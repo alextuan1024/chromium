@@ -97,9 +97,15 @@ bool TestHostDelegate::IsOwnerThread() const {
   return true;
 }
 bool TestHostDelegate::InProtectedSequence() const {
-  return false;
+  return in_protected_sequence_;
 }
-void TestHostDelegate::WaitForProtectedSequenceCompletion() const {}
+bool TestHostDelegate::InWillCommit() const {
+  return in_will_commit_;
+}
+void TestHostDelegate::WaitForProtectedSequenceCompletion() const {
+  CHECK(!in_will_commit_);
+  in_protected_sequence_ = false;
+}
 
 bool TestHostDelegate::IsElementInPropertyTrees(
     ElementId element_id,

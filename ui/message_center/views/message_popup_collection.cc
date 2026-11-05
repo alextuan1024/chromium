@@ -5,10 +5,10 @@
 #include "ui/message_center/views/message_popup_collection.h"
 
 #include <algorithm>
+#include <ranges>
 #include <vector>
 
 #include "base/auto_reset.h"
-#include "base/containers/adapters.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
@@ -111,7 +111,8 @@ void MessagePopupCollection::Update() {
     UpdateByAnimation();
   }
 
-  DCHECK(state_ == State::kIdle || animation_->is_animating());
+  CHECK(state_ == State::kIdle || animation_->is_animating(),
+        base::NotFatalUntil::M163);
 }
 
 void MessagePopupCollection::ResetBounds() {
@@ -403,8 +404,8 @@ void MessagePopupCollection::CloseAllPopupsNow() {
 }
 
 void MessagePopupCollection::TransitionFromAnimation() {
-  DCHECK_NE(state_, State::kIdle);
-  DCHECK(!animation_->is_animating());
+  CHECK_NE(state_, State::kIdle, base::NotFatalUntil::M163);
+  CHECK(!animation_->is_animating(), base::NotFatalUntil::M163);
 
   // The animation of type |state_| is now finished.
   UpdateByAnimation();
@@ -432,8 +433,8 @@ void MessagePopupCollection::TransitionFromAnimation() {
 }
 
 void MessagePopupCollection::TransitionToAnimation() {
-  DCHECK_EQ(state_, State::kIdle);
-  DCHECK(!animation_->is_animating());
+  CHECK_EQ(state_, State::kIdle, base::NotFatalUntil::M163);
+  CHECK(!animation_->is_animating(), base::NotFatalUntil::M163);
 
   if (HasRemovedPopup()) {
     MarkRemovedPopup();
@@ -548,7 +549,7 @@ void MessagePopupCollection::CalculateAndUpdateBounds() {
 }
 
 void MessagePopupCollection::UpdateByAnimation() {
-  DCHECK_NE(state_, State::kIdle);
+  CHECK_NE(state_, State::kIdle, base::NotFatalUntil::M163);
 
   const bool is_animating = animation_->is_animating();
   for (auto& item : popup_items_) {
@@ -617,7 +618,7 @@ bool MessagePopupCollection::AddPopup() {
   auto notifications = GetPopupNotifications();
   Notification* new_notification = nullptr;
   // Reverse iterating because notifications are in reverse chronological order.
-  for (Notification* notification : base::Reversed(notifications)) {
+  for (Notification* notification : std::views::reverse(notifications)) {
     if (!existing_ids.contains(notification->id())) {
       new_notification = notification;
       break;
@@ -828,7 +829,7 @@ bool MessagePopupCollection::IsAnyPopupFocused() const {
 
 MessagePopupCollection::PopupItem* MessagePopupCollection::GetPopupItem(
     size_t index_from_top) {
-  DCHECK_LT(index_from_top, popup_items_.size());
+  CHECK_LT(index_from_top, popup_items_.size(), base::NotFatalUntil::M163);
   return &popup_items_[index_from_top];
 }
 

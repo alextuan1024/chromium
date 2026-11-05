@@ -27,6 +27,13 @@ namespace remoting {
 // interface is asynchronous to enable maximum throughput.
 class WebrtcVideoEncoder {
  public:
+  // Minimum frame dimension (width or height) supported by the encoders.
+  static constexpr int kMinDimension = 32;
+
+  // Default minimum and maximum quantizer bounds for realtime screen encoding.
+  static constexpr int kMinQuantizer = 10;
+  static constexpr int kMaxQuantizer = 50;
+
   struct FrameParams {
     // Target bitrate in kilobits per second.
     int bitrate_kbps = -1;
@@ -118,9 +125,11 @@ class WebrtcVideoEncoder {
     UNKNOWN_ERROR,
   };
 
-  // Helper function for the VPX and AOM encoders to determine the number of
-  // threads needed to efficiently encode a frame based on its width.
-  static int GetEncoderThreadCount(int frame_width);
+  // Helper function to determine the number of threads needed to efficiently
+  // encode a frame based on its target dimension (`frame_size`).
+  static int GetEncoderThreadCount(int frame_size);
+  static int GetEncoderThreadCountForTesting(int frame_size,
+                                             int num_processors);
 
   // A derived class calls EncodeCallback to return the result of an encoding
   // request. SUCCEEDED with an empty EncodedFrame (nullptr) indicates the frame

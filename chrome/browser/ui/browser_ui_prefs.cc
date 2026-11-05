@@ -89,8 +89,6 @@ void RegisterBrowserPrefs(PrefRegistrySimple* registry) {
   registry->RegisterTimePref(prefs::kDefaultBrowserLastDeclinedTime,
                              base::Time());
   registry->RegisterIntegerPref(prefs::kDefaultBrowserDeclinedCount, 0);
-  registry->RegisterTimePref(prefs::kDefaultBrowserFirstShownTime,
-                             base::Time());
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
   registry->RegisterTimePref(prefs::kPdfInfoBarLastShown, base::Time());
   registry->RegisterIntegerPref(prefs::kPdfInfoBarTimesShown, 0);
@@ -199,6 +197,10 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
 
 #if BUILDFLAG(IS_CHROMEOS)
   registry->RegisterBooleanPref(prefs::kForceMaximizeOnFirstRun, false);
+#endif
+
+#if BUILDFLAG(IS_ANDROID)
+  registry->RegisterBooleanPref(prefs::kAllowFileSelectionDialogs, true);
 #endif
 
   registry->RegisterBooleanPref(prefs::kEnterpriseHardwarePlatformAPIEnabled,

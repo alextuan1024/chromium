@@ -21,7 +21,6 @@
 #include "chrome/browser/sync/test/integration/preferences_helper.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_features.h"
@@ -39,11 +38,9 @@
 #include "components/prefs/mock_pref_change_callback.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_pref_names.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/subscription_eligibility/subscription_eligibility_prefs.h"
 #include "components/subscription_eligibility/subscription_eligibility_service.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/engine/cycle/entity_change_metric_recording.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 #include "components/sync/protocol/preference_specifics.pb.h"
@@ -126,17 +123,7 @@ class SingleClientPreferencesSyncTest
     : public SyncTest,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientPreferencesSyncTest() : SyncTest(SINGLE_CLIENT) {
-    if (GetSetupSyncMode() == SyncTest::SetupSyncMode::kSyncTransportOnly) {
-      feature_list_.InitWithFeatures(
-          /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos,
-                                switches::kEnablePreferencesAccountStorage,
-                                // This is needed to enable prefs in transport
-                                // mode.
-                                syncer::kSeparateLocalAndAccountSearchEngines},
-          /*disabled_features=*/{});
-    }
-  }
+  SingleClientPreferencesSyncTest() : SyncTest(SINGLE_CLIENT) {}
 
   SingleClientPreferencesSyncTest(const SingleClientPreferencesSyncTest&) =
       delete;
@@ -166,7 +153,15 @@ class SingleClientPreferencesSyncTest
             /*creation_time=*/0, /*last_modified_time=*/0));
   }
 
-  base::test::ScopedFeatureList feature_list_;
+  void CommitToDiskAndWait() const {
+    base::RunLoop loop;
+    GetPrefs(0)->CommitPendingWrite(loop.QuitClosure());
+    loop.Run();
+  }
+
+  // Created before browser startup to also capture samples emitted by the
+  // default browser test profile.
+  base::HistogramTester histogram_tester_;
 };
 
 INSTANTIATE_TEST_SUITE_P(,
@@ -177,12 +172,15 @@ INSTANTIATE_TEST_SUITE_P(,
 IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest, Sanity) {
   ASSERT_TRUE(SetupSync());
 
-  const bool kDefaultValue =
-      GetPrefs(/*index=*/0)->GetBoolean(prefs::kHomePageIsNewTabPage);
-  ChangeBooleanPref(0, prefs::kHomePageIsNewTabPage);
-  EXPECT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
-  EXPECT_THAT(GetPrefs(/*index=*/0)->GetBoolean(prefs::kHomePageIsNewTabPage),
-              Ne(kDefaultValue));
+  const bool new_value =
+      !GetPrefs(/*index=*/0)->GetBoolean(prefs::kEnableDoNotTrack);
+  ChangeBooleanPref(0, prefs::kEnableDoNotTrack);
+  EXPECT_TRUE(FakeServerPrefMatchesValueChecker(
+                  syncer::DataType::PREFERENCES, prefs::kEnableDoNotTrack,
+                  ConvertPrefValueToValueInSpecifics(base::Value(new_value)))
+                  .Wait());
+  EXPECT_EQ(GetPrefs(/*index=*/0)->GetBoolean(prefs::kEnableDoNotTrack),
+            new_value);
 }
 
 // Regression test to verify that pagination during GetUpdates() contributes
@@ -203,10 +201,9 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
             /*creation_time=*/0, /*last_modified_time=*/0));
   }
 
-  base::HistogramTester histogram_tester;
   ASSERT_TRUE(SetupSync());
   EXPECT_EQ(kNumEntities,
-            histogram_tester.GetBucketCount(
+            histogram_tester_.GetBucketCount(
                 "Sync.DataTypeEntityChange.PREFERENCE",
                 syncer::DataTypeEntityChange::kRemoteInitialUpdate));
 }
@@ -222,9 +219,8 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
           /*creation_time=*/0,
           /*last_modified_time=*/0));
 
-  base::HistogramTester histogram_tester;
   ASSERT_TRUE(SetupSync());
-  EXPECT_EQ(1, histogram_tester.GetBucketCount(
+  EXPECT_EQ(1, histogram_tester_.GetBucketCount(
                    "Sync.DataTypeEntityChange.PREFERENCE",
                    syncer::DataTypeEntityChange::kRemoteInitialUpdate));
 }
@@ -240,19 +236,12 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
           /*creation_time=*/0,
           /*last_modified_time=*/0));
 
-  base::HistogramTester histogram_tester;
   ASSERT_TRUE(SetupClients());
   ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
 
-  // After restart, the last sync cycle snapshot should be empty.
-  // Once a sync request happened (e.g. by a poll), that snapshot is populated.
-  // We use the following checker to simply wait for an non-empty snapshot.
-  GetSyncService(0)->TriggerRefresh(
-      syncer::SyncService::TriggerRefreshSource::kUnknown,
-      {syncer::PREFERENCES});
-  EXPECT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  EXPECT_TRUE(GetClient(0)->TriggerRefreshAndWait({syncer::PREFERENCES}));
 
-  EXPECT_EQ(0, histogram_tester.GetBucketCount(
+  EXPECT_EQ(0, histogram_tester_.GetBucketCount(
                    "Sync.DataTypeEntityChange.PREFERENCE",
                    syncer::DataTypeEntityChange::kRemoteInitialUpdate));
 }
@@ -282,34 +271,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
               Eq("non-priority value"));
 }
 
-class SingleClientPreferencesWithAccountStorageSyncTest
-    : public SingleClientPreferencesSyncTest {
- public:
-  SingleClientPreferencesWithAccountStorageSyncTest() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/{switches::kEnablePreferencesAccountStorage,
-                              // This is needed to enable prefs in transport
-                              // mode.
-                              syncer::kSeparateLocalAndAccountSearchEngines},
-        /*disabled_features=*/{});
-  }
-
-  void CommitToDiskAndWait() const {
-    base::RunLoop loop;
-    GetPrefs(0)->CommitPendingWrite(loop.QuitClosure());
-    loop.Run();
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(,
-                         SingleClientPreferencesWithAccountStorageSyncTest,
-                         GetSyncTestModes(),
-                         testing::PrintToStringParamName());
-
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldPreserveLocalPrefsAndNotUploadToAccountOnSignin) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -339,7 +301,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 // ChromeOS does not support signing out of a primary account.
 #if !BUILDFLAG(IS_CHROMEOS)
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldCleanupAccountStoreOnSignout) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -376,7 +338,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldCleanupAccountStoreOnDisable) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -412,7 +374,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
             "local value");
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldChangeSyncablePrefLocallyAndOnAccount) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -458,7 +420,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
             "new value");
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldNotSyncNonSyncablePrefToAccount) {
   constexpr char kNonSyncablePref[] = "non-syncable pref";
 
@@ -499,7 +461,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
           .Wait());
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldNotSyncSensitivePrefsIfHistorySyncOff) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncableHistorySensitiveListPrefForTesting`.
@@ -564,7 +526,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
             ConvertPrefValueToValueInSpecifics(base::Value(new_value.Clone())));
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldSyncSensitivePrefsIfHistorySyncOn) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncableHistorySensitiveListPrefForTesting`.
@@ -615,7 +577,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
           .Wait());
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldListenToHistorySyncOptInChanges) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncableHistorySensitiveListPrefForTesting`.
@@ -682,7 +644,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 // Regression test for crbug.com/40066193.
 // ChromeOS does not support signing out of a primary account.
 #if !BUILDFLAG(IS_CHROMEOS)
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldHandleWalletSideEffectsWhenSyncDisabled) {
   ASSERT_TRUE(SetupClients());
   ASSERT_FALSE(
@@ -717,7 +679,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 
 #if !BUILDFLAG(IS_ANDROID)
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldCleanupAccountPreferencesFileOnDisable) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -777,7 +739,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 
 #if !BUILDFLAG(IS_CHROMEOS)
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldCleanupAccountPreferencesFileOnSignout) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -836,7 +798,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 
 // Adds pref values to persistent storage.
 IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithAccountStorageSyncTest,
+    SingleClientPreferencesSyncTest,
     PRE_ShouldReadAccountPreferencesFromFileBeforeSyncStart) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -861,7 +823,7 @@ IN_PROC_BROWSER_TEST_P(
             "account value");
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldReadAccountPreferencesFromFileBeforeSyncStart) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -878,7 +840,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 }
 
 // Adds pref values to persistent storage.
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        PRE_ShouldNotNotifyUponSyncStart) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -899,7 +861,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 }
 
 // Regression test for crbug.com/40277783.
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldNotNotifyUponSyncStart) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
@@ -944,7 +906,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 // ChromeOS does not support sign-in allowed flag.
 #if !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithAccountStorageSyncTest,
+    SingleClientPreferencesSyncTest,
     PRE_ShouldClearAccountDataOnStartupIfSignInAllowedBitChanged) {
   ASSERT_TRUE(SetupClients());
   GetRegistry(GetProfile(0))
@@ -975,9 +937,8 @@ IN_PROC_BROWSER_TEST_P(
 }
 
 IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithAccountStorageSyncTest,
+    SingleClientPreferencesSyncTest,
     ShouldClearAccountDataOnStartupIfSignInAllowedBitChanged) {
-  base::HistogramTester histogram_tester;
   ASSERT_TRUE(SetupClients());
   GetRegistry(GetProfile(0))
       ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
@@ -991,15 +952,17 @@ IN_PROC_BROWSER_TEST_P(
                                base::Value("local value"))
                   .Wait());
   // Clearing happened with StayStoppedAndMaybeClearData() called upon startup.
-  histogram_tester.ExpectUniqueSample(
+  // Both the default browser test profile and client 0's profile emit `true` on
+  // startup.
+  histogram_tester_.ExpectUniqueSample(
       "Sync.SyncableService.MaybeClearDataIfMetadataEmptyOrInvalid.PREFERENCE",
       true,
-      /*expected_bucket_count=*/1);
+      /*expected_bucket_count=*/2);
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
 IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithAccountStorageSyncTest,
+    SingleClientPreferencesSyncTest,
     PRE_ShouldClearAccountDataOnStartupIfAccountStateChanged) {
   ASSERT_TRUE(SetupClients());
   GetRegistry(GetProfile(0))
@@ -1042,9 +1005,8 @@ IN_PROC_BROWSER_TEST_P(
   ExcludeDataTypesFromCheckForDataTypeFailures({syncer::PREFERENCES});
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldClearAccountDataOnStartupIfAccountStateChanged) {
-  base::HistogramTester histogram_tester;
   ASSERT_TRUE(SetupClients());
   GetRegistry(GetProfile(0))
       ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
@@ -1058,15 +1020,17 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
                                base::Value("local value"))
                   .Wait());
   // Clearing happened with StayStoppedAndMaybeClearData() called upon startup.
-  histogram_tester.ExpectUniqueSample(
+  // Both the default browser test profile and client 0's profile emit `true` on
+  // startup.
+  histogram_tester_.ExpectUniqueSample(
       "Sync.SyncableService.MaybeClearDataIfMetadataEmptyOrInvalid.PREFERENCE",
       true,
-      /*expected_bucket_count=*/1);
+      /*expected_bucket_count=*/2);
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 using SingleClientPreferencesWithAccountStorageMergeSyncTest =
-    SingleClientPreferencesWithAccountStorageSyncTest;
+    SingleClientPreferencesSyncTest;
 
 INSTANTIATE_TEST_SUITE_P(,
                          SingleClientPreferencesWithAccountStorageMergeSyncTest,
@@ -1324,10 +1288,260 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageMergeSyncTest,
             updated_value);
 }
 
+class SingleClientPreferencesWithAccountStorageMergeRemovalSyncTest
+    : public SingleClientPreferencesSyncTest {
+  base::test::ScopedFeatureList feature_list_{
+      sync_preferences::features::kSyncUnmergeRemotePrefRemovals};
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    SingleClientPreferencesWithAccountStorageMergeRemovalSyncTest,
+    GetSyncTestModes(),
+    testing::PrintToStringParamName());
+
+IN_PROC_BROWSER_TEST_P(
+    SingleClientPreferencesWithAccountStorageMergeRemovalSyncTest,
+    ShouldRemoveRemotelyDeletedListEntryFromLocalStore) {
+  ASSERT_TRUE(SetupClients());
+  GetRegistry(GetProfile(0))
+      ->RegisterListPref(sync_preferences::kSyncableMergeableListPrefForTesting,
+                         user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  ASSERT_FALSE(
+      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
+
+  // Seed a local-only entry along with entries shared with the server before
+  // enabling sync.
+  GetPrefs(0)->SetList(sync_preferences::kSyncableMergeableListPrefForTesting,
+                       base::ListValue()
+                           .Append("local.com")
+                           .Append("cnn.com")
+                           .Append("facebook.com"));
+
+  InjectPreferenceToFakeServer(
+      syncer::PREFERENCES,
+      sync_preferences::kSyncableMergeableListPrefForTesting,
+      base::Value(base::ListValue().Append("cnn.com").Append("facebook.com")));
+
+  ASSERT_TRUE(SetupSync());
+  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
+  ASSERT_EQ(GetPrefs(0)->GetList(
+                sync_preferences::kSyncableMergeableListPrefForTesting),
+            base::ListValue()
+                .Append("cnn.com")
+                .Append("facebook.com")
+                .Append("local.com"));
+
+  // Remote update removes "facebook.com".
+  InjectPreferenceToFakeServer(
+      syncer::PREFERENCES,
+      sync_preferences::kSyncableMergeableListPrefForTesting,
+      base::Value(base::ListValue().Append("cnn.com")));
+  ASSERT_TRUE(
+      PrefValueChecker(
+          GetPrefs(0), sync_preferences::kSyncableMergeableListPrefForTesting,
+          base::Value(base::ListValue().Append("cnn.com").Append("local.com")))
+          .Wait());
+
+  // Disable syncing preferences; the local-only and kept entries remain and the
+  // deleted entry stays gone.
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
+      syncer::UserSelectableType::kPreferences));
+  ASSERT_FALSE(
+      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
+  EXPECT_EQ(GetPrefs(0)->GetList(
+                sync_preferences::kSyncableMergeableListPrefForTesting),
+            base::ListValue().Append("local.com").Append("cnn.com"));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    SingleClientPreferencesWithAccountStorageMergeRemovalSyncTest,
+    ShouldRemoveRemotelyDeletedDictEntryFromLocalStore) {
+  ASSERT_TRUE(SetupClients());
+  GetRegistry(GetProfile(0))
+      ->RegisterDictionaryPref(
+          sync_preferences::kSyncableMergeableDictPrefForTesting,
+          user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  ASSERT_FALSE(
+      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
+
+  // Seed a local-only key and subkey before enabling sync.
+  GetPrefs(0)->SetDict(
+      sync_preferences::kSyncableMergeableDictPrefForTesting,
+      base::DictValue()
+          .Set("local.com", "allow")
+          .Set("nested", base::DictValue().Set("local_sub", "allow")));
+
+  ASSERT_TRUE(SetupSync());
+  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
+
+  GetPrefs(0)->SetDict(
+      sync_preferences::kSyncableMergeableDictPrefForTesting,
+      base::DictValue()
+          .Set("local.com", "allow")
+          .Set("kept.com", "allow")
+          .Set("removed.com", "deny")
+          .Set("nested", base::DictValue()
+                             .Set("local_sub", "allow")
+                             .Set("removed_sub", "deny"))
+          .Set("emptied_nested", base::DictValue().Set("sub", "deny")));
+
+  ASSERT_TRUE(
+      FakeServerPrefMatchesValueChecker(
+          syncer::DataType::PREFERENCES,
+          sync_preferences::kSyncableMergeableDictPrefForTesting,
+          ConvertPrefValueToValueInSpecifics(base::Value(
+              base::DictValue()
+                  .Set("kept.com", "allow")
+                  .Set("removed.com", "deny")
+                  .Set("nested", base::DictValue().Set("removed_sub", "deny"))
+                  .Set("emptied_nested",
+                       base::DictValue().Set("sub", "deny")))))
+          .Wait());
+
+  // Remote update removes "removed.com", "nested.removed_sub", and
+  // "emptied_nested".
+  InjectPreferenceToFakeServer(
+      syncer::PREFERENCES,
+      sync_preferences::kSyncableMergeableDictPrefForTesting,
+      base::Value(base::DictValue().Set("kept.com", "allow")));
+
+  base::DictValue expected_after_removal =
+      base::DictValue()
+          .Set("local.com", "allow")
+          .Set("kept.com", "allow")
+          .Set("nested", base::DictValue().Set("local_sub", "allow"));
+  ASSERT_TRUE(
+      PrefValueChecker(GetPrefs(0),
+                       sync_preferences::kSyncableMergeableDictPrefForTesting,
+                       base::Value(expected_after_removal.Clone()))
+          .Wait());
+
+  // Adding another remote key does not resurrect the deleted entries.
+  InjectPreferenceToFakeServer(
+      syncer::PREFERENCES,
+      sync_preferences::kSyncableMergeableDictPrefForTesting,
+      base::Value(base::DictValue()
+                      .Set("kept.com", "allow")
+                      .Set("added.com", "allow")));
+
+  ASSERT_TRUE(
+      PrefValueChecker(
+          GetPrefs(0), sync_preferences::kSyncableMergeableDictPrefForTesting,
+          base::Value(expected_after_removal.Clone().Set("added.com", "allow")))
+          .Wait());
+
+  // Disable syncing preferences; local-only entries remain and deleted ones
+  // stay gone.
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
+      syncer::UserSelectableType::kPreferences));
+  ASSERT_FALSE(
+      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
+  EXPECT_EQ(GetPrefs(0)->GetDict(
+                sync_preferences::kSyncableMergeableDictPrefForTesting),
+            expected_after_removal);
+}
+
+class SingleClientPreferencesWithAccountStorageMergeRemovalDisabledSyncTest
+    : public SingleClientPreferencesSyncTest {
+ public:
+  SingleClientPreferencesWithAccountStorageMergeRemovalDisabledSyncTest() {
+    feature_list_.InitAndDisableFeature(
+        sync_preferences::features::kSyncUnmergeRemotePrefRemovals);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    SingleClientPreferencesWithAccountStorageMergeRemovalDisabledSyncTest,
+    GetSyncTestModes(),
+    testing::PrintToStringParamName());
+
+IN_PROC_BROWSER_TEST_P(
+    SingleClientPreferencesWithAccountStorageMergeRemovalDisabledSyncTest,
+    ShouldKeepDeletedEntriesInLocalStore) {
+  ASSERT_TRUE(SetupClients());
+  GetRegistry(GetProfile(0))
+      ->RegisterListPref(sync_preferences::kSyncableMergeableListPrefForTesting,
+                         user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  GetRegistry(GetProfile(0))
+      ->RegisterDictionaryPref(
+          sync_preferences::kSyncableMergeableDictPrefForTesting,
+          user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  ASSERT_FALSE(
+      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
+
+  ASSERT_TRUE(SetupSync());
+  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
+
+  base::ListValue initial_list =
+      base::ListValue().Append("kept.com").Append("removed.com");
+  GetPrefs(0)->SetList(sync_preferences::kSyncableMergeableListPrefForTesting,
+                       initial_list.Clone());
+  base::DictValue initial_dict =
+      base::DictValue().Set("kept.com", "allow").Set("removed.com", "deny");
+  GetPrefs(0)->SetDict(sync_preferences::kSyncableMergeableDictPrefForTesting,
+                       initial_dict.Clone());
+  ASSERT_TRUE(
+      FakeServerPrefMatchesValueChecker(
+          syncer::DataType::PREFERENCES,
+          sync_preferences::kSyncableMergeableListPrefForTesting,
+          ConvertPrefValueToValueInSpecifics(base::Value(initial_list.Clone())))
+          .Wait());
+  ASSERT_TRUE(
+      FakeServerPrefMatchesValueChecker(
+          syncer::DataType::PREFERENCES,
+          sync_preferences::kSyncableMergeableDictPrefForTesting,
+          ConvertPrefValueToValueInSpecifics(base::Value(initial_dict.Clone())))
+          .Wait());
+
+  // Remote updates remove "removed.com" and add "added.com".
+  InjectPreferenceToFakeServer(
+      syncer::PREFERENCES,
+      sync_preferences::kSyncableMergeableListPrefForTesting,
+      base::Value(base::ListValue().Append("kept.com").Append("added.com")));
+  InjectPreferenceToFakeServer(
+      syncer::PREFERENCES,
+      sync_preferences::kSyncableMergeableDictPrefForTesting,
+      base::Value(base::DictValue()
+                      .Set("kept.com", "allow")
+                      .Set("added.com", "allow")));
+
+  // With the flag disabled, "removed.com" remains in the local store and
+  // resurrects in the merged values.
+  ASSERT_TRUE(
+      PrefValueChecker(GetPrefs(0),
+                       sync_preferences::kSyncableMergeableListPrefForTesting,
+                       base::Value(base::ListValue()
+                                       .Append("kept.com")
+                                       .Append("added.com")
+                                       .Append("removed.com")))
+          .Wait());
+  ASSERT_TRUE(PrefValueChecker(
+                  GetPrefs(0),
+                  sync_preferences::kSyncableMergeableDictPrefForTesting,
+                  base::Value(initial_dict.Clone().Set("added.com", "allow")))
+                  .Wait());
+
+  ASSERT_TRUE(GetClient(0)->DisableSelectableType(
+      syncer::UserSelectableType::kPreferences));
+  ASSERT_FALSE(
+      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
+  EXPECT_EQ(GetPrefs(0)->GetList(
+                sync_preferences::kSyncableMergeableListPrefForTesting),
+            initial_list);
+  EXPECT_EQ(GetPrefs(0)->GetDict(
+                sync_preferences::kSyncableMergeableDictPrefForTesting),
+            initial_dict);
+}
+
 #if BUILDFLAG(IS_ANDROID)
 
 class SingleClientPreferencesMigrateAccountPrefsSyncTest
-    : public SingleClientPreferencesWithAccountStorageSyncTest {
+    : public SingleClientPreferencesSyncTest {
  public:
   SingleClientPreferencesMigrateAccountPrefsSyncTest() = default;
 
@@ -1343,9 +1557,8 @@ INSTANTIATE_TEST_SUITE_P(
     testing::Values(SyncTest::SetupSyncMode::kSyncTransportOnly),
     testing::PrintToStringParamName());
 
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesMigrateAccountPrefsSyncTest,
-    ShouldNotCreateAccountPrefsFile) {
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesMigrateAccountPrefsSyncTest,
+                       ShouldNotCreateAccountPrefsFile) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
   GetRegistry(GetProfile(0))
@@ -1370,9 +1583,8 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_FALSE(base::PathExists(AccountPreferencesFilePath()));
 }
 
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesMigrateAccountPrefsSyncTest,
-    ShouldDownloadAccountPrefsWithInitialSync) {
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesMigrateAccountPrefsSyncTest,
+                       ShouldDownloadAccountPrefsWithInitialSync) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
   GetRegistry(GetProfile(0))
@@ -1417,9 +1629,8 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_TRUE(account_pref_values_on_disk->empty());
 }
 
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesMigrateAccountPrefsSyncTest,
-    ShouldCleanupAccountPreferencesFileOnDisable) {
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesMigrateAccountPrefsSyncTest,
+                       ShouldCleanupAccountPreferencesFileOnDisable) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
   GetRegistry(GetProfile(0))
@@ -1476,9 +1687,8 @@ IN_PROC_BROWSER_TEST_P(
       file_content->FindString(sync_preferences::kSyncablePrefForTesting));
 }
 
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesMigrateAccountPrefsSyncTest,
-    ShouldCleanupAccountPreferencesFileOnSignout) {
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesMigrateAccountPrefsSyncTest,
+                       ShouldCleanupAccountPreferencesFileOnSignout) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
   GetRegistry(GetProfile(0))
@@ -1545,11 +1755,10 @@ const char* kProtectedPrefName = prefs::kShowHomeButton;
 const char* kUnprotectedPrefName = prefs::kShowForwardButton;
 
 class SingleClientTrackedPreferencesSyncTest
-    : public SingleClientPreferencesWithAccountStorageSyncTest {
+    : public SingleClientPreferencesSyncTest {
  public:
   void SetUpInProcessBrowserTestFixture() override {
-    SingleClientPreferencesWithAccountStorageSyncTest::
-        SetUpInProcessBrowserTestFixture();
+    SingleClientPreferencesSyncTest::SetUpInProcessBrowserTestFixture();
 
     // Bots are on a domain, turn off the domain check for settings hardening in
     // order to be able to test all SettingsEnforcement groups.
@@ -1948,7 +2157,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSubscriptionEligibilityTest,
   EXPECT_EQ(1, service()->GetAiSubscriptionTier());
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ActiveWhenUserToggleIsOff) {
   ASSERT_TRUE(SetupClients());
   ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().empty());
@@ -1976,7 +2185,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
       syncer::PRIORITY_PREFERENCES));
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldSyncAllowlistedPriorityPrefWithoutOptIn) {
   ASSERT_TRUE(SetupClients());
   // Regular priority pref.
@@ -2044,7 +2253,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
       ConvertPrefValueToValueInSpecifics(base::Value("value1")));
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldSyncRegularPriorityPrefWithOptIn) {
   ASSERT_TRUE(SetupClients());
   // Regular syncable pref.
@@ -2090,11 +2299,10 @@ IN_PROC_BROWSER_TEST_P(SingleClientPreferencesWithAccountStorageSyncTest,
 #if !BUILDFLAG(IS_ANDROID)
 // Regression test for crbug.com/415305009.
 class SingleClientFeatureListEarlyAccessTest
-    : public SingleClientPreferencesWithAccountStorageSyncTest {
+    : public SingleClientPreferencesSyncTest {
  public:
   void SetUpInProcessBrowserTestFixture() override {
-    SingleClientPreferencesWithAccountStorageSyncTest::
-        SetUpInProcessBrowserTestFixture();
+    SingleClientPreferencesSyncTest::SetUpInProcessBrowserTestFixture();
     policy_provider_.SetDefaultReturns(
         /*is_initialization_complete_return=*/true,
         /*is_first_policy_load_complete_return=*/true);
@@ -2127,171 +2335,11 @@ IN_PROC_BROWSER_TEST_P(SingleClientFeatureListEarlyAccessTest,
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-// Sync-the-feature is no longer supported on Android.
-#if !BUILDFLAG(IS_ANDROID)
-class
-    SingleClientPreferencesWithoutShouldUseSelectedTypesAndWithoutAccountStorageSyncTest
-    : public SingleClientPreferencesSyncTest {
- public:
-  SingleClientPreferencesWithoutShouldUseSelectedTypesAndWithoutAccountStorageSyncTest() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/{
-            syncer::kSyncPreferencesUseSelectedTypes,
-            switches::kEnablePreferencesAccountStorage,
-            // Skip sync-to-signin migration for sync-the-feature tests. This is
-            // to avoid the sync state changing between the PRE_ tests.
-            switches::kMigrateSyncingUserToSignedIn});
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    SingleClientPreferencesWithoutShouldUseSelectedTypesAndWithoutAccountStorageSyncTest,
-    testing::Values(SyncTest::SetupSyncMode::kSyncTheFeature),
-    testing::PrintToStringParamName());
-
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithoutShouldUseSelectedTypesAndWithoutAccountStorageSyncTest,
-    PRE_CommitsPreInitialMergePrefAdds) {
-  ASSERT_TRUE(SetupClients());
-  // Register `sync_preferences::kSyncablePrefForTesting`.
-  GetRegistry(GetProfile(0))
-      ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
-                           user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-
-  ASSERT_TRUE(SetupSync());
-  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-  // Preferences value does not exist yet.
-  ASSERT_FALSE(
-      GetPrefs(0)->GetUserPrefValue(sync_preferences::kSyncablePrefForTesting));
-  ASSERT_FALSE(preferences_helper::GetPreferenceInFakeServer(
-      syncer::PREFERENCES, sync_preferences::kSyncablePrefForTesting,
-      GetFakeServer()));
-}
-
-// Note that this test documents the current behavior, but is not necessarily
-// the desired behavior.
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithoutShouldUseSelectedTypesAndWithoutAccountStorageSyncTest,
-    CommitsPreInitialMergePrefAdds) {
-  ASSERT_TRUE(SetupClients());
-  // Register `sync_preferences::kSyncablePrefForTesting`.
-  GetRegistry(GetProfile(0))
-      ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
-                           user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  ASSERT_FALSE(
-      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-
-  preferences_helper::ChangeStringPref(
-      0, sync_preferences::kSyncablePrefForTesting, "new value");
-
-  // Wait for sync to start.
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
-  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-  ASSERT_TRUE(CommittedAllNudgedChangesChecker(GetSyncService(0)).Wait());
-
-  ASSERT_EQ(GetPrefs(0)->GetString(sync_preferences::kSyncablePrefForTesting),
-            "new value");
-  // Change is synced to account.
-  const std::optional<sync_pb::PreferenceSpecifics> entity =
-      preferences_helper::GetPreferenceInFakeServer(
-          syncer::PREFERENCES, sync_preferences::kSyncablePrefForTesting,
-          GetFakeServer());
-  ASSERT_TRUE(entity.has_value());
-  EXPECT_EQ(entity->value(),
-            ConvertPrefValueToValueInSpecifics(base::Value("new value")));
-}
-
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithoutShouldUseSelectedTypesAndWithoutAccountStorageSyncTest,
-    PRE_DoesNotCommitPreInitialMergePrefUpdates) {
-  ASSERT_TRUE(SetupClients());
-  // Register `sync_preferences::kSyncablePrefForTesting`.
-  GetRegistry(GetProfile(0))
-      ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
-                           user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-
-  ASSERT_TRUE(SetupSync());
-  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-
-  InjectPreferenceToFakeServer(syncer::PREFERENCES,
-                               sync_preferences::kSyncablePrefForTesting,
-                               base::Value("old value"));
-
-  // Same preference value exists on the client and the remote.
-  ASSERT_TRUE(PrefValueChecker(GetPrefs(0),
-                               sync_preferences::kSyncablePrefForTesting,
-                               base::Value("old value"))
-                  .Wait());
-  ASSERT_EQ(preferences_helper::GetPreferenceInFakeServer(
-                syncer::PREFERENCES, sync_preferences::kSyncablePrefForTesting,
-                GetFakeServer())
-                ->value(),
-            ConvertPrefValueToValueInSpecifics(base::Value("old value")));
-}
-
-// Note that this test documents the current behavior, but is not necessarily
-// the desired behavior.
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithoutShouldUseSelectedTypesAndWithoutAccountStorageSyncTest,
-    DoesNotCommitPreInitialMergePrefUpdates) {
-  ASSERT_TRUE(SetupClients());
-  // Register `sync_preferences::kSyncablePrefForTesting`.
-  GetRegistry(GetProfile(0))
-      ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
-                           user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  ASSERT_FALSE(
-      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-
-  preferences_helper::ChangeStringPref(
-      0, sync_preferences::kSyncablePrefForTesting, "new value");
-
-  // Wait for sync to start.
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
-  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-  ASSERT_TRUE(CommittedAllNudgedChangesChecker(GetSyncService(0)).Wait());
-
-  // Remote value overwrites the new local value. This is the current behavior
-  // but is not desired.
-  EXPECT_EQ(GetPrefs(0)->GetString(sync_preferences::kSyncablePrefForTesting),
-            "old value");
-  // Remote value is unchanged.
-  EXPECT_TRUE(FakeServerPrefMatchesValueChecker(
-                  syncer::DataType::PREFERENCES,
-                  sync_preferences::kSyncablePrefForTesting,
-                  ConvertPrefValueToValueInSpecifics(base::Value("old value")))
-                  .Wait());
-}
-#endif  // !BUILDFLAG(IS_ANDROID)
-
 // TODO(crbug.com/467211652): Investigate why these PRE_ test is not yet
 // supported on Android.
 #if !BUILDFLAG(IS_ANDROID)
-class SingleClientPreferencesWithoutShouldUseSelectedTypesSyncTest
-    : public SingleClientPreferencesWithAccountStorageSyncTest {
- public:
-  SingleClientPreferencesWithoutShouldUseSelectedTypesSyncTest() {
-    feature_list_.InitAndDisableFeature(
-        syncer::kSyncPreferencesUseSelectedTypes);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    SingleClientPreferencesWithoutShouldUseSelectedTypesSyncTest,
-    GetSyncTestModes(),
-    testing::PrintToStringParamName());
-
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithoutShouldUseSelectedTypesSyncTest,
-    PRE_DoesNotCommitPreInitialMergePrefAdds) {
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
+                       PRE_CommitsPreInitialMergePrefAdds) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
   GetRegistry(GetProfile(0))
@@ -2308,132 +2356,8 @@ IN_PROC_BROWSER_TEST_P(
       GetFakeServer()));
 }
 
-// Note that this test documents the current behavior, but is not necessarily
-// the desired behavior.
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithoutShouldUseSelectedTypesSyncTest,
-    DoesNotCommitPreInitialMergePrefAdds) {
-  ASSERT_TRUE(SetupClients());
-  // Register `sync_preferences::kSyncablePrefForTesting`.
-  GetRegistry(GetProfile(0))
-      ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
-                           user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  ASSERT_FALSE(
-      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-
-  preferences_helper::ChangeStringPref(
-      0, sync_preferences::kSyncablePrefForTesting, "new value");
-
-  // Wait for sync to start.
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
-  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-  ASSERT_TRUE(CommittedAllNudgedChangesChecker(GetSyncService(0)).Wait());
-
-  ASSERT_EQ(GetPrefs(0)->GetString(sync_preferences::kSyncablePrefForTesting),
-            "new value");
-  // Change is not synced to account. This is the current behavior but is not
-  // desired.
-  EXPECT_FALSE(preferences_helper::GetPreferenceInFakeServer(
-      syncer::PREFERENCES, sync_preferences::kSyncablePrefForTesting,
-      GetFakeServer()));
-}
-
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithoutShouldUseSelectedTypesSyncTest,
-    PRE_DoesNotCommitPreInitialMergePrefUpdates) {
-  ASSERT_TRUE(SetupClients());
-  // Register `sync_preferences::kSyncablePrefForTesting`.
-  GetRegistry(GetProfile(0))
-      ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
-                           user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-
-  ASSERT_TRUE(SetupSync());
-  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-
-  InjectPreferenceToFakeServer(syncer::PREFERENCES,
-                               sync_preferences::kSyncablePrefForTesting,
-                               base::Value("old value"));
-
-  // Same preference value exists on the client and the remote.
-  ASSERT_TRUE(PrefValueChecker(GetPrefs(0),
-                               sync_preferences::kSyncablePrefForTesting,
-                               base::Value("old value"))
-                  .Wait());
-  ASSERT_EQ(preferences_helper::GetPreferenceInFakeServer(
-                syncer::PREFERENCES, sync_preferences::kSyncablePrefForTesting,
-                GetFakeServer())
-                ->value(),
-            ConvertPrefValueToValueInSpecifics(base::Value("old value")));
-}
-
-// Note that this test documents the current behavior, but is not necessarily
-// the desired behavior.
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithoutShouldUseSelectedTypesSyncTest,
-    DoesNotCommitPreInitialMergePrefUpdates) {
-  ASSERT_TRUE(SetupClients());
-  // Register `sync_preferences::kSyncablePrefForTesting`.
-  GetRegistry(GetProfile(0))
-      ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
-                           user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  ASSERT_FALSE(
-      GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-
-  preferences_helper::ChangeStringPref(
-      0, sync_preferences::kSyncablePrefForTesting, "new value");
-
-  // Wait for sync to start.
-  ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
-  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-  ASSERT_TRUE(CommittedAllNudgedChangesChecker(GetSyncService(0)).Wait());
-
-  // Remote value overwrites the new local value.
-  EXPECT_EQ(GetPrefs(0)->GetString(sync_preferences::kSyncablePrefForTesting),
-            "old value");
-  // Remote value is unchanged. This is the current behavior but is not
-  // desired.
-  EXPECT_TRUE(FakeServerPrefMatchesValueChecker(
-                  syncer::DataType::PREFERENCES,
-                  sync_preferences::kSyncablePrefForTesting,
-                  ConvertPrefValueToValueInSpecifics(base::Value("old value")))
-                  .Wait());
-}
-
-class SingleClientPreferencesWithShouldUseSelectedTypesSyncTest
-    : public SingleClientPreferencesWithAccountStorageSyncTest {
- private:
-  base::test::ScopedFeatureList feature_list_{
-      syncer::kSyncPreferencesUseSelectedTypes};
-};
-
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    SingleClientPreferencesWithShouldUseSelectedTypesSyncTest,
-    GetSyncTestModes(),
-    testing::PrintToStringParamName());
-
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithShouldUseSelectedTypesSyncTest,
-    PRE_CommitsPreInitialMergePrefAdds) {
-  ASSERT_TRUE(SetupClients());
-  // Register `sync_preferences::kSyncablePrefForTesting`.
-  GetRegistry(GetProfile(0))
-      ->RegisterStringPref(sync_preferences::kSyncablePrefForTesting, "",
-                           user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-
-  ASSERT_TRUE(SetupSync());
-  ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PREFERENCES));
-  // Preferences value does not exist yet.
-  ASSERT_FALSE(
-      GetPrefs(0)->GetUserPrefValue(sync_preferences::kSyncablePrefForTesting));
-  ASSERT_FALSE(preferences_helper::GetPreferenceInFakeServer(
-      syncer::PREFERENCES, sync_preferences::kSyncablePrefForTesting,
-      GetFakeServer()));
-}
-
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithShouldUseSelectedTypesSyncTest,
-    CommitsPreInitialMergePrefAdds) {
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
+                       CommitsPreInitialMergePrefAdds) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
   GetRegistry(GetProfile(0))
@@ -2462,9 +2386,8 @@ IN_PROC_BROWSER_TEST_P(
             ConvertPrefValueToValueInSpecifics(base::Value("new value")));
 }
 
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithShouldUseSelectedTypesSyncTest,
-    PRE_CommitsPreInitialMergePrefUpdates) {
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
+                       PRE_CommitsPreInitialMergePrefUpdates) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
   GetRegistry(GetProfile(0))
@@ -2490,9 +2413,8 @@ IN_PROC_BROWSER_TEST_P(
             ConvertPrefValueToValueInSpecifics(base::Value("old value")));
 }
 
-IN_PROC_BROWSER_TEST_P(
-    SingleClientPreferencesWithShouldUseSelectedTypesSyncTest,
-    CommitsPreInitialMergePrefUpdates) {
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
+                       CommitsPreInitialMergePrefUpdates) {
   ASSERT_TRUE(SetupClients());
   // Register `sync_preferences::kSyncablePrefForTesting`.
   GetRegistry(GetProfile(0))
@@ -2522,24 +2444,7 @@ IN_PROC_BROWSER_TEST_P(
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-class SingleClientPreferencesAccountScopedSyncTest
-    : public SingleClientPreferencesWithAccountStorageSyncTest {
- public:
-  SingleClientPreferencesAccountScopedSyncTest() {
-    feature_list_.InitAndEnableFeature(
-        sync_preferences::features::kAccountScopedPrefs);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(,
-                         SingleClientPreferencesAccountScopedSyncTest,
-                         GetSyncTestModes(),
-                         testing::PrintToStringParamName());
-
-IN_PROC_BROWSER_TEST_P(SingleClientPreferencesAccountScopedSyncTest,
+IN_PROC_BROWSER_TEST_P(SingleClientPreferencesSyncTest,
                        ShouldStoreAccountScopedPrefInAccountStoreOnly) {
   ASSERT_TRUE(SetupClients());
   GetRegistry(GetProfile(0))

@@ -17,7 +17,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
-#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/events/event_constants.h"
@@ -215,8 +214,7 @@ class GestureProviderTest : public testing::Test, public GestureProviderClient {
   }
 
   const GestureProvider::Config& GetDefaultConfig() const {
-    static GestureProvider::Config sConfig = CreateDefaultConfig();
-    return sConfig;
+    return default_config_;
   }
 
   float GetTapSlop(
@@ -518,6 +516,8 @@ class GestureProviderTest : public testing::Test, public GestureProviderClient {
         FROM_HERE, run_loop.QuitClosure(), delay);
     run_loop.Run();
   }
+
+  const GestureProvider::Config default_config_ = CreateDefaultConfig();
 
   std::vector<GestureEventData> gestures_;
   std::unique_ptr<GestureProvider> gesture_provider_;
@@ -1209,14 +1209,10 @@ TEST_F(GestureProviderTest, ScrollUpdateValues) {
   EXPECT_EQ(kFakeCoordY - delta_y + raw_offset_y, gesture.raw_y);
   EXPECT_EQ(1, gesture.details.touch_points());
 
-  // Horizontal delta is preserved when railing in renderer is enabled;
-  // otherwise it is zeroed by browser-side snapping.
-  if (base::FeatureList::IsEnabled(features::kApplyScrollRailingInRenderer)) {
-    EXPECT_EQ(-delta_x / 2, gesture.details.scroll_x());
-  } else {
-    EXPECT_EQ(0, gesture.details.scroll_x());
-  }
+  EXPECT_EQ(0, gesture.details.scroll_x());
   EXPECT_EQ(-delta_y / 2, gesture.details.scroll_y());
+  EXPECT_EQ(-delta_x / 2, gesture.details.scroll_x_unconstrained());
+  EXPECT_EQ(-delta_y / 2, gesture.details.scroll_y_unconstrained());
   EXPECT_EQ(GestureScrollRailsMode::kVertical,
             gesture.details.scroll_update_rails_mode());
   EXPECT_EQ(primary_unique_touch_event_id,
@@ -1279,13 +1275,7 @@ TEST_F(GestureProviderTest, FractionalScroll) {
     EXPECT_GE(gesture.details.scroll_y(), (int)delta_y);
     EXPECT_LE(gesture.details.scroll_y(), ((int)delta_y) + 1);
 
-    // Horizontal motion is preserved when railing in renderer is enabled;
-    // otherwise there is no horizontal motion due to browser snapping.
-    if (base::FeatureList::IsEnabled(features::kApplyScrollRailingInRenderer)) {
-      EXPECT_NEAR(delta_x, gesture.details.scroll_x(), 0.001f);
-    } else {
-      EXPECT_EQ(0, gesture.details.scroll_x());
-    }
+    EXPECT_EQ(0, gesture.details.scroll_x());
 
     // Verify unconstrained deltas are NOT zeroed.
     EXPECT_NEAR(delta_x, gesture.details.scroll_x_unconstrained(), 0.001f);
@@ -1300,12 +1290,8 @@ TEST_F(GestureProviderTest, FractionalScroll) {
 TEST_F(GestureProviderTest, ScrollBeginValues) {
   const float delta_x = 14;
   const float delta_y = 48;
-  // These are the deltas after subtracting the slop region (and applying
-  // browser railing if ApplyScrollRailingInRenderer is disabled).
-  const float delta_x_hint =
-      base::FeatureList::IsEnabled(features::kApplyScrollRailingInRenderer)
-          ? 11.76f
-          : 0;
+  // These are the deltas after subtracting the slop region.
+  const float delta_x_hint = 11.76f;
   const float delta_y_hint = 40.32f;
 
   const base::TimeTicks event_time = TimeTicks::Now();
@@ -1336,13 +1322,13 @@ TEST_F(GestureProviderTest, ScrollBeginValues) {
 
   const GestureEventData* scroll_begin_gesture = GetActiveScrollBeginEvent();
   ASSERT_TRUE(scroll_begin_gesture);
-  if (base::FeatureList::IsEnabled(features::kApplyScrollRailingInRenderer)) {
-    EXPECT_NEAR(delta_x_hint, scroll_begin_gesture->details.scroll_x_hint(),
-                0.001f);
-  } else {
-    EXPECT_EQ(delta_x_hint, scroll_begin_gesture->details.scroll_x_hint());
-  }
+  EXPECT_EQ(0, scroll_begin_gesture->details.scroll_x_hint());
   EXPECT_EQ(delta_y_hint, scroll_begin_gesture->details.scroll_y_hint());
+  EXPECT_NEAR(delta_x_hint,
+              scroll_begin_gesture->details.scroll_x_hint_unconstrained(),
+              0.001f);
+  EXPECT_EQ(delta_y_hint,
+            scroll_begin_gesture->details.scroll_y_hint_unconstrained());
   EXPECT_EQ(GestureScrollRailsMode::kVertical,
             scroll_begin_gesture->details.scroll_begin_rails_mode());
   EXPECT_EQ(primary_unique_touch_event_id,
@@ -2585,6 +2571,166 @@ TEST_F(GestureProviderTest, CancelActiveTouchSequence) {
   EXPECT_EQ(1, GetMostRecentGestureEvent().details.touch_points());
 }
 
+TEST_F(GestureProviderTest, SynthesizedEndEventsRetainDebuggerOrigin) {
+  for (int origin : {EF_NONE, EF_FROM_DEBUGGER}) {
+    SCOPED_TRACE(origin);
+    SetUpWithConfig(GetDefaultConfig());
+    gestures_.clear();
+    const base::TimeTicks now = base::TimeTicks::Now();
+    MockMotionEvent down = ObtainMotionEvent(now, MotionEvent::Action::DOWN);
+    down.set_flags((origin ^ EF_FROM_DEBUGGER) | EF_SHIFT_DOWN);
+    ASSERT_TRUE(gesture_provider_->OnTouchEvent(down));
+    MockMotionEvent move =
+        ObtainMotionEvent(now + kOneMicrosecond, MotionEvent::Action::MOVE,
+                          kFakeCoordX, kFakeCoordY + 2 * GetTapSlop());
+    move.set_flags(origin | EF_SHIFT_DOWN);
+    ASSERT_TRUE(gesture_provider_->OnTouchEvent(move));
+    ASSERT_TRUE(gesture_provider_->IsScrollInProgress());
+    gestures_.clear();
+
+    gesture_provider_->SendSynthesizedEndEvents();
+    ASSERT_EQ(2U, GetReceivedGestureCount());
+    EXPECT_EQ(EventType::kGestureScrollEnd, GetReceivedGesture(0).type());
+    EXPECT_EQ(EventType::kGestureEnd, GetReceivedGesture(1).type());
+    EXPECT_EQ(origin, GetReceivedGesture(0).flags);
+    EXPECT_EQ(origin ^ EF_FROM_DEBUGGER, GetReceivedGesture(1).flags);
+    EXPECT_TRUE(gesture_provider_->IsScrollInProgress());
+    EXPECT_TRUE(gesture_provider_->current_down_event());
+  }
+}
+
+TEST_F(GestureProviderTest, ResetDetectionRetainsDebuggerOrigin) {
+  auto config = GetDefaultConfig();
+  config.gesture_begin_end_types_enabled = true;
+  for (int origin : {EF_NONE, EF_FROM_DEBUGGER}) {
+    SCOPED_TRACE(origin);
+    SetUpWithConfig(config);
+    gestures_.clear();
+    const base::TimeTicks now = base::TimeTicks::Now();
+    MockMotionEvent down = ObtainMotionEvent(now, MotionEvent::Action::DOWN);
+    down.set_flags((origin ^ EF_FROM_DEBUGGER) | EF_SHIFT_DOWN);
+    ASSERT_TRUE(gesture_provider_->OnTouchEvent(down));
+    MockMotionEvent move =
+        ObtainMotionEvent(now + kOneMicrosecond, MotionEvent::Action::MOVE,
+                          kFakeCoordX, kFakeCoordY + 2 * GetTapSlop());
+    move.set_flags(origin | EF_SHIFT_DOWN);
+    ASSERT_TRUE(gesture_provider_->OnTouchEvent(move));
+    ASSERT_TRUE(gesture_provider_->IsScrollInProgress());
+    gestures_.clear();
+
+    gesture_provider_->ResetDetection();
+    ASSERT_EQ(2U, GetReceivedGestureCount());
+    EXPECT_EQ(EventType::kGestureScrollEnd, GetReceivedGesture(0).type());
+    EXPECT_EQ(EventType::kGestureEnd, GetReceivedGesture(1).type());
+    EXPECT_EQ(origin, GetReceivedGesture(0).flags);
+    EXPECT_EQ(origin ^ EF_FROM_DEBUGGER, GetReceivedGesture(1).flags);
+    EXPECT_FALSE(gesture_provider_->IsScrollInProgress());
+    EXPECT_FALSE(gesture_provider_->current_down_event());
+  }
+}
+
+TEST_F(GestureProviderTest, SynthesizedPinchEndRetainsDebuggerOrigin) {
+  auto config = GetDefaultConfig();
+  config.gesture_begin_end_types_enabled = true;
+  for (int origin : {EF_NONE, EF_FROM_DEBUGGER}) {
+    for (bool reset_detection : {false, true}) {
+      SCOPED_TRACE(origin);
+      SCOPED_TRACE(reset_detection);
+      SetUpWithConfig(config);
+      gesture_provider_->SetMultiTouchZoomSupportEnabled(true);
+      gestures_.clear();
+      const base::TimeTicks now = base::TimeTicks::Now();
+      const float span = 20 * GetTapSlop();
+      MockMotionEvent down = ObtainMotionEvent(now, MotionEvent::Action::DOWN);
+      down.set_flags((origin ^ EF_FROM_DEBUGGER) | EF_SHIFT_DOWN);
+      ASSERT_TRUE(gesture_provider_->OnTouchEvent(down));
+      MockMotionEvent second = ObtainMotionEvent(
+          now + kOneMicrosecond, MotionEvent::Action::POINTER_DOWN, kFakeCoordX,
+          kFakeCoordY, kFakeCoordX + span, kFakeCoordY + span);
+      second.set_flags(origin | EF_SHIFT_DOWN);
+      ASSERT_TRUE(gesture_provider_->OnTouchEvent(second));
+      MockMotionEvent move = ObtainMotionEvent(
+          now + 2 * kOneMicrosecond, MotionEvent::Action::MOVE, kFakeCoordX,
+          kFakeCoordY, kFakeCoordX + 1.25f * span, kFakeCoordY + 1.25f * span);
+      move.set_flags(origin | EF_SHIFT_DOWN);
+      ASSERT_TRUE(gesture_provider_->OnTouchEvent(move));
+      ASSERT_TRUE(gesture_provider_->IsPinchInProgress());
+      ASSERT_TRUE(gesture_provider_->IsScrollInProgress());
+      gestures_.clear();
+
+      if (reset_detection) {
+        gesture_provider_->ResetDetection();
+      } else {
+        gesture_provider_->SendSynthesizedEndEvents();
+      }
+      ASSERT_EQ(3U, GetReceivedGestureCount());
+      EXPECT_EQ(EventType::kGesturePinchEnd, GetReceivedGesture(0).type());
+      EXPECT_EQ(EventType::kGestureScrollEnd, GetReceivedGesture(1).type());
+      EXPECT_EQ(EventType::kGestureEnd, GetReceivedGesture(2).type());
+      EXPECT_EQ(origin, GetReceivedGesture(0).flags);
+      EXPECT_EQ(origin, GetReceivedGesture(1).flags);
+      EXPECT_EQ(origin ^ EF_FROM_DEBUGGER, GetReceivedGesture(2).flags);
+    }
+  }
+}
+
+TEST_F(GestureProviderTest, TouchEndRetainsGestureBeginOrigin) {
+  for (int origin : {EF_NONE, EF_FROM_DEBUGGER}) {
+    for (MotionEvent::Action action :
+         {MotionEvent::Action::UP, MotionEvent::Action::CANCEL}) {
+      for (bool pinch : {false, true}) {
+        SCOPED_TRACE(origin);
+        SCOPED_TRACE(static_cast<int>(action));
+        SCOPED_TRACE(pinch);
+        SetUpWithConfig(GetDefaultConfig());
+        gesture_provider_->SetMultiTouchZoomSupportEnabled(true);
+        gestures_.clear();
+        const base::TimeTicks now = base::TimeTicks::Now();
+        MockMotionEvent down =
+            ObtainMotionEvent(now, MotionEvent::Action::DOWN);
+        down.set_flags(origin ^ EF_FROM_DEBUGGER);
+        ASSERT_TRUE(gesture_provider_->OnTouchEvent(down));
+        MockMotionEvent move =
+            ObtainMotionEvent(now + kOneMicrosecond, MotionEvent::Action::MOVE,
+                              kFakeCoordX, kFakeCoordY + 2 * GetTapSlop());
+        move.set_flags(origin);
+        ASSERT_TRUE(gesture_provider_->OnTouchEvent(move));
+        ASSERT_TRUE(gesture_provider_->IsScrollInProgress());
+        if (pinch) {
+          const float span = 20 * GetTapSlop();
+          MockMotionEvent second = ObtainMotionEvent(
+              now + 2 * kOneMicrosecond, MotionEvent::Action::POINTER_DOWN,
+              kFakeCoordX, kFakeCoordY, kFakeCoordX + span, kFakeCoordY + span);
+          second.set_flags(origin);
+          ASSERT_TRUE(gesture_provider_->OnTouchEvent(second));
+          move = ObtainMotionEvent(now + 3 * kOneMicrosecond,
+                                   MotionEvent::Action::MOVE, kFakeCoordX,
+                                   kFakeCoordY, kFakeCoordX + 1.25f * span,
+                                   kFakeCoordY + 1.25f * span);
+          // The pinch begins with the other origin, while the scroll remains
+          // owned by the earlier move.
+          move.set_flags(origin ^ EF_FROM_DEBUGGER);
+          ASSERT_TRUE(gesture_provider_->OnTouchEvent(move));
+          ASSERT_TRUE(gesture_provider_->IsPinchInProgress());
+        }
+        gestures_.clear();
+        MockMotionEvent end = ObtainMotionEvent(now + kOneSecond, action);
+        end.set_flags((origin ^ EF_FROM_DEBUGGER) | EF_CONTROL_DOWN);
+        ASSERT_TRUE(gesture_provider_->OnTouchEvent(end));
+        ASSERT_EQ(pinch ? 2U : 1U, GetReceivedGestureCount());
+        if (pinch) {
+          EXPECT_EQ(EventType::kGesturePinchEnd, GetReceivedGesture(0).type());
+          EXPECT_EQ((origin ^ EF_FROM_DEBUGGER) | EF_CONTROL_DOWN,
+                    GetReceivedGesture(0).flags);
+        }
+        EXPECT_EQ(EventType::kGestureScrollEnd,
+                  GetMostRecentGestureEventType());
+        EXPECT_EQ(origin | EF_CONTROL_DOWN, GetMostRecentGestureEvent().flags);
+      }
+    }
+  }
+}
+
 TEST_F(GestureProviderTest, DoubleTapDragZoomCancelledOnSecondaryPointerDown) {
   const base::TimeTicks down_time_1 = TimeTicks::Now();
   const base::TimeTicks down_time_2 = down_time_1 + GetValidDoubleTapDelay();
@@ -3352,23 +3498,15 @@ TEST_F(GestureProviderTest, NoMinOrMaxGestureBoundsLengthWithStylusOrMouse) {
             GetMostRecentGestureEvent().details.bounding_box_f().height());
 }
 
-#if BUILDFLAG(IS_MAC) && defined(ARCH_CPU_ARM64)
-// https://crbug.com/1222659
-#define MAYBE_BoundingBoxForShowPressAndTapGesture \
-  DISABLED_BoundingBoxForShowPressAndTapGesture
-#else
-#define MAYBE_BoundingBoxForShowPressAndTapGesture \
-  BoundingBoxForShowPressAndTapGesture
-#endif
 // Test the bounding box for show press and tap gestures.
-TEST_F(GestureProviderTest, MAYBE_BoundingBoxForShowPressAndTapGesture) {
+TEST_F(GestureProviderTest, BoundingBoxForShowPressAndTapGesture) {
   base::TimeTicks event_time = base::TimeTicks::Now();
-  gesture_provider_->SetDoubleTapSupportForPlatformEnabled(false);
   base::TimeDelta showpress_timeout = kOneMicrosecond;
   base::TimeDelta shortpress_timeout = kOneSecond;
   base::TimeDelta longpress_timeout = kOneSecond * 2;
   SetShowPressAndLongPressTimeout(showpress_timeout, shortpress_timeout,
                                   longpress_timeout);
+  gesture_provider_->SetDoubleTapSupportForPlatformEnabled(false);
 
   MockMotionEvent event =
       ObtainMotionEvent(event_time, MotionEvent::Action::DOWN, 10, 10);

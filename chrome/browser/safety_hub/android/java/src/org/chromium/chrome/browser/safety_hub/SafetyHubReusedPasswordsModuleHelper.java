@@ -19,6 +19,7 @@ import org.chromium.chrome.browser.safety_hub.SafetyHubModuleMediator.ModuleStat
 public class SafetyHubReusedPasswordsModuleHelper implements SafetyHubModuleHelper {
     private final Context mContext;
     private final SafetyHubModuleDelegate mModuleDelegate;
+    private final SafetyHubModuleMediatorDelegate mMediatorDelegate;
     private final int mAccountReusedPasswordsCount;
     private final int mLocalReusedPasswordsCount;
     private final boolean mUnifiedModule;
@@ -26,11 +27,13 @@ public class SafetyHubReusedPasswordsModuleHelper implements SafetyHubModuleHelp
     SafetyHubReusedPasswordsModuleHelper(
             Context context,
             SafetyHubModuleDelegate moduleDelegate,
+            SafetyHubModuleMediatorDelegate mediatorDelegate,
             int accountReusedPasswordsCount,
             int localReusedPasswordsCount,
             boolean unifiedModule) {
         mContext = context;
         mModuleDelegate = moduleDelegate;
+        mMediatorDelegate = mediatorDelegate;
         mAccountReusedPasswordsCount = accountReusedPasswordsCount;
         mLocalReusedPasswordsCount = localReusedPasswordsCount;
         mUnifiedModule = unifiedModule;
@@ -51,7 +54,8 @@ public class SafetyHubReusedPasswordsModuleHelper implements SafetyHubModuleHelp
 
     @Override
     public String getSummary() {
-        int totalReusedPasswordsCount = mAccountReusedPasswordsCount + mLocalReusedPasswordsCount;
+        int totalReusedPasswordsCount =
+                Math.max(0, mAccountReusedPasswordsCount) + Math.max(0, mLocalReusedPasswordsCount);
         return mContext.getResources()
                 .getQuantityString(
                         R.plurals.safety_hub_reused_passwords_summary,
@@ -71,8 +75,7 @@ public class SafetyHubReusedPasswordsModuleHelper implements SafetyHubModuleHelp
     public OnClickListener getPrimaryButtonListener() {
         if (mAccountReusedPasswordsCount > 0 && mLocalReusedPasswordsCount > 0) {
             return v -> {
-                // TODO(crbug.com/407931779): Change to open the SH passwords page.
-                mModuleDelegate.showLocalPasswordCheckUi(mContext);
+                mMediatorDelegate.startSettingsForModule(SafetyHubPasswordsFragment.class);
             };
         }
         if (mAccountReusedPasswordsCount > 0) {
@@ -101,8 +104,7 @@ public class SafetyHubReusedPasswordsModuleHelper implements SafetyHubModuleHelp
         if (mUnifiedModule
                 && !(mAccountReusedPasswordsCount > 0 && mLocalReusedPasswordsCount > 0)) {
             return v -> {
-                // TODO(crbug.com/407931779): Change to open the SH passwords page.
-                mModuleDelegate.showLocalPasswordCheckUi(mContext);
+                mMediatorDelegate.startSettingsForModule(SafetyHubPasswordsFragment.class);
             };
         }
         return null;

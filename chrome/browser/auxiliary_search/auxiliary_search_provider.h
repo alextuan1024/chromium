@@ -6,8 +6,13 @@
 #define CHROME_BROWSER_AUXILIARY_SEARCH_AUXILIARY_SEARCH_PROVIDER_H_
 
 #include <jni.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/callback_forward.h"
@@ -20,6 +25,7 @@ namespace visited_url_ranking {
 class VisitedURLRankingService;
 }  // namespace visited_url_ranking
 
+class GURL;
 class TabAndroid;
 
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.auxiliary_search
@@ -35,6 +41,9 @@ enum class AuxiliarySearchEntryType {
 // information for the auxiliary search.
 class AuxiliarySearchProvider : public KeyedService {
  public:
+  // The maximum number of tabs donated to the auxiliary search.
+  static constexpr size_t kMaxDonatedTabsCount = 100;
+
   AuxiliarySearchProvider(
       visited_url_ranking::VisitedURLRankingService* ranking_service);
 
@@ -56,6 +65,17 @@ class AuxiliarySearchProvider : public KeyedService {
       int64_t j_begin_time,
       const base::android::JavaRef<jobject>& j_callback_obj) const;
 
+  // The visit IDs below are non-negative 63-bit values that are stable across
+  // restarts, so donating the same entry again replaces its previous document.
+
+  // Computes the visit ID of a Custom Tab entry from the `url_key` of its URL
+  // visit aggregate.
+  static int64_t GetCustomTabVisitId(std::string_view url_key);
+
+  // Computes the visit ID of a top site entry from its `url` and `title`.
+  static int64_t GetTopSiteVisitId(const GURL& url,
+                                   const std::u16string& title);
+
   static void EnsureFactoryBuilt();
 
  private:
@@ -64,7 +84,7 @@ class AuxiliarySearchProvider : public KeyedService {
   FRIEND_TEST_ALL_PREFIXES(AuxiliarySearchProviderBrowserTest,
                            QueryNonSensitiveTab);
   FRIEND_TEST_ALL_PREFIXES(AuxiliarySearchProviderBrowserTest,
-                           QueryNonSensitiveTab_flagTest);
+                           QueryNonSensitiveTab_CappedByMaxCount);
   FRIEND_TEST_ALL_PREFIXES(AuxiliarySearchProviderBrowserTest,
                            QueryEmptyTabList);
   FRIEND_TEST_ALL_PREFIXES(AuxiliarySearchProviderBrowserTest, NativeTabTest);
@@ -75,7 +95,10 @@ class AuxiliarySearchProvider : public KeyedService {
 
   static void FilterTabsByScheme(std::vector<TabAndroid*>& tabs);
 
+  // Returns at most `max_donated_tabs_count` non-sensitive tabs from
+  // `all_tabs` via `callback`.
   void GetNonSensitiveTabsInternal(std::vector<TabAndroid*> all_tabs,
+                                   size_t max_donated_tabs_count,
                                    NonSensitiveTabsCallback callback) const;
 
   const raw_ptr<visited_url_ranking::VisitedURLRankingService> ranking_service_;

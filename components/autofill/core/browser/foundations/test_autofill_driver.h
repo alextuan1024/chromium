@@ -8,8 +8,8 @@
 #include <algorithm>
 #include <concepts>
 #include <map>
+#include <optional>
 #include <string>
-#include <variant>
 #include <vector>
 
 #include "base/compiler_specific.h"
@@ -17,7 +17,6 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
-#include "base/memory/scoped_refptr.h"
 #include "build/build_config.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
@@ -27,10 +26,6 @@
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "url/origin.h"
-
-#if !BUILDFLAG(IS_IOS)
-#include "components/webauthn/core/browser/internal_authenticator.h"
-#endif
 
 namespace autofill::mojom {
 class AutofillVisibilityObserver;
@@ -43,7 +38,7 @@ namespace autofill {
 //
 // - TestAutofillDriver is a simple AutofillDriver;
 // - TestContentAutofillDriver is a ContentAutofillDriver, i.e., is associated
-//   to a content::WebContents and has a ContentAutofillDriverFactory
+//   with a RenderFrameHost and owned by a ContentAutofillDriverFactory.
 //
 // As a rule of thumb, TestContentAutofillDriver is preferable in tests that
 // have a content::WebContents.
@@ -57,27 +52,6 @@ class TestAutofillDriverTemplate : public T {
   ~TestAutofillDriverTemplate() override = default;
 
   // AutofillDriver:
-  LocalFrameToken GetFrameToken() const override { return frame_token_; }
-  std::optional<LocalFrameToken> Resolve(FrameToken query) override {
-    if (auto* local_frame_token = std::get_if<LocalFrameToken>(&query)) {
-      return *local_frame_token;
-    }
-    auto it = remote_frame_tokens_.find(std::get<RemoteFrameToken>(query));
-    if (it != remote_frame_tokens_.end()) {
-      return it->second;
-    }
-    return std::nullopt;
-  }
-  TestAutofillDriverTemplate* GetParent() override { return parent_; }
-  bool IsActive() const override { return is_active_; }
-  bool IsEmbedded() const override { return is_embedded_; }
-  bool IsPolicyControlledFeatureAutofillEnabled() const override {
-    return policy_controlled_feature_autofill_enabled_;
-  }
-  bool IsPolicyControlledFeatureManualTextEnabled() const override {
-    return policy_controlled_feature_manual_text_enabled_;
-  }
-  bool CanShowAutofillUi() const override { return true; }
   void ApplyFieldAction(mojom::FieldActionType action_type,
                         mojom::ActionPersistence action_persistence,
                         const FieldGlobalId& field,
@@ -94,22 +68,13 @@ class TestAutofillDriverTemplate : public T {
   void RendererShouldSetSuggestionAvailability(
       const FieldGlobalId& field,
       mojom::AutofillSuggestionAvailability suggestion_availability) override {}
-  std::optional<net::IsolationInfo> GetIsolationInfo() override {
-    // In AutofillDriverIOS, we always return std::nullopt here. That behavior
-    // should be reflected in iOS tests.
-#if BUILDFLAG(IS_IOS)
-    return std::nullopt;
-#else
-    return isolation_info_;
-#endif
-  }
   void TriggerFormExtractionInDriverFrame(
-      AutofillDriver::AutofillDriverRouterAndFormForestPassKey pass_key)
-      override {}
+      AutofillDriver::AutofillDriverRouterAndFormForestPassKey pass_key,
+      bool force) override {}
   void TriggerFormExtractionInAllFrames(
+      bool force,
       base::OnceCallback<void(bool)> form_extraction_finished_callback)
       override {}
-  void ClearFormCacheInAllFrames() override {}
   void ExtractFormWithField(
       FieldGlobalId field_id,
       AutofillDriver::BrowserFormHandler response_handler) override {}
@@ -134,14 +99,7 @@ class TestAutofillDriverTemplate : public T {
                                   const std::string& email,
                                   const std::string& token) override {}
   void ScrollFieldIntoView(FieldGlobalId field_id) override {}
-  bool IsSafeToFill(const FormFieldData& field,
-                    FieldType filled_type,
-                    const url::Origin& main_origin,
-                    const url::Origin& trigger_origin) const override {
-    // Simplified security model which allows to filter (only) fields from the
-    // same origin.
-    return field.origin() == trigger_origin;
-  }
+  void LoadCustomFormControlScript(const std::string& script) override {}
 
   base::flat_set<FieldGlobalId> ApplyFormAction(
       mojom::FormActionType action_type,
@@ -154,11 +112,46 @@ class TestAutofillDriverTemplate : public T {
       override {
     return base::ToVector(fields, &FormFieldData::global_id);
   }
+};
 
-  // Methods unique to TestAutofillDriver that tests can use to specialize
-  // functionality.
+// A simple `AutofillDriver` for tests. Consider `TestContentAutofillDriver` as
+// an alternative for tests where the content layer is visible.
+//
+// Consider using TestAutofillDriverInjector in browser tests.
+class TestAutofillDriver : public TestAutofillDriverTemplate<AutofillDriver> {
+ public:
+  explicit TestAutofillDriver(TestAutofillClient* client);
+  ~TestAutofillDriver() override;
 
-  void SetLocalFrameToken(LocalFrameToken frame_token) {
+  // AutofillDriver:
+  LocalFrameToken GetFrameToken() const override;
+  std::optional<LocalFrameToken> Resolve(FrameToken query) override;
+  TestAutofillDriver* GetParent() override;
+  bool IsActive() const override;
+  bool IsEmbedded() const override;
+  TestAutofillClient& GetAutofillClient() override;
+  AutofillManager& GetAutofillManager() override;
+  ukm::SourceId GetPageUkmSourceId() const override;
+  ukm::SourceId GetPageUkmSourceId();
+  bool IsPolicyControlledFeatureAutofillEnabled() const override;
+  bool IsPolicyControlledFeatureManualTextEnabled() const override;
+  bool CanShowAutofillUi() const override;
+  bool DocumentUsedWebOtp() const override;
+  std::optional<net::IsolationInfo> GetIsolationInfo() override;
+  void TriggerFormExtractionInAllFrames(
+      bool force,
+      base::OnceCallback<void(bool)> form_extraction_finished_callback)
+      override;
+  bool IsSafeToFill(const FormFieldData& field,
+                    FieldType filled_type,
+                    const url::Origin& main_origin,
+                    const url::Origin& trigger_origin) const override;
+
+  void set_autofill_manager(std::unique_ptr<AutofillManager> autofill_manager) {
+    autofill_manager_ = std::move(autofill_manager);
+  }
+
+  void set_frame_token(LocalFrameToken frame_token) {
     frame_token_ = frame_token;
   }
 
@@ -167,7 +160,7 @@ class TestAutofillDriverTemplate : public T {
     remote_frame_tokens_[remote_frame_token] = local_frame_token;
   }
 
-  void SetParent(TestAutofillDriverTemplate* parent) { parent_ = parent; }
+  void SetParent(TestAutofillDriver* parent) { parent_ = parent; }
 
   void SetIsActive(bool is_active) { is_active_ = is_active; }
 
@@ -185,54 +178,6 @@ class TestAutofillDriverTemplate : public T {
     isolation_info_ = isolation_info;
   }
 
-
-  void SetSharedURLLoaderFactory(
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
-
-#if !BUILDFLAG(IS_IOS)
-  void SetAuthenticator(webauthn::InternalAuthenticator* authenticator_) {
-    test_authenticator_.reset(authenticator_);
-  }
-#endif
-
- private:
-  LocalFrameToken frame_token_;
-  std::map<RemoteFrameToken, LocalFrameToken> remote_frame_tokens_;
-  raw_ptr<TestAutofillDriverTemplate> parent_ = nullptr;
-  bool is_active_ = true;
-  bool is_embedded_ = false;
-  bool policy_controlled_feature_autofill_enabled_ = false;
-  bool policy_controlled_feature_manual_text_enabled_ = false;
-  net::IsolationInfo isolation_info_;
-
-#if !BUILDFLAG(IS_IOS)
-  std::unique_ptr<webauthn::InternalAuthenticator> test_authenticator_;
-#endif
-};
-
-// A simple `AutofillDriver` for tests. Consider `TestContentAutofillDriver` as
-// an alternative for tests where the content layer is visible.
-//
-// Consider using TestAutofillDriverInjector in browser tests.
-class TestAutofillDriver : public TestAutofillDriverTemplate<AutofillDriver> {
- public:
-  explicit TestAutofillDriver(TestAutofillClient* client);
-  ~TestAutofillDriver() override;
-
-  // AutofillDriver
-  TestAutofillClient& GetAutofillClient() override;
-  AutofillManager& GetAutofillManager() override;
-  ukm::SourceId GetPageUkmSourceId() const override;
-  ukm::SourceId GetPageUkmSourceId();
-  void TriggerFormExtractionInAllFrames(
-      base::OnceCallback<void(bool)> form_extraction_finished_callback)
-      override;
-  void ClearFormCacheInAllFrames() override;
-
-  void set_autofill_manager(std::unique_ptr<AutofillManager> autofill_manager) {
-    autofill_manager_ = std::move(autofill_manager);
-  }
-
   // Initializes UKM source from `url()`. This needs to be called in unittests
   // after calling Purge for ukm recorder to re-initialize sources.
   void InitializeUKMSources();
@@ -242,6 +187,14 @@ class TestAutofillDriver : public TestAutofillDriverTemplate<AutofillDriver> {
   void set_url(GURL url) { url_ = std::move(url); }
 
  private:
+  LocalFrameToken frame_token_;
+  std::map<RemoteFrameToken, LocalFrameToken> remote_frame_tokens_;
+  raw_ptr<TestAutofillDriver> parent_ = nullptr;
+  bool is_active_ = true;
+  bool is_embedded_ = false;
+  bool policy_controlled_feature_autofill_enabled_ = false;
+  bool policy_controlled_feature_manual_text_enabled_ = false;
+  net::IsolationInfo isolation_info_;
   raw_ref<TestAutofillClient> autofill_client_;
   ukm::SourceId ukm_source_id_ = ukm::kInvalidSourceId;
   GURL url_{"https://example.test"};

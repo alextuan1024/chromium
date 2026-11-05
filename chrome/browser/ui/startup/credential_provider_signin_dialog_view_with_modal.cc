@@ -7,7 +7,7 @@
 #include "base/logging.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/views/widget/widget.h"
 
 CredentialProviderWebDialogViewWithModal::
@@ -27,21 +27,11 @@ CredentialProviderWebDialogViewWithModal::
   observers_.Notify(&web_modal::ModalDialogHostObserver::OnHostDestroying);
 }
 
-void CredentialProviderWebDialogViewWithModal::ViewHierarchyChanged(
-    const views::ViewHierarchyChangedDetails& details) {
-  views::WebDialogView::ViewHierarchyChanged(details);
-  if (details.is_add && GetWidget()) {
-    // Get the existing manager if it exists. If it doesn't, create it.
-    auto* manager = web_modal::WebContentsModalDialogManager::FromWebContents(
-        web_contents());
-    if (!manager) {
-      web_modal::WebContentsModalDialogManager::CreateForWebContents(
-          web_contents());
-      manager = web_modal::WebContentsModalDialogManager::FromWebContents(
-          web_contents());
-    }
-    manager->SetDelegate(this);
-  }
+void CredentialProviderWebDialogViewWithModal::AddedToWidget() {
+  views::WebDialogView::AddedToWidget();
+  web_modal::WebContentsModalDialogManager::GetOrCreateForWebContents(
+      web_contents())
+      ->SetDelegate(this);
 }
 
 void CredentialProviderWebDialogViewWithModal::NotifyPositionRequiresUpdate() {
@@ -73,12 +63,12 @@ CredentialProviderWebDialogViewWithModal::CreateCustomWebContents(
     const GURL& opener_url,
     const std::string& frame_name,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     const content::StoragePartitionConfig& partition_config,
     content::SessionStorageNamespaceHandle* session_storage_namespace) {
-  VLOG(0) << "Suppressed window creation for  " << target_url.GetHost()
-          << target_url.GetPath();
+  VLOG(0) << "Suppressed window creation for  " << target_url.host()
+          << target_url.path();
   return nullptr;
 }
 

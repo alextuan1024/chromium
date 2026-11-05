@@ -6,7 +6,6 @@ package org.chromium.chrome.browser.tabmodel;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.doReturn;
@@ -22,9 +21,6 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -32,12 +28,12 @@ import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.List;
 
 /** Unit tests for {@link TabOpenerTrackerHelper}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures({ChromeFeatureList.TAB_OPENER_TRACKING})
 public class TabOpenerTrackerHelperUnitTest {
 
     @Rule public final MockitoRule mockito = MockitoJUnit.rule();
@@ -53,24 +49,13 @@ public class TabOpenerTrackerHelperUnitTest {
         PriceTrackingFeatures.setPriceAnnotationsEnabledForTesting(false);
         mNextTabId = 100;
         mTabModel = spy(new MockTabModel(mProfile, null));
-        mHelper = TabOpenerTrackerHelper.create();
+        mHelper = new TabOpenerTrackerHelper();
     }
 
     private Tab createTab(int parentId) {
         Tab tab = mTabModel.addTab(mNextTabId++);
         tab.setParentId(parentId);
         return tab;
-    }
-
-    @Test
-    public void testCreate_FlagEnabled_ReturnsHelper() {
-        assertNotNull(TabOpenerTrackerHelper.create());
-    }
-
-    @Test
-    @DisableFeatures({ChromeFeatureList.TAB_OPENER_TRACKING})
-    public void testCreate_FlagDisabled_ReturnsNull() {
-        assertNull(TabOpenerTrackerHelper.create());
     }
 
     @Test
@@ -257,8 +242,9 @@ public class TabOpenerTrackerHelperUnitTest {
         Tab currentTab = createTab(parentTab.getId());
         Tab childTab = createTab(currentTab.getId());
         childTab.setTabGroupId(groupId);
-        doReturn(true).when(mTabModel).getTabGroupCollapsed(groupId);
-        assertTrue(mTabModel.getTabGroupCollapsed(childTab.getTabGroupId()));
+        doReturn(true).when(mTabModel).getTabGroupCollapsed(TabGroupId.fromRawToken(groupId));
+        assertTrue(
+                mTabModel.getTabGroupCollapsed(TabGroupId.fromRawToken(childTab.getTabGroupId())));
 
         mHelper.addRelatedTabForTesting(parentTab.getId());
         mHelper.addRelatedTabForTesting(currentTab.getId());

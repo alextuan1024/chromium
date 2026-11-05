@@ -34,6 +34,7 @@
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/base/cocoa/accessibility_focus_overrider.h"
 #include "ui/base/cocoa/remote_layer_api.h"
+#include "ui/base/cursor/cursor.h"
 #include "ui/base/mojom/attributed_string.mojom-forward.h"
 #include "ui/display/display_list.h"
 #include "ui/events/gesture_detection/filtered_gesture_provider.h"
@@ -174,9 +175,10 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
   void UpdateTooltip(const std::u16string& tooltip_text) override;
   gfx::Size GetRequestedRendererSize() override;
   bool IsSurfaceAvailableForCopy() override;
-  void CopyFromSurface(
+  void CopyFromSurfaceImpl(
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
+      bool is_copy_request_secure,
       base::TimeDelta timeout,
       base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
       override;
@@ -205,10 +207,7 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
   void DidNavigate() override;
 
   void CreateUnboundedSurface(
-      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
-          client,
-      const gfx::Rect& bounds_in_dips,
+      const gfx::Rect& bounds_in_screen,
       base::WeakPtr<RenderWidgetHostViewBase> subframe_view) override;
 
   blink::mojom::PointerLockResult LockPointer(bool) override;
@@ -434,6 +433,8 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
                                 gfx::Rect* out_rect,
                                 gfx::Range* out_actual_range,
                                 bool* out_success) override;
+  void GetFirstRectForRange(const gfx::Range& requested_range,
+                            GetFirstRectForRangeCallback callback) override;
   void ExecuteEditCommand(const std::string& command) override;
   void Undo() override;
   void Redo() override;
@@ -624,6 +625,13 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
       gfx::Rect* rect,
       gfx::Range* actual_range);
 
+  // Completes GetFirstRectForRange() with `blink_rect`, the renderer's bounds
+  // for `requested_range` in physical pixels.
+  void OnGotFirstRectForRange(const gfx::Range& requested_range,
+                              float device_scale_factor,
+                              GetFirstRectForRangeCallback callback,
+                              gfx::Rect blink_rect);
+
   // Interface through which the NSView is to be manipulated. This points either
   // to |in_process_ns_view_bridge_| or to |remote_ns_view_|.
   raw_ptr<remote_cocoa::mojom::RenderWidgetHostNSView> ns_view_ = nullptr;
@@ -665,6 +673,10 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
 
   // Indicates if the page is loading.
   bool is_loading_;
+
+  // The cursor most recently passed to DisplayCursor(). Used to seed a newly
+  // created unbounded surface window, since Blink only reports changes.
+  ui::Cursor last_displayed_cursor_;
 
   // Our parent host view, if this is a popup.  NULL otherwise.
   raw_ptr<RenderWidgetHostViewMac> popup_parent_host_view_;

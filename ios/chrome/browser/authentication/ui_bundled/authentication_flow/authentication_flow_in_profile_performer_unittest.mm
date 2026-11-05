@@ -7,14 +7,11 @@
 #import <objc/runtime.h>
 
 #import "base/test/metrics/histogram_tester.h"
-#import "components/sync/test/test_sync_service.h"
-#import "ios/chrome/app/change_profile_continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_in_profile_performer_delegate.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
-#import "ios/chrome/browser/shared/public/commands/browser_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
@@ -44,14 +41,14 @@ class AuthenticationFlowInProfilePerformerTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
     browser_ = std::make_unique<TestBrowser>(profile_);
     fake_identity_ = [FakeSystemIdentity fakeIdentity1];
 
     NSArray<Protocol*>* command_protocols = @[
-      @protocol(SceneCommands), @protocol(BrowserCommands),
-      @protocol(SettingsCommands), @protocol(SnackbarCommands)
+      @protocol(SceneCommands), @protocol(SettingsCommands),
+      @protocol(SnackbarCommands)
     ];
     fake_command_endpoint_ =
         [[ProtocolFake alloc] initWithProtocols:command_protocols];
@@ -105,16 +102,8 @@ TEST_F(AuthenticationFlowInProfilePerformerTest, SignoutForSwitch) {
       AuthenticationServiceFactory::GetForProfile(profile_);
   authentication_service->SignIn(fake_identity_,
                                  signin_metrics::AccessPoint::kStartPage);
-  __block std::unique_ptr<base::RunLoop> run_loop_ =
-      std::make_unique<base::RunLoop>();
-  OCMExpect([authentication_flow_in_profile_performer_delegate_mock_
-                didSignOutForAccountSwitch])
-      .andDo(^(NSInvocation*) {
-        run_loop_->Quit();
-      });
   [authentication_flow_in_profile_performer_
       signOutForAccountSwitchWithProfile:profile_];
-  run_loop_->Run();
   EXPECT_FALSE(authentication_service->HasPrimaryIdentity());
   histogram_tester.ExpectUniqueSample(
       "Signin.SignoutProfile",

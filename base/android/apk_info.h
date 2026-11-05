@@ -42,8 +42,6 @@ BASE_EXPORT const std::string& package_version_name();
 
 BASE_EXPORT const std::string& package_name();
 
-BASE_EXPORT const std::string& resources_version();
-
 BASE_EXPORT const std::string& installer_package_name();
 
 BASE_EXPORT bool is_debug_app();
@@ -51,6 +49,8 @@ BASE_EXPORT bool is_debug_app();
 BASE_EXPORT bool is_system_app();
 
 BASE_EXPORT int target_sdk_version();
+
+BASE_EXPORT const std::string& primary_cpu_abi();
 
 BASE_EXPORT std::string host_signing_cert_sha256();
 

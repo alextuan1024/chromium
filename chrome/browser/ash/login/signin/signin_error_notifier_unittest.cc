@@ -8,16 +8,15 @@
 #include <string>
 
 #include "ash/constants/ash_login_pref_names.h"
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "ash/public/cpp/notification_utils.h"
-#include "ash/public/cpp/token_handle_store.h"
 #include "base/check_deref.h"
 #include "build/build_config.h"
 #include "chrome/browser/ash/login/signin/signin_error_notifier_factory.h"
+#include "chrome/browser/ash/login/signin/token_handle_store.h"
 #include "chrome/browser/ash/login/signin/token_handle_store_factory.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
@@ -26,6 +25,7 @@
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/supervised_user/core/browser/supervised_user_service.h"
+#include "components/supervised_user/core/browser/supervised_user_test_environment.h"
 #include "components/user_manager/user.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/google_service_auth_error.h"
@@ -54,7 +54,7 @@ class SigninErrorNotifierTest : public BrowserWithTestWindowTest {
  public:
   void SetUp() override {
     BrowserWithTestWindowTest::SetUp();
-    // Required to initialize TokenHandleUtil.
+    // Required to initialize TokenHandleStore.
     ash::UserDataAuthClient::InitializeFake();
 
     token_handle_store_factory_ = std::make_unique<TokenHandleStoreFactory>(
@@ -284,8 +284,8 @@ TEST_F(SigninErrorNotifierTest, ChildSecondaryAccountMigrationTest) {
           .GetAccountId();
 
   // Mark the profile as a child user.
-  GetProfile()->SetIsSupervisedProfile();
-  base::RunLoop().RunUntilIdle();
+  supervised_user::SupervisedUserTestEnvironment::EnableSupervisedAccount(
+      identity_test_env()->identity_manager());
 
   // Invalidate the secondary account.
   SetAuthError(

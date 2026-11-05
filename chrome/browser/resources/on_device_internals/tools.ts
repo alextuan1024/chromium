@@ -469,6 +469,8 @@ class OnDeviceInternalsToolsElement extends CrLitElement {
           maxOutputTokens: 0,
           constraint: null,
           addOutputTokensToContext: false,
+          enableThinking: false,
+          thinkingTokenBudget: 0,
         },
         this.responseRouter_.$.bindNewPipeAndPassRemote());
     const onResponseId = this.responseRouter_.onResponse.addListener(chunk => {
@@ -492,7 +494,7 @@ class OnDeviceInternalsToolsElement extends CrLitElement {
     this.text_ = '';
   }
 
-  protected canEnterInput_(): boolean {
+  private canEnterInput_(): boolean {
     return !this.currentResponse_ && this.model_ !== null;
   }
 

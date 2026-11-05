@@ -55,16 +55,7 @@ ScopedJavaLocalRef<jobject> JNI_ActorKeyedServiceFactory_GetForProfile(
     return nullptr;
   }
 
-  ActorKeyedServiceAndroid* bridge = static_cast<ActorKeyedServiceAndroid*>(
-      service->GetUserData(kActorKeyedServiceBridgeKey));
-  if (!bridge) {
-    service->SetUserData(kActorKeyedServiceBridgeKey,
-                         std::make_unique<ActorKeyedServiceAndroid>(service));
-    bridge = static_cast<ActorKeyedServiceAndroid*>(
-        service->GetUserData(kActorKeyedServiceBridgeKey));
-  }
-
-  return bridge->GetJavaObject();
+  return ActorKeyedServiceAndroid::Get(service)->GetJavaObject();
 }
 
 ActorKeyedServiceAndroid::ActorKeyedServiceAndroid(ActorKeyedService* service)
@@ -82,15 +73,19 @@ ActorKeyedServiceAndroid::ActorKeyedServiceAndroid(ActorKeyedService* service)
           &ActorKeyedServiceAndroid::OnTaskStepProgressChanged,
           base::Unretained(this)));
 
-  ensure_fgs_started_subscription_ =
-      service_->AddForegroundServiceStartedCallback(base::BindRepeating(
-          &ActorKeyedServiceAndroid::EnsureForegroundServiceStarted,
-          base::Unretained(this)));
-
   message_trigger_task_stopped_subscription_ =
       service_->AddMessageTriggerTaskStoppedCallback(base::BindRepeating(
           &ActorKeyedServiceAndroid::OnMessageTriggerTaskStopped,
           base::Unretained(this)));
+
+  pending_task_count_subscription_ =
+      service_->AddPendingTaskCountChangedCallback(base::BindRepeating(
+          &ActorKeyedServiceAndroid::OnPendingTaskCountChanged,
+          base::Unretained(this)));
+
+  pending_task_added_subscription_ = service_->AddPendingTaskAddedCallback(
+      base::BindRepeating(&ActorKeyedServiceAndroid::OnPendingTaskAdded,
+                          base::Unretained(this)));
 }
 
 ActorKeyedServiceAndroid::~ActorKeyedServiceAndroid() {
@@ -148,7 +143,7 @@ void ActorKeyedServiceAndroid::StopTask(int32_t task_id, int32_t stop_reason) {
                      static_cast<ActorTask::StoppedReason>(stop_reason));
 }
 
-void ActorKeyedServiceAndroid::SetPreparedBackgroundTab(
+void ActorKeyedServiceAndroid::SetTabReady(
     TabAndroid* tab,
     const std::string& glic_trigger_message_id) {
   service_->NotifyBackgroundTabReady(tab, glic_trigger_message_id);
@@ -161,6 +156,11 @@ void ActorKeyedServiceAndroid::NotifyBackgroundSetupFailed(
 
 void ActorKeyedServiceAndroid::OnTaskStateChanged(ActorTask& task) {
   JNIEnv* env = AttachCurrentThread();
+  if (task.stopped_reason().has_value()) {
+    Java_ActorKeyedService_onTaskStopped(
+        env, java_obj_, task.id().GetUnsafeValue(),
+        static_cast<int>(task.stopped_reason().value()));
+  }
   Java_ActorKeyedService_onTaskStateChanged(env, java_obj_,
                                             task.id().GetUnsafeValue(),
                                             static_cast<int>(task.GetState()));
@@ -174,11 +174,35 @@ void ActorKeyedServiceAndroid::OnTaskStepProgressChanged(
       env, java_obj_, task.id().GetUnsafeValue(), step_progress);
 }
 
-void ActorKeyedServiceAndroid::EnsureForegroundServiceStarted(
-    const std::string& glic_trigger_message_id) {
+void ActorKeyedServiceAndroid::OnPendingTaskCountChanged(size_t pending_count) {
   JNIEnv* env = AttachCurrentThread();
-  Java_ActorKeyedService_ensureForegroundServiceStarted(
-      env, java_obj_, glic_trigger_message_id);
+  Java_ActorKeyedService_onPendingTaskCountChanged(
+      env, java_obj_, static_cast<int32_t>(pending_count));
+}
+
+void ActorKeyedServiceAndroid::OnPendingTaskAdded(
+    const std::string& context_id) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_ActorKeyedService_onPendingTaskAdded(env, java_obj_,
+                                            service_->GetProfile(), context_id);
+}
+
+int32_t ActorKeyedServiceAndroid::GetPendingTasksCount() {
+  return static_cast<int32_t>(service_->GetPendingTasksCount());
+}
+
+void ActorKeyedServiceAndroid::AddExternalTriggerPendingTask(
+    int64_t timeout_ms) {
+  service_->AddExternalTriggerPendingTask(base::Milliseconds(timeout_ms));
+}
+
+void ActorKeyedServiceAndroid::AddPendingTask(const std::string& context_id) {
+  service_->AddPendingTask(context_id);
+}
+
+void ActorKeyedServiceAndroid::RemovePendingTask(
+    const std::string& context_id) {
+  service_->RemovePendingTask(context_id);
 }
 
 void CreateBackgroundTabForTask(

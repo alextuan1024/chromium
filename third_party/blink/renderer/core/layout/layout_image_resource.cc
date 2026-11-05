@@ -28,12 +28,14 @@
 
 #include "third_party/blink/renderer/core/layout/layout_image_resource.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/public/resources/grit/blink_image_resources.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/layout/layout_image.h"
 #include "third_party/blink/renderer/core/layout/natural_sizing_info.h"
 #include "third_party/blink/renderer/core/svg/graphics/svg_image_for_container.h"
 #include "third_party/blink/renderer/platform/graphics/bitmap_image.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "ui/base/resource/resource_scale_factor.h"
 
 namespace blink {
@@ -139,7 +141,7 @@ RespectImageOrientationEnum LayoutImageResource::ImageOrientation() const {
   // Always respect the orientation of opaque origin images to avoid leaking
   // image data. Otherwise pull orientation from the layout object's style.
   return cached_image_->ForceOrientationIfNecessary(
-      layout_object_->StyleRef().ImageOrientation());
+      layout_object_->Style().ImageOrientation());
 }
 
 NaturalSizingInfo LayoutImageResource::GetNaturalDimensions(
@@ -149,8 +151,8 @@ NaturalSizingInfo LayoutImageResource::GetNaturalDimensions(
     return NaturalSizingInfo::None();
   }
   NaturalSizingInfo sizing_info;
-  Image& image = *cached_image_->GetImage();
-  if (auto* svg_image = DynamicTo<SVGImage>(image)) {
+  scoped_refptr<Image> image = cached_image_->GetImage();
+  if (auto* svg_image = DynamicTo<SVGImage>(image.get())) {
     const SVGImageViewInfo* view_info = SVGImageForContainer::CreateViewInfo(
         *svg_image, layout_object_->GetNode());
     sizing_info =
@@ -158,9 +160,9 @@ NaturalSizingInfo LayoutImageResource::GetNaturalDimensions(
             .value_or(NaturalSizingInfo::None());
   } else {
     sizing_info = NaturalSizingInfo::MakeFixed(
-        gfx::SizeF(image.Size(ImageOrientation())));
+        gfx::SizeF(image->Size(ImageOrientation())));
   }
-  if (multiplier != 1 && image.HasIntrinsicSize()) {
+  if (multiplier != 1 && image->HasIntrinsicSize()) {
     sizing_info.size = ApplyClampedZoom(sizing_info.size, multiplier);
   }
   if (auto* layout_image = DynamicTo<LayoutImage>(*layout_object_)) {
@@ -173,15 +175,14 @@ Image* LayoutImageResource::BrokenImage(double device_pixel_ratio) {
   // TODO(rendering-core): Replace static resources with dynamically
   // generated ones, to support a wider range of device scale factors.
   if (device_pixel_ratio >= 2) {
-    DEFINE_STATIC_REF(
-        Image, broken_image_hi_res,
-        (Image::LoadPlatformResource(IDR_BROKENIMAGE, ui::k200Percent)));
-    return broken_image_hi_res;
+    static const base::NoDestructor<scoped_refptr<Image>> broken_image_hi_res(
+        Image::LoadPlatformResource(IDR_BROKENIMAGE, ui::k200Percent));
+    return broken_image_hi_res->get();
   }
 
-  DEFINE_STATIC_REF(Image, broken_image_lo_res,
-                    (Image::LoadPlatformResource(IDR_BROKENIMAGE)));
-  return broken_image_lo_res;
+  static const base::NoDestructor<scoped_refptr<Image>> broken_image_lo_res(
+      Image::LoadPlatformResource(IDR_BROKENIMAGE));
+  return broken_image_lo_res->get();
 }
 
 double LayoutImageResource::DevicePixelRatio() const {
@@ -217,18 +218,23 @@ scoped_refptr<Image> LayoutImageResource::GetImage(
   if (!cached_image_->HasImage())
     return Image::NullImage();
 
-  Image* image = cached_image_->GetImage();
+  scoped_refptr<Image> image = cached_image_->GetImage();
 
-  auto* svg_image = DynamicTo<SVGImage>(image);
+  auto* svg_image = DynamicTo<SVGImage>(image.get());
   if (!svg_image)
     return image;
 
-  const ComputedStyle& style = layout_object_->StyleRef();
+  const ComputedStyle& style = layout_object_->Style();
   auto preferred_color_scheme = layout_object_->GetDocument()
                                     .GetStyleEngine()
                                     .ResolveColorSchemeForEmbedding(&style);
+  const LinkParameterList* link_parameter_list =
+      RuntimeEnabledFeatures::CSSLinkParametersPropertyEnabled()
+          ? style.LinkParameters()
+          : nullptr;
   const SVGImageViewInfo* view_info = SVGImageForContainer::CreateViewInfo(
-      *svg_image, layout_object_->GetNode());
+      *svg_image, layout_object_->GetNode(), link_parameter_list);
+
   return SVGImageForContainer::Create(*svg_image, container_size,
                                       style.EffectiveZoom(), view_info,
                                       preferred_color_scheme);

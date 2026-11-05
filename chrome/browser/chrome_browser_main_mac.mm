@@ -131,7 +131,7 @@ void ChromeBrowserMainPartsMac::PreCreateMainMessageLoop() {
   metrics_->RecordAppFileSystemType();
 
   PrefService* local_state = g_browser_process->local_state();
-  DCHECK(local_state);
+  CHECK(local_state, base::NotFatalUntil::M163);
 
   // AppKit only restores windows to their original spaces when relaunching
   // apps after a restart, and puts them all on the current space when an app
@@ -153,6 +153,11 @@ int ChromeBrowserMainPartsMac::PreCreateThreads() {
       ret != content::RESULT_CODE_NORMAL_EXIT) {
     return ret;
   }
+
+  // Disable automatic Cocoa window tabbing early so any window creation or UI
+  // work running before `-applicationWillFinishLaunching:` observes the final
+  // setting.
+  NSWindow.allowsAutomaticWindowTabbing = NO;
 
   // Create the app delegate by requesting the shared AppController.
   CHECK_EQ(nil, NSApp.delegate);

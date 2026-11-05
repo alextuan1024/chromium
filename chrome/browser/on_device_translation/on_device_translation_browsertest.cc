@@ -18,6 +18,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/current_thread.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
@@ -776,6 +777,38 @@ IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest, CrashWhileTranslating) {
   TestSimpleTranslationWorks(browser(), "en", "ja");
 }
 
+// Tests that translateStreaming() fails when the service crashes after the
+// first sentence.
+IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
+                       CrashWhileTranslatingStreaming) {
+  MockComponentManager mock_component_manager(GetTempDir());
+  mock_component_manager.ExpectCallRegisterTranslateKitComponentAndInstall();
+  mock_component_manager.ExpectCallRegisterLanguagePackComponentAndInstall(
+      {LanguagePackKey::kEn_Ja});
+
+  NavigateToEmptyPage();
+
+  // The mock library splits the input at each period and crashes when it
+  // translates CAUSE_CRASH. See comments in mock_translate_kit_lib.cc.
+  EXPECT_EQ(EvalJsCatchingError(R"(
+      window._translator = await Translator.create({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+      });
+      const stream =
+          window._translator.translateStreaming('hello. CAUSE_CRASH. world.');
+      let result = '';
+      for await (const chunk of stream) {
+        result += chunk;
+      }
+      return result;
+  )"),
+            "UnknownError: Other generic failures occurred.");
+
+  // A new translator can still be created and used.
+  TestSimpleTranslationWorks(browser(), "en", "ja");
+}
+
 // Tests the behavior of failing to load the library
 IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
                        CreateTranslatorErrorLibraryLoadFailed) {
@@ -809,19 +842,17 @@ IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
   WaitForConsoleObserver(*console_observer);
 }
 
-// Tests that a relative library path causes a crash/failure (reproducing the
-// bug/crash in PreLockdownSandboxHook on Windows).
+// Tests that a relative library path counts as "not installed". Earlier
+// versions stored a relative path before the library was installed, and the
+// translation service crashed on it in PreLockdownSandboxHook() on Windows.
+// Now `create()` installs the library instead, and then works.
 IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
-                       CreateTranslatorErrorLibraryPathRelative) {
+                       RelativeLibraryPathCountsAsNotInstalled) {
   MockComponentManager mock_component_manager(GetTempDir());
-  EXPECT_CALL(mock_component_manager, RegisterTranslateKitComponentImpl())
-      .Times(1);
-
-  // Set the TranslateKit binary path to a relative path.
   g_browser_process->local_state()->SetFilePath(
       prefs::kTranslateKitBinaryPath,
       base::FilePath(FILE_PATH_LITERAL("relative/path/to/fakefile")));
-
+  mock_component_manager.ExpectCallRegisterTranslateKitComponentAndInstall();
   mock_component_manager.ExpectCallRegisterLanguagePackComponentAndInstall(
       {LanguagePackKey::kEn_Ja});
   NavigateToEmptyPage();
@@ -831,15 +862,16 @@ IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
               sourceLanguage: 'en',
               targetLanguage: 'ja',
             });
+            return await translator.translate('hello');
       )"),
-            "NotSupportedError: Unable to create translator for the given "
-            "source and target language.");
+            "en to ja: hello");
 }
 
 // Tests the behavior of failing to load the library as a result of the
 // incompatibility of the library.
 IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
                        CreateTranslatorErrorLibraryIncompatible) {
+  base::HistogramTester histogram_tester;
   MockComponentManager mock_component_manager(GetTempDir());
   EXPECT_CALL(mock_component_manager, RegisterTranslateKitComponentImpl())
       .Times(1);
@@ -859,6 +891,10 @@ IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
       )"),
             "NotSupportedError: Unable to create translator for the given "
             "source and target language.");
+  // The browser records why `create()` failed before it replies.
+  histogram_tester.ExpectUniqueSample(
+      "Translate.TranslatorApi.CreateTranslatorError",
+      blink::mojom::CreateTranslatorError::kInvalidFunctionPointer, 1);
 
   // The console message should be logged.
   WaitForConsoleObserver(*console_observer);
@@ -917,6 +953,35 @@ IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
   WaitForConsoleObserver(*console_observer);
 }
 
+// Tests that non-ASCII whitespace and C1 control input returns unchanged from
+// `translate()` and `translateStreaming()`.
+IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
+                       NonAsciiWhitespaceIsNotTranslated) {
+  MockComponentManager mock_component_manager(GetTempDir());
+  mock_component_manager.ExpectCallRegisterTranslateKitComponentAndInstall();
+  mock_component_manager.ExpectCallRegisterLanguagePackComponentAndInstall(
+      {LanguagePackKey::kEn_Ja});
+
+  NavigateToEmptyPage();
+
+  EXPECT_EQ(EvalJsCatchingError(R"(
+      const translator = await Translator.create({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+      });
+      const input = '\u00A0\u3000 \u009F';
+      let streamed = '';
+      for await (const chunk of translator.translateStreaming(input)) {
+        streamed += chunk;
+      }
+      return ((await translator.translate(input)) === input &&
+              streamed === input)
+                 ? 'ok'
+                 : 'mismatch';
+  )"),
+            "ok");
+}
+
 // Tests the behavior of streaming translation.
 IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest, TranslateStreaming) {
   MockComponentManager mock_component_manager(GetTempDir());
@@ -951,6 +1016,41 @@ IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest, TranslateStreaming) {
       return result;
   )"),
             "en to ja: Sentence one en to ja: Sentence two");
+}
+
+// Tests that unpaired UTF-16 surrogates are replaced with U+FFFD before
+// reaching the translation service.
+IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
+                       UnpairedSurrogatesAreReplaced) {
+  MockComponentManager mock_component_manager(GetTempDir());
+  mock_component_manager.ExpectCallRegisterTranslateKitComponentAndInstall();
+  mock_component_manager.ExpectCallRegisterLanguagePackComponentAndInstall(
+      {LanguagePackKey::kEn_Ja});
+
+  NavigateToEmptyPage();
+
+  EXPECT_EQ(EvalJsCatchingError(R"(
+      const translator = await Translator.create({
+        sourceLanguage: 'en',
+        targetLanguage: 'ja',
+      });
+      const translated = await translator.translate('hello \uD800 world');
+      if (translated !== 'en to ja: hello \uFFFD world') {
+        return 'translate mismatch: ' + translated;
+      }
+      const chunks = [];
+      for await (const chunk of translator.translateStreaming(
+                     'hello \uD800. world \uDC00.')) {
+        chunks.push(chunk);
+      }
+      if (chunks.length !== 2 ||
+          chunks[0] !== 'en to ja: hello \uFFFD' ||
+          chunks[1] !== ' en to ja: world \uFFFD') {
+        return 'stream mismatch: ' + JSON.stringify(chunks);
+      }
+      return 'ok';
+  )"),
+            "ok");
 }
 
 // Tests the FIFO order of multiple parallel TranslateStreaming() invocations.
@@ -2359,5 +2459,63 @@ IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest, FileSchemeUrl) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), net::FilePathToFileURL(empty2_html_path)));
   TestTranslationAvailable(browser(), "en", "ja", "downloadable");
+}
+
+// Tests that zh-TW and zh-HK map to zh-Hant and he maps to iw across
+// availability() and create().
+IN_PROC_BROWSER_TEST_F(OnDeviceTranslationBrowserTest,
+                       BestFitLanguageCodeChineseAndHebrew) {
+  MockComponentManager mock_component_manager(GetTempDir());
+  EXPECT_CALL(mock_component_manager, RegisterTranslateKitComponentImpl())
+      .Times(1);
+  mock_component_manager.DoNotExpectCallRegisterLanguagePackComponent();
+  mock_component_manager.InstallMockTranslateKitComponent();
+  mock_component_manager.InstallMockLanguagePack(LanguagePackKey::kEn_ZhHant);
+  mock_component_manager.InstallMockLanguagePack(LanguagePackKey::kEn_Iw);
+
+  TestCanTranslateResult(
+      "en", "zh-TW",
+      CanCreateTranslatorResult::kAfterDownloadTranslatorCreationRequired);
+  TestCanTranslateResult(
+      "en", "zh-HK",
+      CanCreateTranslatorResult::kAfterDownloadTranslatorCreationRequired);
+  TestCanTranslateResult(
+      "en", "he",
+      CanCreateTranslatorResult::kAfterDownloadTranslatorCreationRequired);
+  TestCanTranslateResult(
+      "en", "zh-CN",
+      CanCreateTranslatorResult::kAfterDownloadLanguagePackNotReady);
+
+  NavigateToEmptyPage();
+  EXPECT_EQ(EvalJsCatchingError(R"(
+      const twTranslator = await Translator.create({
+        sourceLanguage: 'en',
+        targetLanguage: 'zh-TW',
+      });
+      return await twTranslator.translate('hello');
+    )"),
+            "en to zh-Hant: hello");
+  TestTranslationAvailable(browser(), "en", "zh-TW", "available");
+  TestTranslationAvailable(browser(), "en", "zh-HK", "available");
+  TestTranslationAvailable(browser(), "en", "zh-CN", "downloadable");
+
+  EXPECT_EQ(EvalJsCatchingError(R"(
+      const hkTranslator = await Translator.create({
+        sourceLanguage: 'en',
+        targetLanguage: 'zh-HK',
+      });
+      return await hkTranslator.translate('hello');
+    )"),
+            "en to zh-Hant: hello");
+
+  EXPECT_EQ(EvalJsCatchingError(R"(
+      const heTranslator = await Translator.create({
+        sourceLanguage: 'en',
+        targetLanguage: 'he',
+      });
+      return await heTranslator.translate('hello');
+    )"),
+            "en to iw: hello");
+  TestTranslationAvailable(browser(), "en", "he", "available");
 }
 }  // namespace on_device_translation

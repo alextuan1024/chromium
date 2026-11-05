@@ -47,6 +47,7 @@ class FetchParameters;
 class ResourceFetcher;
 class FontCustomPlatformData;
 class FontResourceClient;
+class IftPatcher;
 
 // An observer that will be notified when original data is cleared
 // from the resource. Inspector may collect this data and store it for
@@ -76,7 +77,13 @@ class CORE_EXPORT FontResource final : public Resource {
 
   String OtsParsingMessage() const { return ots_parsing_message_; }
 
+  // Decodes the font on the first call, then releases the encoded data and
+  // reports the decoded size to MemoryCache. Returns null on decode failure.
   const FontCustomPlatformData* GetCustomFontData();
+  // Returns a copy of the IFT patcher for this font, or nullptr if the font is
+  // not an IFT font. Each caller receives its own independent copy.
+  // TODO(wmedrano): Share a single IftPatcher instead of cloning.
+  std::unique_ptr<IftPatcher> CloneIftPatcher() const;
 
   // Returns true if the loading priority of the remote font resource can be
   // lowered. The loading priority of the font can be lowered only if the
@@ -125,6 +132,7 @@ class CORE_EXPORT FontResource final : public Resource {
   };
 
   Member<FontCustomPlatformData> font_data_;
+  std::unique_ptr<IftPatcher> ift_patcher_;
   String ots_parsing_message_;
   LoadLimitState load_limit_state_;
   bool cors_failed_;

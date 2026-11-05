@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,7 @@
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/cryptohome/system_salt_getter.h"
+#include "chromeos/ash/components/dbus/cryptohome/rpc.pb.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/session_manager/fake_session_manager_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
@@ -257,7 +259,7 @@ class WallpaperPolicyTest : public LoginManagerTest,
     const AccountId& account_id =
         login_manager_.users()[user_number].account_id;
     policy::UserPolicyBuilder* builder =
-        UNSAFE_TODO(user_policy_builders_[user_number]).get();
+        user_policy_builders_[user_number].get();
     if (!filename.empty()) {
       builder->payload().mutable_wallpaperimage()->set_value(
           ConstructPolicy(filename));
@@ -299,7 +301,8 @@ class WallpaperPolicyTest : public LoginManagerTest,
   base::FilePath test_data_dir_;
   std::unique_ptr<base::RunLoop> run_loop_;
   int wallpaper_change_count_ = 0;
-  std::unique_ptr<policy::UserPolicyBuilder> user_policy_builders_[2];
+  std::array<std::unique_ptr<policy::UserPolicyBuilder>, 2>
+      user_policy_builders_ = {};
   policy::DevicePolicyBuilder device_policy_;
   scoped_refptr<ownership::MockOwnerKeyUtil> owner_key_util_;
   FakeGaiaMixin fake_gaia_{&mixin_host_};

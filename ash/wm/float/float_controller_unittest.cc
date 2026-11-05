@@ -46,6 +46,7 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/simple_test_clock.h"
 #include "base/time/clock.h"
 #include "chromeos/ui/base/app_types.h"
@@ -246,9 +247,11 @@ TEST_F(WindowFloatTest, FloatToMaximizeWindowAnimates) {
       gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
   const WMEvent maximize_event(WM_EVENT_MAXIMIZE);
   WindowState::Get(window.get())->OnWMEvent(&maximize_event);
-  // `WindowState::SetBoundsDirectCrossFade` still starts an animation if the
+  // When `kCrossFadeBoundsChangeAnimation` is disabled,
+  // `WindowState::SetBoundsDirectAnimated` with
+  // `kUnfloatCrossFadeAnimationParams` still starts an animation even if the
   // source and destination bounds are the same. Therefore, it is not enough to
-  // just check if its animating.
+  // just check if it is animating.
   EXPECT_TRUE(window->layer()->GetAnimator()->is_animating());
   EXPECT_NE(window->layer()->transform(),
             window->layer()->GetTargetTransform());
@@ -943,6 +946,37 @@ TEST_F(WindowFloatTest, AlwaysOnTopWindow) {
 
   PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
   EXPECT_FALSE(WindowState::Get(always_on_top_window.get())->IsFloated());
+}
+
+// Regression test: when a floated window's minimum size changes such that it
+// can no longer be floated, FloatedWindowInfo::OnWidgetSizeConstraintsChanged
+// triggers ResetFloatedWindow(), which synchronously destroys the
+// FloatedWindowInfo (`this`). The handler must not write to its members after
+// that point. Under ASAN this previously reported heap-use-after-free.
+TEST_F(WindowFloatTest, MinimumSizeChangeUnfloatsWindowNoUAF) {
+  UpdateDisplay("800x600");
+  // Create and float a window with a custom frame so we can change its
+  // minimum size and have Widget::OnSizeConstraintsChanged() fire.
+  auto window = CreateWindowWithAppType(AppType::SYSTEM_APP, {300, 300},
+                                        kShellWindowId_DeskContainerA,
+                                        new TestWidgetDelegateAsh);
+  auto* custom_frame =
+      static_cast<TestFrameViewAsh*>(FrameViewAsh::Get(window.get()));
+  wm::ActivateWindow(window.get());
+  PressAndReleaseKey(ui::VKEY_F, ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN);
+  ASSERT_TRUE(WindowState::Get(window.get())->IsFloated());
+
+  // Set a minimum size larger than the work area so CanFloatWindow() returns
+  // false. This drives:
+  //   FloatedWindowInfo::OnWidgetSizeConstraintsChanged()
+  //     -> OnResizabilityOrSizeConstraintsChanged()
+  //       -> FloatController::ResetFloatedWindow()
+  //         -> ... -> UnfloatImpl()  (erases FloatedWindowInfo from the map)
+  // and `this` is destroyed mid-call.
+  custom_frame->SetMinimumSize(gfx::Size(100, 100000));
+
+  // If we reach here without an ASAN heap-use-after-free, the bug is fixed.
+  EXPECT_FALSE(WindowState::Get(window.get())->IsFloated());
 }
 
 // Tests that for unresizable windows, floatability depends on its window state
@@ -2211,8 +2245,10 @@ TEST_F(TabletWindowFloatTest, BasicTuckNudge) {
   // the test will fail.
   widget_waiter.WaitIfNeededAndGet();
 
-  // Nudge should dismiss properly after animations end.
-  EXPECT_TRUE(window->children().empty());
+  // Nudge should dismiss properly after animations end. Its window is destroyed
+  // in a posted task after the nudge widget is closed.
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return window->children().empty(); }));
 
   // TODO(hewer): Add a callback to check that the nudge has properly dismissed
   // after the bounce animations and timer have ended.

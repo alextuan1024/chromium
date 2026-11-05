@@ -5,10 +5,13 @@
 #include "chrome/browser/context_sharing/tab_bottom_sheet/android/co_browse_views_bridge.h"
 
 #include <cstdint>
+#include <utility>
 
+#include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/context_sharing/tab_bottom_sheet/android/co_browse_container_type.h"
@@ -48,15 +51,29 @@ CoBrowseViewsBridge::CoBrowseViewsBridge(
     context_sharing::CoBrowseContainerType container_type,
     const base::android::JavaRef<jobject>& bottom_sheet_content_provider,
     bool enable_pinch_to_zoom,
-    ui::ColorId background_color_id)
+    ui::ColorId background_color_id,
+    ui::ColorId placeholder_elem_color_id,
+    base::RepeatingClosure close_callback)
     : tab_(tab),
       client_type_(client_type),
       container_type_(container_type),
       enable_pinch_to_zoom_(enable_pinch_to_zoom),
       background_color_id_(background_color_id),
+      placeholder_elem_color_id_(placeholder_elem_color_id),
+      close_callback_(std::move(close_callback)),
+      is_tab_active_(tab.IsActivated()),
       bottom_sheet_content_provider_(bottom_sheet_content_provider),
       tab_insert_subscription_(tab.RegisterDidInsert(
           base::BindRepeating(&CoBrowseViewsBridge::OnTabInserted,
+                              base::Unretained(this)))),
+      tab_did_activate_subscription_(tab.RegisterDidActivate(
+          base::BindRepeating(&CoBrowseViewsBridge::OnTabDidActivate,
+                              base::Unretained(this)))),
+      tab_will_deactivate_subscription_(tab.RegisterWillDeactivate(
+          base::BindRepeating(&CoBrowseViewsBridge::OnTabWillDeactivate,
+                              base::Unretained(this)))),
+      tab_will_detach_subscription_(tab.RegisterWillDetach(
+          base::BindRepeating(&CoBrowseViewsBridge::OnTabWillDetach,
                               base::Unretained(this)))) {}
 
 CoBrowseViewsBridge::~CoBrowseViewsBridge() {
@@ -72,6 +89,7 @@ CoBrowseViewsBridge::~CoBrowseViewsBridge() {
 bool CoBrowseViewsBridge::CreateCoBrowseViews(
     content::WebContents* web_contents,
     bool request_focus) {
+  Observe(web_contents);
   TabAndroid* tab_android = GetTabAndroid();
   if (!tab_android) {
     LOG(WARNING) << "Cannot create CoBrowseViews: TabAndroid is null.";
@@ -97,21 +115,37 @@ bool CoBrowseViewsBridge::CreateCoBrowseViews(
 
   const ui::ColorProvider* color_provider = window_android->GetColorProvider();
   CHECK(color_provider);
-  SkColor color = color_provider->GetColor(background_color_id_);
-  int32_t background_color = static_cast<int32_t>(color);
+  int32_t background_color =
+      static_cast<int32_t>(color_provider->GetColor(background_color_id_));
+  int32_t placeholder_elem_color = static_cast<int32_t>(
+      color_provider->GetColor(placeholder_elem_color_id_));
+
+  if (!tab_android->IsActivated()) {
+    is_tab_active_ = false;
+  }
 
   JNIEnv* env = AttachCurrentThread();
   java_co_browse_views_.Reset(Java_CoBrowseViewFactory_buildCoBrowseViews(
       env, window_android, web_contents, background_color,
-      static_cast<int>(client_type_), static_cast<int>(container_type_),
-      request_focus, bottom_sheet_content_provider_));
+      placeholder_elem_color, static_cast<int>(client_type_),
+      static_cast<int>(container_type_), request_focus,
+      bottom_sheet_content_provider_,
+      close_callback_ ? close_callback_ : base::DoNothing()));
+  if (is_loading_ && !java_co_browse_views_.is_null()) {
+    Java_CoBrowseViews_setIsLoading(env, java_co_browse_views_,
+                                    /*is_loading=*/true);
+  }
+  if (!is_tab_active_ && !java_co_browse_views_.is_null()) {
+    Java_CoBrowseViews_setIsTabActive(env, java_co_browse_views_,
+                                      /*is_tab_active=*/false);
+  }
 
   return !java_co_browse_views_.is_null();
 }
 
 void CoBrowseViewsBridge::SetWebContents(content::WebContents* web_contents,
                                          bool request_focus) {
-  guest_web_contents_ = web_contents;
+  Observe(web_contents);
   if (web_contents) {
     web_contents->SetIgnoreZoomGestures(!enable_pinch_to_zoom_);
     if (!zoom::ZoomController::FromWebContents(web_contents)) {
@@ -138,9 +172,23 @@ void CoBrowseViewsBridge::SetWebContents(content::WebContents* web_contents,
     return;
   }
 
+  // Only lower `is_tab_active_` here, never raise it from `IsActivated()`:
+  // during the tab model's `willSet` phase `OnTabWillDeactivate` has already
+  // cleared `is_tab_active_` while `IsActivated()` still returns true.
+  if (!tab_android->IsActivated()) {
+    SetTabActive(false);
+  }
   JNIEnv* env = AttachCurrentThread();
   Java_CoBrowseViews_setWebContents(env, java_co_browse_views_, web_contents,
                                     request_focus);
+}
+
+void CoBrowseViewsBridge::SetIsLoading(bool is_loading) {
+  is_loading_ = is_loading;
+  if (!java_co_browse_views_.is_null()) {
+    JNIEnv* env = AttachCurrentThread();
+    Java_CoBrowseViews_setIsLoading(env, java_co_browse_views_, is_loading);
+  }
 }
 
 base::android::ScopedJavaLocalRef<jobject>
@@ -150,6 +198,32 @@ CoBrowseViewsBridge::GetCoBrowseViews() {
   }
   JNIEnv* env = AttachCurrentThread();
   return base::android::ScopedJavaLocalRef<jobject>(env, java_co_browse_views_);
+}
+
+bool CoBrowseViewsBridge::HasJavaWebContentsForTesting() const {
+  if (!java_co_browse_views_) {
+    return false;
+  }
+  JNIEnv* env = AttachCurrentThread();
+  return !Java_CoBrowseViews_getWebContents(env, java_co_browse_views_)
+              .is_null();
+}
+
+bool CoBrowseViewsBridge::IsEmptyPlaceholderVisibleForTesting() const {
+  if (!java_co_browse_views_) {
+    return false;
+  }
+  JNIEnv* env = AttachCurrentThread();
+  return Java_CoBrowseViews_isEmptyPlaceholderVisibleForTesting(  // IN-TEST
+      env, java_co_browse_views_);
+}
+
+void CoBrowseViewsBridge::WebContentsDestroyed() {
+  if (java_co_browse_views_) {
+    JNIEnv* env = AttachCurrentThread();
+    Java_CoBrowseViews_setWebContents(env, java_co_browse_views_, nullptr,
+                                      /*requestFocus=*/false);
+  }
 }
 
 void CoBrowseViewsBridge::DestroyCoBrowseViews() {
@@ -169,6 +243,9 @@ TabAndroid* CoBrowseViewsBridge::GetTabAndroid() const {
 }
 
 void CoBrowseViewsBridge::OnTabInserted(tabs::TabInterface* tab) {
+  if (!java_co_browse_views_) {
+    return;
+  }
   TabAndroid* tab_android = GetTabAndroid();
   if (!tab_android) {
     return;
@@ -180,8 +257,31 @@ void CoBrowseViewsBridge::OnTabInserted(tabs::TabInterface* tab) {
           : nullptr;
 
   if (current_window && current_window != window_android_) {
-    CreateCoBrowseViews(guest_web_contents_, /*request_focus=*/false);
+    CreateCoBrowseViews(web_contents(), /*request_focus=*/false);
   }
+}
+
+void CoBrowseViewsBridge::SetTabActive(bool is_tab_active) {
+  is_tab_active_ = is_tab_active;
+  if (!java_co_browse_views_) {
+    return;
+  }
+  JNIEnv* env = AttachCurrentThread();
+  Java_CoBrowseViews_setIsTabActive(env, java_co_browse_views_, is_tab_active_);
+}
+
+void CoBrowseViewsBridge::OnTabDidActivate(tabs::TabInterface* tab) {
+  SetTabActive(true);
+}
+
+void CoBrowseViewsBridge::OnTabWillDeactivate(tabs::TabInterface* tab) {
+  SetTabActive(false);
+}
+
+void CoBrowseViewsBridge::OnTabWillDetach(
+    tabs::TabInterface* tab,
+    tabs::TabInterface::DetachReason reason) {
+  SetTabActive(false);
 }
 
 }  // namespace context_sharing

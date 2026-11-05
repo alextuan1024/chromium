@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/profiles/profile_management_flow_controller.h"
 
+#include <iterator>
+
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -67,11 +69,17 @@ ProfileManagementFlowController::ProfileManagementFlowController(
     : host_(host),
       clear_host_callback_(std::move(clear_host_callback)),
       flow_tracker_(flow_type_string) {
-  DCHECK(clear_host_callback_.value());
+  CHECK(clear_host_callback_.value(), base::NotFatalUntil::M162);
 }
 
 ProfileManagementFlowController::~ProfileManagementFlowController() {
   flow_tracker_.ExitedFlow();
+  // Destroy steps in reverse order of `Step` so later steps (such as
+  // `kSearchEngineChoice`, which holds a `raw_ptr` to the `WebContents` owned
+  // by `kPostSignInFlow`) are destroyed before earlier steps.
+  while (!initialized_steps_.empty()) {
+    initialized_steps_.erase(std::prev(initialized_steps_.end()));
+  }
 }
 
 void ProfileManagementFlowController::SwitchToStep(
@@ -97,7 +105,7 @@ void ProfileManagementFlowController::SwitchToStep(
       CombineCallbacks<StepSwitchFinishedCallback, bool>(std::move(callbacks));
 
   auto* new_step_controller = initialized_steps_.at(step).get();
-  DCHECK(new_step_controller);
+  CHECK(new_step_controller, base::NotFatalUntil::M162);
   new_step_controller->set_pop_step_callback(std::move(pop_step_callback));
   new_step_controller->Show(std::move(combined_step_switch_callbacks),
                             reset_state);
@@ -117,13 +125,15 @@ bool ProfileManagementFlowController::CanNavigateBack() const {
 }
 
 void ProfileManagementFlowController::OnNavigateBackRequested() {
-  DCHECK(initialized_steps_.contains(flow_tracker_.tracked_step()));
+  CHECK(initialized_steps_.contains(flow_tracker_.tracked_step()),
+        base::NotFatalUntil::M162);
   initialized_steps_.at(flow_tracker_.tracked_step())
       ->OnNavigateBackRequested();
 }
 
 void ProfileManagementFlowController::OnReloadRequested() {
-  DCHECK(initialized_steps_.contains(flow_tracker_.tracked_step()));
+  CHECK(initialized_steps_.contains(flow_tracker_.tracked_step()),
+        base::NotFatalUntil::M162);
   initialized_steps_.at(flow_tracker_.tracked_step())->OnReloadRequested();
 }
 
@@ -186,7 +196,8 @@ ProfileManagementFlowController::GetCurrentStepController() const {
 void ProfileManagementFlowController::FinishFlowAndRunInBrowser(
     Profile* profile,
     PostHostClearedCallback post_host_cleared_callback) {
-  DCHECK(clear_host_callback_.value());  // The host shouldn't be cleared yet.
+  CHECK(clear_host_callback_.value(),
+        base::NotFatalUntil::M162);  // The host shouldn't be cleared yet.
 
   // TODO(crbug.com/40246333): Handle the return value and don't open a browser
   // if it is already going to be opened.
@@ -210,7 +221,8 @@ void ProfileManagementFlowController::FinishFlowAndRunInBrowser(
             .Then(std::move(post_host_cleared_callback.value()));
   }
 
-  bool open_command_line_urls = ProfilePicker::GetOpenCommandLineUrlsInNextProfileOpened();
+  bool open_command_line_urls =
+      ProfilePicker::GetOpenCommandLineUrlsInNextProfileOpened();
   ProfilePicker::SetOpenCommandLineUrlsInNextProfileOpened(false);
 
   // Start by opening the browser window, to ensure that we have another

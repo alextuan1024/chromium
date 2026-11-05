@@ -23,7 +23,6 @@
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/cookie_util.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
 #include "services/network/public/cpp/session_cookie_delete_predicate.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
@@ -118,7 +117,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
       const GURL& url,
       const net::SiteForCookies& site_for_cookies,
       base::optional_ref<const url::Origin> top_frame_origin,
-      const net::FirstPartySetMetadata& first_party_set_metadata,
       net::CookieSettingOverrides overrides,
       net::CookieInclusionStatus* cookie_inclusion_status) const;
 
@@ -133,7 +131,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
       const GURL& url,
       const net::SiteForCookies& site_for_cookies,
       base::optional_ref<const url::Origin> top_frame_origin,
-      const net::FirstPartySetMetadata& first_party_set_metadata,
       net::CookieSettingOverrides overrides,
       net::CookieAccessResultList& maybe_included_cookies,
       net::CookieAccessResultList& excluded_cookies) const;
@@ -148,13 +145,18 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
     return (setting == CONTENT_SETTING_ALLOW);
   }
 
-  bool ShouldAlwaysAllowCookiesForTesting(const GURL& url,
-                                          const GURL& first_party_url) const;
+  bool ShouldAlwaysAllowCookiesForTesting(
+      const GURL& url,
+      const GURL& first_party_url,
+      net::CookieSettingOverrides overrides =
+          net::CookieSettingOverrides()) const;
 
  private:
   // content_settings::CookieSettingsBase:
-  bool ShouldAlwaysAllowCookies(const GURL& url,
-                                const GURL& first_party_url) const override;
+  bool ShouldAlwaysAllowCookies(
+      const GURL& url,
+      const GURL& first_party_url,
+      net::CookieSettingOverrides overrides) const override;
   ContentSetting GetContentSetting(
       const GURL& primary_url,
       const GURL& secondary_url,
@@ -211,7 +213,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
       const net::CanonicalCookie& cookie,
       base::optional_ref<const url::Origin> top_frame_origin,
       const CookieSettings::CookieSettingWithMetadata& setting_with_metadata,
-      const net::FirstPartySetMetadata& first_party_set_metadata,
       net::CookieSettingOverrides overrides,
       net::CookieInclusionStatus& out_status) const;
 
@@ -239,7 +240,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CookieSettings
       EntryIndex;
 
   EntryIndex content_settings_;
-
 };
 
 }  // namespace network

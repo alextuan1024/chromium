@@ -5,6 +5,7 @@ package org.chromium.chrome.browser.toolbar;
 
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
@@ -15,19 +16,18 @@ import androidx.annotation.ColorRes;
 import androidx.test.annotation.UiThreadTest;
 import androidx.test.filters.SmallTest;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.Batch;
@@ -42,6 +42,7 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TrustedCdn;
 import org.chromium.chrome.browser.theme.ThemeUtils;
+import org.chromium.chrome.browser.toolbar.LocationBarModel.NativeLocationBarModelAndroid;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.test.util.ToolbarUnitTestUtils;
 import org.chromium.components.security_state.ConnectionMaliciousContentStatus;
@@ -52,7 +53,6 @@ import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
-import java.util.Random;
 import java.util.concurrent.ExecutionException;
 
 /** Instrumentation tests for the toolbar security icon. */
@@ -94,32 +94,28 @@ public final class ToolbarSecurityIconTest {
 
     @Mock private LocationBarModel.Natives mLocationBarModelJni;
 
+    @Mock private JniUniquePtr<NativeLocationBarModelAndroid> mNativeLocationBarModelAndroid;
+
     @Mock private ChromeAutocompleteSchemeClassifier.Natives mChromeAutocompleteSchemeClassifierJni;
 
     @Mock private Profile mMockProfile;
 
-    @Mock private TrustedCdn mTrustedCdn;
-
     @Before
     public void setUp() throws ExecutionException {
-
         NativeLibraryTestUtils.loadNativeLibraryNoBrowserProcess();
         SecurityStateModelJni.setInstanceForTesting(mSecurityStateMocks);
         ChromeAutocompleteSchemeClassifierJni.setInstanceForTesting(
                 mChromeAutocompleteSchemeClassifierJni);
+        doAnswer(invocation -> JniUniquePtr.createForTesting(1L))
+                .when(mChromeAutocompleteSchemeClassifierJni)
+                .createAutocompleteClassifier(any());
         LocationBarModelJni.setInstanceForTesting(mLocationBarModelJni);
 
         GURL exampleUrl = JUnitTestGURLs.EXAMPLE_URL;
-        doReturn(exampleUrl)
-                .when(mLocationBarModelJni)
-                .getUrlOfVisibleNavigationEntry(Mockito.anyLong());
-        doReturn(exampleUrl.getSpec())
-                .when(mLocationBarModelJni)
-                .getFormattedFullURL(Mockito.anyLong());
-        doReturn(exampleUrl.getSpec())
-                .when(mLocationBarModelJni)
-                .getURLForDisplay(Mockito.anyLong());
-        doReturn(new Random().nextLong()).when(mLocationBarModelJni).init(Mockito.any());
+        doReturn(exampleUrl).when(mLocationBarModelJni).getUrlOfVisibleNavigationEntry(any());
+        doReturn(exampleUrl.getSpec()).when(mLocationBarModelJni).getFormattedFullURL(any());
+        doReturn(exampleUrl.getSpec()).when(mLocationBarModelJni).getURLForDisplay(any());
+        doReturn(mNativeLocationBarModelAndroid).when(mLocationBarModelJni).init(any());
 
         Context context =
                 new ContextThemeWrapper(
@@ -137,9 +133,6 @@ public final class ToolbarSecurityIconTest {
                                                     ControlsPosition.TOP)));
                     ProfileManager.setLastUsedProfileForTesting(mMockProfile);
                     mLocationBarModel.initializeWithNative();
-                    UserDataHost userDataHost = new UserDataHost();
-                    userDataHost.setUserData(TrustedCdn.USER_DATA_KEY, mTrustedCdn);
-                    doReturn(userDataHost).when(mTab).getUserDataHost();
                 });
     }
 
@@ -173,12 +166,12 @@ public final class ToolbarSecurityIconTest {
         doReturn(ConnectionSecurityLevel.SECURE)
                 .when(mLocationBarModel)
                 .getSecurityLevelFromStateModel(any());
-        doReturn(new GURL("https://example.com")).when(mTrustedCdn).getPublisherUrl();
+        TrustedCdn.setPublisherUrlForTesting(new GURL("https://example.com"));
         assertEquals(
                 "Wrong security level returned for HTTPS publisher URL",
                 ConnectionSecurityLevel.SECURE,
                 mLocationBarModel.getSecurityLevel(mTab, !IS_OFFLINE_PAGE));
-        doReturn(new GURL("http://example.com")).when(mTrustedCdn).getPublisherUrl();
+        TrustedCdn.setPublisherUrlForTesting(new GURL("http://example.com"));
         assertEquals(
                 "Wrong security level returned for HTTP publisher URL",
                 ConnectionSecurityLevel.WARNING,
@@ -187,7 +180,7 @@ public final class ToolbarSecurityIconTest {
         doReturn(ConnectionSecurityLevel.DANGEROUS)
                 .when(mLocationBarModel)
                 .getSecurityLevelFromStateModel(any());
-        doReturn(null).when(mTrustedCdn).getPublisherUrl();
+        TrustedCdn.setPublisherUrlForTesting(null);
         assertEquals(
                 "Wrong security level returned for publisher URL on insecure page",
                 ConnectionSecurityLevel.DANGEROUS,

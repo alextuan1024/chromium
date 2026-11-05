@@ -7,9 +7,6 @@
 
 #include <optional>
 
-#include "third_party/blink/renderer/core/paint/timing/paint_timing_record.h"
-#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
-#include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace base {
@@ -21,7 +18,9 @@ struct DOMPaintTimingInfo;
 
 // Presentation time callback used for PaintTiming clients.
 using PaintTimingCallback =
-    base::OnceCallback<void(const base::TimeTicks&, const DOMPaintTimingInfo&)>;
+    base::OnceCallback<void(const base::TimeTicks& raw_presentation_timestamp,
+                            const DOMPaintTimingInfo& paint_timing_info,
+                            uint64_t navigation_id)>;
 using OptionalPaintTimingCallback = std::optional<PaintTimingCallback>;
 
 }  // namespace blink

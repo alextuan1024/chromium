@@ -68,7 +68,6 @@ class MetricsReporter {
                   int index_in_stream,
                   OpenActionType action_type);
   void OpenVisitComplete(base::TimeDelta visit_time);
-  void PageLoaded();
   void OtherUserAction(const StreamType& stream_type,
                        FeedUserActionType action_type);
   void OtherUserAction(FeedUserActionType action_type);
@@ -99,8 +98,6 @@ class MetricsReporter {
     LoadStreamStatus load_from_store_status = LoadStreamStatus::kNoStatus;
     LoadStreamStatus final_status = LoadStreamStatus::kNoStatus;
     bool is_initial_load = false;
-    bool loaded_new_content_from_network = false;
-    base::TimeDelta stored_content_age;
     std::optional<feedstore::Metadata::StreamMetadata> stream_metadata;
   };
   virtual void OnLoadStream(const StreamType& stream_type,
@@ -117,12 +114,9 @@ class MetricsReporter {
   virtual void OnLoadMore(const StreamType& stream_type,
                           LoadStreamStatus final_status,
                           const ContentStats& content_stats);
-  // Called each time the surface receives new content.
-  void SurfaceReceivedContent(SurfaceId surface_id);
   // Called when Chrome is entering the background.
   void OnEnterBackground();
 
-  static void OnImageFetched(const GURL& url, int net_error_or_http_status);
   static void OnResourceFetched(int net_error_or_http_status);
 
   // Actions upload.
@@ -131,7 +125,6 @@ class MetricsReporter {
 
   static void ActivityLoggingEnabled(bool response_has_logging_enabled);
   static void NoticeCardFulfilled(bool response_has_notice_card);
-  static void NoticeCardFulfilledObsolete(bool response_has_notice_card);
 
   // Info card events.
   void OnInfoCardTrackViewStarted(const StreamType& stream_type,
@@ -156,7 +149,6 @@ class MetricsReporter {
     bool scrolled_reported = false;
   };
   struct SurfaceWaiting {
-    explicit operator bool() const { return !wait_start.is_null(); }
     SurfaceWaiting();
     SurfaceWaiting(const feed::StreamType& stream_type,
                    base::TimeTicks wait_start);
@@ -175,9 +167,6 @@ class MetricsReporter {
   }
 
   void ReportPersistentDataIfDayIsDone();
-  void CardOpenBegin(const StreamType& stream_type);
-  void CardOpenTimeout(base::TimeTicks start_ticks);
-  void ReportCardOpenEndIfNeeded(bool success);
   void RecordEngagement(const StreamType& stream_type,
                         int scroll_distance_dp,
                         bool interacted);
@@ -186,7 +175,6 @@ class MetricsReporter {
   void TrackTimeSpentInFeed(bool interacted_or_scrolled);
   void RecordInteraction(const StreamType& stream_type);
   void ReportOpenFeedIfNeeded(SurfaceId surface_id, bool success);
-  void ReportGetMoreIfNeeded(SurfaceId surface_id, bool success);
   void FinalizeMetrics();
   void FinalizeVisit();
 
@@ -208,16 +196,6 @@ class MetricsReporter {
 
   // The time a surface was opened, for surfaces still waiting for content.
   std::map<SurfaceId, SurfaceWaiting> surfaces_waiting_for_content_;
-  // The time a surface requested more content, for surfaces still waiting for
-  // more content.
-  std::map<SurfaceId, SurfaceWaiting> surfaces_waiting_for_more_content_;
-
-  // Tracking ContentSuggestions.Feed.UserJourney.OpenCard.*:
-  // We assume at most one card is opened at a time. The time the card was
-  // tapped is stored here. Upon timeout, another open attempt, or
-  // |ChromeStopping()|, the open is considered failed. Otherwise, if the
-  // loading the page succeeds, the open is considered successful.
-  SurfaceWaiting pending_open_;
 
   // For tracking time spent in the Feed.
   std::optional<base::TimeTicks> time_in_feed_start_;
@@ -225,7 +203,6 @@ class MetricsReporter {
   base::TimeDelta tracked_visit_time_in_feed_;
   // Non-null only directly after a stream load.
   std::unique_ptr<LoadLatencyTimes> load_latencies_;
-  bool load_latencies_recorded_ = false;
 
   class GoodVisitState {
    public:

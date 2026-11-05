@@ -13,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/android/android_info.h"
 #include "base/base64.h"
 #include "base/check.h"
 #include "base/check_deref.h"
@@ -51,6 +50,10 @@
 #include "third_party/blink/public/mojom/webauthn/authenticator.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/android_info.h"
+#endif
 
 namespace autofill {
 
@@ -365,7 +368,8 @@ void CreditCardFidoAuthenticator::MakeCredential(
 void CreditCardFidoAuthenticator::OptChange(
     base::DictValue authenticator_response) {
   payments::OptChangeRequestDetails request_details;
-  request_details.app_locale = payments_data_manager().app_locale();
+  request_details.app_locale =
+      payments_data_manager().app_locale().tag_string();
 
   switch (current_flow_) {
     case Flow::kOptInWithChallengeFlow:
@@ -532,8 +536,29 @@ void CreditCardFidoAuthenticator::OnFullCardRequestFailed(
   if (!requester_)
     return;
 
+  const FidoAuthenticationResponse::FailureType response_failure_type =
+      [failure_type] {
+        switch (failure_type) {
+          case payments::FullCardRequest::VERIFICATION_DECLINED:
+            return FidoAuthenticationResponse::FailureType::
+                kVerificationDeclined;
+          case payments::FullCardRequest::
+              VIRTUAL_CARD_RETRIEVAL_TRANSIENT_FAILURE:
+            return FidoAuthenticationResponse::FailureType::
+                kVirtualCardRetrievalTransientFailure;
+          case payments::FullCardRequest::
+              VIRTUAL_CARD_RETRIEVAL_PERMANENT_FAILURE:
+            return FidoAuthenticationResponse::FailureType::
+                kVirtualCardRetrievalPermanentFailure;
+          case payments::FullCardRequest::GENERIC_FAILURE:
+            return FidoAuthenticationResponse::FailureType::kGenericFailure;
+          case payments::FullCardRequest::PROMPT_CLOSED:
+          case payments::FullCardRequest::UNKNOWN:
+            NOTREACHED();
+        }
+      }();
   requester_->OnFIDOAuthenticationComplete(FidoAuthenticationResponse{
-      .did_succeed = false, .failure_type = failure_type});
+      .did_succeed = false, .failure_type = response_failure_type});
 }
 
 blink::mojom::PublicKeyCredentialRequestOptionsPtr

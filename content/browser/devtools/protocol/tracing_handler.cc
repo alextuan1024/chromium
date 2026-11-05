@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/base64.h"
 #include "base/format_macros.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
@@ -24,7 +25,6 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
-#include "base/timer/timer.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
@@ -46,8 +46,12 @@
 #include "content/browser/tracing/tracing_controller_impl.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/child_process_host.h"
+#include "content/public/browser/service_process_host.h"
 #include "content/public/browser/tracing_service.h"
 #include "content/public/browser/web_contents.h"
+#include "media/base/video_frame.h"
+#include "media/media_buildflags.h"
 #include "services/resource_coordinator/public/cpp/memory_instrumentation/memory_instrumentation.h"
 #include "services/resource_coordinator/public/mojom/memory_instrumentation/memory_instrumentation.mojom-shared.h"
 #include "services/tracing/public/cpp/perfetto/perfetto_config.h"
@@ -59,6 +63,7 @@
 #include "services/tracing/public/mojom/constants.mojom-forward.h"
 #include "third_party/abseil-cpp/absl/strings/ascii.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "components/tracing/common/etw_stack_sampling_win.h"
@@ -102,6 +107,11 @@ constexpr int64_t kScreenshotMemoryBudgetBytes =
     static_cast<int64_t>(kDefaultMaxFrameSize.width()) *
     kDefaultMaxFrameSize.height() * 4 *
     DevToolsTraceableScreenshot::kDefaultMaximumNumberOfScreenshots;
+
+// Maximum time to wait for the DevTools Media Encoding Service to flush and
+// close when stopping tracing. 5 seconds bounds the in-flight encode backlog
+// plus the utility process Mojo round-trip on slow devices.
+constexpr base::TimeDelta kVideoEncodingStopTimeout = base::Seconds(5);
 
 // Convert from camel case to separator + lowercase.
 std::string ConvertFromCamelCase(const std::string& in_str, char separator) {
@@ -211,7 +221,9 @@ void SendProcessReadyInBrowserEvent(const base::UnguessableToken& frame_token,
 
 void FillFrameData(base::trace_event::TracedValue* data,
                    RenderFrameHostImpl* frame_host,
-                   const GURL& url) {
+                   const GURL& url,
+                   const url::Origin& origin,
+                   bool is_in_primary_main_frame) {
   CHECK(frame_host);
   GURL::Replacements strip_fragment;
   strip_fragment.ClearRef();
@@ -220,12 +232,8 @@ void FillFrameData(base::trace_event::TracedValue* data,
   data->SetString("url", std::move(trimmed_url));
   data->SetString("name", frame_host->GetFrameName());
   data->SetBoolean("isOutermostMainFrame", frame_host->IsOutermostMainFrame());
-  // Use FrameTree's primary status since the `frame_host` itself might not be
-  // the primary main RenderFrameHost yet, if this function is called when
-  // `frame_host` is still speculative / pending commit.
-  data->SetBoolean("isInPrimaryMainFrame",
-                   frame_host->IsOutermostMainFrame() &&
-                       frame_host->frame_tree()->is_primary());
+  data->SetBoolean("isInPrimaryMainFrame", is_in_primary_main_frame);
+  data->SetBoolean("isOpaqueOrigin", origin.opaque());
   if (frame_host->GetParent()) {
     data->SetString(
         "parent", frame_host->GetParent()->GetDevToolsFrameToken().ToString());
@@ -252,6 +260,8 @@ StringToMemoryDumpLevelOfDetail(const std::string& str) {
     return {base::trace_event::MemoryDumpLevelOfDetail::kLight};
   return {};
 }
+
+const char kNeverMatchingProducerName[] = "org.chromium-0";
 
 bool IsChromeDataSource(const std::string& data_source_name) {
   return base::StartsWith(data_source_name, "org.chromium.") ||
@@ -571,6 +581,7 @@ TracingHandler::TracingHandler(DevToolsAgentHostImpl* host,
       return_as_stream_(false),
       gzip_compression_(false),
       buffer_usage_reporting_interval_(0) {
+  CHECK(is_trusted_ || session_for_process_filter_);
   video_consumer_ = std::make_unique<DevToolsVideoConsumer>(base::BindRepeating(
       &TracingHandler::OnFrameFromVideoConsumer, base::Unretained(this)));
 }
@@ -635,11 +646,13 @@ void TracingHandler::OnTraceComplete() {
   if (!trace_data_buffer_state_.data.empty())
     OnTraceDataCollected(std::make_unique<std::string>(""));
 
-  CHECK(trace_data_buffer_state_.data.empty(), base::NotFatalUntil::M159);
-  CHECK_EQ(0u, trace_data_buffer_state_.pos, base::NotFatalUntil::M159);
-  CHECK_EQ(0, trace_data_buffer_state_.open_braces, base::NotFatalUntil::M159);
-  CHECK(!trace_data_buffer_state_.in_string, base::NotFatalUntil::M159);
-  CHECK(!trace_data_buffer_state_.slashed, base::NotFatalUntil::M159);
+  // TODO(crbug.com/575410219): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(trace_data_buffer_state_.data.empty());
+  DCHECK_EQ(0u, trace_data_buffer_state_.pos);
+  DCHECK_EQ(0, trace_data_buffer_state_.open_braces);
+  DCHECK(!trace_data_buffer_state_.in_string);
+  DCHECK(!trace_data_buffer_state_.slashed);
 
   bool data_loss = session_->HasDataLossOccurred();
   process_set_monitor_.reset();
@@ -671,7 +684,9 @@ std::string TracingHandler::UpdateTraceDataBuffer(
         break;
       case '}':
         if (!state.in_string && !state.slashed) {
-          CHECK_GT(state.open_braces, 0, base::NotFatalUntil::M159);
+          // TODO(crbug.com/573976460): CHECK-exclusion: Convert to a CHECK once
+          // we are confident it won't be triggered.
+          DCHECK_GT(state.open_braces, 0);
           state.open_braces--;
           if (state.open_braces == 0)
             end = state.data.size() + state.pos + 1;
@@ -789,6 +804,16 @@ void TracingHandler::Start(
                                                proto_format);
   }
 
+  if (!is_trusted_) {
+    FilterUntrustedDataSources(trace_config);
+    if (!trace_config.data_sources_size()) {
+      callback->sendFailure(Response::InvalidParams(
+          "Supplied perfettoConfig doesn't have any allowed data sources "
+          "specified"));
+      return;
+    }
+  }
+
   std::optional<perfetto::BackendType> backend = GetBackendTypeFromParameters(
       tracing_backend.value_or(Tracing::TracingBackendEnum::Auto),
       trace_config);
@@ -857,21 +882,34 @@ void TracingHandler::Start(
   screenshot_max_count_ = resolved_screenshot_max_count;
 
   if (session_for_process_filter_) {
+    std::erase_if(*trace_config_.mutable_data_sources(),
+                  [](const perfetto::TraceConfig::DataSource& data_source) {
+                    return !IsChromeDataSource(data_source.config().name());
+                  });
     process_set_monitor_ = TracingProcessSetMonitor::Start(
         *session_for_process_filter_,
         base::BindRepeating(&TracingHandler::AddProcessToFilter,
                             base::Unretained(this)));
     std::unordered_set<base::ProcessId> pids = process_set_monitor_->GetPids();
 
-    base::ProcessId browser_pid = base::Process::Current().Pid();
-    pids.insert(browser_pid);
-    if (auto* gpu_process_host =
-            GpuProcessHost::Get(GPU_PROCESS_KIND_SANDBOXED,
-                                /* force_create */ false)) {
-      base::ProcessId gpu_pid = gpu_process_host->process_id();
-      if (gpu_pid != base::kNullProcessId) {
-        pids.insert(gpu_pid);
+    if (is_trusted_) {
+      base::ProcessId browser_pid = base::Process::Current().Pid();
+      pids.insert(browser_pid);
+      if (auto* gpu_process_host =
+              GpuProcessHost::Get(GPU_PROCESS_KIND_SANDBOXED,
+                                  /* force_create */ false)) {
+        base::ProcessId gpu_pid = gpu_process_host->process_id();
+        if (gpu_pid != base::kNullProcessId) {
+          pids.insert(gpu_pid);
+        }
       }
+    } else {
+      pids.erase(base::Process::Current().Pid());
+    }
+
+    for (auto& data_source : *trace_config_.mutable_data_sources()) {
+      data_source.clear_producer_name_regex_filter();
+      data_source.clear_producer_name_filter();
     }
     AddPidsToProcessFilter(pids, trace_config_);
   }
@@ -900,6 +938,9 @@ perfetto::TraceConfig TracingHandler::CreatePerfettoConfiguration(
 void TracingHandler::AddProcessToFilter(base::ProcessId pid) {
   CHECK(did_initiate_recording_);
   CHECK(session_);
+  if (!is_trusted_ && pid == base::Process::Current().Pid()) {
+    return;
+  }
   AddPidsToProcessFilter({pid}, trace_config_);
   session_->ChangeTraceConfig(trace_config_);
 }
@@ -943,6 +984,10 @@ Response TracingHandler::End() {
 
   if (session_->HasTracingFailed())
     return Response::ServerError("Tracing failed");
+
+  if (pending_disable_tracing_endpoint_) {
+    return Response::ServerError("Tracing is already being stopped");
+  }
 
   scoped_refptr<TracingController::TraceDataEndpoint> endpoint;
   if (return_as_stream_) {
@@ -1001,13 +1046,52 @@ void TracingHandler::OnRecordingEnabled(std::unique_ptr<StartCallback> callback,
 
   SetupTimer(buffer_usage_reporting_interval_);
 
-  bool screenshot_enabled;
+  bitmap_screenshot_enabled_ = false;
   TRACE_EVENT_CATEGORY_GROUP_ENABLED(
-      TRACE_DISABLED_BY_DEFAULT("devtools.screenshot"), &screenshot_enabled);
-  if (screenshot_enabled) {
+      TRACE_DISABLED_BY_DEFAULT("devtools.screenshot"),
+      &bitmap_screenshot_enabled_);
+  bool capture_video = bitmap_screenshot_enabled_;
+  bool video_screenshot_enabled = false;
+  TRACE_EVENT_CATEGORY_GROUP_ENABLED(
+      TRACE_DISABLED_BY_DEFAULT("devtools.video_screenshot"),
+      &video_screenshot_enabled);
+  ResetVideoEncodingService();
+  WebContents* wc = host_ ? host_->GetWebContents() : nullptr;
+  if (video_screenshot_enabled) {
+#if BUILDFLAG(ENABLE_LIBAOM)
+    if (wc) {
+      video_encoding_service_ = content::ServiceProcessHost::Launch<
+          devtools_media_encoding_service::mojom::DevToolsMediaEncodingService>(
+          ServiceProcessHost::Options()
+              .WithDisplayName("DevTools Media Encoding Service")
+#if BUILDFLAG(IS_MAC)
+              .WithChildFlags(ChildProcessHost::CHILD_RENDERER)
+#endif
+              .Pass());
+      auto options =
+          devtools_media_encoding_service::mojom::RecordingOptions::New();
+      options->output =
+          devtools_media_encoding_service::mojom::Output::kEncodedFrames;
+      options->frame_rate = 60;
+      options->latency_mode =
+          devtools_media_encoding_service::mojom::LatencyMode::kQuality;
+      options->keyframe_interval = 60;
+      video_encoding_service_->StartRecording(
+          video_encoding_client_receiver_.BindNewPipeAndPassRemote(),
+          std::move(options));
+      video_encoding_client_receiver_.set_disconnect_handler(base::BindOnce(
+          &TracingHandler::OnClosed, weak_factory_.GetWeakPtr()));
+      capture_video = true;
+    }
+#else
+    // disabled-by-default-devtools.video_screenshot requires libaom.
+#endif
+  }
+
+  if (capture_video) {
     // Reset number of screenshots received, each time tracing begins.
     number_of_screenshots_from_video_consumer_ = 0;
-    if (WebContents* wc = host_ ? host_->GetWebContents() : nullptr) {
+    if (wc) {
       auto* frame_host =
           static_cast<RenderFrameHostImpl*>(wc->GetPrimaryMainFrame());
       video_consumer_->SetFrameSinkId(
@@ -1045,6 +1129,10 @@ void TracingHandler::RequestMemoryDump(
     std::optional<bool> deterministic,
     std::optional<std::string> level_of_detail,
     std::unique_ptr<RequestMemoryDumpCallback> callback) {
+  if (!is_trusted_) {
+    callback->sendFailure(Response::ServerError("Not allowed"));
+    return;
+  }
   if (!IsTracing()) {
     callback->sendFailure(Response::ServerError("Tracing is not started"));
     return;
@@ -1085,29 +1173,115 @@ void TracingHandler::OnMemoryDumpFinished(
 
 void TracingHandler::OnFrameFromVideoConsumer(
     scoped_refptr<media::VideoFrame> frame) {
-  if (!IsTracing()) {
+  if (!IsTracing() || !did_initiate_recording_) {
     return;
   }
-  const SkBitmap skbitmap = DevToolsVideoConsumer::GetSkBitmapFromFrame(frame);
-  // This reference_time is an ESTIMATE. It is set by the compositor frame sink
-  // from the `expected_display_time`, which is based on a previously known
-  // frame start PLUS the vsync interval (eg 16.6ms)
-  base::TimeTicks expected_display_time = *frame->metadata().reference_time;
 
-  uint64_t frame_sequence = *frame->metadata().frame_sequence;
-  uint64_t source_id = *frame->metadata().source_id;
+  bool captured = false;
+  if (video_encoding_service_) {
+    captured = EncodeVideoScreenshot(frame);
+  }
 
-  TRACE_EVENT_INSTANT(TRACE_DISABLED_BY_DEFAULT("devtools.screenshot"),
-                      "Screenshot", "expected_display_time",
-                      expected_display_time, "frame_sequence", frame_sequence,
-                      "source_id", source_id, "snapshot",
-                      std::make_unique<DevToolsTraceableScreenshot>(skbitmap));
+  if (bitmap_screenshot_enabled_) {
+    const SkBitmap skbitmap =
+        DevToolsVideoConsumer::GetSkBitmapFromFrame(frame);
+    // This reference_time is an ESTIMATE. It is set by the compositor frame
+    // sink from the `expected_display_time`, which is based on a previously
+    // known frame start PLUS the vsync interval (eg 16.6ms)
+    base::TimeTicks expected_display_time = *frame->metadata().reference_time;
+
+    uint64_t frame_sequence = *frame->metadata().frame_sequence;
+    uint64_t source_id = *frame->metadata().source_id;
+
+    TRACE_EVENT_INSTANT(
+        TRACE_DISABLED_BY_DEFAULT("devtools.screenshot"), "Screenshot",
+        "expected_display_time", expected_display_time, "frame_sequence",
+        frame_sequence, "source_id", source_id, "snapshot",
+        std::make_unique<DevToolsTraceableScreenshot>(skbitmap));
+    captured = true;
+  }
+
+  if (!captured) {
+    return;
+  }
 
   ++number_of_screenshots_from_video_consumer_;
   CHECK(video_consumer_, base::NotFatalUntil::M159);
   if (number_of_screenshots_from_video_consumer_ >= screenshot_max_count_) {
     video_consumer_->StopCapture();
   }
+}
+
+bool TracingHandler::EncodeVideoScreenshot(
+    scoped_refptr<media::VideoFrame> frame) {
+  // Cap in-flight frames holding STORAGE_SHMEM buffers so slow encoding on
+  // low-end devices cannot exhaust FrameSinkVideoCapturerImpl's buffer pool.
+  constexpr size_t kMaxInFlightVideoFrames = 4;
+  if (pending_video_frames_.size() >= kMaxInFlightVideoFrames) {
+    return false;
+  }
+  last_video_frame_size_for_testing_ = frame->visible_rect().size();
+  base::TimeDelta timestamp = frame->timestamp();
+  base::TimeTicks capture_time = TRACE_TIME_TICKS_NOW();
+  pending_video_frames_.push_back({
+      timestamp,
+      capture_time,
+      frame->metadata().reference_time.value_or(capture_time),
+      frame->metadata().frame_sequence.value_or(0),
+      frame->metadata().source_id.value_or(0),
+      frame,
+  });
+
+  video_encoding_service_->RecordVideoFrame(std::move(frame));
+  return true;
+}
+
+void TracingHandler::OnEncodedVideoFrame(const std::vector<uint8_t>& data,
+                                         bool key_frame,
+                                         base::TimeDelta timestamp) {
+  if (!session_) {
+    return;
+  }
+  while (!pending_video_frames_.empty() &&
+         pending_video_frames_.front().timestamp < timestamp) {
+    pending_video_frames_.pop_front();
+  }
+  if (pending_video_frames_.empty() ||
+      pending_video_frames_.front().timestamp != timestamp) {
+    return;
+  }
+  PendingFrameMetadata meta = pending_video_frames_.front();
+  pending_video_frames_.pop_front();
+
+  if (data.empty()) {
+    return;
+  }
+
+  TRACE_EVENT_INSTANT(
+      TRACE_DISABLED_BY_DEFAULT("devtools.video_screenshot"), "Screenshot",
+      meta.capture_time, "expected_display_time", meta.expected_display_time,
+      "frame_sequence", meta.frame_sequence, "source_id", meta.source_id,
+      "key_frame", key_frame, "av1_chunk", base::Base64Encode(data));
+}
+
+void TracingHandler::OnClosed() {
+  auto endpoint = std::move(pending_disable_tracing_endpoint_);
+  if (!bitmap_screenshot_enabled_ && video_consumer_) {
+    video_consumer_->StopCapture();
+  }
+  ResetVideoEncodingService();
+  if (endpoint && session_) {
+    session_->DisableTracing(std::move(endpoint));
+  }
+}
+
+void TracingHandler::ResetVideoEncodingService() {
+  video_encoding_stop_timer_.Stop();
+  video_encoding_service_.reset();
+  video_encoding_client_receiver_.reset();
+  pending_disable_tracing_endpoint_.reset();
+  pending_video_frames_.clear();
+  last_video_frame_size_for_testing_ = gfx::Size();
 }
 
 Response TracingHandler::RecordClockSyncMarker(const std::string& sync_id) {
@@ -1143,14 +1317,25 @@ void TracingHandler::StopTracing(
   CHECK(session_, base::NotFatalUntil::M159);
   buffer_usage_poll_timer_.reset();
   process_set_monitor_.reset();
+  did_initiate_recording_ = false;
+  bitmap_screenshot_enabled_ = false;
+  video_consumer_->StopCapture();
+
+  if (video_encoding_service_ && endpoint) {
+    pending_disable_tracing_endpoint_ = endpoint;
+    video_encoding_stop_timer_.Start(FROM_HERE, kVideoEncodingStopTimeout, this,
+                                     &TracingHandler::OnClosed);
+    video_encoding_service_->StopRecording();
+    return;
+  }
+  ResetVideoEncodingService();
+
   if (endpoint) {
     // Will delete |session_|.
     session_->DisableTracing(std::move(endpoint));
   } else {
     session_.reset();
   }
-  did_initiate_recording_ = false;
-  video_consumer_->StopCapture();
 }
 
 bool TracingHandler::IsTracing() const {
@@ -1168,11 +1353,22 @@ void TracingHandler::EmitFrameTree() {
         frame_host->frame_tree_node()->frame_tree_node_id().value());
     data->SetBoolean("persistentIds", true);
     data->BeginArray("frames");
-    wc->ForEachRenderFrameHost([&data](RenderFrameHost* rfh) {
+    wc->ForEachRenderFrameHostWithAction([&data](RenderFrameHost* rfh) {
+      RenderFrameHost::LifecycleState lifecycle_state =
+          rfh->GetLifecycleState();
+      if (lifecycle_state ==
+              RenderFrameHost::LifecycleState::kInBackForwardCache ||
+          lifecycle_state ==
+              RenderFrameHost::LifecycleState::kPendingDeletion) {
+        return RenderFrameHost::FrameIterationAction::kSkipChildren;
+      }
+      auto* rfh_impl = static_cast<RenderFrameHostImpl*>(rfh);
       data->BeginDictionary();
-      FillFrameData(data.get(), static_cast<RenderFrameHostImpl*>(rfh),
-                    rfh->GetLastCommittedURL());
+      FillFrameData(data.get(), rfh_impl, rfh_impl->GetLastCommittedURL(),
+                    rfh_impl->GetLastCommittedOrigin(),
+                    rfh_impl->IsInPrimaryMainFrame());
       data->EndDictionary();
+      return RenderFrameHost::FrameIterationAction::kContinue;
     });
     data->EndArray();
   }
@@ -1185,19 +1381,24 @@ void TracingHandler::WillInitiatePrerender(FrameTreeNode* frame_tree_node) {
     return;
   }
   auto data = std::make_unique<base::trace_event::TracedValue>();
-  FillFrameData(data.get(), frame_tree_node->current_frame_host(),
-                frame_tree_node->current_url());
+  RenderFrameHostImpl* frame_host = frame_tree_node->current_frame_host();
+  FillFrameData(data.get(), frame_host, frame_tree_node->current_url(),
+                frame_host->GetLastCommittedOrigin(),
+                /*is_in_primary_main_frame=*/false);
   TRACE_EVENT_INSTANT(TRACE_DISABLED_BY_DEFAULT("devtools.timeline"),
                       "FrameCommittedInBrowser", "data", std::move(data));
 }
 
 void TracingHandler::ReadyToCommitNavigation(
     NavigationRequest* navigation_request) {
-  if (!did_initiate_recording_)
+  if (!did_initiate_recording_) {
     return;
+  }
   auto data = std::make_unique<base::trace_event::TracedValue>();
   RenderFrameHostImpl* frame_host = navigation_request->GetRenderFrameHost();
-  FillFrameData(data.get(), frame_host, navigation_request->GetURL());
+  FillFrameData(data.get(), frame_host, navigation_request->GetURL(),
+                navigation_request->GetOriginToCommit().value(),
+                navigation_request->IsInPrimaryMainFrame());
   TRACE_EVENT_INSTANT(TRACE_DISABLED_BY_DEFAULT("devtools.timeline"),
                       "FrameCommittedInBrowser", "data", std::move(data));
   if (frame_host->IsOutermostMainFrame()) {
@@ -1208,8 +1409,9 @@ void TracingHandler::ReadyToCommitNavigation(
 }
 
 void TracingHandler::FrameDeleted(FrameTreeNodeId frame_tree_node_id) {
-  if (!did_initiate_recording_)
+  if (!did_initiate_recording_) {
     return;
+  }
   FrameTreeNode* node = FrameTreeNode::GloballyFindByID(frame_tree_node_id);
 
   if (!node->current_frame_host()) {
@@ -1225,16 +1427,21 @@ void TracingHandler::FrameDeleted(FrameTreeNodeId frame_tree_node_id) {
 }
 
 // static
+void TracingHandler::FilterUntrustedDataSources(
+    perfetto::TraceConfig& trace_config) {
+  std::erase_if(
+      *trace_config.mutable_data_sources(),
+      [](const perfetto::TraceConfig::DataSource& data_source) {
+        return data_source.config().name() != tracing::kMetaData2SourceName &&
+               data_source.config().name() != kTrackEventDataSourceName;
+      });
+}
+
+// static
 void TracingHandler::AddPidsToProcessFilter(
     const std::unordered_set<base::ProcessId>& included_process_ids,
     perfetto::TraceConfig& trace_config) {
   for (auto& data_source : *(trace_config.mutable_data_sources())) {
-    auto* source_config = data_source.mutable_config();
-    if (IsChromeDataSource(source_config->name())) {
-      if (data_source.producer_name_regex_filter_size() > 0) {
-        data_source.clear_producer_name_regex_filter();
-        data_source.clear_producer_name_filter();
-      }
       std::unordered_set<std::string> existing_filters(
           data_source.producer_name_filter().begin(),
           data_source.producer_name_filter().end());
@@ -1246,7 +1453,14 @@ void TracingHandler::AddPidsToProcessFilter(
           *data_source.add_producer_name_filter() = std::move(new_filter);
         }
       }
-    }
+
+      if (data_source.producer_name_filter_size() == 0) {
+        // An empty `producer_name_filter` in Perfetto matches all
+        // producers. Insert a never-matching producer name so the filter
+        // remains non-empty and matches no processes until a valid process
+        // is added.
+        *data_source.add_producer_name_filter() = kNeverMatchingProducerName;
+      }
   }
 }
 

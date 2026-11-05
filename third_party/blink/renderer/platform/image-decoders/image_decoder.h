@@ -35,6 +35,7 @@
 #include "base/containers/heap_array.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/no_destructor.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
@@ -110,6 +111,15 @@ class PLATFORM_EXPORT ImagePlanes final {
       HighBitDepthOutputType::kScaledTo16Bits;
 };
 
+// Indicates whether an image contains an embedded C2PA manifest.
+enum class C2PAManifestStatus {
+  // C2PA manifest detection is unsupported for this image format, or the image
+  // metadata has not been decoded yet.
+  kUnknown,
+  kNotDetected,
+  kDetected,
+};
+
 // ImageDecoder is a base for all format-specific decoders
 // (e.g. JPEGImageDecoder). This base manages the ImageFrame cache.
 //
@@ -170,7 +180,7 @@ class PLATFORM_EXPORT ImageDecoder {
       ColorBehavior,
       cc::AuxImage aux_image,
       const size_t platform_max_decoded_bytes,
-      const SkISize& desired_size = SkISize::MakeEmpty(),
+      const gfx::Size& desired_size = gfx::Size(),
       AnimationOption animation_option = AnimationOption::kUnspecified);
   static std::unique_ptr<ImageDecoder> Create(
       scoped_refptr<SharedBuffer> data,
@@ -180,7 +190,7 @@ class PLATFORM_EXPORT ImageDecoder {
       ColorBehavior color_behavior,
       cc::AuxImage aux_image,
       size_t platform_max_decoded_bytes,
-      const SkISize& desired_size = SkISize::MakeEmpty(),
+      const gfx::Size& desired_size = gfx::Size(),
       AnimationOption animation_option = AnimationOption::kUnspecified) {
     return Create(SegmentReader::CreateFromSharedBuffer(std::move(data)),
                   data_complete, alpha_option, high_bit_depth_decoding_option,
@@ -199,7 +209,7 @@ class PLATFORM_EXPORT ImageDecoder {
       ColorBehavior color_behavior,
       cc::AuxImage aux_image,
       size_t platform_max_decoded_bytes,
-      const SkISize& desired_size = SkISize::MakeEmpty(),
+      const gfx::Size& desired_size = gfx::Size(),
       AnimationOption animation_option = AnimationOption::kUnspecified);
 
   virtual String FilenameExtension() const = 0;
@@ -293,7 +303,7 @@ class PLATFORM_EXPORT ImageDecoder {
   virtual uint8_t GetYUVBitDepth() const;
 
   // Image decoders that support C2PA manifest embedding can override this.
-  virtual bool HasC2PAManifest() const;
+  virtual C2PAManifestStatus GetC2PAManifestStatus() const;
 
   // Returns the information required to decide whether or not hardware
   // acceleration can be used to decode this image. Callers of this function
@@ -325,9 +335,6 @@ class PLATFORM_EXPORT ImageDecoder {
   // Decodes as much of the requested frame as possible, and returns an
   // ImageDecoder-owned pointer.
   ImageFrame* DecodeFrameBufferAtIndex(wtf_size_t);
-
-  // Whether the requested frame has alpha.
-  virtual bool FrameHasAlphaAtIndex(wtf_size_t) const;
 
   // Whether or not the frame is fully received.
   virtual bool FrameIsReceivedAtIndex(wtf_size_t) const;
@@ -443,7 +450,8 @@ class PLATFORM_EXPORT ImageDecoder {
                HighBitDepthDecodingOption high_bit_depth_decoding_option,
                ColorBehavior color_behavior,
                cc::AuxImage aux_image,
-               wtf_size_t max_decoded_bytes);
+               wtf_size_t max_decoded_bytes,
+               const gfx::Size& desired_size = gfx::Size());
 
   // Calculates the most recent frame whose image data may be needed in
   // order to decode frame |frame_index|, based on frame disposal methods
@@ -517,18 +525,6 @@ class PLATFORM_EXPORT ImageDecoder {
   //         false otherwise.
   bool PostDecodeProcessing(wtf_size_t);
 
-  // The GIF and PNG decoders set the default alpha setting of the ImageFrame to
-  // true. When the frame rect does not contain any (semi-) transparent pixels,
-  // this may need to be changed to false. This depends on whether the required
-  // previous frame adds transparency to the image, outside of the frame rect.
-  // This methods corrects the alpha setting of the frame buffer to false when
-  // the whole frame is opaque.
-  //
-  // This method should be called by the GIF and PNG decoder when the pixels in
-  // the frame rect do *not* contain any transparent pixels. Before calling
-  // this method, the caller must verify that the frame exists.
-  void CorrectAlphaWhenFrameBufferSawNoAlpha(wtf_size_t);
-
   scoped_refptr<SegmentReader> data_;  // The encoded data.
   Vector<ImageFrame, 1> frame_buffer_cache_;
   const bool premultiply_alpha_;
@@ -547,6 +543,14 @@ class PLATFORM_EXPORT ImageDecoder {
   // this limit can cause excessive memory use or even crashes on low-
   // memory devices.
   const wtf_size_t max_decoded_bytes_;
+
+  // The desired size of the decoded image, if specified (e.g. via WebCodecs).
+  // Is empty (0, 0) if not specified. When empty, the image is decoded at its
+  // native size. Decoders that support downsampling (such as JPEGImageDecoder)
+  // use this as a target size to choose the closest supported downscale factor
+  // without failing if the requested size is smaller than the lowest supported
+  // factor.
+  const gfx::Size desired_size_;
 
   // While decoding, we may learn that there are so many animation frames that
   // we would go beyond our cache budget.
@@ -622,12 +626,11 @@ class PLATFORM_EXPORT ImageDecoder {
 // static
 template <const char type[]>
 void ImageDecoder::UpdateBppHistogram(gfx::Size size, size_t image_size_bytes) {
-#define DEFINE_BPP_HISTOGRAM(var, suffix)                                    \
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(                                           \
-      CustomCountHistogram, var,                                             \
-      (base::StrCat({"Blink.DecodedImage.", type, "Density.Count.", suffix}) \
-           .c_str(),                                                         \
-       1, 1000, 100))
+#define DEFINE_BPP_HISTOGRAM(var, suffix)                                   \
+  static base::NoDestructor<CustomCountHistogram> var(                      \
+      base::StrCat({"Blink.DecodedImage.", type, "Density.Count.", suffix}) \
+          .c_str(),                                                         \
+      1, 1000, 100)
 
   // From 1 pixel to 1 MP, we have one histogram per 0.1 MP.
   // From 2 MP to 13 MP, we have one histogram per 1 MP.
@@ -642,11 +645,11 @@ void ImageDecoder::UpdateBppHistogram(gfx::Size size, size_t image_size_bytes) {
   DEFINE_BPP_HISTOGRAM(density_point_8_mp_histogram, "0.8MP");
   DEFINE_BPP_HISTOGRAM(density_point_9_mp_histogram, "0.9MP");
   static std::array<CustomCountHistogram* const, 9> density_histogram_small = {
-      &density_point_1_mp_histogram, &density_point_2_mp_histogram,
-      &density_point_3_mp_histogram, &density_point_4_mp_histogram,
-      &density_point_5_mp_histogram, &density_point_6_mp_histogram,
-      &density_point_7_mp_histogram, &density_point_8_mp_histogram,
-      &density_point_9_mp_histogram};
+      density_point_1_mp_histogram.get(), density_point_2_mp_histogram.get(),
+      density_point_3_mp_histogram.get(), density_point_4_mp_histogram.get(),
+      density_point_5_mp_histogram.get(), density_point_6_mp_histogram.get(),
+      density_point_7_mp_histogram.get(), density_point_8_mp_histogram.get(),
+      density_point_9_mp_histogram.get()};
 
   DEFINE_BPP_HISTOGRAM(density_1_mp_histogram, "01MP");
   DEFINE_BPP_HISTOGRAM(density_2_mp_histogram, "02MP");
@@ -662,13 +665,13 @@ void ImageDecoder::UpdateBppHistogram(gfx::Size size, size_t image_size_bytes) {
   DEFINE_BPP_HISTOGRAM(density_12_mp_histogram, "12MP");
   DEFINE_BPP_HISTOGRAM(density_13_mp_histogram, "13MP");
   static std::array<CustomCountHistogram* const, 13> density_histogram_big = {
-      &density_1_mp_histogram,  &density_2_mp_histogram,
-      &density_3_mp_histogram,  &density_4_mp_histogram,
-      &density_5_mp_histogram,  &density_6_mp_histogram,
-      &density_7_mp_histogram,  &density_8_mp_histogram,
-      &density_9_mp_histogram,  &density_10_mp_histogram,
-      &density_11_mp_histogram, &density_12_mp_histogram,
-      &density_13_mp_histogram};
+      density_1_mp_histogram.get(),  density_2_mp_histogram.get(),
+      density_3_mp_histogram.get(),  density_4_mp_histogram.get(),
+      density_5_mp_histogram.get(),  density_6_mp_histogram.get(),
+      density_7_mp_histogram.get(),  density_8_mp_histogram.get(),
+      density_9_mp_histogram.get(),  density_10_mp_histogram.get(),
+      density_11_mp_histogram.get(), density_12_mp_histogram.get(),
+      density_13_mp_histogram.get()};
 
   DEFINE_BPP_HISTOGRAM(density_14plus_mp_histogram, "14+MP");
 
@@ -694,7 +697,7 @@ void ImageDecoder::UpdateBppHistogram(gfx::Size size, size_t image_size_bytes) {
     int n = (static_cast<int>(image_area) + (1000000 - 1)) / 1000000;
     density_histogram = density_histogram_big[n - 1];
   } else {
-    density_histogram = &density_14plus_mp_histogram;
+    density_histogram = density_14plus_mp_histogram.get();
   }
 
   density_histogram->Count(base::saturated_cast<base::Histogram::Sample32>(

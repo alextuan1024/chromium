@@ -16,9 +16,7 @@ import org.chromium.base.Token;
 import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.actor.ActorKeyedService;
-import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
-import org.chromium.chrome.browser.actor.StoppedReason;
+import org.chromium.chrome.browser.actor.background_tabs.ActorServiceTabUtils;
 import org.chromium.chrome.browser.collaboration.CollaborationServiceFactory;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabGroupUtils;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabGroupUtils.GroupsPendingDestroy;
@@ -36,6 +34,7 @@ import org.chromium.components.data_sharing.member_role.MemberRole;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.util.List;
@@ -107,7 +106,6 @@ class TabModelRemover {
     private @MonotonicNonNull ActionConfirmationManager mActionConfirmationManager;
     private @Nullable TabGroupSyncService mTabGroupSyncService;
     private @Nullable CollaborationService mCollaborationService;
-    private @Nullable ActorKeyedService mActorKeyedService;
 
     /**
      * @param context The activity context.
@@ -239,7 +237,8 @@ class TabModelRemover {
         return (confirmationResult) -> {
             switch (confirmationResult) {
                 case CONFIRMATION_POSITIVE:
-                    stopOngoingActorTasks(handler);
+                    ActorServiceTabUtils.stopOngoingActorTasks(
+                            getProfile(), handler.getOngoingActorTasks());
                     handler.performAction();
                     return;
                 case CONFIRMATION_NEGATIVE:
@@ -250,15 +249,6 @@ class TabModelRemover {
                     assert false : "Not reached.";
             }
         };
-    }
-
-    // TODO(crbug.com/489134045): Move this function to a utility file.
-    private void stopOngoingActorTasks(TabModelRemoverFlowHandler handler) {
-        @Nullable ActorKeyedService actorKeyedService = getActorService();
-        if (actorKeyedService == null) return;
-        for (Integer taskId : handler.getOngoingActorTasks()) {
-            actorKeyedService.stopTask(taskId, StoppedReason.STOPPED_BY_USER);
-        }
     }
 
     private void leaveOrDeleteCollaboration(
@@ -324,7 +314,7 @@ class TabModelRemover {
 
         TabModel tabModel = getTabModelInternal();
         Token tabGroupId = savedTabGroup.localId.tabGroupId;
-        if (!tabModel.tabGroupExists(tabGroupId)) {
+        if (!tabModel.containsTabGroup(TabGroupId.fromOptionalToken(tabGroupId))) {
             return new CollaborationInfo();
         }
         String title = TabGroupTitleUtils.getDisplayableTitle(mContext, tabModel, tabGroupId);
@@ -401,13 +391,5 @@ class TabModelRemover {
             mCollaborationService = CollaborationServiceFactory.getForProfile(profile);
         }
         return mCollaborationService;
-    }
-
-    private @Nullable ActorKeyedService getActorService() {
-        if (mActorKeyedService == null) {
-            Profile profile = getProfile();
-            mActorKeyedService = ActorKeyedServiceFactory.getForProfile(profile);
-        }
-        return mActorKeyedService;
     }
 }

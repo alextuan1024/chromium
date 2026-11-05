@@ -183,6 +183,21 @@ suite('lit_template_formatter', () => {
     assert.ok(
         !p2.code.includes(': \'\''),
         'Ternary expression should not contain the temporary else branch');
+
+    const invalidMap = new Map([
+      [
+        `${TEMPLATE_PREFIX}-1`,
+        {
+          code: '${this.items.map(item => {\n  return html`',
+          indent: 4,
+          isTemplate: true,
+        },
+      ],
+    ]);
+    await assert.rejects(
+        formatTsExpressions(
+            invalidMap, clangFormatPath, join(__dirname, 'dummy.ts')),
+        /Unsupported nested html`\.\.\.` expression:[\s\S]*return html`/);
   });
 
   test('serializeHtmlAst', () => {
@@ -206,20 +221,170 @@ suite('lit_template_formatter', () => {
         serialized, expectedSerialized,
         'Serialized output with wrapped attributes must match exactly');
 
-    // Test 2: lit-template-format off/on blocks
+    // Test 2: lit-template-format off/on blocks (including expressions) and
+    // void closing tag removal without injecting blank lines.
     const blockTemplate = `
       <div>
         <!-- lit-template-format-off -->
-        <span   class="weird-spacing" >No Formatting</span>
+        <span   class="weird-spacing" >${EXPR_PREFIX}-1</span>
         <!-- lit-template-format-on -->
+        <img src="foo.png">
+        </img>
       </div>
     `;
-    const blockMap = new Map();
+    const blockMap = new Map([
+      [`${EXPR_PREFIX}-1`, {code: '${this.unformattedExpr}'}],
+    ]);
     const blockAst = prepareHtmlAst(blockTemplate, blockMap);
     const blockSerialized = serializeHtmlAst(blockAst, blockMap, false);
     assert.ok(
         blockSerialized.includes(
-            '<span   class="weird-spacing" >No Formatting</span>'),
-        'lit-template-format off block must be preserved exactly');
+            '<span   class="weird-spacing" >${this.unformattedExpr}</span>'),
+        'lit-template-format off block with expressions must be preserved');
+    assert.ok(
+        blockSerialized.includes('<img src="foo.png">\n</div>'),
+        'Removing </img> on its own line must not inject a blank line');
+
+    // Test 3: Partial attribute expressions with prefixes and suffixes
+    const mixedAttrTemplate = `
+      <div class="static-class-1 ${EXPR_PREFIX}-1 longer-static-class-2 ${
+        EXPR_PREFIX}-2"></div>
+    `;
+    const mixedMap = new Map([
+      [
+        `${EXPR_PREFIX}-1`,
+        {code: '${this.someCondition ? \'first-class\' : \'second-class\'}'},
+      ],
+      [`${EXPR_PREFIX}-2`, {code: '${this.someOtherClass}'}],
+    ]);
+    const mixedAst = prepareHtmlAst(mixedAttrTemplate, mixedMap);
+    const mixedSerialized = serializeHtmlAst(mixedAst, mixedMap, false);
+    const expectedMixed = `
+<div
+    class="static-class-1 \${
+        this.someCondition ? 'first-class' : 'second-class'
+    } longer-static-class-2 \${this.someOtherClass}">
+</div>`;
+    assert.strictEqual(mixedSerialized, expectedMixed);
+
+    // Test 4: Text nodes with static text and expressions exceeding 80 chars
+    const mixedTextTemplate = `
+      <div>
+        Manifest loaded successfully: ${EXPR_PREFIX}-1 version${
+        EXPR_PREFIX}-2 available.
+      </div>
+    `;
+    const mixedTextMap = new Map([
+      [`${EXPR_PREFIX}-1`, {code: '${this.versionOptions_.length}'}],
+      [
+        `${EXPR_PREFIX}-2`,
+        {code: '${this.versionOptions_.length === 1 ? \'\' : \'s\'}'},
+      ],
+    ]);
+    const mixedTextAst = prepareHtmlAst(mixedTextTemplate, mixedTextMap);
+    const mixedTextSerialized =
+        serializeHtmlAst(mixedTextAst, mixedTextMap, false);
+    const expectedMixedText = `
+<div>
+  Manifest loaded successfully: \${this.versionOptions_.length} version\${
+      this.versionOptions_.length === 1 ? '' : 's'} available.
+</div>`;
+    assert.strictEqual(mixedTextSerialized, expectedMixedText);
+  });
+
+  test('preserveHtmlEntities', () => {
+    const entityTemplate = `
+      <div>
+        <!-- Comment with &amp; and &nbsp; -->
+        <span>&nbsp;</span>
+        <span>A &amp; B &lt;tag&gt; a > b &harr; &#9888; &#x200B;</span>
+        <div title="Foo &quot;bar&quot; &amp; &nbsp;"></div>
+      </div>
+    `;
+    const entityMap = new Map();
+    const entityAst = prepareHtmlAst(entityTemplate, entityMap);
+    const entitySerialized = serializeHtmlAst(entityAst, entityMap, false);
+    const expectedEntities = `
+<div>
+  <!-- Comment with &amp; and &nbsp; -->
+  <span>&nbsp;</span>
+  <span>A &amp; B &lt;tag&gt; a > b &harr; &#9888; &#x200B;</span>
+  <div title="Foo &quot;bar&quot; &amp; &nbsp;"></div>
+</div>`;
+    assert.strictEqual(entitySerialized, expectedEntities);
+  });
+
+  test('preserveRcdataElements', () => {
+    const rcdataTemplate = [
+      '<div>',
+      '  <textarea id="short"></textarea>',
+      '  <textarea id="wrap-for-end-tag" ' +
+          'class="thirty-eight-char-class-pushes-over-80"></textarea>',
+      '  <textarea id="multiline" autocomplete="off" spellcheck="false" ' +
+          `placeholder="Enter text" @paste="${EXPR_PREFIX}-1" ` +
+          `@scroll="${EXPR_PREFIX}-2"></textarea>`,
+      '  <textarea id="previously-wrapped" rows="4"',
+      '      cols="60">',
+      '  </textarea>',
+      '  <textarea id="preset-multiline">',
+      'Line 1',
+      '  Indented line 2</textarea>',
+      '  <textarea id="leading-blank-line">',
+      '',
+      'After blank line</textarea>',
+      '  <title id="page-title" ' +
+          `class="medium-class-name-to-wrap-attrs">${EXPR_PREFIX}-3</title>`,
+      '  <svg viewBox="0 0 24 24">',
+      '    <title id="svg-title" ' +
+          'class="svg-title-is-not-rcdata-and-wraps-across-lines">Icon</title>',
+      '  </svg>',
+      '</div>',
+    ].join('\n');
+    const rcdataMap = new Map([
+      [`${EXPR_PREFIX}-1`, {code: '${this.onInputPaste_}'}],
+      [`${EXPR_PREFIX}-2`, {code: '${this.onInputScroll_}'}],
+      [`${EXPR_PREFIX}-3`, {code: '${this.pageTitle}'}],
+    ]);
+    const rcdataAst = prepareHtmlAst(rcdataTemplate, rcdataMap);
+    const rcdataSerialized = serializeHtmlAst(rcdataAst, rcdataMap, false);
+    const expectedRcdata = `
+<div>
+  <textarea id="short"></textarea>
+  <textarea id="wrap-for-end-tag"
+      class="thirty-eight-char-class-pushes-over-80"></textarea>
+  <textarea id="multiline" autocomplete="off" spellcheck="false"
+      placeholder="Enter text" @paste="\${this.onInputPaste_}"
+      @scroll="\${this.onInputScroll_}"></textarea>
+  <textarea id="previously-wrapped" rows="4" cols="60"></textarea>
+  <textarea id="preset-multiline">
+Line 1
+  Indented line 2</textarea>
+  <textarea id="leading-blank-line">
+
+After blank line</textarea>
+  <title id="page-title"
+      class="medium-class-name-to-wrap-attrs">\${this.pageTitle}</title>
+  <svg viewBox="0 0 24 24">
+    <title id="svg-title"
+        class="svg-title-is-not-rcdata-and-wraps-across-lines">
+      Icon
+    </title>
+  </svg>
+</div>`;
+    assert.strictEqual(rcdataSerialized, expectedRcdata);
+
+    // Re-parse and re-serialize to verify idempotency.
+    const secondMap = new Map([
+      [`${EXPR_PREFIX}-1`, {code: '${this.onInputPaste_}'}],
+      [`${EXPR_PREFIX}-2`, {code: '${this.onInputScroll_}'}],
+      [`${EXPR_PREFIX}-3`, {code: '${this.pageTitle}'}],
+    ]);
+    const reSubstituted =
+        expectedRcdata.replace('${this.onInputPaste_}', `${EXPR_PREFIX}-1`)
+            .replace('${this.onInputScroll_}', `${EXPR_PREFIX}-2`)
+            .replace('${this.pageTitle}', `${EXPR_PREFIX}-3`);
+    const secondAst = prepareHtmlAst(reSubstituted, secondMap);
+    assert.strictEqual(
+        serializeHtmlAst(secondAst, secondMap, false), expectedRcdata);
   });
 });

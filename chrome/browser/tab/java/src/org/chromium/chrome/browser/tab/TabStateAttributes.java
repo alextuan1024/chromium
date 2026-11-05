@@ -34,7 +34,6 @@ public class TabStateAttributes {
     /** Marker interface for keys used in {@link TabStateAttributesRegistry}. */
     public interface StoreKey {}
 
-    private @Nullable WebContents mWebContents;
     @VisibleForTesting static final long DEFAULT_LOW_PRIORITY_SAVE_DELAY_MS = 30 * 1000L;
 
     /**
@@ -56,6 +55,7 @@ public class TabStateAttributes {
 
     private final ObserverList<Observer> mObservers = new ObserverList<>();
     private final Tab mTab;
+    private final TabObserver mTabObserver;
 
     /** Whether or not the TabState has changed. */
     private @DirtinessState int mDirtinessState = DirtinessState.CLEAN;
@@ -86,7 +86,9 @@ public class TabStateAttributes {
 
     TabStateAttributes(Tab tab, @Nullable @TabCreationState Integer creationState) {
         mTab = tab;
-        if (creationState == null || creationState == TabCreationState.FROZEN_FOR_LAZY_LOAD) {
+        if (creationState == null
+                || creationState == TabCreationState.FROZEN_FOR_LAZY_LOAD
+                || tab.getLaunchType() == TabLaunchType.FROM_UNDO_CLOSURE) {
             updateIsDirty(DirtinessState.DIRTY);
         } else if (creationState == TabCreationState.LIVE_IN_FOREGROUND
                 || creationState == TabCreationState.LIVE_IN_BACKGROUND) {
@@ -96,7 +98,7 @@ public class TabStateAttributes {
         }
         // TODO(crbug.com/40242471): Should this also handle mTab.getPendingLoadParams(), and ignore
         //                      URL updates when the URL matches the pending load?
-        mTab.addObserver(
+        mTabObserver =
                 new TabObserver() {
                     @Override
                     public void onHidden(Tab tab, int reason) {
@@ -212,7 +214,8 @@ public class TabStateAttributes {
                         if (!tab.isInitialized()) return;
                         updateIsDirtyNotCheckingNtp(DirtinessState.DIRTY);
                     }
-                });
+                };
+        mTab.addObserver(mTabObserver);
     }
 
     /**
@@ -220,7 +223,8 @@ public class TabStateAttributes {
      *
      * @param webContents The web contents to track.
      */
-    public void beginTracking(WebContents webContents) {
+    void beginTracking(WebContents webContents) {
+        assert mWebContentsObserver == null;
         mWebContentsObserver =
                 new WebContentsObserver(webContents) {
                     @Override
@@ -239,12 +243,10 @@ public class TabStateAttributes {
      * Clean up web contents observers. This method is required to handle WebContents swapping (e.g.
      * when the tab is reparented or navigation replaces the WebContents) so that we stop observing
      * the old WebContents.
-     *
-     * @param webContents The web contents to stop tracking.
      */
-    void cleanupWebContents(WebContents webContents) {
+    void cleanupWebContents() {
         if (mWebContentsObserver != null) {
-            mWebContentsObserver.observe(null);
+            mWebContentsObserver.observe(/* webContents= */ null);
             mWebContentsObserver = null;
         }
     }
@@ -281,11 +283,9 @@ public class TabStateAttributes {
         }
     }
 
-    public void destroy() {
-        if (mWebContents != null) {
-            cleanupWebContents(mWebContents);
-            mWebContents = null;
-        }
+    void destroy() {
+        mTab.removeObserver(mTabObserver);
+        cleanupWebContents();
         // Cancel the pending low-priority save task so it stops retaining this object (and the
         // tab/activity it transitively holds) via the static TaskRunnerImpl task queue.
         if (mPendingLowPrioritySaveTask != null) {

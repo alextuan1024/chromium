@@ -114,6 +114,7 @@ class CC_EXPORT Scheduler : public viz::BeginFrameObserverBase {
   void TearDown();
 
   // BeginFrameObserverBase
+  void OnBeginFrame(const viz::BeginFrameArgs& args) override;
   void OnBeginFrameSourcePausedChanged(bool paused) override;
   bool OnBeginFrameDerivedImpl(const viz::BeginFrameArgs& args) override;
 
@@ -204,6 +205,7 @@ class CC_EXPORT Scheduler : public viz::BeginFrameObserverBase {
   // main thread updates are completed to signal it is ready for the commmit.
   void NotifyReadyToCommit(std::unique_ptr<BeginMainFrameMetrics> details);
   void BeginMainFrameAborted(CommitEarlyOutReason reason);
+  void NotifyOutOfBandFrame() { state_machine_->NotifyOutOfBandFrame(); }
 
   // In the PrepareTiles step, compositor thread divides the layers into tiles
   // to reduce cost of raster large layers. Then, each tile is rastered by a
@@ -293,6 +295,16 @@ class CC_EXPORT Scheduler : public viz::BeginFrameObserverBase {
 
   int consecutive_no_damage_main_frames() const {
     return state_machine_->consecutive_no_damage_main_frames();
+  }
+
+  void SetViewTransitionSnapshotCapturing(bool capturing) {
+    state_machine_->SetViewTransitionSnapshotCapturing(capturing);
+  }
+  ViewTransitionSnapshotState& view_transition_snapshot_state() {
+    return state_machine_->view_transition_snapshot_state();
+  }
+  const ViewTransitionSnapshotState& view_transition_snapshot_state() const {
+    return state_machine_->view_transition_snapshot_state();
   }
 
  protected:
@@ -390,6 +402,26 @@ class CC_EXPORT Scheduler : public viz::BeginFrameObserverBase {
 
   // Used to drop the pending begin frame before we go idle.
   void CancelPendingBeginFrameTask();
+
+  // Returns the BeginFrameArgs with the latest frame time that the scheduler
+  // knows about. This includes the last used BeginFrame, which can be later
+  // than the last impl frame (e.g. a MISSED BeginFrame that was dropped because
+  // its deadline passed). Frame ids from different sources (including
+  // `viz::BeginFrameArgs::kManualSourceId`) are not comparable, so the frame
+  // time is used to find the latest one.
+  viz::BeginFrameArgs LatestKnownBeginFrameArgs() const;
+
+  // Returns a sequence number for a manual BeginFrame
+  // (`viz::BeginFrameArgs::kManualSourceId`). It is at least `candidate`, and
+  // larger than the sequence number of every manual BeginFrame that the
+  // scheduler knows about, so that the new BeginFrame is not dropped as a
+  // duplicate.
+  uint64_t NextManualSequenceNumber(uint64_t candidate) const;
+
+  // Issues a manual BeginFrame to draw a cross-document ViewTransition snapshot
+  // `kSave` frame if the state machine needs one. See
+  // `SchedulerStateMachine::ShouldIssueBeginFrameForSnapshotSave()`.
+  void MaybeIssueBeginFrameForSnapshotSave();
 
   void DrawIfPossible();
   void DrawForced();

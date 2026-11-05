@@ -1,4 +1,4 @@
-// Copyright 2023 The Chromium Authors.
+// Copyright 2023 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -15,7 +15,9 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 
-class Profile;
+namespace user_manager {
+class User;
+}  // namespace user_manager
 
 namespace policy {
 
@@ -24,9 +26,11 @@ class DlpInternalsPageHandler
     : public dlp_internals::mojom::PageHandler,
       public data_controls::DlpReportingManager::Observer {
  public:
+  // `user` is the User associated with the WebUI. May be nullptr if the WebUI
+  // is not associated with any User (e.g., on the sign-in screen).
   DlpInternalsPageHandler(
       mojo::PendingReceiver<dlp_internals::mojom::PageHandler> receiver,
-      Profile* profile);
+      const user_manager::User* user);
 
   DlpInternalsPageHandler(const DlpInternalsPageHandler&) = delete;
   DlpInternalsPageHandler& operator=(const DlpInternalsPageHandler&) = delete;
@@ -54,13 +58,12 @@ class DlpInternalsPageHandler
                               ::dlp::GetDatabaseEntriesResponse response_proto);
 
   mojo::Receiver<dlp_internals::mojom::PageHandler> receiver_;
+  const raw_ptr<const user_manager::User> user_;
   mojo::RemoteSet<dlp_internals::mojom::ReportingObserver> reporting_observers_;
 
   base::ScopedObservation<data_controls::DlpReportingManager,
                           data_controls::DlpReportingManager::Observer>
       reporting_observation_{this};
-
-  raw_ptr<Profile> profile_;
 
   base::WeakPtrFactory<DlpInternalsPageHandler> weak_ptr_factory_{this};
 };

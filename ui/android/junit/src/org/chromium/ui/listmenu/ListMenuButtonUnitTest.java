@@ -1,0 +1,223 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.ui.listmenu;
+
+import android.content.Context;
+import android.os.Build;
+import android.view.LayoutInflater;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+
+import androidx.test.core.app.ApplicationProvider;
+
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.annotation.Config;
+import org.robolectric.shadows.ShadowLooper;
+
+import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.ui.R;
+import org.chromium.ui.base.MotionEventTestUtils;
+
+/** Unit tests for {@link ListMenuButton}. */
+@RunWith(BaseRobolectricTestRunner.class)
+public class ListMenuButtonUnitTest {
+
+    private Context mContext;
+    private ListMenuDelegate mMenuDelegate;
+
+    @Before
+    public void setUp() {
+        mContext = ApplicationProvider.getApplicationContext();
+        ViewGroup contentView = new FrameLayout(mContext);
+        mMenuDelegate =
+                () ->
+                        new ListMenu() {
+                            @Override
+                            public View getContentView() {
+                                return contentView;
+                            }
+
+                            @Override
+                            public void addContentViewClickRunnable(Runnable runnable) {}
+
+                            @Override
+                            public int getMaxItemWidth() {
+                                return 0;
+                            }
+                        };
+    }
+
+    @Test
+    public void testA11yLabel() {
+        ListMenuButton button = new ListMenuButton(mContext, null);
+
+        button.setContentDescriptionContext("");
+        Assert.assertEquals(
+                mContext.getString(R.string.accessibility_toolbar_btn_menu),
+                button.getContentDescription());
+
+        String title = "Test title";
+        button.setContentDescriptionContext(title);
+        Assert.assertEquals(
+                mContext.getString(R.string.accessibility_list_menu_button, title),
+                button.getContentDescription());
+    }
+
+    @Test
+    public void testTriggerShowMenuTwice() {
+        ListMenuButton button = createListMenuButton();
+
+        // Expect no crash when calling showMenu twice.
+        button.showMenu();
+        button.showMenu();
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R)
+    public void testSecondaryClick() {
+        CallbackHelper longClickHelper = new CallbackHelper();
+        ListMenuButton button = new ListMenuButton(mContext, null);
+        button.setOnLongClickListener(
+                (v) -> {
+                    longClickHelper.notifyCalled();
+                    return true;
+                });
+        MotionEvent secondaryClickEvent = MotionEventTestUtils.getTrackRightClickEvent();
+        button.onGenericMotionEvent(secondaryClickEvent);
+        Assert.assertEquals(1, longClickHelper.getCallCount());
+    }
+
+    @Test
+    public void testMenuOpenSetsPressedState() {
+        ListMenuButton button = createListMenuButton();
+
+        Assert.assertFalse("Button should not be pressed initially.", button.isPressed());
+        button.showMenu();
+
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        Assert.assertTrue("Button should be pressed when menu is open.", button.isPressed());
+
+        button.dismiss();
+
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        Assert.assertFalse(
+                "Button should not be pressed after menu is dismissed.", button.isPressed());
+    }
+
+    @Test
+    public void testMenuOpenDoesNotSetPressedStateWhenDisabled() {
+        ListMenuButton button = createListMenuButton();
+        button.setMaintainPressedStateWhenMenuOpen(false);
+
+        Assert.assertFalse("Button should not be pressed initially.", button.isPressed());
+        button.showMenu();
+
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        Assert.assertFalse(
+                "Button should not be pressed when menu is open and maintain pressed state is"
+                        + " disabled.",
+                button.isPressed());
+    }
+
+    @Test
+    public void testMenuOpenMaintainsFocusStateByDefault() {
+        ListMenuButton button = createListMenuButton();
+
+        button.setFocusable(true);
+        button.setFocusableInTouchMode(true);
+        button.requestFocus();
+        Assert.assertTrue("Button should be focused.", button.isFocused());
+        button.showMenu();
+
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        Assert.assertTrue("Button should remain focused when menu is open.", button.isFocused());
+    }
+
+    @Test
+    public void testSetDelegateThrowsWhenExternalClickListenerAlreadySet() {
+        // Install an external click listener before configuring the menu delegate.
+        ListMenuButton button = new ListMenuButton(mContext, /* attrs= */ null);
+        button.setOnClickListener(v -> {});
+
+        // Verify 1-arg setDelegate asserts instead of overwriting the external listener.
+        Assert.assertThrows(AssertionError.class, () -> button.setDelegate(mMenuDelegate));
+    }
+
+    @Test
+    public void testSetDelegateThrowsAfterExternalClickListenerReplacesHostListener() {
+        // Configure the button with the default host click listener, then overwrite it externally.
+        CallbackHelper externalClickHelper = new CallbackHelper();
+        ListMenuButton button = createListMenuButton();
+        button.setOnClickListener(v -> externalClickHelper.notifyCalled());
+
+        // Verify a subsequent 1-arg setDelegate asserts because ListMenuButton tracked the
+        // replacement, while overrideOnClickListener=false preserves the external listener.
+        Assert.assertThrows(AssertionError.class, () -> button.setDelegate(mMenuDelegate));
+        button.setDelegate(mMenuDelegate, /* overrideOnClickListener= */ false);
+        button.performClick();
+        Assert.assertEquals(1, externalClickHelper.getCallCount());
+        Assert.assertFalse(button.getHost().isMenuShowing());
+    }
+
+    @Test
+    public void testSetDelegateSucceedsAfterExternalClickListenerCleared() {
+        // Replace the host click listener with an external listener, then clear it with null.
+        ListMenuButton button = createListMenuButton();
+        button.setOnClickListener(v -> {});
+        button.setOnClickListener(null);
+        Assert.assertFalse(button.hasOnClickListeners());
+
+        // Verify setDelegate succeeds once cleared and clicking opens the popup menu.
+        button.setDelegate(mMenuDelegate);
+        button.performClick();
+        Assert.assertTrue(button.getHost().isMenuShowing());
+        button.dismiss();
+    }
+
+    @Test
+    public void testSetDelegateTracksClickCallbackAndNullReset() {
+        // Install a ChromeImageButton ClickWithMetaStateCallback on a ListMenuButton.
+        ListMenuButton button = new ListMenuButton(mContext, /* attrs= */ null);
+        button.setClickCallback((metaState, buttonState) -> {});
+
+        // Verify setDelegate asserts while the callback is active, then succeeds after clearing
+        // the callback with null.
+        Assert.assertThrows(AssertionError.class, () -> button.setDelegate(mMenuDelegate));
+        button.setClickCallback(null);
+        Assert.assertFalse(button.hasOnClickListeners());
+        button.setDelegate(mMenuDelegate);
+        Assert.assertTrue(button.hasOnClickListeners());
+    }
+
+    @Test
+    public void testInflateWithXmlOnClickDoesNotCrashAndAssertsOnSetDelegate() {
+        // Inflate a ListMenuButton declaring android:onClick in XML, which invokes
+        // setOnClickListener during View's super constructor before mListMenuHost is assigned.
+        View root =
+                LayoutInflater.from(mContext)
+                        .inflate(R.layout.list_menu_button_unittest, /* root= */ null);
+        ListMenuButton button = root.findViewById(R.id.button_with_on_click);
+
+        // Verify inflation succeeded with the XML click listener intact, 1-arg setDelegate
+        // asserts, and clearing the listener allows setDelegate to succeed.
+        Assert.assertTrue(button.hasOnClickListeners());
+        Assert.assertThrows(AssertionError.class, () -> button.setDelegate(mMenuDelegate));
+        button.setOnClickListener(null);
+        button.setDelegate(mMenuDelegate);
+    }
+
+    private ListMenuButton createListMenuButton() {
+        ListMenuButton button = new ListMenuButton(mContext, /* attrs= */ null);
+        button.setAttachedToWindowForTesting();
+        button.setDelegate(mMenuDelegate, /* overrideOnClickListener= */ true);
+        return button;
+    }
+}

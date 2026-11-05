@@ -70,7 +70,75 @@ if (is_posix) {
   }
 }
 
-source_set("base") {
+static_library("os_utils") {
+  sources = [
+    "branding.cc",
+    "branding.h",
+    "username.cc",
+    "username.h",
+  ]
+  public_deps = [
+    ":loggable",
+    "//base",
+  ]
+  deps = [ "//build:branding_buildflags" ]
+
+  if (is_posix) {
+    sources += [
+      "passwd_utils.cc",
+      "passwd_utils.h",
+    ]
+  }
+
+  if (is_linux || is_chromeos) {
+    sources += [
+      "file_path_util_linux.cc",
+      "file_path_util_linux.h",
+    ]
+  }
+}
+
+static_library("codec_utils") {
+  sources = [
+    "constants.cc",
+    "constants.h",
+    "cpu_utils.cc",
+    "cpu_utils.h",
+    "util.cc",
+    "util.h",
+    "weighted_samples.cc",
+    "weighted_samples.h",
+  ]
+
+  configs += [
+    "//build/config/compiler:wexit_time_destructors",
+    "//remoting/build/config:version",
+  ]
+
+  public_deps = [ "//base" ]
+  deps = [ "//third_party/webrtc_overrides:webrtc_component" ]
+}
+
+static_library("perfetto_tracing") {
+  sources = [
+    "perfetto_trace_config.cc",
+    "perfetto_trace_config.h",
+    "perfetto_trace_producer.cc",
+    "perfetto_trace_producer.h",
+    "perfetto_tracing.cc",
+    "perfetto_tracing.h",
+  ]
+
+  configs += [ "//build/config/compiler:wexit_time_destructors" ]
+
+  public_deps = [
+    "//base",
+    "//third_party/perfetto:libperfetto",
+  ]
+  deps = [ "//third_party/webrtc_overrides:webrtc_component" ]
+}
+
+static_library("base") {
   sources = [
     "async_file_util.cc",
     "async_file_util.h",
@@ -78,8 +146,6 @@ source_set("base") {
     "auto_thread.h",
     "auto_thread_task_runner.cc",
     "auto_thread_task_runner.h",
-    "branding.cc",
-    "branding.h",
     "capabilities.cc",
     "capabilities.h",
     "certificate_helpers.cc",
@@ -92,8 +158,6 @@ source_set("base") {
     "compound_buffer.h",
     "compute_engine_service_client.cc",
     "compute_engine_service_client.h",
-    "constants.cc",
-    "constants.h",
     "corp_auth_util.cc",
     "corp_auth_util.h",
     "corp_logging_service_client.cc",
@@ -104,8 +168,6 @@ source_set("base") {
     "corp_session_authz_service_client.h",
     "corp_session_authz_service_client_factory.cc",
     "corp_session_authz_service_client_factory.h",
-    "cpu_utils.cc",
-    "cpu_utils.h",
     "directory_service_client.cc",
     "directory_service_client.h",
     "ecdh_key_exchange.cc",
@@ -162,7 +224,6 @@ source_set("base") {
     "session_authz_service_client_factory.h",
     "session_options.cc",
     "session_options.h",
-    "session_options_constants.cc",
     "session_options_constants.h",
     "source_location.cc",
     "source_location.h",
@@ -174,26 +235,20 @@ source_set("base") {
     "url_loader_network_service_observer.h",
     "url_request_context_getter.cc",
     "url_request_context_getter.h",
-    "username.cc",
-    "username.h",
-    "util.cc",
-    "util.h",
     "vlog_net_log.cc",
     "vlog_net_log.h",
-    "weighted_samples.cc",
-    "weighted_samples.h",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//remoting/build/config:version",
-  ]
+  configs += [ "//remoting/build/config:version" ]
 
   public_deps = [
     ":authentication_method",
     ":buildflags",
+    ":codec_utils",
     ":http_status",
     ":loggable",
+    ":os_utils",
+    ":perfetto_tracing",
     "//base",
     "//net",
     "//remoting/proto",
@@ -237,21 +292,13 @@ source_set("base") {
     ]
   }
 
-  if (is_posix) {
-    sources += [
-      "passwd_utils.cc",
-      "passwd_utils.h",
-    ]
-  }
-
   if (is_win) {
-    sources += [ "scoped_sc_handle_win.h" ]
-    libs = [ "crypt32.lib" ]  # For CryptoAPI functions in certificate_helpers
-  } else if (is_linux || is_chromeos) {
     sources += [
-      "file_path_util_linux.cc",
-      "file_path_util_linux.h",
+      "registry_util_win.cc",
+      "registry_util_win.h",
+      "scoped_sc_handle_win.h",
     ]
+    libs = [ "crypt32.lib" ]  # For CryptoAPI functions in certificate_helpers
   }
 }
 
@@ -280,7 +327,7 @@ source_set("loggable") {
   deps = [ "//base" ]
 }
 
-source_set("session_policies") {
+static_library("session_policies") {
   public = [
     "port_range.h",
     "session_policies.h",
@@ -293,7 +340,7 @@ source_set("session_policies") {
   deps = [ "//base" ]
 }
 
-source_set("authorization") {
+static_library("authorization") {
   sources = [
     "gaia_oauth_client.cc",
     "gaia_oauth_client.h",
@@ -310,10 +357,7 @@ source_set("authorization") {
     "passthrough_oauth_token_getter.h",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//remoting/build/config:version",
-  ]
+  configs += [ "//remoting/build/config:version" ]
 
   deps = [
     ":logging",
@@ -327,7 +371,7 @@ source_set("authorization") {
   ]
 }
 
-source_set("logging") {
+static_library("logging") {
   public = [ "logging.h" ]
 
   sources = [
@@ -354,7 +398,7 @@ source_set("logging") {
   deps = [ "//base" ]
 }
 
-source_set("settings") {
+static_library("settings") {
   sources = [
     "host_settings.cc",
     "host_settings.h",
@@ -422,6 +466,13 @@ static_library("test_support") {
     "//testing/gtest",
     "//third_party/protobuf:protobuf_lite",
   ]
+
+  if (is_win) {
+    sources += [
+      "registry_test_helper_win.cc",
+      "registry_test_helper_win.h",
+    ]
+  }
 }
 
 proto_library("test_proto") {
@@ -490,6 +541,9 @@ source_set("unit_tests") {
     "leaky_bucket_unittest.cc",
     "local_session_policies_provider_unittest.cc",
     "oauth_token_getter_proxy_unittest.cc",
+    "perfetto_trace_config_unittest.cc",
+    "perfetto_trace_producer_unittest.cc",
+    "perfetto_tracing_unittest.cc",
     "port_range_unittest.cc",
     "protobuf_http_client_unittest.cc",
     "protobuf_http_stream_parser_unittest.cc",
@@ -503,6 +557,7 @@ source_set("unit_tests") {
     "source_location_unittest.cc",
     "ssl_private_key_wrapper_unittest.cc",
     "typed_buffer_unittest.cc",
+    "url_loader_network_service_observer_unittest.cc",
     "util_unittest.cc",
     "weighted_samples_unittest.cc",
   ]
@@ -515,6 +570,7 @@ source_set("unit_tests") {
     ":test_proto",
     ":test_support",
     "//base",
+    "//base/test:test_support",
     "//net:test_support",
     "//services/network:test_support",
     "//services/network/public/cpp",
@@ -527,19 +583,26 @@ source_set("unit_tests") {
 
   if (is_linux || is_win) {
     sources += [ "crash/crashpad_database_manager_unittest.cc" ]
-    deps += [ "//remoting/base/crash:crashpad_db_mgr" ]
-  }
-
-  if (is_linux) {
-    sources += [ "crash/crashpad_linux_unittest.cc" ]
     deps += [
       "//remoting/base/crash",
+      "//remoting/base/crash:crashpad_db_mgr",
       "//third_party/crashpad/crashpad/client",
     ]
   }
 
-  if (is_win || is_chromeos) {
-    deps += [ "//third_party/breakpad:client" ]
+  if (is_win) {
+    sources += [
+      "crash/crashpad_win_unittest.cc",
+      "registry_util_win_unittest.cc",
+    ]
+    deps += [
+      "//third_party/crashpad/crashpad/util",
+      "//third_party/zlib/google:compression_utils",
+    ]
+  }
+
+  if (is_linux) {
+    sources += [ "crash/crashpad_linux_unittest.cc" ]
   }
 
   # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and

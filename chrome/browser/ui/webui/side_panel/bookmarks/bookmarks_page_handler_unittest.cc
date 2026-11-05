@@ -4,20 +4,32 @@
 
 #include "chrome/browser/ui/webui/side_panel/bookmarks/bookmarks_page_handler.h"
 
+#include <cstddef>
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 
+#include "base/auto_reset.h"
+#include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_base.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/metrics/user_action_tester.h"
 #include "base/test/mock_callback.h"
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service_factory.h"
 #include "chrome/browser/bookmarks/bookmark_test_utils.h"
 #include "chrome/browser/extensions/api/bookmark_manager_private/bookmark_manager_private_api.h"
+#include "chrome/browser/ui/bookmarks/bookmark_stats.h"
+#include "chrome/browser/ui/bookmarks/bookmark_utils_desktop.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -30,6 +42,7 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/browser/bookmark_node_data.h"
+#include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/bookmarks/managed/managed_bookmark_service.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/bookmarks/test/test_bookmark_client.h"
@@ -39,6 +52,7 @@
 #include "content/public/test/test_web_ui.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/views/widget/any_widget_observer.h"
 
 namespace {
@@ -121,6 +135,48 @@ class MockBookmarksPage : public side_panel::mojom::BookmarksPage {
   mojo::Receiver<side_panel::mojom::BookmarksPage> receiver_{this};
 };
 
+class TestBookmarkNavigationWrapper
+    : public bookmarks::BookmarkNavigationWrapper {
+ public:
+  TestBookmarkNavigationWrapper() = default;
+  explicit TestBookmarkNavigationWrapper(base::RepeatingClosure on_navigate)
+      : on_navigate_(std::move(on_navigate)) {}
+  ~TestBookmarkNavigationWrapper() override = default;
+
+  base::WeakPtr<content::NavigationHandle> NavigateTo(
+      NavigateParams* params) override {
+    ++navigate_count_;
+    if (on_navigate_) {
+      on_navigate_.Run();
+    }
+    return nullptr;
+  }
+
+  void PromptForOpenAll(BrowserWindowInterface* browser,
+                        size_t child_count,
+                        base::OnceCallback<void(bool)> callback) override {
+    prompt_child_count_ = child_count;
+    prompt_callback_ = std::move(callback);
+  }
+
+  size_t navigate_count() const { return navigate_count_; }
+  bool has_pending_prompt() const { return !prompt_callback_.is_null(); }
+  std::optional<size_t> prompt_child_count() const {
+    return prompt_child_count_;
+  }
+
+  void ResolvePrompt(bool confirmed) {
+    CHECK(prompt_callback_);
+    std::move(prompt_callback_).Run(confirmed);
+  }
+
+ private:
+  base::RepeatingClosure on_navigate_;
+  size_t navigate_count_ = 0;
+  std::optional<size_t> prompt_child_count_;
+  base::OnceCallback<void(bool)> prompt_callback_;
+};
+
 // Helper class to handle the return value of
 // `BookmarksPageHandler::CreateFolder()` through a callback. It resets
 // internally after retrieving the results so that it can be used multiple times
@@ -192,6 +248,7 @@ class BookmarksPageHandlerTest : public ChromeRenderViewHostTestHarness {
     return managed_bookmark_service_.get();
   }
   BookmarkMergedSurfaceService* service() { return bookmark_merged_service_; }
+  sync_preferences::TestingPrefServiceSyncable* prefs() { return prefs_.get(); }
   testing::NiceMock<MockBookmarksPage>& mock_bookmarks_page() {
     return mock_bookmarks_page_;
   }
@@ -199,6 +256,10 @@ class BookmarksPageHandlerTest : public ChromeRenderViewHostTestHarness {
     return fake_side_panel_web_contents_.get();
   }
   TabStripModel* tab_strip_model() { return tab_strip_model_.get(); }
+  testing::NiceMock<MockBrowserWindowInterface>&
+  mock_browser_window_interface() {
+    return mock_browser_window_interface_;
+  }
 
   void CreateHandler(int managed_bookmarks_count = 0) {
     CHECK(!handler_);
@@ -334,22 +395,129 @@ TEST_F(BookmarksPageHandlerTest,
        GetAllBookmarksContentWithEmptyPermanentNodes) {
   const bookmarks::BookmarkNode* bookmark_bar = model()->bookmark_bar_node();
   const bookmarks::BookmarkNode* other_node = model()->other_node();
+  const bookmarks::BookmarkNode* mobile_node = model()->mobile_node();
+  const bookmarks::BookmarkNode* managed_node =
+      managed_bookmark_service()->managed_node();
 
   base::MockCallback<BookmarksPageHandler::GetAllBookmarksCallback>
       mock_callback;
   EXPECT_CALL(mock_callback, Run(testing::_))
       .WillOnce([&](const std::vector<side_panel::mojom::BookmarksTreeNodePtr>&
                         nodes) {
-        // Total count: 2 - BookmarkBar + Other node (even if empty).
-        EXPECT_THAT(nodes, SizeIs(2));
-        // Bookmark is empty but still pushed.
+        // Total count: 4 - `BookmarkBar` + `Other` + `Mobile` + `Managed` (even
+        // if empty, so later synced or policy-loaded bookmarks find their
+        // parent in the WebUI).
+        EXPECT_THAT(nodes, SizeIs(4));
         ASSERT_TRUE(bookmark_bar->children().empty());
         EXPECT_THAT(nodes, Contains(TreeNodeMatchesNode(bookmark_bar)));
-        // Other node is empty but still pushed.
         ASSERT_TRUE(other_node->children().empty());
         EXPECT_THAT(nodes, Contains(TreeNodeMatchesNode(other_node)));
+        ASSERT_TRUE(mobile_node->children().empty());
+        EXPECT_THAT(nodes, Contains(TreeNodeMatchesNode(mobile_node)));
+        ASSERT_TRUE(managed_node->children().empty());
+        EXPECT_THAT(nodes, Contains(TreeNodeMatchesNode(managed_node)));
       });
   handler()->GetAllBookmarks(mock_callback.Get());
+}
+
+TEST_F(BookmarksPageHandlerTest,
+       MobileBookmarkSyncedAfterEmptyInitialLoadHasSentParent) {
+  std::string sent_mobile_folder_id;
+  base::MockCallback<BookmarksPageHandler::GetAllBookmarksCallback>
+      mock_callback;
+  EXPECT_CALL(mock_callback, Run(testing::_))
+      .WillOnce([&](const std::vector<side_panel::mojom::BookmarksTreeNodePtr>&
+                        nodes) {
+        for (const auto& node : nodes) {
+          if (node->id == kSidePanelMobileBookmarksID) {
+            sent_mobile_folder_id = node->id;
+          }
+        }
+      });
+  handler()->GetAllBookmarks(mock_callback.Get());
+  ASSERT_EQ(kSidePanelMobileBookmarksID, sent_mobile_folder_id);
+
+  model()->CreateAccountPermanentFolders();
+  EXPECT_CALL(mock_bookmarks_page(), OnBookmarkNodeAdded(testing::_))
+      .WillOnce([&](side_panel::mojom::BookmarksTreeNodePtr mojo_node) {
+        EXPECT_EQ(sent_mobile_folder_id, mojo_node->parent_id);
+      });
+  AddNodesFromModelString(model(), model()->account_mobile_node(), "m1 ");
+  mock_bookmarks_page().FlushForTesting();
+}
+
+TEST_F(BookmarksPageHandlerTest,
+       ManagedBookmarkLoadedAfterEmptyInitialLoadHasSentParent) {
+  std::string sent_managed_folder_id;
+  base::MockCallback<BookmarksPageHandler::GetAllBookmarksCallback>
+      mock_callback;
+  EXPECT_CALL(mock_callback, Run(testing::_))
+      .WillOnce([&](const std::vector<side_panel::mojom::BookmarksTreeNodePtr>&
+                        nodes) {
+        for (const auto& node : nodes) {
+          if (node->id == kSidePanelManagedBookmarksID) {
+            sent_managed_folder_id = node->id;
+          }
+        }
+      });
+  handler()->GetAllBookmarks(mock_callback.Get());
+  ASSERT_EQ(kSidePanelManagedBookmarksID, sent_managed_folder_id);
+
+  EXPECT_CALL(mock_bookmarks_page(),
+              OnBookmarkNodeChanged(kSidePanelManagedBookmarksID,
+                                    "Enterprise Bookmarks", ""));
+  prefs()->SetString(bookmarks::prefs::kManagedBookmarksFolderName,
+                     "Enterprise Bookmarks");
+  mock_bookmarks_page().FlushForTesting();
+  testing::Mock::VerifyAndClearExpectations(&mock_bookmarks_page());
+
+  EXPECT_CALL(mock_bookmarks_page(), OnBookmarkNodeAdded(testing::_))
+      .WillOnce([&](side_panel::mojom::BookmarksTreeNodePtr mojo_node) {
+        EXPECT_EQ(sent_managed_folder_id, mojo_node->parent_id);
+      });
+  base::ListValue managed_list;
+  managed_list.Append(
+      base::DictValue().Set("name", "Managed").Set("url", "https://foo.com/"));
+  prefs()->SetManagedPref(bookmarks::prefs::kManagedBookmarks,
+                          std::move(managed_list));
+  mock_bookmarks_page().FlushForTesting();
+}
+
+TEST_F(BookmarksPageHandlerTest, ManagedFolderAndNodesCannotBeModified) {
+  ClearHandler();
+  CreateHandler(/*managed_bookmarks_count=*/1);
+  LoadBookmarkModel();
+
+  const bookmarks::BookmarkNode* managed_node =
+      managed_bookmark_service()->managed_node();
+  ASSERT_EQ(1u, managed_node->children().size());
+  const bookmarks::BookmarkNode* managed_child =
+      managed_node->children()[0].get();
+  const std::u16string original_title = managed_child->GetTitle();
+
+  base::MockCallback<BookmarksPageHandler::CreateFolderCallback>
+      create_callback;
+  EXPECT_CALL(create_callback, Run(""));
+  handler()->CreateFolder(kSidePanelManagedBookmarksID, "Blocked",
+                          create_callback.Get());
+  testing::Mock::VerifyAndClearExpectations(&create_callback);
+
+  EXPECT_CALL(create_callback, Run(""));
+  handler()->CreateFolder(base::ToString(managed_child->id()), "Blocked",
+                          create_callback.Get());
+  EXPECT_EQ(1u, managed_node->children().size());
+
+  handler()->BookmarkCurrentTabInFolder(kSidePanelManagedBookmarksID);
+  EXPECT_EQ(1u, managed_node->children().size());
+
+  handler()->RenameBookmark(managed_child->id(), "Renamed");
+  EXPECT_EQ(original_title, managed_child->GetTitle());
+
+  base::MockCallback<BookmarksPageHandler::RemoveBookmarksCallback>
+      remove_callback;
+  EXPECT_CALL(remove_callback, Run());
+  handler()->RemoveBookmarks({managed_child->id()}, remove_callback.Get());
+  EXPECT_EQ(1u, managed_node->children().size());
 }
 
 TEST_F(BookmarksPageHandlerTest, GetAllBookmarksContentWithAllNodes) {
@@ -405,14 +573,17 @@ TEST_F(BookmarksPageHandlerTest, GetAllBookmarksContentWithAccountNodes) {
       model()->account_mobile_node();
   AddNodesFromModelString(model(), account_mobile_node, "a5 ");
   const bookmarks::BookmarkNode* mobile_node = model()->mobile_node();
+  const bookmarks::BookmarkNode* managed_node =
+      managed_bookmark_service()->managed_node();
 
   base::MockCallback<BookmarksPageHandler::GetAllBookmarksCallback>
       mock_callback;
   EXPECT_CALL(mock_callback, Run(testing::_))
       .WillOnce([&](const std::vector<side_panel::mojom::BookmarksTreeNodePtr>&
                         nodes) {
-        // Total count: 3 - BookmarkBar (Merged) + Other node (Merged) + Mobile.
-        EXPECT_THAT(nodes, SizeIs(3));
+        // Total count: 4 - `BookmarkBar` (Merged) + `Other` (Merged) + `Mobile`
+        // + `Managed`.
+        EXPECT_THAT(nodes, SizeIs(4));
         // Both `bookmark_bar` and `account_bookmark_bar` are merged into one.
         EXPECT_THAT(nodes, Contains(TreeNodeMatchesNode(bookmark_bar)));
         EXPECT_THAT(nodes, Contains(TreeNodeMatchesNode(account_bookmark_bar)));
@@ -425,6 +596,7 @@ TEST_F(BookmarksPageHandlerTest, GetAllBookmarksContentWithAccountNodes) {
         EXPECT_THAT(nodes, Contains(TreeNodeMatchesNode(account_mobile_node)));
         ASSERT_TRUE(mobile_node->children().empty());
         EXPECT_THAT(nodes, Contains(TreeNodeMatchesNode(mobile_node)));
+        EXPECT_THAT(nodes, Contains(TreeNodeMatchesNode(managed_node)));
       });
   handler()->GetAllBookmarks(mock_callback.Get());
 }
@@ -736,7 +908,6 @@ TEST_F(BookmarksPageHandlerTest, DropBookmarks) {
       side_panel_web_contents())
       ->OnDrop(data);
 
-
   // Drop the data. This should move it.
   base::MockCallback<BookmarksPageHandler::DropBookmarksCallback> mock_callback;
   EXPECT_CALL(mock_callback, Run());
@@ -801,7 +972,6 @@ TEST_F(BookmarksPageHandlerTest, DropBookmarksInDifferentProfile) {
   extensions::BookmarkManagerPrivateDragEventRouter::FromWebContents(
       side_panel_web_contents())
       ->OnDrop(data);
-
 
   // Drop the data in the other browser. This should copy it.
   base::MockCallback<BookmarksPageHandler::DropBookmarksCallback> mock_callback;
@@ -885,6 +1055,242 @@ TEST_F(BookmarksPageHandlerTest,
               ElementsAre(MatchesNode(node1), MatchesNode(node2)));
 
   histogram_tester.ExpectTotalCount("Bookmarks.AddedPerProfileType", 1);
+}
+
+TEST_F(BookmarksPageHandlerTest, OpenBookmark) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  const bookmarks::BookmarkNode* bookmark_bar = model()->bookmark_bar_node();
+  const bookmarks::BookmarkNode* node = model()->AddURL(
+      bookmark_bar, 0, u"Google", GURL("https://www.google.com"));
+
+  TestBookmarkNavigationWrapper wrapper;
+  bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper);
+  base::ScopedClosureRunner reset_nav_wrapper(base::BindOnce(
+      &bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting, nullptr));
+
+  handler()->OpenBookmark(node->id(), /*parent_folder_depth=*/0,
+                          ui::mojom::ClickModifiers::New(),
+                          side_panel::mojom::ActionSource::kBookmark);
+
+  EXPECT_EQ(
+      1, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectUniqueSample(
+      "Bookmarks.LaunchLocation", BookmarkLaunchLocation::kSidePanelFolder, 1);
+}
+
+TEST_F(BookmarksPageHandlerTest, OpenBookmarkSynchronouslyDestroysHandler) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  const bookmarks::BookmarkNode* bookmark_bar = model()->bookmark_bar_node();
+  const bookmarks::BookmarkNode* node = model()->AddURL(
+      bookmark_bar, 0, u"Google", GURL("https://www.google.com"));
+
+  bool handler_destroyed = false;
+  ON_CALL(mock_browser_window_interface(), GetProfile()).WillByDefault([&]() {
+    EXPECT_FALSE(handler_destroyed);
+    return profile();
+  });
+
+  TestBookmarkNavigationWrapper wrapper(base::BindLambdaForTesting([&]() {
+    handler_destroyed = true;
+    ClearHandler();
+  }));
+  bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper);
+  base::ScopedClosureRunner reset_nav_wrapper(base::BindOnce(
+      &bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting, nullptr));
+
+  // Opening a bookmark may synchronously close the side panel and destroy the
+  // handler. Ensure this does not cause a crash or use-after-free, and that
+  // metrics are still recorded.
+  handler()->OpenBookmark(node->id(), /*parent_folder_depth=*/0,
+                          ui::mojom::ClickModifiers::New(),
+                          side_panel::mojom::ActionSource::kBookmark);
+
+  EXPECT_TRUE(handler_destroyed);
+  EXPECT_EQ(
+      1, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectUniqueSample(
+      "Bookmarks.LaunchLocation", BookmarkLaunchLocation::kSidePanelFolder, 1);
+}
+
+TEST_F(BookmarksPageHandlerTest, OpenBookmarkPromptConfirmed) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+  base::AutoReset<size_t> prompt_threshold(
+      &bookmarks::kNumBookmarkUrlsBeforePrompting, 2);
+
+  const bookmarks::BookmarkNode* folder =
+      model()->AddFolder(model()->bookmark_bar_node(), 0, u"Folder");
+  model()->AddURL(folder, 0, u"Site 1", GURL("https://example.com/1"));
+  model()->AddURL(folder, 1, u"Site 2", GURL("https://example.com/2"));
+
+  TestBookmarkNavigationWrapper wrapper;
+  bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper);
+  base::ScopedClosureRunner reset_nav_wrapper(base::BindOnce(
+      &bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting, nullptr));
+
+  handler()->OpenBookmark(folder->id(), /*parent_folder_depth=*/1,
+                          ui::mojom::ClickModifiers::New(),
+                          side_panel::mojom::ActionSource::kBookmark);
+
+  // Metrics must not be logged while the confirmation prompt is pending.
+  ASSERT_TRUE(wrapper.has_pending_prompt());
+  EXPECT_EQ(2u, wrapper.prompt_child_count());
+  EXPECT_EQ(0u, wrapper.navigate_count());
+  EXPECT_EQ(
+      0, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectTotalCount("Bookmarks.LaunchLocation", 0);
+  histogram_tester.ExpectTotalCount("Bookmarks.UsageCountPerProfileType", 0);
+
+  // Confirming the prompt opens all URLs and logs launch metrics once.
+  wrapper.ResolvePrompt(/*confirmed=*/true);
+
+  EXPECT_EQ(2u, wrapper.navigate_count());
+  EXPECT_EQ(
+      1, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectUniqueSample(
+      "Bookmarks.LaunchLocation", BookmarkLaunchLocation::kSidePanelSubfolder,
+      1);
+  histogram_tester.ExpectTotalCount("Bookmarks.UsageCountPerProfileType", 1);
+}
+
+TEST_F(BookmarksPageHandlerTest, OpenBookmarkPromptCancelled) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+  base::AutoReset<size_t> prompt_threshold(
+      &bookmarks::kNumBookmarkUrlsBeforePrompting, 2);
+
+  const bookmarks::BookmarkNode* folder =
+      model()->AddFolder(model()->bookmark_bar_node(), 0, u"Folder");
+  model()->AddURL(folder, 0, u"Site 1", GURL("https://example.com/1"));
+  model()->AddURL(folder, 1, u"Site 2", GURL("https://example.com/2"));
+
+  TestBookmarkNavigationWrapper wrapper;
+  bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper);
+  base::ScopedClosureRunner reset_nav_wrapper(base::BindOnce(
+      &bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting, nullptr));
+
+  handler()->OpenBookmark(folder->id(), /*parent_folder_depth=*/0,
+                          ui::mojom::ClickModifiers::New(),
+                          side_panel::mojom::ActionSource::kBookmark);
+
+  ASSERT_TRUE(wrapper.has_pending_prompt());
+  wrapper.ResolvePrompt(/*confirmed=*/false);
+
+  EXPECT_EQ(0u, wrapper.navigate_count());
+  EXPECT_EQ(
+      0, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectTotalCount("Bookmarks.LaunchLocation", 0);
+  histogram_tester.ExpectTotalCount("Bookmarks.UsageCountPerProfileType", 0);
+}
+
+TEST_F(BookmarksPageHandlerTest,
+       OpenBookmarkPromptConfirmedAfterHandlerDestroyed) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+  base::AutoReset<size_t> prompt_threshold(
+      &bookmarks::kNumBookmarkUrlsBeforePrompting, 2);
+
+  const bookmarks::BookmarkNode* folder =
+      model()->AddFolder(model()->bookmark_bar_node(), 0, u"Folder");
+  model()->AddURL(folder, 0, u"Site 1", GURL("https://example.com/1"));
+  model()->AddURL(folder, 1, u"Site 2", GURL("https://example.com/2"));
+
+  TestBookmarkNavigationWrapper wrapper;
+  bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper);
+  base::ScopedClosureRunner reset_nav_wrapper(base::BindOnce(
+      &bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting, nullptr));
+
+  handler()->OpenBookmark(folder->id(), /*parent_folder_depth=*/0,
+                          ui::mojom::ClickModifiers::New(),
+                          side_panel::mojom::ActionSource::kBookmark);
+
+  ASSERT_TRUE(wrapper.has_pending_prompt());
+
+  // Closing the side panel while the confirmation dialog is open destroys the
+  // handler before the user confirms the dialog.
+  ClearHandler();
+  wrapper.ResolvePrompt(/*confirmed=*/true);
+
+  EXPECT_EQ(2u, wrapper.navigate_count());
+  EXPECT_EQ(
+      1, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectUniqueSample(
+      "Bookmarks.LaunchLocation", BookmarkLaunchLocation::kSidePanelFolder, 1);
+  histogram_tester.ExpectTotalCount("Bookmarks.UsageCountPerProfileType", 1);
+}
+
+TEST_F(BookmarksPageHandlerTest, OpenBookmarkDoesNotLogWhenNoBookmarksOpened) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  const bookmarks::BookmarkNode* bookmark_bar = model()->bookmark_bar_node();
+  const bookmarks::BookmarkNode* empty_folder =
+      model()->AddFolder(bookmark_bar, 0, u"Empty Folder");
+  const bookmarks::BookmarkNode* js_bookmark = model()->AddURL(
+      bookmark_bar, 1, u"Bookmarklet", GURL("javascript:void(0)"));
+
+  TestBookmarkNavigationWrapper wrapper;
+  bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper);
+  base::ScopedClosureRunner reset_nav_wrapper(base::BindOnce(
+      &bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting, nullptr));
+
+  // Empty folders do not open any tabs.
+  handler()->OpenBookmark(empty_folder->id(), /*parent_folder_depth=*/0,
+                          ui::mojom::ClickModifiers::New(),
+                          side_panel::mojom::ActionSource::kBookmark);
+  EXPECT_EQ(0u, wrapper.navigate_count());
+  EXPECT_EQ(
+      0, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectTotalCount("Bookmarks.LaunchLocation", 0);
+
+  // Javascript bookmarklets are blocked from opening in a new tab.
+  auto middle_click = ui::mojom::ClickModifiers::New();
+  middle_click->middle_button = true;
+  handler()->OpenBookmark(js_bookmark->id(), /*parent_folder_depth=*/0,
+                          std::move(middle_click),
+                          side_panel::mojom::ActionSource::kBookmark);
+  EXPECT_EQ(0u, wrapper.navigate_count());
+  EXPECT_EQ(
+      0, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectTotalCount("Bookmarks.LaunchLocation", 0);
+
+  // Javascript bookmarklets opened in the current tab do navigate and log.
+  handler()->OpenBookmark(js_bookmark->id(), /*parent_folder_depth=*/0,
+                          ui::mojom::ClickModifiers::New(),
+                          side_panel::mojom::ActionSource::kBookmark);
+  EXPECT_EQ(1u, wrapper.navigate_count());
+  EXPECT_EQ(
+      1, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectUniqueSample(
+      "Bookmarks.LaunchLocation", BookmarkLaunchLocation::kSidePanelFolder, 1);
+}
+
+TEST_F(BookmarksPageHandlerTest,
+       OpenBookmarkPriceTrackingDoesNotLogNavigation) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  const bookmarks::BookmarkNode* node =
+      model()->AddURL(model()->bookmark_bar_node(), 0, u"Product",
+                      GURL("https://example.com/product"));
+
+  TestBookmarkNavigationWrapper wrapper;
+  bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting(&wrapper);
+  base::ScopedClosureRunner reset_nav_wrapper(base::BindOnce(
+      &bookmarks::BookmarkNavigationWrapper::SetInstanceForTesting, nullptr));
+
+  handler()->OpenBookmark(node->id(), /*parent_folder_depth=*/0,
+                          ui::mojom::ClickModifiers::New(),
+                          side_panel::mojom::ActionSource::kPriceTracking);
+
+  EXPECT_EQ(1u, wrapper.navigate_count());
+  EXPECT_EQ(
+      0, user_action_tester.GetActionCount("SidePanel.Bookmarks.Navigation"));
+  histogram_tester.ExpectTotalCount("Bookmarks.LaunchLocation", 0);
 }
 
 }  // namespace

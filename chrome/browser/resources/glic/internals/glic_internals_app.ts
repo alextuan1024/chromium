@@ -6,6 +6,8 @@ import '//resources/cr_elements/cr_button/cr_button.js';
 import '//resources/cr_elements/cr_checkbox/cr_checkbox.js';
 import '//resources/cr_elements/cr_tabs/cr_tabs.js';
 
+import type {CrCheckboxElement} from '//resources/cr_elements/cr_checkbox/cr_checkbox.js';
+import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
@@ -22,6 +24,7 @@ import {                            //
   browserProxyFactory,              //
   FreCompletionWaitMode,            //
   GlicExperimentalTriggeringState,  //
+  GlicProviderType,                 //
 } from '../glic_internals.mojom-webui.js';
 import type {                                   //
              BrowserProxy,                      //
@@ -31,6 +34,22 @@ import type {                                   //
 
 import {getCss} from './glic_internals_app.css.js';
 import {getHtml} from './glic_internals_app.html.js';
+
+const TAB_GENERAL = 0;
+const TAB_DEBUG = 1;
+const DEFAULT_TAB_HASH = '#general';
+
+export interface UiLocaleComboOption {
+  code: string;
+  display: string;
+  label?: string;
+  isCustom?: boolean;
+}
+
+const TAB_HASH_MAP: Record<number, string> = {
+  [TAB_GENERAL]: DEFAULT_TAB_HASH,
+  [TAB_DEBUG]: '#debug',
+};
 
 function getEnumEntries<E extends Record<string, unknown>>(enumObj: E):
     Array<{name: string, value: number}> {
@@ -57,7 +76,7 @@ export class GlicInternalsAppElement extends CrLitElement {
   static override get properties() {
     return {
       data_: {type: Object},
-      invokePrompt_: {type: String},
+      invokePrompts_: {type: Array},
       invokeAutoSubmit_: {type: Boolean},
       invokeFreOverride_: {type: Number},
       invokeFeatureMode_: {type: Number},
@@ -71,6 +90,7 @@ export class GlicInternalsAppElement extends CrLitElement {
       invokeZssAdditionalContent_: {type: String},
       invokeOpenInForeground_: {type: Boolean},
       invokeActuationTarget_: {type: Number},
+      invokeHeadlessActuation_: {type: Boolean},
       actuationTargetEnumValues_: {type: Array},
       invokeShowPanel_: {type: Boolean},
       invokePayloadUniversalCartMetadata_: {type: String},
@@ -90,14 +110,27 @@ export class GlicInternalsAppElement extends CrLitElement {
       tabNames_: {type: Array},
       featureModeEnumValues_: {type: Array},
       copyButtonText_: {type: String},
+      uiLocaleQuery_: {type: String},
+      uiLocaleDropdownOpen_: {type: Boolean},
+      uiLocaleActiveIndex_: {type: Number},
+      uiLocaleError_: {type: Boolean},
+      uiLocaleReloadWarningShown_: {type: Boolean},
     };
   }
 
   protected accessor copyButtonText_: string = 'Copy Diagnostics';
+  protected accessor uiLocaleQuery_: string = '';
+  protected accessor uiLocaleDropdownOpen_: boolean = false;
+  protected accessor uiLocaleActiveIndex_: number = 0;
+  protected accessor uiLocaleError_: boolean = false;
+  protected accessor uiLocaleReloadWarningShown_: boolean = false;
   private copyResetTimeoutId_: number|null = null;
+  private eventTracker_: EventTracker = new EventTracker();
+  private highlightTimeoutId_: number|null = null;
+  private currentHighlightedElement_: HTMLElement|null = null;
 
   protected accessor data_: InternalsDataPayload|undefined;
-  protected accessor invokePrompt_: string = '';
+  protected accessor invokePrompts_: string[] = [''];
   protected accessor invokeAutoSubmit_: boolean = true;
   protected accessor invokeFreOverride_: FreOverride = FreOverride.kUnspecified;
   protected accessor invokeFeatureMode_: FeatureMode = FeatureMode.kUnspecified;
@@ -113,6 +146,7 @@ export class GlicInternalsAppElement extends CrLitElement {
   protected accessor invokeOpenInForeground_: boolean = true;
   protected accessor invokeActuationTarget_: ActuationTarget =
       ActuationTarget.kAgentDecides;
+  protected accessor invokeHeadlessActuation_: boolean = false;
   protected accessor invokeShowPanel_: boolean = true;
   protected accessor invokePayloadUniversalCartMetadata_: string = '';
   protected accessor invokeFreCompletionWaitMode_: FreCompletionWaitMode =
@@ -145,16 +179,331 @@ export class GlicInternalsAppElement extends CrLitElement {
 
   override connectedCallback() {
     super.connectedCallback();
+    this.eventTracker_.add(window, 'hashchange', () => this.onHashChanged_());
     this.fetchInternalsData_();
-
     this.refreshOpenTabs_();
+    this.onHashChanged_();
   }
 
-  private fetchInternalsData_() {
-    this.browserProxy_.handler.getInternalsDataPayload().then(
-        ({internalsData}: {internalsData: InternalsDataPayload}) => {
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this.eventTracker_.removeAll();
+    if (this.highlightTimeoutId_ !== null) {
+      window.clearTimeout(this.highlightTimeoutId_);
+      this.highlightTimeoutId_ = null;
+    }
+  }
+
+  private fetchInternalsData_(): Promise<void> {
+    return this.browserProxy_.handler.getInternalsDataPayload().then(
+        async ({internalsData}: {internalsData: InternalsDataPayload}) => {
           this.data_ = internalsData;
+          this.syncUiLocaleStateFromData_();
+          if (window.location.hash) {
+            await this.updateComplete;
+            const {elementId} = this.resolveTargetHash_(window.location.hash);
+            if (elementId) {
+              this.scrollToElement_(elementId);
+            }
+          }
         });
+  }
+
+  private formatUiLocaleOverride_(code: string): string {
+    if (!code) {
+      return '';
+    }
+    const match =
+        this.data_?.config?.availableUiLocales?.find(opt => opt.code === code);
+    return match ? `${match.label} (${match.code})` : code;
+  }
+
+  private syncUiLocaleStateFromData_() {
+    this.uiLocaleError_ = false;
+    const currentOverride = this.data_?.config?.uiLocaleOverride ?? '';
+    this.uiLocaleQuery_ = this.formatUiLocaleOverride_(currentOverride);
+  }
+
+  protected hasUiLocaleOverride_(): boolean {
+    return !!this.data_?.config?.uiLocaleOverride;
+  }
+
+  protected getDefaultUiLocaleLabel_(): string {
+    const browserLocale = this.data_?.debugInfo?.locale;
+    return browserLocale ? `Default (Chrome UI language: ${browserLocale})` :
+                           'Default (Chrome UI language)';
+  }
+
+  protected getOverridingGuestUrlHl_(): string|null {
+    return this.data_?.config?.guestUrlExplicitLocale || null;
+  }
+
+  protected getFilteredUiLocaleOptions_(): UiLocaleComboOption[] {
+    const defaultOption: UiLocaleComboOption = {
+      code: '',
+      display: this.getDefaultUiLocaleLabel_(),
+    };
+    const presets: UiLocaleComboOption[] =
+        (this.data_?.config?.availableUiLocales ??
+         []).map(opt => ({
+                   code: opt.code,
+                   display: `${opt.label} (${opt.code})`,
+                   label: opt.label,
+                 }));
+    const currentOverride = this.data_?.config?.uiLocaleOverride ?? '';
+    const baseOptions: UiLocaleComboOption[] =
+        currentOverride && !presets.some(opt => opt.code === currentOverride) ?
+        [
+          defaultOption,
+          {
+            code: currentOverride,
+            display: `Custom locale (${currentOverride})`,
+            isCustom: true,
+          },
+          ...presets,
+        ] :
+        [defaultOption, ...presets];
+    if (!this.isUiLocaleInputDirty_()) {
+      return baseOptions;
+    }
+    const trimmed = this.uiLocaleQuery_.trim();
+    if (!trimmed) {
+      return baseOptions;
+    }
+    const lower = trimmed.toLowerCase();
+    const matches: UiLocaleComboOption[] = [];
+    if (defaultOption.display.toLowerCase().includes(lower)) {
+      matches.push(defaultOption);
+    }
+    for (const preset of presets) {
+      if (preset.display.toLowerCase().includes(lower) ||
+          preset.code.toLowerCase().includes(lower)) {
+        matches.push(preset);
+      }
+    }
+    const hasExactCode = matches.some(opt => opt.code.toLowerCase() === lower);
+    if (!hasExactCode) {
+      matches.push({
+        code: trimmed,
+        display: `Use custom locale code "${trimmed}"`,
+        isCustom: true,
+      });
+    }
+    return matches;
+  }
+
+  protected getActiveUiLocaleOptionId_(): string {
+    if (!this.uiLocaleDropdownOpen_) {
+      return '';
+    }
+    const options = this.getFilteredUiLocaleOptions_();
+    if (this.uiLocaleActiveIndex_ < 0 ||
+        this.uiLocaleActiveIndex_ >= options.length) {
+      return '';
+    }
+    return `uiLocaleOption-${this.uiLocaleActiveIndex_}`;
+  }
+
+  protected isUiLocaleOptionSelected_(code: string): boolean {
+    return (this.data_?.config?.uiLocaleOverride ?? '') === code;
+  }
+
+  protected isUiLocaleInputDirty_(): boolean {
+    const currentOverride = this.data_?.config?.uiLocaleOverride ?? '';
+    return this.uiLocaleQuery_.trim() !==
+        this.formatUiLocaleOverride_(currentOverride);
+  }
+
+  private resolveTypedUiLocale_(): string {
+    const trimmed = this.uiLocaleQuery_.trim();
+    if (!trimmed || trimmed === this.getDefaultUiLocaleLabel_()) {
+      return '';
+    }
+    const lower = trimmed.toLowerCase();
+    for (const opt of this.data_?.config?.availableUiLocales ?? []) {
+      const formatted = `${opt.label} (${opt.code})`.toLowerCase();
+      if (lower === formatted || lower === opt.code.toLowerCase() ||
+          lower === opt.label.toLowerCase()) {
+        return opt.code;
+      }
+    }
+    return trimmed;
+  }
+
+  private computeDefaultUiLocaleActiveIndex_(options: UiLocaleComboOption[]):
+      number {
+    if (!this.isUiLocaleInputDirty_()) {
+      const currentOverride = this.data_?.config?.uiLocaleOverride ?? '';
+      const idx = options.findIndex(opt => opt.code === currentOverride);
+      return idx >= 0 ? idx : 0;
+    }
+    const lower = this.uiLocaleQuery_.trim().toLowerCase();
+    if (!lower) {
+      return 0;
+    }
+    const exactIdx = options.findIndex(
+        opt => !opt.isCustom &&
+            (opt.code.toLowerCase() === lower ||
+             opt.label?.toLowerCase() === lower ||
+             opt.display.toLowerCase() === lower));
+    return exactIdx >= 0 ? exactIdx : 0;
+  }
+
+  private async openUiLocaleDropdown_() {
+    this.uiLocaleDropdownOpen_ = true;
+    const options = this.getFilteredUiLocaleOptions_();
+    this.uiLocaleActiveIndex_ =
+        this.computeDefaultUiLocaleActiveIndex_(options);
+    await this.scrollActiveUiLocaleOptionIntoView_();
+  }
+
+  private async scrollActiveUiLocaleOptionIntoView_() {
+    await this.updateComplete;
+    const id = this.getActiveUiLocaleOptionId_();
+    if (!id) {
+      return;
+    }
+    const el = this.shadowRoot?.getElementById(id);
+    el?.scrollIntoView({block: 'nearest'});
+  }
+
+  protected onUiLocaleInputFocus_(e: Event) {
+    // Do not open the listbox on bare `focus`: refocusing the internals tab
+    // from another surface (such as the Glic side panel) restores focus to the
+    // last-focused element before dispatching the click, which would pop the
+    // listbox over controls below `#uiLocaleInput`.
+    if (!this.isUiLocaleInputDirty_()) {
+      (e.target as HTMLInputElement).select();
+    }
+  }
+
+  protected onUiLocaleInputClick_(e: Event) {
+    if (!this.uiLocaleDropdownOpen_) {
+      if (!this.isUiLocaleInputDirty_()) {
+        (e.target as HTMLInputElement).select();
+      }
+      this.openUiLocaleDropdown_();
+    }
+  }
+
+  protected onUiLocaleInputBlur_() {
+    this.uiLocaleDropdownOpen_ = false;
+  }
+
+  protected onUiLocaleInput_(e: Event) {
+    this.uiLocaleQuery_ = (e.target as HTMLInputElement).value;
+    this.uiLocaleDropdownOpen_ = true;
+    const options = this.getFilteredUiLocaleOptions_();
+    this.uiLocaleActiveIndex_ =
+        this.computeDefaultUiLocaleActiveIndex_(options);
+    this.uiLocaleError_ = false;
+    void this.scrollActiveUiLocaleOptionIntoView_();
+  }
+
+  protected async onUiLocaleKeydown_(e: KeyboardEvent) {
+    const options = this.getFilteredUiLocaleOptions_();
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (!this.uiLocaleDropdownOpen_) {
+        await this.openUiLocaleDropdown_();
+        return;
+      }
+      if (options.length > 0) {
+        this.uiLocaleActiveIndex_ =
+            (this.uiLocaleActiveIndex_ + 1) % options.length;
+        await this.scrollActiveUiLocaleOptionIntoView_();
+      }
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!this.uiLocaleDropdownOpen_) {
+        await this.openUiLocaleDropdown_();
+        return;
+      }
+      if (options.length > 0) {
+        this.uiLocaleActiveIndex_ =
+            (this.uiLocaleActiveIndex_ - 1 + options.length) % options.length;
+        await this.scrollActiveUiLocaleOptionIntoView_();
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (this.uiLocaleDropdownOpen_) {
+        e.preventDefault();
+        this.uiLocaleDropdownOpen_ = false;
+        this.syncUiLocaleStateFromData_();
+      }
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      let codeToApply: string;
+      if (this.uiLocaleDropdownOpen_ && this.uiLocaleActiveIndex_ >= 0 &&
+          this.uiLocaleActiveIndex_ < options.length) {
+        codeToApply = options[this.uiLocaleActiveIndex_]!.code;
+      } else {
+        codeToApply = this.resolveTypedUiLocale_();
+      }
+      this.uiLocaleDropdownOpen_ = false;
+      await this.applyUiLocaleOverride_(codeToApply);
+    }
+  }
+
+  protected onUiLocaleToggleMousedown_(e: MouseEvent) {
+    e.preventDefault();
+  }
+
+  protected onUiLocaleToggleClick_() {
+    if (this.uiLocaleDropdownOpen_) {
+      this.uiLocaleDropdownOpen_ = false;
+      return;
+    }
+    const input =
+        this.shadowRoot?.querySelector<HTMLInputElement>('#uiLocaleInput');
+    input?.focus();
+    this.openUiLocaleDropdown_();
+  }
+
+  protected onUiLocaleOptionMousedown_(e: MouseEvent) {
+    e.preventDefault();
+  }
+
+  protected async onUiLocaleOptionClick_(e: MouseEvent) {
+    const code = (e.currentTarget as HTMLElement).dataset['code'] ?? '';
+    this.uiLocaleDropdownOpen_ = false;
+    this.shadowRoot?.querySelector<HTMLInputElement>('#uiLocaleInput')?.blur();
+    await this.applyUiLocaleOverride_(code);
+  }
+
+  protected async onApplyUiLocaleClick_() {
+    this.uiLocaleDropdownOpen_ = false;
+    await this.applyUiLocaleOverride_(this.resolveTypedUiLocale_());
+  }
+
+  protected async onResetUiLocaleClick_() {
+    this.uiLocaleDropdownOpen_ = false;
+    this.uiLocaleError_ = false;
+    await this.applyUiLocaleOverride_('');
+  }
+
+  protected onDismissUiLocaleReloadClick_() {
+    this.uiLocaleReloadWarningShown_ = false;
+  }
+
+  private async applyUiLocaleOverride_(locale: string) {
+    const previousOverride = this.data_?.config?.uiLocaleOverride ?? '';
+    const {success} =
+        await this.browserProxy_.handler.setUiLocaleOverride(locale);
+    if (!success) {
+      this.uiLocaleError_ = true;
+      return;
+    }
+    this.uiLocaleError_ = false;
+    await this.fetchInternalsData_();
+    if ((this.data_?.config?.uiLocaleOverride ?? '') !== previousOverride) {
+      this.uiLocaleReloadWarningShown_ = true;
+    }
   }
 
   protected onShowErrorAllowedChange(e: Event) {
@@ -198,6 +547,16 @@ export class GlicInternalsAppElement extends CrLitElement {
     }
   }
 
+  protected onHotkeyGlobalScopeMigratedChange_(
+      e: CustomEvent<{value: boolean}>) {
+    const checked = (e.target as CrCheckboxElement).checked;
+    if (this.data_) {
+      this.data_.hotkeyGlobalScopeMigratedV2 = checked;
+    }
+    this.browserProxy_.handler.setHotkeyGlobalScopeMigratedV2(checked);
+    this.fetchInternalsData_();
+  }
+
   protected onAutopushInputChange(e: Event) {
     this.data_!.config.autopushGuestUrl = (e.target as HTMLInputElement).value;
   }
@@ -234,6 +593,17 @@ export class GlicInternalsAppElement extends CrLitElement {
     this.browserProxy_.handler.setGuestUrlPresets(
         this.data_!.config.autopushGuestUrl, this.data_!.config.stagingGuestUrl,
         this.data_!.config.preprodGuestUrl, this.data_!.config.prodGuestUrl);
+  }
+
+  protected onGuestUrlQueryParamsInputChange(e: Event) {
+    this.data_!.config.guestUrlQueryParams =
+        (e.target as HTMLInputElement).value;
+  }
+
+  protected onSaveGuestUrlQueryParamsClick_() {
+    this.browserProxy_.handler.setGuestUrlQueryParams(
+        this.data_!.config.guestUrlQueryParams);
+    this.fetchInternalsData_();
   }
 
   protected onWebContinuityInputChange(e: Event) {
@@ -347,7 +717,7 @@ export class GlicInternalsAppElement extends CrLitElement {
     this.refreshOpenTabs_();
   }
 
-  protected getChromeVersion_(): string {
+  private getChromeVersion_(): string {
     if (loadTimeData.isInitialized()) {
       try {
         const browserVersion = loadTimeData.getString('browserVersion');
@@ -372,7 +742,7 @@ export class GlicInternalsAppElement extends CrLitElement {
     return match?.[1] ?? 'Unknown';
   }
 
-  protected getDiagnosticsMarkdown_(): string {
+  private getDiagnosticsMarkdown_(): string {
     if (!this.data_) {
       return '# Glic Internals Diagnostics\n\nNo diagnostics data available.';
     }
@@ -491,11 +861,15 @@ export class GlicInternalsAppElement extends CrLitElement {
         GlicExperimentalTriggeringState.kReady;
   }
 
-  protected getTableData_(): Array<{label: string, value: boolean}> {
+  protected getTableData_():
+      Array<{label: string, value: boolean, skipped?: boolean}> {
     if (!this.data_ || !this.data_.enablement) {
       return [];
     }
 
+    // The Gemini account eligibility checks are skipped for some providers
+    // (e.g. Gemini Enterprise), and then read as passed.
+    const skipped = !this.data_.enablement.geminiAccountEligibilityChecked;
     return [
       {
         label: 'Enabled by Chrome Flags',
@@ -508,27 +882,33 @@ export class GlicInternalsAppElement extends CrLitElement {
       {
         label: 'Pref or flag based rollout (flag or pref) applies',
         value: this.data_.enablement.isRolledOut,
+        skipped,
       },
       {
         label: 'Account exists and has the Gemini in Chrome capability',
         value: this.data_.enablement.primaryAccountIsCapable,
+        skipped,
       },
       {
         label: 'Account exists and is fully signed-in',
         value: this.data_.enablement.primaryAccountIsFullySignedIn,
+        skipped,
       },
       {
         label:
             'Chrome Enterprise policy allows this feature (or doesn\'t apply)',
         value: this.data_.enablement.allowedByChromePolicy,
+        skipped,
       },
       {
         label: 'Server side admin allows this feature',
         value: this.data_.enablement.allowedByRemoteAdmin,
+        skipped,
       },
       {
         label: 'Server side allows this feature (Not admin policy)',
         value: this.data_.enablement.allowedByRemoteOther,
+        skipped,
       },
       {
         label: 'User did pass the FRE',
@@ -555,7 +935,25 @@ export class GlicInternalsAppElement extends CrLitElement {
   }
 
   protected onInvokePromptInput_(e: Event) {
-    this.invokePrompt_ = (e.target as HTMLInputElement).value;
+    const input = e.target as HTMLInputElement;
+    const index = Number(input.dataset['index']);
+    const newPrompts = [...this.invokePrompts_];
+    newPrompts[index] = input.value;
+    this.invokePrompts_ = newPrompts;
+  }
+
+  protected onAddPromptClick_() {
+    this.invokePrompts_ = [...this.invokePrompts_, ''];
+  }
+
+  protected onRemovePromptClick_(e: Event) {
+    if (this.invokePrompts_.length <= 1) {
+      return;
+    }
+    const button = e.currentTarget as HTMLElement;
+    const indexToRemove = Number(button.dataset['index']);
+    this.invokePrompts_ =
+        this.invokePrompts_.filter((_, index) => index !== indexToRemove);
   }
 
   protected onInvokeAutoSubmitChange_(e: Event) {
@@ -604,7 +1002,7 @@ export class GlicInternalsAppElement extends CrLitElement {
     }
   }
 
-  protected async refreshOpenTabs_() {
+  private async refreshOpenTabs_() {
     const {tabTitles} = await this.browserProxy_.handler.getOpenTabs();
     this.availableTabs_ = tabTitles;
     this.invokeSpecificTabIndex_ = 0;
@@ -656,6 +1054,14 @@ export class GlicInternalsAppElement extends CrLitElement {
     this.invokeActuationTarget_ = Number((e.target as HTMLSelectElement).value);
   }
 
+  protected isTargetSurfaceSelected_(): boolean {
+    return this.invokeActuationTarget_ === ActuationTarget.kTargetSurface;
+  }
+
+  protected onInvokeHeadlessActuationChange_(e: Event) {
+    this.invokeHeadlessActuation_ = (e.target as HTMLInputElement).checked;
+  }
+
   protected onInvokeShowPanelChange_(e: Event) {
     this.invokeShowPanel_ = (e.target as HTMLInputElement).checked;
   }
@@ -675,7 +1081,7 @@ export class GlicInternalsAppElement extends CrLitElement {
   protected onInvokeAuthSecretInput_(e: Event) {
     this.invokeAuthSecret_ = (e.target as HTMLInputElement).value;
   }
-  protected onTriggerInvokeClick_() {
+  protected async onTriggerInvokeClick_() {
     let surface: TriggerInvokeFromInternalsOptions['surface'];
     if (this.invokeSurfaceType_ === 'newTab') {
       surface = {newTab: {openInForeground: this.invokeOpenInForeground_}};
@@ -709,7 +1115,7 @@ export class GlicInternalsAppElement extends CrLitElement {
 
     const options: TriggerInvokeFromInternalsOptions = {
       invocationSource: this.invokeInvocationSource_,
-      prompts: this.invokePrompt_ ? [this.invokePrompt_] : [],
+      prompts: this.invokePrompts_.filter(prompt => prompt.length > 0),
       conversation: conversationSelection,
       featureMode: this.invokeFeatureMode_,
       disableZss: false,
@@ -739,6 +1145,8 @@ export class GlicInternalsAppElement extends CrLitElement {
       payload: payload,
       takeScreenshot: this.invokeTakeScreenshot_,
       supersedeIfInProgress: this.invokeSupersedeIfInProgress_,
+      headlessActuation: this.isTargetSurfaceSelected_() &&
+          this.invokeAutoSubmit_ && this.invokeHeadlessActuation_,
       keyConfig: (this.invokePublicKey_ || this.invokeAuthSecret_) ? {
         publicKey: this.invokePublicKey_,
         authSecret: this.invokeAuthSecret_,
@@ -821,14 +1229,14 @@ export class GlicInternalsAppElement extends CrLitElement {
     ];
     console.info(this.invokeLogs_[0]);
 
-    this.browserProxy_.handler.triggerInvokeFromInternalsAction(options).then(
-        ({success, errorMessage}: {success: boolean, errorMessage: string}) => {
-          const timestamp = new Date().toLocaleTimeString();
-          const logEntry = `[${timestamp}] ${
-              success ? 'SUCCESS' : 'ERROR: ' + errorMessage}`;
-          this.invokeLogs_ = [...this.invokeLogs_, logEntry];
-          console.info(logEntry);
-        });
+    const {success, errorMessage} =
+        await this.browserProxy_.handler.triggerInvokeFromInternalsAction(
+            options);
+    const timestamp = new Date().toLocaleTimeString();
+    const logEntry =
+        `[${timestamp}] ${success ? 'SUCCESS' : 'ERROR: ' + errorMessage}`;
+    this.invokeLogs_ = [...this.invokeLogs_, logEntry];
+    console.info(logEntry);
   }
 
   protected getPlatformString_(platform: Platform): string {
@@ -861,6 +1269,14 @@ export class GlicInternalsAppElement extends CrLitElement {
     }
   }
 
+  protected isGeminiEnterprise_(): boolean {
+    return this.data_?.provider === GlicProviderType.kGeminiEnterprise;
+  }
+
+  protected getProviderName_(): string {
+    return this.isGeminiEnterprise_() ? 'Gemini Enterprise' : 'Gemini';
+  }
+
   protected getDebugSettingsData_():
       Array<{label: string, value: string|boolean}> {
     if (!this.data_ || !this.data_.debugInfo) {
@@ -884,6 +1300,10 @@ export class GlicInternalsAppElement extends CrLitElement {
       {
         label: 'GlicTieredRolloutV2 Feature Flag',
         value: debugInfo.glicTieredRolloutV2FeatureEnabled,
+      },
+      {
+        label: 'GlicSubscriptionBenefitsEligibility Feature Flag',
+        value: debugInfo.glicSubscriptionBenefitsEligibilityFeatureEnabled,
       },
       {
         label: 'Platform',
@@ -945,7 +1365,145 @@ export class GlicInternalsAppElement extends CrLitElement {
 
   protected onSelectedTabIndexSelectedChanged_(
       e: CustomEvent<{value: number}>) {
-    this.selectedTabIndex_ = e.detail.value;
+    const newIndex = e.detail.value;
+    if (this.selectedTabIndex_ === newIndex) {
+      return;
+    }
+    this.selectedTabIndex_ = newIndex;
+    const targetHash = TAB_HASH_MAP[newIndex] ?? DEFAULT_TAB_HASH;
+    const currentHash = window.location.hash;
+    if (currentHash !== targetHash &&
+        !currentHash.startsWith(targetHash + '.')) {
+      window.location.hash = targetHash;
+    }
+  }
+
+  protected onTabsClick_(e: MouseEvent) {
+    const tab = e.composedPath().find(
+                    el => el instanceof HTMLElement &&
+                        el.classList.contains('tab')) as HTMLElement |
+        undefined;
+    if (!tab || tab.dataset['index'] === undefined) {
+      return;
+    }
+    const clickedIndex = Number(tab.dataset['index']);
+    const targetHash = TAB_HASH_MAP[clickedIndex] ?? DEFAULT_TAB_HASH;
+    if (window.location.hash !== targetHash) {
+      window.location.hash = targetHash;
+    }
+  }
+
+  protected onSectionLinkClick_(e: MouseEvent) {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
+      return;
+    }
+    e.preventDefault();
+
+    const anchor = (e.currentTarget as HTMLElement)
+                       .closest<HTMLAnchorElement>('a.section-link');
+    const targetHash = anchor?.getAttribute('href');
+    if (!targetHash) {
+      return;
+    }
+
+    if (window.location.hash !== targetHash) {
+      window.location.hash = targetHash;
+    } else {
+      const id = targetHash.startsWith('#') ? targetHash.slice(1) : targetHash;
+      this.scrollToElement_(id);
+    }
+  }
+
+  private resolveTargetHash_(rawHash: string): {
+    targetHash: string,
+    tabIndex: number,
+    elementId?: string,
+  } {
+    let hash = rawHash.trim().toLowerCase();
+    if (!hash || hash === '#') {
+      return {
+        targetHash: DEFAULT_TAB_HASH,
+        tabIndex: TAB_GENERAL,
+      };
+    }
+    if (!hash.startsWith('#')) {
+      hash = '#' + hash;
+    }
+
+    for (const [indexStr, tabHash] of Object.entries(TAB_HASH_MAP)) {
+      const tabIndex = Number(indexStr);
+      if (hash === tabHash) {
+        return {targetHash: tabHash, tabIndex};
+      }
+      if (hash.startsWith(tabHash + '.')) {
+        return {
+          targetHash: hash,
+          tabIndex,
+          elementId: hash.slice(1),
+        };
+      }
+    }
+
+    return {
+      targetHash: DEFAULT_TAB_HASH,
+      tabIndex: TAB_GENERAL,
+    };
+  }
+
+  private async onHashChanged_() {
+    const {targetHash, tabIndex, elementId} =
+        this.resolveTargetHash_(window.location.hash);
+
+    if (this.selectedTabIndex_ !== tabIndex) {
+      this.selectedTabIndex_ = tabIndex;
+    }
+
+    await this.updateComplete;
+
+    if (elementId) {
+      this.scrollToElement_(elementId);
+    } else if (Object.values(TAB_HASH_MAP).includes(targetHash)) {
+      window.scrollTo({top: 0, behavior: 'smooth'});
+    }
+  }
+
+  private scrollToElement_(elementId: string) {
+    if (!this.shadowRoot) {
+      return;
+    }
+
+    const element = this.shadowRoot.getElementById(elementId);
+    if (!element) {
+      return;
+    }
+
+    element.scrollIntoView({behavior: 'smooth', block: 'start'});
+
+    // Clear any pending timeout and remove highlight from any previously
+    // highlighted element.
+    if (this.highlightTimeoutId_ !== null) {
+      window.clearTimeout(this.highlightTimeoutId_);
+      this.highlightTimeoutId_ = null;
+    }
+    if (this.currentHighlightedElement_) {
+      this.currentHighlightedElement_.classList.remove('highlight-target');
+    }
+
+    // Trigger pulse animation. Removing and re-adding the class with a forced
+    // reflow (by reading offsetWidth) restarts the CSS animation if the element
+    // was already highlighted.
+    element.classList.remove('highlight-target');
+    void element.offsetWidth;
+    element.classList.add('highlight-target');
+    this.currentHighlightedElement_ = element;
+
+    this.highlightTimeoutId_ = window.setTimeout(() => {
+      element.classList.remove('highlight-target');
+      if (this.currentHighlightedElement_ === element) {
+        this.currentHighlightedElement_ = null;
+      }
+      this.highlightTimeoutId_ = null;
+    }, 1500);
   }
 }
 

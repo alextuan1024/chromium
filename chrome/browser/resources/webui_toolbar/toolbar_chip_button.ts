@@ -27,6 +27,8 @@ export interface ToolbarChipButtonElement {
  *   automatic accessibility, keyboard nav, and drag-to-cancel behavior.
  * - Label Animation: Supports sliding label transitions via animates-label
  *   and has-label attributes.
+ * - Split Button: Supports flattening one side via the flat-edge attribute
+ *   to visually join an adjacent companion chip.
  *
  * Slots:
  * - prefix-icon: Icon before the text.
@@ -53,6 +55,7 @@ export class ToolbarChipButtonElement extends CrLitElement {
       tooltip: {type: String},
       ariaHasPopup: {type: String},
       ariaExpanded: {type: String},
+      ariaPressed: {type: String},
       disabled: {
         type: Boolean,
         reflect: true,
@@ -73,6 +76,14 @@ export class ToolbarChipButtonElement extends CrLitElement {
       buttonTabIndex: {
         type: Number,
       },
+      buttonRole: {
+        type: String,
+      },
+      flatEdge: {
+        type: String,
+        reflect: true,
+        attribute: 'flat-edge',
+      },
     };
   }
 
@@ -91,6 +102,9 @@ export class ToolbarChipButtonElement extends CrLitElement {
   /** Indicates whether the popup triggered by the button is expanded. */
   override accessor ariaExpanded: string|null = null;
 
+  /** Indicates the current pressed state of a toggle button. */
+  override accessor ariaPressed: string|null = null;
+
   /** Whether the button is disabled. */
   accessor disabled: boolean = false;
 
@@ -103,8 +117,32 @@ export class ToolbarChipButtonElement extends CrLitElement {
   accessor outsetFocusRing: boolean = false;
   accessor buttonTabIndex: number = -1;
 
-  override focus() {
-    this.$.button.focus();
+  /**
+   * ARIA role for the inner button (e.g. 'img'). When unset, the inner button
+   * keeps its implicit 'button' role.
+   */
+  accessor buttonRole: string|null = null;
+
+  /**
+   * Flattens one logical side of the pill so the chip visually joins an
+   * adjacent companion chip as a split button (e.g. the Glic button and the
+   * actor task icon). Uses logical sides, so it mirrors automatically in RTL,
+   * matching Views ToolbarButton::SetFlipCanvasOnPaintForRTLUI().
+   */
+  accessor flatEdge: 'start'|'end'|null = null;
+
+  override focus(options?: FocusOptions) {
+    // `focus()` is a no-op on the focused element, so blur first if a focus
+    // ring is requested for a button that has focus without one (e.g. after a
+    // mouse click). Check `activeElement` rather than `:focus`, which doesn't
+    // match while the frame itself is unfocused (e.g. a focus request that
+    // arrives before the frame regains focus).
+    if (options?.focusVisible &&
+        this.shadowRoot.activeElement === this.$.button &&
+        !this.$.button.matches(':focus-visible')) {
+      this.$.button.blur();
+    }
+    this.$.button.focus(options);
   }
 
   protected onPrefixIconSlotchange_(e: Event) {

@@ -4,14 +4,20 @@
 
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_mediator.h"
 
+#import <string>
+
 #import "base/memory/raw_ptr.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/public/tracker.h"
+#import "components/google/core/common/google_util.h"
 #import "components/password_manager/core/browser/features/password_manager_features_util.h"
 #import "components/password_manager/core/browser/leak_detection_dialog_utils.h"
 #import "components/password_manager/core/browser/password_manager_client.h"
+#import "components/password_manager/core/browser/password_manager_constants.h"
 #import "components/password_manager/core/browser/password_sync_util.h"
+#import "components/password_manager/core/common/password_manager_pref_names.h"
+#import "components/prefs/pref_service.h"
 #import "components/sync/service/sync_service_utils.h"
 #import "components/sync/service/sync_user_settings.h"
 #import "ios/chrome/browser/favicon/model/favicon_loader.h"
@@ -19,11 +25,11 @@
 #import "ios/chrome/browser/passwords/model/password_check_observer_bridge.h"
 #import "ios/chrome/browser/passwords/model/password_checkup_utils.h"
 #import "ios/chrome/browser/passwords/model/password_manager_util_ios.h"
+#import "ios/chrome/browser/settings/password/public/password_manager_ui_features.h"
+#import "ios/chrome/browser/settings/password/public/passwords_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/account_storage_utils.h"
-#import "ios/chrome/browser/settings/ui_bundled/password/password_manager_ui_features.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_consumer.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_mediator+Testing.h"
-#import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/saved_passwords_presenter_observer.h"
 #import "ios/chrome/browser/settings/ui_bundled/utils/password_auto_fill_status_manager.h"
 #import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
@@ -51,6 +57,15 @@ struct PasswordManagerActiveWidgetPromoData
   // Key to use for this type in SupportsUserData
   static constexpr char key[] = "PasswordManagerActiveWidgetPromoData";
 };
+
+// Returns whether adding passwords is allowed by enterprise policy.
+bool AllowsAddPassword(PrefService* pref_service) {
+  // If the settings are managed by enterprise policy and the password manager
+  // is not enabled, there won't be any add functionality.
+  const char* pref_name = password_manager::prefs::kCredentialsEnableService;
+  return !pref_service->IsManagedPreference(pref_name) ||
+         pref_service->GetBoolean(pref_name);
+}
 
 }  // namespace
 
@@ -94,17 +109,32 @@ struct PasswordManagerActiveWidgetPromoData
 
   // Service to know whether passwords are synced.
   raw_ptr<syncer::SyncService> _syncService;
+
+  // Profile pref service.
+  raw_ptr<PrefService> _prefService;
+
+  // Localized Password Manager Help Center URL.
+  CrURL* _helpCenterURL;
 }
 
-- (instancetype)initWithPasswordCheckManager:
-                    (scoped_refptr<IOSChromePasswordCheckManager>)
-                        passwordCheckManager
-                               faviconLoader:(FaviconLoader*)faviconLoader
-                                 syncService:(syncer::SyncService*)syncService {
+- (instancetype)
+    initWithPasswordCheckManager:
+        (scoped_refptr<IOSChromePasswordCheckManager>)passwordCheckManager
+                   faviconLoader:(FaviconLoader*)faviconLoader
+                     syncService:(syncer::SyncService*)syncService
+                     prefService:(PrefService*)prefService
+               applicationLocale:(std::string_view)applicationLocale {
   self = [super init];
   if (self) {
+    CHECK(prefService);
     _syncService = syncService;
     _faviconLoader = faviconLoader;
+    _prefService = prefService;
+    _helpCenterURL = [[CrURL alloc]
+        initWithGURL:
+            google_util::AppendGoogleLocaleParam(
+                GURL(password_manager::kPasswordManagerHelpCenteriOSURL),
+                std::string(applicationLocale))];
 
     _syncObserver = std::make_unique<SyncObserverBridge>(self, syncService);
 
@@ -130,6 +160,7 @@ struct PasswordManagerActiveWidgetPromoData
 
   [self.consumer
       setUserEmail:base::UTF8ToUTF16(_syncService->GetAccountInfo().email)];
+  [self.consumer setHelpCenterURL:_helpCenterURL];
   [self displayOrHideTrustedVaultPasswordManagerWidgetPromo];
   [self providePasswordsToConsumer];
 
@@ -139,6 +170,7 @@ struct PasswordManagerActiveWidgetPromoData
       setSavingPasswordsToAccount:
           password_manager::sync_util::GetPasswordSyncState(_syncService) !=
           password_manager::sync_util::SyncState::kNotActive];
+  [self.consumer setAllowsAddPassword:AllowsAddPassword(_prefService)];
 }
 
 - (void)disconnect {
@@ -153,6 +185,7 @@ struct PasswordManagerActiveWidgetPromoData
   _savedPasswordsPresenter = nullptr;
   _faviconLoader = nullptr;
   _syncService = nullptr;
+  _prefService = nullptr;
 }
 
 - (void)askFETToShowPasswordManagerWidgetPromo {

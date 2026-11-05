@@ -73,6 +73,9 @@ void AddToSubresourceFilterMetadata(
   }
 }
 
+// Keep the severity values in sync with GetThreatSeverity() in
+// base_ui_manager.cc.
+// LINT.IfChange(ThreatTypeSeverity)
 int GetThreatSeverity(const V5::FullHash::FullHashDetail& detail) {
   bool is_canary =
       std::ranges::contains(detail.attributes(), V5::ThreatAttribute::CANARY);
@@ -80,7 +83,6 @@ int GetThreatSeverity(const V5::FullHash::FullHashDetail& detail) {
     // SUSPICIOUS threat type.
     return 7;
   }
-  // LINT.IfChange(ThreatTypeSeverity)
   switch (detail.threat_type()) {
     case V5::ThreatType::MALWARE:
     // POTENTIALLY_HARMFUL_APPLICATION is used for mobile/iOS malware
@@ -104,13 +106,14 @@ int GetThreatSeverity(const V5::FullHash::FullHashDetail& detail) {
     case V5::ThreatType::SUBRESOURCE_FILTER:
     case V5::ThreatType::THREAT_TYPE_UNSPECIFIED:
       NOTREACHED();
-      // LINT.ThenChange(//components/safe_browsing/core/common/proto/safebrowsingv5.proto:ThreatType)
     default:
       // Using "default" because exhaustive switch statements are not
       // recommended for proto3 enums.
       NOTREACHED();
   }
 }
+// LINT.ThenChange(//components/safe_browsing/core/common/proto/safebrowsingv5.proto:ThreatType,
+// //components/safe_browsing/content/browser/interstitials/base_ui_manager.cc:ThreatTypeSeverity)
 
 bool RemoveUnmatchedFullHashes(
     V5::SearchHashesResponse* response,
@@ -221,11 +224,10 @@ ThreatResult DetermineMostSevereThreat(
 }
 
 std::string GetResourceUrl(V5::SearchHashesRequest* request) {
-  std::string request_data, request_base64;
+  std::string request_data;
   request->SerializeToString(&request_data);
-  base::Base64UrlEncode(request_data,
-                        base::Base64UrlEncodePolicy::INCLUDE_PADDING,
-                        &request_base64);
+  std::string request_base64 = base::Base64UrlEncode(
+      request_data, base::Base64UrlEncodePolicy::INCLUDE_PADDING);
 
   std::string url = base::StringPrintf(
       "%s/hashes:search"

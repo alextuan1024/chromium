@@ -4,6 +4,7 @@
 
 #include "components/facilitated_payments/core/browser/native_account_linking_handler.h"
 
+#include <string>
 #include <utility>
 
 #include "base/check_deref.h"
@@ -138,7 +139,8 @@ void NativeAccountLinkingHandler::InitiateAccountLinkingNetworkCall(
       base::BindOnce(&NativeAccountLinkingHandler::
                          OnGetDetailsForCreatePaymentInstrumentResponseReceived,
                      GetWeakPtr(), base::TimeTicks::Now()),
-      client_->GetPaymentsDataManager()->app_locale());
+      std::string(
+          client_->GetPaymentsDataManager()->app_locale().tag_string()));
 }
 
 void NativeAccountLinkingHandler::InvokeInstrumentManager(
@@ -169,6 +171,11 @@ void NativeAccountLinkingHandler::ShowAccountLinkingPrompt() {
       base::BindOnce(&NativeAccountLinkingHandler::OnAccepted, GetWeakPtr()),
       base::BindOnce(&NativeAccountLinkingHandler::OnDeclined, GetWeakPtr()),
       base::BindOnce(&NativeAccountLinkingHandler::OnDismissed, GetWeakPtr()));
+}
+
+void NativeAccountLinkingHandler::Reset() {
+  api_client_.reset();
+  action_token_.clear();
 }
 
 void NativeAccountLinkingHandler::DismissPrompt() {

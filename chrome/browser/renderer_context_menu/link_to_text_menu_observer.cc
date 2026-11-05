@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
@@ -100,7 +101,8 @@ std::unique_ptr<LinkToTextMenuObserver> LinkToTextMenuObserver::Create(
     return nullptr;
   }
 
-  DCHECK(content::RenderFrameHost::FromID(render_frame_host_id));
+  CHECK(content::RenderFrameHost::FromID(render_frame_host_id),
+        base::NotFatalUntil::M163);
   return base::WrapUnique(new LinkToTextMenuObserver(
       proxy, render_frame_host_id, toast_controller));
 }
@@ -171,7 +173,7 @@ bool LinkToTextMenuObserver::IsCommandIdSupported(int command_id) {
 
 bool LinkToTextMenuObserver::IsCommandIdEnabled(int command_id) {
   // This should only be called for the command for copying link to text.
-  DCHECK(IsCommandIdSupported(command_id));
+  CHECK(IsCommandIdSupported(command_id), base::NotFatalUntil::M163);
 
   // If a link generation was needed, only enable the command if a link was
   // successfully generated.
@@ -185,7 +187,7 @@ bool LinkToTextMenuObserver::IsCommandIdEnabled(int command_id) {
 
 void LinkToTextMenuObserver::ExecuteCommand(int command_id) {
   // This should only be called for the command for copying link to text.
-  DCHECK(IsCommandIdSupported(command_id));
+  CHECK(IsCommandIdSupported(command_id), base::NotFatalUntil::M163);
 
   if (command_id == IDC_CONTENT_CONTEXT_COPYLINKTOTEXT) {
     ExecuteCopyLinkToText();
@@ -292,17 +294,38 @@ void LinkToTextMenuObserver::StartLinkGenerationRequestWithTimeout() {
 }
 
 void LinkToTextMenuObserver::ExecuteCopyLinkToText() {
-  DCHECK(generated_link_.has_value());
+  CHECK(generated_link_.has_value(), base::NotFatalUntil::M163);
 
-  CopyTextToClipboard(generated_link_.value());
+  // A policy can hold the copy back, e.g. until a content analysis scan allows
+  // it, so then show the toast once the link is copied, if it is. The menu can
+  // be gone by then, so the toast controller is looked up from the tab.
+  base::OnceCallback<void(bool copied)> callback = base::DoNothing();
+  bool copy_allowed_by_policy =
+      enterprise_data_protection::IsClipboardCopyAllowedByPolicyForUI(
+          proxy_->GetWebContents());
+  if (!copy_allowed_by_policy &&
+      toast_features::IsEnabled(toast_features::kLinkToHighlightCopiedToast)) {
+    callback = base::BindOnce(
+        [](base::WeakPtr<content::WebContents> web_contents, bool copied) {
+          if (!copied) {
+            return;
+          }
+          if (auto* toast_controller =
+                  ToastController::MaybeGetForWebContents(web_contents.get())) {
+            toast_controller->MaybeShowToast(
+                ToastParams(ToastId::kLinkToHighlightCopied));
+          }
+        },
+        proxy_->GetWebContents()->GetWeakPtr());
+  }
+  CopyTextToClipboard(generated_link_.value(), std::move(callback));
 
   LogDesktopLinkGenerationCopiedLinkType(
       shared_highlighting::LinkGenerationCopiedLinkType::
           kCopiedFromNewGeneration);
 
-  if (toast_features::IsEnabled(toast_features::kLinkToHighlightCopiedToast) &&
-      enterprise_data_protection::IsClipboardCopyAllowedByPolicyForUI(
-          proxy_->GetWebContents()) &&
+  if (copy_allowed_by_policy &&
+      toast_features::IsEnabled(toast_features::kLinkToHighlightCopiedToast) &&
       toast_controller_) {
     toast_controller_->MaybeShowToast(
         ToastParams(ToastId::kLinkToHighlightCopied));
@@ -396,7 +419,7 @@ void LinkToTextMenuObserver::OnGetExistingSelectorsComplete(
   url_to_share =
       shared_highlighting::AppendSelectors(url_to_share, aggregated_selectors);
 
-  CopyTextToClipboard(url_to_share.spec());
+  CopyTextToClipboard(url_to_share.spec(), base::DoNothing());
 
   LogDesktopLinkGenerationCopiedLinkType(
       shared_highlighting::LinkGenerationCopiedLinkType::
@@ -440,11 +463,14 @@ LinkToTextMenuObserver::GetRemote() {
   return remote_;
 }
 
-void LinkToTextMenuObserver::CopyTextToClipboard(const std::string& text) {
+void LinkToTextMenuObserver::CopyTextToClipboard(
+    const std::string& text,
+    base::OnceCallback<void(bool copied)> callback) {
   auto* rfh = content::RenderFrameHost::FromID(render_frame_host_id_);
   CHECK(rfh);
 
-  enterprise_data_protection::CopyTextToClipboard(rfh, base::UTF8ToUTF16(text));
+  enterprise_data_protection::CopyTextToClipboard(*rfh, base::UTF8ToUTF16(text),
+                                                  std::move(callback));
 }
 
 std::u16string LinkToTextMenuObserver::GetCopyLinkToTextLabel() const {

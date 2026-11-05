@@ -14,10 +14,7 @@ group("remoting_all") {
   }
 
   if (is_win) {
-    deps += [
-      "//remoting/host/win:all",
-      "//remoting/tools:remoting_breakpad_tester",
-    ]
+    deps += [ "//remoting/host/win:all" ]
 
     if (is_chrome_branded) {
       deps += [ "//remoting/host:remoting_host_installation" ]
@@ -45,6 +42,10 @@ group("remoting_all") {
         "//remoting/host/crash:crash_tools",
         "//remoting/host/linux:remoting_dev_me2me_host",
       ]
+    }
+
+    if (is_win) {
+      deps += [ "//remoting/host/crash:remoting_crashpad_tester" ]
     }
 
     if (use_glib) {
@@ -89,6 +90,7 @@ group("test_support") {
 }
 
 test("remoting_unittests") {
+  data_deps = []
   defines = []
   libs = []
 
@@ -100,6 +102,7 @@ test("remoting_unittests") {
     "//base/test:test_support",
     "//google_apis",
     "//remoting/base:unit_tests",
+    "//remoting/codec:unit_tests",
     "//remoting/protocol:unit_tests",
     "//remoting/signaling:unit_tests",
     "//testing/gmock",
@@ -108,7 +111,6 @@ test("remoting_unittests") {
 
   if (enable_remoting_host) {
     deps += [
-      "//remoting/codec:unit_tests",
       "//remoting/host:unit_tests",
       "//remoting/host/base:unit_tests",
       "//ui/gfx",
@@ -128,6 +130,7 @@ test("remoting_unittests") {
 
   if (is_win) {
     defines += [ "_ALT_NO_EXCEPTIONS" ]
+    data_deps += [ "//remoting/host/crash:remoting_crashpad_handler" ]
 
     libs += [
       "comctl32.lib",

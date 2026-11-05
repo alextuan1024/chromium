@@ -224,7 +224,7 @@ class HashRealTimeServiceTest : public PlatformTest {
     }
     service_ = std::make_unique<HashRealTimeService>(
         network_context_callback, cache_ptr, ohttp_key_service_.get(),
-        webui_delegate_.get());
+        webui_delegate_.get(), /*profile_mode_suffix=*/"Regular");
   }
   void SetUp() override {
     PlatformTest::SetUp();
@@ -275,12 +275,10 @@ class HashRealTimeServiceTest : public PlatformTest {
   }
   std::string GetExpectedRequestUrl(
       const std::unique_ptr<V5::SearchHashesRequest>& request) {
-    std::string expected_request_base64;
     std::string expected_request_data;
     request->SerializeToString(&expected_request_data);
-    base::Base64UrlEncode(expected_request_data,
-                          base::Base64UrlEncodePolicy::INCLUDE_PADDING,
-                          &expected_request_base64);
+    std::string expected_request_base64 = base::Base64UrlEncode(
+        expected_request_data, base::Base64UrlEncodePolicy::INCLUDE_PADDING);
     return "https://safebrowsing.googleapis.com/v5/hashes:search?$req=" +
            expected_request_base64 + "&$ct=application/x-protobuf" + key_param_;
   }
@@ -369,6 +367,10 @@ class HashRealTimeServiceTest : public PlatformTest {
       HashRealTimeService::OperationOutcome expected_operation_outcome) {
     histogram_tester_->ExpectUniqueSample(
         /*name=*/"SafeBrowsing.HPRT.OperationOutcome",
+        /*sample=*/expected_operation_outcome,
+        /*expected_bucket_count=*/1);
+    histogram_tester_->ExpectUniqueSample(
+        /*name=*/"SafeBrowsing.HPRT.OperationOutcome.Regular",
         /*sample=*/expected_operation_outcome,
         /*expected_bucket_count=*/1);
   }

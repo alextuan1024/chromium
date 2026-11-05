@@ -183,9 +183,7 @@ public class BundleUtils {
 
     /** Replaces the ClassLoader of the passed in Context. */
     public static void replaceClassLoader(Context baseContext, ClassLoader classLoader) {
-        while (baseContext instanceof ContextWrapper) {
-            baseContext = ((ContextWrapper) baseContext).getBaseContext();
-        }
+        baseContext = ContextUtils.getBaseContext(baseContext);
 
         try {
             // baseContext should now be an instance of ContextImpl.
@@ -420,16 +418,11 @@ public class BundleUtils {
         if (apkPath == null) {
             return null;
         }
-
-        try {
-            ApplicationInfo info = ContextUtils.getApplicationContext().getApplicationInfo();
-            String primaryCpuAbi = (String) info.getClass().getField("primaryCpuAbi").get(info);
-            // This matches the logic LoadedApk.java uses to construct library paths.
-            return apkPath + "!/lib/" + primaryCpuAbi + "/" + System.mapLibraryName(libraryName);
-        } catch (ReflectiveOperationException e) {
-            throw JavaUtils.throwUnchecked(e);
+        String primaryCpuAbi = ApkInfo.getPrimaryCpuAbi();
+        if (primaryCpuAbi == null) {
+            return null;
         }
+        // This matches the logic LoadedApk.java uses to construct library paths.
+        return apkPath + "!/lib/" + primaryCpuAbi + "/" + System.mapLibraryName(libraryName);
     }
-
 }
-

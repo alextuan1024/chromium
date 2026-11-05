@@ -755,7 +755,7 @@
 <translation id="5760594853119905566">Apêndice</translation>
 <translation id="5761219715606611783">Muito bem! Aprendeu as noções básicas acerca do toque do ChromeVox. Pode voltar a assistir ao tutorial ou sair do mesmo com os botões abaixo.</translation>
 <translation id="5776001898637896684">Extensão de conversão de texto em voz Google Enhanced Network</translation>
-<translation id="5783252477644995371">O controlo facial permite-lhe controlar o cursor apontando com o rosto e executar ações, como clicar com o botão esquerdo com gestos faciais, como um sorriso</translation>
+<translation id="5783252477644995371">O controlo facial permite-lhe controlar o cursor apontando com a cara e executar ações, como clicar com o botão esquerdo com gestos faciais, como um sorriso</translation>
 <translation id="5805940204952508776">Tocar com dois dedos</translation>
 <translation id="5807774529265708172">Mostrar ou ocultar o teclado no ecrã</translation>
 <translation id="5819072574982403430">Item de árvore</translation>
@@ -1116,6 +1116,7 @@
 <translation id="8276439074553447000">Ir para o anterior item a focar</translation>
 <translation id="8279039817939141096">Prima uma tecla do teclado de esquema QWERTY, uma tecla de braille atualizável ou utilize um gesto de toque para conhecer a respetiva função. Prima Control + W, Espaço + Z, Esc ou deslize rapidamente para a esquerda com dois dedos para sair.</translation>
 <translation id="8283603667300770666">Campo de formulário seguinte</translation>
+<translation id="8304225988857172661">Não foi possível carregar o braille japonês, por isso o braille está desativado. Para tentar novamente, altere a tabela de braille nas definições do ChromeVox.</translation>
 <translation id="8310185481635255431">Não existe nenhum link seguinte.</translation>
 <translation id="831207808878314375">Definição</translation>
 <translation id="8313653172105209786">dir</translation>

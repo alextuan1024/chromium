@@ -31,6 +31,10 @@ const base::Feature* GetFeatureOfRegexFeature(RegexFeature feature) {
       return &features::kAutofillSupportCombinedZipAndCityFR;
     case RegexFeature::kAutofillEnableExpandIbanRegexPattern:
       return &features::kAutofillEnableExpandIbanRegexPattern;
+    case RegexFeature::kAutofillStricterPhoneExtensionRegex:
+      return &features::kAutofillStricterPhoneExtensionRegex;
+    case RegexFeature::kAutofillImproveZipCodeRegexPrecision:
+      return &features::kAutofillImproveZipCodeRegexPrecision;
   }
   NOTREACHED();
 }

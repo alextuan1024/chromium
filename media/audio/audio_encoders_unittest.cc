@@ -286,11 +286,16 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
     }
   }
 
-  // The amount of front padding that the encoder emits.
-  size_t GetExpectedPadding() {
+  // The amount of padding that the encoder emits.
+  size_t GetExpectedPadding(size_t input_frames = 0) {
 #if BUILDFLAG(IS_MAC)
     if (options_.codec == AudioCodec::kAAC)
       return 2112;
+#elif BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)
+    if (options_.codec == AudioCodec::kAAC && input_frames > 0 &&
+        input_frames < 2 * static_cast<size_t>(frames_per_buffer_)) {
+      return frames_per_buffer_;
+    }
 #endif
     return 0;
   }
@@ -302,7 +307,9 @@ class AudioEncodersTest : public ::testing::TestWithParam<TestAudioParams> {
         frames_per_buffer_ -
         (expected_duration_helper_->frame_count() % frames_per_buffer_);
 
-    int64_t amount_of_padding = GetExpectedPadding() + frame_remainder;
+    int64_t amount_of_padding =
+        GetExpectedPadding(expected_duration_helper_->frame_count()) +
+        frame_remainder;
 
     // Padding is re-emitted after each flush.
     amount_of_padding *= flush_count;
@@ -412,6 +419,22 @@ TEST_P(AudioEncodersTest, EncodeAndFlush) {
   ProduceAudioAndEncode();
   ProduceAudioAndEncode();
   ProduceAudioAndEncode();
+
+  FlushAndVerifyStatus();
+
+  ValidateDoneCallbacksRun();
+  ValidateOutputDuration();
+}
+
+TEST_P(AudioEncodersTest, ShortInputAndFlush) {
+  if (EncoderHasDelay()) {
+    return;
+  }
+
+  InitializeEncoder();
+  ProduceAudioAndEncode(
+      base::TimeTicks::Now(),
+      std::max(1, static_cast<int>(options_.sample_rate * 0.01)));
 
   FlushAndVerifyStatus();
 
@@ -698,7 +721,7 @@ TEST_P(AudioOpusEncoderTest, ExtraData) {
 }
 
 TEST_P(AudioOpusEncoderTest, FullCycleEncodeDecode) {
-  const int kOpusDecoderSampleRate = 48000;
+  constexpr int kOpusDecoderSampleRate = 48000;
   const int kOpusDecoderFramesPerBuffer = AudioTimestampHelper::TimeToFrames(
       kOpusBufferDuration, kOpusDecoderSampleRate);
 
@@ -902,6 +925,86 @@ TEST_P(AudioOpusEncoderTest, FullCycleEncodeDecode_OpusOptions) {
   }
 }
 
+// Makes sure output timestamps advance across suppressed DTX frames for both
+// standard and repacketized frame durations.
+TEST_P(AudioOpusEncoderTest, DtxTimestamps) {
+  if (EncoderHasDelay()) {
+    return;
+  }
+
+  // Below 16 kHz, libopus only supports SILK DTX, which requires a voice
+  // signal hint and SILK-compatible bitrate.
+  constexpr int kSilkSampleRateThreshold = 16000;
+  const bool use_silk_dtx = options_.sample_rate < kSilkSampleRateThreshold;
+  constexpr int kOpusBitrate = 96000;
+  options_.bitrate = use_silk_dtx ? std::nullopt : std::optional(kOpusBitrate);
+  options_.opus = {
+      .signal = use_silk_dtx ? AudioEncoder::OpusSignal::kVoice
+                             : AudioEncoder::OpusSignal::kAuto,
+      .application = AudioEncoder::OpusApplication::kAudio,
+      .complexity = 10,
+      .use_dtx = true,
+  };
+
+  constexpr std::array<base::TimeDelta, 3> kTestFrameDurations = {
+      base::Milliseconds(20), base::Milliseconds(30), base::Milliseconds(60)};
+
+  for (const base::TimeDelta frame_duration : kTestFrameDurations) {
+    encoder_ = std::make_unique<AudioOpusEncoder>();
+    options_.opus->frame_duration = frame_duration;
+    buffer_duration_ = frame_duration;
+    frames_per_buffer_ = AudioTimestampHelper::TimeToFrames(
+        buffer_duration_, options_.sample_rate);
+
+    std::vector<base::TimeTicks> timestamps;
+    InitializeEncoder(
+        base::BindLambdaForTesting([&](EncodedAudioBuffer output, MaybeDesc) {
+          EXPECT_EQ(output.duration, frame_duration);
+          timestamps.push_back(output.timestamp);
+        }));
+
+    base::TimeTicks current_timestamp;
+    constexpr base::TimeDelta kAudibleDuration = base::Milliseconds(120);
+    constexpr base::TimeDelta kSilenceDuration = base::Milliseconds(600);
+    constexpr base::TimeDelta kTotalDuration =
+        kAudibleDuration * 2 + kSilenceDuration;
+    for (base::TimeDelta t; t < kTotalDuration; t += frame_duration) {
+      // libopus enters DTX after 200ms of silence and emits a comfort noise
+      // packet every 400ms, so 600ms of silence guarantees suppressed frames.
+      // Push 120ms audible, 600ms silent, then 120ms audible.
+      if (t >= kAudibleDuration && t < kAudibleDuration + kSilenceDuration) {
+        auto silent_bus =
+            AudioBus::Create(options_.channels, frames_per_buffer_);
+        silent_bus->Zero();
+        DoEncode(std::move(silent_bus), current_timestamp);
+      } else {
+        ProduceAudioAndEncode(current_timestamp, frames_per_buffer_);
+      }
+      current_timestamp += frame_duration;
+    }
+
+    FlushAndVerifyStatus();
+
+    // Verify DTX suppressed some frames.
+    ASSERT_FALSE(timestamps.empty());
+    EXPECT_LT(timestamps.size(), kTotalDuration / frame_duration);
+
+    // Verify timestamps are strictly increasing and we saw a gap > 1 frame.
+    bool has_gap = false;
+    for (size_t i = 1; i < timestamps.size(); ++i) {
+      EXPECT_GT(timestamps[i], timestamps[i - 1]);
+      has_gap |= (timestamps[i] - timestamps[i - 1] >
+                  frame_duration + base::Microseconds(1));
+    }
+    EXPECT_TRUE(has_gap);
+
+    // The final audible frames should have a timestamp reflecting the time
+    // elapsed during the silent DTX period.
+    EXPECT_GE(timestamps.back() + base::Microseconds(1),
+              base::TimeTicks() + kAudibleDuration + kSilenceDuration);
+  }
+}
+
 TEST_P(AudioOpusEncoderTest, VariableChannelCounts) {
   constexpr int kTestToneFrequency = 440;
   std::array<SineWaveAudioSource, 3> sources = {
@@ -947,7 +1050,17 @@ INSTANTIATE_TEST_SUITE_P(Opus,
                          AudioOpusEncoderTest,
                          testing::ValuesIn(kTestAudioParamsOpus));
 
-#if HAS_AAC_ENCODER
+// Note: theoretically we could create the test fixture AACAudioEncoderTest with
+// only `HAS_AAC_ENCODER`. However, since it's a parameterized test and there
+// are no test cases without the other two flags, this results in an empty
+// parameterized test on some builders, which causes the test suite to crash.
+// See https://crbug.com/568313689 for an example.
+//
+// Feel free to break these conditions up in the future if there are tests where
+// only `HAS_AAC_ENCODER` is required.
+#if HAS_AAC_ENCODER && BUILDFLAG(ENABLE_FFMPEG) && \
+    BUILDFLAG(USE_PROPRIETARY_CODECS)
+
 class AACAudioEncoderTest : public AudioEncodersTest {
  public:
   AACAudioEncoderTest() = default;
@@ -955,7 +1068,6 @@ class AACAudioEncoderTest : public AudioEncodersTest {
   AACAudioEncoderTest& operator=(const AACAudioEncoderTest&) = delete;
   ~AACAudioEncoderTest() override = default;
 
-#if BUILDFLAG(ENABLE_FFMPEG) && BUILDFLAG(USE_PROPRIETARY_CODECS)
   void InitializeDecoder() {
     decoder_ = std::make_unique<FFmpegAudioDecoder>(
         base::SequencedTaskRunner::GetCurrentDefault(), &media_log);
@@ -995,23 +1107,8 @@ class AACAudioEncoderTest : public AudioEncodersTest {
   MockMediaLog media_log;
   std::unique_ptr<FFmpegAudioDecoder> decoder_;
   int decoder_output_callback_count = 0;
-#endif  // BUILDFLAG(ENABLE_FFMPEG) && BUILDFLAG(USE_PROPRIETARY_CODECS)
 };
 
-#if BUILDFLAG(IS_WIN)
-// `MFAudioEncoder` requires `kMinSamplesForOutput` before `Flush` can be called
-// successfully.
-TEST_P(AACAudioEncoderTest, FlushWithTooLittleInput) {
-  InitializeEncoder(base::DoNothing());
-  ProduceAudioAndEncode();
-
-  FlushAndVerifyStatus(EncoderStatus::Codes::kEncoderFailedFlush);
-
-  ValidateDoneCallbacksRun();
-}
-#endif
-
-#if BUILDFLAG(ENABLE_FFMPEG) && BUILDFLAG(USE_PROPRIETARY_CODECS)
 TEST_P(AACAudioEncoderTest, FullCycleEncodeDecode) {
   InitializeDecoder();
 
@@ -1125,11 +1222,12 @@ TEST_P(AACAudioEncoderTest, AacOutputFormat) {
     FlushAndVerifyStatus();
   }
 }
-#endif  // BUILDFLAG(ENABLE_FFMPEG) && BUILDFLAG(USE_PROPRIETARY_CODECS)
 
 INSTANTIATE_TEST_SUITE_P(AAC,
                          AACAudioEncoderTest,
                          testing::ValuesIn(kTestAudioParamsAAC));
-#endif  // HAS_AAC_ENCODER
+
+#endif  // HAS_AAC_ENCODER && BUILDFLAG(ENABLE_FFMPEG) &&
+        // BUILDFLAG(USE_PROPRIETARY_CODECS)
 
 }  // namespace media

@@ -128,7 +128,7 @@ class TouchBarNotificationBridge : public CommandObserver,
                              BrowserWindowInterface* browser)
       : owner_(owner), browser_(browser), contents_(nullptr) {
     TabStripModel* const model = browser_->GetTabStripModel();
-    DCHECK(model);
+    CHECK(model, base::NotFatalUntil::M162);
     model->AddObserver(this);
     UpdateWebContents(model->GetActiveWebContents());
 
@@ -210,15 +210,17 @@ class TouchBarNotificationBridge : public CommandObserver,
 
   // BookmarkTabHelperObserver:
   void URLStarredChanged(content::WebContents* web_contents,
-                         bool starred) override {
-    DCHECK(web_contents == contents_);
+                         bool starred,
+                         bool is_bookmark_added_or_removed) override {
+    CHECK(web_contents == contents_, base::NotFatalUntil::M162);
     owner_.isStarred = starred;
   }
 
  protected:
   // CommandObserver:
   void EnabledStateChangedForCommand(int command, bool enabled) override {
-    DCHECK(command == IDC_BACK || command == IDC_FORWARD);
+    CHECK(command == IDC_BACK || command == IDC_FORWARD,
+          base::NotFatalUntil::M162);
     if (command == IDC_BACK) {
       owner_.canGoBack = enabled;
     } else if (command == IDC_FORWARD) {
@@ -241,12 +243,12 @@ class TouchBarNotificationBridge : public CommandObserver,
   }
 
   void DidStartLoading() override {
-    DCHECK(contents_ && contents_->IsLoading());
+    CHECK(contents_ && contents_->IsLoading(), base::NotFatalUntil::M162);
     owner_.isPageLoading = YES;
   }
 
   void DidStopLoading() override {
-    DCHECK(contents_ && !contents_->IsLoading());
+    CHECK(contents_ && !contents_->IsLoading(), base::NotFatalUntil::M162);
     owner_.isPageLoading = NO;
   }
 

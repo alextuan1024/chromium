@@ -56,7 +56,7 @@ class BookmarkUIOperationsHelper {
   static void CopyToClipboard(
       bookmarks::BookmarkModel* model,
       const std::vector<
-          raw_ptr<const bookmarks::BookmarkNode, VectorExperimental>>& nodes,
+          raw_ptr<const bookmarks::BookmarkNode, DanglingUntriaged>>& nodes,
       bookmarks::metrics::BookmarkEditSource source,
       bool is_off_the_record);
 
@@ -65,7 +65,7 @@ class BookmarkUIOperationsHelper {
   static void CutToClipboard(
       bookmarks::BookmarkModel* model,
       const std::vector<
-          raw_ptr<const bookmarks::BookmarkNode, VectorExperimental>>& nodes,
+          raw_ptr<const bookmarks::BookmarkNode, DanglingUntriaged>>& nodes,
       bookmarks::metrics::BookmarkEditSource source,
       bool is_off_the_record);
 
@@ -115,7 +115,7 @@ class BookmarkUIOperationsHelper {
   static void CopyOrCutToClipboard(
       bookmarks::BookmarkModel* model,
       const std::vector<
-          raw_ptr<const bookmarks::BookmarkNode, VectorExperimental>>& nodes,
+          raw_ptr<const bookmarks::BookmarkNode, DanglingUntriaged>>& nodes,
       bool remove_nodes,
       bookmarks::metrics::BookmarkEditSource source,
       bool is_off_the_record);
@@ -244,10 +244,10 @@ class BookmarkUIOperationsHelperMergedSurfaces
         const BookmarkParentFolder* parent);
 
     TargetParent(BookmarkMergedSurfaceService* merged_surface_service,
-                 BookmarkParentFolder parent);
+                 const BookmarkParentFolder& parent);
     ~TargetParent() override;
 
-    const BookmarkParentFolder& parent_folder() const;
+    std::optional<BookmarkParentFolder> parent_folder() const;
 
     // internal::BookmarkUIOperationsHelper::TargetParent
     bool IsManaged() const override;
@@ -259,10 +259,10 @@ class BookmarkUIOperationsHelperMergedSurfaces
 
    private:
     const raw_ptr<BookmarkMergedSurfaceService> merged_surface_service_;
-    const BookmarkParentFolder parent_;
+    const bookmarks::BookmarkNodeId parent_id_;
   };
 
-  const BookmarkParentFolder& parent_folder() const;
+  std::optional<BookmarkParentFolder> parent_folder() const;
 
   const raw_ptr<BookmarkMergedSurfaceService> merged_surface_service_;
   const std::unique_ptr<TargetParent> target_parent_;

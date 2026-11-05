@@ -41,6 +41,7 @@
 #include "components/viz/host/persistent_cache_sandboxed_file_factory.h"
 #include "components/vrp_flags/buildflags.h"
 #include "content/browser/browser_child_process_host_impl.h"
+#include "content/browser/browser_main_loop.h"
 #include "content/browser/child_process_host_impl.h"
 #include "content/browser/child_process_launcher.h"
 #include "content/browser/compositor/image_transport_factory.h"
@@ -70,6 +71,7 @@
 #include "content/public/common/result_codes.h"
 #include "content/public/common/zygote/zygote_buildflags.h"
 #include "gpu/command_buffer/service/gpu_switches.h"
+#include "gpu/command_buffer/service/gpu_task_priority.h"
 #include "gpu/config/gpu_driver_bug_list.h"
 #include "gpu/config/gpu_driver_bug_workaround_type.h"
 #include "gpu/config/gpu_finch_features.h"
@@ -150,13 +152,6 @@ static_assert(RESULT_CODE_HUNG == static_cast<int>(gpu::RESULT_CODE_HUNG),
               "Please use the same enum value in both header files.");
 
 namespace {
-
-#if BUILDFLAG(IS_MAC)
-// If enabled, the GPU process will not inherit the browser process's TCC
-// responsibilities (https://crbug.com/507596239).
-BASE_FEATURE(kMacDisclaimGpuTccResponsibility,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif
 
 // UMA histogram names.
 constexpr char kFallbackEventCause[] = "GPU.FallbackEventCause";
@@ -293,6 +288,7 @@ static const char* const kSwitchNames[] = {
     switches::kDoubleBufferCompositing,
     switches::kHeadless,
     switches::kEnableLowEndDeviceMode,
+    switches::kDisableDumpWithoutCrashingOnAnglePortabilityMessages,
     switches::kDisableSkiaGraphite,
     switches::kDisableSkiaGraphitePrecompilation,
     switches::kDisableLowEndDeviceMode,
@@ -476,8 +472,7 @@ class GpuSandboxedProcessLauncherDelegate
   bool DisclaimResponsibility() override {
     // Disclaim the GPU process if we've inherited TCC responsibilities from a
     // different (possibly privileged) process.
-    return base::FeatureList::IsEnabled(kMacDisclaimGpuTccResponsibility) &&
-           !base::IsCurrentProcessSelfResponsible();
+    return !base::IsCurrentProcessSelfResponsible();
   }
 #endif
 
@@ -584,18 +579,16 @@ void InitGpuPersistentCacheFileFactoryOnce() {
   }
 }
 
-// True while the OS is ending the user session (Windows logoff, shutdown,
-// restart): it is killing this browser's child processes and refuses to start
-// new ones, which says nothing about the GPU.
-bool IsSessionEnding() {
+}  // anonymous namespace
+
+// static
+bool GpuProcessHost::IsSessionEnding() {
 #if BUILDFLAG(IS_WIN)
   return ::GetSystemMetrics(SM_SHUTTINGDOWN) != 0;
 #else
   return false;
 #endif
 }
-
-}  // anonymous namespace
 
 // static
 bool GpuProcessHost::ValidateHost(GpuProcessHost* host) {
@@ -976,6 +969,8 @@ bool GpuProcessHost::Init() {
     options.message_pump_type = base::MessagePumpType::UI;
 #endif
     options.thread_type = base::ThreadType::kPresentation;
+    options.sequence_manager_settings =
+        gpu::CreateGpuSequenceManagerSettings(options.message_pump_type);
     in_process_gpu_thread_->StartWithOptions(std::move(options));
   } else if (!LaunchGpuProcess()) {
     return false;
@@ -991,7 +986,8 @@ bool GpuProcessHost::Init() {
   params.product = GetContentClient()->browser()->GetProduct();
   params.deadline_to_synchronize_surfaces =
       switches::GetDeadlineToSynchronizeSurfaces();
-  params.main_thread_task_runner = GetUIThreadTaskRunner({});
+  params.main_thread_task_runner =
+      BrowserMainLoop::GetInstance()->GetResizeTaskRunner();
   params.info_collection_gpu_process =
       kind_ == GPU_PROCESS_KIND_INFO_COLLECTION;
   params.gpu_service_running_in_process = in_process_;
@@ -1022,6 +1018,10 @@ void GpuProcessHost::OnProcessLaunched() {
     process_id_ = process_->GetProcess().Pid();
     CHECK_NE(base::kNullProcessId, process_id_, base::NotFatalUntil::M159);
     gpu_host_->SetProcessId(process_id_);
+
+#if BUILDFLAG(IS_ANDROID)
+    is_gpu_uid_isolated_ = process_->HasIsolatedUid();
+#endif
 
 #if BUILDFLAG(IS_MAC)
     if (base::FeatureList::IsEnabled(features::kAdjustGpuProcessPriority)) {
@@ -1072,7 +1072,20 @@ void GpuProcessHost::DidInitialize(
     // listeners.
     gpu_data_manager->UpdateGpuFeatureInfo(gpu_feature_info,
                                            gpu_feature_info_for_hardware_gpu);
+#if BUILDFLAG(IS_ANDROID)
+    const bool android_isolated = IsAndroidIsolated();
+    gpu::GPUInfo resolved_gpu_info = gpu_info;
+    resolved_gpu_info.android_isolated = android_isolated;
+    std::optional<gpu::GPUInfo> resolved_hardware_gpu_info =
+        gpu_info_for_hardware_gpu;
+    if (resolved_hardware_gpu_info.has_value()) {
+      resolved_hardware_gpu_info->android_isolated = android_isolated;
+    }
+    gpu_data_manager->UpdateGpuInfo(resolved_gpu_info,
+                                    resolved_hardware_gpu_info);
+#else
     gpu_data_manager->UpdateGpuInfo(gpu_info, gpu_info_for_hardware_gpu);
+#endif
     gpu_data_manager->UpdateGpuExtraInfo(gpu_extra_info);
     // The GPU process might change the actual GpuMode after initialization.
     mode_ = gpu_data_manager->GetGpuMode();
@@ -1116,7 +1129,14 @@ void GpuProcessHost::MaybeShutdownGpuProcess() {
 }
 
 void GpuProcessHost::DidUpdateGPUInfo(const gpu::GPUInfo& gpu_info) {
+#if BUILDFLAG(IS_ANDROID)
+  gpu::GPUInfo resolved_gpu_info = gpu_info;
+  resolved_gpu_info.android_isolated = IsAndroidIsolated();
+  GpuDataManagerImpl::GetInstance()->UpdateGpuInfo(resolved_gpu_info,
+                                                   std::nullopt);
+#else
   GpuDataManagerImpl::GetInstance()->UpdateGpuInfo(gpu_info, std::nullopt);
+#endif
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -1137,8 +1157,10 @@ std::string GpuProcessHost::GetIsolationKey(
     // Return an empty isolation key if the frame host is gone. This could
     // happen if the frame is destroyed (or being destroyed) in between when we
     // are trying to get the isolation key.
+    // TODO(crbug.com/379869738): Remove FromUnsafeValue().
     RenderFrameHostImpl* frame_host = RenderFrameHostImpl::FromDocumentToken(
-        process_id, token.GetAs<blink::DocumentToken>());
+        ChildProcessId::FromUnsafeValue(process_id),
+        token.GetAs<blink::DocumentToken>());
     if (!frame_host) {
       return "";
     }
@@ -1307,6 +1329,18 @@ void GpuProcessHost::RunServiceImpl(mojo::GenericPendingReceiver receiver) {
   process_->child_process()->BindServiceInterface(std::move(receiver));
 }
 
+#if BUILDFLAG(IS_ANDROID)
+bool GpuProcessHost::IsAndroidIsolated() {
+  if (in_process_) {
+    return false;
+  }
+  if (!is_gpu_uid_isolated_ && process_) {
+    is_gpu_uid_isolated_ = process_->HasIsolatedUid();
+  }
+  return is_gpu_uid_isolated_;
+}
+#endif
+
 bool GpuProcessHost::LaunchGpuProcess() {
   const base::CommandLine& browser_command_line =
       *base::CommandLine::ForCurrentProcess();
@@ -1412,8 +1446,9 @@ bool GpuProcessHost::LaunchGpuProcess() {
   // Because AppendExtraCommandLineSwitches is called here, we should call
   // LaunchWithoutExtraCommandLineSwitches() instead of Launch for gpu process
   // launch below.
+  // TODO(crbug.com/379869738): Remove GetUnsafeValue.
   GetContentClient()->browser()->AppendExtraCommandLineSwitches(
-      cmd_line.get(), process_->GetData().id);
+      cmd_line.get(), process_->GetData().GetChildProcessId().GetUnsafeValue());
 
   // TODO(kylechar): The command line flags added here should be based on
   // |mode_|.
@@ -1538,9 +1573,5 @@ GpuProcessHost::info_collection_gpu_service() {
   return gpu_host_->info_collection_gpu_service();
 }
 #endif
-
-int GpuProcessHost::GetIDForTesting() const {
-  return process_->GetData().id;
-}
 
 }  // namespace content

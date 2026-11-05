@@ -15,6 +15,7 @@
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
+#include "services/device/buildflags.h"
 #include "services/device/geolocation/geolocation_provider.h"
 #include "services/device/geolocation/geolocation_provider_impl.h"
 #include "services/device/geolocation/public_ip_address_geolocation_provider.h"
@@ -26,6 +27,7 @@
 #include "services/device/public/mojom/geolocation_context.mojom.h"
 #include "services/device/public/mojom/geolocation_control.mojom.h"
 #include "services/device/public/mojom/geolocation_internals.mojom.h"
+#include "services/device/public/mojom/haptics.mojom.h"
 #include "services/device/public/mojom/power_monitor.mojom.h"
 #include "services/device/public/mojom/screen_orientation.mojom.h"
 #include "services/device/public/mojom/sensor_provider.mojom.h"
@@ -75,7 +77,7 @@ namespace device {
 class PressureManagerImpl;
 #endif
 
-#if defined(IS_SERIAL_ENABLED_PLATFORM)
+#if BUILDFLAG(IS_SERIAL_ENABLED_PLATFORM)
 class SerialPortManagerImpl;
 #endif
 
@@ -136,6 +138,12 @@ class DeviceService : public mojom::DeviceService {
   static void OverrideGeolocationContextBinderForTesting(
       GeolocationContextBinder binder);
 
+  // Supports global override of HapticsService binding within the service.
+  using HapticsServiceBinder = base::RepeatingCallback<void(
+      mojo::PendingReceiver<mojom::HapticsService>)>;
+  static void OverrideHapticsServiceBinderForTesting(
+      HapticsServiceBinder binder);
+
 #if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
   // Supports global override of PressureManager binding within the service.
   using PressureManagerBinder = base::RepeatingCallback<void(
@@ -195,6 +203,9 @@ class DeviceService : public mojom::DeviceService {
   void BindVibrationManager(
       mojo::PendingReceiver<mojom::VibrationManager> receiver,
       mojo::PendingRemote<mojom::VibrationManagerListener> listener) override;
+
+  void BindHapticsService(
+      mojo::PendingReceiver<mojom::HapticsService> receiver) override;
 
   void BindHidManager(
       mojo::PendingReceiver<mojom::HidManager> receiver) override;
@@ -270,9 +281,9 @@ class DeviceService : public mojom::DeviceService {
   std::unique_ptr<PressureManagerImpl> pressure_manager_;
 #endif
 
-#if defined(IS_SERIAL_ENABLED_PLATFORM)
+#if BUILDFLAG(IS_SERIAL_ENABLED_PLATFORM)
   base::SequenceBound<SerialPortManagerImpl> serial_port_manager_;
-#endif  // defined(IS_SERIAL_ENABLED_PLATFORM)
+#endif  // BUILDFLAG(IS_SERIAL_ENABLED_PLATFORM)
 
 #if BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<MtpDeviceManager> mtp_device_manager_;

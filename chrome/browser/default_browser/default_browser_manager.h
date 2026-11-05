@@ -10,6 +10,7 @@
 
 #include "base/callback_list.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/weak_ptr.h"
 #include "build/buildflag.h"
 #include "chrome/browser/default_browser/default_browser_controller.h"
 #include "chrome/browser/default_browser/default_browser_features.h"
@@ -99,6 +100,10 @@ class DefaultBrowserManager {
   void TrackTimeAfterSetterFailure(DefaultBrowserEntrypointType entrypoint,
                                    DefaultBrowserSetterType setter);
 
+  // Launches a HaTS survey after a default browser setter fails.
+  void MaybeLaunchHatsSurvey(DefaultBrowserEntrypointType entrypoint,
+                             DefaultBrowserSetterType setter);
+
  private:
   void OnDefaultBrowserStateChangedForTracker(DefaultBrowserState state);
 
@@ -141,6 +146,8 @@ class DefaultBrowserManager {
 
   std::unique_ptr<TimeAfterSetterFailureTracker> tracker_;
   base::CallbackListSubscription tracker_subscription_;
+
+  base::WeakPtrFactory<DefaultBrowserManager> weak_ptr_factory_{this};
 };
 
 }  // namespace default_browser

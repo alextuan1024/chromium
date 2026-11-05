@@ -47,7 +47,7 @@ public abstract class SuggestionsPopupWindow
     private final Context mContext;
     protected final TextSuggestionHost mTextSuggestionHost;
     private final View mParentView;
-    private @Nullable WindowAndroid mWindowAndroid;
+    private final @Nullable WindowAndroid mWindowAndroid;
 
     private @Nullable Activity mActivity;
     private @Nullable DisplayMetrics mDisplayMetrics;
@@ -177,11 +177,6 @@ public abstract class SuggestionsPopupWindow
     /** Used by TextSuggestionHost to determine if the text suggestion menu is currently visible. */
     public boolean isShowing() {
         return mPopupWindow.isShowing();
-    }
-
-    /** Used by TextSuggestionHost to update {@link WindowAndroid} to the current one. */
-    public void updateWindowAndroid(@Nullable WindowAndroid windowAndroid) {
-        mWindowAndroid = windowAndroid;
     }
 
     private void addToDictionary() {
@@ -365,7 +360,7 @@ public abstract class SuggestionsPopupWindow
         positionX = Math.max(-mContentView.getPaddingLeft(), positionX);
 
         // Vertical clipping: if part of the menu or its bottom margin would fall off the bottom of
-        // the screen, shift it up to keep it on-screen.
+        // the screen, shift it up to keep it on-screen, without drawing above mParentView.
         positionY =
                 Math.min(
                         positionY,
@@ -373,6 +368,7 @@ public abstract class SuggestionsPopupWindow
                                 - height
                                 - mContentView.getPaddingTop()
                                 - mPopupVerticalMargin);
+        positionY = Math.max(positionY, positionInWindow[1] - mContentView.getPaddingTop());
 
         mPopupWindow.showAtLocation(mParentView, Gravity.NO_GRAVITY, positionX, positionY);
     }

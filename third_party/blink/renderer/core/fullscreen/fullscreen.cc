@@ -29,7 +29,10 @@
 
 #include "third_party/blink/renderer/core/fullscreen/fullscreen.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
+#include "base/check.h"
+#include "base/no_destructor.h"
 #include "base/time/time.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom-blink.h"
@@ -65,6 +68,7 @@
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -176,10 +180,11 @@ using ElementMetaParamsMap =
     HeapHashMap<WeakMember<const Element>, Member<const MetaParams>>;
 
 ElementMetaParamsMap& FullscreenParamsMap() {
+  DCHECK(IsMainThread());
   using ElementMetaParamsMapHolder = DisallowNewWrapper<ElementMetaParamsMap>;
-  DEFINE_STATIC_LOCAL(Persistent<ElementMetaParamsMapHolder>, holder,
-                      (MakeGarbageCollected<ElementMetaParamsMapHolder>()));
-  return holder->Value();
+  static base::NoDestructor<Persistent<ElementMetaParamsMapHolder>> holder(
+      MakeGarbageCollected<ElementMetaParamsMapHolder>());
+  return (*holder)->Value();
 }
 
 bool HasFullscreenFlag(const Element& element) {
@@ -206,10 +211,11 @@ using IframeFullscreenFlagSet =
     HeapHashSet<WeakMember<const HTMLIFrameElement>>;
 
 IframeFullscreenFlagSet& IframeFullscreenFlagElements() {
+  DCHECK(IsMainThread());
   using Holder = DisallowNewWrapper<IframeFullscreenFlagSet>;
-  DEFINE_STATIC_LOCAL(Persistent<Holder>, holder,
-                      (MakeGarbageCollected<Holder>()));
-  return holder->Value();
+  static base::NoDestructor<Persistent<Holder>> holder(
+      MakeGarbageCollected<Holder>());
+  return (*holder)->Value();
 }
 
 bool HasIframeFullscreenFlag(const HTMLIFrameElement& element) {
@@ -612,7 +618,7 @@ Element* Fullscreen::FullscreenElementFrom(Document& document) {
   // whose fullscreen flag is set, if any, and null otherwise.
 
   const auto& elements = document.TopLayerElements();
-  for (const auto& element : base::Reversed(elements)) {
+  for (const auto& element : std::views::reverse(elements)) {
     if (HasFullscreenFlag(*element))
       return element.Get();
   }

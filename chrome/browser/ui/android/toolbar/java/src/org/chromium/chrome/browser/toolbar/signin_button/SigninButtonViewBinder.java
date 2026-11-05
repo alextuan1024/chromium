@@ -30,6 +30,9 @@ final class SigninButtonViewBinder {
         } else if (SigninButtonProperties.AVATAR_TINT.equals(propertyKey)) {
             ImageViewCompat.setImageTintList(
                     view.getAvatarButton(), model.get(SigninButtonProperties.AVATAR_TINT));
+            updateAvatarDimming(model, view);
+        } else if (SigninButtonProperties.BUTTON_ALPHA.equals(propertyKey)) {
+            updateAvatarDimming(model, view);
         } else if (SigninButtonProperties.ON_CLICK.equals(propertyKey)) {
             view.getAvatarButton().setOnClickListener(model.get(SigninButtonProperties.ON_CLICK));
             view.getSigninTextButton()
@@ -43,5 +46,15 @@ final class SigninButtonViewBinder {
             view.getAvatarButton().setEnabled(isEnabled);
             view.getSigninTextButton().setEnabled(isEnabled);
         }
+    }
+
+    private static void updateAvatarDimming(PropertyModel model, SigninButtonView view) {
+        // Signed-out placeholders use AVATAR_TINT (which already applies unfocused disabled alpha),
+        // so only dim via view alpha for untinted signed-in avatars to avoid double-dimming.
+        float alpha =
+                model.get(SigninButtonProperties.AVATAR_TINT) == null
+                        ? model.get(SigninButtonProperties.BUTTON_ALPHA)
+                        : 1.0f;
+        view.getAvatarButton().setAlpha(alpha);
     }
 }

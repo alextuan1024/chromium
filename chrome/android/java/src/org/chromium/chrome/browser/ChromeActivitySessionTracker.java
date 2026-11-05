@@ -20,6 +20,7 @@ import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.accessibility.settings.DeviceAccessibilitySettingsHandlerFactory;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataBridge;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataType;
 import org.chromium.chrome.browser.browsing_data.TimePeriod;
@@ -40,11 +41,11 @@ import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.safety_hub.SafetyHubFetchServiceFactory;
 import org.chromium.chrome.browser.translate.TranslateBridge;
 import org.chromium.chrome.browser.util.DefaultBrowserInfo;
-import org.chromium.components.browser_ui.accessibility.DeviceAccessibilitySettingsHandler;
 import org.chromium.components.browser_ui.accessibility.FontSizePrefs;
 import org.chromium.components.browser_ui.share.ShareImageFileUtils;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.user_prefs.UserPrefs;
 
 /** Tracks the foreground session state for the Chrome activities. */
 @NullMarked
@@ -67,9 +68,7 @@ public class ChromeActivitySessionTracker {
     private boolean mIsInitialized;
     private boolean mIsStarted;
 
-    /**
-     * @return The activity session tracker for Chrome.
-     */
+    /** Returns the activity session tracker for Chrome. */
     public static ChromeActivitySessionTracker getInstance() {
         ThreadUtils.assertOnUiThread();
 
@@ -101,7 +100,7 @@ public class ChromeActivitySessionTracker {
     }
 
     /**
-     * @return The latest country according to the current variations state. Null if not available.
+     * Returns the latest country according to the current variations state. Null if not available.
      */
     public @Nullable String getVariationsLatestCountry() {
         return mVariationsSession.getLatestCountry();
@@ -184,8 +183,9 @@ public class ChromeActivitySessionTracker {
                 TraceEvent.scoped(
                         "ChromeActivitySessionTracker.handlePerProfileForegroundSessionStart")) {
             PasswordEchoSettingHandlerFactory.getForProfile(profile).updatePasswordEchoState();
-            FontSizePrefs.getInstance(profile).setFontScaleFactor();
-            DeviceAccessibilitySettingsHandler.getInstance(profile).updateFontWeightAdjustment();
+            FontSizePrefs.setFontScaleFactor(UserPrefs.get(profile));
+            DeviceAccessibilitySettingsHandlerFactory.getForProfile(profile)
+                    .updateFontWeightAdjustment();
             updateAcceptLanguages(profile);
             SafetyHubFetchServiceFactory.getForProfile(profile).onForegroundSessionStart();
         }
@@ -262,9 +262,7 @@ public class ChromeActivitySessionTracker {
         }
     }
 
-    /**
-     * @return The {@link OmahaServiceStartDelayer} for the browser process.
-     */
+    /** Returns the {@link OmahaServiceStartDelayer} for the browser process. */
     public OmahaServiceStartDelayer getOmahaServiceStartDelayerForTesting() {
         return mOmahaServiceStartDelayer;
     }

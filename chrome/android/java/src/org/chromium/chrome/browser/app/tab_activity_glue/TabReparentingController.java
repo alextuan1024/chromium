@@ -14,6 +14,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabReparentingParams;
 import org.chromium.content_public.browser.WebContents;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
@@ -31,23 +32,31 @@ public class TabReparentingController {
 
     private final Supplier<TabModelSelector> mTabModelSelectorSupplier;
     private final AsyncTabParamsManager mAsyncTabParamsManager;
+    private final Runnable mDestroyTabPersistentStoreRunnable;
 
     /** Constructs a {@link TabReparentingController} with the given dependencies. */
     public TabReparentingController(
             Supplier<TabModelSelector> tabModelSelectorSupplier,
-            AsyncTabParamsManager asyncTabParamsManager) {
+            AsyncTabParamsManager asyncTabParamsManager,
+            Runnable destroyTabPersistentStoreRunnable) {
         mTabModelSelectorSupplier = tabModelSelectorSupplier;
         mAsyncTabParamsManager = asyncTabParamsManager;
+        mDestroyTabPersistentStoreRunnable = destroyTabPersistentStoreRunnable;
     }
 
     /**
-     * Prepares the tabs for reparenting by, 1. Informing the {@link TabModelSelector} that
-     * reparenting is in progress. 2. Detaching each tab from the models. 3. For each tab that's
-     * detached, it's added to {@link AsyncTabParamsManager}. These tabs are held in memory until an
-     * application restart.
+     * Prepares the tabs for reparenting by:
      *
-     * <p>On app restart, the tabs from AsyncTabParamsManager are reattached/enabled in {@link
-     * ChromeTabCreator}.
+     * <ol>
+     *   <li>Informing the {@link TabModelSelector} that reparenting is in progress.
+     *   <li>Detaching each tab from the window.
+     *   <li>Adding each detached tab to {@link AsyncTabParamsManager}. These tabs are held in
+     *       memory until an application restart.
+     * </ol>
+     *
+     * <p>On app restart, the tabs from {@link AsyncTabParamsManager} are detached from the old
+     * {@link TabModelSelector} via {@link TabReparentingParams}'s finalize callback before
+     * reattachment in {@link ChromeTabCreator}.
      */
     public void prepareTabsForReparenting() {
         TabModelSelector selector = mTabModelSelectorSupplier.get();
@@ -64,11 +73,14 @@ public class TabReparentingController {
 
         // Save all the tabs in memory to be retrieved after restart.
         selector.enterReparentingMode();
+        WeakReference<Runnable> weakDestroyStore =
+                new WeakReference<>(mDestroyTabPersistentStoreRunnable);
         int tabsAwaitingReparenting = 0;
         int tabsStillLoading = 0;
         for (int i = 0; i < tabs.size(); i++) {
             Tab tab = tabs.get(i);
-            if (tab.isLoading()) {
+            boolean wasLoading = tab.isLoading();
+            if (wasLoading) {
                 tab.stopLoading();
                 WebContents webContents = tab.getWebContents();
                 if (webContents != null) {
@@ -84,8 +96,23 @@ public class TabReparentingController {
                 continue;
             }
 
+            // Only force an eager reload when an in-progress load was interrupted above; unloaded
+            // or discarded background tabs stay deferred, and any foreground tab needing a reload
+            // restores naturally via Tab#show when selected.
             TabReparentingParams params =
-                    new TabReparentingParams(tab, /* finalizeCallback= */ null);
+                    new TabReparentingParams(
+                            tab,
+                            selector,
+                            wasLoading,
+                            () -> {
+                                // Destroy old store first so its observer won't delete persisted
+                                // tab/group rows the new Activity restores; weak refs keep
+                                // AsyncTabParamsManager from retaining the old Activity.
+                                Runnable destroyStore = weakDestroyStore.get();
+                                if (destroyStore != null) {
+                                    destroyStore.run();
+                                }
+                            });
             mAsyncTabParamsManager.add(tab.getId(), params);
             ReparentingTask.from(tab).detach();
 

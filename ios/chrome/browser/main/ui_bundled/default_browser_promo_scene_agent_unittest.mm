@@ -19,12 +19,10 @@
 #import "ios/chrome/browser/default_browser/model/utils.h"
 #import "ios/chrome/browser/default_browser/model/utils_test_support.h"
 #import "ios/chrome/browser/default_browser/promo/post_default_abandonment/public/features.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/promos_manager/model/constants.h"
 #import "ios/chrome/browser/promos_manager/model/mock_promos_manager.h"
 #import "ios/chrome/browser/promos_manager/model/promos_manager_factory.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_metrics_helper.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
@@ -41,6 +39,7 @@
 #import "ios/chrome/browser/signin/model/signin_util.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/testing_application_context.h"
@@ -55,21 +54,6 @@ using testing::_;
 using testing::AnyNumber;
 using testing::Mock;
 using testing::NiceMock;
-
-namespace {
-
-// Factory returning a mock feature engagement tracker.
-std::unique_ptr<KeyedService> BuildMockFeatureEngagementTracker(
-    ProfileIOS* profile) {
-  return std::make_unique<feature_engagement::test::MockTracker>();
-}
-
-// Factory returning a mock PromosManager.
-std::unique_ptr<KeyedService> BuildMockPromosManager(ProfileIOS* profile) {
-  return std::make_unique<NiceMock<MockPromosManager>>();
-}
-
-}  // namespace
 
 class DefaultBrowserPromoSceneAgentTest : public PlatformTest {
  public:
@@ -90,12 +74,14 @@ class DefaultBrowserPromoSceneAgentTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
     builder.AddTestingFactory(
         feature_engagement::TrackerFactory::GetInstance(),
-        base::BindRepeating(&BuildMockFeatureEngagementTracker));
-    builder.AddTestingFactory(PromosManagerFactory::GetInstance(),
-                              base::BindOnce(&BuildMockPromosManager));
+        base::BindOnce(
+            &std::make_unique<feature_engagement::test::MockTracker>));
+    builder.AddTestingFactory(
+        PromosManagerFactory::GetInstance(),
+        base::BindOnce(&std::make_unique<NiceMock<MockPromosManager>>));
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     promos_manager_ = static_cast<NiceMock<MockPromosManager>*>(
@@ -255,7 +241,7 @@ class DefaultBrowserPromoSceneAgentTest : public PlatformTest {
   DefaultBrowserPromoSceneAgent* agent_ = nil;
   web::FakeWebState web_state_;
   std::unique_ptr<ReaderModeMetricsHelper> metrics_helper_;
-  raw_ptr<dom_distiller::DistilledPagePrefs> distilled_page_prefs_ = nullptr;
+  raw_ptr<web_distiller::DistilledPagePrefs> distilled_page_prefs_ = nullptr;
   static base::Time now_override_;
 };
 

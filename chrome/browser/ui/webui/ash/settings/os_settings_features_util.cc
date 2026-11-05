@@ -12,14 +12,17 @@
 #include "base/feature_list.h"
 #include "chrome/browser/ash/app_restore/full_restore_service_factory.h"
 #include "chrome/browser/ash/arc/arc_util.h"
-#include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
+#include "components/account_id/account_id.h"
 #include "components/policy/core/common/management/management_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/supervised_user/core/browser/supervised_user_preferences.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
@@ -48,7 +51,12 @@ bool IsSanitizeAllowed(const user_manager::User& user) {
 
 bool ShouldShowParentalControlSettings(const Profile* profile) {
   // Not shown for secondary users.
-  if (profile != ProfileManager::GetPrimaryUserProfile()) {
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  CHECK(primary_session);
+  const AccountId& account_id =
+      CHECK_DEREF(AnnotatedAccountId::Get(profile->GetOriginalProfile()));
+  if (account_id != primary_session->account_id()) {
     return false;
   }
 
@@ -68,9 +76,12 @@ bool IsExternalStorageEnabled(const Profile* profile) {
          arc::ShouldArcAlwaysStart();
 }
 
-bool IsAppRestoreAvailableForProfile(const Profile* profile) {
-  return full_restore::FullRestoreServiceFactory::
-      IsFullRestoreAvailableForProfile(profile);
+bool IsAppRestoreAvailableForProfile(Profile* profile) {
+  const user_manager::User* const user =
+      BrowserContextHelper::Get()->GetUserByBrowserContext(profile);
+  return user &&
+         full_restore::FullRestoreServiceFactory::IsFullRestoreAvailableForUser(
+             *user);
 }
 
 bool IsPerAppLanguageEnabled(const Profile* profile) {

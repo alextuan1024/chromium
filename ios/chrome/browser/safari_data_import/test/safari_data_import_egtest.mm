@@ -3,20 +3,21 @@
 // found in the LICENSE file.
 
 #import "components/strings/grit/components_strings.h"
-#import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
+#import "ios/chrome/browser/autofill/test/autofill_app_interface.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_storage_type.h"
 #import "ios/chrome/browser/bookmarks/test/bookmark_earl_grey.h"
 #import "ios/chrome/browser/data_import/public/accessibility_utils.h"
 #import "ios/chrome/browser/data_import/public/credential_item_identifier.h"
 #import "ios/chrome/browser/device_reauth/test/reauthentication_app_interface.h"
 #import "ios/chrome/browser/passwords/model/password_manager_app_interface.h"
+#import "ios/chrome/browser/safari_data_import/public/utils.h"
 #import "ios/chrome/browser/safari_data_import/test/safari_data_import_app_interface.h"
 #import "ios/chrome/browser/safari_data_import/test/safari_data_import_earl_grey_ui.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/reauthentication/local_reauthentication_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_constants.h"
 #import "ios/chrome/common/ui/confirmation_alert/constants.h"
-#import "ios/chrome/common/ui/promo_style/constants.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
@@ -123,15 +124,11 @@ id<GREYMatcher> ImportButton() {
 /// reminder.
 - (void)testFirstRunAndReminder {
   if (@available(iOS 18.2, *)) {
-    [[self class] testForStartup];
     AppLaunchConfiguration firstRunConfig =
         [self appConfigurationNoOverrideBehavior];
     /// Show the First Run UI at startup.
     firstRunConfig.additional_args.push_back("-FirstRunForceEnabled");
     firstRunConfig.additional_args.push_back("true");
-    firstRunConfig.additional_args.push_back(
-        "--enable-features=UpdatedFirstRunSequence:updated-first-run-sequence-"
-        "param/2");
     firstRunConfig.features_disabled.push_back(kBestOfAppFRE);
     firstRunConfig.relaunch_policy = ForceRelaunchByCleanShutdown;
     [[AppLaunchManager sharedManager]
@@ -140,7 +137,7 @@ id<GREYMatcher> ImportButton() {
     /// (skipping default browser settings.)
     id<GREYMatcher> buttonMatcher = ButtonStackSecondaryButton();
     id<GREYMatcher> scrollViewMatcher =
-        grey_accessibilityID(kPromoStyleScrollViewAccessibilityIdentifier);
+        grey_accessibilityID(kButtonStackScrollViewAccessibilityIdentifier);
     id<GREYAction> searchAction =
         grey_scrollInDirection(kGREYDirectionDown, 200);
     GREYElementInteraction* element =
@@ -217,9 +214,10 @@ id<GREYMatcher> ImportButton() {
         assertWithMatcher:grey_not(grey_sufficientlyVisible())];
     /// Verify that the user is still able to proceed in landscape mode.
     StartImportOnSafariDataImportEntryPoint();
-    [[EarlGrey selectElementWithMatcher:
-                   grey_accessibilityID(
-                       kConfirmationAlertUnderTitleViewAccessibilityIdentifier)]
+    [[EarlGrey
+        selectElementWithMatcher:
+            grey_accessibilityID(
+                kSafariDataExportInstructionsViewAccessibilityIdentifier)]
         assertWithMatcher:grey_minimumVisiblePercent(0.5f)];
   }
 }
@@ -230,13 +228,15 @@ id<GREYMatcher> ImportButton() {
   if (@available(iOS 18.2, *)) {
     StartImportOnSafariDataImportEntryPoint();
     /// Swipe should not be supported.
-    [[EarlGrey selectElementWithMatcher:
-                   grey_accessibilityID(
-                       kConfirmationAlertUnderTitleViewAccessibilityIdentifier)]
+    [[EarlGrey
+        selectElementWithMatcher:
+            grey_accessibilityID(
+                kSafariDataExportInstructionsViewAccessibilityIdentifier)]
         performAction:grey_swipeSlowInDirection(kGREYDirectionDown)];
-    [[EarlGrey selectElementWithMatcher:
-                   grey_accessibilityID(
-                       kConfirmationAlertUnderTitleViewAccessibilityIdentifier)]
+    [[EarlGrey
+        selectElementWithMatcher:
+            grey_accessibilityID(
+                kSafariDataExportInstructionsViewAccessibilityIdentifier)]
         assertWithMatcher:grey_minimumVisiblePercent(0.5f)];
     /// Dismiss by tapping the "Cancel" button on the top right.
     id<GREYMatcher> buttonInNavBar = grey_allOf(

@@ -7,22 +7,28 @@
 #include <dlfcn.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/system_properties.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
+#include <optional>
+#include <set>
 #include <string_view>
+#include <utility>
 
 #include "base/android/android_info.h"
 #include "base/android/apk_info.h"
 #include "base/android/device_info.h"
 #include "base/android/java_exception_reporter.h"
 #include "base/android/jni_android.h"
-#include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/android/path_utils.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/environment.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
@@ -32,11 +38,15 @@
 #include "base/posix/eintr_wrapper.h"
 #include "base/posix/global_descriptors.h"
 #include "base/rand_util.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_split.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/lock.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "components/crash/core/app/crash_reporter_client.h"
+#include "components/crash/core/app/shared_memory_user_stream_args.h"
 #include "content/public/common/content_descriptors.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/tagging.h"
@@ -273,7 +283,18 @@ class SandboxedHandler {
 }  // namespace crashpad
 
 namespace crash_reporter {
+
+// When enabled, 32-bit browser processes launch a 64-bit Crashpad handler for
+// child processes when the package's primary CPU ABI is 64-bit. A 32-bit
+// Crashpad handler cannot ptrace a 64-bit process (e.g., a 64-bit WebView
+// renderer hosted by a 32-bit app), so launching a 64-bit handler allows
+// minidumps to be captured for those crashes.
+BASE_FEATURE(kAlwaysUse64BitCrashHandlerIfAvailable,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 namespace {
+
+constexpr char kHandlerTrampoline[] = "libcrashpad_handler_trampoline.so";
 
 void SetJavaExceptionInfo(const char* info_string) {
   static crashpad::StringAnnotation<5 * 4096> exception_info("exception_info");
@@ -298,8 +319,6 @@ void SetBuildInfoAnnotations(std::map<std::string, std::string>* annotations) {
   (*annotations)["installer_package_name"] =
       base::android::apk_info::installer_package_name();
   (*annotations)["abi_name"] = base::android::android_info::abi_name();
-  (*annotations)["resources_version"] =
-      base::android::apk_info::resources_version();
   (*annotations)["gms_core_version"] =
       base::android::device_info::gms_version_code();
 
@@ -309,34 +328,48 @@ void SetBuildInfoAnnotations(std::map<std::string, std::string>* annotations) {
       base::android::apk_info::package_version_name() + ")";
 }
 
-
-
-#if defined(__arm__) && defined(__ARM_ARCH_7A__)
-#define CURRENT_ABI "armeabi-v7a"
-#elif defined(__arm__)
-#define CURRENT_ABI "armeabi"
-#elif defined(__i386__)
-#define CURRENT_ABI "x86"
-#elif defined(__mips__)
-#define CURRENT_ABI "mips"
-#elif defined(__x86_64__)
-#define CURRENT_ABI "x86_64"
-#elif defined(__aarch64__)
-#define CURRENT_ABI "arm64-v8a"
+const char* GetTargetAbi(bool is_64_bit) {
+#if defined(__arm__) || defined(__aarch64__)
+  return is_64_bit ? "arm64-v8a" : "armeabi-v7a";
+#elif defined(__i386__) || defined(__x86_64__)
+  return is_64_bit ? "x86_64" : "x86";
+#elif defined(__mips__) || defined(__mips64__)
+  return is_64_bit ? "mips64" : "mips";
 #elif defined(__riscv) && (__riscv_xlen == 64)
-#define CURRENT_ABI "riscv64"
+  return "riscv64";
 #else
 #error "Unsupported target abi"
 #endif
+}
 
-void MakePackagePaths(std::string* classpath, std::string* libpath) {
+bool IsPrimaryCpuAbi64Bit() {
+  const std::string& primary_abi = base::android::apk_info::primary_cpu_abi();
+  if (primary_abi.empty()) {
+    return false;
+  }
+  std::array<char, PROP_VALUE_MAX> abilist64;
+  int len = __system_property_get("ro.product.cpu.abilist64", abilist64.data());
+  if (len <= 0) {
+    return false;
+  }
+  std::string_view abilist64_view = base::as_string_view(
+      base::span(abilist64).first(static_cast<size_t>(len)));
+  std::vector<std::string_view> supported_64_bit_abis = base::SplitStringPiece(
+      abilist64_view, ",", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+  return std::ranges::contains(supported_64_bit_abis, primary_abi);
+}
+
+void MakePackagePaths(bool use_64_bit,
+                      bool is_same_bitness,
+                      std::string* classpath,
+                      std::string* libpath) {
   JNIEnv* env = base::android::AttachCurrentThread();
 
   base::android::ScopedJavaLocalRef<jstring> arch =
-      base::android::ConvertUTF8ToJavaString(env,
-                                             std::string_view(CURRENT_ABI));
+      base::android::ConvertUTF8ToJavaString(
+          env, std::string_view(GetTargetAbi(use_64_bit)));
   base::android::ScopedJavaLocalRef<jobjectArray> paths =
-      Java_PackagePaths_makePackagePaths(env, arch);
+      Java_PackagePaths_makePackagePaths(env, arch, is_same_bitness);
 
   base::android::ConvertJavaStringToUTF8(
       env, static_cast<jstring>(env->GetObjectArrayElement(paths.obj(), 0)),
@@ -345,8 +378,6 @@ void MakePackagePaths(std::string* classpath, std::string* libpath) {
       env, static_cast<jstring>(env->GetObjectArrayElement(paths.obj(), 1)),
       libpath);
 }
-
-
 
 void BuildHandlerArgs(CrashReporterClient* crash_reporter_client,
                       base::FilePath* database_path,
@@ -379,28 +410,45 @@ void BuildHandlerArgs(CrashReporterClient* crash_reporter_client,
   }
 
   (*process_annotations)["plat"] = std::string("Android");
+  for (auto& [key, value] :
+       crash_reporter_client->GetExtraProcessAnnotations()) {
+    (*process_annotations)[key] = std::move(value);
+  }
 }
 
 bool ShouldHandleCrashAndUpdateArguments(bool write_minidump_to_database,
                                          bool write_minidump_to_log,
                                          std::vector<std::string>* arguments) {
-  if (!write_minidump_to_database)
+  if (!write_minidump_to_database) {
     arguments->push_back("--no-write-minidump-to-database");
-  if (write_minidump_to_log)
+  }
+  if (write_minidump_to_log) {
     arguments->push_back("--write-minidump-to-log");
+  }
   return write_minidump_to_database || write_minidump_to_log;
 }
 
+bool Get64BitHandlerTrampoline(const std::string& browser_library,
+                               std::string* handler_trampoline,
+                               std::string* handler_library) {
+  base::FilePath library_path(browser_library);
+  base::FilePath libdir = library_path.DirName();
+  if (libdir.BaseName().value() != GetTargetAbi(/*is_64_bit=*/false)) {
+    return false;
+  }
+
+  base::FilePath libdir_64 =
+      libdir.DirName().AppendASCII(GetTargetAbi(/*is_64_bit=*/true));
+  *handler_trampoline = libdir_64.AppendASCII(kHandlerTrampoline).value();
+  *handler_library = libdir_64.Append(library_path.BaseName()).value();
+  return true;
+}
+
 class HandlerStarter {
-  // TODO(jperaza): Currently only launching a same-bitness handler is
-  // supported. The logic to build package paths, locate a handler executable,
-  // and the crashpad client interface for launching a Java handler need to be
-  // updated to use a specified bitness before a cross-bitness handler can be
-  // used.
 #if defined(ARCH_CPU_64_BITS)
-  static constexpr bool kUse64Bit = true;
+  static constexpr bool kBrowserIs64Bit = true;
 #else
-  static constexpr bool kUse64Bit = false;
+  static constexpr bool kBrowserIs64Bit = false;
 #endif
 
  public:
@@ -437,7 +485,18 @@ class HandlerStarter {
     // (e.g. by a WebView app) we don't want to treat this as a crash.
     GetCrashpadClient().SetUnhandledSignals({SIGQUIT});
 
-    internal::GetHandlerTrampoline(&handler_trampoline_, &handler_library_);
+    internal::GetHandlerTrampoline(&browser_trampoline_, &browser_library_);
+
+    user_streams_ =
+        GetCrashReporterClient()->GetUserStreamSharedMemoryRegions();
+    for (const auto& region : user_streams_) {
+      if (region.IsValid()) {
+        // Those handles are kept open in the browser process throughout its
+        // lifetime and passed to the handler. Set `close-on-exec` to avoid
+        // passing them to other child processes.
+        base::SetCloseOnExec(region.GetPlatformHandle());
+      }
+    }
 
     if (!ShouldHandleCrashAndUpdateArguments(
             dump_at_crash, GetCrashReporterClient()->ShouldWriteMinidumpToLog(),
@@ -445,15 +504,17 @@ class HandlerStarter {
       return database_path;
     }
 
-    if (!handler_trampoline_.empty()) {
-      std::vector<std::string> env;
-      if (!internal::BuildEnvironmentWithApk(kUse64Bit, &env)) {
-        return database_path;
-      }
+    if (!browser_trampoline_.empty()) {
+      std::vector<std::string> env =
+          internal::BuildEnvironmentWithApk(kBrowserIs64Bit);
+      std::set<crashpad::FileHandle> preserve_handles;
+      internal::AppendSharedMemoryUserStreamArgs(user_streams_, &arguments,
+                                                 &preserve_handles);
 
       bool result = GetCrashpadClient().StartHandlerWithLinkerAtCrash(
-          handler_trampoline_, handler_library_, kUse64Bit, &env, database_path,
-          metrics_path, url, process_annotations, arguments);
+          browser_trampoline_, browser_library_, kBrowserIs64Bit, &env,
+          database_path, metrics_path, url, process_annotations, arguments,
+          preserve_handles);
       DCHECK(result);
       return database_path;
     }
@@ -478,15 +539,27 @@ class HandlerStarter {
       return true;
     }
 
-    if (!handler_trampoline_.empty()) {
-      std::vector<std::string> env;
-      if (!internal::BuildEnvironmentWithApk(kUse64Bit, &env)) {
-        return false;
-      }
+    std::string handler_trampoline = browser_trampoline_;
+    std::string handler_library = browser_library_;
+    bool use_64_bit = kBrowserIs64Bit;
+    if (!kBrowserIs64Bit && !handler_trampoline.empty() &&
+        IsPrimaryCpuAbi64Bit() &&
+        base::FeatureList::IsEnabled(kAlwaysUse64BitCrashHandlerIfAvailable)) {
+      use_64_bit = Get64BitHandlerTrampoline(
+          browser_library_, &handler_trampoline, &handler_library);
+    }
+
+    if (!handler_trampoline.empty()) {
+      std::vector<std::string> env =
+          internal::BuildEnvironmentWithApk(use_64_bit);
+      std::set<crashpad::FileHandle> preserve_handles;
+      internal::AppendSharedMemoryUserStreamArgs(user_streams_, &arguments,
+                                                 &preserve_handles);
 
       return GetCrashpadClient().StartHandlerWithLinkerForClient(
-          handler_trampoline_, handler_library_, kUse64Bit, &env, database_path,
-          metrics_path, url, process_annotations, arguments, fd);
+          handler_trampoline, handler_library, use_64_bit, &env, database_path,
+          metrics_path, url, process_annotations, arguments, fd,
+          preserve_handles);
     }
 
     return false;
@@ -497,8 +570,9 @@ class HandlerStarter {
   ~HandlerStarter() = delete;
 
   crashpad::SanitizationInformation browser_sanitization_info_;
-  std::string handler_trampoline_;
-  std::string handler_library_;
+  std::string browser_trampoline_;
+  std::string browser_library_;
+  std::vector<base::ReadOnlySharedMemoryRegion> user_streams_;
 };
 
 bool g_is_browser = false;
@@ -553,21 +627,25 @@ bool GetHandlerTrampoline(std::string* handler_trampoline,
   base::FilePath handler_library_path(info.dli_fname);
   base::FilePath libdir = handler_library_path.DirName();
   base::FilePath handler_trampoline_path =
-      libdir.AppendASCII("libcrashpad_handler_trampoline.so");
+      libdir.AppendASCII(kHandlerTrampoline);
 
   *handler_trampoline = handler_trampoline_path.value();
   *handler_library = handler_library_path.value();
   return true;
 }
 
-bool BuildEnvironmentWithApk(bool use_64_bit,
-                             std::vector<std::string>* result) {
-  DCHECK(result->empty());
+std::vector<std::string> BuildEnvironmentWithApk(bool use_64_bit) {
+#if defined(ARCH_CPU_64_BITS)
+  constexpr bool kIs64BitProcess = true;
+#else
+  constexpr bool kIs64BitProcess = false;
+#endif
+  const bool is_same_bitness = (use_64_bit == kIs64BitProcess);
 
   std::string classpath;
   std::string library_path;
   // CLASSPATH can just inherit existing values once Trichrome is removed.
-  MakePackagePaths(&classpath, &library_path);
+  MakePackagePaths(use_64_bit, is_same_bitness, &classpath, &library_path);
 
   std::unique_ptr<base::Environment> env(base::Environment::Create());
   static constexpr char kClasspathVar[] = "CLASSPATH";
@@ -577,34 +655,44 @@ bool BuildEnvironmentWithApk(bool use_64_bit,
   }
 
   static constexpr char kLdLibraryPathVar[] = "LD_LIBRARY_PATH";
-  std::optional<std::string> current_library_path =
-      env->GetVar(kLdLibraryPathVar);
-  if (current_library_path.has_value()) {
-    library_path += ":" + current_library_path.value();
+  if (is_same_bitness) {
+    std::optional<std::string> current_library_path =
+        env->GetVar(kLdLibraryPathVar);
+    if (current_library_path.has_value()) {
+      base::StrAppend(&library_path, {library_path.empty() ? "" : ":",
+                                      current_library_path.value()});
+    }
   }
 
   static constexpr char kRuntimeRootVar[] = "ANDROID_RUNTIME_ROOT";
   std::optional<std::string> runtime_root = env->GetVar(kRuntimeRootVar);
   if (runtime_root.has_value()) {
-    library_path +=
-        ":" + runtime_root.value() + (use_64_bit ? "/lib64" : "/lib");
+    base::StrAppend(&library_path,
+                    {library_path.empty() ? "" : ":", runtime_root.value(),
+                     use_64_bit ? "/lib64" : "/lib"});
   }
 
-  result->push_back("CLASSPATH=" + classpath);
-  result->push_back("LD_LIBRARY_PATH=" + library_path);
-  for (char** envp = environ; *envp != nullptr; UNSAFE_TODO(++envp)) {
-    if ((UNSAFE_TODO(strncmp(*envp, kClasspathVar, strlen(kClasspathVar))) ==
-             0 &&
-         UNSAFE_TODO((*envp)[strlen(kClasspathVar)]) == '=') ||
-        (UNSAFE_TODO(strncmp(*envp, kLdLibraryPathVar,
-                             strlen(kLdLibraryPathVar))) == 0 &&
-         UNSAFE_TODO((*envp)[strlen(kLdLibraryPathVar)]) == '=')) {
+  std::vector<std::string> result;
+  result.push_back("CLASSPATH=" + classpath);
+  result.push_back("LD_LIBRARY_PATH=" + library_path);
+  auto is_env_var = [](std::string_view entry, std::string_view var) {
+    return entry.starts_with(var) && entry.substr(var.size()).starts_with('=');
+  };
+  for (std::string& entry : env->GetAllVars()) {
+    static constexpr char kLdPreloadVar[] = "LD_PRELOAD";
+
+    // Omit LD_PRELOAD when launching a cross-bitness handler, as any preloaded
+    // library paths from the current process will have the wrong ELF class and
+    // cause the target linker to abort on startup.
+    if (is_env_var(entry, kClasspathVar) ||
+        is_env_var(entry, kLdLibraryPathVar) ||
+        (!is_same_bitness && is_env_var(entry, kLdPreloadVar))) {
       continue;
     }
-    result->push_back(*envp);
+    result.push_back(std::move(entry));
   }
 
-  return true;
+  return result;
 }
 
 bool StartHandlerForClient(int fd, bool write_minidump_to_database) {

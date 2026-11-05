@@ -44,6 +44,7 @@ class HorizontalTabClosingHelper : public views::MouseWatcherListener {
   }
 
   int GetUnpinnedContainerWidth() const;
+  bool IsLastVisibleUnpinnedChild(const TabCollectionNode* child_node) const;
 
   bool in_tab_close() const { return in_tab_close_; }
 
@@ -59,8 +60,18 @@ class HorizontalTabClosingHelper : public views::MouseWatcherListener {
   void OnTouchTimerFired();
 
   void OnChildWillBeRemoved(TabCollectionNode* child_node);
+  void OnChildrenRemoved();
   void OnChildrenAdded(const tabs::TabCollectionNodes& handles);
-  void OnChildMoved(TabCollectionNode* moved_node);
+  void OnChildMoved(TabCollectionNode* moved_node,
+                    const TabCollectionNode* src_parent_node);
+  void OnTabWillBeRemoved(const TabCollectionNode* tab_node);
+
+  // Returns the trailingmost visible unpinned tab node, or nullptr if none is
+  // found.
+  const TabCollectionNode* GetLastVisibleTab() const;
+  bool IsLastVisibleTab(const TabCollectionNode* child_node) const;
+  bool IsUnpinnedContainerOverflowing() const;
+  int GetVisibleTabCount() const;
 
   void InvalidateLayout();
   UnpinnedTabContainerView* GetUnpinnedContainer() const;
@@ -71,12 +82,19 @@ class HorizontalTabClosingHelper : public views::MouseWatcherListener {
   bool in_tab_close_ = false;
   bool is_paused_ = false;
   std::optional<int> override_available_width_for_tabs_;
+  // Tracks the split collection and its closing tab between
+  // OnTabWillBeRemoved() and OnChildWillBeRemoved() so the intermediate unsplit
+  // move out of the split does not exit tab closing mode.
+  std::optional<tabs::TabCollectionNodeHandle> closing_split_handle_;
+  std::optional<tabs::TabCollectionNodeHandle> closing_split_tab_handle_;
   std::unique_ptr<views::MouseWatcher> mouse_watcher_;
   base::OneShotTimer touch_resize_timer_;
 
   base::CallbackListSubscription on_child_will_be_removed_subscription_;
+  base::CallbackListSubscription on_children_removed_subscription_;
   base::CallbackListSubscription on_children_added_subscription_;
   base::CallbackListSubscription on_child_moved_subscription_;
+  base::CallbackListSubscription on_tab_will_be_removed_subscription_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_HORIZONTAL_HORIZONTAL_TAB_CLOSING_HELPER_H_

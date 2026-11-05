@@ -29,8 +29,8 @@ include_rules = [
   "+services/viz/privileged/mojom",
   "+services/viz/public/mojom",
   "+skia/ext",
-  "+third_party/khronos/GLES2/gl2.h",
-  "+third_party/khronos/GLES2/gl2ext.h",
+  "+third_party/angle/include/GLES2/gl2.h",
+  "+third_party/angle/include/GLES2/gl2ext.h",
   "+third_party/skia/include",
   "+ui/base/ozone_buildflags.h",
   "+ui/events",
@@ -64,6 +64,7 @@ specific_include_rules = {
 
   "test_gpu_service_holder\\.cc": [
     "+gpu/command_buffer/service/dawn_context_provider.h",
+    "+gpu/command_buffer/service/gpu_task_priority.h",
     "+gpu/command_buffer/service/scheduler_sequence.h",
     "+gpu/command_buffer/service/service_utils.h",
     "+gpu/config",

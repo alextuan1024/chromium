@@ -195,8 +195,7 @@ void LayoutBoxModelObject::StyleDidChange(
     }
   }
 
-  if (RuntimeEnabledFeatures::AnnotationSpaceOnStartEnabled() &&
-      new_style.GetTextEmphasisMark() != TextEmphasisMark::kNone) {
+  if (new_style.GetTextEmphasisMark() != TextEmphasisMark::kNone) {
     View()->SetContainsAnnotations();
   }
 
@@ -251,28 +250,32 @@ void LayoutBoxModelObject::StyleDidChange(
   }
 
   if (old_style && Parent()) {
-    LayoutBlock* block = InclusiveContainingBlock();
+    LayoutBox* container = InclusiveContainingBox();
 
     if ((could_contain_fixed && !can_contain_fixed) ||
         (could_contain_absolute && !can_contain_absolute)) {
       // Clear our positioned objects list. Our absolute and fixed positioned
       // descendants will be inserted into our containing block's positioned
       // objects list during layout.
-      block->RemovePositionedObjects(nullptr);
+      container->RemovePositionedObjects(nullptr);
     }
     if (!could_contain_absolute && can_contain_absolute) {
       // Remove our absolute positioned descendants from their current
       // containing block.
       // They will be inserted into our positioned objects list during layout.
-      if (LayoutBlock* cb = block->ContainingBlockForAbsolutePosition())
-        cb->RemovePositionedObjects(this);
+      if (LayoutBox* absolute_container =
+              container->ContainingBoxForAbsolutePosition()) {
+        absolute_container->RemovePositionedObjects(this);
+      }
     }
     if (!could_contain_fixed && can_contain_fixed) {
       // Remove our fixed positioned descendants from their current containing
       // block.
       // They will be inserted into our positioned objects list during layout.
-      if (LayoutBlock* cb = block->ContainingBlockForFixedPosition())
-        cb->RemovePositionedObjects(this);
+      if (LayoutBox* fixed_container =
+              container->ContainingBoxForFixedPosition()) {
+        fixed_container->RemovePositionedObjects(this);
+      }
     }
   }
 
@@ -303,7 +306,7 @@ void LayoutBoxModelObject::StyleDidChange(
         bool old_body_background_transfers =
             old_style && body_object->BackgroundTransfersToView(old_style);
         if (new_body_background_transfers != old_body_background_transfers &&
-            body_object->StyleRef().HasBackground()) {
+            body_object->Style().HasBackground()) {
           body_object->SetBackgroundNeedsFullPaintInvalidation();
         }
       }
@@ -311,7 +314,9 @@ void LayoutBoxModelObject::StyleDidChange(
   }
 
   if (old_style &&
-      old_style->BackfaceVisibility() != new_style.BackfaceVisibility()) {
+      (old_style->BackfaceVisibility() != new_style.BackfaceVisibility() ||
+       old_style->HasLayoutContainmentForOverscrollContainer() !=
+           new_style.HasLayoutContainmentForOverscrollContainer())) {
     SetNeedsPaintPropertyUpdate();
   }
 
@@ -434,26 +439,6 @@ void LayoutBoxModelObject::AddOutlineRectsForDescendant(
                              include_block_overflows);
 }
 
-void LayoutBoxModelObject::RecalcVisualOverflow() {
-  NOT_DESTROYED();
-  // |PaintLayer| calls this function when |HasSelfPaintingLayer|. When |this|
-  // is an inline box or an atomic inline, its ink overflow is stored in
-  // |FragmentItem| in the inline formatting context.
-  if (IsInline() && IsInLayoutNGInlineFormattingContext()) {
-    DCHECK(HasSelfPaintingLayer());
-    InlineCursor cursor;
-    InlinePaintContext inline_context;
-    for (cursor.MoveTo(*this); cursor; cursor.MoveToNextForSameLayoutObject()) {
-      InlinePaintContext::ScopedInlineBoxAncestors scoped_items(
-          cursor, &inline_context);
-      cursor.Current().RecalcInkOverflow(cursor, &inline_context);
-    }
-    return;
-  }
-
-  LayoutObject::RecalcVisualOverflow();
-}
-
 bool LayoutBoxModelObject::ShouldBeHandledAsInline(
     const ComputedStyle& style) const {
   NOT_DESTROYED();
@@ -474,7 +459,7 @@ bool LayoutBoxModelObject::ShouldBeHandledAsInline(
 void LayoutBoxModelObject::ImageChanged(WrappedImagePtr image,
                                         CanDeferInvalidation) {
   NOT_DESTROYED();
-  for (const FillLayer* layer = &StyleRef().MaskLayers(); layer;
+  for (const FillLayer* layer = &Style().MaskLayers(); layer;
        layer = layer->NextForUsedValue()) {
     if (layer->GetImage() && image == layer->GetImage()->Data()) {
       // Since an invalid <mask> reference does not yield a paint property
@@ -490,7 +475,7 @@ void LayoutBoxModelObject::ImageChanged(WrappedImagePtr image,
 
 void LayoutBoxModelObject::UpdateFromStyle() {
   NOT_DESTROYED();
-  const ComputedStyle& style = StyleRef();
+  const ComputedStyle& style = Style();
   SetHasBoxDecorationBackground(style.HasBoxDecorationBackground());
   SetInline(ShouldBeHandledAsInline(style));
   SetPositionState(ToPositionedState(style.GetPosition()));
@@ -502,7 +487,7 @@ void LayoutBoxModelObject::UpdateFromStyle() {
       ComputeIsAbsoluteContainer(style, is_fixed_container));
   SetIsBackgroundAttachmentFixedObject(
       !BackgroundTransfersToView() &&
-      StyleRef().HasFixedAttachmentBackgroundImage());
+      Style().HasFixedAttachmentBackgroundImage());
 }
 
 void LayoutBoxModelObject::UpdateCanCompositeBackgroundAttachmentFixed(
@@ -521,7 +506,7 @@ PhysicalRect LayoutBoxModelObject::VisualOverflowRectIncludingFilters() const {
 PhysicalRect LayoutBoxModelObject::ApplyFiltersToRect(
     const PhysicalRect& rect) const {
   NOT_DESTROYED();
-  if (!HasReflection() && !StyleRef().HasFilter()) {
+  if (!HasReflection() && !Style().HasFilter()) {
     return rect;
   }
   gfx::RectF float_rect(rect);
@@ -538,16 +523,16 @@ PhysicalRect LayoutBoxModelObject::ApplyFiltersToRect(
   return PhysicalRect::EnclosingRect(float_rect);
 }
 
-LayoutBlock* LayoutBoxModelObject::StickyContainer() const {
+LayoutBox* LayoutBoxModelObject::StickyContainer() const {
   NOT_DESTROYED();
-  return ContainingBlock();
+  return ContainingBox();
 }
 
 StickyConstraintsData LayoutBoxModelObject::ComputeStickyPositionConstraints(
     const PaintLayer& scroll_container_layer,
     PhysicalAxes scroll_axes) const {
   NOT_DESTROYED();
-  DCHECK(StyleRef().HasStickyConstrainedPosition());
+  DCHECK(Style().HasStickyConstrainedPosition());
 
   bool is_fixed_to_view = false;
   {
@@ -563,13 +548,13 @@ StickyConstraintsData LayoutBoxModelObject::ComputeStickyPositionConstraints(
   }
 
   // Skip anonymous containing blocks except for anonymous fieldset content box.
-  LayoutBlock* sticky_container = StickyContainer();
+  LayoutBox* sticky_container = StickyContainer();
   while (sticky_container->IsAnonymous()) {
     if (sticky_container->Parent() &&
         sticky_container->Parent()->IsFieldset()) {
       break;
     }
-    sticky_container = sticky_container->ContainingBlock();
+    sticky_container = sticky_container->ContainingBox();
   }
 
   const auto* scroll_container = scroll_container_layer.GetLayoutBox();
@@ -616,10 +601,10 @@ StickyConstraintsData LayoutBoxModelObject::ComputeStickyPositionConstraints(
       // allowed to move.
       LayoutUnit max_width = sticky_container->ContentLogicalWidth();
       scroll_container_relative_containing_block_rect.ContractEdges(
-          MinimumValueForLength(StyleRef().MarginTop(), max_width),
-          MinimumValueForLength(StyleRef().MarginRight(), max_width),
-          MinimumValueForLength(StyleRef().MarginBottom(), max_width),
-          MinimumValueForLength(StyleRef().MarginLeft(), max_width));
+          MinimumValueForLength(Style().MarginTop(), max_width),
+          MinimumValueForLength(Style().MarginRight(), max_width),
+          MinimumValueForLength(Style().MarginBottom(), max_width),
+          MinimumValueForLength(Style().MarginLeft(), max_width));
     }
   }
 
@@ -702,9 +687,9 @@ StickyConstraintsData LayoutBoxModelObject::ComputeStickyPositionConstraints(
         max_inset_for_get_computed_style);
   };
 
-  const auto& style = StyleRef();
+  const auto& style = Style();
   const WritingDirectionMode sticky_container_writing_direction =
-      sticky_container->StyleRef().GetWritingDirection();
+      sticky_container->Style().GetWritingDirection();
 
   return StickyConstraintsData{
       compute_axis_data(PhysicalAxis::kHorizontal, style.Left(), style.Right(),
@@ -841,7 +826,7 @@ PhysicalOffset LayoutBoxModelObject::AdjustedPositionRelativeTo(
 PhysicalBoxStrut LayoutBoxModelObject::ComputedPaddingOutsets() const {
   NOT_DESTROYED();
 
-  const ComputedStyle& style = StyleRef();
+  const ComputedStyle& style = Style();
   if (!style.MayHavePadding()) {
     return PhysicalBoxStrut();
   }
@@ -859,7 +844,7 @@ PhysicalBoxStrut LayoutBoxModelObject::ComputedPaddingOutsets() const {
 
 LayoutUnit LayoutBoxModelObject::ContainingBlockLogicalWidthForContent() const {
   NOT_DESTROYED();
-  return ContainingBlock()->ContentLogicalWidth();
+  return ContainingBox()->ContentLogicalWidth();
 }
 
 LogicalRect LayoutBoxModelObject::LocalCaretRectForEmptyElement(
@@ -869,7 +854,7 @@ LogicalRect LayoutBoxModelObject::LocalCaretRectForEmptyElement(
   NOT_DESTROYED();
   DCHECK(!SlowFirstChild() || SlowFirstChild()->IsPseudoElement());
 
-  const SimpleFontData* font_data = StyleRef().GetFont()->PrimaryFont();
+  const SimpleFontData* font_data = Style().GetFont()->PrimaryFont();
   const Node* node = GetNode();
 
   // Caret-shape only applies to text or elements that accept text input.
@@ -881,7 +866,7 @@ LogicalRect LayoutBoxModelObject::LocalCaretRectForEmptyElement(
   // However, as soon as some content is entered, the line boxes will be
   // constructed and this kludge is not called any more. So only the caret size
   // of an empty :first-line'd block is wrong. I think we can live with that.
-  const ComputedStyle& current_style = FirstLineStyleRef();
+  const ComputedStyle& current_style = FirstLineStyle();
 
   enum CaretAlignment { kAlignLeft, kAlignRight, kAlignCenter };
 
@@ -894,8 +879,8 @@ LogicalRect LayoutBoxModelObject::LocalCaretRectForEmptyElement(
     if (!Parent()) {
       reference_align = ETextAlign::kStart;
     } else {
-      reference_align = Parent()->StyleRef().GetTextAlign();
-      reference_style = &Parent()->StyleRef();
+      reference_align = Parent()->Style().GetTextAlign();
+      reference_style = &Parent()->Style();
     }
   }
 
@@ -991,39 +976,27 @@ LogicalRect LayoutBoxModelObject::LocalCaretRectForEmptyElement(
 void LayoutBoxModelObject::MoveChildTo(
     LayoutBoxModelObject* to_box_model_object,
     LayoutObject* child,
-    LayoutObject* before_child,
-    bool full_remove_insert) {
+    LayoutObject* before_child) {
   NOT_DESTROYED();
   DCHECK_EQ(this, child->Parent());
   DCHECK(!before_child || to_box_model_object == before_child->Parent());
 
-  if (full_remove_insert && (to_box_model_object->IsLayoutBlock() ||
-                             to_box_model_object->IsLayoutInline())) {
-    // Takes care of adding the new child correctly if toBlock and fromBlock
-    // have different kind of children (block vs inline).
-    to_box_model_object->AddChild(
-        VirtualChildren()->RemoveChildNode(this, child), before_child);
-  } else {
-    to_box_model_object->VirtualChildren()->InsertChildNode(
-        to_box_model_object,
-        VirtualChildren()->RemoveChildNode(this, child, full_remove_insert),
-        before_child, full_remove_insert);
-  }
+  to_box_model_object->AddChild(VirtualChildren()->RemoveChildNode(this, child),
+                                before_child);
 }
 
 void LayoutBoxModelObject::MoveChildrenTo(
     LayoutBoxModelObject* to_box_model_object,
     LayoutObject* start_child,
     LayoutObject* end_child,
-    LayoutObject* before_child,
-    bool full_remove_insert) {
+    LayoutObject* before_child) {
   NOT_DESTROYED();
 
   DCHECK(!before_child || to_box_model_object == before_child->Parent());
   for (LayoutObject* child = start_child; child && child != end_child;) {
     // Save our next sibling as moveChildTo will clear it.
     LayoutObject* next_sibling = child->NextSibling();
-    MoveChildTo(to_box_model_object, child, before_child, full_remove_insert);
+    MoveChildTo(to_box_model_object, child, before_child);
     child = next_sibling;
   }
 }
@@ -1048,7 +1021,7 @@ LayoutObject* LayoutBoxModelObject::SplitAnonymousBoxesAroundChild(
       MarkBoxForRelayoutAfterSplit(parent_box);
       parent_box->VirtualChildren()->InsertChildNode(
           parent_box, post_box, box_to_split->NextSibling());
-      box_to_split->MoveChildrenTo(post_box, before_child, nullptr, true);
+      box_to_split->MoveChildrenTo(post_box, before_child, nullptr);
 
       LayoutObject* child = post_box->SlowFirstChild();
       DCHECK(child);
@@ -1107,7 +1080,7 @@ void LayoutBoxModelObject::AttemptToMerge(LayoutBoxModelObject* prev,
 
   // Shift all the children of `next` into `prev`, and destroy the
   // (now empty) sibling.
-  next->MoveAllChildrenTo(prev, true);
+  next->MoveAllChildrenTo(prev);
   next->Destroy();
 
   // We now need to recurse, as there may be multiple levels of anonymous
@@ -1143,8 +1116,9 @@ bool LayoutBoxModelObject::BackgroundTransfersToView(
     return false;
   if (document_element_style->ShouldApplyAnyContainment(*document_element))
     return false;
-  if (StyleRef().ShouldApplyAnyContainment(*To<Element>(GetNode())))
+  if (Style().ShouldApplyAnyContainment(*To<Element>(GetNode()))) {
     return false;
+  }
   return true;
 }
 

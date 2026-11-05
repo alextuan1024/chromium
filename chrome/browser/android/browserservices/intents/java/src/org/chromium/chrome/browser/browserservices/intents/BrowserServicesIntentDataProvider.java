@@ -261,8 +261,7 @@ public abstract class BrowserServicesIntentDataProvider {
     }
 
     /**
-     * @return The URL that should be used from this intent. Must be called only after native has
-     *     loaded.
+     * @return The URL that should be used from this intent.
      */
     public abstract @Nullable String getUrlToLoad();
 
@@ -449,6 +448,18 @@ public abstract class BrowserServicesIntentDataProvider {
      */
     public @CustomTabProfileType int getCustomTabMode() {
         return CustomTabProfileType.REGULAR;
+    }
+
+    /**
+     * Returns whether an Incognito Activity shares the primary OTR profile with Chrome's Incognito
+     * tabs, instead of using its own unique OTR profile. Such an Activity is registered as an
+     * {@code IncognitoTabHost} so that the primary OTR profile outlives it.
+     */
+    public boolean usesPrimaryOtrProfile() {
+        // Incognito popups opened by Chrome share the primary OTR profile with their opener.
+        return getCustomTabMode() == CustomTabProfileType.INCOGNITO
+                && getUiType() == CustomTabsUiType.POPUP
+                && isOpenedByChrome();
     }
 
     /**
@@ -725,16 +736,6 @@ public abstract class BrowserServicesIntentDataProvider {
         return ACTIVITY_SIDE_SHEET_POSITION_END;
     }
 
-    /** Return whether omnibox is allowed to be displayed in the CCT. */
-    public boolean isInteractiveOmniboxAllowed() {
-        return false;
-    }
-
-    /** Return whether omnibox should be enabled for the calling package. */
-    public boolean isInteractiveOmniboxEnabled() {
-        return false;
-    }
-
     /**
      * Return the target network handle {@link android.net.Network#getNetworkHandle} that loads
      * associated with this intent must use. Defaults to {@code NetId.INVALID}, in which case we let
@@ -875,10 +876,69 @@ public abstract class BrowserServicesIntentDataProvider {
     public void maybeAddAdditionalContentExtrasToOutboundIntent(
             Supplier<@Nullable Tab> tabProvider, Intent outboundIntent, int viewId) {}
 
-    /**
-     * @return Whether the CCT tab switcher is enabled.
-     */
-    public boolean isCctTabSwitcherEnabled() {
+    /** Returns Whether Tabbed CCT is enabled. */
+    public boolean isTabbedCctEnabled() {
         return false;
+    }
+
+    /** Returns the account ID specified for Tabbed CCT, or null if not present. */
+    public @Nullable String getTabbedCctAccountId() {
+        return null;
+    }
+
+    /**
+     * @return The {@link CustomTabIntentDataHolder} for this provider, or null if not applicable.
+     */
+    public @Nullable CustomTabIntentDataHolder getCustomTabIntentDataHolder() {
+        return null;
+    }
+
+    /** Returns whether a translucent background color was specified in the intent. */
+    public boolean hasTranslucentBackgroundColor() {
+        return false;
+    }
+
+    /** Returns the custom inactivity timeout in minutes, or null if not specified. */
+    public @Nullable Integer getTimeoutMinutes() {
+        return null;
+    }
+
+    /**
+     * Returns the {@link PendingIntent} sent when the inactivity timeout elapses, or null if not
+     * specified.
+     */
+    public @Nullable PendingIntent getTimeoutPendingIntent() {
+        return null;
+    }
+
+    /** Returns the embedder-supplied tab identifier for tab resumption, or null if not set. */
+    public @Nullable String getEmbedderTabId() {
+        return null;
+    }
+
+    /** Returns whether restoring a previously closed tab was requested. */
+    public boolean isRestoreTabRequested() {
+        return false;
+    }
+
+    /** Clears resumption state when a reparented tab takes precedence over tab resumption. */
+    public void clearResumptionExtras() {}
+
+    /** Returns the maximum number of resumption tabs retained, or null to use the default. */
+    public @Nullable Integer getMaxResumptionTabs() {
+        return null;
+    }
+
+    /**
+     * Returns the time-to-live in milliseconds for retained resumption tabs, or null to use the
+     * default.
+     */
+    public @Nullable Long getResumptionTabTtlMs() {
+        return null;
+    }
+
+    /** Returns the FedCM request identifier associated with the intent, or null if not set. */
+    public @Nullable Integer getFedCmId() {
+        return null;
     }
 }

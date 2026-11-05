@@ -9,6 +9,7 @@
 #import "base/apple/foundation_util.h"
 #import "base/command_line.h"
 #import "base/containers/flat_set.h"
+#import "base/containers/span.h"
 #import "base/memory/raw_ptr.h"
 #import "base/sequence_checker.h"
 #import "base/strings/string_number_conversions.h"
@@ -200,7 +201,10 @@ void ConfigureTabResumptionItemForShopCard(
     std::unique_ptr<payments::CurrencyFormatter> formatter =
         std::make_unique<payments::CurrencyFormatter>(
             price_tracking_data->product_update().new_price().currency_code(),
-            GetApplicationContext()->GetApplicationLocaleStorage()->Get());
+            std::string(GetApplicationContext()
+                            ->GetApplicationLocaleStorage()
+                            ->GetTag()
+                            .tag_string()));
     config.shopCardData.priceDrop = GetPriceDrop(
         formatter.get(),
         price_tracking_data->product_update().new_price().amount_micros(),
@@ -781,8 +785,9 @@ class TabResumptionMediatorProxy {
   }
   _imageFetcher->FetchImageData(
       URL,
-      base::BindOnce(^(const std::string& imageData,
+      base::BindOnce(^(image_fetcher::ImageData sharedImageData,
                        const image_fetcher::RequestMetadata& metadata) {
+        const auto imageData = base::span(*sharedImageData);
         [weakSelf salientImageReceived:imageData
                                forItem:config
                            updateImage:updateImage];
@@ -791,12 +796,12 @@ class TabResumptionMediatorProxy {
 }
 
 // Salient image has been received. Display it.
-- (void)salientImageReceived:(const std::string&)imageData
+- (void)salientImageReceived:(base::span<const uint8_t>)imageData
                      forItem:(TabResumptionConfig*)config
                  updateImage:(BOOL)updateImage {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
   UIImage* image =
-      [UIImage imageWithData:[NSData dataWithBytes:imageData.c_str()
+      [UIImage imageWithData:[NSData dataWithBytes:imageData.data()
                                             length:imageData.size()]];
   if (!image) {
     return;

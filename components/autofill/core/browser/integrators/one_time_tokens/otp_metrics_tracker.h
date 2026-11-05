@@ -9,16 +9,18 @@
 #include <string>
 #include <vector>
 
-#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "components/autofill/core/common/unique_ids.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service_constants.h"
 #include "components/one_time_tokens/core/browser/util/expiring_subscription.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+
+namespace one_time_tokens {
+class GmailOtpBackend;
+enum class TickleFormOutcome;
+}  // namespace one_time_tokens
 
 namespace signin {
 class IdentityManager;
@@ -35,19 +37,17 @@ class AutofillManager;
 class OtpMetricsTracker {
  public:
   static constexpr char kFieldDetectionToTickleLatencyHistogram[] =
-      "Autofill.OneTimeTokens.FieldDetectionToTickleLatency";
+      "OneTimeTokens.Gmail.FieldDetectionToTickleLatency";
   static constexpr char kTickleToFieldDetectionLatencyHistogram[] =
-      "Autofill.OneTimeTokens.TickleToFieldDetectionLatency";
-  static constexpr char kTickleFormOutcomeHistogram[] =
-      "Autofill.OneTimeTokens.Tickle.FormOutcome";
+      "OneTimeTokens.Gmail.TickleToFieldDetectionLatency";
   static constexpr char kPageLanguageTickleBeforeUserInteractionHistogram[] =
-      "Autofill.OneTimeTokens.PageLanguage.TickleBeforeUserInteraction";
+      "OneTimeTokens.Gmail.PageLanguage.TickleBeforeUserInteraction";
   static constexpr char kPageLanguageTickleAfterUserInteractionHistogram[] =
-      "Autofill.OneTimeTokens.PageLanguage.TickleAfterUserInteraction";
+      "OneTimeTokens.Gmail.PageLanguage.TickleAfterUserInteraction";
   static constexpr char kPageLanguageNoTickleReceivedHistogram[] =
-      "Autofill.OneTimeTokens.PageLanguage.NoTickleReceived";
+      "OneTimeTokens.Gmail.PageLanguage.NoTickleReceived";
   static constexpr char kPageLanguageNoFieldDetectedHistogram[] =
-      "Autofill.OneTimeTokens.PageLanguage.NoFieldDetected";
+      "OneTimeTokens.Gmail.PageLanguage.NoFieldDetected";
 
   // Maximum duration between OTP field detection and tickle arrival for them to
   // be considered correlated. If more than this time has passed, the tickle is
@@ -61,9 +61,10 @@ class OtpMetricsTracker {
   static bool IsEligibleForGmailOtps(
       const signin::IdentityManager* identity_manager);
 
-  OtpMetricsTracker(
-      one_time_tokens::OneTimeTokenService* one_time_token_service,
-      AutofillClient& autofill_client);
+  // Subscribes to tickles from `gmail_otp_backend`. If `gmail_otp_backend` is
+  // null, no tickles are received.
+  OtpMetricsTracker(one_time_tokens::GmailOtpBackend* gmail_otp_backend,
+                    AutofillClient& autofill_client);
   OtpMetricsTracker(const OtpMetricsTracker&) = delete;
   OtpMetricsTracker& operator=(const OtpMetricsTracker&) = delete;
   virtual ~OtpMetricsTracker();
@@ -83,7 +84,7 @@ class OtpMetricsTracker {
 #endif
 
  private:
-  void OnTickleReceived(one_time_tokens::OneTimeTokenSource source);
+  void OnTickleReceived();
   void OnTickleTimeout();
   void OnFormOutcomeTimeout();
   void RecordFormOutcomeMetrics(
@@ -97,7 +98,6 @@ class OtpMetricsTracker {
   bool IsOtpFieldEmptyAndUnedited() const;
   void ResetPendingFormState();
 
-  raw_ptr<one_time_tokens::OneTimeTokenService> one_time_token_service_;
   // The owning `AutofillClient`, guaranteed to outlive this class.
   const raw_ref<AutofillClient> autofill_client_;
   one_time_tokens::ExpiringSubscription tickle_subscription_;

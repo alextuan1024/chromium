@@ -4,7 +4,6 @@
 
 #include "chrome/browser/actor/actor_keyed_service_fake.h"
 
-#include "base/test/bind.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/execution_engine.h"
@@ -24,12 +23,6 @@ ActorKeyedServiceFake::ActorKeyedServiceFake(Profile* profile)
 
 ActorKeyedServiceFake::~ActorKeyedServiceFake() = default;
 
-TaskId ActorKeyedServiceFake::CreateTaskForTesting() {
-  return CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
-      actor::webui::mojom::TaskDuration::kDefault,
-      glic::mojom::FeatureMode::kUnspecified);
-}
-
 TaskId ActorKeyedServiceFake::CreateTransientTaskForTesting() {
   return CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
       actor::webui::mojom::TaskDuration::kTransient,
@@ -42,16 +35,51 @@ TaskId ActorKeyedServiceFake::CreateExperimentalTriggeringTaskForTesting() {
       glic::mojom::FeatureMode::kExperimentalTriggering);
 }
 
+TaskId
+ActorKeyedServiceFake::CreateExperimentalTriggeringTaskWithTitleForTesting(
+    const std::string& title) {
+  return CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
+      actor::webui::mojom::TaskDuration::kDefault,
+      glic::mojom::FeatureMode::kExperimentalTriggering, title);
+}
+
 TaskId ActorKeyedServiceFake::CreateTaskWithDurationForTesting(  // IN-TEST
     actor::webui::mojom::TaskDuration duration) {
   return CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
       duration, glic::mojom::FeatureMode::kUnspecified);
 }
 
+TaskId ActorKeyedServiceFake::CreateTaskWithSourceInfoForTesting(
+    const TaskSourceInfo& source_info) {
+  return CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
+      actor::webui::mojom::TaskDuration::kDefault,
+      glic::mojom::FeatureMode::kUnspecified, "Test Task", source_info);
+}
+
 TaskId ActorKeyedServiceFake::
     CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
         actor::webui::mojom::TaskDuration duration,
-        glic::mojom::FeatureMode feature_mode) {
+        glic::mojom::FeatureMode feature_mode,
+        const std::string& title,
+        const TaskSourceInfo& source_info) {
+  auto webui_task_options = webui::mojom::TaskOptions::New();
+  webui_task_options->title = title;
+  webui_task_options->duration = duration;
+  webui_task_options->feature_mode = feature_mode;
+  ActorTaskOptions options;
+  options.webui_task_options = std::move(webui_task_options);
+  return CreateTaskForTesting(source_info, std::move(options));  // IN-TEST
+}
+
+TaskId ActorKeyedServiceFake::CreateTaskForTesting(  // IN-TEST
+    const TaskSourceInfo& source_info,
+    std::optional<ActorTaskOptions> options) {
+  if (!options) {
+    return CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
+        actor::webui::mojom::TaskDuration::kDefault,
+        glic::mojom::FeatureMode::kUnspecified, "Test Task", source_info);
+  }
+
   std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher =
       ui::NewMockUiEventDispatcher();
   auto* mock_ui_dispatcher =
@@ -69,14 +97,9 @@ TaskId ActorKeyedServiceFake::
           base::BindRepeating(MakeOkResult,
                               /*requires_page_stabilization=*/true)));
 
-  auto task_options = webui::mojom::TaskOptions::New();
-  task_options->title = "Test Task";
-  task_options->duration = duration;
-  task_options->feature_mode = feature_mode;
   return ActorKeyedService::CreateTaskForTesting(  // IN-TEST
-      std::move(ui_event_dispatcher), TestTaskSourceInfo(),
-      &no_enterprise_policy_checker_, std::move(task_options),
-      /*delegate=*/nullptr);
+      std::move(ui_event_dispatcher), source_info,
+      &no_enterprise_policy_checker_, std::move(*options));
 }
 
 void ActorKeyedServiceFake::PauseTaskForTesting(TaskId task_id,  // IN-TEST

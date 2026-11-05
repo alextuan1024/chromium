@@ -12,7 +12,9 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
+#include "components/search_engines/search_engine_type.h"
 
 class PrefService;
 struct TemplateURLData;
@@ -44,9 +46,12 @@ inline constexpr size_t kMaxRowPrepopulatedEngines = 5;
 
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
+// Records `Search.SearchProviderOverrideStatus2` reflecting the state of
+// `prefs::kSearchProviderOverrides` in `prefs`.
+void RecordSearchProviderOverrideStatus(const PrefService& prefs);
+
 // Returns the current version of the prepopulate data, so callers can know when
-// they need to re-merge. If the prepopulate data comes from the preferences
-// file then it returns the version specified there.
+// they need to re-merge.
 int GetDataVersion(PrefService* prefs);
 
 // Resolves the prepopulated Template URLs to use, resolving priority between
@@ -92,14 +97,22 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
     const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants,
     std::u16string_view keyword);
 
+// Returns the engines from `regional_prepopulated_engines`, followed by the
+// other prepopulated engines that at least one regional list references (see
+// `regional_capabilities::GetPrepopulatedEnginesInRegionalLists()`),
+// deduplicated by ID. When several definitions share an ID, the one from
+// `regional_prepopulated_engines` is preferred, matching
+// `GetPrepopulatedEngineFromFullList()`.
+std::vector<raw_ptr<const PrepopulatedEngine>> GetAllPrepopulatedEngines(
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines);
+
 // Returns the prepopulated search engine with the given `prepopulated_id`
 // from the full list of known prepopulated search engines, or `nullptr` if
 // it's not known there.
 // The region-specific list is used to ensure we prioritise returning a search
 // engine relevant for the given country, for cases where the `prepopulated_id`
 // could be associated with multiple country-specific variants.
-// Important: Unlike other functions in this file, it does not look for the
-// potential presence of search providers overrides. Use with caution.
 const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
     int prepopulated_id,
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
@@ -109,10 +122,22 @@ const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
 // Returns the prepopulated search engine with the given `keyword`
 // from the full list of known prepopulated search engines, or `nullptr` if
 // it's not known there.
-// This function assumes no overrides, as a single keyword can only be
-// associated with a single search engine.
 const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
     std::u16string_view keyword,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants);
+
+// Returns the prepopulated search engine with the given `engine_type`
+// from the full list of known prepopulated search engines, or `nullptr` if
+// it's not known there.
+// The region-specific list is used to ensure we prioritise returning a search
+// engine relevant for the given country, for cases where the `engine_type`
+// could be associated with multiple country-specific variants.
+// Important: Unlike other functions in this file, it does not look for the
+// potential presence of search providers overrides. Use with caution.
+const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
+    SearchEngineType engine_type,
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
         regional_prepopulated_engines,
     const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants);
@@ -126,13 +151,9 @@ std::vector<std::unique_ptr<TemplateURLData>> GetLocalPrepopulatedEngines(
     PrefService& prefs);
 #endif
 
-// Removes prepopulated engines and their version stored in user prefs.
-void ClearPrepopulatedEnginesInPrefs(PrefService* prefs);
-
 // Returns the fallback default search provider, currently hardcoded to be
 // Google, or whichever one is the first of the list if Google is not in the
 // list of prepopulated search engines.
-// Search provider overrides are read from `prefs`.
 // The region-specific list is used to ensure we prioritise returning a search
 // engine relevant for the given country, for cases where the `prepopulated_id`
 // could be associated with multiple country-specific variants.

@@ -11,7 +11,8 @@
 
 #include "base/time/time.h"
 #include "net/base/net_export.h"
-#include "url/gurl.h"
+
+class GURL;
 
 namespace net {
 
@@ -83,7 +84,8 @@ enum class CookieEffectiveSameSite {
   COUNT
 };
 
-// Used for histograms only. Do not renumber. Keep in sync with enums.xml.
+// The string form of a SameSite attribute value, as parsed by
+// StringToCookieSameSite().
 enum class CookieSameSiteString {
   // No SameSite attribute is present.
   kUnspecified = 0,
@@ -336,9 +338,6 @@ NET_EXPORT std::string CookieSameSiteToString(CookieSameSite same_site);
 NET_EXPORT std::pair<CookieSameSite, CookieSameSiteString>
 StringToCookieSameSite(std::string_view same_site);
 
-NET_EXPORT void RecordCookieSameSiteAttributeValueHistogram(
-    CookieSameSiteString value);
-
 // This function reduces the 65535 available TCP port values down to a <100
 // potentially interesting values that cookies could be set by or sent to. This
 // is because UMA cannot handle the full range.
@@ -389,8 +388,6 @@ enum class CookieSourceType {
 
 // The special cookie prefixes as defined in
 // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis-13#name-cookie-name-prefixes
-//
-// This enum is being histogrammed; do not reorder or remove values.
 enum class CookiePrefix {
   kNone = 0,
   kSecure,

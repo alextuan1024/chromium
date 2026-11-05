@@ -14,6 +14,7 @@ build_webui("build") {
     "icons/fre/keyboard.svg",
     "icons/fre/lens.svg",
     "images/mac_menu_bar.png",
+    "images/mac_menu_bar_small.png",
     "images/windows_taskbar_collapsed.png",
     "images/windows_taskbar_expanded.png",
   ]
@@ -33,7 +34,6 @@ build_webui("build") {
     "profile_icon.ts",
     "debug/debug_app.html.ts",
     "debug/debug_app.ts",
-    "browser_proxy.ts",
   ]
   css_files = [
     "composebox.css",
@@ -60,6 +60,7 @@ build_webui("build") {
 
   ts_deps = [
     "//third_party/lit/v3_0:build_ts",
+    "//ui/webui/resources/cr_components/color_change_listener:build_ts",
     "//ui/webui/resources/cr_components/composebox:build_ts",
     "//ui/webui/resources/cr_components/help_bubble:build_ts",
     "//ui/webui/resources/cr_components/most_visited:build_ts",

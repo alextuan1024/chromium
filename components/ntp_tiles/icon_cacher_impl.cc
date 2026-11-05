@@ -188,7 +188,7 @@ IconCacherImpl::MaybeProvideDefaultIcon(
           base::BindOnce(&IconCacherImpl::SaveAndNotifyDefaultIconForSite,
                          weak_ptr_factory_.GetWeakPtr(), site,
                          std::move(preliminary_icon_available))));
-  image_fetcher_->GetImageDecoder()->DecodeImage(
+  image_fetcher_->GetImageDecoder()->DecodeImageFromString(
       std::string(ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
           site.default_icon_resource)),
       gfx::Size(kDesiredFrameSize, kDesiredFrameSize), data_decoder_.get(),
@@ -214,7 +214,7 @@ void IconCacherImpl::StartFetchMostLikely(const GURL& page_url,
 
 void IconCacherImpl::OnGetLargeIconOrFallbackStyleFinished(
     const GURL& page_url,
-    const favicon_base::LargeIconResult& result) {
+    favicon_base::LargeIconResult result) {
   if (!HasResultDefaultBackgroundColor(result)) {
     // There is already an icon, there is nothing to do. (We should only fetch
     // for default "gray" tiles so that we never overwrite any favicon of any

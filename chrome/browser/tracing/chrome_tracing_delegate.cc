@@ -7,7 +7,6 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
@@ -67,30 +66,29 @@ ChromeTracingDelegate::ChromeTracingDelegate(PrefService& local_state)
     : local_state_(local_state) {
   // Ensure that this code is called on the UI thread, except for
   // tests where a UI thread might not have been initialized at this point.
-  DCHECK(
-      content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
-      !content::BrowserThread::IsThreadInitialized(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+            !content::BrowserThread::IsThreadInitialized(
+                content::BrowserThread::UI),
+        base::NotFatalUntil::M162);
 #if !BUILDFLAG(IS_ANDROID)
   EnsureObservingBrowserCollection();
 #else
-  TabModelList::AddObserver(this);
+  TabModelList::AddGlobalObserver(this);
 #endif
 }
 
 ChromeTracingDelegate::~ChromeTracingDelegate() {
   CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
 #if BUILDFLAG(IS_ANDROID)
-  TabModelList::RemoveObserver(this);
+  TabModelList::RemoveGlobalObserver(this);
 #endif
 }
 
 #if BUILDFLAG(IS_ANDROID)
 void ChromeTracingDelegate::OnTabModelAdded(TabModel* tab_model) {
-  for (const TabModel* model : TabModelList::models()) {
-    if (model->GetProfile()->IsOffTheRecord()) {
-      latest_incognito_launched_ = base::TimeTicks::Now();
-      base::trace_event::EmitNamedTrigger("incognito-start");
-    }
+  if (tab_model->GetProfile()->IsOffTheRecord()) {
+    latest_incognito_launched_ = base::TimeTicks::Now();
+    base::trace_event::EmitNamedTrigger("incognito-start");
   }
 }
 
@@ -240,7 +238,7 @@ bool ChromeTracingDelegate::IsSystemWideTracingEnabled() {
   }
   // In non-dev images, honor the pref for system-wide tracing.
   PrefService* local_state = g_browser_process->local_state();
-  DCHECK(local_state);
+  CHECK(local_state, base::NotFatalUntil::M162);
   return local_state->GetBoolean(ash::prefs::kDeviceSystemWideTracingEnabled);
 #else
   return false;

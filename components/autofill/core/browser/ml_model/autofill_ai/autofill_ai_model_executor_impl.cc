@@ -30,7 +30,7 @@
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/core/model_quality/model_execution_logging_wrappers.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
@@ -142,8 +142,7 @@ void AutofillAiModelExecutorImpl::GetPredictions(
       optimization_guide::proto::FormsClassificationsLoggingData>
       wrapper_callback =
           base::BindOnce(&AutofillAiModelExecutorImpl::OnModelExecuted,
-                         weak_ptr_factory_.GetWeakPtr(), std::move(form_data),
-                         request)
+                         weak_ptr_factory_.GetWeakPtr(), request)
               .Then(base::BindOnce(std::move(on_model_executed), form_id));
   optimization_guide::ExecuteModelWithLogging(
       &model_executor_.get(),
@@ -158,11 +157,10 @@ AutofillAiModelExecutorImpl::GetWeakPtr() {
 }
 
 void AutofillAiModelExecutorImpl::OnModelExecuted(
-    const FormData form_data,
     const AutofillAiTypeRequest request,
     OptimizationGuideModelExecutionResult execution_result,
     std::unique_ptr<FormsClassificationsLoggingData> logging_data) {
-  const FormSignature form_signature = CalculateFormSignature(form_data);
+  const FormSignature form_signature(request.form_data().form_signature());
   ongoing_queries_.erase(form_signature);
 
   if (!execution_result.response.has_value()) {
@@ -189,7 +187,8 @@ void AutofillAiModelExecutorImpl::OnModelExecuted(
     return;
   }
 
-  if (!AreFieldTypeResponseIndicesValid(form_data.fields().size(), *response)) {
+  if (!AreFieldTypeResponseIndicesValid(request.form_data().fields_size(),
+                                        *response)) {
     model_cache_->Update(form_signature, {}, {});
     base::UmaHistogramEnumeration(
         kUmaAutofillAiModelExecutionStatus,
@@ -211,16 +210,17 @@ void AutofillAiModelExecutorImpl::OnModelExecuted(
   // First compute all field identifiers because we cannot assume that
   // `field_index` in the response is monotonically increasing.
   std::map<FieldSignature, size_t> field_ranks_in_signature_group;
-  std::vector<AutofillAiModelCache::FieldIdentifier> all_field_identifiers;
-  all_field_identifiers.reserve(form_data.fields().size());
-  for (const FormFieldData& field : form_data.fields()) {
-    const FieldSignature field_signature =
-        CalculateFieldSignatureForField(field);
-    all_field_identifiers.push_back(
-        {.signature = field_signature,
-         .rank_in_signature_group =
-             field_ranks_in_signature_group[field_signature]++});
-  }
+  std::vector<AutofillAiModelCache::FieldIdentifier> all_field_identifiers =
+      base::ToVector(
+          request.form_data().fields(),
+          [&field_ranks_in_signature_group](
+              const optimization_guide::proto::FormFieldData& field) {
+            const FieldSignature field_signature(field.field_signature());
+            return AutofillAiModelCache::FieldIdentifier{
+                .signature = field_signature,
+                .rank_in_signature_group =
+                    field_ranks_in_signature_group[field_signature]++};
+          });
 
   // Now select the identifiers corresponding to fields in the response.
   std::vector<AutofillAiModelCache::FieldIdentifier>

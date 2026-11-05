@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_VERTICAL_TAB_STRIP_TOP_CONTAINER_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_VERTICAL_TAB_STRIP_TOP_CONTAINER_H_
 
+#include "base/callback_list.h"
+#include "base/timer/timer.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/layout/delegating_layout_manager.h"
@@ -49,6 +51,9 @@ class VerticalTabStripTopContainer : public views::View,
 
   // View:
   void Layout(PassKey) override;
+  void VisibilityChanged(views::View* starting_from, bool is_visible) override;
+
+  void MaybeShowTabGroupsMovedIPH();
 
   // LayoutDelegate:
   views::ProposedLayout CalculateProposedLayout(
@@ -58,9 +63,7 @@ class VerticalTabStripTopContainer : public views::View,
   views::LabelButton* AddChildButtonFor(actions::ActionId action_id);
 
   TabStripComboButton* GetComboButton();
-  TabStripFlatEdgeButton* GetTabSearchButton();
   views::LabelButton* GetCollapseButton() { return collapse_button_; }
-  views::LabelButton* GetUnfocusButton() { return unfocus_button_; }
 
   bool IsPositionInWindowCaption(const gfx::Point& point);
 
@@ -88,6 +91,9 @@ class VerticalTabStripTopContainer : public views::View,
  private:
   void OnCollapseButtonContextMenuClosed();
 
+  // Returns the preferred size of `combo_button_` when laid out horizontally.
+  gfx::Size GetComboButtonPreferredSize() const;
+
   // Calculates the width of the visible buttons and returns the sum along with
   // the padding between them.
   int GetPreferredWidth() const;
@@ -101,7 +107,8 @@ class VerticalTabStripTopContainer : public views::View,
   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
   raw_ptr<TabStripComboButton> combo_button_ = nullptr;
   raw_ptr<views::LabelButton> collapse_button_ = nullptr;
-  raw_ptr<views::LabelButton> unfocus_button_ = nullptr;
+
+  base::CallbackListSubscription expand_on_hover_subscription_;
 
   std::unique_ptr<views::ActionViewController> action_view_controller_;
 
@@ -125,6 +132,8 @@ class VerticalTabStripTopContainer : public views::View,
   // This is updated during layout calculation and then applied during layout.
   mutable views::LayoutOrientation combo_button_orientation_ =
       views::LayoutOrientation::kHorizontal;
+
+  base::OneShotTimer iph_timer_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_VERTICAL_TAB_STRIP_TOP_CONTAINER_H_

@@ -10,33 +10,12 @@
 
 namespace history_clusters {
 
-enum class ClusteringRequestSource;
 struct QueryClustersFilterParams;
-
-// The reasons why a cluster can be filtered via this processor.
-enum class ClusterFilterReason {
-  kNotFiltered = 0,
-  kNotEnoughImages = 1,
-  kNoCategoryMatch = 2,
-  kNotSearchInitiated = 3,
-  kNoRelatedSearches = 4,
-  kNotEnoughInterestingVisits = 5,
-  kSingleVisit = 6,
-  kNotContentVisible = 7,
-  kHasBlockedCategory = 8,
-  kNotEnoughVisits = 9,
-
-  // Add above here and make sure to keep `ClusterFilterReason` up to date in
-  // enums.xml.
-
-  kMaxValue = kNotEnoughVisits
-};
 
 // A cluster processor that removes clusters that do not match the filter.
 class FilterClusterProcessor : public ClusterProcessor {
  public:
   explicit FilterClusterProcessor(
-      ClusteringRequestSource clustering_request_source,
       QueryClustersFilterParams& filter_params,
       bool engagement_score_provider_is_valid);
   ~FilterClusterProcessor() override;
@@ -52,10 +31,6 @@ class FilterClusterProcessor : public ClusterProcessor {
   // Sorts clusters based on `filter_params_`.
   void SortClustersUsingFilterParams(
       std::vector<history::Cluster>* clusters) const;
-
-  // The clustering request source that requires this filtering. Used for
-  // metrics purposes.
-  ClusteringRequestSource clustering_request_source_;
 
   // Whether the logic should be run to see if clusters should be filtered out
   // based on `filter_params_`.

@@ -122,11 +122,9 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
 }
 
 // Tests that there is only one active (selected) tab at a time.
-// TODO(crbug.com/440615724): This test is flaky.
-- (void)FLAKY_testOneActiveTabAtATime {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
-                           @"supported on iPhone.");
+- (void)testOneActiveTabAtATime {
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(@"The Pinned Tabs feature is not enabled.");
   }
 
   // Create tabs.
@@ -219,9 +217,8 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
 
 // Tests that active tabs are open by tapping the "Done" button.
 - (void)testTabIsOpenByTappingDoneButton {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
-                           @"supported on iPhone.");
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(@"The Pinned Tabs feature is not enabled.");
   }
 
   // Create tabs.
@@ -265,9 +262,8 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
 
 // Tests that Pinned Tab updates when navigated to another site.
 - (void)testPinnedTabUpdatesWhenNavigatedToAnotherSite {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
-                           @"supported on iPhone.");
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(@"The Pinned Tabs feature is not enabled.");
   }
 
   // Create tabs.
@@ -305,9 +301,8 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
 
 // Tests closing all the regular tabs and then all the pinned tabs.
 - (void)testCloseAllRegularThenPinnedTabs {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
-                           @"supported on iPhone.");
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(@"The Pinned Tabs feature is not enabled.");
   }
 
   // Consume the initial cold startup NTP for `PinnedTab0` directly right before
@@ -400,9 +395,8 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
 
 // Tests closing all the pinned tabs and then all the regular tabs.
 - (void)testCloseAllPinnedThenRegularTabs {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
-                           @"supported on iPhone.");
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(@"The Pinned Tabs feature is not enabled.");
   }
 
   // Consume the initial cold startup NTP for `PinnedTab0` directly right before
@@ -493,12 +487,10 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
 }
 
 
-// TODO(crbug.com/441313129): This test is disabled because of its flakiness.
 // Tests scrolling of the pinned tabs collection.
-- (void)DISABLED_testPinnedTabsScrolling {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped for iPad. The Pinned Tabs feature is only "
-                           @"supported on iPhone.");
+- (void)testPinnedTabsScrolling {
+  if (![ChromeEarlGrey isPinnedTabsEnabled]) {
+    EARL_GREY_TEST_SKIPPED(@"The Pinned Tabs feature is not enabled.");
   }
 
   // Create tabs.
@@ -531,6 +523,20 @@ GURL GetURLForTitle(net::EmbeddedTestServer* test_server, NSString* title) {
   [[EarlGrey
       selectElementWithMatcher:GetMatcherForPinnedCellWithTitle(@"PinnedTab0")]
       assertWithMatcher:grey_sufficientlyVisible()];
+}
+
+// Tests that pinned tabs view is not visible on iPhone Duo devices.
+- (void)testPinnedTabsDisabledOnDuo {
+  if (![ChromeEarlGrey isDuoSimulator]) {
+    EARL_GREY_TEST_SKIPPED(@"Test only runs on iPhone Duo simulator.");
+  }
+
+  // Open the Tab Grid.
+  [ChromeEarlGreyUI openTabGrid];
+
+  // Pinned tabs view should not be visible.
+  [[EarlGrey selectElementWithMatcher:GetMatcherForPinnedView()]
+      assertWithMatcher:grey_notVisible()];
 }
 
 @end

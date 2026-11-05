@@ -11,8 +11,7 @@
 #include "ui/events/event_target_iterator.h"
 #include "ui/events/event_targeter.h"
 
-namespace ui {
-namespace test {
+namespace ui::test {
 
 TestEventTarget::TestEventTarget()
     : parent_(nullptr),
@@ -48,11 +47,11 @@ void TestEventTarget::SetEventTargeter(
 }
 
 bool TestEventTarget::DidReceiveEvent(ui::EventType type) const {
-  return received_.count(type) > 0;
+  return received_.Has(type);
 }
 
 void TestEventTarget::ResetReceivedEvents() {
-  received_.clear();
+  received_.Clear();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -67,8 +66,7 @@ EventTarget* TestEventTarget::GetParentTarget() {
 }
 
 std::unique_ptr<EventTargetIterator> TestEventTarget::GetChildIterator() const {
-  return std::make_unique<EventTargetIteratorUniquePtrImpl<TestEventTarget>>(
-      children_);
+  return MakeEventTargetIterator(children_);
 }
 
 EventTargeter* TestEventTarget::GetEventTargeter() {
@@ -78,7 +76,7 @@ EventTargeter* TestEventTarget::GetEventTargeter() {
 void TestEventTarget::OnEvent(Event* event) {
   if (recorder_)
     recorder_->push_back(target_name_);
-  received_.insert(event->type());
+  received_.Put(event->type());
   EventHandler::OnEvent(event);
   if (!event->handled() && mark_events_as_handled_)
     event->SetHandled();
@@ -93,5 +91,4 @@ bool TestEventTarget::Contains(TestEventTarget* target) const {
   return target == this;
 }
 
-}  // namespace test
-}  // namespace ui
+}  // namespace ui::test

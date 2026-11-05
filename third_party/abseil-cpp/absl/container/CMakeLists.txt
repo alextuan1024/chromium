@@ -49,7 +49,7 @@ absl_cc_library(
 absl_cc_library(
   NAME
     btree_test_common
-  hdrs
+  HDRS
     "btree_test.h"
   COPTS
     ${ABSL_TEST_COPTS}
@@ -87,6 +87,29 @@ absl_cc_test(
     absl::test_allocator
     absl::test_instance_tracker
     GTest::gmock_main
+  SHARD_COUNT
+    10
+)
+
+absl_cc_test(
+  NAME
+    btree_instantiate_test
+  SRCS
+    "btree_instantiate_test.cc"
+  COPTS
+    ${ABSL_TEST_COPTS}
+  LINKOPTS
+    ${ABSL_DEFAULT_LINKOPTS}
+  DEPS
+    absl::btree
+    absl::btree_test_common
+    absl::cord
+    absl::core_headers
+    absl::flags
+    absl::raw_logging_internal
+    GTest::gmock_main
+  SHARD_COUNT
+    10
 )
 
 # Internal-only target, do not depend on directly.
@@ -313,6 +336,7 @@ absl_cc_test(
     absl::check
     absl::config
     absl::flat_hash_map
+    absl::hash
     absl::hash_generator_testing
     absl::hash_policy_testing
     absl::test_allocator
@@ -353,6 +377,7 @@ absl_cc_test(
     absl::check
     absl::config
     absl::container_memory
+    absl::core_headers
     absl::flat_hash_set
     absl::hash
     absl::hash_container_defaults
@@ -395,6 +420,7 @@ absl_cc_test(
     ${ABSL_TEST_COPTS}
   DEPS
     absl::config
+    absl::hash
     absl::hash_policy_testing
     absl::node_hash_map
     absl::tracked
@@ -466,7 +492,9 @@ absl_cc_library(
   COPTS
     ${ABSL_DEFAULT_COPTS}
   DEPS
+    absl::canonical_hash
     absl::config
+    absl::core_headers
     absl::hash
     absl::memory
     absl::type_traits
@@ -484,7 +512,9 @@ absl_cc_test(
   DEPS
     absl::config
     absl::container_memory
+    absl::hash
     absl::no_destructor
+    absl::overload
     absl::string_view
     absl::test_instance_tracker
     absl::type_traits
@@ -643,6 +673,7 @@ absl_cc_library(
   DEPS
     absl::base
     absl::config
+    absl::container_memory
     absl::exponential_biased
     absl::no_destructor
     absl::raw_logging_internal
@@ -726,6 +757,7 @@ absl_cc_library(
   COPTS
     ${ABSL_DEFAULT_COPTS}
   DEPS
+    absl::bits
     absl::common_policy_traits
     absl::config
     absl::container_memory
@@ -790,7 +822,6 @@ absl_cc_library(
     absl::base
     absl::bits
     absl::common_policy_traits
-    absl::compressed_tuple
     absl::config
     absl::container_common
     absl::container_memory
@@ -810,6 +841,7 @@ absl_cc_library(
     absl::optional
     absl::prefetch
     absl::raw_logging_internal
+    absl::string_view
     absl::utility
     absl::weakly_mixed_integer
   PUBLIC
@@ -849,6 +881,8 @@ absl_cc_test(
     absl::test_instance_tracker
     absl::type_traits
     GTest::gmock_main
+  SHARD_COUNT
+    4
 )
 
 # Internal-only target, do not depend on directly.
@@ -1217,6 +1251,7 @@ absl_cc_library(
   LINKOPTS
     ${ABSL_DEFAULT_LINKOPTS}
   DEPS
+     absl::cleanup
      absl::config
      absl::core_headers
      absl::hardening

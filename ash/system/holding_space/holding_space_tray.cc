@@ -11,8 +11,8 @@
 
 #include "ash/accessibility/accessibility_controller.h"
 #include "ash/ash_element_identifiers.h"
-#include "ash/constants/ash_features.h"
 #include "ash/constants/tray_background_view_catalog.h"
+#include "ash/drag_drop/drag_drop_util.h"
 #include "ash/public/cpp/holding_space/holding_space_client.h"
 #include "ash/public/cpp/holding_space/holding_space_constants.h"
 #include "ash/public/cpp/holding_space/holding_space_item.h"
@@ -100,8 +100,7 @@ void AnimateToTargetOpacity(views::View* view, float target_opacity) {
 std::vector<base::FilePath> ExtractUnpinnedFilePaths(
     const ui::OSExchangeData& data) {
   std::vector<base::FilePath> unpinned_file_paths =
-      holding_space_util::ExtractFilePaths(data,
-                                           /*fallback_to_filenames=*/true);
+      drag_drop::ExtractFilePaths(data, /*fallback_to_filenames=*/true);
 
   HoldingSpaceModel* const model = HoldingSpaceController::Get()->model();
   std::erase_if(unpinned_file_paths, [model](const base::FilePath& file_path) {
@@ -223,11 +222,9 @@ HoldingSpaceTray::HoldingSpaceTray(Shelf* shelf)
   session_observer_.Observe(Shell::Get()->session_controller());
   SetVisible(false);
 
-  if (features::IsUserEducationEnabled()) {
-    // NOTE: Set `kHelpBubbleContextKey` before `views::kElementIdentifierKey`
-    // in case registration causes a help bubble to be created synchronously.
-    SetProperty(kHelpBubbleContextKey, HelpBubbleContext::kAsh);
-  }
+  // NOTE: Set `kHelpBubbleContextKey` before `views::kElementIdentifierKey`
+  // in case registration causes a help bubble to be created synchronously.
+  SetProperty(kHelpBubbleContextKey, HelpBubbleContext::kAsh);
   SetProperty(views::kElementIdentifierKey, kHoldingSpaceTrayElementId);
 
   SetTooltipText(l10n_util::GetStringUTF16(IDS_ASH_HOLDING_SPACE_TITLE));

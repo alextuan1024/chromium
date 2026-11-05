@@ -79,7 +79,7 @@ base::AutoReset<bool> SetAcknowledgeExistingNtpExtensionsForTesting(
 }
 
 void AcknowledgePreExistingNtpExtensions(Profile* profile) {
-  DCHECK(g_acknowledge_existing_ntp_extensions);
+  CHECK(g_acknowledge_existing_ntp_extensions, base::NotFatalUntil::M162);
 
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile);
   PrefService* profile_prefs = profile->GetPrefs();
@@ -125,10 +125,10 @@ void MaybeShowExtensionControlledHomeNotification(
 
 void MaybeShowExtensionControlledSearchNotification(
     content::WebContents* web_contents,
-    AutocompleteMatch::Type match_type) {
+    omnibox::AutocompleteMatchType match_type) {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
   if (!AutocompleteMatch::IsSearchType(match_type) ||
-      match_type == AutocompleteMatchType::SEARCH_OTHER_ENGINE) {
+      match_type == omnibox::AutocompleteMatchType::kSearchOtherEngine) {
     return;
   }
 
@@ -140,7 +140,7 @@ void MaybeShowExtensionControlledSearchNotification(
 
   // Ansynchronously collect the parameters needed for the dialog, then show it.
   settings_overridden_params::GetSearchOverriddenParamsThenRun(
-      web_contents,
+      profile,
       base::BindOnce(
           [](Profile* profile, content::WebContents* web_contents,
              std::unique_ptr<ExtensionSettingsOverriddenDialog::Params>

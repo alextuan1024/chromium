@@ -88,7 +88,8 @@
       emeApp = new EMEApp(testConfig);
       setInterval(function () {
                       Utils.timeLog('heartbeat #' + ++heartbeatCount +
-                                    ' video: ' + getVideoStatus(player.video));
+                                    ' video: ' + getVideoStatus(
+                                        player ? player.video : null));
                   }, 1000);
     }
 
@@ -102,6 +103,14 @@
       video.removeEventListener('ended', Utils.failTest);
       Utils.installTitleEventHandler(video, 'ended');
       video.removeEventListener('timeupdate', onTimeUpdate);
+
+      // Several encrypted streams have 0.5s clear leads, so 1s of playback
+      // already covers encrypted frames. Seek near the end to save test time,
+      // skipping MediaFoundationClearKey (which has 2s clear-lead clips).
+      if (testConfig.keySystem != MEDIAFOUNDATION_CLEARKEY &&
+          Number.isFinite(video.duration)) {
+        video.currentTime = Math.max(video.currentTime, video.duration - 0.5);
+      }
     }
 
     function onFirstPlayEnded(e) {
@@ -158,6 +167,11 @@
         media_files = media_files.concat(testConfig.videoFile);
         media_types = media_types.concat(testConfig.audioFormat);
         media_files = media_files.concat(testConfig.audioFile);
+        if (urlParams.get('secondVideoFile')) {
+          media_types = media_types.concat(
+              urlParams.get('secondVideoFormat') || testConfig.videoFormat);
+          media_files = media_files.concat(urlParams.get('secondVideoFile'));
+        }
 
         var mediaSource = MediaSourceUtils.loadMediaSource(media_files, media_types);
         video.src = window.URL.createObjectURL(mediaSource);
@@ -166,6 +180,23 @@
       if (playCount == 2) {
         // Wait for the first play to complete.
         video.addEventListener('ended', onFirstPlayEnded);
+        return video.play();
+      }
+      if (urlParams.get('stopAfterPlaybackStart') === '1') {
+        // Loop so a slow frame does not hit ended and detach the visibility
+        // tracker before the lifecycle update finishes, and pause from a task
+        // after rAF so DidFinishLifecycleUpdate runs while still playing.
+        video.loop = true;
+        video.addEventListener('playing', function() {
+          requestAnimationFrame(function() {
+            requestAnimationFrame(function() {
+              setTimeout(function() {
+                video.pause();
+                Utils.setResultInTitle('ENDED');
+              }, 0);
+            });
+          });
+        }, {once: true});
         return video.play();
       }
       // Ended should not fire before onTimeUpdate.
@@ -228,7 +259,11 @@
             return play(player.video, testConfig.playCount);
           }).catch(function(error) {
               Utils.timeLog(error);
-              Utils.failTest('Unable to play video.');
+              // When a CDM crash is expected, the video error handler verifies
+              // session closure and sets the expected result title.
+              if (!player || player.testConfig.keySystem != CRASH_TEST_KEYSYSTEM) {
+                Utils.failTest('Unable to play video.');
+              }
           });
     }
   </script>

@@ -9,11 +9,15 @@
 
 #import "ios/chrome/browser/settings/autofill/autofill_ai/ui/autofill_ai_entity_edit_consumer.h"
 
+@class CrURL;
 @class TableViewItem;
 
 // Fake consumer for AutofillAIEntityEditMediator and Coordinator tests.
 @interface FakeAutofillAIEntityEditConsumer
     : NSObject <AutofillAIEntityEditConsumer>
+
+// The presentation mode passed to the consumer.
+@property(nonatomic, assign) AutofillAIEntityEditMode mode;
 
 // Title of the view controller.
 @property(nonatomic, copy) NSString* title;
@@ -26,8 +30,11 @@
 
 @property(nonatomic, assign) BOOL isServerWalletItem;
 
-// User email with the account.
-@property(nonatomic, strong) NSString* userEmail;
+// The footer text passed to the consumer.
+@property(nonatomic, copy) NSString* footerText;
+
+// The footer link URLs passed to the consumer.
+@property(nonatomic, copy) NSArray<CrURL*>* footerURLs;
 
 // YES if `setLoadingState:YES` was called on the consumer.
 @property(nonatomic, assign) BOOL showLoadingStateCalled;

@@ -155,7 +155,7 @@ IIRFilterNode* IIRFilterNode::Create(BaseAudioContext& context,
     context.GetExecutionContext()->AddConsoleMessage(
         MakeGarbageCollected<ConsoleMessage>(
             mojom::ConsoleMessageSource::kJavaScript,
-            mojom::ConsoleMessageLevel::kWarning, message.ToString()));
+            mojom::ConsoleMessageLevel::kWarning, message.ReleaseString()));
   }
 
   return MakeGarbageCollected<IIRFilterNode>(context, feedforward_coef,
@@ -214,7 +214,7 @@ void IIRFilterNode::getFrequencyResponse(
     return;
   }
 
-  int frequency_hz_length_as_int;
+  int frequency_hz_length_as_int = 0;
   if (!base::CheckedNumeric<int>(frequency_hz_length)
            .AssignIfValid(&frequency_hz_length_as_int)) {
     exception_state.ThrowRangeError(

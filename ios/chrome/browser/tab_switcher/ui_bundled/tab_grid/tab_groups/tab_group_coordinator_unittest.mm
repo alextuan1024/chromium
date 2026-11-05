@@ -50,14 +50,8 @@ class TabGroupCoordinatorFakeWebStateListDelegate
   }
 };
 
-// Creates a FakeTabGroupSyncService.
-std::unique_ptr<KeyedService> CreateFakeTabGroupSyncService(
-    ProfileIOS* profile) {
-  return std::make_unique<tab_groups::FakeTabGroupSyncService>();
-}
-
 // Creates a test ShareKitService.
-std::unique_ptr<KeyedService> BuildTestShareKitService(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildTestShareKitService(ProfileIOS& profile) {
   data_sharing::DataSharingService* data_sharing_service =
       data_sharing::DataSharingServiceFactory::GetForProfile(profile);
   TabGroupService* tab_group_service =
@@ -75,7 +69,7 @@ class TabGroupCoordinatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         tab_groups::TabGroupSyncServiceFactory::GetInstance(),
-        base::BindRepeating(&CreateFakeTabGroupSyncService));
+        base::BindOnce(&std::make_unique<tab_groups::FakeTabGroupSyncService>));
     builder.AddTestingFactory(ShareKitServiceFactory::GetInstance(),
                               base::BindOnce(&BuildTestShareKitService));
     profile_ = std::move(builder).Build();

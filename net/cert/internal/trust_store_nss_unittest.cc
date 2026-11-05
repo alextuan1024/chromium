@@ -7,17 +7,16 @@
 #include <cert.h>
 #include <certdb.h>
 #include <nss.h>
-#include <pkcs11n.h>
 #include <prtypes.h>
 
 #include <memory>
+#include <optional>
 
-#include "base/strings/strcat.h"
+#include "base/containers/span.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_view_util.h"
-#include "base/test/scoped_feature_list.h"
+#include "crypto/scoped_nss_types.h"
 #include "crypto/scoped_test_nss_db.h"
-#include "net/base/features.h"
 #include "net/cert/internal/cert_issuer_source_sync_unittest.h"
 #include "net/cert/internal/test_helpers.h"
 #include "net/cert/scoped_nss_types.h"
@@ -63,9 +62,8 @@ std::shared_ptr<const bssl::ParsedCertificate> GetASSLTrustedBuiltinRoot() {
   if (!ssl_trusted_root) {
     return nullptr;
   }
-  return bssl::ParsedCertificate::Create(
-      bssl::UpRef(ssl_trusted_root->cert_buffer()),
-      x509_util::DefaultParseCertificateOptions(), &parsing_errors);
+  return x509_util::CreateParsedCertificate(
+      bssl::UpRef(ssl_trusted_root->cert_buffer()), &parsing_errors);
 }
 
 std::optional<unsigned> GetNSSTrustForCert(
@@ -102,10 +100,6 @@ std::optional<unsigned> GetNSSTrustForCert(
 
 class TrustStoreNSSTest : public ::testing::Test {
  public:
-  bssl::CertificateTrust ExpectedTrustForBuiltinAnchor() const {
-    return bssl::CertificateTrust::ForTrustAnchor();
-  }
-
   bssl::CertificateTrust ExpectedTrustForAnchor() const {
     return bssl::CertificateTrust::ForTrustAnchor()
         .WithEnforceAnchorConstraints()
@@ -411,9 +405,8 @@ TEST_F(TrustStoreNSSTest, GetAllUserAddedCertsManualTrustClientCert) {
                                      "client_1.pk8", test_nssdb_.slot());
   ASSERT_TRUE(client_cert);
   std::shared_ptr<const bssl::ParsedCertificate> parsed_client_cert =
-      bssl::ParsedCertificate::Create(
-          bssl::UpRef(client_cert->cert_buffer()),
-          x509_util::DefaultParseCertificateOptions(), nullptr);
+      x509_util::CreateParsedCertificate(
+          bssl::UpRef(client_cert->cert_buffer()), nullptr);
   ASSERT_TRUE(parsed_client_cert);
   TrustCert(parsed_client_cert.get());
 
@@ -496,15 +489,8 @@ TEST_F(TrustStoreNSSTest, SystemRootCertIgnoredWhenPresentInUserDb) {
 }
 
 // A system trusted root is also present in a user DB, with TRUSTED_CA settings
-// in the user DB. The system trust settings should not be used, but the trust
-// from the user DB should be honored.
-TEST_F(TrustStoreNSSTest, UserDbTrustForSystemRootHonored) {
-  if (NSS_VersionCheck("3.115")) {
-    // TODO(crbug.com/490139148): The functionality tested here appears to be
-    // broken by upstream changes in NSS around 3.115-3.116.
-    GTEST_SKIP();
-  }
-
+// in the user DB. The trust should be ignored.
+TEST_F(TrustStoreNSSTest, UserDbTrustForSystemRootIgnored) {
   std::shared_ptr<const bssl::ParsedCertificate> system_root =
       GetASSLTrustedBuiltinRoot();
   ASSERT_TRUE(system_root);
@@ -515,21 +501,18 @@ TEST_F(TrustStoreNSSTest, UserDbTrustForSystemRootHonored) {
   EXPECT_EQ(CERTDB_TRUSTED_CA | CERTDB_VALID_CA,
             GetNSSTrustForCert(system_root.get()));
 
-  // TrustStoreNSS should see as TrustAnchor since the cert was trusted in the
-  // user slot.
-  EXPECT_TRUE(HasTrust({system_root}, ExpectedTrustForAnchor()));
+  // TrustStoreNSS should ignore the cert since it is an NSS built-in trust
+  // anchor.
+  EXPECT_TRUE(
+      HasTrust({system_root}, bssl::CertificateTrust::ForUnspecified()));
+  for (const auto& cert_with_trust : trust_store_nss_->GetAllUserAddedCerts()) {
+    EXPECT_NE(base::span(cert_with_trust.cert_bytes), system_root->der_cert());
+  }
 }
 
 // A system trusted root is also present in a user DB, with leaf trust in the
-// user DB. The system trust settings should not be used, but the trust from
-// the user DB should be honored.
-TEST_F(TrustStoreNSSTest, UserDbLeafTrustForSystemRootHonored) {
-  if (NSS_VersionCheck("3.115")) {
-    // TODO(crbug.com/490139148): The functionality tested here appears to be
-    // broken by upstream changes in NSS around 3.115-3.116.
-    GTEST_SKIP();
-  }
-
+// user DB. The trust should be ignored.
+TEST_F(TrustStoreNSSTest, UserDbLeafTrustForSystemRootIgnored) {
   std::shared_ptr<const bssl::ParsedCertificate> system_root =
       GetASSLTrustedBuiltinRoot();
   ASSERT_TRUE(system_root);
@@ -550,21 +533,18 @@ TEST_F(TrustStoreNSSTest, UserDbLeafTrustForSystemRootHonored) {
   EXPECT_EQ(CERTDB_TRUSTED | CERTDB_TERMINAL_RECORD,
             GetNSSTrustForCert(system_root.get()));
 
-  // TrustStoreNSS should see as TrustedLeaf since the cert was trusted in the
-  // user slot.
-  EXPECT_TRUE(HasTrust({system_root}, ExpectedTrustForLeaf()));
+  // TrustStoreNSS should ignore the cert since it is an NSS built-in trust
+  // anchor.
+  EXPECT_TRUE(
+      HasTrust({system_root}, bssl::CertificateTrust::ForUnspecified()));
+  for (const auto& cert_with_trust : trust_store_nss_->GetAllUserAddedCerts()) {
+    EXPECT_NE(base::span(cert_with_trust.cert_bytes), system_root->der_cert());
+  }
 }
 
 // A system trusted root is also present in a user DB, with both CA and leaf
-// trust in the user DB. The system trust settings should not be used, but the
-// trust from the user DB should be honored.
-TEST_F(TrustStoreNSSTest, UserDbAnchorAndLeafTrustForSystemRootHonored) {
-  if (NSS_VersionCheck("3.115")) {
-    // TODO(crbug.com/490139148): The functionality tested here appears to be
-    // broken by upstream changes in NSS around 3.115-3.116.
-    GTEST_SKIP();
-  }
-
+// trust in the user DB. The trust should be ignored.
+TEST_F(TrustStoreNSSTest, UserDbAnchorAndLeafTrustForSystemRootIgnored) {
   std::shared_ptr<const bssl::ParsedCertificate> system_root =
       GetASSLTrustedBuiltinRoot();
   ASSERT_TRUE(system_root);
@@ -577,22 +557,18 @@ TEST_F(TrustStoreNSSTest, UserDbAnchorAndLeafTrustForSystemRootHonored) {
                 CERTDB_TERMINAL_RECORD,
             GetNSSTrustForCert(system_root.get()));
 
-  // TrustStoreNSS should see as TrustAnchor since the cert was trusted in the
-  // user slot. The TrustStoreNSS implementation isn't able to pick up both the
-  // CA and Leaf trust in this case, but we don't really care.
-  EXPECT_TRUE(HasTrust({system_root}, ExpectedTrustForAnchor()));
+  // TrustStoreNSS should ignore the cert since it is an NSS built-in trust
+  // anchor.
+  EXPECT_TRUE(
+      HasTrust({system_root}, bssl::CertificateTrust::ForUnspecified()));
+  for (const auto& cert_with_trust : trust_store_nss_->GetAllUserAddedCerts()) {
+    EXPECT_NE(base::span(cert_with_trust.cert_bytes), system_root->der_cert());
+  }
 }
 
 // A system trusted root is also present in a user DB, with TERMINAL_RECORD
-// settings in the user DB. The system trust settings should not be used, and
-// the distrust from the user DB should be honored.
-TEST_F(TrustStoreNSSTest, UserDbDistrustForSystemRootHonored) {
-  if (NSS_VersionCheck("3.115")) {
-    // TODO(crbug.com/490139148): The functionality tested here appears to be
-    // broken by upstream changes in NSS around 3.115-3.116.
-    GTEST_SKIP();
-  }
-
+// settings in the user DB. The (dis)trust should be ignored.
+TEST_F(TrustStoreNSSTest, UserDbDistrustForSystemRootIgnored) {
   std::shared_ptr<const bssl::ParsedCertificate> system_root =
       GetASSLTrustedBuiltinRoot();
   ASSERT_TRUE(system_root);
@@ -603,22 +579,20 @@ TEST_F(TrustStoreNSSTest, UserDbDistrustForSystemRootHonored) {
   // NSS should see the cert as distrusted.
   EXPECT_EQ(CERTDB_TERMINAL_RECORD, GetNSSTrustForCert(system_root.get()));
 
-  // TrustStoreNSS should see as Distrusted since the cert was distrusted in
-  // the user slot.
-  EXPECT_TRUE(HasTrust({system_root}, bssl::CertificateTrust::ForDistrusted()));
+  // TrustStoreNSS should ignore the cert since it is an NSS built-in trust
+  // anchor.
+  EXPECT_TRUE(
+      HasTrust({system_root}, bssl::CertificateTrust::ForUnspecified()));
+  for (const auto& cert_with_trust : trust_store_nss_->GetAllUserAddedCerts()) {
+    EXPECT_NE(base::span(cert_with_trust.cert_bytes), system_root->der_cert());
+  }
 }
 
 // A system trusted root is also present in a user DB, with a trust object with
 // no SSL trust flags set in the user DB. The system trust settings should not
 // be used, and the lack of trust flags in the user DB should result in
 // unspecified trust.
-TEST_F(TrustStoreNSSTest, UserDbUnspecifiedTrustForSystemRootHonored) {
-  if (NSS_VersionCheck("3.115")) {
-    // TODO(crbug.com/490139148): The functionality tested here appears to be
-    // broken by upstream changes in NSS around 3.115-3.116.
-    GTEST_SKIP();
-  }
-
+TEST_F(TrustStoreNSSTest, UserDbUnspecifiedTrustForSystemRootIgnored) {
   std::shared_ptr<const bssl::ParsedCertificate> system_root =
       GetASSLTrustedBuiltinRoot();
   ASSERT_TRUE(system_root);
@@ -629,10 +603,13 @@ TEST_F(TrustStoreNSSTest, UserDbUnspecifiedTrustForSystemRootHonored) {
   // NSS should see the cert as unspecified trust.
   EXPECT_EQ(0u, GetNSSTrustForCert(system_root.get()));
 
-  // TrustStoreNSS should see as Unspecified since the cert was marked
-  // unspecified in the user slot.
+  // TrustStoreNSS should ignore the cert since it is an NSS built-in trust
+  // anchor.
   EXPECT_TRUE(
       HasTrust({system_root}, bssl::CertificateTrust::ForUnspecified()));
+  for (const auto& cert_with_trust : trust_store_nss_->GetAllUserAddedCerts()) {
+    EXPECT_NE(base::span(cert_with_trust.cert_bytes), system_root->der_cert());
+  }
 }
 
 // If certs are present in NSS DB but aren't marked as trusted, should get no
@@ -664,9 +641,8 @@ TEST_F(TrustStoreNSSTest, TrustedCA) {
 TEST_F(TrustStoreNSSTest, TrustedCertWithDifferentKey) {
   auto [leaf_builder, root_builder] = CertBuilder::CreateSimpleChain2();
 
-  auto trusted_root = bssl::ParsedCertificate::Create(
-      root_builder->DupCertBuffer(),
-      x509_util::DefaultParseCertificateOptions(), nullptr);
+  auto trusted_root = x509_util::CreateParsedCertificate(
+      root_builder->DupCertBuffer(), nullptr);
   ASSERT_TRUE(trusted_root);
   AddCertToNSSSlotWithTrust(trusted_root.get(), test_nssdb_.slot(),
                             bssl::CertificateTrustType::TRUSTED_ANCHOR);
@@ -674,9 +650,8 @@ TEST_F(TrustStoreNSSTest, TrustedCertWithDifferentKey) {
   // Regenerate the private key of the cert builder to create a similar cert
   // where the only difference is the SPKI (and the self-signature).
   root_builder->GenerateECKey();
-  auto imposter_root = bssl::ParsedCertificate::Create(
-      root_builder->DupCertBuffer(),
-      x509_util::DefaultParseCertificateOptions(), nullptr);
+  auto imposter_root = x509_util::CreateParsedCertificate(
+      root_builder->DupCertBuffer(), nullptr);
   ASSERT_TRUE(imposter_root);
 
   EXPECT_TRUE(HasTrust({trusted_root}, ExpectedTrustForAnchor()));

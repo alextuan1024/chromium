@@ -5,12 +5,12 @@
 #include "services/accessibility/android/ax_tree_source_android.h"
 
 #include <memory>
+#include <ranges>
 #include <stack>
 #include <string>
 #include <utility>
 
 #include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/dcheck_is_on.h"
 #include "base/memory/raw_ptr.h"
 #include "services/accessibility/android/accessibility_node_info_data_wrapper.h"
@@ -313,7 +313,7 @@ void AXTreeSourceAndroid::NotifyAccessibilityEventInternal(
   // Updates from Android event first as this contains the entire tree
   // information, including focus.
   std::vector<ui::AXTreeUpdate> updates;
-  for (const int32_t update_id : base::Reversed(update_ids)) {
+  for (const int32_t update_id : std::views::reverse(update_ids)) {
     AccessibilityInfoDataWrapper* update_root = GetFromId(update_id);
     if (!update_root) {
       LOG(ERROR) << "Update root node doesn't exist, id=" << update_id;
@@ -379,7 +379,7 @@ void AXTreeSourceAndroid::ComputeEnclosingBoundsInternal(
 
   // NOTE: |AXTreeSourceAndroid::GetChildren| depends on ComputeEnclosingBounds.
   // To get children, directly call wrapper's GetChildren here.
-  std::vector<raw_ptr<AccessibilityInfoDataWrapper, VectorExperimental>>
+  std::vector<raw_ptr<AccessibilityInfoDataWrapper, DanglingUntriaged>>
       children;
   info_data->GetChildren(&children);
   for (AccessibilityInfoDataWrapper* child : children) {
@@ -704,7 +704,7 @@ void AXTreeSourceAndroid::PerformAction(const ui::AXActionData& data) {
   delegate_->OnAction(data);
 }
 
-std::vector<raw_ptr<AccessibilityInfoDataWrapper, VectorExperimental>>&
+std::vector<raw_ptr<AccessibilityInfoDataWrapper, DanglingUntriaged>>&
 AXTreeSourceAndroid::GetChildren(
     AccessibilityInfoDataWrapper* info_data) const {
   DCHECK(info_data);
@@ -718,7 +718,7 @@ void AXTreeSourceAndroid::ComputeAndCacheChildren(
     return;
   }
 
-  std::vector<raw_ptr<AccessibilityInfoDataWrapper, VectorExperimental>>&
+  std::vector<raw_ptr<AccessibilityInfoDataWrapper, DanglingUntriaged>>&
       children = info_data->cached_children_.emplace();
 
   info_data->GetChildren(&children);

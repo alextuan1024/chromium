@@ -11,6 +11,7 @@
 
 #import "base/functional/callback.h"
 #import "base/functional/callback_helpers.h"
+#import "base/ios/block_types.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/run_loop.h"
@@ -26,6 +27,7 @@
 #import "components/password_manager/ios/actor_login/actor_login_tool_delegate.h"
 #import "components/password_manager/ios/shared_password_controller.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_task_intervention_delegate.h"
+#import "ios/chrome/browser/intelligence/actor/test/fake_actor_task_intervention_delegate.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_form_suggestion.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_task_form_filling_handler.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool.h"
@@ -47,37 +49,6 @@
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
-
-// A fake implementation of ActorTaskInterventionDelegate.
-@interface FakeActorTaskInterventionDelegate
-    : NSObject <ActorTaskInterventionDelegate>
-@property(nonatomic, assign) BOOL selectFromSuggestionsCalled;
-@property(nonatomic, strong) NSArray<ActorFormSuggestion*>* promptedSuggestions;
-@end
-
-@implementation FakeActorTaskInterventionDelegate {
-  void (^_completionHandler)(ActorFormSuggestion*, BOOL);
-}
-
-- (void)actorTask:(actor::ActorTaskId)taskID
-    selectFromSuggestions:(NSArray<ActorFormSuggestion*>*)suggestions
-        completionHandler:
-            (void (^)(ActorFormSuggestion* selectedSuggestion,
-                      BOOL shouldStorePermission))completionHandler {
-  _selectFromSuggestionsCalled = YES;
-  _promptedSuggestions = suggestions;
-  _completionHandler = [completionHandler copy];
-}
-
-- (void)runCompletionWithSuggestion:(ActorFormSuggestion*)selectedSuggestion
-              shouldStorePermission:(BOOL)shouldStorePermission {
-  if (_completionHandler) {
-    void (^_completion)(ActorFormSuggestion*, BOOL) = _completionHandler;
-    _completionHandler = nil;
-    _completion(selectedSuggestion, shouldStorePermission);
-  }
-}
-@end
 
 namespace actor {
 
@@ -176,7 +147,8 @@ class AttemptLoginToolTest : public PlatformTest {
     fake_actor_login_service_ptr_ = fake_service.get();
 
     auto form_filling_handler = ActorTaskFormFillingHandler::CreateForTesting(
-        ActorTaskId(1), std::move(fake_service), nullptr);
+        ActorTaskId(1), std::move(fake_service), nullptr,
+        /*favicon_loader=*/nullptr);
     intervention_delegate_ = [[FakeActorTaskInterventionDelegate alloc] init];
     form_filling_handler->SetInterventionDelegateForTesting(
         intervention_delegate_);
@@ -239,10 +211,12 @@ class AttemptLoginToolTest : public PlatformTest {
     return intervention_delegate_;
   }
 
+  FakeToolDelegate& tool_delegate() { return delegate_; }
+
   void TearDown() override {
     [mock_password_controller_ stopMocking];
     mock_password_controller_ = nil;
-    captured_reparse_completion_ = nil;
+    captured_no_forms_found_handler_ = nil;
     PlatformTest::TearDown();
   }
 
@@ -266,7 +240,7 @@ class AttemptLoginToolTest : public PlatformTest {
   }
 
   // Stubs SharedPasswordController on `web_state` to intercept page reparse
-  // requests and capture the completion handler.
+  // requests and capture the no-forms-found handler.
   void MockReparseForms(web::WebState* web_state) {
     SharedPasswordController* controller =
         PasswordTabHelper::FromWebState(web_state)
@@ -274,36 +248,49 @@ class AttemptLoginToolTest : public PlatformTest {
     mock_password_controller_ = OCMPartialMock(controller);
 
     OCMStub([mock_password_controller_
-                actorLoginToolFindsFormsInWebState:(web::WebState*)
-                                                       [OCMArg anyPointer]
-                                 completionHandler:[OCMArg any]])
+                actorLoginToolRescansFormsInWebState:(web::WebState*)
+                                                         [OCMArg anyPointer]
+                                 noFormsFoundHandler:[OCMArg any]])
         .andDo(^(NSInvocation* invocation) {
           reparse_call_count_++;
-          __unsafe_unretained void (^handler)(BOOL) = nil;
+          __unsafe_unretained ProceduralBlock handler = nil;
           [invocation getArgument:&handler atIndex:3];
-          captured_reparse_completion_ = [handler copy];
+          captured_no_forms_found_handler_ = [handler copy];
         });
   }
 
-  // Completes the pending reparse request with `forms_found`. If `forms_found`
-  // is true and `tool` is provided, also notifies `tool` that a password form
-  // was parsed.
+  // Completes the pending reparse request. When `forms_found` is true the
+  // production delegate deliberately stays silent and the result is delivered
+  // through the `PasswordFormCache` observer, so only `tool` is notified.
+  // Otherwise the captured no-forms-found handler is invoked.
   [[nodiscard]] testing::AssertionResult CompleteReparse(
       BOOL forms_found,
       AttemptLoginTool* tool = nullptr) {
-    if (!captured_reparse_completion_) {
+    if (!captured_no_forms_found_handler_) {
       return testing::AssertionFailure()
-             << "captured_reparse_completion_ is nil (no pending reparse "
+             << "captured_no_forms_found_handler_ is nil (no pending reparse "
                 "request).";
     }
-    std::exchange(captured_reparse_completion_, nil)(forms_found);
-    if (forms_found && tool) {
-      tool->OnPasswordFormParsed(nullptr);
+    if (forms_found) {
+      captured_no_forms_found_handler_ = nil;
+      if (tool) {
+        tool->OnPasswordFormParsed(nullptr);
+      }
+    } else {
+      std::exchange(captured_no_forms_found_handler_, nil)();
     }
     return testing::AssertionSuccess();
   }
 
   int reparse_call_count() const { return reparse_call_count_; }
+
+  // Returns whether `tool` is registered with the `PasswordFormCache` or any of
+  // its `PasswordFormManager`s. The cast disambiguates `IsInObserverList()`,
+  // which is also inherited through `WebStateObserver`.
+  static bool IsObservingFormCache(AttemptLoginTool* tool) {
+    return static_cast<password_manager::PasswordFormManagerObserver*>(tool)
+        ->IsInObserverList();
+  }
 
  private:
   base::test::TaskEnvironment task_environment_;
@@ -315,7 +302,7 @@ class AttemptLoginToolTest : public PlatformTest {
   raw_ptr<ActorTaskFormFillingHandler> form_filling_handler_ptr_ = nullptr;
   FakeActorTaskInterventionDelegate* intervention_delegate_;
   id mock_password_controller_ = nil;
-  void (^captured_reparse_completion_)(BOOL) = nil;
+  ProceduralBlock captured_no_forms_found_handler_ = nil;
   int reparse_call_count_ = 0;
 };
 
@@ -421,9 +408,73 @@ TEST_F(AttemptLoginToolTest, Execute_UserDeclinesCredential) {
             mojom::ActionResultCode::kLoginNoCredentialsAvailable);
 }
 
+// Tests that cancelling the tool while the credential prompt is shown dismisses
+// the prompt, so that the next prompt can be shown.
+TEST_F(AttemptLoginToolTest, Cancel_DropsPendingCredentialPrompt) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state_ptr = CreateAndInsertWebState();
+  action.set_tab_id(web_state_ptr->GetUniqueIdentifier().identifier());
+
+  auto result = CreateToolAndValidate(action, web_state_ptr);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = false;
+  fake_actor_login_service()->credentials_ = {cred};
+
+  tool->Execute(base::DoNothing());
+  ASSERT_TRUE(intervention_delegate().hasPendingSuggestionSelection);
+
+  tool->Cancel();
+  EXPECT_TRUE(intervention_delegate().cancelSuggestionSelectionCalled);
+
+  base::test::TestFuture<base::expected<std::optional<CredentialWithPermission>,
+                                        ToolExecutionResult>>
+      next_prompt;
+  form_filling_handler()->PromptToSelectCredential({cred},
+                                                   next_prompt.GetCallback());
+  [intervention_delegate() runCompletionWithSuggestion:nil];
+  ASSERT_TRUE(next_prompt.Get().has_value());
+  EXPECT_FALSE(next_prompt.Get().value().has_value());
+}
+
+// Tests that an answer to a credential prompt arriving after the tool is
+// cancelled is ignored.
+TEST_F(AttemptLoginToolTest, Cancel_IgnoresLateCredentialAnswer) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state_ptr = CreateAndInsertWebState();
+  action.set_tab_id(web_state_ptr->GetUniqueIdentifier().identifier());
+
+  auto result = CreateToolAndValidate(action, web_state_ptr);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = false;
+  fake_actor_login_service()->credentials_ = {cred};
+
+  tool->Execute(base::DoNothing());
+  ASSERT_TRUE(intervention_delegate().hasPendingSuggestionSelection);
+
+  // Detach the delegate so that it keeps its completion, as a detached delegate
+  // would.
+  form_filling_handler()->SetInterventionDelegateForTesting(nil);
+  tool->Cancel();
+
+  // Answer the dropped prompt; it must not reach the handler's `CHECK`.
+  [intervention_delegate()
+      runCompletionWithSuggestion:intervention_delegate()
+                                      .promptedSuggestions.firstObject];
+}
+
 // Tests that execution automatically selects and logs in using a credential
-// that has persistent permission, without prompting the user.
-TEST_F(AttemptLoginToolTest, Execute_PersistentCredentialDirectSelect_Success) {
+// that has persistent permission without prompting the user, and does not
+// enqueue a follow-up click when no `login_targets` are provided.
+TEST_F(AttemptLoginToolTest,
+       Execute_PersistentCredentialDirectSelect_NoLoginTargets_Success) {
   optimization_guide::proto::AttemptLoginAction action;
   web::FakeWebState* web_state = CreateAndInsertWebState();
   action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
@@ -447,6 +498,63 @@ TEST_F(AttemptLoginToolTest, Execute_PersistentCredentialDirectSelect_Success) {
   EXPECT_EQ(fake_actor_login_service()->attempted_credentials_.front().id,
             cred.id);
   EXPECT_TRUE(fake_actor_login_service()->attempted_should_store_permission_);
+  EXPECT_TRUE(tool_delegate().enqueued_followup_actions().empty());
+}
+
+// Tests that execution automatically selects and logs in using a credential
+// that has persistent permission, and enqueues a follow-up click when a
+// `PASSWORD_FORM_SUBMIT` login target is provided.
+TEST_F(AttemptLoginToolTest,
+       Execute_PersistentCredentialDirectSelect_WithLoginTarget_Success) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  const int32_t tab_id = web_state->GetUniqueIdentifier().identifier();
+  action.set_tab_id(tab_id);
+
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* login_target =
+      action.add_login_targets();
+  login_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          PASSWORD_FORM_SUBMIT);
+  login_target->mutable_target()->set_content_node_id(42);
+  login_target->mutable_target()
+      ->mutable_document_identifier()
+      ->set_serialized_token("main_frame_doc");
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = true;
+
+  fake_actor_login_service()->credentials_ = {cred};
+  fake_actor_login_service()->SetSequentialResults(
+      {actor_login::LoginStatusResult::kSuccessUsernameAndPasswordFilled});
+
+  base::test::TestFuture<ToolExecutionResult> future;
+  tool->Execute(future.GetCallback());
+  EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kOk);
+  EXPECT_FALSE(future.Get().requires_page_stabilization());
+  EXPECT_TRUE(fake_actor_login_service()->attempt_login_called_);
+  EXPECT_EQ(fake_actor_login_service()->attempted_credentials_.front().id,
+            cred.id);
+  EXPECT_TRUE(fake_actor_login_service()->attempted_should_store_permission_);
+
+  ASSERT_EQ(tool_delegate().enqueued_followup_actions().size(), 1u);
+  const ActorToolRequest& followup =
+      *tool_delegate().enqueued_followup_actions()[0];
+  EXPECT_EQ(followup.GetToolType(), ToolType::kClick);
+  const optimization_guide::proto::ClickAction& click =
+      followup.action().click();
+  EXPECT_EQ(click.tab_id(), tab_id);
+  EXPECT_EQ(click.click_type(), optimization_guide::proto::ClickAction::LEFT);
+  EXPECT_EQ(click.click_count(),
+            optimization_guide::proto::ClickAction::SINGLE);
+  EXPECT_EQ(click.target().content_node_id(), 42);
+  EXPECT_EQ(click.target().document_identifier().serialized_token(),
+            "main_frame_doc");
 }
 
 // Tests that when login requires device re-authentication, the tool waits for
@@ -647,6 +755,8 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_ReparseSuccess_RetriesLogin) {
   tool->Execute(future.GetCallback());
 
   EXPECT_FALSE(future.IsReady());
+  // The tool observes the `PasswordFormCache` for the rescan result.
+  EXPECT_TRUE(IsObservingFormCache(tool.get()));
 
   // Verifies that WasShown called during an active reparse is ignored and does
   // not trigger a premature login attempt.
@@ -660,6 +770,7 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_ReparseSuccess_RetriesLogin) {
   EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kOk);
   EXPECT_EQ(fake_actor_login_service()->attempted_credentials_.size(), 2u);
   EXPECT_EQ(reparse_call_count(), 1);
+  EXPECT_FALSE(IsObservingFormCache(tool.get()));
 }
 
 // Tests that when a reparse returns NO (no forms found), the tool exits with
@@ -694,6 +805,7 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_ReparseNoFormsFound) {
   EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kLoginNotLoginPage);
   EXPECT_EQ(fake_actor_login_service()->attempted_credentials_.size(), 1u);
   EXPECT_EQ(reparse_call_count(), 1);
+  EXPECT_FALSE(IsObservingFormCache(tool.get()));
 }
 
 // Tests that when form reparse does not complete within the timeout, the timer
@@ -836,8 +948,10 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_CancelDuringReparse) {
   tool->Execute(future.GetCallback());
 
   EXPECT_FALSE(future.IsReady());
+  EXPECT_TRUE(IsObservingFormCache(tool.get()));
 
   tool->Cancel();
+  EXPECT_FALSE(IsObservingFormCache(tool.get()));
 
   // Invoke completion after cancellation.
   ASSERT_TRUE(CompleteReparse(YES, tool.get()));
@@ -848,6 +962,37 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_CancelDuringReparse) {
   // Verify only the 1 initial attempt happened and no crash occurred.
   EXPECT_EQ(fake_actor_login_service()->attempted_credentials_.size(), 1u);
   EXPECT_EQ(reparse_call_count(), 1);
+}
+
+// Tests that destroying the tool while waiting for reparse, without calling
+// `Cancel()`, unregisters it from the `PasswordFormCache`.
+TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_DestroyedDuringReparse) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = true;
+  fake_actor_login_service()->credentials_ = {cred};
+
+  fake_actor_login_service()->SetSequentialResults(
+      {actor_login::LoginStatusResult::kErrorNoSigninForm});
+
+  MockReparseForms(web_state);
+
+  base::test::TestFuture<ToolExecutionResult> future;
+  tool->Execute(future.GetCallback());
+
+  EXPECT_FALSE(future.IsReady());
+  ASSERT_TRUE(IsObservingFormCache(tool.get()));
+
+  // `~AttemptLoginTool()` DCHECKs that the tool left every observer list.
+  tool.reset();
 }
 
 // Tests that if the WebState is destroyed while waiting for reparse, execution
@@ -882,6 +1027,297 @@ TEST_F(AttemptLoginToolTest,
 
   EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kTabWentAway);
   EXPECT_EQ(reparse_call_count(), 1);
+}
+
+// Tests that DebugString returns the expected string.
+TEST_F(AttemptLoginToolTest, DebugString) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+  EXPECT_EQ(tool->DebugString(), "AttemptLoginTool");
+}
+
+// Tests that `Validate()` fails with `kArgumentsInvalid` when a `login_targets`
+// entry is missing `login_type`.
+TEST_F(AttemptLoginToolTest,
+       Validate_MissingLoginType_ReturnsArgumentsInvalid) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* login_target =
+      action.add_login_targets();
+  login_target->mutable_target()->mutable_coordinate()->set_x(10);
+  login_target->mutable_target()->mutable_coordinate()->set_y(20);
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), mojom::ActionResultCode::kArgumentsInvalid);
+}
+
+// Tests that `Validate()` fails with `kArgumentsInvalid` when a `login_targets`
+// entry is missing `target`.
+TEST_F(AttemptLoginToolTest, Validate_MissingTarget_ReturnsArgumentsInvalid) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* login_target =
+      action.add_login_targets();
+  login_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          PASSWORD_FORM_SUBMIT);
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), mojom::ActionResultCode::kArgumentsInvalid);
+}
+
+// Tests that `Validate()` fails with `kArgumentsInvalid` when a `login_targets`
+// entry has an incomplete `ActionTarget` (node ID without document identifier).
+TEST_F(AttemptLoginToolTest, Validate_InvalidTarget_ReturnsArgumentsInvalid) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* login_target =
+      action.add_login_targets();
+  login_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          PASSWORD_FORM_SUBMIT);
+  login_target->mutable_target()->set_content_node_id(42);
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), mojom::ActionResultCode::kArgumentsInvalid);
+}
+
+// Tests that unsupported or unknown `login_targets` types (including
+// `FEDERATED_GOOGLE_SIGNIN`) are ignored during validation and do not enqueue a
+// follow-up click when executed without a `PASSWORD_FORM_SUBMIT` target.
+TEST_F(AttemptLoginToolTest, Validate_UnsupportedLoginTypesIgnored_Success) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* federated_target =
+      action.add_login_targets();
+  federated_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          FEDERATED_GOOGLE_SIGNIN);
+  federated_target->mutable_target()->mutable_coordinate()->set_x(10);
+  federated_target->mutable_target()->mutable_coordinate()->set_y(20);
+
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* unknown_target =
+      action.add_login_targets();
+  unknown_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          UNKNOWN_LOGIN_TYPE);
+  unknown_target->mutable_target()->mutable_coordinate()->set_x(30);
+  unknown_target->mutable_target()->mutable_coordinate()->set_y(40);
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = true;
+  fake_actor_login_service()->credentials_ = {cred};
+  fake_actor_login_service()->SetSequentialResults(
+      {actor_login::LoginStatusResult::kSuccessUsernameAndPasswordFilled});
+
+  base::test::TestFuture<ToolExecutionResult> future;
+  tool->Execute(future.GetCallback());
+  EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kOk);
+  EXPECT_TRUE(tool_delegate().enqueued_followup_actions().empty());
+}
+
+// Tests that when multiple `login_targets` are provided (including multiple
+// `PASSWORD_FORM_SUBMIT` targets and a federated target), the follow-up click
+// targets the last `PASSWORD_FORM_SUBMIT` entry.
+TEST_F(AttemptLoginToolTest,
+       Execute_MultipleLoginTargets_EnqueuesLastPasswordButtonClick) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  const int32_t tab_id = web_state->GetUniqueIdentifier().identifier();
+  action.set_tab_id(tab_id);
+
+  optimization_guide::proto::AttemptLoginAction_LoginTarget*
+      first_password_target = action.add_login_targets();
+  first_password_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          PASSWORD_FORM_SUBMIT);
+  first_password_target->mutable_target()->set_content_node_id(7);
+  first_password_target->mutable_target()
+      ->mutable_document_identifier()
+      ->set_serialized_token("earlier_doc");
+
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* password_target =
+      action.add_login_targets();
+  password_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          PASSWORD_FORM_SUBMIT);
+  password_target->mutable_target()->set_content_node_id(42);
+  password_target->mutable_target()
+      ->mutable_document_identifier()
+      ->set_serialized_token("main_frame_doc");
+
+  // Also include a federated target to verify `PASSWORD_FORM_SUBMIT` is used.
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* federated_target =
+      action.add_login_targets();
+  federated_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          FEDERATED_GOOGLE_SIGNIN);
+  federated_target->mutable_target()->mutable_coordinate()->set_x(10);
+  federated_target->mutable_target()->mutable_coordinate()->set_y(20);
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = true;
+  fake_actor_login_service()->credentials_ = {cred};
+  fake_actor_login_service()->SetSequentialResults(
+      {actor_login::LoginStatusResult::kSuccessUsernameAndPasswordFilled});
+
+  base::test::TestFuture<ToolExecutionResult> future;
+  tool->Execute(future.GetCallback());
+  EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kOk);
+  EXPECT_FALSE(future.Get().requires_page_stabilization());
+
+  ASSERT_EQ(tool_delegate().enqueued_followup_actions().size(), 1u);
+  const ActorToolRequest& followup =
+      *tool_delegate().enqueued_followup_actions()[0];
+  EXPECT_EQ(followup.GetToolType(), ToolType::kClick);
+  const optimization_guide::proto::ClickAction& click =
+      followup.action().click();
+  EXPECT_EQ(click.tab_id(), tab_id);
+  EXPECT_EQ(click.click_type(), optimization_guide::proto::ClickAction::LEFT);
+  EXPECT_EQ(click.click_count(),
+            optimization_guide::proto::ClickAction::SINGLE);
+  EXPECT_EQ(click.target().content_node_id(), 42);
+  EXPECT_EQ(click.target().document_identifier().serialized_token(),
+            "main_frame_doc");
+}
+
+// Tests that `kSuccessUsernameFilled` and `kSuccessPasswordFilled` also enqueue
+// the `PASSWORD_FORM_SUBMIT` follow-up click (e.g. multi-step login forms).
+TEST_F(
+    AttemptLoginToolTest,
+    Execute_PasswordButtonProvided_PartialFillSuccess_EnqueuesFollowupClick) {
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  optimization_guide::proto::AttemptLoginAction action;
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* password_target =
+      action.add_login_targets();
+  password_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          PASSWORD_FORM_SUBMIT);
+  password_target->mutable_target()->mutable_coordinate()->set_x(50);
+  password_target->mutable_target()->mutable_coordinate()->set_y(60);
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = true;
+  fake_actor_login_service()->credentials_ = {cred};
+  fake_actor_login_service()->SetSequentialResults(
+      {actor_login::LoginStatusResult::kSuccessUsernameFilled,
+       actor_login::LoginStatusResult::kSuccessPasswordFilled});
+
+  for (size_t expected_count = 1; expected_count <= 2; ++expected_count) {
+    auto result = CreateToolAndValidate(action, web_state);
+    ASSERT_TRUE(result.has_value());
+    base::test::TestFuture<ToolExecutionResult> future;
+    result.value()->Execute(future.GetCallback());
+    EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kOk);
+    EXPECT_EQ(tool_delegate().enqueued_followup_actions().size(),
+              expected_count);
+  }
+}
+
+// Tests that no follow-up click is enqueued when `PASSWORD_FORM_SUBMIT` is
+// provided but password filling does not succeed (including
+// `kRequiresButtonClick`).
+TEST_F(
+    AttemptLoginToolTest,
+    Execute_PasswordButtonProvided_FillingFails_DoesNotEnqueueFollowupClick) {
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  optimization_guide::proto::AttemptLoginAction action;
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* password_target =
+      action.add_login_targets();
+  password_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          PASSWORD_FORM_SUBMIT);
+  password_target->mutable_target()->mutable_coordinate()->set_x(50);
+  password_target->mutable_target()->mutable_coordinate()->set_y(60);
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = true;
+  fake_actor_login_service()->credentials_ = {cred};
+  fake_actor_login_service()->SetSequentialResults(
+      {actor_login::LoginStatusResult::kErrorNoFillableFields,
+       actor_login::LoginStatusResult::kRequiresButtonClick});
+
+  const mojom::ActionResultCode expected_codes[] = {
+      mojom::ActionResultCode::kLoginNoFillableFields,
+      mojom::ActionResultCode::kArgumentsInvalid,
+  };
+  for (mojom::ActionResultCode expected_code : expected_codes) {
+    auto result = CreateToolAndValidate(action, web_state);
+    ASSERT_TRUE(result.has_value());
+    base::test::TestFuture<ToolExecutionResult> future;
+    result.value()->Execute(future.GetCallback());
+    EXPECT_EQ(future.Get().code(), expected_code);
+    EXPECT_TRUE(tool_delegate().enqueued_followup_actions().empty());
+  }
+}
+
+// Tests that when `PASSWORD_FORM_SUBMIT` is provided and login initially
+// requires device reauthentication, the follow-up click is enqueued only after
+// the tab is refocused and the retry fills credentials.
+TEST_F(AttemptLoginToolTest,
+       Execute_PasswordButtonProvided_DeviceReauthRetry_EnqueuesFollowupClick) {
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  optimization_guide::proto::AttemptLoginAction action;
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+  optimization_guide::proto::AttemptLoginAction_LoginTarget* password_target =
+      action.add_login_targets();
+  password_target->set_login_type(
+      optimization_guide::proto::AttemptLoginAction_LoginTarget::
+          PASSWORD_FORM_SUBMIT);
+  password_target->mutable_target()->mutable_coordinate()->set_x(50);
+  password_target->mutable_target()->mutable_coordinate()->set_y(60);
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = true;
+  fake_actor_login_service()->credentials_ = {cred};
+  fake_actor_login_service()->SetSequentialResults(
+      {actor_login::LoginStatusResult::kErrorDeviceReauthRequired,
+       actor_login::LoginStatusResult::kSuccessUsernameAndPasswordFilled});
+
+  base::test::TestFuture<ToolExecutionResult> future;
+  tool->Execute(future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+  EXPECT_TRUE(tool_delegate().enqueued_followup_actions().empty());
+
+  web_state->WasShown();
+
+  EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kOk);
+  EXPECT_EQ(tool_delegate().enqueued_followup_actions().size(), 1u);
 }
 
 }  // namespace actor

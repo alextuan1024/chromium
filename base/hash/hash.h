@@ -35,7 +35,9 @@ BASE_EXPORT uint32_t Hash(const std::string& str);
 // May changed without warning, do not expect stability of outputs.
 BASE_EXPORT size_t FastHash(base::span<const uint8_t> data);
 inline size_t FastHash(std::string_view str) {
-  return FastHash(as_byte_span(str));
+  // Not `as_byte_span(str)`: that is generic and costs several milliseconds of
+  // compile time in every translation unit that includes this file.
+  return FastHash(as_bytes(span<const char>(str)));
 }
 
 // Computes a hash of a memory buffer. This hash function must not change so
@@ -79,7 +81,7 @@ struct IntPairHash<std::pair<Type1, Type2>> {
 
 // Combine the hash `seed` with the computed hash of `value`.
 template <typename T>
-size_t HashCombine(size_t seed, const T& value) {
+[[nodiscard]] size_t HashCombine(size_t seed, const T& value) {
   size_t hash;
   if constexpr (sizeof(size_t) == 8) {
     hash = HashInts64(seed, std::hash<T>()(value));
@@ -92,7 +94,9 @@ size_t HashCombine(size_t seed, const T& value) {
 
 // Computes the combination of hashes for `values`.
 template <typename T, typename... V>
-size_t HashCombine(size_t seed, const T& first, const V&... values) {
+[[nodiscard]] size_t HashCombine(size_t seed,
+                                 const T& first,
+                                 const V&... values) {
   size_t hash = HashCombine(seed, first);
   return HashCombine(hash, values...);
 }

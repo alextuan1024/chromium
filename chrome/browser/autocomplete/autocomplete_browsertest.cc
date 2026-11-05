@@ -10,6 +10,7 @@
 #include "base/functional/bind.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/memory_dump_request_args.h"
@@ -105,7 +106,10 @@ IN_PROC_BROWSER_TEST_F(AutocompleteBrowserTest, Basic) {
 
   EXPECT_FALSE(location_bar->navigation_params().destination_url.is_valid());
   EXPECT_EQ(url::kAboutBlankURL16, omnibox_view->GetText());
-  EXPECT_TRUE(omnibox_view->IsSelectAll());
+  // With the WebUI toolbar, the select-all that accompanies a focus request is
+  // applied by the WebUI and reported back to the browser asynchronously.
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return omnibox_view->IsSelectAll(); }));
 
   omnibox_view->SetUserText(u"chrome");
 
@@ -163,7 +167,7 @@ IN_PROC_BROWSER_TEST_F(AutocompleteBrowserTest, MAYBE_Autocomplete) {
     const AutocompleteResult& result = autocomplete_controller->result();
     ASSERT_GE(result.size(), 1U) << AutocompleteResultAsString(result);
     AutocompleteMatch match = result.match_at(0);
-    EXPECT_EQ(AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchWhatYouTyped, match.type);
     EXPECT_FALSE(match.deletable);
   }
 
@@ -187,8 +191,7 @@ IN_PROC_BROWSER_TEST_F(AutocompleteBrowserTest, TabAwayRevertSelect) {
   EXPECT_EQ(url::kAboutBlankURL16, omnibox_view->GetText());
   omnibox_view->SetUserText(std::u16string());
   content::CreateAndLoadWebContentsObserver observer;
-  chrome::AddSelectedTabWithURL(browser(),
-                                GURL(url::kAboutBlankURL),
+  chrome::AddSelectedTabWithURL(browser(), GURL(url::kAboutBlankURL),
                                 ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
   observer.Wait();
   EXPECT_EQ(url::kAboutBlankURL16, omnibox_view->GetText());

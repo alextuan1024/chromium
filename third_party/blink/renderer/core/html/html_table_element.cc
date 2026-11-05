@@ -25,6 +25,7 @@
 
 #include "third_party/blink/renderer/core/html/html_table_element.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/css/css_identifier_value.h"
 #include "third_party/blink/renderer/core/css/css_inherited_value.h"
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
@@ -45,12 +46,13 @@
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/keywords.h"
+#include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/referrer.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
-#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 
 namespace blink {
@@ -186,8 +188,7 @@ HTMLTableRowElement* HTMLTableElement::insertRow(
   if (index < -1) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The index provided (", String::Number(index),
-                ") is less than -1."}));
+        ExceptionMessages::IndexExceedsMinimumBound("index", index, -1));
     return nullptr;
   }
 
@@ -202,9 +203,9 @@ HTMLTableRowElement* HTMLTableElement::insertRow(
         if (i != index) {
           exception_state.ThrowDOMException(
               DOMExceptionCode::kIndexSizeError,
-              StrCat({"The index provided (", String::Number(index),
-                      ") is greater than the number of rows in the table (",
-                      String::Number(i), ")."}));
+              Format("The index provided ({}) is greater than the number of "
+                     "rows in the table ({}).",
+                     index, i));
           return nullptr;
         }
         break;
@@ -237,8 +238,7 @@ void HTMLTableElement::deleteRow(int index, ExceptionState& exception_state) {
   if (index < -1) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The index provided (", String::Number(index),
-                ") is less than -1."}));
+        ExceptionMessages::IndexExceedsMinimumBound("index", index, -1));
     return;
   }
 
@@ -258,9 +258,9 @@ void HTMLTableElement::deleteRow(int index, ExceptionState& exception_state) {
   if (!row) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The index provided (", String::Number(index),
-                ") is greater than the number of rows in the table (",
-                String::Number(i), ")."}));
+        Format("The index provided ({}) is greater than the number of rows in "
+               "the table ({}).",
+               index, i));
     return;
   }
   row->remove(exception_state);
@@ -493,21 +493,21 @@ HTMLTableElement::AdditionalPresentationAttributeStyle() {
     // Setting the border to 'hidden' allows it to win over any border
     // set on the table's cells during border-conflict resolution.
     if (rules_attr_ != kUnsetRules) {
-      DEFINE_STATIC_LOCAL(Persistent<CSSPropertyValueSet>, solid_border_style,
-                          (CreateBorderStyle(CSSValueID::kHidden)));
-      return solid_border_style;
+      static base::NoDestructor<Persistent<CSSPropertyValueSet>>
+          solid_border_style{CreateBorderStyle(CSSValueID::kHidden)};
+      return *solid_border_style;
     }
     return nullptr;
   }
 
   if (border_color_attr_) {
-    DEFINE_STATIC_LOCAL(Persistent<CSSPropertyValueSet>, solid_border_style,
-                        (CreateBorderStyle(CSSValueID::kSolid)));
-    return solid_border_style;
+    static base::NoDestructor<Persistent<CSSPropertyValueSet>>
+        solid_border_style{CreateBorderStyle(CSSValueID::kSolid)};
+    return *solid_border_style;
   }
-  DEFINE_STATIC_LOCAL(Persistent<CSSPropertyValueSet>, outset_border_style,
-                      (CreateBorderStyle(CSSValueID::kOutset)));
-  return outset_border_style;
+  static base::NoDestructor<Persistent<CSSPropertyValueSet>>
+      outset_border_style{CreateBorderStyle(CSSValueID::kOutset)};
+  return *outset_border_style;
 }
 
 HTMLTableElement::CellBorders HTMLTableElement::GetCellBorders() const {
@@ -635,13 +635,13 @@ const CSSPropertyValueSet* HTMLTableElement::AdditionalGroupStyle(bool rows) {
     return nullptr;
 
   if (rows) {
-    DEFINE_STATIC_LOCAL(Persistent<CSSPropertyValueSet>, row_border_style,
-                        (CreateGroupBorderStyle(true)));
-    return row_border_style;
+    static base::NoDestructor<Persistent<CSSPropertyValueSet>> row_border_style{
+        CreateGroupBorderStyle(true)};
+    return *row_border_style;
   }
-  DEFINE_STATIC_LOCAL(Persistent<CSSPropertyValueSet>, column_border_style,
-                      (CreateGroupBorderStyle(false)));
-  return column_border_style;
+  static base::NoDestructor<Persistent<CSSPropertyValueSet>>
+      column_border_style{CreateGroupBorderStyle(false)};
+  return *column_border_style;
 }
 
 bool HTMLTableElement::IsURLAttribute(const Attribute& attribute) const {

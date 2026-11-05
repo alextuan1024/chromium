@@ -191,9 +191,14 @@ GoogleServiceAuthError ConvertErrorOAuth2ResponseToAuthError(
   }
 
   if (http_response_code == net::HTTP_PROXY_AUTHENTICATION_REQUIRED ||
-      http_response_code >= net::HTTP_INTERNAL_SERVER_ERROR) {
+      http_response_code >= net::HTTP_INTERNAL_SERVER_ERROR ||
+      (http_response_code == net::HTTP_REQUEST_TIMEOUT &&
+       base::FeatureList::IsEnabled(
+           gaia::features::kOAuth2MintTokenHttp408IsTransient))) {
     // HTTP_PROXY_AUTHENTICATION_REQUIRED (407): is treated as a network error.
     // HTTP_INTERNAL_SERVER_ERROR: 5xx is always treated as transient.
+    // HTTP_REQUEST_TIMEOUT (408): is treated as transient when the feature is
+    // enabled.
     return GoogleServiceAuthError::FromServiceUnavailable(display_message);
   }
 
@@ -720,6 +725,7 @@ OAuth2MintTokenFlow::GetNetworkTrafficAnnotationTag() {
           "User's login token, the identity of a chrome app/extension, and a "
           "list of oauth scopes requested by the app/extension."
         destination: GOOGLE_OWNED_SERVICE
+        api_service_name: "oauthaccountmanager.googleapis.com"
       }
       policy {
         setting:

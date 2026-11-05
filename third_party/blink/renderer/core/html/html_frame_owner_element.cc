@@ -20,9 +20,11 @@
 
 #include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
 
+#include "base/check.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/time/time.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "services/network/public/mojom/content_security_policy.mojom-blink-forward.h"
@@ -38,10 +40,12 @@
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
+#include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/events/current_input_event.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
 #include "third_party/blink/renderer/core/fetch/fetch_later_util.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
@@ -62,7 +66,6 @@
 #include "third_party/blink/renderer/core/loader/frame_load_request.h"
 #include "third_party/blink/renderer/core/loader/frame_loader.h"
 #include "third_party/blink/renderer/core/loader/resource_initiator_helper.h"
-#include "third_party/blink/renderer/core/loader/url_matcher.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/scrolling/root_scroller_controller.h"
 #include "third_party/blink/renderer/core/paint/object_paint_invalidator.h"
@@ -84,6 +87,7 @@
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -156,8 +160,9 @@ bool CheckAndRecordIfShouldLazilyLoadFrame(const Document& document,
 
 SubframeLoadingDisabler::SubtreeRootSet&
 SubframeLoadingDisabler::DisabledSubtreeRoots() {
-  DEFINE_STATIC_LOCAL(SubtreeRootSet, nodes, ());
-  return nodes;
+  DCHECK(IsMainThread());
+  static base::NoDestructor<SubtreeRootSet> nodes;
+  return *nodes;
 }
 
 HTMLFrameOwnerElement::HTMLFrameOwnerElement(const QualifiedName& tag_name,
@@ -165,7 +170,6 @@ HTMLFrameOwnerElement::HTMLFrameOwnerElement(const QualifiedName& tag_name,
     : HTMLElement(tag_name, document),
       should_lazy_load_children_(DoesParentAllowLazyLoadingChildren(document)) {
   SetHasCustomStyleCallbacks();
-  document.IncrementImmediateChildFrameCreationCount();
 }
 
 const QualifiedName& HTMLFrameOwnerElement::SubResourceAttributeName() const {
@@ -217,11 +221,12 @@ Node::InsertionNotificationRequest HTMLFrameOwnerElement::InsertedInto(
   return result;
 }
 
-void HTMLFrameOwnerElement::DidChangeIsInCanvasSubtree() {
-  HTMLElement::DidChangeIsInCanvasSubtree();
+void HTMLFrameOwnerElement::DidChangeIsInCanvasSubtree(
+    CanvasSubtreePropagation propagation_behavior) {
+  HTMLElement::DidChangeIsInCanvasSubtree(propagation_behavior);
   if (Document* inner_document = contentDocument()) {
     if (Element* root = inner_document->documentElement()) {
-      root->SetIsInCanvasSubtree(IsInCanvasSubtree());
+      root->SetIsInCanvasSubtree(IsInCanvasSubtree(), propagation_behavior);
       if (auto* layout_view = inner_document->GetLayoutView()) {
         layout_view->SetNeedsPaintPropertyUpdate();
         layout_view->SetSubtreeShouldDoFullPaintInvalidation();
@@ -591,7 +596,12 @@ void HTMLFrameOwnerElement::SetEmbeddedContentView(
   embedded_content_view_ = embedded_content_view;
   if (old_view && old_view->IsAttached()) {
     old_view->DetachFromLayout();
-    old_view->Dispose();
+    // Dispose a plugin but not a FrameView here. FrameViews are owned and
+    // disposed by their Frame, and an <iframe> that becomes display:none keeps
+    // an active FrameView which could be reattached later.
+    if (auto* plugin = DynamicTo<WebPluginContainerImpl>(old_view)) {
+      plugin->Dispose();
+    }
   }
 
   FrameOwnerPropertiesChanged();
@@ -796,7 +806,8 @@ bool HTMLFrameOwnerElement::LoadOrRedirectSubframe(
   frame_load_request.SetIsContainerInitiated(true);
   frame_load_request.SetClientNavigationReason(
       ClientNavigationReason::kInitialFrameNavigation);
-  if (!child_frame->Loader().AllowRequestForThisFrame(frame_load_request)) {
+  if (!child_frame->Loader().AllowRequestForThisFrame(
+          frame_load_request, /*is_same_document_navigation=*/false)) {
     return false;
   }
   child_frame->Loader().StartNavigation(frame_load_request, child_load_type);
@@ -812,6 +823,28 @@ void HTMLFrameOwnerElement::CancelPendingLazyLoad() {
 
 bool HTMLFrameOwnerElement::ShouldLazyLoadChildren() const {
   return should_lazy_load_children_;
+}
+
+// This is the FrameOwner concept of display-locked
+bool HTMLFrameOwnerElement::IsDisplayLocked() const {
+  if (Frame* frame = GetDocument().GetFrame()) {
+    if (FrameOwner* owner = frame->Owner(); owner && owner->IsDisplayLocked()) {
+      return true;
+    }
+  }
+  return DisplayLockUtilities::LockedInclusiveAncestorPreventingPaint(*this);
+}
+
+void HTMLFrameOwnerElement::UpdateThrottlingStatusAfterMove() {
+  if (!ContentFrame()) {
+    return;
+  }
+  if (FrameView* content_view = ContentFrame()->View()) {
+    content_view->UpdateRenderThrottlingStatus(
+        content_view->IsHiddenForThrottling(),
+        content_view->IsSubtreeThrottled(), IsDisplayLocked(),
+        /*recurse=*/true);
+  }
 }
 
 void HTMLFrameOwnerElement::ParseAttribute(

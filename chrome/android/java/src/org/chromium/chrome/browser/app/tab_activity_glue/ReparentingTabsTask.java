@@ -63,7 +63,7 @@ public class ReparentingTabsTask {
      *     may be null if no intent customization is needed.
      * @param startActivityOptions Options to pass to {@link Activity#startActivity(Intent, Bundle)}
      * @param finalizeCallback A callback that will be called after the tab is attached to the new
-     *     host activity in {@link #attachAndFinishReparenting}.
+     *     host activity in {@link ReparentingTask#finish}.
      */
     public boolean begin(
             @Nullable Context context,
@@ -117,11 +117,17 @@ public class ReparentingTabsTask {
 
         if (mTabs == null || mTabs.isEmpty()) return;
 
-        boolean isIncognito = mTabs.get(0).isIncognito();
+        boolean isIncognito = ReparentingTask.isIncognitoOrPrimaryOtr(mTabs.get(0));
 
         for (Tab tab : mTabs) {
             AsyncTabParamsManagerSingleton.getInstance()
-                    .add(tab.getId(), new TabReparentingParams(tab, finalizeCallback));
+                    .add(
+                            tab.getId(),
+                            new TabReparentingParams(
+                                    tab,
+                                    /* sourceSelector= */ null,
+                                    /* shouldReload= */ false,
+                                    finalizeCallback));
             ReparentingTask.from(tab).detach();
         }
 

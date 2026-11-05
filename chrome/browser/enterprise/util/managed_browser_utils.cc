@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
+#include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
@@ -61,11 +63,14 @@
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "chrome/browser/enterprise/connectors/connectors_service.h"
+#include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/managed_ui.h"
 #include "components/enterprise/browser/reporting/common_pref_names.h"
-#include "components/enterprise/connectors/core/features.h"
 #include "components/safe_browsing/core/common/features.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_prefs.h"
+#include "google_apis/gaia/gaia_id.h"
 
 // Must come after other includes, because FromJniType() uses Profile.
 #include "chrome/browser/enterprise/util/jni_headers/ManagedBrowserUtils_jni.h"
@@ -91,8 +96,9 @@ base::ListValue GetCertAutoSelectionFilters(Profile* profile,
       requesting_url, requesting_url,
       ContentSettingsType::AUTO_SELECT_CERTIFICATE, nullptr);
 
-  if (!setting.is_dict())
+  if (!setting.is_dict()) {
     return {};
+  }
 
   base::ListValue* filters = setting.GetDict().FindList("filters");
   if (!filters) {
@@ -169,8 +175,9 @@ net::NetworkTrafficAnnotationTag GetTrafficAnnotationForPolicy(
     EnterpriseLogoUrlScope url_scope) {
   switch (url_scope) {
     case EnterpriseLogoUrlScope::kBrowser: {
-      return net::DefineNetworkTrafficAnnotation("enterprise_logo_fetcher_for_browser",
-                                                 R"(
+      return net::DefineNetworkTrafficAnnotation(
+          "enterprise_logo_fetcher_for_browser",
+          R"(
         semantics {
           sender: "Browser Management Service"
           description:
@@ -247,7 +254,7 @@ net::NetworkTrafficAnnotationTag GetTrafficAnnotationForPolicy(
 }  // namespace
 
 bool IsBrowserManaged(Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
   return policy::ManagementServiceFactory::GetForProfile(profile)->IsManaged();
 }
 
@@ -256,8 +263,9 @@ std::string GetDomainFromEmail(std::string_view email) {
   bool is_email = email_separator_pos != std::string_view::npos &&
                   email_separator_pos < email.length() - 1;
 
-  if (!is_email)
+  if (!is_email) {
     return std::string();
+  }
 
   return gaia::ExtractDomainName(email);
 }
@@ -267,21 +275,33 @@ GURL GetRequestingUrl(const net::HostPortPair host_port_pair) {
 }
 
 void AutoSelectCertificates(
+    const base::ListValue& auto_selection_filters,
+    net::ClientCertIdentityList client_certs,
+    net::ClientCertIdentityList* matching_client_certs,
+    net::ClientCertIdentityList* nonmatching_client_certs) {
+  CHECK(matching_client_certs);
+  CHECK(nonmatching_client_certs);
+  matching_client_certs->clear();
+  nonmatching_client_certs->clear();
+  for (auto& client_cert : client_certs) {
+    if (CertMatchesSelectionFilters(*client_cert, auto_selection_filters)) {
+      matching_client_certs->push_back(std::move(client_cert));
+    } else {
+      nonmatching_client_certs->push_back(std::move(client_cert));
+    }
+  }
+}
+
+void AutoSelectCertificates(
     Profile* profile,
     const GURL& requesting_url,
     net::ClientCertIdentityList client_certs,
     net::ClientCertIdentityList* matching_client_certs,
     net::ClientCertIdentityList* nonmatching_client_certs) {
-  matching_client_certs->clear();
-  nonmatching_client_certs->clear();
   const base::ListValue auto_selection_filters =
       GetCertAutoSelectionFilters(profile, requesting_url);
-  for (auto& client_cert : client_certs) {
-    if (CertMatchesSelectionFilters(*client_cert, auto_selection_filters))
-      matching_client_certs->push_back(std::move(client_cert));
-    else
-      nonmatching_client_certs->push_back(std::move(client_cert));
-  }
+  AutoSelectCertificates(auto_selection_filters, std::move(client_certs),
+                         matching_client_certs, nonmatching_client_certs);
 }
 
 bool IsMachinePolicyPref(const std::string& pref_name) {
@@ -295,10 +315,34 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
   registry->RegisterListPref(prefs::kManagedAutoSelectCertificateForUrls);
 }
 
+#if BUILDFLAG(IS_ANDROID)
+void SetUserAcceptedAccountManagementAndroid(Profile* profile,
+                                             const GaiaId& gaia_id,
+                                             bool accepted) {
+  CHECK(profile);
+  CHECK(!gaia_id.empty());
+  CHECK(!profile->IsOffTheRecord());
+  // The management notice on Android also asks the user for consent to share
+  // device signals, so both are backed by the same per-account bit.
+  SigninPrefs(*profile->GetPrefs())
+      .SetDeviceSignalsPermanentConsentReceived(gaia_id, accepted);
+}
+
+bool UserAcceptedAccountManagementAndroid(Profile* profile,
+                                          const GaiaId& gaia_id) {
+  CHECK(profile);
+  CHECK(!gaia_id.empty());
+  CHECK(!profile->IsOffTheRecord());
+  return SigninPrefs(*profile->GetPrefs())
+      .GetDeviceSignalsPermanentConsentReceived(gaia_id);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
 void SetUserAcceptedAccountManagement(Profile* profile, bool accepted) {
   // Some tests do not have a profile manager.
-  if (!g_browser_process->profile_manager())
+  if (!g_browser_process->profile_manager()) {
     return;
+  }
   // The updated consent screen also ask the user for consent to share device
   // signals.
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
@@ -320,8 +364,9 @@ void SetUserAcceptedAccountManagement(Profile* profile, bool accepted) {
 
 bool UserAcceptedAccountManagement(Profile* profile) {
   // Some tests do not have a profile manager.
-  if (!g_browser_process->profile_manager())
+  if (!g_browser_process->profile_manager()) {
     return false;
+  }
   ProfileAttributesEntry* entry =
       g_browser_process->profile_manager()
           ->GetProfileAttributesStorage()
@@ -353,6 +398,34 @@ bool ProfileCanBeManaged(Profile* profile) {
   if (!g_browser_process->profile_manager() || !profile) {
     return false;
   }
+
+#if BUILDFLAG(IS_ANDROID)
+  // TODO(crbug.com/553341908): During feature flag cleanup, change #endif to
+  // #else.
+  if (base::FeatureList::IsEnabled(
+          chrome::android::kAndroidNewManagementNotice)) {
+    // If the new management notice is enabled, the acceptance bit is stored
+    // in `SigninPrefs` so this implementation bypasses the profile attribute
+    // storage.
+    signin::IdentityManager* identity_manager =
+        IdentityManagerFactory::GetForProfile(profile);
+    if (!identity_manager) {
+      return false;
+    }
+
+    // `HasPrimaryAccount()` only guarantees a non-empty account id; guard
+    // against an empty Gaia ID since the Android helpers `CHECK()` on it.
+    const GaiaId gaia_id =
+        identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+            .gaia;
+    if (gaia_id.empty()) {
+      return false;
+    }
+
+    return UserAcceptedAccountManagementAndroid(profile, gaia_id);
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
   ProfileAttributesEntry* entry =
       g_browser_process->profile_manager()
           ->GetProfileAttributesStorage()
@@ -477,12 +550,6 @@ static std::u16string JNI_ManagedBrowserUtils_GetTitle(JNIEnv* env,
 }
 
 // static
-static bool JNI_ManagedBrowserUtils_IsBrowserReportingEnabled(JNIEnv* env) {
-  return g_browser_process->local_state()->GetBoolean(
-      enterprise_reporting::kCloudReportingEnabled);
-}
-
-// static
 static bool JNI_ManagedBrowserUtils_IsProfileReportingEnabled(
     JNIEnv* env,
     Profile* profile) {
@@ -494,7 +561,7 @@ static bool JNI_ManagedBrowserUtils_IsProfileReportingEnabled(
 static bool JNI_ManagedBrowserUtils_IsOnSecurityEventEnterpriseConnectorEnabled(
     JNIEnv* env,
     Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   auto* service =
       enterprise_connectors::ConnectorsServiceFactory::GetForBrowserContext(
@@ -510,7 +577,7 @@ static bool JNI_ManagedBrowserUtils_IsOnSecurityEventEnterpriseConnectorEnabled(
 static bool JNI_ManagedBrowserUtils_IsEnterpriseRealTimeUrlCheckModeEnabled(
     JNIEnv* env,
     Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   auto* service =
       enterprise_connectors::ConnectorsServiceFactory::GetForBrowserContext(
@@ -528,12 +595,7 @@ static bool
 JNI_ManagedBrowserUtils_IsOnFileDownloadedEnterpriseConnectorEnabled(
     JNIEnv* env,
     Profile* profile) {
-  DCHECK(profile);
-
-  if (!base::FeatureList::IsEnabled(
-          enterprise_connectors::kEnableDownloadEnterpriseScanOnClank)) {
-    return false;
-  }
+  CHECK(profile, base::NotFatalUntil::M161);
 
   auto* service =
       enterprise_connectors::ConnectorsServiceFactory::GetForBrowserContext(

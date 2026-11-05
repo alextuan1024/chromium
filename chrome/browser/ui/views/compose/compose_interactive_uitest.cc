@@ -22,7 +22,6 @@
 #include "chrome/test/interaction/interaction_test_util_browser.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/compose/core/browser/compose_features.h"
 #include "components/compose/core/browser/config.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
@@ -35,7 +34,6 @@
 #include "components/unified_consent/pref_names.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/default_handlers.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -78,10 +76,8 @@ const DeepQuery kTextarea = {"#elem1"};
 class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
  public:
   MAYBE_ComposeInteractiveUiTest() {
-    feature_list_.InitWithFeatures(
-        {compose::features::kEnableCompose,
-         optimization_guide::features::kOptimizationGuideModelExecution},
-        {});
+    feature_list_.InitAndEnableFeature(
+        optimization_guide::features::kOptimizationGuideModelExecution);
     subscription_ =
         BrowserContextDependencyManager::GetInstance()
             ->RegisterCreateServicesCallbackForTesting(
@@ -218,9 +214,6 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
 
   base::test::ScopedFeatureList* feature_list() { return &feature_list_; }
   net::EmbeddedTestServer* https_server() { return &https_server_; }
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_test_helper_;
-  }
 
  private:
   static void OnWillCreateBrowserContextServices(
@@ -235,7 +228,6 @@ class MAYBE_ComposeInteractiveUiTest : public InteractiveBrowserTest {
         }));
   }
 
-  content::test::FencedFrameTestHelper fenced_frame_test_helper_;
   base::test::ScopedFeatureList feature_list_;
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
   base::CallbackListSubscription subscription_;

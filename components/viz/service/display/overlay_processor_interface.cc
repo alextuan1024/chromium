@@ -4,6 +4,7 @@
 
 #include "components/viz/service/display/overlay_processor_interface.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "base/memory/ptr_util.h"
@@ -16,6 +17,7 @@
 #include "components/viz/service/display/display_compositor_memory_and_task_controller.h"
 #include "components/viz/service/display/overlay_processor_stub.h"
 #include "components/viz/service/display_embedder/skia_output_surface_dependency.h"
+#include "ui/gfx/display_color_spaces.h"
 #include "ui/gfx/overlay_priority_hint.h"
 
 #if BUILDFLAG(IS_APPLE)
@@ -218,20 +220,49 @@ OverlayCandidate OverlayProcessorInterface::CreatePrimaryPlane(
 
   overlay_plane.format = params.si_format;
   overlay_plane.color_space = params.color_space;
+  overlay_plane.hdr_metadata = params.hdr_metadata;
 
 #if BUILDFLAG(IS_OZONE)
   overlay_plane.mailbox = params.overlay_testing_mailbox;
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
   if (params.supports_hdr) {
-    overlay_plane.hdr_metadata.extended_range.emplace();
     // TODO(crbug.com/40263227): Track the actual brightness of the
     // content. For now, assume that all HDR content is 1,000 nits.
-    overlay_plane.hdr_metadata.extended_range->desired_headroom =
-        gfx::HdrMetadataExtendedRange::kDefaultHdrHeadroom;
+    overlay_plane.desired_brightness_ratio =
+        gfx::HDRMetadata::kDefaultHdrHeadroom;
   }
+#endif
 
   return overlay_plane;
+}
+
+// static
+gfx::HDRMetadata OverlayProcessorInterface::ComputePrimaryPlaneHDRMetadata(
+    const gfx::DisplayColorSpaces& display_color_spaces,
+    const gfx::ColorSpace& output_color_space,
+    gfx::ContentColorUsage content_color_usage) {
+  if (!output_color_space.IsHDR()) {
+    return gfx::HDRMetadata();
+  }
+
+  const float sdr_white = display_color_spaces.GetSDRMaxLuminanceNits();
+  float peak = sdr_white;
+  if (content_color_usage == gfx::ContentColorUsage::kHDR) {
+    peak *= std::max(1.f, display_color_spaces.GetHDRMaxLuminanceRelative());
+  }
+
+  return gfx::HDRMetadata(
+      skhdr::MasteringDisplayColorVolume{
+          .fDisplayPrimaries = output_color_space.GetPrimaries(),
+          .fMaximumDisplayMasteringLuminance = peak,
+          .fMinimumDisplayMasteringLuminance = 0.f,
+      },
+      skhdr::ContentLightLevelInformation{
+          .fMaxCLL = peak,
+          .fMaxFALL = sdr_white,
+      });
 }
 
 void OverlayProcessorInterface::ScheduleOverlays(

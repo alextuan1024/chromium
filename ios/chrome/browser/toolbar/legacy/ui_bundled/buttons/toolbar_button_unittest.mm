@@ -6,24 +6,13 @@
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/buttons/buttons_constants.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/buttons/legacy_toolbar_button.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/buttons/toolbar_button_visibility_configuration.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/buttons/toolbar_configuration.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_type.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
 #import "testing/platform_test.h"
 #import "ui/base/device_form_factor.h"
 
 namespace {
-
-UIView* FindSubViewByID(UIView* view, NSString* accessibility_id) {
-  if (view.accessibilityIdentifier == accessibility_id) {
-    return view;
-  }
-  for (UIView* subview in view.subviews) {
-    UIView* found_view = FindSubViewByID(subview, accessibility_id);
-    if (found_view) {
-      return found_view;
-    }
-  }
-  return nil;
-}
 
 // The size of the symbol image.
 const CGFloat kSymbolToolbarPointSize = 24;
@@ -103,13 +92,19 @@ TEST_F(ToolbarButtonTest, ToolbarButtonCorrectImageWithHighlight) {
 // subview.
 TEST_F(ToolbarButtonTest, ToolbarButtonBlueDot) {
   EXPECT_FALSE(toolbar_button_.hasBlueDot);
-  EXPECT_EQ(FindSubViewByID(toolbar_button_, kToolbarButtonBlueDotViewID), nil);
+  EXPECT_EQ(chrome_test_util::FindViewById(toolbar_button_,
+                                           kToolbarButtonBlueDotViewID),
+            nil);
 
   toolbar_button_.hasBlueDot = YES;
-  EXPECT_NE(FindSubViewByID(toolbar_button_, kToolbarButtonBlueDotViewID), nil);
+  EXPECT_NE(chrome_test_util::FindViewById(toolbar_button_,
+                                           kToolbarButtonBlueDotViewID),
+            nil);
 
   toolbar_button_.hasBlueDot = NO;
-  EXPECT_EQ(FindSubViewByID(toolbar_button_, kToolbarButtonBlueDotViewID), nil);
+  EXPECT_EQ(chrome_test_util::FindViewById(toolbar_button_,
+                                           kToolbarButtonBlueDotViewID),
+            nil);
 }
 
 // Checks that setting blue dot property correctly updates accessibility value.
@@ -186,4 +181,41 @@ TEST_F(ToolbarButtonTest, SetImageLoader_NotLoadedImage) {
   // other image.
   EXPECT_TRUE(called);
   EXPECT_EQ(toolbar_button_.currentImage, other_image);
+}
+
+// Tests that `locationBarBackgroundColorWithVisibility:` returns the cached
+// dynamic color at full visibility (`1.0`), scales alpha for `< 1.0`, and
+// resolves dynamically across light and dark `UITraitCollection`s.
+TEST_F(ToolbarButtonTest,
+       ToolbarConfigurationCachesBaseLocationBarBackgroundColor) {
+  ToolbarConfiguration* config =
+      [[ToolbarConfiguration alloc] initWithStyle:ToolbarStyle::kNormal];
+
+  UIColor* full_visibility_first =
+      [config locationBarBackgroundColorWithVisibility:1.0];
+  UIColor* full_visibility_second =
+      [config locationBarBackgroundColorWithVisibility:1.0];
+  EXPECT_EQ(full_visibility_first, full_visibility_second);
+
+  UIColor* hidden_first = [config locationBarBackgroundColorWithVisibility:0.0];
+  UIColor* hidden_second =
+      [config locationBarBackgroundColorWithVisibility:0.0];
+  EXPECT_EQ(hidden_first, hidden_second);
+
+  CGFloat alpha = -1.0;
+  [[config locationBarBackgroundColorWithVisibility:0.25] getRed:nullptr
+                                                           green:nullptr
+                                                            blue:nullptr
+                                                           alpha:&alpha];
+  EXPECT_NEAR(0.25, alpha, 0.01);
+
+  UITraitCollection* light_traits = [UITraitCollection
+      traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight];
+  UITraitCollection* dark_traits = [UITraitCollection
+      traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleDark];
+  UIColor* resolved_light =
+      [full_visibility_first resolvedColorWithTraitCollection:light_traits];
+  UIColor* resolved_dark =
+      [full_visibility_first resolvedColorWithTraitCollection:dark_traits];
+  EXPECT_FALSE([resolved_light isEqual:resolved_dark]);
 }

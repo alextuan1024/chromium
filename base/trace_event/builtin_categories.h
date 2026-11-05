@@ -11,7 +11,6 @@
 #include "build/build_config.h"
 
 PERFETTO_DEFINE_TEST_CATEGORY_PREFIXES("cat",
-                                       "cast_perf_test",
                                        "foo",
                                        "test",
                                        "test_gpu",
@@ -234,6 +233,19 @@ PERFETTO_DEFINE_CATEGORIES_IN_NAMESPACE_WITH_ATTRS(
     perfetto::Category("print"),
     perfetto::Category("raf_investigation"),
     perfetto::Category("rail"),
+    perfetto::Category("remoting")
+        .SetDescription(
+            "Lifecycle, signaling, and control-plane events for Chrome Remote "
+            "Desktop."),
+    perfetto::Category("remoting.debug")
+        .SetTags("debug")
+        .SetDescription(
+            "Verbose per-strip and debug events for Chrome Remote Desktop."),
+    perfetto::Category("remoting.video")
+        .SetTags("video")
+        .SetDescription(
+            "Desktop frame capture, video encoding, video stream, and renderer "
+            "events for Chrome Remote Desktop."),
     perfetto::Category("renderer"),
     perfetto::Category("renderer_host"),
     perfetto::Category("renderer.scheduler"),
@@ -259,6 +271,10 @@ PERFETTO_DEFINE_CATEGORIES_IN_NAMESPACE_WITH_ATTRS(
     perfetto::Category("shell"),
     perfetto::Category("shutdown"),
     perfetto::Category("skia"),
+    perfetto::Category("speech")
+        .SetTags("audio")
+        .SetDescription(
+            "Events from the Web Speech API and speech recognition."),
     perfetto::Category("sql"),
     perfetto::Category("startup"),
     perfetto::Category("sync"),
@@ -304,6 +320,11 @@ PERFETTO_DEFINE_CATEGORIES_IN_NAMESPACE_WITH_ATTRS(
         .SetTags("debug"),
     perfetto::Category(TRACE_DISABLED_BY_DEFAULT("blink.debug.display_lock"))
         .SetTags("debug"),
+    perfetto::Category(TRACE_DISABLED_BY_DEFAULT("blink.debug.html_content"))
+        .SetTags("debug")
+        .SetDescription(
+            "Exports parsed HTML content and target element metadata in Blink "
+            "HTML parser trace events."),
     perfetto::Category(TRACE_DISABLED_BY_DEFAULT("blink.debug.layout"))
         .SetTags("debug"),
     perfetto::Category(TRACE_DISABLED_BY_DEFAULT("blink.debug.layout.trees"))
@@ -337,6 +358,9 @@ PERFETTO_DEFINE_CATEGORIES_IN_NAMESPACE_WITH_ATTRS(
     perfetto::Category(TRACE_DISABLED_BY_DEFAULT("crypto.dpapi"))
         .SetTags("slow"),
     perfetto::Category(TRACE_DISABLED_BY_DEFAULT("devtools.screenshot"))
+        .SetTags("slow"),
+    perfetto::Category(TRACE_DISABLED_BY_DEFAULT("devtools.video_screenshot"))
+        .SetDescription("AV1-encoded video screenshots captured by DevTools.")
         .SetTags("slow"),
     perfetto::Category(TRACE_DISABLED_BY_DEFAULT("devtools.timeline"))
         .SetTags("slow"),

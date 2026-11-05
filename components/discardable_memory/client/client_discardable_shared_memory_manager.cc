@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/atomic_sequence_num.h"
+#include "base/byte_size.h"
 #include "base/format_macros.h"
 #include "base/functional/bind.h"
 #include "base/memory/discardable_memory.h"
@@ -15,8 +16,8 @@
 #include "base/memory/page_size.h"
 #include "base/memory_coordinator/traits.h"
 #include "base/memory_coordinator/utils.h"
-#include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/numerics/checked_math.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/process/memory.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/waitable_event.h"
@@ -85,7 +86,7 @@ constexpr base::MemoryConsumerTraits kMemoryConsumerTraits(
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kLarge,
     // Releasing free segments unmaps shared memory regions, letting the OS
     // reclaim pages directly without traversing memory contents.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     // Unlocked discardable memory is a cache and can be regenerated on demand.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Asynchronous because this class sometimes doesn't live on the main thread
@@ -98,11 +99,6 @@ constexpr base::MemoryConsumerTraits kMemoryConsumerTraits(
     base::MemoryConsumerTraits::IsStateful::kNo);
 
 }  // namespace
-
-constexpr base::TimeDelta
-    ClientDiscardableSharedMemoryManager::kMinAgeForScheduledPurge;
-constexpr base::TimeDelta
-    ClientDiscardableSharedMemoryManager::kScheduledPurgeInterval;
 
 ClientDiscardableSharedMemoryManager::DiscardableMemoryImpl::
     DiscardableMemoryImpl(
@@ -130,10 +126,7 @@ bool ClientDiscardableSharedMemoryManager::DiscardableMemoryImpl::Lock() {
   if (span_ && manager_->LockSpan(span_.get()))
     last_locked_ = base::TimeTicks();
 
-  bool locked = is_locked();
-  UMA_HISTOGRAM_BOOLEAN("Memory.Discardable.LockingSuccess", locked);
-
-  return locked;
+  return is_locked();
 }
 
 void ClientDiscardableSharedMemoryManager::DiscardableMemoryImpl::Unlock() {
@@ -247,16 +240,6 @@ ClientDiscardableSharedMemoryManager::~ClientDiscardableSharedMemoryManager() {
     manager_mojo_.reset();
 }
 
-void ClientDiscardableSharedMemoryManager::OnForegrounded() {
-  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  foregrounded_ = true;
-}
-
-void ClientDiscardableSharedMemoryManager::OnBackgrounded() {
-  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  foregrounded_ = false;
-}
-
 void ClientDiscardableSharedMemoryManager::OnUpdateMemoryLimit() {
   // ClientDiscardableSharedMemoryManager allocates memory on demand for clients
   // and does not maintain an internal capacity limit.
@@ -270,7 +253,8 @@ void ClientDiscardableSharedMemoryManager::OnReleaseMemory() {
 
 std::unique_ptr<base::DiscardableMemory>
 ClientDiscardableSharedMemoryManager::AllocateLockedDiscardableMemory(
-    size_t size) {
+    base::ByteSize byte_size) {
+  const size_t size = static_cast<size_t>(byte_size.InBytes());
   base::AutoLock lock(lock_);
 
   if (!is_purge_scheduled_) {
@@ -284,22 +268,26 @@ ClientDiscardableSharedMemoryManager::AllocateLockedDiscardableMemory(
 
   DCHECK_NE(size, 0u);
 
-  auto size_in_kb = static_cast<base::HistogramBase::Sample32>(size / 1024);
-  UMA_HISTOGRAM_CUSTOM_COUNTS("Memory.DiscardableAllocationSize",
-                              size_in_kb,  // In KiB
-                              1,
-                              4 * 1024 * 1024,  // 4 GiB
-                              50);
-
-  // Round up to multiple of page size.
-  size_t pages =
-      std::max((size + base::GetPageSize() - 1) / base::GetPageSize(),
-               static_cast<size_t>(1));
+  // Round up to multiple of page size, failing if `size` is so large that this
+  // would overflow.
+  const base::CheckedNumeric<size_t> pages_checked =
+      base::CheckAdd(size, base::GetPageSize() - 1) / base::GetPageSize();
+  if (!pages_checked.IsValid()) {
+    return nullptr;
+  }
+  const size_t pages = std::max<size_t>(pages_checked.ValueOrDie(), 1);
 
   static const size_t allocation_size = GetDefaultAllocationSize();
   DCHECK_EQ(allocation_size % base::GetPageSize(), 0u);
   // Default allocation size in pages.
-  size_t allocation_pages = allocation_size / base::GetPageSize();
+  const size_t allocation_pages = allocation_size / base::GetPageSize();
+  const size_t pages_to_allocate = std::max(allocation_pages, pages);
+  const size_t allocation_size_in_bytes =
+      base::CheckMul(pages_to_allocate, base::GetPageSize()).ValueOrDie();
+  // The browser process can't be asked for more than uint32_t bytes.
+  if (!base::IsValueInRangeForNumericType<uint32_t>(allocation_size_in_bytes)) {
+    return nullptr;
+  }
 
   size_t slack = 0;
   // When searching the free lists, allow a slack between required size and
@@ -333,11 +321,6 @@ ClientDiscardableSharedMemoryManager::AllocateLockedDiscardableMemory(
 
     free_span->set_is_locked(true);
 
-    if (pages >= allocation_pages) {
-      UMA_HISTOGRAM_BOOLEAN("Memory.Discardable.LargeAllocationFromFreelist",
-                            true);
-    }
-
     // Memory usage is guaranteed to have changed after having removed
     // at least one span from the free lists.
     MemoryUsageChanged(heap_->GetSize(), heap_->GetFreelistSize());
@@ -355,10 +338,6 @@ ClientDiscardableSharedMemoryManager::AllocateLockedDiscardableMemory(
   // Make sure crash keys are up to date in case allocation fails.
   if (heap_->GetSize() != heap_size_prior_to_releasing_purged_memory)
     MemoryUsageChanged(heap_->GetSize(), heap_->GetFreelistSize());
-
-  size_t pages_to_allocate =
-      std::max(allocation_size / base::GetPageSize(), pages);
-  size_t allocation_size_in_bytes = pages_to_allocate * base::GetPageSize();
 
   int32_t new_id = g_next_discardable_shared_memory_id.GetNext();
 
@@ -393,12 +372,7 @@ ClientDiscardableSharedMemoryManager::AllocateLockedDiscardableMemory(
         leftover->first_block() * base::GetPageSize(),
         leftover->num_blocks() * base::GetPageSize());
     leftover->set_is_locked(false);
-    heap_->MergeIntoFreeListsClean(std::move(leftover));
-  }
-
-  if (pages >= allocation_pages) {
-    UMA_HISTOGRAM_BOOLEAN("Memory.Discardable.LargeAllocationFromFreelist",
-                          false);
+    heap_->MergeIntoFreeLists(std::move(leftover));
   }
 
   MemoryUsageChanged(heap_->GetSize(), heap_->GetFreelistSize());
@@ -414,24 +388,12 @@ bool ClientDiscardableSharedMemoryManager::OnMemoryDump(
     base::trace_event::ProcessMemoryDump* pmd) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   base::AutoLock lock(lock_);
-  if (foregrounded_) {
-    const size_t total_size = heap_->GetSize() / 1024;                // in KiB
-    const size_t freelist_size = heap_->GetFreelistSize() / 1024;     // in KiB
-
-    base::UmaHistogramCounts1M("Memory.Discardable.FreelistSize.Foreground",
-                               freelist_size);
-    base::UmaHistogramCounts1M("Memory.Discardable.VirtualSize.Foreground",
-                               total_size);
-    base::UmaHistogramCounts1M("Memory.Discardable.Size.Foreground",
-                               total_size - freelist_size);
-  }
-
   return heap_->OnMemoryDump(args, pmd);
 }
 
-size_t ClientDiscardableSharedMemoryManager::GetBytesAllocated() const {
+base::ByteSize ClientDiscardableSharedMemoryManager::GetAllocatedSize() const {
   base::AutoLock lock(lock_);
-  return GetBytesAllocatedLocked();
+  return base::ByteSize(GetBytesAllocatedLocked());
 }
 
 size_t ClientDiscardableSharedMemoryManager::GetBytesAllocatedLocked() const {
@@ -553,7 +515,6 @@ void ClientDiscardableSharedMemoryManager::UnlockAndReleaseMemory(
     DiscardableMemoryImpl* memory,
     std::unique_ptr<DiscardableSharedMemoryHeap::Span> span) {
   memory->manager_->lock_.AssertAcquired();
-  // lock_.AssertAcquired();
   if (memory->is_locked()) {
     UnlockSpan(span.get());
   }
@@ -643,7 +604,7 @@ void ClientDiscardableSharedMemoryManager::AllocateOnIO(
     base::ScopedClosureRunner closure_runner) {
   (*manager_mojo_)
       ->AllocateLockedDiscardableSharedMemory(
-          static_cast<uint32_t>(size), id,
+          base::checked_cast<uint32_t>(size), id,
           base::BindOnce(
               &ClientDiscardableSharedMemoryManager::AllocateCompletedOnIO,
               base::Unretained(this), region, std::move(closure_runner)));

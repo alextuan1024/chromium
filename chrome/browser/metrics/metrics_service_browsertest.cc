@@ -49,7 +49,7 @@
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_POSIX)
@@ -111,6 +111,13 @@ class MetricsServiceBrowserTest : public InProcessBrowserTest {
   void SetUpCommandLine(base::CommandLine* command_line) override {
     // Enable the metrics service for testing (in recording-only mode).
     metrics::EnableMetricsRecordingOnlyForTesting(command_line);
+#if BUILDFLAG(IS_WIN)
+    // Disable in-process stack traces in child processes on Windows since
+    // symbolizing stack traces via DbgHelp in intentionally crashed renderer
+    // processes is unneeded and can time out under load, and DbgHelp is
+    // unreliable in low-memory conditions (see crbug.com/41302062).
+    command_line->AppendSwitch(switches::kDisableInProcessStackTraces);
+#endif
   }
 
   void SetUp() override {
@@ -156,12 +163,12 @@ class MetricsServiceBrowserTest : public InProcessBrowserTest {
     base::FilePath page1_path = test_directory.AppendASCII("title2.html");
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), net::FilePathToFileURL(page1_path),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB, kBrowserTestFlags);
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab, kBrowserTestFlags);
 
     base::FilePath page2_path = test_directory.AppendASCII("iframe.html");
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), net::FilePathToFileURL(page2_path),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB, kBrowserTestFlags);
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab, kBrowserTestFlags);
   }
 
  private:
@@ -288,11 +295,6 @@ IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, CrashRenderersInRust) {
 // OOM code only works on Windows.
 #if BUILDFLAG(IS_WIN) && !defined(ADDRESS_SANITIZER)
 IN_PROC_BROWSER_TEST_F(MetricsServiceBrowserTest, OOMRenderers) {
-  // Disable stack traces during this test since DbgHelp is unreliable in
-  // low-memory conditions (see crbug.com/41302062).
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      switches::kDisableInProcessStackTraces);
-
   base::HistogramTester histogram_tester;
 
   OpenTabsAndNavigateToCrashyUrl(blink::kChromeUIMemoryExhaustURL);

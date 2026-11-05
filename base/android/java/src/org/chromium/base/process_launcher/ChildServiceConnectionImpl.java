@@ -31,6 +31,7 @@ import java.util.concurrent.Executor;
     private final Executor mExecutor;
     private @Nullable ChildServiceConnectionDelegate mDelegate;
     private final @Nullable String mInstanceName;
+    private final boolean mAllowBindFailure;
     private boolean mBound;
 
     /* package */ ChildServiceConnectionImpl(
@@ -40,7 +41,8 @@ import java.util.concurrent.Executor;
             Handler handler,
             Executor executor,
             ChildServiceConnectionDelegate delegate,
-            @Nullable String instanceName) {
+            @Nullable String instanceName,
+            boolean allowBindFailure) {
         mContext = context;
         mBindIntent = bindIntent;
         mBindFlags = bindFlags;
@@ -48,6 +50,7 @@ import java.util.concurrent.Executor;
         mExecutor = executor;
         mDelegate = delegate;
         mInstanceName = instanceName;
+        mAllowBindFailure = allowBindFailure;
     }
 
     @Override
@@ -62,7 +65,8 @@ import java.util.concurrent.Executor;
                             mBindFlags,
                             mHandler,
                             mExecutor,
-                            mInstanceName);
+                            mInstanceName,
+                            mAllowBindFailure);
         } finally {
             TraceEvent.end("ChildServiceConnectionImpl.bindServiceConnection");
         }
@@ -96,15 +100,13 @@ import java.util.concurrent.Executor;
         if (!isBound()) {
             return false;
         }
-        if (BindService.supportVariableConnections()) {
-            try {
-                BindService.doUpdateServiceGroup(mContext, this, group, importanceInGroup);
-                return true;
-            } catch (IllegalArgumentException e) {
-                // There is an unavoidable race here binding might be removed for example due to a
-                // crash, which has not been processed on the launcher thread.
-                // Ignore these. See crbug.com/1026626 and crbug.com/1026626 for context.
-            }
+        try {
+            BindService.doUpdateServiceGroup(mContext, this, group, importanceInGroup);
+            return true;
+        } catch (IllegalArgumentException e) {
+            // There is an unavoidable race here binding might be removed for example due to a
+            // crash, which has not been processed on the launcher thread.
+            // Ignore these. See crbug.com/1026626 and crbug.com/1026626 for context.
         }
         return false;
     }
@@ -116,8 +118,11 @@ import java.util.concurrent.Executor;
     }
 
     @Override
-    public void rebindService(int bindFlags) {
-        BindService.doRebindService(mContext, this, bindFlags);
+    public void rebindService(int bindFlags, boolean urgent) {
+        if (!isBound()) {
+            return;
+        }
+        BindService.doRebindService(mContext, this, bindFlags, urgent);
     }
 
     @Override

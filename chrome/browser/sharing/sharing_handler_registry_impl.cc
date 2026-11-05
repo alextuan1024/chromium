@@ -6,13 +6,15 @@
 
 #include "base/feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/glic/public/glic_feature.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sharing/browser_actuator/browser_actuator_message_handler.h"
 #include "chrome/browser/sharing/glic_experimental_triggering/glic_experimental_triggering_message_handler.h"
 #include "chrome/browser/sharing/one_time_tokens/one_time_token_sharing_handler.h"
 #include "chrome/browser/sharing/optimization_guide/optimization_guide_message_handler.h"
-#include "chrome/common/chrome_features.h"
+#include "chrome/browser/stream_transport/transport_service_factory.h"
 #include "components/browser_actuator/public/features.h"
 #include "components/one_time_tokens/core/browser/gmail_otp_backend.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
@@ -33,15 +35,8 @@
 
 namespace {
 
-bool IsBrowserActuatorForGlicEnabled() {
-  return base::FeatureList::IsEnabled(browser_actuator::kBrowserActuator) &&
-         base::FeatureList::IsEnabled(
-             browser_actuator::
-                 kEnableBrowserActuatorForGlicExperimentalTriggering);
-}
-
 std::set<components_sharing_message::SharingMessage::PayloadCase>
-GetBrowserActuatorPayloads(Profile* profile) {
+GetBrowserActuatorPayloads() {
   std::set<components_sharing_message::SharingMessage::PayloadCase> payloads;
   if (!base::FeatureList::IsEnabled(browser_actuator::kBrowserActuator)) {
     return payloads;
@@ -50,15 +45,6 @@ GetBrowserActuatorPayloads(Profile* profile) {
   // Generic transport messages always go to BrowserActuatorMessageHandler.
   payloads.insert(
       components_sharing_message::SharingMessage::kActuatorDownstreamMessage);
-
-  // Route kGlicExperimentalTriggering based on whether BrowserActuator is
-  // taking over handling for it.
-  if (IsBrowserActuatorForGlicEnabled() &&
-      glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile,
-                                                         /*create=*/true)) {
-    payloads.insert(components_sharing_message::SharingMessage::
-                        kGlicExperimentalTriggering);
-  }
 
   return payloads;
 }
@@ -114,10 +100,9 @@ SharingHandlerRegistryImpl::SharingHandlerRegistryImpl(
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-  // Route kGlicExperimentalTriggering to legacy handler if BrowserActuator is
-  // not taking over handling for it.
-  if (!IsBrowserActuatorForGlicEnabled() &&
-      base::FeatureList::IsEnabled(features::kGlicExperimentalTriggering) &&
+  // GetGlicProviderSpec() returns the consumer spec for a null `profile`.
+  if (glic::GetGlicProviderSpec(profile).SupportsFeature(
+          glic::GlicFeature::kExperimentalTriggering) &&
       glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile,
                                                          /*create=*/true)) {
     AddSharingHandler(
@@ -128,10 +113,14 @@ SharingHandlerRegistryImpl::SharingHandlerRegistryImpl(
   }
 
   std::set<components_sharing_message::SharingMessage::PayloadCase>
-      browser_actuator_payloads = GetBrowserActuatorPayloads(profile);
-  if (!browser_actuator_payloads.empty()) {
-    AddSharingHandler(std::make_unique<BrowserActuatorMessageHandler>(profile),
-                      browser_actuator_payloads);
+      browser_actuator_payloads = GetBrowserActuatorPayloads();
+  if (!browser_actuator_payloads.empty() && profile) {
+    if (stream_transport::TransportService* transport_service =
+            stream_transport::TransportServiceFactory::GetForProfile(profile)) {
+      AddSharingHandler(
+          std::make_unique<BrowserActuatorMessageHandler>(transport_service),
+          browser_actuator_payloads);
+    }
   }
 }
 
@@ -173,7 +162,7 @@ void SharingHandlerRegistryImpl::RegisterSharingHandler(
     std::unique_ptr<SharingMessageHandler> handler,
     components_sharing_message::SharingMessage::PayloadCase payload_case) {
   DCHECK(handler) << "Received request to add null handler";
-  DCHECK(!GetSharingHandler(payload_case));
+  CHECK(!GetSharingHandler(payload_case), base::NotFatalUntil::M162);
   DCHECK(payload_case !=
          components_sharing_message::SharingMessage::PAYLOAD_NOT_SET)
       << "Incorrect payload type specified for handler";

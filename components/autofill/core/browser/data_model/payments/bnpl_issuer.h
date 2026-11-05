@@ -20,6 +20,10 @@
 #include "components/autofill/core/browser/data_model/payments/payment_instrument.h"
 #include "components/autofill/core/common/dense_set.h"
 
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
+
 namespace autofill {
 
 // Contains information regarding a Buy Now Pay Later issuer that the user is
@@ -79,6 +83,12 @@ class BnplIssuer {
   using LightModeImageId = base::StrongAlias<class LightModeImageIdTag, int>;
   using DarkModeImageId = base::StrongAlias<class DarkModeImageIdTag, int>;
 
+  // Returns true if the `app_locale` is supported by BNPL issuer with the
+  // given `issuer_id`.
+  static bool IsAppLocaleSupportedByBnplIssuer(
+      const base::i18n::LanguageTag& app_locale,
+      BnplIssuer::IssuerId issuer_id);
+
   BnplIssuer();
   // `instrument_id` is present for linked issuers, and nullopt for unlinked
   // issuers. `issuer_id` is the unique identifier of this specfiic issuer.
@@ -131,7 +141,7 @@ class BnplIssuer {
 
  private:
   // Unique identifier for the BNPL partner.
-  IssuerId issuer_id_;
+  IssuerId issuer_id_ = IssuerId::kBnplAffirm;
 
   // If the issuer is linked, `payment_instrument_` will contain the
   // instrument_id. If the issuer is unlinked, `payment_instrument_` will be

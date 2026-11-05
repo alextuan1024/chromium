@@ -48,7 +48,7 @@ enum class MetricsEndpointErrorCode;
 
 // Manages network requests and maintains relevant state for interaction with
 // the Identity Provider across a FedCM transaction. Owned by
-// Request and has a lifetime limited to a single identity
+// RequestHandler and has a lifetime limited to a single identity
 // transaction between an RP and an IDP.
 //
 // Diagram of the permission-based data flows between the browser and the IDP:
@@ -114,6 +114,12 @@ class CONTENT_EXPORT IdpNetworkRequestManager : public NetworkRequestManager {
     std::set<GURL> provider_urls;
     GURL accounts;
     GURL login_url;
+    // The identity provider's account management page, privacy policy and terms
+    // of service, as written in the well-known file, so that `ConfigFetcher`
+    // can warn about the ones it rejects. Each is empty if it's missing.
+    std::string account_management_url;
+    std::string privacy_policy_url;
+    std::string terms_of_service_url;
   };
 
   struct CONTENT_EXPORT ClientMetadata {
@@ -292,7 +298,8 @@ class CONTENT_EXPORT IdpNetworkRequestManager : public NetworkRequestManager {
 
   // Fetch the well-known file. This is the /.well-known/web-identity file on
   // the eTLD+1 calculated from the provider URL, used to check that the
-  // provider URL is valid for this eTLD+1.
+  // provider URL is valid for this eTLD+1 and to get the identity provider's
+  // links.
   virtual void FetchWellKnown(const GURL& provider, FetchWellKnownCallback);
 
   // Attempt to fetch the IDP's FedCM parameters from the config file.

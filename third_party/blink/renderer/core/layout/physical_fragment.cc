@@ -4,6 +4,7 @@
 
 #include <algorithm>
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/dom/document_lifecycle.h"
 #include "third_party/blink/renderer/core/html/shadow/shadow_element_utils.h"
 #include "third_party/blink/renderer/core/layout/block_node.h"
@@ -211,7 +212,7 @@ class FragmentTreeDumper {
       const PhysicalFragment* box = current.BoxFragment();
       if (box && !box->IsInlineBox()) {
         Vector<String> attributes;
-        if (current->IsHiddenForPaint()) {
+        if (current->IsHiddenDueToLayout()) {
           attributes.push_back("hidden");
         }
         Append(box, current.OffsetInContainerFragment(), attributes, indent);
@@ -328,7 +329,7 @@ PhysicalFragment::PhysicalFragment(FragmentBuilder* builder,
       type_(type),
       sub_type_(sub_type),
       style_variant_((unsigned)builder->style_variant_),
-      is_hidden_for_paint_(builder->is_hidden_for_paint_),
+      is_hidden_due_to_layout_(builder->is_hidden_due_to_layout_),
       has_floating_descendants_for_paint_(false),
       has_running_anchor_transform_animation_(
           builder->has_running_anchor_transform_animation_),
@@ -389,7 +390,7 @@ PhysicalFragment::PhysicalFragment(const PhysicalFragment& other)
       type_(other.type_),
       sub_type_(other.sub_type_),
       style_variant_(other.style_variant_),
-      is_hidden_for_paint_(other.is_hidden_for_paint_),
+      is_hidden_due_to_layout_(other.is_hidden_due_to_layout_),
       has_floating_descendants_for_paint_(
           other.has_floating_descendants_for_paint_),
       has_adjoining_object_descendants_(
@@ -521,12 +522,11 @@ PhysicalFragment::OofData* PhysicalFragment::FragmentedOofDataFromBuilder(
     OofInlineContainer<PhysicalOffset> inline_container(
         descendant.InlineContainer(),
         converter.ToPhysical(descendant.InlineContainerInfo().RelativeOffset(),
-                             PhysicalSize()));
+                             size));
     OofInlineContainer<PhysicalOffset> fixedpos_inline_container(
         descendant.fixedpos_inline_container.Container(),
         converter.ToPhysical(
-            descendant.fixedpos_inline_container.RelativeOffset(),
-            PhysicalSize()));
+            descendant.fixedpos_inline_container.RelativeOffset(), size));
 
     // The static position should remain relative to the containing block.
     PhysicalSize containing_block_size =
@@ -730,20 +730,20 @@ PhysicalFragment::StickyDescendants() const {
   if (propagated_data_ && propagated_data_->sticky_descendants) {
     return *propagated_data_->sticky_descendants;
   }
-  DEFINE_STATIC_LOCAL(
-      Persistent<GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>>, empty,
-      (MakeGarbageCollected<
-          GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>>()));
-  return *empty;
+  static base::NoDestructor<
+      Persistent<GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>>>
+      empty(MakeGarbageCollected<
+            GCedHeapVector<SplitAxisItem<LayoutBoxModelObject>>>());
+  return **empty;
 }
 
 const GCedHeapVector<SnapArea>& PhysicalFragment::SnapAreas() const {
   if (propagated_data_ && propagated_data_->snap_areas) {
     return *propagated_data_->snap_areas;
   }
-  DEFINE_STATIC_LOCAL(Persistent<GCedHeapVector<SnapArea>>, empty,
-                      (MakeGarbageCollected<GCedHeapVector<SnapArea>>()));
-  return *empty;
+  static base::NoDestructor<Persistent<GCedHeapVector<SnapArea>>> empty(
+      MakeGarbageCollected<GCedHeapVector<SnapArea>>());
+  return **empty;
 }
 
 bool PhysicalFragment::DependsOnPercentageBlockSize(

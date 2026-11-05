@@ -17,10 +17,11 @@ class AndroidAutofillProviderTestApi {
   void StartNewSession(AndroidAutofillManager* manager,
                        const FormData& form,
                        const FormFieldData& field) {
+    provider_->UpdateCurrentField(manager, form, field);
     provider_->StartNewSession(manager, form, field);
   }
 
-  const FormDataAndroid* form() && {
+  FormDataAndroid* form() && {
     return provider_->session_state_ ? provider_->session_state_->form.get()
                                      : nullptr;
   }
@@ -49,6 +50,10 @@ class AndroidAutofillProviderTestApi {
   }
 
   void OnTriggerPasskeyRequest() { provider_->OnTriggerPasskeyRequest(); }
+
+  void set_last_session_id(SessionId session_id) {
+    provider_->last_session_id_ = session_id;
+  }
 
  private:
   const raw_ref<AndroidAutofillProvider> provider_;

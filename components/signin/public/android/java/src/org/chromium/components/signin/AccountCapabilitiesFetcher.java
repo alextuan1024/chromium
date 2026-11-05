@@ -7,9 +7,10 @@ package org.chromium.components.signin;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
-import org.jni_zero.NativeMethods;
 
+import org.chromium.base.JniOnceCallback;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.signin.base.AccountCapabilities;
 import org.chromium.components.signin.base.CoreAccountInfo;
 
@@ -21,45 +22,43 @@ import org.chromium.components.signin.base.CoreAccountInfo;
 @NullMarked
 @JNINamespace("signin")
 public class AccountCapabilitiesFetcher {
-    private static final long INVALID_NATIVE_CALLBACK = 0;
     private final CoreAccountInfo mCoreAccountInfo;
-    private long mNativeCallback;
+    private @Nullable JniOnceCallback<AccountCapabilities> mCallback;
 
-    /**
-     * Constructs a fetcher tied to a single account identified by {@code coreAccountInfo}.
-     *
-     * <p>WARNING: {@code nativeCallback} points to an unowned callback object allocated on native
-     * heap. {@code this} *must* call {@link #onCapabilitiesFetchComplete} in order to clean up the
-     * callback object properly.
-     */
+    /** Constructs a fetcher tied to a single account identified by {@code coreAccountInfo}. */
     @CalledByNative
     public AccountCapabilitiesFetcher(
-            @JniType("CoreAccountInfo") CoreAccountInfo coreAccountInfo, long nativeCallback) {
-        assert nativeCallback != INVALID_NATIVE_CALLBACK;
+            @JniType("CoreAccountInfo") CoreAccountInfo coreAccountInfo,
+            @JniType("base::OnceCallback<void(const base::android::JavaRef<jobject>&)>&&")
+                    JniOnceCallback<AccountCapabilities> callback) {
         mCoreAccountInfo = coreAccountInfo;
-        mNativeCallback = nativeCallback;
+        mCallback = callback;
     }
 
     @CalledByNative
     public void startFetchingAccountCapabilities() {
-        AccountManagerFacadeProvider.getInstance()
-                .getAccountCapabilities(mCoreAccountInfo)
-                .then(
-                        accountCapabilities -> {
-                            onCapabilitiesFetchComplete(accountCapabilities);
-                        });
+        var accountManagerFacade = AccountManagerFacadeProvider.getInstance();
+        var capabilitiesPromise = accountManagerFacade.getAccountCapabilities(mCoreAccountInfo);
+        if (capabilitiesPromise.isFulfilled()) {
+            onCapabilitiesFetchComplete(capabilitiesPromise.getResult());
+        } else {
+            capabilitiesPromise.then(this::onCapabilitiesFetchComplete);
+        }
+    }
+
+    @CalledByNative
+    void destroy() {
+        if (mCallback != null) {
+            mCallback.destroy();
+            mCallback = null;
+        }
     }
 
     private void onCapabilitiesFetchComplete(AccountCapabilities accountCapabilities) {
-        assert mNativeCallback != INVALID_NATIVE_CALLBACK;
-        AccountCapabilitiesFetcherJni.get()
-                .onCapabilitiesFetchComplete(accountCapabilities, mNativeCallback);
-        mNativeCallback = INVALID_NATIVE_CALLBACK;
-    }
-
-    @NativeMethods
-    interface Natives {
-        void onCapabilitiesFetchComplete(
-                AccountCapabilities accountCapabilities, long nativeCallback);
+        if (mCallback != null) {
+            JniOnceCallback<AccountCapabilities> callback = mCallback;
+            mCallback = null;
+            callback.onResult(accountCapabilities);
+        }
     }
 }

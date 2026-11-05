@@ -31,16 +31,6 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Long article"/>
 </enum>
 
-<enum name="ContentClassificationOpenGraph">
-  <int value="0" label="Unknown"/>
-  <int value="1" label="Website"/>
-  <int value="2" label="Music"/>
-  <int value="3" label="Video"/>
-  <int value="4" label="Article"/>
-  <int value="5" label="Book"/>
-  <int value="6" label="Profile"/>
-</enum>
-
 <enum name="ContentNotificationActionType">
   <int value="0" label="Notification Received and Displayed by the OS."/>
   <int value="1" label="Notification opened."/>
@@ -82,23 +72,6 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Dismissed Promo from close button"/>
   <int value="4" label="Dismissed Promo from secondary button"/>
   <int value="5" label="Promo was shown to the user"/>
-</enum>
-
-<enum name="ContentSettingBubbleAction">
-  <int value="1" label="kOpened"/>
-  <int value="2" label="kPermissionAllowed"/>
-  <int value="3" label="kPermissionBlocked"/>
-  <int value="4" label="KManageButtonClicked"/>
-</enum>
-
-<enum name="ContentSettingPopupAction">
-  <int value="0" label="Displayed popup-blocked icon in Omnibox"/>
-  <int value="1" label="Displayed bubble"/>
-  <int value="2" label="Clicked 'Always allow pop-ups from'"/>
-  <int value="3" label="Clicked one of the list items"/>
-  <int value="4" label="Clicked 'Manage pop-up blocking'"/>
-  <int value="5" label="Displayed popup-blocked infobar on mobile"/>
-  <int value="6" label="Clicked 'Always show on mobile'"/>
 </enum>
 
 <enum name="ContentSuggestionsDisplayStatus">
@@ -440,40 +413,6 @@ chromium-metrics-reviews@google.com.
   <int value="9" label="The Feed is disabled by flag"/>
 </enum>
 
-<enum name="FeedVideoInitializationError">
-  <int value="0" label="Client library update required."/>
-  <int value="1" label="Developer key invalid."/>
-  <int value="2" label="Error connecting to service."/>
-  <int value="3" label="Internal error."/>
-  <int value="4" label="Invalid application signature."/>
-  <int value="5" label="Network error."/>
-  <int value="6" label="Service disabled."/>
-  <int value="7" label="Service invalid."/>
-  <int value="8" label="Service missing."/>
-  <int value="9" label="Service version update required."/>
-  <int value="10" label="Unknown error."/>
-</enum>
-
-<enum name="FeedVideoPlayError">
-  <int value="0" label="Not playable."/>
-  <int value="1" label="Unauthorized overlay."/>
-  <int value="2" label="Internal error."/>
-  <int value="3" label="Unknown error."/>
-  <int value="4" label="Autoplay disabled."/>
-  <int value="5" label="Unexpected service disconnection."/>
-  <int value="6" label="Not playable muted."/>
-  <int value="7" label="Network error."/>
-</enum>
-
-<enum name="FeedVideoPlayEvent">
-  <int value="0" label="Auto-play stops before reaching the end."/>
-  <int value="1" label="Auto-play reaches the end."/>
-  <int value="2" label="User clicks on the auto-play video."/>
-  <int value="3" label="Video playing is triggered, but not started yet."/>
-  <int value="4" label="The player starts to play the video."/>
-  <int value="5" label="An error occurs during the video playing."/>
-</enum>
-
 <enum name="NTPBrokenViewHierarchyRelationship">
   <int value="0" label="ELM collection containing Content Suggestions fixed"/>
   <int value="1" label="Discover feed containing ELM collection fixed"/>
@@ -482,13 +421,6 @@ chromium-metrics-reviews@google.com.
   <int value="4"
       label="Content suggestions view controller not cleaned up on restart"/>
   <int value="5" label="ELM collection view containing feed header fixed"/>
-</enum>
-
-<enum name="PopupBlockerAction">
-  <int value="0" label="Popup initiated"/>
-  <int value="1" label="Popup blocked"/>
-  <int value="2" label="Popup clicked through (no gesture)"/>
-  <int value="3" label="Popup clicked through (abusive)"/>
 </enum>
 
 <!-- LINT.IfChange(SharedWorkerCreationContextTypeMismatch) -->
@@ -512,14 +444,6 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//content/browser/worker_host/shared_worker_host.cc:SharedWorkerHostDestructionSource) -->
-
-<enum name="StrongPopupBlockerAction">
-  <int value="0" label="Navigation commit"/>
-  <int value="1" label="Commit warn site"/>
-  <int value="2" label="Commit enforced site"/>
-  <int value="3" label="Popup considered"/>
-  <int value="4" label="Popup blocked"/>
-</enum>
 
 </enums>
 

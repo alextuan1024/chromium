@@ -17,7 +17,7 @@ import static org.hamcrest.core.StringContains.containsString;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doReturn;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.os.Build;
 
@@ -26,7 +26,6 @@ import androidx.test.espresso.NoMatchingViewException;
 import androidx.test.filters.LargeTest;
 
 import org.hamcrest.Matchers;
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -118,11 +117,6 @@ public class IncognitoPermissionLeakageTest {
         ModalDialogView.disableButtonTapProtectionForTesting();
     }
 
-    @After
-    public void tearDown() {
-        mChromeActivityTestRule.closeAllWindowsAndDeleteInstanceAndTabState();
-    }
-
     private void requestLocationPermission(Tab tab) throws TimeoutException, ExecutionException {
         // If tab is frozen then getWebContents may return null
         ThreadUtils.runOnUiThreadBlocking(() -> tab.loadIfNeeded(/* forceBackingSize= */ false));
@@ -133,7 +127,7 @@ public class IncognitoPermissionLeakageTest {
     }
 
     private void assertDialogIsShown() throws NoMatchingViewException {
-        onViewWaiting(withId(R.id.text)).check(matches(withText(containsString("location"))));
+        waitForView(withId(R.id.text)).check(matches(withText(containsString("location"))));
     }
 
     private void assertDialogIsNotShown() throws NoMatchingViewException {

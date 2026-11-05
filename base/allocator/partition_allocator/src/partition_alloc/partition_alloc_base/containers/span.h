@@ -1837,7 +1837,7 @@ template <typename ElementType,
   // [intro.object]: https://eel.is/c++draft/intro.object
   // [obj.lifetime] https://eel.is/c++draft/obj.lifetime
   //
-  // TODO(sergiosolano): adapt `start_lifetime_as_array` once it's
+  // TODO(crbug.com/570737624): adapt `start_lifetime_as_array` once it's
   // implemented in //base/containers/span.h
   //
   // `start_lifetime_as_array` is part of C++23, but not yet implemented by
@@ -1870,16 +1870,19 @@ template <typename ElementType,
 // Note: We use the 2-argument constructor `(s.data(), s.size())` instead of the
 // 1-argument range constructor `(s)` for C++20 compatibility.
 constexpr auto as_string_view(span<const char> s) {
-  return std::string_view(s.data(), s.size());
+  // SAFETY: `s.data()` is valid for `s.size()` elements.
+  return PA_UNSAFE_BUFFERS(std::string_view(s.data(), s.size()));
 }
 constexpr auto as_string_view(span<const unsigned char> s) {
   return as_string_view(as_chars(s));
 }
 constexpr auto as_string_view(span<const char16_t> s) {
-  return std::u16string_view(s.data(), s.size());
+  // SAFETY: `s.data()` is valid for `s.size()` elements.
+  return PA_UNSAFE_BUFFERS(std::u16string_view(s.data(), s.size()));
 }
 constexpr auto as_string_view(span<const wchar_t> s) {
-  return std::wstring_view(s.data(), s.size());
+  // SAFETY: `s.data()` is valid for `s.size()` elements.
+  return PA_UNSAFE_BUFFERS(std::wstring_view(s.data(), s.size()));
 }
 
 }  // namespace partition_alloc::internal::base

@@ -7,11 +7,13 @@ package org.chromium.chrome.browser.site_settings;
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
+import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertEquals;
 
@@ -34,12 +36,13 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.permissions.PermissionTestRule;
 import org.chromium.chrome.browser.permissions.PermissionTestRule.PermissionUpdateWaiter;
 import org.chromium.chrome.browser.tab.Tab;
@@ -57,9 +60,11 @@ import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.embedder_support.util.Origin;
 import org.chromium.components.permissions.PermissionsAndroidFeatureList;
+import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.content_public.common.ContentSwitches;
 import org.chromium.device.geolocation.LocationProviderOverrider;
 import org.chromium.device.geolocation.MockLocationProvider;
+import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.concurrent.TimeoutException;
 
@@ -67,15 +72,11 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
     "ignore-certificate-errors"
 })
-@DisableFeatures({
-    ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE,
-    ChromeFeatureList.SETTINGS_MULTI_COLUMN,
-    ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER
-})
+@DisableFeatures({ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER})
+@DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/563034012
 public class SiteSettingsLocationTest {
 
     private static final String[]
@@ -90,8 +91,7 @@ public class SiteSettingsLocationTest {
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.autoResetCtaActivityRule();
 
-    public PermissionTestRule mPermissionTestRule =
-            new PermissionTestRule(mActivityTestRule.getActivityTestRule(), true);
+    public PermissionTestRule mPermissionTestRule = new PermissionTestRule(mActivityTestRule, true);
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -119,9 +119,7 @@ public class SiteSettingsLocationTest {
         if (mPermissionUpdateWaiter != null) {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
-                        mPermissionTestRule
-                                .getActivityTab()
-                                .removeObserver(mPermissionUpdateWaiter);
+                        mActivityTestRule.getActivityTab().removeObserver(mPermissionUpdateWaiter);
                     });
         }
         SiteSettingsTestHelper.cleanUpContentSettingsAndExceptions(new CallbackHelper());
@@ -131,16 +129,14 @@ public class SiteSettingsLocationTest {
         if (mPermissionUpdateWaiter != null) {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
-                        mPermissionTestRule
-                                .getActivityTab()
-                                .removeObserver(mPermissionUpdateWaiter);
+                        mActivityTestRule.getActivityTab().removeObserver(mPermissionUpdateWaiter);
                     });
         }
-        Tab tab = mPermissionTestRule.getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
 
         mPermissionUpdateWaiter =
                 new PermissionUpdateWaiter(
-                        expectGranted ? "Granted" : "Denied", mPermissionTestRule.getActivity());
+                        expectGranted ? "Granted" : "Denied", mActivityTestRule.getActivity());
         ThreadUtils.runOnUiThreadBlocking(() -> tab.addObserver(mPermissionUpdateWaiter));
     }
 
@@ -148,8 +144,8 @@ public class SiteSettingsLocationTest {
         // Ignore notification request 4 times to enter embargo. 5th one ensures that notifications
         // are blocked by actually causing a deny-by-embargo.
         for (int i = 0; i < 5; i++) {
-            mPermissionTestRule.loadUrl(url);
-            mPermissionTestRule.runJavaScriptCodeInCurrentTab("requestPermissionAndRespond()");
+            mActivityTestRule.loadUrl(url);
+            mActivityTestRule.runJavaScriptCodeInCurrentTab("requestPermissionAndRespond()");
         }
     }
 
@@ -158,6 +154,7 @@ public class SiteSettingsLocationTest {
     @SmallTest
     @Feature({"Preferences"})
     @DisableFeatures(ChromeFeatureList.PERMISSION_DEDICATED_CPSS_SETTING_ANDROID)
+    @DisabledTest(message = "https://crbug.com/577990835")
     public void testSetAllowLocationEnabled() throws Exception {
         LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
         LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
@@ -271,6 +268,46 @@ public class SiteSettingsLocationTest {
     @Test
     @SmallTest
     @Feature({"Preferences"})
+    @Policies.Add({@Policies.Item(key = "DefaultGeolocationSetting", string = "2")})
+    public void testOnlyExpectedPreferencesDeviceLocationBlockedByPolicy() {
+        // When location is blocked by enterprise policy, no OS permission warnings or empty
+        // expandable groups should be shown regardless of Android/system location settings.
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(
+                /* systemEnabled= */ true,
+                /* androidEnabled= */ true,
+                /* androidFineEnabled= */ true);
+        SiteSettingsTestHelper.checkPreferencesForCategory(
+                SiteSettingsCategory.Type.DEVICE_LOCATION,
+                SiteSettingsTestHelper.BINARY_RADIO_BUTTON_AND_INFO_TEXT);
+
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(
+                /* systemEnabled= */ false,
+                /* androidEnabled= */ true,
+                /* androidFineEnabled= */ true);
+        SiteSettingsTestHelper.checkPreferencesForCategory(
+                SiteSettingsCategory.Type.DEVICE_LOCATION,
+                SiteSettingsTestHelper.BINARY_RADIO_BUTTON_AND_INFO_TEXT);
+
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(
+                /* systemEnabled= */ true,
+                /* androidEnabled= */ false,
+                /* androidFineEnabled= */ false);
+        SiteSettingsTestHelper.checkPreferencesForCategory(
+                SiteSettingsCategory.Type.DEVICE_LOCATION,
+                SiteSettingsTestHelper.BINARY_RADIO_BUTTON_AND_INFO_TEXT);
+
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(
+                /* systemEnabled= */ false,
+                /* androidEnabled= */ false,
+                /* androidFineEnabled= */ false);
+        SiteSettingsTestHelper.checkPreferencesForCategory(
+                SiteSettingsCategory.Type.DEVICE_LOCATION,
+                SiteSettingsTestHelper.BINARY_RADIO_BUTTON_AND_INFO_TEXT);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Preferences"})
     public void testAllowGeolocation() {
         LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
         new SiteSettingsTestHelper.TwoStatePermissionTestCaseWithRadioButton(
@@ -308,7 +345,8 @@ public class SiteSettingsLocationTest {
         SiteSettingsTestUtils.startSiteSettingsCategory(SiteSettingsCategory.Type.DEVICE_LOCATION);
         assertEquals(allowSetting, getGeolocationSetting(url));
 
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
         onView(withText(url)).check(matches(isDisplayed())).perform(click());
         onView(withText("Remove")).perform(click());
         assertEquals(
@@ -328,7 +366,8 @@ public class SiteSettingsLocationTest {
         SiteSettingsTestUtils.startSiteSettingsCategory(SiteSettingsCategory.Type.DEVICE_LOCATION);
         assertEquals(allowSetting, getGeolocationSetting(url));
 
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
         onView(withText(url)).check(matches(isDisplayed())).perform(click());
         onView(withText("Edit")).perform(click());
         onView(withText("Approximate")).perform(click());
@@ -358,7 +397,8 @@ public class SiteSettingsLocationTest {
         SiteSettingsTestUtils.startSiteSettingsCategory(SiteSettingsCategory.Type.DEVICE_LOCATION);
         assertEquals(blockSetting, getGeolocationSetting(url));
 
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
         onView(withText(url)).check(matches(isDisplayed())).perform(click());
         onView(withText("Edit")).perform(click());
 
@@ -394,7 +434,8 @@ public class SiteSettingsLocationTest {
 
         SiteSettingsTestUtils.startSiteSettingsCategory(SiteSettingsCategory.Type.DEVICE_LOCATION);
 
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
         onView(withText("Automatically blocked")).check(matches(isDisplayed()));
         onView(withText(origin)).perform(click());
         onView(withText("Edit")).perform(click());
@@ -403,6 +444,26 @@ public class SiteSettingsLocationTest {
         assertEquals(
                 new GeolocationSetting(ContentSetting.ALLOW, ContentSetting.ALLOW),
                 getGeolocationSetting(url));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"Preferences"})
+    @EnableFeatures(PermissionsAndroidFeatureList.APPROXIMATE_GEOLOCATION_PERMISSION)
+    public void testCoarseAndroidPermissionWithSiteExceptionShowsOsWarningAndException() {
+        String url = "https://example.com";
+        LocationSettingsTestUtil.setSystemAndAndroidLocationSettings(
+                /* systemEnabled= */ true,
+                /* androidEnabled= */ true,
+                /* androidFineEnabled= */ false);
+        var allowSetting = new GeolocationSetting(ContentSetting.ALLOW, ContentSetting.ALLOW);
+        setGeolocationSetting(url, allowSetting);
+        assertEquals(allowSetting, getGeolocationSetting(url));
+
+        SiteSettingsTestUtils.startSiteSettingsCategory(SiteSettingsCategory.Type.DEVICE_LOCATION);
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
+        onView(withText(url)).check(matches(isDisplayed()));
     }
 
     void setGeolocationSetting(String url, GeolocationSetting setting) {

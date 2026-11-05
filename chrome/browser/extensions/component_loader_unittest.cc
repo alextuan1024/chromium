@@ -52,9 +52,20 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_resource.h"
 #include "extensions/common/extension_set.h"
+#include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/background_info.h"
+#include "extensions/common/mojom/manifest.mojom-shared.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/display/test/test_screen.h"
+#include "ui/webui/buildflags.h"
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+#include "components/search/ntp_features.h"
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chromeos/ash/components/file_manager/app_id.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -81,6 +92,29 @@ base::FilePath GetAimEligibilityRelativeInstallDir(std::string_view version) {
   return base::FilePath(extension_misc::kAimEligibilityExtensionDirName)
       .AppendASCII(version);
 }
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+base::DictValue CreateNewTabPageManifest(std::string_view version) {
+  constexpr char kNewTabPageExtensionKey[] =
+      "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAykwjZZvD8VmMLl8zD6+aoJ/"
+      "c3yC3CGNlJwsOVMUrcFYN7PNXcEnbzdYELWakSOUvFONXrg5MLlEYn8JK7R4J6iJTPU8Ch"
+      "ySEU2doBXAB1200QcLo6GL+GW13SyzazqbB4FbSVuez9Gu0LIBHwZcoI/"
+      "a7RG5ffGfm9FSPKRSzb9JRQ5GKywcyGXnM6xEZ0dezHB9aNxt+"
+      "SiVC5iRU3zLY9gxFIrqCYMPywGrHA1OWpFwiF7VrR8EJD73+5W/m/"
+      "oiiSou6yPar9yFXhl/38huIxlypsRggptgKMyMvr0/"
+      "iUO/mmWBxQZIQgtYYb0QRS4QL42u2fvVmmVGolHWESI5c1wIDAQAB";
+  return base::DictValue()
+      .Set("key", kNewTabPageExtensionKey)
+      .Set("version", version)
+      .Set("manifest_version", 3)
+      .Set("name", "NTP Staged");
+}
+
+base::FilePath GetNewTabPageRelativeInstallDir(std::string_view version) {
+  return base::FilePath(extension_misc::kNewTabPageExtensionDirName)
+      .AppendASCII(version);
+}
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
 
 class ExtensionUnloadedObserver : public ExtensionRegistryObserver {
  public:
@@ -182,6 +216,8 @@ class ComponentLoaderTest : public testing::Test {
     component_loader_->AddAimEligibilityExtension();
   }
 
+  void AddNewTabPageExtension() { component_loader_->AddNewTabPageExtension(); }
+
   void VerifyBundledAimEligibilityExtensionLoaded(
       bool expect_prefs_cleared = true) {
     component_loader_->AddAimEligibilityExtension();
@@ -199,6 +235,17 @@ class ComponentLoaderTest : public testing::Test {
                   *local_state, extension_misc::kAimEligibilityExtensionId)
                   .has_value(),
               !expect_prefs_cleared);
+  }
+
+  // Returns the public key of the registered component extension at `index` in
+  // `component_loader_`, or `nullptr` if `index` is out of bounds or the
+  // manifest does not contain a public key.
+  const std::string* GetRegisteredExtensionKey(size_t index) const {
+    if (index >= component_loader_->component_extensions_.size()) {
+      return nullptr;
+    }
+    return component_loader_->component_extensions_[index].manifest.FindString(
+        manifest_keys::kPublicKey);
   }
 
  protected:
@@ -225,6 +272,8 @@ class ComponentLoaderTest : public testing::Test {
 #endif
 };
 
+// Verifies that `ComponentLoader::ParseManifest()` rejects invalid or
+// non-dictionary JSON and parses valid dictionary manifests.
 TEST_F(ComponentLoaderTest, ParseManifest) {
   std::optional<base::DictValue> manifest;
 
@@ -291,6 +340,8 @@ TEST_F(ComponentLoaderTest, AddWhenReady) {
   EXPECT_TRUE(registry->enabled_extensions().GetByID(extension_id));
 }
 
+// Verifies that `ComponentLoader::Remove()` unregisters and unloads component
+// extensions by path.
 TEST_F(ComponentLoaderTest, Remove) {
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
 
@@ -306,8 +357,7 @@ TEST_F(ComponentLoaderTest, Remove) {
 
   // Load an extension, and check that it's unloaded when Remove() is called.
   extension_system_->SetReady();
-  std::string extension_id =
-      component_loader_->Add(manifest_contents_, extension_path_);
+  component_loader_->Add(manifest_contents_, extension_path_);
   EXPECT_EQ(1u, registry->enabled_extensions().size());
   component_loader_->Remove(extension_path_);
   EXPECT_EQ(0u, registry->enabled_extensions().size());
@@ -317,6 +367,8 @@ TEST_F(ComponentLoaderTest, Remove) {
   EXPECT_EQ(0u, registry->enabled_extensions().size());
 }
 
+// Verifies that `ComponentLoader::LoadAll()` loads all registered component
+// extensions into the `ExtensionRegistry`.
 TEST_F(ComponentLoaderTest, LoadAll) {
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
 
@@ -361,6 +413,8 @@ class ComponentLoaderExtensionServiceTest
   }
 };
 
+// Verifies that `ComponentLoader::LoadAll()` emits
+// `Extensions.LoadAllComponentTime.User` for regular user profiles.
 TEST_F(ComponentLoaderExtensionServiceTest, LoadAll_EmitUserHistograms) {
   ASSERT_NO_FATAL_FAILURE(MaybeSetUpTestUser(/*is_guest=*/false));
 
@@ -368,6 +422,8 @@ TEST_F(ComponentLoaderExtensionServiceTest, LoadAll_EmitUserHistograms) {
                             /*user_expected_total_count=*/1);
 }
 
+// Verifies that `ComponentLoader::LoadAll()` emits
+// `Extensions.LoadAllComponentTime.NonUser` for guest profiles.
 TEST_F(ComponentLoaderExtensionServiceTest, LoadAll_NonUserEmitHistograms) {
   ASSERT_NO_FATAL_FAILURE(MaybeSetUpTestUser(/*is_guest=*/true));
 
@@ -375,22 +431,41 @@ TEST_F(ComponentLoaderExtensionServiceTest, LoadAll_NonUserEmitHistograms) {
                             /*user_expected_total_count=*/0);
 }
 
-// Test is flaky. https://crbug.com/40828122
-TEST_F(ComponentLoaderTest, DISABLED_AddOrReplace) {
+// Tests that `ComponentLoader::AddOrReplace()` properly adds new component
+// extensions and replaces existing ones.
+TEST_F(ComponentLoaderTest, AddOrReplace) {
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
   ExtensionUnloadedObserver unload_observer(registry);
   EXPECT_EQ(0u, component_loader_->registered_extensions_count());
 
-  // Allow the Feedback extension, which has a background page, to be loaded.
+  // Allow component extensions with background pages to be loaded.
   component_loader_->EnableBackgroundExtensionsForTesting();
 
   component_loader_->AddDefaultComponentExtensions(false);
-  size_t const default_count = component_loader_->registered_extensions_count();
-  base::FilePath known_extension = GetBasePath()
-      .AppendASCII("override_component_extension");
+  const size_t default_count = component_loader_->registered_extensions_count();
+  ASSERT_GT(default_count, 0u);
+  const std::string* existing_key = GetRegisteredExtensionKey(0);
+  ASSERT_TRUE(existing_key);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath known_extension =
+      temp_dir.GetPath().AppendASCII("override_component_extension");
+  ASSERT_TRUE(base::CreateDirectory(known_extension));
+  std::string manifest_contents = base::StringPrintf(
+      R"({
+        "key": "%s",
+        "name": "Override Component Extension for testing",
+        "version": "1.0",
+        "manifest_version": 3
+      })",
+      existing_key->c_str());
+  ASSERT_TRUE(base::WriteFile(known_extension.Append(kManifestFilename),
+                              manifest_contents));
+
   base::FilePath unknown_extension = extension_path_;
-  base::FilePath invalid_extension = GetBasePath()
-      .AppendASCII("this_path_does_not_exist");
+  base::FilePath invalid_extension =
+      GetBasePath().AppendASCII("this_path_does_not_exist");
 
   // Replace a default component extension.
   component_loader_->AddOrReplace(known_extension);
@@ -407,7 +482,7 @@ TEST_F(ComponentLoaderTest, DISABLED_AddOrReplace) {
   EXPECT_EQ(default_count + 1, registry->enabled_extensions().size());
   EXPECT_EQ(0u, unload_observer.unloaded_count());
 
-  // replace loaded component extension.
+  // Replace loaded component extension.
   component_loader_->AddOrReplace(known_extension);
   EXPECT_EQ(default_count + 1, registry->enabled_extensions().size());
   EXPECT_EQ(1u, unload_observer.unloaded_count());
@@ -519,8 +594,22 @@ TEST_F(ComponentLoaderTest, RemovePendingAdd) {
   EXPECT_FALSE(component_loader_->ExistsOrPendingAdd(kExtensionId));
 }
 
+// Verifies that the Image Loader extension is not loaded by default and can
+// be loaded on demand.
+TEST_F(ComponentLoaderTest, AddImageLoaderExtensionOnDemand) {
+  component_loader_->EnableBackgroundExtensionsForTesting();
+  component_loader_->AddDefaultComponentExtensions(false);
+  EXPECT_FALSE(
+      component_loader_->Exists(file_manager::kImageLoaderExtensionId));
+
+  component_loader_->AddImageLoaderExtension();
+  EXPECT_TRUE(component_loader_->Exists(file_manager::kImageLoaderExtensionId));
+}
+
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` loads the
+// staged extension when a newer version is staged in `local_state`.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsStagedVersionIfNewer) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -550,6 +639,9 @@ TEST_F(ComponentLoaderTest,
   EXPECT_EQ(extension->name(), "AIM Staged");
 }
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` loads the
+// bundled extension when the staged version is not newer than the bundled
+// version.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsBundledIfStagedOlderOrEqual) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -566,6 +658,9 @@ TEST_F(ComponentLoaderTest,
   VerifyBundledAimEligibilityExtensionLoaded();
 }
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` loads the
+// bundled extension when the `use_component_updater` feature parameter is
+// disabled.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsBundledIfFeatureParamDisabled) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -584,6 +679,8 @@ TEST_F(ComponentLoaderTest,
   VerifyBundledAimEligibilityExtensionLoaded(/*expect_prefs_cleared=*/false);
 }
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged manifest is corrupted.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsBundledIfStagedManifestCorrupted) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -599,6 +696,8 @@ TEST_F(ComponentLoaderTest,
   VerifyBundledAimEligibilityExtensionLoaded();
 }
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged manifest has an invalid version string.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsBundledIfStagedVersionMismatch) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -616,6 +715,9 @@ TEST_F(ComponentLoaderTest,
   VerifyBundledAimEligibilityExtensionLoaded();
 }
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged manifest key does not match
+// `extension_misc::kAimEligibilityExtensionId`.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsBundledIfStagedExtensionIdMismatch) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -649,6 +751,9 @@ TEST_F(ComponentLoaderTest,
   VerifyBundledAimEligibilityExtensionLoaded();
 }
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged manifest contains an invalid public
+// key.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsBundledIfStagedKeyInvalid) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -674,6 +779,8 @@ TEST_F(ComponentLoaderTest,
   VerifyBundledAimEligibilityExtensionLoaded();
 }
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged path is absolute.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsBundledIfStagedPathIsAbsolute) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -695,6 +802,8 @@ TEST_F(ComponentLoaderTest,
   VerifyBundledAimEligibilityExtensionLoaded();
 }
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged path references a parent directory.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsBundledIfStagedPathReferencesParent) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -716,6 +825,8 @@ TEST_F(ComponentLoaderTest,
   VerifyBundledAimEligibilityExtensionLoaded();
 }
 
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged path is empty.
 TEST_F(ComponentLoaderTest,
        AddAimEligibilityExtensionLoadsBundledIfStagedPathIsEmpty) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -729,5 +840,109 @@ TEST_F(ComponentLoaderTest,
 
   VerifyBundledAimEligibilityExtensionLoaded();
 }
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+// Verifies the NTP component extension is installed when its feature is
+// enabled.
+TEST_F(ComponentLoaderTest, AddNewTabPageExtensionLoadsWhenFeatureEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ntp_features::kNtpComponentExtension);
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  const Extension* extension =
+      ExtensionRegistry::Get(profile())->enabled_extensions().GetByID(
+          extension_misc::kNewTabPageExtensionId);
+  ASSERT_TRUE(extension);
+  EXPECT_EQ(extension->location(), mojom::ManifestLocation::kComponent);
+}
+
+// Verifies the NTP component extension loads the staged version from disk when
+// a newer version is staged in Local State.
+TEST_F(ComponentLoaderTest, AddNewTabPageExtensionLoadsStagedVersionIfNewer) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ntp_features::kNtpComponentExtension);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::ScopedPathOverride path_override(component_updater::DIR_COMPONENT_USER,
+                                         temp_dir.GetPath());
+  base::FilePath relative_path = GetNewTabPageRelativeInstallDir("2.0");
+  ASSERT_TRUE(base::CreateDirectory(temp_dir.GetPath().Append(relative_path)));
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kNewTabPageExtensionId, relative_path,
+      CreateNewTabPageManifest("2.0"));
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
+  const Extension* extension = registry->enabled_extensions().GetByID(
+      extension_misc::kNewTabPageExtensionId);
+  ASSERT_TRUE(extension);
+  EXPECT_EQ(extension->version(), base::Version("2.0"));
+  EXPECT_EQ(extension->name(), "NTP Staged");
+}
+
+// Verifies the NTP component extension falls back to the bundled version when
+// the use_component_updater feature param is disabled.
+TEST_F(ComponentLoaderTest,
+       AddNewTabPageExtensionLoadsBundledIfFeatureParamDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeaturesAndParameters(
+      {{ntp_features::kNtpComponentExtension,
+        {{"use_component_updater", "false"}}}},
+      {});
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kNewTabPageExtensionId,
+      GetNewTabPageRelativeInstallDir("2.0"), CreateNewTabPageManifest("2.0"));
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
+  const Extension* extension = registry->enabled_extensions().GetByID(
+      extension_misc::kNewTabPageExtensionId);
+  ASSERT_TRUE(extension);
+  EXPECT_EQ(extension->version(), base::Version("1.0"));
+  EXPECT_EQ(extension->name(), "New Tab Page");
+  EXPECT_TRUE(component_loader_prefs::GetExtension(
+                  *local_state, extension_misc::kNewTabPageExtensionId)
+                  .has_value());
+}
+
+// Verifies the NTP component extension is not installed when its feature is
+// disabled.
+TEST_F(ComponentLoaderTest, AddNewTabPageExtensionSkippedWhenFeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      ntp_features::kNtpComponentExtension);
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  EXPECT_FALSE(ExtensionRegistry::Get(profile())->GetInstalledExtension(
+      extension_misc::kNewTabPageExtensionId));
+}
+
+// Verifies the extension is on the component extension allowlist, so it loads
+// without `set_ignore_allowlist_for_testing()`.
+TEST_F(ComponentLoaderTest, AddNewTabPageExtensionIsAllowlisted) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ntp_features::kNtpComponentExtension);
+  component_loader_->set_ignore_allowlist_for_testing(false);
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  EXPECT_TRUE(ExtensionRegistry::Get(profile())->enabled_extensions().GetByID(
+      extension_misc::kNewTabPageExtensionId));
+}
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
 
 }  // namespace extensions

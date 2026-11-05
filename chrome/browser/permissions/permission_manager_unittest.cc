@@ -9,7 +9,6 @@
 #include "chrome/browser/permissions/permission_manager_factory.h"
 #include "chrome/browser/pwc/privileged_web_contents.h"
 #include "chrome/browser/pwc/pwc_component_policy.h"
-#include "chrome/browser/pwc/pwc_features.mojom-features.h"
 #include "chrome/browser/pwc/test_support/test_pwc_permission_delegate.h"
 #include "chrome/browser/search_engines/ui_thread_search_terms_data.h"
 #include "chrome/common/url_constants.h"
@@ -205,8 +204,8 @@ TEST_P(PermissionManagerTest, SubscribeWithPermissionDelegation) {
   content::PermissionController* permission_controller =
       GetBrowserContext()->GetPermissionController();
 
-  content::PermissionController::SubscriptionId subscription_id =
-      content::SubscribeToPermissionResultChange(
+  std::unique_ptr<content::PermissionController::PermissionSubscription>
+      subscription = content::SubscribeToPermissionResultChange(
           permission_controller,
           content::PermissionDescriptorUtil::
               CreatePermissionDescriptorForPermissionType(
@@ -244,8 +243,6 @@ TEST_P(PermissionManagerTest, SubscribeWithPermissionDelegation) {
   EXPECT_EQ(PermissionStatus::GRANTED,
             permission_controller->GetPermissionStatusForCurrentDocument(
                 geolocation_permission_descriptor, child));
-
-  permission_controller->UnsubscribeFromPermissionResultChange(subscription_id);
 }
 
 class PermissionManagerPwcTest : public ChromeRenderViewHostTestHarness {
@@ -253,8 +250,6 @@ class PermissionManagerPwcTest : public ChromeRenderViewHostTestHarness {
   PermissionManagerPwcTest() : test_url_("https://pwc-test.example.com") {}
 
   void SetUp() override {
-    scoped_pwc_feature_list_.InitAndEnableFeature(
-        pwc::mojom::features::kPrivilegedWebContents);
     TestingBrowserProcess::GetGlobal()->SetUpGlobalFeaturesForTesting(
         /*profile_manager=*/false);
     ChromeRenderViewHostTestHarness::SetUp();
@@ -300,7 +295,6 @@ class PermissionManagerPwcTest : public ChromeRenderViewHostTestHarness {
   const GURL& test_url() const { return test_url_; }
 
  private:
-  base::test::ScopedFeatureList scoped_pwc_feature_list_;
   GURL test_url_;
   std::unique_ptr<pwc::PrivilegedWebContents> pwc_;
 };
@@ -366,8 +360,8 @@ TEST_F(PermissionManagerPwcTest,
                                 content::PermissionStatusSource::UNSPECIFIED));
 
   base::test::TestFuture<const std::vector<content::PermissionResult>&> future;
-  content::PermissionRequestDescription description(
-      mic_descriptor.Clone(), /*user_gesture=*/true, test_url());
+  content::PermissionRequestDescription description(mic_descriptor.Clone(),
+                                                    /*user_gesture=*/true);
 
   permission_controller()->RequestPermissionsFromCurrentDocument(
       pwc_main_rfh(), description, future.GetCallback());
@@ -375,31 +369,6 @@ TEST_F(PermissionManagerPwcTest,
   const std::vector<content::PermissionResult>& results = future.Get();
   ASSERT_EQ(1u, results.size());
   EXPECT_EQ(PermissionStatus::GRANTED, results[0].status);
-}
-
-TEST_F(PermissionManagerPwcTest,
-       RequestPermissions_OriginMismatch_DoesNotOverride) {
-  auto mic_descriptor = content::PermissionDescriptorUtil::
-      CreatePermissionDescriptorForPermissionType(
-          blink::PermissionType::AUDIO_CAPTURE);
-
-  delegate()->set_result(
-      content::PermissionResult(blink::mojom::PermissionStatus::GRANTED,
-                                content::PermissionStatusSource::UNSPECIFIED));
-
-  base::test::TestFuture<const std::vector<content::PermissionResult>&> future;
-  GURL mismatched_url("https://mismatch.example.com");
-  content::PermissionRequestDescription description(
-      mic_descriptor.Clone(), /*user_gesture=*/true, mismatched_url);
-
-  permission_controller()->RequestPermissionsFromCurrentDocument(
-      pwc_main_rfh(), description, future.GetCallback());
-
-  // Because requesting_origin does not match the PWC RFH's last committed
-  // origin, the PWC override does not apply.
-  const std::vector<content::PermissionResult>& results = future.Get();
-  ASSERT_EQ(1u, results.size());
-  EXPECT_NE(PermissionStatus::GRANTED, results[0].status);
 }
 
 class PermissionManagerPwcGeolocationTest
@@ -417,8 +386,8 @@ TEST_P(PermissionManagerPwcGeolocationTest,
       content::PermissionResult(blink::mojom::PermissionStatus::GRANTED,
                                 content::PermissionStatusSource::UNSPECIFIED));
 
-  content::PermissionController::SubscriptionId subscription_id =
-      content::SubscribeToPermissionResultChange(
+  std::unique_ptr<content::PermissionController::PermissionSubscription>
+      subscription = content::SubscribeToPermissionResultChange(
           permission_controller(),
           content::PermissionDescriptorUtil::
               CreatePermissionDescriptorForPermissionType(
@@ -426,9 +395,7 @@ TEST_P(PermissionManagerPwcGeolocationTest,
           /*render_process_host=*/nullptr, pwc_main_rfh(), test_url(),
           /*should_include_device_status=*/false, base::DoNothing());
 
-  EXPECT_TRUE(subscription_id);
-  permission_controller()->UnsubscribeFromPermissionResultChange(
-      subscription_id);
+  EXPECT_TRUE(subscription);
 }
 
 TEST_P(PermissionManagerPwcGeolocationTest,
@@ -456,8 +423,8 @@ TEST_P(PermissionManagerPwcGeolocationTest,
                                 content::PermissionStatusSource::UNSPECIFIED));
 
   base::test::TestFuture<const std::vector<content::PermissionResult>&> future;
-  content::PermissionRequestDescription description(
-      geo_descriptor.Clone(), /*user_gesture=*/true, test_url());
+  content::PermissionRequestDescription description(geo_descriptor.Clone(),
+                                                    /*user_gesture=*/true);
 
   permission_controller()->RequestPermissionsFromCurrentDocument(
       pwc_main_rfh(), description, future.GetCallback());

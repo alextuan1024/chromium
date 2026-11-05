@@ -4,6 +4,7 @@
 
 #include "content/browser/digital_credentials/digital_identity_request_impl.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -16,7 +17,6 @@
 #include "base/functional/callback.h"
 #include "base/json/json_reader.h"
 #include "base/location.h"
-#include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
@@ -27,23 +27,19 @@
 #include "content/browser/webid/flags.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
-#include "content/public/browser/digital_identity_interstitial_type.h"
 #include "content/public/browser/digital_identity_provider.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_client.h"
-#include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
 #include "third_party/blink/public/mojom/webid/digital_identity_request.mojom-forward.h"
 #include "third_party/re2/src/re2/re2.h"
 
 using blink::mojom::RequestDigitalIdentityStatus;
-using InterstitialType = content::DigitalIdentityInterstitialType;
 using RequestStatusForMetrics =
     content::DigitalIdentityProvider::RequestStatusForMetrics;
-using DigitalIdentityInterstitialAbortCallback =
-    content::DigitalIdentityProvider::DigitalIdentityInterstitialAbortCallback;
+using UiWarningLevel = content::DigitalIdentityProvider::UiWarningLevel;
 
 namespace content {
 namespace {
@@ -63,8 +59,10 @@ constexpr char kGetPhoneNumberTestSingleSimVctValue[] =
     "number-verification/device-phone-number/test-ts43-single-sim";
 constexpr char kGetPhoneNumberTestMultiSimVctValue[] =
     "number-verification/device-phone-number/test-ts43-multi-sim";
+constexpr char kUserInfoCredentialVctValue[] = "UserInfoCredential";
 
 constexpr char kDpcVctValue[] = "com.emvco.dpc";
+constexpr char kDpcCardVctValue[] = "com.emvco.dpc.card";
 constexpr char kDpcCredCardVctValue[] = "dpc.cred.card";
 
 constexpr char kDcqlQuery[] = "dcql_query";
@@ -73,11 +71,6 @@ constexpr char kMdlDocumentType[] = "org.iso.18013.5.1.mDL";
 constexpr char kMdlNamespace[] = "org.iso.18013.5.1";
 constexpr char kMeta[] = "meta";
 constexpr char kDoctypeValue[] = "doctype_value";
-
-constexpr char kDigitalIdentityDialogParam[] = "dialog";
-constexpr char kDigitalIdentityNoDialogParamValue[] = "no_dialog";
-constexpr char kDigitalIdentityLowRiskDialogParamValue[] = "low_risk";
-constexpr char kDigitalIdentityHighRiskDialogParamValue[] = "high_risk";
 
 // Returns whether an interstitial should be shown for a request which solely
 // requests the passed-in claims/data elements.
@@ -98,19 +91,21 @@ bool CanClaimBypassInterstitial(const std::string& claim) {
 
 // Returns whether the vct value is a Digital Payment Credential (DPC).
 bool IsDpcVctValue(const std::string& vct_value) {
-  return vct_value == kDpcVctValue || vct_value == kDpcCredCardVctValue;
+  return vct_value == kDpcVctValue || vct_value == kDpcCardVctValue ||
+         vct_value == kDpcCredCardVctValue;
 }
 
 // Returns whether the doctype value is a Digital Payment Credential (DPC).
 bool IsDpcDocTypeValue(const std::string& doctype_value) {
-  return doctype_value == kDpcVctValue;
+  return doctype_value == kDpcVctValue || doctype_value == kDpcCardVctValue;
 }
 
 bool CanVctValueBypassInterstitial(const std::string& vct_value) {
   return vct_value == kGetPhoneNumberVctValue ||
          vct_value == kVerifyPhoneNumberVctValue ||
          vct_value == kGetPhoneNumberTestSingleSimVctValue ||
-         vct_value == kGetPhoneNumberTestMultiSimVctValue;
+         vct_value == kGetPhoneNumberTestMultiSimVctValue ||
+         vct_value == kUserInfoCredentialVctValue;
 }
 
 bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
@@ -119,11 +114,19 @@ bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
   if (!query_dict) {
     return false;
   }
-  auto credential_to_claims =
-      [](const base::DictValue& credential) -> std::vector<std::string> {
-    const base::ListValue* claims_list = credential.FindList("claims");
+  // Parses `credential["claims"]` into claim names. Returns an empty vector
+  // when `"claims"` is absent, or `std::nullopt` if `"claims"` is present but
+  // malformed or contains a claim entry/path that cannot be parsed, so callers
+  // fail closed rather than treating unparsable claims as claimless.
+  auto credential_to_claims = [](const base::DictValue& credential)
+      -> std::optional<std::vector<std::string>> {
+    const base::Value* claims_value = credential.Find("claims");
+    if (!claims_value) {
+      return std::vector<std::string>{};
+    }
+    const base::ListValue* claims_list = claims_value->GetIfList();
     if (!claims_list) {
-      return {};
+      return std::nullopt;
     }
 
     const std::string* format = credential.FindString("format");
@@ -140,15 +143,15 @@ bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
     for (const base::Value& claim : *claims_list) {
       const base::DictValue* claim_dict = claim.GetIfDict();
       if (!claim_dict) {
-        return {};
+        return std::nullopt;
       }
       const base::ListValue* paths = claim_dict->FindList("path");
       if (!paths || paths->empty()) {
-        return {};
+        return std::nullopt;
       }
       const std::string* claim_name = paths->back().GetIfString();
       if (!claim_name) {
-        return {};
+        return std::nullopt;
       }
 
       bool path_ok = false;
@@ -159,21 +162,10 @@ bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
         path_ok = paths->size() == 1u;
       }
 
-      bool is_mdl_claim =
-          re2::RE2::FullMatch(*claim_name,
-                              re2::RE2(kMdocAgeOverDataElementRegex)) ||
-          *claim_name == kMdocAgeInYearsDataElement ||
-          *claim_name == kMdocAgeBirthYearDataElement ||
-          *claim_name == kMdocBirthDateDataElement;
-
-      if (is_mdl_claim) {
-        if ((is_mdl || is_sdjwt) && path_ok) {
-          claims.push_back(*claim_name);
-        } else {
-          claims.push_back("__invalid_context__");
-        }
-      } else {
+      if (path_ok) {
         claims.push_back(*claim_name);
+      } else {
+        claims.push_back("__invalid_context__");
       }
     }
     return claims;
@@ -225,50 +217,61 @@ bool CanRequestCredentialBypassInterstitialForOpenid4vpProtocolWithDCQL(
     bool is_sdjwt = format && (*format == "dc+sd-jwt" ||
                                *format == "dc-authorization+sd-jwt");
 
-    // Phone Number Verification (PNV) requests via Digital Credentials API do
-    // not return user PII in response to requested claims; claims serve solely
-    // as operational hints/parameters (e.g. `disallowed_carriers`). Therefore,
-    // PNV credentials bypass the safety interstitial based on their VCT values
-    // without inspecting the requested claims.
+    // Phone Number Verification (PNV) and UserInfoCredential requests do not
+    // expose high-risk government ID PII; PNV claims serve solely as
+    // operational hints/parameters (e.g. `disallowed_carriers`) and
+    // UserInfoCredential only holds basic profile attributes (with the
+    // credential provider enforcing the supported profile claim set).
+    // Therefore, these credentials intentionally bypass the safety interstitial
+    // based on their VCT values without inspecting `claims` (even if `claims`
+    // is omitted or specifies unrecognized claim names).
     //
     // Requiring `doctype_value.empty()` and `is_sdjwt` ensures that mDL or
     // hybrid cross-format requests cannot evade claim inspection by attaching
-    // PNV VCT values.
-    bool is_phone =
+    // allowlisted VCT values.
+    bool can_vct_bypass =
         is_sdjwt && doctype_value.empty() && !vct_values.empty() &&
         std::ranges::all_of(vct_values, CanVctValueBypassInterstitial);
-    if (is_phone) {
+    if (can_vct_bypass) {
       continue;
     }
 
-    std::vector<std::string> claims = credential_to_claims(*credential_dict);
-    if (!std::ranges::all_of(claims, CanClaimBypassInterstitial)) {
+    std::optional<std::vector<std::string>> claims =
+        credential_to_claims(*credential_dict);
+    if (!claims || !std::ranges::all_of(*claims, CanClaimBypassInterstitial)) {
       return false;
     }
 
-    bool is_dpc = std::ranges::any_of(vct_values, IsDpcVctValue) ||
-                  IsDpcDocTypeValue(doctype_value);
-    if (is_dpc) {
+    // Require DPC credentials to match their format exclusively (all
+    // `vct_values` for SD-JWT with no `doctype_value`, or a DPC `doctype_value`
+    // for `mso_mdoc` with no `vct_values`) so a query cannot mix a DPC VCT with
+    // a non-DPC VCT (e.g. a PID) or spoof an mDL request with a DPC VCT.
+    bool is_dpc_sdjwt = is_sdjwt && doctype_value.empty() &&
+                        !vct_values.empty() &&
+                        std::ranges::all_of(vct_values, IsDpcVctValue);
+    bool is_dpc_mdoc = format && *format == kMdocFormat && vct_values.empty() &&
+                       IsDpcDocTypeValue(doctype_value);
+    if (is_dpc_sdjwt || is_dpc_mdoc) {
       continue;
     }
 
     bool is_mdl =
         format && *format == kMdocFormat && doctype_value == kMdlDocumentType;
     if (is_mdl) {
-      if (claims.empty()) {
+      if (claims->empty()) {
         return false;
       }
       continue;
     }
 
     if (is_sdjwt) {
-      if (claims.empty()) {
+      if (claims->empty()) {
         return false;
       }
       continue;
     }
 
-    // If it doesn't qualify as a DPC, MDL, SD-JWT, or phone-carrier bypass,
+    // If it doesn't qualify as a DPC, MDL, SD-JWT, or allowlisted VCT bypass,
     // it requires an interstitial.
     return false;
   }
@@ -405,33 +408,19 @@ DigitalIdentityRequestImpl::CreateInstance(
   // interface error occurs, the RenderFrameHost is deleted, or the
   // RenderFrameHost navigates to a new document.
   DigitalIdentityRequestImpl* instance =
-      new DigitalIdentityRequestImpl(host, std::move(receiver));
+      base::MakeSelfDeleting<DigitalIdentityRequestImpl>(host,
+                                                         std::move(receiver));
   return instance->weak_ptr_factory_.GetWeakPtr();
 }
 
 // static
-std::optional<InterstitialType>
-DigitalIdentityRequestImpl::ComputeInterstitialType(
+UiWarningLevel DigitalIdentityRequestImpl::ComputeUiWarningLevel(
     RenderFrameHost& render_frame_host,
-    const DigitalIdentityProvider* provider,
+    const DigitalIdentityProvider& provider,
     const std::vector<blink::mojom::DigitalCredentialGetRequestPtr>&
         digital_credential_requests) {
-  std::string dialog_param_value = base::GetFieldTrialParamValueByFeature(
-      features::kWebIdentityDigitalCredentials, kDigitalIdentityDialogParam);
-  if (dialog_param_value == kDigitalIdentityNoDialogParamValue) {
-    return std::nullopt;
-  }
-
-  if (dialog_param_value == kDigitalIdentityHighRiskDialogParamValue) {
-    return InterstitialType::kHighRisk;
-  }
-
-  if (dialog_param_value == kDigitalIdentityLowRiskDialogParamValue) {
-    return InterstitialType::kLowRisk;
-  }
-
-  if (provider->IsLastCommittedOriginLowRisk(render_frame_host)) {
-    return std::nullopt;
+  if (provider.IsLastCommittedOriginLowRisk(render_frame_host)) {
+    return UiWarningLevel::kHintNoIssues;
   }
   return std::ranges::all_of(
              digital_credential_requests,
@@ -439,14 +428,16 @@ DigitalIdentityRequestImpl::ComputeInterstitialType(
                return CanRequestCredentialBypassInterstitial(request->protocol,
                                                              request->data);
              })
-             ? std::nullopt
-             : std::optional<InterstitialType>(InterstitialType::kLowRisk);
+             ? UiWarningLevel::kHintNoIssues
+             : UiWarningLevel::kHintCaution;
 }
 
 DigitalIdentityRequestImpl::DigitalIdentityRequestImpl(
     RenderFrameHost& host,
-    mojo::PendingReceiver<blink::mojom::DigitalIdentityRequest> receiver)
-    : DocumentService(host, std::move(receiver)) {}
+    mojo::PendingReceiver<blink::mojom::DigitalIdentityRequest> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(host, std::move(receiver), key),
+      WebContentsObserver(WebContents::FromRenderFrameHost(&host)) {}
 
 DigitalIdentityRequestImpl::~DigitalIdentityRequestImpl() = default;
 
@@ -532,8 +523,8 @@ void DigitalIdentityRequestImpl::CompleteRequestWithStatus(
     return;
   }
   weak_ptr_factory_.InvalidateWeakPtrs();
-  update_interstitial_on_abort_callback_.Reset();
 
+  CHECK(callback_);
   if (response) {
     std::move(callback_).Run(status, response->protocol,
                              std::move(response->data));
@@ -622,9 +613,11 @@ void DigitalIdentityRequestImpl::Get(
     }
   }
 
+  // Reject requests on inactive (e.g. BFCached) frames early, before virtual
+  // wallets or `--use-fake-ui-for-digital-identity` can short-circuit UI.
   WebContents* web_contents =
       WebContents::FromRenderFrameHost(&render_frame_host());
-  if (!web_contents) {
+  if (!web_contents || !render_frame_host().IsActive()) {
     CompleteRequestWithError(RequestStatusForMetrics::kErrorOther);
     return;
   }
@@ -654,6 +647,8 @@ void DigitalIdentityRequestImpl::Get(
     return;
   }
 
+  // Require both active lifecycle state and `kVisible` page visibility before
+  // showing platform credential UI.
   if (!render_frame_host().IsActive() ||
       render_frame_host().GetVisibilityState() !=
           content::PageVisibilityState::kVisible) {
@@ -661,34 +656,14 @@ void DigitalIdentityRequestImpl::Get(
     return;
   }
 
-  std::optional<InterstitialType> interstitial_type = ComputeInterstitialType(
-      render_frame_host(), provider_.get(), digital_credential_requests);
+  UiWarningLevel warning_level = ComputeUiWarningLevel(
+      render_frame_host(), *provider_, digital_credential_requests);
 
   base::Value request_to_send = BuildGetRequest(digital_credential_requests);
-  if (!interstitial_type) {
-    OnInterstitialDone(std::move(request_to_send),
-                       RequestStatusForMetrics::kSuccess);
-    return;
-  }
-
-  // ShowDigitalIdentityInterstitial can synchronously exit fullscreen on
-  // Windows, which can spin the message loop and destroy the WebContents and
-  // `this`. We use a WeakPtr to guard against this potential UAF.
-  base::WeakPtr<DigitalIdentityRequestImpl> weak_this =
-      weak_ptr_factory_.GetWeakPtr();
-
-  auto abort_callback = provider_->ShowDigitalIdentityInterstitial(
-      *WebContents::FromRenderFrameHost(&render_frame_host()), origin(),
-      *interstitial_type,
-      base::BindOnce(&DigitalIdentityRequestImpl::OnInterstitialDone,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     std::move(request_to_send)));
-
-  if (!weak_this) {
-    return;
-  }
-
-  update_interstitial_on_abort_callback_ = std::move(abort_callback);
+  provider_->Get(WebContents::FromRenderFrameHost(&render_frame_host()),
+                 origin(), request_to_send, warning_level,
+                 base::BindOnce(&DigitalIdentityRequestImpl::CompleteRequest,
+                                weak_ptr_factory_.GetWeakPtr()));
 }
 
 void DigitalIdentityRequestImpl::Create(
@@ -740,9 +715,11 @@ void DigitalIdentityRequestImpl::Create(
     return;
   }
 
+  // Reject requests on inactive (e.g. BFCached) frames early, before virtual
+  // wallets or `--use-fake-ui-for-digital-identity` can short-circuit UI.
   WebContents* web_contents =
       WebContents::FromRenderFrameHost(&render_frame_host());
-  if (!web_contents) {
+  if (!web_contents || !render_frame_host().IsActive()) {
     CompleteRequestWithError(RequestStatusForMetrics::kErrorOther);
     return;
   }
@@ -779,6 +756,8 @@ void DigitalIdentityRequestImpl::Create(
     return;
   }
 
+  // Require both active lifecycle state and `kVisible` page visibility before
+  // showing platform credential UI.
   if (!render_frame_host().IsActive() ||
       render_frame_host().GetVisibilityState() !=
           content::PageVisibilityState::kVisible) {
@@ -798,31 +777,24 @@ void DigitalIdentityRequestImpl::Abort() {
     return;
   }
 
-  base::WeakPtr<DigitalIdentityRequestImpl> weak_this =
-      weak_ptr_factory_.GetWeakPtr();
-  if (update_interstitial_on_abort_callback_) {
-    std::move(update_interstitial_on_abort_callback_).Run();
-  }
-
-  if (!weak_this) {
-    return;
-  }
-
   CompleteRequestWithError(RequestStatusForMetrics::kErrorAborted);
 }
 
-void DigitalIdentityRequestImpl::OnInterstitialDone(
-    base::Value request_to_send,
-    RequestStatusForMetrics status_after_interstitial) {
-  if (status_after_interstitial != RequestStatusForMetrics::kSuccess) {
-    CompleteRequestWithError(status_after_interstitial);
+void DigitalIdentityRequestImpl::RenderFrameHostStateChanged(
+    RenderFrameHost* rfh,
+    RenderFrameHost::LifecycleState old_state,
+    RenderFrameHost::LifecycleState new_state) {
+  // Per the W3C Digital Credentials spec ("not fully active"), abort any
+  // pending request and reset `provider_` to dismiss platform UI as soon as the
+  // owning `render_frame_host()` (including nested subframes when an ancestor
+  // enters BFCache) is no longer active. Note that `PageVisibilityState`
+  // changes are intentionally not treated as cancellation because launching an
+  // opaque Wallet Activity on Android hides `ChromeActivity` while user
+  // mediation is in progress.
+  if (!callback_ || render_frame_host().IsActive()) {
     return;
   }
-
-  provider_->Get(WebContents::FromRenderFrameHost(&render_frame_host()),
-                 origin(), request_to_send,
-                 base::BindOnce(&DigitalIdentityRequestImpl::CompleteRequest,
-                                weak_ptr_factory_.GetWeakPtr()));
+  CompleteRequestWithError(RequestStatusForMetrics::kErrorAborted);
 }
 
 }  // namespace content

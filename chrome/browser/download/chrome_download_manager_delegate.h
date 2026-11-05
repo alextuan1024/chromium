@@ -29,7 +29,7 @@
 #include "components/download/public/common/download_target_info.h"
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/common/proto/download_file_types.pb.h"
+#include "components/safe_browsing/content/common/file_type_policies/proto/download_file_types.pb.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/download_manager_delegate.h"
 #include "extensions/buildflags/buildflags.h"
@@ -101,7 +101,7 @@ class ChromeDownloadManagerDelegate
   void SetDownloadManager(content::DownloadManager* dm);
 
 #if BUILDFLAG(IS_ANDROID)
-  void ShowDownloadDialog(gfx::NativeWindow native_window,
+  void ShowDownloadDialog(content::WebContents* web_contents,
                           int64_t total_bytes,
                           DownloadLocationDialogType dialog_type,
                           const base::FilePath& suggested_path,
@@ -188,6 +188,11 @@ class ChromeDownloadManagerDelegate
   // which ends up being handled by OpenDownload(), will open a download in the
   // browser if doing so is preferred.
   void OpenDownloadUsingPlatformHandler(download::DownloadItem* download);
+
+#if BUILDFLAG(IS_WIN)
+  // Shows the Windows "Open with" dialog for `download`.
+  void OpenDownloadWithDialog(download::DownloadItem* download);
+#endif
 
   DownloadPrefs* download_prefs() { return download_prefs_.get(); }
 
@@ -335,6 +340,14 @@ class ChromeDownloadManagerDelegate
       base::OnceClosure internal_complete_callback);
   void ShouldCompleteDownloadInternal(uint32_t download_id,
                                       base::OnceClosure user_complete_callback);
+
+#if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION) && BUILDFLAG(IS_ANDROID)
+  // Returns whether a confirmation dialog should be shown before completing a
+  // non-dangerous APK download on Android.
+  bool ShouldShowNonDangerousApkSafeBrowsingWarning(
+      download::DownloadItem* item,
+      const SafeBrowsingState& state) const;
+#endif
 
 #if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
   // Called when obfuscated download files are deobfuscated.

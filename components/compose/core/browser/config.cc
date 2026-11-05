@@ -92,9 +92,6 @@ Config::Config() {
   auto_submit_with_selection =
       base::FeatureList::IsEnabled(features::kComposeAutoSubmit);
 
-  is_nudge_shown_at_cursor =
-      base::FeatureList::IsEnabled(features::kEnableComposeNudgeAtCursor);
-
   saved_state_nudge_enabled =
       base::FeatureList::IsEnabled(features::kEnableComposeSavedStateNudge);
 
@@ -141,24 +138,6 @@ Config::Config() {
       features::kEnableComposeProactiveNudge,
       "proactive_nudge_text_change_count", proactive_nudge_text_change_count);
 
-  selection_nudge_enabled =
-      base::FeatureList::IsEnabled(features::kEnableComposeSelectionNudge);
-
-  selection_nudge_length =
-      base::saturated_cast<unsigned int>(GetFieldTrialParamByFeatureAsInt(
-          features::kEnableComposeSelectionNudge, "selection_nudge_length",
-          selection_nudge_length));
-
-  selection_nudge_delay =
-      base::Milliseconds(base::GetFieldTrialParamByFeatureAsInt(
-          features::kEnableComposeSelectionNudge,
-          "selection_nudge_delay_milliseconds",
-          selection_nudge_delay.InMilliseconds()));
-
-  selection_nudge_once_per_focus = base::GetFieldTrialParamByFeatureAsBool(
-      features::kEnableComposeSelectionNudge, "selection_nudge_once_per_focus",
-      selection_nudge_once_per_focus);
-
   nudge_field_change_event_max = GetFieldTrialParamByFeatureAsUnsignedInt(
       features::kEnableComposeProactiveNudge, "nudge_field_change_event_max",
       nudge_field_change_event_max);
@@ -171,16 +150,6 @@ Config::Config() {
           features::kEnableComposeProactiveNudge,
           "proactive_nudge_field_per_navigation",
           proactive_nudge_field_per_navigation);
-
-  saved_state_timeout =
-      base::Milliseconds(base::GetFieldTrialParamByFeatureAsInt(
-          features::kEnableComposeSavedStateNotification,
-          "saved_state_timeout_milliseconds",
-          saved_state_timeout.InMilliseconds()));
-
-  focus_lost_delay = base::Milliseconds(base::GetFieldTrialParamByFeatureAsInt(
-      features::kEnableComposeSavedStateNotification,
-      "focus_lost_delay_milliseconds", focus_lost_delay.InMilliseconds()));
 
   stay_in_window_bounds = base::GetFieldTrialParamByFeatureAsBool(
       features::kComposeUiParams, "stay_in_window_bounds",
@@ -197,23 +166,18 @@ Config::Config() {
           "request_latency_timeout_seconds",
           request_latency_timeout.InSeconds()));
 
-  // The "countries" field trial params must contain a list of lowercase
-  // country codes, following the format described in the documentation for the
+  enabled_countries =
+      base::flat_set<std::string>(DEFAULT_COMPOSE_ENABLED_COUNTRIES.begin(),
+                                  DEFAULT_COMPOSE_ENABLED_COUNTRIES.end());
+
+  // The "proactive_nudge_countries" field trial param must contain a list of
+  // lowercase country codes, following the format described in the
+  // documentation for the
   // variations::VariationsService::GetStoredPermanentCountry method. Commas,
   // spaces, tabs, new lines, single and double quotes are all treated as
   // separators and then discarded. A resulting empty list will be ignored in
   // favor of the default launched countries list.
   // To enable all countries, set it to have a single "*" element.
-  std::vector<std::string> enabled_countries_from_finch =
-      GetFieldTrialParamAsSplitString(features::kEnableCompose,
-                                      "enabled_countries");
-  enabled_countries =
-      (enabled_countries_from_finch.empty())
-          ? base::flat_set<std::string>(
-                DEFAULT_COMPOSE_ENABLED_COUNTRIES.begin(),
-                DEFAULT_COMPOSE_ENABLED_COUNTRIES.end())
-          : base::flat_set<std::string>(enabled_countries_from_finch);
-
   std::vector<std::string> proactive_nudge_countries_from_finch =
       GetFieldTrialParamAsSplitString(features::kEnableComposeProactiveNudge,
                                       "proactive_nudge_countries");
@@ -223,11 +187,6 @@ Config::Config() {
                 DEFAULT_PROACTIVE_NUDGE_ENABLED_COUNTRIES.begin(),
                 DEFAULT_PROACTIVE_NUDGE_ENABLED_COUNTRIES.end())
           : base::flat_set<std::string>(proactive_nudge_countries_from_finch);
-
-  session_max_allowed_lifetime =
-      base::Minutes(base::GetFieldTrialParamByFeatureAsInt(
-          features::kEnableCompose, "session_max_allowed_lifetime_minutes",
-          session_max_allowed_lifetime.InMinutes()));
 }
 
 Config::Config(const Config& other) = default;

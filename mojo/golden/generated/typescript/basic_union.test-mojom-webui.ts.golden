@@ -21,11 +21,24 @@ export enum EnumInUnion {
   kThat = 1,
 }
 
+export const ExtensibleEnumInUnionSpec: { $: mojo.internal.MojomType } = { $: mojo.internal.Enum() };
+
+export enum ExtensibleEnumInUnion {
+
+  MIN_VALUE = 0,
+  MAX_VALUE = 1,
+  kThis = 0,
+  kThat = 1,
+}
+
 
 export const StructInUnionSpec: { $: mojo.internal.MojomType } =
     { $: {} as unknown as mojo.internal.MojomType };
 
 export const BasicUnionSpec: { $: mojo.internal.MojomType } =
+    { $: {} as unknown as mojo.internal.MojomType };
+
+export const TrivialUnionSpec: { $: mojo.internal.MojomType } =
     { $: {} as unknown as mojo.internal.MojomType };
 
 
@@ -78,8 +91,12 @@ mojo.internal.Union(
         'ordinal': 1,
         'type': EnumInUnionSpec.$,
       },
-      'structValue': {
+      'extensibleEnumValue': {
         'ordinal': 2,
+        'type': ExtensibleEnumInUnionSpec.$,
+      },
+      'structValue': {
+        'ordinal': 3,
         'type': StructInUnionSpec.$,
       },
     });
@@ -87,12 +104,14 @@ mojo.internal.Union(
 export declare interface BasicUnion {
   numericValue?: number,
   enumValue?: EnumInUnion,
+  extensibleEnumValue?: ExtensibleEnumInUnion,
   structValue?: StructInUnion,
 }
 
 export enum BasicUnionFieldTags {
   NUMERIC_VALUE,
   ENUM_VALUE,
+  EXTENSIBLE_ENUM_VALUE,
   STRUCT_VALUE,
 }
 
@@ -103,8 +122,43 @@ export function whichBasicUnion(u: BasicUnion): BasicUnionFieldTags {
   if (u.enumValue !== null && u.enumValue !== undefined) {
     return BasicUnionFieldTags.ENUM_VALUE;
   }
+  if (u.extensibleEnumValue !== null && u.extensibleEnumValue !== undefined) {
+    return BasicUnionFieldTags.EXTENSIBLE_ENUM_VALUE;
+  }
   if (u.structValue !== null && u.structValue !== undefined) {
     return BasicUnionFieldTags.STRUCT_VALUE;
+  }
+  throw new Error("no union field has been set, this is an illegal state");
+}
+mojo.internal.Union(
+    TrivialUnionSpec.$, 'TrivialUnion',
+    {
+      'numericValue': {
+        'ordinal': 0,
+        'type': mojo.internal.Int32,
+      },
+      'enumValue': {
+        'ordinal': 1,
+        'type': EnumInUnionSpec.$,
+      },
+    });
+
+export declare interface TrivialUnion {
+  numericValue?: number,
+  enumValue?: EnumInUnion,
+}
+
+export enum TrivialUnionFieldTags {
+  NUMERIC_VALUE,
+  ENUM_VALUE,
+}
+
+export function whichTrivialUnion(u: TrivialUnion): TrivialUnionFieldTags {
+  if (u.numericValue !== null && u.numericValue !== undefined) {
+    return TrivialUnionFieldTags.NUMERIC_VALUE;
+  }
+  if (u.enumValue !== null && u.enumValue !== undefined) {
+    return TrivialUnionFieldTags.ENUM_VALUE;
   }
   throw new Error("no union field has been set, this is an illegal state");
 }

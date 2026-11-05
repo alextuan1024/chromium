@@ -64,7 +64,7 @@ public class HomeButtonCoordinator extends ToolbarChildButton implements TintObs
      * @param isHomepageMenuDisabledSupplier Supplier for whether the home button menu is enabled.
      * @param themeColorProvider a provider that notifies about theme changes.
      * @param incognitoStateProvider a provider that notifies about incognito state changes.
-     * @param homeActionModelSupplier Supplier for the Home action property model.
+     * @param actionRegistry The registry used to look up the Home button action, may be null.
      */
     public HomeButtonCoordinator(
             Context context,
@@ -163,6 +163,7 @@ public class HomeButtonCoordinator extends ToolbarChildButton implements TintObs
     public void onTintChanged(
             @Nullable ColorStateList tint,
             @Nullable ColorStateList activityFocusTint,
+            float unfocusedAlpha,
             int brandedColorScheme) {
         ImageViewCompat.setImageTintList(mHomeButton, tint);
     }

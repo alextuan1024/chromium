@@ -13,14 +13,14 @@ source_set("interactive_ui_tests") {
 
   deps = [
     "//ash",
-    "//chrome/app:generated_resources_grit",
+    "//ash/strings",
     "//chrome/test/base/ash/interactive:test_support",
     "//chrome/test/base/ash/interactive/network:test_support",
     "//chrome/test/base/ash/interactive/settings:test_support",
     "//chromeos/ash/components/dbus/shill",
     "//chromeos/ash/components/dbus/shill:test_support",
     "//chromeos/ash/components/network",
-    "//chromeos/strings:strings_grit",
+    "//chromeos/resources:strings",
     "//components/user_manager",
     "//content/test:test_support",
     "//crypto",

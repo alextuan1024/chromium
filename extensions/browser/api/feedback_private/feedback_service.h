@@ -16,6 +16,8 @@
 #include "build/chromeos_buildflags.h"
 #include "components/feedback/system_logs/system_logs_fetcher.h"
 #include "extensions/browser/api/feedback_private/feedback_private_delegate.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom-forward.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include <optional>
@@ -23,6 +25,7 @@
 
 #include "base/containers/span.h"
 #include "chromeos/ash/components/dbus/debug_daemon/binary_log_files_reader.h"
+#include "components/account_id/account_id.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace feedback {
@@ -52,6 +55,11 @@ struct FeedbackParams {
   base::TimeTicks form_submit_time;
 };
 
+struct FeedbackAttachments {
+  mojo::PendingRemote<blink::mojom::Blob> attached_file;
+  mojo::PendingRemote<blink::mojom::Blob> screenshot;
+};
+
 // Callback invoked when the feedback report is ready to be sent.
 // True will be passed to indicate that it is being successfully sent now,
 // and false to indicate that it will be delayed due to being offline.
@@ -71,6 +79,7 @@ class FeedbackService : public base::RefCountedThreadSafe<FeedbackService> {
   virtual void RedactThenSendFeedback(
       const FeedbackParams& params,
       scoped_refptr<feedback::FeedbackData> feedback_data,
+      FeedbackAttachments attachments,
       SendFeedbackCallback callback);
 
   FeedbackPrivateDelegate* GetFeedbackPrivateDelegate() { return delegate_; }
@@ -90,10 +99,12 @@ class FeedbackService : public base::RefCountedThreadSafe<FeedbackService> {
 
   void SendFeedback(const FeedbackParams& params,
                     scoped_refptr<feedback::FeedbackData> feedback_data,
+                    FeedbackAttachments attachments,
                     SendFeedbackCallback callback);
 
   void FetchAttachedFileAndScreenshot(
       scoped_refptr<feedback::FeedbackData> feedback_data,
+      FeedbackAttachments attachments,
       base::OnceClosure callback);
   void OnAttachedFileAndScreenshotFetched(
       const FeedbackParams& params,
@@ -148,6 +159,9 @@ class FeedbackService : public base::RefCountedThreadSafe<FeedbackService> {
       browser_context_;
   raw_ptr<FeedbackPrivateDelegate, AcrossTasksDanglingUntriaged> delegate_;
 #if BUILDFLAG(IS_CHROMEOS)
+  // The account of `browser_context_`, read up front because the context can
+  // be gone by the time the logs are fetched.
+  const AccountId account_id_;
   // Root file path for log files. It can be overwritten for testing purpose.
   base::FilePath log_file_root_{FILE_PATH_LITERAL("/var/log/")};
   feedback::BinaryLogFilesReader binary_log_files_reader_;

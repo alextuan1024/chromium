@@ -8,13 +8,16 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/scoped_observation.h"
 #include "ui/aura/client/capture_client.h"
 #include "ui/aura/client/cursor_client.h"
 #include "ui/aura/client/drag_drop_client_observer.h"
+#include "ui/aura/env.h"
 #include "ui/aura/window.h"
+#include "ui/aura/window_tracker.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/base/data_transfer_policy/data_transfer_policy_controller.h"
@@ -37,6 +40,12 @@ using ::ui::mojom::DragOperation;
 // RunMoveLoop is pumping tasks. On X11 that lets a compromised renderer steal
 // the global XdndSelection mid-drag. Mirrors desktop_drag_drop_client_win.cc.
 bool g_is_dragging = false;
+
+// Number of live ScopedSuppressForWindowMove() scopes. A counter (rather than
+// reusing `g_is_dragging` with base::AutoReset) allows independent scopes, such
+// as a caption click-hold and a move loop, to overlap and be destroyed in any
+// order without leaving drags permanently suppressed or prematurely enabled.
+int g_window_move_suppression_count = 0;
 
 // The minimum alpha required so we would treat the pixel as visible.
 constexpr uint32_t kMinAlpha = 32;
@@ -134,10 +143,18 @@ DesktopDragDropClientOzone::DesktopDragDropClientOzone(
     : root_window_(root_window), drag_handler_(drag_handler) {}
 
 // static
-base::AutoReset<bool>
+base::ScopedClosureRunner
 DesktopDragDropClientOzone::ScopedSuppressForWindowMove() {
-  DCHECK(!g_is_dragging);
-  return base::AutoReset<bool>(&g_is_dragging, true);
+  ++g_window_move_suppression_count;
+  return base::ScopedClosureRunner(base::BindOnce([] {
+    CHECK_GT(g_window_move_suppression_count, 0);
+    --g_window_move_suppression_count;
+  }));
+}
+
+// static
+bool DesktopDragDropClientOzone::IsDragInProgressOrSuppressedForTesting() {
+  return g_is_dragging || g_window_move_suppression_count > 0;
 }
 
 DesktopDragDropClientOzone::~DesktopDragDropClientOzone() {
@@ -158,20 +175,39 @@ DragOperation DesktopDragDropClientOzone::StartDragAndDrop(
   }
 
   // A renderer can send LocalFrameHost::StartDragging at any time, so reject
-  // (rather than CHECK) re-entrant drags from a second top-level window.
-  if (g_is_dragging) {
+  // (rather than CHECK) re-entrant drags from a second top-level window, and
+  // drags that would latch onto a user's in-progress window-move gesture.
+  if (g_is_dragging || g_window_move_suppression_count > 0) {
     return DragOperation::kNone;
   }
   base::AutoReset<bool> drag_scoper(&g_is_dragging, true);
 
-  DCHECK(!drag_context_);
+  CHECK(!drag_context_, base::NotFatalUntil::M163);
   drag_context_ = std::make_unique<DragContext>();
+
+  // This object is owned by a DesktopNativeWidgetAura that can be destroyed
+  // while this method is on the stack, which would also destroy this object
+  // and the windows passed in.  So keep track of whether everything is still
+  // alive after each call that may run nested event handlers.
+  auto alive = weak_factory_.GetWeakPtr();
+  aura::WindowTracker window_tracker({root_window, source_window});
 
   if (drag_handler_->ShouldReleaseCaptureForDrag(data.get())) {
     aura::Window* capture_window =
         aura::client::GetCaptureClient(root_window)->GetGlobalCaptureWindow();
     if (capture_window) {
+      // Releasing capture synchronously dispatches a capture-changed event and
+      // notifies capture observers, which may tear down UI, including this
+      // object and the windows involved in the drag.
       capture_window->ReleaseCapture();
+      if (!alive) {
+        return DragOperation::kNone;
+      }
+      if (!window_tracker.Contains(root_window) ||
+          !window_tracker.Contains(source_window)) {
+        drag_context_.reset();
+        return DragOperation::kNone;
+      }
     }
   }
 
@@ -194,19 +230,21 @@ DragOperation DesktopDragDropClientOzone::StartDragAndDrop(
     }
   }
 
-  // This object is owned by a DesktopNativeWidgetAura that can be destroyed
-  // during the drag loop, which will also destroy this object.  So keep track
-  // of whether we are still alive after the drag ends.
-  auto alive = weak_factory_.GetWeakPtr();
-
   const bool drag_succeeded = drag_handler_->StartDrag(
-      *data.get(), allowed_operations, source, cursor_client->GetCursor(),
+      *data.get(), allowed_operations, source,
+      cursor_client ? cursor_client->GetCursor() : gfx::NativeCursor(),
       !source_window->HasCapture(),
       base::BindOnce(&DesktopDragDropClientOzone::OnDragStarted,
                      weak_factory_.GetWeakPtr()),
       base::BindOnce(&DesktopDragDropClientOzone::OnDragFinished,
                      weak_factory_.GetWeakPtr()),
       GetLocationDelegate());
+
+  // The platform owns the pointer during the drag and may consume the button
+  // release that ends it (e.g. the X11 drag loop), which would otherwise leave
+  // aura::Env reporting the button as held after the drag.  If the release was
+  // dispatched, this is a no-op.
+  aura::Env::GetInstance()->set_mouse_button_flags(0);
 
   if (!alive) {
     return DragOperation::kNone;
@@ -231,12 +269,13 @@ DragOperation DesktopDragDropClientOzone::StartDragAndDrop(
 #if BUILDFLAG(IS_LINUX)
 void DesktopDragDropClientOzone::UpdateDragImage(const gfx::ImageSkia& image,
                                                  const gfx::Vector2d& offset) {
-  DCHECK(drag_handler_);
+  CHECK(drag_handler_, base::NotFatalUntil::M163);
   drag_handler_->UpdateDragImage(image, offset);
 }
 #endif  // BUILDFLAG(LINUX)
 
 void DesktopDragDropClientOzone::DragCancel() {
+  has_pending_drag_update_ = false;
   ResetDragDropTarget();
   selected_operation_ = DragOperation::kNone;
 
@@ -269,16 +308,26 @@ void DesktopDragDropClientOzone::OnDragEnter(const gfx::PointF& location,
   drag_location_ = location;
   available_operations_ = operations;
   modifiers_ = modifiers;
+  has_pending_drag_update_ = false;
 }
 
 void DesktopDragDropClientOzone::OnDragDataAvailable(
     std::unique_ptr<ui::OSExchangeData> data) {
-  DCHECK(data);
+  CHECK(data, base::NotFatalUntil::M163);
   data_to_drop_ = std::move(data);
+  const bool send_drag_update = std::exchange(has_pending_drag_update_, false);
+  auto alive = weak_factory_.GetWeakPtr();
   std::unique_ptr<ui::DropTargetEvent> event = UpdateTargetAndCreateDropEvent();
-  if (event) {
-    observers_.Notify(&aura::client::DragDropClientObserver::OnDragUpdated,
-                      *event);
+  if (!alive || !data_to_drop_ || !event) {
+    return;
+  }
+  observers_.Notify(&aura::client::DragDropClientObserver::OnDragUpdated,
+                    *event);
+  if (!alive || !data_to_drop_) {
+    return;
+  }
+  if (send_drag_update && delegate_) {
+    current_drag_update_info_ = delegate_->OnDragUpdated(*event);
   }
 }
 
@@ -289,8 +338,10 @@ int DesktopDragDropClientOzone::OnDragMotion(const gfx::PointF& location,
   available_operations_ = operations;
   modifiers_ = modifiers;
 
-  // If |data_to_drop_| doesn't have data, return that we accept everything.
+  // If |data_to_drop_| lacks data, accept copy/move optimistically and record
+  // that OnDragUpdated() must be sent once OnDragDataAvailable() arrives.
   if (!data_to_drop_) {
+    has_pending_drag_update_ = true;
     return ui::DragDropTypes::DRAG_COPY | ui::DragDropTypes::DRAG_MOVE;
   }
 
@@ -346,6 +397,7 @@ void DesktopDragDropClientOzone::OnDragDrop(int modifiers) {
 
 void DesktopDragDropClientOzone::OnDragLeave() {
   data_to_drop_.reset();
+  has_pending_drag_update_ = false;
   drag_location_ = {};
   available_operations_ = 0;
   modifiers_ = 0;
@@ -353,7 +405,8 @@ void DesktopDragDropClientOzone::OnDragLeave() {
 }
 
 void DesktopDragDropClientOzone::OnWindowDestroyed(aura::Window* window) {
-  DCHECK(entered_window_observation_.IsObservingSource(window));
+  CHECK(entered_window_observation_.IsObservingSource(window),
+        base::NotFatalUntil::M163);
 
   entered_window_observation_.Reset();
   delegate_ = nullptr;
@@ -377,7 +430,7 @@ void DesktopDragDropClientOzone::OnDragFinished(DragOperation operation) {
 
 std::unique_ptr<ui::DropTargetEvent>
 DesktopDragDropClientOzone::UpdateTargetAndCreateDropEvent() {
-  DCHECK(data_to_drop_);
+  CHECK(data_to_drop_, base::NotFatalUntil::M163);
 
   aura::Window* window = root_window_->GetEventHandlerForPoint(
       gfx::ToFlooredPoint(drag_location_));

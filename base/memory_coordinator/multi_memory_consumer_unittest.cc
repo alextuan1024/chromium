@@ -31,13 +31,13 @@ class MockMultiMemoryConsumer : public MultiMemoryConsumer {
 
 constexpr MemoryConsumerTraits kTestTraits(
     MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     MemoryConsumerTraits::InformationRetention::kLossless,
     MemoryConsumerTraits::ExecutionType::kSynchronous);
 
 constexpr MemoryConsumerTraits kActiveTraits(
     MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     MemoryConsumerTraits::InformationRetention::kLossless,
     MemoryConsumerTraits::ExecutionType::kAsynchronous);
 
@@ -141,30 +141,10 @@ TEST(MultiMemoryConsumerTest, DuplicateInterventionsCheck) {
   });
 }
 
-// A test registry that synchronously notifies the consumer with a non-default
-// limit during registration.
-class SyncNotifyingMemoryConsumerRegistry : public MemoryConsumerRegistry {
- public:
-  SyncNotifyingMemoryConsumerRegistry() { MemoryConsumerRegistry::Set(this); }
-  ~SyncNotifyingMemoryConsumerRegistry() override {
-    NotifyDestruction();
-    MemoryConsumerRegistry::Set(nullptr);
-  }
-
-  void OnMemoryConsumerAdded(uint32_t consumer_id,
-                             std::string_view consumer_name,
-                             MemoryConsumerTraits traits,
-                             MemoryConsumer* consumer) override {
-    NotifyUpdateMemoryLimitNoNotification(
-        consumer, MemoryLimit::ModeratePressureThreshold());
-  }
-
-  void OnMemoryConsumerRemoved(uint32_t consumer_id,
-                               MemoryConsumer* consumer) override {}
-};
-
 TEST(MultiMemoryConsumerTest, NoNotificationDuringConstruction) {
-  SyncNotifyingMemoryConsumerRegistry registry;
+  TestMemoryConsumerRegistry registry;
+  registry.NotifyUpdateMemoryLimit(MemoryLimit::ModeratePressureThreshold());
+
   MockMultiMemoryConsumer consumer;
 
   // We expect NO calls on the mock during construction.

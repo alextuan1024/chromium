@@ -1,3 +1,11 @@
 include_rules = [
-  "+components/browser_actuator",
+  "+components/browser_actuator/public",
+  "+components/stream_transport/internal/proto/transport_messages.pb.h",
 ]
+
+specific_include_rules = {
+  "browser_actuator_message_handler_unittest\\.cc": [
+    "+components/stream_transport/internal",
+    "+components/stream_transport/test_support",
+  ],
+}

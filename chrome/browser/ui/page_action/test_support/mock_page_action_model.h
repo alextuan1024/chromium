@@ -23,6 +23,8 @@ class MockPageActionModel : public PageActionModelInterface {
 
   MOCK_METHOD(actions::ActionId, GetActionId, (), (const, override));
   MOCK_METHOD(bool, GetVisible, (), (const, override));
+  MOCK_METHOD(bool, GetShouldAnimateVisibilityOut, (), (const, override));
+  MOCK_METHOD(bool, GetShouldAnimateVisibilityIn, (), (const, override));
   MOCK_METHOD(bool, IsChipShowing, (), (const, override));
   MOCK_METHOD(bool, ShouldShowSuggestionChip, (), (const, override));
   MOCK_METHOD(bool, GetShouldAnimateChipOut, (), (const, override));
@@ -75,6 +77,10 @@ class MockPageActionModel : public PageActionModelInterface {
               GetOverrideBackgroundColorId,
               (),
               (const, override));
+  MOCK_METHOD(std::optional<ui::ColorId>,
+              GetOverrideForegroundColorId,
+              (),
+              (const, override));
   MOCK_METHOD(void,
               AddObserver,
               (PageActionModelObserver * observer),
@@ -90,6 +96,10 @@ class MockPageActionModel : public PageActionModelInterface {
   MOCK_METHOD(void,
               SetShowRequested,
               (PageActionPassKey, bool requested),
+              (override));
+  MOCK_METHOD(void,
+              SetVisibilityConfig,
+              (PageActionPassKey, const PageActionVisibilityConfig& config),
               (override));
   MOCK_METHOD(void,
               SetShouldShowSuggestionChip,
@@ -127,6 +137,7 @@ class MockPageActionModel : public PageActionModelInterface {
               (PageActionPassKey, bool is_chip_showing),
               (override));
   MOCK_METHOD(void, SetDidAnimateImage, (PageActionPassKey), (override));
+  MOCK_METHOD(void, SetDidAnimateVisibility, (PageActionPassKey), (override));
   MOCK_METHOD(void,
               SetIsAnchoredMessageShowing,
               (PageActionPassKey, bool is_anchored_message_showing),
@@ -166,6 +177,11 @@ class MockPageActionModel : public PageActionModelInterface {
                std::optional<ui::ColorId> override_background_color_id),
               (override));
   MOCK_METHOD(void,
+              SetOverrideForegroundColorId,
+              (PageActionPassKey,
+               std::optional<ui::ColorId> override_foreground_color_id),
+              (override));
+  MOCK_METHOD(void,
               SetActionActive,
               (PageActionPassKey, bool is_active),
               (override));
@@ -177,6 +193,7 @@ class MockPageActionModel : public PageActionModelInterface {
               SetExemptFromOmniboxSuppression,
               (PageActionPassKey, bool is_exempt),
               (override));
+  MOCK_METHOD(bool, IsAffectedByOmniboxSuppression, (), (const, override));
   MOCK_METHOD(void,
               SetAnimationStyle,
               (PageActionPassKey, PageActionAnimationStyle style),

@@ -8,24 +8,44 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/property_registration.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
 
 namespace blink {
 
+// TODO(crbug.com/578573238): Consolidate these aliases. Keep in sync with
+// css_property_value_set.h for now.
+using PrivateNameMap = HashMap<AtomicString, AtomicString>;
+
 class CORE_EXPORT PropertyRegistry : public GarbageCollected<PropertyRegistry> {
  public:
+  static constexpr char kPrivatePropertyNamePrefix[] = "-ua-private-";
+
   using RegistrationMap =
       HeapHashMap<AtomicString, Member<PropertyRegistration>>;
 
   // Registers a property (CSS.registerProperty).
   void RegisterProperty(const AtomicString&, PropertyRegistration&);
-  // Registers a property (@property).
-  void DeclareProperty(const AtomicString&, PropertyRegistration&);
+  // Updates the @property declarations, preserving registrations created from
+  // the same rule when their descriptors are unchanged. Returns whether any
+  // declaration changed.
+  bool UpdateDeclaredProperties(RegistrationMap registrations);
 
-  // Removes all registrations originating from @property. Has no effect on
-  // properties originating from CSS.registerProperty.
-  void RemoveDeclaredProperties();
+  static AtomicString AllocatePrivatePropertyName();
+  // Registers a private property under a name from
+  // AllocatePrivatePropertyName().
+  void RegisterPrivateProperty(const AtomicString& authored_name,
+                               const AtomicString& private_name,
+                               const CSSSyntaxDefinition&);
+  const AtomicString& AuthoredPrivatePropertyName(
+      const AtomicString& private_name) const;
+  const PrivateNameMap& GetAuthoredPrivateNames() const {
+    return authored_private_names_;
+  }
+  const PropertyRegistration* PrivateRegistration(
+      const AtomicString& private_name) const;
+  PropertyRegistry* CopyPrivateRegistry() const;
 
   // Register property for devtools inspector.
   void AddRegistrationForInspector(const AtomicString&, PropertyRegistration&);
@@ -62,7 +82,8 @@ class CORE_EXPORT PropertyRegistry : public GarbageCollected<PropertyRegistry> {
   //
   // This means all registrations originating from CSS.registerProperty,
   // plus all registration originating from @property that don't conflict
-  // with any CSS.registerProperty-registrations.
+  // with any CSS.registerProperty-registrations. Private registrations are
+  // not exposed.
   //
   // https://drafts.css-houdini.org/css-properties-values-api-1/#determining-registration
   class CORE_EXPORT Iterator {
@@ -96,6 +117,7 @@ class CORE_EXPORT PropertyRegistry : public GarbageCollected<PropertyRegistry> {
   void Trace(Visitor* visitor) const {
     visitor->Trace(registered_properties_);
     visitor->Trace(declared_properties_);
+    visitor->Trace(private_registrations_);
   }
 
   // Whenever a registered custom property is referenced by anything using
@@ -108,6 +130,8 @@ class CORE_EXPORT PropertyRegistry : public GarbageCollected<PropertyRegistry> {
  private:
   RegistrationMap registered_properties_;
   RegistrationMap declared_properties_;
+  PrivateNameMap authored_private_names_;
+  RegistrationMap private_registrations_;
   unsigned registered_viewport_unit_flags_ = 0;
   unsigned declared_viewport_unit_flags_ = 0;
   size_t version_ = 0;

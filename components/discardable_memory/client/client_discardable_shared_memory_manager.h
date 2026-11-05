@@ -10,6 +10,7 @@
 #include <memory>
 #include <set>
 
+#include "base/byte_size.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/discardable_memory_allocator.h"
 #include "base/memory/post_delayed_memory_reduction_task.h"
@@ -54,10 +55,10 @@ class DISCARDABLE_MEMORY_EXPORT ClientDiscardableSharedMemoryManager
 
   // Overridden from base::DiscardableMemoryAllocator:
   std::unique_ptr<base::DiscardableMemory> AllocateLockedDiscardableMemory(
-      size_t size) override LOCKS_EXCLUDED(lock_);
+      base::ByteSize size) override LOCKS_EXCLUDED(lock_);
 
   // Overridden from base::DiscardableMemoryAllocator:
-  size_t GetBytesAllocated() const override LOCKS_EXCLUDED(lock_);
+  base::ByteSize GetAllocatedSize() const override LOCKS_EXCLUDED(lock_);
 
   // Overridden from base::DiscardableMemoryAllocator:
   // Release memory and associated resources that have been purged.
@@ -71,17 +72,8 @@ class DISCARDABLE_MEMORY_EXPORT ClientDiscardableSharedMemoryManager
   // Purge all unlocked memory that was allocated by this manager.
   void BackgroundPurge();
 
-  // Change the state of this to either backgrounded or foregrounded. These
-  // states should match the state that is found in |RenderThreadImpl|. We
-  // initially set the state to backgrounded, since we may not know the state we
-  // are in when we construct this. This avoids accidentally collecting data
-  // from this while we are in the background, at the cost of potentially losing
-  // some data near the time this is created.
-  void OnForegrounded();
-  void OnBackgrounded();
-
-  void SetBytesAllocatedLimitForTesting(size_t limit) {
-    bytes_allocated_limit_for_testing_ = limit;
+  void SetBytesAllocatedLimitForTesting(base::ByteSize limit) {
+    bytes_allocated_limit_for_testing_ = static_cast<size_t>(limit.InBytes());
   }
 
   // base::MemoryConsumer:
@@ -153,11 +145,6 @@ class DISCARDABLE_MEMORY_EXPORT ClientDiscardableSharedMemoryManager
     base::TimeTicks last_locked_ GUARDED_BY(manager_->lock_);
   };
 
-  struct Statistics {
-    size_t total_size;
-    size_t freelist_size;
-  };
-
   base::trace_event::MemoryAllocatorDump* CreateMemoryAllocatorDump(
       DiscardableSharedMemoryHeap::Span* span,
       const char* name,
@@ -211,12 +198,6 @@ class DISCARDABLE_MEMORY_EXPORT ClientDiscardableSharedMemoryManager
   std::set<raw_ptr<DiscardableMemoryImpl, SetExperimental>> allocated_memory_
       GUARDED_BY(lock_);
   size_t bytes_allocated_limit_for_testing_ = 0;
-
-  // Used in metrics to distinguish in-use consumers from background ones. We
-  // initialize this to false to avoid getting any data before we are certain
-  // we're in the foreground. This is parallel to what we do in
-  // RenderThreadImpl.
-  bool foregrounded_ = false;
 
   base::AsyncMemoryConsumerRegistration memory_consumer_registration_;
 

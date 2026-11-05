@@ -4,11 +4,14 @@
 
 #include "components/policy/core/common/cloud/cloud_policy_util.h"
 
+#include <string_view>
+
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
+#include "components/policy/core/common/cloud/network_name_cache.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "net/base/network_interfaces.h"
 
@@ -47,6 +50,7 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/feature_list.h"
 #include "base/notreached.h"
 #include "base/system/sys_info.h"
 #if BUILDFLAG(IS_WIN)
@@ -79,10 +83,28 @@
 #endif
 
 #if BUILDFLAG(IS_IOS)
+#include "base/feature_list.h"
 #include "base/ios/device_util.h"
+#include "components/policy/core/common/cloud/cloud_policy_util_ios.h"
+#endif
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/android_info.h"
+#include "base/android/device_info.h"
+#include "base/feature_list.h"
 #endif
 
 namespace policy {
+
+#if BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kReportAndroidMachineName, base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+BASE_FEATURE(kUseCachedNetworkName, base::FEATURE_ENABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_IOS)
+BASE_FEATURE(kIOSReportMachineName, base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_IOS)
 
 namespace em = enterprise_management;
 
@@ -95,11 +117,20 @@ const int kMinimumVersionForExtensionInstallPolicy = 146;
 std::string GetMachineName() {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_FUCHSIA)
   char hostname[HOST_NAME_MAX];
-  if (gethostname(hostname, HOST_NAME_MAX) == 0)  // Success.
+  if (gethostname(hostname, HOST_NAME_MAX) == 0) {  // Success.
     return hostname;
+  }
   return std::string();
 #elif BUILDFLAG(IS_IOS)
-  // Use the Vendor ID as the machine name.
+  if (base::FeatureList::IsEnabled(kIOSReportMachineName)) {
+    // Prefer the device name configured by the MDM administrator, if any,
+    // since the user-visible device name isn't accessible to the app.
+    if (std::string mdm_device_name = GetIOSManagedDeviceName();
+        !mdm_device_name.empty()) {
+      return mdm_device_name;
+    }
+  }
+  // Fall back to the Vendor ID as the machine name.
   return ios::device_util::GetVendorId();
 #elif BUILDFLAG(IS_MAC)
   // Do not use NSHost currentHost, as it's very slow. http://crbug.com/138570
@@ -108,14 +139,16 @@ std::string GetMachineName() {
       kCFAllocatorDefault, CFSTR("chrome_sync"), NULL, &context));
   base::apple::ScopedCFTypeRef<CFStringRef> machine_name(
       SCDynamicStoreCopyLocalHostName(store.get()));
-  if (machine_name.get())
+  if (machine_name.get()) {
     return base::SysCFStringRefToUTF8(machine_name.get());
+  }
 
   // Fall back to get computer name.
   base::apple::ScopedCFTypeRef<CFStringRef> computer_name(
       SCDynamicStoreCopyComputerName(store.get(), NULL));
-  if (computer_name.get())
+  if (computer_name.get()) {
     return base::SysCFStringRefToUTF8(computer_name.get());
+  }
 
   // If all else fails, return to using a slightly nicer version of the hardware
   // model. Warning: This will soon return just a useless "Mac" string.
@@ -133,13 +166,23 @@ std::string GetMachineName() {
   DWORD size = std::size(computer_name);
   if (::GetComputerNameW(computer_name, &size)) {
     std::string result;
-    bool conversion_successful = base::WideToUTF8(computer_name, size, &result);
+    bool conversion_successful =
+        base::WideToUTF8(std::wstring_view(computer_name, size), &result);
     DCHECK(conversion_successful);
     return result;
   }
   return std::string();
 #elif BUILDFLAG(IS_ANDROID)
-  return std::string();
+  if (!base::FeatureList::IsEnabled(kReportAndroidMachineName)) {
+    return std::string();
+  }
+  std::string device_name = base::android::device_info::device_name();
+  if (!device_name.empty()) {
+    return device_name;
+  }
+  // Fall back to the hardware model (`Build.MODEL`) when the user-configured
+  // device name (`Settings.Global.DEVICE_NAME`) is unset or inaccessible.
+  return base::android::android_info::model();
 #elif BUILDFLAG(IS_CHROMEOS)
   NOTREACHED();
 #else
@@ -173,8 +216,9 @@ std::string GetOSArchitecture() {
 std::string GetOSUsername() {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_APPLE)
   struct passwd* creds = getpwuid(getuid());
-  if (!creds || !creds->pw_name)
+  if (!creds || !creds->pw_name) {
     return std::string();
+  }
 
   return creds->pw_name;
 #elif BUILDFLAG(IS_WIN)
@@ -261,7 +305,8 @@ std::string GetDeviceFqdn() {
   if (::GetComputerNameExW(ComputerNameDnsFullyQualified, &result_wstr[0],
                            &size)) {
     std::string result;
-    if (base::WideToUTF8(result_wstr.data(), size, &result)) {
+    if (base::WideToUTF8(std::wstring_view(result_wstr).substr(0, size),
+                         &result)) {
       return result;
     }
   }
@@ -271,8 +316,20 @@ std::string GetDeviceFqdn() {
   return net::GetHostName();
 }
 
-std::string GetNetworkName() {
-  return net::GetWifiSSID();
+std::string GetNetworkName(NetworkNameCache* network_name_cache) {
+  if (!base::FeatureList::IsEnabled(kUseCachedNetworkName)) {
+#if BUILDFLAG(IS_WIN)
+    // On Windows 11 24H2+, the synchronous WLAN API calls made by
+    // `net::GetWifiSSID()` can hang the calling thread, so skip querying it
+    // when the `kUseCachedNetworkName` kill switch is disabled.
+    if (base::win::GetVersion() >= base::win::Version::WIN11_24H2) {
+      return std::string();
+    }
+#endif  // BUILDFLAG(IS_WIN)
+    return net::GetWifiSSID();
+  }
+  return network_name_cache ? network_name_cache->GetNetworkName()
+                            : std::string();
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -319,7 +376,6 @@ bool IsUserLevelPolicyType(const std::string& policy_type) {
   return policy_type == dm_protocol::GetChromeUserPolicyType() ||
          policy_type == dm_protocol::kChromeExtensionInstallUserCloudPolicyType;
 }
-
 
 std::string PolicyTypeLogPrefix(std::string_view policy_type,
                                 std::string_view settings_entity_id) {

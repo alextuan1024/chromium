@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -27,6 +28,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_process_host_observer.h"
 #include "content/public/browser/shared_worker_instance.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "media/mojo/mojom/video_decode_perf_history.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -35,10 +37,14 @@
 #include "mojo/public/cpp/bindings/unique_receiver_set.h"
 #include "net/base/network_isolation_key.h"
 #include "net/base/network_isolation_partition.h"
+#include "net/storage_access_api/status.h"
 #include "services/device/public/cpp/compute_pressure/buildflags.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/cpp/cross_origin_embedder_policy.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
+#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-forward.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/blob/blob_url_store.mojom-forward.h"
@@ -48,6 +54,7 @@
 #include "third_party/blink/public/mojom/loader/code_cache.mojom.h"
 #include "third_party/blink/public/mojom/loader/fetch_client_settings_object.mojom-forward.h"
 #include "third_party/blink/public/mojom/payments/payment_app.mojom-forward.h"
+#include "third_party/blink/public/mojom/security_context/outside_context_csp_violation_reporter.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_provider.mojom.h"
 #include "third_party/blink/public/mojom/webtransport/web_transport_connector.mojom.h"
 #include "third_party/blink/public/mojom/worker/shared_worker.mojom.h"
@@ -55,6 +62,7 @@
 #include "third_party/blink/public/mojom/worker/shared_worker_factory.mojom.h"
 #include "third_party/blink/public/mojom/worker/shared_worker_host.mojom.h"
 #include "third_party/blink/public/mojom/worker/worker_main_script_load_params.mojom.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
 #include "content/browser/compute_pressure/pressure_service_for_shared_worker.h"
@@ -96,7 +104,10 @@ class CONTENT_EXPORT SharedWorkerHost
       scoped_refptr<SiteInstanceImpl> site_instance,
       std::vector<network::mojom::ContentSecurityPolicyPtr>
           content_security_policies,
-      scoped_refptr<PolicyContainerHost> creator_policy_container_host);
+      scoped_refptr<PolicyContainerHost> creator_policy_container_host,
+      net::StorageAccessApiStatus storage_access_api_status,
+      base::flat_set<url::Origin> creator_cos_scope_ceiling = {},
+      WeakDocumentPtr creator_document = {});
 
   SharedWorkerHost(const SharedWorkerHost&) = delete;
   SharedWorkerHost& operator=(const SharedWorkerHost&) = delete;
@@ -113,16 +124,23 @@ class CONTENT_EXPORT SharedWorkerHost
   // worker main script by the browser process, sent to the renderer process,
   // and then used to load the script.
   //
+  // |outside_settings_reporter| is sent to the renderer process to report the
+  // violation that the worker detects while fetching with the outside settings
+  // object to the context that created the worker.
+  //
   // |client| is used to determine the IP address space of the worker if the
   // script is fetched from a URL with a special scheme known only to the
   // embedder.
   //
   // `result` contains the worker main script fetch result.
-  void Start(mojo::PendingRemote<blink::mojom::SharedWorkerFactory> factory,
-             blink::mojom::FetchClientSettingsObjectPtr
-                 outside_fetch_client_settings_object,
-             ContentBrowserClient* client,
-             WorkerScriptFetcherResult result);
+  void Start(
+      mojo::PendingRemote<blink::mojom::SharedWorkerFactory> factory,
+      blink::mojom::FetchClientSettingsObjectPtr
+          outside_fetch_client_settings_object,
+      mojo::PendingRemote<blink::mojom::OutsideContextCSPViolationReporter>
+          outside_settings_reporter,
+      ContentBrowserClient* client,
+      WorkerScriptFetcherResult result);
 
   void AllowFileSystem(const GURL& url,
                        base::OnceCallback<void(bool)> callback);
@@ -143,6 +161,8 @@ class CONTENT_EXPORT SharedWorkerHost
       mojo::PendingReceiver<blink::mojom::BlobURLStore> receiver);
   void CreateBucketManagerHost(
       mojo::PendingReceiver<blink::mojom::BucketManagerHost> receiver);
+  void CreateFileSystemAccessManager(
+      mojo::PendingReceiver<blink::mojom::FileSystemAccessManager> receiver);
   void CreateLockManager(
       mojo::PendingReceiver<blink::mojom::LockManager> receiver);
 
@@ -236,8 +256,14 @@ class CONTENT_EXPORT SharedWorkerHost
     worker_client_security_state_ = std::move(client_security_state);
   }
 
-  // Computes the IsolationInfo used for WebSocket connections from this worker.
-  net::IsolationInfo ComputeIsolationInfoForWebSocket() const;
+  // Computes the IsolationInfo used for network requests and code cache
+  // partitions from this worker. The SiteForCookies is nulled out when the
+  // worker requires cross-site request semantics for cookies (e.g. a worker in
+  // a third-party context, or one created with a first-party storage key via
+  // the Storage Access API), and the NetworkIsolationPartition is populated
+  // according to GetNetworkIsolationPartition().
+  net::IsolationInfo ComputeIsolationInfoForNetworkRequest(
+      bool is_websocket_request) const;
 
   base::WeakPtr<SharedWorkerHost> AsWeakPtr();
 
@@ -260,6 +286,17 @@ class CONTENT_EXPORT SharedWorkerHost
   const PolicyContainerPolicies& creator_policies() const {
     return creator_policy_container_host_->policies();
   }
+
+  const network::PermissionsPolicy* GetPermissionsPolicy() const {
+    return permissions_policy_.get();
+  }
+
+  bool IsFeatureEnabled(network::mojom::PermissionsPolicyFeature feature) const;
+
+  const base::flat_set<url::Origin>& creator_cos_scope_ceiling() const {
+    return creator_cos_scope_ceiling_;
+  }
+  WeakDocumentPtr creator_document() const { return creator_document_; }
 
   void ReportNoBinderForInterface(const std::string& error);
 
@@ -320,6 +357,8 @@ class CONTENT_EXPORT SharedWorkerHost
   void OnReportException(
       blink::mojom::SharedWorkerExceptionDetailsPtr details) override;
   void OnFeatureUsed(blink::mojom::WebFeature feature) override;
+  void SetPermissionsPolicyHeader(const network::ParsedPermissionsPolicy&
+                                      permissions_policy_header) override;
 
   // RenderProcessHostObserver methods:
   void RenderProcessHostDestroyed(RenderProcessHost* host) override;
@@ -413,8 +452,16 @@ class CONTENT_EXPORT SharedWorkerHost
 
   const base::UnguessableToken reporting_source_;
 
-  // Set at construction time and should not change afterwards.
+  // Set at construction time and should not change afterwards. Never null.
   const scoped_refptr<PolicyContainerHost> creator_policy_container_host_;
+
+  // The Cross-Origin-Storage-Allow-Origin ceiling for the worker's creator
+  // document (WICG § 7). Fixed at creation time.
+  const base::flat_set<url::Origin> creator_cos_scope_ceiling_;
+
+  // Weak handle to the document that created this worker (for DevTools console
+  // warning reporting).
+  const WeakDocumentPtr creator_document_;
 
   // The worker's own client security state, applied to subresource fetches.
   // This is nullptr until it is computed in `DidStartScriptLoad()`.
@@ -425,6 +472,13 @@ class CONTENT_EXPORT SharedWorkerHost
   std::unique_ptr<DocumentIsolationPolicyReporter> dip_reporter_;
 
   const base::UnguessableToken network_restrictions_id_;
+
+  // `kAccessViaAPI` if this worker was created via
+  // `StorageAccessHandle.SharedWorker()`. Sent to the renderer so that the
+  // worker's subresource requests are eligible to use the storage-access grant.
+  const net::StorageAccessApiStatus storage_access_api_status_;
+
+  std::unique_ptr<network::PermissionsPolicy> permissions_policy_;
 
   base::WeakPtrFactory<SharedWorkerHost> weak_factory_{this};
 };

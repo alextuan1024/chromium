@@ -10,7 +10,9 @@
 #include "ash/webui/common/backend/accelerator_fetcher.h"
 #include "ash/webui/common/backend/shortcut_input_provider.h"
 #include "ash/webui/eche_app_ui/eche_app_manager.h"
+#include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_forward.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/device/display_settings/display_settings_provider.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/device/input_device_settings/input_device_settings_provider.h"
@@ -25,6 +27,14 @@ namespace content {
 class WebUI;
 class WebUIDataSource;
 }  // namespace content
+
+namespace metrics {
+class MetricsService;
+}  // namespace metrics
+
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
 
 namespace policy {
 class BrowserPolicyConnectorAsh;
@@ -49,6 +59,10 @@ class MultiDeviceSetupClient;
 
 namespace phonehub {
 class PhoneHubManager;
+}
+
+namespace system {
+class TimeZoneResolverManager;
 }
 
 namespace settings {
@@ -91,12 +105,26 @@ class SettingsUserActionTracker;
 //     and the settings app (JS), via content::WebUIMessageHandler objects.
 class OsSettingsManager : public KeyedService {
  public:
-  // `local_state`, `application_locale_storage`, and
-  // `browser_policy_connector_ash` must be non-null and must outlive `this`.
+  // TODO(crbug.com/558489113): Revisit callback usage once `MetricsService`
+  // lifetime is resolved to inject `raw_ref`/`raw_ptr` directly.
+  // NOTE: The getter-callback pattern should be avoided if possible and is used
+  // here for `MetricsService` only as an exception (destroyed before
+  // `KeyedService`s). Do NOT apply this pattern to other dependencies without
+  // thoroughly investigating their lifetimes and alternatives first.
+  using MetricsServiceGetter =
+      base::RepeatingCallback<::metrics::MetricsService*()>;
+
+  // `local_state`, `application_locale_storage`,
+  // `browser_policy_connector_ash`, and `timezone_resolver_manager` must be
+  // non-null and must outlive `this`.
+  // `metrics_service_getter` and `url_loader_factory` must be non-null.
   OsSettingsManager(
       PrefService* local_state,
       const ApplicationLocaleStorage* application_locale_storage,
+      MetricsServiceGetter metrics_service_getter,
       policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+      system::TimeZoneResolverManager* timezone_resolver_manager,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       Profile* profile,
       local_search_service::LocalSearchServiceProxy* local_search_service_proxy,
       multidevice_setup::MultiDeviceSetupClient* multidevice_setup_client,

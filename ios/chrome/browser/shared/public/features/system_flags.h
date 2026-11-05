@@ -122,6 +122,11 @@ std::optional<int> GetFirstRunRecency();
 // switches, but the former takes precedence.
 std::string GetSegmentForForcedDeviceSwitcherExperience();
 
+// Returns whether the forced device switcher segment in Experimental Settings
+// or command-line flags is `AndroidPhone`, or `std::nullopt` if no forced
+// segment is configured.
+std::optional<bool> IsForcedDeviceSwitcherAndroidPhone();
+
 // Returns the selected shopper segment the user wants to simulate as a string.
 // The string should either be nil, "ShoppingUser", or "Other". The value could
 // be set both from Experimental Settings and command line switches, but the
@@ -145,12 +150,13 @@ bool ShouldIgnoreHistorySyncDeclineLimits();
 // Returns `std::nullopt` if no override is specified.
 std::optional<int> GetForcedInactivityThresholdForSafetyCheckNotifications();
 
-// Returns the forced state of the Tips (Magic Stack) module.
-std::optional<int> GetForcedTipsMagicStackState();
-
 // Whether the Lens Shop state for Tips (Magic Stack) should display a product
 // image.
 bool ShouldDisplayLensShopTipWithImage();
+
+// Returns true if the Magic Stack Tips state should be reset on startup.
+// Calling this method resets the flag to false.
+bool ShouldResetMagicStackTipsState();
 
 // Whether Inactive Tabs should be in Demo mode, where tabs are
 // considered inactive after a minute.
@@ -186,18 +192,6 @@ NSString* GetCobrowseGwsURL();
 // Returns true if Composebox AIM eligibility should be disabled.
 bool ShouldForceDisableComposeboxAIM();
 
-// Returns true if Composebox Create Images eligibility should be disabled.
-bool ShouldForceDisableComposeboxCreateImages();
-
-// Returns true if Canvas eligibility should be disabled.
-bool ShouldForceDisableComposeboxCanvas();
-
-// Returns true if Deep Search eligibility should be disabled.
-bool ShouldForceDisableComposeboxDeepSearch();
-
-// Returns true if Composebox Pdf Upload eligibility should be disabled.
-bool ShouldForceDisableComposeboxPdfUpload();
-
 // Returns true if the Catalog items should be shown in Settings. Always true
 // in debug builds.
 bool ShouldShowCatalogItems();
@@ -213,6 +207,44 @@ int GetForcedPushNotificationType();
 
 // Returns the delay in seconds before triggering the forced push notification.
 int GetForcedPushNotificationDelay();
+
+// The forced state of Universal Opt-Out eligibility from experimental settings.
+enum class UniversalOptOutEligibilityOverride {
+  kDefault = 0,
+  kForcedOn = 1,
+  kForcedOff = 2,
+};
+
+// Returns the forced state of Universal Opt-Out eligibility.
+UniversalOptOutEligibilityOverride GetUniversalOptOutEligibilityOverride();
+
+// Key in NSUserDefaults for simulated web extension loading delay and failure.
+extern NSString* const kWebExtensionLoadDelay;
+
+// Values for `kWebExtensionLoadDelay` in NSUserDefaults.
+extern NSString* const kWebExtensionLoadDelayNoDelayFail;
+extern NSString* const kWebExtensionLoadDelay1s;
+extern NSString* const kWebExtensionLoadDelay1sFail;
+extern NSString* const kWebExtensionLoadDelay5s;
+extern NSString* const kWebExtensionLoadDelay5sFail;
+
+// Returns the simulated delay for loading the web extension.
+base::TimeDelta GetWebExtensionLoadDelay();
+
+// Whether loading the web extension should simulate a failure.
+bool ShouldWebExtensionLoadFail();
+
+// Returns true if the web extension load delay experimental flag is set to
+// default.
+bool IsWebExtensionLoadDelayDefault();
+
+// Whether App Switcher AI summarization external URL testing is enabled.
+bool IsAppSwitcherAISummarizationTestingExternalURLEnabled();
+
+// Whether the geolocation permission prompt frequency restriction should be
+// bypassed for the current app session. Returns true by default on Canary
+// channel.
+bool ShouldBypassGeolocationPromptRestriction();
 
 }  // namespace experimental_flags
 

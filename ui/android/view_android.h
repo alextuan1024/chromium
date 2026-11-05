@@ -94,6 +94,8 @@ class UI_ANDROID_EXPORT ViewAndroid {
     void TransferViewAndDelegateFrom(ScopedAnchorView& other);
 
     // Default copy/assign disabled by move constructor.
+
+    bool has_view_ = false;
   };
 
   enum class LayoutType {
@@ -208,10 +210,12 @@ class UI_ANDROID_EXPORT ViewAndroid {
   // This may return null.
   base::android::ScopedJavaLocalRef<jobject> GetContainerView();
 
-  // Return the location of the container view in physical pixels.
+  // Returns the location of the container view in physical pixels. Must be
+  // called on the UI thread.
   gfx::Point GetLocationOfContainerViewInWindow();
 
-  // Return the location of the point relative to screen coordinate in pixels.
+  // Returns the location of the point relative to screen coordinates in pixels.
+  // Must be called on the UI thread.
   gfx::PointF GetLocationOnScreen(float x, float y);
 
   // ViewAndroid does not own |observer|s.
@@ -246,8 +250,6 @@ class UI_ANDROID_EXPORT ViewAndroid {
   }
 
   void NotifyVirtualKeyboardOverlayRect(const gfx::Rect& keyboard_rect);
-
-  void ShowInterestInElement(int);
 
   void SetLayoutForTesting(int x, int y, int width, int height);
 
@@ -346,7 +348,7 @@ class UI_ANDROID_EXPORT ViewAndroid {
   // child addition, removal, or reordering during event dispatch). Active
   // iterators register themselves in `active_iters_` so mutating operations can
   // update them in-place, preventing UAF and iterator invalidation.
-  class ScopedChildrenIter : public base::LinkNode<ScopedChildrenIter> {
+  class ScopedChildrenIter : public base::SafeLinkNode<ScopedChildrenIter> {
    public:
     enum class IterationType {
       kForward,
@@ -371,19 +373,18 @@ class UI_ANDROID_EXPORT ViewAndroid {
 
     raw_ptr<ViewAndroid> view_;
     IterationType type_;
-    std::list<raw_ptr<ViewAndroid, CtnExperimental>>::iterator it_;
+    std::list<raw_ptr<ViewAndroid>>::iterator it_;
   };
 
   // Safely advances any active iterators currently pointing to `child_it`
   // before a mutation (e.g. Remove, MoveToFront) changes the list.
-  void StepIteratorsOver(
-      std::list<raw_ptr<ViewAndroid, CtnExperimental>>::iterator child_it);
+  void StepIteratorsOver(std::list<raw_ptr<ViewAndroid>>::iterator child_it);
 
-  std::list<raw_ptr<ViewAndroid, CtnExperimental>> children_;
+  std::list<raw_ptr<ViewAndroid>> children_;
 
   // Tracks all active iterators traversing the `children_` list, allowing
   // real-time updates when the list structure changes (e.g. RemoveChild).
-  base::LinkedList<ScopedChildrenIter> active_iters_;
+  base::SafeLinkedList<ScopedChildrenIter> active_iters_;
 
   base::ObserverList<ViewAndroidObserver>::Unchecked observer_list_;
   scoped_refptr<cc::slim::Layer> layer_;
@@ -417,6 +418,7 @@ class UI_ANDROID_EXPORT ViewAndroid {
   HitTestCallback hit_test_callback_;
 
   bool controls_resize_view_ = false;
+  bool has_delegate_ = false;
 
   // Whether the view is showing. This is used to check if the view is eligible
   // for a Check Hit.

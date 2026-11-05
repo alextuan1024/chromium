@@ -5,10 +5,11 @@
 #include "third_party/blink/renderer/core/intersection_observer/intersection_geometry.h"
 
 #include <optional>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
+#include "third_party/blink/renderer/core/dom/slot_assignment_engine.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -168,7 +169,7 @@ VisibilityInfo ComputeVisibilityInfo(
     HitTestResult result(target->HitTestForOcclusion(
         rect, base::BindRepeating(hit_node_cb.value(), rect)));
     const HitTestResult::NodeSet& nodes = result.ListBasedTestResult();
-    for (const auto& hit_node : base::Reversed(nodes)) {
+    for (const auto& hit_node : std::views::reverse(nodes)) {
       // If the `target` itself or any of its child nodes is in the hit test
       // results, then the `target` is visible/unoccluded enough to be hit.
       if (hit_node == target->GetNode() ||
@@ -228,7 +229,7 @@ IntersectionGeometry::RootGeometry::RootGeometry(const LayoutObject* root,
       !root->IsBox()) {
     return;
   }
-  zoom = root->StyleRef().EffectiveZoom();
+  zoom = root->Style().EffectiveZoom();
   pre_margin_local_root_rect = InitializeRootRect(root);
   UpdateMargin(margin);
   root_to_view_transform = ObjectToViewTransform(*root);
@@ -269,6 +270,9 @@ IntersectionGeometry::IntersectionGeometry(
     CachedRects* cached_rects,
     std::optional<HitNodeCb> hit_node_cb)
     : flags_(flags), hit_node_cb_(std::move(hit_node_cb)) {
+  if (flags_.Has(kStaleGeometry)) {
+    return;
+  }
   flags_.RetainAll(
       Flags::FromRange(kConstructorFlagFirst, kConstructorFlagLast));
   // Only one of root_margin or target_margin can be specified.
@@ -299,9 +303,14 @@ IntersectionGeometry::RootAndTarget::RootAndTarget(
     const Node* root_node,
     const Element& target_element,
     bool has_target_margin,
-    bool has_scroll_margin)
-    : target(GetTargetLayoutObject(target_element)),
-      root(target ? GetRootLayoutObject(root_node) : nullptr) {
+    bool has_scroll_margin) {
+  if (root_node && root_node->GetDocument().GetFrame() !=
+                       target_element.GetDocument().GetFrame()) {
+    relationship = kInvalid;
+    return;
+  }
+  target = GetTargetLayoutObject(target_element);
+  root = target ? GetRootLayoutObject(root_node) : nullptr;
   ComputeRelationship(!root_node, has_target_margin, has_scroll_margin);
 }
 
@@ -320,8 +329,13 @@ const LayoutObject* IntersectionGeometry::GetTargetLayoutObject(
     return nullptr;
   }
   // If the target is inside a locked subtree, it isn't ever visible.
-  if (target->GetFrameView()->IsDisplayLocked() ||
-      DisplayLockUtilities::IsInLockedSubtreeCrossingFrames(target_element))
+  if (target->GetFrameView()->IsDisplayLockThrottled()) [[unlikely]] {
+    return nullptr;
+  }
+  CHECK(!target_element.GetDocument()
+             .GetSlotAssignmentEngine()
+             .HasPendingSlotAssignmentRecalc());
+  if (DisplayLockUtilities::IsInLockedSubtreeCrossingFrames(target_element))
       [[unlikely]] {
     return nullptr;
   }
@@ -393,14 +407,6 @@ void IntersectionGeometry::RootAndTarget::ComputeRelationship(
       // get populated.
       return;
     }
-  }
-
-  if (target->GetFrame() != root->GetFrame() && !root_is_implicit) {
-    // The case of different frame with implicit root has been covered by the
-    // previous condition.
-    // The target and the explicit root are required to be in the same frame.
-    relationship = kInvalid;
-    return;
   }
 
   bool has_intermediate_scrollers = false;
@@ -809,7 +815,7 @@ bool IntersectionGeometry::ApplyClip(const LayoutObject* target,
         // If the root is scrollable, apply the scroll margin to inflate the
         // root_clip_rect.
         ApplyMargin(root_clip_rect, scroll_margin,
-                    root->StyleRef().EffectiveZoom(), root_clip_rect.size());
+                    root->Style().EffectiveZoom(), root_clip_rect.size());
       }
 
       intersection_rect = unclipped_intersection_rect;

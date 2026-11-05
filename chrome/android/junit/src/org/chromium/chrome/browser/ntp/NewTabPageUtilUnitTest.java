@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import android.content.Context;
 import android.content.res.Resources;
+import android.os.Build;
 import android.view.ContextThemeWrapper;
 import android.view.View;
 import android.view.ViewGroup.MarginLayoutParams;
@@ -21,16 +22,23 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.annotation.Config;
 
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.ntp.NewTabPageUtils.LayoutType;
 import org.chromium.chrome.browser.ntp.NewTabPageUtils.PaddingStyle;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.components.browser_ui.widget.displaystyle.HorizontalDisplayStyle;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig.DisplayStyle;
@@ -44,6 +52,8 @@ public class NewTabPageUtilUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     private static final String PADDING_STYLE_PARAM = "padding_style";
+
+    @Mock private EdgeToEdgeController mEdgeToEdgeController;
 
     private Context mContext;
     private View mView;
@@ -137,6 +147,8 @@ public class NewTabPageUtilUnitTest {
     @Test
     public void testGetPaddingStyleForAurora() {
         // Default should be DEFAULT.
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA, PADDING_STYLE_PARAM, PaddingStyle.DEFAULT);
         assertEquals(PaddingStyle.DEFAULT, NewTabPageUtils.getPaddingStyleForAurora());
 
         FeatureOverrides.overrideParam(
@@ -160,6 +172,8 @@ public class NewTabPageUtilUnitTest {
                 resources.getDimensionPixelSize(R.dimen.ntp_section_top_margin_small);
 
         // Default should be ntp_section_top_margin.
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA, PADDING_STYLE_PARAM, PaddingStyle.DEFAULT);
         assertEquals(expectedDefaultMargin, NewTabPageUtils.getNtpSectionPaddingPx(resources));
 
         FeatureOverrides.overrideParam(
@@ -173,6 +187,87 @@ public class NewTabPageUtilUnitTest {
         FeatureOverrides.overrideParam(
                 ChromeFeatureList.NTP_AURORA, PADDING_STYLE_PARAM, PaddingStyle.LARGE);
         assertEquals(expectedSmallMargin, NewTabPageUtils.getNtpSectionPaddingPx(resources));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.NTP_AURORA_V2)
+    public void testIsComposeplateRemovedInAuroraV2_Disabled() {
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.INSIDE_MVT);
+        assertFalse(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.REMOVE);
+        assertFalse(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA, ChromeFeatureList.NTP_AURORA_V2})
+    public void testIsComposeplateRemovedInAuroraV2() {
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.DEFAULT);
+        assertFalse(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.BESIDE_MVT);
+        assertFalse(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.INSIDE_MVT);
+        assertTrue(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.NTP_AURORA_V2,
+                ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE,
+                LayoutType.REMOVE);
+        assertTrue(NewTabPageUtils.isComposeplateRemovedInAuroraV2());
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R)
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testShouldConsumeTopInset_TopEdgeToEdgeEnabled() {
+        assertTrue(EdgeToEdgeUtils.isTopEdgeToEdgeEnabled());
+        assertFalse(NewTabPage.shouldConsumeTopInset(50, /* controller= */ null));
+        assertFalse(NewTabPage.shouldConsumeTopInset(0, mEdgeToEdgeController));
+
+        when(mEdgeToEdgeController.isDrawingToTopEdge()).thenReturn(true);
+        when(mEdgeToEdgeController.tabShouldDrawFullTopEdgeToEdge()).thenReturn(true);
+        assertTrue(NewTabPage.shouldConsumeTopInset(50, mEdgeToEdgeController));
+
+        // Status indicator visible: both states false.
+        when(mEdgeToEdgeController.isDrawingToTopEdge()).thenReturn(false);
+        when(mEdgeToEdgeController.tabShouldDrawFullTopEdgeToEdge()).thenReturn(false);
+        assertFalse(NewTabPage.shouldConsumeTopInset(50, mEdgeToEdgeController));
+
+        // Opted-in web tab with top scalp visible: isDrawingToTopEdge() true, full false.
+        when(mEdgeToEdgeController.isDrawingToTopEdge()).thenReturn(true);
+        assertFalse(NewTabPage.shouldConsumeTopInset(50, mEdgeToEdgeController));
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R)
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/false")
+    public void testShouldConsumeTopInset_RefactorOnlyArm() {
+        assertFalse(EdgeToEdgeUtils.isTopEdgeToEdgeEnabled());
+        assertTrue(EdgeToEdgeUtils.isEdgeToEdgeRefactorEnabled());
+
+        when(mEdgeToEdgeController.isDrawingToTopEdge()).thenReturn(true);
+        assertTrue(NewTabPage.shouldConsumeTopInset(50, mEdgeToEdgeController));
+        assertFalse(NewTabPage.shouldConsumeTopInset(0, mEdgeToEdgeController));
+
+        when(mEdgeToEdgeController.isDrawingToTopEdge()).thenReturn(false);
+        assertFalse(NewTabPage.shouldConsumeTopInset(50, mEdgeToEdgeController));
     }
 
     private void testUpdateTilesLayoutTopMargin_shouldNotShowLogoImpl(

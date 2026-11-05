@@ -9,9 +9,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
+#include "base/functional/callback.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
@@ -26,6 +29,14 @@ namespace critical_actions {
 // backend thread.
 class CriticalActionDatabase {
  public:
+  enum class InitStatus {
+    kOk,
+    kBusyTimeout,
+    kError,
+  };
+
+  static constexpr base::TimeDelta kDefaultBusyTimeout = base::Seconds(1);
+
   explicit CriticalActionDatabase(const base::FilePath& db_path);
   CriticalActionDatabase(const CriticalActionDatabase&) = delete;
   CriticalActionDatabase& operator=(const CriticalActionDatabase&) = delete;
@@ -33,8 +44,7 @@ class CriticalActionDatabase {
 
   // Opens/initializes the database. Main entry point on the backend thread.
   // Performs the table and index initialization inside a transaction.
-  // Returns true on success.
-  bool Init();
+  InitStatus Init(base::TimeDelta busy_timeout = kDefaultBusyTimeout);
 
   // Adds a new critical action record to the database.
   // Returns true if successfully added, or false if an entry with the same ID
@@ -42,10 +52,10 @@ class CriticalActionDatabase {
   bool AddCriticalAction(const CriticalActionEntry& entry);
 
   // Associates conversation_id with all critical actions matching
-  // actor_task_ids. Returns true if successfully updated, or false on
+  // critical_action_ids. Returns true if successfully updated, or false on
   // database error.
   bool SetCriticalActionsConversationId(
-      const std::vector<std::string>& actor_task_ids,
+      const std::vector<std::string>& critical_action_ids,
       std::string_view conversation_id);
 
   // Retrieves a critical action record by its ID.
@@ -55,7 +65,8 @@ class CriticalActionDatabase {
 
   // Retrieves critical action records matching the given `options`.
   // Returns a list of matching critical action entries, sorted by timestamp
-  // descending.
+  // descending. `options.visit_ids` must not contain duplicates, as IDs split
+  // across batched queries would return duplicate entries.
   std::vector<CriticalActionEntry> GetCriticalActions(
       const CriticalActionQueryOptions& options);
 
@@ -82,6 +93,12 @@ class CriticalActionDatabase {
   // Exposes underlying database for testing or verification.
   sql::Database& GetDBForTesting() { return db_; }
 
+  // Registers a callback invoked before each SQLITE_BUSY retry sleep in Init().
+  void SetBusyRetryCallbackForTesting(base::RepeatingClosure callback) {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    busy_retry_callback_for_testing_ = std::move(callback);
+  }
+
   // Generates a comma-separated list of placeholder question marks for SQL
   // parameterized queries, e.g. "?, ?, ?". Returns an empty string if `count`
   // is 0.
@@ -100,14 +117,25 @@ class CriticalActionDatabase {
       std::optional<base::Time> begin_time,
       std::optional<base::Time> end_time);
 
-  // Builds the SQL query string for `GetCriticalActions` given `options`.
+  // Builds the SQL query string for `GetCriticalActions` given `options` and
+  // `batch_visit_ids_count` placeholders for the visit_id IN (...) clause.
   static std::string BuildGetCriticalActionsQuery(
-      const CriticalActionQueryOptions& options);
+      const CriticalActionQueryOptions& options,
+      size_t batch_visit_ids_count);
 
  private:
-  // Binds the filter values from `options` into `statement`.
+  // Executes a single SELECT query using the filters in `options` and the
+  // given batch_visit_ids (where batch_visit_ids.size() <= kMaxBatchSize).
+  std::vector<CriticalActionEntry> GetCriticalActionsBatch(
+      const CriticalActionQueryOptions& options,
+      base::span<const int64_t> batch_visit_ids);
+
+  // Binds the filter values from `options` into `statement`, using
+  // batch_visit_ids so that batched queries only bind the current batch's slice
+  // of visit IDs.
   static void BindQueryOptions(sql::Statement& statement,
-                               const CriticalActionQueryOptions& options);
+                               const CriticalActionQueryOptions& options,
+                               base::span<const int64_t> batch_visit_ids);
 
   // Constructs a CriticalActionEntry from the current row of `statement`.
   static CriticalActionEntry StatementToEntry(sql::Statement& statement);
@@ -130,6 +158,10 @@ class CriticalActionDatabase {
   // Migrates schema from version 2 to version 3 (drops `url` column and index).
   bool MigrateFromV2ToV3();
 
+  // Migrates schema from version 3 to version 4 (adds `conversation_anchor_id`
+  // column to CriticalActionEntries).
+  bool MigrateFromV3ToV4();
+
   // SQLite error callback.
   void DatabaseErrorCallback(int extended_error, sql::Statement* statement);
 
@@ -137,6 +169,8 @@ class CriticalActionDatabase {
   sql::Database db_ GUARDED_BY_CONTEXT(sequence_checker_);
   sql::MetaTable meta_table_ GUARDED_BY_CONTEXT(sequence_checker_);
   bool needs_vacuum_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+  base::RepeatingClosure busy_retry_callback_for_testing_
+      GUARDED_BY_CONTEXT(sequence_checker_);
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

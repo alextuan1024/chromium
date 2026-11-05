@@ -4,150 +4,106 @@
 
 import {html} from '//resources/lit/v3_0/lit.rollup.js';
 
-import {AutoTodoGroup, AutoTodoStatus} from '../context_hub.mojom-webui.js';
+import {AutoTodoStatus} from '../context_hub.mojom-webui.js';
 
 import type {TodoItemElement} from './todo_item.js';
-import {TodoItemVariant} from './todo_item.js';
 
 export function getHtml(this: TodoItemElement) {
   return html`
-${this.variant === TodoItemVariant.TAB ?
-      html`
-      <div class="todo-content tab-todo-content">
-        ${this.status === AutoTodoStatus.kDismissed ? html`
-          <cr-button class="tonal-button mark-active-button"
-              id="markActiveButton"
-              ?disabled="${this.disable_state_mgmt}"
-              @click="${this.onMarkActiveClick_}">
-            Mark active
-          </cr-button>
-        ` : html`
-          ${this.groupType !== AutoTodoGroup.kReadingList ? html`
-            <cr-icon-button id="check-circle"
-                ?disabled="${this.disable_state_mgmt}"
-                iron-icon="cr:check-circle"
-                @click="${this.onCheckCircleClick_}">
-            </cr-icon-button>
-          ` : ''}
-        `}
-        <div class="todo-info">
-          <h3 title="${this.heading}">${this.heading}</h3>
-          <p class="description">${this.description}</p>
-        </div>
-        <div class="todo-actions" @click="${this.onActionsClick_}">
-          <cr-button class="tonal-button"
-              @click="${this.onOpenTabClick_}">Open tab</cr-button>
-          <div class="thumb-group">
-            <cr-icon-button id="thumbsUp"
-                iron-icon="${this.getThumbsUpIcon_()}"
-                title="Like"
-                aria-pressed="${this.liked === true}"
-                @click="${this.onThumbsUpClick_}">
-            </cr-icon-button>
-            <cr-icon-button id="thumbsDown"
-                iron-icon="${this.getThumbsDownIcon_()}"
-                title="Dislike"
-                aria-pressed="${this.liked === false}"
-                @click="${this.onThumbsDownClick_}">
-            </cr-icon-button>
-          </div>
-          <cr-icon-button id="moreButton"
-              iron-icon="cr:more-vert"
-              title="More actions"
-              @click="${this.onMoreClick_}">
-          </cr-icon-button>
-        </div>
-      </div>
-      <cr-action-menu id="menu">
-        <button class="dropdown-item" @click="${this.onCloseTabClick_}">
-          Close tab
-        </button>
-        ${
-          this.groupType !== AutoTodoGroup.kReadingList &&
-          this.status === AutoTodoStatus.kActive ?
-              html`
-        <button class="dropdown-item" @click="${this.onSaveClick_}">
-          Add to Reading List
-        </button>
-        ` :
-              ''}
-        ${this.status !== AutoTodoStatus.kDismissed ? html`
-        <button class="dropdown-item" @click="${this.onDismissClick_}">
-          Dismiss Todo
-        </button>
-        ` : ''}
-      </cr-action-menu>
-    ` :
-      html`
-    <cr-expand-button
-        ?expanded="${this.expanded_}"
-        @expanded-changed="${this.onExpandedChanged_}">
-      <div class="todo-content">
-        ${this.status === AutoTodoStatus.kDismissed ? html`
-          <cr-button class="tonal-button mark-active-button"
-              id="markActiveButton"
-              ?disabled="${this.disable_state_mgmt}"
-              @click="${this.onMarkActiveClick_}">
-            Mark active
-          </cr-button>
-        ` : html`
-          <cr-icon-button id="check-circle"
-              ?disabled="${this.disable_state_mgmt}"
-              iron-icon="cr:check-circle"
-              @click="${this.onCheckCircleClick_}">
-          </cr-icon-button>
-        `}
-        <div class="todo-info">
-          <h3>${this.heading}</h3>
-          <p class="description">${this.description}</p>
-        </div>
-        <div class="todo-actions" @click="${this.onActionsClick_}">
-          <cr-button class="tonal-button"
-              @click="${this.onOpenTabClick_}">Open tab</cr-button>
-          <div class="thumb-group">
-            <cr-icon-button id="thumbsUp"
-                iron-icon="${this.getThumbsUpIcon_()}"
-                title="Like"
-                aria-pressed="${this.liked === true}"
-                @click="${this.onThumbsUpClick_}">
-            </cr-icon-button>
-            <cr-icon-button id="thumbsDown"
-                iron-icon="${this.getThumbsDownIcon_()}"
-                title="Dislike"
-                aria-pressed="${this.liked === false}"
-                @click="${this.onThumbsDownClick_}">
-            </cr-icon-button>
-          </div>
-        </div>
-      </div>
-    </cr-expand-button>
-    ${
-          this.expanded_ ? html`
-      <div class="expanded-content">
-        <div class="expanded-details">
-          <div>Score: ${this.score?.toFixed(2)}</div>
-          <div class="references-section">
-            <span class="references-label">From:</span>
-            <div class="references-list">
-              ${
-                               this.getReferences().map(
-                                   ref => html`
-                <a class="reference-link" href="${
-                                       ref.url}" target="_blank" title="${
-                                       ref.label}">${ref.label}</a>
-              `)}
+<div class="todo-content">
+  <div class="todo-main">
+    ${this.status !== AutoTodoStatus.kDismissed ? html`
+      <cr-icon-button id="check-circle"
+          class="no-overlap${
+              this.status === AutoTodoStatus.kCompleted ? ' completed' : ''}"
+          ?disabled="${this.disable_state_mgmt}"
+          iron-icon="${this.getCheckCircleIcon_()}"
+          title="${this.status === AutoTodoStatus.kCompleted ?
+              'Mark active' :
+              'Mark completed'}"
+          aria-label="${this.status === AutoTodoStatus.kCompleted ?
+              'Mark active' :
+              'Mark completed'}"
+          @click="${this.onCheckCircleClick_}">
+      </cr-icon-button>
+    ` : ''}
+    <div class="todo-info">
+      <h3>${this.heading}</h3>
+      <p class="description">${this.description}</p>
+      ${this.references_.length > 0 ||
+              (this.feedbackMode && this.score != null) ?
+          html`
+        <div class="todo-metadata">
+          ${this.references_.length > 0 ? html`
+            <div class="references-section">
+              <span class="references-label">From:</span>
+              <div class="references-list">
+                ${this.references_.map(item => html`
+                  <a class="reference-link" href="${item.url}" target="_blank"
+                      title="${item.label}">
+                    ${item.label}
+                  </a>
+                `)}
+              </div>
             </div>
-          </div>
+          ` : ''}
+          ${this.feedbackMode && this.score != null ? html`
+            <span class="score-badge">Score: ${this.score.toFixed(2)}</span>
+          ` : ''}
         </div>
-        ${this.status !== AutoTodoStatus.kDismissed ? html`
-        <cr-button class="dismiss-button"
-            ?disabled="${this.disable_state_mgmt}"
-            @click="${this.onDismissClick_}">
-          Dismiss Todo
-        </cr-button>
-        ` : ''}
+      ` : ''}
+    </div>
+  </div>
+  <div class="todo-actions">
+    ${this.canActOnWeb_ ? html`
+      <cr-button class="tonal-button run-task-button" id="runTaskButton"
+          title="Run task" aria-label="Run task"
+          ?disabled="${this.disable_state_mgmt || this.isRunningTask_ ||
+              !this.canRunTask_()}"
+          @click="${this.onRunTaskButtonClick_}">
+        <cr-icon icon="context-hub:cursor-spark"></cr-icon>
+      </cr-button>
+    ` : ''}
+    <cr-button class="tonal-button action-pill-button" id="openTabButton"
+        ?disabled="${!this.canOpenTab_()}" @click="${this.onOpenTabClick_}">
+      Open tab
+    </cr-button>
+    ${this.feedbackMode ? html`
+      <div class="thumb-group">
+        <cr-icon-button class="no-overlap" id="thumbsUp"
+            iron-icon="${this.getThumbsUpIcon_()}" title="Like"
+            aria-pressed="${this.liked === true}"
+            ?disabled="${this.disable_feedback}"
+            @click="${this.onThumbsUpClick_}">
+        </cr-icon-button>
+        <cr-icon-button class="no-overlap" id="thumbsDown"
+            iron-icon="${this.getThumbsDownIcon_()}" title="Dislike"
+            aria-pressed="${this.liked === false}"
+            ?disabled="${this.disable_feedback}"
+            @click="${this.onThumbsDownClick_}">
+        </cr-icon-button>
       </div>
-    ` :
-                           ''}
-  `}`;
+    ` : ''}
+    <cr-icon-button class="no-overlap" id="moreButton" iron-icon="cr:more-vert"
+        title="More actions" aria-label="More actions" aria-haspopup="menu"
+        ?disabled="${this.disable_state_mgmt}"
+        @click="${this.onMoreButtonClick_}">
+    </cr-icon-button>
+  </div>
+</div>
+<cr-action-menu id="menu">
+  ${this.status === AutoTodoStatus.kDismissed ? html`
+    <button class="dropdown-item" id="menuMarkActiveButton"
+        ?disabled="${this.disable_state_mgmt}"
+        @click="${this.onMenuMarkActiveButtonClick_}">
+      Mark active
+    </button>
+  ` : html`
+    <button class="dropdown-item" id="dismissButton"
+        ?disabled="${this.disable_state_mgmt}"
+        @click="${this.onDismissButtonClick_}">
+      Dismiss Todo
+    </button>
+  `}
+</cr-action-menu>`;
 }

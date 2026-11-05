@@ -8,10 +8,12 @@
 #include <cstdint>
 #include <vector>
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "chrome/services/readaloud/decoded_audio_segment.h"
 
@@ -57,10 +59,40 @@ class ReadAloudDecoderSequencer {
   void SetAudioQueue(AudioSegmentQueue* audio_segment_queue);
 
   // Updates the next sequential chunk index to decode (e.g. after seek
-  // operations).
-  void SetNextChunkToDecode(uint32_t chunk_index);
+  // operations), optionally skipping leading word segments that precede
+  // `min_global_char_offset`.
+  void SetNextChunkToDecode(uint32_t chunk_index,
+                            uint32_t min_global_char_offset = 0);
+
+  // Outcome of a replenish cycle, from the renderer's point of view.
+  enum class PumpStatus {
+    // Decoded audio is buffered and ready to be rendered.
+    kFlowing,
+    // The renderer queue is dry, but timeline chunks are still pending, so
+    // audio is expected to arrive.
+    kStarved,
+    // The whole timeline has been consumed and at least some audio was
+    // produced along the way, i.e. playback reached the end of the document.
+    kDrained,
+    // The whole timeline has been consumed without ever producing a single
+    // audio segment, so this session can never produce sound.
+    kFailed,
+  };
+
+  // Callback invoked at the end of every replenish cycle, but only while the
+  // pump timer is running (i.e. while playback is active).
+  using PumpStatusCallback = base::RepeatingCallback<void(PumpStatus status)>;
+  void SetPumpStatusCallback(PumpStatusCallback callback);
+
+  // Callback invoked when a chunk is decoded into non-empty PCM segments,
+  // reporting the exact decoded chunk duration.
+  using ChunkDecodedCallback =
+      base::RepeatingCallback<void(uint32_t chunk_index,
+                                   base::TimeDelta duration)>;
+  void SetChunkDecodedCallback(ChunkDecodedCallback callback);
 
   uint32_t next_chunk_to_decode() const { return next_chunk_to_decode_; }
+  uint32_t min_global_char_offset() const { return min_global_char_offset_; }
   bool is_decoding() const { return is_decoding_; }
   bool is_pumping() const { return pump_timer_.IsRunning(); }
 
@@ -70,13 +102,31 @@ class ReadAloudDecoderSequencer {
       uint32_t chunk_index,
       std::vector<scoped_refptr<DecodedAudioSegment>> decoded_segments);
 
+  PumpStatus EvaluatePumpStatus() const;
+
+  // Evaluates the current pump status and forwards it to
+  // `pump_status_callback_`. No-op when not pumping, so that replenish cycles
+  // driven by late synthesis or decode responses after a pause cannot
+  // resurrect an active playback state.
+  void NotifyPumpStatus();
+
   const raw_ptr<PrefetchManager> prefetch_manager_;
   const raw_ptr<OpusDecoderHelper> decoder_helper_;
   raw_ptr<AudioSegmentQueue> audio_segment_queue_ = nullptr;
 
+  PumpStatusCallback pump_status_callback_;
+  ChunkDecodedCallback chunk_decoded_callback_;
+
   uint32_t next_chunk_to_decode_ = 0;
+  uint32_t min_global_char_offset_ = 0;
   bool is_decoding_ = false;
   bool is_replenishing_ = false;
+  // True once any valid audio has been decoded in this session. Distinguishes
+  // a finished timeline from a totally failed one.
+  bool produced_audio_ = false;
+  // True when `SetNextChunkToDecode` explicitly positioned the cursor at or
+  // past the end of a non-empty timeline (seek to EOF).
+  bool sought_to_end_ = false;
 
   base::RepeatingTimer pump_timer_;
 

@@ -29,6 +29,7 @@
 #include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/threading/platform_thread.h"
 #include "base/threading/thread.h"
 #include "build/build_config.h"
 #include "skia/buildflags.h"
@@ -305,7 +306,7 @@ TEST_F(ResourceBundleTest, DelegateGetRawDataResource) {
   EXPECT_EQ(string_piece.data(), result.data());
 }
 
-TEST_F(ResourceBundleTest, IsGzipped) {
+TEST_F(ResourceBundleTest, IsCompressed) {
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
   base::FilePath data_path =
       temp_dir_.GetPath().Append(FILE_PATH_LITERAL("sample.pak"));
@@ -315,31 +316,13 @@ TEST_F(ResourceBundleTest, IsGzipped) {
   ResourceBundle* resource_bundle = CreateResourceBundle(nullptr);
   resource_bundle->AddDataPackFromPath(data_path, k100Percent);
 
-  ASSERT_FALSE(resource_bundle->IsGzipped(1));
-  ASSERT_FALSE(resource_bundle->IsGzipped(4));
-  ASSERT_FALSE(resource_bundle->IsGzipped(6));
-  ASSERT_TRUE(resource_bundle->IsGzipped(8));
+  ASSERT_FALSE(resource_bundle->IsCompressed(1));
+  ASSERT_FALSE(resource_bundle->IsCompressed(4));
+  ASSERT_TRUE(resource_bundle->IsCompressed(6));
+  ASSERT_TRUE(resource_bundle->IsCompressed(8));
+  ASSERT_TRUE(resource_bundle->IsCompressed(9));
   // Ask for a non-existent resource ID.
-  ASSERT_FALSE(resource_bundle->IsGzipped(200));
-}
-
-TEST_F(ResourceBundleTest, IsBrotli) {
-  ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-  base::FilePath data_path =
-      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("sample.pak"));
-  // Dump contents into a pak file and load it.
-  UNSAFE_TODO(ASSERT_TRUE(base::WriteFile(
-      data_path, {kSampleCompressPakContentsV5, kSampleCompressPakSizeV5})));
-  ResourceBundle* resource_bundle = CreateResourceBundle(nullptr);
-  resource_bundle->AddDataPackFromPath(data_path, k100Percent);
-
-  ASSERT_FALSE(resource_bundle->IsBrotli(1));
-  ASSERT_FALSE(resource_bundle->IsBrotli(4));
-  ASSERT_TRUE(resource_bundle->IsBrotli(6));
-  ASSERT_FALSE(resource_bundle->IsGzipped(6));
-  ASSERT_FALSE(resource_bundle->IsBrotli(8));
-  // Ask for non-existent resource ID.
-  ASSERT_FALSE(resource_bundle->IsBrotli(200));
+  ASSERT_FALSE(resource_bundle->IsCompressed(200));
 }
 
 TEST_F(ResourceBundleTest, DelegateGetLocalizedString) {
@@ -373,7 +356,6 @@ TEST_F(ResourceBundleTest, OverrideStringResource) {
 #if DCHECK_IS_ON()
 TEST_F(ResourceBundleTest, CanOverrideStringResources) {
   ResourceBundle* resource_bundle = CreateResourceBundle(nullptr);
-  std::u16string data = u"My test data";
   int resource_id = 5;
 
   EXPECT_TRUE(
@@ -392,8 +374,6 @@ TEST_F(ResourceBundleTest, DelegateGetLocalizedStringWithOverride) {
   EXPECT_CALL(delegate_, GetLocalizedString(resource_id, _))
       .Times(1)
       .WillOnce(DoAll(SetArgPointee<1>(delegate_data), Return(true)));
-
-  std::u16string override_data = u"My override data";
 
   std::u16string result = resource_bundle->GetLocalizedString(resource_id);
   EXPECT_EQ(delegate_data, result);
@@ -557,6 +537,7 @@ TEST_F(ResourceBundleImageTest, LoadLocalizedResourceString) {
 
   EXPECT_EQ("this is id 6", resource_bundle->LoadLocalizedResourceString(6));
   EXPECT_EQ("this is id 8", resource_bundle->LoadLocalizedResourceString(8));
+  EXPECT_EQ("this is id 9", resource_bundle->LoadLocalizedResourceString(9));
 }
 
 TEST_F(ResourceBundleImageTest, LoadDataResourceString) {
@@ -573,6 +554,13 @@ TEST_F(ResourceBundleImageTest, LoadDataResourceString) {
 
   // Resource ID 8 is Gzip compressed, expect it to be uncompressed.
   EXPECT_EQ("this is id 8", resource_bundle->LoadDataResourceString(8));
+
+  // Resource ID 9 is zstd compressed, expect it to be uncompressed.
+  EXPECT_EQ("this is id 9", resource_bundle->LoadDataResourceString(9));
+  scoped_refptr<base::RefCountedMemory> bytes =
+      resource_bundle->LoadDataResourceBytes(9);
+  ASSERT_TRUE(bytes);
+  EXPECT_EQ("this is id 9", base::as_string_view(*bytes));
 
   // Resource ID 4 is plain text (not compressed), expect to return as-is.
   EXPECT_EQ("this is id 4", resource_bundle->LoadDataResourceString(4));
@@ -636,6 +624,7 @@ TEST_F(ResourceBundleImageTest, GetRawDataResourceWhileAddingDataPack) {
           EXPECT_FALSE(resource_bundle->HasDataResource(kMissingResourceId));
           EXPECT_TRUE(
               resource_bundle->GetRawDataResource(kMissingResourceId).empty());
+          base::PlatformThread::YieldCurrentThread();
         }
       }));
 

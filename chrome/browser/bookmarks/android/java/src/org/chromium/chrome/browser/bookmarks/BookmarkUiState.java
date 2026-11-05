@@ -70,8 +70,8 @@ public class BookmarkUiState {
     }
 
     /**
-     * @return A state corresponding to the URI object. If the URI is not valid a folder state for
-     *     the root folder will be returned.
+     * Returns a state corresponding to the URI object. If the URI is not valid a folder state for
+     * the default folder view location will be returned.
      */
     static BookmarkUiState createStateFromUrl(Uri uri, BookmarkModel bookmarkModel) {
         String url = uri.toString();
@@ -131,8 +131,7 @@ public class BookmarkUiState {
 
     @Override
     public boolean equals(Object obj) {
-        if (!(obj instanceof BookmarkUiState)) return false;
-        BookmarkUiState other = (BookmarkUiState) obj;
+        if (!(obj instanceof BookmarkUiState other)) return false;
         return mUiMode == other.mUiMode
                 && TextUtils.equals(mUrl, other.mUrl)
                 && Objects.equals(mSearchText, other.mSearchText);

@@ -39,6 +39,7 @@ import org.chromium.components.tab_group_sync.ClosingSource;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
@@ -50,7 +51,6 @@ public class StartupHelperUnitTest {
     private static final int TAB_ID_1 = 5;
     private static final int TAB_ID_2 = 6;
     private static final Token TOKEN_1 = new Token(2, 3);
-    private static final int ROOT_ID_1 = 1;
     private static final LocalTabGroupId LOCAL_TAB_GROUP_ID_1 = new LocalTabGroupId(TOKEN_1);
     private static final String TAB_TITLE_1 = "Tab Title";
 
@@ -103,9 +103,7 @@ public class StartupHelperUnitTest {
                         mRemoteMutationHelper,
                         mPrefService);
 
-        when(mTabModel.tabGroupExists(TOKEN_1)).thenReturn(true);
-        when(mTabModel.getGroupLastShownTabId(any())).thenReturn(Tab.INVALID_TAB_ID);
-        when(mTabModel.getGroupLastShownTabId(TOKEN_1)).thenReturn(ROOT_ID_1);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TOKEN_1))).thenReturn(true);
 
         when(mTabGroupSyncService.getDeletedGroupIds()).thenReturn(new ArrayList<>());
         when(mTabGroupSyncService.getAllGroupIds()).thenReturn(new String[0]);
@@ -131,8 +129,7 @@ public class StartupHelperUnitTest {
         List<Tab> tabs = new ArrayList<>();
         tabs.add(mTab1);
         tabs.add(mTab2);
-        when(mTabModel.getRelatedTabList(ROOT_ID_1)).thenReturn(tabs);
-        when(mTabModel.getTabsInGroup(TOKEN_1)).thenReturn(tabs);
+        when(mTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(TOKEN_1))).thenReturn(tabs);
 
         when(mTab1.getTabGroupId()).thenReturn(TOKEN_1);
         when(mTab2.getTabGroupId()).thenReturn(TOKEN_1);

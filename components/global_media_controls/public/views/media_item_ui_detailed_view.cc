@@ -84,10 +84,6 @@ constexpr char kMediaDisplayPageHistogram[] = "Media.Notification.DisplayPage";
 constexpr int kProgressRowHeight = 20;
 constexpr gfx::Insets kButtonRowInsets = gfx::Insets::TLBR(0, 8, 0, 0);
 constexpr char16_t kTimestampDelimiter[] = u" / ";
-const gfx::FontList kTimestampFont({"Google Sans"},
-                                   gfx::Font::NORMAL,
-                                   13,
-                                   gfx::Font::Weight::MEDIUM);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 class MediaLabelButton : public views::Button {
@@ -569,6 +565,9 @@ void MediaItemUIDetailedView::UpdateFooterView(
   }
   if (footer_view) {
     footer_view_ = button_container_->AddChildView(std::move(footer_view));
+    // Do not show the start casting button while the item is being cast and
+    // shows the stop casting button, as in UpdateDeviceSelectorAvailability().
+    HideStartCastingButton();
   }
   picture_in_picture_button_->SetVisible(!footer_view_);
 }
@@ -584,6 +583,21 @@ void MediaItemUIDetailedView::UpdateDeviceSelector(
   if (device_selector_view) {
     CreateDeviceSelectorViewSeparator();
     device_selector_view_ = AddChildView(std::move(device_selector_view));
+    UpdateCastingState();
+  } else {
+    // The start casting button toggles the device selector, so it cannot be
+    // shown without one. A new device selector shows it again through
+    // UpdateDeviceSelectorAvailability() once it finds devices.
+    HideStartCastingButton();
+  }
+}
+
+void MediaItemUIDetailedView::HideStartCastingButton() {
+  if (!start_casting_button_->GetVisible()) {
+    return;
+  }
+  start_casting_button_->SetVisible(false);
+  if (device_selector_view_) {
     UpdateCastingState();
   }
 }
@@ -897,6 +911,8 @@ views::View* MediaItemUIDetailedView::CreateControlsRow() {
     return nullptr;
   }
 
+  const gfx::FontList timestamp_font({"Google Sans"}, gfx::Font::NORMAL, 13,
+                                     gfx::Font::Weight::MEDIUM);
   views::View* button_container;
   AddChildView(
       views::Builder<views::BoxLayoutView>()
@@ -912,14 +928,14 @@ views::View* MediaItemUIDetailedView::CreateControlsRow() {
                           .CopyAddressTo(&current_timestamp_view_)
                           .SetText(
                               GetFormattedDuration(position_.GetPosition()))
-                          .SetFontList(kTimestampFont)
+                          .SetFontList(timestamp_font)
                           .SetHorizontalAlignment(gfx::ALIGN_LEFT)
                           .SetEnabledColor(theme_.primary_foreground_color_id),
                       views::Builder<views::Label>()
                           .CopyAddressTo(&total_duration_view_)
                           .SetText(kTimestampDelimiter +
                                    GetFormattedDuration(position_.duration()))
-                          .SetFontList(kTimestampFont)
+                          .SetFontList(timestamp_font)
                           .SetHorizontalAlignment(gfx::ALIGN_LEFT)
                           .SetEnabledColor(theme_.primary_foreground_color_id)))
           .AddChildren(
@@ -1013,7 +1029,7 @@ views::Label* MediaItemUIDetailedView::GetTotalDurationViewForTesting() {
   return total_duration_view_;
 }
 
-base::flat_map<int, raw_ptr<ChapterItemView, CtnExperimental>>
+base::flat_map<int, raw_ptr<ChapterItemView, DanglingUntriaged>>
 MediaItemUIDetailedView::GetChaptersForTesting() {
   return chapters_;
 }

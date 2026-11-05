@@ -6,7 +6,6 @@ import 'chrome://history/history.js';
 
 import type {HistoryAppElement, HistoryEntry, HistoryItemElement} from 'chrome://history/history.js';
 import {BrowserProxyImpl, foreignSessionBrowserProxyFactory, HistoryPageViewHistogram, HistorySignInState, SYNCED_TABS_HISTOGRAM_NAME, SyncedTabsHistogram, SyncState, VisitContextMenuAction} from 'chrome://history/history.js';
-import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
@@ -40,6 +39,11 @@ suite('Metrics', function() {
 
     actionMap = testProxy.actionMap;
     histogramMap = testProxy.histogramMap;
+  });
+
+  teardown(() => {
+    document.body.classList.remove('loading');
+    delete (document as {visibilityState?: string}).visibilityState;
   });
 
   /**
@@ -85,13 +89,12 @@ suite('Metrics', function() {
     navigateTo('/syncedTabs', app);
     await microtasksFinished();
     assertEquals(1, histogram[HistoryPageViewHistogram.SIGNIN_PROMO]);
-    await testProxy.whenCalled('otherDevicesInitialized');
 
     testProxy.resetResolver('recordHistogram');
-    webUIListenerCallback('history-identity-state-changed', {
-      signIn: HistorySignInState.SIGNED_IN,
-      tabsSync: SyncState.TURNED_ON,
-      historySync: SyncState.TURNED_OFF,
+    testProxy.pageRemote.onIdentityStateChanged({
+      signIn: HistorySignInState.kSignedIn,
+      tabsSync: SyncState.kTurnedOn,
+      historySync: SyncState.kTurnedOff,
     });
     await testProxy.whenCalled('recordHistogram');
 
@@ -135,9 +138,7 @@ suite('Metrics', function() {
       },
     }));
 
-    app.dispatchEvent(new CustomEvent(
-        'change-query',
-        {bubbles: true, composed: true, detail: {search: 'goog'}}));
+    app.fire('change-query', {search: 'goog'});
     assertEquals(1, actionMap['Search']);
     const queryManager = app.shadowRoot.querySelector('history-query-manager');
     assertTrue(!!queryManager);
@@ -206,11 +207,12 @@ suite('Metrics', function() {
     navigateTo('/syncedTabs', app);
     await microtasksFinished();
 
-    webUIListenerCallback('history-identity-state-changed', {
-      signIn: HistorySignInState.SIGNED_IN,
-      tabsSync: SyncState.TURNED_ON,
-      historySync: SyncState.TURNED_OFF,
+    testProxy.pageRemote.onIdentityStateChanged({
+      signIn: HistorySignInState.kSignedIn,
+      tabsSync: SyncState.kTurnedOn,
+      historySync: SyncState.kTurnedOff,
     });
+    await testProxy.pageRemote.$.flushForTesting();
 
     const histogram = histogramMap[SYNCED_TABS_HISTOGRAM_NAME];
     assertTrue(!!histogram);
@@ -235,6 +237,11 @@ suite('Metrics', function() {
     cards[0].shadowRoot.querySelectorAll<HTMLElement>(
                            '.website-link')[0]!.click();
     assertEquals(1, histogram[SyncedTabsHistogram.LINK_CLICKED]);
+
+    assertTrue(!!cards[1]);
+    cards[1].shadowRoot.querySelector<HTMLElement>(
+                           '.open-window-button')!.click();
+    assertEquals(1, histogram[SyncedTabsHistogram.OPEN_WINDOW]);
 
     const menuButton = cards[0].$.menuButton;
     menuButton.click();
@@ -295,8 +302,7 @@ suite('Metrics', function() {
         ],
       },
     }));
-    app.dispatchEvent(new CustomEvent(
-        'query-history', {detail: true, bubbles: true, composed: true}));
+    app.fire('query-history', true);
     await testProxy.handler.whenCalled('queryHistoryContinuation');
 
     const recordedHistogram2 =
@@ -428,7 +434,39 @@ suite('Metrics', function() {
     assertTrue(!!histogram);
     assertEquals(
         1, histogram[VisitContextMenuAction.REVIEW_GEMINI_ACTIVITY_CLICKED]);
-    assertEquals(
-        1, testProxy.actionMap['EntryMenuReviewGeminiActivity']);
+    assertEquals(1, testProxy.actionMap['EntryMenuReviewGeminiActivity']);
+  });
+
+  test('HistoryPage.TimeToFirstVisibleContent', async () => {
+    document.body.classList.add('loading');
+    await finishSetup([]);
+
+    const [histogram, value] = await testProxy.whenCalled('recordTime');
+    assertEquals('HistoryPage.TimeToFirstVisibleContent', histogram);
+    assertTrue(value >= 0);
+    assertFalse(document.body.classList.contains('loading'));
+
+    // Subsequent queries should not record the histogram again.
+    testProxy.resetResolver('recordTime');
+    testProxy.handler.resetResolver('queryHistory');
+    testProxy.handler.setResultFor('queryHistory', Promise.resolve({
+      results: {info: createHistoryInfo('search'), value: []},
+    }));
+    app.fire('change-query', {search: 'search'});
+    await testProxy.handler.whenCalled('queryHistory');
+    await microtasksFinished();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    assertEquals(0, testProxy.getCallCount('recordTime'));
+  });
+
+  test('HistoryPage.TimeToFirstVisibleContent_Hidden', async () => {
+    Object.defineProperty(
+        document, 'visibilityState', {value: 'hidden', configurable: true});
+    document.body.classList.add('loading');
+    await finishSetup([]);
+
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    assertEquals(0, testProxy.getCallCount('recordTime'));
+    assertFalse(document.body.classList.contains('loading'));
   });
 });

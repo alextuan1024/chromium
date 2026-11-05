@@ -5,9 +5,11 @@
 #include "chromecast/base/cast_features.h"
 
 #include <algorithm>
+#include <string_view>
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/field_trial.h"
@@ -176,7 +178,7 @@ BASE_FEATURE(kEnableStarboardRenderer,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // End Chromecast Feature definitions.
-const base::Feature* kFeatures[] = {
+constexpr const base::Feature* kFeatures[] = {
     &kAllowUserMediaAccess,
     &kEnableQuic,
     &kTripleBuffer720,
@@ -188,21 +190,11 @@ const base::Feature* kFeatures[] = {
     &kEnableStarboardRenderer,
 };
 
-std::vector<const base::Feature*> GetInternalFeatures();
-
-const std::vector<const base::Feature*>& GetFeatures() {
-  static const base::NoDestructor<std::vector<const base::Feature*>> features(
-      [] {
-        std::vector<const base::Feature*> features(std::begin(kFeatures),
-                                                   std::end(kFeatures));
-        auto internal_features = GetInternalFeatures();
-        features.insert(features.end(), internal_features.begin(),
-                        internal_features.end());
-        return features;
-      }());
-  if (GetTestFeatures().size() > 0)
+base::span<const base::Feature* const> GetFeatures() {
+  if (!GetTestFeatures().empty()) {
     return GetTestFeatures();
-  return *features;
+  }
+  return kFeatures;
 }
 
 void InitializeFeatureList(const base::DictValue& dcs_features,
@@ -225,6 +217,11 @@ void InitializeFeatureList(const base::DictValue& dcs_features,
   auto feature_list = std::make_unique<base::FeatureList>();
   feature_list->InitFromCommandLine(all_enable_features, all_disable_features);
 
+  std::unordered_set<std::string_view> registered_features;
+  for (const auto* feature : GetFeatures()) {
+    registered_features.insert(feature->name);
+  }
+
   // Override defaults from the DCS config.
   for (const auto kv : dcs_features) {
     // Each feature must have its own FieldTrial object. Since experiments are
@@ -238,6 +235,10 @@ void InitializeFeatureList(const base::DictValue& dcs_features,
     //   - We don't care about the group_id.
     //
     const std::string& feature_name = kv.first;
+    if (!registered_features.contains(feature_name)) {
+      DVLOG(1) << __func__ << ": Ignoring unknown feature " << feature_name;
+      continue;
+    }
     auto* field_trial = base::FieldTrialList::CreateFieldTrial(
         feature_name, kDefaultDCSFeaturesGroup);
 

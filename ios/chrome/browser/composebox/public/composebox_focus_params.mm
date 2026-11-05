@@ -4,14 +4,20 @@
 
 #import "ios/chrome/browser/composebox/public/composebox_focus_params.h"
 
+#import <utility>
+
+#import "components/contextual_search/contextual_search_session_handle.h"
 #import "ios/chrome/browser/composebox/public/composebox_attachment_selection.h"
 
-@implementation ComposeboxFocusParams
+@implementation ComposeboxFocusParams {
+  std::unique_ptr<contextual_search::ContextualSearchSessionHandle>
+      _contextualSearchSession;
+}
 
 - (instancetype)initWithEntrypoint:(ComposeboxEntrypoint)entrypoint
                              query:(NSString*)query
-                          toolMode:(ComposeboxMode)toolMode
-                         modelMode:(ComposeboxModelOption)modelMode
+                          toolMode:(omnibox::ToolMode)toolMode
+                         modelMode:(omnibox::ModelMode)modelMode
                     attachmentList:
                         (ComposeboxAttachmentSelection*)attachmentList {
   self = [super init];
@@ -25,6 +31,20 @@
   return self;
 }
 
+- (BOOL)hasContextualSearchSession {
+  return _contextualSearchSession != nullptr;
+}
+
+- (void)setContextualSearchSession:
+    (std::unique_ptr<contextual_search::ContextualSearchSessionHandle>)session {
+  _contextualSearchSession = std::move(session);
+}
+
+- (std::unique_ptr<contextual_search::ContextualSearchSessionHandle>)
+    takeContextualSearchSession {
+  return std::move(_contextualSearchSession);
+}
+
 - (BOOL)hasInitialTabIDs {
   return !self.initialSelectedWebStateIDs.empty() ||
          !self.initialCachedWebStateIDs.empty();
@@ -35,10 +55,26 @@
 }
 
 - (instancetype)initWithEntrypoint:(ComposeboxEntrypoint)entrypoint {
+  omnibox::ToolMode toolMode = omnibox::ToolMode::TOOL_MODE_UNSPECIFIED;
+  switch (entrypoint) {
+    case ComposeboxEntrypoint::kNTPAIMButton:
+    case ComposeboxEntrypoint::kCobrowse:
+    case ComposeboxEntrypoint::kNTPAttachImageButton:
+      toolMode = omnibox::ToolMode::TOOL_MODE_AIM;
+      break;
+    case ComposeboxEntrypoint::kNTPImageGenerationButton:
+      toolMode = omnibox::ToolMode::TOOL_MODE_IMAGE_GEN;
+      break;
+    case ComposeboxEntrypoint::kNTPFakebox:
+    case ComposeboxEntrypoint::kNTPPlusButton:
+    case ComposeboxEntrypoint::kOther:
+      break;
+  }
+
   return [self initWithEntrypoint:entrypoint
                             query:nil
-                         toolMode:ComposeboxMode::kRegularSearch
-                        modelMode:ComposeboxModelOption::kNone
+                         toolMode:toolMode
+                        modelMode:omnibox::ModelMode::MODEL_MODE_UNSPECIFIED
                    attachmentList:nil];
 }
 

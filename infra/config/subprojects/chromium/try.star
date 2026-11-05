@@ -47,6 +47,9 @@ luci.bucket(
                 # NOTE: Please get explicit approval from Chrome resource owners
                 # before adding projects here, as Chromium's machine resources
                 # are primarily for Chromium.
+                # BoringSSL may trigger Chromium builds on a limited set of
+                # builders by opt-in only.
+                "boringssl-scoped@luci-project-accounts.iam.gserviceaccount.com",
                 # Dawn traffic into Chromium is contained within GPU-specific
                 # pools.
                 "dawn-scoped@luci-project-accounts.iam.gserviceaccount.com",
@@ -162,6 +165,12 @@ luci.cq_group(
         ),
     ],
     tree_status_host = "chromium-status.appspot.com" if settings.is_main else None,
+    tryjob_experiments = [
+        cq.tryjob_experiment(
+            name = "chromium.vuln_scan.mandatory_org",
+            owner_group_allowlist = ["mdb/potassium-katabolism-team"],
+        ),
+    ],
     user_limit_default = cq.user_limit(
         name = "default-limit",
         run = cq.run_limits(max_active = 10),

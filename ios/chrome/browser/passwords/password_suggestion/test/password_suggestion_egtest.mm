@@ -9,14 +9,13 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
-#import "components/password_manager/core/browser/features/password_features.h"
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/passwords/model/password_manager_app_interface.h"
+#import "ios/chrome/browser/settings/password/public/password_manager_ui_features.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_manager_egtest_utils.h"
-#import "ios/chrome/browser/settings/ui_bundled/password/password_manager_ui_features.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_settings_app_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
@@ -28,7 +27,6 @@
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/chrome/test/scoped_eg_traits_overrider.h"
-#import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
 #import "net/base/apple/url_conversions.h"
@@ -111,13 +109,6 @@ id<GREYMatcher> ProactivePasswordGenerationUseKeyboardButton() {
   [super tearDownHelper];
 }
 
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config;
-  config.features_enabled.push_back(
-      password_manager::features::kIOSProactivePasswordGenerationBottomSheet);
-  return config;
-}
-
 #pragma mark - Helper methods
 
 // Loads simple page on localhost.
@@ -189,8 +180,7 @@ id<GREYMatcher> ProactivePasswordGenerationUseKeyboardButton() {
 
 // Tests that the bottom sheet populates the new password and confirm password
 // fields.
-// TODO(crbug.com/425885707): ensures this test works on CQ.
-- (void)FLAKY_testFillNewPasswordWithProactiveBottomSheet {
+- (void)testFillNewPasswordWithProactiveBottomSheet {
   [self loadSignupPage];
 
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
@@ -361,8 +351,7 @@ id<GREYMatcher> ProactivePasswordGenerationUseKeyboardButton() {
 }
 
 // Tests that the bottom sheet does not show if the user isn't signed in.
-// TODO(crbug.com/440577394): This test is flaky.
-- (void)FLAKY_testUserSignedOut {
+- (void)testUserSignedOut {
   [ChromeEarlGrey signOutAndClearIdentities];
 
   [self loadSignupPage];

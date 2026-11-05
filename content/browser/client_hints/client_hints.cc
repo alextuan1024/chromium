@@ -214,27 +214,26 @@ GetWebHoldbackEffectiveConnectionType() {
 void SetHeaderToDouble(net::HttpRequestHeaders* headers,
                        WebClientHintsType client_hint_type,
                        double value) {
-  headers->SetHeader(network::GetClientHintToNameMap().at(client_hint_type),
+  headers->SetHeader(network::kClientHintToNameMap.at(client_hint_type),
                      DoubleToSpecCompliantString(value));
 }
 
 void SetHeaderToInt(net::HttpRequestHeaders* headers,
                     WebClientHintsType client_hint_type,
                     double value) {
-  headers->SetHeader(network::GetClientHintToNameMap().at(client_hint_type),
+  headers->SetHeader(network::kClientHintToNameMap.at(client_hint_type),
                      base::NumberToString(std::round(value)));
 }
 
 void SetHeaderToString(net::HttpRequestHeaders* headers,
                        WebClientHintsType client_hint_type,
                        const std::string& value) {
-  headers->SetHeader(network::GetClientHintToNameMap().at(client_hint_type),
-                     value);
+  headers->SetHeader(network::kClientHintToNameMap.at(client_hint_type), value);
 }
 
 void RemoveClientHintHeader(WebClientHintsType client_hint_type,
                             net::HttpRequestHeaders* headers) {
-  headers->RemoveHeader(network::GetClientHintToNameMap().at(client_hint_type));
+  headers->RemoveHeader(network::kClientHintToNameMap.at(client_hint_type));
 }
 
 void AddDeviceMemoryHeader(net::HttpRequestHeaders* headers,
@@ -516,7 +515,7 @@ void AddUAHeader(net::HttpRequestHeaders* headers,
 template <typename... Args>
 const std::string SerializeHeaderString(Args&&... args) {
   return net::structured_headers::SerializeItem(
-             net::structured_headers::Item(std::forward<Args>(args)...))
+             net::structured_headers::ItemView(std::forward<Args>(args)...))
       .value_or(std::string());
 }
 
@@ -702,7 +701,8 @@ void UpdateNavigationRequestClientUaHeadersImpl(
 
   if (ftn_for_devtools_override &&
       devtools_instrumentation::ApplyUserAgentMetadataOverrides(
-          ftn_for_devtools_override, &ua_metadata)) {
+          ftn_for_devtools_override, &ua_metadata,
+          data.resource_origin.GetURL())) {
     // Likewise, if devtools says to override client hints but provides no
     // value, disable them. This overwrites previous decision from UI.
     disable_due_to_custom_ua = !ua_metadata.has_value();
@@ -731,38 +731,44 @@ void UpdateNavigationRequestClientUaHeadersImpl(
     }
 
     if (ShouldAddClientHint(data, WebClientHintsType::kUAFullVersion)) {
-      AddUAHeader(headers, WebClientHintsType::kUAFullVersion,
-                  SerializeHeaderString(net::structured_headers::Item::string,
-                                        ua_metadata->full_version));
+      AddUAHeader(
+          headers, WebClientHintsType::kUAFullVersion,
+          SerializeHeaderString(net::structured_headers::ItemView::string,
+                                ua_metadata->full_version));
     }
 
     if (ShouldAddClientHint(data, WebClientHintsType::kUAArch)) {
-      AddUAHeader(headers, WebClientHintsType::kUAArch,
-                  SerializeHeaderString(net::structured_headers::Item::string,
-                                        ua_metadata->architecture));
+      AddUAHeader(
+          headers, WebClientHintsType::kUAArch,
+          SerializeHeaderString(net::structured_headers::ItemView::string,
+                                ua_metadata->architecture));
     }
 
     if (ShouldAddClientHint(data, WebClientHintsType::kUAPlatform)) {
-      AddUAHeader(headers, WebClientHintsType::kUAPlatform,
-                  SerializeHeaderString(net::structured_headers::Item::string,
-                                        ua_metadata->platform));
+      AddUAHeader(
+          headers, WebClientHintsType::kUAPlatform,
+          SerializeHeaderString(net::structured_headers::ItemView::string,
+                                ua_metadata->platform));
     }
 
     if (ShouldAddClientHint(data, WebClientHintsType::kUAPlatformVersion)) {
-      AddUAHeader(headers, WebClientHintsType::kUAPlatformVersion,
-                  SerializeHeaderString(net::structured_headers::Item::string,
-                                        ua_metadata->platform_version));
+      AddUAHeader(
+          headers, WebClientHintsType::kUAPlatformVersion,
+          SerializeHeaderString(net::structured_headers::ItemView::string,
+                                ua_metadata->platform_version));
     }
 
     if (ShouldAddClientHint(data, WebClientHintsType::kUAModel)) {
-      AddUAHeader(headers, WebClientHintsType::kUAModel,
-                  SerializeHeaderString(net::structured_headers::Item::string,
-                                        ua_metadata->model));
+      AddUAHeader(
+          headers, WebClientHintsType::kUAModel,
+          SerializeHeaderString(net::structured_headers::ItemView::string,
+                                ua_metadata->model));
     }
     if (ShouldAddClientHint(data, WebClientHintsType::kUABitness)) {
-      AddUAHeader(headers, WebClientHintsType::kUABitness,
-                  SerializeHeaderString(net::structured_headers::Item::string,
-                                        ua_metadata->bitness));
+      AddUAHeader(
+          headers, WebClientHintsType::kUABitness,
+          SerializeHeaderString(net::structured_headers::ItemView::string,
+                                ua_metadata->bitness));
     }
     if (ShouldAddClientHint(data, WebClientHintsType::kUAWoW64)) {
       AddUAHeader(headers, WebClientHintsType::kUAWoW64,
@@ -1121,7 +1127,7 @@ GetEnabledClientHints(const url::Origin& origin,
   network::ResourceRequest::TrustedParams::EnabledClientHints
       enabled_client_hints;
   enabled_client_hints.is_outermost_main_frame = data.is_outermost_main_frame;
-  const auto& client_hints_map = network::GetClientHintToNameMap();
+  const auto& client_hints_map = network::kClientHintToNameMap;
   // Note: these only check for per-hint origin/permissions policy settings, not
   // origin-level or "browser-level" policies like disabling JS or other
   // features.

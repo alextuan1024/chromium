@@ -22,9 +22,7 @@ struct FlexItemData;
 class CORE_EXPORT FlexLayoutAlgorithm
     : public LayoutAlgorithm<BlockNode, BoxFragmentBuilder, BlockBreakToken> {
  public:
-  explicit FlexLayoutAlgorithm(
-      const LayoutAlgorithmParams& params,
-      const HashMap<wtf_size_t, LayoutUnit>* cross_size_adjustments = nullptr);
+  explicit FlexLayoutAlgorithm(const LayoutAlgorithmParams& params);
   ~FlexLayoutAlgorithm() { flex_items_.clear(); }
 
   void SetupRelayoutData(const FlexLayoutAlgorithm& previous, RelayoutType);
@@ -154,19 +152,18 @@ class CORE_EXPORT FlexLayoutAlgorithm
   void ConsumeRemainingFragmentainerSpace(
       LayoutUnit offset_in_stitched_container,
       FlexLine* flex_line,
-      const FlexColumnBreakInfo* column_break_info = nullptr);
+      const ColumnBreakInfo* column_break_info = nullptr);
 
-  BreakStatus BreakBeforeChildIfNeeded(
-      LayoutInputNode child,
-      const LayoutResult& layout_result,
-      LayoutUnit fragmentainer_block_offset,
-      bool has_container_separation,
-      bool is_row_item,
-      FlexColumnBreakInfo* flex_column_break_info) {
+  BreakStatus BreakBeforeChildIfNeeded(LayoutInputNode child,
+                                       const LayoutResult& layout_result,
+                                       LayoutUnit fragmentainer_block_offset,
+                                       bool has_container_separation,
+                                       bool is_row_item,
+                                       ColumnBreakInfo* column_break_info) {
     return ::blink::BreakBeforeChildIfNeeded(
         child, layout_result, fragmentainer_block_offset,
         FragmentainerCapacityForChildren(), has_container_separation,
-        &container_builder_, is_row_item, flex_column_break_info);
+        &container_builder_, is_row_item, column_break_info);
   }
 
   // Insert a fragmentainer break before a row if necessary. Rows do not produce

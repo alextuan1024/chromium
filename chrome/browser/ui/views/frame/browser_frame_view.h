@@ -10,7 +10,6 @@
 
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/gfx/geometry/outsets_f.h"
@@ -24,6 +23,7 @@
 #include "ui/views/window/frame_view.h"
 
 class BrowserView;
+class BrowserWidget;
 
 // This enum is used for functions who rely on the state of the browser to alter
 // the appearance of the window frame.
@@ -103,6 +103,12 @@ class BrowserFrameView : public views::FrameView {
   // dependent. Default implementation does not have rounded corners; override
   // as needed.
   virtual gfx::RoundedCornersF GetWindowRoundedCorners() const;
+
+  // Gets the corner radius that would be used when the window is restored
+  // (unlike GetWindowRoundedCorners(), which returns the current radii). This
+  // may be an empirical value/best guess on some systems, and not all corners
+  // may match this value in all cases.
+  virtual int GetRestoredWindowCornerRadius() const;
 
   // Returns the inset from the top of the window to the top of the client
   // view. For a tabbed browser, this is the space occupied by the tab strip.
@@ -265,10 +271,7 @@ class BrowserFrameView : public views::FrameView {
 
   // Subscription to receive notifications when the frame's PaintAsActive state
   // changes.
-  base::CallbackListSubscription paint_as_active_subscription_ =
-      browser_widget_->RegisterPaintAsActiveChangedCallback(
-          base::BindRepeating(&BrowserFrameView::PaintAsActiveChanged,
-                              base::Unretained(this)));
+  base::CallbackListSubscription paint_as_active_subscription_;
 };
 
 namespace chrome {

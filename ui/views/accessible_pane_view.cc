@@ -5,6 +5,7 @@
 #include "ui/views/accessible_pane_view.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
@@ -118,7 +119,13 @@ bool AccessiblePaneView::SetPaneFocus(views::View* initial_focus) {
   focus_manager_->RegisterAccelerator(right_key_, normal, this);
   focus_manager_->AddFocusChangeListener(this);
 
+  pane_focus_changed_callbacks_.Notify(true);
   return true;
+}
+
+base::CallbackListSubscription AccessiblePaneView::AddPaneFocusChangedCallback(
+    PaneFocusChangedCallback callback) {
+  return pane_focus_changed_callbacks_.Add(std::move(callback));
 }
 
 bool AccessiblePaneView::SetPaneFocusAndFocusDefault() {
@@ -154,6 +161,7 @@ void AccessiblePaneView::RemovePaneFocus() {
   }
   focus_manager_->UnregisterAccelerator(left_key_, this);
   focus_manager_->UnregisterAccelerator(right_key_, this);
+  pane_focus_changed_callbacks_.Notify(false);
 }
 
 views::View* AccessiblePaneView::GetFirstFocusableChild() {
@@ -290,17 +298,17 @@ void AccessiblePaneView::OnDidChangeFocus(views::View* focused_before,
 // FocusTraversable overrides:
 
 views::FocusSearch* AccessiblePaneView::GetFocusSearch() {
-  DCHECK(pane_has_focus_);
+  CHECK(pane_has_focus_, base::NotFatalUntil::M163);
   return focus_search_.get();
 }
 
 views::FocusTraversable* AccessiblePaneView::GetFocusTraversableParent() {
-  DCHECK(pane_has_focus_);
+  CHECK(pane_has_focus_, base::NotFatalUntil::M163);
   return nullptr;
 }
 
 views::View* AccessiblePaneView::GetFocusTraversableParentView() {
-  DCHECK(pane_has_focus_);
+  CHECK(pane_has_focus_, base::NotFatalUntil::M163);
   return nullptr;
 }
 

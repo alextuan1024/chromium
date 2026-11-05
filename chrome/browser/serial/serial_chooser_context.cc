@@ -4,6 +4,7 @@
 
 #include "chrome/browser/serial/serial_chooser_context.h"
 
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -11,6 +12,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/observer_list.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -26,7 +28,9 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "content/public/browser/device_service.h"
+#include "device/bluetooth/public/cpp/bluetooth_uuid.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "services/device/public/cpp/bluetooth/bluetooth_utils.h"
 #include "services/device/public/cpp/usb/usb_ids.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -40,6 +44,7 @@ namespace {
 constexpr char kPortNameKey[] = "name";
 constexpr char kTokenKey[] = "token";
 constexpr char kBluetoothDevicePathKey[] = "bluetooth_device_path";
+constexpr char kBluetoothServiceClassIdKey[] = "bluetooth_service_class_id";
 #if BUILDFLAG(IS_WIN)
 constexpr char kDeviceInstanceIdKey[] = "device_instance_id";
 #else
@@ -129,6 +134,16 @@ void RecordPermissionRevocation(SerialPermissionRevoked type) {
   UMA_HISTOGRAM_ENUMERATION("Permissions.Serial.Revoked", type);
 }
 
+std::u16string GetServiceDisplayName(const device::BluetoothUUID& uuid) {
+  if (uuid == device::GetSerialPortProfileUUID()) {
+    return l10n_util::GetStringUTF16(IDS_SERIAL_PORT_PROFILE_NAME);
+  }
+  if (std::optional<uint16_t> short_uuid = uuid.Get16BitValue()) {
+    return base::ASCIIToUTF16(base::StringPrintf("0x%04x", *short_uuid));
+  }
+  return base::UTF8ToUTF16(uuid.canonical_value());
+}
+
 }  // namespace
 
 SerialChooserContext::SerialChooserContext(Profile* profile)
@@ -137,7 +152,7 @@ SerialChooserContext::SerialChooserContext(Profile* profile)
           ContentSettingsType::SERIAL_CHOOSER_DATA,
           HostContentSettingsMapFactory::GetForProfile(profile)),
       profile_(profile) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M162);
   permission_observation_.Observe(this);
 }
 
@@ -161,6 +176,8 @@ base::DictValue SerialChooserContext::PortInfoToValue(
   if (port.bluetooth_service_class_id &&
       port.bluetooth_service_class_id->IsValid()) {
     value.Set(kBluetoothDevicePathKey, port.path.LossyDisplayName());
+    value.Set(kBluetoothServiceClassIdKey,
+              port.bluetooth_service_class_id->canonical_value());
   } else {
 #if BUILDFLAG(IS_WIN)
     // Windows provides a handy device identifier which we can rely on to be
@@ -194,7 +211,10 @@ std::string SerialChooserContext::GetKeyForObject(
   const std::string* bluetooth_device_path =
       object.FindString(kBluetoothDevicePathKey);
   if (bluetooth_device_path) {
-    return *bluetooth_device_path;
+    const std::string* bluetooth_service_class_id =
+        object.FindString(kBluetoothServiceClassIdKey);
+    return base::StrCat(
+        {*bluetooth_device_path, "|", *bluetooth_service_class_id});
   }
 
 #if BUILDFLAG(IS_WIN)
@@ -223,8 +243,19 @@ bool SerialChooserContext::IsValidObject(const base::DictValue& object) {
   const std::string* token = object.FindString(kTokenKey);
   if (token)
     return object.size() == 2 && DecodeToken(*token);
-  if (object.FindString(kBluetoothDevicePathKey)) {
-    return object.size() == 2;
+  const std::string* bluetooth_device_path =
+      object.FindString(kBluetoothDevicePathKey);
+  if (bluetooth_device_path) {
+    if (bluetooth_device_path->empty()) {
+      return false;
+    }
+    const std::string* service_id =
+        object.FindString(kBluetoothServiceClassIdKey);
+    if (!service_id || object.size() != 3) {
+      return false;
+    }
+    device::BluetoothUUID uuid(*service_id);
+    return uuid.IsValid() && uuid.canonical_value() == *service_id;
   }
 
 #if BUILDFLAG(IS_WIN)
@@ -245,7 +276,17 @@ bool SerialChooserContext::IsValidObject(const base::DictValue& object) {
 std::u16string SerialChooserContext::GetObjectDisplayName(
     const base::DictValue& object) {
   const std::string* name = object.FindString(kPortNameKey);
-  DCHECK(name);
+  CHECK(name, base::NotFatalUntil::M162);
+  const std::string* service_id =
+      object.FindString(kBluetoothServiceClassIdKey);
+  if (service_id) {
+    device::BluetoothUUID uuid(*service_id);
+    if (uuid.IsValid()) {
+      return l10n_util::GetStringFUTF16(
+          IDS_SERIAL_PORT_CHOOSER_NAME_WITH_SERVICE, base::UTF8ToUTF16(*name),
+          GetServiceDisplayName(uuid));
+    }
+  }
   return base::UTF8ToUTF16(*name);
 }
 
@@ -401,7 +442,7 @@ void SerialChooserContext::RevokeObjectPermissionInternal(
     return;
   std::set<base::UnguessableToken>& ports = it->second;
 
-  DCHECK(IsValidObject(object));
+  CHECK(IsValidObject(object), base::NotFatalUntil::M162);
   base::UnguessableToken decoded_token = DecodeToken(*token);
   if (decoded_token.is_empty()) {
     return;
@@ -479,13 +520,15 @@ bool SerialChooserContext::HasPortPermission(
     const base::DictValue& device = object->value;
 
     // Objects provided by the parent class can be assumed valid.
-    DCHECK(IsValidObject(device));
+    CHECK(IsValidObject(device), base::NotFatalUntil::M162);
 
     if (port.bluetooth_service_class_id &&
         port.bluetooth_service_class_id->IsValid()) {
       const std::string* bluetooth_device_path =
           device.FindString(kBluetoothDevicePathKey);
-      if (!bluetooth_device_path) {
+      const std::string* bluetooth_service_class_id =
+          device.FindString(kBluetoothServiceClassIdKey);
+      if (!bluetooth_device_path || !bluetooth_service_class_id) {
         continue;
       }
       // LossyDisplayName for Bluetooth devices is always expected to be a MAC
@@ -493,6 +536,10 @@ bool SerialChooserContext::HasPortPermission(
       // is safe.
       if (base::UTF8ToUTF16(*bluetooth_device_path) !=
           port.path.LossyDisplayName()) {
+        continue;
+      }
+      if (*bluetooth_service_class_id !=
+          port.bluetooth_service_class_id->canonical_value()) {
         continue;
       }
       return true;
@@ -582,7 +629,6 @@ bool SerialChooserContext::CanStorePersistentEntry(
 
 const device::mojom::SerialPortInfo* SerialChooserContext::GetPortInfo(
     const base::UnguessableToken& token) {
-  DCHECK(is_initialized_);
   auto it = port_info_.find(token);
   return it == port_info_.end() ? nullptr : it->second.get();
 }
@@ -692,7 +738,6 @@ void SerialChooserContext::OnGetDevices(
     std::vector<device::mojom::SerialPortInfoPtr> ports) {
   for (auto& port : ports)
     port_info_.insert({port->token, std::move(port)});
-  is_initialized_ = true;
 }
 
 void SerialChooserContext::OnPortManagerConnectionError() {
@@ -720,9 +765,9 @@ void SerialChooserContext::OnPortManagerConnectionError() {
 bool SerialChooserContext::CanApplyPortSpecificPolicy() {
 #if BUILDFLAG(IS_CHROMEOS)
   auto* profile_helper = ash::ProfileHelper::Get();
-  DCHECK(profile_helper);
+  CHECK(profile_helper, base::NotFatalUntil::M162);
   user_manager::User* user = profile_helper->GetUserByProfile(profile_);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
   return user->IsAffiliated();
 #else
   return true;

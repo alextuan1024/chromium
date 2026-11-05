@@ -4,14 +4,53 @@
 
 #include "components/wallet/content/browser/walletable_pass_barcode_detector_impl.h"
 
+#include <optional>
+#include <utility>
+#include <vector>
+
 #include "base/barrier_callback.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/notreached.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/shape_detection_service.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
 #include "services/shape_detection/public/mojom/barcodedetection_provider.mojom.h"
+#include "third_party/skia/include/core/SkBitmap.h"
 
 namespace wallet {
+
+namespace {
+
+// Returns detector options that decode only `barcode_formats`, or every format
+// if it is empty. Restricting the formats lets the platform detector skip the
+// others.
+shape_detection::mojom::BarcodeDetectorOptionsPtr CreateBarcodeDetectorOptions(
+    const std::vector<shape_detection::mojom::BarcodeFormat>& barcode_formats) {
+  auto options = shape_detection::mojom::BarcodeDetectorOptions::New();
+  for (shape_detection::mojom::BarcodeFormat format : barcode_formats) {
+    if (format == shape_detection::mojom::BarcodeFormat::UNKNOWN) {
+      continue;
+    }
+    options->formats.push_back(format);
+  }
+  return options;
+}
+
+// Returns `std::nullopt` for a value this browser does not know, since the
+// value comes from the renderer.
+std::optional<WalletBarcodeSourceElement> ToWalletBarcodeSourceElement(
+    mojom::ImageSourceElement source_element) {
+  switch (source_element) {
+    case mojom::ImageSourceElement::kImg:
+      return WalletBarcodeSourceElement::kImg;
+    case mojom::ImageSourceElement::kCanvas:
+      return WalletBarcodeSourceElement::kCanvas;
+  }
+  return std::nullopt;
+}
+
+}  // namespace
 
 WalletablePassBarcodeDetectorImpl::WalletablePassBarcodeDetectorImpl() =
     default;
@@ -66,12 +105,12 @@ WalletablePassBarcodeDetectorImpl::CreateAndBindImageExtractorRemote(
 }
 
 mojo::Remote<shape_detection::mojom::BarcodeDetection>
-WalletablePassBarcodeDetectorImpl::CreateAndBindBarcodeDetectorRemote() {
+WalletablePassBarcodeDetectorImpl::CreateAndBindBarcodeDetectorRemote(
+    shape_detection::mojom::BarcodeDetectorOptionsPtr options) {
   mojo::Remote<shape_detection::mojom::BarcodeDetection> remote;
   mojo::Remote<shape_detection::mojom::BarcodeDetectionProvider> provider;
   content::GetShapeDetectionService()->BindBarcodeDetectionProvider(
       provider.BindNewPipeAndPassReceiver());
-  auto options = shape_detection::mojom::BarcodeDetectorOptions::New();
   provider->CreateBarcodeDetection(remote.BindNewPipeAndPassReceiver(),
                                    std::move(options));
   return remote;
@@ -79,9 +118,11 @@ WalletablePassBarcodeDetectorImpl::CreateAndBindBarcodeDetectorRemote() {
 
 void WalletablePassBarcodeDetectorImpl::ExtractImageWithRemote(
     mojo::Remote<mojom::ImageExtractor> remote,
+    mojom::ImageExtractionOptionsPtr extraction_options,
+    std::vector<shape_detection::mojom::BarcodeFormat> barcode_formats,
     WalletBarcodeDetectionDetectCallback callback) {
   if (!remote) {
-    std::move(callback).Run({});
+    std::move(callback).Run(BarcodeDetectionStatus::kDetectorUnavailable, {});
     return;
   }
 
@@ -100,24 +141,33 @@ void WalletablePassBarcodeDetectorImpl::ExtractImageWithRemote(
       weak_ptr_factory_.GetWeakPtr(), std::move(disconnected_cb)));
 
   image_extractor_remote_->ExtractImages(
+      std::move(extraction_options),
       base::BindOnce(&WalletablePassBarcodeDetectorImpl::OnImagesExtracted,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(success_cb)));
+                     weak_ptr_factory_.GetWeakPtr(), std::move(barcode_formats),
+                     std::move(success_cb)));
 }
 
 void WalletablePassBarcodeDetectorImpl::OnRemoteDisconnected(
     WalletBarcodeDetectionDetectCallback callback) {
   image_extractor_remote_.reset();
-  std::move(callback).Run({});
+  std::move(callback).Run(BarcodeDetectionStatus::kDetectorUnavailable, {});
 }
 
 void WalletablePassBarcodeDetectorImpl::OnImagesExtracted(
+    std::vector<shape_detection::mojom::BarcodeFormat> barcode_formats,
     WalletBarcodeDetectionDetectCallback callback,
-    const std::vector<SkBitmap>& images) {
+    std::vector<mojom::ExtractedImagePtr> images) {
   image_extractor_remote_.reset();
+
+  // Skips images whose source element is unknown, rather than crashing the
+  // browser on a value sent by a misbehaving renderer.
+  std::erase_if(images, [](const mojom::ExtractedImagePtr& image) {
+    return !ToWalletBarcodeSourceElement(image->source_element).has_value();
+  });
 
   // Don't start a new detection if there are no images.
   if (images.empty()) {
-    std::move(callback).Run({});
+    std::move(callback).Run(BarcodeDetectionStatus::kImagesNotFound, {});
     return;
   }
 
@@ -135,55 +185,69 @@ void WalletablePassBarcodeDetectorImpl::OnImagesExtracted(
   auto [success_callback, failure_callback] =
       base::SplitOnceCallback(std::move(callback));
 
-  barcode_detector_ = CreateAndBindBarcodeDetectorRemote();
+  barcode_detector_ = CreateAndBindBarcodeDetectorRemote(
+      CreateBarcodeDetectorOptions(barcode_formats));
   barcode_detector_.set_disconnect_handler(base::BindOnce(
       &WalletablePassBarcodeDetectorImpl::OnBarcodeDetectorDisconnected,
       weak_ptr_factory_.GetWeakPtr(), std::move(failure_callback)));
 
   // The barrier callback will be called after all images have been processed.
-  auto barrier_callback = base::BarrierCallback<
-      std::vector<shape_detection::mojom::BarcodeDetectionResultPtr>>(
+  auto barrier_callback = base::BarrierCallback<ImageDetectionResults>(
       images.size(),
       base::BindOnce(&WalletablePassBarcodeDetectorImpl::OnAllBarcodesDetected,
                      weak_ptr_factory_.GetWeakPtr(),
                      std::move(success_callback)));
 
-  for (const SkBitmap& image : images) {
-    barcode_detector_->Detect(image, barrier_callback);
+  // The barrier collects results in completion order, so each image's source
+  // element is bound to its own detection.
+  for (const mojom::ExtractedImagePtr& image : images) {
+    barcode_detector_->Detect(
+        image->bitmap,
+        base::BindOnce(
+            [](WalletBarcodeSourceElement source_element,
+               std::vector<shape_detection::mojom::BarcodeDetectionResultPtr>
+                   results) {
+              return ImageDetectionResults(source_element, std::move(results));
+            },
+            *ToWalletBarcodeSourceElement(image->source_element))
+            .Then(barrier_callback));
   }
 }
 
 void WalletablePassBarcodeDetectorImpl::OnAllBarcodesDetected(
     WalletBarcodeDetectionDetectCallback callback,
-    std::vector<std::vector<shape_detection::mojom::BarcodeDetectionResultPtr>>
-        all_detected_barcodes) {
+    std::vector<ImageDetectionResults> all_detected_barcodes) {
   std::vector<WalletBarcode> results;
-  for (const std::vector<shape_detection::mojom::BarcodeDetectionResultPtr>&
-           detected_barcodes : all_detected_barcodes) {
+  for (const auto& [source_element, detected_barcodes] :
+       all_detected_barcodes) {
     for (const shape_detection::mojom::BarcodeDetectionResultPtr& barcode :
          detected_barcodes) {
       if (!barcode) {
         continue;  // Skip null result.
       }
       results.push_back({.raw_value = barcode->raw_value,
-                         .format = MojoToBarcodeFormat(barcode->format)});
+                         .format = MojoToBarcodeFormat(barcode->format),
+                         .source_element = source_element});
     }
   }
   barcode_detector_.reset();
-  std::move(callback).Run(std::move(results));
+  std::move(callback).Run(BarcodeDetectionStatus::kSuccess, std::move(results));
 }
 
 void WalletablePassBarcodeDetectorImpl::OnBarcodeDetectorDisconnected(
     WalletBarcodeDetectionDetectCallback callback) {
   barcode_detector_.reset();
-  std::move(callback).Run({});
+  std::move(callback).Run(BarcodeDetectionStatus::kDetectorUnavailable, {});
 }
 
 void WalletablePassBarcodeDetectorImpl::Detect(
     content::WebContents* web_contents,
+    mojom::ImageExtractionOptionsPtr extraction_options,
+    std::vector<shape_detection::mojom::BarcodeFormat> barcode_formats,
     WalletBarcodeDetectionDetectCallback callback) {
   ExtractImageWithRemote(CreateAndBindImageExtractorRemote(web_contents),
-                         std::move(callback));
+                         std::move(extraction_options),
+                         std::move(barcode_formats), std::move(callback));
 }
 
 }  // namespace wallet

@@ -5,15 +5,20 @@
 #include "components/activity_reporter/configurator.h"
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "base/enterprise_util.h"
+#include "base/containers/flat_map.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/location.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/sequence_checker.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/version.h"
 #include "base/version_info/channel.h"
@@ -25,6 +30,7 @@
 #include "components/update_client/network.h"
 #include "components/update_client/persisted_data.h"
 #include "components/update_client/protocol_handler.h"
+#include "ui/base/device_form_factor.h"
 #include "url/gurl.h"
 
 namespace activity_reporter {
@@ -43,22 +49,19 @@ class ActivityService final : public update_client::ActivityDataService {
   void GetActiveBits(const std::vector<std::string>& ids,
                      base::OnceCallback<void(const std::set<std::string>&)>
                          callback) const override {
-    // This is only called when we have activity to report, assume active.
+    // update_client calls this only with the apps in the current update check,
+    // and `ActivityReporterImpl` starts update checks only for active apps.
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(std::move(callback),
-                       std::set<std::string>{std::string{kChromeActivityId}}));
+                       std::set<std::string>(ids.begin(), ids.end())));
   }
 
   void GetAndClearActiveBits(
       const std::vector<std::string>& ids,
       base::OnceCallback<void(const std::set<std::string>&)> callback)
       override {
-    // Other implementations of `GetActiveBits` rely on some local state to
-    // track whether activity has happened. Since
-    // `ActivityService::GetActiveBits` is only called when this app is
-    // active, it doesn't have any local state to clear, and this function
-    // just reduces to `GetActiveBits`.
+    // Every requested app is active, so there is nothing to clear.
     GetActiveBits(ids, std::move(callback));
   }
 
@@ -82,10 +85,10 @@ ActivityReporterConfigurator::ActivityReporterConfigurator(
     bool per_user_install)
     : pref_service_provider_(pref_service_provider),
       persisted_data_(update_client::CreatePersistedData(
-          pref_service_provider,
+          std::move(pref_service_provider),
           std::make_unique<ActivityService>())),
-      network_fetcher_factory_(network_fetcher_factory),
-      channel_provider_(channel_provider),
+      network_fetcher_factory_(std::move(network_fetcher_factory)),
+      channel_provider_(std::move(channel_provider)),
       per_user_install_(per_user_install) {}
 
 ActivityReporterConfigurator::~ActivityReporterConfigurator() = default;
@@ -143,6 +146,11 @@ std::string ActivityReporterConfigurator::GetLang() const {
 std::string ActivityReporterConfigurator::GetOSLongName() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return std::string{version_info::GetOSType()};
+}
+
+std::string ActivityReporterConfigurator::GetDeviceFormFactor() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return std::string(ui::DeviceFormFactorToString(ui::GetDeviceFormFactor()));
 }
 
 base::flat_map<std::string, std::string>
@@ -223,7 +231,14 @@ std::optional<bool> ActivityReporterConfigurator::IsMachineExternallyManaged()
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   policy::PlatformManagementService* service =
       policy::PlatformManagementService::GetInstance();
-  return service && service->IsManaged();
+  // Use GetManagementAuthorityTrustworthinessForPolicyLoading() instead of
+  // GetManagementAuthorityTrustworthiness(): on Windows, the latter counts
+  // per-user Azure AD workplace joins (personal devices with a linked
+  // work/school account), whereas this reports machine-level management
+  // (device-level join). >= TRUSTED also excludes LOW-trust local policies.
+  return service &&
+         service->GetManagementAuthorityTrustworthinessForPolicyLoading() >=
+             policy::ManagementAuthorityTrustworthiness::TRUSTED;
 }
 
 update_client::UpdaterStateProvider

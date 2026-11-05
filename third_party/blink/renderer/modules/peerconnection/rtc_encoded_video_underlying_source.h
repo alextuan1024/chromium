@@ -5,9 +5,11 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_ENCODED_VIDEO_UNDERLYING_SOURCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_ENCODED_VIDEO_UNDERLYING_SOURCE_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/scoped_refptr.h"
@@ -16,14 +18,19 @@
 #include "base/unguessable_token.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/core/streams/readable_stream_default_controller_with_script_scope.h"
 #include "third_party/blink/renderer/core/streams/underlying_source_base.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace webrtc {
 class TransformableVideoFrameInterface;
@@ -53,10 +60,29 @@ class MODULES_EXPORT RTCEncodedVideoUnderlyingSource
   ScriptPromise<IDLUndefined> Cancel(ScriptState*,
                                      ScriptValue reason,
                                      ExceptionState&) override;
+  void ContextDestroyed() override;
+
+  struct MODULES_EXPORT PendingKeyFrameRequest
+      : public GarbageCollected<PendingKeyFrameRequest> {
+    PendingKeyFrameRequest(Vector<String> remaining_rids,
+                           ScriptPromiseResolver<IDLUndefined>* resolver);
+    ~PendingKeyFrameRequest();
+
+    void Trace(Visitor* visitor) const;
+
+    Vector<String> remaining_rids;
+    Member<ScriptPromiseResolver<IDLUndefined>> resolver;
+  };
 
   void OnFrameFromSource(
       std::unique_ptr<webrtc::TransformableVideoFrameInterface>);
   void Close();
+  void AddPendingKeyFrameRequest(Vector<String> rids,
+                                 ScriptPromiseResolver<IDLUndefined>* resolver);
+  // Removes the pending request associated with `resolver`, if still present.
+  // Returns true if a request was removed.
+  bool RemovePendingKeyFrameRequest(
+      ScriptPromiseResolver<IDLUndefined>* resolver);
 
   // Called on any thread to indicate the source is being transferred to an
   // UnderlyingSource on a different thread to this.
@@ -82,6 +108,7 @@ class MODULES_EXPORT RTCEncodedVideoUnderlyingSource
   // In case there is controller override, this one is returned. If not,
   // Controller() from the underlying source base will be returned.
   ReadableStreamDefaultControllerWithScriptScope* GetController();
+  void ClearPendingKeyFrameRequests();
 
   FRIEND_TEST_ALL_PREFIXES(RTCEncodedVideoUnderlyingSourceTest,
                            QueuedFramesAreDroppedWhenOverflow);
@@ -99,6 +126,7 @@ class MODULES_EXPORT RTCEncodedVideoUnderlyingSource
   bool realm_is_boostable_context_;
   std::optional<base::PlatformThread::RaiseThreadTypeLease>
       realm_thread_type_lease_;
+  HeapVector<Member<PendingKeyFrameRequest>> pending_keyframe_requests_;
 };
 
 }  // namespace blink

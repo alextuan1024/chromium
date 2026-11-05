@@ -470,6 +470,12 @@ CrossProcessFrameConnector::GetRootRenderWidgetHostView() {
   return view;
 }
 
+input::RenderWidgetHostViewInput*
+CrossProcessFrameConnector::GetPinchZoomTarget() {
+  input::RenderWidgetHostViewInput* parent = GetParentViewInput();
+  return parent ? parent->GetPinchZoomTarget() : nullptr;
+}
+
 RenderWidgetHostViewBase*
 CrossProcessFrameConnector::GetParentRenderWidgetHostView() {
   // Input always hits the parent view if there is one so we should
@@ -504,9 +510,10 @@ bool CrossProcessFrameConnector::IsHidden() {
   return visibility_ == blink::mojom::FrameVisibility::kNotRendered;
 }
 
-void CrossProcessFrameConnector::DidUpdateVisualProperties(
-    const cc::RenderFrameMetadata& metadata) {
-  frame_proxy_in_parent_renderer_->DidUpdateVisualProperties(metadata);
+void CrossProcessFrameConnector::DidUpdateChildLocalSurfaceId(
+    const viz::LocalSurfaceId& local_surface_id) {
+  frame_proxy_in_parent_renderer_->DidUpdateChildLocalSurfaceId(
+      local_surface_id);
 }
 
 bool CrossProcessFrameConnector::HasSize() {
@@ -675,15 +682,6 @@ bool CrossProcessFrameConnector::IsVisible() {
 
 Visibility CrossProcessFrameConnector::EmbedderVisibility() {
   return current_child_frame_host()->delegate()->GetVisibility();
-}
-
-void CrossProcessFrameConnector::SetKeepSurfaceAlive(bool keep_alive) {
-  // Not needed here; since the necessary work will be done on the parent
-  // view (unless people start capturing frames or such).
-}
-
-bool CrossProcessFrameConnector::IsKeepingAlive() const {
-  return false;
 }
 
 RenderFrameHostImpl* CrossProcessFrameConnector::current_child_frame_host()

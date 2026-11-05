@@ -70,8 +70,9 @@ ServiceWorkerUpdateChecker::ServiceWorkerUpdateChecker(
       creator_policies_(std::move(creator_policies)) {
   CHECK(context_, base::NotFatalUntil::M159);
   CHECK(fetch_client_settings_object_, base::NotFatalUntil::M159);
-  CHECK(fetch_client_settings_object_->outgoing_referrer.is_valid(),
-        base::NotFatalUntil::M159);
+  // TODO(crbug.com/565874976): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
+  DCHECK(fetch_client_settings_object_->outgoing_referrer.is_valid());
 }
 
 ServiceWorkerUpdateChecker::~ServiceWorkerUpdateChecker() = default;
@@ -138,10 +139,14 @@ void ServiceWorkerUpdateChecker::OnOneUpdateCheckFinished(
     return;
   }
 
+  network::mojom::URLResponseHeadPtr response_head =
+      result == ServiceWorkerSingleScriptUpdateChecker::Result::kIdentical
+          ? running_checker_->TakeResponseHead()
+          : nullptr;
   script_check_results_.emplace(
       script_url,
       ComparedScriptInfo(old_resource_id, result, std::move(paused_state),
-                         std::move(failure_info)));
+                         std::move(failure_info), std::move(response_head)));
   if (running_checker_->network_accessed())
     network_accessed_ = true;
 
@@ -299,11 +304,13 @@ ServiceWorkerUpdateChecker::ComparedScriptInfo::ComparedScriptInfo(
     std::unique_ptr<ServiceWorkerSingleScriptUpdateChecker::PausedState>
         paused_state,
     std::unique_ptr<ServiceWorkerSingleScriptUpdateChecker::FailureInfo>
-        failure_info)
+        failure_info,
+    network::mojom::URLResponseHeadPtr response_head)
     : old_resource_id(old_resource_id),
       result(result),
       paused_state(std::move(paused_state)),
-      failure_info(std::move(failure_info)) {}
+      failure_info(std::move(failure_info)),
+      response_head(std::move(response_head)) {}
 
 ServiceWorkerUpdateChecker::ComparedScriptInfo::~ComparedScriptInfo() = default;
 

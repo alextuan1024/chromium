@@ -184,6 +184,13 @@ const char kInfobarSaveCvcModalEventHistogram[] =
 // Badge.
 const char kInfobarSaveCvcBadgeTappedHistogram[] =
     "Mobile.Messages.Badge.Tapped.InfobarTypeSaveCvc";
+
+// Histogram names for InfobarTypeContextualCue.
+// Banner.
+const char kInfobarContextualCueBannerEventHistogram[] =
+    "Mobile.Messages.Banner.Event.InfobarTypeContextualCue";
+const char kInfobarContextualCueBannerDismissTypeHistogram[] =
+    "Mobile.Messages.Banner.Dismiss.InfobarTypeContextualCue";
 }  // namespace
 
 @interface InfobarMetricsRecorder ()
@@ -259,6 +266,10 @@ const char kInfobarSaveCvcBadgeTappedHistogram[] =
       UMA_HISTOGRAM_ENUMERATION(
           kInfobarAutofillAiSaveEntityBannerEventHistogram, event);
       break;
+    case InfobarType::kInfobarTypeContextualCue:
+      base::UmaHistogramEnumeration(kInfobarContextualCueBannerEventHistogram,
+                                    event);
+      break;
     case InfobarType::kInfobarTypeReaderMode:
       // Reader Mode infobar does not support banners.
       NOTREACHED();
@@ -329,6 +340,10 @@ const char kInfobarSaveCvcBadgeTappedHistogram[] =
       UMA_HISTOGRAM_ENUMERATION(
           kInfobarAutofillAiSaveEntityBannerDismissTypeHistogram, dismissType);
       break;
+    case InfobarType::kInfobarTypeContextualCue:
+      base::UmaHistogramEnumeration(
+          kInfobarContextualCueBannerDismissTypeHistogram, dismissType);
+      break;
     case InfobarType::kInfobarTypeReaderMode:
       // Reader Mode infobar does not support banners.
       NOTREACHED();
@@ -395,8 +410,9 @@ const char kInfobarSaveCvcBadgeTappedHistogram[] =
       base::UmaHistogramEnumeration(
           kInfobarAutofillAiSaveEntityModalEventHistogram, event);
       break;
+    case InfobarType::kInfobarTypeContextualCue:
     case InfobarType::kInfobarTypeReaderMode:
-      // Reader Mode infobar does not support modals.
+      // Modals are not supported.
       NOTREACHED();
   }
 }
@@ -455,8 +471,9 @@ const char kInfobarSaveCvcBadgeTappedHistogram[] =
     case InfobarType::kInfobarTypeAutofillAiSaveEntity:
       // Autofill Ai infobar does not support badges.
       NOTREACHED();
+    case InfobarType::kInfobarTypeContextualCue:
     case InfobarType::kInfobarTypeReaderMode:
-      // Reader Mode infobar badge is not interactive.
+      // Badge is not interactive / not supported.
       NOTREACHED();
   }
 }

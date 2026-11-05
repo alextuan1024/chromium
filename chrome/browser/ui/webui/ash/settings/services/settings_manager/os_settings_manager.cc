@@ -4,9 +4,12 @@
 
 #include "chrome/browser/ui/webui/ash/settings/services/settings_manager/os_settings_manager.h"
 
+#include <utility>
+
 #include "ash/public/cpp/input_device_settings_controller.h"
 #include "ash/webui/common/backend/accelerator_fetcher.h"
 #include "ash/webui/common/backend/shortcut_input_provider.h"
+#include "base/functional/callback.h"
 #include "chrome/browser/nearby_sharing/common/nearby_share_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/apps/app_notification_handler.h"
@@ -23,13 +26,17 @@
 #include "chromeos/ash/components/phonehub/phone_hub_manager.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "content/public/browser/web_ui_data_source.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash::settings {
 
 OsSettingsManager::OsSettingsManager(
     PrefService* local_state,
     const ApplicationLocaleStorage* application_locale_storage,
+    MetricsServiceGetter metrics_service_getter,
     policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    system::TimeZoneResolverManager* timezone_resolver_manager,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     Profile* profile,
     local_search_service::LocalSearchServiceProxy* local_search_service_proxy,
     multidevice_setup::MultiDeviceSetupClient* multidevice_setup_client,
@@ -45,7 +52,10 @@ OsSettingsManager::OsSettingsManager(
       sections_(
           std::make_unique<OsSettingsSections>(local_state,
                                                application_locale_storage,
+                                               metrics_service_getter,
                                                browser_policy_connector_ash,
+                                               timezone_resolver_manager,
+                                               std::move(url_loader_factory),
                                                profile,
                                                search_tag_registry_.get(),
                                                multidevice_setup_client,
@@ -57,10 +67,11 @@ OsSettingsManager::OsSettingsManager(
                                                app_service_proxy,
                                                eche_app_manager)),
       hierarchy_(std::make_unique<Hierarchy>(sections_.get())),
-      settings_user_action_tracker_(
-          std::make_unique<SettingsUserActionTracker>(hierarchy_.get(),
-                                                      sections_.get(),
-                                                      profile->GetPrefs())),
+      settings_user_action_tracker_(std::make_unique<SettingsUserActionTracker>(
+          std::move(metrics_service_getter),
+          hierarchy_.get(),
+          sections_.get(),
+          profile->GetPrefs())),
       search_handler_(
           std::make_unique<SearchHandler>(search_tag_registry_.get(),
                                           sections_.get(),
@@ -75,7 +86,7 @@ OsSettingsManager::OsSettingsManager(
                                                        profile)),
       graduation_handler_(std::make_unique<GraduationHandler>(profile)),
       input_device_settings_provider_(
-          std::make_unique<InputDeviceSettingsProvider>()),
+          std::make_unique<InputDeviceSettingsProvider>(app_service_proxy)),
       display_settings_provider_(std::make_unique<DisplaySettingsProvider>()),
       shortcut_input_provider_(std::make_unique<ShortcutInputProvider>()),
       accelerator_fetcher_(std::make_unique<AcceleratorFetcher>()) {}

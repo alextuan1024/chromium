@@ -12,8 +12,10 @@ export function getHtml(this: HelpBubbleElement) {
 <link rel="stylesheet"
     href="chrome://theme/colors.css?sets=ui,chrome&shadow_host=true">
 <div class="help-bubble" role="alertdialog" aria-modal="true"
-    aria-labelledby="title" aria-describedby="body" aria-live="assertive"
-    @keydown="${this.onKeydown_}" @click="${this.onHelpBubbleClick_}">
+    aria-labelledby="title" aria-describedby="${
+        this.shouldShowBodyInTopContainer_() ? 'topBody' : 'mainBody'}"
+    aria-live="assertive" @keydown="${this.onKeydown_}"
+    @click="${this.onHelpBubbleClick_}">
   <div id="topContainer">
     <div id="bodyIcon" ?hidden="${!this.shouldShowBodyIcon_()}" role="image"
         aria-label="${this.bodyIconAltText}">
@@ -49,7 +51,9 @@ export function getHtml(this: HelpBubbleElement) {
           tabindex="${this.getButtonTabIndex_(item)}"
           class="${this.getButtonClass_(item.isDefault)}"
           @click="${this.onButtonClick_}" role="button"
-          aria-label="${item.text}">${item.text}</cr-button>
+          aria-label="${item.text}"><!--
+        -->${item.text}<!--
+      --></cr-button>
     `)}
   </div>
   <div id="arrow" class="${this.getArrowClass_()}">

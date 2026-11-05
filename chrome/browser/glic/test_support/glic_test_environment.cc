@@ -113,7 +113,7 @@ void ServeGlicFiles(net::test_server::EmbeddedTestServer* server,
   if (!server) {
     return;
   }
-  if (server->Started()) {
+  if (server->StartedAcceptingConnection()) {
     LOG(WARNING) << server_name
                  << " was already started; unable to serve Glic test files.";
     return;
@@ -142,10 +142,7 @@ void ServeGlicFiles(net::test_server::EmbeddedTestServer* server,
 namespace glic {
 
 namespace internal {
-GlicTestEnvironmentConfig& GetConfig() {
-  static GlicTestEnvironmentConfig config;
-  return config;
-}
+GlicTestEnvironmentConfig* g_current_config = nullptr;
 
 // A fake GlicCookieSynchronizer.
 class TestCookieSynchronizer : public glic::GlicCookieSynchronizer {
@@ -243,9 +240,9 @@ GlicTestEnvironment::GlicTestEnvironment(
     const GlicTestEnvironmentConfig& config,
     std::vector<base::test::FeatureRef> enabled_features,
     std::vector<base::test::FeatureRef> disabled_features)
-    : shared_(enabled_features, disabled_features) {
-  internal::GetConfig() = config;
-
+    : config_(config),
+      current_config_resetter_(&internal::g_current_config, &config_),
+      shared_(enabled_features, disabled_features) {
   // The service factory needs to be created before any services are created.
   internal::GlicTestEnvironmentServiceFactory::GetInstance();
   create_services_subscription_ =
@@ -267,12 +264,12 @@ GlicTestEnvironment::~GlicTestEnvironment() = default;
 
 void GlicTestEnvironment::SetForceSigninAndModelExecutionCapability(
     bool force) {
-  internal::GetConfig().force_signin_and_glic_capability = force;
+  config_.force_signin_and_glic_capability = force;
 }
 
 void GlicTestEnvironment::SetFreStatusForNewProfiles(
     std::optional<prefs::FreStatus> fre_status) {
-  internal::GetConfig().fre_status = fre_status;
+  config_.fre_status = fre_status;
 }
 
 GlicTestEnvironmentService* GlicTestEnvironment::GetService(Profile* profile,
@@ -293,7 +290,7 @@ void GlicTestEnvironment::OnWillCreateBrowserContextKeyedServices(
                     "ineligible profile.";
     return;
   }
-  if (internal::GetConfig().force_signin_and_glic_capability) {
+  if (config_.force_signin_and_glic_capability) {
     IdentityTestEnvironmentProfileAdaptor::
         SetIdentityTestEnvironmentFactoriesOnBrowserContext(context);
 
@@ -319,35 +316,28 @@ void GlicTestEnvironment::OnProfileInitializationComplete(Profile* profile) {
 bool GlicTestEnvironment::StartTestServerIfNeeded(
     net::test_server::EmbeddedTestServer* server,
     net::test_server::EmbeddedTestServerHandle& handle) {
-  if (server->Started()) {
+  if (server->StartedAcceptingConnection()) {
     return true;
   }
 
-  handle = server->StartAndReturnHandle();
+  handle = server->Started()
+               ? server->StartAcceptingConnectionsAndReturnHandle()
+               : server->StartAndReturnHandle();
   return static_cast<bool>(handle);
 }
 
-bool GlicTestEnvironment::SetupEmbeddedTestServers(
-    net::test_server::EmbeddedTestServer* http_server,
+bool GlicTestEnvironment::InitializeEmbeddedTestServers(
     net::test_server::EmbeddedTestServer* https_server) {
-  CHECK(guest_url_.is_empty()) << "SetupEmbeddedTestServers called twice";
+  CHECK(guest_url_.is_empty()) << "InitializeEmbeddedTestServers called twice";
   CHECK(https_server);
 
-  if (http_server) {
-    ServeGlicFiles(http_server, "HTTP test server");
-    if (!StartTestServerIfNeeded(http_server, test_server_handle_)) {
-      return false;
-    }
-  }
-  ServeGlicFiles(https_server, "HTTPS test server");
-
-  if (!StartTestServerIfNeeded(https_server, https_test_server_handle_)) {
+  // Initialize the listen socket so the port is known and `GetURL()` can be
+  // queried in `SetUpCommandLine()`, without starting the IO thread before the
+  // sandbox is initialized.
+  if (!https_server->Started() && !https_server->InitializeAndListen()) {
     return false;
   }
 
-  // Need to set this here rather than in SetUpCommandLine because we need to
-  // use the embedded test server to get the right URL and it's not started
-  // at that time.
   std::ostringstream path;
   path << glic_page_path_;
 
@@ -369,16 +359,40 @@ bool GlicTestEnvironment::SetupEmbeddedTestServers(
   return true;
 }
 
+bool GlicTestEnvironment::SetupEmbeddedTestServers(
+    net::test_server::EmbeddedTestServer* http_server,
+    net::test_server::EmbeddedTestServer* https_server) {
+  CHECK(https_server);
+
+  if (guest_url_.is_empty() && !InitializeEmbeddedTestServers(https_server)) {
+    return false;
+  }
+
+  if (http_server) {
+    ServeGlicFiles(http_server, "HTTP test server");
+    if (!StartTestServerIfNeeded(http_server, test_server_handle_)) {
+      return false;
+    }
+  }
+  ServeGlicFiles(https_server, "HTTPS test server");
+
+  if (!StartTestServerIfNeeded(https_server, https_test_server_handle_)) {
+    return false;
+  }
+
+  return true;
+}
+
 void GlicTestEnvironment::SetGlicPagePath(const std::string& path) {
   CHECK(guest_url_.is_empty())
-      << "SetGlicPagePath must be called before SetupEmbeddedTestServers";
+      << "SetGlicPagePath must be called before InitializeEmbeddedTestServers";
   glic_page_path_ = path;
 }
 
 void GlicTestEnvironment::AddMockGlicQueryParam(const std::string_view& key,
                                                 const std::string_view& value) {
-  CHECK(guest_url_.is_empty())
-      << "AddMockGlicQueryParam must be called before SetupEmbeddedTestServers";
+  CHECK(guest_url_.is_empty()) << "AddMockGlicQueryParam must be called before "
+                                  "InitializeEmbeddedTestServers";
   mock_glic_query_params_.emplace(key, value);
 }
 
@@ -395,7 +409,9 @@ GlicTestEnvironmentService::GlicTestEnvironmentService(Profile* profile)
   if (cookie_synchronizer) {
     cookie_synchronizer_ = cookie_synchronizer->GetWeakPtr();
   }
-  const GlicTestEnvironmentConfig& config = internal::GetConfig();
+  const GlicTestEnvironmentConfig default_config;
+  const GlicTestEnvironmentConfig& config =
+      internal::g_current_config ? *internal::g_current_config : default_config;
   if (config.fre_status) {
     SetFRECompletion(*config.fre_status);
   }
@@ -482,6 +498,18 @@ internal::GlicTestEnvironmentShared::GlicTestEnvironmentShared(
     std::vector<base::test::FeatureRef> enabled_features,
     std::vector<base::test::FeatureRef> disabled_features) {
   scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
+
+  // The enabled list above includes chromeos::features::kFeatureManagementGlic
+  // so that the system requirement is met, but
+  // GlicGlobalEnabling::IsSystemRequirementMet() reads it into a
+  // function-local static. That static is settled by whichever test in the
+  // process asks first, so without pinning it here the features set up above
+  // may have no effect.
+  GlicEnabling::SetSystemRequirementMetForTesting(true);
+}
+
+internal::GlicTestEnvironmentShared::~GlicTestEnvironmentShared() {
+  GlicEnabling::SetSystemRequirementMetForTesting(std::nullopt);
 }
 
 }  // namespace glic

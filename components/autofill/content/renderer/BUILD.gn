@@ -6,10 +6,14 @@ static_library("renderer") {
   sources = [
     "a11y_util.cc",
     "a11y_util.h",
-    "at_memory_handler.cc",
-    "at_memory_handler.h",
     "autofill_agent.cc",
     "autofill_agent.h",
+    "custom_form_control_agent.cc",
+    "custom_form_control_agent.h",
+    "custom_form_control_script_executor.cc",
+    "custom_form_control_script_executor.h",
+    "custom_form_control_util.cc",
+    "custom_form_control_util.h",
     "email_verification_handler.cc",
     "email_verification_handler.h",
     "form_autofill_issues.cc",
@@ -54,7 +58,6 @@ static_library("renderer") {
     "//components/autofill/core/common:autofill_regex",
     "//components/password_manager/core/common",
     "//components/safe_browsing:buildflags",
-    "//components/signin/public/base:signin_buildflags",
     "//components/signin/public/base:signin_switches",
     "//components/strings",
     "//content/public/common",
@@ -62,16 +65,15 @@ static_library("renderer") {
     "//google_apis",
     "//mojo/public/cpp/system",
     "//net",
-    "//services/metrics/public/cpp:ukm_builders",
     "//services/service_manager/public/cpp",
     "//skia",
     "//third_party/blink/public:blink",
     "//third_party/blink/public/common",
     "//third_party/re2",
     "//ui/base",
+    "//url",
+    "//v8",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 static_library("test_support") {
@@ -82,6 +84,7 @@ static_library("test_support") {
     "autofill_renderer_test.h",
     "focus_test_util.cc",
     "focus_test_util.h",
+    "form_cache_test_api.h",
     "form_submission_tracker_test_api.h",
     "javascript_autofill_tracker_test_api.h",
     "test_password_autofill_agent.cc",
@@ -128,9 +131,11 @@ source_set("browser_tests") {
   testonly = true
   sources = [
     "a11y_util_browsertest.cc",
-    "at_memory_handler_browsertest.cc",
     "autofill_agent_browsertest.cc",
     "autofill_agent_form_interaction_browsertest.cc",
+    "custom_form_control_agent_browsertest.cc",
+    "custom_form_control_script_executor_browsertest.cc",
+    "custom_form_control_util_browsertest.cc",
     "dom_label_browsertest.cc",
     "email_verification_handler_browsertest.cc",
     "form_autofill_issues_browsertest.cc",
@@ -149,10 +154,8 @@ source_set("browser_tests") {
     "//components/autofill/content/common/mojom",
     "//components/autofill/core/common",
     "//components/autofill/core/common:test_support",
-    "//components/ukm:test_support",
     "//content/public/renderer",
     "//google_apis",
-    "//services/metrics/public/cpp:ukm_builders",
     "//testing/gmock",
     "//testing/gtest",
     "//third_party/blink/public:blink",

@@ -29,6 +29,7 @@
 #include <utility>
 
 #include "base/check_deref.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/metrics/document_update_reason.h"
 #include "third_party/blink/renderer/core/animation/animation_utils.h"
 #include "third_party/blink/renderer/core/animation/css/css_animation.h"
@@ -141,6 +142,7 @@
 #include "third_party/blink/renderer/core/layout/constraint_space.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_cursor.h"
+#include "third_party/blink/renderer/core/layout/layout_invalidation_reason.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/layout_result.h"
@@ -370,95 +372,73 @@ enum ForcePseudoClassFlags {
   kPseudoLink = 1 << 23,
   kPseudoOpen = 1 << 24,
   kPseudoTargetCurrent = 1 << 25,
+  kPseudoBuffering = 1 << 26,
+  kPseudoStalled = 1 << 27,
 };
 
 static unsigned ComputePseudoClassMask(
     std::unique_ptr<protocol::Array<String>> pseudo_class_array) {
-  DEFINE_STATIC_LOCAL(String, active, ("active"));
-  DEFINE_STATIC_LOCAL(String, hover, ("hover"));
-  DEFINE_STATIC_LOCAL(String, focus, ("focus"));
-  DEFINE_STATIC_LOCAL(String, focusVisible, ("focus-visible"));
-  DEFINE_STATIC_LOCAL(String, focusWithin, ("focus-within"));
-  DEFINE_STATIC_LOCAL(String, target, ("target"));
-  DEFINE_STATIC_LOCAL(String, targetCurrent, ("target-current"));
-  // Specific pseudo states
-  DEFINE_STATIC_LOCAL(String, enabled, ("enabled"));
-  DEFINE_STATIC_LOCAL(String, disabled, ("disabled"));
-  DEFINE_STATIC_LOCAL(String, valid, ("valid"));
-  DEFINE_STATIC_LOCAL(String, invalid, ("invalid"));
-  DEFINE_STATIC_LOCAL(String, userValid, ("user-valid"));
-  DEFINE_STATIC_LOCAL(String, userInvalid, ("user-invalid"));
-  DEFINE_STATIC_LOCAL(String, required, ("required"));
-  DEFINE_STATIC_LOCAL(String, optional, ("optional"));
-  DEFINE_STATIC_LOCAL(String, readOnly, ("read-only"));
-  DEFINE_STATIC_LOCAL(String, readWrite, ("read-write"));
-  DEFINE_STATIC_LOCAL(String, inRange, ("in-range"));
-  DEFINE_STATIC_LOCAL(String, outOfRange, ("out-of-range"));
-  DEFINE_STATIC_LOCAL(String, visited, ("visited"));
-  DEFINE_STATIC_LOCAL(String, checked, ("checked"));
-  DEFINE_STATIC_LOCAL(String, indeterminate, ("indeterminate"));
-  DEFINE_STATIC_LOCAL(String, placeholderShown, ("placeholder-shown"));
-  DEFINE_STATIC_LOCAL(String, autofill, ("autofill"));
-  DEFINE_STATIC_LOCAL(String, link, ("link"));
-  DEFINE_STATIC_LOCAL(String, open, ("open"));
-
   if (!pseudo_class_array || pseudo_class_array->empty())
     return kPseudoNone;
 
   unsigned result = kPseudoNone;
   for (const String& pseudo_class : *pseudo_class_array) {
-    if (pseudo_class == active) {
+    if (pseudo_class == String::FromLiteral<"active">()) {
       result |= kPseudoActive;
-    } else if (pseudo_class == hover) {
+    } else if (pseudo_class == String::FromLiteral<"hover">()) {
       result |= kPseudoHover;
-    } else if (pseudo_class == focus) {
+    } else if (pseudo_class == String::FromLiteral<"focus">()) {
       result |= kPseudoFocus;
-    } else if (pseudo_class == focusVisible) {
+    } else if (pseudo_class == String::FromLiteral<"focus-visible">()) {
       result |= kPseudoFocusVisible;
-    } else if (pseudo_class == focusWithin) {
+    } else if (pseudo_class == String::FromLiteral<"focus-within">()) {
       result |= kPseudoFocusWithin;
-    } else if (pseudo_class == target) {
+    } else if (pseudo_class == String::FromLiteral<"target">()) {
       result |= kPseudoTarget;
-    } else if (pseudo_class == targetCurrent) {
+    } else if (pseudo_class == String::FromLiteral<"target-current">()) {
       result |= kPseudoTargetCurrent;
-    } else if (pseudo_class == enabled) {
+    } else if (pseudo_class == String::FromLiteral<"enabled">()) {
       result |= kPseudoEnabled;
-    } else if (pseudo_class == disabled) {
+    } else if (pseudo_class == String::FromLiteral<"disabled">()) {
       result |= kPseudoDisabled;
-    } else if (pseudo_class == valid) {
+    } else if (pseudo_class == String::FromLiteral<"valid">()) {
       result |= kPseudoValid;
-    } else if (pseudo_class == invalid) {
+    } else if (pseudo_class == String::FromLiteral<"invalid">()) {
       result |= kPseudoInvalid;
-    } else if (pseudo_class == userValid) {
+    } else if (pseudo_class == String::FromLiteral<"user-valid">()) {
       result |= kPseudoUserValid;
-    } else if (pseudo_class == userInvalid) {
+    } else if (pseudo_class == String::FromLiteral<"user-invalid">()) {
       result |= kPseudoUserInvalid;
-    } else if (pseudo_class == required) {
+    } else if (pseudo_class == String::FromLiteral<"required">()) {
       result |= kPseudoRequired;
-    } else if (pseudo_class == optional) {
+    } else if (pseudo_class == String::FromLiteral<"optional">()) {
       result |= kPseudoOptional;
-    } else if (pseudo_class == readOnly) {
+    } else if (pseudo_class == String::FromLiteral<"read-only">()) {
       result |= kPseudoReadOnly;
-    } else if (pseudo_class == readWrite) {
+    } else if (pseudo_class == String::FromLiteral<"read-write">()) {
       result |= kPseudoReadWrite;
-    } else if (pseudo_class == inRange) {
+    } else if (pseudo_class == String::FromLiteral<"in-range">()) {
       result |= kPseudoInRange;
-    } else if (pseudo_class == outOfRange) {
+    } else if (pseudo_class == String::FromLiteral<"out-of-range">()) {
       result |= kPseudoOutOfRange;
-    } else if (pseudo_class == visited) {
+    } else if (pseudo_class == String::FromLiteral<"visited">()) {
       result |= kPseudoVisited;
-    } else if (pseudo_class == checked) {
+    } else if (pseudo_class == String::FromLiteral<"checked">()) {
       result |= kPseudoChecked;
-    } else if (pseudo_class == indeterminate) {
+    } else if (pseudo_class == String::FromLiteral<"indeterminate">()) {
       result |= kPseudoIndeterminate;
-    } else if (pseudo_class == placeholderShown) {
+    } else if (pseudo_class == String::FromLiteral<"placeholder-shown">()) {
       result |= kPseudoPlaceholderShown;
-    } else if (pseudo_class == autofill) {
+    } else if (pseudo_class == String::FromLiteral<"autofill">()) {
       result |= kPseudoAutofill;
-    } else if (pseudo_class == link) {
+    } else if (pseudo_class == String::FromLiteral<"link">()) {
       result |= kPseudoLink;
-    } else if (pseudo_class == open) {
+    } else if (pseudo_class == String::FromLiteral<"open">()) {
       result |= kPseudoOpen;
+    } else if (pseudo_class == String::FromLiteral<"buffering">()) {
+      result |= kPseudoBuffering;
+    } else if (pseudo_class == String::FromLiteral<"stalled">()) {
+      result |= kPseudoStalled;
     }
   }
   return result;
@@ -911,6 +891,7 @@ void InspectorCSSAgent::Reset() {
 void InspectorCSSAgent::ResetNonPersistentData() {
   ResetPseudoStates();
   ResetStartingStyles();
+  ResetPositionTryOptions();
 }
 
 void InspectorCSSAgent::enable(std::unique_ptr<EnableCallback> prp_callback) {
@@ -1217,6 +1198,12 @@ void InspectorCSSAgent::ForcePseudoState(Element* element,
     case CSSSelector::kPseudoOpen:
       force = forced_pseudo_state & kPseudoOpen;
       break;
+    case CSSSelector::kPseudoBuffering:
+      force = forced_pseudo_state & kPseudoBuffering;
+      break;
+    case CSSSelector::kPseudoStalled:
+      force = forced_pseudo_state & kPseudoStalled;
+      break;
     default:
       break;
   }
@@ -1239,6 +1226,43 @@ void InspectorCSSAgent::ForceStartingStyle(Element* element, bool* result) {
   }
 
   *result = true;
+}
+
+// Sets `*forced_index` to 0 to force the base position (without fallbacks), or
+// to 1..N to force the 1-based index into `position-try-fallbacks`. Leaves
+// `*forced_index` unchanged if no option is forced for `element`.
+void InspectorCSSAgent::ForcePositionTryOption(
+    Element* element,
+    std::optional<wtf_size_t>* forced_index) {
+  if (node_id_to_forced_position_try_option_.empty() || !element) {
+    return;
+  }
+
+  int node_id = dom_agent_->BoundNodeId(element);
+  if (!node_id) {
+    return;
+  }
+
+  auto it = node_id_to_forced_position_try_option_.find(node_id);
+  if (it == node_id_to_forced_position_try_option_.end()) {
+    return;
+  }
+
+  wtf_size_t index = it->value;
+  if (index > 0) {
+    const ComputedStyle* style = element->GetComputedStyle();
+    const PositionTryFallbacks* fallbacks =
+        style ? style->GetPositionTryFallbacks() : nullptr;
+    if (!fallbacks || index - 1 >= fallbacks->GetFallbacks().size() ||
+        !element->GetDocument()
+             .GetStyleEngine()
+             .TrySetFromFallback(fallbacks->GetFallbacks()[index - 1])
+             .has_value()) {
+      index = 0;
+    }
+  }
+
+  *forced_index = index;
 }
 
 protocol::Response InspectorCSSAgent::getMediaQueries(
@@ -1938,17 +1962,27 @@ InspectorCSSAgent::CustomPropertiesForNode(Element* element) {
       std::make_unique<
           protocol::Array<protocol::CSS::CSSPropertyRegistration>>());
   Document& document = element->GetDocument();
-  auto style_sheets = document_to_css_style_sheets_.find(&document);
-  if (style_sheets == document_to_css_style_sheets_.end()) {
-    return result;
-  }
-
   const ComputedStyle* style = element->EnsureComputedStyle();
   if (!style) {
     return result;
   }
 
-  for (const AtomicString& var_name : style->GetVariableNames()) {
+  // Check after EnsureComputedStyle(): style resolution can synchronously
+  // re-enter the agent (e.g. via FontsUpdated()) and mutate
+  // `document_to_css_style_sheets_`.
+  if (!document_to_css_style_sheets_.Contains(&document)) {
+    return result;
+  }
+
+  // GetVariableNames() is backed by a HashSet; sort so that the protocol
+  // output has a deterministic order.
+  Vector<AtomicString> variable_names = style->GetVariableNames();
+  std::sort(variable_names.begin(), variable_names.end(),
+            [](const AtomicString& a, const AtomicString& b) {
+              return CodeUnitCompareLessThan(a, b);
+            });
+
+  for (const AtomicString& var_name : variable_names) {
     const auto* registration =
         PropertyRegistration::From(document.GetExecutionContext(), var_name);
     if (!registration) {
@@ -1956,6 +1990,15 @@ InspectorCSSAgent::CustomPropertiesForNode(Element* element) {
     }
 
     if (StyleRuleProperty* rule = registration->PropertyRule()) {
+      // Look up the stylesheets per rule rather than holding an iterator across
+      // BindStyleSheet(), which can synchronously flush pending notifications
+      // (e.g. via Audits.issueAdded) and mutate
+      // `document_to_css_style_sheets_`.
+      DocumentStyleSheets::iterator style_sheets =
+          document_to_css_style_sheets_.find(&document);
+      if (style_sheets == document_to_css_style_sheets_.end()) {
+        continue;
+      }
       // Find CSSOM wrapper.
       CSSPropertyRule* property_rule = nullptr;
       for (CSSStyleSheet* style_sheet : *style_sheets->value) {
@@ -2017,11 +2060,29 @@ static CSSRuleType* FindCSSRuleInSet(
   return nullptr;
 }
 
+// Looks up the document's stylesheet set on each search rather than holding an
+// iterator across EnsureComputedStyle() or BindStyleSheet(), both of which can
+// synchronously flush pending notifications and mutate `style_sheets_map`.
+template <class CSSRuleType, class DocumentStyleSheetsMap>
+static CSSRuleType* FindCSSRuleInDocumentStyleSheets(
+    const DocumentStyleSheetsMap& style_sheets_map,
+    Document& document,
+    base::FunctionRef<bool(CSSRuleType&)> filter_callback) {
+  auto style_sheets = style_sheets_map.find(&document);
+  if (style_sheets == style_sheets_map.end()) {
+    return nullptr;
+  }
+  return FindCSSRuleInSet<CSSRuleType>(*style_sheets->value, filter_callback);
+}
+
+template <class DocumentStyleSheetsMap>
 static CSSFontPaletteValuesRule* FindFontPaletteValuesRule(
-    GCedHeapHashSet<Member<CSSStyleSheet>>& css_rules,
+    const DocumentStyleSheetsMap& style_sheets_map,
+    Document& document,
     StyleRuleFontPaletteValues* values_rule) {
-  return FindCSSRuleInSet<CSSFontPaletteValuesRule>(
-      css_rules, [&values_rule](CSSFontPaletteValuesRule& css_rule) {
+  return FindCSSRuleInDocumentStyleSheets<CSSFontPaletteValuesRule>(
+      style_sheets_map, document,
+      [&values_rule](CSSFontPaletteValuesRule& css_rule) {
         return css_rule.FontPaletteValues() == values_rule;
       });
 }
@@ -2055,23 +2116,28 @@ FontFeatureTypesFromFontVariantAlternates(
 
 std::unique_ptr<protocol::Array<protocol::CSS::CSSAtRule>>
 InspectorCSSAgent::FontAtRulesForNodes(HeapVector<Member<Element>>& elements) {
-  Document& document = elements[0]->GetDocument();
-  auto style_sheets = document_to_css_style_sheets_.find(&document);
-  if (style_sheets == document_to_css_style_sheets_.end()) {
-    return {};
-  }
-
   HeapHashSet<Member<CSSFontPaletteValuesRule>> seen_font_palette_values_rules;
   HeapHashMap<Member<CSSFontFeatureValuesRule>,
               HashSet<StyleRuleFontFeature::FeatureType>>
       seen_font_feature_values_rules;
   HeapHashSet<Member<CSSFontFaceRule>> seen_font_face_rules;
 
-  auto result = std::make_unique<protocol::Array<protocol::CSS::CSSAtRule>>();
+  std::unique_ptr<protocol::Array<protocol::CSS::CSSAtRule>> result;
   for (Element* element : elements) {
     const ComputedStyle* style = element->EnsureComputedStyle();
     if (!style) {
       continue;
+    }
+
+    // Check after each EnsureComputedStyle(): style resolution can
+    // synchronously re-enter the agent (e.g. via FontsUpdated()) and mutate
+    // `document_to_css_style_sheets_`.
+    Document& document = element->GetDocument();
+    if (!document_to_css_style_sheets_.Contains(&document)) {
+      continue;
+    }
+    if (!result) {
+      result = std::make_unique<protocol::Array<protocol::CSS::CSSAtRule>>();
     }
 
     const AtomicString& family_name =
@@ -2084,8 +2150,8 @@ InspectorCSSAgent::FontAtRulesForNodes(HeapVector<Member<Element>>& elements) {
               palette->GetPaletteValuesName(), family_name);
       if (rule) {
         // Find CSSOM wrapper.
-        CSSFontPaletteValuesRule* values_rule =
-            FindFontPaletteValuesRule(*style_sheets->value, rule);
+        CSSFontPaletteValuesRule* values_rule = FindFontPaletteValuesRule(
+            document_to_css_style_sheets_, document, rule);
 
         if (values_rule &&
             !seen_font_palette_values_rules.Contains(values_rule)) {
@@ -2115,8 +2181,8 @@ InspectorCSSAgent::FontAtRulesForNodes(HeapVector<Member<Element>>& elements) {
         for (const auto& rule : *feature_values_rules) {
           // Find CSSOM wrapper.
           CSSFontFeatureValuesRule* values_rule =
-              FindCSSRuleInSet<CSSFontFeatureValuesRule>(
-                  *style_sheets->value,
+              FindCSSRuleInDocumentStyleSheets<CSSFontFeatureValuesRule>(
+                  document_to_css_style_sheets_, document,
                   [&rule](CSSFontFeatureValuesRule& css_rule) {
                     bool result = css_rule.FontFeatureValues() == rule;
                     return result;
@@ -2152,16 +2218,18 @@ InspectorCSSAgent::FontAtRulesForNodes(HeapVector<Member<Element>>& elements) {
       }
     }
 
-    CSSFontFaceRule* font_face_rule = FindCSSRuleInSet<CSSFontFaceRule>(
-        *style_sheets->value, [&family_name](CSSFontFaceRule& css_rule) {
-          auto* family = DynamicTo<CSSFontFamilyValue>(
-              css_rule.StyleRule()->Properties().GetPropertyCSSValue(
-                  AtRuleDescriptorID::FontFamily));
-          if (!family) {
-            return false;
-          }
-          return family->Value() == family_name;
-        });
+    CSSFontFaceRule* font_face_rule =
+        FindCSSRuleInDocumentStyleSheets<CSSFontFaceRule>(
+            document_to_css_style_sheets_, document,
+            [&family_name](CSSFontFaceRule& css_rule) {
+              auto* family = DynamicTo<CSSFontFamilyValue>(
+                  css_rule.StyleRule()->Properties().GetPropertyCSSValue(
+                      AtRuleDescriptorID::FontFamily));
+              if (!family) {
+                return false;
+              }
+              return family->Value() == family_name;
+            });
     if (font_face_rule && !seen_font_face_rules.Contains(font_face_rule)) {
       seen_font_face_rules.insert(font_face_rule);
       InspectorStyleSheet* inspector_style_sheet =
@@ -3508,6 +3576,51 @@ protocol::Response InspectorCSSAgent::forceStartingStyle(int node_id,
   return protocol::Response::Success();
 }
 
+protocol::Response InspectorCSSAgent::forcePositionTryOption(
+    int node_id,
+    std::optional<int> index) {
+  protocol::Response response = AssertEnabled();
+  if (!response.IsSuccess()) {
+    return response;
+  }
+  Element* element = nullptr;
+  response = dom_agent_->AssertElement(node_id, element);
+  if (!response.IsSuccess()) {
+    return response;
+  }
+  if (index.has_value() && *index < 0) {
+    return protocol::Response::InvalidParams("Index must be non-negative");
+  }
+
+  auto it = node_id_to_forced_position_try_option_.find(node_id);
+  std::optional<wtf_size_t> current_index =
+      it != node_id_to_forced_position_try_option_.end()
+          ? std::optional<wtf_size_t>(it->value)
+          : std::nullopt;
+
+  if (current_index == index) {
+    return protocol::Response::Success();
+  }
+
+  if (index.has_value()) {
+    node_id_to_forced_position_try_option_.Set(node_id, *index);
+  } else {
+    node_id_to_forced_position_try_option_.erase(node_id);
+  }
+
+  if (OutOfFlowData* out_of_flow_data = element->GetOutOfFlowData()) {
+    out_of_flow_data->ClearLastSuccessfulPositionFallback();
+  }
+  element->GetDocument()
+      .GetStyleEngine()
+      .MarkLastSuccessfulPositionFallbackDirtyForElement(*element);
+  if (LayoutObject* layout_object = element->GetLayoutObject()) {
+    layout_object->SetNeedsLayoutAndFullPaintInvalidation(
+        layout_invalidation_reason::kDevtools);
+  }
+  return protocol::Response::Success();
+}
+
 void InspectorCSSAgent::IncrementFocusedCountForAncestors(Element* element) {
   for (Node& ancestor : FlatTreeTraversal::AncestorsOf(*element)) {
     if (!IsA<Element>(ancestor))
@@ -3668,6 +3781,12 @@ void InspectorCSSAgent::CollectMediaQueriesFromStyleSheet(
     CSSStyleSheet* style_sheet,
     protocol::Array<protocol::CSS::CSSMedia>* media_array,
     protocol::Array<protocol::CSS::CSSRuleType>* rule_types) {
+  // A sheet loaded via @import shares its MediaList with the CSSImportRule.
+  // That media is reported from the import rule itself, with the import
+  // rule's source range, by CollectMediaQueriesFromRule().
+  if (style_sheet->ownerRule()) {
+    return;
+  }
   MediaList* media_list = style_sheet->media();
   String source_url;
   if (media_list && media_list->length()) {
@@ -4621,6 +4740,7 @@ void InspectorCSSAgent::WillRemoveDOMNode(Node* node) {
   DCHECK(node_id);
   node_id_to_forced_pseudo_state_.erase(node_id);
   node_id_to_forced_starting_style_.erase(node_id);
+  node_id_to_forced_position_try_option_.erase(node_id);
   computed_style_updated_node_ids_.erase(node_id);
 
   NodeToInspectorStyleSheet::iterator it =
@@ -4715,6 +4835,24 @@ void InspectorCSSAgent::ResetStartingStyles() {
     document->GetStyleEngine().MarkAllElementsForStyleRecalc(
         StyleChangeReasonForTracing::Create(style_change_reason::kInspector));
   }
+}
+
+void InspectorCSSAgent::ResetPositionTryOptions() {
+  for (auto& entry : node_id_to_forced_position_try_option_) {
+    if (auto* element = To<Element>(dom_agent_->NodeForId(entry.key))) {
+      if (OutOfFlowData* out_of_flow_data = element->GetOutOfFlowData()) {
+        out_of_flow_data->ClearLastSuccessfulPositionFallback();
+      }
+      element->GetDocument()
+          .GetStyleEngine()
+          .MarkLastSuccessfulPositionFallbackDirtyForElement(*element);
+      if (LayoutObject* layout_object = element->GetLayoutObject()) {
+        layout_object->SetNeedsLayoutAndFullPaintInvalidation(
+            layout_invalidation_reason::kDevtools);
+      }
+    }
+  }
+  node_id_to_forced_position_try_option_.clear();
 }
 
 HeapVector<Member<CSSStyleDeclaration>> InspectorCSSAgent::MatchingStyles(
@@ -5119,7 +5257,8 @@ void InspectorCSSAgent::SetCoverageEnabled(bool enabled) {
 }
 
 void InspectorCSSAgent::WillChangeStyleElement(Element* element) {
-  resource_container_->EraseStyleElementContent(element->GetDomNodeId());
+  resource_container_->EraseStyleElementContent(
+      DOMNodeIdType(element->GetDomNodeId()));
 }
 
 protocol::Response InspectorCSSAgent::startRuleUsageTracking() {
@@ -5207,6 +5346,7 @@ protocol::Response InspectorCSSAgent::takeCoverageDelta(
     HeapHashMap<Member<const StyleRule>, Member<CSSStyleRule>> rule_to_css_rule;
     BuildRulesMap(style_sheet, &rule_to_css_rule);
 
+    HeapHashSet<Member<CSSRule>> used_rules;
     for (const auto& used_rule : *entry.value) {
       auto rule_to_css_rule_it = rule_to_css_rule.find(used_rule);
       if (rule_to_css_rule_it == rule_to_css_rule.end())
@@ -5219,13 +5359,13 @@ protocol::Response InspectorCSSAgent::takeCoverageDelta(
       // If the rule comes from an @import'ed file, the `rule_style_sheet` is
       // different from `style_sheet`.
       InspectorStyleSheet* rule_style_sheet = it->value;
-      CSSRule* rule = css_style_rule;
-      while (rule) {
+      for (CSSRule* rule = css_style_rule;
+           rule && used_rules.insert(rule).is_new_entry;
+           rule = rule->parentRule()) {
         if (std::unique_ptr<protocol::CSS::RuleUsage> rule_usage_object =
                 rule_style_sheet->BuildObjectForRuleUsage(rule, true)) {
           (*result)->emplace_back(std::move(rule_usage_object));
         }
-        rule = rule->parentRule();
       }
     }
   }
@@ -5408,6 +5548,7 @@ void InspectorCSSAgent::Trace(Visitor* visitor) const {
   visitor->Trace(weak_factory_);
   visitor->Trace(default_inspector_stylesheets_);
   InspectorBaseAgent::Trace(visitor);
+  InspectorStyleSheetBase::Listener::Trace(visitor);
 }
 
 void InspectorCSSAgent::LocalFontsEnabled(bool* result) {

@@ -31,10 +31,6 @@ namespace signin {
 class IdentityManager;
 }  // namespace signin
 
-namespace version_info {
-enum class Channel;
-}  // namespace version_info
-
 namespace supervised_user {
 
 // Represents custodian data - who is responsible for managing the supervised
@@ -69,7 +65,8 @@ class Custodian {
 // availability.
 // The state of features is driven by changes to the following preferences:
 // * `profile.managed_user_id` for remote approvals and custodian data,
-// * `incognito.mode_availability` for incognito mode.
+// * `incognito.mode_availability` and `enterprise.isolated_mode` for
+//   off-the-record modes (incognito and enterprise isolated mode).
 class SupervisedUserService : public KeyedService {
  public:
   // Delegate encapsulating platform-specific logic that is invoked from this
@@ -77,14 +74,6 @@ class SupervisedUserService : public KeyedService {
   class PlatformDelegate {
    public:
     virtual ~PlatformDelegate() = default;
-
-    // Returns the country code stored for this client.
-    // Country code is in the format of lowercase ISO 3166-1 alpha-2. Example:
-    // us, br, in.
-    virtual std::string GetCountryCode() const = 0;
-
-    // Returns the channel for the installation.
-    virtual version_info::Channel GetChannel() const = 0;
 
     // Decides if incognito tabs should be closed. Tested when the supervision
     // features are enabled.
@@ -140,8 +129,9 @@ class SupervisedUserService : public KeyedService {
   // Handler when supervision is disabled. Intentionally idempotent.
   void OnFamilyLinkParentalControlsDisabled();
 
-  // Closes incognito tabs on each availability change, under condition that
-  // any parental controls are enabled and incognito mode is not available.
+  // Closes incognito and isolated mode tabs on each availability change, under
+  // condition that any parental controls are enabled and off-the-record mode
+  // is not available.
   void OnIncognitoModeAvailabilityChanged();
 
   const raw_ref<PrefService> user_prefs_;

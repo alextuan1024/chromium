@@ -55,8 +55,6 @@ class TestDeviceInfoBuilder {
   TestDeviceInfoBuilder& WithLastUpdatedTimestamp(
       base::Time last_updated_timestamp);
   TestDeviceInfoBuilder& WithPulseInterval(base::TimeDelta pulse_interval);
-  TestDeviceInfoBuilder& WithSendTabToSelfReceivingEnabled(
-      bool send_tab_to_self_receiving_enabled);
   TestDeviceInfoBuilder& WithSendTabToSelfReceivingType(
       DeviceInfo::SendTabReceivingType send_tab_to_self_receiving_type);
   TestDeviceInfoBuilder& WithSharingInfo(
@@ -88,6 +86,8 @@ class TestDeviceInfoBuilder {
   TestDeviceInfoBuilder& WithPersonalContextInfo(
       const std::optional<DeviceInfo::PersonalContextInfo>&
           personal_context_info);
+  TestDeviceInfoBuilder& WithBrowserActuatorInfo(
+      std::optional<DeviceInfo::BrowserActuatorInfo> browser_actuator_info);
 
  private:
   std::string guid_ = "guid";
@@ -104,7 +104,6 @@ class TestDeviceInfoBuilder {
   std::optional<std::string> android_os_build_fingerprint_prefix_;
   base::Time last_updated_timestamp_ = base::Time::Now();
   base::TimeDelta pulse_interval_ = base::Days(1);
-  bool send_tab_to_self_receiving_enabled_ = false;
   DeviceInfo::SendTabReceivingType send_tab_to_self_receiving_type_ =
       DeviceInfo::SendTabReceivingType::kChromeOrUnspecified;
   std::optional<DeviceInfo::SharingInfo> sharing_info_;
@@ -121,6 +120,7 @@ class TestDeviceInfoBuilder {
   base::flat_set<std::string> glic_experimental_triggering_capabilities_;
   std::optional<std::string> server_determined_model_name_;
   std::optional<DeviceInfo::PersonalContextInfo> personal_context_info_;
+  std::optional<DeviceInfo::BrowserActuatorInfo> browser_actuator_info_;
 };
 
 }  // namespace syncer

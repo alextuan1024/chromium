@@ -22,8 +22,11 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "ui/base/webui/web_ui_util.h"
+#include "ui/native_theme/native_theme.h"
 #include "ui/webui/webui_util.h"
+#include "url/gurl.h"
 
 namespace glic {
 
@@ -55,7 +58,13 @@ SelectionOverlayUntrustedUI::SelectionOverlayUntrustedUI(content::WebUI* web_ui)
       {"bottomLeftSliderAriaLabel",
        IDS_LENS_OVERLAY_BOTTOM_LEFT_CORNER_SLIDER_ACCESSIBILITY_LABEL},
       {"close", IDS_CLOSE},
+      {"settings", IDS_SETTINGS_SETTINGS},
+      {"sendFeedback", IDS_LENS_SEND_FEEDBACK},
       {"askGemini", IDS_GLIC_BUTTON_ENTRYPOINT_ASK_GEMINI_LABEL},
+      {"askGeminiMore", IDS_GLIC_SELECTION_ASK_GEMINI_MORE},
+      {"submitPrompt", IDS_GLIC_SELECTION_SUBMIT_PROMPT},
+      {"fetchingPageContent", IDS_GLIC_SELECTION_FETCHING_PAGE_CONTENT},
+      {"sharingDisclaimer", IDS_GLIC_SELECTION_SHARING_DISCLAIMER},
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
   html_source->AddBoolean("enableShimmer", true);
@@ -64,6 +73,15 @@ SelectionOverlayUntrustedUI::SelectionOverlayUntrustedUI(content::WebUI* web_ui)
   html_source->AddInteger("tapRegionHeight", 300);
   html_source->AddInteger("tapRegionWidth", 300);
   html_source->AddBoolean("enableGradientRegionStroke", false);
+  const auto* web_theme = ui::NativeTheme::GetInstanceForWeb();
+  html_source->AddInteger(
+      "pageScrollbarWidth",
+      web_theme->use_overlay_scrollbar()
+          ? 0
+          : web_theme
+                ->GetPartSize(ui::NativeTheme::kScrollbarVerticalTrack,
+                              ui::NativeTheme::kNormal, {})
+                .width());
   html_source->AddBoolean("enableWhiteRegionStroke", true);
   html_source->AddInteger("lineSelectionStrokeWidth", 40);
   html_source->AddInteger("colorLineSelectionGradient1",
@@ -103,6 +121,16 @@ SelectionOverlayUntrustedUI::SelectionOverlayUntrustedUI(content::WebUI* web_ui)
   html_source->AddBoolean(
       "enableSelectionOverlayPrompt",
       base::FeatureList::IsEnabled(features::kGlicSelectionOverlayPrompt));
+  html_source->AddBoolean(
+      "enableSelectionOverlayPromptBox",
+      base::FeatureList::IsEnabled(features::kGlicSelectionOverlayPromptBox));
+  const GURL dogfood_feedback_url(
+      features::kGlicSelectionOverlayDogfoodFeedbackUrl.Get());
+  html_source->AddBoolean("enableSelectionOverlayDogfoodFeedback",
+                          base::FeatureList::IsEnabled(
+                              features::kGlicSelectionOverlayDogfoodFeedback) &&
+                              dogfood_feedback_url.is_valid() &&
+                              dogfood_feedback_url.SchemeIsHTTPOrHTTPS());
 
   // TODO(b/489801993): Refactor shared resources into a common directory to
   // avoid manual path concatenation for Lens and the Glic selection overlay.
@@ -139,8 +167,45 @@ SelectionOverlayUntrustedUI::GetSelectionOverlayController() {
 void SelectionOverlayUntrustedUI::CreatePageHandler(
     mojo::PendingReceiver<selection::SelectionOverlayPageHandler> receiver,
     mojo::PendingRemote<selection::SelectionOverlayPage> page) {
+  if (page_handler_requested_) {
+    selection_page_factory_receiver_.ReportBadMessage(
+        "CreatePageHandler called more than once");
+    return;
+  }
+  page_handler_requested_ = true;
   SelectionOverlayController& controller = GetSelectionOverlayController();
-  controller.BindOverlay(std::move(receiver), std::move(page));
+  content::WebContents* contents = web_ui()->GetWebContents();
+  if (controller.CanBindOverlay(contents)) {
+    controller.BindOverlay(std::move(receiver), std::move(page));
+    return;
+  }
+  // Only a prewarmed overlay may wait. The controller binds it once a session
+  // adopts it; otherwise the endpoints are dropped with this WebUI.
+  if (!controller.IsPrewarmedOverlay(contents)) {
+    selection_page_factory_receiver_.ReportBadMessage(
+        "CreatePageHandler called when the overlay cannot bind");
+    return;
+  }
+  pending_handler_receiver_ = std::move(receiver);
+  // Apply the expected session's interaction options right away, as a
+  // session does on bind, so the page doesn't render (and animate) its
+  // default state while it waits.
+  mojo::Remote<selection::SelectionOverlayPage> page_remote(std::move(page));
+  if (auto options = controller.GetPrewarmInteractionOptions()) {
+    page_remote->SetInteractionOptions(std::move(options));
+  }
+  pending_page_ = page_remote.Unbind();
+}
+
+bool SelectionOverlayUntrustedUI::BindPendingPageHandler() {
+  if (!pending_handler_receiver_.is_valid()) {
+    return false;
+  }
+  SelectionOverlayController& controller = GetSelectionOverlayController();
+  CHECK(controller.CanBindOverlay(web_ui()->GetWebContents()));
+  controller.BindOverlay(std::move(pending_handler_receiver_),
+                         std::move(pending_page_));
+  return true;
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(SelectionOverlayUntrustedUI)

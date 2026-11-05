@@ -4,7 +4,6 @@
 
 #include "components/policy/core/common/management/platform_management_status_provider_win.h"
 
-#include "base/feature_list.h"
 #include "base/win/win_util.h"
 #include "base/win/windows_version.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
@@ -46,10 +45,6 @@ AzureActiveDirectoryDeviceStatusProvider::
 
 EnterpriseManagementAuthority
 AzureActiveDirectoryDeviceStatusProvider::FetchAuthority() {
-  if (!base::FeatureList::IsEnabled(
-          features::kFilterSensitivePoliciesOnWorkplaceJoinedDevices)) {
-    return base::win::IsJoinedToAzureAD() ? CLOUD_DOMAIN : NONE;
-  }
   return base::win::IsDeviceJoinedToAzureAD() ? CLOUD_DOMAIN : NONE;
 }
 

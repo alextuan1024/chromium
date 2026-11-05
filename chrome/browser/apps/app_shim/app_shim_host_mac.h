@@ -15,10 +15,12 @@
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/threading/thread_checker.h"
+#include "base/time/time.h"
 #include "chrome/browser/web_applications/os_integration/mac/app_shim_launch.h"
 #include "chrome/common/mac/app_shim.mojom.h"
 #include "components/metrics/histogram_child_process.h"
 #include "content/public/browser/scoped_accessibility_mode.h"
+#include "content/public/common/child_process_id.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -91,9 +93,13 @@ class AppShimHost : public chrome::mojom::AppShimHost,
     virtual void OnShimWillTerminate(AppShimHost* host) = 0;
 
     // Invoked by the shim host when a change to the system level notification
-    // permission status has been detected.
+    // permission status has been detected. `previous_status` is the status
+    // previously reported by this shim host, or nullopt if this is the first
+    // status reported since the shim connected.
     virtual void OnNotificationPermissionStatusChanged(
         AppShimHost* host,
+        std::optional<mac_notifications::mojom::PermissionStatus>
+            previous_status,
         mac_notifications::mojom::PermissionStatus status) = 0;
   };
 
@@ -132,7 +138,15 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   // Return the app shim interface. Virtual for tests.
   virtual chrome::mojom::AppShim* GetAppShim() const;
 
+  void SetBadgeLabel(const std::string& badge_label,
+                     chrome::mojom::AppShim::SetBadgeLabelCallback callback);
+
   void SetOnShimConnectedForTesting(base::OnceClosure closure);
+
+  // Overrides the notification permission status for this host and ignores any
+  // subsequent status updates reported by the app shim process.
+  void SetNotificationPermissionStatusForTesting(
+      mac_notifications::mojom::PermissionStatus status);
 
   // Returns kNullProcessId if no process has connected to this host yet.
   base::ProcessId GetAppShimPid() const;
@@ -140,6 +154,32 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   // Returns a weak pointer from a factory that is invalidated when a new launch
   // is initiated or when the bootstrap connects.
   base::WeakPtr<AppShimHost> GetLaunchWeakPtr();
+
+  // LINT.IfChange(AppShimLaunchResult)
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class LaunchResult {
+    kSuccess = 0,
+    kFailedProcessCreation = 1,
+    kFailedTerminatedBeforeConnection = 2,
+    kSuccessAfterRecreate = 3,
+    kMaxValue = kSuccessAfterRecreate,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/enums.xml:AppShimLaunchResult)
+
+  // LINT.IfChange(AppShimLifecycleState)
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class LifecycleState {
+    kLaunchInitiated = 0,
+    kPidReceived = 1,
+    kBootstrapConnected = 2,
+    kDisconnectedBeforeHandshake = 3,
+    kTerminatedAfterConnect = 4,
+    kLaunchFailed = 5,
+    kMaxValue = kLaunchFailed,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/apps/enums.xml:AppShimLifecycleState)
 
  protected:
   void ChannelError(uint32_t custom_reason, const std::string& description);
@@ -204,7 +244,7 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   // Not a system-level PID, rather an ID assigned by content::ChildProcessHost
   // used to identify this process when registering with
   // metrics::SubprocessMetricsProvider.
-  const int child_process_host_id_;
+  const content::ChildProcessId child_process_id_;
 
   // This holds the histogram allocator to be used for this app shim before it
   // gets passed to the remote host when it finished launching.
@@ -218,19 +258,11 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   std::unique_ptr<content::ScopedAccessibilityMode> process_accessibility_mode_;
 
  private:
-  // LINT.IfChange(AppShimLaunchResult)
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  enum class LaunchResult {
-    kSuccess = 0,
-    kFailedProcessCreation = 1,
-    kFailedTerminatedBeforeConnection = 2,
-    kSuccessAfterRecreate = 3,
-    kMaxValue = kSuccessAfterRecreate,
-  };
-  // LINT.ThenChange(//tools/metrics/histograms/enums.xml:AppShimLaunchResult)
-
   void MaybeRecordLaunchResult(LaunchResult result);
+  void RecordLifecycleState(LifecycleState state);
+  void OnSetBadgeLabelComplete(
+      chrome::mojom::AppShim::SetBadgeLabelCallback callback,
+      chrome::mojom::AppShimBadgeResult result);
 
   // If a launch was initiated by Chrome, this stores the launch mode.
   // This is used to log the Apps.AppShim.LaunchResult.{LaunchMode} metric
@@ -239,13 +271,36 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   // or the launch was initiated externally (in which case we don't log).
   std::optional<web_app::ShimLaunchMode> pending_chrome_initiated_launch_mode_;
 
+  // The launch mode that this host was initiated with. Stays populated even
+  // after the launch completes, to log AppShimLifecycleState upon termination.
+  std::optional<web_app::ShimLaunchMode> initial_launch_mode_;
+
+  // The time at which the current Chrome-initiated launch was initiated.
+  // Used to record TimeToConnect / TimeToFailure metrics.
+  base::TimeTicks launch_initiated_time_;
+
+  // Tracks if the shim process was successfully created during the current
+  // launch attempt.
+  bool has_received_pid_ = false;
+
   // True if we have attempted to recreate the shim during this launch process.
   // Used to distinguish between success on first try vs success after recreate
   // for metrics.
   bool shim_recreated_ = false;
 
-  // This weak factory is used for launch callbacks only.
+  // Last permission status for the shim sent to
+  // `OnNotificationPermissionStatusChanged()`. This is `std::nullopt` if the
+  // shim hasn't reported a status yet.
+  std::optional<mac_notifications::mojom::PermissionStatus>
+      last_notification_permission_status_;
+  bool notification_permission_status_overridden_for_testing_ = false;
+
+  // This weak factory is used for launch callbacks only and is invalidated in
+  // `OnBootstrapConnected()` and `LaunchShimInternal()`.
   base::WeakPtrFactory<AppShimHost> launch_weak_factory_;
+  // Weak factory whose pointers remain valid for the lifetime of `AppShimHost`
+  // (including across `OnBootstrapConnected()` for queued `AppShim` messages).
+  base::WeakPtrFactory<AppShimHost> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_APPS_APP_SHIM_APP_SHIM_HOST_MAC_H_

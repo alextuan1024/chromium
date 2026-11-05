@@ -19,7 +19,6 @@
 #include "base/feature_list.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/login/quick_unlock/pin_backend.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/grit/browser_resources.h"
 #include "chromeos/ash/components/osauth/public/auth_policy_utils.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -99,7 +98,7 @@ bool HasPolicyValue(const PrefService* pref_service,
 // kAny) by reading the policy value.
 bool IsFingerprintDisabledByPolicySinglePurpose(const PrefService* pref_service,
                                                 Purpose purpose) {
-  DCHECK(purpose != Purpose::kAny);
+  CHECK(purpose != Purpose::kAny, base::NotFatalUntil::M161);
   const bool enabled =
       HasPolicyValue(pref_service, purpose, kFactorsOptionAll) ||
       HasPolicyValue(pref_service, purpose, kFactorsOptionFingerprint);
@@ -110,7 +109,7 @@ bool IsFingerprintDisabledByPolicySinglePurpose(const PrefService* pref_service,
 // kAny) by reading the policy value.
 bool IsPinDisabledByPolicySinglePurpose(const PrefService* pref_service,
                                         Purpose purpose) {
-  DCHECK(purpose != Purpose::kAny);
+  CHECK(purpose != Purpose::kAny, base::NotFatalUntil::M161);
   const bool enabled =
       HasPolicyValue(pref_service, purpose, kFactorsOptionAll) ||
       HasPolicyValue(pref_service, purpose, kFactorsOptionPin) ||
@@ -126,13 +125,6 @@ TestApi::TestApi(bool override_quick_unlock)
     : overridden_(override_quick_unlock) {
   old_instance_ = g_instance;
   g_instance = this;
-  std::fill(pin_purposes_enabled_by_policy_,
-            UNSAFE_TODO(pin_purposes_enabled_by_policy_ + kNumOfPurposes),
-            false);
-  std::fill(
-      fingerprint_purposes_enabled_by_policy_,
-      UNSAFE_TODO(fingerprint_purposes_enabled_by_policy_ + kNumOfPurposes),
-      false);
 }
 
 TestApi::~TestApi() {
@@ -150,30 +142,25 @@ bool TestApi::IsQuickUnlockOverridden() {
 
 void TestApi::EnablePinByPolicy(Purpose purpose) {
   if (purpose != Purpose::kAny) {
-    pin_purposes_enabled_by_policy_[static_cast<int>(Purpose::kAny)] = true;
+    pin_purposes_enabled_by_policy_[static_cast<size_t>(Purpose::kAny)] = true;
   }
-  UNSAFE_TODO(pin_purposes_enabled_by_policy_[static_cast<int>(purpose)]) =
-      true;
+  pin_purposes_enabled_by_policy_[static_cast<size_t>(purpose)] = true;
 }
 
 void TestApi::EnableFingerprintByPolicy(Purpose purpose) {
   if (purpose != Purpose::kAny) {
-    fingerprint_purposes_enabled_by_policy_[static_cast<int>(Purpose::kAny)] =
-        true;
+    fingerprint_purposes_enabled_by_policy_[static_cast<size_t>(
+        Purpose::kAny)] = true;
   }
-  UNSAFE_TODO(
-      fingerprint_purposes_enabled_by_policy_[static_cast<int>(purpose)]) =
-      true;
+  fingerprint_purposes_enabled_by_policy_[static_cast<size_t>(purpose)] = true;
 }
 
 bool TestApi::IsPinEnabledByPolicy(Purpose purpose) {
-  return UNSAFE_TODO(
-      pin_purposes_enabled_by_policy_[static_cast<int>(purpose)]);
+  return pin_purposes_enabled_by_policy_[static_cast<size_t>(purpose)];
 }
 
 bool TestApi::IsFingerprintEnabledByPolicy(Purpose purpose) {
-  return UNSAFE_TODO(
-      fingerprint_purposes_enabled_by_policy_[static_cast<int>(purpose)]);
+  return fingerprint_purposes_enabled_by_policy_[static_cast<size_t>(purpose)];
 }
 
 bool IsFingerprintDisabledByPolicy(const PrefService* pref_service,
@@ -283,26 +270,6 @@ bool IsFingerprintSupported() {
       base::CommandLine::ForCurrentProcess();
   return base::FeatureList::IsEnabled(features::kQuickUnlockFingerprint) &&
          command_line->HasSwitch(switches::kFingerprintSensorLocation);
-}
-
-bool IsFingerprintEnabled(Profile* profile, Purpose purpose) {
-  // Don't need to check these when using flags to control fingerprint behavior
-  // in tests.
-  auto* test_api = TestApi::Get();
-  if (!test_api || !test_api->IsQuickUnlockOverridden()) {
-    if (!IsFingerprintSupported())
-      return false;
-
-    // Disable fingerprint if the profile does not belong to the primary user.
-    if (profile != ProfileManager::GetPrimaryUserProfile())
-      return false;
-  }
-
-  // Disable fingerprint if disallowed by policy.
-  if (IsFingerprintDisabledByPolicy(profile->GetPrefs(), purpose))
-    return false;
-
-  return true;
 }
 
 void AddFingerprintResources(content::WebUIDataSource* html_source) {

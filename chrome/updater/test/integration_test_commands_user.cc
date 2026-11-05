@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -18,12 +18,18 @@
 #include "chrome/updater/external_constants.h"
 #include "chrome/updater/test/integration_test_commands.h"
 #include "chrome/updater/test/integration_tests_impl.h"
+#include "chrome/updater/test/json_matchers.h"
 #include "chrome/updater/test/server.h"
+#include "chrome/updater/test/test_scope.h"
 #include "chrome/updater/update_service.h"
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_WIN)
+#include <shlobj.h>
+#endif  // BUILDFLAG(IS_WIN)
 
 namespace updater::test {
 
@@ -46,10 +52,18 @@ class IntegrationTestCommandsUser : public IntegrationTestCommands {
     }
   }
 
-  void Clean() const override { updater::test::Clean(updater_scope_); }
+  void Clean() const override {
+    updater::test::Clean(updater_scope_);
+    if (ShouldCleanSystemScope()) {
+      updater::test::Clean(UpdaterScope::kSystem);
+    }
+  }
 
   void ExpectClean() const override {
     updater::test::ExpectClean(updater_scope_);
+    if (ShouldCleanSystemScope()) {
+      updater::test::ExpectClean(UpdaterScope::kSystem);
+    }
   }
 
   void Install(const base::ListValue& switches) const override {
@@ -120,15 +134,17 @@ class IntegrationTestCommandsUser : public IntegrationTestCommands {
   }
 
   void ExpectPing(ScopedServer& test_server,
+                  const std::string& app_id,
                   int event_type,
                   std::optional<GURL> target_url) const override {
-    updater::test::ExpectPing(updater_scope_, test_server, event_type,
+    updater::test::ExpectPing(updater_scope_, test_server, app_id, event_type,
                               target_url);
   }
 
   void ExpectInstallSource(ScopedServer& test_server,
+                           const std::string& app_id,
                            const std::string& install_source) const override {
-    updater::test::ExpectInstallSource(updater_scope_, test_server,
+    updater::test::ExpectInstallSource(updater_scope_, test_server, app_id,
                                        install_source);
   }
 
@@ -171,12 +187,12 @@ class IntegrationTestCommandsUser : public IntegrationTestCommands {
                             bool do_fault_injection,
                             bool skip_download,
                             const base::Version& updater_version,
-                            const std::string& event_regex,
+                            std::optional<json::ValueMatcher> ping_app_matcher,
                             bool use_xz) const override {
     updater::test::ExpectUpdateSequence(
         updater_scope_, test_server, app_id, install_data_index, priority,
         from_version, to_version, do_fault_injection, skip_download,
-        updater_version, event_regex, use_xz);
+        updater_version, std::move(ping_app_matcher), use_xz);
   }
 
   void ExpectUpdateSequenceBadHash(
@@ -191,20 +207,21 @@ class IntegrationTestCommandsUser : public IntegrationTestCommands {
         from_version, to_version);
   }
 
-  void ExpectInstallSequence(ScopedServer& test_server,
-                             const std::string& app_id,
-                             const std::string& install_data_index,
-                             UpdateService::Priority priority,
-                             const base::Version& from_version,
-                             const base::Version& to_version,
-                             bool do_fault_injection,
-                             bool skip_download,
-                             const base::Version& updater_version,
-                             const std::string& event_regex) const override {
+  void ExpectInstallSequence(
+      ScopedServer& test_server,
+      const std::string& app_id,
+      const std::string& install_data_index,
+      UpdateService::Priority priority,
+      const base::Version& from_version,
+      const base::Version& to_version,
+      bool do_fault_injection,
+      bool skip_download,
+      const base::Version& updater_version,
+      std::optional<json::ValueMatcher> ping_app_matcher) const override {
     updater::test::ExpectInstallSequence(
         updater_scope_, test_server, app_id, install_data_index, priority,
         from_version, to_version, do_fault_injection, skip_download,
-        updater_version, event_regex);
+        updater_version, std::move(ping_app_matcher));
   }
 
   void ExpectEnterpriseCompanionAppOTAInstallSequence(
@@ -481,6 +498,14 @@ class IntegrationTestCommandsUser : public IntegrationTestCommands {
     updater::test::ExpectPrepareToRunBundleSuccess(bundle_path);
   }
 
+  void QuarantineWakePlist() const override {
+    updater::test::QuarantineWakePlist(updater_scope_);
+  }
+
+  void ExpectWakeJobLoaded() const override {
+    updater::test::ExpectWakeJobLoaded(updater_scope_);
+  }
+
   void ExpectKSAdminFetchTag(
       bool elevate,
       const std::string& product_id,
@@ -607,6 +632,22 @@ class IntegrationTestCommandsUser : public IntegrationTestCommands {
 
  private:
   ~IntegrationTestCommandsUser() override = default;
+
+  // Returns true if the system scope is cleaned, and expected to be clean,
+  // along with the user scope. A system test that is killed before its cleanup
+  // can leave a system updater behind, which would serve the system-scope
+  // calls that some user tests expect to fail. The user tests can only remove
+  // it when they run as an administrator. The user-scope commands of the
+  // system tests, such as in `IntegrationTestUserInSystem`, must not touch the
+  // system updater under test.
+  bool ShouldCleanSystemScope() const {
+#if BUILDFLAG(IS_WIN)
+    return !IsSystemInstall(GetUpdaterScopeForTesting()) &&
+           !IsSystemInstall(updater_scope_) && ::IsUserAnAdmin();
+#else
+    return false;
+#endif  // BUILDFLAG(IS_WIN)
+  }
 
   const UpdaterScope updater_scope_;
 };

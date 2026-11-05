@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "base/i18n/language_tag.h"
 #include "base/path_service.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
@@ -192,7 +193,8 @@ class AutofillSelectWithStatesTest
     normalizer_ = std::make_unique<AddressNormalizerImpl>(
         std::unique_ptr<Source>(
             new TestdataSource(true, file_path.AsUTF8Unsafe())),
-        std::unique_ptr<Storage>(new NullStorage), "en-US");
+        std::unique_ptr<Storage>(new NullStorage),
+        base::i18n::GetKnownLanguageTag("en-US"));
 
     test::PopulateAlternativeStateNameMapForTesting(
         "US", "California",
@@ -406,7 +408,7 @@ TEST_F(FieldFillingAddressUtilTest, FillStreetAddressTextArea) {
                                       /*address_normalizer=*/nullptr));
 
   std::u16string ja_value = u"桜丘町26-1\nセルリアンタワー6階";
-  profile.SetInfo(AutofillType(ADDRESS_HOME_STREET_ADDRESS), ja_value, "ja-JP");
+  profile.SetInfo(ADDRESS_HOME_STREET_ADDRESS, ja_value, "ja-JP");
   profile.set_language_code("ja-JP");
   EXPECT_EQ(ja_value, GetValueForProfile(profile, /*app_locale=*/"ja-JP",
                                          ADDRESS_HOME_STREET_ADDRESS, field,
@@ -421,14 +423,14 @@ TEST_F(FieldFillingAddressUtilTest, FillStreetAddressTextField) {
       {test::CreateFieldPrediction(ADDRESS_HOME_STREET_ADDRESS)});
 
   std::u16string value = u"123 Fake St.\nApt. 42";
-  profile.SetInfo(AutofillType(ADDRESS_HOME_STREET_ADDRESS), value, "en-US");
+  profile.SetInfo(ADDRESS_HOME_STREET_ADDRESS, value, "en-US");
   EXPECT_EQ(GetValueForProfile(profile, kAppLocale, ADDRESS_HOME_STREET_ADDRESS,
                                field,
                                /*address_normalizer=*/nullptr),
             u"123 Fake St., Apt. 42");
 
   std::u16string ja_value = u"桜丘町26-1\nセルリアンタワー6階";
-  profile.SetInfo(AutofillType(ADDRESS_HOME_STREET_ADDRESS), ja_value, "ja-JP");
+  profile.SetInfo(ADDRESS_HOME_STREET_ADDRESS, ja_value, "ja-JP");
   profile.set_language_code("ja-JP");
   EXPECT_EQ(GetValueForProfile(profile, /*app_locale=*/"ja-JP",
                                ADDRESS_HOME_STREET_ADDRESS, field,

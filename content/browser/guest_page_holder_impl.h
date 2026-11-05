@@ -15,6 +15,7 @@
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/browser/guest_page_holder.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 namespace content {
 
@@ -57,6 +58,7 @@ class GuestPageHolderImpl : public GuestPageHolder,
   RenderFrameHostImpl* GetProspectiveOuterDocument() override;
   FrameTree* LoadingTree() override;
   void SetFocusedFrame(FrameTreeNode* node, SiteInstanceGroup* source) override;
+  void DidChangeFocusedFrame() override;
   FrameTree* GetOwnedDocumentPictureInPictureFrameTree() override;
   FrameTree* GetDocumentPictureInPictureOpenerFrameTree() override;
   bool OnRenderFrameProxyVisibilityChanged(
@@ -75,7 +77,7 @@ class GuestPageHolderImpl : public GuestPageHolder,
       const EntryChangedDetails& change_details) override;
   void NotifyNavigationListPruned(const PrunedDetails& pruned_details) override;
   void NotifyNavigationEntriesDeleted() override;
-  void ActivateAndShowRepostFormWarningDialog() override;
+  bool ActivateAndShowRepostFormWarningDialog() override;
   bool ShouldPreserveAbortedURLs() override;
   void UpdateOverridingUserAgent() override;
 #if BUILDFLAG(IS_ANDROID)
@@ -90,7 +92,7 @@ class GuestPageHolderImpl : public GuestPageHolder,
   const blink::RendererPreferences& GetRendererPrefs();
   const blink::web_pref::WebPreferences& GetWebPreferences();
 
-  FrameTree* CreateNewWindow(WindowOpenDisposition disposition,
+  FrameTree* CreateNewWindow(ui::mojom::WindowOpenDisposition disposition,
                              const GURL& url,
                              const std::string& main_frame_name,
                              scoped_refptr<SiteInstance> site_instance,

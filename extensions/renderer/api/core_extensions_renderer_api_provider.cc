@@ -22,7 +22,6 @@
 #include "extensions/renderer/api_activity_logger.h"
 #include "extensions/renderer/api_definitions_natives.h"
 #include "extensions/renderer/bindings/api_bindings_system.h"
-#include "extensions/renderer/blob_native_handler.h"
 #include "extensions/renderer/chrome_setting.h"
 #include "extensions/renderer/content_setting.h"
 #include "extensions/renderer/id_generator_custom_bindings.h"
@@ -110,8 +109,6 @@ void CoreExtensionsRendererAPIProvider::RegisterNativeHandlers(
       "app_window_natives", std::make_unique<AppWindowCustomBindings>(context));
 #endif
   module_system->RegisterNativeHandler(
-      "blob_natives", std::make_unique<BlobNativeHandler>(context));
-  module_system->RegisterNativeHandler(
       "context_menus", std::make_unique<ContextMenusCustomBindings>(context));
 
 #if BUILDFLAG(ENABLE_GUEST_VIEW)
@@ -189,8 +186,6 @@ void CoreExtensionsRendererAPIProvider::PopulateSourceMap(
        IDR_EXTENSIONS_RENDERER_GENERATED_GUEST_VIEW_EXTENSION_OPTIONS_EXTENSION_OPTIONS_CONSTANTS_JS},
       {"extensionOptionsEvents",
        IDR_EXTENSIONS_RENDERER_GENERATED_GUEST_VIEW_EXTENSION_OPTIONS_EXTENSION_OPTIONS_EVENTS_JS},
-      {"feedbackPrivate",
-       IDR_EXTENSIONS_RENDERER_GENERATED_FEEDBACK_PRIVATE_CUSTOM_BINDINGS_JS},
       {"fileEntryBindingUtil",
        IDR_EXTENSIONS_RENDERER_GENERATED_FILE_ENTRY_BINDING_UTIL_JS},
       {"fileSystem",

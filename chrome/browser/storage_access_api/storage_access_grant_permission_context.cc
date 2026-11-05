@@ -11,6 +11,7 @@
 #include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/fuzzing_buildflags.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
@@ -20,8 +21,6 @@
 #include "chrome/browser/bad_message.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/first_party_sets/first_party_sets_policy_service.h"
-#include "chrome/browser/first_party_sets/first_party_sets_policy_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/webid/federated_identity_auto_reauthn_permission_context.h"
 #include "chrome/browser/webid/federated_identity_auto_reauthn_permission_context_factory.h"
@@ -57,14 +56,16 @@
 #include "net/base/schemeful_site.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/site_for_cookies.h"
-#include "net/first_party_sets/first_party_set_entry.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/runtime_feature_state/runtime_feature_state_read_context.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-shared.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
+
+#if !BUILDFLAG(USE_FUZZING_ENGINE)
+#include "chrome/browser/storage_access_api/storage_access_metrics.h"  // nogncheck
+#endif
 
 namespace {
 
@@ -81,7 +82,6 @@ constexpr base::TimeDelta kStorageAccessAPITopLevelUserInteractionBound =
 // this is only called when persisting a permission grant.
 bool IsUserDecidedPersistableOutcome(RequestOutcome outcome) {
   switch (outcome) {
-    case RequestOutcome::kGrantedByFirstPartySet:
     case RequestOutcome::kGrantedByAllowance:
     case RequestOutcome::kDismissedByUser:
     case RequestOutcome::kReusedPreviousDecision:
@@ -110,7 +110,6 @@ bool ShouldDisplayOutcomeInOmnibox(RequestOutcome outcome) {
     case RequestOutcome::kDismissedByUser:
     case RequestOutcome::kReusedPreviousDecision:
       return true;
-    case RequestOutcome::kGrantedByFirstPartySet:
     case RequestOutcome::kGrantedByAllowance:
     case RequestOutcome::kDeniedByTopLevelInteractionHeuristic:
     case RequestOutcome::kReusedImplicitGrant:
@@ -145,12 +144,18 @@ RequestOutcome RequestOutcomeFromPrompt(PermissionDecision decision,
   }
 }
 
-void RecordOutcomeSample(RequestOutcome outcome,
+void RecordOutcomeSample(content::BrowserContext* browser_context,
+                         RequestOutcome outcome,
                          const net::SchemefulSite& requesting_site) {
   dwa::builders::StorageAccess_RequestOutcome()
       .SetOutcome(static_cast<int>(outcome))
       .SetContent(requesting_site.GetURL().spec())
       .Record(metrics::dwa::DwaRecorder::Get());
+  // TODO(b/564439825): Remove DWA once Private Insights is validated.
+#if !BUILDFLAG(USE_FUZZING_ENGINE)
+  storage_access_api::RecordOutcomeToPrivateInsights(browser_context, outcome,
+                                                     requesting_site);
+#endif
 }
 
 content_settings::ContentSettingConstraints ComputeConstraints(
@@ -158,12 +163,6 @@ content_settings::ContentSettingConstraints ComputeConstraints(
     base::Time now) {
   content_settings::ContentSettingConstraints constraints(now);
   switch (outcome) {
-    case RequestOutcome::kGrantedByFirstPartySet:
-      constraints.set_lifetime(
-          permissions::kStorageAccessAPIRelatedWebsiteSetsLifetime);
-      constraints.set_decided_by_related_website_sets(true);
-      return constraints;
-
     case RequestOutcome::kGrantedByAllowance:
       constraints.set_lifetime(
           permissions::kStorageAccessAPIImplicitPermissionLifetime);
@@ -218,7 +217,8 @@ FederatedIdentityPermissionContext* IsAutograntViaFedCmAllowed(
     return nullptr;
   }
 
-  RecordOutcomeSample(RequestOutcome::kAllowedByFedCM, requesting_site);
+  RecordOutcomeSample(browser_context, RequestOutcome::kAllowedByFedCM,
+                      requesting_site);
   return fedcm_context;
 }
 
@@ -232,7 +232,8 @@ ValidatePermissionEligibility(content::RenderFrameHost* rfh,
     // No need to log anything here, since well-behaved renderers have already
     // done these checks and have logged to the console. This block is to handle
     // compromised renderers.
-    RecordOutcomeSample(RequestOutcome::kDeniedByPrerequisites,
+    RecordOutcomeSample(rfh->GetBrowserContext(),
+                        RequestOutcome::kDeniedByPrerequisites,
                         requesting_site);
     bad_message::ReceivedBadMessage(
         rfh->GetProcess(), bad_message::BadMessageReason::
@@ -321,7 +322,7 @@ void StorageAccessGrantPermissionContext::DecidePermissionForTesting(
 void StorageAccessGrantPermissionContext::DecidePermission(
     std::unique_ptr<permissions::PermissionRequestData> request_data,
     permissions::BrowserPermissionCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
   CHECK(request_data->requesting_origin.is_valid());
   CHECK(request_data->embedding_origin.is_valid());
 
@@ -349,7 +350,8 @@ void StorageAccessGrantPermissionContext::DecidePermission(
       ContentSettingsType::COOKIES);
 
   if (setting == CONTENT_SETTING_BLOCK) {
-    RecordOutcomeSample(RequestOutcome::kDeniedByCookieSettings,
+    RecordOutcomeSample(browser_context(),
+                        RequestOutcome::kDeniedByCookieSettings,
                         requesting_site);
     std::move(callback).Run(content::PermissionResult(
         blink::mojom::PermissionStatus::DENIED,
@@ -366,7 +368,8 @@ void StorageAccessGrantPermissionContext::DecidePermission(
   if (overrides.Has(net::CookieSettingOverride::kStorageAccessGrantEligible) ||
       overrides.Has(
           net::CookieSettingOverride::kStorageAccessGrantEligibleViaHeader)) {
-    RecordOutcomeSample(RequestOutcome::kReusedPreviousDecision,
+    RecordOutcomeSample(browser_context(),
+                        RequestOutcome::kReusedPreviousDecision,
                         requesting_site);
     // The caller already has the `kStorageAccessGrantEligible` or
     // `kStorageAccessGrantEligibleViaHeader` override, which suggests they've
@@ -384,7 +387,8 @@ void StorageAccessGrantPermissionContext::DecidePermission(
           request_data->requesting_origin, net::SiteForCookies(),
           embedding_origin, overrides,
           rfh->GetStorageKey().ToCookiePartitionKey())) {
-    RecordOutcomeSample(RequestOutcome::kAllowedByCookieSettings,
+    RecordOutcomeSample(browser_context(),
+                        RequestOutcome::kAllowedByCookieSettings,
                         requesting_site);
     std::move(callback).Run(content::PermissionResult(
         blink::mojom::PermissionStatus::GRANTED,
@@ -397,7 +401,8 @@ void StorageAccessGrantPermissionContext::DecidePermission(
   // Return early without prompting users if the requesting frame is same-site
   // with the top-level frame.
   if (requesting_site == embedding_site) {
-    RecordOutcomeSample(RequestOutcome::kAllowedBySameSite, requesting_site);
+    RecordOutcomeSample(browser_context(), RequestOutcome::kAllowedBySameSite,
+                        requesting_site);
     std::move(callback).Run(content::PermissionResult(
         blink::mojom::PermissionStatus::GRANTED,
         content::PermissionStatusSource::UNSPECIFIED));
@@ -424,7 +429,8 @@ void StorageAccessGrantPermissionContext::DecidePermission(
     rfh->AddMessageToConsole(
         blink::mojom::ConsoleMessageLevel::kError,
         "requestStorageAccess: Must be handling a user gesture to use.");
-    RecordOutcomeSample(RequestOutcome::kDeniedByPrerequisites,
+    RecordOutcomeSample(browser_context(),
+                        RequestOutcome::kDeniedByPrerequisites,
                         requesting_site);
     std::move(callback).Run(content::PermissionResult(
         blink::mojom::PermissionStatus::DENIED,
@@ -432,49 +438,9 @@ void StorageAccessGrantPermissionContext::DecidePermission(
     return;
   }
 
-  if (!base::FeatureList::IsEnabled(
-          content_settings::features::kStorageAccessAPIRelatedWebsiteSets)) {
-    CheckForAutoGrantOrAutoDenial(std::move(request_data), std::move(callback),
-                                  net::FirstPartySetMetadata());
-    return;
-  }
-
-  first_party_sets::FirstPartySetsPolicyServiceFactory::GetForBrowserContext(
-      browser_context())
-      ->ComputeFirstPartySetMetadata(
-          requesting_site, &embedding_site,
-          base::BindOnce(&StorageAccessGrantPermissionContext::
-                             CheckForAutoGrantOrAutoDenial,
-                         weak_factory_.GetWeakPtr(), std::move(request_data),
-                         std::move(callback)));
-}
-
-void StorageAccessGrantPermissionContext::CheckForAutoGrantOrAutoDenial(
-    std::unique_ptr<permissions::PermissionRequestData> request_data,
-    permissions::BrowserPermissionCallback callback,
-    net::FirstPartySetMetadata metadata) {
-  if (metadata.AreSitesInSameFirstPartySet()) {
-    switch (metadata.top_frame_entry()->site_type()) {
-      case net::SiteType::kPrimary:
-      case net::SiteType::kAssociated:
-        // Since the sites are in the same First-Party Set, risk of abuse due
-        // to allowing access is considered to be low.
-        NotifyPermissionSetInternal(*request_data, std::move(callback),
-                                    /*persist=*/true,
-                                    PermissionDecision::kAllow,
-                                    RequestOutcome::kGrantedByFirstPartySet);
-        return;
-      case net::SiteType::kService:
-        break;
-    }
-  }
-
   // Get all of our implicit grants and see which ones apply to our
   // |requesting_origin|.
   if (implicit_grant_limit > 0) {
-    HostContentSettingsMap* settings_map =
-        HostContentSettingsMapFactory::GetForProfile(browser_context());
-    CHECK(settings_map);
     ContentSettingsForOneType implicit_grants =
         settings_map->GetSettingsForOneType(
             ContentSettingsType::STORAGE_ACCESS,
@@ -528,7 +494,7 @@ void StorageAccessGrantPermissionContext::OnCheckedUserInteractionHeuristic(
   if (!rfh) {
     // After async steps, the RenderFrameHost is not guaranteed to still be
     // alive.
-    RecordOutcomeSample(RequestOutcome::kDeniedAborted,
+    RecordOutcomeSample(browser_context(), RequestOutcome::kDeniedAborted,
                         net::SchemefulSite(request_data->requesting_origin));
     std::move(callback).Run(content::PermissionResult(
         blink::mojom::PermissionStatus::DENIED,
@@ -586,29 +552,25 @@ void StorageAccessGrantPermissionContext::NotifyPermissionSet(
   CHECK(decision.overall_decision != PermissionDecision::kAllowThisTime);
   CHECK(decision.is_final);
   CHECK(!persist || (decision.overall_decision != PermissionDecision::kNone));
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
   RequestOutcome outcome =
       RequestOutcomeFromPrompt(decision.overall_decision, persist);
   if (outcome == RequestOutcome::kReusedPreviousDecision) {
-    // This could be an implicit, e.g. FPS or allowance based permission. Check
-    // if the exception has an ephemeral session model.
+    // This could be an implicit allowance-based permission. Check if the
+    // exception has an ephemeral session model.
     content_settings::SettingInfo info;
     HostContentSettingsMapFactory::GetForProfile(browser_context())
         ->GetContentSetting(request_data.requesting_origin,
                             request_data.embedding_origin,
                             ContentSettingsType::STORAGE_ACCESS, &info);
 
-    if (info.metadata.decided_by_related_website_sets()) {
-      outcome = RequestOutcome::kReusedImplicitGrant;
-    } else {
-      switch (info.metadata.session_model()) {
-        case content_settings::mojom::SessionModel::USER_SESSION:
-          outcome = RequestOutcome::kReusedImplicitGrant;
-          break;
-        case content_settings::mojom::SessionModel::DURABLE:
-        case content_settings::mojom::SessionModel::ONE_TIME:
-          break;
-      }
+    switch (info.metadata.session_model()) {
+      case content_settings::mojom::SessionModel::USER_SESSION:
+        outcome = RequestOutcome::kReusedImplicitGrant;
+        break;
+      case content_settings::mojom::SessionModel::DURABLE:
+      case content_settings::mojom::SessionModel::ONE_TIME:
+        break;
     }
   }
   NotifyPermissionSetInternal(request_data, std::move(callback), persist,
@@ -624,33 +586,15 @@ void StorageAccessGrantPermissionContext::MaybeOverridePermissionResultToReturn(
   }
 }
 
-void StorageAccessGrantPermissionContext::ReportRelatedWebsiteSetsDeprecation(
-    content::RenderFrameHost* rfh) {
-  auto deprecation_details = blink::mojom::DeprecationIssueDetails::New();
-  deprecation_details->type =
-      blink::mojom::DeprecationIssueType::kRelatedWebsiteSets;
-  deprecation_details->affected_location =
-      blink::mojom::AffectedLocation::New();
-  deprecation_details->affected_location->url =
-      rfh->GetLastCommittedURL().spec();
-
-  auto details = blink::mojom::InspectorIssueDetails::New();
-  details->deprecation_issue_details = std::move(deprecation_details);
-
-  auto issue_info = blink::mojom::InspectorIssueInfo::New(
-      blink::mojom::InspectorIssueCode::kDeprecationIssue, std::move(details));
-  rfh->ReportInspectorIssue(std::move(issue_info));
-}
-
 void StorageAccessGrantPermissionContext::NotifyPermissionSetInternal(
     const permissions::PermissionRequestData& request_data,
     permissions::BrowserPermissionCallback callback,
     bool persist,
     PermissionDecision decision,
     RequestOutcome outcome) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
 
-  RecordOutcomeSample(outcome,
+  RecordOutcomeSample(browser_context(), outcome,
                       net::SchemefulSite(request_data.requesting_origin));
 
   const bool permission_allowed = (decision == PermissionDecision::kAllow);
@@ -683,28 +627,6 @@ void StorageAccessGrantPermissionContext::NotifyPermissionSetInternal(
       content_settings->OnTwoSitePermissionChanged(
           ContentSettingsType::STORAGE_ACCESS,
           net::SchemefulSite(request_data.requesting_origin), content_setting);
-    }
-  }
-
-  bool was_granted_by_first_party_set =
-      outcome == RequestOutcome::kGrantedByFirstPartySet;
-  if (outcome == RequestOutcome::kReusedImplicitGrant) {
-    content_settings::SettingInfo info;
-    HostContentSettingsMapFactory::GetForProfile(browser_context())
-        ->GetContentSetting(request_data.requesting_origin,
-                            request_data.embedding_origin,
-                            ContentSettingsType::STORAGE_ACCESS, &info);
-    bool decided_by_rws = info.metadata.decided_by_related_website_sets();
-    if (decided_by_rws) {
-      was_granted_by_first_party_set = true;
-    }
-  }
-
-  if (was_granted_by_first_party_set) {
-    content::RenderFrameHost* rfh = content::RenderFrameHost::FromID(
-        request_data.id.global_render_frame_host_id());
-    if (rfh) {
-      ReportRelatedWebsiteSetsDeprecation(rfh);
     }
   }
 

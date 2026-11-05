@@ -98,6 +98,13 @@ NavigateEvent::NavigateEvent(ExecutionContext* context,
   CHECK(!controller_ || controller_->signal() == signal_);
 }
 
+Element* NavigateEvent::sourceElement() const {
+  // The source element might be inside a shadow tree (including a user-agent
+  // shadow tree, e.g. the instance tree of an SVG <use> element). Retarget it
+  // so that shadow-internal nodes are never exposed to script.
+  return DynamicTo<Element>(Retarget(source_element_.Get()));
+}
+
 bool NavigateEvent::PerformSharedChecks(const String& function_name,
                                         ExceptionState& exception_state) {
   if (!DomWindow()) {
@@ -470,6 +477,7 @@ void NavigateEvent::CommitNow() {
 
 void NavigateEvent::React(ScriptState* script_state) {
   CHECK(navigation_action_handlers_list_.empty());
+  has_reacted_ = true;
   PromiseAll<IDLUndefined>::WaitForAll(
       script_state, navigation_action_promises_list_,
       bindings::HeapBind(
@@ -626,7 +634,9 @@ void NavigateEvent::PotentiallyResetTheFocus() {
 
   if (Element* focus_delegate = document->GetAutofocusDelegate()) {
     focus_delegate->Focus(FocusParams(
-        user_initiated_ ? FocusTrigger::kUserGesture : FocusTrigger::kScript));
+        dispatch_params_->involvement == UserNavigationInvolvement::kActivation
+            ? FocusTrigger::kUserGesture
+            : FocusTrigger::kScript));
   } else {
     document->ClearFocusedElement();
     document->SetSequentialFocusNavigationStartingPoint(nullptr);

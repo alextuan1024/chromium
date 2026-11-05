@@ -13,6 +13,7 @@
 #include "base/files/file_path.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/version.h"
+#include "components/metrics/metrics_service.h"
 #include "components/variations/proto/study.pb.h"
 #include "components/variations/seed_response.h"
 #include "components/version_info/channel.h"
@@ -60,12 +61,26 @@ class VariationsServiceClient {
   // on platforms that support dedicated seed files should override this.
   virtual base::FilePath GetVariationsSeedFileDir();
 
+  // Returns true if a first-run variations seed is still pending in native
+  // staging storage. Platforms that keep the first-run seed in native staging
+  // storage until it has been durably stored (see
+  // `ClearNativeVariationsSeed()`) override this so a subsequent startup still
+  // imports the seed if the prior session flushed `kVariationsSeedDate` to
+  // Local State before the seed file write finished.
+  virtual bool HasPendingNativeVariationsSeed();
+
   // If a native variations service that directly fetches the seed from the
   // server is implemented, returns the SeedResponse from the native variations
-  // seed store, and removes the seed from the native storage given that we can
-  // assume that the returned seed would be stored into Chrome Prefs. Otherwise,
-  // returns nullptr.
+  // seed store. The seed is removed from native storage either immediately or,
+  // if `HasPendingNativeVariationsSeed()` still returns true afterwards, later
+  // by `ClearNativeVariationsSeed()`. Otherwise, returns nullptr. On first run,
+  // Desktop Chrome returns the seed from the installer initial preferences.
   virtual std::unique_ptr<SeedResponse> TakeSeedFromNativeVariationsSeedStore();
+
+  // Removes the first-run seed from native staging storage. Called once a seed
+  // that was still pending after `TakeSeedFromNativeVariationsSeedStore()` has
+  // been durably stored or discarded. Does nothing by default.
+  virtual void ClearNativeVariationsSeed();
 
   // If an invalid command-line was specified by the user, flag an error to the
   // user and exit the process.
@@ -97,6 +112,18 @@ class VariationsServiceClient {
   // Returns whether we verify the variations seed with its signature when we
   // load the variations seed from disk on startup.
   virtual bool EnableSignatureVerificationOnLoad();
+
+  // Rotates the current UMA log (closes current and opens a new one) right
+  // before runtime mutable variations changes are applied.
+  virtual metrics::MetricsService::RotateUmaLogResult
+      RotateUmaLogForRuntimeMutability(
+          metrics::MetricsService::RuntimeMutabilityPassKey);
+
+  // Returns whether applying runtime mutable variations changes should be
+  // delayed (e.g. because it is currently too early to close the current UMA
+  // log).
+  virtual bool ShouldDelayRuntimeMutability(
+      metrics::MetricsService::RuntimeMutabilityPassKey);
 
  private:
   // Gets the channel of the embedder. But all variations callers should use

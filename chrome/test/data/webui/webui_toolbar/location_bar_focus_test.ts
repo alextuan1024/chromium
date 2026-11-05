@@ -2,13 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
 
 import {assertEquals} from 'chrome://webui-test/chai_assert.js';
-import {TestSearchboxBrowserProxy} from 'chrome://webui-test/cr_components/searchbox/test_searchbox_browser_proxy.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, SearchboxBrowserProxy} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {LocationBarElement, LocationBarState} from 'chrome://webui-toolbar.top-chrome/app.js';
+import type {LocationBarElement} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {BrowserProxyImpl} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {LocationBarState} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {TestToolbarBrowserProxy} from './test_toolbar_browser_proxy.js';
 import type {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
@@ -36,7 +36,6 @@ suite('LocationBarFocus', function() {
     const browserProxy = new TestToolbarBrowserProxy();
     uiHandler = browserProxy.toolbarUIHandler;
     BrowserProxyImpl.setInstance(browserProxy);
-    SearchboxBrowserProxy.setInstance(new TestSearchboxBrowserProxy());
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     // Make first element something else focusable so we don't end up with
@@ -109,13 +108,16 @@ suite('LocationBarFocus', function() {
     // Default invisible outline
     assertEquals('solid', style.get('outline-style')?.toString());
     assertEquals('1px', style.get('outline-width')?.toString());
+    assertEquals('-1px', style.get('outline-offset')?.toString());
     assertEquals('rgba(0, 0, 0, 0)', style.get('outline-color')?.toString());
 
-    // Focus upgrades the outline to a 2px boundary.
+    // Focus upgrades the outline to a 2px boundary, 1px outside and 1px inside
+    // the location bar's bounds like Native.
     focusLocationBar();
     await microtasksFinished();
     assertEquals('solid', style.get('outline-style')?.toString());
     assertEquals('2px', style.get('outline-width')?.toString());
+    assertEquals('-1px', style.get('outline-offset')?.toString());
     assertEquals(crFocusOutlineColor, style.get('outline-color')?.toString());
 
     // If popup is open, the outline reverts.
@@ -151,6 +153,7 @@ suite('LocationBarFocus', function() {
     await microtasksFinished();
     assertEquals('solid', style.get('outline-style')?.toString());
     assertEquals('2px', style.get('outline-width')?.toString());
+    assertEquals('-1px', style.get('outline-offset')?.toString());
     assertEquals(crFocusOutlineColor, style.get('outline-color')?.toString());
   });
 

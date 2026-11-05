@@ -29,7 +29,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
-#include "chrome/browser/ui/tab_helpers.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
@@ -41,6 +40,7 @@
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/contextual_tasks/contextual_tasks_close_button_controller.h"
+#include "chrome/browser/ui/waap/window_creation.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
 #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
@@ -127,15 +127,19 @@ BrowserWindowInterface* BrowserTabStripModelDelegate::CreateNewStripWithTabs(
     std::vector<NewStripContents> tabs,
     const gfx::Rect& window_bounds,
     bool maximize) {
-  DCHECK(WindowFeatureController::From(browser_)->CanSupportWindowFeature(
-      WindowFeatureController::WindowFeature::kFeatureTabStrip));
+  CHECK(WindowFeatureController::From(browser_)->CanSupportWindowFeature(
+            WindowFeatureController::WindowFeature::kFeatureTabStrip),
+        base::NotFatalUntil::M162);
 
   // Create an empty new browser window the same size as the old one.
   BrowserWindowCreateParams params(browser_->GetProfile(), true);
   params.initial_bounds = window_bounds;
   params.initial_show_state = maximize ? ui::mojom::WindowShowState::kMaximized
                                        : ui::mojom::WindowShowState::kNormal;
-  BrowserWindowInterface* browser = CreateBrowserWindow(std::move(params));
+  BrowserWindowInterface* browser =
+      waap::CreateBrowserWindowAndRecordCreationSource(
+          std::move(params),
+          waap::NewWindowCreationSource::kMoveTabsToNewWindow);
   TabStripModel* new_model = browser->GetTabStripModel();
 
   for (size_t i = 0; i < tabs.size(); ++i) {
@@ -162,9 +166,7 @@ BrowserWindowInterface* BrowserTabStripModelDelegate::CreateNewStripWithTabs(
 }
 
 void BrowserTabStripModelDelegate::WillAddWebContents(
-    content::WebContents* contents) {
-  TabHelpers::AttachTabHelpers(contents);
-}
+    content::WebContents* contents) {}
 
 int BrowserTabStripModelDelegate::GetDragActions() const {
   return TabStripModelDelegate::TAB_TEAROFF_ACTION |
@@ -334,6 +336,11 @@ bool BrowserTabStripModelDelegate::ShouldRunUnloadListenerBeforeClosing(
     content::WebContents* contents) {
   return UnloadController::From(browser_)->ShouldRunUnloadListenerBeforeClosing(
       contents);
+}
+
+bool BrowserTabStripModelDelegate::IsTabClosable(
+    const tabs::TabInterface* tab) const {
+  return UnloadController::From(browser_)->IsTabClosable(tab);
 }
 
 bool BrowserTabStripModelDelegate::CanReload() const {

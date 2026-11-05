@@ -36,6 +36,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.build.annotations.RequiresNonNull;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
 import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
@@ -44,6 +45,7 @@ import org.chromium.chrome.browser.ui.appmenu.internal.R;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 import org.chromium.components.browser_ui.widget.textbubble.TextBubble;
 import org.chromium.ui.KeyboardVisibilityDelegate;
+import org.chromium.ui.KeyboardVisibilityDelegate.KeyboardVisibilityListener;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroidManager;
 import org.chromium.ui.hierarchicalmenu.FlyoutController.FlyoutHandler;
@@ -122,8 +124,7 @@ class AppMenuHandlerImpl
     private final SubmenuHeaderFactory mSubmenuHeaderFactory;
     private final ListObserver<Void> mListObserver;
     private @Nullable Callback<Integer> mTestOptionsItemSelectedListener;
-    private @MonotonicNonNull KeyboardVisibilityDelegate.KeyboardVisibilityListener
-            mKeyboardVisibilityListener;
+    private @MonotonicNonNull KeyboardVisibilityListener mKeyboardVisibilityListener;
 
     /**
      * The resource id of the menu item to highlight when the menu next opens. A value of {@code
@@ -298,13 +299,20 @@ class AppMenuHandlerImpl
     // TODO(crbug.com/40479664): Fix this properly.
     @SuppressLint("ResourceType")
     public boolean showAppMenu(@Nullable View anchorView, boolean startDragging) {
-        return showAppMenu(anchorView, startDragging, false);
+        return showAppMenu(
+                anchorView,
+                startDragging,
+                /* isFromBottomBar= */ false,
+                /* isFromPointer= */ false);
     }
 
     @Override
     @SuppressLint("ResourceType")
     public boolean showAppMenu(
-            @Nullable View anchorView, boolean startDragging, boolean isFromBottomBar) {
+            @Nullable View anchorView,
+            boolean startDragging,
+            boolean isFromBottomBar,
+            boolean isFromPointer) {
         if (!shouldShowAppMenu() || isAppMenuShowing()) return false;
 
         TextBubble.dismissBubbles();
@@ -356,12 +364,7 @@ class AppMenuHandlerImpl
                 /* headerModelList= */ null, mModelList, CallbackUtils.emptyRunnable());
 
         if (mAppMenu == null) {
-            mAppMenu =
-                    new AppMenu(
-                            this,
-                            mContext.getResources(),
-                            mHierarchicalMenuController,
-                            mAppMenuDelegate.shouldDisableVerticalScrollbar());
+            mAppMenu = new AppMenu(this, mContext.getResources(), mHierarchicalMenuController);
             mAppMenuDragHelper = new AppMenuDragHelper(mContext, mAppMenu, itemRowHeight);
         }
 
@@ -409,27 +412,22 @@ class AppMenuHandlerImpl
                 mWindowAndroid.getKeyboardDelegate();
 
         // If keyboard is showing, wait until keyboard disappears to set appRect
-        if (keyboardVisibilityDelegate.isKeyboardShowing(anchorView)) {
-            View finalAnchorView = anchorView;
-            boolean finalIsByPermanentButton = isByPermanentButton;
+        if (keyboardVisibilityDelegate.isKeyboardObscuring(anchorView)) {
+            // A show may already be waiting on the keyboard. Replace it, or the listener
+            // below would remove the new one instead of itself and never be removed.
+            if (mKeyboardVisibilityListener != null) {
+                keyboardVisibilityDelegate.removeKeyboardVisibilityListener(
+                        mKeyboardVisibilityListener);
+            }
             mKeyboardVisibilityListener =
-                    isShowing -> {
-                        if (!isShowing) {
-                            assert mAppMenu != null;
-                            setDisplayAndShowAppMenu(
-                                    wrapper,
-                                    finalAnchorView,
-                                    finalIsByPermanentButton,
-                                    rotation,
-                                    mAppRect.get(),
-                                    startDragging,
-                                    isFromBottomBar);
-                            // https://github.com/uber/NullAway/issues/1190
-                            assumeNonNull(mKeyboardVisibilityListener);
-                            keyboardVisibilityDelegate.removeKeyboardVisibilityListener(
-                                    mKeyboardVisibilityListener);
-                        }
-                    };
+                    createKeyboardVisibilityListener(
+                            wrapper,
+                            anchorView,
+                            isByPermanentButton,
+                            rotation,
+                            startDragging,
+                            isFromBottomBar,
+                            isFromPointer);
             keyboardVisibilityDelegate.addKeyboardVisibilityListener(mKeyboardVisibilityListener);
             keyboardVisibilityDelegate.hideKeyboard(anchorView);
         } else {
@@ -440,7 +438,8 @@ class AppMenuHandlerImpl
                     rotation,
                     mAppRect.get(),
                     startDragging,
-                    isFromBottomBar);
+                    isFromBottomBar,
+                    isFromPointer);
         }
         return true;
     }
@@ -476,6 +475,36 @@ class AppMenuHandlerImpl
         if (mAppMenu != null && mAppMenu.isShowing()) {
             mAppMenu.dismiss();
         }
+    }
+
+    private KeyboardVisibilityListener createKeyboardVisibilityListener(
+            ContextThemeWrapper wrapper,
+            View anchorView,
+            boolean isByPermanentButton,
+            int rotation,
+            boolean startDragging,
+            boolean isFromBottomBar,
+            boolean isFromPointer) {
+        KeyboardVisibilityDelegate keyboardVisibilityDelegate =
+                mWindowAndroid.getKeyboardDelegate();
+        return new KeyboardVisibilityListener() {
+            @Override
+            public void keyboardObscuringChanged(boolean isObscuring) {
+                if (!isObscuring) {
+                    assert mAppMenu != null;
+                    setDisplayAndShowAppMenu(
+                            wrapper,
+                            anchorView,
+                            isByPermanentButton,
+                            rotation,
+                            mAppRect.get(),
+                            startDragging,
+                            isFromBottomBar,
+                            isFromPointer);
+                    keyboardVisibilityDelegate.removeKeyboardVisibilityListener(this);
+                }
+            }
+        };
     }
 
     @Override
@@ -665,6 +694,14 @@ class AppMenuHandlerImpl
                 AppMenuItemType.HEADER,
                 new LayoutViewBuilder<>(R.layout.menu_header),
                 AppMenuItemViewBinder::bindHeaderItem);
+        adapter.registerType(
+                AppMenuItemType.TAB_GROUP,
+                new LayoutViewBuilder<>(standardItemResId),
+                AppMenuItemViewBinder::bindStandardItem);
+        adapter.registerType(
+                AppMenuItemType.TAB_GROUP_NO_ICON,
+                new LayoutViewBuilder<>(R.layout.menu_item_no_icon),
+                AppMenuItemViewBinder::bindStandardItem);
     }
 
     private void registerViewBinders(
@@ -784,7 +821,8 @@ class AppMenuHandlerImpl
             Integer rotation,
             Rect appRect,
             boolean startDragging,
-            boolean isFromBottomBar) {
+            boolean isFromBottomBar,
+            boolean isFromPointer) {
         // Use full size of window for abnormal appRect.
         if (appRect.left < 0 && appRect.top < 0) {
             appRect.left = 0;
@@ -792,6 +830,16 @@ class AppMenuHandlerImpl
             appRect.right = mDecorView.getWidth();
             appRect.bottom = mDecorView.getHeight();
         }
+
+        // When anchored to the bottom bar with top-anchored controls, keep the menu from growing
+        // over the top controls unless the delegate says there is nothing there to protect.
+        int reservedTopSpace =
+                isFromBottomBar
+                                && mBrowserControlsStateProvider.getControlsPosition()
+                                        == ControlsPosition.TOP
+                                && mDelegate.shouldKeepMenuBelowTopControls()
+                        ? mBrowserControlsStateProvider.getTopControlsHeight()
+                        : 0;
 
         mAppMenu.show(
                 wrapper,
@@ -806,6 +854,8 @@ class AppMenuHandlerImpl
                 mBrowserControlsStateProvider.getControlsPosition(),
                 addTopPaddingBeforeFirstRow(),
                 isFromBottomBar,
+                reservedTopSpace,
+                isFromPointer,
                 this);
         assumeNonNull(mAppMenuDragHelper);
         mAppMenuDragHelper.onShow(startDragging);
@@ -861,6 +911,12 @@ class AppMenuHandlerImpl
 
     @Override
     public void onSubmenuLoaded(List<ListItem> items) {
+        // Submenu items are instantiated lazily via SUBMENU_PROVIDER when a submenu is opened
+        // (not present in mAdapter during AppMenu#show). Clear their hints before they are
+        // measured or displayed if the root menu hid shortcuts.
+        if (mAppMenu != null && mAppMenu.shouldHideShortcutHints()) {
+            AppMenu.clearShortcutHints(items);
+        }
         updateModelForHighlightAndClick(
                 items, mHighlightMenuId, this, /* startIndex= */ 0, /* withAssertions= */ false);
     }

@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_AI_LANGUAGE_MODEL_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_AI_LANGUAGE_MODEL_H_
 
+#include <optional>
 #include <variant>
 
 #include "base/types/pass_key.h"
@@ -20,6 +21,7 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_message_role.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_prompt_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_sampling_mode.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_thinking_effort.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_languagemodelmessagecontentsequence_string.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
@@ -28,6 +30,7 @@
 #include "third_party/blink/renderer/core/streams/readable_stream.h"
 #include "third_party/blink/renderer/modules/ai/ai_utils.h"
 #include "third_party/blink/renderer/modules/ai/language_model_params.h"
+#include "third_party/blink/renderer/modules/ai/resolver_with_abort_signal.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
@@ -49,10 +52,23 @@ class MODULES_EXPORT LanguageModel final : public EventTarget,
       mojo::PendingRemote<mojom::blink::AILanguageModel> pending_remote,
       scoped_refptr<base::SequencedTaskRunner> task_runner,
       mojom::blink::AILanguageModelInstanceInfoPtr info,
-      bool has_context = false);
+      bool has_context = false,
+      bool has_warned_non_balanced_thinking = false);
   ~LanguageModel() override = default;
 
   bool has_context() const { return has_context_; }
+  bool has_warned_non_balanced_thinking() const {
+    return has_warned_non_balanced_thinking_;
+  }
+  // The runtime applies one sampling configuration across both reasoning and
+  // the final answer, and reasoning models are calibrated for `"balanced"`
+  // sampling during thinking (greedy or custom sampling can cause repetitive
+  // or incoherent thoughts). Warn at most once per session instead of
+  // rejecting or overriding explicit sampling options so sessions can mix
+  // thinking and `"none"` turns (see crbug.com/546151578).
+  void MaybeWarnNonBalancedSamplingForThinking(
+      std::optional<mojom::blink::AILanguageModelThinkingEffort>
+          prompt_thinking_effort = std::nullopt);
 
   void Trace(Visitor* visitor) const override;
 
@@ -108,6 +124,11 @@ class MODULES_EXPORT LanguageModel final : public EventTarget,
   std::optional<V8LanguageModelSamplingMode> samplingMode() const {
     return ConvertSamplingModeToV8(info_->sampling_mode);
   }
+  // Defaults to "none" when the session was created without `thinkingEffort`.
+  V8LanguageModelThinkingEffort thinkingEffort() const {
+    return ConvertThinkingEffortToV8(info_->thinking_effort.value_or(
+        mojom::blink::AILanguageModelThinkingEffort::kNone));
+  }
 
   ScriptPromise<LanguageModel> clone(ScriptState* script_state,
                                      const LanguageModelCloneOptions* options,
@@ -143,13 +164,14 @@ class MODULES_EXPORT LanguageModel final : public EventTarget,
       on_device_model::mojom::blink::ResponseConstraintPtr constraint,
       mojo::PendingRemote<mojom::blink::ModelStreamingResponder>
           pending_responder,
+      std::optional<mojom::blink::AILanguageModelThinkingEffort>
+          thinking_effort,
       Vector<mojom::blink::AILanguageModelPromptPtr> prompts);
 
   // Helper to make AILanguageModelProxy::MeasureInputUsage compatible with
   // ConvertPromptInputsToMojo callback.
   void ExecuteMeasureInputUsage(
-      ScriptPromiseResolver<IDLDouble>* resolver,
-      AbortSignal* signal,
+      ResolverWithAbortSignal<IDLDouble>* resolver,
       Vector<mojom::blink::AILanguageModelPromptPtr> prompts);
 
   // Validates common prompt input and returns true on success.
@@ -175,6 +197,8 @@ class MODULES_EXPORT LanguageModel final : public EventTarget,
   Vector<mojom::blink::ToolCallPtr> pending_tool_calls_;
   // Whether the session has any context, including pending requests.
   bool has_context_ = false;
+  // Whether this session has already logged the non balanced sampling warning.
+  bool has_warned_non_balanced_thinking_ = false;
 };
 
 }  // namespace blink

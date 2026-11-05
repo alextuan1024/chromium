@@ -4,14 +4,13 @@
 
 #include "third_party/blink/renderer/platform/graphics/offscreen_canvas_placeholder.h"
 
+#include "base/functional/callback_helpers.h"
+#include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_non_2d_resource_provider.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/exported_canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
-#include "third_party/blink/renderer/platform/graphics/test/test_webgraphics_shared_image_interface_provider.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "ui/gfx/geometry/rect.h"
@@ -38,7 +37,7 @@ class MockPlaceholderClient : public OffscreenCanvasPlaceholder::Client {
   }
 
   void PostImageToPlaceholder(
-      scoped_refptr<ExportedCanvasResource>&& resource) override {
+      scoped_refptr<ExportedCanvasResource> resource) override {
     OffscreenCanvasPlaceholder::Client::PostImageToPlaceholder(
         std::move(resource));
     OnPostImageToPlaceholder();
@@ -62,8 +61,8 @@ class OffscreenCanvasPlaceholderTest : public Test {
   OffscreenCanvasPlaceholder* placeholder() { return &placeholder_; }
   MockPlaceholderClient* client() { return placeholder_client_.get(); }
 
-  CanvasResource* DispatchOneFrame();
-  scoped_refptr<CanvasResource> DrawSomething();
+  ExportedCanvasResource* DispatchOneFrame();
+  scoped_refptr<ExportedCanvasResource> CreateResource();
   void CreateClient();
 
  protected:
@@ -82,23 +81,19 @@ class OffscreenCanvasPlaceholderTest : public Test {
   test::TaskEnvironment task_environment_;
   OffscreenCanvasPlaceholder placeholder_;
   std::unique_ptr<MockPlaceholderClient> placeholder_client_;
-  std::unique_ptr<CanvasNon2DResourceProvider> resource_provider_;
-  std::unique_ptr<WebGraphicsSharedImageInterfaceProvider>
-      test_web_shared_image_interface_provider_;
+  scoped_refptr<gpu::TestSharedImageInterface> test_sii_;
   DOMNodeId placeholder_id_ = 0;
 };
 
 void OffscreenCanvasPlaceholderTest::SetUp() {
   Test::SetUp();
-  test_web_shared_image_interface_provider_ =
-      TestWebGraphicsSharedImageInterfaceProvider::Create();
+  test_sii_ = base::MakeRefCounted<gpu::TestSharedImageInterface>();
 
   placeholder_id_ = GenPlaceholderId();
   placeholder_.RegisterPlaceholderCanvas(placeholder_id_);
 }
 
 void OffscreenCanvasPlaceholderTest::TearDown() {
-  resource_provider_.reset();
   placeholder_.UnregisterPlaceholderCanvas();
   Test::TearDown();
 }
@@ -106,22 +101,26 @@ void OffscreenCanvasPlaceholderTest::TearDown() {
 void OffscreenCanvasPlaceholderTest::CreateClient() {
   placeholder_client_ =
       std::make_unique<MockPlaceholderClient>(placeholder_id_);
-  resource_provider_ = CanvasNon2DResourceProvider::CreateForSoftwareCompositor(
-      gfx::Size(10, 10), GetN32FormatForCanvas(), kPremul_SkAlphaType,
-      gfx::ColorSpace::CreateSRGB(),
-      test_web_shared_image_interface_provider_.get());
 }
 
-scoped_refptr<CanvasResource> OffscreenCanvasPlaceholderTest::DrawSomething() {
-  return resource_provider_->DoExternalOverdrawAndProduceResource(
-      [](cc::PaintCanvas& canvas) { canvas.clear(SkColors::kWhite); });
+scoped_refptr<ExportedCanvasResource>
+OffscreenCanvasPlaceholderTest::CreateResource() {
+  auto shared_image = test_sii_->CreateSharedImageForSoftwareCompositor(
+      {GetN32FormatForCanvas(), gfx::Size(10, 10),
+       gfx::ColorSpace::CreateSRGB(), gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY,
+       "test"});
+  return base::MakeRefCounted<ExportedCanvasResource>(
+      std::move(shared_image), gpu::SyncToken(),
+      viz::TransferableResource::ResourceSource::kCanvas, gfx::HDRMetadata(),
+      /*context_provider_wrapper=*/nullptr, /*accelerated_raster=*/false,
+      base::NullCallback(), base::NullCallback(),
+      /*use_legacy_external_canvas_resource_bitmap_path=*/false);
 }
 
-CanvasResource* OffscreenCanvasPlaceholderTest::DispatchOneFrame() {
-  scoped_refptr<CanvasResource> resource = DrawSomething();
-  CanvasResource* resource_raw_ptr = resource.get();
-  placeholder_client_->DispatchFrame(
-      base::MakeRefCounted<ExportedCanvasResource>(std::move(resource)));
+ExportedCanvasResource* OffscreenCanvasPlaceholderTest::DispatchOneFrame() {
+  scoped_refptr<ExportedCanvasResource> resource = CreateResource();
+  ExportedCanvasResource* resource_raw_ptr = resource.get();
+  placeholder_client_->DispatchFrame(std::move(resource));
   // We avoid holding a ref here to avoid interfering with
   // OffscreenCanvasPlaceholder's ref count logic.  This pointer should only
   // be used for validations.
@@ -136,73 +135,25 @@ TEST_F(OffscreenCanvasPlaceholderTest, OldFrameCleared) {
   ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
   CreateClient();
 
-  DrawSomething();
-  CanvasResource* frame1_raw_ptr = DispatchOneFrame();
+  ExportedCanvasResource* frame1_raw_ptr = DispatchOneFrame();
 
   EXPECT_CALL(*(client()), MainThreadReceivedImage()).Times(1);
   // Run task that propagates the frame to the placeholder canvas.
   EXPECT_EQ(placeholder()->OffscreenCanvasFrame(), nullptr);
   platform->RunUntilIdle();
-  EXPECT_EQ(placeholder()->OffscreenCanvasFrame()->GetResourceForTesting(),
-            frame1_raw_ptr);
+  EXPECT_EQ(placeholder()->OffscreenCanvasFrame(), frame1_raw_ptr);
   Mock::VerifyAndClearExpectations(client());
 
   EXPECT_CALL(*(client()), MainThreadReceivedImage()).Times(0);
-  DrawSomething();
-  CanvasResource* frame2_raw_ptr = DispatchOneFrame();
+  ExportedCanvasResource* frame2_raw_ptr = DispatchOneFrame();
   Mock::VerifyAndClearExpectations(client());
 
   EXPECT_CALL(*(client()), MainThreadReceivedImage()).Times(1);
   // Propagate second frame to the placeholder, causing frame 1 to be
   // cleared.
-  EXPECT_EQ(placeholder()->OffscreenCanvasFrame()->GetResourceForTesting(),
-            frame1_raw_ptr);
+  EXPECT_EQ(placeholder()->OffscreenCanvasFrame(), frame1_raw_ptr);
   platform->RunUntilIdle();
-  EXPECT_EQ(placeholder()->OffscreenCanvasFrame()->GetResourceForTesting(),
-            frame2_raw_ptr);
-  Mock::VerifyAndClearExpectations(client());
-}
-
-TEST_F(OffscreenCanvasPlaceholderTest, OldFrameClearedWithExtraRef) {
-  // This test verifies that OffscreenCanvasPlaceholder clears
-  // the previous frame when it receives a new one regardless of whether there
-  // is another ref on that previous frame.
-  ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
-  CreateClient();
-
-  DrawSomething();
-  CanvasResource* frame1_raw_ptr = DispatchOneFrame();
-
-  EXPECT_CALL(*(client()), MainThreadReceivedImage()).Times(1);
-  // Run task that propagates the frame to the placeholder canvas.
-  EXPECT_EQ(placeholder()->OffscreenCanvasFrame(), nullptr);
-  platform->RunUntilIdle();
-  EXPECT_EQ(placeholder()->OffscreenCanvasFrame()->GetResourceForTesting(),
-            frame1_raw_ptr);
-  scoped_refptr<CanvasResource> extra_ref =
-      placeholder()->OffscreenCanvasFrame()->GetResourceForTesting();
-  Mock::VerifyAndClearExpectations(client());
-
-  EXPECT_CALL(*(client()), MainThreadReceivedImage()).Times(0);
-  DrawSomething();
-  CanvasResource* frame2_raw_ptr = DispatchOneFrame();
-  Mock::VerifyAndClearExpectations(client());
-
-  EXPECT_CALL(*(client()), MainThreadReceivedImage()).Times(1);
-  // Propagate second frame to the placeholder. First frame will be cleared.
-  EXPECT_EQ(placeholder()->OffscreenCanvasFrame()->GetResourceForTesting(),
-            frame1_raw_ptr);
-  platform->RunUntilIdle();
-  EXPECT_EQ(placeholder()->OffscreenCanvasFrame()->GetResourceForTesting(),
-            frame2_raw_ptr);
-  Mock::VerifyAndClearExpectations(client());
-
-  EXPECT_CALL(*(client()), MainThreadReceivedImage()).Times(0);
-  extra_ref = nullptr;
-  Mock::VerifyAndClearExpectations(client());
-
-  EXPECT_CALL(*(client()), MainThreadReceivedImage()).Times(0);
-  platform->RunUntilIdle();
+  EXPECT_EQ(placeholder()->OffscreenCanvasFrame(), frame2_raw_ptr);
   Mock::VerifyAndClearExpectations(client());
 }
 

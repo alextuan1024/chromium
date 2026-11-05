@@ -34,8 +34,7 @@ class HistoryClustersServiceTaskUpdateClusterTriggerability
       base::WeakPtr<HistoryClustersService> weak_history_clusters_service,
       ClusteringBackend* const backend,
       history::HistoryService* const history_service,
-      bool likely_has_unclustered_visits_or_unprocessed_clusters,
-      base::OnceClosure callback);
+      bool likely_has_unclustered_visits_or_unprocessed_clusters);
   ~HistoryClustersServiceTaskUpdateClusterTriggerability() override;
 
  private:
@@ -63,7 +62,7 @@ class HistoryClustersServiceTaskUpdateClusterTriggerability
 
   // Invoked syncly during construction, after `OnGotPersistedClusters()`
   // receives no clusters while history isn't exhuasted, and after
-  // `OnPersistedClusterTriggerability()` records metrics. This fetches
+  // `OnPersistedClusterTriggerability()` completes. This fetches
   // persisted clusters.
   void Start();
 
@@ -72,41 +71,33 @@ class HistoryClustersServiceTaskUpdateClusterTriggerability
   // After all unclustered visits have been exhausted, the flow to update its
   // triggerability metadata will be run.
   void OnGotAnnotatedVisitsToCluster(
-      base::TimeTicks start_time,
       std::vector<history::ClusterId> old_clusters_unused,
       std::vector<history::AnnotatedVisit> annotated_visits,
       QueryClustersContinuationParams continuation_params);
 
   // Invoked after `OnGotAnnotatedVisitsToCluster()` asyncly calculates context
   // clusters from unclustered visits.
-  void OnGotModelContextClusters(base::TimeTicks start_time,
-                                 std::vector<history::Cluster> clusters);
+  void OnGotModelContextClusters(std::vector<history::Cluster> clusters);
 
   // Invoked after `OnGotModelContextClusters()` asyncly persists the context
   // clusters.
-  void OnPersistedContextClusters(base::TimeTicks start_time);
+  void OnPersistedContextClusters();
 
   // Invoked after `Start()` asyncly fetches clusters when all unclustered
-  // visits have been exhausted. May syncly invoke `callback_` if no clusters
+  // visits have been exhausted. May syncly mark the task as done if no clusters
   // were returned. If clusters are returned, this will filter for clusters that
   // do not have their triggerability calculated yet so that triggerability
   // metadata can be calculated. Otherwise, it invokes `Start()` to fetch more
   // clusters.
-  void OnGotPersistedClusters(base::TimeTicks start_time,
-                              std::vector<history::Cluster> clusters);
+  void OnGotPersistedClusters(std::vector<history::Cluster> clusters);
 
   // Invoked after `OnGotPersistedClusters()` asyncly obtains clusters.
   void OnGotModelClustersWithTriggerability(
-      base::TimeTicks start_time,
       std::vector<history::Cluster> clusters);
 
   // Invoked after `OnGotModelClustersWithTriggerability()` asyncly persists
   // clusters. Will syncly invoke `Start()` to initiate the next iteration.
-  void OnPersistedClusterTriggerability(base::TimeTicks start_time);
-
-  // Marks the task as done, runs `callback_`, and logs metrics about the task
-  // run.
-  void MarkDoneAndRunCallback();
+  void OnPersistedClusterTriggerability();
 
   // Never nullptr.
   base::WeakPtr<HistoryClustersService> weak_history_clusters_service_;
@@ -119,10 +110,6 @@ class HistoryClustersServiceTaskUpdateClusterTriggerability
   QueryClustersContinuationParams continuation_params_;
   base::CancelableTaskTracker task_tracker_;
 
-  // Invoked after `OnGotPersistedClusters()` when all clusters have been
-  // exhausted.
-  base::OnceClosure callback_;
-
   // Tracks the time `this` was created to use for the max time we should update
   // clusters for.
   base::Time task_created_time_;
@@ -130,18 +117,6 @@ class HistoryClustersServiceTaskUpdateClusterTriggerability
   // Whether it is likely that there are unclustered visits to cluster or old
   // clusters that do not yet have their triggerability calculated.
   const bool likely_has_unclustered_visits_or_unprocessed_clusters_ = false;
-
-  // Tracks whether at least one cluster's triggerability was updated (for
-  // metrics only).
-  bool updated_cluster_triggerability_ = false;
-
-  // Tracks whether at least one cluster's triggerability was updated after the
-  // first call with all filtered clusters returned (for metrics only).
-  // Initially nullopt but false after receiving a response with no clusters and
-  // true after receiving a response with clusters after having received a
-  // response with no clusters.
-  std::optional<bool>
-      updated_cluster_triggerability_after_filtered_clusters_empty_;
 
   // Used for async callbacks.
   base::WeakPtrFactory<HistoryClustersServiceTaskUpdateClusterTriggerability>

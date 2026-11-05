@@ -30,6 +30,8 @@
 #include <tuple>
 
 #include "base/feature_list.h"
+#include "base/no_destructor.h"
+#include "base/numerics/clamped_math.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
 #include "third_party/blink/public/web/web_frame_widget.h"
@@ -49,6 +51,7 @@
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/editing/ime/edit_context.h"
+#include "third_party/blink/renderer/core/editing/ime/ime_code_point_utils.h"
 #include "third_party/blink/renderer/core/editing/markers/document_marker_controller.h"
 #include "third_party/blink/renderer/core/editing/markers/spell_check_marker.h"
 #include "third_party/blink/renderer/core/editing/markers/suggestion_marker_properties.h"
@@ -56,8 +59,6 @@
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/set_selection_options.h"
 #include "third_party/blink/renderer/core/editing/spellcheck/spell_checker.h"
-#include "third_party/blink/renderer/core/editing/state_machines/backward_code_point_state_machine.h"
-#include "third_party/blink/renderer/core/editing/state_machines/forward_code_point_state_machine.h"
 #include "third_party/blink/renderer/core/events/composition_event.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -155,75 +156,6 @@ AtomicString GetVirtualKeyboardPolicyAttribute(Element* element) {
   return virtual_keyboard_policy_value.ToAsciiLower();
 }
 
-constexpr int kInvalidDeletionLength = -1;
-constexpr bool IsInvalidDeletionLength(const int length) {
-  return length == kInvalidDeletionLength;
-}
-
-int CalculateBeforeDeletionLengthsInCodePoints(const String& text,
-                                               int before_length_in_code_points,
-                                               int selection_start) {
-  DCHECK_GE(before_length_in_code_points, 0);
-  DCHECK_GE(selection_start, 0);
-  DCHECK_LE(selection_start, static_cast<int>(text.length()));
-
-  base::span<const UChar> u_text = text.Span16();
-  BackwardCodePointStateMachine backward_machine;
-  int counter = before_length_in_code_points;
-  int deletion_start = selection_start;
-  while (counter > 0 && deletion_start > 0) {
-    const TextSegmentationMachineState state =
-        backward_machine.FeedPrecedingCodeUnit(
-            u_text[static_cast<size_t>(deletion_start - 1)]);
-    // According to Android's InputConnection spec, we should do nothing if
-    // |text| has invalid surrogate pair in the deletion range.
-    if (state == TextSegmentationMachineState::kInvalid)
-      return kInvalidDeletionLength;
-
-    if (backward_machine.AtCodePointBoundary())
-      --counter;
-    --deletion_start;
-  }
-  if (!backward_machine.AtCodePointBoundary())
-    return kInvalidDeletionLength;
-
-  const int offset = backward_machine.GetBoundaryOffset();
-  DCHECK_EQ(-offset, selection_start - deletion_start);
-  return -offset;
-}
-
-int CalculateAfterDeletionLengthsInCodePoints(const String& text,
-                                              int after_length_in_code_points,
-                                              int selection_end) {
-  DCHECK_GE(after_length_in_code_points, 0);
-  const auto end = base::checked_cast<wtf_size_t>(selection_end);
-  const wtf_size_t length = text.length();
-  DCHECK_LE(end, length);
-
-  base::span<const UChar> u_text = text.Span16();
-  ForwardCodePointStateMachine forward_machine;
-  int counter = after_length_in_code_points;
-  wtf_size_t deletion_end = end;
-  while (counter > 0 && deletion_end < length) {
-    const TextSegmentationMachineState state =
-        forward_machine.FeedFollowingCodeUnit(u_text[deletion_end]);
-    // According to Android's InputConnection spec, we should do nothing if
-    // |text| has invalid surrogate pair in the deletion range.
-    if (state == TextSegmentationMachineState::kInvalid)
-      return kInvalidDeletionLength;
-
-    if (forward_machine.AtCodePointBoundary())
-      --counter;
-    ++deletion_end;
-  }
-  if (!forward_machine.AtCodePointBoundary())
-    return kInvalidDeletionLength;
-
-  const int offset = forward_machine.GetBoundaryOffset();
-  DCHECK_EQ(static_cast<wtf_size_t>(offset), deletion_end - end);
-  return offset;
-}
-
 Element* RootEditableElementOfSelection(const FrameSelection& frame_selection) {
   const SelectionInDomTree& selection = frame_selection.GetSelectionInDomTree();
   if (selection.IsNone())
@@ -277,18 +209,21 @@ int ComputeAutocapitalizeFlags(const Element* element) {
 
   int flags = 0;
 
-  DEFINE_STATIC_LOCAL(const AtomicString, characters, ("characters"));
-  DEFINE_STATIC_LOCAL(const AtomicString, words, ("words"));
-  DEFINE_STATIC_LOCAL(const AtomicString, sentences, ("sentences"));
+  static const base::NoDestructor<AtomicString> characters(
+      AtomicString::FromLiteral<"characters">());
+  static const base::NoDestructor<AtomicString> words(
+      AtomicString::FromLiteral<"words">());
+  static const base::NoDestructor<AtomicString> sentences(
+      AtomicString::FromLiteral<"sentences">());
 
   const AtomicString& autocapitalize = html_element->autocapitalize();
   if (autocapitalize == keywords::kNone) {
     flags |= kWebTextInputFlagAutocapitalizeNone;
-  } else if (autocapitalize == characters) {
+  } else if (autocapitalize == *characters) {
     flags |= kWebTextInputFlagAutocapitalizeCharacters;
-  } else if (autocapitalize == words) {
+  } else if (autocapitalize == *words) {
     flags |= kWebTextInputFlagAutocapitalizeWords;
-  } else if (autocapitalize == sentences) {
+  } else if (autocapitalize == *sentences) {
     flags |= kWebTextInputFlagAutocapitalizeSentences;
   } else if (autocapitalize == g_empty_atom) {
     // https://html.spec.whatwg.org/multipage/interaction.html#autocapitalization
@@ -916,8 +851,16 @@ bool InputMethodController::ReplaceCompositionAndMoveCaret(
 
   AddImeTextSpans(ime_text_spans, root_editable_element, text_start);
 
+  int inserted_length = text.length();
+  if (RuntimeEnabledFeatures::ReplaceCompositionActualInsertedLengthEnabled()) {
+    PlainTextRange selection_offsets = GetSelectionOffsets();
+    if (selection_offsets.IsNull()) {
+      return false;
+    }
+    inserted_length = selection_offsets.End() - text_start;
+  }
   int absolute_caret_position = ComputeAbsoluteCaretPosition(
-      text_start, text.length(), relative_caret_position);
+      text_start, inserted_length, relative_caret_position);
   return MoveCaret(absolute_caret_position);
 }
 
@@ -1496,6 +1439,21 @@ void InputMethodController::ExtendSelectionAndDelete(int before, int after) {
   if (selection_offsets.IsNull())
     return;
 
+  if (RuntimeEnabledFeatures::ExtendSelectionAndDeleteInCodeUnitsEnabled()) {
+    if (before < 0 || after < 0) {
+      return;
+    }
+    const wtf_size_t start = base::ClampSub(selection_offsets.Start(),
+                                            static_cast<wtf_size_t>(before));
+    const wtf_size_t end =
+        base::ClampAdd(selection_offsets.End(), static_cast<wtf_size_t>(after));
+    if (!SetSelectionOffsets(PlainTextRange(start, end))) {
+      return;
+    }
+    std::ignore = DeleteSelectionWithoutAdjustment();
+    return;
+  }
+
   // A common call of before=1 and after=0 will fail if the last character
   // is multi-code-word UTF-16, including both multi-16bit code-points and
   // Unicode combining character sequences of multiple single-16bit code-
@@ -1660,16 +1618,18 @@ void InputMethodController::DeleteSurroundingTextInCodePoints(int before,
   const int selection_start = static_cast<int>(selection_offsets.Start());
   const int selection_end = static_cast<int>(selection_offsets.End());
 
-  const int before_length =
+  const std::optional<int> before_length =
       CalculateBeforeDeletionLengthsInCodePoints(text, before, selection_start);
-  if (IsInvalidDeletionLength(before_length))
+  if (!before_length) {
     return;
-  const int after_length =
+  }
+  const std::optional<int> after_length =
       CalculateAfterDeletionLengthsInCodePoints(text, after, selection_end);
-  if (IsInvalidDeletionLength(after_length))
+  if (!after_length) {
     return;
+  }
 
-  return DeleteSurroundingText(before_length, after_length);
+  return DeleteSurroundingText(*before_length, *after_length);
 }
 
 void InputMethodController::ExtendSelectionAndReplace(
@@ -1734,6 +1694,10 @@ WebTextInputInfo InputMethodController::TextInputInfo() const {
   if (!IsAvailable())
     return info;
 
+  // The type must be resolved before the selection checks below, which bail
+  // out for a focused element without a text selection.
+  info.type = TextInputType();
+
   if (!GetFrame().Selection().IsAvailable()) {
     // plugins/mouse-capture-inside-shadow.html reaches here.
     return info;
@@ -1746,7 +1710,6 @@ WebTextInputInfo InputMethodController::TextInputInfo() const {
   info.action = InputActionOfFocusedElement();
   info.input_mode = InputModeOfFocusedElement();
   info.virtual_keyboard_policy = VirtualKeyboardPolicyOfFocusedElement();
-  info.type = TextInputType();
   info.flags = TextInputFlags();
   if (info.type == kWebTextInputTypeNone)
     return info;
@@ -1985,6 +1948,15 @@ WebTextInputType InputMethodController::TextInputType() const {
     Element* element = GetDocument().FocusedElement();
     if (IsA<HTMLCanvasElement>(element)) {
       return kWebTextInputTypeContentEditable;
+    }
+  }
+
+  // A DateTimeFieldElement accepts keyboard input but never has a text
+  // selection, so the selection checks below would report kNone for it.
+  if (RuntimeEnabledFeatures::DateTimeFieldTypeWithoutSelectionEnabled()) {
+    Element* focused_element = GetDocument().FocusedElement();
+    if (focused_element && focused_element->IsDateTimeFieldElement()) {
+      return kWebTextInputTypeDateTimeField;
     }
   }
 

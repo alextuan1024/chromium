@@ -4,7 +4,11 @@
 
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 
+#include <utility>
+
 #include "build/build_config.h"
+#include "cc/input/scroll_snap_data.h"
+#include "cc/input/snap_selection_strategy.h"
 #include "cc/layers/picture_layer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/features.h"
@@ -25,6 +29,7 @@
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme.h"
 #include "third_party/blink/renderer/core/testing/color_scheme_helper.h"
 #include "third_party/blink/renderer/platform/graphics/compositing/paint_artifact_compositor.h"
+#include "third_party/blink/renderer/platform/graphics/compositor_element_id.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "ui/display/screen_info.h"
 
@@ -192,7 +197,7 @@ TEST_P(PaintLayerScrollableAreaTest, OpaqueLayersDepromotedOnStyleChange) {
     <div id="scroller"><div id="scrolled"></div></div>
   )HTML");
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   EXPECT_TRUE(UsesCompositedScrolling(scroller->GetLayoutBox()));
 
   // Change the background to transparent
@@ -213,7 +218,7 @@ TEST_P(PaintLayerScrollableAreaTest, OpaqueLayersPromotedOnStyleChange) {
     <div id="scroller"><div id="scrolled"></div></div>
   )HTML");
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   EXPECT_FALSE(UsesCompositedScrolling(scroller->GetLayoutBox()));
 
   // Change the background to opaque
@@ -238,8 +243,8 @@ TEST_P(PaintLayerScrollableAreaTest,
     </div>
   )HTML");
 
-  Element* parent = GetDocument().getElementById(AtomicString("parent"));
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* parent = GetElementById("parent");
+  Element* scroller = GetElementById("scroller");
   EXPECT_TRUE(UsesCompositedScrolling(scroller->GetLayoutBox()));
 
   // Change the parent to have a transform.
@@ -273,8 +278,8 @@ TEST_P(PaintLayerScrollableAreaTest,
     </div>
   )HTML");
 
-  Element* parent = GetDocument().getElementById(AtomicString("parent"));
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* parent = GetElementById("parent");
+  Element* scroller = GetElementById("scroller");
   EXPECT_TRUE(UsesCompositedScrolling(scroller->GetLayoutBox()));
 
   // Change the parent to be partially translucent.
@@ -304,7 +309,7 @@ TEST_P(PaintLayerScrollableAreaTest, CompositedScrollOnWillChangeTransform) {
     <div id="scroller"><div id="scrolled"></div></div>
   )HTML");
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   EXPECT_FALSE(UsesCompositedScrolling(scroller->GetLayoutBox()));
 
   scroller->setAttribute(html_names::kStyleAttr,
@@ -329,7 +334,7 @@ TEST_P(PaintLayerScrollableAreaTest, ScrollLayerOnPointerEvents) {
     <div id="scroller"><div id="scrolled"></div></div>
   )HTML");
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   EXPECT_TRUE(UsesCompositedScrolling(scroller->GetLayoutBox()));
 
   // pointer-events: none does not affect whether composited scrolling is
@@ -363,7 +368,7 @@ TEST_P(PaintLayerScrollableAreaTest, InputElementPromotionTest) {
     <input id='input' width=10 style='font-size:40pt;'/>
   )HTML");
 
-  Element* element = GetDocument().getElementById(AtomicString("input"));
+  Element* element = GetElementById("input");
   EXPECT_FALSE(HasDirectCompositingReasons(element->GetLayoutObject()));
   EXPECT_FALSE(UsesCompositedScrolling(element->GetLayoutBox()));
 
@@ -389,7 +394,7 @@ TEST_P(PaintLayerScrollableAreaTest, SelectElementPromotionTest) {
     </select>
   )HTML");
 
-  Element* element = GetDocument().getElementById(AtomicString("select"));
+  Element* element = GetElementById("select");
   EXPECT_FALSE(HasDirectCompositingReasons(element->GetLayoutObject()));
   EXPECT_FALSE(UsesCompositedScrolling(element->GetLayoutBox()));
 
@@ -524,7 +529,7 @@ TEST_P(PaintLayerScrollableAreaTest, HideTooltipWhenScrollPositionChanges) {
     <div id="scroller"><div id="scrolled"></div></div>
   )HTML");
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   PaintLayerScrollableArea* scrollable_area =
       scroller->GetLayoutBox()->GetScrollableArea();
   ASSERT_TRUE(scrollable_area);
@@ -557,7 +562,7 @@ TEST_P(PaintLayerScrollableAreaTest, IncludeOverlayScrollbarsInVisibleWidth) {
     <div id="scroller"><div id="scrolled"></div></div>
   )HTML");
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   ASSERT_TRUE(scroller);
   PaintLayerScrollableArea* scrollable_area =
       scroller->GetLayoutBox()->GetScrollableArea();
@@ -589,7 +594,7 @@ TEST_P(PaintLayerScrollableAreaTest, ShowAutoScrollbarsForVisibleContent) {
     </div>
   )HTML");
 
-  Element* outer_div = GetDocument().getElementById(AtomicString("outerDiv"));
+  Element* outer_div = GetElementById("outerDiv");
   ASSERT_TRUE(outer_div);
   outer_div->GetLayoutBox()->SetNeedsLayout("test");
   UpdateAllLifecyclePhasesForTest();
@@ -619,7 +624,7 @@ TEST_P(PaintLayerScrollableAreaTest, FloatOverflowInRtlContainer) {
     </div>
   )HTML");
 
-  Element* container = GetDocument().getElementById(AtomicString("container"));
+  Element* container = GetElementById("container");
   ASSERT_TRUE(container);
   PaintLayerScrollableArea* scrollable_area =
       container->GetLayoutBox()->GetScrollableArea();
@@ -647,7 +652,7 @@ TEST_P(PaintLayerScrollableAreaTest, ScrollOriginInRtlContainer) {
     </div>
   )HTML");
 
-  Element* container = GetDocument().getElementById(AtomicString("container"));
+  Element* container = GetElementById("container");
   ASSERT_TRUE(container);
   PaintLayerScrollableArea* scrollable_area =
       container->GetLayoutBox()->GetScrollableArea();
@@ -1336,7 +1341,7 @@ TEST_P(PaintLayerScrollableAreaTest, IgnoreDelayedScrollOnDestroyedLayer) {
       <div style="height: 1000px;"></div>
     </div>
   )HTML");
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   {
     PaintLayerScrollableArea::DelayScrollOffsetClampScope scope;
     PaintLayerScrollableArea::DelayScrollOffsetClampScope::SetNeedsClamp(
@@ -1406,6 +1411,278 @@ TEST_P(PaintLayerScrollableAreaTest, ScrollingBackgroundVisualRect) {
             GetLayoutBoxByElementId("scroller")
                 ->GetScrollableArea()
                 ->ScrollingBackgroundVisualRect(PhysicalOffset()));
+}
+
+TEST_P(PaintLayerScrollableAreaTest, GetSnapPositionDoesNotChangeSelection) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #scroller {
+        overflow: auto;
+        width: 100px;
+        height: 100px;
+        scroll-snap-type: y mandatory;
+      }
+      .snap { height: 50px; scroll-snap-align: start; }
+      #second { margin-top: 150px; }
+    </style>
+    <div id="scroller">
+      <div id="first" class="snap"></div>
+      <div id="second" class="snap"></div>
+      <div style="height: 750px;"></div>
+    </div>
+  )HTML");
+  auto* scroller = GetLayoutBoxByElementId("scroller");
+  auto* scrollable_area = scroller->GetScrollableArea();
+  const cc::TargetSnapAreaElementIds initial_ids(
+      cc::ElementId(), CompositorElementIdFromDOMNodeId(
+                           GetElementById("first")->GetDomNodeId()));
+  const cc::TargetSnapAreaElementIds expected_ids(
+      cc::ElementId(), CompositorElementIdFromDOMNodeId(
+                           GetElementById("second")->GetDomNodeId()));
+  ASSERT_TRUE(scrollable_area->GetSnapContainerData());
+  ASSERT_EQ(
+      initial_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  ASSERT_EQ(ScrollOffset(), scrollable_area->GetScrollOffset());
+  ASSERT_FALSE(scroller->NeedsPaintPropertyUpdate());
+
+  const auto strategy = cc::SnapSelectionStrategy::CreateForEndPosition(
+      gfx::PointF(0, 200), false, true);
+  const auto snap = scrollable_area->GetSnapPosition(*strategy);
+  ASSERT_TRUE(snap);
+  EXPECT_EQ(cc::SnapPositionData::Type::kAligned, snap->type);
+  EXPECT_EQ(gfx::PointF(0, 200), snap->position);
+  EXPECT_EQ(expected_ids, snap->target_element_ids);
+  EXPECT_EQ(
+      initial_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  EXPECT_EQ(ScrollOffset(), scrollable_area->GetScrollOffset());
+  EXPECT_FALSE(scroller->NeedsPaintPropertyUpdate());
+
+  EXPECT_TRUE(
+      scrollable_area->SetTargetSnapAreaElementIds(snap->target_element_ids));
+  EXPECT_EQ(
+      expected_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  EXPECT_EQ(ScrollOffset(), scrollable_area->GetScrollOffset());
+  EXPECT_TRUE(scroller->NeedsPaintPropertyUpdate());
+}
+
+TEST_P(PaintLayerScrollableAreaTest,
+       GetSnapPositionAndSetTargetAtCurrentOffset) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #scroller {
+        overflow: auto;
+        width: 100px;
+        height: 100px;
+        scroll-snap-type: y mandatory;
+      }
+      .snap { height: 50px; scroll-snap-align: start; }
+      #second { margin-top: 150px; }
+    </style>
+    <div id="scroller">
+      <div id="first" class="snap"></div>
+      <div id="second" class="snap"></div>
+      <div style="height: 750px;"></div>
+    </div>
+  )HTML");
+  auto* scroller = GetLayoutBoxByElementId("scroller");
+  auto* scrollable_area = scroller->GetScrollableArea();
+  const cc::TargetSnapAreaElementIds initial_ids(
+      cc::ElementId(), CompositorElementIdFromDOMNodeId(
+                           GetElementById("first")->GetDomNodeId()));
+  const cc::TargetSnapAreaElementIds expected_ids(
+      cc::ElementId(), CompositorElementIdFromDOMNodeId(
+                           GetElementById("second")->GetDomNodeId()));
+  ASSERT_TRUE(scrollable_area->GetSnapContainerData());
+  ASSERT_EQ(
+      initial_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+
+  // A user scroll can reach the next snap area before snap selection is
+  // updated. Finish painting the movement to isolate selection invalidation.
+  scrollable_area->ScrollBy(ScrollOffset(0, 200),
+                            mojom::blink::ScrollType::kUser,
+                            mojom::blink::ScrollBehavior::kInstant);
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_EQ(ScrollOffset(0, 200), scrollable_area->GetScrollOffset());
+  ASSERT_EQ(
+      initial_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  ASSERT_FALSE(scroller->NeedsPaintPropertyUpdate());
+
+  const auto strategy = cc::SnapSelectionStrategy::CreateForEndPosition(
+      scrollable_area->ScrollPosition(), false, true);
+  const auto position = scrollable_area->GetSnapPositionAndSetTarget(*strategy);
+  ASSERT_TRUE(position);
+  EXPECT_EQ(gfx::PointF(0, 200), *position);
+  EXPECT_EQ(
+      expected_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  EXPECT_EQ(ScrollOffset(0, 200), scrollable_area->GetScrollOffset());
+  EXPECT_TRUE(scroller->NeedsPaintPropertyUpdate());
+
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_FALSE(scroller->NeedsPaintPropertyUpdate());
+  EXPECT_FALSE(scrollable_area->SetTargetSnapAreaElementIds(expected_ids));
+  EXPECT_FALSE(scroller->NeedsPaintPropertyUpdate());
+  EXPECT_EQ(position, scrollable_area->GetSnapPositionAndSetTarget(*strategy));
+  EXPECT_EQ(
+      expected_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  EXPECT_EQ(ScrollOffset(0, 200), scrollable_area->GetScrollOffset());
+  EXPECT_FALSE(scroller->NeedsPaintPropertyUpdate());
+}
+
+TEST_P(PaintLayerScrollableAreaTest, GetSnapPositionWithMissingOrEmptyData) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      .scroller { overflow: auto; width: 100px; height: 100px; }
+      #empty { scroll-snap-type: y mandatory; }
+    </style>
+    <div id="plain" class="scroller">
+      <div style="height: 1000px;"></div>
+    </div>
+    <div id="empty" class="scroller">
+      <div id="last-target" style="height: 50px; scroll-snap-align: start;"></div>
+      <div style="height: 950px;"></div>
+    </div>
+  )HTML");
+  ASSERT_FALSE(GetLayoutBoxByElementId("plain")
+                   ->GetScrollableArea()
+                   ->GetSnapContainerData());
+  auto* empty_scroller = GetLayoutBoxByElementId("empty")->GetScrollableArea();
+  const cc::TargetSnapAreaElementIds original_ids(
+      cc::ElementId(), CompositorElementIdFromDOMNodeId(
+                           GetElementById("last-target")->GetDomNodeId()));
+  cc::SnapContainerData empty_data;
+  empty_data.SetTargetSnapAreaElementIds(original_ids);
+  empty_scroller->SetSnapContainerData(std::move(empty_data));
+  ASSERT_EQ(0u, empty_scroller->GetSnapContainerData()->size());
+
+  const auto strategy = cc::SnapSelectionStrategy::CreateForEndPosition(
+      gfx::PointF(0, 200), false, true);
+  for (const char* id : {"plain", "empty"}) {
+    SCOPED_TRACE(id);
+    auto* scroller = GetLayoutBoxByElementId(id);
+    auto* scrollable_area = scroller->GetScrollableArea();
+    ASSERT_FALSE(scroller->NeedsPaintPropertyUpdate());
+    EXPECT_FALSE(scrollable_area->GetSnapPosition(*strategy));
+    EXPECT_EQ(ScrollOffset(), scrollable_area->GetScrollOffset());
+    EXPECT_FALSE(scroller->NeedsPaintPropertyUpdate());
+    if (scrollable_area == empty_scroller) {
+      const auto* data = scrollable_area->GetSnapContainerData();
+      ASSERT_TRUE(data);
+      EXPECT_EQ(original_ids, data->GetTargetSnapAreaElementIds());
+    } else {
+      EXPECT_FALSE(scrollable_area->GetSnapContainerData());
+    }
+
+    EXPECT_FALSE(scrollable_area->GetSnapPositionAndSetTarget(*strategy));
+    EXPECT_EQ(ScrollOffset(), scrollable_area->GetScrollOffset());
+    EXPECT_FALSE(scroller->NeedsPaintPropertyUpdate());
+    if (scrollable_area == empty_scroller) {
+      const auto* data = scrollable_area->GetSnapContainerData();
+      ASSERT_TRUE(data);
+      EXPECT_EQ(original_ids, data->GetTargetSnapAreaElementIds());
+    } else {
+      EXPECT_FALSE(scrollable_area->GetSnapContainerData());
+    }
+  }
+}
+
+TEST_P(PaintLayerScrollableAreaTest, GetSnapPositionNoneClearsTargets) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="scroller" style="overflow: auto; width: 100px; height: 100px;
+                              scroll-snap-type: y proximity;">
+      <div id="target" style="height: 50px; scroll-snap-align: start;"></div>
+      <div style="height: 950px;"></div>
+    </div>
+  )HTML");
+  auto* scroller = GetLayoutBoxByElementId("scroller");
+  auto* scrollable_area = scroller->GetScrollableArea();
+  const cc::TargetSnapAreaElementIds initial_ids(
+      cc::ElementId(), CompositorElementIdFromDOMNodeId(
+                           GetElementById("target")->GetDomNodeId()));
+  ASSERT_TRUE(scrollable_area->GetSnapContainerData());
+  ASSERT_EQ(
+      initial_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+
+  // Scroll outside the proximity range before selecting the final snap target.
+  scrollable_area->ScrollBy(ScrollOffset(0, 200),
+                            mojom::blink::ScrollType::kUser,
+                            mojom::blink::ScrollBehavior::kInstant);
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_EQ(ScrollOffset(0, 200), scrollable_area->GetScrollOffset());
+  ASSERT_EQ(
+      initial_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  ASSERT_FALSE(scroller->NeedsPaintPropertyUpdate());
+
+  const auto strategy = cc::SnapSelectionStrategy::CreateForEndPosition(
+      scrollable_area->ScrollPosition(), false, true);
+  const auto snap = scrollable_area->GetSnapPosition(*strategy);
+  ASSERT_TRUE(snap);
+  EXPECT_EQ(cc::SnapPositionData::Type::kNone, snap->type);
+  EXPECT_EQ(cc::TargetSnapAreaElementIds(), snap->target_element_ids);
+  EXPECT_EQ(
+      initial_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  EXPECT_EQ(ScrollOffset(0, 200), scrollable_area->GetScrollOffset());
+  EXPECT_FALSE(scroller->NeedsPaintPropertyUpdate());
+
+  EXPECT_FALSE(scrollable_area->GetSnapPositionAndSetTarget(*strategy));
+  EXPECT_EQ(
+      cc::TargetSnapAreaElementIds(),
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  EXPECT_EQ(ScrollOffset(0, 200), scrollable_area->GetScrollOffset());
+  EXPECT_TRUE(scroller->NeedsPaintPropertyUpdate());
+}
+
+TEST_P(PaintLayerScrollableAreaTest,
+       GetSnapPositionNoneRetainsOtherAxisTarget) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="scroller" style="overflow: auto; width: 100px; height: 100px;
+                              scroll-snap-type: y mandatory;">
+      <div style="width: 1000px; height: 1000px;">
+        <div id="target" style="width: 50px; height: 50px;
+                                scroll-snap-align: start;"></div>
+      </div>
+    </div>
+  )HTML");
+  auto* scroller = GetLayoutBoxByElementId("scroller");
+  auto* scrollable_area = scroller->GetScrollableArea();
+  const cc::TargetSnapAreaElementIds expected_ids(
+      cc::ElementId(), CompositorElementIdFromDOMNodeId(
+                           GetElementById("target")->GetDomNodeId()));
+  ASSERT_TRUE(scrollable_area->GetSnapContainerData());
+  ASSERT_EQ(
+      expected_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  ASSERT_EQ(ScrollOffset(), scrollable_area->GetScrollOffset());
+  ASSERT_FALSE(scroller->NeedsPaintPropertyUpdate());
+
+  // An x-only query must retain the current y target.
+  const auto strategy = cc::SnapSelectionStrategy::CreateForEndPosition(
+      gfx::PointF(20, 0), true, false);
+  const auto snap = scrollable_area->GetSnapPosition(*strategy);
+  ASSERT_TRUE(snap);
+  EXPECT_EQ(cc::SnapPositionData::Type::kNone, snap->type);
+  EXPECT_EQ(expected_ids, snap->target_element_ids);
+  EXPECT_EQ(
+      expected_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  EXPECT_EQ(ScrollOffset(), scrollable_area->GetScrollOffset());
+  EXPECT_FALSE(scroller->NeedsPaintPropertyUpdate());
+
+  EXPECT_FALSE(scrollable_area->GetSnapPositionAndSetTarget(*strategy));
+  EXPECT_EQ(
+      expected_ids,
+      scrollable_area->GetSnapContainerData()->GetTargetSnapAreaElementIds());
+  EXPECT_EQ(ScrollOffset(), scrollable_area->GetScrollOffset());
+  EXPECT_FALSE(scroller->NeedsPaintPropertyUpdate());
 }
 
 TEST_P(PaintLayerScrollableAreaTest, RtlScrollOriginSnapping) {
@@ -1710,7 +1987,7 @@ TEST_P(PaintLayerScrollableAreaTest,
     </div>
   )HTML");
 
-  auto* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  auto* scroller = GetElementById("scroller");
   auto* scrollable_area = scroller->GetLayoutBox()->GetScrollableArea();
   ASSERT_TRUE(scrollable_area);
   EXPECT_FALSE(scrollable_area->HasScrollbar());
@@ -1739,7 +2016,7 @@ TEST_P(PaintLayerScrollableAreaTest, RemoveAddResizerWithoutScrollbars) {
     </div>
   )HTML");
 
-  auto* target = GetDocument().getElementById(AtomicString("target"));
+  auto* target = GetElementById("target");
   auto* scrollable_area = target->GetLayoutBox()->GetScrollableArea();
   ASSERT_TRUE(scrollable_area);
   EXPECT_FALSE(scrollable_area->HasScrollbar());
@@ -2468,7 +2745,7 @@ TEST_P(PaintLayerScrollableAreaTest,
   ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
   SetBodyInnerHTML(R"HTML(
     <canvas id="canvas" style="width: 200px; height: 200px" content=drawable>
-      <div id="scroller" style="width: 100px; height: 100px; overflow: scroll">
+      <div id="scroller" drawable style="width: 100px; height: 100px; overflow: scroll">
         <div style="width: 200px; height: 200px; background: white"></div>
       </div>
     </canvas>

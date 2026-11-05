@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <ostream>
@@ -97,7 +98,7 @@ class Section {
                            const FieldIdentifier& rhs) = default;
 
     std::string field_name;
-    size_t local_frame_id;
+    size_t local_frame_id = 0;
     FieldRendererId field_renderer_id;
   };
 
@@ -230,23 +231,6 @@ class AutofillField : public FormFieldData {
 
   void SetHtmlType(HtmlFieldType type, HtmlFieldMode mode);
 
-  // This is deprecated. Please use `AutofillField::AddFieldModifier()` instead.
-  void set_previously_autofilled_deprecated(
-      bool previously_autofilled_deprecated) {
-    previously_autofilled_deprecated_ = previously_autofilled_deprecated;
-  }
-  // This is deprecated. Please use `AutofillField::all_modifiers()` instead.
-  bool previously_autofilled_deprecated() const {
-    return previously_autofilled_deprecated_;
-  }
-
-  // This is deprecated. Please use `AutofillField::AddFieldModifier()` instead.
-  void set_is_user_edited_deprecated(bool is_user_edited_deprecated) {
-    is_user_edited_deprecated_ = is_user_edited_deprecated;
-  }
-  // This is deprecated. Please use `AutofillField::all_modifiers()` instead.
-  bool is_user_edited_deprecated() const { return is_user_edited_deprecated_; }
-
   // Returns all the modifiers to have acted on the field, in no particular
   // order.
   DenseSet<FieldModifier> all_modifiers() const;
@@ -264,6 +248,16 @@ class AutofillField : public FormFieldData {
   void set_field_modifiers(std::vector<FieldModifier> field_modifiers,
                            base::PassKey<FormFiller>) {
     field_modifiers_ = std::move(field_modifiers);
+    ++field_modifiers_generation_;
+  }
+
+  // Returns a counter that is incremented whenever the field's modifiers are
+  // written, even if the sequence of modifiers stays the same (e.g., on a
+  // repeated user edit). Comparing two values of the same field tells whether
+  // the field was modified in between. Copies of the field keep the value.
+  // Fields whose modifiers were never written return 0.
+  uint32_t field_modifiers_generation() const {
+    return field_modifiers_generation_;
   }
 
   void set_only_fill_when_focused(bool fill_when_focused) {
@@ -463,6 +457,11 @@ class AutofillField : public FormFieldData {
     return autofill_source_profile_guid_;
   }
 
+  void set_was_filled_with_bnpl(bool was_filled_with_bnpl) {
+    was_filled_with_bnpl_ = was_filled_with_bnpl;
+  }
+  bool was_filled_with_bnpl() const { return was_filled_with_bnpl_; }
+
   void set_autofilled_type(std::optional<FieldType> autofilled_type) {
     autofilled_type_ = std::move(autofilled_type);
   }
@@ -510,14 +509,6 @@ class AutofillField : public FormFieldData {
                        base::PassKey<FormStructure> pass_key) {
     UpdateFieldData(field_data);
   }
-
-#if defined(UNIT_TEST)
-  const std::array<FieldType,
-                   static_cast<size_t>(HeuristicSource::kMaxValue) + 1>&
-  local_type_predictions() const {
-    return local_type_predictions_;
-  }
-#endif
 
  private:
   friend class AutofillFieldTestApi;
@@ -584,7 +575,7 @@ class AutofillField : public FormFieldData {
   // Predictions which where calculated on the client. This is initialized to
   // `NO_SERVER_DATA`, which means "NO_DATA", i.e. no classification was
   // attempted.
-  std::array<FieldType, static_cast<size_t>(HeuristicSource::kMaxValue) + 1>
+  std::array<FieldType, std::to_underlying(HeuristicSource::kMaxValue) + 1>
       local_type_predictions_;
 
   // Structure that holds the additional information on the regex match (e.g.
@@ -624,17 +615,6 @@ class AutofillField : public FormFieldData {
   // from credit card number.
   size_t credit_card_number_offset_ = 0;
 
-  // Whether the field was autofilled then later edited.
-  // TODO(crbug.com/393114125): Remove after fully launching
-  // `AutofillField::field_modifiers_`.
-  bool previously_autofilled_deprecated_ = false;
-
-  // This is deprecated, please use `field_modifiers_` instead.
-  // Whether or not the user edited the field. It corresponds to whether the
-  // field is seen by `AutofillManager` in an `OnTextFieldValueChanged()`
-  // signal.
-  bool is_user_edited_deprecated_ = false;
-
   // Tracks the relative order of all the modifiers of the field. Each
   // `FieldModifier` value is present at most once in the list, and the order of
   // the list depends on the order of events that modified the field's value.
@@ -651,6 +631,9 @@ class AutofillField : public FormFieldData {
   //   `blink::WebFormControlElement`'s `WebAutofillState` at form extraction
   //   time in the renderer process.
   std::vector<FieldModifier> field_modifiers_;
+
+  // See `field_modifiers_generation()`.
+  uint32_t field_modifiers_generation_ = 0;
 
   // Whether the field should be filled when it is not the highlighted field.
   bool only_fill_when_focused_ = false;
@@ -690,6 +673,9 @@ class AutofillField : public FormFieldData {
 
   // Denotes whether this field triggered a custom JS autofill.
   bool did_trigger_javascript_autofill_ = false;
+
+  // Whether the field was ever filled using a BNPL virtual credit card.
+  bool was_filled_with_bnpl_ = false;
 
   // Field types that the ML model is able to output.
   // Assigned by the model when it has classified the field.

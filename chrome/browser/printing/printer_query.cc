@@ -5,6 +5,7 @@
 #include "chrome/browser/printing/printer_query.h"
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/functional/bind.h"
@@ -27,11 +28,6 @@
 #include "printing/print_settings.h"
 #include "ui/gfx/native_ui_types.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/android/tab_android.h"
-#include "printing/printing_context_android.h"
-#endif
-
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
 #include "chrome/browser/printing/oop_features.h"
 #include "chrome/browser/printing/printer_query_oop.h"
@@ -39,11 +35,6 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/strings/utf_string_conversions.h"
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-// Must come after all headers that specialize FromJniType() / ToJniType().
-#include "chrome/android/chrome_jni_headers/TabPrinter_jni.h"  // nogncheck
 #endif
 
 namespace printing {
@@ -74,8 +65,6 @@ class PrintingContextDelegate : public PrintingContext::Delegate {
   // Not exposed to PrintingContext::Delegate because of dependency issues.
   content::WebContents* GetWebContents();
 
-  content::GlobalRenderFrameHostId rfh_id() const { return rfh_id_; }
-
  private:
   const content::GlobalRenderFrameHostId rfh_id_;
 };
@@ -92,7 +81,7 @@ gfx::NativeView PrintingContextDelegate::GetParentView() {
 }
 
 content::WebContents* PrintingContextDelegate::GetWebContents() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   auto* rfh = content::RenderFrameHost::FromID(rfh_id_);
   return rfh ? content::WebContents::FromRenderFrameHost(rfh) : nullptr;
 }
@@ -128,19 +117,19 @@ PrinterQuery::PrinterQuery(content::GlobalRenderFrameHostId rfh_id)
                                   GetPrintingContextOutOfProcessBehavior())),
       rfh_id_(rfh_id),
       cookie_(PrintSettings::NewCookie()) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 }
 
 PrinterQuery::~PrinterQuery() {
   // The job should be finished (or at least canceled) when it is destroyed.
-  DCHECK(!is_print_dialog_box_shown_);
+  CHECK(!is_print_dialog_box_shown_, base::NotFatalUntil::M162);
 }
 
 void PrinterQuery::GetSettingsDone(base::OnceClosure callback,
                                    std::optional<bool> maybe_is_modifiable,
                                    std::unique_ptr<PrintSettings> new_settings,
                                    mojom::ResultCode result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   is_print_dialog_box_shown_ = false;
   last_status_ = result;
   if (result == mojom::ResultCode::kSuccess) {
@@ -160,7 +149,7 @@ void PrinterQuery::PostSettingsDone(base::OnceClosure callback,
                                     std::optional<bool> maybe_is_modifiable,
                                     std::unique_ptr<PrintSettings> new_settings,
                                     mojom::ResultCode result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   // `this` is owned by `callback`, so `base::Unretained()` is safe.
   content::GetUIThreadTaskRunner({})->PostTask(
@@ -172,7 +161,7 @@ void PrinterQuery::PostSettingsDone(base::OnceClosure callback,
 
 std::unique_ptr<PrintJobWorker> PrinterQuery::TransferContextToNewWorker(
     PrintJob* print_job) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   return CreatePrintJobWorker(print_job);
 }
@@ -196,14 +185,14 @@ int PrinterQuery::cookie() const {
 void PrinterQuery::GetDefaultSettings(base::OnceClosure callback,
                                       bool is_modifiable,
                                       bool want_pdf_settings) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   // Real work is done in PrinterQuery::UseDefaultSettings().
   is_print_dialog_box_shown_ = false;
   if (want_pdf_settings) {
     // `GetPdfSettings()` is always guaranteed to succeed.
     std::unique_ptr<PrintSettings> pdf_settings = GetPdfSettings();
-    DCHECK(pdf_settings);
+    CHECK(pdf_settings, base::NotFatalUntil::M162);
     PostSettingsDone(std::move(callback), is_modifiable,
                      std::move(pdf_settings), mojom::ResultCode::kSuccess);
     return;
@@ -223,8 +212,8 @@ void PrinterQuery::GetSettingsFromUser(uint32_t document_page_count,
                                        bool is_scripted,
                                        bool is_modifiable,
                                        base::OnceClosure callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!is_print_dialog_box_shown_ || !is_scripted);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(!is_print_dialog_box_shown_ || !is_scripted, base::NotFatalUntil::M162);
 
   // Real work is done in GetSettingsWithUI().
   is_print_dialog_box_shown_ = true;
@@ -238,7 +227,7 @@ void PrinterQuery::GetSettingsFromUser(uint32_t document_page_count,
 
 void PrinterQuery::SetSettings(base::DictValue new_settings,
                                base::OnceClosure callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // `this` is owned by `callback`, so `base::Unretained()` is safe.
   UpdatePrintSettings(
       std::move(new_settings),
@@ -251,7 +240,7 @@ void PrinterQuery::SetSettings(base::DictValue new_settings,
 void PrinterQuery::SetSettingsFromPOD(
     std::unique_ptr<PrintSettings> new_settings,
     base::OnceClosure callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // `this` is owned by `callback`, so `base::Unretained()` is safe.
   UpdatePrintSettingsFromPOD(
       std::move(new_settings),
@@ -265,7 +254,7 @@ void PrinterQuery::SetSettingsFromPOD(
 void PrinterQuery::UpdatePrintableArea(
     PrintSettings* print_settings,
     OnDidUpdatePrintableAreaCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   scoped_refptr<PrintBackend> print_backend =
       PrintBackend::CreateInstance(g_browser_process->GetApplicationLocale());
 
@@ -297,7 +286,7 @@ void PrinterQuery::UpdatePrintableArea(
 // static
 void PrinterQuery::ApplyDefaultPrintableAreaToVirtualPrinterPrintSettings(
     PrintSettings& print_settings) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // The purpose of `print_context` is to set the default printable area. To do
   // so, it doesn't need a RFH, so just default initialize the RFH id.
   PrintingContextDelegate delegate((content::GlobalRenderFrameHostId()));
@@ -316,7 +305,7 @@ void PrinterQuery::SetClientId(PrintBackendServiceManager::ClientId client_id) {
 #endif
 
 std::unique_ptr<PrintSettings> PrinterQuery::GetPdfSettings() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   printing_context_->UsePdfSettings();
   return printing_context_->TakeAndResetSettings();
@@ -329,9 +318,9 @@ void PrinterQuery::InvokeSettingsCallback(SettingsCallback callback,
 
 void PrinterQuery::UpdatePrintSettings(base::DictValue new_settings,
                                        SettingsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
-  std::unique_ptr<crash_keys::ScopedPrinterInfo> crash_key;
+  std::optional<crash_keys::ScopedPrinterInfo> crash_key;
   mojom::PrinterType type = static_cast<mojom::PrinterType>(
       new_settings.FindInt(kSettingPrinterType).value());
   if (type == mojom::PrinterType::kLocal) {
@@ -343,16 +332,17 @@ void PrinterQuery::UpdatePrintSettings(base::DictValue new_settings,
     scoped_refptr<PrintBackend> print_backend =
         PrintBackend::CreateInstance(g_browser_process->GetApplicationLocale());
     std::string printer_name = *new_settings.FindString(kSettingDeviceName);
-    crash_key = std::make_unique<crash_keys::ScopedPrinterInfo>(
-        printer_name, print_backend->GetPrinterDriverInfo(printer_name));
+    crash_key.emplace(printer_name,
+                      print_backend->GetPrinterDriverInfo(printer_name));
 
 #if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_CUPS)
     PrinterBasicInfo basic_info;
     if (print_backend->GetPrinterBasicInfo(printer_name, &basic_info) ==
         mojom::ResultCode::kSuccess) {
       base::DictValue advanced_settings;
+      advanced_settings.reserve(basic_info.options.size());
       for (const auto& pair : basic_info.options) {
-        advanced_settings.Set(pair.first, pair.second);
+        advanced_settings.Set_HintAtEnd(pair.first, base::Value(pair.second));
       }
 
       new_settings.Set(kSettingAdvancedSettings, std::move(advanced_settings));
@@ -377,7 +367,7 @@ void PrinterQuery::UpdatePrintSettings(base::DictValue new_settings,
 void PrinterQuery::UpdatePrintSettingsFromPOD(
     std::unique_ptr<PrintSettings> new_settings,
     SettingsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   mojom::ResultCode result =
       printing_context_->UpdatePrintSettingsFromPOD(std::move(new_settings));
   InvokeSettingsCallback(std::move(callback), result);
@@ -395,7 +385,7 @@ void PrinterQuery::GetSettingsWithUI(uint32_t document_page_count,
                                      bool has_selection,
                                      bool is_scripted,
                                      SettingsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   if (document_page_count > kMaxPageCount) {
     InvokeSettingsCallback(std::move(callback), mojom::ResultCode::kFailed);
@@ -403,32 +393,10 @@ void PrinterQuery::GetSettingsWithUI(uint32_t document_page_count,
   }
 
   content::WebContents* web_contents = GetWebContents();
-
-#if BUILDFLAG(IS_ANDROID)
-  if (!web_contents || !web_contents->GetTopLevelNativeWindow()) {
+  if (!web_contents) {
     InvokeSettingsCallback(std::move(callback), mojom::ResultCode::kCanceled);
     return;
   }
-
-  if (is_scripted) {
-    TabAndroid* tab = TabAndroid::FromWebContents(web_contents);
-
-    // Regardless of whether the following call fails or not, the javascript
-    // call will return since startPendingPrint will make it return immediately
-    // in case of error.
-    if (tab) {
-      JNIEnv* env = base::android::AttachCurrentThread();
-      auto* printing_context_delegate = static_cast<PrintingContextDelegate*>(
-          printing_context_delegate_.get());
-      // TODO(crbug.com/379869738) Remove GetUnsafeValue.
-      PrintingContextAndroid::SetPendingPrint(
-          web_contents->GetTopLevelNativeWindow(),
-          Java_TabPrinter_getPrintable(env, tab->GetJavaObject()),
-          printing_context_delegate->rfh_id().child_id.GetUnsafeValue(),
-          printing_context_delegate->rfh_id().frame_routing_id);
-    }
-  }
-#endif
 
   // Running a dialog causes an exit to webpage-initiated fullscreen.
   // http://crbug.com/41322524
@@ -444,7 +412,7 @@ void PrinterQuery::GetSettingsWithUI(uint32_t document_page_count,
 }
 
 void PrinterQuery::UseDefaultSettings(SettingsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   PRINTER_LOG(EVENT) << "Using printer default settings in-process";
   mojom::ResultCode result;
@@ -470,7 +438,7 @@ bool PrinterQuery::is_valid() const {
 }
 
 content::WebContents* PrinterQuery::GetWebContents() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   PrintingContextDelegate* printing_context_delegate =
       static_cast<PrintingContextDelegate*>(printing_context_delegate_.get());
   return printing_context_delegate->GetWebContents();

@@ -26,8 +26,8 @@
 #include "components/split_tabs/split_tab_id.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace sessions {
 
@@ -61,15 +61,27 @@ class SESSIONS_EXPORT TabRestoreService : public KeyedService {
   virtual void RemoveObserver(TabRestoreServiceObserver* observer) = 0;
 
   // Creates a Tab to represent |live_tab| and notifies observers the list of
-  // entries has changed. If successful, returns the unique SessionID associated
-  // with the Tab.
+  // entries has changed.
+  //
+  // When |context| is an app window, this records the whole window and
+  // returns the Window entry's id. Returns the SessionID of the top-level
+  // entry stored by this call, or std::nullopt if nothing was stored (e.g.
+  // while restoring, no restorable navigations, or the entry was filtered
+  // out). The id identifies the entry at return time; the entry may later be
+  // removed (pruning, restore, clear).
   virtual std::optional<SessionID> CreateHistoricalTab(LiveTab* live_tab,
                                                        int index) = 0;
 
   // Creates a Group to represent a tab group with ID |id|, containing group
   // metadata and all tabs within the group.
-  virtual void CreateHistoricalGroup(LiveTabContext* context,
-                                     const tab_groups::TabGroupId& id) = 0;
+  //
+  // Returns the SessionID of the top-level entry stored by this call, or
+  // std::nullopt if nothing was stored (e.g. while restoring, no restorable
+  // navigations, or the entry was filtered out). The id identifies the entry
+  // at return time; the entry may later be removed (pruning, restore, clear).
+  virtual std::optional<SessionID> CreateHistoricalGroup(
+      LiveTabContext* context,
+      const tab_groups::TabGroupId& id) = 0;
 
   // Creates a Split to represent a split view with ID |id|, containing
   // the two tabs within the split.
@@ -83,6 +95,22 @@ class SESSIONS_EXPORT TabRestoreService : public KeyedService {
   // had a beforeunload handler.
   virtual void GroupCloseStopped(const tab_groups::TabGroupId& group) = 0;
 
+  // Invoked when the ephemeral tab group `group_id` is promoted to a regular
+  // group. Closed tab entries (and tabs inside closed split entries) that were
+  // captured while `group_id` was ephemeral are promoted to permanent group
+  // entries with `visual_data`. Entries of groups that were never ephemeral
+  // are not touched.
+  virtual void PromoteEphemeralTabGroup(
+      const tab_groups::TabGroupId& group_id,
+      const tab_groups::TabGroupVisualData& visual_data) = 0;
+
+  // Invoked when `group_id` is saved (or re-saved) as `saved_group_id`. Sets
+  // the saved group id of closed entries (tabs, splits, groups, and windows)
+  // in `group_id` whose saved group id differs. No-op (no rewrite, no
+  // notification) if nothing changes.
+  virtual void UpdateSavedTabGroupId(const tab_groups::TabGroupId& group_id,
+                                     const base::Uuid& saved_group_id) = 0;
+
   // Invoked when the split is done closing.
   virtual void SplitClosed(const split_tabs::SplitTabId& id) = 0;
 
@@ -93,7 +121,12 @@ class SESSIONS_EXPORT TabRestoreService : public KeyedService {
   // Invoked when a browser is closing. If |context| is a tabbed browser with
   // at least one tab, a Window is created, added to entries and observers are
   // notified.
-  virtual void BrowserClosing(LiveTabContext* context) = 0;
+  //
+  // Returns the SessionID of the top-level entry stored by this call, or
+  // std::nullopt if nothing was stored (e.g. while restoring, no restorable
+  // navigations, or the entry was filtered out). The id identifies the entry
+  // at return time; the entry may later be removed (pruning, restore, clear).
+  virtual std::optional<SessionID> BrowserClosing(LiveTabContext* context) = 0;
 
   // TODO(blundell): Rename and fix comment.
   // Invoked when the browser is done closing.
@@ -136,7 +169,7 @@ class SESSIONS_EXPORT TabRestoreService : public KeyedService {
   virtual std::optional<std::vector<LiveTab*>> RestoreEntryById(
       LiveTabContext* context,
       SessionID id,
-      WindowOpenDisposition disposition) = 0;
+      ui::mojom::WindowOpenDisposition disposition) = 0;
 
   // Loads the tabs and previous session. This does nothing if the tabs
   // from the previous session have already been loaded.

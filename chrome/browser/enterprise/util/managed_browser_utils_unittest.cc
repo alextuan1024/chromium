@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
@@ -30,12 +31,26 @@
 #include "url/gurl.h"
 
 #if !BUILDFLAG(IS_CHROMEOS)
-#include "base/values.h"
 #include "components/policy/core/browser/browser_policy_connector_base.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_types.h"
 #endif  // !BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/strings/utf_string_conversions.h"
+#include "base/test/gtest_util.h"
+#include "base/test/with_feature_override.h"
+#include "chrome/browser/flags/android/chrome_feature_list.h"
+#include "chrome/browser/profiles/profile_attributes_entry.h"
+#include "chrome/browser/profiles/profile_attributes_storage.h"
+#include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_prefs.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "google_apis/gaia/gaia_id.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 using testing::UnorderedElementsAre;
 
@@ -145,7 +160,6 @@ TEST_F(ManagedBrowserUtilsTest, WorkProfileDefaultLabel) {
 }
 
 TEST_F(ManagedBrowserUtilsTest, DefaultLabelDisabledbyPolicy) {
-  std::u16string work_label = u"Work";
   profile()->GetPrefs()->SetInteger(
       prefs::kEnterpriseProfileBadgeToolbarSettings, 1);
   enterprise_util::SetUserAcceptedAccountManagement(profile(), true);
@@ -186,6 +200,191 @@ TEST_F(ManagedBrowserUtilsTest, CustomLabelTruncated) {
             u"Custom Label Can…");
 }
 #endif
+
+#if BUILDFLAG(IS_ANDROID)
+class ManagedBrowserUtilsAndroidTest : public testing::Test {
+ protected:
+  TestingProfile* profile() { return &profile_; }
+
+  content::BrowserTaskEnvironment task_environment_;
+  TestingProfile profile_;
+};
+
+TEST_F(ManagedBrowserUtilsAndroidTest,
+       UserAcceptedAccountManagementAndroid_DefaultsToFalse) {
+  EXPECT_FALSE(enterprise_util::UserAcceptedAccountManagementAndroid(
+      profile(), GaiaId("gaia_id")));
+}
+
+TEST_F(ManagedBrowserUtilsAndroidTest,
+       SetUserAcceptedAccountManagementAndroid) {
+  const GaiaId gaia_id("gaia_id");
+
+  enterprise_util::SetUserAcceptedAccountManagementAndroid(profile(), gaia_id,
+                                                           true);
+  EXPECT_TRUE(enterprise_util::UserAcceptedAccountManagementAndroid(profile(),
+                                                                    gaia_id));
+
+  enterprise_util::SetUserAcceptedAccountManagementAndroid(profile(), gaia_id,
+                                                           false);
+  EXPECT_FALSE(enterprise_util::UserAcceptedAccountManagementAndroid(profile(),
+                                                                     gaia_id));
+}
+
+TEST_F(ManagedBrowserUtilsAndroidTest,
+       SetUserAcceptedAccountManagementAndroid_IsPerAccount) {
+  const GaiaId accepted_gaia_id("accepted");
+  const GaiaId other_gaia_id("other");
+
+  enterprise_util::SetUserAcceptedAccountManagementAndroid(
+      profile(), accepted_gaia_id, true);
+
+  EXPECT_TRUE(enterprise_util::UserAcceptedAccountManagementAndroid(
+      profile(), accepted_gaia_id));
+  EXPECT_FALSE(enterprise_util::UserAcceptedAccountManagementAndroid(
+      profile(), other_gaia_id));
+}
+
+TEST_F(ManagedBrowserUtilsAndroidTest,
+       SetUserAcceptedAccountManagementAndroid_SharesDeviceSignalsConsentBit) {
+  const GaiaId gaia_id("gaia_id");
+  SigninPrefs signin_prefs(*profile()->GetPrefs());
+
+  // Accepting management records the device signals consent.
+  enterprise_util::SetUserAcceptedAccountManagementAndroid(profile(), gaia_id,
+                                                           true);
+  EXPECT_TRUE(signin_prefs.GetDeviceSignalsPermanentConsentReceived(gaia_id));
+
+  // And the device signals consent is reflected as management acceptance.
+  signin_prefs.SetDeviceSignalsPermanentConsentReceived(gaia_id, false);
+  EXPECT_FALSE(enterprise_util::UserAcceptedAccountManagementAndroid(profile(),
+                                                                     gaia_id));
+}
+
+// Tests for `ProfileCanBeManaged()` on Android. Unlike the fixture above, this
+// one registers a `TestingProfileManager` (`ProfileCanBeManaged()` bails out
+// early without one) and an `IdentityTestEnvironment` so a primary account can
+// be set.
+class ManagedBrowserUtilsProfileCanBeManagedAndroidTest
+    : public base::test::WithFeatureOverride,
+      public testing::Test {
+ protected:
+  ManagedBrowserUtilsProfileCanBeManagedAndroidTest()
+      : base::test::WithFeatureOverride(
+            chrome::android::kAndroidNewManagementNotice) {}
+
+  void SetUp() override {
+    ASSERT_TRUE(profile_manager_.SetUp());
+    profile_ = profile_manager_.CreateTestingProfile(
+        "profile_name", IdentityTestEnvironmentProfileAdaptor::
+                            GetIdentityTestEnvironmentFactories());
+    identity_test_env_adaptor_ =
+        std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_);
+  }
+
+  void TearDown() override {
+    identity_test_env_adaptor_.reset();
+    profile_ = nullptr;
+    profile_manager_.DeleteAllTestingProfiles();
+  }
+
+  TestingProfile* profile() { return profile_; }
+
+  signin::IdentityTestEnvironment* identity_test_env() {
+    return identity_test_env_adaptor_->identity_test_env();
+  }
+
+  ProfileAttributesEntry* GetProfileAttributesEntry() {
+    return profile_manager_.profile_attributes_storage()
+        ->GetProfileAttributesWithPath(profile_->GetPath());
+  }
+
+  // Signs in with `ConsentLevel::kSignin` and mirrors the sign-in state onto
+  // the `ProfileAttributesEntry`, which is what the legacy (profile-attribute
+  // based) implementation of `ProfileCanBeManaged()` consults.
+  AccountInfo SignIn() {
+    AccountInfo account = identity_test_env()->MakePrimaryAccountAvailable(
+        "user@example.com", signin::ConsentLevel::kSignin);
+    GetProfileAttributesEntry()->SetAuthInfo(
+        account.GetGaiaId(), base::UTF8ToUTF16(account.GetEmail()),
+        /*is_consented_primary_account=*/false);
+    return account;
+  }
+
+  content::BrowserTaskEnvironment task_environment_;
+  TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
+  raw_ptr<TestingProfile> profile_ = nullptr;
+  std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
+      identity_test_env_adaptor_;
+};
+
+TEST_P(ManagedBrowserUtilsProfileCanBeManagedAndroidTest, NullProfile) {
+  EXPECT_FALSE(enterprise_util::ProfileCanBeManaged(nullptr));
+}
+
+TEST_P(ManagedBrowserUtilsProfileCanBeManagedAndroidTest, NotSignedIn) {
+  EXPECT_FALSE(enterprise_util::ProfileCanBeManaged(profile()));
+}
+
+TEST_P(ManagedBrowserUtilsProfileCanBeManagedAndroidTest,
+       SignedInWithoutAcceptingManagement) {
+  SignIn();
+  EXPECT_FALSE(enterprise_util::ProfileCanBeManaged(profile()));
+}
+
+TEST_P(ManagedBrowserUtilsProfileCanBeManagedAndroidTest,
+       SignedInAndAcceptedManagementPerAccount) {
+  AccountInfo account = SignIn();
+  enterprise_util::SetUserAcceptedAccountManagementAndroid(
+      profile(), account.GetGaiaId(), /*accepted=*/true);
+
+  // The per-account bit is only consulted by the new implementation.
+  EXPECT_EQ(enterprise_util::ProfileCanBeManaged(profile()),
+            IsParamFeatureEnabled());
+}
+
+TEST_P(ManagedBrowserUtilsProfileCanBeManagedAndroidTest,
+       SignedInAndAcceptedManagementOnProfileAttributes) {
+  SignIn();
+  GetProfileAttributesEntry()->SetUserAcceptedAccountManagement(true);
+
+  // The profile attribute is only consulted by the legacy implementation.
+  EXPECT_EQ(enterprise_util::ProfileCanBeManaged(profile()),
+            !IsParamFeatureEnabled());
+}
+
+TEST_P(ManagedBrowserUtilsProfileCanBeManagedAndroidTest,
+       AcceptedManagementForOtherAccount) {
+  SignIn();
+  enterprise_util::SetUserAcceptedAccountManagementAndroid(
+      profile(), GaiaId("other_account"), /*accepted=*/true);
+  EXPECT_FALSE(enterprise_util::ProfileCanBeManaged(profile()));
+}
+
+TEST_P(ManagedBrowserUtilsProfileCanBeManagedAndroidTest,
+       PerAccountAcceptanceSurvivesSignOut) {
+  if (!IsParamFeatureEnabled()) {
+    GTEST_SKIP() << "Per-account acceptance is only used with the feature.";
+  }
+
+  AccountInfo account = SignIn();
+  enterprise_util::SetUserAcceptedAccountManagementAndroid(
+      profile(), account.GetGaiaId(), /*accepted=*/true);
+  ASSERT_TRUE(enterprise_util::ProfileCanBeManaged(profile()));
+
+  // Without a primary account the profile can never be managed.
+  identity_test_env()->ClearPrimaryAccount();
+  EXPECT_FALSE(enterprise_util::ProfileCanBeManaged(profile()));
+
+  // Signing back in with the same account restores manageability since the
+  // per-account bit is not cleared on sign-out.
+  SignIn();
+  EXPECT_TRUE(enterprise_util::ProfileCanBeManaged(profile()));
+}
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    ManagedBrowserUtilsProfileCanBeManagedAndroidTest);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 class AutoSelectCertificateTest : public testing::Test {
  protected:
@@ -415,4 +614,19 @@ TEST_F(AutoSelectCertificateTest, MatchingCertOnDifferentUrlDoesntSelectCerts) {
   EXPECT_TRUE(matching_certs_list.empty());
   EXPECT_THAT(nonmatching_certs_list,
               UnorderedElementsAre(CertEq(client_1()), CertEq(client_2())));
+}
+
+TEST_F(AutoSelectCertificateTest, DirectFilterListOverloadSelectsMatchingCert) {
+  net::ClientCertIdentityList client_certs_list = GetDefaultClientCertList();
+
+  base::ListValue filters;
+  filters.Append(CreateFilterValue("B CA", ""));
+
+  net::ClientCertIdentityList matching_certs_list, nonmatching_certs_list;
+  enterprise_util::AutoSelectCertificates(filters, std::move(client_certs_list),
+                                          &matching_certs_list,
+                                          &nonmatching_certs_list);
+
+  EXPECT_THAT(matching_certs_list, UnorderedElementsAre(CertEq(client_1())));
+  EXPECT_THAT(nonmatching_certs_list, UnorderedElementsAre(CertEq(client_2())));
 }

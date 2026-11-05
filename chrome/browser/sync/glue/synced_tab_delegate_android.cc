@@ -20,7 +20,6 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 
-namespace browser_sync {
 namespace {
 
 bool ContainsURLThatShouldSync(
@@ -88,20 +87,23 @@ SyncedTabDelegateAndroid::ReadPlaceholderTabSnapshotIfItShouldSync(
 
   TabModel* tab_model = TabModelList::FindTabModelWithWindowSessionId(
       tab_android_data_provider_->GetWindowId());
-  DCHECK(tab_model);
+  CHECK(tab_model, base::NotFatalUntil::M163);
   Profile* profile = tab_model->GetProfile();
 
-  return browser_sync::WebContentsStateSyncedTabDelegate::Create(
-      profile, tab_android_data_provider_, std::move(web_contents_byte_buffer));
+  return WebContentsStateSyncedTabDelegate::Create(
+      profile, tab_android_data_provider_, web_contents_byte_buffer.get());
 }
 
 void SyncedTabDelegateAndroid::SetWebContents(
-    content::WebContents* web_contents) {
-  TabContentsSyncedTabDelegate::SetWebContents(web_contents);
+    content::WebContents* web_contents,
+    tasks::TaskTabHelper* task_tab_helper,
+    SupervisedUserNavigationObserver* supervised_user_navigation_observer) {
+  TabContentsSyncedTabDelegate::SetWebContents(
+      web_contents, task_tab_helper, supervised_user_navigation_observer);
 }
 
 void SyncedTabDelegateAndroid::ResetWebContents() {
-  TabContentsSyncedTabDelegate::SetWebContents(nullptr);
+  TabContentsSyncedTabDelegate::SetWebContents(nullptr, nullptr, nullptr);
 }
 
 SessionID SyncedTabDelegateAndroid::SessionIdFromAndroidId(int android_tab_id) {
@@ -115,5 +117,3 @@ SessionID SyncedTabDelegateAndroid::SessionIdFromAndroidId(int android_tab_id) {
   // generation between Android and SessionIDs.
   return SessionID::FromSerializedValue(1 + android_tab_id);
 }
-
-}  // namespace browser_sync

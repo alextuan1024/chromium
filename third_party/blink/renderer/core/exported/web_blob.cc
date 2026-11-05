@@ -32,6 +32,7 @@
 
 #include <memory>
 
+#include "third_party/blink/public/mojom/blob/blob.mojom-blink.h"
 #include "third_party/blink/public/mojom/blob/blob.mojom.h"
 #include "third_party/blink/public/mojom/blob/serialized_blob.mojom.h"
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
@@ -78,10 +79,12 @@ void WebBlob::Assign(const WebBlob& other) {
   private_ = other.private_;
 }
 
-WebString WebBlob::Uuid() {
-  if (!private_.Get())
-    return WebString();
-  return private_->Uuid();
+CrossVariantMojoRemote<mojom::blink::BlobInterfaceBase>
+WebBlob::CloneBlobRemote() const {
+  if (IsNull()) {
+    return {};
+  }
+  return private_->AsMojoBlob();
 }
 
 v8::Local<v8::Value> WebBlob::ToV8Value(v8::Isolate* isolate) {

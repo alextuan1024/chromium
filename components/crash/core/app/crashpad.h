@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_CRASH_CORE_APP_CRASHPAD_H_
 #define COMPONENTS_CRASH_CORE_APP_CRASHPAD_H_
 
+#include <stdint.h>
 #include <time.h>
 
 #include <map>
@@ -12,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
@@ -29,7 +32,6 @@
 #endif
 
 #if BUILDFLAG(IS_IOS)
-#include "base/containers/span.h"
 #include "third_party/crashpad/crashpad/client/simple_address_range_bag.h"
 #include "third_party/crashpad/crashpad/handler/user_stream_data_source.h"  // nogncheck
 #endif
@@ -215,6 +217,12 @@ std::optional<base::FilePath> GetCrashpadDatabasePath();
 // Deletes any reports that were recorded or uploaded within the time range.
 void ClearReportsBetween(const base::Time& begin, const base::Time& end);
 
+// Writes `data` into the embedder-managed user stream with `user_stream_type`.
+// `data` must not exceed the stream's capacity. Returns true if the write
+// succeeded, or false if the client does not own a stream of that type.
+bool WriteUserStreamData(uint32_t user_stream_type,
+                         base::span<const uint8_t> data);
+
 // The implementation function for GetReports.
 void GetReportsImpl(std::vector<Report>* reports);
 
@@ -226,6 +234,10 @@ base::FilePath::StringType::const_pointer GetCrashpadDatabasePathImpl();
 
 // The implementation function for ClearReportsBetween.
 void ClearReportsBetweenImpl(time_t begin, time_t end);
+
+// The implementation function for `WriteUserStreamData()`.
+bool WriteUserStreamDataImpl(uint32_t user_stream_type,
+                             base::span<const uint8_t> data);
 
 #if BUILDFLAG(IS_CHROMEOS_DEVICE)
 // Called late in shutdown to remove the file that tells ChromeOS's
@@ -271,6 +283,8 @@ void StartProcessingPendingReports();
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kAlwaysUse64BitCrashHandlerIfAvailable);
+
 // If a CrashReporterClient has enabled sanitization, this function specifies
 // regions of memory which are allowed to be collected by Crashpad.
 void AllowMemoryRange(void* begin, size_t size);
@@ -309,7 +323,7 @@ bool StartHandlerForClient(int fd, bool write_minidump_to_database);
 
 bool GetHandlerTrampoline(std::string* handler_trampoline,
                           std::string* handler_library);
-bool BuildEnvironmentWithApk(bool use_64_bit, std::vector<std::string>* result);
+std::vector<std::string> BuildEnvironmentWithApk(bool use_64_bit);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // The platform-specific portion of InitializeCrashpad(). On Windows, if

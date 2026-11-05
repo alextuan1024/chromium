@@ -112,7 +112,8 @@ class URLLoader::Context : public ResourceRequestClient {
              SyncLoadResponse* sync_load_response,
              std::unique_ptr<ResourceLoadInfoNotifierWrapper>
                  resource_load_info_notifier_wrapper,
-             CodeCacheHost* code_cache_host);
+             CodeCacheHost* code_cache_host,
+             bool should_fetch_code_cache);
 
   // ResourceRequestClient overrides:
   void OnUploadProgress(uint64_t position, uint64_t size) override;
@@ -245,7 +246,8 @@ void URLLoader::Context::Start(
     SyncLoadResponse* sync_load_response,
     std::unique_ptr<ResourceLoadInfoNotifierWrapper>
         resource_load_info_notifier_wrapper,
-    CodeCacheHost* code_cache_host) {
+    CodeCacheHost* code_cache_host,
+    bool should_fetch_code_cache) {
   DCHECK_EQ(request_id_, -1);
 
   url_ = KURL(request->url);
@@ -268,12 +270,15 @@ void URLLoader::Context::Start(
         GetMaybeUnfreezableTaskRunner()));
   }
 
+  if (!should_fetch_code_cache) {
+    CHECK_EQ(code_cache_host, nullptr);
+  }
+
   if (sync_load_response) {
     DCHECK_EQ(freeze_mode_, LoaderFreezeMode::kNone);
-    CHECK(!code_cache_host);
+    CHECK(!should_fetch_code_cache);
 
     loader_options |= network::mojom::kURLLoadOptionSynchronous;
-    request->load_flags |= net::LOAD_IGNORE_LIMITS;
 
     mojo::PendingRemote<mojom::blink::BlobRegistry> download_to_blob_registry;
     if (download_to_blob) {
@@ -299,7 +304,7 @@ void URLLoader::Context::Start(
       std::move(request), GetMaybeUnfreezableTaskRunner(), tag, loader_options,
       cors_exempt_header_list_, base::WrapRefCounted(this), url_loader_factory_,
       std::move(throttles), std::move(resource_load_info_notifier_wrapper),
-      code_cache_host,
+      code_cache_host, should_fetch_code_cache,
       base::BindOnce(&BackForwardCacheLoaderHelper::EvictFromBackForwardCache,
                      back_forward_cache_loader_helper_),
       base::BindRepeating(
@@ -367,6 +372,8 @@ void URLLoader::Context::OnReceivedResponse(
 
   WebURLResponse response = WebURLResponse::Create(
       url_, *head, has_devtools_request_id_, request_id_);
+  response.SetCacheStorageSideDataWriter(
+      std::move(head->cache_storage_side_data_writer));
   client_->DidReceiveResponse(response, std::move(body),
                               std::move(cached_metadata));
 }
@@ -466,7 +473,8 @@ void URLLoader::LoadSynchronously(
                   download_to_blob, no_mime_sniffing, timeout_interval,
                   &sync_load_response,
                   std::move(resource_load_info_notifier_wrapper),
-                  /*code_cache_host=*/nullptr);
+                  /*code_cache_host=*/nullptr,
+                  /*should_fetch_code_cache=*/false);
 
   const KURL final_url(sync_load_response.url);
 
@@ -503,6 +511,8 @@ void URLLoader::LoadSynchronously(
   response =
       WebURLResponse::Create(final_url, *sync_load_response.head,
                              has_devtools_request_id, context_->request_id());
+  response.SetCacheStorageSideDataWriter(
+      std::move(sync_load_response.head->cache_storage_side_data_writer));
   encoded_data_length = sync_load_response.head->encoded_data_length;
   encoded_body_length =
       sync_load_response.head->encoded_body_length
@@ -522,6 +532,7 @@ void URLLoader::LoadAsynchronously(
     std::unique_ptr<ResourceLoadInfoNotifierWrapper>
         resource_load_info_notifier_wrapper,
     CodeCacheHost* code_cache_host,
+    bool should_fetch_code_cache,
     URLLoaderClient* client) {
   if (!context_) {
     return;
@@ -536,7 +547,7 @@ void URLLoader::LoadAsynchronously(
                   /*download_to_blob=*/false, no_mime_sniffing,
                   base::TimeDelta(), /*sync_load_response=*/nullptr,
                   std::move(resource_load_info_notifier_wrapper),
-                  code_cache_host);
+                  code_cache_host, should_fetch_code_cache);
 }
 
 void URLLoader::Cancel() {

@@ -82,9 +82,9 @@ export class ComposeResultTextElement extends CrLitElement {
   };
   accessor isOutputComplete: boolean = false;
   accessor hasOutput: boolean = false;
-  protected accessor hasPartialOutput_: boolean = false;
+  private accessor hasPartialOutput_: boolean = false;
   protected accessor displayedChunks_: StreamChunk[] = [];
-  protected accessor displayedFullText_: string = '';
+  private accessor displayedFullText_: string = '';
 
   // Private regular properties.
   private wordStreamer_: WordStreamer;
@@ -123,7 +123,7 @@ export class ComposeResultTextElement extends CrLitElement {
     }
   }
 
-  protected updateInputs_() {
+  private updateInputs_() {
     if (this.textInput.streamingEnabled) {
       this.isOutputComplete = false;
       this.wordStreamer_.setText(

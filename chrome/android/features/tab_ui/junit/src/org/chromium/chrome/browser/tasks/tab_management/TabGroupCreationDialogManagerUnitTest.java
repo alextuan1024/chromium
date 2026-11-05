@@ -26,6 +26,7 @@ import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -53,7 +54,8 @@ public class TabGroupCreationDialogManagerUnitTest {
                         activity, mModalDialogManager, mOnTabGroupCreation);
 
         when(mTabModel.getProfile()).thenReturn(mProfile);
-        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(true);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TAB_GROUP_ID)))
+                .thenReturn(true);
     }
 
     @Test
@@ -76,8 +78,8 @@ public class TabGroupCreationDialogManagerUnitTest {
                 mTabGroupCreationDialogManager.getDialogControllerForTesting();
 
         controller.onDismiss(null, DialogDismissalCause.UNKNOWN);
-        verify(mTabModel).setTabGroupColor(eq(TAB_GROUP_ID), anyInt());
-        verify(mTabModel).setTabGroupTitle(eq(TAB_GROUP_ID), any());
+        verify(mTabModel).setTabGroupColor(eq(TabGroupId.fromRawToken(TAB_GROUP_ID)), anyInt());
+        verify(mTabModel).setTabGroupTitle(eq(TabGroupId.fromRawToken(TAB_GROUP_ID)), any());
         verify(mOnTabGroupCreation).run();
     }
 
@@ -90,7 +92,8 @@ public class TabGroupCreationDialogManagerUnitTest {
         ModalDialogProperties.Controller controller =
                 mTabGroupCreationDialogManager.getDialogControllerForTesting();
 
-        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(false);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TAB_GROUP_ID)))
+                .thenReturn(false);
         controller.onDismiss(null, DialogDismissalCause.UNKNOWN);
 
         verify(mTabModel, never()).setTabGroupColor(any(), anyInt());

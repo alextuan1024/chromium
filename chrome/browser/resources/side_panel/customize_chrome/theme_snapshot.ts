@@ -4,14 +4,16 @@
 
 import 'chrome://resources/cr_elements/cr_auto_img/cr_auto_img.js';
 import 'chrome://resources/cr_elements/cr_ripple/cr_ripple.js';
+import '/strings.m.js';
 
 import {assert} from 'chrome://resources/js/assert.js';
 import {skColorToRgba} from 'chrome://resources/js/color_utils.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import type {Theme} from './customize_chrome.mojom-webui.js';
-import {CustomizeChromeApiProxy} from './customize_chrome_api_proxy.js';
+import type {BrowserProxy, Theme} from './customize_chrome.mojom-webui.js';
+import {browserProxyFactory} from './customize_chrome.mojom-webui.js';
 import {getCss} from './theme_snapshot.css.js';
 import {getHtml} from './theme_snapshot.html.js';
 
@@ -37,16 +39,24 @@ export class ThemeSnapshotElement extends CrLitElement {
 
   static override get properties() {
     return {
+      organizerPanelEnabled_: {type: Boolean},
       theme_: {type: Object},
       themeType_: {type: String},
     };
   }
 
+  private accessor organizerPanelEnabled_: boolean =
+      loadTimeData.getBoolean('organizerPanelEnabled');
   protected accessor theme_: Theme|null = null;
   protected accessor themeType_: CustomizeThemeType|null = null;
 
-  private apiProxy_: CustomizeChromeApiProxy =
-      CustomizeChromeApiProxy.getInstance();
+  protected getMiniNewTabPageSrc_(): string {
+    return this.organizerPanelEnabled_ ?
+        'icons/mini_new_tab_page_organizer_panel.svg#EXPORT_miniNewTabPage' :
+        'icons/mini_new_tab_page.svg#miniNewTabPage';
+  }
+
+  private apiProxy_: BrowserProxy = browserProxyFactory.getInstance();
   private setThemeListenerId_: number|null = null;
 
   override connectedCallback() {

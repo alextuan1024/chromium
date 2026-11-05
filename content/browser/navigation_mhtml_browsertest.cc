@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -19,9 +20,12 @@
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
+#include "content/browser/storage_partition_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/content_navigation_policy.h"
 #include "content/common/frame.mojom.h"
+#include "content/public/browser/download_utils.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -29,20 +33,31 @@
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/test_utils.h"
+#include "content/public/test/url_loader_interceptor.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
 #include "content/test/did_commit_navigation_interceptor.h"
 #include "content/test/frame_host_interceptor.h"
 #include "mojo/public/c/system/trap.h"
 #include "mojo/public/c/system/types.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "mojo/public/cpp/system/handle_signals_state.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
 #include "net/base/filename_util.h"
+#include "net/base/mime_util.h"
+#include "net/base/net_errors.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/http/http_response_headers.h"
+#include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/cpp/web_sandbox_flags.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
+#include "storage/browser/blob/blob_url_registry.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/page_state/page_state.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
@@ -143,6 +158,17 @@ class MhtmlArchive {
   base::ScopedTempDir file_directory_;
   std::string content_;
 };
+
+// Writes `archive` to a file and returns the file's contents.
+std::string ReadMhtmlArchive(MhtmlArchive& archive) {
+  const GURL file_url = archive.Write("index.mhtml");
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  base::FilePath path;
+  std::string contents;
+  EXPECT_TRUE(net::FileURLToFilePath(file_url, &path));
+  EXPECT_TRUE(base::ReadFileToString(path, &contents));
+  return contents;
+}
 
 }  // namespace
 
@@ -498,7 +524,6 @@ IN_PROC_BROWSER_TEST_F(NavigationMhtmlBrowserTest,
   auto params = mojom::DidCommitProvisionalLoadParams::New();
   params->url = GURL("https://victim.example/#poc");
   params->origin = url::Origin::Create(GURL("https://victim.example"));
-  params->navigation_token = base::UnguessableToken::Create();
   // Fill in other required params to avoid other validation failures.
   params->did_create_new_entry = false;
   params->method = "GET";
@@ -1170,6 +1195,388 @@ IN_PROC_BROWSER_TEST_F(NavigationMhtmlImprovementsBrowserTest,
   injector.Activate();
   ExecuteScriptAsync(sub_document, "window.location = 'about:blank';");
   EXPECT_EQ(bad_message::INVALID_INITIATOR_ORIGIN, kill_waiter.Wait());
+}
+
+// Verifies that MHTML archives served with mixed-case MIME types (such as
+// "Multipart/Related" or "Message/RFC822") are recognized as MHTML documents
+// by the browser process, enforcing MHTML sandboxing and opaque origins on the
+// main frame and subframes.
+IN_PROC_BROWSER_TEST_F(NavigationMhtmlBrowserTest, MixedCaseMimeType) {
+  EXPECT_TRUE(embedded_test_server()->Start());
+  const GURL iframe_url =
+      embedded_test_server()->GetURL("example.com", "/cachetime");
+
+  auto default_mhtml_sandbox =
+      ~network::mojom::WebSandboxFlags::kPopups &
+      ~network::mojom::WebSandboxFlags::kPropagatesToAuxiliaryBrowsingContexts;
+  if (base::FeatureList::IsEnabled(blink::features::kMHTML_Improvements)) {
+    default_mhtml_sandbox &= ~network::mojom::WebSandboxFlags::kScripts;
+  }
+
+  for (const char* mime_type : {"Multipart/Related", "Message/RFC822"}) {
+    SCOPED_TRACE(mime_type);
+    MhtmlArchive mhtml_archive;
+    mhtml_archive.AddHtmlDocument(
+        GURL("http://example.com"),
+        base::StringPrintf("<iframe src=\"%s\"></iframe>",
+                           iframe_url.spec().c_str()));
+    mhtml_archive.AddHtmlDocument(iframe_url, "<iframe></iframe>");
+    GURL mhtml_url = mhtml_archive.Write("index.mhtml");
+
+    net::ScopedOverrideGetMimeTypeForTesting mime_override(mime_type);
+    NavigationHandleObserver iframe_navigation(web_contents(), iframe_url);
+    EXPECT_TRUE(NavigateToURL(shell(), mhtml_url));
+
+    RenderFrameHostImpl* main_document = main_frame_host();
+    EXPECT_TRUE(main_document->is_mhtml_document());
+    EXPECT_TRUE(main_document->GetLastCommittedOrigin().opaque());
+    EXPECT_EQ(default_mhtml_sandbox, main_document->active_sandbox_flags());
+
+    ASSERT_EQ(1u, main_document->child_count());
+    RenderFrameHostImpl* sub_document =
+        main_document->child_at(0)->current_frame_host();
+    EXPECT_TRUE(sub_document->is_mhtml_document());
+    EXPECT_TRUE(sub_document->GetLastCommittedOrigin().opaque());
+    EXPECT_EQ(default_mhtml_sandbox, sub_document->active_sandbox_flags());
+    EXPECT_EQ(iframe_url, sub_document->GetLastCommittedURL());
+    EXPECT_TRUE(iframe_navigation.has_committed());
+    EXPECT_FALSE(iframe_navigation.is_error());
+    EXPECT_EQ(1u, sub_document->child_count());
+  }
+}
+
+// Verifies that navigating a subframe to an MHTML archive with a mixed-case
+// MIME type ("Multipart/Related" or "Message/RFC822") is blocked by the
+// browser with net::ERR_BLOCKED_BY_RESPONSE rather than committing in the
+// renderer and hitting CHECK(frame_->IsMainFrame()).
+IN_PROC_BROWSER_TEST_F(NavigationMhtmlBrowserTest,
+                       SubframeMixedCaseMimeTypeBlocked) {
+  for (const char* mime_type : {"Multipart/Related", "Message/RFC822"}) {
+    SCOPED_TRACE(mime_type);
+    EXPECT_TRUE(
+        NavigateToURL(shell(), GetTestUrl("", "page_with_blank_iframe.html")));
+
+    MhtmlArchive mhtml_archive;
+    mhtml_archive.AddHtmlDocument(GURL("http://example.com"), "MHTML content");
+    GURL mhtml_url = mhtml_archive.Write("index.mhtml");
+
+    auto headers =
+        base::MakeRefCounted<net::HttpResponseHeaders>("HTTP/1.1 200 OK");
+    EXPECT_TRUE(download_utils::MustDownload(
+        web_contents()->GetBrowserContext(), GURL("http://example.com/a.mhtml"),
+        headers.get(), mime_type));
+    EXPECT_FALSE(
+        download_utils::MustDownload(web_contents()->GetBrowserContext(),
+                                     mhtml_url, headers.get(), mime_type));
+
+    net::ScopedOverrideGetMimeTypeForTesting mime_override(mime_type);
+    NavigationHandleObserver subframe_navigation(web_contents(), mhtml_url);
+    EXPECT_TRUE(NavigateIframeToURL(web_contents(), "test_iframe", mhtml_url));
+    EXPECT_TRUE(subframe_navigation.has_committed());
+    EXPECT_TRUE(subframe_navigation.is_error());
+    EXPECT_EQ(net::ERR_BLOCKED_BY_RESPONSE,
+              subframe_navigation.net_error_code());
+    ASSERT_EQ(1u, main_frame_host()->child_count());
+    EXPECT_TRUE(main_frame_host()
+                    ->child_at(0)
+                    ->current_frame_host()
+                    ->IsErrorDocument());
+  }
+}
+
+namespace {
+
+// Responds to a request with a 200 response whose URLResponseHead::mime_type
+// is set verbatim to `mime_type`. Unlike URLLoaderInterceptor::WriteResponse(),
+// this does not derive the MIME type from HttpResponseHeaders (which lowercases
+// it). This mimics embedder loaders, such as WebView's handling of
+// shouldInterceptRequest(), that pass app-supplied MIME types through as-is.
+// If `with_headers` is false, the response has no HttpResponseHeaders, like
+// responses from some embedder loaders (e.g., Android offline pages).
+void WriteResponseWithRawMimeType(const std::string& mime_type,
+                                  const std::string& body,
+                                  network::mojom::URLLoaderClient* client,
+                                  bool with_headers = true) {
+  auto head = network::mojom::URLResponseHead::New();
+  if (with_headers) {
+    head->headers =
+        base::MakeRefCounted<net::HttpResponseHeaders>("HTTP/1.1 200 OK");
+  }
+  head->mime_type = mime_type;
+
+  mojo::ScopedDataPipeProducerHandle producer_handle;
+  mojo::ScopedDataPipeConsumerHandle consumer_handle;
+  CHECK_EQ(MOJO_RESULT_OK,
+           mojo::CreateDataPipe(body.size(), producer_handle, consumer_handle));
+  CHECK_EQ(MOJO_RESULT_OK,
+           producer_handle->WriteAllData(base::as_byte_span(body)));
+
+  client->OnReceiveResponse(std::move(head), std::move(consumer_handle),
+                            std::nullopt);
+  client->OnComplete(network::URLLoaderCompletionStatus(net::OK));
+}
+
+// Runs with the kCaseInsensitiveMhtmlMustDownload kill switch disabled.
+class NavigationMhtmlCaseSensitiveMustDownloadBrowserTest
+    : public NavigationMhtmlBrowserTest {
+ public:
+  NavigationMhtmlCaseSensitiveMustDownloadBrowserTest() {
+    scoped_feature_list_.InitAndDisableFeature(
+        features::kCaseInsensitiveMhtmlMustDownload);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+}  // namespace
+
+// With the kill switch disabled, download_utils::MustDownload() only forces
+// lowercase MHTML MIME types over HTTP to be downloaded.
+IN_PROC_BROWSER_TEST_F(NavigationMhtmlCaseSensitiveMustDownloadBrowserTest,
+                       MustDownloadIsCaseSensitive) {
+  const GURL http_url("http://example.com/a.mhtml");
+  auto headers =
+      base::MakeRefCounted<net::HttpResponseHeaders>("HTTP/1.1 200 OK");
+
+  for (const char* mime_type : {"multipart/related", "message/rfc822"}) {
+    SCOPED_TRACE(mime_type);
+    EXPECT_TRUE(
+        download_utils::MustDownload(web_contents()->GetBrowserContext(),
+                                     http_url, headers.get(), mime_type));
+  }
+  for (const char* mime_type : {"Multipart/Related", "Message/RFC822"}) {
+    SCOPED_TRACE(mime_type);
+    EXPECT_FALSE(
+        download_utils::MustDownload(web_contents()->GetBrowserContext(),
+                                     http_url, headers.get(), mime_type));
+  }
+}
+
+// With the kill switch disabled, a mixed-case MHTML response over HTTP is
+// rendered rather than downloaded, but NavigationRequest must still treat it
+// as MHTML and apply the MHTML sandbox and an opaque origin to both the main
+// frame and subframes, without making network requests for subframes.
+IN_PROC_BROWSER_TEST_F(NavigationMhtmlCaseSensitiveMustDownloadBrowserTest,
+                       MixedCaseMimeTypeOverHttpIsSandboxed) {
+  auto default_mhtml_sandbox =
+      ~network::mojom::WebSandboxFlags::kPopups &
+      ~network::mojom::WebSandboxFlags::kPropagatesToAuxiliaryBrowsingContexts;
+  if (base::FeatureList::IsEnabled(blink::features::kMHTML_Improvements)) {
+    default_mhtml_sandbox &= ~network::mojom::WebSandboxFlags::kScripts;
+  }
+
+  const GURL iframe_url("http://victim.example/subframe.html");
+
+  for (const char* mime_type : {"Multipart/Related", "Message/RFC822"}) {
+    SCOPED_TRACE(mime_type);
+    MhtmlArchive mhtml_archive;
+    mhtml_archive.AddHtmlDocument(
+        GURL("http://example.com"),
+        base::StringPrintf("<iframe src=\"%s\"></iframe>",
+                           iframe_url.spec().c_str()));
+    mhtml_archive.AddHtmlDocument(iframe_url, "<iframe></iframe>");
+    const std::string archive_body = ReadMhtmlArchive(mhtml_archive);
+
+    const GURL http_url("http://example.com/archive");
+    bool saw_iframe_network_request = false;
+    URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
+        [&](URLLoaderInterceptor::RequestParams* params) {
+          if (params->url_request.url == iframe_url) {
+            saw_iframe_network_request = true;
+            return false;
+          }
+          if (params->url_request.url != http_url) {
+            return false;
+          }
+          WriteResponseWithRawMimeType(mime_type, archive_body,
+                                       params->client.get());
+          return true;
+        }));
+
+    NavigationHandleObserver iframe_navigation(web_contents(), iframe_url);
+    EXPECT_TRUE(NavigateToURL(shell(), http_url));
+
+    RenderFrameHostImpl* main_document = main_frame_host();
+    EXPECT_EQ(http_url, main_document->GetLastCommittedURL());
+    EXPECT_TRUE(main_document->is_mhtml_document());
+    EXPECT_TRUE(main_document->GetLastCommittedOrigin().opaque());
+    EXPECT_EQ(default_mhtml_sandbox, main_document->active_sandbox_flags());
+
+    ASSERT_EQ(1u, main_document->child_count());
+    RenderFrameHostImpl* sub_document =
+        main_document->child_at(0)->current_frame_host();
+    EXPECT_TRUE(sub_document->is_mhtml_document());
+    EXPECT_TRUE(sub_document->GetLastCommittedOrigin().opaque());
+    EXPECT_EQ(default_mhtml_sandbox, sub_document->active_sandbox_flags());
+    EXPECT_EQ(iframe_url, sub_document->GetLastCommittedURL());
+    EXPECT_TRUE(iframe_navigation.has_committed());
+    EXPECT_FALSE(iframe_navigation.is_error());
+    EXPECT_FALSE(saw_iframe_network_request);
+    EXPECT_EQ(1u, sub_document->child_count());
+  }
+}
+
+namespace {
+
+// A blink::mojom::Blob implementation that, when Load() is called, responds
+// with an MHTML archive. This simulates a blob URL backed by a Blob that a
+// compromised renderer implements, so it controls the whole response head.
+class MhtmlBlob : public blink::mojom::Blob {
+ public:
+  MhtmlBlob(std::string body, bool with_headers, bool intercepted_by_plugin)
+      : body_(std::move(body)),
+        with_headers_(with_headers),
+        intercepted_by_plugin_(intercepted_by_plugin) {}
+
+  mojo::PendingRemote<blink::mojom::Blob> BindNewPipeAndPassRemote() {
+    mojo::PendingRemote<blink::mojom::Blob> remote;
+    receivers_.Add(this, remote.InitWithNewPipeAndPassReceiver());
+    return remote;
+  }
+
+  // blink::mojom::Blob:
+  void Clone(mojo::PendingReceiver<blink::mojom::Blob> receiver) override {
+    receivers_.Add(this, std::move(receiver));
+  }
+  void AsDataPipeGetter(
+      mojo::PendingReceiver<network::mojom::DataPipeGetter>) override {
+    NOTREACHED();
+  }
+  void ReadAll(mojo::ScopedDataPipeProducerHandle,
+               mojo::PendingRemote<blink::mojom::BlobReaderClient>) override {
+    NOTREACHED();
+  }
+  void ReadRange(uint64_t,
+                 uint64_t,
+                 mojo::ScopedDataPipeProducerHandle,
+                 mojo::PendingRemote<blink::mojom::BlobReaderClient>) override {
+    NOTREACHED();
+  }
+  void Load(
+      mojo::PendingReceiver<network::mojom::URLLoader> loader,
+      const std::string& method,
+      const net::HttpRequestHeaders&,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client) override {
+    loader_receiver_ = std::move(loader);
+    client_.reset();
+    client_.Bind(std::move(client));
+
+    auto head = network::mojom::URLResponseHead::New();
+    if (with_headers_) {
+      head->headers =
+          base::MakeRefCounted<net::HttpResponseHeaders>("HTTP/1.1 200 OK");
+    }
+    head->mime_type = "multipart/related";
+    head->intercepted_by_plugin = intercepted_by_plugin_;
+
+    mojo::ScopedDataPipeProducerHandle producer_handle;
+    mojo::ScopedDataPipeConsumerHandle consumer_handle;
+    CHECK_EQ(MOJO_RESULT_OK, mojo::CreateDataPipe(body_.size(), producer_handle,
+                                                  consumer_handle));
+    CHECK_EQ(MOJO_RESULT_OK,
+             producer_handle->WriteAllData(base::as_byte_span(body_)));
+
+    client_->OnReceiveResponse(std::move(head), std::move(consumer_handle),
+                               std::nullopt);
+    client_->OnComplete(network::URLLoaderCompletionStatus(net::OK));
+  }
+  void CaptureSnapshot(CaptureSnapshotCallback callback) override {
+    std::move(callback).Run(0, std::nullopt);
+  }
+  void GetInternalUUID(GetInternalUUIDCallback callback) override {
+    std::move(callback).Run("");
+  }
+
+ private:
+  const std::string body_;
+  const bool with_headers_;
+  const bool intercepted_by_plugin_;
+  mojo::ReceiverSet<blink::mojom::Blob> receivers_;
+  // Retain the receiver so the endpoint does not signal disconnect.
+  mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver_;
+  mojo::Remote<network::mojom::URLLoaderClient> client_;
+};
+
+class NavigationMhtmlBlobBrowserTest : public NavigationMhtmlBrowserTest {
+ protected:
+  // Navigates the main frame to a blob URL backed by an MhtmlBlob and checks
+  // that the response isn't committed as an MHTML document.
+  void ExpectMhtmlFromBlobIsBlocked(bool with_headers,
+                                    bool intercepted_by_plugin) {
+    ASSERT_TRUE(embedded_test_server()->Start());
+    const GURL url = embedded_test_server()->GetURL("a.test", "/title1.html");
+    const url::Origin origin = url::Origin::Create(url);
+    ASSERT_TRUE(NavigateToURL(shell(), url));
+
+    MhtmlArchive mhtml_archive;
+    mhtml_archive.AddHtmlDocument(GURL("http://example.com"), "MHTML content");
+    MhtmlBlob blob(ReadMhtmlArchive(mhtml_archive), with_headers,
+                   intercepted_by_plugin);
+
+    const GURL blob_url("blob:" + origin.Serialize() +
+                        "/33221100-0000-0000-0000-000000000000");
+    RenderFrameHostImpl* rfh = main_frame_host();
+    ASSERT_TRUE(static_cast<StoragePartitionImpl*>(rfh->GetStoragePartition())
+                    ->GetBlobUrlRegistry()
+                    ->AddUrlMapping(blob_url, blob.BindNewPipeAndPassRemote(),
+                                    blink::StorageKey::CreateFirstParty(origin),
+                                    origin,
+                                    rfh->GetProcess()->GetDeprecatedID()));
+
+    NavigationHandleObserver observer(web_contents(), blob_url);
+    EXPECT_FALSE(NavigateToURL(shell(), blob_url));
+    EXPECT_FALSE(observer.is_download());
+    EXPECT_TRUE(observer.is_error());
+    EXPECT_EQ(net::ERR_BLOCKED_BY_RESPONSE, observer.net_error_code());
+    EXPECT_FALSE(main_frame_host()->is_mhtml_document());
+  }
+};
+
+}  // namespace
+
+// An MHTML response from a blob URL without HttpResponseHeaders isn't turned
+// into a download by download_utils::MustDownload(), but it must not commit
+// as an MHTML document, since blob: isn't a scheme MHTML can be loaded from.
+IN_PROC_BROWSER_TEST_F(NavigationMhtmlBlobBrowserTest,
+                       MhtmlFromBlobWithoutHeadersIsBlocked) {
+  ExpectMhtmlFromBlobIsBlocked(/*with_headers=*/false,
+                               /*intercepted_by_plugin=*/false);
+}
+
+// An MHTML response from a blob URL whose response head claims it was
+// intercepted by a plugin isn't turned into a download, but it must not
+// commit as an MHTML document either.
+IN_PROC_BROWSER_TEST_F(NavigationMhtmlBlobBrowserTest,
+                       MhtmlFromBlobInterceptedByPluginIsBlocked) {
+  ExpectMhtmlFromBlobIsBlocked(/*with_headers=*/true,
+                               /*intercepted_by_plugin=*/true);
+}
+
+// MHTML served over http(s) without HttpResponseHeaders must still render as
+// MHTML. Embedders rely on this: e.g., Android offline pages serve saved MHTML
+// archives at their original http(s) URLs without headers.
+IN_PROC_BROWSER_TEST_F(NavigationMhtmlBrowserTest,
+                       MhtmlOverHttpWithoutHeadersIsRendered) {
+  MhtmlArchive mhtml_archive;
+  mhtml_archive.AddHtmlDocument(GURL("http://example.com"), "MHTML content");
+  const std::string archive_body = ReadMhtmlArchive(mhtml_archive);
+
+  const GURL url("http://example.com/archive");
+  URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
+      [&](URLLoaderInterceptor::RequestParams* params) {
+        if (params->url_request.url != url) {
+          return false;
+        }
+        WriteResponseWithRawMimeType("multipart/related", archive_body,
+                                     params->client.get(),
+                                     /*with_headers=*/false);
+        return true;
+      }));
+
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+  EXPECT_EQ(url, main_frame_host()->GetLastCommittedURL());
+  EXPECT_TRUE(main_frame_host()->is_mhtml_document());
 }
 
 }  // namespace content

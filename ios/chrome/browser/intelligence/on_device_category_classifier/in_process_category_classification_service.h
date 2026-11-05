@@ -33,8 +33,7 @@
 // category classification.
 class InProcessCategoryClassificationService
     : public KeyedService,
-      public passage_embeddings::EmbedderMetadataProvider,
-      public page_content_annotations::OnDeviceCategoryClassifier::Observer {
+      public passage_embeddings::EmbedderMetadataProvider {
  public:
   using ClassificationCallback = base::OnceCallback<void(
       const std::vector<page_content_annotations::Category>&)>;
@@ -94,8 +93,10 @@ class InProcessCategoryClassificationService
   // Simulates passage embedder load completion for testing.
   void OnPassageEmbedderLoadedForTesting(int64_t model_version,
                                          size_t output_size,
+                                         uint32_t input_window_size,
                                          bool success) {
-    OnPassageEmbedderLoaded(model_version, output_size, success);
+    OnPassageEmbedderLoaded(model_version, output_size, input_window_size,
+                            success);
   }
 
   // Simulates embedder disconnect for testing.
@@ -107,22 +108,18 @@ class InProcessCategoryClassificationService
   void RemoveObserver(
       passage_embeddings::EmbedderMetadataObserver* observer) override;
 
-  // page_content_annotations::OnDeviceCategoryClassifier::Observer:
-  void OnCategoriesClassified(
-      const GURL& url,
-      ukm::SourceId source_id,
-      const std::vector<page_content_annotations::Category>& categories)
-      override;
-
  protected:
   virtual void OnGotEmbeddings(
       const GURL& url,
-      ukm::SourceId source_id,
       std::vector<page_content_annotations::EmbeddingPassageType> passage_types,
       std::vector<passage_embeddings::mojom::PassageEmbeddingsResultPtr>
           results);
 
  private:
+  void OnCategoriesClassified(
+      const GURL& url,
+      std::vector<page_content_annotations::Category> categories);
+
   void OnModelFilesOpened(base::File embeddings_file,
                           base::File sp_file,
                           uint32_t window_size,
@@ -131,6 +128,7 @@ class InProcessCategoryClassificationService
 
   void OnPassageEmbedderLoaded(int64_t model_version,
                                size_t output_size,
+                               uint32_t input_window_size,
                                bool success);
 
   void OnEmbedderDisconnect();

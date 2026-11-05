@@ -37,7 +37,6 @@
 <translation id="1901303067676059328">Избери ги &amp;сите</translation>
 <translation id="19085484004813472">Ова е нова функција</translation>
 <translation id="2006524834898217237">Проверете дали уредов е поврзан на интернет.</translation>
-<translation id="208586643495776849">Обидете се повторно</translation>
 <translation id="2111134541987263231">Вклучете <ph name="BEGIN_BOLD" />Дозволи во режим „Инкогнито“<ph name="END_BOLD" /></translation>
 <translation id="2141853158323869627">{DAYS,plural, =1{1 д.}one{# д.}other{# д.}}</translation>
 <translation id="2148716181193084225">Денес</translation>
@@ -126,7 +125,6 @@
 <translation id="5046499563572181734">Допрете тука</translation>
 <translation id="5076340679995252485">&amp;Залепи</translation>
 <translation id="520299402983819650"><ph name="QUANTITY" /> ПБ</translation>
-<translation id="5278860589123563674">Не успеа да се испрати</translation>
 <translation id="5283101102242354279">Вклучете екстензија во режим „Инкогнито“:</translation>
 <translation id="528468243742722775">Крај</translation>
 <translation id="5329858601952122676">&amp;Избриши</translation>
@@ -145,7 +143,6 @@
 <translation id="5768079895599174203">{DAYS,plural, =1{1 ден и }one{# ден и }other{# дена и }}</translation>
 <translation id="5789643057113097023">.</translation>
 <translation id="5843690142429128814">Слика.</translation>
-<translation id="5860491529813859533">Вклучи</translation>
 <translation id="5866104238061687188">{YEARS,plural, =1{за 1 г.}one{за # г.}other{за # г.}}</translation>
 <translation id="588258955323874662">Цел екран</translation>
 <translation id="5906667377645263094">{SECONDS,plural, =1{Преостана 1 секунда}one{Преостана # секунда}other{Преостанаа # секунди}}</translation>

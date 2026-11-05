@@ -42,6 +42,7 @@
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "ui/base/l10n/l10n_util.h"
 
@@ -165,6 +166,7 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 }
 
 // Tests reopening a closed tab from a regular tab with history.
+TAG_SMOKE_TEST(RecentTabsTestCase, testOpenCloseTabFromRegularWithHistory);
 - (void)testOpenCloseTabFromRegularWithHistory {
   const GURL testPageURL = self.testServer->GetURL(kPageURL);
 
@@ -379,8 +381,7 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 
 // Tests that for a signed out user, sign-in using the promo then decline
 // history sync promo signs the user out and does not enable history sync.
-// TODO(crbug.com/453011095): Test is failing on the waterfall.
-- (void)DISABLED_testDelineHistorySyncIfSignedOut {
+- (void)testDelineHistorySyncIfSignedOut {
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
   [SigninEarlGrey addFakeIdentity:fakeIdentity];
 
@@ -756,10 +757,6 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 
 // Tests that the VC can be dismissed by swiping down.
 - (void)testSwipeDownDismiss {
-  // TODO(crbug.com/40149458): Test disabled on iOS14 iPhones.
-  if (![ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Fails on iOS14 iPhones.");
-  }
   OpenRecentTabsPanel();
 
   id<GREYMatcher> recentTabsViewController =
@@ -935,8 +932,7 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 }
 
 // Tests the Open in New Window action on a recent tab's context menu.
-// TODO(crbug.com/40807242) Test is flaky.
-- (void)FLAKY_testContextMenuOpenInNewWindow {
+- (void)testContextMenuOpenInNewWindow {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_DISABLED(@"Multiple windows can't be opened.");
   }

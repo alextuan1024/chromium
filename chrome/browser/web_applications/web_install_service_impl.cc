@@ -59,12 +59,14 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "services/network/public/cpp/ip_address_space_util.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
-#include "services/network/public/cpp/wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/client_security_state.mojom.h"
 #include "services/network/public/mojom/ip_address_space.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/common/manifest/manifest_util.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
@@ -92,11 +94,43 @@ constexpr char kInstallElementTypeUma[] =
 // Rate limiting defaults for cross-origin IsInstalled queries.
 size_t g_max_cross_origin_queries = 100;
 base::TimeDelta g_min_cross_origin_query_interval = base::Seconds(1);
-network::SharedURLLoaderFactory* g_test_factory = nullptr;
 
 bool IsUrlAllowedForWebInstall(const GURL& url) {
   return url.SchemeIs(url::kHttpsScheme) ||
          (url.SchemeIs(url::kHttpScheme) && net::IsLocalhost(url));
+}
+
+// Builds a ClientSecurityState representing `rfh` for Local Network Access
+// (LNA) enforcement on browser-initiated manifest fetches.
+// Note: Because `WebInstallManifestFetcher` uses the profile's browser-process
+// URLLoaderFactory (which has no URLLoaderNetworkServiceObserver to service
+// LNA permission prompts), `local_network_access_request_policy` is hard-set
+// to `kBlock` (fail-closed) rather than `kPermissionBlock`.
+// TODO(crbug.com/562207183): Expose `BuildClientSecurityState()` (or
+// `PolicyContainerPolicies::ip_address_space`) on `content::RenderFrameHost` so
+// policy-container overrides such as `CSP: treat-as-public-address` are also
+// reflected here.
+network::mojom::ClientSecurityStatePtr BuildFrameClientSecurityState(
+    content::RenderFrameHost& rfh) {
+  const GURL& url = rfh.GetLastCommittedURL();
+  std::optional<network::CalculateClientAddressSpaceParams> params;
+  std::optional<network::mojom::IPAddressSpace> sw_address_space;
+  if (const network::mojom::URLResponseHead* response_head =
+          rfh.GetLastResponseHead()) {
+    if (response_head->was_fetched_via_service_worker &&
+        response_head->client_address_space !=
+            network::mojom::IPAddressSpace::kUnknown) {
+      sw_address_space = response_head->client_address_space;
+    }
+    params.emplace(sw_address_space, &response_head->remote_endpoint);
+  }
+  auto state = network::mojom::ClientSecurityState::New();
+  state->ip_address_space = network::CalculateClientAddressSpace(url, params);
+  state->is_web_secure_context =
+      network::IsOriginPotentiallyTrustworthy(rfh.GetLastCommittedOrigin());
+  state->local_network_access_request_policy =
+      network::mojom::LocalNetworkAccessRequestPolicy::kBlock;
+  return state;
 }
 
 std::optional<blink::mojom::WebInstallIssueReason> GetIssueReasonForFetchError(
@@ -104,10 +138,11 @@ std::optional<blink::mojom::WebInstallIssueReason> GetIssueReasonForFetchError(
   switch (error) {
     case WebInstallManifestFetchError::kDownloadFailed:
     case WebInstallManifestFetchError::kRedirected:
+    // TODO(crbug.com/575536637): Surface a new DevTools issue for invalid
+    // manifest content type.
+    case WebInstallManifestFetchError::kInvalidContentType:
       return blink::mojom::WebInstallIssueReason::
           kManifestParsingOrNetworkError;
-    case WebInstallManifestFetchError::kInvalidContentType:
-      return std::nullopt;
   }
 }
 
@@ -210,10 +245,12 @@ void EmitInstallTypeUma(bool triggered_from_element,
 
 WebInstallServiceImpl::WebInstallServiceImpl(
     content::RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<blink::mojom::WebInstallService> receiver)
+    mojo::PendingReceiver<blink::mojom::WebInstallService> receiver,
+    base::SelfDeletingPassKey key)
     : content::DocumentService<blink::mojom::WebInstallService>(
           render_frame_host,
-          std::move(receiver)),
+          std::move(receiver),
+          key),
       content::WebContentsObserver(
           content::WebContents::FromRenderFrameHost(&render_frame_host)),
       frame_routing_id_(render_frame_host.GetGlobalId()),
@@ -246,11 +283,6 @@ void WebInstallServiceImpl::CreateIfAllowed(
     return;
   }
 
-  if (!network::IsUrlPotentiallyTrustworthy(
-          render_frame_host->GetLastCommittedURL())) {
-    return;
-  }
-
   // TODO(crbug.com/493534965): Evaluate sandbox restrictions. In the meantime,
   // Web Install API is not available in any sandboxed contexts, including
   // sandboxed top-level documents, as well as frames with sandbox flags
@@ -261,7 +293,13 @@ void WebInstallServiceImpl::CreateIfAllowed(
     return;
   }
 
-  new WebInstallServiceImpl(*render_frame_host, std::move(receiver));
+  if (!network::IsOriginPotentiallyTrustworthy(
+          render_frame_host->GetLastCommittedOrigin())) {
+    return;
+  }
+
+  base::MakeSelfDeleting<WebInstallServiceImpl>(*render_frame_host,
+                                                std::move(receiver));
 }
 
 // static
@@ -277,26 +315,6 @@ WebInstallServiceImpl::SetMinCrossOriginQueryIntervalForTesting(  // IN-TEST
     base::TimeDelta interval) {
   return base::AutoReset<base::TimeDelta>(&g_min_cross_origin_query_interval,
                                           interval);
-}
-
-// static
-base::AutoReset<network::SharedURLLoaderFactory*>
-WebInstallServiceImpl::SetURLLoaderFactoryForTesting(  // IN-TEST
-    network::SharedURLLoaderFactory* factory) {
-  return base::AutoReset<network::SharedURLLoaderFactory*>(&g_test_factory,
-                                                           factory);
-}
-
-scoped_refptr<network::SharedURLLoaderFactory>
-WebInstallServiceImpl::GetURLLoaderFactory() {
-  if (g_test_factory) {
-    return base::WrapRefCounted(g_test_factory);
-  }
-  mojo::PendingRemote<network::mojom::URLLoaderFactory> factory_remote;
-  render_frame_host().CreateNetworkServiceDefaultFactory(
-      factory_remote.InitWithNewPipeAndPassReceiver());
-  return base::MakeRefCounted<network::WrapperSharedURLLoaderFactory>(
-      std::move(factory_remote));
 }
 
 void WebInstallServiceImpl::IsInstalled(
@@ -534,7 +552,8 @@ void WebInstallServiceImpl::InstallFromManifestInternal(
       content::WebContents::FromRenderFrameHost(&render_frame_host());
 
   // Null in two cases: `AreWebAppsUserInstallable` is false (e.g.
-  // Incognito/OTR), OR `AttachTabHelpers` never ran on this WebContents.
+  // Incognito/OTR), OR `TabFeatures` was never initialized for this
+  // WebContents.
   webapps::MLInstallabilityPromoter* promoter =
       webapps::MLInstallabilityPromoter::FromWebContents(web_contents);
   if (promoter && promoter->HasCurrentInstall()) {
@@ -572,8 +591,9 @@ void WebInstallServiceImpl::InstallFromManifestInternal(
   // DataErrors (invalid JSON, missing id) are returned accurately. This
   // prevents sites from using error differences to detect Incognito mode.
   manifest_fetcher_ = std::make_unique<WebInstallManifestFetcher>(
-      install_target, render_frame_host().GetLastCommittedOrigin(),
-      GetURLLoaderFactory());
+      install_target, initiating_profile->GetURLLoaderFactory(),
+      render_frame_host().GetLastCommittedOrigin(),
+      BuildFrameClientSecurityState(render_frame_host()));
 
   manifest_fetcher_->Fetch(base::BindOnce(
       &WebInstallServiceImpl::OnManifestFetched, weak_ptr_factory_.GetWeakPtr(),
@@ -634,7 +654,7 @@ void WebInstallServiceImpl::InstallCurrentDocumentInternal(
   auto* web_contents =
       content::WebContents::FromRenderFrameHost(&render_frame_host());
   // Null if `AreWebAppsUserInstallable` is false (e.g. Incognito/OTR), or
-  // `AttachTabHelpers` did not run on `web_contents`.
+  // `TabFeatures` was not initialized for `web_contents`.
   webapps::MLInstallabilityPromoter* promoter =
       webapps::MLInstallabilityPromoter::FromWebContents(web_contents);
   if (promoter && promoter->HasCurrentInstall()) {
@@ -696,7 +716,7 @@ void WebInstallServiceImpl::OnDidCheckInstallabilityForCurrentDocumentInstall(
     InstallFromManifestCallbackWithMetrics callback_with_metrics,
     base::WeakPtr<WebAppDataRetriever> data_retriever,
     std::optional<GURL> linked_manifest_url,
-    blink::mojom::ManifestPtr manifest,
+    std::optional<blink::Manifest> manifest,
     bool valid_manifest_for_web_app,
     webapps::InstallableStatusCode error_code) {
   // Remove the data retriever from the set now that the callback has completed.
@@ -737,7 +757,7 @@ void WebInstallServiceImpl::OnDidCheckInstallabilityForCurrentDocumentInstall(
 
   // The Web Install API currently requires that the manifest is from the same
   // trusted origin as the current document to prevent origin spoofing.
-  if (!origin().IsSameOriginWith(manifest->id)) {
+  if (!origin().IsSameOriginWith(manifest->id())) {
     std::move(callback_with_metrics)
         .Run(web_app::WebInstallServiceResult::kInstallCommandFailed,
              blink::mojom::WebInstallServiceResult::kDataError);
@@ -746,7 +766,7 @@ void WebInstallServiceImpl::OnDidCheckInstallabilityForCurrentDocumentInstall(
 
   // The Web Install API no-argument signature requires the manifest to have a
   // developer-specified id to prevent multiple installs of the same app.
-  if (!manifest->has_custom_id) {
+  if (!manifest->has_custom_id()) {
     if (!IsInitiatingPageGoneOrChanged() && linked_manifest_url &&
         linked_manifest_url->is_valid() &&
         origin().IsSameOriginWith(url::Origin::Create(*linked_manifest_url))) {
@@ -794,7 +814,7 @@ void WebInstallServiceImpl::OnDidCheckInstallabilityForCurrentDocumentInstall(
   auto* provider = WebAppProvider::GetForWebContents(web_contents);
   CHECK(provider);
   std::optional<webapps::ManifestId> computed_manifest_id =
-      webapps::ManifestId::Create(manifest->id);
+      webapps::ManifestId::Create(manifest->id());
   CHECK(computed_manifest_id);
 
   std::optional<webapps::AppId> installed_app_id =
@@ -955,12 +975,12 @@ void WebInstallServiceImpl::OnManifestParsed(
              blink::mojom::WebInstallServiceResult::kDataError);
     return;
   }
-  blink::mojom::ManifestPtr parsed_manifest = std::move(parse_result).value();
+  blink::Manifest parsed_manifest = std::move(parse_result).value();
 
   // If the developer provided a manifest ID, it should match what was just
   // parsed and computed.
   if (options->manifest_id.has_value()) {
-    if (parsed_manifest->id != *options->manifest_id) {
+    if (parsed_manifest.id() != *options->manifest_id) {
       std::move(callback_with_metrics)
           .Run(web_app::WebInstallServiceResult::kManifestIdMismatch,
                blink::mojom::WebInstallServiceResult::kDataError);
@@ -969,7 +989,7 @@ void WebInstallServiceImpl::OnManifestParsed(
   } else {
     // The developer did not provide a manifest ID, so the parsed manifest
     // must have declared one.
-    if (!parsed_manifest->has_custom_id) {
+    if (!parsed_manifest.has_custom_id()) {
       if (can_report_devtools_issue) {
         ReportWebInstallIssue(
             render_frame_host(), options->manifest_url,
@@ -980,6 +1000,15 @@ void WebInstallServiceImpl::OnManifestParsed(
                blink::mojom::WebInstallServiceResult::kDataError);
       return;
     }
+  }
+
+  // Explicit manifest installs require at least one parsed icon. Check before
+  // profile and permission checks to preserve DataError behavior.
+  if (parsed_manifest.icons().empty()) {
+    std::move(callback_with_metrics)
+        .Run(web_app::WebInstallServiceResult::kNoManifestIcons,
+             blink::mojom::WebInstallServiceResult::kDataError);
+    return;
   }
 
   // The initiating page changed during parsing - this intentionally comes
@@ -1049,10 +1078,9 @@ void WebInstallServiceImpl::OnManifestPermissionDecided(
     InstallFromManifestCallbackWithMetrics callback_with_metrics,
     blink::mojom::ManifestInstallOptionsPtr options,
     std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker,
-    blink::mojom::ManifestPtr manifest,
+    blink::Manifest manifest,
     const std::vector<content::PermissionResult>& permission_result) {
   CHECK(options);
-  CHECK(manifest);
   CHECK_EQ(permission_result.size(), 1u);
 
   if (permission_result[0].status != PermissionStatus::GRANTED) {
@@ -1070,7 +1098,7 @@ void WebInstallServiceImpl::ContinueManifestInstall(
     InstallFromManifestCallbackWithMetrics callback_with_metrics,
     blink::mojom::ManifestInstallOptionsPtr options,
     std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker,
-    blink::mojom::ManifestPtr manifest) {
+    blink::Manifest manifest) {
   CHECK(options);
 
   if (IsInitiatingPageGoneOrChanged()) {
@@ -1082,7 +1110,7 @@ void WebInstallServiceImpl::ContinueManifestInstall(
 
   // At this point, `AreWebAppsUserInstallable` is guaranteed true (false case
   // falls out in `OnManifestParsed`), but `install_tracker` may still be null
-  // if `AttachTabHelpers` was never called on this WebContents (e.g.
+  // if `TabFeatures` was never initialized for this WebContents (e.g.
   // background/offscreen WebContents, certain test-created WebContents,
   // non browser embedder-owned WebContents, etc.). These WebContents are not
   // expected to call the Web Install API, but must still be handled gracefully.
@@ -1101,7 +1129,7 @@ void WebInstallServiceImpl::ContinueManifestInstall(
   // If the app described by this manifest is already installed, show a launch
   // dialog, instead of install.
   std::optional<webapps::ManifestId> valid_manifest_id =
-      webapps::ManifestId::Create(manifest->id);
+      webapps::ManifestId::Create(manifest.id());
   // A successfully parsed manifest always has a valid computed ID.
   CHECK(valid_manifest_id);
   // These reads can be unsafe as the launch command itself rechecks the app
@@ -1126,7 +1154,7 @@ void WebInstallServiceImpl::ContinueManifestInstall(
 
   provider->ui_manager().TriggerInstallDialogForManifestInstall(
       content::WebContents::FromRenderFrameHost(&render_frame_host()),
-      initiating_page_, std::move(install_tracker), std::move(manifest),
+      initiating_page_, std::move(install_tracker), manifest,
       options->manifest_url, last_committed_url_,
       base::BindOnce(&WebInstallServiceImpl::OnAppInstalledFromManifest,
                      weak_ptr_factory_.GetWeakPtr(),
@@ -1158,6 +1186,10 @@ void WebInstallServiceImpl::OnAppInstalledFromManifest(
       case webapps::InstallResultCode::kManifestIdMismatch:
         install_result = blink::mojom::WebInstallServiceResult::kDataError;
         uma_result = web_app::WebInstallServiceResult::kManifestIdMismatch;
+        break;
+      case webapps::InstallResultCode::kNoValidIconsInManifest:
+        install_result = blink::mojom::WebInstallServiceResult::kDataError;
+        uma_result = web_app::WebInstallServiceResult::kNoManifestIcons;
         break;
       // TODO(crbug.com/534847491): Distinguish AbortErrors caused by user
       // cancellation.
@@ -1370,7 +1402,6 @@ void WebInstallServiceImpl::RequestWebInstallPermission(
       break;
   }
 
-  GURL requesting_origin = origin().GetURL();
   // User gesture requirement is enforced in NavigatorWebInstall::InstallImpl.
   permission_controller->RequestPermissionsFromCurrentDocument(
       &render_frame_host(),
@@ -1378,7 +1409,7 @@ void WebInstallServiceImpl::RequestWebInstallPermission(
           content::PermissionDescriptorUtil::
               CreatePermissionDescriptorForPermissionType(
                   blink::PermissionType::WEB_APP_INSTALLATION),
-          /*user_gesture=*/true, requesting_origin),
+          /*user_gesture=*/true),
       std::move(callback));
 }
 

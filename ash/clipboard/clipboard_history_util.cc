@@ -4,33 +4,38 @@
 
 #include "ash/clipboard/clipboard_history_util.h"
 
+#include <algorithm>
 #include <array>
 #include <string_view>
 
 #include "ash/clipboard/clipboard_history_item.h"
 #include "ash/clipboard/views/clipboard_history_view_constants.h"
+#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/metrics/histogram_macros.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "base/files/file_path.h"
+#include "base/check_op.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "cc/paint/paint_flags.h"
-#include "chromeos/ui/base/file_icon_util.h"
 #include "chromeos/ui/clipboard_history/clipboard_history_types.h"
+#include "components/prefs/pref_service.h"
 #include "ui/base/clipboard/clipboard_data.h"
 #include "ui/base/clipboard/custom_data_helper.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
+#include "ui/color/color_id.h"
 #include "ui/events/ash/keyboard_capability.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/image/canvas_image_source.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/gfx/vector_icon_types.h"
 #include "ui/views/controls/menu/menu_config.h"
 
 namespace ash::clipboard_history_util {
@@ -242,28 +247,34 @@ bool IsEnabledInCurrentMode() {
     case LoginStatus::USER:
     case LoginStatus::GUEST:
     case LoginStatus::CHILD:
-      return true;
+      return IsEnabledByPolicy();
   }
 }
 
-ui::ImageModel GetIconForFileClipboardItem(const ClipboardHistoryItem& item) {
-  DCHECK_EQ(item.display_format(),
-            chromeos::clipboard_history::DisplayFormat::kFile);
-  const int copied_files_count = GetCountOfCopiedFiles(item.data());
-  if (copied_files_count == 0)
-    return ui::ImageModel();
+bool IsEnabledByPolicy() {
+  if (!ash::features::IsClipboardHistoryPolicyEnabled()) {
+    return true;
+  }
 
-  constexpr std::array<const gfx::VectorIcon*, 9> icons = {
+  if (auto* prefs =
+          Shell::Get()->session_controller()->GetPrimaryUserPrefService()) {
+    if (prefs->FindPreference(prefs::kClipboardHistoryEnabled)) {
+      return prefs->GetInteger(prefs::kClipboardHistoryEnabled) ==
+             static_cast<int>(PolicyValue::kEnabled);
+    }
+  }
+
+  return true;
+}
+
+ui::ImageModel GetIconForItemCount(size_t count) {
+  CHECK_GT(count, 1u);
+  constexpr std::array<const gfx::VectorIcon*, 9> kIcons = {
       &kTwoFilesIcon,   &kThreeFilesIcon, &kFourFilesIcon,
       &kFiveFilesIcon,  &kSixFilesIcon,   &kSevenFilesIcon,
       &kEightFilesIcon, &kNineFilesIcon,  &kMoreThanNineFilesIcon};
-  int icon_index = std::min(copied_files_count - 2, (int)icons.size() - 1);
-
-  const auto* vector_icon = copied_files_count == 1
-                                ? &chromeos::GetIconForPath(base::FilePath(
-                                      base::UTF16ToUTF8(item.display_text())))
-                                : icons[icon_index];
-  return ui::ImageModel::FromVectorIcon(*vector_icon, ui::kColorSysSecondary);
+  return ui::ImageModel::FromVectorIcon(
+      *kIcons[std::min(count - 2, kIcons.size() - 1)], ui::kColorSysSecondary);
 }
 
 ui::ImageModel GetHtmlPreviewPlaceholder() {

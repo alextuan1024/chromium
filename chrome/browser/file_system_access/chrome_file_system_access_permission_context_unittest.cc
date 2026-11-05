@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/base_paths.h"
 #include "base/files/file_path.h"
@@ -13,10 +14,12 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/values_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/strcat.h"
 #include "base/task/current_thread.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_path_override.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/test_file_util.h"
@@ -45,6 +48,8 @@
 #include "components/permissions/permission_util.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/fullscreen_types.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/site_instance.h"
@@ -52,10 +57,12 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/browser_task_environment.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/webui/webui_allowlist.h"
 #include "url/gurl.h"
@@ -79,13 +86,21 @@
 // conditional statements in BUILD.gn files that import this file. See
 // "gn help nogncheck" for more information.
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"  // nogncheck
-#include "chrome/browser/enterprise/connectors/test/fake_content_analysis_delegate.h"
+#include "chrome/browser/enterprise/connectors/test/fake_content_analysis_delegate.h"  // nogncheck
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "storage/browser/file_system/external_mount_points.h"
 #endif
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "components/safe_browsing/content/common/file_type_policies_test_util.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies_test_util.h"
+#endif
+
+#if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
+#include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
+#include "chrome/browser/safe_browsing/services_delegate.h"
+#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
+#include "chrome/test/base/testing_browser_process.h"
+#include "content/public/browser/file_system_access_write_item.h"
 #endif
 
 using content::BrowserContext;
@@ -332,8 +347,10 @@ class ChromeFileSystemAccessPermissionContextTest : public testing::Test {
 
     web_contents_ = content::WebContentsTester::CreateTestWebContents(
         profile_.get(), nullptr);
-    FileSystemAccessPermissionRequestManager::CreateForWebContents(
-        web_contents());
+    tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(), &tab_);
+    ON_CALL(tab_, GetContents()).WillByDefault(testing::Return(web_contents()));
+    permission_request_manager_ =
+        std::make_unique<FileSystemAccessPermissionRequestManager>(tab_);
     content::WebContentsTester::For(web_contents())
         ->NavigateAndCommit(kTestOrigin.GetURL());
 
@@ -354,6 +371,7 @@ class ChromeFileSystemAccessPermissionContextTest : public testing::Test {
 #endif
     task_environment_.RunUntilIdle();
     ASSERT_TRUE(temp_dir_.Delete());
+    permission_request_manager_.reset();
     web_contents_.reset();
   }
 
@@ -549,6 +567,9 @@ class ChromeFileSystemAccessPermissionContextTest : public testing::Test {
   content::RenderViewHostTestEnabler render_view_host_test_enabler_;
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<WebContents> web_contents_;
+  tabs::MockTabInterface tab_;
+  std::unique_ptr<FileSystemAccessPermissionRequestManager>
+      permission_request_manager_;
   // `permission_context_` must be declared after `profile_` (and
   // `web_contents_`) so that it is destroyed BEFORE them. The base class
   // `ObjectPermissionContextBase` holds a raw pointer to
@@ -725,9 +746,54 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
         // BUILDFLAG(IS_ANDROID)
 }
 
-// TODO(crbug.com/432011571): Flaky test.
+// ~/.cache should be blocked on all platforms even when base::DIR_CACHE points
+// elsewhere (macOS NSCachesDirectory, custom $XDG_CACHE_HOME on Linux/ChromeOS,
+// Android app cache) or does not exist (Windows).
 TEST_F(ChromeFileSystemAccessPermissionContextTest,
-       DISABLED_ConfirmSensitiveEntryAccess_BlockChildrenNested) {
+       ConfirmSensitiveEntryAccess_HomeCacheBlockedOnAllPlatforms) {
+  base::FilePath home_dir = temp_dir_.GetPath().AppendASCII("home");
+  ScopedHomeDirOverride home_override = OverrideHomeDir(home_dir);
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+  base::FilePath xdg_cache_dir = temp_dir_.GetPath().AppendASCII("xdg_cache");
+  base::ScopedPathOverride cache_override(base::DIR_CACHE, xdg_cache_dir, true,
+                                          true);
+#endif
+  ResetBlockPath();
+
+  base::FilePath home_cache_dir = home_dir.AppendASCII(".cache");
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(home_cache_dir),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(home_cache_dir),
+                HandleType::kDirectory, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(home_cache_dir.AppendASCII("pre-commit")),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(home_cache_dir.AppendASCII("pre-commit")
+                             .AppendASCII("sitecustomize.py")),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+  // Custom $XDG_CACHE_HOME / Android cache directory remains blocked too.
+  EXPECT_TRUE(IsOpenAbort(xdg_cache_dir, HandleType::kDirectory));
+  EXPECT_TRUE(IsOpenAbort(xdg_cache_dir.AppendASCII("foo"), HandleType::kFile));
+#endif
+
+  // Sibling directories inside DIR_HOME remain allowed.
+  EXPECT_TRUE(
+      IsOpenAllowed(home_dir.AppendASCII("allowed"), HandleType::kDirectory));
+}
+
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ConfirmSensitiveEntryAccess_BlockChildrenNested) {
   base::FilePath user_data_dir = temp_dir_.GetPath().AppendASCII("user");
   base::ScopedPathOverride user_data_override(chrome::DIR_USER_DATA,
                                               user_data_dir, true, true);
@@ -842,11 +908,398 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
       SensitiveDirectoryResult::kAbort);
 }
 
+// Tests that Vim startup directories and files under `base::DIR_HOME` are
+// blocked across access triggers, while unrelated children of `base::DIR_HOME`
+// remain allowed.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ConfirmSensitiveEntryAccess_VimStartupPathsBlocked) {
+  base::FilePath home_dir = temp_dir_.GetPath().AppendASCII("home");
+  ScopedHomeDirOverride home_override = OverrideHomeDir(home_dir);
+
+  for (const char* dir_name : {".vim", "vimfiles"}) {
+    base::FilePath vim_dir = home_dir.AppendASCII(dir_name);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(vim_dir),
+                  HandleType::kDirectory, AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(vim_dir),
+                  HandleType::kDirectory, AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(vim_dir),
+                  HandleType::kDirectory, AccessTrigger::kDragAndDrop),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(vim_dir),
+                  HandleType::kDirectory, AccessTrigger::kProgrammaticRead),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(vim_dir),
+                  HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAbort);
+
+    // Descendants such as vimrc, gvimrc, and plugin scripts inside ~/.vim or
+    // ~/vimfiles must also be blocked across read and write triggers.
+    for (const base::FilePath& child_file :
+         {vim_dir.AppendASCII("vimrc"), vim_dir.AppendASCII("gvimrc"),
+          vim_dir.AppendASCII("plugin").AppendASCII("init.vim")}) {
+      EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                    permission_context(), PathInfo(child_file),
+                    HandleType::kFile, AccessTrigger::kOpen),
+                SensitiveDirectoryResult::kAbort);
+      EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                    permission_context(), PathInfo(child_file),
+                    HandleType::kFile, AccessTrigger::kSave),
+                SensitiveDirectoryResult::kAbort);
+      EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                    permission_context(), PathInfo(child_file),
+                    HandleType::kFile, AccessTrigger::kProgrammaticRead),
+                SensitiveDirectoryResult::kAbort);
+      EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                    permission_context(), PathInfo(child_file),
+                    HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+                SensitiveDirectoryResult::kAbort);
+    }
+  }
+
+  // Top-level Vim startup files in `base::DIR_HOME` must be blocked across
+  // triggers.
+  for (const char* file_name :
+       {".vimrc", "_vimrc", ".gvimrc", "_gvimrc", ".exrc", "_exrc"}) {
+    base::FilePath startup_file = home_dir.AppendASCII(file_name);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(startup_file),
+                  HandleType::kFile, AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(startup_file),
+                  HandleType::kFile, AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(startup_file),
+                  HandleType::kFile, AccessTrigger::kProgrammaticRead),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(startup_file),
+                  HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAbort);
+  }
+
+  // Unrelated children of `base::DIR_HOME` remain allowed.
+  base::FilePath project_dir = home_dir.AppendASCII("project");
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(project_dir),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(project_dir),
+                HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(project_dir.AppendASCII("notes.txt")),
+          HandleType::kFile, AccessTrigger::kSave),
+      SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(project_dir.AppendASCII("vimrc")),
+          HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+      SensitiveDirectoryResult::kAllowed);
+}
+
+// Tests that sensitive-path blocklist matching handles case-variant file and
+// directory names (e.g., `_VIMRC` or `VIMFILES` on case-insensitive
+// filesystems).
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ConfirmSensitiveEntryAccess_CaseInsensitivePathBlock) {
+  base::FilePath parent_dir = temp_dir_.GetPath().AppendASCII("parent");
+  base::FilePath home_dir = parent_dir.AppendASCII("home");
+  ScopedHomeDirOverride home_override =
+      OverrideHomeDir(home_dir, /*should_skip_check=*/true);
+
+  // Case-variant top-level Vim startup files under `base::DIR_HOME` must be
+  // blocked across triggers.
+  base::FilePath upper_vimrc = home_dir.AppendASCII("_VIMRC");
+  for (AccessTrigger trigger :
+       {AccessTrigger::kOpen, AccessTrigger::kSave,
+        AccessTrigger::kProgrammaticRead, AccessTrigger::kProgrammaticWrite}) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(upper_vimrc),
+                  HandleType::kFile, trigger),
+              SensitiveDirectoryResult::kAbort);
+  }
+  for (const char* file_name : {"_Vimrc", "_GVIMRC", "_EXRC"}) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(),
+                  PathInfo(home_dir.AppendASCII(file_name)), HandleType::kFile,
+                  AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAbort);
+  }
+
+  // Case-variant blocked directories under `base::DIR_HOME` and their
+  // descendants must also be blocked.
+  for (const char* dir_name : {"VIMFILES", "VimFiles"}) {
+    base::FilePath blocked_dir = home_dir.AppendASCII(dir_name);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(blocked_dir),
+                  HandleType::kDirectory, AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(
+        ConfirmSensitiveEntryAccessSync(
+            permission_context(),
+            PathInfo(blocked_dir.AppendASCII("plugin").AppendASCII("init.vim")),
+            HandleType::kFile, AccessTrigger::kSave),
+        SensitiveDirectoryResult::kAbort);
+  }
+
+  // A strict parent of a blocked path accessed with different casing must
+  // also be blocked.
+  base::FilePath upper_parent_dir = temp_dir_.GetPath().AppendASCII("PARENT");
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(upper_parent_dir),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAbort);
+
+  // Case-variant `base::DIR_HOME` ancestor components must preserve
+  // `kDontBlockChildren` on `base::DIR_HOME`, `kBlockAllChildren` on its
+  // blocked children/dotfiles, and `kBlockWrite` on nested suffix rules.
+  base::FilePath upper_home_dir = parent_dir.AppendASCII("HOME");
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(upper_home_dir),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(upper_home_dir.AppendASCII("_vimrc")),
+          HandleType::kFile, AccessTrigger::kSave),
+      SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(upper_home_dir.AppendASCII(".claude").AppendASCII(
+                    "settings.json")),
+                HandleType::kFile, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  base::FilePath git_hook_in_upper_home =
+      upper_home_dir.AppendASCII("project")
+          .AppendASCII(".git")
+          .AppendASCII("hooks")
+          .AppendASCII("pre-commit");
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(git_hook_in_upper_home),
+                HandleType::kFile, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(git_hook_in_upper_home),
+                HandleType::kFile, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(upper_home_dir.AppendASCII("project").AppendASCII(
+                    "notes.txt")),
+                HandleType::kFile, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAllowed);
+}
+
+// Tests that hidden dot-files and dot-directories directly under
+// `base::DIR_HOME` (and their descendants) are blocked across access triggers,
+// while dotfiles inside non-dot subdirectories of `base::DIR_HOME` remain
+// allowed.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ConfirmSensitiveEntryAccess_HomeDotFilesBlocked) {
+  base::FilePath home_dir = temp_dir_.GetPath().AppendASCII("home");
+  ScopedHomeDirOverride home_override = OverrideHomeDir(home_dir);
+
+  // Hidden dot-directories under `base::DIR_HOME` (including AI coding agent
+  // config directories and unlisted dot-directories) and their descendants must
+  // be blocked across all triggers.
+  for (const char* dir_name :
+       {".aws", ".cargo", ".claude", ".codeium", ".codex", ".continue",
+        ".copilot", ".cursor", ".emacs.d", ".gemini", ".kube", ".local"}) {
+    base::FilePath dot_dir = home_dir.AppendASCII(dir_name);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dot_dir),
+                  HandleType::kDirectory, AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dot_dir),
+                  HandleType::kDirectory, AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dot_dir),
+                  HandleType::kDirectory, AccessTrigger::kDragAndDrop),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dot_dir),
+                  HandleType::kDirectory, AccessTrigger::kProgrammaticRead),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dot_dir),
+                  HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAbort);
+
+    base::FilePath nested_file =
+        dot_dir.AppendASCII("subdir").AppendASCII("settings.json");
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(nested_file),
+                  HandleType::kFile, AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(nested_file),
+                  HandleType::kFile, AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(nested_file),
+                  HandleType::kFile, AccessTrigger::kProgrammaticRead),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(nested_file),
+                  HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAbort);
+  }
+
+  // Hidden dot-files directly under `base::DIR_HOME` must be blocked.
+  for (const char* file_name :
+       {".aider.conf.yml", ".claude.json", ".emacs", ".gdbinit", ".lldbinit",
+        ".netrc", ".tmux.conf"}) {
+    base::FilePath dot_file = home_dir.AppendASCII(file_name);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dot_file), HandleType::kFile,
+                  AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dot_file), HandleType::kFile,
+                  AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dot_file), HandleType::kFile,
+                  AccessTrigger::kProgrammaticRead),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dot_file), HandleType::kFile,
+                  AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAbort);
+  }
+
+  // Non-dot subdirectories under `base::DIR_HOME` and project-level dotfiles
+  // inside them remain allowed.
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(home_dir.AppendASCII("notes.txt")),
+          HandleType::kFile, AccessTrigger::kOpen),
+      SensitiveDirectoryResult::kAllowed);
+  base::FilePath project_dir = home_dir.AppendASCII("project");
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(project_dir),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  for (const char* project_dotfile :
+       {".clang-format", ".eslintrc.json", ".gitignore"}) {
+    base::FilePath file_path = project_dir.AppendASCII(project_dotfile);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(file_path), HandleType::kFile,
+                  AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAllowed);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(file_path), HandleType::kFile,
+                  AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAllowed);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(file_path), HandleType::kFile,
+                  AccessTrigger::kProgrammaticRead),
+              SensitiveDirectoryResult::kAllowed);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(file_path), HandleType::kFile,
+                  AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAllowed);
+  }
+  base::FilePath project_dot_dir = project_dir.AppendASCII(".claude");
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(project_dot_dir),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(project_dot_dir.AppendASCII("settings.json")),
+                HandleType::kFile, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAllowed);
+}
+
+// Tests that disabling `features::kFileSystemAccessBlockHomeDotFiles` falls
+// back to the explicit `kBlockPaths` rules under `base::DIR_HOME`.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ConfirmSensitiveEntryAccess_HomeDotFilesFeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kFileSystemAccessBlockHomeDotFiles);
+
+  base::FilePath home_dir = temp_dir_.GetPath().AppendASCII("home");
+  ScopedHomeDirOverride home_override = OverrideHomeDir(home_dir);
+
+  // Explicitly blocklisted paths under `base::DIR_HOME` remain blocked,
+  // including case-variant names and descendants.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(home_dir.AppendASCII(".ssh")),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(home_dir.AppendASCII(".SSH").AppendASCII("id_rsa")),
+                HandleType::kFile, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(home_dir.AppendASCII(".bashrc")),
+                HandleType::kFile, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(home_dir.AppendASCII(".BASHRC")),
+                HandleType::kFile, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(home_dir.AppendASCII(".vim")),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(home_dir.AppendASCII(".VIMRC")),
+                HandleType::kFile, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(home_dir.AppendASCII(".fontconfig")),
+          HandleType::kDirectory, AccessTrigger::kOpen),
+      SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(home_dir.AppendASCII(".fonts")),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAbort);
+#endif
+
+  // Unlisted dot-entries under `base::DIR_HOME` are allowed when the feature is
+  // disabled.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(home_dir.AppendASCII(".unlisted_dotfile")),
+                HandleType::kFile, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(home_dir.AppendASCII(".unlisted_dotdir")),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(),
+          PathInfo(
+              home_dir.AppendASCII(".unlisted_dotdir").AppendASCII("file.txt")),
+          HandleType::kFile, AccessTrigger::kOpen),
+      SensitiveDirectoryResult::kAllowed);
+}
+
 TEST_F(ChromeFileSystemAccessPermissionContextTest,
        ConfirmSensitiveEntryAccess_ExplicitPathBlock) {
-// Linux is the only OS where we have some blocked directories with explicit
-// paths (as opposed to PathService provided paths).
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID) || \
+    BUILDFLAG(IS_MAC)
   // /dev should be blocked.
   EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
                 permission_context(), PathInfo(FILE_PATH_LITERAL("/dev")),
@@ -870,6 +1323,29 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
                 permission_context(), PathInfo(FILE_PATH_LITERAL("/dev")),
                 HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
             SensitiveDirectoryResult::kAbort);
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+  // /run and its children should be blocked across access triggers.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(FILE_PATH_LITERAL("/run")),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(FILE_PATH_LITERAL("/run/user/1000")),
+          HandleType::kDirectory, AccessTrigger::kOpen),
+      SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(FILE_PATH_LITERAL("/run/user/1000")),
+          HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+      SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(temp_dir_.GetPath().AppendASCII("run")),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
+        // BUILDFLAG(IS_ANDROID)
 #elif BUILDFLAG(IS_WIN)
   EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
                 permission_context(),
@@ -1401,6 +1877,58 @@ TEST_F(ChromeFileSystemAccessPermissionContextNoSymbolicLinkCheckTest,
       SensitiveDirectoryResult::kAbort);
 }
 
+// Verifies that only subfolders of a WSL home directory are allowed, except its
+// dot entries and bin, see crbug.com/573422635.
+TEST_F(ChromeFileSystemAccessPermissionContextNoSymbolicLinkCheckTest,
+       ConfirmSensitiveEntryAccess_WSL_HomeSubfolders) {
+  static constexpr const base::FilePath::CharType* kAllowedPaths[] = {
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\user\\projects"),
+      FILE_PATH_LITERAL("\\\\WSL.LOCALHOST\\Ubuntu\\home\\user\\src\\app"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\user\\src\\.vscode"),
+      FILE_PATH_LITERAL(
+          "\\\\wsl.localhost\\Ubuntu\\home\\user\\src\\.git\\hooks"),
+      FILE_PATH_LITERAL("//wsl.localhost/Ubuntu/home/user/projects"),
+  };
+  static constexpr const base::FilePath::CharType* kBlockedPaths[] = {
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\user\\.config\\app"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\user\\bin"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\mnt\\c\\Users\\user\\src"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\root\\projects"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\HOME\\user\\projects"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\.\\home\\user\\projects"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\.\\user"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\ \\user"),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\user\\."),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\user\\ ."),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\user\\ "),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\user\\projects."),
+      FILE_PATH_LITERAL("\\\\wsl.localhost\\Ubuntu\\home\\user\\a\\..\\.ssh"),
+      FILE_PATH_LITERAL("\\\\wsl$\\Ubuntu\\home\\user\\projects"),
+  };
+  for (const auto* path : kAllowedPaths) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(path), HandleType::kDirectory,
+                  AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAllowed)
+        << path;
+  }
+  for (const auto* path : kBlockedPaths) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(path), HandleType::kDirectory,
+                  AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAbort)
+        << path;
+  }
+  // The regular rules still apply, such as the write block on .git/hooks.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(FILE_PATH_LITERAL(
+                    "\\\\wsl.localhost\\Ubuntu\\home\\user\\src\\.git\\hooks")),
+                HandleType::kDirectory, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+}
+
 // Verifies that legitimate remote UNC shares remain allowed.
 TEST_F(ChromeFileSystemAccessPermissionContextNoSymbolicLinkCheckTest,
        ConfirmSensitiveEntryAccess_RemoteUNC_Allowed) {
@@ -1421,9 +1949,105 @@ TEST_F(ChromeFileSystemAccessPermissionContextNoSymbolicLinkCheckTest,
             SensitiveDirectoryResult::kAllowed);
 }
 
+// Verifies that hypervisor host-share UNC paths (Parallels, VMware, VirtualBox)
+// are blocked by `MaybeIsLocalUNCPath()`.
+TEST_F(ChromeFileSystemAccessPermissionContextNoSymbolicLinkCheckTest,
+       ConfirmSensitiveEntryAccess_HypervisorHostShareUNC) {
+  static constexpr const base::FilePath::CharType* kBlockedPaths[] = {
+      FILE_PATH_LITERAL("\\\\Mac\\Home"),
+      FILE_PATH_LITERAL("\\\\MAC\\home"),
+      FILE_PATH_LITERAL("\\\\Mac.\\Home"),
+      FILE_PATH_LITERAL("\\\\Mac\\AllFiles"),
+      FILE_PATH_LITERAL("\\\\Mac\\Home\\.ssh\\id_rsa"),
+      FILE_PATH_LITERAL("\\\\Mac\\Home\\.zshenv"),
+      FILE_PATH_LITERAL("\\\\psf\\Home"),
+      FILE_PATH_LITERAL("\\\\psf.\\Home"),
+      FILE_PATH_LITERAL("\\\\vmware-host\\Shared Folders"),
+      FILE_PATH_LITERAL("\\\\vmware-host.\\Shared Folders"),
+      FILE_PATH_LITERAL("\\\\.host\\Shared Folders"),
+      FILE_PATH_LITERAL("\\\\.host.\\Shared Folders"),
+      FILE_PATH_LITERAL("\\\\vboxsvr\\share"),
+      FILE_PATH_LITERAL("\\\\vboxsvr.\\share"),
+      FILE_PATH_LITERAL("\\\\vboxsrv\\share"),
+  };
+  for (const auto* path : kBlockedPaths) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(path), HandleType::kDirectory,
+                  AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAbort)
+        << "Expected blocked path: " << path;
+  }
+}
+
+// Verifies that remote-desktop client-drive UNC paths (RDP/Horizon `\\tsclient`
+// and Citrix HDX `\\Client`) are blocked across handle types and triggers,
+// while multi-label remote FQDNs remain allowed.
+TEST_F(ChromeFileSystemAccessPermissionContextNoSymbolicLinkCheckTest,
+       ConfirmSensitiveEntryAccess_RemoteDesktopClientUNC) {
+  static constexpr const base::FilePath::CharType* kBlockedDirPaths[] = {
+      FILE_PATH_LITERAL("\\\\tsclient"),
+      FILE_PATH_LITERAL("\\\\tsclient\\C\\Users\\user"),
+      FILE_PATH_LITERAL("\\\\TSCLIENT\\C\\Users\\user"),
+      FILE_PATH_LITERAL("\\\\TsClient\\home\\user"),
+      FILE_PATH_LITERAL("\\\\tsclient.\\C\\Users\\user"),
+      FILE_PATH_LITERAL("//tsclient/home/user/.ssh"),
+      FILE_PATH_LITERAL("\\\\Client"),
+      FILE_PATH_LITERAL("\\\\Client\\C\\Users\\user"),
+      FILE_PATH_LITERAL("\\\\client\\home\\user"),
+      FILE_PATH_LITERAL("\\\\CLIENT\\C\\Users\\user"),
+      FILE_PATH_LITERAL("\\\\Client.\\C\\Users\\user"),
+      FILE_PATH_LITERAL("\\\\client.\\home\\user"),
+      FILE_PATH_LITERAL("//Client/C/Users/user/.ssh"),
+  };
+  for (const auto* path : kBlockedDirPaths) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(path), HandleType::kDirectory,
+                  AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAbort)
+        << "Expected blocked directory path: " << path;
+  }
+
+  static constexpr const base::FilePath::CharType* kBlockedFilePaths[] = {
+      FILE_PATH_LITERAL("\\\\tsclient\\C\\Users\\user\\.ssh\\id_rsa"),
+      FILE_PATH_LITERAL("\\\\tsclient\\home\\user\\.bashrc"),
+      FILE_PATH_LITERAL("\\\\TSCLIENT.\\home\\user\\.bashrc"),
+      FILE_PATH_LITERAL("//tsclient/home/user/.bashrc"),
+      FILE_PATH_LITERAL("\\\\Client\\C\\Users\\user\\.ssh\\id_rsa"),
+      FILE_PATH_LITERAL("\\\\client\\home\\user\\.bashrc"),
+      FILE_PATH_LITERAL("\\\\Client.\\home\\user\\.bashrc"),
+  };
+  for (const auto* path : kBlockedFilePaths) {
+    for (AccessTrigger trigger : {AccessTrigger::kOpen, AccessTrigger::kSave,
+                                  AccessTrigger::kProgrammaticRead,
+                                  AccessTrigger::kProgrammaticWrite}) {
+      EXPECT_EQ(
+          ConfirmSensitiveEntryAccessSync(permission_context(), PathInfo(path),
+                                          HandleType::kFile, trigger),
+          SensitiveDirectoryResult::kAbort)
+          << "Expected blocked file path: " << path;
+    }
+  }
+
+  // Multi-label FQDNs and distinct server names must remain allowed.
+  static constexpr const base::FilePath::CharType* kAllowedPaths[] = {
+      FILE_PATH_LITERAL("\\\\client.corp.domain.com\\share\\foo"),
+      FILE_PATH_LITERAL("\\\\tsclient.corp.domain.com\\share\\foo"),
+      FILE_PATH_LITERAL("\\\\tsclient-prod\\share\\foo"),
+      FILE_PATH_LITERAL("\\\\myclient\\share\\foo"),
+  };
+  for (const auto* path : kAllowedPaths) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(path), HandleType::kDirectory,
+                  AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAllowed)
+        << "Expected allowed remote UNC path: " << path;
+  }
+}
+
 #endif  // BUILDFLAG(IS_WIN)
 
-// Testing that the */.git/hooks are all blocked.
+// Testing that writes to */.git and non-allowlisted descendants are blocked,
+// while reads stay allowed.
 TEST_F(ChromeFileSystemAccessPermissionContextTest,
        ConfirmSensitiveEntryAccess_SuffixWriteBlock) {
 #if defined(FILE_PATH_USES_DRIVE_LETTERS)
@@ -1432,11 +2056,40 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
   base::FilePath root(FILE_PATH_LITERAL("/"));
 #endif
   // Parent folder is not blocked.
-  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
-                permission_context(),
-                PathInfo(root.Append(FILE_PATH_LITERAL(".git"))),
-                HandleType::kDirectory, AccessTrigger::kSave),
-            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(root.Append(FILE_PATH_LITERAL("a"))),
+          HandleType::kDirectory, AccessTrigger::kSave),
+      SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(root.Append(FILE_PATH_LITERAL("a"))),
+          HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+      SensitiveDirectoryResult::kAllowed);
+  // .git itself (as a directory or file) is blocked for save and programmatic
+  // write, and allowed for open and programmatic read.
+  for (HandleType handle_type : {HandleType::kDirectory, HandleType::kFile}) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(),
+                  PathInfo(root.Append(FILE_PATH_LITERAL(".git"))), handle_type,
+                  AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(),
+                  PathInfo(root.Append(FILE_PATH_LITERAL(".git"))), handle_type,
+                  AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(),
+                  PathInfo(root.Append(FILE_PATH_LITERAL(".git"))), handle_type,
+                  AccessTrigger::kOpen),
+              SensitiveDirectoryResult::kAllowed);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(),
+                  PathInfo(root.Append(FILE_PATH_LITERAL(".git"))), handle_type,
+                  AccessTrigger::kProgrammaticRead),
+              SensitiveDirectoryResult::kAllowed);
+  }
   // .git/hooks is blocked for save.
   EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
                 permission_context(),
@@ -1530,7 +2183,20 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
                              .Append(FILE_PATH_LITERAL("b"))),
                 HandleType::kDirectory, AccessTrigger::kProgrammaticRead),
             SensitiveDirectoryResult::kAllowed);
-  // Case variations of .git/hooks are blocked for save and programmatic write.
+  // Case variations of .git and .git/hooks are blocked for save and
+  // programmatic write.
+  for (HandleType handle_type : {HandleType::kDirectory, HandleType::kFile}) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(),
+                  PathInfo(root.Append(FILE_PATH_LITERAL(".GIT"))), handle_type,
+                  AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(),
+                  PathInfo(root.Append(FILE_PATH_LITERAL(".Git"))), handle_type,
+                  AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAbort);
+  }
   EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
                 permission_context(),
                 PathInfo(root.Append(FILE_PATH_LITERAL(".GIT"))
@@ -1571,18 +2237,535 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
                              .Append(FILE_PATH_LITERAL("b"))),
                 HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
             SensitiveDirectoryResult::kAbort);
-  // Other suffix is allowed.
+  // Arbitrary children under .git are also blocked for write.
   EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
                 permission_context(),
                 PathInfo(root.Append(FILE_PATH_LITERAL(".git"))
                              .Append(FILE_PATH_LITERAL("hook"))),
                 HandleType::kDirectory, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(root.Append(FILE_PATH_LITERAL(".git"))
+                             .Append(FILE_PATH_LITERAL("hook"))),
+                HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  // Other suffixes outside .git are allowed.
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(root.Append(FILE_PATH_LITERAL(".gi"))),
+          HandleType::kDirectory, AccessTrigger::kSave),
+      SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(), PathInfo(root.Append(FILE_PATH_LITERAL(".gi"))),
+          HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+      SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(root.Append(FILE_PATH_LITERAL(".github"))),
+                HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
             SensitiveDirectoryResult::kAllowed);
   EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
                 permission_context(),
-                PathInfo(root.Append(FILE_PATH_LITERAL(".git"))
-                             .Append(FILE_PATH_LITERAL("hook"))),
+                PathInfo(root.Append(FILE_PATH_LITERAL("a"))
+                             .Append(FILE_PATH_LITERAL(".gitignore"))),
+                HandleType::kFile, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(root.Append(FILE_PATH_LITERAL("a"))
+                             .Append(FILE_PATH_LITERAL(".gitignore"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAllowed);
+}
+
+// Testing that writes to */.git itself and sensitive/indirection paths under
+// .git (such as config, modules, commondir, worktrees, info, and objects/info)
+// are blocked, while reads and non-.git files stay allowed.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ConfirmSensitiveEntryAccess_GitConfigAndModulesWriteBlock) {
+#if defined(FILE_PATH_USES_DRIVE_LETTERS)
+  base::FilePath root(FILE_PATH_LITERAL("c:\\"));
+#else
+  base::FilePath root(FILE_PATH_LITERAL("/"));
+#endif
+  const base::FilePath git_dir =
+      root.Append(FILE_PATH_LITERAL("a")).Append(FILE_PATH_LITERAL(".git"));
+  const base::FilePath git_config = git_dir.Append(FILE_PATH_LITERAL("config"));
+  const base::FilePath git_modules =
+      git_dir.Append(FILE_PATH_LITERAL("modules"));
+  const base::FilePath submodule_dir =
+      git_modules.Append(FILE_PATH_LITERAL("sub"));
+
+  // .git/config is blocked for save and programmatic write.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(git_config), HandleType::kFile,
+                AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(git_config), HandleType::kFile,
+                AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  // .git/config is not blocked for read.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(git_config), HandleType::kFile,
+                AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(git_config), HandleType::kFile,
+                AccessTrigger::kProgrammaticRead),
+            SensitiveDirectoryResult::kAllowed);
+  // Case variations of .git/config are blocked for programmatic write.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(root.Append(FILE_PATH_LITERAL("a"))
+                             .Append(FILE_PATH_LITERAL(".GIT"))
+                             .Append(FILE_PATH_LITERAL("CONFIG"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  // Other configuration, indirection, and filter metadata under .git (such as
+  // config.bak, config.worktree, commondir, worktrees, info/attributes,
+  // objects/info/alternates, and remotes), as well as other non-allowlisted
+  // repository state (such as description, info/exclude, lfs, and rebase and
+  // sequencer state), are blocked for write and allowed for read, while files
+  // named config outside of .git remain allowed for write.
+  for (const base::FilePath& blocked_file : {
+           git_dir.Append(FILE_PATH_LITERAL("config.bak")),
+           git_dir.Append(FILE_PATH_LITERAL("config.lock")),
+           git_dir.Append(FILE_PATH_LITERAL("config.worktree")),
+           git_dir.Append(FILE_PATH_LITERAL("commondir")),
+           git_dir.Append(FILE_PATH_LITERAL("gitdir")),
+           git_dir.Append(FILE_PATH_LITERAL("worktrees"))
+               .Append(FILE_PATH_LITERAL("wt"))
+               .Append(FILE_PATH_LITERAL("commondir")),
+           git_dir.Append(FILE_PATH_LITERAL("info"))
+               .Append(FILE_PATH_LITERAL("attributes")),
+           git_dir.Append(FILE_PATH_LITERAL("objects"))
+               .Append(FILE_PATH_LITERAL("info"))
+               .Append(FILE_PATH_LITERAL("alternates")),
+           git_dir.Append(FILE_PATH_LITERAL("objects"))
+               .Append(FILE_PATH_LITERAL("."))
+               .Append(FILE_PATH_LITERAL("info"))
+               .Append(FILE_PATH_LITERAL("alternates")),
+           git_dir.Append(FILE_PATH_LITERAL("remotes"))
+               .Append(FILE_PATH_LITERAL("origin")),
+           git_dir.Append(FILE_PATH_LITERAL("description")),
+           git_dir.Append(FILE_PATH_LITERAL("info"))
+               .Append(FILE_PATH_LITERAL("exclude")),
+           git_dir.Append(FILE_PATH_LITERAL("lfs"))
+               .Append(FILE_PATH_LITERAL("objects"))
+               .Append(FILE_PATH_LITERAL("ab"))
+               .Append(FILE_PATH_LITERAL("cd"))
+               .Append(FILE_PATH_LITERAL("abcd1234")),
+           git_dir.Append(FILE_PATH_LITERAL("rebase-merge"))
+               .Append(FILE_PATH_LITERAL("git-rebase-todo")),
+           git_dir.Append(FILE_PATH_LITERAL("sequencer"))
+               .Append(FILE_PATH_LITERAL("todo")),
+       }) {
+    SCOPED_TRACE(blocked_file.value());
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(blocked_file),
+                  HandleType::kFile, AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(blocked_file),
+                  HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAbort);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(blocked_file),
+                  HandleType::kFile, AccessTrigger::kProgrammaticRead),
+              SensitiveDirectoryResult::kAllowed);
+  }
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("objects"))
+                             .Append(FILE_PATH_LITERAL("info"))),
                 HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(root.Append(FILE_PATH_LITERAL("a"))
+                             .Append(FILE_PATH_LITERAL(".GIT"))
+                             .Append(FILE_PATH_LITERAL("OBJECTS"))
+                             .Append(FILE_PATH_LITERAL("INFO"))
+                             .Append(FILE_PATH_LITERAL("alternates"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(root.Append(FILE_PATH_LITERAL("a"))
+                             .Append(FILE_PATH_LITERAL("config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAllowed);
+
+  // .git/modules and everything inside it (including HEAD/refs/objects of a
+  // submodule gitdir) is blocked for save and programmatic write.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(git_modules),
+                HandleType::kDirectory, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(git_modules),
+                HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(submodule_dir.Append(FILE_PATH_LITERAL("hooks"))
+                             .Append(FILE_PATH_LITERAL("pre-commit"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(submodule_dir.Append(FILE_PATH_LITERAL("config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(submodule_dir.Append(FILE_PATH_LITERAL("HEAD"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  // .git/modules is not blocked for read.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(git_modules),
+                HandleType::kDirectory, AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(submodule_dir.Append(FILE_PATH_LITERAL("config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticRead),
+            SensitiveDirectoryResult::kAllowed);
+  // The .git entry itself (as a directory or gitfile pointer, including an
+  // un-normalized trailing `.` component) is blocked for save and programmatic
+  // write, and allowed for open and programmatic read.
+  for (const base::FilePath& target :
+       {git_dir, git_dir.Append(FILE_PATH_LITERAL("."))}) {
+    SCOPED_TRACE(target.value());
+    for (HandleType handle_type : {HandleType::kDirectory, HandleType::kFile}) {
+      EXPECT_EQ(ConfirmSensitiveEntryAccessSync(permission_context(),
+                                                PathInfo(target), handle_type,
+                                                AccessTrigger::kSave),
+                SensitiveDirectoryResult::kAbort);
+      EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                    permission_context(), PathInfo(target), handle_type,
+                    AccessTrigger::kProgrammaticWrite),
+                SensitiveDirectoryResult::kAbort);
+      EXPECT_EQ(ConfirmSensitiveEntryAccessSync(permission_context(),
+                                                PathInfo(target), handle_type,
+                                                AccessTrigger::kOpen),
+                SensitiveDirectoryResult::kAllowed);
+      EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                    permission_context(), PathInfo(target), handle_type,
+                    AccessTrigger::kProgrammaticRead),
+                SensitiveDirectoryResult::kAllowed);
+    }
+  }
+}
+
+// Testing that allowlisted repository data, ref, and index paths under an
+// existing */.git directory remain writable for web-based Git clients, without
+// weakening stricter ancestor rules or nested .git/.mvn blocks.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ConfirmSensitiveEntryAccess_GitSafeDataPathsWriteAllowed) {
+#if defined(FILE_PATH_USES_DRIVE_LETTERS)
+  base::FilePath root(FILE_PATH_LITERAL("c:\\"));
+#else
+  base::FilePath root(FILE_PATH_LITERAL("/"));
+#endif
+  const base::FilePath git_dir =
+      root.Append(FILE_PATH_LITERAL("a")).Append(FILE_PATH_LITERAL(".git"));
+
+  const base::FilePath kAllowedDirs[] = {
+      git_dir.Append(FILE_PATH_LITERAL("objects")),
+      git_dir.Append(FILE_PATH_LITERAL("objects"))
+          .Append(FILE_PATH_LITERAL("ab")),
+      git_dir.Append(FILE_PATH_LITERAL("objects"))
+          .Append(FILE_PATH_LITERAL("pack")),
+      git_dir.Append(FILE_PATH_LITERAL("refs")),
+      git_dir.Append(FILE_PATH_LITERAL("refs"))
+          .Append(FILE_PATH_LITERAL("heads")),
+      git_dir.Append(FILE_PATH_LITERAL("reftable")),
+      git_dir.Append(FILE_PATH_LITERAL("logs")),
+  };
+  for (const base::FilePath& dir : kAllowedDirs) {
+    SCOPED_TRACE(dir.value());
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dir), HandleType::kDirectory,
+                  AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAllowed);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(dir), HandleType::kDirectory,
+                  AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAllowed);
+  }
+
+  const base::FilePath kAllowedFiles[] = {
+      git_dir.Append(FILE_PATH_LITERAL("objects"))
+          .Append(FILE_PATH_LITERAL("ab"))
+          .Append(FILE_PATH_LITERAL("cd1234")),
+      git_dir.Append(FILE_PATH_LITERAL("objects"))
+          .Append(FILE_PATH_LITERAL("pack"))
+          .Append(FILE_PATH_LITERAL("pack-1234.pack")),
+      git_dir.Append(FILE_PATH_LITERAL("refs"))
+          .Append(FILE_PATH_LITERAL("heads"))
+          .Append(FILE_PATH_LITERAL("main")),
+      git_dir.Append(FILE_PATH_LITERAL("refs"))
+          .Append(FILE_PATH_LITERAL("heads"))
+          .Append(FILE_PATH_LITERAL("main.lock")),
+      git_dir.Append(FILE_PATH_LITERAL("reftable"))
+          .Append(FILE_PATH_LITERAL("tables.list")),
+      git_dir.Append(FILE_PATH_LITERAL("logs"))
+          .Append(FILE_PATH_LITERAL("HEAD")),
+      git_dir.Append(FILE_PATH_LITERAL("index")),
+      git_dir.Append(FILE_PATH_LITERAL("index.lock")),
+      git_dir.Append(FILE_PATH_LITERAL("packed-refs")),
+      git_dir.Append(FILE_PATH_LITERAL("packed-refs.lock")),
+      git_dir.Append(FILE_PATH_LITERAL("packed-refs.new")),
+      git_dir.Append(FILE_PATH_LITERAL("shallow")),
+      git_dir.Append(FILE_PATH_LITERAL("shallow.lock")),
+      git_dir.Append(FILE_PATH_LITERAL("HEAD")),
+      git_dir.Append(FILE_PATH_LITERAL("HEAD.lock")),
+      git_dir.Append(FILE_PATH_LITERAL("ORIG_HEAD")),
+      git_dir.Append(FILE_PATH_LITERAL("ORIG_HEAD.lock")),
+      git_dir.Append(FILE_PATH_LITERAL("FETCH_HEAD")),
+      git_dir.Append(FILE_PATH_LITERAL("MERGE_HEAD")),
+      git_dir.Append(FILE_PATH_LITERAL("MERGE_MSG")),
+      git_dir.Append(FILE_PATH_LITERAL("MERGE_MODE")),
+      git_dir.Append(FILE_PATH_LITERAL("CHERRY_PICK_HEAD")),
+      git_dir.Append(FILE_PATH_LITERAL("REVERT_HEAD")),
+      git_dir.Append(FILE_PATH_LITERAL("COMMIT_EDITMSG")),
+      // Case-insensitive suffix matching applies to allowlisted paths too.
+      root.Append(FILE_PATH_LITERAL("a"))
+          .Append(FILE_PATH_LITERAL(".Git"))
+          .Append(FILE_PATH_LITERAL("Refs"))
+          .Append(FILE_PATH_LITERAL("heads"))
+          .Append(FILE_PATH_LITERAL("main")),
+      root.Append(FILE_PATH_LITERAL("a"))
+          .Append(FILE_PATH_LITERAL(".GIT"))
+          .Append(FILE_PATH_LITERAL("HEAD")),
+  };
+  for (const base::FilePath& file : kAllowedFiles) {
+    SCOPED_TRACE(file.value());
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(permission_context(),
+                                              PathInfo(file), HandleType::kFile,
+                                              AccessTrigger::kSave),
+              SensitiveDirectoryResult::kAllowed);
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                  permission_context(), PathInfo(file), HandleType::kFile,
+                  AccessTrigger::kProgrammaticWrite),
+              SensitiveDirectoryResult::kAllowed);
+  }
+
+  // Type mismatches on allowlisted paths (e.g., creating `HEAD` as a directory
+  // or `objects`/`refs` as a regular file) stay blocked for write.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("HEAD"))),
+                HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("HEAD"))
+                             .Append(FILE_PATH_LITERAL("config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("objects"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("refs"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+
+  // Nested .git or .mvn entries inside `.git` (including under `.git/modules`
+  // or `.git/refs`) stay blocked for write.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("modules"))
+                             .Append(FILE_PATH_LITERAL("sub"))
+                             .Append(FILE_PATH_LITERAL(".git"))
+                             .Append(FILE_PATH_LITERAL("HEAD"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("refs"))
+                             .Append(FILE_PATH_LITERAL("evil"))
+                             .Append(FILE_PATH_LITERAL(".git"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("refs"))
+                             .Append(FILE_PATH_LITERAL("evil"))
+                             .Append(FILE_PATH_LITERAL(".git"))
+                             .Append(FILE_PATH_LITERAL("HEAD"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("refs"))
+                             .Append(FILE_PATH_LITERAL("evil"))
+                             .Append(FILE_PATH_LITERAL(".git"))
+                             .Append(FILE_PATH_LITERAL("config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(git_dir.Append(FILE_PATH_LITERAL("refs"))
+                             .Append(FILE_PATH_LITERAL("evil"))
+                             .Append(FILE_PATH_LITERAL(".mvn"))
+                             .Append(FILE_PATH_LITERAL("jvm.config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+
+  // `ShouldBlockAccessToGitPath()` must never unblock paths inside a
+  // `kBlockAllChildren` ancestor (such as `~/.ssh` or `DIR_EXE`).
+  base::FilePath home_dir = temp_dir_.GetPath().AppendASCII("home");
+  ScopedHomeDirOverride home_override = OverrideHomeDir(home_dir);
+  ResetBlockPath();
+
+  const base::FilePath ssh_git_head =
+      home_dir.AppendASCII(".ssh").AppendASCII(".git").AppendASCII("HEAD");
+  for (AccessTrigger trigger :
+       {AccessTrigger::kOpen, AccessTrigger::kSave,
+        AccessTrigger::kProgrammaticRead, AccessTrigger::kProgrammaticWrite}) {
+    EXPECT_EQ(ConfirmSensitiveEntryAccessSync(permission_context(),
+                                              PathInfo(ssh_git_head),
+                                              HandleType::kFile, trigger),
+              SensitiveDirectoryResult::kAbort);
+  }
+}
+
+// Testing that writes to */.mvn and its descendants (such as .mvn/jvm.config)
+// are blocked, while reads and non-.mvn workspace paths stay allowed.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ConfirmSensitiveEntryAccess_MvnWriteBlock) {
+#if defined(FILE_PATH_USES_DRIVE_LETTERS)
+  base::FilePath root(FILE_PATH_LITERAL("c:\\"));
+#else
+  base::FilePath root(FILE_PATH_LITERAL("/"));
+#endif
+  const base::FilePath workspace_dir = root.Append(FILE_PATH_LITERAL("a"));
+  const base::FilePath mvn_dir =
+      workspace_dir.Append(FILE_PATH_LITERAL(".mvn"));
+  const base::FilePath jvm_config =
+      mvn_dir.Append(FILE_PATH_LITERAL("jvm.config"));
+  const base::FilePath maven_config =
+      mvn_dir.Append(FILE_PATH_LITERAL("maven.config"));
+  const base::FilePath extensions_xml =
+      mvn_dir.Append(FILE_PATH_LITERAL("extensions.xml"));
+  const base::FilePath wrapper_dir =
+      mvn_dir.Append(FILE_PATH_LITERAL("wrapper"));
+  const base::FilePath wrapper_props =
+      wrapper_dir.Append(FILE_PATH_LITERAL("maven-wrapper.properties"));
+
+  // .mvn directory is blocked for save and programmatic write, but allowed for
+  // read.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(mvn_dir), HandleType::kDirectory,
+                AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(mvn_dir), HandleType::kDirectory,
+                AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(mvn_dir), HandleType::kDirectory,
+                AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(mvn_dir), HandleType::kDirectory,
+                AccessTrigger::kProgrammaticRead),
+            SensitiveDirectoryResult::kAllowed);
+
+  // .mvn/jvm.config and other files/subdirectories inside .mvn are blocked for
+  // save and programmatic write, but allowed for read.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(jvm_config), HandleType::kFile,
+                AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(jvm_config), HandleType::kFile,
+                AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(jvm_config), HandleType::kFile,
+                AccessTrigger::kOpen),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(jvm_config), HandleType::kFile,
+                AccessTrigger::kProgrammaticRead),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(maven_config), HandleType::kFile,
+                AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(extensions_xml),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(wrapper_dir),
+                HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(wrapper_props),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+
+  // Case variations of .mvn and .mvn/jvm.config are blocked for save and
+  // programmatic write.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(workspace_dir.Append(FILE_PATH_LITERAL(".MVN"))),
+                HandleType::kDirectory, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(workspace_dir.Append(FILE_PATH_LITERAL(".MVN"))
+                             .Append(FILE_PATH_LITERAL("JVM.CONFIG"))),
+                HandleType::kFile, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAbort);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(workspace_dir.Append(FILE_PATH_LITERAL(".Mvn"))
+                             .Append(FILE_PATH_LITERAL("Jvm.Config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAbort);
+
+  // Parent workspace directory, child project files, and files named
+  // jvm.config outside of .mvn remain allowed for save and programmatic write.
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(), PathInfo(workspace_dir),
+                HandleType::kDirectory, AccessTrigger::kSave),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(
+      ConfirmSensitiveEntryAccessSync(
+          permission_context(),
+          PathInfo(workspace_dir.Append(FILE_PATH_LITERAL("child-project"))
+                       .Append(FILE_PATH_LITERAL("pom.xml"))),
+          HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+      SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(workspace_dir.Append(FILE_PATH_LITERAL("jvm.config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(workspace_dir.Append(FILE_PATH_LITERAL(".mvn2"))
+                             .Append(FILE_PATH_LITERAL("jvm.config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
+            SensitiveDirectoryResult::kAllowed);
+  EXPECT_EQ(ConfirmSensitiveEntryAccessSync(
+                permission_context(),
+                PathInfo(workspace_dir.Append(FILE_PATH_LITERAL(".mvn_other"))
+                             .Append(FILE_PATH_LITERAL("jvm.config"))),
+                HandleType::kFile, AccessTrigger::kProgrammaticWrite),
             SensitiveDirectoryResult::kAllowed);
 }
 
@@ -1849,6 +3032,24 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
       {chrome::DIR_USER_DATA, nullptr, true, false},
       {base::DIR_HOME, FILE_PATH_LITERAL(".ssh"), true, false},
       {base::DIR_HOME, FILE_PATH_LITERAL(".gnupg"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".config"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".cache"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".bash_profile"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".bash_login"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".bashrc"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".profile"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".zshenv"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".zprofile"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".zshrc"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".zlogin"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".vim"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL("vimfiles"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".vimrc"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL("_vimrc"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".gvimrc"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL("_gvimrc"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".exrc"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL("_exrc"), true, false},
 
 #if BUILDFLAG(IS_WIN)
       {base::DIR_PROGRAM_FILES, nullptr, true, false},
@@ -1862,6 +3063,7 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
 #endif
 
 #if BUILDFLAG(IS_MAC)
+      {kNoBasePathKey, FILE_PATH_LITERAL("/dev"), true, false},
       {base::DIR_APP_DATA, nullptr, true, false},
       {chrome::DIR_OUTER_BUNDLE, nullptr, true, false},
       {base::DIR_HOME, FILE_PATH_LITERAL("Applications"), true, false},
@@ -1882,13 +3084,19 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
       {kNoBasePathKey, FILE_PATH_LITERAL("/sys"), true, false},
       {kNoBasePathKey, FILE_PATH_LITERAL("/boot"), true, false},
       {kNoBasePathKey, FILE_PATH_LITERAL("/etc"), true, false},
-      {base::DIR_HOME, FILE_PATH_LITERAL(".config"), true, false},
+      {kNoBasePathKey, FILE_PATH_LITERAL("/run"), true, false},
       {base::DIR_HOME, FILE_PATH_LITERAL(".dbus"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".local/share"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".fonts.conf"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".fonts.conf.d"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".fontconfig"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".fonts"), true, false},
+      {base::DIR_HOME, FILE_PATH_LITERAL(".pki"), true, false},
+      {base::DIR_CACHE, nullptr, true, false},
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
       {base::DIR_ANDROID_APP_DATA, nullptr, true, false},
-      {base::DIR_CACHE, nullptr, true, false},
 #endif
   };
 
@@ -3914,6 +5122,159 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
   EXPECT_EQ(future.Get(), PermissionRequestOutcome::kRequestAborted);
   web_contents_->SetDelegate(nullptr);
 }
+
+// Verifies that `RequestPermission()` requested from a cross-origin child
+// iframe evaluates the embedding frame hierarchy and returns
+// `PermissionRequestOutcome::kThirdPartyContext`, even when the grant holds an
+// active `PermissionStatus::GRANTED` status.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       RequestPermission_ThirdPartyIframe_AlreadyGranted_Blocked) {
+  // Navigates the main frame to `kTestOrigin` to obtain an active write grant.
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(kTestOrigin.GetURL());
+  auto grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kSave);
+  ASSERT_EQ(grant->GetStatus(), PermissionStatus::GRANTED);
+
+  // Navigates the top-level main frame to `kTestOrigin2` and embeds
+  // `kTestOrigin` inside a cross-origin child iframe.
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(kTestOrigin2.GetURL());
+  content::RenderFrameHostTester::For(web_contents()->GetPrimaryMainFrame())
+      ->InitializeRenderFrameIfNeeded();
+  content::RenderFrameHost* child_rfh =
+      content::RenderFrameHostTester::For(web_contents()->GetPrimaryMainFrame())
+          ->AppendChild("child_iframe");
+  auto child_simulator = content::NavigationSimulator::CreateRendererInitiated(
+      kTestOrigin.GetURL(), child_rfh);
+  child_simulator->Commit();
+  child_rfh = child_simulator->GetFinalRenderFrameHost();
+
+  ASSERT_EQ(child_rfh->GetLastCommittedOrigin(), kTestOrigin);
+  ASSERT_EQ(child_rfh->GetMainFrame()->GetLastCommittedOrigin(), kTestOrigin2);
+  ASSERT_NE(child_rfh->GetLastCommittedOrigin(),
+            child_rfh->GetMainFrame()->GetLastCommittedOrigin());
+
+  // Simulates user activation and requests permission from the third-party
+  // child frame.
+  content::RenderFrameHostTester::For(child_rfh)->SimulateUserActivation();
+
+  base::test::TestFuture<PermissionRequestOutcome> future;
+  grant->RequestPermission(child_rfh->GetGlobalId(),
+                           UserActivationState::kRequired,
+                           future.GetCallback());
+
+  // In an unfixed state, `PermissionGrantImpl::RequestPermission()` checks
+  // whether `GetActivePermissionStatus()` differs from `PermissionStatus::ASK`
+  // before evaluating whether `embedding_origin` differs from `origin_`.
+  // When the status is already `PermissionStatus::GRANTED`, it early-returns
+  // `PermissionRequestOutcome::kRequestAborted`, bypassing the third-party
+  // block.
+  EXPECT_EQ(future.Get(), PermissionRequestOutcome::kThirdPartyContext);
+}
+
+// Verifies that `RequestPermission()` requested from a cross-origin child
+// iframe evaluates the embedding frame hierarchy and returns
+// `PermissionRequestOutcome::kThirdPartyContext`, even when the origin holds
+// persistent permissions.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       RequestPermission_ThirdPartyIframe_PersistentPermission_Blocked) {
+  // Navigates the top-level main frame to `kTestOrigin2`.
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(kTestOrigin2.GetURL());
+
+  // Creates a cross-origin child iframe and navigates it to `kTestOrigin`.
+  content::RenderFrameHostTester::For(web_contents()->GetPrimaryMainFrame())
+      ->InitializeRenderFrameIfNeeded();
+  content::RenderFrameHost* child_rfh =
+      content::RenderFrameHostTester::For(web_contents()->GetPrimaryMainFrame())
+          ->AppendChild("child_iframe");
+  auto child_simulator = content::NavigationSimulator::CreateRendererInitiated(
+      kTestOrigin.GetURL(), child_rfh);
+  child_simulator->Commit();
+  child_rfh = child_simulator->GetFinalRenderFrameHost();
+
+  ASSERT_EQ(child_rfh->GetLastCommittedOrigin(), kTestOrigin);
+  ASSERT_EQ(child_rfh->GetMainFrame()->GetLastCommittedOrigin(), kTestOrigin2);
+  ASSERT_NE(child_rfh->GetLastCommittedOrigin(),
+            child_rfh->GetMainFrame()->GetLastCommittedOrigin());
+
+  // Configures persistent permissions for `kTestOrigin` and persists write
+  // permission.
+  permission_context()->SetOriginHasExtendedPermissionForTesting(kTestOrigin);
+  permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kSave);
+
+  // Obtains a write grant with `AccessTrigger::kOpen` (simulating
+  // deserialization from IndexedDB).
+  auto grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kOpen);
+
+  // Simulates user activation and requests permission from the third-party
+  // child frame.
+  content::RenderFrameHostTester::For(child_rfh)->SimulateUserActivation();
+
+  base::test::TestFuture<PermissionRequestOutcome> future;
+  grant->RequestPermission(child_rfh->GetGlobalId(),
+                           UserActivationState::kRequired,
+                           future.GetCallback());
+
+  // In an unfixed state, `PermissionGrantImpl::RequestPermission()` evaluates
+  // `CanAutoGrantViaPersistentPermission()` before checking whether
+  // `embedding_origin` differs from `origin_`. It early-returns
+  // `PermissionRequestOutcome::kGrantedByPersistentPermission` and upgrades the
+  // status to `PermissionStatus::GRANTED`, bypassing the third-party block.
+  EXPECT_EQ(future.Get(), PermissionRequestOutcome::kThirdPartyContext);
+}
+
+// Verifies that `RequestPermission()` requested from a nested third-party
+// iframe (A -> B -> A) evaluates the third-party context and returns
+// `PermissionRequestOutcome::kThirdPartyContext`, even when the embedding
+// top-level origin matches the iframe's origin.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       RequestPermission_NestedThirdPartyIframe_Blocked) {
+  // Navigates the top-level main frame to `kTestOrigin`.
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(kTestOrigin.GetURL());
+  content::RenderFrameHostTester::For(web_contents()->GetPrimaryMainFrame())
+      ->InitializeRenderFrameIfNeeded();
+
+  // Appends a child iframe and navigates it to `kTestOrigin2`.
+  content::RenderFrameHost* child_rfh =
+      content::RenderFrameHostTester::For(web_contents()->GetPrimaryMainFrame())
+          ->AppendChild("child_iframe");
+  auto child_simulator = content::NavigationSimulator::CreateRendererInitiated(
+      kTestOrigin2.GetURL(), child_rfh);
+  child_simulator->Commit();
+  child_rfh = child_simulator->GetFinalRenderFrameHost();
+
+  // Appends a grandchild iframe and navigates it to `kTestOrigin`.
+  content::RenderFrameHost* grandchild_rfh =
+      content::RenderFrameHostTester::For(child_rfh)->AppendChild(
+          "grandchild_iframe");
+  auto grandchild_simulator =
+      content::NavigationSimulator::CreateRendererInitiated(
+          kTestOrigin.GetURL(), grandchild_rfh);
+  grandchild_simulator->Commit();
+  grandchild_rfh = grandchild_simulator->GetFinalRenderFrameHost();
+
+  ASSERT_EQ(grandchild_rfh->GetLastCommittedOrigin(), kTestOrigin);
+  ASSERT_EQ(grandchild_rfh->GetMainFrame()->GetLastCommittedOrigin(),
+            kTestOrigin);
+  EXPECT_TRUE(grandchild_rfh->GetStorageKey().IsThirdPartyContext());
+
+  auto grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kOpen);
+
+  // Simulates user activation and requests permission from the nested iframe.
+  content::RenderFrameHostTester::For(grandchild_rfh)->SimulateUserActivation();
+
+  base::test::TestFuture<PermissionRequestOutcome> future;
+  grant->RequestPermission(grandchild_rfh->GetGlobalId(),
+                           UserActivationState::kRequired,
+                           future.GetCallback());
+  EXPECT_EQ(future.Get(), PermissionRequestOutcome::kThirdPartyContext);
+}
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(ChromeFileSystemAccessPermissionContextTest,
@@ -3935,6 +5296,10 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
   EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
       kTestOrigin, kTestPathInfo, HandleType::kFile, GrantType::kWrite));
 
+  // Align the main frame's committed origin with the grant so that the request
+  // is evaluated as a first-party caller.
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(kTestOrigin2.GetURL());
   auto grant2 = permission_context()->GetWritePermissionGrant(
       kTestOrigin2, kTestPathInfo, HandleType::kFile, AccessTrigger::kOpen);
 
@@ -3984,6 +5349,10 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
   EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
       kTestOrigin, kTestPathInfo, HandleType::kFile, GrantType::kWrite));
 
+  // Align the main frame's committed origin with `grant2` so that the request
+  // is evaluated as a first-party caller.
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(kTestOrigin2.GetURL());
   base::test::TestFuture<PermissionRequestOutcome> future2;
   grant2->RequestPermission(frame_id(), UserActivationState::kRequired,
                             future2.GetCallback());
@@ -3998,6 +5367,9 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
   SetContentSettingValueForOrigin(kTestOrigin,
                                   ContentSettingsType::FILE_SYSTEM_WRITE_GUARD,
                                   CONTENT_SETTING_ASK);
+  // Recommit `kTestOrigin` so that the main frame matches `grant`.
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(kTestOrigin.GetURL());
   grant = permission_context()->GetWritePermissionGrant(
       kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kOpen);
   grant2 = permission_context()->GetWritePermissionGrant(
@@ -4011,6 +5383,9 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
   EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
       kTestOrigin, kTestPathInfo, HandleType::kFile, GrantType::kWrite));
 
+  // Recommit `kTestOrigin2` so that the main frame matches `grant2`.
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(kTestOrigin2.GetURL());
   base::test::TestFuture<PermissionRequestOutcome> future4;
   grant2->RequestPermission(frame_id(), UserActivationState::kRequired,
                             future4.GetCallback());
@@ -4761,6 +6136,347 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
   EXPECT_EQ(old_file2_write_grant->GetStatus(), PermissionStatus::ASK);
 }
 
+// An overwrite must revoke every spelling of the destination, not just the
+// spelling passed to move(). A revoked source must not regain read permission.
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       NotifyEntryMoved_RevokesCaseAliases) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kFileSystemAccessMoveWithOverwrite,
+       features::kFileSystemAccessPersistentPermissions,
+       blink::features::kFileSystemAccessRevokeReadOnRemove},
+      {});
+  permission_context()->SetOriginHasExtendedPermissionForTesting(kTestOrigin);
+  const PathInfo source(kTestPathInfo.path.AppendASCII("source.txt"));
+  const PathInfo destination(kTestPathInfo.path.AppendASCII("DECOY.TXT"));
+  const PathInfo lower(kTestPathInfo.path.AppendASCII("decoy.txt"));
+  const PathInfo mixed(kTestPathInfo.path.AppendASCII("Decoy.txt"));
+  const PathInfo unrelated(kTestPathInfo.path.AppendASCII("decoy.txt.other"));
+  auto source_read = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, source, HandleType::kFile, AccessTrigger::kSave);
+  auto source_write = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, source, HandleType::kFile, AccessTrigger::kSave);
+  permission_context()->NotifyEntryRemoved(kTestOrigin, source);
+  ASSERT_EQ(source_read->GetStatus(), PermissionStatus::DENIED);
+  ASSERT_EQ(source_write->GetStatus(), PermissionStatus::GRANTED);
+
+  std::vector<scoped_refptr<content::FileSystemAccessPermissionGrant>> aliases;
+  for (const auto& path : {destination, lower, mixed}) {
+    aliases.push_back(permission_context()->GetReadPermissionGrant(
+        kTestOrigin, path, HandleType::kFile, AccessTrigger::kSave));
+    aliases.push_back(permission_context()->GetWritePermissionGrant(
+        kTestOrigin, path, HandleType::kFile, AccessTrigger::kSave));
+  }
+  for (const auto& grant : aliases) {
+    ASSERT_EQ(grant->GetStatus(), PermissionStatus::GRANTED);
+  }
+  auto unrelated_read = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, unrelated, HandleType::kFile, AccessTrigger::kSave);
+  auto unrelated_write = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, unrelated, HandleType::kFile, AccessTrigger::kSave);
+
+  permission_context()->NotifyEntryMoved(kTestOrigin, source, destination);
+
+  for (const auto& grant : aliases) {
+    EXPECT_EQ(grant->GetStatus(), PermissionStatus::DENIED);
+  }
+  EXPECT_EQ(source_read->GetPath(), destination.path);
+  EXPECT_EQ(source_read->GetStatus(), PermissionStatus::DENIED);
+  EXPECT_EQ(source_write->GetPath(), destination.path);
+  EXPECT_EQ(source_write->GetStatus(), PermissionStatus::GRANTED);
+  EXPECT_EQ(unrelated_read->GetStatus(), PermissionStatus::GRANTED);
+  EXPECT_EQ(unrelated_write->GetStatus(), PermissionStatus::GRANTED);
+  for (const auto& path : {lower, mixed}) {
+    for (auto type : {GrantType::kRead, GrantType::kWrite}) {
+      EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
+          kTestOrigin, path, HandleType::kFile, type));
+    }
+  }
+  EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
+      kTestOrigin, destination, HandleType::kFile, GrantType::kRead));
+  EXPECT_TRUE(permission_context()->HasExtendedPermissionForTesting(
+      kTestOrigin, destination, HandleType::kFile, GrantType::kWrite));
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+// Overwriting an entry must discard its restoration bookkeeping and retain
+// only the source entry's read state.
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       NotifyEntryMoved_ClearsDowngradedDestinationAliases) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kFileSystemAccessMoveWithOverwrite,
+       features::kFileSystemAccessPersistentPermissions,
+       blink::features::kFileSystemAccessRevokeReadOnRemove},
+      {});
+  permission_context()->SetOriginHasExtendedPermissionForTesting(kTestOrigin);
+  for (bool downgrade_source : {false, true}) {
+    SCOPED_TRACE(downgrade_source);
+    const auto directory = kTestPathInfo.path.AppendASCII(
+        downgrade_source ? "revoked" : "readable");
+    const PathInfo source(directory.AppendASCII("source.txt"));
+    const PathInfo destination(directory.AppendASCII("DECOY.TXT"));
+    const PathInfo alias(directory.AppendASCII("decoy.txt"));
+    const PathInfo unrelated(directory.AppendASCII("decoy.txt.other"));
+    auto source_read = permission_context()->GetReadPermissionGrant(
+        kTestOrigin, source, HandleType::kFile, AccessTrigger::kSave);
+    auto source_write = permission_context()->GetWritePermissionGrant(
+        kTestOrigin, source, HandleType::kFile, AccessTrigger::kSave);
+    auto destination_read = permission_context()->GetReadPermissionGrant(
+        kTestOrigin, destination, HandleType::kFile, AccessTrigger::kSave);
+    auto alias_read = permission_context()->GetReadPermissionGrant(
+        kTestOrigin, alias, HandleType::kFile, AccessTrigger::kSave);
+    permission_context()->NotifyEntryRemoved(kTestOrigin, destination);
+    permission_context()->NotifyEntryRemoved(kTestOrigin, unrelated);
+    if (downgrade_source) {
+      permission_context()->NotifyEntryRemoved(kTestOrigin, source);
+    }
+    for (const auto& path : {destination, alias, unrelated}) {
+      ASSERT_TRUE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+          kTestOrigin, path.path));
+    }
+
+    permission_context()->NotifyEntryMoved(kTestOrigin, source, destination);
+
+    EXPECT_FALSE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+        kTestOrigin, source.path));
+    EXPECT_FALSE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+        kTestOrigin, alias.path));
+    EXPECT_EQ(permission_context()->IsPathInDowngradedReadPathsForTesting(
+                  kTestOrigin, destination.path),
+              downgrade_source);
+    EXPECT_TRUE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+        kTestOrigin, unrelated.path));
+    EXPECT_EQ(source_read->GetStatus(), downgrade_source
+                                            ? PermissionStatus::DENIED
+                                            : PermissionStatus::GRANTED);
+    EXPECT_EQ(destination_read->GetStatus(), PermissionStatus::DENIED);
+    EXPECT_EQ(alias_read->GetStatus(), PermissionStatus::DENIED);
+    // Persisted grants must migrate even with active read and write grants.
+    for (auto type : {GrantType::kRead, GrantType::kWrite}) {
+      EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
+          kTestOrigin, source, HandleType::kFile, type));
+    }
+    EXPECT_TRUE(permission_context()->HasExtendedPermissionForTesting(
+        kTestOrigin, destination, HandleType::kFile, GrantType::kWrite));
+    EXPECT_EQ(
+        permission_context()->HasExtendedPermissionForTesting(
+            kTestOrigin, destination, HandleType::kFile, GrantType::kRead),
+        !downgrade_source);
+
+    permission_context()->NotifyEntryModified(kTestOrigin, destination);
+    EXPECT_EQ(source_read->GetStatus(), PermissionStatus::GRANTED);
+    EXPECT_FALSE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+        kTestOrigin, destination.path));
+    EXPECT_EQ(alias_read->GetStatus(), PermissionStatus::DENIED);
+  }
+}
+
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       NotifyEntryMoved_CaseOnlyRenamePreservesDowngradedSource) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kFileSystemAccessMoveWithOverwrite,
+       blink::features::kFileSystemAccessRevokeReadOnRemove},
+      {});
+  const PathInfo source(kTestPathInfo.path.AppendASCII("source.txt"));
+  const PathInfo destination(kTestPathInfo.path.AppendASCII("SOURCE.TXT"));
+  const PathInfo alias(kTestPathInfo.path.AppendASCII("Source.txt"));
+  auto source_read = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, source, HandleType::kFile, AccessTrigger::kSave);
+  auto alias_read = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, alias, HandleType::kFile, AccessTrigger::kSave);
+  permission_context()->NotifyEntryRemoved(kTestOrigin, source);
+  ASSERT_TRUE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+      kTestOrigin, alias.path));
+
+  permission_context()->NotifyEntryMoved(kTestOrigin, source, destination);
+
+  EXPECT_FALSE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+      kTestOrigin, source.path));
+  EXPECT_FALSE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+      kTestOrigin, alias.path));
+  EXPECT_TRUE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+      kTestOrigin, destination.path));
+  EXPECT_EQ(source_read->GetStatus(), PermissionStatus::DENIED);
+  permission_context()->NotifyEntryModified(kTestOrigin, destination);
+  EXPECT_EQ(source_read->GetStatus(), PermissionStatus::GRANTED);
+  EXPECT_EQ(alias_read->GetStatus(), PermissionStatus::DENIED);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+// Destination invalidation must not depend on an explicit source grant: a
+// source can inherit its permission from a directory grant.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       NotifyEntryMoved_RevokesAliasesWithoutSourceGrant) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kFileSystemAccessMoveWithOverwrite);
+  const PathInfo source(kTestPathInfo.path.AppendASCII("source.txt"));
+  const PathInfo destination(kTestPathInfo.path.AppendASCII("DECOY.TXT"));
+  const PathInfo alias(kTestPathInfo.path.AppendASCII("decoy.txt"));
+  auto read = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, alias, HandleType::kFile, AccessTrigger::kSave);
+  auto write = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, alias, HandleType::kFile, AccessTrigger::kSave);
+  ASSERT_EQ(read->GetStatus(), PermissionStatus::GRANTED);
+  ASSERT_EQ(write->GetStatus(), PermissionStatus::GRANTED);
+
+  permission_context()->NotifyEntryMoved(kTestOrigin, source, destination);
+
+  EXPECT_EQ(read->GetStatus(), PermissionStatus::DENIED);
+  EXPECT_EQ(write->GetStatus(), PermissionStatus::DENIED);
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       NotifyEntryMoved_RevokesPersistedOnlyAliases) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kFileSystemAccessMoveWithOverwrite,
+       features::kFileSystemAccessPersistentPermissions},
+      {});
+  permission_context()->SetOriginHasExtendedPermissionForTesting(kTestOrigin);
+  const PathInfo source(kTestPathInfo.path.AppendASCII("source.txt"));
+  const PathInfo destination(kTestPathInfo.path.AppendASCII("DECOY.TXT"));
+  const PathInfo alias(kTestPathInfo.path.AppendASCII("decoy.txt"));
+  {
+    auto read = permission_context()->GetReadPermissionGrant(
+        kTestOrigin, alias, HandleType::kFile, AccessTrigger::kSave);
+    auto write = permission_context()->GetWritePermissionGrant(
+        kTestOrigin, alias, HandleType::kFile, AccessTrigger::kSave);
+    ASSERT_EQ(read->GetStatus(), PermissionStatus::GRANTED);
+    ASSERT_EQ(write->GetStatus(), PermissionStatus::GRANTED);
+  }
+  for (auto type : {GrantType::kRead, GrantType::kWrite}) {
+    ASSERT_TRUE(permission_context()->HasExtendedPermissionForTesting(
+        kTestOrigin, alias, HandleType::kFile, type));
+  }
+
+  permission_context()->NotifyEntryMoved(kTestOrigin, source, destination);
+
+  for (auto type : {GrantType::kRead, GrantType::kWrite}) {
+    EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
+        kTestOrigin, alias, HandleType::kFile, type));
+  }
+  auto read = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, alias, HandleType::kFile, AccessTrigger::kProgrammaticRead);
+  auto write = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, alias, HandleType::kFile, AccessTrigger::kProgrammaticWrite);
+  EXPECT_EQ(read->GetStatus(), PermissionStatus::ASK);
+  EXPECT_EQ(write->GetStatus(), PermissionStatus::ASK);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       NotifyEntryMoved_CaseOnlyRenamePreservesSource) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kFileSystemAccessMoveWithOverwrite,
+       features::kFileSystemAccessPersistentPermissions},
+      {});
+  permission_context()->SetOriginHasExtendedPermissionForTesting(kTestOrigin);
+  const PathInfo source(kTestPathInfo.path.AppendASCII("source.txt"));
+  const PathInfo destination(kTestPathInfo.path.AppendASCII("SOURCE.TXT"));
+  auto read = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, source, HandleType::kFile, AccessTrigger::kSave);
+  auto write = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, source, HandleType::kFile, AccessTrigger::kSave);
+
+  permission_context()->NotifyEntryMoved(kTestOrigin, source, destination);
+
+  EXPECT_EQ(read->GetPath(), destination.path);
+  EXPECT_EQ(write->GetPath(), destination.path);
+  EXPECT_EQ(read->GetStatus(), PermissionStatus::GRANTED);
+  EXPECT_EQ(write->GetStatus(), PermissionStatus::GRANTED);
+  for (auto type : {GrantType::kRead, GrantType::kWrite}) {
+    EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
+        kTestOrigin, source, HandleType::kFile, type));
+    EXPECT_TRUE(permission_context()->HasExtendedPermissionForTesting(
+        kTestOrigin, destination, HandleType::kFile, type));
+  }
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       NotifyEntryMoved_RevokesDormantDestinationGrants) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kFileSystemAccessMoveWithOverwrite,
+       features::kFileSystemAccessPersistentPermissions},
+      {});
+  const PathInfo source(kTestPathInfo.path.AppendASCII("source.txt"));
+  const PathInfo destination(kTestPathInfo.path.AppendASCII("DECOY.TXT"));
+  const PathInfo alias(kTestPathInfo.path.AppendASCII("decoy.txt"));
+  for (const auto& path : {source, destination, alias}) {
+    auto read = permission_context()->GetReadPermissionGrant(
+        kTestOrigin, path, HandleType::kFile, AccessTrigger::kSave);
+    auto write = permission_context()->GetWritePermissionGrant(
+        kTestOrigin, path, HandleType::kFile, AccessTrigger::kSave);
+    ASSERT_EQ(read->GetStatus(), PermissionStatus::GRANTED);
+    ASSERT_EQ(write->GetStatus(), PermissionStatus::GRANTED);
+  }
+  ASSERT_EQ(permission_context()->GetPersistedGrantTypeForTesting(kTestOrigin),
+            PersistedGrantType::kDormant);
+  // The UI-facing list excludes dormant grants. Check the backing store too.
+  ASSERT_THAT(permission_context()->GetGrantedObjects(kTestOrigin),
+              testing::IsEmpty());
+  ASSERT_THAT(
+      permission_context()->ObjectPermissionContextBase::GetGrantedObjects(
+          kTestOrigin),
+      testing::SizeIs(3));
+
+  permission_context()->NotifyEntryMoved(kTestOrigin, source, destination);
+
+  EXPECT_THAT(
+      permission_context()->ObjectPermissionContextBase::GetGrantedObjects(
+          kTestOrigin),
+      testing::SizeIs(1));
+  permission_context()->SetOriginHasExtendedPermissionForTesting(kTestOrigin);
+  for (auto type : {GrantType::kRead, GrantType::kWrite}) {
+    EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
+        kTestOrigin, source, HandleType::kFile, type));
+    EXPECT_FALSE(permission_context()->HasExtendedPermissionForTesting(
+        kTestOrigin, alias, HandleType::kFile, type));
+    EXPECT_TRUE(permission_context()->HasExtendedPermissionForTesting(
+        kTestOrigin, destination, HandleType::kFile, type));
+  }
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       NotifyEntryMoved_CaseAliasObserversReleaseGrants) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kFileSystemAccessMoveWithOverwrite);
+  const PathInfo source(kTestPathInfo.path.AppendASCII("source.txt"));
+  const PathInfo destination(kTestPathInfo.path.AppendASCII("DECOY.TXT"));
+  const PathInfo lower(kTestPathInfo.path.AppendASCII("decoy.txt"));
+  const PathInfo mixed(kTestPathInfo.path.AppendASCII("Decoy.txt"));
+  auto source_grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, source, HandleType::kFile, AccessTrigger::kSave);
+  auto lower_grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, lower, HandleType::kFile, AccessTrigger::kSave);
+  auto mixed_grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, mixed, HandleType::kFile, AccessTrigger::kSave);
+  auto source_observer =
+      SelfDestructingPermissionGrantObserver::Create(std::move(source_grant));
+  auto lower_observer =
+      SelfDestructingPermissionGrantObserver::Create(std::move(lower_grant));
+  auto mixed_observer =
+      SelfDestructingPermissionGrantObserver::Create(std::move(mixed_grant));
+
+  permission_context()->NotifyEntryMoved(kTestOrigin, source, destination);
+
+  EXPECT_FALSE(source_observer);
+  EXPECT_FALSE(lower_observer);
+  EXPECT_FALSE(mixed_observer);
+}
+
 // Regression test for crbug.com/499078161.
 TEST_F(ChromeFileSystemAccessPermissionContextTest,
        RevokeActiveGrants_ClearsDowngradedReadPaths) {
@@ -4789,15 +6505,16 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
           ->GetStatus(),
       PermissionStatus::GRANTED);
 
-  // 1. Revoke the read permission for the file path by calling NotifyEntryRemoved.
-  // This adds the path to downgraded_read_paths.
+  // 1. Revoke the read permission for the file path by calling
+  // NotifyEntryRemoved. This adds the path to downgraded_read_paths.
   permission_context()->NotifyEntryRemoved(kTestOrigin, file_path_info);
 
   // Verify the path is added to downgraded_read_paths.
   EXPECT_TRUE(permission_context()->IsPathInDowngradedReadPathsForTesting(
       kTestOrigin, file_path_info.path));
 
-  // 2. Revoke all active grants for the origin. This should clear downgraded_read_paths.
+  // 2. Revoke all active grants for the origin. This should clear
+  // downgraded_read_paths.
   permission_context()->RevokeActiveGrantsForTesting(kTestOrigin);
 
   // Verify the path is removed from downgraded_read_paths.
@@ -4835,8 +6552,8 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
           ->GetStatus(),
       PermissionStatus::GRANTED);
 
-  // 1. Revoke the read permission for the file paths by calling NotifyEntryRemoved.
-  // This adds the paths to downgraded_read_paths.
+  // 1. Revoke the read permission for the file paths by calling
+  // NotifyEntryRemoved. This adds the paths to downgraded_read_paths.
   permission_context()->NotifyEntryRemoved(kTestOrigin, file_path_info1);
   permission_context()->NotifyEntryRemoved(kTestOrigin, file_path_info2);
 
@@ -4880,15 +6597,16 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
           ->GetStatus(),
       PermissionStatus::GRANTED);
 
-  // 1. Revoke the read permission for the file path by calling NotifyEntryRemoved.
-  // This adds the path to downgraded_read_paths.
+  // 1. Revoke the read permission for the file path by calling
+  // NotifyEntryRemoved. This adds the path to downgraded_read_paths.
   permission_context()->NotifyEntryRemoved(kTestOrigin, file_path_info);
 
   // Verify the path is added to downgraded_read_paths.
   EXPECT_TRUE(permission_context()->IsPathInDowngradedReadPathsForTesting(
       kTestOrigin, file_path_info.path));
 
-  // 2. Revoke all active grants. This should clear downgraded_read_paths for all origins.
+  // 2. Revoke all active grants. This should clear downgraded_read_paths for
+  // all origins.
   permission_context()->RevokeAllActiveGrants();
 
   // Verify the path is removed from downgraded_read_paths.
@@ -5064,6 +6782,132 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
   EXPECT_EQ(grant2->GetStatus(), PermissionStatus::GRANTED);
 
   EXPECT_FALSE(observer);
+}
+
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ReadGrantDestroyedOnHandleTypeChange) {
+  auto file_grant = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kOpen);
+  EXPECT_EQ(file_grant->GetStatus(), PermissionStatus::GRANTED);
+
+  auto file_observer =
+      SelfDestructingPermissionGrantObserver::Create(std::move(file_grant));
+
+  // Requesting a read grant for the same path with a different handle type
+  // revokes the existing grant, causing `file_observer` to destroy itself and
+  // drop the last reference to `file_grant`.
+  auto dir_grant = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kDirectory,
+      AccessTrigger::kDragAndDrop);
+  EXPECT_FALSE(file_observer);
+  EXPECT_EQ(dir_grant->GetStatus(), PermissionStatus::GRANTED);
+
+  // Verify the newly created directory grant is tracked in the active grants
+  // map by revoking active grants for the path.
+  permission_context()->RevokeActiveGrantsForTesting(kTestOrigin,
+                                                     kTestPathInfo.path);
+  EXPECT_EQ(dir_grant->GetStatus(), PermissionStatus::ASK);
+
+  // Also verify the reverse transition (directory to file).
+  dir_grant = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kDirectory,
+      AccessTrigger::kDragAndDrop);
+  EXPECT_EQ(dir_grant->GetStatus(), PermissionStatus::GRANTED);
+
+  auto dir_observer =
+      SelfDestructingPermissionGrantObserver::Create(std::move(dir_grant));
+  auto new_file_grant = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kOpen);
+  EXPECT_FALSE(dir_observer);
+  EXPECT_EQ(new_file_grant->GetStatus(), PermissionStatus::GRANTED);
+
+  permission_context()->RevokeActiveGrantsForTesting(kTestOrigin,
+                                                     kTestPathInfo.path);
+  EXPECT_EQ(new_file_grant->GetStatus(), PermissionStatus::ASK);
+}
+
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       WriteGrantDestroyedOnHandleTypeChange) {
+  auto file_grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kSave);
+  EXPECT_EQ(file_grant->GetStatus(), PermissionStatus::GRANTED);
+
+  auto file_observer =
+      SelfDestructingPermissionGrantObserver::Create(std::move(file_grant));
+
+  // Requesting a write grant for the same path with a different handle type
+  // revokes the existing grant, causing `file_observer` to destroy itself and
+  // drop the last reference to `file_grant`.
+  auto dir_grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kDirectory, AccessTrigger::kSave);
+  EXPECT_FALSE(file_observer);
+  EXPECT_EQ(dir_grant->GetStatus(), PermissionStatus::GRANTED);
+
+  // Verify the newly created directory grant is tracked in the active grants
+  // map by revoking active grants for the path.
+  permission_context()->RevokeActiveGrantsForTesting(kTestOrigin,
+                                                     kTestPathInfo.path);
+  EXPECT_EQ(dir_grant->GetStatus(), PermissionStatus::ASK);
+
+  // Also verify the reverse transition (directory to file).
+  dir_grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kDirectory, AccessTrigger::kSave);
+  EXPECT_EQ(dir_grant->GetStatus(), PermissionStatus::GRANTED);
+
+  auto dir_observer =
+      SelfDestructingPermissionGrantObserver::Create(std::move(dir_grant));
+  auto new_file_grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kSave);
+  EXPECT_FALSE(dir_observer);
+  EXPECT_EQ(new_file_grant->GetStatus(), PermissionStatus::GRANTED);
+
+  permission_context()->RevokeActiveGrantsForTesting(kTestOrigin,
+                                                     kTestPathInfo.path);
+  EXPECT_EQ(new_file_grant->GetStatus(), PermissionStatus::ASK);
+}
+
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       ReadGrantDestroyedOnNotifyEntryRemoved) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      blink::features::kFileSystemAccessRevokeReadOnRemove);
+
+  const auto child_path_info =
+      PathInfo(kTestPathInfo.path.AppendASCII("child.txt"));
+  auto grant = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, child_path_info, HandleType::kFile, AccessTrigger::kOpen);
+  EXPECT_EQ(grant->GetStatus(), PermissionStatus::GRANTED);
+
+  auto observer =
+      SelfDestructingPermissionGrantObserver::Create(std::move(grant));
+
+  permission_context()->NotifyEntryRemoved(kTestOrigin, kTestPathInfo);
+  EXPECT_FALSE(observer);
+  EXPECT_TRUE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+      kTestOrigin, kTestPathInfo.path));
+  EXPECT_TRUE(permission_context()->IsPathInDowngradedReadPathsForTesting(
+      kTestOrigin, child_path_info.path));
+}
+
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       WriteGrantDestroyedOnNotifyEntryMoved) {
+  auto grant1 = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile, AccessTrigger::kSave);
+  EXPECT_EQ(grant1->GetStatus(), PermissionStatus::GRANTED);
+
+  auto grant2 = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo2, HandleType::kFile, AccessTrigger::kSave);
+  EXPECT_EQ(grant2->GetStatus(), PermissionStatus::GRANTED);
+
+  auto observer1 =
+      SelfDestructingPermissionGrantObserver::Create(std::move(grant1));
+  auto observer2 =
+      SelfDestructingPermissionGrantObserver::Create(std::move(grant2));
+
+  permission_context()->NotifyEntryMoved(kTestOrigin, kTestPathInfo,
+                                         kTestPathInfo2);
+  EXPECT_FALSE(observer1);
+  EXPECT_FALSE(observer2);
 }
 
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
@@ -5369,3 +7213,204 @@ TEST_F(ChromeFileSystemAccessPermissionContextTest,
       SensitiveDirectoryResult::kAllowed);
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
+namespace {
+
+class MockDownloadProtectionService
+    : public safe_browsing::DownloadProtectionService {
+ public:
+  explicit MockDownloadProtectionService(
+      safe_browsing::SafeBrowsingServiceImpl* sb_service)
+      : safe_browsing::DownloadProtectionService(sb_service) {
+    SetEnabled(true);
+  }
+
+  MOCK_METHOD(void,
+              CheckFileSystemAccessWrite,
+              (std::unique_ptr<content::FileSystemAccessWriteItem> item,
+               safe_browsing::CheckDownloadCallback callback),
+              (override));
+};
+
+class SafeBrowsingServiceWithMockDownloadProtection
+    : public safe_browsing::TestSafeBrowsingService {
+ public:
+  SafeBrowsingServiceWithMockDownloadProtection() {
+    services_delegate_ =
+        safe_browsing::ServicesDelegate::CreateForTest(this, this);
+  }
+
+  MockDownloadProtectionService* mock_download_protection_service() const {
+    return mock_download_protection_service_;
+  }
+
+  void ShutDown() {
+    mock_download_protection_service_ = nullptr;
+    safe_browsing::TestSafeBrowsingService::ShutDown();
+  }
+
+ protected:
+  ~SafeBrowsingServiceWithMockDownloadProtection() override = default;
+
+  bool CanCreateDownloadProtectionService() override { return true; }
+
+  safe_browsing::DownloadProtectionService* CreateDownloadProtectionService()
+      override {
+    auto* service = new MockDownloadProtectionService(this);
+    mock_download_protection_service_ = service;
+    return service;
+  }
+
+ private:
+  raw_ptr<MockDownloadProtectionService> mock_download_protection_service_ =
+      nullptr;
+};
+
+}  // namespace
+
+// Regression test for b/503201581.
+// Verifies that when the initiating RenderProcessHost is already destroyed
+// (e.g. popup teardown during close), PerformAfterWriteChecks still populates
+// item->browser_context from the permission context's profile and runs the
+// Safe Browsing download check instead of failing open with UNKNOWN.
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       PerformAfterWriteChecks_MissingRenderProcessHost) {
+  auto sb_service =
+      base::MakeRefCounted<SafeBrowsingServiceWithMockDownloadProtection>();
+  TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(sb_service.get());
+  sb_service->Initialize();
+  ASSERT_TRUE(sb_service->mock_download_protection_service());
+
+  auto item = std::make_unique<content::FileSystemAccessWriteItem>();
+  item->target_file_path = temp_dir_.GetPath().AppendASCII("test.exe");
+  item->full_path = temp_dir_.GetPath().AppendASCII("test.exe.crswap");
+  item->sha256_hash = "hash";
+  item->size = 100;
+  item->frame_url = GURL("https://example.com/popup");
+  // Use a non-existent child process ID so RenderProcessHost::FromID returns
+  // nullptr, simulating popup renderer teardown.
+  const content::GlobalRenderFrameHostId kDeadFrameId(999999, 999999);
+  item->initiating_frame_id = kDeadFrameId;
+
+  EXPECT_CALL(*sb_service->mock_download_protection_service(),
+              CheckFileSystemAccessWrite(testing::_, testing::_))
+      .WillOnce([&](std::unique_ptr<content::FileSystemAccessWriteItem> item,
+                    safe_browsing::CheckDownloadCallback callback) {
+        EXPECT_EQ(item->browser_context, profile());
+        std::move(callback).Run(safe_browsing::DownloadCheckResult::DANGEROUS);
+      });
+
+  base::test::TestFuture<
+      ChromeFileSystemAccessPermissionContext::AfterWriteCheckResult>
+      future;
+  permission_context()->PerformAfterWriteChecks(std::move(item), kDeadFrameId,
+                                                future.GetCallback());
+
+  EXPECT_EQ(
+      future.Get(),
+      ChromeFileSystemAccessPermissionContext::AfterWriteCheckResult::kBlock);
+
+  sb_service->ShutDown();
+  TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(nullptr);
+}
+
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       PerformAfterWriteChecks_DestroyedPermissionContextFailsClosed) {
+  auto sb_service =
+      base::MakeRefCounted<SafeBrowsingServiceWithMockDownloadProtection>();
+  TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(sb_service.get());
+  sb_service->Initialize();
+  ASSERT_TRUE(sb_service->mock_download_protection_service());
+
+  auto temp_permission_context =
+      std::make_unique<ChromeFileSystemAccessPermissionContext>(profile());
+
+  auto item = std::make_unique<content::FileSystemAccessWriteItem>();
+  item->target_file_path = temp_dir_.GetPath().AppendASCII("test.exe");
+  item->full_path = temp_dir_.GetPath().AppendASCII("test.exe.crswap");
+  const content::GlobalRenderFrameHostId kDeadFrameId(999999, 999999);
+
+  base::test::TestFuture<
+      ChromeFileSystemAccessPermissionContext::AfterWriteCheckResult>
+      future;
+  temp_permission_context->PerformAfterWriteChecks(
+      std::move(item), kDeadFrameId, future.GetCallback());
+
+  // Destroy the permission context before the posted UI thread task runs.
+  temp_permission_context.reset();
+
+  EXPECT_EQ(
+      future.Get(),
+      ChromeFileSystemAccessPermissionContext::AfterWriteCheckResult::kBlock);
+
+  sb_service->ShutDown();
+  TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(nullptr);
+}
+#endif  // BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
+
+TEST_F(ChromeFileSystemAccessPermissionContextTest,
+       UserGuardContentSettingAllowDowngradedToAsk) {
+  SetContentSettingValueForOrigin(kTestOrigin,
+                                  ContentSettingsType::FILE_SYSTEM_READ_GUARD,
+                                  CONTENT_SETTING_ALLOW);
+  SetContentSettingValueForOrigin(kTestOrigin,
+                                  ContentSettingsType::FILE_SYSTEM_WRITE_GUARD,
+                                  CONTENT_SETTING_ALLOW);
+  EXPECT_TRUE(permission_context()->CanRequestObjectPermission(kTestOrigin));
+
+  auto read_grant = permission_context()->GetReadPermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile,
+      AccessTrigger::kLoadFromStorage);
+  EXPECT_EQ(read_grant->GetStatus(), PermissionStatus::ASK);
+
+  auto write_grant = permission_context()->GetWritePermissionGrant(
+      kTestOrigin, kTestPathInfo, HandleType::kFile,
+      AccessTrigger::kLoadFromStorage);
+  EXPECT_EQ(write_grant->GetStatus(), PermissionStatus::ASK);
+
+#if !BUILDFLAG(IS_ANDROID)
+  // Persisted grants on `kTestOrigin` remain visible via
+  // `ObjectPermissionContextBase` even when user `WRITE_GUARD` is `ALLOW`.
+  permission_context()->SetOriginHasExtendedPermissionForTesting(kTestOrigin);
+  {
+    auto saved_grant = permission_context()->GetWritePermissionGrant(
+        kTestOrigin, kTestPathInfo2, HandleType::kFile, AccessTrigger::kSave);
+    EXPECT_EQ(saved_grant->GetStatus(), PermissionStatus::GRANTED);
+  }
+  EXPECT_THAT(permission_context()->GetGrantedPaths(kTestOrigin),
+              testing::ElementsAre(kTestPathInfo2.path));
+#endif
+
+  // Blocking `WRITE_GUARD` still disables persisted-object requests.
+  SetContentSettingValueForOrigin(kTestOrigin2,
+                                  ContentSettingsType::FILE_SYSTEM_WRITE_GUARD,
+                                  CONTENT_SETTING_BLOCK);
+  EXPECT_FALSE(permission_context()->CanRequestObjectPermission(kTestOrigin2));
+
+  // Allowlist providers (`WebUIAllowlist` and `devtools://` scheme allowlist)
+  // retain `ALLOW` and disable persisted-object requests.
+  auto* allowlist = WebUIAllowlist::GetOrCreate(browser_context());
+  allowlist->RegisterAutoGrantedPermission(
+      kChromeOrigin, ContentSettingsType::FILE_SYSTEM_READ_GUARD);
+  allowlist->RegisterAutoGrantedPermission(
+      kChromeOrigin, ContentSettingsType::FILE_SYSTEM_WRITE_GUARD);
+  EXPECT_FALSE(permission_context()->CanRequestObjectPermission(kChromeOrigin));
+  auto webui_read = permission_context()->GetReadPermissionGrant(
+      kChromeOrigin, kTestPathInfo, HandleType::kFile,
+      AccessTrigger::kLoadFromStorage);
+  auto webui_write = permission_context()->GetWritePermissionGrant(
+      kChromeOrigin, kTestPathInfo, HandleType::kFile,
+      AccessTrigger::kLoadFromStorage);
+  EXPECT_EQ(webui_read->GetStatus(), PermissionStatus::GRANTED);
+  EXPECT_EQ(webui_write->GetStatus(), PermissionStatus::GRANTED);
+
+  const url::Origin kDevToolsOrigin =
+      url::Origin::Create(GURL("devtools://devtools"));
+  EXPECT_FALSE(
+      permission_context()->CanRequestObjectPermission(kDevToolsOrigin));
+  auto devtools_write = permission_context()->GetWritePermissionGrant(
+      kDevToolsOrigin, kTestPathInfo, HandleType::kFile,
+      AccessTrigger::kLoadFromStorage);
+  EXPECT_EQ(devtools_write->GetStatus(), PermissionStatus::GRANTED);
+}

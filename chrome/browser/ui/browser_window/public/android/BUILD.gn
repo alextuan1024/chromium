@@ -4,9 +4,23 @@
 
 import("//build/config/android/rules.gni")
 import("//chrome/android/features/android_library_factory_tmpl.gni")
+import("//third_party/jni_zero/jni_zero.gni")
 
 # This file contains public Java interface and factory targets for all Android
 # builds.
+
+android_library("browser_window_interface_java") {
+  sources = [ "java/src/org/chromium/chrome/browser/ui/browser_window/NativeBrowserWindowInterface.java" ]
+  deps = [
+    "//build/android:build_java",
+    "//third_party/jni_zero:jni_zero_java",
+  ]
+  srcjar_deps = [ ":browser_window_interface_jni" ]
+}
+
+generate_jni("browser_window_interface_jni") {
+  sources = [ "java/src/org/chromium/chrome/browser/ui/browser_window/NativeBrowserWindowInterface.java" ]
+}
 
 # Public Java interfaces
 android_library("java") {
@@ -20,6 +34,7 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskTrackerObserver.java",
   ]
   deps = [
+    ":browser_window_interface_java",
     "//base:base_java",
     "//build/android:build_java",
     "//chrome/browser/profiles/android:java",
@@ -28,11 +43,19 @@ android_library("java") {
     "//components/browser_ui/desktop_windowing/android:java",
     "//content/public/android:content_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
+    "//third_party/jni_zero:jni_zero_java",
     "//ui/android:ui_no_recycler_view_java",
     "//ui/base:ui_base_types_java",
     "//ui/base/mojom:ui_base_types_java",
   ]
-  srcjar_deps = [ ":java_enum_srcjar" ]
+  srcjar_deps = [
+    ":java_enum_srcjar",
+    ":jni",
+  ]
+}
+
+generate_jni("jni") {
+  sources = [ "java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTask.java" ]
 }
 
 # Public Java factory

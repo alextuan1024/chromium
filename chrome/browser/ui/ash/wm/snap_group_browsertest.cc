@@ -26,7 +26,6 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/ash/new_window/chrome_new_window_client.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -36,7 +35,6 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
-#include "chrome/browser/ui/views/tabs/shared/tab_strip_observer.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/ash/util/ash_test_util.h"
@@ -84,7 +82,7 @@ class TabRemoveObserver : public TabStripModelObserver {
   }
 
   // TabStripModelObserver:
-  void OnTabWillBeRemoved(tabs::TabInterface* tab, int index) override {
+  void OnTabWillBeRemoved(tabs::TabHandle tab) override {
     // Tab detachment is asynchronous. Release the mouse button after the tab
     // move is done.
     event_generator_->ReleaseLeftButton();

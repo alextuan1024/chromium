@@ -23,6 +23,7 @@
 
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 
 namespace blink {
 
@@ -44,6 +45,16 @@ class PLATFORM_EXPORT CustomFontData : public GarbageCollected<CustomFontData> {
   virtual bool IsLoadingFallback() const { return false; }
   virtual bool ShouldSkipDrawing() const { return false; }
   virtual bool IsPendingDataUrl() const { return false; }
+
+  // Requests that an IFT font is extended to support `text` at this font
+  // instance's variation coordinates. Returns true if the rendered font already
+  // supports it, or if the font has no patches for it (which is always the case
+  // for non-IFT fonts).
+  //
+  // See https://www.w3.org/TR/IFT/ for IFT fonts.
+  //
+  // TODO(wmedrano): Add support for features.
+  virtual bool IftRequireSubset(const StringView& text) const { return true; }
 };
 
 }  // namespace blink

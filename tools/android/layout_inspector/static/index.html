@@ -13,9 +13,11 @@ found in the LICENSE file.
   <link rel="stylesheet" href="style.css">
   <script src="utils.js"></script>
   <script src="math.js"></script>
+  <script src="svg.js"></script>
   <script src="model.js"></script>
   <script src="ui_common.js"></script>
   <script src="layout_ui.js"></script>
+  <script src="markup.js"></script>
   <script src="screenshot_ui.js"></script>
   <script src="tree_ui.js"></script>
   <script src="app.js"></script>
@@ -24,12 +26,24 @@ found in the LICENSE file.
   <div id="div-controls">
     <button id="btn-load" class="action-button"
          data-hint="CTRL_LOAD">Load</button>
+    <label data-hint="CTRL_ZOOM">
+      <span>Zoom:</span>
+      <select id="sel-zoom"></select>
+    </label>
   </div>
   <div id="div-main" class="main-layout">
     <div id="div-pane-screenshot">
       <div id="div-screenshot">
         <div class="screenshot-inner">
           <canvas class="canv-base"></canvas>
+          <svg class="svg-markup"></svg>
+        </div>
+      </div>
+      <div id="div-screenshot-info" data-show="none">
+        <div class="div-size-info">
+          <span class="sp-size-device"></span>
+          <span class="sp-separator">|</span>
+          <span class="sp-size-scaled"></span>
         </div>
       </div>
     </div>
@@ -38,7 +52,15 @@ found in the LICENSE file.
       <div id="div-view-tree"></div>
     </div>
   </div>
-  <div id="div-info-bar" class="idle">
+  <div id="div-info-bar">
+    <div class="view-info hidden">
+      <div class="view-class"></div>
+      <div class="view-dims">
+        <span class="size-px"></span>
+        <span>|</span>
+        <span class="size-dp"></span>
+      </div>
+    </div>
     <div class="hint-text"></div>
   </div>
   <div id="div-overlay" class="hidden">

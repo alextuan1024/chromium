@@ -43,6 +43,16 @@ BASE_EXPORT BASE_DECLARE_FEATURE(kAlignWakeUps);
 // allowed per DelayPolicy.
 BASE_EXPORT BASE_DECLARE_FEATURE(kTimerSlackMac);
 
+#if BUILDFLAG(IS_MAC)
+// When enabled, drains ready UI tasks in `MessagePumpNSApplication` for up to
+// `kMacPumpBeforeFinishLaunchingMaxMs` before `-[NSApplication run]` and up to
+// `kMacPumpAfterFinishLaunchingMaxMs` right after
+// `-[NSApplication finishLaunching]`.
+BASE_EXPORT BASE_DECLARE_FEATURE(kMacPumpTasksBeforeFinishLaunching);
+BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kMacPumpBeforeFinishLaunchingMaxMs);
+BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(int, kMacPumpAfterFinishLaunchingMaxMs);
+#endif  // BUILDFLAG(IS_MAC)
+
 // Feature to run tasks by batches before pumping out messages.
 BASE_EXPORT BASE_DECLARE_FEATURE(kRunTasksByBatches);
 
@@ -59,6 +69,11 @@ BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(
 // Under this feature, ThreadPool inherits GetCurrentTaskImportance by default,
 // when TaskPriority isn't otherwise specified.
 BASE_EXPORT BASE_DECLARE_FEATURE(kInheritTaskImportanceByDefault);
+
+// Under this feature, thread pool initialization creates various thread groups'
+// initial threads asynchronously on the service thread instead of synchronously
+// on UI thread.
+BASE_EXPORT BASE_DECLARE_FEATURE(kAsyncThreadPoolInit);
 
 }  // namespace base
 

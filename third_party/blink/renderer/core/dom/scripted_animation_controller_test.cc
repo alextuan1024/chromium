@@ -10,12 +10,15 @@
 #include "base/memory/raw_ptr.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/core/animation/animation.h"
 #include "third_party/blink/renderer/core/animation/document_timeline.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/dom/frame_request_callback_collection.h"
+#include "third_party/blink/renderer/core/event_type_names.h"
+#include "third_party/blink/renderer/core/events/animation_playback_event.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
@@ -379,6 +382,98 @@ TEST_F(ScriptedAnimationControllerTest, CoarsenedFrameTimestamps) {
 
     previous_standard_time = standard_time;
     previous_legacy_time = legacy_time;
+  }
+}
+
+TEST_F(ScriptedAnimationControllerTest, SortsAnimationEventsByCompositeOrder) {
+  TaskOrderObserver observer;
+
+  DocumentTimeline* timeline1 = &GetDocument().Timeline();
+  DocumentTimeline* timeline2 =
+      MakeGarbageCollected<DocumentTimeline>(&GetDocument());
+
+  Animation* anim1 = Animation::Create(nullptr, timeline1, ASSERT_NO_EXCEPTION);
+  Animation* anim2 = Animation::Create(nullptr, timeline2, ASSERT_NO_EXCEPTION);
+
+  anim1->addEventListener(
+      event_type_names::kFinish,
+      MakeGarbageCollected<RunTaskEventListener>(observer.CreateTask(1)));
+  anim2->addEventListener(
+      event_type_names::kFinish,
+      MakeGarbageCollected<RunTaskEventListener>(observer.CreateTask(2)));
+
+  auto* event2 = MakeGarbageCollected<AnimationPlaybackEvent>(
+      event_type_names::kFinish, nullptr, nullptr);
+  event2->SetTarget(anim2);
+  auto* event1 = MakeGarbageCollected<AnimationPlaybackEvent>(
+      event_type_names::kFinish, nullptr, nullptr);
+  event1->SetTarget(anim1);
+
+  // Enqueue in reverse composite order; SortAnimationEvents should sort
+  // anim1's finish event ahead of anim2's finish event.
+  wtf_size_t start_index = Controller().EventQueueSize();
+  Controller().EnqueueEvent(event2);
+  Controller().EnqueueEvent(event1);
+  Controller().SortAnimationEvents(start_index);
+
+  PageAnimator::ServiceScriptedAnimations(base::TimeTicks(),
+                                          {{Controller(), false}});
+  ASSERT_EQ(2u, observer.Order().size());
+  EXPECT_EQ(1, observer.Order()[0]);
+  EXPECT_EQ(2, observer.Order()[1]);
+}
+
+TEST_F(ScriptedAnimationControllerTest, EnqueueEventsDuringDispatchFilter) {
+  TaskOrderObserver observer;
+
+  GetDocument().addEventListener(
+      AtomicString("first"),
+      MakeGarbageCollected<RunTaskEventListener>(observer.CreateTask(1)));
+  GetDocument().addEventListener(
+      AtomicString("second"),
+      MakeGarbageCollected<RunTaskEventListener>(observer.CreateTask(2)));
+  GetDocument().addEventListener(
+      AtomicString("enqueued_in_filter"),
+      MakeGarbageCollected<RunTaskEventListener>(observer.CreateTask(3)));
+
+  Event* first_event = Event::Create(AtomicString("first"));
+  first_event->SetTarget(&GetDocument());
+  Controller().EnqueueEvent(first_event);
+
+  Event* second_event = Event::Create(AtomicString("second"));
+  second_event->SetTarget(&GetDocument());
+  Controller().EnqueueEvent(second_event);
+
+  // Dispatch only "first" events, while the filter callback enqueues enough
+  // additional events to force `event_queue_` to reallocate its backing buffer.
+  bool filter_ran = false;
+  bool did_dispatch = Controller().DispatchEvents(BindRepeating(
+      [](ScriptedAnimationController* controller, Document* document,
+         bool* filter_ran, Event* event) {
+        if (!*filter_ran) {
+          *filter_ran = true;
+          for (int i = 0; i < 16; ++i) {
+            Event* extra = Event::Create(AtomicString("enqueued_in_filter"));
+            extra->SetTarget(document);
+            controller->EnqueueEvent(extra);
+          }
+        }
+        return event->type() == AtomicString("first");
+      },
+      WrapPersistent(&Controller()), WrapPersistent(&GetDocument()),
+      blink::subtle::UnretainedException(&filter_ran)));
+
+  EXPECT_TRUE(did_dispatch);
+  ASSERT_EQ(1u, observer.Order().size());
+  EXPECT_EQ(1, observer.Order()[0]);
+
+  // Now dispatch all remaining events ("second" followed by the 16 events
+  // enqueued during the filter).
+  EXPECT_TRUE(Controller().DispatchEvents());
+  ASSERT_EQ(18u, observer.Order().size());
+  EXPECT_EQ(2, observer.Order()[1]);
+  for (wtf_size_t i = 2; i < 18; ++i) {
+    EXPECT_EQ(3, observer.Order()[i]);
   }
 }
 

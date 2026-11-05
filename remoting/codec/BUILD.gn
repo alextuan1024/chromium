@@ -4,12 +4,27 @@
 
 import("//remoting/remoting_options.gni")
 
-source_set("encoder") {
+static_library("utils") {
+  sources = [
+    "utils.cc",
+    "utils.h",
+  ]
+
+  public_deps = [
+    "//base",
+    "//third_party/webrtc_overrides:webrtc_component",
+  ]
+
+  deps = [
+    "//remoting/base:codec_utils",
+    "//third_party/libyuv",
+  ]
+}
+
+static_library("encoder") {
   sources = [
     "encoder_bitrate_filter.cc",
     "encoder_bitrate_filter.h",
-    "utils.cc",
-    "utils.h",
     "video_encoder_active_map.cc",
     "video_encoder_active_map.h",
     "webrtc_video_encoder.cc",
@@ -19,15 +34,14 @@ source_set("encoder") {
     "webrtc_video_encoder_vpx.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
-  public_deps = [ "//third_party/libaom" ]
+  public_deps = [
+    ":utils",
+    "//third_party/libaom",
+  ]
 
   deps = [
     ":vpx_codec",
-    "//remoting/base",
-    "//remoting/proto",
-    "//remoting/signaling",
+    "//remoting/base:codec_utils",
     "//third_party/libvpx",
     "//third_party/libyuv",
     "//third_party/webrtc_overrides:webrtc_component",
@@ -50,19 +64,16 @@ source_set("encoder") {
   }
 }
 
-source_set("vpx_codec") {
+static_library("vpx_codec") {
   sources = [
     "scoped_vpx_codec.cc",
     "scoped_vpx_codec.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [ "//third_party/libvpx" ]
 
   deps = [
     "//base",
-    "//remoting/proto",
     "//third_party/libyuv",
     "//third_party/webrtc_overrides:webrtc_component",
   ]
@@ -79,6 +90,7 @@ if (!is_component_build && (is_win || is_linux)) {
       "//base",
       "//base/test:test_support",
       "//remoting/test/frame_generator:frame_generator_test_support",
+      "//third_party/libyuv",
       "//third_party/webrtc_overrides:webrtc_component",
     ]
   }
@@ -87,15 +99,29 @@ if (!is_component_build && (is_win || is_linux)) {
 source_set("unit_tests") {
   testonly = true
 
-  sources = [ "encoder_bitrate_filter_unittest.cc" ]
+  sources = [ "utils_unittest.cc" ]
 
   deps = [
-    ":encoder",
+    ":utils",
     "//base",
-    "//remoting/base",
-    "//remoting/proto",
+    "//base/test:test_support",
+    "//remoting/base:codec_utils",
     "//testing/gtest",
+    "//third_party/libyuv",
     "//third_party/webrtc_overrides:webrtc_component",
-    "//ui/gfx:color_space",
   ]
+
+  if (enable_remoting_host) {
+    sources += [
+      "encoder_bitrate_filter_unittest.cc",
+      "video_encoder_active_map_unittest.cc",
+      "webrtc_video_encoder_av1_unittest.cc",
+      "webrtc_video_encoder_unittest.cc",
+    ]
+
+    deps += [
+      ":encoder",
+      "//ui/gfx:color_space",
+    ]
+  }
 }

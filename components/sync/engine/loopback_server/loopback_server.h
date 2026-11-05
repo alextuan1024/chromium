@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/files/file_path.h"
@@ -20,6 +21,7 @@
 #include "base/sequence_checker.h"
 #include "base/values.h"
 #include "components/sync/base/data_type.h"
+#include "components/sync/base/progress_marker_map.h"
 #include "components/sync/engine/loopback_server/loopback_server_entity.h"
 #include "components/sync/protocol/sync.pb.h"
 #include "net/http/http_status_code.h"
@@ -44,9 +46,12 @@ class LoopbackServer : public base::ImportantFileWriter::DataSerializer {
    public:
     virtual ~ObserverForTests() = default;
 
-    // Called after the server has processed a successful commit. The types
-    // updated as part of the commit are passed in `committed_data_types`.
-    virtual void OnCommit(syncer::DataTypeSet committed_data_types) = 0;
+    // Called after the server has processed a successful commit.
+    // `committer_cache_guid` is the committing client's cache GUID for client
+    // COMMIT requests, or empty for server-initiated changes. The types updated
+    // as part of the commit are passed in `committed_data_types`.
+    virtual void OnCommit(std::string_view committer_cache_guid,
+                          syncer::DataTypeSet committed_data_types) = 0;
 
     // Called when a committed tombstone includes a deletion origin.
     virtual void OnCommittedDeletionOrigin(
@@ -54,7 +59,9 @@ class LoopbackServer : public base::ImportantFileWriter::DataSerializer {
         const sync_pb::DeletionOrigin& deletion_origin) = 0;
   };
 
-  explicit LoopbackServer(const base::FilePath& persistent_file);
+  LoopbackServer(const base::FilePath& persistent_file,
+                 base::ImportantFileWriter::TaskRunnerOrBlockCurrentSequence
+                     writer_task_runner);
   ~LoopbackServer() override;
 
   // Handles a /command POST (with the given `message`) to the server.
@@ -198,6 +205,12 @@ class LoopbackServer : public base::ImportantFileWriter::DataSerializer {
   // Returns the store birthday.
   std::string GetStoreBirthday() const;
 
+  // Returns true if `progress_markers` are non-empty and up to date with all
+  // server entities and migration versions for all non-commit-only types in
+  // `progress_markers`.
+  bool AreProgressMarkersUpToDateForTesting(
+      const ProgressMarkerMap& progress_markers) const;
+
   // Returns all entities stored by the server of the given `data_type`.
   // Permanent entities are excluded. This method is only used in tests.
   std::vector<sync_pb::SyncEntity> GetSyncEntitiesByDataType(
@@ -268,6 +281,7 @@ class LoopbackServer : public base::ImportantFileWriter::DataSerializer {
   int64_t version_ = 0;
 
   int64_t store_birthday_ = 0;
+  bool bookmarks_migrated_to_client_tag_hash_ = false;
 
   DataTypeSet throttled_types_;
   DataTypeSet full_update_types_;

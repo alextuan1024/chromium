@@ -2,15 +2,59 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+source_set("actor_dialog_utils") {
+  sources = [
+    "actor_dialog_utils.h",
+    "actor_dialog_utils.mm",
+  ]
+  deps = [
+    "//base",
+    "//ios/chrome/browser/intelligence/actor/model:tab_helper",
+    "//ios/chrome/browser/intelligence/actor/public:actor_control_state",
+    "//ios/chrome/browser/intelligence/features",
+    "//ios/web/public",
+  ]
+}
+
 source_set("test_support") {
   testonly = true
   sources = [
     "actor_test_utils.h",
     "actor_test_utils.mm",
   ]
-  deps = [
-    "//components/optimization_guide/proto:optimization_guide_proto",
+  public_deps = [
+    "//base",
+    "//components/actor/core:journal",
+    "//components/actor/public/mojom:mojo_bindings",
+    "//components/origin_gating/core",
     "//ios/chrome/browser/intelligence/actor/tools/model:actor_tool_interface",
     "//ios/web/public",
+    "//ios/web/public/test/fakes",
+    "//testing/gtest",
+    "//url",
+  ]
+  deps = [
+    "//components/optimization_guide/proto:optimization_guide_proto",
+    "//ios/web/public/navigation",
+    "//net",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [
+    "actor_dialog_utils_unittest.mm",
+    "actor_test_utils_unittest.mm",
+  ]
+  deps = [
+    ":actor_dialog_utils",
+    ":test_support",
+    "//base",
+    "//base/test:test_support",
+    "//ios/chrome/browser/intelligence/actor/model:tab_helper",
+    "//ios/chrome/browser/intelligence/actor/public:actor_control_state",
+    "//ios/chrome/browser/intelligence/features",
+    "//ios/web/public/test/fakes",
+    "//testing/gtest",
   ]
 }

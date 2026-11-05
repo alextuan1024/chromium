@@ -4,43 +4,61 @@
 
 package org.chromium.device.serial;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
+import android.hardware.serial.SerialManager;
+import android.hardware.serial.SerialPort;
+import android.hardware.serial.SerialPortListener;
+import android.hardware.serial.SerialPortResponse;
+import android.os.Build;
 import android.os.OutcomeReceiver;
 
+import androidx.annotation.GuardedBy;
+import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
-import org.chromium.base.ServiceLoaderUtil;
-import org.chromium.base.serial.SerialManager;
-import org.chromium.base.serial.SerialPort;
-import org.chromium.base.serial.SerialPortListener;
-import org.chromium.base.serial.SerialPortResponse;
 import org.chromium.base.task.AsyncTask;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
+import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** Exposes Android Serial API as necessary for C++ device::SerialDeviceEnumeratorAndroid. */
+/**
+ * Exposes Android Serial API as necessary for C++ device::SerialDeviceEnumeratorAndroid.
+ *
+ * <p>This class implements a platform interface that does not exist before SDK 37, and so cannot
+ * even be loaded on older OS versions. Callers must first check
+ * SerialDeviceEnumeratorAndroid::IsSupported().
+ */
 @JNINamespace("device")
 @NullMarked
+@RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
 public class ChromeSerialManager implements SerialPortListener {
+    @JniType("::device::SerialDeviceEnumeratorAndroid")
+    interface NativeSerialDeviceEnumeratorAndroid extends JniTypeToken {}
+
     private static final String TAG = "ChromeSerialManager";
 
-    private static final @Nullable AconfigFlaggedApiDelegate sAconfigFlaggedApiDelegate =
-            ServiceLoaderUtil.maybeCreate(AconfigFlaggedApiDelegate.class);
+    private final Object mLock = new Object();
 
     /** Address of C++ object SerialDeviceEnumeratorAndroid. */
-    private final long mNativePointer;
+    @GuardedBy("mLock")
+    private @Nullable JniRawPtr<NativeSerialDeviceEnumeratorAndroid> mNativePointer;
 
     /** Android SerialManager. */
     private final SerialManager mSerialManager;
@@ -53,18 +71,20 @@ public class ChromeSerialManager implements SerialPortListener {
             Collections.synchronizedMap(new HashMap<>());
 
     @VisibleForTesting
-    protected ChromeSerialManager(long nativePointer, SerialManager serialManager) {
+    protected ChromeSerialManager(
+            JniRawPtr<NativeSerialDeviceEnumeratorAndroid> nativePointer,
+            SerialManager serialManager) {
         mNativePointer = nativePointer;
         mSerialManager = serialManager;
     }
 
     @CalledByNative
-    private static @Nullable ChromeSerialManager create(long nativePointer) {
-        if (sAconfigFlaggedApiDelegate == null) {
-            return null;
-        }
-        SerialManager serialManager = sAconfigFlaggedApiDelegate.getSerialManager();
+    static @Nullable ChromeSerialManager create(
+            JniRawPtr<NativeSerialDeviceEnumeratorAndroid> nativePointer) {
+        SerialManager serialManager =
+                ContextUtils.getApplicationContext().getSystemService(SerialManager.class);
         if (serialManager == null) {
+            nativePointer.release();
             return null;
         }
         ChromeSerialManager instance = new ChromeSerialManager(nativePointer, serialManager);
@@ -78,16 +98,20 @@ public class ChromeSerialManager implements SerialPortListener {
 
         // Initial enumeration of existing serial ports
         List<SerialPort> ports = mSerialManager.getPorts();
-        for (int i = 0; i < ports.size(); i++) {
-            SerialPort port = ports.get(i);
-            mPorts.put(port.getName(), port);
-            ChromeSerialManagerJni.get()
-                    .addPortViaJni(
-                            mNativePointer,
-                            port.getName(),
-                            port.getVendorId(),
-                            port.getProductId(),
-                            /* initialEnumeration= */ true);
+        synchronized (mLock) {
+            JniRawPtr<NativeSerialDeviceEnumeratorAndroid> nativePointer =
+                    assumeNonNull(mNativePointer);
+            for (int i = 0; i < ports.size(); i++) {
+                SerialPort port = ports.get(i);
+                mPorts.put(port.getName(), port);
+                ChromeSerialManagerJni.get()
+                        .addPortViaJni(
+                                nativePointer,
+                                port.getName(),
+                                port.getVendorId(),
+                                port.getProductId(),
+                                /* initialEnumeration= */ true);
+            }
         }
     }
 
@@ -95,6 +119,12 @@ public class ChromeSerialManager implements SerialPortListener {
     @VisibleForTesting
     protected void close() {
         mSerialManager.unregisterSerialPortListener(this);
+        synchronized (mLock) {
+            if (mNativePointer != null) {
+                mNativePointer.release();
+                mNativePointer = null;
+            }
+        }
     }
 
     /**
@@ -120,22 +150,27 @@ public class ChromeSerialManager implements SerialPortListener {
     @Override
     public void onSerialPortConnected(SerialPort port) {
         mPorts.put(port.getName(), port);
-        ChromeSerialManagerJni.get()
-                .addPortViaJni(
-                        mNativePointer,
-                        port.getName(),
-                        port.getVendorId(),
-                        port.getProductId(),
-                        /* initialEnumeration= */ false);
+        synchronized (mLock) {
+            if (mNativePointer == null) return;
+            ChromeSerialManagerJni.get()
+                    .addPortViaJni(
+                            mNativePointer,
+                            port.getName(),
+                            port.getVendorId(),
+                            port.getProductId(),
+                            /* initialEnumeration= */ false);
+        }
     }
 
     @Override
     public void onSerialPortDisconnected(SerialPort port) {
         mPorts.remove(port.getName());
-        ChromeSerialManagerJni.get().removePortViaJni(mNativePointer, port.getName());
+        synchronized (mLock) {
+            if (mNativePointer == null) return;
+            ChromeSerialManagerJni.get().removePortViaJni(mNativePointer, port.getName());
+        }
     }
 
-    @SuppressWarnings("NewApi")
     private class FileDescriptorReceiver implements OutcomeReceiver<SerialPortResponse, Exception> {
         private final String mPortName;
 
@@ -150,42 +185,56 @@ public class ChromeSerialManager implements SerialPortListener {
                 Log.e(TAG, "Port mismatch: " + response.getPort().getName() + " != " + mPortName);
                 return;
             }
-            int fd = response.getFileDescriptor().detachFd();
-            Log.d(TAG, "Returning file descriptor %d for port %s", fd, mPortName);
-            ChromeSerialManagerJni.get().openPathCallbackViaJni(mNativePointer, mPortName, fd);
+            synchronized (mLock) {
+                if (mNativePointer == null) {
+                    try {
+                        response.getFileDescriptor().close();
+                    } catch (IOException e) {
+                        Log.w(TAG, "Failed to close file descriptor", e);
+                    }
+                    return;
+                }
+                int fd = response.getFileDescriptor().detachFd();
+                Log.d(TAG, "Returning file descriptor %d for port %s", fd, mPortName);
+                ChromeSerialManagerJni.get().openPathCallbackViaJni(mNativePointer, mPortName, fd);
+            }
         }
 
         @Override
         public void onError(Exception error) {
             mReceivers.remove(mPortName);
             Log.e(TAG, "Failed requestOpen()", error);
-            ChromeSerialManagerJni.get()
-                    .errorCallbackViaJni(
-                            mNativePointer, mPortName, "Error opening port", error.toString());
+            synchronized (mLock) {
+                if (mNativePointer == null) return;
+                ChromeSerialManagerJni.get()
+                        .errorCallbackViaJni(
+                                mNativePointer, mPortName, "Error opening port", error.toString());
+            }
         }
     }
 
     @NativeMethods
     interface Natives {
         void openPathCallbackViaJni(
-                long nativeSerialDeviceEnumeratorAndroid,
+                JniPtr<NativeSerialDeviceEnumeratorAndroid> self,
                 @JniType("std::string") String portName,
                 int fd);
 
         void errorCallbackViaJni(
-                long nativeSerialDeviceEnumeratorAndroid,
+                JniPtr<NativeSerialDeviceEnumeratorAndroid> self,
                 @JniType("std::string") String portName,
                 @JniType("std::string") String errorName,
                 @JniType("std::string") String message);
 
         void addPortViaJni(
-                long nativeSerialDeviceEnumeratorAndroid,
+                JniPtr<NativeSerialDeviceEnumeratorAndroid> self,
                 @JniType("std::string") String name,
                 int vendorId,
                 int productId,
                 boolean initialEnumeration);
 
         void removePortViaJni(
-                long nativeSerialDeviceEnumeratorAndroid, @JniType("std::string") String name);
+                JniPtr<NativeSerialDeviceEnumeratorAndroid> self,
+                @JniType("std::string") String name);
     }
 }

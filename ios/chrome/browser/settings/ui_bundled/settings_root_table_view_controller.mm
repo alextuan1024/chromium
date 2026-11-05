@@ -17,8 +17,8 @@
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/ui/util/ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
-#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -60,7 +60,6 @@ const CGFloat kActivityIndicatorDimensionIPhone = 56;
 @implementation SettingsRootTableViewController
 
 @synthesize sceneHandler = _sceneHandler;
-@synthesize browserHandler = _browserHandler;
 @synthesize settingsHandler = _settingsHandler;
 @synthesize snackbarHandler = _snackbarHandler;
 
@@ -139,7 +138,6 @@ const CGFloat kActivityIndicatorDimensionIPhone = 56;
 - (void)configureHandlersForRootViewController:
     (id<SettingsRootViewControlling>)controller {
   controller.sceneHandler = self.sceneHandler;
-  controller.browserHandler = self.browserHandler;
   controller.settingsHandler = self.settingsHandler;
   controller.snackbarHandler = self.snackbarHandler;
 }
@@ -161,10 +159,11 @@ const CGFloat kActivityIndicatorDimensionIPhone = 56;
 - (UIBarButtonItem*)deleteButton {
   if (!_deleteButton) {
     _deleteButton = [[UIBarButtonItem alloc]
-        initWithTitle:l10n_util::GetNSString(IDS_IOS_SETTINGS_TOOLBAR_DELETE)
-                style:UIBarButtonItemStylePlain
-               target:self
-               action:@selector(deleteButtonCallback)];
+        initWithBarButtonSystemItem:UIBarButtonSystemItemTrash
+                             target:self
+                             action:@selector(deleteButtonCallback)];
+    _deleteButton.accessibilityLabel =
+        l10n_util::GetNSString(IDS_IOS_SETTINGS_TOOLBAR_DELETE);
     _deleteButton.accessibilityIdentifier = kSettingsToolbarDeleteButtonId;
     _deleteButton.tintColor = [UIColor colorNamed:kRedColor];
   }
@@ -383,8 +382,12 @@ const CGFloat kActivityIndicatorDimensionIPhone = 56;
   // Create `waitButton`.
   BOOL displayActivityIndicatorOnTheRight =
       self.navigationItem.rightBarButtonItem != nil;
+  UITraitCollection* traitCollection =
+      self.view.window
+          ? self.view.window.traitCollection
+          : self.navigationController.presentingViewController.traitCollection;
   CGFloat activityIndicatorDimension =
-      (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET)
+      IsRegularXRegularSizeClass(traitCollection)
           ? kActivityIndicatorDimensionIPad
           : kActivityIndicatorDimensionIPhone;
   BarButtonActivityIndicator* indicator = [[BarButtonActivityIndicator alloc]

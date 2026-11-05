@@ -12,7 +12,6 @@
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
 #include "components/browser_sync/browser_sync_switches.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/features/password_manager_features_util.h"
@@ -99,10 +98,7 @@ class SingleClientPasswordsSyncTest
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
   SingleClientPasswordsSyncTest() : SyncTest(SINGLE_CLIENT) {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitAndEnableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
-    } else {
+    if (GetSetupSyncMode() != SetupSyncMode::kSyncTransportOnly) {
       // Skip sync-to-signin migration for sync-the-feature tests. This is to
       // avoid the sync state changing between the PRE_ tests.
       scoped_feature_list_.InitAndDisableFeature(
@@ -164,7 +160,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPasswordsSyncTest,
   GetPasswordStoreInterface()->AddLogin(
       password_manager::FromPasswordForm(form));
   ASSERT_EQ(1, GetPasswordCount());
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  ASSERT_TRUE(ServerCountMatchStatusChecker(syncer::PASSWORDS, 1).Wait());
 
   const std::vector<sync_pb::SyncEntity> entities =
       fake_server_->GetSyncEntitiesByDataType(syncer::PASSWORDS);
@@ -194,7 +190,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPasswordsSyncTest,
   GetPasswordStoreInterface()->AddLogin(
       password_manager::FromPasswordForm(form));
   ASSERT_EQ(1, GetPasswordCount());
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  ASSERT_TRUE(ServerCountMatchStatusChecker(syncer::PASSWORDS, 1).Wait());
 
   const std::vector<sync_pb::SyncEntity> entities =
       fake_server_->GetSyncEntitiesByDataType(syncer::PASSWORDS);
@@ -219,7 +215,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPasswordsSyncTest,
   GetPasswordStoreInterface()->AddLogin(
       password_manager::FromPasswordForm(form));
   ASSERT_EQ(1, GetPasswordCount());
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  ASSERT_TRUE(ServerCountMatchStatusChecker(syncer::PASSWORDS, 1).Wait());
 
   std::string prior_encryption_key_name;
   {
@@ -241,7 +237,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientPasswordsSyncTest,
   ASSERT_TRUE(
       ServerPassphraseTypeChecker(syncer::PassphraseType::kCustomPassphrase)
           .Wait());
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  ASSERT_TRUE(CommittedAllNudgedChangesChecker(GetSyncService(0)).Wait());
 
   const std::vector<sync_pb::SyncEntity> entities =
       fake_server_->GetSyncEntitiesByDataType(syncer::PASSWORDS);
@@ -268,7 +264,6 @@ IN_PROC_BROWSER_TEST_P(SingleClientPasswordsSyncTest,
   // Setup sync, wait for its completion, and make sure changes were synced.
   base::HistogramTester histogram_tester;
   ASSERT_TRUE(SetupSync());
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
   // Upon a local creation, the received update will be seen as reflection and
   // get counted as incremental update.
   EXPECT_EQ(1, histogram_tester.GetBucketCount(
@@ -283,15 +278,9 @@ IN_PROC_BROWSER_TEST_P(SingleClientPasswordsSyncTest,
   ASSERT_EQ(1, GetPasswordCount());
 
   // Wait for data types to be ready for sync and trigger a sync cycle.
-  // Otherwise, TriggerRefresh() would be no-op.
+  // Otherwise, `TriggerRefreshAndWait()` would be no-op.
   ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());
-  GetSyncService(0)->TriggerRefresh(
-      syncer::SyncService::TriggerRefreshSource::kUnknown, {syncer::PASSWORDS});
-
-  // After restart, the last sync cycle snapshot should be empty. Once a sync
-  // request happened (e.g. by a poll), that snapshot is populated. We use the
-  // following checker to simply wait for an non-empty snapshot.
-  EXPECT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  EXPECT_TRUE(GetClient(0)->TriggerRefreshAndWait({syncer::PASSWORDS}));
 
   // If that metadata hasn't been properly persisted, the password stored on the
   // server will be received at the client as an initial update or an

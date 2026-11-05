@@ -13,7 +13,6 @@
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "chrome/browser/digital_credentials/digital_identity_low_risk_origins.h"
-#include "chrome/browser/ui/digital_credentials/digital_identity_safety_interstitial_bridge_android.h"
 #include "content/public/browser/digital_identity_provider.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/android/window_android.h"
@@ -26,22 +25,7 @@ using base::android::ScopedJavaLocalRef;
 
 using RequestStatusForMetrics =
     content::DigitalIdentityProvider::RequestStatusForMetrics;
-using DigitalIdentityInterstitialAbortCallback =
-    content::DigitalIdentityProvider::DigitalIdentityInterstitialAbortCallback;
 using DigitalCredential = content::DigitalIdentityProvider::DigitalCredential;
-
-namespace {
-
-void RunDigitalIdentityCallback(
-    std::unique_ptr<DigitalIdentitySafetyInterstitialBridgeAndroid> controller,
-    content::DigitalIdentityProvider::DigitalIdentityInterstitialCallback
-        callback,
-    content::DigitalIdentityProvider::RequestStatusForMetrics
-        status_for_metrics) {
-  std::move(callback).Run(status_for_metrics);
-}
-
-}  // anonymous namespace
 
 DigitalIdentityProviderAndroid::DigitalIdentityProviderAndroid() {
   JNIEnv* env = AttachCurrentThread();
@@ -61,24 +45,10 @@ bool DigitalIdentityProviderAndroid::IsLastCommittedOriginLowRisk(
   return digital_credentials::IsLastCommittedOriginLowRisk(render_frame_host);
 }
 
-DigitalIdentityInterstitialAbortCallback
-DigitalIdentityProviderAndroid::ShowDigitalIdentityInterstitial(
-    content::WebContents& web_contents,
-    const url::Origin& origin,
-    content::DigitalIdentityInterstitialType interstitial_type,
-    DigitalIdentityInterstitialCallback callback) {
-  auto controller =
-      std::make_unique<DigitalIdentitySafetyInterstitialBridgeAndroid>();
-  // Callback takes ownership of |controller|.
-  return controller->ShowInterstitial(
-      web_contents, origin, interstitial_type,
-      base::BindOnce(&RunDigitalIdentityCallback, std::move(controller),
-                     std::move(callback)));
-}
-
 void DigitalIdentityProviderAndroid::Get(content::WebContents* web_contents,
                                          const url::Origin& origin,
                                          base::ValueView request,
+                                         UiWarningLevel warning_level,
                                          DigitalIdentityCallback callback) {
   TRACE_EVENT("content.digitalcredentials",
               "DigitalIdentityProviderAndroid::Get");
@@ -89,16 +59,20 @@ void DigitalIdentityProviderAndroid::Get(content::WebContents* web_contents,
     return;
   }
 
-  callback_ = std::move(callback);
-
-  ScopedJavaLocalRef<jobject> j_window = nullptr;
-  if (web_contents && web_contents->GetTopLevelNativeWindow()) {
-    j_window = web_contents->GetTopLevelNativeWindow()->GetJavaObject();
+  // Reject early if the WebContents is detached from a native window, since
+  // the Android credential presentation flow requires a live WindowAndroid.
+  if (!web_contents || !web_contents->GetTopLevelNativeWindow()) {
+    std::move(callback).Run(
+        base::unexpected(RequestStatusForMetrics::kErrorOther));
+    return;
   }
 
+  callback_ = std::move(callback);
+
   Java_DigitalIdentityProvider_request(
-      AttachCurrentThread(), j_digital_identity_provider_android_, j_window,
-      origin.Serialize(), *request_str);
+      AttachCurrentThread(), j_digital_identity_provider_android_,
+      web_contents->GetTopLevelNativeWindow()->GetJavaObject(),
+      origin.Serialize(), *request_str, warning_level);
 }
 
 void DigitalIdentityProviderAndroid::Create(content::WebContents* web_contents,

@@ -582,18 +582,18 @@ TEST(HTTPParsersTest, ParseMultipartHeadersContentCharset) {
   EXPECT_EQ("utf-8", response.TextEncodingName());
 }
 
-void testServerTimingHeader(const char* headerValue,
-                            Vector<Vector<String>> expectedResults) {
+void testServerTimingHeader(const char* header_value,
+                            Vector<Vector<String>> expected_results) {
   std::unique_ptr<ServerTimingHeaderVector> results =
-      ParseServerTimingHeader(headerValue);
-  EXPECT_EQ((*results).size(), expectedResults.size());
+      ParseServerTimingHeader(header_value);
+  EXPECT_EQ((*results).size(), expected_results.size());
   unsigned i = 0;
   for (const auto& header : *results) {
-    Vector<String> expectedResult = expectedResults[i++];
-    EXPECT_EQ(header->Name(), expectedResult[0]);
+    Vector<String> expected_result = expected_results[i++];
+    EXPECT_EQ(header->Name(), expected_result[0]);
     EXPECT_EQ(header->Duration(),
-              StringToDouble(expectedResult[1]).value_or(0));
-    EXPECT_EQ(header->Description(), expectedResult[2]);
+              StringToDouble(expected_result[1]).value_or(0));
+    EXPECT_EQ(header->Description(), expected_result[2]);
   }
 }
 
@@ -1085,7 +1085,7 @@ TEST(ParseSRIMessageSignaturesTest, NoSignatures) {
       ("HTTP/1.1 200 OK\r\nSignature-Input: "
        "signature=(\"unencoded-digest\";sf);"
        "keyid=\"JrQLj5P/89iXES9+vFgrIy29clF9CC/oPPsw3c5D0bs=\";"
-       "tag=\"sri\"")};
+       "tag=\"ed25519-integrity\"")};
   for (const char* test : cases) {
     SCOPED_TRACE(test);
     auto result = ParseSRIMessageSignaturesFromHeaders(test);
@@ -1100,7 +1100,7 @@ TEST(ParseSRIMessageSignaturesTest, ValidSignature) {
       "UxXJprz89+2aOwEAz3w6KjjZuGkdrOUwxhBQ==:\r\n"
       "Signature-Input: signature=(\"unencoded-digest\";sf);"
       "keyid=\"JrQLj5P/89iXES9+vFgrIy29clF9CC/oPPsw3c5D0bs=\";"
-      "tag=\"sri\"\r\n\r\n";
+      "tag=\"ed25519-integrity\"\r\n\r\n";
   Vector<uint8_t> key_bytes;
   ASSERT_TRUE(Base64Decode(
       StringView("JrQLj5P/89iXES9+vFgrIy29clF9CC/oPPsw3c5D0bs="), key_bytes));
@@ -1112,7 +1112,7 @@ TEST(ParseSRIMessageSignaturesTest, ValidSignature) {
   EXPECT_FALSE(parsed->signatures[0]->expires.has_value());
   EXPECT_EQ(key_bytes, parsed->signatures[0]->keyid);
   EXPECT_TRUE(parsed->signatures[0]->nonce.IsNull());
-  EXPECT_EQ("sri", parsed->signatures[0]->tag);
+  EXPECT_EQ("ed25519-integrity", parsed->signatures[0]->tag);
 
   EXPECT_EQ(
       "amDAmvl9bsfIcfA/bIJsBuBvInjJAaxxNIlLOzNI3FkrnG2k52UxXJprz89+2aOwEAz3w6Kj"

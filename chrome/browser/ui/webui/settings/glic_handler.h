@@ -38,6 +38,10 @@ class GlicHandler : public SettingsPageUIHandler,
   // Returns whether the web actuation toggle should be shown for `profile`.
   static bool ShouldShowWebActuationToggle(Profile* profile);
 
+  // Returns whether web actuation is blocked by enterprise policy for
+  // `profile`.
+  static bool IsWebActuationDisabledForEnterprise(Profile* profile);
+
   // Returns whether the experimental triggering toggle should be shown for
   // `profile`.
   static bool ShouldShowExperimentalTriggeringToggle(Profile* profile);
@@ -60,6 +64,8 @@ class GlicHandler : public SettingsPageUIHandler,
  private:
   FRIEND_TEST_ALL_PREFIXES(GlicHandlerBrowserTest, UpdateShortcutSuspension);
   FRIEND_TEST_ALL_PREFIXES(GlicHandlerBrowserTest, UpdateGlicShortcut);
+  FRIEND_TEST_ALL_PREFIXES(GlicHandlerBrowserTest, OnHotkeyScopeSettingsChange);
+  FRIEND_TEST_ALL_PREFIXES(GlicHandlerBrowserTest, OnHotkeyCleared);
   FRIEND_TEST_ALL_PREFIXES(GlicHandlerBrowserTest,
                            ToggleActorLoginPermissionsObservation);
   FRIEND_TEST_ALL_PREFIXES(GlicHandlerBrowserTest, GetActorLoginPermissions);
@@ -108,8 +114,15 @@ class GlicHandler : public SettingsPageUIHandler,
   // `args`.
   void HandleSetGlicFocusToggleShortcut(const base::ListValue& args);
 
+  // Handles hotkey scope changes from the settings page and records metrics.
+  void HandleOnHotkeyScopeSettingsChange(const base::ListValue& args);
+
   // Sends the client whether glic is disallowed by the admin or not.
   void HandleGetGlicDisallowedByAdmin(const base::ListValue& args);
+
+  // Sets the assistant selection the user picked before restarting Chrome to
+  // switch Glic provider.
+  void HandleSwitchAssistantSelection(const base::ListValue& args);
 
   // Handles requests for actor login permissions for display in settings.
   void HandleGetActorLoginPermissions(const base::ListValue& args);

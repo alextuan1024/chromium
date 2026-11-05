@@ -5,9 +5,9 @@
 #include "third_party/blink/renderer/core/layout/inline/inline_cursor.h"
 
 #include <algorithm>
+#include <ranges>
 
 #include "base/compiler_specific.h"
-#include "base/containers/adapters.h"
 #include "base/containers/span.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
@@ -33,7 +33,7 @@ namespace {
 bool IsBidiControl(StringView string) {
   // SAFETY: length of one implies first element valid.
   return string.length() == 1 &&
-         Character::IsBidiControl(UNSAFE_BUFFERS(string[0]));
+         unicode::IsBidiControl(UNSAFE_BUFFERS(string[0]));
 }
 
 LogicalRect ExpandedSelectionRectForSoftLineBreakIfNeeded(
@@ -140,6 +140,22 @@ bool ShouldIgnoreForPositionForPoint(const InlineCursor& line) {
   // There are no block-in-inline and inline leaf.
   // Note: editing/selection/last-empty-inline.html requires this to skip
   // empty <span> with padding.
+  return true;
+}
+
+// Bounds the cost of |LayoutObject| descendant traversals for culled inlines
+// in |InlineCursor::MoveToFirstForCulledInline|. A culled inline may have a
+// huge number of descendants (crbug.com/1008523).
+constexpr unsigned kCulledInlineDescendantsLimit = 8;
+
+bool HasFewDescendants(const LayoutInline& layout_inline) {
+  unsigned count = 0;
+  for (const LayoutObject* descendant = layout_inline.FirstChild(); descendant;
+       descendant = descendant->NextInPreOrder(&layout_inline)) {
+    if (++count > kCulledInlineDescendantsLimit) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -302,7 +318,7 @@ bool InlineCursorPosition::HasSoftWrapToNextLine() const {
 }
 
 bool InlineCursorPosition::IsInlineLeaf() const {
-  if (IsHiddenForPaint()) {
+  if (IsHiddenDueToLayout()) {
     return false;
   }
   if (IsText()) {
@@ -1096,8 +1112,8 @@ void InlineCursor::MoveToLastChild() {
 
 void InlineCursor::MoveToLastLine() {
   DCHECK(HasRoot());
-  auto iter = std::ranges::find(base::Reversed(items_), FragmentItem::kLine,
-                                &FragmentItem::Type);
+  auto iter = std::ranges::find(std::views::reverse(items_),
+                                FragmentItem::kLine, &FragmentItem::Type);
   if (iter != items_.rend())
     MoveToItem(std::next(iter).base());
   else
@@ -1121,16 +1137,16 @@ void InlineCursor::MoveToLastLogicalLeaf() {
 
 void InlineCursor::MoveToLastNonPseudoLeaf() {
   // TODO(yosin): We should introduce |IsTruncated()| to avoid to use
-  // |in_hidden_for_paint|. See also |LayoutText::GetTextBoxInfo()|.
+  // |is_hidden_due_to_layout|. See also |LayoutText::GetTextBoxInfo()|.
   // When "text-overflow:ellipsis" specified, items usually are:
-  //  [i+0] original non-truncated text (IsHiddenForPaint()=true)
+  //  [i+0] original non-truncated text (IsHiddenDueToLayout()=true)
   //  [i+1] truncated text
   //  [i+2] ellipsis (IsLayoutGeneratedText())
   // But this is also possible:
   //  [i+0] atomic inline box
   //  [i+1] ellipsis (IsLayoutGeneratedText())
   InlineCursor last_leaf;
-  bool in_hidden_for_paint = false;
+  bool is_hidden_due_to_layout = false;
   for (InlineCursor cursor = *this; cursor; cursor.MoveToNext()) {
     if (cursor.Current().IsLineBox())
       continue;
@@ -1148,11 +1164,11 @@ void InlineCursor::MoveToLastNonPseudoLeaf() {
         // |cursor| is at ellipsis.
         break;
       }
-      if (in_hidden_for_paint && !cursor.Current().IsHiddenForPaint()) {
+      if (is_hidden_due_to_layout && !cursor.Current().IsHiddenDueToLayout()) {
         // |cursor| is at truncated text.
         break;
       }
-      in_hidden_for_paint = cursor.Current().IsHiddenForPaint();
+      is_hidden_due_to_layout = cursor.Current().IsHiddenDueToLayout();
       // Exclude bidi control only fragment, e.g.
       // <p dir=ltr>&#x202B;xyz ABC.&#x202C;</p> has
       //  [0] "\u202Bxyz "
@@ -1430,6 +1446,15 @@ void InlineCursor::MoveTo(const LayoutObject& layout_object) {
   DCHECK_EQ(is_descendants_cursor, IsDescendantsCursor());
   if (root_block_flow_) {
     DCHECK(!is_descendants_cursor);
+    if ((item_index < fragment_items_->SizeOfEarlierFragments() ||
+         fragment_index_ > max_fragment_index_) &&
+        RuntimeEnabledFeatures::
+            InlineCursorMoveToEarlierFragmentainerEnabled()) {
+      MoveToFirstIncludingFragmentainer();
+      if (!Current()) {
+        return;
+      }
+    }
     while (item_index >= fragment_items_->EndItemIndex()) {
       MoveToNextFragmentainer();
       if (!Current())
@@ -1610,8 +1635,14 @@ void InlineCursor::MoveToFirstForCulledInline(
   // When |this| is a descendant cursor, |this| may be limited to a very small
   // subset of the |LayoutObject| descendants, and that traversing
   // |LayoutObject| descendants is much more expensive. Prefer checking every
-  // fragment in that case.
-  if (IsDescendantsCursor()) {
+  // fragment in that case, unless the culled inline has only a few
+  // descendants: scanning fragments is O(size of the cursor range) per culled
+  // inline, which is quadratic when hit-testing a line with many culled
+  // inlines (crbug.com/454861482), while a small |LayoutObject| traversal is
+  // O(1).
+  if (IsDescendantsCursor() &&
+      (!RuntimeEnabledFeatures::CulledInlineDescendantsTraversalEnabled() ||
+       !HasFewDescendants(layout_inline))) {
     culled_inline_.SetUseFragmentTree(layout_inline);
     DCHECK(!CanMoveAcrossFragmentainer());
     MoveToFirst();
@@ -1649,13 +1680,36 @@ void InlineCursor::MoveToNextForCulledInline() {
 
 void InlineCursor::MoveToNextCulledInlineDescendantIfNeeded() {
   DCHECK(culled_inline_);
-  if (Current())
-    return;
-
-  while (const LayoutObject* layout_object = culled_inline_.MoveToNext()) {
-    MoveTo(*layout_object);
-    if (Current())
+  if (!IsDescendantsCursor() ||
+      !RuntimeEnabledFeatures::CulledInlineDescendantsTraversalEnabled()) {
+    if (Current()) {
       return;
+    }
+    while (const LayoutObject* layout_object = culled_inline_.MoveToNext()) {
+      MoveTo(*layout_object);
+      if (Current()) {
+        return;
+      }
+    }
+    return;
+  }
+
+  // Find() skips descendants of non-culled inline boxes. A descendants
+  // cursor also excludes atomic inlines and objects outside inline layout.
+  for (;;) {
+    if (Current()) {
+      const LayoutObject* layout_object = Current().GetLayoutObject();
+      if (layout_object && !layout_object->IsAtomicInline() &&
+          (layout_object->IsInline() || layout_object->IsBlockInInline())) {
+        return;
+      }
+    }
+    const LayoutObject* layout_object = culled_inline_.MoveToNext();
+    if (!layout_object) {
+      MakeNull();
+      return;
+    }
+    MoveTo(*layout_object);
   }
 }
 

@@ -28,7 +28,11 @@ ExclusiveAccessManagerAndroid::ExclusiveAccessManagerAndroid(
   j_eam_.Reset(j_eam);
 }
 
-ExclusiveAccessManagerAndroid::~ExclusiveAccessManagerAndroid() = default;
+ExclusiveAccessManagerAndroid::~ExclusiveAccessManagerAndroid() {
+  if (eac_) {
+    eac_->Destroy(jni_zero::AttachCurrentThread());
+  }
+}
 
 bool ExclusiveAccessManagerAndroid::CanEnterFullscreenModeForTab(
     JNIEnv* env,
@@ -59,12 +63,19 @@ void ExclusiveAccessManagerAndroid::ExitFullscreenModeForTab(
     const jni_zero::JavaRef<jobject>& jweb_contents) {
   content::WebContents* wc =
       content::WebContents::FromJavaWebContents(jweb_contents);
-  DCHECK(wc != nullptr);
+  CHECK(wc != nullptr, base::NotFatalUntil::M162);
   eam_.fullscreen_controller()->ExitFullscreenModeForTab(wc);
+}
+
+void ExclusiveAccessManagerAndroid::ToggleBrowserFullscreenMode(
+    JNIEnv* env,
+    bool user_initiated) {
+  eam_.fullscreen_controller()->ToggleBrowserFullscreenMode(user_initiated);
 }
 
 bool ExclusiveAccessManagerAndroid::HasExclusiveAccess(JNIEnv* env) {
   return eam_.fullscreen_controller()->IsTabFullscreen() ||
+         eam_.fullscreen_controller()->IsFullscreenForBrowser() ||
          eam_.pointer_lock_controller()->IsPointerLocked() ||
          eam_.keyboard_lock_controller()->IsKeyboardLockActive();
 }
@@ -74,7 +85,7 @@ bool ExclusiveAccessManagerAndroid::IsFullscreenForTabOrPending(
     const jni_zero::JavaRef<jobject>& jweb_contents) {
   content::WebContents* wc =
       content::WebContents::FromJavaWebContents(jweb_contents);
-  DCHECK(wc != nullptr);
+  CHECK(wc != nullptr, base::NotFatalUntil::M162);
 
   auto state = eam_.fullscreen_controller()->GetFullscreenState(wc);
 
@@ -95,7 +106,7 @@ void ExclusiveAccessManagerAndroid::RequestKeyboardLock(
     bool escKeyLocked) {
   content::WebContents* wc =
       content::WebContents::FromJavaWebContents(jweb_contents);
-  DCHECK_NE(wc, nullptr);
+  CHECK_NE(wc, nullptr, base::NotFatalUntil::M162);
   eam_.keyboard_lock_controller()->RequestKeyboardLock(wc, escKeyLocked);
 }
 
@@ -104,7 +115,7 @@ void ExclusiveAccessManagerAndroid::CancelKeyboardLockRequest(
     const jni_zero::JavaRef<jobject>& jweb_contents) {
   content::WebContents* wc =
       content::WebContents::FromJavaWebContents(jweb_contents);
-  DCHECK_NE(wc, nullptr);
+  CHECK_NE(wc, nullptr, base::NotFatalUntil::M162);
   eam_.keyboard_lock_controller()->CancelKeyboardLockRequest(wc);
 }
 
@@ -119,7 +130,7 @@ void ExclusiveAccessManagerAndroid::RequestPointerLock(
     bool last_unlocked_by_target) {
   content::WebContents* wc =
       content::WebContents::FromJavaWebContents(jweb_contents);
-  DCHECK(wc != nullptr);
+  CHECK(wc != nullptr, base::NotFatalUntil::M162);
   eam_.pointer_lock_controller()->RequestToLockPointer(wc, user_gesture,
                                                        last_unlocked_by_target);
 }
@@ -130,6 +141,18 @@ void ExclusiveAccessManagerAndroid::LostPointerLock(JNIEnv* env) {
 
 void ExclusiveAccessManagerAndroid::ExitExclusiveAccess(JNIEnv* env) {
   eam_.ExitExclusiveAccess();
+}
+
+void ExclusiveAccessManagerAndroid::ExitAllExclusiveAccess(JNIEnv* env) {
+  eam_.ExitExclusiveAccess();
+  // In nested fullscreen (tab fullscreen on top of browser immersive mode),
+  // the first ExitExclusiveAccess() call only pops tab fullscreen. When tearing
+  // down all fullscreen (e.g. when the activity is hidden or when restoring the
+  // window into desktop windowing mode), call again to also exit browser
+  // immersive mode.
+  if (eam_.fullscreen_controller()->IsFullscreenForBrowser()) {
+    eam_.ExitExclusiveAccess();
+  }
 }
 
 void ExclusiveAccessManagerAndroid::OnTabDeactivated(
@@ -162,25 +185,16 @@ void ExclusiveAccessManagerAndroid::ForceActiveTab(
   eac_->ForceActiveTab(env, j_tab);
 }
 
-void ExclusiveAccessManagerAndroid::Destroy(JNIEnv* env) {
-  if (eac_) {
-    // Notify the Java counterpart to drop its native pointer before
-    // the C++ object is destroyed, preventing a use-after-free.
-    eac_->Destroy(env);
-  }
-  delete this;
-}
-
-static int64_t JNI_ExclusiveAccessManager_Init(
+static jni_zero::JniUniquePtr<ExclusiveAccessManagerAndroid>
+JNI_ExclusiveAccessManager_Init(
     JNIEnv* env,
     const jni_zero::JavaRef<jobject>& jeam,
     const jni_zero::JavaRef<jobject>& j_window_android,
     const jni_zero::JavaRef<jobject>& j_fullscreen_manager,
     const jni_zero::JavaRef<jobject>& j_activity_tab_provider) {
-  ExclusiveAccessManagerAndroid* content = new ExclusiveAccessManagerAndroid(
+  return jni_zero::MakeUnique<ExclusiveAccessManagerAndroid>(
       env, jeam, j_window_android, j_fullscreen_manager,
       j_activity_tab_provider);
-  return reinterpret_cast<intptr_t>(content);
 }
 
 DEFINE_JNI(ExclusiveAccessManager)

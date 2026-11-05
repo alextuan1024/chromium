@@ -5,6 +5,7 @@
 module network.mojom;
 
 import "mojo/public/mojom/base/big_buffer.mojom";
+import "mojo/public/mojom/base/byte_string.mojom";
 import "mojo/public/mojom/base/file_path.mojom";
 import "mojo/public/mojom/base/time.mojom";
 import "mojo/public/mojom/base/unguessable_token.mojom";
@@ -182,11 +183,14 @@ struct TrustedUrlRequestParams {
   // experiment and will be removed after standardization.
   HttpResponseHeaders? expected_response_headers_for_synthetic_response;
 
-  // If true, `Content-Type: message/ad-auction-trusted-signals-request` will
-  // be treated as a CORS-safelisted Content-Type, so it will not trigger a CORS
-  // preflight. No new consumers should use this. It will be removed once the
-  // deprecated Protected Audiences code is deleted.
-  bool is_ad_auction_trusted_signals_request = false;
+  // Whether the context for this trusted request could potentially be allowed
+  // to receive unpartitioned storage access. The effective value for the
+  // request is the logical AND of this field and
+  // `URLLoaderFactoryParams.is_storage_access_potentially_allowed` (so `true`
+  // here does not override `false` on the factory). Trusted browser callers
+  // sharing a `URLLoaderFactory` across frames (such as
+  // `NavigationURLLoaderImpl`) set this to `false` for restricted contexts.
+  bool is_storage_access_potentially_allowed = true;
 };
 
 // Options that may only be set on URLRequests which are related to WebBundle.
@@ -332,6 +336,25 @@ struct URLRequest {
   // need to add your own headers to the list.
   HttpRequestHeaders cors_exempt_headers;  // See Note above before using.
 
+  // The browser's User-Agent for this request, after DevTools and embedder
+  // overrides. It is CORS-exempt, unlike a User-Agent in `headers`, which will
+  // follow the CORS protocol once User-Agent is no longer a forbidden request
+  // header (crbug.com/40450316).
+  //
+  // The request sends it only if neither `headers` nor `cors_exempt_headers`
+  // has a User-Agent. While the AllowUserAgentHeaderFromScript feature is
+  // enabled, CORS preflights send it in place of any User-Agent in `headers`.
+  // If it is null and no other User-Agent applies, the NetworkContext's
+  // User-Agent is sent; an empty string sends an empty User-Agent.
+  //
+  // Like other header values, it is opaque bytes, not necessarily UTF-8. It
+  // may be set by renderers. Deserialization trims surrounding whitespace and
+  // fails for values that are not valid header values. CorsURLLoaderFactory
+  // rejects the request with a bad message while the feature is disabled;
+  // otherwise it truncates the value to its first 512 bytes and trims any
+  // trailing whitespace the cut leaves.
+  mojo_base.mojom.ByteString? content_user_agent;
+
   // net::URLRequest load flags.
   int32 load_flags;
 
@@ -414,6 +437,10 @@ struct URLRequest {
 
   // True if login prompts for this request should be suppressed. Cached
   // credentials or default credentials may still be used for authentication.
+  // Server auth challenges are cancelled in the network service. Proxy auth
+  // challenges are forwarded to the URLLoaderNetworkServiceObserver, flagged
+  // with `do_not_prompt_for_login`, so that non-UI credential sources (e.g.
+  // extensions) can answer them.
   bool do_not_prompt_for_login;
 
   // True if |frame_id| is the outermost main frame of a page.
@@ -574,14 +601,12 @@ struct URLRequest {
   // network error will be returned.
   network.mojom.IPAddressSpace required_ip_address_space;
 
-  // True if the request is eligible for using Storage Access API grant (if
-  // one exists). This is secure since the renderer cannot forge a new storage
-  // access permission grant, so the renderer would not be able to gain access
-  // to unpartitioned cookies without also compromising the browser process or
-  // the network service. If permission has already been granted, then the
-  // compromised renderer would be able to access unpartitioned cookies. But by
-  // assumption, the browser process has already determined that this access is
-  // ok.
+  // Indicates whether the request is eligible to use a Storage Access API grant
+  // (if one exists). The Network Service validates this field against both
+  // `URLLoaderFactoryParams.is_storage_access_potentially_allowed` and
+  // `TrustedUrlRequestParams.is_storage_access_potentially_allowed` to ensure a
+  // compromised renderer hosting a storage-access-restricted document cannot
+  // opt into an existing Storage Access API permission grant.
   StorageAccessApiStatus storage_access_api_status;
 
   // When applicable, i.e. `keepalive` is true, indicates a fetch keepalive

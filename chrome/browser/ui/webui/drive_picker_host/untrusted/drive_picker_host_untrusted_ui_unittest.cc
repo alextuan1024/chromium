@@ -6,6 +6,7 @@
 
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/ui/views/drive_picker_host/drive_picker_result_handler.mojom.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/omnibox/common/omnibox_features.h"
@@ -105,9 +106,17 @@ TEST_F(DrivePickerUntrustedHostUITest, IsWebUIEnabled_FeatureEnabled) {
 
 TEST_F(DrivePickerUntrustedHostUITest, IsWebUIEnabled_FeatureDisabled) {
   DrivePickerUntrustedHostUIConfig config;
-  feature_list_.InitAndDisableFeature(
-      omnibox::kComposeboxDriveContextMenuOption);
+  feature_list_.InitWithFeatures(
+      {},
+      {omnibox::kComposeboxDriveContextMenuOption, features::kGlicDrivePicker});
   EXPECT_FALSE(config.IsWebUIEnabled(profile()));
+}
+
+TEST_F(DrivePickerUntrustedHostUITest, IsWebUIEnabled_GlicFeatureEnabled) {
+  DrivePickerUntrustedHostUIConfig config;
+  feature_list_.InitWithFeatures({features::kGlicDrivePicker},
+                                 {omnibox::kComposeboxDriveContextMenuOption});
+  EXPECT_TRUE(config.IsWebUIEnabled(profile()));
 }
 
 TEST_F(DrivePickerUntrustedHostUITest, ShowDrivePickerForwardsToPage) {
@@ -244,8 +253,9 @@ TEST_F(DrivePickerUntrustedHostUITest, LoadConsentKitUrl_ForwardsToPage) {
 
   const GURL test_url("https://consent.google.com/primitive?hl=en");
   base::RunLoop run_loop;
-  EXPECT_CALL(mock_page, LoadConsentKitUrl(test_url))
-      .WillOnce(testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+  EXPECT_CALL(mock_page, LoadConsentKitUrl(test_url)).WillOnce([&run_loop]() {
+    run_loop.Quit();
+  });
 
   controller.LoadConsentKitUrl(test_url);
 

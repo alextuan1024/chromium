@@ -10,14 +10,22 @@
 #include "base/test/bind.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
+#include "chrome/browser/ui/views/frame/horizontal_tab_strip_region_view.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_header_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interaction_test_util_browser.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
+#include "components/tabs/public/tab_interface.h"
 #include "ui/base/interaction/interactive_test.h"
+#include "ui/views/view_utils.h"
+#include "ui/views/widget/widget.h"
 
 // Template to be used as a mixin class for tab strip tests extending
 // InProcessBrowserTest.
@@ -36,22 +44,50 @@ class TabStripInteractiveTestMixin : public T {
       delete;
 
   auto FinishTabstripAnimations() {
-    if (base::FeatureList::IsEnabled(tabs::kTabStripUnification)) {
-      return T::Steps(T::WaitForShow(kTabStripRegionElementId));
-    }
-    return T::Steps(T::WaitForShow(kTabStripElementId),
-                    T::WithView(kTabStripElementId, [](TabStrip* tab_strip) {
-                      tab_strip->StopAnimating();
-                    }));
+    return T::Steps(
+        T::WaitForShow(kTabStripRegionElementId),
+        T::WithView(kTabStripRegionElementId, [](TabStripRegionView*
+                                                     region_view) {
+          if (auto* base_region_view =
+                  views::AsViewClass<BaseTabStripRegionView>(region_view)) {
+            // Flush pending layout to kick off any queued
+            // animations, stop them, then re-run layout to snap
+            // views to their target bounds.
+            if (views::Widget* widget = base_region_view->GetWidget()) {
+              widget->LayoutRootViewIfNecessary();
+            }
+            if (auto* controller =
+                    base_region_view->GetTabStripCollectionController()) {
+              controller->animation_coordinator().StopAllAnimationsForTesting();
+            }
+            if (views::Widget* widget = base_region_view->GetWidget()) {
+              widget->LayoutRootViewIfNecessary();
+            }
+          } else if (auto* old_region_view =
+                         views::AsViewClass<HorizontalTabStripRegionViewOld>(
+                             region_view)) {
+            if (auto* tab_strip = old_region_view->tab_strip()) {
+              tab_strip->StopAnimating();
+            }
+          }
+        }));
   }
 
   auto FocusTabAt(int index) {
     const char kTabToFocus[] = "Tab to focus";
     if (base::FeatureList::IsEnabled(tabs::kTabStripUnification)) {
-      return T::Steps(FinishTabstripAnimations(),
-                      T::template NameDescendantViewByType<TabView>(
-                          kBrowserViewElementId, kTabToFocus, index),
-                      T::FocusElement(kTabToFocus));
+      return T::Steps(
+          FinishTabstripAnimations(),
+          T::NameViewRelative(
+              kTabStripRegionElementId, kTabToFocus,
+              base::BindOnce(
+                  [](TabStripModel* tab_strip_model, int index,
+                     BaseTabStripRegionView* region_view) {
+                    return region_view->GetTabAnchorView(
+                        tab_strip_model->GetTabAtIndex(index)->GetHandle());
+                  },
+                  T::browser()->GetTabStripModel(), index)),
+          T::FocusElement(kTabToFocus));
     }
     return T::Steps(FinishTabstripAnimations(),
                     T::template NameDescendantViewByType<Tab>(
@@ -62,10 +98,18 @@ class TabStripInteractiveTestMixin : public T {
   auto HoverTabAt(int index) {
     const char kTabToHover[] = "Tab to hover";
     if (base::FeatureList::IsEnabled(tabs::kTabStripUnification)) {
-      return T::Steps(FinishTabstripAnimations(),
-                      T::template NameDescendantViewByType<TabView>(
-                          kBrowserViewElementId, kTabToHover, index),
-                      T::MoveMouseTo(kTabToHover));
+      return T::Steps(
+          FinishTabstripAnimations(),
+          T::NameViewRelative(
+              kTabStripRegionElementId, kTabToHover,
+              base::BindOnce(
+                  [](TabStripModel* tab_strip_model, int index,
+                     BaseTabStripRegionView* region_view) {
+                    return region_view->GetTabAnchorView(
+                        tab_strip_model->GetTabAtIndex(index)->GetHandle());
+                  },
+                  T::browser()->GetTabStripModel(), index)),
+          T::MoveMouseTo(kTabToHover));
     }
     return T::Steps(FinishTabstripAnimations(),
                     T::template NameDescendantViewByType<Tab>(

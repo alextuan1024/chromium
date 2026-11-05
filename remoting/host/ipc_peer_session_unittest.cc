@@ -5,14 +5,18 @@
 #include "remoting/host/ipc_peer_session.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "build/build_config.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
@@ -63,6 +67,8 @@ class MockPeerSessionReceiver : public mojom::PeerSession {
   }
 
   void Close() { receiver_.reset(); }
+
+  void CloseEventHandler() { event_handler_remote_.reset(); }
 
   void set_start_closure(base::OnceClosure closure) {
     start_closure_ = std::move(closure);
@@ -268,9 +274,22 @@ class MockEventHandler : public PeerSession::EventHandler {
   void OnSessionChannelsConnected() override {}
   void OnSessionClosed(protocol::ErrorCode error,
                        const std::string& error_details,
-                       const SourceLocation& error_location) override {}
+                       const SourceLocation& error_location) override {
+    if (session_closed_callback_) {
+      std::move(session_closed_callback_).Run(error, error_details);
+    }
+  }
   void OnSessionRouteChange(const std::string& channel_name,
                             const protocol::TransportRoute& route) override {}
+
+  void set_session_closed_callback(
+      base::OnceCallback<void(protocol::ErrorCode, std::string)> callback) {
+    session_closed_callback_ = std::move(callback);
+  }
+
+ private:
+  base::OnceCallback<void(protocol::ErrorCode, std::string)>
+      session_closed_callback_;
 };
 
 }  // namespace
@@ -594,10 +613,60 @@ TEST_F(IpcPeerSessionTest,
       session_requested_future.Take();
   ASSERT_TRUE(received_options);
   EXPECT_EQ(received_options->client_id, "client_id_123@domain.com");
-  EXPECT_TRUE(received_options->is_curtained);
+  EXPECT_TRUE(received_options->curtain_required);
+#if BUILDFLAG(IS_LINUX)
+  EXPECT_FALSE(received_options->terminate_local_session);
+#endif  // BUILDFLAG(IS_LINUX)
   EXPECT_EQ(received_options->screen_resolution.dimensions().width(), 1600);
   EXPECT_EQ(received_options->screen_resolution.dimensions().height(), 900);
 }
+
+#if BUILDFLAG(IS_LINUX)
+TEST_F(IpcPeerSessionTest,
+       RequestDesktopSessionPropagatesTerminateLocalSession) {
+  mojo::PendingRemote<mojom::PeerSession> remote;
+  MockPeerSessionReceiver receiver;
+  receiver.Bind(remote.InitWithNewPipeAndPassReceiver());
+
+  base::test::TestFuture<mojo::PendingReceiver<mojom::DesktopSession>,
+                         mojo::PendingRemote<mojom::DesktopSessionEvents>,
+                         mojom::DesktopSessionOptionsPtr>
+      session_requested_future;
+  auto session = std::make_unique<IpcPeerSession>(
+      std::move(remote), session_requested_future.GetRepeatingCallback(),
+      std::make_unique<FakeIceConfigFetcher>(protocol::IceConfig()),
+      base::NullCallback());
+
+  base::test::TestFuture<void> start_future;
+  receiver.set_start_closure(start_future.GetCallback());
+
+  SessionOptions session_options;
+  session_options.terminate_local_session = true;
+
+  MockEventHandler event_handler;
+  session->Start(&event_handler, "client_id_123@domain.com/channel",
+                 DesktopEnvironmentOptions(), SessionPolicies(),
+                 session_options);
+  EXPECT_TRUE(start_future.Wait());
+
+  ASSERT_TRUE(receiver.desktop_session_requester_remote().is_bound());
+
+  mojo::PendingRemote<mojom::DesktopSession> control_remote;
+  mojo::PendingReceiver<mojom::DesktopSession> control_receiver =
+      control_remote.InitWithNewPipeAndPassReceiver();
+  mojo::PendingRemote<mojom::DesktopSessionEvents> events_remote;
+  mojo::PendingReceiver<mojom::DesktopSessionEvents> events_receiver =
+      events_remote.InitWithNewPipeAndPassReceiver();
+  receiver.desktop_session_requester_remote()->RequestDesktopSession(
+      std::move(control_receiver), std::move(events_remote),
+      ScreenResolution());
+
+  auto [received_control_receiver, received_events_remote, received_options] =
+      session_requested_future.Take();
+  ASSERT_TRUE(received_options);
+  EXPECT_TRUE(received_options->terminate_local_session);
+}
+#endif  // BUILDFLAG(IS_LINUX)
 
 TEST_F(IpcPeerSessionTest, RequestDesktopSessionRejectsDuplicateRequests) {
   mojo::PendingRemote<mojom::PeerSession> remote;
@@ -966,6 +1035,81 @@ TEST_F(IpcPeerSessionTest, IpcPeerSessionFactorySetsRequestPairingCallback) {
   static_cast<IpcPeerSession*>(session.get())
       ->RequestPairing("test_client", base::DoNothing());
   EXPECT_TRUE(pairing_called);
+}
+
+TEST_F(IpcPeerSessionTest, StartWhenRemoteUnboundNotifiesInvalidState) {
+  auto session = std::make_unique<IpcPeerSession>(
+      mojo::NullRemote(), base::DoNothing(),
+      std::make_unique<FakeIceConfigFetcher>(protocol::IceConfig()),
+      base::NullCallback());
+
+  base::test::TestFuture<protocol::ErrorCode, std::string> closed_future;
+  MockEventHandler event_handler;
+  event_handler.set_session_closed_callback(closed_future.GetCallback());
+
+  session->Start(&event_handler, "client@example.com/test",
+                 DesktopEnvironmentOptions(), SessionPolicies(),
+                 SessionOptions());
+
+  EXPECT_EQ(closed_future.Get<0>(), protocol::ErrorCode::INVALID_STATE);
+  EXPECT_EQ(closed_future.Get<1>(), "PeerSession remote is not bound.");
+}
+
+TEST_F(IpcPeerSessionTest, PeerSessionRemoteDisconnectedNotifiesInvalidState) {
+  mojo::PendingRemote<mojom::PeerSession> remote;
+  MockPeerSessionReceiver receiver;
+  receiver.Bind(remote.InitWithNewPipeAndPassReceiver());
+
+  auto session = std::make_unique<IpcPeerSession>(
+      std::move(remote), base::DoNothing(),
+      std::make_unique<FakeIceConfigFetcher>(protocol::IceConfig()),
+      base::NullCallback());
+
+  base::test::TestFuture<void> start_future;
+  receiver.set_start_closure(start_future.GetCallback());
+
+  base::test::TestFuture<protocol::ErrorCode, std::string> closed_future;
+  MockEventHandler event_handler;
+  event_handler.set_session_closed_callback(closed_future.GetCallback());
+
+  session->Start(&event_handler, "client@example.com/test",
+                 DesktopEnvironmentOptions(), SessionPolicies(),
+                 SessionOptions());
+  EXPECT_TRUE(start_future.Wait());
+
+  receiver.Close();
+
+  EXPECT_EQ(closed_future.Get<0>(), protocol::ErrorCode::INVALID_STATE);
+  EXPECT_EQ(closed_future.Get<1>(), "PeerSession remote dropped unexpectedly.");
+}
+
+TEST_F(IpcPeerSessionTest, EventHandlerRemoteDisconnectedNotifiesInvalidState) {
+  mojo::PendingRemote<mojom::PeerSession> remote;
+  MockPeerSessionReceiver receiver;
+  receiver.Bind(remote.InitWithNewPipeAndPassReceiver());
+
+  auto session = std::make_unique<IpcPeerSession>(
+      std::move(remote), base::DoNothing(),
+      std::make_unique<FakeIceConfigFetcher>(protocol::IceConfig()),
+      base::NullCallback());
+
+  base::test::TestFuture<void> start_future;
+  receiver.set_start_closure(start_future.GetCallback());
+
+  base::test::TestFuture<protocol::ErrorCode, std::string> closed_future;
+  MockEventHandler event_handler;
+  event_handler.set_session_closed_callback(closed_future.GetCallback());
+
+  session->Start(&event_handler, "client@example.com/test",
+                 DesktopEnvironmentOptions(), SessionPolicies(),
+                 SessionOptions());
+  EXPECT_TRUE(start_future.Wait());
+
+  receiver.CloseEventHandler();
+
+  EXPECT_EQ(closed_future.Get<0>(), protocol::ErrorCode::INVALID_STATE);
+  EXPECT_EQ(closed_future.Get<1>(),
+            "PeerSessionEventHandler dropped unexpectedly.");
 }
 
 }  // namespace remoting

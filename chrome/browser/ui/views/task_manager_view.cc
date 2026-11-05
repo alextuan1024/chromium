@@ -16,7 +16,7 @@
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/task_manager/common/task_manager_features.h"
-#include "chrome/browser/task_manager/task_manager_interface.h"
+#include "chrome/browser/task_manager/task_manager_prefs.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -192,16 +192,11 @@ bool TaskManagerView::IsColumnVisible(int column_id) const {
 }
 
 bool TaskManagerView::SetColumnVisibility(int column_id, bool new_visibility) {
-  // Check if there is at least 1 visible column before changing the visibility.
-  // If this column would be the last column to be visible and its hiding, then
-  // prevent this column visibility change. see crbug.com/40836680 for details.
-  if (!new_visibility && tab_table_->visible_columns().size() <= 1) {
-    return false;
-  }
-
-  const bool currently_visible = tab_table_->IsColumnVisible(column_id);
+  // The table keeps its last visible column (crbug.com/40836680), so report
+  // what actually changed rather than what was asked for.
+  const bool was_visible = tab_table_->IsColumnVisible(column_id);
   tab_table_->SetColumnVisibility(column_id, new_visibility);
-  return new_visibility != currently_visible;
+  return tab_table_->IsColumnVisible(column_id) != was_visible;
 }
 
 bool TaskManagerView::IsTableSorted() const {
@@ -353,7 +348,8 @@ bool TaskManagerView::IsCommandIdChecked(int id) const {
 }
 
 bool TaskManagerView::IsCommandIdEnabled(int id) const {
-  return true;
+  // The last visible column cannot be hidden, so do not offer to.
+  return !tab_table_->IsLastVisibleColumn(id);
 }
 
 void TaskManagerView::ExecuteCommand(int id, int event_flags) {
@@ -526,7 +522,7 @@ std::unique_ptr<views::View> TaskManagerView::CreateSearchBar(
   const int horizontal_spacing = provider->GetDistanceMetric(
       DISTANCE_TASK_MANAGER_SEARCH_BAR_ICON_AND_BUTTON_HORIZONTAL_SPACING);
   const int search_bar_container_radius = provider->GetCornerRadiusMetric(
-      views::ShapeContextTokens::kOmniboxExpandedRadius);
+      ChromeShapeContextTokens::kOmniboxExpandedRadius);
 
   auto search_bar_layout = std::make_unique<views::BoxLayout>();
   search_bar_layout->SetOrientation(views::LayoutOrientation::kHorizontal);
@@ -575,12 +571,11 @@ void TaskManagerView::Init() {
   }
 
   // Create the table view.
-  auto tab_table = std::make_unique<views::TableView>(
-      nullptr, columns_, views::TableType::kIconAndText, false);
-  tab_table_ = tab_table.get();
   table_model_ = std::make_unique<TaskManagerTableModel>(
       this, DisplayCategory::kTabsAndExtensions);
-  tab_table->SetModel(table_model_.get());
+  auto tab_table = std::make_unique<views::TableView>(
+      table_model_.get(), columns_, views::TableType::kIconAndText, false);
+  tab_table_ = tab_table.get();
   tab_table->SetGrouper(this);
   tab_table->SetGrouperVisibility(false);
   tab_table->SetSortOnPaint(true);
@@ -787,7 +782,7 @@ bool TaskManagerView::IsEndProcessButtonEnabled() const {
     }
   }
 
-  return !selections.empty() && TaskManagerInterface::IsEndProcessEnabled();
+  return !selections.empty() && IsEndProcessEnabled();
 }
 
 BEGIN_METADATA(TaskManagerView)

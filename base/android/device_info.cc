@@ -4,6 +4,7 @@
 
 #include "base/android/device_info.h"
 
+#include <optional>
 #include <string>
 
 #include "base/android/jni_android.h"
@@ -14,6 +15,8 @@
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/synchronization/lock.h"
+#include "base/types/pass_key.h"
+#include "third_party/jni_zero/default_conversions.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "base/build_info_jni/DeviceInfo_jni.h"
@@ -182,6 +185,18 @@ void reset_is_desktop_for_testing() {
   get_holder().reset();
 }
 
+void set_is_automotive_for_testing(bool is_automotive) {
+  Java_DeviceInfo_setIsAutomotiveForTesting(AttachCurrentThread(),  // IN-TEST
+                                            is_automotive);
+  get_holder().reset();
+}
+
+void reset_is_automotive_for_testing() {
+  Java_DeviceInfo_resetIsAutomotiveForTesting(  // IN-TEST
+      AttachCurrentThread());
+  get_holder().reset();
+}
+
 void set_is_foldable_for_testing(bool is_foldable) {
   Java_DeviceInfo_setIsFoldableForTesting(AttachCurrentThread(),
                                           is_foldable);  // IN-TEST
@@ -191,6 +206,13 @@ void set_is_foldable_for_testing(bool is_foldable) {
 void reset_is_foldable_for_testing() {
   Java_DeviceInfo_resetIsFoldableForTesting(AttachCurrentThread());  // IN-TEST
   get_holder().reset();
+}
+
+std::optional<std::string> set_device_name_for_testing(
+    base::PassKey<ScopedDeviceName>,
+    std::optional<std::string> device_name) {
+  return Java_DeviceInfo_setDeviceNameForTesting(  // IN-TEST
+      AttachCurrentThread(), device_name);
 }
 
 }  // namespace base::android::device_info

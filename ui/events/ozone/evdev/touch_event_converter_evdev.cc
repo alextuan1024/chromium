@@ -19,7 +19,6 @@
 #include <queue>
 
 #include "base/command_line.h"
-#include "base/feature_list.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -172,8 +171,6 @@ std::optional<ui::HeatmapPalmDetector::CropHeatmap> GetCropHeatmap(
   if (info.HasKeyEvent(BTN_TOOL_PEN)) {
     return std::nullopt;
   }
-  std::vector<SupportedHidrawDevice> supported_hidraw_devices =
-      GetSupportedHidrawDevices();
   for (const SupportedHidrawDevice& device : GetSupportedHidrawDevices()) {
     if (info.name() == device.name && info.vendor_id() == device.vendor_id &&
         info.product_id() == device.product_id) {
@@ -186,10 +183,6 @@ std::optional<ui::HeatmapPalmDetector::CropHeatmap> GetCropHeatmap(
 }  // namespace
 
 namespace ui {
-
-BASE_FEATURE(kEnableSingleCancelTouch,
-             "EnableSingleTouchCancel",
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 TouchEventConverterEvdev::TouchEventConverterEvdev(
     base::ScopedFD fd,
@@ -249,8 +242,6 @@ HeatmapPalmDetector::ModelId TouchEventConverterEvdev::GetHidrawModelId(
   if (info.HasKeyEvent(BTN_TOOL_PEN)) {
     return HeatmapPalmDetector::ModelId::kNotSupported;
   }
-  std::vector<SupportedHidrawDevice> supported_hidraw_devices =
-      GetSupportedHidrawDevices();
   for (const SupportedHidrawDevice& device : GetSupportedHidrawDevices()) {
     if (info.name() == device.name && info.vendor_id() == device.vendor_id &&
         info.product_id() == device.product_id) {
@@ -651,7 +642,7 @@ EventType TouchEventConverterEvdev::GetEventTypeForTouch(
       touch.was_touching && !touch.was_delayed && !touch.was_cancelled;
 
   // Delaying an already live touch is not possible.
-  DCHECK(!touch_was_alive || !touch.delayed);
+  CHECK(!touch_was_alive || !touch.delayed, base::NotFatalUntil::M163);
 
   if ((!touch_was_alive && !touch_is_alive) || touch.was_cancelled) {
     // Ignore this touch; it was never born or has already died.
@@ -692,8 +683,7 @@ bool TouchEventConverterEvdev::MaybeCancelAllTouches() {
   // TODO(denniskempin): Remove once upper layers properly handle single
   // cancelled touches.
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kDisableCancelAllTouches) ||
-      base::FeatureList::IsEnabled(kEnableSingleCancelTouch)) {
+          switches::kDisableCancelAllTouches)) {
     return false;
   }
   for (size_t i = 0; i < events_.size(); i++) {

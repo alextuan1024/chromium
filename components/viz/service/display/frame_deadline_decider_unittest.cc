@@ -5,9 +5,11 @@
 #include "components/viz/service/display/frame_deadline_decider.h"
 
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include "base/rand_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_mock_time_task_runner.h"
@@ -28,14 +30,16 @@ class FrameDeadlineDeciderTest : public testing::Test {
  public:
   FrameDeadlineDeciderTest() = default;
   ~FrameDeadlineDeciderTest() override = default;
+
+ protected:
+  std::optional<base::MetricsSubSampler::ScopedAlwaysSampleForTesting>
+      always_sample_{std::in_place};
 };
 
 PossibleDeadlines CreatePossibleDeadlines(
     size_t os_preferred_index,
     std::vector<PossibleDeadline> deadlines) {
-  PossibleDeadlines possible_deadlines(os_preferred_index);
-  possible_deadlines.deadlines = std::move(deadlines);
-  return possible_deadlines;
+  return PossibleDeadlines(os_preferred_index, std::move(deadlines));
 }
 
 TEST_F(FrameDeadlineDeciderTest, FeatureDisabledFallback) {
@@ -58,7 +62,7 @@ TEST_F(FrameDeadlineDeciderTest, FeatureDisabledFallback) {
                                        std::nullopt,
                                        /*is_handling_interaction=*/false));
   histogram_tester.ExpectUniqueSample(
-      "Viz.FrameDeadlineDecider.SelectionReason",
+      "Viz.FrameDeadlineDecider.SelectionReason2",
       FrameDeadlineDecider::SelectionReason::kPlatformPreferred, 1);
 }
 
@@ -77,9 +81,9 @@ TEST_F(FrameDeadlineDeciderTest, SelectedSustainableDeadline_True) {
                          /*is_handling_interaction=*/false);
 
   histogram_tester.ExpectUniqueSample(
-      "Viz.FrameDeadlineDecider.SelectedSustainableDeadline", true, 1);
+      "Viz.FrameDeadlineDecider.SelectedSustainableDeadline2", true, 1);
   histogram_tester.ExpectUniqueSample(
-      "Viz.FrameDeadlineDecider.SelectionReason",
+      "Viz.FrameDeadlineDecider.SelectionReason2",
       FrameDeadlineDecider::SelectionReason::kPlatformPreferred, 1);
 }
 
@@ -98,10 +102,30 @@ TEST_F(FrameDeadlineDeciderTest, SelectedSustainableDeadline_False) {
                          /*is_handling_interaction=*/false);
 
   histogram_tester.ExpectUniqueSample(
-      "Viz.FrameDeadlineDecider.SelectedSustainableDeadline", false, 1);
+      "Viz.FrameDeadlineDecider.SelectedSustainableDeadline2", false, 1);
   histogram_tester.ExpectUniqueSample(
-      "Viz.FrameDeadlineDecider.SelectionReason",
+      "Viz.FrameDeadlineDecider.SelectionReason2",
       FrameDeadlineDecider::SelectionReason::kPlatformPreferred, 1);
+}
+
+TEST_F(FrameDeadlineDeciderTest, HistogramsNotRecordedWhenSubsampledOut) {
+  always_sample_.reset();
+  base::MetricsSubSampler::ScopedNeverSampleForTesting never_sample;
+
+  base::HistogramTester histogram_tester;
+  FrameDeadlineDecider decider(/*use_platform_preferred_deadlines=*/true);
+
+  auto deadlines = CreatePossibleDeadlines(
+      0, {PossibleDeadline(1, base::Milliseconds(8), base::Milliseconds(41))});
+
+  decider.SelectDeadline(deadlines, k120HzVsyncInterval, k120HzAllowedBuffers,
+                         base::TimeTicks(), std::nullopt,
+                         /*is_handling_interaction=*/false);
+
+  histogram_tester.ExpectTotalCount(
+      "Viz.FrameDeadlineDecider.SelectedSustainableDeadline2", 0);
+  histogram_tester.ExpectTotalCount("Viz.FrameDeadlineDecider.SelectionReason2",
+                                    0);
 }
 
 TEST_F(FrameDeadlineDeciderTest, OngoingInteractionSequenceRetention) {
@@ -124,7 +148,7 @@ TEST_F(FrameDeadlineDeciderTest, OngoingInteractionSequenceRetention) {
                              /*is_handling_interaction=*/true),
       2u);
   histogram_tester.ExpectBucketCount(
-      "Viz.FrameDeadlineDecider.SelectionReason",
+      "Viz.FrameDeadlineDecider.SelectionReason2",
       FrameDeadlineDecider::SelectionReason::kChromePreferredNewSequence, 1);
 
   // Frame 2 (t=150ms): Active interaction continues (> 50ms threshold).
@@ -136,7 +160,7 @@ TEST_F(FrameDeadlineDeciderTest, OngoingInteractionSequenceRetention) {
                              /*is_handling_interaction=*/true),
       2u);
   histogram_tester.ExpectBucketCount(
-      "Viz.FrameDeadlineDecider.SelectionReason",
+      "Viz.FrameDeadlineDecider.SelectionReason2",
       FrameDeadlineDecider::SelectionReason::kOngoingSequence, 1);
 }
 
@@ -633,7 +657,7 @@ TEST_F(AndroidFrameDeadlineDeciderTest, SanityGuardFallback) {
                                        std::nullopt,
                                        /*is_handling_interaction=*/false));
   histogram_tester.ExpectUniqueSample(
-      "Viz.FrameDeadlineDecider.SelectionReason",
+      "Viz.FrameDeadlineDecider.SelectionReason2",
       FrameDeadlineDecider::SelectionReason::kOsPreferredChromePreferredSooner,
       1);
 }
@@ -663,7 +687,7 @@ TEST_F(AndroidFrameDeadlineDeciderTest, SelectionReason_FallbackExceedsTarget) {
                                        /*is_handling_interaction=*/false));
 
   histogram_tester.ExpectUniqueSample(
-      "Viz.FrameDeadlineDecider.SelectionReason",
+      "Viz.FrameDeadlineDecider.SelectionReason2",
       FrameDeadlineDecider::SelectionReason::kOsPreferredNoDeadlineWithinTarget,
       1);
 }

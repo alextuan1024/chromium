@@ -40,9 +40,6 @@ namespace {
 using base::test::IsJson;
 using testing::Optional;
 
-constexpr char kReportingUploadHeaderTypeHistogram[] =
-    "Net.Reporting.UploadHeaderType";
-
 constexpr size_t kMaxReportBodySizeBytes = 1024;  // 1KB for testing
 
 constexpr std::string CreateStringWithLength(size_t size_bytes) {
@@ -122,24 +119,6 @@ class ReportingDeliveryAgentTest : public ReportingTestBase {
     EXPECT_TRUE(delivery_timer()->IsRunning());
   }
 
-  // Prime delivery timer with a document report with a endpoint group that
-  // has matching reporting_source.
-  void UploadFirstDocumentReportAndStartTimer() {
-    ReportingEndpointGroupKey dummy_group(
-        kNak_, kDocumentReportingSource_,
-        url::Origin::Create(GURL("https://dummy.test")), "dummy",
-        ReportingTargetType::kDeveloper);
-    SetV1EndpointInCache(dummy_group, kDocumentReportingSource_,
-                         kIsolationInfo_, GURL("https://dummy.test/upload"));
-    AddReport(kDocumentReportingSource_, dummy_group.network_anonymization_key,
-              dummy_group.origin.value().GetURL(), dummy_group.group_name);
-
-    ASSERT_EQ(1u, pending_uploads().size());
-    pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
-    EXPECT_EQ(0u, pending_uploads().size());
-    EXPECT_TRUE(delivery_timer()->IsRunning());
-  }
-
   void SendReportsForSource(base::UnguessableToken reporting_source) {
     delivery_agent()->SendReportsForSource(reporting_source);
   }
@@ -147,7 +126,7 @@ class ReportingDeliveryAgentTest : public ReportingTestBase {
   void SendReports() { delivery_agent()->SendReportsForTesting(); }
 
   bool AreReportsProcessed() {
-    std::vector<raw_ptr<const ReportingReport, VectorExperimental>>
+    std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>>
         cached_reports;
     cache()->GetReports(&cached_reports);
     return cached_reports.empty();
@@ -196,7 +175,6 @@ class ReportingDeliveryAgentTest : public ReportingTestBase {
 };
 
 TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateUpload) {
-  base::HistogramTester histograms;
   ASSERT_TRUE(SetEndpointInCache(kGroupKey_, kEndpoint_, kExpires_));
   AddReport(kEmptyReportingSource_, kNak_, kUrl_, kGroup_);
 
@@ -215,16 +193,9 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateUpload) {
   pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
 
   // Successful upload should remove delivered reports.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_TRUE(reports.empty());
-  histograms.ExpectBucketCount(
-      kReportingUploadHeaderTypeHistogram,
-      ReportingDeliveryAgent::ReportingUploadHeaderType::kReportTo, 1);
-  histograms.ExpectBucketCount(
-      kReportingUploadHeaderTypeHistogram,
-      ReportingDeliveryAgent::ReportingUploadHeaderType::kReportingEndpoints,
-      0);
 
   {
     ReportingEndpoint::Statistics stats =
@@ -238,31 +209,7 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateUpload) {
   // TODO(dcreager): Check that BackoffEntry was informed of success.
 }
 
-TEST_F(ReportingDeliveryAgentTest, ReportToHeaderCountedCorrectly) {
-  base::HistogramTester histograms;
-
-  // Set an endpoint with no reporting source (as if configured with the
-  // Report-To header).
-  ASSERT_TRUE(SetEndpointInCache(kGroupKey_, kEndpoint_, kExpires_));
-
-  // Add and upload a report with an associated source.
-  AddReport(kDocumentReportingSource_, kNak_, kUrl_, kGroup_);
-  pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
-
-  // Successful upload should count this as a Report-To delivery, even though
-  // the report itself had a reporting source.
-  histograms.ExpectBucketCount(
-      kReportingUploadHeaderTypeHistogram,
-      ReportingDeliveryAgent::ReportingUploadHeaderType::kReportTo, 1);
-  histograms.ExpectBucketCount(
-      kReportingUploadHeaderTypeHistogram,
-      ReportingDeliveryAgent::ReportingUploadHeaderType::kReportingEndpoints,
-      0);
-}
-
 TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateUploadDocumentReport) {
-  base::HistogramTester histograms;
-
   SetV1EndpointInCache(kDocumentGroupKey_, kDocumentReportingSource_,
                        kIsolationInfo_, kEndpoint_);
   AddReport(kDocumentReportingSource_, kNak_, kUrl_, kGroup_);
@@ -282,16 +229,9 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateUploadDocumentReport) {
   pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
 
   // Successful upload should remove delivered reports.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_TRUE(reports.empty());
-  histograms.ExpectBucketCount(
-      kReportingUploadHeaderTypeHistogram,
-      ReportingDeliveryAgent::ReportingUploadHeaderType::kReportingEndpoints,
-      1);
-  histograms.ExpectBucketCount(
-      kReportingUploadHeaderTypeHistogram,
-      ReportingDeliveryAgent::ReportingUploadHeaderType::kReportTo, 0);
 
   {
     ReportingEndpoint::Statistics stats =
@@ -301,35 +241,6 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateUploadDocumentReport) {
     EXPECT_EQ(1, stats.attempted_reports);
     EXPECT_EQ(1, stats.successful_reports);
   }
-}
-
-TEST_F(ReportingDeliveryAgentTest, UploadHeaderTypeEnumCountPerReport) {
-  UploadFirstDocumentReportAndStartTimer();
-  base::HistogramTester histograms;
-
-  SetV1EndpointInCache(kDocumentGroupKey_, kDocumentReportingSource_,
-                       kIsolationInfo_, kEndpoint_);
-  AddReport(kDocumentReportingSource_, kNak_, kUrl_, kGroup_);
-  AddReport(kDocumentReportingSource_, kNak_, kUrl_, kGroup_);
-
-  // There should be one upload per (NAK, origin, reporting source).
-  EXPECT_TRUE(delivery_timer()->IsRunning());
-  delivery_timer()->Fire();
-
-  ASSERT_EQ(1u, pending_uploads().size());
-  pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
-
-  // Successful upload should remove delivered reports.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
-  cache()->GetReports(&reports);
-  EXPECT_TRUE(reports.empty());
-  histograms.ExpectBucketCount(
-      kReportingUploadHeaderTypeHistogram,
-      ReportingDeliveryAgent::ReportingUploadHeaderType::kReportingEndpoints,
-      2);
-  histograms.ExpectBucketCount(
-      kReportingUploadHeaderTypeHistogram,
-      ReportingDeliveryAgent::ReportingUploadHeaderType::kReportTo, 0);
 }
 
 TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateSubdomainUpload) {
@@ -352,7 +263,7 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulImmediateSubdomainUpload) {
   pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
 
   // Successful upload should remove delivered reports.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_TRUE(reports.empty());
 
@@ -392,7 +303,7 @@ TEST_F(ReportingDeliveryAgentTest,
   }
 
   // Successful upload should remove delivered reports.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_TRUE(reports.empty());
 }
@@ -431,7 +342,7 @@ TEST_F(ReportingDeliveryAgentTest, SuccessfulDelayedUpload) {
   }
 
   // Successful upload should remove delivered reports.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_TRUE(reports.empty());
 
@@ -458,7 +369,7 @@ TEST_F(ReportingDeliveryAgentTest, FailedUpload) {
   }
 
   // Failed upload should increment reports' attempts.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   ASSERT_EQ(1u, reports.size());
   EXPECT_EQ(1, reports[0]->attempts);
@@ -509,7 +420,7 @@ TEST_F(ReportingDeliveryAgentTest, DisallowedUpload) {
   }
 
   // Disallowed reports should NOT have been removed from the cache.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_EQ(1u, reports.size());
 }
@@ -531,7 +442,7 @@ TEST_F(ReportingDeliveryAgentTest, RemoveEndpointUpload) {
 
   // "Remove endpoint" upload should remove endpoint from *all* origins and
   // increment reports' attempts.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   ASSERT_EQ(1u, reports.size());
   EXPECT_EQ(1, reports[0]->attempts);
@@ -555,7 +466,7 @@ TEST_F(ReportingDeliveryAgentTest, ConcurrentRemove) {
   ASSERT_EQ(1u, pending_uploads().size());
 
   // Remove the report while the upload is running.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_EQ(1u, reports.size());
 
@@ -587,7 +498,7 @@ TEST_F(ReportingDeliveryAgentTest, ConcurrentRemoveDuringPermissionsCheck) {
   ASSERT_TRUE(context()->test_delegate()->PermissionsCheckPaused());
 
   // Remove the report while the upload is running.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_EQ(1u, reports.size());
 
@@ -876,6 +787,144 @@ TEST_F(ReportingDeliveryAgentTest, SendDeveloperReportsForSource) {
   EXPECT_EQ(0u, pending_uploads().size());
 }
 
+// Verifies that when `SendReportsForSource()` is called while an upload for the
+// same (reporting_source, group) is already in flight, the second report is not
+// uploaded concurrently, and is instead sent immediately as soon as the
+// in-flight upload completes rather than waiting for the periodic delivery
+// timer.
+TEST_F(ReportingDeliveryAgentTest,
+       SendDeveloperReportsForSourceWithPendingUpload) {
+  const base::UnguessableToken kReportingSource =
+      base::UnguessableToken::Create();
+  const IsolationInfo kIsolationInfo =
+      IsolationInfo::Create(IsolationInfo::RequestType::kOther, kOrigin_,
+                            kOrigin_, SiteForCookies::FromOrigin(kOrigin_));
+  const ReportingEndpointGroupKey kGroupKey(kNak_, kReportingSource, kOrigin_,
+                                            kGroup_,
+                                            ReportingTargetType::kDeveloper);
+
+  SetV1EndpointInCache(kGroupKey, kReportingSource, kIsolationInfo, kUrl_);
+
+  // The first report starts uploading immediately via `OnReportsUpdated()` and
+  // starts the periodic delivery timer.
+  AddReport(kReportingSource, kNak_, kUrl_, kGroup_);
+  EXPECT_EQ(0u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(1u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+  ASSERT_EQ(1u, pending_uploads().size());
+
+  // Queue a second report for the same (reporting_source, group) and explicitly
+  // request an immediate flush while the first upload is still in flight.
+  // Because concurrent uploads to the same group are disallowed, the second
+  // report must remain queued while the first upload is pending.
+  AddReport(kReportingSource, kNak_, kUrl_, kGroup_);
+  SendReportsForSource(kReportingSource);
+  EXPECT_EQ(1u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(1u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+  ASSERT_EQ(1u, pending_uploads().size());
+
+  // Completing the first upload must immediately drain the deferred flush for
+  // `kReportingSource` without waiting for `delivery_timer()` to fire.
+  pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
+  EXPECT_EQ(0u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(1u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+  ASSERT_EQ(1u, pending_uploads().size());
+
+  pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
+  EXPECT_EQ(0u, pending_uploads().size());
+  EXPECT_EQ(0u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(0u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+}
+
+TEST_F(ReportingDeliveryAgentTest,
+       SendDeveloperReportsForSourceWithPendingUploadFailure) {
+  const base::UnguessableToken kReportingSource =
+      base::UnguessableToken::Create();
+  const IsolationInfo kIsolationInfo =
+      IsolationInfo::Create(IsolationInfo::RequestType::kOther, kOrigin_,
+                            kOrigin_, SiteForCookies::FromOrigin(kOrigin_));
+  const ReportingEndpointGroupKey kGroupKey(kNak_, kReportingSource, kOrigin_,
+                                            kGroup_,
+                                            ReportingTargetType::kDeveloper);
+
+  SetV1EndpointInCache(kGroupKey, kReportingSource, kIsolationInfo, kUrl_);
+
+  AddReport(kReportingSource, kNak_, kUrl_, kGroup_);
+  ASSERT_EQ(1u, pending_uploads().size());
+
+  AddReport(kReportingSource, kNak_, kUrl_, kGroup_);
+  SendReportsForSource(kReportingSource);
+  EXPECT_EQ(1u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(1u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+  ASSERT_EQ(1u, pending_uploads().size());
+
+  // When the first upload fails, the endpoint enters backoff. The deferred
+  // flush runs, finds no available endpoint out of backoff, and returns both
+  // the failed first report and the second report to `QUEUED`.
+  pending_uploads()[0]->Complete(ReportingUploader::Outcome::FAILURE);
+  EXPECT_TRUE(pending_uploads().empty());
+  EXPECT_EQ(2u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(0u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+
+  // Once the endpoint backoff expires, both queued reports are batched and
+  // uploaded together.
+  tick_clock()->Advance(base::Seconds(60));
+  SendReportsForSource(kReportingSource);
+  EXPECT_EQ(0u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(2u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+  ASSERT_EQ(1u, pending_uploads().size());
+
+  pending_uploads()[0]->Complete(ReportingUploader::Outcome::SUCCESS);
+  EXPECT_TRUE(pending_uploads().empty());
+  EXPECT_EQ(0u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(0u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+}
+
+TEST_F(ReportingDeliveryAgentTest,
+       SendDeveloperReportsForSourceWithPendingUploadRemoveEndpoint) {
+  const base::UnguessableToken kReportingSource =
+      base::UnguessableToken::Create();
+
+  ASSERT_TRUE(SetEndpointInCache(kGroupKey_, kEndpoint_, kExpires_));
+
+  AddReport(kReportingSource, kNak_, kUrl_, kGroup_);
+  ASSERT_EQ(1u, pending_uploads().size());
+
+  AddReport(kReportingSource, kNak_, kUrl_, kGroup_);
+  SendReportsForSource(kReportingSource);
+  EXPECT_EQ(1u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(1u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+  ASSERT_EQ(1u, pending_uploads().size());
+
+  // Completing with `REMOVE_ENDPOINT` removes the endpoint from the cache.
+  // The deferred flush runs, finds no valid endpoint, and leaves both reports
+  // `QUEUED` without starting a new upload.
+  pending_uploads()[0]->Complete(ReportingUploader::Outcome::REMOVE_ENDPOINT);
+  EXPECT_FALSE(FindEndpointInCache(kGroupKey_, kEndpoint_));
+  EXPECT_TRUE(pending_uploads().empty());
+  EXPECT_EQ(2u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(0u, cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+}
+
 TEST_F(ReportingDeliveryAgentTest, SendEnterpriseReports) {
   const ReportingEndpointGroupKey kEnterpriseGroupKey(
       NetworkAnonymizationKey(), /*reporting_source=*/std::nullopt,
@@ -892,7 +941,7 @@ TEST_F(ReportingDeliveryAgentTest, SendEnterpriseReports) {
   EXPECT_EQ(0u, pending_uploads().size());
 
   // Successful upload should remove delivered reports.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_TRUE(reports.empty());
 }
@@ -927,7 +976,7 @@ TEST_F(ReportingDeliveryAgentTest, SendEnterpriseReportsBatched) {
   EXPECT_EQ(0u, pending_uploads().size());
 
   // Successful upload should remove delivered reports.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_TRUE(reports.empty());
 }
@@ -960,7 +1009,7 @@ TEST_F(ReportingDeliveryAgentTest, SendDeveloperAndEnterpriseReports) {
   EXPECT_EQ(0u, pending_uploads().size());
 
   // Successful upload should remove delivered reports.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   cache()->GetReports(&reports);
   EXPECT_TRUE(reports.empty());
 }

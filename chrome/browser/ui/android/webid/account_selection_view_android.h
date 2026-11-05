@@ -6,7 +6,9 @@
 #define CHROME_BROWSER_UI_ANDROID_WEBID_ACCOUNT_SELECTION_VIEW_ANDROID_H_
 
 #include <string>
+#include <vector>
 
+#include "base/containers/flat_map.h"
 #include "chrome/browser/ui/webid/account_selection_view.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom-shared.h"
@@ -53,6 +55,8 @@ class AccountSelectionViewAndroid : public AccountSelectionView {
                            const IdentityRequestAccountPtr& account,
                            Account::SignInMode sign_in_mode,
                            blink::mojom::RpMode rp_mode) override;
+  bool ShowNativeAppUi(
+      const content::NativeAppRequestOptions& request_options) override;
 
   std::string GetTitle() const override;
   std::optional<std::string> GetSubtitle() const override;
@@ -66,27 +70,37 @@ class AccountSelectionViewAndroid : public AccountSelectionView {
   content::WebContents* GetRpWebContents() override;
   void SetCanShowUi(bool can_show_ui) override;
 
-  void OnAccountSelected(JNIEnv* env,
-                         const GURL& idp_config_url,
+  void OnAccountSelected(const GURL& idp_config_url,
                          const std::string& account_id,
                          bool is_sign_in);
-  void OnDismiss(JNIEnv* env, int32_t dismiss_reason);
-  void OnLoginToIdP(JNIEnv* env,
-                    const GURL& idp_config_url,
-                    const GURL& idp_login_url);
-  void OnMoreDetails(JNIEnv* env);
-  void OnAccountsDisplayed(JNIEnv* env);
-  void OnNativeAppResult(JNIEnv* env, const std::string& token);
-  void OnNativeAppLoginFinished(JNIEnv* env);
+  void OnDismiss(int32_t dismiss_reason);
+  void OnLoginToIdP(const GURL& idp_config_url, const GURL& idp_login_url);
+  void OnMoreDetails();
+  void OnAccountsDisplayed();
+  void OnNativeAppResult(const std::string& token);
+  void OnNativeAppError(const std::string& code, const GURL& url);
+  void OnNativeAppLoginFinished();
+
+  static std::vector<jni_zero::ScopedJavaLocalRef<jobject>>
+  ConvertToJavaIdentityProvidersListForTesting(
+      const std::vector<IdentityProviderDataPtr>& identity_providers,
+      const base::flat_map<IdentityProviderDataPtr,
+                           jni_zero::ScopedJavaLocalRef<jobject>>&
+          identity_providers_map);
 
  private:
+  base::android::ScopedJavaLocalRef<jobject>
+  ConvertToJavaNativeAppRequestOptions(
+      JNIEnv* env,
+      const content::NativeAppRequestOptions& request_options);
+
   // Returns either true if the java counterpart of this bridge is initialized
   // successfully or false if the creation failed.
   bool MaybeCreateJavaObject(std::optional<blink::mojom::RpMode> rp_mode);
 
   // Applies to both active mode (modal) and passive mode (widget/bottom sheet).
   bool can_show_ui_ = true;
-  base::android::ScopedJavaGlobalRef<jobject> java_object_internal_;
+  jni_zero::ScopedJavaGlobalRef<jobject> java_object_internal_;
 };
 
 #endif  // CHROME_BROWSER_UI_ANDROID_WEBID_ACCOUNT_SELECTION_VIEW_ANDROID_H_

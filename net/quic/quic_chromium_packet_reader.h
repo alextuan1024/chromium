@@ -6,9 +6,11 @@
 #ifndef NET_QUIC_QUIC_CHROMIUM_PACKET_READER_H_
 #define NET_QUIC_QUIC_CHROMIUM_PACKET_READER_H_
 
+#include <utility>
+
 #include "base/containers/circular_deque.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/weak_ptr.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_export.h"
@@ -31,7 +33,7 @@ const int kQuicYieldAfterDurationMilliseconds = 2;
 class NET_EXPORT_PRIVATE QuicChromiumPacketReader {
   // TODO(crbug.com/422045782): Remove this macro once we identified the cause
   // of the bug.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   class NET_EXPORT_PRIVATE Visitor {
@@ -64,6 +66,10 @@ class NET_EXPORT_PRIVATE QuicChromiumPacketReader {
 
   DatagramClientSocket* socket() { return socket_.get(); }
 
+  bool TakeIsDispatchingPacket() {
+    return std::exchange(is_dispatching_packet_, false);
+  }
+
   void CloseSocket();
 
  private:
@@ -79,12 +85,16 @@ class NET_EXPORT_PRIVATE QuicChromiumPacketReader {
   bool ProcessPendingPackets();
   void ResumeProcessingPendingPackets();
   bool ProcessSingleDatagram(const DatagramMetadata& datagram);
+  // Passes `packet` to the visitor. Returns true if reading should continue.
+  // If it returns false, `this` may have been destroyed.
+  bool DispatchPacket(const quic::QuicReceivedPacket& packet);
 
   std::unique_ptr<DatagramClientSocket> socket_;
 
   raw_ptr<Visitor> visitor_;
   const bool use_read_multiple_;
   bool read_pending_ = false;
+  bool is_dispatching_packet_ = false;
   int num_packets_read_ = 0;
   raw_ptr<const quic::QuicClock> clock_;  // Not owned.
   int yield_after_packets_;

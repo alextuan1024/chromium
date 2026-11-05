@@ -4,8 +4,6 @@
 
 #include "components/update_client/update_checker.h"
 
-#include <stddef.h>
-
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -20,6 +18,7 @@
 #include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
@@ -241,7 +240,8 @@ void UpdateCheckerImpl::CheckForUpdatesHelper(
           if (install_data_index.empty()) {
             return {};
           } else {
-            return {{"install", install_data_index, ""}};
+            return {
+                {.name = "install", .install_data_index = install_data_index}};
           }
         }(crx_component->install_data_index),
         MakeProtocolPing(app_id, config_->GetPersistedData(),
@@ -259,11 +259,11 @@ void UpdateCheckerImpl::CheckForUpdatesHelper(
   const auto request = MakeProtocolRequest(
       !config_->IsPerUserInstall(), context->session_id, config_->GetProdId(),
       config_->GetBrowserVersion().GetString(), config_->GetChannel(),
-      config_->GetOSLongName(), config_->GetDownloadPreference(),
-      config_->IsMachineExternallyManaged(), additional_attributes,
-      updater_state_attributes, std::move(apps));
+      config_->GetOSLongName(), config_->GetDeviceFormFactor(),
+      config_->GetDownloadPreference(), config_->IsMachineExternallyManaged(),
+      additional_attributes, updater_state_attributes, std::move(apps));
 
-  cancellation_->OnCancel(
+  cancellation_->OnCancel(base::IgnoreArgs<CancelMode>(
       base::MakeRefCounted<RequestSender>(config_->GetNetworkFetcherFactory())
           ->Send({url},
                  BuildUpdateCheckExtraRequestHeaders(
@@ -283,7 +283,7 @@ void UpdateCheckerImpl::CheckForUpdatesHelper(
                                base::ToVector(base::span(urls).subspan(1u)),
                                additional_attributes, cache_contents,
                                updater_state_attributes, active_ids))
-                         : std::nullopt)));
+                         : std::nullopt))));
 }
 
 void UpdateCheckerImpl::OnRequestSenderComplete(

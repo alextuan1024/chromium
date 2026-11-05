@@ -5,6 +5,8 @@
 
 #include "media/base/android/media_codec_bridge_impl.h"
 
+#include <android/hardware_buffer_jni.h>
+
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -15,8 +17,10 @@
 #include "base/android/jni_array.h"
 #include "base/android/jni_bytebuffer.h"
 #include "base/android/jni_string.h"
-#include "base/compiler_specific.h"
+#include "base/android/scoped_hardware_buffer_handle.h"
 #include "base/containers/heap_array.h"
+#include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
@@ -24,6 +28,7 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/trace_event/trace_event.h"
 #include "media/base/android/jni_hdr_metadata.h"
 #include "media/base/android/media_codec_bridge.h"
 #include "media/base/android/media_codec_util.h"
@@ -33,6 +38,7 @@
 #include "media/base/media_switches.h"
 #include "media/base/subsample_entry.h"
 #include "media/base/video_codecs.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/gfx/android/rect_jni_conversion.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -58,24 +64,15 @@ using base::android::ToJavaIntArray;
   } while (0)
 
 namespace media {
-namespace {
-
-enum {
-  kBufferFlagSyncFrame = 1,    // BUFFER_FLAG_SYNC_FRAME
-  kBufferFlagEndOfStream = 4,  // BUFFER_FLAG_END_OF_STREAM
-  kConfigureFlagEncode = 1,    // CONFIGURE_FLAG_ENCODE
-  kBitrateModeCBR = 2,         // BITRATE_MODE_CBR
-  kBitrateModeVBR = 1,         // BITRATE_MODE_VBR
-};
-
-using CodecSpecificData = std::vector<uint8_t>;
 
 // Parses |extra_data| to get info to be added to a Java MediaFormat.
-bool GetCodecSpecificDataForAudio(const AudioDecoderConfig& config,
-                                  CodecSpecificData* output_csd0,
-                                  CodecSpecificData* output_csd1,
-                                  CodecSpecificData* output_csd2,
-                                  bool* output_frame_has_adts_header) {
+// static
+bool MediaCodecBridgeImpl::GetCodecSpecificDataForAudio(
+    const AudioDecoderConfig& config,
+    std::vector<uint8_t>* output_csd0,
+    std::vector<uint8_t>* output_csd1,
+    std::vector<uint8_t>* output_csd2,
+    bool* output_frame_has_adts_header) {
   // It's important that the multiplication is first in this calculation to
   // reduce the precision loss due to integer truncation.
   const int64_t codec_delay_ns = base::Time::kNanosecondsPerSecond *
@@ -91,8 +88,7 @@ bool GetCodecSpecificDataForAudio(const AudioDecoderConfig& config,
       if (config.extra_data().empty()) {
         return true;
       }
-      const uint8_t* extra_data = config.extra_data().data();
-      const size_t extra_data_size = config.extra_data().size();
+      base::span<const uint8_t> extra_data = config.extra_data();
 
       if (extra_data[0] != 2) {
         LOG(ERROR) << "Invalid number of vorbis headers before the codec "
@@ -104,11 +100,11 @@ bool GetCodecSpecificDataForAudio(const AudioDecoderConfig& config,
       // |total_length| keeps track of the total number of bytes before the last
       // header.
       size_t total_length = 1;
-      const uint8_t* current_pos = extra_data;
+      size_t current_pos = 0;
       // Calculate the length of the first 2 headers.
       for (size_t& length : header_length) {
-        while (total_length < extra_data_size) {
-          size_t size = *UNSAFE_TODO(++current_pos);
+        while (total_length < extra_data.size()) {
+          size_t size = extra_data[++current_pos];
           total_length += 1 + size;
           if (total_length > 0x80000000) {
             LOG(ERROR) << "Vorbis header size too large";
@@ -119,20 +115,19 @@ bool GetCodecSpecificDataForAudio(const AudioDecoderConfig& config,
             break;
           }
         }
-        if (total_length >= extra_data_size) {
+        if (total_length >= extra_data.size()) {
           LOG(ERROR) << "Invalid vorbis header size in the extra data";
           return false;
         }
       }
-      UNSAFE_TODO(current_pos++);
+      current_pos++;
 
       // The first header is the identification header.
-      output_csd0->assign(current_pos,
-                          UNSAFE_TODO(current_pos + header_length[0]));
+      *output_csd0 =
+          base::ToVector(extra_data.subspan(current_pos, header_length[0]));
 
       // The last header is the codec header.
-      output_csd1->assign(UNSAFE_TODO(extra_data + total_length),
-                          UNSAFE_TODO(extra_data + extra_data_size));
+      *output_csd1 = base::ToVector(extra_data.subspan(total_length));
       break;
     }
     case AudioCodec::kFLAC: {
@@ -183,16 +178,10 @@ bool GetCodecSpecificDataForAudio(const AudioDecoderConfig& config,
       *output_csd0 = config.extra_data();
 
       // csd1 - Codec Delay
-      const uint8_t* codec_delay_ns_ptr =
-          reinterpret_cast<const uint8_t*>(&codec_delay_ns);
-      output_csd1->assign(codec_delay_ns_ptr,
-                          UNSAFE_TODO(codec_delay_ns_ptr + sizeof(int64_t)));
+      *output_csd1 = base::ToVector(base::byte_span_from_ref(codec_delay_ns));
 
       // csd2 - Seek Preroll
-      const uint8_t* seek_preroll_ns_ptr =
-          reinterpret_cast<const uint8_t*>(&seek_preroll_ns);
-      output_csd2->assign(seek_preroll_ns_ptr,
-                          UNSAFE_TODO(seek_preroll_ns_ptr + sizeof(int64_t)));
+      *output_csd2 = base::ToVector(base::byte_span_from_ref(seek_preroll_ns));
       break;
     }
     default:
@@ -205,6 +194,18 @@ bool GetCodecSpecificDataForAudio(const AudioDecoderConfig& config,
   }
   return true;
 }
+
+namespace {
+
+enum {
+  kBufferFlagSyncFrame = 1,    // BUFFER_FLAG_SYNC_FRAME
+  kBufferFlagEndOfStream = 4,  // BUFFER_FLAG_END_OF_STREAM
+  kConfigureFlagEncode = 1,    // CONFIGURE_FLAG_ENCODE
+  kBitrateModeCBR = 2,         // BITRATE_MODE_CBR
+  kBitrateModeVBR = 1,         // BITRATE_MODE_VBR
+};
+
+using CodecSpecificData = std::vector<uint8_t>;
 
 // Given |status|, return an appropriate error message to be included in
 // MediaCodecResult.
@@ -522,7 +523,7 @@ MediaCodecBridgeImpl::MediaCodecBridgeImpl(
   // Note this should be done last since setBuffersAvailableListener() may
   // immediately invoke the callback if buffers came in during construction.
   Java_MediaCodecBridge_setBuffersAvailableListener(
-      AttachCurrentThread(), j_bridge_, reinterpret_cast<intptr_t>(this));
+      AttachCurrentThread(), j_bridge_, jni_zero::MakeRaw(this));
 }
 
 MediaCodecBridgeImpl::~MediaCodecBridgeImpl() {
@@ -683,6 +684,7 @@ MediaCodecResult MediaCodecBridgeImpl::QueueSecureInputBuffer(
     ScopedJavaLocalRef<jobject> j_block =
         Java_ObtainBlockResult_block(env, j_result);
     if (j_block.is_null()) {
+      ReportAnyErrorToUMA(MediaCodecStatus::MEDIA_CODEC_LINEAR_BLOCK_EXCEPTION);
       return {MediaCodecResult::Codes::kError, "Unable to obtain input block."};
     }
 
@@ -827,6 +829,49 @@ void MediaCodecBridgeImpl::ReleaseOutputBuffer(int index, bool render) {
   DVLOG(3) << __func__ << ": " << index;
   JNIEnv* env = AttachCurrentThread();
   Java_MediaCodecBridge_releaseOutputBuffer(env, j_bridge_, index, render);
+}
+
+base::expected<base::android::ScopedHardwareBufferHandle, OutputFrameStatus>
+MediaCodecBridgeImpl::GetOutputFrame(int index) {
+  TRACE_EVENT("media", "MediaCodecBridge::GetOutputFrame");
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> j_result =
+      Java_MediaCodecBridge_getOutputFrame(env, j_bridge_, index);
+  ScopedJavaLocalRef<jobject> j_hardware_buffer =
+      Java_GetOutputFrameResult_hardwareBuffer(env, j_result);
+  // GetOutputFrameResult holds a HardwareBuffer iff status is kOk.
+  // OutputFrameStatus is tracked separately from Media.MediaCodecError.*, so
+  // don't call ReportAnyErrorToUMA() here.
+  if (j_hardware_buffer.is_null()) {
+    const OutputFrameStatus status =
+        Java_GetOutputFrameResult_status(env, j_result);
+    DCHECK_GE(static_cast<int>(status), 0);
+    DCHECK_LE(static_cast<int>(status),
+              static_cast<int>(OutputFrameStatus::kStaleFrame));
+    if (status == OutputFrameStatus::kOk) {
+      DVLOG(1) << __func__ << ": null HardwareBuffer for index " << index;
+      return base::unexpected(OutputFrameStatus::kJniFailure);
+    }
+    DVLOG(3) << __func__ << ": index: " << index
+             << ", status: " << static_cast<int>(status);
+    return base::unexpected(status);
+  }
+
+  AHardwareBuffer* buffer =
+      AHardwareBuffer_fromHardwareBuffer(env, j_hardware_buffer.obj());
+  base::android::ScopedHardwareBufferHandle handle;
+  if (buffer) {
+    // Take our own reference before Java closes its HardwareBuffer.
+    handle = base::android::ScopedHardwareBufferHandle::Create(buffer);
+  }
+  // Drop the Java reference now instead of at garbage collection.
+  Java_GetOutputFrameResult_close(env, j_result);
+
+  if (!handle.is_valid()) {
+    DVLOG(1) << __func__ << ": no AHardwareBuffer for index " << index;
+    return base::unexpected(OutputFrameStatus::kJniFailure);
+  }
+  return base::ok(std::move(handle));
 }
 
 base::span<uint8_t> MediaCodecBridgeImpl::GetInputBuffer(

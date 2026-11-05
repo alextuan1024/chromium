@@ -18,6 +18,7 @@ import android.os.Build.VERSION;
 import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
 import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
@@ -40,7 +41,6 @@ import org.chromium.base.BundleUtils;
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
-import org.chromium.base.FeatureList;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -53,6 +53,7 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.automotivetoolbar.AutomotiveBackButtonToolbarCoordinator;
 import org.chromium.chrome.browser.base.SplitChromeApplication;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeFeatures;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.language.GlobalAppLocaleController;
 import org.chromium.chrome.browser.night_mode.GlobalNightModeStateProviderHolder;
@@ -243,8 +244,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
                         mEdgeToEdgeStateProvider,
                         createSystemBarColorHelperSupplier(),
                         shouldDrawEdgeToEdgeOnCreate(),
-                        canColorStatusBarWithEdgeToEdgeHelper(),
-                        canSetTransparentStatusBarWithoutDelegate());
+                        canColorStatusBarWithEdgeToEdgeHelper());
 
         if (canColorStatusBarWithEdgeToEdgeHelper()) {
             initializeSystemBarColors(mEdgeToEdgeManager.getEdgeToEdgeSystemBarColorHelper());
@@ -270,7 +270,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
     protected void onStart() {
         super.onStart();
 
-        if (NtpCustomizationUtils.isNtpThemeCustomizationEnabled()) {
+        if (NtpCustomizationUtils.isNtpThemeCustomizationEnabledByPolicy()) {
             if (mNtpThemeStateObserver == null) {
                 mNtpThemeStateObserver = this::recreate;
                 NtpThemeStateProvider.getInstance().addObserver(mNtpThemeStateObserver);
@@ -291,11 +291,6 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
     /** Returns whether the edge-to-edge system bar helper may update the status bar color. */
     protected boolean canColorStatusBarWithEdgeToEdgeHelper() {
         return EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled();
-    }
-
-    /** Returns whether the helper may make the status bar transparent without a delegate helper. */
-    protected boolean canSetTransparentStatusBarWithoutDelegate() {
-        return false;
     }
 
     /**
@@ -322,7 +317,8 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
                         new EdgeToEdgeControllerCreator(
                                 new WeakReference<Activity>(this),
                                 getInsetObserver(),
-                                this::ensureEdgeToEdgeController);
+                                this::ensureEdgeToEdgeController,
+                                /* supportsTopInset= */ false);
             }
         } else {
             ensureEdgeToEdgeController();
@@ -406,11 +402,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
     @Override
     public final void onMultiWindowModeChanged(boolean inMultiWindowMode) {
         // Some OEMs double-notify about multi-window mode changes (eg. Samsung tablets).
-        if (FeatureList.isNativeInitialized()
-                && ChromeFeatureList.isEnabled(ChromeFeatureList.AVOID_DOUBLE_MULTIWINDOW_CHANGES)
-                && mInMultiWindowMode == inMultiWindowMode) {
-            return;
-        }
+        if (mInMultiWindowMode == inMultiWindowMode) return;
         mInMultiWindowMode = inMultiWindowMode;
         handleMultiWindowModeChanged(inMultiWindowMode);
         super.onMultiWindowModeChanged(inMultiWindowMode);
@@ -449,6 +441,14 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
      */
     public MonotonicObservableSupplier<ModalDialogManager> getModalDialogManagerSupplier() {
         return mModalDialogManagerSupplier;
+    }
+
+    @Override
+    public void onEnterAnimationComplete() {
+        super.onEnterAnimationComplete();
+
+        ModalDialogManager modalDialogManager = mModalDialogManagerSupplier.get();
+        if (modalDialogManager != null) modalDialogManager.replayButtonTapProtection();
     }
 
     /**
@@ -508,7 +508,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
      * #applyOverrideConfiguration(Configuration)}.
      *
      * @param baseContext The base {@link Context} attached to this class.
-     * @param overrideConfig The {@link Configuration} that will be passed to {@link}
+     * @param overrideConfig The {@link Configuration} that will be passed to {@link
      *     #applyOverrideConfiguration(Configuration)} if necessary.
      * @return True if any configuration overrides were applied, and false otherwise.
      */
@@ -669,6 +669,12 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
     }
 
     @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        PointerDownProvenanceRecorder.record(ev);
+        return super.dispatchTouchEvent(ev);
+    }
+
+    @Override
     public void setContentView(@LayoutRes int layoutResID) {
         if (isAutomotiveWithToolbarView()) {
             View automotiveLayout = inflateAutomotiveToolbarLayout();
@@ -814,8 +820,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
         return new InsetObserver(
                 new ImmutableWeakReference<>(getWindow().getDecorView().getRootView()),
                 new ImmutableWeakReference<>(this),
-                ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.ACCOUNT_FOR_SUPPRESSED_KEYBOARD_INSETS),
+                ChromeFeatures.AccountForSuppressedKeyboardInsets.isEnabled(),
                 ChromeFeatureList.sEdgeToEdgeExtraLogs.isEnabled());
     }
 

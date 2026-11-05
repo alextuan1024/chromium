@@ -46,6 +46,7 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/stable_sort.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "ui/gfx/geometry/transform.h"
@@ -169,6 +170,17 @@ KeyframeEffectModelBase::IterableDynamicProperties
 KeyframeEffectModelBase::DynamicProperties(const Element* element) const {
   EnsureKeyframeGroups();
   return IterableDynamicProperties(this, element);
+}
+
+bool KeyframeEffectModelBase::IsDynamicProperty(
+    const PropertyHandle& property,
+    const ComputedStyle& reference_style) const {
+  EnsureKeyframeGroups();
+  auto iter = keyframe_groups_->find(property);
+  if (iter == keyframe_groups_->end()) {
+    return false;
+  }
+  return !iter->value->HasStaticKeyframeResolution(property, reference_style);
 }
 
 bool KeyframeEffectModelBase::HasStaticProperty() const {
@@ -476,13 +488,6 @@ template CORE_EXPORT Vector<double> KeyframeEffectModelBase::GetComputedOffsets(
 template CORE_EXPORT Vector<double> KeyframeEffectModelBase::GetComputedOffsets(
     const HeapVector<Member<StringKeyframe>>& keyframes);
 
-bool KeyframeEffectModelBase::IsTransformRelatedEffect() const {
-  return Affects(PropertyHandle(GetCSSPropertyTransform())) ||
-         Affects(PropertyHandle(GetCSSPropertyRotate())) ||
-         Affects(PropertyHandle(GetCSSPropertyScale())) ||
-         Affects(PropertyHandle(GetCSSPropertyTranslate()));
-}
-
 bool KeyframeEffectModelBase::SetLogicalPropertyResolutionContext(
     WritingDirectionMode writing_direction) {
   bool changed = false;
@@ -517,7 +522,8 @@ void KeyframeEffectModelBase::EnsureKeyframeGroups() const {
     const auto& keyframe = keyframes_[i];
     double computed_offset = keyframe->ComputedOffset().value();
 
-    if (computed_offset == 0) {
+    if (!RuntimeEnabledFeatures::NeutralKeyframeEasingComplianceEnabled() &&
+        computed_offset == 0) {
       zero_offset_easing = &keyframe->Easing();
     }
 
@@ -544,8 +550,9 @@ void KeyframeEffectModelBase::EnsureKeyframeGroups() const {
   // Add synthetic keyframes and determine if the keyframe values are static.
   has_synthetic_keyframes_ = false;
   for (const auto& entry : *keyframe_groups_) {
-    if (entry.value->AddSyntheticKeyframeIfRequired(zero_offset_easing))
+    if (entry.value->AddSyntheticKeyframeIfRequired(zero_offset_easing)) {
       has_synthetic_keyframes_ = true;
+    }
 
     entry.value->RemoveRedundantKeyframes();
     entry.value->CheckIfStatic(*this);
@@ -650,7 +657,7 @@ bool KeyframeEffectModelBase::ResolveTimelineOffsets(
         keyframe->ResolveTimelineOffset(timeline_range, range_start, range_end);
   }
   if (needs_update) {
-    std::stable_sort(keyframes_.begin(), keyframes_.end(), &Keyframe::LessThan);
+    StableSort(keyframes_, &Keyframe::LessThan);
     ClearCachedData();
   }
 
@@ -758,17 +765,7 @@ bool KeyframeEffectModelBase::PropertySpecificKeyframeGroup::
         return false;
       }
 
-      const CSSPropertySpecificKeyframe* keyframe =
-          FirstCssKeyframeWithSetValue();
-      CHECK(keyframe);
-      const CSSValue* target_value = keyframe->Value();
-      CHECK(target_value);
-
-      const CSSValue* underlying_value =
-          ComputedStyleUtils::ComputedPropertyValue(property.GetCSSProperty(),
-                                                    *base_style);
-      if (!underlying_value ||
-          !AreEquivalent(*underlying_value, *target_value)) {
+      if (!UnderlyingValueMatchesKeyframes(property, *base_style)) {
         static_check_result_ = StaticCheckResult::kDynamic;
         return false;
       }
@@ -780,6 +777,39 @@ bool KeyframeEffectModelBase::PropertySpecificKeyframeGroup::
     case StaticCheckResult::kUnset:
       NOTREACHED();
   }
+}
+
+bool KeyframeEffectModelBase::PropertySpecificKeyframeGroup::
+    HasStaticKeyframeResolution(const PropertyHandle& property,
+                                const ComputedStyle& reference_style) const {
+  switch (static_check_result_) {
+    case StaticCheckResult::kDynamic:
+      return false;
+
+    case StaticCheckResult::kStatic:
+      return true;
+
+    case StaticCheckResult::kProvisionalChecked:
+    case StaticCheckResult::kProvisionalUnchecked:
+      return UnderlyingValueMatchesKeyframes(property, reference_style);
+
+    case StaticCheckResult::kUnset:
+      NOTREACHED();
+  }
+}
+
+bool KeyframeEffectModelBase::PropertySpecificKeyframeGroup::
+    UnderlyingValueMatchesKeyframes(
+        const PropertyHandle& property,
+        const ComputedStyle& reference_style) const {
+  const CSSPropertySpecificKeyframe* keyframe = FirstCssKeyframeWithSetValue();
+  CHECK(keyframe);
+  const CSSValue* target_value = keyframe->Value();
+  CHECK(target_value);
+
+  const CSSValue* underlying_value = ComputedStyleUtils::ComputedPropertyValue(
+      property.GetCSSProperty(), reference_style);
+  return underlying_value && AreEquivalent(*underlying_value, *target_value);
 }
 
 void KeyframeEffectModelBase::PropertySpecificKeyframeGroup::CheckIfStatic(

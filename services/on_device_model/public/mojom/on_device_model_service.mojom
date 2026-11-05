@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 //
-// Next MinVersion: 5
+// Next MinVersion: 6
 
 module on_device_model.mojom;
 
@@ -43,6 +43,8 @@ struct ModelAssets {
   [MinVersion=2] mojo_base.mojom.File? program_cache;
   [MinVersion=3] mojo_base.mojom.File? encoder_program_cache;
   [MinVersion=3] mojo_base.mojom.File? adapter_program_cache;
+  [MinVersion=5] mojo_base.mojom.File? mtp_drafter_cache;
+  [MinVersion=5] mojo_base.mojom.File? mtp_drafter_program_cache;
 };
 
 // Type of the backend to run the model.
@@ -88,6 +90,15 @@ struct LoadModelParams {
 struct TextSafetyModelParams {
   mojo_base.mojom.ReadOnlyFile? safety_model;
   mojo_base.mojom.ReadOnlyFile? language_model;
+};
+
+// Params to describe a decision model to load.
+struct DecisionModelParams {
+  // Backend type of the model.
+  ModelBackendType backend_type;
+
+  // Assets for the model.
+  ModelAssets assets;
 };
 
 // An observer to report the current platform model loading progress.
@@ -148,6 +159,12 @@ interface OnDeviceModelService {
   // The model is disconnected on any errors with it.
   LoadTextSafetyModel(
       TextSafetyModelParams params, pending_receiver<TextSafetyModel> model);
+
+  // Initializes a new DecisionModel with the provided `params`. If the model
+  // cannot be created the model pipe will be reset.
+  LoadDecisionModel(
+      DecisionModelParams params, pending_receiver<DecisionModel> model)
+      => (LoadModelResult result);
 
   // Returns performance benchmark results for the device as well as
   // its info (vendor id, device id, driver version, fp16 support).

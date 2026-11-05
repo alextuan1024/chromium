@@ -10,9 +10,9 @@
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
+#include "third_party/angle/include/GLES2/gl2.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
-#include "third_party/khronos/GLES2/gl2.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "ui/gfx/hdr_metadata.h"
 
@@ -36,7 +36,11 @@ class PLATFORM_EXPORT StaticBitmapImage : public Image {
       const gfx::HDRMetadata&,
       ImageOrientation = ImageOrientationEnum::kDefault);
 
-  StaticBitmapImage(ImageOrientation orientation) : orientation_(orientation) {}
+  explicit StaticBitmapImage(ImageOrientation orientation)
+      : Image(/*observer=*/nullptr,
+              /*is_multipart=*/false,
+              /*is_cors_same_origin=*/true),
+        orientation_(orientation) {}
 
   bool IsStaticBitmapImage() const override { return true; }
 

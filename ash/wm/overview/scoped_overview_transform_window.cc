@@ -8,10 +8,9 @@
 #include <memory>
 #include <utility>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/window_properties.h"
 #include "ash/shell.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "ash/wm/float/float_controller.h"
 #include "ash/wm/layer_tree_synchronizer.h"
 #include "ash/wm/overview/delayed_animation_observer_impl.h"
@@ -45,7 +44,6 @@
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/compositor/layer_observer.h"
-#include "ui/compositor/scoped_layer_request.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -57,7 +55,6 @@
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/coordinate_conversion.h"
-#include "ui/wm/core/shadow_controller.h"
 #include "ui/wm/core/window_animations.h"
 #include "ui/wm/core/window_util.h"
 
@@ -118,6 +115,7 @@ class UndoPropertyObserver : public ui::ImplicitAnimationObserver,
 ScopedOverviewTransformWindow::TransientInfo::TransientInfo(
     aura::Window* transient)
     : event_targeting_blocker(transient) {
+  OverviewController::Get()->AddDecorationHider(transient);
   auto* widget = views::Widget::GetTopLevelWidgetForNativeView(transient);
   auto* bubble_dialog_delegate =
       widget && widget->widget_delegate()
@@ -130,6 +128,17 @@ ScopedOverviewTransformWindow::TransientInfo::TransientInfo(
 }
 
 ScopedOverviewTransformWindow::TransientInfo::~TransientInfo() {
+  if (aura::Window* window = event_targeting_blocker.window()) {
+    OverviewController* overview_controller = OverviewController::Get();
+    // Restore the decoration immediately if `window` leaves overview while the
+    // session stays open, e.g. when snapped into split view in partial overview
+    // so its highlight border is shown.
+    if (!overview_controller->overview_session() ||
+        !overview_controller->overview_session()->is_shutting_down()) {
+      overview_controller->RemoveDecorationHider(window);
+    }
+  }
+
   auto* widget = views::Widget::GetTopLevelWidgetForNativeView(
       event_targeting_blocker.window());
   auto* bubble_dialog_delegate =
@@ -150,7 +159,7 @@ ScopedOverviewTransformWindow::ScopedOverviewTransformWindow(
       original_clip_rect_(window_->layer()->GetTargetClipRect()) {
   fill_mode_ = GetOverviewItemFillModeForWindow(window);
 
-  std::vector<raw_ptr<aura::Window, VectorExperimental>>
+  std::vector<raw_ptr<aura::Window, DanglingUntriaged>>
       transient_children_to_hide;
   for (auto* transient : GetTransientTreeIterator(window)) {
     transient_windows_info_map_.emplace(
@@ -243,11 +252,6 @@ void ScopedOverviewTransformWindow::RestoreWindow(bool reset_transform,
                                                   bool animate) {
   base::AutoReset<bool> restoring(&is_restoring_, true);
 
-  // Shadow controller may be null on shutdown.
-  if (auto* shadow_controller = Shell::Get()->shadow_controller()) {
-    shadow_controller->UpdateShadowForWindow(window_);
-  }
-
   // We will handle clipping here, no need to do anything in the destructor.
   reset_clip_on_shutdown_ = false;
 
@@ -277,16 +281,6 @@ void ScopedOverviewTransformWindow::RestoreWindow(bool reset_transform,
     // Use identity transform directly to reset window's transform when exiting
     // overview.
     window_util::SetTransform(window_, gfx::Transform());
-
-    // Add requests to cache render surface and perform trilinear filtering for
-    // the exit animation of overview mode. The requests will be removed when
-    // the exit animation finishes.
-    if (features::IsTrilinearFilteringEnabled()) {
-      for (auto& settings : animation_settings_list) {
-        settings->CacheRenderSurface();
-        settings->TrilinearFiltering();
-      }
-    }
   }
 
   ScopedOverviewAnimationSettings animation_settings(
@@ -483,24 +477,6 @@ bool ScopedOverviewTransformWindow::IsMinimizedOrTucked() const {
   return window_util::IsMinimizedOrTucked(window_);
 }
 
-void ScopedOverviewTransformWindow::PrepareForOverview() {
-  Shell::Get()->shadow_controller()->UpdateShadowForWindow(window_);
-
-  // Add requests to cache render surface and perform trilinear filtering. The
-  // requests will be removed in dtor. So the requests will be valid during the
-  // enter animation and the whole time during overview mode. For the exit
-  // animation of overview mode, we need to add those requests again.
-  if (features::IsTrilinearFilteringEnabled()) {
-    for (auto* window :
-         window_util::GetVisibleTransientTreeIterator(GetOverviewWindow())) {
-      cache_render_surface_locks_.push_back(
-          std::make_unique<ui::ScopedCacheRenderSurfaceLock>(window->layer()));
-      trilinear_filtering_locks_.push_back(
-          std::make_unique<ui::ScopedTrilinearFilteringLock>(window->layer()));
-    }
-  }
-}
-
 void ScopedOverviewTransformWindow::EnsureVisible() {
   original_opacity_ = 1.f;
 }
@@ -692,7 +668,7 @@ void ScopedOverviewTransformWindow::CloseWidget() {
 }
 
 void ScopedOverviewTransformWindow::AddHiddenTransientWindows(
-    const std::vector<raw_ptr<aura::Window, VectorExperimental>>&
+    const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>&
         transient_windows) {
   if (!hidden_transient_children_) {
     hidden_transient_children_ = std::make_unique<ScopedOverviewHideWindows>(

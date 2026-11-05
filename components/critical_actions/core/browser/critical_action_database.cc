@@ -6,21 +6,30 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
+#include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "base/containers/extend.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/cstring_view.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/threading/platform_thread.h"
 #include "base/time/time.h"
+#include "base/time/time_override.h"
 #include "sql/error_delegate_util.h"
 #include "sql/sqlite_result_code.h"
+#include "sql/sqlite_result_code_values.h"
 #include "sql/statement.h"
 #include "sql/table_management_helpers.h"
 #include "sql/transaction.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 
 namespace critical_actions {
 
@@ -30,7 +39,10 @@ namespace {
 // SQLite's parameter limits (SQLITE_MAX_VARIABLE_NUMBER) and minimizing
 // parser memory.
 constexpr size_t kMaxBatchSize = 500;
-constexpr int kCurrentVersion = 3;
+constexpr int kCurrentVersion = 4;
+// Version 3 remains compatible because version 4 only adds the nullable
+// `conversation_anchor_id` TEXT column, and v3 statements name columns
+// explicitly and ignore unknown nullable columns on read and write.
 constexpr int kCompatibleVersion = 3;
 
 constexpr std::string_view kTableNames[] = {
@@ -154,42 +166,95 @@ CriticalActionDatabase::~CriticalActionDatabase() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
-bool CriticalActionDatabase::Init() {
+CriticalActionDatabase::InitStatus CriticalActionDatabase::Init(
+    base::TimeDelta busy_timeout) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  absl::Cleanup close_on_error = [this] { Close(); };
+
+  // `db_.Open()` only acquires a SHARED lock (`locking_mode=EXCLUSIVE` retains
+  // locks until close). Upgrade to an EXCLUSIVE lock immediately (retrying on
+  // transient `SQLITE_BUSY`) so concurrent connections cannot deadlock writes.
+  {
+    static constexpr base::TimeDelta kInitialRetryDelay = base::Milliseconds(5);
+    static constexpr base::TimeDelta kMaxRetryDelay = base::Milliseconds(50);
+    // Use real wall-clock ticks as PlatformThread::Sleep ignores mock time.
+    const base::TimeTicks deadline =
+        base::subtle::TimeTicksNowIgnoringOverride() + busy_timeout;
+    base::TimeDelta retry_delay = kInitialRetryDelay;
+
+    std::optional<int> last_busy_error;
+    while (true) {
+      last_busy_error.reset();
+      db_.reset_error_callback();
+      db_.set_error_callback(base::BindRepeating(
+          [](CriticalActionDatabase* self, std::optional<int>* busy_error,
+             int extended_error, sql::Statement* statement) {
+            if (sql::ToSqliteLoggedResultCode(extended_error) ==
+                sql::SqliteLoggedResultCode::kBusy) {
+              // TODO(b/585093572): Record dedicated Init outcome and retry
+              // histograms to confirm lock contention recovery in the field.
+              *busy_error = extended_error;
+              return;
+            }
+            self->DatabaseErrorCallback(extended_error, statement);
+          },
+          base::Unretained(this), base::Unretained(&last_busy_error)));
+
+      if (db_.Open(db_path_) && db_.Execute("BEGIN EXCLUSIVE") &&
+          db_.Execute("COMMIT")) {
+        break;
+      }
+      Close();
+      if (!last_busy_error.has_value()) {
+        LOG(ERROR) << "Failed to open CriticalAction database: "
+                   << db_path_.value();
+        return InitStatus::kError;
+      }
+      const base::TimeDelta remaining =
+          deadline - base::subtle::TimeTicksNowIgnoringOverride();
+      if (!remaining.is_positive()) {
+        DatabaseErrorCallback(*last_busy_error, /*statement=*/nullptr);
+        LOG(ERROR) << "Timed out waiting for lock on CriticalAction database: "
+                   << db_path_.value();
+        return InitStatus::kBusyTimeout;
+      }
+      if (busy_retry_callback_for_testing_) {
+        busy_retry_callback_for_testing_.Run();
+      }
+      base::PlatformThread::Sleep(std::min(retry_delay, remaining));
+      retry_delay = std::min(retry_delay * 2, kMaxRetryDelay);
+    }
+    db_.reset_error_callback();
+  }
 
   db_.set_error_callback(base::BindRepeating(
       &CriticalActionDatabase::DatabaseErrorCallback, base::Unretained(this)));
 
-  if (!db_.Open(db_path_)) {
-    LOG(ERROR) << "Failed to open CriticalAction database: "
-               << db_path_.value();
-    return false;
-  }
-
   sql::Transaction transaction(&db_);
   if (!transaction.Begin()) {
-    return false;
+    return InitStatus::kError;
   }
 
   if (!meta_table_.Init(&db_, kCurrentVersion, kCompatibleVersion)) {
-    return false;
+    return InitStatus::kError;
   }
 
   if (meta_table_.GetCompatibleVersionNumber() > kCurrentVersion) {
     LOG(ERROR) << "CriticalAction database is too new.";
-    return false;
+    return InitStatus::kError;
   }
 
   if (!MigrateToCurrentVersion()) {
-    return false;
+    return InitStatus::kError;
   }
 
   if (!InitSchema()) {
-    return false;
+    return InitStatus::kError;
   }
 
   if (!transaction.Commit()) {
-    return false;
+    return InitStatus::kError;
   }
 
   if (std::exchange(needs_vacuum_, false)) {
@@ -198,7 +263,8 @@ bool CriticalActionDatabase::Init() {
                               db_.Vacuum());
   }
 
-  return true;
+  std::move(close_on_error).Cancel();
+  return InitStatus::kOk;
 }
 
 bool CriticalActionDatabase::InitSchema() {
@@ -209,7 +275,8 @@ bool CriticalActionDatabase::InitSchema() {
                    "  timestamp INTEGER NOT NULL,"
                    "  actor_task_id TEXT,"
                    "  action_type INTEGER NOT NULL,"
-                   "  metadata TEXT"
+                   "  metadata TEXT,"
+                   "  conversation_anchor_id TEXT"
                    ")")) {
     return false;
   }
@@ -282,6 +349,8 @@ bool CriticalActionDatabase::MigrateToVersion(int version) {
       return MigrateFromV1ToV2();
     case 3:
       return MigrateFromV2ToV3();
+    case 4:
+      return MigrateFromV3ToV4();
     default:
       return true;
   }
@@ -352,7 +421,11 @@ bool CriticalActionDatabase::MigrateFromV2ToV3() {
   // Older clients SELECT/INSERT `url`, so they can no longer read this file.
   // MetaTable::Init()'s compatible_version argument only applies to newly
   // created databases, so existing ones must be updated explicitly.
-  if (!meta_table_.SetCompatibleVersionNumber(kCompatibleVersion)) {
+  // Intentionally hard-coded rather than `kCompatibleVersion`: this step must
+  // leave the database exactly as a v3 client expects, even after later
+  // schema versions change `kCompatibleVersion`. Later migrations that need a
+  // higher compatible version set it themselves.
+  if (!meta_table_.SetCompatibleVersionNumber(3)) {
     return false;
   }
 
@@ -360,6 +433,22 @@ bool CriticalActionDatabase::MigrateFromV2ToV3() {
   // return to the OS by itself. Init() vacuums once after committing, since
   // VACUUM cannot run inside a transaction.
   needs_vacuum_ = true;
+
+  return transaction.Commit();
+}
+
+bool CriticalActionDatabase::MigrateFromV3ToV4() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  sql::Transaction transaction(&db_);
+  if (!transaction.Begin()) {
+    return false;
+  }
+
+  if (!db_.Execute("ALTER TABLE CriticalActionEntries "
+                   "ADD COLUMN conversation_anchor_id TEXT")) {
+    return false;
+  }
 
   return transaction.Commit();
 }
@@ -376,13 +465,31 @@ bool CriticalActionDatabase::AddCriticalAction(
   sql::Statement stmt_entry(db_.GetCachedStatement(
       SQL_FROM_HERE,
       "INSERT INTO CriticalActionEntries (critical_action_id, timestamp, "
-      "action_type, metadata, actor_task_id) "
-      "VALUES (?, ?, ?, ?, ?)"));
+      "action_type, metadata, actor_task_id, conversation_anchor_id) "
+      "VALUES (?, ?, ?, ?, ?, ?)"));
   stmt_entry.BindString(0, entry.critical_action_id);
   stmt_entry.BindTime(1, entry.timestamp);
   stmt_entry.BindInt(2, static_cast<int>(entry.action_type));
   stmt_entry.BindString(3, entry.metadata);
   stmt_entry.BindString(4, entry.actor_task_id);
+  // Enforce kMaxConversationAnchorIdLength here so storage stays bounded
+  // regardless of the caller. Oversized anchors are dropped (stored as NULL)
+  // without failing the insertion, so the action itself is still recorded.
+  // CriticalActionService already drops them on the UI thread, so this is the
+  // last line of defense for other callers.
+  std::string_view conversation_anchor_id = entry.conversation_anchor_id;
+  if (conversation_anchor_id.size() > kMaxConversationAnchorIdLength) {
+    DLOG(WARNING) << "Dropping oversized conversation_anchor_id (length="
+                  << conversation_anchor_id.size() << ")";
+    conversation_anchor_id = std::string_view();
+  }
+  // Store NULL rather than '' for a missing anchor so that new rows match rows
+  // migrated from v3, which have a NULL column.
+  if (conversation_anchor_id.empty()) {
+    stmt_entry.BindNull(5);
+  } else {
+    stmt_entry.BindString(5, conversation_anchor_id);
+  }
   if (!stmt_entry.Run()) {
     return false;
   }
@@ -415,10 +522,10 @@ bool CriticalActionDatabase::AddCriticalAction(
 }
 
 bool CriticalActionDatabase::SetCriticalActionsConversationId(
-    const std::vector<std::string>& actor_task_ids,
+    const std::vector<std::string>& critical_action_ids,
     std::string_view conversation_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (actor_task_ids.empty()) {
+  if (critical_action_ids.empty()) {
     // No-op succeeds since nothing needs updating.
     return true;
   }
@@ -434,18 +541,16 @@ bool CriticalActionDatabase::SetCriticalActionsConversationId(
   // Unlike DeleteCriticalActionsByVisitIds which runs rarely and in bulk, this
   // is called often with only a few actor tasks per conversation, making
   // GetCachedStatement preferred over dynamic statement compilation.
-  sql::Statement statement(db_.GetCachedStatement(
+  sql::Statement insert_stmt(db_.GetCachedStatement(
       SQL_FROM_HERE,
-      "INSERT OR REPLACE INTO CriticalActionConversations (critical_action_id, "
-      "conversation_id) "
-      "SELECT critical_action_id, ? FROM CriticalActionEntries "
-      "WHERE actor_task_id = ?"));
+      "INSERT OR REPLACE INTO CriticalActionConversations "
+      "(critical_action_id, conversation_id) VALUES (?, ?) "));
 
-  for (const std::string& task_id : actor_task_ids) {
-    statement.Reset(true);
-    statement.BindString(0, conversation_id);
-    statement.BindString(1, task_id);
-    if (!statement.Run()) {
+  for (const std::string& critical_action_id : critical_action_ids) {
+    insert_stmt.Reset(true);
+    insert_stmt.BindString(0, critical_action_id);
+    insert_stmt.BindString(1, conversation_id);
+    if (!insert_stmt.Run()) {
       return false;
     }
   }
@@ -461,7 +566,8 @@ std::optional<CriticalActionEntry> CriticalActionDatabase::GetCriticalAction(
       SQL_FROM_HERE,
       "SELECT e.critical_action_id, e.timestamp, v.visit_id, "
       "c.conversation_id, "
-      "       e.actor_task_id, e.action_type, e.metadata "
+      "       e.actor_task_id, e.action_type, e.metadata, "
+      "e.conversation_anchor_id "
       "FROM CriticalActionEntries e "
       "LEFT JOIN CriticalActionVisits v ON e.critical_action_id = "
       "v.critical_action_id "
@@ -520,12 +626,14 @@ void CriticalActionDatabase::AddTimeRangeConditions(
 
 // static
 std::string CriticalActionDatabase::BuildGetCriticalActionsQuery(
-    const CriticalActionQueryOptions& options) {
+    const CriticalActionQueryOptions& options,
+    size_t batch_visit_ids_count) {
   std::vector<std::string> conditions;
   std::string sql_query =
       "SELECT e.critical_action_id, e.timestamp, v.visit_id, "
       "c.conversation_id, "
-      "       e.actor_task_id, e.action_type, e.metadata "
+      "       e.actor_task_id, e.action_type, e.metadata, "
+      "e.conversation_anchor_id "
       "FROM CriticalActionEntries e "
       "LEFT JOIN CriticalActionVisits v ON e.critical_action_id = "
       "v.critical_action_id "
@@ -544,9 +652,8 @@ std::string CriticalActionDatabase::BuildGetCriticalActionsQuery(
   // not synced between devices. As a result, visits that occurred on
   // other devices will not have matching critical actions in the local
   // database.
-  if (!options.visit_ids.empty()) {
-    conditions.push_back(
-        BuildInCondition("v.visit_id", options.visit_ids.size()));
+  if (batch_visit_ids_count > 0) {
+    conditions.push_back(BuildInCondition("v.visit_id", batch_visit_ids_count));
   }
   if (options.conversation_id.has_value()) {
     conditions.push_back("c.conversation_id = ?");
@@ -572,7 +679,8 @@ std::string CriticalActionDatabase::BuildGetCriticalActionsQuery(
 // static
 void CriticalActionDatabase::BindQueryOptions(
     sql::Statement& statement,
-    const CriticalActionQueryOptions& options) {
+    const CriticalActionQueryOptions& options,
+    base::span<const int64_t> batch_visit_ids) {
   int bind_index = 0;
   if (options.begin_time.has_value()) {
     statement.BindTime(bind_index++, *options.begin_time);
@@ -585,10 +693,8 @@ void CriticalActionDatabase::BindQueryOptions(
       statement.BindInt(bind_index++, static_cast<int>(type));
     }
   }
-  if (!options.visit_ids.empty()) {
-    for (int64_t visit_id : options.visit_ids) {
-      statement.BindInt64(bind_index++, visit_id);
-    }
+  for (int64_t visit_id : batch_visit_ids) {
+    statement.BindInt64(bind_index++, visit_id);
   }
   if (options.conversation_id.has_value()) {
     statement.BindString(bind_index++, *options.conversation_id);
@@ -610,26 +716,73 @@ CriticalActionEntry CriticalActionDatabase::StatementToEntry(
   entry.visit_id = statement.ColumnInt64(2);
   entry.conversation_id = statement.ColumnString(3);
   entry.actor_task_id = statement.ColumnString(4);
-  entry.action_type = static_cast<ActionType>(statement.ColumnInt(5));
+  // The stored value comes from disk and may not be a valid `ActionType` value,
+  // e.g. if the row was written by a newer Chrome release that knows more
+  // types. Treat any out-of-range value as `kUnknown` so it never reaches code
+  // that expects a known `ActionType`.
+  const int raw_action_type = statement.ColumnInt(5);
+  entry.action_type =
+      (raw_action_type >= 0 &&
+       raw_action_type <= static_cast<int>(ActionType::kMaxValue))
+          ? static_cast<ActionType>(raw_action_type)
+          : ActionType::kUnknown;
   entry.metadata = statement.ColumnString(6);
+  entry.conversation_anchor_id = statement.ColumnString(7);
   return entry;
 }
 
-std::vector<CriticalActionEntry> CriticalActionDatabase::GetCriticalActions(
-    const CriticalActionQueryOptions& options) {
+std::vector<CriticalActionEntry>
+CriticalActionDatabase::GetCriticalActionsBatch(
+    const CriticalActionQueryOptions& options,
+    base::span<const int64_t> batch_visit_ids) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  std::string sql_query =
+      BuildGetCriticalActionsQuery(options, batch_visit_ids.size());
+  sql::Statement statement(db_.GetReadonlyStatement(sql_query));
+  if (!statement.is_valid()) {
+    return {};
+  }
+  BindQueryOptions(statement, options, batch_visit_ids);
+
   std::vector<CriticalActionEntry> entries;
-
-  std::string sql_query = BuildGetCriticalActionsQuery(options);
-  sql::Statement statement(db_.GetUniqueStatement(sql_query));
-
-  BindQueryOptions(statement, options);
-
   while (statement.Step()) {
     entries.push_back(StatementToEntry(statement));
   }
 
   return entries;
+}
+
+std::vector<CriticalActionEntry> CriticalActionDatabase::GetCriticalActions(
+    const CriticalActionQueryOptions& options) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (options.visit_ids.size() <= kMaxBatchSize) {
+    return GetCriticalActionsBatch(options, options.visit_ids);
+  }
+
+  base::span<const int64_t> visit_ids_span(options.visit_ids);
+  std::vector<CriticalActionEntry> all_entries;
+
+  for (size_t batch_start_index = 0; batch_start_index < visit_ids_span.size();
+       batch_start_index += kMaxBatchSize) {
+    const size_t batch_size =
+        std::min(kMaxBatchSize, visit_ids_span.size() - batch_start_index);
+    base::Extend(all_entries, GetCriticalActionsBatch(
+                                  options, visit_ids_span.subspan(
+                                               batch_start_index, batch_size)));
+  }
+
+  // Preserve the expected ORDER BY timestamp DESC across all batches.
+  std::ranges::sort(all_entries, std::ranges::greater{},
+                    &CriticalActionEntry::timestamp);
+
+  if (options.max_count.has_value() &&
+      all_entries.size() > *options.max_count) {
+    all_entries.resize(*options.max_count);
+  }
+
+  return all_entries;
 }
 
 bool CriticalActionDatabase::DeleteCriticalAction(
@@ -720,6 +873,7 @@ bool CriticalActionDatabase::DeleteCriticalActionsByVisitIds(
 
 void CriticalActionDatabase::Close() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  db_.reset_error_callback();
   db_.Close();
 }
 
@@ -729,7 +883,9 @@ void CriticalActionDatabase::DatabaseErrorCallback(int extended_error,
   sql::UmaHistogramSqliteResult("CriticalActions.Database.SqliteError",
                                 extended_error);
   if (sql::IsErrorCatastrophic(extended_error)) {
-    db_.RazeAndPoison();
+    if (db_.is_open()) {
+      db_.RazeAndPoison();
+    }
   } else if (!sql::Database::IsExpectedSqliteError(extended_error)) {
     LOG(ERROR) << "CriticalAction Database error: " << extended_error;
   }

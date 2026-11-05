@@ -180,6 +180,11 @@ public abstract class TabModalPresenter extends ModalDialogManager.Presenter {
         mDialogView = null;
     }
 
+    @Override
+    protected void replayButtonTapProtection() {
+        if (mDialogView != null) mDialogView.replayButtonTapProtection();
+    }
+
     /**
      * Change view hierarchy for the dialog container to be either the front most or beneath the
      * toolbar.
@@ -218,9 +223,12 @@ public abstract class TabModalPresenter extends ModalDialogManager.Presenter {
      *
      * @param webContents the WebContents that the dialog is showing over.
      * @param save true if a dialog is showing and text selection should be saved; false if a dialog
-     *         is hiding and text selection should be restored.
+     *     is hiding and text selection should be restored.
+     * @param restoreFocus when restoring, whether to give focus back to the page. Callers should
+     *     pass false if the tab is no longer shown and selected. Ignored when saving.
      */
-    protected void saveOrRestoreTextSelection(WebContents webContents, boolean save) {
+    protected void saveOrRestoreTextSelection(
+            WebContents webContents, boolean save, boolean restoreFocus) {
         SelectionPopupController controller = SelectionPopupController.fromWebContents(webContents);
         if (save) {
             // Dismiss the action bar that obscures the dialogs but preserve the text selection.
@@ -230,6 +238,13 @@ public abstract class TabModalPresenter extends ModalDialogManager.Presenter {
             controller.updateTextSelectionUI(false);
             mDidClearTextControls = true;
         } else if (mDidClearTextControls) {
+            // Give focus back to the page, as happens when a dialog closes on desktop.
+            if (restoreFocus) {
+                View containerView =
+                        assumeNonNull(webContents.getViewAndroidDelegate()).getContainerView();
+                assumeNonNull(containerView).requestFocus();
+            }
+
             // Show the action bar back if it was dismissed when the dialogs were showing.
             mDidClearTextControls = false;
             controller.updateTextSelectionUI(true);

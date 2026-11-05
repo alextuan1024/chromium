@@ -61,13 +61,11 @@
 #import "ios/chrome/browser/autofill/ui_bundled/card_name_fix_flow_view_bridge.h"
 #import "ios/chrome/browser/autofill/ui_bundled/card_unmask_prompt_view_bridge.h"
 #import "ios/chrome/browser/autofill/ui_bundled/chrome_autofill_client_ios.h"
-#import "ios/chrome/browser/autofill/wallet_reminder_notice/ui/wallet_reminder_notice_ui_delegate_ios.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
 #import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
 #import "ios/public/provider/chrome/browser/risk_data/risk_data_api.h"
 #import "ios/web/public/web_state.h"
 #import "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
-#import "url/gurl.h"
 
 namespace autofill::payments {
 namespace {
@@ -160,8 +158,11 @@ void IOSChromePaymentsAutofillClient::ShowSaveCreditCardLocally(
     SaveCreditCardOptions options,
     LocalSaveCardPromptCallback callback) {
   DCHECK(options.show_prompt);
-  CHECK(!card.GetInfo(CREDIT_CARD_EXP_MONTH, client_->GetAppLocale()).empty());
-  CHECK(!card.GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, client_->GetAppLocale())
+  CHECK(
+      !card.GetInfo(CREDIT_CARD_EXP_MONTH, client_->GetAppLocale().tag_string())
+           .empty());
+  CHECK(!card.GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR,
+                      client_->GetAppLocale().tag_string())
              .empty());
 
   ShowSaveCreditCard(
@@ -529,14 +530,6 @@ IOSChromePaymentsAutofillClient::GetMerchantPromoCodeManager() {
   return nullptr;
 }
 
-void IOSChromePaymentsAutofillClient::OpenPromoCodeOfferDetailsURL(
-    const GURL& url) {
-  web_state_->OpenURL(web::WebState::OpenURLParams(
-      url, web::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-      /*is_renderer_initiated=*/false));
-}
-
 AutofillOfferManager*
 IOSChromePaymentsAutofillClient::GetAutofillOfferManager() {
   return nullptr;
@@ -694,13 +687,11 @@ BnplUiDelegate* IOSChromePaymentsAutofillClient::GetBnplUiDelegate() {
   return bnpl_ui_delegate_.get();
 }
 
-WalletReminderNoticeUiDelegate*
-IOSChromePaymentsAutofillClient::GetWalletReminderNoticeUiDelegate() {
-  if (!wallet_reminder_notice_ui_delegate_) {
-    wallet_reminder_notice_ui_delegate_.emplace(web_state_,
-                                                client_->commands_handler());
-  }
-  return &*wallet_reminder_notice_ui_delegate_;
+void IOSChromePaymentsAutofillClient::ShowWalletReminderNotice(
+    LegalMessageLines legal_message_lines) {
+  [client_->commands_handler()
+      showWalletReminderNoticeOnOriginWebState:web_state_
+                             legalMessageLines:std::move(legal_message_lines)];
 }
 
 WalletReminderNoticeManager*

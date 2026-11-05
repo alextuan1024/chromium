@@ -14,12 +14,7 @@ source_set("quick_answers") {
     "quick_answers_ui_controller.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
-  public_deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//chrome/browser/ui/ash/quick_answers/ui",
-  ]
+  public_deps = [ "//chrome/browser/ui/ash/quick_answers/ui" ]
 
   # quick_answers_ui_controller.h/.cc includes headers owned by the ui:
   # target above, while its .cc files include quick_answers_ui_controller.h
@@ -43,7 +38,7 @@ source_set("quick_answers") {
     "//chromeos/components/quick_answers/public/cpp:constants",
     "//chromeos/components/quick_answers/public/cpp:prefs",
     "//chromeos/constants",
-    "//chromeos/strings:strings_grit",
+    "//chromeos/resources:strings",
     "//chromeos/ui/vector_icons",
     "//components/account_id",
     "//components/application_locale_storage",
@@ -74,8 +69,8 @@ source_set("unit_tests") {
     "//chrome/browser/ui/ash/quick_answers/test:test_support",
     "//chrome/browser/ui/ash/quick_answers/ui:unit_tests",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/components/kiosk",
-    "//chromeos/components/kiosk:test_support",
     "//chromeos/components/magic_boost/public/cpp",
     "//chromeos/components/magic_boost/test:fake_magic_boost_state",
     "//chromeos/components/quick_answers",
@@ -84,7 +79,7 @@ source_set("unit_tests") {
     "//chromeos/components/quick_answers/public/cpp:constants",
     "//chromeos/components/quick_answers/public/cpp:prefs",
     "//chromeos/constants",
-    "//chromeos/strings:strings_grit",
+    "//chromeos/resources:strings",
     "//testing/gmock",
     "//testing/gtest",
     "//ui/base",
@@ -113,6 +108,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui/ash/quick_answers/ui:browser_tests",
     "//chrome/browser/ui/ash/read_write_cards",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_utils",
     "//chromeos/components/kiosk",
     "//chromeos/components/kiosk:test_support",
     "//chromeos/components/magic_boost/public/cpp",
@@ -121,7 +117,7 @@ source_set("browser_tests") {
     "//chromeos/components/quick_answers/public/cpp",
     "//chromeos/components/quick_answers/public/cpp:constants",
     "//chromeos/components/quick_answers/public/cpp:prefs",
-    "//chromeos/strings",
+    "//chromeos/resources:strings",
     "//content/test:test_support",
     "//testing/gtest",
     "//ui/events:test_support",

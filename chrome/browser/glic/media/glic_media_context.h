@@ -33,14 +33,11 @@ class GlicMediaContext : public content::DocumentUserData<GlicMediaContext>,
 
   bool OnResult(const media::SpeechRecognitionResult&);
 
-  void OnPeerConnectionAdded();
-  void OnPeerConnectionRemoved();
   void OnPipPeerConnectionAdded();
   void OnPipPeerConnectionRemoved();
 
-  bool is_excluded_from_transcript_for_testing() {
-    return IsExcludedFromTranscript();
-  }
+  static bool IsExcludedFromTranscript(content::RenderFrameHost* rfh);
+  bool IsExcludedFromTranscript() const;
 
   DOCUMENT_USER_DATA_KEY_DECL();
 
@@ -80,7 +77,8 @@ class GlicMediaContext : public content::DocumentUserData<GlicMediaContext>,
   // Returns a copy of the transcript chunks.
   std::list<TranscriptChunk> GetTranscriptChunks() const;
 
-  // Returns whether there are any final transcript chunks.
+  // Returns whether there are any final transcript chunks or a sufficiently
+  // long non-final transcript chunk.
   bool HasTranscriptChunks() const;
 
   // Clears all stored transcripts.
@@ -97,6 +95,8 @@ class GlicMediaContext : public content::DocumentUserData<GlicMediaContext>,
     ~Transcript();
     Transcript(const Transcript&) = delete;
     Transcript& operator=(const Transcript&) = delete;
+
+    bool HasTranscriptChunks() const;
 
     // Stores transcript chunks in timestamp order.
     std::list<TranscriptChunk> transcript_chunks_;
@@ -116,8 +116,6 @@ class GlicMediaContext : public content::DocumentUserData<GlicMediaContext>,
     size_t max_transcript_size_ = 0u;
   };
 
-  bool IsExcludedFromTranscript() const;
-
   // Handles a non-final speech recognition result by inserting or updating a
   // temporary non-final chunk in `transcript_chunks_`.
   void HandleNonFinalResult(Transcript* transcript, TranscriptChunk new_chunk);
@@ -126,6 +124,10 @@ class GlicMediaContext : public content::DocumentUserData<GlicMediaContext>,
   // non-final chunk, inserting the new final chunk in the correct order, and
   // trimming the transcript.
   void HandleFinalResult(Transcript* transcript, TranscriptChunk new_chunk);
+
+  // Notifies the `MediaTranscriptProvider` that transcription has begun for
+  // this frame, if not already notified.
+  void MaybeNotifyTranscriptionBegin();
 
   // Trims the transcript to a maximum size by removing the oldest chunks until
   // the total size is within the limit.
@@ -149,10 +151,9 @@ class GlicMediaContext : public content::DocumentUserData<GlicMediaContext>,
   // Map from media session title to transcript.
   std::map<std::u16string, std::unique_ptr<Transcript>> transcripts_by_title_;
 
-  size_t num_peer_connections_ = 0;
-
-  // Set to true if any final transcript chunk was recorded for any title.
-  bool has_recorded_any_final_chunk_ = false;
+  // Set to true once `MediaTranscriptProvider::OnTranscriptionBeginForFrame`
+  // has been called for this frame.
+  bool has_notified_transcription_begin_ = false;
 };
 
 }  // namespace glic

@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_SCRIPT_CLASSIC_PENDING_SCRIPT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SCRIPT_CLASSIC_PENDING_SCRIPT_H_
 
+#include "build/build_config.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_cache_consumer_client.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_source_location_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_streamer.h"
@@ -13,7 +14,6 @@
 #include "third_party/blink/renderer/core/script/cache_hint_attribute_value.h"
 #include "third_party/blink/renderer/core/script/classic_script.h"
 #include "third_party/blink/renderer/core/script/pending_script.h"
-#include "third_party/blink/renderer/platform/instrumentation/memory_pressure_listener.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
 
 namespace blink {
@@ -56,6 +56,10 @@ class CORE_EXPORT ClassicPendingScript final
                                             scheduler::TaskAttributionInfo*,
                                             CacheHintAttributeValue);
 
+#if !BUILDFLAG(IS_CHROMEOS)
+  static bool IsDeviceEligibleForLowPriorityAsyncScriptExecutionForTesting();
+#endif
+
   ClassicPendingScript(ScriptElementBase*,
                        const TextPosition&,
                        const KURL& source_url_for_inline_script,
@@ -84,8 +88,8 @@ class CORE_EXPORT ClassicPendingScript final
   // ScriptCacheConsumerClient:
   void NotifyCacheConsumeFinished() override;
 
-  // Check if this script is eligible for kLowPriorityAsyncScriptExecution
-  // feature (see crbug/1348467).
+  // Check if this script is eligible for low-priority async script execution
+  // (see crbug.com/1348467).
   bool IsEligibleForLowPriorityAsyncScriptExecution() const override;
 
  private:

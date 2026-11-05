@@ -29,6 +29,10 @@ namespace base {
 class CommandLine;
 }
 
+namespace dawn::native {
+class Adapter;
+}  // namespace dawn::native
+
 namespace gpu {
 // Collects basic GPU info without creating a GL/DirectX context (and without
 // the danger of crashing), including vendor_id and device_id.
@@ -69,9 +73,20 @@ GPU_CONFIG_EXPORT bool CollectD3D11FeatureInfo(
 // Collect the hardware overlay support flags.
 GPU_CONFIG_EXPORT void CollectHardwareOverlayInfo(OverlayInfo* overlay_info);
 
+// Query the LUID of ANGLE's active D3D11 adapter.
+GPU_CONFIG_EXPORT bool GetActiveAdapterLuid(LUID* luid);
+
 // Identify the active GPU based on LUIDs.
 bool IdentifyActiveGPUWithLuid(GPUInfo* gpu_info);
 #endif  // BUILDFLAG(IS_WIN)
+
+// Collect the GPUInfo fields that ANGLE derives from its EGL display rather
+// than from a current GL context: display_type, gl_vendor, gl_ws_vendor,
+// gl_ws_version, gl_ws_extensions and gl_reset_notification_strategy, plus
+// gl_renderer and gl_version if EGL_ANGLE_query_renderer_strings is supported.
+// Returns false if ANGLE isn't in use or |display| isn't an EGL display.
+bool CollectGraphicsInfoFromANGLEDisplay(GPUInfo* gpu_info,
+                                         gl::GLDisplay* display);
 
 // Create a GL context and collect GL strings and versions.
 GPU_CONFIG_EXPORT bool CollectGraphicsInfoGL(GPUInfo* gpu_info,
@@ -80,6 +95,9 @@ GPU_CONFIG_EXPORT bool CollectGraphicsInfoGL(GPUInfo* gpu_info,
 // If more than one GPUs are identified, and GL strings are available,
 // identify the active GPU based on GL strings.
 GPU_CONFIG_EXPORT void IdentifyActiveGPU(GPUInfo* gpu_info);
+
+// Marks the primary GPU as active and all secondary GPUs as inactive.
+void MarkPrimaryGpuActive(GPUInfo* gpu_info);
 
 // Helper function to convert data from ANGLE's system info gathering library
 // into a GPUInfo
@@ -99,6 +117,11 @@ GPU_CONFIG_EXPORT void CollectDawnInfo(
     const gpu::GpuPreferences& gpu_preferences,
     bool collect_metrics,
     std::vector<std::string>* dawn_info_list);
+
+// Checks whether a Dawn WebGPU adapter can share textures with Chrome's
+// compositor (SharedImage).
+GPU_CONFIG_EXPORT bool WebGPUAdapterSupportsExternalTextures(
+    const dawn::native::Adapter& native_adapter);
 
 }  // namespace gpu
 

@@ -2,6 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//chrome/common/features.gni")
+import("//tools/grit/preprocess_if_expr.gni")
 import("//ui/webui/resources/tools/build_webui.gni")
 import("//ui/webui/resources/tools/bundle_js.gni")
 import("//ui/webui/resources/tools/bundle_js_excludes.gni")
@@ -41,101 +43,77 @@ action("rewrite_mojo_imports") {
   ]
 }
 
+preprocess_if_expr("preprocess_background") {
+  visibility = [ ":build_background_ts" ]
+  defines = chrome_grit_defines
+  in_folder = "."
+  out_folder = "$target_gen_dir/preprocessed_background"
+  in_files = [ "background.ts" ]
+}
+
 ts_library("build_background_ts") {
-  root_dir = "."
+  root_dir = "$target_gen_dir/preprocessed_background"
   out_dir = "$target_gen_dir/background"
   in_files = [ "background.ts" ]
+  composite = true
+  deps = [
+    "//chrome/browser/resources/contextual_tasks:build_ts",
+    "//ui/webui/resources/mojo:build_ts",
+  ]
+  extra_deps = [ ":preprocess_background" ]
+  path_mappings =
+      [ "chrome://contextual-tasks/*|" +
+        rebase_path(
+            "$root_gen_dir/chrome/browser/resources/contextual_tasks/tsc/*",
+            target_gen_dir) ]
   definitions = [
     "contextual_tasks_private.d.ts",
+    "//tools/typescript/definitions/chrome_event.d.ts",
+    "//tools/typescript/definitions/chrome_histograms.d.ts",
+    "//tools/typescript/definitions/metrics_private.d.ts",
     "//tools/typescript/definitions/runtime.d.ts",
     "//tools/typescript/definitions/tabs.d.ts",
-    "//tools/typescript/definitions/chrome_event.d.ts",
+  ]
+}
+
+bundle_js("bundle_background") {
+  host = "chrome-extension://glbjnfimcajjenihimblfaponejbkoph"
+  input = rebase_path("$target_gen_dir/background", root_build_dir)
+  js_module_in_files = [ "background.js" ]
+  out_folder = "$target_gen_dir/background_bundled"
+  deps = [
+    ":build_background_ts",
+    "//chrome/browser/resources/contextual_tasks:build_ts",
+    "//mojo/public/js:bindings_module",
+    "//ui/webui/resources/mojo:build_ts",
+  ]
+  external_paths = [
+    "chrome://resources/mojo/mojo/public/js/|" +
+        rebase_path("$root_gen_dir/mojo/public/js", root_build_dir),
+    "//resources/mojo/mojo/public/js/|" +
+        rebase_path("$root_gen_dir/mojo/public/js", root_build_dir),
+    "chrome://resources/mojo/|" +
+        rebase_path("$root_gen_dir/ui/webui/resources/tsc/mojo",
+                    root_build_dir),
+    "//resources/mojo/|" +
+        rebase_path("$root_gen_dir/ui/webui/resources/tsc/mojo",
+                    root_build_dir),
+    "chrome://contextual-tasks/|" +
+        rebase_path(
+            "$root_gen_dir/chrome/browser/resources/contextual_tasks/tsc",
+            root_build_dir),
   ]
 }
 
 generate_grd("build_background_grdp") {
   grd_prefix = "contextual_tasks_extension"
   out_grd = "$target_gen_dir/background_resources.grdp"
-  manifest_files = [ "$target_gen_dir/build_background_ts_manifest.json" ]
-  resource_path_prefix = "contextual_tasks_extension"
-  deps = [ ":build_background_ts" ]
-}
-
-ts_library("build_post_message_handler_ts") {
-  root_dir = "."
-  out_dir = "$target_gen_dir/post_message_handler"
-  in_files = [
-    "post_message_entrypoint.ts",
-    "post_message_handler.ts",
-  ]
-  composite = true
-  deps = [
-    "//chrome/browser/resources/contextual_tasks:build_ts",
-    "//ui/webui/resources/js:build_ts",
-    "//ui/webui/resources/mojo:build_ts",
-  ]
-  path_mappings =
-      [ "chrome://contextual-tasks/*|" +
-        rebase_path(
-            "$root_gen_dir/chrome/browser/resources/contextual_tasks/tsc/*",
-            target_gen_dir) ]
-}
-
-bundle_js("bundle_post_message_handler") {
-  host = "chrome-extension://glbjnfimcajjenihimblfaponejbkoph"
-  input = rebase_path("$target_gen_dir/post_message_handler", root_build_dir)
-  js_module_in_files = [ "post_message_handler.js" ]
-  out_folder = "$target_gen_dir/post_message_handler_bundled"
-  excludes = BUNDLE_JS_EXCLUDES
-  deps = [
-    ":build_post_message_handler_ts",
-    "//chrome/browser/resources/contextual_tasks:build_ts",
-    "//ui/webui/resources/js:build_ts",
-    "//ui/webui/resources/mojo:build_ts",
-  ]
-  external_paths =
-      [ "chrome://contextual-tasks/|" +
-        rebase_path(
-            "$root_gen_dir/chrome/browser/resources/contextual_tasks/tsc",
-            root_build_dir) ]
-}
-
-bundle_js("bundle_post_message_entrypoint") {
-  host = "chrome-extension://glbjnfimcajjenihimblfaponejbkoph"
-  input = rebase_path("$target_gen_dir/post_message_handler", root_build_dir)
-  js_module_in_files = [ "post_message_entrypoint.js" ]
-  out_folder = "$target_gen_dir/post_message_entrypoint_bundled"
-  excludes = BUNDLE_JS_EXCLUDES
-  deps = [
-    ":build_post_message_handler_ts",
-    "//chrome/browser/resources/contextual_tasks:build_ts",
-    "//ui/webui/resources/js:build_ts",
-    "//ui/webui/resources/mojo:build_ts",
-  ]
-  external_paths =
-      [ "chrome://contextual-tasks/|" +
-        rebase_path(
-            "$root_gen_dir/chrome/browser/resources/contextual_tasks/tsc",
-            root_build_dir) ]
-}
-
-generate_grd("build_post_message_handler_grdp") {
-  grd_prefix = "contextual_tasks_extension"
-  out_grd = "$target_gen_dir/post_message_handler_resources.grdp"
   resource_path_prefix = "contextual_tasks_extension"
   input_files_base_dir = rebase_path(target_gen_dir, root_build_dir)
-  input_files = [
-    "post_message_entrypoint_bundled/post_message_entrypoint.rollup.js",
-    "post_message_handler_bundled/post_message_handler.rollup.js",
-  ]
-  resource_path_rewrites = [
-    "post_message_entrypoint_bundled/post_message_entrypoint.rollup.js|post_message_entrypoint.js",
-    "post_message_handler_bundled/post_message_handler.rollup.js|post_message_handler.js",
-  ]
-  deps = [
-    ":bundle_post_message_entrypoint",
-    ":bundle_post_message_handler",
-  ]
+  input_files = [ "background_bundled/background.rollup.js" ]
+  resource_path_rewrites =
+      [ "background_bundled/background.rollup.js|background.js" ]
+  deps = [ ":bundle_background" ]
 }
 
 bundle_js("bundle_tab_picker") {
@@ -158,10 +136,53 @@ generate_grd("build_tab_picker_grdp") {
   resource_path_prefix = "contextual_tasks_extension"
   input_files_base_dir = rebase_path(target_gen_dir, root_build_dir)
   input_files = [ "tab_picker_bundled/tab_picker.rollup.js" ]
-  resource_path_rewrites = [
-    "tab_picker_bundled/tab_picker.rollup.js|tab_picker.js",
-  ]
+  resource_path_rewrites =
+      [ "tab_picker_bundled/tab_picker.rollup.js|tab_picker.js" ]
   deps = [ ":bundle_tab_picker" ]
+}
+
+bundle_js("bundle_lens_chip") {
+  host = "chrome-extension://glbjnfimcajjenihimblfaponejbkoph"
+  input = rebase_path("$target_gen_dir/tsc", root_build_dir)
+  js_module_in_files = [ "lens_chip_app.js" ]
+  out_folder = "$target_gen_dir/lens_chip_bundled"
+  excludes = BUNDLE_JS_EXCLUDES
+  deps = [ ":build_ts" ]
+  external_paths =
+      [ "chrome://contextual-tasks/|" +
+        rebase_path(
+            "$root_gen_dir/chrome/browser/resources/contextual_tasks/tsc",
+            root_build_dir) ]
+}
+
+generate_grd("build_lens_chip_grdp") {
+  grd_prefix = "contextual_tasks_extension"
+  out_grd = "$target_gen_dir/lens_chip_resources.grdp"
+  resource_path_prefix = "contextual_tasks_extension"
+  input_files_base_dir = rebase_path(target_gen_dir, root_build_dir)
+  input_files = [ "lens_chip_bundled/lens_chip_app.rollup.js" ]
+  resource_path_rewrites =
+      [ "lens_chip_bundled/lens_chip_app.rollup.js|lens_chip_app.js" ]
+  deps = [ ":bundle_lens_chip" ]
+}
+
+bundle_js("bundle_color_scheme") {
+  host = "chrome-extension://glbjnfimcajjenihimblfaponejbkoph"
+  input = rebase_path("$target_gen_dir/tsc", root_build_dir)
+  js_module_in_files = [ "color_scheme.js" ]
+  out_folder = "$target_gen_dir/color_scheme_bundled"
+  deps = [ ":build_ts" ]
+}
+
+generate_grd("build_color_scheme_grdp") {
+  grd_prefix = "contextual_tasks_extension"
+  out_grd = "$target_gen_dir/color_scheme_resources.grdp"
+  resource_path_prefix = "contextual_tasks_extension"
+  input_files_base_dir = rebase_path(target_gen_dir, root_build_dir)
+  input_files = [ "color_scheme_bundled/color_scheme.rollup.js" ]
+  resource_path_rewrites =
+      [ "color_scheme_bundled/color_scheme.rollup.js|color_scheme.js" ]
+  deps = [ ":bundle_color_scheme" ]
 }
 
 build_webui("build") {
@@ -172,29 +193,34 @@ build_webui("build") {
   in_folder = "."
 
   static_files = [
-    "chip.html",
-    "favicons.html",
+    "context_library.html",
     "lens_button.html",
+    "lens_chip.html",
     "manifest.json",
     "tab_picker.html",
   ]
 
   extra_grdp_deps = [
     ":build_background_grdp",
-    ":build_post_message_handler_grdp",
+    ":build_color_scheme_grdp",
+    ":build_lens_chip_grdp",
     ":build_tab_picker_grdp",
   ]
   extra_grdp_files = [
     "$target_gen_dir/background_resources.grdp",
-    "$target_gen_dir/post_message_handler_resources.grdp",
+    "$target_gen_dir/color_scheme_resources.grdp",
+    "$target_gen_dir/lens_chip_resources.grdp",
     "$target_gen_dir/tab_picker_resources.grdp",
   ]
 
   ts_files = [
-    "favicons_app.html.ts",
-    "favicons_app.ts",
+    "color_scheme.ts",
+    "context_library.html.ts",
+    "context_library.ts",
     "lens_button_app.html.ts",
     "lens_button_app.ts",
+    "lens_chip_app.html.ts",
+    "lens_chip_app.ts",
     "tab_picker.ts",
     "tab_picker_app.html.ts",
     "tab_picker_app.ts",
@@ -202,8 +228,9 @@ build_webui("build") {
   ]
 
   css_files = [
-    "favicons_app.css",
+    "context_library.css",
     "lens_button_app.css",
+    "lens_chip_app.css",
     "tab_picker_app.css",
   ]
 
@@ -218,6 +245,12 @@ build_webui("build") {
     "//ui/webui/resources/cr_elements:build_ts",
     "//ui/webui/resources/js:build_ts",
     "//ui/webui/resources/mojo:build_ts",
+  ]
+
+  ts_definitions = [
+    "//tools/typescript/definitions/chrome_histograms.d.ts",
+    "//tools/typescript/definitions/metrics_private.d.ts",
+    "//tools/typescript/definitions/pending.d.ts",
   ]
   mojo_files_deps = [ ":rewrite_mojo_imports" ]
   mojo_files = [
@@ -244,7 +277,7 @@ build_webui("build") {
   optimize = true
   optimize_webui_host = "chrome-extension://glbjnfimcajjenihimblfaponejbkoph"
   optimize_webui_in_files = [
-    "favicons_app.js",
+    "context_library.js",
     "lens_button_app.js",
   ]
 

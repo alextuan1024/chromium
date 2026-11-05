@@ -5,12 +5,12 @@
 #include "media/formats/mp4/box_definitions.h"
 
 #include <bitset>
+#include <limits>
 #include <memory>
 #include <tuple>
 #include <utility>
 
 #include "base/command_line.h"
-#include "base/containers/auto_spanification_helper.h"
 #include "base/containers/span.h"
 #include "base/containers/span_writer.h"
 #include "base/logging.h"
@@ -19,6 +19,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "media/base/agtm.h"
+#include "media/base/bit_reader.h"
 #include "media/base/media_switches.h"
 #include "media/base/media_util.h"
 #include "media/base/video_types.h"
@@ -596,7 +597,7 @@ bool MetadataIT35SampleEntry::Parse(BoxReader* reader) {
   std::vector<uint8_t> it35_prefix;
   RCHECK(reader->ReadVec(&it35_prefix, it35_identifier_length));
 
-  if (gfx::HdrMetadataAgtm::IsEnabled() && MatchesAgtmT35(it35_prefix)) {
+  if (MatchesAgtmT35(it35_prefix)) {
     it35_prefix_type = MetadataTrack::IT35PrefixType::kSmpteSt2094App5;
   }
   return true;
@@ -1111,6 +1112,294 @@ bool AV1CodecConfigurationRecord::ParseInternal(BufferReader* reader,
 }
 #endif  // BUILDFLAG(ENABLE_AV1_DECODER)
 
+#if BUILDFLAG(ENABLE_DAV2D_DECODER)
+
+namespace {
+
+constexpr uint8_t kAv2ObuSequenceHeader = 1;
+constexpr uint32_t kAv2MaxSeqNum = 16;
+
+std::optional<VideoCodecProfile> MapAV2ProfileIdc(uint32_t profile_idc) {
+  switch (profile_idc) {
+    case 0:
+      return AV2PROFILE_MAIN_420_10_IP0;
+    case 1:
+      return AV2PROFILE_MAIN_420_10_IP1;
+    case 2:
+      return AV2PROFILE_MAIN_420_10_IP2;
+    case 3:
+      return AV2PROFILE_MAIN_422_10_IP1;
+    case 4:
+      return AV2PROFILE_MAIN_444_10_IP1;
+    case 5:
+      return AV2PROFILE_MAIN_444C_12_IP2;
+    case 31:
+      return AV2PROFILE_CONFIGURABLE;
+    default:
+      return std::nullopt;
+  }
+}
+
+// Parses an unsigned-variable-length-code (uvlc), defined in section 4.11.3
+bool ReadAv2Uvlc(BitReader* br, uint32_t* out) {
+  bool done = false;
+  size_t leading_zeros = 0;
+  while (true) {
+    if (!br->ReadFlag(&done)) {
+      return false;
+    }
+    if (done) {
+      break;
+    }
+    if (++leading_zeros >= 32) {
+      return false;
+    }
+  }
+  if (!leading_zeros) {
+    *out = 0;
+    return true;
+  }
+  uint32_t value = 0;
+  if (!br->ReadBits(leading_zeros, &value)) {
+    return false;
+  }
+  *out = value + ((1u << leading_zeros) - 1u);
+  return true;
+}
+
+bool ParseLengthDelimitedOBUs(base::span<const uint8_t> buf,
+                              size_t obu_count,
+                              std::vector<base::span<const uint8_t>>* obus) {
+  obus->clear();
+  obus->reserve(obu_count);
+
+  size_t position = 0;
+  while (position < buf.size()) {
+    uint64_t obu_length = 0;
+    bool length_secured = false;
+    for (int i = 0; i < 8; i++) {
+      if (position >= buf.size()) {
+        return false;
+      }
+
+      const auto byte = buf[position++];
+      obu_length |= static_cast<uint64_t>(byte & 0x7f) << (i * 7);
+      if (!(byte & 0x80)) {
+        length_secured = true;
+        break;
+      }
+    }
+
+    if (!length_secured || obu_length == 0 ||
+        obu_length > std::numeric_limits<uint32_t>::max() ||
+        obu_length > buf.size() - position) {
+      return false;
+    }
+
+    obus->push_back(buf.subspan(position, static_cast<size_t>(obu_length)));
+    position += obu_length;
+  }
+  return obus->size() == obu_count;
+}
+
+bool ParseAv2SequenceHeaderBody(BitReader* br,
+                                MediaLog* log,
+                                VideoCodecProfile* out_profile,
+                                VideoCodecLevel* out_level) {
+  uint32_t header_id = 0;
+  if (!ReadAv2Uvlc(br, &header_id) || header_id >= kAv2MaxSeqNum) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2C box: header-id out of range";
+    return false;
+  }
+
+  uint32_t profile_idc = 0;
+  uint32_t level_idx = 0;
+  bool single_pic = false;
+  if (!br->ReadBits(5, &profile_idc) || !br->ReadFlag(&single_pic) ||
+      !br->ReadBits(5, &level_idx)) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2C box: malformed sequence header";
+    return false;
+  }
+
+  std::optional<VideoCodecProfile> profile = MapAV2ProfileIdc(profile_idc);
+  if (!profile.has_value()) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2C box: bad profile: " << profile_idc;
+    return false;
+  }
+
+  if (level_idx > 3 && !single_pic && !br->SkipBits(1)) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2C box: malformed sequence header";
+    return false;
+  }
+
+  uint32_t chroma = 0;
+  if (!ReadAv2Uvlc(br, &chroma) || chroma > 3) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2C box: bad chroma format: " << chroma;
+    return false;
+  }
+
+  uint32_t bit_depth = 0;
+  // Note that we reject 12-bit streams (2) because we can't play them.
+  if (!ReadAv2Uvlc(br, &bit_depth) || bit_depth > 1) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2C box: bad bit_depth: " << bit_depth;
+    return false;
+  }
+
+  *out_profile = *profile;
+  *out_level = level_idx;
+  return true;
+}
+
+}  // namespace
+
+AV2CodecConfigurationRecord::AV2CodecConfigurationRecord() = default;
+
+AV2CodecConfigurationRecord::AV2CodecConfigurationRecord(
+    const AV2CodecConfigurationRecord& other) = default;
+
+AV2CodecConfigurationRecord::~AV2CodecConfigurationRecord() = default;
+
+FourCC AV2CodecConfigurationRecord::BoxType() const {
+  return FOURCC_AV2C;
+}
+
+bool AV2CodecConfigurationRecord::Parse(BoxReader* reader) {
+  RCHECK(reader->pos() <= reader->box_size());
+  return ParseInternal(reader->buffer().subspan(reader->pos()),
+                       reader->media_log());
+}
+
+bool AV2CodecConfigurationRecord::Parse(base::span<const uint8_t> data) {
+  NullMediaLog media_log;
+  return ParseInternal(data, &media_log);
+}
+
+// Parse the AV2CodecConfigurationRecord, which has the following format:
+//   unsigned int (8) reserved1 = 0;
+//   unsigned int (8) config_obus_count_minus1;
+//   unsigned int (8)[config_obus_count_minus1 + 1][]
+bool AV2CodecConfigurationRecord::ParseInternal(base::span<const uint8_t> data,
+                                                MediaLog* log) {
+  // There must be at least one OBU so the minimum number of bytes is 4
+  if (data.size() < 4) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2C box: payload too short";
+    return false;
+  }
+
+  // Per av2-isobmff spec section 3.2.2.3, `reserved1` SHALL be ignored.
+  const size_t obu_count = size_t{data[1]} + 1;
+  const base::span<const uint8_t> obu_data = data.subspan(2u);
+  std::vector<base::span<const uint8_t>> obus;
+
+  if (!ParseLengthDelimitedOBUs(obu_data, obu_count, &obus)) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2C box: malformed OBU entries";
+    return false;
+  }
+
+  bool found_sequence_header = false;
+  for (const auto& obu : obus) {
+    BitReader br(obu);
+
+    // (1 bit) Has an additional 8 bits after tlayer_id
+    bool has_extension = false;
+
+    // OBU type (5 bits)
+    uint8_t obu_type = 0;
+
+    // Layer ID (2 bits), unused presently.
+    uint8_t tlayer_id = 0;
+
+    if (!br.ReadFlag(&has_extension) || !br.ReadBits(5, &obu_type) ||
+        !br.ReadBits(2, &tlayer_id) || (has_extension && !br.SkipBits(8))) {
+      MEDIA_LOG(ERROR, log) << "Invalid av2C box: malformed OBU header";
+      return false;
+    }
+
+    if (obu_type != kAv2ObuSequenceHeader) {
+      continue;
+    }
+
+    VideoCodecProfile parsed_profile = VIDEO_CODEC_PROFILE_UNKNOWN;
+    VideoCodecLevel parsed_level = kNoVideoCodecLevel;
+
+    if (!ParseAv2SequenceHeaderBody(&br, log, &parsed_profile, &parsed_level)) {
+      // ParseAV2SequenceHeaderBody handles error logging.
+      return false;
+    }
+
+    if (!found_sequence_header) {
+      profile = parsed_profile;
+      level = parsed_level;
+      found_sequence_header = true;
+    }
+
+    // Note - there was a "legacy" encoder / muxer implementation which kept
+    // the only correct reference to width and height inside the sequence header
+    // OBU. This is no longer the case, and we can't parse this legacy muxed
+    // content.
+  }
+
+  if (!found_sequence_header) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2C box: missing sequence header OBU";
+    return false;
+  }
+
+  config_obus.assign(obu_data.begin(), obu_data.end());
+  return true;
+}
+
+InBandAV2CodecConfigurationRecord::InBandAV2CodecConfigurationRecord() =
+    default;
+
+InBandAV2CodecConfigurationRecord::InBandAV2CodecConfigurationRecord(
+    const InBandAV2CodecConfigurationRecord& other) = default;
+
+InBandAV2CodecConfigurationRecord::~InBandAV2CodecConfigurationRecord() =
+    default;
+
+FourCC InBandAV2CodecConfigurationRecord::BoxType() const {
+  return FOURCC_av2c;
+}
+
+bool InBandAV2CodecConfigurationRecord::Parse(BoxReader* reader) {
+  return ParseInternal(reader, reader->media_log());
+}
+
+bool InBandAV2CodecConfigurationRecord::Parse(base::span<const uint8_t> data) {
+  BufferReader reader(data);
+  NullMediaLog media_log;
+  return ParseInternal(&reader, &media_log);
+}
+
+// Parses the InBand version of the AV2CodecConfigurationRecord, which has the
+// following format:
+//   unsigned int (3) reserved1 = 0;
+//   unsigned int (2) max_num_streams_minus1;
+//   unsigned int (5) max_profile_idc;
+//   unsigned int (5) max_level_idx;
+//   unsigned int (1) max_tier;
+bool InBandAV2CodecConfigurationRecord::ParseInternal(BufferReader* reader,
+                                                      MediaLog* log) {
+  uint16_t packed = 0;
+  if (!reader->Read2(&packed)) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2c box: payload too short";
+    return false;
+  }
+
+  const uint32_t profile_idc = (packed >> 6) & 0x1f;
+  auto parsed_profile = MapAV2ProfileIdc(profile_idc);
+  if (!parsed_profile.has_value()) {
+    MEDIA_LOG(ERROR, log) << "Invalid av2c box: bad profile: " << profile_idc;
+    return false;
+  }
+
+  profile = *parsed_profile;
+  level = (packed >> 1) & 0x1f;
+  return true;
+}
+
+#endif  // BUILDFLAG(ENABLE_DAV2D_DECODER)
+
 PixelAspectRatioBox::PixelAspectRatioBox() : h_spacing(1), v_spacing(1) {}
 PixelAspectRatioBox::PixelAspectRatioBox(const PixelAspectRatioBox& other) =
     default;
@@ -1284,6 +1573,9 @@ bool VideoSampleEntry::Parse(BoxReader* reader) {
     }
   }
 
+  // HDR metadata from the codec configuration record (e.g, hvcC).
+  gfx::HDRMetadata codec_config_hdr_metadata;
+  // HDR metadata from static metadata boxes (e.g, mdcv and clli).
   gfx::HDRMetadata hdr_static_metadata;
   const FourCC actual_format =
       format == FOURCC_ENCV ? sinf.format.format : format;
@@ -1314,7 +1606,7 @@ bool VideoSampleEntry::Parse(BoxReader* reader) {
       RCHECK(reader->ReadChild(hevc_config.get()));
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
       video_color_space = hevc_config->GetColorSpace();
-      hdr_metadata = hevc_config->GetHDRMetadata();
+      codec_config_hdr_metadata = hevc_config->GetHDRMetadata();
       alpha_mode = hevc_config->GetAlphaMode();
 #endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
       video_info.codec = VideoCodec::kHEVC;
@@ -1349,7 +1641,7 @@ bool VideoSampleEntry::Parse(BoxReader* reader) {
       RCHECK(reader->ReadChild(hevc_config.get()));
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
       video_color_space = hevc_config->GetColorSpace();
-      hdr_metadata = hevc_config->GetHDRMetadata();
+      codec_config_hdr_metadata = hevc_config->GetHDRMetadata();
       alpha_mode = hevc_config->GetAlphaMode();
 #endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
       video_info.codec = VideoCodec::kHEVC;
@@ -1407,6 +1699,38 @@ bool VideoSampleEntry::Parse(BoxReader* reader) {
       break;
     }
 #endif  // BUILDFLAG(ENABLE_AV1_DECODER)
+#if BUILDFLAG(ENABLE_DAV2D_DECODER)
+    case FOURCC_AV02:
+    case FOURCC_AV2E:
+    case FOURCC_av2e: {
+      {
+        AV2CodecConfigurationRecord av2_config;
+        // AV02 can identify either an in-band or an out-of-band config, so we
+        // need to check both. AV2E can only identify out-of-band, while av2e
+        // can only identify in-band.
+        if (actual_format == FOURCC_AV2E ||
+            (actual_format == FOURCC_AV02 && reader->HasChild(&av2_config))) {
+          RCHECK(reader->ReadChild(&av2_config));
+          video_info.codec = VideoCodec::kAV2;
+          video_info.profile = av2_config.profile;
+          video_info.level = av2_config.level;
+          extra_data = std::move(av2_config.config_obus);
+          frame_bitstream_converter = nullptr;
+          break;
+        }
+      }
+      {
+        InBandAV2CodecConfigurationRecord av2_config;
+        RCHECK(reader->ReadChild(&av2_config));
+        video_info.codec = VideoCodec::kAV2;
+        video_info.profile = av2_config.profile;
+        video_info.level = av2_config.level;
+        extra_data.clear();
+        frame_bitstream_converter = nullptr;
+        break;
+      }
+    }
+#endif  // BUILDFLAG(ENABLE_DAV2D_DECODER)
     default:
       // Unknown/unsupported format
       MEDIA_LOG(ERROR, reader->media_log())
@@ -1438,9 +1762,10 @@ bool VideoSampleEntry::Parse(BoxReader* reader) {
         /*maxFALL=*/level_information.max_pic_average_light_level));
   }
 
-  if (hdr_static_metadata.IsValid()) {
-    hdr_metadata = hdr_static_metadata;
-  }
+  // Metadata from static metadata boxes takes precedence over metadata from
+  // the codec configuration record.
+  hdr_metadata = codec_config_hdr_metadata;
+  hdr_metadata.MergeMetadataFrom(hdr_static_metadata);
 
   Stereoscopic3DVideo st3d;
   if (reader->HasChild(&st3d)) {
@@ -1487,6 +1812,12 @@ bool VideoSampleEntry::IsFormatValid() const {
 #endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
       return true;
 #endif  // BUILDFLAG(ENABLE_AV1_DECODER)
+#if BUILDFLAG(ENABLE_DAV2D_DECODER)
+    case FOURCC_AV02:
+    case FOURCC_AV2E:
+    case FOURCC_av2e:
+      return true;
+#endif  // BUILDFLAG(ENABLE_DAV2D_DECODER)
     default:
       return false;
   }
@@ -1764,6 +2095,47 @@ enum IamfConfigObuType {
   kIamfConfigObuTypeSequenceHeader = 31,
 };
 
+namespace {
+
+// https://aomediacodec.github.io/iamf/v1.0.0.html#obu-audioelement.
+constexpr uint8_t kIamfAudioElementTypeChannelBased = 0;
+
+enum class IamfParamDefinitionType : uint32_t {
+  kMixGain = 0,
+  kDemixing = 1,
+  kReconGain = 2,
+};
+constexpr uint8_t kIamfParamDefinitionModeMask = 0x80;
+constexpr size_t kIamfDefaultDemixingInfoParameterDataSize = 2;
+
+constexpr uint8_t kIamfLayerOutputGainIsPresentMask = 0x08;
+constexpr size_t kIamfLayerSubstreamCountsSize = 2;
+constexpr size_t kIamfLayerOutputGainSize = 3;
+constexpr size_t kIamfLayerExpandedLoudspeakerLayoutSize = 1;
+
+std::optional<ChannelLayoutConfig> ToChannelLayoutConfig(
+    IamfLoudspeakerLayout loudspeaker_layout) {
+  switch (loudspeaker_layout) {
+    case IamfLoudspeakerLayout::kMono:
+      return ChannelLayoutConfig::Mono();
+    case IamfLoudspeakerLayout::kStereo:
+    case IamfLoudspeakerLayout::kBinaural:
+      return ChannelLayoutConfig::Stereo();
+    case IamfLoudspeakerLayout::k5_1:
+      return ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_5_1>();
+    case IamfLoudspeakerLayout::k5_1_4:
+      return ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_5_1_4>();
+    case IamfLoudspeakerLayout::k7_1:
+      return ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_7_1>();
+    case IamfLoudspeakerLayout::k7_1_4:
+      return ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_7_1_4>();
+    default:
+      return std::nullopt;
+  }
+}
+
+}  // namespace
+
 IamfSpecificBox::IamfSpecificBox() = default;
 
 IamfSpecificBox::IamfSpecificBox(const IamfSpecificBox& other) = default;
@@ -1790,6 +2162,7 @@ bool IamfSpecificBox::Parse(BoxReader* reader) {
     RCHECK(ReadOBU(&config_reader));
   }
 
+  RCHECK(profile != AudioCodecProfile::kUnknown);
   return true;
 }
 
@@ -1797,22 +2170,44 @@ bool IamfSpecificBox::ReadOBU(BufferReader* reader) {
   uint8_t obu_type;
   uint32_t obu_size;
   RCHECK(ReadOBUHeader(reader, &obu_type, &obu_size));
+  RCHECK(reader->HasBytes(obu_size));
   const size_t read_stop_pos = reader->pos() + obu_size;
 
   switch (static_cast<int>(obu_type)) {
     case kIamfConfigObuTypeCodecConfig:
-    case kIamfConfigObuTypeAudioElement:
     case kIamfConfigObuTypeMixPresentation:
       break;
-    case kIamfConfigObuTypeSequenceHeader:
+    case kIamfConfigObuTypeAudioElement: {
+      BufferReader element_reader(
+          reader->buffer().subspan(reader->pos(), obu_size));
+      ChannelLayoutConfig layout;
+      if (ReadAudioElementLayout(&element_reader, &layout) &&
+          (!channel_layout || layout.channels() > channel_layout->channels())) {
+        channel_layout = layout;
+      }
+      break;
+    }
+    case kIamfConfigObuTypeSequenceHeader: {
       uint32_t ia_code;
       RCHECK(reader->Read4(&ia_code));
       RCHECK(ia_code == FOURCC_IAMF);
 
-      RCHECK(reader->Read1(&profile));
-      RCHECK(profile <= 1);
-
+      uint8_t primary_profile;
+      RCHECK(reader->Read1(&primary_profile));
+      switch (primary_profile) {
+        case 0:
+          profile = AudioCodecProfile::kIAMF_SIMPLE;
+          break;
+        case 1:
+          profile = AudioCodecProfile::kIAMF_BASE;
+          break;
+        default:
+          DVLOG(1) << "Unhandled IAMF primary_profile "
+                   << static_cast<int>(primary_profile);
+          return false;
+      }
       break;
+    }
     default:
       DVLOG(1) << "Unhandled IAMF OBU type " << static_cast<int>(obu_type);
       return false;
@@ -1851,23 +2246,159 @@ bool IamfSpecificBox::ReadOBUHeader(BufferReader* reader,
   return true;
 }
 
+bool IamfSpecificBox::ReadAudioElementLayout(
+    BufferReader* reader,
+    ChannelLayoutConfig* layout) const {
+  // `audio_element_id` identifies this element to Mix Presentation OBUs.
+  uint32_t audio_element_id;
+  RCHECK(ReadLeb128Value(reader, &audio_element_id));
+
+  // Only channel-based elements (`audio_element_type` 0) have a loudspeaker
+  // layout.
+  uint8_t audio_element_type;
+  RCHECK(reader->Read1(&audio_element_type));
+  if (audio_element_type >> 5 != kIamfAudioElementTypeChannelBased) {
+    return false;
+  }
+
+  // `codec_config_id` names the Codec Config OBU this element decodes with.
+  uint32_t codec_config_id;
+  RCHECK(ReadLeb128Value(reader, &codec_config_id));
+
+  // `num_substreams` counts the `audio_substream_id`s that carry this element.
+  uint32_t num_substreams;
+  RCHECK(ReadLeb128Value(reader, &num_substreams));
+  for (uint32_t i = 0; i < num_substreams; ++i) {
+    uint32_t audio_substream_id;
+    RCHECK(ReadLeb128Value(reader, &audio_substream_id));
+  }
+
+  // `num_parameters` counts the parameter definitions that follow.
+  uint32_t num_parameters;
+  RCHECK(ReadLeb128Value(reader, &num_parameters));
+  for (uint32_t i = 0; i < num_parameters; ++i) {
+    RCHECK(SkipAudioElementParamDefinition(reader));
+  }
+
+  // `num_layers` is the top 3 bits of its byte.
+  uint8_t num_layers;
+  RCHECK(reader->Read1(&num_layers));
+  num_layers >>= 5;
+  RCHECK(num_layers > 0);
+
+  // Layers are ordered from smallest to largest, so the last
+  // `loudspeaker_layout` is the element's full layout.
+  IamfLoudspeakerLayout loudspeaker_layout = IamfLoudspeakerLayout::kMono;
+  for (uint8_t i = 0; i < num_layers; ++i) {
+    uint8_t channel_audio_layer_config;
+    RCHECK(reader->Read1(&channel_audio_layer_config));
+    loudspeaker_layout =
+        static_cast<IamfLoudspeakerLayout>(channel_audio_layer_config >> 4);
+    const bool output_gain_is_present_flag =
+        channel_audio_layer_config & kIamfLayerOutputGainIsPresentMask;
+    RCHECK(reader->SkipBytes(kIamfLayerSubstreamCountsSize));
+    if (output_gain_is_present_flag) {
+      RCHECK(reader->SkipBytes(kIamfLayerOutputGainSize));
+    }
+    if (loudspeaker_layout == IamfLoudspeakerLayout::kExpanded) {
+      RCHECK(reader->SkipBytes(kIamfLayerExpandedLoudspeakerLayoutSize));
+    }
+  }
+
+  const std::optional<ChannelLayoutConfig> config =
+      ToChannelLayoutConfig(loudspeaker_layout);
+  if (!config) {
+    return false;
+  }
+  *layout = *config;
+  return true;
+}
+
+bool IamfSpecificBox::SkipAudioElementParamDefinition(
+    BufferReader* reader) const {
+  uint32_t param_definition_type;
+  RCHECK(ReadLeb128Value(reader, &param_definition_type));
+
+  // Any `param_definition_type` not in IamfParamDefinitionType is an extension
+  // that carries its own `param_definition_size`.
+  switch (static_cast<IamfParamDefinitionType>(param_definition_type)) {
+    case IamfParamDefinitionType::kMixGain:
+      return false;
+    case IamfParamDefinitionType::kDemixing:
+    case IamfParamDefinitionType::kReconGain:
+      break;
+    default: {
+      uint32_t param_definition_size;
+      RCHECK(ReadLeb128Value(reader, &param_definition_size));
+      return reader->SkipBytes(param_definition_size);
+    }
+  }
+
+  // `parameter_id` ties this definition to its Parameter Block OBUs.
+  uint32_t parameter_id;
+  RCHECK(ReadLeb128Value(reader, &parameter_id));
+
+  // `parameter_rate` is the ticks per second that the durations are counted in.
+  uint32_t parameter_rate;
+  RCHECK(ReadLeb128Value(reader, &parameter_rate));
+
+  // `param_definition_mode` 0 carries the durations here rather than in each
+  // Parameter Block OBU.
+  uint8_t param_definition_mode;
+  RCHECK(reader->Read1(&param_definition_mode));
+  if (!(param_definition_mode & kIamfParamDefinitionModeMask)) {
+    RCHECK(SkipParamDefinitionDurations(reader));
+  }
+
+  // A demixing definition ends with `default_demixing_info_parameter_data`.
+  if (static_cast<IamfParamDefinitionType>(param_definition_type) ==
+      IamfParamDefinitionType::kDemixing) {
+    RCHECK(reader->SkipBytes(kIamfDefaultDemixingInfoParameterDataSize));
+  }
+  return true;
+}
+
+bool IamfSpecificBox::SkipParamDefinitionDurations(BufferReader* reader) const {
+  // `duration` is the length of each parameter block in ticks.
+  uint32_t duration;
+  RCHECK(ReadLeb128Value(reader, &duration));
+
+  // A `constant_subblock_duration` of 0 means each `subblock_duration` is
+  // listed.
+  uint32_t constant_subblock_duration;
+  RCHECK(ReadLeb128Value(reader, &constant_subblock_duration));
+  if (constant_subblock_duration != 0) {
+    return true;
+  }
+
+  // `num_subblocks` counts the `subblock_duration`s that follow.
+  uint32_t num_subblocks;
+  RCHECK(ReadLeb128Value(reader, &num_subblocks));
+  for (uint32_t i = 0; i < num_subblocks; ++i) {
+    uint32_t subblock_duration;
+    RCHECK(ReadLeb128Value(reader, &subblock_duration));
+  }
+  return true;
+}
+
 bool IamfSpecificBox::ReadLeb128Value(BufferReader* reader,
                                       uint32_t* value) const {
   DCHECK(reader);
   DCHECK(value);
-  *value = 0;
-  bool error = true;
-  for (size_t i = 0; i < sizeof(uint32_t); ++i) {
+  constexpr size_t kMaxIamfLeb128Bytes = 8;
+  uint64_t accumulated = 0;
+  for (size_t i = 0; i < kMaxIamfLeb128Bytes; ++i) {
     uint8_t byte;
     RCHECK(reader->Read1(&byte));
-    *value |= ((byte & 0x7f) << (i * 7));
+    accumulated |= (uint64_t{byte} & 0x7f) << (i * 7);
+    RCHECK(accumulated <= std::numeric_limits<uint32_t>::max());
     if (!(byte & 0x80)) {
-      error = false;
-      break;
+      *value = static_cast<uint32_t>(accumulated);
+      return true;
     }
   }
 
-  return !error;
+  return false;
 }
 #endif  // BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO) || ...
 

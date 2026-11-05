@@ -23,9 +23,27 @@ namespace stats {
   WaitForMetricsFlush();                            \
   EXPECT_EQ(count, tester.GetBucketCount(name, value))
 
-class StatsTest : public testing::Test {
+class StatsBaseTest : public testing::Test {
  public:
-  StatsTest() { BackgroundUmaRecorder::GetInstance().Initialize(); }
+  // testing::Test:
+  void TearDown() override {
+    // `BackgroundUmaRecorder` is a singleton, and
+    // `InitializeForTesting(nullptr)` resets the task runner it caches.
+    BackgroundUmaRecorder::GetInstance().InitializeForTesting(nullptr);
+  }
+
+ protected:
+  base::test::TaskEnvironment task_env_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+};
+
+class StatsTest : public StatsBaseTest {
+ public:
+  // testing::Test:
+  void SetUp() override {
+    StatsBaseTest::SetUp();
+    BackgroundUmaRecorder::GetInstance().Initialize();
+  }
 
   void WaitForMetricsFlush() {
     task_env_.AdvanceClock(base::Seconds(5));
@@ -34,10 +52,6 @@ class StatsTest : public testing::Test {
         FROM_HERE, wait.QuitClosure());
     wait.Run();
   }
-
- protected:
-  base::test::TaskEnvironment task_env_{
-      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
 };
 
 TEST_F(StatsTest, ModelExecutionZeroValuePercent) {
@@ -370,14 +384,22 @@ TEST_F(StatsTest, SegmentIdToHistogramVariant) {
                          proto::SegmentId::OPTIMIZATION_TARGET_UNKNOWN));
 }
 
-class BackgroundRecorderTest : public testing::Test {
- protected:
-  base::test::TaskEnvironment task_env_;
-};
+TEST_F(StatsTest, ClassificationRequestTotalDuration) {
+  base::HistogramTester tester;
+  Config config;
+  config.segmentation_key = kDeviceSwitcherKey;
+  config.segmentation_uma_name = kDeviceSwitcherUmaName;
 
-// TODO(ssid): This test may cause delay in the test framework, fix and re-enable the test.
-// Tracking: b/299529800.
-TEST_F(BackgroundRecorderTest, DISABLED_Recording) {
+  stats::RecordClassificationRequestTotalDuration(config, base::Seconds(45));
+  tester.ExpectUniqueTimeSample(
+      "SegmentationPlatform.ClassificationRequest.TotalDuration2."
+      "DeviceSwitcher",
+      base::Seconds(45), 1);
+}
+
+class BackgroundRecorderTest : public StatsBaseTest {};
+
+TEST_F(BackgroundRecorderTest, Recording) {
   BackgroundUmaRecorder& recorder = BackgroundUmaRecorder::GetInstance();
   recorder.InitializeForTesting(task_env_.GetMainThreadTaskRunner());
   int counter = 0;

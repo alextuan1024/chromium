@@ -30,7 +30,6 @@
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/core/common/features.h"
 #include "components/webui/flags/pref_service_flags_storage.h"
 #include "content/public/browser/network_service_instance.h"
 #include "net/base/features.h"
@@ -146,15 +145,13 @@ bool ShouldUseDohFallback(net::SecureDnsMode secure_dns_mode,
     return false;
   }
 
-  // If the feature is enabled then return the boolean value of the pref.
-  // DoH fallback is a new setting introduced in the Bundled Security Settings
-  // for Secure DNS. If the new UI is enabled to make the setting available,
-  // then just check user choice in the pref.
-  if (base::FeatureList::IsEnabled(
-          safe_browsing::kBundledSecuritySettingsSecureDnsV2)) {
-    return doh_config_source.AutomaticModeFallbackToDohEnabled();
-  }
-
+  // Automatic-mode DoH fallback is not currently launched, though its
+  // underlying resolver plumbing remains in place. Ignore
+  // `doh_config_source.AutomaticModeFallbackToDohEnabled()` so any stale pref
+  // values persisted in local state are not honored while there is no settings
+  // UI to change them.
+  // TODO(crbug.com/586589235): Clean up or re-gate the dormant automatic-mode
+  // DoH fallback plumbing.
   return false;
 }
 
@@ -173,6 +170,9 @@ BASE_FEATURE_PARAM(bool,
 // static
 bool StubResolverConfigReader::is_ztdns_enabled_for_testing_ = false;
 #endif
+
+// static
+bool StubResolverConfigReader::dns_overridden_for_testing_ = false;
 
 // static
 constexpr base::TimeDelta StubResolverConfigReader::kParentalControlsCheckDelay;
@@ -318,7 +318,7 @@ StubResolverConfigReader::GetFallbackDohNameservers() {
 }
 
 void StubResolverConfigReader::OnParentalControlsDelayTimer() {
-  DCHECK(!parental_controls_delay_timer_.IsRunning());
+  CHECK(!parental_controls_delay_timer_.IsRunning(), base::NotFatalUntil::M161);
 
   // No need to act if parental controls were checked early.
   if (parental_controls_checked_)
@@ -447,7 +447,13 @@ SecureDnsConfig StubResolverConfigReader::GetAndUpdateConfiguration(
   if (update_network_service) {
     net::InsecureDnsMode insecure_dns_mode = net::InsecureDnsMode::kDisabled;
     if (GetInsecureStubResolverEnabled()) {
+      // Platform DNS APIs query the OS resolver directly. This bypasses both
+      // test host resolver overrides and replacement `net::DnsConfig`. Fall
+      // back to the built-in DNS client whenever tests override DNS, so that
+      // tests keep resolving hosts through their own rules instead of the real
+      // OS resolver.
       if (net::features::IsDnsPlatformSupported() &&
+          !dns_overridden_for_testing_ &&
           base::FeatureList::IsEnabled(kChromeEnableDnsPlatform)) {
         insecure_dns_mode = kChromeEnableDnsPlatformNoSystem.Get()
                                 ? net::InsecureDnsMode::kEnabledPlatformNoSystem

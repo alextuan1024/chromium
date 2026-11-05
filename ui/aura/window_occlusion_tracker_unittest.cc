@@ -2170,12 +2170,14 @@ TEST_F(WindowOcclusionTrackerTest, OcclusionStatesDontBecomeStable) {
   // Once the maximum number of times that occlusion can be recomputed is
   // reached, the occlusion state of all IsVisible() windows should be set to
   // VISIBLE.
-  EXPECT_DCHECK_DEATH({
-    delegate_a->set_expectation(Window::OcclusionState::VISIBLE,
-                                SkRegion(SkIRect::MakeXYWH(20, 0, 10, 10)));
-    delegate_d->set_expectation(Window::OcclusionState::HIDDEN, SkRegion());
-    window_d->Hide();
-  });
+  EXPECT_CHECK_DEATH(
+      {
+        delegate_a->set_expectation(Window::OcclusionState::VISIBLE,
+                                    SkRegion(SkIRect::MakeXYWH(20, 0, 10, 10)));
+        delegate_d->set_expectation(Window::OcclusionState::HIDDEN, SkRegion());
+        window_d->Hide();
+      },
+      base::NotFatalUntil::M163);
 }
 
 // Verify that the occlusion states are correctly updated when a branch of the
@@ -3150,6 +3152,81 @@ TEST_F(WindowOcclusionTrackerTest,
   EXPECT_FALSE(delegate_a->is_expecting_call());
 }
 
+TEST_F(WindowOcclusionTrackerTest,
+       SetOpaqueRegionsForOcclusionDoesNotBypassWindowAlphaShape) {
+  MockWindowDelegate* delegate_a = new MockWindowDelegate();
+  delegate_a->set_expectation(Window::OcclusionState::VISIBLE, SkRegion());
+  CreateTrackedWindow(delegate_a, gfx::Rect(10, 10, 10, 10));
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  delegate_a->set_expectation(Window::OcclusionState::OCCLUDED, SkRegion());
+  Window* window_b = CreateUntrackedWindow(gfx::Rect(10, 10, 10, 10));
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  delegate_a->set_expectation(Window::OcclusionState::VISIBLE, SkRegion());
+  window_b->SetTransparent(true);
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  delegate_a->set_expectation(Window::OcclusionState::OCCLUDED, SkRegion());
+  window_b->SetOpaqueRegionsForOcclusion({gfx::Rect(0, 0, 10, 10)});
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  // Setting an alpha shape on |window_b| masks pixels outside the shape to
+  // transparent, so explicit opaque regions must not occlude |window_a|.
+  auto shape = std::make_unique<ui::Layer::ShapeRects>();
+  shape->emplace_back(0, 0, 4, 4);
+  delegate_a->set_expectation(Window::OcclusionState::VISIBLE, SkRegion());
+  window_b->layer()->SetAlphaShape(std::move(shape));
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  // Clearing the alpha shape restores occlusion from the explicit opaque
+  // region.
+  delegate_a->set_expectation(Window::OcclusionState::OCCLUDED, SkRegion());
+  window_b->layer()->SetAlphaShape(nullptr);
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+}
+
+TEST_F(WindowOcclusionTrackerTest,
+       SetOpaqueRegionsForOcclusionDoesNotBypassParentAlphaShape) {
+  MockWindowDelegate* delegate_a = new MockWindowDelegate();
+  delegate_a->set_expectation(Window::OcclusionState::VISIBLE, SkRegion());
+  CreateTrackedWindow(delegate_a, gfx::Rect(0, 0, 20, 20));
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  delegate_a->set_expectation(Window::OcclusionState::OCCLUDED, SkRegion());
+  Window* window_b = CreateUntrackedWindow(gfx::Rect(0, 0, 20, 20));
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  delegate_a->set_expectation(Window::OcclusionState::VISIBLE, SkRegion());
+  window_b->SetTransparent(true);
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  delegate_a->set_expectation(Window::OcclusionState::OCCLUDED, SkRegion());
+  Window* window_c = CreateUntrackedWindow(gfx::Rect(0, 0, 20, 20), window_b);
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  delegate_a->set_expectation(Window::OcclusionState::VISIBLE, SkRegion());
+  window_c->SetTransparent(true);
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  delegate_a->set_expectation(Window::OcclusionState::OCCLUDED, SkRegion());
+  window_c->SetOpaqueRegionsForOcclusion({gfx::Rect(0, 0, 20, 20)});
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  // Setting an alpha shape on the parent |window_b| masks the entire subtree,
+  // including |window_c|'s explicit opaque region.
+  auto shape = std::make_unique<ui::Layer::ShapeRects>();
+  shape->emplace_back(0, 0, 4, 4);
+  delegate_a->set_expectation(Window::OcclusionState::VISIBLE, SkRegion());
+  window_b->layer()->SetAlphaShape(std::move(shape));
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+
+  // Clearing the parent's alpha shape restores occlusion from |window_c|.
+  delegate_a->set_expectation(Window::OcclusionState::OCCLUDED, SkRegion());
+  window_b->layer()->SetAlphaShape(nullptr);
+  EXPECT_FALSE(delegate_a->is_expecting_call());
+}
+
 TEST_F(
     WindowOcclusionTrackerTest,
     SetOpaqueRegionsForOcclusionOfAWindowDoesNotAffectOcclusionOfThatWindowItself) {
@@ -3318,16 +3395,15 @@ TEST_F(WindowOcclusionTrackerTest, DoNotCountTwice) {
   }
   EXPECT_FALSE(window_occlusion_tracker->IsObservingWindowTreeHostsForTest());
 
-  // This test requires DCHECK enabled.
-#if defined(GTEST_HAS_DEATH_TEST) && DCHECK_IS_ON()
+#if defined(GTEST_HAS_DEATH_TEST)
   window_occlusion_tracker->set_num_tracked_windows_count_check_for_test(true);
-  EXPECT_DEATH(
+  EXPECT_CHECK_DEATH_WITH(
       {
         auto w = test::TestWindowBuilder().SetShow(true).Build();
         TestObserver obs(w.get());
         root_window()->AddChild(w.get());
       },
-      "DCHECK failed.*num_tracked_windows.*");
+      ".*num_tracked_windows.*", base::NotFatalUntil::M163);
 #endif
 }
 

@@ -67,6 +67,19 @@ class SubgriddedItemData {
                : parent_layout_data_->Columns();
   }
 
+  bool ParentHasTrackCollection(
+      GridTrackSizingDirection track_direction,
+      std::optional<WritingMode> container_writing_mode = std::nullopt) const {
+    DCHECK(parent_layout_data_);
+    const bool is_parallel =
+        !container_writing_mode ||
+        IsParallelWritingMode(*container_writing_mode, parent_writing_mode_);
+    const auto direction_in_parent =
+        is_parallel ? track_direction
+                    : (track_direction == kForColumns ? kForRows : kForColumns);
+    return parent_layout_data_->HasTrackCollection(direction_in_parent);
+  }
+
   const GridLayoutData* ParentLayoutData() const { return parent_layout_data_; }
 
  private:
@@ -129,6 +142,13 @@ class CORE_EXPORT GridSizingTree {
   const GridLanesItemGroups& GetVirtualItemGroups(wtf_size_t index = 0) const {
     DCHECK(At(index).virtual_items);
     return At(index).virtual_items->item_groups;
+  }
+
+  const GridLanesSubgriddedItemGroups& GetGridLanesSubgriddedItemGroups(
+      wtf_size_t index = 0) const {
+    CHECK(At(index).virtual_items);
+    CHECK(At(index).virtual_items->subgridded_item_groups);
+    return *At(index).virtual_items->subgridded_item_groups;
   }
 
   GridLayoutData& LayoutData(wtf_size_t index = 0) {
@@ -298,6 +318,11 @@ class GridSizingSubtree : public GridSubtree<GridSizingTree> {
 
   const GridLanesItemGroups& GetVirtualItemGroups() const {
     return SizingTree().GetVirtualItemGroups(subtree_root_);
+  }
+
+  const GridLanesSubgriddedItemGroups& GetGridLanesSubgriddedItemGroups()
+      const {
+    return SizingTree().GetGridLanesSubgriddedItemGroups(subtree_root_);
   }
 
   GridLayoutData& LayoutData() const {

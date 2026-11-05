@@ -40,7 +40,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListL
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtilsJni;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
@@ -59,7 +59,7 @@ public class TabListEditorShareActionUnitTest {
 
     @Mock private SelectionDelegate<TabListEditorItemSelectionId> mSelectionDelegate;
     @Mock private ActionDelegate mDelegate;
-    @Mock private DomDistillerUrlUtilsJni mDomDistillerUrlUtilsJni;
+    @Mock private WebDistillerUrlUtilsJni mWebDistillerUrlUtilsJni;
     @Mock private Profile mProfile;
     @Mock private Profile mIncognitoProfile;
     private Context mContext;
@@ -81,7 +81,7 @@ public class TabListEditorShareActionUnitTest {
 
     @Before
     public void setUp() {
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
         mAction =
                 (TabListEditorShareAction)
                         TabListEditorShareAction.createAction(
@@ -107,7 +107,7 @@ public class TabListEditorShareActionUnitTest {
                         })
                 .when(mTabModel)
                 .getRelatedTabList(anyInt());
-        DomDistillerUrlUtilsJni.setInstanceForTesting(mDomDistillerUrlUtilsJni);
+        WebDistillerUrlUtilsJni.setInstanceForTesting(mWebDistillerUrlUtilsJni);
     }
 
     @Test
@@ -165,7 +165,7 @@ public class TabListEditorShareActionUnitTest {
 
         Set<TabListEditorItemSelectionId> itemIdsSet = new LinkedHashSet<>(itemIds);
         when(mSelectionDelegate.getSelectedItems()).thenReturn(itemIdsSet);
-        when(mDomDistillerUrlUtilsJni.getOriginalUrlFromDistillerUrl(any(String.class)))
+        when(mWebDistillerUrlUtilsJni.getOriginalUrlFromDistillerUrl(any(String.class)))
                 .thenReturn(JUnitTestGURLs.URL_1);
 
         mAction.onSelectionStateChange(itemIds);
@@ -201,6 +201,8 @@ public class TabListEditorShareActionUnitTest {
                     Assert.assertEquals(
                             "1 link from Chrome", result.getStringExtra(Intent.EXTRA_TITLE));
                     Assert.assertNotNull(result.getClipData());
+                    Assert.assertNotEquals(
+                            0, result.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 });
 
         Assert.assertTrue(mAction.perform());
@@ -268,6 +270,8 @@ public class TabListEditorShareActionUnitTest {
                     Assert.assertEquals(
                             "3 links from Chrome", result.getStringExtra(Intent.EXTRA_TITLE));
                     Assert.assertNotNull(result.getClipData());
+                    Assert.assertNotEquals(
+                            0, result.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 });
 
         Assert.assertTrue(mAction.perform());

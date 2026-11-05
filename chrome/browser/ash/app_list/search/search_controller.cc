@@ -39,6 +39,7 @@
 #include "chrome/browser/ash/app_list/search/types.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -75,7 +76,8 @@ SearchController::~SearchController() = default;
 void SearchController::Initialize() {
   burn_in_controller_ = std::make_unique<BurnInController>(base::BindRepeating(
       &SearchController::OnBurnInPeriodElapsed, base::Unretained(this)));
-  ranker_manager_ = std::make_unique<RankerManager>(profile_);
+  ranker_manager_ = std::make_unique<RankerManager>(
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile_));
   metrics_manager_ =
       std::make_unique<SearchMetricsManager>(profile_, notifier_);
   session_metrics_manager_ =
@@ -175,6 +177,7 @@ void SearchController::ClearSearch() {
   burn_in_controller_->Stop();
 
   ClearNonZeroStateResults(results_);
+  app_search_data_source_->SweepIconCache();
   last_query_.clear();
 
   search_engine_->StopQuery();
@@ -188,6 +191,7 @@ void SearchController::StartZeroState(base::OnceClosure on_done,
   // Clear all results - zero state search request is made when the app list
   // gets first shown, which would indicate that search is not currently active.
   results_.clear();
+  app_search_data_source_->SweepIconCache();
   burn_in_controller_->Stop();
 
   // Categories currently are not used by zero-state, but may be required for
@@ -230,9 +234,16 @@ void SearchController::AppListViewChanging(bool is_visible) {
     app_discovery_metrics_manager_->OnLauncherOpen();
   }
 
+  // Lazily initialize search providers the first time the launcher is opened.
+  if (is_visible && !providers_initialized_) {
+    providers_initialized_ = true;
+    search_engine_->InitializeProviders();
+  }
+
   // On close.
   if (!is_visible) {
     search_engine_->StopZeroState();
+    app_search_data_source_->SweepIconCache();
   }
 }
 
@@ -362,7 +373,7 @@ void SearchController::Publish() {
 
   // Compile a single list of results and sort first by their category with best
   // match first, then by burn-in iteration number, and finally by relevance.
-  std::vector<raw_ptr<ChromeSearchResult, VectorExperimental>> all_results;
+  std::vector<raw_ptr<ChromeSearchResult, DanglingUntriaged>> all_results;
   for (const auto& type_results : results_) {
     for (const auto& result : type_results.second) {
       double score = result->scoring().FinalScore();

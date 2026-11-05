@@ -49,6 +49,7 @@ class MEDIA_EXPORT MimeUtil {
     THEORA,
     DOLBY_VISION,
     AV1,
+    AV2,
     MPEG_H_AUDIO,
     DTS,
     DTSXP2,
@@ -99,8 +100,8 @@ class MEDIA_EXPORT MimeUtil {
                                         const PlatformInfo& platform_info);
 
  private:
-  typedef base::flat_set<int> CodecSet;
-  typedef base::flat_map<std::string, CodecSet> MediaFormatMappings;
+  using CodecSet = base::flat_set<int>;
+  using MediaFormatMappings = base::flat_map<std::string, CodecSet>;
 
   // Initializes the supported media types into hash sets for faster lookup.
   void InitializeMimeTypeMaps();
@@ -172,9 +173,6 @@ class MEDIA_EXPORT MimeUtil {
                                 VideoCodecLevel video_level,
                                 const VideoColorSpace& eotf,
                                 bool is_encrypted) const;
-
-  // Returns true if |codec| refers to a proprietary codec.
-  bool IsCodecProprietary(Codec codec) const;
 
   // Returns true and sets |*default_codec| if |mime_type_lower_case| has a
   // default codec associated with it. Returns false otherwise and the value of

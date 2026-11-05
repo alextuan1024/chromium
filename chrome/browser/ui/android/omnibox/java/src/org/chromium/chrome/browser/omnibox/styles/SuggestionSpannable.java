@@ -4,16 +4,29 @@
 
 package org.chromium.chrome.browser.omnibox.styles;
 
+import android.text.Spannable;
 import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.style.BackgroundColorSpan;
 import android.text.style.ForegroundColorSpan;
+import android.text.style.ImageSpan;
 import android.text.style.StyleSpan;
 import android.text.style.TextAppearanceSpan;
 import android.text.style.UpdateAppearance;
 
+import androidx.annotation.ColorInt;
+
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
+import org.chromium.components.omnibox.AutocompleteMatch.MatchClassification;
+import org.chromium.components.omnibox.FormattedStringProto.FormattedString;
+import org.chromium.components.omnibox.FormattedStringProto.FormattedString.FormattedStringFragment;
+import org.chromium.components.omnibox.FormattedStringProtoIntDef.ColorType;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * SpannableString that supplies .equals method for content comparison. This code assumes the use of
@@ -29,6 +42,110 @@ public class SuggestionSpannable extends SpannableString {
     }
 
     /**
+     * Applies text color to this spannable string, using the secondary text color for regions with
+     * {@link MatchClassificationStyle#DIM}, the URL text color for regions with {@link
+     * MatchClassificationStyle#URL}, and the primary text color for all other regions.
+     *
+     * @param classifications Classifications describing how to format text.
+     * @param resourceProvider Resource provider used to resolve suggestion text colors.
+     */
+    public void applyTextColor(
+            @Nullable List<MatchClassification> classifications,
+            OmniboxResourceProvider resourceProvider) {
+        if (TextUtils.isEmpty(this)) return;
+
+        @ColorInt int defaultColor = resourceProvider.getSuggestionPrimaryTextColor();
+        @ColorInt int dimColor = resourceProvider.getSuggestionSecondaryTextColor();
+        @ColorInt int urlColor = resourceProvider.getSuggestionUrlTextColor();
+
+        // Combine adjacent classifications that resolve to the same color into a single
+        // ColorSpan. Classifications are ordered by offset, and consecutive entries may
+        // differ only in non-color styles (e.g., MATCH).
+        int length = length();
+        int currentStart = 0;
+        @ColorInt int currentColor = defaultColor;
+
+        if (classifications != null) {
+            for (int i = 0; i < classifications.size(); i++) {
+                MatchClassification classification = classifications.get(i);
+                int offset = classification.offset;
+                if (offset >= length) break;
+
+                @ColorInt int color;
+                if ((classification.style & MatchClassificationStyle.URL)
+                        == MatchClassificationStyle.URL) {
+                    color = urlColor;
+                } else if ((classification.style & MatchClassificationStyle.DIM)
+                        == MatchClassificationStyle.DIM) {
+                    color = dimColor;
+                } else {
+                    color = defaultColor;
+                }
+
+                if (color != currentColor) {
+                    if (offset > currentStart) {
+                        setSpan(
+                                new ForegroundColorSpan(currentColor),
+                                currentStart,
+                                offset,
+                                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                        currentStart = offset;
+                    }
+                    currentColor = color;
+                }
+            }
+        }
+
+        // Apply the span for the final remaining segment up to the end of the text.
+        setSpan(
+                new ForegroundColorSpan(currentColor),
+                currentStart,
+                length,
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+    }
+
+    /**
+     * Applies the colors of the fragments in {@code formattedString} to this text. Does nothing if
+     * the two texts differ, since dedupe and other changes to the match don't update the
+     * SuggestTemplateInfo. Fragments without a color keep the color this text already has.
+     *
+     * @param formattedString The server's FormattedString for this text.
+     * @param resourceProvider Provides the text colors for the server's color types.
+     */
+    public void applyFormattedStringColors(
+            FormattedString formattedString, OmniboxResourceProvider resourceProvider) {
+        int fragmentsCount = formattedString.getFragmentsCount();
+        if (fragmentsCount == 0 || !TextUtils.equals(this, formattedString.getText())) return;
+        // Fragments without a start index can't be placed in the text.
+        List<FormattedStringFragment> fragments = new ArrayList<>(fragmentsCount);
+        for (FormattedStringFragment fragment : formattedString.getFragmentsList()) {
+            if (fragment.hasStartIndex()) fragments.add(fragment);
+        }
+        for (int i = 0; i < fragments.size(); i++) {
+            FormattedStringFragment fragment = fragments.get(i);
+            // Each fragment runs until the next one starts or the text ends, whichever comes first.
+            int start = fragment.getStartIndex();
+            int nextStart =
+                    i + 1 < fragments.size() ? fragments.get(i + 1).getStartIndex() : length();
+            int end = Math.min(nextStart, length());
+            if (start < 0 || start >= end) {
+                continue;
+            }
+            if (fragment.hasColor()) {
+                @ColorType int colorType = fragment.getColor().getNumber();
+                if (colorType != ColorType.COLOR_UNKNOWN) {
+                    setSpan(
+                            new ForegroundColorSpan(
+                                    resourceProvider.colorTypeToSuggestionTextColor(colorType)),
+                            start,
+                            end,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+            }
+        }
+    }
+
+    /**
      * Custom equals method that addresses some of the issues found in SpannableStringInternal:
      *
      * <ul>
@@ -38,65 +155,98 @@ public class SuggestionSpannable extends SpannableString {
      *       ForegroundColorSpan), making them always fail the comparison.
      * </ul>
      *
+     * <p>Only spans implementing {@link UpdateAppearance} are compared. Of those, the types handled
+     * by {@link #contentEquals} (ForegroundColorSpan, BackgroundColorSpan, StyleSpan,
+     * TextAppearanceSpan, ImageSpan) are compared structurally, and any other UpdateAppearance span
+     * causes the strings to be reported as different. Spans that do not implement UpdateAppearance
+     * (e.g. paragraph spans such as AlignmentSpan or LeadingMarginSpan) are ignored, so suggestion
+     * text must not rely on them without extending this method.
+     *
      * <p>This code simply addresses some issues in SpannableString.equals() method, therefore does
      * not come paired with hashCode() call. hashCode() is correctly supplied by SpannableString.
      */
     @Override
     public final boolean equals(@Nullable Object obj) {
-        if (!(obj instanceof SuggestionSpannable)) return false;
+        return obj instanceof SuggestionSpannable other && contentEquals(this, other);
+    }
 
-        final SuggestionSpannable other = (SuggestionSpannable) obj;
-        if (!TextUtils.equals(this, other)) return false;
-        if (TextUtils.isEmpty(this)) return true;
+    /**
+     * Whether {@code a} and {@code b} render identically: same characters and, position for
+     * position, the same visual spans with the same extents, flags and attributes. Spans are
+     * compared in the order {@link Spanned#getSpans} returns them (insertion order), so two strings
+     * whose equal spans were inserted in a different order compare as different; that is a false
+     * negative, never a false positive.
+     *
+     * <p>Useful for comparing a {@link SuggestionSpannable} against the copy a {@link
+     * android.widget.TextView} keeps after {@code setText}, which preserves span order.
+     *
+     * @param a First text to compare.
+     * @param b Second text to compare.
+     * @return true if both texts would render identically.
+     */
+    public static boolean contentEquals(Spanned a, Spanned b) {
+        if (!TextUtils.equals(a, b)) return false;
+        if (TextUtils.isEmpty(a)) return true;
 
-        final UpdateAppearance[] thisSpans = getSpans(0, length(), UpdateAppearance.class);
-        final UpdateAppearance[] otherSpans =
-                other.getSpans(0, other.length(), UpdateAppearance.class);
+        final UpdateAppearance[] aSpans = a.getSpans(0, a.length(), UpdateAppearance.class);
+        final UpdateAppearance[] bSpans = b.getSpans(0, b.length(), UpdateAppearance.class);
 
-        if (thisSpans.length != otherSpans.length) return false;
+        if (aSpans.length != bSpans.length) return false;
 
-        for (int i = 0; i < thisSpans.length; i++) {
-            final UpdateAppearance thisSpan = thisSpans[i];
-            final UpdateAppearance otherSpan = otherSpans[i];
+        for (int i = 0; i < aSpans.length; i++) {
+            final UpdateAppearance aSpan = aSpans[i];
+            final UpdateAppearance bSpan = bSpans[i];
 
-            if (getSpanStart(thisSpan) != other.getSpanStart(otherSpan)
-                    || getSpanEnd(thisSpan) != other.getSpanEnd(otherSpan)
-                    || getSpanFlags(thisSpan) != other.getSpanFlags(otherSpan)
-                    || thisSpan.getClass() != otherSpan.getClass()) {
+            if (a.getSpanStart(aSpan) != b.getSpanStart(bSpan)
+                    || a.getSpanEnd(aSpan) != b.getSpanEnd(bSpan)
+                    || a.getSpanFlags(aSpan) != b.getSpanFlags(bSpan)
+                    || aSpan.getClass() != bSpan.getClass()) {
                 return false;
             }
 
-            if (thisSpan instanceof ForegroundColorSpan) {
-                ForegroundColorSpan ta1 = (ForegroundColorSpan) thisSpan;
-                ForegroundColorSpan ta2 = (ForegroundColorSpan) otherSpan;
-                if (ta1.getForegroundColor() != ta2.getForegroundColor()) {
+            switch (aSpan) {
+                case ForegroundColorSpan ta1 -> {
+                    ForegroundColorSpan ta2 = (ForegroundColorSpan) bSpan;
+                    if (ta1.getForegroundColor() != ta2.getForegroundColor()) {
+                        return false;
+                    }
+                }
+                case BackgroundColorSpan ta1 -> {
+                    BackgroundColorSpan ta2 = (BackgroundColorSpan) bSpan;
+                    if (ta1.getBackgroundColor() != ta2.getBackgroundColor()) {
+                        return false;
+                    }
+                }
+                case StyleSpan ta1 -> {
+                    StyleSpan ta2 = (StyleSpan) bSpan;
+                    if (ta1.getStyle() != ta2.getStyle()) {
+                        return false;
+                    }
+                }
+                case TextAppearanceSpan ta1 -> {
+                    TextAppearanceSpan ta2 = (TextAppearanceSpan) bSpan;
+                    if (!TextUtils.equals(ta1.getFamily(), ta2.getFamily())
+                            || !ta1.getLinkTextColor().equals(ta2.getLinkTextColor())
+                            || !ta1.getTextColor().equals(ta2.getTextColor())
+                            || ta1.getTextSize() != ta2.getTextSize()
+                            || ta1.getTextStyle() != ta2.getTextStyle()) {
+                        return false;
+                    }
+                }
+                case ImageSpan ia -> {
+                    ImageSpan ib = (ImageSpan) bSpan;
+                    // Drawables have no meaningful equals(); only identical instances are known
+                    // to render the same. Anything else costs at most one extra setText.
+                    if (ia.getVerticalAlignment() != ib.getVerticalAlignment()
+                            || ia.getDrawable() != ib.getDrawable()) {
+                        return false;
+                    }
+                }
+                default -> {
+                    // Unknown span type: we cannot prove the two render identically, so report them
+                    // as different. This only costs an unnecessary TextView.setText.
                     return false;
                 }
-            } else if (thisSpan instanceof BackgroundColorSpan) {
-                BackgroundColorSpan ta1 = (BackgroundColorSpan) thisSpan;
-                BackgroundColorSpan ta2 = (BackgroundColorSpan) otherSpan;
-                if (ta1.getBackgroundColor() != ta2.getBackgroundColor()) {
-                    return false;
-                }
-            } else if (thisSpan instanceof StyleSpan) {
-                StyleSpan ta1 = (StyleSpan) thisSpan;
-                StyleSpan ta2 = (StyleSpan) otherSpan;
-                if (ta1.getStyle() != ta2.getStyle()) {
-                    return false;
-                }
-            } else if (thisSpan instanceof TextAppearanceSpan) {
-                TextAppearanceSpan ta1 = (TextAppearanceSpan) thisSpan;
-                TextAppearanceSpan ta2 = (TextAppearanceSpan) otherSpan;
-                if (!TextUtils.equals(ta1.getFamily(), ta2.getFamily())
-                        || !ta1.getLinkTextColor().equals(ta2.getLinkTextColor())
-                        || !ta1.getTextColor().equals(ta2.getTextColor())
-                        || ta1.getTextSize() != ta2.getTextSize()
-                        || ta1.getTextStyle() != ta2.getTextStyle()) {
-                    return false;
-                }
-            } else {
-                assert false : "Unexpected visual span specified: " + thisSpan.getClass();
-                return false;
             }
         }
         return true;

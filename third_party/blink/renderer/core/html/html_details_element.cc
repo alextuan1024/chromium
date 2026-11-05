@@ -142,8 +142,8 @@ void HTMLDetailsElement::ManuallyAssignSlots() {
       content_nodes.push_back(child);
     }
   }
-  summary_slot_->Assign(summary_nodes);
-  content_slot_->Assign(content_nodes);
+  summary_slot_->SetManuallyAssignedNodesForRecalc(summary_nodes);
+  content_slot_->SetManuallyAssignedNodesForRecalc(content_nodes);
 }
 
 void HTMLDetailsElement::Trace(Visitor* visitor) const {
@@ -305,11 +305,12 @@ bool HTMLDetailsElement::IsValidBuiltinCommand(HTMLElement& invoker,
 }
 
 bool HTMLDetailsElement::HandleCommandInternal(HTMLElement& invoker,
-                                               CommandEventType command) {
+                                               CommandEventType command,
+                                               UIEvent* activate_event) {
   if (!IsValidBuiltinCommand(invoker, command)) {
     return false;
   }
-  if (HTMLElement::HandleCommandInternal(invoker, command)) {
+  if (HTMLElement::HandleCommandInternal(invoker, command, activate_event)) {
     return true;
   }
 

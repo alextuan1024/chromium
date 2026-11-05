@@ -5,7 +5,9 @@
 #ifndef THIRD_PARTY_BLINK_PUBLIC_COMMON_TOKENS_TOKENS_MOJOM_TRAITS_H_
 #define THIRD_PARTY_BLINK_PUBLIC_COMMON_TOKENS_TOKENS_MOJOM_TRAITS_H_
 
+#include "base/check.h"
 #include "base/immediate_crash.h"
+#include "mojo/public/cpp/base/uuid_mojom_traits.h"
 #include "third_party/blink/public/common/common_export.h"
 #include "third_party/blink/public/common/tokens/token_mojom_traits_helper.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
@@ -170,13 +172,6 @@ struct StructTraits<blink::mojom::PaintWorkletTokenDataView,
           blink::PaintWorkletToken> {};
 
 template <>
-struct StructTraits<blink::mojom::SharedStorageWorkletTokenDataView,
-                    blink::SharedStorageWorkletToken>
-    : public blink::TokenMojomTraitsHelper<
-          blink::mojom::SharedStorageWorkletTokenDataView,
-          blink::SharedStorageWorkletToken> {};
-
-template <>
 struct BLINK_COMMON_EXPORT
     UnionTraits<blink::mojom::WorkletTokenDataView, blink::WorkletToken> {
  private:
@@ -196,8 +191,6 @@ struct BLINK_COMMON_EXPORT
         return DataView::Tag::kLayoutWorkletToken;
       case blink::WorkletToken::IndexOf<blink::PaintWorkletToken>():
         return DataView::Tag::kPaintWorkletToken;
-      case blink::WorkletToken::IndexOf<blink::SharedStorageWorkletToken>():
-        return DataView::Tag::kSharedStorageWorkletToken;
     }
     base::ImmediateCrash();
   }
@@ -217,10 +210,6 @@ struct BLINK_COMMON_EXPORT
   static const blink::PaintWorkletToken& paint_worklet_token(
       const blink::WorkletToken& token) {
     return token.GetAs<blink::PaintWorkletToken>();
-  }
-  static const blink::SharedStorageWorkletToken& shared_storage_worklet_token(
-      const blink::WorkletToken& token) {
-    return token.GetAs<blink::SharedStorageWorkletToken>();
   }
 };
 
@@ -242,6 +231,29 @@ struct StructTraits<blink::mojom::ShadowRealmTokenDataView,
 // If you have multiple tokens that make a thematic group, please lift them to
 // their own section, in alphabetical order. If adding a new token here, please
 // keep the following list in alphabetic order.
+
+template <>
+struct StructTraits<blink::mojom::ContinuationTokenDataView,
+                    blink::ContinuationToken> {
+  static const base::Uuid& value(const blink::ContinuationToken& token) {
+    DCHECK(blink::IsValidContinuationToken(token));
+    return token.value();
+  }
+
+  static bool Read(blink::mojom::ContinuationTokenDataView data,
+                   blink::ContinuationToken* output) {
+    base::Uuid uuid;
+    if (!data.ReadValue(&uuid)) {
+      return false;
+    }
+    blink::ContinuationToken token(std::move(uuid));
+    if (!blink::IsValidContinuationToken(token)) {
+      return false;
+    }
+    *output = std::move(token);
+    return true;
+  }
+};
 
 template <>
 struct BLINK_COMMON_EXPORT
@@ -273,9 +285,6 @@ struct BLINK_COMMON_EXPORT
         return DataView::Tag::kLayoutWorkletToken;
       case blink::ExecutionContextToken::IndexOf<blink::PaintWorkletToken>():
         return DataView::Tag::kPaintWorkletToken;
-      case blink::ExecutionContextToken::IndexOf<
-          blink::SharedStorageWorkletToken>():
-        return DataView::Tag::kSharedStorageWorkletToken;
       case blink::ExecutionContextToken::IndexOf<blink::ShadowRealmToken>():
         return DataView::Tag::kShadowRealmToken;
     }
@@ -314,10 +323,6 @@ struct BLINK_COMMON_EXPORT
       const blink::ExecutionContextToken& token) {
     return token.GetAs<blink::PaintWorkletToken>();
   }
-  static const blink::SharedStorageWorkletToken& shared_storage_worklet_token(
-      const blink::ExecutionContextToken& token) {
-    return token.GetAs<blink::SharedStorageWorkletToken>();
-  }
   static const blink::ShadowRealmToken& shadow_realm_token(
       const blink::ExecutionContextToken& token) {
     return token.GetAs<blink::ShadowRealmToken>();
@@ -331,6 +336,20 @@ struct StructTraits<
     : public blink::TokenMojomTraitsHelper<
           blink::mojom::SameDocNavigationScreenshotDestinationTokenDataView,
           blink::SameDocNavigationScreenshotDestinationToken> {};
+
+template <>
+struct StructTraits<blink::mojom::ScriptToolTokenDataView,
+                    blink::ScriptToolToken>
+    : public blink::TokenMojomTraitsHelper<
+          blink::mojom::ScriptToolTokenDataView,
+          blink::ScriptToolToken> {};
+
+template <>
+struct StructTraits<blink::mojom::ToolInvocationTokenDataView,
+                    blink::ToolInvocationToken>
+    : public blink::TokenMojomTraitsHelper<
+          blink::mojom::ToolInvocationTokenDataView,
+          blink::ToolInvocationToken> {};
 
 template <>
 struct StructTraits<blink::mojom::V8ContextTokenDataView, blink::V8ContextToken>

@@ -87,6 +87,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNode {
   // this object.
   virtual void NotifyAccessibilityEvent(ax::mojom::Event event_type) = 0;
 
+  // Clears any cached hypertext state on this node.
+  virtual void ResetComputedHypertext() {}
+
   // Returns the top-level URL for the active document. This should generally
   // correspond to what would be shown in the Omnibox.
   virtual std::string GetRootURL() const = 0;
@@ -119,8 +122,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) AXPlatformNode {
   std::string ToString() const;
 
   // Returns a string representation of the subtree of nodes rooted at this
-  // node.
-  std::string SubtreeToString() const;
+  // node. If `stop_at_document` is true, include document nodes but omit their
+  // descendants.
+  std::string SubtreeToString(bool stop_at_document = false) const;
 
   friend std::ostream& operator<<(std::ostream& stream, AXPlatformNode& node);
 

@@ -60,7 +60,6 @@
 #include "net/cert/x509_util.h"
 #include "net/dns/host_resolver.h"
 #include "net/http/transport_security_state.h"
-#include "net/http/transport_security_state_test_util.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source.h"
 #include "net/log/test_net_log.h"
@@ -106,6 +105,10 @@
 #include "third_party/boringssl/src/include/openssl/ssl.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+#include "net/cert/key_pinning_state_chrome_test_util.h"
+#endif
+
 using net::test::IsError;
 using net::test::IsOk;
 
@@ -130,10 +133,12 @@ namespace {
 // base-64 alphabet.)
 const uint8_t kGoodHashValueVectorInput = 0;
 
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 // When passed to |MakeHashValueVector|, this will generate a key pin that is
 // not sha256/AA...=, and hence will cause pin validation failure with the
 // TestSPKI pin.
 const uint8_t kBadHashValueVectorInput = 3;
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
 constexpr uint16_t kModernTLS12Cipher = 0xc02f;
@@ -4665,6 +4670,20 @@ TEST_F(SSLClientSocketTest, ClientCertSignatureAlgorithm) {
           .client_prefs = {SSL_SIGN_RSA_PSS_RSAE_SHA256},
           .error = ERR_SSL_CLIENT_AUTH_NO_COMMON_ALGORITHMS,
       },
+      {
+          .name = "TLS 1.2 empty client preferences",
+          .version = SSL_PROTOCOL_VERSION_TLS1_2,
+          .server_prefs = {SSL_SIGN_RSA_PSS_RSAE_SHA256},
+          .client_prefs = {},
+          .error = ERR_SSL_CLIENT_AUTH_NO_COMMON_ALGORITHMS,
+      },
+      {
+          .name = "TLS 1.3 empty client preferences",
+          .version = SSL_PROTOCOL_VERSION_TLS1_3,
+          .server_prefs = {SSL_SIGN_RSA_PSS_RSAE_SHA256},
+          .client_prefs = {},
+          .error = ERR_SSL_CLIENT_AUTH_NO_COMMON_ALGORITHMS,
+      },
 
       {
           .name = "TLS 1.2 PKCS#1",
@@ -4719,6 +4738,8 @@ TEST_F(SSLClientSocketTest, ClientCertSignatureAlgorithm) {
   };
   for (const auto& test : kTests) {
     SCOPED_TRACE(test.name);
+    log_observer_.Clear();
+    base::HistogramTester histogram_tester;
 
     SSLServerConfig server_config;
     server_config.version_min = test.version;
@@ -4734,13 +4755,34 @@ TEST_F(SSLClientSocketTest, ClientCertSignatureAlgorithm) {
         WrapSSLPrivateKeyWithPreferences(client_key, test.client_prefs));
     int rv;
     ASSERT_TRUE(CreateAndConnectSSLClientSocket(SSLConfig(), &rv));
+    histogram_tester.ExpectUniqueSample(
+        "Net.SSLClientCertSupportedAlgorithmsEmpty", test.client_prefs.empty(),
+        1);
+    auto cert_entries = log_observer_.GetEntriesWithType(
+        NetLogEventType::SSL_CLIENT_CERT_PROVIDED);
+    ASSERT_EQ(1u, cert_entries.size());
+    if (test.client_prefs.empty()) {
+      EXPECT_EQ(0, GetIntegerValueFromParams(cert_entries[0], "cert_count"));
+      EXPECT_EQ(client_key->GetProviderName(),
+                GetStringValueFromParams(cert_entries[0], "provider"));
+      EXPECT_TRUE(GetBooleanValueFromParams(cert_entries[0],
+                                            "empty_algorithm_preferences"));
+    } else {
+      EXPECT_EQ(1, GetIntegerValueFromParams(cert_entries[0], "cert_count"));
+      EXPECT_EQ(std::nullopt,
+                GetOptionalBooleanValueFromParams(
+                    cert_entries[0], "empty_algorithm_preferences"));
+    }
     if (test.error != OK) {
       EXPECT_THAT(rv, IsError(test.error));
+      histogram_tester.ExpectTotalCount("Net.SSLClientCertSignResult", 0);
       continue;
     }
 
     EXPECT_THAT(rv, IsOk());
     EXPECT_TRUE(sock_->IsConnected());
+    histogram_tester.ExpectUniqueSample("Net.SSLClientCertSignResult",
+                                        SSLClientCertSignResult::kSuccess, 1);
 
     // Capture the SSLInfo from the server to get the client's chosen signature
     // algorithm.
@@ -4750,6 +4792,69 @@ TEST_F(SSLClientSocketTest, ClientCertSignatureAlgorithm) {
     EXPECT_EQ(server_ssl_info->peer_signature_algorithm,
               test.expected_signature_algorithm);
   }
+}
+
+// Test explicit signing failures from SSLPrivateKey::Sign and their UMA metric.
+TEST_P(SSLClientSocketVersionTest, ClientCertSignFailed) {
+  SSLServerConfig server_config = GetServerConfig();
+  server_config.client_cert_type = SSLServerConfig::REQUIRE_CLIENT_CERT;
+  ASSERT_TRUE(
+      StartEmbeddedTestServer(EmbeddedTestServer::CERT_OK, server_config));
+
+  scoped_refptr<net::X509Certificate> client_cert =
+      ImportCertFromFile(GetTestCertsDirectory(), "client_1.pem");
+  ASSERT_TRUE(client_cert);
+
+  base::HistogramTester histogram_tester;
+  context_->SetClientCertificate(host_port_pair(), client_cert,
+                                 CreateFailSigningSSLPrivateKey());
+  int rv;
+  ASSERT_TRUE(CreateAndConnectSSLClientSocket(SSLConfig(), &rv));
+  EXPECT_THAT(rv, IsError(ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED));
+  histogram_tester.ExpectUniqueSample("Net.SSLClientCertSignResult",
+                                      SSLClientCertSignResult::kFailed, 1);
+
+  auto entries =
+      log_observer_.GetEntriesWithType(NetLogEventType::SSL_PRIVATE_KEY_OP);
+  ASSERT_EQ(2u, entries.size());
+  EXPECT_EQ(NetLogEventPhase::BEGIN, entries[0].phase);
+  EXPECT_EQ(NetLogEventPhase::END, entries[1].phase);
+  EXPECT_EQ(ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED,
+            GetIntegerValueFromParams(entries[1], "net_error"));
+  EXPECT_EQ(std::nullopt,
+            GetOptionalBooleanValueFromParams(entries[1], "empty_signature"));
+}
+
+// Test buggy middleware returning OK with a 0-byte signature and its UMA
+// metric.
+TEST_P(SSLClientSocketVersionTest, ClientCertSignEmptySignature) {
+  SSLServerConfig server_config = GetServerConfig();
+  server_config.client_cert_type = SSLServerConfig::REQUIRE_CLIENT_CERT;
+  ASSERT_TRUE(
+      StartEmbeddedTestServer(EmbeddedTestServer::CERT_OK, server_config));
+
+  scoped_refptr<net::X509Certificate> client_cert =
+      ImportCertFromFile(GetTestCertsDirectory(), "client_1.pem");
+  ASSERT_TRUE(client_cert);
+
+  base::HistogramTester histogram_tester;
+  context_->SetClientCertificate(host_port_pair(), client_cert,
+                                 CreateEmptySignatureSSLPrivateKey());
+  int rv;
+  ASSERT_TRUE(CreateAndConnectSSLClientSocket(SSLConfig(), &rv));
+  EXPECT_THAT(rv, IsError(ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED));
+  histogram_tester.ExpectUniqueSample("Net.SSLClientCertSignResult",
+                                      SSLClientCertSignResult::kEmptySignature,
+                                      1);
+
+  auto entries =
+      log_observer_.GetEntriesWithType(NetLogEventType::SSL_PRIVATE_KEY_OP);
+  ASSERT_EQ(2u, entries.size());
+  EXPECT_EQ(NetLogEventPhase::BEGIN, entries[0].phase);
+  EXPECT_EQ(NetLogEventPhase::END, entries[1].phase);
+  EXPECT_EQ(ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED,
+            GetIntegerValueFromParams(entries[1], "net_error"));
+  EXPECT_TRUE(GetBooleanValueFromParams(entries[1], "empty_signature"));
 }
 #endif  // BUILDFLAG(ENABLE_CLIENT_CERTIFICATES)
 
@@ -4761,11 +4866,20 @@ std::vector<SHA256HashValue> MakeHashValueVector(uint8_t tag) {
   return out;
 }
 
+// The PKP tests depend on ScopedKeyPinningStateChromeDefaults and
+// KeyPinningStateChrome which are only available when the builtin pin list is
+// compiled in. We could also make a separate version of these tests that use
+// the dynamic PKP path for testing on cronet, but it's not really worth the
+// effort, especially since this is only a temporary state. Once PKP refactor
+// is complete and pinning is only done in cert verification, then these tests
+// can just configure the mock cert verifier to test the desired pkp results.
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 // Test that |ssl_info.pkp_bypassed| is set when a local trust anchor causes
 // pinning to be bypassed.
 TEST_P(SSLClientSocketVersionTest, PKPBypassedSet) {
   AddScopedFeatureList().InitAndEnableFeature(
       net::features::kStaticKeyPinningEnforcement);
+
   ASSERT_TRUE(
       StartEmbeddedTestServer(EmbeddedTestServer::CERT_OK, GetServerConfig()));
   scoped_refptr<X509Certificate> server_cert =
@@ -4780,9 +4894,8 @@ TEST_P(SSLClientSocketVersionTest, PKPBypassedSet) {
       MakeHashValueVector(kBadHashValueVectorInput);
   cert_verifier_->AddResultForCert(server_cert.get(), verify_result, OK);
 
-  transport_security_state_->EnableStaticPinsForTesting();
-  transport_security_state_->SetPinningListAlwaysTimelyForTesting(true);
-  ScopedTransportSecurityStateSource scoped_security_state_source;
+  ScopedKeyPinningStateChromeDefaults scoped_key_pinning_enable;
+  transport_security_state_->ReinitializePinningForTesting();
 
   SSLConfig ssl_config;
   int rv;
@@ -4802,6 +4915,7 @@ TEST_P(SSLClientSocketVersionTest, PKPBypassedSet) {
 TEST_P(SSLClientSocketVersionTest, PKPEnforced) {
   AddScopedFeatureList().InitAndEnableFeature(
       net::features::kStaticKeyPinningEnforcement);
+
   ASSERT_TRUE(
       StartEmbeddedTestServer(EmbeddedTestServer::CERT_OK, GetServerConfig()));
   scoped_refptr<X509Certificate> server_cert =
@@ -4816,9 +4930,8 @@ TEST_P(SSLClientSocketVersionTest, PKPEnforced) {
       MakeHashValueVector(kBadHashValueVectorInput);
   cert_verifier_->AddResultForCert(server_cert.get(), verify_result, OK);
 
-  transport_security_state_->EnableStaticPinsForTesting();
-  transport_security_state_->SetPinningListAlwaysTimelyForTesting(true);
-  ScopedTransportSecurityStateSource scoped_security_state_source;
+  ScopedKeyPinningStateChromeDefaults scoped_key_pinning_enable;
+  transport_security_state_->ReinitializePinningForTesting();
 
   SSLConfig ssl_config;
   int rv;
@@ -4834,6 +4947,7 @@ TEST_P(SSLClientSocketVersionTest, PKPEnforced) {
 
   EXPECT_FALSE(ssl_info.pkp_bypassed);
 }
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 namespace {
 // TLS_RSA_WITH_AES_128_GCM_SHA256's key exchange involves encrypting to the
@@ -4937,11 +5051,20 @@ TEST_P(SSLClientSocketVersionTest, IgnoreCertificateErrorsBypassesRequiredCT) {
   EXPECT_TRUE(sock_->IsConnected());
 }
 
+// The PKP tests depend on ScopedKeyPinningStateChromeDefaults and
+// KeyPinningStateChrome which are only available when the builtin pin list is
+// compiled in. We could also make a separate version of these tests that use
+// the dynamic PKP path for testing on cronet, but it's not really worth the
+// effort, especially since this is only a temporary state. Once PKP refactor
+// is complete and pinning is only done in cert verification, then these tests
+// can just configure the mock cert verifier to test the desired pkp results.
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 // When both PKP and CT are required for a host, and both fail, the more
 // serious error is that the pin validation failed.
 TEST_P(SSLClientSocketVersionTest, PKPMoreImportantThanCT) {
   AddScopedFeatureList().InitAndEnableFeature(
       net::features::kStaticKeyPinningEnforcement);
+
   ASSERT_TRUE(
       StartEmbeddedTestServer(EmbeddedTestServer::CERT_OK, GetServerConfig()));
   scoped_refptr<X509Certificate> server_cert =
@@ -4960,9 +5083,8 @@ TEST_P(SSLClientSocketVersionTest, PKPMoreImportantThanCT) {
   cert_verifier_->AddResultForCert(server_cert.get(), verify_result,
                                    ERR_CERTIFICATE_TRANSPARENCY_REQUIRED);
 
-  transport_security_state_->EnableStaticPinsForTesting();
-  transport_security_state_->SetPinningListAlwaysTimelyForTesting(true);
-  ScopedTransportSecurityStateSource scoped_security_state_source;
+  ScopedKeyPinningStateChromeDefaults scoped_key_pinning_enable;
+  transport_security_state_->ReinitializePinningForTesting();
 
   const char kCTHost[] = "hsts-hpkp-preloaded.test";
 
@@ -4980,6 +5102,7 @@ TEST_P(SSLClientSocketVersionTest, PKPMoreImportantThanCT) {
               CERT_STATUS_CERTIFICATE_TRANSPARENCY_REQUIRED);
   EXPECT_FALSE(sock_->IsConnected());
 }
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 // Tests that the SCTAuditingDelegate is called to enqueue SCT reports.
 TEST_P(SSLClientSocketVersionTest, SCTAuditingReportCollected) {

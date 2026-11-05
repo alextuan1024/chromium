@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "base/check.h"
 #include "base/memory/raw_ref.h"
 #include "base/no_destructor.h"
 #include "build/build_config.h"
@@ -15,15 +16,21 @@
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "ui/base/base_window.h"
+#include "ui/base/l10n/l10n_util.h"
 
 GlobalBrowserCollection::GlobalBrowserCollection()
-    : platform_delegate_(GlobalBrowserCollectionPlatformDelegate(*this)) {}
+    : platform_delegate_(*this) {}
 
 GlobalBrowserCollection::~GlobalBrowserCollection() = default;
 
 // static
 GlobalBrowserCollection* GlobalBrowserCollection::GetInstance() {
-  return g_browser_process->GetFeatures()->global_browser_collection();
+  CHECK(g_browser_process);
+  GlobalFeatures* features = g_browser_process->GetFeatures();
+  CHECK(features);
+  GlobalBrowserCollection* collection = features->global_browser_collection();
+  CHECK(collection);
+  return collection;
 }
 
 bool GlobalBrowserCollection::IsEmpty() const {
@@ -122,4 +129,41 @@ size_t GlobalBrowserCollection::GetGuestBrowserCount() {
     return true;
   });
   return guest_browser_count;
+}
+
+size_t GlobalBrowserCollection::GetIsolatedBrowserCount() {
+  size_t isolated_browser_count = 0;
+  ForEach([&isolated_browser_count](BrowserWindowInterface* browser) {
+    if (!browser->GetProfile()->IsEnterpriseIsolatedModeProfile()) {
+      return true;
+    }
+#if !BUILDFLAG(IS_ANDROID)
+    if (browser->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS) {
+      return true;
+    }
+#endif
+    isolated_browser_count++;
+    return true;
+  });
+  return isolated_browser_count;
+}
+
+std::u16string
+GlobalBrowserCollection::GetDialogWithIncognitoAndIsolatedVariants(
+    int incognito_message_id,
+    int isolated_message_id,
+    int combined_message_id) {
+  const size_t isolated_browser_count = GetIsolatedBrowserCount();
+  const size_t incognito_browser_count = GetIncognitoBrowserCount();
+  if (isolated_browser_count == 0) {
+    return l10n_util::GetPluralStringFUTF16(incognito_message_id,
+                                            incognito_browser_count);
+  }
+
+  if (incognito_browser_count == 0) {
+    return l10n_util::GetPluralStringFUTF16(isolated_message_id,
+                                            isolated_browser_count);
+  }
+  return l10n_util::GetPluralStringFUTF16(
+      combined_message_id, incognito_browser_count + isolated_browser_count);
 }

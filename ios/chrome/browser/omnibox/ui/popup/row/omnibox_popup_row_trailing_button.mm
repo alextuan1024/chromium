@@ -12,11 +12,15 @@
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/common/ui/util/pointer_interaction_util.h"
+#import "ios/chrome/common/ui/util/ui_util.h"
 
 namespace {
 
 /// Size of the trailing button.
 const CGFloat kTrailingButtonIconPointSizeMedium = 15.0f;
+
+/// Size of the dot shown in the trailing button.
+const CGFloat kTrailingButtonDotPointSize = 8.0f;
 
 }  // namespace
 
@@ -29,6 +33,7 @@ const CGFloat kTrailingButtonIconPointSizeMedium = 15.0f;
   self = [super initWithFrame:frame];
 
   if (self) {
+    self.hidden = YES;
     [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.self ]
                        withAction:@selector(traitCollectionDidChangeAction)];
   }
@@ -41,6 +46,7 @@ const CGFloat kTrailingButtonIconPointSizeMedium = 15.0f;
   }
 
   _trailingIconType = trailingIconType;
+  [self invalidateIntrinsicContentSize];
 
   [self updateButtonImageForCurrentState];
 }
@@ -52,6 +58,36 @@ const CGFloat kTrailingButtonIconPointSizeMedium = 15.0f;
 
   _isHighlighted = isHighlighted;
   [self updateTintColor];
+}
+
+#pragma mark - UIView
+
+- (CGSize)intrinsicContentSize {
+  if (self.trailingIconType != TrailingIconType::kBlueDot) {
+    return [super intrinsicContentSize];
+  }
+  // The dot gets the append arrow's size, so that it is centered where the
+  // arrow is on other rows.
+  CGFloat multiplier = OmniboxPopupRowContentSizeMultiplierForCategory(
+      self.traitCollection.preferredContentSizeCategory);
+  UIImage* appendArrow = SymbolWithPointSize(
+      SymbolRefineQuery, kTrailingButtonIconPointSizeMedium * multiplier);
+  return appendArrow.size;
+}
+
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  if (self.trailingIconType != TrailingIconType::kBlueDot ||
+      CGRectIsEmpty(self.bounds)) {
+    return;
+  }
+  // Keep the dot image unstretched even if UIButton shrinks its content rect
+  // vertically across cell reuse.
+  CGSize imageSize = self.currentImage.size;
+  if (imageSize.width > 0 && imageSize.height > 0) {
+    self.imageView.frame =
+        CGRectMakeCenteredRectInFrame(self.bounds.size, imageSize);
+  }
 }
 
 #pragma mark - private
@@ -67,6 +103,7 @@ const CGFloat kTrailingButtonIconPointSizeMedium = 15.0f;
 }
 
 - (void)traitCollectionDidChangeAction {
+  [self invalidateIntrinsicContentSize];
   [self updateButtonImageForCurrentState];
 }
 
@@ -77,8 +114,10 @@ const CGFloat kTrailingButtonIconPointSizeMedium = 15.0f;
   if (multiplier) {
     UIImage* icon;
     self.hidden = NO;
+    self.userInteractionEnabled = YES;
     switch (self.trailingIconType) {
       case TrailingIconType::kNone:
+        [self setImage:nil forState:UIControlStateNormal];
         self.accessibilityIdentifier = nil;
         self.hidden = YES;
         return;
@@ -100,6 +139,14 @@ const CGFloat kTrailingButtonIconPointSizeMedium = 15.0f;
         self.accessibilityIdentifier =
             kOmniboxPopupRowSwitchTabAccessibilityIdentifier;
         break;
+      case TrailingIconType::kBlueDot:
+        icon = SymbolWithPointSize(SymbolCircleFill,
+                                   kTrailingButtonDotPointSize * multiplier);
+        self.accessibilityIdentifier = nil;
+        // The dot is only an indicator. Taps on it go to the row, which opens
+        // the suggestion.
+        self.userInteractionEnabled = NO;
+        break;
     }
 
     // `imageWithHorizontallyFlippedOrientation` is flipping the icon
@@ -109,6 +156,7 @@ const CGFloat kTrailingButtonIconPointSizeMedium = 15.0f;
 
     [self setImage:icon forState:UIControlStateNormal];
     [self updateTintColor];
+    [self setNeedsLayout];
   }
 }
 

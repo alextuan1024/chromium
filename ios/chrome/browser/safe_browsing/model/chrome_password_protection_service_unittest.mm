@@ -13,7 +13,6 @@
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/mock_callback.h"
 #import "base/values.h"
-#import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/password_manager_metrics_util.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
 #import "components/password_manager/core/browser/password_reuse_detector.h"
@@ -88,10 +87,6 @@ constexpr struct {
     {RequestOutcome::DISABLED_DUE_TO_USER_POPULATION,
      PasswordReuseLookup::REQUEST_FAILURE}};
 
-// A test factory to create a FakeUserEventService.
-std::unique_ptr<KeyedService> CreateFakeUserEventService(ProfileIOS* profile) {
-  return std::make_unique<syncer::FakeUserEventService>();
-}
 }  // namespace
 
 class FakeChromePasswordProtectionService
@@ -150,11 +145,11 @@ class ChromePasswordProtectionServiceTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindOnce(
-            &password_manager::BuildPasswordStoreInterface<
-                ProfileIOS, password_manager::MockPasswordStoreInterface>));
-    builder.AddTestingFactory(IOSUserEventServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateFakeUserEventService));
+        base::BindOnce(&password_manager::BuildPasswordStoreInterface<
+                       password_manager::MockPasswordStoreInterface>));
+    builder.AddTestingFactory(
+        IOSUserEventServiceFactory::GetInstance(),
+        base::BindOnce(&std::make_unique<syncer::FakeUserEventService>));
     profile_ = std::move(builder).Build();
 
     web::WebState::CreateParams params(profile_.get());
@@ -166,8 +161,7 @@ class ChromePasswordProtectionServiceTest : public PlatformTest {
 
     service_ = std::make_unique<FakeChromePasswordProtectionService>(
         safe_browsing_service_.get(), profile_.get(),
-        ios::HistoryServiceFactory::GetForProfile(
-            profile_.get(), ServiceAccessType::EXPLICIT_ACCESS),
+        ios::HistoryServiceFactory::GetForProfile(profile_.get()),
         SafeBrowsingMetricsCollectorFactory::GetForProfile(profile_.get()),
         mock_add_callback_.Get(), mock_remove_callback_.Get());
 

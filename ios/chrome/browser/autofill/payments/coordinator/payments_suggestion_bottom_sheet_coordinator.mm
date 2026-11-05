@@ -12,6 +12,7 @@
 #import "ios/chrome/browser/autofill/payments/ui/credit_card_suggestion_bottom_sheet_view_controller.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/utils/web_state_keyboard_util.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
@@ -20,11 +21,13 @@
 
 using PaymentsSuggestionBottomSheetExitReason::kCouldNotPresent;
 using PaymentsSuggestionBottomSheetExitReason::kDismissal;
+using PaymentsSuggestionBottomSheetExitReason::kNavigationOrTabChange;
 using PaymentsSuggestionBottomSheetExitReason::kShowPaymentDetails;
 using PaymentsSuggestionBottomSheetExitReason::kShowPaymentMethods;
 using PaymentsSuggestionBottomSheetExitReason::kUsePaymentsSuggestion;
 
-@interface PaymentsSuggestionBottomSheetCoordinator () {
+@interface PaymentsSuggestionBottomSheetCoordinator () <
+    CreditCardSuggestionBottomSheetMediatorDelegate> {
   // Information regarding the triggering form for this bottom sheet.
   autofill::FormActivityParams _params;
 
@@ -79,6 +82,7 @@ using PaymentsSuggestionBottomSheetExitReason::kUsePaymentsSuggestion;
       initWithHandler:self
                   URL:URL];
   self.mediator.consumer = self.viewController;
+  self.mediator.delegate = self;
   self.viewController.delegate = self.mediator;
 
   // This is a fallback since the code enabling the bottom sheet happens earlier
@@ -86,7 +90,7 @@ using PaymentsSuggestionBottomSheetExitReason::kUsePaymentsSuggestion;
   // and other operations which may modify the list of available credit cards
   // can happen between these two operations.
   if (!self.mediator.hasCreditCards) {
-    [self.mediator disableBottomSheetAndRefocus:YES];
+    [self.mediator refocus];
     [self.mediator disconnect];
     return;
   }
@@ -127,6 +131,16 @@ using PaymentsSuggestionBottomSheetExitReason::kUsePaymentsSuggestion;
   self.viewController = nil;
   [self.mediator disconnect];
   self.mediator = nil;
+}
+
+#pragma mark - CreditCardSuggestionBottomSheetMediatorDelegate
+
+- (void)creditCardSuggestionBottomSheetMediatorDidRequestDismissal:
+    (CreditCardSuggestionBottomSheetMediator*)mediator {
+  // This dismissal is only requested when the observed WebState undergoes
+  // cross-document navigation, tab switching, or destruction, so
+  // `kNavigationOrTabChange` is the only applicable exit reason.
+  [self tearDownWithExitReason:kNavigationOrTabChange];
 }
 
 #pragma mark - CreditCardSuggestionBottomSheetHandler
@@ -200,16 +214,26 @@ using PaymentsSuggestionBottomSheetExitReason::kUsePaymentsSuggestion;
 }
 
 - (void)viewDidDisappear {
-  if (_dismissing) {
-    return;
-  }
-
-  [self.mediator logExitReason:kDismissal];
-  [self.mediator disconnect];
-  [self.autofillHandler dismissPaymentsBottomSheet];
+  [self tearDownWithExitReason:kDismissal];
 }
 
 #pragma mark - Private
+
+// Records `exitReason`, tears down the mediator and dismisses the bottom sheet.
+// Guarded by `_dismissing` so that a sheet that is already on its way out (for
+// example because a navigation commits while the dismissal animation is still
+// running) doesn't record a second exit reason.
+- (void)tearDownWithExitReason:
+    (PaymentsSuggestionBottomSheetExitReason)exitReason {
+  if (_dismissing || !self.mediator) {
+    return;
+  }
+
+  _dismissing = YES;
+  [self.mediator logExitReason:exitReason];
+  [self.mediator disconnect];
+  [self.autofillHandler dismissPaymentsBottomSheet];
+}
 
 - (void)didSelectCreditCard:(CreditCardData*)creditCardData
                     atIndex:(NSInteger)index {
@@ -229,9 +253,7 @@ using PaymentsSuggestionBottomSheetExitReason::kUsePaymentsSuggestion;
   web::WebState* activeWebState =
       self.browser->GetWebStateList()->GetActiveWebState();
   CHECK(activeWebState);
-  if (activeWebState) {
-    [activeWebState->GetView() endEditing:NO];
-  }
+  DismissKeyboardForWebState(activeWebState);
 }
 
 // Returns the AutofillCommands handler.

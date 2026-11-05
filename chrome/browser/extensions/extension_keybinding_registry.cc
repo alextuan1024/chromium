@@ -7,6 +7,8 @@
 #include <memory>
 #include <utility>
 
+#include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
@@ -20,6 +22,7 @@
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_registry_factory.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/browser/permissions/active_tab_permission_granter.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/command.h"
@@ -63,6 +66,68 @@ class ExtensionKeybindingRegistryShutdownNotifierFactory
 }  // namespace
 
 namespace extensions {
+
+namespace {
+
+bool IsExtensionAllowedInContext(const Extension& extension,
+                                 content::BrowserContext& context) {
+  return !context.IsOffTheRecord() ||
+         util::IsIncognitoEnabled(&extension, &context);
+}
+
+const Extension* GetEnabledExtensionForContext(
+    const ExtensionId& extension_id,
+    content::BrowserContext& context) {
+  const Extension* extension =
+      ExtensionRegistry::Get(&context)->enabled_extensions().GetByID(
+          extension_id);
+  return (extension && IsExtensionAllowedInContext(*extension, context))
+             ? extension
+             : nullptr;
+}
+
+// Dispatches the `commands.onCommand` event for `command` to the extension
+// with `extension_id` (if the extension is still enabled and allowed in
+// `browser_context`). `web_contents` is the active tab (or null if there is no
+// active tab).
+void DispatchCommandEvent(content::BrowserContext& browser_context,
+                          const ExtensionId& extension_id,
+                          const std::string& command,
+                          content::WebContents* web_contents) {
+  const Extension* extension =
+      GetEnabledExtensionForContext(extension_id, browser_context);
+  if (!extension) {
+    return;
+  }
+
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(command);
+
+  base::Value tab_value;
+  if (web_contents) {
+    // The action APIs (browserAction, pageAction, action) are only available
+    // to privileged extension contexts. As such, we deterministically know
+    // that the right context type here is privileged.
+    constexpr mojom::ContextType context_type =
+        mojom::ContextType::kPrivilegedExtension;
+    ExtensionTabUtil::ScrubTabBehavior scrub_tab_behavior =
+        ExtensionTabUtil::GetScrubTabBehavior(extension, context_type,
+                                              web_contents);
+    tab_value = base::Value(ExtensionTabUtil::CreateTabObject(
+                                web_contents, scrub_tab_behavior, extension)
+                                .ToValue());
+  }
+  args->data.Append(std::move(tab_value));
+
+  auto event =
+      std::make_unique<Event>(events::COMMANDS_ON_COMMAND, kOnCommandEventName,
+                              std::move(args), &browser_context);
+  event->user_gesture = EventRouter::UserGestureState::kEnabled;
+  EventRouter::Get(&browser_context)
+      ->DispatchEventToExtension(extension_id, std::move(event));
+}
+
+}  // namespace
 
 ExtensionKeybindingRegistry::ExtensionKeybindingRegistry(
     content::BrowserContext* context,
@@ -112,7 +177,18 @@ void ExtensionKeybindingRegistry::AddExtensionKeybindings(
   if (!browser_context_) {
     return;
   }
-  // This object only handles named commands, not toolbar action execution.
+  // In incognito mode, don't add any keybindings for extensions that aren't
+  // incognito-enabled. Note that this check must be here rather than in
+  // `ExtensionMatchesFilter()` because `SetIsIncognitoEnabled()` updates
+  // `ExtensionPrefs` to false before reloading the extension, and
+  // `OnExtensionUnloaded()` still needs to unregister the old keybindings.
+  // Checking this in `ExtensionKeybindingRegistry` also covers Desktop Android,
+  // which routes action commands through this class.
+  if (!IsExtensionAllowedInContext(*extension, *browser_context_)) {
+    return;
+  }
+  // On Desktop Views, this object only handles named commands, not toolbar
+  // action execution (which is handled per action view).
   if (ShouldIgnoreCommand(command_name)) {
     return;
   }
@@ -189,7 +265,7 @@ void ExtensionKeybindingRegistry::RemoveExtensionKeybinding(
             IsMediaKeysListenerManagerEnabled()) {
       content::MediaKeysListenerManager* media_keys_listener_manager =
           content::MediaKeysListenerManager::GetInstance();
-      DCHECK(media_keys_listener_manager);
+      CHECK(media_keys_listener_manager, base::NotFatalUntil::M161);
 
       media_keys_listener_manager->EnableInternalMediaKeyHandling();
     } else {
@@ -231,54 +307,43 @@ void ExtensionKeybindingRegistry::CommandExecuted(
   if (!browser_context_) {
     return;
   }
-  const Extension* extension = ExtensionRegistry::Get(browser_context_)
-                                   ->enabled_extensions()
-                                   .GetByID(extension_id);
-  if (!extension)
+  const Extension* extension =
+      GetEnabledExtensionForContext(extension_id, *browser_context_);
+  if (!extension) {
     return;
-
-  base::ListValue args;
-  args.Append(command);
-
-  base::Value tab_value;
-  if (tab_list_interface_) {
-    auto* active_tab = tab_list_interface_->GetActiveTab();
-    content::WebContents* web_contents =
-        active_tab ? active_tab->GetContents() : nullptr;
-    // Grant before sending the event so that the permission is granted before
-    // the extension acts on the command. NOTE: The Global Commands handler does
-    // not set the TabListInterface as it deals only with named commands (not
-    // page/browser actions that are associated with the current page directly).
-    ActiveTabPermissionGranter* granter =
-        web_contents ? ActiveTabPermissionGranter::FromWebContents(web_contents)
-                     : nullptr;
-    if (granter && !accelerator.IsMediaKey()) {
-      granter->GrantIfRequested(extension);
-    }
-
-    if (web_contents) {
-      // The action APIs (browserAction, pageAction, action) are only available
-      // to privileged extension contexts. As such, we deterministically know
-      // that the right context type here is privileged.
-      constexpr mojom::ContextType context_type =
-          mojom::ContextType::kPrivilegedExtension;
-      ExtensionTabUtil::ScrubTabBehavior scrub_tab_behavior =
-          ExtensionTabUtil::GetScrubTabBehavior(extension, context_type,
-                                                web_contents);
-      tab_value = base::Value(ExtensionTabUtil::CreateTabObject(
-                                  web_contents, scrub_tab_behavior, extension)
-                                  .ToValue());
-    }
   }
 
-  args.Append(std::move(tab_value));
+  content::WebContents* web_contents = nullptr;
+  if (tab_list_interface_) {
+    auto* active_tab = tab_list_interface_->GetActiveTab();
+    web_contents = active_tab ? active_tab->GetContents() : nullptr;
+  }
 
-  auto event =
-      std::make_unique<Event>(events::COMMANDS_ON_COMMAND, kOnCommandEventName,
-                              std::move(args), browser_context_);
-  event->user_gesture = EventRouter::UserGestureState::kEnabled;
-  EventRouter::Get(browser_context_)
-      ->DispatchEventToExtension(extension_id, std::move(event));
+  // Grant before sending the event so that the permission is granted before
+  // the extension acts on the command. NOTE: The Global Commands handler does
+  // not set the TabListInterface as it deals only with named commands (not
+  // page/browser actions that are associated with the current page directly).
+  ActiveTabPermissionGranter* granter =
+      web_contents && !accelerator.IsMediaKey()
+          ? ActiveTabPermissionGranter::FromWebContents(web_contents)
+          : nullptr;
+  if (!granter) {
+    DispatchCommandEvent(*browser_context_, extension_id, command,
+                         web_contents);
+    return;
+  }
+  granter->GrantIfRequested(
+      extension,
+      base::BindOnce(
+          [](base::WeakPtr<content::WebContents> web_contents,
+             const ExtensionId& extension_id, const std::string& command) {
+            if (!web_contents) {
+              return;
+            }
+            DispatchCommandEvent(*web_contents->GetBrowserContext(),
+                                 extension_id, command, web_contents.get());
+          },
+          web_contents->GetWeakPtr(), extension_id, command));
 }
 
 bool ExtensionKeybindingRegistry::IsAcceleratorRegistered(
@@ -295,6 +360,8 @@ void ExtensionKeybindingRegistry::AddEventTarget(
   // Shortcuts except media keys have only one target in the list. See comment
   // about |event_targets_|.
   if (!accelerator.IsMediaKey()) {
+    // TODO(crbug.com/571680756): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK_EQ(1u, event_targets_[accelerator].size());
   } else {
     if (media_keys_listener_)
@@ -306,7 +373,7 @@ void ExtensionKeybindingRegistry::AddEventTarget(
             IsMediaKeysListenerManagerEnabled()) {
       content::MediaKeysListenerManager* media_keys_listener_manager =
           content::MediaKeysListenerManager::GetInstance();
-      DCHECK(media_keys_listener_manager);
+      CHECK(media_keys_listener_manager, base::NotFatalUntil::M161);
 
       media_keys_listener_manager->DisableInternalMediaKeyHandling();
     } else {
@@ -326,7 +393,7 @@ bool ExtensionKeybindingRegistry::GetFirstTarget(
   if (targets == event_targets_.end())
     return false;
 
-  DCHECK(!targets->second.empty());
+  CHECK(!targets->second.empty(), base::NotFatalUntil::M161);
   auto first_target = targets->second.begin();
   *extension_id = first_target->first;
   *command_name = first_target->second;
@@ -434,6 +501,9 @@ bool ExtensionKeybindingRegistry::ExecuteCommands(
   bool executed = false;
   for (TargetList::const_iterator it = targets->second.begin();
        it != targets->second.end(); it++) {
+    if (!GetEnabledExtensionForContext(it->first, *browser_context_)) {
+      continue;
+    }
     if (!EventRouter::Get(browser_context_)
              ->ExtensionHasEventListener(it->first, kOnCommandEventName)) {
       continue;

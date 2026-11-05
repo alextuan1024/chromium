@@ -18,11 +18,17 @@
 namespace ui {
 
 GbmPixmap::GbmPixmap(GbmSurfaceFactory* surface_manager,
+                     scoped_refptr<DrmDevice> drm_device,
                      std::unique_ptr<GbmBuffer> buffer,
                      scoped_refptr<DrmFramebuffer> framebuffer)
     : surface_manager_(surface_manager),
+      drm_device_(std::move(drm_device)),
       buffer_(std::move(buffer)),
-      framebuffer_(std::move(framebuffer)) {}
+      framebuffer_(std::move(framebuffer)) {
+  CHECK(drm_device_);
+  CHECK(buffer_);
+  CHECK(!framebuffer_ || framebuffer_->drm_device() == drm_device_);
+}
 
 gfx::NativePixmapHandle GbmPixmap::ExportHandle() const {
   return buffer_->ExportHandle();
@@ -75,19 +81,17 @@ uint32_t GbmPixmap::GetUniqueId() const {
 bool GbmPixmap::ScheduleOverlayPlane(
     gfx::AcceleratedWidget widget,
     const gfx::OverlayPlaneData& overlay_plane_data,
-    std::vector<gfx::GpuFence> acquire_fences,
-    std::vector<gfx::GpuFence> release_fences) {
-  DCHECK(buffer_->GetFlags() & GBM_BO_USE_SCANOUT);
+    gfx::GpuFenceHandle acquire_fence) {
+  CHECK(buffer_->GetFlags() & GBM_BO_USE_SCANOUT, base::NotFatalUntil::M163);
   // |framebuffer_id| might be 0 if AddFramebuffer2 failed, in that case we
   // already logged the error in GbmBuffer ctor. We avoid logging the error
   // here since this method might be called every pageflip.
   if (framebuffer_) {
-    DCHECK(acquire_fences.empty() || acquire_fences.size() == 1u);
     surface_manager_->GetSurface(widget)->QueueOverlayPlane(DrmOverlayPlane(
         framebuffer_, overlay_plane_data,
-        acquire_fences.empty()
+        acquire_fence.is_null()
             ? nullptr
-            : std::make_unique<gfx::GpuFence>(std::move(acquire_fences[0]))));
+            : std::make_unique<gfx::GpuFence>(std::move(acquire_fence))));
   }
 
   return true;

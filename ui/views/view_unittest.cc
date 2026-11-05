@@ -23,6 +23,7 @@
 #include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/scoped_multi_source_observation.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -35,6 +36,7 @@
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/clipboard/clipboard.h"
@@ -137,7 +139,7 @@ const ui::Layer* NextLayer(const ui::Layer* layer) {
   if (!parent) {
     return nullptr;
   }
-  const std::vector<raw_ptr<ui::Layer, VectorExperimental>> children =
+  const std::vector<raw_ptr<ui::Layer, DanglingUntriaged>> children =
       parent->children();
   const auto i = std::ranges::find(children, layer) + 1;
   return (i == children.cend()) ? parent : FirstLayer(*i);
@@ -1478,6 +1480,105 @@ TEST_F(ViewTest, SetAccessibleDescriptionExplicitlyEmptyToRemoveDescription) {
             ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
 }
 
+TEST_F(ViewTest, SetAccessibleDescriptionExplicitlyEmptyIgnoresTooltipChanges) {
+  TestView v;
+  v.GetViewAccessibility().SetRole(ax::mojom::Role::kButton);
+  v.GetViewAccessibility().SetDescription(
+      u"", ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+
+  v.SetTooltipText(u"Tooltip");
+  v.GetViewAccessibility().SetName(u"Name");
+  v.SetTooltipText(u"Updated Tooltip");
+
+  ui::AXNodeData data;
+  v.GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(v.GetViewAccessibility().GetCachedDescription(), u"");
+  EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kDescription),
+            u"");
+  EXPECT_EQ(data.GetDescriptionFrom(),
+            ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+
+  // Applying `kAttributeExplicitlyEmpty` after a tooltip is already set also
+  // prevents subsequent tooltip updates from restoring a tooltip description.
+  TestView v_with_tooltip;
+  v_with_tooltip.SetTooltipText(u"Initial Tooltip");
+  v_with_tooltip.GetViewAccessibility().SetDescription(
+      u"", ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+  v_with_tooltip.SetTooltipText(u"Changed Tooltip");
+
+  data = ui::AXNodeData();
+  v_with_tooltip.GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(v_with_tooltip.GetViewAccessibility().GetCachedDescription(), u"");
+  EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kDescription),
+            u"");
+  EXPECT_EQ(data.GetDescriptionFrom(),
+            ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+}
+
+TEST_F(ViewTest,
+       SetAccessibleDescriptionExplicitlyEmptyPreservedOnEmptyNameAndTooltip) {
+  TestView v;
+  v.GetViewAccessibility().SetRole(ax::mojom::Role::kButton);
+  v.GetViewAccessibility().SetDescription(
+      u"", ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+  v.SetTooltipText(u"Tooltip");
+  v.GetViewAccessibility().SetName(u"Tooltip");
+
+  // Clearing both tooltip and name must not strip `kAttributeExplicitlyEmpty`.
+  v.SetTooltipText(u"");
+  v.GetViewAccessibility().SetName(u"");
+
+  ui::AXNodeData data;
+  v.GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(v.GetViewAccessibility().GetCachedDescription(), u"");
+  EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kDescription),
+            u"");
+  EXPECT_EQ(data.GetDescriptionFrom(),
+            ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+
+  v.SetTooltipText(u"Another Tooltip");
+  data = ui::AXNodeData();
+  v.GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(v.GetViewAccessibility().GetCachedDescription(), u"");
+  EXPECT_EQ(data.GetDescriptionFrom(),
+            ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+}
+
+TEST_F(ViewTest,
+       SetAccessibleDescriptionExplicitlyEmptyCanBeOverriddenAndRemoved) {
+  TestView v;
+  v.GetViewAccessibility().SetRole(ax::mojom::Role::kButton);
+  v.GetViewAccessibility().SetDescription(
+      u"", ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+
+  // An explicit non-empty `SetDescription()` call overrides it.
+  v.GetViewAccessibility().SetDescription(u"Explicit Description");
+  ui::AXNodeData data;
+  v.GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(v.GetViewAccessibility().GetCachedDescription(),
+            u"Explicit Description");
+  EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kDescription),
+            u"Explicit Description");
+  EXPECT_EQ(data.GetDescriptionFrom(),
+            ax::mojom::DescriptionFrom::kAriaDescription);
+
+  // `RemoveDescription()` clears `kAttributeExplicitlyEmpty` so subsequent
+  // tooltip updates fall back to the tooltip text again.
+  v.GetViewAccessibility().SetDescription(
+      u"", ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty);
+  v.GetViewAccessibility().RemoveDescription();
+  v.SetTooltipText(u"Fallback Tooltip");
+
+  data = ui::AXNodeData();
+  v.GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(v.GetViewAccessibility().GetCachedDescription(),
+            u"Fallback Tooltip");
+  EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kDescription),
+            u"Fallback Tooltip");
+  EXPECT_EQ(data.GetDescriptionFrom(),
+            ax::mojom::DescriptionFrom::kAriaDescription);
+}
+
 TEST_F(ViewTest, SetIsLeafUnpruneSubtreeWithLeafView) {
   TestView v;
   ui::AXNodeData data = ui::AXNodeData();
@@ -1701,6 +1802,95 @@ TEST_F(ViewTest, DeleteOnPressed) {
                          ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
                          ui::EF_LEFT_MOUSE_BUTTON);
   root->OnMousePressed(pressed);
+  EXPECT_TRUE(v1->children().empty());
+}
+
+// Confirm that HandleAccessibleAction(kDoDefault) dispatches press and release
+// when the view remains alive, and safely skips release if the view is deleted
+// directly or via a focus observer while processing the press event.
+TEST_F(ViewTest, HandleAccessibleActionDoDefault) {
+  auto view1 = std::make_unique<TestView>();
+  view1->SetBoundsRect(gfx::Rect(0, 0, 300, 300));
+
+  auto view2 = std::make_unique<TestView>();
+  view2->SetBoundsRect(gfx::Rect(100, 100, 100, 100));
+
+  view1->Reset();
+  view2->Reset();
+
+  auto widget = std::make_unique<Widget>();
+  Widget::InitParams params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_POPUP);
+  params.bounds = gfx::Rect(50, 50, 650, 650);
+  widget->Init(std::move(params));
+  View* root = widget->GetRootView();
+
+  TestView* v1 = root->AddChildView(std::move(view1));
+  TestView* v2 = v1->AddChildView(std::move(view2));
+
+  ui::AXActionData action_data;
+  action_data.action = ax::mojom::Action::kDoDefault;
+
+  // Normal press + release dispatch.
+  EXPECT_TRUE(v2->HandleAccessibleAction(action_data));
+  EXPECT_EQ(v2->last_mouse_event_type_, ui::EventType::kMouseReleased);
+  EXPECT_EQ(v2->location_, gfx::Point(50, 50));
+  ASSERT_FALSE(v1->children().empty());
+
+  // Direct deletion in OnMousePressed.
+  v2->Reset();
+  v2->delete_on_pressed_ = true;
+  EXPECT_TRUE(v2->HandleAccessibleAction(action_data));
+  EXPECT_TRUE(v1->children().empty());
+
+  // Focus-observer deletion in OnMousePressed (matching
+  // InactiveGlicViewContainer -> RequestFocus() -> OnViewFocused() ->
+  // RemoveAllChildViews()).
+  class FocusOnMousePressedView : public View {
+   public:
+    FocusOnMousePressedView() { SetFocusBehavior(FocusBehavior::ALWAYS); }
+    bool OnMousePressed(const ui::MouseEvent& event) override {
+      RequestFocus();
+      return true;
+    }
+  };
+
+  class RemoveChildrenOnFocusObserver : public ViewObserver {
+   public:
+    explicit RemoveChildrenOnFocusObserver(View* parent) : parent_(parent) {}
+
+    void Observe(View* view) { observation_.Observe(view); }
+    bool focus_observed() const { return focus_observed_; }
+
+    void OnViewFocused(View* observed_view) override {
+      focus_observed_ = true;
+      parent_->RemoveAllChildViews();
+    }
+
+    void OnViewIsDeleting(View* observed_view) override {
+      observation_.Reset();
+    }
+
+   private:
+    raw_ptr<View> parent_;
+    bool focus_observed_ = false;
+    base::ScopedObservation<View, ViewObserver> observation_{this};
+  };
+
+  widget->widget_delegate()->SetCanActivate(true);
+  widget->Show();
+  widget->Activate();
+  ASSERT_TRUE(widget->IsActive());
+
+  View* focus_view =
+      v1->AddChildView<View>(std::make_unique<FocusOnMousePressedView>());
+  focus_view->SetBoundsRect(gfx::Rect(0, 0, 100, 100));
+
+  RemoveChildrenOnFocusObserver focus_observer(v1);
+  focus_observer.Observe(focus_view);
+
+  EXPECT_TRUE(focus_view->HandleAccessibleAction(action_data));
+  EXPECT_TRUE(focus_observer.focus_observed());
   EXPECT_TRUE(v1->children().empty());
 }
 
@@ -4017,6 +4207,13 @@ TEST_F(ViewTest, WidgetObserverViewWidgetClosedViewReparented) {
   EXPECT_TRUE(!view_1->GetViewAccessibility().is_widget_closed_);
   EXPECT_TRUE(!child_view_1->GetViewAccessibility().is_widget_closed_);
   EXPECT_TRUE(!child_view_2->GetViewAccessibility().is_widget_closed_);
+
+  // An asynchronous Close() must also immediately mark the hierarchy closed.
+  widget_2->Close();
+  EXPECT_TRUE(contents_view->GetViewAccessibility().is_widget_closed_);
+  EXPECT_TRUE(view_1->GetViewAccessibility().is_widget_closed_);
+  EXPECT_TRUE(child_view_1->GetViewAccessibility().is_widget_closed_);
+  EXPECT_TRUE(child_view_2->GetViewAccessibility().is_widget_closed_);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -6106,6 +6303,105 @@ TEST_F(ViewLayerTest, ReorderUnderWidget) {
   EXPECT_EQ(c2->layer(), parent_layer->children()[0]);
 }
 
+TEST_F(ViewLayerTest, ReorderChildLayers) {
+  View* content = widget()->SetContentsView(std::make_unique<View>());
+  View* c1 = content->AddChildView(std::make_unique<View>());
+  View* c2 = content->AddChildView(std::make_unique<View>());
+  View* c3 = content->AddChildView(std::make_unique<View>());
+  c1->SetPaintToLayer();
+  c2->SetPaintToLayer();
+  c3->SetPaintToLayer();
+
+  ui::Layer* parent_layer = widget()->GetLayer();
+  ASSERT_EQ(3u, parent_layer->children().size());
+  EXPECT_EQ(c1->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c3->layer(), parent_layer->children()[2]);
+
+  // Move c3 to the back (index 0).
+  content->ReorderChildView(c3, 0);
+  EXPECT_EQ(c3->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c1->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[2]);
+
+  // Move c1 to the front (end).
+  content->ReorderChildView(c1, content->children().size());
+  EXPECT_EQ(c3->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c1->layer(), parent_layer->children()[2]);
+
+  // Add child without layer between c3 and c2. Layer order should not change.
+  View* c4 = content->AddChildViewAt(std::make_unique<View>(), 1);
+  EXPECT_EQ(c3->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c1->layer(), parent_layer->children()[2]);
+
+  // Reorder c4 without layer. Layer order should not change.
+  content->ReorderChildView(c4, 0);
+  EXPECT_EQ(c3->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c1->layer(), parent_layer->children()[2]);
+}
+
+TEST_F(ViewLayerTest, ReorderChildLayersWithMultipleRegionLayers) {
+  View* content = widget()->SetContentsView(std::make_unique<View>());
+  View* v1 = content->AddChildView(std::make_unique<View>());
+  View* v2 = content->AddChildView(std::make_unique<View>());
+  v1->SetPaintToLayer();
+  v2->SetPaintToLayer();
+
+  auto b1 = std::make_unique<ui::LayerTextured>();
+  auto b2 = std::make_unique<ui::LayerTextured>();
+  auto a1 = std::make_unique<ui::LayerTextured>();
+  auto a2 = std::make_unique<ui::LayerTextured>();
+
+  v1->AddLayerToRegion(b1.get(), LayerRegion::kBelow);
+  v1->AddLayerToRegion(b2.get(), LayerRegion::kBelow);
+  v1->AddLayerToRegion(a1.get(), LayerRegion::kAbove);
+  v1->AddLayerToRegion(a2.get(), LayerRegion::kAbove);
+
+  ui::Layer* parent_layer = widget()->GetLayer();
+  // Under parent_layer, the bottom-to-top order must preserve insertion order
+  // within each region: b1, b2, v1->layer(), a1, a2, v2->layer().
+  EXPECT_THAT(parent_layer->children(),
+              testing::ElementsAre(b1.get(), b2.get(), v1->layer(), a1.get(),
+                                   a2.get(), v2->layer()));
+
+  // Reorder v2 to the bottom (index 0).
+  content->ReorderChildView(v2, 0);
+  EXPECT_THAT(parent_layer->children(),
+              testing::ElementsAre(v2->layer(), b1.get(), b2.get(), v1->layer(),
+                                   a1.get(), a2.get()));
+
+  // Move v2 back to the front (end).
+  content->ReorderChildView(v2, content->children().size());
+  EXPECT_THAT(parent_layer->children(),
+              testing::ElementsAre(b1.get(), b2.get(), v1->layer(), a1.get(),
+                                   a2.get(), v2->layer()));
+
+  v1->RemoveLayerFromRegions(b1.get());
+  v1->RemoveLayerFromRegions(b2.get());
+  v1->RemoveLayerFromRegions(a1.get());
+  v1->RemoveLayerFromRegions(a2.get());
+}
+
+TEST_F(ViewLayerTest, ReorderChildLayersWithMaskLayer) {
+  View* content = widget()->SetContentsView(std::make_unique<View>());
+  content->SetPaintToLayer();
+  content->SetClipPath(SkPath::Rect(SkRect::MakeWH(100, 100)));
+  ASSERT_TRUE(content->layer()->layer_mask_layer());
+
+  View* c1 = content->AddChildView(std::make_unique<View>());
+  View* c2 = content->AddChildView(std::make_unique<View>());
+  c1->SetPaintToLayer();
+  c2->SetPaintToLayer();
+
+  // Reordering child views under a view with a mask layer should not crash.
+  content->ReorderChildView(c2, 0);
+  EXPECT_EQ(c2->layer(), content->layer()->children()[0]);
+  EXPECT_EQ(c1->layer(), content->layer()->children()[1]);
+}
+
 // Verifies that the layer of a view can be acquired properly.
 TEST_F(ViewLayerTest, AcquireLayer) {
   View* content = widget()->SetContentsView(std::make_unique<View>());
@@ -6135,7 +6431,7 @@ TEST_F(ViewLayerTest, RecreateLayerZOrder) {
   v2->SetPaintToLayer();
 
   // Test the initial z-order.
-  const std::vector<raw_ptr<ui::Layer, VectorExperimental>>& child_layers_pre =
+  const std::vector<raw_ptr<ui::Layer, DanglingUntriaged>>& child_layers_pre =
       v->layer()->children();
   ASSERT_EQ(2u, child_layers_pre.size());
   EXPECT_EQ(v1->layer(), child_layers_pre[0]);
@@ -6145,7 +6441,7 @@ TEST_F(ViewLayerTest, RecreateLayerZOrder) {
 
   // Test the new layer order. We expect: |v1| |v1_old_layer| |v2|.
   // for |v1| and |v2|.
-  const std::vector<raw_ptr<ui::Layer, VectorExperimental>>& child_layers_post =
+  const std::vector<raw_ptr<ui::Layer, DanglingUntriaged>>& child_layers_post =
       v->layer()->children();
   ASSERT_EQ(3u, child_layers_post.size());
   EXPECT_EQ(v1->layer(), child_layers_post[0]);
@@ -6166,7 +6462,7 @@ TEST_F(ViewLayerTest, RecreateLayerZOrderWidgetParent) {
   ui::Layer* root_layer = GetRootLayer();
 
   // Test the initial z-order.
-  const std::vector<raw_ptr<ui::Layer, VectorExperimental>>& child_layers_pre =
+  const std::vector<raw_ptr<ui::Layer, DanglingUntriaged>>& child_layers_pre =
       root_layer->children();
   ASSERT_EQ(2u, child_layers_pre.size());
   EXPECT_EQ(v1->layer(), child_layers_pre[0]);
@@ -6175,7 +6471,7 @@ TEST_F(ViewLayerTest, RecreateLayerZOrderWidgetParent) {
   std::unique_ptr<ui::Layer> v1_old_layer(v1->RecreateLayer());
 
   // Test the new layer order. We expect: |v1| |v1_old_layer| |v2|.
-  const std::vector<raw_ptr<ui::Layer, VectorExperimental>>& child_layers_post =
+  const std::vector<raw_ptr<ui::Layer, DanglingUntriaged>>& child_layers_post =
       root_layer->children();
   ASSERT_EQ(3u, child_layers_post.size());
   EXPECT_EQ(v1->layer(), child_layers_post[0]);
@@ -6354,7 +6650,7 @@ TEST_F(ViewLayerTest, RemoveLayerFromRegionsWhenNoViewLayer) {
   view->RemoveLayerFromRegions(layer.get());
 }
 
-TEST_F(ViewLayerTest, ReorderChildLayersWithUnparentedRegionLayer) {
+TEST_F(ViewLayerTest, RecreateRegionLayers) {
   View root;
   root.SetPaintToLayer();
 
@@ -6363,16 +6659,40 @@ TEST_F(ViewLayerTest, ReorderChildLayersWithUnparentedRegionLayer) {
   v1->SetPaintToLayer();
   v2->SetPaintToLayer();
 
-  auto layer = std::make_unique<ui::LayerTextured>();
-  v2->AddLayerToRegion(layer.get(), LayerRegion::kBelow);
+  ui::LayerOwner below_owner(std::make_unique<ui::LayerTextured>());
+  ui::LayerOwner above_owner(std::make_unique<ui::LayerTextured>());
+  v2->AddLayerToRegion(below_owner.layer(), LayerRegion::kBelow);
+  v2->AddLayerToRegion(above_owner.layer(), LayerRegion::kAbove);
 
-  // Detach the region layer from the root layer tree while keeping it in v2's
-  // regions. Reordering views triggers layer reordering and should safely
-  // ignore unparented region layers rather than attempting to stack them
-  // relative to the root layer.
-  root.layer()->Remove(layer.get());
+  std::unique_ptr<ui::Layer> old_below = below_owner.RecreateLayer();
+  std::unique_ptr<ui::Layer> old_above = above_owner.RecreateLayer();
+
+  // Recreated layers should replace old layers in `layers_below_` and
+  // `layers_above_`.
+  EXPECT_THAT(v2->GetLayersInOrder(),
+              testing::ElementsAre(below_owner.layer(), v2->layer(),
+                                   above_owner.layer()));
+
+  // Move old layers to a separate parent (as wm::RecreateLayers does).
+  // Reordering while `old_below` and `old_above` are still alive in `old_root`
+  // must restack the new layers under `root.layer()` rather than attempting to
+  // stack `old_below` / `old_above` (which would crash in StackRelativeTo).
+  std::unique_ptr<ui::Layer> old_root = ui::Layer::Create(ui::LAYER_NOT_DRAWN);
+  old_root->Add(old_below.get());
+  old_root->Add(old_above.get());
 
   root.ReorderChildView(v1, 1);
+  EXPECT_THAT(root.layer()->children(),
+              testing::ElementsAre(below_owner.layer(), v2->layer(),
+                                   above_owner.layer(), v1->layer()));
+
+  // Destroying the old layers afterward should not remove the new layers from
+  // `v2`'s regions.
+  old_below.reset();
+  old_above.reset();
+  EXPECT_THAT(v2->GetLayersInOrder(),
+              testing::ElementsAre(below_owner.layer(), v2->layer(),
+                                   above_owner.layer()));
 }
 
 // View::OrphanLayers() captures a bare ui::Layer* `parent` local and loops
@@ -7065,7 +7385,7 @@ TEST_F(ViewTest, ChildViewZOrderChanged) {
     AddViewWithChildLayer(view.get());
   }
   View::Views children = view->GetChildrenInZOrder();
-  const std::vector<raw_ptr<ui::Layer, VectorExperimental>>& layers =
+  const std::vector<raw_ptr<ui::Layer, DanglingUntriaged>>& layers =
       view->layer()->children();
   ASSERT_EQ(kNumChildren, children.size());
   ASSERT_EQ(kNumChildren, layers.size());
@@ -7108,7 +7428,7 @@ TEST_F(ViewTest, AttachChildViewWithComplicatedLayers) {
   // grand_child_view has layer.
   View* grand_child_view = child_view2->AddChildView(std::make_unique<View>());
   grand_child_view->SetPaintToLayer();
-  const std::vector<raw_ptr<ui::Layer, VectorExperimental>>& layers =
+  const std::vector<raw_ptr<ui::Layer, DanglingUntriaged>>& layers =
       parent_view->layer()->children();
   EXPECT_EQ(2u, layers.size());
   EXPECT_EQ(layers[0], grand_child_view->layer());
@@ -7118,7 +7438,7 @@ TEST_F(ViewTest, AttachChildViewWithComplicatedLayers) {
   // should not change.
   OrderableView* parent_view_ptr =
       grand_parent_view->AddChildView(std::move(parent_view));
-  const std::vector<raw_ptr<ui::Layer, VectorExperimental>>&
+  const std::vector<raw_ptr<ui::Layer, DanglingUntriaged>>&
       layers_after_attached = parent_view_ptr->layer()->children();
   EXPECT_EQ(2u, layers_after_attached.size());
   EXPECT_EQ(layers_after_attached[0], grand_child_view->layer());
@@ -7926,5 +8246,134 @@ TEST_F(ViewTest, PillBackground) {
   view->SetBackground(CreatePillBackground(ui::kColorSysBaseContainerElevated));
   EXPECT_NE(nullptr, view->GetBackground());
 }
+
+// Tests conversions between a view and its direct child. As in production,
+// each view's mirroring is set before anything is positioned. Values are
+// given in logical coordinates (measured from each view's leading edge), so
+// the fully-LTR and fully-RTL hierarchies expect identical results. The
+// parameter scales ancestors of `child`, which must not affect the results.
+class ViewParentChildConversionTest : public ViewTest,
+                                      public testing::WithParamInterface<bool> {
+ protected:
+  // Builds root -> container -> parent -> child. `root`, `container` and
+  // `parent` are mirrored iff `parent_rtl`; `child` is mirrored iff
+  // `child_rtl`.
+  void Init(bool parent_rtl, bool child_rtl) {
+    root_ = std::make_unique<View>();
+    root_->SetMirrored(parent_rtl);
+    auto container = std::make_unique<View>();
+    container->SetMirrored(parent_rtl);
+    auto parent = std::make_unique<View>();
+    parent->SetMirrored(parent_rtl);
+    auto child = std::make_unique<View>();
+    child->SetMirrored(child_rtl);
+    if (GetParam()) {
+      container->SetTransform(gfx::Transform::MakeScale(2, 3));
+      parent->SetTransform(gfx::Transform::MakeScale(3, 2));
+    }
+
+    container_ = root_->AddChildView(std::move(container));
+    parent_ = container_->AddChildView(std::move(parent));
+    child_ = parent_->AddChildView(std::move(child));
+    root_->SetBounds(0, 0, 800, 600);
+    container_->SetBounds(50, 40, 300, 200);
+    parent_->SetBounds(20, 30, 200, 120);
+    child_->SetBounds(15, 25, 60, 40);
+  }
+
+  // Expects logical `in_child` to convert to logical `in_parent`, and back.
+  void ExpectConversions(const gfx::Point& in_child,
+                         const gfx::Point& in_parent) {
+    EXPECT_EQ(in_parent,
+              Flip(parent_, View::ConvertPointToTarget(
+                                child_, parent_, Flip(child_, in_child))));
+    EXPECT_EQ(in_child,
+              Flip(child_, View::ConvertPointToTarget(
+                               parent_, child_, Flip(parent_, in_parent))));
+  }
+  void ExpectConversions(const gfx::Rect& in_child,
+                         const gfx::Rect& in_parent) {
+    EXPECT_EQ(in_parent,
+              Flip(parent_, View::ConvertRectToTarget(child_, parent_,
+                                                      Flip(child_, in_child))));
+    EXPECT_EQ(in_child,
+              Flip(child_, View::ConvertRectToTarget(
+                               parent_, child_, Flip(parent_, in_parent))));
+  }
+  void ExpectConversions(const gfx::RectF& in_child,
+                         const gfx::RectF& in_parent) {
+    EXPECT_EQ(in_parent,
+              Flip(parent_, View::ConvertRectToTarget(child_, parent_,
+                                                      Flip(child_, in_child))));
+    EXPECT_EQ(in_child,
+              Flip(child_, View::ConvertRectToTarget(
+                               parent_, child_, Flip(parent_, in_parent))));
+  }
+
+  // `child` is at logical (15, 25) in `parent` in all cases.
+  void ExpectSameDirectionConversions() {
+    ExpectConversions(gfx::Point(10, 10), gfx::Point(25, 35));
+    ExpectConversions(gfx::Rect(10, 10, 12, 14), gfx::Rect(25, 35, 12, 14));
+    ExpectConversions(gfx::RectF(10.5f, 10.25f, 12.f, 14.f),
+                      gfx::RectF(25.5f, 35.25f, 12.f, 14.f));
+  }
+
+  // `child`'s leading edge is on the opposite side from `parent`'s, so a
+  // logical x in `child` is 15 + (60 - x) from `parent`'s leading edge.
+  void ExpectMixedDirectionConversions() {
+    ExpectConversions(gfx::Point(10, 10), gfx::Point(65, 35));
+    ExpectConversions(gfx::Rect(10, 10, 12, 14), gfx::Rect(53, 35, 12, 14));
+    ExpectConversions(gfx::RectF(10.5f, 10.25f, 12.f, 14.f),
+                      gfx::RectF(52.5f, 35.25f, 12.f, 14.f));
+  }
+
+ private:
+  // Converts between logical and physical coordinates in `view`.
+  static gfx::Point Flip(const View* view, const gfx::Point& point) {
+    return gfx::Point(view->GetMirroredXInView(point.x()), point.y());
+  }
+  static gfx::Rect Flip(const View* view, gfx::Rect rect) {
+    rect.set_x(view->GetMirroredXWithWidthInView(rect.x(), rect.width()));
+    return rect;
+  }
+  static gfx::RectF Flip(const View* view, gfx::RectF rect) {
+    if (view->GetMirrored()) {
+      rect.set_x(view->width() - rect.right());
+    }
+    return rect;
+  }
+
+  std::unique_ptr<View> root_;
+  raw_ptr<View> container_ = nullptr;
+  raw_ptr<View> parent_ = nullptr;
+  raw_ptr<View> child_ = nullptr;
+};
+
+TEST_P(ViewParentChildConversionTest, LTRParentLTRChild) {
+  Init(/*parent_rtl=*/false, /*child_rtl=*/false);
+  ExpectSameDirectionConversions();
+}
+
+TEST_P(ViewParentChildConversionTest, RTLParentRTLChild) {
+  Init(/*parent_rtl=*/true, /*child_rtl=*/true);
+  ExpectSameDirectionConversions();
+}
+
+TEST_P(ViewParentChildConversionTest, RTLParentLTRChild) {
+  Init(/*parent_rtl=*/true, /*child_rtl=*/false);
+  ExpectMixedDirectionConversions();
+}
+
+TEST_P(ViewParentChildConversionTest, LTRParentRTLChild) {
+  Init(/*parent_rtl=*/false, /*child_rtl=*/true);
+  ExpectMixedDirectionConversions();
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         ViewParentChildConversionTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Scaled" : "Unscaled";
+                         });
 
 }  // namespace views

@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_ACTOR_UI_UI_EVENT_H_
 
 #include <optional>
+#include <string>
 #include <variant>
 
 #include "chrome/browser/actor/actor_task.h"
@@ -73,6 +74,28 @@ struct TaskStateChanged {
   ~TaskStateChanged();
 };
 
+// STATUS: Dispatched on every ActorTask step progress update.
+struct TaskStepProgressUpdated {
+  actor::TaskId task_id;
+  std::string step_progress;
+
+  TaskStepProgressUpdated(actor::TaskId, std::string step_progress);
+  TaskStepProgressUpdated(const TaskStepProgressUpdated&);
+  TaskStepProgressUpdated(TaskStepProgressUpdated&&);
+  ~TaskStepProgressUpdated();
+};
+
+// STATUS: Dispatched when a client requests an act on an ActorTask, before the
+// request is validated. The request can still fail before the task reaches
+// kActing.
+struct TaskActRequested {
+  actor::TaskId task_id;
+
+  explicit TaskActRequested(actor::TaskId);
+  TaskActRequested(const TaskActRequested&);
+  ~TaskActRequested();
+};
+
 // STATUS: Dispatched when a tab is added to ActorTask.
 struct StartingToActOnTab {
   tabs::TabInterface::Handle tab_handle;
@@ -128,16 +151,22 @@ using AsyncUiEvent = std::variant<StartingToActOnTab, MouseClick, MouseMove>;
 // There's no affordance for ActorUiStateManager to report errors processing
 // these events or for callers to wait for ActorUiStateManager to finish async
 // work before proceeding.
-using SyncUiEvent =
-    std::variant<StartTask, StopTask, TaskStateChanged, StoppedActingOnTab>;
+using SyncUiEvent = std::variant<StartTask,
+                                 StopTask,
+                                 TaskStateChanged,
+                                 TaskStepProgressUpdated,
+                                 StoppedActingOnTab,
+                                 TaskActRequested>;
 
 using UiEvent = std::variant<StartTask,
                              StopTask,
                              StartingToActOnTab,
                              StoppedActingOnTab,
                              TaskStateChanged,
+                             TaskStepProgressUpdated,
                              MouseClick,
-                             MouseMove>;
+                             MouseMove,
+                             TaskActRequested>;
 
 }  // namespace actor::ui
 

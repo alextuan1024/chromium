@@ -61,6 +61,8 @@ component("input") {
     "render_widget_targeter.h",
     "stylus_handwriting_handler.cc",
     "stylus_handwriting_handler.h",
+    "stylus_handwriting_handler_factory.cc",
+    "stylus_handwriting_handler_factory.h",
     "switches.cc",
     "switches.h",
     "tap_suppression_controller.cc",
@@ -109,6 +111,7 @@ component("input") {
       "stylus_handwriting_handler_win.cc",
       "stylus_handwriting_handler_win.h",
     ]
+    deps += [ "//components/stylus_handwriting/win" ]
   }
   if (is_android) {
     sources += [
@@ -219,7 +222,10 @@ source_set("unit_tests") {
   }
   if (is_win) {
     sources += [ "stylus_handwriting_handler_win_unittest.cc" ]
-    deps += [ "//ui/gfx" ]
+    deps += [
+      "//components/stylus_handwriting/win",
+      "//ui/gfx",
+    ]
   }
 }
 

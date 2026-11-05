@@ -30,9 +30,12 @@ suite('SettingsSubpage', function() {
 
   setup(function() {
     const basicRoute = new Route('/');
-    const searchRoute = basicRoute.createSection('/search', 'search');
-    const peopleRoute = basicRoute.createSection('/people', 'people');
-    const privacyRoute = basicRoute.createSection('/privacy', 'privacy');
+    const searchRoute =
+        basicRoute.createSection('/search', 'search', '', 'icon');
+    const peopleRoute =
+        basicRoute.createSection('/people', 'people', '', 'icon');
+    const privacyRoute =
+        basicRoute.createSection('/privacy', 'privacy', '', 'icon');
     const siteDataRoute = basicRoute.createChild('/siteData');
 
     testRoutes = {
@@ -120,8 +123,7 @@ suite('SettingsSubpage', function() {
     const search = subpage.shadowRoot.querySelector('cr-search-field');
     assertTrue(!!search);
     search.setValue('Hello');
-    subpage.dispatchEvent(new CustomEvent(
-        'clear-subpage-search', {bubbles: true, composed: true}));
+    subpage.fire('clear-subpage-search');
     await microtasksFinished();
     assertEquals('', search.getValue());
   });

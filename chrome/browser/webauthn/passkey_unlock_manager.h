@@ -5,10 +5,16 @@
 #ifndef CHROME_BROWSER_WEBAUTHN_PASSKEY_UNLOCK_MANAGER_H_
 #define CHROME_BROWSER_WEBAUTHN_PASSKEY_UNLOCK_MANAGER_H_
 
+#include <memory>
+#include <optional>
+#include <vector>
+
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
+#include "build/build_config.h"
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
 #include "chrome/browser/webauthn/enclave_manager.h"
 #include "chrome/browser/webauthn/enclave_manager_interface.h"
@@ -17,6 +23,7 @@
 #include "components/trusted_vault/trusted_vault_connection.h"
 #include "components/webauthn/core/browser/passkey_model.h"
 #include "components/webauthn/core/browser/passkey_model_change.h"
+#include "google_apis/gaia/gaia_id.h"
 
 class BrowserWindowInterface;
 
@@ -26,9 +33,12 @@ class SyncService;
 
 namespace webauthn {
 
-// This class manages the unlock state for Google Password Manager (GPM)
-// passkeys. It asynchronously determines if passkeys are locked, but can be
-// unlocked. Once the final state is known, it notifies observers.
+// Manages the unlock state for Google Password Manager (GPM) passkeys.
+// Observers and startup checks update cached inputs, while a linear `Stage`
+// state machine waits for `EnclaveManager` to load, downloads the security
+// domain state once to check GPM PIN availability, and on macOS attempts
+// opportunistic iCloud Keychain recovery before computing the error UI and
+// reporting locked passkeys to Sync in `Stage::kReady`.
 class PasskeyUnlockManager : public KeyedService,
                              public PasskeyModel::Observer,
                              public EnclaveManager::Observer,
@@ -79,14 +89,10 @@ class PasskeyUnlockManager : public KeyedService,
       BrowserWindowInterface* browser,
       trusted_vault::TrustedVaultUserActionTriggerForUMA trigger);
 
-  // Methods providing the UI strings. Results depend on the experiment arms
-  // configured by the feature parameter `kPasskeyUnlockErrorUiExperimentArm`.
-  std::u16string GetPasskeyErrorProfilePillTitle() const;
-  std::u16string GetPasskeyErrorProfileMenuDetails() const;
-  std::u16string GetPasskeyErrorProfileMenuButtonLabel() const;
-
-  // Returns true if the passkey unlock error UI is enabled, depending on the
-  // feature flags.
+  // Returns true if the standalone passkey unlock error UI is enabled
+  // (`device::kPasskeyUnlockErrorUi` is enabled and
+  // `device::kPasskeyUnlockIdentityErrorUi` is disabled; the two UIs are
+  // mutually exclusive).
   static bool IsPasskeyUnlockErrorUiEnabled();
 
   // Used in tests to notify observers.
@@ -95,6 +101,30 @@ class PasskeyUnlockManager : public KeyedService,
   static void RecordErrorUIEventType(ErrorUIEventType event_type);
 
  private:
+  using AccountState =
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult;
+
+  // Linear startup stages. The error UI and Sync's passkeys-locked state are
+  // only computed and reported once `kReady` is reached.
+  enum class Stage {
+    // Waiting for `EnclaveManager` to finish loading (at construction, via an
+    // early load by another caller, or via `LoadAfterDelay()`).
+    kWaitingForEnclaveLoad,
+    // Downloading the security domain state once; GPM PIN availability is
+    // checked when it arrives.
+    kDownloadingAccountState,
+#if BUILDFLAG(IS_MAC)
+    // Waiting for passkeys to become locked so iCloud Keychain recovery can run
+    // once; the error UI and Sync's passkeys-locked state remain false.
+    kAwaitingICloudRecovery,
+    // Opportunistic iCloud Keychain recovery is in flight.
+    kRecoveringWithICloudKeychain,
+#endif  // BUILDFLAG(IS_MAC)
+    // Steady state; computes `should_display_error_ui_` and
+    // `passkeys_locked_for_sync_` and notifies observers and Sync.
+    kReady,
+  };
+
   // Returns the PasskeyModel provided at construction.
   PasskeyModel* passkey_model();
 
@@ -107,37 +137,62 @@ class PasskeyUnlockManager : public KeyedService,
   // Updates the cached value of `has_passkeys_`.
   void UpdateHasPasskeys();
 
-  // Updates the cached value of `sync_active_`. Checks the sync state and
-  // user actionable errors.
+  // Updates the cached values of `syncing_webauthn_enabled_` and
+  // `no_sync_errors_`.
   void UpdateSyncState();
 
-  // Recomputes `should_display_error_ui_` and notifies observers if its value
-  // changed.
+  // Advances `stage_` through the startup sequence (`kWaitingForEnclaveLoad`
+  // -> `kDownloadingAccountState` -> macOS iCloud Keychain recovery ->
+  // `kReady`), or recomputes the error UI and Sync state once in `kReady`.
+  void ActAccordingToPasskeyUnlockState();
+
+  // Recomputes `should_display_error_ui_` and `passkeys_locked_for_sync_`, and
+  // notifies observers / Sync if their values changed. Only called in
+  // `Stage::kReady`.
   void ComputeShouldDisplayErrorUiAndNotifyObservers();
 
   // Used for notifying observers.
   void NotifyObservers();
 
-  // Caches `has_gpm_pin_`.
-  void AsynchronouslyCheckGpmPinAvailability();
-  void OnHaveGpmPinAvailability(
-      EnclaveManager::GpmPinAvailability gpm_pin_availability);
+  // Callback for `EnclaveManagerInterface::LoadAfterDelay()`. Advances startup
+  // if `EnclaveManager` was not already loaded earlier.
+  void OnEnclaveManagerLoaded();
+  // Enters `Stage::kDownloadingAccountState` and starts the single security
+  // domain state download.
+  void StartAccountStateDownload();
+  // Caches `has_gpm_pin_`, schedules `WebAuthentication.GpmPinStatus`, and
+  // advances to iCloud Keychain recovery (on macOS when enabled) or
+  // `Stage::kReady`.
+  void OnAccountStateDownloaded(AccountState account_state,
+                                GaiaId account_state_gaia_id);
   // Caches `has_system_uv_`.
   void AsynchronouslyCheckSystemUVAvailability();
-  // Callback for `AsynchronouslyCheckSystemUVAvailability`.
+  // Callback for `AsynchronouslyCheckSystemUVAvailability()`.
   void OnHaveSystemUVAvailability(bool has_system_uv);
+#if BUILDFLAG(IS_MAC)
+  // Enters `Stage::kRecoveringWithICloudKeychain` and starts opportunistic
+  // iCloud Keychain recovery. `account_state` and `account_state_gaia_id` are
+  // provided when recovery starts directly from `OnAccountStateDownloaded()`
+  // after a successful download, and `std::nullopt` otherwise so
+  // `EnclaveManager` downloads fresh state.
+  void StartICloudRecovery(std::optional<AccountState> account_state,
+                           std::optional<GaiaId> account_state_gaia_id);
+  // Updates `enclave_ready_`, enters `Stage::kReady`, and recomputes the error
+  // UI and Sync state.
+  void OnICloudRecoveryComplete();
+#endif  // BUILDFLAG(IS_MAC)
 
-  // A helper for `ComputeShouldDisplayErrorUi()`. Checks whether passkeys are
-  // in the locked state. If this information can't be computed returns
-  // `std::nullopt`.
+  // Checks whether passkeys are in the locked state; when
+  // `kPasskeyUnlockIdentityErrorUi` is disabled, also requires Sync to have no
+  // actionable error (`no_sync_errors_`). Returns `std::nullopt` if this
+  // information can't be computed yet.
   std::optional<bool> ArePasskeysLocked() const;
-  // A helper for `ComputeShouldDisplayErrorUi()`. Checks whether passkeys could
-  // be unlocked. If this information can't be computed returns `std::nullopt`.
+  // A helper for `ComputeShouldDisplayErrorUiAndNotifyObservers()`. Checks
+  // whether passkeys could be unlocked. If this information can't be computed
+  // returns `std::nullopt`.
   std::optional<bool> ArePasskeysUnlockable() const;
 
   void Shutdown() override;
-
-  void OnEnclaveManagerLoaded();
 
   // EnclaveManager::Observer
   void OnStateUpdated() override;
@@ -178,12 +233,15 @@ class PasskeyUnlockManager : public KeyedService,
   // Records the `PasswordManager.TrustedVaultPasswordReadiness` histogram.
   void RecordPasswordReadinessHistogram(bool password_readiness);
 
+  Stage stage_ = Stage::kWaitingForEnclaveLoad;
   std::optional<bool> has_passkeys_;
   std::optional<bool> enclave_ready_;
   std::optional<bool> has_gpm_pin_;
   std::optional<bool> has_system_uv_;
-  bool sync_active_ = false;
+  bool syncing_webauthn_enabled_ = false;
+  bool no_sync_errors_ = false;
   bool should_display_error_ui_ = false;
+  bool passkeys_locked_for_sync_ = false;
 
   base::ObserverList<Observer> observer_list_;
 

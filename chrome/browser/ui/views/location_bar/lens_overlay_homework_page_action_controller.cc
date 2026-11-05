@@ -6,9 +6,13 @@
 
 #include "base/functional/bind.h"
 #include "build/build_config.h"
+#include "chrome/browser/contextual_cueing/contextual_cueing_controller.h"
+#include "chrome/browser/contextual_cueing/cue_target.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/lens/region_search/lens_region_search_controller.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -22,10 +26,12 @@
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/common/buildflags.h"
+#include "components/contextual_tasks/public/features.h"
 #include "components/lens/lens_features.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
 
 DEFINE_USER_DATA(LensOverlayHomeworkPageActionController);
 
@@ -34,10 +40,15 @@ LensOverlayHomeworkPageActionController::
         tabs::TabInterface& tab_interface,
         Profile& profile,
         page_actions::PageActionController& page_action_controller)
-    : profile_(profile),
+    : page_actions::PageActionObserver(kActionAnchoredContextualCue),
+      profile_(profile),
       tab_(tab_interface),
       page_action_controller_(page_action_controller),
       scoped_unowned_user_data_(tab_interface.GetUnownedUserDataHost(), *this) {
+  tab_did_activate_subscription_ =
+      tab_interface.RegisterDidActivate(base::BindRepeating(
+          &LensOverlayHomeworkPageActionController::OnTabDidActivate,
+          base::Unretained(this)));
   tab_will_detach_subscription_ =
       tab_interface.RegisterWillDetach(base::BindRepeating(
           &LensOverlayHomeworkPageActionController::OnTabWillDetach,
@@ -47,6 +58,7 @@ LensOverlayHomeworkPageActionController::
           &LensOverlayHomeworkPageActionController::OnTabWillDiscardContents,
           base::Unretained(this)));
   Observe(tab_->GetContents());
+  RegisterAsPageActionObserver(page_action_controller);
 }
 
 LensOverlayHomeworkPageActionController::
@@ -61,6 +73,7 @@ LensOverlayHomeworkPageActionController::From(tabs::TabInterface& tab) {
 void LensOverlayHomeworkPageActionController::UpdatePageActionIcon() {
   CHECK(tab_->GetContents());
 
+  search_journey_cue_showing_ = IsSearchJourneyCueShowing();
   if (ShouldShow()) {
     if (!scoped_call_to_action_lock_) {
       scoped_call_to_action_lock_ =
@@ -91,12 +104,21 @@ void LensOverlayHomeworkPageActionController::HandlePageActionEvent(
     return;
   }
 
-  LensSearchController* const controller =
-      LensSearchController::FromTabWebContents(tab_->GetContents());
-  CHECK(controller);
+  if (contextual_tasks::AreContextualTasksUpdatedEntryPointsEnabled(
+          tab_->GetBrowserWindowInterface()->GetProfile())) {
+    chrome::ExecAskGoogleAboutThisPage(
+        tab_->GetBrowserWindowInterface(),
+        lens::LensOverlayInvocationSource::kHomeworkActionChip,
+        omnibox::ChromeAimEntryPoint::
+            DESKTOP_CHROME_CHROMNIENT_HOMEWORK_ACTION_CHIP);
+  } else {
+    LensSearchController* const controller =
+        LensSearchController::FromTabWebContents(tab_->GetContents());
+    CHECK(controller);
 
-  controller->OpenLensOverlay(
-      lens::LensOverlayInvocationSource::kHomeworkActionChip);
+    controller->OpenLensOverlay(
+        lens::LensOverlayInvocationSource::kHomeworkActionChip);
+  }
   UserEducationService::MaybeNotifyNewBadgeFeatureUsed(
       tab_->GetContents()->GetBrowserContext(), lens::features::kLensOverlay);
 
@@ -106,6 +128,10 @@ void LensOverlayHomeworkPageActionController::HandlePageActionEvent(
 
 bool LensOverlayHomeworkPageActionController::ShouldShow() {
   if (!lens::ShouldShowLensOverlayEduActionChip(base::to_address(profile_))) {
+    return false;
+  }
+
+  if (IsSearchJourneyCueShowing()) {
     return false;
   }
 
@@ -169,6 +195,15 @@ bool LensOverlayHomeworkPageActionController::ShouldShow() {
   return lens_overlay_entry_point_controller->IsUrlEduEligible(entry->GetURL());
 }
 
+bool LensOverlayHomeworkPageActionController::IsSearchJourneyCueShowing()
+    const {
+  const auto* cueing_controller =
+      contextual_cueing::ContextualCueingController::From(&tab_.get());
+  return cueing_controller &&
+         cueing_controller->GetShowingCueTargetType() ==
+             contextual_cueing::CueTargetType::kAbaSearchJourney;
+}
+
 void LensOverlayHomeworkPageActionController::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
   // Since ShouldShow cares about the current URL, we need to update after
@@ -176,9 +211,36 @@ void LensOverlayHomeworkPageActionController::DidFinishNavigation(
   UpdatePageActionIcon();
 }
 
+void LensOverlayHomeworkPageActionController::OnPageActionIconShown(
+    const page_actions::PageActionState& page_action) {
+  OnContextualCueChanged();
+}
+
+void LensOverlayHomeworkPageActionController::OnPageActionIconHidden(
+    const page_actions::PageActionState& page_action) {
+  OnContextualCueChanged();
+}
+
+void LensOverlayHomeworkPageActionController::OnContextualCueChanged() {
+  const bool search_journey_cue_showing = IsSearchJourneyCueShowing();
+  if (search_journey_cue_showing == search_journey_cue_showing_) {
+    return;
+  }
+  search_journey_cue_showing_ = search_journey_cue_showing;
+  UpdatePageActionIcon();
+}
+
+void LensOverlayHomeworkPageActionController::OnTabDidActivate(
+    tabs::TabInterface* tab) {
+  OnContextualCueChanged();
+}
+
 void LensOverlayHomeworkPageActionController::OnTabWillDetach(
     tabs::TabInterface* tab,
     tabs::TabInterface::DetachReason reason) {
+  if (reason == tabs::TabInterface::DetachReason::kDelete) {
+    search_journey_cue_showing_ = false;
+  }
   scoped_call_to_action_lock_.reset();
 }
 

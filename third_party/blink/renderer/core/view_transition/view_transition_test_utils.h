@@ -27,12 +27,12 @@ class ViewTransitionTestUtils {
   static void CommitCaptureIfNeeded(ViewTransition& transition) {
     if (transition.state_ == ViewTransition::State::kCapturing) {
       // If rendering has already been paused (e.g., the test manually called
-      // WillCommitCompositorFrame), we should not pause it again.
+      // WillSnapshotCommitState), we should not pause it again.
       if (transition.style_tracker_ &&
           !transition.style_tracker_->IsOldSnapshotFrozen()) {
         transition.PauseRendering();
       }
-      if (auto* delegate = transition.delegate_.get();
+      if (auto* delegate = transition.delegate_.Get();
           delegate && delegate->IsEarlyCallbackEnabled()) {
         delegate->OnCaptureCommitted(&transition);
       }

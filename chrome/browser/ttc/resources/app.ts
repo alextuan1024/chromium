@@ -7,9 +7,9 @@ import '/strings.m.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
-
 import type {BigBuffer} from '//resources/mojo/mojo/public/mojom/base/big_buffer.mojom-webui.js';
-import type {PageContentNode} from './ai_overlay_dialog.mojom-webui.js';
+
+import type {PageContentNode, PageHandlerInterface, WebMcpToolDefinition} from './ai_overlay_dialog.mojom-webui.js';
 import {PageCallbackRouter, PageHandlerFactory, PageHandlerRemote} from './ai_overlay_dialog.mojom-webui.js';
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
@@ -17,10 +17,16 @@ import type {AudioCapturer} from './audio_capturer.js';
 import {BlobAudioCapturer, MicrophoneAudioCapturer} from './audio_capturer.js';
 import {AudioPlayer} from './audio_player.js';
 import {CaptionBlockManager, formatCaptions} from './caption_block_manager.js';
-import {LocalSpeechRecognition} from './local_speech_recognition.js';
 // <if expr="_google_chrome">
-import {Conversation, DEFAULT_TTC_BUNDLE_URL, State} from './internal/conversation.js';
+import {Conversation, DEFAULT_API_CONFIG, DEFAULT_PERSONA, DEFAULT_SYSTEM_INSTRUCTION, DEFAULT_TTC_BUNDLE_URL, State} from './internal/conversation.js';
 import type {ApiConfig, ConversationConfig, Persona} from './internal/conversation.js';
+// </if>
+import {LocalSpeechRecognition} from './local_speech_recognition.js';
+import {errorLog, log, warnLog} from './logging.js';
+import type {PageContext} from './page_context_manager.js';
+import {AiOverlayToolsRemote} from './tools.mojom-webui.js';
+
+// <if expr="_google_chrome">
 export type ConversationMessage =|{
   type: 'inputTranscription',
   text: string,
@@ -58,7 +64,9 @@ class Conversation {
   onTurnComplete(): void {}
   interrupt(): void {}
   recordOnDeviceSpeechTranscript(..._args: any[]): void {}
-  start(): Promise<void> { return Promise.resolve(); }
+  start(): Promise<void> {
+    return Promise.resolve();
+  }
   stop(): void {}
 }
 type ApiConfig = any;
@@ -71,13 +79,39 @@ type ConversationConfig = {
 type ConversationMessage = any;
 type Persona = any;
 const DEFAULT_TTC_BUNDLE_URL = '';
+const DEFAULT_API_CONFIG: ApiConfig = {
+  endpointUrl: '',
+  model: '',
+  apiKey: '',
+};
+const DEFAULT_PERSONA: Persona = {
+  id: 'generic',
+  name: 'Chrome',
+  nicknames: [],
+  persona: '',
+  voice: 'Achernar',
+};
+const DEFAULT_SYSTEM_INSTRUCTION = '';
 // </if>
 /* eslint-enable @typescript-eslint/no-explicit-any */
-import {errorLog, log} from './logging.js';
-import type {PageContext} from './page_context_manager.js';
-import {AiOverlayToolsRemote} from './tools.mojom-webui.js';
 
 const FILE = 'App';
+
+export const API_KEY_STORAGE_KEY = 'ttc_gemini_api_key';
+
+export interface ConversationInstance {
+  readonly connected: boolean;
+  readonly pageContext: PageContext|null;
+  start(): Promise<void>;
+  stop(): void;
+  sendAudio(sampleRate: number, data: string): void;
+  sendText(text: string): void;
+  markMockAudioEndTime(time: number): void;
+  recordOnDeviceSpeechTranscript(text: string): void;
+}
+
+export type ConversationFactory = (config: ConversationConfig) =>
+    ConversationInstance;
 
 /**
  * Used to describe the phase of the app during startup.
@@ -85,6 +119,7 @@ const FILE = 'App';
 enum InitializationState {
   UNINITIALIZED = 'uninitialized',
   CONNECTING = 'connecting',
+  NEEDS_API_KEY = 'needs_api_key',
   ERROR = 'error',
   INITIALIZED = 'initialized',
 }
@@ -108,8 +143,8 @@ interface PersonaConfig {
 interface ResourceBundle {
   persona: Persona;
   apiConfig: ApiConfig;
-  speakingBlob: Blob;
-  listeningBlob: Blob;
+  speakingBlob: Blob|null;
+  listeningBlob: Blob|null;
   instruction: string;
 }
 
@@ -166,21 +201,36 @@ export class AppElement extends CrLitElement {
       usePersona: {
         type: Boolean,
       },
+      pendingApiKey: {
+        type: String,
+      },
     };
   }
 
   protected accessor initializationState = InitializationState.UNINITIALIZED;
-  protected accessor state = State.LISTENING;
+  private accessor state = State.LISTENING;
   protected accessor mockButtons: MockAudioButton[] = [];
   protected accessor sequences: Sequence[] = [];
-  protected accessor inputTranscription: string = '';
-  protected accessor outputTranscription: string = '';
-  protected accessor inputCaptionsVisible: boolean = true;
-  protected accessor outputCaptionsVisible: boolean = true;
-  protected accessor activeType: 'input'|'output' = 'output';
+  private accessor inputTranscription: string = '';
+  private accessor outputTranscription: string = '';
+  private accessor inputCaptionsVisible: boolean = true;
+  private accessor outputCaptionsVisible: boolean = true;
+  private accessor activeType: 'input'|'output' = 'output';
   protected accessor speakingBlobUrl: string = '';
   protected accessor listeningBlobUrl: string = '';
-  protected accessor usePersona: boolean = true;
+  protected accessor usePersona: boolean = false;
+  protected accessor pendingApiKey: string = '';
+
+  private static pageHandlerForTesting: PageHandlerInterface|null = null;
+  private static conversationFactoryForTesting: ConversationFactory|null = null;
+
+  static setPageHandlerForTesting(handler: PageHandlerInterface|null) {
+    AppElement.pageHandlerForTesting = handler;
+  }
+
+  static setConversationFactoryForTesting(factory: ConversationFactory|null) {
+    AppElement.conversationFactoryForTesting = factory;
+  }
 
   private isLocalTranscription: boolean = false;
   private uiStateListeningTimeout: number = 0;
@@ -225,16 +275,17 @@ export class AppElement extends CrLitElement {
     return !this.isAssistantSpeaking() && this.inputCaptionsVisible;
   }
 
-  protected formatCaptionsText(text: string): string {
+  private formatCaptionsText(text: string): string {
     return formatCaptions(text, this.usePersona ? 50 : 60);
   }
 
 
 
-  private pageHandler: PageHandlerRemote;
+  private pageHandler: PageHandlerInterface;
+  private pageHandlerRemote?: PageHandlerRemote;
   private toolsRemote: AiOverlayToolsRemote;
   private pageCallbackRouter: PageCallbackRouter;
-  private conversation: Conversation|null = null;
+  private conversation: ConversationInstance|null = null;
   private blobCapturer: BlobAudioCapturer|null = null;
   private audioCapturer: AudioCapturer|null = null;
   private audioPlayer: AudioPlayer|null = null;
@@ -251,8 +302,13 @@ export class AppElement extends CrLitElement {
 
     // Setup Mojo connection
     this.pageCallbackRouter = new PageCallbackRouter();
-    this.pageHandler = new PageHandlerRemote();
     this.toolsRemote = new AiOverlayToolsRemote();
+    if (AppElement.pageHandlerForTesting) {
+      this.pageHandler = AppElement.pageHandlerForTesting;
+    } else {
+      this.pageHandlerRemote = new PageHandlerRemote();
+      this.pageHandler = this.pageHandlerRemote;
+    }
 
     // Start listening for page context updates immediately to ensure we catch
     // any initial updates before the Conversation is initialized.
@@ -261,10 +317,12 @@ export class AppElement extends CrLitElement {
             {url, title, content: null, hasHadContent: false});
     const updateContextId =
         this.pageCallbackRouter.updateCurrentPageContext.addListener(
-            (title: string, rootNode: PageContentNode|null) => {
+            (title: string, rootNode: PageContentNode|null,
+             webmcpTools: WebMcpToolDefinition[]) => {
               if (this.initialPageContext) {
                 this.initialPageContext.title = title;
                 this.initialPageContext.content = rootNode ?? null;
+                this.initialPageContext.webmcpTools = webmcpTools ?? [];
                 this.initialPageContext.hasHadContent ||= Boolean(rootNode);
               }
             });
@@ -309,11 +367,13 @@ export class AppElement extends CrLitElement {
       }
     });
 
-    const factory = PageHandlerFactory.getRemote();
-    factory.createPageHandler(
-        this.pageHandler.$.bindNewPipeAndPassReceiver(),
-        this.pageCallbackRouter.$.bindNewPipeAndPassRemote(),
-        this.toolsRemote.$.bindNewPipeAndPassReceiver());
+    if (this.pageHandlerRemote) {
+      const factory = PageHandlerFactory.getRemote();
+      factory.createPageHandler(
+          this.pageHandlerRemote.$.bindNewPipeAndPassReceiver(),
+          this.pageCallbackRouter.$.bindNewPipeAndPassRemote(),
+          this.toolsRemote.$.bindNewPipeAndPassReceiver());
+    }
 
     this.pageCallbackRouter.onStreamingSessionStateChanged.addListener(
         (connected: boolean, sessionId: string, errorMessage: string) => {
@@ -426,6 +486,11 @@ export class AppElement extends CrLitElement {
         bubble.scrollTop = bubble.scrollHeight;
       }
     }
+    if (changed.has('initializationState') &&
+        this.initializationState === InitializationState.NEEDS_API_KEY) {
+      this.shadowRoot?.querySelector<HTMLInputElement>('#api-key-input')
+          ?.focus();
+    }
   }
 
   private onVisibilityChange = () => {
@@ -491,16 +556,18 @@ export class AppElement extends CrLitElement {
     };
   }
 
-  private createConversation(config: ConversationConfig) {
-    const conversation = new Conversation(
-        config, {
-          sendToUI: (msg: ConversationMessage) =>
-              this.onMessageFromConversation(msg),
-          onStateChange: (state) => this.onConversationStateChanged(state),
-          onResponse: (audioData) => this.onAudioOutput(audioData),
-        },
-        this.toolsRemote, this.pageCallbackRouter, this.initialPageContext,
-        this.pageHandler);
+  private createConversation(config: ConversationConfig): ConversationInstance {
+    const conversation = AppElement.conversationFactoryForTesting ?
+        AppElement.conversationFactoryForTesting(config) :
+        new Conversation(
+            config, {
+              sendToUI: (msg: ConversationMessage) =>
+                  this.onMessageFromConversation(msg),
+              onStateChange: (state) => this.onConversationStateChanged(state),
+              onResponse: (audioData) => this.onAudioOutput(audioData),
+            },
+            this.toolsRemote, this.pageCallbackRouter, this.initialPageContext,
+            this.pageHandlerRemote);
 
     if (this.unregisterPageContextListeners) {
       this.unregisterPageContextListeners();
@@ -741,12 +808,110 @@ export class AppElement extends CrLitElement {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      // On Android, enabling echoCancellation activates the platform
+      // ECHO_CANCELLER effect, which puts Android into VoIP communication mode
+      // (MODE_IN_COMMUNICATION / AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION) and
+      // causes Android AudioPolicy to silence concurrent microphone streams
+      // (such as Screen Recorder). Disabling echoCancellation keeps Android in
+      // MODE_NORMAL while still allowing WebRTC software noiseSuppression and
+      // autoGainControl.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: this.isAndroidBackend() ? {
+          echoCancellation: false,
+          noiseSuppression: true,
+          autoGainControl: true,
+        } :
+                                         true,
+      });
       return new MicrophoneAudioCapturer(stream);
     } catch (e) {
       log(FILE, 'No Microphone Found', e);
       return this.blobCapturer;
     }
+  }
+
+  private getBuiltInResourceBundle(): ResourceBundle {
+    return {
+      persona: DEFAULT_PERSONA,
+      apiConfig: {...DEFAULT_API_CONFIG},
+      speakingBlob: null,
+      listeningBlob: null,
+      instruction: DEFAULT_SYSTEM_INSTRUCTION,
+    };
+  }
+
+  private getCliApiKey(): string {
+    return loadTimeData.valueExists('apiKey') ?
+        loadTimeData.getString('apiKey').trim() :
+        '';
+  }
+
+  private getSavedApiKey(): string {
+    try {
+      return window.localStorage.getItem(API_KEY_STORAGE_KEY)?.trim() ?? '';
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  private setSavedApiKey(key: string) {
+    try {
+      const trimmed = key.trim();
+      if (trimmed) {
+        window.localStorage.setItem(API_KEY_STORAGE_KEY, trimmed);
+      } else {
+        window.localStorage.removeItem(API_KEY_STORAGE_KEY);
+      }
+    } catch (_e) {
+    }
+  }
+
+  protected shouldShowErrorActions(): boolean {
+    return this.initializationState === InitializationState.ERROR &&
+        !this.isMesEnabled() && !this.getCliApiKey();
+  }
+
+  protected onApiKeyInput = (e: Event) => {
+    this.pendingApiKey = (e.target as HTMLInputElement).value;
+  };
+
+  protected onApiKeyKeydown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      this.submitPendingApiKey();
+    }
+  };
+
+  protected onSaveApiKeyClick = () => {
+    this.submitPendingApiKey();
+  };
+
+  protected onChangeApiKeyClick = () => {
+    this.setSavedApiKey('');
+    this.pendingApiKey = '';
+    this.stopConversation();
+    this.initializationState = InitializationState.NEEDS_API_KEY;
+  };
+
+  protected onRetryClick = () => {
+    this.stopConversation();
+    this.startConversation();
+  };
+
+  private submitPendingApiKey() {
+    const inputEl =
+        this.shadowRoot?.querySelector<HTMLInputElement>('#api-key-input');
+    const rawValue = inputEl ? inputEl.value : this.pendingApiKey;
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return;
+    }
+    this.setSavedApiKey(trimmed);
+    this.pendingApiKey = '';
+    if (inputEl) {
+      inputEl.value = '';
+    }
+    this.startConversation();
   }
 
   private async startConversation() {
@@ -758,20 +923,64 @@ export class AppElement extends CrLitElement {
     this.initializationState = InitializationState.CONNECTING;
 
     try {
-      const ttcBundleUrl =
-          (loadTimeData.valueExists('ttcBundleUrl') ?
-               loadTimeData.getString('ttcBundleUrl') :
-               '') ||
-          DEFAULT_TTC_BUNDLE_URL;
-      const bundle = await this.initializeResourceBundle(ttcBundleUrl);
+      const customBundleUrl = loadTimeData.valueExists('ttcBundleUrl') ?
+          loadTimeData.getString('ttcBundleUrl') :
+          '';
+      const cliApiKey = this.getCliApiKey();
+      const savedApiKey = this.getSavedApiKey();
+      const localApiKey = cliApiKey || savedApiKey;
+      const allowBuiltInDefaults =
+          !loadTimeData.valueExists('allowBuiltInDefaults') ||
+          loadTimeData.getBoolean('allowBuiltInDefaults');
+      const hasLocalAuth = allowBuiltInDefaults &&
+          (Boolean(localApiKey || DEFAULT_API_CONFIG.apiKey) ||
+           this.isMesEnabled());
 
-      log(FILE, 'Bundle initialized');
-      this.speakingBlobUrl = URL.createObjectURL(bundle.speakingBlob);
-      this.listeningBlobUrl = URL.createObjectURL(bundle.listeningBlob);
+      let bundle: ResourceBundle;
+      if (!this.usePersona && !customBundleUrl && hasLocalAuth) {
+        log(FILE, 'Using built-in resource bundle (local auth / MES mode)');
+        bundle = this.getBuiltInResourceBundle();
+      } else {
+        const ttcBundleUrl = customBundleUrl || DEFAULT_TTC_BUNDLE_URL;
+        try {
+          bundle = await this.initializeResourceBundle(ttcBundleUrl);
+          log(FILE, 'Remote resource bundle initialized');
+        } catch (e) {
+          if (hasLocalAuth ||
+              (!customBundleUrl && allowBuiltInDefaults &&
+               !this.isMesEnabled())) {
+            warnLog(
+                FILE,
+                'Failed to load remote resource bundle, falling back to ' +
+                    'built-in defaults:',
+                e);
+            bundle = this.getBuiltInResourceBundle();
+          } else {
+            throw e;
+          }
+        }
+      }
 
-      // Locally specified key overrides the fetched one.
-      const apiKey =
-          loadTimeData.getString('apiKey') || bundle.apiConfig.apiKey;
+      // Locally specified key (CLI flag, then saved WebUI key) overrides any
+      // bundle key.
+      const apiKey = localApiKey || bundle.apiConfig.apiKey;
+      if (!this.isMesEnabled() && !apiKey) {
+        log(FILE, 'No API key configured; prompting for Gemini API key');
+        this.initializationState = InitializationState.NEEDS_API_KEY;
+        return;
+      }
+
+      if (this.speakingBlobUrl) {
+        URL.revokeObjectURL(this.speakingBlobUrl);
+      }
+      if (this.listeningBlobUrl) {
+        URL.revokeObjectURL(this.listeningBlobUrl);
+      }
+      this.speakingBlobUrl =
+          bundle.speakingBlob ? URL.createObjectURL(bundle.speakingBlob) : '';
+      this.listeningBlobUrl =
+          bundle.listeningBlob ? URL.createObjectURL(bundle.listeningBlob) : '';
+
       const genericPersona: Persona = {
         id: 'generic',
         name: 'Chrome',
@@ -808,9 +1017,9 @@ export class AppElement extends CrLitElement {
       this.state = State.LISTENING;
       this.initializationState = InitializationState.INITIALIZED;
     } catch (e) {
-      this.initializationState = InitializationState.ERROR;
       errorLog(FILE, 'startConversation failed: ', e);
       this.stopConversation();
+      this.initializationState = InitializationState.ERROR;
     }
   }
 
@@ -818,10 +1027,14 @@ export class AppElement extends CrLitElement {
     if (this.isMesEnabled()) {
       this.pageHandler.stopStreamingSession();
     }
+    if (this.conversation?.pageContext) {
+      this.initialPageContext = this.conversation.pageContext;
+    }
     if (this.conversation?.connected) {
       log(FILE, 'Conversation connected, stopping it.');
       this.conversation.stop();
     }
+    this.conversation = null;
     log(FILE, `stopConversation: Stopping conversation and audio capture...`);
     this.stopEnergyAnimation();
     this.mockButtons = [];

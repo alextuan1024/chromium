@@ -49,9 +49,11 @@ class HTMLFormElement;
 class KeyboardEvent;
 class PointerEvent;
 class TextControlElement;
+class UIEvent;
 class V8UnionStringLegacyNullToEmptyStringOrTrustedScript;
 class V8UnionBooleanOrTogglePopoverOptions;
 class ShowPopoverOptions;
+class ShowUnboundedElementOptions;
 class UnboundedEventData;
 enum class PopoverInvokedVia;
 
@@ -234,8 +236,9 @@ class CORE_EXPORT HTMLElement : public Element {
   LabelsNodeList* labels();
   bool HasActiveLabel() const;
 
-  // https://html.spec.whatwg.org/C/#interactive-content
   virtual bool IsInteractiveContent() const;
+  bool HasActivationBehavior() const override;
+  void RunActivationBehavior(Event&, EventDispatchHandlingState*) override;
   void DefaultEventHandler(Event&) override;
 
   // Returns the axes on which this element has native arrow key behavior.
@@ -278,7 +281,6 @@ class CORE_EXPORT HTMLElement : public Element {
   virtual FormAssociated* ToFormAssociatedOrNull() { return nullptr; }
   bool IsFormAssociatedCustomElement() const;
 
-  void UpdateDescendantDirectionality(TextDirection direction);
   void UpdateDirectionalityAfterInputTypeChange(const AtomicString& old_value,
                                                 const AtomicString& new_value);
   void AdjustDirectionAutoAfterRecalcAssignedNodes();
@@ -331,7 +333,6 @@ class CORE_EXPORT HTMLElement : public Element {
       HidePopoverFocusBehavior focus_behavior,
       HidePopoverTransitionBehavior event_firing,
       ExceptionState* exception_state);
-  void PopoverHideFinishIfNeeded(bool immediate);
   static HTMLElement* FindTopmostPopoverAncestor(
       Element& new_popover_or_top_layer_element,
       HeapVector<Member<HTMLElement>>* stack_to_check,
@@ -392,7 +393,8 @@ class CORE_EXPORT HTMLElement : public Element {
                              CommandEventType command) override;
   bool IsValidBuiltinPopoverCommand(CommandEventType command);
   bool HandleCommandInternal(HTMLElement& invoker,
-                             CommandEventType command) override;
+                             CommandEventType command,
+                             UIEvent* activate_event) override;
   // This is true if this element *can* be a command invoker: it is an element
   // type that supports command invokers (e.g. buttons and menuitems), and the
   // element isn't in a state that disqualifies it (e.g. a disabled state). This
@@ -401,7 +403,7 @@ class CORE_EXPORT HTMLElement : public Element {
   virtual bool CanBeCommandInvoker() const;
   static CommandEventType GetCommandEventType(const AtomicString& type,
                                               ExecutionContext*);
-  virtual bool HandleCommandForActivation();
+  virtual bool HandleCommandForActivation(UIEvent* activate_event);
   Element* commandForElement() const;
   AtomicString command() const;
   void setCommand(const AtomicString& type);
@@ -417,12 +419,18 @@ class CORE_EXPORT HTMLElement : public Element {
   bool IsRenderedInTopLayer() const override;
 
   // The Unbounded Element API. See crbug.com/508672616.
-  ScriptPromise<IDLUndefined> showUnboundedElement(ScriptState*);
+  ScriptPromise<IDLUndefined> showUnboundedElement(
+      ScriptState*,
+      ShowUnboundedElementOptions* options);
   ScriptPromise<IDLUndefined> hideUnboundedElement(ScriptState*);
   bool IsUnboundedElementActive() const;
   // Returns true if the state change proceeded, and false if the beforetoggle
-  // event was canceled by the author.
-  bool SetUnboundedElementActive(bool active, UnboundedEvents fire_events);
+  // event was canceled by the author or if the element lost eligibility (e.g.
+  // had its `unbounded` attribute removed, was disconnected, or its document
+  // became inactive) during `beforetoggle`.
+  bool SetUnboundedElementActive(bool active,
+                                 UnboundedEvents fire_events,
+                                 Element* source);
   void AttachLayoutTree(AttachContext& context) override;
   gfx::Rect LastSentUnboundedBounds() const;
   void SetLastSentUnboundedBounds(const gfx::Rect& bounds);
@@ -505,7 +513,6 @@ class CORE_EXPORT HTMLElement : public Element {
 
   TranslateAttributeMode GetTranslateAttributeMode() const;
 
-  void HandleKeydownEvent(KeyboardEvent&);
   void HandleKeypressEvent(KeyboardEvent&);
 
   void SetPopoverInvoker(Element* invoker, PopoverInvokedVia invoked_via);

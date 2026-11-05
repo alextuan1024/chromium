@@ -15,11 +15,11 @@
 #include "base/containers/heap_array.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_helpers.h"
-#include "base/memory/memory_pressure_listener_registry.h"
+#include "base/memory/memory_pressure_level.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_span.h"
 #include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/memory_limit.h"
 #include "base/memory_coordinator/test_memory_consumer_registry.h"
 #include "base/memory_coordinator/utils.h"
 #include "base/numerics/safe_conversions.h"
@@ -243,23 +243,21 @@ class MemoryProgramCacheTest : public GpuServiceTest, public DecoderClient {
   std::string shader_cache_shader_;
   std::vector<std::string> varyings_;
   void SimulateMemoryPressure(base::MemoryPressureLevel level) {
-    int percentage = 100;
+    base::MemoryLimit memory_limit = base::MemoryLimit::Default();
     switch (level) {
       case base::MEMORY_PRESSURE_LEVEL_NONE:
-        percentage = 100;
+        memory_limit = base::kNoMemoryPressureThreshold;
         break;
       case base::MEMORY_PRESSURE_LEVEL_MODERATE:
-        percentage = base::kModerateMemoryPressureThreshold;
+        memory_limit = base::kModerateMemoryPressureThreshold;
         break;
       case base::MEMORY_PRESSURE_LEVEL_CRITICAL:
-        percentage = base::kCriticalMemoryPressureThreshold;
+        memory_limit = base::kCriticalMemoryPressureThreshold;
         break;
     }
     base::RunLoop run_loop;
-    test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-        percentage, base::DoNothing());
-    test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
-        run_loop.QuitClosure());
+    test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
+        memory_limit, run_loop.QuitClosure());
     run_loop.Run();
   }
 

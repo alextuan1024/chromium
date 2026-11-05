@@ -31,6 +31,7 @@ import {OutgoingMessage} from '../../OutgoingMessage.js';
 import type {UserContextStorage} from '../browser/UserContextStorage.js';
 import type {BrowsingContextStorage} from '../context/BrowsingContextStorage.js';
 
+import type {AclManager} from './AclManager.js';
 import {assertSupportedEvent} from './events.js';
 import {
   difference,
@@ -38,13 +39,22 @@ import {
   unrollEvents,
 } from './SubscriptionManager.js';
 
+type LazyEvent<T = ChromiumBidi.Event> =
+  Promise<Result<T>> | (() => Promise<Result<T>>);
+
+/**
+ * Wraps an event (or a lazy event factory) with a unique monotonic `id` and
+ * its associated `contextId`. Used to buffer events, deduplicate buffered
+ * events across `goog:channel` subscriptions via `#lastMessageSent`, and
+ * defer/memoize lazy event evaluation until the event is actually sent.
+ */
 class EventWrapper {
   readonly #idWrapper = new IdWrapper();
   readonly #contextId: BrowsingContext.BrowsingContext | null;
-  readonly #event: Promise<Result<ChromiumBidi.Event>>;
+  #event: LazyEvent;
 
   constructor(
-    event: Promise<Result<ChromiumBidi.Event>>,
+    event: LazyEvent,
     contextId: BrowsingContext.BrowsingContext | null,
   ) {
     this.#event = event;
@@ -60,6 +70,10 @@ class EventWrapper {
   }
 
   get event(): Promise<Result<ChromiumBidi.Event>> {
+    if (typeof this.#event === 'function') {
+      // Evaluate lazy events only when sent, and cache the promise for other channels.
+      this.#event = this.#event();
+    }
     return this.#event;
   }
 }
@@ -107,7 +121,8 @@ export class EventManager extends EventEmitter<EventManagerEventsMap> {
   /**
    * Maps `eventName` + `browsingContext` to  Map of goog:channel to last id.
    * Used to avoid sending duplicated events when user
-   * subscribes -> unsubscribes -> subscribes.
+   * subscribes -> unsubscribes -> subscribes, and to not replay events that the
+   * session ACL withheld.
    */
   #lastMessageSent = new Map<string, Map<string | null, number>>();
   #subscriptionManager: SubscriptionManager;
@@ -121,14 +136,17 @@ export class EventManager extends EventEmitter<EventManagerEventsMap> {
   >;
 
   #userContextStorage: UserContextStorage;
+  #aclManager: AclManager;
 
   constructor(
     browsingContextStorage: BrowsingContextStorage,
     userContextStorage: UserContextStorage,
+    aclManager: AclManager,
   ) {
     super();
     this.#browsingContextStorage = browsingContextStorage;
     this.#userContextStorage = userContextStorage;
+    this.#aclManager = aclManager;
     this.#subscriptionManager = new SubscriptionManager(browsingContextStorage);
     this.#subscribeHooks = new DefaultMap(() => []);
   }
@@ -168,21 +186,27 @@ export class EventManager extends EventEmitter<EventManagerEventsMap> {
     );
   }
 
-  registerGlobalEvent(event: ChromiumBidi.Event): void {
+  registerGlobalEvent(
+    event: ChromiumBidi.Event,
+    userContext?: Browser.UserContext,
+  ): void {
     this.registerGlobalPromiseEvent(
       Promise.resolve({
         kind: 'success',
         value: event,
       }),
       event.method,
+      userContext,
     );
   }
 
   registerPromiseEvent(
-    event: Promise<Result<ChromiumBidi.Event>>,
+    event: LazyEvent,
     contextId: BrowsingContext.BrowsingContext,
     eventName: ChromiumBidi.EventNames,
   ): void {
+    // Wrap the event with a unique id and contextId for buffering, deduplication,
+    // and lazy evaluation (if `event` is a factory function).
     const eventWrapper = new EventWrapper(event, contextId);
     const sortedGoogChannels =
       this.#subscriptionManager.getGoogChannelsSubscribedToEvent(
@@ -192,31 +216,25 @@ export class EventManager extends EventEmitter<EventManagerEventsMap> {
     this.#bufferEvent(eventWrapper, eventName);
     // Send events to channels in the subscription priority.
     for (const googChannel of sortedGoogChannels) {
-      this.emit(EventManagerEvents.Event, {
-        message: OutgoingMessage.createFromPromise(event, googChannel),
-        event: eventName,
-      });
-      this.#markEventSent(eventWrapper, googChannel, eventName);
+      this.#sendEvent(eventWrapper, eventName, googChannel);
     }
   }
 
   registerGlobalPromiseEvent(
-    event: Promise<Result<ChromiumBidi.Event>>,
+    event: LazyEvent,
     eventName: ChromiumBidi.EventNames,
+    userContext?: Browser.UserContext,
   ): void {
     const eventWrapper = new EventWrapper(event, null);
     const sortedGoogChannels =
       this.#subscriptionManager.getGoogChannelsSubscribedToEventGlobally(
         eventName,
+        userContext,
       );
     this.#bufferEvent(eventWrapper, eventName);
     // Send events to goog:channels in the subscription priority.
     for (const googChannel of sortedGoogChannels) {
-      this.emit(EventManagerEvents.Event, {
-        message: OutgoingMessage.createFromPromise(event, googChannel),
-        event: eventName,
-      });
-      this.#markEventSent(eventWrapper, googChannel, eventName);
+      this.#sendEvent(eventWrapper, eventName, googChannel);
     }
   }
 
@@ -287,14 +305,7 @@ export class EventManager extends EventEmitter<EventManagerEventsMap> {
           googChannel,
         )) {
           // The order of the events is important.
-          this.emit(EventManagerEvents.Event, {
-            message: OutgoingMessage.createFromPromise(
-              eventWrapper.event,
-              googChannel,
-            ),
-            event: eventName,
-          });
-          this.#markEventSent(eventWrapper, googChannel, eventName);
+          this.#sendEvent(eventWrapper, eventName, googChannel);
         }
       }
     }
@@ -345,11 +356,36 @@ export class EventManager extends EventEmitter<EventManagerEventsMap> {
   }
 
   /**
+   * Sends the event to `googChannel`, or silently skips it if the session ACL
+   * doesn't allow it. The ACL is checked right before sending, so ACL changes
+   * apply to existing subscriptions.
+   */
+  #sendEvent(
+    eventWrapper: EventWrapper,
+    eventName: ChromiumBidi.EventNames,
+    googChannel: GoogChannel,
+  ) {
+    if (this.#aclManager.isEventAllowed(eventName, eventWrapper.contextId)) {
+      this.emit(EventManagerEvents.Event, {
+        message: OutgoingMessage.createFromPromise(
+          eventWrapper.event,
+          googChannel,
+        ),
+        event: eventName,
+      });
+    }
+    // Mark skipped events as sent too, so a later ACL grant doesn't replay
+    // buffered events already withheld from this channel.
+    this.#markEventSent(eventWrapper, googChannel, eventName);
+  }
+
+  /**
    * If the event is buffer-able, put it in the buffer.
    */
   #bufferEvent(eventWrapper: EventWrapper, eventName: ChromiumBidi.EventNames) {
-    if (!eventBufferLength.has(eventName)) {
-      // Do nothing if the event is no buffer-able.
+    if (this.#aclManager.isEnabled() || !eventBufferLength.has(eventName)) {
+      // Do nothing in restricted sessions (buffer size is 0) or if the event
+      // is not buffer-able.
       return;
     }
     const bufferMapKey = EventManager.#getMapKey(

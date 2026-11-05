@@ -4,68 +4,120 @@
 
 package org.chromium.components.feature_engagement.internal;
 
+import static org.chromium.components.feature_engagement.internal.CooldownBypassAllowlist.isAllowedToBypassCooldownGroup;
+import static org.chromium.components.feature_engagement.internal.CooldownBypassAllowlist.isAllowedToSkipBlockingCooldownGroup;
+import static org.chromium.components.feature_engagement.internal.EnterprisePolicyBypassAllowlist.isAllowedToBypassEnterprisePolicy;
+
 import androidx.annotation.CheckResult;
+import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.components.feature_engagement.EventConstants;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.feature_engagement.TriggerDetails;
-import org.chromium.components.feature_engagement.TriggerState;
+import org.chromium.components.feature_engagement.TriggerHelpUIResult;
+import org.chromium.components.feature_engagement.UiFormat;
 import org.chromium.ui.UiSwitches;
 
+import java.util.function.BooleanSupplier;
+
 /**
- * Java side of the JNI bridge between TrackerImpl in Java
- * and C++. All method calls are delegated to the native C++ class.
+ * Java side of the JNI bridge between TrackerImpl in Java and C++. All method calls are delegated
+ * to the native C++ class.
  */
 @JNINamespace("feature_engagement")
 @NullMarked
 public class TrackerImpl implements Tracker {
-    /**
-     * A JNI-wrapper for the native DisplayLockHandle.
-     * The C++ counterpart is DisplayLockHandleAndroid.
-     */
+    @JniType("::feature_engagement::DisplayLockHandle")
+    interface NativeDisplayLockHandle extends JniTypeToken {}
+
+    /** A JNI-wrapper for the native DisplayLockHandle. */
     static class DisplayLockHandleAndroid implements DisplayLockHandle {
         @CalledByNative
-        private static DisplayLockHandleAndroid create(long nativePtr) {
+        static DisplayLockHandleAndroid create(JniUniquePtr<NativeDisplayLockHandle> nativePtr) {
             return new DisplayLockHandleAndroid(nativePtr);
         }
 
-        long mNativePtr;
+        private final JniUniquePtr<NativeDisplayLockHandle> mNativePtr;
 
-        private DisplayLockHandleAndroid(long nativePtr) {
+        private DisplayLockHandleAndroid(JniUniquePtr<NativeDisplayLockHandle> nativePtr) {
             mNativePtr = nativePtr;
-        }
-
-        @CalledByNative
-        private void clearNativePtr() {
-            mNativePtr = 0;
         }
 
         @Override
         public void release() {
-            assert mNativePtr != 0;
-            TrackerImplJni.get().release(mNativePtr);
-            assert mNativePtr == 0;
+            mNativePtr.destroy();
         }
     }
 
     /** The pointer to the feature_engagement::TrackerImplAndroid JNI bridge. */
     private long mNativePtr;
 
+    // Whether the PromotionsEnabled enterprise policy currently blocks promotions. Defaults to
+    // false; flag-guarded by kUserEducationFramework and kUserEducationEnterprisePolicy in
+    // TrackerFactory.
+    private BooleanSupplier mEnterprisePolicyBlocksPromotionsSupplier =
+            SupplierUtils.alwaysFalseBooleanSupplier();
+
+    // Whether legacy shouldTriggerHelpUi(String) callers should aggressively trigger cooldown
+    // groups. Defaults to false; flag-guarded by kUserEducationFramework and
+    // kUserEducationAggressivelyCooldownIphs in TrackerFactory.
+    private BooleanSupplier mAggressivelyCooldownIphsSupplier =
+            SupplierUtils.alwaysFalseBooleanSupplier();
+
+    // Whether the interruptive IPH cooldown group is enabled. Defaults to false; flag-guarded by
+    // kUserEducationFramework and kUserEducationInterruptiveCooldownGroup in TrackerFactory.
+    private BooleanSupplier mInterruptiveCooldownGroupEnabledSupplier =
+            SupplierUtils.alwaysFalseBooleanSupplier();
+
+    // Whether the blue bubble cooldown group is enabled. Defaults to false; flag-guarded by
+    // kUserEducationFramework and kUserEducationBlueBubbleCooldownGroup in TrackerFactory.
+    private BooleanSupplier mBlueBubbleCooldownGroupEnabledSupplier =
+            SupplierUtils.alwaysFalseBooleanSupplier();
+
     @CalledByNative
-    private static TrackerImpl create(long nativePtr) {
+    @VisibleForTesting
+    static TrackerImpl create(long nativePtr) {
         return new TrackerImpl(nativePtr);
     }
 
     private TrackerImpl(long nativePtr) {
         mNativePtr = nativePtr;
+    }
+
+    @Override
+    public void setEnterprisePolicyBlocksPromotionsSupplier(BooleanSupplier supplier) {
+        mEnterprisePolicyBlocksPromotionsSupplier = supplier;
+    }
+
+    @Override
+    public void setAggressivelyCooldownIphsSupplier(BooleanSupplier supplier) {
+        mAggressivelyCooldownIphsSupplier = supplier;
+    }
+
+    @Override
+    public void setInterruptiveCooldownGroupEnabledSupplier(BooleanSupplier supplier) {
+        mInterruptiveCooldownGroupEnabledSupplier = supplier;
+    }
+
+    @Override
+    public void setBlueBubbleCooldownGroupEnabledSupplier(BooleanSupplier supplier) {
+        mBlueBubbleCooldownGroupEnabledSupplier = supplier;
     }
 
     @Override
@@ -75,43 +127,319 @@ public class TrackerImpl implements Tracker {
     }
 
     @Override
+    @Deprecated
     public boolean shouldTriggerHelpUi(String feature) {
+        FeatureProperties properties = new FeatureProperties(UiFormat.UNKNOWN);
+
+        // Call the new method to share enterprise policy check logic.
+        if (!shouldTriggerHelpUi(feature, properties)) {
+            return false;
+        }
+        if (mAggressivelyCooldownIphsSupplier.getAsBoolean()) {
+            recordCooldownTriggered(UiFormat.DIALOG);
+            recordCooldownTriggered(UiFormat.BLUE_BUBBLE);
+        }
+        return true;
+    }
+
+    @Override
+    public boolean shouldTriggerHelpUi(String feature, FeatureProperties featureProperties) {
+        return shouldTriggerHelpUiInternal(feature, featureProperties, /* withSnooze= */ false)
+                .shouldTriggerIph;
+    }
+
+    @Override
+    @Deprecated
+    public TriggerDetails shouldTriggerHelpUiWithSnooze(String feature) {
+        FeatureProperties properties = new FeatureProperties(UiFormat.UNKNOWN);
+
+        // Call the new method to share enterprise policy check logic.
+        TriggerDetails details = shouldTriggerHelpUiWithSnooze(feature, properties);
+        if (!details.shouldTriggerIph) {
+            return details;
+        }
+        if (mAggressivelyCooldownIphsSupplier.getAsBoolean()) {
+            recordCooldownTriggered(UiFormat.DIALOG);
+            recordCooldownTriggered(UiFormat.BLUE_BUBBLE);
+        }
+        return details;
+    }
+
+    @Override
+    public TriggerDetails shouldTriggerHelpUiWithSnooze(
+            String feature, FeatureProperties featureProperties) {
+        return shouldTriggerHelpUiInternal(feature, featureProperties, /* withSnooze= */ true);
+    }
+
+    /**
+     * Evaluates native feature rules, enterprise policy, and format cooldown groups before
+     * triggering the feature in native FET.
+     *
+     * @param feature The name of the feature requesting in-product help.
+     * @param featureProperties The {@link FeatureProperties} for cooldown group evaluation.
+     * @param withSnooze Whether to query native {@code shouldTriggerHelpUiWithSnooze}.
+     * @return The {@link TriggerDetails} indicating whether to show the IPH and snooze UI.
+     */
+    private TriggerDetails shouldTriggerHelpUiInternal(
+            String feature, FeatureProperties featureProperties, boolean withSnooze) {
+        if (!meetsTriggerCriteria(feature, featureProperties, /* recordMetrics= */ true)) {
+            return new TriggerDetails(false, false);
+        }
+
+        // If we need to block the cooldown group, notify the cooldown group.
+        if (blocksCooldownGroup(feature)) {
+            recordCooldownTriggered(featureProperties.getFormat());
+        }
+
+        // All checks passed -> trigger feature (C++ logs ShouldTriggerHelpUI + Triggered).
+        return triggerNative(feature, withSnooze);
+    }
+
+    /**
+     * Evaluates native feature rules, enterprise policy, and format cooldown groups without
+     * triggering the feature or mutating cooldown state.
+     *
+     * @param feature The name of the feature requesting in-product help.
+     * @param featureProperties The {@link FeatureProperties} for cooldown group evaluation.
+     * @param recordMetrics Whether to record failure/cooldown metrics (true for {@code
+     *     shouldTriggerHelpUi}, false for {@code wouldTriggerHelpUi}).
+     * @return Whether the feature passes all checks and would be allowed to trigger.
+     */
+    private boolean meetsTriggerCriteria(
+            String feature, FeatureProperties featureProperties, boolean recordMetrics) {
         // Disable all IPH if the UI is in screenshot mode. For context, see crbug.com/964012.
         if (CommandLine.getInstance().hasSwitch(UiSwitches.ENABLE_SCREENSHOT_UI_MODE)) {
             return false;
         }
 
         assert mNativePtr != 0;
-        return TrackerImplJni.get().shouldTriggerHelpUi(mNativePtr, feature);
-    }
 
-    @Override
-    public TriggerDetails shouldTriggerHelpUiWithSnooze(String feature) {
-        // Disable all IPH if the UI is in screenshot mode. For context, see crbug.com/964012.
-        if (CommandLine.getInstance().hasSwitch(UiSwitches.ENABLE_SCREENSHOT_UI_MODE)) {
-            return new TriggerDetails(false, false);
+        // 1. Feature fails its own rules/groups -> delegate to C++ to log normal failure metrics
+        // when recordMetrics is true.
+        if (!TrackerImplJni.get().wouldTriggerHelpUi(mNativePtr, feature)) {
+            if (recordMetrics) {
+                TrackerImplJni.get().shouldTriggerHelpUi(mNativePtr, feature);
+            }
+            return false;
         }
-        assert mNativePtr != 0;
-        return TrackerImplJni.get().shouldTriggerHelpUiWithSnooze(mNativePtr, feature);
+
+        // 2. Enterprise policy check.
+        if (isBlockedByEnterprisePolicy(feature)) {
+            if (recordMetrics) {
+                RecordUserAction.record("InProductHelp.ShouldTriggerHelpUI." + feature);
+                RecordUserAction.record(
+                        "InProductHelp.ShouldTriggerHelpUIResult.NotTriggered." + feature);
+                recordFailureHistograms(
+                        feature, TriggerHelpUIResult.FAILURE_BLOCKED_BY_ENTERPRISE_POLICY);
+            }
+            return false;
+        }
+
+        @UiFormat int format = featureProperties.getFormat();
+        String cooldownFeature = getCooldownFeature(format);
+        // If the cooldown feature is null, we don't need to check whether the cooldown feature
+        // blocks us.
+        if (cooldownFeature == null) {
+            return true;
+        }
+
+        // 3. Cooldown group check.
+        // Don't actually call shouldTriggerHelpUi for cooldownFeature, since we don't know whether
+        // we need to contribute to the cooldown group.
+        if (!TrackerImplJni.get().wouldTriggerHelpUi(mNativePtr, cooldownFeature)) {
+            if (recordMetrics) {
+                RecordUserAction.record("InProductHelp.CooldownGroupActive." + cooldownFeature);
+            }
+            if (isBlockedByCooldownGroup(feature)) {
+                if (recordMetrics) {
+                    RecordUserAction.record("InProductHelp.ShouldTriggerHelpUI." + feature);
+                    RecordUserAction.record(
+                            "InProductHelp.ShouldTriggerHelpUIResult.NotTriggered." + feature);
+                    RecordUserAction.record(
+                            "InProductHelp.ShouldTriggerHelpUIResult.BlockedByCooldownGroup."
+                                    + feature);
+                    // Reuses FAILURE_OTHER_PRECONDITION_UNMET so every NotTriggered action records
+                    // a ShouldTriggerHelpUI histogram failure reason; feature-level event_configs
+                    // failures can be isolated by subtracting BlockedByCooldownGroup.
+                    recordFailureHistograms(
+                            feature, TriggerHelpUIResult.FAILURE_OTHER_PRECONDITION_UNMET);
+                }
+                return false;
+            } else if (recordMetrics) {
+                // Cooldown wants to block IPHs, but we are not blocked by cooldown group.
+                RecordUserAction.record(
+                        "InProductHelp.ShouldTriggerHelpUIResult.BypassedCooldownGroup." + feature);
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Triggers the feature in native FET via JNI, with or without snooze details.
+     *
+     * @param feature The name of the feature requesting in-product help.
+     * @param withSnooze Whether to call native {@code shouldTriggerHelpUiWithSnooze}.
+     * @return The resulting {@link TriggerDetails}.
+     */
+    private TriggerDetails triggerNative(String feature, boolean withSnooze) {
+        if (withSnooze) {
+            return TrackerImplJni.get().shouldTriggerHelpUiWithSnooze(mNativePtr, feature);
+        }
+        return new TriggerDetails(
+                TrackerImplJni.get().shouldTriggerHelpUi(mNativePtr, feature), false);
+    }
+
+    /**
+     * Records {@link TriggerHelpUIResult#FAILURE} and the given {@code reason} to both the
+     * per-feature and aggregate shadow {@code InProductHelp.ShouldTriggerHelpUI} histograms
+     * (matching native {@code LogTriggerHelpUIResult} in {@code stats.cc}).
+     *
+     * @param feature The name of the feature that failed to trigger.
+     * @param reason The {@link TriggerHelpUIResult} failure reason enum value.
+     */
+    private static void recordFailureHistograms(String feature, @TriggerHelpUIResult int reason) {
+        for (String histogram :
+                new String[] {
+                    "InProductHelp.ShouldTriggerHelpUI." + feature,
+                    "InProductHelp.ShouldTriggerHelpUI"
+                }) {
+            RecordHistogram.recordEnumeratedHistogram(
+                    histogram, TriggerHelpUIResult.FAILURE, TriggerHelpUIResult.COUNT);
+            RecordHistogram.recordEnumeratedHistogram(histogram, reason, TriggerHelpUIResult.COUNT);
+        }
+    }
+
+    /**
+     * Notifies the cooldown group for the given {@code format} that an IPH was shown, immediately
+     * dismissing the cooldown group feature if triggered in native FET.
+     *
+     * @param format The {@link UiFormat} whose cooldown group should be updated.
+     */
+    private void recordCooldownTriggered(@UiFormat int format) {
+        String cooldownFeature = getCooldownFeature(format);
+        if (cooldownFeature == null) return;
+        // Call shouldTriggerHelpUi when possible, because if it "shows", it contributes to the
+        // session limit. Because of SessionRateImpact::Type::EXPLICIT affecting only
+        // cooldownFeature, it will not prevent other IPHs from showing due to session limit. We
+        // want to keep track of the session limit for blue bubbles so that we will know if a blue
+        // bubble has already been shown this session.
+        if (TrackerImplJni.get().shouldTriggerHelpUi(mNativePtr, cooldownFeature)) {
+            TrackerImplJni.get().dismissed(mNativePtr, cooldownFeature);
+        } else {
+            // Even if cooldownFeature did not "show", we can still record a trigger event for
+            // future sessions. This branch only matters if an IPH bypasses the interruptive
+            // cooldown.
+            String triggerEvent = getCooldownTriggerEvent(format);
+            if (triggerEvent != null) {
+                notifyEvent(triggerEvent);
+            }
+        }
+    }
+
+    // LINT.IfChange(UiFormatCooldownFeature)
+    /**
+     * Returns the FET cooldown group feature name for the given {@link UiFormat}, or {@code null}
+     * if the format does not belong to a cooldown group or the embedder has that group disabled
+     * (see the cooldown group enabled suppliers).
+     *
+     * @param format The {@link UiFormat} to look up.
+     * @return The cooldown group feature name, or {@code null}.
+     */
+    private @Nullable String getCooldownFeature(@UiFormat int format) {
+        switch (format) {
+            case UiFormat.BLUE_BUBBLE:
+                return mBlueBubbleCooldownGroupEnabledSupplier.getAsBoolean()
+                        ? FeatureConstants.BLUE_BUBBLE_COOLDOWN_GROUP
+                        : null;
+            case UiFormat.BOTTOM_SHEET:
+            case UiFormat.FRE:
+            case UiFormat.ALERTS:
+            case UiFormat.DIALOG:
+                return mInterruptiveCooldownGroupEnabledSupplier.getAsBoolean()
+                        ? FeatureConstants.INTERRUPTIVE_IPH_COOLDOWN_GROUP
+                        : null;
+            case UiFormat.UNKNOWN:
+            case UiFormat.SET_UP_LIST:
+            case UiFormat.MAGIC_STACK:
+            case UiFormat.NOTIFICATIONS:
+            case UiFormat.MESSAGES:
+            case UiFormat.INLINE_PROMO:
+            default:
+                return null;
+        }
+    }
+
+    // LINT.ThenChange(//components/feature_engagement/public/android/java/src/org/chromium/components/feature_engagement/UiFormat.java:UiFormat)
+
+    // LINT.IfChange(UiFormatCooldownTriggerEvent)
+    /**
+     * Returns the FET trigger event name for the given {@link UiFormat}'s cooldown group, or {@code
+     * null} if the format does not belong to a cooldown group.
+     *
+     * @param format The {@link UiFormat} to look up.
+     * @return The cooldown group trigger event name, or {@code null}.
+     */
+    private static @Nullable String getCooldownTriggerEvent(@UiFormat int format) {
+        switch (format) {
+            case UiFormat.BLUE_BUBBLE:
+                return EventConstants.BLUE_BUBBLE_COOLDOWN_GROUP_TRIGGER;
+            case UiFormat.BOTTOM_SHEET:
+            case UiFormat.FRE:
+            case UiFormat.ALERTS:
+            case UiFormat.DIALOG:
+                return EventConstants.INTERRUPTIVE_IPH_COOLDOWN_GROUP_TRIGGER;
+            case UiFormat.UNKNOWN:
+            case UiFormat.SET_UP_LIST:
+            case UiFormat.MAGIC_STACK:
+            case UiFormat.NOTIFICATIONS:
+            case UiFormat.MESSAGES:
+            case UiFormat.INLINE_PROMO:
+            default:
+                return null;
+        }
+    }
+
+    // LINT.ThenChange(//components/feature_engagement/public/android/java/src/org/chromium/components/feature_engagement/UiFormat.java:UiFormat)
+
+    @Override
+    @Deprecated
+    public boolean wouldTriggerHelpUi(String feature) {
+        return wouldTriggerHelpUi(feature, new FeatureProperties(UiFormat.UNKNOWN));
     }
 
     @Override
-    public boolean wouldTriggerHelpUi(String feature) {
-        assert mNativePtr != 0;
-        return TrackerImplJni.get().wouldTriggerHelpUi(mNativePtr, feature);
+    public boolean wouldTriggerHelpUi(String feature, FeatureProperties featureProperties) {
+        return meetsTriggerCriteria(feature, featureProperties, /* recordMetrics= */ false);
+    }
+
+    /**
+     * Returns whether {@code feature} is currently blocked by the PromotionsEnabled enterprise
+     * policy, i.e. the policy blocks promotions and the feature is not allowed to bypass it (see
+     * {@link EnterprisePolicyBypassAllowlist}).
+     */
+    private boolean isBlockedByEnterprisePolicy(String feature) {
+        return mEnterprisePolicyBlocksPromotionsSupplier.getAsBoolean()
+                && !isAllowedToBypassEnterprisePolicy(feature);
+    }
+
+    /**
+     * Returns whether the feature is blocked by its format's cooldown group while that group is
+     * cooling down.
+     */
+    private boolean isBlockedByCooldownGroup(String feature) {
+        return !isAllowedToBypassCooldownGroup(feature);
+    }
+
+    /** Returns whether triggering the feature contributes to its format's cooldown group. */
+    private boolean blocksCooldownGroup(String feature) {
+        return !isAllowedToSkipBlockingCooldownGroup(feature);
     }
 
     @Override
     public boolean hasEverTriggered(String feature, boolean fromWindow) {
         assert mNativePtr != 0;
         return TrackerImplJni.get().hasEverTriggered(mNativePtr, feature, fromWindow);
-    }
-
-    @Override
-    @TriggerState
-    public int getTriggerState(String feature) {
-        assert mNativePtr != 0;
-        return TrackerImplJni.get().getTriggerState(mNativePtr, feature);
     }
 
     @Override
@@ -197,8 +525,6 @@ public class TrackerImpl implements Tracker {
 
         boolean hasEverTriggered(long nativeTrackerImplAndroid, String feature, boolean fromWindow);
 
-        int getTriggerState(long nativeTrackerImplAndroid, String feature);
-
         void dismissed(long nativeTrackerImplAndroid, String feature);
 
         void dismissedWithSnooze(long nativeTrackerImplAndroid, String feature, int snoozeAction);
@@ -221,7 +547,5 @@ public class TrackerImpl implements Tracker {
         void addOnInitializedCallback(
                 long nativeTrackerImplAndroid,
                 @JniType("base::OnceCallback<void(bool)>") Callback<Boolean> callback);
-
-        void release(long nativeDisplayLockHandleAndroid);
     }
 }

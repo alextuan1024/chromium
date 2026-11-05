@@ -96,7 +96,8 @@ void ValidationMessageClientImpl::ShowValidationMessage(
   DCHECK(!overlay_);
   overlay_ =
       MakeGarbageCollected<FrameOverlay>(target_frame, std::move(delegate));
-  overlay_delegate_->CreatePage(*overlay_);
+  ValidationMessageOverlayDelegate::CreatePage(overlay_delegate_->GetWeakPtr(),
+                                               *overlay_);
   ValidationMessageVisibilityChanged(anchor);
 }
 
@@ -159,8 +160,13 @@ bool ValidationMessageClientImpl::IsValidationMessageVisible(
 }
 
 void ValidationMessageClientImpl::DocumentDetached(const Document& document) {
-  if (current_anchor_ && current_anchor_->GetDocument() == document)
+  // The anchor may have been adopted into another document while the overlay
+  // is hiding. Destroy the overlay before its own frame's view is cleared.
+  if (current_anchor_ &&
+      (current_anchor_->GetDocument() == document ||
+       (overlay_ && overlay_->Frame().GetDocument() == document))) {
     HideValidationMessageImmediately(*current_anchor_);
+  }
 }
 
 void ValidationMessageClientImpl::DidChangeFocusTo(const Element* new_element) {

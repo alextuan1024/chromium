@@ -603,7 +603,7 @@ public class ContextMenuTest extends AwParameterizedTest {
     public void doNotShowContextMenuForNonLinkItems() {
         final ContextMenuParams params =
                 new ContextMenuParams(
-                        /* nativePtr= */ 0,
+                        /* nativePtr= */ null,
                         new MenuModelBridge(0L),
                         ContextMenuDataMediaType.NONE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -620,7 +620,6 @@ public class ContextMenuTest extends AwParameterizedTest {
                         /* sourceType= */ 0,
                         /* openedFromHighlight= */ false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         Assert.assertFalse(mHelper.showContextMenu(params, mTestContainerView));
@@ -894,7 +893,7 @@ public class ContextMenuTest extends AwParameterizedTest {
             String srcUrl) {
 
         return new ContextMenuParams(
-                0,
+                null,
                 new MenuModelBridge(0L),
                 mediaType,
                 ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -911,7 +910,6 @@ public class ContextMenuTest extends AwParameterizedTest {
                 MenuSourceType.TOUCH,
                 false,
                 /* openedFromInterestFor= */ false,
-                /* interestForNodeID= */ 0,
                 /* additionalNavigationParams= */ null);
     }
 

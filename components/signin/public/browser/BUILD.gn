@@ -8,17 +8,35 @@ if (is_android) {
 
 source_set("browser") {
   sources = [
+    "signin_status_metrics_provider_helpers.cc",
+    "signin_status_metrics_provider_helpers.h",
     "web_signin_tracker.cc",
     "web_signin_tracker.h",
   ]
 
   deps = [
+    "//base",
     "//components/signin/core/browser",
     "//components/signin/public/base",
     "//components/signin/public/base:signin_buildflags",
     "//components/signin/public/identity_manager",
     "//google_apis",
   ]
+
+  if (is_ios) {
+    sources += [
+      "account_switching_promo_logger.cc",
+      "account_switching_promo_logger.h",
+      "account_switching_promo_metrics.h",
+      "account_switching_promo_prefs.cc",
+      "account_switching_promo_prefs.h",
+    ]
+    deps += [
+      "//base",
+      "//components/feature_engagement/public",
+      "//components/prefs",
+    ]
+  }
 }
 
 if (is_android) {
@@ -30,7 +48,10 @@ if (is_android) {
 source_set("unit_tests") {
   testonly = true
 
-  sources = [ "web_signin_tracker_unittest.cc" ]
+  sources = [
+    "signin_status_metrics_provider_helpers_unittest.cc",
+    "web_signin_tracker_unittest.cc",
+  ]
 
   deps = [
     ":browser",
@@ -48,6 +69,20 @@ source_set("unit_tests") {
   ]
 
   if (is_chromeos) {
+    sources -= [ "signin_status_metrics_provider_helpers_unittest.cc" ]
     deps += [ "//components/account_manager_core:test_support" ]
+  }
+
+  if (is_ios) {
+    sources += [
+      "account_switching_promo_logger_unittest.cc",
+      "account_switching_promo_prefs_unittest.cc",
+    ]
+    deps += [
+      "//components/feature_engagement/public",
+      "//components/feature_engagement/test:test_support",
+      "//components/prefs",
+      "//components/prefs:test_support",
+    ]
   }
 }

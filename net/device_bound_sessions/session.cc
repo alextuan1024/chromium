@@ -531,6 +531,10 @@ bool Session::IncludesUrl(const GURL& url) const {
   return inclusion_rules_.EvaluateRequestUrl(url) == InclusionResult::kInclude;
 }
 
+bool Session::IsVisibleToOrigin(const url::Origin& origin) const {
+  return inclusion_rules_.MayIncludeOrigin(origin);
+}
+
 bool Session::AllowedToInitiateRefresh(
     const std::optional<url::Origin>& initiator) const {
   // The initiator is missing only for browser-initiated requests.
@@ -608,6 +612,7 @@ void Session::InformOfRefreshResult(bool was_proactive,
     case kInvalidFederatedSessionWrongProviderOrigin:
     case kInvalidFederatedKey:
     case kSessionDeletedDuringRefresh:
+    case kCrossSiteRefreshSessionConfig:
 
     // We do not want to back off on many network connection errors
     // (e.g. internet disconnected), so we do not hit our maximum
@@ -650,6 +655,7 @@ void Session::InformOfRefreshResult(bool was_proactive,
     case kPreProvisionedKeyNotFound:
     case kAttestationCertificationError:
     case kAttestationSigningError:
+    case kFederatedRegistrationRedirected:
       NOTREACHED();
   }
 

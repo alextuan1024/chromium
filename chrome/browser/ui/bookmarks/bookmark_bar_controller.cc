@@ -6,13 +6,14 @@
 
 #include "base/feature_list.h"
 #include "base/types/to_address.h"
+#include "build/build_config.h"
+#include "chrome/browser/bookmarks/bookmark_bar_utils.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/defaults.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar.h"
-#include "chrome/browser/ui/bookmarks/bookmark_utils.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
@@ -21,9 +22,6 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/browser/ui/webui/new_tab_page/new_tab_page_ui.h"
-#include "chrome/browser/ui/webui/new_tab_page_third_party/new_tab_page_third_party_ui.h"
-#include "chrome/browser/ui/webui/ntp/new_tab_ui.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "components/bookmarks/browser/bookmark_model.h"
@@ -40,7 +38,26 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/platform_util.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
+#include "chrome/common/chrome_features.h"
+#endif
+
 namespace {
+
+#if BUILDFLAG(IS_CHROMEOS)
+bool IsTrustedPinned(BrowserWindowInterface* browser) {
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    // Can be null during BrowserWindowFeatures::Init(), which constructs
+    // BookmarkBarController (calling UpdateBookmarkBarState() in its
+    // constructor) before LockedStateController, as well as in unit tests.
+    auto* controller = chromeos::LockedStateController::From(browser);
+    return controller && controller->IsLocked();
+  }
+  return platform_util::IsBrowserLockedFullscreen(browser);
+}
+#endif
 
 // TODO(crbug.com/382494946): Similar bespoke checks are used throughout the
 // codebase. This should be factored out as a common util and other callsites
@@ -59,8 +76,7 @@ bool IsShowingNTP(content::WebContents* web_contents) {
     entry = web_contents->GetController().GetVisibleEntry();
   }
   const GURL& url = entry->GetURL();
-  return NewTabUI::IsNewTab(url) || NewTabPageUI::IsNewTabPageOrigin(url) ||
-         NewTabPageThirdPartyUI::IsNewTabPageOrigin(url) ||
+  return search::IsWebUINewTabPageOrigin(url) ||
          search::NavEntryIsInstantNTP(web_contents, entry);
 }
 
@@ -225,6 +241,17 @@ bool BookmarkBarController::ShouldShowBookmarkBar() const {
   if (profile->IsGuestSession()) {
     return false;
   }
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Hide the bookmark bar when trusted-pinned (e.g. locked fullscreen exam
+  // mode) so bookmarks and saved tab group chips cannot be used to switch tabs
+  // or close the pinned window (crbug.com/586988816).
+  // This relies on LockedStateController::Lock()/Unlock() updating its state
+  // before pinning/unpinning the window.
+  if (IsTrustedPinned(base::to_address(browser_))) {
+    return false;
+  }
+#endif
 
   PrefService* prefs = profile->GetPrefs();
   bool should_show_bar =

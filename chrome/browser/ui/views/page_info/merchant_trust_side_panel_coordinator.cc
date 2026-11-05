@@ -28,8 +28,8 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "net/base/url_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 constexpr char kStaticLoadingScreenURL[] =
     "https://www.gstatic.com/diner/chrome/atp_loading.html";
@@ -40,7 +40,8 @@ content::OpenURLParams CreateOpenUrlParams(const GURL& url) {
       net::AppendOrReplaceQueryParameter(url,
                                          kMerchantTrustContextParameterName,
                                          kMerchantTrustContextParameterValue),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK);
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui::PAGE_TRANSITION_LINK);
 }
 }  // namespace
 
@@ -115,8 +116,8 @@ void MerchantTrustSidePanelCoordinator::RegisterEntryAndShow(
 std::unique_ptr<views::View>
 MerchantTrustSidePanelCoordinator::CreateMerchantTrustWebView(
     SidePanelEntryScope& scope) {
-  DCHECK(GetBrowserView());
-  DCHECK(last_url_info_);
+  CHECK(GetBrowserView(), base::NotFatalUntil::M162);
+  CHECK(last_url_info_, base::NotFatalUntil::M162);
   if (registered_but_not_shown_) {
     registered_but_not_shown_ = false;
   }
@@ -199,7 +200,7 @@ void MerchantTrustSidePanelCoordinator::DidFinishNavigation(
       web_view_side_panel_view_) {
     auto* entry = registry->GetEntryForKey(
         SidePanelEntry::Key(SidePanelEntry::Id::kMerchantTrust));
-    DCHECK(entry);
+    CHECK(entry, base::NotFatalUntil::M162);
     entry->ClearCachedView();
   }
 }

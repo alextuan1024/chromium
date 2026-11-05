@@ -8,11 +8,13 @@
 
 #include <cstdint>
 
+#include "base/android/android_info.h"
 #include "base/android/jni_string.h"
 #include "base/feature_list.h"
 #include "base/no_destructor.h"
 #include "components/device_event_log/device_event_log.h"
 #include "services/device/serial/serial_io_handler_android.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "services/device/serial/jni_headers/ChromeSerialManager_jni.h"
@@ -23,10 +25,20 @@ using ::jni_zero::AttachCurrentThread;
 SerialDeviceEnumeratorAndroid::SerialDeviceEnumeratorAndroid()
     : task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {}
 
+// static
+bool SerialDeviceEnumeratorAndroid::IsSupported() {
+  return base::android::android_info::sdk_int() >=
+         base::android::android_info::SDK_VERSION_CINNAMON_BUN;
+}
+
 void SerialDeviceEnumeratorAndroid::Initialize() {
+  if (!IsSupported()) {
+    SERIAL_LOG(EVENT) << "Android Serial Service requires SDK 37";
+    return;
+  }
   JNIEnv* env = AttachCurrentThread();
   j_serial_manager_.Reset(
-      Java_ChromeSerialManager_create(env, reinterpret_cast<int64_t>(this)));
+      Java_ChromeSerialManager_create(env, jni_zero::MakeRaw(this)));
   if (j_serial_manager_.is_null()) {
     SERIAL_LOG(ERROR) << "Could not find Android Serial Service";
     return;

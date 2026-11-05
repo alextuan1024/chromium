@@ -8,7 +8,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "content/web_test/renderer/event_sender.h"
 #include "content/web_test/renderer/test_runner.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/web/web_frame_widget.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_page_popup.h"
@@ -194,6 +193,7 @@ WebTestWebFrameWidgetImpl::GetFrameWidgetTestHelperForTesting() {
 
 void WebTestWebFrameWidgetImpl::Reset() {
   event_sender_->Reset();
+  screen_infos_for_testing_.reset();
 
   // Ends any synthetic gestures started in |event_sender_|.
   FlushInputProcessedCallback();
@@ -219,6 +219,31 @@ void WebTestWebFrameWidgetImpl::Reset() {
 
 content::EventSender* WebTestWebFrameWidgetImpl::GetEventSender() {
   return event_sender_.get();
+}
+
+void WebTestWebFrameWidgetImpl::SetScreenSizeForTesting(int width, int height) {
+  screen_infos_for_testing_ = WebFrameWidgetImpl::GetOriginalScreenInfos();
+  display::ScreenInfo& screen_info =
+      screen_infos_for_testing_->mutable_current();
+  screen_info.rect = gfx::Rect(width, height);
+  screen_info.available_rect = screen_info.rect;
+}
+
+const display::ScreenInfo& WebTestWebFrameWidgetImpl::GetScreenInfo() {
+  return screen_infos_for_testing_ ? screen_infos_for_testing_->current()
+                                   : WebFrameWidgetImpl::GetScreenInfo();
+}
+
+const display::ScreenInfos& WebTestWebFrameWidgetImpl::GetScreenInfos() {
+  return screen_infos_for_testing_ ? *screen_infos_for_testing_
+                                   : WebFrameWidgetImpl::GetScreenInfos();
+}
+
+const display::ScreenInfos&
+WebTestWebFrameWidgetImpl::GetOriginalScreenInfos() {
+  return screen_infos_for_testing_
+             ? *screen_infos_for_testing_
+             : WebFrameWidgetImpl::GetOriginalScreenInfos();
 }
 
 void WebTestWebFrameWidgetImpl::SynchronouslyCompositeAfterTest(
@@ -262,15 +287,6 @@ void WebTestWebFrameWidgetImpl::SynchronouslyComposite(
   DCHECK(!LayerTreeHost()->GetSettings().single_thread_proxy_scheduler);
 
   if (!LayerTreeHost()->IsVisible()) {
-    if (callback) {
-      std::move(callback).Run();
-    }
-    return;
-  }
-
-  if (base::FeatureList::IsEnabled(
-          blink::features::kNoForcedFrameUpdatesForWebTests) &&
-      LayerTreeHost()->MainFrameUpdatesAreDeferred()) {
     if (callback) {
       std::move(callback).Run();
     }

@@ -28,11 +28,11 @@
 #include "chrome/browser/ash/arc/policy/arc_policy_util.h"
 #include "chrome/browser/ash/arc/policy/managed_configuration_variables.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
+#include "chrome/browser/ash/platform_keys/extension_key_permissions_service.h"
 #include "chrome/browser/ash/policy/core/device_attributes_impl.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part_ash.h"
-#include "chrome/browser/chromeos/platform_keys/extension_key_permissions_service.h"
 #include "chrome/browser/policy/developer_tools_policy_handler.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
@@ -262,7 +262,7 @@ void AddChoosePrivateKeyRuleToPolicy(
     return;
   }
 
-  auto app_ids = chromeos::platform_keys::ExtensionKeyPermissionsService::
+  auto app_ids = ash::platform_keys::ExtensionKeyPermissionsService::
       GetCorporateKeyUsageAllowedAndroidAppIds(policy_service);
   base::ListValue arc_app_ids;
   for (const auto& app_id : app_ids) {
@@ -747,7 +747,9 @@ void ArcPolicyBridge::OnCommandReceived(
 
   if (!instance) {
     VLOG(1) << "ARC not ready yet, will retry remote command once it is ready.";
-    CHECK(on_arc_instance_ready_callback_.is_null(), base::NotFatalUntil::M160);
+    // TODO(crbug.com/569687178): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(on_arc_instance_ready_callback_.is_null());
 
     // base::Unretained is safe here since this class owns the callback's
     // lifetime.

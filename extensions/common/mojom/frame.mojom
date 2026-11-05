@@ -8,6 +8,7 @@ import "mojo/public/mojom/base/uuid.mojom";
 import "extensions/common/mojom/code_injection.mojom";
 import "extensions/common/mojom/context_type.mojom";
 import "extensions/common/mojom/extra_response_data.mojom";
+import "extensions/common/mojom/response_wrapper.mojom";
 import "extensions/common/mojom/host_id.mojom";
 import "extensions/common/mojom/injection_type.mojom";
 import "extensions/common/mojom/extension_id.mojom";
@@ -18,6 +19,7 @@ import "extensions/common/mojom/stack_frame.mojom";
 import "extensions/common/mojom/view_type.mojom";
 import "mojo/public/mojom/base/string16.mojom";
 import "mojo/public/mojom/base/values.mojom";
+import "third_party/blink/public/mojom/blob/blob.mojom";
 import "ui/gfx/geometry/mojom/geometry.mojom";
 import "url/mojom/url.mojom";
 import "third_party/blink/public/mojom/devtools/console_message.mojom";
@@ -46,6 +48,10 @@ struct RequestParams {
   string name;
   // List of message arguments.
   mojo_base.mojom.ListValue arguments;
+  // Also an ordered list of message arguments, but ones that are Blobs, which
+  // don't fit into a serialized Value. Like `arguments`, the meaning and
+  // ordering of `blobs` is context-dependent.
+  array<pending_remote<blink.mojom.Blob>> blobs;
   // Extension ID this request was sent from. This can be empty, in the case
   // where we expose APIs to normal web pages using the extension function
   // system.
@@ -161,7 +167,7 @@ interface LocalFrameHost {
   [UnlimitedSize]
   Request(RequestParams params)
       => (bool success,
-          mojo_base.mojom.ListValue response_wrapper,
+          ResponseWrapper response_wrapper,
           string error,
           ExtraResponseData? extra_data);
 

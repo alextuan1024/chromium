@@ -62,12 +62,18 @@ const char kManagementOnFileDownloadedVisibleData[] =
 const char kManagementOnBulkDataEntryEvent[] = "managementOnBulkDataEntryEvent";
 const char kManagementOnBulkDataEntryVisibleData[] =
     "managementOnBulkDataEntryVisibleData";
+const char kManagementOnDataCopiedEvent[] = "managementOnDataCopiedEvent";
+const char kManagementOnDataCopiedVisibleData[] =
+    "managementOnDataCopiedVisibleData";
 const char kManagementOnPrintEvent[] = "managementOnPrintEvent";
 const char kManagementOnPrintVisibleData[] = "managementOnPrintVisibleData";
 
 const char kManagementOnPageVisitedEvent[] = "managementOnPageVisitedEvent";
 const char kManagementOnPageVisitedVisibleData[] =
     "managementOnPageVisitedVisibleData";
+const char kManagementOnSecureGatewayEvent[] = "managementOnSecureGatewayEvent";
+const char kManagementOnSecureGatewayVisibleData[] =
+    "managementOnSecureGatewayVisibleData";
 const char kManagementOnExtensionTelemetryEvent[] =
     "managementOnExtensionTelemetryEvent";
 const char kManagementOnExtensionTelemetryVisibleData[] =
@@ -98,12 +104,10 @@ const char kManagementScreenCaptureEvent[] = "managementScreenCaptureEvent";
 const char kManagementScreenCaptureData[] = "managementScreenCaptureData";
 #endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
-    (BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_EXTENSIONS_CORE))
+#if !BUILDFLAG(IS_CHROMEOS)
 const char kManagementDeviceSignalsDisclosure[] =
     "managementDeviceSignalsDisclosure";
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
-        // (BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_EXTENSIONS_CORE))
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_CHROMEOS)
 const char kManagementLogUploadEnabled[] = "managementLogUploadEnabled";

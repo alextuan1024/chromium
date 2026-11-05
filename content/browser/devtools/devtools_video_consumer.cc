@@ -15,7 +15,7 @@
 #include "media/base/limits.h"
 #include "media/capture/mojom/video_capture_buffer.mojom.h"
 #include "media/capture/mojom/video_capture_types.mojom.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 
 namespace content {
 
@@ -95,8 +95,9 @@ void DevToolsVideoConsumer::SetMinCapturePeriod(
 
 void DevToolsVideoConsumer::SetMinAndMaxFrameSize(gfx::Size min_frame_size,
                                                   gfx::Size max_frame_size) {
-  CHECK(IsValidMinAndMaxFrameSize(min_frame_size, max_frame_size),
-        base::NotFatalUntil::M159);
+  // TODO(crbug.com/567037602): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
+  DCHECK(IsValidMinAndMaxFrameSize(min_frame_size, max_frame_size));
   min_frame_size_ = min_frame_size;
   max_frame_size_ = max_frame_size;
   if (capturer_) {
@@ -184,6 +185,11 @@ void DevToolsVideoConsumer::OnFrameCaptured(
     DLOG(ERROR) << "Unable to create VideoFrame wrapper around the shmem.";
     return;
   }
+  // The destruction observer below owns `data`, so `data->region` outlives
+  // `frame` and the raw pointer remains valid. Consumers of this
+  // STORAGE_SHMEM frame must keep `frame` alive until they finish reading
+  // its pixels, as destroying `frame` releases the buffer back to Viz.
+  frame->BackWithSharedMemory(&shmem_region);
   frame->AddDestructionObserver(base::BindOnce(
       [](media::mojom::VideoBufferHandlePtr data,
          base::ReadOnlySharedMemoryMapping mapping,

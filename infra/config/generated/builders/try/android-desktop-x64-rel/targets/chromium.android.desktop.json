@@ -8,8 +8,8 @@
     "gtest_tests": [
       {
         "args": [
-          "--force-desktop-android",
           "--avd-config=../../tools/android/avd/proto/android_35_google_apis_tablet_x64_tablet_landscape.textpb",
+          "--force-desktop-android",
           "--test-launcher-filter-file=../../testing/buildbot/filters/android.desktop.emulator_15.android_browsertests.filter",
           "--emulator-debug-tags=all",
           "--gs-results-bucket=chromium-result-details",
@@ -37,7 +37,7 @@
         "swarming": {
           "dimensions": {
             "cores": "8",
-            "cpu": "x86-64",
+            "cpu": "x86-64-n4|x86-64",
             "device_os": null,
             "device_type": null,
             "os": "Ubuntu-22.04",
@@ -63,9 +63,9 @@
       {
         "args": [
           "--git-revision=${got_revision}",
-          "--force-desktop-android",
           "--timeout-scale=2.0",
           "--avd-config=../../tools/android/avd/proto/android_35_google_apis_tablet_x64_tablet_landscape.textpb",
+          "--force-desktop-android",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
@@ -96,7 +96,7 @@
         "swarming": {
           "dimensions": {
             "cores": "8",
-            "cpu": "x86-64",
+            "cpu": "x86-64-n4|x86-64",
             "device_os": null,
             "device_type": null,
             "os": "Ubuntu-22.04",
@@ -121,11 +121,11 @@
       },
       {
         "args": [
-          "--annotation=Restriction=Desktop,Restriction=TabletOrDesktop,ImportantFormFactors=Desktop,ImportantFormFactors=TabletOrDesktop",
           "--git-revision=${got_revision}",
-          "--force-desktop-android",
           "--timeout-scale=2.0",
           "--avd-config=../../tools/android/avd/proto/android_35_google_apis_tablet_x64_tablet_landscape.textpb",
+          "--force-desktop-android",
+          "--annotation=Restriction=Desktop,Restriction=TabletOrDesktop,ImportantFormFactors=Desktop,ImportantFormFactors=TabletOrDesktop",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
@@ -155,7 +155,7 @@
         "swarming": {
           "dimensions": {
             "cores": "8",
-            "cpu": "x86-64",
+            "cpu": "x86-64-n4|x86-64",
             "device_os": null,
             "device_type": null,
             "os": "Ubuntu-22.04",
@@ -173,7 +173,7 @@
             }
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 3
+          "shards": 6
         },
         "test": "chrome_public_test_apk",
         "test_id_prefix": "ninja://chrome/android:chrome_public_test_apk/"
@@ -181,8 +181,8 @@
       {
         "args": [
           "--git-revision=${got_revision}",
-          "--force-desktop-android",
           "--avd-config=../../tools/android/avd/proto/android_35_google_apis_tablet_x64_tablet_landscape.textpb",
+          "--force-desktop-android",
           "--gtest_filter=-org.chromium.chrome.browser.ui.appmenu.AppMenuTest.testShowAppMenu_AnchorTop",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
@@ -214,7 +214,7 @@
         "swarming": {
           "dimensions": {
             "cores": "8",
-            "cpu": "x86-64",
+            "cpu": "x86-64-n4|x86-64",
             "device_os": null,
             "device_type": null,
             "os": "Ubuntu-22.04",
@@ -239,8 +239,8 @@
       },
       {
         "args": [
-          "--force-desktop-android",
           "--avd-config=../../tools/android/avd/proto/android_35_google_apis_tablet_x64_tablet_landscape.textpb",
+          "--force-desktop-android",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
@@ -265,7 +265,7 @@
         "swarming": {
           "dimensions": {
             "cores": "8",
-            "cpu": "x86-64",
+            "cpu": "x86-64-n4|x86-64",
             "device_os": null,
             "device_type": null,
             "os": "Ubuntu-22.04",
@@ -289,8 +289,8 @@
       },
       {
         "args": [
-          "--force-desktop-android",
           "--avd-config=../../tools/android/avd/proto/android_35_google_apis_tablet_x64_tablet_landscape.textpb",
+          "--force-desktop-android",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
@@ -316,7 +316,7 @@
         "swarming": {
           "dimensions": {
             "cores": "8",
-            "cpu": "x86-64",
+            "cpu": "x86-64-n4|x86-64",
             "device_os": null,
             "device_type": null,
             "os": "Ubuntu-22.04",
@@ -340,8 +340,8 @@
       },
       {
         "args": [
-          "--force-desktop-android",
           "--avd-config=../../tools/android/avd/proto/android_35_google_apis_tablet_x64_tablet_landscape.textpb",
+          "--force-desktop-android",
           "--test-launcher-filter-file=../../testing/buildbot/filters/android.desktop.emulator_15.unit_tests.filter",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
@@ -367,7 +367,7 @@
         "swarming": {
           "dimensions": {
             "cores": "8",
-            "cpu": "x86-64",
+            "cpu": "x86-64-n4|x86-64",
             "device_os": null,
             "device_type": null,
             "os": "Ubuntu-22.04",
@@ -392,8 +392,8 @@
       },
       {
         "args": [
-          "--force-desktop-android",
           "--avd-config=../../tools/android/avd/proto/android_35_google_apis_tablet_x64_tablet_landscape.textpb",
+          "--force-desktop-android",
           "--gs-results-bucket=chromium-result-details",
           "--recover-devices"
         ],
@@ -418,7 +418,7 @@
         "swarming": {
           "dimensions": {
             "cores": "8",
-            "cpu": "x86-64",
+            "cpu": "x86-64-n4|x86-64",
             "device_os": null,
             "device_type": null,
             "os": "Ubuntu-22.04",
@@ -451,9 +451,8 @@
           "reftest",
           "crashtest",
           "print-reftest",
-          "--additional-driver-flag=--force-desktop-android",
           "--avd-config=../../tools/android/avd/proto/android_35_google_apis_tablet_x64_tablet_landscape.textpb",
-          "--additional-driver-flag=--disable-features=UseWebUiNtpAndroid"
+          "--additional-driver-flag=--force-desktop-android"
         ],
         "ci_only": true,
         "description": "Run with android_35_google_apis_tablet_x64_tablet_landscape",
@@ -475,7 +474,7 @@
         "swarming": {
           "dimensions": {
             "cores": "8",
-            "cpu": "x86-64",
+            "cpu": "x86-64-n4|x86-64",
             "device_os": null,
             "device_type": null,
             "os": "Ubuntu-22.04",
@@ -518,7 +517,7 @@
             "pool": "chromium.tests"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 10
+          "shards": 4
         },
         "test": "chrome_junit_tests",
         "test_id_prefix": "ninja://chrome/android:chrome_junit_tests/"

@@ -25,6 +25,7 @@ import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.core.os.BuildCompat;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.SysUtils;
@@ -34,11 +35,11 @@ import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
 import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.util.ColorUtils;
 
 import java.util.Locale;
@@ -62,6 +63,10 @@ public class MediaViewerUtils {
      * @param allowExternalAppHandlers Whether the viewer should allow the user to open with another
      *     app.
      * @param allowShareAction Whether the view should allow the share action.
+     * @param isIncognito Whether the file belongs to an incognito profile. When the file opens in a
+     *     new tab, that tab is then incognito. The Custom Tab path deliberately stays regular: an
+     *     incognito Custom Tab drops the media viewer UI, and the content:// URL is never recorded
+     *     in history either way.
      * @return Intent that can be fired to open the file.
      */
     public static Intent getMediaViewerIntent(
@@ -70,12 +75,18 @@ public class MediaViewerUtils {
             @Nullable String mimeType,
             boolean allowExternalAppHandlers,
             boolean allowShareAction,
+            boolean isIncognito,
             Context context) {
+        // TODO(crbug.com/521890621): Update to LFF check
+        // (DeviceFormFactor.isNonMultiDisplayContextOnTablet(context)) once rollout is complete.
         if (ChromeFeatureList.isEnabled(ChromeFeatureList.OPEN_DOWNLOAD_IN_NEW_TAB)
-                && DeviceFormFactor.isNonMultiDisplayContextOnTablet(context)) {
+                || DeviceInfo.isDesktop()) {
             Intent intent = createViewIntentForUri(contentUri, mimeType, null, null);
+            intent.removeFlags(
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             intent.setClass(context, ChromeLauncherActivity.class);
             intent.putExtra(Browser.EXTRA_CREATE_NEW_TAB, true);
+            intent.putExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, isIncognito);
             intent.putExtra(Browser.EXTRA_APPLICATION_ID, context.getPackageName());
             // TODO(crbug.com/531944280): Choose the right window to open the new tab. The latest
             // used activity window will be used by default.

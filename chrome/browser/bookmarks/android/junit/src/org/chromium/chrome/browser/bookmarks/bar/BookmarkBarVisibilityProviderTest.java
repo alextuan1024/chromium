@@ -18,7 +18,6 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.content.res.Configuration;
-import android.content.res.Resources;
 
 import androidx.annotation.NonNull;
 
@@ -33,6 +32,7 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
 import org.robolectric.Robolectric;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -41,6 +41,7 @@ import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.bookmarks.R;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarVisibilityProvider.BookmarkBarVisibilityObserver;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
@@ -70,8 +71,6 @@ public class BookmarkBarVisibilityProviderTest {
     public OverrideContextWrapperTestRule mOverrideContextRule =
             new OverrideContextWrapperTestRule();
 
-    @Mock private Activity mActivity;
-    @Mock private Resources mResources;
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     @Mock private Configuration mConfig;
     @Mock private PrefChangeRegistrar.Natives mPrefChangeRegistrarJni;
@@ -80,6 +79,9 @@ public class BookmarkBarVisibilityProviderTest {
     @Mock private UserPrefs.Natives mUserPrefsJni;
     @Mock private BookmarkBarVisibilityObserver mObserver;
 
+    private Activity mActivity;
+    private int mItemMinWidth;
+    private int mItemMaxWidth;
     private final Set<ConfigurationChangedObserver> mConfigChangeObserverCache = new HashSet<>();
     private final SettableMonotonicObservableSupplier<Profile> mProfileSupplier =
             ObservableSuppliers.createMonotonic();
@@ -89,14 +91,17 @@ public class BookmarkBarVisibilityProviderTest {
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).get();
+        mItemMinWidth =
+                mActivity.getResources().getDimensionPixelSize(R.dimen.bookmark_bar_item_min_width);
+        mItemMaxWidth =
+                mActivity.getResources().getDimensionPixelSize(R.dimen.bookmark_bar_item_max_width);
         mProfileSupplier.set(mProfile);
         mOverrideContextRule.setIsDesktop(true);
 
         // Set up mocks.
         when(mProfile.getOriginalProfile()).thenReturn(mProfile);
         when(mUserPrefsJni.get(mProfile)).thenReturn(mPrefService);
-        when(mActivity.getResources()).thenReturn(mResources);
-        when(mResources.getDimensionPixelSize(anyInt())).thenReturn(12);
 
         // Set up natives.
         PrefChangeRegistrarJni.setInstanceForTesting(mPrefChangeRegistrarJni);
@@ -130,7 +135,7 @@ public class BookmarkBarVisibilityProviderTest {
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(false);
         BookmarkBarUtils.setSettingEnabledForTesting(false);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         verify(mObserver, times(2)).onVisibilityChanged(false);
         verify(mObserver, never()).onItemWidthConstraintsChanged(anyInt(), anyInt());
         clearInvocations(mObserver);
@@ -143,7 +148,7 @@ public class BookmarkBarVisibilityProviderTest {
         // Case: Construct w/ feature disallowed and setting enabled.
         BookmarkBarUtils.setSettingEnabledForTesting(true);
         provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         // Called 2 times because mXrSpaceModeSupplier will also call it when initialized.
         verify(mObserver, times(2)).onVisibilityChanged(false);
         verify(mObserver, never()).onItemWidthConstraintsChanged(anyInt(), anyInt());
@@ -158,7 +163,7 @@ public class BookmarkBarVisibilityProviderTest {
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
         BookmarkBarUtils.setSettingEnabledForTesting(false);
         provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         // Called 2 times because mXrSpaceModeSupplier will also call it when initialized.
         verify(mObserver, times(2)).onVisibilityChanged(false);
         verify(mObserver, never()).onItemWidthConstraintsChanged(anyInt(), anyInt());
@@ -172,7 +177,7 @@ public class BookmarkBarVisibilityProviderTest {
         // Case: Construct w/ feature allowed and setting enabled.
         BookmarkBarUtils.setSettingEnabledForTesting(true);
         provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         verify(mObserver, times(2)).onVisibilityChanged(true);
         verify(mObserver, never()).onItemWidthConstraintsChanged(anyInt(), anyInt());
         clearInvocations(mObserver);
@@ -189,20 +194,20 @@ public class BookmarkBarVisibilityProviderTest {
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
         BookmarkBarUtils.setSettingEnabledForTesting(true);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         // Case: Configuration changed to disallow feature.
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(false);
         mConfigChangeObserverCache.stream().forEach(obs -> obs.onConfigurationChanged(mConfig));
         verify(mObserver, times(1)).onVisibilityChanged(false);
-        verify(mObserver, times(1)).onItemWidthConstraintsChanged(12, 12);
+        verify(mObserver, times(1)).onItemWidthConstraintsChanged(mItemMinWidth, mItemMaxWidth);
         clearInvocations(mObserver);
 
         // Case: Configuration changed to allow feature.
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
         mConfigChangeObserverCache.stream().forEach(obs -> obs.onConfigurationChanged(mConfig));
         verify(mObserver, times(1)).onVisibilityChanged(true);
-        verify(mObserver, times(1)).onItemWidthConstraintsChanged(12, 12);
+        verify(mObserver, times(1)).onItemWidthConstraintsChanged(mItemMinWidth, mItemMaxWidth);
 
         // Clean up.
         provider.destroy();
@@ -214,7 +219,7 @@ public class BookmarkBarVisibilityProviderTest {
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
         BookmarkBarUtils.setSettingEnabledForTesting(true);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         // Case: Preference changed to disable setting.
         BookmarkBarUtils.setSettingEnabledForTesting(false);
@@ -239,7 +244,7 @@ public class BookmarkBarVisibilityProviderTest {
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
         BookmarkBarUtils.setSettingEnabledForTesting(true);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         // Case: Profile changed
         clearInvocations(mObserver);
@@ -258,7 +263,7 @@ public class BookmarkBarVisibilityProviderTest {
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
         BookmarkBarUtils.setSettingEnabledForTesting(true);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         // Verify initial state.
         verify(mObserver, times(2)).onVisibilityChanged(true);
@@ -296,7 +301,7 @@ public class BookmarkBarVisibilityProviderTest {
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
                 .thenReturn(BookmarkBarVisibilityState.ALWAYS_HIDE);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         verify(mObserver, times(2))
                 .onVisibilityChanged_TriState(BookmarkBarVisibilityState.ALWAYS_HIDE);
         verify(mObserver, never()).onVisibilityChanged(anyBoolean());
@@ -313,7 +318,7 @@ public class BookmarkBarVisibilityProviderTest {
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
                 .thenReturn(BookmarkBarVisibilityState.ALWAYS_SHOW);
         provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         // Called 2 times because mXrSpaceModeSupplier will also call it when initialized.
         verify(mObserver, times(2))
                 .onVisibilityChanged_TriState(BookmarkBarVisibilityState.ALWAYS_HIDE);
@@ -332,7 +337,7 @@ public class BookmarkBarVisibilityProviderTest {
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
                 .thenReturn(BookmarkBarVisibilityState.ALWAYS_HIDE);
         provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         verify(mObserver, times(2))
                 .onVisibilityChanged_TriState(BookmarkBarVisibilityState.ALWAYS_HIDE);
         verify(mObserver, never()).onVisibilityChanged(anyBoolean());
@@ -349,7 +354,7 @@ public class BookmarkBarVisibilityProviderTest {
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
                 .thenReturn(BookmarkBarVisibilityState.ALWAYS_SHOW);
         provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         verify(mObserver, times(2))
                 .onVisibilityChanged_TriState(BookmarkBarVisibilityState.ALWAYS_SHOW);
         verify(mObserver, never()).onVisibilityChanged(anyBoolean());
@@ -366,7 +371,7 @@ public class BookmarkBarVisibilityProviderTest {
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
                 .thenReturn(BookmarkBarVisibilityState.ONLY_SHOW_ON_NTP);
         provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         verify(mObserver, times(2))
                 .onVisibilityChanged_TriState(BookmarkBarVisibilityState.ONLY_SHOW_ON_NTP);
         verify(mObserver, never()).onVisibilityChanged(anyBoolean());
@@ -388,14 +393,14 @@ public class BookmarkBarVisibilityProviderTest {
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
                 .thenReturn(BookmarkBarVisibilityState.ALWAYS_SHOW);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         // Case: Configuration changed to disallow feature.
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(false);
         mConfigChangeObserverCache.stream().forEach(obs -> obs.onConfigurationChanged(mConfig));
         verify(mObserver, times(1))
                 .onVisibilityChanged_TriState(BookmarkBarVisibilityState.ALWAYS_HIDE);
-        verify(mObserver, times(1)).onItemWidthConstraintsChanged(12, 12);
+        verify(mObserver, times(1)).onItemWidthConstraintsChanged(mItemMinWidth, mItemMaxWidth);
         clearInvocations(mObserver);
 
         // Case: Configuration changed to allow feature.
@@ -403,7 +408,7 @@ public class BookmarkBarVisibilityProviderTest {
         mConfigChangeObserverCache.stream().forEach(obs -> obs.onConfigurationChanged(mConfig));
         verify(mObserver, times(1))
                 .onVisibilityChanged_TriState(BookmarkBarVisibilityState.ALWAYS_SHOW);
-        verify(mObserver, times(1)).onItemWidthConstraintsChanged(12, 12);
+        verify(mObserver, times(1)).onItemWidthConstraintsChanged(mItemMinWidth, mItemMaxWidth);
 
         // Clean up.
         provider.destroy();
@@ -417,7 +422,7 @@ public class BookmarkBarVisibilityProviderTest {
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
                 .thenReturn(BookmarkBarVisibilityState.ALWAYS_SHOW);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         // Case: Preference changed to ALWAYS_HIDE.
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
@@ -458,7 +463,7 @@ public class BookmarkBarVisibilityProviderTest {
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
 
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         // Case: Tablet shared preference changed to ALWAYS_SHOW.
         clearInvocations(mObserver);
@@ -468,7 +473,7 @@ public class BookmarkBarVisibilityProviderTest {
                         BookmarkBarConstants.BOOKMARK_BAR_BOOKMARK_BAR_VISIBILITY_STATE,
                         BookmarkBarVisibilityState.ALWAYS_SHOW)
                 .apply();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         verify(mObserver, times(1))
                 .onVisibilityChanged_TriState(BookmarkBarVisibilityState.ALWAYS_SHOW);
         clearInvocations(mObserver);
@@ -480,7 +485,7 @@ public class BookmarkBarVisibilityProviderTest {
                         BookmarkBarConstants.BOOKMARK_BAR_BOOKMARK_BAR_VISIBILITY_STATE,
                         BookmarkBarVisibilityState.ONLY_SHOW_ON_NTP)
                 .apply();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         verify(mObserver, times(1))
                 .onVisibilityChanged_TriState(BookmarkBarVisibilityState.ONLY_SHOW_ON_NTP);
         clearInvocations(mObserver);
@@ -491,7 +496,7 @@ public class BookmarkBarVisibilityProviderTest {
                 .edit()
                 .putBoolean(BookmarkBarConstants.BOOKMARK_BAR_SHOW_BOOKMARK_BAR, true)
                 .apply();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
         verify(mObserver, never()).onVisibilityChanged_TriState(anyInt());
 
         // Clean up.
@@ -506,7 +511,7 @@ public class BookmarkBarVisibilityProviderTest {
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
                 .thenReturn(BookmarkBarVisibilityState.ALWAYS_SHOW);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         // Case: Profile changed.
         clearInvocations(mObserver);
@@ -534,7 +539,7 @@ public class BookmarkBarVisibilityProviderTest {
         when(mPrefService.getInteger(Pref.BOOKMARK_BAR_VISIBILITY_STATE))
                 .thenReturn(BookmarkBarVisibilityState.ALWAYS_SHOW);
         BookmarkBarVisibilityProvider provider = createProvider();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         // Verify initial state.
         verify(mObserver, times(2))

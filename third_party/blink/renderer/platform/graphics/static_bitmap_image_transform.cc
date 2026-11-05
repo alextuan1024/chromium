@@ -12,7 +12,6 @@
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_non_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
@@ -192,9 +191,8 @@ scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::ApplyUsingPixmap(
       NOTREACHED();
     }
     if (!source_rect_valid.isEmpty()) {
-      if (!source_paint_image.readPixels(
-              pm_valid.info(), pm_valid.writable_addr(), pm_valid.rowBytes(),
-              source_rect_valid.x(), source_rect_valid.y())) {
+      if (!source_paint_image.readPixels(pm_valid, source_rect_valid.x(),
+                                         source_rect_valid.y())) {
         return nullptr;
       }
     }
@@ -221,8 +219,10 @@ scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::ApplyUsingPixmap(
   auto dest_image = bm.asImage();
 
   // Strip the color space if requested.
+  gfx::HDRMetadata dest_hdr_metadata = source->GetHdrMetadata();
   if (options.reinterpret_as_srgb) {
     dest_image = dest_image->reinterpretColorSpace(SkColorSpace::MakeSRGB());
+    dest_hdr_metadata = gfx::HDRMetadata();
   }
 
   // Return the result.
@@ -230,6 +230,7 @@ scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::ApplyUsingPixmap(
       PaintImageBuilder::WithDefault()
           .set_id(cc::PaintImage::GetNextId())
           .set_image(std::move(dest_image), cc::PaintImage::GetNextContentId())
+          .set_hdr_metadata(dest_hdr_metadata)
           .TakePaintImage();
   return UnacceleratedStaticBitmapImage::Create(std::move(dest_paint_image),
                                                 source_orientation);
@@ -264,25 +265,28 @@ scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::ApplyWithBlit(
   ComputeSubsetParameters(source, options, source_rect, source_rect_valid,
                           dest_size);
 
-  // If `source` is accelerated and there is a context provider, try to use an
-  // accelerated SharedImage provider.
+  // If `source` is accelerated and there is a context provider, try to create
+  // an accelerated snapshot.
   auto source_paint_image = source->PaintImageForCurrentFrame();
   const auto source_orientation = GetSourceOrientation(source, options);
-  if (source_paint_image.IsTextureBacked() &&
-      source->ContextProviderWrapper()) {
-    auto resource_provider = CanvasNon2DResourceProvider::Create(
-        gfx::Size(dest_size.width(), dest_size.height()), dest_format,
-        dest_alpha_type, dest_color_space, dest_hdr_metadata,
-        source->ContextProviderWrapper(), source->GetSharedImage()->usage());
+  if (source_paint_image.IsTextureBacked()) {
+    CHECK(source->IsTextureBacked());
+    auto* accelerated_source =
+        static_cast<AcceleratedStaticBitmapImage*>(source.get());
 
-    if (resource_provider) {
-      // Perform the blit and return the drawn resource.
-      return resource_provider->DoExternalOverdrawAndSnapshot(
-          [&](cc::PaintCanvas& canvas) {
-            BlitToCanvas(canvas, source_paint_image, source_orientation,
-                         SkRect::Make(source_rect), dest_size, options);
-          },
-          source_orientation);
+    if (auto provider = accelerated_source->SkiaContextProviderWrapper()) {
+      if (auto image = AcceleratedStaticBitmapImage::CreateFromRaster(
+              gfx::Size(dest_size.width(), dest_size.height()), dest_format,
+              dest_alpha_type, dest_color_space, dest_hdr_metadata, provider,
+              gpu::Intersection(
+                  source->GetSharedImage()->usage(),
+                  AcceleratedStaticBitmapImage::kAllowedReadUsages),
+              [&](cc::PaintCanvas& canvas) {
+                BlitToCanvas(canvas, source_paint_image, source_orientation,
+                             SkRect::Make(source_rect), dest_size, options);
+              })) {
+        return image;
+      }
     }
   }
 
@@ -301,8 +305,8 @@ scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::ApplyWithBlit(
   cc::SkiaPaintCanvas canvas(surface->getCanvas());
   BlitToCanvas(canvas, source_paint_image, source_orientation,
                SkRect::Make(source_rect), dest_size, options);
-  return UnacceleratedStaticBitmapImage::Create(surface->makeImageSnapshot(),
-                                                source_orientation);
+  return UnacceleratedStaticBitmapImage::Create(
+      surface->makeImageSnapshot(), source_orientation, dest_hdr_metadata);
 }
 
 // Apply the transformations indicated in `options` on `source`, and return the
@@ -349,11 +353,13 @@ scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::Apply(
   // requested, fall back to software. The test ImageBitmapTest.AvoidGPUReadback
   // expects this, even if the source had premultiplied alpha (in which case we
   // are falling back to the CPU for no increased precision).
-  scoped_refptr<StaticBitmapImage> result;
-  if (!options.premultiply_alpha) {
-    return ApplyUsingPixmap(source, options);
+  scoped_refptr<StaticBitmapImage> result =
+      !options.premultiply_alpha ? ApplyUsingPixmap(source, options)
+                                 : ApplyWithBlit(source, options);
+  if (result) {
+    result->SetOriginClean(source->OriginClean());
   }
-  return ApplyWithBlit(source, options);
+  return result;
 }
 
 scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::Clone(

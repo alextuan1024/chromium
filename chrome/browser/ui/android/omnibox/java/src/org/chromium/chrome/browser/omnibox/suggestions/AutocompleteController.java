@@ -8,6 +8,7 @@ import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
@@ -15,8 +16,8 @@ import org.chromium.base.ObserverList;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.omnibox.OmniboxMetrics;
 import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge;
+import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge.NativeComposeboxQueryControllerBridge;
 import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler.VoiceResult;
 import org.chromium.chrome.browser.preloading.PreloadingFeatureMap;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -54,7 +55,6 @@ import java.util.Optional;
 @NullMarked
 public class AutocompleteController {
     /** Instance to be used for testing - null value permitted to signify no controller. */
-    @SuppressWarnings("NullableOptional")
     private static @Nullable Optional<AutocompleteController> sInstanceForTesting;
 
     // Maximum number of voice suggestions to show.
@@ -229,8 +229,6 @@ public class AutocompleteController {
 
     private boolean hasValidNativeObjectRef(
             AutocompleteMatch match, @VerificationPoint int reason) {
-        // Skip suggestions from cache.
-        OmniboxMetrics.recordUsedSuggestionFromCache(match.getNativeObjectRef() == 0L);
         if (match.getNativeObjectRef() == 0L) return false;
         return mAutocompleteResult != null
                 && mAutocompleteResult.verifyCoherency(
@@ -369,7 +367,7 @@ public class AutocompleteController {
         if (mNativeController == 0) return;
         AutocompleteControllerJni.get()
                 .setComposeboxQueryControllerBridge(
-                        mNativeController, bridge == null ? 0L : bridge.getNativeInstance());
+                        mNativeController, bridge == null ? null : bridge.getNativeInstance());
     }
 
     /**
@@ -528,7 +526,8 @@ public class AutocompleteController {
 
         void setComposeboxQueryControllerBridge(
                 long nativeAutocompleteControllerAndroid,
-                long nativeComposeboxQueryControllerBridge);
+                @Nullable JniPtr<NativeComposeboxQueryControllerBridge>
+                        composeboxQueryControllerBridge);
 
         void setVoiceMatches(
                 long nativeAutocompleteControllerAndroid,

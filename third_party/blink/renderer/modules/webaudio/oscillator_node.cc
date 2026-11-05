@@ -40,7 +40,6 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
 namespace blink {
 
@@ -90,7 +89,7 @@ OscillatorNode* OscillatorNode::Create(BaseAudioContext& context,
                                                     oscillator_type,
                                                     wave_table);
   if (wave_table) {
-    node->GetOscillatorHandler().SetInitialPeriodicWave(wave_table->impl());
+    node->GetOscillatorHandler().SetInitialPeriodicWave(wave_table->handler());
   } else {
     if (!node->GetOscillatorHandler().SetInitialType(oscillator_type)) {
       exception_state.ThrowDOMException(
@@ -157,7 +156,7 @@ AudioParam* OscillatorNode::detune() {
 }
 
 void OscillatorNode::setPeriodicWave(PeriodicWave* wave) {
-  GetOscillatorHandler().SetPeriodicWave(wave->impl());
+  GetOscillatorHandler().SetPeriodicWave(wave->handler());
 }
 
 void OscillatorNode::ReportDidCreate() {

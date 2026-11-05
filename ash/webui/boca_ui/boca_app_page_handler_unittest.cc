@@ -59,18 +59,16 @@
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_context_helper/fake_browser_context_helper_delegate.h"
-#include "chromeos/ash/components/test/ash_test_suite.h"
 #include "components/account_id/account_id.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/content_settings/core/browser/content_settings_policy_provider.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/session_manager/core/fake_session_manager_delegate.h"
-#include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
-#include "components/user_manager/fake_user_manager.h"
-#include "components/user_manager/scoped_user_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
@@ -90,7 +88,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/aura/window.h"
-#include "ui/base/resource/resource_bundle.h"
 
 using ::testing::_;
 using ::testing::DoAll;
@@ -105,6 +102,8 @@ namespace ash::boca {
 namespace {
 constexpr GaiaId::Literal kGaiaId("123");
 constexpr char kUserEmail[] = "cat@gmail.com";
+constexpr AccountId::Literal kTestAccountId =
+    AccountId::Literal::FromUserEmailGaiaId(kUserEmail, kGaiaId);
 constexpr char kTestDefaultUrl[] = "https://test";
 constexpr char kTestUrlBase[] = "https://test";
 constexpr char kBocaSpotlightViewStudentScreenErrorCodeUmaPath[] =
@@ -308,6 +307,7 @@ class MockBocaAppClient : public BocaAppClient {
   MOCK_METHOD(std::string, GetSchoolToolsServerBaseUrl, (), (override));
   MOCK_METHOD(void, OpenFeedbackDialog, (), (override));
   MOCK_METHOD(int, GetAppInstanceCount, (), (override));
+  MOCK_METHOD(bool, IsBocaAppWindow, (aura::Window*), (override));
 };
 
 class MockSessionManager : public BocaSessionManager {
@@ -331,6 +331,7 @@ class MockSessionManager : public BocaSessionManager {
               (override));
   MOCK_METHOD((::boca::Session*), GetCurrentSession, (), (override));
   MOCK_METHOD(void, LoadCurrentSession, (bool), (override));
+  MOCK_METHOD(void, StartFastPolling, (std::string), (override));
   MOCK_METHOD(void, OnAppWindowOpened, (), (override));
   MOCK_METHOD(void, NotifyAppReload, (), (override));
   MOCK_METHOD(void,
@@ -569,7 +570,9 @@ class FakePage : public mojom::Page {
 
 class MockContentSettingsHandler : public ContentSettingsHandler {
  public:
-  MockContentSettingsHandler() : ContentSettingsHandler(nullptr) {}
+  explicit MockContentSettingsHandler(
+      HostContentSettingsMap* host_content_settings_map)
+      : ContentSettingsHandler(host_content_settings_map) {}
   ~MockContentSettingsHandler() override = default;
 
   MOCK_METHOD(bool,
@@ -580,29 +583,28 @@ class MockContentSettingsHandler : public ContentSettingsHandler {
               (override));
 };
 
-class BocaAppPageHandlerTest : public testing::Test {
+class BocaAppPageHandlerTest : public AshTestBase {
  public:
-  BocaAppPageHandlerTest() = default;
-  mojo::Remote<mojom::PageHandler>& remote() { return remote_; }
-  void SetUp() override {
+  BocaAppPageHandlerTest()
+      : AshTestBase(std::unique_ptr<base::test::TaskEnvironment>(
+            std::make_unique<content::BrowserTaskEnvironment>(
+                base::test::TaskEnvironment::TimeSource::MOCK_TIME))) {
     scoped_feature_list_.InitWithFeatures(
         {ash::features::kBoca, ash::features::kBocaScreenSharingStudent,
          ash::features::kBocaScreenSharingTeacher},
-        // TODO:crbug.com/424867979 - Re-enable feature flag after adding unit
-        // tests.
-        /*disabled_features=*/{ash::features::kBocaSpotlightRobotRequester,
-                               ash::features::kAnnotatorMode});
-    // Set up UserManager related modules.
-    user_manager::UserManagerImpl::RegisterPrefs(local_state_.registry());
-    ash::boca_util::RegisterPrefs(local_state_.registry());
-    local_state_.SetDict(ash::prefs::kClassManagementToolsKioskReceiverCodes,
-                         base::DictValue().Set(kReceiverId, kReceiverName));
-    content_settings::PolicyProvider::RegisterProfilePrefs(
-        pref_service_.registry());
-    fake_user_manager_.Reset(
-        std::make_unique<user_manager::FakeUserManager>(&local_state_));
+        /*disabled_features=*/{});
+  }
+  mojo::Remote<mojom::PageHandler>& remote() { return remote_; }
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.users.clear();
+  }
+  void SetUp() override {
+    ash::boca_util::RegisterPrefs(local_state()->registry());
+    local_state()->SetDict(ash::prefs::kClassManagementToolsKioskReceiverCodes,
+                           base::DictValue().Set(kReceiverId, kReceiverName));
+    AshTestBase::SetUp();
 
-    auto account_id = AccountId::FromUserEmailGaiaId(kUserEmail, kGaiaId);
     auto browser_context_helper_delegate =
         std::make_unique<ash::FakeBrowserContextHelperDelegate>();
     auto* browser_context_helper_delegate_ptr =
@@ -614,19 +616,26 @@ class BocaAppPageHandlerTest : public testing::Test {
     boca_app_client_ = std::make_unique<NiceMock<MockBocaAppClient>>();
     ON_CALL(*boca_app_client_, GetSchoolToolsServerBaseUrl())
         .WillByDefault(Return(kTestDefaultUrl));
+    ON_CALL(*boca_app_client_, IsBocaAppWindow(_)).WillByDefault(Return(true));
 
     // Sign in a test user.
-    fake_user_manager_->AddGaiaUser(account_id,
-                                    user_manager::UserType::kRegular);
-    fake_user_manager_->UserLoggedIn(
-        account_id,
-        user_manager::FakeUserManager::GetFakeUsernameHash(account_id));
+    ASSERT_TRUE(
+        ash_test_helper()->user_session_test_environment().AddRegularUser(
+            kTestAccountId));
+    ash_test_helper()->user_session_test_environment().LogIn(kTestAccountId);
     browser_context_ =
         browser_context_helper_delegate_ptr->CreateBrowserContext(
             browser_context_helper_delegate_ptr->GetUserDataDir()->AppendASCII(
                 "test-browser-context"),
             /*is_off_the_record=*/false);
-    ash::AnnotatedAccountId::Set(browser_context_, account_id);
+    ash::AnnotatedAccountId::Set(browser_context_, kTestAccountId);
+
+    // Covers the PolicyProvider prefs too.
+    HostContentSettingsMap::RegisterProfilePrefs(pref_service_.registry());
+    host_content_settings_map_ = base::MakeRefCounted<HostContentSettingsMap>(
+        &pref_service_, /*is_off_the_record=*/false,
+        /*store_last_modified=*/false, /*restore_session=*/false,
+        /*should_record_metrics=*/false);
 
     identity_test_env_.MakePrimaryAccountAvailable(
         kUserEmail, signin::ConsentLevel::kSignin);
@@ -652,14 +661,18 @@ class BocaAppPageHandlerTest : public testing::Test {
     VerifyEndSession();
     browser_context_ = nullptr;
     mock_content_settings_handler_ = nullptr;
+    // Must outlive `boca_app_handler_`, which owns the ContentSettingsHandler
+    // holding a raw_ref to it.
     boca_app_handler_.reset();
+    host_content_settings_map_->ShutdownOnUIThread();
+    host_content_settings_map_.reset();
     web_ui_.reset();
     web_contents_.reset();
     spotlight_service_.reset();
     session_manager_.reset();
     boca_app_client_.reset();
     browser_context_helper_.reset();
-    fake_user_manager_.Reset();
+    AshTestBase::TearDown();
   }
 
  protected:
@@ -681,7 +694,8 @@ class BocaAppPageHandlerTest : public testing::Test {
     // `BocaAppClient::GetSessionManager` should be called exactly once on
     // construction.
     auto content_settings_handler =
-        std::make_unique<NiceMock<MockContentSettingsHandler>>();
+        std::make_unique<NiceMock<MockContentSettingsHandler>>(
+            host_content_settings_map_.get());
     mock_content_settings_handler_ = content_settings_handler.get();
     auto fake_tab_info_collector = std::make_unique<FakeTabInfoCollector>(
         base::BindOnce(&BocaAppPageHandlerTest::ResetTabInfoCollectorPtr,
@@ -700,7 +714,7 @@ class BocaAppPageHandlerTest : public testing::Test {
     *fake_page = std::make_unique<FakePage>(std::move(page_pending_receiver));
     boca_app_handler->SetSpotlightService(spotlight_service_.get());
     // Explicitly set pref
-    boca_app_handler->SetPrefForTesting(&local_state_);
+    boca_app_handler->SetPrefForTesting(local_state());
     return boca_app_handler;
   }
 
@@ -793,10 +807,6 @@ class BocaAppPageHandlerTest : public testing::Test {
 
   void ResetTabInfoCollectorPtr() { fake_tab_info_collector_ptr_ = nullptr; }
 
-  content::BrowserTaskEnvironment* task_environment() {
-    return &task_environment_;
-  }
-
   signin::IdentityTestEnvironment& identity_test_env() {
     return identity_test_env_;
   }
@@ -804,16 +814,10 @@ class BocaAppPageHandlerTest : public testing::Test {
  private:
   bool is_producer_;
   base::test::ScopedFeatureList scoped_feature_list_;
-  content::BrowserTaskEnvironment task_environment_{
-      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   sync_preferences::TestingPrefServiceSyncable pref_service_;
-  TestingPrefServiceSimple local_state_;
+  scoped_refptr<HostContentSettingsMap> host_content_settings_map_;
   ::boca::Session session = GetCommonActiveSessionProto();
-  session_manager::SessionManager device_session_manager_{
-      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
 
-  user_manager::TypedScopedUserManager<user_manager::FakeUserManager>
-      fake_user_manager_;
   std::unique_ptr<ash::BrowserContextHelper> browser_context_helper_;
   // Among all BocaAppHandler dependencies,BocaAppClient should construct early
   // and destruct last.
@@ -1325,13 +1329,10 @@ TEST_F(BocaAppPageHandlerConsumerTest, GetSessionWithFullInputTest) {
 }
 
 TEST_F(BocaAppPageHandlerConsumerTest, StartSpotlightFailsForConsumer) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      ash::features::kBocaSpotlightRobotRequester);
-
   std::string bad_message;
-  mojo::SetDefaultProcessErrorHandler(base::BindLambdaForTesting(
-      [&bad_message](const std::string& error) { bad_message = error; }));
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler(
+      base::BindLambdaForTesting(
+          [&bad_message](const std::string& error) { bad_message = error; }));
 
   remote().get()->StartSpotlight("123456789012", base::DoNothing());
 
@@ -1339,37 +1340,26 @@ TEST_F(BocaAppPageHandlerConsumerTest, StartSpotlightFailsForConsumer) {
       base::test::RunUntil([&bad_message]() { return !bad_message.empty(); }));
 
   EXPECT_EQ("StartSpotlight without active producer session", bad_message);
-
-  mojo::SetDefaultProcessErrorHandler(base::NullCallback());
 }
 
 TEST_F(BocaAppPageHandlerProducerTest, StartSpotlightIgnoresRaceCondition) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      ash::features::kBocaSpotlightRobotRequester);
-
   EXPECT_CALL(*session_manager(), GetCurrentSession())
       .WillRepeatedly(Return(nullptr));
 
   std::string bad_message;
-  mojo::SetDefaultProcessErrorHandler(base::BindLambdaForTesting(
-      [&bad_message](const std::string& error) { bad_message = error; }));
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler(
+      base::BindLambdaForTesting(
+          [&bad_message](const std::string& error) { bad_message = error; }));
 
   base::test::TestFuture<void> future;
   remote().get()->StartSpotlight("123456789012", future.GetCallback());
 
   EXPECT_TRUE(future.Wait());
   EXPECT_TRUE(bad_message.empty());
-
-  mojo::SetDefaultProcessErrorHandler(base::NullCallback());
 }
 
 TEST_F(BocaAppPageHandlerProducerTest,
        StartSpotlightRejectsUnknownConnectionCode) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      ash::features::kBocaSpotlightRobotRequester);
-
   auto session = GetCommonActiveSessionProto();
   EXPECT_CALL(*session_manager(), GetCurrentSession())
       .WillRepeatedly(Return(&session));
@@ -1384,10 +1374,6 @@ TEST_F(BocaAppPageHandlerProducerTest,
 
 TEST_F(BocaAppPageHandlerProducerTest,
        StartSpotlightAcceptsKnownConnectionCode) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      ash::features::kBocaSpotlightRobotRequester);
-
   auto session = GetCommonActiveSessionProto();
   auto* student_statuses = session.mutable_student_statuses();
   ::boca::StudentStatus status;
@@ -2737,7 +2723,7 @@ TEST_F(BocaAppPageHandlerProducerTest, OnSessionRosterUpdatedSucceed) {
   ASSERT_TRUE(result->is_config());
 }
 
-TEST_F(BocaAppPageHandlerProducerTest, JoinSessionSucceeded) {
+TEST_F(BocaAppPageHandlerConsumerTest, JoinSessionSucceeded) {
   EXPECT_CALL(*session_manager(),
               UpdateCurrentSession(_, /*dispatch_event=*/true))
       .Times(1);
@@ -2762,12 +2748,12 @@ TEST_F(BocaAppPageHandlerProducerTest, JoinSessionSucceeded) {
   EXPECT_CALL(*session_manager(), disabled_on_non_managed_network())
       .WillOnce(Return(false));
 
-  boca_app_handler()->SubmitAccessCode("code", future_1.GetCallback());
+  remote()->SubmitAccessCode("code", future_1.GetCallback());
   ASSERT_TRUE(future_1.Wait());
   EXPECT_FALSE(future_1.Get().has_value());
 }
 
-TEST_F(BocaAppPageHandlerProducerTest, JoinSessionFailed) {
+TEST_F(BocaAppPageHandlerConsumerTest, JoinSessionFailed) {
   base::HistogramTester histogram_tester;
   EXPECT_CALL(*session_manager(),
               UpdateCurrentSession(_, /*dispatch_event=*/true))
@@ -2794,7 +2780,7 @@ TEST_F(BocaAppPageHandlerProducerTest, JoinSessionFailed) {
   EXPECT_CALL(*session_manager(), disabled_on_non_managed_network())
       .WillOnce(Return(false));
 
-  boca_app_handler()->SubmitAccessCode("code", future_1.GetCallback());
+  remote()->SubmitAccessCode("code", future_1.GetCallback());
   ASSERT_TRUE(future_1.Wait());
   EXPECT_EQ(mojom::SubmitAccessCodeError::kInvalid, future_1.Get().value());
   histogram_tester.ExpectTotalCount(
@@ -2804,7 +2790,7 @@ TEST_F(BocaAppPageHandlerProducerTest, JoinSessionFailed) {
       google_apis::ApiErrorCode::HTTP_FORBIDDEN, 1);
 }
 
-TEST_F(BocaAppPageHandlerProducerTest,
+TEST_F(BocaAppPageHandlerConsumerTest,
        JoinSessionFailedDueToNonManagedNetwork) {
   EXPECT_CALL(*session_manager(),
               UpdateCurrentSession(_, /*dispatch_event=*/true))
@@ -2823,10 +2809,28 @@ TEST_F(BocaAppPageHandlerProducerTest,
   EXPECT_CALL(*session_client_impl(), JoinSession(_)).Times(0);
   EXPECT_CALL(*session_manager(), disabled_on_non_managed_network())
       .WillOnce(Return(true));
-  boca_app_handler()->SubmitAccessCode("code", future_1.GetCallback());
+  remote()->SubmitAccessCode("code", future_1.GetCallback());
   ASSERT_TRUE(future_1.Wait());
   EXPECT_EQ(mojom::SubmitAccessCodeError::kNetworkRestriction,
             future_1.Get().value());
+}
+
+TEST_F(BocaAppPageHandlerProducerTest, SubmitAccessCodeFailsForProducer) {
+  EXPECT_CALL(*session_client_impl(), JoinSession(_)).Times(0);
+  EXPECT_CALL(*session_manager(), UpdateCurrentSession(_, _)).Times(0);
+
+  std::string bad_message;
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler(
+      base::BindLambdaForTesting(
+          [&bad_message](const std::string& error) { bad_message = error; }));
+
+  remote()->SubmitAccessCode("code", base::DoNothing());
+  remote().FlushForTesting();
+
+  EXPECT_EQ("SubmitAccessCode called by producer.", bad_message);
+  EXPECT_FALSE(remote().is_connected());
+
+  testing::Mock::VerifyAndClearExpectations(session_manager());
 }
 
 TEST_F(BocaAppPageHandlerProducerTest, ViewScreenSucceeded) {
@@ -2834,6 +2838,7 @@ TEST_F(BocaAppPageHandlerProducerTest, ViewScreenSucceeded) {
   EXPECT_CALL(*spotlight_service(), ViewScreen(student_id, kTestUrlBase, _))
       .WillOnce(WithArg<2>(
           [&](auto request) { std::move(request).Run(base::ok(true)); }));
+  EXPECT_CALL(*session_manager(), StartFastPolling(student_id)).Times(1);
 
   base::test::TestFuture<std::optional<mojom::ViewStudentScreenError>> future;
 
@@ -2851,6 +2856,7 @@ TEST_F(BocaAppPageHandlerProducerTest, ViewScreenFailed) {
         std::move(request).Run(
             base::unexpected(google_apis::ApiErrorCode::HTTP_FORBIDDEN));
       }));
+  EXPECT_CALL(*session_manager(), StartFastPolling(_)).Times(0);
 
   base::test::TestFuture<std::optional<mojom::ViewStudentScreenError>> future;
 
@@ -2881,6 +2887,21 @@ TEST_F(BocaAppPageHandlerProducerTest, TestPrefGetterAndSetter) {
   nav_map.Set("google.com", std::move(nav_occurrence));
   TestUserPref(mojom::BocaValidPref::kNavigationSetting,
                /*value=*/base::Value(nav_map.Clone()));
+}
+
+TEST_F(BocaAppPageHandlerProducerTest, TestSetUserPrefDisallowedType) {
+  boca_app_handler()->SetPrefForTesting(pref_service());
+  std::string bad_message;
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler(
+      base::BindLambdaForTesting(
+          [&bad_message](const std::string& error) { bad_message = error; }));
+
+  remote()->SetUserPref(mojom::BocaValidPref::kNavigationSetting,
+                        base::Value(42), base::DoNothing());
+
+  ASSERT_TRUE(
+      base::test::RunUntil([&bad_message]() { return !bad_message.empty(); }));
+  EXPECT_EQ("Using disallowed type for pref.", bad_message);
 }
 
 TEST_F(BocaAppPageHandlerProducerTest, EndViewScreenSessionSucceeded) {
@@ -3006,15 +3027,7 @@ TEST_F(BocaAppPageHandlerProducerTest, SetViewScreenSessionActiveFailed) {
       google_apis::ApiErrorCode::HTTP_FORBIDDEN, 1);
 }
 
-class BocaAppPageHandlerFloatModeTest : public AshTestBase {
- public:
-  BocaAppPageHandlerFloatModeTest() = default;
-  void SetUp() override {
-    ui::ResourceBundle::CleanupSharedInstance();
-    AshTestSuite::LoadTestResources();
-    AshTestBase::SetUp();
-  }
-};
+using BocaAppPageHandlerFloatModeTest = AshTestBase;
 
 TEST_F(BocaAppPageHandlerFloatModeTest, SetFloatModeTest) {
   UpdateDisplay("1366x768");
@@ -3422,8 +3435,9 @@ TEST_F(BocaAppPageHandlerProducerTest, PresentStudentScreenSuccess) {
 
 TEST_F(BocaAppPageHandlerProducerTest, PresentStudentScreenInvalidReceiverId) {
   std::string bad_message;
-  mojo::SetDefaultProcessErrorHandler(base::BindLambdaForTesting(
-      [&bad_message](const std::string& error) { bad_message = error; }));
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler(
+      base::BindLambdaForTesting(
+          [&bad_message](const std::string& error) { bad_message = error; }));
 
   auto student =
       mojom::Identity::New("1", "a", "a@gmail.com", GURL("cdn://s1"));
@@ -3434,8 +3448,6 @@ TEST_F(BocaAppPageHandlerProducerTest, PresentStudentScreenInvalidReceiverId) {
       base::test::RunUntil([&bad_message]() { return !bad_message.empty(); }));
 
   EXPECT_EQ("Invalid receiver_id.", bad_message);
-
-  mojo::SetDefaultProcessErrorHandler(base::NullCallback());
 }
 
 TEST_F(BocaAppPageHandlerProducerTest, PresentStudentScreenFailure) {
@@ -4040,6 +4052,33 @@ TEST_F(BocaAppPageHandlerConsumerTest, SetSitePermission_DeniedWhenNoWindows) {
   EXPECT_TRUE(remote().is_connected());
 }
 
+TEST_F(BocaAppPageHandlerConsumerTest,
+       SetSitePermission_DeniedWhenNotInBocaSWAWindow) {
+  const std::string requested_url = "https://example.com/safe";
+
+  auto tab = mojom::TabInfo::New(std::nullopt, "safe", GURL(requested_url),
+                                 GURL("https://example.com/favicon"),
+                                 /*url_type=*/std::nullopt);
+  std::vector<mojom::TabInfoPtr> tabs;
+  tabs.push_back(std::move(tab));
+  fake_tab_info_collector()->AddWindow(std::move(tabs));
+
+  // Simulate that the top-level native window is not a Boca SWA window.
+  EXPECT_CALL(*boca_app_client(), IsBocaAppWindow(_)).WillOnce(Return(false));
+
+  EXPECT_CALL(*mock_content_settings_handler(),
+              SetContentSettingForOrigin(_, _, _))
+      .Times(0);
+
+  base::test::TestFuture<bool> success_future;
+  remote()->SetSitePermission(requested_url, mojom::Permission::kCamera,
+                              mojom::PermissionSetting::kAllow,
+                              success_future.GetCallback());
+  EXPECT_FALSE(success_future.Get());
+  remote().FlushForTesting();
+  EXPECT_FALSE(remote().is_connected());
+}
+
 struct GeminiStatusTestParam {
   std::string test_name;
   std::string state_string;
@@ -4134,8 +4173,6 @@ class BocaAppPageHandlerProducerMarkerModeTest : public AshTestBase {
  public:
   BocaAppPageHandlerProducerMarkerModeTest() = default;
   void SetUp() override {
-    ui::ResourceBundle::CleanupSharedInstance();
-    AshTestSuite::LoadTestResources();
     AshTestBase::SetUp();
 
     AnnotatorController* annotator_controller =

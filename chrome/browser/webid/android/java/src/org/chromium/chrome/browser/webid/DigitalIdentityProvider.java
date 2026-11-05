@@ -20,7 +20,9 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.webid.DigitalIdentityRequestStatusForMetrics;
+import org.chromium.content_public.browser.webid.DigitalIdentityUiWarningLevel;
 import org.chromium.ui.base.WindowAndroid;
 
 /** Class for issuing request to the Identity Credentials Manager in GMS core. */
@@ -28,16 +30,23 @@ import org.chromium.ui.base.WindowAndroid;
 public class DigitalIdentityProvider {
     private static final String TAG = "DigitalIdentityProvider";
     private long mDigitalIdentityProvider;
-    private static IdentityCredentialsDelegate sCredentials = new IdentityCredentialsDelegate();
+    private static @Nullable IdentityCredentialsDelegate sDelegateForTesting;
+    // Per-instance delegate (rather than a process-wide singleton) so each native
+    // DigitalIdentityProviderAndroid tracks and cancels only its own in-flight GMS
+    // Credential Manager intent on teardown.
+    private final IdentityCredentialsDelegate mCredentialsDelegate;
 
     private DigitalIdentityProvider(long digitalIdentityProvider) {
         mDigitalIdentityProvider = digitalIdentityProvider;
+        mCredentialsDelegate =
+                sDelegateForTesting != null
+                        ? sDelegateForTesting
+                        : new IdentityCredentialsDelegate();
     }
 
-    public static void setDelegateForTesting(IdentityCredentialsDelegate mock) {
-        var oldValue = sCredentials;
-        sCredentials = mock;
-        ResettersForTesting.register(() -> sCredentials = oldValue);
+    public static void setDelegateForTesting(@Nullable IdentityCredentialsDelegate mock) {
+        sDelegateForTesting = mock;
+        ResettersForTesting.register(() -> sDelegateForTesting = null);
     }
 
     @VisibleForTesting
@@ -58,13 +67,18 @@ public class DigitalIdentityProvider {
 
     // Methods that are called by native implementation
     @CalledByNative
-    private static DigitalIdentityProvider create(long digitalIdentityProvider) {
+    @VisibleForTesting
+    static DigitalIdentityProvider create(long digitalIdentityProvider) {
         return new DigitalIdentityProvider(digitalIdentityProvider);
     }
 
     @CalledByNative
-    private void destroy() {
+    @VisibleForTesting
+    void destroy() {
         mDigitalIdentityProvider = 0;
+        // Dismiss any in-flight platform Credential Manager UI and cancel pending intents
+        // so that the UI does not persist out of context across navigation (crbug.com/553271120).
+        mCredentialsDelegate.cancel();
     }
 
     /**
@@ -73,14 +87,18 @@ public class DigitalIdentityProvider {
      * @param window The window associated with the request.
      * @param origin The origin of the requester.
      * @param request The request.
+     * @param warningLevel The UI warning level hint computed for the presentation request.
      */
     @CalledByNative
     void request(
             WindowAndroid window,
             @JniType("std::string") String origin,
-            @JniType("std::string") String request) {
-        sCredentials
-                .get(window, origin, request)
+            @JniType("std::string") String request,
+            @JniType("content::DigitalIdentityProvider::UiWarningLevel")
+                    @DigitalIdentityUiWarningLevel
+                    int warningLevel) {
+        mCredentialsDelegate
+                .get(window, origin, request, warningLevel)
                 .then(
                         response -> {
                             if (mDigitalIdentityProvider != 0) {
@@ -118,7 +136,7 @@ public class DigitalIdentityProvider {
             WindowAndroid window,
             @JniType("std::string") String origin,
             @JniType("std::string") String request) {
-        sCredentials
+        mCredentialsDelegate
                 .create(window, origin, request)
                 .then(
                         response -> {

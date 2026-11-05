@@ -31,6 +31,7 @@
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
+#include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -108,6 +109,7 @@ UpdateService::Result ToResult(update_client::Error error) {
     case update_client::Error::RETRY_LATER:
       return UpdateService::Result::kRetryLater;
     case update_client::Error::SERVICE_ERROR:
+    case update_client::Error::UPDATE_DISABLED:
       return UpdateService::Result::kServiceFailed;
     case update_client::Error::UPDATE_CHECK_ERROR:
       return UpdateService::Result::kUpdateCheckFailed;
@@ -242,6 +244,8 @@ std::wstring GetTextForDownloadError(int error, const std::wstring& language) {
     DOWNLOAD_SWITCH_ENTRY(update_client::CrxDownloaderError::NO_HASH);
     DOWNLOAD_SWITCH_ENTRY(
         update_client::CrxDownloaderError::BITS_TOO_MANY_JOBS);
+    DOWNLOAD_SWITCH_ENTRY(
+        update_client::CrxDownloaderError::DO_TOO_MANY_DOWNLOADS);
     DOWNLOAD_SWITCH_ENTRY(update_client::CrxDownloaderError::GENERIC_ERROR);
 
     case std::to_underlying(update_client::CrxDownloaderError::BAD_HASH):
@@ -718,13 +722,13 @@ void UpdateServiceImplImpl::MaybeInstallEnterpriseCompanionAppOTA(
                       /*new_install=*/false,
                       /*language=*/{},
                       /*callback=*/base::DoNothing()),
-                  MakeUpdateClientCallback(base::BindOnce([](Result result) {
-                                             VLOG(1)
-                                                 << "OTA installation of the "
-                                                    "enterprise companion app "
-                                                    "completed with result: "
-                                                 << result;
-                                           }).Then(std::move(callback)))))));
+                  MakeUpdateClientCallback(TrackInstall(
+                      enterprise_companion::kCompanionAppId,
+                      base::BindOnce([](Result result) {
+                        VLOG(1) << "OTA installation of the enterprise "
+                                   "companion app completed with result: "
+                                << result;
+                      }).Then(std::move(callback))))))));
 }
 
 void UpdateServiceImplImpl::FetchPolicies(
@@ -791,15 +795,13 @@ void UpdateServiceImplImpl::RegisterApp(
                                         enterprise_companion::kCompanionAppId);
   config_->GetUpdaterPersistedData()->RegisterApp(request);
   if (send_event) {
-    update_client::CrxComponent install_data;
-    install_data.ap = request.ap;
-    install_data.app_id = request.app_id;
-    install_data.brand = request.brand_code;
-    install_data.lang = request.lang.value_or("");
-    install_data.requires_network_encryption = false;
-    install_data.version = base::Version(request.version);
     update_client_->SendPing(
-        install_data,
+        {.app_id = request.app_id,
+         .version = base::Version(request.version),
+         .ap = request.ap,
+         .brand = request.brand_code,
+         .lang = request.lang.value_or(""),
+         .requires_network_encryption = false},
         {.event_type = update_client::protocol_request::kEventInstall,
          .result = update_client::protocol_request::kEventResultSuccess},
         base::BindOnce([](update_client::Error error) {
@@ -874,10 +876,11 @@ void UpdateServiceImplImpl::RunPeriodicTasks(base::OnceClosure callback) {
       base::BindOnce(&HandleInconsistentAppsTask::Run,
                      base::MakeRefCounted<HandleInconsistentAppsTask>(
                          config_, GetUpdaterScope())));
-  new_tasks.push_back(
-      base::BindOnce(&RemoveUninstalledAppsTask::Run,
-                     base::MakeRefCounted<RemoveUninstalledAppsTask>(
-                         config_, GetUpdaterScope())));
+  new_tasks.push_back(base::BindOnce(
+      &RemoveUninstalledAppsTask::Run,
+      base::MakeRefCounted<RemoveUninstalledAppsTask>(
+          config_, GetUpdaterScope(),
+          base::BindRepeating(&UpdateServiceImplImpl::IsInstalling, this))));
   new_tasks.push_back(MakeChangeOwnersTask(config_->GetUpdaterPersistedData(),
                                            GetUpdaterScope()));
 
@@ -1159,20 +1162,26 @@ void UpdateServiceImplImpl::UpdateAll(
   VLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  auto app_ids = config_->GetUpdaterPersistedData()->GetAppIds();
+  std::vector<std::string> app_ids =
+      config_->GetUpdaterPersistedData()->GetAppIds();
 
   CHECK(std::ranges::contains(
       app_ids, base::ToLowerASCII(kUpdaterAppId),
       static_cast<std::string (*)(std::string_view)>(&base::ToLowerASCII)));
 
-  const Priority priority = Priority::kBackground;
+  // Apps are checked and installed in this order, so randomize it to keep an
+  // app that fails, hangs, or runs out of time from always delaying the apps
+  // after it.
+  base::RandomShuffle(app_ids.begin(), app_ids.end());
+
+  constexpr Priority kPriority = Priority::kBackground;
 
   auto events_by_app_id =
       std::make_unique<base::flat_map<std::string, UpdateEndEvent>>();
   for (const std::string& app_id : app_ids) {
     (*events_by_app_id)[app_id] = UpdateStartEvent()
                                       .SetAppId(app_id)
-                                      .SetPriority(priority)
+                                      .SetPriority(kPriority)
                                       .WriteAsyncAndReturnEndEvent();
   }
   state_update =
@@ -1210,10 +1219,10 @@ void UpdateServiceImplImpl::UpdateAll(
                  .Then(std::move(callback));
 
   ShouldBlockUpdateForMeteredNetwork(
-      priority,
+      kPriority,
       base::BindOnce(
           &UpdateServiceImplImpl::OnShouldBlockUpdateForMeteredNetwork, this,
-          app_ids, kEmptyFlatMap, kEmptyFlatMap, priority,
+          app_ids, kEmptyFlatMap, kEmptyFlatMap, kPriority,
           UpdateService::PolicySameVersionUpdate::kNotAllowed,
           /*language=*/"", state_update,
           base::BindOnce(
@@ -1280,6 +1289,7 @@ void UpdateServiceImplImpl::Install(
           std::move(event), config_->GetUpdaterPersistedData(),
           registration.app_id)
           .Then(std::move(callback));
+  callback = TrackInstall(registration.app_id, std::move(callback));
 
   base::MakeRefCounted<HandleInconsistentAppsTask>(config_, GetUpdaterScope())
       ->Run(base::BindOnce(
@@ -1360,6 +1370,28 @@ void UpdateServiceImplImpl::InstallImpl(
               base::WrapRefCounted(this), pos)));
 }
 
+bool UpdateServiceImplImpl::IsInstalling(const std::string& app_id) const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return installing_app_ids_.contains(base::ToLowerASCII(app_id));
+}
+
+base::OnceCallback<void(UpdateService::Result)>
+UpdateServiceImplImpl::TrackInstall(const std::string& app_id,
+                                    base::OnceCallback<void(Result)> callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto pos = installing_app_ids_.insert(base::ToLowerASCII(app_id));
+  return base::BindOnce(&UpdateServiceImplImpl::InstallDone, this, pos)
+      .Then(std::move(callback));
+}
+
+UpdateService::Result UpdateServiceImplImpl::InstallDone(
+    std::multiset<std::string>::iterator pos,
+    Result result) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  installing_app_ids_.erase(pos);
+  return result;
+}
+
 void UpdateServiceImplImpl::CancelInstalls(const std::string& app_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   VLOG(1) << __func__;
@@ -1393,6 +1425,7 @@ void UpdateServiceImplImpl::RunInstaller(
     return;
   }
 
+  callback = TrackInstall(app_id, std::move(callback));
   base::MakeRefCounted<HandleInconsistentAppsTask>(config_, GetUpdaterScope())
       ->Run(base::BindOnce(
           &UpdateServiceImplImpl::FetchPolicies, this,
@@ -1578,18 +1611,16 @@ void UpdateServiceImplImpl::RunInstallerImpl(
               // Send an install ping. In some environments the ping cannot be
               // sent, so do not wait for it to be sent before calling back
               // the client.
-              update_client::CrxComponent install_data;
-              install_data.ap = ap;
-              install_data.app_id = app_id;
-              install_data.lang = language;
-              install_data.brand = brand;
-              install_data.requires_network_encryption = false;
-              install_data.install_source = install_source.empty()
-                                                ? kInstallSourceOffline
-                                                : install_source;
-              install_data.version = installer_version;
               update_client->SendPing(
-                  install_data,
+                  {.app_id = app_id,
+                   .version = installer_version,
+                   .ap = ap,
+                   .brand = brand,
+                   .lang = language,
+                   .requires_network_encryption = false,
+                   .install_source = install_source.empty()
+                                         ? kInstallSourceOffline
+                                         : install_source},
                   {.event_type = update_client::protocol_request::kEventInstall,
                    .result =
                        result.result.category ==

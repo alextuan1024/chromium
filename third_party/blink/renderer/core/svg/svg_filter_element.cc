@@ -98,8 +98,11 @@ void SVGFilterElement::SvgAttributeChanged(
 }
 
 LocalSVGResource* SVGFilterElement::AssociatedResource() const {
-  return GetTreeScope().EnsureSVGTreeScopedResources().ExistingResourceForId(
-      GetIdAttribute());
+  SVGTreeScopeResources* scope_resources =
+      GetTreeScope().ExistingSVGTreeScopedResources();
+  return scope_resources
+             ? scope_resources->ExistingResourceForId(GetIdAttribute())
+             : nullptr;
 }
 
 void SVGFilterElement::PrimitiveAttributeChanged(
@@ -120,6 +123,14 @@ void SVGFilterElement::ChildrenChanged(const ChildrenChange& change) {
   if (change.ByParser() && !AssociatedResource())
     return;
 
+  InvalidateFilterChain();
+}
+
+void SVGFilterElement::DidChangeIsInCanvasSubtree(
+    CanvasSubtreePropagation propagation_behavior) {
+  // Reachable from slot assignment recalc; see "Recalc hooks" in
+  // slot_assignment.h.
+  SVGElement::DidChangeIsInCanvasSubtree(propagation_behavior);
   InvalidateFilterChain();
 }
 

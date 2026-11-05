@@ -23,6 +23,7 @@ void PassthroughVoiceIsolation::ProcessAudio(base::span<const float> input,
            << input.size();
   CHECK_EQ(input.size(), frame_size_);
   CHECK_EQ(output.size(), frame_size_);
+  // Use copy_from() as callers may process in place.
   output.copy_from(input);
 }
 
@@ -32,6 +33,12 @@ size_t PassthroughVoiceIsolation::FrameSize() const {
 
 size_t PassthroughVoiceIsolation::FramesPerSecond() const {
   return frames_per_second_;
+}
+
+void PassthroughVoiceIsolation::ClearBuffers() {}
+
+base::TimeDelta PassthroughVoiceIsolation::AlgorithmicDelay() const {
+  return base::TimeDelta();
 }
 
 }  // namespace media

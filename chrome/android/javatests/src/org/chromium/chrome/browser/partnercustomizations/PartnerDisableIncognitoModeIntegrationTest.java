@@ -20,13 +20,10 @@ import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.homepage.HomepageTestRule;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.profiles.ProfileManager;
@@ -38,7 +35,6 @@ import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.net.test.EmbeddedTestServer;
-import org.chromium.ui.base.UiAndroidFeatures;
 import org.chromium.ui.modelutil.MVCListAdapter;
 
 import java.util.List;
@@ -46,8 +42,6 @@ import java.util.concurrent.ExecutionException;
 
 /** Integration tests for the partner disabling incognito mode feature. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableFeatures(UiAndroidFeatures.USE_NEW_ETC1_ENCODER) // https://crbug.com/401244299
 public class PartnerDisableIncognitoModeIntegrationTest {
     private final BasePartnerBrowserCustomizationIntegrationTestRule
             mPartnerBrowserCustomizationRule =

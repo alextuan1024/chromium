@@ -135,8 +135,8 @@
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/test/window_destroyed_waiter.h"
 #include "ui/aura/window.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/screen.h"
 #include "ui/display/test/display_manager_test_api.h"
@@ -251,15 +251,15 @@ std::unique_ptr<ash::DeskTemplate> CaptureActiveDeskAndSaveTemplate(
   return desk_template;
 }
 
-std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>>
+std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>>
 GetDeskTemplates() {
   base::RunLoop run_loop;
-  std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>> templates;
+  std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>> templates;
 
   DesksClient::Get()->GetDeskTemplates(base::BindLambdaForTesting(
       [&](std::optional<DesksClient::DeskActionError> error,
           const std::vector<raw_ptr<const ash::DeskTemplate,
-                                    VectorExperimental>>& desk_templates) {
+                                    DanglingUntriaged>>& desk_templates) {
         templates = desk_templates;
         run_loop.Quit();
       }));
@@ -272,7 +272,7 @@ GetDeskTemplates() {
 // false if not.
 bool ContainUuidInTemplates(
     const base::Uuid& uuid,
-    const std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>>&
+    const std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>>&
         desk_templates) {
   DCHECK(uuid.is_valid());
   return std::ranges::contains(desk_templates, uuid, &ash::DeskTemplate::uuid);
@@ -374,7 +374,7 @@ void ClickFirstTemplateItem() {
   ClickView(template_item);
 }
 
-const std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>>
+const std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>>
 GetAllEntries() {
   std::vector<const ash::DeskTemplate*> templates;
   auto error = DesksClient::Get()->GetDeskModel()->GetAllEntries();
@@ -496,10 +496,6 @@ class DesksClientTest : public extensions::PlatformAppBrowserTest {
     std::vector<base::test::FeatureRef> disabled_features = {
         ash::features::kDeskTemplateSync};
     scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
-    // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
-    // enabled and then remove this.
-    webui_omnibox_feature_list_.InitFromCommandLine(
-        "", "WebUIOmniboxPopup,WebUIOmniboxAimPopup");
 
     // Suppress the multitask menu nudge as we'll be checking the stacking order
     // and the count of the active desk children.
@@ -589,7 +585,6 @@ class DesksClientTest : public extensions::PlatformAppBrowserTest {
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-  base::test::ScopedFeatureList webui_omnibox_feature_list_;
 };
 
 // Tests that a browser's urls can be captured correctly in the desk template.
@@ -636,7 +631,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, CaptureBrowserTabGroupsTest) {
 
   ClickSaveDeskAsTemplateMenuItem();
 
-  std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>> templates =
+  std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>> templates =
       GetAllEntries();
   ASSERT_EQ(1u, templates.size());
 
@@ -665,7 +660,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest,
   app_launch_info->container =
       static_cast<int32_t>(apps::LaunchContainer::kLaunchContainerWindow);
   app_launch_info->disposition =
-      static_cast<int32_t>(WindowOpenDisposition::NEW_FOREGROUND_TAB);
+      static_cast<int32_t>(ui::mojom::WindowOpenDisposition::kNewForegroundTab);
   app_launch_info->browser_extra_info.urls = {GURL(kExampleUrl1)};
   app_launch_info->browser_extra_info.tab_group_infos = {group_info};
 
@@ -708,7 +703,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, CaptureBrowserWithPinnedTabs) {
 
   ClickSaveDeskAsTemplateMenuItem();
 
-  std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>> templates =
+  std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>> templates =
       GetAllEntries();
   ASSERT_EQ(1u, templates.size());
 
@@ -816,7 +811,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, CaptureActiveDeskAsTemplateTest) {
 
   EXPECT_EQ(static_cast<int>(apps::LaunchContainer::kLaunchContainerWindow),
             data2->container.value());
-  EXPECT_EQ(static_cast<int>(WindowOpenDisposition::NEW_WINDOW),
+  EXPECT_EQ(static_cast<int>(ui::mojom::WindowOpenDisposition::kNewWindow),
             data2->disposition.value());
   // Verify window info are correctly captured.
   EXPECT_THAT(data2->window_info.current_bounds, Optional(settings_app_bounds));
@@ -987,8 +982,8 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, LaunchTemplateWithChromeApp) {
       profile()->GetPath(),
       std::make_unique<app_restore::AppLaunchInfo>(
           extension_id, apps::LaunchContainer::kLaunchContainerWindow,
-          WindowOpenDisposition::NEW_WINDOW, display::kDefaultDisplayId,
-          std::vector<base::FilePath>{}, nullptr));
+          ui::mojom::WindowOpenDisposition::kNewWindow,
+          display::kDefaultDisplayId, std::vector<base::FilePath>{}, nullptr));
 
   extensions::AppWindow* app_window = CreateAppWindow(profile(), extension);
   ASSERT_TRUE(app_window);
@@ -1608,7 +1603,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, SystemUICaptureBrowserUrlsTest) {
 
   ClickSaveDeskAsTemplateMenuItem();
 
-  std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>> templates =
+  std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>> templates =
       GetAllEntries();
   ASSERT_EQ(1u, templates.size());
 
@@ -1780,7 +1775,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, SystemUICaptureIncognitoBrowserTest) {
     event_generator.PressAndReleaseKey(ui::VKEY_RETURN);
   }
 
-  std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>> templates =
+  std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>> templates =
       GetAllEntries();
   ASSERT_EQ(1u, templates.size());
 
@@ -2054,7 +2049,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, SystemUILaunchTemplateWithPWA) {
   ash::WaitForOverviewEnterAnimation();
   ClickSaveDeskAsTemplateMenuItem();
 
-  std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>> templates =
+  std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>> templates =
       GetAllEntries();
   ASSERT_EQ(1u, templates.size());
 
@@ -2101,7 +2096,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest,
   ash::WaitForOverviewEnterAnimation();
   ClickSaveDeskAsTemplateMenuItem();
 
-  std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>> templates =
+  std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>> templates =
       GetAllEntries();
   ASSERT_EQ(1u, templates.size());
 
@@ -2150,7 +2145,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest,
 
   ClickSaveDeskAsTemplateMenuItem();
 
-  std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>> templates =
+  std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>> templates =
       GetAllEntries();
   ASSERT_EQ(1u, templates.size());
 
@@ -2189,7 +2184,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest,
 
   EXPECT_EQ(static_cast<int>(apps::LaunchContainer::kLaunchContainerWindow),
             data2->container.value());
-  EXPECT_EQ(static_cast<int>(WindowOpenDisposition::NEW_WINDOW),
+  EXPECT_EQ(static_cast<int>(ui::mojom::WindowOpenDisposition::kNewWindow),
             data2->disposition.value());
   // Verify window info are correctly captured.
   EXPECT_THAT(data2->window_info.current_bounds, Optional(settings_app_bounds));
@@ -2213,8 +2208,8 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, SystemUILaunchTemplateWithChromeApp) {
       profile()->GetPath(),
       std::make_unique<app_restore::AppLaunchInfo>(
           extension_id, apps::LaunchContainer::kLaunchContainerWindow,
-          WindowOpenDisposition::NEW_WINDOW, display::kDefaultDisplayId,
-          std::vector<base::FilePath>{}, nullptr));
+          ui::mojom::WindowOpenDisposition::kNewWindow,
+          display::kDefaultDisplayId, std::vector<base::FilePath>{}, nullptr));
 
   extensions::AppWindow* app_window = CreateAppWindow(profile(), extension);
   ASSERT_TRUE(app_window);
@@ -3073,7 +3068,7 @@ IN_PROC_BROWSER_TEST_F(SaveAndRecallBrowserTest,
   ASSERT_TRUE(overview_grid);
   EXPECT_TRUE(overview_grid->IsShowingSavedDeskLibrary());
 
-  std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>> templates =
+  std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>> templates =
       GetAllEntries();
   EXPECT_EQ(1u, templates.size());
 }

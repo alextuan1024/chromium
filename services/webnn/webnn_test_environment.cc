@@ -4,15 +4,20 @@
 
 #include "services/webnn/webnn_test_environment.h"
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
+#include "base/task/sequence_manager/task_queue.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/run_until.h"
+#include "gpu/command_buffer/service/gpu_task_priority.h"
+#include "gpu/command_buffer/service/scheduler.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "services/webnn/buildflags.h"
 #include "services/webnn/host/weights_file_provider.h"
+#include "services/webnn/public/mojom/features.mojom-features.h"
 #include "services/webnn/webnn_context_impl.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/origin.h"
@@ -20,6 +25,11 @@
 #if BUILDFLAG(WEBNN_USE_TFLITE) || BUILDFLAG(WEBNN_USE_LITERT)
 #include "services/webnn/host/weights_file_creator_impl.h"
 #include "services/webnn/public/cpp/in_process_context_provider.h"  // nogncheck
+#endif
+
+#if BUILDFLAG(IS_APPLE)
+#include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -109,6 +119,22 @@ class InProcessFallbackContextProvider : public mojom::WebNNContextProvider {
       task_runner_;
 };
 
+class TaskEnvironmentWithGpuPriorities : public base::test::TaskEnvironment {
+ public:
+  TaskEnvironmentWithGpuPriorities()
+      : base::test::TaskEnvironment(CreateTaskEnvironmentWithPriorities(
+            gpu::CreateGpuPrioritySettings(),
+            SubclassCreatesDefaultTaskRunner{})) {
+    task_queue_ = sequence_manager()->CreateTaskQueue(
+        base::sequence_manager::TaskQueue::Spec(
+            base::sequence_manager::QueueName::TASK_ENVIRONMENT_DEFAULT_TQ));
+    DeferredInitFromSubclass(task_queue_.get());
+  }
+
+ private:
+  base::sequence_manager::TaskQueue::Handle task_queue_;
+};
+
 }  // namespace
 
 FakeWebNNBrowserHostForTesting::FakeWebNNBrowserHostForTesting()
@@ -127,16 +153,39 @@ void FakeWebNNBrowserHostForTesting::EnsureExecutionProvidersReady(
   // Initializes the execution providers used by the WebNN ORT backend.
   webnn::EnsureExecutionProvidersReady(std::move(callback));
 }
+#endif
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
 void FakeWebNNBrowserHostForTesting::RequestCompilerContext(
     webnn::mojom::CreateContextOptionsPtr context_options,
     const webnn::ContextProperties& context_properties,
+#if BUILDFLAG(IS_WIN)
     const webnn::EpDeviceInfo& target_device,
+#endif
     mojo::PendingReceiver<webnn::mojom::WebNNCompilerContext>
         compiler_context_receiver,
     mojo::PendingRemote<webnn::mojom::WebNNModelLoader> model_loader_remote,
+    mojo::PendingReceiver<webnn::mojom::WebNNCompilerHost>
+        compiler_host_receiver,
     RequestCompilerContextCallback callback) {
+#if BUILDFLAG(IS_APPLE)
+  if (!base::FeatureList::IsEnabled(mojom::features::kWebNNCompilerProcess) ||
+      !base::FeatureList::IsEnabled(mojom::features::kWebNNCoreML)) {
+    std::move(callback).Run(false);
+    return;
+  }
+  if (!compiler_service_) {
+    compiler_service_ = std::make_unique<WebNNCompilerServiceImpl>(
+        compiler_service_remote_.BindNewPipeAndPassReceiver());
+  }
+  compiler_host_receivers_.Add(this, std::move(compiler_host_receiver));
+  compiler_service_remote_->CreateCompilerContext(
+      std::move(context_options), context_properties,
+      std::move(model_loader_remote), std::move(compiler_context_receiver),
+      std::move(callback));
+#else
   std::move(callback).Run(false);
+#endif
 }
 #endif
 
@@ -149,7 +198,28 @@ void FakeWebNNBrowserHostForTesting::CreateWeightsFile(
 void FakeWebNNBrowserHostForTesting::CopyCompiledModel(
     const base::FilePath& compiler_model_path,
     CopyCompiledModelCallback callback) {
-  std::move(callback).Run(compiler_model_path);
+  base::ScopedTempDir gpu_temp_dir;
+  if (!gpu_temp_dir.CreateUniqueTempDir()) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+  base::FilePath dest_path =
+      gpu_temp_dir.GetPath().AppendASCII("model.mlmodelc");
+  if (!base::CopyDirectory(compiler_model_path, dest_path,
+                           /*recursive=*/true)) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+  // Release ownership; ContextImplCoreml::OnCompiledModelCopied adopts
+  // dest_path.DirName() into its own ScopedTempDir.
+  std::ignore = gpu_temp_dir.Take();
+  std::move(callback).Run(dest_path);
+}
+
+void FakeWebNNBrowserHostForTesting::Terminate() {
+  compiler_service_.reset();
+  compiler_service_remote_.reset();
+  compiler_host_receivers_.Clear();
 }
 #endif
 
@@ -158,7 +228,10 @@ WebNNTestEnvironment::WebNNTestEnvironment(
     WebNNContextProviderImpl::LoseAllContextsCallback
         lose_all_contexts_callback,
     std::unique_ptr<base::test::TaskEnvironment> task_environment)
-    : task_environment_(std::move(task_environment)),
+    : task_environment_(
+          task_environment
+              ? std::move(task_environment)
+              : std::make_unique<TaskEnvironmentWithGpuPriorities>()),
       destruction_callback_(
           base::BindRepeating(&WebNNTestEnvironment::OnContextDestroyed,
                               base::Unretained(this))) {
@@ -228,20 +301,26 @@ void WebNNTestEnvironment::OnReceiverDisconnected() {
 }
 
 void WebNNTestEnvironment::OnContextDestroyed() {
+  if (!task_environment_->GetMainThreadTaskRunner()->BelongsToCurrentThread()) {
+    task_environment_->GetMainThreadTaskRunner()->PostTask(
+        FROM_HERE, base::BindOnce(&WebNNTestEnvironment::OnContextDestroyed,
+                                  base::Unretained(this)));
+    return;
+  }
   destroyed_context_count_++;
 }
 
 void WebNNTestEnvironment::WaitForAllContextsToBeDestroyed() {
   // Mojo pipe closure notifications are delivered by the IO thread (managed
   // by ScopedMojoIoForTest inside TaskEnvironment). Flushing the thread pool
-  // ensures those notifications have been forwarded to the GPU scheduler,
-  // which then posts disconnect tasks to the main thread. Without this flush,
-  // RunUntil would never see the disconnect tasks arrive.
+  // and worker thread ensures those notifications have been forwarded to the
+  // GPU scheduler, which then posts disconnect tasks to the main thread.
   base::ThreadPoolInstance::Get()->FlushForTesting();
+  context_provider_->FlushForTesting();
 
   // Wait for all contexts to be fully destroyed (not just removed from the
   // provider's map). After RemoveWebNNContextImpl erases a context,
-  // OnTaskRunnerDeleter posts the actual deletion to the SchedulerTaskRunner.
+  // OnTaskRunnerDeleter posts the actual deletion to the owning task runner.
   // The destructor explicitly resets gpu_task_scheduler_ (releasing
   // MultiplexRouter refs) then fires our callback, incrementing
   // destroyed_context_count_.
@@ -251,14 +330,15 @@ void WebNNTestEnvironment::WaitForAllContextsToBeDestroyed() {
       [&]() { return destroyed_context_count_ >= target_destroyed; }));
 }
 
-void WebNNTestEnvironment::TearDown() {
-  // Flush the thread pool to drain MultiplexRouter bounced tasks that hold
-  // scoped_refptr<MultiplexRouter> via WrapRefCounted. In production these
-  // drain naturally, but in tests the thread pool may shut down first.
-  base::ThreadPoolInstance::Get()->FlushForTesting();
+void WebNNTestEnvironment::RunUntilIdle() {
+  context_provider_->FlushForTesting();
+  task_environment_->RunUntilIdle();
+}
 
-  EXPECT_TRUE(
-      base::test::RunUntil([&]() { return pending_receiver_count_ == 0; }));
+void WebNNTestEnvironment::TearDown() {
+  WaitForAllContextsToBeDestroyed();
+  RunUntilIdle();
+  EXPECT_EQ(pending_receiver_count_, 0u);
 }
 
 WebNNTestEnvironment::~WebNNTestEnvironment() {

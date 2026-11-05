@@ -6,6 +6,7 @@
 
 #include <set>
 #include <string>
+#include <utility>
 
 #include "base/command_line.h"
 #include "base/debug/leak_annotations.h"
@@ -26,11 +27,11 @@
 #include "components/variations/variations_switches.h"
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
+#include "base/task/cancelable_task_tracker.h"
 #include "base/task/thread_pool.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/task/cancelable_task_tracker.h"
 #include "components/variations/variations_crash_keys_android.h"
 #endif
 
@@ -44,16 +45,19 @@ namespace {
 
 // Size of the "variations" crash key (kExperimentListKey) in bytes.
 // 1024*7 bytes should be able to hold about 398 entries, given each entry is
-// 18 bytes long (due to being of the form "8e7abfb0-c16397b7,").
+// 18 bytes long (due to being of the form "8e7abfb0-c16397b7,"). Cast builds
+// use a larger key, since Cast creates a field trial for every server-side
+// feature.
+// Note: `kVariationsKeySize` uses plural "Variations", whereas the histogram
+// name (`Variations.Limits.VariationKeySize.Default`) and
+// `kVariationKeySizeHistogram` use singular "Variation".
 #if BUILDFLAG(LARGE_VARIATION_KEY_SIZE)
 constexpr size_t kVariationsKeySize = 1024 * 8;
-constexpr char kVariationKeySizeHistogram[] =
-    "Variations.Limits.VariationKeySize.Large";
 #else
 constexpr size_t kVariationsKeySize = 1024 * 7;
+#endif
 constexpr char kVariationKeySizeHistogram[] =
     "Variations.Limits.VariationKeySize.Default";
-#endif
 constexpr size_t kVariationsKeySizeNumBuckets = 16;
 
 // Crash key reporting the number of experiments. 8 is the size of the crash key
@@ -99,7 +103,7 @@ class VariationsCrashKeys final
     : public base::FieldTrialList::Observer,
       public base::RuntimeFieldTrialOverrides::Observer {
  public:
-  VariationsCrashKeys();
+  explicit VariationsCrashKeys(ProcessType process_type);
 
   VariationsCrashKeys(const VariationsCrashKeys&) = delete;
   VariationsCrashKeys& operator=(const VariationsCrashKeys&) = delete;
@@ -112,9 +116,10 @@ class VariationsCrashKeys final
 
   // base::RuntimeFieldTrialOverrides::Observer:
   void OnRuntimeFieldTrialOverride(
-      const base::RuntimeFieldTrialOverrides::RuntimeOverrideInfo&
-          override_info,
+      const base::RuntimeFieldTrialInfo& override_info,
       std::string_view previous_override_trial_name) override;
+  void OnRuntimeFieldTrialOverrideActivated(
+      const base::RuntimeFieldTrialInfo& override_info) override;
 
   // Notifies the object that the list of synthetic field trial groups has
   // changed. Note: This matches the SyntheticTrialObserver interface, but this
@@ -124,6 +129,10 @@ class VariationsCrashKeys final
   // Gets the list of experiments and number of experiments in the format we
   // want to place it in the crash keys.
   ExperimentListInfo GetExperimentListInfo();
+
+  // Returns whether this instance was initialized for the browser or a child
+  // process. Used by RecreateCrashKeys() to preserve the process type.
+  ProcessType process_type() const { return process_type_; }
 
  private:
   // Populates `active_trials_` with all the currently active trials.
@@ -151,17 +160,19 @@ class VariationsCrashKeys final
   // observer calls that happen on a different thread.
   scoped_refptr<base::SequencedTaskRunner> ui_thread_task_runner_;
 
+  // Whether this instance was initialized in the browser process or a child
+  // process.
+  const ProcessType process_type_;
+
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
   // Task runner corresponding to a background thread, used for tasks that may
-  // block.
+  // block. Null in child processes.
   scoped_refptr<base::SequencedTaskRunner> background_thread_task_runner_;
-#endif  // IS_CHROMEOS || IS_ANDROID
 
-#if BUILDFLAG(IS_ANDROID)
   // A task tracker that allows us to cancel any tasks that have been posted
   // but have not started to run.
   base::CancelableTaskTracker cancelable_task_tracker_;
-#endif  // IS_ANDROID
+#endif  // IS_CHROMEOS || IS_ANDROID
 
   // A serialized string containing the variations state.
   std::string variations_string_;
@@ -185,7 +196,8 @@ class VariationsCrashKeys final
   SEQUENCE_CHECKER(sequence_checker_);
 };
 
-VariationsCrashKeys::VariationsCrashKeys() {
+VariationsCrashKeys::VariationsCrashKeys(ProcessType process_type)
+    : process_type_(process_type) {
   // Set |ui_thread_task_runner_| *before* observering field trials. Otherwise,
   // it would be possible for a field trial to be activated on a different
   // thread, calling OnFieldTrialGroupFinalized(), and accessing
@@ -193,10 +205,13 @@ VariationsCrashKeys::VariationsCrashKeys() {
   ui_thread_task_runner_ = base::SequencedTaskRunner::GetCurrentDefault();
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
-  // Set |background_thread_task_runner_| before observering field trials for
-  // the same reason mentioned above.
-  background_thread_task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
-      {base::TaskPriority::BEST_EFFORT, base::MayBlock()});
+  if (process_type_ == ProcessType::kBrowser) {
+    // Set |background_thread_task_runner_| before observering field trials for
+    // the same reason mentioned above.
+    background_thread_task_runner_ =
+        base::ThreadPool::CreateSequencedTaskRunner(
+            {base::TaskPriority::BEST_EFFORT, base::MayBlock()});
+  }
 #endif  // IS_CHROMEOS || IS_ANDROID
 
   // Observe field trials before filling the crash key with the currently
@@ -217,7 +232,7 @@ VariationsCrashKeys::VariationsCrashKeys() {
   base::RuntimeFieldTrialOverrides::GetInstance()->AddObserver(this);
   for (const auto& [override_trial_name, override_info] :
        base::RuntimeFieldTrialOverrides::GetInstance()->GetRuntimeOverrides()) {
-    OnRuntimeFieldTrialOverride(override_info,
+    OnRuntimeFieldTrialOverride(*override_info,
                                 /*previous_override_trial_name=*/"");
   }
 
@@ -231,6 +246,8 @@ VariationsCrashKeys::~VariationsCrashKeys() {
   g_num_variations_crash_key.Clear();
   g_variations_crash_key.Clear();
   g_variations_seed_version_crash_key.Clear();
+  g_variations_runtime_field_trial_overrides_crash_key.Clear();
+  g_num_runtime_field_trial_overrides_crash_key.Clear();
 }
 
 void VariationsCrashKeys::OnFieldTrialGroupFinalized(
@@ -258,40 +275,49 @@ void VariationsCrashKeys::OnFieldTrialGroupFinalized(
 }
 
 void VariationsCrashKeys::OnRuntimeFieldTrialOverride(
-    const base::RuntimeFieldTrialOverrides::RuntimeOverrideInfo& override_info,
+    const base::RuntimeFieldTrialInfo& override_info,
     std::string_view previous_override_trial_name) {
   // TODO(crbug.com/482449878): Propagate runtime overrides to child processes
   // so that they also appear in crash reports from child processes.
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   uint32_t overridden_trial_name_hash =
-      override_info.overridden_trial == nullptr
+      override_info.overridden_trial() == nullptr
           ? 0
-          : HashName(override_info.overridden_trial->trial_name());
+          : HashName(override_info.overridden_trial()->trial_name());
   uint32_t previous_override_trial_name_hash =
       previous_override_trial_name.empty()
           ? 0
           : HashName(previous_override_trial_name);
 
   runtime_field_trial_overrides_string_ += base::StringPrintf(
-      "%x-%x-%x-%x,", HashName(override_info.trial_name),
-      HashName(override_info.group_name), overridden_trial_name_hash,
+      "%x-%x-%x-%x,", HashName(override_info.trial_name()),
+      HashName(override_info.group_name()), overridden_trial_name_hash,
       previous_override_trial_name_hash);
 
   ++num_total_runtime_field_trial_overrides_;
 
-  // If we've already initialized crash keys previously, then we need to
-  // recompute the list of active trials from scratch when an override is
-  // applied because runtime overrides changes the state of active trials (i.e.,
-  // one of the currently active trial will be replaced by the override).
-  // If we are in the process of initializing (i.e. initialized_ is false), then
-  // there is no need to recompute the list of as it will be properly
-  // initialized with the overrides already taken into account.
+  // If this override is replacing a previous override or an existing trial, we
+  // need to recompute the list of active trials from scratch to remove the
+  // replaced trial from the active trials crash key.
   if (initialized_) {
-    active_trials_.clear();
-    variations_string_.clear();
-    InitializeWithActiveTrials();
+    if (override_info.overridden_trial() ||
+        !previous_override_trial_name.empty()) {
+      active_trials_.clear();
+      variations_string_.clear();
+      InitializeWithActiveTrials();
+    }
     UpdateCrashKeys();
+  }
+}
+
+void VariationsCrashKeys::OnRuntimeFieldTrialOverrideActivated(
+    const base::RuntimeFieldTrialInfo& override_info) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (initialized_) {
+    AppendFieldTrialAndUpdateCrashKeys(override_info.trial_name(),
+                                       override_info.group_name(),
+                                       /*is_overridden=*/false);
   }
 }
 
@@ -372,14 +398,23 @@ void VariationsCrashKeys::UpdateCrashKeys() {
         variations::switches::kVariationsSeedVersion));
   }
 
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
+  // Android and ChromeOS are the only platforms where VariationsCrashKeys
+  // persists active variations to disk (for OS-level ANR and crash reporting).
+  // Only write from the browser process: child processes have an incomplete
+  // view of active variations (e.g. missing synthetic trials) and should not
+  // overwrite the browser's file.
+  if (process_type_ == ProcessType::kBrowser) {
 #if BUILDFLAG(IS_ANDROID)
-  SaveVariationsForAnrReporting(&cancelable_task_tracker_,
-                                background_thread_task_runner_, info);
-#endif  // IS_ANDROID
-
-#if BUILDFLAG(IS_CHROMEOS)
-  ReportVariationsToChromeOs(background_thread_task_runner_, info);
-#endif  // IS_CHROMEOS
+    SaveVariationsForAnrReporting(&cancelable_task_tracker_,
+                                  background_thread_task_runner_,
+                                  std::move(info));
+#elif BUILDFLAG(IS_CHROMEOS)
+    ReportVariationsToChromeOs(&cancelable_task_tracker_,
+                               background_thread_task_runner_, std::move(info));
+#endif
+  }
+#endif  // IS_ANDROID || IS_CHROMEOS
 }
 
 void VariationsCrashKeys::OnSyntheticTrialsChanged(
@@ -410,17 +445,19 @@ const char kRuntimeFieldTrialOverridesKey[] = "variations-runtime-overrides";
 const char kNumRuntimeFieldTrialOverridesKey[] =
     "num-variations-runtime-overrides";
 
-void InitCrashKeys() {
+void InitCrashKeys(ProcessType process_type) {
   DCHECK(!g_variations_crash_keys);
-  g_variations_crash_keys = new VariationsCrashKeys();
+  g_variations_crash_keys = new VariationsCrashKeys(process_type);
   ANNOTATE_LEAKING_OBJECT_PTR(g_variations_crash_keys);
 }
 
 void RecreateCrashKeys() {
   DCHECK(g_variations_crash_keys);
+  // Preserve the process type across recreation (e.g. in macOS app shims).
+  const ProcessType process_type = g_variations_crash_keys->process_type();
   delete g_variations_crash_keys;
   g_variations_crash_keys = nullptr;
-  InitCrashKeys();
+  InitCrashKeys(process_type);
 }
 
 void UpdateCrashKeysWithSyntheticTrials(

@@ -47,7 +47,7 @@
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/interaction_sequence.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if !BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ui/download/download_display.h"
@@ -387,7 +387,7 @@ class RealCriticalUserJourneyServiceInteractiveTest
               manager, 1,
               content::DownloadTestObserver::ON_DANGEROUS_DOWNLOAD_FAIL));
       ui_test_utils::NavigateToURLWithDisposition(
-          browser(), url, WindowOpenDisposition::CURRENT_TAB,
+          browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui_test_utils::BROWSER_TEST_NO_WAIT);
       observer->WaitForFinished();
     }));
@@ -530,6 +530,13 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
                    browsing_data_important_sites_util::
                        kClearBrowsingDataHistoryEventId));
 
+  // Verification
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return histograms.GetBucketCount(
+               result, CriticalUserJourneySession::JourneyResult::kCompleted) >
+           0;
+  }));
+
   histograms.ExpectBucketCount(step_reached, 2, 1);  // App Menu Clicked
   histograms.ExpectBucketCount(step_reached, 3,
                                1);  // Clear browsing dialog shown
@@ -573,6 +580,13 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
       WaitForEvent(kBrowserViewElementId,
                    browsing_data_important_sites_util::
                        kClearBrowsingDataHistoryEventId));
+
+  // Verification
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return histograms.GetBucketCount(
+               result, CriticalUserJourneySession::JourneyResult::kCompleted) >
+           0;
+  }));
 
   histograms.ExpectBucketCount(step_reached, 1, 1);  // App Menu Clicked
   histograms.ExpectBucketCount(step_reached, 3,

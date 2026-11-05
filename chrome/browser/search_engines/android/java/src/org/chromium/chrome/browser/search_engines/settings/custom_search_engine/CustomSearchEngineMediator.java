@@ -16,6 +16,7 @@ import org.chromium.chrome.browser.search_engines.R;
 import org.chromium.chrome.browser.search_engines.settings.common.BaseSiteSearchMediator;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
+import org.chromium.components.search_engines.SearchEngineSettingsDataProvider;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlCategory;
 import org.chromium.ui.listmenu.ListMenuDelegate;
@@ -26,16 +27,17 @@ import java.util.List;
 
 @NullMarked
 public class CustomSearchEngineMediator extends BaseSiteSearchMediator {
-    private final Callback<TemplateUrl> mOnEditSearchEngine;
-    private final Callback<TemplateUrl> mOnRemoveSearchEngine;
+    private final Callback<String> mOnEditSearchEngine;
+    private final Callback<String> mOnRemoveSearchEngine;
 
     public CustomSearchEngineMediator(
             Context context,
             ModelList modelList,
             Profile profile,
-            Callback<TemplateUrl> onEditSearchEngine,
-            Callback<TemplateUrl> onRemoveSearchEngine) {
-        super(context, modelList, profile);
+            SearchEngineSettingsDataProvider settingsDataProvider,
+            Callback<String> onEditSearchEngine,
+            Callback<String> onRemoveSearchEngine) {
+        super(context, modelList, profile, settingsDataProvider);
         mOnEditSearchEngine = onEditSearchEngine;
         mOnRemoveSearchEngine = onRemoveSearchEngine;
 
@@ -47,7 +49,7 @@ public class CustomSearchEngineMediator extends BaseSiteSearchMediator {
         mModelList.clear();
 
         List<TemplateUrl> urls =
-                mTemplateUrlService.getTemplateUrlsByCategory(TemplateUrlCategory.DEFAULT);
+                mSettingsDataProvider.getTemplateUrlsByCategory(TemplateUrlCategory.DEFAULT);
         for (TemplateUrl url : urls) {
             mModelList.add(createListItem(url));
         }
@@ -55,6 +57,7 @@ public class CustomSearchEngineMediator extends BaseSiteSearchMediator {
 
     @Override
     protected @Nullable ListMenuDelegate createMenuDelegate(TemplateUrl url) {
+        String keyword = url.getKeyword();
         return () -> {
             TemplateUrl defaultSearchEngine =
                     mTemplateUrlService.getDefaultSearchEngineTemplateUrl();
@@ -66,7 +69,7 @@ public class CustomSearchEngineMediator extends BaseSiteSearchMediator {
                             .build());
 
             // Only allow users to make default or remove if it is not DSE.
-            if (!url.equals(defaultSearchEngine)) {
+            if (defaultSearchEngine == null || !keyword.equals(defaultSearchEngine.getKeyword())) {
                 menuItems.add(
                         new ListItemBuilder()
                                 .withTitleRes(R.string.site_search_list_menu_make_default)
@@ -82,19 +85,19 @@ public class CustomSearchEngineMediator extends BaseSiteSearchMediator {
                     menuItems,
                     (model, view) -> {
                         int textId = model.get(ListMenuItemProperties.TITLE_ID);
-                        onMenuItemClicked(textId, url);
+                        onMenuItemClicked(textId, keyword);
                     });
         };
     }
 
     @VisibleForTesting
-    void onMenuItemClicked(int textId, TemplateUrl url) {
+    void onMenuItemClicked(int textId, String keyword) {
         if (R.string.site_search_list_menu_edit == textId) {
-            mOnEditSearchEngine.onResult(url);
+            mOnEditSearchEngine.onResult(keyword);
         } else if (R.string.site_search_list_menu_make_default == textId) {
-            mTemplateUrlService.setSearchEngine(url.getKeyword());
+            mTemplateUrlService.setSearchEngine(keyword);
         } else if (R.string.site_search_list_menu_delete == textId) {
-            mOnRemoveSearchEngine.onResult(url);
+            mOnRemoveSearchEngine.onResult(keyword);
         }
     }
 }

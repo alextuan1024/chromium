@@ -13,6 +13,7 @@
 #include "base/component_export.h"
 #include "google_apis/gaia/core_account_id.h"
 #include "google_apis/gaia/gaia_id.h"
+#include "google_apis/gaia/google_service_auth_error.h"
 
 class GURL;
 
@@ -25,6 +26,8 @@ struct COMPONENT_EXPORT(GOOGLE_APIS) ListedAccount {
   std::string email;
   GaiaId gaia_id;
   std::string raw_email;
+  std::string display_name;
+  std::string photo_url;
   bool valid = true;
   bool signed_out = false;
   bool verified = true;
@@ -122,6 +125,14 @@ std::string CreateBoundOAuthToken(const GaiaId& gaia_id,
 COMPONENT_EXPORT(GOOGLE_APIS)
 std::string CreateMultiOAuthHeader(
     const std::vector<MultiloginAccountAuthCredentials>& accounts);
+
+// Classifies a token rejection based on the `token_binding_assertion` carried
+// by the rejected request: empty or sentinel assertions indicate a rejected
+// token, whereas a real assertion (or failed placeholder) indicates a token
+// binding failure.
+COMPONENT_EXPORT(GOOGLE_APIS)
+GoogleServiceAuthError::InvalidGaiaCredentialsReason
+ClassifyTokenBindingAssertionFailure(std::string_view token_binding_assertion);
 
 }  // namespace gaia
 

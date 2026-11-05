@@ -17,6 +17,7 @@
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/payments/test_payments_data_manager.h"
 #include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
@@ -70,6 +71,7 @@ class MockCreditCardAccessManager : public CreditCardAccessManager {
   MOCK_METHOD(void,
               FetchCreditCard,
               (const CreditCard* card,
+               bool require_user_confirmation,
                OnCreditCardFetchedCallback on_credit_card_fetched),
               (override));
 };
@@ -91,6 +93,7 @@ class MockAutofillDriver : public TestAutofillDriver {
                const url::Origin& triggered_origin,
                (const absl::flat_hash_map<FieldGlobalId, FieldType>&)),
               (override));
+  MOCK_METHOD(bool, DocumentUsedWebOtp, (), (const, override));
 };
 
 class TestBrowserAutofillManager : public autofill::TestBrowserAutofillManager {
@@ -141,17 +144,12 @@ class AutofillMetricsBaseTest : public WithTestAutofillClientDriverManager<
   // credentials/info.
   void CreateLocalAndDuplicateServerCreditCard();
 
-  void AddMaskedServerCreditCardWithOffer(std::string guid,
-                                          std::string offer_reward_amount,
-                                          GURL url,
-                                          int64_t id,
-                                          bool offer_expired = false);
-
   // If set to true, then user is capable of using FIDO authentication for
   // card unmasking.
   void SetFidoEligibility(bool is_verifiable);
 
-  // Mocks a RPC response from Payments.
+  // Mocks a RPC response from Payments and runs the post-fill bookkeeping of
+  // the resulting fill.
   void OnDidGetRealPan(
       payments::PaymentsAutofillClient::PaymentsRpcResult result,
       const std::string& real_pan,
@@ -231,7 +229,7 @@ class AutofillMetricsBaseTest : public WithTestAutofillClientDriverManager<
 
   FormData GetAndAddSeenForm(const test::FormDescription& form_description) {
     FormData form = test::GetFormData(form_description);
-    autofill_driver().SetLocalFrameToken(form.host_frame());
+    autofill_driver().set_frame_token(form.host_frame());
     autofill_manager().AddSeenForm(form,
                                    test::GetHeuristicTypes(form_description),
                                    test::GetServerTypes(form_description));
@@ -270,9 +268,26 @@ class AutofillMetricsBaseTest : public WithTestAutofillClientDriverManager<
                          size_t field_index = 0) {
     autofill_manager().FillOrPreviewForm(
         mojom::ActionPersistence::kFill, form.global_id(),
-        form.fields()[field_index].global_id(),
+        form.fields()[field_index].global_id(), FillingProduct::kAddress,
         personal_data().address_data_manager().GetProfileByGUID(profile_guid),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
+    test_api(autofill_manager()).RunPendingPostFillTasks();
+  }
+
+  // Fills or previews `form` with `credit_card`, triggered on `trigger_field`,
+  // and runs the post-fill bookkeeping. If `credit_card` needs to be fetched
+  // (e.g., a masked server card), the form is only filled once the fetch
+  // completes (see `OnDidGetRealPan()`).
+  void FillOrPreviewCreditCard(const FormData& form,
+                               const FormFieldData& trigger_field,
+                               const CreditCard* credit_card,
+                               mojom::ActionPersistence action_persistence) {
+    autofill_manager().FillOrPreviewForm(
+        action_persistence, form.global_id(), trigger_field.global_id(),
+        FillingProduct::kCreditCard, credit_card, AutofillTriggerSource::kPopup,
+        /*require_user_confirmation=*/false, /*blocked_fields=*/{});
+    test_api(autofill_manager()).RunPendingPostFillTasks();
   }
 
   void FillLoyaltyCard(const FormData& form,

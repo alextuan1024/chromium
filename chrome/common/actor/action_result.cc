@@ -12,24 +12,6 @@
 
 namespace actor {
 
-ActionResultWithLatencyInfo::ActionResultWithLatencyInfo(
-    base::TimeTicks start_time,
-    base::TimeTicks end_time,
-    mojom::ActionResultPtr result)
-    : start_time(start_time), end_time(end_time), result(std::move(result)) {
-  DCHECK(!start_time.is_null());
-  DCHECK(!end_time.is_null());
-  DCHECK_LE(start_time, end_time);
-}
-ActionResultWithLatencyInfo::ActionResultWithLatencyInfo(
-    const ActionResultWithLatencyInfo& other)
-    : start_time(other.start_time),
-      end_time(other.end_time),
-      result(other.result.Clone()) {}
-ActionResultWithLatencyInfo::~ActionResultWithLatencyInfo() = default;
-ActionResultWithLatencyInfo::ActionResultWithLatencyInfo(
-    ActionResultWithLatencyInfo&&) = default;
-
 bool IsOk(const mojom::ActionResult& result) {
   return IsOk(result.code);
 }
@@ -51,6 +33,7 @@ mojom::ActionResultPtr MakeOkResultWithMessage(bool requires_page_stabilization,
   return mojom::ActionResult::New(
       mojom::ActionResultCode::kOk, requires_page_stabilization, message,
       /*script_tool_response=*/nullptr,
+      /*execute_js_response=*/nullptr,
       /*execution_end_time=*/base::TimeTicks::Now(),
       mojom::ScreenshotPolicy::kRequested,
       mojom::PageContentExtractionPolicy::kRequested,
@@ -65,22 +48,11 @@ mojom::ActionResultPtr MakeResult(mojom::ActionResultCode code,
   return mojom::ActionResult::New(
       code, requires_page_stabilization, std::string(msg),
       /*script_tool_response=*/nullptr,
+      /*execute_js_response=*/nullptr,
       /*execution_end_time=*/base::TimeTicks::Now(),
       mojom::ScreenshotPolicy::kRequested,
       mojom::PageContentExtractionPolicy::kRequested,
       /*attempt_login_status=*/std::nullopt);
-}
-
-std::vector<ActionResultWithLatencyInfo> MakeResultVector(
-    mojom::ActionResultPtr result) {
-  const auto now = base::TimeTicks::Now();
-  return std::vector<ActionResultWithLatencyInfo>(
-      {ActionResultWithLatencyInfo(now, now, std::move(result))});
-}
-
-std::vector<ActionResultWithLatencyInfo> MakeResultVector(
-    mojom::ActionResultCode code) {
-  return MakeResultVector(MakeResult(code));
 }
 
 std::string ToDebugString(const mojom::ActionResult& result) {

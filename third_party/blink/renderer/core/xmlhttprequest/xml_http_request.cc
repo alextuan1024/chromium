@@ -105,7 +105,6 @@
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
@@ -380,8 +379,7 @@ v8::Local<v8::Value> XMLHttpRequest::ResponseJSON(ScriptState* script_state) {
   // Catch syntax error. Swallows an exception (when thrown) as the
   // spec says. https://xhr.spec.whatwg.org/#response-body
   v8::TryCatch try_catch(script_state->GetIsolate());
-  v8::Local<v8::Value> json =
-      FromJSONString(script_state, response_text_.ToString());
+  v8::Local<v8::Value> json = FromJSONString(script_state, response_text_);
   if (try_catch.HasCaught()) {
     return v8::Null(script_state->GetIsolate());
   }
@@ -1060,6 +1058,12 @@ void XMLHttpRequest::CreateRequest(scoped_refptr<EncodedFormData> http_body,
   request.SetSkipServiceWorker(world_ && world_->IsIsolatedWorld());
   if (trust_token_params_)
     request.SetTrustTokenParams(*trust_token_params_);
+  // Sync requests from workers are not allowed to bypass limits as this enables
+  // probing of the socket pool capacity. See https://crbug.com/563817431.
+  request.SetRequiresLoadIgnoreLimits(
+      !async_ && (!base::FeatureList::IsEnabled(
+                      features::kRequiresLoadIgnoreLimitsForDomWindowsOnly) ||
+                  GetExecutionContext()->IsWindow()));
 
   probe::WillLoadXHR(&execution_context, method_, url_, async_,
                      request_headers_, with_credentials_);
@@ -1073,7 +1077,8 @@ void XMLHttpRequest::CreateRequest(scoped_refptr<EncodedFormData> http_body,
   if (request_headers_.size() > 0)
     request.AddHTTPHeaderFields(request_headers_);
 
-  ResourceLoaderOptions resource_loader_options(world_);
+  ResourceLoaderOptions resource_loader_options =
+      ResourceLoaderOptions::CreateForTargetWorld(world_.Get());
   resource_loader_options.initiator_info.name =
       fetch_initiator_type_names::kXmlhttprequest;
   if (blob_url_loader_factory_) {

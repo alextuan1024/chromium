@@ -79,13 +79,12 @@ class FakeOptimizationGuideDecider
     : public optimization_guide::TestOptimizationGuideDecider {
  public:
   void RegisterOptimizationTypes(
-      const std::vector<optimization_guide::proto::OptimizationType>&
-          optimization_types) override {
+      optimization_guide::OptimizationTypeSet optimization_types) override {
     registered_optimization_types_ = optimization_types;
   }
 
-  std::vector<optimization_guide::proto::OptimizationType>
-  registered_optimization_types() {
+  optimization_guide::OptimizationTypeSet registered_optimization_types()
+      const {
     return registered_optimization_types_;
   }
 
@@ -93,7 +92,6 @@ class FakeOptimizationGuideDecider
       const GURL& url,
       optimization_guide::proto::OptimizationType optimization_type,
       optimization_guide::OptimizationGuideDecisionCallback callback) override {
-    std::string url_spec = url.spec();
     if (optimization_type == optimization_guide::proto::PAGE_ENTITIES &&
         url == GURL("http://hasmetadata.com/")) {
       optimization_guide::proto::PageEntitiesMetadata page_entities_metadata;
@@ -140,8 +138,7 @@ class FakeOptimizationGuideDecider
   }
 
  private:
-  std::vector<optimization_guide::proto::OptimizationType>
-      registered_optimization_types_;
+  optimization_guide::OptimizationTypeSet registered_optimization_types_;
 };
 
 class MockPageContentAnnotationsObserver
@@ -151,6 +148,30 @@ class MockPageContentAnnotationsObserver
               OnPageContentAnnotated,
               (const HistoryVisit&, const PageContentAnnotationsResult&),
               (override));
+};
+
+class FakePageCategoryClassifierBridge : public PageCategoryClassifierBridge {
+ public:
+  base::CallbackListSubscription Subscribe(
+      ClassificationCallback callback) override {
+    ++subscribe_count_;
+    return callbacks_.Add(std::move(callback));
+  }
+
+  void Notify(const GURL& url,
+              ukm::SourceId source_id,
+              const std::vector<Category>& categories) {
+    callbacks_.Notify(url, source_id, categories);
+  }
+
+  bool has_subscribers() const { return !callbacks_.empty(); }
+  int subscribe_count() const { return subscribe_count_; }
+
+ private:
+  base::RepeatingCallbackList<
+      void(const GURL&, ukm::SourceId, const std::vector<Category>&)>
+      callbacks_;
+  int subscribe_count_ = 0;
 };
 
 }  // namespace
@@ -437,13 +458,12 @@ TEST_F(PageContentAnnotationsServiceTest, MAYBE_OlderVisitsDropped) {
 }
 
 TEST_F(PageContentAnnotationsServiceTest, RegistersType) {
-  std::vector<optimization_guide::proto::OptimizationType>
-      registered_optimization_types =
-          optimization_guide_decider()->registered_optimization_types();
-  EXPECT_TRUE(std::ranges::contains(registered_optimization_types,
-                                    optimization_guide::proto::PAGE_ENTITIES));
-  EXPECT_TRUE(std::ranges::contains(registered_optimization_types,
-                                    optimization_guide::proto::SALIENT_IMAGE));
+  optimization_guide::OptimizationTypeSet registered_optimization_types =
+      optimization_guide_decider()->registered_optimization_types();
+  EXPECT_TRUE(registered_optimization_types.Has(
+      optimization_guide::proto::PAGE_ENTITIES));
+  EXPECT_TRUE(registered_optimization_types.Has(
+      optimization_guide::proto::SALIENT_IMAGE));
 }
 
 TEST_F(PageContentAnnotationsServiceTest, DoesNotPersistIfServerHasNoData) {
@@ -477,6 +497,10 @@ TEST_F(PageContentAnnotationsServiceTest,
 }
 
 TEST_F(PageContentAnnotationsServiceTest, CategoryClassifierObserver) {
+  auto bridge = std::make_unique<FakePageCategoryClassifierBridge>();
+  FakePageCategoryClassifierBridge* bridge_ptr = bridge.get();
+  service_->SetPageCategoryClassifierBridge(std::move(bridge));
+
   MockPageContentAnnotationsObserver observer;
   service_->AddObserver(AnnotationType::kCategoryClassifier, &observer);
 
@@ -510,9 +534,39 @@ TEST_F(PageContentAnnotationsServiceTest, CategoryClassifierObserver) {
         EXPECT_EQ(results[1].score, 0.8f);
       });
 
-  service()->OnCategoriesClassified(url, /*source_id=*/0, categories);
+  bridge_ptr->Notify(url, /*source_id=*/0, categories);
 
   service_->RemoveObserver(AnnotationType::kCategoryClassifier, &observer);
+}
+
+TEST_F(PageContentAnnotationsServiceTest, CategoryClassifierBridgeDemand) {
+  auto bridge = std::make_unique<FakePageCategoryClassifierBridge>();
+  FakePageCategoryClassifierBridge* bridge_ptr = bridge.get();
+
+  service_->SetPageCategoryClassifierBridge(std::move(bridge));
+  EXPECT_FALSE(bridge_ptr->has_subscribers());
+  EXPECT_EQ(bridge_ptr->subscribe_count(), 0);
+
+  MockPageContentAnnotationsObserver observer1;
+  MockPageContentAnnotationsObserver observer2;
+
+  service_->AddObserver(AnnotationType::kCategoryClassifier, &observer1);
+  EXPECT_TRUE(bridge_ptr->has_subscribers());
+  EXPECT_EQ(bridge_ptr->subscribe_count(), 1);
+
+  // Adding a second observer reuses the existing bridge subscription.
+  service_->AddObserver(AnnotationType::kCategoryClassifier, &observer2);
+  EXPECT_TRUE(bridge_ptr->has_subscribers());
+  EXPECT_EQ(bridge_ptr->subscribe_count(), 1);
+
+  // Removing one observer keeps the subscription active while another observer
+  // exists.
+  service_->RemoveObserver(AnnotationType::kCategoryClassifier, &observer1);
+  EXPECT_TRUE(bridge_ptr->has_subscribers());
+
+  // Removing the last observer drops the bridge subscription.
+  service_->RemoveObserver(AnnotationType::kCategoryClassifier, &observer2);
+  EXPECT_FALSE(bridge_ptr->has_subscribers());
 }
 
 }  // namespace page_content_annotations

@@ -9,24 +9,32 @@
 #include "base/test/tracing/trace_event_analyzer.h"
 #include "base/test/tracing/trace_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/css/css_style_rule.h"
 #include "third_party/blink/renderer/core/css/css_test_helpers.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser.h"
 #include "third_party/blink/renderer/core/css/resolver/element_resolve_context.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
+#include "third_party/blink/renderer/core/css/resolver/style_rule_usage_tracker.h"
 #include "third_party/blink/renderer/core/css/selector_filter.h"
+#include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
+#include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_style_element.h"
 #include "third_party/blink/renderer/core/inspector/invalidation_set_to_selector_map.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/platform/bindings/v8_binding.h"
+#include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
+#include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 
@@ -147,6 +155,48 @@ class ElementRuleCollectorTest : public PageTestBase {
   }
 };
 
+TEST_F(ElementRuleCollectorTest, PresentationHintApplicationMetadata) {
+  for (bool enabled : {false, true}) {
+    ScopedSvgIncrementalStyleForTest incremental_style(enabled);
+    SCOPED_TRACE(enabled);
+    SetBodyInnerHTML(R"HTML(
+      <div id="html"></div>
+      <svg><rect id="svg"/></svg>
+    )HTML");
+    const auto* properties =
+        css_test_helpers::ParseDeclarationBlock("opacity: 0.5");
+    for (const char* id : {"html", "svg"}) {
+      SCOPED_TRACE(id);
+      Element* element = GetElementById(id);
+      for (CascadeOrigin origin :
+           {CascadeOrigin::kAuthorPresentationalHint, CascadeOrigin::kAuthor}) {
+        const bool is_inline_style = origin == CascadeOrigin::kAuthor;
+        ElementResolveContext context(*element);
+        SelectorFilter filter;
+        MatchResult result;
+        if (is_inline_style) {
+          result.BeginAddingAuthorRulesForTreeScope(GetDocument());
+        }
+        ElementRuleCollector collector(context, StyleRecalcContext(), filter,
+                                       result, InsideLink(element));
+        collector.AddElementStyleProperties(properties, origin,
+                                            /*is_cacheable=*/true,
+                                            is_inline_style);
+        ASSERT_EQ(1u, result.GetMatchedProperties().size());
+        const bool is_svg_hint =
+            enabled && element->IsSVGElement() && !is_inline_style;
+        EXPECT_EQ(
+            is_svg_hint,
+            result.GetMatchedProperties()[0].data_.is_svg_presentation_hint);
+        ASSERT_EQ(1u, result.GetMatchedPropertiesHash().size());
+        EXPECT_EQ(
+            is_svg_hint,
+            result.GetMatchedPropertiesHash()[0].data.is_svg_presentation_hint);
+      }
+    }
+  }
+}
+
 TEST_F(ElementRuleCollectorTest, LinkMatchType) {
   SetBodyInnerHTML(R"HTML(
     <div id=foo></div>
@@ -158,14 +208,12 @@ TEST_F(ElementRuleCollectorTest, LinkMatchType) {
     </a>
     <div id=bar></div>
   )HTML");
-  Element* foo = GetDocument().getElementById(AtomicString("foo"));
-  Element* bar = GetDocument().getElementById(AtomicString("bar"));
-  Element* visited = GetDocument().getElementById(AtomicString("visited"));
-  Element* link = GetDocument().getElementById(AtomicString("link"));
-  Element* unvisited_span =
-      GetDocument().getElementById(AtomicString("unvisited_span"));
-  Element* visited_span =
-      GetDocument().getElementById(AtomicString("visited_span"));
+  Element* foo = GetElementById("foo");
+  Element* bar = GetElementById("bar");
+  Element* visited = GetElementById("visited");
+  Element* link = GetElementById("link");
+  Element* unvisited_span = GetElementById("unvisited_span");
+  Element* visited_span = GetElementById("visited_span");
   ASSERT_TRUE(foo);
   ASSERT_TRUE(bar);
   ASSERT_TRUE(visited);
@@ -261,10 +309,8 @@ TEST_F(ElementRuleCollectorTest, LinkMatchTypeHostContext) {
     <a href="unvisited"><div id="unvisited_host"></div></a>
   )HTML");
 
-  Element* visited_host =
-      GetDocument().getElementById(AtomicString("visited_host"));
-  Element* unvisited_host =
-      GetDocument().getElementById(AtomicString("unvisited_host"));
+  Element* visited_host = GetElementById("visited_host");
+  Element* unvisited_host = GetElementById("unvisited_host");
   ASSERT_TRUE(visited_host);
   ASSERT_TRUE(unvisited_host);
 
@@ -444,9 +490,9 @@ TEST_F(ElementRuleCollectorTest, DirectNesting) {
   RuleSet* rule_set = RuleSetFromSingleRule(GetDocument(), rule);
   ASSERT_NE(nullptr, rule_set);
 
-  Element* foo = GetDocument().getElementById(AtomicString("foo"));
-  Element* bar = GetDocument().getElementById(AtomicString("bar"));
-  Element* baz = GetDocument().getElementById(AtomicString("baz"));
+  Element* foo = GetElementById("foo");
+  Element* bar = GetElementById("bar");
+  Element* baz = GetElementById("baz");
   ASSERT_NE(nullptr, foo);
   ASSERT_NE(nullptr, bar);
   ASSERT_NE(nullptr, baz);
@@ -478,8 +524,8 @@ TEST_F(ElementRuleCollectorTest, RuleNotStartingWithAmpersand) {
   RuleSet* rule_set = RuleSetFromSingleRule(GetDocument(), rule);
   ASSERT_NE(nullptr, rule_set);
 
-  Element* foo = GetDocument().getElementById(AtomicString("foo"));
-  Element* bar = GetDocument().getElementById(AtomicString("bar"));
+  Element* foo = GetElementById("foo");
+  Element* bar = GetElementById("bar");
   ASSERT_NE(nullptr, foo);
   ASSERT_NE(nullptr, bar);
 
@@ -502,7 +548,7 @@ TEST_F(ElementRuleCollectorTest, NestingAtToplevelMatchesNothing) {
   RuleSet* rule_set = RuleSetFromSingleRule(GetDocument(), rule);
   ASSERT_NE(nullptr, rule_set);
 
-  Element* foo = GetDocument().getElementById(AtomicString("foo"));
+  Element* foo = GetElementById("foo");
   ASSERT_NE(nullptr, foo);
 
   HeapVector<MatchedRule> foo_rules = GetAllMatchedRules(foo, rule_set);
@@ -525,9 +571,9 @@ TEST_F(ElementRuleCollectorTest, NestedRulesInMediaQuery) {
   RuleSet* rule_set = RuleSetFromSingleRule(GetDocument(), rule);
   ASSERT_NE(nullptr, rule_set);
 
-  Element* foo = GetDocument().getElementById(AtomicString("foo"));
-  Element* bar = GetDocument().getElementById(AtomicString("bar"));
-  Element* baz = GetDocument().getElementById(AtomicString("baz"));
+  Element* foo = GetElementById("foo");
+  Element* bar = GetElementById("bar");
+  Element* baz = GetElementById("baz");
   ASSERT_NE(nullptr, foo);
   ASSERT_NE(nullptr, bar);
   ASSERT_NE(nullptr, baz);
@@ -558,15 +604,13 @@ TEST_F(ElementRuleCollectorTest, FindStyleRuleWithNesting) {
       </div>
     </div>
   )HTML");
-  CSSStyleSheet* sheet =
-      To<HTMLStyleElement>(GetDocument().getElementById(AtomicString("style")))
-          ->sheet();
+  CSSStyleSheet* sheet = To<HTMLStyleElement>(GetElementById("style"))->sheet();
 
   RuleSet* rule_set = &sheet->Contents()->GetRuleSet();
   ASSERT_NE(nullptr, rule_set);
 
-  Element* foo = GetDocument().getElementById(AtomicString("foo"));
-  Element* bar = GetDocument().getElementById(AtomicString("bar"));
+  Element* foo = GetElementById("foo");
+  Element* bar = GetElementById("bar");
   ASSERT_NE(nullptr, foo);
   ASSERT_NE(nullptr, bar);
 
@@ -866,13 +910,12 @@ TEST_F(ElementRuleCollectorTest, TraceRuleIndexList) {
 
   // All of this stuff should go out of scope, except `rule_index_list`.
   {
-    Element* sheet_element =
-        GetDocument().getElementById(AtomicString("style"));
+    Element* sheet_element = GetElementById("style");
     ASSERT_TRUE(sheet_element);
     CSSStyleSheet* sheet = To<HTMLStyleElement>(sheet_element)->sheet();
     RuleSet* rule_set = &sheet->Contents()->GetRuleSet();
     ASSERT_TRUE(rule_set);
-    Element* e = GetDocument().getElementById(AtomicString("e"));
+    Element* e = GetElementById("e");
     ASSERT_TRUE(e);
     rule_index_list = GetMatchedCSSRuleList(e, rule_set);
   }
@@ -896,6 +939,166 @@ TEST_F(ElementRuleCollectorTest, TraceRuleIndexList) {
     ASSERT_TRUE(IsA<CSSStyleRule>(css_rule));
     EXPECT_EQ("#e", To<CSSStyleRule>(*css_rule).selectorText());
   }
+}
+
+TEST_F(ElementRuleCollectorTest, RuleUsageTracker) {
+  // - #s1: basic stylesheet with one used and one unused rule.
+  // - #s2: nested rule inside @media (matches both #target and &.nested).
+  // - #s3: identical to #s1 so it shares StyleSheetContents (and StyleRule
+  //   pointers), placed after #s2 so their RuleSets are not merged. This tests
+  //   that rule attribution uses MatchedRule::StyleSheetIndex() rather than
+  //   scanning stylesheets for the StyleRule* pointer (which would attribute
+  //   #s3's match to #s1).
+  SetBodyInnerHTML(R"HTML(
+    <style id="s1">
+      .used1 { color: red; }
+      .unused1 { color: blue; }
+    </style>
+    <style id="s2">
+      @media screen {
+        #target {
+          &.nested { background: green; }
+        }
+      }
+    </style>
+    <style id="s3">
+      .used1 { color: red; }
+      .unused1 { color: blue; }
+    </style>
+    <div id="target" class="used1 nested"></div>
+  )HTML");
+
+  StyleSheetContents* user_contents = MakeGarbageCollected<StyleSheetContents>(
+      MakeGarbageCollected<CSSParserContext>(GetDocument()));
+  user_contents->ParseString(".used1 { font-size: 16px; }");
+  GetDocument().GetStyleEngine().InjectSheet(
+      StyleSheetKey("user"), user_contents, WebCssOrigin::kUser);
+  UpdateAllLifecyclePhasesForTest();
+
+  // 1. Test tracking during style resolution (kResolvingStyle mode).
+  auto* tracker = MakeGarbageCollected<StyleRuleUsageTracker>();
+  GetDocument().GetStyleEngine().SetRuleUsageTracker(tracker);
+  GetDocument().GetStyleEngine().MarkAllElementsForStyleRecalc(
+      StyleChangeReasonForTracing::Create("test"));
+  UpdateAllLifecyclePhasesForTest();
+
+  StyleRuleUsageTracker::RuleListByStyleSheet delta = tracker->TakeDelta();
+  const CSSStyleSheet* sheet1 =
+      To<HTMLStyleElement>(GetElementById("s1"))->sheet();
+  const CSSStyleSheet* sheet2 =
+      To<HTMLStyleElement>(GetElementById("s2"))->sheet();
+  const CSSStyleSheet* sheet3 =
+      To<HTMLStyleElement>(GetElementById("s3"))->sheet();
+  ASSERT_EQ(sheet1->Contents(), sheet3->Contents());
+
+  ASSERT_TRUE(delta.Contains(sheet1));
+  EXPECT_EQ(1u, delta.at(sheet1)->size());
+  ASSERT_TRUE(delta.Contains(sheet2));
+  // Both outer `#target` and inner `&.nested` match.
+  EXPECT_EQ(2u, delta.at(sheet2)->size());
+  ASSERT_TRUE(delta.Contains(sheet3));
+  EXPECT_EQ(1u, delta.at(sheet3)->size());
+  // sheet1, sheet2, sheet3, and the injected user sheet.
+  EXPECT_EQ(4u, delta.size());
+
+  // 2. Test CSSOM wrapper parent attribution and tracking during rule
+  // collection (kCollectingCSSRules mode).
+  auto* tracker2 = MakeGarbageCollected<StyleRuleUsageTracker>();
+  GetDocument().GetStyleEngine().SetRuleUsageTracker(tracker2);
+  RuleIndexList* css_rules =
+      GetDocument().GetStyleResolver().CssRulesForElement(
+          GetElementById("target"),
+          StyleResolver::kUserCSSRules | StyleResolver::kAuthorCSSRules);
+  ASSERT_NE(nullptr, css_rules);
+  ASSERT_EQ(5u, css_rules->size());
+  // Entry 0 is from the user stylesheet, which has no TreeScope and therefore
+  // creates a CSSOM wrapper without a parentStyleSheet.
+  EXPECT_EQ(nullptr, css_rules->at(0).rule->parentStyleSheet());
+  // Author rules are sorted by specificity first (.used1 in sheet1 and sheet3),
+  // then #target and &.nested in sheet2.
+  EXPECT_EQ(sheet1, css_rules->at(1).rule->parentStyleSheet());
+  EXPECT_EQ(sheet3, css_rules->at(2).rule->parentStyleSheet());
+  EXPECT_EQ(sheet2, css_rules->at(3).rule->parentStyleSheet());
+  EXPECT_EQ(sheet2, css_rules->at(4).rule->parentStyleSheet());
+
+  // Both user and author rule stages must be recorded in the tracker, even
+  // though MatchElementScopeRules calls ClearMatchedRules() after
+  // MatchUserRules.
+  StyleRuleUsageTracker::RuleListByStyleSheet delta2 = tracker2->TakeDelta();
+  EXPECT_TRUE(delta2.Contains(sheet1));
+  EXPECT_TRUE(delta2.Contains(sheet2));
+  EXPECT_TRUE(delta2.Contains(sheet3));
+  EXPECT_EQ(4u, delta2.size());
+
+  GetDocument().GetStyleEngine().SetRuleUsageTracker(nullptr);
+}
+
+namespace {
+Persistent<HTMLInputElement> g_target_input;
+bool g_callback_fired = false;
+}  // namespace
+
+TEST_F(ElementRuleCollectorTest, MutateClassDuringRuleMatching) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      .c0:invalid { color: red; }
+    </style>
+    <input id="target" class="c0 c1 c2 c3 c4 c5" pattern="a+" value="b">
+  )HTML");
+  auto* input = To<HTMLInputElement>(GetElementById("target"));
+  ASSERT_TRUE(input);
+  g_target_input = input;
+  g_callback_fired = false;
+
+  v8::Isolate* isolate = GetDocument().GetExecutionContext()->GetIsolate();
+  {
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> regexp_context =
+        V8PerIsolateData::From(isolate)->EnsureScriptRegexpContext();
+    v8::Context::Scope context_scope(regexp_context);
+    v8::MicrotasksScope microtasks_scope(
+        isolate, regexp_context->GetMicrotaskQueue(),
+        v8::MicrotasksScope::kDoNotRunMicrotasks);
+
+    auto callback = [](const v8::FunctionCallbackInfo<v8::Value>& info) {
+      g_callback_fired = true;
+      if (g_target_input) {
+        g_target_input->setAttribute(
+            html_names::kClassAttr, AtomicString("d0 d1 d2 d3 d4 d5 d6 d7 d8"));
+        ThreadState::Current()->CollectAllGarbageForTesting(
+            ThreadState::StackState::kMayContainHeapPointers);
+      }
+      info.GetReturnValue().SetNull();
+    };
+
+    v8::Local<v8::Object> global = regexp_context->Global();
+    v8::Local<v8::Value> regexp_val =
+        global->Get(regexp_context, V8String(isolate, "RegExp"))
+            .ToLocalChecked();
+    v8::Local<v8::Object> regexp_obj = regexp_val.As<v8::Object>();
+    v8::Local<v8::Value> proto_val =
+        regexp_obj->Get(regexp_context, V8String(isolate, "prototype"))
+            .ToLocalChecked();
+    v8::Local<v8::Object> proto = proto_val.As<v8::Object>();
+
+    v8::Local<v8::Function> hook_fn =
+        v8::Function::New(regexp_context, callback).ToLocalChecked();
+    proto->Set(regexp_context, V8String(isolate, "exec"), hook_fn).Check();
+  }
+
+  // SetBodyInnerHTML() already computed and cached the validity state, so
+  // without this, IsValidElement() would return the cached value without
+  // re-running the pattern RegExp (and therefore the hook above).
+  input->SetNeedsValidityCheck();
+
+  // Resolving style matches author rules through ElementRuleCollector.
+  // When matching .c0:invalid, the RegExp callback mutates className and
+  // forces garbage collection. The class loop must not use the freed memory.
+  GetDocument().GetStyleResolver().ResolveStyle(input, StyleRecalcContext());
+  EXPECT_TRUE(g_callback_fired);
+
+  g_target_input = nullptr;
+  V8PerIsolateData::From(isolate)->ClearScriptRegexpContext();
 }
 
 }  // namespace blink

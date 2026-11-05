@@ -5,6 +5,8 @@
 #include "chrome/browser/ui/webui/ash/settings/pages/privacy/privacy_section.h"
 
 #include <array>
+#include <memory>
+#include <utility>
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
@@ -12,6 +14,7 @@
 #include "ash/constants/chrome_url_constants.h"
 #include "ash/constants/url_constants.h"
 #include "ash/constants/web_app_id_constants.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/containers/span.h"
@@ -23,9 +26,7 @@
 #include "chrome/browser/ash/auth/legacy_fingerprint_engine.h"
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_utils.h"
 #include "chrome/browser/ash/privacy_hub/privacy_hub_util.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/system/timezone_util.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/webui/ash/settings/os_settings_features_util.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/privacy/metrics_choice_handler.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/privacy/peripheral_data_access_handler.h"
@@ -34,10 +35,10 @@
 #include "chrome/browser/ui/webui/settings/settings_secure_dns_handler.h"
 #include "chrome/browser/ui/webui/settings/shared_settings_localized_strings_provider.h"
 #include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "components/metrics/metrics_reporting_choice_service.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -86,7 +87,7 @@ base::span<const SearchConcept> GetPrivacySearchConceptsSharedWithGuestMode() {
 
 base::span<const SearchConcept> GetPrivacySearchConcepts(
     const user_manager::User& user) {
-  DCHECK(!IsGuestModeActive(user));
+  CHECK(!IsGuestModeActive(user), base::NotFatalUntil::M162);
   static constexpr auto tags = std::to_array<SearchConcept>({
       {IDS_OS_SETTINGS_TAG_MANAGE_OTHER_PEOPLE_PAGE,
        mojom::kManageOtherPeopleSubpagePathV2,
@@ -208,8 +209,9 @@ base::span<const SearchConcept> GetPciguardSearchConcepts() {
 }
 
 base::span<const SearchConcept> GetSmartPrivacySearchConcepts() {
-  DCHECK(ash::features::IsSnoopingProtectionEnabled() &&
-         ash::features::IsQuickDimEnabled());
+  CHECK(ash::features::IsSnoopingProtectionEnabled() &&
+            ash::features::IsQuickDimEnabled(),
+        base::NotFatalUntil::M162);
   static constexpr auto tags = std::to_array<SearchConcept>({
       {IDS_OS_SETTINGS_TAG_SMART_PRIVACY,
        mojom::kSmartPrivacySubpagePath,
@@ -257,7 +259,7 @@ base::span<const SearchConcept> GetPrivacyGoogleChromeSearchConcepts() {
 
 base::span<const SearchConcept> GetPrivacyControlsSearchConcepts(
     const user_manager::User& user) {
-  DCHECK(!IsGuestModeActive(user));
+  CHECK(!IsGuestModeActive(user), base::NotFatalUntil::M162);
   static constexpr auto tags = std::to_array<SearchConcept>({
       {IDS_OS_SETTINGS_TAG_PRIVACY_CONTROLS,
        mojom::kPrivacyHubSubpagePath,
@@ -283,8 +285,8 @@ base::span<const SearchConcept> GetPrivacyControlsSearchConcepts(
 
 base::span<const SearchConcept> GetPrivacyControlsLocationSearchConcepts(
     const user_manager::User& user) {
-  DCHECK(!IsGuestModeActive(user));
-  DCHECK(features::IsCrosPrivacyHubLocationEnabled());
+  CHECK(!IsGuestModeActive(user), base::NotFatalUntil::M162);
+  CHECK(features::IsCrosPrivacyHubLocationEnabled(), base::NotFatalUntil::M162);
   static constexpr auto tags = std::to_array<SearchConcept>(
       {{IDS_OS_SETTINGS_TAG_GEOLOCATION,
         mojom::kPrivacyHubGeolocationSubpagePath,
@@ -332,17 +334,20 @@ void AddChromeOsSecureDnsStrings(content::WebUIDataSource* html_source) {
 PrivacySection::PrivacySection(
     PrefService* local_state,
     const ApplicationLocaleStorage* application_locale_storage,
+    MetricsServiceGetter metrics_service_getter,
     Profile* profile,
     SearchTagRegistry* search_tag_registry,
     PrefService* pref_service)
     : OsSettingsSection(profile, search_tag_registry),
       local_state_(CHECK_DEREF(local_state)),
+      metrics_service_getter_(std::move(metrics_service_getter)),
       sync_subsection_(application_locale_storage,
                        profile,
                        search_tag_registry),
       pref_service_(pref_service),
       auth_performer_(UserDataAuthClient::Get()),
       fp_engine_(&auth_performer_) {
+  CHECK(metrics_service_getter_);
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
   updater.AddSearchTags(GetPrivacySearchConceptsSharedWithGuestMode());
   const auto& user = CHECK_DEREF(
@@ -375,8 +380,8 @@ PrivacySection::PrivacySection(
   // one day.
   //
   // For now, assume they are always equal.
-  DCHECK_EQ(ash::features::IsSnoopingProtectionEnabled(),
-            ash::features::IsQuickDimEnabled());
+  CHECK_EQ(ash::features::IsSnoopingProtectionEnabled(),
+           ash::features::IsQuickDimEnabled(), base::NotFatalUntil::M162);
   if (ash::features::IsQuickDimEnabled()) {
     updater.AddSearchTags(GetSmartPrivacySearchConcepts());
   }
@@ -397,9 +402,10 @@ void PrivacySection::AddHandlers(content::WebUI* web_ui) {
   web_ui->AddMessageHandler(std::make_unique<PeripheralDataAccessHandler>(
       &local_state_.get(), profile()));
 
+  ::metrics::MetricsService* metrics_service = metrics_service_getter_.Run();
+  CHECK(metrics_service);
   web_ui->AddMessageHandler(std::make_unique<MetricsChoiceHandler>(
-      profile(), g_browser_process->metrics_service(),
-      user_manager::UserManager::Get()));
+      profile(), metrics_service, user_manager::UserManager::Get()));
 
   web_ui->AddMessageHandler(std::make_unique<PrivacyHubHandler>());
 
@@ -414,10 +420,6 @@ void PrivacySection::AddLoadTimeData(content::WebUIDataSource* html_source) {
       {"enableLoggingDesc", IDS_OS_SETTINGS_ENABLE_LOGGING_TOGGLE_DESCRIPTION},
       {"enableContentProtectionAttestation",
        IDS_SETTINGS_ENABLE_CONTENT_PROTECTION_ATTESTATION},
-      {"enableSuggestedContent",
-       IDS_OS_SETTINGS_ENABLE_SUGGESTED_CONTENT_TITLE},
-      {"enableSuggestedContentDesc",
-       IDS_OS_SETTINGS_ENABLE_SUGGESTED_CONTENT_DESCRIPTION},
       {"peripheralDataAccessProtectionToggleTitle",
        IDS_OS_SETTINGS_DATA_ACCESS_PROTECTION_TOGGLE_TITLE},
       {"peripheralDataAccessProtectionToggleDescription",
@@ -643,9 +645,6 @@ void PrivacySection::AddLoadTimeData(content::WebUIDataSource* html_source) {
   html_source->AddString("smartPrivacyLearnMoreURL",
                          ash::external_urls::kSmartPrivacySettingsLearnMoreURL);
 
-  html_source->AddString("suggestedContentLearnMoreURL",
-                         ash::external_urls::kSuggestedContentLearnMoreURL);
-
   html_source->AddString(
       "syncAndGoogleServicesLearnMoreURL",
       ash::chrome_external_urls::kSyncAndGoogleServicesLearnMoreURL);
@@ -746,7 +745,6 @@ void PrivacySection::RegisterHierarchy(HierarchyGenerator* generator) const {
       mojom::Setting::kLockScreenV2,
       mojom::Setting::kChangeAuthPinV2,
       mojom::Setting::kPeripheralDataAccessProtection,
-      mojom::Setting::kLockScreenNotification,
       mojom::Setting::kDataRecovery,
   };
   RegisterNestedSettingBulk(mojom::Subpage::kSecurityAndSignInV2,

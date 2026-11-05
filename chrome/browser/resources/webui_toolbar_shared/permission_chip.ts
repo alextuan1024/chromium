@@ -5,6 +5,7 @@
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import './icons.js';
 
+import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {ensureTransitionEndEvent} from '//resources/js/util.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
@@ -23,6 +24,7 @@ const PermissionChipElementBase = HelpBubbleMixinLit(CrLitElement);
 
 export interface PermissionChipElement {
   $: {
+    chip: HTMLButtonElement,
     message: HTMLSpanElement,
   };
 }
@@ -46,12 +48,14 @@ export class PermissionChipElement extends PermissionChipElementBase {
       chipState: {type: Object},
       hasDivider: {type: Boolean, attribute: 'has-divider', reflect: true},
       isFullyCollapsed_: {type: Boolean},
+      permissionBubblesKeyboardNavigable: {type: Boolean},
     };
   }
 
   accessor delegate: PermissionChipDelegate|null = null;
   accessor chipState: PermissionChipState|null = null;
   accessor hasDivider: boolean = false;
+  accessor permissionBubblesKeyboardNavigable: boolean = false;
   protected accessor isFullyCollapsed_: boolean = true;
 
   private isTracking_: boolean = false;
@@ -71,6 +75,9 @@ export class PermissionChipElement extends PermissionChipElementBase {
       this.updateColors_();
       this.onChipStateChanged_();
       this.updateTracking_();
+    }
+    if (changedProperties.has('permissionBubblesKeyboardNavigable')) {
+      this.updateTabIndex_();
     }
   }
 
@@ -140,6 +147,7 @@ export class PermissionChipElement extends PermissionChipElementBase {
           // problem is, and whether we really need to manually toggle it or
           // if we can use a reflected Lit property.
           this.toggleAttribute('anchor-highlighted', highlighted);
+          this.updateTabIndex_();
         },
       });
       this.isTracking_ = true;
@@ -177,6 +185,7 @@ export class PermissionChipElement extends PermissionChipElementBase {
     if (!this.chipState) {
       return;
     }
+    TrackedElementManager.getInstance().notifyElementActivated(this);
     // Note:'click' event dispatches using PointerEvents. Keyboard clicks
     // (Enter/Space) also dispatch PointerEvents, but they have an empty
     // pointerType (""). We only want to suppress true pointer interactions
@@ -263,49 +272,26 @@ export class PermissionChipElement extends PermissionChipElementBase {
     this.style.setProperty('--chip-fg-color', fgColor);
   }
 
+  // The browser resolves the chip's vector icon to an id in the
+  // `webui-toolbar-shared` iconset (see `WebUIPermissionChip::SetChipIcon()`),
+  // or sends an empty string when the chip has no icon.
   protected getIconName_(): string {
-    if (!this.chipState || !this.chipState.iconName) {
-      return '';
+    return this.chipState?.iconName || '';
+  }
+
+  private updateTabIndex_() {
+    this.$.chip.tabIndex = this.effectiveTabIndex_();
+  }
+
+  private effectiveTabIndex_(): number {
+    // If bubbles aren't tab accessible, make sure at least chips are.
+    if (!this.permissionBubblesKeyboardNavigable) {
+      return 0;
     }
 
-    let iconName = '';
-    switch (this.chipState.iconName) {
-      case 'kLocationOnIcon':
-      case 'kLocationOnChromeRefreshOldIcon':
-        iconName = 'location_on';
-        break;
-      case 'kLocationOffIcon':
-      case 'kLocationOffChromeRefreshOldIcon':
-        iconName = 'location_off';
-        break;
-      case 'kVideocamIcon':
-      case 'kVideocamChromeRefreshOldIcon':
-        iconName = 'videocam';
-        break;
-      case 'kVideocamOffIcon':
-      case 'kVideocamOffChromeRefreshOldIcon':
-        iconName = 'videocam_off';
-        break;
-      case 'kMicIcon':
-      case 'kMicChromeRefreshOldIcon':
-        iconName = 'mic';
-        break;
-      case 'kMicOffIcon':
-      case 'kMicOffChromeRefreshOldIcon':
-        iconName = 'mic_off';
-        break;
-      case 'kNotificationsIcon':
-      case 'kNotificationsChromeRefreshOldIcon':
-        iconName = 'notifications';
-        break;
-      case 'kNotificationsOffIcon':
-      case 'kNotificationsOffChromeRefreshOldIcon':
-        iconName = 'notifications_off';
-        break;
-      default:
-        break;
-    }
-    return iconName ? `webui-toolbar-shared:${iconName}` : '';
+    // If we have a bubble, don't be tab focusable, since we want focus to
+    // go directly there.
+    return this.hasAttribute('anchor-highlighted') ? -1 : 0;
   }
 }
 

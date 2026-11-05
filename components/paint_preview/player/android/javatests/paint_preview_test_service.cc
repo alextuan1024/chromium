@@ -4,6 +4,7 @@
 
 #include "components/paint_preview/player/android/javatests/paint_preview_test_service.h"
 
+#include <array>
 #include <memory>
 #include <utility>
 
@@ -157,9 +158,13 @@ PaintPreviewTestService::CreateSingleSkp(
   if (id == 0) {
     color = SK_ColorGRAY;
   } else {
-    constexpr SkColor colors[4] = {SK_ColorRED, SK_ColorBLUE, SK_ColorGREEN,
-                                   SK_ColorMAGENTA};
-    color = UNSAFE_TODO(colors[id % 4]);
+    static constexpr std::array<SkColor, 4> colors = {
+        SK_ColorBLUE,
+        SK_ColorGREEN,
+        SK_ColorRED,
+        SK_ColorMAGENTA,
+    };
+    color = colors[(id - 1) % colors.size()];
   }
   CreateBackground(canvas, color, width, height);
 
@@ -194,7 +199,8 @@ PaintPreviewTestService::CreateSingleSkp(
     auto rect = SkRect::MakeXYWH(x, y, w, h);
     auto sub_pic = SkPicture::MakePlaceholder(rect);
     SkMatrix matrix = SkMatrix::Translate(x, y);
-    uint32_t sub_id = sub_pic->uniqueID();
+    uint32_t sub_id = next_subframe_id_++;
+    const uint64_t sub_pic_id = sub_pic->uniqueID();
     canvas->drawPicture(sub_pic, &matrix, nullptr);
 
     out.push_back(sub_id);
@@ -211,6 +217,8 @@ PaintPreviewTestService::CreateSingleSkp(
     // Re-find |data| as it may have moved when emplacing the new frame.
     it = frames_.find(id);
     data = &it->second;
+    data->ctx.picture_id_to_content_id.insert(
+        std::make_pair(sub_pic_id, sub_id));
     data->ctx.content_id_to_embedding_token.insert(
         std::make_pair(sub_id, token));
     data->ctx.content_id_to_transformed_clip.insert(
@@ -276,6 +284,7 @@ bool PaintPreviewTestService::SerializeFrames(
     return false;
   }
   frames_.clear();
+  next_subframe_id_ = 1;
   return true;
 }
 

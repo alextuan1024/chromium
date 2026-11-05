@@ -20,6 +20,7 @@ source_set("test_support") {
 
   public_deps = [
     "//base",
+    "//chrome/test/base:platform_browser_test",
     "//components/enterprise/common/proto:connectors_proto",
     "//components/policy/core/common:common_constants",
     "//components/policy/core/common:test_support",
@@ -30,7 +31,11 @@ source_set("test_support") {
   if (is_android) {
     public_deps += [ "//chrome/test:test_support_ui_android" ]
   } else {
-    public_deps += [ "//chrome/test:test_support_ui" ]
+    public_deps += [
+      "//chrome/test/base:in_process_browser_test",
+      "//chrome/test/base:mixin_based_in_process_browser_test",
+      "//chrome/test/base:platform_browser_test",
+    ]
   }
 
   deps = [
@@ -45,7 +50,6 @@ source_set("test_support") {
 
     deps += [
       "//chrome/browser:browser_process",
-      "//chrome/test:test_support",
       "//components/enterprise",
       "//components/enterprise:test_support",
     ]
@@ -59,6 +63,7 @@ source_set("test_support") {
       "//chrome/browser/ash/login/test:test_support",
       "//chrome/browser/ash/policy/core",
       "//chrome/browser/ash/policy/core:test_support",
+      "//chrome/test/base:platform_browser_test",
     ]
   }
 }

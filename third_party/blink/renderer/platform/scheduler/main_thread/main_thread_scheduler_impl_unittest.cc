@@ -5,7 +5,6 @@
 #include "third_party/blink/renderer/platform/scheduler/main_thread/main_thread_scheduler_impl.h"
 
 #include <atomic>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -2953,19 +2952,12 @@ TEST_F(MainThreadSchedulerImplTest,
        LogIpcsPostedToDocumentsInBackForwardCache) {
   base::HistogramTester histogram_tester;
 
-  // Start recording IPCs immediately.
-  base::FieldTrialParams params;
-  params["delay_before_tracking_ms"] = "0";
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeatureWithParameters(
-      blink::features::kLogUnexpectedIPCPostedToBackForwardCachedDocuments,
-      params);
-
   // Store documents inside the back-forward cache. IPCs are only tracked IFF
   // all pages are in the back-forward cache.
   PageSchedulerImpl* page_scheduler = page_scheduler_.get();
   page_scheduler->SetPageBackForwardCached(true);
-  base::RunLoop().RunUntilIdle();
+  task_environment_.FastForwardBy(
+      PageSchedulerImpl::kDelayForTrackingIPCsPostedToCachedFrames);
   {
     base::TaskAnnotator::ScopedSetIpcHash scoped_set_ipc_hash(1);
     default_task_runner_->PostTask(FROM_HERE, base::DoNothing());
@@ -4587,7 +4579,11 @@ TEST_P(BusyLoopOnRendererMainTest,
   } else {
     CheckScaleFactor([](UseCase use_case, float scale_factor) {
       const float expected_scale_factor =
-          (use_case == UseCase::kNone ? .5f : 1.f);
+          (use_case == UseCase::kNone ||
+           (use_case == UseCase::kCompositorGesture &&
+            base::FeatureList::IsEnabled(kBusyLoopLessWhenCompositorGesture)))
+              ? .5f
+              : 1.f;
       if (scale_factor == expected_scale_factor) {
         return ::testing::AssertionSuccess();
       }
@@ -4647,7 +4643,12 @@ TEST_P(BusyLoopOnRendererMainTest, BusyLoopAggressiveAfterCommittedLoad) {
   }
 
   auto expect_regular_factor = [](UseCase use_case, float scale_factor) {
-    const float expected_scale_factor = use_case == UseCase::kNone ? .5f : 1.f;
+    const float expected_scale_factor =
+        (use_case == UseCase::kNone ||
+         (use_case == UseCase::kCompositorGesture &&
+          base::FeatureList::IsEnabled(kBusyLoopLessWhenCompositorGesture)))
+            ? .5f
+            : 1.f;
     return Report(use_case, scale_factor, expected_scale_factor);
   };
 

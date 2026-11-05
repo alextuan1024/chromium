@@ -72,10 +72,22 @@ class RoundedOmniboxResultsFrame : public views::View {
   void OnMouseEvent(ui::MouseEvent* event) override;
 #endif  // !USE_AURA
 
+ protected:
+#if defined(USE_AURA)
+  // Installs or updates the native window's targeter with
+  // `GetWindowTargeterInsets()`. No-op unless this frame is the Widget's
+  // client contents view.
+  void UpdateWindowTargeter();
+#endif  // USE_AURA
+
  private:
   void SetElevation(int elevation);
+#if defined(USE_AURA)
+  // Events inside these insets pass through to the browser window beneath.
+  virtual gfx::Insets GetWindowTargeterInsets() const;
+#endif  // USE_AURA
 
-  gfx::Insets GetContentInsets();
+  gfx::Insets GetContentInsets() const;
 
   raw_ptr<views::View> top_background_ = nullptr;
   raw_ptr<views::View> contents_host_ = nullptr;
@@ -83,6 +95,10 @@ class RoundedOmniboxResultsFrame : public views::View {
 
   // Only used on platforms that support Aura (non-Mac).
   [[maybe_unused]] bool forward_mouse_events_;
+
+  // True when the WebUI paints the popup's background, rounded corners and
+  // drop shadow instead of this frame. Determined at construction.
+  bool draw_shadow_in_webui_ = false;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_OMNIBOX_ROUNDED_OMNIBOX_RESULTS_FRAME_H_

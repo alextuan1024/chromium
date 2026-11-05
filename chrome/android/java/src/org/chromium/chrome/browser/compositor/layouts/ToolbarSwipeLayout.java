@@ -142,7 +142,7 @@ public class ToolbarSwipeLayout extends Layout {
             @Nullable ControlContainer controlContainer,
             Runnable forceLayoutUpdateAndCaptureRunnable) {
         super(context, updateHost, renderHost);
-        mControlView = controlContainer instanceof View ? (View) controlContainer : null;
+        mControlView = (controlContainer instanceof View view) ? view : null;
         mBlackHoleEventFilter = new BlackHoleEventFilter(context);
         mBrowserControlsVisibilityManager = browserControlsVisibilityManager;
         Resources res = context.getResources();
@@ -254,7 +254,7 @@ public class ToolbarSwipeLayout extends Layout {
         Tab tab = mTabModelSelector.getCurrentTab();
         if (tab != null && tab.isNativePage()) {
             assumeNonNull(mTabContentManager);
-            mTabContentManager.cacheTabThumbnail(tab);
+            mTabContentManager.cacheTabThumbnail(tab, /* deferUntilNextFrame= */ false);
         }
 
         TabModel model = mTabModelSelector.getCurrentModel();

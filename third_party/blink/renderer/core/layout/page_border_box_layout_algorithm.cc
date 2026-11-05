@@ -33,7 +33,9 @@ const LayoutResult* PageBorderBoxLayoutAlgorithm::Layout() {
       fragmentainer_space, content_node_, /*break_token=*/nullptr);
   LayoutAlgorithmParams params(content_node_, fragment_geometry,
                                fragmentainer_space);
-  params.break_token = page_area_params_.break_token;
+  params.fragmentation.break_token = page_area_params_.break_token;
+  params.fragmentation.fragmented_oof_container =
+      container_builder_.GetFragmentedOofContainer();
   const LayoutResult* result;
   if (page_area_params_.template_fragmentainer) {
     // We are creating an empty fragmentainer for OutOfFlowLayoutPart to
@@ -63,7 +65,7 @@ const LayoutResult* PageBorderBoxLayoutAlgorithm::Layout() {
                                  container_builder_.Size());
   LogicalOffset origin = converter.ToLogical(
       PhysicalOffset(), result->GetPhysicalFragment().Size());
-  container_builder_.AddResult(*result, origin, /*margins=*/std::nullopt);
+  container_builder_.AddResult(*result, origin, /*margins=*/BoxStrut());
 
   return container_builder_.ToBoxFragment();
 }

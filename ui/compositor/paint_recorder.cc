@@ -30,12 +30,16 @@ PaintRecorder::PaintRecorder(const PaintContext& context,
       cache_(cache),
       recording_size_(recording_size) {
 #if DCHECK_IS_ON()
-  DCHECK(!context_->inside_paint_recorder_);
+  CHECK(!context_->inside_paint_recorder_, base::NotFatalUntil::M163);
   context_->inside_paint_recorder_ = true;
 #endif
   if (context_->is_pixel_canvas()) {
     canvas()->Save();
     canvas()->Scale(recording_scale_x, recording_scale_y);
+  } else {
+    // Recording happens in DIPs, so tell the canvas where it is relative to the
+    // (pixel-aligned) layer, which lets it draw images at whole device pixels.
+    canvas_.set_device_pixel_snap_offset(context_->offset_);
   }
 }
 
@@ -61,10 +65,11 @@ PaintRecorder::~PaintRecorder() {
 
   cc::PaintRecord record = record_canvas_.ReleaseAsRecord();
   if (cache_) {
-    cache_->SetPaintRecord(record, context_->device_scale_factor());
+    cache_->SetPaintRecord(record, context_->device_scale_factor(),
+                           context_->offset_);
   }
 
-  DCHECK(context_->list_);
+  CHECK(context_->list_, base::NotFatalUntil::M163);
   context_->list_->StartPaint();
   context_->list_->push<cc::DrawRecordOp>(std::move(record));
   gfx::Rect bounds_in_layer = context_->ToLayerSpaceBounds(recording_size_);

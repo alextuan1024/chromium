@@ -53,7 +53,7 @@ class PLATFORM_EXPORT LocaleIcu : public Locale {
   ~LocaleIcu() override;
 
   const Vector<String>& WeekDayShortLabels() override;
-  unsigned FirstDayOfWeek() override;
+  wtf_size_t FirstDayOfWeek() override;
   bool IsRtl() override;
   String DateFormat() override;
   String MonthFormat() override;
@@ -75,16 +75,15 @@ class PLATFORM_EXPORT LocaleIcu : public Locale {
 
   bool DetectSignAndGetDigitRange(const String& input,
                                   bool& is_negative,
-                                  unsigned& start_index,
-                                  unsigned& end_index);
-  unsigned MatchedDecimalSymbolIndex(const String& input, unsigned& position);
+                                  wtf_size_t& start_index,
+                                  wtf_size_t& end_index);
+  wtf_size_t MatchedDecimalSymbolIndex(const String& input,
+                                       wtf_size_t& position);
 
   bool InitializeShortDateFormat();
   UDateFormat* OpenDateFormat(UDateFormatStyle time_style,
                               UDateFormatStyle date_style) const;
   UDateFormat* OpenDateFormatForStandAloneMonthLabels(bool is_short) const;
-
-  void InitializeCalendar();
 
   Vector<String> CreateLabelVector(const UDateFormat*,
                                    UDateFormatSymbolType,
@@ -99,7 +98,7 @@ class PLATFORM_EXPORT LocaleIcu : public Locale {
   bool did_create_short_date_format_ = false;
 
   Vector<String> week_day_short_labels_;
-  std::optional<unsigned> first_day_of_week_;
+  std::optional<wtf_size_t> first_day_of_week_;
   Vector<String> month_labels_;
   String date_format_;
   String month_format_;

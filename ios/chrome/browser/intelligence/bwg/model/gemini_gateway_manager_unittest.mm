@@ -8,6 +8,7 @@
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/test/mock_tracker.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_custom_ui_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_page_state_change_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_session_handler.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
@@ -33,7 +34,8 @@ class GeminiGatewayManagerTest : public PlatformTest {
         OptimizationGuideServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         feature_engagement::TrackerFactory::GetInstance(),
-        base::BindOnce(&GeminiGatewayManagerTest::CreateMockTracker));
+        base::BindOnce(
+            &std::make_unique<feature_engagement::test::MockTracker>));
     profile_ = std::move(builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
 
@@ -44,10 +46,6 @@ class GeminiGatewayManagerTest : public PlatformTest {
     mock_gemini_handler_ = OCMProtocolMock(@protocol(GeminiCommands));
     [dispatcher startDispatchingToTarget:mock_gemini_handler_
                              forProtocol:@protocol(GeminiCommands)];
-  }
-
-  static std::unique_ptr<KeyedService> CreateMockTracker(ProfileIOS* context) {
-    return std::make_unique<feature_engagement::test::MockTracker>();
   }
 
   web::WebTaskEnvironment task_environment_;
@@ -71,4 +69,17 @@ TEST_F(GeminiGatewayManagerTest, TestHandlersInitialization) {
   EXPECT_NE(nil, manager.suggestionHandler);
 
   [manager disconnect];
+}
+
+// Tests that the manager creates the custom UI handler and attaches it to the
+// gateway.
+TEST_F(GeminiGatewayManagerTest, AttachesCustomUIHandlerToGateway) {
+  GeminiGatewayManager* manager =
+      [[GeminiGatewayManager alloc] initWithBrowser:browser_.get()
+                                  viewStateDelegate:nil];
+  EXPECT_NE(nil, manager.customUIHandler);
+  EXPECT_EQ(manager.customUIHandler, manager.gateway.customUIHandler);
+
+  [manager disconnect];
+  EXPECT_EQ(nil, manager.customUIHandler);
 }

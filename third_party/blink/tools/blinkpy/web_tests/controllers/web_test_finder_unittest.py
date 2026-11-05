@@ -29,35 +29,42 @@ class WebTestFinderTests(unittest.TestCase):
         # Patch port.tests() to return our tests
         port.tests = lambda paths: paths or all_tests
 
-        options = optparse.Values({
-            'no_expectations': False,
-            'enable_sanitizer': False,
-            'skipped': 'default',
-            'skip_timeouts': False,
-            'skip_failing_tests': False,
-        })
+        options = optparse.Values(
+            {
+                'no_expectations': False,
+                'enable_sanitizer': False,
+                'skipped': 'default',
+                'skip_timeouts': False,
+                'skip_failing_tests': False,
+            }
+        )
         finder = web_test_finder.WebTestFinder(port, options)
 
         expectations = test_expectations.TestExpectations(port)
         expectations.merge_raw_expectations(
-            ('# results: [ Failure Timeout Skip ]'
-             '\nfast/css/fails.html [ Failure ]'
-             '\nfast/css/times_out.html [ Timeout ]'
-             '\nfast/css/skip.html [ Skip ]'))
+            (
+                '# results: [ Failure Timeout Skip ]'
+                '\nfast/css/fails.html [ Failure ]'
+                '\nfast/css/times_out.html [ Timeout ]'
+                '\nfast/css/skip.html [ Skip ]'
+            )
+        )
 
         # When run with default settings, we only skip the tests marked Skip.
         tests = finder.skip_tests([], all_tests, expectations)
         self.assertEqual(tests, set(['fast/css/skip.html']))
 
         # Specify test on the command line; by default should not skip.
-        tests = finder.skip_tests(['fast/css/skip.html'], all_tests,
-                                  expectations)
+        tests = finder.skip_tests(
+            ['fast/css/skip.html'], all_tests, expectations
+        )
         self.assertEqual(tests, set())
 
         # Specify test on the command line, but always skip.
         finder._options.skipped = 'always'
-        tests = finder.skip_tests(['fast/css/skip.html'], all_tests,
-                                  expectations)
+        tests = finder.skip_tests(
+            ['fast/css/skip.html'], all_tests, expectations
+        )
         self.assertEqual(tests, set(['fast/css/skip.html']))
         finder._options.skipped = 'default'
 
@@ -66,10 +73,14 @@ class WebTestFinderTests(unittest.TestCase):
         tests = finder.skip_tests([], all_tests, expectations)
         self.assertEqual(
             tests,
-            set([
-                'fast/css/passes.html', 'fast/css/fails.html',
-                'fast/css/times_out.html'
-            ]))
+            set(
+                [
+                    'fast/css/passes.html',
+                    'fast/css/fails.html',
+                    'fast/css/times_out.html',
+                ]
+            ),
+        )
         finder._options.skipped = 'default'
 
         # Ignore any skip entries, aka never skip anything.
@@ -82,14 +93,16 @@ class WebTestFinderTests(unittest.TestCase):
         finder._options.skip_timeouts = True
         tests = finder.skip_tests([], all_tests, expectations)
         self.assertEqual(
-            tests, set(['fast/css/times_out.html', 'fast/css/skip.html']))
+            tests, set(['fast/css/times_out.html', 'fast/css/skip.html'])
+        )
         finder._options.skip_timeouts = False
 
         # Skip tests that are marked FAILURE
         finder._options.skip_failing_tests = True
         tests = finder.skip_tests([], all_tests, expectations)
-        self.assertEqual(tests,
-                         set(['fast/css/fails.html', 'fast/css/skip.html']))
+        self.assertEqual(
+            tests, set(['fast/css/fails.html', 'fast/css/skip.html'])
+        )
         finder._options.skip_failing_tests = False
 
         # Disable expectations entirely; nothing should be skipped by default.
@@ -117,13 +130,15 @@ class WebTestFinderTests(unittest.TestCase):
         # Patch port.tests() to return our tests
         port.tests = lambda paths: paths or all_tests
 
-        options = optparse.Values({
-            'no_expectations': False,
-            'enable_sanitizer': False,
-            'skipped': 'default',
-            'skip_timeouts': False,
-            'skip_failing_tests': False,
-        })
+        options = optparse.Values(
+            {
+                'no_expectations': False,
+                'enable_sanitizer': False,
+                'skipped': 'default',
+                'skip_timeouts': False,
+                'skip_failing_tests': False,
+            }
+        )
         finder = web_test_finder.WebTestFinder(port, options)
 
         # Default case; not MSAN/ASAN so should not skip anything.
@@ -149,6 +164,65 @@ class WebTestFinderTests(unittest.TestCase):
         expectations = test_expectations.TestExpectations(port)
         tests = finder.skip_tests([idlharness_test_1], all_tests, expectations)
         self.assertEqual(tests, set([idlharness_test_2]))
+
+    def test_skip_websocket_h3_requires_opt_in(self):
+        host = MockHost()
+        options = optparse.Values(
+            {
+                'no_expectations': False,
+                'enable_sanitizer': False,
+                'enable_websocket_h3': False,
+                'skipped': 'default',
+                'skip_timeouts': False,
+                'skip_failing_tests': False,
+            }
+        )
+        port = host.port_factory.get('test-win-win7', options=options)
+        finder = web_test_finder.WebTestFinder(port, options)
+        prefix = 'external/wpt/websockets/'
+        h3_tests = {
+            prefix + 'test.html?wpt_flags=websocket-h3',
+            prefix + 'test.html?foo=bar&wpt_flags=websocket-h3',
+            prefix + 'test.websocket-h3.html?wpt_flags=websocket-h3',
+            'virtual/fake/' + prefix + 'test.html?wpt_flags=websocket-h3',
+        }
+        other_tests = {
+            prefix + 'test.html',
+            prefix + 'test.websocket-h3.html',
+            prefix + 'test.websocket-h3.html?wpt_flags=h2',
+            prefix + 'test.html?wpt_flags=h2',
+            prefix + 'test.html?foo=websocket-h3',
+            prefix + 'test.html?wpt_flags=websocket-h3-other',
+            'fast/test.html?wpt_flags=websocket-h3',
+        }
+        all_tests = h3_tests | other_tests
+        for websocket_h3_enabled in (False, True):
+            port.set_option('enable_websocket_h3', websocket_h3_enabled)
+            for skipped in ('default', 'ignore', 'only', 'always'):
+                options.skipped = skipped
+                with self.subTest(
+                    websocket_h3_enabled=websocket_h3_enabled,
+                    skipped=skipped,
+                ):
+                    options.no_expectations = True
+                    self.assertEqual(
+                        finder.skip_tests(list(all_tests), all_tests, None),
+                        all_tests
+                        if skipped == 'only'
+                        else (set() if websocket_h3_enabled else h3_tests),
+                    )
+
+        options.no_expectations = False
+        options.skipped = 'default'
+        port.set_option('enable_websocket_h3', True)
+        expectations = test_expectations.TestExpectations(port)
+        self.assertEqual(finder.skip_tests([], all_tests, expectations), set())
+        test = prefix + 'test.html?wpt_flags=websocket-h3'
+        expectations = test_expectations.TestExpectations(port)
+        expectations.merge_raw_expectations(
+            f'# results: [ Skip ]\n{test} [ Skip ]\n'
+        )
+        self.assertEqual(finder.skip_tests([], all_tests, expectations), {test})
 
     def test_find_fastest_tests(self):
         host = MockHost()
@@ -185,22 +259,29 @@ class WebTestFinderTests(unittest.TestCase):
             },
             'path': {
                 'test.html': 4,
-            }
+            },
         }
 
         tests = finder.find_tests(fastest_percentile=50, args=[])
         self.assertEqual(
             set(tests[1]),
-            set(['fast/css/1.html', 'fast/css/2.html', 'new/test.html']))
+            set(['fast/css/1.html', 'fast/css/2.html', 'new/test.html']),
+        )
 
         tests = finder.find_tests(
-            fastest_percentile=50, args=['path/test.html'])
+            fastest_percentile=50, args=['path/test.html']
+        )
         self.assertEqual(
             set(tests[1]),
-            set([
-                'fast/css/1.html', 'fast/css/2.html', 'path/test.html',
-                'new/test.html'
-            ]))
+            set(
+                [
+                    'fast/css/1.html',
+                    'fast/css/2.html',
+                    'path/test.html',
+                    'new/test.html',
+                ]
+            ),
+        )
 
         tests = finder.find_tests(args=[])
         self.assertEqual(tests[1], all_tests)
@@ -235,7 +316,7 @@ class WebTestFinderTests(unittest.TestCase):
         self.assertEqual(set(tests[1]), set(['fast/css/1.html']))
 
     def test_split_chunks(self):
-        split = web_test_finder.WebTestFinder._split_into_chunks  # pylint: disable=protected-access
+        split = web_test_finder.WebTestFinder._split_into_chunks
 
         tests = ['1', '2', '3', '4']
         self.assertEqual(['1', '2', '3', '4'], split(tests, 0, 1))
@@ -270,9 +351,7 @@ class WebTestFinderTests(unittest.TestCase):
     def test_test_list_find_tests(self):
         host = MockHost()
         port = host.port_factory.get('test-win-win7', None)
-        mock_files = {'test-list.txt': \
-            'path/test.html\n'\
-            'virtual/path/test.html'}
+        mock_files = {'test-list.txt': 'path/test.html\nvirtual/path/test.html'}
         host.filesystem = MockFileSystem(files=mock_files)
 
         port_tests = [
@@ -287,14 +366,20 @@ class WebTestFinderTests(unittest.TestCase):
         tests = finder.find_tests(args=[], test_lists=['test-list.txt'])
         self.assertEqual(
             set(tests[1]),
-            set(['path/test.html','virtual/path/test.html',]))
+            set(
+                [
+                    'path/test.html',
+                    'virtual/path/test.html',
+                ]
+            ),
+        )
 
     def test_inverted_test_filter_find_tests(self):
         host = MockHost()
         port = host.port_factory.get('test-win-win7', None)
         mock_files = {
             'test-list.txt': 'path/test.html\nvirtual/path/test.html',
-            'inverted-filter.txt': 'path/test.html'
+            'inverted-filter.txt': 'path/test.html',
         }
         host.filesystem = MockFileSystem(files=mock_files)
 
@@ -310,36 +395,48 @@ class WebTestFinderTests(unittest.TestCase):
         tests = finder.find_tests(
             args=[],
             test_lists=['test-list.txt'],
-            inverted_filter_files=['inverted-filter.txt'])
-        self.assertEqual(set(tests[1]), set([
-            'virtual/path/test.html',
-        ]))
+            inverted_filter_files=['inverted-filter.txt'],
+        )
+        self.assertEqual(
+            set(tests[1]),
+            set(
+                [
+                    'virtual/path/test.html',
+                ]
+            ),
+        )
 
 
 class FilterTestsTests(unittest.TestCase):
     simple_test_filter = ['a/a1.html', 'a/a2.html', 'b/b1.html']
 
     def check(self, tests, filters, expected_tests):
-        self.assertEqual(expected_tests,
-                         web_test_finder.filter_tests(tests, filters))
+        self.assertEqual(
+            expected_tests, web_test_finder.filter_tests(tests, filters)
+        )
 
     def test_no_filters(self):
         self.check(self.simple_test_filter, [], self.simple_test_filter)
 
     def test_empty_glob_is_rejected(self):
-        self.assertRaises(ValueError, self.check, self.simple_test_filter,
-                          [['']], [])
-        self.assertRaises(ValueError, self.check, self.simple_test_filter,
-                          [['-']], [])
+        self.assertRaises(
+            ValueError, self.check, self.simple_test_filter, [['']], []
+        )
+        self.assertRaises(
+            ValueError, self.check, self.simple_test_filter, [['-']], []
+        )
 
     def test_one_all_positive_filter(self):
-        self.check(self.simple_test_filter, [['a*']],
-                   ['a/a1.html', 'a/a2.html'])
-        self.check(self.simple_test_filter, [['+a*']],
-                   ['a/a1.html', 'a/a2.html'])
+        self.check(
+            self.simple_test_filter, [['a*']], ['a/a1.html', 'a/a2.html']
+        )
+        self.check(
+            self.simple_test_filter, [['+a*']], ['a/a1.html', 'a/a2.html']
+        )
 
-        self.check(self.simple_test_filter, [['a*', 'b*']],
-                   self.simple_test_filter)
+        self.check(
+            self.simple_test_filter, [['a*', 'b*']], self.simple_test_filter
+        )
 
     def test_one_exact_positive_filter(self):
         self.check(self.simple_test_filter, [['a/a1.html']], ['a/a1.html'])
@@ -349,12 +446,16 @@ class FilterTestsTests(unittest.TestCase):
         self.check(self.simple_test_filter, [['-c*']], self.simple_test_filter)
 
     def test_one_exact_negative_filter(self):
-        self.check(self.simple_test_filter, [['-a/a1.html']],
-                   ['a/a2.html', 'b/b1.html'])
+        self.check(
+            self.simple_test_filter,
+            [['-a/a1.html']],
+            ['a/a2.html', 'b/b1.html'],
+        )
 
     def test_one_mixed_filter(self):
-        self.check(self.simple_test_filter, [['a*', '-c*']],
-                   ['a/a1.html', 'a/a2.html'])
+        self.check(
+            self.simple_test_filter, [['a*', '-c*']], ['a/a1.html', 'a/a2.html']
+        )
 
     def test_two_all_positive_filters(self):
         self.check(self.simple_test_filter, [['a*'], ['b*']], [])
@@ -365,8 +466,11 @@ class FilterTestsTests(unittest.TestCase):
         self.check(self.simple_test_filter, [['-a*'], ['-c*']], ['b/b1.html'])
 
     def test_two_mixed_filters(self):
-        self.check(self.simple_test_filter, [['a*'], ['-b*']],
-                   ['a/a1.html', 'a/a2.html'])
+        self.check(
+            self.simple_test_filter,
+            [['a*'], ['-b*']],
+            ['a/a1.html', 'a/a2.html'],
+        )
 
     def test_middle_exclude(self):
         self.check(['a2', 'a1', 'a3'], [['a*', '-a2']], ['a1', 'a3'])
@@ -382,10 +486,8 @@ class FilterTestsTests(unittest.TestCase):
         # part of the same filter expression, the longest matching
         # glob wins (takes precedence). The order of the two globs
         # must not matter.
-        self.check(self.simple_test_filter, [['a/a*', '-a/a2*']],
-                   ['a/a1.html'])
-        self.check(self.simple_test_filter, [['-a/a*', 'a/a2*']],
-                   ['a/a2.html'])
+        self.check(self.simple_test_filter, [['a/a*', '-a/a2*']], ['a/a1.html'])
+        self.check(self.simple_test_filter, [['-a/a*', 'a/a2*']], ['a/a2.html'])
 
         # In this test, the positive and negative globs are in
         # separate filter expressions, so a2 should be filtered out
@@ -394,18 +496,24 @@ class FilterTestsTests(unittest.TestCase):
         self.check(self.simple_test_filter, [['-a/a*'], ['a/a2*']], [])
 
     def test_only_trailing_unescaped_globs_work(self):
-        self.check(self.simple_test_filter, [['a*']],
-                   ['a/a1.html', 'a/a2.html'])
+        self.check(
+            self.simple_test_filter, [['a*']], ['a/a1.html', 'a/a2.html']
+        )
         # These test that if you have a glob that contains a "*" that isn't
         # at the end, it is rejected; only globs at the end should work.
-        self.assertRaises(ValueError, self.check, self.simple_test_filter,
-                          [['*1.html']], [])
-        self.assertRaises(ValueError, self.check, self.simple_test_filter,
-                          [['a*.html']], [])
+        self.assertRaises(
+            ValueError, self.check, self.simple_test_filter, [['*1.html']], []
+        )
+        self.assertRaises(
+            ValueError, self.check, self.simple_test_filter, [['a*.html']], []
+        )
 
     def test_escaped_globs_allowed(self):
-        self.check(self.simple_test_filter + ['a\\*1'], [['-a\\*1']],
-                   self.simple_test_filter)
+        self.check(
+            self.simple_test_filter + ['a\\*1'],
+            [['-a\\*1']],
+            self.simple_test_filter,
+        )
 
     def test_contradictory_sign_not_allowed(self):
         with self.assertRaises(ValueError):
@@ -420,21 +528,24 @@ class FilterTrieTests(unittest.TestCase):
     """Additional coverage for the internal structure of `FilterTrie`."""
 
     def test_exact_test(self):
-        trie = FilterTrie.from_terms([('a/b/c.html', False),
-                                      ('a/b/d.html', True),
-                                      ('a/e.html', False)])
-        expected_trie = FilterTrie({
-            'a':
-            FilterTrie({
-                'b':
-                FilterTrie({
-                    'c.html': FilterTrie({}, False),
-                    'd.html': FilterTrie({}, True),
-                }),
-                'e.html':
-                FilterTrie({}, False),
-            }),
-        })
+        trie = FilterTrie.from_terms(
+            [('a/b/c.html', False), ('a/b/d.html', True), ('a/e.html', False)]
+        )
+        expected_trie = FilterTrie(
+            {
+                'a': FilterTrie(
+                    {
+                        'b': FilterTrie(
+                            {
+                                'c.html': FilterTrie({}, False),
+                                'd.html': FilterTrie({}, True),
+                            }
+                        ),
+                        'e.html': FilterTrie({}, False),
+                    }
+                ),
+            }
+        )
 
         self.assertEqual(expected_trie, trie)
         self.assertFalse(trie.should_include(['a', 'b', 'c.html']))
@@ -445,12 +556,20 @@ class FilterTrieTests(unittest.TestCase):
     def test_glob(self):
         trie = FilterTrie.from_terms([('a/b*', True), ('*', False)])
         expected_trie = FilterTrie(
-            OrderedDict([
-                ('a', FilterTrie({
-                    'b*': FilterTrie({}, True),
-                })),
-                ('*', FilterTrie({}, False)),
-            ]))
+            OrderedDict(
+                [
+                    (
+                        'a',
+                        FilterTrie(
+                            {
+                                'b*': FilterTrie({}, True),
+                            }
+                        ),
+                    ),
+                    ('*', FilterTrie({}, False)),
+                ]
+            )
+        )
 
         self.assertEqual(expected_trie, trie)
         self.assertTrue(trie.should_include(['a', 'b-c.html']))
@@ -460,10 +579,13 @@ class FilterTrieTests(unittest.TestCase):
     def test_exact_test_overrides_glob(self):
         trie = FilterTrie.from_terms([('a-b.html', False), ('a*', True)])
         expected_trie = FilterTrie(
-            OrderedDict([
-                ('a-b.html', FilterTrie({}, False)),
-                ('a*', FilterTrie({}, True)),
-            ]))
+            OrderedDict(
+                [
+                    ('a-b.html', FilterTrie({}, False)),
+                    ('a*', FilterTrie({}, True)),
+                ]
+            )
+        )
 
         self.assertEqual(expected_trie, trie)
         self.assertFalse(trie.should_include(['a-b.html']))
@@ -471,13 +593,17 @@ class FilterTrieTests(unittest.TestCase):
         self.assertIsNone(trie.should_include(['b.html']))
 
     def test_special_characters(self):
-        trie = FilterTrie.from_terms([('a.html?b&c*', True),
-                                      ('a.html?b*', False)])
+        trie = FilterTrie.from_terms(
+            [('a.html?b&c*', True), ('a.html?b*', False)]
+        )
         expected_trie = FilterTrie(
-            OrderedDict([
-                ('a.html?b&c*', FilterTrie({}, True)),
-                ('a.html?b*', FilterTrie({}, False)),
-            ]))
+            OrderedDict(
+                [
+                    ('a.html?b&c*', FilterTrie({}, True)),
+                    ('a.html?b*', FilterTrie({}, False)),
+                ]
+            )
+        )
 
         self.assertEqual(expected_trie, trie)
         self.assertTrue(trie.should_include(['a.html?b&c']))

@@ -41,11 +41,10 @@ class ReadAnythingOmniboxController : public tabs::ContentsObservingTabFeature,
       ReadAnythingOpenTrigger open_trigger,
       std::optional<base::TimeDelta> completed_session_duration) override;
   void OnDestroyed() override;
-  void OnReadingModePresenterChanged() override;
   void OnWillClose(ReadAnythingCloseReason reason) override;
 
   void SetDwellTimeForTesting(base::TimeTicks test_time) {
-    candidate_check_triggered_time_ms_ = test_time;
+    entry_point_shown_time_ = test_time;
   }
 
   // tabs::ContentsObservingTabFeature:
@@ -65,8 +64,8 @@ class ReadAnythingOmniboxController : public tabs::ContentsObservingTabFeature,
   virtual void CheckIfShouldSuggestReadingMode();
 
  private:
-  // The amount of time the user must spend on the previous page before it seems
-  // they are ignoring the omnibox entry point.
+  // The amount of time the omnibox entry point must be showing on the previous
+  // page before it seems the user is ignoring it.
   static const int kTimeOnPreviousPageBeforeIgnored = 3000;
   // Delay before logging whether the user opened RM after seeing the IPH for
   // the omnibox entrypoint. If they don't open RM within this time, log that
@@ -111,8 +110,9 @@ class ReadAnythingOmniboxController : public tabs::ContentsObservingTabFeature,
   // Logs the UKM metrics for the omnibox entry point.
   void LogUkm();
 
-  // The time when CheckIfShouldSuggestReadingMode was triggered.
-  base::TimeTicks candidate_check_triggered_time_ms_;
+  // When the entry point was last shown on the current page. Null if it hasn't
+  // been shown.
+  base::TimeTicks entry_point_shown_time_;
 
   // The cached result of CheckIfShouldSuggestReadingMode.
   bool was_last_checked_page_distillable_ = false;
@@ -129,9 +129,11 @@ class ReadAnythingOmniboxController : public tabs::ContentsObservingTabFeature,
   // The current ukm source.
   ukm::SourceId ukm_source_id_ = ukm::kInvalidSourceId;
 
-  // The last reason Immersive RM was closed. Used to determine whether to show
-  // the omnibox entrypoint after RM is closed. This needs to be stored because
-  // the ReadingModePresenterChanged callback happens asynchronously.
+  // The reason Reading Mode was last closed. Activate(false) consumes it to
+  // decide whether to show the omnibox entry point again once the session
+  // ends, which can be after the side panel's close animation. Cleared when
+  // Reading Mode is shown again or the page changes, so it can't apply to a
+  // later session or another page.
   std::optional<ReadAnythingCloseReason> last_close_reason_;
 
   // A timer for logging whether the user opened RM after seeing the IPH.

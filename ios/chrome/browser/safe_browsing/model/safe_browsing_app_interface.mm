@@ -5,11 +5,16 @@
 #import "ios/chrome/browser/safe_browsing/model/safe_browsing_app_interface.h"
 
 #import "base/check.h"
+#import "base/memory/weak_ptr.h"
+#import "base/no_destructor.h"
 #import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/bind.h"
 #import "components/safe_browsing/core/browser/verdict_cache_manager.h"
+#import "components/safe_browsing/core/common/hashprefix_realtime/hash_realtime_utils.h"
 #import "components/safe_browsing/core/common/phishing_classifier/scorer.h"
-#import "components/safe_browsing/ios/browser/client_side_detection_feature_cache.h"
+#import "components/safe_browsing/core/common/proto/csd.pb.h"
+#import "components/safe_browsing/ios/browser/client_side_detection/client_side_detection_feature_cache.h"
 #import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_host_ios.h"
 #import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_service.h"
 #import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_service_factory.h"
@@ -17,12 +22,70 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/test/app/chrome_test_util.h"
 #import "ios/chrome/test/app/tab_test_util.h"
+#import "ios/components/security_interstitials/safe_browsing/safe_browsing_query_manager.h"
 #import "ios/components/security_interstitials/safe_browsing/safe_browsing_tab_helper.h"
 #import "ios/web/public/web_state.h"
+#import "services/network/public/cpp/resource_request.h"
+#import "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#import "services/network/test/test_url_loader_factory.h"
+#import "services/network/test/test_utils.h"
 #import "url/gurl.h"
 
 namespace {
 constexpr int kCacheDurationSec = 60;
+bool g_last_sent_request_has_intelligent_scan_info = false;
+
+// Populates the exact-match `ThreatInfo` fields for `url` on `response` and
+// stores `response` in the original profile's `VerdictCacheManager`.
+void CacheRealTimeUrlVerdict(
+    NSString* url,
+    safe_browsing::RTLookupResponse::ThreatInfo::VerdictType verdict_type,
+    safe_browsing::RTLookupResponse::ThreatInfo::ThreatType threat_type,
+    safe_browsing::RTLookupResponse response) {
+  const GURL gurl(base::SysNSStringToUTF8(url));
+  safe_browsing::RTLookupResponse::ThreatInfo* threat_info =
+      response.add_threat_info();
+  threat_info->set_verdict_type(verdict_type);
+  if (threat_type !=
+      safe_browsing::RTLookupResponse::ThreatInfo::THREAT_TYPE_UNSPECIFIED) {
+    threat_info->set_threat_type(threat_type);
+  }
+  threat_info->set_cache_duration_sec(kCacheDurationSec);
+  std::string cache_expression = base::StrCat({gurl.host(), gurl.path()});
+  threat_info->set_cache_expression_using_match_type(cache_expression);
+  threat_info->set_cache_expression_match_type(
+      safe_browsing::RTLookupResponse::ThreatInfo::EXACT_MATCH);
+
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  safe_browsing::VerdictCacheManager* cache_manager =
+      VerdictCacheManagerFactory::GetForProfile(profile);
+  if (cache_manager) {
+    cache_manager->CacheRealTimeUrlVerdict(response, base::Time::Now());
+  }
+}
+
+network::TestURLLoaderFactory* GetTestURLLoaderFactory() {
+  static base::NoDestructor<network::TestURLLoaderFactory> factory;
+  return factory.get();
+}
+
+// Holds a weak pointer to the `WebState` whose asynchronous Safe Browsing
+// queries were paused for testing, so that `resumeAsyncQueriesForTesting`
+// resumes the same `WebState` even if the active tab has changed.
+base::WeakPtr<web::WebState>& GetPausedWebState() {
+  static base::NoDestructor<base::WeakPtr<web::WebState>> web_state;
+  return *web_state;
+}
+
+std::unique_ptr<safe_browsing::hash_realtime_utils::
+                    GoogleChromeBrandingPretenderForTesting>&
+GetBrandingPretender() {
+  static base::NoDestructor<
+      std::unique_ptr<safe_browsing::hash_realtime_utils::
+                          GoogleChromeBrandingPretenderForTesting>>
+      branding_pretender;
+  return *branding_pretender;
+}
 }  // namespace
 
 @implementation SafeBrowsingAppInterface
@@ -64,29 +127,27 @@ constexpr int kCacheDurationSec = 60;
 }
 
 + (void)cacheRealTimeVerdictForURL:(NSString*)url
-                      forceRequest:(BOOL)forceRequest {
-  const GURL gurl(base::SysNSStringToUTF8(url));
+                      forceRequest:(BOOL)forceRequest
+                   intelligentScan:(BOOL)intelligentScan {
   safe_browsing::RTLookupResponse response;
   if (forceRequest) {
     response.set_client_side_detection_type(
         safe_browsing::ClientSideDetectionType::FORCE_REQUEST);
   }
-  safe_browsing::RTLookupResponse::ThreatInfo* threat_info =
-      response.add_threat_info();
-  threat_info->set_verdict_type(
-      safe_browsing::RTLookupResponse::ThreatInfo::SAFE);
-  threat_info->set_cache_duration_sec(kCacheDurationSec);
-  std::string cache_expression = base::StrCat({gurl.host(), gurl.path()});
-  threat_info->set_cache_expression_using_match_type(cache_expression);
-  threat_info->set_cache_expression_match_type(
-      safe_browsing::RTLookupResponse::ThreatInfo::EXACT_MATCH);
-
-  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
-  safe_browsing::VerdictCacheManager* cache_manager =
-      VerdictCacheManagerFactory::GetForProfile(profile);
-  if (cache_manager) {
-    cache_manager->CacheRealTimeUrlVerdict(response, base::Time::Now());
+  if (intelligentScan) {
+    response.mutable_llama_forced_trigger_info()->set_intelligent_scan(true);
   }
+  CacheRealTimeUrlVerdict(
+      url, safe_browsing::RTLookupResponse::ThreatInfo::SAFE,
+      safe_browsing::RTLookupResponse::ThreatInfo::THREAT_TYPE_UNSPECIFIED,
+      std::move(response));
+}
+
++ (void)cacheSuspiciousSiteVerdictForURL:(NSString*)url {
+  CacheRealTimeUrlVerdict(
+      url, safe_browsing::RTLookupResponse::ThreatInfo::WARN,
+      safe_browsing::RTLookupResponse::ThreatInfo::SOCIAL_ENGINEERING,
+      safe_browsing::RTLookupResponse());
 }
 
 + (void)triggerClassificationDoneWithURL:(NSString*)url
@@ -130,6 +191,80 @@ constexpr int kCacheDurationSec = 60;
 + (void)setBypassLocalResourceCheckForTesting:(BOOL)bypass {
   safe_browsing::ClientSideDetectionHostIOS::
       SetBypassLocalResourceCheckForTesting(bypass);
+}
+
++ (void)setUpMockScamVerdictPhishingReportServer {
+  g_last_sent_request_has_intelligent_scan_info = false;
+  network::TestURLLoaderFactory* test_factory = GetTestURLLoaderFactory();
+  test_factory->ClearResponses();
+  test_factory->SetInterceptor(base::BindLambdaForTesting(
+      [test_factory](const network::ResourceRequest& request) {
+        std::string upload_data = network::GetUploadData(request);
+        safe_browsing::ClientPhishingRequest parsed_request;
+        if (parsed_request.ParseFromString(upload_data)) {
+          g_last_sent_request_has_intelligent_scan_info =
+              parsed_request.has_intelligent_scan_info();
+        }
+        safe_browsing::ClientPhishingResponse response;
+        response.set_phishy(false);
+        response.set_intelligent_scan_verdict(
+            safe_browsing::IntelligentScanVerdict::SCAM_EXPERIMENT_VERDICT_1);
+        test_factory->AddResponse(request.url.spec(),
+                                  response.SerializeAsString());
+      }));
+
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  safe_browsing::ClientSideDetectionService* service =
+      ClientSideDetectionServiceFactory::GetForProfile(profile);
+  if (service) {
+    service->SetSharedURLLoaderFactoryForTesting(
+        test_factory->GetSafeWeakWrapper());
+  }
+}
+
++ (BOOL)lastSentPhishingRequestHasIntelligentScanInfo {
+  return g_last_sent_request_has_intelligent_scan_info;
+}
+
++ (BOOL)pauseAsyncQueriesForTesting {
+  web::WebState* web_state = chrome_test_util::GetCurrentWebState();
+  if (!web_state) {
+    return NO;
+  }
+  SafeBrowsingQueryManager* query_manager =
+      SafeBrowsingQueryManager::FromWebState(web_state);
+  if (!query_manager) {
+    return NO;
+  }
+  GetPausedWebState() = web_state->GetWeakPtr();
+  query_manager->PauseAsyncQueriesForTesting();
+  return YES;
+}
+
++ (void)resumeAsyncQueriesForTesting {
+  web::WebState* web_state = GetPausedWebState().get();
+  if (!web_state) {
+    return;
+  }
+  SafeBrowsingQueryManager* query_manager =
+      SafeBrowsingQueryManager::FromWebState(web_state);
+  if (!query_manager) {
+    return;
+  }
+  query_manager->ResumeAsyncQueriesForTesting();
+  GetPausedWebState().reset();
+}
+
++ (void)setUpGoogleChromeBrandingForTesting {
+  if (!GetBrandingPretender()) {
+    GetBrandingPretender() =
+        std::make_unique<safe_browsing::hash_realtime_utils::
+                             GoogleChromeBrandingPretenderForTesting>();
+  }
+}
+
++ (void)tearDownGoogleChromeBrandingForTesting {
+  GetBrandingPretender().reset();
 }
 
 @end

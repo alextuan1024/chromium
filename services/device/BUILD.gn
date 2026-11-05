@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/buildflag_header.gni")
 import("//build/config/features.gni")
 import("//services/device/public/cpp/compute_pressure/buildflags.gni")
 import("//services/device/public/cpp/geolocation/buildflags.gni")
@@ -19,6 +20,11 @@ if (is_ios) {
 is_serial_enabled_platform =
     is_win || ((is_linux || is_chromeos) && use_udev) || is_mac || is_android
 
+buildflag_header("buildflags") {
+  header = "buildflags.h"
+  flags = [ "IS_SERIAL_ENABLED_PLATFORM=$is_serial_enabled_platform" ]
+}
+
 source_set("lib") {
   # This should be visible only to embedders of the Device Service, and the
   # dependence should only be for the purpose of embedding the Device Service.
@@ -34,13 +40,12 @@ source_set("lib") {
     "device_service.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     ":binder_overrides",
     "//services/device/fingerprint",
     "//services/device/generic_sensor",
     "//services/device/geolocation",
+    "//services/device/haptics",
     "//services/device/hid",
     "//services/device/power_monitor",
     "//services/device/public/cpp:device_features",
@@ -58,6 +63,7 @@ source_set("lib") {
   ]
 
   public_deps = [
+    ":buildflags",
     "//base",
     "//mojo/public/cpp/bindings",
     "//services/device/public/mojom",
@@ -82,7 +88,6 @@ source_set("lib") {
 
   if (is_serial_enabled_platform) {
     deps += [ "//services/device/serial" ]
-    defines = [ "IS_SERIAL_ENABLED_PLATFORM" ]
   }
 }
 
@@ -98,7 +103,6 @@ component("binder_overrides") {
     "binder_overrides.cc",
     "binder_overrides.h",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
   public_deps = [
     "//base",
     "//mojo/public/cpp/bindings",
@@ -155,6 +159,7 @@ source_set("tests") {
     "geolocation/public_ip_address_location_notifier_unittest.cc",
     "geolocation/wifi_data_provider_common_unittest.cc",
     "geolocation/wifi_polling_policy_unittest.cc",
+    "haptics/haptics_manager_impl_unittest.cc",
     "power_monitor/power_monitor_message_broadcaster_unittest.cc",
     "public/cpp/power_monitor/power_monitor_broadcast_source_unittest.cc",
     "vibration/vibration_manager_impl_unittest.cc",
@@ -171,11 +176,13 @@ source_set("tests") {
     "//components/variations",
     "//device/base/synchronization",
     "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/test_support:test_utils",
     "//net",
     "//net:test_support",
     "//services/device/generic_sensor",
     "//services/device/geolocation",
     "//services/device/geolocation:test_support",
+    "//services/device/haptics",
     "//services/device/power_monitor",
     "//services/device/public/cpp:device_features",
     "//services/device/public/cpp/power_monitor",
@@ -239,10 +246,15 @@ source_set("tests") {
       "battery/battery_status_manager_linux_unittest.cc",
       "geolocation/location_provider_linux_portal_unittest.cc",
       "geolocation/wifi_data_provider_linux_unittest.cc",
+      "wake_lock/power_save_blocker/power_save_blocker_linux_unittest.cc",
     ]
     deps += [
       "//components/dbus",
       "//dbus:test_support",
+      "//services/device/wake_lock/power_save_blocker",
+      "//ui/display",
+      "//ui/display:test_support",
+      "//ui/gfx",
     ]
   }
 
@@ -390,6 +402,10 @@ source_set("tests") {
     if (is_android || is_linux) {
       sources += [ "usb/usb_interface_detach_allowlist_unittest.cc" ]
     }
+
+    if (is_win) {
+      sources += [ "usb/usb_device_handle_win_unittest.cc" ]
+    }
   }
 
   if (is_apple) {
@@ -506,6 +522,7 @@ if (is_android) {
       "//services/device/battery/android:battery_monitor_java",
       "//services/device/generic_sensor:java",
       "//services/device/geolocation:geolocation_java",
+      "//services/device/haptics/android:haptics_java",
       "//services/device/hid:java",
       "//services/device/nfc/android:java",
       "//services/device/public/java:nfc_java",

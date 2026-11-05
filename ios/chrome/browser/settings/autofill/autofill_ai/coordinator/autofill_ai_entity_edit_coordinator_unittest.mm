@@ -41,7 +41,7 @@ class AutofillAIEntityEditCoordinatorTest : public PlatformTest {
     builder.AddTestingFactory(ios::WebDataServiceFactory::GetInstance(),
                               ios::WebDataServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
 
     profile_ = std::move(builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
@@ -125,6 +125,7 @@ TEST_F(AutofillAIEntityEditCoordinatorTest, MediatorSetsConsumer) {
       [[FakeAutofillAIEntityEditConsumer alloc] init];
   mediator.consumer = consumer;
 
+  EXPECT_EQ(consumer.mode, AutofillAIEntityEditMode::kViewAndEdit);
   EXPECT_GT(consumer.title.length, 0u);
   EXPECT_GT(consumer.editItems.count, 0u);
 }
@@ -175,8 +176,8 @@ TEST_F(AutofillAIEntityEditCoordinatorTest, OpenWalletURLForServerWalletItem) {
   // Create an explicit Server Wallet entity instance.
   autofill::EntityType type(autofill::EntityTypeName::kVehicle);
   autofill::EntityInstanceBuilder builder(type);
-  builder.SetRecordTypeData(
-      autofill::EntityInstance::WalletRecordTypePayload{.management_url = ""});
+  builder.SetRecordTypeData(autofill::EntityInstance::WalletRecordTypePayload{
+      .management_url = GURL()});
 
   for (autofill::AttributeType attr_type : type.attributes()) {
     builder.AddAttribute(autofill::AttributeInstance(attr_type));

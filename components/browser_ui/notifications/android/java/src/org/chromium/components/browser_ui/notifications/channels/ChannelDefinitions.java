@@ -15,8 +15,10 @@ import android.net.Uri;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -29,22 +31,18 @@ import java.util.Set;
 @NullMarked
 public abstract class ChannelDefinitions {
     /**
-     * @return A set of all known channel group ids that can be used for {@link #getChannelGroup}.
+     * Returns a set of all known channel group ids that can be used for {@link #getChannelGroup}.
      */
     public abstract Set<String> getAllChannelGroupIds();
 
-    /**
-     * @return A set of all known channel ids that can be used for {@link #getChannelFromId}.
-     */
+    /** Returns a set of all known channel ids that can be used for {@link #getChannelFromId}. */
     public abstract Set<String> getAllChannelIds();
 
-    /**
-     * @return A set of channel ids of channels that should be initialized on startup.
-     */
+    /** Returns a set of channel ids of channels that should be initialized on startup. */
     public abstract Set<String> getStartupChannelIds();
 
     /**
-     * @return A set of channel group ids of channel groups that should be initialized on startup.
+     * Returns a set of channel group ids of channel groups that should be initialized on startup.
      */
     public Set<String> getStartupChannelGroupIds() {
         Set<String> groupIds = new HashSet<>();
@@ -55,10 +53,23 @@ public abstract class ChannelDefinitions {
     }
 
     /**
-     * @return An array of old ChannelIds that may have been returned by
-     *         {@link #getStartupChannelIds} in the past, but are no longer in use.
+     * Returns an array of old ChannelIds that may have been returned by {@link
+     * #getStartupChannelIds} in the past, but are no longer in use.
      */
     public abstract List<String> getLegacyChannelIds();
+
+    /**
+     * Before {@link ChannelsInitializer#deleteLegacyChannels} deletes a legacy channel that is a
+     * key in this map, it copies the channel to its replacement if the legacy channel is enabled
+     * and the replacement doesn't exist yet. This is for legacy channels that the user enabled to
+     * opt in to a feature, where the channel is the only record of that decision.
+     *
+     * @return A map from a legacy channel id, which must also be in {@link #getLegacyChannelIds},
+     *     to the id of the predefined channel that replaces it.
+     */
+    public Map<String, String> getLegacyChannelReplacements() {
+        return Collections.emptyMap();
+    }
 
     public PredefinedChannelGroup getChannelGroupForChannel(PredefinedChannel channel) {
         return assumeNonNull(getChannelGroup(channel.mGroupId));
@@ -70,8 +81,8 @@ public abstract class ChannelDefinitions {
 
     /**
      * @param channelId a channel ID which may or may not correlate to a PredefinedChannel.
-     * @return true if the input is a valid channel ID other than one returned in
-     *     {@link getAllChannelIds}.
+     * @return true if the input is a valid channel ID other than one returned in {@link
+     *     #getAllChannelIds}.
      */
     public boolean isValidNonPredefinedChannelId(String channelId) {
         return false;

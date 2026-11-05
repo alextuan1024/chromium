@@ -19,6 +19,7 @@
 #include "third_party/blink/public/common/loader/loading_behavior_flag.h"
 #include "third_party/blink/public/common/subresource_load_metrics.h"
 #include "third_party/blink/public/mojom/loader/resource_load_info.mojom-shared.h"
+#include "third_party/blink/public/web/web_local_frame_metrics_observer.h"
 #include "third_party/blink/public/web/web_local_frame_observer.h"
 
 class GURL;
@@ -37,7 +38,8 @@ class PageTimingSender;
 // child frames). MetricsRenderFrameObserver dispatches timing and metadata
 // updates for main frames, but only metadata updates for child frames.
 class MetricsRenderFrameObserver : public content::RenderFrameObserver,
-                                   public blink::WebLocalFrameObserver {
+                                   public blink::WebLocalFrameObserver,
+                                   public blink::WebLocalFrameMetricsObserver {
  public:
   explicit MetricsRenderFrameObserver(content::RenderFrame* render_frame);
 
@@ -48,34 +50,6 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   ~MetricsRenderFrameObserver() override;
 
   // RenderFrameObserver implementation
-  void DidChangePerformanceTiming() override;
-  void DidObserveUserInteraction(
-      base::TimeTicks max_event_start,
-      base::TimeTicks max_event_queued_main_thread,
-      base::TimeTicks max_event_processing_start,
-      base::TimeTicks max_event_commit_finish,
-      base::TimeTicks max_event_end,
-      uint64_t interaction_offset,
-      uint64_t performance_timeline_navigation_id) override;
-  void DidChangeCpuTiming(base::TimeDelta time) override;
-  void DidObserveLoadingBehavior(blink::LoadingBehaviorFlag behavior) override;
-  void DidObserveJavaScriptFrameworks(
-      const blink::JavaScriptFrameworkDetectionResult&) override;
-  void DidObserveSubresourceLoad(
-      const blink::SubresourceLoadMetrics& subresource_load_metrics) override;
-  void DidObserveNewFeatureUsage(
-      const blink::UseCounterFeature& feature) override;
-  void DidObserveSoftNavigation(
-      blink::SoftNavigationMetricsForReporting metrics) override;
-  void DidObserveSoftNavigationFirstContentfulPaint(
-      uint64_t performance_timeline_navigation_id,
-      base::TimeDelta first_contentful_paint) override;
-  void DidObserveSoftLargestContentfulPaint(
-      const blink::LargestContentfulPaintDetailsForReporting& lcp) override;
-  void DidObserveLayoutShift(
-      double score,
-      bool after_input_or_scroll,
-      uint64_t performance_timeline_navigation_id) override;
   void DidStartResponse(const url::SchemeHostPort& final_response_url,
                         int request_id,
                         const network::mojom::URLResponseHead& response_head,
@@ -96,8 +70,6 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   void DidStartNavigation(
       const GURL& url,
       std::optional<blink::WebNavigationType> navigation_type) override;
-  void DidSetPageLifecycleState(
-      blink::BFCacheStateChange bfcache_change) override;
 
   void ReadyToCommitNavigation(
       blink::WebDocumentLoader* document_loader) override;
@@ -113,11 +85,44 @@ class MetricsRenderFrameObserver : public content::RenderFrameObserver,
   void OnMainFrameRectangleChanged(const gfx::Rect& main_frame_rect) override;
   void OnMainFrameViewportRectangleChanged(
       const gfx::Rect& main_frame_viewport_rect) override;
-  void OnMainFrameAdRectangleChanged(int element_id,
-                                     const gfx::Rect& ad_rect) override;
 
   // blink::WebLocalFrameObserver implementation
   void OnFrameDetached() override;
+  void DidChangePerformanceTiming() override;
+  void DidObserveLoadingBehavior(blink::LoadingBehaviorFlag behavior) override;
+  void DidObserveSoftNavigation(
+      blink::SoftNavigationMetricsForReporting metrics) override;
+  void DidSetPageLifecycleState(
+      blink::BFCacheStateChange bfcache_change) override;
+  void OnMainFrameAdRectangleChanged(int element_id,
+                                     const gfx::Rect& ad_rect) override;
+
+  // blink::WebLocalFrameMetricsObserver implementation
+  void DidObserveUserInteraction(
+      base::TimeTicks max_event_start,
+      base::TimeTicks max_event_queued_main_thread,
+      base::TimeTicks max_event_processing_start,
+      base::TimeTicks max_event_commit_finish,
+      base::TimeTicks max_event_end,
+      uint64_t interaction_offset,
+      uint64_t performance_timeline_navigation_id) override;
+  void DidChangeCpuTiming(base::TimeDelta time,
+                          base::TimeDelta ad_time) override;
+  void DidObserveJavaScriptFrameworks(
+      const blink::JavaScriptFrameworkDetectionResult&) override;
+  void DidObserveSubresourceLoad(
+      const blink::SubresourceLoadMetrics& subresource_load_metrics) override;
+  void DidObserveNewFeatureUsage(
+      const blink::UseCounterFeature& feature) override;
+  void DidObserveSoftNavigationFirstContentfulPaint(
+      uint64_t performance_timeline_navigation_id,
+      base::TimeDelta first_contentful_paint) override;
+  void DidObserveSoftLargestContentfulPaint(
+      const blink::LargestContentfulPaintDetailsForReporting& lcp) override;
+  void DidObserveLayoutShift(
+      double score,
+      bool after_input_or_scroll,
+      uint64_t performance_timeline_navigation_id) override;
 
  protected:
   // The relative and monotonic page load timings.

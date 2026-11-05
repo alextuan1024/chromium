@@ -36,8 +36,7 @@ namespace {
 
 bool ShouldExposeTabContextPrivateApi(
     content::NavigationHandle* navigation_handle) {
-  if (!base::FeatureList::IsEnabled(
-          syncer::kSyncEncryptedTabContextContainer)) {
+  if (!base::FeatureList::IsEnabled(syncer::kSyncEncryptedTabContext)) {
     return false;
   }
 
@@ -74,8 +73,7 @@ class DecryptionTokenApi
       const std::string& obfuscated_gaia_id,
       const base::Uuid& container_id,
       GetContainerDecryptionTokenCallback callback) override {
-    CHECK(base::FeatureList::IsEnabled(
-        syncer::kSyncEncryptedTabContextContainer));
+    CHECK(base::FeatureList::IsEnabled(syncer::kSyncEncryptedTabContext));
 
     // Although binding is restricted to allowed origins during navigation,
     // a compromised renderer attempting to send an unauthorized IPC message
@@ -152,22 +150,16 @@ DOCUMENT_USER_DATA_KEY_IMPL(DecryptionTokenApi);
 }  // namespace
 
 // static
-void TabContextDecryptionTokenTabHelper::CreateForWebContents(
+std::unique_ptr<TabContextDecryptionTokenTabHelper>
+TabContextDecryptionTokenTabHelper::MaybeCreate(
     content::WebContents* web_contents) {
   CHECK(web_contents);
 
-  if (!base::FeatureList::IsEnabled(
-          syncer::kSyncEncryptedTabContextContainer)) {
-    return;
+  if (!base::FeatureList::IsEnabled(syncer::kSyncEncryptedTabContext)) {
+    return nullptr;
   }
 
-  if (FromWebContents(web_contents)) {
-    return;
-  }
-
-  web_contents->SetUserData(
-      UserDataKey(),
-      base::WrapUnique(new TabContextDecryptionTokenTabHelper(web_contents)));
+  return base::WrapUnique(new TabContextDecryptionTokenTabHelper(web_contents));
 }
 
 // static
@@ -185,9 +177,7 @@ void TabContextDecryptionTokenTabHelper::BindTabContextDecryptionTokenExtension(
 
 TabContextDecryptionTokenTabHelper::TabContextDecryptionTokenTabHelper(
     content::WebContents* web_contents)
-    : content::WebContentsUserData<TabContextDecryptionTokenTabHelper>(
-          *web_contents),
-      content::WebContentsObserver(web_contents) {}
+    : content::WebContentsObserver(web_contents) {}
 
 TabContextDecryptionTokenTabHelper::~TabContextDecryptionTokenTabHelper() =
     default;
@@ -203,5 +193,3 @@ void TabContextDecryptionTokenTabHelper::DidFinishNavigation(
         navigation_handle->GetRenderFrameHost());
   }
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(TabContextDecryptionTokenTabHelper);

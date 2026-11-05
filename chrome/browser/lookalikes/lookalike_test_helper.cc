@@ -29,8 +29,7 @@ void LookalikeTestHelper::SetUpLookalikeTestParams() {
 
   // Use test top bucket domain skeletons instead of the actual list.
   lookalikes::TopBucketDomainsParams top_bucket_params{
-      test_top_bucket_domains::kTopBucketEditDistanceSkeletons,
-      test_top_bucket_domains::kNumTopBucketEditDistanceSkeletons};
+      test_top_bucket_domains::kTopBucketEditDistanceSkeletons};
   lookalikes::SetTopBucketDomainsParamsForTesting(top_bucket_params);
 
   lookalikes::InitializeSafetyTipConfig();
@@ -44,7 +43,7 @@ void LookalikeTestHelper::TearDownLookalikeTestParams() {
 
 void LookalikeTestHelper::CheckSafetyTipUkmCount(
     size_t expected_event_count) const {
-  std::vector<raw_ptr<const ukm::mojom::UkmEntry, VectorExperimental>> entries =
+  std::vector<raw_ptr<const ukm::mojom::UkmEntry, DanglingUntriaged>> entries =
       ukm_recorder_->GetEntriesByName(
           ukm::builders::Security_SafetyTip::kEntryName);
   ASSERT_EQ(expected_event_count, entries.size());
@@ -52,7 +51,7 @@ void LookalikeTestHelper::CheckSafetyTipUkmCount(
 
 void LookalikeTestHelper::CheckInterstitialUkmCount(
     size_t expected_event_count) const {
-  std::vector<raw_ptr<const ukm::mojom::UkmEntry, VectorExperimental>> entries =
+  std::vector<raw_ptr<const ukm::mojom::UkmEntry, DanglingUntriaged>> entries =
       ukm_recorder_->GetEntriesByName(
           ukm::builders::LookalikeUrl_NavigationSuggestion::kEntryName);
   ASSERT_EQ(expected_event_count, entries.size());

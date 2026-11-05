@@ -29,6 +29,7 @@ std::optional<DeletionReason> SessionError::GetDeletionReason() const {
     case kInvalidChallenge:
     case kTooManyChallenges:
     case kSessionDeletedDuringRefresh:
+    case kCrossSiteRefreshSessionConfig:
       return DeletionReason::kRefreshFatalError;
     case kInvalidConfigJson:
     case kInvalidSessionId:
@@ -102,6 +103,7 @@ std::optional<DeletionReason> SessionError::GetDeletionReason() const {
     case kPreProvisionedKeyNotFound:
     case kAttestationCertificationError:
     case kAttestationSigningError:
+    case kFederatedRegistrationRedirected:
       NOTREACHED();
   }
 }
@@ -156,6 +158,7 @@ bool SessionError::IsServerError() const {
     case kInvalidScopeIncludeSite:
     case kMissingScopeIncludeSite:
     case kBoundCookieSetForbidden:
+    case kCrossSiteRefreshSessionConfig:
       return true;
     // Registration-only errors never get reported to the server.
     case kSigningKeyGenerationError:
@@ -187,6 +190,7 @@ bool SessionError::IsServerError() const {
     case kPreProvisionedKeyNotFound:
     case kAttestationCertificationError:
     case kAttestationSigningError:
+    case kFederatedRegistrationRedirected:
       NOTREACHED();
   }
 }
@@ -236,6 +240,7 @@ std::optional<RefreshResult> SessionError::GetRefreshResult() const {
     case kNoCredentials:
     case kInvalidScopeIncludeSite:
     case kMissingScopeIncludeSite:
+    case kCrossSiteRefreshSessionConfig:
       return RefreshResult::kFatalError;
 
     // Specific cases
@@ -284,6 +289,7 @@ std::optional<RefreshResult> SessionError::GetRefreshResult() const {
     case kPreProvisionedKeyNotFound:
     case kAttestationCertificationError:
     case kAttestationSigningError:
+    case kFederatedRegistrationRedirected:
       NOTREACHED();
   }
 }

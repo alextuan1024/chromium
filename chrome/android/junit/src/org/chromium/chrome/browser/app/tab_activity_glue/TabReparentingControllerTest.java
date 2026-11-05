@@ -4,7 +4,10 @@
 
 package org.chromium.chrome.browser.app.tab_activity_glue;
 
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -14,6 +17,7 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
@@ -28,6 +32,8 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.AsyncTabParams;
 import org.chromium.chrome.browser.tabmodel.AsyncTabParamsManager;
 import org.chromium.chrome.browser.tabmodel.AsyncTabParamsManagerFactory;
+import org.chromium.chrome.browser.tabmodel.IncognitoTabHostRegistry;
+import org.chromium.chrome.browser.tabmodel.IncognitoTabHostUtils;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabReparentingParams;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
@@ -44,6 +50,7 @@ import java.util.Map;
 public class TabReparentingControllerTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock TabModelSelector mTabModelSelector;
+    @Mock Runnable mDestroyTabPersistentStoreRunnable;
     @Mock ReparentingTask mTask;
     @Mock Profile mProfile;
     @Mock Profile mIncognitoProfile;
@@ -58,6 +65,7 @@ public class TabReparentingControllerTest {
 
     @Before
     public void setUp() {
+        IncognitoTabHostRegistry.getInstance().clearForTesting();
         Mockito.when(mIncognitoProfile.isOffTheRecord()).thenReturn(true);
 
         mTabModel = new MockTabModel(mProfile, null);
@@ -68,13 +76,17 @@ public class TabReparentingControllerTest {
 
         mRealAsyncTabParamsManager = AsyncTabParamsManagerFactory.createAsyncTabParamsManager();
         mController =
-                new TabReparentingController(() -> mTabModelSelector, mRealAsyncTabParamsManager);
+                new TabReparentingController(
+                        () -> mTabModelSelector,
+                        mRealAsyncTabParamsManager,
+                        mDestroyTabPersistentStoreRunnable);
     }
 
     @After
     public void tearDown() {
         mForegroundTab = null;
         mRealAsyncTabParamsManager.getAsyncTabParams().clear();
+        IncognitoTabHostRegistry.getInstance().clearForTesting();
         mTabIndexMapping.clear();
     }
 
@@ -90,6 +102,7 @@ public class TabReparentingControllerTest {
         TabReparentingParams trp = (TabReparentingParams) params;
         Tab tab = trp.getTabToReparent();
         Assert.assertNotNull(tab);
+        Assert.assertFalse(trp.shouldReload());
         verify(mTask, times(1)).detach();
     }
 
@@ -208,6 +221,102 @@ public class TabReparentingControllerTest {
 
         verify(mForegroundTab).stopLoading();
         verify(mForegroundTab.getWebContents().getNavigationController()).setNeedsReload();
+    }
+
+    @Test
+    public void testReparenting_shouldReloadOnlyLoadingTabs() {
+        Tab tab1 = createAndAddMockTab(/* id= */ 1, /* incognito= */ false);
+        Tab tab2 = createAndAddMockTab(/* id= */ 2, /* incognito= */ false);
+        Tab tab3 = createAndAddMockTab(/* id= */ 3, /* incognito= */ false);
+        Tab tab4 = createAndAddMockTab(/* id= */ 4, /* incognito= */ false);
+
+        doReturn(tab1).when(mTabModelSelector).getCurrentTab();
+        doReturn(true).when(tab1).needsReload();
+
+        boolean[] tab2Loading = {true};
+        doAnswer(_ -> tab2Loading[0]).when(tab2).isLoading();
+        doAnswer(
+                        _ -> {
+                            tab2Loading[0] = false;
+                            return null;
+                        })
+                .when(tab2)
+                .stopLoading();
+
+        doReturn(true).when(tab3).needsReload();
+
+        mController.prepareTabsForReparenting();
+        Assert.assertFalse(tab2.isLoading());
+        Assert.assertFalse(
+                ((TabReparentingParams) mRealAsyncTabParamsManager.getAsyncTabParams().get(1))
+                        .shouldReload());
+        Assert.assertTrue(
+                ((TabReparentingParams) mRealAsyncTabParamsManager.getAsyncTabParams().get(2))
+                        .shouldReload());
+        Assert.assertFalse(
+                ((TabReparentingParams) mRealAsyncTabParamsManager.getAsyncTabParams().get(3))
+                        .shouldReload());
+        Assert.assertFalse(
+                ((TabReparentingParams) mRealAsyncTabParamsManager.getAsyncTabParams().get(4))
+                        .shouldReload());
+
+        mController.prepareTabsForReparenting();
+        Assert.assertTrue(
+                ((TabReparentingParams) mRealAsyncTabParamsManager.getAsyncTabParams().get(2))
+                        .shouldReload());
+        verify(tab2, times(1)).stopLoading();
+        verify(tab2.getWebContents().getNavigationController(), times(1)).setNeedsReload();
+        verify(mTask, times(4)).detach();
+    }
+
+    @Test
+    public void testReparenting_finalizeCallbackDetachesTabFromOldSelector() {
+        mForegroundTab = createAndAddMockTab(1, /* incognito= */ false);
+
+        mController.prepareTabsForReparenting();
+
+        TabReparentingParams trp =
+                (TabReparentingParams) mRealAsyncTabParamsManager.getAsyncTabParams().get(1);
+        Assert.assertNotNull(trp);
+        Runnable finalizeCallback = trp.getFinalizeCallback();
+        Assert.assertNotNull(finalizeCallback);
+        Assert.assertSame(finalizeCallback, trp.getFinalizeCallback());
+
+        finalizeCallback.run();
+        InOrder inOrder = inOrder(mDestroyTabPersistentStoreRunnable, mTabModelSelector);
+        inOrder.verify(mDestroyTabPersistentStoreRunnable).run();
+        inOrder.verify(mTabModelSelector).detachTabForReparenting(mForegroundTab);
+    }
+
+    @Test
+    public void testReparenting_overwrittenParamsDetachesFromOldSelector() {
+        mForegroundTab = createAndAddMockTab(1, /* incognito= */ false);
+        mController.prepareTabsForReparenting();
+
+        mRealAsyncTabParamsManager.add(
+                1,
+                new TabReparentingParams(
+                        mForegroundTab,
+                        /* sourceSelector= */ null,
+                        /* shouldReload= */ false,
+                        /* finalizeCallback= */ null));
+
+        verify(mTabModelSelector).detachTabForReparenting(mForegroundTab);
+        verify(mDestroyTabPersistentStoreRunnable, never()).run();
+    }
+
+    @Test
+    public void testReparenting_closeAllIncognitoTabsDetachesBeforeDestroy() {
+        Tab incognitoTab = createAndAddMockTab(1, /* incognito= */ true);
+        doReturn(true).when(incognitoTab).isIncognitoBranded();
+        mController.prepareTabsForReparenting();
+
+        IncognitoTabHostUtils.closeAllIncognitoTabs();
+
+        InOrder inOrder = inOrder(mTabModelSelector, incognitoTab);
+        inOrder.verify(mTabModelSelector).detachTabForReparenting(incognitoTab);
+        inOrder.verify(incognitoTab).destroy();
+        verify(mDestroyTabPersistentStoreRunnable, never()).run();
     }
 
     /**

@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "ash/constants/chrome_webui_url_constants.h"
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
@@ -14,8 +15,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/browser_app_launcher.h"
 #include "chrome/browser/ash/login/existing_user_controller.h"
 #include "chrome/browser/ash/login/screens/app_launch_splash_screen.h"
@@ -35,8 +34,6 @@
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/network_state_informer.h"
 #include "chrome/browser/ui/webui/ash/login/offline_login_screen_handler.h"
-#include "chrome/grit/browser_resources.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/network/network_connection_handler.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
@@ -393,20 +390,23 @@ void ErrorScreen::OnRebootButtonClicked() {
 }
 
 void ErrorScreen::OnCancelButtonClicked() {
-  DCHECK(LoginDisplayHost::default_host()->HasUserPods());
+  CHECK(LoginDisplayHost::default_host()->HasUserPods(),
+        base::NotFatalUntil::M161);
   LoginDisplayHost::default_host()->HideOobeDialog();
   Hide();
 }
 
 void ErrorScreen::OnReloadGaiaClicked() {
-  DCHECK_EQ(parent_screen_, GaiaView::kScreenId.AsId());
+  CHECK_EQ(parent_screen_, GaiaView::kScreenId.AsId(),
+           base::NotFatalUntil::M161);
   WizardController::default_controller()
       ->GetScreen<GaiaScreen>()
       ->ReloadGaiaAuthenticator();
 }
 
 void ErrorScreen::OnContinueAppLaunchButtonClicked() {
-  DCHECK_EQ(parent_screen_, AppLaunchSplashScreenView::kScreenId.AsId());
+  CHECK_EQ(parent_screen_, AppLaunchSplashScreenView::kScreenId.AsId(),
+           base::NotFatalUntil::M161);
   WizardController::default_controller()
       ->GetScreen<AppLaunchSplashScreen>()
       ->ContinueAppLaunch();

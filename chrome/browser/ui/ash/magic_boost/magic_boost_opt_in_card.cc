@@ -14,7 +14,7 @@
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_constants.h"
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_metrics.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "chromeos/ui/vector_icons/vector_icons.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -34,7 +34,6 @@
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
-#include "ui/views/widget/unique_widget_ptr.h"
 #include "ui/views/widget/widget.h"
 
 namespace chromeos {
@@ -66,17 +65,9 @@ constexpr int kBetweenImageAndTextSpacing = 16;
 constexpr int kBetweenContentsAndButtonsSpacing = 16;
 constexpr int kBetweenLabelsSpacing = 4;
 
-// Font lists
-const gfx::FontList kBodyTextFontList =
-    gfx::FontList({"Google Sans", "Roboto"},
-                  gfx::Font::NORMAL,
-                  /*font_size=*/12,
-                  gfx::Font::Weight::NORMAL);
-const gfx::FontList kTitleTextFontList =
-    gfx::FontList({"Google Sans", "Roboto"},
-                  gfx::Font::NORMAL,
-                  /*font_size=*/14,
-                  gfx::Font::Weight::MEDIUM);
+// Font constants
+constexpr int kBodyTextFontSize = 12;
+constexpr int kTitleTextFontSize = 14;
 
 }  // namespace
 
@@ -172,7 +163,9 @@ MagicBoostOptInCard::MagicBoostOptInCard(
                       include_orca
                           ? IDS_ASH_MAGIC_BOOST_OPT_IN_CARD_TITLE
                           : IDS_ASH_MAGIC_BOOST_OPT_IN_CARD_NO_ORCA_TITLE))
-                  .SetFontList(kTitleTextFontList)
+                  .SetFontList(gfx::FontList(
+                      {"Google Sans", "Roboto"}, gfx::Font::NORMAL,
+                      kTitleTextFontSize, gfx::Font::Weight::MEDIUM))
                   .SetMultiLine(true)
                   .SetMaxLines(kTitleLabelMaxLines),
               views::Builder<views::Label>()
@@ -188,7 +181,9 @@ MagicBoostOptInCard::MagicBoostOptInCard(
                       include_orca
                           ? IDS_ASH_MAGIC_BOOST_OPT_IN_CARD_BODY
                           : IDS_ASH_MAGIC_BOOST_OPT_IN_CARD_NO_ORCA_BODY))
-                  .SetFontList(kBodyTextFontList)
+                  .SetFontList(gfx::FontList(
+                      {"Google Sans", "Roboto"}, gfx::Font::NORMAL,
+                      kBodyTextFontSize, gfx::Font::Weight::NORMAL))
                   .SetMultiLine(true)
                   .SetMaxLines(kBodyLabelMaxLines))
           .Build());
@@ -229,12 +224,12 @@ MagicBoostOptInCard::MagicBoostOptInCard(
 MagicBoostOptInCard::~MagicBoostOptInCard() = default;
 
 // static
-views::UniqueWidgetPtr MagicBoostOptInCard::CreateWidget(
+std::unique_ptr<views::Widget> MagicBoostOptInCard::CreateWidget(
     const ApplicationLocaleStorage* application_locale_storage,
     MagicBoostCardController* controller,
     const gfx::Rect& anchor_view_bounds) {
   views::Widget::InitParams params(
-      views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET,
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_POPUP);
   params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
   params.activatable = views::Widget::InitParams::Activatable::kYes;
@@ -243,8 +238,7 @@ views::UniqueWidgetPtr MagicBoostOptInCard::CreateWidget(
   params.z_order = ui::ZOrderLevel::kFloatingUIElement;
   params.name = GetWidgetName();
 
-  views::UniqueWidgetPtr widget =
-      std::make_unique<views::Widget>(std::move(params));
+  auto widget = std::make_unique<views::Widget>(std::move(params));
   MagicBoostOptInCard* magic_boost_opt_in_card =
       widget->SetContentsView(std::make_unique<MagicBoostOptInCard>(
           application_locale_storage, controller));
@@ -262,7 +256,7 @@ void MagicBoostOptInCard::UpdateWidgetBounds(
     const gfx::Rect& anchor_view_bounds) {
   // TODO(b/318733414): Move `GetEditorMenuBounds` to a common place to use.
   GetWidget()->SetBounds(editor_menu::GetEditorMenuBounds(
-      anchor_view_bounds, this, application_locale_storage_->Get()));
+      anchor_view_bounds, this, application_locale_storage_->GetTag()));
 }
 
 void MagicBoostOptInCard::RequestFocus() {

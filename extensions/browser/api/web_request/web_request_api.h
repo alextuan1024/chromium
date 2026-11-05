@@ -20,6 +20,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -66,6 +67,7 @@ class URLLoaderFactoryBuilder;
 }  // namespace network
 
 namespace extensions {
+class ExtensionRegistry;
 class WebViewGuest;
 
 // Support class for the WebRequest API. Lives on the UI thread. Most of the
@@ -228,7 +230,8 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
   //
   // `navigation_response_task_runner` is a task runner that may be non-null for
   // navigation requests and can be used to run navigation request blocking
-  // tasks.
+  // tasks. It may also be non-null for a main frame's document subresource
+  // factory, in which case all of the proxy's receivers are bound to it.
   //
   // Returns `true` if the URLLoaderFactory will be proxied; `false` otherwise.
   bool MaybeProxyURLLoaderFactory(
@@ -425,6 +428,9 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
   // Stores the last result of |MayHaveProxies()|, so it can be used in
   // |UpdateMayHaveProxies()|.
   bool may_have_proxies_;
+
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   base::WeakPtrFactory<WebRequestAPI> weak_factory_{this};
 };

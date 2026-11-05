@@ -30,12 +30,13 @@ import type {                                                                //
 } from '../../actor_webui.mojom-webui.js';
 import {enumFromClient, enumToClient} from '../../enum_conversions.js';
 import {ActorClientReceiver, ActorHandlerRemote} from '../../glic.mojom-webui.js';
-import type {                                      //
-             ActorClientInterface,                 //
-             ActorTaskState as ActorTaskStateMojo, //
-             TabContextResult as TabContextMojo,   //
-             WebClientHandlerRemote,               //
-             WebClientInitialState,                //
+import type {                                                    //
+             ActorClientInterface,                               //
+             ActorTaskState as ActorTaskStateMojo,               //
+             PerformActionsOptions as PerformActionsOptionsMojo, //
+             TabContextResult as TabContextMojo,                 //
+             WebClientHandlerRemote,                             //
+             WebClientInitialState,                              //
 } from '../../glic.mojom-webui.js';
 import type * as glicApi from '../../glic_api/glic_api.js';
 import type {                                        //
@@ -52,6 +53,7 @@ import type {                                        //
              NavigationConfirmationRequest,          //
              Observable,                             //
              ObservableValue,                        //
+             PerformActionsOptions,                  //
              ResumeActorTaskResult,                  //
              SelectAutofillSuggestionsDialogRequest, //
              SelectCredentialDialogRequest,          //
@@ -70,9 +72,6 @@ import {                      //
   PerformActionsErrorReason,  //
 } from '../../glic_api/glic_api.js';
 import {ObservableValue as ObservableValueImpl, Subject} from '../../observable.js';
-import {convertTabContextResultFromPrivate, convertTabDataFromPrivate} from '../client/glic_api_client.js';
-import {rgbaImageToBlob} from '../client/image_utils.js';
-import type {CheckEnumCompatibility} from '../conversions.js';
 import {                        //
   bitmapN32ToRGBAImage,         //
   byteArrayFromClient,          //
@@ -85,11 +84,11 @@ import {                        //
   tabContextOptionsFromClient,  //
   tabContextToClient,           //
   urlToClient,                  //
-} from '../host/conversions.js';
+} from '../conversions.js';
+import {assertNever, ErrorWithReasonImpl} from '../glic_client_common.js';
+import {rgbaImageToBlob} from '../image_utils.js';
+import type {CheckEnumCompatibility} from '../legacy_enum_check.js';
 import {maybeWrapWithLogging} from '../mojo_logging.js';
-import type {ResumeActorTaskResultPrivate} from '../request_types.js';
-import {ErrorWithReasonImpl} from '../request_types.js';
-import {assertNever, ResponseExtras} from '../transport/messaging.js';
 
 // Implements actor-specific methods on GlicBrowserHost.
 export class GlicBrowserHostActor implements ActorClientInterface,
@@ -246,9 +245,7 @@ export class GlicBrowserHostActor implements ActorClientInterface,
     if (!tabContext) {
       throw new Error(`tabContext failed: ${errorReason}`);
     }
-    const tabContextResult =
-        tabContextToClient(tabContext, new ResponseExtras());
-    return convertTabContextResultFromPrivate(tabContextResult);
+    return tabContextToClient(tabContext);
   }
 
   async createTask?(taskOptions?: TaskOptions): Promise<number> {
@@ -263,11 +260,12 @@ export class GlicBrowserHostActor implements ActorClientInterface,
     }
   }
 
-  async performActions?(actions: ArrayBuffer): Promise<ArrayBuffer> {
+  async performActions?(actions: ArrayBuffer, options?: PerformActionsOptions):
+      Promise<ArrayBuffer> {
     assert(this.actorHandler);
     try {
-      const resultProto =
-          await this.actorHandler.performActions(byteArrayFromClient(actions));
+      const resultProto = await this.actorHandler.performActions(
+          byteArrayFromClient(actions), performActionsOptionsToMojo(options));
       const buffer = getArrayBufferFromBigBuffer(resultProto.smuggled);
       if (!buffer) {
         throw PerformActionsErrorReason.UNKNOWN;
@@ -317,10 +315,8 @@ export class GlicBrowserHostActor implements ActorClientInterface,
       throw new Error(
           `resumeActorTask failed: ${getContextResult.errorReason}`);
     }
-    const extras = new ResponseExtras();
-    const resumeActorTaskResult = resumeActorTaskResultToClient(
-        getContextResult.tabContext, actionResult, extras);
-    return convertTabContextResultFromPrivate(resumeActorTaskResult);
+    return resumeActorTaskResultToClient(
+        getContextResult.tabContext, actionResult);
   }
 
   interruptActorTask?
@@ -361,12 +357,12 @@ export class GlicBrowserHostActor implements ActorClientInterface,
     });
     const tabData = response.tabData;
     if (tabData) {
-      return convertTabDataFromPrivate({
+      return {
         tabId: idToClient(tabData.tabId),
         windowId: idToClient(tabData.windowId),
         url: urlToClient(tabData.url),
         title: optionalToClient(tabData.title),
-      });
+      };
     }
     throw new Error('createActorTab: failed');
   }
@@ -726,11 +722,20 @@ function taskOptionsToMojo(taskOptions?: TaskOptions): TaskOptionsMojo|null {
   return null;
 }
 
+function performActionsOptionsToMojo(options?: PerformActionsOptions):
+    PerformActionsOptionsMojo|null {
+  if (options) {
+    return {
+      turnId: options.turnId ?? '',
+    };
+  }
+  return null;
+}
+
 function resumeActorTaskResultToClient(
-    tabContext: TabContextMojo, actionResult: number,
-    extras: ResponseExtras): ResumeActorTaskResultPrivate {
+    tabContext: TabContextMojo, actionResult: number): ResumeActorTaskResult {
   return {
-    ...tabContextToClient(tabContext, extras),
+    ...tabContextToClient(tabContext),
     actionResult,
   };
 }

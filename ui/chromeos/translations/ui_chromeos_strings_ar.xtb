@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">الكاميرا</translation>
 <translation id="162175252992296058">البرتغالية باستخدام لوحة المفاتيح الأمريكية الدولية</translation>
 <translation id="1629521517399325891">شهادة المستخدم غير متاحة لعملية مصادقة الشبكة.</translation>
+<translation id="1639239467298939599">جارٍ التحميل</translation>
 <translation id="1641780993263690097">الصينية باستخدام لوحة مفاتيح بنيين</translation>
 <translation id="164969095109328410">‏جهاز Chrome</translation>
 <translation id="1661207570040737402">‏لقد استهلكت كل مساحة التخزين السحابي المشتركة في Google Workspace.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">تم إيقاف مزامنة الملفات</translation>
 <translation id="2820957248982571256">جارٍ الفحص...</translation>
 <translation id="2830077785865012357">‏الصينية باستخدام لوحة مفاتيح Zhuyin</translation>
+<translation id="2838379631617906747">يتم الآن التثبيت</translation>
 <translation id="2843806747483486897">تغيير الإجراء التلقائي...</translation>
 <translation id="2873951654529031587">المهملات</translation>
 <translation id="2887314858867008269">‏لوحة مفاتيح Colemak (الولايات المتحدة)</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">كلمة مرور غير صحيحة</translation>
 <translation id="5059127710849015030">تحويل صوتي إلى اللغة النيبالية</translation>
 <translation id="5068919226082848014">بيتزا</translation>
+<translation id="5075336522277785691">وضعَ "<ph name="EXTENSION_NAME" />" قواعد لتجاوز الخادم الوكيل</translation>
 <translation id="5081517858322016911">سيتم حذف <ph name="TOTAL_FILE_SIZE" /> من حجم الملفات.</translation>
 <translation id="508423945471810158">جارٍ نقل <ph name="NUMBER_OF_ITEMS" /> عنصر إلى <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">حدث خطأ.</translation>
-<translation id="5102922915594634436">إدارة المجلدات التي تمت مزامنتها</translation>
 <translation id="5109254780565519649">حدث خطأ. وقد لا تتم استعادة بعض الملفات.</translation>
 <translation id="5110329002213341433">الإنجليزية (كندا)</translation>
 <translation id="5119780910075847424">المزامنة متوقّفة مؤقتًا</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">لم يتم تثبيت أي شهادات</translation>
 <translation id="5317780077021120954">حفظ</translation>
 <translation id="5318819489018851358">‏المشاركة مع نظام التشغيل Linux</translation>
-<translation id="5330145655348521461">تم فتح هذه الملفات على جهاز سطح مكتب آخر. يمكنك الانتقال إلى <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) للاطلاع عليها.</translation>
 <translation id="5330512191124428349">الحصول على معلومات</translation>
 <translation id="535792325654997756">شخص مع قطط</translation>
 <translation id="5358764674931277">عدد اللقطات في الثانية</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">قيمة غير صالحة لمطابقة لاحقة النطاق</translation>
 <translation id="6364301859968397756">مساحة التخزين المتوفّرة للمؤسسة ممتلئة.</translation>
 <translation id="6367976544441405720">سيارة نقل</translation>
-<translation id="637062427944097960">تم فتح هذا الملف على جهاز سطح مكتب آخر. يمكنك الانتقال إلى <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) للاطلاع عليه.</translation>
 <translation id="6394388407447716302">للقراءة فقط</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> من العناصر</translation>
 <translation id="6407769893376380348">تعذّر نقل "<ph name="FILE_NAME" />" لأنّه مشفَّر.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> - منفذ</translation>
 <translation id="8656407365183407932">كان يلزم إزالة الملفات المتاحة بلا اتصال بالإنترنت</translation>
 <translation id="8656768832129462377">عدم التحقق</translation>
+<translation id="8662978096466608964">‏يتعذر على Chrome تعيين هذه الخلفية.</translation>
 <translation id="8688591111840995413">كلمة مرور سيئة</translation>
 <translation id="8698464937041809063">‏رسم Google</translation>
 <translation id="8698877009525468705">هذا الملف سرّي ويخضع للقيود المفروضة بموجب سياسة المشرف.</translation>

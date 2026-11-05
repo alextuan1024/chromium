@@ -4,8 +4,6 @@
 
 #include "third_party/blink/renderer/bindings/core/v8/v8_metrics.h"
 
-#include <cstdint>
-
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/strcat.h"
@@ -19,7 +17,6 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/platform/instrumentation/histogram.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
 namespace blink {
 
@@ -386,10 +383,10 @@ void ReportCppHistograms(std::string_view priority,
   /* Report size metrics: */
   ReportHistogramCollectionSizes(
       base::StrCat({"V8.GC.Cycle", priority, ".Objects"}), ".Full.Cpp",
-      event.objects);
+      event.objects_cpp);
   base::UmaHistogramCustomCounts(
       base::StrCat({"V8.GC.Cycle", priority, ".Memory", ".Freed.Full.Cpp"}),
-      CappedSizeInKB(event.memory.bytes_freed), kMinSize, kMaxSize,
+      CappedSizeInKB(event.memory_cpp.bytes_freed), kMinSize, kMaxSize,
       kNumBuckets);
 
   /* Report efficacy metrics: */

@@ -6,42 +6,44 @@
 #define COMPONENTS_BROWSER_ACTUATOR_INTERNAL_BROWSER_ACTUATOR_SERVICE_IMPL_H_
 
 #include <memory>
-#include <string_view>
 
-#include "base/memory/scoped_refptr.h"
+#include "base/functional/callback.h"
+#include "base/sequence_checker.h"
+#include "base/thread_annotations.h"
 #include "components/browser_actuator/public/browser_actuator_service.h"
-
-namespace network {
-class SharedURLLoaderFactory;
-}  // namespace network
-
-namespace signin {
-class IdentityManager;
-}  // namespace signin
 
 namespace browser_actuator {
 
-class TransportChannelImpl;
+class BrowserActuatorTaskClient;
 
 class BrowserActuatorServiceImpl : public BrowserActuatorService {
  public:
-  BrowserActuatorServiceImpl(
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      signin::IdentityManager* identity_manager);
+  using TaskClientFactoryCallback =
+      base::RepeatingCallback<std::unique_ptr<BrowserActuatorTaskClient>()>;
+
+  BrowserActuatorServiceImpl();
   ~BrowserActuatorServiceImpl() override;
 
   BrowserActuatorServiceImpl(const BrowserActuatorServiceImpl&) = delete;
   BrowserActuatorServiceImpl& operator=(const BrowserActuatorServiceImpl&) =
       delete;
 
-  // BrowserActuatorService implementation.
+  void SetTaskClientFactory(TaskClientFactoryCallback task_client_factory);
+
+  // KeyedService:
+  void Shutdown() override;
+
+  // BrowserActuatorService:
   bool IsInitialized() const override;
-  TransportChannel* GetChannel() override;
-  TransportSession* GetOrCreateSession(std::string_view session_id) override;
-  TransportSession* GetSession(std::string_view session_id) override;
+  std::unique_ptr<BrowserActuatorTaskClient> CreateTaskClient() override;
 
  private:
-  std::unique_ptr<TransportChannelImpl> channel_;
+  SEQUENCE_CHECKER(sequence_checker_);
+
+  bool is_shut_down_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+
+  TaskClientFactoryCallback task_client_factory_
+      GUARDED_BY_CONTEXT(sequence_checker_);
 };
 
 }  // namespace browser_actuator

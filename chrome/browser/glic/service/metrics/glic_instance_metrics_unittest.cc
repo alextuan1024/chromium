@@ -4,8 +4,11 @@
 
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
@@ -14,15 +17,29 @@
 #include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/glic_pref_names_internal.h"
+#include "chrome/browser/glic/glic_profile_manager.h"
+#include "chrome/browser/glic/host/context/glic_tab_data.h"
 #include "chrome/browser/glic/host/glic.mojom-shared.h"
+#include "chrome/browser/glic/public/context/glic_sharing_manager.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_cui_tracker.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/provider_features.h"
 #include "chrome/browser/glic/service/glic_state_tracker.h"
 #include "chrome/browser/glic/service/metrics/metrics_types.h"
+#include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"
+#include "chrome/browser/glic/test_support/structured_metrics_test_util.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chrome/test/base/testing_profile_manager.h"
 #include "components/metrics/profile_metrics_service.h"
+#include "components/metrics/structured/buildflags/buildflags.h"
 #include "components/prefs/pref_service.h"
 #include "components/skills/public/skills_metrics.h"
 #include "components/split_tabs/split_tab_id.h"
@@ -36,7 +53,122 @@
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "ui/gfx/geometry/size.h"
 
+#if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+#include "components/metrics/structured/structured_events.h"
+#endif
+
 namespace glic {
+namespace {
+
+class MockGlicSharingManager : public GlicSharingManagerInternal {
+ public:
+  MOCK_METHOD(base::CallbackListSubscription,
+              AddFocusedTabChangedCallback,
+              (FocusedTabChangedCallback callback),
+              (override));
+  MOCK_METHOD(base::CallbackListSubscription,
+              AddFocusedTabDataChangedCallback,
+              (FocusedTabDataChangedCallback callback),
+              (override));
+  FocusedTabData GetFocusedTabData() override {
+    return FocusedTabData("no focus", nullptr);
+  }
+  MOCK_METHOD(base::CallbackListSubscription,
+              AddFocusedBrowserChangedCallback,
+              (FocusedBrowserChangedCallback callback),
+              (override));
+  MOCK_METHOD(BrowserWindowInterface*,
+              GetFocusedBrowser,
+              (),
+              (const, override));
+  MOCK_METHOD(base::CallbackListSubscription,
+              AddTabPinningStatusChangedCallback,
+              (TabPinningStatusChangedCallback callback),
+              (override));
+  MOCK_METHOD(base::CallbackListSubscription,
+              AddTabPinningStatusEventCallback,
+              (TabPinningStatusEventCallback callback),
+              (override));
+  MOCK_METHOD(base::CallbackListSubscription,
+              AddPinnedTabsChangedCallback,
+              (PinnedTabsChangedCallback callback),
+              (override));
+  MOCK_METHOD(base::CallbackListSubscription,
+              AddPinnedTabDataChangedCallback,
+              (PinnedTabDataChangedCallback callback),
+              (override));
+  MOCK_METHOD(bool,
+              PinTabs,
+              (base::span<const tabs::TabHandle> tab_handles,
+               GlicPinTrigger trigger),
+              (override));
+  MOCK_METHOD(void,
+              SetPinTrigger,
+              (tabs::TabHandle tab_handle, GlicPinTrigger trigger),
+              (override));
+  MOCK_METHOD(bool,
+              UnpinTabs,
+              (base::span<const tabs::TabHandle> tab_handles,
+               GlicUnpinTrigger trigger),
+              (override));
+  MOCK_METHOD(void, UnpinAllTabs, (GlicUnpinTrigger trigger), (override));
+  MOCK_METHOD(int32_t, GetMaxPinnedTabs, (), (const, override));
+  MOCK_METHOD(int32_t, GetNumPinnedTabs, (), (const, override));
+  MOCK_METHOD(int32_t,
+              SetMaxPinnedTabs,
+              (uint32_t max_pinned_tabs),
+              (override));
+  MOCK_METHOD(std::vector<raw_ptr<tabs::TabInterface>>,
+              GetPinnedTabs,
+              (),
+              (const, override));
+  MOCK_METHOD(bool,
+              IsTabPinned,
+              (tabs::TabHandle tab_handle),
+              (const, override));
+  MOCK_METHOD(bool, IsTabShared, (tabs::TabInterface * tab), (const, override));
+  MOCK_METHOD(bool,
+              IsTabFocused,
+              (tabs::TabHandle tab_handle),
+              (const, override));
+  MOCK_METHOD(std::optional<GlicPinnedTabUsage>,
+              GetPinnedTabUsage,
+              (tabs::TabHandle tab_handle),
+              (override));
+  MOCK_METHOD(std::optional<GlicGetContextError>,
+              CheckPreliminaryContextSharingEligibility,
+              (tabs::TabHandle tab_handle),
+              (const, override));
+  MOCK_METHOD(void,
+              GetContextFromTab,
+              (tabs::TabHandle tab_handle,
+               const mojom::TabContextOptions& options,
+               base::OnceCallback<void(GlicGetContextResult)> callback),
+              (override));
+  MOCK_METHOD(void,
+              GetContextForActorFromTab,
+              (tabs::TabHandle tab_handle,
+               const mojom::TabContextOptions& options,
+               base::OnceCallback<void(GlicGetContextResult)> callback),
+              (override));
+  MOCK_METHOD(void,
+              GetImageBytes,
+              (tabs::TabHandle tab_handle,
+               const std::string& document_id,
+               int32_t dom_node_id,
+               base::OnceCallback<void(GlicGetImageBytesResult)> callback),
+              (override));
+  MOCK_METHOD(void, OnConversationTurnSubmitted, (), (override));
+  base::WeakPtr<GlicSharingManagerInternal> GetWeakPtr() override {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
+ private:
+  base::WeakPtrFactory<MockGlicSharingManager> weak_ptr_factory_{this};
+};
+
+}  // namespace
+
 class GlicInstanceMetricsTest : public testing::Test {
  public:
   GlicInstanceMetricsTest() {
@@ -45,15 +177,28 @@ class GlicInstanceMetricsTest : public testing::Test {
   }
 
  protected:
+  ShowOptions MakeNativeFreShowOptions() {
+    ShowOptions show_options = ShowOptions::ForSidePanel(mock_tab_);
+    show_options.fre_override = mojom::FreOverride::kNativeFre;
+    return show_options;
+  }
+
+  ShowOptions ShowOptionsFor(mojom::InvocationSource source,
+                             ShowOptions options) {
+    options.invocation_source = source;
+    return options;
+  }
+
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  base::HistogramTester histogram_tester_;
   ukm::TestAutoSetUkmRecorder ukm_tester_;
+  TestingProfile profile_;
   metrics::ProfileMetricsService profile_metrics_service_;
-  GlicInstanceMetrics metrics_{&profile_metrics_service_};
+  base::HistogramTester histogram_tester_;
+  base::UserActionTester user_action_tester_;
+  GlicInstanceMetrics metrics_{&profile_metrics_service_, &profile_};
   tabs::MockTabInterface mock_tab_;
   ui::UnownedUserDataHost unowned_user_data_host_;
-  base::UserActionTester user_action_tester_;
   base::test::ScopedFeatureList scoped_feature_list_{
       features::kGlicCaptureRegion};
 };
@@ -348,19 +493,21 @@ TEST_F(GlicInstanceMetricsTest, OnOpen_DoesNotOverrideInitialEntrypoint) {
 }
 
 TEST_F(GlicInstanceMetricsTest,
-       OnShowInactiveSidePanel_SetsInitialInvocationSource) {
-  metrics_.OnShowInactiveSidePanel(mojom::InvocationSource::kTopChromeButton);
+       MaybeSetInitialInvocationSource_SetsInitialInvocationSource) {
+  metrics_.MaybeSetInitialInvocationSource(
+      mojom::InvocationSource::kTopChromeButton);
   EXPECT_EQ(metrics_.initial_invocation_source(),
             mojom::InvocationSource::kTopChromeButton);
 }
 
 TEST_F(GlicInstanceMetricsTest,
-       OnShowInactiveSidePanel_DoesNotOverrideInitialInvocationSource) {
-  metrics_.OnShowInactiveSidePanel(mojom::InvocationSource::kTopChromeButton);
+       MaybeSetInitialInvocationSource_DoesNotOverrideInitialInvocationSource) {
+  metrics_.MaybeSetInitialInvocationSource(
+      mojom::InvocationSource::kTopChromeButton);
   EXPECT_EQ(metrics_.initial_invocation_source(),
             mojom::InvocationSource::kTopChromeButton);
 
-  metrics_.OnShowInactiveSidePanel(mojom::InvocationSource::kOsButton);
+  metrics_.MaybeSetInitialInvocationSource(mojom::InvocationSource::kOsButton);
   EXPECT_EQ(metrics_.initial_invocation_source(),
             mojom::InvocationSource::kTopChromeButton);
 }
@@ -383,7 +530,7 @@ TEST_F(GlicInstanceMetricsTest,
        InitialInvocationSource_LoggedWhenStartingInactive) {
   // 1. Simulate opening the instance in an inactive side panel via a background
   // daisy-chain.
-  metrics_.OnShowInactiveSidePanel(
+  metrics_.MaybeSetInitialInvocationSource(
       mojom::InvocationSource::kDaisyChainOnFollowLink);
 
   // 2. Later, the user activates the background tab, promoting the instance to
@@ -395,6 +542,35 @@ TEST_F(GlicInstanceMetricsTest,
   histogram_tester_.ExpectUniqueSample(
       "Glic.Instance.InitialInvocationSource",
       mojom::InvocationSource::kDaisyChainOnFollowLink, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, FreInvoked_RecordedOnceWhenUnconsented) {
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre,
+      static_cast<int>(prefs::FreStatus::kNotStarted));
+
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Fre.Invoked.InvocationSource",
+      mojom::InvocationSource::kTopChromeButton, 1);
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.Invoked"), 1);
+
+  metrics_.OnOpen(mojom::InvocationSource::kOsButton, show_options);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Fre.Invoked.InvocationSource",
+      mojom::InvocationSource::kTopChromeButton, 1);
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.Invoked"), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, FreInvoked_NotRecordedWhenConsented) {
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre, static_cast<int>(prefs::FreStatus::kCompleted));
+
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  histogram_tester_.ExpectTotalCount("Glic.Fre.Invoked.InvocationSource", 0);
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.Invoked"), 0);
 }
 
 TEST_F(GlicInstanceMetricsTest, SidePanelFirstOpenDuration_LoggedOnFirstClose) {
@@ -563,6 +739,14 @@ TEST_F(GlicInstanceMetricsTest, InstanceEvents_Open) {
 
   histogram_tester_.ExpectBucketCount("Glic.Instance.EventCounts",
                                       GlicInstanceEvent::kOpen, 1);
+  histogram_tester_.ExpectBucketCount("Glic.Instance.HadEvent",
+                                      GlicInstanceEvent::kOpen, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.InvocationSource.TopChromeButton.EventCounts",
+      GlicInstanceEvent::kOpen, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.InvocationSource.TopChromeButton.HadEvent",
+      GlicInstanceEvent::kOpen, 1);
 
   EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Instance.Open"), 1);
 
@@ -573,6 +757,81 @@ TEST_F(GlicInstanceMetricsTest, InstanceEvents_Open) {
   histogram_tester_.ExpectUniqueSample(
       "Glic.Instance.Floaty.OpenSource",
       mojom::InvocationSource::kTopChromeButton, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       InstanceEvents_SidePanelShowOrder_LogsTabBoundAndOpen) {
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+  ShowOptions show_options{SidePanelShowOptions{mock_tab_}};
+
+  metrics_.MaybeSetInitialInvocationSource(
+      mojom::InvocationSource::kPdfSummarizeButton);
+  metrics_.OnBind();
+  metrics_.OnOpen(mojom::InvocationSource::kPdfSummarizeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+
+  for (GlicInstanceEvent event :
+       {GlicInstanceEvent::kTabBound, GlicInstanceEvent::kOpen,
+        GlicInstanceEvent::kSidePanelShown, GlicInstanceEvent::kShown}) {
+    histogram_tester_.ExpectBucketCount(
+        "Glic.InvocationSource.PdfSummarizeButton.EventCounts", event, 1);
+    histogram_tester_.ExpectBucketCount(
+        "Glic.InvocationSource.PdfSummarizeButton.HadEvent", event, 1);
+  }
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       InstanceEvents_BackfillsPreOpenEventsWhenInitialSourceSet) {
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+  ShowOptions show_options{SidePanelShowOptions{mock_tab_}};
+
+  metrics_.OnInstanceCreatedWithoutWarming();
+  metrics_.OnRegisterConversation("conv-id");
+  metrics_.OnBind();
+  metrics_.OnBind();
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.InvocationSource.PdfSummarizeButton.EventCounts", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.InvocationSource.PdfSummarizeButton.HadEvent", 0);
+
+  metrics_.OnOpen(mojom::InvocationSource::kPdfSummarizeButton, show_options);
+
+  // Check that relevant events were properly backfilled after invocation source
+  // was set as kPdfSummarizeButton.
+  for (GlicInstanceEvent event :
+       {GlicInstanceEvent::kInstanceCreated,
+        GlicInstanceEvent::kInstanceCreatedWithoutWarming,
+        GlicInstanceEvent::kRegisterConversation, GlicInstanceEvent::kTabBound,
+        GlicInstanceEvent::kOpen}) {
+    histogram_tester_.ExpectBucketCount(
+        "Glic.InvocationSource.PdfSummarizeButton.HadEvent", event, 1);
+  }
+  for (GlicInstanceEvent event :
+       {GlicInstanceEvent::kInstanceCreated,
+        GlicInstanceEvent::kInstanceCreatedWithoutWarming,
+        GlicInstanceEvent::kRegisterConversation, GlicInstanceEvent::kOpen}) {
+    histogram_tester_.ExpectBucketCount(
+        "Glic.InvocationSource.PdfSummarizeButton.EventCounts", event, 1);
+  }
+  histogram_tester_.ExpectBucketCount(
+      "Glic.InvocationSource.PdfSummarizeButton.EventCounts",
+      GlicInstanceEvent::kTabBound, 2);
+
+  metrics_.OnBind();
+  metrics_.OnOpen(mojom::InvocationSource::kOsButton, show_options);
+
+  // Verify that initial invocation source is sticky.
+  histogram_tester_.ExpectBucketCount(
+      "Glic.InvocationSource.PdfSummarizeButton.HadEvent",
+      GlicInstanceEvent::kTabBound, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.InvocationSource.PdfSummarizeButton.EventCounts",
+      GlicInstanceEvent::kTabBound, 3);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.InvocationSource.OsButton.EventCounts", 0);
+  histogram_tester_.ExpectTotalCount("Glic.InvocationSource.OsButton.HadEvent",
+                                     0);
 }
 
 TEST_F(GlicInstanceMetricsTest,
@@ -754,7 +1013,7 @@ TEST_F(GlicInstanceMetricsTest, ActuationResponseStopTime) {
 
 TEST_F(GlicInstanceMetricsTest, InputModesUsed_IgnoresUnknown) {
   {
-    GlicInstanceMetrics metrics(&profile_metrics_service_);
+    GlicInstanceMetrics metrics(&profile_metrics_service_, &profile_);
     metrics.OnVisibilityChanged(true);
     metrics.OnUserInputSubmitted(mojom::WebClientMode::kUnknown,
                                  mojom::PromptType::kUnspecified);
@@ -767,7 +1026,7 @@ TEST_F(GlicInstanceMetricsTest, InputModesUsed_IgnoresUnknown) {
                                       InputModesUsed::kOnlyAudio, 1);
 
   {
-    GlicInstanceMetrics metrics(&profile_metrics_service_);
+    GlicInstanceMetrics metrics(&profile_metrics_service_, &profile_);
     metrics.OnVisibilityChanged(true);
     metrics.OnUserInputSubmitted(mojom::WebClientMode::kUnknown,
                                  mojom::PromptType::kUnspecified);
@@ -952,7 +1211,8 @@ TEST_F(GlicInstanceMetricsTest, OnInstanceDestroyed_LogsPerProfileTurnCount) {
   metrics::ProfileMetricsContext context = 1;  // Profile 1 -> .Profile1
   metrics::ProfileMetricsService profile_metrics_service{context};
   {
-    GlicInstanceMetrics metrics_with_profile(&profile_metrics_service);
+    GlicInstanceMetrics metrics_with_profile(&profile_metrics_service,
+                                             &profile_);
     metrics_with_profile.OnTurnCompleted(mojom::WebClientModel::kDefault,
                                          base::Milliseconds(100));
     metrics_with_profile.OnTurnCompleted(mojom::WebClientModel::kDefault,
@@ -966,7 +1226,7 @@ TEST_F(GlicInstanceMetricsTest, OnInstanceDestroyed_LogsPerProfileTurnCount) {
 
 TEST_F(GlicInstanceMetricsTest, ZoomChangeCount) {
   {
-    GlicInstanceMetrics metrics(&profile_metrics_service_);
+    GlicInstanceMetrics metrics(&profile_metrics_service_, &profile_);
     metrics.OnZoomLevelChange();
     metrics.OnZoomLevelChange();
     metrics.OnZoomLevelChange();
@@ -1055,6 +1315,15 @@ TEST_F(GlicInstanceMetricsTest, PanelPresentationTime_ActiveFlow_SidePanel) {
   histogram_tester_.ExpectTotalCount(
       "Glic.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
   histogram_tester_.ExpectTotalCount(
+      "Glic.Enterprise.Instance.PanelPresentationTime.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Enterprise.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Consumer.Instance.PanelPresentationTime.SidePanel",
+      base::Milliseconds(350), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Consumer.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
       "Glic.Instance.TimeToDismissWhileLoading.SidePanel", 0);
 }
 
@@ -1124,6 +1393,15 @@ TEST_F(GlicInstanceMetricsTest,
       1);
   histogram_tester_.ExpectTotalCount(
       "Glic.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Enterprise.Instance.PanelPresentationTime.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Enterprise.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Consumer.Instance.PanelPresentationTime.SidePanel",
+      base::Milliseconds(350), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Consumer.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
 }
 
 TEST_F(GlicInstanceMetricsTest,
@@ -1143,6 +1421,14 @@ TEST_F(GlicInstanceMetricsTest,
       "Glic.Instance.PanelPresentationTime.SidePanel", 0);
   histogram_tester_.ExpectTotalCount(
       "Glic.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Enterprise.Instance.PanelPresentationTime.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Enterprise.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Consumer.Instance.PanelPresentationTime.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Consumer.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
 
   // Client finishes loading later after close; should not record presentation
   // time.
@@ -1153,6 +1439,14 @@ TEST_F(GlicInstanceMetricsTest,
       "Glic.Instance.PanelPresentationTime.SidePanel", 0);
   histogram_tester_.ExpectTotalCount(
       "Glic.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Enterprise.Instance.PanelPresentationTime.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Enterprise.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Consumer.Instance.PanelPresentationTime.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Consumer.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
 }
 
 TEST_F(GlicInstanceMetricsTest,
@@ -1180,6 +1474,871 @@ TEST_F(GlicInstanceMetricsTest,
       "Glic.Instance.PanelPresentationTime.Inactive.SidePanel", 1);
   histogram_tester_.ExpectTotalCount(
       "Glic.Instance.PanelPresentationTime.SidePanel", 0);
+}
+
+TEST_F(
+    GlicInstanceMetricsTest,
+    PanelPresentationTime_ActiveFlow_MultipleOnOpenCallsDoNotResetStartTime) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+
+  // A second OnOpen call occurs while still loading (e.g. tab switch during
+  // load).
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  task_environment_.FastForwardBy(base::Milliseconds(150));
+
+  metrics_.OnClientReady();
+
+  // Presentation time should be measured from the initial OnOpen (250ms total),
+  // not overwritten by the second OnOpen (which would be 150ms).
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.PanelPresentationTime.SidePanel", base::Milliseconds(250),
+      1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       PanelPresentationTime_EmbedderTypeUpdatedOnSubsequentOnOpen) {
+  ShowOptions side_panel_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton,
+                  side_panel_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+
+  // Switched to floaty while still loading.
+  ShowOptions floaty_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, floaty_options);
+  task_environment_.FastForwardBy(base::Milliseconds(150));
+
+  metrics_.OnClientReady();
+
+  // Should log under Floaty with the full 250ms elapsed time.
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.PanelPresentationTime.Floaty", base::Milliseconds(250), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.PanelPresentationTime.SidePanel", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       PanelPresentationTime_ClosedBeforeReadyResetsStartTimeForNextOpen) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+
+  // Explicit close cancels the in-flight load measurement.
+  metrics_.OnClose();
+  task_environment_.FastForwardBy(base::Milliseconds(50));
+
+  // Re-opened fresh.
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(200));
+  metrics_.OnClientReady();
+
+  // Should measure 200ms from the second open, not 350ms.
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.PanelPresentationTime.SidePanel", base::Milliseconds(200),
+      1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToActionable_WarmedGuest_WaitsForPresentedFrame) {
+  // Guest emits actionability mark while warming in the background before any
+  // panel open. Must not mark the guest as presented yet.
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  task_environment_.FastForwardBy(base::Seconds(2));
+
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToActionable.Inactive.SidePanel", 0);
+
+  // Rendered frame is presented 25ms after open.
+  task_environment_.FastForwardBy(base::Milliseconds(25));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(25), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToActionable_ActiveFlow_WaitsForPresentedFrame) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+
+  // Actionability mark and client ready arrive while visible. Legacy
+  // PanelPresentationTime records on OnClientReady(), while TimeToActionable
+  // waits for the submitted frame (OnGuestMilestoneFrameSubmitted).
+  task_environment_.FastForwardBy(base::Milliseconds(300));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  metrics_.OnClientReady();
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.PanelPresentationTime.SidePanel", base::Milliseconds(300),
+      1);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     0);
+
+  // Visual frame callback completes 20ms later (total 320ms).
+  task_environment_.FastForwardBy(base::Milliseconds(20));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(320), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToActionable_OnlyRecordedOncePerGuestUntilReset) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(200));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(200), 1);
+
+  // Closing and reopening the same guest must not record a second sample.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+  task_environment_.FastForwardBy(base::Seconds(1));
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     1);
+
+  // In-place guest reload while the panel is already open marks the reloaded
+  // guest as presented without emitting a histogram sample, so closing and
+  // reopening later does not record a stale sample.
+  metrics_.OnGuestReset();
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+  task_environment_.FastForwardBy(base::Minutes(5));
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     1);
+
+  // After a guest reset while closed (e.g. hibernate), the next open records
+  // once upon presentation.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+  metrics_.OnGuestReset();
+
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(120));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     2);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(120), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToActionable_ClosedBeforePresentationLogsOnNextOpen) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+
+  // Closing before client readiness records TimeToDismissWhileLoading.
+  metrics_.OnClose();
+  metrics_.OnVisibilityChanged(false);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToDismissWhileLoading.SidePanel",
+      base::Milliseconds(100), 1);
+
+  // Mark, client readiness, or a late visual callback arriving while
+  // closed/hidden must not log TimeToActionable or latch `recorded`.
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  metrics_.OnClientReady();
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToActionable.Inactive.SidePanel", 0);
+
+  // Reopening presents the already-actionable guest and logs once when the
+  // rendered frame is presented while visible.
+  task_environment_.FastForwardBy(base::Milliseconds(300));
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(10));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(10), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToActionable_InactiveFlow_HiddenDuringLoad) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+
+  // User switches tabs while guest is still loading.
+  metrics_.OnVisibilityChanged(false);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToDismissWhileLoading.SidePanel",
+      base::Milliseconds(100), 1);
+
+  // Guest emits actionability mark 250ms later (total 350ms) while hidden.
+  task_environment_.FastForwardBy(base::Milliseconds(250));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.Inactive.SidePanel",
+      base::Milliseconds(350), 1);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     0);
+
+  // Returning 10 minutes later must not record an additional/inflated sample.
+  task_environment_.FastForwardBy(base::Minutes(10));
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToActionable.Inactive.SidePanel", 1);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToActionable_WarmedGuest_HiddenBeforeFrameRecordsWhenShown) {
+  // Guest emits actionability mark while warming in the background 2s before
+  // open.
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  task_environment_.FastForwardBy(base::Seconds(2));
+
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(5));
+
+  // User hides panel before InsertVisualStateCallback completes, and the frame
+  // callback fires during the hide debounce window while hidden. Must not
+  // record an Inactive sample, and remembers that the frame was submitted so
+  // showing the panel again records the active metric.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToActionable.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToDismissWhileLoading.SidePanel",
+      base::Milliseconds(5), 1);
+
+  // Switching back to the tab records the active metric as soon as the panel is
+  // shown again.
+  task_environment_.FastForwardBy(base::Milliseconds(20));
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(25), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, TimeToSubmittable_TwoStageColdOpen) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+
+  task_environment_.FastForwardBy(base::Milliseconds(130));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  task_environment_.FastForwardBy(base::Milliseconds(20));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(150), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+  EXPECT_FALSE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kActionable));
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+
+  task_environment_.FastForwardBy(base::Milliseconds(230));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  task_environment_.FastForwardBy(base::Milliseconds(20));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(150), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(400), 1);
+  EXPECT_FALSE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_MarkArrivesWhileActionableFramePending) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kActionable));
+
+  // Submittable mark arrives before actionable's visual state callback fires.
+  task_environment_.FastForwardBy(base::Milliseconds(50));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+
+  // Actionable frame completes first at 175ms; submittable still waits for its
+  // own compositor frame at 220ms.
+  task_environment_.FastForwardBy(base::Milliseconds(25));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(175), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+
+  task_environment_.FastForwardBy(base::Milliseconds(45));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(220), 1);
+  EXPECT_FALSE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_WarmedGuest_WaitsForPresentedFrame) {
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  task_environment_.FastForwardBy(base::Seconds(2));
+
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.Inactive.SidePanel", 0);
+
+  task_environment_.FastForwardBy(base::Milliseconds(35));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(35), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_OnlyRecordedOncePerGuestUntilReset) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(200));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(200), 1);
+
+  // Closing and reopening the same guest must not record a second sample.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+  task_environment_.FastForwardBy(base::Seconds(1));
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 1);
+
+  // In-place guest reload while open marks the reloaded guest presented
+  // without emitting a sample, so reopening later does not emit a stale one.
+  metrics_.OnGuestReset();
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+  task_environment_.FastForwardBy(base::Minutes(5));
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 1);
+
+  // After a guest reset while closed (e.g. hibernate), the next open records
+  // once upon presentation.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+  metrics_.OnGuestReset();
+
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(120));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 2);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(120), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_ClosedBeforePresentationLogsOnNextOpen) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+
+  metrics_.OnClose();
+  metrics_.OnVisibilityChanged(false);
+
+  // Mark or visual callback arriving while closed/hidden must not log
+  // TimeToSubmittable or latch `recorded`.
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.Inactive.SidePanel", 0);
+
+  task_environment_.FastForwardBy(base::Milliseconds(300));
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(10));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(10), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_InactiveFlow_HiddenDuringLoad) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+
+  metrics_.OnVisibilityChanged(false);
+
+  task_environment_.FastForwardBy(base::Milliseconds(250));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.Inactive.SidePanel",
+      base::Milliseconds(350), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+
+  // Returning 10 minutes later must not record an additional/inflated sample.
+  task_environment_.FastForwardBy(base::Minutes(10));
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.Inactive.SidePanel", 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_WarmedGuest_HiddenBeforeFrameRecordsWhenShown) {
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  task_environment_.FastForwardBy(base::Seconds(2));
+
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(5));
+
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.Inactive.SidePanel", 0);
+
+  task_environment_.FastForwardBy(base::Milliseconds(20));
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(25), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_GuestResetWhileHiddenClearsPendingFrame) {
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  task_environment_.FastForwardBy(base::Seconds(1));
+
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(5));
+
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  // Navigating/resetting the guest before the panel is shown again must clear
+  // `frame_submitted_while_hidden` so showing the panel does not attribute the
+  // old document's compositor frame to the new document.
+  metrics_.OnGuestReset();
+  task_environment_.FastForwardBy(base::Milliseconds(20));
+  metrics_.OnVisibilityChanged(true);
+
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kActionable));
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_NativeAndWebFre_SuppressesZeroAndPreConsentSamples) {
+  // Native FRE waits on consent: must not emit 0ms TimeToSubmittable, must not
+  // emit Inactive if hidden before accept, and must not log
+  // AcceptToChatActionable off a kSubmittable frame.
+  ShowOptions native_fre_options = MakeNativeFreShowOptions();
+  metrics_.OnWillShow(native_fre_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kFre, native_fre_options);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Instance.TimeToActionable.SidePanel", 0, 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+
+  metrics_.OnVisibilityChanged(false);
+  task_environment_.FastForwardBy(base::Milliseconds(200));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.Inactive.SidePanel", 0);
+
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnNativeFreAccepted();
+  task_environment_.FastForwardBy(base::Milliseconds(500));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount("Glic.Fre.AcceptToChatActionable", 0);
+
+  // Transitioning an already-open non-native invocation into Native FRE via
+  // OnWillShow() immediately clears any pre-consent submittable start_time so
+  // neither pre-accept hides nor post-accept frames emit TimeToSubmittable.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+  metrics_.OnGuestReset();
+  ShowOptions non_native_options = ShowOptions::ForSidePanel(mock_tab_);
+  metrics_.OnWillShow(non_native_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton,
+                  non_native_options);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  metrics_.OnWillShow(native_fre_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(false);
+  task_environment_.FastForwardBy(base::Milliseconds(150));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.Inactive.SidePanel", 0);
+
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnNativeFreAccepted();
+  task_environment_.FastForwardBy(base::Milliseconds(250));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+
+  // WebUI FRE: even if the FRE screen already satisfied TimeToActionable,
+  // OnWebFreAccepted clears the pre-consent submittable start time so consent
+  // reading duration cannot leak into TimeToSubmittable.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+  metrics_.OnGuestReset();
+  ShowOptions web_fre_options = ShowOptions::ForSidePanel(mock_tab_);
+  metrics_.OnWillShow(web_fre_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kFre, web_fre_options);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(100), 1);
+
+  task_environment_.FastForwardBy(base::Seconds(10));
+  metrics_.OnWebFreAccepted();
+  metrics_.OnGuestReset();
+  task_environment_.FastForwardBy(base::Milliseconds(250));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_PreOpenMarkWhileHidden_WaitsForFrame) {
+  const base::TimeTicks pre_open_mark_time = base::TimeTicks::Now();
+  task_environment_.FastForwardBy(base::Milliseconds(20));
+
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(50));
+  metrics_.OnVisibilityChanged(false);
+
+  // Pre-open marks replayed while hidden (with `mark_time < start_time`) do not
+  // emit an Inactive sample, matching existing `TimeToActionable` semantics so
+  // the subsequent visible compositor frame records the open-to-presentation
+  // time.
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, pre_open_mark_time);
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable, pre_open_mark_time);
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kActionable));
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToActionable.Inactive.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.Inactive.SidePanel", 0);
+
+  task_environment_.FastForwardBy(base::Milliseconds(30));
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.SidePanel", base::Milliseconds(80), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(80), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_OnCloseClearsHiddenFrameAndRecordsWithoutActionable) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(40));
+
+  // Submittable arrives without an actionable mark, then its frame completes
+  // while hidden before `OnClose()` cancels the invocation.
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  metrics_.OnClose();
+
+  // Reopening must not log a stale 0ms sample before a new frame is submitted;
+  // it waits for the reopened frame and records cleanly without actionable.
+  task_environment_.FastForwardBy(base::Seconds(1));
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+
+  task_environment_.FastForwardBy(base::Milliseconds(18));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(18), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_ExternalProfileConsentFlipSuppressesPreConsentOpen) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnWillShow(show_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  task_environment_.FastForwardBy(base::Seconds(15));
+
+  // Another tab or settings completes onboarding on the shared profile without
+  // calling `OnWebFreAccepted()` on this instance. When the guest unlocks and
+  // emits `gemini.submittable`, the pre-consent wait must not be logged.
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre, static_cast<int>(prefs::FreStatus::kCompleted));
+
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToSubmittable.Inactive.SidePanel", 0);
+  EXPECT_FALSE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable));
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_FloatyAndFloatyToSidePanelAttach) {
+  ShowOptions floaty_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, floaty_options);
+  metrics_.OnVisibilityChanged(true);
+
+  task_environment_.FastForwardBy(base::Milliseconds(180));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kActionable, base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  task_environment_.FastForwardBy(base::Milliseconds(120));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToActionable.Floaty", base::Milliseconds(180), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.Floaty", base::Milliseconds(300), 1);
+
+  // Mid-load Floaty -> SidePanel attach (`GlicInstanceImpl::Attach()` calls
+  // `Show(side_panel_options)` without closing an embedder) updates the
+  // recorded embedder suffix while keeping the initial OnOpen start time.
+  GlicInstanceMetrics attach_metrics(&profile_metrics_service_, &profile_);
+  ShowOptions side_panel_options{SidePanelShowOptions(mock_tab_)};
+  attach_metrics.OnOpen(mojom::InvocationSource::kTopChromeButton,
+                        floaty_options);
+  attach_metrics.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+
+  attach_metrics.OnOpen(mojom::InvocationSource::kDetachAttachButton,
+                        side_panel_options);
+  task_environment_.FastForwardBy(base::Milliseconds(150));
+  attach_metrics.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  attach_metrics.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(250), 1);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToSubmittable.Floaty",
+                                     1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TimeToSubmittable_OnWebFreAccepted_ConsentedProfileDoesNotWipeInFlight) {
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre, static_cast<int>(prefs::FreStatus::kCompleted));
+
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+
+  // Redundant consent callback on an already-consented profile must not wipe
+  // an active TimeToSubmittable measurement.
+  metrics_.OnWebFreAccepted();
+  task_environment_.FastForwardBy(base::Milliseconds(150));
+  metrics_.OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(250), 1);
 }
 
 TEST_F(GlicInstanceMetricsTest, OnUserInputSubmitted_RecordsPromptType) {
@@ -1210,6 +2369,2800 @@ TEST_F(GlicInstanceMetricsTest, OnUserInputSubmitted_RecordsPromptType) {
                                       mojom::PromptType::kUnspecified, 1);
 
   histogram_tester_.ExpectTotalCount("Glic.Turn.PromptType", 5);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       DidRequestContextFromFocusedTab_LogsFocusedAndGeneralContextEvents) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kUnspecified);
+
+  metrics_.DidRequestContextFromFocusedTab();
+  metrics_.OnResponseStarted();
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.EventCounts",
+      GlicInstanceEvent::kFocusedTabContextRequested, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.HadEvent", GlicInstanceEvent::kFocusedTabContextRequested,
+      1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.EventCounts", GlicInstanceEvent::kTabContextRequested, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.HadEvent", GlicInstanceEvent::kTabContextRequested, 1);
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ResponseStartTime.WithContext",
+                                     1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       DidRequestContextFromTab_LogsOnlyGeneralTabContextEvent) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kUnspecified);
+
+  metrics_.DidRequestContextFromTab();
+  metrics_.OnResponseStarted();
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.EventCounts",
+      GlicInstanceEvent::kFocusedTabContextRequested, 0);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.HadEvent", GlicInstanceEvent::kFocusedTabContextRequested,
+      0);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.EventCounts", GlicInstanceEvent::kTabContextRequested, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.HadEvent", GlicInstanceEvent::kTabContextRequested, 1);
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ResponseStartTime.WithContext",
+                                     1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       ResetShownState_ReturnsTrueOnlyWhenPreviouslyShown) {
+  EmbedderKey key = SidePanelEmbedderKey(&mock_tab_);
+  EXPECT_FALSE(metrics_.ResetShownState(key));
+  EXPECT_TRUE(metrics_.MarkShownAndCheckIfFirstTime(key));
+  EXPECT_FALSE(metrics_.MarkShownAndCheckIfFirstTime(key));
+  EXPECT_TRUE(metrics_.ResetShownState(key));
+  EXPECT_FALSE(metrics_.ResetShownState(key));
+}
+
+class GlicInstanceMetricsGeicTest : public GlicInstanceMetricsTest {
+ protected:
+  GlicInstanceMetricsGeicTest() {
+    geic_feature_list_.InitAndEnableFeatureWithParameters(
+        features::kGeic,
+        {{"geic-guest-url", "https://business.gemini.google/side-panel"}});
+  }
+
+  void SetUp() override {
+    GlicInstanceMetricsTest::SetUp();
+    ASSERT_TRUE(testing_profile_manager_.SetUp());
+
+    TestingProfile::TestingFactories factories =
+        IdentityTestEnvironmentProfileAdaptor::
+            GetIdentityTestEnvironmentFactories();
+    factories.push_back(
+        {GlicKeyedServiceFactory::GetInstance(),
+         base::BindRepeating(
+             [](ProfileManager* pm, GlicProfileManager* gpm,
+                content::BrowserContext* context)
+                 -> std::unique_ptr<KeyedService> {
+               return std::make_unique<testing::NiceMock<MockGlicKeyedService>>(
+                   context,
+                   IdentityManagerFactory::GetForProfile(
+                       Profile::FromBrowserContext(context)),
+                   pm, gpm,
+                   /*contextual_cueing_service=*/nullptr,
+                   /*actor_keyed_service=*/nullptr);
+             },
+             testing_profile_manager_.profile_manager(),
+             &glic_profile_manager_)});
+
+    geic_profile_ = testing_profile_manager_.CreateTestingProfile(
+        "geic_profile", std::move(factories));
+    identity_test_env_adaptor_ =
+        std::make_unique<IdentityTestEnvironmentProfileAdaptor>(geic_profile_);
+
+    ASSERT_TRUE(
+        GlicKeyedServiceFactory::GetGlicKeyedService(geic_profile_.get(),
+                                                     /*create=*/true));
+
+    geic_metrics_ = std::make_unique<GlicInstanceMetrics>(
+        &profile_metrics_service_, geic_profile_);
+  }
+
+  GlicEnabling::ScopedBypassEnablementChecksForTesting bypass_enablement_;
+  base::test::ScopedFeatureList geic_feature_list_;
+  GlicProfileManager glic_profile_manager_;
+  TestingProfileManager testing_profile_manager_{
+      TestingBrowserProcess::GetGlobal()};
+  raw_ptr<TestingProfile> geic_profile_;
+  std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
+      identity_test_env_adaptor_;
+  std::unique_ptr<GlicInstanceMetrics> geic_metrics_;
+};
+
+TEST_F(GlicInstanceMetricsGeicTest,
+       PanelPresentationTime_ActiveFlow_SidePanel_Geic) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  geic_metrics_->OnOpen(mojom::InvocationSource::kTopChromeButton,
+                        show_options);
+  geic_metrics_->OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(350));
+  geic_metrics_->OnClientReady();
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Enterprise.Instance.PanelPresentationTime.SidePanel",
+      base::Milliseconds(350), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.PanelPresentationTime.SidePanel", 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.PanelPresentationTime.Inactive.SidePanel", 0);
+}
+
+TEST_F(GlicInstanceMetricsGeicTest,
+       PanelPresentationTime_InactiveFlow_SidePanel_Geic) {
+  ShowOptions show_options{SidePanelShowOptions(mock_tab_)};
+  geic_metrics_->OnOpen(mojom::InvocationSource::kTopChromeButton,
+                        show_options);
+  geic_metrics_->OnVisibilityChanged(false);
+  task_environment_.FastForwardBy(base::Milliseconds(350));
+  geic_metrics_->OnClientReady();
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Enterprise.Instance.PanelPresentationTime.Inactive.SidePanel",
+      base::Milliseconds(350), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.PanelPresentationTime.Inactive.SidePanel", 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.PanelPresentationTime.SidePanel", 0);
+}
+
+TEST_F(GlicInstanceMetricsGeicTest, WebUiLoadTime_Geic) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  geic_metrics_->OnOpen(mojom::InvocationSource::kTopChromeButton,
+                        show_options);
+  geic_metrics_->OnVisibilityChanged(true);
+
+  geic_metrics_->OnWebUiStateChanged(mojom::WebUiState::kBeginLoad);
+  task_environment_.FastForwardBy(base::Milliseconds(300));
+  geic_metrics_->OnWebUiStateChanged(mojom::WebUiState::kReady);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Enterprise.Instance.WebUiLoadTime.Visible", base::Milliseconds(300),
+      1);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.WebUiLoadTime.Visible", 1);
+}
+
+TEST_F(GlicInstanceMetricsGeicTest, TurnResponseStartTime_Geic) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  geic_metrics_->OnOpen(mojom::InvocationSource::kTopChromeButton,
+                        show_options);
+  geic_metrics_->OnVisibilityChanged(true);
+  geic_metrics_->OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                      mojom::PromptType::kUnspecified);
+  task_environment_.FastForwardBy(base::Milliseconds(200));
+  geic_metrics_->OnResponseStarted();
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Enterprise.Turn.ResponseStartTime", base::Milliseconds(200), 1);
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ResponseStartTime", 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Enterprise.Turn.ResponseStartTime.InputMode.Text",
+      base::Milliseconds(200), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.ResponseStartTime.InputMode.Text", 1);
+}
+
+TEST_F(GlicInstanceMetricsGeicTest, TurnDuration_Geic) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  geic_metrics_->OnOpen(mojom::InvocationSource::kTopChromeButton,
+                        show_options);
+  geic_metrics_->OnVisibilityChanged(true);
+
+  geic_metrics_->OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                      mojom::PromptType::kUnspecified);
+  task_environment_.FastForwardBy(base::Milliseconds(500));
+  geic_metrics_->OnTurnCompleted(mojom::WebClientModel::kActor,
+                                 base::Milliseconds(500));
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Enterprise.Turn.Duration.Actor", base::Milliseconds(500), 1);
+  histogram_tester_.ExpectTotalCount("Glic.Turn.Duration.Actor", 1);
+}
+TEST_F(GlicInstanceMetricsGeicTest, PanelWebUiStateFinishState3_Geic) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  geic_metrics_->OnOpen(mojom::InvocationSource::kTopChromeButton,
+                        show_options);
+  geic_metrics_->OnWebUiStateChanged(mojom::WebUiState::kReady);
+  geic_metrics_->OnClose();
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Enterprise.PanelWebUiState.FinishState3", mojom::WebUiState::kReady,
+      1);
+  histogram_tester_.ExpectTotalCount("Glic.PanelWebUiState.FinishState3", 1);
+}
+
+class GlicInstanceProviderMetricsTest
+    : public testing::TestWithParam<GlicProvider> {
+ protected:
+  GlicInstanceProviderMetricsTest() {
+    if (GetParam() == GlicProvider::kGeminiEnterprise) {
+      feature_list_.InitAndEnableFeatureWithParameters(
+          features::kGeic,
+          {{"geic-guest-url", "https://business.gemini.google/side-panel"}});
+    } else {
+      feature_list_.InitAndDisableFeature(features::kGeic);
+    }
+  }
+
+  void SetUp() override {
+    ASSERT_TRUE(testing_profile_manager_.SetUp());
+    TestingProfile::TestingFactories factories =
+        IdentityTestEnvironmentProfileAdaptor::
+            GetIdentityTestEnvironmentFactories();
+    factories.push_back(
+        {GlicKeyedServiceFactory::GetInstance(),
+         base::BindRepeating(
+             [](ProfileManager* pm, GlicProfileManager* gpm,
+                content::BrowserContext* context)
+                 -> std::unique_ptr<KeyedService> {
+               return std::make_unique<testing::NiceMock<MockGlicKeyedService>>(
+                   context,
+                   IdentityManagerFactory::GetForProfile(
+                       Profile::FromBrowserContext(context)),
+                   pm, gpm,
+                   /*contextual_cueing_service=*/nullptr,
+                   /*actor_keyed_service=*/nullptr);
+             },
+             testing_profile_manager_.profile_manager(),
+             &glic_profile_manager_)});
+
+    profile_ = testing_profile_manager_.CreateTestingProfile(
+        "profile", std::move(factories));
+    identity_test_env_adaptor_ =
+        std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_);
+
+    ASSERT_TRUE(GlicKeyedServiceFactory::GetGlicKeyedService(profile_,
+                                                             /*create=*/true));
+
+    metrics_ = std::make_unique<GlicInstanceMetrics>(&profile_metrics_service_,
+                                                     profile_);
+  }
+
+  GlicEnabling::ScopedBypassEnablementChecksForTesting bypass_enablement_;
+  content::BrowserTaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  base::test::ScopedFeatureList feature_list_;
+  GlicProfileManager glic_profile_manager_;
+  TestingProfileManager testing_profile_manager_{
+      TestingBrowserProcess::GetGlobal()};
+  raw_ptr<TestingProfile> profile_;
+  std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
+      identity_test_env_adaptor_;
+  metrics::ProfileMetricsService profile_metrics_service_{1};
+  base::HistogramTester histogram_tester_;
+  base::UserActionTester user_action_tester_;
+  std::unique_ptr<GlicInstanceMetrics> metrics_;
+};
+
+TEST_P(GlicInstanceProviderMetricsTest, GeicConsumerNames) {
+  metrics_->OnActivationChanged(true);
+  task_environment_.FastForwardBy(base::Minutes(5));
+  metrics_->OnActivationChanged(false);
+  task_environment_.FastForwardBy(base::Minutes(10));
+  metrics_->OnActivationChanged(true);
+
+  metrics_->OnTurnCompleted(mojom::WebClientModel::kDefault,
+                            base::Milliseconds(100));
+  metrics_->OnReaction(mojom::MetricUserInputReactionType::kModel);
+
+  std::string specific_prefix = (GetParam() == GlicProvider::kGeminiEnterprise)
+                                    ? "Glic.Enterprise"
+                                    : "Glic.Consumer";
+  std::string other_prefix = (GetParam() == GlicProvider::kGeminiEnterprise)
+                                 ? "Glic.Consumer"
+                                 : "Glic.Enterprise";
+
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeSinceLastActive", 1);
+  histogram_tester_.ExpectTotalCount(
+      specific_prefix + ".Instance.TimeSinceLastActive", 1);
+  histogram_tester_.ExpectTotalCount(
+      other_prefix + ".Instance.TimeSinceLastActive", 0);
+
+  // Check Glic.X=1
+  histogram_tester_.ExpectUniqueTimeSample("Glic.Turn.Duration.Default",
+                                           base::Milliseconds(100), 1);
+  // Check specific prefix=1
+  histogram_tester_.ExpectUniqueTimeSample(
+      specific_prefix + ".Turn.Duration.Default", base::Milliseconds(100), 1);
+  // Check other prefix=0
+  histogram_tester_.ExpectTotalCount(other_prefix + ".Turn.Duration.Default",
+                                     0);
+
+  // Check no-dot action GlicReactionModelled
+  EXPECT_EQ(1, user_action_tester_.GetActionCount("GlicReactionModelled"));
+
+  // Check dotted action Glic.Instance.Created (emitted in constructor)
+  EXPECT_EQ(1, user_action_tester_.GetActionCount("Glic.Instance.Created"));
+
+  metrics_->OnFloatyClosed();
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Instance.Metrics.Error",
+      GlicInstanceMetricsError::kFloatyClosedWithoutOpen, 1);
+  histogram_tester_.ExpectUniqueSample(
+      specific_prefix + ".Instance.Metrics.Error",
+      GlicInstanceMetricsError::kFloatyClosedWithoutOpen, 1);
+  histogram_tester_.ExpectTotalCount(other_prefix + ".Instance.Metrics.Error",
+                                     0);
+}
+
+TEST_P(GlicInstanceProviderMetricsTest, TimeToSubmittable_ProviderSplit) {
+  const std::string specific_prefix =
+      (GetParam() == GlicProvider::kGeminiEnterprise) ? "Glic.Enterprise"
+                                                      : "Glic.Consumer";
+  const std::string other_prefix =
+      (GetParam() == GlicProvider::kGeminiEnterprise) ? "Glic.Consumer"
+                                                      : "Glic.Enterprise";
+
+  // Active SidePanel flow.
+  tabs::MockTabInterface mock_tab;
+  ui::UnownedUserDataHost user_data_host;
+  EXPECT_CALL(mock_tab, GetUnownedUserDataHost())
+      .WillRepeatedly(testing::ReturnRef(user_data_host));
+  metrics_->OnOpen(mojom::InvocationSource::kTopChromeButton,
+                   ShowOptions::ForSidePanel(mock_tab));
+  metrics_->OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(300));
+  metrics_->OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+  metrics_->OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable);
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.SidePanel", base::Milliseconds(300), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      specific_prefix + ".Instance.TimeToSubmittable.SidePanel",
+      base::Milliseconds(300), 1);
+  histogram_tester_.ExpectTotalCount(
+      other_prefix + ".Instance.TimeToSubmittable.SidePanel", 0);
+
+  // Inactive Floaty flow after close + guest reset.
+  metrics_->OnVisibilityChanged(false);
+  metrics_->OnClose();
+  metrics_->OnGuestReset();
+  metrics_->OnOpen(mojom::InvocationSource::kTopChromeButton,
+                   ShowOptions{FloatingShowOptions{}});
+  metrics_->OnVisibilityChanged(true);
+  task_environment_.FastForwardBy(base::Milliseconds(50));
+  metrics_->OnVisibilityChanged(false);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  metrics_->OnGuestMilestoneMarkObserved(
+      GlicInstanceMetrics::GuestMilestone::kSubmittable,
+      base::TimeTicks::Now());
+
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToSubmittable.Inactive.Floaty",
+      base::Milliseconds(150), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      specific_prefix + ".Instance.TimeToSubmittable.Inactive.Floaty",
+      base::Milliseconds(150), 1);
+  histogram_tester_.ExpectTotalCount(
+      other_prefix + ".Instance.TimeToSubmittable.Inactive.Floaty", 0);
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         GlicInstanceProviderMetricsTest,
+                         testing::Values(GlicProvider::kGemini,
+                                         GlicProvider::kGeminiEnterprise));
+
+TEST_F(GlicInstanceMetricsTest,
+       FreImpressionCuiTracker_SuccessOnUpfrontFreAndCancelledOnMessageFirst) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kGlicOptInImpressionMetrics);
+
+  ShowOptions show_options{FloatingShowOptions{}};
+
+  // 1. Upfront FRE: user opens Glic while unconsented and FRE is shown.
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  task_environment_.FastForwardBy(base::Milliseconds(250));
+  metrics_.OnOptinImpression();
+  metrics_.OnClientReady();
+
+  histogram_tester_.ExpectBucketCount("Glic.CUI.FreImpression.Outcome",
+                                      GlicCuiOutcome::kSuccess, 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.CUI.FreImpression.Latency.Success", base::Milliseconds(250), 1);
+
+  // 2. Message-First FRE: user opens Glic while unconsented and submits input
+  // before FRE is shown -> resolves as kUnknownCancel without recording
+  // latency.
+  metrics_.OnInstanceHidden();
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  task_environment_.FastForwardBy(base::Milliseconds(120));
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+
+  histogram_tester_.ExpectBucketCount("Glic.CUI.FreImpression.Outcome",
+                                      GlicCuiOutcome::kUnknownCancel, 1);
+  histogram_tester_.ExpectTotalCount("Glic.CUI.FreImpression.Latency", 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       FreImpressionCuiTracker_SuccessWhenWarmedInBackground) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kGlicOptInImpressionMetrics);
+
+  ShowOptions show_options{FloatingShowOptions{}};
+
+  // Instance is warmed in the background while hidden: the web client becomes
+  // ready and signals OnOptinImpression() before the panel becomes visible or
+  // opened.
+  metrics_.OnOptinImpression();
+  metrics_.OnClientReady();
+  histogram_tester_.ExpectTotalCount("Glic.CUI.FreImpression.Outcome", 0);
+
+  // User opens the warmed instance: OnVisibilityChanged(true) records the
+  // pending opt-in impression, and OnOpen() immediately resolves the FRE
+  // impression CUI tracker as kSuccess.
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+
+  histogram_tester_.ExpectBucketCount("Glic.CUI.FreImpression.Outcome",
+                                      GlicCuiOutcome::kSuccess, 1);
+  histogram_tester_.ExpectTotalCount("Glic.CUI.FreImpression.Latency.Success",
+                                     1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       ResponseCompletionCuiTracker_SuccessAndUserStop) {
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  histogram_tester_.ExpectBucketCount("Glic.CUI.ResponseCompletion.Outcome",
+                                      GlicCuiOutcome::kSuccess, 1);
+
+  // Second turn stopped by user should resolve ResponseCompletion as kAbandoned
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUser);
+
+  histogram_tester_.ExpectBucketCount("Glic.CUI.ResponseCompletion.Outcome",
+                                      GlicCuiOutcome::kAbandoned, 1);
+
+  // Third turn stopped by system (kOther) should resolve ResponseCompletion as
+  // kFailed
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kOther);
+
+  histogram_tester_.ExpectBucketCount("Glic.CUI.ResponseCompletion.Outcome",
+                                      GlicCuiOutcome::kFailed, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, OnInputFocused_RecordsLatencyOncePerCycle) {
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre, static_cast<int>(prefs::FreStatus::kCompleted));
+
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  metrics_.OnClientReady();
+  task_environment_.FastForwardBy(base::Milliseconds(50));
+
+  metrics_.OnInputFocused();
+  // Second focus in the same open should not re-record.
+  metrics_.OnInputFocused();
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Instance.InputFocused"),
+            2);
+
+  histogram_tester_.ExpectUniqueTimeSample("Glic.Instance.TimeToInputFocus",
+                                           base::Milliseconds(150), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToInputFocus.Cold", base::Milliseconds(150), 1);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToInputFocus.Warm", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.ClientReadyToInputFocus", base::Milliseconds(50), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToInputFocus.NonOnboarded", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToInputFocus.Cold.NonOnboarded", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.ClientReadyToInputFocus.NonOnboarded", 0);
+
+  // Hide and warm-reopen: should record TimeToInputFocus.Warm.
+  metrics_.OnInstanceHidden();
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  task_environment_.FastForwardBy(base::Milliseconds(35));
+  metrics_.OnInputFocused();
+
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToInputFocus", 2);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToInputFocus.Warm", base::Milliseconds(35), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToInputFocus.Warm.NonOnboarded", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       OnInputFocused_NonOnboardedRecordsVariantUntilConsented) {
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre,
+      static_cast<int>(prefs::FreStatus::kNotStarted));
+
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  metrics_.OnClientReady();
+  task_environment_.FastForwardBy(base::Milliseconds(50));
+  metrics_.OnInputFocused();
+
+  histogram_tester_.ExpectUniqueTimeSample("Glic.Instance.TimeToInputFocus",
+                                           base::Milliseconds(150), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToInputFocus.NonOnboarded", base::Milliseconds(150),
+      1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToInputFocus.Cold.NonOnboarded",
+      base::Milliseconds(150), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.ClientReadyToInputFocus.NonOnboarded",
+      base::Milliseconds(50), 1);
+
+  // Warm reopen while still non-onboarded (e.g., Message-First FRE or
+  // Just-In-Time consent before acceptance).
+  metrics_.OnInstanceHidden();
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  task_environment_.FastForwardBy(base::Milliseconds(35));
+  metrics_.OnInputFocused();
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToInputFocus.NonOnboarded", 2);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Instance.TimeToInputFocus.Warm.NonOnboarded",
+      base::Milliseconds(35), 1);
+
+  // Once the profile completes onboarding, subsequent opens only record the
+  // base histograms.
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre, static_cast<int>(prefs::FreStatus::kCompleted));
+  metrics_.OnInstanceHidden();
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  task_environment_.FastForwardBy(base::Milliseconds(25));
+  metrics_.OnInputFocused();
+
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToInputFocus", 3);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToInputFocus.NonOnboarded", 2);
+}
+
+TEST_F(GlicInstanceMetricsTest, ShowingOutcome_Default_VisibleAndActive) {
+  ShowOptions show_options = ShowOptions::ForSidePanel(mock_tab_);
+
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+      /*has_conversation_id=*/false);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnActivationChanged(true);
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  histogram_tester_.ExpectBucketCount("Glic.Turn.ShowingOutcome.Default",
+                                      GlicTurnShowingOutcome::kShowingAndActive,
+                                      1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kShowingAndActive, 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed", 0);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.Metrics.Error", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest, ShowingOutcome_Actor_VisibleAndActive) {
+  ShowOptions show_options{FloatingShowOptions{}};
+
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+      /*has_conversation_id=*/false);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnActivationChanged(true);
+
+  // Actor turn: submit prompt, submit action result, stop response.
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnActionSubmitted(/*is_retry=*/false);
+  metrics_.OnResponseStarted();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  histogram_tester_.ExpectBucketCount("Glic.Turn.ShowingOutcome.Actor",
+                                      GlicTurnShowingOutcome::kShowingAndActive,
+                                      1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kShowingAndActive, 1);
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ShowingOutcome.Default", 0);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.Metrics.Error", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest, ShowingOutcome_ShowingInactiveThenActive) {
+  ShowOptions show_options = ShowOptions::ForSidePanel(mock_tab_);
+
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+      /*has_conversation_id=*/false);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnActivationChanged(false);
+
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  // Visible but inactive when response completes: pending, not recorded yet.
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ShowingOutcome.Default", 0);
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ShowingOutcome", 0);
+
+  // Window becomes active later.
+  metrics_.OnActivationChanged(true);
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome.Default",
+      GlicTurnShowingOutcome::kShowingInactiveThenActive, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome",
+      GlicTurnShowingOutcome::kShowingInactiveThenActive, 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed", 0);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.Metrics.Error", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest, ShowingOutcome_ShowingInactiveNeverActive) {
+  ShowOptions show_options{FloatingShowOptions{}};
+
+  {
+    GlicInstanceMetrics metrics(&profile_metrics_service_, &profile_);
+    metrics.OnWillShow(
+        ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+        /*has_conversation_id=*/false);
+    metrics.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+    metrics.OnVisibilityChanged(true);
+    metrics.OnActivationChanged(false);
+    metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                 mojom::PromptType::kTypedText);
+    metrics.OnResponseStarted();
+    metrics.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+    histogram_tester_.ExpectTotalCount("Glic.Turn.ShowingOutcome.Default", 0);
+    histogram_tester_.ExpectTotalCount("Glic.Turn.ShowingOutcome", 0);
+  }  // Destructor calls OnInstanceDestroyed().
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Turn.ShowingOutcome.Default",
+      GlicTurnShowingOutcome::kShowingInactiveNeverActive, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Turn.ShowingOutcome",
+      GlicTurnShowingOutcome::kShowingInactiveNeverActive, 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed", 0);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.Metrics.Error", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest, CompletedWhileHidden_ShownOutcomesAndTimes) {
+  ShowOptions show_options = ShowOptions::ForSidePanel(mock_tab_);
+
+  // 1. Shown via tab switch back:
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+      /*has_conversation_id=*/false);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnActivationChanged(true);
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  // Tab switched away.
+  metrics_.OnVisibilityChanged(false);
+  // Response completes while hidden.
+  task_environment_.FastForwardBy(base::Seconds(2));
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  // Still hidden, so outcome, return source, and time to show not recorded yet.
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ShowingOutcome.Default", 0);
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ShowingOutcome", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", 0);
+
+  // User switches back to tab after 5 seconds.
+  task_environment_.FastForwardBy(base::Seconds(5));
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kReshowInactive, show_options),
+      /*has_conversation_id=*/true);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome.Default",
+      GlicTurnShowingOutcome::kHiddenThenShowing, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kHiddenThenShowing,
+      1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Default",
+      mojom::InvocationSource::kReshowInactive, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource",
+      mojom::InvocationSource::kReshowInactive, 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", base::Seconds(5), 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", base::Seconds(5), 1);
+
+  // 2. Shown via panel reopen:
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnSidePanelClosed(
+      &mock_tab_, GlicInstanceMetrics::CloseReason::kExplicitlyClosed);
+  metrics_.OnVisibilityChanged(false);
+  task_environment_.FastForwardBy(base::Seconds(1));
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  task_environment_.FastForwardBy(base::Seconds(10));
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+      /*has_conversation_id=*/true);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome.Default",
+      GlicTurnShowingOutcome::kHiddenThenShowing, 2);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kHiddenThenShowing,
+      2);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Default",
+      mojom::InvocationSource::kTopChromeButton, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource",
+      mojom::InvocationSource::kTopChromeButton, 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", base::Seconds(10),
+      1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", base::Seconds(10), 1);
+
+  // 3. Shown via activity hub:
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnVisibilityChanged(false);
+  task_environment_.FastForwardBy(base::Seconds(1));
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  task_environment_.FastForwardBy(base::Seconds(3));
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kActivityListBubble,
+                     show_options),
+      /*has_conversation_id=*/true);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome.Default",
+      GlicTurnShowingOutcome::kHiddenThenShowing, 3);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kHiddenThenShowing,
+      3);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Default",
+      mojom::InvocationSource::kActivityListBubble, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource",
+      mojom::InvocationSource::kActivityListBubble, 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", base::Seconds(3), 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", base::Seconds(3), 1);
+
+  // 4. Shown via conversation switch:
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnVisibilityChanged(false);
+  task_environment_.FastForwardBy(base::Seconds(1));
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  task_environment_.FastForwardBy(base::Seconds(8));
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kConversationSwitch,
+                     show_options),
+      /*has_conversation_id=*/true);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome.Default",
+      GlicTurnShowingOutcome::kHiddenThenShowing, 4);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kHiddenThenShowing,
+      4);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Default",
+      mojom::InvocationSource::kConversationSwitch, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource",
+      mojom::InvocationSource::kConversationSwitch, 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", base::Seconds(8), 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", base::Seconds(8), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", 4);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", 4);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed", 0);
+
+  // 5. Surface move while already visible does not re-trigger.
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kDetachAttachButton,
+                     show_options),
+      /*has_conversation_id=*/true);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", 4);
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ShowingOutcome.Default", 4);
+
+  // 6. User-stopped response does not start pending state or record outcomes.
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUser);
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+      /*has_conversation_id=*/true);
+  metrics_.OnVisibilityChanged(true);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", 4);
+  histogram_tester_.ExpectTotalCount("Glic.Turn.ShowingOutcome.Default", 4);
+
+  histogram_tester_.ExpectTotalCount("Glic.Instance.Metrics.Error", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest, CompletedWhileHidden_NeverShowing) {
+  ShowOptions show_options{FloatingShowOptions{}};
+
+  // 1. Default instance destroyed while hidden:
+  {
+    GlicInstanceMetrics metrics(&profile_metrics_service_, &profile_);
+    metrics.OnWillShow(
+        ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+        /*has_conversation_id=*/false);
+    metrics.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+    metrics.OnVisibilityChanged(true);
+    metrics.OnActivationChanged(true);
+    metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                 mojom::PromptType::kTypedText);
+    metrics.OnResponseStarted();
+    metrics.OnVisibilityChanged(false);
+    metrics.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+    task_environment_.FastForwardBy(base::Seconds(12));
+  }  // Destructor calls OnInstanceDestroyed().
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Turn.ShowingOutcome.Default",
+      GlicTurnShowingOutcome::kHiddenNeverShowing, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kHiddenNeverShowing,
+      1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed.Default",
+      base::Seconds(12), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed", base::Seconds(12),
+      1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Consumer.Turn.CompletedWhileHidden.TimeUntilDestroyed.Default",
+      base::Seconds(12), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Consumer.Turn.CompletedWhileHidden.TimeUntilDestroyed",
+      base::Seconds(12), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", 0);
+
+  // 2. Actor instance destroyed while hidden:
+  {
+    GlicInstanceMetrics metrics(&profile_metrics_service_, &profile_);
+    metrics.OnWillShow(
+        ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+        /*has_conversation_id=*/false);
+    metrics.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+    metrics.OnVisibilityChanged(true);
+    metrics.OnActivationChanged(true);
+    metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                 mojom::PromptType::kTypedText);
+    metrics.OnActionSubmitted(/*is_retry=*/false);
+    metrics.OnResponseStarted();
+    metrics.OnVisibilityChanged(false);
+    metrics.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+    task_environment_.FastForwardBy(base::Seconds(7));
+  }  // Destructor calls OnInstanceDestroyed().
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Turn.ShowingOutcome.Actor",
+      GlicTurnShowingOutcome::kHiddenNeverShowing, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kHiddenNeverShowing,
+      2);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Actor", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed.Actor",
+      base::Seconds(7), 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed", base::Seconds(7), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Consumer.Turn.CompletedWhileHidden.TimeUntilDestroyed.Actor",
+      base::Seconds(7), 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Consumer.Turn.CompletedWhileHidden.TimeUntilDestroyed",
+      base::Seconds(7), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Actor", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", 0);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.Metrics.Error", 0);
+}
+
+TEST_F(
+    GlicInstanceMetricsTest,
+    CompletedWhileHidden_MultiStepActorTaskDoesNotRecordIntermediateNeverShown) {
+  ShowOptions show_options{FloatingShowOptions{}};
+
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kTopChromeButton, show_options),
+      /*has_conversation_id=*/false);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnActivationChanged(true);
+
+  // Turn 1: user submits prompt. Instance is hidden and response completes.
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kTypedText);
+  metrics_.OnResponseStarted();
+  metrics_.OnVisibilityChanged(false);
+  task_environment_.FastForwardBy(base::Seconds(2));
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  // Step 1: action result submitted in background. Intermediate response
+  // completes.
+  task_environment_.FastForwardBy(base::Seconds(5));
+  metrics_.OnActionSubmitted(/*is_retry=*/false);
+  metrics_.OnResponseStarted();
+  task_environment_.FastForwardBy(base::Seconds(1));
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  // Step 2: another action result submitted in background. Final response
+  // completes.
+  task_environment_.FastForwardBy(base::Seconds(5));
+  metrics_.OnActionSubmitted(/*is_retry=*/false);
+  metrics_.OnResponseStarted();
+  task_environment_.FastForwardBy(base::Seconds(1));
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  // Intermediate steps should NOT emit false never-shown events.
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome.Actor",
+      GlicTurnShowingOutcome::kHiddenNeverShowing, 0);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome.Default",
+      GlicTurnShowingOutcome::kHiddenNeverShowing, 0);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kHiddenNeverShowing,
+      0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed.Actor", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed.Default", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.CompletedWhileHidden.TimeUntilDestroyed", 0);
+
+  // User views response 4s after final step completes.
+  task_environment_.FastForwardBy(base::Seconds(4));
+  metrics_.OnWillShow(
+      ShowOptionsFor(mojom::InvocationSource::kReshowInactive, show_options),
+      /*has_conversation_id=*/true);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome.Actor",
+      GlicTurnShowingOutcome::kHiddenThenShowing, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.ShowingOutcome", GlicTurnShowingOutcome::kHiddenThenShowing,
+      1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource.Actor",
+      mojom::InvocationSource::kReshowInactive, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Turn.CompletedWhileHidden.ReturnSource",
+      mojom::InvocationSource::kReshowInactive, 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow.Actor", base::Seconds(4), 1);
+  histogram_tester_.ExpectTimeBucketCount(
+      "Glic.Turn.CompletedWhileHidden.TimeToShow", base::Seconds(4), 1);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.Metrics.Error", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest, ReturnSource_RecordedCorrectly) {
+  ShowOptions show_options = ShowOptions::ForSidePanel(mock_tab_);
+  auto options_for = [&](mojom::InvocationSource source) {
+    ShowOptions options = show_options;
+    options.invocation_source = source;
+    return options;
+  };
+
+  // Cold open with no conversation history -> ReturnSource NOT recorded.
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kTopChromeButton),
+                      /*has_conversation_id=*/false);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.ReturnSource", 0);
+
+  // Conversation switch while visible with no conversation ID -> NOT recorded.
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kConversationSwitch),
+                      /*has_conversation_id=*/false);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.ReturnSource", 0);
+
+  // Tab switch away and back with no conversation ID -> NOT recorded.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kReshowInactive),
+                      /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.ReturnSource", 0);
+
+  // Tab switch away and back with conversation ID.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kReshowInactive),
+                      /*has_conversation_id=*/true);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount("Glic.Instance.ReturnSource",
+                                      mojom::InvocationSource::kReshowInactive,
+                                      1);
+
+  // Surface move while already visible -> ReturnSource NOT recorded.
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kDetachAttachButton),
+                      /*has_conversation_id=*/true);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.ReturnSource",
+      mojom::InvocationSource::kDetachAttachButton, 0);
+
+  // Close panel and reopen via Top Chrome button.
+  metrics_.OnSidePanelClosed(
+      &mock_tab_, GlicInstanceMetrics::CloseReason::kExplicitlyClosed);
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kTopChromeButton),
+                      /*has_conversation_id=*/true);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount("Glic.Instance.ReturnSource",
+                                      mojom::InvocationSource::kTopChromeButton,
+                                      1);
+
+  // Close panel and reopen via Hotkey.
+  metrics_.OnSidePanelClosed(
+      &mock_tab_, GlicInstanceMetrics::CloseReason::kExplicitlyClosed);
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kOsHotkey),
+                      /*has_conversation_id=*/true);
+  metrics_.OnOpen(mojom::InvocationSource::kOsHotkey, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount("Glic.Instance.ReturnSource",
+                                      mojom::InvocationSource::kOsHotkey, 1);
+
+  // Close panel and reopen via Activity Hub.
+  metrics_.OnSidePanelClosed(
+      &mock_tab_, GlicInstanceMetrics::CloseReason::kExplicitlyClosed);
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kActivityListBubble),
+                      /*has_conversation_id=*/true);
+  metrics_.OnOpen(mojom::InvocationSource::kActivityListBubble, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.ReturnSource",
+      mojom::InvocationSource::kActivityListBubble, 1);
+
+  // Re-open via Actor task icon.
+  metrics_.OnSidePanelClosed(
+      &mock_tab_, GlicInstanceMetrics::CloseReason::kExplicitlyClosed);
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kActorTaskIcon),
+                      /*has_conversation_id=*/true);
+  metrics_.OnOpen(mojom::InvocationSource::kActorTaskIcon, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.ReturnSource", mojom::InvocationSource::kActorTaskIcon, 1);
+
+  // In-place conversation switch while visible.
+  metrics_.OnWillShow(options_for(mojom::InvocationSource::kConversationSwitch),
+                      /*has_conversation_id=*/true);
+
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Instance.ReturnSource",
+      mojom::InvocationSource::kConversationSwitch, 1);
+
+  histogram_tester_.ExpectTotalCount("Glic.Instance.Metrics.Error", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest, TooltipMetrics_Impression) {
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.Impression",
+                                       mojom::TooltipImpressionType::kTooltip1,
+                                       1);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip2a);
+  histogram_tester_.ExpectBucketCount("Glic.Tooltip.MultiTab.Impression",
+                                      mojom::TooltipImpressionType::kTooltip2a,
+                                      1);
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.Impression", 2);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_OnFloatyClosed) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnShowInFloaty(show_options);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  metrics_.OnFloatyClosed();
+
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       true, 1);
+
+  // Subsequent destruction should NOT double-record.
+  metrics_.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_OnSidePanelClosed) {
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+  ShowOptions show_options{SidePanelShowOptions{mock_tab_}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  metrics_.OnSidePanelClosed(
+      static_cast<tabs::TabInterface*>(&mock_tab_),
+      GlicInstanceMetrics::CloseReason::kExplicitlyClosed);
+
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       true, 1);
+
+  // Subsequent destruction should NOT double-record.
+  metrics_.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_OnUnbindOpenEmbedder) {
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+  ShowOptions show_options{SidePanelShowOptions{mock_tab_}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(3));
+  metrics_.OnUnbindEmbedder(SidePanelEmbedderKey{&mock_tab_});
+
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       true, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+
+  metrics_.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_OnUnbindOpenFloatyEmbedder) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInFloaty(show_options);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(3));
+  metrics_.OnUnbindEmbedder(FloatingEmbedderKey{});
+
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       true, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+
+  metrics_.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_OnBoundTabDestroyed) {
+  tabs::MockTabInterface background_tab;
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+  EXPECT_CALL(background_tab, GetTabHandle())
+      .WillRepeatedly(testing::Return(2));
+
+  // Open side panel on background_tab, then switch away (kTabSwitched removes
+  // it from `side_panel_open_times_`) and open on mock_tab_.
+  ShowOptions bg_options{SidePanelShowOptions{background_tab}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, bg_options);
+  metrics_.OnShowInSidePanel(&background_tab);
+  metrics_.OnSidePanelClosed(static_cast<tabs::TabInterface*>(&background_tab),
+                             GlicInstanceMetrics::CloseReason::kTabSwitched);
+
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(3));
+
+  // Closing the backgrounded tab must NOT falsely emit tooltip close metrics.
+  metrics_.OnBoundTabDestroyed(&background_tab, /*is_active_embedder=*/false);
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 0);
+
+  // Closing the active open-panel tab emits both tooltip close metrics once.
+  metrics_.OnBoundTabDestroyed(&mock_tab_, /*is_active_embedder=*/true);
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       true, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+
+  metrics_.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_DetachThenCloseOriginalTab) {
+  tabs::MockTabInterface detached_tab;
+  EXPECT_CALL(detached_tab, GetTabHandle()).WillRepeatedly(testing::Return(2));
+
+  ShowOptions sp_options{SidePanelShowOptions{detached_tab}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, sp_options);
+  metrics_.OnShowInSidePanel(&detached_tab);
+
+  // Detaching to Floaty leaves `detached_tab` in `side_panel_open_times_`
+  // without an OnSidePanelClosed() callback.
+  metrics_.OnDetach();
+  metrics_.OnShowInFloaty(ShowOptions{FloatingShowOptions{}});
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(3));
+
+  // Closing the original tab while Floaty is active must NOT emit close metrics
+  // or clear the tooltip flag before the Floaty window closes.
+  metrics_.OnBoundTabDestroyed(&detached_tab, /*is_active_embedder=*/false);
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 0);
+
+  metrics_.OnFloatyClosed();
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       true, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_OnInstanceDestroyed) {
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  metrics_.OnInstanceDestroyed();
+
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       true, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_RecordsFalseAfterHidden) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnShowInFloaty(show_options);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  metrics_.OnTooltipHidden();
+  task_environment_.FastForwardBy(base::Seconds(2));
+  metrics_.OnFloatyClosed();
+
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       false, 1);
+  // PanelCloseWithin10s still tracks closes within 10s of an impression.
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_ReShownAfterHidden) {
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  metrics_.OnTooltipHidden();
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip2a);
+  metrics_.OnInstanceDestroyed();
+
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       true, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_NotEmittedOnTabSwitched) {
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+  ShowOptions show_options{SidePanelShowOptions{mock_tab_}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+  metrics_.OnVisibilityChanged(true);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  metrics_.OnSidePanelClosed(static_cast<tabs::TabInterface*>(&mock_tab_),
+                             GlicInstanceMetrics::CloseReason::kTabSwitched);
+  metrics_.OnVisibilityChanged(false);
+
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 0);
+
+  // Destroying the hidden switched-away instance later must not falsely record
+  // either close metric.
+  metrics_.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_PreservedAcrossClientReady) {
+  metrics_.OnShowInFloaty(ShowOptions{FloatingShowOptions{}});
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+
+  // PanelWillOpenComplete (OnClientReady) can arrive after initial tooltip
+  // impressions without tearing down the web client.
+  metrics_.OnClientReady();
+  metrics_.OnTooltipHidden();
+  metrics_.OnFloatyClosed();
+
+  histogram_tester_.ExpectUniqueSample("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                       false, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_ClearedOnWebClientCleared) {
+  metrics_.OnShowInFloaty(ShowOptions{FloatingShowOptions{}});
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+
+  // Simulate web client reload, crash recovery, or hibernation.
+  metrics_.OnWebClientCleared();
+  metrics_.OnFloatyClosed();
+
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_ClosedWhileShown_NotEmittedWithoutImpressionOrUnknown) {
+  metrics_.OnShowInFloaty(ShowOptions{FloatingShowOptions{}});
+  metrics_.OnFloatyClosed();
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     0);
+
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kUnknown);
+  metrics_.OnInstanceDestroyed();
+
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.ClosedWhileShown",
+                                     0);
+}
+
+TEST_F(GlicInstanceMetricsTest, TooltipMetrics_MultiTabPromptSubmitted) {
+  testing::NiceMock<MockGlicSharingManager> sharing_manager;
+  GlicInstanceMetrics metrics(&profile_metrics_service_, &sharing_manager,
+                              nullptr, &profile_);
+  tabs::MockTabInterface tab1;
+  tabs::MockTabInterface tab2;
+  std::vector<raw_ptr<tabs::TabInterface>> pinned_tabs = {&tab1, &tab2};
+  EXPECT_CALL(sharing_manager, GetPinnedTabs())
+      .WillRepeatedly(testing::ReturnPointee(&pinned_tabs));
+
+  metrics.OnVisibilityChanged(true);
+  metrics.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+
+  // First prompt in session synchronously triggers OnSessionStarted(); verify
+  // the pre-prompt tooltip impression is preserved and MultiTabPromptSubmitted
+  // is emitted when 2+ tabs are pinned.
+  metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                               mojom::PromptType::kTypedText);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.MultiTabPromptSubmitted", true, 1);
+
+  metrics.OnResponseStarted();
+  metrics.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  // Follow-up prompts in the same session should NOT emit duplicate samples.
+  metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                               mojom::PromptType::kTypedText);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.MultiTabPromptSubmitted", true, 1);
+  metrics.OnResponseStarted();
+  metrics.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  // Finish the session (via inactivity timeout) and verify tooltip state resets
+  // so a subsequent session without a new impression does not emit.
+  task_environment_.FastForwardBy(
+      features::kGlicMetricsSessionInactivityTimeout.Get());
+  metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                               mojom::PromptType::kTypedText);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.MultiTabPromptSubmitted", true, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, TooltipMetrics_UnknownImpressionIgnored) {
+  testing::NiceMock<MockGlicSharingManager> sharing_manager;
+  GlicInstanceMetrics metrics(&profile_metrics_service_, &sharing_manager,
+                              nullptr, &profile_);
+  tabs::MockTabInterface tab1;
+  tabs::MockTabInterface tab2;
+  std::vector<raw_ptr<tabs::TabInterface>> pinned_tabs = {&tab1, &tab2};
+  EXPECT_CALL(sharing_manager, GetPinnedTabs())
+      .WillRepeatedly(testing::ReturnPointee(&pinned_tabs));
+
+  metrics.OnVisibilityChanged(true);
+  metrics.OnTooltipImpression(mojom::TooltipImpressionType::kUnknown);
+  histogram_tester_.ExpectTotalCount("Glic.Tooltip.MultiTab.Impression", 0);
+
+  metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                               mojom::PromptType::kTypedText);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.MultiTabPromptSubmitted", 0);
+
+  metrics.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_MultiTabPromptSubmitted_RequiresTwoPinnedTabs) {
+  testing::NiceMock<MockGlicSharingManager> sharing_manager;
+  GlicInstanceMetrics metrics(&profile_metrics_service_, &sharing_manager,
+                              nullptr, &profile_);
+  tabs::MockTabInterface tab1;
+  std::vector<raw_ptr<tabs::TabInterface>> pinned_tabs = {&tab1};
+  EXPECT_CALL(sharing_manager, GetPinnedTabs())
+      .WillRepeatedly(testing::ReturnPointee(&pinned_tabs));
+
+  metrics.OnVisibilityChanged(true);
+  metrics.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                               mojom::PromptType::kTypedText);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.MultiTabPromptSubmitted", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_MultiTabPromptSubmitted_RequiresTooltipImpression) {
+  testing::NiceMock<MockGlicSharingManager> sharing_manager;
+  GlicInstanceMetrics metrics(&profile_metrics_service_, &sharing_manager,
+                              nullptr, &profile_);
+  tabs::MockTabInterface tab1;
+  tabs::MockTabInterface tab2;
+  std::vector<raw_ptr<tabs::TabInterface>> pinned_tabs = {&tab1, &tab2};
+  EXPECT_CALL(sharing_manager, GetPinnedTabs())
+      .WillRepeatedly(testing::ReturnPointee(&pinned_tabs));
+
+  metrics.OnVisibilityChanged(true);
+  metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                               mojom::PromptType::kTypedText);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.MultiTabPromptSubmitted", 0);
+}
+
+TEST_F(
+    GlicInstanceMetricsTest,
+    TooltipMetrics_MultiTabPromptSubmitted_PreservedAcrossPendingTabSwitchAndUnfocus) {
+  testing::NiceMock<MockGlicSharingManager> sharing_manager;
+  GlicInstanceMetrics metrics(&profile_metrics_service_, &sharing_manager,
+                              nullptr, &profile_);
+  tabs::MockTabInterface tab1;
+  tabs::MockTabInterface tab2;
+  std::vector<raw_ptr<tabs::TabInterface>> pinned_tabs = {&tab1};
+  EXPECT_CALL(sharing_manager, GetPinnedTabs())
+      .WillRepeatedly(testing::ReturnPointee(&pinned_tabs));
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+
+  // Side Panel tab switch within the initial 5s pending window must NOT wipe
+  // `tooltip_shown_in_session_`.
+  ShowOptions side_panel_options{SidePanelShowOptions{mock_tab_}};
+  metrics.OnOpen(mojom::InvocationSource::kTopChromeButton, side_panel_options);
+  metrics.OnShowInSidePanel(&mock_tab_);
+  metrics.OnVisibilityChanged(true);
+  metrics.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+
+  metrics.OnSidePanelClosed(static_cast<tabs::TabInterface*>(&mock_tab_),
+                            GlicInstanceMetrics::CloseReason::kTabSwitched);
+  metrics.OnVisibilityChanged(false);
+
+  // User switches back, pins a second tab, and submits within < 5s.
+  metrics.OnVisibilityChanged(true);
+  pinned_tabs.push_back(&tab2);
+  metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                               mojom::PromptType::kTypedText);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.MultiTabPromptSubmitted", true, 1);
+
+  // Floaty focus loss (clicking browser window to pin a tab) within the
+  // pending window must also preserve `tooltip_shown_in_session_`.
+  pinned_tabs = {&tab1};
+  metrics.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip2a);
+  metrics.OnActivationChanged(false);
+  metrics.OnActivationChanged(true);
+  pinned_tabs.push_back(&tab2);
+  metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                               mojom::PromptType::kTypedText);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.MultiTabPromptSubmitted", true, 2);
+}
+
+TEST_F(
+    GlicInstanceMetricsTest,
+    TooltipMetrics_MultiTabPromptSubmitted_ResetsOnExplicitCloseBeforeStart) {
+  testing::NiceMock<MockGlicSharingManager> sharing_manager;
+  GlicInstanceMetrics metrics(&profile_metrics_service_, &sharing_manager,
+                              nullptr, &profile_);
+  tabs::MockTabInterface tab1;
+  tabs::MockTabInterface tab2;
+  std::vector<raw_ptr<tabs::TabInterface>> pinned_tabs = {&tab1, &tab2};
+  EXPECT_CALL(sharing_manager, GetPinnedTabs())
+      .WillRepeatedly(testing::ReturnPointee(&pinned_tabs));
+
+  ShowOptions floaty_options{FloatingShowOptions{}};
+  metrics.OnOpen(mojom::InvocationSource::kTopChromeButton, floaty_options);
+  metrics.OnShowInFloaty(floaty_options);
+  metrics.OnVisibilityChanged(true);
+  metrics.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+
+  // Explicit panel close before session start clears
+  // `tooltip_shown_in_session_`.
+  metrics.OnFloatyClosed();
+  metrics.OnVisibilityChanged(false);
+
+  // Reopening later without a new tooltip impression does not credit the closed
+  // tooltip.
+  metrics.OnShowInFloaty(floaty_options);
+  metrics.OnVisibilityChanged(true);
+  metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                               mojom::PromptType::kTypedText);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.MultiTabPromptSubmitted", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_PanelCloseWithin10s_NoImpressionAndRefreshesTimestamp) {
+  {
+    testing::NiceMock<MockGlicSharingManager> sharing_manager;
+    GlicInstanceMetrics no_impression_metrics(
+        &profile_metrics_service_, &sharing_manager, nullptr, &profile_);
+    no_impression_metrics.OnVisibilityChanged(true);
+    no_impression_metrics.OnInstanceDestroyed();
+    histogram_tester_.ExpectTotalCount(
+        "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 0);
+  }
+
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(8));
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip2a);
+  task_environment_.FastForwardBy(base::Seconds(5));
+  metrics_.OnInstanceDestroyed();
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, TooltipMetrics_PanelCloseWithin10s_Emitted) {
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(5));
+  metrics_.OnInstanceDestroyed();
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_PanelCloseWithin10s_After10sRecordsFalse) {
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(11));
+  metrics_.OnInstanceDestroyed();
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", false, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_PanelCloseWithin10s_OnSidePanelClosedAfter10s) {
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+  ShowOptions show_options{SidePanelShowOptions{mock_tab_}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(11));
+
+  metrics_.OnSidePanelClosed(
+      static_cast<tabs::TabInterface*>(&mock_tab_),
+      GlicInstanceMetrics::CloseReason::kExplicitlyClosed);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", false, 1);
+
+  // Subsequent destruction should NOT double-record.
+  metrics_.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_PanelCloseWithin10s_OnSidePanelClosed) {
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+  ShowOptions show_options{SidePanelShowOptions{mock_tab_}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(4));
+
+  metrics_.OnSidePanelClosed(
+      static_cast<tabs::TabInterface*>(&mock_tab_),
+      GlicInstanceMetrics::CloseReason::kExplicitlyClosed);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+
+  // Subsequent destruction should NOT double-record.
+  metrics_.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_PanelCloseWithin10s_NotEmittedOnTabSwitched) {
+  EXPECT_CALL(mock_tab_, GetTabHandle()).WillRepeatedly(testing::Return(1));
+  ShowOptions show_options{SidePanelShowOptions{mock_tab_}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnShowInSidePanel(&mock_tab_);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(3));
+
+  // Tab switch is not an explicit side panel close.
+  metrics_.OnSidePanelClosed(static_cast<tabs::TabInterface*>(&mock_tab_),
+                             GlicInstanceMetrics::CloseReason::kTabSwitched);
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       TooltipMetrics_PanelCloseWithin10s_OnFloatyClosed) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnShowInFloaty(show_options);
+
+  metrics_.OnTooltipImpression(mojom::TooltipImpressionType::kTooltip1);
+  task_environment_.FastForwardBy(base::Seconds(3));
+
+  metrics_.OnFloatyClosed();
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", true, 1);
+
+  // Subsequent destruction should NOT double-record.
+  metrics_.OnInstanceDestroyed();
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Tooltip.MultiTab.PanelCloseWithin10s", 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       NativeFreShown_RecordsImpressionOnceAndSuppressesDuplicates) {
+  base::test::ScopedFeatureList feature_list{
+      features::kGlicOptInImpressionMetrics};
+  ShowOptions show_options = MakeNativeFreShowOptions();
+
+  // Pre-warmed while hidden before OnWillShow must not record until OnOpen.
+  metrics_.OnClientReady();
+  metrics_.OnOptinImpression();
+  metrics_.OnWillShow(show_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  EXPECT_EQ(
+      user_action_tester_.GetActionCount("Glic.Onboarding.OptInImpression"), 0);
+
+  metrics_.OnOpen(mojom::InvocationSource::kFre, show_options);
+  EXPECT_EQ(
+      user_action_tester_.GetActionCount("Glic.Onboarding.OptInImpression"), 1);
+  histogram_tester_.ExpectUniqueSample("Glic.CUI.FreImpression.Outcome",
+                                       GlicCuiOutcome::kSuccess, 1);
+
+  // Subsequent WebUI impression while visible must not double-record, even
+  // after backgrounding and reshowing via kReshowInactive.
+  metrics_.OnOptinImpression();
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnWillShow(ShowOptionsFor(mojom::InvocationSource::kReshowInactive,
+                                     ShowOptions::ForSidePanel(mock_tab_)),
+                      /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOptinImpression();
+  EXPECT_EQ(
+      user_action_tester_.GetActionCount("Glic.Onboarding.OptInImpression"), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       NativeFreTriggered_RecordsActionOnlyForNativeFreOpen) {
+  metrics_.OnOpen(mojom::InvocationSource::kFre,
+                  ShowOptions::ForSidePanel(mock_tab_));
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.NativeFreTriggered"),
+            0);
+
+  metrics_.OnOpen(mojom::InvocationSource::kFre, MakeNativeFreShowOptions());
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.NativeFreTriggered"),
+            1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       NativeFreDismissOrError_SuppressesLoadingDismissAndActionableMetrics) {
+  ShowOptions show_options = MakeNativeFreShowOptions();
+
+  // Pre-accept dismiss counts as FRE decline, not loading abandon.
+  metrics_.OnWillShow(show_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kFre, show_options);
+  task_environment_.FastForwardBy(base::Milliseconds(500));
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.TimeToDismissWhileLoading.SidePanel", 0);
+  histogram_tester_.ExpectTotalCount("Glic.Fre.PanelWebUiState.FinishState", 1);
+
+  // Load error after accept suppresses AcceptToChatActionable.
+  metrics_.OnWillShow(show_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kFre, show_options);
+  metrics_.OnNativeFreAccepted();
+  metrics_.OnClientLoadError(ClientLoadErrorReason::kUnknown);
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectTotalCount("Glic.Fre.AcceptToChatActionable", 0);
+}
+
+TEST_F(
+    GlicInstanceMetricsTest,
+    NativeFreAccept_RecordsActionableOnShowAndPreservesWarmFrameAcrossReopen) {
+  ShowOptions show_options = MakeNativeFreShowOptions();
+
+  metrics_.OnWillShow(show_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kFre, show_options);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Instance.PanelPresentationTime.SidePanel", 0, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Instance.TimeToActionable.SidePanel", 0, 1);
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kActionable));
+
+  // Cold background navigation commit while native FRE is up keeps
+  // TimeToActionable recorded while still waiting for the guest frame.
+  metrics_.OnGuestReset();
+  EXPECT_TRUE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kActionable));
+
+  // Guest ready and frame arrive in the background while the native FRE card is
+  // up, without logging a second PanelPresentationTime or TimeToActionable.
+  task_environment_.FastForwardBy(base::Milliseconds(150));
+  metrics_.OnClientReady();
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  EXPECT_FALSE(metrics_.IsWaitingForGuestMilestone(
+      GlicInstanceMetrics::GuestMilestone::kActionable));
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Instance.PanelPresentationTime.SidePanel", 1);
+  histogram_tester_.ExpectTotalCount("Glic.Instance.TimeToActionable.SidePanel",
+                                     1);
+
+  // Hiding/closing and reopening before accept preserves the guest frame state
+  // for the same guest document without double-recording TimeToActionable.
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnClose();
+  metrics_.OnWillShow(show_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kFre, show_options);
+
+  task_environment_.FastForwardBy(base::Milliseconds(250));
+  metrics_.OnNativeFreAccepted();
+
+  histogram_tester_.ExpectUniqueSample("Glic.Fre.AcceptToChatActionable", 0, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Instance.TimeToActionable.SidePanel", 0, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       ColdNativeAndWebFreAccept_RecordsOnceGuestFrameSubmits) {
+  ShowOptions show_options = MakeNativeFreShowOptions();
+
+  // Cold native FRE: accept completes before guest frame submits.
+  metrics_.OnWillShow(show_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kFre, show_options);
+  metrics_.OnNativeFreAccepted();
+  histogram_tester_.ExpectTotalCount("Glic.Fre.AcceptToChatActionable", 0);
+
+  task_environment_.FastForwardBy(base::Milliseconds(500));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+  histogram_tester_.ExpectUniqueSample("Glic.Fre.AcceptToChatActionable", 500,
+                                       1);
+
+  // Control arm (WebUI FRE): duplicate OnWebFreAccepted does not overwrite.
+  metrics_.OnClose();
+  metrics_.OnGuestReset();
+  metrics_.OnOpen(mojom::InvocationSource::kFre,
+                  ShowOptions::ForSidePanel(mock_tab_));
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnClientReady();
+  metrics_.OnWebFreAccepted();
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  metrics_.OnWebFreAccepted();
+  task_environment_.FastForwardBy(base::Milliseconds(150));
+  metrics_.OnGuestMilestoneFrameSubmitted(
+      GlicInstanceMetrics::GuestMilestone::kActionable);
+
+  histogram_tester_.ExpectBucketCount("Glic.Fre.AcceptToChatActionable", 250,
+                                      1);
+  histogram_tester_.ExpectTotalCount("Glic.Fre.AcceptToChatActionable", 2);
+}
+
+#if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+
+TEST_F(GlicInstanceMetricsTest,
+       OnClientLoadErrorRecordsStructuredReasonsAndInvocationId) {
+  using StructuredReason =
+      metrics::structured::events::v2::glic::GlicClientLoadErrorReason;
+  static constexpr struct {
+    ClientLoadErrorReason reason;
+    StructuredReason structured_reason;
+  } kCases[] = {
+      {ClientLoadErrorReason::kOffline, StructuredReason::OFFLINE},
+      {ClientLoadErrorReason::kGuestLoadFailed,
+       StructuredReason::GUEST_LOAD_FAILED},
+      {ClientLoadErrorReason::kGuestProcessGone,
+       StructuredReason::GUEST_PROCESS_GONE},
+      {ClientLoadErrorReason::kGuestHttpClientError,
+       StructuredReason::GUEST_HTTP_CLIENT_ERROR},
+      {ClientLoadErrorReason::kGuestHttpServerError,
+       StructuredReason::GUEST_HTTP_SERVER_ERROR},
+      {ClientLoadErrorReason::kGuestProcessCrashed,
+       StructuredReason::GUEST_PROCESS_CRASHED},
+      {ClientLoadErrorReason::kGuestProcessKilled,
+       StructuredReason::GUEST_PROCESS_KILLED},
+      {ClientLoadErrorReason::kGuestProcessOom,
+       StructuredReason::GUEST_PROCESS_OOM},
+      {ClientLoadErrorReason::kGuestProcessLaunchFailed,
+       StructuredReason::GUEST_PROCESS_LAUNCH_FAILED},
+      {ClientLoadErrorReason::kGuestProcessIntegrityFailure,
+       StructuredReason::GUEST_PROCESS_INTEGRITY_FAILURE},
+      {ClientLoadErrorReason::kClientLoadTimeoutNavigationInProgress,
+       StructuredReason::CLIENT_LOAD_TIMEOUT_NAVIGATION_IN_PROGRESS},
+      {ClientLoadErrorReason::kClientLoadTimeoutNavigationNotCommitted,
+       StructuredReason::CLIENT_LOAD_TIMEOUT_NAVIGATION_NOT_COMMITTED},
+      {ClientLoadErrorReason::kClientLoadTimeoutBeforeOnload,
+       StructuredReason::CLIENT_LOAD_TIMEOUT_BEFORE_ONLOAD},
+      {ClientLoadErrorReason::kClientLoadTimeoutAfterOnload,
+       StructuredReason::CLIENT_LOAD_TIMEOUT_AFTER_ONLOAD},
+  };
+
+  constexpr uint64_t kInvocationId = 42;
+  metrics_.SetActiveInvocationId(kInvocationId);
+
+  for (const auto& c : kCases) {
+    SCOPED_TRACE(static_cast<int>(c.reason));
+    ScopedStructuredEventCapture capture;
+    metrics_.OnClientLoadError(c.reason);
+    auto events = capture.GetEvents("ClientLoadError");
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(GetIntMetric(*events[0], "Reason"),
+              static_cast<int>(c.structured_reason));
+    EXPECT_EQ(GetIntMetric(*events[0], "InvocationId"),
+              static_cast<int64_t>(kInvocationId));
+  }
+}
+
+// FreImpression / FreDecision structured events. structured.xml
+// GlicFreDecision wire values; these must not change.
+constexpr int kFreAcceptedWireValue = 0;
+constexpr int kFreNoThanksWireValue = 1;
+constexpr int kFrePanelClosedWireValue = 2;
+constexpr int kFreInstanceDestroyedWireValue = 3;
+constexpr int kFreAcceptedElsewhereWireValue = 4;
+constexpr uint64_t kInvocationId = 0x1234567890abcdefULL;
+
+class GlicInstanceMetricsFreAttemptTest : public GlicInstanceMetricsTest {
+ public:
+  GlicInstanceMetricsFreAttemptTest() {
+    feature_list_.InitAndEnableFeature(features::kGlicOptInImpressionMetrics);
+    SetConsented(false);
+  }
+
+ protected:
+  void SetConsented(bool consented) {
+    profile_.GetPrefs()->SetInteger(
+        prefs::kGlicCompletedFre,
+        static_cast<int>(consented ? prefs::FreStatus::kCompleted
+                                   : prefs::FreStatus::kNotStarted));
+  }
+
+  // Opens the panel the way an invocation does: the handler sets the active
+  // invocation id before any task runs, then the show task opens the panel.
+  void OpenUnconsented() {
+    metrics_.SetActiveInvocationId(kInvocationId);
+    metrics_.OnVisibilityChanged(true);
+    metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton,
+                    ShowOptions{FloatingShowOptions{}});
+    // A toggle invocation completes as soon as the panel is open.
+    metrics_.SetActiveInvocationId(std::nullopt);
+  }
+
+  void ShowFre() {
+    metrics_.OnOptinImpression();
+    metrics_.OnClientReady();
+  }
+
+  ScopedStructuredEventCapture capture_;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(GlicInstanceMetricsFreAttemptTest, ImpressionKeyedByOpeningInvocation) {
+  OpenUnconsented();
+  task_environment_.FastForwardBy(base::Milliseconds(300));
+  ShowFre();
+
+  auto events = capture_.GetEvents("FreImpression");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationSource"),
+            static_cast<int>(mojom::InvocationSource::kTopChromeButton));
+  EXPECT_EQ(GetIntMetric(*events[0], "ElapsedMs"), 300);
+}
+
+TEST_F(GlicInstanceMetricsFreAttemptTest, ImpressionRecordedOnceWhileVisible) {
+  OpenUnconsented();
+  ShowFre();
+  metrics_.OnOptinImpression();
+
+  EXPECT_EQ(capture_.GetEvents("FreImpression").size(), 1u);
+}
+
+// A warmed instance reports the impression before it is shown; the attempt
+// starts when the panel opens and records the impression then, not while
+// the instance sits in the warming pool.
+TEST_F(GlicInstanceMetricsFreAttemptTest, WarmedImpressionWaitsForOpen) {
+  metrics_.OnOptinImpression();
+  metrics_.OnClientReady();
+  EXPECT_TRUE(capture_.GetEvents("FreImpression").empty());
+
+  OpenUnconsented();
+
+  auto events = capture_.GetEvents("FreImpression");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+  EXPECT_EQ(GetIntMetric(*events[0], "ElapsedMs"), 0);
+}
+
+TEST_F(GlicInstanceMetricsFreAttemptTest, NoAttemptWhenConsented) {
+  SetConsented(true);
+  OpenUnconsented();
+  ShowFre();
+  metrics_.OnClose();
+
+  EXPECT_TRUE(capture_.GetEvents("FreImpression").empty());
+  EXPECT_TRUE(capture_.GetEvents("FreDecision").empty());
+}
+
+TEST_F(GlicInstanceMetricsFreAttemptTest, AcceptedEndsAttempt) {
+  OpenUnconsented();
+  ShowFre();
+  task_environment_.FastForwardBy(base::Milliseconds(1500));
+  metrics_.OnOnboardingCompleted();
+  SetConsented(true);
+  metrics_.OnClose();
+
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"), kFreAcceptedWireValue);
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationSource"),
+            static_cast<int>(mojom::InvocationSource::kTopChromeButton));
+  EXPECT_EQ(GetIntMetric(*events[0], "ImpressionRecorded"), 1);
+  EXPECT_EQ(GetIntMetric(*events[0], "ElapsedMs"), 1500);
+}
+
+// "No thanks" closes the panel; the explicit decision must win over the
+// close that follows it.
+TEST_F(GlicInstanceMetricsFreAttemptTest, NoThanksIsNotPanelClosed) {
+  OpenUnconsented();
+  ShowFre();
+  metrics_.OnOptinRejected();
+  metrics_.OnClose();
+
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"), kFreNoThanksWireValue);
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+}
+
+TEST_F(GlicInstanceMetricsFreAttemptTest, PanelClosedWithoutImpression) {
+  OpenUnconsented();
+  metrics_.OnClose();
+
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"), kFrePanelClosedWireValue);
+  EXPECT_EQ(GetIntMetric(*events[0], "ImpressionRecorded"), 0);
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+}
+
+// Each open while unconsented is its own attempt with its own invocation.
+// The web client reports the opt-in impression once per load, so a reopen of
+// the same guest gets its impression from that earlier report.
+TEST_F(GlicInstanceMetricsFreAttemptTest, ReopenStartsNewAttempt) {
+  OpenUnconsented();
+  ShowFre();
+  metrics_.OnClose();
+  metrics_.OnVisibilityChanged(false);
+
+  metrics_.SetActiveInvocationId(kInvocationId + 1);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kOsHotkey,
+                  ShowOptions{FloatingShowOptions{}});
+  metrics_.SetActiveInvocationId(std::nullopt);
+  metrics_.OnOnboardingCompleted();
+
+  auto impressions = capture_.GetEvents("FreImpression");
+  ASSERT_EQ(impressions.size(), 2u);
+  EXPECT_EQ(GetIntMetric(*impressions[1], "InvocationId"),
+            static_cast<int64_t>(kInvocationId + 1));
+  EXPECT_EQ(GetIntMetric(*impressions[1], "ElapsedMs"), 0);
+
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 2u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"), kFrePanelClosedWireValue);
+  EXPECT_EQ(GetIntMetric(*events[1], "Decision"), kFreAcceptedWireValue);
+  EXPECT_EQ(GetIntMetric(*events[1], "ImpressionRecorded"), 1);
+  EXPECT_EQ(GetIntMetric(*events[1], "InvocationId"),
+            static_cast<int64_t>(kInvocationId + 1));
+  EXPECT_EQ(GetIntMetric(*events[1], "InvocationSource"),
+            static_cast<int>(mojom::InvocationSource::kOsHotkey));
+}
+
+// A reopen that shows the panel before it is visible records the impression
+// once the panel becomes visible, not at open.
+TEST_F(GlicInstanceMetricsFreAttemptTest, ReopenImpressionWaitsForVisible) {
+  OpenUnconsented();
+  ShowFre();
+  metrics_.OnClose();
+  metrics_.OnVisibilityChanged(false);
+
+  metrics_.SetActiveInvocationId(kInvocationId + 1);
+  metrics_.OnOpen(mojom::InvocationSource::kOsHotkey,
+                  ShowOptions{FloatingShowOptions{}});
+  EXPECT_EQ(capture_.GetEvents("FreImpression").size(), 1u);
+  task_environment_.FastForwardBy(base::Milliseconds(250));
+  metrics_.OnVisibilityChanged(true);
+
+  auto impressions = capture_.GetEvents("FreImpression");
+  ASSERT_EQ(impressions.size(), 2u);
+  EXPECT_EQ(GetIntMetric(*impressions[1], "ElapsedMs"), 250);
+}
+
+// A new guest document (reload or crash) has to report the impression again
+// before a reopened attempt counts one.
+TEST_F(GlicInstanceMetricsFreAttemptTest, GuestResetClearsReportedImpression) {
+  OpenUnconsented();
+  ShowFre();
+  metrics_.OnClose();
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnGuestReset();
+
+  metrics_.SetActiveInvocationId(kInvocationId + 1);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kOsHotkey,
+                  ShowOptions{FloatingShowOptions{}});
+  EXPECT_EQ(capture_.GetEvents("FreImpression").size(), 1u);
+
+  metrics_.OnOptinImpression();
+  EXPECT_EQ(capture_.GetEvents("FreImpression").size(), 2u);
+}
+
+// The native FRE card is the consent screen: the impression is recorded on
+// open, before any web client is ready, and accepting it ends the attempt.
+TEST_F(GlicInstanceMetricsFreAttemptTest, NativeFreImpressionAndAccept) {
+  ShowOptions show_options = MakeNativeFreShowOptions();
+  show_options.invocation_source = mojom::InvocationSource::kFre;
+  metrics_.SetActiveInvocationId(kInvocationId);
+  metrics_.OnWillShow(show_options, /*has_conversation_id=*/false);
+  metrics_.OnVisibilityChanged(true);
+  metrics_.OnOpen(mojom::InvocationSource::kFre, show_options);
+
+  auto impressions = capture_.GetEvents("FreImpression");
+  ASSERT_EQ(impressions.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*impressions[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+
+  // GlicInstanceImpl::AcceptNativeFre() reports both.
+  metrics_.OnNativeFreAccepted();
+  metrics_.OnOnboardingCompleted();
+  SetConsented(true);
+  metrics_.OnClose();
+
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"), kFreAcceptedWireValue);
+  EXPECT_EQ(GetIntMetric(*events[0], "ImpressionRecorded"), 1);
+}
+
+TEST_F(GlicInstanceMetricsFreAttemptTest, AcceptedElsewhere) {
+  OpenUnconsented();
+  ShowFre();
+  SetConsented(true);
+  metrics_.OnClose();
+
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"),
+            kFreAcceptedElsewhereWireValue);
+}
+
+TEST_F(GlicInstanceMetricsFreAttemptTest,
+       WebImpressionRecordedWhenOptInUmaDisabled) {
+  base::test::ScopedFeatureList disabled_feature;
+  disabled_feature.InitAndDisableFeature(features::kGlicOptInImpressionMetrics);
+
+  OpenUnconsented();
+  ShowFre();
+  metrics_.OnOnboardingCompleted();
+
+  EXPECT_EQ(
+      user_action_tester_.GetActionCount("Glic.Onboarding.OptInImpression"), 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Onboarding.OptInImpression.FlowSource", 0);
+  ASSERT_EQ(capture_.GetEvents("FreImpression").size(), 1u);
+  auto decisions = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(decisions.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*decisions[0], "Decision"), kFreAcceptedWireValue);
+  EXPECT_EQ(GetIntMetric(*decisions[0], "ImpressionRecorded"), 1);
+}
+
+// Detach(), Attach(), and inactive-embedder closes call OnClose(false) while
+// the FRE remains open on another surface; they must not end the attempt.
+TEST_F(GlicInstanceMetricsFreAttemptTest,
+       InactiveEmbedderCloseKeepsAttemptOpen) {
+  OpenUnconsented();
+  ShowFre();
+  // Detach opens the floaty and closes the old side panel embedder.
+  metrics_.OnOpen(mojom::InvocationSource::kDetachAttachButton,
+                  ShowOptions{FloatingShowOptions{}});
+  metrics_.OnClose(/*is_active_embedder=*/false);
+  EXPECT_TRUE(capture_.GetEvents("FreDecision").empty());
+  EXPECT_EQ(capture_.GetEvents("FreImpression").size(), 1u);
+
+  // Attach deactivates the floaty before opening the side panel.
+  metrics_.OnClose(/*is_active_embedder=*/false);
+  metrics_.OnOpen(mojom::InvocationSource::kDetachAttachButton,
+                  ShowOptions::ForSidePanel(mock_tab_));
+  EXPECT_TRUE(capture_.GetEvents("FreDecision").empty());
+  EXPECT_EQ(capture_.GetEvents("FreImpression").size(), 1u);
+
+  metrics_.OnOnboardingCompleted();
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"), kFreAcceptedWireValue);
+  EXPECT_EQ(GetIntMetric(*events[0], "ImpressionRecorded"), 1);
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+}
+
+TEST_F(GlicInstanceMetricsFreAttemptTest, InstanceDestroyedWhilePending) {
+  {
+    GlicInstanceMetrics metrics(&profile_metrics_service_, &profile_);
+    metrics.SetActiveInvocationId(kInvocationId);
+    metrics.OnVisibilityChanged(true);
+    metrics.OnOpen(mojom::InvocationSource::kTopChromeButton,
+                   ShowOptions{FloatingShowOptions{}});
+  }
+
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"),
+            kFreInstanceDestroyedWireValue);
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+}
+
+// Like OnClose(), destruction after the profile consented through another
+// surface is not a pending FRE being lost.
+TEST_F(GlicInstanceMetricsFreAttemptTest,
+       InstanceDestroyedAfterConsentElsewhere) {
+  {
+    GlicInstanceMetrics metrics(&profile_metrics_service_, &profile_);
+    metrics.SetActiveInvocationId(kInvocationId);
+    metrics.OnVisibilityChanged(true);
+    metrics.OnOpen(mojom::InvocationSource::kTopChromeButton,
+                   ShowOptions{FloatingShowOptions{}});
+    SetConsented(true);
+  }
+
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"),
+            kFreAcceptedElsewhereWireValue);
+}
+
+// A decision reported without an attempt in flight is still recorded, just
+// without an invocation to join it to.
+TEST_F(GlicInstanceMetricsFreAttemptTest, DecisionWithoutAttempt) {
+  metrics_.OnOnboardingCompleted();
+
+  auto events = capture_.GetEvents("FreDecision");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*events[0], "Decision"), kFreAcceptedWireValue);
+  EXPECT_EQ(GetIntMetric(*events[0], "InvocationId"), std::nullopt);
+  EXPECT_EQ(GetIntMetric(*events[0], "ElapsedMs"), std::nullopt);
+}
+
+#endif  // BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+
+#if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+
+// TurnSubmitted / TurnTerminated structured events. structured.xml
+// GlicTurnEnd wire values; these must not change.
+constexpr int kTurnEndResponseCompletedWireValue = 0;
+constexpr int kTurnEndStoppedByUserWireValue = 1;
+constexpr int kTurnEndStoppedOtherWireValue = 2;
+constexpr int kTurnEndSupersededWireValue = 3;
+constexpr int kTurnEndInstanceDestroyedWireValue = 4;
+
+class GlicInstanceMetricsTurnEventsTest : public GlicInstanceMetricsTest {
+ public:
+  GlicInstanceMetricsTurnEventsTest() {
+    profile_.GetPrefs()->SetInteger(
+        prefs::kGlicCompletedFre,
+        static_cast<int>(prefs::FreStatus::kCompleted));
+    metrics_.OnVisibilityChanged(true);
+  }
+
+ protected:
+  void Submit() { Submit(mojom::PromptType::kTypedText); }
+  void Submit(mojom::PromptType prompt_type) {
+    metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText, prompt_type);
+  }
+
+  ScopedStructuredEventCapture capture_;
+};
+
+TEST_F(GlicInstanceMetricsTurnEventsTest, SubmittedAndCompleted) {
+  // Simulate a toggle open whose invocation finishes as soon as the panel is
+  // open, before the user types a prompt.
+  metrics_.SetActiveInvocationId(kInvocationId);
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton,
+                  ShowOptions{FloatingShowOptions{}});
+  metrics_.SetActiveInvocationId(std::nullopt);
+  Submit(mojom::PromptType::kZeroStateSuggestions);
+  metrics_.DidRequestContextFromFocusedTab();
+  task_environment_.FastForwardBy(base::Milliseconds(400));
+  metrics_.OnResponseStarted();
+  task_environment_.FastForwardBy(base::Milliseconds(600));
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  auto submitted = capture_.GetEvents("TurnSubmitted");
+  ASSERT_EQ(submitted.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*submitted[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+  EXPECT_EQ(GetIntMetric(*submitted[0], "TurnSeq"), 1);
+  EXPECT_EQ(GetIntMetric(*submitted[0], "PreConsent"), 0);
+  EXPECT_EQ(GetIntMetric(*submitted[0], "PromptType"),
+            static_cast<int>(mojom::PromptType::kZeroStateSuggestions));
+  EXPECT_EQ(GetIntMetric(*submitted[0], "InputMode"),
+            static_cast<int>(mojom::WebClientMode::kText));
+
+  auto terminated = capture_.GetEvents("TurnTerminated");
+  ASSERT_EQ(terminated.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "InvocationId"),
+            static_cast<int64_t>(kInvocationId));
+  EXPECT_EQ(GetIntMetric(*terminated[0], "TurnSeq"), 1);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "End"),
+            kTurnEndResponseCompletedWireValue);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "HadContext"), 1);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "TimeToResponseStartMs"), 400);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "TimeToEndMs"), 1000);
+
+  // Closing the panel clears the open invocation id.
+  metrics_.OnClose();
+  Submit();
+  submitted = capture_.GetEvents("TurnSubmitted");
+  ASSERT_EQ(submitted.size(), 2u);
+  EXPECT_EQ(GetIntMetric(*submitted[1], "InvocationId"), std::nullopt);
+}
+
+TEST_F(GlicInstanceMetricsTurnEventsTest, StopCausesMapToEnds) {
+  Submit();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUser);
+  Submit();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kOther);
+
+  auto terminated = capture_.GetEvents("TurnTerminated");
+  ASSERT_EQ(terminated.size(), 2u);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "TurnSeq"), 1);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "End"),
+            kTurnEndStoppedByUserWireValue);
+  EXPECT_EQ(GetIntMetric(*terminated[1], "TurnSeq"), 2);
+  EXPECT_EQ(GetIntMetric(*terminated[1], "End"), kTurnEndStoppedOtherWireValue);
+  // A stop without a prior OnResponseStarted() leaves TimeToResponseStartMs
+  // unset so pre-first-token failures and cancellations stay distinguishable.
+  EXPECT_EQ(GetIntMetric(*terminated[0], "TimeToResponseStartMs"),
+            std::nullopt);
+  EXPECT_EQ(GetIntMetric(*terminated[1], "TimeToResponseStartMs"),
+            std::nullopt);
+}
+
+// A turn the client never reports an outcome for is terminated when the next
+// input replaces it.
+TEST_F(GlicInstanceMetricsTurnEventsTest, SupersededTurn) {
+  Submit();
+  task_environment_.FastForwardBy(base::Milliseconds(5000));
+  Submit();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  auto terminated = capture_.GetEvents("TurnTerminated");
+  ASSERT_EQ(terminated.size(), 2u);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "TurnSeq"), 1);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "End"), kTurnEndSupersededWireValue);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "TimeToResponseStartMs"),
+            std::nullopt);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "TimeToEndMs"), 5000);
+  EXPECT_EQ(GetIntMetric(*terminated[1], "TurnSeq"), 2);
+  EXPECT_EQ(GetIntMetric(*terminated[1], "End"),
+            kTurnEndResponseCompletedWireValue);
+}
+
+TEST_F(GlicInstanceMetricsTurnEventsTest, TerminatedOnceOnly) {
+  Submit();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+  // A second stop for the same turn, or a stop with no turn, adds nothing.
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  EXPECT_EQ(capture_.GetEvents("TurnTerminated").size(), 1u);
+}
+
+TEST_F(GlicInstanceMetricsTurnEventsTest, InstanceDestroyedWhilePending) {
+  {
+    GlicInstanceMetrics metrics(&profile_metrics_service_, &profile_);
+    metrics.OnVisibilityChanged(true);
+    metrics.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                 mojom::PromptType::kTypedText);
+    metrics.OnResponseStarted();
+  }
+
+  auto terminated = capture_.GetEvents("TurnTerminated");
+  ASSERT_EQ(terminated.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "End"),
+            kTurnEndInstanceDestroyedWireValue);
+  EXPECT_NE(GetIntMetric(*terminated[0], "TimeToResponseStartMs"),
+            std::nullopt);
+}
+
+TEST_F(GlicInstanceMetricsTurnEventsTest, PreConsentTurn) {
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre,
+      static_cast<int>(prefs::FreStatus::kNotStarted));
+  Submit();
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre, static_cast<int>(prefs::FreStatus::kCompleted));
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  auto submitted = capture_.GetEvents("TurnSubmitted");
+  ASSERT_EQ(submitted.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*submitted[0], "PreConsent"), 1);
+  EXPECT_EQ(GetIntMetric(*submitted[0], "InvocationId"), std::nullopt);
+  auto terminated = capture_.GetEvents("TurnTerminated");
+  ASSERT_EQ(terminated.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "PreConsent"), 1);
+}
+
+// A message-first prompt is held by the client and released only after the
+// user consented, so the profile is already consented at submit time; the
+// hold report is what marks it pre-consent. It applies to that turn only.
+TEST_F(GlicInstanceMetricsTurnEventsTest, HeldPromptIsPreConsent) {
+  metrics_.OnUserInputHeldForOnboarding();
+  Submit();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+  Submit();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  auto submitted = capture_.GetEvents("TurnSubmitted");
+  ASSERT_EQ(submitted.size(), 2u);
+  EXPECT_EQ(GetIntMetric(*submitted[0], "PreConsent"), 1);
+  EXPECT_EQ(GetIntMetric(*submitted[1], "PreConsent"), 0);
+  auto terminated = capture_.GetEvents("TurnTerminated");
+  ASSERT_EQ(terminated.size(), 2u);
+  EXPECT_EQ(GetIntMetric(*terminated[0], "PreConsent"), 1);
+  EXPECT_EQ(GetIntMetric(*terminated[1], "PreConsent"), 0);
+}
+
+// A hold that is never released in this open does not leak into the next
+// open's first turn.
+TEST_F(GlicInstanceMetricsTurnEventsTest, HeldPromptClearedOnClose) {
+  metrics_.OnUserInputHeldForOnboarding();
+  metrics_.OnClose();
+  metrics_.OnVisibilityChanged(false);
+  metrics_.OnVisibilityChanged(true);
+  Submit();
+
+  auto submitted = capture_.GetEvents("TurnSubmitted");
+  ASSERT_EQ(submitted.size(), 1u);
+  EXPECT_EQ(GetIntMetric(*submitted[0], "PreConsent"), 0);
+}
+
+// Inputs the instance metrics reject (hidden panel, response in progress)
+// are not turns.
+TEST_F(GlicInstanceMetricsTurnEventsTest, RejectedInputIsNotATurn) {
+  Submit();
+  metrics_.OnResponseStarted();
+  Submit();  // kInputSubmittedWhileResponseInProgress.
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+  metrics_.OnVisibilityChanged(false);
+  Submit();  // kInputSubmittedWhileHidden.
+
+  EXPECT_EQ(capture_.GetEvents("TurnSubmitted").size(), 1u);
+  EXPECT_EQ(capture_.GetEvents("TurnTerminated").size(), 1u);
+}
+
+#endif  // BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+
+TEST_F(GlicInstanceMetricsTest, LogGetContextFromFocusedTabError_UnknownMode) {
+  metrics_.LogGetContextFromFocusedTabError(
+      GlicGetContextFromTabError::kTabNotFound);
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Api.GetContextFromFocusedTab.Error.Text", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Api.GetContextFromFocusedTab.Error.Audio", 0);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextFromFocusedTab.Error.Unknown",
+      GlicGetContextFromTabError::kTabNotFound, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, LogGetContextFromTabError_UnknownMode) {
+  metrics_.LogGetContextFromTabError(GlicGetContextFromTabError::kTabNotFound);
+
+  histogram_tester_.ExpectTotalCount("Glic.Api.GetContextFromTab.Error.Text",
+                                     0);
+  histogram_tester_.ExpectTotalCount("Glic.Api.GetContextFromTab.Error.Audio",
+                                     0);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextFromTab.Error.Unknown",
+      GlicGetContextFromTabError::kTabNotFound, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.Api.GetContextFromTab.Error.Unknown",
+      GlicGetContextFromTabError::kTabNotFound, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, LogGetContextForActorFromTabError_UnknownMode) {
+  metrics_.LogGetContextForActorFromTabError(
+      GlicGetContextFromTabError::kTabNotFound);
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Api.GetContextForActorFromTab.Error.Text", 0);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Api.GetContextForActorFromTab.Error.Audio", 0);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextForActorFromTab.Error.Unknown",
+      GlicGetContextFromTabError::kTabNotFound, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.Api.GetContextForActorFromTab.Error.Unknown",
+      GlicGetContextFromTabError::kTabNotFound, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       LogGetContextFromFocusedTabError_ChangingModes) {
+  metrics_.SetWebClientMode(mojom::WebClientMode::kText);
+  metrics_.LogGetContextFromFocusedTabError(
+      GlicGetContextFromTabError::kWebContentsChanged);
+  metrics_.SetWebClientMode(mojom::WebClientMode::kAudio);
+  metrics_.LogGetContextFromFocusedTabError(
+      GlicGetContextFromTabError::kPermissionDenied);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextFromFocusedTab.Error.Text",
+      GlicGetContextFromTabError::kWebContentsChanged, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextFromFocusedTab.Error.Audio",
+      GlicGetContextFromTabError::kPermissionDenied, 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Api.GetContextFromFocusedTab.Error.Unknown", 0);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.Api.GetContextFromFocusedTab.Error.Text",
+      GlicGetContextFromTabError::kWebContentsChanged, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.Api.GetContextFromFocusedTab.Error.Audio",
+      GlicGetContextFromTabError::kPermissionDenied, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, LogGetImageBytesFromTabError) {
+  metrics_.LogGetImageBytesFromTabError(
+      GlicGetContextFromTabError::kTabNotFound);
+
+  histogram_tester_.ExpectUniqueSample("Glic.Api.GetImageBytesFromTab.Error",
+                                       GlicGetContextFromTabError::kTabNotFound,
+                                       1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.Api.GetImageBytesFromTab.Error",
+      GlicGetContextFromTabError::kTabNotFound, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, OnWebClientCleared_ResetsWebClientMode) {
+  metrics_.SetWebClientMode(mojom::WebClientMode::kAudio);
+  metrics_.OnWebClientCleared();
+  metrics_.LogGetContextFromFocusedTabError(
+      GlicGetContextFromTabError::kTabNotFound);
+
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Api.GetContextFromFocusedTab.Error.Audio", 0);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextFromFocusedTab.Error.Unknown",
+      GlicGetContextFromTabError::kTabNotFound, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.Api.GetContextFromFocusedTab.Error.Unknown",
+      GlicGetContextFromTabError::kTabNotFound, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, WebClientModeAndTurnInputModeAreIndependent) {
+  ShowOptions show_options{FloatingShowOptions{}};
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton, show_options);
+  metrics_.OnVisibilityChanged(true);
+
+  metrics_.SetWebClientMode(mojom::WebClientMode::kText);
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kUnspecified);
+
+  // Switching web client mode mid-turn updates GetContext*.Error suffixes
+  // without changing the turn's InputMode histogram.
+  metrics_.SetWebClientMode(mojom::WebClientMode::kAudio);
+  metrics_.LogGetContextFromFocusedTabError(
+      GlicGetContextFromTabError::kTabNotFound);
+  task_environment_.FastForwardBy(base::Milliseconds(200));
+  metrics_.OnResponseStarted();
+  metrics_.OnResponseStopped(mojom::ResponseStopCause::kUnknown);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextFromFocusedTab.Error.Audio",
+      GlicGetContextFromTabError::kTabNotFound, 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Api.GetContextFromFocusedTab.Error.Text", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Turn.ResponseStartTime.InputMode.Text", base::Milliseconds(200), 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Turn.ResponseStartTime.InputMode.Audio", 0);
+
+  // Submitting a new turn with a different mode does not overwrite
+  // `web_client_mode_`.
+  metrics_.OnUserInputSubmitted(mojom::WebClientMode::kText,
+                                mojom::PromptType::kUnspecified);
+  metrics_.LogGetContextFromTabError(
+      GlicGetContextFromTabError::kPermissionDenied);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextFromTab.Error.Audio",
+      GlicGetContextFromTabError::kPermissionDenied, 1);
+  histogram_tester_.ExpectTotalCount("Glic.Api.GetContextFromTab.Error.Text",
+                                     0);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       ConcurrentInstancesMaintainSeparateWebClientModes) {
+  GlicInstanceMetrics second_metrics(&profile_metrics_service_, &profile_);
+
+  metrics_.SetWebClientMode(mojom::WebClientMode::kText);
+  second_metrics.SetWebClientMode(mojom::WebClientMode::kAudio);
+
+  metrics_.LogGetContextForActorFromTabError(
+      GlicGetContextFromTabError::kWebContentsChanged);
+  second_metrics.LogGetContextFromTabError(
+      GlicGetContextFromTabError::kPermissionDenied);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextForActorFromTab.Error.Text",
+      GlicGetContextFromTabError::kWebContentsChanged, 1);
+  histogram_tester_.ExpectTotalCount(
+      "Glic.Api.GetContextForActorFromTab.Error.Audio", 0);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.Api.GetContextForActorFromTab.Error.Text",
+      GlicGetContextFromTabError::kWebContentsChanged, 1);
+
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Api.GetContextFromTab.Error.Audio",
+      GlicGetContextFromTabError::kPermissionDenied, 1);
+  histogram_tester_.ExpectTotalCount("Glic.Api.GetContextFromTab.Error.Text",
+                                     0);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.Api.GetContextFromTab.Error.Audio",
+      GlicGetContextFromTabError::kPermissionDenied, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, ClosedCaptionsResponse_PrefLogsFalse) {
+  metrics_.LogClosedCaptionsShown();
+
+  histogram_tester_.ExpectUniqueSample("Glic.Response.ClosedCaptionsShown",
+                                       false, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, ClosedCaptionsResponse_PrefLogsTrue) {
+  profile_.GetPrefs()->SetBoolean(prefs::kGlicClosedCaptioningEnabled, true);
+  metrics_.LogClosedCaptionsShown();
+
+  histogram_tester_.ExpectUniqueSample("Glic.Response.ClosedCaptionsShown",
+                                       true, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.Response.ClosedCaptionsShown", true, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, ContextUploadAndResponseRated) {
+  metrics_.OnContextUploadStarted();
+  task_environment_.FastForwardBy(base::Milliseconds(250));
+  metrics_.OnContextUploadCompleted();
+
+  EXPECT_EQ(user_action_tester_.GetActionCount("GlicContextUploadStarted"), 1);
+  EXPECT_EQ(user_action_tester_.GetActionCount("GlicContextUploadCompleted"),
+            1);
+  histogram_tester_.ExpectUniqueTimeSample("Glic.TabContext.UploadTime",
+                                           base::Milliseconds(250), 1);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "Glic.Consumer.TabContext.UploadTime", base::Milliseconds(250), 1);
+
+  metrics_.OnSessionTerminated();
+  EXPECT_EQ(user_action_tester_.GetActionCount("GlicWebClientSessionEnd"), 1);
+
+  metrics_.OnResponseRated(true);
+  metrics_.OnResponseRated(false);
+  histogram_tester_.ExpectBucketCount("Glic.Response.Rated", true, 1);
+  histogram_tester_.ExpectBucketCount("Glic.Response.Rated", false, 1);
+  histogram_tester_.ExpectBucketCount("Glic.Consumer.Response.Rated", true, 1);
+  histogram_tester_.ExpectBucketCount("Glic.Consumer.Response.Rated", false, 1);
+}
+
+TEST_F(GlicInstanceMetricsTest, NativeFre_UnexpectedWebImpressionLogsAction) {
+  metrics_.OnOpen(mojom::InvocationSource::kTopChromeButton,
+                  ShowOptions::ForSidePanel(mock_tab_));
+  metrics_.OnOptinImpression();
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.UnexpectedWebFre"), 0);
+
+  metrics_.OnOpen(mojom::InvocationSource::kFre, MakeNativeFreShowOptions());
+  metrics_.OnOptinImpression();
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.UnexpectedWebFre"), 1);
+
+  metrics_.OnNativeFreAccepted();
+  metrics_.OnOptinImpression();
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.UnexpectedWebFre"), 1);
+}
+
+TEST_F(GlicInstanceMetricsTest,
+       NativeFre_ConsentedAfterOpenSuppressesUnexpectedWebFre) {
+  metrics_.OnOpen(mojom::InvocationSource::kFre, MakeNativeFreShowOptions());
+  profile_.GetPrefs()->SetInteger(
+      prefs::kGlicCompletedFre, static_cast<int>(prefs::FreStatus::kCompleted));
+  metrics_.OnOptinImpression();
+
+  EXPECT_EQ(user_action_tester_.GetActionCount("Glic.Fre.UnexpectedWebFre"), 0);
 }
 
 }  // namespace glic

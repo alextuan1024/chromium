@@ -12,6 +12,7 @@
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate_factory.h"
 #include "chrome/browser/password_manager/chrome_password_change_service.h"
+#include "chrome/browser/password_manager/chrome_password_manager_client.h"
 #include "chrome/browser/password_manager/password_change/features.h"
 #include "chrome/browser/password_manager/password_change_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -309,7 +310,6 @@ content::WebUIDataSource* CreateAndAddPasswordsUIHTMLSource(
        IDS_PASSWORD_MANAGER_UI_IMPORT_COMPLETE_TITLE},
       {"importPasswordsSuccessTitle",
        IDS_PASSWORD_MANAGER_UI_IMPORT_SUCCESS_TITLE},
-      {"importPasswordsSuccessTip", IDS_PASSWORD_MANAGER_UI_IMPORT_SUCCESS_TIP},
       {"importPasswordsDeleteFileOption",
        IDS_PASSWORD_MANAGER_UI_IMPORT_DELETE_FILE_OPTION},
       {"importPasswordsDescriptionAccount",
@@ -726,11 +726,6 @@ content::WebUIDataSource* CreateAndAddPasswordsUIHTMLSource(
           : IDS_SETTINGS_PASSWORD_CHANGE_CONTENT);
 
   source->AddBoolean(
-      "enablePasswordManagerMojoApi",
-      base::FeatureList::IsEnabled(
-          password_manager::features::kEnablePasswordManagerMojoApi));
-
-  source->AddBoolean(
       "enablePasswordManagerMojoApiPhase2",
       base::FeatureList::IsEnabled(
           password_manager::features::kEnablePasswordManagerMojoApiPhase2));
@@ -828,11 +823,7 @@ void AddPluralStrings(content::WebUI* web_ui) {
 
 }  // namespace
 
-DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PasswordManagerUI,
-                                      kSettingsMenuItemElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PasswordManagerUI, kAddShortcutElementId);
-DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PasswordManagerUI,
-                                      kOverflowMenuElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PasswordManagerUI,
                                       kSharePasswordElementId);
 DEFINE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(PasswordManagerUI,
@@ -863,10 +854,8 @@ PasswordManagerUI::PasswordManagerUI(content::WebUI* web_ui)
 
   ui::TrackedElementHandlerDocumentSingleton::Register(
       this, std::vector<ui::ElementIdentifier>{
-                PasswordManagerUI::kSettingsMenuItemElementId,
                 PasswordManagerUI::kAddShortcutElementId,
-                PasswordManagerUI::kSharePasswordElementId,
-                PasswordManagerUI::kOverflowMenuElementId});
+                PasswordManagerUI::kSharePasswordElementId});
 }
 
 PasswordManagerUI::~PasswordManagerUI() = default;
@@ -909,8 +898,9 @@ void PasswordManagerUI::BindInterface(
 void PasswordManagerUI::CreatePageHandler(
     mojo::PendingRemote<password_manager::mojom::Page> page,
     mojo::PendingReceiver<password_manager::mojom::PageHandler> receiver) {
-  DCHECK(page);
+  CHECK(page, base::NotFatalUntil::M162);
+  content::WebContents* web_contents = web_ui()->GetWebContents();
   password_manager_ui_handler_ = std::make_unique<PasswordManagerUIHandler>(
       std::move(receiver), std::move(page), passwords_private_delegate_,
-      web_ui()->GetWebContents());
+      web_contents, ChromePasswordManagerClient::FromWebContents(web_contents));
 }

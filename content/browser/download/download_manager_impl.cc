@@ -94,8 +94,10 @@
 #include "third_party/blink/public/common/loader/throttling_url_loader.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "url/origin.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "content/browser/android/content_url_loader_factory.h"
 #include "net/http/http_content_disposition.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -1211,6 +1213,19 @@ void DownloadManagerImpl::InterceptNavigation(
   ui::PageTransition transition_type =
       static_cast<ui::PageTransition>(resource_request->transition_type);
 
+  // Capture the initiator's StoragePartitionConfig now so that the download is
+  // associated with the correct partition even if the initiating frame is
+  // detached before CheckDownloadAllowed() completes.
+  auto storage_partition_config =
+      StoragePartitionConfig::CreateDefault(browser_context_);
+  auto* ftn = FrameTreeNode::GloballyFindByID(frame_tree_node_id);
+  if (ftn && ftn->current_frame_host()) {
+    storage_partition_config = ftn->current_frame_host()
+                                   ->GetSiteInstance()
+                                   ->GetSecurityPrincipal()
+                                   .GetStoragePartitionConfig();
+  }
+
   WebContents::Getter web_contents_getter =
       base::BindRepeating(WebContents::FromFrameTreeNodeId, frame_tree_node_id);
 
@@ -1220,7 +1235,7 @@ void DownloadManagerImpl::InterceptNavigation(
           weak_factory_.GetWeakPtr(), frame_tree_node_id,
           std::move(resource_request), std::move(url_chain), cert_status,
           std::move(response_head), std::move(response_body),
-          std::move(url_loader_client_endpoints));
+          std::move(url_loader_client_endpoints), storage_partition_config);
 
   delegate_->CheckDownloadAllowed(
       std::move(web_contents_getter), url, method, std::move(request_initiator),
@@ -1327,7 +1342,8 @@ download::DownloadItem* DownloadManagerImpl::CreateDownloadItem(
     bool opened,
     base::Time last_access_time,
     bool transient,
-    const std::vector<download::DownloadItem::ReceivedSlice>& received_slices) {
+    const std::vector<download::DownloadItem::ReceivedSlice>& received_slices,
+    const base::FilePath& display_name) {
   // Retrieve the in-progress download if it exists. Notice that this also
   // removes it from |in_progress_downloads_|.
   auto in_progress_download = RetrieveInProgressDownload(id);
@@ -1376,7 +1392,10 @@ download::DownloadItem* DownloadManagerImpl::CreateDownloadItem(
 #if BUILDFLAG(IS_ANDROID)
   if (target_path.IsContentUri()) {
     base::FilePath android_display_name =
-        in_progress_manager_->GetDownloadDisplayName(target_path);
+        base::FeatureList::IsEnabled(
+            download::features::kRetrieveDisplayNamesForHistoryDownloads)
+            ? display_name
+            : in_progress_manager_->GetDownloadDisplayName(target_path);
     if (!android_display_name.empty())
       item->SetDisplayName(android_display_name);
     else
@@ -1589,6 +1608,7 @@ void DownloadManagerImpl::InterceptNavigationOnChecksComplete(
     network::mojom::URLResponseHeadPtr response_head,
     mojo::ScopedDataPipeConsumerHandle response_body,
     network::mojom::URLLoaderClientEndpointsPtr url_loader_client_endpoints,
+    const StoragePartitionConfig& storage_partition_config,
     bool is_download_allowed) {
   if (!is_download_allowed) {
     DropDownload();
@@ -1599,17 +1619,12 @@ void DownloadManagerImpl::InterceptNavigationOnChecksComplete(
   int render_frame_id = -1;
   GURL site_url, tab_url, tab_referrer_url;
   RenderFrameHost* render_frame_host = nullptr;
-  auto storage_partition_config =
-      StoragePartitionConfig::CreateDefault(browser_context_);
   auto* ftn = FrameTreeNode::GloballyFindByID(frame_tree_node_id);
   if (ftn) {
     render_frame_host = ftn->current_frame_host();
     if (render_frame_host) {
       render_process_id = render_frame_host->GetProcess()->GetDeprecatedID();
       render_frame_id = render_frame_host->GetRoutingID();
-      storage_partition_config = render_frame_host->GetSiteInstance()
-                                     ->GetSecurityPrincipal()
-                                     .GetStoragePartitionConfig();
     }
     auto* web_contents = WebContentsImpl::FromFrameTreeNode(ftn);
     DCHECK(web_contents);
@@ -1686,11 +1701,20 @@ void DownloadManagerImpl::BeginResourceDownloadOnChecksComplete(
                 // USER_VISIBLE because download should progress
                 // even when there is high priority work to do.
                 base::TaskPriority::USER_VISIBLE));
+#if BUILDFLAG(IS_ANDROID)
+  } else if (params->url().SchemeIs(url::kContentScheme)) {
+    // content:// URLs are served by the embedder's ContentProviders; mirror the
+    // navigation loader (NavigationURLLoaderImpl) and do not require a frame.
+    pending_url_loader_factory =
+        std::make_unique<network::WrapperPendingSharedURLLoaderFactory>(
+            ContentURLLoaderFactory::Create());
+#endif  // BUILDFLAG(IS_ANDROID)
   } else if (rfh && params->url().SchemeIs(content::kChromeUIScheme)) {
     pending_url_loader_factory =
         std::make_unique<network::WrapperPendingSharedURLLoaderFactory>(
-            CreateWebUIURLLoaderFactory(rfh, params->url().GetScheme(),
-                                        base::flat_set<std::string>()));
+            CreateWebUIURLLoaderFactoryWithoutOriginLock(
+                WebUIURLLoaderFactoryPasskey::GetPassKey(), rfh,
+                params->url().GetScheme(), base::flat_set<std::string>()));
   } else if (rfh && params->url().SchemeIsFileSystem()) {
     StoragePartitionImpl* storage_partition = GetStoragePartitionForConfig(
         browser_context_, storage_partition_config);
@@ -1871,7 +1895,16 @@ void DownloadManagerImpl::BeginDownloadInternal(
     bool is_new_download,
     const std::string& serialized_embedder_download_data) {
   // Check if the renderer is permitted to request the requested URL.
+  // Browser-initiated local file/content downloads where the caller explicitly
+  // cleared `initiator` (e.g. downloading a browser-selected local file while
+  // associating the DownloadItem with a WebContents for UI) are not requested
+  // on behalf of the renderer process.
+  const bool is_browser_initiated_local_download =
+      !params->content_initiated() && !params->initiator().has_value() &&
+      (params->url().SchemeIsFile() ||
+       params->url().SchemeIs(url::kContentScheme));
   if (params->render_process_host_id() >= 0 &&
+      !is_browser_initiated_local_download &&
       !DownloadRequestUtils::IsURLSafe(params->render_process_host_id(),
                                        params->url())) {
     CreateInterruptedDownload(

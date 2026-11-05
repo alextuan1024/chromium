@@ -65,6 +65,63 @@ TEST(FacilitatedPaymentsMetricsTest, LogPixCodeCopied) {
                                       /*expected_bucket_count=*/1);
 }
 
+// Tests that the heuristic signals are logged as a bitmask, under the variant
+// for whether the pass decoded a QR code.
+TEST(FacilitatedPaymentsMetricsTest, LogQrCodeHeuristicSignals) {
+  // The design's bit values: link = 1, square = 2, URL keyword = 4 and text
+  // keyword = 8.
+  static constexpr int kSquareAndUrlKeywordSample = 2 + 4;
+  static constexpr int kAllSignalsSample = 1 + 2 + 4 + 8;
+  base::HistogramTester histogram_tester;
+
+  LogQrCodeHeuristicSignals(
+      QrCodeHeuristicSignals({QrCodeHeuristicSignal::kSquareCandidate,
+                              QrCodeHeuristicSignal::kUrlKeywordMatch}),
+      /*qr_code_found=*/true);
+  LogQrCodeHeuristicSignals(QrCodeHeuristicSignals::All(),
+                            /*qr_code_found=*/false);
+
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.QrCode.HeuristicSignals.QrFound",
+      kSquareAndUrlKeywordSample, /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.QrCode.HeuristicSignals.QrNotFound",
+      kAllSignalsSample, /*expected_bucket_count=*/1);
+}
+
+// Tests that each validation result is logged under the variant of its scheme.
+TEST(FacilitatedPaymentsMetricsTest, LogQrCodeValidationResult) {
+  base::HistogramTester histogram_tester;
+
+  LogQrCodeValidationResult(QrCodeScheme::kDuitNow,
+                            QrCodeValidationResult::kFailedCrcCheck);
+  LogQrCodeValidationResult(QrCodeScheme::kUnknown,
+                            QrCodeValidationResult::kNotPaymentCode);
+
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.QrCode.DuitNow.ValidationResult",
+      QrCodeValidationResult::kFailedCrcCheck, /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.QrCode.Unknown.ValidationResult",
+      QrCodeValidationResult::kNotPaymentCode, /*expected_bucket_count=*/1);
+}
+
+// Tests that each source element type of a decoded QR code is logged.
+TEST(FacilitatedPaymentsMetricsTest, LogQrCodeSourceElementType) {
+  for (int i = 0; i <= static_cast<int>(QrCodeSourceElementType::kMaxValue);
+       ++i) {
+    const auto type = static_cast<QrCodeSourceElementType>(i);
+    SCOPED_TRACE(i);
+    base::HistogramTester histogram_tester;
+
+    LogQrCodeSourceElementType(type);
+
+    histogram_tester.ExpectUniqueSample(
+        "FacilitatedPayments.QrCode.SourceElementType", type,
+        /*expected_bucket_count=*/1);
+  }
+}
+
 TEST(FacilitatedPaymentsMetricsTest, LogPixCodeCopiedInIframe) {
   base::HistogramTester histogram_tester;
 
@@ -217,94 +274,6 @@ TEST(FacilitatedPaymentsMetricsTest, LogEwalletFopSelected) {
 }
 
 TEST(FacilitatedPaymentsMetricsTest,
-     LogPaymentCodeValidationResultAndLatency_ValidatorFailed) {
-  base::HistogramTester histogram_tester;
-
-  LogPaymentCodeValidationResultAndLatency(
-      PixCodeValidationResult::kValidatorFailed, std::nullopt,
-      base::Milliseconds(10));
-
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.Result",
-      /*sample=*/PixCodeValidationResult::kValidatorFailed,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.ValidatorFailed."
-      "ResultVsRust",
-      /*sample=*/PixCodeValidationResult::kInvalid,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.ValidatorFailed.Latency",
-      /*sample=*/10,
-      /*expected_bucket_count=*/1);
-}
-
-TEST(FacilitatedPaymentsMetricsTest,
-     LogPaymentCodeValidationResultAndLatency_InvalidCode) {
-  base::HistogramTester histogram_tester;
-
-  LogPaymentCodeValidationResultAndLatency(
-      PixCodeValidationResult::kInvalid, std::nullopt, base::Milliseconds(10));
-
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.Result",
-      /*sample=*/PixCodeValidationResult::kInvalid,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.InvalidCode.ResultVsRust",
-      /*sample=*/PixCodeValidationResult::kInvalid,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.InvalidCode.Latency",
-      /*sample=*/10,
-      /*expected_bucket_count=*/1);
-}
-
-TEST(FacilitatedPaymentsMetricsTest,
-     LogPaymentCodeValidationResultAndLatency_DynamicCode) {
-  base::HistogramTester histogram_tester;
-
-  LogPaymentCodeValidationResultAndLatency(
-      PixCodeValidationResult::kDynamic, PixCodeRustValidationResult::kDynamic,
-      base::Milliseconds(10));
-
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.Result",
-      /*sample=*/PixCodeValidationResult::kDynamic,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.DynamicCode.ResultVsRust",
-      /*sample=*/PixCodeValidationResult::kDynamic,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.DynamicCode.Latency",
-      /*sample=*/10,
-      /*expected_bucket_count=*/1);
-}
-
-TEST(FacilitatedPaymentsMetricsTest,
-     LogPaymentCodeValidationResultAndLatency_StaticCode) {
-  base::HistogramTester histogram_tester;
-
-  LogPaymentCodeValidationResultAndLatency(PixCodeValidationResult::kStatic,
-                                           PixCodeRustValidationResult::kStatic,
-                                           base::Milliseconds(10));
-
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.Result",
-      /*sample=*/PixCodeValidationResult::kStatic,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.StaticCode.ResultVsRust",
-      /*sample=*/PixCodeValidationResult::kStatic,
-      /*expected_bucket_count=*/1);
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.StaticCode.Latency",
-      /*sample=*/10,
-      /*expected_bucket_count=*/1);
-  }
-
-TEST(FacilitatedPaymentsMetricsTest,
      LogPixInitiatePurchaseActionResultAndLatency) {
   for (PurchaseActionResult result :
        {PurchaseActionResult::kResultOk, PurchaseActionResult::kCouldNotInvoke,
@@ -368,17 +337,6 @@ TEST(FacilitatedPaymentsMetricsTest, LogPixAccountLinkingPromptShown) {
       /*expected_bucket_count=*/1);
 }
 
-TEST(FacilitatedPaymentsMetricsTest, LogPixAccountLinkingPromptAccepted) {
-  base::HistogramTester histogram_tester;
-
-  LogPixAccountLinkingPromptAccepted();
-
-  histogram_tester.ExpectUniqueSample(
-      "FacilitatedPayments.Pix.AccountLinking.PromptAccepted",
-      /*sample=*/true,
-      /*expected_bucket_count=*/1);
-}
-
 class FacilitatedPaymentsMetricsAccountLinkingFlowExitedReasonTest
     : public testing::TestWithParam<AccountLinkingFlowExitedReason> {};
 
@@ -402,11 +360,8 @@ INSTANTIATE_TEST_SUITE_P(
         AccountLinkingFlowExitedReason::kScreenClosedNotByUser,
         AccountLinkingFlowExitedReason::kScreenClosedByUser,
         AccountLinkingFlowExitedReason::kUserDeclined,
-        AccountLinkingFlowExitedReason::kWalletNotInstalled,
-        AccountLinkingFlowExitedReason::kWalletVersionNotSupported,
         AccountLinkingFlowExitedReason::kUserOptedOut,
         AccountLinkingFlowExitedReason::kNoScreenlockOrBiometricSetup,
-        AccountLinkingFlowExitedReason::kServerSideIneligible,
         AccountLinkingFlowExitedReason::kTabIsNotActive,
         AccountLinkingFlowExitedReason::kUserSwitchedWebsite,
         AccountLinkingFlowExitedReason::kMaxStrikes,
@@ -417,7 +372,9 @@ INSTANTIATE_TEST_SUITE_P(
         AccountLinkingFlowExitedReason::kNotEligiblePerPaymentsBackend,
         AccountLinkingFlowExitedReason::kActionTokenNotAvailable,
         AccountLinkingFlowExitedReason::kUserLoggedOut,
-        AccountLinkingFlowExitedReason::kApiClientNotAvailable));
+        AccountLinkingFlowExitedReason::kApiClientNotAvailable,
+        AccountLinkingFlowExitedReason::kUserCanceledInGmsCore,
+        AccountLinkingFlowExitedReason::kGmsCoreFlowFailed));
 
 TEST(FacilitatedPaymentsMetricsTest,
      LogAccountLinkingGetDetailsForCreatePaymentInstrumentResultAndLatency) {
@@ -625,8 +582,7 @@ TEST_P(FacilitatedPaymentsMetricsPixExitedReasonTest, LogPixFlowExitedReason) {
 INSTANTIATE_TEST_SUITE_P(
     FacilitatedPaymentsMetricsTest,
     FacilitatedPaymentsMetricsPixExitedReasonTest,
-    testing::Values(PixFlowExitedReason::kCodeValidatorFailed,
-                    PixFlowExitedReason::kInvalidCode,
+    testing::Values(PixFlowExitedReason::kInvalidCode,
                     PixFlowExitedReason::kUserOptedOut,
                     PixFlowExitedReason::kNoLinkedAccount,
                     PixFlowExitedReason::kLandscapeScreenOrientation,
@@ -666,6 +622,26 @@ TEST_F(FacilitatedPaymentsMetricsUkmTest, LogPixCodeCopied) {
   ASSERT_EQ(ukm_entries.size(), 1UL);
   EXPECT_EQ(ukm_entries[0].metrics.at("PixCodeCopied"), true);
   EXPECT_EQ(ukm_entries[0].metrics.at("HasIframe"), true);
+}
+
+// Tests that the QR code detected UKM records the scheme and the validation
+// result.
+TEST_F(FacilitatedPaymentsMetricsUkmTest, LogQrCodeDetectedUkm) {
+  using UkmEntry = ukm::builders::FacilitatedPayments_QrCodeDetected;
+  const ukm::SourceId source_id = ukm::UkmRecorder::GetNewSourceID();
+
+  LogQrCodeDetectedUkm(source_id, QrCodeScheme::kPix,
+                       QrCodeValidationResult::kValidPixDynamic);
+
+  auto ukm_entries = ukm_recorder_.GetEntries(
+      UkmEntry::kEntryName,
+      {UkmEntry::kPaymentQrCodeSchemeName, UkmEntry::kValidationResultName});
+  ASSERT_EQ(ukm_entries.size(), 1UL);
+  EXPECT_EQ(ukm_entries[0].source_id, source_id);
+  EXPECT_EQ(ukm_entries[0].metrics.at(UkmEntry::kPaymentQrCodeSchemeName),
+            static_cast<int64_t>(QrCodeScheme::kPix));
+  EXPECT_EQ(ukm_entries[0].metrics.at(UkmEntry::kValidationResultName),
+            static_cast<int64_t>(QrCodeValidationResult::kValidPixDynamic));
 }
 
 TEST_F(FacilitatedPaymentsMetricsUkmTest, LogEwalletPaymentLinkDetectedUkm) {

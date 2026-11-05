@@ -9,8 +9,8 @@
 #include "chrome/browser/ui/webui/chrome_web_ui_controller_factory.h"
 #include "chrome/common/url_constants.h"
 #include "components/bookmarks/browser/bookmark_model.h"
-#include "components/dom_distiller/core/url_constants.h"
-#include "components/dom_distiller/core/url_utils.h"
+#include "components/web_distiller/core/url_constants.h"
+#include "components/web_distiller/core/url_utils.h"
 #include "extensions/buildflags/buildflags.h"
 #include "url/gurl.h"
 
@@ -65,13 +65,13 @@ bool ChromeFaviconClient::IsNativeApplicationURL(const GURL& url) {
 }
 
 bool ChromeFaviconClient::IsReaderModeURL(const GURL& url) {
-  return url.SchemeIs(dom_distiller::kDomDistillerScheme);
+  return url.SchemeIs(web_distiller::kWebDistillerScheme);
 }
 
 const GURL ChromeFaviconClient::GetOriginalUrlFromReaderModeUrl(
     const GURL& url) {
-  DCHECK(IsReaderModeURL(url));
-  return dom_distiller::url_utils::GetOriginalUrlFromDistillerUrl(url);
+  CHECK(IsReaderModeURL(url), base::NotFatalUntil::M161);
+  return web_distiller::url_utils::GetOriginalUrlFromDistillerUrl(url);
 }
 
 base::CancelableTaskTracker::TaskId
@@ -80,8 +80,8 @@ ChromeFaviconClient::GetFaviconForNativeApplicationURL(
     const std::vector<int>& desired_sizes_in_pixel,
     favicon_base::FaviconResultsCallback callback,
     base::CancelableTaskTracker* tracker) {
-  DCHECK(tracker);
-  DCHECK(IsNativeApplicationURL(url));
+  CHECK(tracker, base::NotFatalUntil::M161);
+  CHECK(IsNativeApplicationURL(url), base::NotFatalUntil::M161);
   base::CancelableTaskTracker::IsCanceledCallback is_canceled_cb;
   base::CancelableTaskTracker::TaskId task_id =
       tracker->NewTrackedTaskId(&is_canceled_cb);

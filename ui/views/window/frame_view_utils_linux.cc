@@ -87,6 +87,7 @@ void PaintRestoredFrameBorderLinux(gfx::Canvas& canvas,
 
 gfx::Insets GetRestoredFrameBorderInsetsLinux(
     bool showing_shadow,
+    bool tiled,
     const gfx::Insets& default_border,
     const gfx::ShadowValues& shadow_values,
     const gfx::Insets& resize_border) {
@@ -94,6 +95,10 @@ gfx::Insets GetRestoredFrameBorderInsetsLinux(
     auto no_shadow_border = default_border;
     no_shadow_border.set_top(0);
     return no_shadow_border;
+  }
+
+  if (tiled) {
+    return gfx::Insets();
   }
 
   // The border must be at least as large as the shadow.
@@ -169,7 +174,8 @@ void MaybeUpdateCachedFrameButtonImages(
       views::Button::ButtonState button_state =
           static_cast<views::Button::ButtonState>(state);
       views::Button* button = get_button(type);
-      DCHECK_EQ(views::ImageButton::kViewClassName, button->GetClassName());
+      CHECK_EQ(views::ImageButton::kViewClassName, button->GetClassName(),
+               base::NotFatalUntil::M163);
       static_cast<views::ImageButton*>(button)->SetImageModel(
           button_state,
           ui::ImageModel::FromImageSkia(nav_button_provider->GetImage(

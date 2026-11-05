@@ -115,9 +115,12 @@ public class RecordingTabCreatorUnitTest {
     @Test
     public void testCreateFrozenTab() {
         mTabState.timestampMillis = 12345L;
-        mRecordingTabCreator.createFrozenTab(mTabState, 5, TabModel.INVALID_TAB_INDEX);
+        mRecordingTabCreator.createFrozenTab(
+                mTabState, 5, TabModel.INVALID_TAB_INDEX, TabLaunchType.FROM_RESTORE);
 
-        verify(mDelegate).createFrozenTab(mTabState, 5, TabModel.INVALID_TAB_INDEX);
+        verify(mDelegate)
+                .createFrozenTab(
+                        mTabState, 5, TabModel.INVALID_TAB_INDEX, TabLaunchType.FROM_RESTORE);
 
         assertEquals(1, mRecordingTabCreator.getTabCount());
         List<TabCreationData> frozenData = mRecordingTabCreator.getFrozenTabCreationData();
@@ -149,17 +152,23 @@ public class RecordingTabCreatorUnitTest {
 
     @Test
     public void testCreateTabWithWebContents() {
+        when(mWebContents.getVisibleUrl()).thenReturn(mGurl);
+
         mRecordingTabCreator.createTabWithWebContents(
-                mTab, true, mWebContents, TabLaunchType.FROM_LINK, mGurl, 5, mAddTabToModel);
+                mTab,
+                /* shouldPin= */ true,
+                mWebContents,
+                TabLaunchType.FROM_LINK,
+                /* index= */ 5,
+                mAddTabToModel);
 
         verify(mDelegate)
                 .createTabWithWebContents(
                         mTab,
-                        true,
+                        /* shouldPin= */ true,
                         mWebContents,
                         TabLaunchType.FROM_LINK,
-                        mGurl,
-                        5,
+                        /* index= */ 5,
                         mAddTabToModel);
 
         assertEquals(1, mRecordingTabCreator.getTabCount());
@@ -221,8 +230,11 @@ public class RecordingTabCreatorUnitTest {
         assertEquals(0, data.size());
 
         mTabState.timestampMillis = 12345L;
-        mRecordingTabCreator.createFrozenTab(mTabState, 5, TabModel.INVALID_TAB_INDEX);
-        verify(mDelegate).createFrozenTab(mTabState, 5, TabModel.INVALID_TAB_INDEX);
+        mRecordingTabCreator.createFrozenTab(
+                mTabState, 5, TabModel.INVALID_TAB_INDEX, TabLaunchType.FROM_RESTORE);
+        verify(mDelegate)
+                .createFrozenTab(
+                        mTabState, 5, TabModel.INVALID_TAB_INDEX, TabLaunchType.FROM_RESTORE);
 
         assertEquals(0, mRecordingTabCreator.getTabCount());
         List<TabCreationData> frozenData = mRecordingTabCreator.getFrozenTabCreationData();
@@ -248,9 +260,12 @@ public class RecordingTabCreatorUnitTest {
     @DisableFeatures(ChromeFeatureList.TAB_STORAGE_SQLITE_PROTOTYPE)
     public void testCreateFrozenTab_FeatureDisabled() {
         mTabState.timestampMillis = 12345L;
-        mRecordingTabCreator.createFrozenTab(mTabState, 5, TabModel.INVALID_TAB_INDEX);
+        mRecordingTabCreator.createFrozenTab(
+                mTabState, 5, TabModel.INVALID_TAB_INDEX, TabLaunchType.FROM_RESTORE);
 
-        verify(mDelegate).createFrozenTab(mTabState, 5, TabModel.INVALID_TAB_INDEX);
+        verify(mDelegate)
+                .createFrozenTab(
+                        mTabState, 5, TabModel.INVALID_TAB_INDEX, TabLaunchType.FROM_RESTORE);
 
         assertEquals(0, mRecordingTabCreator.getTabCount());
         List<TabCreationData> frozenData = mRecordingTabCreator.getFrozenTabCreationData();

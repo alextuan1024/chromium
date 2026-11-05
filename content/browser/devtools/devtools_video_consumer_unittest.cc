@@ -86,6 +86,7 @@ class MockFrameSinkVideoCapturer : public viz::mojom::FrameSinkVideoCapturer {
                     bool use_fixed_aspect_ratio));
   // This is never called.
   MOCK_METHOD1(SetAutoThrottlingEnabled, void(bool));
+  MOCK_METHOD1(SetIsSecure, void(bool));
   void ChangeTarget(const std::optional<viz::VideoCaptureTarget>& target,
                     uint32_t sub_capture_target_version) final {
     frame_sink_id_ = target ? target->frame_sink_id : viz::FrameSinkId();
@@ -273,6 +274,12 @@ TEST_F(DevToolsVideoConsumerTest, CallbacksAreCalledWhenBufferValid) {
   ASSERT_TRUE(region.IsValid());
   SimulateFrameCapture(std::move(region));
   base::RunLoop().RunUntilIdle();
+
+  auto frame = receiver_.TakeFrameAt(0);
+  ASSERT_TRUE(frame);
+  EXPECT_EQ(frame->storage_type(), media::VideoFrame::STORAGE_SHMEM);
+  ASSERT_TRUE(frame->shm_region());
+  EXPECT_TRUE(frame->shm_region()->IsValid());
 }
 
 // Tests that the OnFrameFromVideoConsumer callback is not called when

@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.translate;
 
 import android.app.Activity;
 
+import org.jni_zero.JniRawPtr;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -15,6 +16,7 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -42,7 +44,8 @@ public final class AutoTranslateSnackbarControllerTest {
     public void testCreateWithNullWindowAndroid() {
         Mockito.doReturn(null).when(mWebContents).getTopLevelNativeWindow();
         Assert.assertNull(
-                AutoTranslateSnackbarController.create(mWebContents, NATIVE_SNACKBAR_VIEW));
+                AutoTranslateSnackbarController.create(
+                        mWebContents, JniRawPtr.createForTesting(NATIVE_SNACKBAR_VIEW)));
     }
 
     @Test
@@ -50,17 +53,19 @@ public final class AutoTranslateSnackbarControllerTest {
         Mockito.doReturn(mWindowAndroid).when(mWebContents).getTopLevelNativeWindow();
         Mockito.doReturn(null).when(mWindowAndroid).getActivity();
         Assert.assertNull(
-                AutoTranslateSnackbarController.create(mWebContents, NATIVE_SNACKBAR_VIEW));
+                AutoTranslateSnackbarController.create(
+                        mWebContents, JniRawPtr.createForTesting(NATIVE_SNACKBAR_VIEW)));
     }
 
     @Test
     public void testCreateWithNullSnackbarManager() {
-        Activity activity = Mockito.mock(Activity.class);
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
 
         Mockito.doReturn(new WeakReference<>(activity)).when(mWindowAndroid).getActivity();
         Mockito.doReturn(mWindowAndroid).when(mWebContents).getTopLevelNativeWindow();
         Mockito.doReturn(new UnownedUserDataHost()).when(mWindowAndroid).getUnownedUserDataHost();
         Assert.assertNull(
-                AutoTranslateSnackbarController.create(mWebContents, NATIVE_SNACKBAR_VIEW));
+                AutoTranslateSnackbarController.create(
+                        mWebContents, JniRawPtr.createForTesting(NATIVE_SNACKBAR_VIEW)));
     }
 }

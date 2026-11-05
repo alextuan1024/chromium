@@ -119,6 +119,19 @@ class InstanceTracker : public base::SupportsUserData::Data {
   int session_service_count_ = 0;
 };
 
+bool ShouldTriggerSessionRestoreForBrowser(BrowserWindowInterface* browser) {
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+  if (base::FeatureList::IsEnabled(
+          features::kRespectShouldTriggerSessionRestoreOnDesktop) &&
+      browser) {
+    if (const auto* init_state = BrowserInitState::From(browser)) {
+      return init_state->should_trigger_session_restore();
+    }
+  }
+#endif
+  return true;
+}
+
 }  // namespace
 
 SessionService::SessionService(Profile* profile)
@@ -235,9 +248,15 @@ bool SessionService::RestoreIfNecessary(const StartupTabs& startup_tabs,
 }
 
 void SessionService::MoveCurrentSessionToLastSession() {
-  DCHECK(is_saving_enabled());
+  CHECK(is_saving_enabled(), base::NotFatalUntil::M163);
+  set_rebuild_on_next_save(false);
   pending_tab_close_ids_.clear();
   window_closing_ids_.clear();
+  for (auto id : pending_window_close_ids_) {
+    if (windows_tracking()->contains(id)) {
+      committed_pending_window_close_ids_.insert(id);
+    }
+  }
   pending_window_close_ids_.clear();
 
   command_storage_manager()->MoveCurrentSessionToLastSession();
@@ -430,6 +449,11 @@ void SessionService::WindowClosing(SessionID window_id) {
     return;
   }
 
+  const bool already_closing =
+      pending_window_close_ids_.contains(window_id) ||
+      window_closing_ids_.contains(window_id) ||
+      committed_pending_window_close_ids_.contains(window_id);
+
   // If Chrome is closed immediately after a history deletion, we have to
   // rebuild commands before this window is closed, otherwise these tabs would
   // be lost.
@@ -440,10 +464,12 @@ void SessionService::WindowClosing(SessionID window_id) {
   //
   // NOTE: if the user chooses the exit menu item session service is destroyed
   // and this code isn't hit.
+  bool only_committed_pending_closes = false;
   if (has_open_trackable_browsers_) {
     // Closing a window can never make has_open_trackable_browsers_ go from
     // false to true, so only update it if already true.
-    has_open_trackable_browsers_ = HasOpenTrackableBrowsers(window_id);
+    has_open_trackable_browsers_ =
+        HasOpenTrackableBrowsers(window_id, &only_committed_pending_closes);
   }
   bool use_pending_close = !has_open_trackable_browsers_;
   if (!use_pending_close) {
@@ -472,11 +498,17 @@ void SessionService::WindowClosing(SessionID window_id) {
   } else {
     window_closing_ids_.insert(window_id);
   }
+  if (!already_closing) {
+    base::UmaHistogramBoolean(
+        "Session.WindowClosing.CommittedPendingCloseCountedAsOpen",
+        !use_pending_close && only_committed_pending_closes);
+  }
 }
 
 void SessionService::WindowClosed(SessionID window_id) {
   windows_tracking()->erase(window_id);
   last_selected_tab_in_window()->erase(window_id);
+  committed_pending_window_close_ids_.erase(window_id);
 
   if (window_closing_ids_.contains(window_id)) {
     window_closing_ids_.erase(window_id);
@@ -593,7 +625,9 @@ bool SessionService::RestoreIfNecessary(const StartupTabs& startup_tabs,
         *base::CommandLine::ForCurrentProcess(), profile());
     sessions::TabRestoreService* tab_restore_service =
         TabRestoreServiceFactory::GetForProfileIfExisting(profile());
-    if (pref.ShouldRestoreLastSession() &&
+
+    if (ShouldTriggerSessionRestoreForBrowser(browser) &&
+        pref.ShouldRestoreLastSession() &&
         (!tab_restore_service || !tab_restore_service->IsRestoring())) {
       SessionRestore::RestoreSession(
           profile(), browser,
@@ -618,7 +652,7 @@ bool SessionService::RestoreIfNecessary(const StartupTabs& startup_tabs,
     } else {
       // If 'browser' is not null, show the crash bubble in the current browser
       // instance.
-      SessionCrashedBubble::ShowIfNotOffTheRecordProfile(
+      ShowSessionCrashedBubbleIfNotOffTheRecordProfile(
           browser, /*skip_tab_checking=*/true);
       ProfileLaunchObserver::AddLaunched(profile());
     }
@@ -635,7 +669,7 @@ void SessionService::BuildCommandsForTab(
     std::optional<split_tabs::SplitTabId> split,
     bool is_pinned,
     IdToRange* tab_to_available_range) {
-  DCHECK(is_saving_enabled());
+  CHECK(is_saving_enabled(), base::NotFatalUntil::M163);
   SessionServiceBase::BuildCommandsForTab(window_id, tab, index_in_window,
                                           group, split, is_pinned,
                                           tab_to_available_range);
@@ -669,7 +703,7 @@ void SessionService::BuildCommandsForTab(
 }
 
 void SessionService::ScheduleResetCommands() {
-  DCHECK(is_saving_enabled());
+  CHECK(is_saving_enabled(), base::NotFatalUntil::M163);
   command_storage_manager()->set_pending_reset(true);
   command_storage_manager()->ClearPendingCommands();
   tab_to_available_range()->clear();
@@ -693,6 +727,9 @@ void SessionService::CommitPendingCloses() {
   pending_tab_close_ids_.clear();
 
   for (auto id : pending_window_close_ids_) {
+    if (windows_tracking()->contains(id)) {
+      committed_pending_window_close_ids_.insert(id);
+    }
     ScheduleCommand(sessions::CreateWindowClosedCommand(id));
   }
   pending_window_close_ids_.clear();
@@ -729,23 +766,37 @@ bool SessionService::IsOnlyOneTabLeft() const {
   return is_only_one_tab_left;
 }
 
-bool SessionService::HasOpenTrackableBrowsers(SessionID window_id) const {
+bool SessionService::HasOpenTrackableBrowsers(
+    SessionID window_id,
+    bool* only_committed_pending_closes) const {
+  if (only_committed_pending_closes) {
+    *only_committed_pending_closes = false;
+  }
   if (profile()->AsTestingProfile()) {
     return has_open_trackable_browser_for_test_;
   }
 
   bool has_open_trackable = false;
+  bool has_non_committed_open_trackable = false;
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
-      [this, window_id, &has_open_trackable](BrowserWindowInterface* browser) {
+      [this, window_id, &has_open_trackable,
+       &has_non_committed_open_trackable](BrowserWindowInterface* browser) {
         const SessionID browser_id = browser->GetSessionID();
         if (browser_id != window_id &&
             !window_closing_ids_.contains(browser_id)) {
           if (ShouldTrackBrowser(browser)) {
             has_open_trackable = true;
+            if (!committed_pending_window_close_ids_.contains(browser_id)) {
+              has_non_committed_open_trackable = true;
+            }
           }
         }
-        return !has_open_trackable;
+        return !has_non_committed_open_trackable;
       });
+  if (only_committed_pending_closes) {
+    *only_committed_pending_closes =
+        has_open_trackable && !has_non_committed_open_trackable;
+  }
   return has_open_trackable;
 }
 
@@ -754,6 +805,17 @@ void SessionService::RebuildCommandsIfRequired() {
       is_saving_enabled()) {
     ScheduleResetCommands();
   }
+}
+
+bool SessionService::HasPendingTabCloses() const {
+  return !pending_tab_close_ids_.empty();
+}
+
+bool SessionService::ShouldDeleteSessionStorageOnTabClosing(
+    SessionID window_id) const {
+  // If the window is closing, then the tab's sessionStorage should be kept
+  // around for session restore.
+  return !pending_window_close_ids_.contains(window_id);
 }
 
 void SessionService::OnClosingAllBrowsersChanged(bool closing) {

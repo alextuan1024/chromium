@@ -8,7 +8,12 @@
 #include <linux/input-event-codes.h>
 #include <tablet-unstable-v2-client-protocol.h>
 
+#include <cmath>
+
+#include "ui/base/cursor/mojom/cursor_type.mojom.h"
 #include "ui/events/event.h"
+#include "ui/gfx/geometry/point.h"
+#include "ui/ozone/common/bitmap_cursor.h"
 #include "ui/ozone/platform/wayland/common/wayland_util.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_cursor_shape.h"
@@ -90,6 +95,74 @@ WaylandTabletTool::WaylandTabletTool(zwp_tablet_tool_v2* tool,
 }
 
 WaylandTabletTool::~WaylandTabletTool() = default;
+
+void WaylandTabletTool::SetCursor(BitmapCursor* cursor) {
+  if (!proximity_serial_) {
+    return;
+  }
+
+  if (cursor && cursor->type() == mojom::CursorType::kNone) {
+    if (cursor_) {
+      // Also detaches the buffer from the cursor surface and flushes.
+      cursor_->UpdateBitmap({}, gfx::Point(), 1);
+    } else {
+      zwp_tablet_tool_v2_set_cursor(tool_.get(), *proximity_serial_, nullptr, 0,
+                                    0);
+    }
+    return;
+  }
+
+  // As with wl_pointer, prefer the compositor's cursor shapes.
+  std::optional<uint32_t> shape;
+  if (cursor) {
+    shape = WaylandCursorShape::ShapeFromType(cursor->type());
+  }
+  if (cursor_shape_device_ && (shape || !cursor)) {
+    wp_cursor_shape_device_v1_set_shape(
+        cursor_shape_device_.get(), *proximity_serial_,
+        shape.value_or(WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT));
+    return;
+  }
+  if (!cursor) {
+    return;
+  }
+  if (!cursor->platform_data() && cursor->bitmaps().empty()) {
+    if (cursor_shape_device_) {
+      wp_cursor_shape_device_v1_set_shape(
+          cursor_shape_device_.get(), *proximity_serial_,
+          WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
+    }
+    return;
+  }
+
+  // Otherwise, draw the cursor on a surface of the tool's own. Round the scale
+  // up, as wl_surface.set_buffer_scale accepts only integers.
+  if (!cursor_) {
+    cursor_ = std::make_unique<WaylandCursor>(this, connection_);
+  }
+  const int buffer_scale = std::ceil(cursor->cursor_image_scale_factor());
+  if (cursor->platform_data()) {
+    cursor_->SetStaticPlatformShape(
+        static_cast<wl_cursor*>(cursor->platform_data()), buffer_scale);
+  } else {
+    // Translate physical pixels to DIPs.
+    gfx::Point hotspot_in_dips = gfx::ScaleToRoundedPoint(
+        cursor->hotspot(), 1.0f / cursor->cursor_image_scale_factor());
+    cursor_->UpdateBitmap(cursor->bitmaps(), hotspot_in_dips, buffer_scale);
+  }
+}
+
+std::optional<uint32_t> WaylandTabletTool::GetCursorSerial() const {
+  return proximity_serial_;
+}
+
+void WaylandTabletTool::SetCursorSurface(uint32_t serial,
+                                         wl_surface* surface,
+                                         int32_t hotspot_x_dip,
+                                         int32_t hotspot_y_dip) {
+  zwp_tablet_tool_v2_set_cursor(tool_.get(), serial, surface, hotspot_x_dip,
+                                hotspot_y_dip);
+}
 
 void WaylandTabletTool::DispatchBufferedEvents() {
   if (frame_data_.proximity_in && frame_data_.proximity_target.get()) {
@@ -199,16 +272,17 @@ void WaylandTabletTool::ProximityIn(void* data,
           shape->CreateTabletToolShapeDevice(self->tool_.get());
     }
   }
-  if (self->cursor_shape_device_) {
-    wp_cursor_shape_device_v1_set_shape(
-        self->cursor_shape_device_.get(), serial,
-        WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT);
-  }
 
-  if (!surface) {
-    return;
-  }
-  WaylandWindow* window = wl::RootWindowFromWlSurface(surface);
+  WaylandWindow* window =
+      surface ? wl::RootWindowFromWlSurface(surface) : nullptr;
+  self->proximity_serial_ = serial;
+  self->focused_window_ =
+      window ? window->AsWeakPtr() : base::WeakPtr<WaylandWindow>();
+
+  // The window updates the cursors of the tools in proximity whenever its
+  // cursor changes, but the tool still needs the window's current cursor.
+  self->SetCursor(window ? window->GetLoadedCursor().get() : nullptr);
+
   if (!window) {
     return;
   }
@@ -218,12 +292,13 @@ void WaylandTabletTool::ProximityIn(void* data,
   self->frame_data_.proximity_in = true;
   self->frame_data_.proximity_out = false;
   self->frame_data_.proximity_target = window->AsWeakPtr();
-  self->frame_data_.proximity_serial = serial;
 }
 
 // static
 void WaylandTabletTool::ProximityOut(void* data, zwp_tablet_tool_v2* tool) {
   auto* self = static_cast<WaylandTabletTool*>(data);
+  self->proximity_serial_.reset();
+  self->focused_window_.reset();
   self->frame_data_.proximity_out = true;
   self->frame_data_.proximity_in = false;
 }

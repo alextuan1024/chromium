@@ -17,6 +17,7 @@
 #include "extensions/browser/extension_function_dispatcher.h"
 #include "extensions/common/mojom/frame.mojom.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
+#include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-forward.h"
 #include "url/gurl.h"
 
@@ -83,7 +84,7 @@ class ExtensionWebContentsObserver : public content::WebContentsObserver {
   // Returns the extension associated with the given `render_frame_host`, or
   // null if there is none.
   // If `verify_url` is false, only the SiteInstance is taken into account.
-  // If `verify_url` is true, the frame's last committed URL is also used to
+  // If `verify_url` is true, the frame's last committed origin is also used to
   // improve the classification of the frame.
   const Extension* GetExtensionFromFrame(
       content::RenderFrameHost* render_frame_host,
@@ -110,6 +111,16 @@ class ExtensionWebContentsObserver : public content::WebContentsObserver {
   ExtensionFrameHost* extension_frame_host_for_testing() {
     return extension_frame_host_.get();
   }
+
+  // Replaces the `mojom::LocalFrame` remote used for `render_frame_host` with
+  // `remote` so tests can observe or stand in for the renderer side of the
+  // interface. Returns the previously bound remote (which may be unbound) so
+  // the caller can forward calls to the real renderer. `render_frame_host` must
+  // be live and belong directly to this observer's `WebContents`, the same
+  // conditions `GetLocalFrame()` requires.
+  mojo::AssociatedRemote<mojom::LocalFrame> SetLocalFrameForTesting(
+      content::RenderFrameHost* render_frame_host,
+      mojo::PendingAssociatedRemote<mojom::LocalFrame> remote);
 
  protected:
   explicit ExtensionWebContentsObserver(content::WebContents* web_contents);
@@ -149,10 +160,6 @@ class ExtensionWebContentsObserver : public content::WebContentsObserver {
   virtual void SetUpRenderFrameHost(
       content::RenderFrameHost* render_frame_host);
 
-  // Returns true if `extension` is allowed to use Mojo JS bindings.
-  // Default queries ExtensionMojoBinderRegistry.
-  virtual bool IsMojoJsEnabled(const Extension& extension) const;
-
   // Returns true if JS error reporting (e.g. stack trace collection) should be
   // enabled for the given `extension`. Default queries ExtensionConfigMap.
   virtual bool IsJsErrorReportingEnabled(const Extension& extension) const;
@@ -173,6 +180,17 @@ class ExtensionWebContentsObserver : public content::WebContentsObserver {
   using PassKey = base::PassKey<ExtensionWebContentsObserver>;
 
   void OnWindowIdChanged(SessionID id);
+
+  // Enables MojoJS for the document that `navigation_handle` is about to
+  // commit, if the origin it will commit belongs to an extension that is
+  // allowed to use it.
+  void MaybeEnableMojoJsBindings(content::NavigationHandle* navigation_handle);
+
+  // Creates the broker for the document that `navigation_handle` committed, if
+  // MaybeEnableMojoJsBindings() enabled MojoJS for it and its extension is
+  // still loaded and allowed to use MojoJS. Must only be called for committed
+  // navigations.
+  void MaybeCreateMojoJsBroker(content::NavigationHandle* navigation_handle);
 
   // The BrowserContext associated with the WebContents being observed.
   raw_ptr<content::BrowserContext> browser_context_;

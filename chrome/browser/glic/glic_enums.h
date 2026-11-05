@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_GLIC_GLIC_ENUMS_H_
 #define CHROME_BROWSER_GLIC_GLIC_ENUMS_H_
 
+#include <iosfwd>
+
 namespace glic {
 
 // Add here Glic enums that should be visible to external code. If the enum is
@@ -18,6 +20,34 @@ enum class ZoomSource {
   kScroll,
   kMaxValue = kScroll,
 };
+
+// Represents the hotkey scope state when the user clears the hotkey in
+// settings.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(GlicHotkeyCleared)
+enum class GlicHotkeyCleared {
+  kDefaultGlobalWithGlobalScope = 0,
+  kDefaultGlobalWithLocalScope = 1,
+  kDefaultLocalWithGlobalScope = 2,
+  kDefaultLocalWithLocalScope = 3,
+  kMaxValue = kDefaultLocalWithLocalScope,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicHotkeyCleared)
+
+// Represents hotkey scope changes in settings.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(GlicHotkeyScopeChange)
+enum class GlicHotkeyScopeChange {
+  kDefaultGlobalToGlobal = 0,
+  kDefaultGlobalToLocal = 1,
+  kDefaultLocalToGlobal = 2,
+  kDefaultLocalToLocal = 3,
+  kNotMigrated = 4,
+  kMaxValue = kNotMigrated,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicHotkeyScopeChange)
 
 // Error types for when attempting to extract context from a tab.
 // LINT.IfChange(GlicGetContextFromTabError)
@@ -113,6 +143,35 @@ enum class EmbedderType {
   kMaxValue = kTab,
 };
 
+// Whether the Glic client is usable, as seen by the browser.
+//
+// This is derived by `Host` rather than reported to it. The client is ready
+// exactly when `mojom::WebClientState` says it has come up, so `kReady` and
+// the web client state machine cannot disagree in either direction. Whoever
+// hosts the client -- chrome://glic, or the GlicNoWebview overlay -- supplies
+// only the one bit the browser cannot see for itself: whether a client that is
+// not up yet is still loading or has failed. This lets browser-side code wait
+// on the client without knowing which host is in use, or anything about its
+// internal state machine.
+//
+// Responsiveness is a separate axis: a client that is up but unresponsive
+// (`WebClientState::kUnresponsive`) is still `kReady` here, because it can
+// become responsive again on its own.
+// LINT.IfChange(ClientLoadState)
+enum class ClientLoadState {
+  // The client is being created or is still loading. It cannot be used yet,
+  // but may become ready later.
+  kLoading,
+  // The client has finished loading and can be used.
+  kReady,
+  // The client failed to load. It will not become ready again unless it is
+  // reloaded.
+  kError,
+};
+// LINT.ThenChange(//chrome/browser/glic/service/glic_invoke_handler.cc:ClientLoadStateToDiagnosticString)
+
+std::ostream& operator<<(std::ostream& os, ClientLoadState state);
+
 // Why the Glic client failed to load, i.e. failed to become usable. Scoped to
 // failures that prevent the client from reaching a usable state; errors raised
 // by a client that is already running are a separate concept.
@@ -149,7 +208,8 @@ enum class ClientLoadErrorReason {
   // learn-more-link variants of the panel, which differ only in presentation.
   kDisabledByAdmin = 4,
 
-  // The browser has no network connection.
+  // The browser has no network connection. Covers both the pre-load offline
+  // check and the guest failing to load with net::ERR_INTERNET_DISCONNECTED.
   kOffline = 5,
 
   // The user needs to sign in. Covers both the pre-load auth check and the
@@ -162,28 +222,127 @@ enum class ClientLoadErrorReason {
 
   // Guest failures. The guest contents itself did not come up.
 
-  // The guest navigation committed an error page.
+  // The guest navigation committed a network error page (other than
+  // net::ERR_INTERNET_DISCONNECTED, which is reported as kOffline). Before
+  // M160, also covered net::ERR_INTERNET_DISCONNECTED and HTTP status codes of
+  // 400 or above.
   kGuestLoadFailed = 8,
 
-  // The guest renderer process crashed or was killed.
+  // The guest renderer process exited with a normal or abnormal exit code not
+  // covered by a more specific kGuestProcess* value below (including foreground
+  // renderer terminations on Android, where waitpid() is unavailable and all
+  // bound child exits report TERMINATION_STATUS_OOM_PROTECTED). Before M160,
+  // also covered all guest process terminations.
   kGuestProcessGone = 9,
 
   // The web client loaded but reported a fatal error.
   kClientError = 10,
 
-  // Timeouts owned by the chrome://glic host page. These have no counterpart
-  // in the no-webview world, where the browser's own invocation watchdog
-  // (WaitForClientConnectedTask) owns the deadline instead.
+  // Timeouts when waiting for the web client to connect or become ready.
+  // In the webview world, these are owned by the chrome://glic host page.
+  // In the no-webview world, GlicNoWebviewContentsManager owns the load
+  // timeout.
 
-  // The host page gave up waiting for the web client to connect.
+  // The host page or manager gave up waiting for the web client to connect
+  // before a guest navigation started (or when no more specific timeout stage
+  // applies). Before M160, also covered all guest load timeouts.
   kClientLoadTimeout = 11,
 
   // A warmed client never became ready after the panel was shown.
   kWarmedTimeout = 12,
 
-  kMaxValue = kWarmedTimeout,
+  // More guest failures (see kGuestLoadFailed). Both were reported as
+  // kGuestLoadFailed before M158.
+
+  // The guest navigation was cancelled because its origin is not an allowed
+  // guest origin, e.g. a redirect to a host that is not on the list.
+  kGuestOriginBlocked = 13,
+
+  // The guest navigation committed a regular page, but on an origin that is
+  // not allowed to use the Glic API, so the web client can never connect.
+  kGuestApiNotAllowed = 14,
+
+  // The configured provider differs from the one latched for the profile.
+  kPendingProviderChange = 15,
+
+  // More guest failures (see kGuestLoadFailed), reported as kGuestLoadFailed
+  // before M160.
+
+  // The guest navigation committed an HTTP 4xx response.
+  kGuestHttpClientError = 16,
+
+  // The guest navigation committed an HTTP 5xx response.
+  kGuestHttpServerError = 17,
+
+  // More guest process termination causes (see kGuestProcessGone), reported as
+  // kGuestProcessGone before M160.
+
+  // The guest renderer process crashed (e.g. segmentation fault or CHECK
+  // failure).
+  kGuestProcessCrashed = 18,
+
+  // The guest renderer process was killed by a signal or task manager.
+  kGuestProcessKilled = 19,
+
+  // The guest renderer process was terminated due to out-of-memory.
+  kGuestProcessOom = 20,
+
+  // The guest renderer process failed to launch.
+  kGuestProcessLaunchFailed = 21,
+
+  // The guest renderer process was terminated due to a code integrity failure.
+  kGuestProcessIntegrityFailure = 22,
+
+  // More specific client load timeout stages in NoWebview mode (see
+  // kClientLoadTimeout), reported as kClientLoadTimeout before M160 (and in
+  // legacy webview mode).
+
+  // Timed out while a guest primary-main-frame navigation was still in
+  // progress (started, not yet committed or finished).
+  kClientLoadTimeoutNavigationInProgress = 23,
+
+  // Timed out after the most recent guest primary-main-frame navigation
+  // finished without committing (for example HTTP 204, download, or aborted
+  // navigation).
+  kClientLoadTimeoutNavigationNotCommitted = 24,
+
+  // Timed out after a regular API-allowed guest page committed, before its
+  // primary main frame completed onload.
+  kClientLoadTimeoutBeforeOnload = 25,
+
+  // Timed out after a regular API-allowed guest page committed and completed
+  // onload, before creating the web client.
+  kClientLoadTimeoutAfterOnload = 26,
+
+  // The provider was switched for the user since they last used Glic, and the
+  // notice telling them about it is shown instead of the client.
+  kProviderSwitchNotice = 27,
+
+  kMaxValue = kProviderSwitchNotice,
 };
-// LINT.ThenChange(//tools/metrics/structured/sync/structured.xml)
+// LINT.ThenChange(//tools/metrics/structured/sync/structured.xml,//chrome/browser/glic/host/glic_page_handler.cc:ToClientLoadErrorReason,//chrome/browser/glic/service/glic_invoke_task.cc:IsGatePanelReason,//chrome/browser/glic/service/metrics/glic_structured_metrics_conversions.cc:ToStructuredClientLoadErrorReason,//chrome/browser/glic/service/glic_invoke_handler.cc:ClientLoadErrorReasonToDiagnosticString)
+
+// Why a Glic instance was removed. Invocations still running on the instance
+// fail with the matching GlicInvokeError::kInstanceDestroyed* value.
+enum class InstanceRemovalReason {
+  // The panel of an instance without a conversation was closed, so the blank
+  // instance was cleaned up.
+  kBlankInstanceClosed,
+
+  // Nothing kept the instance alive anymore: it had no bound tabs, tab group
+  // or pinned tabs left, e.g. because its last tab was closed, unpinned or
+  // bound to another conversation.
+  kUnbound,
+
+  // The user manually deleted the instance.
+  kArchived,
+
+  // The user signed out of the primary account.
+  kSignedOut,
+
+  // The profile is shutting down.
+  kShutdown,
+};
 
 }  // namespace glic
 

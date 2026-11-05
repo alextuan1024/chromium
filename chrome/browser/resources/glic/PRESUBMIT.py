@@ -3,7 +3,6 @@
 # found in the LICENSE file.
 
 import os
-import re
 import json
 
 # Runs PRESUBMIT.py in py3 mode by git cl presubmit.
@@ -125,7 +124,7 @@ def _CheckTypeScriptImports(input_api, output_api):
         return input_api.FilterSourceFile(
             affected_file,
             files_to_check=[r'^chrome/browser/resources/glic/.*\.ts$'],
-            files_to_skip=[r'.*\.d\.ts$'],
+            files_to_skip=[r'.*\.d\.ts$', r'.*\.html\.ts$'],
         )
 
     affected_files = list(
@@ -163,7 +162,11 @@ def _CheckTypeScriptImports(input_api, output_api):
         unformatted_files = []
         for line in stderr.splitlines():
             line = line.strip()
-            if not line or line.startswith('The following files') or line.startswith('Warning:'):
+            if (
+                not line
+                or line.startswith('The following files')
+                or line.startswith('Warning:')
+            ):
                 continue
             norm_line = input_api.os_path.normpath(line)
             for f in file_paths:

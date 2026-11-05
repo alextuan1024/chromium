@@ -153,7 +153,7 @@ TEST(TextEliderTest, TestFilenameEliding) {
             "file.name.really.long.text.superduperextremelylongext"),
         u"file.name.re…emelylongext"}});
 
-  static const FontList font_list;
+  const FontList font_list;
   for (const auto& c : cases) {
     std::u16string using_width_of =
         c.using_width_of.empty() ? c.output : c.using_width_of;
@@ -1141,6 +1141,12 @@ TEST(TextEliderTest, TruncateString) {
   EXPECT_EQ(u"…", TruncateString(str2, 4, CHARACTER_BREAK));
   EXPECT_EQ(u"   f…", TruncateString(str2, 5, WORD_BREAK));
   EXPECT_EQ(u"   f…", TruncateString(str2, 5, CHARACTER_BREAK));
+
+  // Test breaking in the middle of a surrogate pair that directly follows a
+  // word boundary. The boundary right before the pair is used.
+  const std::u16string str3 = u"Hello world\U0001F600 test";
+  EXPECT_EQ(u"Hello world…", TruncateString(str3, 12, WORD_BREAK));
+  EXPECT_EQ(u"Hello world…", TruncateString(str3, 12, CHARACTER_BREAK));
 }
 
 }  // namespace gfx

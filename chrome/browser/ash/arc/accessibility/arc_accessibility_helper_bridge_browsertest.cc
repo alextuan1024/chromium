@@ -15,7 +15,6 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/ash/accessibility/magnification_manager.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/shelf/app_service/exo_app_type_resolver.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
@@ -29,6 +28,8 @@
 #include "components/exo/surface.h"
 #include "components/exo/test/shell_surface_builder.h"
 #include "components/exo/wm_helper.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/viz/common/features.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/api/automation_internal/automation_event_router_interface.h"
@@ -105,7 +106,11 @@ class ArcAccessibilityHelperBridgeBrowserTest : public InProcessBrowserTest {
     WaitForInstanceReady(
         ArcServiceManager::Get()->arc_bridge_service()->accessibility_helper());
 
-    AccessibilityManager::Get()->SetProfileForTest(browser()->GetProfile());
+    const session_manager::Session* primary_session =
+        session_manager::SessionManager::Get()->GetPrimarySession();
+    ASSERT_TRUE(primary_session);
+    AccessibilityManager::Get()->SetProfileForTest(
+        browser()->GetProfile(), primary_session->account_id());
 
     wm_helper_ = std::make_unique<exo::WMHelper>();
     wm_helper_->RegisterAppPropertyResolver(

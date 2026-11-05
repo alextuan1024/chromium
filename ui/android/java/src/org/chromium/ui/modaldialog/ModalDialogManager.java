@@ -12,6 +12,8 @@ import android.view.View;
 import androidx.activity.ComponentDialog;
 import androidx.annotation.IntDef;
 
+import org.jni_zero.JniPtr;
+
 import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
 import org.chromium.base.ObserverList;
@@ -21,15 +23,14 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.UiSwitches;
 import org.chromium.ui.insets.InsetObserver;
+import org.chromium.ui.modaldialog.ModalDialogManagerBridge.NativeModalDialogManagerBridge;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.util.TokenHolder;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /** Manager for managing the display of a queue of {@link PropertyModel}s. */
@@ -157,6 +158,13 @@ public class ModalDialogManager {
         protected void setInsetObserver(InsetObserver insetObserver) {}
 
         /**
+         * Restarts the button tap protection period (see {@link
+         * ModalDialogProperties#BUTTON_TAP_PROTECTION_PERIOD_MS}) of the dialog currently shown by
+         * this presenter, if any.
+         */
+        protected void replayButtonTapProtection() {}
+
+        /**
          * A supplier to determine whether edge-to-edge is active in the enclosing window.
          *
          * @param edgeToEdgeStateSupplier The supplier for edge-to-edge state.
@@ -262,7 +270,7 @@ public class ModalDialogManager {
     private final ObserverList<ModalDialogManagerObserver> mObserverList = new ObserverList<>();
 
     /** Tokens for features temporarily suppressing dialogs. */
-    private final Map<Integer, TokenHolder> mTokenHolders = new HashMap<>();
+    private final SparseArray<TokenHolder> mTokenHolders = new SparseArray<>();
 
     /**
      * A container to insert pending dialogs on both {@link ModalDialogType} and {@link
@@ -381,6 +389,15 @@ public class ModalDialogManager {
             presenter.setEdgeToEdgeStateSupplier(
                     mEdgeToEdgeStateSupplier, mIsEdgeToEdgeEverywhereEnabled);
         }
+    }
+
+    /**
+     * Replays the button tap protection period (see {@link
+     * ModalDialogProperties#BUTTON_TAP_PROTECTION_PERIOD_MS}) of the currently visible dialog.
+     */
+    public void replayButtonTapProtection() {
+        if (mCurrentPresenter == null) return;
+        mCurrentPresenter.replayButtonTapProtection();
     }
 
     /**
@@ -652,9 +669,9 @@ public class ModalDialogManager {
         assumeNonNull(mTokenHolders.get(dialogType)).releaseToken(token);
     }
 
-    public long getOrCreateNativeBridge() {
+    public @Nullable JniPtr<NativeModalDialogManagerBridge> getOrCreateNativeBridge() {
         // Prevents the bridge gets recreated after `destroy()` is called.
-        if (mDestroyed) return 0;
+        if (mDestroyed) return null;
 
         if (mModalDialogManagerBridge == null) {
             mModalDialogManagerBridge = new ModalDialogManagerBridge(this);

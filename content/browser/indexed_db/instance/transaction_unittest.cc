@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include <limits>
 #include <memory>
 
 #include "base/functional/bind.h"
@@ -15,8 +16,11 @@
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/gmock_callback_support.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock_manager.h"
 #include "content/browser/indexed_db/indexed_db_database_error.h"
 #include "content/browser/indexed_db/indexed_db_leveldb_coding.h"
@@ -25,7 +29,9 @@
 #include "content/browser/indexed_db/instance/connection.h"
 #include "content/browser/indexed_db/instance/database_callbacks.h"
 #include "content/browser/indexed_db/instance/fake_transaction.h"
+#include "content/browser/indexed_db/mock_mojo_indexed_db_database_callbacks.h"
 #include "content/public/common/content_features.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom.h"
 
@@ -55,6 +61,8 @@ class AbortObserver {
 
 class TransactionTestBase : public IndexedDBTestBase {
  public:
+  static constexpr int64_t kObjectStoreId = 1;
+
   explicit TransactionTestBase(bool use_sqlite)
       : IndexedDBTestBase(/*use_default_buckets=*/true, use_sqlite) {}
 
@@ -80,22 +88,57 @@ class TransactionTestBase : public IndexedDBTestBase {
   BucketContext* bucket_context() { return bucket_context_.get(); }
 
   std::unique_ptr<Connection> CreateConnection(int priority = 0) {
+    return CreateConnection(mojo::NullAssociatedRemote(), priority);
+  }
+
+  std::unique_ptr<Connection> CreateConnection(
+      mojo::PendingAssociatedRemote<blink::mojom::IDBDatabaseCallbacks>
+          callbacks,
+      int priority = 0) {
     if (db_->connections_.empty()) {
       db_->OpenInternal();
+      if (!db_->IsObjectStoreIdInMetadata(kObjectStoreId)) {
+        PartitionedLockHolder locks;
+        lock_manager().AcquireLocks(
+            db_->BuildLockRequestsForTransaction(
+                blink::mojom::IDBTransactionMode::VersionChange, {}),
+            locks, base::DoNothing());
+        CHECK(!locks.locks.empty());
+
+        std::unique_ptr<BackingStore::Transaction> transaction =
+            db_->backing_store_db()->CreateTransaction(
+                blink::mojom::IDBTransactionDurability::Relaxed,
+                blink::mojom::IDBTransactionMode::VersionChange);
+        CHECK(transaction->Begin(std::move(locks.locks)).ok());
+        CHECK(transaction->SetDatabaseVersion(1).ok());
+        CHECK(transaction
+                  ->CreateObjectStore(kObjectStoreId, u"store",
+                                      blink::IndexedDBKeyPath(),
+                                      /*auto_increment=*/false)
+                  .ok());
+        StatusOr<bool> async_work =
+            transaction->CommitPhaseOne(base::DoNothing(), base::DoNothing());
+        CHECK(async_work.has_value());
+        CHECK(!async_work.value());
+        CHECK(transaction->CommitPhaseTwo().ok());
+      }
     }
     storage::BucketClientInfo client_info;
     client_info.context_token = blink::LocalFrameToken();
     return db_->CreateConnection(
-        std::make_unique<DatabaseCallbacks>(mojo::NullAssociatedRemote()),
-        client_info, priority, base::DoNothing());
+        std::make_unique<DatabaseCallbacks>(std::move(callbacks)), client_info,
+        priority, base::DoNothing());
   }
 
-  Transaction* CreateTransaction(Connection* connection,
-                                 const int64_t id,
-                                 const std::vector<int64_t>& object_store_ids,
-                                 blink::mojom::IDBTransactionMode mode) {
+  Transaction* CreateTransaction(
+      Connection* connection,
+      const int64_t id,
+      const std::vector<int64_t>& object_store_ids,
+      blink::mojom::IDBTransactionMode mode,
+      mojo::PendingAssociatedReceiver<blink::mojom::IDBTransaction> receiver =
+          mojo::NullAssociatedReceiver()) {
     connection->CreateTransaction(
-        mojo::NullAssociatedReceiver(), id, object_store_ids, mode,
+        std::move(receiver), id, object_store_ids, mode,
         blink::mojom::IDBTransactionDurability::Relaxed);
 
     Transaction* transaction = connection->GetTransaction(id);
@@ -174,7 +217,7 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 TEST_P(TransactionTest, Timeout) {
-  const std::vector<int64_t> object_store_ids{1};
+  const std::vector<int64_t> object_store_ids{kObjectStoreId};
   std::unique_ptr<Connection> connection = CreateConnection();
   Transaction* transaction =
       CreateTransaction(connection.get(), /*id=*/0, object_store_ids,
@@ -223,6 +266,59 @@ TEST_P(TransactionTest, Timeout) {
   EXPECT_FALSE(transaction->IsTimeoutTimerRunning());
   EXPECT_EQ(1, transaction->diagnostics().tasks_scheduled);
   EXPECT_EQ(1, transaction->diagnostics().tasks_completed);
+}
+
+TEST_P(TransactionTest, PreliminarySizeEstimateClamped) {
+  quota_manager_->SetQuota(bucket_context()->bucket_locator().storage_key,
+                           /*quota=*/1);
+  task_environment_.FastForwardBy(BucketContext::kBucketSpaceCacheTimeLimit *
+                                  2);
+
+  MockMojoDatabaseCallbacks callbacks;
+  std::unique_ptr<Connection> connection =
+      CreateConnection(callbacks.BindNewEndpointAndPassDedicatedRemote());
+  CreateTransaction(connection.get(), /*id=*/0,
+                    /*object_store_ids=*/{kObjectStoreId},
+                    blink::mojom::IDBTransactionMode::ReadWrite);
+
+  mojo::AssociatedRemote<blink::mojom::IDBTransaction> transaction_remote;
+  Transaction* transaction = CreateTransaction(
+      connection.get(), /*id=*/1, /*object_store_ids=*/{kObjectStoreId},
+      blink::mojom::IDBTransactionMode::ReadWrite,
+      transaction_remote.BindNewEndpointAndPassDedicatedReceiver());
+  ASSERT_EQ(Transaction::CREATED, transaction->state());
+
+  mojo::PendingRemote<blink::mojom::Blob> blob;
+  mojo::PendingReceiver<blink::mojom::Blob> blob_receiver =
+      blob.InitWithNewPipeAndPassReceiver();
+  blink::mojom::IDBBlobInfoPtr blob_info = blink::mojom::IDBBlobInfo::New();
+  blob_info->blob = std::move(blob);
+  // NB: set a huge size that overflows when added to another number.
+  blob_info->size = std::numeric_limits<int64_t>::max();
+  blink::mojom::IDBValuePtr value = blink::mojom::IDBValue::New();
+  value->external_objects.push_back(
+      blink::mojom::IDBExternalObject::NewBlobOrFile(std::move(blob_info)));
+
+  base::test::TestFuture<bool> quota_future;
+  bucket_context()->CheckCanUseDiskSpace(base::ByteSizeDelta::Max(),
+                                         quota_future.GetCallback());
+  ASSERT_FALSE(quota_future.Get());
+
+  transaction_remote->Put(kObjectStoreId, std::move(value),
+                          blink::IndexedDBKey(std::u16string(u"key")),
+                          blink::mojom::IDBPutMode::AddOrUpdate,
+                          /*index_keys=*/{}, base::DoNothing());
+
+  EXPECT_TRUE(blob_receiver.is_valid());
+
+  base::RunLoop abort_loop;
+  EXPECT_CALL(callbacks,
+              Abort(/*transaction_id=*/1,
+                    blink::mojom::IDBException::kQuotaError, testing::_))
+      .WillOnce(base::test::RunClosure(abort_loop.QuitClosure()));
+
+  transaction_remote->Commit(/*num_errors_handled=*/0);
+  abort_loop.Run();
 }
 
 TEST_P(TransactionTest, TimeoutPreemptive) {
@@ -293,7 +389,7 @@ TEST_P(TransactionTest, TimeoutWithPriorities) {
   } const test_cases[] = {
       {0, 0, true}, {0, 1, true}, {1, 1, false}, {1, 0, true}, {2, 1, true}};
 
-  const std::vector<int64_t> object_store_ids{1};
+  const std::vector<int64_t> object_store_ids{kObjectStoreId};
   int txn_id = 0;
 
   int i = 0;
@@ -378,6 +474,7 @@ TEST_P(TransactionTestMode, ScheduleNormalTask) {
 }
 
 TEST_P(TransactionTestMode, TaskFails) {
+  base::HistogramTester histograms;
   std::unique_ptr<Connection> connection = CreateConnection();
   Transaction* transaction =
       CreateTransaction(connection.get(), /*id=*/0, /*object_store_ids=*/{},
@@ -415,16 +512,22 @@ TEST_P(TransactionTestMode, TaskFails) {
   transaction->SetCommitFlag();
   EXPECT_EQ(1, transaction->diagnostics().tasks_scheduled);
   EXPECT_EQ(1, transaction->diagnostics().tasks_completed);
+  histograms.ExpectUniqueSample("IndexedDB.BackingStore.DatabaseError.OnDisk",
+                                /*Status::Type::kIoError=*/4, 1);
 
   // An error was reported which ...
   if (!IsSqliteBackingStoreEnabled()) {
     // ... deletes the bucket context.
     EXPECT_FALSE(bucket_context_);
+    histograms.ExpectUniqueSample(
+        "IndexedDB.BackingStore.ResetReason.OnDisk",
+        BucketContext::BackingStoreResetReason::kDatabaseError, 1);
   } else {
     // ... closes the database.
     EXPECT_TRUE(bucket_context_);
     ASSERT_TRUE(base::test::RunUntil(
         [&]() { return bucket_context_->GetDatabasesForTesting().empty(); }));
+    histograms.ExpectTotalCount("IndexedDB.BackingStore.ResetReason.OnDisk", 0);
   }
 }
 
@@ -549,12 +652,10 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(TransactionTest, AbortCancelsLockRequest) {
   std::unique_ptr<Connection> connection = CreateConnection();
 
-  const int64_t object_store_id = 1ll;
-
   // Acquire a lock to block the transaction's lock acquisition.
   std::vector<PartitionedLockManager::PartitionedLockRequest> lock_requests =
       connection->database()->BuildLockRequestsForTransaction(
-          blink::mojom::IDBTransactionMode::ReadWrite, {object_store_id});
+          blink::mojom::IDBTransactionMode::ReadWrite, {kObjectStoreId});
   bool locks_received = false;
   PartitionedLockHolder temp_lock_receiver;
   lock_manager().AcquireLocks(lock_requests, temp_lock_receiver,
@@ -564,7 +665,7 @@ TEST_P(TransactionTest, AbortCancelsLockRequest) {
   // Create and register the transaction, which should request locks and wait
   // for `temp_lock_receiver` to release the locks.
   Transaction* transaction = CreateTransaction(
-      connection.get(), /*transaction_id=*/0, {object_store_id},
+      connection.get(), /*transaction_id=*/0, {kObjectStoreId},
       blink::mojom::IDBTransactionMode::ReadWrite);
   EXPECT_EQ(transaction->state(), Transaction::CREATED);
 
@@ -589,7 +690,7 @@ TEST_P(TransactionTest, PostedStartTaskRunAfterAbort) {
   std::unique_ptr<Connection> connection = CreateConnection();
 
   int64_t id = 0;
-  const std::vector<int64_t> object_store_ids = {1ll};
+  const std::vector<int64_t> object_store_ids = {kObjectStoreId};
   Transaction* transaction1 =
       CreateTransaction(connection.get(), id, object_store_ids,
                         blink::mojom::IDBTransactionMode::ReadWrite);
@@ -625,12 +726,12 @@ TEST_P(TransactionTest, PostedStartTaskRunAfterAbort) {
 TEST_P(TransactionTest, IsTransactionBlockingOtherClients) {
   std::unique_ptr<Connection> connection = CreateConnection();
 
-  const std::vector<int64_t> object_store_ids = {1ll};
+  const std::vector<int64_t> object_store_ids = {kObjectStoreId};
   Transaction* transaction = CreateTransaction(
       connection.get(),
       /*id=*/0, object_store_ids, blink::mojom::IDBTransactionMode::ReadWrite);
 
-  // Register a transaction with ReadWrite mode to object store 1.
+  // Register a transaction with ReadWrite mode to the object store.
   // The transaction should be started and it's not blocking any others.
   EXPECT_EQ(transaction->state(), Transaction::STARTED);
   EXPECT_FALSE(transaction->IsTransactionBlockingOtherClients());

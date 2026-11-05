@@ -4,45 +4,78 @@
 
 #include "net/http/http_auth_gssapi_posix.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <limits>
 #include <string>
 #include <string_view>
 
 #include "base/base64.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/format_macros.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/types/expected.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "net/base/net_errors.h"
+#include "net/base/url_util.h"
 #include "net/http/http_auth.h"
-#include "net/http/http_auth_gssapi_posix.h"
 #include "net/http/http_auth_multi_round_parse.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_values.h"
 #include "net/log/net_log_with_source.h"
 #include "net/net_buildflags.h"
+#include "url/url_canon.h"
 
 namespace net {
 
 using DelegationType = HttpAuth::DelegationType;
 
+namespace {
+
+// On x86 macOS, Apple's gssapi.h wraps gss_OID_desc in `#pragma pack(2)`,
+// which places `elements` at a 4-byte-aligned address. A statically
+// initialized pointer that isn't 8-byte aligned can straddle a page boundary,
+// which Mach-O chained fixups can't represent. Pad the descriptor so that
+// `gss_OID_desc::elements` is 8-byte aligned on all platforms.
+struct alignas(8) PaddedOidDesc {
+  uint32_t padding;
+  gss_OID_desc desc;
+};
+static_assert(
+    (offsetof(PaddedOidDesc, desc) + offsetof(gss_OID_desc, elements)) % 8 ==
+    0);
+
 // Exported mechanism for GSSAPI. We always use SPNEGO:
 
 // iso.org.dod.internet.security.mechanism.snego (1.3.6.1.5.5.2)
-gss_OID_desc CHROME_GSS_SPNEGO_MECH_OID_DESC_VAL = {
-  6,
-  const_cast<char*>("\x2b\x06\x01\x05\x05\x02")
-};
+PaddedOidDesc CHROME_GSS_SPNEGO_MECH_OID_DESC_VAL = {
+    0,
+    {6, const_cast<char*>("\x2b\x06\x01\x05\x05\x02")}};
+
+base::span<const uint8_t> GssBufferToSpan(const gss_buffer_desc& buffer) {
+  if (!buffer.value) {
+    return {};
+  }
+  // SAFETY: The GSS-API contract is that `value` points to `length` bytes.
+  return UNSAFE_BUFFERS(
+      base::span(static_cast<const uint8_t*>(buffer.value), buffer.length));
+}
+
+}  // namespace
 
 gss_OID CHROME_GSS_SPNEGO_MECH_OID_DESC =
-    &CHROME_GSS_SPNEGO_MECH_OID_DESC_VAL;
+    &CHROME_GSS_SPNEGO_MECH_OID_DESC_VAL.desc;
 
 OM_uint32 DelegationTypeToFlag(DelegationType delegation_type) {
   switch (delegation_type) {
@@ -113,13 +146,6 @@ class ScopedName {
   raw_ptr<GSSAPILibrary> gssapi_lib_;
 };
 
-bool OidEquals(const gss_OID left, const gss_OID right) {
-  if (left->length != right->length)
-    return false;
-  return 0 ==
-         UNSAFE_TODO(memcmp(left->elements, right->elements, right->length));
-}
-
 base::DictValue GetGssStatusCodeValue(GSSAPILibrary* gssapi_lib,
                                       OM_uint32 status,
                                       OM_uint32 status_code_type) {
@@ -160,14 +186,13 @@ base::DictValue GetGssStatusCodeValue(GSSAPILibrary* gssapi_lib,
         &minor_status, status, status_code_type, GSS_C_NO_OID, &message_context,
         &message_buffer);
 
-    if (major_status != GSS_S_COMPLETE || message_buffer.length == 0 ||
-        !message_buffer.value) {
+    base::span<const uint8_t> message_bytes = GssBufferToSpan(message_buffer);
+    if (major_status != GSS_S_COMPLETE || message_bytes.empty()) {
       continue;
     }
 
-    std::string_view message_string{
-        static_cast<const char*>(message_buffer.value),
-        std::min(kMaxMsgLength, message_buffer.length)};
+    std::string_view message_string = base::as_string_view(
+        message_bytes.first(std::min(kMaxMsgLength, message_bytes.size())));
 
     // The returned string is almost assuredly ASCII, but be defensive.
     if (!base::IsStringUTF8(message_string))
@@ -206,34 +231,41 @@ base::DictValue OidToValue(gss_OID oid) {
   if (!oid->elements)
     return params;
 
+  // SAFETY: The GSS-API contract is that `elements` points to `length` bytes.
+  auto oid_bytes = UNSAFE_BUFFERS(
+      base::span(static_cast<const char*>(oid->elements), oid->length));
+
   // Cap OID content at arbitrary limit 1k.
-  constexpr OM_uint32 kMaxOidDataSize = 1024;
-  params.Set("bytes", NetLogBinaryValue(oid->elements, std::min(kMaxOidDataSize,
-                                                                oid->length)));
+  constexpr size_t kMaxOidDataSize = 1024;
+  params.Set("bytes", NetLogBinaryValue(base::as_byte_span(oid_bytes).first(
+                          std::min(kMaxOidDataSize, oid_bytes.size()))));
 
   // Based on RFC 2744 Appendix A. Hardcoding the OIDs in the list below to
-  // avoid having a static dependency on the library.
+  // avoid having a static dependency on the library. The OIDs are stored as
+  // bytes rather than as gss_OID_desc, see the comment on PaddedOidDesc.
   static const struct {
     const char* symbolic_name;
-    const gss_OID_desc oid_desc;
+    base::span<const char> oid;
   } kWellKnownOIDs[] = {
       {"GSS_C_NT_USER_NAME",
-       {10, const_cast<char*>("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x01")}},
+       base::span_from_cstring("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x01")},
       {"GSS_C_NT_MACHINE_UID_NAME",
-       {10, const_cast<char*>("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x02")}},
+       base::span_from_cstring("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x02")},
       {"GSS_C_NT_STRING_UID_NAME",
-       {10, const_cast<char*>("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x03")}},
+       base::span_from_cstring("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x03")},
       {"GSS_C_NT_HOSTBASED_SERVICE_X",
-       {6, const_cast<char*>("\x2b\x06\x01\x05\x06\x02")}},
+       base::span_from_cstring("\x2b\x06\x01\x05\x06\x02")},
       {"GSS_C_NT_HOSTBASED_SERVICE",
-       {10, const_cast<char*>("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x04")}},
-      {"GSS_C_NT_ANONYMOUS", {6, const_cast<char*>("\x2b\x06\01\x05\x06\x03")}},
+       base::span_from_cstring("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x04")},
+      {"GSS_C_NT_ANONYMOUS",
+       base::span_from_cstring("\x2b\x06\01\x05\x06\x03")},
       {"GSS_C_NT_EXPORT_NAME",
-       {6, const_cast<char*>("\x2b\x06\x01\x05\x06\x04")}}};
+       base::span_from_cstring("\x2b\x06\x01\x05\x06\x04")}};
 
   for (auto& well_known_oid : kWellKnownOIDs) {
-    if (OidEquals(oid, const_cast<const gss_OID>(&well_known_oid.oid_desc)))
+    if (well_known_oid.oid == oid_bytes) {
       params.Set("oid", well_known_oid.symbolic_name);
+    }
   }
 
   return params;
@@ -255,11 +287,11 @@ base::DictValue GetDisplayNameValue(GSSAPILibrary* gssapi_lib,
                                       major_status, minor_status));
     return rv;
   }
-  auto name_string =
-      std::string_view(reinterpret_cast<const char*>(name.value), name.length);
+  base::span<const uint8_t> name_bytes = GssBufferToSpan(name);
+  std::string_view name_string = base::as_string_view(name_bytes);
   rv.Set("name", base::IsStringUTF8(name_string)
                      ? NetLogStringValue(name_string)
-                     : NetLogBinaryValue(name.value, name.length));
+                     : NetLogBinaryValue(name_bytes));
   rv.Set("type", OidToValue(name_type));
   return rv;
 }
@@ -630,6 +662,10 @@ ScopedSecurityContext::ScopedSecurityContext(GSSAPILibrary* gssapi_lib)
 }
 
 ScopedSecurityContext::~ScopedSecurityContext() {
+  reset();
+}
+
+void ScopedSecurityContext::reset() {
   if (security_context_ != GSS_C_NO_CONTEXT) {
     gss_buffer_desc output_token = GSS_C_EMPTY_BUFFER;
     OM_uint32 minor_status = 0;
@@ -643,8 +679,13 @@ ScopedSecurityContext::~ScopedSecurityContext() {
   }
 }
 
-HttpAuthGSSAPI::HttpAuthGSSAPI(GSSAPILibrary* library, gss_OID gss_oid)
-    : gss_oid_(gss_oid), library_(library), scoped_sec_context_(library) {
+HttpAuthGSSAPI::HttpAuthGSSAPI(scoped_refptr<GSSAPILibrary> library,
+                               gss_OID gss_oid)
+    : gss_oid_(gss_oid),
+      library_(std::move(library)),
+      // Safe: `library_` is declared before `scoped_sec_context_`, so it
+      // outlives the context it is borrowed by.
+      scoped_sec_context_(library_.get()) {
   DCHECK(library_);
 }
 
@@ -672,6 +713,206 @@ void HttpAuthGSSAPI::SetDelegation(DelegationType delegation_type) {
   delegation_type_ = delegation_type;
 }
 
+bool HttpAuthGSSAPI::ResetSecurityContext() {
+  scoped_sec_context_.reset();
+  decoded_server_auth_token_.clear();
+  return true;
+}
+
+namespace {
+
+bool OidEquals(const gss_OID oid, base::span<const char> expected) {
+  if (!oid || !oid->elements || oid->length == 0) {
+    return false;
+  }
+  // SAFETY: The GSS-API contract is that `elements` points to `length` bytes.
+  auto oid_bytes = UNSAFE_BUFFERS(
+      base::span(static_cast<const char*>(oid->elements), oid->length));
+  return oid_bytes == expected;
+}
+
+bool IsHostbasedServiceOid(const gss_OID oid) {
+  // Match `GSS_C_NT_HOSTBASED_SERVICE` (1.2.840.113554.1.2.1.4) and deprecated
+  // `GSS_C_NT_HOSTBASED_SERVICE_X` (1.3.6.1.5.6.2, RFC 2744 Appendix A).
+  return OidEquals(oid, base::span_from_cstring(
+                            "\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x04")) ||
+         OidEquals(oid, base::span_from_cstring("\x2b\x06\x01\x05\x06\x02"));
+}
+
+bool IsUserNameOid(const gss_OID oid) {
+  // `GSS_C_NT_USER_NAME` (1.2.840.113554.1.2.1.1, RFC 2744 Appendix A).
+  return OidEquals(
+      oid, base::span_from_cstring("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x01"));
+}
+
+bool IsKrb5PrincipalOid(const gss_OID oid) {
+  // `GSS_KRB5_NT_PRINCIPAL_NAME` (1.2.840.113554.1.2.2.1, RFC 1964 Section
+  // 2.1.1).
+  return OidEquals(
+      oid, base::span_from_cstring("\x2a\x86\x48\x86\xf7\x12\x01\x02\x02\x01"));
+}
+
+bool IsSpnegoOid(const gss_OID oid) {
+  // SPNEGO mechanism OID (1.3.6.1.5.5.2).
+  return OidEquals(oid, base::span_from_cstring("\x2b\x06\x01\x05\x05\x02"));
+}
+
+bool IsNtlmsspOid(const gss_OID oid) {
+  // Microsoft NTLMSSP mechanism OID (1.3.6.1.4.1.311.2.2.10), negotiated when
+  // SPNEGO falls back from Kerberos to NTLM (e.g. `GSS.framework` on macOS or
+  // `gss-ntlmssp` on Linux).
+  return OidEquals(
+      oid, base::span_from_cstring("\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a"));
+}
+
+}  // namespace
+
+base::expected<std::string, HttpAuthMechanism::TargetPrincipalError>
+HttpAuthGSSAPI::GetTargetPrincipalHost() const {
+  if (scoped_sec_context_.get() == GSS_C_NO_CONTEXT) {
+    return base::unexpected(TargetPrincipalError::kNotReported);
+  }
+  gss_name_t targ_name = GSS_C_NO_NAME;
+  gss_OID mech_type = GSS_C_NO_OID;
+  int open = 0;
+  OM_uint32 minor_status = 0;
+  OM_uint32 major_status = library_->inquire_context(
+      &minor_status, scoped_sec_context_.get(), nullptr, &targ_name, nullptr,
+      &mech_type, nullptr, nullptr, &open);
+  ScopedName scoped_targ_name(targ_name, library_.get());
+  if (major_status != GSS_S_COMPLETE) {
+    // Heimdal SPNEGO returns `GSS_S_NO_CONTEXT` for an incomplete round-1
+    // context that only proposed a mechanism list (no optimistic mechanism
+    // token, so no ticket or delegated credential exists yet).
+    if (GSS_ROUTINE_ERROR(major_status) == GSS_S_NO_CONTEXT && !open) {
+      return base::unexpected(TargetPrincipalError::kNotReported);
+    }
+    return base::unexpected(TargetPrincipalError::kQueryFailed);
+  }
+  // NTLM has no KDC tickets, TGT delegation, or krb5 DNS canonicalization, so
+  // skip Kerberos principal validation once the context reports NTLMSSP. (Until
+  // SPNEGO completes, MIT krb5 reports the SPNEGO OID instead, and
+  // `gss-ntlmssp` displays its target as `HTTP/<host>` under
+  // `GSS_C_NT_HOSTBASED_SERVICE`, which is validated below.)
+  if (IsNtlmsspOid(mech_type)) {
+    return base::unexpected(TargetPrincipalError::kNotReported);
+  }
+  // Incomplete round-1 SPNEGO contexts (and Heimdal/macOS `GSS.framework` NTLM
+  // contexts) can succeed with `targ_name == GSS_C_NO_NAME`.
+  if (targ_name == GSS_C_NO_NAME) {
+    return base::unexpected(TargetPrincipalError::kNotReported);
+  }
+  gss_buffer_desc output_name_buffer = GSS_C_EMPTY_BUFFER;
+  gss_OID output_name_type = GSS_C_NO_OID;
+  major_status = library_->display_name(&minor_status, targ_name,
+                                        &output_name_buffer, &output_name_type);
+  ScopedBuffer scoped_output_name(&output_name_buffer, library_.get());
+  if (major_status != GSS_S_COMPLETE || !output_name_buffer.value ||
+      !output_name_buffer.length) {
+    return base::unexpected(TargetPrincipalError::kQueryFailed);
+  }
+  std::string_view display_name(
+      static_cast<const char*>(output_name_buffer.value),
+      output_name_buffer.length);
+  // Strip at most one trailing NUL if a GSSAPI provider includes a terminator
+  // in `output_name_buffer.length`.
+  if (display_name.ends_with('\0')) {
+    display_name.remove_suffix(1);
+  }
+  if (display_name.empty()) {
+    return base::unexpected(TargetPrincipalError::kQueryFailed);
+  }
+  // Reject interior NULs and backslash-escaped Kerberos/hostbased delimiters
+  // (`\/` or `\@`), which can't be split into service and host unambiguously.
+  // The explicit length keeps the embedded NUL in the search set.
+  constexpr std::string_view kNulOrBackslash("\0\\", 2);
+  if (display_name.find_first_of(kNulOrBackslash) != std::string_view::npos) {
+    return base::unexpected(TargetPrincipalError::kUnparsableHost);
+  }
+  // Accept both `HTTP` and `host` service prefixes: KDCs with service aliasing
+  // (e.g. FreeIPA, MIT krb5, Heimdal) can canonicalize `HTTP/<fqdn>` to the
+  // machine's `host/<fqdn>@REALM` keytab principal in an authenticated
+  // `TGS-REP`.
+  //
+  // Accept `HTTP@<host>` and `host@<host>` for hostbased name types.
+  //
+  // On incomplete SPNEGO contexts (`!open && IsSpnegoOid(mech_type)`, which MIT
+  // krb5 reports until SPNEGO negotiation completes), also accept them under an
+  // empty or unrecognized name type. This is only a defensive fallback: no
+  // known provider reports that form (MIT krb5 displays `HTTP/<host>@REALM` and
+  // `gss-ntlmssp` displays `HTTP/<host>`, both handled by the `http/` branch),
+  // so validating the host against the URL host and policy is preferred over
+  // failing authentication for an unknown provider. `GSS_C_NT_USER_NAME` and
+  // `GSS_KRB5_NT_PRINCIPAL_NAME` are excluded so that 1-component Kerberos UPNs
+  // such as `HTTP@REALM` are still rejected.
+  std::string_view target_part;
+  if (base::StartsWith(display_name, "http/",
+                       base::CompareCase::INSENSITIVE_ASCII) ||
+      base::StartsWith(display_name, "host/",
+                       base::CompareCase::INSENSITIVE_ASCII)) {
+    target_part = display_name.substr(5);
+    size_t at_pos = target_part.find('@');
+    if (at_pos != std::string_view::npos) {
+      if (target_part.find('@', at_pos + 1) != std::string_view::npos) {
+        return base::unexpected(TargetPrincipalError::kUnparsableHost);
+      }
+      target_part = target_part.substr(0, at_pos);
+    }
+  } else if ((IsHostbasedServiceOid(output_name_type) ||
+              (!open && IsSpnegoOid(mech_type) &&
+               !IsUserNameOid(output_name_type) &&
+               !IsKrb5PrincipalOid(output_name_type))) &&
+             (base::StartsWith(display_name, "http@",
+                               base::CompareCase::INSENSITIVE_ASCII) ||
+              base::StartsWith(display_name, "host@",
+                               base::CompareCase::INSENSITIVE_ASCII))) {
+    target_part = display_name.substr(5);
+  } else {
+    return base::unexpected(TargetPrincipalError::kNonHttpServicePrincipal);
+  }
+  if (target_part.empty() ||
+      target_part.find_first_of("/@") != std::string_view::npos) {
+    return base::unexpected(TargetPrincipalError::kUnparsableHost);
+  }
+  std::string parsed_host;
+  std::string_view raw_host;
+  if (!target_part.starts_with('[') &&
+      target_part.find(':') != target_part.rfind(':')) {
+    // Multiple colons without '[' can only be a bare IPv6 literal; skip
+    // `ParseHostAndPort()`, which would treat the final `:<group>` as a port.
+    raw_host = target_part;
+  } else {
+    int port = -1;
+    if (!ParseHostAndPort(target_part, &parsed_host, &port)) {
+      return base::unexpected(TargetPrincipalError::kUnparsableHost);
+    }
+    raw_host = parsed_host;
+  }
+  std::string trimmed_host = TrimEndingDot(raw_host);
+  if (trimmed_host.empty() || trimmed_host.ends_with('.')) {
+    return base::unexpected(TargetPrincipalError::kUnparsableHost);
+  }
+  url::CanonHostInfo host_info;
+  std::string canonical_host =
+      CanonicalizeHostSupportsBareIPV6(trimmed_host, &host_info);
+  // Host canonicalization is many-to-one (for example, percent-decoding, IPv4
+  // shorthand such as `0x0a.0.0.2` or `167772162`, IPv6 zero compression, and
+  // UTS-46 mapping of IDN labels, fullwidth letters, or ignored code points),
+  // so a distinct principal could otherwise compare equal to the requested
+  // host. Require the host to already be canonical, ignoring only ASCII case
+  // and IPv6 brackets.
+  std::string expected_host = base::ToLowerASCII(trimmed_host);
+  if (host_info.family == url::CanonHostInfo::IPV6 &&
+      !expected_host.starts_with('[')) {
+    expected_host = base::StrCat({"[", expected_host, "]"});
+  }
+  if (host_info.family == url::CanonHostInfo::BROKEN ||
+      canonical_host != expected_host) {
+    return base::unexpected(TargetPrincipalError::kUnparsableHost);
+  }
+  return canonical_host;
+}
+
 HttpAuth::AuthorizationResult HttpAuthGSSAPI::ParseChallenge(
     HttpAuthChallengeTokenizer* tok) {
   if (scoped_sec_context_.get() == GSS_C_NO_CONTEXT) {
@@ -697,17 +938,15 @@ int HttpAuthGSSAPI::GenerateAuthToken(const AuthCredentials* credentials,
                           ? const_cast<char*>(decoded_server_auth_token_.data())
                           : nullptr;
   gss_buffer_desc output_token = GSS_C_EMPTY_BUFFER;
-  ScopedBuffer scoped_output_token(&output_token, library_);
+  ScopedBuffer scoped_output_token(&output_token, library_.get());
   int rv = GetNextSecurityToken(spn, channel_bindings, &input_token,
                                 &output_token, net_log);
   if (rv != OK)
     return rv;
 
   // Base64 encode data in output buffer and prepend the scheme.
-  std::string encode_input(static_cast<char*>(output_token.value),
-                           output_token.length);
-  std::string encode_output = base::Base64Encode(encode_input);
-  *auth_token = "Negotiate " + encode_output;
+  *auth_token =
+      "Negotiate " + base::Base64Encode(GssBufferToSpan(output_token));
   return OK;
 }
 
@@ -836,7 +1075,11 @@ int HttpAuthGSSAPI::GetNextSecurityToken(const std::string& spn,
   // pointers. Rather than const casting, let's just leave this as non-const.
   // Even if the OID pointer is const, the inner |elements| pointer is still
   // non-const.
-  static gss_OID_desc kGSS_C_NT_HOSTBASED_SERVICE = {
+  //
+  // This is deliberately not static: a static gss_OID_desc would be statically
+  // initialized data with a 4-byte-aligned pointer on x86 macOS (see the
+  // comment on PaddedOidDesc), while a local is built on the stack by code.
+  gss_OID_desc kGSS_C_NT_HOSTBASED_SERVICE = {
       10, const_cast<char*>("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x04")};
 
   // Create a name for the principal
@@ -852,12 +1095,13 @@ int HttpAuthGSSAPI::GetNextSecurityToken(const std::string& spn,
       library_->import_name(&minor_status, &spn_buffer,
                             &kGSS_C_NT_HOSTBASED_SERVICE, &principal_name);
   net_log.AddEvent(NetLogEventType::AUTH_LIBRARY_IMPORT_NAME, [&] {
-    return ImportNameErrorParams(library_, spn, major_status, minor_status);
+    return ImportNameErrorParams(library_.get(), spn, major_status,
+                                 minor_status);
   });
   int rv = MapImportNameStatusToError(major_status);
   if (rv != OK)
     return rv;
-  ScopedName scoped_name(principal_name, library_);
+  ScopedName scoped_name(principal_name, library_.get());
 
   // Continue creating a security context.
   net_log.BeginEvent(NetLogEventType::AUTH_LIBRARY_INIT_SEC_CTX);
@@ -870,7 +1114,7 @@ int HttpAuthGSSAPI::GetNextSecurityToken(const std::string& spn,
       nullptr,  // ret flags
       nullptr);
   net_log.EndEvent(NetLogEventType::AUTH_LIBRARY_INIT_SEC_CTX, [&] {
-    return InitSecContextErrorParams(library_, scoped_sec_context_.get(),
+    return InitSecContextErrorParams(library_.get(), scoped_sec_context_.get(),
                                      major_status, minor_status);
   });
   return MapInitSecContextStatusToError(major_status);

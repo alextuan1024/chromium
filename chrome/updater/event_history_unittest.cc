@@ -4,12 +4,13 @@
 
 #include "chrome/updater/event_history.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <concepts>
-#include <cstddef>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <type_traits>
@@ -20,6 +21,7 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/json/values_util.h"
 #include "base/strings/string_split.h"
 #include "base/time/time.h"
@@ -144,6 +146,14 @@ MATCHER_P(ListValueElementsAre, expected_list_elements, "") {
 MATCHER(IsPositiveTimeDeltaValue, "") {
   const std::optional<base::TimeDelta> td = base::ValueToTimeDelta(&arg);
   return td.has_value() && td->is_positive();
+}
+
+// Matches an element of the `updateStates` list of an UPDATE END event.
+testing::Matcher<const base::Value&> UpdateStateIs(const std::string& state) {
+  return DictHasFields(ExpectedFields({
+      {"deviceUptime", IsPositiveTimeDeltaValue()},
+      {"state", ValueIs(state)},
+  }));
 }
 
 class EventHistoryTest : public testing::Test {
@@ -431,23 +441,19 @@ TEST_F(EventHistoryTest, PersistedDataEventToDict) {
   ASSERT_TRUE(base::Time::FromString("2 Jan 2024 12:00:00 GMT", &last_checked));
   base::Time last_started;
   ASSERT_TRUE(base::Time::FromString("1 Jan 2024 12:00:00 GMT", &last_started));
-  PersistedDataEvent::RegisteredApp app1;
-  app1.app_id = "app1";
-  app1.version = "1.0";
-  app1.cohort = "cohort1";
-  app1.brand_code = "brand1";
-  PersistedDataEvent::RegisteredApp app2;
-  app2.app_id = "app2";
-  app2.version = "2.0";
-  app2.brand_code = "brand2";
-  std::optional<base::DictValue> event = PersistedDataEvent()
-                                             .SetEventId("test-event-id")
-                                             .SetEulaRequired(true)
-                                             .SetLastChecked(last_checked)
-                                             .SetLastStarted(last_started)
-                                             .AddRegisteredApp(app1)
-                                             .AddRegisteredApp(app2)
-                                             .Build();
+  std::optional<base::DictValue> event =
+      PersistedDataEvent()
+          .SetEventId("test-event-id")
+          .SetEulaRequired(true)
+          .SetLastChecked(last_checked)
+          .SetLastStarted(last_started)
+          .AddRegisteredApp({.app_id = "app1",
+                             .version = "1.0",
+                             .cohort = "cohort1",
+                             .brand_code = "brand1"})
+          .AddRegisteredApp(
+              {.app_id = "app2", .version = "2.0", .brand_code = "brand2"})
+          .Build();
 
   base::ListValue expected_apps;
   expected_apps.Append(base::DictValue()
@@ -629,6 +635,108 @@ TEST_F(EventHistoryTest, UpdateEndEventNoOptionalFieldsToDict) {
                           {"eventType", ValueIs("UPDATE")},
                           {"bound", ValueIs("END")},
                           {"eventId", ValueIs("test-event-id")},
+                          {"deviceUptime", IsPositiveTimeDeltaValue()},
+                          {"pid", ValueIs(GetCurrentPid())},
+                          {"processToken", ValueIs(GetProcessToken())},
+                      })));
+}
+
+TEST_F(EventHistoryTest, UpdateEndEventRecordsRepeatedStateOnce) {
+  UpdateEndEvent builder;
+  builder.SetEventId("test-event-id");
+  // Download progress is reported as an update state notification for every
+  // chunk read, so a large download repeats the same state many times.
+  for (int i = 0; i < 100'000; ++i) {
+    builder.AddUpdateState(UpdateService::UpdateState::State::kDownloading);
+  }
+  std::optional<base::DictValue> event = builder.Build();
+
+  ASSERT_TRUE(event);
+  EXPECT_THAT(*event,
+              DictHasFields(ExpectedFields({
+                  {"eventType", ValueIs("UPDATE")},
+                  {"bound", ValueIs("END")},
+                  {"eventId", ValueIs("test-event-id")},
+                  {"updateStates", ListValueElementsAre(ExpectedListElements(
+                                       {UpdateStateIs("DOWNLOADING")}))},
+                  {"deviceUptime", IsPositiveTimeDeltaValue()},
+                  {"pid", ValueIs(GetCurrentPid())},
+                  {"processToken", ValueIs(GetProcessToken())},
+              })));
+
+  // The size of the event does not depend on the number of notifications.
+  std::optional<std::string> json = base::WriteJson(*event);
+  ASSERT_TRUE(json);
+  EXPECT_LT(json->size(), 1024u);
+}
+
+TEST_F(EventHistoryTest, UpdateEndEventRecordsStateTransitions) {
+  using State = UpdateService::UpdateState::State;
+  UpdateEndEvent builder;
+  builder.SetEventId("test-event-id")
+      .AddUpdateState(State::kCheckingForUpdates)
+      .AddUpdateState(State::kUpdateAvailable);
+  // Each state is reported repeatedly while the update makes progress in it. A
+  // failed differential update falls back to a full update, so the update can
+  // enter a state more than once.
+  for (State state :
+       {State::kDownloading, State::kPatching, State::kDownloading,
+        State::kDecompressing, State::kInstalling, State::kUpdated}) {
+    for (int i = 0; i < 3; ++i) {
+      builder.AddUpdateState(state);
+    }
+  }
+  std::optional<base::DictValue> event = builder.Build();
+
+  ASSERT_TRUE(event);
+  EXPECT_THAT(*event,
+              DictHasFields(ExpectedFields({
+                  {"eventType", ValueIs("UPDATE")},
+                  {"bound", ValueIs("END")},
+                  {"eventId", ValueIs("test-event-id")},
+                  {"updateStates", ListValueElementsAre(ExpectedListElements({
+                                       UpdateStateIs("CHECKING_FOR_UPDATES"),
+                                       UpdateStateIs("UPDATE_AVAILABLE"),
+                                       UpdateStateIs("DOWNLOADING"),
+                                       UpdateStateIs("PATCHING"),
+                                       UpdateStateIs("DOWNLOADING"),
+                                       UpdateStateIs("DECOMPRESSING"),
+                                       UpdateStateIs("INSTALLING"),
+                                       UpdateStateIs("UPDATED"),
+                                   }))},
+                  {"deviceUptime", IsPositiveTimeDeltaValue()},
+                  {"pid", ValueIs(GetCurrentPid())},
+                  {"processToken", ValueIs(GetProcessToken())},
+              })));
+}
+
+TEST_F(EventHistoryTest, AddErrorRecordsRepeatedErrorOnce) {
+  const HistoryEventError error1 = {.category = 1, .code = 2, .extracode1 = 3};
+  // Differs from `error1` only in `extracode1`.
+  const HistoryEventError error2 = {.category = 1, .code = 2, .extracode1 = 4};
+  UpdateEndEvent builder;
+  builder.SetEventId("test-event-id");
+  // Update state notifications carry the current error of the update, so the
+  // same error can be reported many times in a row.
+  for (int i = 0; i < 100; ++i) {
+    builder.AddError(error1);
+  }
+  builder.AddError(error2).AddError(error2).AddError(error1);
+  std::optional<base::DictValue> event = builder.Build();
+
+  base::ListValue expected_errors;
+  expected_errors.Append(
+      base::DictValue().Set("category", 1).Set("code", 2).Set("extracode1", 3));
+  expected_errors.Append(
+      base::DictValue().Set("category", 1).Set("code", 2).Set("extracode1", 4));
+  expected_errors.Append(
+      base::DictValue().Set("category", 1).Set("code", 2).Set("extracode1", 3));
+  ASSERT_TRUE(event);
+  EXPECT_THAT(*event, DictHasFields(ExpectedFields({
+                          {"eventType", ValueIs("UPDATE")},
+                          {"bound", ValueIs("END")},
+                          {"eventId", ValueIs("test-event-id")},
+                          {"errors", Eq(std::cref(expected_errors))},
                           {"deviceUptime", IsPositiveTimeDeltaValue()},
                           {"pid", ValueIs(GetCurrentPid())},
                           {"processToken", ValueIs(GetProcessToken())},

@@ -28,6 +28,7 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.bookmarks.BookmarkEditMetrics.BookmarkEditOutcome;
 import org.chromium.chrome.browser.bookmarks.BookmarkManagerOpenerImpl;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
@@ -51,6 +52,8 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @EnableFeatures({ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG})
+@DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/462590301
+@Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
 public class BookmarkEditDesktopTest {
 
     @Rule
@@ -124,10 +127,8 @@ public class BookmarkEditDesktopTest {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
                         ApplicationStatus.unregisterActivityStateListener(mActivityStateListener);
-                        if (!mActivity.isFinishing() && !mActivity.isDestroyed()) {
-                            mActivity.finish();
-                        }
                     });
+            ApplicationTestUtils.finishActivity(mActivity);
         }
         if (mBookmarkModel != null && mModelObserver != null) {
             ThreadUtils.runOnUiThreadBlocking(
@@ -214,7 +215,6 @@ public class BookmarkEditDesktopTest {
 
     @Test
     @MediumTest
-    @DisableIf.Device(DeviceFormFactor.PHONE) // https://crbug.com/562626182
     public void testCloseButton() throws ExecutionException, TimeoutException {
         var histogramWatcher =
                 HistogramWatcher.newBuilder()

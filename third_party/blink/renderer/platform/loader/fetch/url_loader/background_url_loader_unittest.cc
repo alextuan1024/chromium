@@ -4,23 +4,25 @@
 
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/background_url_loader.h"
 
+#include <atomic>
 #include <variant>
+#include <vector>
 
 #include "base/check.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/ref_counted_memory.h"
 #include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
-#include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/threading/thread_restrictions.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe_utils.h"
 #include "net/base/net_errors.h"
@@ -32,7 +34,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/common/loader/background_resource_fetch_histograms.h"
 #include "third_party/blink/public/mojom/navigation/renderer_eviction_reason.mojom-blink.h"
 #include "third_party/blink/public/platform/resource_load_info_notifier_wrapper.h"
 #include "third_party/blink/public/platform/web_background_resource_fetch_assets.h"
@@ -53,10 +54,6 @@
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -311,7 +308,8 @@ class FakeURLLoaderClient : public URLLoaderClient {
     will_follow_callbacks_.pop_front();
     return std::move(will_follow_callback).Run(new_url);
   }
-  void DidSendData(uint64_t bytesSent, uint64_t totalBytesToBeSent) override {
+  void DidSendData(uint64_t bytes_sent,
+                   uint64_t total_bytes_to_be_sent) override {
     NOTREACHED();
   }
   void DidReceiveResponse(
@@ -335,18 +333,18 @@ class FakeURLLoaderClient : public URLLoaderClient {
     DCHECK(unfreezable_task_runner_->BelongsToCurrentThread());
     transfer_size_diffs_.push_back(transfer_size_diff);
   }
-  void DidFinishLoading(base::TimeTicks finishTime,
-                        int64_t totalEncodedDataLength,
-                        uint64_t totalEncodedBodyLength,
-                        int64_t totalDecodedBodyLength) override {
+  void DidFinishLoading(base::TimeTicks finish_time,
+                        int64_t total_encoded_data_length,
+                        uint64_t total_encoded_body_length,
+                        int64_t total_decoded_body_length) override {
     DCHECK(unfreezable_task_runner_->BelongsToCurrentThread());
     did_finish_ = true;
   }
   void DidFail(const WebURLError& error,
-               base::TimeTicks finishTime,
-               int64_t totalEncodedDataLength,
-               uint64_t totalEncodedBodyLength,
-               int64_t totalDecodedBodyLength) override {
+               base::TimeTicks finish_time,
+               int64_t total_encoded_data_length,
+               uint64_t total_encoded_body_length,
+               int64_t total_decoded_body_length) override {
     DCHECK(unfreezable_task_runner_->BelongsToCurrentThread());
     EXPECT_FALSE(did_finish_);
     error_ = error;
@@ -455,11 +453,49 @@ class BackgroundResourceFecherTest : public testing::Test {
   }
 
  protected:
+  class TestPlatformForRedirects final : public TestingPlatformSupport {
+   public:
+    bool IsRedirectSafe(
+        const GURL& from_url,
+        const GURL& to_url,
+        const std::optional<url::Origin>& request_initiator) override {
+      return true;
+    }
+    scoped_refptr<base::RefCountedMemory> GetDataResourceBytes(
+        int resource_id) override {
+      get_data_resource_bytes_count_.fetch_add(1, std::memory_order_relaxed);
+      return resource_data_;
+    }
+    std::optional<int> GetWebUIBundledCodeCacheResourceId(
+        const GURL& resource_url) override {
+      return resource_url == webui_bundled_code_cache_url_
+                 ? std::optional<int>(1)
+                 : std::nullopt;
+    }
+
+    void set_webui_bundled_code_cache_url(const GURL& url) {
+      webui_bundled_code_cache_url_ = url;
+    }
+    int get_data_resource_bytes_count() const {
+      return get_data_resource_bytes_count_.load(std::memory_order_relaxed);
+    }
+
+   private:
+    GURL webui_bundled_code_cache_url_;
+    scoped_refptr<base::RefCountedMemory> resource_data_ =
+        base::MakeRefCounted<base::RefCountedBytes>(
+            std::vector<uint8_t>{1, 2, 3});
+    std::atomic<int> get_data_resource_bytes_count_{0};
+  };
+
   std::unique_ptr<BackgroundURLLoader> CreateBackgroundURLLoaderAndStart(
       std::unique_ptr<network::ResourceRequest> request,
       URLLoaderClient* url_loader_client,
       std::unique_ptr<BackgroundResponseProcessorFactory>
-          background_processor_factory = nullptr) {
+          background_processor_factory = nullptr,
+      bool should_fetch_code_cache = true,
+      scoped_refptr<base::SingleThreadTaskRunner> unfreezable_task_runner =
+          nullptr) {
     base::RunLoop run_loop;
     scoped_refptr<WebBackgroundResourceFetchAssets>
         background_resource_fetch_assets =
@@ -479,7 +515,9 @@ class BackgroundResourceFecherTest : public testing::Test {
         std::make_unique<BackgroundURLLoader>(
             std::move(background_resource_fetch_assets),
             /*cors_exempt_header_list=*/Vector<String>(),
-            unfreezable_task_runner_, bfcache_loader_helper_,
+            unfreezable_task_runner ? std::move(unfreezable_task_runner)
+                                    : unfreezable_task_runner_,
+            bfcache_loader_helper_,
             /*background_code_cache_host=*/nullptr);
 
     CHECK(background_url_loader->CanHandleResponseOnBackground());
@@ -492,7 +530,8 @@ class BackgroundResourceFecherTest : public testing::Test {
         /*no_mime_sniffing=*/false,
         std::make_unique<ResourceLoadInfoNotifierWrapper>(
             /*resource_load_info_notifier=*/nullptr),
-        /*code_cache_host=*/nullptr, url_loader_client);
+        /*code_cache_host=*/nullptr, should_fetch_code_cache,
+        url_loader_client);
     run_loop.Run();
     return background_url_loader;
   }
@@ -505,19 +544,9 @@ class BackgroundResourceFecherTest : public testing::Test {
   scoped_refptr<scheduler::FakeTaskRunner> unfreezable_task_runner_;
   base::test::TaskEnvironment task_environment_;
   Persistent<FakeBackForwardCacheLoaderHelper> bfcache_loader_helper_;
+  ScopedTestingPlatformSupport<TestPlatformForRedirects> platform_;
 
  private:
-  class TestPlatformForRedirects final : public TestingPlatformSupport {
-   public:
-    bool IsRedirectSafe(
-        const GURL& from_url,
-        const GURL& to_url,
-        const std::optional<url::Origin>& request_initiator) override {
-      return true;
-    }
-  };
-
-  ScopedTestingPlatformSupport<TestPlatformForRedirects> platform_;
   base::test::ScopedFeatureList feature_list_;
 };
 
@@ -561,38 +590,30 @@ TEST_F(BackgroundURLLoaderCanHandleRequestTest,
   const char kWebUIScheme[] = "webui-test";
   SchemeRegistry::RegisterURLSchemeAsWebUIForTest(kWebUIScheme);
 
-  base::HistogramTester histograms;
   network::ResourceRequest request;
   request.url = GURL(std::string(kWebUIScheme) + "://host/resource.js");
 
   EXPECT_TRUE(BackgroundURLLoader::CanHandleRequest(
       request, ResourceLoaderOptions(/*world=*/nullptr),
       /*is_prefech_only_document=*/false));
-  histograms.ExpectUniqueSample(
-      kBackgroundResourceFetchSupportStatusHistogramName,
-      BackgroundResourceFetchSupportStatus::kSupported, 1);
 
   SchemeRegistry::RemoveURLSchemeAsWebUIForTest(kWebUIScheme);
 }
 
 // WebUI support is gated behind the `BackgroundResourceFetchSupportsWebUI`
 // param. With the param disabled, WebUI scheme requests are not handled by the
-// background loader and are reported as `kUnsupportedNonHttpUrlRequest`.
+// background loader.
 TEST_F(BackgroundURLLoaderCanHandleRequestTest,
        CannotHandleRequestForWebUISchemeWhenParamDisabled) {
   const char kWebUIScheme[] = "webui-test";
   SchemeRegistry::RegisterURLSchemeAsWebUIForTest(kWebUIScheme);
 
-  base::HistogramTester histograms;
   network::ResourceRequest request;
   request.url = GURL(std::string(kWebUIScheme) + "://host/resource.js");
 
   EXPECT_FALSE(BackgroundURLLoader::CanHandleRequest(
       request, ResourceLoaderOptions(/*world=*/nullptr),
       /*is_prefech_only_document=*/false));
-  histograms.ExpectUniqueSample(
-      kBackgroundResourceFetchSupportStatusHistogramName,
-      BackgroundResourceFetchSupportStatus::kUnsupportedNonHttpUrlRequest, 1);
 
   SchemeRegistry::RemoveURLSchemeAsWebUIForTest(kWebUIScheme);
 }
@@ -600,37 +621,27 @@ TEST_F(BackgroundURLLoaderCanHandleRequestTest,
 TEST_F(BackgroundURLLoaderCanHandleRequestTest,
        CanHandleRequestForWebUIUntrustedScheme) {
   EnableWebUISupport();
-  base::HistogramTester histograms;
   network::ResourceRequest request;
   request.url = GURL("chrome-untrusted://host/resource.js");
 
   EXPECT_TRUE(BackgroundURLLoader::CanHandleRequest(
       request, ResourceLoaderOptions(/*world=*/nullptr),
       /*is_prefech_only_document=*/false));
-  histograms.ExpectUniqueSample(
-      kBackgroundResourceFetchSupportStatusHistogramName,
-      BackgroundResourceFetchSupportStatus::kSupported, 1);
 }
 
 TEST_F(BackgroundURLLoaderCanHandleRequestTest,
        CannotHandleRequestForNonWebUIScheme) {
-  base::HistogramTester histograms;
   network::ResourceRequest request;
   request.url = GURL("ftp://host/resource.js");
 
   EXPECT_FALSE(BackgroundURLLoader::CanHandleRequest(
       request, ResourceLoaderOptions(/*world=*/nullptr),
       /*is_prefech_only_document=*/false));
-  histograms.ExpectUniqueSample(
-      kBackgroundResourceFetchSupportStatusHistogramName,
-      BackgroundResourceFetchSupportStatus::kUnsupportedNonHttpUrlRequest, 1);
 }
 
 // A WebUI request that would be serviced from the WebUI bundled code cache must
 // not use the background loader: that static code cache is only serviced on the
-// main-thread loading path. Such requests are reported as
-// `kUnsupportedNonHttpUrlRequest`, matching how WebUI requests were counted
-// before WebUI schemes became supported.
+// main-thread loading path.
 TEST_F(BackgroundURLLoaderCanHandleRequestTest,
        CannotHandleRequestForWebUIBundledCodeCache) {
   EnableWebUISupport();
@@ -640,16 +651,12 @@ TEST_F(BackgroundURLLoaderCanHandleRequestTest,
   SchemeRegistry::RegisterURLSchemeAsWebUIBundledBytecodeForTest(kWebUIScheme);
   SetWebUIBundledCodeCacheURL(kUrl);
 
-  base::HistogramTester histograms;
   network::ResourceRequest request;
   request.url = kUrl;
 
   EXPECT_FALSE(BackgroundURLLoader::CanHandleRequest(
       request, ResourceLoaderOptions(/*world=*/nullptr),
       /*is_prefech_only_document=*/false));
-  histograms.ExpectUniqueSample(
-      kBackgroundResourceFetchSupportStatusHistogramName,
-      BackgroundResourceFetchSupportStatus::kUnsupportedNonHttpUrlRequest, 1);
 
   SchemeRegistry::RemoveURLSchemeAsWebUIBundledBytecodeForTest(kWebUIScheme);
   SchemeRegistry::RemoveURLSchemeAsWebUIForTest(kWebUIScheme);
@@ -884,7 +891,7 @@ TEST_F(BackgroundResourceFecherTest, CancelSoonAfterStart) {
       /*no_mime_sniffing=*/false,
       std::make_unique<ResourceLoadInfoNotifierWrapper>(
           /*resource_load_info_notifier=*/nullptr),
-      /*code_cache_host=*/nullptr, &client);
+      /*code_cache_host=*/nullptr, /*should_fetch_code_cache=*/true, &client);
 
   background_url_loader.reset();
   waitable_event.Signal();
@@ -1806,6 +1813,85 @@ TEST_F(BackgroundResourceFecherTest,
   unfreezable_task_runner_->RunUntilIdle();
   EXPECT_FALSE(client.did_finish());
   EXPECT_TRUE(client.error());
+}
+
+TEST_F(BackgroundResourceFecherTest,
+       ShouldFetchCodeCacheFalseSkipsCodeCacheFetch) {
+  SchemeRegistry::RegisterURLSchemeAsWebUIBundledBytecodeForTest("http");
+  platform_->set_webui_bundled_code_cache_url(GURL(kTestURL));
+
+  scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner =
+      task_environment_.GetMainThreadTaskRunner();
+  auto flush_tasks = [&]() {
+    base::RunLoop bg_loop;
+    background_task_runner_->PostTask(FROM_HERE, bg_loop.QuitClosure());
+    bg_loop.Run();
+    base::RunLoop main_loop;
+    main_thread_task_runner->PostTask(FROM_HERE, main_loop.QuitClosure());
+    main_loop.Run();
+  };
+
+  // First verify `should_fetch_code_cache = true` fetches the bundled code
+  // cache (with `code_cache_host == nullptr`) so the disabled check below is
+  // non-vacuous.
+  {
+    auto request = CreateTestRequest();
+    request->destination = network::mojom::RequestDestination::kScript;
+    FakeURLLoaderClient client(main_thread_task_runner);
+    auto background_url_loader = CreateBackgroundURLLoaderAndStart(
+        std::move(request), &client,
+        /*background_processor_factory=*/nullptr,
+        /*should_fetch_code_cache=*/true, main_thread_task_runner);
+
+    mojo::Remote<network::mojom::URLLoaderClient> loader_client_remote(
+        std::move(loader_client_pending_remote_));
+    loader_client_remote->OnReceiveResponse(CreateTestResponse(),
+                                            CreateTestBody(),
+                                            /*cached_metadata=*/std::nullopt);
+    loader_client_remote->OnComplete(
+        network::URLLoaderCompletionStatus(net::OK));
+    ASSERT_TRUE(base::test::RunUntil([&]() { return client.did_finish(); }));
+
+    EXPECT_EQ(1, platform_->get_data_resource_bytes_count());
+    EXPECT_TRUE(client.response());
+    EXPECT_TRUE(client.cached_metadata());
+    EXPECT_TRUE(client.did_finish());
+    EXPECT_FALSE(client.error());
+
+    background_url_loader.reset();
+    flush_tasks();
+  }
+
+  // Now verify `should_fetch_code_cache = false` skips the code cache fetch.
+  {
+    auto request = CreateTestRequest();
+    request->destination = network::mojom::RequestDestination::kScript;
+    FakeURLLoaderClient client(main_thread_task_runner);
+    auto background_url_loader = CreateBackgroundURLLoaderAndStart(
+        std::move(request), &client,
+        /*background_processor_factory=*/nullptr,
+        /*should_fetch_code_cache=*/false, main_thread_task_runner);
+
+    mojo::Remote<network::mojom::URLLoaderClient> loader_client_remote(
+        std::move(loader_client_pending_remote_));
+    loader_client_remote->OnReceiveResponse(CreateTestResponse(),
+                                            CreateTestBody(),
+                                            /*cached_metadata=*/std::nullopt);
+    loader_client_remote->OnComplete(
+        network::URLLoaderCompletionStatus(net::OK));
+    ASSERT_TRUE(base::test::RunUntil([&]() { return client.did_finish(); }));
+
+    EXPECT_EQ(1, platform_->get_data_resource_bytes_count());
+    EXPECT_TRUE(client.response());
+    EXPECT_FALSE(client.cached_metadata());
+    EXPECT_TRUE(client.did_finish());
+    EXPECT_FALSE(client.error());
+
+    background_url_loader.reset();
+    flush_tasks();
+  }
+
+  SchemeRegistry::RemoveURLSchemeAsWebUIBundledBytecodeForTest("http");
 }
 
 }  // namespace

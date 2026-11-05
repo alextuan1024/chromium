@@ -20,10 +20,12 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/history/history_utils.h"
+#include "chrome/browser/history/web_history_service_factory.h"
 #include "chrome/browser/history_clusters/history_clusters_metrics_logger.h"
 #include "chrome/browser/history_clusters/history_clusters_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -48,6 +50,8 @@
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/sync_device_info/device_info_sync_service.h"
+#include "components/sync_device_info/device_info_tracker.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
@@ -57,7 +61,6 @@
 #include "ui/base/l10n/time_format.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/webui/resources/cr_components/history_clusters/history_clusters.mojom.h"
@@ -130,7 +133,7 @@ class HistoryClustersSidePanelContextMenu
         }
         content::OpenURLParams params =
             content::OpenURLParams::CreateBrowserInitiated(
-                url_, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+                url_, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
                 ui::PAGE_TRANSITION_AUTO_BOOKMARK);
         GetBrowserWindowInterface(interface_)
             ->OpenURL(params,
@@ -144,7 +147,7 @@ class HistoryClustersSidePanelContextMenu
         }
         content::OpenURLParams params =
             content::OpenURLParams::CreateBrowserInitiated(
-                url_, WindowOpenDisposition::NEW_WINDOW,
+                url_, ui::mojom::WindowOpenDisposition::kNewWindow,
                 ui::PAGE_TRANSITION_AUTO_BOOKMARK);
         GetBrowserWindowInterface(interface_)
             ->OpenURL(params,
@@ -158,7 +161,7 @@ class HistoryClustersSidePanelContextMenu
         }
         content::OpenURLParams params =
             content::OpenURLParams::CreateBrowserInitiated(
-                url_, WindowOpenDisposition::OFF_THE_RECORD,
+                url_, ui::mojom::WindowOpenDisposition::kOffTheRecord,
                 ui::PAGE_TRANSITION_AUTO_BOOKMARK);
         GetBrowserWindowInterface(interface_)
             ->OpenURL(params,
@@ -254,20 +257,27 @@ HistoryClustersHandler::HistoryClustersHandler(
 }
 
 void HistoryClustersHandler::CommonInit() {
-  DCHECK(profile_);
-  DCHECK(web_contents_);
+  CHECK(profile_, base::NotFatalUntil::M162);
+  CHECK(web_contents_, base::NotFatalUntil::M162);
 
   auto* history_clusters_service =
       HistoryClustersServiceFactory::GetForBrowserContext(profile_);
-  DCHECK(history_clusters_service);
+  CHECK(history_clusters_service, base::NotFatalUntil::M162);
   service_observation_.Observe(history_clusters_service);
 
   history_service_ = HistoryServiceFactory::GetForProfile(
       profile_, ServiceAccessType::EXPLICIT_ACCESS);
+  history::WebHistoryService* web_history_service =
+      WebHistoryServiceFactory::GetForProfile(profile_);
   syncer::SyncService* sync_service =
       SyncServiceFactory::GetForProfile(profile_);
+  auto* device_info_service =
+      DeviceInfoSyncServiceFactory::GetForProfile(profile_);
   browsing_history_service_ = std::make_unique<history::BrowsingHistoryService>(
-      this, history_service_, sync_service);
+      this, history_service_, web_history_service, sync_service,
+      device_info_service ? device_info_service->GetDeviceInfoTracker()
+                          : nullptr,
+      /*critical_action_provider=*/nullptr);
 }
 
 HistoryClustersHandler::~HistoryClustersHandler() = default;
@@ -296,12 +306,12 @@ void HistoryClustersHandler::OpenHistoryUrl(
 
   // In the Side Panel, the default is the current tab. From History WebUI, the
   // default is a new foreground tab.
-  WindowOpenDisposition default_disposition =
+  ui::mojom::WindowOpenDisposition default_disposition =
       history_clusters_side_panel_embedder_
-          ? WindowOpenDisposition::CURRENT_TAB
-          : WindowOpenDisposition::NEW_FOREGROUND_TAB;
+          ? ui::mojom::WindowOpenDisposition::kCurrentTab
+          : ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
-  WindowOpenDisposition open_location = ui::DispositionFromClick(
+  ui::mojom::WindowOpenDisposition open_location = ui::DispositionFromClick(
       click_modifiers->middle_button, click_modifiers->alt_key,
       click_modifiers->ctrl_key, click_modifiers->meta_key,
       click_modifiers->shift_key, default_disposition);
@@ -352,6 +362,8 @@ void HistoryClustersHandler::StartQueryClusters(
 
 void HistoryClustersHandler::LoadMoreClusters(const std::string& query) {
   if (query_clusters_state_) {
+    // TODO(crbug.com/578093658): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK_EQ(query, query_clusters_state_->query());
     query_clusters_state_->LoadNextBatchOfClusters(
         base::BindOnce(&HistoryClustersHandler::SendClustersToPage,
@@ -361,7 +373,7 @@ void HistoryClustersHandler::LoadMoreClusters(const std::string& query) {
 
 void HistoryClustersHandler::HideVisits(std::vector<mojom::URLVisitPtr> visits,
                                         HideVisitsCallback callback) {
-  DCHECK(!visits.empty());
+  CHECK(!visits.empty(), base::NotFatalUntil::M162);
 
   // If there's a pending request, fail because `HistoryClustersHandler` only
   // supports one hide request at a time.
@@ -478,7 +490,7 @@ void HistoryClustersHandler::OpenVisitUrlsInTabGroup(
         GetBrowserWindowInterface(interface_)
             ->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
                           visit_ptr->normalized_url,
-                          WindowOpenDisposition::NEW_BACKGROUND_TAB,
+                          ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
                           ui::PAGE_TRANSITION_AUTO_BOOKMARK),
                       /*navigation_handle_callback=*/{});
 
@@ -539,7 +551,7 @@ void HistoryClustersHandler::HistoryDeleted() {
 }
 
 Profile* HistoryClustersHandler::GetProfile() {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M162);
   return profile_;
 }
 
@@ -563,7 +575,7 @@ void HistoryClustersHandler::SendClustersToPage(
 }
 
 void HistoryClustersHandler::OnHideVisitsComplete() {
-  DCHECK(!pending_hide_visits_callback_.is_null());
+  CHECK(!pending_hide_visits_callback_.is_null(), base::NotFatalUntil::M162);
   std::move(pending_hide_visits_callback_).Run(/*success=*/true);
   // Notify the page of the successfully hidden visits to update the UI.
   page_->OnVisitsHidden(std::move(pending_hide_visits_));

@@ -11,6 +11,7 @@
 #include "base/unguessable_token.h"
 #include "cc/layers/view_transition_content_layer.h"
 #include "components/viz/common/view_transition_element_resource_id.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/frame/view_transition_state.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/css_rule.h"
@@ -26,6 +27,8 @@
 #include "third_party/blink/renderer/platform/geometry/physical_size.h"
 #include "third_party/blink/renderer/platform/graphics/paint/effect_paint_property_node.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/heap_traits.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "ui/gfx/geometry/transform.h"
@@ -36,6 +39,7 @@ namespace blink {
 class ClipPaintPropertyNode;
 class PaintLayer;
 class PseudoElement;
+class ShadowRoot;
 
 // This class manages the integration between ViewTransition and the style
 // system which encompasses the following responsibilities :
@@ -89,11 +93,13 @@ class ViewTransitionStyleTracker
 
   explicit ViewTransitionStyleTracker(
       Document& document,
-      const blink::ViewTransitionToken& transition_token);
+      const blink::ViewTransitionToken& transition_token,
+      bool generates_pseudo_element_tree);
   ViewTransitionStyleTracker(Document& document, ViewTransitionState);
   ViewTransitionStyleTracker(
       Element& element,
-      const blink::ViewTransitionToken& transition_token);
+      const blink::ViewTransitionToken& transition_token,
+      const HeapVector<Member<ShadowRoot>>* shadow_roots = nullptr);
 
   void AddTransitionElementsFromCSS();
 
@@ -247,6 +253,14 @@ class ViewTransitionStyleTracker
     return state_ == State::kOldSnapshotFrozen;
   }
 
+  // Returns false if this transition doesn't generate the ::view-transition
+  // pseudo-element tree. This is the case when capturing the outgoing document
+  // of a cross-document transition, since the animation runs on the new
+  // document.
+  bool GeneratesPseudoElementTree() const {
+    return generates_pseudo_element_tree_;
+  }
+
  private:
   class ImageWrapperPseudoElement;
 
@@ -264,6 +278,11 @@ class ViewTransitionStyleTracker
 
   AtomicString ComputeContainingGroupName(
       const AtomicString& name,
+      const StyleViewTransitionGroup& group) const;
+
+  bool IsParticipatingTreeScope(const TreeScope* tree_scope) const;
+  Vector<AtomicString> GetScopedClassList(Element* element) const;
+  StyleViewTransitionGroup ResolveScopedViewTransitionGroup(
       const StyleViewTransitionGroup& group) const;
 
   AtomicString GenerateAutoName(Element&, const TreeScope*, bool allow_from_id);
@@ -366,6 +385,8 @@ class ViewTransitionStyleTracker
     // Auto-generated names do not appear in reflection methods such as
     // getAnimations.
     bool is_generated_name;
+
+    bool is_document_element = false;
   };
 
   // Remaps the element data's snapshot matrix to be relative to the new parent
@@ -388,7 +409,8 @@ class ViewTransitionStyleTracker
   bool HasLiveNewContent() const;
   void EndTransition();
 
-  void AddConsoleError(String message, Vector<DOMNodeId> related_nodes = {});
+  void AddConsoleError(String message,
+                       Vector<DOMNodeIdType> related_nodes = {});
   void AddTransitionElement(Element*,
                             const AtomicString& name,
                             const AtomicString& nearest_containing_group,
@@ -397,7 +419,6 @@ class ViewTransitionStyleTracker
 
   void AddTransitionElementsFromCSSRecursive(
       PaintLayer*,
-      const TreeScope*,
       Vector<AtomicString>& containing_group_stack,
       const AtomicString& nearest_group_with_contain);
 
@@ -458,6 +479,9 @@ class ViewTransitionStyleTracker
   // Documents which are cross-process.
   const bool deserialized_ = false;
 
+  // See GeneratesPseudoElementTree().
+  const bool generates_pseudo_element_tree_ = true;
+
   // Tracks the number of names discovered during the capture phase of the
   // transition.
   int captured_name_count_ = 0;
@@ -486,6 +510,8 @@ class ViewTransitionStyleTracker
   int set_element_sequence_id_ = 0;
   HeapHashMap<Member<Element>, HashSet<std::pair<AtomicString, int>>>
       pending_transition_element_names_;
+
+  HeapHashSet<Member<const TreeScope>> participating_tree_roots_;
 
   // This vector is passed as constructed to cc's view transition request,
   // so this uses the std::vector for that reason, instead of blink::Vector.

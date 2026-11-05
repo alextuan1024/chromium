@@ -58,7 +58,6 @@
 #include "components/search_engines/default_search_manager.h"
 #include "components/search_engines/search_engines_pref_names.h"
 #include "components/signin/public/base/signin_pref_names.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/supervised_user/core/browser/device_parental_controls.h"
 #include "components/supervised_user/core/browser/supervised_user_pref_store.h"
 #include "components/sync/base/data_type.h"
@@ -115,6 +114,14 @@ bool g_disable_domain_check_for_testing = false;
 // histogram enum. Each tracked preference must be given a unique reporting ID.
 // See CleanupDeprecatedTrackedPreferences() in pref_hash_filter.cc to remove a
 // deprecated tracked preference.
+//
+// WARNING: Adding an existing (untracked or NO_ENFORCEMENT) preference here as
+// ENFORCE_ON_LOAD, or switching an existing entry to ENFORCE_ON_LOAD, will
+// RESET its value for existing users on their next startup. Values are not
+// migrated from Preferences to Secure Preferences outside of first run (see
+// https://crbug.com/574078135 for context). To protect an existing pref without
+// losing data, register a new protected pref and migrate the value through the
+// PrefService. See services/preferences/tracked/README.md.
 const auto kTrackedPrefs = std::to_array<prefs::TrackedPreferenceMetadata>({
     {0, prefs::kShowHomeButton, EnforcementLevel::ENFORCE_ON_LOAD,
      PrefTrackingStrategy::ATOMIC, ValueType::IMPERSONAL},
@@ -187,6 +194,36 @@ const auto kTrackedPrefs = std::to_array<prefs::TrackedPreferenceMetadata>({
      EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
      ValueType::IMPERSONAL},
 #endif
+// File System Access persisted grants and read/write guard settings must
+// not be forgeable via unprotected Preferences (https://crbug.com/584014474).
+#if !BUILDFLAG(IS_ANDROID)
+    {39,
+     "profile.content_settings.exceptions."
+     "file_system_access_extended_permission",
+     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
+     ValueType::IMPERSONAL},
+    {40, "profile.content_settings.exceptions.file_system_access_chooser_data",
+     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
+     // Contains absolute local file paths; keep them out of incident reports.
+     ValueType::PERSONAL},
+    {41,
+     "profile.default_content_setting_values."
+     "file_system_access_extended_permission",
+     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
+     ValueType::IMPERSONAL},
+#endif
+    {42, "profile.content_settings.exceptions.file_system_read_guard",
+     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
+     ValueType::IMPERSONAL},
+    {43, "profile.content_settings.exceptions.file_system_write_guard",
+     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
+     ValueType::IMPERSONAL},
+    {44, "profile.default_content_setting_values.file_system_read_guard",
+     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
+     ValueType::IMPERSONAL},
+    {45, "profile.default_content_setting_values.file_system_write_guard",
+     EnforcementLevel::ENFORCE_ON_LOAD, PrefTrackingStrategy::ATOMIC,
+     ValueType::IMPERSONAL},
 
     // See note at top, new items added here also need to be added to
     // histograms.xml's TrackedPreference enum.
@@ -238,7 +275,7 @@ GetTrackingConfiguration() {
   const SettingsEnforcementGroup enforcement_group =
       GetSettingsEnforcementGroup();
 
-  browser_sync::ChromeSyncablePrefsDatabase syncable_prefs_db;
+  ChromeSyncablePrefsDatabase syncable_prefs_db;
   std::vector<prefs::mojom::TrackedPreferenceMetadataPtr> result;
   for (size_t i = 0; i < std::size(kTrackedPrefs); ++i) {
     prefs::mojom::TrackedPreferenceMetadataPtr data =
@@ -265,9 +302,7 @@ GetTrackingConfiguration() {
 #endif
     // Add the account value equivalent for syncable prefs for tracking, by
     // prefixing the pref name with `kAccountPreferencesPrefix`.
-    if (base::FeatureList::IsEnabled(
-            switches::kEnablePreferencesAccountStorage) &&
-        syncable_prefs_db.IsPreferenceSyncable(data->name)) {
+    if (syncable_prefs_db.IsPreferenceSyncable(data->name)) {
       auto account_data = data->Clone();
       account_data->name = base::StringPrintf(
           "%s.%s", chrome_prefs::kAccountPreferencesPrefix, data->name.c_str());
@@ -348,7 +383,8 @@ void PrepareFactory(
   scoped_refptr<PrefStore> supervised_user_prefs =
       base::MakeRefCounted<SupervisedUserPrefStore>(
           family_link_settings_service, device_parental_controls);
-  DCHECK(async || supervised_user_prefs->IsInitializationComplete());
+  CHECK(async || supervised_user_prefs->IsInitializationComplete(),
+        base::NotFatalUntil::M163);
   factory->set_supervised_user_prefs(supervised_user_prefs);
 }
 
@@ -457,68 +493,65 @@ std::unique_ptr<sync_preferences::PrefServiceSyncable> CreateProfilePrefs(
   }
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 
-  if (base::FeatureList::IsEnabled(
-          switches::kEnablePreferencesAccountStorage)) {
 #if BUILDFLAG(IS_ANDROID)
-    // Delete account preference file on Mobile platforms.
-    // TODO(crbug.com/346508597): Remove this after a year, consistent with
-    // the pref migration process.
-    io_task_runner->PostTask(
-        FROM_HERE, base::BindOnce(IgnoreResult(&base::DeleteFile),
-                                  profile_path.Append(
-                                      chrome::kAccountPreferencesFilename)));
+  // Delete account preference file on Mobile platforms.
+  // TODO(crbug.com/346508597): Remove this after a year, consistent with
+  // the pref migration process.
+  io_task_runner->PostTask(
+      FROM_HERE, base::BindOnce(IgnoreResult(&base::DeleteFile),
+                                profile_path.Append(
+                                    chrome::kAccountPreferencesFilename)));
 #endif  // BUILDFLAG(IS_ANDROID)
-    /**
-     * Account values will live under `kAccountPreferencesPrefix` as a
-     * dictionary in the main preference file and will be operated upon by a
-     * WrapWithPrefixPrefStore.
-     * {
-     *   "A": ...
-     *   "B": ...
-     *   "C": ...
-     *   "account_values": {
-     *     "A": ...
-     *     "B": ...
-     *     "D": ...
-     *   }
-     * }
-     *
-     * To achieve the above, a WrapWithPrefixPrefStore is used to prefix the
-     * prefs with `kAccountPreferencesPrefix` to allow easy access to the
-     * account values. A DualLayerUserPrefStore then wraps this pref store
-     * along with the main pref store. The callers of the
-     * DualLayerUserPrefStore will be unaware of where a preference value is
-     * coming from, the local store or the account store.
-     *
-     * +---------------------+   +------------------+   +-------------+
-     * | DualLayerUserPref   |   | SegregatedPref   |   | Secure      |
-     * | Store               |   | Store            |   | Preferences |
-     * | +------------+      |   | +--------------+ |   | .json       |
-     * | | Local Pref |      |   | |Protected Pref|-|-->|             |
-     * | | Store      |---- -|-->| |Store         | |   |             |
-     * | +------------+      |   | +--------------+ |   |             |
-     * |                     |   |                  |   +-------------+
-     * | +-----------------+ |   |                  |   +-------------+
-     * | | WrapWithPrefix  | |   |                  |   | Preferences |
-     * | | PrefStore       | |   | +-------------+  |   | .json       |
-     * | | +-------------+ | |   | |Unprotected  |--|-->|             |
-     * | | | Local Pref  | | |   | |Pref Store   |  |   |             |
-     * | | | Store (same | | |
-     * | | | as above)   | | |   | +-------------+  |   |             |
-     * | | +-------------+ | |   +------------------+   +-------------+
-     * | +-----------------+ |
-     * +---------------------+
-     *
-     * NOTE: Mobile platforms do not require preference protection and hence,
-     * the SegregatedPrefStore layer above does not actually get created,
-     * thus keeping only a single preference file on Mobile platforms.
-     */
-    factory.SetAccountPrefStore(base::MakeRefCounted<WrapWithPrefixPrefStore>(
-        std::move(user_pref_store), kAccountPreferencesPrefix));
-    // Register `kAccountPreferencesPrefix` as dictionary pref. This prevents
-    // others from using the prefix as a preference.
-    pref_registry->RegisterDictionaryPref(kAccountPreferencesPrefix);
-  }
+  /**
+   * Account values will live under `kAccountPreferencesPrefix` as a
+   * dictionary in the main preference file and will be operated upon by a
+   * WrapWithPrefixPrefStore.
+   * {
+   *   "A": ...
+   *   "B": ...
+   *   "C": ...
+   *   "account_values": {
+   *     "A": ...
+   *     "B": ...
+   *     "D": ...
+   *   }
+   * }
+   *
+   * To achieve the above, a WrapWithPrefixPrefStore is used to prefix the
+   * prefs with `kAccountPreferencesPrefix` to allow easy access to the
+   * account values. A DualLayerUserPrefStore then wraps this pref store
+   * along with the main pref store. The callers of the
+   * DualLayerUserPrefStore will be unaware of where a preference value is
+   * coming from, the local store or the account store.
+   *
+   * +---------------------+   +------------------+   +-------------+
+   * | DualLayerUserPref   |   | SegregatedPref   |   | Secure      |
+   * | Store               |   | Store            |   | Preferences |
+   * | +------------+      |   | +--------------+ |   | .json       |
+   * | | Local Pref |      |   | |Protected Pref|-|-->|             |
+   * | | Store      |---- -|-->| |Store         | |   |             |
+   * | +------------+      |   | +--------------+ |   |             |
+   * |                     |   |                  |   +-------------+
+   * | +-----------------+ |   |                  |   +-------------+
+   * | | WrapWithPrefix  | |   |                  |   | Preferences |
+   * | | PrefStore       | |   | +-------------+  |   | .json       |
+   * | | +-------------+ | |   | |Unprotected  |--|-->|             |
+   * | | | Local Pref  | | |   | |Pref Store   |  |   |             |
+   * | | | Store (same | | |
+   * | | | as above)   | | |   | +-------------+  |   |             |
+   * | | +-------------+ | |   +------------------+   +-------------+
+   * | +-----------------+ |
+   * +---------------------+
+   *
+   * NOTE: Mobile platforms do not require preference protection and hence,
+   * the SegregatedPrefStore layer above does not actually get created,
+   * thus keeping only a single preference file on Mobile platforms.
+   */
+  factory.SetAccountPrefStore(base::MakeRefCounted<WrapWithPrefixPrefStore>(
+      std::move(user_pref_store), kAccountPreferencesPrefix));
+  // Register `kAccountPreferencesPrefix` as dictionary pref. This prevents
+  // others from using the prefix as a preference.
+  pref_registry->RegisterDictionaryPref(kAccountPreferencesPrefix);
 
   std::unique_ptr<sync_preferences::PrefServiceSyncable> pref_service =
       factory.CreateSyncable(std::move(pref_registry));
@@ -578,8 +611,9 @@ void HandlePersistentPrefStoreReadError(
   // The error callback is always invoked back on the main thread (which is
   // BrowserThread::UI unless called during early initialization before the main
   // thread is promoted to BrowserThread::UI).
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
-         !BrowserThread::IsThreadInitialized(BrowserThread::UI));
+  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
+            !BrowserThread::IsThreadInitialized(BrowserThread::UI),
+        base::NotFatalUntil::M163);
 
   if (error != PersistentPrefStore::PREF_READ_ERROR_NONE) {
 #if !BUILDFLAG(IS_CHROMEOS)

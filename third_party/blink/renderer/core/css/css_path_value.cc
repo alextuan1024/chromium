@@ -6,11 +6,13 @@
 
 #include <memory>
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/style/style_path.h"
 #include "third_party/blink/renderer/core/svg/svg_path_utilities.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/hash_functions.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 namespace cssvalue {
@@ -39,8 +41,9 @@ CSSPathValue* CreatePathValue() {
 }  // namespace
 
 const CSSPathValue& CSSPathValue::EmptyPathValue() {
-  DEFINE_STATIC_LOCAL(Persistent<CSSPathValue>, empty, (CreatePathValue()));
-  return *empty;
+  static base::NoDestructor<Persistent<CSSPathValue>> empty(CreatePathValue());
+  CHECK(IsMainThread());
+  return **empty;
 }
 
 String CSSPathValue::CustomCSSText() const {

@@ -100,8 +100,14 @@ void RequestDispatcher::OnAuthenticatorReady(
         base::unexpected(ProtocolError::kIncompatibleDevice));
     return;
   }
-  if (!tunnel_device->features().contains(
-          device::cablev2::Feature::kDigitialIdentities)) {
+  const std::optional<base::flat_set<device::cablev2::Feature>>& features =
+      tunnel_device->features();
+  if (!features.has_value()) {
+    FIDO_LOG(ERROR) << "Hybrid tunnel failed prior to feature negotiation";
+    std::move(callback_).Run(base::unexpected(ProtocolError::kTransportError));
+    return;
+  }
+  if (!features->contains(device::cablev2::Feature::kDigitialIdentities)) {
     FIDO_LOG(ERROR)
         << "Hybrid device doesn't advertise support for digital identities";
     std::move(callback_).Run(
@@ -177,13 +183,13 @@ void RequestDispatcher::OnComplete(
   // response contains a JSON object that has both a protocol and data.
   if (data->is_dict()) {
     const base::DictValue& data_dict = data->GetDict();
-    const base::Value* wallet_data = data_dict.Find("data");
+    const base::DictValue* wallet_data = data_dict.FindDict("data");
     const std::string* protocol = data_dict.FindString("protocol");
     if (wallet_data && protocol) {
       FIDO_LOG(EVENT) << "Standard format is received from the mobile device.";
       std::move(callback_).Run(
           Response(DigitalIdentityProvider::DigitalCredential(
-              *protocol, wallet_data->Clone())));
+              *protocol, base::Value(wallet_data->Clone()))));
       return;
     }
   }

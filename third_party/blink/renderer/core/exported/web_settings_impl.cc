@@ -53,21 +53,10 @@ WebSettingsImpl::WebSettingsImpl(Settings* settings,
   DCHECK(settings);
 }
 
-void WebSettingsImpl::SetFromStrings(const WebString& name,
-                                     const WebString& value) {
-  settings_->SetFromStrings(name, value);
-}
-
-void WebSettingsImpl::SetStandardFontFamily(const WebString& font,
-                                            UScriptCode script) {
-  if (settings_->GetGenericFontFamilySettings().UpdateStandard(font, script))
-    settings_->NotifyGenericFontFamilyChange();
-}
-
-void WebSettingsImpl::SetFixedFontFamily(const WebString& font,
-                                         UScriptCode script) {
-  if (settings_->GetGenericFontFamilySettings().UpdateFixed(font, script))
-    settings_->NotifyGenericFontFamilyChange();
+void WebSettingsImpl::SetGenericFontFamily(GenericFontFamily family,
+                                           const WebString& font,
+                                           UScriptCode script) {
+  dev_tools_emulator_->SetGenericFontFamily(family, font, script);
 }
 
 void WebSettingsImpl::SetNetworkQuietTimeout(double timeout) {
@@ -86,42 +75,12 @@ void WebSettingsImpl::SetFullscreenSupported(bool enabled) {
   settings_->SetFullscreenSupported(enabled);
 }
 
-void WebSettingsImpl::SetSerifFontFamily(const WebString& font,
-                                         UScriptCode script) {
-  if (settings_->GetGenericFontFamilySettings().UpdateSerif(font, script))
-    settings_->NotifyGenericFontFamilyChange();
-}
-
-void WebSettingsImpl::SetSansSerifFontFamily(const WebString& font,
-                                             UScriptCode script) {
-  if (settings_->GetGenericFontFamilySettings().UpdateSansSerif(font, script))
-    settings_->NotifyGenericFontFamilyChange();
-}
-
-void WebSettingsImpl::SetCursiveFontFamily(const WebString& font,
-                                           UScriptCode script) {
-  if (settings_->GetGenericFontFamilySettings().UpdateCursive(font, script))
-    settings_->NotifyGenericFontFamilyChange();
-}
-
-void WebSettingsImpl::SetFantasyFontFamily(const WebString& font,
-                                           UScriptCode script) {
-  if (settings_->GetGenericFontFamilySettings().UpdateFantasy(font, script))
-    settings_->NotifyGenericFontFamilyChange();
-}
-
-void WebSettingsImpl::SetMathFontFamily(const WebString& font,
-                                        UScriptCode script) {
-  if (settings_->GetGenericFontFamilySettings().UpdateMath(font, script))
-    settings_->NotifyGenericFontFamilyChange();
-}
-
 void WebSettingsImpl::SetDefaultFontSize(int size) {
-  settings_->SetDefaultFontSize(size);
+  dev_tools_emulator_->SetDefaultFontSize(size);
 }
 
 void WebSettingsImpl::SetDefaultFixedFontSize(int size) {
-  settings_->SetDefaultFixedFontSize(size);
+  dev_tools_emulator_->SetDefaultFixedFontSize(size);
 }
 
 void WebSettingsImpl::SetDefaultVideoPosterURL(const WebString& url) {
@@ -137,8 +96,11 @@ void WebSettingsImpl::SetMinimumLogicalFontSize(int size) {
 }
 
 void WebSettingsImpl::SetAutoplayPolicy(mojom::blink::AutoplayPolicy policy) {
-  settings_->SetAutoplayPolicy(
-      static_cast<blink::AutoplayPolicy::Type>(policy));
+  SetAutoplayPolicy(static_cast<blink::AutoplayPolicy::Type>(policy));
+}
+
+void WebSettingsImpl::SetAutoplayPolicy(AutoplayPolicy::Type policy) {
+  settings_->SetAutoplayPolicy(policy);
 }
 
 void WebSettingsImpl::SetRequireTransientActivationForGetDisplayMedia(
@@ -189,6 +151,10 @@ void WebSettingsImpl::SetDefaultTextEncodingName(const WebString& encoding) {
 }
 
 void WebSettingsImpl::SetJavaScriptEnabled(bool enabled) {
+  SetScriptEnabled(enabled);
+}
+
+void WebSettingsImpl::SetScriptEnabled(bool enabled) {
   dev_tools_emulator_->SetScriptEnabled(enabled);
 }
 
@@ -465,6 +431,10 @@ void WebSettingsImpl::SetWebGL2Enabled(bool enabled) {
   settings_->SetWebGL2Enabled(enabled);
 }
 
+void WebSettingsImpl::SetWebGPUEnabled(bool enabled) {
+  settings_->SetWebGPUEnabled(enabled);
+}
+
 void WebSettingsImpl::SetRenderVSyncNotificationEnabled(bool enabled) {
   render_v_sync_notification_enabled_ = enabled;
 }
@@ -486,6 +456,11 @@ void WebSettingsImpl::SetShowContextMenuOnMouseUp(bool enabled) {
 }
 
 void WebSettingsImpl::SetEditingBehavior(
+    mojom::blink::EditingBehavior behavior) {
+  SetEditingBehaviorType(behavior);
+}
+
+void WebSettingsImpl::SetEditingBehaviorType(
     mojom::blink::EditingBehavior behavior) {
   settings_->SetEditingBehaviorType(behavior);
 }
@@ -584,6 +559,10 @@ void WebSettingsImpl::SetShouldClearDocumentBackground(bool enabled) {
 }
 
 void WebSettingsImpl::SetEnableScrollAnimator(bool enabled) {
+  SetScrollAnimatorEnabled(enabled);
+}
+
+void WebSettingsImpl::SetScrollAnimatorEnabled(bool enabled) {
   settings_->SetScrollAnimatorEnabled(enabled);
 }
 
@@ -628,7 +607,11 @@ void WebSettingsImpl::SetWebAppScope(const WebString& scope) {
 }
 
 void WebSettingsImpl::SetWebAppCustomManifestUrl(const WebURL& url) {
-  settings_->SetWebAppCustomManifestUrl(KURL(url).GetString());
+  SetWebAppCustomManifestUrl(KURL(url).GetString());
+}
+
+void WebSettingsImpl::SetWebAppCustomManifestUrl(const String& url) {
+  settings_->SetWebAppCustomManifestUrl(url);
 }
 
 void WebSettingsImpl::SetIsInitialProfile(bool is_initial_profile) {
@@ -693,7 +676,11 @@ void WebSettingsImpl::SetSelectionIncludesAltImageText(bool enabled) {
 }
 
 void WebSettingsImpl::SetSelectionStrategy(SelectionStrategyType strategy) {
-  settings_->SetSelectionStrategy(static_cast<SelectionStrategy>(strategy));
+  SetSelectionStrategy(static_cast<SelectionStrategy>(strategy));
+}
+
+void WebSettingsImpl::SetSelectionStrategy(SelectionStrategy strategy) {
+  settings_->SetSelectionStrategy(strategy);
 }
 
 void WebSettingsImpl::SetSmartInsertDeleteEnabled(bool enabled) {
@@ -836,7 +823,6 @@ void WebSettingsImpl::SetModalContextMenu(bool is_available) {
   settings_->SetModalContextMenu(is_available);
 }
 
-
 void WebSettingsImpl::SetRootScrollbarThemeColor(
     std::optional<SkColor> theme_color) {
   settings_->SetRootScrollbarThemeColor(theme_color);
@@ -848,6 +834,116 @@ void WebSettingsImpl::SetBatterySaverEnabled(bool enabled) {
 
 void WebSettingsImpl::SetPreloadingDisabled(bool disabled) {
   settings_->SetPreloadingDisabled(disabled);
+}
+
+void WebSettingsImpl::SetXSLTDeprecationBannerSuppressed(bool suppressed) {
+  settings_->SetXSLTDeprecationBannerSuppressed(suppressed);
+}
+
+void WebSettingsImpl::SetAcceleratedCompositingEnabled(bool enabled) {
+  settings_->SetAcceleratedCompositingEnabled(enabled);
+}
+
+void WebSettingsImpl::SetAcceptLanguages(const String& accept_languages) {
+  settings_->SetAcceptLanguages(accept_languages);
+}
+
+void WebSettingsImpl::SetBypassCSP(bool bypass) {
+  settings_->SetBypassCSP(bypass);
+}
+
+void WebSettingsImpl::SetDisallowFetchForDocWrittenScriptsInMainFrame(
+    bool disallow) {
+  settings_->SetDisallowFetchForDocWrittenScriptsInMainFrame(disallow);
+}
+
+void WebSettingsImpl::
+    SetDisallowFetchForDocWrittenScriptsInMainFrameIfEffectively2G(
+        bool disallow) {
+  settings_->SetDisallowFetchForDocWrittenScriptsInMainFrameIfEffectively2G(
+      disallow);
+}
+
+void WebSettingsImpl::
+    SetDisallowFetchForDocWrittenScriptsInMainFrameOnSlowConnections(
+        bool disallow) {
+  settings_->SetDisallowFetchForDocWrittenScriptsInMainFrameOnSlowConnections(
+      disallow);
+}
+
+void WebSettingsImpl::SetDisplayModeOverride(mojom::blink::DisplayMode mode) {
+  settings_->SetDisplayModeOverride(mode);
+}
+
+void WebSettingsImpl::SetDoHtmlPreloadScanning(bool enabled) {
+  settings_->SetDoHtmlPreloadScanning(enabled);
+}
+
+void WebSettingsImpl::SetForceAndroidOverlayScrollbar(bool force) {
+  settings_->SetForceAndroidOverlayScrollbar(force);
+}
+
+void WebSettingsImpl::SetForceTouchEventFeatureDetectionForInspector(
+    bool force) {
+  settings_->SetForceTouchEventFeatureDetectionForInspector(force);
+}
+
+void WebSettingsImpl::SetLogDnsPrefetchAndPreconnect(bool enabled) {
+  settings_->SetLogDnsPrefetchAndPreconnect(enabled);
+}
+
+void WebSettingsImpl::SetLogPreload(bool enabled) {
+  settings_->SetLogPreload(enabled);
+}
+
+void WebSettingsImpl::SetMediaTypeOverride(const String& media_type) {
+  settings_->SetMediaTypeOverride(media_type);
+}
+
+void WebSettingsImpl::SetMultiTargetTapNotificationEnabled(bool enabled) {
+  settings_->SetMultiTargetTapNotificationEnabled(enabled);
+}
+
+void WebSettingsImpl::SetNavigateOnDragDrop(bool enabled) {
+  settings_->SetNavigateOnDragDrop(enabled);
+}
+
+void WebSettingsImpl::SetNavigatorPlatformOverride(const String& platform) {
+  settings_->SetNavigatorPlatformOverride(platform);
+}
+
+void WebSettingsImpl::SetParserScriptingFlagPolicy(
+    ParserScriptingFlagPolicy policy) {
+  settings_->SetParserScriptingFlagPolicy(policy);
+}
+
+void WebSettingsImpl::SetPlaceRTLScrollbarsOnLeftSideInMainFrame(bool enabled) {
+  settings_->SetPlaceRTLScrollbarsOnLeftSideInMainFrame(enabled);
+}
+
+void WebSettingsImpl::SetPrintingMaximumShrinkFactor(float factor) {
+  settings_->SetPrintingMaximumShrinkFactor(factor);
+}
+
+void WebSettingsImpl::SetResizable(bool resizable) {
+  settings_->SetResizable(resizable);
+}
+
+void WebSettingsImpl::SetStrictPowerfulFeatureRestrictions(bool enabled) {
+  settings_->SetStrictPowerfulFeatureRestrictions(enabled);
+}
+
+void WebSettingsImpl::SetTouchEditingEnabled(bool enabled) {
+  settings_->SetTouchEditingEnabled(enabled);
+}
+
+void WebSettingsImpl::SetUseAXMenuList(bool enabled) {
+  settings_->SetUseAXMenuList(enabled);
+}
+
+void WebSettingsImpl::SetWindowShowState(
+    ui::mojom::blink::WindowShowState state) {
+  settings_->SetWindowShowState(state);
 }
 
 }  // namespace blink

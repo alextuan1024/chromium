@@ -7,7 +7,7 @@ import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
 
 // clang-format off
 // <if expr="enable_pdf_ink2">
-import type {AnnotationBrush, AnnotationBrushType, AnnotationMode, TextAnnotation, TextAnnotationMessageData} from './constants.js';
+import type {AnnotationBrush, AnnotationBrushType, AnnotationMode, DeleteTextAnnotationMessageData, TextAnnotation, TextAnnotationMessageData} from './constants.js';
 // </if>
 import type {NamedDestinationMessageData, Rect} from './constants.js';
 // clang-format on
@@ -72,6 +72,12 @@ interface AllTextAnnotationsMessage {
   annotations: TextAnnotation[];
 }
 
+// deleteTextAnnotation goes from the viewer to the plugin.
+interface DeleteTextAnnotationMessage {
+  type: 'deleteTextAnnotation';
+  data: DeleteTextAnnotationMessageData;
+}
+
 interface EditTextAnnotationMessage {
   type: 'editTextAnnotation';
   data: number;
@@ -126,6 +132,12 @@ export interface PrintMessage {
 
 export interface SelectAllMessage {
   type: 'selectAll';
+}
+
+export interface HighlightSearchTermsMessage {
+  type: 'highlightSearchTerms';
+  searchTerms: string[];
+  startPageIndex: number;
 }
 
 export interface HighlightTextFragmentsMessage {
@@ -234,25 +246,54 @@ export interface GetAllTextAnnotationsRequestMessage {
 export interface AnnotationUndoMessage {
   type: 'annotationUndo';
 }
+
+export interface SignatureStrokePoint {
+  x: number;
+  y: number;
+  elapsedTime: number;
+}
+
+export interface StartSignatureStrokeMessage {
+  type: 'startSignatureStroke';
+  point: SignatureStrokePoint;
+}
+
+export interface ContinueSignatureStrokeMessage {
+  type: 'continueSignatureStroke';
+  points: SignatureStrokePoint[];
+}
+
+export interface FinishSignatureStrokeMessage {
+  type: 'finishSignatureStroke';
+  point?: SignatureStrokePoint;
+}
+
+export interface SignatureStrokeReplyMessage {
+  outlines: number[][];
+}
 // </if>
 
 export type PluginMessageWithReply =
     GetSelectedTextMessage|GetThumbnailMessage|GetPageBoundingBoxMessage|
     GetNamedDestinationMessage|GetSuggestedFileNameMessage|SaveAttachmentMessage
     // <if expr="enable_pdf_ink2">
-    |GetAnnotationBrushMessage|GetAllTextAnnotationsRequestMessage
+    |ContinueSignatureStrokeMessage|FinishSignatureStrokeMessage|
+    GetAllTextAnnotationsRequestMessage|GetAnnotationBrushMessage|
+    StartSignatureStrokeMessage
     // </if>
     ;
 
 export type PluginMessageWithoutReply = StopScrollingMessage|ViewportMessage|
     RotateClockwiseMessage|RotateCounterclockwiseMessage|
     DisplayAnnotationsMessage|SetTwoUpViewMessage|PrintMessage|SelectAllMessage|
-    HighlightTextFragmentsMessage|ResetPrintPreviewModeMessage|
+    HighlightSearchTermsMessage|HighlightTextFragmentsMessage|
+    ResetPrintPreviewModeMessage|
     SetBackgroundColorMessage|LoadPreviewPageMessage|GetPasswordCompleteMessage|
     SetPresentationModeMessage|SaveMessage|GetSaveDataBlockMessage|
     ReleaseSaveInBlockBuffersMessage|FocusMessage
     // <if expr="enable_pdf_ink2">
-    |SetAnnotationModeMessage|AnnotationBrushMessage|EditTextAnnotationMessage|
+    |SetAnnotationModeMessage|AnnotationBrushMessage|
+    DeleteTextAnnotationMessage|EditTextAnnotationMessage|
     FinishTextAnnotationMessage|AnnotationRedoMessage|AnnotationUndoMessage
     // </if>
     ;
@@ -268,8 +309,11 @@ export interface MessageResponseMap {
       {fileName: string, bypassSaveFileForTesting?: boolean};
   'saveAttachment': SaveAttachmentMessageData;
   // <if expr="enable_pdf_ink2">
-  'getAnnotationBrush': AnnotationBrushMessage;
+  'continueSignatureStroke': SignatureStrokeReplyMessage;
+  'finishSignatureStroke': SignatureStrokeReplyMessage;
   'getAllTextAnnotations': AllTextAnnotationsMessage;
+  'getAnnotationBrush': AnnotationBrushMessage;
+  'startSignatureStroke': SignatureStrokeReplyMessage;
   // </if>
 }
 
@@ -448,6 +492,15 @@ export class PluginController implements ContentController {
     });
   }
 
+  deleteTextAnnotation(data: DeleteTextAnnotationMessageData) {
+    const message: DeleteTextAnnotationMessage = {
+      type: 'deleteTextAnnotation',
+      data,
+    };
+
+    this.postMessage_(message);
+  }
+
   editTextAnnotation(id: number) {
     const message: EditTextAnnotationMessage = {
       type: 'editTextAnnotation',
@@ -464,6 +517,33 @@ export class PluginController implements ContentController {
     };
 
     this.postMessage_(message);
+  }
+
+  startSignatureStroke(point: SignatureStrokePoint):
+      Promise<SignatureStrokeReplyMessage> {
+    return this.postMessageWithReply_({
+      type: 'startSignatureStroke',
+      point,
+    });
+  }
+
+  continueSignatureStroke(points: SignatureStrokePoint[]):
+      Promise<SignatureStrokeReplyMessage> {
+    return this.postMessageWithReply_({
+      type: 'continueSignatureStroke',
+      points,
+    });
+  }
+
+  finishSignatureStroke(point?: SignatureStrokePoint):
+      Promise<SignatureStrokeReplyMessage> {
+    const message: FinishSignatureStrokeMessage = {
+      type: 'finishSignatureStroke',
+    };
+    if (point !== undefined) {
+      message.point = point;
+    }
+    return this.postMessageWithReply_(message);
   }
   // </if>
 
@@ -585,6 +665,14 @@ export class PluginController implements ContentController {
 
   selectAll() {
     this.postMessage_({type: 'selectAll'});
+  }
+
+  highlightSearchTerms(searchTerms: string[], startPageIndex: number) {
+    this.postMessage_({
+      type: 'highlightSearchTerms',
+      searchTerms,
+      startPageIndex,
+    });
   }
 
   highlightTextFragments(textFragments: string[]) {
@@ -872,11 +960,9 @@ export class PluginController implements ContentController {
     resolver.resolve(messageData);
   }
 
-  // <if expr="enable_pdf_ink2">
   setPluginForTesting(plugin: HTMLEmbedElement) {
     this.setPlugin_(plugin);
   }
-  // </if>
 
   static getInstance(): PluginController {
     return instance || (instance = new PluginController());

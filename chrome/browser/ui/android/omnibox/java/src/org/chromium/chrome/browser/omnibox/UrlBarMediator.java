@@ -11,13 +11,11 @@ import androidx.annotation.ColorInt;
 import androidx.annotation.VisibleForTesting;
 import androidx.fragment.app.Fragment;
 
-import com.google.android.material.color.MaterialColors;
-
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeFeatures;
 import org.chromium.chrome.browser.omnibox.UrlBar.ScrollType;
 import org.chromium.chrome.browser.omnibox.UrlBar.UrlBarDelegate;
 import org.chromium.chrome.browser.omnibox.UrlBar.UrlBarTextContextMenuDelegate;
@@ -31,9 +29,11 @@ import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteInput.DisplayState;
+import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.OmniboxUrlEmphasizer.UrlEmphasisSpan;
 import org.chromium.components.omnibox.TextSelection;
+import org.chromium.components.omnibox.ToolModeUtils;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -58,11 +58,16 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
     // and we couldn't change it by the branded color scheme.
     private boolean mIsHintTextFixedForNtp;
     private boolean mShowOriginOnly;
+    // The text for Autofill services that goes with mUrlBarData. Like mUrlBarData, it follows the
+    // text typed by the user, which does not pass through the model.
+    private @Nullable CharSequence mTextForAutofillServices;
     private boolean mIsReparenting;
     private final @Nullable Callback<String> mTextChangeListener;
     private final @Nullable Callback<UrlBarTextChangeInfo> mRichTextChangeListener;
     private final Callback<@DisplayState Integer> mDisplayStateObserver =
             this::onDisplayStateChanged;
+    private final Callback<@AutocompleteRequestType Integer> mRequestTypeObserver =
+            this::onRequestTypeChanged;
 
     /**
      * Creates a URLBarMediator.
@@ -84,6 +89,7 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
 
         mModel.set(UrlBarProperties.TEXT_CONTEXT_MENU_DELEGATE, this);
         mModel.set(UrlBarProperties.ALLOW_MULTILINE_INPUT, false);
+        mModel.set(UrlBarProperties.USE_NATURAL_TEXT_IME, false);
         mModel.set(UrlBarProperties.HAS_URL_SUGGESTIONS, false);
         mModel.set(UrlBarProperties.TEXT_CHANGE_LISTENER, this::onTextChanged);
         mModel.set(UrlBarProperties.RICH_TEXT_CHANGE_LISTENER, this::onRichTextChanged);
@@ -98,9 +104,7 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
     }
 
     public void destroy() {
-        if (mCurrentInput != null) {
-            mCurrentInput.getDisplayStateSupplier().removeObserver(mDisplayStateObserver);
-        }
+        detachCurrentInputObservers();
         mModel.set(UrlBarProperties.TEXT_CONTEXT_MENU_DELEGATE, null);
         mModel.set(UrlBarProperties.TEXT_CHANGE_LISTENER, null);
         mModel.set(UrlBarProperties.RICH_TEXT_CHANGE_LISTENER, null);
@@ -109,30 +113,47 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
 
     /** Signals that the Omnibox input session has begun. */
     void beginInput(FuseboxSessionState sessionState) {
-        if (mCurrentInput != null) {
-            mCurrentInput.getDisplayStateSupplier().removeObserver(mDisplayStateObserver);
-        }
+        detachCurrentInputObservers();
         mCurrentInput = sessionState.getAutocompleteInput();
         mCurrentInput
                 .getDisplayStateSupplier()
                 .addSyncObserverAndCallIfNonNull(mDisplayStateObserver);
+        mCurrentInput
+                .getRequestTypeSupplier()
+                .addSyncObserverAndCallIfNonNull(mRequestTypeObserver);
         pushCurrentInputToModel();
     }
 
     /** Signals that the Omnibox input session has ended. */
     void endInput() {
         if (!isInInputSession()) return;
-        mCurrentInput.getDisplayStateSupplier().removeObserver(mDisplayStateObserver);
+        detachCurrentInputObservers();
         mModel.set(UrlBarProperties.ALLOW_MULTILINE_INPUT, false);
         var pageUrl = mCurrentInput.getPageUrl();
         mCurrentInput = null;
-        var data = UrlBarData.forUrl(pageUrl);
+        // NTPs display a search hint rather than their internal chrome-native://newtab/ URL, so
+        // reset to EMPTY instead of populating the raw page URL via UrlBarData.forUrl.
+        UrlBarData data =
+                OmniboxUrlUtils.isNtpUrl(pageUrl) ? UrlBarData.EMPTY : UrlBarData.forUrl(pageUrl);
         setUrlBarData(data, ScrollType.SCROLL_TO_TLD, TextSelection.SELECT_END);
+    }
+
+    private void detachCurrentInputObservers() {
+        if (mCurrentInput == null) return;
+        mCurrentInput.getDisplayStateSupplier().removeObserver(mDisplayStateObserver);
+        mCurrentInput.getRequestTypeSupplier().removeObserver(mRequestTypeObserver);
     }
 
     private void onDisplayStateChanged(@DisplayState int displayState) {
         boolean allowMultiline = displayState == DisplayState.SUGGESTIONS;
         mModel.set(UrlBarProperties.ALLOW_MULTILINE_INPUT, allowMultiline);
+    }
+
+    private void onRequestTypeChanged(@AutocompleteRequestType int requestType) {
+        boolean useNaturalTextIme =
+                OmniboxFeatures.isUrlBarAimNaturalTextImeEnabled()
+                        && ToolModeUtils.isAimRequest(requestType);
+        mModel.set(UrlBarProperties.USE_NATURAL_TEXT_IME, useNaturalTextIme);
     }
 
     /** Sets the current selection for the active input session. */
@@ -156,11 +177,14 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
     /**
      * Signals that the UrlBar has finished being relocated to a new parent.
      *
-     * @param postReparentingFocus Whether the UrlBar should be focused.
+     * @param focusGained Whether the UrlBar gained focus as part of the reparenting. Outside of an
+     *     input session the text is re-pushed so the view picks up the focused presentation. When
+     *     focus is unchanged the view is deliberately left untouched: re-pushing text calls
+     *     setText(), which replaces the Editable and destroys any in-progress IME composition.
      */
-    void finishReparenting(boolean postReparentingFocus) {
+    void finishReparenting(boolean focusGained) {
         mIsReparenting = false;
-        if (postReparentingFocus && !isInInputSession()) {
+        if (focusGained && !isInInputSession()) {
             pushTextToModel(/* originChanged= */ false);
         }
     }
@@ -204,6 +228,7 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
             UrlBarData typedData = UrlBarData.forNonUrlText(text);
             if (!isNewTextEquivalentToExistingText(mUrlBarData, typedData)) {
                 mUrlBarData = typedData;
+                mTextForAutofillServices = text;
             }
         }
         if (mTextChangeListener != null) {
@@ -268,7 +293,15 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
                                 && TextUtils.isEmpty(mUrlBarData.displayText));
         boolean selectionEquivalent = !isInInputSession() || mSelection.equals(selection);
 
-        if (textEquivalent && scrollTypeEquivalent && selectionEquivalent) {
+        // The text reported to Autofill services does not always derive from the UrlBar text, so
+        // it can change while everything else stays the same.
+        boolean textForAutofillServicesEquivalent =
+                TextUtils.equals(mTextForAutofillServices, getTextForAutofillServices(data));
+
+        if (textEquivalent
+                && scrollTypeEquivalent
+                && selectionEquivalent
+                && textForAutofillServicesEquivalent) {
             return false;
         }
 
@@ -286,25 +319,17 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
     }
 
     /* package */ void pushTextToModel(boolean originChanged) {
-        CharSequence text;
-        if (mShowOriginOnly && mUrlBarData.originStartIndex != mUrlBarData.originEndIndex) {
-            text =
-                    mUrlBarData.displayText.subSequence(
-                            mUrlBarData.originStartIndex, mUrlBarData.originEndIndex);
-        } else {
-            text =
-                    !isInInputSession()
-                            ? mUrlBarData.displayText
-                            : mUrlBarData.getEditingOrDisplayText();
-        }
-        CharSequence textForAutofillServices = text;
+        CharSequence text = getTextToShow(mUrlBarData);
+        CharSequence textForAutofillServices = getTextForAutofillServices(mUrlBarData);
+        mTextForAutofillServices = textForAutofillServices;
 
-        if (!(isInInputSession() || TextUtils.isEmpty(text) || mUrlBarData.url == null)) {
-            textForAutofillServices = mUrlBarData.url.getSpec();
-        }
-
-        @ScrollType int scrollType = isInInputSession() ? ScrollType.NO_SCROLL : mScrollType;
-        if (text == null) text = "";
+        @ScrollType
+        int scrollType =
+                (isInInputSession()
+                                && mCurrentInput.getDisplayState()
+                                        != DisplayState.DRAFTING_NO_FOCUS)
+                        ? ScrollType.NO_SCROLL
+                        : mScrollType;
 
         UrlBarTextState state =
                 new UrlBarTextState(
@@ -316,6 +341,50 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
                         originChanged);
         mModel.set(UrlBarProperties.TEXT_STATE, state);
         updateShowHintText(text.toString());
+    }
+
+    /**
+     * Returns the text the UrlBar shows for the supplied data in the current state.
+     *
+     * @param data The data to derive the text from.
+     */
+    private CharSequence getTextToShow(UrlBarData data) {
+        CharSequence text;
+        if (mShowOriginOnly && data.originStartIndex != data.originEndIndex) {
+            text = data.displayText.subSequence(data.originStartIndex, data.originEndIndex);
+        } else {
+            text = !isInInputSession() ? data.displayText : data.getEditingOrDisplayText();
+        }
+        return text == null ? "" : text;
+    }
+
+    /**
+     * Returns the text reported to Autofill services in place of the UrlBar text.
+     *
+     * <p>Autofill services use this text to tell which page the web content belongs to, so it has
+     * to identify the page whenever the web content can be interacted with:
+     *
+     * <ul>
+     *   <li>Outside of an input session, this is the URL being displayed.
+     *   <li>In {@link DisplayState#DRAFTING_NO_FOCUS} the input is retained while the page is
+     *       interactive again. The input does not identify the page, so the page URL of the session
+     *       is reported, which LocationBarMediator keeps up to date with the tab.
+     *   <li>While the UrlBar is being edited the web content is not focused, and the edited text is
+     *       reported.
+     * </ul>
+     *
+     * @param data The data about to be shown in the UrlBar.
+     */
+    private CharSequence getTextForAutofillServices(UrlBarData data) {
+        CharSequence text = getTextToShow(data);
+        if (!isInInputSession()) {
+            if (TextUtils.isEmpty(text) || data.url == null) return text;
+            return data.url.getSpec();
+        }
+        if (mCurrentInput.getDisplayState() == DisplayState.DRAFTING_NO_FOCUS) {
+            return mCurrentInput.getPageUrl().getSpec();
+        }
+        return text;
     }
 
     @VisibleForTesting
@@ -423,11 +492,6 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
         // Trim to just the currently selected text as that is the only text we are replacing.
         currentText = currentText.substring(minSel, maxSel);
 
-        UrlBarDelegate delegate = mModel.get(UrlBarProperties.DELEGATE);
-        assert delegate != null;
-        String replacement = delegate.getReplacementCutCopyText(currentText, selection);
-        if (replacement != null) return replacement;
-
         String formattedUrlLocation;
         String originalUrlLocation;
 
@@ -512,8 +576,8 @@ class UrlBarMediator implements UrlBarTextContextMenuDelegate {
     void setUrlBarHintTextColorForNtp() {
         mIsHintTextFixedForNtp = true;
         final @ColorInt int hintTextColor =
-                ChromeFeatureList.sNtpAurora.isEnabled()
-                        ? MaterialColors.getColor(mContext, R.attr.colorOutline, TAG)
+                ChromeFeatures.NtpAurora.isEnabled()
+                        ? SemanticColorUtils.getDefaultTextColorSecondary(mContext)
                         : SemanticColorUtils.getDefaultTextColor(mContext);
         mModel.set(UrlBarProperties.HINT_TEXT_COLOR, hintTextColor);
     }

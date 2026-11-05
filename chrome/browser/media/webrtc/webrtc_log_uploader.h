@@ -46,6 +46,7 @@ struct WebRtcLogUploadFailureReason {
     // Deprecated value.
     // kStoredLogNotFound = 1,
     kNetworkError = 2,
+    kInvalidReportId = 3,
   };
 };
 
@@ -106,6 +107,12 @@ class WebRtcLogUploader {
   };
 
   static WebRtcLogUploader* GetInstance();
+
+  // Deletes the RTP dump files in |log_paths|, if any. A dump whose parent
+  // directory is a symbolic link is skipped so that nothing is deleted through
+  // the link. Must be called on a sequence that allows blocking.
+  static void DeleteRtpDumpFiles(const WebRtcLogPaths& log_paths);
+
   WebRtcLogUploader();
 
   WebRtcLogUploader(const WebRtcLogUploader&) = delete;
@@ -155,7 +162,8 @@ class WebRtcLogUploader {
   // For testing purposes. If called, the multipart will not be uploaded, but
   // written to |post_data_| instead.
   void OverrideUploadWithBufferForTesting(std::string* post_data) {
-    DCHECK((post_data && !post_data_) || (!post_data && post_data_));
+    CHECK((post_data && !post_data_) || (!post_data && post_data_),
+          base::NotFatalUntil::M161);
     post_data_ = post_data;
   }
 
@@ -242,7 +250,8 @@ class WebRtcLogUploader {
   void NotifyUploadDoneAndLogStats(std::optional<int> response_code,
                                    int network_error_code,
                                    const std::string& report_id,
-                                   UploadDoneData upload_done_data);
+                                   UploadDoneData upload_done_data,
+                                   bool is_invalid_report_id);
 
   using SimpleURLLoaderList =
       std::list<std::unique_ptr<network::SimpleURLLoader>>;

@@ -32,6 +32,7 @@
 #include "third_party/blink/renderer/core/frame/navigator_id.h"
 
 #include "base/feature_list.h"
+#include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -67,8 +68,8 @@ String NavigatorID::platform() const {
   return "Win32";
 #else  // Unix-like systems
   struct utsname osname;
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<String>, platform_name, ());
-  if (platform_name->IsNull()) {
+  static base::NoDestructor<ThreadSpecific<String>> platform_name;
+  if ((*platform_name)->IsNull()) {
     StringBuilder result;
     if (uname(&osname) >= 0) {
       result.Append(osname.sysname);
@@ -77,14 +78,31 @@ String NavigatorID::platform() const {
         result.Append(osname.machine);
       }
     }
-    *platform_name = result.ToString();
+    **platform_name = result.ToString();
   }
-  return *platform_name;
+  return **platform_name;
 #endif
 }
 
 String NavigatorID::product() {
   return "Gecko";
+}
+
+String NavigatorID::productSub() const {
+  return "20030107";
+}
+
+String NavigatorID::vendor() const {
+  // Do not change without good cause. History:
+  // https://code.google.com/p/chromium/issues/detail?id=276813
+  // https://www.w3.org/Bugs/Public/show_bug.cgi?id=27786
+  // https://groups.google.com/a/chromium.org/forum/#!topic/blink-dev/QrgyulnqvmE
+  // https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-vendor
+  return "Google Inc.";
+}
+
+String NavigatorID::vendorSub() const {
+  return "";
 }
 
 }  // namespace blink

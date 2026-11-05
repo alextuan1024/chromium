@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/core/loader/worker_fetch_context.h"
 
+#include "base/feature_list.h"
 #include "base/task/single_thread_task_runner.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
 #include "third_party/blink/public/platform/web_content_settings_client.h"
 #include "third_party/blink/public/platform/web_url_request.h"
@@ -58,6 +60,26 @@ WorkerFetchContext::WorkerFetchContext(
 }
 
 net::SiteForCookies WorkerFetchContext::GetSiteForCookies() const {
+  // Return an empty `SiteForCookies` (withholding SameSite cookies) if the
+  // fetch client's origin is opaque, or if this is a worker whose own global
+  // scope has an opaque origin (e.g. a CSP-sandboxed module worker, whose
+  // static `import` fetches still use the creator document's non-opaque
+  // `FetchClientSettingsObject`).
+  //
+  // Exclude worklets (`WorkletGlobalScope`) from the `global_scope_` check:
+  // worklets always have an opaque global scope origin by spec, but
+  // `worklet.addModule()` fetches scripts on behalf of the owning document and
+  // should still send the document's SameSite cookies unless the document's
+  // `FetchClientSettingsObject` origin is itself opaque.
+  if (base::FeatureList::IsEnabled(features::kCSPSandboxedWorkerOpaqueOrigin) &&
+      ((global_scope_->IsWorkerGlobalScope() &&
+        global_scope_->GetSecurityOrigin()->IsOpaque()) ||
+       GetResourceFetcherProperties()
+           .GetFetchClientSettingsObject()
+           .GetSecurityOrigin()
+           ->IsOpaque())) {
+    return net::SiteForCookies();
+  }
   return web_context_->SiteForCookies();
 }
 
@@ -248,9 +270,8 @@ void WorkerFetchContext::AddAdditionalRequestHeaders(ResourceRequest& request) {
   }
 }
 
-// TODO(crbug.com/40919714): After determine exactly how we support initiator
-// for resource timing on worker threads, consider merging this function with
-// FrameFetchContext::FillInitiatorInfo().
+// Unlike FrameFetchContext::FillInitiatorInfo(), a fetch that reaches here is
+// always initiated by JavaScript.
 void WorkerFetchContext::FillInitiatorInfo(FetchInitiatorInfo& initiator_info) {
   CHECK(RuntimeEnabledFeatures::ResourceTimingInitiatorEnabled());
   // Top-level worker scripts loaded by WorkerMainScriptLoader bypass this
@@ -263,15 +284,24 @@ void WorkerFetchContext::FillInitiatorInfo(FetchInitiatorInfo& initiator_info) {
     return;
   }
 
-  v8::Isolate* isolate = ResourceInitiatorHelper::GetIsolateIfRunningScript();
-  if (isolate) {
-    // It is the currently executing JavaScript that is fetching the resource.
-    // The initiator is the JavaScript that originally dispatched currently
-    // executing JavaScript.
-    initiator_info.initiator_url =
-        ResourceInitiatorHelper::GetScriptInitiatorUrl(*isolate);
+  // The initiator URL is not needed in worklets, so skip the task attribution
+  // lookup below.
+  if (!global_scope_->IsWorkerGlobalScope()) {
     return;
   }
+
+  // The fetch is made by JavaScript running in the worker, so the initiator
+  // is taken from the task attribution.
+  v8::Isolate* isolate = global_scope_->GetIsolate();
+  // |isolate| is not null because:
+  // 1) |global_scope_| is a WorkerGlobalScope.
+  // 2) WorkerGlobalScope is created in worker_thread.cc, and for workers a
+  //    valid isolate is set in
+  //    GetWorkerBackingThread().InitializeOnBackingThread() before the
+  //    global scope is created.
+  CHECK(isolate);
+  initiator_info.initiator_url =
+      ResourceInitiatorHelper::GetScriptInitiatorUrl(*isolate);
 }
 
 void WorkerFetchContext::AddResourceTiming(

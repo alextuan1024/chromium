@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history_clusters/core/clustering_backend.h"
@@ -23,12 +22,10 @@ HistoryClustersServiceTaskUpdateClusterTriggerability::
         base::WeakPtr<HistoryClustersService> weak_history_clusters_service,
         ClusteringBackend* const backend,
         history::HistoryService* const history_service,
-        bool likely_has_unclustered_visits_or_unprocessed_clusters,
-        base::OnceClosure callback)
+        bool likely_has_unclustered_visits_or_unprocessed_clusters)
     : weak_history_clusters_service_(std::move(weak_history_clusters_service)),
       backend_(backend),
       history_service_(history_service),
-      callback_(std::move(callback)),
       task_created_time_(base::Time::Now()),
       likely_has_unclustered_visits_or_unprocessed_clusters_(
           likely_has_unclustered_visits_or_unprocessed_clusters) {
@@ -63,7 +60,7 @@ void HistoryClustersServiceTaskUpdateClusterTriggerability::Start() {
         GetConfig().max_persisted_cluster_visits_to_fetch_soft_cap,
         base::BindOnce(&HistoryClustersServiceTaskUpdateClusterTriggerability::
                            OnGotPersistedClusters,
-                       weak_ptr_factory_.GetWeakPtr(), base::TimeTicks::Now()),
+                       weak_ptr_factory_.GetWeakPtr()),
         /*include_keywords_and_duplicates=*/false, &task_tracker_);
   } else {
     history_service_->ScheduleDBTask(
@@ -76,34 +73,18 @@ void HistoryClustersServiceTaskUpdateClusterTriggerability::Start() {
             base::BindOnce(
                 &HistoryClustersServiceTaskUpdateClusterTriggerability::
                     OnGotAnnotatedVisitsToCluster,
-                weak_ptr_factory_.GetWeakPtr(), base::TimeTicks::Now())),
+                weak_ptr_factory_.GetWeakPtr())),
         &task_tracker_);
   }
 }
 
 void HistoryClustersServiceTaskUpdateClusterTriggerability::
     OnGotAnnotatedVisitsToCluster(
-        base::TimeTicks start_time,
         std::vector<history::ClusterId> old_clusters_unused,
         std::vector<history::AnnotatedVisit> annotated_visits,
         QueryClustersContinuationParams continuation_params) {
   if (!weak_history_clusters_service_) {
     return;
-  }
-
-  base::UmaHistogramTimes(
-      "History.Clusters.Backend.UpdateClusterTriggerability."
-      "GetAnnotatedVisitsToClusterLatency",
-      base::TimeTicks::Now() - start_time);
-
-  // Records whether there were unclustered visits to cluster. This will inform
-  // whether the call to get annotated visits to cluster can be removed once
-  // this code path has launched.
-  if (!continuation_params_.is_continuation) {
-    base::UmaHistogramBoolean(
-        "History.Clusters.Backend.UpdateClusterTriggerability."
-        "HadUnclusteredVisitsToCluster",
-        annotated_visits.empty());
   }
 
   if (weak_history_clusters_service_->ShouldNotifyDebugMessage()) {
@@ -129,22 +110,16 @@ void HistoryClustersServiceTaskUpdateClusterTriggerability::
       ClusteringRequestSource::kAllKeywordCacheRefresh,
       base::BindOnce(&HistoryClustersServiceTaskUpdateClusterTriggerability::
                          OnGotModelContextClusters,
-                     weak_ptr_factory_.GetWeakPtr(), base::TimeTicks::Now()),
+                     weak_ptr_factory_.GetWeakPtr()),
       annotated_visits, /*requires_ui_and_triggerability=*/false);
 }
 
 void HistoryClustersServiceTaskUpdateClusterTriggerability::
-    OnGotModelContextClusters(base::TimeTicks start_time,
-                              std::vector<history::Cluster> clusters) {
+    OnGotModelContextClusters(std::vector<history::Cluster> clusters) {
   // Persist the context clusters.
   if (!weak_history_clusters_service_) {
     return;
   }
-
-  base::UmaHistogramTimes(
-      "History.Clusters.Backend.UpdateClusterTriggerability."
-      "ComputeContextClustersLatency",
-      base::TimeTicks::Now() - start_time);
 
   if (weak_history_clusters_service_->ShouldNotifyDebugMessage()) {
     weak_history_clusters_service_->NotifyDebugMessage(base::StringPrintf(
@@ -158,35 +133,24 @@ void HistoryClustersServiceTaskUpdateClusterTriggerability::
       /*ids_to_delete=*/{}, clusters,
       base::BindOnce(&HistoryClustersServiceTaskUpdateClusterTriggerability::
                          OnPersistedContextClusters,
-                     weak_ptr_factory_.GetWeakPtr(), base::TimeTicks::Now()),
+                     weak_ptr_factory_.GetWeakPtr()),
       &task_tracker_);
 }
 
 void HistoryClustersServiceTaskUpdateClusterTriggerability::
-    OnPersistedContextClusters(base::TimeTicks start_time) {
+    OnPersistedContextClusters() {
   if (!weak_history_clusters_service_) {
     return;
   }
-
-  base::UmaHistogramTimes(
-      "History.Clusters.Backend.UpdateClusterTriggerability."
-      "PersistContextClustersLatency",
-      base::TimeTicks::Now() - start_time);
 
   Start();
 }
 
 void HistoryClustersServiceTaskUpdateClusterTriggerability::
-    OnGotPersistedClusters(base::TimeTicks start_time,
-                           std::vector<history::Cluster> clusters) {
+    OnGotPersistedClusters(std::vector<history::Cluster> clusters) {
   if (!weak_history_clusters_service_) {
     return;
   }
-
-  base::UmaHistogramTimes(
-      "History.Clusters.Backend.UpdateClusterTriggerability."
-      "GetMostRecentPersistedClustersLatency",
-      base::TimeTicks::Now() - start_time);
 
   if (weak_history_clusters_service_->ShouldNotifyDebugMessage()) {
     weak_history_clusters_service_->NotifyDebugMessage(base::StringPrintf(
@@ -197,10 +161,7 @@ void HistoryClustersServiceTaskUpdateClusterTriggerability::
   }
 
   if (clusters.empty()) {
-    // TODO(manukh): If the most recent cluster is invalid (due to DB
-    //  corruption), `GetMostRecentClusters()` will return no clusters. We
-    //  should handle this case and not assume we've exhausted history.
-    MarkDoneAndRunCallback();
+    done_ = true;
     return;
   }
   continuation_params_.continuation_time =
@@ -215,50 +176,29 @@ void HistoryClustersServiceTaskUpdateClusterTriggerability::
                        });
 
   if (filtered_clusters.empty()) {
-    if (!updated_cluster_triggerability_after_filtered_clusters_empty_) {
-      // If nullopt, set initial state to false.
-      updated_cluster_triggerability_after_filtered_clusters_empty_ = false;
-    }
-
     if (likely_has_unclustered_visits_or_unprocessed_clusters_) {
       // Get more persisted clusters and see if the clusters need to be updated
       // if visits have not been exhausted yet.
       Start();
     } else {
-      MarkDoneAndRunCallback();
+      done_ = true;
     }
     return;
-  }
-
-  updated_cluster_triggerability_ = true;
-
-  if (updated_cluster_triggerability_after_filtered_clusters_empty_) {
-    // If this is a run after all returned clusters had their cluster
-    // triggerability calculated, set this value to true since there were
-    // clusters that did not have their triggerability calculated earlier in the
-    // user's history.
-    updated_cluster_triggerability_after_filtered_clusters_empty_ = true;
   }
 
   backend_->GetClusterTriggerability(
       base::BindOnce(&HistoryClustersServiceTaskUpdateClusterTriggerability::
                          OnGotModelClustersWithTriggerability,
-                     weak_ptr_factory_.GetWeakPtr(), base::TimeTicks::Now()),
+                     weak_ptr_factory_.GetWeakPtr()),
       std::move(filtered_clusters));
 }
 
 void HistoryClustersServiceTaskUpdateClusterTriggerability::
     OnGotModelClustersWithTriggerability(
-        base::TimeTicks start_time,
         std::vector<history::Cluster> clusters) {
   if (!weak_history_clusters_service_) {
     return;
   }
-
-  base::UmaHistogramTimes(
-      "History.Clusters.Backend.UpdateClusterTriggerability."
-      "ComputeClusterTriggerabilityLatency",
-      base::TimeTicks::Now() - start_time);
 
   if (weak_history_clusters_service_->ShouldNotifyDebugMessage()) {
     weak_history_clusters_service_->NotifyDebugMessage(
@@ -284,36 +224,13 @@ void HistoryClustersServiceTaskUpdateClusterTriggerability::
       clusters,
       base::BindOnce(&HistoryClustersServiceTaskUpdateClusterTriggerability::
                          OnPersistedClusterTriggerability,
-                     weak_ptr_factory_.GetWeakPtr(), base::TimeTicks::Now()),
+                     weak_ptr_factory_.GetWeakPtr()),
       &task_tracker_);
 }
 
 void HistoryClustersServiceTaskUpdateClusterTriggerability::
-    OnPersistedClusterTriggerability(base::TimeTicks start_time) {
-  base::UmaHistogramTimes(
-      "History.Clusters.Backend.UpdateClusterTriggerability."
-      "PersistClusterTriggerabilityLatency",
-      base::TimeTicks::Now() - start_time);
-
+    OnPersistedClusterTriggerability() {
   Start();
-}
-
-void HistoryClustersServiceTaskUpdateClusterTriggerability::
-    MarkDoneAndRunCallback() {
-  done_ = true;
-
-  base::UmaHistogramBoolean(
-      "History.Clusters.Backend.UpdateClusterTriggerability."
-      "DidUpdateClusterTriggerability",
-      updated_cluster_triggerability_);
-  if (updated_cluster_triggerability_after_filtered_clusters_empty_) {
-    base::UmaHistogramBoolean(
-        "History.Clusters.Backend.UpdateClusterTriggerability."
-        "DidUpdateClusterTriggerability.AfterFilteredClustersEmpty",
-        *updated_cluster_triggerability_after_filtered_clusters_empty_);
-  }
-
-  std::move(callback_).Run();
 }
 
 }  // namespace history_clusters

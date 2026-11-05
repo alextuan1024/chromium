@@ -8,6 +8,7 @@
 
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
+#include "base/time/time.h"
 #include "device/vr/openxr/openxr_util.h"
 #include "device/vr/openxr/test/openxr_mock_helper.h"
 #include "device/vr/openxr/test/openxr_test_helper.h"
@@ -119,6 +120,21 @@ XrResult XRAPI_PTR xrBeginSession(XrSession session,
 
   return XR_SUCCESS;
 }
+
+#if !BUILDFLAG(IS_WIN)
+XrResult XRAPI_PTR xrConvertTimeToTimespecTimeKHR(XrInstance instance,
+                                                  XrTime time,
+                                                  timespec* timespec_time) {
+  DVLOG(2) << __FUNCTION__;
+  RETURN_IF_XR_FAILED(GetTestHelper().ValidateInstance(instance));
+  RETURN_IF(timespec_time == nullptr, XR_ERROR_VALIDATION_FAILURE,
+            "timespec_time is nullptr");
+  // The mock runtime's XrTime counts nanoseconds of CLOCK_MONOTONIC.
+  timespec_time->tv_sec = time / base::Time::kNanosecondsPerSecond;
+  timespec_time->tv_nsec = time % base::Time::kNanosecondsPerSecond;
+  return XR_SUCCESS;
+}
+#endif
 
 XrResult XRAPI_PTR xrCreateAction(XrActionSet action_set,
                                   const XrActionCreateInfo* create_info,
@@ -315,6 +331,9 @@ XrResult XRAPI_PTR xrCreateSession(XrInstance instance,
             "XrGraphicsBindingVulkan2KHR physicalDevice is VK_NULL_HANDLE");
   RETURN_IF(binding->device == VK_NULL_HANDLE, XR_ERROR_VALIDATION_FAILURE,
             "XrGraphicsBindingVulkan2KHR device is VK_NULL_HANDLE");
+  GetTestHelper().SetVulkanDevice(binding->physicalDevice, binding->device,
+                                  binding->queueFamilyIndex,
+                                  binding->queueIndex);
 #elif BUILDFLAG(IS_ANDROID)
   const XrGraphicsBindingOpenGLESAndroidKHR* binding =
       static_cast<const XrGraphicsBindingOpenGLESAndroidKHR*>(
@@ -371,7 +390,9 @@ XrResult XRAPI_PTR xrCreateSwapchain(XrSession session,
   RETURN_IF(create_info->faceCount != 1 && create_info->faceCount != 6,
             XR_ERROR_VALIDATION_FAILURE,
             "XrSwapchainCreateInfo faceCount is not 1 or 6");
-  RETURN_IF(create_info->arraySize != 1, XR_ERROR_VALIDATION_FAILURE,
+  RETURN_IF(create_info->arraySize != 1 &&
+                create_info->arraySize != device::kNumPrimaryViews,
+            XR_ERROR_VALIDATION_FAILURE,
             "XrSwapchainCreateInfo arraySize invalid");
   RETURN_IF(create_info->mipCount != 1, XR_ERROR_VALIDATION_FAILURE,
             "XrSwapchainCreateInfo mipCount is not 1");
@@ -543,6 +564,34 @@ XrResult XRAPI_PTR xrEndSession(XrSession session) {
   DVLOG(2) << __FUNCTION__;
   RETURN_IF_XR_FAILED(GetTestHelper().ValidateSession(session));
   RETURN_IF_XR_FAILED(GetTestHelper().EndSession());
+
+  return XR_SUCCESS;
+}
+
+XrResult XRAPI_PTR
+xrEnumerateDisplayRefreshRatesFB(XrSession session,
+                                 uint32_t display_refresh_rate_capacity_input,
+                                 uint32_t* display_refresh_rate_count_output,
+                                 float* display_refresh_rates) {
+  DVLOG(2) << __FUNCTION__;
+  RETURN_IF_XR_FAILED(GetTestHelper().ValidateSession(session));
+  RETURN_IF(display_refresh_rate_count_output == nullptr,
+            XR_ERROR_VALIDATION_FAILURE,
+            "display_refresh_rate_count_output is nullptr");
+
+  const auto& rates = OpenXrTestHelper::kDisplayRefreshRates;
+  *display_refresh_rate_count_output = rates.size();
+  if (display_refresh_rate_capacity_input == 0) {
+    return XR_SUCCESS;
+  }
+
+  RETURN_IF(display_refresh_rates == nullptr, XR_ERROR_VALIDATION_FAILURE,
+            "display_refresh_rates is nullptr");
+  RETURN_IF(display_refresh_rate_capacity_input < rates.size(),
+            XR_ERROR_SIZE_INSUFFICIENT,
+            "display_refresh_rate_capacity_input size is insufficient");
+
+  std::ranges::copy(rates, display_refresh_rates);
 
   return XR_SUCCESS;
 }
@@ -821,15 +870,15 @@ xrEnumerateSwapchainImages(XrSwapchain swapchain,
   auto images_span = UNSAFE_BUFFERS(
       base::span(reinterpret_cast<XrSwapchainImageVulkan2KHR*>(images),
                  image_capacity_input));
+  const std::vector<VkImage>& vk_images =
+      GetTestHelper().GetSwapchainImages(swapchain);
+  DCHECK_EQ(vk_images.size(), image_capacity_input);
   for (uint32_t i = 0; i < image_capacity_input; i++) {
     XrSwapchainImageVulkan2KHR& image = images_span[i];
     RETURN_IF(image.type != XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR,
               XR_ERROR_VALIDATION_FAILURE,
               "XrSwapchainImageVulkan2KHR type invalid");
-    // SwiftShader cannot create real VkImages in the mock without a full
-    // rendering setup. Return VK_NULL_HANDLE — EnumerateSwapchainImages and
-    // CreateSharedImages handle null images gracefully.
-    image.image = VK_NULL_HANDLE;
+    image.image = vk_images[i];
   }
 #endif
 
@@ -988,6 +1037,16 @@ xrGetCurrentInteractionProfile(XrSession session,
             "nullptr");
   interaction_profile->interactionProfile =
       GetTestHelper().GetCurrentInteractionProfile();
+  return XR_SUCCESS;
+}
+
+XrResult XRAPI_PTR xrGetDisplayRefreshRateFB(XrSession session,
+                                             float* display_refresh_rate) {
+  DVLOG(2) << __FUNCTION__;
+  RETURN_IF_XR_FAILED(GetTestHelper().ValidateSession(session));
+  RETURN_IF(display_refresh_rate == nullptr, XR_ERROR_VALIDATION_FAILURE,
+            "display_refresh_rate is nullptr");
+  *display_refresh_rate = GetTestHelper().display_refresh_rate();
   return XR_SUCCESS;
 }
 
@@ -1198,6 +1257,13 @@ XrResult XRAPI_PTR xrPollEvent(XrInstance instance,
   return GetTestHelper().PollEvent(event_data);
 }
 
+XrResult XRAPI_PTR xrRequestDisplayRefreshRateFB(XrSession session,
+                                                 float display_refresh_rate) {
+  DVLOG(2) << __FUNCTION__;
+  RETURN_IF_XR_FAILED(GetTestHelper().ValidateSession(session));
+  return GetTestHelper().RequestDisplayRefreshRate(display_refresh_rate);
+}
+
 XrResult XRAPI_PTR
 xrReleaseSwapchainImage(XrSwapchain swapchain,
                         const XrSwapchainImageReleaseInfo* release_info) {
@@ -1211,7 +1277,7 @@ xrReleaseSwapchainImage(XrSwapchain swapchain,
   RETURN_IF(release_info->next != nullptr, XR_ERROR_VALIDATION_FAILURE,
             "XrSwapchainImageReleaseInfo next is not nullptr");
 
-  return XR_SUCCESS;
+  return GetTestHelper().ReleaseSwapchainImage(swapchain);
 }
 
 XrResult XRAPI_PTR xrSuggestInteractionProfileBindings(
@@ -1229,8 +1295,6 @@ XrResult XRAPI_PTR xrSuggestInteractionProfileBindings(
             "xrSetInteractionProfileSuggestedBindings next is not nullptr");
   RETURN_IF_XR_FAILED(
       GetTestHelper().ValidatePath(suggested_bindings->interactionProfile));
-  std::string interaction_profile =
-      GetTestHelper().PathToString(suggested_bindings->interactionProfile);
 
   RETURN_IF(suggested_bindings->suggestedBindings == nullptr,
             XR_ERROR_VALIDATION_FAILURE,
@@ -1527,6 +1591,9 @@ XrResult XRAPI_PTR xrGetInstanceProcAddr(XrInstance instance,
   TRY_LOAD_METHOD(xrAttachSessionActionSets);
   TRY_LOAD_METHOD(xrBeginFrame);
   TRY_LOAD_METHOD(xrBeginSession);
+#if !BUILDFLAG(IS_WIN)
+  TRY_LOAD_METHOD(xrConvertTimeToTimespecTimeKHR);
+#endif
   TRY_LOAD_METHOD(xrCreateAction);
   TRY_LOAD_METHOD(xrCreateActionSet);
   TRY_LOAD_METHOD(xrCreateActionSpace);
@@ -1547,6 +1614,7 @@ XrResult XRAPI_PTR xrGetInstanceProcAddr(XrInstance instance,
   TRY_LOAD_METHOD(xrDestroySwapchain);
   TRY_LOAD_METHOD(xrEndFrame);
   TRY_LOAD_METHOD(xrEndSession);
+  TRY_LOAD_METHOD(xrEnumerateDisplayRefreshRatesFB);
   TRY_LOAD_METHOD(xrEnumerateEnvironmentBlendModes);
   TRY_LOAD_METHOD(xrEnumerateInstanceExtensionProperties);
   TRY_LOAD_METHOD(xrEnumerateSwapchainFormats);
@@ -1561,6 +1629,7 @@ XrResult XRAPI_PTR xrGetInstanceProcAddr(XrInstance instance,
   TRY_LOAD_METHOD(xrGetActionStateVector2f);
   TRY_LOAD_METHOD(xrGetActionStatePose);
   TRY_LOAD_METHOD(xrGetCurrentInteractionProfile);
+  TRY_LOAD_METHOD(xrGetDisplayRefreshRateFB);
 #if BUILDFLAG(IS_ANDROID)
   TRY_LOAD_METHOD(xrGetOpenGLESGraphicsRequirementsKHR);
 #endif
@@ -1578,6 +1647,7 @@ XrResult XRAPI_PTR xrGetInstanceProcAddr(XrInstance instance,
   TRY_LOAD_METHOD(xrLocateViews);
   TRY_LOAD_METHOD(xrPollEvent);
   TRY_LOAD_METHOD(xrReleaseSwapchainImage);
+  TRY_LOAD_METHOD(xrRequestDisplayRefreshRateFB);
   TRY_LOAD_METHOD(xrSuggestInteractionProfileBindings);
   TRY_LOAD_METHOD(xrStringToPath);
   TRY_LOAD_METHOD(xrPathToString);

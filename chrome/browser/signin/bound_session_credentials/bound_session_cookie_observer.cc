@@ -67,8 +67,8 @@ void BoundSessionCookieObserver::OnGetCookieList(
 
 void BoundSessionCookieObserver::OnCookieChange(
     const net::CookieChangeInfo& change) {
-  DCHECK_EQ(change.cookie.Name(), cookie_name_);
-  DCHECK(change.cookie.IsDomainMatch(url_.GetHost()));
+  CHECK_EQ(change.cookie.Name(), cookie_name_, base::NotFatalUntil::M162);
+  CHECK(change.cookie.IsDomainMatch(url_.GetHost()), base::NotFatalUntil::M162);
   switch (change.cause) {
     // The cookie was inserted.
     case net::CookieChangeCause::INSERTED:
@@ -97,20 +97,31 @@ void BoundSessionCookieObserver::OnCookieChange(
     case net::CookieChangeCause::EVICTED:
     // The cookie was overwritten with an already-expired expiration date.
     case net::CookieChangeCause::EXPIRED_OVERWRITE:
-      DCHECK(net::CookieChangeCauseIsDeletion(change.cause));
+      CHECK(net::CookieChangeCauseIsDeletion(change.cause),
+            base::NotFatalUntil::M162);
       callback_.Run(cookie_name_, base::Time());
       break;
 
     // The cookie was automatically removed as it expired.
-    case net::CookieChangeCause::EXPIRED:
-      DCHECK(net::CookieChangeCauseIsDeletion(change.cause));
-      DCHECK(change.cookie.ExpiryDate() < base::Time::Now());
-      callback_.Run(cookie_name_, change.cookie.ExpiryDate());
+    case net::CookieChangeCause::EXPIRED: {
+      CHECK(net::CookieChangeCauseIsDeletion(change.cause),
+            base::NotFatalUntil::M162);
+      // Normally `ExpiryDate()` is in the past and passing it is a no-op for
+      // the controller. In the unlikely case it isn't (e.g. due to
+      // cross-process clock skew), fall back to `base::Time()` so the deleted
+      // cookie is not treated as fresh (https://crbug.com/576071796).
+      const base::Time expiration_date =
+          change.cookie.ExpiryDate() < base::Time::Now()
+              ? change.cookie.ExpiryDate()
+              : base::Time();
+      callback_.Run(cookie_name_, expiration_date);
+      break;
+    }
   }
 }
 
 void BoundSessionCookieObserver::AddCookieChangeListener() {
-  DCHECK(!cookie_listener_receiver_.is_bound());
+  CHECK(!cookie_listener_receiver_.is_bound(), base::NotFatalUntil::M162);
   network::mojom::CookieManager* cookie_manager =
       storage_partition_->GetCookieManagerForBrowserProcess();
   // NOTE: `cookie_manager` can be nullptr when TestSigninClient is used in

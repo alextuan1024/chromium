@@ -25,10 +25,6 @@
   return NO;
 }
 
-- (BOOL)hasAnswer {
-  return NO;
-}
-
 - (BOOL)isURL {
   return NO;
 }
@@ -59,6 +55,18 @@
 
 - (NSInteger)numberOfLines {
   return 1;
+}
+
+- (BOOL)wrapPrimaryText {
+  return NO;
+}
+
+- (BOOL)wrapSecondaryText {
+  return NO;
+}
+
+- (omnibox::SuggestTemplateInfo::ActionIconType)actionIcon {
+  return omnibox::SuggestTemplateInfo::ACTION_ICON_TYPE_UNSPECIFIED;
 }
 
 - (NSAttributedString*)text {

@@ -20,10 +20,6 @@
     "extension_types": ["extension"],
     "platforms": ["win", "mac"]
   },
-  "file_browser_handlers": {
-    "channel": "stable",
-    "extension_types": ["extension", "legacy_packaged_app"]
-  },
   "minimum_chrome_version": {
     "channel": "stable",
     "extension_types": [
@@ -45,6 +41,12 @@
   "side_panel": {
     "channel": "stable",
     "extension_types": ["extension"],
+    "min_manifest_version": 3
+  },
+  "sidebar": {
+    "channel": "trunk",
+    "extension_types": ["extension"],
+    "feature_flag": "ApiSidebar",
     "min_manifest_version": 3
   },
   "storage": {

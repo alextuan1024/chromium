@@ -14,9 +14,7 @@
 #import "base/functional/callback.h"
 #import "base/observer_list.h"
 #import "base/observer_list_types.h"
-#import "base/scoped_observation.h"
 #include "base/sequence_checker.h"
-#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/signin/model/system_account_updater.h"
 #import "ios/chrome/browser/signin/model/system_identity_manager.h"
 
@@ -26,9 +24,139 @@ class PrefService;
 class ProfileManagerIOS;
 @protocol SystemIdentity;
 
+// Enum for `Signin.IOSAccountProfileMappingStartupState` histogram.
+// Entries should not be renumbered and numeric values should never be reused.
+// LINT.IfChange(IOSAccountProfileMappingStartupState)
+enum class IOSAccountProfileMappingStartupState {
+  // Healthy state: each managed Gaia ID on the device is attached to its own
+  // single Managed profile.
+  kEachManagedAccountInSingleProfile = 0,
+
+  // Exactly 1 managed Gaia ID is attached to 2 Managed profiles; `profiles[0]`
+  // has Init=0 and `profiles[1]` has Init=1 (Cohort A: `UUID_M < orig_profile`,
+  // so uninitialized `UUID_M` shadows `orig_profile`):
+  // - A1: Personal profile (`UUID_P`) has Init=0 (`UUID_P` was never loaded).
+  kCohortA1_ShadowedByUninitManaged_PersonalUninit = 1,
+  // - A2: Personal profile (`UUID_P`) has Init=1 (`UUID_P` was loaded at least
+  //   once).
+  kCohortA2_ShadowedByUninitManaged_PersonalInit = 2,
+
+  // Exactly 1 managed Gaia ID is attached to 2 Managed profiles; both
+  // `profiles[0]` and `profiles[1]` have Init=1 (Cohort A3: user initialized
+  // both `orig_profile` and `UUID_M`):
+  // - A3a: `profiles[0]` (`UUID_M`) has a more recent `LastActiveTime` than
+  //   both `profiles[1]` (`orig_profile`) and `UUID_P`.
+  kCohortA3a_TwoInitManaged_FirstMoreRecent = 3,
+  // - A3b: `profiles[0]` (`UUID_M`) has a more recent `LastActiveTime` than
+  //   `profiles[1]` (`orig_profile`), and `UUID_P` has a more recent
+  //   `LastActiveTime` than `UUID_M`.
+  kCohortA3b_TwoInitManaged_PersonalMoreRecent = 4,
+  // - A3c: `profiles[1]` (`orig_profile`) has a more recent `LastActiveTime`
+  //   than `profiles[0]` (`UUID_M`) (unexpected, as `UUID_M` shadows
+  //   `orig_profile`).
+  kCohortA3c_TwoInitManaged_SecondMoreRecent = 5,
+
+  // Exactly 1 managed Gaia ID is attached to 2 Managed profiles; `profiles[0]`
+  // has Init=1 and `profiles[1]` has Init=0 (Cohort B: `orig_profile < UUID_M`,
+  // so `orig_profile` is found first and uninitialized `UUID_M` is shadowed):
+  // - B1: Personal profile (`UUID_P`) has Init=0, or `orig_profile` has a more
+  //   recent `LastActiveTime` than `UUID_P`.
+  kCohortB1_ExtraUninitManaged_OrigMoreRecent = 6,
+  // - B2: Personal profile (`UUID_P`) has Init=1 and has a more recent
+  //   `LastActiveTime` than `orig_profile`.
+  kCohortB2_ExtraUninitManaged_PersonalMoreRecent = 7,
+  // - Unexpected Cohort B case: both `profiles[0]` and `profiles[1]` have
+  //   Init=1, and `profiles[0]` is named `"Default"` (so `profiles[0]` is
+  //   `orig_profile` and `profiles[1]` is `UUID_M`, which should have been
+  //   shadowed; when neither profile is `"Default"`, this case is
+  //   indistinguishable from Cohort A3 above).
+  kCohortB_TwoInitManaged_FirstIsDefault = 8,
+  // - Unexpected Cohort B case: `profiles[0]` is named `"Default"` with Init=0
+  //   and `profiles[1]` (`UUID_M`) has Init=1.
+  kCohortB_FirstIsDefaultUninit_SecondInit = 9,
+
+  // Exactly 1 managed Gaia ID is attached to 2 Managed profiles; both have
+  // Init=0 (unexpected).
+  kTwoUninitManagedProfiles = 10,
+
+  // Exactly 1 managed Gaia ID is attached to 1 Personal profile (`UUID_P`) and
+  // 1 Managed profile (`orig_profile`) (Cohort C):
+  // - C1: Personal profile (`UUID_P`) has Init=0.
+  kCohortC1_PersonalAndManaged_PersonalUninit = 11,
+  // - C2: Personal profile (`UUID_P`) has Init=1, and this Gaia ID is NOT the
+  //   primary account of `UUID_P`.
+  kCohortC2_PersonalAndManaged_NotPrimaryInPersonal = 12,
+  // - C3: Personal profile (`UUID_P`) has Init=1, and this Gaia ID IS the
+  //   primary account of `UUID_P` (`UUID_P` has a more recent `LastActiveTime`
+  //   than `orig_profile`).
+  kCohortC3_PersonalAndManaged_PrimaryInPersonal = 13,
+  // - C3 edge case (`C3 -> UUID_M2 -> orig_profile`): this Gaia ID IS the
+  //   primary account of `UUID_P`, but the Managed profile (`orig_profile`) has
+  //   a more recent `LastActiveTime` than `UUID_P`.
+  kCohortC3_PersonalAndManaged_PrimaryInPersonal_ManagedMoreRecent = 14,
+
+  // Exactly 1 managed Gaia ID is attached to 3 or more profiles (unexpected).
+  kThreeOrMoreProfiles = 15,
+
+  // 2 or more managed Gaia IDs on the same device are each attached to >= 2
+  // profiles (unexpected).
+  kMultipleCorruptedManagedAccounts = 16,
+
+  kMaxValue = kMultipleCorruptedManagedAccounts,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:IOSAccountProfileMappingStartupState)
+
+// Enum for `Signin.IOSAccountProfileMappingCleanupAction` histogram.
+// Entries should not be renumbered and numeric values should never be reused.
+// LINT.IfChange(IOSAccountProfileMappingCleanupAction)
+enum class IOSAccountProfileMappingCleanupAction {
+  // Cohorts A1, A2: Deleted `profiles[0]` (`UUID_M`, uninitialized) and kept
+  // `profiles[1]` (`orig_profile`, initialized).
+  kDeletedFirstManagedProfileUninit = 0,
+  // Cohort A3: Both Managed profiles were initialized; abandoned `profiles[0]`
+  // (`UUID_M`, older `LastActiveTime`, kept on disk in
+  // `prefs::kAbandonedProfiles`) and kept `profiles[1]` (`orig_profile`, more
+  // recent `LastActiveTime`).
+  kAbandonedFirstManagedProfileInitOlder = 1,
+  // Cohort A3: Both Managed profiles were initialized; abandoned `profiles[1]`
+  // (`orig_profile`, older `LastActiveTime`, kept on disk in
+  // `prefs::kAbandonedProfiles`) and kept `profiles[0]` (`UUID_M`, more recent
+  // or tied `LastActiveTime`).
+  kAbandonedSecondManagedProfileInitOlder = 2,
+  // Cohorts B1, B2: Deleted `profiles[1]` (`UUID_M`, uninitialized) and kept
+  // `profiles[0]` (`orig_profile`, initialized).
+  kDeletedSecondManagedProfileUninit = 3,
+  // Cohort C1: Detached the managed Gaia ID from an uninitialized Personal
+  // profile (`UUID_P`), keeping its attachment to the Managed profile.
+  kDetachedFromUninitPersonalProfile = 4,
+  // Cohort C2: Detached the managed Gaia ID from an initialized Personal
+  // profile (`UUID_P`) where it was not the primary account, keeping its
+  // attachment to the Managed profile.
+  kDetachedFromInitPersonalProfileNotPrimary = 5,
+  // Cohort C3: Detached the managed Gaia ID from an initialized Personal
+  // profile (`UUID_P`) where it was the primary account, keeping its attachment
+  // to the Managed profile.
+  kDetachedFromInitPersonalProfilePrimary = 6,
+  // Unexpected (`kTwoUninitManagedProfiles`): Both Managed profiles were
+  // uninitialized; deleted `profiles[1]` and kept `profiles[0]`.
+  kDeletedSecondManagedProfileBothUninit = 7,
+  // Unexpected (`kThreeOrMoreProfiles`): Attached to 3 or more profiles; left
+  // untouched.
+  kSkippedThreeOrMoreProfiles = 8,
+  // Unexpected (`kMultipleCorruptedManagedAccounts`): 2 or more Gaia IDs were
+  // attached to multiple profiles; left untouched.
+  kSkippedMultipleCorruptedAccounts = 9,
+  kMaxValue = kSkippedMultipleCorruptedAccounts,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:IOSAccountProfileMappingCleanupAction)
+
 // Class to map the identities from SystemIdentityManager to profiles.
+// Unless stated otherwise, this class and its `Observer` ignore the
+// `kRestrictAccountsToPatterns` policy and deal with accounts on the device
+// even if they are filtered by `kRestrictAccountsToPatterns`.
 class AccountProfileMapper {
  public:
+  // Observer handling events related to `AccountProfileMapper`.
   class Observer : public base::CheckedObserver {
    public:
     Observer() = default;
@@ -93,7 +221,8 @@ class AccountProfileMapper {
   bool IsSigninSupported();
 
   // Returns the name of the profile to which `gaia_id` is assigned, or nullopt
-  // if no such profile exists.
+  // if no such profile exists. `gaia_id` does not need to correspond to an
+  // account on the device.
   std::optional<std::string> FindProfileNameForGaiaID(
       const GaiaId& gaia_id) const;
 

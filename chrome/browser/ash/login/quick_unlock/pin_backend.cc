@@ -6,7 +6,6 @@
 
 #include <optional>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_login_pref_names.h"
 #include "base/base64.h"
 #include "base/check_deref.h"
@@ -150,10 +149,11 @@ std::string PinBackend::ComputeSalt() {
 std::string PinBackend::ComputeSecret(const std::string& pin,
                                       const std::string& salt,
                                       Key::KeyType key_type) {
-  DCHECK(key_type == Key::KEY_TYPE_PASSWORD_PLAIN ||
-         key_type == Key::KEY_TYPE_SALTED_PBKDF2_AES256_1234);
-  DCHECK(!pin.empty());
-  DCHECK(!salt.empty());
+  CHECK(key_type == Key::KEY_TYPE_PASSWORD_PLAIN ||
+            key_type == Key::KEY_TYPE_SALTED_PBKDF2_AES256_1234,
+        base::NotFatalUntil::M161);
+  CHECK(!pin.empty(), base::NotFatalUntil::M161);
+  CHECK(!salt.empty(), base::NotFatalUntil::M161);
   if (key_type != Key::KEY_TYPE_PASSWORD_PLAIN)
     return pin;
 
@@ -170,7 +170,7 @@ PinBackend::PinBackend(PrefService* local_state) : local_state_(local_state) {
 }
 
 PinBackend::~PinBackend() {
-  DCHECK(on_cryptohome_support_received_.empty());
+  CHECK(on_cryptohome_support_received_.empty(), base::NotFatalUntil::M161);
 }
 
 void PinBackend::HasLoginSupport(BoolCallback result) {
@@ -230,7 +230,7 @@ void PinBackend::Set(const AccountId& account_id,
                        account_id, token, pin, std::move(did_set)));
   } else {
     QuickUnlockStorage* storage = GetPrefsBackend(account_id);
-    DCHECK(storage);
+    CHECK(storage, base::NotFatalUntil::M161);
 
     storage->pin_storage_prefs()->SetPin(pin);
     storage->MarkStrongAuth();
@@ -386,7 +386,7 @@ void PinBackend::Remove(const AccountId& account_id,
                        account_id, token, std::move(did_remove)));
   } else {
     QuickUnlockStorage* storage = GetPrefsBackend(account_id);
-    DCHECK(storage);
+    CHECK(storage, base::NotFatalUntil::M161);
     const bool had_pin = storage->pin_storage_prefs()->IsPinSet();
     storage->pin_storage_prefs()->RemovePin();
     PostResponse(std::move(did_remove), had_pin);
@@ -437,8 +437,8 @@ void PinBackend::TryAuthenticate(std::unique_ptr<UserContext> user_context,
                                  const Key& key,
                                  Purpose purpose,
                                  AuthOperationCallback result) {
-  DCHECK(user_context->GetAuthSessionId().empty());
-  DCHECK(user_context->IsUsingPin());
+  CHECK(user_context->GetAuthSessionId().empty(), base::NotFatalUntil::M161);
+  CHECK(user_context->IsUsingPin(), base::NotFatalUntil::M161);
   const AccountId& account_id = user_context->GetAccountId();
   if (cryptohome_state_.IsResolving()) {
     on_cryptohome_support_received_.push_back(base::BindOnce(
@@ -455,7 +455,7 @@ void PinBackend::TryAuthenticate(std::unique_ptr<UserContext> user_context,
                        base::Unretained(this), key, std::move(result)));
   } else {
     QuickUnlockStorage* storage = GetPrefsBackend(account_id);
-    DCHECK(storage);
+    CHECK(storage, base::NotFatalUntil::M161);
 
     if (!storage->HasStrongAuth()) {
       PostResponse(std::move(result), std::move(user_context), false);
@@ -521,7 +521,7 @@ void PinBackend::OnCryptohomeAuthenticationResponse(
 
     // Mark the PIN as strong auth factor if the authentication was successful.
     QuickUnlockStorage* storage = GetPrefsBackend(user_context->GetAccountId());
-    DCHECK(storage);
+    CHECK(storage, base::NotFatalUntil::M161);
     if (storage) {
       storage->MarkStrongAuth();
     }
@@ -603,10 +603,6 @@ void PinBackend::UpdatePinAutosubmitOnSuccessfulTryAuth(
 
 void PinBackend::PinAutosubmitBackfill(const AccountId& account_id,
                                        size_t pin_length) {
-  if (!features::IsPinAutosubmitBackfillFeatureEnabled()) {
-    return;
-  }
-
   CHECK(local_state_);
   user_manager::KnownUser known_user(local_state_.get());
   // Don't backfill if its not necessary & Prevent future backfill attempts.

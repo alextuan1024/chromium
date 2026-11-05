@@ -12,6 +12,9 @@ public interface VerticalTabsActionDelegate {
     /** Opens the tab search overlay side panel. */
     void openTabSearch();
 
-    /** Opens the Hub layout and focuses the search bar (GTS search). */
+    /**
+     * Opens the grid tab switcher (Hub) with its search bar focused. Used as a fallback when the
+     * tab search overlay is unavailable and the grid tab switcher is still available.
+     */
     void openHubSearch();
 }

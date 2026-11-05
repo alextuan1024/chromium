@@ -6,7 +6,6 @@
 
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/color/chrome_color_provider_utils.h"
-#include "third_party/skia/include/core/SkColor.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_mixer.h"
 #include "ui/color/color_provider.h"
@@ -37,31 +36,22 @@ void AddMaterialTabStripColorMixer(ui::ColorProvider* provider,
       ui::kColorSysStateHeaderHover};
   mixer[kColorTabStripComboButtonSeparator] = {ui::kColorSysDivider};
   mixer[kColorTabStripControlButtonInkDrop] = {ui::kColorSysStateHeaderHover};
+  mixer[kColorTabStripControlButtonInkDropFrameInactive] = {
+      ui::kColorSysStateHeaderHoverInactive};
   mixer[kColorTabStripControlButtonInkDropRipple] = {
+      ui::kColorSysStateRippleNeutralOnSubtle};
+  mixer[kColorTabStripControlButtonInkDropRippleFrameInactive] = {
       ui::kColorSysStateRippleNeutralOnSubtle};
 
   // TODO(tbergquist): Use kColorSysStateHeaderHoverInactive, once it exists.
   mixer[kColorTabBackgroundInactiveHoverFrameInactive] = {
       ui::kColorSysStateHeaderHoverInactive};
 
-  if (key.frame_style == ui::ColorProviderKey::FrameStyle::kGlass) {
-    constexpr SkAlpha kSelectedTabOpacity = 0.80 * SK_AlphaOPAQUE;
-    mixer[kColorTabBackgroundSelectedFrameActive] = {
-        ui::SetAlpha(ui::GetResultingPaintColor(ui::kColorSysStateHeaderSelect,
-                                                ui::kColorSysHeader),
-                     kSelectedTabOpacity)};
-    mixer[kColorTabBackgroundSelectedFrameInactive] = {
-        ui::SetAlpha(ui::GetResultingPaintColor(ui::kColorSysStateHeaderSelect,
-                                                ui::kColorSysHeaderInactive),
-                     kSelectedTabOpacity)};
-  } else {
-    mixer[kColorTabBackgroundSelectedFrameActive] = {
-        ui::GetResultingPaintColor(ui::kColorSysStateHeaderSelect,
-                                   kColorTabBackgroundInactiveFrameActive)};
-    mixer[kColorTabBackgroundSelectedFrameInactive] = {
-        ui::GetResultingPaintColor(ui::kColorSysStateHeaderSelect,
-                                   kColorTabBackgroundInactiveFrameInactive)};
-  }
+  mixer[kColorTabBackgroundSelectedFrameActive] = {ui::GetResultingPaintColor(
+      ui::kColorSysStateHeaderSelect, kColorTabBackgroundInactiveFrameActive)};
+  mixer[kColorTabBackgroundSelectedFrameInactive] = {
+      ui::GetResultingPaintColor(ui::kColorSysStateHeaderSelect,
+                                 kColorTabBackgroundInactiveFrameInactive)};
   mixer[kColorTabBackgroundSelectedHoverFrameActive] = {
       ui::GetResultingPaintColor(ui::kColorSysStateHoverDimBlendProtection,
                                  kColorTabBackgroundSelectedFrameActive)};
@@ -100,4 +90,17 @@ void AddMaterialTabStripColorMixer(ui::ColorProvider* provider,
       ui::kColorSysOnSurfacePrimary};
   mixer[kColorTabSearchButtonCRForegroundFrameInactive] = {
       ui::kColorSysOnSurfacePrimaryInactive};
+
+  mixer[kColorTabGroupEphemeralHeaderBackgroundFrameActive] = {
+      ui::kColorSysOnHeaderDivider};
+  mixer[kColorTabGroupEphemeralHeaderBackgroundFrameInactive] = {
+      ui::kColorSysOnHeaderDividerInactive};
+  mixer[kColorTabGroupEphemeralHeaderForegroundFrameActive] =
+      ui::BlendForMinContrast(
+          {ui::kColorSysOnSurfacePrimary},
+          {kColorTabGroupEphemeralHeaderBackgroundFrameActive});
+  mixer[kColorTabGroupEphemeralHeaderForegroundFrameInactive] =
+      ui::BlendForMinContrast(
+          {ui::kColorSysOnSurfacePrimaryInactive},
+          {kColorTabGroupEphemeralHeaderBackgroundFrameInactive});
 }

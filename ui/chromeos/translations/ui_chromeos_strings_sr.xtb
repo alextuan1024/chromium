@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Камера</translation>
 <translation id="162175252992296058">португалски са америчком интернационалном тастатуром</translation>
 <translation id="1629521517399325891">Кориснички сертификат није доступан за потврду идентитета мреже.</translation>
+<translation id="1639239467298939599">Учитава се</translation>
 <translation id="1641780993263690097">кинески пинјин</translation>
 <translation id="164969095109328410">Chrome уређај</translation>
 <translation id="1661207570040737402">Искористили сте сав Google Workspace меморијски простор на дељеном диску.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Синхронизација фајлова је искључена</translation>
 <translation id="2820957248982571256">Скенира се...</translation>
 <translation id="2830077785865012357">кинески жујин</translation>
+<translation id="2838379631617906747">Инсталира се</translation>
 <translation id="2843806747483486897">Промени подразумевано...</translation>
 <translation id="2873951654529031587">Отпад</translation>
 <translation id="2887314858867008269">америчка Colemak</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Неисправна лозинка</translation>
 <translation id="5059127710849015030">непалски, транслитерација</translation>
 <translation id="5068919226082848014">Пица</translation>
+<translation id="5075336522277785691">Додатак <ph name="EXTENSION_NAME" /> је подесио правила за замену проксија</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> датотека ће се избрисати</translation>
 <translation id="508423945471810158">Ставке (<ph name="NUMBER_OF_ITEMS" />) се премештају у фолдер <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Дошло је до грешке.</translation>
-<translation id="5102922915594634436">Управљајте синхронизованим фолдерима</translation>
 <translation id="5109254780565519649">Дошло је до грешке. Неке ставке можда нису враћене.</translation>
 <translation id="5110329002213341433">енглески (Канада)</translation>
 <translation id="5119780910075847424">Синхронизација је паузирана</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Ништа није инсталирано</translation>
 <translation id="5317780077021120954">Сачувај</translation>
 <translation id="5318819489018851358">Дели са Linux-ом</translation>
-<translation id="5330145655348521461">Ове датотеке су отворене на другом профилу. Пређите на <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) да бисте их погледали.</translation>
 <translation id="5330512191124428349">Преузми податке</translation>
 <translation id="535792325654997756">Особа са мачкама</translation>
 <translation id="5358764674931277">Брзина кадрова</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Неважећа вредност подударања суфикса домена</translation>
 <translation id="6364301859968397756">Меморијски простор организације је попуњен</translation>
 <translation id="6367976544441405720">Комби</translation>
-<translation id="637062427944097960">Ова датотека је отворена на другом профилу. Пређите на <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) да бисте је погледали.</translation>
 <translation id="6394388407447716302">Само за читање</translation>
 <translation id="6395575651121294044">Ставки: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Премештање фајла <ph name="FILE_NAME" /> није успело зато што је шифрован.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – порт</translation>
 <translation id="8656407365183407932">Офлајн фајлови су морали да се уклоне</translation>
 <translation id="8656768832129462377">Не проверавај</translation>
+<translation id="8662978096466608964">Chrome не може да подеси позадину.</translation>
 <translation id="8688591111840995413">Погрешна лозинка</translation>
 <translation id="8698464937041809063">Google цртеж</translation>
 <translation id="8698877009525468705">Овај фајл је поверљив и подлеже ограничењима смерница администратора.</translation>

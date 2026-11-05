@@ -19,7 +19,6 @@
 #import "components/omnibox/browser/autocomplete_input.h"
 #import "components/open_from_clipboard/clipboard_async_wrapper_ios.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_scheme_classifier_impl.h"
-#import "ios/chrome/browser/composebox/public/features.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_ui_features.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_util.h"
@@ -37,7 +36,6 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/grit/ios_theme_resources.h"
 #import "skia/ext/skia_utils_ios.h"
-#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "ui/gfx/color_palette.h"
 #import "ui/gfx/image/image.h"
@@ -94,6 +92,9 @@ const CGFloat kVerticalOffset = 1;
   // Cached single line height.
   CGFloat _cachedSingleLineHeight;
 
+  // The last font applied during initialization or trait updates.
+  UIFont* _appliedTraitFont;
+
   // Whether a newline is being programmatically inserted (e.g. by
   // Shift+Return).
   BOOL _insertingNewline;
@@ -136,11 +137,6 @@ const CGFloat kVerticalOffset = 1;
     self.writingToolsBehavior = UIWritingToolsBehaviorNone;
     [self updateOmniboxTypingAttributes];
 
-    // Disable drag on iPhone because there's nowhere to drag to
-    if (ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET) {
-      self.textDragInteraction.enabled = NO;
-    }
-
     // Remove drop when presented by the Composebox so that the composebox can
     // handle all drop actions.
     if (_presentationContext == OmniboxPresentationContext::kComposebox) {
@@ -148,7 +144,8 @@ const CGFloat kVerticalOffset = 1;
     }
 
     // Force initial layout of internal text label.
-    self.font = self.currentFont;
+    _appliedTraitFont = self.currentFont;
+    self.font = _appliedTraitFont;
     [self updateTextContainerInset];
 
     _tapGestureRecognizer =
@@ -173,7 +170,11 @@ const CGFloat kVerticalOffset = 1;
 
     self.delegate = self;
 
-    [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+    [self registerForTraitChanges:@[
+      UITraitPreferredContentSizeCategory.class,
+      UITraitHorizontalSizeClass.class,
+      UITraitVerticalSizeClass.class,
+    ]
                        withAction:@selector(updateTextProperitesOnTraitChange)];
   }
   return self;
@@ -185,7 +186,7 @@ const CGFloat kVerticalOffset = 1;
 
 - (void)setPlaceholderLabel:(UILabel*)placeholderLabel {
   placeholderLabel.font = self.font;
-  placeholderLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
+  placeholderLabel.textColor = self.placeholderColor;
   placeholderLabel.isAccessibilityElement = NO;
   _placeholderLabel = placeholderLabel;
 
@@ -203,6 +204,11 @@ const CGFloat kVerticalOffset = 1;
     [placeholderLabel.trailingAnchor
         constraintEqualToAnchor:self.trailingAnchor],
   ]];
+}
+
+- (void)setPlaceholderColor:(UIColor*)placeholderColor {
+  _placeholderColor = placeholderColor;
+  self.placeholderLabel.textColor = placeholderColor;
 }
 
 - (void)setAllowsReturnKeyWithEmptyText:(BOOL)allowsReturnKeyWithEmptyText {
@@ -681,10 +687,8 @@ const CGFloat kVerticalOffset = 1;
     return [self.omniboxKeyboardDelegate canPerformKeyboardAction:kRightArrow];
   }
 
-  if (IsComposeboxPhysicalKeyboardReturnKeysEnabled()) {
-    if (action == @selector(forwardKeyCommandShiftReturn:)) {
-      return YES;
-    }
+  if (action == @selector(forwardKeyCommandShiftReturn:)) {
+    return YES;
   }
 
   // Handle pre-edit shortcuts.
@@ -834,9 +838,8 @@ const CGFloat kVerticalOffset = 1;
   NSMutableArray<UIKeyCommand*>* commands = [NSMutableArray
       arrayWithObjects:commandUp, commandDown, commandLeft, commandRight, nil];
 
-  if (IsComposeboxPhysicalKeyboardReturnKeysEnabled() &&
-      (_presentationContext == OmniboxPresentationContext::kComposebox ||
-       _presentationContext == OmniboxPresentationContext::kCobrowse)) {
+  if (_presentationContext == OmniboxPresentationContext::kComposebox ||
+      _presentationContext == OmniboxPresentationContext::kCobrowse) {
     UIKeyCommand* commandShiftReturn = [UIKeyCommand
         keyCommandWithInput:@"\r"
               modifierFlags:UIKeyModifierShift
@@ -1191,16 +1194,37 @@ const CGFloat kVerticalOffset = 1;
   [self pasteboardDidChange:nil];
 }
 
-// Resets Omnibox's the font and attributed text when a UITrait is modified.
+// Resets the font, cached line height, and container insets when size class or
+// content size category traits change.
 - (void)updateTextProperitesOnTraitChange {
-  // Reset the fonts to the appropriate ones in this size class.
-  self.font = self.currentFont;
-  _cachedSingleLineHeight = 0;
+  UIFont* newFont = self.currentFont;
+  BOOL fontChanged = ![_appliedTraitFont isEqual:newFont];
+  if (fontChanged) {
+    _appliedTraitFont = newFont;
+    _cachedSingleLineHeight = 0;
+    self.placeholderLabel.font = newFont;
+    [self updateOmniboxTypingAttributes];
+    NSTextStorage* textStorage = self.textStorage;
+    NSUInteger textLength = textStorage.length;
+    if (textLength > 0) {
+      [textStorage beginEditing];
+      [textStorage addAttribute:NSFontAttributeName
+                          value:newFont
+                          range:NSMakeRange(0, textLength)];
+      [textStorage endEditing];
+    }
+    self.font = newFont;
+    self.typingAttributes = _omniboxTypingAttributes;
+  }
+
+  UIEdgeInsets previousInsets = self.textContainerInset;
   [self updateTextContainerInset];
-  self.placeholderLabel.font = self.font;
-  [self setAttributedText:self.attributedText];
-  [self updateOmniboxTypingAttributes];
-  [self.heightDelegate textViewContentChanged:self];
+  BOOL insetsChanged =
+      !UIEdgeInsetsEqualToEdgeInsets(previousInsets, self.textContainerInset);
+
+  if (fontChanged || insetsChanged) {
+    [self.heightDelegate textViewContentChanged:self];
+  }
 }
 
 - (void)updateTextContainerInset {

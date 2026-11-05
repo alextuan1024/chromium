@@ -15,12 +15,15 @@
 #include "base/time/clock.h"
 #include "base/time/default_clock.h"
 #include "chromeos/ash/components/cryptohome/auth_factor.h"
-#include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/login/auth/public/auth_callbacks.h"
 #include "chromeos/ash/components/login/auth/public/auth_session_intent.h"
 #include "chromeos/ash/components/login/auth/public/auth_session_status.h"
 #include "chromeos/ash/components/login/auth/public/authentication_error.h"
+
+namespace user_data_auth {
+class AuthSessionProperties;
+}  // namespace user_data_auth
 
 namespace ash {
 
@@ -138,11 +141,6 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_LOGIN_AUTH) AuthPerformer {
   // Session will become authenticated upon success.
   void AuthenticateAsKiosk(std::unique_ptr<UserContext> context,
                            AuthOperationCallback callback);
-
-  // Attempts to authenticate session with fingerprint auth factor.
-  // Session will become authenticated upon success.
-  void AuthenticateWithFingerprint(std::unique_ptr<UserContext> context,
-                                   AuthOperationCallback callback);
 
   void AuthenticateWithLegacyFingerprint(std::unique_ptr<UserContext> context,
                                          AuthOperationCallback callback);

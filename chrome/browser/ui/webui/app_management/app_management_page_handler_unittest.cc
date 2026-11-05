@@ -13,8 +13,10 @@
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
 #include "chrome/browser/web_applications/link_capturing_features.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom-shared.h"
+#include "chrome/browser/web_applications/proto/web_app.pb.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
+#include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -43,7 +45,6 @@
 #include "chrome/browser/ash/apps/apk_web_app_service.h"
 #include "chrome/browser/ui/webui/app_management/app_management_page_handler_chromeos.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
-#include "chrome/browser/web_applications/isolated_web_apps/update/isolated_web_app_update_manager.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/ash/experiences/arc/test/fake_app_instance.h"
 #include "chromeos/ash/experiences/arc/test/fake_intent_helper_instance.h"
@@ -128,19 +129,20 @@ class AppManagementPageHandlerTestBase
 
     mojo::PendingReceiver<app_management::mojom::Page> page;
     mojo::Remote<app_management::mojom::PageHandler> handler;
+    auto features_and_params =
+        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam());
 #if BUILDFLAG(IS_CHROMEOS)
-    scoped_feature_list_.InitAndEnableFeature(
-        ash::features::kIsolatedWebAppInlineUpdate);
+    features_and_params.push_back(base::test::FeatureRefAndParams(
+        ash::features::kIsolatedWebAppInlineUpdate, {}));
+    scoped_feature_list_.InitWithFeaturesAndParameters(features_and_params, {});
     handler_ = std::make_unique<AppManagementPageHandlerChromeOs>(
         handler.BindNewPipeAndPassReceiver(),
         page.InitWithNewPipeAndPassRemote(), profile(), *delegate_);
 #else
+    scoped_feature_list_.InitWithFeaturesAndParameters(features_and_params, {});
     handler_ = std::make_unique<WebAppSettingsPageHandler>(
         handler.BindNewPipeAndPassReceiver(),
         page.InitWithNewPipeAndPassRemote(), profile(), *delegate_);
-    auto features_and_params =
-        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam());
-    scoped_feature_list_.InitWithFeaturesAndParameters(features_and_params, {});
 #endif  // !BUILDFLAG(IS_CHROMEOS)
   }
 
@@ -150,11 +152,7 @@ class AppManagementPageHandlerTestBase
   }
 
   bool LinkCapturingEnabledByDefault() {
-#if BUILDFLAG(IS_CHROMEOS)
-    return false;
-#else
     return GetParam() == apps::test::LinkCapturingFeatureVersion::kV2DefaultOn;
-#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
   AppManagementPageHandlerBase* handler() { return handler_.get(); }
@@ -246,6 +244,113 @@ TEST_P(AppManagementPageHandlerTestBase, DisablePreferredApp) {
   EXPECT_FALSE(updated_result.Get()->is_preferred_app);
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
+TEST_P(AppManagementPageHandlerTestBase,
+       SetPreferredAppFalseRecordsExplicitOptOut) {
+  auto web_app_info = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
+      GURL("https://example.com/abc/index.html"));
+  web_app_info->title = u"app_name";
+  std::string app_id =
+      web_app::test::InstallWebApp(profile(), std::move(web_app_info));
+  // The install makes the app preferred only if link capturing is on by
+  // default. So kV2DefaultOff tests "false -> false" and kV2DefaultOn tests
+  // "true -> false".
+  ASSERT_EQ(IsAppPreferred(app_id), LinkCapturingEnabledByDefault());
+  web_app::WebAppProvider* provider =
+      web_app::WebAppProvider::GetForTest(profile());
+  ASSERT_EQ(provider->registrar_unsafe()
+                .GetAppById(app_id)
+                ->user_link_capturing_preference(),
+            web_app::proto::NAVIGATION_CAPTURING_PREFERENCE_DEFAULT);
+
+  handler()->SetPreferredApp(app_id, /*is_preferred_app=*/false);
+  AwaitWebAppCommandsComplete();
+
+  EXPECT_FALSE(IsAppPreferred(app_id));
+  EXPECT_EQ(provider->registrar_unsafe()
+                .GetAppById(app_id)
+                ->user_link_capturing_preference(),
+            web_app::proto::NAVIGATION_CAPTURING_PREFERENCE_DO_NOT_CAPTURE);
+}
+
+TEST_P(AppManagementPageHandlerTestBase, SetPreferredAppTrueRecordsOptIn) {
+  auto web_app_info = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
+      GURL("https://example.com/abc/index.html"));
+  web_app_info->title = u"app_name";
+  std::string app_id =
+      web_app::test::InstallWebApp(profile(), std::move(web_app_info));
+
+  handler()->SetPreferredApp(app_id, /*is_preferred_app=*/true);
+  AwaitWebAppCommandsComplete();
+
+  EXPECT_TRUE(IsAppPreferred(app_id));
+  EXPECT_EQ(web_app::WebAppProvider::GetForTest(profile())
+                ->registrar_unsafe()
+                .GetAppById(app_id)
+                ->user_link_capturing_preference(),
+            web_app::proto::NAVIGATION_CAPTURING_PREFERENCE_CAPTURE);
+}
+
+TEST_P(AppManagementPageHandlerTestBase,
+       SetPreferredAppTrueRecordsOptOutForDisplacedApp) {
+  // Both apps have the scope "https://example.com/abc/", so they conflict in
+  // all link capturing modes.
+  auto web_app_info1 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
+      GURL("https://example.com/abc/index.html"));
+  web_app_info1->title = u"app_name1";
+  std::string app_id1 =
+      web_app::test::InstallWebApp(profile(), std::move(web_app_info1));
+  auto web_app_info2 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
+      GURL("https://example.com/abc/other.html"));
+  web_app_info2->title = u"app_name2";
+  std::string app_id2 =
+      web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
+  const web_app::WebAppRegistrar& registrar =
+      web_app::WebAppProvider::GetForTest(profile())->registrar_unsafe();
+
+  handler()->SetPreferredApp(app_id1, /*is_preferred_app=*/true);
+  AwaitWebAppCommandsComplete();
+  ASSERT_TRUE(IsAppPreferred(app_id1));
+  ASSERT_FALSE(IsAppPreferred(app_id2));
+  ASSERT_EQ(registrar.GetAppById(app_id1)->user_link_capturing_preference(),
+            web_app::proto::NAVIGATION_CAPTURING_PREFERENCE_CAPTURE);
+
+  // App Service removes `app_id1`, so its record must not stay "CAPTURE".
+  handler()->SetPreferredApp(app_id2, /*is_preferred_app=*/true);
+  AwaitWebAppCommandsComplete();
+
+  EXPECT_FALSE(IsAppPreferred(app_id1));
+  EXPECT_TRUE(IsAppPreferred(app_id2));
+  EXPECT_EQ(registrar.GetAppById(app_id1)->user_link_capturing_preference(),
+            web_app::proto::NAVIGATION_CAPTURING_PREFERENCE_DO_NOT_CAPTURE);
+  EXPECT_EQ(registrar.GetAppById(app_id2)->user_link_capturing_preference(),
+            web_app::proto::NAVIGATION_CAPTURING_PREFERENCE_CAPTURE);
+}
+
+TEST_P(AppManagementPageHandlerTestBase, SetPreferredAppEmptyAppIdDoesNothing) {
+  auto web_app_info = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
+      GURL("https://example.com/abc/index.html"));
+  web_app_info->title = u"app_name";
+  std::string app_id =
+      web_app::test::InstallWebApp(profile(), std::move(web_app_info));
+  const web_app::WebAppRegistrar& registrar =
+      web_app::WebAppProvider::GetForTest(profile())->registrar_unsafe();
+  const bool preferred_before = IsAppPreferred(app_id);
+  const web_app::proto::LinkCapturingUserPreference preference_before =
+      registrar.GetAppById(app_id)->user_link_capturing_preference();
+
+  // `SetPreferredApp()` is a Mojo endpoint, so `app_id` can be empty. This
+  // must not crash and must not change the installed app.
+  handler()->SetPreferredApp("", /*is_preferred_app=*/false);
+  handler()->SetPreferredApp("", /*is_preferred_app=*/true);
+  AwaitWebAppCommandsComplete();
+
+  EXPECT_EQ(IsAppPreferred(app_id), preferred_before);
+  EXPECT_EQ(registrar.GetAppById(app_id)->user_link_capturing_preference(),
+            preference_before);
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 #if !BUILDFLAG(IS_CHROMEOS)
 TEST_P(AppManagementPageHandlerTestBase, SupportedLinksWithPort) {
   auto web_app_info = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
@@ -318,13 +423,8 @@ TEST_P(AppManagementPageHandlerTestBase, PreferredAppOverlappingScopePort) {
   handler()->SetPreferredApp(app_id2, /*is_preferred_app=*/true);
   AwaitWebAppCommandsComplete();
 
-// On Windows, Mac and Linux, nested scopes are not considered overlapping,
-// so 2 apps having nested scopes can be set as preferred at the same time,
-// while on CrOS, this cannot happen.
-// TODO(crbug.com/40279851): If CrOS decides to treat overlapping apps
-// as non-nested ones, then this will need to be modified.
 #if BUILDFLAG(IS_CHROMEOS)
-  EXPECT_FALSE(IsAppPreferred(app_id1));
+  EXPECT_EQ(IsAppPreferred(app_id1), LinkCapturingEnabledByDefault());
 #else
   EXPECT_TRUE(IsAppPreferred(app_id1));
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -401,19 +501,31 @@ TEST_P(AppManagementPageHandlerTestBase,
   std::string app_id =
       web_app::test::InstallWebApp(profile(), std::move(web_app_info));
 
+#if !BUILDFLAG(IS_CHROMEOS)
   if (LinkCapturingEnabledByDefault()) {
     EXPECT_TRUE(IsAppPreferred(app_id));
     ASSERT_EQ(test::DisableLinkCapturingByUser(profile(), app_id), base::ok());
   }
-
+#endif  // !BUILDFLAG(IS_CHROMEOS)
   EXPECT_FALSE(IsAppPreferred(app_id));
 
   handler()->SetPreferredApp(app_id, /*is_preferred_app=*/true);
+#if BUILDFLAG(IS_CHROMEOS)
+  AwaitWebAppCommandsComplete();
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   base::test::TestFuture<app_management::mojom::AppPtr> updated_result;
   handler()->GetApp(app_id, updated_result.GetCallback());
   EXPECT_FALSE(updated_result.Get()->is_preferred_app);
   EXPECT_TRUE(updated_result.Get()->supported_links.empty());
+#if BUILDFLAG(IS_CHROMEOS)
+  // The app has no supported links, so no choice is recorded.
+  EXPECT_EQ(web_app::WebAppProvider::GetForTest(profile())
+                ->registrar_unsafe()
+                .GetAppById(app_id)
+                ->user_link_capturing_preference(),
+            web_app::proto::NAVIGATION_CAPTURING_PREFERENCE_DEFAULT);
+#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
 TEST_P(AppManagementPageHandlerTestBase,
@@ -433,8 +545,7 @@ TEST_P(AppManagementPageHandlerTestBase,
   web_app_info2->user_display_mode =
       web_app::mojom::UserDisplayMode::kStandalone;
 
-  std::string app_id2 =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
+  web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
 
   if (LinkCapturingEnabledByDefault()) {
     EXPECT_TRUE(IsAppPreferred(app_id1));
@@ -477,11 +588,12 @@ TEST_P(AppManagementPageHandlerTestBase,
   std::vector<std::string> overlapping_apps =
       GetOverlappingPreferredApps(app_id2);
 
-// TODO(crbug.com/40279851): Modify if nested scope behavior changes on CrOS.
-// On Windows, Mac and Linux, apps with nested scopes are not considered
-// overlapping, but on CrOS they are.
 #if BUILDFLAG(IS_CHROMEOS)
-  EXPECT_THAT(overlapping_apps, testing::ElementsAre(app_id1));
+  if (LinkCapturingEnabledByDefault()) {
+    EXPECT_TRUE(overlapping_apps.empty());
+  } else {
+    EXPECT_THAT(overlapping_apps, testing::ElementsAre(app_id1));
+  }
 #else
   EXPECT_TRUE(overlapping_apps.empty());
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -579,8 +691,7 @@ TEST_P(AppManagementPageHandlerTestBase,
   web_app_info2->user_display_mode =
       web_app::mojom::UserDisplayMode::kStandalone;
 
-  std::string app_id2 =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
+  web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
 
   // The result should be empty since app_id2 is a shortcut app.
   std::vector<std::string> overlapping_apps =
@@ -627,8 +738,7 @@ TEST_P(AppManagementPageHandlerTestBase, DifferentScopeNoOverlap) {
   web_app_info2->user_display_mode =
       web_app::mojom::UserDisplayMode::kStandalone;
 
-  std::string app_id2 =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
+  web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
 
   // The result should be empty since none of the apps have the same scope.
   std::vector<std::string> overlapping_apps =
@@ -738,131 +848,7 @@ TEST_P(AppManagementPageHandlerTestBase, GetScopeExtensions) {
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
-// TODO(crbug.com/40279851): The overlapping nested scope based behavior is only
-// on ChromeOS, and will need to be modified if the behavior changes.
 #if BUILDFLAG(IS_CHROMEOS)
-TEST_P(AppManagementPageHandlerTestBase, UseCase_ADisabledBDisabled) {
-  auto web_app_info1 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
-      GURL("https://example.com/index.html"));
-  web_app_info1->title = u"A";
-
-  std::string appA =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info1));
-
-  auto web_app_info2 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
-      GURL("https://example.com/abc/index_abc.html"));
-  web_app_info2->title = u"B";
-  web_app_info2->user_display_mode =
-      web_app::mojom::UserDisplayMode::kStandalone;
-
-  std::string appB =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
-
-  std::vector<std::string> overlapping_apps_a =
-      GetOverlappingPreferredApps(appA);
-  EXPECT_TRUE(overlapping_apps_a.empty());
-
-  std::vector<std::string> overlapping_apps_b =
-      GetOverlappingPreferredApps(appB);
-  EXPECT_TRUE(overlapping_apps_b.empty());
-}
-
-TEST_P(AppManagementPageHandlerTestBase, UseCase_ADisabledBEnabled) {
-  auto web_app_info1 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
-      GURL("https://example.com/index.html"));
-  web_app_info1->title = u"A";
-
-  std::string appA =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info1));
-
-  auto web_app_info2 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
-      GURL("https://example.com/abc/index_abc.html"));
-  web_app_info2->title = u"B";
-  web_app_info2->user_display_mode =
-      web_app::mojom::UserDisplayMode::kStandalone;
-
-  std::string appB =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
-
-  handler()->SetPreferredApp(appB, /*is_preferred_app=*/true);
-  AwaitWebAppCommandsComplete();
-
-  // B is set as preferred app and its scope matches the prefix of A's scope.
-  std::vector<std::string> overlapping_apps_a =
-      GetOverlappingPreferredApps(appA);
-  EXPECT_THAT(overlapping_apps_a, testing::ElementsAre(appB));
-
-  std::vector<std::string> overlapping_apps_b =
-      GetOverlappingPreferredApps(appB);
-  EXPECT_TRUE(overlapping_apps_b.empty());
-}
-
-TEST_P(AppManagementPageHandlerTestBase, UseCase_AEnabledBDisabled) {
-  auto web_app_info1 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
-      GURL("https://example.com/index.html"));
-  web_app_info1->title = u"A";
-
-  std::string appA =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info1));
-
-  auto web_app_info2 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
-      GURL("https://example.com/abc/index_abc.html"));
-  web_app_info2->title = u"B";
-  web_app_info2->user_display_mode =
-      web_app::mojom::UserDisplayMode::kStandalone;
-
-  std::string appB =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
-
-  handler()->SetPreferredApp(appA, /*is_preferred_app=*/true);
-  AwaitWebAppCommandsComplete();
-
-  std::vector<std::string> overlapping_apps_a =
-      GetOverlappingPreferredApps(appA);
-  EXPECT_TRUE(overlapping_apps_a.empty());
-
-  // A is set as preferred app and its scope matches the prefix of B's scope.
-  std::vector<std::string> overlapping_apps_b =
-      GetOverlappingPreferredApps(appB);
-  EXPECT_THAT(overlapping_apps_b, testing::ElementsAre(appA));
-}
-
-TEST_P(AppManagementPageHandlerTestBase, UseCase_AEnabledBEnabled) {
-  auto web_app_info1 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
-      GURL("https://example.com/index.html"));
-  web_app_info1->title = u"A";
-
-  std::string appA =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info1));
-
-  auto web_app_info2 = web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(
-      GURL("https://example.com/abc/index_abc.html"));
-  web_app_info2->title = u"B";
-  web_app_info2->user_display_mode =
-      web_app::mojom::UserDisplayMode::kStandalone;
-
-  std::string appB =
-      web_app::test::InstallWebApp(profile(), std::move(web_app_info2));
-
-  handler()->SetPreferredApp(appA, /*is_preferred_app=*/true);
-  AwaitWebAppCommandsComplete();
-  handler()->SetPreferredApp(appB, /*is_preferred_app=*/true);
-  AwaitWebAppCommandsComplete();
-
-  // Since both are enabled, B's scope prefix matches A's scope and is longer,
-  // so that is returned for A.
-  std::vector<std::string> overlapping_apps_a =
-      GetOverlappingPreferredApps(appA);
-  EXPECT_THAT(overlapping_apps_a, testing::ElementsAre(appB));
-
-  // While A and B are both enabled, and their scopes prefix match, B should not
-  // return A to prevent document links for being captured by A, who has a
-  // shorter scope.
-  std::vector<std::string> overlapping_apps_b =
-      GetOverlappingPreferredApps(appB);
-  EXPECT_TRUE(overlapping_apps_b.empty());
-}
-
 TEST_P(AppManagementPageHandlerTestBase,
        CheckForIsolatedWebAppUpdate_NotFound) {
   const std::unique_ptr<web_app::ScopedBundledIsolatedWebApp> bundle =

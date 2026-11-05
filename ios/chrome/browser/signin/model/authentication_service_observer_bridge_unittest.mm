@@ -5,7 +5,6 @@
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
 
 #import "base/memory/raw_ptr.h"
-#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
@@ -24,7 +23,7 @@ class AuthenticationServiceObserverBridgeTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
     auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_.get());
   }

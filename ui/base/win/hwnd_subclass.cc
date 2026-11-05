@@ -54,7 +54,7 @@ class HWNDSubclass::HWNDSubclassFactory {
   // Returns a non-null HWNDSubclass corresponding to the HWND |target|. Creates
   // one if none exists. Retains ownership of the returned pointer.
   HWNDSubclass* GetHwndSubclassForTarget(HWND target) {
-    DCHECK(target);
+    CHECK(target, base::NotFatalUntil::M163);
     HWNDSubclass* subclass = reinterpret_cast<HWNDSubclass*>(
         ui::ViewProp::GetValue(target, kHWNDSubclassKey));
     if (!subclass) {
@@ -95,14 +95,14 @@ HWNDSubclass* HWNDSubclass::GetHwndSubclassForTarget(HWND target) {
 }
 
 void HWNDSubclass::AddFilter(HWNDMessageFilter* filter) {
-  DCHECK(filter);
+  CHECK(filter, base::NotFatalUntil::M163);
   if (!std::ranges::contains(filters_, filter)) {
     filters_.push_back(filter);
   }
 }
 
 void HWNDSubclass::RemoveFilter(HWNDMessageFilter* filter) {
-  std::vector<raw_ptr<HWNDMessageFilter, VectorExperimental>>::iterator it =
+  std::vector<raw_ptr<HWNDMessageFilter>>::iterator it =
       std::ranges::find(filters_, filter);
   if (it != filters_.end())
     filters_.erase(it);
@@ -140,8 +140,7 @@ LRESULT HWNDSubclass::OnWndProc(HWND hwnd,
     }
   }
 
-  for (std::vector<raw_ptr<HWNDMessageFilter, VectorExperimental>>::iterator
-           it = filters_.begin();
+  for (std::vector<raw_ptr<HWNDMessageFilter>>::iterator it = filters_.begin();
        it != filters_.end(); ++it) {
     LRESULT l_result = 0;
     if ((*it)->FilterMessage(hwnd, message, w_param, l_param, &l_result))

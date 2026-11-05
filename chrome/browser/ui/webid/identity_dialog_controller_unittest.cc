@@ -5,15 +5,26 @@
 #include "chrome/browser/ui/webid/identity_dialog_controller.h"
 
 #include <memory>
+#include <optional>
 #include <utility>
 
+#include "base/containers/to_vector.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "chrome/browser/ui/hats/hats_service_factory.h"
+#include "chrome/browser/ui/hats/mock_hats_service.h"
+#include "chrome/browser/ui/hats/survey_config.h"
 #include "chrome/browser/ui/webid/account_selection_view.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/optimization_guide/core/hints/mock_optimization_guide_decider.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
@@ -36,7 +47,14 @@
 #include "url/origin.h"
 
 using testing::_;
+using testing::An;
+using testing::DoAll;
+using testing::ElementsAre;
+using testing::Field;
+using testing::NiceMock;
+using testing::Return;
 using testing::SaveArg;
+using testing::UnorderedElementsAreArray;
 
 namespace {
 
@@ -114,9 +132,16 @@ class MockAccountSelectionView : public AccountSelectionView {
                blink::mojom::RpMode),
               (override));
 
+  MOCK_METHOD(bool,
+              ShowNativeAppUi,
+              (const content::NativeAppRequestOptions&),
+              (override));
+
   MOCK_METHOD(std::string, GetTitle, (), (const, override));
 
   MOCK_METHOD(std::optional<std::string>, GetSubtitle, (), (const, override));
+
+  MOCK_METHOD(bool, IsAmbientBubbleUsed, (), (const, override));
 
   MOCK_METHOD(void, ShowUrl, (LinkType type, const GURL& url), (override));
 
@@ -175,17 +200,29 @@ class IdentityDialogControllerTest : public ChromeRenderViewHostTestHarness {
     task_environment()->RunUntilIdle();
   }
 
+  std::vector<IdentityRequestAccountPtr> CreateAccounts(size_t count) {
+    std::vector<IdentityRequestAccountPtr> accounts;
+    accounts.reserve(count);
+    for (size_t i = 1; i <= count; ++i) {
+      accounts.push_back(base::MakeRefCounted<Account>(
+          /*id=*/base::StrCat({"account_id", base::NumberToString(i)}),
+          /*display_identifier=*/"", /*display_name=*/"", /*email=*/"", "", "",
+          /*picture=*/GURL(), /*phone=*/"",
+          /*username=*/"",
+          /*potentially_approved_origin_hashes=*/std::vector<std::string>(),
+          /*login_hints=*/std::vector<std::string>(),
+          /*domain_hints=*/std::vector<std::string>(),
+          /*labels=*/std::vector<std::string>(),
+          /*idp_claimed_login_state=*/
+          content::IdentityRequestAccount::LoginState::kSignIn,
+          /*browser_trusted_login_state=*/
+          content::IdentityRequestAccount::LoginState::kSignUp));
+    }
+    return accounts;
+  }
+
   std::vector<IdentityRequestAccountPtr> CreateAccount() {
-    return {base::MakeRefCounted<Account>(
-        kAccountId, "", "", "", "", "", GURL(), "", "",
-        /*potentially_approved_origin_hashes=*/std::vector<std::string>(),
-        /*login_hints=*/std::vector<std::string>(),
-        /*domain_hints=*/std::vector<std::string>(),
-        /*labels=*/std::vector<std::string>(),
-        /*idp_claimed_login_state=*/
-        content::IdentityRequestAccount::LoginState::kSignIn,
-        /*browser_trusted_login_state=*/
-        content::IdentityRequestAccount::LoginState::kSignUp)};
+    return CreateAccounts(1);
   }
 
   IdentityProviderDataPtr CreateIdentityProviderData(
@@ -206,8 +243,9 @@ class IdentityDialogControllerTest : public ChromeRenderViewHostTestHarness {
   void ShowAccountsDialog(
       IdentityDialogController* controller,
       blink::mojom::RpMode rp_mode,
+      std::vector<IdentityRequestAccountPtr> accounts,
       DismissCallback dismiss_callback = base::DoNothing()) {
-    accounts_ = CreateAccount();
+    accounts_ = std::move(accounts);
     IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts_);
     controller->ShowAccountsDialog(
         content::RelyingPartyData(kTopFrameEtldPlusOne,
@@ -216,6 +254,14 @@ class IdentityDialogControllerTest : public ChromeRenderViewHostTestHarness {
         /*on_selected=*/base::DoNothing(),
         /*on_add_account=*/base::DoNothing(), std::move(dismiss_callback),
         /*accounts_displayed_callback=*/base::DoNothing());
+  }
+
+  void ShowAccountsDialog(
+      IdentityDialogController* controller,
+      blink::mojom::RpMode rp_mode,
+      DismissCallback dismiss_callback = base::DoNothing()) {
+    ShowAccountsDialog(controller, rp_mode, CreateAccount(),
+                       std::move(dismiss_callback));
   }
 
   segmentation_platform::MockSegmentationPlatformService*
@@ -288,15 +334,15 @@ class IdentityDialogControllerTest : public ChromeRenderViewHostTestHarness {
     optimization_guide_decider_ =
         std::make_unique<optimization_guide::MockOptimizationGuideDecider>();
     EXPECT_CALL(*optimization_guide_decider_,
-                RegisterOptimizationTypes(testing::ElementsAre(
+                RegisterOptimizationTypes(ElementsAre(
                     optimization_guide::proto::FEDCM_CLICKTHROUGH_RATE)))
         .Times(1);
-    ON_CALL(*optimization_guide_decider_,
-            CanApplyOptimization(
-                _,
-                optimization_guide::proto::OptimizationType::
-                    FEDCM_CLICKTHROUGH_RATE,
-                testing::An<optimization_guide::OptimizationMetadata*>()))
+    ON_CALL(
+        *optimization_guide_decider_,
+        CanApplyOptimization(_,
+                             optimization_guide::proto::OptimizationType::
+                                 FEDCM_CLICKTHROUGH_RATE,
+                             An<optimization_guide::OptimizationMetadata*>()))
         .WillByDefault(
             [](const GURL& url,
                optimization_guide::proto::OptimizationType optimization_type,
@@ -335,7 +381,7 @@ TEST_F(IdentityDialogControllerTest, Accept) {
       std::make_unique<IdentityDialogController>(web_contents());
 
   base::MockCallback<base::OnceCallback<void(bool accepted)>> callback;
-  EXPECT_CALL(callback, Run(true)).WillOnce(testing::Return());
+  EXPECT_CALL(callback, Run(true)).WillOnce(Return());
   controller->RequestIdPRegistrationPermision(
       url::Origin::Create(GURL("https://idp.example")), callback.Get());
 
@@ -374,12 +420,23 @@ TEST_F(IdentityDialogControllerTest, ActorTaskSuppressesUi) {
       base::DoNothing()));
 }
 
+TEST_F(IdentityDialogControllerTest, IsAmbientBubbleUsedForwardsToView) {
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  // There is no view yet.
+  EXPECT_FALSE(controller->IsAmbientBubbleUsed());
+
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  EXPECT_CALL(*mock_view, IsAmbientBubbleUsed()).WillOnce(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  EXPECT_TRUE(controller->IsAmbientBubbleUsed());
+}
+
 TEST_F(IdentityDialogControllerTest, Deny) {
   std::unique_ptr<IdentityDialogController> controller =
       std::make_unique<IdentityDialogController>(web_contents());
 
   base::MockCallback<base::OnceCallback<void(bool accepted)>> callback;
-  EXPECT_CALL(callback, Run(false)).WillOnce(testing::Return());
+  EXPECT_CALL(callback, Run(false)).WillOnce(Return());
   controller->RequestIdPRegistrationPermision(
       url::Origin::Create(GURL("https://idp.example")), callback.Get());
 
@@ -403,7 +460,7 @@ TEST_F(IdentityDialogControllerTest, Dismiss) {
       std::make_unique<IdentityDialogController>(web_contents());
 
   base::MockCallback<base::OnceCallback<void(bool accepted)>> callback;
-  EXPECT_CALL(callback, Run(false)).WillOnce(testing::Return());
+  EXPECT_CALL(callback, Run(false)).WillOnce(Return());
   controller->RequestIdPRegistrationPermision(
       url::Origin::Create(GURL("https://idp.example")), callback.Get());
 
@@ -435,7 +492,7 @@ TEST_F(IdentityDialogControllerTest, OnAccountSelectedButtonCallsDismiss) {
 
   // Dismiss callback should run once.
   base::MockCallback<DismissCallback> dismiss_callback;
-  EXPECT_CALL(dismiss_callback, Run).WillOnce(testing::Return());
+  EXPECT_CALL(dismiss_callback, Run).WillOnce(Return());
 
   ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kActive,
                      dismiss_callback.Get());
@@ -480,6 +537,37 @@ TEST_F(IdentityDialogControllerTest, NoTabDoesNotCrash) {
   IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts);
 
   ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kActive);
+}
+
+// Tests that the controller does not access its members when it gets destroyed
+// while showing the accounts dialog, even if `Show()` returns true.
+TEST_F(IdentityDialogControllerTest,
+       ControllerDestroyedDuringShowAccountsDialog) {
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  IdentityDialogController* controller_ptr = controller.get();
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  accounts_ = CreateAccount();
+  IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts_);
+
+  // The view reports that the dialog was shown even though the controller was
+  // destroyed. The controller should report that the dialog was not shown.
+  EXPECT_CALL(*mock_view_ptr, Show).WillOnce([&controller]() {
+    controller.reset();
+    return true;
+  });
+  EXPECT_FALSE(controller_ptr->ShowAccountsDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      {idp_data}, accounts_, /*filtered_accounts=*/{},
+      blink::mojom::RpMode::kPassive,
+      /*on_selected=*/base::DoNothing(),
+      /*on_add_account=*/base::DoNothing(),
+      /*dismiss_callback=*/base::DoNothing(),
+      /*accounts_displayed_callback=*/base::DoNothing()));
+  EXPECT_FALSE(controller);
 }
 
 TEST_F(IdentityDialogControllerTest, SegmentationPlatformLoudUi) {
@@ -557,7 +645,7 @@ TEST_F(IdentityDialogControllerTest,
             CreateMockOptimizationGuideDecider());
 
     auto mock_view = std::make_unique<MockAccountSelectionView>();
-    EXPECT_CALL(*mock_view, Show).WillOnce(testing::Return(true));
+    EXPECT_CALL(*mock_view, Show).WillOnce(Return(true));
     controller->SetAccountSelectionViewForTesting(std::move(mock_view));
 
     EXPECT_CALL(*segmentation_platform_service_,
@@ -584,7 +672,7 @@ TEST_F(IdentityDialogControllerTest,
             CreateMockOptimizationGuideDecider());
 
     auto mock_view = std::make_unique<MockAccountSelectionView>();
-    EXPECT_CALL(*mock_view, Show).WillOnce(testing::Return(true));
+    EXPECT_CALL(*mock_view, Show).WillOnce(Return(true));
     controller->SetAccountSelectionViewForTesting(std::move(mock_view));
 
     EXPECT_CALL(*segmentation_platform_service_,
@@ -611,7 +699,7 @@ TEST_F(IdentityDialogControllerTest,
             CreateMockOptimizationGuideDecider());
 
     auto mock_view = std::make_unique<MockAccountSelectionView>();
-    EXPECT_CALL(*mock_view, Show).WillOnce(testing::Return(true));
+    EXPECT_CALL(*mock_view, Show).WillOnce(Return(true));
     controller->SetAccountSelectionViewForTesting(std::move(mock_view));
 
     EXPECT_CALL(*segmentation_platform_service_,
@@ -641,7 +729,7 @@ TEST_F(IdentityDialogControllerTest,
           CreateMockSegmentationPlatformService("FedCmUserLoud", run_loop),
           CreateMockOptimizationGuideDecider());
   auto mock_view = std::make_unique<MockAccountSelectionView>();
-  EXPECT_CALL(*mock_view, Show).WillOnce(testing::Return(false));
+  EXPECT_CALL(*mock_view, Show).WillOnce(Return(false));
   controller->SetAccountSelectionViewForTesting(std::move(mock_view));
   EXPECT_CALL(*segmentation_platform_service_,
               CollectTrainingData(_, _, _, _, _))
@@ -859,6 +947,46 @@ TEST_F(IdentityDialogControllerTest,
   }
 }
 
+// Tests that the controller does not access its members or notify the embedder
+// when it gets destroyed while showing the failure dialog, even if
+// `ShowFailureDialog()` returns true.
+TEST_F(IdentityDialogControllerTest,
+       ControllerDestroyedDuringShowFailureDialog) {
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  IdentityDialogController* controller_ptr = controller.get();
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  base::MockCallback<
+      base::OnceCallback<void(content::webid::FederatedLoginResult)>>
+      embedder_callback;
+  content::webid::FederatedEmbedderLoginRequest::Set(
+      web_contents(), url::Origin::Create(GURL("https://idp.example")),
+      kAccountId, embedder_callback.Get());
+  base::ScopedClosureRunner remove_embedder_request(
+      base::BindOnce(&content::webid::FederatedEmbedderLoginRequest::Remove,
+                     base::Unretained(web_contents())));
+
+  // The view reports that the dialog was shown even though the controller was
+  // destroyed. The controller should report that the dialog was not shown and
+  // must not notify the embedder afterwards.
+  EXPECT_CALL(*mock_view_ptr, ShowFailureDialog).WillOnce([&controller]() {
+    controller.reset();
+    return true;
+  });
+  EXPECT_CALL(embedder_callback, Run).Times(0);
+  EXPECT_FALSE(controller_ptr->ShowFailureDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      kIdpEtldPlusOne, blink::mojom::RpContext::kSignIn,
+      blink::mojom::RpMode::kPassive, content::IdentityProviderMetadata(),
+      /*filtered_accounts=*/{},
+      /*dismiss_callback=*/base::DoNothing(),
+      /*login_callback=*/base::DoNothing()));
+  EXPECT_FALSE(controller);
+}
+
 TEST_F(IdentityDialogControllerTest, EmbedderNotifiedOfContinuation) {
   std::unique_ptr<IdentityDialogController> controller =
       std::make_unique<IdentityDialogController>(web_contents());
@@ -888,8 +1016,7 @@ TEST_F(IdentityDialogControllerTest, EmbedderNotifiedOfContinuation) {
     content::webid::FederatedEmbedderLoginRequest::Set(
         web_contents(), idp_origin, account_id, callback.Get());
 
-    EXPECT_CALL(*mock_view_ptr, ShowFailureDialog)
-        .WillOnce(testing::Return(true));
+    EXPECT_CALL(*mock_view_ptr, ShowFailureDialog).WillOnce(Return(true));
     controller->ShowFailureDialog(
         content::RelyingPartyData(kTopFrameEtldPlusOne, u""), kIdpEtldPlusOne,
         blink::mojom::RpContext::kSignIn, blink::mojom::RpMode::kActive,
@@ -1003,7 +1130,7 @@ TEST_F(IdentityDialogControllerTestWithOptimizationDisabled, NoCrash) {
       std::make_unique<IdentityDialogController>(web_contents());
 
   base::MockCallback<base::OnceCallback<void(bool accepted)>> callback;
-  EXPECT_CALL(callback, Run(true)).WillOnce(testing::Return());
+  EXPECT_CALL(callback, Run(true)).WillOnce(Return());
   controller->RequestIdPRegistrationPermision(
       url::Origin::Create(GURL("https://idp.example")), callback.Get());
 
@@ -1099,8 +1226,7 @@ TEST_F(IdentityDialogControllerTest, ShowModalDialogNotGuardedByActorTask) {
   controller->SetActingTaskIdForTesting(actor::TaskId::FromUnsafeValue(1));
 
   // 2. Should STILL show modal UI.
-  EXPECT_CALL(*mock_view_ptr, ShowModalDialog)
-      .WillOnce(testing::Return(nullptr));
+  EXPECT_CALL(*mock_view_ptr, ShowModalDialog).WillOnce(Return(nullptr));
 
   controller->ShowModalDialog(GURL("https://idp.example/login"),
                               blink::mojom::RpMode::kActive, base::DoNothing(),
@@ -1122,7 +1248,7 @@ TEST_F(IdentityDialogControllerTest, PassiveModeNotGuardedByActorTask) {
   IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts_);
 
   // 2. ShowAccountsDialog should STILL show UI in passive mode.
-  EXPECT_CALL(*mock_view_ptr, Show).WillOnce(testing::Return(true));
+  EXPECT_CALL(*mock_view_ptr, Show).WillOnce(Return(true));
   base::MockCallback<AccountSelectionCallback> on_selected;
   EXPECT_CALL(on_selected, Run).Times(0);
 
@@ -1132,8 +1258,7 @@ TEST_F(IdentityDialogControllerTest, PassiveModeNotGuardedByActorTask) {
       base::DoNothing(), base::DoNothing(), base::DoNothing()));
 
   // 3. ShowVerifyingDialog should STILL show UI in passive mode.
-  EXPECT_CALL(*mock_view_ptr, ShowVerifyingDialog)
-      .WillOnce(testing::Return(true));
+  EXPECT_CALL(*mock_view_ptr, ShowVerifyingDialog).WillOnce(Return(true));
   EXPECT_TRUE(controller->ShowVerifyingDialog(
       content::RelyingPartyData(kTopFrameEtldPlusOne, u""), idp_data,
       accounts_[0], content::IdentityRequestAccount::SignInMode::kExplicit,
@@ -1171,4 +1296,728 @@ TEST_F(IdentityDialogControllerTest, ActiveModeDismissedWhenActorStopsActing) {
               Run(IdentityDialogController::DismissReason::kOther))
       .Times(1);
   controller->SetActingTaskIdForTesting(actor::TaskId());
+}
+
+// Tests that the controller does not access its members when it gets destroyed
+// while showing the loading dialog, even if `ShowLoadingDialog()` returns true.
+TEST_F(IdentityDialogControllerTest,
+       ControllerDestroyedDuringShowLoadingDialog) {
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  IdentityDialogController* controller_ptr = controller.get();
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  // The view reports that the dialog was shown even though the controller was
+  // destroyed. The controller should report that the dialog was not shown.
+  EXPECT_CALL(*mock_view_ptr, ShowLoadingDialog).WillOnce([&controller]() {
+    controller.reset();
+    return true;
+  });
+  EXPECT_FALSE(controller_ptr->ShowLoadingDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      kIdpEtldPlusOne, blink::mojom::RpContext::kSignIn,
+      blink::mojom::RpMode::kActive,
+      /*dismiss_callback=*/base::DoNothing()));
+  EXPECT_FALSE(controller);
+}
+
+TEST_F(IdentityDialogControllerTest, ShowNativeAppUiSuccess) {
+  std::unique_ptr<IdentityDialogController> controller =
+      std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  base::MockCallback<IdentityDialogController::DismissCallback>
+      dismiss_callback;
+  base::MockCallback<IdentityDialogController::NativeAppResultCallback>
+      native_result_callback;
+
+  EXPECT_CALL(*mock_view_ptr, ShowNativeAppUi).WillOnce(Return(true));
+  EXPECT_TRUE(controller->ShowNativeAppUi(content::NativeAppRequestOptions(),
+                                          dismiss_callback.Get(),
+                                          native_result_callback.Get()));
+
+  EXPECT_CALL(
+      native_result_callback,
+      Run(Field(
+          &content::IdentityRequestDialogController::NativeAppResult::type,
+          content::IdentityRequestDialogController::NativeAppResult::Type::
+              kToken)))
+      .Times(1);
+  EXPECT_CALL(dismiss_callback, Run).Times(0);
+  controller->OnNativeAppResult("token123");
+
+  controller->OnDismiss(IdentityDialogController::DismissReason::kOther);
+}
+
+// Launching a native application is a UI surface, so it must be suppressed for
+// the same reason the active mode dialog is: an actor task driving the tab
+// means there is no user present to interact with the application.
+TEST_F(IdentityDialogControllerTest, ShowNativeAppUiGuardedByActorTask) {
+  std::unique_ptr<IdentityDialogController> controller =
+      std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  controller->SetActingTaskIdForTesting(actor::TaskId::FromUnsafeValue(1));
+
+  base::MockCallback<IdentityDialogController::DismissCallback>
+      dismiss_callback;
+  base::MockCallback<IdentityDialogController::NativeAppResultCallback>
+      native_result_callback;
+
+  EXPECT_CALL(*mock_view_ptr, ShowNativeAppUi).Times(0);
+  EXPECT_FALSE(controller->ShowNativeAppUi(content::NativeAppRequestOptions(),
+                                           dismiss_callback.Get(),
+                                           native_result_callback.Get()));
+}
+
+TEST_F(IdentityDialogControllerTest, ShowNativeAppUiErrorResult) {
+  std::unique_ptr<IdentityDialogController> controller =
+      std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  base::MockCallback<IdentityDialogController::DismissCallback>
+      dismiss_callback;
+  base::MockCallback<IdentityDialogController::NativeAppResultCallback>
+      native_result_callback;
+
+  EXPECT_CALL(*mock_view_ptr, ShowNativeAppUi).WillOnce(Return(true));
+  EXPECT_TRUE(controller->ShowNativeAppUi(content::NativeAppRequestOptions(),
+                                          dismiss_callback.Get(),
+                                          native_result_callback.Get()));
+
+  EXPECT_CALL(
+      native_result_callback,
+      Run(Field(
+          &content::IdentityRequestDialogController::NativeAppResult::type,
+          content::IdentityRequestDialogController::NativeAppResult::Type::
+              kError)))
+      .Times(1);
+  EXPECT_CALL(dismiss_callback, Run).Times(0);
+  controller->OnNativeAppError(content::IdentityCredentialTokenError{
+      "error_code", GURL("https://idp.example/error")});
+}
+
+TEST_F(IdentityDialogControllerTest, ShowNativeAppUiDismissed) {
+  std::unique_ptr<IdentityDialogController> controller =
+      std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  base::MockCallback<IdentityDialogController::DismissCallback>
+      dismiss_callback;
+  base::MockCallback<IdentityDialogController::NativeAppResultCallback>
+      native_result_callback;
+
+  EXPECT_CALL(*mock_view_ptr, ShowNativeAppUi).WillOnce(Return(true));
+  EXPECT_TRUE(controller->ShowNativeAppUi(content::NativeAppRequestOptions(),
+                                          dismiss_callback.Get(),
+                                          native_result_callback.Get()));
+
+  EXPECT_CALL(dismiss_callback,
+              Run(IdentityDialogController::DismissReason::kOther))
+      .Times(1);
+  EXPECT_CALL(native_result_callback, Run).Times(0);
+  controller->OnDismiss(IdentityDialogController::DismissReason::kOther);
+}
+
+// Tests that the controller does not access its members when it gets destroyed
+// while initiating the native app UI, even if `ShowNativeAppUi()` returns true.
+TEST_F(IdentityDialogControllerTest, ControllerDestroyedDuringShowNativeAppUi) {
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  IdentityDialogController* controller_ptr = controller.get();
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  // The view reports that the native app UI was initiated even though the
+  // controller was destroyed. The controller should report that the UI was not
+  // initiated.
+  EXPECT_CALL(*mock_view_ptr, ShowNativeAppUi).WillOnce([&controller]() {
+    controller.reset();
+    return true;
+  });
+  EXPECT_FALSE(controller_ptr->ShowNativeAppUi(
+      content::NativeAppRequestOptions(),
+      /*dismiss_callback=*/base::DoNothing(),
+      /*native_result_callback=*/base::DoNothing()));
+  EXPECT_FALSE(controller);
+}
+
+// Tests that a HaT survey about personalization and trust is launched when the
+// user accepts an account in FedCM and login succeeds.
+TEST_F(IdentityDialogControllerTest, PersonalizationAndTrustSurvey_Accept) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kPassive);
+
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmAccepted,
+          web_contents(), 0, _,
+          SurveyStringData{
+              {"FedCM UI mode", "passive"},
+              {"FedCM interaction type", "sign-in"},
+              {"Number of accounts shown", "1"},
+              {"Origin of the website (eTLD+1)", "google.com"},
+          },
+          _, _, _, _, _));
+  controller->OnAccountSelected(
+      GURL(kIdpEtldPlusOne), kAccountId,
+      content::IdentityRequestAccount::LoginState::kSignIn);
+  controller->OnFedCmFederatedLogin(/*success=*/true);
+}
+
+// Tests that no HaT survey is launched when login fails after account
+// selection.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_DoNotTrigger_AcceptFailed) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kPassive);
+
+  EXPECT_CALL(*mock_hats_service, LaunchDelayedSurveyForWebContents).Times(0);
+  controller->OnAccountSelected(
+      GURL(kIdpEtldPlusOne), kAccountId,
+      content::IdentityRequestAccount::LoginState::kSignIn);
+  controller->OnFedCmFederatedLogin(/*success=*/false);
+}
+
+// Tests that the survey PSD specifies "active" mode and "sign-up" when FedCM
+// runs in active mode with a sign-up account.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_Accept_ActiveMode) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kActive);
+
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmAccepted,
+          web_contents(), 0, _,
+          SurveyStringData{
+              {"FedCM UI mode", "active"},
+              {"FedCM interaction type", "sign-up"},
+              {"Number of accounts shown", "1"},
+              {"Origin of the website (eTLD+1)", "google.com"},
+          },
+          _, _, _, _, _));
+  controller->OnAccountSelected(
+      GURL(kIdpEtldPlusOne), kAccountId,
+      content::IdentityRequestAccount::LoginState::kSignUp);
+  controller->OnFedCmFederatedLogin(/*success=*/true);
+}
+
+// Tests that a HaT survey for auto-reauthn is launched when the verifying
+// dialog is shown in auto sign-in mode and login succeeds.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_AutoReauthn) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, ShowVerifyingDialog).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  std::vector<IdentityRequestAccountPtr> accounts = CreateAccount();
+  IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts);
+  controller->ShowVerifyingDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      idp_data, accounts[0], content::IdentityRequestAccount::SignInMode::kAuto,
+      blink::mojom::RpMode::kPassive, base::DoNothing());
+
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmAutoReauthn,
+          web_contents(), 0, _,
+          SurveyStringData{
+              {"FedCM UI mode", "passive"},
+              {"FedCM interaction type", "sign-in"},
+              {"Number of accounts shown", "1"},
+              {"Origin of the website (eTLD+1)", "google.com"},
+          },
+          _, _, _, _, _));
+  controller->OnFedCmFederatedLogin(/*success=*/true);
+}
+
+// Tests that a HaT survey for auto-reauthn is launched in active mode when
+// auto sign-in succeeds even if the desktop view does not update the loading
+// dialog.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_AutoReauthn_ActiveMode) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, ShowLoadingDialog).WillByDefault(Return(true));
+  // On desktop in active mode, `ShowVerifyingDialog()` returns false because
+  // the modal loading dialog is already showing and is not updated.
+  ON_CALL(*mock_view, ShowVerifyingDialog).WillByDefault(Return(false));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  EXPECT_TRUE(controller->ShowLoadingDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne, u""), kIdpEtldPlusOne,
+      blink::mojom::RpContext::kSignIn, blink::mojom::RpMode::kActive,
+      base::DoNothing()));
+
+  std::vector<IdentityRequestAccountPtr> accounts = CreateAccount();
+  IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts);
+  EXPECT_FALSE(controller->ShowVerifyingDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      idp_data, accounts[0], content::IdentityRequestAccount::SignInMode::kAuto,
+      blink::mojom::RpMode::kActive, base::DoNothing()));
+
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmAutoReauthn,
+          web_contents(), 0, _,
+          SurveyStringData{
+              {"FedCM UI mode", "active"},
+              {"FedCM interaction type", "sign-in"},
+              {"Number of accounts shown", "1"},
+              {"Origin of the website (eTLD+1)", "google.com"},
+          },
+          _, _, _, _, _));
+  controller->OnFedCmFederatedLogin(/*success=*/true);
+}
+
+// Tests that a HaT survey about personalization and trust is launched when the
+// user dismisses a FedCM dialog. If both sign-up and sign-in accounts are
+// present, the interaction type is estimated as sign-in.
+TEST_F(IdentityDialogControllerTest, PersonalizationAndTrustSurvey_Dismiss) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  std::vector<IdentityRequestAccountPtr> accounts = CreateAccounts(2);
+  accounts[0]->idp_claimed_login_state =
+      content::IdentityRequestAccount::LoginState::kSignUp;
+  accounts[1]->idp_claimed_login_state =
+      content::IdentityRequestAccount::LoginState::kSignIn;
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kPassive,
+                     accounts);
+
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmDismissed,
+          web_contents(), 0, _,
+          SurveyStringData{
+              {"FedCM UI mode", "passive"},
+              {"FedCM interaction type", "sign-in"},
+              {"Number of accounts shown", "2"},
+              {"Origin of the website (eTLD+1)", "google.com"},
+          },
+          _, _, _, _, _));
+  controller->OnDismiss(IdentityDialogController::DismissReason::kCloseButton);
+}
+
+// Tests that the survey PSD specifies "sign-in" when the user dismisses an
+// accounts dialog where only the browser-trusted state is sign-in.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_Dismiss_BrowserTrustedSignIn) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  std::vector<IdentityRequestAccountPtr> accounts = CreateAccount();
+  accounts[0]->idp_claimed_login_state = std::nullopt;
+  accounts[0]->browser_trusted_login_state =
+      content::IdentityRequestAccount::LoginState::kSignIn;
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kPassive,
+                     accounts);
+
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmDismissed,
+          web_contents(), 0, _,
+          SurveyStringData{
+              {"FedCM UI mode", "passive"},
+              {"FedCM interaction type", "sign-in"},
+              {"Number of accounts shown", "1"},
+              {"Origin of the website (eTLD+1)", "google.com"},
+          },
+          _, _, _, _, _));
+  controller->OnDismiss(IdentityDialogController::DismissReason::kCloseButton);
+}
+
+// Tests that the survey PSD specifies "sign-up" when the user dismisses an
+// accounts dialog with sign-up accounts.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_Dismiss_SignUp) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  std::vector<IdentityRequestAccountPtr> accounts = CreateAccount();
+  accounts[0]->idp_claimed_login_state =
+      content::IdentityRequestAccount::LoginState::kSignUp;
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kPassive,
+                     accounts);
+
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmDismissed,
+          web_contents(), 0, _,
+          SurveyStringData{
+              {"FedCM UI mode", "passive"},
+              {"FedCM interaction type", "sign-up"},
+              {"Number of accounts shown", "1"},
+              {"Origin of the website (eTLD+1)", "google.com"},
+          },
+          _, _, _, _, _));
+  controller->OnDismiss(IdentityDialogController::DismissReason::kCloseButton);
+}
+
+// Tests that the HaT survey PSDs cap the number of accounts shown at "5+".
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_Dismiss_AccountsCountCap) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kPassive,
+                     CreateAccounts(6));
+
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmDismissed,
+          web_contents(), 0, _,
+          SurveyStringData{
+              {"FedCM UI mode", "passive"},
+              {"FedCM interaction type", "sign-in"},
+              {"Number of accounts shown", "5+"},
+              {"Origin of the website (eTLD+1)", "google.com"},
+          },
+          _, _, _, _, _));
+  controller->OnDismiss(IdentityDialogController::DismissReason::kCloseButton);
+}
+
+// Tests that the survey PSD specifies "0" when no accounts are shown.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_Dismiss_NoAccounts) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kPassive,
+                     /*accounts=*/std::vector<IdentityRequestAccountPtr>{});
+
+  EXPECT_CALL(
+      *mock_hats_service,
+      LaunchDelayedSurveyForWebContents(
+          kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmDismissed,
+          web_contents(), 0, _,
+          SurveyStringData{
+              {"FedCM UI mode", "passive"},
+              {"FedCM interaction type", "sign-up"},
+              {"Number of accounts shown", "0"},
+              {"Origin of the website (eTLD+1)", "google.com"},
+          },
+          _, _, _, _, _));
+  controller->OnDismiss(IdentityDialogController::DismissReason::kCloseButton);
+}
+
+// Tests that no HaT survey is launched when the dialog is dismissed for reasons
+// other than explicit user dismissal (such as being ignored).
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_DoNotTrigger_DismissIgnored) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kPassive);
+
+  EXPECT_CALL(*mock_hats_service, LaunchDelayedSurveyForWebContents).Times(0);
+  controller->OnDismiss(IdentityDialogController::DismissReason::kOther);
+}
+
+// Tests that no HaT survey is launched when the user closes FedCM error
+// dialogs.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_DoNotTrigger_DismissError) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, ShowErrorDialog).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  controller->ShowErrorDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      kIdpEtldPlusOne, blink::mojom::RpContext::kSignIn,
+      blink::mojom::RpMode::kPassive, content::IdentityProviderMetadata(),
+      /*error=*/std::nullopt,
+      /*dismiss_callback=*/base::DoNothing(),
+      /*more_details_callback=*/base::DoNothing());
+
+  EXPECT_CALL(*mock_hats_service, LaunchDelayedSurveyForWebContents).Times(0);
+  controller->OnDismiss(IdentityDialogController::DismissReason::kCloseButton);
+}
+
+// Tests that no HaT survey is launched when auto-reauthn login fails.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_DoNotTrigger_AutoReauthnFailed) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, ShowVerifyingDialog).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  std::vector<IdentityRequestAccountPtr> accounts = CreateAccount();
+  IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts);
+  controller->ShowVerifyingDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      idp_data, accounts[0], content::IdentityRequestAccount::SignInMode::kAuto,
+      blink::mojom::RpMode::kPassive, base::DoNothing());
+
+  EXPECT_CALL(*mock_hats_service, LaunchDelayedSurveyForWebContents).Times(0);
+  controller->OnFedCmFederatedLogin(/*success=*/false);
+}
+
+// Tests that no HaT survey is launched for auto-reauthn when an actor task
+// suppresses the UI.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_DoNotTrigger_AutoReauthn_ActorTask) {
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, ShowVerifyingDialog).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  controller->SetActingTaskIdForTesting(actor::TaskId::FromUnsafeValue(1));
+
+  std::vector<IdentityRequestAccountPtr> accounts = CreateAccount();
+  IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts);
+  controller->ShowVerifyingDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      idp_data, accounts[0], content::IdentityRequestAccount::SignInMode::kAuto,
+      blink::mojom::RpMode::kPassive, base::DoNothing());
+
+  EXPECT_CALL(*mock_hats_service, LaunchDelayedSurveyForWebContents).Times(0);
+  controller->OnFedCmFederatedLogin(/*success=*/true);
+}
+
+// Tests that the product-specific string data keys supplied to HaTS match the
+// fields configured in the survey configs.
+TEST_F(IdentityDialogControllerTest,
+       PersonalizationAndTrustSurvey_PsdKeysMatchSurveyConfig) {
+  base::test::ScopedFeatureList feature_list(
+      {autofill::features::kAutofillPersonalizationAndTrustFedCmAcceptedSurvey,
+       autofill::features::
+           kAutofillPersonalizationAndTrustFedCmAutoReauthnSurvey,
+       autofill::features::
+           kAutofillPersonalizationAndTrustFedCmDismissedSurvey});
+  MockHatsService* mock_hats_service = static_cast<MockHatsService*>(
+      HatsServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          profile(), base::BindRepeating(&BuildMockHatsService)));
+
+  SurveyStringData psd;
+  EXPECT_CALL(*mock_hats_service, LaunchDelayedSurveyForWebContents)
+      .WillOnce(
+          DoAll(SaveArg<4>(&psd), Return(HatsService::LaunchError::kNone)));
+
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  auto mock_view = std::make_unique<NiceMock<MockAccountSelectionView>>();
+  ON_CALL(*mock_view, Show).WillByDefault(Return(true));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  ShowAccountsDialog(controller.get(), blink::mojom::RpMode::kPassive);
+  controller->OnDismiss(IdentityDialogController::DismissReason::kCloseButton);
+
+  hats::SurveyConfigs survey_configs;
+  hats::GetActiveSurveyConfigs(survey_configs);
+  const std::vector<std::string>& accepted_keys =
+      survey_configs
+          [kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmAccepted]
+              .product_specific_string_data_fields;
+  const std::vector<std::string>& auto_reauthn_keys =
+      survey_configs
+          [kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmAutoReauthn]
+              .product_specific_string_data_fields;
+  const std::vector<std::string>& dismissed_keys =
+      survey_configs
+          [kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmDismissed]
+              .product_specific_string_data_fields;
+
+  // Confirm all survey triggers require the same PSD schema.
+  EXPECT_EQ(accepted_keys, auto_reauthn_keys);
+  EXPECT_EQ(accepted_keys, dismissed_keys);
+
+  const std::vector<std::string> actual_keys =
+      base::ToVector(psd, &std::pair<const std::string, std::string>::first);
+  EXPECT_THAT(actual_keys, UnorderedElementsAreArray(accepted_keys));
+}
+
+// Tests that the controller does not access its members when it gets destroyed
+// while showing the verifying dialog, e.g. because the view dismissed the
+// dialog synchronously and the request completed.
+TEST_F(IdentityDialogControllerTest,
+       ControllerDestroyedDuringShowVerifyingDialog) {
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  IdentityDialogController* controller_ptr = controller.get();
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  accounts_ = CreateAccount();
+  IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts_);
+
+  // The view reports that the dialog was shown even though the controller was
+  // destroyed. The controller should report that the dialog was not shown.
+  EXPECT_CALL(*mock_view_ptr, ShowVerifyingDialog).WillOnce([&controller]() {
+    controller.reset();
+    return true;
+  });
+  EXPECT_FALSE(controller_ptr->ShowVerifyingDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      idp_data, accounts_[0],
+      content::IdentityRequestAccount::SignInMode::kAuto,
+      blink::mojom::RpMode::kPassive, base::DoNothing()));
+  EXPECT_FALSE(controller);
+}
+
+// Tests that the controller does not access its members when it gets destroyed
+// while letting the view show UI again after an actor task stops acting.
+TEST_F(IdentityDialogControllerTest, ControllerDestroyedDuringSetCanShowUi) {
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  IdentityDialogController* controller_ptr = controller.get();
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+
+  // Simulate an active actor task.
+  EXPECT_CALL(*mock_view_ptr, SetCanShowUi(false));
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+  controller->SetActingTaskIdForTesting(actor::TaskId::FromUnsafeValue(1));
+
+  accounts_ = CreateAccount();
+  IdentityProviderDataPtr idp_data = CreateIdentityProviderData(accounts_);
+
+  // Store a dismiss callback for an active mode request while the UI is
+  // suppressed.
+  base::MockCallback<DismissCallback> dismiss_callback;
+  EXPECT_CALL(*mock_view_ptr, Show).Times(0);
+  EXPECT_FALSE(controller->ShowAccountsDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne, u""), {idp_data},
+      accounts_, {}, blink::mojom::RpMode::kActive, base::DoNothing(),
+      base::DoNothing(), dismiss_callback.Get(), base::DoNothing()));
+
+  // The actor task stops acting. Letting the view show UI again destroys the
+  // controller, so the controller must not run the dismiss callback afterwards.
+  EXPECT_CALL(*mock_view_ptr, SetCanShowUi(true)).WillOnce([&controller]() {
+    controller.reset();
+  });
+  EXPECT_CALL(dismiss_callback, Run).Times(0);
+  controller_ptr->SetActingTaskIdForTesting(actor::TaskId());
+  EXPECT_FALSE(controller);
+}
+
+// Tests that the controller does not access its members or notify the embedder
+// when it gets destroyed while showing the error dialog, e.g. because the view
+// dismissed the dialog synchronously and the request completed.
+TEST_F(IdentityDialogControllerTest, ControllerDestroyedDuringShowErrorDialog) {
+  auto controller = std::make_unique<IdentityDialogController>(web_contents());
+  IdentityDialogController* controller_ptr = controller.get();
+  auto mock_view = std::make_unique<MockAccountSelectionView>();
+  MockAccountSelectionView* mock_view_ptr = mock_view.get();
+  controller->SetAccountSelectionViewForTesting(std::move(mock_view));
+
+  base::MockCallback<
+      base::OnceCallback<void(content::webid::FederatedLoginResult)>>
+      embedder_callback;
+  content::webid::FederatedEmbedderLoginRequest::Set(
+      web_contents(), url::Origin::Create(GURL("https://idp.example")),
+      kAccountId, embedder_callback.Get());
+  base::ScopedClosureRunner remove_embedder_request(
+      base::BindOnce(&content::webid::FederatedEmbedderLoginRequest::Remove,
+                     base::Unretained(web_contents())));
+
+  // The view reports that the dialog was shown even though the controller was
+  // destroyed. The controller should report that the dialog was not shown and
+  // must not notify the embedder afterwards.
+  EXPECT_CALL(*mock_view_ptr, ShowErrorDialog).WillOnce([&controller]() {
+    controller.reset();
+    return true;
+  });
+  EXPECT_CALL(embedder_callback, Run).Times(0);
+  EXPECT_FALSE(controller_ptr->ShowErrorDialog(
+      content::RelyingPartyData(kTopFrameEtldPlusOne,
+                                /*iframe_for_display=*/u""),
+      kIdpEtldPlusOne, blink::mojom::RpContext::kSignIn,
+      blink::mojom::RpMode::kActive, content::IdentityProviderMetadata(),
+      /*error=*/std::nullopt,
+      /*dismiss_callback=*/base::DoNothing(),
+      /*more_details_callback=*/base::NullCallback()));
+  EXPECT_FALSE(controller);
 }

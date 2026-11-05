@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/core/layout/inline/score_line_breaker.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "third_party/blink/renderer/core/layout/inline/inline_break_token.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_node.h"
 #include "third_party/blink/renderer/core/layout/inline/line_breaker.h"
@@ -83,19 +84,19 @@ void ScoreLineBreaker::OptimalBreakPoints(const LeadingFloats& leading_floats,
   LineBreaker line_breaker(
       node_, LineBreakerMode::kContent, GetConstraintSpace(),
       LineLayoutOpportunity(line_width), leading_floats, break_token_,
-      /* column_spanner_path */ nullptr, exclusion_space_);
+      /*ColumnSpannerPath=*/nullptr, /*FragmentedOofContainer=*/nullptr,
+      exclusion_space_);
   const int lines_until_clamp =
       space_.GetLineClampData().LinesUntilClamp().value_or(0);
-  // If we're line-clamping with ellipsis placed as part of line-breaking, we
-  // should use ParagraphLineBreaker instead. Score line breaking will be
-  // disabled in the InlineItemsBuilder for the line-clamp container itself,
-  // but not for its descendants, so we do it here.
-  if (RuntimeEnabledFeatures::CSSLineClampLineBreakingEllipsisEnabled() &&
-      lines_until_clamp) {
+  // If we're line-clamping in non-legacy mode (where the ellipsis is placed as
+  // part of line-breaking), we should use ParagraphLineBreaker instead.
+  // Score line breaking will be disabled in the InlineItemsBuilder for the
+  // line-clamp container itself, but not for its descendants, so we do it here.
+  if (RuntimeEnabledFeatures::CSSLineClampEnabled() && lines_until_clamp) {
     context.SuspendUntilEndParagraph();
     return;
   }
-  DCHECK(!RuntimeEnabledFeatures::CSSLineClampLineBreakingEllipsisEnabled() ||
+  DCHECK(!RuntimeEnabledFeatures::CSSLineClampEnabled() ||
          lines_until_clamp == 0);
   for (;;) {
     LineInfo& line_info = line_info_list.Append();
@@ -201,7 +202,7 @@ bool ScoreLineBreaker::Optimize(const LineInfoList& line_info_list,
     const float orphans_penalty = kOrphansPenalty * zoom_;
     const auto candidates_span =
         base::span(candidates).first(candidates.size() - 1);
-    for (LineBreakCandidate& candidate : base::Reversed(candidates_span)) {
+    for (LineBreakCandidate& candidate : std::views::reverse(candidates_span)) {
       candidate.penalty += orphans_penalty;
       if (!candidate.is_hyphenated) {
         break;

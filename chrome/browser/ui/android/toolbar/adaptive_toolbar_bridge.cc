@@ -4,10 +4,12 @@
 
 #include "chrome/browser/ui/android/toolbar/adaptive_toolbar_bridge.h"
 
+#include <string_view>
+
 #include "base/android/callback_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/scoped_java_ref.h"
-#include "base/no_destructor.h"
+#include "base/containers/fixed_flat_map.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/segmentation_platform/segmentation_platform_service_factory.h"
 #include "chrome/browser/ui/android/toolbar/adaptive_toolbar_enums.h"
@@ -27,52 +29,43 @@ using segmentation_platform::InputContext;
 
 namespace {
 
-std::map<std::string, AdaptiveToolbarButtonVariant> GetEnumLabelMapping() {
-  static base::NoDestructor<std::map<std::string, AdaptiveToolbarButtonVariant>>
-      enum_label_mapping(
-          {{
-               segmentation_platform::kAdaptiveToolbarModelLabelNewTab,
-               AdaptiveToolbarButtonVariant::kNewTab,
-           },
-           {
-               segmentation_platform::kAdaptiveToolbarModelLabelShare,
-               AdaptiveToolbarButtonVariant::kShare,
-           },
-           {
-
-               segmentation_platform::kAdaptiveToolbarModelLabelVoice,
-               AdaptiveToolbarButtonVariant::kVoice,
-           },
-           {
-
-               segmentation_platform::kAdaptiveToolbarModelLabelTranslate,
-               AdaptiveToolbarButtonVariant::kTranslate,
-           },
-           {
-
-               segmentation_platform::kAdaptiveToolbarModelLabelAddToBookmarks,
-               AdaptiveToolbarButtonVariant::kAddToBookmarks,
-           },
-           {
-
-               segmentation_platform::kAdaptiveToolbarModelLabelReadAloud,
-               AdaptiveToolbarButtonVariant::kReadAloud,
-           },
-           {
-               segmentation_platform::kAdaptiveToolbarModelLabelOpenInBrowser,
-               AdaptiveToolbarButtonVariant::kOpenInBrowser,
-           }});
-
-  return *enum_label_mapping;
-}
+constexpr auto kEnumLabelMapping =
+    base::MakeFixedFlatMap<std::string_view, AdaptiveToolbarButtonVariant>({
+        {
+            segmentation_platform::kAdaptiveToolbarModelLabelNewTab,
+            AdaptiveToolbarButtonVariant::kNewTab,
+        },
+        {
+            segmentation_platform::kAdaptiveToolbarModelLabelShare,
+            AdaptiveToolbarButtonVariant::kShare,
+        },
+        {
+            segmentation_platform::kAdaptiveToolbarModelLabelVoice,
+            AdaptiveToolbarButtonVariant::kVoice,
+        },
+        {
+            segmentation_platform::kAdaptiveToolbarModelLabelTranslate,
+            AdaptiveToolbarButtonVariant::kTranslate,
+        },
+        {
+            segmentation_platform::kAdaptiveToolbarModelLabelAddToBookmarks,
+            AdaptiveToolbarButtonVariant::kAddToBookmarks,
+        },
+        {
+            segmentation_platform::kAdaptiveToolbarModelLabelReadAloud,
+            AdaptiveToolbarButtonVariant::kReadAloud,
+        },
+        {
+            segmentation_platform::kAdaptiveToolbarModelLabelOpenInBrowser,
+            AdaptiveToolbarButtonVariant::kOpenInBrowser,
+        },
+    });
 
 AdaptiveToolbarButtonVariant ActionLabelToAdaptiveToolbarButtonVariant(
-    const std::string& label) {
-  std::map<std::string, AdaptiveToolbarButtonVariant> label_enum_mapping =
-      GetEnumLabelMapping();
-
-  if (label_enum_mapping.contains(label)) {
-    return label_enum_mapping.at(label);
+    std::string_view label) {
+  auto it = kEnumLabelMapping.find(label);
+  if (it != kEnumLabelMapping.end()) {
+    return it->second;
   }
 
   return AdaptiveToolbarButtonVariant::kUnknown;
@@ -115,8 +108,9 @@ void RunGetSelectedSegmentCallback(
 void RunGetClassificationSingleResultCallback(
     const base::android::JavaRef<jobject>& j_callback,
     const segmentation_platform::ClassificationResult& result) {
-  std::string button_to_show =
-      result.ordered_labels.empty() ? "" : result.ordered_labels[0];
+  std::string_view button_to_show = result.ordered_labels.empty()
+                                        ? std::string_view()
+                                        : result.ordered_labels[0];
 
   bool is_ready =
       result.status == segmentation_platform::PredictionStatus::kSucceeded;
@@ -133,10 +127,11 @@ void RunGetClassificationMultipleResultCallback(
     base::OnceCallback<void(bool, std::vector<int>)> callback,
     const segmentation_platform::ClassificationResult& result) {
   std::vector<int> ranked_buttons;
+  ranked_buttons.reserve(result.ordered_labels.size());
   bool is_ready =
       result.status == segmentation_platform::PredictionStatus::kSucceeded;
 
-  for (std::string label : result.ordered_labels) {
+  for (std::string_view label : result.ordered_labels) {
     ranked_buttons.emplace_back(
         static_cast<int32_t>(ActionLabelToAdaptiveToolbarButtonVariant(label)));
   }
@@ -154,26 +149,21 @@ void RunGetAnnotatedNumericResultCallback(
   bool is_ready =
       result.status == segmentation_platform::PredictionStatus::kSucceeded;
 
-  std::map<std::string, AdaptiveToolbarButtonVariant> enum_label_mapping =
-      GetEnumLabelMapping();
-
   // Map that sorts elements with largest first.
   std::multimap<float, AdaptiveToolbarButtonVariant, std::greater<>>
       sorted_button_scores;
 
-  for (std::pair<std::string, AdaptiveToolbarButtonVariant> button :
-       enum_label_mapping) {
-    std::optional<float> score_for_button =
-        result.GetResultForLabel(button.first);
+  for (const auto& [label, variant] : kEnumLabelMapping) {
+    std::optional<float> score_for_button = result.GetResultForLabel(label);
     if (score_for_button.has_value()) {
-      sorted_button_scores.emplace(score_for_button.value(), button.second);
+      sorted_button_scores.emplace(score_for_button.value(), variant);
     }
   }
 
   std::vector<int> sorted_buttons;
-  for (std::pair<float, AdaptiveToolbarButtonVariant> score_button :
-       sorted_button_scores) {
-    sorted_buttons.emplace_back(static_cast<int32_t>(score_button.second));
+  sorted_buttons.reserve(sorted_button_scores.size());
+  for (const auto& [score, variant] : sorted_button_scores) {
+    sorted_buttons.emplace_back(static_cast<int32_t>(variant));
   }
   if (sorted_buttons.empty()) {
     sorted_buttons.emplace_back(

@@ -6,6 +6,7 @@
 """Unittests for test_runner.py."""
 
 import collections
+import contextlib
 import logging
 import mock
 import os
@@ -121,22 +122,8 @@ class SimulatorTestRunnerTest(TestCase):
     with self.assertRaises(test_runner.AppNotFoundError):
       test_runner.SimulatorTestRunner(
         'fake-app',
-        'fake-iossim',
         'platform',
         'os',
-        'out-dir',
-      )
-
-  def test_iossim_not_found(self):
-    """Ensures SimulatorNotFoundError is raised."""
-    self.mock(os.path, 'exists', lambda p: not p.endswith('fake-iossim'))
-
-    with self.assertRaises(test_runner.SimulatorNotFoundError):
-      test_runner.SimulatorTestRunner(
-        'fake-app',
-        'fake-iossim',
-        'iPhone X',
-        '11.4',
         'out-dir',
       )
 
@@ -144,13 +131,24 @@ class SimulatorTestRunnerTest(TestCase):
     """Ensures instance is created."""
     tr = test_runner.SimulatorTestRunner(
       'fake-app',
-      'fake-iossim',
       'iPhone X',
       '11.4',
       'out-dir',
     )
 
     self.assertTrue(tr)
+
+  def test_init_duo_forces_clones_to_one(self):
+    """Ensures clones is forced to 1 for Duo simulator."""
+    tr = test_runner.SimulatorTestRunner(
+      'fake-app',
+      'iPhone Duo',
+      '27.1',
+      'out-dir',
+      clones=2,
+    )
+
+    self.assertEqual(tr.clones, 1)
 
   @mock.patch('test_runner.SimulatorTestRunner.tear_down')
   @mock.patch('test_runner.SimulatorTestRunner.set_up')
@@ -163,7 +161,6 @@ class SimulatorTestRunnerTest(TestCase):
 
     tr = test_runner.SimulatorTestRunner(
       'fake-app',
-      'fake-iossim',
       'iPhone X',
       '11.4',
       'out-dir',
@@ -206,7 +203,6 @@ class SimulatorTestRunnerTest(TestCase):
 
     tr = test_runner.SimulatorTestRunner(
       'fake-app',
-      'fake-iossim',
       'iPhone X',
       '11.4',
       'out-dir',
@@ -229,7 +225,7 @@ class SimulatorTestRunnerTest(TestCase):
     retry_result2 = ResultCollection(test_results=[test2_pass_result])
     mock_run.side_effect = [result1, retry_result1, retry_result2]
     tr = test_runner.SimulatorTestRunner(
-      'fake-app', 'fake-iossim', 'iPhone X', '11.4', 'out-dir', retries=3
+      'fake-app', 'iPhone X', '11.4', 'out-dir', retries=3
     )
     tr.launch()
     self.assertEqual(len(mock_run.mock_calls), 3)
@@ -260,7 +256,7 @@ class SimulatorTestRunnerTest(TestCase):
       test_retry2_result,
     ]
     tr = test_runner.SimulatorTestRunner(
-      'fake-app', 'fake-iossim', 'iPhone X', '11.4', 'out-dir', retries=3
+      'fake-app', 'iPhone X', '11.4', 'out-dir', retries=3
     )
     tr.launch()
     self.assertEqual(len(mock_run.mock_calls), 5)
@@ -292,7 +288,7 @@ class SimulatorTestRunnerTest(TestCase):
       test_retry2_result,
     ]
     tr = test_runner.SimulatorTestRunner(
-      'fake-app', 'fake-iossim', 'iPhone X', '11.4', 'out-dir', retries=3
+      'fake-app', 'iPhone X', '11.4', 'out-dir', retries=3
     )
     tr.launch()
     self.assertEqual(len(mock_run.mock_calls), 5)
@@ -317,7 +313,7 @@ class SimulatorTestRunnerTest(TestCase):
       test1_retry3_result,
     ]
     tr = test_runner.SimulatorTestRunner(
-      'fake-app', 'fake-iossim', 'iPhone X', '11.4', 'out-dir', retries=3
+      'fake-app', 'iPhone X', '11.4', 'out-dir', retries=3
     )
     tr.launch()
     self.assertEqual(len(mock_run.mock_calls), 4)
@@ -337,13 +333,257 @@ class SimulatorTestRunnerTest(TestCase):
     initial_result.spawning_test_launcher = True
     mock_run.side_effect = [initial_result]
     tr = test_runner.SimulatorTestRunner(
-      'fake-app', 'fake-iossim', 'iPhone X', '11.4', 'out-dir', retries=3
+      'fake-app', 'iPhone X', '11.4', 'out-dir', retries=3
     )
     tr.launch()
     self.assertEqual(len(mock_run.mock_calls), 1)
     self.assertTrue(tr.test_results['interrupted'])
     self.assertIn('test suite crash', tr.logs)
     self.assertTrue(tr.logs)
+
+  @mock.patch('test_runner.SimulatorTestRunner.tear_down')
+  @mock.patch('test_runner.SimulatorTestRunner.set_up')
+  @mock.patch('test_runner.TestRunner._list_runnable_gtests')
+  @mock.patch('test_runner.TestRunner._run')
+  def test_sharded_relaunch_preserves_sharding_and_excludes_aligned_prefix(
+    self, mock_run, mock_list_gtests, _1, _2
+  ):
+    all_tests = [
+      'SuiteA.Test0',
+      'SuiteA.Test1',
+      'SuiteB.Test0',
+      'SuiteB.Test1',
+      'SuiteB.Test2',
+      'SuiteC.Test0',
+    ]
+    mock_list_gtests.return_value = all_tests
+
+    # Shard 0 of 2 runs indices 0, 2, 4:
+    # SuiteA.Test0 passes, SuiteB.Test0 crashes.
+    initial_result = ResultCollection(
+      test_results=[
+        TestResult('SuiteA.Test0', TestStatus.PASS),
+        TestResult('SuiteB.Test0', TestStatus.CRASH),
+      ]
+    )
+    initial_result.crashed = True
+    # Resume run on Shard 0 runs index 4 (SuiteB.Test2).
+    resume_result = ResultCollection(
+      test_results=[TestResult('SuiteB.Test2', TestStatus.PASS)]
+    )
+    # Single-test retry of SuiteB.Test0 passes.
+    retry_result = ResultCollection(
+      test_results=[TestResult('SuiteB.Test0', TestStatus.PASS)]
+    )
+    mock_run.side_effect = [initial_result, resume_result, retry_result]
+
+    recorded_states = []
+    orig_get_launch_command = test_runner.SimulatorTestRunner.get_launch_command
+
+    def spy_get_launch_command(
+      runner_self, test_app, out_dir, destination, clones=1
+    ):
+      recorded_states.append(
+        {
+          'out_dir': out_dir,
+          'env_vars': dict(test_app.env_vars),
+          'included_tests': list(test_app.included_tests),
+          'excluded_tests': list(test_app.excluded_tests),
+          'crashed_tests': list(test_app.crashed_tests),
+        }
+      )
+      return orig_get_launch_command(
+        runner_self, test_app, out_dir, destination, clones
+      )
+
+    self.mock(
+      test_runner.SimulatorTestRunner,
+      'get_launch_command',
+      spy_get_launch_command,
+    )
+
+    tr = test_runner.SimulatorTestRunner(
+      'fake-app',
+      'iPhone X',
+      '11.4',
+      'out-dir',
+      env_vars=['GTEST_SHARD_INDEX=0', 'GTEST_TOTAL_SHARDS=2'],
+      retries=1,
+    )
+    succeeded = tr.launch()
+    self.assertTrue(succeeded)
+    self.assertFalse(tr.test_results['interrupted'])
+    mock_list_gtests.assert_called_once()
+    self.assertEqual(len(recorded_states), 3)
+
+    # 1. Initial launch: sharded, no filter.
+    self.assertEqual(
+      recorded_states[0]['env_vars'],
+      {'GTEST_SHARD_INDEX': '0', 'GTEST_TOTAL_SHARDS': '2'},
+    )
+    self.assertEqual(recorded_states[0]['excluded_tests'], [])
+
+    # 2. Crash resume launch: sharding env vars preserved, excluded_tests is
+    # aligned prefix of length ((2 // 2) + 1) * 2 = 4.
+    self.assertEqual(
+      recorded_states[1]['env_vars'],
+      {'GTEST_SHARD_INDEX': '0', 'GTEST_TOTAL_SHARDS': '2'},
+    )
+    self.assertEqual(
+      recorded_states[1]['excluded_tests'],
+      ['SuiteA.Test0', 'SuiteA.Test1', 'SuiteB.Test0', 'SuiteB.Test1'],
+    )
+    self.assertEqual(recorded_states[1]['crashed_tests'], ['SuiteB.Test1'])
+
+    # 3. Individual failed test retry: sharding env vars removed, included_tests
+    # has only the crashed test.
+    self.assertEqual(recorded_states[2]['env_vars'], {})
+    self.assertEqual(recorded_states[2]['included_tests'], ['SuiteB.Test0'])
+    self.assertEqual(recorded_states[2]['excluded_tests'], [])
+    self.assertEqual(recorded_states[2]['crashed_tests'], [])
+
+  @mock.patch('test_runner.SimulatorTestRunner.tear_down')
+  @mock.patch('test_runner.SimulatorTestRunner.set_up')
+  @mock.patch('test_runner.TestRunner._list_runnable_gtests')
+  @mock.patch('test_runner.TestRunner._run')
+  def test_sharded_crash_on_last_shard_test_skips_suite_resume(
+    self, mock_run, mock_list_gtests, _1, _2
+  ):
+    all_tests = [
+      'SuiteA.Test0',
+      'SuiteA.Test1',
+      'SuiteB.Test0',
+      'SuiteB.Test1',
+    ]
+    mock_list_gtests.return_value = all_tests
+
+    # Shard 0 of 2 runs indices 0 and 2. Crashing at index 2 (SuiteB.Test0)
+    # leaves excluded_prefix_len = 4 >= len(all_tests), so no more tests remain
+    # on Shard 0.
+    initial_result = ResultCollection(
+      test_results=[
+        TestResult('SuiteA.Test0', TestStatus.PASS),
+        TestResult('SuiteB.Test0', TestStatus.CRASH),
+      ]
+    )
+    initial_result.crashed = True
+    retry_result = ResultCollection(
+      test_results=[TestResult('SuiteB.Test0', TestStatus.PASS)]
+    )
+    mock_run.side_effect = [initial_result, retry_result]
+
+    tr = test_runner.SimulatorTestRunner(
+      'fake-app',
+      'iPhone X',
+      '11.4',
+      'out-dir',
+      env_vars=['GTEST_SHARD_INDEX=0', 'GTEST_TOTAL_SHARDS=2'],
+      retries=1,
+    )
+    succeeded = tr.launch()
+    self.assertTrue(succeeded)
+    self.assertFalse(tr.test_results['interrupted'])
+    # Only 2 _run calls: initial run + single-test retry (no suite resume run).
+    self.assertEqual(len(mock_run.mock_calls), 2)
+
+  def test_run_watches_clones_when_clones_gt_one(self):
+    """Wraps `SimulatorTestRunner._run` with clone watcher when `clones > 1`."""
+    tr = test_runner.SimulatorTestRunner(
+      'fake-app', 'iPhone X', '11.4', 'out-dir', clones=2
+    )
+    fake_proc = mock.MagicMock(returncode=0)
+    watched_paths = []
+
+    @contextlib.contextmanager
+    def _fake_watch(path):
+      watched_paths.append(path)
+      yield
+
+    with (
+      mock.patch.object(
+        test_runner.iossim_util,
+        'watch_simulator_clones_for_daemon_disabling',
+        _fake_watch,
+      ),
+      mock.patch.object(tr, 'start_proc', return_value=fake_proc),
+      mock.patch.object(test_runner, 'print_process_output'),
+    ):
+      tr._run(['xcodebuild'], clones=2)
+      self.assertEqual(
+        watched_paths, [iossim_util.SIMULATOR_XCTEST_DEVICES_PATH]
+      )
+      tr._run(['xcodebuild'], clones=1)
+      self.assertEqual(
+        watched_paths, [iossim_util.SIMULATOR_XCTEST_DEVICES_PATH]
+      )
+
+  def test_clone_watch_context(self):
+    """Uses clone watcher only when `clones > 1`."""
+    tr = test_runner.SimulatorTestRunner(
+      'fake-app', 'iPhone X', '11.4', 'out-dir', clones=2
+    )
+    sentinel_ctx = contextlib.nullcontext()
+    with mock.patch.object(
+      test_runner.iossim_util,
+      'watch_simulator_clones_for_daemon_disabling',
+      return_value=sentinel_ctx,
+    ) as mock_watch:
+      self.assertIsInstance(tr._clone_watch_context(1), contextlib.nullcontext)
+      mock_watch.assert_not_called()
+      self.assertIs(tr._clone_watch_context(2), sentinel_ctx)
+      mock_watch.assert_called_once_with(
+        iossim_util.SIMULATOR_XCTEST_DEVICES_PATH
+      )
+
+  @mock.patch('test_runner.SimulatorTestRunner.tear_down')
+  @mock.patch('test_runner.SimulatorTestRunner.set_up')
+  @mock.patch('test_runner.SimulatorTestRunner.shutdown_and_restart')
+  @mock.patch('test_runner.TestRunner._run')
+  def test_startup_crash_retry_passes_clones(
+    self, mock_run, mock_restart, _1, _2
+  ):
+    """Passes `clones` to `_run()` when retrying after a startup crash."""
+    crash_result = ResultCollection()
+    crash_result.crashed = True
+    pass_result = ResultCollection(
+      test_results=[TestResult('test1', TestStatus.PASS)]
+    )
+    mock_run.side_effect = [crash_result, pass_result]
+
+    tr = test_runner.SimulatorTestRunner(
+      'fake-app', 'iPhone X', '11.4', 'out-dir', clones=2
+    )
+    tr.launch()
+
+    self.assertEqual(mock_run.call_count, 2)
+    mock_restart.assert_called_once()
+    for _, kwargs in mock_run.call_args_list:
+      self.assertEqual(kwargs.get('clones'), 2)
+
+  def test_non_simulator_runner_does_not_watch_clones(self):
+    """Uses nullcontext on base `TestRunner` and `DeviceTestRunner`."""
+    fake_proc = mock.MagicMock(returncode=0)
+    with mock.patch(
+      'test_runner.subprocess.check_output', return_value=b'device-udid'
+    ):
+      device_tr = test_runner.DeviceTestRunner('fake-app', 'out-dir')
+    base_tr = test_runner.TestRunner('fake-app', 'out-dir')
+
+    self.assertIsInstance(
+      base_tr._clone_watch_context(2), contextlib.nullcontext
+    )
+    self.assertIsInstance(
+      device_tr._clone_watch_context(2), contextlib.nullcontext
+    )
+    with (
+      mock.patch.object(
+        test_runner.iossim_util, 'watch_simulator_clones_for_daemon_disabling'
+      ) as mock_watch,
+      mock.patch.object(device_tr, 'start_proc', return_value=fake_proc),
+      mock.patch.object(test_runner, 'print_process_output'),
+    ):
+      device_tr._run(['xcodebuild'], clones=2)
+    mock_watch.assert_not_called()
 
 
 class DeviceTestRunnerTest(TestCase):

@@ -27,7 +27,7 @@ namespace {
 void CloneChildren(ui::Layer* to_clone,
                    ui::Layer* parent,
                    const wm::MapLayerFunc& map_func) {
-  typedef std::vector<raw_ptr<ui::Layer, VectorExperimental>> Layers;
+  typedef std::vector<raw_ptr<ui::Layer, DanglingUntriaged>> Layers;
   // Make a copy of the children since RecreateLayer() mutates it.
   Layers children(to_clone->children());
   for (Layers::const_iterator i = children.begin(); i != children.end(); ++i) {
@@ -61,19 +61,19 @@ void MirrorChildren(ui::Layer* to_mirror,
 namespace wm {
 
 void ActivateWindow(aura::Window* window) {
-  DCHECK(window);
-  DCHECK(window->GetRootWindow());
+  CHECK(window, base::NotFatalUntil::M163);
+  CHECK(window->GetRootWindow(), base::NotFatalUntil::M163);
   GetActivationClient(window->GetRootWindow())->ActivateWindow(window);
 }
 
 void DeactivateWindow(aura::Window* window) {
-  DCHECK(window);
-  DCHECK(window->GetRootWindow());
+  CHECK(window, base::NotFatalUntil::M163);
+  CHECK(window->GetRootWindow(), base::NotFatalUntil::M163);
   GetActivationClient(window->GetRootWindow())->DeactivateWindow(window);
 }
 
 bool IsActiveWindow(const aura::Window* window) {
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
   if (!window->GetRootWindow())
     return false;
   const ActivationClient* client = GetActivationClient(window->GetRootWindow());
@@ -81,7 +81,7 @@ bool IsActiveWindow(const aura::Window* window) {
 }
 
 bool CanActivateWindow(const aura::Window* window) {
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
   if (!window->GetRootWindow())
     return false;
   const ActivationClient* client = GetActivationClient(window->GetRootWindow());
@@ -91,9 +91,10 @@ bool CanActivateWindow(const aura::Window* window) {
 void SetWindowFullscreen(aura::Window* window,
                          bool fullscreen,
                          int64_t target_display_id) {
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
   // Should only specify display id when entering fullscreen.
-  DCHECK(target_display_id == display::kInvalidDisplayId || fullscreen);
+  CHECK(target_display_id == display::kInvalidDisplayId || fullscreen,
+        base::NotFatalUntil::M163);
 
   ui::mojom::WindowShowState current_show_state =
       window->GetProperty(aura::client::kShowStateKey);
@@ -160,6 +161,8 @@ void Restore(aura::Window* window) {
 }
 
 void Unminimize(aura::Window* window) {
+  // TODO(crbug.com/586381264): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK_EQ(window->GetProperty(aura::client::kShowStateKey),
             ui::mojom::WindowShowState::kMinimized);
   Restore(window);
@@ -181,7 +184,7 @@ const aura::Window* GetToplevelWindow(const aura::Window* window) {
 }
 
 std::unique_ptr<ui::LayerTreeOwner> RecreateLayers(ui::LayerOwner* root) {
-  DCHECK(root->OwnsLayer());
+  CHECK(root->OwnsLayer(), base::NotFatalUntil::M163);
   return RecreateLayersWithClosure(
       root, base::BindRepeating(
                 [](ui::LayerOwner* owner) { return owner->RecreateLayer(); }));
@@ -190,7 +193,7 @@ std::unique_ptr<ui::LayerTreeOwner> RecreateLayers(ui::LayerOwner* root) {
 std::unique_ptr<ui::LayerTreeOwner> RecreateLayersWithClosure(
     ui::LayerOwner* root,
     const MapLayerFunc& map_func) {
-  DCHECK(root->OwnsLayer());
+  CHECK(root->OwnsLayer(), base::NotFatalUntil::M163);
   auto layer = map_func.Run(root);
   if (!layer)
     return nullptr;
@@ -217,15 +220,15 @@ const aura::Window* GetTransientParent(const aura::Window* window) {
   return manager ? manager->transient_parent() : nullptr;
 }
 
-const std::vector<raw_ptr<aura::Window, VectorExperimental>>&
+const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>&
 GetTransientChildren(const aura::Window* window) {
   const TransientWindowManager* manager =
       TransientWindowManager::GetIfExists(window);
   if (manager)
     return manager->transient_children();
 
-  static std::vector<raw_ptr<aura::Window, VectorExperimental>>* shared =
-      new std::vector<raw_ptr<aura::Window, VectorExperimental>>;
+  static std::vector<raw_ptr<aura::Window, DanglingUntriaged>>* shared =
+      new std::vector<raw_ptr<aura::Window, DanglingUntriaged>>;
   return *shared;
 }
 

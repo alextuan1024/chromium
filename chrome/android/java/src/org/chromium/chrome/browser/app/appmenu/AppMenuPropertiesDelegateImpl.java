@@ -53,13 +53,13 @@ import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.night_mode.WebContentsDarkModeController;
-import org.chromium.chrome.browser.ntp.RecentlyClosedEntry;
-import org.chromium.chrome.browser.ntp.RecentlyClosedWindow;
-import org.chromium.chrome.browser.ntp.SessionRecentlyClosedEntry;
 import org.chromium.chrome.browser.open_in_app.OpenInAppMenuItemProvider;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.readaloud.ReadAloudController;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSessionTab;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedEntry;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedWindow;
+import org.chromium.chrome.browser.recent_tabs.SessionRecentlyClosedEntry;
 import org.chromium.chrome.browser.share.ShareHelper;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
@@ -77,6 +77,7 @@ import org.chromium.chrome.browser.ui.appmenu.AppMenuPropertiesDelegate;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuRecentEntryItemProperties;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuTabGroupItemProperties;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuTabItemProperties;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.chrome.browser.ui.extensions.ExtensionUi;
 import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.chrome.browser.util.BrowserUiUtils.ModuleTypeOnStartAndNtp;
@@ -94,9 +95,9 @@ import org.chromium.components.commerce.core.IdentifierType;
 import org.chromium.components.commerce.core.ManagementType;
 import org.chromium.components.commerce.core.ShoppingService;
 import org.chromium.components.commerce.core.SubscriptionType;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
 import org.chromium.components.webapps.WebappsUtils;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
@@ -323,7 +324,7 @@ public abstract class AppMenuPropertiesDelegateImpl implements AppMenuProperties
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
     @Contract("null -> false")
     public boolean isReaderModeShowing(@Nullable Tab currentTab) {
-        return currentTab != null && DomDistillerUrlUtils.isDistilledPage(currentTab.getUrl());
+        return currentTab != null && WebDistillerUrlUtils.isDistilledPage(currentTab.getUrl());
     }
 
     /** Construct the reader mode menu item. */
@@ -333,7 +334,7 @@ public abstract class AppMenuPropertiesDelegateImpl implements AppMenuProperties
                         mContext,
                         mAppMenuItemTheme,
                         R.id.reader_mode_menu_id,
-                        DomDistillerUrlUtils.isDistilledPage(currentTab.getUrl())
+                        WebDistillerUrlUtils.isDistilledPage(currentTab.getUrl())
                                 ? R.string.hide_reading_mode_text
                                 : R.string.show_reading_mode_text,
                         showIcon ? R.drawable.ic_mobile_friendly_24dp : 0,
@@ -518,11 +519,7 @@ public abstract class AppMenuPropertiesDelegateImpl implements AppMenuProperties
 
     /** Build the PropertyModel for the download this page action. */
     protected PropertyModel buildDownloadActionModel(@Nullable Tab currentTab) {
-        int titleId =
-                (ChromeFeatureList.isEnabled(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
-                                && DeviceInfo.isDesktop())
-                        ? R.string.menu_save_page_as
-                        : R.string.download_page;
+        int titleId = DeviceInfo.isDesktop() ? R.string.menu_save_page_as : R.string.download_page;
         PropertyModel downloadButton =
                 AppMenuItemUtils.buildModelForIcon(
                         mContext,
@@ -950,6 +947,11 @@ public abstract class AppMenuPropertiesDelegateImpl implements AppMenuProperties
         return false;
     }
 
+    @Override
+    public boolean shouldKeepMenuBelowTopControls() {
+        return !BottomBarConfigUtils.isNtp(mActivityTabProvider.get());
+    }
+
     /**
      * Updates the bookmark item's visibility.
      *
@@ -1164,7 +1166,8 @@ public abstract class AppMenuPropertiesDelegateImpl implements AppMenuProperties
      * @return The share list item.
      */
     protected ListItem buildShareListItem(boolean showIcon) {
-        Pair<Drawable, CharSequence> directShare = ShareHelper.getShareableIconAndNameForText();
+        Pair<@Nullable Drawable, @Nullable CharSequence> directShare =
+                ShareHelper.getShareableIconAndNameForText();
         if (directShare.first != null) {
             CharSequence directShareTitle = directShare.second;
             if (directShareTitle != null) {
@@ -1338,6 +1341,23 @@ public abstract class AppMenuPropertiesDelegateImpl implements AppMenuProperties
             mPageZoomMenuItemCoordinator.setModel(model);
             return new ListItem(CustomMenuItemType.ZOOM_ITEM, model);
         }
+        if (ChromeFeatureList.sAndroidZoomImmersive.isEnabled()) {
+            return new ListItem(
+                    AppMenuItemType.TITLE_BUTTON,
+                    AppMenuItemUtils.buildModelForMenuItemWithSecondaryButton(
+                            mContext,
+                            mAppMenuItemTheme,
+                            R.id.page_zoom_id,
+                            R.string.page_zoom_menu_title,
+                            shouldShowIconBeforeItem() ? R.drawable.ic_zoom : Resources.ID_NULL,
+                            R.id.fullscreen_button,
+                            mContext.getString(
+                                    R.string.page_zoom_fullscreen_button_content_description),
+                            assumeNonNull(
+                                    AppCompatResources.getDrawable(
+                                            mContext, R.drawable.ic_fullscreen_enter)),
+                            isMenuIconAtStart()));
+        }
         return new ListItem(
                 AppMenuItemType.STANDARD,
                 AppMenuItemUtils.buildModelForStandardMenuItem(
@@ -1363,9 +1383,9 @@ public abstract class AppMenuPropertiesDelegateImpl implements AppMenuProperties
         if (ChromeFeatureList.isEnabled(ChromeFeatureList.SUBMENUS_IN_APP_MENU)) {
             return true;
         }
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.SUBMENUS_IN_APP_MENU_LFF)
-                && DeviceFormFactor.isNonMultiDisplayContextOnTablet(context)
-                && !DeviceInfo.isFoldable()) {
+        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(context)
+                && !DeviceInfo.isFoldable()
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.SUBMENUS_IN_APP_MENU_LFF)) {
             return true;
         }
         return false;

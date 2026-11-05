@@ -87,15 +87,12 @@ class OngoingProcessViewPixelTest
   }
 
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(features::kOngoingProcesses);
-
     AshTestBase::SetUp();
 
     test_api_ = std::make_unique<NotificationCenterTestApi>();
   }
 
   std::unique_ptr<NotificationCenterTestApi> test_api_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -134,7 +131,7 @@ TEST_P(OngoingProcessViewPixelTest, MultilineLabels) {
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       GenerateScreenshotName("OngoingProcessView"),
-      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 6 : 2,
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 7 : 3,
       test_api()->GetNotificationCenterView()));
 }
 

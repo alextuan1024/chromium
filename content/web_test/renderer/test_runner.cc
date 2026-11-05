@@ -14,11 +14,11 @@
 #include <vector>
 
 #include "base/command_line.h"
-#include "base/compiler_specific.h"
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
@@ -101,6 +101,7 @@
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gfx/skia_span_util.h"
 #include "v8/include/cppgc/allocation.h"
 #include "v8/include/cppgc/prefinalizer.h"
 #include "v8/include/v8-cppgc.h"
@@ -354,8 +355,9 @@ class TestRunnerBindings final : public gin::Wrappable<TestRunnerBindings> {
                        v8::Local<v8::Function> callback);
   void SetCustomPolicyDelegate(gin::Arguments* args);
   void SetCustomTextOutput(const std::string& output);
-  void SetDisallowedSubresourcePathSuffixes(std::vector<std::string> suffixes,
-                                            bool block_subresources);
+  void SetDisallowedSubresourcePathSuffixes(
+      const std::vector<std::string>& suffixes,
+      bool block_subresources);
   void SetDomainRelaxationForbiddenForURLScheme(bool forbidden,
                                                 const std::string& scheme);
   void SetDumpConsoleMessages(bool value);
@@ -367,6 +369,7 @@ class TestRunnerBindings final : public gin::Wrappable<TestRunnerBindings> {
                             v8::Local<v8::Value> security_origin,
                             v8::Local<v8::Value> content_security_policy);
   void SetJavaScriptCanAccessClipboard(bool can_access);
+  void SetMockScreenSize(int width, int height);
   void SetMockScreenOrientation(const std::string& orientation);
   void SetPOSIXLocale(const std::string& locale);
   void SetMainWindowHidden(bool hidden);
@@ -424,7 +427,7 @@ class TestRunnerBindings final : public gin::Wrappable<TestRunnerBindings> {
 
   bool IsCommandEnabled(const std::string& command);
   std::string PathToLocalResource(const std::string& path);
-  std::string PlatformName();
+  std::string_view PlatformName();
   std::string SelectionAsMarkup();
   void TextZoomIn();
   void TextZoomOut();
@@ -561,49 +564,49 @@ TestRunnerBindings::TestRunnerBindings(TestRunner* runner,
 gin::ObjectTemplateBuilder TestRunnerBindings::GetObjectTemplateBuilder(
     v8::Isolate* isolate) {
   return gin::Wrappable<TestRunnerBindings>::GetObjectTemplateBuilder(isolate)
-      .SetMethod("abortModal", &TestRunnerBindings::NotImplemented)
-      .SetMethod("addDisallowedURL", &TestRunnerBindings::NotImplemented)
-      .SetMethod("addOriginAccessAllowListEntry",
-                 &TestRunnerBindings::AddOriginAccessAllowListEntry)
+      .SetMethod<&TestRunnerBindings::NotImplemented>("abortModal")
+      .SetMethod<&TestRunnerBindings::NotImplemented>("addDisallowedURL")
+      .SetMethod<&TestRunnerBindings::AddOriginAccessAllowListEntry>(
+          "addOriginAccessAllowListEntry")
       // Permits the adding of only one opaque overlay. May only be called from
       // inside the main frame.
-      .SetMethod("addWebPageOverlay", &TestRunnerBindings::AddWebPageOverlay)
+      .SetMethod<&TestRunnerBindings::AddWebPageOverlay>("addWebPageOverlay")
 #if BUILDFLAG(ENABLE_PRINTING)
-      .SetMethod("capturePrintingPixelsThen",
-                 &TestRunnerBindings::CapturePrintingPixelsThen)
+      .SetMethod<&TestRunnerBindings::CapturePrintingPixelsThen>(
+          "capturePrintingPixelsThen")
 #endif
       // If the test will be closing its windows explicitly, and wants to look
       // for leaks due to those windows closing incorrectly, it can specify this
       // to avoid having them closed at the end of the test before the leak
       // checker.
-      .SetMethod("checkForLeakedWindows",
-                 &TestRunnerBindings::CheckForLeakedWindows)
-      .SetMethod("clearBackForwardList", &TestRunnerBindings::NotImplemented)
+      .SetMethod<&TestRunnerBindings::CheckForLeakedWindows>(
+          "checkForLeakedWindows")
+      .SetMethod<&TestRunnerBindings::NotImplemented>("clearBackForwardList")
       // Clears persistent Trust Tokens state in the browser. See
       // https://github.com/wicg/trust-token-api.
-      .SetMethod("clearTrustTokenState",
-                 &TestRunnerBindings::ClearTrustTokenState)
-      .SetMethod("copyImageThen", &TestRunnerBindings::CopyImageThen)
+      .SetMethod<&TestRunnerBindings::ClearTrustTokenState>(
+          "clearTrustTokenState")
+      .SetMethod<&TestRunnerBindings::CopyImageThen>("copyImageThen")
       // While holding a pointer lock, this breaks the lock. Or if
       // setPointerLockWillRespondAsynchronously() was called, and a lock is
       // pending it rejects the lock request.
-      .SetMethod("dropPointerLock", &TestRunnerBindings::DropPointerLock)
+      .SetMethod<&TestRunnerBindings::DropPointerLock>("dropPointerLock")
       // When setPointerLockWillRespondAsynchronously() was called, this is used
       // to respond to the async pointer request.
-      .SetMethod("allowPointerLock", &TestRunnerBindings::AllowPointerLock)
+      .SetMethod<&TestRunnerBindings::AllowPointerLock>("allowPointerLock")
       // Causes the next pointer lock request to fail in the renderer.
-      .SetMethod("setPointerLockWillFail",
-                 &TestRunnerBindings::SetPointerLockWillFail)
+      .SetMethod<&TestRunnerBindings::SetPointerLockWillFail>(
+          "setPointerLockWillFail")
       // Causes the next pointer lock request to delay until the test calls
       // either allowPointerLock() or dropPointerLock().
-      .SetMethod("setPointerLockWillRespondAsynchronously",
-                 &TestRunnerBindings::SetPointerLockWillRespondAsynchronously)
-      .SetMethod("disableAutoResizeMode",
-                 &TestRunnerBindings::DisableAutoResizeMode)
-      .SetMethod("disableMockScreenOrientation",
-                 &TestRunnerBindings::DisableMockScreenOrientation)
-      .SetMethod("simulateScreenOrientationLockChanged",
-                 &TestRunnerBindings::SimulateScreenOrientationLockChanged)
+      .SetMethod<&TestRunnerBindings::SetPointerLockWillRespondAsynchronously>(
+          "setPointerLockWillRespondAsynchronously")
+      .SetMethod<&TestRunnerBindings::DisableAutoResizeMode>(
+          "disableAutoResizeMode")
+      .SetMethod<&TestRunnerBindings::DisableMockScreenOrientation>(
+          "disableMockScreenOrientation")
+      .SetMethod<&TestRunnerBindings::SimulateScreenOrientationLockChanged>(
+          "simulateScreenOrientationLockChanged")
       // Sets up a WebDocumentSubresourceFilterImpl to disallow subsequent
       // subresource loads within the current document with the given path
       // |suffixes|. The filter is created and injected even if |suffixes| is
@@ -611,125 +614,125 @@ gin::ObjectTemplateBuilder TestRunnerBindings::GetObjectTemplateBuilder(
       // will be disallowed. If |block_subresources| is false, matching
       // resources will not be blocked but instead marked as matching a
       // disallowed resource.
-      .SetMethod("setDisallowedSubresourcePathSuffixes",
-                 &TestRunnerBindings::SetDisallowedSubresourcePathSuffixes)
+      .SetMethod<&TestRunnerBindings::SetDisallowedSubresourcePathSuffixes>(
+          "setDisallowedSubresourcePathSuffixes")
       // Causes the beforeinstallprompt event to be sent to the renderer.
-      .SetMethod("dispatchBeforeInstallPromptEvent",
-                 &TestRunnerBindings::DispatchBeforeInstallPromptEvent)
-      .SetMethod("dumpAsMarkup", &TestRunnerBindings::DumpAsMarkup)
-      .SetMethod("dumpAsText", &TestRunnerBindings::DumpAsText)
-      .SetMethod("dumpAsTextWithPixelResults",
-                 &TestRunnerBindings::DumpAsTextWithPixelResults)
-      .SetMethod("dumpAsLayout", &TestRunnerBindings::DumpAsLayout)
-      .SetMethod("dumpAsLayoutWithPixelResults",
-                 &TestRunnerBindings::DumpAsLayoutWithPixelResults)
-      .SetMethod("dumpBackForwardList",
-                 &TestRunnerBindings::DumpBackForwardList)
-      .SetMethod("dumpChildFrames", &TestRunnerBindings::DumpChildFrames)
-      .SetMethod("dumpDatabaseCallbacks", &TestRunnerBindings::NotImplemented)
-      .SetMethod("dumpDragImage", &TestRunnerBindings::DumpDragImage)
-      .SetMethod("dumpEditingCallbacks",
-                 &TestRunnerBindings::DumpEditingCallbacks)
-      .SetMethod("dumpFrameLoadCallbacks",
-                 &TestRunnerBindings::DumpFrameLoadCallbacks)
-      .SetMethod("dumpIconChanges", &TestRunnerBindings::DumpIconChanges)
-      .SetMethod("dumpNavigationPolicy",
-                 &TestRunnerBindings::DumpNavigationPolicy)
-      .SetMethod("dumpPermissionClientCallbacks",
-                 &TestRunnerBindings::DumpPermissionClientCallbacks)
-      .SetMethod("dumpPingLoaderCallbacks",
-                 &TestRunnerBindings::DumpPingLoaderCallbacks)
-      .SetMethod("dumpSelectionRect", &TestRunnerBindings::DumpSelectionRect)
-      .SetMethod("dumpTitleChanges", &TestRunnerBindings::DumpTitleChanges)
-      .SetMethod("dumpUserGestureInFrameLoadCallbacks",
-                 &TestRunnerBindings::DumpUserGestureInFrameLoadCallbacks)
-      .SetMethod("enableAutoResizeMode",
-                 &TestRunnerBindings::EnableAutoResizeMode)
-      .SetMethod("evaluateScriptInIsolatedWorld",
-                 &TestRunnerBindings::EvaluateScriptInIsolatedWorld)
-      .SetMethod("evaluateScriptInOwnTask",
-                 &TestRunnerBindings::EvaluateScriptInOwnTask)
-      .SetMethod(
-          "evaluateScriptInIsolatedWorldAndReturnValue",
-          &TestRunnerBindings::EvaluateScriptInIsolatedWorldAndReturnValue)
+      .SetMethod<&TestRunnerBindings::DispatchBeforeInstallPromptEvent>(
+          "dispatchBeforeInstallPromptEvent")
+      .SetMethod<&TestRunnerBindings::DumpAsMarkup>("dumpAsMarkup")
+      .SetMethod<&TestRunnerBindings::DumpAsText>("dumpAsText")
+      .SetMethod<&TestRunnerBindings::DumpAsTextWithPixelResults>(
+          "dumpAsTextWithPixelResults")
+      .SetMethod<&TestRunnerBindings::DumpAsLayout>("dumpAsLayout")
+      .SetMethod<&TestRunnerBindings::DumpAsLayoutWithPixelResults>(
+          "dumpAsLayoutWithPixelResults")
+      .SetMethod<&TestRunnerBindings::DumpBackForwardList>(
+          "dumpBackForwardList")
+      .SetMethod<&TestRunnerBindings::DumpChildFrames>("dumpChildFrames")
+      .SetMethod<&TestRunnerBindings::NotImplemented>("dumpDatabaseCallbacks")
+      .SetMethod<&TestRunnerBindings::DumpDragImage>("dumpDragImage")
+      .SetMethod<&TestRunnerBindings::DumpEditingCallbacks>(
+          "dumpEditingCallbacks")
+      .SetMethod<&TestRunnerBindings::DumpFrameLoadCallbacks>(
+          "dumpFrameLoadCallbacks")
+      .SetMethod<&TestRunnerBindings::DumpIconChanges>("dumpIconChanges")
+      .SetMethod<&TestRunnerBindings::DumpNavigationPolicy>(
+          "dumpNavigationPolicy")
+      .SetMethod<&TestRunnerBindings::DumpPermissionClientCallbacks>(
+          "dumpPermissionClientCallbacks")
+      .SetMethod<&TestRunnerBindings::DumpPingLoaderCallbacks>(
+          "dumpPingLoaderCallbacks")
+      .SetMethod<&TestRunnerBindings::DumpSelectionRect>("dumpSelectionRect")
+      .SetMethod<&TestRunnerBindings::DumpTitleChanges>("dumpTitleChanges")
+      .SetMethod<&TestRunnerBindings::DumpUserGestureInFrameLoadCallbacks>(
+          "dumpUserGestureInFrameLoadCallbacks")
+      .SetMethod<&TestRunnerBindings::EnableAutoResizeMode>(
+          "enableAutoResizeMode")
+      .SetMethod<&TestRunnerBindings::EvaluateScriptInIsolatedWorld>(
+          "evaluateScriptInIsolatedWorld")
+      .SetMethod<&TestRunnerBindings::EvaluateScriptInOwnTask>(
+          "evaluateScriptInOwnTask")
+      .SetMethod<
+          &TestRunnerBindings::EvaluateScriptInIsolatedWorldAndReturnValue>(
+          "evaluateScriptInIsolatedWorldAndReturnValue")
       // Executes an internal command (superset of document.execCommand()
       // commands) on the frame's document.
-      .SetMethod("execCommand", &TestRunnerBindings::ExecCommand)
+      .SetMethod<&TestRunnerBindings::ExecCommand>("execCommand")
       // Trigger an inspector issue for the frame.
-      .SetMethod("triggerTestInspectorIssue",
-                 &TestRunnerBindings::TriggerTestInspectorIssue)
-      .SetMethod("findString", &TestRunnerBindings::FindString)
+      .SetMethod<&TestRunnerBindings::TriggerTestInspectorIssue>(
+          "triggerTestInspectorIssue")
+      .SetMethod<&TestRunnerBindings::FindString>("findString")
       // Moves focus and active state to the secondary devtools window, which
       // exists only in devtools JS tests.
-      .SetMethod("focusDevtoolsSecondaryWindow",
-                 &TestRunnerBindings::FocusDevtoolsSecondaryWindow)
+      .SetMethod<&TestRunnerBindings::FocusDevtoolsSecondaryWindow>(
+          "focusDevtoolsSecondaryWindow")
       // Sets a flag causing the next call to WebGLRenderingContext::Create() to
       // fail.
-      .SetMethod("forceNextDrawingBufferCreationToFail",
-                 &TestRunnerBindings::ForceNextDrawingBufferCreationToFail)
+      .SetMethod<&TestRunnerBindings::ForceNextDrawingBufferCreationToFail>(
+          "forceNextDrawingBufferCreationToFail")
       // Sets a flag causing the next call to DrawingBuffer::Create() to fail.
-      .SetMethod("forceNextWebGLContextCreationToFail",
-                 &TestRunnerBindings::ForceNextWebGLContextCreationToFail)
+      .SetMethod<&TestRunnerBindings::ForceNextWebGLContextCreationToFail>(
+          "forceNextWebGLContextCreationToFail")
 
       // The Bluetooth functions are specified at
       // https://webbluetoothcg.github.io/web-bluetooth/tests/.
       //
       // Returns the events recorded since the last call to this function.
-      .SetMethod("getBluetoothManualChooserEvents",
-                 &TestRunnerBindings::GetBluetoothManualChooserEvents)
+      .SetMethod<&TestRunnerBindings::GetBluetoothManualChooserEvents>(
+          "getBluetoothManualChooserEvents")
       // Returns the clipboard read tracking state from the mock clipboard host.
       // The returned object has boolean properties: readTextCalled,
       // readHtmlCalled, readUnsanitizedCustomFormatCalled,
       // readAvailableFormatsCalled.
-      .SetMethod("getClipboardReadState",
-                 &TestRunnerBindings::GetClipboardReadState)
-      .SetMethod("getManifestThen", &TestRunnerBindings::GetManifestThen)
+      .SetMethod<&TestRunnerBindings::GetClipboardReadState>(
+          "getClipboardReadState")
+      .SetMethod<&TestRunnerBindings::GetManifestThen>("getManifestThen")
       // Returns the absolute path to a directory this test can write data in.
       // This returns the path to a fresh empty directory every time this method
       // is called. Additionally when this method is called any previously
       // created directories will be deleted.
-      .SetMethod("getWritableDirectory",
-                 &TestRunnerBindings::GetWritableDirectory)
-      .SetMethod("insertStyleSheet", &TestRunnerBindings::InsertStyleSheet)
+      .SetMethod<&TestRunnerBindings::GetWritableDirectory>(
+          "getWritableDirectory")
+      .SetMethod<&TestRunnerBindings::InsertStyleSheet>("insertStyleSheet")
       // Checks if an internal editing command is currently available for the
       // frame's document.
-      .SetMethod("isCommandEnabled", &TestRunnerBindings::IsCommandEnabled)
-      .SetMethod("keepWebHistory", &TestRunnerBindings::NotImplemented)
-      .SetMethod("updateAllLifecyclePhasesAndComposite",
-                 &TestRunnerBindings::UpdateAllLifecyclePhasesAndComposite)
+      .SetMethod<&TestRunnerBindings::IsCommandEnabled>("isCommandEnabled")
+      .SetMethod<&TestRunnerBindings::NotImplemented>("keepWebHistory")
+      .SetMethod<&TestRunnerBindings::UpdateAllLifecyclePhasesAndComposite>(
+          "updateAllLifecyclePhasesAndComposite")
       // Note, the reply callback is executed synchronously. Wrap in
       // setTimeout() to run asynchronously.
-      .SetMethod("updateAllLifecyclePhasesAndCompositeThen",
-                 &TestRunnerBindings::UpdateAllLifecyclePhasesAndCompositeThen)
-      .SetMethod("setAnimationRequiresRaster",
-                 &TestRunnerBindings::SetAnimationRequiresRaster)
-      .SetMethod("logToStderr", &TestRunnerBindings::LogToStderr)
-      .SetMethod("notifyDone", &TestRunnerBindings::NotifyDone)
-      .SetMethod("overridePreference", &TestRunnerBindings::OverridePreference)
-      .SetMethod("pathToLocalResource",
-                 &TestRunnerBindings::PathToLocalResource)
-      .SetProperty("platformName", &TestRunnerBindings::PlatformName)
-      .SetMethod("queueBackNavigation",
-                 &TestRunnerBindings::QueueBackNavigation)
-      .SetMethod("queueForwardNavigation",
-                 &TestRunnerBindings::QueueForwardNavigation)
-      .SetMethod("queueLoad", &TestRunnerBindings::QueueLoad)
-      .SetMethod("queueLoadingScript", &TestRunnerBindings::QueueLoadingScript)
-      .SetMethod("queueNonLoadingScript",
-                 &TestRunnerBindings::QueueNonLoadingScript)
-      .SetMethod("queueReload", &TestRunnerBindings::QueueReload)
-      .SetMethod("removeSpellCheckResolvedCallback",
-                 &TestRunnerBindings::RemoveSpellCheckResolvedCallback)
+      .SetMethod<&TestRunnerBindings::UpdateAllLifecyclePhasesAndCompositeThen>(
+          "updateAllLifecyclePhasesAndCompositeThen")
+      .SetMethod<&TestRunnerBindings::SetAnimationRequiresRaster>(
+          "setAnimationRequiresRaster")
+      .SetMethod<&TestRunnerBindings::LogToStderr>("logToStderr")
+      .SetMethod<&TestRunnerBindings::NotifyDone>("notifyDone")
+      .SetMethod<&TestRunnerBindings::OverridePreference>("overridePreference")
+      .SetMethod<&TestRunnerBindings::PathToLocalResource>(
+          "pathToLocalResource")
+      .SetProperty<&TestRunnerBindings::PlatformName>("platformName")
+      .SetMethod<&TestRunnerBindings::QueueBackNavigation>(
+          "queueBackNavigation")
+      .SetMethod<&TestRunnerBindings::QueueForwardNavigation>(
+          "queueForwardNavigation")
+      .SetMethod<&TestRunnerBindings::QueueLoad>("queueLoad")
+      .SetMethod<&TestRunnerBindings::QueueLoadingScript>("queueLoadingScript")
+      .SetMethod<&TestRunnerBindings::QueueNonLoadingScript>(
+          "queueNonLoadingScript")
+      .SetMethod<&TestRunnerBindings::QueueReload>("queueReload")
+      .SetMethod<&TestRunnerBindings::RemoveSpellCheckResolvedCallback>(
+          "removeSpellCheckResolvedCallback")
       // Removes an overlay added by addWebPageOverlay(). May only be called
       // from inside the main frame.
-      .SetMethod("removeWebPageOverlay",
-                 &TestRunnerBindings::RemoveWebPageOverlay)
+      .SetMethod<&TestRunnerBindings::RemoveWebPageOverlay>(
+          "removeWebPageOverlay")
       // Resets the clipboard read tracking state on the mock clipboard host.
-      .SetMethod("resetClipboardReadTracking",
-                 &TestRunnerBindings::ResetClipboardReadTracking)
-      .SetMethod("resolveBeforeInstallPromptPromise",
-                 &TestRunnerBindings::ResolveBeforeInstallPromptPromise)
-      .SetMethod("selectionAsMarkup", &TestRunnerBindings::SelectionAsMarkup)
+      .SetMethod<&TestRunnerBindings::ResetClipboardReadTracking>(
+          "resetClipboardReadTracking")
+      .SetMethod<&TestRunnerBindings::ResolveBeforeInstallPromptPromise>(
+          "resolveBeforeInstallPromptPromise")
+      .SetMethod<&TestRunnerBindings::SelectionAsMarkup>("selectionAsMarkup")
 
       // The Bluetooth functions are specified at
       // https://webbluetoothcg.github.io/web-bluetooth/tests/.
@@ -739,156 +742,157 @@ gin::ObjectTemplateBuilder TestRunnerBindings::GetObjectTemplateBuilder(
       //  * "cancel" - simulates the user canceling the chooser.
       //  * "select" - simulates the user selecting a device whose device ID is
       //               in the 2nd parameter.
-      .SetMethod("sendBluetoothManualChooserEvent",
-                 &TestRunnerBindings::SendBluetoothManualChooserEvent)
-      .SetMethod("setAcceptLanguages", &TestRunnerBindings::SetAcceptLanguages)
-      .SetMethod("setAllowFileAccessFromFileURLs",
-                 &TestRunnerBindings::SetAllowFileAccessFromFileURLs)
-      .SetMethod("setAllowRunningOfInsecureContent",
-                 &TestRunnerBindings::SetAllowRunningOfInsecureContent)
+      .SetMethod<&TestRunnerBindings::SendBluetoothManualChooserEvent>(
+          "sendBluetoothManualChooserEvent")
+      .SetMethod<&TestRunnerBindings::SetAcceptLanguages>("setAcceptLanguages")
+      .SetMethod<&TestRunnerBindings::SetAllowFileAccessFromFileURLs>(
+          "setAllowFileAccessFromFileURLs")
+      .SetMethod<&TestRunnerBindings::SetAllowRunningOfInsecureContent>(
+          "setAllowRunningOfInsecureContent")
       // Controls whether all cookies should be accepted or writing cookies in a
       // third-party context is blocked:
       // - Allows all cookies when |block| is false
       // - Blocks only third-party cookies when |block| is true
-      .SetMethod("setBlockThirdPartyCookies",
-                 &TestRunnerBindings::SetBlockThirdPartyCookies)
-      .SetMethod("setAudioData", &TestRunnerBindings::SetAudioData)
-      .SetMethod("setBackingScaleFactor",
-                 &TestRunnerBindings::SetBackingScaleFactor)
+      .SetMethod<&TestRunnerBindings::SetBlockThirdPartyCookies>(
+          "setBlockThirdPartyCookies")
+      .SetMethod<&TestRunnerBindings::SetAudioData>("setAudioData")
+      .SetMethod<&TestRunnerBindings::SetBackingScaleFactor>(
+          "setBackingScaleFactor")
       // Set the bluetooth adapter while running a web test.
-      .SetMethod("setBluetoothFakeAdapter",
-                 &TestRunnerBindings::SetBluetoothFakeAdapter)
+      .SetMethod<&TestRunnerBindings::SetBluetoothFakeAdapter>(
+          "setBluetoothFakeAdapter")
       // If |enable| is true, makes the Bluetooth chooser record its input and
       // wait for instructions from the test program on how to proceed.
       // Otherwise falls back to the browser's default chooser.
-      .SetMethod("setBluetoothManualChooser",
-                 &TestRunnerBindings::SetBluetoothManualChooser)
-      .SetMethod("setBrowserHandlesFocus",
-                 &TestRunnerBindings::SetBrowserHandlesFocus)
-      .SetMethod("setCallCloseOnWebViews", &TestRunnerBindings::NotImplemented)
-      .SetMethod("setCaretBrowsingEnabled",
-                 &TestRunnerBindings::SetCaretBrowsingEnabled)
-      .SetMethod("setColorProfile", &TestRunnerBindings::SetColorProfile)
-      .SetMethod("setCustomPolicyDelegate",
-                 &TestRunnerBindings::SetCustomPolicyDelegate)
-      .SetMethod("setCustomTextOutput",
-                 &TestRunnerBindings::SetCustomTextOutput)
-      .SetMethod("setDomainRelaxationForbiddenForURLScheme",
-                 &TestRunnerBindings::SetDomainRelaxationForbiddenForURLScheme)
-      .SetMethod("setDumpConsoleMessages",
-                 &TestRunnerBindings::SetDumpConsoleMessages)
-      .SetMethod("setDumpJavaScriptDialogs",
-                 &TestRunnerBindings::SetDumpJavaScriptDialogs)
-      .SetMethod("setEffectiveConnectionType",
-                 &TestRunnerBindings::SetEffectiveConnectionType)
+      .SetMethod<&TestRunnerBindings::SetBluetoothManualChooser>(
+          "setBluetoothManualChooser")
+      .SetMethod<&TestRunnerBindings::SetBrowserHandlesFocus>(
+          "setBrowserHandlesFocus")
+      .SetMethod<&TestRunnerBindings::NotImplemented>("setCallCloseOnWebViews")
+      .SetMethod<&TestRunnerBindings::SetCaretBrowsingEnabled>(
+          "setCaretBrowsingEnabled")
+      .SetMethod<&TestRunnerBindings::SetColorProfile>("setColorProfile")
+      .SetMethod<&TestRunnerBindings::SetCustomPolicyDelegate>(
+          "setCustomPolicyDelegate")
+      .SetMethod<&TestRunnerBindings::SetCustomTextOutput>(
+          "setCustomTextOutput")
+      .SetMethod<&TestRunnerBindings::SetDomainRelaxationForbiddenForURLScheme>(
+          "setDomainRelaxationForbiddenForURLScheme")
+      .SetMethod<&TestRunnerBindings::SetDumpConsoleMessages>(
+          "setDumpConsoleMessages")
+      .SetMethod<&TestRunnerBindings::SetDumpJavaScriptDialogs>(
+          "setDumpJavaScriptDialogs")
+      .SetMethod<&TestRunnerBindings::SetEffectiveConnectionType>(
+          "setEffectiveConnectionType")
       // Sets the path that should be returned when the test shows a file
       // dialog.
-      .SetMethod("setFilePathForMockFileDialog",
-                 &TestRunnerBindings::SetFilePathForMockFileDialog)
-      .SetMethod("setHighlightAds", &TestRunnerBindings::SetHighlightAds)
-      .SetMethod("setMockSpellCheckerEnabled",
-                 &TestRunnerBindings::SetMockSpellCheckerEnabled)
-      .SetMethod("setIconDatabaseEnabled", &TestRunnerBindings::NotImplemented)
-      .SetMethod("setIsolatedWorldInfo",
-                 &TestRunnerBindings::SetIsolatedWorldInfo)
-      .SetMethod("setJavaScriptCanAccessClipboard",
-                 &TestRunnerBindings::SetJavaScriptCanAccessClipboard)
-      .SetMethod("setMainFrameIsFirstResponder",
-                 &TestRunnerBindings::NotImplemented)
-      .SetMethod("setMockScreenOrientation",
-                 &TestRunnerBindings::SetMockScreenOrientation)
+      .SetMethod<&TestRunnerBindings::SetFilePathForMockFileDialog>(
+          "setFilePathForMockFileDialog")
+      .SetMethod<&TestRunnerBindings::SetHighlightAds>("setHighlightAds")
+      .SetMethod<&TestRunnerBindings::SetMockSpellCheckerEnabled>(
+          "setMockSpellCheckerEnabled")
+      .SetMethod<&TestRunnerBindings::NotImplemented>("setIconDatabaseEnabled")
+      .SetMethod<&TestRunnerBindings::SetIsolatedWorldInfo>(
+          "setIsolatedWorldInfo")
+      .SetMethod<&TestRunnerBindings::SetJavaScriptCanAccessClipboard>(
+          "setJavaScriptCanAccessClipboard")
+      .SetMethod<&TestRunnerBindings::NotImplemented>(
+          "setMainFrameIsFirstResponder")
+      .SetMethod<&TestRunnerBindings::SetMockScreenSize>("setMockScreenSize")
+      .SetMethod<&TestRunnerBindings::SetMockScreenOrientation>(
+          "setMockScreenOrientation")
       // Calls setlocale(LC_ALL, ...) for a specified locale.
-      .SetMethod("setPOSIXLocale", &TestRunnerBindings::SetPOSIXLocale)
+      .SetMethod<&TestRunnerBindings::SetPOSIXLocale>("setPOSIXLocale")
       // Hide or show the main window. Watch for the |document.visibilityState|
       // on the primary window's Document to change in order to wait for the
       // side effects of calling this.
-      .SetMethod("setMainWindowHidden",
-                 &TestRunnerBindings::SetMainWindowHidden)
+      .SetMethod<&TestRunnerBindings::SetMainWindowHidden>(
+          "setMainWindowHidden")
       // Hide or show the window displaying this frame. Watch for the
       // |document.visibilityState| to change in order to wait for the side
       // effects of calling this.
-      .SetMethod("setFrameWindowHidden",
-                 &TestRunnerBindings::SetFrameWindowHidden)
-      .SetMethod("setWindowRect", &TestRunnerBindings::SetWindowRect)
+      .SetMethod<&TestRunnerBindings::SetFrameWindowHidden>(
+          "setFrameWindowHidden")
+      .SetMethod<&TestRunnerBindings::SetWindowRect>("setWindowRect")
       // Sets the permission's |name| to |value| for a given {origin, embedder}
       // tuple. Sends a message to the WebTestPermissionManager in order for it
       // to update its database.
-      .SetMethod("setPermission", &TestRunnerBindings::SetPermission)
-      .SetMethod("setPluginsAllowed", &TestRunnerBindings::SetPluginsAllowed)
-      .SetMethod("setPluginsEnabled", &TestRunnerBindings::SetPluginsEnabled)
-      .SetMethod("setPopupBlockingEnabled",
-                 &TestRunnerBindings::SetPopupBlockingEnabled)
-      .SetMethod("setPrinting", &TestRunnerBindings::SetPrinting)
-      .SetMethod("setPrintingForFrame",
-                 &TestRunnerBindings::SetPrintingForFrame)
-      .SetMethod("setPrintingSize", &TestRunnerBindings::SetPrintingSize)
-      .SetMethod("setPrintingMargin", &TestRunnerBindings::SetPrintingMargin)
-      .SetMethod("setSafePrintableInset",
-                 &TestRunnerBindings::SetSafePrintableInset)
-      .SetMethod("setShouldCenterAndShrinkToFitPaper",
-                 &TestRunnerBindings::SetShouldCenterAndShrinkToFitPaper)
-      .SetMethod("setPrintingScaleFactor",
-                 &TestRunnerBindings::SetPrintingScaleFactor)
-      .SetMethod("setRphRegistrationMode",
-                 &TestRunnerBindings::SetRphRegistrationMode)
-      .SetMethod("setScrollbarPolicy", &TestRunnerBindings::NotImplemented)
-      .SetMethod("setShouldGeneratePixelResults",
-                 &TestRunnerBindings::SetShouldGeneratePixelResults)
-      .SetMethod(
-          "setShouldStayOnPageAfterHandlingBeforeUnload",
-          &TestRunnerBindings::SetShouldStayOnPageAfterHandlingBeforeUnload)
-      .SetMethod("setSpellCheckResolvedCallback",
-                 &TestRunnerBindings::SetSpellCheckResolvedCallback)
-      .SetMethod("setStorageAllowed", &TestRunnerBindings::SetStorageAllowed)
+      .SetMethod<&TestRunnerBindings::SetPermission>("setPermission")
+      .SetMethod<&TestRunnerBindings::SetPluginsAllowed>("setPluginsAllowed")
+      .SetMethod<&TestRunnerBindings::SetPluginsEnabled>("setPluginsEnabled")
+      .SetMethod<&TestRunnerBindings::SetPopupBlockingEnabled>(
+          "setPopupBlockingEnabled")
+      .SetMethod<&TestRunnerBindings::SetPrinting>("setPrinting")
+      .SetMethod<&TestRunnerBindings::SetPrintingForFrame>(
+          "setPrintingForFrame")
+      .SetMethod<&TestRunnerBindings::SetPrintingSize>("setPrintingSize")
+      .SetMethod<&TestRunnerBindings::SetPrintingMargin>("setPrintingMargin")
+      .SetMethod<&TestRunnerBindings::SetSafePrintableInset>(
+          "setSafePrintableInset")
+      .SetMethod<&TestRunnerBindings::SetShouldCenterAndShrinkToFitPaper>(
+          "setShouldCenterAndShrinkToFitPaper")
+      .SetMethod<&TestRunnerBindings::SetPrintingScaleFactor>(
+          "setPrintingScaleFactor")
+      .SetMethod<&TestRunnerBindings::SetRphRegistrationMode>(
+          "setRphRegistrationMode")
+      .SetMethod<&TestRunnerBindings::NotImplemented>("setScrollbarPolicy")
+      .SetMethod<&TestRunnerBindings::SetShouldGeneratePixelResults>(
+          "setShouldGeneratePixelResults")
+      .SetMethod<
+          &TestRunnerBindings::SetShouldStayOnPageAfterHandlingBeforeUnload>(
+          "setShouldStayOnPageAfterHandlingBeforeUnload")
+      .SetMethod<&TestRunnerBindings::SetSpellCheckResolvedCallback>(
+          "setSpellCheckResolvedCallback")
+      .SetMethod<&TestRunnerBindings::SetStorageAllowed>("setStorageAllowed")
       // Method that controls whether pressing Tab key cycles through page
       // elements or inserts a '\t' char in text area
-      .SetMethod("setTabKeyCyclesThroughElements",
-                 &TestRunnerBindings::SetTabKeyCyclesThroughElements)
+      .SetMethod<&TestRunnerBindings::SetTabKeyCyclesThroughElements>(
+          "setTabKeyCyclesThroughElements")
       // Changes the direction of text for the frame's focused element.
-      .SetMethod("setTextDirection", &TestRunnerBindings::SetTextDirection)
-      .SetMethod("setTextSubpixelPositioning",
-                 &TestRunnerBindings::SetTextSubpixelPositioning)
+      .SetMethod<&TestRunnerBindings::SetTextDirection>("setTextDirection")
+      .SetMethod<&TestRunnerBindings::SetTextSubpixelPositioning>(
+          "setTextSubpixelPositioning")
       // Sets the network service-global Trust Tokens key commitments.
       // Takes a |raw_commitments| string that should be JSON-encoded according
       // to the format expected by NetworkService::SetTrustTokenKeyCommitments.
-      .SetMethod("setTrustTokenKeyCommitments",
-                 &TestRunnerBindings::SetTrustTokenKeyCommitments)
-      .SetMethod("setUseDashboardCompatibilityMode",
-                 &TestRunnerBindings::NotImplemented)
-      .SetMethod("setWillSendRequestClearHeader",
-                 &TestRunnerBindings::SetWillSendRequestClearHeader)
-      .SetMethod("setWillSendRequestClearReferrer",
-                 &TestRunnerBindings::SetWillSendRequestClearReferrer)
-      .SetMethod("setWindowFocus",
-                 &TestRunnerBindings::SimulateBrowserWindowFocus)
+      .SetMethod<&TestRunnerBindings::SetTrustTokenKeyCommitments>(
+          "setTrustTokenKeyCommitments")
+      .SetMethod<&TestRunnerBindings::NotImplemented>(
+          "setUseDashboardCompatibilityMode")
+      .SetMethod<&TestRunnerBindings::SetWillSendRequestClearHeader>(
+          "setWillSendRequestClearHeader")
+      .SetMethod<&TestRunnerBindings::SetWillSendRequestClearReferrer>(
+          "setWillSendRequestClearReferrer")
+      .SetMethod<&TestRunnerBindings::SimulateBrowserWindowFocus>(
+          "setWindowFocus")
       // Simulates a click on a Web Notification.
-      .SetMethod("simulateWebNotificationClick",
-                 &TestRunnerBindings::SimulateWebNotificationClick)
+      .SetMethod<&TestRunnerBindings::SimulateWebNotificationClick>(
+          "simulateWebNotificationClick")
       // Simulates closing a Web Notification.
-      .SetMethod("simulateWebNotificationClose",
-                 &TestRunnerBindings::SimulateWebNotificationClose)
+      .SetMethod<&TestRunnerBindings::SimulateWebNotificationClose>(
+          "simulateWebNotificationClose")
       // Simulates a user deleting a content index entry.
-      .SetMethod("simulateWebContentIndexDelete",
-                 &TestRunnerBindings::SimulateWebContentIndexDelete)
-      .SetMethod("textZoomIn", &TestRunnerBindings::TextZoomIn)
-      .SetMethod("textZoomOut", &TestRunnerBindings::TextZoomOut)
-      .SetMethod("zoomPageIn", &TestRunnerBindings::ZoomPageIn)
-      .SetMethod("zoomPageOut", &TestRunnerBindings::ZoomPageOut)
-      .SetMethod("setPageZoomFactor", &TestRunnerBindings::SetPageZoomFactor)
-      .SetProperty("tooltipText", &TestRunnerBindings::TooltipText)
-      .SetMethod("waitForPolicyDelegate",
-                 &TestRunnerBindings::WaitForPolicyDelegate)
-      .SetMethod("waitUntilDone", &TestRunnerBindings::WaitUntilDone)
-      .SetMethod("waitUntilExternalURLLoad",
-                 &TestRunnerBindings::WaitUntilExternalURLLoad)
+      .SetMethod<&TestRunnerBindings::SimulateWebContentIndexDelete>(
+          "simulateWebContentIndexDelete")
+      .SetMethod<&TestRunnerBindings::TextZoomIn>("textZoomIn")
+      .SetMethod<&TestRunnerBindings::TextZoomOut>("textZoomOut")
+      .SetMethod<&TestRunnerBindings::ZoomPageIn>("zoomPageIn")
+      .SetMethod<&TestRunnerBindings::ZoomPageOut>("zoomPageOut")
+      .SetMethod<&TestRunnerBindings::SetPageZoomFactor>("setPageZoomFactor")
+      .SetProperty<&TestRunnerBindings::TooltipText>("tooltipText")
+      .SetMethod<&TestRunnerBindings::WaitForPolicyDelegate>(
+          "waitForPolicyDelegate")
+      .SetMethod<&TestRunnerBindings::WaitUntilDone>("waitUntilDone")
+      .SetMethod<&TestRunnerBindings::WaitUntilExternalURLLoad>(
+          "waitUntilExternalURLLoad")
 
       // webHistoryItemCount is used by tests in web_tests\http\tests\history
-      .SetProperty("webHistoryItemCount",
-                   &TestRunnerBindings::WebHistoryItemCount)
-      .SetMethod("windowCount", &TestRunnerBindings::WindowCount)
-      .SetMethod("disableAutomaticDragDrop",
-                 &TestRunnerBindings::DisableAutomaticDragDrop)
-      .SetMethod("goToOffset", &TestRunnerBindings::GoToOffset);
+      .SetProperty<&TestRunnerBindings::WebHistoryItemCount>(
+          "webHistoryItemCount")
+      .SetMethod<&TestRunnerBindings::WindowCount>("windowCount")
+      .SetMethod<&TestRunnerBindings::DisableAutomaticDragDrop>(
+          "disableAutomaticDragDrop")
+      .SetMethod<&TestRunnerBindings::GoToOffset>("goToOffset");
 }
 
 BoundV8Callback TestRunnerBindings::WrapV8Callback(
@@ -961,6 +965,7 @@ void TestRunnerBindings::InvokeV8Callback(
   v8::Context::Scope context_scope(context);
 
   v8::LocalVector<v8::Value> local_args(isolate);
+  local_args.reserve(bound_args.size() + runtime_args.size());
   for (auto& arg : bound_args)
     local_args.push_back(v8::Local<v8::Value>::New(isolate, std::move(arg)));
   for (const auto& arg : runtime_args)
@@ -1261,20 +1266,20 @@ void TestRunnerBindings::EvaluateScriptInOwnTask(
                                 blink::WebURL(GURL(url)));
   GetWebFrame()
       ->GetTaskRunner(blink::TaskType::kInternalTest)
-      ->PostTask(
-          FROM_HERE,
-          base::BindOnce(
-              [](base::WeakPtr<TestRunnerBindings> weak_this,
-                 blink::WebScriptSource source, base::OnceClosure closure) {
-                if (!weak_this || !weak_this->frame_) {
-                  return;
-                }
+      ->PostTask(FROM_HERE,
+                 base::BindOnce(
+                     [](base::WeakPtr<TestRunnerBindings> weak_this,
+                        const blink::WebScriptSource& source,
+                        base::OnceClosure closure) {
+                       if (!weak_this || !weak_this->frame_) {
+                         return;
+                       }
 
-                weak_this->GetWebFrame()->ExecuteScript(source);
-                std::move(closure).Run();
-              },
-              weak_ptr_factory_.GetWeakPtr(), std::move(source),
-              WrapV8Closure(v8_callback)));
+                       weak_this->GetWebFrame()->ExecuteScript(source);
+                       std::move(closure).Run();
+                     },
+                     weak_ptr_factory_.GetWeakPtr(), std::move(source),
+                     WrapV8Closure(v8_callback)));
 }
 
 void TestRunnerBindings::SetIsolatedWorldInfo(
@@ -1342,7 +1347,7 @@ void TestRunnerBindings::AddOriginAccessAllowListEntry(
   DCHECK(url.has_scheme());
   DCHECK(url.has_host());
 
-  runner_->AddOriginAccessAllowListEntry(source_origin, destination_protocol,
+  runner_->AddOriginAccessAllowListEntry(url, destination_protocol,
                                          destination_host,
                                          allow_destination_subdomains);
 }
@@ -1504,6 +1509,20 @@ void TestRunnerBindings::DisableAutoResizeMode(int new_width, int new_height) {
   frame_->GetWebTestControlHostRemote()->DisableAutoResize(new_size);
 }
 
+void TestRunnerBindings::SetMockScreenSize(int width, int height) {
+  if (!frame_) {
+    return;
+  }
+
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  frame_->GetLocalRootWebFrameWidget()
+      ->GetFrameWidgetTestHelperForTesting()
+      ->SetScreenSizeForTesting(width, height);
+}
+
 void TestRunnerBindings::SetMockScreenOrientation(
     const std::string& orientation) {
   if (!frame_) {
@@ -1549,7 +1568,7 @@ void TestRunnerBindings::SimulateScreenOrientationLockChanged(
 }
 
 void TestRunnerBindings::SetDisallowedSubresourcePathSuffixes(
-    std::vector<std::string> suffixes,
+    const std::vector<std::string>& suffixes,
     bool block_subresources) {
   if (!frame_) {
     return;
@@ -2178,13 +2197,13 @@ void TestRunnerBindings::SimulateWebNotificationClick(gin::Arguments* args) {
 
   // Optional |reply| argument.
   if (args->Length() >= 3) {
-    std::string reply_string;
+    std::u16string reply_string;
     if (!args->GetNext(&reply_string)) {
       args->ThrowError();
       return;
     }
 
-    reply = base::UTF8ToUTF16(reply_string);
+    reply = std::move(reply_string);
   }
 
   frame_->GetWebTestControlHostRemote()->SimulateWebNotificationClick(
@@ -2432,7 +2451,7 @@ void TestRunnerBindings::ResolveBeforeInstallPromptPromise(
   }
 }
 
-std::string TestRunnerBindings::PlatformName() {
+std::string_view TestRunnerBindings::PlatformName() {
   if (!frame_) {
     return {};
   }
@@ -2730,9 +2749,9 @@ bool TestRunner::WorkQueue::ProcessWorkItemInternal(
   NOTREACHED();
 }
 
-void TestRunner::WorkQueue::ReplicateStates(const base::DictValue& values,
+void TestRunner::WorkQueue::ReplicateStates(base::DictValue&& values,
                                             WebFrameTestProxy& source) {
-  states_.ApplyUntrackedChanges(values);
+  states_.ApplyUntrackedChanges(std::move(values));
   if (!has_items())
     controller_->FinishTestIfReady(source);
 }
@@ -2789,14 +2808,13 @@ void TestRunner::Reset() {
   setlocale(LC_ALL, "");
   setlocale(LC_NUMERIC, "C");
 
-  dump_as_audio_ = false;
-  dump_back_forward_list_ = false;
-  test_repaint_ = false;
-  sweep_horizontally_ = false;
-  animation_requires_raster_ = false;
   main_frame_loaded_ = false;
   frame_will_start_load_ = false;
   did_notify_done_ = false;
+  requested_printing_resources_ = false;
+  waiting_for_printing_resources_ = false;
+
+  test_params_ = TestParams();
 
   http_headers_to_clear_.clear();
   clear_referrer_ = false;
@@ -2850,11 +2868,11 @@ bool TestRunner::ShouldDumpAsCustomText() const {
   return web_test_runtime_flags_.has_custom_text_output();
 }
 
-std::string TestRunner::CustomDumpText() const {
+const std::string& TestRunner::CustomDumpText() const {
   return web_test_runtime_flags_.custom_text_output();
 }
 
-void TestRunner::SetCustomTextOutput(const std::string& text,
+void TestRunner::SetCustomTextOutput(std::string_view text,
                                      WebFrameTestProxy& source) {
   web_test_runtime_flags_.set_custom_text_output(text);
   web_test_runtime_flags_.set_has_custom_text_output(true);
@@ -2890,7 +2908,7 @@ void TestRunner::SetShouldGeneratePixelResults(bool value,
 }
 
 bool TestRunner::ShouldDumpAsAudio() const {
-  return dump_as_audio_;
+  return test_params_.dump_as_audio;
 }
 
 const std::vector<uint8_t>& TestRunner::GetAudioData() const {
@@ -3040,9 +3058,9 @@ SkBitmap TestRunner::PrintFrameToBitmap(blink::WebLocalFrame* frame) {
   gfx::RectF printable_area(page_size);
   printable_area.Inset(GetSafePrintableInset(frame));
   print_params.printable_area_in_css_pixels = printable_area;
-  print_params.scale_factor = printing_scale_factor_;
+  print_params.scale_factor = test_params_.print_scale_factor;
   print_params.print_scaling_option =
-      should_center_and_shrink_to_fit_paper_
+      test_params_.should_center_and_shrink_to_fit_paper
           ? printing::mojom::PrintScalingOption::kCenterShrinkToFitPaper
           : printing::mojom::PrintScalingOption::kSourceSize;
 
@@ -3094,7 +3112,7 @@ SkBitmap TestRunner::DumpPixelsInRenderer(blink::WebLocalFrame* main_frame) {
 
 #if BUILDFLAG(ENABLE_PRINTING)
   blink::WebLocalFrame* target_frame = main_frame;
-  std::string frame_name = web_test_runtime_flags_.printing_frame();
+  const std::string& frame_name = web_test_runtime_flags_.printing_frame();
   if (!frame_name.empty()) {
     blink::WebFrame* frame_to_print =
         main_frame->FindFrameByName(blink::WebString::FromUtf8(frame_name));
@@ -3109,12 +3127,12 @@ SkBitmap TestRunner::DumpPixelsInRenderer(blink::WebLocalFrame* main_frame) {
 }
 
 void TestRunner::ReplicateWebTestRuntimeFlagsChanges(
-    const base::DictValue& changed_values) {
+    base::DictValue&& changed_values) {
   if (!test_is_running_)
     return;
 
   web_test_runtime_flags_.tracked_dictionary().ApplyUntrackedChanges(
-      changed_values);
+      std::move(changed_values));
 }
 
 bool TestRunner::HasCustomTextDump(std::string* custom_text_dump) const {
@@ -3156,7 +3174,7 @@ bool TestRunner::ShouldDumpIconChanges() const {
 }
 
 bool TestRunner::ShouldDumpBackForwardList() const {
-  return dump_back_forward_list_;
+  return test_params_.dump_back_forward_list;
 }
 
 bool TestRunner::ShouldWaitUntilExternalURLLoad() const {
@@ -3311,6 +3329,10 @@ void TestRunner::FinishTestIfReady(WebFrameTestProxy& source) {
     return;
   }
 
+  if (waiting_for_printing_resources_) {
+    return;
+  }
+
   FinishTest(source);
 }
 
@@ -3318,7 +3340,40 @@ void TestRunner::TestFinishedFromSecondaryRenderer(WebFrameTestProxy& source) {
   NotifyDone(source);
 }
 
+void TestRunner::DidFinishLoadForPrinting(WebFrameTestProxy& source) {
+  if (!waiting_for_printing_resources_) {
+    return;
+  }
+
+  waiting_for_printing_resources_ = false;
+  FinishTestIfReady(source);
+}
+
 void TestRunner::AddMainFrame(WebFrameTestProxy& frame) {
+  auto is_active_main_window_frame = [this](WebFrameTestProxy& f) {
+    return IsFrameInMainWindow(f.GetWebFrame()) &&
+           !f.GetWebFrame()->GetDocument().IsPrerendering();
+  };
+
+  // The main window has a single active main frame. When a new one commits (or
+  // is restored from the back/forward cache) while the outgoing one lives in
+  // this same process, e.g. after a same-site proactive BrowsingInstance swap,
+  // the browser's OnDeactivated() for the outgoing frame only arrives after
+  // the commit has round-tripped through the browser. If the new page finishes
+  // the test before then, FindInProcessMainWindowMainFrame() could pick the
+  // outgoing frame, so deactivate it now. The later OnDeactivated() is a no-op.
+  if (test_is_running_ && is_active_main_window_frame(frame)) {
+    // Copy first, since OnFrameDeactivated() mutates `main_frames_`.
+    std::vector<WebFrameTestProxy*> outgoing_frames;
+    for (WebFrameTestProxy* other : main_frames_) {
+      if (other != &frame && is_active_main_window_frame(*other)) {
+        outgoing_frames.push_back(other);
+      }
+    }
+    for (WebFrameTestProxy* outgoing_frame : outgoing_frames) {
+      OnFrameDeactivated(*outgoing_frame);
+    }
+  }
   main_frames_.insert(&frame);
 }
 
@@ -3420,7 +3475,7 @@ void TestRunner::QueueNonLoadingScript(const std::string& script,
 }
 
 void TestRunner::QueueLoad(const GURL& current_url,
-                           const std::string& relative_url,
+                           std::string_view relative_url,
                            const std::string& target,
                            WebFrameTestProxy& source) {
   GURL full_url = current_url.Resolve(relative_url);
@@ -3434,11 +3489,11 @@ void TestRunner::ProcessWorkItem(mojom::WorkItemPtr work_item,
   work_queue_.ProcessWorkItem(std::move(work_item), source);
 }
 
-void TestRunner::ReplicateWorkQueueStates(const base::DictValue& values,
+void TestRunner::ReplicateWorkQueueStates(base::DictValue&& values,
                                           WebFrameTestProxy& source) {
   if (!test_is_running_)
     return;
-  work_queue_.ReplicateStates(values, source);
+  work_queue_.ReplicateStates(std::move(values), source);
 }
 
 bool TestRunner::IsFrameInMainWindow(blink::WebLocalFrame* frame) {
@@ -3487,14 +3542,15 @@ void TestRunner::SetMainWindowAndTestConfiguration(
   test_config_ = std::move(*config);
   SetTestIsRunning(true);
 
-  std::string spec = GURL(test_config_.test_url).spec();
+  std::string_view spec = test_config_.test_url.spec();
   size_t path_start = spec.rfind("web_tests/");
-  if (path_start != std::string::npos)
+  if (path_start != std::string_view::npos) {
     spec = spec.substr(path_start);
+  }
 
   bool is_devtools_test =
-      spec.find("/devtools/") != std::string::npos ||
-      spec.find("/inspector-protocol/") != std::string::npos;
+      spec.find("/devtools/") != std::string_view::npos ||
+      spec.find("/inspector-protocol/") != std::string_view::npos;
 
   auto* source =
       static_cast<WebFrameTestProxy*>(RenderFrame::FromWebFrame(frame));
@@ -3514,14 +3570,15 @@ void TestRunner::SetMainWindowAndTestConfiguration(
   bool wpt_printing_test = test_config_.wpt_print_mode;
 
   // For http/tests/loading/, which is served via httpd and becomes /loading/.
-  if (spec.find("/loading/") != std::string::npos)
+  if (spec.find("/loading/") != std::string_view::npos) {
     SetShouldDumpFrameLoadCallbacks(true, *source);
+  }
 
   if (IsWebPlatformTest(spec)) {
     SetIsWebPlatformTestsMode(*source);
 
-    if (spec.find("/print/") != std::string::npos ||
-        spec.find("-print.html") != std::string::npos) {
+    if (spec.find("/print/") != std::string_view::npos ||
+        spec.find("-print.html") != std::string_view::npos) {
       wpt_printing_test = true;
     }
   }
@@ -3539,7 +3596,7 @@ void TestRunner::SetMainWindowAndTestConfiguration(
 }
 
 blink::WebString TestRunner::GetAbsoluteWebStringFromUTF8Path(
-    const std::string& utf8_path) {
+    std::string_view utf8_path) {
   DCHECK(test_is_running_);
   base::FilePath path = base::FilePath::FromUTF8Unsafe(utf8_path);
   if (!path.IsAbsolute()) {
@@ -3595,11 +3652,11 @@ int TestRunner::InProcessWindowCount() {
 }
 
 void TestRunner::AddOriginAccessAllowListEntry(
-    const std::string& source_origin,
-    const std::string& destination_protocol,
-    const std::string& destination_host,
+    const GURL& source_origin,
+    std::string_view destination_protocol,
+    std::string_view destination_host,
     bool allow_destination_subdomains) {
-  blink::WebURL url((GURL(source_origin)));
+  blink::WebURL url(source_origin);
   if (!url.IsValid())
     return;
 
@@ -3621,7 +3678,7 @@ void TestRunner::SetTextSubpixelPositioning(bool value) {
 #endif
 }
 
-void TestRunner::SetMockScreenOrientation(const std::string& orientation_str,
+void TestRunner::SetMockScreenOrientation(std::string_view orientation_str,
                                           WebFrameTestProxy& frame) {
   display::mojom::ScreenOrientation orientation;
 
@@ -3694,9 +3751,8 @@ void TestRunner::DumpIconChanges(WebFrameTestProxy& source) {
 
 void TestRunner::SetAudioData(const gin::ArrayBufferView& view) {
   base::span<const uint8_t> src = view.span();
-  audio_data_.resize(src.size());
-  base::span(audio_data_).copy_from_nonoverlapping(src);
-  dump_as_audio_ = true;
+  audio_data_.assign(src.begin(), src.end());
+  test_params_.dump_as_audio = true;
 }
 
 void TestRunner::DumpFrameLoadCallbacks(WebFrameTestProxy& source) {
@@ -3737,7 +3793,7 @@ void TestRunner::DumpPermissionClientCallbacks(WebFrameTestProxy& source) {
 }
 
 void TestRunner::DumpBackForwardList() {
-  dump_back_forward_list_ = true;
+  test_params_.dump_back_forward_list = true;
 }
 
 void TestRunner::DumpSelectionRect(WebFrameTestProxy& source) {
@@ -3749,7 +3805,7 @@ void TestRunner::SetPrinting(WebFrameTestProxy& source) {
   SetPrintingForFrame("", source);
 }
 
-void TestRunner::SetPrintingForFrame(const std::string& frame_name,
+void TestRunner::SetPrintingForFrame(std::string_view frame_name,
                                      WebFrameTestProxy& source) {
   web_test_runtime_flags_.set_printing_frame(frame_name);
   web_test_runtime_flags_.set_is_printing(true);
@@ -3902,7 +3958,7 @@ void TestRunner::FocusWindow(RenderFrame* main_frame, bool focus) {
 }
 
 void TestRunner::SetAnimationRequiresRaster(bool do_raster) {
-  animation_requires_raster_ = do_raster;
+  test_params_.animation_requires_raster = do_raster;
 }
 
 void TestRunner::OnWebTestRuntimeFlagsChanged(WebFrameTestProxy& source) {
@@ -3952,12 +4008,20 @@ void TestRunner::FinishTest(WebFrameTestProxy& source) {
   if (!test_is_running_) {
     return;
   }
-  test_is_running_ = false;
 
   // Now we know that we're in the main frame, we should generate dump results.
   // Clean out the lifecycle if needed before capturing the web tree
   // dump and pixels from the compositor.
   auto* web_frame = main_frame->GetWebFrame();
+  if (IsPrinting() && !requested_printing_resources_) {
+    requested_printing_resources_ = true;
+    waiting_for_printing_resources_ = web_frame->WillPrintSoon();
+    if (waiting_for_printing_resources_) {
+      return;
+    }
+  }
+
+  test_is_running_ = false;
   web_frame->FrameWidget()->PrepareForFinalLifecyclUpdateForTesting();
   web_frame->FrameWidget()->UpdateAllLifecyclePhases(
       blink::DocumentUpdateReason::kTest);
@@ -3971,23 +4035,22 @@ void TestRunner::FinishTest(WebFrameTestProxy& source) {
 
   if (ShouldDumpAsAudio()) {
     TRACE_EVENT0("shell", "TestRunner::CaptureLocalAudioDump");
-    dump_result->audio = GetAudioData();
+    dump_result->audio = std::move(audio_data_);
   } else {
     TextResultType text_result_type = ShouldGenerateTextResults();
     bool pixel_result = ShouldGeneratePixelResults();
 
-    std::string spec = GURL(test_config_.test_url).spec();
+    std::string_view spec = test_config_.test_url.spec();
     size_t path_start = spec.rfind("web_tests/");
-    if (path_start != std::string::npos)
+    if (path_start != std::string_view::npos) {
       spec = spec.substr(path_start);
-
-    std::string mime_type =
-        web_frame->GetDocumentLoader()->GetWebResponse().MimeType().Utf8();
+    }
 
     // In a text/plain document, and in a dumpAsText/ subdirectory, we generate
     // text results no matter what the test may previously have requested.
-    if (mime_type == "text/plain" ||
-        spec.find("/dumpAsText/") != std::string::npos) {
+    if (web_frame->GetDocumentLoader()->GetWebResponse().MimeType() ==
+            "text/plain" ||
+        spec.find("/dumpAsText/") != std::string_view::npos) {
       text_result_type = TextResultType::kText;
       pixel_result = false;
     }
@@ -4000,9 +4063,8 @@ void TestRunner::FinishTest(WebFrameTestProxy& source) {
     //
     // The CustomTextDump always takes precedence if it's been specified by the
     // test.
-    std::string custom_text_dump;
-    if (HasCustomTextDump(&custom_text_dump)) {
-      dump_result->layout = custom_text_dump + "\n";
+    if (ShouldDumpAsCustomText()) {
+      dump_result->layout = base::StrCat({CustomDumpText(), "\n"});
     } else if (!IsRecursiveLayoutDumpRequested()) {
       TRACE_EVENT0("shell", "TestRunner::CaptureLocalLayoutDump");
       dump_result->layout = DumpLayoutAsString(web_frame, text_result_type);
@@ -4015,10 +4077,8 @@ void TestRunner::FinishTest(WebFrameTestProxy& source) {
         DCHECK_GT(actual.info().width(), 0);
         DCHECK_GT(actual.info().height(), 0);
 
-        auto bytes = UNSAFE_TODO(
-            base::span(static_cast<const uint8_t*>(actual.getPixels()),
-                       actual.computeByteSize()));
-        dump_result->actual_pixel_hash = Md5AsHexForWebTestPixels(bytes);
+        dump_result->actual_pixel_hash =
+            Md5AsHexForWebTestPixels(gfx::SkPixmapToSpan(actual.pixmap()));
 
         if (dump_result->actual_pixel_hash != test_config_.expected_pixel_hash)
           dump_result->pixels = std::move(actual);

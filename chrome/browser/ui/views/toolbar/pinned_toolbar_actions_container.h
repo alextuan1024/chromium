@@ -21,6 +21,7 @@
 #include "ui/views/drag_controller.h"
 
 class BrowserView;
+class DownloadButtonViews;
 class ToolbarButtonProvider;
 class ToolbarDivider;
 
@@ -94,8 +95,9 @@ class PinnedToolbarActionsContainer
   bool IsActionPinned(actions::ActionId id) override;
   bool IsActionPoppedOut(actions::ActionId id) override;
   bool IsActionPinnedOrPoppedOut(actions::ActionId id) override;
+  bool IsActionHighlighted(actions::ActionId id) override;
   void PostOrQueueActionAfterAnimation(base::OnceClosure action) override;
-  ToolbarButton* GetDownloadButton() override;
+  DownloadButton* GetDownloadButton() override;
   views::BubbleAnchor GetBubbleAnchor(actions::ActionId action_id) override;
   void GetBubbleAnchorAsync(
       actions::ActionId action_id,
@@ -178,13 +180,15 @@ class PinnedToolbarActionsContainer
   raw_ptr<ToolbarButtonProvider> button_provider_;
 
   std::unique_ptr<views::ActionViewController> action_view_controller_;
-  std::vector<raw_ptr<PinnedActionToolbarButton, VectorExperimental>>
-      pinned_buttons_;
-  std::vector<raw_ptr<PinnedActionToolbarButton, VectorExperimental>>
-      popped_out_buttons_;
+  std::vector<raw_ptr<PinnedActionToolbarButton>> pinned_buttons_;
+  std::vector<raw_ptr<PinnedActionToolbarButton>> popped_out_buttons_;
   std::vector<std::unique_ptr<PinnedActionToolbarButton>> permanent_buttons_;
   raw_ptr<ToolbarDivider> toolbar_divider_;
   raw_ptr<PinnedToolbarActionsModel> model_;
+
+  // Implements DownloadButton on top of the downloads button, when there is
+  // one.
+  const std::unique_ptr<DownloadButtonViews> download_button_;
 
   base::ScopedObservation<PinnedToolbarActionsModel,
                           PinnedToolbarActionsModel::Observer>

@@ -10,6 +10,7 @@
 
 #include "base/debug/crash_logging.h"
 #include "base/functional/callback_helpers.h"
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/exported/web_dev_tools_agent_impl.h"
@@ -30,7 +31,6 @@
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 
@@ -187,6 +187,10 @@ void DevToolsAgent::Trace(Visitor* visitor) const {
   visitor->Trace(sessions_);
 }
 
+bool DevToolsAgent::IsInterruptingExecution() {
+  return inspector_task_runner_->IsInterrupting();
+}
+
 void DevToolsAgent::Dispose() {
   HeapHashSet<Member<DevToolsSession>> copy(sessions_);
   for (auto& session : copy)
@@ -237,8 +241,8 @@ void UpdateSessionCountCrashKey(int delta) {
   if (!need_update) {
     return;
   }
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(base::Lock, lock, ());
-  base::AutoLock auto_lock(lock);
+  static base::NoDestructor<base::Lock> lock;
+  base::AutoLock auto_lock(*lock);
   static base::debug::CrashKeyString* devtools_present =
       base::debug::AllocateCrashKeyString("devtools_present",
                                           base::debug::CrashKeySize::Size32);
@@ -296,13 +300,14 @@ void DevToolsAgent::AttachDevToolsSession(
     bool session_waits_for_debugger) {
   TRACE_EVENT0("devtools", "Agent::AttachDevToolsSession");
   if (associated_receiver_.is_bound()) {
-    // Discard `session_waits_for_debugger` for regular pages, this is rather
-    // handled by the navigation throttles machinery on the browser side.
+    // Most of the waiting for regular pages is handled by the navigation
+    // throttles machinery on the browser side. A window.open() popup is
+    // paused in the renderer, so make sure it can be resumed.
     AttachDevToolsSessionImpl(
         std::move(host), std::move(session_receiver),
         std::move(io_session_receiver), std::move(reattach_session_state),
         client_expects_binary_responses, client_is_trusted, session_id,
-        /* session_waits_for_debugger */ false);
+        session_waits_for_debugger);
   } else {
     io_agent_->AttachDevToolsSession(
         std::move(host), std::move(session_receiver),

@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/autofill/bubble_manager_impl.h"
 
 #include <algorithm>
+#include <utility>
 
 #include "base/auto_reset.h"
 #include "base/callback_list.h"
@@ -27,26 +28,31 @@ constexpr base::TimeDelta kPendingRequestTimeout = base::Seconds(3600);
 int GetPriorityForBubbleType(BubbleType type) {
   switch (type) {
     case BubbleType::kOmniboxAutofill:
-      return 13;
+      return 14;
     case BubbleType::kFilledCardInformation:
-      return 12;
+      return 13;
     case BubbleType::kPassword:
-      return 11;
+      return 12;
     case BubbleType::kSaveUpdateAutofillAi:
-      return 10;
+      return 11;
     case BubbleType::kSaveUpdateCard:
-      return 9;
+      return 10;
     case BubbleType::kVirtualCardEnrollConfirmation:
-      return 8;
+      return 9;
     case BubbleType::kSaveIban:
-      return 7;
+      return 8;
     case BubbleType::kMandatoryReauth:
-      return 6;
+      return 7;
     case BubbleType::kSaveUpdateAddress:
-      return 5;
+      return 6;
     case BubbleType::kOfferNotification:
-      return 4;
+      return 5;
     case BubbleType::kPaymentsChurnedUsers:
+      return 4;
+    // Proactive Gmail OTP opt-in has lower priority than post-submission save
+    // flows (save-password, save-card, save-address) and sits alongside other
+    // feature opt-in consent prompts.
+    case BubbleType::kGmailOtpOptIn:
       return 3;
     case BubbleType::kWalletablePassConsent:
       return 2;
@@ -74,6 +80,7 @@ bool ShouldAlwaysPreemptSameType(BubbleType bubble_type) {
     case BubbleType::kMandatoryReauth:
     case BubbleType::kSaveUpdateAddress:
     case BubbleType::kOfferNotification:
+    case BubbleType::kGmailOtpOptIn:
     case BubbleType::kWalletablePassConsent:
     case BubbleType::kWalletablePassSave:
     case BubbleType::kWalletReminderNotice:
@@ -113,6 +120,8 @@ std::string_view BubbleTypeToMetricSuffix(BubbleType bubble_type) {
       return "WalletablePassSave";
     case BubbleType::kWalletReminderNotice:
       return "WalletReminderNotice";
+    case BubbleType::kGmailOtpOptIn:
+      return "GmailOtpOptIn";
   }
   NOTREACHED();
 }
@@ -144,11 +153,15 @@ bool BubbleManagerImpl::PendingRequest::operator<(
 }
 
 BubbleManagerImpl::BubbleManagerImpl(tabs::TabInterface* tab)
-    : tab_interface_(tab) {
+    : tab_interface_(tab),
+      scoped_unowned_user_data_(tab->GetUnownedUserDataHost(), *this) {
   tab_subscriptions_.push_back(tab->RegisterWillDeactivate(base::BindRepeating(
       &BubbleManagerImpl::TabWillEnterBackground, base::Unretained(this))));
   tab_subscriptions_.push_back(tab->RegisterDidActivate(base::BindRepeating(
       &BubbleManagerImpl::TabDidEnterForeground, base::Unretained(this))));
+  tab_subscriptions_.push_back(
+      tab->RegisterWillDiscardContents(base::BindRepeating(
+          &BubbleManagerImpl::WillDiscardContents, base::Unretained(this))));
 }
 
 BubbleManagerImpl::~BubbleManagerImpl() {
@@ -269,15 +282,10 @@ void BubbleManagerImpl::AddToPendingQueue(
     const bool bubble_has_timed_out =
         (now - it->time_added) > kPendingRequestTimeout;
     if (ShouldAlwaysPreemptSameType(new_bubble_type) || bubble_has_timed_out) {
-      if (bubble_has_timed_out) {
-        if (it->controller) {
-          it->controller->OnBubbleDiscarded();
-          base::UmaHistogramEnumeration("Autofill.Bubble.Queue.TimedOut",
-                                        it->controller->GetBubbleType());
-        }
-      } else {
-        base::UmaHistogramEnumeration("Autofill.Bubble.Queue.Replaced",
-                                      new_bubble_type);
+      if (bubble_has_timed_out && it->controller) {
+        it->controller->OnBubbleDiscarded();
+        base::UmaHistogramEnumeration("Autofill.Bubble.Queue.TimedOut",
+                                      it->controller->GetBubbleType());
       }
       pending_bubbles_queue_.erase(it);
       pending_bubbles_queue_.insert(PendingRequest(controller, now, priority));
@@ -435,6 +443,27 @@ void BubbleManagerImpl::TabDidEnterForeground(
   } else if (!active_bubble_controller_->IsShowingBubble()) {
     // This can happen if a tab created in background becomes visible.
     active_bubble_controller_->ShowBubble();
+  }
+}
+
+void BubbleManagerImpl::WillDiscardContents(
+    tabs::TabInterface* tab_interface,
+    content::WebContents* old_contents,
+    content::WebContents* new_contents) {
+  const std::set<PendingRequest> pending_queue =
+      std::exchange(pending_bubbles_queue_, {});
+  if (const base::WeakPtr<BubbleControllerBase> active_controller =
+          std::exchange(active_bubble_controller_, nullptr)) {
+    active_controller->OnBubbleDiscarded();
+    if (active_controller && active_controller->IsShowingBubble()) {
+      active_controller->HideBubble(/*initiated_by_bubble_manager=*/true);
+    }
+  }
+
+  for (const PendingRequest& request : pending_queue) {
+    if (request.controller) {
+      request.controller->OnBubbleDiscarded();
+    }
   }
 }
 

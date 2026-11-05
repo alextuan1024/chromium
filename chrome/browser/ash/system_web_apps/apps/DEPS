@@ -15,8 +15,8 @@ include_rules = [
   # depending on chrome.
   "+chrome/browser/ash/child_accounts",
   "+chrome/browser/ash/crostini",
+  "+chrome/browser/content_settings/host_content_settings_map_factory.h",
   "+chrome/browser/ash/drive",
-  "+chrome/browser/enterprise/util/affiliation.h",
   "+chrome/browser/ash/file_system_provider",
   "+chrome/browser/ash/first_run",
   "+chrome/browser/ash/fusebox",
@@ -39,7 +39,6 @@ include_rules = [
   "+chrome/browser/ash/wallpaper_handlers",
   "+chrome/browser/feedback/public/feedback_source.h",
   "+chrome/browser/feedback/show_feedback_page.h",
-  "+chrome/browser/manta/manta_service_factory.h",
   "+chrome/browser/pdf",
   # TODO(b/338516458): Allow ash to use ScreenAI without depending on //chrome.
   "+chrome/browser/screen_ai/public",
@@ -71,6 +70,9 @@ specific_include_rules = {
   "personalization_app_integration_browsertest\\.cc": [
     "+ash/ambient/test/ambient_ash_test_helper.h",
     "+ui/message_center/message_center.h",
+  ],
+  "personalization_app_sea_pen_provider_impl_unittest\\.cc": [
+    "+chrome/browser/ash/browser_delegate/browser_controller_impl.h",
   ],
   "personalization_app_utils_unittest\\.cc": [
     "+chrome/browser/ash/browser_delegate/browser_controller_impl.h",

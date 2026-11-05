@@ -11,11 +11,9 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -42,6 +40,7 @@ import org.mockito.quality.Strictness;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
@@ -59,9 +58,11 @@ import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.SearchEngineService;
 import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge;
 import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridgeJni;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.status.StatusCoordinator.PageInfoAction;
+import org.chromium.chrome.browser.omnibox.status.StatusMediator.StatusIconType;
+import org.chromium.chrome.browser.omnibox.status.StatusProperties.PermissionIconResource;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties.StatusIconResource;
 import org.chromium.chrome.browser.omnibox.status.StatusView.IconTransitionType;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
@@ -70,8 +71,6 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
-import org.chromium.components.content_settings.CookieControlsBridge;
-import org.chromium.components.content_settings.CookieControlsBridgeJni;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.favicon.LargeIconBridgeJni;
 import org.chromium.components.feature_engagement.Tracker;
@@ -102,8 +101,6 @@ import org.chromium.url.JUnitTestGURLs;
 @RunWith(BaseRobolectricTestRunner.class)
 public final class StatusMediatorUnitTest {
     private static final String TAG = "StatusMediatorUnitTest";
-    private static final int CURRENT_TAB_ID = 5;
-    private static final int NEW_TAB_ID = 1;
 
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
@@ -116,8 +113,6 @@ public final class StatusMediatorUnitTest {
     @Mock private TemplateUrlService mTemplateUrlService;
     @Mock private PermissionDialogController mPermissionDialogController;
     @Mock private PageInfoIphController mPageInfoIphController;
-    @Mock private CookieControlsBridge mCookieControlsBridge;
-    @Mock private CookieControlsBridge.Natives mCookieControlsBridgeJniMock;
     @Mock private Tab mTab;
     @Mock private WebContents mWebContents;
     @Mock private NavigationController mNavigationController;
@@ -137,9 +132,7 @@ public final class StatusMediatorUnitTest {
     @Mock private TemplateUrl mGeminiTemplate;
 
     @Captor private ArgumentCaptor<PermissionDialogController.Observer> mPermissionObserverCaptor;
-
-    @Captor
-    private ArgumentCaptor<org.chromium.base.Callback<StatusIconResource>> mFaviconCallbackCaptor;
+    @Captor private ArgumentCaptor<Callback<StatusIconResource>> mFaviconCallbackCaptor;
 
     private Context mContext;
     private OmniboxResourceProvider mResourceProvider;
@@ -159,7 +152,6 @@ public final class StatusMediatorUnitTest {
     public void setUp() {
         SearchEngineService.setInstanceForTesting(mSearchEngineService);
         TrackerFactory.setTrackerForTests(mTracker);
-        CookieControlsBridgeJni.setInstanceForTesting(mCookieControlsBridgeJniMock);
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeNatives);
         lenient().doReturn(1L).when(mLargeIconBridgeNatives).init();
         UserPrefsJni.setInstanceForTesting(mMockUserPrefsJni);
@@ -217,10 +209,6 @@ public final class StatusMediatorUnitTest {
 
     private int getModelIconID() {
         return mModel.get(StatusProperties.STATUS_ICON_RESOURCE).getIconRes();
-    }
-
-    private void assertModelIconResId(int resId) {
-        assertEquals(resId, mModel.get(StatusProperties.STATUS_ICON_RESOURCE).getIconRes());
     }
 
     @Test
@@ -412,22 +400,18 @@ public final class StatusMediatorUnitTest {
     }
 
     @Test
-    public void testIncognitoStateChange() {
-        assertFalse(mModel.get(StatusProperties.INCOGNITO_BADGE_VISIBLE));
-
+    public void searchEngineLogo_shownOnIncognitoNtp() {
         doReturn(true).when(mNewTabPageDelegate).isIncognitoNewTabPageCurrentlyVisible();
         mMediator.updateLocationBarIcon(IconTransitionType.CROSSFADE);
 
         assertEquals(
                 R.drawable.ic_logo_googleg_20dp,
                 mModel.get(StatusProperties.STATUS_ICON_RESOURCE).getIconRes());
-        assertFalse(mModel.get(StatusProperties.INCOGNITO_BADGE_VISIBLE));
 
         mMediator.beginInput(mFuseboxSessionState);
         assertEquals(
                 R.drawable.ic_logo_googleg_20dp,
                 mModel.get(StatusProperties.STATUS_ICON_RESOURCE).getIconRes());
-        assertFalse(mModel.get(StatusProperties.INCOGNITO_BADGE_VISIBLE));
     }
 
     @Test
@@ -678,88 +662,6 @@ public final class StatusMediatorUnitTest {
     }
 
     @Test
-    public void onUrlChanged_whenTabChanges_shouldUpdateWebContents() {
-        mMediator.setCookieControlsBridgeForTesting(mCookieControlsBridge);
-        doReturn(mWebContents).when(mTab).getWebContents();
-        doReturn(mTab).when(mLocationBarDataProvider).getTab();
-
-        verify(mCookieControlsBridge, never()).updateWebContents(any(), any(), anyBoolean());
-
-        doReturn(CURRENT_TAB_ID).when(mTab).getId();
-
-        mMediator.onUrlChanged();
-        verify(mCookieControlsBridge).updateWebContents(any(), any(), anyBoolean());
-
-        mMediator.onUrlChanged();
-        verify(mCookieControlsBridge).updateWebContents(any(), any(), anyBoolean());
-
-        doReturn(NEW_TAB_ID).when(mTab).getId();
-        mMediator.onUrlChanged();
-        verify(mCookieControlsBridge, times(2)).updateWebContents(any(), any(), anyBoolean());
-    }
-
-    @Test
-    public void onUrlChanged_whenTabNotChanging_shouldNotUpdateWebContents() {
-        mMediator.setCookieControlsBridgeForTesting(mCookieControlsBridge);
-        doReturn(mWebContents).when(mTab).getWebContents();
-        doReturn(mTab).when(mLocationBarDataProvider).getTab();
-
-        doReturn(CURRENT_TAB_ID).when(mTab).getId();
-
-        mMediator.onUrlChanged();
-        verify(mCookieControlsBridge).updateWebContents(any(), any(), anyBoolean());
-
-        mMediator.onUrlChanged();
-        verify(mCookieControlsBridge).updateWebContents(any(), any(), anyBoolean());
-    }
-
-    @Test
-    public void onUrlChanged_whenTabCrashing_shouldUpdateWebContents() {
-        mMediator.setCookieControlsBridgeForTesting(mCookieControlsBridge);
-        doReturn(mWebContents).when(mTab).getWebContents();
-        doReturn(mTab).when(mLocationBarDataProvider).getTab();
-
-        doReturn(CURRENT_TAB_ID).when(mTab).getId();
-
-        mMediator.onUrlChanged();
-        verify(mCookieControlsBridge).updateWebContents(any(), any(), anyBoolean());
-
-        // Tab crashed, need to update the web contents at next url change.
-        mMediator.onTabCrashed();
-        mMediator.onUrlChanged();
-        verify(mCookieControlsBridge, times(2)).updateWebContents(any(), any(), anyBoolean());
-
-        // Subsequent url changes on the same tab should not trigger any web contents update.
-        mMediator.onUrlChanged();
-        verify(mCookieControlsBridge, times(2)).updateWebContents(any(), any(), anyBoolean());
-    }
-
-    @Test
-    public void onUrlChanged_whenNotExistingCookieControlsBridge_shouldCreateNewBridge() {
-        doReturn(mWebContents).when(mTab).getWebContents();
-        doReturn(mTab).when(mLocationBarDataProvider).getTab();
-
-        assertNull(mMediator.getCookieControlsBridgeForTesting());
-
-        mMediator.onUrlChanged();
-
-        assertNotEquals(null, mMediator.getCookieControlsBridgeForTesting());
-    }
-
-    @Test
-    public void onUrlChanged_whenInIncognito_shouldUpdateWebContentsWithUpdatedIncognitoState() {
-        mMediator.setCookieControlsBridgeForTesting(mCookieControlsBridge);
-        doReturn(mWebContents).when(mTab).getWebContents();
-        doReturn(mTab).when(mLocationBarDataProvider).getTab();
-        doReturn(true).when(mProfile).isIncognitoBranded();
-        doReturn(CURRENT_TAB_ID).when(mTab).getId();
-
-        mMediator.onUrlChanged();
-        verify(mCookieControlsBridge)
-                .updateWebContents(any(), any(), /* isIncognitoBranded= */ eq(true));
-    }
-
-    @Test
     public void showStatusView_toggleVisibility() {
         mMediator.setShowStatusView(false);
         assertFalse(mModel.get(StatusProperties.SHOW_STATUS_VIEW));
@@ -878,8 +780,7 @@ public final class StatusMediatorUnitTest {
                 /* pageIsPaintPreview= */ false);
         assertFalse(mModel.get(StatusProperties.SHOW_STATUS_VIEW));
 
-        StatusProperties.PermissionIconResource icon =
-                new StatusProperties.PermissionIconResource(null, /* isIncognito= */ false);
+        PermissionIconResource icon = new PermissionIconResource(null, /* isIncognito= */ false);
         mMediator.showPermissionIcon(icon);
 
         assertTrue(mModel.get(StatusProperties.SHOW_STATUS_VIEW));
@@ -1007,6 +908,9 @@ public final class StatusMediatorUnitTest {
 
         mMediator.updateLocationBarIcon(IconTransitionType.CROSSFADE);
 
+        assertEquals(
+                StatusIconType.FUSEBOX_PLUS_BUTTON,
+                mMediator.getStatusIconTypeSupplier().get().intValue());
         assertNotNull(mModel.get(StatusProperties.STATUS_ICON_RESOURCE));
         assertEquals(
                 R.drawable.ic_add_round_20dp_with_inset,
@@ -1184,7 +1088,7 @@ public final class StatusMediatorUnitTest {
         doReturn(true).when(mNewTabPageDelegate).isCurrentlyVisible();
         ComposeplateUtils.setIsEnabledForTesting(true);
 
-        // Focus the search box (sets mUrlHasFocus = true).
+        // Focus the search box (begins input session).
         mMediator.beginInput(mFuseboxSessionState);
 
         mMediator.updateLocationBarIcon(IconTransitionType.CROSSFADE);
@@ -1383,6 +1287,25 @@ public final class StatusMediatorUnitTest {
     }
 
     @Test
+    public void testDestroy_duringActiveSession_unregistersInputObservers() {
+        mMediator.beginInput(mFuseboxSessionState);
+
+        assertTrue(mAutocompleteInput.getSiteSearchDataSupplier().hasObservers());
+        assertTrue(mAutocompleteInput.getRequestTypeSupplier().hasObservers());
+        assertTrue(mAutocompleteInput.getPreviewMatchUrlSupplier().hasObservers());
+        assertTrue(mAutocompleteInput.getDisplayStateSupplier().hasObservers());
+        assertTrue(mAutocompleteInput.getAutocompleteStateSupplier().hasObservers());
+
+        mMediator.destroy();
+
+        assertFalse(mAutocompleteInput.getSiteSearchDataSupplier().hasObservers());
+        assertFalse(mAutocompleteInput.getRequestTypeSupplier().hasObservers());
+        assertFalse(mAutocompleteInput.getPreviewMatchUrlSupplier().hasObservers());
+        assertFalse(mAutocompleteInput.getDisplayStateSupplier().hasObservers());
+        assertFalse(mAutocompleteInput.getAutocompleteStateSupplier().hasObservers());
+    }
+
+    @Test
     public void searchEngineLogo_hidden_whenPendingNavigationToWebPage() {
         // 1. Setup: NTP is visible initially
         doReturn(true).when(mNewTabPageDelegate).isCurrentlyVisible();
@@ -1429,59 +1352,6 @@ public final class StatusMediatorUnitTest {
 
         assertNull(mModel.get(StatusProperties.STATUS_CLICK_LISTENER));
         assertFalse(mModel.get(StatusProperties.STATUS_VIEW_HOVER_ENABLED));
-    }
-
-    @Test
-    public void statusIcon_blankWhenPendingHttpNavigation() {
-        mMediator.updateSecurityIcon(
-                R.drawable.ic_settings_tune_24dp, /* tintList= */ 0, /* desc= */ 0);
-
-        assertModelIconResId(R.drawable.ic_settings_tune_24dp);
-
-        doReturn(mNavigationEntry).when(mNavigationController).getPendingEntry();
-        doReturn(JUnitTestGURLs.BLUE_1).when(mNavigationEntry).getUrl();
-        mMediator.updateSecurityIcon(R.drawable.ic_info_24dp, /* tintList= */ 0, /* desc= */ 0);
-
-        assertNull(mModel.get(StatusProperties.STATUS_ICON_RESOURCE));
-
-        doReturn(null).when(mNavigationController).getPendingEntry();
-        mMediator.updateSecurityIcon(R.drawable.ic_info_24dp, /* tintList= */ 0, /* desc= */ 0);
-
-        assertModelIconResId(R.drawable.ic_info_24dp);
-    }
-
-    @Test
-    @DisableFeatures(OmniboxFeatureList.SUPPRESS_STATUS_ICON_DURING_HTTP_NAVIGATION)
-    public void statusIcon_notBlankWhenPendingHttpNavigation_killSwitch() {
-        mMediator.updateSecurityIcon(
-                R.drawable.ic_settings_tune_24dp, /* tintList= */ 0, /* desc= */ 0);
-
-        assertModelIconResId(R.drawable.ic_settings_tune_24dp);
-
-        doReturn(mNavigationEntry).when(mNavigationController).getPendingEntry();
-        doReturn(JUnitTestGURLs.BLUE_1).when(mNavigationEntry).getUrl();
-        mMediator.updateSecurityIcon(R.drawable.ic_info_24dp, /* tintList= */ 0, /* desc= */ 0);
-
-        assertModelIconResId(R.drawable.ic_info_24dp);
-    }
-
-    @Test
-    public void statusIcon_infoIconWhenPendingNonHttpNavigation() {
-        mMediator.updateSecurityIcon(
-                R.drawable.ic_settings_tune_24dp, /* tintList= */ 0, /* desc= */ 0);
-
-        assertModelIconResId(R.drawable.ic_settings_tune_24dp);
-
-        doReturn(mNavigationEntry).when(mNavigationController).getPendingEntry();
-        doReturn(JUnitTestGURLs.CHROME_ABOUT).when(mNavigationEntry).getUrl();
-        mMediator.updateSecurityIcon(R.drawable.ic_info_24dp, /* tintList= */ 0, /* desc= */ 0);
-
-        assertModelIconResId(R.drawable.ic_info_24dp);
-
-        doReturn(null).when(mNavigationController).getPendingEntry();
-        mMediator.updateSecurityIcon(R.drawable.ic_info_24dp, /* tintList= */ 0, /* desc= */ 0);
-
-        assertModelIconResId(R.drawable.ic_info_24dp);
     }
 
     @Test

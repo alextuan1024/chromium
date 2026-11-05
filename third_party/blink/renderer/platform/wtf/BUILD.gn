@@ -13,13 +13,22 @@ import("//third_party/blink/public/public_features.gni")
 import("//third_party/blink/renderer/config.gni")
 
 declare_args() {
+  # Enable modification checks in blink::HeapHashTable (HeapHashSet,
+  # HeapHashMap, etc.) to detect modifications during iteration.
+  enable_heap_hash_table_modification_checks = false
+
+  # Enable modification checks in non-garbage-collected blink::HashTable
+  # (i.e. PartitionAllocator-backed HashSet, HashMap, etc.) to detect
+  # modifications during iteration.
+  enable_hash_table_modification_checks = true
+
   # Enable modification checks in blink::HeapVector to detect
   # modifications during iteration.
   enable_heap_vector_modification_checks = false
 
   # Enable modification checks in non-garbage-collected blink::Vector
   # (i.e. PartitionAllocator-backed) to detect modifications during iteration.
-  enable_vector_modification_checks = false
+  enable_vector_modification_checks = true
 }
 
 buildflag_header("wtf_buildflags") {
@@ -27,6 +36,8 @@ buildflag_header("wtf_buildflags") {
   header_dir = "third_party/blink/renderer/platform/wtf"
 
   flags = [
+    "ENABLE_HASH_TABLE_MODIFICATION_CHECKS=$enable_hash_table_modification_checks",
+    "ENABLE_HEAP_HASH_TABLE_MODIFICATION_CHECKS=$enable_heap_hash_table_modification_checks",
     "ENABLE_HEAP_VECTOR_MODIFICATION_CHECKS=$enable_heap_vector_modification_checks",
     "ENABLE_VECTOR_MODIFICATION_CHECKS=$enable_vector_modification_checks",
   ]
@@ -76,16 +87,6 @@ component("wtf") {
     "casting.h",
     "construct_traits.h",
     "container_annotations.h",
-    "cross_thread_copier.h",
-    "cross_thread_copier_base.h",
-    "cross_thread_copier_gfx.h",
-    "cross_thread_copier_gpu.h",
-    "cross_thread_copier_media.h",
-    "cross_thread_copier_mojo.h",
-    "cross_thread_copier_public.h",
-    "cross_thread_copier_skia.h",
-    "cross_thread_copier_std.h",
-    "cross_thread_copier_url.h",
     "cross_thread_functional.h",
     "date_math.cc",
     "date_math.h",
@@ -130,7 +131,6 @@ component("wtf") {
     "stack_util.cc",
     "stack_util.h",
     "static_constructors.h",
-    "std_lib_extras.h",
     "text/ascii_ctype.h",
     "text/ascii_fast_path.cc",
     "text/ascii_fast_path.h",
@@ -225,8 +225,6 @@ component("wtf") {
     "thread_specific.h",
     "threading.cc",
     "threading.h",
-    "threading_primitives.cc",
-    "threading_primitives.h",
     "type_traits.h",
     "uuid.cc",
     "uuid.h",
@@ -256,6 +254,7 @@ component("wtf") {
   deps = [
     "//base/allocator:buildflags",
     "//third_party/blink/public/common",
+    "//third_party/highway:libhwy",
     "//third_party/modp_b64",
     "//third_party/rapidhash",
     "//third_party/simdutf",
@@ -267,9 +266,9 @@ component("wtf") {
   public_deps = [
     ":wtf_buildflags",
     "//base",
+    "//base:i18n",
     "//base/third_party/double_conversion",
     "//components/crash/core/common:crash_key",
-    "//third_party/highway:libhwy",
     "//third_party/icu",
   ]
 
@@ -322,7 +321,9 @@ test("wtf_unittests") {
   deps = [ ":wtf_unittests_sources" ]
   fuzztests = [
     "TextCodecUtf8FuzzTest.DecodeFastPathMatchesLegacy",
+    "TextCodecUtf8FuzzTest.DecodeSimdutfFastPathMatchesLegacy",
     "TextCodecUtf8FuzzTest.DecodeStreamingFastPathMatchesLegacy",
+    "TextCodecUtf8FuzzTest.DecodeStreamingSimdutfFastPathMatchesLegacy",
   ]
 }
 
@@ -344,6 +345,7 @@ test("wtf_perf_tests") {
     "//base/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/blink/public/common",
   ]
 }
 
@@ -415,7 +417,6 @@ source_set("wtf_unittests_sources") {
     "text/utf16_test.cc",
     "text/utf8_test.cc",
     "text/wtf_string_test.cc",
-    "threading_primitives_test.cc",
     "type_traits_test.cc",
     "uuid_test.cc",
     "vector_backed_linked_list_test.cc",
@@ -440,6 +441,7 @@ source_set("wtf_unittests_sources") {
     "//base/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/blink/public/common",
     "//third_party/fuzztest",
   ]
 

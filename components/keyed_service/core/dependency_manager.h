@@ -100,16 +100,26 @@ class KEYED_SERVICE_EXPORT DependencyManager {
   // marked as live again with MarkContextLive().
   void MarkContextDead(void* context);
 
- private:
-  friend class KeyedServiceBaseFactory;
+  // Disables services for |context| by default: services are only created for
+  // it by factories that explicitly allow it, see
+  // KeyedServiceBaseFactory::ServiceIsAllowedWhenServicesDisabledByDefault().
+  // Must be called before any service is created for |context|.
+  void DisableContextServicesByDefault(void* context);
+
+  // Returns whether DisableContextServicesByDefault() has been called for
+  // |context|.
+  bool AreContextServicesDisabledByDefault(void* context) const;
 
   // An ordered container of pointers to KeyedServiceBaseFactory. The order
   // depends on the operation to perform (initialisation, destruction, ...).
   using OrderedFactories =
-      std::vector<raw_ptr<KeyedServiceBaseFactory, VectorExperimental>>;
+      std::vector<raw_ptr<KeyedServiceBaseFactory, DanglingUntriaged>>;
 
   // Returns the list of factories in the order they should be initialised.
   OrderedFactories GetConstructionOrder();
+
+ private:
+  friend class KeyedServiceBaseFactory;
 
   // Returns the list of factories in the order they should be destroyed.
   OrderedFactories GetDestructionOrder();
@@ -130,7 +140,11 @@ class KEYED_SERVICE_EXPORT DependencyManager {
   // These pointers are most likely invalid, but we keep track of their
   // locations in memory so we can nicely assert if we're asked to do anything
   // with them.
-  std::set<raw_ptr<void, SetExperimental>> dead_context_pointers_;
+  std::set<raw_ptr<void, DanglingUntriaged>> dead_context_pointers_;
+
+  // Contexts passed to DisableContextServicesByDefault(). A context is removed
+  // when it is marked as dead.
+  std::set<raw_ptr<void>> contexts_with_services_disabled_by_default_;
 
 #if DCHECK_IS_ON()
 #if BUILDFLAG(KEYED_SERVICE_HAS_TIGHT_REGISTRATION)

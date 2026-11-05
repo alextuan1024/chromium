@@ -4,13 +4,14 @@
 
 #include "ui/accessibility/ax_node_data.h"
 
-#include <set>
 #include <string>
-#include <unordered_set>
 #include <utility>
 
+#include "base/containers/enum_set.h"
 #include "base/test/gtest_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_enum_util.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_role_properties.h"
@@ -178,7 +179,7 @@ TEST(AXNodeDataTest, IsClickable) {
   }
 
   // Test for iterating through all roles and validate if a role is clickable.
-  std::set<ax::mojom::Role> roles_expected_is_clickable = {
+  constexpr base::EnumSet<ax::mojom::Role> roles_expected_is_clickable = {
       ax::mojom::Role::kButton,
       ax::mojom::Role::kCheckBox,
       ax::mojom::Role::kColorWell,
@@ -224,7 +225,7 @@ TEST(AXNodeDataTest, IsClickable) {
                  << ", Actual: isClickable=" << is_clickable
                  << ", Expected: isClickable=" << !is_clickable);
 
-    EXPECT_EQ(roles_expected_is_clickable.contains(data.role), is_clickable);
+    EXPECT_EQ(roles_expected_is_clickable.Has(data.role), is_clickable);
   }
 }
 
@@ -355,14 +356,15 @@ TEST(AXNodeDataTest, SupportsExpandCollapse) {
   // collapse.
   AXNodeData data;
 
-  std::unordered_set<ax::mojom::Role> roles_expected_supports_expand_collapse =
-      {ax::mojom::Role::kComboBoxGrouping,
-       ax::mojom::Role::kComboBoxMenuButton,
-       ax::mojom::Role::kComboBoxSelect,
-       ax::mojom::Role::kDisclosureTriangle,
-       ax::mojom::Role::kDisclosureTriangleGrouped,
-       ax::mojom::Role::kTextFieldWithComboBox,
-       ax::mojom::Role::kTreeItem};
+  constexpr base::EnumSet<ax::mojom::Role>
+      roles_expected_supports_expand_collapse = {
+          ax::mojom::Role::kComboBoxGrouping,
+          ax::mojom::Role::kComboBoxMenuButton,
+          ax::mojom::Role::kComboBoxSelect,
+          ax::mojom::Role::kDisclosureTriangle,
+          ax::mojom::Role::kDisclosureTriangleGrouped,
+          ax::mojom::Role::kTextFieldWithComboBox,
+          ax::mojom::Role::kTreeItem};
 
   for (int role_idx = static_cast<int>(ax::mojom::Role::kMinValue);
        role_idx <= static_cast<int>(ax::mojom::Role::kMaxValue); role_idx++) {
@@ -375,11 +377,11 @@ TEST(AXNodeDataTest, SupportsExpandCollapse) {
                                     << ", Expected: supportsExpandCollapse="
                                     << !supports_expand_collapse);
 
-    if (roles_expected_supports_expand_collapse.find(data.role) !=
-        roles_expected_supports_expand_collapse.end())
+    if (roles_expected_supports_expand_collapse.Has(data.role)) {
       EXPECT_TRUE(supports_expand_collapse);
-    else
+    } else {
       EXPECT_FALSE(supports_expand_collapse);
+    }
   }
 }
 
@@ -472,6 +474,44 @@ TEST(AXNodeDataTest, BitFieldsConfidenceCheck) {
             sizeof(AXNodeData::state) * 8);
   EXPECT_LT(static_cast<size_t>(ax::mojom::Action::kMaxValue),
             sizeof(AXNodeData::actions) * 8);
+}
+
+TEST(AXNodeDataTest, IsValidAXNodeDataFromRenderer) {
+  // Test IsValidAXNodeIDFromRenderer directly.
+  EXPECT_TRUE(IsValidAXNodeIDFromRenderer(1));
+  EXPECT_TRUE(IsValidAXNodeIDFromRenderer(42));
+  EXPECT_TRUE(IsValidAXNodeIDFromRenderer(kInvalidAXNodeID));
+  EXPECT_TRUE(IsValidAXNodeIDFromRenderer(kFirstGeneratedRendererNodeID));
+  EXPECT_TRUE(IsValidAXNodeIDFromRenderer(kFirstGeneratedRendererNodeID - 1));
+  EXPECT_TRUE(IsValidAXNodeIDFromRenderer(kLastGeneratedRendererNodeID));
+
+  EXPECT_FALSE(IsValidAXNodeIDFromRenderer(kFirstGeneratedBrowserNodeID));
+  EXPECT_FALSE(IsValidAXNodeIDFromRenderer(-100));
+  EXPECT_FALSE(IsValidAXNodeIDFromRenderer(kLastGeneratedBrowserNodeID));
+  EXPECT_FALSE(IsValidAXNodeIDFromRenderer(kInitialEmptyDocumentRootNodeID));
+
+  // Test AXNodeData.HasValidAXNodeIDsFromRenderer.
+  AXNodeData valid_node;
+  valid_node.id = 1;
+  valid_node.child_ids = {2, 3, kFirstGeneratedRendererNodeID};
+  EXPECT_TRUE(valid_node.HasValidAXNodeIDsFromRenderer());
+
+  AXNodeData invalid_node_id;
+  invalid_node_id.id = kFirstGeneratedBrowserNodeID;
+  EXPECT_FALSE(invalid_node_id.HasValidAXNodeIDsFromRenderer());
+
+  AXNodeData invalid_child_id;
+  invalid_child_id.id = 1;
+  invalid_child_id.child_ids = {2, kInitialEmptyDocumentRootNodeID};
+  EXPECT_FALSE(invalid_child_id.HasValidAXNodeIDsFromRenderer());
+
+  // When feature flag is disabled, all IDs are accepted.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      ::features::kAccessibilityCheckAXNodeIDs);
+  EXPECT_TRUE(IsValidAXNodeIDFromRenderer(kFirstGeneratedBrowserNodeID));
+  EXPECT_TRUE(invalid_node_id.HasValidAXNodeIDsFromRenderer());
+  EXPECT_TRUE(invalid_child_id.HasValidAXNodeIDsFromRenderer());
 }
 
 }  // namespace ui

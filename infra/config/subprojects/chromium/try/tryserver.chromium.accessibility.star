@@ -16,10 +16,12 @@ try_.defaults.set(
     pool = try_constants.DEFAULT_POOL,
     cores = 8,
     os = os.LINUX_DEFAULT,
+    ssd = True,
     compilator_cores = 16,
     execution_timeout = try_constants.DEFAULT_EXECUTION_TIMEOUT,
     experiments = {
         "chromium_tests.resultdb_module": 100,
+        "luci.buildbucket.run_in_turboci.grpc_client": 50,
         "luci.buildbucket.run_in_turboci": 100,
     },
     service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
@@ -59,7 +61,6 @@ try_.builder(
         ],
     ),
     check_for_flakiness = False,
-    check_for_flakiness_with_resultdb = False,
     cq_settings = try_.cq_settings(
         location_filters = [
             "third_party/blink/renderer/modules/accessibility/.+",

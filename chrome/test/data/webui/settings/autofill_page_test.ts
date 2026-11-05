@@ -4,29 +4,48 @@
 
 import 'chrome://settings/settings.js';
 
-import {AiEnterpriseFeaturePrefName, AutofillManagerImpl, EntityDataManagerProxyImpl, PaymentsManagerImpl} from 'chrome://settings/lazy_load.js';
-import {CrSettingsPrefs, ModelExecutionEnterprisePolicyValue} from 'chrome://settings/settings.js';
-import type {SettingsAutofillPageElement, SettingsPrefsElement} from 'chrome://settings/settings.js';
-import {loadTimeData, MetricsBrowserProxyImpl, OpenWindowProxyImpl, PasswordManagerImpl, PasswordManagerPage, resetRouterForTesting, Router, YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from 'chrome://settings/settings.js';
-import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
-import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
-import {isChildVisible} from 'chrome://webui-test/test_util.js';
 import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
-
+import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
+import {AiEnterpriseFeaturePrefName, AutofillManagerImpl, EntityDataManagerProxyImpl, PaymentsManagerImpl} from 'chrome://settings/lazy_load.js';
+import type {SettingsAutofillPageElement} from 'chrome://settings/settings.js';
+import {loadTimeData, MetricsBrowserProxyImpl, ModelExecutionEnterprisePolicyValue, OpenWindowProxyImpl, PasswordManagerImpl, PasswordManagerPage, PrefsBrowserProxy, PrefService, resetRouterForTesting, Router, SavedInfoHandlerImpl, YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from 'chrome://settings/settings.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
+import {isChildVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {createAddressEntry, createCreditCardEntry, createIbanEntry, createPayOverTimeIssuerEntry, TestAutofillManager, TestPaymentsManager} from './autofill_fake_data.js';
 import {TestEntityDataManagerProxy} from './test_entity_data_manager_proxy.js';
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
+import {TestSavedInfoHandlerProxy} from './test_saved_info_handler_proxy.js';
 
-function setDefaultPrefs(objectToSetup: SettingsPrefsElement) {
-  objectToSetup.set(
-      `prefs.${AiEnterpriseFeaturePrefName.AUTOFILL_AI}.value`,
-      ModelExecutionEnterprisePolicyValue.ALLOW);
-  objectToSetup.set(
-      'prefs.optimization_guide.model_execution.autofill_prediction_improvements_enterprise_policy_allowed.value',
-      ModelExecutionEnterprisePolicyValue.ALLOW);
+async function setupPrefs() {
+  const prefsBrowserProxy = new TestPrefsBrowserProxy([
+    {
+      key: 'signin.allowed_on_next_startup',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: 'autofill.profile_enabled',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+    },
+    {
+      key: AiEnterpriseFeaturePrefName.AUTOFILL_AI,
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: ModelExecutionEnterprisePolicyValue.ALLOW,
+    },
+    {
+      key: 'autofill.autofill_ai.reauth_before_viewing_sensitive_data',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+    },
+  ]);
+  PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+  PrefService.resetInstanceForTesting();
+  await PrefService.getInstance().whenInitialized();
 }
 
 suite('AutofillPage', function() {
@@ -35,11 +54,10 @@ suite('AutofillPage', function() {
   let passwordManager: TestPasswordManagerProxy;
   let paymentsManager: TestPaymentsManager;
   let metricsBrowserProxy: TestMetricsBrowserProxy;
-  let settingsPrefs: SettingsPrefsElement;
+  let savedInfoHandler: TestSavedInfoHandlerProxy;
 
   suiteSetup(function() {
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
+    return setupPrefs();
   });
 
   setup(async function() {
@@ -53,12 +71,15 @@ suite('AutofillPage', function() {
     PaymentsManagerImpl.setInstance(paymentsManager);
     metricsBrowserProxy = new TestMetricsBrowserProxy();
     MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
+    savedInfoHandler = new TestSavedInfoHandlerProxy();
+    SavedInfoHandlerImpl.setInstance(savedInfoHandler);
 
     await setupPage({
       showIbansSettings: true,
       shouldShowPayOverTimeSettings: true,
       shoppingIntegrationEnabled: true,
       showSuggestionsFromGeminiSettings: true,
+      offersAndLoyaltyCardsSettingsEnabled: true,
     });
   });
 
@@ -68,17 +89,15 @@ suite('AutofillPage', function() {
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     autofillPage = document.createElement('settings-autofill-page');
-    setDefaultPrefs(settingsPrefs);
-    autofillPage.prefs = settingsPrefs.prefs!;
     document.body.appendChild(autofillPage);
-    await flushTasks();
+    await microtasksFinished();
   }
 
   function getChipCount(chipLabel: string): number|undefined {
-    const cards = autofillPage.shadowRoot!.querySelectorAll(
-        'category-reference-card');
+    const cards =
+        autofillPage.shadowRoot.querySelectorAll('category-reference-card');
     for (const card of cards) {
-      const chips = card.shadowRoot!.querySelectorAll('cr-button');
+      const chips = card.shadowRoot.querySelectorAll('cr-button');
       for (const chip of chips) {
         const labelSpan = chip.querySelector('span:not(.counter)');
         if (labelSpan && labelSpan.textContent === chipLabel) {
@@ -94,13 +113,9 @@ suite('AutofillPage', function() {
     return undefined;
   }
 
-  teardown(function() {
-    CrSettingsPrefs.resetForTesting();
-  });
-
   test('TitleExists', function() {
     const autofillPageTitleElement =
-        autofillPage.shadowRoot!.querySelector('#autofillPageTitle');
+        autofillPage.shadowRoot.querySelector('#autofillPageTitle');
     assertTrue(!!autofillPageTitleElement);
   });
 
@@ -109,21 +124,32 @@ suite('AutofillPage', function() {
       shoppingIntegrationEnabled: false,
     });
 
-    const shoppingCard =
-        autofillPage.shadowRoot!.querySelector<HTMLElement>(
-            '#shoppingManagerButton');
+    const shoppingCard = autofillPage.shadowRoot.querySelector<HTMLElement>(
+        '#shoppingManagerButton');
     assertFalse(!!shoppingCard);
   });
 
+  test('OffersAndLoyaltyCardsCategoryHiddenWhenFlagDisabled', async function() {
+    await setupPage({
+      offersAndLoyaltyCardsSettingsEnabled: false,
+    });
+
+    const offersAndLoyaltyCardsCard =
+        autofillPage.shadowRoot.querySelector<HTMLElement>(
+            '#offersAndLoyaltyCardsManagerButton');
+    assertFalse(!!offersAndLoyaltyCardsCard);
+  });
+
   test('CardsRenderCorrectly', function() {
-    const cards = autofillPage.shadowRoot!.querySelectorAll(
-        'category-reference-card');
+    const cards =
+        autofillPage.shadowRoot.querySelectorAll('category-reference-card');
     const expectedCardTitles = [
       loadTimeData.getString('localPasswordManager'),
       loadTimeData.getString('paymentsTitle'),
       loadTimeData.getString('contactInfoTitle'),
       loadTimeData.getString('identityDocsCardTitle'),
       loadTimeData.getString('travelCardTitle'),
+      loadTimeData.getString('offersAndLoyaltyCardsCardTitle'),
       loadTimeData.getString('shoppingCardTitle'),
     ];
 
@@ -134,15 +160,15 @@ suite('AutofillPage', function() {
   });
 
   test('passwordsCardOpensPasswordManager', async function() {
-    const passwordsCard =
-        autofillPage.shadowRoot!.querySelector<HTMLElement>(`
+    const passwordsCard = autofillPage.shadowRoot.querySelector<HTMLElement>(`
         category-reference-card[card-title="${
-            loadTimeData.getString('localPasswordManager')}"]`);
+        loadTimeData.getString('localPasswordManager')}"]`);
     assertTrue(!!passwordsCard);
 
     passwordsCard.shadowRoot!.querySelector<HTMLElement>(
                                  'cr-link-row')!.click();
 
+    await passwordManager.whenCalled('recordPasswordsPageAccessInSettings');
     const page = await passwordManager.whenCalled('showPasswordManager');
     assertEquals(PasswordManagerPage.PASSWORDS, page);
     const [category] = await metricsBrowserProxy.whenCalled(
@@ -179,13 +205,18 @@ suite('AutofillPage', function() {
      expectedCategory: YourSavedInfoDataCategory.TRAVEL,
    },
    {
+     cardTitle: 'offersAndLoyaltyCardsCardTitle',
+     expectedRoute: '/offersAndLoyaltyCards',
+     expectedCategory: YourSavedInfoDataCategory.OFFERS_AND_LOYALTY_CARDS,
+   },
+   {
      cardTitle: 'shoppingCardTitle',
      expectedRoute: '/shopping',
      expectedCategory: YourSavedInfoDataCategory.SHOPPING,
    },
   ].forEach(({cardTitle, expectedRoute, expectedCategory}) => {
     test(`${cardTitle} card navigates to the correct route`, async function() {
-      const card = autofillPage.shadowRoot!.querySelector<HTMLElement>(
+      const card = autofillPage.shadowRoot.querySelector<HTMLElement>(
           `category-reference-card[card-title="${
               loadTimeData.getString(cardTitle)}"]`);
       assertTrue(!!card);
@@ -225,7 +256,7 @@ suite('AutofillPage', function() {
     const payOverTimeIssuerList = [createPayOverTimeIssuerEntry()];
     autofillManager.lastCallback.setPersonalDataManagerListener!
         (addressList, cardList, ibanList, payOverTimeIssuerList);
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(2, getChipCount(loadTimeData.getString('addresses')));
     assertEquals(
@@ -238,7 +269,7 @@ suite('AutofillPage', function() {
   });
 
   test('ClickOnChipNavigatesToLeafPage', async function() {
-    const card = autofillPage.shadowRoot!.querySelector<HTMLElement>(
+    const card = autofillPage.shadowRoot.querySelector<HTMLElement>(
         `category-reference-card[card-title="${
             loadTimeData.getString('contactInfoTitle')}"]`);
     assertTrue(!!card);
@@ -260,7 +291,7 @@ suite('AutofillPage', function() {
   });
 
   test('ClickOnShoppingChipNavigatesToLeafPage', async function() {
-    const card = autofillPage.shadowRoot!.querySelector<HTMLElement>(
+    const card = autofillPage.shadowRoot.querySelector<HTMLElement>(
         `category-reference-card[card-title="${
             loadTimeData.getString('shoppingCardTitle')}"]`);
     assertTrue(!!card);
@@ -282,26 +313,64 @@ suite('AutofillPage', function() {
     assertEquals('Settings.YourSavedInfo.ChipClick.ORDERS', action);
   });
 
+  test('LoyaltyCardsCounterIsUpdated', async function() {
+    savedInfoHandler.setLoyaltyCardsCount(2);
+    // `setup()` already created a page, so reset the resolver to wait for the
+    // call from the recreated page below.
+    savedInfoHandler.resetResolver('getLoyaltyCardsCount');
+    await setupPage({offersAndLoyaltyCardsSettingsEnabled: true});
+    await savedInfoHandler.whenCalled('getLoyaltyCardsCount');
+    await microtasksFinished();
+    assertEquals(2, getChipCount(loadTimeData.getString('loyaltyCardsTitle')));
+
+    webUIListenerCallback('loyalty-cards-count-changed', 3);
+    await microtasksFinished();
+    assertEquals(3, getChipCount(loadTimeData.getString('loyaltyCardsTitle')));
+  });
+
+  test('ClickOnLoyaltyCardsChipNavigatesToLeafPage', async function() {
+    const card = autofillPage.shadowRoot.querySelector<HTMLElement>(
+        '#offersAndLoyaltyCardsManagerButton');
+    assertTrue(!!card);
+    const chips: HTMLElement[] =
+        Array.from(card.shadowRoot!.querySelectorAll('cr-button'));
+    const chip: HTMLElement = chips.find(chip => {
+      const labelSpan = chip.querySelector('span:not(.counter)');
+      return labelSpan &&
+          labelSpan.textContent === loadTimeData.getString('loyaltyCardsTitle');
+    })!;
+    assertTrue(!!chip);
+
+    chip.click();
+    assertEquals(
+        '/offersAndLoyaltyCards', Router.getInstance().currentRoute.path);
+    const [metricChip] = await metricsBrowserProxy.whenCalled(
+        'recordYourSavedInfoDataChipClick');
+    assertEquals(YourSavedInfoDataChip.LOYALTY_CARDS, metricChip);
+    const action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('Settings.YourSavedInfo.ChipClick.LOYALTY_CARDS', action);
+  });
+
   test('SuggestionsFromGeminiHiddenWhenFlagDisabled', async function() {
     await setupPage({
       showSuggestionsFromGeminiSettings: false,
     });
 
-    const geminiCard = autofillPage.shadowRoot!.querySelector<HTMLElement>(
+    const geminiCard = autofillPage.shadowRoot.querySelector<HTMLElement>(
         '#suggestionsFromGeminiCard');
     assertFalse(!!geminiCard);
   });
 
   test('SuggestionsFromGeminiCardNavigates', async function() {
-    const geminiCard = autofillPage.shadowRoot!.querySelector<HTMLElement>(
+    const geminiCard = autofillPage.shadowRoot.querySelector<HTMLElement>(
         '#suggestionsFromGeminiCard');
     assertTrue(!!geminiCard);
 
-    const button = autofillPage.shadowRoot!.querySelector<HTMLElement>(
+    const button = autofillPage.shadowRoot.querySelector<HTMLElement>(
         '#suggestionsFromGeminiLinkRow');
     assertTrue(!!button);
 
-    const icon = autofillPage.shadowRoot!.querySelector<CrIconElement>(
+    const icon = autofillPage.shadowRoot.querySelector<CrIconElement>(
         '#suggestionsFromGeminiSubLabel cr-icon');
     assertTrue(!!icon);
     // <if expr="_google_chrome">
@@ -326,12 +395,10 @@ suite('AutofillPage', function() {
 });
 
 suite('DataChipsVisibility', function() {
-  let settingsPrefs: SettingsPrefsElement;
   let entityDataManager: TestEntityDataManagerProxy;
 
   suiteSetup(function() {
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
+    return setupPrefs();
   });
 
   setup(function() {
@@ -370,28 +437,23 @@ suite('DataChipsVisibility', function() {
 
   async function setupPage(overrides: {[key: string]: boolean}):
       Promise<SettingsAutofillPageElement> {
-    loadTimeData.overrideValues(overrides);
+    loadTimeData.overrideValues(
+        {offersAndLoyaltyCardsSettingsEnabled: false, ...overrides});
     resetRouterForTesting();
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const autofillPage: SettingsAutofillPageElement =
         document.createElement('settings-autofill-page');
-    setDefaultPrefs(settingsPrefs);
-    autofillPage.prefs = settingsPrefs.prefs!;
     document.body.appendChild(autofillPage);
-    await flushTasks();
+    await microtasksFinished();
     return autofillPage;
   }
-
-  teardown(function() {
-    CrSettingsPrefs.resetForTesting();
-  });
 
   function getChipLabels(
       autofillPage: SettingsAutofillPageElement,
       cardSelector: string): string[] {
     const card =
-        autofillPage.shadowRoot!.querySelector<HTMLElement>(cardSelector);
+        autofillPage.shadowRoot.querySelector<HTMLElement>(cardSelector);
     assertTrue(!!card);
     const chips: HTMLElement[] =
         Array.from(card.shadowRoot!.querySelectorAll('cr-button'));
@@ -468,7 +530,7 @@ suite('DataChipsVisibility', function() {
     });
     autofillManager.lastCallback.setPersonalDataManagerListener!
         ([], [], [createIbanEntry()], []);
-    await flushTasks();
+    await microtasksFinished();
 
     assertDeepEquals(
         [
@@ -493,6 +555,24 @@ suite('DataChipsVisibility', function() {
           loadTimeData.getString('loyaltyCardsTitle'),
         ],
         getChipLabels(autofillPage, '#paymentManagerButton'));
+  });
+
+  test('LoyaltyCardsChipInOffersAndLoyaltyCardsWhenEnabled', async function() {
+    const autofillPage = await setupPage({
+      showIbansSettings: true,
+      shouldShowPayOverTimeSettings: true,
+      offersAndLoyaltyCardsSettingsEnabled: true,
+    });
+    assertDeepEquals(
+        [
+          loadTimeData.getString('creditAndDebitCardTitle'),
+          loadTimeData.getString('ibanTitle'),
+          loadTimeData.getString('autofillPayOverTimeSettingsLabel'),
+        ],
+        getChipLabels(autofillPage, '#paymentManagerButton'));
+    assertDeepEquals(
+        [loadTimeData.getString('loyaltyCardsTitle')],
+        getChipLabels(autofillPage, '#offersAndLoyaltyCardsManagerButton'));
   });
 
   test('DisabledAutofillAi', async function() {
@@ -569,12 +649,10 @@ suite('RelatedServices', function() {
   let autofillPage: SettingsAutofillPageElement;
   let openWindowProxy: TestOpenWindowProxy;
   let passwordManager: TestPasswordManagerProxy;
-  let settingsPrefs: SettingsPrefsElement;
   let metricsBrowserProxy: TestMetricsBrowserProxy;
 
   suiteSetup(function() {
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
+    return setupPrefs();
   });
 
   setup(function() {
@@ -591,18 +669,11 @@ suite('RelatedServices', function() {
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     autofillPage = document.createElement('settings-autofill-page');
-    setDefaultPrefs(settingsPrefs);
-    autofillPage.prefs = settingsPrefs.prefs!;
     document.body.appendChild(autofillPage);
   });
 
-  teardown(function() {
-    CrSettingsPrefs.resetForTesting();
-  });
-
   async function testRowOpensUrl(selector: string, urlStringId: string) {
-    const row =
-        autofillPage.shadowRoot!.querySelector<HTMLElement>(selector);
+    const row = autofillPage.shadowRoot.querySelector<HTMLElement>(selector);
     assertTrue(!!row);
     row.click();
     const url = await openWindowProxy.whenCalled('openUrl');
@@ -611,7 +682,7 @@ suite('RelatedServices', function() {
 
   test('CardRendersCorrectly', function() {
     const relatedServicesCard =
-        autofillPage.shadowRoot!.querySelector<HTMLElement>(
+        autofillPage.shadowRoot.querySelector<HTMLElement>(
             `settings-section[page-title="${
                 loadTimeData.getString(
                     'yourSavedInfoRelatedServicesTitle')}"]`);
@@ -630,10 +701,11 @@ suite('RelatedServices', function() {
 
   test('PasswordManagerRowOpensPasswordManager', async function() {
     const passwordManagerRow =
-        autofillPage.shadowRoot!.querySelector<HTMLElement>(
+        autofillPage.shadowRoot.querySelector<HTMLElement>(
             '#passwordManagerButton');
     assertTrue(!!passwordManagerRow);
     passwordManagerRow.click();
+    await passwordManager.whenCalled('recordPasswordsPageAccessInSettings');
     const page = await passwordManager.whenCalled('showPasswordManager');
     assertEquals(PasswordManagerPage.PASSWORDS, page);
     const [service] = await metricsBrowserProxy.whenCalled(

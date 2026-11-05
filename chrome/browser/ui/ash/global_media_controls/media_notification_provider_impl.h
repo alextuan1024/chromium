@@ -5,7 +5,9 @@
 #ifndef CHROME_BROWSER_UI_ASH_GLOBAL_MEDIA_CONTROLS_MEDIA_NOTIFICATION_PROVIDER_IMPL_H_
 #define CHROME_BROWSER_UI_ASH_GLOBAL_MEDIA_CONTROLS_MEDIA_NOTIFICATION_PROVIDER_IMPL_H_
 
+#include <memory>
 #include <optional>
+#include <string>
 
 #include "ash/ash_export.h"
 #include "ash/system/media/media_notification_provider.h"
@@ -20,6 +22,7 @@
 #include "components/media_message_center/notification_theme.h"
 
 class CastMediaNotificationProducerKeyedService;
+class MediaSessionRouteObserver;
 class Profile;
 
 namespace global_media_controls {
@@ -97,6 +100,7 @@ class ASH_EXPORT MediaNotificationProviderImpl
 
   // global_media_controls::MediaItemUIObserver:
   void OnMediaItemUISizeChanged() override;
+  void OnMediaItemUIDestroyed(const std::string& id) override;
 
   global_media_controls::MediaSessionItemProducer*
   media_session_item_producer_for_testing() {
@@ -118,6 +122,20 @@ class ASH_EXPORT MediaNotificationProviderImpl
   global_media_controls::mojom::DeviceService* GetDeviceService(
       base::WeakPtr<media_message_center::MediaNotificationItem> item) const;
 
+  // Starts or stops observing Media Routes for the active profile.
+  void StartObservingRoutes();
+  void StopObservingRoutes();
+
+  // Refreshes the item `id` after its associated Media Route started or
+  // ended, so that the stop casting footer and the device selector match the
+  // current routes.
+  void OnSessionRouteChanged(
+      const std::string& id,
+      base::WeakPtr<media_message_center::MediaNotificationItem> item);
+
+  // Stops observing routes if the list view is gone.
+  void StopObservingRoutesIfNoListView();
+
   // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
   base::ObserverList<
       MediaNotificationProviderObserver,
@@ -129,6 +147,11 @@ class ASH_EXPORT MediaNotificationProviderImpl
       media_item_ui_list_view_;
 
   std::string show_devices_for_item_id_;
+
+  // Tracks the Media Routes of items in `media_item_ui_list_view_` while it is
+  // showing. Declared before `media_session_item_producer_`, which hides its
+  // items when it is destroyed.
+  std::unique_ptr<MediaSessionRouteObserver> route_observer_;
 
   std::unique_ptr<global_media_controls::MediaItemManager> item_manager_;
 

@@ -201,7 +201,7 @@ public class StripLayoutTab extends StripLayoutView {
     private final Size mCloseButtonSize;
     private TintedCompositorButton mCloseButton;
 
-    private boolean mIsSelected;
+    private boolean mIsActivated;
     private boolean mIsPinned;
     private boolean mIsHovered;
     private boolean mIsMultiSelected;
@@ -238,7 +238,7 @@ public class StripLayoutTab extends StripLayoutView {
     // Preallocated
     private final RectF mClosePlacement = new RectF();
 
-    private final ObserverList<Observer> mObservers = new ObserverList<>();
+    private @Nullable ObserverList<Observer> mObservers;
 
     private @VisualState int mVisualState = VisualState.NORMAL;
 
@@ -319,17 +319,17 @@ public class StripLayoutTab extends StripLayoutView {
     }
 
     /**
-     * Sets the selected state for this tab.
+     * Sets the activated state for this tab.
      *
-     * @param isSelected Whether the tab is selected.
+     * @param isActivated Whether the tab is activated.
      */
-    public void setIsSelected(boolean isSelected) {
-        mIsSelected = isSelected;
+    public void setIsActivated(boolean isActivated) {
+        mIsActivated = isActivated;
     }
 
-    /** Gets the selected state for this tab. */
-    public boolean getIsSelected() {
-        return mIsSelected;
+    /** Gets the activated state for this tab. */
+    public boolean getIsActivated() {
+        return mIsActivated;
     }
 
     /**
@@ -417,13 +417,15 @@ public class StripLayoutTab extends StripLayoutView {
 
     /** Returns whether an alert indicator should be shown. */
     public boolean shouldShowAlertIndicator() {
-        if (mAlertState == TabAlert.GLIC_ACCESSING || mAlertState == TabAlert.GLIC_SHARING) {
+        if (mAlertState == TabAlert.GLIC_ACCESSING
+                || mAlertState == TabAlert.GLIC_SHARING
+                || mAlertState == TabAlert.AI_MODE_SHARING) {
             // Tab underlines replace the alert indicator for Glic accessing and sharing states on
             // the tab strip.
             return false;
         }
-        return TabUtils.getTabAlertDrawable(mAlertState) != Resources.ID_NULL
-                && !shouldHideAlertIndicator();
+        boolean hasSpace = mCloseButton.getOpacity() == 0.f || getWidth() > WIDTH_TO_HIDE_ICON;
+        return TabUtils.getTabAlertDrawable(mAlertState) != Resources.ID_NULL && hasSpace;
     }
 
     /** Returns the resource ID of the alert indicator to show. */
@@ -536,19 +538,26 @@ public class StripLayoutTab extends StripLayoutView {
      */
     @VisibleForTesting
     public void addObserver(Observer observer) {
+        if (mObservers == null) {
+            mObservers = new ObserverList<>();
+        }
         mObservers.addObserver(observer);
     }
 
-    /** @param observer The observer to remove. */
+    /**
+     * @param observer The observer to remove.
+     */
     public void removeObserver(Observer observer) {
-        mObservers.removeObserver(observer);
+        if (mObservers != null) {
+            mObservers.removeObserver(observer);
+        }
     }
 
     @Override
     public void getVirtualViews(List<VirtualView> views) {
         if (isCollapsed() || isDying()) return;
         super.getVirtualViews(views);
-        if (mShowingCloseButton || mIsSelected) mCloseButton.getVirtualViews(views);
+        if (mShowingCloseButton || mIsActivated) mCloseButton.getVirtualViews(views);
     }
 
     @Override
@@ -565,6 +574,7 @@ public class StripLayoutTab extends StripLayoutView {
      *
      * @param description A description for accessibility events.
      * @param title The title of the tab.
+     * @param newA11yTabstripIdentifierResId The String resource ID the description uses.
      */
     public void setAccessibilityDescription(
             String description,
@@ -641,16 +651,12 @@ public class StripLayoutTab extends StripLayoutView {
         mTabId = id;
     }
 
-    /**
-     * @return The id of the {@link Tab} this {@link StripLayoutTab} represents.
-     */
+    /** Returns the id of the {@link Tab} this {@link StripLayoutTab} represents. */
     public int getTabId() {
         return mTabId;
     }
 
-    /**
-     * @return The Android resource that represents the tab background.
-     */
+    /** Returns the Android resource that represents the tab background. */
     public @DrawableRes int getResourceId() {
         if (!mFolioAttached || mIsPlaceholder) {
             return TabUiThemeUtil.getDetachedResource();
@@ -659,16 +665,12 @@ public class StripLayoutTab extends StripLayoutView {
         }
     }
 
-    /**
-     * @return The Android resource that represents the tab outline.
-     */
+    /** Returns the Android resource that represents the tab outline. */
     public @DrawableRes int getOutlineResourceId() {
         return R.drawable.tab_group_outline;
     }
 
-    /**
-     * @return The Android resource that represents the tab divider.
-     */
+    /** Returns the Android resource that represents the tab divider. */
     public @DrawableRes int getDividerResourceId() {
         return R.drawable.bg_tabstrip_tab_divider;
     }
@@ -680,9 +682,9 @@ public class StripLayoutTab extends StripLayoutView {
      */
     public @ColorInt int getTint() {
         switch (mVisualState) {
-            case VisualState.SELECTED_HOVERED:
+            case VisualState.ACTIVATED_HOVERED:
                 return TabUiThemeUtil.getTabStripSelectedTabColor(mContext, isIncognito());
-            case VisualState.SELECTED:
+            case VisualState.ACTIVATED:
                 return TabUiThemeUtil.getTabStripSelectedTabColor(mContext, isIncognito());
             case VisualState.NON_DRAG_REORDERING:
                 return TabUiThemeUtil.getTabStripBackgroundColor(mContext, isIncognito());
@@ -703,9 +705,7 @@ public class StripLayoutTab extends StripLayoutView {
         }
     }
 
-    /**
-     * @return The tint color resource for the tab divider.
-     */
+    /** Returns the tint color resource for the tab divider. */
     public @ColorInt int getDividerTint() {
         return TabUiThemeUtil.getDividerTint(mContext, isIncognito());
     }
@@ -717,9 +717,7 @@ public class StripLayoutTab extends StripLayoutView {
         mStartDividerVisible = visible;
     }
 
-    /**
-     * @return Visibility of tab's start divider.
-     */
+    /** Returns visibility of tab's start divider. */
     public boolean isStartDividerVisible() {
         return mStartDividerVisible;
     }
@@ -731,9 +729,7 @@ public class StripLayoutTab extends StripLayoutView {
         mEndDividerVisible = visible;
     }
 
-    /**
-     * @return Visibility of tab's end divider.
-     */
+    /** Returns visibility of tab's end divider. */
     public boolean isEndDividerVisible() {
         return mEndDividerVisible;
     }
@@ -755,8 +751,10 @@ public class StripLayoutTab extends StripLayoutView {
             mUpdateHost.releaseResourcesForTab(mTabId);
         }
 
-        for (Observer observer : mObservers) {
-            observer.onVisibilityChanged(isVisible());
+        if (mObservers != null) {
+            for (Observer observer : mObservers) {
+                observer.onVisibilityChanged(isVisible());
+            }
         }
     }
 
@@ -765,22 +763,19 @@ public class StripLayoutTab extends StripLayoutView {
         assert false : "Incognito state of a tab cannot change";
     }
 
-    /**
-     * @return Whether or not this tab should be visually represented as loading.
-     */
+    /** Returns whether or not this tab should be visually represented as loading. */
     public boolean isLoading() {
         return mLoadTracker.isLoading();
     }
 
-    /**
-     * @return The rotation of the loading spinner in degrees.
-     */
+    /** Returns the rotation of the loading spinner in degrees. */
     public float getLoadingSpinnerRotation() {
         return mLoadingSpinnerRotationDegrees;
     }
 
     /**
      * Additive spinner rotation update.
+     *
      * @param rotation The amount to rotate the spinner by in degrees.
      */
     public void addLoadingSpinnerRotation(float rotation) {
@@ -799,7 +794,7 @@ public class StripLayoutTab extends StripLayoutView {
 
     /** Returns {@code true} if the tab should be visible. */
     public boolean shouldBeVisible() {
-        return mIsSelected || mIsPlaceholder || mIsMultiSelected || getIsNonDragReordering();
+        return mIsActivated || mIsPlaceholder || mIsMultiSelected || getIsNonDragReordering();
     }
 
     /**
@@ -809,23 +804,17 @@ public class StripLayoutTab extends StripLayoutView {
         mContainerOpacity = opacity;
     }
 
-    /**
-     * @return The fraction (from 0.f to 1.f) of how opaque the tab container should be.
-     */
+    /** Returns the fraction (from 0.f to 1.f) of how opaque the tab container should be. */
     public float getContainerOpacity() {
         return mContainerOpacity;
     }
 
-    /**
-     * @return How far to vertically offset the tab content.
-     */
+    /** Returns how far to vertically offset the tab content. */
     public static float getContentOffsetY() {
         return FOLIO_CONTENT_OFFSET_Y - (TOP_MARGIN_DP / 2);
     }
 
-    /**
-     * @return The trailing offset for the tab divider.
-     */
+    /** Returns the trailing offset for the tab divider. */
     public float getDividerOffsetX() {
         return DIVIDER_OFFSET_X;
     }
@@ -837,30 +826,22 @@ public class StripLayoutTab extends StripLayoutView {
         mBottomMargin = bottomMargin;
     }
 
-    /**
-     * @return How far to offset the bottom of the tab container from the toolbar.
-     */
+    /** Returns how far to offset the bottom of the tab container from the toolbar. */
     public float getBottomMargin() {
         return mBottomMargin;
     }
 
-    /**
-     * @return How far to offset the top of the tab container from the top of the tab strip.
-     */
+    /** Returns how far to offset the top of the tab container from the top of the tab strip. */
     public static float getTopMargin() {
         return TOP_MARGIN_DP;
     }
 
-    /**
-     * @return The horizontal padding between the edges of a tab and its contents.
-     */
+    /** Returns the horizontal padding between the edges of a tab and its contents. */
     public float getContentPaddingX() {
         return CONTENT_PADDING_X;
     }
 
-    /**
-     * @return The size of the tab favicon.
-     */
+    /** Returns the size of the tab favicon. */
     public float getFaviconSize() {
         return FAVICON_WIDTH;
     }
@@ -934,23 +915,17 @@ public class StripLayoutTab extends StripLayoutView {
         mCloseButton.setHovered(closeHovered);
     }
 
-    /**
-     * @return The current hovered state of the close button.
-     */
+    /** Returns the current hovered state of the close button. */
     public boolean isCloseHovered() {
         return mCloseButton.isHovered();
     }
 
-    /**
-     * @return The current pressed state of the close button.
-     */
+    /** Returns the current pressed state of the close button. */
     public boolean getClosePressed() {
         return mCloseButton.isPressed();
     }
 
-    /**
-     * @return The close button for this tab.
-     */
+    /** Returns the close button for this tab. */
     public TintedCompositorButton getCloseButton() {
         return mCloseButton;
     }
@@ -981,6 +956,7 @@ public class StripLayoutTab extends StripLayoutView {
      * This is used to determine if the tab is a placeholder or not. If it is a placeholder, it will
      * show as an empty tab on the tab strip (without tab contents, such as title & favicon,
      * generated).
+     *
      * @return Whether or not the tab is a placeholder used on startup.
      */
     public boolean getIsPlaceholder() {
@@ -996,16 +972,12 @@ public class StripLayoutTab extends StripLayoutView {
         setEndDividerVisible(/* visible= */ false);
     }
 
-    /**
-     * @return The left-side of the tab's touch target.
-     */
+    /** Returns the left-side of the tab's touch target. */
     public float getTouchTargetLeft() {
         return getTouchTargetBounds().left;
     }
 
-    /**
-     * @return The right-side of the tab's touch target.
-     */
+    /** Returns the right-side of the tab's touch target. */
     public float getTouchTargetRight() {
         return getTouchTargetBounds().right;
     }
@@ -1086,11 +1058,6 @@ public class StripLayoutTab extends StripLayoutView {
         return closeButtonVisible && width <= WIDTH_TO_HIDE_ICON;
     }
 
-    public boolean shouldHideAlertIndicator() {
-        final boolean closeButtonVisible = mCloseButton.getOpacity() > 0.f;
-        return closeButtonVisible && getWidth() <= WIDTH_TO_HIDE_ICON;
-    }
-
     /** Returns the width of the alert indicator. */
     public float getAlertIndicatorWidth() {
         if (mAlertState == TabAlert.ACTOR_ACCESSING) {
@@ -1131,7 +1098,11 @@ public class StripLayoutTab extends StripLayoutView {
         return TabUiThemeUtil.getLineWidth(mContext);
     }
 
-    // TODO(dtrainor): Don't animate this if we're selecting or deselecting this tab.
+    void finishAnimations() {
+        if (mButtonOpacityAnimator != null) mButtonOpacityAnimator.end();
+    }
+
+    // TODO(dtrainor): Don't animate this if we're activating or deactivating this tab.
     private void checkCloseButtonVisibility(boolean animate) {
         boolean shouldShow = mCanShowCloseButton && !mIsPlaceholder;
 
@@ -1156,6 +1127,7 @@ public class StripLayoutTab extends StripLayoutView {
                         });
                 mButtonOpacityAnimator.start();
             } else {
+                if (mButtonOpacityAnimator != null) mButtonOpacityAnimator.end();
                 mCloseButton.setOpacity(opacity);
             }
             mShowingCloseButton = shouldShow;

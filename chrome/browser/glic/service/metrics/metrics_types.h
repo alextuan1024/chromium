@@ -9,7 +9,7 @@
 #include <string_view>
 
 #include "chrome/browser/glic/glic_enums.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 
 namespace tabs {
@@ -115,10 +115,10 @@ enum class ResponseSegmentation {
   kAnchoredContextualCueAttachedAudio = 90,
   kAnchoredContextualCueDetachedText = 91,
   kAnchoredContextualCueDetachedAudio = 92,
-  kWebContentsContextMenuAttachedText = 93,
-  kWebContentsContextMenuAttachedAudio = 94,
-  kWebContentsContextMenuDetachedText = 95,
-  kWebContentsContextMenuDetachedAudio = 96,
+  kObsoleteWebContentsContextMenuAttachedText = 93,
+  kObsoleteWebContentsContextMenuAttachedAudio = 94,
+  kObsoleteWebContentsContextMenuDetachedText = 95,
+  kObsoleteWebContentsContextMenuDetachedAudio = 96,
   kTextSelectionNudgeAttachedText = 97,
   kTextSelectionNudgeAttachedAudio = 98,
   kTextSelectionNudgeDetachedText = 99,
@@ -199,7 +199,39 @@ enum class ResponseSegmentation {
   kHistoryPageChatLinkoutAttachedAudio = 174,
   kHistoryPageChatLinkoutDetachedText = 175,
   kHistoryPageChatLinkoutDetachedAudio = 176,
-  kMaxValue = kHistoryPageChatLinkoutDetachedAudio,
+  kContextHubTopicsAttachedText = 177,
+  kContextHubTopicsAttachedAudio = 178,
+  kContextHubTopicsDetachedText = 179,
+  kContextHubTopicsDetachedAudio = 180,
+  kContextHubAutoTodosAttachedText = 181,
+  kContextHubAutoTodosAttachedAudio = 182,
+  kContextHubAutoTodosDetachedText = 183,
+  kContextHubAutoTodosDetachedAudio = 184,
+  kWebContentsContextMenuLinkAttachedText = 185,
+  kWebContentsContextMenuLinkAttachedAudio = 186,
+  kWebContentsContextMenuLinkDetachedText = 187,
+  kWebContentsContextMenuLinkDetachedAudio = 188,
+  kWebContentsContextMenuPageAttachedText = 189,
+  kWebContentsContextMenuPageAttachedAudio = 190,
+  kWebContentsContextMenuPageDetachedText = 191,
+  kWebContentsContextMenuPageDetachedAudio = 192,
+  kWebContentsContextMenuTextSelectionAttachedText = 193,
+  kWebContentsContextMenuTextSelectionAttachedAudio = 194,
+  kWebContentsContextMenuTextSelectionDetachedText = 195,
+  kWebContentsContextMenuTextSelectionDetachedAudio = 196,
+  kActorToolAttachedText = 197,
+  kActorToolAttachedAudio = 198,
+  kActorToolDetachedText = 199,
+  kActorToolDetachedAudio = 200,
+  kActivityListBubbleAttachedText = 201,
+  kActivityListBubbleAttachedAudio = 202,
+  kActivityListBubbleDetachedText = 203,
+  kActivityListBubbleDetachedAudio = 204,
+  kHistoryPageCriticalActionChatLinkoutAttachedText = 205,
+  kHistoryPageCriticalActionChatLinkoutAttachedAudio = 206,
+  kHistoryPageCriticalActionChatLinkoutDetachedText = 207,
+  kHistoryPageCriticalActionChatLinkoutDetachedAudio = 208,
+  kMaxValue = kHistoryPageCriticalActionChatLinkoutDetachedAudio,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicResponseSegmentation)
 
@@ -226,18 +258,25 @@ enum class DaisyChainSource {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/histograms.xml:Source)
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 // LINT.IfChange(GlicDragAndDropValidationResult)
 enum class GlicDragAndDropValidationResult {
   kSuccess = 0,
   kBlockedByFeatureFlag = 1,
-  kInvalidDragId = 2,
+  kObsoleteInvalidDragId = 2,
   kCrossProfileDragBlocked = 3,
-  kSourceWebContentsDestroyed = 4,
-  kSourceTabClosed = 5,
-  kTargetWebContentsDestroyed = 6,
-  kSourceFrameNavigatedBeforeContextFetched = 7,
-  kContextFetchFailed = 8,
-  kMaxValue = kContextFetchFailed,
+  kObsoleteSourceWebContentsDestroyed = 4,
+  kObsoleteSourceTabClosed = 5,
+  kObsoleteTargetWebContentsDestroyed = 6,
+  kObsoleteSourceFrameNavigatedBeforeContextFetched = 7,
+  kObsoleteContextFetchFailed = 8,
+  kUnsupportedContentType = 9,
+  kPageContextIneligible = 10,
+  kUnknownDragSource = 11,
+  kSourceFrameDestroyed = 12,
+  kFreNotCompleted = 13,
+  kMaxValue = kFreNotCompleted,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicDragAndDropValidationResult)
 
@@ -320,9 +359,10 @@ enum class GlicInstanceEvent {
   kWebUiStateDisabledByAdmin = 39,
   kUnbindEmbedder = 40,
   kUserInputSubmitted = 41,
-  kContextRequested = 42,
+  kFocusedTabContextRequested = 42,
   kResponseStarted = 43,
-  kResponseStopped = 44,
+  // kResponseStopped = 44 - Deprecated in favor of kResponseStoppedByUser,
+  // kResponseStoppedOther, and kResponseStoppedSuccess.
   kTurnCompleted = 45,
   kReaction = 46,
   kShown = 47,
@@ -332,7 +372,18 @@ enum class GlicInstanceEvent {
   kWebUiStateLocationMismatch = 51,
   kWebUiStateIneligibleAccount = 52,
   kClientReady = 53,
-  kMaxValue = kClientReady,
+  // Logged for all tab context requests (including focused tab requests, which
+  // also log kFocusedTabContextRequested).
+  kTabContextRequested = 54,
+  kOptInImpression = 55,
+  kResponseStoppedByUser = 56,
+  kResponseStoppedOther = 57,
+  kResponseStoppedSuccess = 58,
+  kWebUiStateGuestLoaded = 59,
+  kInputFocused = 60,
+  kWebUiStatePendingProviderChangeGeminiToGeic = 61,
+  kWebUiStateProviderSwitchNoticeGeicToGemini = 62,
+  kMaxValue = kWebUiStateProviderSwitchNoticeGeicToGemini,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInstanceEvent)
 
@@ -366,6 +417,36 @@ enum class OnboardingFunnelStep {
   kMaxValue = kFirstPromptSubmitted,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicOnboardingFunnelStep)
+
+// LINT.IfChange(GlicTurnShowingOutcome)
+enum class GlicTurnShowingOutcome {
+  kShowingAndActive = 0,
+  kShowingInactiveThenActive = 1,
+  kShowingInactiveNeverActive = 2,
+  kHiddenThenShowing = 3,
+  kHiddenNeverShowing = 4,
+  kMaxValue = kHiddenNeverShowing,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicTurnShowingOutcome)
+
+// LINT.IfChange(GlicInputModesUsed)
+enum class InputModesUsed {
+  kNone = 0,
+  kOnlyText = 1,
+  kOnlyAudio = 2,
+  kTextAndAudio = 3,
+  kMaxValue = kTextAndAudio,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInputModesUsed)
+
+// LINT.IfChange(GlicTabPinnedForSharingResult)
+enum class GlicTabPinnedForSharingResult {
+  kPinTabForSharingFailedTooManyTabs = 0,
+  kPinTabForSharingFailedNotValidForSharing = 1,
+  kPinTabForSharingSucceeded = 2,
+  kMaxValue = kPinTabForSharingSucceeded,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicTabPinnedForSharingResult)
 
 std::string GetDaisyChainSourceString(DaisyChainSource source);
 

@@ -15,7 +15,6 @@ import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.chrome.browser.tab.TabStateStorageFlagHelper;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.url.GURL;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -98,7 +97,8 @@ public class RecordingTabCreator implements TabCreator {
     }
 
     @Override
-    public @Nullable Tab createFrozenTab(TabState state, int id, int index) {
+    public @Nullable Tab createFrozenTab(
+            TabState state, int id, int index, @TabLaunchType int type) {
         assertInitialized();
         if (mIsRecording && TabStateStorageFlagHelper.isTabStorageEnabled()) {
             mTabCount++;
@@ -107,7 +107,7 @@ public class RecordingTabCreator implements TabCreator {
                     new TabCreationData(
                             id, urlSpec, state.timestampMillis, state.isPinned, state.tabGroupId));
         }
-        return mDelegate.createFrozenTab(state, id, index);
+        return mDelegate.createFrozenTab(state, id, index, type);
     }
 
     @Override
@@ -129,13 +129,12 @@ public class RecordingTabCreator implements TabCreator {
             boolean shouldPin,
             WebContents webContents,
             @TabLaunchType int type,
-            GURL url,
             int index,
             CompletableFuture<Boolean> addTabToModel) {
         assertInitialized();
-        recordNewTab(url.getSpec());
+        recordNewTab(webContents.getVisibleUrl().getSpec());
         return mDelegate.createTabWithWebContents(
-                parent, shouldPin, webContents, type, url, index, addTabToModel);
+                parent, shouldPin, webContents, type, index, addTabToModel);
     }
 
     @Override

@@ -13,7 +13,7 @@ import {FocusOutlineManager} from 'chrome://resources/js/focus_outline_manager.j
 import {getDeepActiveElement} from 'chrome://resources/js/util.js';
 import {keyDownOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import {html, css, CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
-import {assertEquals, assertFalse, assertNear, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertNear, assertNotEquals, assertThrows, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 import {getTrustedHtml} from 'chrome://webui-test/trusted_html.js';
 import {getTrustedHTML as getTrustedStaticHtml} from 'chrome://resources/js/static_types.js';
@@ -197,6 +197,19 @@ suite('CrActionMenu', function() {
     return;
   });
 
+  test('pressing control+enter when no focus', function() {
+    menu.showAt(dots);
+    assertEquals(menu, document.activeElement);
+    const keydown = new KeyboardEvent(
+        'keydown', {key: 'Enter', ctrlKey: true, cancelable: true});
+    menu.dispatchEvent(keydown);
+    assertEquals(!isMac, keydown.defaultPrevented);
+    assertEquals(!isWindows, dialog.open);
+    if (!isWindows && !isMac) {
+      assertEquals(items[0], getDeepActiveElement());
+    }
+  });
+
   test('pressing enter when when item has focus', function() {
     menu.showAt(dots);
     down();
@@ -228,9 +241,22 @@ suite('CrActionMenu', function() {
   test('close on click away', function() {
     menu.showAt(dots);
     assertTrue(dialog.open);
-    menu.click();
+    dialog.click();
     assertFalse(dialog.open);
   });
+
+  test(
+      'does not close when click targets host from drag across items',
+      function() {
+        menu.showAt(dots);
+        assertTrue(dialog.open);
+
+        // When dragging across slotted items or selecting text, the browser
+        // fires the 'click' event on the common ancestor (<cr-action-menu>).
+        // This should not dismiss the menu.
+        menu.click();
+        assertTrue(dialog.open);
+      });
 
   test('close on resize', function() {
     menu.showAt(dots);
@@ -433,8 +459,8 @@ suite('CrActionMenu', function() {
       left: 0,
       top: 0,
     }));
-    assertEquals(`0px`, dialog.style.left);
-    assertEquals(`0px`, dialog.style.top);
+    assertEquals('0px', dialog.style.left);
+    assertEquals('0px', dialog.style.top);
     menu.close();
 
     // Being aligned to a point in the bottom right should anchor to the top
@@ -458,7 +484,7 @@ suite('CrActionMenu', function() {
       maxX: menuWidth * 2 - 10,
     });
     assertEquals(`${menuWidth - 10}px`, dialog.style.left);
-    assertEquals(`0px`, dialog.style.top);
+    assertEquals('0px', dialog.style.top);
     menu.close();
 
     // Alignment is reversed in RTL.
@@ -781,32 +807,151 @@ suite('CrActionMenu', function() {
       await menu.setUnbounded();
     });
 
+    function positionAnchor(
+        left: number, top: number, width: number = 100, height: number = 30) {
+      dots.style.cssText = `position: fixed; left: ${left}px; top: ${
+          top}px; width: ${width}px; height: ${
+          height}px; margin: 0; padding: 0; border: none;`;
+    }
+
+    // Measures the display work area in local CSS coordinates via anchor-center
+    // safety clamping without a position-area inset.
+    function getScreenBounds() {
+      const dialog = menu.getDialog();
+      positionAnchor(-100000, -100000, 0, 0);
+      menu.showAt(dots);
+      dialog.style.positionArea = '';
+      dialog.style.justifySelf = 'anchor-center';
+      dialog.style.alignSelf = 'anchor-center';
+      const minRect = dialog.getBoundingClientRect();
+      const minX = minRect.left;
+      const minY = minRect.top;
+      dialog.style.justifySelf = '';
+      dialog.style.alignSelf = '';
+      menu.close();
+
+      positionAnchor(100000, 100000, 0, 0);
+      menu.showAt(dots);
+      dialog.style.positionArea = '';
+      dialog.style.justifySelf = 'anchor-center';
+      dialog.style.alignSelf = 'anchor-center';
+      const maxRect = dialog.getBoundingClientRect();
+      const maxX = maxRect.right;
+      const maxY = maxRect.bottom;
+      dialog.style.justifySelf = '';
+      dialog.style.alignSelf = '';
+      menu.close();
+      return {minX, minY, maxX, maxY};
+    }
+
     test(
         'allows negative coordinates without clamping to document', function() {
-          menu.showAtPosition({
-            top: -50,
-            left: -30,
-            minX: -500,
-            minY: -500,
-            maxX: 2000,
-            maxY: 2000,
+          positionAnchor(-30, -50);
+          menu.showAt(dots, {
+            anchorAlignmentX: AnchorAlignment.AFTER_START,
+            anchorAlignmentY: AnchorAlignment.AFTER_START,
           });
 
-          assertTrue(menu.getDialog().open);
-          assertEquals('-50px', menu.getDialog().style.top);
-          assertEquals('-30px', menu.getDialog().style.left);
+          const dialog = menu.getDialog();
+          assertTrue(dialog.open);
+          const rect = dialog.getBoundingClientRect();
+          assertEquals(-50, Math.round(rect.top));
+          assertEquals(-30, Math.round(rect.left));
+          menu.close();
         });
 
     test('opens without throwing in unbounded mode', function() {
+      const beforeToggleSources: Array<Element|null> = [];
+      menu.getDialog().addEventListener('beforetoggle', (e: Event) => {
+        beforeToggleSources.push((e as ToggleEvent).source);
+      });
+
       menu.showAt(dots, {
         anchorAlignmentX: AnchorAlignment.AFTER_START,
         anchorAlignmentY: AnchorAlignment.AFTER_END,
       });
 
-      assertTrue(menu.getDialog().open);
-      assertTrue(menu.getDialog().hasAttribute('unbounded'));
+      const dialog = menu.getDialog();
+      assertTrue(dialog.open);
+      assertTrue(dialog.hasAttribute('unbounded'));
+      assertEquals(dots, beforeToggleSources[beforeToggleSources.length - 1]);
+      assertEquals('auto', dialog.style.positionAnchor);
+      const dotsRect = dots.getBoundingClientRect();
+      const dialogRect = dialog.getBoundingClientRect();
+      assertEquals(Math.round(dotsRect.left), Math.round(dialogRect.left));
+      assertEquals(
+          Math.round(dotsRect.bottom - 10), Math.round(dialogRect.top));
       menu.close();
     });
+
+    test('does not close on window resize in unbounded mode', function() {
+      menu.showAt(dots);
+      assertTrue(menu.open);
+      assertTrue(menu.getDialog().open);
+
+      window.dispatchEvent(new CustomEvent('resize'));
+      assertTrue(menu.open);
+      assertTrue(menu.getDialog().open);
+      menu.close();
+    });
+
+    test(
+        'fires unbounded-shown event on successful unbounded presentation',
+        async () => {
+          const shownPromise = eventToPromise('unbounded-shown', menu);
+          menu.showAt(dots);
+          await shownPromise;
+          assertTrue(menu.open);
+          assertTrue(menu.getDialog().matches(':unbounded'));
+          menu.close();
+        });
+
+    test(
+        'fires unbounded-show-error when showUnboundedElement rejects with non-AbortError',
+        async () => {
+          const dialog = menu.getDialog() as UnboundedDialogElement;
+          const originalShow = dialog.showUnboundedElement;
+          dialog.showUnboundedElement = () =>
+              Promise.reject(new Error('Presentation failed'));
+
+          const errorPromise = eventToPromise('unbounded-show-error', menu);
+          const originalConsoleError = console.error;
+          console.error = () => {};
+          try {
+            menu.showAt(dots);
+            await errorPromise;
+          } finally {
+            console.error = originalConsoleError;
+          }
+
+          dialog.showUnboundedElement = originalShow;
+          menu.close();
+        });
+
+    test(
+        'does not fire unbounded-shown or unbounded-show-error on AbortError',
+        async () => {
+          const dialog = menu.getDialog() as UnboundedDialogElement;
+          const originalShow = dialog.showUnboundedElement;
+          dialog.showUnboundedElement = () =>
+              Promise.reject(new DOMException('Dismissed', 'AbortError'));
+
+          let eventFired = false;
+          const onEvent = () => {
+            eventFired = true;
+          };
+          menu.addEventListener('unbounded-shown', onEvent);
+          menu.addEventListener('unbounded-show-error', onEvent);
+
+          menu.showAt(dots);
+          await microtasksFinished();
+          assertFalse(eventFired);
+
+          menu.removeEventListener('unbounded-shown', onEvent);
+          menu.removeEventListener('unbounded-show-error', onEvent);
+          dialog.showUnboundedElement = originalShow;
+          menu.close();
+        });
 
     test(
         'activates and deactivates unbounded dialog in unbounded mode', () => {
@@ -882,31 +1027,29 @@ suite('CrActionMenu', function() {
         });
 
     test('clamps center alignment to screen bounds in unbounded mode', () => {
-      // Center alignment overflowing maxX clamps to maxX - menuWidth.
-      menu.showAtPosition({
-        top: 50,
-        left: 950,
-        height: 30,
-        width: 100,
-        minX: 0,
-        maxX: 1000,
+      const dialog = menu.getDialog();
+      const {minX, minY, maxX} = getScreenBounds();
+      assertTrue(minX <= 0);
+      assertTrue(maxX >= window.innerWidth);
+
+      // Center alignment near the left edge of the display work area clamps to
+      // minX when the 128px+ menu would underflow.
+      positionAnchor(Math.ceil(minX) + 5, Math.ceil(minY) + 50, 20, 30);
+      menu.showAt(dots, {
         anchorAlignmentX: AnchorAlignment.CENTER,
       });
-      const menuWidth = menu.getDialog().offsetWidth;
-      assertEquals(`${1000 - menuWidth}px`, menu.getDialog().style.left);
+      assertEquals(
+          Math.round(minX), Math.round(dialog.getBoundingClientRect().left));
       menu.close();
 
-      // Center alignment underflowing minX clamps to minX.
-      menu.showAtPosition({
-        top: 50,
-        left: 0,
-        height: 30,
-        width: 100,
-        minX: 50,
-        maxX: 1000,
+      // Center alignment near the right edge of the display work area clamps to
+      // maxX - menuWidth when the 128px+ menu would overflow.
+      positionAnchor(Math.floor(maxX) - 25, Math.ceil(minY) + 50, 20, 30);
+      menu.showAt(dots, {
         anchorAlignmentX: AnchorAlignment.CENTER,
       });
-      assertEquals('50px', menu.getDialog().style.left);
+      assertEquals(
+          Math.round(maxX), Math.round(dialog.getBoundingClientRect().right));
       menu.close();
     });
 
@@ -941,7 +1084,8 @@ suite('CrActionMenu', function() {
       document.documentElement.scrollLeft = 120;
       document.documentElement.scrollTop = 240;
 
-      menu.showAtPosition({top: 50, left: 50});
+      positionAnchor(50, 50);
+      menu.showAt(dots);
       assertEquals(120, document.documentElement.scrollLeft);
       assertEquals(240, document.documentElement.scrollTop);
 
@@ -956,79 +1100,119 @@ suite('CrActionMenu', function() {
         'preserves requested anchor alignment without clamping in ' +
             'unbounded mode',
         () => {
-          menu.showAtPosition({
-            top: 200,
-            left: 50,
-            height: 30,
-            width: 100,
+          positionAnchor(50, 200, 100, 30);
+          menu.showAt(dots, {
+            anchorAlignmentX: AnchorAlignment.AFTER_START,
             anchorAlignmentY: AnchorAlignment.AFTER_END,
+            noOffset: true,
           });
 
-          assertEquals('230px', menu.getDialog().style.top);
+          assertEquals(
+              230, Math.round(menu.getDialog().getBoundingClientRect().top));
           menu.close();
         });
+
+    test('reverses X alignment in RTL in unbounded mode', () => {
+      const dialog = menu.getDialog();
+      positionAnchor(200, 100, 40, 30);
+      document.body.style.direction = 'rtl';
+      try {
+        menu.showAt(dots, {
+          anchorAlignmentX: AnchorAlignment.AFTER_START,
+        });
+        assertEquals(240, Math.round(dialog.getBoundingClientRect().right));
+        menu.close();
+
+        menu.showAt(dots, {
+          anchorAlignmentX: AnchorAlignment.BEFORE_END,
+        });
+        assertEquals(200, Math.round(dialog.getBoundingClientRect().left));
+        menu.close();
+      } finally {
+        document.body.style.direction = '';
+      }
+    });
 
     test(
         'flips forward and backward alignments when overflowing display ' +
             'bounds in unbounded mode',
         () => {
+          const dialog = menu.getDialog();
+          const {
+            minX: screenMinX,
+            minY: screenMinY,
+            maxX: screenMaxX,
+            maxY: screenMaxY,
+          } = getScreenBounds();
+
           // Forward AFTER_END flips to backward (start - menuLength) when
-          // overflowing maxY.
-          menu.showAtPosition({
-            top: 500,
-            left: 50,
-            height: 30,
-            width: 100,
-            minY: 0,
-            maxY: 550,
+          // overflowing screenMaxY, clearing the default -10px AFTER_END offset
+          // so the flipped menu does not overlap the anchor's top edge.
+          const nearBottomY = Math.round(screenMaxY - 40);
+          positionAnchor(Math.round(screenMinX + 50), nearBottomY, 100, 30);
+          menu.showAt(dots, {
+            anchorAlignmentX: AnchorAlignment.AFTER_START,
             anchorAlignmentY: AnchorAlignment.AFTER_END,
           });
-          const menuHeight = menu.getDialog().offsetHeight;
-          assertEquals(`${500 - menuHeight}px`, menu.getDialog().style.top);
+          const menuHeight = dialog.offsetHeight;
+          assertEquals(
+              nearBottomY - menuHeight,
+              Math.round(dialog.getBoundingClientRect().top));
+          menu.close();
+
+          menu.showAt(dots, {
+            anchorAlignmentX: AnchorAlignment.AFTER_START,
+            anchorAlignmentY: AnchorAlignment.AFTER_END,
+            noOffset: true,
+          });
+          assertEquals(
+              nearBottomY - menuHeight,
+              Math.round(dialog.getBoundingClientRect().top));
           menu.close();
 
           // Forward AFTER_START flips to backward (end - menuLength) when
-          // overflowing maxX.
-          menu.showAtPosition({
-            top: 50,
-            left: 950,
-            height: 30,
-            width: 100,
-            minX: 0,
-            maxX: 1000,
+          // overflowing screenMaxX.
+          const nearRightX = Math.round(screenMaxX - 60);
+          positionAnchor(nearRightX, Math.round(screenMinY + 50), 40, 30);
+          menu.showAt(dots, {
             anchorAlignmentX: AnchorAlignment.AFTER_START,
           });
-          const menuWidth = menu.getDialog().offsetWidth;
-          assertEquals(`${1050 - menuWidth}px`, menu.getDialog().style.left);
+          const menuWidth = dialog.offsetWidth;
+          assertEquals(
+              nearRightX + 40 - menuWidth,
+              Math.round(dialog.getBoundingClientRect().left));
           menu.close();
 
           // Backward BEFORE_START flips to forward (end) when underflowing
-          // minY.
-          menu.showAtPosition({
-            top: 50,
-            left: 50,
-            height: 30,
-            width: 100,
-            minY: 100,
-            maxY: 1000,
+          // screenMinY.
+          const nearTopY = Math.round(screenMinY + 20);
+          positionAnchor(Math.round(screenMinX + 50), nearTopY, 100, 30);
+          menu.showAt(dots, {
+            anchorAlignmentX: AnchorAlignment.AFTER_START,
             anchorAlignmentY: AnchorAlignment.BEFORE_START,
           });
-          assertEquals('80px', menu.getDialog().style.top);
+          assertEquals(
+              nearTopY + 30, Math.round(dialog.getBoundingClientRect().top));
           menu.close();
 
           // Backward BEFORE_END flips to forward (start) when underflowing
-          // minX.
-          menu.showAtPosition({
-            top: 50,
-            left: 50,
-            height: 30,
-            width: 100,
-            minX: 100,
-            maxX: 1000,
+          // screenMinX.
+          const nearLeftX = Math.round(screenMinX + 20);
+          positionAnchor(nearLeftX, Math.round(screenMinY + 50), 40, 30);
+          menu.showAt(dots, {
             anchorAlignmentX: AnchorAlignment.BEFORE_END,
           });
-          assertEquals('50px', menu.getDialog().style.left);
+          assertEquals(
+              nearLeftX, Math.round(dialog.getBoundingClientRect().left));
           menu.close();
+        });
+
+    test(
+        'rejects showAtPosition and coordinate overrides in unbounded mode',
+        () => {
+          assertThrows(() => menu.showAtPosition({top: 10, left: 20}));
+          assertThrows(() => menu.showAt(dots, {top: 10}));
+          assertThrows(() => menu.showAt(dots, {minX: 0}));
         });
 
     test(

@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/i18n/language_tag.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "build/buildflag.h"
@@ -34,7 +35,7 @@ class AddressNormalizerImpl : public AddressNormalizer {
  public:
   AddressNormalizerImpl(std::unique_ptr<::i18n::addressinput::Source> source,
                         std::unique_ptr<::i18n::addressinput::Storage> storage,
-                        const std::string& app_locale);
+                        const base::i18n::LanguageTag& app_locale);
 
   AddressNormalizerImpl(const AddressNormalizerImpl&) = delete;
   AddressNormalizerImpl& operator=(const AddressNormalizerImpl&) = delete;
@@ -50,16 +51,12 @@ class AddressNormalizerImpl : public AddressNormalizer {
   bool NormalizeAddressSync(AutofillProfile* profile) override;
 
 #if BUILDFLAG(IS_ANDROID)
-  base::android::ScopedJavaLocalRef<jobject> GetJavaObject() override;
+  jni_zero::ScopedJavaLocalRef<jobject> GetJavaObject() override;
 
-  void LoadRulesForAddressNormalization(
-      JNIEnv* env,
-      const base::android::JavaRef<jstring>& region_code);
-  void StartAddressNormalization(
-      JNIEnv* env,
-      const base::android::JavaRef<jobject>& jprofile,
-      int32_t jtimeout_seconds,
-      const base::android::JavaRef<jobject>& jdelegate);
+  void LoadRulesForAddressNormalization(const std::string& region_code);
+  void StartAddressNormalization(const jni_zero::JavaRef<jobject>& jprofile,
+                                 int32_t jtimeout_seconds,
+                                 const jni_zero::JavaRef<jobject>& jdelegate);
 #endif  // BUILDFLAG(IS_ANDROID)
 
  private:
@@ -85,11 +82,11 @@ class AddressNormalizerImpl : public AddressNormalizer {
 
   // The address validator used to normalize addresses.
   std::unique_ptr<AddressValidator> address_validator_;
-  const std::string app_locale_;
+  const base::i18n::LanguageTag app_locale_;
 
 #if BUILDFLAG(IS_ANDROID)
   // Java-side version of the AddressNormalizer.
-  base::android::ScopedJavaGlobalRef<jobject> java_ref_;
+  jni_zero::ScopedJavaGlobalRef<jobject> java_ref_;
 #endif  // BUILDFLAG(IS_ANDROID)
 
   SEQUENCE_CHECKER(sequence_checker_);

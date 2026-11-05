@@ -5,6 +5,10 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_AUTOFILL_PRIVATE_AUTOFILL_PRIVATE_API_H_
 #define CHROME_BROWSER_EXTENSIONS_API_AUTOFILL_PRIVATE_AUTOFILL_PRIVATE_API_H_
 
+#include <optional>
+#include <string>
+
+#include "base/containers/span.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
 #include "components/prefs/pref_service.h"
@@ -16,6 +20,7 @@ class AddressDataManager;
 class ContentAutofillClient;
 class EntityDataManager;
 class PaymentsDataManager;
+class ValuablesDataManager;
 }  // namespace autofill
 
 namespace device_reauth {
@@ -40,6 +45,7 @@ class AutofillPrivateExtensionFunction : public ExtensionFunction {
   autofill::ContentAutofillClient* autofill_client();
   autofill::EntityDataManager* entity_data_manager();
   autofill::PaymentsDataManager* payments_data_manager();
+  autofill::ValuablesDataManager* valuables_data_manager();
 };
 
 class AutofillPrivateGetAccountInfoFunction
@@ -348,6 +354,42 @@ class AutofillPrivateGetPayOverTimeIssuerListFunction
   ResponseAction Run() override;
 };
 
+class AutofillPrivateGetLoyaltyCardListFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateGetLoyaltyCardListFunction() = default;
+  AutofillPrivateGetLoyaltyCardListFunction(
+      const AutofillPrivateGetLoyaltyCardListFunction&) = delete;
+  AutofillPrivateGetLoyaltyCardListFunction& operator=(
+      const AutofillPrivateGetLoyaltyCardListFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION("autofillPrivate.getLoyaltyCardList",
+                             AUTOFILLPRIVATE_GETLOYALTYCARDLIST)
+
+ protected:
+  ~AutofillPrivateGetLoyaltyCardListFunction() override = default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+};
+
+class AutofillPrivateGetWalletDirectOfferListFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateGetWalletDirectOfferListFunction() = default;
+  AutofillPrivateGetWalletDirectOfferListFunction(
+      const AutofillPrivateGetWalletDirectOfferListFunction&) = delete;
+  AutofillPrivateGetWalletDirectOfferListFunction& operator=(
+      const AutofillPrivateGetWalletDirectOfferListFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION("autofillPrivate.getWalletDirectOfferList",
+                             AUTOFILLPRIVATE_GETWALLETDIRECTOFFERLIST)
+
+ protected:
+  ~AutofillPrivateGetWalletDirectOfferListFunction() override = default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+};
+
 class AutofillPrivateAuthenticateUserAndFlipMandatoryAuthToggleFunction
     : public AutofillPrivateExtensionFunction {
  public:
@@ -451,10 +493,12 @@ class AutofillPrivateAddOrUpdateEntityInstanceFunction
 
  private:
   // Helper to initiate an asynchronous save request of a private pass
-  // `entity_instance` through the Wallet API. Returns true if the async request
-  // was started, false otherwise.
-  bool TrySavePrivatePassWithWalletAPI(
-      const autofill::EntityInstance& entity_instance);
+  // `entity_instance` through the Wallet API. Returns a `ResponseAction` if the
+  // async request was started or on failed validation, otherwise `std::nullopt`
+  // if the Wallet API is unavailable.
+  std::optional<ResponseAction> TrySavePrivatePassWithWalletAPI(
+      const autofill::EntityInstance& entity_instance,
+      base::span<const std::string> consent_string_names);
 
   // Callback for the WalletPassAccessManager::SaveWalletEntityInstance request
   // for private passes.
@@ -527,6 +571,42 @@ class AutofillPrivateGetEntityInstanceByGuidFunction
                          bool auth_succeeded);
 
   std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator_;
+};
+
+class AutofillPrivateGetDetailsForUpsertPassFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateGetDetailsForUpsertPassFunction() = default;
+  AutofillPrivateGetDetailsForUpsertPassFunction(
+      const AutofillPrivateGetDetailsForUpsertPassFunction&) = delete;
+  AutofillPrivateGetDetailsForUpsertPassFunction& operator=(
+      const AutofillPrivateGetDetailsForUpsertPassFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION("autofillPrivate.getDetailsForUpsertPass",
+                             AUTOFILLPRIVATE_GETDETAILSFORUPSERTPASS)
+
+ protected:
+  ~AutofillPrivateGetDetailsForUpsertPassFunction() override = default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+};
+
+class AutofillPrivatePreloadDetailsForUpsertPassFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivatePreloadDetailsForUpsertPassFunction() = default;
+  AutofillPrivatePreloadDetailsForUpsertPassFunction(
+      const AutofillPrivatePreloadDetailsForUpsertPassFunction&) = delete;
+  AutofillPrivatePreloadDetailsForUpsertPassFunction& operator=(
+      const AutofillPrivatePreloadDetailsForUpsertPassFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION("autofillPrivate.preloadDetailsForUpsertPass",
+                             AUTOFILLPRIVATE_PRELOADDETAILSFORUPSERTPASS)
+
+ protected:
+  ~AutofillPrivatePreloadDetailsForUpsertPassFunction() override = default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
 };
 
 class AutofillPrivateGetWritableEntityTypesFunction

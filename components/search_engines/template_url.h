@@ -35,6 +35,10 @@
 
 class TemplateURL;
 
+namespace TemplateURLPrepopulateData {
+struct PrepopulatedEngine;
+}
+
 // TemplateURLRef -------------------------------------------------------------
 
 // A TemplateURLRef represents a single URL within the larger TemplateURL class
@@ -313,6 +317,14 @@ class TemplateURLRef {
     // The method in which the last input was entered. This is an enum that
     // gets mapped to third_party/omnibox_proto/chrome_searchbox_stats.proto.
     int input_method = 0;
+
+    // Output flag set during TemplateURLRef::HandleReplacements indicating
+    // whether the original query ("oq") parameter value was truncated.
+    mutable std::optional<bool> is_oq_truncated;
+
+    // Output flag set during TemplateURLRef::HandleReplacements indicating
+    // whether the query ("q") parameter value was truncated.
+    mutable std::optional<bool> is_q_truncated;
   };
 
   TemplateURLRef(const TemplateURL* owner, Type type);
@@ -678,9 +690,9 @@ class TemplateURLRef {
 class TemplateURL {
  public:
   using TemplateURLVector =
-      std::vector<raw_ptr<TemplateURL, VectorExperimental>>;
+      std::vector<raw_ptr<TemplateURL, DanglingUntriaged>>;
   using TemplateURLVectorSpan =
-      base::span<const raw_ptr<TemplateURL, VectorExperimental>>;
+      base::span<const raw_ptr<TemplateURL, DanglingUntriaged>>;
   using OwnedTemplateURLVector = std::vector<std::unique_ptr<TemplateURL>>;
   using OwnedTemplateURLVectorSpan =
       base::span<const std::unique_ptr<TemplateURL>>;
@@ -945,6 +957,11 @@ class TemplateURL {
   // with this template URL, or a default image if none is associated with it.
   std::string GetBuiltinImageResourceId() const;
 
+  // Returns the resource ID for the logo (small / favicon style) associated
+  // with `engine`, if it is provided from built-in data.
+  static std::optional<std::string> GetBuiltinImageResourceId(
+      const TemplateURLPrepopulateData::PrepopulatedEngine& engine);
+
   // Returns the resource ID for the search engine description string associated
   // with this template URL, or an empty string if none is associated with it.
   std::string GetBuiltinDescriptionResourceId() const;
@@ -959,6 +976,15 @@ class TemplateURL {
   // engines match.
   SearchEngineType GetEngineType(
       const SearchTermsData& search_terms_data) const;
+
+  // Returns true if this engine can be trusted to be Google, i.e. its search
+  // URL resolves to Google and, if set, its suggestions URL does too. Both URLs
+  // must use a cryptographic scheme (or point to localhost, for tests). This
+  // prevents engines that pair a Google search URL with a third-party
+  // suggestions URL (e.g. registered via OpenSearch) from being trusted with
+  // Google-only suggest features. The result is cached until
+  // InvalidateCachedValues() is called.
+  bool IsTrustedGoogleEngine(const SearchTermsData& search_terms_data) const;
 
   // Returns the type of this search engine, i.e. whether the engine is a
   // prepopulated engine, starter pack engine, or not built-in.
@@ -1028,9 +1054,11 @@ class TemplateURL {
   // Returns an empty GURL if this template URL has no suggestions_url().
   GURL GenerateSuggestionURL(const SearchTermsData& search_terms_data) const;
 
-  // TemplateURL internally caches values derived from a passed SearchTermsData
-  // to make its functions quick. This method invalidates any cached values and
-  // it should be called after SearchTermsData has been changed.
+  // TemplateURL caches values derived from its TemplateURLData (e.g. the
+  // engine type, which is derived from the search URL) and from a passed
+  // SearchTermsData, so that its functions stay fast. This method clears all
+  // cached values. Call it after either the TemplateURLData or the
+  // SearchTermsData changes.
   void InvalidateCachedValues() const;
 
   // Estimates dynamic memory usage.
@@ -1138,6 +1166,9 @@ class TemplateURL {
 
   // Caches the computed engine type across successive calls to GetEngineType().
   mutable SearchEngineType engine_type_;
+
+  // Caches the result of IsTrustedGoogleEngine().
+  mutable std::optional<bool> is_trusted_google_engine_;
 
   // Caches the computed base resource ID across successive calls to
   // `GetBaseBuiltinResourceId()`.

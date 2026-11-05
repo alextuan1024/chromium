@@ -55,18 +55,8 @@ TEST_F(FeedApiTest, DoNotRefreshIfArticlesListIsHidden) {
   EXPECT_TRUE(refresh_scheduler_.completed);
 }
 
-TEST_F(FeedApiTest,
-       DoNotRefreshIfSnippetsByDseDisabled_ignoredWithoutFlagEnabled) {
-  profile_prefs_.SetBoolean(prefs::kEnableSnippetsByDse, false);
-  stream_->ExecuteRefreshTask();
-  WaitForIdleTaskQueue();
-  EXPECT_TRUE(refresh_scheduler_.scheduled_run_time.has_value());
-}
-
 TEST_F(FeedApiTest, DoNotRefreshIfSnippetsByDseDisabled) {
   profile_prefs_.SetBoolean(prefs::kEnableSnippetsByDse, false);
-  CreateStream(/*wait_for_initialization=*/true,
-               /*is_new_tab_search_engine_url_android_enabled*/ true);
   stream_->ExecuteRefreshTask();
 #if BUILDFLAG(IS_ANDROID)
   EXPECT_FALSE(refresh_scheduler_.scheduled_run_time.has_value());
@@ -678,8 +668,6 @@ TEST_F(FeedApiTest, LoadFromNetworkBecauseStoreIsStale_NetworkStaleAge) {
 }
 
 TEST_F(FeedApiTest, LoadFromNetworkBecauseStoreIsExpired_NetworkExpiredAge) {
-  base::HistogramTester histograms;
-
   base::TimeDelta default_content_expiration_threshold =
       GetFeedConfig().content_expiration_threshold;
   base::TimeDelta server_content_expiration_threshold =
@@ -722,9 +710,6 @@ TEST_F(FeedApiTest, LoadFromNetworkBecauseStoreIsExpired_NetworkExpiredAge) {
 
   EXPECT_EQ(LoadStreamStatus::kDataInStoreIsExpired,
             metrics_reporter_->load_stream_from_store_status);
-  histograms.ExpectUniqueTimeSample(
-      "ContentSuggestions.Feed.ContentAgeOnLoad.BlockingRefresh", content_age,
-      1);
 }
 
 TEST_P(FeedStreamTestForAllStreamTypes, LoadFromNetworkBecauseStoreIsStale) {
@@ -751,7 +736,6 @@ TEST_P(FeedStreamTestForAllStreamTypes, LoadFromNetworkBecauseStoreIsStale) {
 
 // Same as LoadFromNetworkBecauseStoreIsStale, but with expired content.
 TEST_F(FeedApiTest, LoadFromNetworkBecauseStoreIsExpired) {
-  base::HistogramTester histograms;
   const base::TimeDelta kContentAge =
       GetFeedConfig().content_expiration_threshold + base::Minutes(1);
   store_->OverwriteStream(
@@ -770,14 +754,10 @@ TEST_F(FeedApiTest, LoadFromNetworkBecauseStoreIsExpired) {
   ASSERT_TRUE(surface.initial_state);
   EXPECT_EQ(LoadStreamStatus::kDataInStoreIsExpired,
             metrics_reporter_->load_stream_from_store_status);
-  histograms.ExpectUniqueTimeSample(
-      "ContentSuggestions.Feed.ContentAgeOnLoad.BlockingRefresh", kContentAge,
-      1);
 }
 
 TEST_F(FeedApiTest, LoadStaleDataBecauseNetworkRequestFails) {
   // Fill the store with stream data that is just barely stale.
-  base::HistogramTester histograms;
   const base::TimeDelta kContentAge =
       GetFeedConfig().stale_content_threshold + base::Minutes(1);
   store_->OverwriteStream(
@@ -797,8 +777,6 @@ TEST_F(FeedApiTest, LoadStaleDataBecauseNetworkRequestFails) {
             metrics_reporter_->load_stream_from_store_status);
   EXPECT_EQ(LoadStreamStatus::kLoadedStaleDataFromStoreDueToNetworkFailure,
             metrics_reporter_->load_stream_status);
-  histograms.ExpectUniqueTimeSample(
-      "ContentSuggestions.Feed.ContentAgeOnLoad.NotRefreshed", kContentAge, 1);
 }
 
 TEST_P(FeedStreamTestForAllStreamTypes, LoadFailsStoredDataIsExpired) {
@@ -2502,15 +2480,13 @@ TEST_F(FeedApiTest, ClearAllOnStartupIfFeedIsDisabledByDse) {
 
   // Turn off the feed, and re-create FeedStream. It should perform a ClearAll.
   profile_prefs_.SetBoolean(feed::prefs::kEnableSnippetsByDse, false);
-  CreateStream(/*wait_for_initialization=*/true,
-               /*is_new_tab_search_engine_url_android_enabled*/ true);
+  CreateStream(/*wait_for_initialization=*/true);
   EXPECT_TRUE(on_clear_all.called());
 
   // Re-create the feed, and verify ClearAll isn't called again.
   on_clear_all.Clear();
   base::HistogramTester histograms;
-  CreateStream(/*wait_for_initialization=*/true,
-               /*is_new_tab_search_engine_url_android_enabled*/ true);
+  CreateStream(/*wait_for_initialization=*/true);
 
   EXPECT_FALSE(on_clear_all.called());
 }
@@ -3135,7 +3111,7 @@ TEST_F(FeedCloseRefreshTest, Scroll) {
 
   // Scrolling should cause a refresh to be scheduled.
   stream_->ReportStreamScrolled(surface.GetSurfaceId(), 1);
-  EXPECT_EQ(base::Minutes(30), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(15), refresh_scheduler_.scheduled_run_time);
 
   refresh_scheduler_.Clear();
 
@@ -3147,7 +3123,7 @@ TEST_F(FeedCloseRefreshTest, Scroll) {
   refresh_scheduler_.Clear();
   task_environment_.FastForwardBy(base::Minutes(5) + base::Seconds(1));
   stream_->ReportStreamScrolled(surface.GetSurfaceId(), 1);
-  EXPECT_EQ(base::Minutes(30), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(15), refresh_scheduler_.scheduled_run_time);
 }
 
 TEST_F(FeedCloseRefreshTest, Open) {
@@ -3157,7 +3133,7 @@ TEST_F(FeedCloseRefreshTest, Open) {
   // Opening should cause a refresh to be scheduled.
   stream_->ReportOpenAction(GURL("http://example.com"), surface.GetSurfaceId(),
                             "", OpenActionType::kDefault);
-  EXPECT_EQ(base::Minutes(30), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(15), refresh_scheduler_.scheduled_run_time);
 }
 
 TEST_F(FeedCloseRefreshTest, OpenInNewTab) {
@@ -3167,7 +3143,7 @@ TEST_F(FeedCloseRefreshTest, OpenInNewTab) {
   // Should cause a refresh to be scheduled.
   stream_->ReportOpenAction(GURL("http://example.com"), surface.GetSurfaceId(),
                             "", OpenActionType::kNewTab);
-  EXPECT_EQ(base::Minutes(30), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(15), refresh_scheduler_.scheduled_run_time);
 }
 
 TEST_F(FeedCloseRefreshTest, ManualRefreshResetsCoalesceTimestamp) {
@@ -3186,7 +3162,7 @@ TEST_F(FeedCloseRefreshTest, ManualRefreshResetsCoalesceTimestamp) {
   // ReportStreamScrolled() should update the schedule.
   stream_->ManualRefresh(surface.GetSurfaceId(), base::DoNothing());
   stream_->ReportStreamScrolled(surface.GetSurfaceId(), 1);
-  EXPECT_EQ(base::Minutes(30), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(15), refresh_scheduler_.scheduled_run_time);
 }
 
 TEST_F(FeedCloseRefreshTest, ExistingScheduleGetsReplaced) {
@@ -3211,7 +3187,7 @@ TEST_F(FeedCloseRefreshTest, ExistingScheduleGetsReplaced) {
 
   // Should cause a refresh to be scheduled.
   stream_->ReportStreamScrolled(surface.GetSurfaceId(), 1);
-  EXPECT_EQ(base::Minutes(30), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(15), refresh_scheduler_.scheduled_run_time);
 }
 
 TEST_F(FeedCloseRefreshTest, Retry) {
@@ -3220,11 +3196,11 @@ TEST_F(FeedCloseRefreshTest, Retry) {
   // Update the schedule.
   stream_->ReportOpenAction(GURL("http://example.com"), surface.GetSurfaceId(),
                             "", OpenActionType::kDefault);
-  EXPECT_EQ(base::Minutes(30), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(15), refresh_scheduler_.scheduled_run_time);
 
   // Simulate an allowed refresh that failed.
   surface.Detach();
-  task_environment_.FastForwardBy(base::Minutes(35));
+  task_environment_.FastForwardBy(base::Minutes(20));
   WaitForIdleTaskQueue();
   refresh_scheduler_.Clear();
   FeedNetwork::RawResponse raw_response;
@@ -3233,24 +3209,24 @@ TEST_F(FeedCloseRefreshTest, Retry) {
   stream_->ExecuteRefreshTask();
   WaitForIdleTaskQueue();
 
-  // The next one should have been scheduled for 60 minutes after the anchor
-  // time, and the clock advanced 35 minutes, so the next one should be
-  // scheduled 25 minutes from now.
+  // The next one should have been scheduled for 30 minutes after the anchor
+  // time, and the clock advanced 20 minutes, so the next one should be
+  // scheduled 10 minutes from now.
   EXPECT_TRUE(refresh_scheduler_.completed);
-  EXPECT_EQ(base::Minutes(25), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(10), refresh_scheduler_.scheduled_run_time);
 
   // Same thing again. There should be one more scheduled retry.
-  task_environment_.FastForwardBy(base::Minutes(35));
+  task_environment_.FastForwardBy(base::Minutes(20));
   refresh_scheduler_.Clear();
   network_.InjectApiRawResponse<QueryBackgroundFeedDiscoverApi>(raw_response);
   stream_->ExecuteRefreshTask();
   WaitForIdleTaskQueue();
 
-  // The next one should have been scheduled for 90 minutes after the anchor
-  // time, and the clock advanced 70 minutes total, so the next one should be
-  // scheduled 20 minutes from now.
+  // The next one should have been scheduled for 45 minutes after the anchor
+  // time, and the clock advanced 40 minutes total, so the next one should be
+  // scheduled 5 minutes from now.
   EXPECT_TRUE(refresh_scheduler_.completed);
-  EXPECT_EQ(base::Minutes(20), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(5), refresh_scheduler_.scheduled_run_time);
 }
 
 TEST_F(FeedCloseRefreshTest, RequestType) {
@@ -3261,7 +3237,7 @@ TEST_F(FeedCloseRefreshTest, RequestType) {
   // Opening should cause a refresh to be scheduled.
   stream_->ReportOpenAction(GURL("http://example.com"), surface.GetSurfaceId(),
                             "", OpenActionType::kDefault);
-  EXPECT_EQ(base::Minutes(30), refresh_scheduler_.scheduled_run_time);
+  EXPECT_EQ(base::Minutes(15), refresh_scheduler_.scheduled_run_time);
 
   // Close the surface and unload the model.
   surface.Detach();

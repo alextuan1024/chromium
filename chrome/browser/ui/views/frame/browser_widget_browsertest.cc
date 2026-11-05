@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 
+#include <string_view>
+
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/test/bind.h"
@@ -80,9 +82,8 @@ class FirstPaintWaiter : public content::WebContentsObserver {
 
 class MockCustomThemeSupplier : public CustomThemeSupplier {
  public:
-  MockCustomThemeSupplier() : CustomThemeSupplier(ThemeType::kExtension) {
-    set_extension_id("mock_extension_id");
-  }
+  MockCustomThemeSupplier() : CustomThemeSupplier(ThemeType::kExtension) {}
+  std::string_view extension_id() const override { return "mock_extension_id"; }
   bool HasCustomImage(int id) const override { return id == IDR_THEME_TOOLBAR; }
 
  protected:

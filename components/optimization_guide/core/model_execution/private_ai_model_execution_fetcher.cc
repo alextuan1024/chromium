@@ -8,7 +8,7 @@
 
 #include "base/strings/string_split.h"
 #include "base/types/expected.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_fetcher.h"
 #include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
 #include "components/optimization_guide/core/model_execution/private_ai_utils.h"
@@ -50,7 +50,10 @@ OptimizationGuideModelExecutionError ToModelExecutionError(
     private_ai::StatusCode error) {
   switch (error) {
     case private_ai::StatusCode::kAuthenticationFailed:
-    case private_ai::StatusCode::kClientAttestationFailed:
+    case private_ai::StatusCode::kAccountNotAvailable:
+    case private_ai::StatusCode::kClientAttestationFailedRequestNotSent:
+    case private_ai::StatusCode::kClientAttestationPresumedRejectedByServer:
+    case private_ai::StatusCode::kClientAttestationFailedConnectionAborted:
       return OptimizationGuideModelExecutionError::FromModelExecutionError(
           ModelExecutionError::kPermissionDenied);
     case private_ai::StatusCode::kTimeout:
@@ -102,7 +105,7 @@ void PrivateAiModelExecutionFetcher::ExecuteModel(
                             private_ai::StatusCode> result) {
             if (!result.has_value()) {
               RecordRequestStatusHistogram(
-                  feature, FetcherRequestStatus::kResponseError);
+                  feature, ModelExecutionFetcherRequestStatus::kResponseError);
               std::move(callback).Run(
                   base::unexpected(ToModelExecutionError(result.error())));
               return;
@@ -110,15 +113,15 @@ void PrivateAiModelExecutionFetcher::ExecuteModel(
 
             if (!result->has_execute_response_ext()) {
               RecordRequestStatusHistogram(
-                  feature, FetcherRequestStatus::kResponseError);
+                  feature, ModelExecutionFetcherRequestStatus::kResponseError);
               std::move(callback).Run(base::unexpected(
                   OptimizationGuideModelExecutionError::FromModelExecutionError(
                       ModelExecutionError::kUnknown)));
               return;
             }
 
-            RecordRequestStatusHistogram(feature,
-                                         FetcherRequestStatus::kSuccess);
+            RecordRequestStatusHistogram(
+                feature, ModelExecutionFetcherRequestStatus::kSuccess);
             std::move(callback).Run(base::ok(result->execute_response_ext()));
           },
           feature, std::move(callback)),

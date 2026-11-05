@@ -39,7 +39,7 @@ AddressNormalizerFactory::AddressNormalizerFactory()
     : address_normalizer_(
           GetAddressInputSource(),
           GetAddressInputStorage(),
-          GetApplicationContext()->GetApplicationLocaleStorage()->Get()) {}
+          GetApplicationContext()->GetApplicationLocaleStorage()->GetTag()) {}
 
 AddressNormalizerFactory::~AddressNormalizerFactory() {}
 

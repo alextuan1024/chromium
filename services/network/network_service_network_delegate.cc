@@ -50,6 +50,16 @@ base::optional_ref<const network::PermissionsPolicy> GetPermissionsPolicy(
   const auto* const loader = URLLoader::ForRequest(request);
   return loader ? loader->GetPermissionsPolicy() : std::nullopt;
 }
+
+// Returns whether storage access is potentially allowed for `request`.
+// `loader` is null for non-URLLoader URLRequests (such as WebSocket handshakes,
+// which clamp `storage_access_api_status` in the browser process and do not
+// compute `StorageAccessStatus` or use Storage Access Headers), where returning
+// true is safe.
+bool IsStorageAccessPotentiallyAllowed(const net::URLRequest& request) {
+  const auto* const loader = URLLoader::ForRequest(request);
+  return !loader || loader->is_storage_access_potentially_allowed();
+}
 }  // namespace
 
 NetworkServiceNetworkDelegate::NetworkServiceNetworkDelegate(
@@ -151,7 +161,7 @@ int NetworkServiceNetworkDelegate::OnHeadersReceived(
   if (web_socket) {
     chain->AddResult(web_socket->OnHeadersReceived(
         chain->CreateCallback(), original_response_headers,
-        override_response_headers, preserve_fragment_on_redirect_url,
+        override_response_headers, endpoint, preserve_fragment_on_redirect_url,
         ssl_info));
   }
 #endif  // BUILDFLAG(ENABLE_WEBSOCKETS)
@@ -208,7 +218,8 @@ NetworkServiceNetworkDelegate::OnGetStorageAccessStatus(
             redirect_info->new_url, redirect_info->new_site_for_cookies,
             request.isolation_info().top_frame_origin(),
             request.cookie_setting_overrides(), request.cookie_partition_key(),
-            GetPermissionsPolicy(request));
+            GetPermissionsPolicy(request),
+            IsStorageAccessPotentiallyAllowed(request));
   }
   return network_context_->cookie_manager()
       ->cookie_settings()
@@ -216,12 +227,12 @@ NetworkServiceNetworkDelegate::OnGetStorageAccessStatus(
                               request.isolation_info().top_frame_origin(),
                               request.cookie_setting_overrides(),
                               request.cookie_partition_key(),
-                              GetPermissionsPolicy(request));
+                              GetPermissionsPolicy(request),
+                              IsStorageAccessPotentiallyAllowed(request));
 }
 
 bool NetworkServiceNetworkDelegate::OnAnnotateAndMoveUserBlockedCookies(
     const net::URLRequest& request,
-    const net::FirstPartySetMetadata& first_party_set_metadata,
     net::CookieAccessResultList& maybe_included_cookies,
     net::CookieAccessResultList& excluded_cookies) {
   if (!network_context_->cookie_manager()
@@ -229,8 +240,8 @@ bool NetworkServiceNetworkDelegate::OnAnnotateAndMoveUserBlockedCookies(
            .AnnotateAndMoveUserBlockedCookies(
                request.url(), request.site_for_cookies(),
                base::OptionalToPtr(request.isolation_info().top_frame_origin()),
-               first_party_set_metadata, request.cookie_setting_overrides(),
-               maybe_included_cookies, excluded_cookies)) {
+               request.cookie_setting_overrides(), maybe_included_cookies,
+               excluded_cookies)) {
     // CookieSettings has already moved and annotated the cookies.
     return false;
   }
@@ -278,12 +289,11 @@ bool NetworkServiceNetworkDelegate::OnCanSetCookie(
     const net::URLRequest& request,
     const net::CanonicalCookie& cookie,
     net::CookieOptions* options,
-    const net::FirstPartySetMetadata& first_party_set_metadata,
     net::CookieInclusionStatus* inclusion_status) {
   bool allowed =
       network_context_->cookie_manager()->cookie_settings().IsCookieAccessible(
           cookie, request.url(), request.site_for_cookies(),
-          request.isolation_info().top_frame_origin(), first_party_set_metadata,
+          request.isolation_info().top_frame_origin(),
           request.cookie_setting_overrides(), inclusion_status);
   if (!allowed)
     return false;
@@ -435,7 +445,12 @@ int NetworkServiceNetworkDelegate::HandleClearSiteDataHeader(
       net::NetworkDelegate::PrivacySetting::kPartitionedStateAllowedOnly;
 
   url_loader_network_observer->OnClearSiteData(
-      request->url(), *header_value, request->load_flags(),
+      request->url(),
+      request->isolation_info().top_frame_origin()
+          ? std::make_optional(net::SchemefulSite(
+                *request->isolation_info().top_frame_origin()))
+          : std::nullopt,
+      request->isolation_info().nonce(), *header_value, request->load_flags(),
       request->cookie_partition_key(), partitioned_state_allowed_only,
       base::BindOnce(&NetworkServiceNetworkDelegate::FinishedClearSiteData,
                      weak_ptr_factory_.GetWeakPtr(), request->GetWeakPtr(),

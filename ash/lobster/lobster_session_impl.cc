@@ -28,9 +28,11 @@
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/types/expected.h"
 #include "build/branding_buildflags.h"
+#include "components/account_id/account_id.h"
 #include "components/feedback/feedback_constants.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -102,10 +104,6 @@ std::string BuildFeedbackDescription(std::string_view query,
       model_version, user_description);
 }
 
-void OpenDownloadsFolder() {
-  ash::NewWindowDelegate::GetInstance()->OpenDownloadsFolder();
-}
-
 message_center::RichNotificationData CreateRichNotificationData(
     const base::FilePath& image_path,
     const std::string& image_bytes) {
@@ -120,9 +118,12 @@ message_center::RichNotificationData CreateRichNotificationData(
   return rich_notification_data;
 }
 
+// `account_id` owns the download, and is the user whose Downloads folder the
+// "Show in folder" button opens.
 void DisplaySuccessfulImageDownloadNotification(
     const base::FilePath& image_path,
-    const std::string& image_bytes) {
+    const std::string& image_bytes,
+    const AccountId& account_id) {
   std::unique_ptr<message_center::Notification> notification =
       CreateSystemNotificationPtr(
           /*type=*/message_center::NOTIFICATION_TYPE_IMAGE,
@@ -138,6 +139,7 @@ void DisplaySuccessfulImageDownloadNotification(
           base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
               base::BindRepeating(
                   [](const std::string& image_bytes,
+                     const AccountId& account_id,
                      std::optional<int> button_index) {
                     if (!button_index.has_value()) {
                       return;
@@ -145,12 +147,13 @@ void DisplaySuccessfulImageDownloadNotification(
                     CHECK(*button_index == 0 || button_index == 1);
 
                     if (button_index == 0) {
-                      OpenDownloadsFolder();
+                      ash::NewWindowDelegate::GetInstance()
+                          ->OpenDownloadsFolder(account_id);
                     } else if (button_index == 1) {
                       CopyToClipboard(image_bytes);
                     }
                   },
-                  image_bytes)),
+                  image_bytes, account_id)),
           /*small_image=*/
           ::features::IsRoundedIconsEnabled()
               ? vector_icons::kDownload2FilledIcon
@@ -245,9 +248,7 @@ void LobsterSessionImpl::DownloadCandidate(int candidate_id,
   }
 
   client_->InflateCandidate(
-      candidate->seed,
-      ash::features::IsLobsterUseRewrittenQuery() ? candidate->rewritten_query
-                                                  : candidate->user_query,
+      candidate->seed, candidate->rewritten_query,
       base::BindOnce(
           [](LobsterClient* lobster_client,
              LobsterImageDownloadActuator* actuator,
@@ -267,12 +268,14 @@ void LobsterSessionImpl::DownloadCandidate(int candidate_id,
                 base::BindOnce(
                     [](StatusCallback status_callback,
                        const std::string& image_bytes,
+                       const AccountId& account_id,
                        const LobsterImageDownloadResponse& download_response) {
                       std::move(status_callback).Run(download_response.success);
 
                       if (download_response.success) {
                         DisplaySuccessfulImageDownloadNotification(
-                            download_response.download_path, image_bytes);
+                            download_response.download_path, image_bytes,
+                            account_id);
                         RecordLobsterState(
                             LobsterMetricState::kCandidateDownloadSuccess);
                         return;
@@ -283,7 +286,8 @@ void LobsterSessionImpl::DownloadCandidate(int candidate_id,
                       RecordLobsterState(
                           LobsterMetricState::kCandidateDownloadError);
                     },
-                    std::move(status_callback), image_candidate.image_bytes));
+                    std::move(status_callback), image_candidate.image_bytes,
+                    lobster_client->GetAccountId()));
           },
           client_.get(), &download_actuator_, download_dir,
           // Always use the original user query for the filename
@@ -293,10 +297,20 @@ void LobsterSessionImpl::DownloadCandidate(int candidate_id,
 void LobsterSessionImpl::RequestCandidates(const std::string& query,
                                            int num_candidates,
                                            RequestCandidatesCallback callback) {
+  // The UI replaces all displayed candidates when the query changes, and only
+  // appends candidates when more are requested for the same query. Drop the
+  // candidates for the previous query so that the store only holds candidates
+  // the UI can still reference.
+  if (last_requested_query_.has_value() && *last_requested_query_ != query) {
+    candidate_store_.Clear();
+  }
+  last_requested_query_ = query;
+
   client_->RequestCandidates(
       query, num_candidates,
       base::BindOnce(&LobsterSessionImpl::OnRequestCandidates,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+                     weak_ptr_factory_.GetWeakPtr(), query,
+                     std::move(callback)));
 }
 
 void LobsterSessionImpl::CommitAsInsert(int candidate_id,
@@ -315,11 +329,10 @@ void LobsterSessionImpl::CommitAsInsert(int candidate_id,
   }
 
   client_->InflateCandidate(
-      candidate->seed,
-      ash::features::IsLobsterUseRewrittenQuery() ? candidate->rewritten_query
-                                                  : candidate->user_query,
+      candidate->seed, candidate->rewritten_query,
       base::BindOnce(
-          [](LobsterClient* lobster_client, StatusCallback status_callback,
+          [](base::WeakPtr<LobsterSessionImpl> session,
+             LobsterClient* lobster_client, StatusCallback status_callback,
              const LobsterResult& result) {
             if (!result.has_value() || result->size() == 0) {
               LOG(ERROR) << "No image candidate";
@@ -343,10 +356,15 @@ void LobsterSessionImpl::CommitAsInsert(int candidate_id,
             std::move(status_callback).Run(true);
             AnnounceInsertionResultLater(lobster_client, true);
 
-            // Close the WebUI.
-            lobster_client->CloseUI();
+            // Close the WebUI and release cached candidates.
+            if (session) {
+              session->CloseUI();
+            } else {
+              lobster_client->CloseUI();
+            }
           },
-          client_.get(), std::move(status_callback)));
+          weak_ptr_factory_.GetWeakPtr(), client_.get(),
+          std::move(status_callback)));
 }
 
 void LobsterSessionImpl::CommitAsDownload(int candidate_id,
@@ -365,11 +383,10 @@ void LobsterSessionImpl::CommitAsDownload(int candidate_id,
   }
 
   client_->InflateCandidate(
-      candidate->seed,
-      ash::features::IsLobsterUseRewrittenQuery() ? candidate->rewritten_query
-                                                  : candidate->user_query,
+      candidate->seed, candidate->rewritten_query,
       base::BindOnce(
-          [](LobsterClient* lobster_client,
+          [](base::WeakPtr<LobsterSessionImpl> session,
+             LobsterClient* lobster_client,
              LobsterImageDownloadActuator* actuator,
              const base::FilePath& download_dir, const std::string& file_name,
              StatusCallback status_callback, const LobsterResult& result) {
@@ -385,17 +402,23 @@ void LobsterSessionImpl::CommitAsDownload(int candidate_id,
                 download_dir, file_name, image_candidate.id,
                 image_candidate.image_bytes,
                 base::BindOnce(
-                    [](LobsterClient* lobster_client,
+                    [](base::WeakPtr<LobsterSessionImpl> session,
+                       LobsterClient* lobster_client,
                        const std::string& image_bytes,
                        StatusCallback status_callback,
                        const LobsterImageDownloadResponse& download_response) {
                       std::move(status_callback).Run(download_response.success);
-                      // Close the WebUI.
-                      lobster_client->CloseUI();
+                      // Close the WebUI and release cached candidates.
+                      if (session) {
+                        session->CloseUI();
+                      } else {
+                        lobster_client->CloseUI();
+                      }
 
                       if (download_response.success) {
                         DisplaySuccessfulImageDownloadNotification(
-                            download_response.download_path, image_bytes);
+                            download_response.download_path, image_bytes,
+                            lobster_client->GetAccountId());
                         RecordLobsterState(
                             LobsterMetricState::kCommitAsDownloadSuccess);
                         return;
@@ -406,10 +429,11 @@ void LobsterSessionImpl::CommitAsDownload(int candidate_id,
                       RecordLobsterState(
                           LobsterMetricState::kCommitAsDownloadError);
                     },
-                    lobster_client, image_candidate.image_bytes,
-                    std::move(status_callback)));
+                    std::move(session), lobster_client,
+                    image_candidate.image_bytes, std::move(status_callback)));
           },
-          client_.get(), &download_actuator_, download_dir,
+          weak_ptr_factory_.GetWeakPtr(), client_.get(), &download_actuator_,
+          download_dir,
           // Always use the original user query for the filename
           candidate->user_query, std::move(status_callback)));
 }
@@ -446,9 +470,10 @@ bool LobsterSessionImpl::SubmitFeedback(int candidate_id,
       /*image_mime_type=*/std::nullopt);
 }
 
-void LobsterSessionImpl::OnRequestCandidates(RequestCandidatesCallback callback,
+void LobsterSessionImpl::OnRequestCandidates(const std::string& query,
+                                             RequestCandidatesCallback callback,
                                              const LobsterResult& result) {
-  if (result.has_value()) {
+  if (result.has_value() && last_requested_query_ == query) {
     for (auto& image_candidate : *result) {
       candidate_store_.Cache(image_candidate);
     }
@@ -482,6 +507,8 @@ void LobsterSessionImpl::ShowUI() {
 }
 
 void LobsterSessionImpl::CloseUI() {
+  last_requested_query_.reset();
+  candidate_store_.Clear();
   client_->CloseUI();
 }
 

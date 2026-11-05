@@ -7,12 +7,13 @@
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/path_service.h"
+#include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/timer/elapsed_timer.h"
 #include "build/build_config.h"
-#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
+#include "chrome/browser/page_load_metrics/chrome_navigation_initiator.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/new_tab_page_preload/new_tab_page_preload_pipeline_manager.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
@@ -23,16 +24,19 @@
 #include "chrome/browser/preloading/prerender/search_preload_progress_test_utils.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
-#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
+#include "components/page_load_metrics/browser/navigation_initiator.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/referrer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/preloading_test_util.h"
@@ -46,8 +50,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/android_info.h"
@@ -319,6 +323,13 @@ IN_PROC_BROWSER_TEST_F(PrerenderUntilScriptBrowserTest, UseCounter) {
 
 IN_PROC_BROWSER_TEST_F(PrerenderBrowserTest,
                        PrerenderTriggeredByEmbedderAndActivate) {
+#if BUILDFLAG(IS_ANDROID)
+  // TODO(crbug.com/576393693): Prerender activation fails with
+  // kActivationNavigationParameterMismatch on Android tablets.
+  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
+    GTEST_SKIP() << "Prerender activation fails on Android tablets.";
+  }
+#endif
   base::HistogramTester histogram_tester;
 
   // Navigate to an initial page.
@@ -756,15 +767,14 @@ class PrerenderNewTabPageBrowserTest
   void SimulateNewTabNavigation(const GURL& url) {
     GetActiveWebContents()->OpenURL(
         content::OpenURLParams::CreateBrowserInitiated(
-            url, WindowOpenDisposition::CURRENT_TAB,
+            url, ui::mojom::WindowOpenDisposition::kCurrentTab,
             ui::PageTransitionFromInt(ui::PAGE_TRANSITION_AUTO_BOOKMARK)),
-        base::BindRepeating(&AttachNewTabPageNavigationHandleUserData));
+        page_load_metrics::NavigationInitiatorHolder::AttacherCallback(
+            chrome_navigation_initiator::kNewTabPage));
   }
 
-  void ExpectPrerenderPageLoad(
-      const GURL& prerender_url,
-      page_load_metrics::NavigationHandleUserData::InitiatorLocation
-          initiator_location) {
+  void ExpectPrerenderPageLoad(const GURL& prerender_url,
+                               int64_t initiator_id) {
     auto entries =
         test_ukm_recorder()->GetMergedEntriesByName("PrerenderPageLoad");
     for (auto& kv : entries) {
@@ -781,7 +791,7 @@ class PrerenderNewTabPageBrowserTest
       test_ukm_recorder()->ExpectEntryMetric(
           entry,
           ukm::builders::PrerenderPageLoad::kNavigation_InitiatorLocationName,
-          static_cast<int>(initiator_location));
+          initiator_id);
       return;
     }
     EXPECT_TRUE(false) << "PrerenderPageLoad hasn't been recorded.";
@@ -804,8 +814,16 @@ class PrerenderNewTabPageBrowserTest
       attempt_entry_builder_;
 };
 
+// TODO(crbug.com/585080255): Consistently failing on Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_PrerenderTriggeredByNewTabPageAndActivate \
+  DISABLED_PrerenderTriggeredByNewTabPageAndActivate
+#else
+#define MAYBE_PrerenderTriggeredByNewTabPageAndActivate \
+  PrerenderTriggeredByNewTabPageAndActivate
+#endif
 IN_PROC_BROWSER_TEST_F(PrerenderNewTabPageBrowserTest,
-                       PrerenderTriggeredByNewTabPageAndActivate) {
+                       MAYBE_PrerenderTriggeredByNewTabPageAndActivate) {
   base::HistogramTester histogram_tester;
 
   // Navigate to an initial page.
@@ -813,9 +831,8 @@ IN_PROC_BROWSER_TEST_F(PrerenderNewTabPageBrowserTest,
                                      chrome::ChromeUINewTabURLAsGURL()));
   GURL prerender_url = GetUrl("/simple.html");
 
-  std::unique_ptr<NewTabPagePreloadPipelineManager> ntp_preload_manager =
-      std::make_unique<NewTabPagePreloadPipelineManager>(
-          GetActiveWebContents());
+  auto* ntp_preload_manager = NewTabPagePreloadPipelineManager::From(
+      chrome_test_utils::GetActiveTab(this));
   ntp_preload_manager->StartPrerender(
       prerender_url,
       chrome_preloading_predictor::kMouseHoverOrMouseDownOnNewTabPage);
@@ -835,9 +852,8 @@ IN_PROC_BROWSER_TEST_F(PrerenderNewTabPageBrowserTest,
   histogram_tester.ExpectTotalCount(
       "NewTabPage.PrerenderNavigationToActivation", 1);
 
-  ExpectPrerenderPageLoad(
-      prerender_url,
-      GetInitiatorLocation(ChromeInitiatorLocation::kNewTabPage));
+  ExpectPrerenderPageLoad(prerender_url,
+                          chrome_navigation_initiator::kNewTabPage.id());
   histogram_tester.ExpectUniqueSample(
       "Prerender.IsPrerenderingSRPUrl.Embedder_NewTabPage", false, 1);
 }
@@ -850,9 +866,8 @@ IN_PROC_BROWSER_TEST_F(PrerenderNewTabPageBrowserTest,
                                      chrome::ChromeUINewTabURLAsGURL()));
   GURL prerender_url = embedded_test_server()->GetURL("/simple.html?prerender");
 
-  std::unique_ptr<NewTabPagePreloadPipelineManager> ntp_preload_manager =
-      std::make_unique<NewTabPagePreloadPipelineManager>(
-          GetActiveWebContents());
+  auto* ntp_preload_manager = NewTabPagePreloadPipelineManager::From(
+      chrome_test_utils::GetActiveTab(this));
   ntp_preload_manager->StartPrerender(
       prerender_url,
       chrome_preloading_predictor::kMouseHoverOrMouseDownOnNewTabPage);
@@ -888,9 +903,8 @@ IN_PROC_BROWSER_TEST_F(PrerenderNewTabPageBrowserTest,
                                      chrome::ChromeUINewTabURLAsGURL()));
   GURL prerender_url = GetUrl("/simple.html");
 
-  std::unique_ptr<NewTabPagePreloadPipelineManager> ntp_preload_manager =
-      std::make_unique<NewTabPagePreloadPipelineManager>(
-          GetActiveWebContents());
+  auto* ntp_preload_manager = NewTabPagePreloadPipelineManager::From(
+      chrome_test_utils::GetActiveTab(this));
 
   ntp_preload_manager->StartPrerender(
       prerender_url,
@@ -934,9 +948,8 @@ IN_PROC_BROWSER_TEST_F(PrerenderNewTabPageBrowserTest,
                                      chrome::ChromeUINewTabURLAsGURL()));
   GURL prerender_url = GetUrl("/simple.html?prerender");
 
-  std::unique_ptr<NewTabPagePreloadPipelineManager> ntp_preload_manager =
-      std::make_unique<NewTabPagePreloadPipelineManager>(
-          GetActiveWebContents());
+  auto* ntp_preload_manager = NewTabPagePreloadPipelineManager::From(
+      chrome_test_utils::GetActiveTab(this));
 
   ntp_preload_manager->StartPrerender(
       prerender_url,
@@ -1006,7 +1019,14 @@ class PrerenderPrewarmDefaultSearchEngineTest
     : public PrerenderBrowserTest,
       public testing::WithParamInterface<content::PreloadingPredictor> {
  public:
-  PrerenderPrewarmDefaultSearchEngineTest() {
+  PrerenderPrewarmDefaultSearchEngineTest()
+      : PrerenderPrewarmDefaultSearchEngineTest(
+            test::ScopedPrewarmFeatureList::PrewarmState::
+                kEnabledWithNoTrigger) {}
+
+  explicit PrerenderPrewarmDefaultSearchEngineTest(
+      test::ScopedPrewarmFeatureList::PrewarmState prewarm_state)
+      : scoped_prewarm_feature_list_(prewarm_state) {
     reuse_prerender_host_feature_.InitAndEnableFeature(
         features::kPrerender2ReuseHost);
   }
@@ -1044,9 +1064,10 @@ class PrerenderPrewarmDefaultSearchEngineTest
     original_web_contents->OpenURL(
         content::OpenURLParams::CreateBrowserInitiated(
             GURL(url::kAboutBlankURL),
-            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
             ui::PageTransitionFromInt(ui::PAGE_TRANSITION_AUTO_BOOKMARK)),
-        base::BindRepeating(&AttachNewTabPageNavigationHandleUserData));
+        page_load_metrics::NavigationInitiatorHolder::AttacherCallback(
+            chrome_navigation_initiator::kNewTabPage));
     content::WebContents* new_web_contents = GetActiveWebContents();
     EXPECT_TRUE(new_web_contents);
     EXPECT_NE(new_web_contents, original_web_contents);
@@ -1055,8 +1076,7 @@ class PrerenderPrewarmDefaultSearchEngineTest
 
  protected:
   GURL prewarm_url_;
-  test::ScopedPrewarmFeatureList scoped_prewarm_feature_list_{
-      test::ScopedPrewarmFeatureList::PrewarmState::kEnabledWithNoTrigger};
+  test::ScopedPrewarmFeatureList scoped_prewarm_feature_list_;
   base::test::ScopedFeatureList reuse_prerender_host_feature_;
 };
 
@@ -1501,6 +1521,133 @@ IN_PROC_BROWSER_TEST_F(PrerenderPrewarmDefaultSearchEngineTest,
   content::test::PrerenderTestHelper::WaitForPrerenderLoadCompletion(
       *GetActiveWebContents(), prerender_url_3);
 }
+
+// In this CL, `PrewarmTabHelper` is only wired up in desktop `TabFeatures`
+// (Android uses a separate `TabFeatures` implementation in
+// `chrome/browser/android/tab_features.cc` and a native Java view for NTP,
+// which are wired up in a follow-up CL).
+#if !BUILDFLAG(IS_ANDROID)
+class FirstVisuallyNonEmptyPaintObserver : public content::WebContentsObserver {
+ public:
+  explicit FirstVisuallyNonEmptyPaintObserver(
+      content::WebContents* web_contents)
+      : content::WebContentsObserver(web_contents) {}
+
+  void Wait() {
+    if (web_contents()->CompletedFirstVisuallyNonEmptyPaint()) {
+      return;
+    }
+    run_loop_.Run();
+  }
+
+  void DidFirstVisuallyNonEmptyPaint() override { run_loop_.Quit(); }
+
+ private:
+  base::RunLoop run_loop_;
+};
+
+class PrerenderPrewarmPageLoadAndTabSwitchAfterPaintBrowserTest
+    : public PrerenderPrewarmDefaultSearchEngineTest {
+ public:
+  PrerenderPrewarmPageLoadAndTabSwitchAfterPaintBrowserTest()
+      : PrerenderPrewarmDefaultSearchEngineTest(
+            test::ScopedPrewarmFeatureList::PrewarmState::
+                kEnabledWithPageLoadAndTabSwitchAfterPaintTrigger) {}
+};
+
+IN_PROC_BROWSER_TEST_F(
+    PrerenderPrewarmPageLoadAndTabSwitchAfterPaintBrowserTest,
+    PageLoadAndTabSwitchTriggersPrewarm) {
+  auto* prerender_manager =
+      PrerenderManager::FromWebContents(GetActiveWebContents());
+  ASSERT_TRUE(prerender_manager);
+  // Stop any prewarm that may have been triggered on the initial about:blank
+  // page after SetPrewarmUrlForTesting() in SetUpOnMainThread().
+  ASSERT_TRUE(content::WaitForLoadStop(GetActiveWebContents()));
+  prerender_manager->StopPrewarmSearchResultForTesting();
+  EXPECT_FALSE(prerender_manager->HasSearchPrewarmTaskForTesting());
+
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+
+  // Navigating the foreground tab to a real page triggers prewarm automatically
+  // once both load and first paint complete.
+  GURL url = embedded_test_server()->GetURL("/title1.html");
+  ASSERT_TRUE(content::NavigateToURL(GetActiveWebContents(), url));
+  FirstVisuallyNonEmptyPaintObserver(GetActiveWebContents()).Wait();
+  registry_observer.WaitForTrigger(prewarm_url_);
+  EXPECT_TRUE(prerender_manager->HasSearchPrewarmTaskForTesting());
+
+  // Stop the prewarm.
+  prerender_manager->StopPrewarmSearchResultForTesting();
+  EXPECT_FALSE(prerender_manager->HasSearchPrewarmTaskForTesting());
+
+  // Hiding/switching away and switching back triggers prewarm again on the
+  // non-loading painted tab.
+  content::test::PrerenderHostRegistryObserver registry_observer2(
+      *GetActiveWebContents());
+  GetActiveWebContents()->WasHidden();
+  EXPECT_FALSE(prerender_manager->HasSearchPrewarmTaskForTesting());
+
+  GetActiveWebContents()->WasShown();
+  registry_observer2.WaitForTrigger(prewarm_url_);
+  EXPECT_TRUE(prerender_manager->HasSearchPrewarmTaskForTesting());
+
+  // Stop the prewarm before testing the loading state.
+  prerender_manager->StopPrewarmSearchResultForTesting();
+  EXPECT_FALSE(prerender_manager->HasSearchPrewarmTaskForTesting());
+
+  // Navigate to a page with a render-blocking stylesheet that never finishes
+  // loading, so the committed page stays in the loading state without painting.
+  GURL loading_url = embedded_test_server()->GetURL("/with_delayed_css.html");
+  content::TestNavigationManager navigation_manager(GetActiveWebContents(),
+                                                    loading_url);
+  GetActiveWebContents()->GetController().LoadURL(
+      loading_url, content::Referrer(), ui::PAGE_TRANSITION_TYPED,
+      std::string());
+  ASSERT_TRUE(navigation_manager.WaitForNavigationFinished());
+  ASSERT_TRUE(navigation_manager.was_committed());
+  EXPECT_TRUE(GetActiveWebContents()->IsLoading());
+  EXPECT_FALSE(GetActiveWebContents()->CompletedFirstVisuallyNonEmptyPaint());
+
+  // Prewarm should not be triggered while the page is loading before first
+  // paint, even if the tab is switched away from and back to.
+  EXPECT_FALSE(prerender_manager->HasSearchPrewarmTaskForTesting());
+  GetActiveWebContents()->WasHidden();
+  GetActiveWebContents()->WasShown();
+  EXPECT_FALSE(prerender_manager->HasSearchPrewarmTaskForTesting());
+
+  // Change the stylesheet media to 'print' so it is no longer render-blocking;
+  // the page completes first paint while the stylesheet is still loading.
+  ASSERT_TRUE(
+      content::ExecJs(GetActiveWebContents(),
+                      "document.querySelector('link').media = 'print';"));
+  FirstVisuallyNonEmptyPaintObserver(GetActiveWebContents()).Wait();
+  EXPECT_TRUE(GetActiveWebContents()->CompletedFirstVisuallyNonEmptyPaint());
+  EXPECT_TRUE(GetActiveWebContents()->IsLoading());
+
+  // Prewarm should still not be triggered while the page is loading even after
+  // first paint (and across tab visibility changes).
+  EXPECT_FALSE(prerender_manager->HasSearchPrewarmTaskForTesting());
+  GetActiveWebContents()->WasHidden();
+  GetActiveWebContents()->WasShown();
+  EXPECT_FALSE(prerender_manager->HasSearchPrewarmTaskForTesting());
+
+  // Stopping the delayed stylesheet load allows the page to finish loading,
+  // which triggers prewarm automatically. Note that `link.remove()` alone only
+  // removes the pending sheet from StyleEngine without calling ClearResource()
+  // until Oilpan GC runs, so `window.stop()` is called to deterministically
+  // cancel the in-flight resource load.
+  content::test::PrerenderHostRegistryObserver registry_observer3(
+      *GetActiveWebContents());
+  ASSERT_TRUE(content::ExecJs(
+      GetActiveWebContents(),
+      "document.querySelector('link').remove(); window.stop();"));
+  ASSERT_TRUE(content::WaitForLoadStop(GetActiveWebContents()));
+  registry_observer3.WaitForTrigger(prewarm_url_);
+  EXPECT_TRUE(prerender_manager->HasSearchPrewarmTaskForTesting());
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 IN_PROC_BROWSER_TEST_F(PrerenderBrowserTest,
                        PrerenderFormSubmissionUseCounter) {

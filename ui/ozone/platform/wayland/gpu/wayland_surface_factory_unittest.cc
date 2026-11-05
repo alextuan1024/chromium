@@ -9,15 +9,23 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/containers/queue.h"
+#include "base/logging.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/test/mock_callback.h"
+#include "base/test/mock_log.h"
+#include "base/threading/simple_thread.h"
 #include "components/viz/common/resources/shared_image_format.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "ui/gfx/buffer_types.h"
@@ -28,10 +36,13 @@
 #include "ui/gfx/native_pixmap.h"
 #include "ui/gfx/overlay_plane_data.h"
 #include "ui/gfx/overlay_priority_hint.h"
+#include "ui/gfx/vsync_provider.h"
 #include "ui/gl/gl_utils.h"
+#include "ui/ozone/platform/wayland/gpu/gbm_pixmap_wayland.h"
 #include "ui/ozone/platform/wayland/gpu/gbm_surfaceless_wayland.h"
 #include "ui/ozone/platform/wayland/gpu/wayland_buffer_manager_gpu.h"
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
+#include "ui/ozone/platform/wayland/host/wayland_frame_manager.h"
 #include "ui/ozone/platform/wayland/host/wayland_subsurface.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
 #include "ui/ozone/platform/wayland/test/mock_surface.h"
@@ -39,11 +50,15 @@
 #include "ui/ozone/platform/wayland/test/test_wayland_server_thread.h"
 #include "ui/ozone/platform/wayland/test/test_zwp_linux_buffer_params.h"
 #include "ui/ozone/platform/wayland/test/wayland_test.h"
+#include "ui/ozone/public/native_pixmap_usage.h"
 #include "ui/ozone/public/surface_ozone_canvas.h"
 #include "ui/ozone/test/mock_platform_window_delegate.h"
 
 using ::testing::_;
+using ::testing::AnyNumber;
+using ::testing::AtMost;
 using ::testing::Expectation;
+using ::testing::HasSubstr;
 using ::testing::SaveArg;
 using ::testing::Values;
 
@@ -199,13 +214,14 @@ class WaylandSurfaceFactoryTest : public WaylandTest {
     WaylandTest::SetUp();
 
     auto manager_ptr = connection_->buffer_manager_host()->BindInterface();
-    buffer_manager_gpu_->Initialize(std::move(manager_ptr),
-                                    kSupportedFormatsWithModifiers,
-                                    /*supports_dma_buf=*/false,
-                                    /*supports_viewporter=*/true,
-                                    /*supports_acquire_fence=*/false,
-                                    /*supports_overlays=*/true,
-                                    /*supports_single_pixel_buffer=*/true);
+    buffer_manager_gpu_->Initialize(
+        std::move(manager_ptr), kSupportedFormatsWithModifiers,
+        ozone::mojom::WaylandBufferManagerCapabilities::New(
+            /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+            /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+            /*supports_single_pixel_buffer=*/true,
+            /*compositor_tone_maps_using_clli=*/false,
+            /*compositor_tone_maps_using_mdcv=*/false));
 
     // Wait until initialization and mojo calls go through.
     base::RunLoop().RunUntilIdle();
@@ -233,7 +249,7 @@ class WaylandSurfaceFactoryTest : public WaylandTest {
                             gl::OverlayImage image,
                             int z_order) {
     presenter->ScheduleOverlayPlane(
-        image, nullptr,
+        image, gfx::GpuFenceHandle(),
         gfx::OverlayPlaneData(
             z_order, gfx::OverlayTransform::OVERLAY_TRANSFORM_NONE,
             gfx::RectF(window_->GetBoundsInPixels()), {}, false,
@@ -1291,6 +1307,88 @@ TEST_P(WaylandSurfaceFactoryTest, CanvasBufferSwapAck3) {
   }
 }
 
+// Verifies that WaylandCanvasSurface's VSyncProvider only updates its timebase
+// and interval from VSync-aligned presentation feedback, ignoring synthetic and
+// discarded feedback.
+TEST_P(WaylandSurfaceFactoryTest, CanvasVSyncProviderIgnoresNonVSyncFeedback) {
+  auto canvas = CreateCanvas(widget_);
+  ASSERT_TRUE(canvas);
+  auto vsync_provider = canvas->CreateVSyncProvider();
+  ASSERT_TRUE(vsync_provider);
+
+  const auto bounds_px = window_->GetBoundsInPixels();
+  canvas->ResizeCanvas(bounds_px.size(), 1.0f);
+
+  const uint32_t surface_id = window_->root_surface()->get_surface_id();
+
+  // Without wp_presentation, synthetic feedback is sent on submission. It is
+  // not VSync-aligned and must not populate VSyncProvider parameters.
+  ASSERT_FALSE(connection_->presentation());
+  ASSERT_TRUE(canvas->GetCanvas());
+  canvas->PresentCanvas(gfx::Rect(bounds_px.size()));
+  canvas->OnSwapBuffers(base::DoNothing(), gfx::FrameData());
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  PostToServerAndWait([surface_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(surface_id);
+    mock_surface->ReleaseBuffer(mock_surface->attached_buffer());
+    mock_surface->SendFrameCallback();
+  });
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  base::TimeTicks timebase;
+  base::TimeDelta interval;
+  EXPECT_FALSE(
+      vsync_provider->GetVSyncParametersIfAvailable(&timebase, &interval));
+
+  // Enable wp_presentation and verify that a discarded feedback is also
+  // ignored, while a real presented feedback updates the VSync parameters.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    ASSERT_TRUE(server->EnsureAndGetWpPresentation());
+  });
+  ASSERT_TRUE(connection_->presentation());
+
+  ASSERT_TRUE(canvas->GetCanvas());
+  canvas->PresentCanvas(gfx::Rect(bounds_px.size()));
+  canvas->OnSwapBuffers(base::DoNothing(), gfx::FrameData());
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  PostToServerAndWait([surface_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(surface_id);
+    mock_surface->ReleaseBuffer(mock_surface->attached_buffer());
+    mock_surface->SendFrameCallback();
+    server->EnsureAndGetWpPresentation()->SendPresentationCallbackDiscarded(
+        /*last=*/false);
+  });
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  EXPECT_FALSE(
+      vsync_provider->GetVSyncParametersIfAvailable(&timebase, &interval));
+
+  ASSERT_TRUE(canvas->GetCanvas());
+  canvas->PresentCanvas(gfx::Rect(bounds_px.size()));
+  canvas->OnSwapBuffers(base::DoNothing(), gfx::FrameData());
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  PostToServerAndWait([surface_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(surface_id);
+    mock_surface->ReleaseBuffer(mock_surface->attached_buffer());
+    mock_surface->SendFrameCallback();
+    server->EnsureAndGetWpPresentation()->SendPresentationCallback();
+  });
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  EXPECT_TRUE(
+      vsync_provider->GetVSyncParametersIfAvailable(&timebase, &interval));
+  EXPECT_FALSE(timebase.is_null());
+}
+
 TEST_P(WaylandSurfaceFactoryTest, CreateSurfaceCheckGbm) {
   gl::SetGLImplementation(gl::kGLImplementationEGLGLES2);
 
@@ -1330,6 +1428,203 @@ TEST_P(WaylandSurfaceFactoryTest, CreateSurfaceCheckGbm) {
   presenter = gl_ozone->CreateSurfacelessViewGLSurface(gl::GetDefaultDisplay(),
                                                        widget_);
   EXPECT_FALSE(presenter);
+}
+
+namespace {
+
+// Repeatedly tries to initialize a pixmap's buffer with a list of formats.
+class InitializeBufferDelegate : public base::DelegateSimpleThread::Delegate {
+ public:
+  InitializeBufferDelegate(scoped_refptr<GbmPixmapWayland> pixmap,
+                           gfx::AcceleratedWidget widget,
+                           std::vector<viz::SharedImageFormat> formats)
+      : pixmap_(std::move(pixmap)),
+        widget_(widget),
+        formats_(std::move(formats)) {}
+  ~InitializeBufferDelegate() override = default;
+
+  // base::DelegateSimpleThread::Delegate:
+  void Run() override {
+    for (int i = 0; i < 100; ++i) {
+      for (const auto& format : formats_) {
+        EXPECT_FALSE(pixmap_->InitializeBuffer(
+            widget_, gfx::Size(16, 16), format,
+            NativePixmapBufferUsage::kScanout, std::nullopt));
+      }
+    }
+  }
+
+ private:
+  const scoped_refptr<GbmPixmapWayland> pixmap_;
+  const gfx::AcceleratedWidget widget_;
+  const std::vector<viz::SharedImageFormat> formats_;
+};
+
+// Allocates buffer IDs once `start` is signaled and records them.
+class AllocateBufferIDDelegate : public base::DelegateSimpleThread::Delegate {
+ public:
+  AllocateBufferIDDelegate(WaylandBufferManagerGpu* buffer_manager,
+                           base::WaitableEvent* start)
+      : buffer_manager_(buffer_manager), start_(start) {}
+  ~AllocateBufferIDDelegate() override = default;
+
+  // base::DelegateSimpleThread::Delegate:
+  void Run() override {
+    start_->Wait();
+    for (int i = 0; i < 1000; ++i) {
+      ids_.push_back(buffer_manager_->AllocateBufferID());
+    }
+  }
+
+  const std::vector<uint32_t>& ids() const { return ids_; }
+
+ private:
+  const raw_ptr<WaylandBufferManagerGpu> buffer_manager_;
+  const raw_ptr<base::WaitableEvent> start_;
+  std::vector<uint32_t> ids_;
+};
+
+}  // namespace
+
+// Pixmaps may be initialized concurrently on the GPU main and IO threads, so
+// buffer allocation failures must be handled in a thread-safe way.
+TEST_P(WaylandSurfaceFactoryTest, ConcurrentBufferAllocationFailures) {
+  gl::SetGLImplementation(gl::kGLImplementationEGLGLES2);
+
+  auto gbm_device = std::make_unique<MockGbmDevice>();
+  gbm_device->set_allocation_failure(true);
+  buffer_manager_gpu_->use_fake_gbm_device_for_test_ = true;
+  buffer_manager_gpu_->gbm_device_ = std::move(gbm_device);
+  buffer_manager_gpu_->supports_dmabuf_ = true;
+  ASSERT_TRUE(buffer_manager_gpu_->GetGbmDevice());
+
+  const std::vector<viz::SharedImageFormat> kFormatsA = {
+      viz::SinglePlaneFormat::kR_8, viz::SinglePlaneFormat::kRG_88,
+      viz::SinglePlaneFormat::kRGBA_8888, viz::SinglePlaneFormat::kBGRX_8888,
+      viz::SinglePlaneFormat::kRGBA_1010102};
+  const std::vector<viz::SharedImageFormat> kFormatsB = {
+      viz::SinglePlaneFormat::kR_16, viz::SinglePlaneFormat::kRG_1616,
+      viz::SinglePlaneFormat::kRGBX_8888, viz::SinglePlaneFormat::kBGR_565,
+      viz::SinglePlaneFormat::kBGRA_1010102};
+
+  // The error for a failing format must be logged at most once, even when
+  // several threads hit the failure concurrently. The set of failed formats is
+  // process-wide and may already contain some of the formats (e.g. with
+  // --gtest_repeat), so the error may also not be logged at all.
+  base::test::MockLog mock_log;
+  EXPECT_CALL(mock_log, Log(_, _, _, _, _)).Times(AnyNumber());
+  for (const auto& formats : {kFormatsA, kFormatsB}) {
+    for (const auto& format : formats) {
+      EXPECT_CALL(mock_log, Log(logging::LOGGING_ERROR, _, _, _,
+                                HasSubstr("Cannot create bo with format=" +
+                                          format.ToString() + " and usage=")))
+          .Times(AtMost(1));
+    }
+  }
+  mock_log.StartCapturingLogs();
+
+  InitializeBufferDelegate delegate_a(
+      base::MakeRefCounted<GbmPixmapWayland>(buffer_manager_gpu_.get()),
+      widget_, kFormatsA);
+  InitializeBufferDelegate delegate_b(
+      base::MakeRefCounted<GbmPixmapWayland>(buffer_manager_gpu_.get()),
+      widget_, kFormatsB);
+  base::DelegateSimpleThread thread_a(&delegate_a, "InitializeBufferA");
+  base::DelegateSimpleThread thread_b(&delegate_b, "InitializeBufferB");
+  thread_a.Start();
+  thread_b.Start();
+  thread_a.Join();
+  thread_b.Join();
+
+  mock_log.StopCapturingLogs();
+}
+
+// Buffer IDs may be allocated concurrently on the GPU main and IO threads, and
+// must remain unique.
+TEST_P(WaylandSurfaceFactoryTest, ConcurrentBufferIDAllocation) {
+  base::WaitableEvent start;
+  AllocateBufferIDDelegate delegate_a(buffer_manager_gpu_.get(), &start);
+  AllocateBufferIDDelegate delegate_b(buffer_manager_gpu_.get(), &start);
+  base::DelegateSimpleThread thread_a(&delegate_a, "AllocateBufferIDA");
+  base::DelegateSimpleThread thread_b(&delegate_b, "AllocateBufferIDB");
+  thread_a.Start();
+  thread_b.Start();
+  start.Signal();
+  thread_a.Join();
+  thread_b.Join();
+
+  std::set<uint32_t> ids(delegate_a.ids().begin(), delegate_a.ids().end());
+  ids.insert(delegate_b.ids().begin(), delegate_b.ids().end());
+  EXPECT_EQ(ids.size(), delegate_a.ids().size() + delegate_b.ids().size());
+  EXPECT_FALSE(ids.contains(0u));
+}
+
+// When the compositor advertises `DRM_FORMAT_MOD_INVALID` and allocation with
+// the advertised explicit modifiers fails, the buffer is allocated without
+// modifiers. If the driver then reports a modifier the compositor did not
+// advertise (e.g. `DRM_FORMAT_MOD_LINEAR` on virgl), the buffer must be
+// submitted with `DRM_FORMAT_MOD_INVALID` instead. Otherwise, the compositor
+// may reject the buffer.
+TEST_P(WaylandSurfaceFactoryTest, ImplicitModifierFallbackWlBufferModifier) {
+  gl::SetGLImplementation(gl::kGLImplementationEGLGLES2);
+
+  buffer_manager_gpu_->use_fake_gbm_device_for_test_ = true;
+  // MockGbmDevice fails to allocate with an explicit `DRM_FORMAT_MOD_INVALID`
+  // modifier, like Mesa, and allocations without modifiers report
+  // `DRM_FORMAT_MOD_LINEAR`.
+  buffer_manager_gpu_->gbm_device_ = std::make_unique<MockGbmDevice>();
+  buffer_manager_gpu_->supports_dmabuf_ = true;
+
+  auto* gl_ozone = surface_factory_->GetGLOzone(
+      gl::GLImplementationParts(gl::kGLImplementationEGLGLES2));
+  ASSERT_TRUE(gl_ozone);
+  auto presenter = gl_ozone->CreateSurfacelessViewGLSurface(
+      gl::GetDefaultDisplay(), widget_);
+  ASSERT_TRUE(presenter);
+
+  struct {
+    std::vector<uint64_t> advertised_modifiers;
+    uint64_t expected_modifier;
+  } const kTestCases[] = {
+      // Only implicit modifiers are advertised (e.g. Mir on virgl): the
+      // driver-reported `DRM_FORMAT_MOD_LINEAR` is not advertised.
+      {{DRM_FORMAT_MOD_INVALID}, DRM_FORMAT_MOD_INVALID},
+      // The driver-reported modifier is advertised, so it is sent as is.
+      {{DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_MOD_INVALID}, DRM_FORMAT_MOD_LINEAR},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(testing::Message()
+                 << "advertised modifiers: "
+                 << testing::PrintToString(test_case.advertised_modifiers));
+    buffer_manager_gpu_->supported_formats_with_modifiers_ = {
+        {viz::SinglePlaneFormat::kBGRA_8888, test_case.advertised_modifiers}};
+
+    auto native_pixmap = surface_factory()->CreateNativePixmap(
+        widget_, nullptr, window_->applied_state().size_px,
+        viz::SinglePlaneFormat::kBGRA_8888, gfx::BufferUsage::SCANOUT);
+    ASSERT_TRUE(native_pixmap);
+    // The buffer object was allocated without modifiers.
+    EXPECT_EQ(native_pixmap->GetFormatModifier(), DRM_FORMAT_MOD_LINEAR);
+
+    ScheduleOverlayPlane(presenter.get(), native_pixmap, /*z_order=*/INT32_MIN);
+
+    // Wait until the wl_buffer creation request reaches the server.
+    base::RunLoop().RunUntilIdle();
+
+    PostToServerAndWait([expected_modifier = test_case.expected_modifier](
+                            wl::TestWaylandServerThread* server) {
+      auto params_vector = server->zwp_linux_dmabuf_v1()->buffer_params();
+      ASSERT_FALSE(params_vector.empty());
+      wl::TestZwpLinuxBufferParamsV1* params = params_vector.back();
+      const uint64_t modifier =
+          (static_cast<uint64_t>(params->modifier_hi_) << 32) |
+          params->modifier_lo_;
+      EXPECT_EQ(modifier, expected_modifier);
+      zwp_linux_buffer_params_v1_send_created(params->resource(),
+                                              params->buffer_resource());
+    });
+  }
 }
 
 class WaylandSurfaceFactoryCompositorV3 : public WaylandSurfaceFactoryTest {};
@@ -1388,7 +1683,7 @@ TEST_P(WaylandSurfaceFactoryCompositorV3, SurfaceDamageTest) {
 
     // Prepare background.
     presenter->ScheduleOverlayPlane(
-        fake_overlay_image[0]->GetNativePixmap(), nullptr,
+        fake_overlay_image[0]->GetNativePixmap(), gfx::GpuFenceHandle(),
         gfx::OverlayPlaneData(
             INT32_MIN,
             gfx::OverlayTransform::OVERLAY_TRANSFORM_ROTATE_CLOCKWISE_270,

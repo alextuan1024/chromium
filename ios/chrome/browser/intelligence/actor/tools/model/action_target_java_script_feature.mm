@@ -11,14 +11,17 @@
 #import "base/functional/callback_helpers.h"
 #import "base/memory/weak_ptr.h"
 #import "base/time/time.h"
+#import "base/timer/elapsed_timer.h"
 #import "base/unguessable_token.h"
 #import "base/values.h"
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/browser/autofill_util.h"
 #import "components/autofill/ios/form_util/child_frame_registrar.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_constants.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_java_script_feature_util.h"
 #import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
+#import "ios/chrome/browser/intelligence/actor/tools/public/metrics.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/web_state.h"
@@ -47,15 +50,15 @@ mojom::ActionResultCode ToActionResultCode(int code) {
   NOTREACHED();
 }
 
-/**
- * Parses and validates the result of action_target.resolveTargetIframe.
- */
+// Parses and validates the result of `action_target.resolveTargetIframe()`.
+// `timer` measures the JavaScript call duration for UMA.
 base::expected<std::optional<ChildFrameData>, ToolExecutionResult>
-ParseResolveTargetIframeResult(const base::Value* result) {
-  ToolExecutionResult tool_result =
-      ParseJavaScriptResultWithResultCode(&ToActionResultCode, result);
+ParseResolveTargetIframeResult(const base::Value* result,
+                               const base::ElapsedTimer& timer) {
+  ToolExecutionResult tool_result = ParseJavaScriptResultWithResultCode(
+      ActorJavaScriptCall::kActionTarget, &ToActionResultCode, result, timer);
   if (!tool_result.IsOk()) {
-    return base::unexpected(tool_result);
+    return base::unexpected(std::move(tool_result));
   }
   CHECK(result->is_dict());
   const base::DictValue* child_frame = result->GetDict().FindDict("childFrame");
@@ -96,7 +99,16 @@ void ActionTargetJavaScriptFeature::GetTargetFrame(web::WebState* web_state,
   CHECK(web_frame);
   CHECK(web_state);
 
+  if (depth == 0) {
+    if (target.node_id().has_value()) {
+      RecordActionTargetType(ActionTargetType::kDomNodeId);
+    } else if (target.coordinate().has_value()) {
+      RecordActionTargetType(ActionTargetType::kCoordinate);
+    }
+  }
+
   if (depth >= kMaxTargetIframeDepth) {
+    RecordTargetFrameResolutionResult(mojom::ActionResultCode::kToolTimeout);
     std::move(callback).Run(base::unexpected(
         ToolExecutionResult(mojom::ActionResultCode::kToolTimeout)));
     return;
@@ -132,10 +144,12 @@ void ActionTargetJavaScriptFeature::GetTargetFrameByDocumentIdentifier(
                                     target.node_id()->document_identifier);
 
   if (!target_frame.has_value()) {
+    RecordTargetFrameResolutionResult(target_frame.error().code());
     std::move(callback).Run(base::unexpected(target_frame.error()));
     return;
   }
 
+  RecordTargetFrameResolutionResult(mojom::ActionResultCode::kOk);
   std::move(callback).Run(TargetFrameResult{*target_frame, target});
 }
 
@@ -155,13 +169,14 @@ void ActionTargetJavaScriptFeature::GetTargetFrameByCoordinate(
       base::BindOnce(&ActionTargetJavaScriptFeature::OnTargetIframeResolved,
                      base::Unretained(GetInstance()), target,
                      web_state->GetWeakPtr(), web_frame->AsWeakPtr(),
-                     std::move(cb_for_js), depth),
-      base::Milliseconds(web::kJavaScriptFunctionCallDefaultTimeout));
+                     std::move(cb_for_js), depth, base::ElapsedTimer()),
+      kActorJavaScriptExecutionTimeout);
   if (!sent) {
-    std::move(cb_for_error)
-        .Run(base::unexpected(ToolExecutionResult(
-            InternalToolErrorCode::
-                kJavascriptFeatureFailedToCallJavaScriptFunction)));
+    ToolExecutionResult error_result(
+        InternalToolErrorCode::
+            kJavascriptFeatureFailedToCallJavaScriptFunction);
+    RecordTargetFrameResolutionResult(error_result.code());
+    std::move(cb_for_error).Run(base::unexpected(error_result));
   }
 }
 
@@ -171,26 +186,31 @@ void ActionTargetJavaScriptFeature::OnTargetIframeResolved(
     base::WeakPtr<web::WebFrame> current_frame,
     TargetFrameCallback callback,
     int depth,
+    base::ElapsedTimer timer,
     const base::Value* result) {
   if (!web_state) {
+    RecordTargetFrameResolutionResult(mojom::ActionResultCode::kTabWentAway);
     std::move(callback).Run(base::unexpected(
         ToolExecutionResult(mojom::ActionResultCode::kTabWentAway)));
     return;
   }
 
   if (!current_frame) {
+    RecordTargetFrameResolutionResult(mojom::ActionResultCode::kFrameWentAway);
     std::move(callback).Run(base::unexpected(
         ToolExecutionResult(mojom::ActionResultCode::kFrameWentAway)));
     return;
   }
 
-  auto parsed_result = ParseResolveTargetIframeResult(result);
+  auto parsed_result = ParseResolveTargetIframeResult(result, timer);
   if (!parsed_result.has_value()) {
+    RecordTargetFrameResolutionResult(parsed_result.error().code());
     std::move(callback).Run(base::unexpected(parsed_result.error()));
     return;
   }
 
   if (!parsed_result->has_value()) {
+    RecordTargetFrameResolutionResult(mojom::ActionResultCode::kOk, depth);
     std::move(callback).Run(
         TargetFrameResult{current_frame.get(), std::move(target)});
     return;
@@ -202,6 +222,7 @@ void ActionTargetJavaScriptFeature::OnTargetIframeResolved(
                                     child_data.remote_frame_token);
 
   if (!target_frame.has_value()) {
+    RecordTargetFrameResolutionResult(target_frame.error().code());
     std::move(callback).Run(base::unexpected(target_frame.error()));
     return;
   }

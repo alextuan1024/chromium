@@ -96,6 +96,10 @@ void TabGroupViews::UpdateBounds() {
 
   highlight_->UpdateBounds(leading_dragged_group_view,
                            trailing_dragged_group_view);
+  // The header's separators depend on the group's collapsed state and on the
+  // tab following the group, which can change without the header's bounds
+  // changing, so repaint it whenever the group's bounds are updated.
+  header_->SchedulePaint();
 }
 
 void TabGroupViews::OnGroupVisualsChanged() {
@@ -136,9 +140,9 @@ SkColor TabGroupViews::GetGroupColor() const {
 
 std::tuple<const views::View*, const views::View*>
 TabGroupViews::GetLeadingTrailingGroupViews() const {
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       underline_->parent()->children();
-  std::vector<raw_ptr<views::View, VectorExperimental>> dragged_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> dragged_children =
       drag_underline_->parent()->children();
   children.insert(children.end(), dragged_children.begin(),
                   dragged_children.end());
@@ -156,7 +160,7 @@ TabGroupViews::GetLeadingTrailingDraggedGroupViews() const {
 
 std::tuple<views::View*, views::View*>
 TabGroupViews::GetLeadingTrailingGroupViews(
-    std::vector<raw_ptr<views::View, VectorExperimental>> children) const {
+    std::vector<raw_ptr<views::View, DanglingUntriaged>> children) const {
   // Elements of `children` may be in different coordinate spaces. Canonicalize
   // to widget space for comparison, since they will be in the same widget.
   views::View* leading_child = nullptr;

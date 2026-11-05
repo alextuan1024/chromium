@@ -9,10 +9,12 @@
 #include <string_view>
 #include <vector>
 
+#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/regional_capabilities/regional_capabilities_country_id.h"
 #include "components/search_engines/keyword_web_data_service.h"
+#include "components/search_engines/search_engine_type.h"
 
 struct TemplateURLData;
 class PrefService;
@@ -70,6 +72,21 @@ class Resolver : public KeyedService {
   std::unique_ptr<TemplateURLData> GetEngineFromFullList(
       std::u16string_view keyword) const;
 
+  // Returns the prepopulated search engine with the given `engine_type` from
+  // the full list of known prepopulated search engines, or `nullptr` if it's
+  // not known there.
+  // TODO(crbug.com/531675190): Refactor the other `GetEngineFromFullList`
+  // overloads to also return `const PrepopulatedEngine*`.
+  const PrepopulatedEngine* GetEngineFromFullList(
+      SearchEngineType engine_type) const;
+
+  // Returns the prepopulated engines from the profile country's list and from
+  // all the other regional lists, deduplicated by ID. When several definitions
+  // share an ID, the profile country's one is used, matching
+  // `GetEngineFromFullList(id)`.
+  std::vector<raw_ptr<const PrepopulatedEngine>> GetAllPrepopulatedEngines()
+      const;
+
   // Returns the fallback default search provider, currently hardcoded to be
   // Google, or whichever one is the first of the list if Google is not in the
   // list of prepopulated search engines.
@@ -80,8 +97,9 @@ class Resolver : public KeyedService {
   // Computes whether updates relative to prepopulated search engines need to be
   // made in the local search engines database.
   //
-  // Returns `std::nullopt` when no updates are needed, or a `Metadata`
-  // providing country and data version info about the data to be merged in.
+  // Returns `std::nullopt` when no updates are needed, or a
+  // `BuiltinKeywordsMetadata`when data needs to be merged in, that provides the
+  // relevant country, data version and migration state info for the new data.
   std::optional<BuiltinKeywordsMetadata> ComputeDatabaseUpdateRequirements(
       const WDKeywordsResult::Metadata& keywords_database_metadata) const;
 

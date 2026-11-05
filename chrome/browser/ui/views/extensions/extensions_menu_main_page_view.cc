@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
@@ -52,6 +53,7 @@
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #include "extensions/common/extension_urls.h"
@@ -74,7 +76,8 @@ constexpr int kRequestEntryLabelIndex = 1;
 // when the view is known to be one). It is only used as an extra measure to
 // prevent bad static casts.
 ExtensionsMenuEntryView* GetAsMenuEntry(views::View* view) {
-  DCHECK(views::IsViewClass<ExtensionsMenuEntryView>(view));
+  CHECK(views::IsViewClass<ExtensionsMenuEntryView>(view),
+        base::NotFatalUntil::M162);
   return views::AsViewClass<ExtensionsMenuEntryView>(view);
 }
 
@@ -89,6 +92,8 @@ struct ExtensionIdWrapper {
 DEFINE_UI_CLASS_PROPERTY_TYPE(ExtensionIdWrapper*)
 DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(ExtensionIdWrapper, kExtensionIdKey)
 
+// TODO(crbug.com/563454001): Revisit this once Benjamin's (bkeen@) widget-level
+// input protection system is landed.
 // A button in the extensions menu requesting access section that grants one
 // time site access to the extension. It uses an input event activation
 // protector to prevent unintended clicks.
@@ -104,6 +109,26 @@ class ExtensionsMenuAllowButton : public views::MdTextButton {
   void VisibilityChanged(views::View* starting_from, bool is_visible) override {
     views::MdTextButton::VisibilityChanged(starting_from, is_visible);
     input_protector_.VisibilityChanged(is_visible);
+  }
+
+  void AddedToWidget() override {
+    views::MdTextButton::AddedToWidget();
+    if (IsDrawn()) {
+      input_protector_.VisibilityChanged(/*is_visible=*/true);
+    }
+  }
+
+  void RemovedFromWidget() override {
+    views::MdTextButton::RemovedFromWidget();
+    input_protector_.VisibilityChanged(/*is_visible=*/false);
+  }
+
+  bool GetNeedsNotificationWhenVisibleBoundsChange() const override {
+    return true;
+  }
+
+  void OnVisibleBoundsChanged() override {
+    input_protector_.MaybeUpdateViewProtectedTimeStamp();
   }
 
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override {
@@ -245,8 +270,7 @@ void ExtensionsMenuMainPageView::CreateAndInsertMenuEntry(
       base::BindRepeating(&ExtensionsMenuHandler::OnActionButtonClicked,
                           base::Unretained(menu_handler_), extension_id),
       base::BindRepeating(&ExtensionsMenuHandler::OnExtensionToggleSelected,
-                          base::Unretained(menu_handler_), extension_id,
-                          entry_state.origin),
+                          base::Unretained(menu_handler_), extension_id),
       base::BindRepeating(&ExtensionsMenuHandler::OpenSitePermissionsPage,
                           base::Unretained(menu_handler_), extension_id));
   item->Update(entry_state);
@@ -316,7 +340,7 @@ void ExtensionsMenuMainPageView::AddExtensionRequestingAccess(
                       &ExtensionsMenuHandler::OnDismissExtensionClicked,
                       base::Unretained(menu_handler_), request.extension_id))
                   .SetStyle(ui::ButtonStyle::kText)
-                  .SetBgColorIdOverride(kColorExtensionsMenuContainerBackground)
+                  .SetBgColorOverride(kColorExtensionsMenuContainerBackground)
                   .SetText(l10n_util::GetStringUTF16(
                       IDS_EXTENSIONS_MENU_REQUESTS_ACCESS_SECTION_DISMISS_BUTTON_TEXT))
                   .SetTooltipText(l10n_util::GetStringUTF16(
@@ -329,7 +353,7 @@ void ExtensionsMenuMainPageView::AddExtensionRequestingAccess(
                       &ExtensionsMenuHandler::OnAllowExtensionClicked,
                       base::Unretained(menu_handler_), request.extension_id))
                   .SetStyle(ui::ButtonStyle::kText)
-                  .SetBgColorIdOverride(kColorExtensionsMenuContainerBackground)
+                  .SetBgColorOverride(kColorExtensionsMenuContainerBackground)
                   .SetText(l10n_util::GetStringUTF16(
                       IDS_EXTENSIONS_MENU_REQUESTS_ACCESS_SECTION_ALLOW_BUTTON_TEXT))
                   .SetTooltipText(l10n_util::GetStringUTF16(
@@ -356,7 +380,7 @@ void ExtensionsMenuMainPageView::UpdateExtensionRequestingAccess(
   views::View* request_view = requests_entries_view_->children().at(index);
   CHECK(request_view);
 
-  std::vector<raw_ptr<View, VectorExperimental>> extension_items =
+  std::vector<raw_ptr<View, DanglingUntriaged>> extension_items =
       request_view->children();
   views::AsViewClass<views::ImageView>(extension_items[kRequestEntryIconIndex])
       ->SetImage(request.extension_icon);
@@ -398,8 +422,6 @@ void ExtensionsMenuMainPageView::SetOptionalSectionVisibility(
       requests_section_->SetVisible(false);
       break;
   }
-
-  SizeToPreferredSize();
 }
 
 std::vector<ExtensionsMenuEntryView*>
@@ -409,6 +431,29 @@ ExtensionsMenuMainPageView::GetMenuEntries() const {
     menu_entry_views.push_back(GetAsMenuEntry(view));
   }
   return menu_entry_views;
+}
+
+ExtensionsMenuEntryView* ExtensionsMenuMainPageView::GetMenuEntry(
+    const extensions::ExtensionId& extension_id) const {
+  for (views::View* view : menu_entries_->children()) {
+    ExtensionsMenuEntryView* entry = GetAsMenuEntry(view);
+    if (entry->extension_id() == extension_id) {
+      return entry;
+    }
+  }
+  return nullptr;
+}
+
+void ExtensionsMenuMainPageView::ScrollToMenuEntry(
+    const extensions::ExtensionId& extension_id) {
+  ExtensionsMenuEntryView* entry = GetMenuEntry(extension_id);
+  if (!entry) {
+    return;
+  }
+  if (views::Widget* widget = GetWidget()) {
+    widget->LayoutRootViewIfNecessary();
+  }
+  entry->ScrollViewToVisible();
 }
 
 std::u16string_view ExtensionsMenuMainPageView::GetSiteSettingLabelForTesting()
@@ -543,6 +588,7 @@ ExtensionsMenuMainPageView::CreateContentsBuilder(
   constexpr int kMaxExtensionButtonsHeightDp = 448;
 
   return views::Builder<views::ScrollView>()
+      .CopyAddressTo(&scroll_view_)
       .ClipHeightTo(0, kMaxExtensionButtonsHeightDp)
       .SetDrawOverflowIndicator(false)
       .SetHorizontalScrollBarMode(views::ScrollView::ScrollBarMode::kDisabled)
@@ -582,7 +628,7 @@ ExtensionsMenuMainPageView::CreateContentsBuilder(
                                   &ExtensionsMenuHandler::
                                       OnReloadPageButtonClicked,
                                   base::Unretained(menu_handler_)))
-                              .SetBgColorIdOverride(
+                              .SetBgColorOverride(
                                   kColorExtensionsMenuContainerBackground)
                               .SetProperty(views::kMarginsKey,
                                            reload_button_margins)

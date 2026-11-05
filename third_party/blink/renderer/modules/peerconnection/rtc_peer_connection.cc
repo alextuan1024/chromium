@@ -32,7 +32,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -42,6 +41,7 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/logging.h"
@@ -116,6 +116,7 @@
 #include "third_party/blink/renderer/modules/mediastream/media_stream_event.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_track_impl.h"
 #include "third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.h"
+#include "third_party/blink/renderer/modules/peerconnection/peer_connection_features.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_certificate.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_certificate_generator.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_data_channel.h"
@@ -391,6 +392,10 @@ webrtc::PeerConnectionInterface::RTCConfiguration ParseConfiguration(
 
   if (RuntimeEnabledFeatures::RtcRtpHeaderEncryptionPolicyEnabled()) {
     switch (configuration->rtpHeaderEncryptionPolicy().AsEnum()) {
+      case V8RTCRtpHeaderEncryptionPolicy::Enum::kDisable:
+        web_configuration.crypto_options.srtp.cryptex_policy =
+            webrtc::CryptoOptions::Srtp::CryptexPolicy::kDisabled;
+        break;
       case V8RTCRtpHeaderEncryptionPolicy::Enum::kNegotiate:
         web_configuration.crypto_options.srtp.cryptex_policy =
             webrtc::CryptoOptions::Srtp::CryptexPolicy::kNegotiate;
@@ -888,9 +893,13 @@ ScriptPromise<RTCSessionDescriptionInit> RTCPeerConnection::createOffer(
       MakeGarbageCollected<ScriptPromiseResolver<RTCSessionDescriptionInit>>(
           script_state, exception_state.GetContext());
   auto promise = resolver->Promise();
+  // Must be evaluated before creating the request, which adds itself to the
+  // operations chain.
+  const bool allow_synchronous_failure = AllowSynchronousSdpCreationFailure();
   RTCSessionDescriptionRequest* request =
       RTCSessionDescriptionRequestPromiseImpl::Create(this, resolver,
                                                       /*is_offer=*/true);
+  request->set_allow_synchronous_failure(allow_synchronous_failure);
   ++pending_create_offer_count_;
 
   ExecutionContext* context = ExecutionContext::From(script_state);
@@ -928,10 +937,12 @@ ScriptPromise<IDLUndefined> RTCPeerConnection::createOffer(
     return ToResolvedUndefinedPromise(script_state);
   }
 
+  const bool allow_synchronous_failure = AllowSynchronousSdpCreationFailure();
   RTCSessionDescriptionRequest* request =
       RTCSessionDescriptionRequestImpl::Create(
           GetExecutionContext(), this, success_callback, error_callback,
           /*is_offer=*/true);
+  request->set_allow_synchronous_failure(allow_synchronous_failure);
   ++pending_create_offer_count_;
 
   Vector<std::unique_ptr<RTCRtpTransceiverPlatform>> platform_transceivers =
@@ -963,9 +974,11 @@ ScriptPromise<RTCSessionDescriptionInit> RTCPeerConnection::createAnswer(
       MakeGarbageCollected<ScriptPromiseResolver<RTCSessionDescriptionInit>>(
           script_state, exception_state.GetContext());
   auto promise = resolver->Promise();
+  const bool allow_synchronous_failure = AllowSynchronousSdpCreationFailure();
   RTCSessionDescriptionRequest* request =
       RTCSessionDescriptionRequestPromiseImpl::Create(this, resolver,
                                                       /*is_offer=*/false);
+  request->set_allow_synchronous_failure(allow_synchronous_failure);
   ++pending_create_answer_count_;
   peer_handler_->CreateAnswer(request,
                               ConvertToRTCAnswerOptionsPlatform(options));
@@ -990,10 +1003,12 @@ ScriptPromise<IDLUndefined> RTCPeerConnection::createAnswer(
     return ToResolvedUndefinedPromise(script_state);
   }
 
+  const bool allow_synchronous_failure = AllowSynchronousSdpCreationFailure();
   RTCSessionDescriptionRequest* request =
       RTCSessionDescriptionRequestImpl::Create(
           GetExecutionContext(), this, success_callback, error_callback,
           /*is_offer=*/false);
+  request->set_allow_synchronous_failure(allow_synchronous_failure);
   ++pending_create_answer_count_;
   peer_handler_->CreateAnswer(request, nullptr);
   return ToResolvedUndefinedPromise(script_state);
@@ -1466,6 +1481,10 @@ RTCConfiguration* RTCPeerConnection::getConfiguration(
 
   if (RuntimeEnabledFeatures::RtcRtpHeaderEncryptionPolicyEnabled()) {
     switch (webrtc_configuration.crypto_options.srtp.cryptex_policy) {
+      case webrtc::CryptoOptions::Srtp::CryptexPolicy::kDisabled:
+        result->setRtpHeaderEncryptionPolicy(
+            V8RTCRtpHeaderEncryptionPolicy::Enum::kDisable);
+        break;
       case webrtc::CryptoOptions::Srtp::CryptexPolicy::kNegotiate:
         result->setRtpHeaderEncryptionPolicy(
             V8RTCRtpHeaderEncryptionPolicy::Enum::kNegotiate);
@@ -1474,8 +1493,6 @@ RTCConfiguration* RTCPeerConnection::getConfiguration(
         result->setRtpHeaderEncryptionPolicy(
             V8RTCRtpHeaderEncryptionPolicy::Enum::kRequire);
         break;
-      default:
-        NOTREACHED();
     }
   }
 
@@ -2592,6 +2609,21 @@ void RTCPeerConnection::NoteCreateAnswerFailed() {
   --pending_create_answer_count_;
 }
 
+void RTCPeerConnection::NoteChainedOperationStarted() {
+  ++unsettled_chained_operations_count_;
+}
+
+void RTCPeerConnection::NoteChainedOperationSettled() {
+  DCHECK_GT(unsettled_chained_operations_count_, 0);
+  --unsettled_chained_operations_count_;
+}
+
+bool RTCPeerConnection::AllowSynchronousSdpCreationFailure() const {
+  return unsettled_chained_operations_count_ == 0 ||
+         !base::FeatureList::IsEnabled(
+             kWebRtcOperationsChainTracksUnsettledPromises);
+}
+
 void RTCPeerConnection::OnStreamAddTrack(MediaStream* stream,
                                          MediaStreamTrack* track,
                                          ExceptionState& exception_state) {
@@ -2773,7 +2805,20 @@ void RTCPeerConnection::DidModifyTransceivers(
   if (signaling_state_ == webrtc::PeerConnectionInterface::kHaveLocalOffer &&
       signaling_state == webrtc::PeerConnectionInterface::kHaveRemoteOffer) {
     // Inject missing kStable in case of implicit rollback.
-    ChangeSignalingState(webrtc::PeerConnectionInterface::kStable, true);
+    if (base::FeatureList::IsEnabled(
+            kWebRtcImplicitRollbackClearsPendingRemoteDescription)) {
+      // The new remote offer has already been stored by
+      // DidChangeSessionDescriptions(), but it must not be visible until the
+      // transition to kHaveRemoteOffer. Keep pendingRemoteDescription null
+      // while firing the event for the injected kStable state.
+      RTCSessionDescription* new_pending_remote_description =
+          pending_remote_description_.Get();
+      pending_remote_description_ = nullptr;
+      ChangeSignalingState(webrtc::PeerConnectionInterface::kStable, true);
+      pending_remote_description_ = new_pending_remote_description;
+    } else {
+      ChangeSignalingState(webrtc::PeerConnectionInterface::kStable, true);
+    }
   }
   ChangeSignalingState(signaling_state, true);
 

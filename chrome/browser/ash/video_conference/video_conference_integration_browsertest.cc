@@ -60,7 +60,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/views/test/button_test_api.h"
@@ -151,7 +151,6 @@ class VideoConferenceIntegrationTest
     scoped_feature_list_.InitWithFeatures(
         {ash::features::kOnDeviceSpeechRecognition,
          ash::features::kFeatureManagementVideoConference,
-         ash::features::kVcBackgroundReplace,
          ash::features::kShowLiveCaptionInVideoConferenceTray},
         {});
   }
@@ -176,7 +175,7 @@ class VideoConferenceIntegrationTest
       // This creates a blank page which is more consistent with normal mode.
       ui_test_utils::NavigateToURLWithDispositionBlockUntilNavigationsComplete(
           browser_, GURL("chrome://blank"), 1,
-          WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
               ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     } else {
@@ -205,7 +204,8 @@ class VideoConferenceIntegrationTest
     const GURL url(embedded_test_server()->GetURL(url_str));
     content::RenderFrameHost* main_rfh = ui_test_utils::
         NavigateToURLWithDispositionBlockUntilNavigationsComplete(
-            browser_, url, 1, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            browser_, url, 1,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
             ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
                 ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     content::WebContents* web_contents =

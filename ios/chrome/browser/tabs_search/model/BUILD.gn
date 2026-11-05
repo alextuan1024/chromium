@@ -11,6 +11,7 @@ source_set("model") {
   deps = [
     "//base",
     "//components/history/core/browser",
+    "//components/prefs",
     "//components/signin/public/base",
     "//components/signin/public/identity_manager",
     "//components/sync_sessions",
@@ -34,6 +35,7 @@ source_set("model_factory") {
   deps = [
     ":model",
     "//base",
+    "//components/sync_device_info",
     "//ios/chrome/browser/history/model",
     "//ios/chrome/browser/sessions/model",
     "//ios/chrome/browser/shared/model/browser",
@@ -41,6 +43,7 @@ source_set("model_factory") {
     "//ios/chrome/browser/shared/model/profile:profile_keyed_service_factory",
     "//ios/chrome/browser/signin/model",
     "//ios/chrome/browser/sync/model",
+    "//ios/chrome/browser/sync/model:device_info_sync_service_factory",
   ]
 }
 

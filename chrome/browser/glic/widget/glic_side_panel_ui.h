@@ -66,16 +66,19 @@ class GlicSidePanelUi
   void SwitchConversation(
       glic::mojom::ConversationInfoPtr info,
       mojom::WebClientHandler::SwitchConversationCallback callback) override;
+  bool ShouldRestoreFocusAfterReload() override;
+  void RestoreFocusAfterReload() override;
 
   // GlicUiEmbedder and Host::Delegate:
   bool IsShowing() const override;
   bool IsShowingOrBackgrounded() const override;
   void ClosePanel() override;
-  void OnReload() override;
   void OnMicrophoneStatusChanged(mojom::MicrophoneStatus status) override {}
 
   // Host::Observer:
   void ActiveWebContentsChanged(content::WebContents* new_contents) override;
+  void ContentsCreated() override;
+  void NativeLoadingStateChanged(bool is_showing) override;
 
   void SidePanelStateChanged(GlicSidePanelCoordinator::State state);
 
@@ -84,6 +87,8 @@ class GlicSidePanelUi
   bool HasFocus() override;
   bool ActivateBrowser() override;
   void Zoom(mojom::ZoomAction zoom_action, ZoomSource source) override;
+  bool Print() override;
+  bool Find() override;
   bool HasSelectionOverlay() override;
   void CloseSelectionOverlay() override;
   base::WeakPtr<views::View> GetView() override;
@@ -96,15 +101,15 @@ class GlicSidePanelUi
  private:
   void OnBrowserWindowActivated(BrowserWindowInterface* bwi);
   void OnBrowserWindowDeactivated(BrowserWindowInterface* bwi);
-  // Focuses on embedder's webcontens.
   void SetFocusDelayed();
-
-  ScopedModalDialogManagerDelegate scoped_modal_dialog_delegate_{this};
-
   GlicSidePanelCoordinator* GetGlicSidePanelCoordinator() const;
-  base::CallbackListSubscription panel_visibility_subscription_;
   std::unique_ptr<views::View> CreateView(Profile* profile);
+
+  base::CallbackListSubscription panel_visibility_subscription_;
   mojom::PanelState panel_state_;
+  // Set by Close() when the user closed the panel, and read when the side
+  // panel reports that it hid.
+  bool pending_user_close_ = false;
   raw_ptr<Profile> profile_;
   base::WeakPtr<tabs::TabInterface> tab_;
   raw_ref<GlicUiEmbedder::Delegate> delegate_;
@@ -118,6 +123,7 @@ class GlicSidePanelUi
   base::CallbackListSubscription deactivation_subscription_;
 
   base::ScopedObservation<Host, Host::Observer> host_observation_{this};
+  ScopedModalDialogManagerDelegate scoped_modal_dialog_delegate_{this};
 
   base::WeakPtrFactory<GlicSidePanelUi> weak_ptr_factory_{this};
 };

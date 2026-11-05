@@ -15,6 +15,7 @@
 #include "components/sync/base/storage_type.h"
 #include "components/sync/model/wipe_model_upon_sync_disabled_behavior.h"
 #include "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#include "ios/chrome/browser/shared/model/profile/test/testing_factories.h"
 
 namespace {
 
@@ -23,7 +24,7 @@ namespace {
 // the entries provided in `initial_entries`..
 std::unique_ptr<KeyedService> BuildReadingListModelWithFakeStorage(
     std::vector<scoped_refptr<ReadingListEntry>> initial_entries,
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   auto storage = std::make_unique<FakeReadingListModelStorage>();
   base::WeakPtr<FakeReadingListModelStorage> storage_ptr = storage->AsWeakPtr();
   auto reading_list_model = std::make_unique<ReadingListModelImpl>(
@@ -37,8 +38,7 @@ std::unique_ptr<KeyedService> BuildReadingListModelWithFakeStorage(
 
 }  // namespace
 
-ProfileKeyedServiceFactoryIOS::TestingFactory
-ReadingListModelTestingFactoryWithFakeStorage(
+KeyedServiceTestingFactoryIOS ReadingListModelTestingFactoryWithFakeStorage(
     std::vector<scoped_refptr<ReadingListEntry>> initial_entries) {
   return base::BindOnce(&BuildReadingListModelWithFakeStorage,
                         std::move(initial_entries));

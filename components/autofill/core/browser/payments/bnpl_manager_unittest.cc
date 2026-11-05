@@ -10,6 +10,8 @@
 
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_callback_support.h"
@@ -283,7 +285,8 @@ class BnplManagerTest : public Test,
 
   void SetUp() override {
     InitAutofillClient();
-    autofill_client().set_app_locale(kAppLocale);
+    autofill_client().set_app_locale(
+        base::i18n::GetLanguageTagFromString(kAppLocale).value());
     autofill_client().set_last_committed_primary_main_frame_url(kDomain);
     autofill_client().GetPersonalDataManager().set_payments_data_manager(
         std::make_unique<TestPaymentsDataManager>());
@@ -436,7 +439,7 @@ TEST_F(BnplManagerTest, OnUserDecisionToUseBnpl_SetsInitialState) {
   EXPECT_EQ(
       kAmount,
       test_api(*bnpl_manager_).GetOngoingFlowState()->final_checkout_amount);
-  EXPECT_EQ(autofill_client().GetAppLocale(),
+  EXPECT_EQ(autofill_client().GetAppLocale().tag_string(),
             test_api(*bnpl_manager_).GetOngoingFlowState()->app_locale);
   EXPECT_EQ(
       GetBillingCustomerId(payments_autofill_client().GetPaymentsDataManager()),
@@ -455,14 +458,14 @@ TEST_F(BnplManagerTest, OnUserDecisionToUseBnpl_SetsInitialState) {
 TEST_F(BnplManagerTest,
        OnUserDecisionToUseBnpl_SetsInitialStateWithDifferentAppLocale) {
   int64_t final_checkout_amount = 1000000;
-  autofill_client().set_app_locale("en_GB");
+  autofill_client().set_app_locale(base::i18n::GetKnownLanguageTag("en-GB"));
   bnpl_manager_->OnUserDecisionToUseBnpl(final_checkout_amount,
                                          base::DoNothing());
 
   EXPECT_EQ(
       final_checkout_amount,
       test_api(*bnpl_manager_).GetOngoingFlowState()->final_checkout_amount);
-  EXPECT_EQ(autofill_client().GetAppLocale(),
+  EXPECT_EQ(autofill_client().GetAppLocale().tag_string(),
             test_api(*bnpl_manager_).GetOngoingFlowState()->app_locale);
   EXPECT_EQ(
       GetBillingCustomerId(payments_autofill_client().GetPaymentsDataManager()),
@@ -492,7 +495,9 @@ TEST_F(BnplManagerTest, TosDialogAccepted_PrefetchedRiskDataNotLoaded) {
   EXPECT_CALL(
       *payments_network_interface_,
       CreateBnplPaymentInstrument(/*request_details=*/
-                                  FieldsAre(autofill_client().GetAppLocale(),
+                                  FieldsAre(std::string(autofill_client()
+                                                            .GetAppLocale()
+                                                            .tag_string()),
                                             GetBillingCustomerId(
                                                 payments_autofill_client()
                                                     .GetPaymentsDataManager()),
@@ -525,7 +530,9 @@ TEST_F(BnplManagerTest, TosDialogAccepted_PrefetchedRiskDataLoaded) {
   EXPECT_CALL(
       *payments_network_interface_,
       CreateBnplPaymentInstrument(/*request_details=*/
-                                  FieldsAre(autofill_client().GetAppLocale(),
+                                  FieldsAre(std::string(autofill_client()
+                                                            .GetAppLocale()
+                                                            .tag_string()),
                                             GetBillingCustomerId(
                                                 payments_autofill_client()
                                                     .GetPaymentsDataManager()),
@@ -565,7 +572,9 @@ TEST_F(BnplManagerTest,
   EXPECT_CALL(
       *payments_network_interface_,
       UpdateBnplPaymentInstrument(/*request_details=*/
-                                  FieldsAre(autofill_client().GetAppLocale(),
+                                  FieldsAre(std::string(autofill_client()
+                                                            .GetAppLocale()
+                                                            .tag_string()),
                                             GetBillingCustomerId(
                                                 payments_autofill_client()
                                                     .GetPaymentsDataManager()),
@@ -609,7 +618,9 @@ TEST_F(BnplManagerTest,
   EXPECT_CALL(
       *payments_network_interface_,
       UpdateBnplPaymentInstrument(/*request_details=*/
-                                  FieldsAre(autofill_client().GetAppLocale(),
+                                  FieldsAre(std::string(autofill_client()
+                                                            .GetAppLocale()
+                                                            .tag_string()),
                                             GetBillingCustomerId(
                                                 payments_autofill_client()
                                                     .GetPaymentsDataManager()),
@@ -1060,10 +1071,8 @@ TEST_F(BnplManagerTest,
   EXPECT_EQ(test_api(*bnpl_manager_).GetOngoingFlowState()->context_token,
             kContextToken);
 
-  const LegalMessageLines& legal_message_lines =
-      bnpl_tos_model.legal_message_lines;
-  ASSERT_FALSE(legal_message_lines.empty());
-  EXPECT_EQ(legal_message_lines[0].text(), kLegalMessage);
+  EXPECT_THAT(bnpl_tos_model.legal_message_lines,
+              ElementsAre(Property(&LegalMessageLine::text, kLegalMessage)));
 
   EXPECT_EQ(bnpl_tos_model.issuer, unlinked_issuer);
 
@@ -2185,10 +2194,6 @@ TEST_F(
       {features::kAutofillEnableAiBasedAmountExtraction,
        features::kAutofillAiBasedAmountExtractionIgnoreSeenTermsForTesting},
       /*disabled_features=*/{});
-
-  std::vector<Suggestion> suggestions = {
-      Suggestion(SuggestionType::kCreditCardEntry),
-      Suggestion(SuggestionType::kBnplEntry)};
 
   ASSERT_FALSE(autofill_client()
                    .GetPersonalDataManager()
@@ -3341,10 +3346,9 @@ TEST_F(BnplManagerTest,
   bnpl_manager_->OnAmountExtractionReturnedFromAi(
       std::make_pair(40'000'000, "USD"));
 
-  ASSERT_EQ(returned_order.size(), 2u);
   // Zip is eligible and must be sorted first.
-  EXPECT_EQ(returned_order[0], IssuerId::kBnplZip);
-  EXPECT_EQ(returned_order[1], IssuerId::kBnplAffirm);
+  EXPECT_THAT(returned_order,
+              ElementsAre(IssuerId::kBnplZip, IssuerId::kBnplAffirm));
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 

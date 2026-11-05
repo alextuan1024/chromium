@@ -11,11 +11,11 @@
 #include "ash/public/cpp/notification_utils.h"
 #include "ash/public/cpp/system_tray_client.h"
 #include "ash/resources/vector_icons/vector_icons.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/network/cellular_esim_profile_handler.h"
 #include "chromeos/ash/components/network/network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_connect.h"
@@ -612,8 +612,7 @@ void NetworkStateNotifier::ShowConnectErrorNotification(
   if (IsSimLockConnectionFailure(error_name, network)) {
     on_click = base::BindRepeating(&NetworkStateNotifier::ShowSimUnlockSettings,
                                    weak_ptr_factory_.GetWeakPtr());
-  } else if (features::IsApnRevampEnabled() && network &&
-             network->GetError() == shill::kErrorInvalidAPN) {
+  } else if (network && network->GetError() == shill::kErrorInvalidAPN) {
     on_click = base::BindRepeating(&NetworkStateNotifier::ShowApnSettings,
                                    weak_ptr_factory_.GetWeakPtr(), guid);
   } else {
@@ -630,7 +629,7 @@ void NetworkStateNotifier::ShowConnectErrorNotification(
 }
 
 void NetworkStateNotifier::ShowVpnDisconnectedNotification(VpnDetails* vpn) {
-  DCHECK(vpn);
+  CHECK(vpn, base::NotFatalUntil::M162);
   std::u16string error_msg = l10n_util::GetStringFUTF16(
       IDS_NETWORK_VPN_CONNECTION_LOST_BODY, base::UTF8ToUTF16(vpn->name));
   ShowErrorNotification(
@@ -705,7 +704,6 @@ void NetworkStateNotifier::ShowMobileDataSubpage() {
 }
 
 void NetworkStateNotifier::ShowApnSettings(const std::string& network_id) {
-  CHECK(features::IsApnRevampEnabled());
   if (!system_tray_client_) {
     return;
   }

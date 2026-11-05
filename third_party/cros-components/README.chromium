@@ -2,7 +2,7 @@ Name: ChromeOS Components
 Short Name: cros-components
 URL: https://chromium.googlesource.com/external/google3/cros_components/
 Version: N/A
-Revision: 0abb2efaa3d16db861c9710b193c39e657ac3bdf
+Revision: db08d5ace95b8818a442ac62a282d1a1d39681c0
 Update Mechanism: Autoroll
 License: Apache-2.0
 License File: LICENSE

@@ -167,7 +167,7 @@ class TestingProfileManager : public ProfileObserver {
   friend class ProfileAttributesStorageTest;
   friend class ProfileNameVerifierObserver;
 
-  typedef std::map<std::string, raw_ptr<TestingProfile, CtnExperimental>>
+  typedef std::map<std::string, raw_ptr<TestingProfile, DanglingUntriaged>>
       TestingProfilesMap;
 
   // Does the actual ASSERT-checked SetUp work. This function cannot have a
@@ -188,6 +188,9 @@ class TestingProfileManager : public ProfileObserver {
   // by the path service instead of the profile manager. The override is scoped
   // with the help of this variable.
   std::unique_ptr<base::ScopedPathOverride> user_data_dir_override_;
+#if BUILDFLAG(IS_CHROMEOS)
+  std::unique_ptr<base::ScopedPathOverride> ash_user_data_dir_override_;
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Weak reference to the browser process on which the ProfileManager is set.
   raw_ptr<TestingBrowserProcess> browser_process_;

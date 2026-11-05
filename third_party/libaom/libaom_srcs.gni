@@ -211,6 +211,7 @@ aom_av1_encoder_intrin_sse2 = [
   "//third_party/libaom/source/libaom/av1/encoder/x86/av1_quantize_sse2.c",
   "//third_party/libaom/source/libaom/av1/encoder/x86/encodetxb_sse2.c",
   "//third_party/libaom/source/libaom/av1/encoder/x86/error_intrin_sse2.c",
+  "//third_party/libaom/source/libaom/av1/encoder/x86/intra_mode_search_sse2.c",
   "//third_party/libaom/source/libaom/av1/encoder/x86/model_rd_sse2.c",
   "//third_party/libaom/source/libaom/av1/encoder/x86/reconinter_enc_sse2.c",
   "//third_party/libaom/source/libaom/av1/encoder/x86/wedge_utils_sse2.c",
@@ -366,8 +367,6 @@ aom_av1_encoder_sources = [
   "//third_party/libaom/source/libaom/third_party/fastfeat/fast.h",
   "//third_party/libaom/source/libaom/third_party/fastfeat/fast_9.c",
   "//third_party/libaom/source/libaom/third_party/fastfeat/nonmax.c",
-  "//third_party/libaom/source/libaom/third_party/vector/vector.c",
-  "//third_party/libaom/source/libaom/third_party/vector/vector.h",
 ]
 
 aom_av1_rc_sources = [

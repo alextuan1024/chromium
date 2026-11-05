@@ -9,31 +9,41 @@
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "build/build_config.h"
+#include "chrome/browser/defaults.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/horizontal_tab_strip_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
+#include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/horizontal/tab_scroll_button_container.h"
 #include "chrome/browser/ui/views/tabs/new_tab_button.h"
+#include "chrome/browser/ui/views/tabs/tab/tab_close_button.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
+#include "ui/base/hit_test.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/ui_base_switches.h"
+#include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
 #include "ui/events/event_constants.h"
 #include "ui/gfx/animation/animation_test_api.h"
 #include "ui/views/controls/scroll_view.h"
@@ -42,10 +52,12 @@
 #include "ui/views/view_utils.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chromeos/constants/chromeos_features.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-class HorizontalTabStripRegionViewBrowserBaseTest : public InProcessBrowserTest {
+class HorizontalTabStripRegionViewBrowserBaseTest
+    : public InteractiveBrowserTest {
  public:
   HorizontalTabStripRegionViewBrowserBaseTest() = default;
   HorizontalTabStripRegionViewBrowserBaseTest(const HorizontalTabStripRegionViewBrowserBaseTest&) =
@@ -54,7 +66,7 @@ class HorizontalTabStripRegionViewBrowserBaseTest : public InProcessBrowserTest 
       const HorizontalTabStripRegionViewBrowserBaseTest&) = delete;
   ~HorizontalTabStripRegionViewBrowserBaseTest() override = default;
 
-  void SetUp() override { InProcessBrowserTest::SetUp(); }
+  void SetUp() override { InteractiveBrowserTest::SetUp(); }
 
   void AppendTab() { chrome::AddTabAt(browser(), GURL(), -1, false); }
 
@@ -232,10 +244,10 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewBrowserTest,
   if (tabs::GetTabSearchPosition(browser()) ==
       tabs::TabSearchPosition::kLeadingHorizontalTabstrip) {
     // The tab search button is calculated as controls padding away from the
-    // first tab (not including bottom corner radius)
+    // first tab (not including bottom extension width)
     int tab_search_button_expected_end =
         tab_strip_region_view()->tab_strip()->x() +
-        TabStyle::Get()->GetBottomCornerRadius() -
+        TabStyle::Get()->GetBottomExtensionWidth() -
         (2 * GetLayoutConstant(LayoutConstant::kTabStripPadding));
 
     EXPECT_EQ(tab_search_button()->bounds().right(),
@@ -299,6 +311,30 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewBrowserTest,
   EXPECT_TRUE(tab_0->IsActive());
 }
 
+class HorizontalTabStripRegionViewTabSearchStartsUnpinned
+    : public HorizontalTabStripRegionViewBrowserTest {
+ public:
+  HorizontalTabStripRegionViewTabSearchStartsUnpinned() = default;
+  ~HorizontalTabStripRegionViewTabSearchStartsUnpinned() override = default;
+
+  void SetUpBrowserContextKeyedServices(
+      content::BrowserContext* context) override {
+    HorizontalTabStripRegionViewBrowserTest::SetUpBrowserContextKeyedServices(
+        context);
+    Profile::FromBrowserContext(context)->GetPrefs()->SetBoolean(
+        prefs::kTabSearchPinnedToTabstrip, false);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewTabSearchStartsUnpinned,
+                       PinTabSearch) {
+  RunTestSequence(EnsureNotPresent(kTabSearchButtonElementId), Do([this]() {
+                    browser()->GetProfile()->GetPrefs()->SetBoolean(
+                        prefs::kTabSearchPinnedToTabstrip, true);
+                  }),
+                  WaitForShow(kTabSearchButtonElementId));
+}
+
 class HorizontalTabStripRegionViewNewInteractiveUiTest
     : public InteractiveBrowserTest {
  public:
@@ -334,6 +370,26 @@ class HorizontalTabStripRegionViewNewInteractiveUiTest
 
   views::View* scroll_button_container() {
     return tab_strip_view()->GetScrollButtonContainer();
+  }
+
+  void AppendTab() {
+    chrome::AddTabAt(browser(), GURL("about:blank"), -1, false);
+  }
+
+  views::LabelButton* tab_search_button() {
+    return BrowserElementsViews::From(browser())->GetViewAs<views::LabelButton>(
+        kTabSearchButtonElementId);
+  }
+
+  views::View* new_tab_button() {
+    return BrowserElementsViews::From(browser())->GetViewAs<views::View>(
+        kNewTabButtonElementId);
+  }
+
+  TabView* GetTabViewAt(int index) {
+    return views::AsViewClass<TabView>(
+        horizontal_tab_strip_region_view()->GetTabAnchorView(
+            browser()->GetTabStripModel()->GetTabAtIndex(index)->GetHandle()));
   }
 
   // Adds unpinned tabs until the unpinned tab container is scrollable. Will
@@ -468,6 +524,35 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
       WaitForShow(TabScrollButtonContainer::kTabScrollButtonContainer),
       SetWindowBounds(gfx::Rect(100, 100, 1200, 800)),
       WaitForHide(TabScrollButtonContainer::kTabScrollButtonContainer));
+}
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
+                       ScrollsToActiveTabWhenScrollButtonsAppear) {
+  AddTabsUntilNearlyScrollable();
+
+  auto* const model = browser()->GetTabStripModel();
+  const int active_tab_index = model->count() - 1;
+  model->ActivateTabAt(active_tab_index);
+  views::test::RunScheduledLayout(
+      BrowserView::GetBrowserViewForBrowser(browser()));
+
+  DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
+                                      kActiveTabVisibleObserver);
+
+  RunTestSequence(
+      EnsurePresent(kTabStripRegionElementId),
+      EnsureNotPresent(TabScrollButtonContainer::kTabScrollButtonContainer),
+      PollState(
+          kActiveTabVisibleObserver,
+          base::BindRepeating(
+              &HorizontalTabStripRegionViewNewInteractiveUiTest::IsTabVisible,
+              base::Unretained(this), active_tab_index)),
+      WaitForState(kActiveTabVisibleObserver, true),
+      Do([this]() { AddTabsUntilScrollable(); }),
+      WaitForShow(TabScrollButtonContainer::kTabScrollButtonContainer),
+      // The active tab at the end should be scrolled into view rather than
+      // covered by the newly shown scroll buttons.
+      WaitForState(kActiveTabVisibleObserver, true));
 }
 
 IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
@@ -644,6 +729,77 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
             tabs::HorizontalTabStripScrollSource::kTouchpadOrMouseWheel,
             kExpectedCount);
       }));
+}
+
+// On Linux, scrolling over the tab strip navigates between tabs. Wheel events
+// should not directly scroll the ScrollView, as active tab changes handle
+// keeping the active tab in view.
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
+                       WheelScrollChangesTabWithoutScrollingScrollView) {
+  if (!browser_defaults::kScrollEventChangesTab) {
+    GTEST_SKIP() << "Test does not apply to this platform.";
+  }
+
+  AddTabsUntilScrollable(10);
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+
+  auto send_wheel_event = [this](int y_offset) {
+    return Do([this, y_offset]() {
+      BrowserView* const browser_view =
+          BrowserView::GetBrowserViewForBrowser(browser());
+      views::View* const root_view = browser_view->GetWidget()->GetRootView();
+      views::ScrollView* const scroll_view =
+          tab_strip_view()->unpinned_tabs_scroll_view();
+      const gfx::Point scroll_view_center =
+          scroll_view->GetLocalBounds().CenterPoint();
+      const gfx::Point location = views::View::ConvertPointToTarget(
+          scroll_view, root_view, scroll_view_center);
+      const gfx::Point root_location =
+          views::View::ConvertPointToScreen(scroll_view, scroll_view_center);
+
+      ui::MouseWheelEvent wheel_event(gfx::Vector2d(0, y_offset), location,
+                                      root_location, base::TimeTicks::Now(),
+                                      /*flags=*/0, /*changed_button_flags=*/0);
+      root_view->OnMouseWheel(wheel_event);
+      views::test::RunScheduledLayout(browser_view);
+    });
+  };
+
+  auto active_tab_index = [this]() {
+    return browser()->GetTabStripModel()->active_index();
+  };
+
+  auto scroll_offset_x = [this]() {
+    return tab_strip_view()->unpinned_tabs_scroll_view()->GetVisibleRect().x();
+  };
+
+  RunTestSequence(
+      EnsurePresent(kTabStripRegionElementId),
+      WaitForShow(TabScrollButtonContainer::kTabScrollButtonContainer),
+      Check([this]() {
+        views::View* const root_view =
+            BrowserView::GetBrowserViewForBrowser(browser())
+                ->GetWidget()
+                ->GetRootView();
+        views::ScrollView* const scroll_view =
+            tab_strip_view()->unpinned_tabs_scroll_view();
+        const gfx::Point location = views::View::ConvertPointToTarget(
+            scroll_view, root_view,
+            scroll_view->GetLocalBounds().CenterPoint());
+        return scroll_view->Contains(
+            root_view->GetEventHandlerForPoint(location));
+      }),
+      CheckResult(active_tab_index, 0), CheckResult(scroll_offset_x, 0),
+      // Scrolling less than the threshold should not change tabs or scroll.
+      send_wheel_event(-ui::MouseWheelEvent::kWheelDelta / 4),
+      CheckResult(active_tab_index, 0), CheckResult(scroll_offset_x, 0),
+      // Scrolling past the threshold switches to the next tab without
+      // scrolling the scroll view.
+      send_wheel_event(-ui::MouseWheelEvent::kWheelDelta / 4),
+      CheckResult(active_tab_index, 1), CheckResult(scroll_offset_x, 0),
+      // A full wheel scroll advances to the next tab without scrolling.
+      send_wheel_event(-ui::MouseWheelEvent::kWheelDelta),
+      CheckResult(active_tab_index, 2), CheckResult(scroll_offset_x, 0));
 }
 
 IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
@@ -864,4 +1020,303 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewRTLInteractiveUiTest,
         // Draggable bounds save room for trailing controls on the left.
         EXPECT_GT(draggable_bounds.x(), region_bounds.x());
       }));
+}
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
+                       UnpinAndPinTabSearch) {
+  RunTestSequence(WaitForShow(kTabSearchButtonElementId), Do([this]() {
+                    browser()->GetProfile()->GetPrefs()->SetBoolean(
+                        prefs::kTabSearchPinnedToTabstrip, false);
+                  }),
+                  WaitForHide(kTabSearchButtonElementId), Do([this]() {
+                    browser()->GetProfile()->GetPrefs()->SetBoolean(
+                        prefs::kTabSearchPinnedToTabstrip, true);
+                  }),
+                  WaitForShow(kTabSearchButtonElementId));
+}
+
+class HorizontalTabStripRegionViewNewTabSearchStartsUnpinned
+    : public HorizontalTabStripRegionViewNewInteractiveUiTest {
+ public:
+  HorizontalTabStripRegionViewNewTabSearchStartsUnpinned() = default;
+  ~HorizontalTabStripRegionViewNewTabSearchStartsUnpinned() override = default;
+
+  void SetUpBrowserContextKeyedServices(
+      content::BrowserContext* context) override {
+    HorizontalTabStripRegionViewNewInteractiveUiTest::
+        SetUpBrowserContextKeyedServices(context);
+    Profile::FromBrowserContext(context)->GetPrefs()->SetBoolean(
+        prefs::kTabSearchPinnedToTabstrip, false);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewTabSearchStartsUnpinned,
+                       PinTabSearch) {
+  RunTestSequence(EnsureNotPresent(kTabSearchButtonElementId), Do([this]() {
+                    browser()->GetProfile()->GetPrefs()->SetBoolean(
+                        prefs::kTabSearchPinnedToTabstrip, true);
+                  }),
+                  WaitForShow(kTabSearchButtonElementId));
+}
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
+                       TestForwardFocus) {
+  AppendTab();
+  AppendTab();
+  browser()->GetTabStripModel()->ActivateTabAt(1);
+  views::test::RunScheduledLayout(
+      BrowserView::GetBrowserViewForBrowser(browser()));
+
+  HorizontalTabStripRegionViewNew* region_view =
+      horizontal_tab_strip_region_view();
+  TabView* tab_0 = GetTabViewAt(0);
+  TabView* tab_1 = GetTabViewAt(1);
+  TabView* tab_2 = GetTabViewAt(2);
+  ASSERT_TRUE(tab_0);
+  ASSERT_TRUE(tab_1);
+  ASSERT_TRUE(tab_2);
+  ASSERT_TRUE(new_tab_button());
+  ASSERT_TRUE(tab_search_button());
+
+  const auto press_right = [&]() {
+    EXPECT_TRUE(region_view->AcceleratorPressed(region_view->right_key()));
+  };
+  const auto move_forward_over_tab = [&](TabView* tab) {
+    // When skipping over tabs two right presses are needed if the close button
+    // is showing.
+    if (tab->close_button_for_testing()->GetVisible()) {
+      press_right();
+    }
+    press_right();
+  };
+
+  region_view->RequestFocus();
+  EXPECT_TRUE(region_view->pane_has_focus());
+  EXPECT_TRUE(tab_1->HasFocus());
+
+  move_forward_over_tab(tab_1);
+  EXPECT_TRUE(tab_2->HasFocus());
+
+  move_forward_over_tab(tab_2);
+  EXPECT_TRUE(new_tab_button()->HasFocus());
+
+  // Advancing past the last view cycles back to the first focusable view.
+  press_right();
+  EXPECT_TRUE(tab_search_button()->HasFocus());
+  EXPECT_TRUE(region_view->pane_has_focus());
+
+  press_right();
+  EXPECT_TRUE(tab_0->HasFocus());
+
+  move_forward_over_tab(tab_0);
+  EXPECT_TRUE(tab_1->HasFocus());
+}
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
+                       TestReverseFocus) {
+  AppendTab();
+  AppendTab();
+  browser()->GetTabStripModel()->ActivateTabAt(1);
+  views::test::RunScheduledLayout(
+      BrowserView::GetBrowserViewForBrowser(browser()));
+
+  HorizontalTabStripRegionViewNew* region_view =
+      horizontal_tab_strip_region_view();
+  TabView* tab_0 = GetTabViewAt(0);
+  TabView* tab_1 = GetTabViewAt(1);
+  TabView* tab_2 = GetTabViewAt(2);
+  ASSERT_TRUE(tab_0);
+  ASSERT_TRUE(tab_1);
+  ASSERT_TRUE(tab_2);
+  ASSERT_TRUE(new_tab_button());
+  ASSERT_TRUE(tab_search_button());
+
+  const auto press_left = [&]() {
+    EXPECT_TRUE(region_view->AcceleratorPressed(region_view->left_key()));
+  };
+  const auto move_back_to_tab = [&](TabView* tab) {
+    // When skipping back to the previous tab two left presses are needed if the
+    // close button is showing.
+    if (tab->close_button_for_testing()->GetVisible()) {
+      press_left();
+    }
+    press_left();
+  };
+
+  region_view->RequestFocus();
+  EXPECT_TRUE(region_view->pane_has_focus());
+  EXPECT_TRUE(tab_1->HasFocus());
+
+  move_back_to_tab(tab_0);
+  EXPECT_TRUE(tab_0->HasFocus());
+
+  press_left();
+  EXPECT_TRUE(tab_search_button()->HasFocus());
+
+  // Reversing past the first view cycles around to the last view.
+  press_left();
+  EXPECT_TRUE(new_tab_button()->HasFocus());
+
+  move_back_to_tab(tab_2);
+  EXPECT_TRUE(tab_2->HasFocus());
+
+  move_back_to_tab(tab_1);
+  EXPECT_TRUE(tab_1->HasFocus());
+  EXPECT_TRUE(region_view->pane_has_focus());
+}
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
+                       TestBeginEndFocus) {
+  AppendTab();
+  AppendTab();
+  browser()->GetTabStripModel()->ActivateTabAt(1);
+  views::test::RunScheduledLayout(
+      BrowserView::GetBrowserViewForBrowser(browser()));
+
+  HorizontalTabStripRegionViewNew* region_view =
+      horizontal_tab_strip_region_view();
+  TabView* tab_1 = GetTabViewAt(1);
+  ASSERT_TRUE(tab_1);
+  ASSERT_TRUE(new_tab_button());
+  ASSERT_TRUE(tab_search_button());
+
+  region_view->RequestFocus();
+  EXPECT_TRUE(region_view->pane_has_focus());
+  EXPECT_TRUE(tab_1->HasFocus());
+
+#if !BUILDFLAG(IS_WIN)
+  EXPECT_TRUE(region_view->AcceleratorPressed(region_view->end_key()));
+  EXPECT_TRUE(new_tab_button()->HasFocus());
+#endif  // !BUILDFLAG(IS_WIN)
+
+  EXPECT_TRUE(region_view->AcceleratorPressed(region_view->home_key()));
+  EXPECT_TRUE(tab_search_button()->HasFocus());
+}
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripRegionViewNewInteractiveUiTest,
+                       ClickNewTabButtonTopEdgeInFullscreen) {
+  auto get_top_center_in_ncv = [](views::View* button) {
+    const gfx::Rect bounds = button->GetBoundsInScreen();
+    gfx::Point point(bounds.CenterPoint().x(), bounds.y());
+    views::View::ConvertPointFromScreen(button->GetWidget()->non_client_view(),
+                                        &point);
+    return point;
+  };
+  auto get_top_center_in_root = [](views::View* button) {
+    gfx::Point point(button->width() / 2, 0);
+    views::View::ConvertPointToTarget(
+        button, button->GetWidget()->GetRootView(), &point);
+    return point;
+  };
+#if BUILDFLAG(IS_CHROMEOS)
+  std::unique_ptr<ImmersiveRevealedLock> revealed_lock;
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+  RunTestSequence(
+      EnsurePresent(kNewTabButtonElementId),
+#if BUILDFLAG(IS_LINUX)
+      Do([this]() {
+        browser()->GetProfile()->GetPrefs()->SetBoolean(
+            prefs::kUseCustomChromeFrame, true);
+        views::test::RunScheduledLayout(
+            BrowserView::GetBrowserViewForBrowser(browser()));
+      }),
+#endif
+      // Outside fullscreen/maximized mode, the space directly above the NTB
+      // belongs to the window caption/frame rather than the button.
+      CheckView(kNewTabButtonElementId,
+                [this, &get_top_center_in_ncv,
+                 &get_top_center_in_root](views::View* button) {
+                  BrowserView* const browser_view =
+                      BrowserView::GetBrowserViewForBrowser(browser());
+                  auto* const region_view = horizontal_tab_strip_region_view();
+                  gfx::Point top_center_in_region(button->width() / 2, 0);
+                  views::View::ConvertPointToTarget(button, region_view,
+                                                    &top_center_in_region);
+                  views::Widget* const widget = button->GetWidget();
+                  return !browser_view->browser_widget()
+                              ->GetFrameView()
+                              ->IsFrameCondensed() &&
+                         region_view->IsPositionInWindowCaption(
+                             top_center_in_region) &&
+                         widget->GetRootView()->GetEventHandlerForPoint(
+                             get_top_center_in_root(button)) != button &&
+                         widget->non_client_view()->NonClientHitTest(
+                             get_top_center_in_ncv(button)) != HTCLIENT;
+                }),
+  // Enter fullscreen while keeping browser chrome visible.
+#if BUILDFLAG(IS_CHROMEOS)
+      Do([this, &revealed_lock]() {
+#else
+      Do([this]() {
+#endif  // BUILDFLAG(IS_CHROMEOS)
+        BrowserWindowFullscreenController::From(browser())
+            ->set_should_hide_ui_for_fullscreen_for_testing(false);
+        ui_test_utils::ToggleFullscreenModeAndWait(browser());
+#if BUILDFLAG(IS_CHROMEOS)
+        // On ChromeOS, entering fullscreen starts a slide-out animation for
+        // TopContainerView unless a reveal lock is held.
+        revealed_lock =
+            ImmersiveModeController::From(browser())->GetRevealedLock(
+                ImmersiveModeController::ANIMATE_REVEAL_NO);
+#endif  // BUILDFLAG(IS_CHROMEOS)
+        views::test::RunScheduledLayout(
+            BrowserView::GetBrowserViewForBrowser(browser()));
+      }),
+      WaitForShow(kNewTabButtonElementId),
+      CheckView(kNewTabButtonElementId,
+                [this, &get_top_center_in_ncv,
+                 &get_top_center_in_root](views::View* button) {
+                  BrowserView* const browser_view =
+                      BrowserView::GetBrowserViewForBrowser(browser());
+                  auto* const region_view = horizontal_tab_strip_region_view();
+                  gfx::Point top_center_in_region(button->width() / 2, 0);
+                  views::View::ConvertPointToTarget(button, region_view,
+                                                    &top_center_in_region);
+                  views::Widget* const widget = button->GetWidget();
+                  // On macOS immersive fullscreen, the tab strip is hosted in
+                  // a TYPE_POPUP overlay widget that has no NonClientView.
+                  const bool ncv_hit_ok =
+                      !widget->non_client_view() ||
+                      widget->non_client_view()->NonClientHitTest(
+                          get_top_center_in_ncv(button)) == HTCLIENT;
+                  return browser_view->browser_widget()
+                             ->GetFrameView()
+                             ->IsFrameCondensed() &&
+                         !region_view->IsPositionInWindowCaption(
+                             top_center_in_region) &&
+                         widget->GetRootView()->GetEventHandlerForPoint(
+                             get_top_center_in_root(button)) == button &&
+                         ncv_hit_ok;
+                }),
+#if BUILDFLAG(IS_MAC)
+      // In macOS immersive fullscreen, tab_overlay_widget_'s content NSView is
+      // reparented into NSToolbarFullScreenWindow while tab_window_ ignores
+      // mouse events, so InteractiveMouseTestApi targeting
+      // widget->GetNativeWindow() cannot deliver OS clicks to the overlay.
+      // Dispatch through the widget's root view directly at the top center.
+      WithView(kNewTabButtonElementId,
+               [&get_top_center_in_root](views::View* button) {
+                 const gfx::Point point = get_top_center_in_root(button);
+                 ui::MouseEvent press(ui::EventType::kMousePressed, point,
+                                      point, ui::EventTimeForNow(),
+                                      ui::EF_LEFT_MOUSE_BUTTON,
+                                      ui::EF_LEFT_MOUSE_BUTTON);
+                 button->GetWidget()->OnMouseEvent(&press);
+                 ui::MouseEvent release(ui::EventType::kMouseReleased, point,
+                                        point, ui::EventTimeForNow(),
+                                        ui::EF_LEFT_MOUSE_BUTTON,
+                                        ui::EF_LEFT_MOUSE_BUTTON);
+                 button->GetWidget()->OnMouseEvent(&release);
+               }),
+#else
+      MoveMouseTo(kNewTabButtonElementId,
+                  base::BindOnce([](ui::TrackedElement* element) {
+                    const gfx::Rect bounds = element->GetScreenBounds();
+                    return gfx::Point(bounds.CenterPoint().x(), bounds.y());
+                  })),
+      ClickMouse(),
+#endif
+      CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
+                  2));
 }

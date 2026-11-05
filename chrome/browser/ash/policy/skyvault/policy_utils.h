@@ -7,11 +7,9 @@
 
 #include <optional>
 
-#include "base/files/file_path.h"
 #include "base/time/time.h"
 
 class PrefService;
-class Profile;
 
 namespace policy::local_user_files {
 
@@ -130,22 +128,21 @@ MigrationDestination GetMigrationDestination(const PrefService& local_state);
 bool IsCloudDestination(MigrationDestination destination);
 
 // Returns the destination where downloads are saved.
-FileSaveDestination GetDownloadsDestination(Profile* profile);
+FileSaveDestination GetDownloadsDestination(const PrefService& profile_prefs);
 
 // Returns the destination where screen captures are saved.
-FileSaveDestination GetScreenCaptureDestination(Profile* profile);
+FileSaveDestination GetScreenCaptureDestination(
+    const PrefService& profile_prefs);
 
 // Returns the destination where camera app files are saved.
-FileSaveDestination GetCameraDestination(Profile* profile);
+FileSaveDestination GetCameraDestination(const PrefService& profile_prefs);
 
 // Returns whether `download` should be saved to tmp/ directory.
-bool DownloadToTemp(Profile* profile);
-
-// Returns the path of MyFiles folder for `profile`.
-base::FilePath GetMyFilesPath(Profile* profile);
+bool DownloadToTemp(const PrefService& profile_prefs);
 
 // Returns the scheduled start time for local file migration or deletion.
-std::optional<base::Time> GetMigrationStartTime(Profile* profile);
+std::optional<base::Time> GetMigrationStartTime(
+    const PrefService& profile_prefs);
 
 }  // namespace policy::local_user_files
 

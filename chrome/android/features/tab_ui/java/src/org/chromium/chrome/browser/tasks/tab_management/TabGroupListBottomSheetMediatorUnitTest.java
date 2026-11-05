@@ -55,6 +55,7 @@ import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.SavedTabGroupTab;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.components.tab_group_sync.TabGroupUiActionHandler;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 
 import java.util.ArrayList;
@@ -132,7 +133,9 @@ public class TabGroupListBottomSheetMediatorUnitTest {
         mToken1 = Token.createRandom();
         mToken2 = Token.createRandom();
         mToken3 = Token.createRandom();
-        when(mTabModel.getAllTabGroupIds()).thenReturn(Set.of(mToken1, mToken2));
+        when(mTabModel.getAllTabGroupIds())
+                .thenReturn(
+                        Set.of(TabGroupId.fromRawToken(mToken1), TabGroupId.fromRawToken(mToken2)));
 
         when(mTab1.getId()).thenReturn(1);
         when(mTab2.getId()).thenReturn(2);
@@ -588,6 +591,17 @@ public class TabGroupListBottomSheetMediatorUnitTest {
 
         List<Tab> list = Arrays.asList(mTab1, mTab2);
         mMediator.requestShowContent(list);
+        assertEquals(3, mModelList.size());
+        assertEquals(RowType.NEW_GROUP, mModelList.get(0).type);
+    }
+
+    @Test
+    public void testPopulateList_showNewGroupRow_mixedGroupedAndUngrouped() {
+        when(mDelegate.requestShowContent()).thenReturn(true);
+        when(mTab1.getTabGroupId()).thenReturn(mToken1);
+        when(mTab2.getTabGroupId()).thenReturn(null);
+
+        mMediator.requestShowContent(Arrays.asList(mTab1, mTab2));
         assertEquals(3, mModelList.size());
         assertEquals(RowType.NEW_GROUP, mModelList.get(0).type);
     }

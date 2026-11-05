@@ -627,7 +627,8 @@ PrerenderTestHelper::AddEmbedderTriggeredPrerenderAsync(
           /*planned_max_preloading_type=*/PreloadingType::kPrerender),
       /*preloading_attempt=*/nullptr, /*url_match_predicate=*/{},
       /*prerender_navigation_handle_callback=*/{},
-      /*allow_reuse=*/false);
+      /*allow_reuse=*/false,
+      /*navigation_ui_data=*/nullptr);
 }
 
 std::unique_ptr<PrerenderHandle>
@@ -720,7 +721,7 @@ PrerenderTestHelper::NavigatePrimaryPageAsync(WebContents& web_contents,
   } else {
     web_contents.OpenURL(
         OpenURLParams::CreateBrowserInitiated(
-            url, WindowOpenDisposition::CURRENT_TAB, transition),
+            url, WindowOpenDisposition::kCurrentTab, transition),
         /*navigation_handle_callback=*/{});
   }
   return observer;

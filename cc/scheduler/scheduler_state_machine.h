@@ -7,12 +7,15 @@
 
 #include <stdint.h>
 
+#include <atomic>
+
 #include "base/time/time.h"
 #include "base/tracing/protos/chrome_track_event.pbzero.h"
 #include "cc/cc_export.h"
 #include "cc/scheduler/commit_earlyout_reason.h"
 #include "cc/scheduler/draw_result.h"
 #include "cc/scheduler/scheduler_settings.h"
+#include "cc/scheduler/view_transition_snapshot_state.h"
 #include "cc/tiles/tile_priority.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 
@@ -148,7 +151,7 @@ class CC_EXPORT SchedulerStateMachine {
   void AsProtozeroInto(
       perfetto::protos::pbzero::ChromeCompositorStateMachineV2* state) const;
 
-  virtual Action NextAction() const;
+  Action NextAction() const;
   void WillSendBeginMainFrame();
   void WillCommit(bool commit_had_no_updates);
   virtual bool CheckWillCommit() const;
@@ -178,7 +181,7 @@ class CC_EXPORT SchedulerStateMachine {
   // Indicates that the system has entered and left a BeginImplFrame callback.
   // The scheduler will not draw more than once in a given BeginImplFrame
   // callback nor send more than one BeginMainFrame message.
-  virtual void OnBeginImplFrame(const viz::BeginFrameArgs& args);
+  void OnBeginImplFrame(const viz::BeginFrameArgs& args);
   // Indicates that the scheduler has entered the draw phase. The scheduler
   // will not draw more than once in a single draw phase.
   // TODO(sunnyps): Rename OnBeginImplFrameDeadline to OnDraw or similar.
@@ -208,6 +211,9 @@ class CC_EXPORT SchedulerStateMachine {
   // Returns the main frame throttle interval computed based on the
   // static throttle feature and the renderer settings.
   base::TimeDelta MainFrameThrottledInterval() const;
+  static base::TimeDelta GetMainFrameThrottledInterval(
+      base::TimeDelta frame_interval,
+      bool is_webview);
 
   // Indicates whether the LayerTreeHostImpl is visible.
   void SetVisible(bool visible);
@@ -263,6 +269,12 @@ class CC_EXPORT SchedulerStateMachine {
   // Notifies that we have received an input event. This is used for
   // unthrottling.
   void NotifyInputEvent();
+
+  // Notifies that a frame was produced outside the main-thread commit (e.g.
+  // OffscreenCanvas or low-latency canvas). May be called from any thread.
+  void NotifyOutOfBandFrame() {
+    has_out_of_band_damage_.store(true, std::memory_order_relaxed);
+  }
 
   // Indicates that a new begin main frame flow needs to be performed, either
   // to pull updates from the main thread to the impl, or to push deltas from
@@ -390,6 +402,22 @@ class CC_EXPORT SchedulerStateMachine {
     return consecutive_no_damage_main_frames_;
   }
 
+  void SetViewTransitionSnapshotCapturing(bool capturing) {
+    view_transition_snapshot_state_.SetCapturing(capturing);
+  }
+  ViewTransitionSnapshotState& view_transition_snapshot_state() {
+    return view_transition_snapshot_state_;
+  }
+  const ViewTransitionSnapshotState& view_transition_snapshot_state() const {
+    return view_transition_snapshot_state_;
+  }
+
+  // Returns true if a cross-document ViewTransition snapshot `kSave` frame was
+  // activated while no impl frame is running, and it is ready to draw. The
+  // scheduler then issues a manual BeginFrame for it, because the external
+  // BeginFrameSource may already be paused.
+  bool ShouldIssueBeginFrameForSnapshotSave() const;
+
  protected:
   bool BeginFrameRequiredForAction() const;
   bool BeginFrameNeededForVideo() const;
@@ -433,6 +461,9 @@ class CC_EXPORT SchedulerStateMachine {
   void DidDrawInternal(DrawResult draw_result);
   void UpdateConsecutiveNoDamageThrottlingInterval();
   bool DisableThrottlingDueToHighFramerateRequests() const;
+  bool ActiveTreeHasViewTransitionSnapshotSave() const {
+    return view_transition_snapshot_state_.IsCapturing() && !has_pending_tree_;
+  }
 
   const SchedulerSettings settings_;
 
@@ -508,8 +539,6 @@ class CC_EXPORT SchedulerStateMachine {
   bool critical_begin_main_frame_to_activate_is_fast_ = true;
   bool main_thread_missed_last_deadline_ = false;
   bool defer_begin_main_frame_ = false;
-  bool pause_rendering_ = false;
-  bool waiting_for_activation_after_rendering_resumed_ = false;
   bool video_needs_begin_frames_ = false;
   bool last_commit_had_no_updates_ = false;
   bool active_tree_is_ready_to_draw_ = true;
@@ -539,6 +568,7 @@ class CC_EXPORT SchedulerStateMachine {
   bool pending_tree_needs_first_draw_on_activation_ = false;
 
   bool draw_aborted_for_paused_begin_frame_ = false;
+  ViewTransitionSnapshotState view_transition_snapshot_state_;
 
   unsigned consecutive_cant_draw_count_ = 0u;
 
@@ -552,6 +582,8 @@ class CC_EXPORT SchedulerStateMachine {
   bool waiting_for_scroll_event_ = false;
 
   uint64_t high_framerate_requests_count_ = 0;
+
+  std::atomic<bool> has_out_of_band_damage_{false};
 };
 
 }  // namespace cc

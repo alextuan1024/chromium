@@ -39,6 +39,7 @@
 #include "media/base/picture_in_picture_events_info.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "services/media_session/public/cpp/media_image_manager.h"
+#include "services/media_session/public/cpp/media_metadata.h"
 #include "services/media_session/public/mojom/audio_focus.mojom.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
@@ -297,6 +298,12 @@ void MediaSessionImpl::RenderFrameDeleted(RenderFrameHost* rfh) {
 
 void MediaSessionImpl::PrimaryPageChanged(content::Page& page) {
   last_auto_picture_in_picture_info_.reset();
+
+  // Source icons are the primary page's favicons, so sync them with the new
+  // primary page, like Initialize() does. Waiting for DidUpdateFaviconURL() is
+  // not enough: pages without favicons (e.g. WebUIs) never call it, and pages
+  // restored from the back/forward cache don't call it again.
+  SetSourceIconsFromFavicons(web_contents()->GetFaviconURLs());
 }
 
 void MediaSessionImpl::DidFinishNavigation(
@@ -307,10 +314,18 @@ void MediaSessionImpl::DidFinishNavigation(
   }
 
   auto new_origin = url::Origin::Create(navigation_handle->GetURL());
-  if (navigation_handle->IsInPrimaryMainFrame() &&
-      !new_origin.IsSameOriginWith(origin_)) {
-    audio_device_id_for_origin_.reset();
-    origin_ = new_origin;
+  if (navigation_handle->IsInPrimaryMainFrame()) {
+    if (!new_origin.IsSameOriginWith(origin_)) {
+      audio_device_id_for_origin_.reset();
+      origin_ = new_origin;
+    }
+
+    // Observers such as Android's MediaSessionHelper clear their cached
+    // metadata on primary main frame cross-document navigations, so reset
+    // `metadata_` to ensure `RebuildAndNotifyMetadataChanged()` re-notifies
+    // observers even when the rebuilt metadata matches pre-navigation state
+    // (e.g. on page reload).
+    metadata_ = media_session::MediaMetadata();
   }
 
   const auto rfh_id = navigation_handle->GetRenderFrameHost()->GetGlobalId();
@@ -502,6 +517,7 @@ bool MediaSessionImpl::AddPlayer(MediaSessionPlayerObserver* observer,
       RebuildAndNotifyMediaSessionInfoChanged();
       RebuildAndNotifyActionsChanged();
       RebuildAndNotifyMediaPositionChanged();
+      RebuildAndNotifyMetadataChanged();
       return true;
     }
   }
@@ -545,6 +561,7 @@ bool MediaSessionImpl::AddPlayer(MediaSessionPlayerObserver* observer,
   RebuildAndNotifyMediaSessionInfoChanged();
   RebuildAndNotifyActionsChanged();
   RebuildAndNotifyMediaPositionChanged();
+  RebuildAndNotifyMetadataChanged();
 
   return true;
 }
@@ -566,6 +583,7 @@ void MediaSessionImpl::RemovePlayer(MediaSessionPlayerObserver* observer,
   RebuildAndNotifyMediaSessionInfoChanged();
   RebuildAndNotifyActionsChanged();
   RebuildAndNotifyMediaPositionChanged();
+  RebuildAndNotifyMetadataChanged();
 }
 
 void MediaSessionImpl::RemovePlayers(MediaSessionPlayerObserver* observer) {
@@ -590,6 +608,7 @@ void MediaSessionImpl::RemovePlayers(MediaSessionPlayerObserver* observer) {
   RebuildAndNotifyMediaSessionInfoChanged();
   RebuildAndNotifyActionsChanged();
   RebuildAndNotifyMediaPositionChanged();
+  RebuildAndNotifyMetadataChanged();
 }
 
 void MediaSessionImpl::OnPlayerPaused(MediaSessionPlayerObserver* observer,
@@ -753,8 +772,10 @@ void MediaSessionImpl::Suspend(SuspendType suspend_type) {
 }
 
 void MediaSessionImpl::Stop(SuspendType suspend_type) {
-  CHECK(audio_focus_state_ != State::INACTIVE, base::NotFatalUntil::M160);
-  CHECK(suspend_type != SuspendType::kContent, base::NotFatalUntil::M160);
+  // TODO(crbug.com/579677172): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(audio_focus_state_ != State::INACTIVE);
+  DCHECK(suspend_type != SuspendType::kContent);
 
   if (suspend_type == SuspendType::kUI) {
     // If the site has registered an action handle for stop then we should
@@ -779,11 +800,14 @@ void MediaSessionImpl::Stop(SuspendType suspend_type) {
   if (audio_focus_state_ != State::SUSPENDED)
     OnSuspendInternal(suspend_type, State::SUSPENDED);
 
-  CHECK(audio_focus_state_ == State::SUSPENDED, base::NotFatalUntil::M160);
+  // TODO(crbug.com/563861408): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(audio_focus_state_ == State::SUSPENDED);
   normal_players_.clear();
 
   AbandonSystemAudioFocusIfNeeded();
   RebuildAndNotifyMediaPositionChanged();
+  RebuildAndNotifyMetadataChanged();
 }
 
 void MediaSessionImpl::Seek(base::TimeDelta seek_time) {
@@ -1356,6 +1380,10 @@ void MediaSessionImpl::EnterAutoPictureInPicture() {
     MaybeEnterBrowserInitiatedAutomaticPictureInPicture();
     return;
   }
+  if (!routed_service_->GetRenderFrameHost() ||
+      !routed_service_->GetRenderFrameHost()->IsInPrimaryMainFrame()) {
+    return;
+  }
 
   DidReceiveAction(
       media_session::mojom::MediaSessionAction::kEnterPictureInPicture,
@@ -1614,6 +1642,7 @@ bool MediaSessionImpl::AddOneShotPlayer(MediaSessionPlayerObserver* observer,
   UpdateRoutedService();
   RebuildAndNotifyMediaSessionInfoChanged();
   RebuildAndNotifyMediaPositionChanged();
+  RebuildAndNotifyMetadataChanged();
 
   return true;
 }
@@ -1786,16 +1815,22 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   std::map<RenderFrameHost*, size_t> map_rfh_to_depth;
 
   std::set<url::Origin> highest_player_origins;
+  std::set<RenderFrameHost*> highest_player_ancestors;
   size_t min_player_depth = std::numeric_limits<size_t>::max();
 
   for (RenderFrameHost* frame : frames) {
     size_t depth = ComputeFrameDepth(frame, &map_rfh_to_depth);
     if (depth < min_player_depth) {
       highest_player_origins.clear();
+      highest_player_ancestors.clear();
       min_player_depth = depth;
     }
     if (depth == min_player_depth) {
       highest_player_origins.insert(frame->GetLastCommittedOrigin());
+      for (RenderFrameHost* ancestor = frame->GetParentOrOuterDocument();
+           ancestor; ancestor = ancestor->GetParentOrOuterDocument()) {
+        highest_player_ancestors.insert(ancestor);
+      }
     }
     if (depth >= min_depth) {
       continue;
@@ -1808,8 +1843,8 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   }
 
   // If we cannot find a suitable frame, take the top-most frame with an active
-  // MediaSessionService (and same-origin with the highest-level active player
-  // if one exists).
+  // MediaSessionService (that is either same-origin with or an ancestor of the
+  // highest-level active player if one exists).
   if (!best_frame) {
     // `FrameTree::Nodes()` iterates in breadth-first order, so this is
     // guaranteed to find the topmost (or tied topmost) frame with an active
@@ -1819,7 +1854,8 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
                                    .Nodes()) {
       RenderFrameHost* rfh = node->current_frame_host();
       if (!highest_player_origins.empty() &&
-          !highest_player_origins.contains(rfh->GetLastCommittedOrigin())) {
+          !highest_player_origins.contains(rfh->GetLastCommittedOrigin()) &&
+          !highest_player_ancestors.contains(rfh)) {
         continue;
       }
       if (IsServiceActiveForRenderFrameHost(rfh)) {
@@ -1931,11 +1967,15 @@ void MediaSessionImpl::RebuildAndNotifyActionsChanged() {
   }
 
   // If the website has specified an action handler for 'enterpictureinpicture',
-  // then we should expose EnterAutoPictureInPicture as an available action.
+  // then we should expose EnterAutoPictureInPicture as an available action if
+  // the routed service is in the primary main frame.
   if (actions.contains(
           media_session::mojom::MediaSessionAction::kEnterPictureInPicture)) {
-    actions.insert(
-        media_session::mojom::MediaSessionAction::kEnterAutoPictureInPicture);
+    if (routed_service_ && routed_service_->GetRenderFrameHost() &&
+        routed_service_->GetRenderFrameHost()->IsInPrimaryMainFrame()) {
+      actions.insert(
+          media_session::mojom::MediaSessionAction::kEnterAutoPictureInPicture);
+    }
     actions.insert(
         media_session::mojom::MediaSessionAction::kExitPictureInPicture);
   }
@@ -2044,6 +2084,43 @@ void MediaSessionImpl::BuildPlaceholderMetadata(
 }
 #endif
 
+void MediaSessionImpl::MaybeApplyPlayerMetadata(
+    media_session::MediaMetadata& metadata) {
+  // If a single player provides metadata, use it as fallback before page title.
+  if (normal_players_.size() != 1 || !one_shot_players_.empty()) {
+    return;
+  }
+
+  auto& first = normal_players_.begin()->first;
+  auto player_metadata = first.observer->GetMetadata(first.player_id);
+  if (!player_metadata) {
+    return;
+  }
+
+  if (metadata.title.empty() && !player_metadata->title.empty()) {
+    std::u16string sanitized_title = SanitizeMediaTitle(player_metadata->title);
+    if (!sanitized_title.empty()) {
+      metadata.title = std::move(sanitized_title);
+    }
+  }
+  if (metadata.source_title.empty() && !player_metadata->source_title.empty()) {
+    std::u16string sanitized_source_title =
+        SanitizeMediaTitle(player_metadata->source_title);
+    if (!sanitized_source_title.empty()) {
+      metadata.source_title = std::move(sanitized_source_title);
+    }
+  }
+  if (metadata.artist.empty() && !player_metadata->artist.empty()) {
+    metadata.artist = player_metadata->artist;
+  }
+  if (metadata.album.empty() && !player_metadata->album.empty()) {
+    metadata.album = player_metadata->album;
+  }
+  if (metadata.chapters.empty() && !player_metadata->chapters.empty()) {
+    metadata.chapters = player_metadata->chapters;
+  }
+}
+
 void MediaSessionImpl::BuildMetadata(
     media_session::MediaMetadata& metadata,
     std::vector<media_session::MediaImage>& artwork) {
@@ -2064,10 +2141,18 @@ void MediaSessionImpl::BuildMetadata(
     metadata.album = routed_service_->metadata()->album;
     metadata.chapters = routed_service_->metadata()->chapterInfo;
     artwork = routed_service_->metadata()->artwork;
+  } else {
+    MaybeApplyPlayerMetadata(metadata);
   }
 
   if (metadata.title.empty()) {
     metadata.title = SanitizeMediaTitle(web_contents()->GetTitle());
+  }
+
+  // If `source_title` was already provided (e.g. by a player observer), we do
+  // not need to derive it from the delegate or page origin URL.
+  if (!metadata.source_title.empty()) {
+    return;
   }
 
   ContentClient* content_client = GetContentClient();

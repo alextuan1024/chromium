@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "chrome/browser/extensions/tab_helper.h"
-#include "chrome/browser/ui/tab_contents/core_tab_helper.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -34,8 +33,6 @@ BrowserWindowInterface* TestTabStripModelDelegate::CreateNewStripWithTabs(
 
 void TestTabStripModelDelegate::WillAddWebContents(
     content::WebContents* contents) {
-  // Required to determine reloadability of tabs.
-  CoreTabHelper::CreateForWebContents(contents);
   // Required to determine if tabs are app tabs.
   extensions::TabHelper::CreateForWebContents(contents);
 }
@@ -111,6 +108,11 @@ bool TestTabStripModelDelegate::ShouldRunUnloadListenerBeforeClosing(
 bool TestTabStripModelDelegate::RunUnloadListenerBeforeClosing(
     content::WebContents* contents) {
   return false;
+}
+
+bool TestTabStripModelDelegate::IsTabClosable(
+    const tabs::TabInterface* tab) const {
+  return true;
 }
 
 bool TestTabStripModelDelegate::CanReload() const {

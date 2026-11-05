@@ -5,11 +5,11 @@
 #include <optional>
 
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
 #include "components/autofill/core/browser/payments/offer_notification_options.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
@@ -17,6 +17,7 @@
 #include "components/strings/grit/components_strings.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/window_open_disposition.h"
 
 namespace autofill {
 namespace {
@@ -34,16 +35,19 @@ std::string GetTestName(const ::testing::TestParamInfo<UiTestData>& info) {
 
 AutofillOfferData CreateTestOffer(const std::vector<GURL>& merchant_origins,
                                   const std::string& promo_code) {
-  int64_t offer_id = 2468;
+  std::string offer_id = "2468";
   base::Time expiry = base::Time::Now() + base::Days(2);
   DisplayStrings display_strings;
   display_strings.value_prop_text = "5% off on shoes. Up to $50";
   display_strings.see_details_text = "See details";
   display_strings.usage_instructions_text =
       "Click the promo code field at checkout to autofill it.";
-  return AutofillOfferData::GPayPromoCodeOffer(
-      offer_id, expiry, merchant_origins, /*offer_details_url=*/GURL(),
-      display_strings, promo_code);
+  return AutofillOfferData(offer_id, expiry, merchant_origins,
+                           /*offer_details_url=*/GURL("https://pay.google.com"),
+                           display_strings, promo_code,
+                           /*offer_short_title=*/"5% off",
+                           /*issue_time=*/base::Time(),
+                           /*issuer_name=*/"Merchant");
 }
 
 class OfferNotificationIconViewBrowserTest
@@ -59,7 +63,7 @@ class OfferNotificationIconViewBrowserTest
     AutofillOfferData offer = CreateTestOffer(
         /*merchant_origins=*/{GURL(kTestURL)}, kTestPromoCode);
     auto* autofill_client =
-        ChromeAutofillClient::FromWebContentsForTesting(GetWebContents());
+        ContentAutofillClient::FromWebContents(GetWebContents());
 
     if (name.find("show_offer_notification_icon_only") != std::string::npos) {
       autofill_client->GetPaymentsAutofillClient()->UpdateOfferNotification(
@@ -109,6 +113,30 @@ INSTANTIATE_TEST_SUITE_P(All,
 IN_PROC_BROWSER_TEST_P(OfferNotificationIconViewBrowserTest,
                        InvokeUi_show_offer_notification_icon_only) {
   ShowAndVerifyUi();
+}
+
+// Tests that dismissing an offer notification in a background tab does not hide
+// the active tab's offer page action icon.
+IN_PROC_BROWSER_TEST_P(OfferNotificationIconViewBrowserTest,
+                       DismissOfferInBackgroundTab_PreservesActiveTabIcon) {
+  ShowUi("show_offer_notification_icon_only");
+  page_actions::PageActionTestAccessor accessor(browser(),
+                                                kActionOffersAndRewardsForPage);
+  ASSERT_TRUE(accessor.GetVisible());
+
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), GURL("about:blank"), WindowOpenDisposition::kNewBackgroundTab,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  content::WebContents* const background_contents =
+      browser()->GetTabStripModel()->GetWebContentsAt(1);
+  ASSERT_TRUE(background_contents);
+  ASSERT_TRUE(accessor.GetVisible());
+
+  ContentAutofillClient::FromWebContents(background_contents)
+      ->GetPaymentsAutofillClient()
+      ->DismissOfferNotification();
+
+  EXPECT_TRUE(accessor.GetVisible());
 }
 
 }  // namespace

@@ -136,7 +136,6 @@ class MultiProfileCredentialsFilterTest : public testing::Test {
                        .Build();
     AccountCapabilitiesTestMutator(&account_info)
         .set_is_subject_to_account_level_enterprise_policies(false);
-    DCHECK(account_info.IsValid());
     identity_test_env()->UpdateAccountInfoForAccount(account_info);
     Profile* profile_2 = profile_manager_.CreateTestingProfile("Profile 2");
     ProfileAttributesEntry* entry =
@@ -303,7 +302,7 @@ TEST_F(MultiProfileCredentialsFilterTest, InterceptInProgress) {
       web_contents_.get(), account_info.GetAccountId(),
       signin_metrics::AccessPoint::kStartPage,
       /*is_new_account=*/true,
-      /*is_sync_signin=*/false,
+      /*is_chrome_signin=*/false,
       /*primary_is_connected=*/signin::Tribool::kUnknown);
   ASSERT_TRUE(dice_web_signin_interceptor()->is_interception_in_progress());
 
@@ -323,7 +322,7 @@ TEST_F(MultiProfileCredentialsFilterTest, SigninIntercepted) {
   AccountInfo account_info = SetupInterception();
   ASSERT_FALSE(dice_web_signin_interceptor()->is_interception_in_progress());
   ASSERT_EQ(dice_web_signin_interceptor()->GetHeuristicOutcome(
-                /*is_new_account=*/true, /*is_sync_signin=*/false,
+                /*is_new_account=*/true, /*is_chrome_signin=*/false,
                 account_info.GetEmail()),
             SigninInterceptionHeuristicOutcome::kInterceptProfileSwitch);
 
@@ -345,7 +344,7 @@ TEST_F(MultiProfileCredentialsFilterTest, SigninInterceptionUnknown) {
       identity_test_env()->MakeAccountAvailable(extra_email);
   ASSERT_FALSE(dice_web_signin_interceptor()->is_interception_in_progress());
   ASSERT_FALSE(dice_web_signin_interceptor()->GetHeuristicOutcome(
-      /*is_new_account=*/true, /*is_sync_signin=*/false, kFormEmail));
+      /*is_new_account=*/true, /*is_chrome_signin=*/false, kFormEmail));
 
   MultiProfileCredentialsFilter multi_profile_filter(
       password_manager_client(), dice_web_signin_interceptor());
@@ -369,7 +368,6 @@ TEST_F(MultiProfileCredentialsFilterTest, SigninNotIntercepted) {
                      .Build();
   AccountCapabilitiesTestMutator(&account_info)
       .set_is_subject_to_account_level_enterprise_policies(false);
-  CHECK(account_info.IsValid());
   identity_test_env()->UpdateAccountInfoForAccount(account_info);
 
   password_manager::PasswordForm form =

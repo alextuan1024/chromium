@@ -10,8 +10,8 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chromeos/ash/experiences/arc/mojom/app.mojom-forward.h"
+#include "components/account_id/account_id.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
 
@@ -68,6 +68,12 @@ class ArcAppTest {
   // `TestingProfile::kDefaultProfileUserName`.
   void SetUserEmail(const std::string& email);
 
+  // Registers an additional regular user to UserManager. The user is not
+  // logged in. Similar to production, users can be registered only before any
+  // user logs in, so this must be called before `PreProfileSetUp`, and is
+  // available only if `user_manager_mode` is `kCreate`.
+  void AddAdditionalUser(const AccountId& account_id);
+
   // Perform initialization that's supposed to be done before profile creation.
   // `PostProfileTearDown` must also be called afterward.
   void PreProfileSetUp();
@@ -98,6 +104,10 @@ class ArcAppTest {
   const std::vector<arc::mojom::ArcPackageInfoPtr>& fake_packages() const {
     return fake_packages_;
   }
+
+  // The user logged in by `PreProfileSetUp()`. Null unless
+  // `user_manager_mode` is `kCreate`.
+  const user_manager::User* user() const { return user_; }
 
   // Adds package info and takes ownership.
   void AddPackage(arc::mojom::ArcPackageInfoPtr package);
@@ -213,6 +223,7 @@ class ArcAppTest {
   std::vector<arc::mojom::ShortcutInfo> fake_shortcuts_;
 
   std::string user_email_;
+  std::vector<AccountId> additional_account_ids_;
 
   bool concierge_client_initialized_ = false;
 

@@ -6,9 +6,13 @@
 
 #include <objbase.h>
 
+#include <wrl/client.h>
+#include <wrl/implements.h>
+
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "base/byte_size.h"
@@ -20,6 +24,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/pickle.h"
 #include "base/sequence_checker.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -36,6 +41,7 @@
 #include "ui/base/clipboard/file_info.h"
 #include "ui/base/dragdrop/os_exchange_data_provider_win.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace ui {
 
@@ -144,6 +150,55 @@ class RefCountMockStream : public IStream {
  private:
   ULONG ref_count_ = 0u;
   SEQUENCE_CHECKER(sequence_checker_);
+};
+
+// Returns the same HGLOBAL for every format. Each medium's `pUnkForRelease` is
+// a ref-counted stream, so ReleaseStgMedium() releases the stream instead of
+// freeing the HGLOBAL, and the ref count shows how many media are unreleased.
+class FakeHGlobalDataObject
+    : public Microsoft::WRL::RuntimeClass<
+          Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+          IDataObject> {
+ public:
+  explicit FakeHGlobalDataObject(base::span<const uint8_t> data)
+      : hglobal_(::GlobalAlloc(GMEM_MOVEABLE, data.size())) {
+    base::win::ScopedHGlobal<uint8_t*> lock(hglobal_);
+    base::span(lock).copy_from(data);
+  }
+  ~FakeHGlobalDataObject() override { ::GlobalFree(hglobal_); }
+
+  // The number of media returned by GetData() that haven't been released.
+  ULONG outstanding_media() const { return releaser_.GetRefCount(); }
+
+  IFACEMETHODIMP GetData(FORMATETC*, STGMEDIUM* medium) override {
+    medium->tymed = TYMED_HGLOBAL;
+    medium->hGlobal = hglobal_;
+    medium->pUnkForRelease = &releaser_;
+    releaser_.AddRef();
+    return S_OK;
+  }
+  IFACEMETHODIMP QueryGetData(FORMATETC*) override { return S_OK; }
+  IFACEMETHODIMP GetDataHere(FORMATETC*, STGMEDIUM*) override {
+    return E_NOTIMPL;
+  }
+  IFACEMETHODIMP GetCanonicalFormatEtc(FORMATETC*, FORMATETC*) override {
+    return E_NOTIMPL;
+  }
+  IFACEMETHODIMP SetData(FORMATETC*, STGMEDIUM*, BOOL) override {
+    return E_NOTIMPL;
+  }
+  IFACEMETHODIMP EnumFormatEtc(DWORD, IEnumFORMATETC**) override {
+    return E_NOTIMPL;
+  }
+  IFACEMETHODIMP DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override {
+    return E_NOTIMPL;
+  }
+  IFACEMETHODIMP DUnadvise(DWORD) override { return E_NOTIMPL; }
+  IFACEMETHODIMP EnumDAdvise(IEnumSTATDATA**) override { return E_NOTIMPL; }
+
+ private:
+  HGLOBAL hglobal_;
+  RefCountMockStream releaser_;
 };
 
 }  // namespace
@@ -1162,6 +1217,95 @@ TEST_F(OSExchangeDataWinTest, SetURLWithMaxPath) {
   data.SetURL(GURL("http://google.com"), long_title);
 }
 
+namespace {
+
+struct URLShortcutFilenameTestCase {
+  const char* name;
+  std::u16string title;
+  std::wstring expected_filename = L"_" + base::UTF16ToWide(title) + L".url";
+};
+
+const URLShortcutFilenameTestCase kURLShortcutFilenameTestCases[] = {
+    {"CON", u"CON"},
+    {"prn", u"prn"},
+    {"AUX", u"AUX"},
+    {"NUL", u"NUL"},
+    {"COM1", u"COM1"},
+    {"COM2", u"COM2"},
+    {"COM3", u"COM3"},
+    {"COM4", u"COM4"},
+    {"COM5", u"COM5"},
+    {"COM6", u"COM6"},
+    {"COM7", u"COM7"},
+    {"COM8", u"COM8"},
+    {"COM9", u"COM9"},
+    {"LPT1", u"LPT1"},
+    {"LPT2", u"LPT2"},
+    {"LPT3", u"LPT3"},
+    {"LPT4", u"LPT4"},
+    {"LPT5", u"LPT5"},
+    {"LPT6", u"LPT6"},
+    {"LPT7", u"LPT7"},
+    {"LPT8", u"LPT8"},
+    {"LPT9", u"LPT9"},
+    {"MixedCaseCOM1", u"cOm1"},
+    {"COM1WithExtension", u"COM1.txt"},
+    {"NULWithExtensions", u"NUL.tar.gz"},
+    {"Clock", u"clock$"},
+    // Windows also recognizes superscript 1, 2, and 3 as device digits.
+    {"COMSuperscript1", u"COM\u00b9"},
+    {"COMSuperscript2", u"COM\u00b2"},
+    {"COMSuperscript3", u"COM\u00b3"},
+    {"LPTSuperscript1", u"LPT\u00b9"},
+    {"LPTSuperscript2", u"LPT\u00b2"},
+    {"LPTSuperscript3", u"LPT\u00b3"},
+    {"COM1WithSpace", u"COM1 .x"},
+    {"COM1WithSpaces", u"COM1  .x"},
+    {"NULWithSpace", u"NUL .tar.gz"},
+    {"COMSuperscript1WithSpace", u"COM\u00b9 .x"},
+    {"TruncatedCOM1", u"COM1" + std::u16string(MAX_PATH, u' ') + u"x",
+     L"_COM1" +
+         std::wstring(MAX_PATH / 2 - std::wstring(L"_COM1.url").size() - 1,
+                      L' ') +
+         L".url"},
+    {"OrdinaryFilename", u"example", L"example.url"},
+    {"COM1WithSuffix", u"COM1 x", L"COM1 x.url"},
+    {"COM10WithSpace", u"COM10 .x", L"COM10 .x.url"},
+};
+
+}  // namespace
+
+class OSExchangeDataWinURLShortcutTest
+    : public OSExchangeDataWinTest,
+      public testing::WithParamInterface<URLShortcutFilenameTestCase> {};
+
+TEST_P(OSExchangeDataWinURLShortcutTest, Filename) {
+  OSExchangeData data;
+  data.SetURL(GURL("http://google.com/"), GetParam().title);
+
+  FORMATETC format = ClipboardFormatType::FileDescriptorType().ToFormatEtc();
+  STGMEDIUM medium = {};
+  IDataObject* data_object = OSExchangeDataProviderWin::GetIDataObject(data);
+  ASSERT_EQ(S_OK, data_object->GetData(&format, &medium));
+  ASSERT_EQ(TYMED_HGLOBAL, medium.tymed);
+  {
+    base::win::ScopedHGlobal<FILEGROUPDESCRIPTORW*> descriptor(medium.hGlobal);
+    ASSERT_EQ(1u, descriptor->cItems);
+    const std::wstring filename(descriptor->fgd[0].cFileName);
+    EXPECT_EQ(GetParam().expected_filename, filename);
+    EXPECT_LT(filename.size(), static_cast<size_t>(MAX_PATH / 2));
+  }
+  ReleaseStgMedium(&medium);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    OSExchangeDataWinURLShortcutTest,
+    testing::ValuesIn(kURLShortcutFilenameTestCases),
+    [](const testing::TestParamInfo<URLShortcutFilenameTestCase>& info) {
+      return info.param.name;
+    });
+
 TEST_F(OSExchangeDataWinTest, ProvideURLForPlainTextURL) {
   OSExchangeData data;
   data.SetString(u"http://google.com");
@@ -1571,6 +1715,47 @@ TEST_F(OSExchangeDataWinTest, ScopedFormatEtcLifecycle) {
   EXPECT_EQ(moved.format_etc.ptd, nullptr);
   EXPECT_EQ(moved_assigned.format_etc.ptd, moved_td_raw);
   EXPECT_EQ(moved_assigned.format_etc.ptd, moved_assigned.target_device.get());
+}
+
+// Regression test for crbug.com/564637477: GetPickledData() must release the
+// medium it gets from the source data object.
+TEST_F(OSExchangeDataWinTest, GetPickledDataReleasesMedium) {
+  base::Pickle pickle;
+  pickle.WriteString("payload");
+  auto source = Microsoft::WRL::Make<FakeHGlobalDataObject>(pickle.AsBytes());
+  OSExchangeDataProviderWin provider(source.Get());
+
+  std::optional<base::Pickle> result =
+      provider.GetPickledData(ClipboardFormatType::DataTransferCustomType());
+  ASSERT_TRUE(result.has_value());
+  base::PickleIterator iter(*result);
+  std::string value;
+  ASSERT_TRUE(iter.ReadString(&value));
+  EXPECT_EQ(value, "payload");
+  EXPECT_EQ(source->outstanding_media(), 0u);
+}
+
+// Verifies GetRendererTaintedOrigin() releases the medium it gets.
+TEST_F(OSExchangeDataWinTest, GetRendererTaintedOriginReleasesMedium) {
+  auto source = Microsoft::WRL::Make<FakeHGlobalDataObject>(
+      base::byte_span_from_cstring("https://example.com"));
+  OSExchangeDataProviderWin provider(source.Get());
+
+  EXPECT_EQ(provider.GetRendererTaintedOrigin(),
+            url::Origin::Create(GURL("https://example.com")));
+  EXPECT_EQ(source->outstanding_media(), 0u);
+}
+
+// Verifies empty taint data yields an opaque origin and is still released.
+TEST_F(OSExchangeDataWinTest, GetRendererTaintedOriginEmptyIsOpaque) {
+  auto source =
+      Microsoft::WRL::Make<FakeHGlobalDataObject>(base::span<const uint8_t>());
+  OSExchangeDataProviderWin provider(source.Get());
+
+  std::optional<url::Origin> origin = provider.GetRendererTaintedOrigin();
+  ASSERT_TRUE(origin.has_value());
+  EXPECT_TRUE(origin->opaque());
+  EXPECT_EQ(source->outstanding_media(), 0u);
 }
 
 }  // namespace ui

@@ -42,6 +42,8 @@ LayerAnimationSequence::~LayerAnimationSequence() {
 }
 
 void LayerAnimationSequence::Start(LayerAnimationDelegate* delegate) {
+  // TODO(crbug.com/586133398): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(start_time_ != base::TimeTicks());
 
   last_progressed_fraction_ = 0.0;
@@ -70,6 +72,8 @@ void LayerAnimationSequence::Start(LayerAnimationDelegate* delegate) {
 
 void LayerAnimationSequence::Progress(base::TimeTicks now,
                                       LayerAnimationDelegate* delegate) {
+  // TODO(crbug.com/586369962): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(start_time_ != base::TimeTicks());
   bool redraw_required = false;
 
@@ -111,7 +115,7 @@ void LayerAnimationSequence::Progress(base::TimeTicks now,
     last_progressed_fraction_ =
         elements_[current_index]->last_progressed_fraction();
     current_index = last_element_ % elements_.size();
-    DCHECK_GT(last_element_, 0u);
+    CHECK_GT(last_element_, 0u, base::NotFatalUntil::M163);
     just_completed_sequence = current_index == 0;
   }
 
@@ -281,7 +285,7 @@ void LayerAnimationSequence::OnThreadedAnimationStarted(
     elements_[current_index]->properties();
   LayerAnimationElement::AnimatableProperty event_property =
       LayerAnimationElement::ToAnimatableProperty(target_property);
-  DCHECK(element_properties & event_property);
+  CHECK(element_properties & event_property, base::NotFatalUntil::M163);
   elements_[current_index]->set_effective_start_time(monotonic_time);
 }
 

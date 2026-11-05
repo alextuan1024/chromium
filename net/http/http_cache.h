@@ -52,7 +52,6 @@
 #include "net/http/http_transaction_factory.h"
 #include "net/http/no_vary_search_cache.h"
 #include "net/http/no_vary_search_cache_storage.h"
-#include "url/gurl.h"
 #include "url/origin.h"
 
 class GURL;
@@ -488,9 +487,9 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
   FRIEND_TEST_ALL_PREFIXES(HttpCacheTest_SplitCacheFeatureEnabled,
                            SplitCacheUsesRegistrableDomain);
 
-  using TransactionList = std::list<raw_ptr<Transaction, CtnExperimental>>;
+  using TransactionList = std::list<raw_ptr<Transaction, DanglingUntriaged>>;
   using TransactionSet =
-      std::unordered_set<raw_ptr<Transaction, CtnExperimental>>;
+      std::unordered_set<raw_ptr<Transaction, DanglingUntriaged>>;
   typedef std::list<std::unique_ptr<WorkItem>> WorkItemList;
 
   // We implement a basic reader/writer lock for the disk cache entry. If there
@@ -657,7 +656,7 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory {
   using ActiveEntriesMap =
       std::unordered_map<std::string, base::raw_ref<ActiveEntry>>;
   using PendingOpsMap =
-      std::unordered_map<std::string, raw_ptr<PendingOp, CtnExperimental>>;
+      std::unordered_map<std::string, raw_ptr<PendingOp, DanglingUntriaged>>;
   using ActiveEntriesSet = std::set<base::raw_ref<ActiveEntry>>;
 
   // Methods ------------------------------------------------------------------

@@ -100,7 +100,7 @@ class BackgroundDownloadServiceTest
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         BackgroundDownloadServiceFactory::GetInstance(),
-        base::BindRepeating(
+        base::BindOnce(
             &BackgroundDownloadServiceTest::MakeBackgroundDowloadService,
             base::Unretained(this)));
     profile_ = std::move(builder).Build();
@@ -144,7 +144,7 @@ class BackgroundDownloadServiceTest
   // service. A pointer to the FakeClient object is kept in the test fixture
   // instance to allow test cases to manipulate it.
   std::unique_ptr<KeyedService> MakeBackgroundDowloadService(
-      ProfileIOS* profile) {
+      ProfileIOS& profile) {
     DCHECK(!fake_client_);
     auto fake_client = std::make_unique<NiceMock<FakeClient>>();
     fake_client_ = fake_client.get();

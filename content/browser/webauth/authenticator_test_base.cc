@@ -28,7 +28,6 @@
 #include "device/fido/public/public_key_credential_user_entity.h"
 #include "device/fido/virtual_fido_device_factory.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/system/functions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -49,7 +48,7 @@ TestAuthenticatorRequestDelegate::TestAuthenticatorRequestDelegate(
     base::OnceClosure started_over_callback,
     bool simulate_user_cancelled,
     base::RepeatingCallback<void(bool)> enclave_discovered_callback,
-    base::RepeatingCallback<void(const base::flat_set<device::FidoTransportProtocol>&)>
+    base::RepeatingCallback<void(device::FidoTransportProtocolSet)>
         transports_discovered_callback)
     : action_callbacks_registered_callback_(
           std::move(action_callbacks_registered_callback)),
@@ -354,8 +353,7 @@ TestAuthenticatorContentBrowserClient::GetWebAuthenticationRequestDelegate(
       action_callbacks_registered_callback
           ? std::move(action_callbacks_registered_callback)
           : base::DoNothing(),
-      std::move(started_over_callback_),
-      simulate_user_cancelled_,
+      std::move(started_over_callback_), simulate_user_cancelled_,
       base::BindRepeating(
           [](base::WeakPtr<TestAuthenticatorContentBrowserClient> self,
              bool discovered) {
@@ -366,7 +364,7 @@ TestAuthenticatorContentBrowserClient::GetWebAuthenticationRequestDelegate(
           weak_factory_.GetWeakPtr()),
       base::BindRepeating(
           [](base::WeakPtr<TestAuthenticatorContentBrowserClient> self,
-             const base::flat_set<device::FidoTransportProtocol>& transports) {
+             device::FidoTransportProtocolSet transports) {
             if (self) {
               self->discovered_transports_ = transports;
             }
@@ -376,7 +374,10 @@ TestAuthenticatorContentBrowserClient::GetWebAuthenticationRequestDelegate(
 
 AuthenticatorTestBase::AuthenticatorTestBase()
     : RenderViewHostTestHarness(
-          base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+          base::test::TaskEnvironment::TimeSource::MOCK_TIME),
+      mojo_error_handler_guard_(
+          base::BindRepeating(&AuthenticatorTestBase::OnMojoError,
+                              base::Unretained(this))) {}
 
 AuthenticatorTestBase::~AuthenticatorTestBase() = default;
 
@@ -398,9 +399,6 @@ void AuthenticatorTestBase::SetUp() {
 
   WebAuthRequestSecurityCheckerImpl::
       UseSystemSharedURLLoaderFactoryForTesting() = true;
-
-  mojo::SetDefaultProcessErrorHandler(base::BindRepeating(
-      &AuthenticatorTestBase::OnMojoError, base::Unretained(this)));
 
 #if BUILDFLAG(IS_CHROMEOS)
   chromeos::TpmManagerClient::InitializeFake();
@@ -427,7 +425,7 @@ void AuthenticatorTestBase::TearDown() {
   WebAuthRequestSecurityCheckerImpl::
       UseSystemSharedURLLoaderFactoryForTesting() = false;
 
-  mojo::SetDefaultProcessErrorHandler(base::NullCallback());
+  mojo_error_handler_.Reset();
 
   virtual_device_factory_ = nullptr;
   AuthenticatorEnvironment::GetInstance()->Reset();

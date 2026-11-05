@@ -19,6 +19,7 @@
 #include "base/check_is_test.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/debug/dump_without_crashing.h"
 #include "base/format_macros.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -613,6 +614,80 @@ bool UserManagerImpl::RemoveStaleEphemeralUsers() {
   return changed;
 }
 
+void UserManagerImpl::SetMaxUserProfiles(std::optional<int> max_user_profiles) {
+  if (max_user_profiles.has_value() && max_user_profiles.value() <= 0) {
+    max_user_profiles_ = std::nullopt;
+  } else {
+    max_user_profiles_ = max_user_profiles;
+  }
+}
+
+std::optional<int> UserManagerImpl::GetMaxUserProfiles() const {
+  return max_user_profiles_;
+}
+
+bool UserManagerImpl::TrimExcessUsers() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Trimming is only supported on the login screen, because removing a user
+  // that owns a running session is not safe. Report the misuse, but keep the
+  // browser alive and leave the user list untouched.
+  if (IsUserLoggedIn()) {
+    base::debug::DumpWithoutCrashing();
+    return false;
+  }
+  if (!max_user_profiles_.has_value() || max_user_profiles_.value() <= 0) {
+    return false;
+  }
+
+  const int max_allowed = max_user_profiles_.value();
+  const auto owner_id = GetOwnerAccountId();
+
+  // Snapshot list of candidate GAIA user AccountIds to avoid pointer
+  // invalidation.
+  std::vector<AccountId> gaia_users;
+  for (const User* user : persisted_users_) {
+    if (user->HasGaiaAccount()) {
+      gaia_users.push_back(user->GetAccountId());
+    }
+  }
+
+  if (static_cast<int>(gaia_users.size()) <= max_allowed) {
+    return false;
+  }
+
+  bool changed = false;
+  size_t current_count = gaia_users.size();
+  // `persisted_users_` has MRU at begin() and LRU at rbegin().
+  // Prune from oldest (back) to newest (front).
+  for (auto it = gaia_users.rbegin(); it != gaia_users.rend(); ++it) {
+    if (static_cast<int>(current_count) <= max_allowed) {
+      break;
+    }
+    const AccountId& account_id = *it;
+    const User* user = FindUser(account_id);
+    if (!user) {
+      continue;
+    }
+
+    // The owner is never removed. Logged in users, non-GAIA users and other
+    // non-removable users are filtered out by `CanUserBeRemoved()`.
+    if (account_id == owner_id || !CanUserBeRemoved(user)) {
+      continue;
+    }
+
+    // `RemoveUserInternal()` waits for the owner ID to be resolved before it
+    // removes anything. Callers are expected to have it resolved already (e.g.
+    // `PolicyUserManagerController` sets it from the same trusted device
+    // policies), so that the removal, and thus the update of
+    // `persisted_users_`, happens synchronously here.
+    RemoveUserInternal(account_id,
+                       UserRemovalReason::DEVICE_MAX_USERS_EXCEEDED);
+    --current_count;
+    changed = true;
+  }
+  return changed;
+}
+
 void UserManagerImpl::CleanStaleUserInformationFor(
     const AccountId& account_id) {
   KnownUser known_user(local_state_);
@@ -728,6 +803,12 @@ void UserManagerImpl::SaveUserOAuthStatus(
   if (IsUserNonCryptohomeDataEphemeral(account_id)) {
     return;
   }
+  // Avoid dirtying and flushing Local State when the stored status matches.
+  if (local_state_->GetDict(prefs::kUserOAuthTokenStatus)
+          .FindInt(account_id.GetUserEmail()) ==
+      static_cast<int>(oauth_token_status)) {
+    return;
+  }
 
   {
     ScopedDictPrefUpdate oauth_status_update(local_state_.get(),
@@ -750,6 +831,11 @@ void UserManagerImpl::SaveForceOnlineSignin(const AccountId& account_id,
   // Do not update local state if data stored or cached outside the user's
   // cryptohome is to be treated as ephemeral.
   if (IsUserNonCryptohomeDataEphemeral(account_id)) {
+    return;
+  }
+  // Avoid dirtying and flushing Local State when the stored flag matches.
+  if (local_state_->GetDict(prefs::kUserForceOnlineSignin)
+          .FindBool(account_id.GetUserEmail()) == force_online_signin) {
     return;
   }
 

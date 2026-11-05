@@ -7,7 +7,6 @@
 
 #include <vector>
 
-#include "base/containers/flat_set.h"
 #include "base/functional/callback_forward.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/optimization_guide/proto/common_types.pb.h"
@@ -40,7 +39,7 @@ class OptimizationGuideDecider {
   // Registering an OptimizationType will cause data for the type to be fetched
   // and cached on each page load.
   virtual void RegisterOptimizationTypes(
-      const std::vector<proto::OptimizationType>& optimization_types) = 0;
+      OptimizationTypeSet optimization_types) = 0;
 
   // Invokes |callback| with the decision for the URL contained in |url| and
   // |optimization_type|, when sufficient information has been collected to
@@ -80,7 +79,7 @@ class OptimizationGuideDecider {
   // before using this API. If approved, add your class as a friend class here.
   virtual void CanApplyOptimizationOnDemand(
       const std::vector<GURL>& urls,
-      const base::flat_set<proto::OptimizationType>& optimization_types,
+      OptimizationTypeSet optimization_types,
       proto::RequestContext request_context,
       OnDemandOptimizationGuideDecisionRepeatingCallback callback,
       std::optional<proto::RequestContextMetadata> request_context_metadata =

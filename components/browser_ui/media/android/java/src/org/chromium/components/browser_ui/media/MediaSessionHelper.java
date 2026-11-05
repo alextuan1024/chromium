@@ -173,9 +173,11 @@ public class MediaSessionHelper implements MediaImageCallback {
                         public void onAudioBecomingNoisy() {
                             if (mIsPaused) return;
 
-                            // On desktop devices, do not pause media when headphones are unplugged
-                            // to align with standard desktop behavior.
-                            boolean shouldPause = !DeviceInfo.isDesktop();
+                            boolean shouldPause =
+                                    MediaFeatureMap.getInstance()
+                                            .isEnabledInNative(
+                                                    MediaFeatureList
+                                                            .PAUSE_MEDIA_ON_HEADPHONE_UNPLUG);
 
                             if (mMediaSessionObserver != null
                                     && mMediaSessionObserver.getMediaSession() != null) {
@@ -350,19 +352,11 @@ public class MediaSessionHelper implements MediaImageCallback {
                                 .setMediaSessionActions(mMediaSessionActions)
                                 .setMediaPosition(mMediaPosition);
 
-                // Show a default icon in incognito contents, as they don't show the media icon.
-                // Also show a default icon if we won't get a favicon from {@link mDelegate}. If the
-                // delegate will pass a favicon later, show nothing for now; we expect the favicon
-                // to arrive quickly.
-                // TODO(cchen): This default is Chrome-branded. Unlike the small
-                // icon, it works in any embedder (it is decoded to a bitmap in-process before
-                // reaching the system), but non-Chrome embedders such as WebView end up showing
-                // the Chrome logo as fallback artwork. Move the choice of default artwork into
-                // the Delegate in a follow-up.
-                if (mWebContents.isIncognito()
-                        || (mCurrentMediaImage == null && !fetchLargeFaviconImage())) {
-                    mNotificationInfoBuilder.setDefaultNotificationLargeIcon(
-                            R.drawable.chrome_product_vd_24);
+                // Kick off a favicon fetch to use as fallback artwork, except in incognito
+                // contents, which don't show the media icon. If a favicon arrives later, the
+                // notification is updated with it; until then no artwork is shown.
+                if (!mWebContents.isIncognito() && mCurrentMediaImage == null) {
+                    fetchLargeFaviconImage();
                 }
                 showNotification();
                 Activity activity = getActivity();
@@ -435,12 +429,14 @@ public class MediaSessionHelper implements MediaImageCallback {
 
         if (mWebContentsObserver != null) mWebContentsObserver.observe(null);
 
-        mMediaImageManager.setWebContents(webContents);
-
         if (webContents == null) {
             mWebContentsObserver = null;
             cleanupMediaSessionObserver();
             return;
+        }
+
+        if (mFallbackTitle == null && !TextUtils.isEmpty(webContents.getTitle())) {
+            mFallbackTitle = sanitizeMediaTitle(webContents.getTitle());
         }
 
         mWebContentsObserver =
@@ -451,16 +447,19 @@ public class MediaSessionHelper implements MediaImageCallback {
                             return;
                         }
 
+                        String previousOrigin = mOrigin;
                         mOrigin = "";
                         mFavicon = null;
                         mPageMediaImage = null;
                         mPageMetadata = null;
                         // |mCurrentMetadata| selects either |mPageMetadata| or |mFallbackTitle|. As
                         // there is no guarantee {@link #titleWasSet()} will be called before or
-                        // after this method, |mFallbackTitle| is not reset in this callback, i.e.
-                        // relying solely on {@link #titleWasSet()}. The following assignment is
-                        // to keep |mCurrentMetadata| up to date as |mPageMetadata| may have
-                        // changed.
+                        // after this method, |mFallbackTitle| is not reset in this callback when it
+                        // holds a page title set by {@link #titleWasSet()}. However, if
+                        // |mFallbackTitle| was previously derived from |previousOrigin|, clear it
+                        // along with |mOrigin| so the stale origin is not mistaken for a page
+                        // title.
+                        maybeSetFallbackTitleFromOrigin(previousOrigin);
                         mCurrentMetadata = getMetadata();
                         mMediaSessionActions = Collections.emptySet();
 
@@ -513,11 +512,13 @@ public class MediaSessionHelper implements MediaImageCallback {
 
         cleanupMediaSessionObserver();
         if (mediaSession != null) {
+            mMediaImageManager.setMediaSession(mediaSession);
             mMediaSessionObserver = createMediaSessionObserver(mediaSession);
         }
     }
 
     private void cleanupMediaSessionObserver() {
+        mMediaImageManager.setMediaSession(null);
         if (mMediaSessionObserver == null) return;
         mMediaSessionObserver.stopObserving();
         mMediaSessionObserver = null;
@@ -694,13 +695,9 @@ public class MediaSessionHelper implements MediaImageCallback {
     public void setLargeIcon(@Nullable Bitmap icon) {
         if (isNotificationHidingOrHidden()) return;
 
-        if (icon == null) {
-            // If we do not have any favicon then make sure we show default sound icon. This
-            // icon is used by notification manager only if we do not show any icon.
-            mNotificationInfoBuilder.setDefaultNotificationLargeIcon(
-                    R.drawable.chrome_product_vd_24);
-            showNotification();
-        } else {
+        // A null icon means no favicon is available; the notification simply keeps showing
+        // no artwork.
+        if (icon != null) {
             updateFavicon(icon);
         }
     }

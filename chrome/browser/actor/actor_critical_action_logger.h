@@ -10,6 +10,7 @@
 
 #include "chrome/common/actor.mojom.h"
 #include "components/actor/core/task_id.h"
+#include "components/actor/core/task_source_info.h"
 #include "components/critical_actions/core/browser/critical_action_types.h"
 
 class Profile;
@@ -27,21 +28,30 @@ class ToolRequest;
 // agents during tool execution.
 class ActorCriticalActionLogger {
  public:
+  // Returns whether critical actions of tasks created by `source` should be
+  // logged. Only Glic tasks are supported for now.
+  static bool IsTaskSourceSupported(TaskSourceInfo::Client source);
+
+  // Returns whether critical actions of `task` should be logged. True if the
+  // source of `task` is supported and history is recorded for `task`.
+  static bool ShouldLogForTask(const ActorTask& task);
+
   // Evaluates whether the completed tool action is critical and, if so,
-  // logs it to the CriticalActionService associated with the profile.
+  // logs it to the CriticalActionService associated with the profile when
+  // history is recorded.
   static void MaybeLogAction(ActorTask& task,
                              Profile* profile,
                              const ToolRequest& action,
                              const mojom::ActionResult& result,
                              int64_t navigation_id);
 
-  // Logs a self-reported agent action to the CriticalActionService.
+  // Logs a self-reported agent action to the `CriticalActionService`, if
+  // `ShouldLogForTask()` is true for `task`.
   static void LogAgentSelfReportedAction(
       Profile* profile,
-      std::string conversation_id,
+      const ActorTask& task,
       critical_actions::ActionType action_type,
       int64_t navigation_id,
-      TaskId actor_task_id = TaskId(),
       std::string metadata = "");
 
  private:

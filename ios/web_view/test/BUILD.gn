@@ -37,9 +37,9 @@ source_set("inttests") {
   ]
 
   deps = [
+    ":run_all_inttests",
     ":test_support",
     "//base",
-    "//base/test:run_all_unittests",
     "//base/test:test_support",
     "//components/autofill/core/common",
     "//components/autofill/ios/form_util",
@@ -65,6 +65,7 @@ source_set("unittests") {
     "../internal/autofill/cwv_autofill_form_unittest.mm",
     "../internal/autofill/cwv_autofill_profile_unittest.mm",
     "../internal/autofill/cwv_autofill_suggestion_unittest.mm",
+    "../internal/autofill/cwv_autofill_util_unittest.mm",
     "../internal/autofill/cwv_credit_card_otp_verifier_unittest.mm",
     "../internal/autofill/cwv_credit_card_saver_unittest.mm",
     "../internal/autofill/cwv_credit_card_unittest.mm",
@@ -116,7 +117,9 @@ source_set("unittests") {
     "//base/test:test_support",
     "//components/affiliations/core/browser:test_support",
     "//components/autofill/core/browser:test_support",
+    "//components/autofill/ios/browser",
     "//components/autofill/ios/browser:test_support",
+    "//components/autofill/ios/form_util",
     "//components/autofill/ios/form_util:test_support",
     "//components/language_detection/core",
     "//components/password_manager/core/browser:test_support",
@@ -152,6 +155,8 @@ source_set("test_support") {
     "//ios/web_view/public/cwv_navigation_type.h",
     "//ios/web_view/public/cwv_web_view.h",
     "//ios/web_view/public/cwv_web_view_configuration.h",
+    "fake_cwv_navigation_delegate.h",
+    "fake_cwv_navigation_delegate.mm",
     "observer.h",
     "observer.mm",
     "test_with_locale_and_resources.cc",
@@ -170,10 +175,31 @@ source_set("test_support") {
   ]
 }
 
+source_set("test_suite") {
+  testonly = true
+  sources = [
+    "web_view_test_suite.cc",
+    "web_view_test_suite.h",
+  ]
+  deps = [ "//ios/testing:screen_time_util" ]
+  public_deps = [ "//base/test:test_support" ]
+}
+
+source_set("run_all_inttests") {
+  testonly = true
+  sources = [ "run_all_inttests.cc" ]
+  deps = [
+    ":test_suite",
+    "//base",
+    "//base/test:test_support",
+  ]
+}
+
 source_set("run_all_unittests") {
   testonly = true
   sources = [ "run_all_unittests.cc" ]
   deps = [
+    ":test_suite",
     "//base",
     "//base/test:test_support",
     "//mojo/core/embedder",

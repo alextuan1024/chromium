@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -18,6 +19,7 @@
 #include "components/webapps/browser/launch_queue/launch_queue_delegate.h"
 #include "content/public/browser/file_system_access_entry_factory.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
@@ -25,6 +27,7 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_directory_handle.mojom.h"
+#include "third_party/blink/public/mojom/frame/user_activation_notification_type.mojom-shared.h"
 #include "third_party/blink/public/mojom/web_launch/web_launch.mojom.h"
 #include "url/origin.h"
 
@@ -35,28 +38,30 @@ namespace {
 class EntriesBuilder {
  public:
   EntriesBuilder(content::WebContents* web_contents,
-                 const GURL& launch_url,
                  size_t expected_number_of_entries)
-      : entry_factory_(web_contents->GetPrimaryMainFrame()
-                           ->GetProcess()
+      : entry_factory_(CHECK_DEREF(web_contents->GetPrimaryMainFrame())
+                           .GetProcess()
                            ->GetStoragePartition()
                            ->GetFileSystemAccessEntryFactory()),
-        context_(blink::StorageKey::CreateFirstParty(
-                     url::Origin::Create(launch_url)),
-                 launch_url,
-                 content::GlobalRenderFrameHostId(
-                     web_contents->GetPrimaryMainFrame()
-                         ->GetProcess()
-                         ->GetDeprecatedID(),
-                     web_contents->GetPrimaryMainFrame()->GetRoutingID())) {
+        context_(web_contents->GetPrimaryMainFrame()->GetStorageKey(),
+                 web_contents->GetPrimaryMainFrame()->GetLastCommittedURL(),
+                 web_contents->GetPrimaryMainFrame()->GetGlobalId()) {
+    content::RenderFrameHost* rfh = web_contents->GetPrimaryMainFrame();
+    CHECK(!rfh->GetLastCommittedOrigin().opaque());
+    CHECK(!rfh->GetStorageKey().IsThirdPartyContext());
     entries_.reserve(expected_number_of_entries);
   }
 
   void AddFileEntry(
       const content::PathInfo& path_info,
       content::FileSystemAccessEntryFactory::AccessTrigger trigger) {
-    entries_.push_back(
-        entry_factory_->CreateFileEntryFromPath(context_, path_info, trigger));
+    // OS-initiated single-file launches (e.g. "Open with" or opening an email
+    // attachment) may stage files in directories on the FSA blocklist such as
+    // `%LOCALAPPDATA%\Temp`. Skip the read-time blocklist check for the
+    // explicitly launched file while keeping write and symlink checks enforced.
+    entries_.push_back(entry_factory_->CreateFileEntryFromPath(
+        context_, path_info, trigger,
+        content::FileSystemAccessEntryFactory::SensitiveEntryReadCheck::kSkip));
   }
 
   void AddDirectoryEntry(const content::PathInfo& path_info) {
@@ -97,7 +102,7 @@ void LaunchQueue::Enqueue(LaunchParams launch_params) {
   }
 
   SendLaunchParams(std::move(launch_params),
-                   web_contents_->GetLastCommittedURL());
+                   web_contents_->GetPrimaryMainFrame()->GetLastCommittedURL());
 }
 
 bool LaunchQueue::IsInScope(const LaunchParams& launch_params,
@@ -116,11 +121,54 @@ void LaunchQueue::FlushForTesting() const {
 
 void LaunchQueue::SendLaunchParams(LaunchParams launch_params,
                                    const GURL& current_url) {
-  // TODO(dmurph): Figure out why this is failing.
-  // https://crbug.com/2546057
-  DCHECK(delegate_->IsInScope(launch_params, current_url))
-      << current_url.spec();
+  // Verify at dispatch time that the currently committed document is still in
+  // scope of the target app (https://crbug.com/574231826). This is a runtime
+  // conditional rather than a DCHECK because a tab's committed URL can diverge
+  // from a pending launch or uncommitted navigation, and an out-of-scope
+  // document must not have file handles minted for its origin or receive
+  // `EnqueueLaunchParams`.
+  if (!delegate_->IsInScope(launch_params, current_url)) {
+    return;
+  }
   CHECK(launch_params.target_url().is_valid());
+
+  // Launch params are routed to a document by URL scope (see
+  // `LaunchQueueDelegate::IsInScope()`), but URL scope does not describe the
+  // effective origin of the document that receives them. An in-scope document
+  // can commit an opaque origin, e.g. when the app serves it with
+  // `Content-Security-Policy: sandbox` without `allow-same-origin`, or when a
+  // navigation fails and commits an error page. Such a document is
+  // cross-origin to the app and must not receive the app's launch params:
+  //  - File and directory entries are origin-bound capabilities minted for the
+  //    app's origin, and the user's one-time file-handling approval was granted
+  //    to the app, not to an opaque document.
+  //  - The target URL may carry tokens or query parameters, and when the
+  //    document was not navigated to it, delivering it leaks it across the
+  //    origin boundary.
+  //
+  // Callers that reuse an existing document in place already reject opaque
+  // documents (see `WebAppTabHelper::CanBeUsedForFocusExisting()`), but this
+  // is also reached after a launch navigation commits, and whether that commit
+  // is opaque depends on the response. So this is a runtime conditional, not a
+  // CHECK: it is reachable by web content.
+  const url::Origin& committed_origin =
+      web_contents_->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+  if (committed_origin.opaque()) {
+    return;
+  }
+
+  // The producer of LaunchParams verified that a user action caused the launch
+  // and the UA just focused this window, mirroring notificationclick window
+  // interaction. Grant transient user activation for deliveries into an
+  // existing document.
+  if (launch_params.user_initiated() &&
+      !launch_params.started_new_navigation() &&
+      base::FeatureList::IsEnabled(
+          features::kWebAppLaunchHandlerUserActivation)) {
+    web_contents_->GetPrimaryMainFrame()->NotifyUserActivation(
+        blink::mojom::UserActivationNotificationType::kWebAppLaunch);
+  }
+
   mojo::AssociatedRemote<blink::mojom::WebLaunchService> launch_service;
   web_contents_->GetPrimaryMainFrame()
       ->GetRemoteAssociatedInterfaces()
@@ -129,8 +177,8 @@ void LaunchQueue::SendLaunchParams(LaunchParams launch_params,
 
   std::vector<blink::mojom::FileSystemAccessEntryPtr> files;
 
-  if (!launch_params.paths().empty() || !launch_params.dir().empty()) {
-    EntriesBuilder entries_builder(web_contents_, launch_params.target_url(),
+  if (launch_params.HasFiles()) {
+    EntriesBuilder entries_builder(web_contents_,
                                    launch_params.paths().size() + 1);
     if (!launch_params.dir().empty()) {
       entries_builder.AddDirectoryEntry(

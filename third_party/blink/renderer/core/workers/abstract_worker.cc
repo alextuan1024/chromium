@@ -30,17 +30,17 @@
 
 #include "third_party/blink/renderer/core/workers/abstract_worker.h"
 
-#include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
+#include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
-#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
 
@@ -61,15 +61,20 @@ KURL AbstractWorker::ResolveURL(ExecutionContext* execution_context,
     return KURL();
   }
 
-  // We can safely expose the URL in the following exceptions, as these checks
-  // happen synchronously before redirection. JavaScript receives no new
-  // information.
   if (!execution_context->GetSecurityOrigin()->CanReadContent(script_url)) {
-    exception_state.ThrowSecurityError(
-        StrCat({"Script at '", script_url.ElidedString(),
-                "' cannot be accessed from origin '",
-                execution_context->GetSecurityOrigin()->ToString(), "'."}));
-    return KURL();
+    if (!RuntimeEnabledFeatures::
+            NoSynchronousThrowForCrossOriginBlockedWorkerEnabled()) {
+      UseCounter::Count(execution_context,
+                        WebFeature::kWorkerScriptURLFetchBlockedByCrossOrigin);
+      // We can safely expose the URL in the following exceptions, as these
+      // checks happen synchronously before redirection. JavaScript receives
+      // no new information.
+      exception_state.ThrowSecurityError(
+          StrCat({"Script at '", script_url.ElidedString(),
+                  "' cannot be accessed from origin '",
+                  execution_context->GetSecurityOrigin()->ToString(), "'."}));
+      return KURL();
+    }
   }
 
   ContentSecurityPolicy* csp = execution_context->GetContentSecurityPolicy();
@@ -96,21 +101,28 @@ bool AbstractWorker::CheckAllowedByCSPForNoThrow(const KURL& script_url) {
     if (!csp->AllowWorkerContextFromSource(script_url)) {
       UseCounter::Count(GetExecutionContext(),
                         WebFeature::kCSPBlockedWorkerCreation);
-      // In the spec, CSP check is part of fetch and should result in network
-      // error and trigger error event asynchronously. See
-      // https://www.w3.org/TR/CSP3/#fetch-integration.
-      // Therefore, we dispatch an error event asynchronously.
-      // This function is called during worker creation, if we dispatch an error
-      // event immediately, the worker object has not been returned to the
-      // script yet for it to have a chance to register an event handler.
-      // Therefore, post a task to fire error event later so that the script
-      // have a chance to register an event handler.
-      GetExecutionContext()
-          ->GetTaskRunner(TaskType::kInternalLoading)
-          ->PostTask(FROM_HERE, BindOnce(&AbstractWorker::DispatchErrorEvent,
-                                         WrapWeakPersistent(this)));
       return false;
     }
+  }
+  return true;
+}
+
+bool AbstractWorker::CheckCanReadScriptURLForNoThrow(const KURL& script_url) {
+  ExecutionContext* execution_context = GetExecutionContext();
+  if (RuntimeEnabledFeatures::
+          NoSynchronousThrowForCrossOriginBlockedWorkerEnabled() &&
+      !execution_context->GetSecurityOrigin()->CanReadContent(script_url)) {
+    UseCounter::Count(execution_context,
+                      WebFeature::kWorkerScriptURLFetchBlockedByCrossOrigin);
+
+    // Add console error to provide the failure information.
+    execution_context->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+        mojom::blink::ConsoleMessageSource::kSecurity,
+        mojom::blink::ConsoleMessageLevel::kError,
+        StrCat({"Script at '", script_url.ElidedString(),
+                "' cannot be accessed from origin '",
+                execution_context->GetSecurityOrigin()->ToString(), "'."})));
+    return false;
   }
   return true;
 }

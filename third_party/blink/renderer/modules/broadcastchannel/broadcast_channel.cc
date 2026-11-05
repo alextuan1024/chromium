@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/modules/broadcastchannel/broadcast_channel.h"
 
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
@@ -22,6 +23,7 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 
 namespace blink {
 
@@ -36,14 +38,14 @@ namespace {
 // thread.
 mojo::Remote<mojom::blink::BroadcastChannelProvider>&
 GetWorkerThreadSpecificProvider(WorkerGlobalScope& worker_global_scope) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      ThreadSpecific<mojo::Remote<mojom::blink::BroadcastChannelProvider>>,
-      provider, ());
-  if (!provider.IsSet()) {
+  static base::NoDestructor<
+      ThreadSpecific<mojo::Remote<mojom::blink::BroadcastChannelProvider>>>
+      provider;
+  if (!provider->IsSet()) {
     worker_global_scope.GetBrowserInterfaceBroker().GetInterface(
-        provider->BindNewPipeAndPassReceiver());
+        (*provider)->BindNewPipeAndPassReceiver());
   }
-  return *provider;
+  return **provider;
 }
 
 }  // namespace

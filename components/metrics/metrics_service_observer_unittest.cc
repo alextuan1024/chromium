@@ -444,8 +444,10 @@ TEST_F(MetricsServiceObserverTest, UmaLogType) {
     // log store". This log store will read from the same persistent storage as
     // a "normal" ongoing log queue.
     auto alternate_ongoing_log_store = std::make_unique<UnsentLogStore>(
-        std::make_unique<UnsentLogStoreMetricsImpl>(), local_state(),
-        prefs::kMetricsOngoingLogs, prefs::kMetricsOngoingLogsMetadata,
+        std::make_unique<UnsentLogStoreMetricsImpl>(
+            UnsentLogStoreMetricsImpl::LogQueue::kUser),
+        local_state(), prefs::kMetricsOngoingLogs,
+        prefs::kMetricsOngoingLogsMetadata,
         storage_limits.ongoing_log_queue_limits, client.GetUploadSigningKey(),
         // |logs_event_manager| will be set by |test_log_store| directly in
         // MetricsLogStore::SetAlternateOngoingLogStore().
@@ -646,6 +648,12 @@ TEST_F(MetricsServiceObserverTest, NotifiedCallbacks) {
     logs_observer.OnLogEvent(MetricsLogsEventManager::LogEvent::kLogStaged,
                              kLogHash, /*message=*/"");
     EXPECT_EQ(num_callback_executed, 2);
+    EXPECT_EQ(logs_observer.logs_for_testing()->size(), 1U);
+
+    // Verify that OnLogsCleared() clears stored logs and triggers the callback.
+    logs_observer.OnLogsCleared();
+    EXPECT_EQ(num_callback_executed, 3);
+    EXPECT_TRUE(logs_observer.logs_for_testing()->empty());
   }
 
   // Verify that after the callback list subscription |callback_subscription| is
@@ -656,6 +664,7 @@ TEST_F(MetricsServiceObserverTest, NotifiedCallbacks) {
                              MetricsLogsEventManager::CreateReason::kUnknown);
   logs_observer.OnLogEvent(MetricsLogsEventManager::LogEvent::kLogStaged,
                            kLogHash2, /*message=*/"");
+  logs_observer.OnLogsCleared();
   EXPECT_EQ(num_callback_executed, 0);
 }
 

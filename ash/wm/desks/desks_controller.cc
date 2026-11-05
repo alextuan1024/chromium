@@ -142,7 +142,7 @@ constexpr auto kDeskDefaultNameIds = std::to_array<int>({
 // session such that the most-recently used window is added first. If
 // The windows will animate to their positions in the overview grid.
 void AppendWindowsToOverview(
-    const std::vector<raw_ptr<aura::Window, VectorExperimental>>& windows) {
+    const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>& windows) {
   DCHECK(Shell::Get()->overview_controller()->InOverviewSession());
 
   // TODO(dandersson): See if we can remove this code and just let
@@ -199,9 +199,9 @@ void RemoveAllWindowsFromOverview() {
 // given windows will be updated, while the rest will remain unchanged. Either
 // or both window lists can be empty.
 void MaybeUpdateShelfItems(
-    const std::vector<raw_ptr<aura::Window, VectorExperimental>>&
+    const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>&
         windows_on_inactive_desk,
-    const std::vector<raw_ptr<aura::Window, VectorExperimental>>&
+    const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>&
         windows_on_active_desk) {
   if (!features::IsPerDeskShelfEnabled())
     return;
@@ -988,6 +988,9 @@ void DesksController::NotifyAllDeskWindowMovedToNewRoot(aura::Window* window) {
   for (auto& desk : desks_) {
     desk->AllDeskWindowMovedToNewRoot(window);
   }
+  if (temporary_removed_desk_) {
+    temporary_removed_desk_->desk()->AllDeskWindowMovedToNewRoot(window);
+  }
 }
 
 void DesksController::NotifyAllDesksForContentChanged() {
@@ -1429,7 +1432,7 @@ bool DesksController::OnSingleInstanceAppLaunchingFromSavedDesk(
           case chromeos::WindowStateType::kInactive:
           case chromeos::WindowStateType::kFullscreen:
           case chromeos::WindowStateType::kPinned:
-          case chromeos::WindowStateType::kLockedFullscreen:
+          case chromeos::WindowStateType::kTrustedPinned:
           case chromeos::WindowStateType::kPip:
             NOTREACHED();
         }
@@ -2074,7 +2077,7 @@ void DesksController::FinalizeDeskRemoval(RemovedDeskData* removed_desk_data) {
       Desk::ScopedContentUpdateNotificationDisabler(
           /*desks=*/{removed_desk}, /*notify_when_destroyed=*/false);
 
-  std::vector<raw_ptr<aura::Window, VectorExperimental>> app_windows =
+  std::vector<raw_ptr<aura::Window, DanglingUntriaged>> app_windows =
       removed_desk->GetAllAppWindows();
 
   // We use `closing_window_tracker` to track all app windows that should be
@@ -2164,12 +2167,19 @@ void DesksController::TrackWindowOnAllDesks(aura::Window* window) {
   for (auto& desk : desks_) {
     desk->TrackAllDeskWindow(window);
   }
+  if (temporary_removed_desk_) {
+    temporary_removed_desk_->desk()->TrackAllDeskWindow(window);
+  }
 }
 
 void DesksController::UntrackWindowFromAllDesks(aura::Window* window) {
   for (auto& desk : desks_) {
     desk->UntrackAllDeskWindow(window,
                                /*recent_root=*/window->GetRootWindow());
+  }
+  if (temporary_removed_desk_) {
+    temporary_removed_desk_->desk()->UntrackAllDeskWindow(
+        window, window->GetRootWindow());
   }
 }
 

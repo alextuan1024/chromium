@@ -206,6 +206,17 @@ EVENT_TYPE(HOST_RESOLVER_MANAGER_JOB_REQUEST_ATTACH)
 //   }
 EVENT_TYPE(HOST_RESOLVER_MANAGER_JOB_REQUEST_DETACH)
 
+// This event is logged while a HostResolverManager::Job is kept running without
+// requests after its last request was cancelled, so that the results of its
+// DnsTask can be cached.
+//
+// The END phase contains the following parameters:
+//
+//   {
+//     "result": <How the keep-alive ended, e.g. "Cached" or "CapExpired">,
+//   }
+EVENT_TYPE(HOST_RESOLVER_MANAGER_JOB_KEPT_ALIVE_FOR_CACHE)
+
 // The creation/completion of a HostResolverSystemTask to call getaddrinfo. The
 // BEGIN phase contains the following parameters:
 //
@@ -353,6 +364,13 @@ EVENT_TYPE(PAC_FILE_DECIDER_FALLING_BACK_TO_NEXT_PAC_SOURCE)
 
 // The start/end of a proxy resolve request.
 EVENT_TYPE(PROXY_RESOLUTION_SERVICE)
+
+// Links a configured proxy resolution request to its native backend lookup.
+// Parameters:
+//   {
+//     "source_dependency": <Source identifier of the system proxy lookup>
+//   }
+EVENT_TYPE(SYSTEM_PROXY_RESOLUTION)
 
 // The time while a request is waiting on InitProxyResolver to configure
 // against either WPAD or custom PAC URL. The specifics on this time
@@ -723,11 +741,13 @@ EVENT_TYPE(SSL_SERVER_HANDSHAKE)
 EVENT_TYPE(SSL_CLIENT_CERT_REQUESTED)
 
 // The SSL stack blocked on a private key operation. The following parameters
-// are attached to the event.
+// are attached to the BEGIN event:
 //   {
 //     "algorithm": <TLS signature algorithm used>,
 //     "provider": <Human-readable name of the crypto provider>,
 //   }
+// On failure, the END event contains "net_error" and, if the provider reported
+// success with a 0-byte signature, "empty_signature": true.
 EVENT_TYPE(SSL_PRIVATE_KEY_OP)
 
 // A client certificate (or none) was provided to the SSL library to be sent
@@ -735,6 +755,10 @@ EVENT_TYPE(SSL_PRIVATE_KEY_OP)
 // The following parameters are attached to the event:
 //   {
 //     "cert_count": <Number of certificates>,
+//     "provider": <Optional; crypto provider name when key had no supported
+//                  signature algorithms>,
+//     "empty_algorithm_preferences": <Optional boolean; true when the private
+//                                     key reported no supported algorithms>,
 //   }
 //   A cert_count of 0 means no client certificate was provided.
 //   A cert_count of -1 means a client certificate was provided but we don't
@@ -833,7 +857,6 @@ EVENT_TYPE(SSL_CERTIFICATES_RECEIVED)
 // The following parameters are attached to the event:
 // {
 //    "embedded_scts": Base64-encoded SignedCertificateTimestampList,
-//    "scts_from_ocsp_response": Base64-encoded SignedCertificateTimestampList,
 //    "scts_from_tls_extension": Base64-encoded SignedCertificateTimestampList,
 // }
 //
@@ -1606,6 +1629,15 @@ EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_PROXY_SERVER_RESOLVED)
 //      "broken": <boolean>
 //   }
 EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_ALT_SVC_FOUND)
+
+// Logs that a connection attempt of the QUIC job that gates the main job failed
+// after the QUIC job reported its connection as in flight, while the main job
+// was still waiting. The main job is resumed without delay if the
+// AsyncDnsQuicJob FastFail param is enabled. The event parameters are:
+//   {
+//      "net_error": <Net error code of the failed attempt>,
+//   }
+EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_QUIC_ATTEMPT_FAILED)
 
 // Logs that a WebSocket-over-HTTP/3 job was created to attempt reusing an
 // existing QUIC session with Extended CONNECT support.
@@ -2643,15 +2675,6 @@ EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_SERVICE_ENDPOINT_REQUEST_FINISHED)
 //   }
 EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_HOST_RESOLUTION_SIGNALED)
 
-// This event indicates that an AsyncDnsJob held a failed session creation
-// result, because another attempt may still create a session.
-//
-// The event parameters are:
-//   {
-//     "net_error": <Net error code the held result carries>,
-//   }
-EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_SESSION_CREATION_HELD)
-
 // This event indicates that an AsyncDnsJob fired the session creation signal
 // of its requests. ERR_IO_PENDING means the session was created and its
 // cryptographic handshake is still running.
@@ -2661,6 +2684,16 @@ EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_SESSION_CREATION_HELD)
 //     "net_error": <Net error code the signal carried>,
 //   }
 EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_SESSION_CREATION_SIGNALED)
+
+// This event indicates that an AsyncDnsJob reported an attempt failure to its
+// requests. Such failures happen after the requests received every signal they
+// were promised, while the job keeps trying other candidates.
+//
+// The event parameters are:
+//   {
+//     "net_error": <Net error code of the most recent attempt failure>,
+//   }
+EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_ATTEMPT_FAILURE_SIGNALED)
 
 // ------------------------------------------------------------------------
 // quic::QuicSession
@@ -3807,6 +3840,46 @@ EVENT_TYPE(AUTH_LIBRARY_INIT_SEC_CTX)
 //  }
 EVENT_TYPE(AUTH_CHANNEL_BINDINGS)
 
+// Logged when a Negotiate authentication token fails target service principal
+// host validation against the challenged origin and `HttpAuthPreferences`.
+//  {
+//     "requested_host": <Host of the origin that issued the challenge>,
+//     "principal_host": <Canonical host extracted from the target principal,
+//                        omitted if the principal could not be queried or
+//                        parsed>,
+//     "reason": <Specific validation failure reason string>
+//  }
+EVENT_TYPE(AUTH_TARGET_PRINCIPAL_REJECTED)
+
+// Logged when the first Negotiate authentication token targets a service
+// principal host that `AuthServerAllowlist` permits but whose delegation is
+// more restricted than the challenged origin's, so the token is regenerated
+// with the delegation allowed for that host.
+//  {
+//     "requested_host": <Host of the origin that issued the challenge>,
+//     "principal_host": <Canonical host extracted from the target principal>
+//  }
+EVENT_TYPE(AUTH_TARGET_PRINCIPAL_DELEGATION_CLAMPED)
+
+// Logged when `HttpAuthHandlerNegotiate` rejects a DNS CNAME canonical host
+// against the challenged origin and `HttpAuthPreferences`, falling back to the
+// requested host for the SPN.
+//  {
+//     "requested_host": <Host of the origin that issued the challenge>,
+//     "canonical_host": <Canonical host returned by DNS CNAME resolution>,
+//     "reason": <Specific validation failure reason string>
+//  }
+EVENT_TYPE(AUTH_CNAME_REJECTED)
+
+// Logged when `HttpAuthHandlerNegotiate` clamps credential delegation because
+// the DNS CNAME canonical host's allowlist policy permits less delegation (or
+// none, when the canonical host is rejected).
+//  {
+//     "requested_host": <Host of the origin that issued the challenge>,
+//     "canonical_host": <Canonical host returned by DNS CNAME resolution>
+//  }
+EVENT_TYPE(AUTH_CNAME_DELEGATION_CLAMPED)
+
 // ------------------------------------------------------------------------
 // Global events
 // ------------------------------------------------------------------------
@@ -4863,6 +4936,13 @@ EVENT_TYPE(COOKIE_STORE_SESSION_PERSISTENCE)
 //  }
 EVENT_TYPE(COOKIE_PERSISTENT_STORE_ORIGIN_FILTERED)
 
+// Event emitted when all partitioned cookies in a particular partition are
+// removed from the persistent store on shutdown.
+//  {
+//    "top_level_site": <Serialized top-level site of the partition>
+//  }
+EVENT_TYPE(COOKIE_PERSISTENT_STORE_PARTITION_FILTERED)
+
 // Event emitted when the persistent database load is started and completed.
 //  {
 //  }
@@ -5198,6 +5278,8 @@ EVENT_TYPE(CORS_PREFLIGHT_CACHED_RESULT)
 //
 // It contains the following parameters:
 //  {
+//    "transport_info": <the TransportInfo of the resource>,
+//    "address_space_overrides": <active IP address space overrides>,
 //    "client_address_space": <the IP address space of the request client>,
 //    "resource_address_space": <the IP address space of the remote endpoint>,
 //    "result": <the result of the check>,
@@ -5337,15 +5419,6 @@ EVENT_TYPE(OBLIVIOUS_HTTP_RESPONSE_DATA)
 // decryption.
 EVENT_TYPE(OBLIVIOUS_HTTP_RESPONSE_HEADERS)
 
-// This event is logged when First-Party Sets metadata is requested/received.
-// The following parameters are attached to the "end" event:
-//   {
-//     "cache_filter": <string>,
-//     "frame_entry": <string>,
-//     "top_frame_entry": <string>,
-//   }
-EVENT_TYPE(FIRST_PARTY_SETS_METADATA)
-
 // ------------------------------------------------------------------------
 // Device Bound Sessions
 // ------------------------------------------------------------------------
@@ -5478,15 +5551,14 @@ EVENT_TYPE(ENTERPRISE_PROXY_NETWORK_PAUSE)
 EVENT_TYPE(ENTERPRISE_PROXY_AUTH_CHALLENGE_RECEIVED)
 
 // This event is logged when EnterpriseProxyService resolves an HTTP 407
-// challenge.
+// challenge. This happens either synchronously, when the challenge is
+// classified, or later, when the credential fetch that a classification
+// started completes. Shares a source with
+// ENTERPRISE_PROXY_AUTH_CHALLENGE_RECEIVED.
 //   {
-//      "decision": <string: "token_acquired", "disguised_error",
-//                   "no_credentials_needed", "sign_in_required", "failed">,
+//      "decision": <string>,
 //      "has_credentials": <bool>,
-//      "failure_reason": <optional string: "unmanaged_user",
-//                         "unsupported_scope", "transient_error",
-//                         "auth_error", "canceled", "service_shutdown",
-//                         "no_primary_account", "invalid_credentials">,
+//      "failure_reason": <optional string>,
 //   }
 EVENT_TYPE(ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED)
 

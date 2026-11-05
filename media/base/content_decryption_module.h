@@ -30,11 +30,11 @@ struct ContentDecryptionModuleTraits;
 template <typename... T>
 class CdmPromiseTemplate;
 
-typedef CdmPromiseTemplate<std::string> NewSessionCdmPromise;
-typedef CdmPromiseTemplate<> SimpleCdmPromise;
-typedef CdmPromiseTemplate<CdmKeyInformation::KeyStatus> KeyStatusCdmPromise;
+using NewSessionCdmPromise = CdmPromiseTemplate<std::string>;
+using SimpleCdmPromise = CdmPromiseTemplate<>;
+using KeyStatusCdmPromise = CdmPromiseTemplate<CdmKeyInformation::KeyStatus>;
 
-typedef std::vector<std::unique_ptr<CdmKeyInformation>> CdmKeysInfo;
+using CdmKeysInfo = std::vector<std::unique_ptr<CdmKeyInformation>>;
 
 // Type of license required when creating/loading a session.
 // Must be consistent with the values specified in the spec:
@@ -57,6 +57,7 @@ enum class CdmMessageType {
 };
 
 // This enum is reported to UKM. Existing values should NEVER be changed.
+// LINT.IfChange(HdcpVersion)
 enum class HdcpVersion {
   kHdcpVersionNone = 0,
   kHdcpVersion1_0 = 1,
@@ -70,6 +71,7 @@ enum class HdcpVersion {
   kHdcpVersion2_3 = 9,
   kMaxValue = kHdcpVersion2_3
 };
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml:HdcpVersion)
 
 // Reasons for CDM session closed.
 enum class CdmSessionClosedReason {

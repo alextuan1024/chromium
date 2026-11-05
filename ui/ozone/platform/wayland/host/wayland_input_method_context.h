@@ -13,6 +13,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/nix/xdg_util.h"
+#include "ui/base/buildflags.h"
 #include "ui/base/ime/character_composer.h"
 #include "ui/base/ime/linux/linux_input_method_context.h"
 #include "ui/base/ime/surrounding_text_tracker.h"
@@ -23,6 +24,14 @@
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
 #include "ui/ozone/platform/wayland/host/zwp_text_input_v1.h"
 #include "ui/ozone/platform/wayland/host/zwp_text_input_v3.h"
+
+#if BUILDFLAG(USE_XKBCOMMON)
+#include "ui/events/ozone/layout/xkb/xkb_composer.h"
+#endif
+
+namespace base {
+class Environment;
+}
 
 namespace ui {
 
@@ -80,7 +89,17 @@ class WaylandInputMethodContext : public LinuxInputMethodContext,
                        const gfx::Range& preedit_cursor);
   void OnCommitString(std::string_view text);
   void OnCursorPosition(int32_t index, int32_t anchor);
-  void OnDeleteSurroundingText(int32_t index, uint32_t length);
+  // `before_length` and `after_length` are the number of UTF-8 bytes to delete
+  // before and after the current cursor or preedit, excluding the selection,
+  // as in text-input-v3.
+  void OnDeleteSurroundingTextAroundCursor(uint32_t before_length,
+                                           uint32_t after_length);
+  // `index` is a UTF-8 byte offset relative to the current cursor position, and
+  // `length` is measured in UTF-8 bytes, as in text-input-v1.
+  void OnDeleteSurroundingTextRelativeToCursor(int32_t index, uint32_t length);
+  // Sends the predicted surrounding text, which reflects the input events
+  // applied since the text input client last updated it.
+  void SendPredictedSurroundingText();
   void OnKeysym(uint32_t keysym,
                 uint32_t state,
                 uint32_t modifiers,
@@ -102,17 +121,35 @@ class WaylandInputMethodContext : public LinuxInputMethodContext,
     desktop_environment_ = desktop_environment;
   }
 
+#if BUILDFLAG(USE_XKBCOMMON)
+  XkbComposer& xkb_composer_for_testing() { return xkb_composer_; }
+#endif
+
  private:
   void CreateTextInput();
   void Focus(bool skip_virtual_keyboard_update);
   void Blur(bool skip_virtual_keyboard_update);
+  // Commits the character of |key_event| as text if it is outside the BMP.
+  // Returns whether the event was consumed.
+  bool MaybeCommitNonBmpCharacter(const KeyEvent& key_event);
+
   void UpdatePreeditText(const std::u16string& preedit_text);
+  bool WindowHasTextInputFocusForTextInputV3() const;
   bool WindowIsActiveForTextInputV1() const;
   // If |skip_virtual_keyboard_update| is true, no virtual keyboard show/hide
   // requests will be sent. This is used to prevent flickering the virtual
   // keyboard when it would be immediately reshown anyway, e.g. when changing
   // focus from one text input to another.
   void MaybeUpdateActivated(bool skip_virtual_keyboard_update);
+  // Deletes the UTF-8 byte range [`start`, `end`) of the predicted surrounding
+  // text. The range must cover the current selection.
+  void DeleteSurroundingTextInRange(size_t start, size_t end);
+  // Sends the surrounding text to the text input, trimmed to the maximum size
+  // allowed by the protocol.
+  void SendSurroundingText(const std::u16string& text,
+                           const gfx::Range& text_range,
+                           const gfx::Range& composition_range,
+                           const gfx::Range& selection_range);
 
   const raw_ptr<WaylandConnection>
       connection_;  // TODO(jani) Handle this better
@@ -135,7 +172,8 @@ class WaylandInputMethodContext : public LinuxInputMethodContext,
   // Tracks whether InputMethod in Chrome has some focus.
   bool focused_ = false;
 
-  // Tracks whether the window associated with the input method is focused.
+  // Tracks whether the window associated with the input method has keyboard
+  // focus. Only used for text-input-v1.
   bool window_focused_ = false;
 
   // Tracks whether a request to activate InputMethod is sent to wayland
@@ -148,8 +186,11 @@ class WaylandInputMethodContext : public LinuxInputMethodContext,
   // An object to compose a character from a sequence of key presses
   // including dead key etc.
   CharacterComposer character_composer_;
+#if BUILDFLAG(USE_XKBCOMMON)
+  XkbComposer xkb_composer_;
+#endif
 
-  // Stores the parameters required for OnDeleteSurroundingText.
+  // Stores the parameters required for OnCursorPosition.
   // The index moved by SetSurroundingText due to the maximum length of wayland
   // messages limitation. It is specified as 4000 bytes in the protocol spec of
   // text-input-unstable-v3.
@@ -186,6 +227,11 @@ class WaylandInputMethodContext : public LinuxInputMethodContext,
   // Keeps modifiers_map sent from the wayland compositor.
   std::vector<std::string> modifiers_map_;
 };
+
+// Returns whether Dead<acute> followed by c should compose c with cedilla,
+// as GTK does for pt_BR locales and with its "cedilla" input method. Exposed
+// for testing.
+bool ShouldComposeCedillaForDeadAcuteC(base::Environment& env);
 
 }  // namespace ui
 

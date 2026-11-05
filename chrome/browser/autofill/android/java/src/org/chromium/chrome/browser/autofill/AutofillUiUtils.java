@@ -43,6 +43,7 @@ import android.widget.PopupWindow;
 import android.widget.TextView;
 
 import androidx.annotation.DimenRes;
+import androidx.annotation.DrawableRes;
 import androidx.annotation.IntDef;
 import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
@@ -55,10 +56,12 @@ import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.Callback;
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
+import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.FieldType;
 import org.chromium.components.autofill.ImageSize;
 import org.chromium.components.autofill.ImageType;
@@ -635,7 +638,7 @@ public class AutofillUiUtils {
             }
             spannableStringBuilder.append(text);
             if (i != legalMessageLines.size() - 1) {
-                spannableStringBuilder.append("\n");
+                spannableStringBuilder.append("\n\n");
             }
         }
         return spannableStringBuilder;
@@ -689,16 +692,17 @@ public class AutofillUiUtils {
     }
 
     /**
-     * Always show the Capital One virtual card icon for virtual cards if the card
-     * icon URL is available for the card. Never show the Capital One virtual card
-     * icon for FPAN.
-     * Otherwise, show rich card art.
+     * Always show the Capital One virtual card icon for virtual cards if the card icon URL is
+     * available for the card. Never show the Capital One virtual card icon for FPAN. Otherwise,
+     * show rich card art.
      *
      * @param customIconUrl {@link GURL} for fetching the custom icon.
      * @param isVirtualCard Whether or not the card is a virtual card.
      * @return True if the custom icon should be shown. False otherwise.
      */
-    public static boolean shouldShowCustomIcon(GURL customIconUrl, boolean isVirtualCard) {
+    @Contract("null, _ -> false")
+    public static boolean shouldShowCustomIcon(
+            @Nullable GURL customIconUrl, boolean isVirtualCard) {
         if (customIconUrl == null) {
             return false;
         }
@@ -1018,5 +1022,31 @@ public class AutofillUiUtils {
             return MANAGE_SANDBOX_PAYMENT_METHODS_URL + "&id=" + instrumentId;
         }
         return MANAGE_PAYMENT_METHODS_URL + "&id=" + instrumentId;
+    }
+
+    /**
+     * Returns the Google Pay logo drawable resource ID. This helper tries to be the single place
+     * where all Google Pay logos are retrieved from on the Java side, but certain icons passed from
+     * the C++ side aren't handled by it.
+     *
+     * @return The drawable resource ID for the Google Pay logo.
+     */
+    public static @DrawableRes int getGPayLogoDrawableId() {
+        return ChromeFeatureList.isEnabled(AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
+                ? R.drawable.googlepay_with_gradient
+                : R.drawable.google_pay;
+    }
+
+    /**
+     * Returns the Google Wallet icon drawable resource ID. This helper tries to be the single place
+     * where all Google Wallet icons are retrieved from on the Java side, but certain icons passed
+     * from the C++ side aren't handled by it.
+     *
+     * @return The drawable resource ID for the Google Wallet icon.
+     */
+    public static @DrawableRes int getGoogleWalletIconDrawableId() {
+        return ChromeFeatureList.isEnabled(AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
+                ? R.drawable.googlewallet_icon_with_gradient
+                : R.drawable.google_wallet_24dp;
     }
 }

@@ -4,14 +4,16 @@
 
 #include "services/network/url_request_context_builder_mojo.h"
 
+#include <utility>
+
 #include "base/check.h"
 #include "build/build_config.h"
 #include "net/proxy_resolution/configured_proxy_resolution_service.h"
 #include "net/proxy_resolution/pac_file_fetcher_impl.h"
 #include "net/proxy_resolution/proxy_config_service.h"
+#include "net/proxy_resolution/proxy_resolution_service.h"
 #include "services/network/network_context.h"
 #include "services/network/proxy_service_mojo.h"
-#include "services/network/public/cpp/features.h"
 #if BUILDFLAG(IS_WIN)
 #include "net/proxy_resolution/win/dhcp_pac_file_fetcher_win.h"
 #include "net/proxy_resolution/win/windows_system_proxy_resolution_service.h"
@@ -19,9 +21,13 @@
 #elif BUILDFLAG(IS_MAC)
 #include "net/proxy_resolution/mac/mac_system_proxy_resolution_service.h"
 #include "services/network/mac_system_proxy_resolver_mojo.h"
+#elif BUILDFLAG(IS_LINUX)
+#include "net/proxy_resolution/linux/linux_system_proxy_resolution_service.h"
+#include "services/network/linux_system_proxy_resolver_mojo.h"
 #elif BUILDFLAG(IS_CHROMEOS)
 #include "services/network/dhcp_pac_file_fetcher_mojo.h"
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS)
 
 namespace network {
 
@@ -35,13 +41,13 @@ void URLRequestContextBuilderMojo::SetMojoProxyResolverFactory(
   mojo_proxy_resolver_factory_ = std::move(mojo_proxy_resolver_factory);
 }
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 void URLRequestContextBuilderMojo::SetMojoSystemProxyResolver(
     mojo::PendingRemote<proxy_resolver::mojom::SystemProxyResolver>
         mojo_system_proxy_resolver) {
   mojo_system_proxy_resolver_ = std::move(mojo_system_proxy_resolver);
 }
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(IS_CHROMEOS)
 void URLRequestContextBuilderMojo::SetDhcpWpadUrlClient(
@@ -64,6 +70,26 @@ URLRequestContextBuilderMojo::CreateDhcpPacFileFetcher(
 #endif
 }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+std::unique_ptr<net::ProxyResolutionService>
+URLRequestContextBuilderMojo::CreateSystemProxyResolutionService(
+    net::NetLog* net_log) {
+  if (!mojo_system_proxy_resolver_) {
+    return nullptr;
+  }
+#if BUILDFLAG(IS_WIN)
+  return net::WindowsSystemProxyResolutionService::Create(
+      std::make_unique<WindowsSystemProxyResolverMojo>(
+          std::move(mojo_system_proxy_resolver_)),
+      net_log);
+#elif BUILDFLAG(IS_MAC)
+  return net::MacSystemProxyResolutionService::Create(
+      std::make_unique<MacSystemProxyResolverMojo>(
+          std::move(mojo_system_proxy_resolver_)));
+#endif
+}
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+
 std::unique_ptr<net::ProxyResolutionService>
 URLRequestContextBuilderMojo::CreateProxyResolutionService(
     std::unique_ptr<net::ProxyConfigService> proxy_config_service,
@@ -75,29 +101,21 @@ URLRequestContextBuilderMojo::CreateProxyResolutionService(
   DCHECK(url_request_context);
   DCHECK(host_resolver);
 
-#if BUILDFLAG(IS_WIN)
-  // TODO(crbug.com/40111093): Support both ProxyResolutionService
-  // implementations so that they can be swapped around at runtime based on
-  // proxy config.
+#if BUILDFLAG(IS_LINUX)
   if (mojo_system_proxy_resolver_) {
     std::unique_ptr<net::ProxyResolutionService> proxy_resolution_service =
-        net::WindowsSystemProxyResolutionService::Create(
-            std::make_unique<WindowsSystemProxyResolverMojo>(
-                std::move(mojo_system_proxy_resolver_)),
-            net_log);
-    if (proxy_resolution_service)
-      return proxy_resolution_service;
-  }
-#elif BUILDFLAG(IS_MAC)
-  if (mojo_system_proxy_resolver_) {
-    std::unique_ptr<net::ProxyResolutionService> proxy_resolution_service =
-        net::MacSystemProxyResolutionService::Create(
-            std::make_unique<MacSystemProxyResolverMojo>(
+        net::LinuxSystemProxyResolutionService::Create(
+            std::make_unique<LinuxSystemProxyResolverMojo>(
                 std::move(mojo_system_proxy_resolver_)));
     if (proxy_resolution_service) {
       return proxy_resolution_service;
     }
   }
+#endif  // BUILDFLAG(IS_LINUX)
+
+  std::unique_ptr<net::ProxyResolutionService> system_proxy_service;
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  system_proxy_service = CreateSystemProxyResolutionService(net_log);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 
   if (mojo_proxy_resolver_factory_) {
@@ -110,12 +128,13 @@ URLRequestContextBuilderMojo::CreateProxyResolutionService(
         std::move(mojo_proxy_resolver_factory_),
         std::move(proxy_config_service), std::move(pac_file_fetcher),
         std::move(dhcp_pac_file_fetcher), host_resolver, net_log,
-        pac_quick_check_enabled, network_delegate);
+        pac_quick_check_enabled, network_delegate,
+        std::move(system_proxy_service));
   }
 
-  return net::URLRequestContextBuilder::CreateProxyResolutionService(
-      std::move(proxy_config_service), url_request_context, host_resolver,
-      network_delegate, net_log, pac_quick_check_enabled);
+  return net::ConfiguredProxyResolutionService::CreateUsingSystemProxyResolver(
+      std::move(proxy_config_service), host_resolver, net_log,
+      pac_quick_check_enabled, std::move(system_proxy_service));
 }
 
 }  // namespace network

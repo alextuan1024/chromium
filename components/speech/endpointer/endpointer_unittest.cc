@@ -2,13 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #include "components/speech/endpointer/endpointer.h"
 
 #include <stdint.h>
 
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/insecure_random_generator.h"
 #include "base/types/fixed_array.h"
 #include "components/speech/audio_buffer.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -34,7 +34,8 @@ void RunEndpointerEventsTest(FrameProcessor* processor, int sample_rate) {
   const int kNumFrames = 150;
 
   // Create a random sequence of samples.
-  srand(1);
+  base::test::InsecureRandomGenerator rng;
+  rng.ReseedForTesting(1);
   float gain = 0.0;
   int64_t time = 0;
   for (int frame_count = 0; frame_count < kNumFrames; ++frame_count) {
@@ -47,8 +48,7 @@ void RunEndpointerEventsTest(FrameProcessor* processor, int sample_rate) {
     }
     // Create random samples.
     for (int i = 0; i < frame_size; ++i) {
-      float randNum = static_cast<float>(rand() - (RAND_MAX / 2)) /
-                      static_cast<float>(RAND_MAX);
+      float randNum = static_cast<float>(rng.RandDouble() - 0.5);
       samples[i] = static_cast<int16_t>(gain * randNum);
     }
 
@@ -225,6 +225,55 @@ TEST(EndpointerTest, StartSessionPreservesEnvironmentWhenRequested) {
   EXPECT_NE(wrapper_adapted_noise_db, wrapper.NoiseLevelDb());
 
   wrapper.EndSession();
+}
+
+TEST(EndpointerTest, SpeechTimestampsAcrossUtterances) {
+  const int sample_rate = 16000;
+  const int frame_size = sample_rate / kFrameRate;
+  base::FixedArray<int16_t> samples(frame_size);
+
+  Endpointer endpointer(sample_rate);
+  endpointer.StartSession();
+  endpointer.SetEnvironmentEstimationMode();
+
+  auto process_frames = [&](int num_frames, bool speech) {
+    srand(1);
+    float gain = speech ? 2000.0f : 1.0f;
+    for (int f = 0; f < num_frames; ++f) {
+      for (int i = 0; i < frame_size; ++i) {
+        float rand_num = static_cast<float>(rand() - (RAND_MAX / 2)) /
+                         static_cast<float>(RAND_MAX);
+        samples[i] = static_cast<int16_t>(gain * rand_num);
+      }
+      scoped_refptr<AudioChunk> frame(
+          new AudioChunk(base::as_writable_byte_span(samples), 2));
+      endpointer.ProcessAudio(*frame, nullptr);
+    }
+  };
+
+  // Noise estimation + silence, then first utterance (25..74), then silence.
+  process_frames(20, false);
+  endpointer.SetUserInputMode();
+  process_frames(5, false);
+  process_frames(50, true);
+  process_frames(30, false);
+
+  const int64_t utterance1_start = endpointer.speech_start_time_us();
+  const int64_t utterance1_end = endpointer.speech_end_time_us();
+  EXPECT_GE(utterance1_start, 500000);
+  EXPECT_GT(utterance1_end, utterance1_start);
+
+  // Reset onset tracking for the next utterance and feed utterance 2 + silence.
+  endpointer.reset_speech_start_time();
+  EXPECT_EQ(-1, endpointer.speech_start_time_us());
+
+  process_frames(50, true);
+  process_frames(30, false);
+
+  EXPECT_GT(endpointer.speech_start_time_us(), utterance1_end);
+  EXPECT_GT(endpointer.speech_end_time_us(), endpointer.speech_start_time_us());
+
+  endpointer.EndSession();
 }
 
 }  // namespace speech

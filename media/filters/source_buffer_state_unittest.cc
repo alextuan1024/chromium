@@ -9,7 +9,6 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/strings/string_number_conversions.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/time/time.h"
 #include "media/base/media_util.h"
@@ -26,7 +25,6 @@ namespace media {
 using base::test::RunClosure;
 using testing::_;
 using testing::DoAll;
-using testing::InvokeWithoutArgs;
 using testing::Return;
 using testing::SaveArg;
 
@@ -129,12 +127,10 @@ class SourceBufferStateTest : public ::testing::Test {
         .WillOnce(Return(true));
     EXPECT_CALL(*mock_stream_parser_,
                 Parse(StreamParser::kMaxPendingBytesPerParse))
-        .WillOnce(
-            DoAll(InvokeWithoutArgs([&] {
-                    new_configs_result = new_config_cb_.Run(std::move(tracks));
-                  }),
-                  /* Indicate successful parse with no uninspected data. */
-                  Return(StreamParser::ParseStatus::kSuccess)));
+        .WillOnce(DoAll(
+            [&] { new_configs_result = new_config_cb_.Run(std::move(tracks)); },
+            /* Indicate successful parse with no uninspected data. */
+            Return(StreamParser::ParseStatus::kSuccess)));
 
     EXPECT_TRUE(sbs->AppendToParseBuffer(stream_data));
     EXPECT_EQ(StreamParser::ParseStatus::kSuccess,
@@ -157,8 +153,8 @@ class SourceBufferStateTest : public ::testing::Test {
 
   ChunkDemuxerStream* CreateDemuxerStream(DemuxerStream::Type type) {
     static unsigned track_id = 0;
-    demuxer_streams_.push_back(base::WrapUnique(new ChunkDemuxerStream(
-        type, MediaTrack::Id(base::NumberToString(++track_id)))));
+    demuxer_streams_.push_back(base::WrapUnique(
+        new ChunkDemuxerStream(type, MediaTrack::IntegralId(++track_id))));
     return demuxer_streams_.back().get();
   }
 
@@ -421,14 +417,13 @@ TEST_F(SourceBufferStateTest, MarkEndOfStreamAllowsNewConfigs) {
   // Verify that MarkEndOfStream triggers the end-of-stream action on
   // the stream parser, and that during this call, new configs can be
   // emitted.
-  EXPECT_CALL(*mock_stream_parser_, MarkEndOfStream())
-      .WillOnce(InvokeWithoutArgs([&] {
-        std::unique_ptr<MediaTracks> tracks(new MediaTracks());
-        AddVideoTrack(tracks, VideoCodec::kVP8, 1);
-        EXPECT_FOUND_CODEC_NAME(Video, "vp8");
-        EXPECT_CALL(*this, MediaTracksUpdatedMock(_));
-        EXPECT_TRUE(new_config_cb_.Run(std::move(tracks)));
-      }));
+  EXPECT_CALL(*mock_stream_parser_, MarkEndOfStream()).WillOnce([&] {
+    std::unique_ptr<MediaTracks> tracks(new MediaTracks());
+    AddVideoTrack(tracks, VideoCodec::kVP8, 1);
+    EXPECT_FOUND_CODEC_NAME(Video, "vp8");
+    EXPECT_CALL(*this, MediaTracksUpdatedMock(_));
+    EXPECT_TRUE(new_config_cb_.Run(std::move(tracks)));
+  });
 
   sbs->MarkEndOfStream();
 }

@@ -29,10 +29,6 @@ source_set("api") {
     "sync_file_system/sync_file_system_api_helpers.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//chrome/app:generated_resources_grit",
     "//chrome/browser:primitives",
@@ -74,6 +70,7 @@ source_set("api") {
     ]
 
     deps += [
+      "//ash/strings",
       "//chrome/browser/ash/app_list/arc",
       "//chrome/browser/ash/login/demo_mode",
       "//chrome/browser/ash/remote_apps",
@@ -81,6 +78,8 @@ source_set("api") {
       "//chromeos/components/remote_apps/mojom",
       "//components/media_gallery_util",
       "//components/storage_monitor",
+      "//content/public/common",
+      "//mojo/public/cpp/bindings",
       "//ui/events:event_constants",
     ]
 
@@ -97,7 +96,6 @@ source_set("api") {
     visibility += [
       "//chrome/browser",
       "//chrome/browser/profiles:profiles_extra_parts_impl",
-      "//chrome/browser/ui",
     ]
   } else {
     # //chrome/browser:browser and //chrome/browser/ui:* will be split into
@@ -105,7 +103,6 @@ source_set("api") {
     visibility += [
       "//chrome/browser:*",
       "//chrome/browser/profiles:profiles_extra_parts_impl",
-      "//chrome/browser/ui:*",
     ]
   }
   visibility += [ ":api_registration" ]

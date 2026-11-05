@@ -720,7 +720,7 @@ void GraphicsContext::FillRect(const gfx::Rect& rect,
 }
 
 void GraphicsContext::FillRect(const gfx::Rect& rect,
-                               const Color& color,
+                               const cc::PaintColor& color,
                                const AutoDarkMode& auto_dark_mode,
                                SkBlendMode xfer_mode) {
   FillRect(gfx::RectF(rect), color, auto_dark_mode, xfer_mode);
@@ -733,11 +733,11 @@ void GraphicsContext::FillRect(const gfx::RectF& rect,
 }
 
 void GraphicsContext::FillRect(const gfx::RectF& rect,
-                               const Color& color,
+                               const cc::PaintColor& color,
                                const AutoDarkMode& auto_dark_mode,
                                SkBlendMode xfer_mode) {
   cc::PaintFlags flags = ImmutableState()->FillFlags();
-  flags.setColor(color.toSkColor4f());
+  flags.setPaintColor(color);
   flags.setBlendMode(xfer_mode);
 
   DrawRect(gfx::RectFToSkRect(rect), flags, auto_dark_mode);
@@ -746,7 +746,7 @@ void GraphicsContext::FillRect(const gfx::RectF& rect,
 void GraphicsContext::FillContouredRect(const ContouredRect& crect,
                                         const Color& color,
                                         const AutoDarkMode& auto_dark_mode) {
-  if (crect.HasRoundCurvature()) {
+  if (crect.CanRenderAsRoundedRect()) {
     FillRoundedRect(crect.AsRoundedRect(), color, auto_dark_mode);
     return;
   }
@@ -765,7 +765,7 @@ void GraphicsContext::FillContouredRect(const ContouredRect& crect,
 }
 
 void GraphicsContext::FillRoundedRect(const FloatRoundedRect& rrect,
-                                      const Color& color,
+                                      const cc::PaintColor& color,
                                       const AutoDarkMode& auto_dark_mode) {
   if (!rrect.IsRounded() || !rrect.IsRenderable()) {
     FillRect(rrect.Rect(), color, auto_dark_mode);
@@ -773,14 +773,13 @@ void GraphicsContext::FillRoundedRect(const FloatRoundedRect& rrect,
   }
 
   const cc::PaintFlags& fill_flags = ImmutableState()->FillFlags();
-  const SkColor4f sk_color = color.toSkColor4f();
-  if (sk_color == fill_flags.getColor4f()) {
+  if (color == fill_flags.getPaintColor()) {
     DrawRRect(SkRRect(rrect), fill_flags, auto_dark_mode);
     return;
   }
 
   cc::PaintFlags flags = fill_flags;
-  flags.setColor(sk_color);
+  flags.setPaintColor(color);
 
   DrawRRect(SkRRect(rrect), flags, auto_dark_mode);
 }
@@ -871,7 +870,7 @@ void GraphicsContext::FillRectWithContouredHole(
   cc::PaintFlags flags(ImmutableState()->FillFlags());
   flags.setColor(color.toSkColor4f());
   const DarkModeFlags dark_mode_flags(this, auto_dark_mode, flags);
-  if (contoured_hole_rect.HasRoundCurvature()) {
+  if (contoured_hole_rect.CanRenderAsRoundedRect()) {
     canvas_->drawDRRect(SkRRect::MakeRect(gfx::RectFToSkRect(rect)),
                         SkRRect(contoured_hole_rect.AsRoundedRect()),
                         dark_mode_flags);
@@ -928,7 +927,7 @@ void GraphicsContext::ClipContouredRect(const ContouredRect& contoured_rect,
     return;
   }
 
-  if (contoured_rect.HasRoundCurvature()) {
+  if (contoured_rect.CanRenderAsRoundedRect()) {
     ClipRRect(SkRRect(contoured_rect.AsRoundedRect()), should_antialias,
               clip_op);
     return;

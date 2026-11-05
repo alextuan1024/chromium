@@ -556,7 +556,7 @@ class GPU_GLES2_EXPORT Texture final : public TextureBase {
   std::vector<FaceInfo> face_infos_;
 
   // The texture refs that point to this Texture.
-  typedef base::flat_set<raw_ptr<TextureRef, CtnExperimental>> RefSet;
+  typedef base::flat_set<raw_ptr<TextureRef>> RefSet;
   RefSet refs_;
   bool has_lightweight_ref_ = false;
 
@@ -707,7 +707,6 @@ struct DecoderTextureState {
 
   bool force_cube_map_positive_x_allocation;
   bool force_cube_complete;
-  bool force_int_or_srgb_cube_texture_complete;
   bool unpack_alignment_workaround_with_unpack_buffer;
   bool unpack_overlapping_rows_separately_unpack_buffer;
   bool split_level_0_pbo_full_sub_image_2d;
@@ -1130,17 +1129,6 @@ class GPU_GLES2_EXPORT TextureManager
   static GLenum AdjustTexStorageFormat(const gles2::FeatureInfo* feature_info,
                                        GLenum format);
 
-  void WorkaroundCopyTexImageCubeMap(DecoderTextureState* texture_state,
-                                     ContextState* state,
-                                     ErrorState* error_state,
-                                     DecoderFramebufferState* framebuffer_state,
-                                     TextureRef* texture_ref,
-                                     const char* function_name,
-                                     const DoTexImageArguments& args) {
-    DoCubeMapWorkaround(texture_state, state, error_state, framebuffer_state,
-                        texture_ref, function_name, args);
-  }
-
  private:
   friend class Texture;
   friend class TextureRef;
@@ -1217,8 +1205,7 @@ class GPU_GLES2_EXPORT TextureManager
 
   scoped_refptr<FeatureInfo> feature_info_;
 
-  std::vector<raw_ptr<FramebufferManager, VectorExperimental>>
-      framebuffer_managers_;
+  std::vector<raw_ptr<FramebufferManager>> framebuffer_managers_;
 
   // Info for each texture in the system.
   typedef std::unordered_map<GLuint, scoped_refptr<TextureRef>> TextureMap;
@@ -1252,8 +1239,7 @@ class GPU_GLES2_EXPORT TextureManager
   // The default textures for each target (texture name = 0)
   std::array<scoped_refptr<TextureRef>, kNumDefaultTextures> default_textures_;
 
-  std::vector<raw_ptr<DestructionObserver, VectorExperimental>>
-      destruction_observers_;
+  std::vector<raw_ptr<DestructionObserver>> destruction_observers_;
 
   uint32_t current_service_id_generation_;
 

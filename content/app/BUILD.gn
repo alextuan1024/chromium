@@ -7,7 +7,6 @@ import("//build/config/chrome_build.gni")
 import("//third_party/tflite/features.gni")
 
 extra_configs = [
-  "//build/config/compiler:wexit_time_destructors",
   "//content:content_implementation",
   "//v8:external_startup_data",
 ]
@@ -20,7 +19,6 @@ content_app_deps = [
   "//content/public/common:common_sources",
   "//crypto",
   "//mojo/core/embedder",
-  "//mojo/core/embedder:features",
   "//mojo/public/cpp/platform",
   "//services/tracing/public/cpp",
   "//ui/base",
@@ -103,9 +101,13 @@ source_set("app") {
   ]
 
   configs += extra_configs
-  deps = content_app_deps + [ "//ipc" ]
+  deps = content_app_deps
 
   public_deps = [ ":content_main_runner_app" ]
+
+  if (is_posix && !is_android) {
+    deps += [ ":locale" ]
+  }
 
   # Only the public target should depend on this. All other targets (even
   # internal content ones) should depend on the public one.
@@ -140,6 +142,19 @@ source_set("app") {
     ]
 
     frameworks = [ "Foundation.framework" ]
+  }
+}
+
+if (is_posix && !is_android) {
+  source_set("locale") {
+    sources = [
+      "locale_posix.cc",
+      "locale_posix.h",
+    ]
+    visibility = [
+      ":app",
+      "//content/test:*",
+    ]
   }
 }
 

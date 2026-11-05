@@ -18,7 +18,7 @@ namespace ash {
 // Web browser related URLs should be placed in
 // chrome/common/webui_url_constants.h even if it is only for ChromeOS.
 // NOTE: If you add a URL/host please check if it should be added to
-// chrome::IsSystemWebUIHost() in chrome/common/webui_url_constants.h
+// IsSystemWebUIHost() in ash/constants/webui_url_constants.cc
 //
 // Please sort in lexicographical order.
 inline constexpr char kChromeUIAccountManagerErrorHost[] =
@@ -44,11 +44,6 @@ inline constexpr char kChromeUIBluetoothPairingHost[] = "bluetooth-pairing";
 inline constexpr char kChromeUIBluetoothPairingURL[] =
     "chrome://bluetooth-pairing/";
 inline constexpr char kChromeUIBorealisCreditsHost[] = "borealis-credits";
-
-// The host and URL for the Borealis MOTD Dialog
-inline constexpr char kChromeUIBorealisMOTDHost[] = "borealis-motd";
-inline constexpr char kChromeUIBorealisMOTDURL[] = "chrome://borealis-motd";
-
 inline constexpr char kChromeUIChromeOSAssetHost[] = "chromeos-asset";
 inline constexpr char kChromeUICloudUploadHost[] = "cloud-upload";
 inline constexpr char kChromeUICloudUploadURL[] = "chrome://cloud-upload/";
@@ -113,9 +108,6 @@ inline constexpr char kChromeUILockScreenNetworkURL[] = "chrome://lock-network";
 inline constexpr char kChromeUILockScreenStartReauthHost[] = "lock-reauth";
 inline constexpr char kChromeUILockScreenStartReauthURL[] =
     "chrome://lock-reauth";
-inline constexpr char kChromeUIManageMirrorSyncHost[] = "manage-mirrorsync";
-inline constexpr char kChromeUIManageMirrorSyncURL[] =
-    "chrome://manage-mirrorsync";
 inline constexpr char kChromeUIMobileSetupHost[] = "mobilesetup";
 inline constexpr char kChromeUIMobileSetupURL[] = "chrome://mobilesetup/";
 inline constexpr char kChromeUIMultiDeviceInternalsHost[] =
@@ -123,6 +115,8 @@ inline constexpr char kChromeUIMultiDeviceInternalsHost[] =
 inline constexpr char kChromeUIMultiDeviceSetupHost[] = "multidevice-setup";
 inline constexpr char kChromeUIMultiDeviceSetupURL[] =
     "chrome://multidevice-setup";
+inline constexpr char kChromeUINearbyShareHost[] = "nearby";
+inline constexpr char kChromeUINearbyShareURL[] = "chrome://nearby/";
 inline constexpr char kChromeUINetworkHost[] = "network";
 inline constexpr char kChromeUINotificationTesterHost[] = "notification-tester";
 inline constexpr char kChromeUIOfficeFallbackHost[] = "office-fallback";
@@ -186,6 +180,11 @@ inline constexpr char kChromeUIUrgentPasswordExpiryNotificationHost[] =
 inline constexpr char kChromeUIUrgentPasswordExpiryNotificationURL[] =
     "chrome://urgent-password-expiry-notification/";
 inline constexpr char kChromeUIUserImageHost[] = "userimage";
+
+// Returns true if this web UI is part of the "system UI". Generally this is
+// UI that opens in a window (not a browser tab) and that on other operating
+// systems would be considered part of the OS or window manager.
+COMPONENT_EXPORT(ASH_CONSTANTS) bool IsSystemWebUIHost(std::string_view host);
 
 }  // namespace ash
 

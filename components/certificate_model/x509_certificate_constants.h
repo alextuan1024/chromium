@@ -18,6 +18,9 @@ inline constexpr uint8_t kTypeDnQualifierOid[] = {0x55, 0x04, 0x2e};
 inline constexpr uint8_t kTypeBusinessCategory[] = {0x55, 0x04, 0x0f};
 // 2.5.4.17 NAME 'postalCode'
 inline constexpr uint8_t kTypePostalCode[] = {0x55, 0x04, 0x11};
+// id-rdna-trustAnchorID (OID: 1.3.6.1.5.5.7.25.3), from
+// draft-ietf-plants-merkle-tree-certs.
+inline constexpr uint8_t kTypeTrustAnchorIdOid[] = {OBJ_ENC_rdna_trustAnchorID};
 
 // TODO(mattm): we can probably just remove these RFC 1274 OIDs.
 //
@@ -133,8 +136,7 @@ inline constexpr uint8_t kOidAlgMldsa65[] = {OBJ_ENC_ML_DSA_65};
 inline constexpr uint8_t kOidAlgMldsa87[] = {OBJ_ENC_ML_DSA_87};
 
 // Merkle Tree Certificates, draft-ietf-plants-merkle-tree-certs:
-// TODO(crbug.com/457784778): Add final OID when draft is finalized.
-inline constexpr uint8_t kOidAlgMtcProofDraft[] = {OBJ_ENC_alg_mtcProof_draft};
+inline constexpr uint8_t kOidAlgMtcProof[] = {OBJ_ENC_alg_mtcProof};
 
 // The certificate viewer may be used to view client certificates, so use the
 // relaxed parsing mode. See crbug.com/41347446 and crbug.com/41357486.

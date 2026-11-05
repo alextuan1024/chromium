@@ -5,7 +5,9 @@
 #include "components/services/storage/dom_storage/storage_area_impl.h"
 
 #include <memory>
+#include <vector>
 
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
@@ -83,21 +85,6 @@ StorageAreaImpl::StorageAreaImpl(
 }
 
 StorageAreaImpl::~StorageAreaImpl() {
-  // For local storage, the map ID is unknown where `database_` must use the
-  // area's storage key to look up the map ID.
-  bool is_session_storage = map_locator_->map_id().has_value();
-
-  // Record data loss, which happens when this storage area destructs before
-  // persisting changes to `database_`.
-  //
-  // TODO(crbug.com/503422295): Monitor this histogram and if dropping changes
-  // is common then handle that here.
-  std::string histogram_name =
-      absl::StrFormat("Storage.%s.ShutdownDroppedChanges",
-                      is_session_storage ? "SessionStorage" : "LocalStorage");
-  base::UmaHistogramBoolean(histogram_name,
-                            has_pending_load_read_write_tasks());
-
   CommitChanges();
   if (database_) {
     database_->RemoveCommitter(this);
@@ -521,13 +508,10 @@ void StorageAreaImpl::GetAll(
     return;
   }
 
-  std::vector<blink::mojom::KeyValuePtr> all;
-  for (const auto& it : keys_values_map_) {
-    auto kv = blink::mojom::KeyValue::New();
-    kv->key = it.first;
-    kv->value = it.second;
-    all.push_back(std::move(kv));
-  }
+  std::vector<blink::mojom::KeyValuePtr> all =
+      base::ToVector(keys_values_map_, [](const auto& it) {
+        return blink::mojom::KeyValue::New(it.first, it.second);
+      });
   std::move(callback).Run(std::move(all));
   if (new_observer)
     AddObserver(std::move(new_observer));
@@ -722,6 +706,10 @@ void StorageAreaImpl::CommitChanges() {
   }
 
   database_->InitiateCommit();
+}
+
+bool StorageAreaImpl::HasPendingCommit() const {
+  return commit_batch_ != nullptr;
 }
 
 std::optional<DomStorageDatabase::MapBatchUpdate>

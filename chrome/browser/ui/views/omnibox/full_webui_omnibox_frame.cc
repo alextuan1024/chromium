@@ -8,28 +8,30 @@
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/view.h"
 
-#if defined(USE_AURA)
-#include "ui/aura/window.h"
-#include "ui/aura/window_targeter.h"
-#else
+#if !defined(USE_AURA)
+#include "ui/compositor/layer.h"
 #include "ui/views/view_targeter.h"
 #include "ui/views/view_targeter_delegate.h"
-#endif  // USE_AURA
+#include "ui/views/widget/widget.h"
+#endif  // !USE_AURA
 
 namespace {
 
 #if !defined(USE_AURA)
 class ResultsViewTargeterDelegate : public views::ViewTargeterDelegate {
  public:
-  explicit ResultsViewTargeterDelegate(RoundedOmniboxResultsFrame* frame)
+  explicit ResultsViewTargeterDelegate(FullWebUIOmniboxFrame* frame)
       : frame_(frame) {}
 
   ResultsViewTargeterDelegate(const ResultsViewTargeterDelegate&) = delete;
@@ -39,12 +41,29 @@ class ResultsViewTargeterDelegate : public views::ViewTargeterDelegate {
 
   views::View* TargetForRect(views::View* root,
                              const gfx::Rect& rect) override {
+    // On macOS (non-Aura), there is no `WindowTargeter` to exclude the shadow
+    // margin or the layer's clip rect at the window level. Because the widget
+    // bounds include the shadow margin, and in WebUI shadow mode the WebView
+    // spans the entire widget, clicks in the transparent shadow margin or the
+    // region clipped for an occluding view (e.g. `OrganizerTrayView` or the
+    // expanded vertical tab strip) would be swallowed by the WebView. Redirect
+    // rects falling outside the unclipped interior to `root` (this frame),
+    // which forwards them to the browser window beneath so underlying controls
+    // (e.g. Organizer Tray, vertical tab strip, bookmarks bar, or web content)
+    // receive the events.
+    gfx::Rect interior = root->GetLocalBounds();
+    interior.Inset(frame_->shadow_margin());
+    if (const views::Widget* widget = root->GetWidget()) {
+      if (const ui::Layer* layer = widget->GetLayer();
+          layer && !layer->clip_rect().IsEmpty()) {
+        interior.Intersect(layer->clip_rect());
+      }
+    }
+    if (!interior.Intersects(rect)) {
+      return root;
+    }
     if (frame_->forward_mouse_events()) {
-      int top_inset =
-          frame_->GetInsets().top() +
-          RoundedOmniboxResultsFrame::GetLocationBarAlignmentInsets().top() +
-          GetLayoutConstant(LayoutConstant::kLocationBarHeight);
-      if (rect.y() < top_inset) {
+      if (rect.y() < frame_->GetEventForwardingInsets().top()) {
         return root;
       }
     }
@@ -52,7 +71,7 @@ class ResultsViewTargeterDelegate : public views::ViewTargeterDelegate {
   }
 
  private:
-  raw_ptr<RoundedOmniboxResultsFrame> frame_;
+  raw_ptr<FullWebUIOmniboxFrame> frame_;
 };
 #endif  // !USE_AURA
 
@@ -68,7 +87,7 @@ FullWebUIOmniboxFrame::~FullWebUIOmniboxFrame() = default;
 
 void FullWebUIOmniboxFrame::SetElevation(int elevation) {
   if (elevation == 0) {
-    SetBorder(views::CreateEmptyBorder(GetShadowInsets()));
+    SetBorder(views::CreateEmptyBorder(shadow_margin_));
 #if defined(USE_AURA)
     UpdateWindowTargeter();
 #endif  // USE_AURA
@@ -76,13 +95,23 @@ void FullWebUIOmniboxFrame::SetElevation(int elevation) {
   }
 
   const int corner_radius = views::LayoutProvider::Get()->GetCornerRadiusMetric(
-      views::ShapeContextTokens::kOmniboxExpandedRadius);
+      ChromeShapeContextTokens::kOmniboxExpandedRadius);
   auto border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::Arrow::NONE,
       views::BubbleBorder::Shadow::STANDARD_SHADOW);
   border->set_rounded_corners(gfx::RoundedCornersF(corner_radius));
   border->set_md_shadow_elevation(elevation);
   SetBorder(std::move(border));
+#if defined(USE_AURA)
+  UpdateWindowTargeter();
+#endif  // USE_AURA
+}
+
+void FullWebUIOmniboxFrame::SetShadowMargin(const gfx::Insets& shadow_margin) {
+  if (shadow_margin_ == shadow_margin) {
+    return;
+  }
+  shadow_margin_ = shadow_margin;
 #if defined(USE_AURA)
   UpdateWindowTargeter();
 #endif  // USE_AURA
@@ -120,28 +149,28 @@ void FullWebUIOmniboxFrame::OnMouseEvent(ui::MouseEvent* event) {
 
 #endif  // !USE_AURA
 
-gfx::Insets FullWebUIOmniboxFrame::GetEventForwardingInsets() {
-  int top_inset = GetInsets().top() + GetLocationBarAlignmentInsets().top() +
+// static
+gfx::Insets FullWebUIOmniboxFrame::GetLocationBarAlignmentInsets() {
+#if BUILDFLAG(IS_MAC)
+  if (!ui::TouchUiController::Get()->touch_ui()) {
+    return gfx::Insets::TLBR(5, 5, 4, 5);
+  }
+#endif
+  return RoundedOmniboxResultsFrame::GetLocationBarAlignmentInsets();
+}
+
+gfx::Insets FullWebUIOmniboxFrame::GetEventForwardingInsets() const {
+  // The widget is always expanded by the shadow margin, whether the shadow is
+  // painted by this frame's border or by the page.
+  int top_inset = shadow_margin_.top() + GetLocationBarAlignmentInsets().top() +
                   GetLayoutConstant(LayoutConstant::kLocationBarHeight);
-  return gfx::Insets::TLBR(top_inset, GetInsets().left(), GetInsets().bottom(),
-                           GetInsets().right());
+  return gfx::Insets::TLBR(top_inset, shadow_margin_.left(),
+                           shadow_margin_.bottom(), shadow_margin_.right());
 }
 
 #if defined(USE_AURA)
-void FullWebUIOmniboxFrame::UpdateWindowTargeter() {
-  if (!GetWidget() || !GetWidget()->GetNativeWindow()) {
-    return;
-  }
-  auto* window = GetWidget()->GetNativeWindow();
-  const gfx::Insets insets =
-      forward_mouse_events() ? GetEventForwardingInsets() : GetInsets();
-  if (window->targeter()) {
-    window->targeter()->SetInsets(insets);
-  } else {
-    auto targeter = std::make_unique<aura::WindowTargeter>();
-    targeter->SetInsets(insets);
-    window->SetEventTargeter(std::move(targeter));
-  }
+gfx::Insets FullWebUIOmniboxFrame::GetWindowTargeterInsets() const {
+  return forward_mouse_events() ? GetEventForwardingInsets() : shadow_margin_;
 }
 #endif  // USE_AURA
 

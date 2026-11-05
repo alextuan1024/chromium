@@ -51,6 +51,7 @@ class TextInputControllerBindings
       v8::Isolate* isolate) override;
 
   void InsertText(const std::string& text);
+  void ReplaceText(int start, int end, const std::string& text);
   void UnmarkText();
   void UnmarkAndUnselectText();
   void DoCommand(const std::string& text);
@@ -107,34 +108,43 @@ gin::ObjectTemplateBuilder
 TextInputControllerBindings::GetObjectTemplateBuilder(v8::Isolate* isolate) {
   return gin::Wrappable<TextInputControllerBindings>::GetObjectTemplateBuilder(
              isolate)
-      .SetMethod("insertText", &TextInputControllerBindings::InsertText)
-      .SetMethod("unmarkText", &TextInputControllerBindings::UnmarkText)
-      .SetMethod("unmarkAndUnselectText",
-                 &TextInputControllerBindings::UnmarkAndUnselectText)
-      .SetMethod("doCommand", &TextInputControllerBindings::DoCommand)
-      .SetMethod("extendSelectionAndDelete",
-                 &TextInputControllerBindings::ExtendSelectionAndDelete)
-      .SetMethod("deleteSurroundingText",
-                 &TextInputControllerBindings::DeleteSurroundingText)
-      .SetMethod("setMarkedText", &TextInputControllerBindings::SetMarkedText)
-      .SetMethod("setMarkedTextFromExistingText",
-                 &TextInputControllerBindings::SetMarkedTextFromExistingText)
-      .SetMethod("hasMarkedText", &TextInputControllerBindings::HasMarkedText)
-      .SetMethod("markedRange", &TextInputControllerBindings::MarkedRange)
-      .SetMethod("selectedRange", &TextInputControllerBindings::SelectedRange)
-      .SetMethod("firstRectForCharacterRange",
-                 &TextInputControllerBindings::FirstRectForCharacterRange)
-      .SetMethod("setComposition", &TextInputControllerBindings::SetComposition)
-      .SetMethod(
-          "setCompositionWithReplacementRange",
-          &TextInputControllerBindings::SetCompositionWithReplacementRange)
-      .SetMethod("forceTextInputStateUpdate",
-                 &TextInputControllerBindings::ForceTextInputStateUpdate);
+      .SetMethod<&TextInputControllerBindings::InsertText>("insertText")
+      .SetMethod<&TextInputControllerBindings::ReplaceText>("replaceText")
+      .SetMethod<&TextInputControllerBindings::UnmarkText>("unmarkText")
+      .SetMethod<&TextInputControllerBindings::UnmarkAndUnselectText>(
+          "unmarkAndUnselectText")
+      .SetMethod<&TextInputControllerBindings::DoCommand>("doCommand")
+      .SetMethod<&TextInputControllerBindings::ExtendSelectionAndDelete>(
+          "extendSelectionAndDelete")
+      .SetMethod<&TextInputControllerBindings::DeleteSurroundingText>(
+          "deleteSurroundingText")
+      .SetMethod<&TextInputControllerBindings::SetMarkedText>("setMarkedText")
+      .SetMethod<&TextInputControllerBindings::SetMarkedTextFromExistingText>(
+          "setMarkedTextFromExistingText")
+      .SetMethod<&TextInputControllerBindings::HasMarkedText>("hasMarkedText")
+      .SetMethod<&TextInputControllerBindings::MarkedRange>("markedRange")
+      .SetMethod<&TextInputControllerBindings::SelectedRange>("selectedRange")
+      .SetMethod<&TextInputControllerBindings::FirstRectForCharacterRange>(
+          "firstRectForCharacterRange")
+      .SetMethod<&TextInputControllerBindings::SetComposition>("setComposition")
+      .SetMethod<
+          &TextInputControllerBindings::SetCompositionWithReplacementRange>(
+          "setCompositionWithReplacementRange")
+      .SetMethod<&TextInputControllerBindings::ForceTextInputStateUpdate>(
+          "forceTextInputStateUpdate");
 }
 
 void TextInputControllerBindings::InsertText(const std::string& text) {
   if (controller_)
     controller_->InsertText(text);
+}
+
+void TextInputControllerBindings::ReplaceText(int start,
+                                              int end,
+                                              const std::string& text) {
+  if (controller_) {
+    controller_->ReplaceText(start, end, text);
+  }
 }
 
 void TextInputControllerBindings::UnmarkText() {
@@ -227,6 +237,16 @@ void TextInputController::InsertText(const std::string& text) {
     controller->CommitText(blink::WebString::FromUtf8(text),
                            std::vector<ui::ImeTextSpan>(), blink::WebRange(),
                            0);
+  }
+}
+
+void TextInputController::ReplaceText(int start,
+                                      int end,
+                                      const std::string& text) {
+  if (auto* controller = GetInputMethodController()) {
+    controller->CommitText(blink::WebString::FromUtf8(text),
+                           std::vector<ui::ImeTextSpan>(),
+                           blink::WebRange(start, end - start), 0);
   }
 }
 

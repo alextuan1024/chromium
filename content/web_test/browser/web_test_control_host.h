@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <queue>
 #include <set>
@@ -31,6 +32,7 @@
 #include "content/public/browser/render_process_host_observer.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/test/file_system_chooser_test_helpers.h"
 #include "content/web_test/browser/leak_detector.h"
 #include "content/web_test/browser/web_test_tracing_controller.h"
 #include "content/web_test/common/web_test.mojom.h"
@@ -39,6 +41,7 @@
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/lcp_critical_path_predictor/lcp_critical_path_predictor.mojom.h"
+#include "third_party/blink/public/test/mojom/select_file_dialog/select_file_dialog_automation.test-mojom.h"
 #include "ui/gfx/geometry/size.h"
 
 class SkBitmap;
@@ -112,11 +115,13 @@ class WebTestResultPrinter {
   bool encode_binary_data_ = false;
 };
 
-class WebTestControlHost : public WebContentsObserver,
-                           public RenderProcessHostObserver,
-                           public GpuDataManagerObserver,
-                           public mojom::WebTestControlHost,
-                           public mojom::NonAssociatedWebTestControlHost {
+class WebTestControlHost
+    : public WebContentsObserver,
+      public RenderProcessHostObserver,
+      public GpuDataManagerObserver,
+      public mojom::WebTestControlHost,
+      public mojom::NonAssociatedWebTestControlHost,
+      public blink::test::mojom::SelectFileDialogAutomation {
  public:
   static WebTestControlHost* Get();
 
@@ -159,6 +164,15 @@ class WebTestControlHost : public WebContentsObserver,
   void BindNonAssociatedWebTestControlHost(
       mojo::PendingReceiver<mojom::NonAssociatedWebTestControlHost> receiver);
 
+  void BindSelectFileDialogAutomation(
+      mojo::PendingReceiver<blink::test::mojom::SelectFileDialogAutomation>
+          receiver);
+
+  // blink::test::mojom::SelectFileDialogAutomation:
+  void SetSelectFileDialogResult(
+      const std::optional<std::vector<base::FilePath>>& paths,
+      SetSelectFileDialogResultCallback callback) override;
+
   const WebTestRuntimeFlags& web_test_runtime_flags() const {
     return web_test_runtime_flags_;
   }
@@ -177,7 +191,7 @@ class WebTestControlHost : public WebContentsObserver,
     raw_ptr<RenderFrameHost, AcrossTasksDanglingUntriaged> render_frame_host =
         nullptr;
     GlobalRenderFrameHostId render_frame_host_id;
-    std::vector<raw_ptr<Node, VectorExperimental>> children;
+    std::vector<raw_ptr<Node, DanglingUntriaged>> children;
   };
 
   class WebTestWindowObserver;
@@ -407,11 +421,11 @@ class WebTestControlHost : public WebContentsObserver,
   base::ScopedMultiSourceObservation<RenderProcessHost,
                                      RenderProcessHostObserver>
       render_process_host_observations_{this};
-  std::set<raw_ptr<RenderProcessHost, SetExperimental>>
+  std::set<raw_ptr<RenderProcessHost, DanglingUntriaged>>
       all_observed_render_process_hosts_;
-  std::set<raw_ptr<RenderProcessHost, SetExperimental>>
+  std::set<raw_ptr<RenderProcessHost, DanglingUntriaged>>
       main_window_render_process_hosts_;
-  std::set<raw_ptr<RenderViewHost, SetExperimental>>
+  std::set<raw_ptr<RenderViewHost, DanglingUntriaged>>
       main_window_render_view_hosts_;
 
   // Changes reported by WebTestRuntimeFlagsChanged() that have accumulated
@@ -445,7 +459,7 @@ class WebTestControlHost : public WebContentsObserver,
   std::map<FrameTreeNodeId, std::string> frame_to_layout_dump_map_;
 
   std::vector<std::unique_ptr<Node>> composite_all_frames_node_storage_;
-  std::queue<raw_ptr<Node, CtnExperimental>> composite_all_frames_node_queue_;
+  std::queue<raw_ptr<Node, DanglingUntriaged>> composite_all_frames_node_queue_;
 
   // Map from one frame to one mojo pipe.
   std::map<GlobalRenderFrameHostId,
@@ -463,7 +477,12 @@ class WebTestControlHost : public WebContentsObserver,
   mojo::ReceiverSet<mojom::NonAssociatedWebTestControlHost>
       non_associated_receiver_bindings_;
 
+  mojo::ReceiverSet<blink::test::mojom::SelectFileDialogAutomation>
+      select_file_dialog_automation_receivers_;
+
   base::ScopedTempDir writable_directory_for_tests_;
+
+  std::optional<ScopedSelectFileDialogFactory> fake_file_dialog_factory_;
 
   std::optional<WebTestTracingController> tracing_controller_;
 

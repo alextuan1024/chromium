@@ -10,16 +10,17 @@
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/language_tag.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/android/resource_mapper.h"
 #include "chrome/browser/autofill/android/autofill_ai_save_update_entity_prompt_controller.h"
 #include "chrome/browser/autofill/ui/ui_util.h"
 #include "chrome/browser/ui/android/autofill/autofill_ai_save_update_entity_prompt_view_android.h"
+#include "chrome/browser/ui/android/autofill/autofill_dialog_controller_impl.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_controller.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_model.h"
 #include "chrome/browser/ui/android/autofill/save_update_address_profile_prompt_view_android.h"
 #include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_string_utils.h"
-#include "chrome/browser/ui/autofill/autofill_dialog_controller_impl.h"
-#include "chrome/browser/ui/autofill/autofill_message_controller.h"
-#include "chrome/browser/ui/autofill/autofill_message_model.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/ui/autofill_resource_util.h"
@@ -86,11 +87,11 @@ AutofillAiSaveUpdateEntityFlowManager::AutofillAiSaveUpdateEntityFlowManager(
     content::WebContents* web_contents,
     AutofillMessageController* autofill_message_controller,
     AutofillDialogController* autofill_dialog_controller,
-    std::string app_locale)
+    const base::i18n::LanguageTag& app_locale)
     : web_contents_(web_contents),
       autofill_message_controller_(CHECK_DEREF(autofill_message_controller)),
       autofill_dialog_controller_(CHECK_DEREF(autofill_dialog_controller)),
-      app_locale_(std::move(app_locale)) {}
+      app_locale_(app_locale) {}
 
 AutofillAiSaveUpdateEntityFlowManager::
     ~AutofillAiSaveUpdateEntityFlowManager() = default;
@@ -118,9 +119,10 @@ void AutofillAiSaveUpdateEntityFlowManager::ShowLocalSaveNotification() {
       l10n_util::GetStringFUTF16(
           IDS_AUTOFILL_AI_SAVE_OR_UPDATE_ENTITY_FAILED_WALLET_SAVE_DIALOG_DESCRIPTION,
           std::move(google_wallet_text)),
+      /*positive_button_text=*/
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_AI_SNACK_BAR_CONFIRMATION_BUTTON_LABEL),
-      base::DoNothing());
+      /*negative_button_text=*/std::u16string(), base::DoNothing());
 }
 
 std::unique_ptr<AutofillMessageModel>

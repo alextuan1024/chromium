@@ -13,6 +13,8 @@ import static org.chromium.android_webview.test.OnlyRunIn.ProcessMode.SINGLE_PRO
 
 import android.annotation.SuppressLint;
 import android.content.ComponentCallbacks2;
+import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.MutableContextWrapper;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -52,9 +54,13 @@ import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.AwDarkMode;
+import org.chromium.android_webview.AwLayoutSizer;
 import org.chromium.android_webview.AwRenderProcess;
 import org.chromium.android_webview.AwSettings;
 import org.chromium.android_webview.AwViewAndroidDelegate;
+import org.chromium.android_webview.GoogleAccountsEvent;
+import org.chromium.android_webview.common.AwFeatures;
+import org.chromium.android_webview.http_headers.AwHeaderInterceptorStore;
 import org.chromium.android_webview.renderer_priority.RendererPriority;
 import org.chromium.android_webview.test.AwActivityTestRule.TestDependencyFactory;
 import org.chromium.android_webview.test.TestAwContentsClient.OnDownloadStartHelper;
@@ -69,23 +75,32 @@ import org.chromium.base.TimeUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.MaxAndroidSdkLevel;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
+import org.chromium.components.content_capture.ContentCaptureConsumer;
+import org.chromium.components.content_capture.ContentCaptureFrame;
+import org.chromium.components.content_capture.FrameSession;
+import org.chromium.components.content_capture.OnscreenContentProvider;
+import org.chromium.components.signin.GAIAServiceType;
 import org.chromium.content_public.browser.test.util.RenderProcessHostUtils;
 import org.chromium.content_public.browser.test.util.TouchCommon;
 import org.chromium.content_public.common.ContentSwitches;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.net.test.util.TestWebServer;
+import org.chromium.net.test.util.WebServer;
+import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.base.WindowAndroid;
 
 import java.io.InputStream;
 import java.net.URL;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -155,12 +170,39 @@ public class AwContentsTest extends AwParameterizedTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
+    public void testHeaderInterceptorStoreThrowsIllegalStateExceptionAfterContentsDestroyed() {
+        mActivityTestRule.startBrowserProcess();
+        AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
+        AwContents awContents = testContainerView.getAwContents();
+        AwHeaderInterceptorStore store = awContents.getHeaderInterceptorStore();
+
+        mActivityTestRule.destroyAwContentsOnMainSync(awContents);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    List<String> urlPatterns = List.of("https://*/*");
+                    Assert.assertThrows(
+                            IllegalStateException.class,
+                            () -> store.addInterceptor(request -> null, urlPatterns));
+                    Assert.assertThrows(
+                            IllegalStateException.class, () -> store.removeInterceptor(1));
+                    Assert.assertThrows(
+                            IllegalStateException.class, () -> store.clearInterceptors());
+                });
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @DisableIf.Build(
+            sdk_is_greater_than = Build.VERSION_CODES.BAKLAVA,
+            message = "https://crbug.com/586538780")
     public void testUpdateContextAndAdopt() throws Throwable {
         mActivityTestRule.startBrowserProcess();
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
-                        "Android.WebView.WebContent.AdoptResult",
-                        AwContents.AdoptResult.SUCCESS);
+                        "Android.WebView.WebContent.AdoptResult", AwContents.AdoptResult.SUCCESS);
 
         MutableContextWrapper oldContext =
                 new MutableContextWrapper(mActivityTestRule.getActivity());
@@ -241,8 +283,60 @@ public class AwContentsTest extends AwParameterizedTest {
 
         Assert.assertNotNull(
                 "AwContents.adopt() must register an OnApplyWindowInsetsListener on the new"
-                    + " container.",
+                        + " container.",
                 newContainer.mInsetsListener);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testAdoptUsesClassLoaderContextWrapper() throws Throwable {
+        mActivityTestRule.startBrowserProcess();
+        AwTestContainerView initialContainer =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
+        AwContents awContents = initialContainer.getAwContents();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    ((ViewGroup) initialContainer.getParent()).removeView(initialContainer);
+
+                    // Simulate WebContent.detach(): adopt into an ApplicationContext container.
+                    FrameLayout detachedContainer =
+                            new FrameLayout(ContextUtils.getApplicationContext());
+                    awContents.adopt(
+                            detachedContainer, initialContainer.getInternalAccessDelegate());
+                    Assert.assertNull(awContents.getWebContents().getTopLevelNativeWindow());
+
+                    // Simulate WebContent re-attach with a fresh ContextWrapper around Activity.
+                    Context rawReattachContext =
+                            new ContextWrapper(mActivityTestRule.getActivity());
+                    AwTestContainerView reattachedContainer =
+                            new AwTestContainerView(rawReattachContext, false);
+                    awContents.adopt(
+                            reattachedContainer, reattachedContainer.getInternalAccessDelegate());
+
+                    Context wrappedReattachContext = awContents.getProvidedContext();
+                    Assert.assertNotSame(rawReattachContext, wrappedReattachContext);
+                    WindowAndroid windowAndroid =
+                            awContents.getWebContents().getTopLevelNativeWindow();
+                    Assert.assertNotNull(windowAndroid);
+                    Assert.assertSame(wrappedReattachContext, windowAndroid.getContext().get());
+
+                    // Direct transfer to another Activity container without an intermediate detach.
+                    Context rawTransferContext =
+                            new ContextWrapper(mActivityTestRule.getActivity());
+                    AwTestContainerView transferContainer =
+                            new AwTestContainerView(rawTransferContext, false);
+                    awContents.adopt(
+                            transferContainer, transferContainer.getInternalAccessDelegate());
+
+                    Context wrappedTransferContext = awContents.getProvidedContext();
+                    Assert.assertNotSame(rawTransferContext, wrappedTransferContext);
+                    WindowAndroid transferredWindow =
+                            awContents.getWebContents().getTopLevelNativeWindow();
+                    Assert.assertNotNull(transferredWindow);
+                    Assert.assertSame(wrappedTransferContext, transferredWindow.getContext().get());
+                });
     }
 
     @Test
@@ -383,6 +477,7 @@ public class AwContentsTest extends AwParameterizedTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/575643007
     public void testBackgroundColorInDarkMode() throws Throwable {
         AwDarkMode.enableLegacyDarkMode();
         try {
@@ -842,6 +937,32 @@ public class AwContentsTest extends AwParameterizedTest {
                         awContents, mContentsClient, script));
     }
 
+    /**
+     * Verifies that SharedWorker is not exposed in WebView.
+     *
+     * Note: It is OK to delete this test if you are consciously enabling SharedWorker in WebView
+     * and have fixed related issues. For example, see crbug.com/575037727.
+     */
+    @Test
+    @Feature({"AndroidWebView"})
+    @SmallTest
+    public void testSharedWorkersDisabled() throws Throwable {
+        mActivityTestRule.startBrowserProcess();
+        AwTestContainerView testView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
+        AwContents awContents = testView.getAwContents();
+
+        AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
+        mActivityTestRule.loadUrlSync(
+                awContents,
+                mContentsClient.getOnPageFinishedHelper(),
+                ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
+        Assert.assertEquals(
+                "false",
+                mActivityTestRule.executeJavaScriptAndWaitForResult(
+                        awContents, mContentsClient, "'SharedWorker' in window"));
+    }
+
     private @RendererPriority int getRendererPriorityOnUiThread(final AwContents awContents)
             throws Exception {
         return ThreadUtils.runOnUiThreadBlocking(() -> awContents.getEffectivePriorityForTesting());
@@ -1239,12 +1360,8 @@ public class AwContentsTest extends AwParameterizedTest {
     @Feature({"AndroidWebView"})
     @MediumTest
     public void testHardwareRenderingSmokeTestVulkanWhereSupported() throws Throwable {
-        // Manually curated list.
-        final String[] supportedModels = {
-            "Pixel", "Pixel 2", "Pixel 3", "Pixel 4a",
-        };
-        if (!Arrays.asList(supportedModels).contains(Build.MODEL)) {
-            Log.w(TAG, "Skipping vulkan test on unknown device: " + Build.MODEL);
+        if ("ranchu".equals(Build.HARDWARE)) {
+            Log.w(TAG, "Skipping vulkan test on emulator");
             return;
         }
         mActivityTestRule.startBrowserProcessWithVulkan();
@@ -1402,70 +1519,6 @@ public class AwContentsTest extends AwParameterizedTest {
         mActivityTestRule.loadUrlAsync(awContents, url);
 
         Assert.assertTrue(AwActivityTestRule.waitForFuture(fetchResultFuture));
-    }
-
-    @Test
-    @Feature({"AndroidWebView"})
-    @SmallTest
-    public void testLoadUrlRecordsScheme_http() {
-        // No need to spin up a web server, since we don't care if the load ever succeeds.
-        final String httpUrlWithNoRealPage = "http://some.origin.test/some/path.html";
-        loadUrlAndCheckScheme(httpUrlWithNoRealPage, AwContents.UrlScheme.HTTP_SCHEME);
-    }
-
-    @Test
-    @Feature({"AndroidWebView"})
-    @SmallTest
-    public void testLoadUrlRecordsScheme_javascript() {
-        loadUrlAndCheckScheme(
-                "javascript:console.log('message')", AwContents.UrlScheme.JAVASCRIPT_SCHEME);
-    }
-
-    @Test
-    @Feature({"AndroidWebView"})
-    @SmallTest
-    public void testLoadUrlRecordsScheme_fileAndroidAsset() {
-        loadUrlAndCheckScheme(
-                "file:///android_asset/some/asset/page.html",
-                AwContents.UrlScheme.FILE_ANDROID_ASSET_SCHEME);
-    }
-
-    @Test
-    @Feature({"AndroidWebView"})
-    @SmallTest
-    public void testLoadUrlRecordsScheme_fileRegular() {
-        loadUrlAndCheckScheme("file:///some/path/on/disk.html", AwContents.UrlScheme.FILE_SCHEME);
-    }
-
-    @Test
-    @Feature({"AndroidWebView"})
-    @SmallTest
-    public void testLoadUrlRecordsScheme_data() {
-        loadUrlAndCheckScheme(
-                "data:text/html,<html><body>foo</body></html>", AwContents.UrlScheme.DATA_SCHEME);
-    }
-
-    @Test
-    @Feature({"AndroidWebView"})
-    @SmallTest
-    public void testLoadUrlRecordsScheme_blank() {
-        loadUrlAndCheckScheme("about:blank", AwContents.UrlScheme.EMPTY);
-    }
-
-    private void loadUrlAndCheckScheme(String url, @AwContents.UrlScheme int expectedSchemeEnum) {
-        mActivityTestRule.startBrowserProcess();
-        AwTestContainerView testView =
-                mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
-        final AwContents awContents = testView.getAwContents();
-
-        HistogramWatcher histogramExpectation =
-                HistogramWatcher.newSingleRecordWatcher(
-                        AwContents.LOAD_URL_SCHEME_HISTOGRAM_NAME, expectedSchemeEnum);
-
-        // Note: we use async because not all loads emit onPageFinished. This relies on the UMA
-        // metric being logged in the synchronous part of loadUrl().
-        mActivityTestRule.loadUrlAsync(awContents, url);
-        histogramExpectation.assertExpected();
     }
 
     @Test
@@ -2100,14 +2153,16 @@ public class AwContentsTest extends AwParameterizedTest {
         AwTestContainerView oldView =
                 mActivityTestRule.createAwTestContainerViewOnMainSync(client, false);
 
-        int oldColor = ThreadUtils.runOnUiThreadBlocking(
-                () -> oldView.getAwContents().getEdgeEffectColor());
+        int oldColor =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> oldView.getAwContents().getEdgeEffectColor());
 
         AwTestContainerView newView =
                 mActivityTestRule.reparentAwContents(oldView, android.R.style.Theme_Black);
 
-        int newColor = ThreadUtils.runOnUiThreadBlocking(
-                () -> newView.getAwContents().getEdgeEffectColor());
+        int newColor =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> newView.getAwContents().getEdgeEffectColor());
 
         Assert.assertNotEquals(oldColor, newColor);
     }
@@ -2151,14 +2206,149 @@ public class AwContentsTest extends AwParameterizedTest {
         AwTestContainerView oldView =
                 mActivityTestRule.createAwTestContainerViewOnMainSync(client, false);
 
-        ThreadUtils.runOnUiThreadBlocking(() -> {
-            oldView.getAwContents().getZoomControlsForTest().invokeZoomPicker();
-        });
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    oldView.getAwContents().getZoomControlsForTest().invokeZoomPicker();
+                });
 
         AwTestContainerView newView =
                 mActivityTestRule.reparentAwContents(oldView, android.R.style.Theme_Black);
 
         Assert.assertNotNull(newView);
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView"})
+    public void testReparentAwContentsContentCapture() throws Throwable {
+        mActivityTestRule.startBrowserProcess();
+        TestAwContentsClient client = new TestAwContentsClient();
+        AwTestContainerView oldView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(client, false);
+        CallbackHelper capturedHelper = new CallbackHelper();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    AwContents awContents = oldView.getAwContents();
+                    OnscreenContentProvider provider =
+                            new OnscreenContentProvider(
+                                    oldView.getContext(), oldView, awContents.getWebContents());
+                    // On devices with a platform ContentCapture service, PlatformContentCapture-
+                    // Consumer retains the old View's ContentCaptureSession (and thus Activity).
+                    // Add a consumer referencing oldView so this leak check runs even on devices
+                    // without a ContentCapture service enabled.
+                    provider.addConsumer(
+                            new ContentCaptureConsumer() {
+                                @Override
+                                public void onContentCaptureFlushed(
+                                        FrameSession parentFrame,
+                                        ContentCaptureFrame contentCaptureFrame) {}
+
+                                @Override
+                                public void onContentCaptured(
+                                        FrameSession parentFrame,
+                                        ContentCaptureFrame contentCaptureFrame) {
+                                    capturedHelper.notifyCalled();
+                                }
+
+                                @Override
+                                public void onContentUpdated(
+                                        FrameSession parentFrame,
+                                        ContentCaptureFrame contentCaptureFrame) {}
+
+                                @Override
+                                public void onSessionRemoved(FrameSession session) {}
+
+                                @Override
+                                public void onContentRemoved(
+                                        FrameSession session, long[] removedIds) {}
+
+                                @Override
+                                public void onTitleUpdated(ContentCaptureFrame mainFrame) {}
+
+                                @Override
+                                public void onFaviconUpdated(ContentCaptureFrame mainFrame) {}
+
+                                @Override
+                                public boolean shouldCapture(String[] urls) {
+                                    return oldView.getContext() != null;
+                                }
+                            });
+                    awContents.setOnscreenContentProvider(provider);
+                });
+
+        mActivityTestRule.loadDataSync(
+                oldView.getAwContents(),
+                client.getOnPageFinishedHelper(),
+                "<html><body><p>Hello</p></body></html>",
+                "text/html",
+                false);
+        capturedHelper.waitForCallback(0);
+
+        AwTestContainerView newView = mActivityTestRule.reparentAwContents(oldView);
+        Assert.assertNotNull(newView);
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView"})
+    public void testAdoptPreservesSizeUntilLaidOut() throws Throwable {
+        mActivityTestRule.startBrowserProcess();
+        List<Pair<Integer, Integer>> sizes = new ArrayList<>();
+        AwTestContainerView oldView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(
+                        mContentsClient,
+                        false,
+                        new TestDependencyFactory() {
+                            @Override
+                            public AwLayoutSizer createLayoutSizer() {
+                                return new AwLayoutSizer() {
+                                    @Override
+                                    public void onSizeChanged(int w, int h, int ow, int oh) {
+                                        super.onSizeChanged(w, h, ow, oh);
+                                        sizes.add(Pair.create(w, h));
+                                    }
+                                };
+                            }
+                        });
+        CriteriaHelper.pollUiThread(oldView::isLaidOut);
+        ThreadUtils.runOnUiThreadBlocking(sizes::clear);
+
+        // Reparenting adopts into a newly created 0x0 container before adding it to the new
+        // Activity; this must not send an intermediate 0x0 size update.
+        AwTestContainerView newView = mActivityTestRule.reparentAwContents(oldView);
+        CriteriaHelper.pollUiThread(newView::isLaidOut);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Assert.assertTrue(
+                            "Expected no zero sizes, got " + sizes,
+                            sizes.stream().noneMatch(s -> s.first == 0 || s.second == 0));
+                    Assert.assertEquals(
+                            Pair.create(newView.getWidth(), newView.getHeight()),
+                            sizes.get(sizes.size() - 1));
+                });
+
+        // Adopting into an unattached 0x0 container (e.g. WebContent#detach) keeps the current
+        // size, whereas adopting into a laid-out container (e.g. headless) applies its size
+        // immediately.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    sizes.clear();
+                    ((ViewGroup) newView.getParent()).removeView(newView);
+                    FrameLayout detachedView =
+                            new FrameLayout(ContextUtils.getApplicationContext());
+                    newView.getAwContents()
+                            .adopt(detachedView, newView.getInternalAccessDelegate());
+                    Assert.assertTrue(sizes.isEmpty());
+
+                    FrameLayout laidOutView = new FrameLayout(ContextUtils.getApplicationContext());
+                    laidOutView.measure(
+                            View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY),
+                            View.MeasureSpec.makeMeasureSpec(200, View.MeasureSpec.EXACTLY));
+                    laidOutView.layout(0, 0, 300, 200);
+                    newView.getAwContents().adopt(laidOutView, newView.getInternalAccessDelegate());
+                    Assert.assertEquals(List.of(Pair.create(300, 200)), sizes);
+                });
     }
 
     /**
@@ -2215,5 +2405,164 @@ public class AwContentsTest extends AwParameterizedTest {
         Assert.assertEquals(
                 "\"success\"", resultFuture.get(WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS));
     }
-}
 
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add({
+        ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
+        "ignore-certificate-errors",
+        "ignore-google-port-numbers"
+    })
+    public void testGoogleAccountsHeaderSetAndParsed() throws Throwable {
+        try (TestWebServer webServer = TestWebServer.startSsl()) {
+            webServer.setServerHost("accounts.google.com");
+            int serverPort = Uri.parse(webServer.getResponseUrl("/")).getPort();
+            CommandLine.getInstance()
+                    .appendSwitchWithValue("gaia-url", "https://accounts.google.com:" + serverPort);
+
+            mActivityTestRule.startBrowserProcess();
+            AwTestContainerView testContainer =
+                    mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
+            AwContents awContents = testContainer.getAwContents();
+
+            SettableFuture<GoogleAccountsEvent> eventFuture = SettableFuture.create();
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        awContents.configureGoogleAccountMirroring(
+                                "test_gaia_id", event -> eventFuture.set(event));
+                    });
+
+            String path = "/accounts_test.html";
+            List<Pair<String, String>> responseHeaders =
+                    List.of(
+                            Pair.create(
+                                    "X-Chrome-Manage-Accounts",
+                                    "action=ADDSESSION,continue_url=https://example.com/continue"));
+            String pageUrl =
+                    webServer.setResponse(
+                            path, "<html><body>accounts.google.com</body></html>", responseHeaders);
+
+            mActivityTestRule.loadUrlSync(
+                    awContents, mContentsClient.getOnPageFinishedHelper(), pageUrl);
+
+            // Verify the X-Chrome-Connected request header was set on the request to
+            // accounts.google.com.
+            Assert.assertEquals(1, webServer.getRequestCount(path));
+            WebServer.HTTPRequest request = webServer.getLastRequest(path);
+            Assert.assertNotNull(request);
+            String requestHeader = request.headerValue("X-Chrome-Connected");
+            Assert.assertNotNull(requestHeader);
+            Assert.assertFalse(requestHeader.isEmpty());
+            Assert.assertTrue(requestHeader.contains("source=AndroidWebView"));
+
+            // Verify the X-Chrome-Manage-Accounts response header was parsed and delivered to the
+            // callback.
+            GoogleAccountsEvent event =
+                    eventFuture.get(CallbackHelper.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            Assert.assertNotNull(event);
+            Assert.assertEquals(
+                    GAIAServiceType.GAIA_SERVICE_TYPE_ADDSESSION, event.getServiceType());
+            Assert.assertEquals("https://example.com/continue", event.getContinueUrl());
+            Assert.assertTrue(event.isOutermostMainFrame());
+            Assert.assertTrue(event.isNavigationRequest());
+        }
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @Features.EnableFeatures({AwFeatures.WEBVIEW_PRESERVE_GOOGLE_ACCOUNT_MIRRORING})
+    @CommandLineFlags.Add({
+        ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
+        "ignore-certificate-errors",
+        "ignore-google-port-numbers"
+    })
+    public void testGoogleAccountsHeaderSetAndParsedForPopupWindow() throws Throwable {
+        try (TestWebServer webServer = TestWebServer.startSsl()) {
+            webServer.setServerHost("accounts.google.com");
+            int serverPort = Uri.parse(webServer.getResponseUrl("/")).getPort();
+            CommandLine.getInstance()
+                    .appendSwitchWithValue("gaia-url", "https://accounts.google.com:" + serverPort);
+
+            mActivityTestRule.startBrowserProcess();
+            AwTestContainerView testContainer =
+                    mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
+            AwContents awContents = testContainer.getAwContents();
+            AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        awContents.getSettings().setSupportMultipleWindows(true);
+                        awContents.getSettings().setJavaScriptCanOpenWindowsAutomatically(true);
+                    });
+
+            String popupPath = "/accounts_test.html";
+            List<Pair<String, String>> responseHeaders =
+                    List.of(
+                            Pair.create(
+                                    "X-Chrome-Manage-Accounts",
+                                    "action=ADDSESSION,continue_url=https://example.com/continue"));
+            webServer.setResponse(
+                    popupPath,
+                    CommonResources.makeHtmlPageFrom("<title>popup</title>", "accounts.google.com"),
+                    responseHeaders);
+
+            String parentPageHtml =
+                    CommonResources.makeHtmlPageFrom(
+                            "",
+                            "<script>function tryOpenWindow() { window.open('"
+                                    + popupPath
+                                    + "'); }</script>");
+            String parentUrl = webServer.setResponse("/parent.html", parentPageHtml, null);
+
+            mContentsClient.getOnCreateWindowHelper().setReturnValue(true);
+            mActivityTestRule.loadUrlSync(
+                    awContents, mContentsClient.getOnPageFinishedHelper(), parentUrl);
+
+            TestAwContentsClient.OnCreateWindowHelper onCreateWindowHelper =
+                    mContentsClient.getOnCreateWindowHelper();
+            int currentCallCount = onCreateWindowHelper.getCallCount();
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> awContents.evaluateJavaScriptForTests("tryOpenWindow()", null));
+            onCreateWindowHelper.waitForCallback(
+                    currentCallCount, 1, WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+            AwActivityTestRule.PopupInfo popupInfo =
+                    mActivityTestRule.createPopupContents(awContents);
+            SettableFuture<GoogleAccountsEvent> eventFuture = SettableFuture.create();
+
+            // Simulate setting the Google accounts callback in WebChromeClient.onCreateWindow().
+            mActivityTestRule.loadPopupContents(
+                    awContents,
+                    popupInfo,
+                    popupContents -> {
+                        ThreadUtils.runOnUiThreadBlocking(
+                                () ->
+                                        popupContents.configureGoogleAccountMirroring(
+                                                "test_gaia_id", eventFuture::set));
+                        return true;
+                    });
+
+            // Verify the X-Chrome-Connected request header was set on the popup's request to
+            // accounts.google.com.
+            Assert.assertEquals(1, webServer.getRequestCount(popupPath));
+            WebServer.HTTPRequest request = webServer.getLastRequest(popupPath);
+            Assert.assertNotNull(request);
+            String requestHeader = request.headerValue("X-Chrome-Connected");
+            Assert.assertNotNull(requestHeader);
+            Assert.assertFalse(requestHeader.isEmpty());
+            Assert.assertTrue(requestHeader.contains("source=AndroidWebView"));
+
+            // Verify the X-Chrome-Manage-Accounts response header was parsed and delivered to the
+            // callback set on the popup window.
+            GoogleAccountsEvent event =
+                    eventFuture.get(CallbackHelper.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            Assert.assertNotNull(event);
+            Assert.assertEquals(
+                    GAIAServiceType.GAIA_SERVICE_TYPE_ADDSESSION, event.getServiceType());
+            Assert.assertEquals("https://example.com/continue", event.getContinueUrl());
+            Assert.assertTrue(event.isOutermostMainFrame());
+            Assert.assertTrue(event.isNavigationRequest());
+        }
+    }
+}

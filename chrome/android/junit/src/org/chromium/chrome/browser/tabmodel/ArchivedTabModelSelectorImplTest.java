@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -33,19 +34,21 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedBridge;
 import org.chromium.chrome.browser.tab.MockTab;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
-import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tabmodel.NextTabPolicy.NextTabPolicySupplier;
+import org.chromium.chrome.browser.tabmodel.undo.UndoClosureSnapshot.ClosedTab;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabCreatorManager;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
 import org.chromium.ui.base.WindowAndroid;
 
 import java.lang.ref.WeakReference;
+import java.util.List;
 
 /** Unit tests for {@link ArchivedTabModelSelectorImpl}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -55,7 +58,6 @@ public class ArchivedTabModelSelectorImplTest {
     private static final @ActivityType int NO_RESTORE_TYPE = ActivityType.CUSTOM_TAB;
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
-    @Mock private TabContentManager mMockTabContentManager;
     @Mock private TabDelegateFactory mTabDelegateFactory;
     @Mock private NextTabPolicySupplier mNextTabPolicySupplier;
 
@@ -64,6 +66,7 @@ public class ArchivedTabModelSelectorImplTest {
     @Mock private Profile mProfile;
     @Mock private Profile mIncognitoProfile;
     @Mock private Context mContext;
+    @Mock private RecentlyClosedBridge mRecentlyClosedBridge;
 
     private ArchivedTabModelSelectorImpl mTabModelSelector;
     private MockTabCreatorManager mTabCreatorManager;
@@ -94,8 +97,7 @@ public class ArchivedTabModelSelectorImplTest {
                 new PassthroughTabRemover(() -> mTabModelSelector.getModel(true));
         MockTabModel incognitoTabModel = new MockTabModel(mIncognitoProfile, null);
         incognitoTabModel.setTabRemoverForTesting(incognitoTabRemover);
-        mTabModelSelector.onNativeLibraryReadyInternal(
-                mMockTabContentManager, regularTabModel, incognitoTabModel);
+        mTabModelSelector.onNativeLibraryReadyInternal(regularTabModel, incognitoTabModel);
 
         assertEquals(
                 mTabModelSelector.getModel(/* incognito= */ false),
@@ -225,6 +227,49 @@ public class ArchivedTabModelSelectorImplTest {
                 "tab shouldn't be removed while reparenting is in progress",
                 1,
                 mTabModelSelector.getModel(false).getCount());
+    }
+
+    @Test
+    public void testRestoreForUndo() {
+        mTabModelSelector.setRecentlyClosedBridgeForTesting(mRecentlyClosedBridge);
+        TabModel model = mTabModelSelector.getModel(/* incognito= */ false);
+        List<ClosedTab> closedTabs =
+                List.of(
+                        new ClosedTab(
+                                /* id= */ 10,
+                                "Title",
+                                /* groupId= */ null,
+                                TabList.INVALID_TAB_INDEX,
+                                /* modelIndex= */ 2,
+                                /* pinned= */ false,
+                                /* wasSelected= */ false));
+        when(mRecentlyClosedBridge.restoreForUndo(
+                        eq(model),
+                        eq(42),
+                        eq(new int[] {10}),
+                        eq(new int[] {2}),
+                        eq(new boolean[] {false})))
+                .thenReturn(new int[] {100});
+
+        assertArrayEquals(
+                new int[] {100},
+                mTabModelSelector.restoreForUndo(model, /* entryId= */ 42, closedTabs));
+
+        when(mRecentlyClosedBridge.restoreForUndo(
+                        eq(model),
+                        eq(42),
+                        eq(new int[] {10}),
+                        eq(new int[] {2}),
+                        eq(new boolean[] {false})))
+                .thenReturn(new int[0]);
+
+        assertArrayEquals(
+                new int[] {Tab.INVALID_TAB_ID},
+                mTabModelSelector.restoreForUndo(model, /* entryId= */ 42, closedTabs));
+
+        mTabModelSelector.destroy();
+        mTabModelSelector.destroy();
+        verify(mRecentlyClosedBridge).destroy();
     }
 
     private boolean currentTabModelSupplierHasObservers() {

@@ -13,13 +13,17 @@ import static androidx.test.espresso.intent.matcher.IntentMatchers.hasExtra;
 import static androidx.test.espresso.intent.matcher.IntentMatchers.hasExtraWithKey;
 
 import static org.hamcrest.CoreMatchers.not;
+import static org.mockito.AdditionalMatchers.aryEq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 import android.app.Instrumentation.ActivityResult;
+import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.net.Uri;
 
@@ -35,22 +39,25 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.Callback;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.profiles.ProfileManager;
+import org.chromium.chrome.browser.profiles.ProfileResolver;
+import org.chromium.chrome.browser.profiles.ProfileResolverJni;
+import org.chromium.chrome.browser.profiles.ProfileTokenUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.MockNotificationManagerProxy;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
+
+import java.nio.charset.StandardCharsets;
 
 /** Tests for SendTabToSelf related notifications. */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -61,6 +68,7 @@ public class SendTabToSelfNotificationTest {
 
     @Mock private SendTabToSelfAndroidBridge.Natives mNativeMock;
     @Mock private Profile mProfile;
+    @Mock private ProfileResolver.Natives mProfileResolverNatives;
 
     private final MockNotificationManagerProxy mMockNotificationManager =
             new MockNotificationManagerProxy();
@@ -68,6 +76,7 @@ public class SendTabToSelfNotificationTest {
     private static final String GUID = "guid";
     private static final String URL = "https://www.google.com/";
     private static final String TEXT_FRAGMENT = "selector";
+    private static final byte[] PROFILE_TOKEN = "profile_token".getBytes(StandardCharsets.UTF_8);
 
     @Before
     public void setUp() {
@@ -76,7 +85,16 @@ public class SendTabToSelfNotificationTest {
         intending(anyIntent()).respondWith(new ActivityResult(Activity.RESULT_OK, null));
         BaseNotificationManagerProxyFactory.setInstanceForTesting(mMockNotificationManager);
         SendTabToSelfAndroidBridgeJni.setInstanceForTesting(mNativeMock);
-        ProfileManager.setLastUsedProfileForTesting(mProfile);
+        ProfileResolverJni.setInstanceForTesting(mProfileResolverNatives);
+        doReturn(PROFILE_TOKEN).when(mProfileResolverNatives).tokenizeProfileToBytes(mProfile);
+        doAnswer(
+                        invocation -> {
+                            Callback<Profile> callback = invocation.getArgument(1);
+                            callback.onResult(mProfile);
+                            return null;
+                        })
+                .when(mProfileResolverNatives)
+                .resolveProfileFromBytes(aryEq(PROFILE_TOKEN), any());
         // markEntryOpened and dismissEntry are called by NotificationManager.
         doNothing().when(mNativeMock).markEntryOpened(any(), any());
         doNothing().when(mNativeMock).dismissEntry(any(), any());
@@ -88,15 +106,17 @@ public class SendTabToSelfNotificationTest {
         BaseNotificationManagerProxyFactory.setInstanceForTesting(null);
     }
 
-    private static Intent createTapIntent(
+    private Intent createTapIntent(
             String guid,
             String url,
             @Nullable String scrollToTextFragment,
             byte @Nullable [] pageContextBytes) {
-        Intent intent = new Intent();
-        intent.setAction(NotificationManager.NOTIFICATION_ACTION_TAP);
-        intent.setData(Uri.parse(url));
-        intent.putExtra(NotificationManager.NOTIFICATION_GUID_EXTRA, guid);
+        Intent intent =
+                new Intent(ContextUtils.getApplicationContext(), BroadcastReceiver.class)
+                        .setAction(NotificationManager.NOTIFICATION_ACTION_TAP)
+                        .setData(Uri.parse(url))
+                        .putExtra(NotificationManager.NOTIFICATION_GUID_EXTRA, guid);
+        ProfileTokenUtils.addProfileToIntent(mProfile, intent);
         if (scrollToTextFragment != null) {
             intent.putExtra(IntentHandler.EXTRA_SCROLL_TO_TEXT_FRAGMENT, scrollToTextFragment);
         }
@@ -106,22 +126,25 @@ public class SendTabToSelfNotificationTest {
         return intent;
     }
 
-    private static Intent createTapIntent(
+    private Intent createTapIntent(
             @Nullable String scrollToTextFragment, byte @Nullable [] pageContextBytes) {
         return createTapIntent(GUID, URL, scrollToTextFragment, pageContextBytes);
     }
 
-    private static Intent createTapIntent(byte @Nullable [] pageContextBytes) {
+    private Intent createTapIntent(byte @Nullable [] pageContextBytes) {
         return createTapIntent(GUID, URL, null, pageContextBytes);
     }
 
-    private static Intent createTapIntent() {
+    private Intent createTapIntent() {
         return createTapIntent(GUID, URL, null, null);
     }
 
+    /**
+     * Verifies that tapping a notification with a scroll-to-text fragment attaches the fragment
+     * extra to the launcher intent and marks the entry opened.
+     */
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)
     public void testNotificationTap_WithScrollToTextFragment() {
         Intent intent = createTapIntent(TEXT_FRAGMENT, /* pageContextBytes= */ null);
 
@@ -133,9 +156,12 @@ public class SendTabToSelfNotificationTest {
         verify(mNativeMock).markEntryOpened(eq(mProfile), eq(GUID));
     }
 
+    /**
+     * Verifies that tapping a notification without a scroll-to-text fragment does not attach the
+     * fragment extra to the launcher intent and marks the entry opened.
+     */
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)
     public void testNotificationTap_WithoutScrollToTextFragment() {
         Intent intent = createTapIntent();
 
@@ -149,24 +175,12 @@ public class SendTabToSelfNotificationTest {
 
     @Test
     @SmallTest
-    @DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)
-    public void testNotificationTap_FeatureDisabled() {
-        Intent intent = createTapIntent(TEXT_FRAGMENT, /* pageContextBytes= */ null);
-
-        ThreadUtils.runOnUiThreadBlocking(() -> NotificationManager.handleIntent(intent));
-
-        intended(hasComponent(ChromeLauncherActivity.class.getName()));
-        intended(hasData(URL));
-        intended(not(hasExtraWithKey(IntentHandler.EXTRA_SCROLL_TO_TEXT_FRAGMENT)));
-        verify(mNativeMock).markEntryOpened(eq(mProfile), eq(GUID));
-    }
-
-    @Test
-    @SmallTest
     public void testNotificationDismiss() {
-        Intent intent = new Intent();
-        intent.setAction(NotificationManager.NOTIFICATION_ACTION_DISMISS);
-        intent.putExtra(NotificationManager.NOTIFICATION_GUID_EXTRA, GUID);
+        Intent intent =
+                new Intent(ContextUtils.getApplicationContext(), BroadcastReceiver.class)
+                        .setAction(NotificationManager.NOTIFICATION_ACTION_DISMISS)
+                        .putExtra(NotificationManager.NOTIFICATION_GUID_EXTRA, GUID);
+        ProfileTokenUtils.addProfileToIntent(mProfile, intent);
 
         ThreadUtils.runOnUiThreadBlocking(() -> NotificationManager.handleIntent(intent));
 
@@ -176,9 +190,11 @@ public class SendTabToSelfNotificationTest {
     @Test
     @SmallTest
     public void testNotificationTimeout() {
-        Intent intent = new Intent();
-        intent.setAction(NotificationManager.NOTIFICATION_ACTION_TIMEOUT);
-        intent.putExtra(NotificationManager.NOTIFICATION_GUID_EXTRA, GUID);
+        Intent intent =
+                new Intent(ContextUtils.getApplicationContext(), BroadcastReceiver.class)
+                        .setAction(NotificationManager.NOTIFICATION_ACTION_TIMEOUT)
+                        .putExtra(NotificationManager.NOTIFICATION_GUID_EXTRA, GUID);
+        ProfileTokenUtils.addProfileToIntent(mProfile, intent);
 
         ThreadUtils.runOnUiThreadBlocking(() -> NotificationManager.handleIntent(intent));
 
@@ -187,11 +203,10 @@ public class SendTabToSelfNotificationTest {
 
     /**
      * Verifies that tapping a notification with serialized page context attaches the page context
-     * extra to the launcher intent when form field propagation is enabled.
+     * extra to the launcher intent and marks the entry opened.
      */
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)
     public void testNotificationTap_WithPageContext() {
         byte[] pageContextBytes = new byte[] {0x08, 0x01};
         Intent intent = createTapIntent(pageContextBytes);
@@ -205,31 +220,11 @@ public class SendTabToSelfNotificationTest {
     }
 
     /**
-     * Verifies that tapping a notification with page context does not attach the page context extra
-     * to the launcher intent when form field propagation is disabled.
-     */
-    @Test
-    @SmallTest
-    @DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)
-    public void testNotificationTap_WithPageContext_FeatureDisabled() {
-        byte[] pageContextBytes = new byte[] {0x08, 0x01};
-        Intent intent = createTapIntent(pageContextBytes);
-
-        ThreadUtils.runOnUiThreadBlocking(() -> NotificationManager.handleIntent(intent));
-
-        intended(hasComponent(ChromeLauncherActivity.class.getName()));
-        intended(hasData(URL));
-        intended(not(hasExtraWithKey(IntentHandler.EXTRA_SEND_TAB_TO_SELF_PAGE_CONTEXT)));
-        verify(mNativeMock).markEntryOpened(eq(mProfile), eq(GUID));
-    }
-
-    /**
      * Verifies that tapping a notification without page context does not attach the page context
-     * extra to the launcher intent when form field propagation is enabled.
+     * extra to the launcher intent and marks the entry opened.
      */
     @Test
     @SmallTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)
     public void testNotificationTap_WithoutPageContext() {
         Intent intent = createTapIntent(/* pageContextBytes= */ null);
 

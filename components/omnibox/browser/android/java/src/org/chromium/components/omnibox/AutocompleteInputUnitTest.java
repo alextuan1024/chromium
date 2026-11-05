@@ -21,8 +21,6 @@ import org.mockito.quality.Strictness;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AimModelsProtoIntDef.ModelMode;
 import org.chromium.components.omnibox.AutocompleteInput.AutocompleteState;
@@ -35,7 +33,6 @@ import org.chromium.url.JUnitTestGURLs;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /** Tests for {@link AutocompleteInput}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -48,22 +45,6 @@ public class AutocompleteInputUnitTest {
     @Mock private Callback<GURL> mGurlCallback;
     private final AutocompleteInput mInput = new AutocompleteInput();
 
-    private void verifyCacheablePageClasses(Set<@PageClassification Integer> allowedPageClasses) {
-        for (@PageClassification int pageClass = PageClassification.MIN_VALUE;
-                pageClass <= PageClassification.MAX_VALUE;
-                pageClass++) {
-            mInput.setPageClassification(pageClass);
-
-            // Typed contexts are never cacheable.
-            mInput.setUserText("text");
-            assertFalse(mInput.isInCacheableContext());
-
-            // Only ZPS contexts are cacheable.
-            mInput.setUserText("");
-            assertEquals(mInput.isInCacheableContext(), allowedPageClasses.contains(pageClass));
-        }
-    }
-
     @Test
     public void testReset_clearsKeyword() {
         AutocompleteInput input = new AutocompleteInput();
@@ -75,49 +56,13 @@ public class AutocompleteInputUnitTest {
     }
 
     @Test
-    @DisableFeatures(OmniboxFeatureList.JUMP_START_OMNIBOX)
-    public void isInCacheableContext_defaultContexts() {
-        verifyCacheablePageClasses(
-                Set.of(
-                        PageClassification.ANDROID_SEARCH_WIDGET,
-                        PageClassification.ANDROID_SHORTCUTS_WIDGET));
-    }
+    public void testReset_clearsFuseboxPopupUsed() {
+        mInput.setFuseboxPopupUsed();
+        assertTrue(mInput.isFuseboxPopupUsed());
 
-    @Test
-    @EnableFeatures(
-            OmniboxFeatureList.JUMP_START_OMNIBOX + ":jump_start_cover_recently_visited_page/false")
-    public void isInCacheableContext_jumpStartDisabled() {
-        OmniboxFeatures.setJumpStartOmniboxEnabled(false);
-        verifyCacheablePageClasses(
-                Set.of(
-                        PageClassification.ANDROID_SEARCH_WIDGET,
-                        PageClassification.ANDROID_SHORTCUTS_WIDGET));
-    }
+        mInput.reset();
 
-    @Test
-    @EnableFeatures(
-            OmniboxFeatureList.JUMP_START_OMNIBOX + ":jump_start_cover_recently_visited_page/false")
-    public void isInCacheableContext_jumpStartDefaultContext() {
-        OmniboxFeatures.setJumpStartOmniboxEnabled(true);
-        verifyCacheablePageClasses(
-                Set.of(
-                        PageClassification.ANDROID_SEARCH_WIDGET,
-                        PageClassification.ANDROID_SHORTCUTS_WIDGET,
-                        PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS));
-    }
-
-    @Test
-    @EnableFeatures(
-            OmniboxFeatureList.JUMP_START_OMNIBOX + ":jump_start_cover_recently_visited_page/true")
-    public void isInCacheableContext_jumpStartAdditionalContext() {
-        OmniboxFeatures.setJumpStartOmniboxEnabled(true);
-        verifyCacheablePageClasses(
-                Set.of(
-                        PageClassification.ANDROID_SEARCH_WIDGET,
-                        PageClassification.ANDROID_SHORTCUTS_WIDGET,
-                        PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS,
-                        PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT,
-                        PageClassification.OTHER));
+        assertFalse(mInput.isFuseboxPopupUsed());
     }
 
     @Test
@@ -273,16 +218,29 @@ public class AutocompleteInputUnitTest {
     @Test
     public void getPageClassification_forFuseboxRequests() {
         Map<@PageClassification Integer, @PageClassification Integer> testCases =
-                Map.of(
+                Map.ofEntries(
                         // NTP
-                        PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS,
-                        PageClassification.NTP_OMNIBOX_COMPOSEBOX,
+                        Map.entry(
+                                PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS,
+                                PageClassification.NTP_OMNIBOX_COMPOSEBOX),
                         // SRP
-                        PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT,
-                        PageClassification.SRP_OMNIBOX_COMPOSEBOX,
-                        // Web
-                        PageClassification.OTHER, //
-                        PageClassification.OTHER_OMNIBOX_COMPOSEBOX);
+                        Map.entry(
+                                PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT,
+                                PageClassification.SRP_OMNIBOX_COMPOSEBOX),
+                        // Web, blank, and custom homepage
+                        Map.entry(
+                                PageClassification.BLANK,
+                                PageClassification.OTHER_OMNIBOX_COMPOSEBOX),
+                        Map.entry(
+                                PageClassification.HOME_PAGE,
+                                PageClassification.OTHER_OMNIBOX_COMPOSEBOX),
+                        Map.entry(
+                                PageClassification.OTHER,
+                                PageClassification.OTHER_OMNIBOX_COMPOSEBOX),
+                        // SearchActivity
+                        Map.entry(
+                                PageClassification.ANDROID_SHORTCUTS_WIDGET,
+                                PageClassification.OTHER_OMNIBOX_COMPOSEBOX));
 
         for (@AutocompleteRequestType
         int requestType :
@@ -360,25 +318,22 @@ public class AutocompleteInputUnitTest {
     }
 
     @Test
-    public void integrationTest_cacheableContextAndKeywordMatch() {
-        // Set up cacheable context
+    public void integrationTest_zeroPrefixContextAndKeywordMatch() {
+        // Set up zero-prefix context
         mInput.setPageClassification(PageClassification.ANDROID_SEARCH_WIDGET);
         mInput.setUserText("");
 
-        // Should be cacheable and zero-prefix, but not allow keyword match
-        assertTrue(mInput.isInCacheableContext());
+        // Should be zero-prefix, but not allow keyword match
         assertTrue(mInput.isInZeroPrefixContext());
         assertFalse(mInput.allowExactKeywordMatch());
 
-        // Add text with first space - should disable caching but enable keyword match
+        // Add text with first space - should disable zero-prefix and enable keyword match
         mInput.setUserText("search ");
-        assertFalse(mInput.isInCacheableContext());
         assertFalse(mInput.isInZeroPrefixContext());
         assertTrue(mInput.allowExactKeywordMatch());
 
-        // Back to empty - should be cacheable again, keyword match disabled
+        // Back to empty - should be zero-prefix again, keyword match disabled
         mInput.setUserText("");
-        assertTrue(mInput.isInCacheableContext());
         assertTrue(mInput.isInZeroPrefixContext());
         assertFalse(mInput.allowExactKeywordMatch());
     }
@@ -571,6 +526,7 @@ public class AutocompleteInputUnitTest {
         input1.setSelection(new TextSelection(selectionStart, selectionEnd));
         input1.setRefineActionUsage(refineActionUsage);
         input1.setSuggestionsListScrolled();
+        input1.setFuseboxPopupUsed();
         input1.setFocusReason(focusReason);
         input1.setModelMode(modelMode);
         input1.setRequestType(requestType);
@@ -593,6 +549,7 @@ public class AutocompleteInputUnitTest {
         assertEquals(selectionEnd, input2.getSelection().to);
         assertEquals(refineActionUsage, input2.getRefineActionUsage());
         assertTrue(input2.isSuggestionsListScrolled());
+        assertTrue(input2.isFuseboxPopupUsed());
         assertEquals(focusReason, input2.getFocusReason());
         assertEquals(modelMode, input2.getModelMode());
         assertEquals(requestType, input2.getRequestType());

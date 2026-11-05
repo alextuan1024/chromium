@@ -1273,7 +1273,7 @@ def _ParseCommandArguments():
     type=int,
     default=None,
     help='Run N jobs to build in parallel. If not specified, a default value '
-    'will be derived based on CPUs and reclient/siso availability. Please '
+    'will be derived based on CPUs and siso/remote execution availability. Please '
     'refer to \'autoninja -h\' for more details.',
   )
 
@@ -1380,7 +1380,7 @@ def Main():
     binary_paths = [_GetBinaryPathForWebTests()]
   elif args.command:
     for i in range(len(args.command)):
-      assert not 'run_web_tests.py' in args.command[i], (
+      assert 'run_web_tests.py' not in args.command[i], (
         'run_web_tests.py is not supported via --command argument. '
         'Please use --run-web-tests argument instead.'
       )

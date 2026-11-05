@@ -25,6 +25,9 @@ FindTabHelper::~FindTabHelper() {
 }
 
 void FindTabHelper::DismissFindNavigator() {
+  if (!IsFindUIActive()) {
+    return;
+  }
   // Same as `StopFinding()` except the UI is not marked as inactive so it can
   // be set back up if needed later.
   if (IsFullscreenRefactoringEnabled()) {
@@ -119,6 +122,10 @@ void FindTabHelper::RestoreSearchTerm() {
   [controller_ restoreSearchTerm];
 }
 
+void FindTabHelper::WasHidden(web::WebState* web_state) {
+  DismissFindNavigator();
+}
+
 void FindTabHelper::WebStateDestroyed(web::WebState* web_state) {
   observation_.Reset();
   scoped_force_fullscreen_.reset();
@@ -131,7 +138,8 @@ void FindTabHelper::WebStateDestroyed(web::WebState* web_state) {
 void FindTabHelper::DidFinishNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
-  if (navigation_context->IsSameDocument()) {
+  if (!navigation_context->HasCommitted() ||
+      navigation_context->IsSameDocument()) {
     return;
   }
 

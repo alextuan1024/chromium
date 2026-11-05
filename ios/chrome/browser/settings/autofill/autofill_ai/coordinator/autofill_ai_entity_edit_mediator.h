@@ -24,6 +24,8 @@ namespace signin {
 class IdentityManager;
 }
 
+enum class AutofillAIEntityEditMode;
+
 @protocol AutofillAIEntityEditConsumer;
 @protocol ReauthenticationProtocol;
 
@@ -45,11 +47,18 @@ class IdentityManager;
 // The consumer of this mediator.
 @property(nonatomic, weak) id<AutofillAIEntityEditConsumer> consumer;
 
+// The delegate of this mediator.
+@property(nonatomic, weak) id<AutofillAIEntityEditMediatorDelegate> delegate;
+
 // The fetched country list.
 @property(nonatomic, strong, readonly) NSArray<CountryItem*>* allCountries;
 
+// Initializes the mediator for `entityInstance` in `mode`. In the create flow,
+// the preloaded single-use Wallet disclosure details are taken from
+// `walletPassManager` when the entity requires a disclosure notice.
 - (instancetype)
     initWithEntityInstance:(autofill::EntityInstance)entityInstance
+                      mode:(AutofillAIEntityEditMode)mode
          entityDataManager:(autofill::EntityDataManager*)entityDataManager
          walletPassManager:(autofill::WalletPassAccessManager*)walletPassManager
             consentAuditor:(consent_auditor::ConsentAuditor*)consentAuditor
@@ -63,10 +72,14 @@ class IdentityManager;
 - (void)didSelectCountry:(CountryItem*)countryItem
                  forItem:(AutofillAIEntityCountryItem*)item;
 
+// Called when a link in the footer is tapped.
+- (void)didTapFooterLinkURL:(const GURL&)url;
+
 // Returns the URL to manage the Server Wallet item.
 - (GURL)walletManagementURL;
 
-@property(nonatomic, weak) id<AutofillAIEntityEditMediatorDelegate> delegate;
+// Disconnects the mediator and logs metrics if the flow ended without saving.
+- (void)disconnect;
 
 @end
 

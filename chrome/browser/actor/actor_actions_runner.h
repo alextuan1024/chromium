@@ -12,6 +12,7 @@
 
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
@@ -27,8 +28,9 @@ class Profile;
 namespace actor {
 
 class ActorTask;
+class EnterprisePolicyChecker;
 class TabObservationStrategy;
-struct ActionResultWithLatencyInfo;
+struct ToolResultWithLatencyInfo;
 
 // Executes a batch of actions from `optimization_guide::proto::Actions` within
 // a transient `ActorTask`.
@@ -75,11 +77,18 @@ class ActorActionsRunner {
   // - `actions`: The protobuf containing actions to execute.
   // - `on_complete`: Fired when actions finish executing (or on failure).
   // - `tab_id`: Optional target tab ID to inject into actions lacking one.
+  // - `policy_checker`: Optional enterprise policy checker for the task. When
+  //   null, no enterprise policy URL blocking or content validation is done at
+  //   the actor task level, which is only appropriate for actions originating
+  //   from trusted browser features. Callers executing actions that originate
+  //   outside the browser should pass their client's checker. When provided it
+  //   must outlive this runner.
   ActorActionsRunner(Profile& profile,
                      TaskSourceInfo source_info,
                      optimization_guide::proto::Actions actions,
                      base::OnceClosure on_complete,
-                     int32_t tab_id = 0);
+                     int32_t tab_id = 0,
+                     const EnterprisePolicyChecker* policy_checker = nullptr);
   ActorActionsRunner(const ActorActionsRunner&) = delete;
   ActorActionsRunner& operator=(const ActorActionsRunner&) = delete;
   ~ActorActionsRunner();
@@ -102,11 +111,11 @@ class ActorActionsRunner {
       bool skip_async_observation_collection,
       std::optional<page_content_annotations::ScreenshotOptions::
                         ScreenshotCollectionOptions> screenshot_options,
-      std::vector<ActionResultWithLatencyInfo> action_results,
+      std::vector<ToolResultWithLatencyInfo> action_results,
       TabObservationStrategy observation_strategy);
   void OnActionsResultBuilt(
       base::TimeTicks start_time,
-      std::vector<ActionResultWithLatencyInfo> action_results,
+      std::vector<ToolResultWithLatencyInfo> action_results,
       TaskId task_id,
       bool skip_async_observation_information,
       std::optional<page_content_annotations::ScreenshotOptions::
@@ -121,6 +130,7 @@ class ActorActionsRunner {
   optimization_guide::proto::Actions actions_;
   base::OnceClosure on_complete_;
   const int32_t tab_id_;
+  const raw_ptr<const EnterprisePolicyChecker> policy_checker_;
 
   bool is_started_ = false;
   std::optional<TaskId> task_id_;

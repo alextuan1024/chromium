@@ -39,12 +39,15 @@
 #include "ui/gfx/geometry/point_conversions.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/vector2d.h"
+#include "ui/gfx/geometry/vector2d_conversions.h"
+#include "ui/gfx/geometry/vector2d_f.h"
 #include "ui/ozone/common/features.h"
 #include "ui/ozone/platform/wayland/common/wayland_object.h"
 #include "ui/ozone/platform/wayland/host/dump_util.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_cursor_position.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_device_manager.h"
+#include "ui/ozone/platform/wayland/host/wayland_data_drag_controller.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_offer.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_source.h"
 #include "ui/ozone/platform/wayland/host/wayland_event_source.h"
@@ -78,19 +81,24 @@ constexpr uint32_t kDndActionWindowDrag =
 // [1] //ui/events/gesture_detection/gesture_detector.h
 constexpr int kHorizontalRailExitThreshold = -10;
 
+// Offset, in UI DIP, beyond a window's bottom-right corner, used to move the
+// dragged window when the pointer leaves another window while dragging a
+// detached window. See HandleLeaveWhileDetached().
+constexpr int kDetachedLeaveOffset = 10;
+
 }  // namespace
 
 class WaylandWindowDragController::ExtendedDragSource {
  public:
   ExtendedDragSource(WaylandConnection& connection, wl_data_source* source)
       : connection_(connection) {
-    DCHECK(connection.extended_drag_v1());
+    CHECK(connection.extended_drag_v1(), base::NotFatalUntil::M163);
     uint32_t options = ZCR_EXTENDED_DRAG_V1_OPTIONS_ALLOW_SWALLOW |
                        ZCR_EXTENDED_DRAG_V1_OPTIONS_ALLOW_DROP_NO_TARGET |
                        ZCR_EXTENDED_DRAG_V1_OPTIONS_LOCK_CURSOR;
     source_.reset(zcr_extended_drag_v1_get_extended_drag_source(
         connection.extended_drag_v1(), source, options));
-    DCHECK(source_);
+    CHECK(source_, base::NotFatalUntil::M163);
   }
 
   void SetDraggedWindow(WaylandToplevelWindow* window,
@@ -110,10 +118,10 @@ class WaylandWindowDragController::XdgToplevelDrag {
  public:
   XdgToplevelDrag(WaylandConnection& connection, wl_data_source* source)
       : connection_(connection) {
-    DCHECK(connection.toplevel_drag_manager_v1());
+    CHECK(connection.toplevel_drag_manager_v1(), base::NotFatalUntil::M163);
     drag_.reset(xdg_toplevel_drag_manager_v1_get_xdg_toplevel_drag(
         connection.toplevel_drag_manager_v1(), source));
-    DCHECK(drag_);
+    CHECK(drag_, base::NotFatalUntil::M163);
   }
 
   void SetDraggedWindow(WaylandToplevelWindow* window,
@@ -123,13 +131,20 @@ class WaylandWindowDragController::XdgToplevelDrag {
       // OnDataSourceDropPerformed()) or when the toplevel gets unmapped.
       return;
     }
-    DCHECK(window->xdg_toplevel());
-    DCHECK(window->xdg_toplevel()->wl_object());
+    CHECK(window->xdg_toplevel(), base::NotFatalUntil::M163);
+    CHECK(window->xdg_toplevel()->wl_object(), base::NotFatalUntil::M163);
     auto* toplevel = window->xdg_toplevel()->wl_object();
 
     // xdg-toplevel-drag protocol expects the passed in offset to be relative to
-    // the surface's geometry, i.e: no client-side decoration insets included.
-    auto toplevel_offset = offset - window->GetWindowGeometryOffsetInDIP();
+    // the surface's geometry, i.e: no client-side decoration insets included,
+    // in Wayland DIP. `offset` is in UI DIP, i.e. scaled by `ui_scale`, so it
+    // must be converted before subtracting the window geometry origin. Use the
+    // latched state, since that is what the window geometry was last sent from.
+    const auto& state = window->latched_state();
+    const gfx::Vector2d toplevel_offset =
+        gfx::ToRoundedVector2d(
+            gfx::ScaleVector2d(gfx::Vector2dF(offset), state.ui_scale)) -
+        window->GetWindowGeometryOriginInWaylandDIP(state).OffsetFromOrigin();
     xdg_toplevel_drag_v1_attach(drag_.get(), toplevel, toplevel_offset.x(),
                                 toplevel_offset.y());
     connection_->Flush();
@@ -153,10 +168,10 @@ WaylandWindowDragController::WaylandWindowDragController(
       pointer_delegate_(pointer_delegate),
       touch_delegate_(touch_delegate),
       keyboard_delegate_(keyboard_delegate) {
-  DCHECK(data_device_);
-  DCHECK(pointer_delegate_);
-  DCHECK(touch_delegate_);
-  DCHECK(keyboard_delegate_);
+  CHECK(data_device_, base::NotFatalUntil::M163);
+  CHECK(pointer_delegate_, base::NotFatalUntil::M163);
+  CHECK(touch_delegate_, base::NotFatalUntil::M163);
+  CHECK(keyboard_delegate_, base::NotFatalUntil::M163);
 }
 
 WaylandWindowDragController::~WaylandWindowDragController() {
@@ -176,6 +191,21 @@ bool WaylandWindowDragController::StartDragSession(
     }
   }
 
+  auto serial = GetSerial(drag_source, origin);
+  if (!serial) {
+    LOG(ERROR) << "Failed to retrieve dnd serial. origin=" << origin
+               << " drag_source=" << drag_source;
+    return false;
+  }
+
+  if (auto* data_drag_controller = connection_->data_drag_controller()) {
+    auto weak_this = weak_factory_.GetWeakPtr();
+    if (data_drag_controller->AbortPendingDrop() &&
+        (!weak_this || state_ != State::kIdle)) {
+      return weak_this && state_ != State::kIdle;
+    }
+  }
+
   // TODO(crbug.com/340398746): This should be a CHECK instead. However
   // currently buggy compositors, eg: KWin 6, which do not send
   // data_source.dnd_finish|cancelled in some cases. In such a case for a data
@@ -190,13 +220,6 @@ bool WaylandWindowDragController::StartDragSession(
                   "resetting shared data device state.";
     data_device_->ResetDragDelegate();
     CHECK(!connection_->IsDragInProgress());
-  }
-
-  auto serial = GetSerial(drag_source, origin);
-  if (!serial) {
-    LOG(ERROR) << "Failed to retrieve dnd serial. origin=" << origin
-               << " drag_source=" << drag_source;
-    return false;
   }
 
   VLOG(1) << "Starting Window Drag session. tracker_id=" << serial->value
@@ -241,9 +264,19 @@ bool WaylandWindowDragController::StartDragSession(
 
 bool WaylandWindowDragController::Drag(WaylandToplevelWindow* window,
                                        const gfx::Vector2d& offset) {
-  DCHECK_GE(state_, State::kAttached);
-  DCHECK(window);
-  CHECK(data_source_);
+  CHECK(window, base::NotFatalUntil::M163);
+
+  // There may be no active window drag session at this point, e.g: if
+  // StartDragSession() failed because no valid serial was available (such as
+  // when the pointer is not focused on the origin window), or if the session
+  // was terminated (e.g: cancelled by the compositor) before the move loop was
+  // requested. Fail gracefully in such cases instead of running the loop.
+  if (!IsActiveDragAndDropSession()) {
+    LOG(ERROR) << "Window drag requested without an active drag session. "
+               << "state=" << state_;
+    return false;
+  }
+  CHECK_NE(state_, State::kIdle, base::NotFatalUntil::M163);
 
   SetDraggedWindow(window, offset);
   state_ = State::kDetached;
@@ -326,9 +359,9 @@ void WaylandWindowDragController::DrawIcon() {}
 
 void WaylandWindowDragController::OnDragOffer(
     std::unique_ptr<WaylandDataOffer> offer) {
-  DCHECK_GE(state_, State::kAttached);
-  DCHECK(offer);
-  DCHECK(!data_offer_);
+  CHECK_GE(state_, State::kAttached, base::NotFatalUntil::M163);
+  CHECK(offer, base::NotFatalUntil::M163);
+  CHECK(!data_offer_, base::NotFatalUntil::M163);
 
   DVLOG(1) << "OnOffer. mime_types=" << offer->mime_types().size();
   data_offer_ = std::move(offer);
@@ -357,7 +390,7 @@ void WaylandWindowDragController::OnDragEnter(WaylandWindow* window,
   // window dragging sesstions.
   pointer_location_ = location;
 
-  DCHECK(drag_source_.has_value());
+  CHECK(drag_source_.has_value(), base::NotFatalUntil::M163);
   // Check if this is necessary.
   if (*drag_source_ == DragEventSource::kMouse) {
     pointer_delegate_->OnPointerFocusChanged(
@@ -390,7 +423,7 @@ void WaylandWindowDragController::OnDragMotion(const gfx::PointF& location,
     return;
   }
 
-  DCHECK_GE(state_, State::kAttached);
+  CHECK_GE(state_, State::kAttached, base::NotFatalUntil::M163);
   DVLOG(2) << "OnMotion. location=" << location.ToString();
 
   // Motion events are not expected to be dispatched while waiting for the drag
@@ -428,10 +461,12 @@ void WaylandWindowDragController::OnDragLeave(base::TimeTicks timestamp) {
     return;
   }
 
+  WaylandWindow* const left_window = drag_target_window_;
   drag_target_window_ = nullptr;
 
   // In order to guarantee EventType::kMouseReleased event is delivered once the
-  // DND session finishes, the focused window is not reset here. This is similar
+  // DND session finishes, the focused window is not reset here, except in the
+  // detached state (see HandleLeaveWhileDetached()). This is similar
   // to the "implicit grab" behavior implemented by Wayland compositors for
   // wl_pointer events. Additionally, this makes it possible for the drag
   // controller to overcome deviations in the order that wl_data_source and
@@ -449,6 +484,11 @@ void WaylandWindowDragController::OnDragLeave(base::TimeTicks timestamp) {
   DVLOG(1) << "OnLeave";
   data_offer_.reset();
 
+  if (state_ == State::kDetached) {
+    HandleLeaveWhileDetached(left_window, timestamp);
+    return;
+  }
+
   // As wl-shell/xdg-shell clients are only aware of surface-local coordinates
   // and there is no implicit grab during DND sessions, a fake motion event with
   // negative y coordinate is used here to allow higher level UI components to
@@ -461,8 +501,9 @@ void WaylandWindowDragController::OnDragLeave(base::TimeTicks timestamp) {
   //
   // TODO(crbug.com/40209502): Find a better solution for upwards tab
   // detaching.
-  if (state_ != State::kAttached)
+  if (state_ != State::kAttached) {
     return;
+  }
 
   if (*drag_source_ == DragEventSource::kMouse) {
     pointer_delegate_->OnPointerMotionEvent(
@@ -483,6 +524,42 @@ void WaylandWindowDragController::OnDragLeave(base::TimeTicks timestamp) {
   }
 }
 
+void WaylandWindowDragController::HandleLeaveWhileDetached(
+    WaylandWindow* left_window,
+    base::TimeTicks timestamp) {
+  CHECK_EQ(state_, State::kDetached);
+
+  // Leaving the dragged window itself, which some compositors send once it
+  // starts following the pointer, says nothing about where the pointer is.
+  if (!left_window || left_window == dragged_window_ || !dragged_window_ ||
+      *drag_source_ != DragEventSource::kMouse) {
+    return;
+  }
+
+  // Motion events only arrive while the pointer is over one of the client's
+  // surfaces, so nothing tells upper layers that the pointer left
+  // `left_window`, e.g. onto the desktop, until the drop. They would keep
+  // treating the pointer as being over it, e.g. a tab drop target shown there
+  // would be used on drop. So reset the pointer focus, such that the pointer
+  // is no longer considered to be over `left_window` (see
+  // WaylandScreen::GetCursorScreenPoint()), and then move the dragged window.
+  // The move only makes upper layers re-evaluate the pointer location (e.g.
+  // TabDragController::OnWidgetBoundsChanged() queries the cursor location,
+  // which no longer overlaps any window); the origin used here doesn't
+  // matter, as long as it differs from the current one. Unlike in the
+  // attached state, resetting the focus is fine here, as the release event is
+  // delivered to `events_grabber_` on drop.
+  if (window_manager_->GetCurrentPointerFocusedWindow() == left_window) {
+    pointer_delegate_->OnPointerFocusChanged(
+        nullptr, pointer_location_, timestamp,
+        wl::EventDispatchPolicy::kImmediate);
+  }
+  const gfx::Size size = left_window->GetBoundsInDIP().size();
+  dragged_window_->SetOrigin(gfx::Point(size.width() + kDetachedLeaveOffset,
+                                        size.height() + kDetachedLeaveOffset) -
+                             drag_offset_);
+}
+
 void WaylandWindowDragController::OnDragDrop(base::TimeTicks timestamp) {
   // Drag-and-drop sessions may be terminated by the client while drag-and-drop
   // server events are still in-flight. No-op if this is the case.
@@ -490,10 +567,10 @@ void WaylandWindowDragController::OnDragDrop(base::TimeTicks timestamp) {
     return;
   }
 
-  DCHECK_GE(state_, State::kAttached);
+  CHECK_GE(state_, State::kAttached, base::NotFatalUntil::M163);
   VLOG(1) << "Dropped. state=" << state_;
 
-  DCHECK(data_offer_);
+  CHECK(data_offer_, base::NotFatalUntil::M163);
   data_offer_->FinishOffer();
   data_offer_.reset();
 
@@ -600,7 +677,7 @@ uint32_t WaylandWindowDragController::DispatchEvent(
 }
 
 void WaylandWindowDragController::OnWindowRemoved(WaylandWindow* window) {
-  DCHECK_NE(state_, State::kIdle);
+  CHECK_NE(state_, State::kIdle, base::NotFatalUntil::M163);
   DVLOG(1) << "Window being destroyed. widget=" << window->GetWidget();
 
   // The drag should only be cancelled after all window pointers have had a
@@ -638,8 +715,8 @@ void WaylandWindowDragController::OnWindowRemoved(WaylandWindow* window) {
 }
 
 void WaylandWindowDragController::HandleMotionEvent(LocatedEvent* event) {
-  DCHECK_EQ(state_, State::kDetached);
-  DCHECK(event);
+  CHECK_EQ(state_, State::kDetached, base::NotFatalUntil::M163);
+  CHECK(event, base::NotFatalUntil::M163);
 
   if (!should_process_drag_motion_events_) {
     return;
@@ -650,8 +727,14 @@ void WaylandWindowDragController::HandleMotionEvent(LocatedEvent* event) {
   // offset. Note that setting a new location (i.e: bounds.origin()) for a
   // surface has no visual effect in ozone/wayland backend. Actual window
   // re-positioning during dragging session is done through the drag icon.
+  //
+  // `event` is intercepted before WaylandWindow::DispatchEvent(), so its
+  // location is still in Wayland DIP, whereas `drag_offset_` and the window
+  // origin are in UI DIP, i.e. scaled by `ui_scale`.
   if (dragged_window_) {
-    dragged_window_->SetOrigin(event->location() - drag_offset_);
+    const gfx::Point location = gfx::ToFlooredPoint(gfx::ScalePoint(
+        event->location_f(), 1.f / dragged_window_->applied_state().ui_scale));
+    dragged_window_->SetOrigin(location - drag_offset_);
   }
 
   should_process_drag_motion_events_ = false;
@@ -662,8 +745,9 @@ void WaylandWindowDragController::HandleMotionEvent(LocatedEvent* event) {
 // about to finish.
 void WaylandWindowDragController::HandleDropAndResetState(
     base::TimeTicks timestamp) {
-  DCHECK(state_ == State::kDropped || state_ == State::kCancelled ||
-         state_ == State::kAttaching);
+  CHECK(state_ == State::kDropped || state_ == State::kCancelled ||
+            state_ == State::kAttaching,
+        base::NotFatalUntil::M163);
   VLOG(1) << "Notifying drop. window=" << events_grabber_;
 
   // StopDragging() may get called in response to bogus input events, eg:
@@ -712,8 +796,8 @@ void WaylandWindowDragController::HandleDropAndResetState(
 }
 
 void WaylandWindowDragController::RunLoop() {
-  DCHECK_EQ(state_, State::kDetached);
-  DCHECK(dragged_window_);
+  CHECK_EQ(state_, State::kDetached, base::NotFatalUntil::M163);
+  CHECK(dragged_window_, base::NotFatalUntil::M163);
   CHECK(nested_dispatcher_);
 
   VLOG(1) << "Starting drag loop. widget=" << dragged_window_->GetWidget()
@@ -734,7 +818,7 @@ void WaylandWindowDragController::RunLoop() {
 }
 
 void WaylandWindowDragController::QuitLoop() {
-  DCHECK(!quit_loop_closure_.is_null());
+  CHECK(!quit_loop_closure_.is_null(), base::NotFatalUntil::M163);
   VLOG(1) << "Quit Loop";
   std::move(quit_loop_closure_).Run();
 }

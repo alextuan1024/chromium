@@ -5,18 +5,24 @@
 #include "chrome/browser/actor/actor_critical_action_logger.h"
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/actor/actor_keyed_service_fake.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_task.h"
+#include "chrome/browser/actor/actor_task_options.h"
 #include "chrome/browser/actor/actor_test_util.h"
-#include "chrome/browser/actor/tools/attempt_form_filling_tool_request.h"
-#include "chrome/browser/actor/tools/attempt_login_tool_request.h"
-#include "chrome/browser/actor/tools/attempt_otp_filling_tool_request.h"
+#include "chrome/browser/actor/tools/autofill/attempt_form_filling/attempt_form_filling_tool_request.h"
 #include "chrome/browser/actor/tools/fake_tool_request.h"
+#include "chrome/browser/actor/tools/one_time_token/attempt_otp_filling_tool_request.h"
+#include "chrome/browser/actor/tools/password_manager/attempt_login/attempt_login_tool_request.h"
+#include "chrome/browser/actor/tools/script_tool_request.h"
 #include "chrome/browser/critical_actions/critical_action_factory.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/actor/action_result.h"
@@ -28,13 +34,22 @@
 #include "components/critical_actions/core/browser/critical_action_service.h"
 #include "components/critical_actions/core/browser/critical_action_types.h"
 #include "components/critical_actions/core/browser/features.h"
+#include "components/download/public/common/mock_download_item.h"
 #include "components/history/core/browser/history_types.h"
+#include "content/public/browser/download_item_utils.h"
+#include "content/public/browser/render_frame_host.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/mojom/content_extraction/script_tools.mojom.h"
 
 namespace actor {
 
 namespace {
+
+using ::testing::HasSubstr;
+using ::testing::Not;
+
+constexpr char kConversationId[] = "conversation-123";
 
 class ActorCriticalActionLoggerTest : public ChromeRenderViewHostTestHarness {
  public:
@@ -44,20 +59,35 @@ class ActorCriticalActionLoggerTest : public ChromeRenderViewHostTestHarness {
          features::kGlicActor},
         {});
     ChromeRenderViewHostTestHarness::SetUp();
-    service_ = std::make_unique<ActorKeyedServiceFake>(profile());
+    service_ = static_cast<ActorKeyedServiceFake*>(
+        ActorKeyedServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+            profile(),
+            base::BindRepeating([](content::BrowserContext* context)
+                                    -> std::unique_ptr<KeyedService> {
+              return std::make_unique<ActorKeyedServiceFake>(
+                  Profile::FromBrowserContext(context));
+            })));
   }
 
   void TearDown() override {
-    service_.reset();
+    service_ = nullptr;
     tab_states_.clear();
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
   ActorKeyedServiceFake& actor_service() { return *service_; }
 
-  tabs::TabHandle CreateTabHandle() {
+  // Creates a task created by Glic, the only source whose critical actions are
+  // logged.
+  TaskId CreateGlicTask(ActorTaskOptions options = {}) {
+    return actor_service().CreateTaskForTesting(
+        TaskSourceInfo(TaskSourceInfo::Client::kGlic, kConversationId),
+        std::move(options));
+  }
+
+  ActorSurfaceHandle CreateActorSurfaceHandle() {
     tab_states_.push_back(std::make_unique<TestTabState>(web_contents()));
-    return tab_states_.back()->tab.GetHandle();
+    return ActorSurfaceHandle::From(tab_states_.back()->tab.GetHandle());
   }
 
   void FlushPendingActions(int64_t navigation_id) {
@@ -88,16 +118,16 @@ class ActorCriticalActionLoggerTest : public ChromeRenderViewHostTestHarness {
 
  private:
   base::test::ScopedFeatureList feature_list_;
-  std::unique_ptr<ActorKeyedServiceFake> service_;
+  raw_ptr<ActorKeyedServiceFake> service_ = nullptr;
   std::vector<std::unique_ptr<TestTabState>> tab_states_;
 };
 
 TEST_F(ActorCriticalActionLoggerTest, LogsAttemptLoginAsPasswordManagerAction) {
-  TaskId task_id = actor_service().CreateTaskForTesting();
+  TaskId task_id = CreateGlicTask();
   ActorTask* task = actor_service().GetTask(task_id);
 
   PageTarget password_button;
-  AttemptLoginToolRequest request(CreateTabHandle(), password_button,
+  AttemptLoginToolRequest request(CreateActorSurfaceHandle(), password_button,
                                   std::nullopt);
   mojom::ActionResultPtr result = MakeOkResult();
   result->attempt_login_status = mojom::AttemptLoginStatus::kPasswordManager;
@@ -110,8 +140,7 @@ TEST_F(ActorCriticalActionLoggerTest, LogsAttemptLoginAsPasswordManagerAction) {
   ASSERT_EQ(logged_actions.size(), 1u);
   EXPECT_EQ(logged_actions[0].action_type,
             critical_actions::ActionType::kGooglePasswordManager);
-  EXPECT_EQ(logged_actions[0].conversation_id,
-            task->source_info().id.value_or(""));
+  EXPECT_EQ(logged_actions[0].conversation_id, kConversationId);
   EXPECT_EQ(logged_actions[0].actor_task_id,
             base::NumberToString(task_id.value()));
 
@@ -120,11 +149,11 @@ TEST_F(ActorCriticalActionLoggerTest, LogsAttemptLoginAsPasswordManagerAction) {
 }
 
 TEST_F(ActorCriticalActionLoggerTest, LogsAttemptLoginAsFederatedLoginAction) {
-  TaskId task_id = actor_service().CreateTaskForTesting();
+  TaskId task_id = CreateGlicTask();
   ActorTask* task = actor_service().GetTask(task_id);
 
   PageTarget google_button;
-  AttemptLoginToolRequest request(CreateTabHandle(), std::nullopt,
+  AttemptLoginToolRequest request(CreateActorSurfaceHandle(), std::nullopt,
                                   google_button);
   mojom::ActionResultPtr result = MakeOkResult();
   result->attempt_login_status = mojom::AttemptLoginStatus::kFederated;
@@ -137,8 +166,7 @@ TEST_F(ActorCriticalActionLoggerTest, LogsAttemptLoginAsFederatedLoginAction) {
   ASSERT_EQ(logged_actions.size(), 1u);
   EXPECT_EQ(logged_actions[0].action_type,
             critical_actions::ActionType::kFederatedLogin);
-  EXPECT_EQ(logged_actions[0].conversation_id,
-            task->source_info().id.value_or(""));
+  EXPECT_EQ(logged_actions[0].conversation_id, kConversationId);
   EXPECT_EQ(logged_actions[0].actor_task_id,
             base::NumberToString(task_id.value()));
 
@@ -147,11 +175,11 @@ TEST_F(ActorCriticalActionLoggerTest, LogsAttemptLoginAsFederatedLoginAction) {
 }
 
 TEST_F(ActorCriticalActionLoggerTest, SkipsAttemptLoginWhenNoStatusResult) {
-  TaskId task_id = actor_service().CreateTaskForTesting();
+  TaskId task_id = CreateGlicTask();
   ActorTask* task = actor_service().GetTask(task_id);
 
   PageTarget password_button;
-  AttemptLoginToolRequest request(CreateTabHandle(), password_button,
+  AttemptLoginToolRequest request(CreateActorSurfaceHandle(), password_button,
                                   std::nullopt);
   // Login action returned result, but attempt_login_status is std::nullopt
   // (e.g. fail/unsupported)
@@ -170,11 +198,11 @@ TEST_F(ActorCriticalActionLoggerTest, SkipsAttemptLoginWhenNoStatusResult) {
 }
 
 TEST_F(ActorCriticalActionLoggerTest, LogsAttemptOtpFillingAction) {
-  TaskId task_id = actor_service().CreateTaskForTesting();
+  TaskId task_id = CreateGlicTask();
   ActorTask* task = actor_service().GetTask(task_id);
 
   PageTarget otp_input;
-  AttemptOtpFillingToolRequest request(CreateTabHandle(), {otp_input},
+  AttemptOtpFillingToolRequest request(CreateActorSurfaceHandle(), {otp_input},
                                        /*for_signin=*/true);
   mojom::ActionResultPtr result = MakeOkResult();
 
@@ -186,8 +214,7 @@ TEST_F(ActorCriticalActionLoggerTest, LogsAttemptOtpFillingAction) {
   ASSERT_EQ(logged_actions.size(), 1u);
   EXPECT_EQ(logged_actions[0].action_type,
             critical_actions::ActionType::kCredentialsOtp);
-  EXPECT_EQ(logged_actions[0].conversation_id,
-            task->source_info().id.value_or(""));
+  EXPECT_EQ(logged_actions[0].conversation_id, kConversationId);
   EXPECT_EQ(logged_actions[0].actor_task_id,
             base::NumberToString(task_id.value()));
 
@@ -196,7 +223,7 @@ TEST_F(ActorCriticalActionLoggerTest, LogsAttemptOtpFillingAction) {
 }
 
 TEST_F(ActorCriticalActionLoggerTest, LogsFormFillActionWithMetadata) {
-  TaskId task_id = actor_service().CreateTaskForTesting();
+  TaskId task_id = CreateGlicTask();
   ActorTask* task = actor_service().GetTask(task_id);
 
   AttemptFormFillingToolRequest::FormFillingRequest sub_req1;
@@ -206,7 +233,9 @@ TEST_F(ActorCriticalActionLoggerTest, LogsFormFillActionWithMetadata) {
   AttemptFormFillingToolRequest::FormFillingRequest sub_req2;
   sub_req2.requested_data = autofill::ActorFormFillingRequestedData::kAddress;
 
-  AttemptFormFillingToolRequest request(CreateTabHandle(), {sub_req1, sub_req2},
+  AttemptFormFillingToolRequest request(CreateActorSurfaceHandle(),
+                                        {sub_req1, sub_req2},
+                                        /*credit_card_opaque_token=*/"",
                                         /*enqueued_click=*/true);
   mojom::ActionResultPtr result = MakeOkResult();
 
@@ -218,8 +247,7 @@ TEST_F(ActorCriticalActionLoggerTest, LogsFormFillActionWithMetadata) {
   ASSERT_EQ(logged_actions.size(), 1u);
   EXPECT_EQ(logged_actions[0].action_type,
             critical_actions::ActionType::kFormFill);
-  EXPECT_EQ(logged_actions[0].conversation_id,
-            task->source_info().id.value_or(""));
+  EXPECT_EQ(logged_actions[0].conversation_id, kConversationId);
   EXPECT_EQ(logged_actions[0].actor_task_id,
             base::NumberToString(task_id.value()));
   EXPECT_EQ(logged_actions[0].metadata,
@@ -230,9 +258,12 @@ TEST_F(ActorCriticalActionLoggerTest, LogsFormFillActionWithMetadata) {
 }
 
 TEST_F(ActorCriticalActionLoggerTest, LogsAgentSelfReportedActionDirectly) {
+  TaskId task_id = CreateGlicTask();
+  ActorTask* task = actor_service().GetTask(task_id);
+
   ActorCriticalActionLogger::LogAgentSelfReportedAction(
-      profile(), "conversation-123", critical_actions::ActionType::kDownload,
-      /*navigation_id=*/1008, TaskId(123));
+      profile(), *task, critical_actions::ActionType::kDownload,
+      /*navigation_id=*/1008);
   FlushPendingActions(1008);
 
   auto logged_actions = GetLoggedActions();
@@ -240,12 +271,16 @@ TEST_F(ActorCriticalActionLoggerTest, LogsAgentSelfReportedActionDirectly) {
 
   EXPECT_EQ(logged_actions[0].action_type,
             critical_actions::ActionType::kDownload);
-  EXPECT_EQ(logged_actions[0].conversation_id, "conversation-123");
-  EXPECT_EQ(logged_actions[0].actor_task_id, "123");
+  EXPECT_EQ(logged_actions[0].conversation_id, kConversationId);
+  EXPECT_EQ(logged_actions[0].actor_task_id,
+            base::NumberToString(task_id.value()));
+
+  actor_service().StopTaskForTesting(
+      task_id, actor::ActorTask::StoppedReason::kTaskComplete);
 }
 
 TEST_F(ActorCriticalActionLoggerTest, SkipsNonCriticalAction) {
-  TaskId task_id = actor_service().CreateTaskForTesting();
+  TaskId task_id = CreateGlicTask();
   ActorTask* task = actor_service().GetTask(task_id);
 
   FakeToolRequest request(base::DoNothing(), base::DoNothing());
@@ -263,23 +298,29 @@ TEST_F(ActorCriticalActionLoggerTest, SkipsNonCriticalAction) {
 }
 
 TEST_F(ActorCriticalActionLoggerTest, HandlesNullProfile) {
+  TaskId task_id = CreateGlicTask();
+  ActorTask* task = actor_service().GetTask(task_id);
+
   // Call with a null profile pointer. This should return early without logging
   // and without crashing.
   ActorCriticalActionLogger::LogAgentSelfReportedAction(
-      /*profile=*/nullptr, "conversation-123",
-      critical_actions::ActionType::kDownload,
-      /*navigation_id=*/1008, TaskId(123));
+      /*profile=*/nullptr, *task, critical_actions::ActionType::kDownload,
+      /*navigation_id=*/1008);
+  FlushPendingActions(1008);
 
   auto logged_actions = GetLoggedActions();
   EXPECT_TRUE(logged_actions.empty());
+
+  actor_service().StopTaskForTesting(
+      task_id, actor::ActorTask::StoppedReason::kTaskComplete);
 }
 
 TEST_F(ActorCriticalActionLoggerTest, SkipsFailedToolExecution) {
-  TaskId task_id = actor_service().CreateTaskForTesting();
+  TaskId task_id = CreateGlicTask();
   ActorTask* task = actor_service().GetTask(task_id);
 
   PageTarget otp_input;
-  AttemptOtpFillingToolRequest request(CreateTabHandle(), {otp_input},
+  AttemptOtpFillingToolRequest request(CreateActorSurfaceHandle(), {otp_input},
                                        /*for_signin=*/true);
   mojom::ActionResultPtr result = mojom::ActionResult::New();
   result->code = mojom::ActionResultCode::kFrameWentAway;
@@ -299,15 +340,16 @@ TEST_F(ActorCriticalActionLoggerTest, FormFillingLoggingPreClickGating) {
   base::test::ScopedFeatureList local_features(
       features::kGlicActorAutofillPreClick);
 
-  TaskId task_id = actor_service().CreateTaskForTesting();
+  TaskId task_id = CreateGlicTask();
   ActorTask* task = actor_service().GetTask(task_id);
 
   AttemptFormFillingToolRequest::FormFillingRequest sub_req;
   sub_req.requested_data = autofill::ActorFormFillingRequestedData::kAddress;
 
   // 1. If enqueued_click = false (pre-click), it should NOT log.
-  AttemptFormFillingToolRequest pre_click_request(CreateTabHandle(), {sub_req},
-                                                  /*enqueued_click=*/false);
+  AttemptFormFillingToolRequest pre_click_request(
+      CreateActorSurfaceHandle(), {sub_req}, /*credit_card_opaque_token=*/"",
+      /*enqueued_click=*/false);
   mojom::ActionResultPtr result = MakeOkResult();
   ActorCriticalActionLogger::MaybeLogAction(*task, profile(), pre_click_request,
                                             *result, /*navigation_id=*/1012);
@@ -315,7 +357,9 @@ TEST_F(ActorCriticalActionLoggerTest, FormFillingLoggingPreClickGating) {
   EXPECT_TRUE(GetLoggedActions().empty());
 
   // 2. If enqueued_click = true, it SHOULD log.
-  AttemptFormFillingToolRequest click_request(CreateTabHandle(), {sub_req},
+  AttemptFormFillingToolRequest click_request(CreateActorSurfaceHandle(),
+                                              {sub_req},
+                                              /*credit_card_opaque_token=*/"",
                                               /*enqueued_click=*/true);
   ActorCriticalActionLogger::MaybeLogAction(*task, profile(), click_request,
                                             *result, /*navigation_id=*/1013);
@@ -335,23 +379,193 @@ TEST_F(ActorCriticalActionLoggerTest, SkipsLoggingWhenFeatureDisabled) {
   local_features.InitAndDisableFeature(
       critical_actions::features::kCriticalActionHistory);
 
-  TaskId task_id = actor_service().CreateTaskForTesting();
+  TaskId task_id = CreateGlicTask();
   ActorTask* task = actor_service().GetTask(task_id);
 
   PageTarget password_button;
-  AttemptLoginToolRequest request(CreateTabHandle(), password_button,
+  AttemptLoginToolRequest request(CreateActorSurfaceHandle(), password_button,
                                   std::nullopt);
   mojom::ActionResultPtr result = MakeOkResult();
   result->attempt_login_status = mojom::AttemptLoginStatus::kPasswordManager;
 
   ActorCriticalActionLogger::MaybeLogAction(*task, profile(), request, *result,
-                                             /*navigation_id=*/1001);
+                                            /*navigation_id=*/1001);
 
   auto logged_actions = GetLoggedActions();
   EXPECT_TRUE(logged_actions.empty());
 
   actor_service().StopTaskForTesting(
       task_id, actor::ActorTask::StoppedReason::kTaskComplete);
+}
+
+TEST_F(ActorCriticalActionLoggerTest, LogsWebMcpToolAction) {
+  TaskId task_id = CreateGlicTask();
+  ActorTask* task = actor_service().GetTask(task_id);
+
+  ScriptToolRequest request(CreateActorSurfaceHandle(),
+                            base::UnguessableToken::Create(), "flight_search",
+                            "{\"destination\":\"Paris\"}");
+
+  mojom::ActionResultPtr result = MakeOkResult();
+  result->script_tool_response = mojom::ScriptToolResponse::New();
+  result->script_tool_response->input_arguments = "{\"destination\":\"Paris\"}";
+  result->script_tool_response->tool = blink::mojom::ScriptTool::New();
+  result->script_tool_response->tool->name = "flight_search";
+  result->script_tool_response->tool->title = "Search Flights";
+  result->script_tool_response->tool->description =
+      "Searches and books flight tickets";
+  result->script_tool_response->tool->annotations =
+      blink::mojom::ScriptToolAnnotations::New();
+  result->script_tool_response->tool->annotations->consequential = true;
+  result->script_tool_response->tool->annotations->read_only = false;
+
+  ActorCriticalActionLogger::MaybeLogAction(*task, profile(), request, *result,
+                                            /*navigation_id=*/1014);
+  FlushPendingActions(1014);
+
+  auto logged_actions = GetLoggedActions();
+  ASSERT_EQ(logged_actions.size(), 1u);
+  EXPECT_EQ(logged_actions[0].action_type,
+            critical_actions::ActionType::kWebMcpTool);
+  EXPECT_EQ(logged_actions[0].conversation_id, kConversationId);
+  EXPECT_EQ(logged_actions[0].actor_task_id,
+            base::NumberToString(task_id.value()));
+  EXPECT_THAT(logged_actions[0].metadata,
+              HasSubstr("\"tool_name\":\"flight_search\""));
+  EXPECT_THAT(logged_actions[0].metadata,
+              HasSubstr("\"tool_title\":\"Search Flights\""));
+  EXPECT_THAT(
+      logged_actions[0].metadata,
+      HasSubstr("\"tool_description\":\"Searches and books flight tickets\""));
+  EXPECT_THAT(logged_actions[0].metadata, HasSubstr("\"consequential\":true"));
+  EXPECT_THAT(logged_actions[0].metadata, HasSubstr("\"read_only\":false"));
+  EXPECT_THAT(logged_actions[0].metadata, Not(HasSubstr("input_arguments")));
+
+  actor_service().StopTaskForTesting(
+      task_id, actor::ActorTask::StoppedReason::kTaskComplete);
+}
+
+class ActorCriticalActionLoggerSourceTest
+    : public ActorCriticalActionLoggerTest,
+      public testing::WithParamInterface<TaskSourceInfo::Client> {};
+
+// Critical actions of tasks not created by Glic must not be logged, neither
+// from tool execution nor from self-reported actions (e.g. downloads).
+TEST_P(ActorCriticalActionLoggerSourceTest, SkipsNonGlicTasks) {
+  // Arbitrary navigation id; pending entries are flushed when a visit with this
+  // id is recorded.
+  constexpr int64_t kNavigationId = 2001;
+
+  TaskId task_id = actor_service().CreateTaskWithSourceInfoForTesting(
+      TaskSourceInfo(GetParam(), "some-id"));
+  ActorTask* task = actor_service().GetTask(task_id);
+
+  PageTarget otp_input;
+  AttemptOtpFillingToolRequest request(CreateActorSurfaceHandle(), {otp_input},
+                                       /*for_signin=*/true);
+  mojom::ActionResultPtr result = MakeOkResult();
+  ActorCriticalActionLogger::MaybeLogAction(*task, profile(), request, *result,
+                                            kNavigationId);
+  ActorCriticalActionLogger::LogAgentSelfReportedAction(
+      profile(), *task, critical_actions::ActionType::kDownload, kNavigationId);
+  FlushPendingActions(kNavigationId);
+
+  EXPECT_TRUE(GetLoggedActions().empty());
+
+  actor_service().StopTaskForTesting(
+      task_id, actor::ActorTask::StoppedReason::kTaskComplete);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ActorCriticalActionLoggerSourceTest,
+    testing::Values(TaskSourceInfo::Client::kUnknown,
+                    TaskSourceInfo::Client::kTest,
+                    TaskSourceInfo::Client::kExperimentalActor,
+                    TaskSourceInfo::Client::kContextualTasks,
+                    TaskSourceInfo::Client::kTtc,
+                    TaskSourceInfo::Client::kBrowserActuator));
+
+TEST_F(ActorCriticalActionLoggerTest,
+       SkipsMaybeLogActionWhenSkipHistoryRecordingIsTrue) {
+  ActorTaskOptions options;
+  options.skip_history_recording = true;
+  TaskId task_id = CreateGlicTask(std::move(options));
+  ActorTask* task = actor_service().GetTask(task_id);
+  ASSERT_TRUE(task);
+  EXPECT_TRUE(task->skip_history_recording());
+
+  PageTarget password_button;
+  AttemptLoginToolRequest request(CreateActorSurfaceHandle(), password_button,
+                                  std::nullopt);
+  mojom::ActionResultPtr result = MakeOkResult();
+  result->attempt_login_status = mojom::AttemptLoginStatus::kPasswordManager;
+
+  ActorCriticalActionLogger::MaybeLogAction(*task, profile(), request, *result,
+                                            /*navigation_id=*/1015);
+  FlushPendingActions(1015);
+
+  EXPECT_TRUE(GetLoggedActions().empty());
+
+  actor_service().StopTaskForTesting(
+      task_id, actor::ActorTask::StoppedReason::kTaskComplete);
+}
+
+TEST_F(ActorCriticalActionLoggerTest,
+       SkipsLogAgentSelfReportedActionWhenSkipHistoryRecordingIsTrue) {
+  ActorTaskOptions options;
+  options.skip_history_recording = true;
+  TaskId task_id = CreateGlicTask(std::move(options));
+  ActorTask* task = actor_service().GetTask(task_id);
+  ASSERT_TRUE(task);
+
+  ActorCriticalActionLogger::LogAgentSelfReportedAction(
+      profile(), *task, critical_actions::ActionType::kDownload,
+      /*navigation_id=*/1016);
+  FlushPendingActions(1016);
+
+  EXPECT_TRUE(GetLoggedActions().empty());
+
+  actor_service().StopTaskForTesting(
+      task_id, actor::ActorTask::StoppedReason::kTaskComplete);
+}
+
+TEST_F(ActorCriticalActionLoggerTest,
+       OnDownloadCreatedRespectsSkipHistoryRecording) {
+  NavigateAndCommit(GURL("https://example.com"));
+  ActorSurfaceHandle surface_handle = CreateActorSurfaceHandle();
+  int64_t nav_id = web_contents()->GetPrimaryMainFrame()->GetNavigationId();
+
+  ActorTaskOptions skip_options;
+  skip_options.skip_history_recording = true;
+  TaskId skip_task_id = CreateGlicTask(std::move(skip_options));
+  AddTabToTask(*surface_handle.GetTabHandle().Get(),
+               *actor_service().GetTask(skip_task_id));
+
+  testing::NiceMock<download::MockDownloadItem> download_item;
+  content::DownloadItemUtils::AttachInfoForTesting(&download_item, profile(),
+                                                   web_contents());
+
+  actor_service().OnDownloadCreated(nullptr, &download_item);
+  FlushPendingActions(nav_id);
+  EXPECT_TRUE(GetLoggedActions().empty());
+
+  actor_service().StopTaskForTesting(
+      skip_task_id, actor::ActorTask::StoppedReason::kTaskComplete);
+
+  TaskId normal_task_id = CreateGlicTask();
+  AddTabToTask(*surface_handle.GetTabHandle().Get(),
+               *actor_service().GetTask(normal_task_id));
+
+  actor_service().OnDownloadCreated(nullptr, &download_item);
+  FlushPendingActions(nav_id);
+  auto logged_actions = GetLoggedActions();
+  ASSERT_EQ(logged_actions.size(), 1u);
+  EXPECT_EQ(logged_actions[0].action_type,
+            critical_actions::ActionType::kDownload);
+
+  actor_service().StopTaskForTesting(
+      normal_task_id, actor::ActorTask::StoppedReason::kTaskComplete);
 }
 
 }  // namespace

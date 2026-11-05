@@ -121,7 +121,9 @@ class CORE_EXPORT FontBuilder {
                                  false);
   }
   static FontSizeAdjust InitialSizeAdjust() { return FontSizeAdjust(); }
-  static TextRenderingMode InitialTextRendering() { return kAutoTextRendering; }
+  static TextRenderingMode InitialTextRendering() {
+    return TextRenderingMode::kAuto;
+  }
   static FontDescription::FontVariantCaps InitialVariantCaps() {
     return FontDescription::kCapsNormal;
   }
@@ -141,8 +143,12 @@ class CORE_EXPORT FontBuilder {
   static TextSpacingTrim InitialTextSpacingTrim() {
     return TextSpacingTrim::kInitial;
   }
-  static OpticalSizing InitialFontOpticalSizing() { return kAutoOpticalSizing; }
-  static FontSmoothingMode InitialFontSmoothing() { return kAutoSmoothing; }
+  static OpticalSizing InitialFontOpticalSizing() {
+    return OpticalSizing::kAuto;
+  }
+  static FontSmoothingMode InitialFontSmoothing() {
+    return FontSmoothingMode::kAuto;
+  }
 
   static constexpr FontSelectionValue InitialStretch() {
     return kNormalWidthValue;
@@ -166,7 +172,9 @@ class CORE_EXPORT FontBuilder {
   static FontDescription::FontVariantPosition InitialVariantPosition() {
     return FontDescription::kNormalVariantPosition;
   }
-  static FontVariantEmoji InitialVariantEmoji() { return kNormalVariantEmoji; }
+  static FontVariantEmoji InitialVariantEmoji() {
+    return FontVariantEmoji::kNormal;
+  }
 
  private:
   void SetFamilyDescription(FontDescription&,

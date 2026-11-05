@@ -25,7 +25,6 @@
 #include "chrome/browser/apps/app_service/intent_util.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/fileapi/arc_content_file_system_url_util.h"
-#include "chrome/browser/ash/arc/nearby_share/arc_nearby_share_uma.h"
 #include "chrome/browser/ash/arc/nearby_share/ui/error_dialog_view.h"
 #include "chrome/browser/ash/arc/nearby_share/ui/low_disk_space_dialog_view.h"
 #include "chrome/browser/ash/arc/nearby_share/ui/nearby_share_overlay_view.h"
@@ -38,7 +37,6 @@
 #include "chrome/browser/sharesheet/sharesheet_service_factory.h"
 #include "chrome/browser/sharesheet/sharesheet_types.h"
 #include "chrome/browser/webshare/prepare_directory_task.h"
-#include "chrome/common/chrome_paths_internal.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
@@ -49,6 +47,7 @@
 #include "net/base/filename_util.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "third_party/cros_system_api/constants/cryptohome.h"
+#include "ui/views/view_utils.h"
 
 // Enable VLOG level 1.
 #undef ENABLED_VLOG_LEVEL
@@ -81,18 +80,6 @@ void DeletePathAndFiles(const base::FilePath& file_path) {
   if (!file_path.empty() && base::PathExists(file_path)) {
     base::DeletePathRecursively(file_path);
   }
-}
-
-void DoDeleteShareCacheFilePaths(const base::FilePath& profile_path,
-                                 const base::FilePath& user_cache_file_path) {
-  // Up until M99, shared files were stored in <user_cache_dir>/.NearbyShare.
-  // We should remove this obsolete directory path if it is still present.
-  base::FilePath cache_base_path;
-  chrome::GetUserCacheDirectory(profile_path, &cache_base_path);
-  DeletePathAndFiles(cache_base_path.Append(kArcNearbyShareDirname));
-
-  // Delete the current user cache file path.
-  DeletePathAndFiles(user_cache_file_path);
 }
 
 // Calculate the amount of disk space, in bytes, needed in |share_dir| to
@@ -163,7 +150,6 @@ NearbyShareSessionImpl::NearbyShareSessionImpl(
   aura::Window* const arc_window = GetArcWindow(task_id_);
   if (arc_window) {
     VLOG(1) << "ARC window found.";
-    UpdateNearbyShareWindowFound(true);
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(&NearbyShareSessionImpl::OnArcWindowFound,
                                   weak_ptr_factory_.GetWeakPtr(), arc_window));
@@ -184,8 +170,7 @@ void NearbyShareSessionImpl::DeleteShareCacheFilePaths(Profile* const profile) {
 
   base::ThreadPool::PostTask(
       FROM_HERE, {base::MayBlock()},
-      base::BindOnce(&DoDeleteShareCacheFilePaths, profile->GetPath(),
-                     GetUserCacheFilePath(profile)));
+      base::BindOnce(&DeletePathAndFiles, GetUserCacheFilePath(profile)));
 }
 
 void NearbyShareSessionImpl::OnNearbyShareClosed(
@@ -283,7 +268,9 @@ apps::IntentPtr NearbyShareSessionImpl::ConvertShareIntentInfoToIntent() {
 void NearbyShareSessionImpl::OnPreparedDirectory(base::File::Error result) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(arc_window_, base::NotFatalUntil::M160);
-  CHECK_GT(file_handler_->GetTotalSizeOfFiles(), 0u, base::NotFatalUntil::M160);
+  // TODO(crbug.com/575975547): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_GT(file_handler_->GetTotalSizeOfFiles(), 0u);
 
   DVLOG(1) << __func__;
   if (result == base::File::FILE_ERROR_NO_SPACE) {
@@ -351,9 +338,10 @@ void NearbyShareSessionImpl::OnFileStreamingStarted() {
   // UI step as the file streaming time should be < 1 second.
   if (file_handler_->GetTotalSizeOfFiles() > kShowProgressBarMinSizeInBytes) {
     const bool is_multiple_files = file_handler_->GetNumberOfFiles() > 1;
-    progress_bar_view_ =
+    auto progress_bar_view =
         std::make_unique<ProgressBarDialogView>(is_multiple_files);
-    ProgressBarDialogView::Show(arc_window_, progress_bar_view_.get());
+    progress_bar_view_tracker_.SetView(progress_bar_view.get());
+    ProgressBarDialogView::Show(arc_window_, std::move(progress_bar_view));
 
     // Keep updating the progress bar if the interval timer elapsed to update
     // the user on the file streaming progress.
@@ -377,14 +365,13 @@ void NearbyShareSessionImpl::ShowNearbyShareBubbleInArcWindow(
   }
 
   // Close any overlay and respective child views that may still be shown.
-  progress_bar_view_.reset();
+  progress_bar_view_tracker_.SetView(nullptr);
   NearbyShareOverlayView::CloseOverlayOn(arc_window_);
 
   // Only applicable if sharing files.
   if (result.has_value() && result.value() != base::File::FILE_OK) {
     LOG(ERROR) << "Failed to complete file streaming with error: "
                << base::File::ErrorToString(result.value());
-    UpdateNearbyShareFileStreamError(result.value());
     ShowErrorDialog();
     return;
   }
@@ -439,7 +426,6 @@ void NearbyShareSessionImpl::OnTimerFired() {
 
   LOG(ERROR) << "ARC window didn't get initialized within "
              << kWindowInitializationTimeout.InSeconds() << " second(s).";
-  UpdateNearbyShareWindowFound(false);
   CleanupSession(/*should_cleanup_files=*/true);
 }
 
@@ -447,8 +433,9 @@ void NearbyShareSessionImpl::OnProgressBarIntervalElapsed() {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   DVLOG(1) << __func__;
-  if (progress_bar_view_) {
-    progress_bar_view_->UpdateInterpolatedProgressBarValue();
+  if (auto* progress_bar = views::AsViewClass<ProgressBarDialogView>(
+          progress_bar_view_tracker_.view())) {
+    progress_bar->UpdateInterpolatedProgressBarValue();
   }
 }
 
@@ -456,10 +443,11 @@ void NearbyShareSessionImpl::OnProgressBarUpdate(double value) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   DVLOG(1) << "OnProgressBarUpdate with value: " << value;
-  if (progress_bar_view_) {
+  if (auto* progress_bar = views::AsViewClass<ProgressBarDialogView>(
+          progress_bar_view_tracker_.view())) {
     // Only show value if there is forward progress.
-    if (value > progress_bar_view_->GetProgressBarValue()) {
-      progress_bar_view_->UpdateProgressBarValue(value);
+    if (value > progress_bar->GetProgressBarValue()) {
+      progress_bar->UpdateProgressBarValue(value);
     }
   }
 }
@@ -515,7 +503,7 @@ void NearbyShareSessionImpl::FinishSession() {
   if (progress_bar_update_timer_.IsRunning()) {
     progress_bar_update_timer_.Stop();
   }
-  progress_bar_view_.reset();
+  progress_bar_view_tracker_.SetView(nullptr);
   aura::Window* const arc_window = GetArcWindow(task_id_);
   if (arc_window) {
     NearbyShareOverlayView::CloseOverlayOn(arc_window);

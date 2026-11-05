@@ -54,13 +54,12 @@ class ChromeAppListModelUpdater : public AppListModelUpdater,
   void RemoveItem(const std::string& id, bool is_uninstall) override;
   void SetStatus(ash::AppListModelStatus status) override;
   void SetSearchEngineIsGoogle(bool is_google) override;
-  void RecalculateWouldTriggerLauncherSearchIph() override;
   void PublishSearchResults(
-      const std::vector<raw_ptr<ChromeSearchResult, VectorExperimental>>&
+      const std::vector<raw_ptr<ChromeSearchResult, DanglingUntriaged>>&
           results,
       const std::vector<ash::AppListSearchResultCategory>& categories) override;
   void ClearSearchResults() override;
-  std::vector<raw_ptr<ChromeSearchResult, VectorExperimental>>
+  std::vector<raw_ptr<ChromeSearchResult, DanglingUntriaged>>
   GetPublishedSearchResultsForTest() override;
   void SetAccessibleName(const std::string& id,
                          const std::string& name) override;
@@ -212,8 +211,6 @@ class ChromeAppListModelUpdater : public AppListModelUpdater,
   // list is sorted by color.
   void MaybeUpdatePositionWhenIconColorChange(ash::AppListItemMetadata* data);
 
-  void OnFeatureEngagementTrackerInitialized(bool success);
-
   // Indicates the profile that the model updater is associated with.
   const raw_ptr<Profile> profile_ = nullptr;
 
@@ -231,7 +228,7 @@ class ChromeAppListModelUpdater : public AppListModelUpdater,
   bool is_active_ = false;
 
   // The most recently list of search results.
-  std::vector<raw_ptr<ChromeSearchResult, VectorExperimental>>
+  std::vector<raw_ptr<ChromeSearchResult, DanglingUntriaged>>
       published_results_;
   // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
   base::ObserverList<

@@ -164,24 +164,38 @@ SVGParsingError SVGAnimatedPropertyBase::UpdateBaseValueFromAttribute(
   static_assert(Property::kInitialValueBits <= kInitialValueStorageBits,
                 "enough bits for the initial value");
 
-  const bool is_attr_removal = value.IsNull();
-  SetContentAttributeState(is_attr_removal ? kNotSet : kHasValue);
-
   if constexpr (Property::kInitialValueBits > 0) {
     SVGParsingError parse_status = SVGParseStatus::kNoError;
-    if (!is_attr_removal) {
+    if (!value.IsNull()) {
+      SetContentAttributeState(kHasValue);
+
       parse_status =
           base_value.SetValueAsString(value, std::forward<Args>(args)...);
+      // If parsing succeeded, check for semantic errors.
       if (parse_status == SVGParseStatus::kNoError) [[likely]] {
         parse_status = validator(base_value);
+        if (parse_status == SVGParseStatus::kNoError) {
+          return parse_status;
+        }
       }
+    } else {
+      SetContentAttributeState(kNotSet);
     }
-    if (is_attr_removal || parse_status != SVGParseStatus::kNoError) {
-      base_value.SetInitial(InitialValueStorage());
-    }
+    base_value.SetInitial(InitialValueStorage());
     return parse_status;
   } else {
-    return base_value.SetValueAsString(value, std::forward<Args>(args)...);
+    if (!value.IsNull()) {
+      SetContentAttributeState(kHasValue);
+    } else {
+      SetContentAttributeState(kNotSet);
+    }
+    SVGParsingError parse_status =
+        base_value.SetValueAsString(value, std::forward<Args>(args)...);
+    // If parsing succeeded, check for semantic errors.
+    if (parse_status == SVGParseStatus::kNoError) [[likely]] {
+      parse_status = validator(base_value);
+    }
+    return parse_status;
   }
 }
 
@@ -200,8 +214,7 @@ class SVGAnimatedPropertyCommon : public SVGAnimatedPropertyBase {
   bool IsAnimating() const override { return current_value_ != base_value_; }
 
   void SetAnimatedValue(SVGPropertyBase* value) override {
-    DCHECK(!value || value->GetType() == Property::ClassType());
-    current_value_ = value ? static_cast<Property*>(value) : BaseValue();
+    current_value_ = value ? To<Property>(value) : BaseValue();
   }
 
   void Trace(Visitor* visitor) const override {

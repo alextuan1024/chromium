@@ -14,6 +14,7 @@ load("//project.star", "settings")
 def chrome_internal_verifier(
         *,
         builder,
+        bucket = "try",
         cq_settings = None,
         **kwargs):
     """Registers an internal Chrome trybot in Chromium's CQ config
@@ -23,13 +24,18 @@ def chrome_internal_verifier(
       cq_settings - A struct containing the details of the tryjob verifier for the
         builder, obtained by calling the `try.cq_settings()` function.
     """
+    builder_full_path = "{}:{}/{}".format(
+        settings.chrome_project,
+        bucket,
+        builder,
+    )
     if cq_settings != None:
         location_filters = cq_settings.location_filters
         if cq_settings.add_default_filters:
             location_filters = (location_filters or []) + default_location_filters()
 
         branches.cq_tryjob_verifier(
-            builder = "{}:try/{}".format(settings.chrome_project, builder),
+            builder = builder_full_path,
             cancel_stale = cq_settings.cancel_stale,
             cq_group = "cq",
             disable_reuse = cq_settings.disable_reuse,
@@ -44,8 +50,12 @@ def chrome_internal_verifier(
             **kwargs
         )
     else:
+        kwargs.setdefault(
+            "reuse_max_commit_distance",
+            None if kwargs.get("disable_reuse") else try_.defaults.reuse_max_commit_distance.get(),
+        )
         branches.cq_tryjob_verifier(
-            builder = "{}:try/{}".format(settings.chrome_project, builder),
+            builder = builder_full_path,
             cq_group = "cq",
             includable_only = True,
             owner_whitelist = default_owner_whitelist_group_for_cq_bots(settings.chrome_project),
@@ -83,6 +93,25 @@ chrome_internal_verifier(
         custom_cq_run_modes = [try_.MEGA_CQ_DRY_RUN_NAME, try_.MEGA_CQ_FULL_RUN_NAME],
         on_default_cq = True,
     ),
+)
+
+chrome_internal_verifier(
+    bucket = "try.security",
+    builder = "vuln-scan-dispatcher",
+    cq_settings = try_.cq_settings(
+        on_default_cq = True,
+    ),
+    owner_whitelist = ["mdb/potassium-katabolism-team"],
+)
+
+chrome_internal_verifier(
+    bucket = "try.security",
+    builder = "vuln-scan-dispatcher-exp",
+    cq_settings = try_.cq_settings(
+        experiment_percentage = 10,
+        on_default_cq = True,
+    ),
+    owner_whitelist = ["googlers"],
 )
 
 ### Optional builders ###
@@ -149,6 +178,10 @@ chrome_internal_verifier(
 chrome_internal_verifier(
     branch_selector = branches.selector.ANDROID_BRANCHES,
     builder = "android-x64-rel-ready",
+)
+
+chrome_internal_verifier(
+    builder = "android-webview-perf-trigger",
 )
 
 chrome_internal_verifier(
@@ -348,6 +381,7 @@ chrome_internal_verifier(
 )
 
 chrome_internal_verifier(
+    branch_selector = branches.selector.LINUX_BRANCHES,
     builder = "linux-bluebird-rel",
 )
 
@@ -402,6 +436,7 @@ chrome_internal_verifier(
 )
 
 chrome_internal_verifier(
+    branch_selector = branches.selector.MAC_BRANCHES,
     builder = "mac-arm64-bluebird-rel",
 )
 
@@ -443,6 +478,7 @@ optimization_guide_cq_settings = try_.cq_settings(
         "components/on_device_translation/.+",
         "components/optimization_guide/.+",
         "services/on_device_model/.+",
+        "testing/buildbot/internal.optimization_guide.json",
         "third_party/blink/web_tests/external/wpt/ai/.+",
         "third_party/blink/web_tests/AIExpectations.*",
     ],
@@ -494,6 +530,7 @@ chrome_internal_verifier(
 )
 
 chrome_internal_verifier(
+    branch_selector = branches.selector.WINDOWS_BRANCHES,
     builder = "win-arm64-bluebird-rel",
 )
 
@@ -508,6 +545,7 @@ chrome_internal_verifier(
 )
 
 chrome_internal_verifier(
+    branch_selector = branches.selector.WINDOWS_BRANCHES,
     builder = "win-bluebird-rel",
 )
 

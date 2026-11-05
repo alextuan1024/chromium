@@ -16,6 +16,7 @@
 #include "ash/system/status_area_widget_delegate.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/window_util.h"
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "ui/aura/test/test_windows.h"
 #include "ui/aura/window.h"
@@ -39,7 +40,7 @@ class PanedWidgetDelegate : public views::WidgetDelegate {
   PanedWidgetDelegate& operator=(const PanedWidgetDelegate&) = delete;
 
   void SetAccessiblePanes(
-      const std::vector<raw_ptr<views::View, VectorExperimental>>& panes) {
+      const std::vector<raw_ptr<views::View, DanglingUntriaged>>& panes) {
     accessible_panes_ = panes;
   }
 
@@ -49,7 +50,7 @@ class PanedWidgetDelegate : public views::WidgetDelegate {
   }
 
  private:
-  std::vector<raw_ptr<views::View, VectorExperimental>> accessible_panes_;
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> accessible_panes_;
 };
 
 }  // namespace
@@ -283,7 +284,7 @@ TEST_F(FocusCyclerTest, CycleFocusThroughWindowWithPanes) {
   view4->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
   pane2->AddChildViewRaw(view4);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> panes;
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> panes;
   panes.push_back(pane1);
   panes.push_back(pane2);
 
@@ -405,8 +406,8 @@ TEST_F(FocusCyclerTest, CycleFocusThroughWindowWithPanes_MoveOntoNext) {
   EXPECT_TRUE(GetPrimaryStatusAreaWidget()->IsActive());
 
   // Manually deallocate to ensure delegate outlives widget.
-  browser_widget.release();
-  test_widget_delegate.release();
+  browser_widget.reset();
+  test_widget_delegate.reset();
 }
 
 // Test that when the shelf widget & status area widget are removed, they should
@@ -439,6 +440,26 @@ TEST_F(FocusCyclerTest, RemoveWidgetOnDisplayRemoved) {
   // Cycle focus should go back to the browser.
   focus_cycler()->RotateFocus(FocusCycler::FORWARD);
   EXPECT_TRUE(wm::IsActiveWindow(window.get()));
+}
+
+TEST_F(FocusCyclerTest, RemoveClientOwnsWidgetOnDestroy) {
+  focus_cycler()->ResetForTesting();
+
+  auto widget = std::make_unique<views::Widget>();
+  views::Widget::InitParams params(
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_WINDOW);
+  params.bounds = {100, 100};
+  widget->Init(std::move(params));
+  widget->Show();
+
+  focus_cycler()->AddWidget(widget.get());
+  EXPECT_EQ(widget.get(), focus_cycler()->FindWidget(base::BindRepeating(
+                              [](views::Widget* w) { return true; })));
+
+  widget.reset();
+  EXPECT_EQ(nullptr, focus_cycler()->FindWidget(base::BindRepeating(
+                         [](views::Widget* w) { return true; })));
 }
 
 }  // namespace ash

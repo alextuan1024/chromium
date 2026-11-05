@@ -27,10 +27,9 @@ GlobalScopeCreationParams::GlobalScopeCreationParams(
     scoped_refptr<WebWorkerFetchContext> web_worker_fetch_context,
     Vector<network::mojom::blink::ContentSecurityPolicyPtr>
         outside_content_security_policies,
-    Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-        response_content_security_policies,
+    mojo::PendingRemote<mojom::blink::OutsideContextCSPViolationReporter>
+        outside_settings_reporter,
     network::mojom::ReferrerPolicy referrer_policy,
-    DocumentPolicy::DocumentPolicyBundle document_policy,
     const SecurityOrigin* starter_origin,
     bool starter_secure_context,
     HttpsState starter_https_state,
@@ -52,6 +51,7 @@ GlobalScopeCreationParams::GlobalScopeCreationParams(
     const std::optional<ExecutionContextToken>& parent_context_token,
     bool cross_origin_isolated_capability,
     bool parent_is_isolated_context,
+    base::TimeTicks time_origin,
     bool direct_sockets_force_enabled_in_parent,
     InterfaceRegistry* interface_registry,
     scoped_refptr<base::SingleThreadTaskRunner>
@@ -72,10 +72,8 @@ GlobalScopeCreationParams::GlobalScopeCreationParams(
       web_worker_fetch_context(std::move(web_worker_fetch_context)),
       outside_content_security_policies(
           std::move(outside_content_security_policies)),
-      response_content_security_policies(
-          std::move(response_content_security_policies)),
+      outside_settings_reporter(std::move(outside_settings_reporter)),
       referrer_policy(referrer_policy),
-      document_policy(std::move(document_policy)),
       starter_origin(starter_origin ? starter_origin->IsolatedCopy() : nullptr),
       origin_to_use(std::move(origin_to_use)),
       starter_secure_context(starter_secure_context),
@@ -108,6 +106,7 @@ GlobalScopeCreationParams::GlobalScopeCreationParams(
       parent_context_token(parent_context_token),
       cross_origin_isolated_capability(cross_origin_isolated_capability),
       parent_is_isolated_context(parent_is_isolated_context),
+      time_origin(time_origin),
       direct_sockets_force_enabled_in_parent(
           direct_sockets_force_enabled_in_parent),
       interface_registry(interface_registry),
@@ -143,9 +142,8 @@ GlobalScopeCreationParams::CreateForWorkerForTesting(
       "fake user agent", UserAgentMetadata(),
       base::MakeRefCounted<EmptyWebWorkerFetchContext>(),
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      network::mojom::ReferrerPolicy::kDefault,
-      DocumentPolicy::DocumentPolicyBundle{}, starter_origin,
+      /*outside_settings_reporter=*/mojo::NullRemote(),
+      network::mojom::ReferrerPolicy::kDefault, starter_origin,
       /*starter_secure_context=*/false, CalculateHttpsState(starter_origin),
       MakeGarbageCollected<WorkerClients>(),
       /*content_settings_client=*/nullptr,

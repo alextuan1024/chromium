@@ -44,6 +44,7 @@
 #include "sandbox/linux/services/syscall_wrappers.h"
 #include "sandbox/linux/services/thread_helpers.h"
 #include "sandbox/linux/system_headers/linux_futex.h"
+#include "sandbox/linux/system_headers/linux_prctl.h"
 #include "sandbox/linux/system_headers/linux_syscalls.h"
 #include "sandbox/linux/system_headers/linux_time.h"
 #include "sandbox/linux/tests/test_utils.h"
@@ -433,6 +434,36 @@ BPF_DEATH_TEST_C(BaselinePolicy,
 }
 #endif
 
+#if defined(__x86_64__)
+BPF_TEST_C(BaselinePolicy, ArchPrctlUntagMask, BaselinePolicy) {
+  errno = 0;
+  uint64_t untag_mask;
+  const int ret = syscall(__NR_arch_prctl, ARCH_GET_UNTAG_MASK, &untag_mask);
+  // Kernels older than 6.4 do not recognize ARCH_GET_UNTAG_MASK and return
+  // EINVAL.
+  BPF_ASSERT(ret == 0 || (ret == -1 && errno == EINVAL));
+}
+
+#if !BUILDFLAG(CLANG_PROFILING_INSIDE_SANDBOX)
+BPF_DEATH_TEST_C(BaselinePolicy,
+                 ArchPrctlSigsys,
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
+                 BaselinePolicy) {
+  uint64_t fs;
+  syscall(__NR_arch_prctl, ARCH_GET_FS, &fs);
+  _exit(1);
+}
+
+BPF_DEATH_TEST_C(BaselinePolicy,
+                 ArchPrctlEnableTaggedAddrSigsys,
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
+                 BaselinePolicy) {
+  syscall(__NR_arch_prctl, ARCH_ENABLE_TAGGED_ADDR, 6);
+  _exit(1);
+}
+#endif
+#endif  // defined(__x86_64__)
+
 BPF_TEST_C(BaselinePolicy, GetOrSetPriority, BaselinePolicy) {
   errno = 0;
   const int original_prio = getpriority(PRIO_PROCESS, 0);
@@ -629,6 +660,74 @@ BPF_DEATH_TEST_C(BaselinePolicy,
   [[maybe_unused]] int fd =
       syscall(__NR_memfd_create, "should_never_be_allocated",
               MFD_CLOEXEC | MFD_HUGETLB);
+}
+
+#if defined(__i386__)
+// On i386, __NR_mmap is the legacy sys_old_mmap, which takes a single pointer
+// to an argument struct whose contents cannot be filtered. The policy rejects
+// the syscall with ENOSYS so callers use __NR_mmap2 instead.
+BPF_TEST_C(BaselinePolicy, OldMmapEnosys, BaselinePolicy) {
+  struct {
+    unsigned long addr;
+    unsigned long len;
+    unsigned long prot;
+    unsigned long flags;
+    unsigned long fd;
+    unsigned long offset;
+  } args = {0,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE,
+            static_cast<unsigned long>(-1),
+            0};
+  errno = 0;
+  // The fourth register is not part of this syscall's ABI; load it with a
+  // value that RestrictMmapFlags() would accept to ensure the rejection is
+  // unconditional.
+  long ret = syscall(__NR_mmap, &args, 0, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+  BPF_ASSERT_EQ(-1, ret);
+  BPF_ASSERT_EQ(ENOSYS, errno);
+}
+#endif  // defined(__i386__)
+
+// Added in Linux 6.10: (F_LINUX_SPECIFIC_BASE + 3).
+#if !defined(F_DUPFD_QUERY)
+#define F_DUPFD_QUERY 1027
+#endif
+
+BPF_TEST_C(BaselinePolicy, FcntlDupfdQuery, BaselinePolicy) {
+  int pipefd[2];
+  BPF_ASSERT_EQ(0, pipe(pipefd));
+  base::ScopedFD read_end(pipefd[0]);
+  base::ScopedFD write_end(pipefd[1]);
+
+  errno = 0;
+  int ret = fcntl(read_end.get(), F_DUPFD_QUERY, read_end.get());
+  if (ret == -1 && errno == EINVAL) {
+    // Kernel older than 6.10 does not support F_DUPFD_QUERY.
+    return;
+  }
+  BPF_ASSERT_EQ(1, ret);
+  BPF_ASSERT_EQ(0, fcntl(read_end.get(), F_DUPFD_QUERY, write_end.get()));
+
+  base::ScopedFD dup_read(dup(read_end.get()));
+  BPF_ASSERT_LE(0, dup_read.get());
+  BPF_ASSERT_EQ(1, fcntl(read_end.get(), F_DUPFD_QUERY, dup_read.get()));
+
+  errno = 0;
+  BPF_ASSERT_EQ(-1, fcntl(-1, F_DUPFD_QUERY, read_end.get()));
+  BPF_ASSERT_EQ(EBADF, errno);
+
+  errno = 0;
+  BPF_ASSERT_EQ(-1, fcntl(read_end.get(), F_DUPFD_QUERY, -1));
+  BPF_ASSERT_EQ(EBADF, errno);
+}
+
+BPF_DEATH_TEST_C(BaselinePolicy,
+                 FcntlDisallowedCommandCrashes,
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
+                 BaselinePolicy) {
+  fcntl(0, F_NOTIFY, 0);
 }
 
 }  // namespace

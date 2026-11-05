@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 
+#include "base/numerics/angle_conversions.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "third_party/blink/renderer/core/css/css_length_resolver.h"
 #include "third_party/blink/renderer/core/css/css_value_clamping_utils.h"
@@ -99,7 +100,7 @@ double CSSNumericLiteralValue::ComputeDegrees() const {
     case UnitType::kDegrees:
       return num_;
     case UnitType::kRadians:
-      return Rad2deg(num_);
+      return base::RadToDeg(num_);
     case UnitType::kGradians:
       return Grad2deg(num_);
     case UnitType::kTurns:
@@ -188,44 +189,40 @@ bool CSSNumericLiteralValue::IsComputationallyIndependent() const {
   return !IsRelativeUnit(GetType());
 }
 
-static String FormatNumber(double number, const char* suffix) {
+static void FormatNumber(double number, StringBuilder& builder) {
   // https://www.w3.org/TR/cssom-1/#serialize-a-css-component-value specifies
   // rounding, but does not specify the rounding mode.
   // This function has historically used round-to-even, whereas blink::Format()
   // rounds half away from zero. We use absl::StrFormat() for round-to-even
   // to maintain compatibility.
-  return String(absl::StrFormat("%.6g%s", number, suffix));
+  builder.Append(base::as_byte_span(absl::StrFormat("%.6g", number)));
 }
 
-static String FormatInfinityOrNaN(double number, StringView suffix) {
-  String result;
+static void FormatInfinityOrNaN(double number,
+                                bool has_unit_suffix,
+                                StringBuilder& builder) {
   if (std::isinf(number)) {
-    if (number > 0) {
-      result = "infinity";
-    } else {
-      result = "-infinity";
+    if (number < 0) {
+      builder.Append('-');
     }
-
+    builder.Append("infinity");
   } else {
     DCHECK(std::isnan(number));
-    result = "NaN";
+    builder.Append("NaN");
   }
-
-  if (suffix.length() > 0) {
-    result = StrCat({result, " * 1", suffix});
+  if (has_unit_suffix) {
+    builder.Append(" * 1");
   }
-  return result;
 }
 
-String CSSNumericLiteralValue::CustomCSSText() const {
-  String text;
-  switch (GetType()) {
+// static
+String CSSNumericLiteralValue::Serialize(double value, UnitType type) {
+  switch (type) {
     case UnitType::kUnknown:
       // FIXME
-      break;
+      return String();
     case UnitType::kInteger:
-      text = String::Number(ComputeInteger());
-      break;
+      return String::Number(ClampTo<int>(value));
     case UnitType::kNumber:
     case UnitType::kPercentage:
     case UnitType::kEms:
@@ -292,33 +289,35 @@ String CSSNumericLiteralValue::CustomCSSText() const {
     case UnitType::kContainerBlockSize:
     case UnitType::kContainerMin:
     case UnitType::kContainerMax: {
+      StringBuilder builder;
+      StringView unit_type = UnitTypeToString(type);
       // The following integers are minimal and maximum integers which can
       // be represented in non-exponential format with 6 digit precision.
       constexpr int kMinInteger = -999999;
       constexpr int kMaxInteger = 999999;
-      double value = DoubleValue();
       // If the value is small integer, go the fast path.
       if (value < kMinInteger || value > kMaxInteger ||
           std::trunc(value) != value) {
         if (!std::isfinite(value)) {
-          text = FormatInfinityOrNaN(value, UnitTypeToString(GetType()));
+          FormatInfinityOrNaN(value, !unit_type.empty(), builder);
         } else {
-          text =
-              FormatNumber(value, UnitTypeToString(GetType()).Utf8().c_str());
+          FormatNumber(value, builder);
         }
       } else {
-        StringBuilder builder;
         int int_value = value;
-        StringView unit_type = UnitTypeToString(GetType());
         builder.AppendNumber(int_value);
-        builder.Append(unit_type);
-        text = builder.ReleaseString();
       }
-    } break;
+      builder.Append(unit_type);
+      return builder.ReleaseString();
+    }
     case UnitType::kIdent:
       NOTREACHED();
   }
-  return text;
+  NOTREACHED();
+}
+
+String CSSNumericLiteralValue::CustomCSSText() const {
+  return Serialize(DoubleValue(), GetType());
 }
 
 bool CSSNumericLiteralValue::Equals(const CSSNumericLiteralValue& other) const {

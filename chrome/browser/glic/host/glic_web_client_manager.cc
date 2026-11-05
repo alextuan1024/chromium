@@ -4,36 +4,71 @@
 
 #include "chrome/browser/glic/host/glic_web_client_manager.h"
 
+#include <array>
+#include <cstddef>
+#include <optional>
+#include <string_view>
 #include <utility>
 
+#include "base/check.h"
 #include "base/check_deref.h"
+#include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
+#include "base/notreached.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
+#include "chrome/browser/glic/gemini_enterprise/geic_sign_in_controller.h"
+#include "chrome/browser/glic/host/glic_guest_page_load_metrics_observer.h"
 #include "chrome/browser/glic/host/glic_web_client_handler.h"
 #include "chrome/browser/glic/host/guest_util.h"
+#include "chrome/browser/glic/host/guest_util_internal.h"
 #include "chrome/browser/glic/host/host.h"
+#include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
+#include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/pwc/privileged_web_contents.h"
+#include "chrome/browser/pwc/pwc_component_policy.h"
+#include "components/security_interstitials/content/security_interstitial_tab_helper.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "net/base/net_errors.h"
+#include "net/http/http_response_headers.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 namespace glic {
 
+// Default-enabled platforms: all (security interstitial handling for the Glic
+// guest).
+BASE_FEATURE(kGlicShowSecurityInterstitials, base::FEATURE_ENABLED_BY_DEFAULT);
+
 namespace {
 
+// Classifies URLs into GuestPageType.
+// Reverse proxy authentication paths (e.g. `/_up` or `/_up/...`) and SSO
+// login endpoints are classified as kLogin so the guest WebContents is
+// displayed directly to the user to authenticate rather than triggering
+// an error overlay or treating them as a broken web client.
 mojom::GuestPageType GetGuestPageType(const GURL& url) {
   if (IsAdminBlockedUrl(url)) {
     return mojom::GuestPageType::kDisabledByAdmin;
   }
+  const std::string_view path = url.path();
   if (url.DomainIs("login.corp.google.com") ||
       url.DomainIs("accounts.google.com") ||
       url.DomainIs("accounts.googlers.com") ||
-      url.DomainIs("gaiastaging.corp.google.com")) {
+      url.DomainIs("gaiastaging.corp.google.com") || path == "/_up" ||
+      path.starts_with("/_up/")) {
     return mojom::GuestPageType::kLogin;
   }
-  if (url.path().starts_with("/sorry/")) {
+  if (path.starts_with("/sorry/")) {
     return mojom::GuestPageType::kGuestError;
   }
   return mojom::GuestPageType::kRegular;
@@ -80,7 +115,312 @@ GlicWebviewExitReason TerminationStatusToExitReason(
 
 }  // namespace
 
-GlicWebClientManager::GlicWebClientManager() = default;
+class GlicWebClientManager::Metrics {
+ public:
+  Metrics() = default;
+  ~Metrics() = default;
+
+  void OnWebClientCreated() {
+    base::UmaHistogramEnumeration("Glic.Host.WebClientLifecycleEvent",
+                                  GlicWebClientLifecycleEvent::kCreated);
+  }
+
+  void OnWebClientInitialized() {
+    base::UmaHistogramEnumeration("Glic.Host.WebClientLifecycleEvent",
+                                  GlicWebClientLifecycleEvent::kInitialized);
+  }
+
+  void OnWebClientDisconnected(std::optional<GlicWebClientLifecycleEvent> event,
+                               bool had_web_client) {
+    base::UmaHistogramEnumeration(
+        "Glic.Host.WebClientLifecycleEvent",
+        event.value_or(
+            had_web_client
+                ? GlicWebClientLifecycleEvent::kDisconnectedAfterInitialization
+                : GlicWebClientLifecycleEvent::
+                      kDisconnectedBeforeInitialization));
+  }
+
+  void OnGuestNavigation(mojom::GuestPageType page_type, bool is_api_allowed) {
+    if (page_type != mojom::GuestPageType::kRegular || !is_api_allowed) {
+      has_error_or_crash_ = true;
+    }
+  }
+
+  void OnProcessGone(base::TerminationStatus status) {
+    has_error_or_crash_ = true;
+    base::UmaHistogramEnumeration("Glic.Contents.WebClientCrash.ExitReason",
+                                  TerminationStatusToExitReason(status));
+    if (status != base::TERMINATION_STATUS_NORMAL_TERMINATION) {
+      base::RecordAction(base::UserMetricsAction("GlicSessionWebClientCrash"));
+    }
+  }
+
+  void OnWebClientStateChanged(mojom::WebClientState state) {
+    if (state == mojom::WebClientState::kWarmed) {
+      MaybeRecordTimeToWarmed();
+    }
+  }
+
+  void MaybeRecordTimeToWarmed() {
+    if (has_recorded_time_to_warmed_ || has_error_or_crash_) {
+      return;
+    }
+    has_recorded_time_to_warmed_ = true;
+    base::TimeDelta duration = base::TimeTicks::Now() - creation_time_;
+    base::UmaHistogramCustomTimes("Glic.Contents.TimeToWarmed", duration,
+                                  base::Milliseconds(1), base::Seconds(60), 50);
+  }
+
+ private:
+  const base::TimeTicks creation_time_ = base::TimeTicks::Now();
+  bool has_recorded_time_to_warmed_ = false;
+  bool has_error_or_crash_ = false;
+};
+
+// Tracks guest presentation state for `Glic.Instance.TimeToActionable` and
+// `Glic.Instance.TimeToSubmittable`.
+//
+// The guest page emits `performance.mark("gemini.interactive")` when its input
+// UI is rendered and `performance.mark("gemini.submittable")` when prompt
+// submission is wired up. Once the guest is attached to a `Host`, shown in the
+// panel (`guest_mounted_`), and has emitted a mark, this class waits for the
+// renderer to submit an independent compositor frame
+// (`InsertVisualStateCallback`) for each milestone and notifies
+// `GlicInstanceMetrics`.
+class GlicWebClientManager::GuestPresentationTracker {
+ public:
+  explicit GuestPresentationTracker(GlicWebClientManager& manager)
+      : manager_(manager) {}
+  ~GuestPresentationTracker() = default;
+
+  GuestPresentationTracker(const GuestPresentationTracker&) = delete;
+  GuestPresentationTracker& operator=(const GuestPresentationTracker&) = delete;
+
+  void OnAttachedToHost(GlicInstanceMetrics& instance_metrics) {
+    CHECK(!instance_metrics_);
+    instance_metrics_ = &instance_metrics;
+    InvalidateVisualStateCallbacks();
+    instance_metrics_->OnGuestReset();
+    for (const MilestoneSpec& spec : kMilestoneSpecs) {
+      if (const auto& mark_time =
+              milestones_[ToIndex(spec.milestone)].mark_time) {
+        // Replay any mark that fired while warming before `AttachToHost()`.
+        instance_metrics_->OnGuestMilestoneMarkObserved(spec.milestone,
+                                                        *mark_time);
+      }
+    }
+    MaybeRequestVisualStateCallbacks();
+  }
+
+  void ObserveGuestContents(content::WebContents& guest_contents) {
+    // Drop any mark callbacks bound to a previous `guest_contents` (in
+    // `<webview>` mode, the old guest WebContents can stay alive until GC after
+    // a new `<webview>` is attached). This is intentionally not invalidated in
+    // `Reset()` on navigation, because `ObserveGlicGuestPageLoadMetrics`
+    // attaches a WebContents-scoped observer once per `guest_contents` and
+    // reuses this callback across navigations of that WebContents.
+    guest_mark_weak_ptr_factory_.InvalidateWeakPtrs();
+    Reset();
+    ObserveGlicGuestPageLoadMetrics(
+        guest_contents,
+        base::BindRepeating(&GuestPresentationTracker::OnMarkObserved,
+                            guest_mark_weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  void SetGuestMounted(bool mounted) {
+    guest_mounted_ = mounted;
+    if (!guest_mounted_) {
+      InvalidateVisualStateCallbacks();
+      return;
+    }
+    MaybeRequestVisualStateCallbacks();
+  }
+
+  void Reset() {
+    for (MilestoneState& state : milestones_) {
+      state.mark_time.reset();
+    }
+    InvalidateVisualStateCallbacks();
+    if (instance_metrics_) {
+      instance_metrics_->OnGuestReset();
+    }
+  }
+
+ private:
+  using GuestMilestone = GlicInstanceMetrics::GuestMilestone;
+  static constexpr size_t kMilestoneCount =
+      GlicInstanceMetrics::kGuestMilestoneCount;
+
+  struct MilestoneSpec {
+    GuestMilestone milestone;
+    std::string_view mark_name;
+  };
+
+  static constexpr auto kMilestoneSpecs = std::to_array<MilestoneSpec>({
+      {GuestMilestone::kActionable, "gemini.interactive"},
+      {GuestMilestone::kSubmittable, "gemini.submittable"},
+  });
+
+  static_assert(kMilestoneSpecs.size() == kMilestoneCount);
+  static_assert([] {
+    for (size_t i = 0; i < kMilestoneCount; ++i) {
+      if (static_cast<size_t>(kMilestoneSpecs[i].milestone) != i ||
+          kMilestoneSpecs[i].mark_name.empty()) {
+        return false;
+      }
+      for (size_t j = 0; j < i; ++j) {
+        if (kMilestoneSpecs[i].mark_name == kMilestoneSpecs[j].mark_name) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }());
+
+  struct MilestoneState {
+    std::optional<base::TimeTicks> mark_time;
+    bool visual_state_pending = false;
+  };
+
+  static constexpr size_t ToIndex(GuestMilestone milestone) {
+    return static_cast<size_t>(milestone);
+  }
+
+  void InvalidateVisualStateCallbacks() {
+    visual_state_weak_ptr_factory_.InvalidateWeakPtrs();
+    for (MilestoneState& state : milestones_) {
+      state.visual_state_pending = false;
+    }
+  }
+
+  void MaybeRequestVisualStateCallbacks() {
+    for (const MilestoneSpec& spec : kMilestoneSpecs) {
+      MaybeRequestVisualStateCallback(spec.milestone);
+    }
+  }
+
+  void OnMarkObserved(std::string_view mark_name, base::TimeTicks mark_time) {
+    for (const MilestoneSpec& spec : kMilestoneSpecs) {
+      if (spec.mark_name != mark_name) {
+        continue;
+      }
+      MilestoneState& state = milestones_[ToIndex(spec.milestone)];
+      // Only the first mark per guest document counts.
+      if (state.mark_time) {
+        return;
+      }
+      state.mark_time = mark_time;
+      if (instance_metrics_) {
+        instance_metrics_->OnGuestMilestoneMarkObserved(spec.milestone,
+                                                        mark_time);
+      }
+      MaybeRequestVisualStateCallback(spec.milestone);
+      return;
+    }
+  }
+
+  void MaybeRequestVisualStateCallback(GuestMilestone milestone) {
+    MilestoneState& state = milestones_[ToIndex(milestone)];
+    if (!instance_metrics_ || !guest_mounted_ || !state.mark_time ||
+        !instance_metrics_->IsWaitingForGuestMilestone(milestone) ||
+        state.visual_state_pending) {
+      return;
+    }
+    content::RenderFrameHost* rfh = manager_->GetGuestMainFrame();
+    if (!rfh || !rfh->IsRenderFrameLive()) {
+      return;
+    }
+    // Set `visual_state_pending` before `InsertVisualStateCallback` because the
+    // callback can run synchronously (with `updated = false`) when the frame
+    // widget is unavailable. Each milestone tracks its own pending flag so an
+    // earlier milestone's frame cannot satisfy a mark that arrived later.
+    state.visual_state_pending = true;
+    rfh->InsertVisualStateCallback(
+        base::BindOnce(&GuestPresentationTracker::OnVisualStateCallback,
+                       visual_state_weak_ptr_factory_.GetWeakPtr(), milestone));
+  }
+
+  void OnVisualStateCallback(GuestMilestone milestone, bool updated) {
+    MilestoneState& state = milestones_[ToIndex(milestone)];
+    state.visual_state_pending = false;
+    // `InsertVisualStateCallback` only passes `updated = false` when the
+    // renderer widget is missing or destroyed before completing the request
+    // (including synchronously when `!blink_frame_widget_`), so do not
+    // immediately re-request here.
+    if (!updated || !instance_metrics_ || !guest_mounted_ || !state.mark_time ||
+        !instance_metrics_->IsWaitingForGuestMilestone(milestone)) {
+      return;
+    }
+    instance_metrics_->OnGuestMilestoneFrameSubmitted(milestone);
+  }
+
+  const raw_ref<GlicWebClientManager> manager_;
+  // Null while warming in `GlicWebContentsWarmingPool`; set once in
+  // `OnAttachedToHost()`. Must outlive `this` (guaranteed because
+  // `GlicInstanceImpl::~GlicInstanceImpl()` hibernates `host_` before
+  // `instance_metrics_` is destroyed).
+  raw_ptr<GlicInstanceMetrics> instance_metrics_ = nullptr;
+  // True when the guest WebContents is shown in the panel (not hidden or
+  // covered by a loading/error overlay).
+  bool guest_mounted_ = false;
+  std::array<MilestoneState, kMilestoneCount> milestones_{};
+
+  base::WeakPtrFactory<GuestPresentationTracker> guest_mark_weak_ptr_factory_{
+      this};
+  // Invalidated when unmounting or resetting to cancel all in-flight
+  // `InsertVisualStateCallback` requests.
+  base::WeakPtrFactory<GuestPresentationTracker> visual_state_weak_ptr_factory_{
+      this};
+};
+
+PrimaryMainFrameNavigationTracker::PrimaryMainFrameNavigationTracker() =
+    default;
+
+PrimaryMainFrameNavigationTracker::~PrimaryMainFrameNavigationTracker() =
+    default;
+
+void PrimaryMainFrameNavigationTracker::ObservePrimaryContents(
+    content::WebContents* web_contents) {
+  in_flight_ids_.clear();
+  Observe(web_contents);
+}
+
+// static
+bool PrimaryMainFrameNavigationTracker::IsTracked(
+    const content::NavigationHandle* navigation_handle) {
+  return navigation_handle && navigation_handle->IsInPrimaryMainFrame() &&
+         !navigation_handle->IsSameDocument();
+}
+
+void PrimaryMainFrameNavigationTracker::DidStartNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!IsTracked(navigation_handle)) {
+    return;
+  }
+  in_flight_ids_.insert(navigation_handle->GetNavigationId());
+  OnPrimaryNavigationStarted(navigation_handle);
+}
+
+void PrimaryMainFrameNavigationTracker::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!IsTracked(navigation_handle)) {
+    return;
+  }
+  in_flight_ids_.erase(navigation_handle->GetNavigationId());
+  OnPrimaryNavigationFinished(navigation_handle);
+}
+
+void PrimaryMainFrameNavigationTracker::PrimaryMainFrameRenderProcessGone(
+    base::TerminationStatus status) {
+  in_flight_ids_.clear();
+  OnPrimaryRenderProcessGone(status);
+}
+
+GlicWebClientManager::GlicWebClientManager()
+    : metrics_(std::make_unique<Metrics>()),
+      guest_presentation_tracker_(
+          std::make_unique<GuestPresentationTracker>(*this)) {}
 
 GlicWebClientManager::~GlicWebClientManager() = default;
 
@@ -95,18 +435,123 @@ void GlicWebClientManager::AttachToHost(Host* host) {
   if (pending_web_client_receiver_.is_valid()) {
     CreateWebClient(std::move(pending_web_client_receiver_));
   }
+  guest_presentation_tracker_->OnAttachedToHost(host->instance_metrics());
 }
 
 void GlicWebClientManager::AttachGuestContents(
     content::WebContents* guest_contents) {
+  CHECK(guest_contents);
   DVLOG(1) << "Glic [WebClientManager] AttachGuestContents " << guest_contents;
   has_navigation_committed_ = false;
-  Observe(guest_contents);
+  blocked_navigation_ids_.clear();
+  guest_load_stage_ = GuestLoadStage::kNotStarted;
+  last_committed_page_type_.reset();
+  guest_main_page_loaded_ = false;
+  if (base::FeatureList::IsEnabled(kGlicShowSecurityInterstitials)) {
+    // Ensure SecurityInterstitialTabHelper is registered as a
+    // WebContentsObserver before GlicWebClientManager so its
+    // DidFinishNavigation runs first to update committed interstitial state.
+    security_interstitials::SecurityInterstitialTabHelper::CreateForWebContents(
+        guest_contents);
+  }
+  ObservePrimaryContents(guest_contents);
+  guest_presentation_tracker_->ObserveGuestContents(*guest_contents);
+}
+
+ClientLoadErrorReason GlicWebClientManager::ReasonForClientLoadTimeout() const {
+  switch (guest_load_stage_) {
+    case GuestLoadStage::kNavigationInProgress:
+      return ClientLoadErrorReason::kClientLoadTimeoutNavigationInProgress;
+    case GuestLoadStage::kNavigationNotCommitted:
+      return ClientLoadErrorReason::kClientLoadTimeoutNavigationNotCommitted;
+    case GuestLoadStage::kCommittedRegularBeforeOnload:
+      return ClientLoadErrorReason::kClientLoadTimeoutBeforeOnload;
+    case GuestLoadStage::kCommittedRegularAfterOnload:
+      return ClientLoadErrorReason::kClientLoadTimeoutAfterOnload;
+    case GuestLoadStage::kNotStarted:
+    case GuestLoadStage::kCommittedNonRegularOrDisallowed:
+      return ClientLoadErrorReason::kClientLoadTimeout;
+  }
+}
+
+void GlicWebClientManager::SetGuestMounted(bool mounted) {
+  guest_presentation_tracker_->SetGuestMounted(mounted);
 }
 
 void GlicWebClientManager::OnGuestNavigationBlocked(
-    mojom::GuestPageType page_type) {
+    int64_t navigation_id,
+    mojom::GuestPageType page_type,
+    const GURL& blocked_url) {
+  if (page_type != mojom::GuestPageType::kSignInRequired &&
+      !base::FeatureList::IsEnabled(kGlicShowSecurityInterstitials)) {
+    DVLOG(1) << "Glic [WebClientManager] OnGuestNavigationBlocked "
+             << page_type;
+    return;
+  }
+  // A single blocked navigation can be observed by both
+  // `GlicGuestNavigationThrottle` (during `WillStartRequest`) and
+  // `DidFinishNavigation` (when `PwcNavigationThrottle` cancels the request).
+  // Deduplicate by navigation ID so metrics and delegate notifications fire at
+  // most once per navigation without colliding across overlapping navigations.
+  if (!blocked_navigation_ids_.insert(navigation_id).second) {
+    return;
+  }
   DVLOG(1) << "Glic [WebClientManager] OnGuestNavigationBlocked " << page_type;
+  // If a web client is already connected (or warmed) on the currently committed
+  // page, a cancelled navigation (e.g. a subframe attempting to navigate the
+  // top frame to about:blank) leaves the primary main frame on its active
+  // document and should not tear down the connected client or show the error
+  // screen unless the navigation was explicitly blocked by admin policy or
+  // requires sign-in.
+  if ((web_client_owned_ || pending_web_client_receiver_.is_valid()) &&
+      page_type != mojom::GuestPageType::kDisabledByAdmin &&
+      page_type != mojom::GuestPageType::kSignInRequired) {
+    last_committed_page_type_ = mojom::GuestPageType::kRegular;
+    if (delegate_) {
+      // Restore the delegate's ready state that `DidStartNavigation()` cleared
+      // to `GuestState::kLoading` when the cancelled navigation began.
+      if (pending_web_client_receiver_.is_valid()) {
+        delegate_->OnWebClientStateChanged(mojom::WebClientState::kWarmed);
+      } else {
+        delegate_->OnWebClientCreated();
+        if (web_client_) {
+          delegate_->OnWebClientStateChanged(web_client_->web_client_state());
+        }
+      }
+    }
+    return;
+  }
+  // When no web client is active (e.g. clicking "Go back" on an initial
+  // security interstitial, or a blocked initial load) or when the navigation is
+  // blocked by admin policy (`kDisabledByAdmin`) or requires sign-in
+  // (`kSignInRequired`), mirror `DidFinishNavigation` for a failed navigation:
+  // reset state, record the navigation metric, notify the delegate to
+  // transition the panel to the error UI, and disconnect any active web client.
+  // `DidFinishNavigation` updates `guest_load_stage_` once all in-flight
+  // primary-main-frame navigations finish.
+  guest_presentation_tracker_->Reset();
+  pending_web_client_receiver_.reset();
+  last_committed_page_type_ = page_type;
+  guest_main_page_loaded_ = false;
+  if (page_type == mojom::GuestPageType::kSignInRequired && web_contents()) {
+    if (Profile* profile =
+            Profile::FromBrowserContext(web_contents()->GetBrowserContext())) {
+      GeicSignInController::GetForProfile(profile)->OnSignInRequired(
+          blocked_url);
+    }
+  }
+  metrics_->OnGuestNavigation(page_type, /*is_api_allowed=*/false);
+  if (delegate_) {
+    delegate_->OnGuestNavigated(
+        blocked_url, /*is_api_allowed=*/false, page_type,
+        /*is_initial_commit=*/!has_navigation_committed_);
+  }
+  if (web_client_owned_) {
+    UnsetWebClient(GlicWebClientLifecycleEvent::kDisconnectedOnNavigation);
+  }
+  if (host_) {
+    host_->UpdateNativeLoadingState();
+  }
 }
 
 content::RenderFrameHost* GlicWebClientManager::GetGuestMainFrame() const {
@@ -123,14 +568,17 @@ void GlicWebClientManager::SetPendingWebClientReceiver(
     CreateWebClient(std::move(web_client_receiver));
   } else {
     pending_web_client_receiver_ = std::move(web_client_receiver);
+    if (delegate_) {
+      delegate_->OnWebClientStateChanged(mojom::WebClientState::kWarmed);
+    }
+    metrics_->MaybeRecordTimeToWarmed();
   }
 }
 
 void GlicWebClientManager::CreateWebClient(
     mojo::PendingReceiver<glic::mojom::WebClientHandler> web_client_receiver) {
   CHECK(host_);
-  base::UmaHistogramEnumeration("Glic.Host.WebClientLifecycleEvent",
-                                GlicWebClientLifecycleEvent::kCreated);
+  metrics_->OnWebClientCreated();
   if (delegate_) {
     delegate_->OnWebClientCreated();
   }
@@ -149,6 +597,7 @@ void GlicWebClientManager::CreateWebClient(
 
 void GlicWebClientManager::OnWebClientStateChanged(
     mojom::WebClientState state) {
+  metrics_->OnWebClientStateChanged(state);
   if (delegate_) {
     delegate_->OnWebClientStateChanged(state);
   }
@@ -160,8 +609,7 @@ void GlicWebClientManager::OnWebClientStateChanged(
 void GlicWebClientManager::WebClientInitialized() {
   CHECK(web_client_owned_);
   web_client_ = web_client_owned_.get();
-  base::UmaHistogramEnumeration("Glic.Host.WebClientLifecycleEvent",
-                                GlicWebClientLifecycleEvent::kInitialized);
+  metrics_->OnWebClientInitialized();
 }
 
 void GlicWebClientManager::UnsetWebClient(
@@ -172,13 +620,7 @@ void GlicWebClientManager::UnsetWebClient(
   DVLOG(1) << "Glic [WebClientManager] UnsetWebClient, had_access="
            << (web_client_owned_ ? "true" : "false");
   bool had_web_client = (web_client_ != nullptr);
-  base::UmaHistogramEnumeration(
-      "Glic.Host.WebClientLifecycleEvent",
-      event.value_or(
-          had_web_client
-              ? GlicWebClientLifecycleEvent::kDisconnectedAfterInitialization
-              : GlicWebClientLifecycleEvent::
-                    kDisconnectedBeforeInitialization));
+  metrics_->OnWebClientDisconnected(event, had_web_client);
   web_client_ = nullptr;
   web_client_owned_.reset();
   if (host_) {
@@ -186,32 +628,109 @@ void GlicWebClientManager::UnsetWebClient(
   }
 }
 
-void GlicWebClientManager::DidStartNavigation(
+void GlicWebClientManager::OnPrimaryNavigationStarted(
     content::NavigationHandle* navigation_handle) {
-  if (!navigation_handle->IsInMainFrame() ||
-      navigation_handle->IsSameDocument()) {
-    return;
+  guest_load_stage_ = GuestLoadStage::kNavigationInProgress;
+  last_committed_page_type_.reset();
+  guest_main_page_loaded_ = false;
+  if (!base::FeatureList::IsEnabled(kGlicShowSecurityInterstitials)) {
+    pending_web_client_receiver_.reset();
   }
   if (delegate_) {
     delegate_->OnGuestNavigationStarted();
   }
+  if (host_) {
+    host_->OnGuestNavigationStarted();
+  }
 }
 
-void GlicWebClientManager::DidFinishNavigation(
+void GlicWebClientManager::OnPrimaryNavigationFinished(
     content::NavigationHandle* navigation_handle) {
-  if (!navigation_handle->IsInMainFrame() ||
-      !navigation_handle->HasCommitted() ||
-      navigation_handle->IsSameDocument()) {
+  const int64_t navigation_id = navigation_handle->GetNavigationId();
+  if (!navigation_handle->HasCommitted()) {
+    // In NoWebview mode, PwcNavigationThrottle cancels navigations to
+    // disallowed origins (e.g. when a user clicks "Go back" on a security
+    // interstitial and it navigates to a default safe page like about:blank
+    // or chrome://newtab, or when a Workforce Auth Portal redirect continues
+    // to a 3P IdP). Transition directly to the appropriate error state.
+    if (auto* privileged =
+            pwc::PrivilegedWebContents::FromWebContents(web_contents())) {
+      const GURL& url = navigation_handle->GetURL();
+      if (!privileged->policy().IsNavigationAllowed(url::Origin::Create(url))) {
+        const BlockedGuestNavigation blocked =
+            ClassifyBlockedGuestNavigation(*navigation_handle);
+        OnGuestNavigationBlocked(navigation_id, blocked.page_type,
+                                 blocked.blocked_url);
+      }
+    }
+    const bool was_blocked = blocked_navigation_ids_.erase(navigation_id) > 0;
+    if (!HasInFlightNavigation()) {
+      if (!was_blocked) {
+        guest_load_stage_ = GuestLoadStage::kNavigationNotCommitted;
+      } else if (web_client_owned_ || pending_web_client_receiver_.is_valid()) {
+        if (web_contents() &&
+            web_contents()->IsDocumentOnLoadCompletedInPrimaryMainFrame()) {
+          MaybeMarkGuestMainPageLoaded();
+        } else {
+          guest_load_stage_ = GuestLoadStage::kCommittedRegularBeforeOnload;
+        }
+      } else {
+        guest_load_stage_ = GuestLoadStage::kCommittedNonRegularOrDisallowed;
+      }
+    }
     return;
   }
+  blocked_navigation_ids_.erase(navigation_id);
+  guest_presentation_tracker_->Reset();
+  // Only drop a warmed guest's pending receiver once a new navigation commits
+  // (or fails fatally in `OnGuestNavigationBlocked`), so a navigation cancelled
+  // by a throttle while warming does not sever the warmed page's Mojo pipe.
+  pending_web_client_receiver_.reset();
   content::RenderFrameHost* guest_main_frame =
       navigation_handle->GetRenderFrameHost();
-  DVLOG(1) << "Glic [WebClientManager] DidFinishNavigation, url="
+  DVLOG(1) << "Glic [WebClientManager] OnPrimaryNavigationFinished, url="
            << guest_main_frame->GetLastCommittedURL();
   bool is_api_allowed =
-      IsOriginAllowedGlicApi(guest_main_frame->GetLastCommittedOrigin());
+      IsOriginAllowedGlicApi(guest_main_frame->GetLastCommittedOrigin(),
+                             guest_main_frame->GetBrowserContext());
+  bool is_security_interstitial = false;
+  if (base::FeatureList::IsEnabled(kGlicShowSecurityInterstitials) &&
+      navigation_handle->IsErrorPage()) {
+    auto* interstitial_helper =
+        security_interstitials::SecurityInterstitialTabHelper::FromWebContents(
+            web_contents());
+    is_security_interstitial =
+        interstitial_helper &&
+        interstitial_helper->IsInterstitialCommittedForFrame(
+            navigation_handle->GetFrameTreeNodeId());
+  }
+  const int http_response_code =
+      navigation_handle->GetResponseHeaders()
+          ? navigation_handle->GetResponseHeaders()->response_code()
+          : 0;
   mojom::GuestPageType page_type =
       GetGuestPageType(guest_main_frame->GetLastCommittedURL());
+  if (is_security_interstitial) {
+    page_type = mojom::GuestPageType::kSecurityInterstitial;
+  } else if (http_response_code >= 500) {
+    page_type = mojom::GuestPageType::kHttpServerError;
+  } else if (http_response_code >= 400) {
+    page_type = mojom::GuestPageType::kHttpClientError;
+  } else if (navigation_handle->IsErrorPage()) {
+    page_type =
+        navigation_handle->GetNetErrorCode() == net::ERR_INTERNET_DISCONNECTED
+            ? mojom::GuestPageType::kOffline
+            : mojom::GuestPageType::kLoadError;
+  }
+  last_committed_page_type_ = page_type;
+  if (!HasInFlightNavigation()) {
+    guest_load_stage_ =
+        (page_type == mojom::GuestPageType::kRegular && is_api_allowed)
+            ? GuestLoadStage::kCommittedRegularBeforeOnload
+            : GuestLoadStage::kCommittedNonRegularOrDisallowed;
+  }
+  guest_main_page_loaded_ = false;
+  metrics_->OnGuestNavigation(page_type, is_api_allowed);
   bool is_initial_commit = !has_navigation_committed_;
   has_navigation_committed_ = true;
 
@@ -224,23 +743,118 @@ void GlicWebClientManager::DidFinishNavigation(
   if (web_client_owned_) {
     UnsetWebClient(GlicWebClientLifecycleEvent::kDisconnectedOnNavigation);
   }
+  if (host_) {
+    host_->UpdateNativeLoadingState();
+  }
 }
 
-void GlicWebClientManager::PrimaryMainFrameRenderProcessGone(
+void GlicWebClientManager::DocumentOnLoadCompletedInPrimaryMainFrame() {
+  if (guest_load_stage_ != GuestLoadStage::kCommittedRegularBeforeOnload) {
+    return;
+  }
+  MaybeMarkGuestMainPageLoaded();
+}
+
+void GlicWebClientManager::MaybeMarkGuestMainPageLoaded() {
+  guest_load_stage_ = GuestLoadStage::kCommittedRegularAfterOnload;
+  if (!web_contents()) {
+    return;
+  }
+  Profile* profile =
+      Profile::FromBrowserContext(web_contents()->GetBrowserContext());
+  if (GetGlicProviderSpec(profile).SupportsSsr() &&
+      features::kGlicShowLoaderUntilMainPageOnload.Get()) {
+    guest_main_page_loaded_ = true;
+    if (delegate_) {
+      delegate_->OnGuestMainPageLoaded();
+    }
+    if (host_) {
+      host_->UpdateNativeLoadingState();
+    }
+  }
+}
+
+void GlicWebClientManager::OnPrimaryRenderProcessGone(
     base::TerminationStatus status) {
-  DVLOG(1)
-      << "Glic [WebClientManager] PrimaryMainFrameRenderProcessGone, status="
-      << std::to_underlying(status);
-  base::UmaHistogramEnumeration("Glic.Session.WebClientCrash.ExitReason",
-                                TerminationStatusToExitReason(status));
+  blocked_navigation_ids_.clear();
+  guest_load_stage_ = GuestLoadStage::kNotStarted;
+  last_committed_page_type_.reset();
+  guest_main_page_loaded_ = false;
+  metrics_->OnProcessGone(status);
+  DVLOG(1) << "Glic [WebClientManager] OnPrimaryRenderProcessGone, status="
+           << std::to_underlying(status);
+  guest_presentation_tracker_->Reset();
+  pending_web_client_receiver_.reset();
   if (web_client_owned_) {
     UnsetWebClient(GlicWebClientLifecycleEvent::kDisconnectedOnProcessGone);
   }
-  if (status != base::TERMINATION_STATUS_NORMAL_TERMINATION) {
-    base::RecordAction(base::UserMetricsAction("GlicSessionWebClientCrash"));
-    if (delegate_) {
-      delegate_->OnGuestProcessGone(status);
-    }
+  // On Android, termination of a background/hidden renderer process is reported
+  // as TERMINATION_STATUS_NORMAL_TERMINATION because waitpid is not used for
+  // Android service processes without a visible/strong binding. Any process
+  // exit while the guest WebContents is still alive (outside browser shutdown)
+  // leaves the guest unusable and must notify the delegate.
+  if (!browser_shutdown::HasShutdownStarted() && delegate_) {
+    delegate_->OnGuestProcessGone(status);
+  }
+  if (host_) {
+    host_->UpdateNativeLoadingState();
+  }
+}
+
+// static
+ClientLoadErrorReason GlicWebClientManager::ReasonForGuestProcessGone(
+    base::TerminationStatus status) {
+  switch (status) {
+    case base::TERMINATION_STATUS_PROCESS_CRASHED:
+      return ClientLoadErrorReason::kGuestProcessCrashed;
+    case base::TERMINATION_STATUS_PROCESS_WAS_KILLED:
+      return ClientLoadErrorReason::kGuestProcessKilled;
+    case base::TERMINATION_STATUS_OOM:
+    case base::TERMINATION_STATUS_EVICTED_FOR_MEMORY:
+#if BUILDFLAG(IS_CHROMEOS)
+    case base::TERMINATION_STATUS_PROCESS_WAS_KILLED_BY_OOM:
+#endif
+      return ClientLoadErrorReason::kGuestProcessOom;
+    case base::TERMINATION_STATUS_LAUNCH_FAILED:
+      return ClientLoadErrorReason::kGuestProcessLaunchFailed;
+#if BUILDFLAG(IS_WIN)
+    case base::TERMINATION_STATUS_INTEGRITY_FAILURE:
+      return ClientLoadErrorReason::kGuestProcessIntegrityFailure;
+#endif
+#if BUILDFLAG(IS_ANDROID)
+    // On Android, ChildProcessLauncherHelper::GetTerminationInfo() maps every
+    // bound foreground renderer termination (crashes, kills, and OOMs alike) to
+    // TERMINATION_STATUS_OOM_PROTECTED because waitpid() is unavailable.
+    case base::TERMINATION_STATUS_OOM_PROTECTED:
+#endif
+    case base::TERMINATION_STATUS_NORMAL_TERMINATION:
+    case base::TERMINATION_STATUS_ABNORMAL_TERMINATION:
+    case base::TERMINATION_STATUS_STILL_RUNNING:
+    case base::TERMINATION_STATUS_MAX_ENUM:
+      return ClientLoadErrorReason::kGuestProcessGone;
+  }
+  return ClientLoadErrorReason::kGuestProcessGone;
+}
+
+// static
+mojom::ClientLoadErrorReason
+GlicWebClientManager::MojoReasonForGuestProcessGone(
+    base::TerminationStatus status) {
+  switch (ReasonForGuestProcessGone(status)) {
+    case ClientLoadErrorReason::kGuestProcessGone:
+      return mojom::ClientLoadErrorReason::kGuestProcessGone;
+    case ClientLoadErrorReason::kGuestProcessCrashed:
+      return mojom::ClientLoadErrorReason::kGuestProcessCrashed;
+    case ClientLoadErrorReason::kGuestProcessKilled:
+      return mojom::ClientLoadErrorReason::kGuestProcessKilled;
+    case ClientLoadErrorReason::kGuestProcessOom:
+      return mojom::ClientLoadErrorReason::kGuestProcessOom;
+    case ClientLoadErrorReason::kGuestProcessLaunchFailed:
+      return mojom::ClientLoadErrorReason::kGuestProcessLaunchFailed;
+    case ClientLoadErrorReason::kGuestProcessIntegrityFailure:
+      return mojom::ClientLoadErrorReason::kGuestProcessIntegrityFailure;
+    default:
+      NOTREACHED();
   }
 }
 

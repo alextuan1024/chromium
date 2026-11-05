@@ -18,7 +18,6 @@
 #include "ui/aura/client/transient_window_client_observer.h"
 #include "ui/aura/scoped_window_event_targeting_blocker.h"
 #include "ui/aura/window_observer.h"
-#include "ui/compositor/scoped_layer_request.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/rrect_f.h"
@@ -99,9 +98,6 @@ class ASH_EXPORT ScopedOverviewTransformWindow
   // `OverviewItem::RestoreWindow()` for details why we need this.
   void RestoreWindow(bool reset_transform, bool animate);
 
-  // Prepares for overview mode by doing any necessary actions before entering.
-  void PrepareForOverview();
-
   // Sets the opacity of the managed windows.
   void SetOpacity(float opacity);
 
@@ -171,7 +167,7 @@ class ASH_EXPORT ScopedOverviewTransformWindow
   // windows are hidden in overview mode and the visibility of the windows is
   // recovered after overview mode.
   void AddHiddenTransientWindows(
-      const std::vector<raw_ptr<aura::Window, VectorExperimental>>&
+      const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>&
           transient_windows);
 
   void RestoreWindowTree();
@@ -195,23 +191,16 @@ class ASH_EXPORT ScopedOverviewTransformWindow
   // Specifies how the window is laid out in the grid.
   OverviewItemFillMode fill_mode_ = OverviewItemFillMode::kNormal;
 
-  // The locks associated with the layers we requested caching render surface
-  // and trilinear filtering. The requests will be removed in dtor if the layer
-  // has not been destroyed.
-  std::vector<std::unique_ptr<ui::ScopedCacheRenderSurfaceLock>>
-      cache_render_surface_locks_;
-  std::vector<std::unique_ptr<ui::ScopedTrilinearFilteringLock>>
-      trilinear_filtering_locks_;
-
   // For the duration of this object |window_| and its transient childrens'
   // event targeting policy will be sent to NONE. In addition, bubble should not
   // adjust their bounds using the display info as it should stay as is.  Store
   // the original states so we can change them back when destroying |this|.
+  // The decoration (e.g. shadow) of the window is also hidden.
   class TransientInfo {
    public:
     explicit TransientInfo(aura::Window* transient);
     TransientInfo(const TransientInfo&) = delete;
-    TransientInfo& operator=(aura::Window* transient) = delete;
+    TransientInfo& operator=(const TransientInfo&) = delete;
     ~TransientInfo();
 
    private:

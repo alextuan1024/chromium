@@ -182,6 +182,19 @@ void CheckRestrictedUrls(const Extension* extension,
       << name;
 }
 
+// Clears the process-wide user and default policy host restrictions in
+// `PermissionsData` for every context id this file uses.
+void ClearHostRestrictions() {
+  for (int context_id : {0, 7, 8}) {
+    PermissionsData::SetUserHostRestrictions(
+        context_id, /*user_blocked_hosts=*/URLPatternSet(),
+        /*user_allowed_hosts=*/URLPatternSet());
+    PermissionsData::SetDefaultPolicyHostRestrictions(
+        context_id, /*default_policy_blocked_hosts=*/URLPatternSet(),
+        /*default_policy_allowed_hosts=*/URLPatternSet());
+  }
+}
+
 }  // namespace
 
 // NOTE: These tests run in Chrome's unit_tests suite because they depend on
@@ -352,6 +365,9 @@ TEST(PermissionsDataTest, IsRestrictedUrl) {
   CheckRestrictedUrls(component.get(), /*block_chrome_urls=*/false,
                       /*block_chrome_untrusted_urls=*/false);
 
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      extensions_features::kDisableExtensionsOnChromeUrlsSwitch);
   base::CommandLine::ForCurrentProcess()->AppendSwitch(
       switches::kExtensionsOnChromeURLs);
   // Enabling the switch should allow all extensions to access chrome urls but
@@ -448,6 +464,10 @@ class ExtensionScriptAndCaptureVisibleTest : public testing::Test {
     // Ignore the policy delegate for this test.
     PermissionsData::SetPolicyDelegate(nullptr);
   }
+
+  void SetUp() override { ClearHostRestrictions(); }
+
+  void TearDown() override { ClearHostRestrictions(); }
 
   enum AccessType {
     DISALLOWED,
@@ -653,6 +673,9 @@ TEST_F(ExtensionScriptAndCaptureVisibleTest, Permissions) {
 }
 
 TEST_F(ExtensionScriptAndCaptureVisibleTest, PermissionsWithChromeURLsEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      extensions_features::kDisableExtensionsOnChromeUrlsSwitch);
   base::CommandLine::ForCurrentProcess()->AppendSwitch(
       switches::kExtensionsOnChromeURLs);
 
@@ -1044,6 +1067,104 @@ TEST(PermissionsDataTest, ChromeWebstoreUrl) {
           << extension->name() << ": " << url;
     }
   }
+}
+
+// Tests for PermissionsData::GetContentScriptAccessForSecurityOrigin(), using
+// an extension with a static content script on a single path of example.com.
+class GetContentScriptAccessForSecurityOriginTest : public testing::Test {
+ protected:
+  static constexpr int kNoTabId = -1;
+  static constexpr int kTabId = 42;
+
+  // Grants tab-specific permissions (e.g. activeTab) for the origin of
+  // `in_path_url_` to `kTabId`.
+  void GrantTabPermissions() {
+    URLPatternSet tab_hosts;
+    tab_hosts.AddOrigin(UserScript::ValidUserScriptSchemes(),
+                        in_path_url_.DeprecatedGetOriginAsURL());
+    permissions_data()->UpdateTabSpecificPermissions(
+        kTabId, PermissionSet(APIPermissionSet(), ManifestPermissionSet(),
+                              tab_hosts.Clone(), tab_hosts.Clone()));
+  }
+
+  const PermissionsData* permissions_data() const {
+    return extension_->permissions_data();
+  }
+
+  const GURL in_path_url_{"http://www.example.com/path/page.html"};
+  const GURL other_path_url_{"http://www.example.com/other/page.html"};
+  const GURL other_origin_url_{"http://www.other.com/path/page.html"};
+
+ private:
+  scoped_refptr<const Extension> extension_ =
+      ExtensionBuilder("content script matcher")
+          .AddContentScript("script.js", {"http://www.example.com/path/*"})
+          .Build();
+};
+
+// Tests that the content script patterns are matched against only the security
+// origin of the document URL, whereas GetContentScriptAccess() also considers
+// their paths.
+TEST_F(GetContentScriptAccessForSecurityOriginTest, IgnoresPath) {
+  EXPECT_EQ(PermissionsData::PageAccess::kAllowed,
+            permissions_data()->GetContentScriptAccess(in_path_url_, kNoTabId,
+                                                       nullptr));
+  EXPECT_EQ(PermissionsData::PageAccess::kDenied,
+            permissions_data()->GetContentScriptAccess(other_path_url_,
+                                                       kNoTabId, nullptr));
+  EXPECT_EQ(PermissionsData::PageAccess::kAllowed,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                in_path_url_, kNoTabId));
+  EXPECT_EQ(PermissionsData::PageAccess::kAllowed,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                other_path_url_, kNoTabId));
+  EXPECT_EQ(PermissionsData::PageAccess::kDenied,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                other_origin_url_, kNoTabId));
+}
+
+// Tests that access is reported as withheld when the extension's host
+// permissions are withheld (i.e. the user configured the extension to run on
+// click), and that tab-specific permissions grant access only for their tab.
+TEST_F(GetContentScriptAccessForSecurityOriginTest, Withheld) {
+  permissions_data()->SetPermissions(
+      std::make_unique<PermissionSet>(),
+      std::make_unique<PermissionSet>(
+          APIPermissionSet(), ManifestPermissionSet(), URLPatternSet(),
+          permissions_data()->active_permissions().scriptable_hosts().Clone()));
+  EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                in_path_url_, kNoTabId));
+  EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                other_path_url_, kNoTabId));
+  EXPECT_EQ(PermissionsData::PageAccess::kDenied,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                other_origin_url_, kNoTabId));
+
+  GrantTabPermissions();
+  EXPECT_EQ(PermissionsData::PageAccess::kAllowed,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                other_path_url_, kTabId));
+  EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                other_path_url_, kNoTabId));
+}
+
+// Tests that policy host restrictions take precedence over both the content
+// script access and tab-specific permissions.
+TEST_F(GetContentScriptAccessForSecurityOriginTest, PolicyBlocked) {
+  GrantTabPermissions();
+  URLPatternSet blocked_hosts;
+  blocked_hosts.AddPattern(
+      URLPattern(URLPattern::SCHEME_ALL, "*://www.example.com/*"));
+  permissions_data()->SetPolicyHostRestrictions(blocked_hosts, URLPatternSet());
+  EXPECT_EQ(PermissionsData::PageAccess::kDenied,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                in_path_url_, kNoTabId));
+  EXPECT_EQ(PermissionsData::PageAccess::kDenied,
+            permissions_data()->GetContentScriptAccessForSecurityOrigin(
+                other_path_url_, kTabId));
 }
 
 TEST_F(ExtensionScriptAndCaptureVisibleTest, PolicyHostRestrictionsSwap) {
@@ -1517,6 +1638,7 @@ class CaptureVisiblePageTest : public testing::Test {
 
  private:
   void SetUp() override {
+    ClearHostRestrictions();
     all_urls_ = ExtensionBuilder("all urls")
                     .AddHostPermission("<all_urls>")
                     .SetID(std::string(32, 'a'))
@@ -1533,6 +1655,7 @@ class CaptureVisiblePageTest : public testing::Test {
   }
 
   void TearDown() override {
+    ClearHostRestrictions();
     all_urls_ = nullptr;
     active_tab_ = nullptr;
     page_capture_ = nullptr;

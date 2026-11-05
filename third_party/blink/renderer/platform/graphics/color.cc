@@ -63,8 +63,13 @@ namespace {
 // For lch/oklch colors, the value of chroma underneath which the color is
 // considered to be "achromatic", relevant for color conversions.
 // https://www.w3.org/TR/css-color-4/#lab-to-lch
-// This is set to be slightly higher than white's chroma value of 0.0188.
-const float kAchromaticChromaThreshold = 0.02;
+//
+// For LCH this is set to be slightly higher than white's chroma value of
+// 0.0188. For OkLCH an epsilon based on a similar magnitude is used.
+//
+// The spec has these as 0.0015 and 0.000004 respectively.
+const float kAchromaticChromaThresholdLch = 0.02f;
+const float kAchromaticChromaThresholdOklch = 0.00005f;
 
 const int kCStartAlpha = 153;     // 60%
 const int kCEndAlpha = 204;       // 80%;
@@ -295,16 +300,48 @@ Color Color::FromHWBA(std::optional<float> h,
 // static
 Color Color::FromColorMix(Color::ColorSpace interpolation_space,
                           std::optional<HueInterpolationMethod> hue_method,
+                          base::span<const Color> colors,
+                          base::span<const double> percentages,
+                          float alpha_multiplier) {
+  CHECK(!colors.empty());
+  CHECK_EQ(colors.size(), percentages.size());
+  CHECK(alpha_multiplier >= 0.0f && alpha_multiplier <= 1.0f);
+
+  Color result = colors[0];
+  if (colors.size() == 1) {
+    // A sole color is still converted to the interpolation color space.
+    // https://github.com/w3c/csswg-drafts/issues/12234
+    result.ConvertToColorSpaceForInterpolation(interpolation_space);
+  } else {
+    double accumulated_percentage = percentages[0];
+    for (size_t i = 1; i < colors.size(); ++i) {
+      const double combined_percentage =
+          accumulated_percentage + percentages[i];
+      // https://github.com/w3c/csswg-drafts/issues/14013
+      const double progress = combined_percentage == 0.0
+                                  ? 0.5
+                                  : percentages[i] / combined_percentage;
+      result = InterpolateColors(interpolation_space, hue_method, result,
+                                 colors[i], progress);
+      accumulated_percentage = combined_percentage;
+    }
+  }
+
+  result.alpha_ *= alpha_multiplier;
+  return result;
+}
+
+// static
+Color Color::FromColorMix(Color::ColorSpace interpolation_space,
+                          std::optional<HueInterpolationMethod> hue_method,
                           Color color1,
                           Color color2,
                           float percentage,
                           float alpha_multiplier) {
-  DCHECK(alpha_multiplier >= 0.0f && alpha_multiplier <= 1.0f);
-  Color result = InterpolateColors(interpolation_space, hue_method, color1,
-                                   color2, percentage);
-
-  result.alpha_ *= alpha_multiplier;
-  return result;
+  const Color colors[] = {color1, color2};
+  const double percentages[] = {1.0 - percentage, percentage};
+  return FromColorMix(interpolation_space, hue_method, colors, percentages,
+                      alpha_multiplier);
 }
 
 // static
@@ -378,6 +415,12 @@ std::array<bool, 3> Color::GetAnalogousMissingComponents(
   const bool param1_is_none = Param1IsNone();
   const bool param2_is_none = Param2IsNone();
 
+  // If all color components are missing in the source space, they should be
+  // missing in the destination space as well.
+  if (param0_is_none && param1_is_none && param2_is_none) {
+    return {param0_is_none, param1_is_none, param2_is_none};
+  }
+
   switch (color_space_) {
     case ColorSpace::kSRGB:
     case ColorSpace::kSRGBLinear:
@@ -404,11 +447,15 @@ std::array<bool, 3> Color::GetAnalogousMissingComponents(
       }
       // Lightness carries forward to *lch (component 0).
       if (is_lch(interpolation_space)) {
-        return {param0_is_none, false, false};
+        // The analogous set is a and b.
+        const bool analogous_set_missing = param1_is_none && param2_is_none;
+        return {param0_is_none, analogous_set_missing, analogous_set_missing};
       }
       // Lightness carries forward to hsl (component 2).
       if (interpolation_space == ColorSpace::kHSL) {
-        return {false, false, param0_is_none};
+        // The analogous set is a and b.
+        const bool analogous_set_missing = param1_is_none && param2_is_none;
+        return {analogous_set_missing, analogous_set_missing, param0_is_none};
       }
       break;
     case ColorSpace::kLch:
@@ -422,9 +469,17 @@ std::array<bool, 3> Color::GetAnalogousMissingComponents(
       if (interpolation_space == ColorSpace::kHSL) {
         return {param2_is_none, param1_is_none, param0_is_none};
       }
+      // Hue carry forward to hwb, swapping component 0 with component 2.
+      if (interpolation_space == ColorSpace::kHWB) {
+        // The analogous set is L and C.
+        const bool analogous_set_missing = param0_is_none && param1_is_none;
+        return {param2_is_none, analogous_set_missing, analogous_set_missing};
+      }
       // Lightness carries forward to *Lab (component 0).
       if (is_lab(interpolation_space)) {
-        return {param0_is_none, false, false};
+        // The analogous set is C and H.
+        const bool analogous_set_missing = param1_is_none && param2_is_none;
+        return {param0_is_none, analogous_set_missing, analogous_set_missing};
       }
       break;
     case ColorSpace::kHSL:
@@ -435,21 +490,29 @@ std::array<bool, 3> Color::GetAnalogousMissingComponents(
       }
       // Lightness carries forward to *Lab (component 0).
       if (is_lab(interpolation_space)) {
-        return {param2_is_none, false, false};
+        // The analogous set is H and S.
+        const bool analogous_set_missing = param0_is_none && param1_is_none;
+        return {param2_is_none, analogous_set_missing, analogous_set_missing};
       }
       // Hue carries forward to hwb (component 0).
       if (interpolation_space == ColorSpace::kHWB) {
-        return {param0_is_none, false, false};
+        // The analogous set is S and L.
+        const bool analogous_set_missing = param1_is_none && param2_is_none;
+        return {param0_is_none, analogous_set_missing, analogous_set_missing};
       }
       break;
     case ColorSpace::kHWB:
       // Hue carries forward to hsl (component 0).
       if (interpolation_space == ColorSpace::kHSL) {
-        return {param0_is_none, false, false};
+        // The analogous set is W and B.
+        const bool analogous_set_missing = param1_is_none && param2_is_none;
+        return {param0_is_none, analogous_set_missing, analogous_set_missing};
       }
       // Hue carries forward to *Lch (component 2).
       if (is_lch(interpolation_space)) {
-        return {false, false, param0_is_none};
+        // The analogous set is W and B.
+        const bool analogous_set_missing = param1_is_none && param2_is_none;
+        return {analogous_set_missing, analogous_set_missing, param0_is_none};
       }
       break;
     case ColorSpace::kNone:
@@ -539,11 +602,11 @@ Color Color::InterpolateColors(Color::ColorSpace interpolation_space,
     hue_method = HueInterpolationMethod::kShorter;
   }
 
+  const std::optional<int> hue_index = HueComponentIndex(interpolation_space);
   std::optional<float> param0 =
       (color1.param0_is_none_ && color2.param0_is_none_)
           ? std::optional<float>(std::nullopt)
-      : (interpolation_space == ColorSpace::kHSL ||
-         interpolation_space == ColorSpace::kHWB)
+      : hue_index == 0
           ? HueInterpolation(color1.param0_, color2.param0_, percentage,
                              hue_method.value())
           : blink::Blend(color1.param0_, color2.param0_, percentage);
@@ -556,7 +619,7 @@ Color Color::InterpolateColors(Color::ColorSpace interpolation_space,
   std::optional<float> param2 =
       (color1.param2_is_none_ && color2.param2_is_none_)
           ? std::optional<float>(std::nullopt)
-      : (IsChromaSecondComponent(interpolation_space))
+      : hue_index == 2
           ? HueInterpolation(color1.param2_, color2.param2_, percentage,
                              hue_method.value())
           : blink::Blend(color1.param2_, color2.param2_, percentage);
@@ -758,7 +821,7 @@ void Color::ConvertToColorSpace(ColorSpace destination_color_space,
       param2_ = AngleToUnitCircleDegrees(param2_);
 
       // Hue component is powerless for achromatic colors.
-      if (param1_ <= kAchromaticChromaThreshold) {
+      if (param1_ <= kAchromaticChromaThresholdLch) {
         param2_is_none_ = true;
       }
       break;
@@ -774,7 +837,7 @@ void Color::ConvertToColorSpace(ColorSpace destination_color_space,
       }
 
       // Hue component is powerless for archromatic colors.
-      if (param1_ <= kAchromaticChromaThreshold) {
+      if (param1_ <= kAchromaticChromaThresholdOklch) {
         param2_is_none_ = true;
       }
       break;
@@ -862,11 +925,13 @@ float Color::PremultiplyColor() {
   // is the same as unpremultiplied.
   if (alpha_is_none_)
     return alpha_;
+  const std::optional<int> hue_index = HueComponentIndex(color_space_);
   float alpha = alpha_;
-  if (color_space_ != ColorSpace::kHSL && color_space_ != ColorSpace::kHWB)
+  if (hue_index != 0) {
     param0_ = param0_ * alpha_;
+  }
   param1_ = param1_ * alpha_;
-  if (!IsChromaSecondComponent(color_space_)) {
+  if (hue_index != 2) {
     param2_ = param2_ * alpha_;
   }
   alpha_ = 1.0f;
@@ -877,13 +942,15 @@ void Color::UnpremultiplyColor() {
   // By the spec (https://www.w3.org/TR/css-color-4/#interpolation) Hue values
   // are not premultiplied, and if alpha is none, the color premultiplied value
   // is the same as unpremultiplied.
-  if (alpha_is_none_ || alpha_ == 0.0f)
+  if (alpha_is_none_ || alpha_ == 0.0f) {
     return;
-
-  if (color_space_ != ColorSpace::kHSL && color_space_ != ColorSpace::kHWB)
+  }
+  const std::optional<int> hue_index = HueComponentIndex(color_space_);
+  if (hue_index != 0) {
     param0_ = param0_ / alpha_;
+  }
   param1_ = param1_ / alpha_;
-  if (!IsChromaSecondComponent(color_space_)) {
+  if (hue_index != 2) {
     param2_ = param2_ / alpha_;
   }
 }
@@ -989,7 +1056,20 @@ String Color::ColorSpaceToString(Color::ColorSpace color_space) {
   }
 }
 
-static String ColorParamToString(float param, int precision = 6) {
+namespace {
+
+enum class ParamType {
+  kNumber,
+  kPercentage,
+};
+
+String ColorParamToString(float param,
+                          int precision = 6,
+                          ParamType param_type = ParamType::kNumber) {
+  const bool is_percentage = param_type == ParamType::kPercentage;
+  if (is_percentage) {
+    param *= 100;
+  }
   StringBuilder result;
   if (!isfinite(param)) {
     // https://www.w3.org/TR/css-values-4/#calc-serialize
@@ -1000,13 +1080,21 @@ static String ColorParamToString(float param, int precision = 6) {
     } else {
       result.AppendNumber(param, precision);
     }
+    if (is_percentage) {
+      result.Append(" * 1%");
+    }
     result.Append(")");
-    return result.ToString();
+    return result.ReleaseString();
   }
 
   result.AppendNumber(param, precision);
-  return result.ToString();
+  if (is_percentage) {
+    result.Append('%');
+  }
+  return result.ReleaseString();
 }
+
+}  // namespace
 
 String Color::SerializeAsCanvasColor() const {
   if (IsOpaque() && IsLegacyColorSpace(color_space_)) {
@@ -1071,7 +1159,7 @@ String Color::SerializeLegacyColorAsCSSColor() const {
   }
 
   result.Append(')');
-  return result.ToString();
+  return result.ReleaseString();
 }
 
 String Color::SerializeInternal() const {
@@ -1099,14 +1187,52 @@ String Color::SerializeInternal() const {
     alpha_is_none_ ? result.Append("none") : result.AppendNumber(alpha_);
   }
   result.Append(")");
-  return result.ToString();
+  return result.ReleaseString();
+}
+
+String Color::SerializeModernHslAndHwb() const {
+  StringBuilder result;
+  if (color_space_ == Color::ColorSpace::kHSL) {
+    result.Append("hsl");
+  } else {
+    result.Append("hwb");
+  }
+  result.Append('(');
+
+  param0_is_none_ ? result.Append("none")
+                  : result.Append(ColorParamToString(param0_));
+  result.Append(" ");
+  param1_is_none_
+      ? result.Append("none")
+      : result.Append(ColorParamToString(param1_, 6, ParamType::kPercentage));
+  result.Append(" ");
+  param2_is_none_
+      ? result.Append("none")
+      : result.Append(ColorParamToString(param2_, 6, ParamType::kPercentage));
+
+  if (alpha_ != 1.0 || alpha_is_none_) {
+    result.Append(" / ");
+    alpha_is_none_ ? result.Append("none") : result.AppendNumber(alpha_);
+  }
+  result.Append(")");
+  return result.ReleaseString();
 }
 
 String Color::SerializeAsCSSColor() const {
-  if (IsLegacyColorSpace(color_space_)) {
+  // https://drafts.csswg.org/css-color/#css-serialization-of-srgb
+  if (IsLegacy()) {
     return SerializeLegacyColorAsCSSColor();
   }
-
+  if (color_space_ == Color::ColorSpace::kHWB ||
+      color_space_ == Color::ColorSpace::kHSL) {
+    return SerializeModernHslAndHwb();
+  }
+  if (color_space_ == Color::ColorSpace::kSRGBLegacy) {
+    Color c = *this;
+    c.ConvertToColorSpace(Color::ColorSpace::kSRGB,
+                          /*resolve_missing_components=*/false);
+    return c.SerializeInternal();
+  }
   return SerializeInternal();
 }
 
@@ -1253,11 +1379,9 @@ Color Color::InvertSRGB() const {
 Color::ColorSpace Color::GetColorInterpolationSpace() const {
   // If the color space is legacy and does not contain none, it should be
   // interpolated in srgb-legacy.
-  if (IsLegacyColorSpace(color_space_) && !param0_is_none_ &&
-      !param1_is_none_ && !param2_is_none_ && !alpha_is_none_) {
+  if (IsLegacy()) {
     return ColorSpace::kSRGBLegacy;
   }
-
   return ColorSpace::kOklab;
 }
 
@@ -1321,7 +1445,7 @@ String Color::SerializeInterpolationSpace(
       break;
   }
 
-  if (ColorSpaceHasHue(color_space)) {
+  if (HueComponentIndex(color_space)) {
     switch (hue_interpolation_method) {
       case Color::HueInterpolationMethod::kDecreasing:
         result.Append(" decreasing hue");

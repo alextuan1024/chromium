@@ -8,6 +8,8 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -35,6 +37,7 @@ import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabContentManagerThumbnailProvider;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.TabListCoordinator.TabListItemSizeChangedObserver;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListItemOnClickListenerProvider;
@@ -42,10 +45,11 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListL
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiMetricsHelper.TabListEditorExitMetricGroups;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataProvider;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarExplicitTrigger;
+import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
@@ -146,9 +150,7 @@ public class TabListEditorCoordinator {
         /** Hides the TabListEditor, notifying that the exit was due to a specific action. */
         void hideByAction();
 
-        /**
-         * @return Whether or not the TabListEditor consumed the event.
-         */
+        /** Returns whether or not the TabListEditor consumed the event. */
         boolean handleBackPressed();
 
         /**
@@ -158,14 +160,10 @@ public class TabListEditorCoordinator {
          */
         void configureToolbarWithMenuItems(List<TabListEditorAction> actions);
 
-        /**
-         * @return Whether the TabListEditor is visible.
-         */
+        /** Returns whether the TabListEditor is visible. */
         boolean isVisible();
 
-        /**
-         * @return Whether the TabListEditor needs to be cleaned up.
-         */
+        /** Returns whether the TabListEditor needs to be cleaned up. */
         boolean needsCleanUp();
 
         /** Sets the toolbar title when no items are selected. */
@@ -344,12 +342,13 @@ public class TabListEditorCoordinator {
     private final @Nullable UndoBarExplicitTrigger mUndoBarExplicitTrigger;
     private final @TabComponentId int mComponentId;
     private final int mAllowedSelectionCount;
-    private final boolean mIsSingleContextMode;
     private final SnackbarManager mSnackbarManager;
+    private final @Nullable TabListDataProvider mDataProvider;
 
     private @Nullable MultiThumbnailCardProvider mMultiThumbnailCardProvider;
     private @Nullable TabListCoordinator mTabListCoordinator;
     private @Nullable PropertyModelChangeProcessor mTabListEditorLayoutChangeProcessor;
+    private @Nullable TabListEditorIphController mIphController;
     private @TabActionState int mTabActionState;
     private boolean mNeedsCleanUp;
     private @Nullable EdgeToEdgePadAdjuster mEdgeToEdgePadAdjuster;
@@ -382,9 +381,8 @@ public class TabListEditorCoordinator {
      *     this tab list.
      * @param allowedSelectionCount The maximum number of tabs that can be selected at once. If
      *     equal to UNLIMITED_SELECTION, then unlimited.
-     * @param isSingleContextMode Whether the picker is operating in a mode where only one item can
-     *     be selected at a time. If true, selecting a new tab will replace the current selection
-     *     instead of appending to it.
+     * @param dataProvider Supplies the items shown in the list. The caller owns and destroys it. If
+     *     null, the list reads the {@link TabModel} directly.
      */
     public TabListEditorCoordinator(
             Activity activity,
@@ -407,7 +405,7 @@ public class TabListEditorCoordinator {
             @Nullable UndoBarExplicitTrigger undoBarExplicitTrigger,
             @TabComponentId @Nullable Integer componentId,
             int allowedSelectionCount,
-            boolean isSingleContextMode) {
+            @Nullable TabListDataProvider dataProvider) {
         try (TraceEvent e = TraceEvent.scoped("TabListEditorCoordinator.constructor")) {
             mActivity = activity;
             mRootView = rootView;
@@ -425,7 +423,7 @@ public class TabListEditorCoordinator {
             mUndoBarExplicitTrigger = undoBarExplicitTrigger;
             mComponentId = componentId == null ? TabComponentId.TAB_LIST_EDITOR : componentId;
             mAllowedSelectionCount = allowedSelectionCount;
-            mIsSingleContextMode = isSingleContextMode;
+            mDataProvider = dataProvider;
 
             // The change processor isn't created until TabListCoordinator is created (lazily).
             mTabListEditorLayout =
@@ -434,9 +432,6 @@ public class TabListEditorCoordinator {
                             .findViewById(R.id.selectable_list);
             mModel = new PropertyModel.Builder(TabListEditorProperties.ALL_KEYS).build();
 
-            if (creationMode == CreationMode.ITEM_PICKER && mIsSingleContextMode) {
-                mSelectionDelegate.setSingleSelectionMode();
-            }
             mTabListEditorMediator =
                     new TabListEditorMediator(
                             activity,
@@ -449,6 +444,7 @@ public class TabListEditorCoordinator {
                             mTabListEditorLayout,
                             mTabActionState,
                             desktopWindowStateManager,
+                            mEdgeToEdgeSupplier,
                             creationMode,
                             itemPickerSelectionHandler);
             mTabListEditorMediator.setNavigationProvider(
@@ -457,9 +453,7 @@ public class TabListEditorCoordinator {
         }
     }
 
-    /**
-     * @return The {@link SelectionDelegate} that is used in this component.
-     */
+    /** Returns the {@link SelectionDelegate} that is used in this component. */
     public SelectionDelegate<TabListEditorItemSelectionId> getSelectionDelegate() {
         return mSelectionDelegate;
     }
@@ -471,15 +465,18 @@ public class TabListEditorCoordinator {
      * @param tabGroupSyncIds List of syncIds tied to {@link SavedTabGroup}s to be shown.
      * @param quickMode whether to use quick mode.
      */
-    void resetWithListOfTabs(
+    public void resetWithListOfTabs(
             @Nullable List<Tab> tabs, @Nullable List<String> tabGroupSyncIds, boolean quickMode) {
         assumeNonNull(mTabListCoordinator);
-        mTabListCoordinator.resetWithListOfTabs(tabs, tabGroupSyncIds, quickMode);
+        // The data provider path in TabListMediator requires tabGroupSyncIds to be null, so
+        // normalize an empty list to null.
+        mTabListCoordinator.resetWithListOfTabs(
+                tabs,
+                tabGroupSyncIds == null || tabGroupSyncIds.isEmpty() ? null : tabGroupSyncIds,
+                quickMode);
     }
 
-    /**
-     * @return {@link TabListEditorController} that can control the TabListEditor.
-     */
+    /** Returns the {@link TabListEditorController} that can control the TabListEditor. */
     public TabListEditorController getController() {
         return mTabListEditorController;
     }
@@ -494,6 +491,10 @@ public class TabListEditorCoordinator {
         if (mTabListEditorLayoutChangeProcessor != null) {
             mTabListEditorLayoutChangeProcessor.destroy();
             mTabListEditorLayoutChangeProcessor = null;
+        }
+        if (mIphController != null) {
+            mIphController.destroy();
+            mIphController = null;
         }
 
         mTabListEditorLayout.destroy();
@@ -569,6 +570,28 @@ public class TabListEditorCoordinator {
             @StringRes int backButtonContentDescription) {
         mTabListEditorLayout.overrideContentDescriptions(
                 containerContentDescription, backButtonContentDescription);
+    }
+
+    /** Shows the loading UI in the layout. */
+    public void showLoadingUi() {
+        if (mTabListCoordinator != null) {
+            mTabListCoordinator.destroyEmptyView();
+        }
+        mTabListEditorLayout.showLoadingUi();
+    }
+
+    /** Hides the loading UI in the layout. */
+    public void hideLoadingUi() {
+        mTabListEditorLayout.hideLoadingUi();
+        if (mTabListCoordinator != null && mTabListEditorMediator.isVisible()) {
+            mTabListCoordinator.attachEmptyView();
+        }
+    }
+
+    /** Requests showing the select-tabs IPH on the first visible tab after layout. */
+    public void maybeShowSelectTabsIph() {
+        assert mIphController != null;
+        mIphController.maybeShowSelectTabsIph();
     }
 
     private void createTabListCoordinator() {
@@ -663,24 +686,22 @@ public class TabListEditorCoordinator {
                         mUndoBarExplicitTrigger,
                         mSnackbarManager,
                         mAllowedSelectionCount,
-                        mIsSingleContextMode);
+                        /* dataProvider= */ mDataProvider);
 
         // Note: The TabListEditorCoordinator is always created after native is initialized.
         mTabListCoordinator.initWithNative(regularProfile);
 
         TabListRecyclerView containerView = mTabListCoordinator.getContainerView();
         RecyclerView.LayoutManager layoutManager = containerView.getLayoutManager();
-        if (layoutManager instanceof GridLayoutManager) {
-            ((GridLayoutManager) layoutManager)
-                    .setSpanSizeLookup(
-                            new GridLayoutManager.SpanSizeLookup() {
-                                @Override
-                                public int getSpanSize(int i) {
-                                    assumeNonNull(mTabListCoordinator);
-                                    return mTabListCoordinator.getSpanCountForItem(
-                                            (GridLayoutManager) layoutManager, i);
-                                }
-                            });
+        if (layoutManager instanceof GridLayoutManager gridLayoutManager) {
+            gridLayoutManager.setSpanSizeLookup(
+                    new GridLayoutManager.SpanSizeLookup() {
+                        @Override
+                        public int getSpanSize(int i) {
+                            assumeNonNull(mTabListCoordinator);
+                            return mTabListCoordinator.getSpanCountForItem(gridLayoutManager, i);
+                        }
+                    });
         }
 
         mTabListEditorLayout.initialize(
@@ -689,13 +710,23 @@ public class TabListEditorCoordinator {
                 containerView,
                 assumeNonNull(containerView.getAdapter()),
                 mSelectionDelegate);
+        mIphController =
+                new TabListEditorIphController(
+                        new UserEducationHelper(
+                                mActivity, regularProfile, new Handler(Looper.getMainLooper())),
+                        mTabListEditorLayout);
         mTabListEditorMediator.initializeWithTabListCoordinator(mTabListCoordinator, resetHandler);
 
         mTabListEditorLayoutChangeProcessor =
                 PropertyModelChangeProcessor.create(
                         mModel, mTabListEditorLayout, TabListEditorLayoutBinder::bind);
 
-        if (mEdgeToEdgeSupplier != null && mLayoutType == TabListLayoutType.GROUPED) {
+        // ArchivedTabsDialogCoordinator passes mEdgeToEdgeSupplier so TabListEditorMediator can
+        // apply the top-inset margin, but registers its own bottom EdgeToEdgePadAdjuster on the
+        // close-all-tabs button container.
+        if (mEdgeToEdgeSupplier != null
+                && mLayoutType == TabListLayoutType.GROUPED
+                && mComponentId != TabComponentId.ARCHIVED_TABS_DIALOG) {
             mEdgeToEdgePadAdjuster =
                     EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
                             mTabListCoordinator.getContainerView(), mEdgeToEdgeSupplier);
@@ -708,8 +739,9 @@ public class TabListEditorCoordinator {
     }
 
     public void removeTabListItemSizeChangedObserver(TabListItemSizeChangedObserver observer) {
-        assert mTabListCoordinator != null;
-        mTabListCoordinator.removeTabListItemSizeChangedObserver(observer);
+        if (mTabListCoordinator != null) {
+            mTabListCoordinator.removeTabListItemSizeChangedObserver(observer);
+        }
     }
 
     private ThumbnailProvider initMultiThumbnailCardProvider(

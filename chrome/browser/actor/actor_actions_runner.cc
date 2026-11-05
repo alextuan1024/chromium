@@ -9,7 +9,6 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
@@ -18,12 +17,11 @@
 #include "chrome/browser/actor/actor_task_metadata.h"
 #include "chrome/browser/actor/enterprise_policy_checker.h"
 #include "chrome/browser/actor/tab_observation_strategy.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/actor/ui/actor_ui_state_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/actor_webui.mojom.h"
 #include "components/actor/core/task_source_info.h"
-#include "content/public/browser/render_frame_host.h"
-#include "url/gurl.h"
 
 namespace actor {
 
@@ -102,6 +100,11 @@ void SetTabIdIfMissing(optimization_guide::proto::Action& action,
         action.mutable_attempt_otp_filling()->set_tab_id(tab_id);
       }
       break;
+    case optimization_guide::proto::Action::kChangePassword:
+      if (!action.change_password().has_tab_id()) {
+        action.mutable_change_password()->set_tab_id(tab_id);
+      }
+      break;
     case optimization_guide::proto::Action::kTranslatePage:
       if (!action.translate_page().has_tab_id()) {
         action.mutable_translate_page()->set_tab_id(tab_id);
@@ -110,6 +113,11 @@ void SetTabIdIfMissing(optimization_guide::proto::Action& action,
     case optimization_guide::proto::Action::kScriptTool:
       if (!action.script_tool().has_tab_id()) {
         action.mutable_script_tool()->set_tab_id(tab_id);
+      }
+      break;
+    case optimization_guide::proto::Action::kExecuteJs:
+      if (!action.execute_js().has_tab_id()) {
+        action.mutable_execute_js()->set_tab_id(tab_id);
       }
       break;
     case optimization_guide::proto::Action::kScrollTo:
@@ -144,12 +152,14 @@ ActorActionsRunner::ActorActionsRunner(
     TaskSourceInfo source_info,
     optimization_guide::proto::Actions actions,
     base::OnceClosure on_complete,
-    int32_t tab_id)
+    int32_t tab_id,
+    const EnterprisePolicyChecker* policy_checker)
     : profile_(profile),
       source_info_(std::move(source_info)),
       actions_(std::move(actions)),
       on_complete_(std::move(on_complete)),
-      tab_id_(tab_id) {}
+      tab_id_(tab_id),
+      policy_checker_(policy_checker) {}
 
 ActorActionsRunner::~ActorActionsRunner() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -187,14 +197,18 @@ void ActorActionsRunner::Start() {
     return;
   }
 
-  auto options = webui::mojom::TaskOptions::New();
-  options->duration = webui::mojom::TaskDuration::kTransient;
-  // ActorActionsRunner executes transient actions on behalf of trusted browser
-  // features and extension APIs, which do not enforce enterprise policy URL
-  // blocking or content validation at the actor task level.
+  ActorTaskOptions options;
+  options.webui_task_options = webui::mojom::TaskOptions::New();
+  options.webui_task_options->duration = webui::mojom::TaskDuration::kTransient;
+  // Without a `policy_checker`, ActorActionsRunner executes transient actions
+  // on behalf of trusted browser features and extension APIs, which do not
+  // enforce enterprise policy URL blocking or content validation at the actor
+  // task level.
   task_id_ = actor_service->CreateTaskWithOptions(
-      source_info_, GetNullEnterprisePolicyChecker(), std::move(options),
-      nullptr, ui::ActorUiStateManager::Get(&profile_.get()));
+      source_info_,
+      policy_checker_ ? policy_checker_.get()
+                      : GetNullEnterprisePolicyChecker(),
+      ui::ActorUiStateManager::Get(&profile_.get()), std::move(options));
   if (!task_id_) {
     LOG(ERROR) << "Failed to create Actor task.";
     Finish(std::make_unique<optimization_guide::proto::ActionsResult>(
@@ -260,7 +274,7 @@ void ActorActionsRunner::OnActionsPerformed(
     bool skip_async_observation_collection,
     std::optional<page_content_annotations::ScreenshotOptions::
                       ScreenshotCollectionOptions> screenshot_options,
-    std::vector<ActionResultWithLatencyInfo> action_results,
+    std::vector<ToolResultWithLatencyInfo> action_results,
     TabObservationStrategy observation_strategy) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   auto* actor_service = ActorKeyedService::Get(&profile_.get());
@@ -282,7 +296,7 @@ void ActorActionsRunner::OnActionsPerformed(
 
 void ActorActionsRunner::OnActionsResultBuilt(
     base::TimeTicks start_time,
-    std::vector<ActionResultWithLatencyInfo> action_results,
+    std::vector<ToolResultWithLatencyInfo> action_results,
     TaskId task_id,
     bool skip_async_observation_information,
     std::optional<page_content_annotations::ScreenshotOptions::

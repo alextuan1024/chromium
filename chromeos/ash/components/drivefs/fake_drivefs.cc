@@ -26,7 +26,7 @@
 #include "chromeos/ash/components/dbus/cros_disks/fake_cros_disks_client.h"
 #include "chromeos/ash/components/drivefs/drivefs_util.h"
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
-#include "chromeos/components/drivefs/mojom/drivefs_native_messaging.mojom.h"
+#include "chromeos/ash/components/drivefs/mojom/drivefs_native_messaging.mojom.h"
 #include "components/drive/file_errors.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -714,21 +714,14 @@ void FakeDriveFs::SetPinnedByStableId(int64_t stable_id,
 void FakeDriveFs::ToggleMirroring(
     bool enabled,
     drivefs::mojom::DriveFs::ToggleMirroringCallback callback) {
-  std::move(callback).Run(drivefs::mojom::MirrorSyncStatus::kSuccess);
+  std::move(callback).Run(drivefs::mojom::MirrorSyncStatus::kFeatureNotEnabled);
 }
 
 void FakeDriveFs::ToggleSyncForPath(
     const base::FilePath& path,
     drivefs::mojom::MirrorPathStatus status,
     drivefs::mojom::DriveFs::ToggleSyncForPathCallback callback) {
-  if (status == drivefs::mojom::MirrorPathStatus::kStart) {
-    syncing_paths_.push_back(path);
-  } else {
-    // status == drivefs::mojom::MirrorPathStatus::kStop.
-    auto element = std::ranges::find(syncing_paths_, path);
-    syncing_paths_.erase(element);
-  }
-  std::move(callback).Run(drive::FileError::FILE_ERROR_OK);
+  std::move(callback).Run(drive::FileError::FILE_ERROR_FAILED);
 }
 
 void FakeDriveFs::PollHostedFilePinStates() {}

@@ -30,6 +30,7 @@
 #include "third_party/blink/public/mojom/service_worker/service_worker_ancestor_frame_type.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_client.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_container.mojom.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_fetch_handler_bypass_option.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_running_status_callback.mojom-forward.h"
 
@@ -407,8 +408,9 @@ class CONTENT_EXPORT ServiceWorkerClient final
   // A client hosted by a privileged WebContents (see //chrome's
   // PrivilegedWebContents) that forbids service worker control is permanently
   // ineligible to be controlled by a service worker (see
-  // IsEligibleForServiceWorkerController). The bit is set for window clients at
-  // response commit and inherited by worker clients from their creator.
+  // IsEligibleForServiceWorkerController). The bit is set for window and
+  // worker clients at client creation and inherited by worker clients from
+  // their creator.
   bool disallows_service_worker_control() const {
     return disallows_service_worker_control_;
   }

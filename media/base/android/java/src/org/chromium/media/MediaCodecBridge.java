@@ -6,19 +6,27 @@ package org.chromium.media;
 
 import android.annotation.SuppressLint;
 import android.graphics.Rect;
+import android.hardware.HardwareBuffer;
 import android.media.MediaCodec;
 import android.media.MediaCodec.CryptoInfo;
 import android.media.MediaCodec.LinearBlock;
 import android.media.MediaCrypto;
 import android.media.MediaDrm;
 import android.media.MediaFormat;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.view.Surface;
 
+import androidx.annotation.RequiresApi;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Log;
@@ -35,6 +43,9 @@ import java.util.Queue;
 @JNINamespace("media")
 @NullMarked
 class MediaCodecBridge {
+    @JniType("::media::MediaCodecBridgeImpl")
+    interface NativeMediaCodecBridge extends JniTypeToken {}
+
     private static final String TAG = "MediaCodecBridge";
 
     private static final int MEDIA_CODEC_UNKNOWN_CIPHER_MODE = -1;
@@ -60,7 +71,7 @@ class MediaCodecBridge {
     private boolean mPendingError;
     private int mPendingErrorCode; // only valid if mPendingError = true
     private boolean mPendingStart;
-    private long mNativeMediaCodecBridge;
+    private @Nullable JniRawPtr<NativeMediaCodecBridge> mNativeMediaCodecBridge;
     private int mSequenceCounter;
     private Queue<DequeueInputResult> mPendingInputBuffers;
     private Queue<DequeueOutputResult> mPendingOutputBuffers;
@@ -228,6 +239,49 @@ class MediaCodecBridge {
                 }
                 mBlock = null;
                 mBuffer = null;
+            }
+        }
+    }
+
+    /**
+     * Result of getOutputFrame(). Holds a HardwareBuffer only for OK. Native takes its own
+     * AHardwareBuffer reference and then calls close().
+     */
+    private static class GetOutputFrameResult {
+        private final @OutputFrameStatus int mStatus;
+        private @Nullable HardwareBuffer mHardwareBuffer;
+
+        private GetOutputFrameResult(
+                @OutputFrameStatus int status, @Nullable HardwareBuffer hardwareBuffer) {
+            mStatus = status;
+            mHardwareBuffer = hardwareBuffer;
+            assert (status == OutputFrameStatus.OK) == (hardwareBuffer != null);
+        }
+
+        private static GetOutputFrameResult ok(HardwareBuffer hardwareBuffer) {
+            return new GetOutputFrameResult(OutputFrameStatus.OK, hardwareBuffer);
+        }
+
+        private static GetOutputFrameResult error(@OutputFrameStatus int status) {
+            return new GetOutputFrameResult(status, null);
+        }
+
+        @CalledByNative
+        private @JniType("media::OutputFrameStatus") @OutputFrameStatus int status() {
+            return mStatus;
+        }
+
+        @CalledByNative
+        private @Nullable HardwareBuffer hardwareBuffer() {
+            return mHardwareBuffer;
+        }
+
+        // Drops the Java reference now instead of at garbage collection.
+        @CalledByNative
+        private void close() {
+            if (mHardwareBuffer != null) {
+                mHardwareBuffer.close();
+                mHardwareBuffer = null;
             }
         }
     }
@@ -465,7 +519,9 @@ class MediaCodecBridge {
     }
 
     @CalledByNative
-    private synchronized void setBuffersAvailableListener(long nativeMediaCodecBridge) {
+    private synchronized void setBuffersAvailableListener(
+            JniRawPtr<NativeMediaCodecBridge> nativeMediaCodecBridge) {
+        assert mNativeMediaCodecBridge == null;
         mNativeMediaCodecBridge = nativeMediaCodecBridge;
 
         // If any buffers or errors occurred before this, trigger the callback now.
@@ -475,7 +531,7 @@ class MediaCodecBridge {
     }
 
     private synchronized void notifyBuffersAvailable() {
-        if (mNativeMediaCodecBridge != 0) {
+        if (mNativeMediaCodecBridge != null) {
             MediaCodecBridgeJni.get().onBuffersAvailable(mNativeMediaCodecBridge);
         }
     }
@@ -529,7 +585,10 @@ class MediaCodecBridge {
             // Disconnect from the native code to ensure we don't issue calls
             // into it after its destruction.
             synchronized (this) {
-                mNativeMediaCodecBridge = 0;
+                if (mNativeMediaCodecBridge != null) {
+                    mNativeMediaCodecBridge.release();
+                    mNativeMediaCodecBridge = null;
+                }
             }
         }
         try {
@@ -784,6 +843,12 @@ class MediaCodecBridge {
             request.setPresentationTimeUs(presentationTimeUs);
             request.setFlags(flags);
             request.queue();
+        } catch (MediaCodec.CodecException e) {
+            Log.e(TAG, "Failed to queue input block", e);
+            return convertCodecException(e);
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "Failed to queue input block", e);
+            return MediaCodecStatus.ILLEGAL_STATE;
         } catch (Exception e) {
             Log.e(TAG, "Failed to queue input block", e);
             return MediaCodecStatus.INPUT_SLOT_UNAVAILABLE;
@@ -838,7 +903,7 @@ class MediaCodecBridge {
             request.queue();
         } catch (MediaCodec.CryptoException e) {
             if (e.getErrorCode() == MediaDrm.ErrorCodes.ERROR_NO_KEY) {
-                Log.d(TAG, QUEUE_SECURE_INPUT_BLOCK_ERR_MSG + "CryptoException.ERROR_NO_KEY");
+                Log.d(TAG, "%sCryptoException.ERROR_NO_KEY", QUEUE_SECURE_INPUT_BLOCK_ERR_MSG);
                 return MediaCodecStatus.NO_KEY;
             }
             // Anything other than ERROR_NO_KEY is unexpected.
@@ -991,6 +1056,89 @@ class MediaCodecBridge {
         }
     }
 
+    /**
+     * Returns the HardwareBuffer of an output buffer for a codec in block model mode. Call at most
+     * once per dequeued buffer: MediaCodec caches the frame, and native closes its HardwareBuffer
+     * after the first call.
+     *
+     * <p>Never throws RuntimeException across JNI; maps all outcomes to an {@link
+     * OutputFrameStatus}:
+     *
+     * <ul>
+     *   <li>{@code OK}: returns a non-null HardwareBuffer; native must acquire its own reference
+     *       and call {@link GetOutputFrameResult#close()}.
+     *   <li>{@code NOT_SUPPORTED}: pre-API 30, codec not in block model or not executing (including
+     *       CodecException), or any unexpected RuntimeException.
+     *   <li>{@code INVALID_INDEX}: invalid index or output buffer already released.
+     *   <li>{@code NO_HARDWARE_BUFFER}: linear, empty, or non-Codec2 output (any LinearBlock is
+     *       recycled immediately).
+     *   <li>{@code STALE_FRAME}: cached HardwareBuffer was already closed by an earlier call.
+     * </ul>
+     */
+    @CalledByNative
+    private GetOutputFrameResult getOutputFrame(int index) {
+        // MediaCodec.getOutputFrame() was added in API 30.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return GetOutputFrameResult.error(OutputFrameStatus.NOT_SUPPORTED);
+        }
+        try {
+            return getOutputFrameInternal(index);
+        } catch (RuntimeException e) {
+            // An exception that reaches native code would crash the GPU process.
+            Log.e(TAG, "Unexpected getOutputFrame() failure", e);
+            return GetOutputFrameResult.error(OutputFrameStatus.NOT_SUPPORTED);
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private GetOutputFrameResult getOutputFrameInternal(int index) {
+        MediaCodec.OutputFrame frame;
+        try {
+            frame = mMediaCodec.getOutputFrame(index);
+        } catch (IllegalStateException e) {
+            // Not block model, codec released or not executing, or a chunked or invalid C2Buffer.
+            // Includes MediaCodec.CodecException.
+            if (e instanceof MediaCodec.CodecException) {
+                Log.w(TAG, "getOutputFrame CodecException", e);
+            }
+            return GetOutputFrameResult.error(OutputFrameStatus.NOT_SUPPORTED);
+        } catch (IllegalArgumentException | IndexOutOfBoundsException e) {
+            // Invalid index, or the output buffer was already released.
+            return GetOutputFrameResult.error(OutputFrameStatus.INVALID_INDEX);
+        }
+
+        HardwareBuffer hardwareBuffer;
+        try {
+            hardwareBuffer = frame.getHardwareBuffer();
+        } catch (IllegalStateException e) {
+            // Output frame holds a LinearBlock rather than a HardwareBuffer.
+            recycleLinearBlock(frame);
+            return GetOutputFrameResult.error(OutputFrameStatus.NO_HARDWARE_BUFFER);
+        }
+
+        if (hardwareBuffer == null) {
+            // Empty or non-Codec2 output.
+            return GetOutputFrameResult.error(OutputFrameStatus.NO_HARDWARE_BUFFER);
+        }
+        if (hardwareBuffer.isClosed()) {
+            return GetOutputFrameResult.error(OutputFrameStatus.STALE_FRAME);
+        }
+        return GetOutputFrameResult.ok(hardwareBuffer);
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private static void recycleLinearBlock(MediaCodec.OutputFrame frame) {
+        // Recycle the LinearBlock now instead of leaving it to garbage collection.
+        try {
+            LinearBlock linearBlock = frame.getLinearBlock();
+            if (linearBlock != null) {
+                linearBlock.recycle();
+            }
+        } catch (IllegalStateException e) {
+            // Already recycled on an earlier call for this cached frame, or not linear.
+        }
+    }
+
     @SuppressWarnings("deprecation")
     @CalledByNative
     private DequeueOutputResult dequeueOutputBuffer(long timeoutUs) {
@@ -1126,6 +1274,6 @@ class MediaCodecBridge {
 
     @NativeMethods
     interface Natives {
-        void onBuffersAvailable(long nativeMediaCodecBridge);
+        void onBuffersAvailable(JniPtr<NativeMediaCodecBridge> self);
     }
 }

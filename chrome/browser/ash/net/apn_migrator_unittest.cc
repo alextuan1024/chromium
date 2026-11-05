@@ -220,85 +220,9 @@ class ApnMigratorTest : public testing::Test {
   std::unique_ptr<ApnMigrator> apn_migrator_;
 };
 
-TEST_F(ApnMigratorTest, ApnRevampFlagDisabled) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(features::kApnRevamp);
-
-  const std::string cellular_service_path_1 =
-      AddTestCellularDeviceAndService(kCellularName1, kTestCellularPath1,
-                                      kTestCellularIccid1, kTestCellularGuid1);
-  const std::string cellular_service_path_2 =
-      AddTestCellularDeviceAndService(kCellularName2, kTestCellularPath2,
-                                      kTestCellularIccid2, kTestCellularGuid2);
-
-  // Every network should be evaluated, simulate the first one as migrated, and
-  // the second one as not.
-  EXPECT_CALL(*managed_cellular_pref_handler(),
-              ContainsApnMigratedIccid(Eq(kTestCellularIccid1)))
-      .Times(2)
-      .WillRepeatedly(Return(true));
-  EXPECT_CALL(*managed_cellular_pref_handler(),
-              ContainsApnMigratedIccid(Eq(kTestCellularIccid2)))
-      .Times(3)
-      .WillRepeatedly(Return(false));
-
-  // For the migrated network, the routine should not check for the current
-  // custom APN list, but rather just resets the CustomApnList.
-  EXPECT_CALL(*network_metadata_store(), GetCustomApnList(kTestCellularGuid1))
-      .Times(0);
-
-  base::OnceClosure success_cb;
-  network_handler::ErrorCallback failure_cb;
-  std::vector<std::string> expected_names;
-  expected_names.push_back(shill::kCellularCustomApnListProperty);
-  EXPECT_CALL(
-      *managed_network_configuration_handler(),
-      ClearShillProperties(
-          cellular_service_path_1,
-          Truly([&expected_names](const std::vector<std::string>& names) {
-            return expected_names == names;
-          }),
-          _, _))
-      .Times(2)
-      .WillRepeatedly(
-          WithArgs<2, 3>([&success_cb, &failure_cb](
-                             base::OnceClosure callback,
-                             network_handler::ErrorCallback error_callback) {
-            success_cb = std::move(callback);
-            failure_cb = std::move(error_callback);
-          }));
-
-  // Ensure that the function does not modify the non-migrated network.
-  EXPECT_CALL(*network_metadata_store(), GetCustomApnList(kTestCellularGuid2))
-      .Times(0);
-  EXPECT_CALL(*managed_network_configuration_handler(),
-              ClearShillProperties(cellular_service_path_2, _, _, _))
-      .Times(0);
-
-  // Function under test
-  TriggerNetworkListChanged();
-
-  // Simulate the ClearShillProperties() call failing.
-  std::move(failure_cb).Run("error");
-  base::RunLoop().RunUntilIdle();
-
-  // Invoke the function again. |cellular_service_path_1|'s property should be
-  // attempted to be cleared again.
-  TriggerNetworkListChanged();
-
-  // Simulate the ClearShillProperties() call succeeding.
-  std::move(success_cb).Run();
-  base::RunLoop().RunUntilIdle();
-
-  // Invoke the function again. |cellular_service_path_1|'s property shouldn't
-  // be attempted to be cleared again.
-  TriggerNetworkListChanged();
-}
-
 TEST_F(ApnMigratorTest, AlreadyMigratedNetworks) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAllowApnModificationPolicy);
+  EXPECT_CALL(*managed_network_configuration_handler(), AllowApnModification())
+      .WillRepeatedly(Return(true));
 
   const std::string cellular_service_path_1 =
       AddTestCellularDeviceAndService(kCellularName1, kTestCellularPath1,
@@ -433,11 +357,7 @@ TEST_F(ApnMigratorTest, AlreadyMigratedNetworks) {
 
   EXPECT_CALL(*managed_cellular_pref_handler(),
               ContainsApnMigratedIccid(Eq(kTestCellularIccid3)))
-#if DCHECK_IS_ON()
       .Times(2)
-#else
-      .Times(1)
-#endif  // DCHECK_IS_ON()
       .WillRepeatedly(Return(false));
 
   EXPECT_CALL(*managed_network_configuration_handler(),
@@ -487,8 +407,6 @@ TEST_F(ApnMigratorTest, AlreadyMigratedNetworks) {
 }
 
 TEST_F(ApnMigratorTest, MigrateNetworksWithoutCustomApns) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 =
       AddTestCellularDeviceAndService(kCellularName1, kTestCellularPath1,
@@ -556,8 +474,6 @@ TEST_F(ApnMigratorTest, MigrateNetworksWithoutCustomApns) {
 }
 
 TEST_F(ApnMigratorTest, MigrateNetworkEmptyIccid) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1,
@@ -660,8 +576,6 @@ TEST_F(ApnMigratorTest, SkipMigratingWhenNoChangeInIccids) {
 }
 
 TEST_F(ApnMigratorTest, MigrateNetworkAlreadyMigrating) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 =
       AddTestCellularDeviceAndService(kCellularName1, kTestCellularPath1,
@@ -751,8 +665,6 @@ TEST_F(ApnMigratorTest, MigrateNetworkAlreadyMigrating) {
 }
 
 TEST_F(ApnMigratorTest, MigrateNetworkNoPropertiesOrNotFound) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 =
       AddTestCellularDeviceAndService(kCellularName1, kTestCellularPath1,
@@ -827,8 +739,6 @@ TEST_F(ApnMigratorTest, MigrateNetworkNoPropertiesOrNotFound) {
 }
 
 TEST_F(ApnMigratorTest, MigrateNetworkCustomApnRemovedDuringMigration) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 =
       AddTestCellularDeviceAndService(kCellularName1, kTestCellularPath1,
@@ -939,8 +849,6 @@ TEST_F(ApnMigratorTest, MigrateNetworkCustomApnRemovedDuringMigration) {
 
 TEST_F(ApnMigratorTest,
        MigrateManagedNetwork_NoLastConnectedDefaultApn_NonMatchingSelectedApn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1092,8 +1000,6 @@ TEST_F(ApnMigratorTest,
 
 TEST_F(ApnMigratorTest,
        MigrateManagedNetwork_NoLastConnectedDefaultApn_MatchingSelectedApn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1169,8 +1075,6 @@ TEST_F(ApnMigratorTest,
 
 TEST_F(ApnMigratorTest,
        MigrateManagedNetwork_MatchingLastConnectedAttachApnAndDefaultApn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1263,8 +1167,6 @@ TEST_F(ApnMigratorTest,
 TEST_F(
     ApnMigratorTest,
     MigrateNonManagedNetwork_NoLastConnectedAttachApnAndDefaultApn_MatchingLastGoodApn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1343,8 +1245,6 @@ TEST_F(
 TEST_F(
     ApnMigratorTest,
     MigrateNonManagedNetwork_NoLastConnectedAttachApnAndDefaultApn_NonMatchingLastGoodApn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1422,8 +1322,6 @@ TEST_F(
 
 TEST_F(ApnMigratorTest,
        MigrateNonManagedNetwork_MatchingLastConnectedAttachApnAndDefaultApn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1507,8 +1405,6 @@ TEST_F(ApnMigratorTest,
 TEST_F(
     ApnMigratorTest,
     MigrateNonManagedNetwork_NoLastConnectedAttachApn_MatchingLastConnectedDefaultApn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1589,8 +1485,6 @@ TEST_F(
 TEST_F(
     ApnMigratorTest,
     MigrateNonManagedNetwork_EmptyLastConnectedAttachApn_MatchingLastConnectedDefaultApn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1674,8 +1568,6 @@ TEST_F(
 TEST_F(
     ApnMigratorTest,
     MigrateNonManagedNetwork_MatchesLastConnectedAttachOnlyAndDefaultExists) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1777,8 +1669,6 @@ TEST_F(
 TEST_F(
     ApnMigratorTest,
     MigrateNonManagedNetwork_MatchesLastConnectedDefaultOnlyAndAttachExists) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1882,8 +1772,6 @@ TEST_F(
 TEST_F(
     ApnMigratorTest,
     MigrateNonManagedNetwork_CreatedEnabledDefaultApnBeforeEnabledAttachApn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,
@@ -1961,8 +1849,6 @@ TEST_F(
 }
 
 TEST_F(ApnMigratorTest, MigrateNonManagedNetwork_Default) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kApnRevamp);
 
   const std::string cellular_service_path_1 = AddTestCellularDeviceAndService(
       kCellularName1, kTestCellularPath1, kTestCellularIccid1,

@@ -40,8 +40,14 @@ static_library("home_modules") {
       "home_modules_card_registry_ios.h",
       "lens_ephemeral_module.cc",
       "lens_ephemeral_module.h",
+      "ntp_customization_ephemeral_module.cc",
+      "ntp_customization_ephemeral_module.h",
+      "ntp_theme_ephemeral_module.cc",
+      "ntp_theme_ephemeral_module.h",
       "save_passwords_ephemeral_module.cc",
       "save_passwords_ephemeral_module.h",
+      "tips_notifications_ephemeral_module.cc",
+      "tips_notifications_ephemeral_module.h",
     ]
   }
 
@@ -63,6 +69,8 @@ static_library("home_modules") {
       "tab_group_promo.h",
       "tab_group_sync_promo.cc",
       "tab_group_sync_promo.h",
+      "tips_notifications_promo.cc",
+      "tips_notifications_promo.h",
     ]
   }
 
@@ -115,7 +123,10 @@ source_set("unit_tests") {
       "enhanced_safe_browsing_ephemeral_module_unittest.cc",
       "home_modules_card_registry_ios_unittest.cc",
       "lens_ephemeral_module_unittest.cc",
+      "ntp_customization_ephemeral_module_unittest.cc",
+      "ntp_theme_ephemeral_module_unittest.cc",
       "save_passwords_ephemeral_module_unittest.cc",
+      "tips_notifications_ephemeral_module_unittest.cc",
     ]
   }
 
@@ -129,6 +140,7 @@ source_set("unit_tests") {
       "quick_delete_promo_unittest.cc",
       "tab_group_promo_unittest.cc",
       "tab_group_sync_promo_unittest.cc",
+      "tips_notifications_promo_unittest.cc",
     ]
   }
 

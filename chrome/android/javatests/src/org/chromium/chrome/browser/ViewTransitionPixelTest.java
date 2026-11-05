@@ -35,7 +35,6 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
@@ -63,7 +62,6 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     // Resampling can make scroll offsets non-deterministic so turn it off to ensure hiding browser
     // controls works reliably;
     // Disable edge to edge as part of the test is measuring the keyboard's height, which differs
@@ -82,6 +80,8 @@ public class ViewTransitionPixelTest {
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.BLINK_VIEW_TRANSITIONS)
+                    .setRevision(1)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .build();
 
     private static final String TEXTFIELD_DOM_ID = "inputElement";
@@ -126,7 +126,7 @@ public class ViewTransitionPixelTest {
                     boolean isKeyboardShowing =
                             mActivityTestRule
                                     .getKeyboardDelegate()
-                                    .isKeyboardShowing(
+                                    .isKeyboardObscuring(
                                             mActivityTestRule
                                                     .getActivity()
                                                     .getTabsViewForTesting());
@@ -264,6 +264,19 @@ public class ViewTransitionPixelTest {
         JavaScriptUtils.executeJavaScriptAndWaitForResult(getWebContents(), "animateToEndState();");
     }
 
+    // Starts the transition animation, awaits transition.ready so pseudo-elements
+    // and animations are generated and paused, waits for the initial transition frame
+    // to be presented, advances animations to the final incoming state, and waits
+    // for the end-state frames to be presented before returning.
+    private void startTransitionAndAnimateToEndState() throws Throwable {
+        startTransitionAnimation();
+        waitForTransitionReady();
+        mViewportTestUtils.waitForFramePresented();
+        animateToEndState();
+        mViewportTestUtils.waitForFramePresented();
+        mViewportTestUtils.waitForFramePresented();
+    }
+
     // Finishes all animations which also finishes the view transition.
     private void finishAnimations() throws Throwable {
         JavaScriptUtils.executeJavaScriptAndWaitForResult(getWebContents(), "finishAnimations();");
@@ -393,6 +406,7 @@ public class ViewTransitionPixelTest {
     @Test
     @MediumTest
     @Feature({"RenderTest"})
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // https://crbug.com/588465568
     public void testDialog() throws Throwable {
         String url = "/chrome/test/data/android/view_transition_dialog.html";
         mActivityTestRule.startOnTestServerUrl(url);
@@ -403,9 +417,7 @@ public class ViewTransitionPixelTest {
         // Start the animation. The "animation" simply displays the old transition for the full
         // duration of the test. This test is interested in how the <dialog> element is positioned.
         // Since that's in the end-state, skip straight to that.
-        startTransitionAnimation();
-        animateToEndState();
-        mViewportTestUtils.waitForFramePresented();
+        startTransitionAndAnimateToEndState();
 
         Bitmap newState = takeScreenshot();
         mRenderTestRule.compareForResult(newState, "incoming_dialog_element");
@@ -423,6 +435,7 @@ public class ViewTransitionPixelTest {
     @Test
     @MediumTest
     @Feature({"RenderTest"})
+    @DisabledTest(message = "https://crbug.com/562983036")
     public void testPageWiderThanICB() throws Throwable {
         String url = "/chrome/test/data/android/view_transition_wider_than_icb.html";
         mActivityTestRule.startOnTestServerUrl(url);
@@ -433,9 +446,7 @@ public class ViewTransitionPixelTest {
         // Start the animation. The "animation" simply displays the old transition for the full
         // duration of the test. This test is interested in how the <dialog> element is positioned.
         // Since that's in the end-state, skip straight to that.
-        startTransitionAnimation();
-        animateToEndState();
-        mViewportTestUtils.waitForFramePresented();
+        startTransitionAndAnimateToEndState();
 
         Bitmap newState = takeScreenshot();
         mRenderTestRule.compareForResult(newState, "wider-than-icb");
@@ -485,6 +496,7 @@ public class ViewTransitionPixelTest {
         JavaScriptUtils.executeJavaScriptAndWaitForResult(
                 getWebContents(), "window.scrollTo(0, " + oldPageScrollOffset + ")");
 
+        mViewportTestUtils.waitForBrowserControlsState(/* shown= */ true);
         mViewportTestUtils.waitForFramePresented();
         mViewportTestUtils.waitForFramePresented();
         Bitmap newState = takeScreenshot();
@@ -577,6 +589,7 @@ public class ViewTransitionPixelTest {
         JavaScriptUtils.executeJavaScriptAndWaitForResult(
                 getWebContents(), "window.scrollTo(0, " + oldPageScrollOffset + ")");
 
+        mViewportTestUtils.waitForBrowserControlsState(/* shown= */ true);
         mViewportTestUtils.waitForFramePresented();
         mViewportTestUtils.waitForFramePresented();
         Bitmap newState = takeScreenshot();

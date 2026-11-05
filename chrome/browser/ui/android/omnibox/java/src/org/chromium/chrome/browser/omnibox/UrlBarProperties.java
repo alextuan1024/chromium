@@ -21,8 +21,6 @@ import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
-import java.util.Locale;
-
 /** The model properties for the URL bar text component. */
 @NullMarked
 class UrlBarProperties {
@@ -60,17 +58,6 @@ class UrlBarProperties {
             this.selection = selection;
             this.originChanged = originChanged;
         }
-
-        @Override
-        public String toString() {
-            return String.format(
-                    Locale.US,
-                    "%s: text: %s; scrollType: %d; selectionState: %s",
-                    getClass().getSimpleName(),
-                    text,
-                    scrollType,
-                    selection);
-        }
     }
 
     /** Contains the necessary information to display inline autocomplete text. */
@@ -100,19 +87,6 @@ class UrlBarProperties {
             this.additionalText = additionalText;
             this.siteSearchLabel = siteSearchLabel;
         }
-
-        @Override
-        public String toString() {
-            return String.format(
-                    Locale.US,
-                    "%s: user text: %s; autocomplete text: %s; additional text: %s; site search"
-                            + " label: %s",
-                    getClass().getSimpleName(),
-                    userText,
-                    autocompleteText,
-                    additionalText,
-                    siteSearchLabel);
-        }
     }
 
     /** The string to append to the end of the URL bar text during TalkBack readout. */
@@ -126,6 +100,10 @@ class UrlBarProperties {
     /** Whether the AI Mode preference is currently enabled. */
     public static final WritableBooleanPropertyKey AI_MODE_PREF_ENABLED =
             new WritableBooleanPropertyKey();
+
+    /** The label for the "Always Show AI Mode" context menu item. */
+    public static final WritableObjectPropertyKey<String> AI_MODE_PREF_LABEL =
+            new WritableObjectPropertyKey<>();
 
     /** The callback to run when the "Always Show AI Mode" menu item is toggled. */
     public static final WritableObjectPropertyKey<Callback<Boolean>> AI_MODE_PREF_TOGGLE_CALLBACK =
@@ -215,6 +193,10 @@ class UrlBarProperties {
     public static final WritableObjectPropertyKey<Callback<Integer>> URL_DIRECTION_LISTENER =
             new WritableObjectPropertyKey<>();
 
+    /** Whether the URL bar should configure the IME for natural text composition. */
+    public static final WritableBooleanPropertyKey USE_NATURAL_TEXT_IME =
+            new WritableBooleanPropertyKey();
+
     /** Whether the URL bar should use a small text size. */
     public static final WritableBooleanPropertyKey USE_SMALL_TEXT =
             new WritableBooleanPropertyKey();
@@ -225,6 +207,7 @@ class UrlBarProperties {
                 ACCESSIBILITY_WARNING,
                 ACTION_MODE_CALLBACK,
                 AI_MODE_PREF_ENABLED,
+                AI_MODE_PREF_LABEL,
                 AI_MODE_PREF_TOGGLE_CALLBACK,
                 ALLOW_FOCUS,
                 ALLOW_MULTILINE_INPUT,
@@ -247,6 +230,7 @@ class UrlBarProperties {
                 TEXT_STATE,
                 TEXT_WRAPPED_CALLBACK,
                 URL_DIRECTION_LISTENER,
+                USE_NATURAL_TEXT_IME,
                 USE_SMALL_TEXT
                 // go/keep-sorted end
             };

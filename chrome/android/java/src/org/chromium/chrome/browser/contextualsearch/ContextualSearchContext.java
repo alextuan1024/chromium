@@ -8,9 +8,10 @@ import android.text.TextUtils;
 
 import androidx.annotation.VisibleForTesting;
 
-import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
-import org.jni_zero.NativeClassQualifiedName;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.Initializer;
@@ -25,13 +26,16 @@ import org.chromium.build.annotations.Nullable;
  */
 @NullMarked
 public abstract class ContextualSearchContext {
+    @JniType("NativeContextualSearchContext")
+    interface NativeContextualSearchContext extends JniTypeToken {}
+
     static final int INVALID_OFFSET = -1;
 
     // Non-visible word-break marker.
     private static final int SOFT_HYPHEN_CHAR = '\u00AD';
 
     // Pointer to the native instance of this class.
-    private long mNativePointer;
+    private @Nullable JniUniquePtr<NativeContextualSearchContext> mNativePointer;
 
     // Whether this context has had the required properties set so it can Resolve a Search Term.
     private boolean mHasSetResolveProperties;
@@ -98,22 +102,22 @@ public abstract class ContextualSearchContext {
             String fluentLanguages) {
         // TODO(donnd): consider making this a constructor variation.
         mHasSetResolveProperties = true;
+        assert mNativePointer != null;
         ContextualSearchContextJni.get()
-                .setResolveProperties(getNativePointer(), homeCountry, doSendBasePageUrl);
+                .setResolveProperties(mNativePointer, homeCountry, doSendBasePageUrl);
         mTargetLanguage = targetLanguage;
         mFluentLanguages = fluentLanguages;
     }
 
     /**
      * This method should be called to clean up storage when an instance of this class is no longer
-     * in use. The ContextualSearchContextJni.get().destroy will call the destructor on the native
-     * instance.
+     * in use.
      */
     @SuppressWarnings("NullAway")
     void destroy() {
-        assert mNativePointer != 0;
-        ContextualSearchContextJni.get().destroy(mNativePointer);
-        mNativePointer = 0;
+        assert mNativePointer != null;
+        mNativePointer.destroy();
+        mNativePointer = null;
 
         // Also zero out private data that may be sizable.
         mSurroundingText = null;
@@ -161,46 +165,38 @@ public abstract class ContextualSearchContext {
         setTranslationLanguages(getDetectedLanguage(), mTargetLanguage, mFluentLanguages);
     }
 
-    /**
-     * @return The text that surrounds the selection, or {@code null} if none yet known.
-     */
+    /** Returns the text that surrounds the selection, or {@code null} if none yet known. */
     String getSurroundingText() {
         return mSurroundingText;
     }
 
     /**
-     * @return The offset into the surrounding text of the start of the selection, or
-     *         {@link #INVALID_OFFSET} if not yet established.
+     * Returns the offset into the surrounding text of the start of the selection, or {@link
+     * #INVALID_OFFSET} if not yet established.
      */
     int getSelectionStartOffset() {
         return mSelectionStartOffset;
     }
 
     /**
-     * @return The offset into the surrounding text of the end of the selection, or
-     *         {@link #INVALID_OFFSET} if not yet established.
+     * Returns the offset into the surrounding text of the end of the selection, or {@link
+     * #INVALID_OFFSET} if not yet established.
      */
     int getSelectionEndOffset() {
         return mSelectionEndOffset;
     }
 
-    /**
-     * @return The original encoding of the base page.
-     */
+    /** Returns the original encoding of the base page. */
     String getEncoding() {
         return mEncoding;
     }
 
-    /**
-     * @return The selection being resolved, or {@code null} if no resolve has been requested.
-     */
+    /** Returns the selection being resolved, or {@code null} if no resolve has been requested. */
     @Nullable String getSelectionBeingResolved() {
         return mSelectionBeingResolved;
     }
 
-    /**
-     * @return The text content that follows the selection (one side of the surrounding text).
-     */
+    /** Returns the text content that follows the selection (one side of the surrounding text). */
     String getTextContentFollowingSelection() {
         if (!TextUtils.isEmpty(mSurroundingText)
                 && mSelectionEndOffset > 0
@@ -211,43 +207,44 @@ public abstract class ContextualSearchContext {
         }
     }
 
-    /**
-     * @return Whether this context can Resolve the Search Term.
-     */
+    /** Returns whether this context can Resolve the Search Term. */
     boolean canResolve() {
         return mHasSetResolveProperties && hasValidSelection();
     }
 
     /**
-     * Prepares the Context to be used in a Resolve request by supplying last minute parameters.
-     * If this call is not made before a Resolve then defaults are used (not exact and not a
-     * Related Search).
+     * Prepares the Context to be used in a Resolve request by supplying last minute parameters. If
+     * this call is not made before a Resolve then defaults are used (not exact and not a Related
+     * Search).
+     *
      * @param isExactSearch Specifies whether this search must be exact -- meaning the resolve must
-     *        return a non-expanding result that matches the selection exactly.
+     *     return a non-expanding result that matches the selection exactly.
      * @param relatedSearchesStamp Information to be attached to the Resolve request that is needed
-     *        for Related Searches. If this string is empty then no Related Searches results will
-     *        be requested.
+     *     for Related Searches. If this string is empty then no Related Searches results will be
+     *     requested.
      */
     void prepareToResolve(boolean isExactSearch, String relatedSearchesStamp) {
         mSelectionBeingResolved = getCurrentSelection();
         mRelatedSearchesStamp = relatedSearchesStamp;
+        assert mNativePointer != null;
         ContextualSearchContextJni.get()
                 .prepareToResolve(mNativePointer, isExactSearch, relatedSearchesStamp);
     }
 
     /**
      * Notifies of an adjustment that has been applied to the start and end of the selection.
+     *
      * @param startAdjust A signed value indicating the direction of the adjustment to the start of
-     *        the selection (typically a negative value when the selection expands).
-     * @param endAdjust A signed value indicating the direction of the adjustment to the end of
-     *        the selection (typically a positive value when the selection expands).
+     *     the selection (typically a negative value when the selection expands).
+     * @param endAdjust A signed value indicating the direction of the adjustment to the end of the
+     *     selection (typically a positive value when the selection expands).
      */
     void onSelectionAdjusted(int startAdjust, int endAdjust) {
         // Fully track the selection as it changes.
         mSelectionStartOffset += startAdjust;
         mSelectionEndOffset += endAdjust;
-        ContextualSearchContextJni.get()
-                .adjustSelection(getNativePointer(), startAdjust, endAdjust);
+        assert mNativePointer != null;
+        ContextualSearchContextJni.get().adjustSelection(mNativePointer, startAdjust, endAdjust);
         // Notify of changes.
         onSelectionChanged();
     }
@@ -263,7 +260,7 @@ public abstract class ContextualSearchContext {
         return mSurroundingText.substring(mSelectionStartOffset, mSelectionEndOffset);
     }
 
-    /** @return the current selection, or an empty string if data is invalid or nothing selected. */
+    /** Returns the current selection, or an empty string if data is invalid or nothing selected. */
     String getSelection() {
         if (TextUtils.isEmpty(mSurroundingText)
                 || mSelectionEndOffset < mSelectionStartOffset
@@ -287,6 +284,7 @@ public abstract class ContextualSearchContext {
     String getDetectedLanguage() {
         assert mSurroundingText != null;
         if (mDetectedLanguage == null) {
+            assert mNativePointer != null;
             mDetectedLanguage = ContextualSearchContextJni.get().detectLanguage(mNativePointer);
         }
         return mDetectedLanguage;
@@ -308,6 +306,7 @@ public abstract class ContextualSearchContext {
         // The target language is essential in order to provide results the user can read, and if
         // not specified the server may fallback onto a guess based on location, which isn't
         // always a good experience.
+        assert mNativePointer != null;
         ContextualSearchContextJni.get()
                 .setTranslationLanguages(
                         mNativePointer, detectedLanguage, targetLanguage, fluentLanguages);
@@ -317,9 +316,7 @@ public abstract class ContextualSearchContext {
     // Content Analysis.
     // ============================================================================================
 
-    /**
-     * @return Whether this context has valid Surrounding text and initial Tap offset.
-     */
+    /** Returns whether this context has valid Surrounding text and initial Tap offset. */
     @VisibleForTesting
     boolean hasValidTappedText() {
         return !TextUtils.isEmpty(mSurroundingText)
@@ -327,9 +324,7 @@ public abstract class ContextualSearchContext {
                 && mTapOffset <= mSurroundingText.length();
     }
 
-    /**
-     * @return Whether this context has a valid selection, which may be an insertion point.
-     */
+    /** Returns whether this context has a valid selection, which may be an insertion point. */
     @VisibleForTesting
     boolean hasValidSelection() {
         return !TextUtils.isEmpty(mSurroundingText)
@@ -339,17 +334,16 @@ public abstract class ContextualSearchContext {
                 && mSelectionEndOffset < mSurroundingText.length();
     }
 
-    /**
-     * @return Whether a Tap gesture has occurred and been analyzed.
-     */
+    /** Returns whether a Tap gesture has occurred and been analyzed. */
     @VisibleForTesting
     boolean hasAnalyzedTap() {
         return mTapOffset >= 0;
     }
 
     /**
-     * @return The word tapped, or {@code null} if the word that was tapped cannot be identified by
-     *     the current limited parsing capability.
+     * Returns the word tapped, or {@code null} if the word that was tapped cannot be identified by
+     * the current limited parsing capability.
+     *
      * @see #analyzeTap(int)
      */
     @Nullable String getWordTapped() {
@@ -357,8 +351,9 @@ public abstract class ContextualSearchContext {
     }
 
     /**
-     * @return The offset of the tap within the tapped word, or {@code INVALID_OFFSET} if the tapped
-     *         word cannot be identified by the current parsing capability.
+     * Returns the offset of the tap within the tapped word, or {@code INVALID_OFFSET} if the tapped
+     * word cannot be identified by the current parsing capability.
+     *
      * @see #analyzeTap(int)
      */
     int getTapOffsetWithinTappedWord() {
@@ -388,8 +383,8 @@ public abstract class ContextualSearchContext {
     }
 
     /**
-     * @return The start of the word that contains the given initial offset, within the surrounding
-     *         text, or {@code INVALID_OFFSET} if not found.
+     * Returns the start of the word that contains the given initial offset, within the surrounding
+     * text, or {@code INVALID_OFFSET} if not found.
      */
     private int findWordStartOffset(int initial) {
         // Scan before, aborting if we hit any ideographic letter.
@@ -404,14 +399,15 @@ public abstract class ContextualSearchContext {
     }
 
     /**
-     * Finds the offset of the end of the word that includes the given initial offset.
-     * NOTE: this is the index of the character just past the last character of the word,
-     * so a 3 character word "who" has start index 0 and end index 3.
-     * The character at the initial offset is examined and each one after that too until a non-word
-     * character is encountered, and that offset will be returned.
+     * Finds the offset of the end of the word that includes the given initial offset. NOTE: this is
+     * the index of the character just past the last character of the word, so a 3 character word
+     * "who" has start index 0 and end index 3. The character at the initial offset is examined and
+     * each one after that too until a non-word character is encountered, and that offset will be
+     * returned.
+     *
      * @param initial The initial offset to scan from.
      * @return The end of the word that contains the given initial offset, within the surrounding
-     *         text.
+     *     text.
      */
     private int findWordEndOffset(int initial) {
         // Scan after, aborting if we hit any CJKV letter.
@@ -424,9 +420,7 @@ public abstract class ContextualSearchContext {
         return INVALID_OFFSET;
     }
 
-    /**
-     * @return Whether the character at the given index is a word-break.
-     */
+    /** Returns whether the character at the given index is a word-break. */
     private boolean isWordBreakAtIndex(int index) {
         return !Character.isLetterOrDigit(mSurroundingText.charAt(index))
                 && mSurroundingText.charAt(index) != SOFT_HYPHEN_CHAR;
@@ -441,47 +435,33 @@ public abstract class ContextualSearchContext {
         return mRelatedSearchesStamp;
     }
 
-    // ============================================================================================
-    // Native callback support.
-    // ============================================================================================
-
-    @CalledByNative
-    private long getNativePointer() {
-        assert mNativePointer != 0;
+    @Nullable JniPtr<NativeContextualSearchContext> getNativePointer() {
         return mNativePointer;
     }
 
     @NativeMethods
     interface Natives {
-        @NativeClassQualifiedName("NativeContextualSearchContext")
-        long init(ContextualSearchContext self);
+        JniUniquePtr<NativeContextualSearchContext> init(ContextualSearchContext self);
 
-        @NativeClassQualifiedName("NativeContextualSearchContext")
-        void destroy(long nativeContextualSearchContext);
-
-        @NativeClassQualifiedName("NativeContextualSearchContext")
         void setResolveProperties(
-                long nativeContextualSearchContext,
+                JniPtr<NativeContextualSearchContext> self,
                 @JniType("std::string") String homeCountry,
                 boolean doSendBasePageUrl);
 
-        @NativeClassQualifiedName("NativeContextualSearchContext")
-        void adjustSelection(long nativeContextualSearchContext, int startAdjust, int endAdjust);
+        void adjustSelection(
+                JniPtr<NativeContextualSearchContext> self, int startAdjust, int endAdjust);
 
-        @NativeClassQualifiedName("NativeContextualSearchContext")
         @JniType("std::string")
-        String detectLanguage(long nativeContextualSearchContext);
+        String detectLanguage(JniPtr<NativeContextualSearchContext> self);
 
-        @NativeClassQualifiedName("NativeContextualSearchContext")
         void setTranslationLanguages(
-                long nativeContextualSearchContext,
+                JniPtr<NativeContextualSearchContext> self,
                 @JniType("std::string") String detectedLanguage,
                 @JniType("std::string") String targetLanguage,
                 @JniType("std::string") String fluentLanguages);
 
-        @NativeClassQualifiedName("NativeContextualSearchContext")
         void prepareToResolve(
-                long nativeContextualSearchContext,
+                JniPtr<NativeContextualSearchContext> self,
                 boolean isExactSearch,
                 @JniType("std::string") String relatedSearchesStamp);
     }

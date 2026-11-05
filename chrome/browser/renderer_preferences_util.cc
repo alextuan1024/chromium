@@ -16,7 +16,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/convert_explicitly_allowed_network_ports_pref.h"
-#include "content/public/browser/reduce_accept_language_utils.h"
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
 #endif
@@ -36,12 +35,15 @@
 #include "third_party/blink/public/public_buildflags.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/platform/ax_platform.h"
+#include "ui/base/accelerators/accelerator.h"
 #include "ui/base/accelerators/command.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/native_theme/native_theme.h"
 
 #if defined(USE_AURA) && BUILDFLAG(IS_LINUX)
 #include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_aura_linux.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #endif
 
@@ -100,7 +102,7 @@ std::vector<std::string> GetLocalIpsAllowedUrls(
 
 std::string GetLanguageListForProfile(Profile* profile,
                                       const std::string& language_list) {
-  return content::ReduceAcceptLanguageUtils::GetLanguagesWithMaxCount(
+  return language::GetLanguagesWithMaxCount(
       profile->IsOffTheRecord()
           ? language::GetIncognitoLanguageList(language_list)
           : language_list);
@@ -129,7 +131,8 @@ void UpdateFromSystemSettings(blink::RendererPreferences* prefs,
 #endif
 
 #if BUILDFLAG(IS_LINUX)
-  if (auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(profile)) {
+  if (auto* linux_ui_theme =
+          ThemeServiceAuraLinux::GetLinuxUiThemeForProfile(profile)) {
     if (ThemeServiceFactory::GetForProfile(profile)->UsingSystemTheme()) {
       linux_ui_theme->GetFocusRingColor(&prefs->focus_ring_color);
       linux_ui_theme->GetActiveSelectionBgColor(
@@ -217,50 +220,20 @@ void UpdateFromSystemSettings(blink::RendererPreferences* prefs,
   prefs->caret_browsing_enabled =
       pref_service->GetBoolean(prefs::kCaretBrowsingEnabled);
 
-  // Trigger strings (e.g. "@@") and keyboard shortcuts for AtMemory are not
-  // supported on Android.
-  if constexpr (!BUILDFLAG(IS_ANDROID)) {
-    const base::DictValue& autofill_trigger_info =
-        pref_service->GetDict(autofill::prefs::kAutofillAtMemoryTriggerInfo);
-    if (autofill_trigger_info.FindBool("is_shortcut").value_or(false)) {
-      if (const std::string* trigger_string =
-              autofill_trigger_info.FindString("trigger")) {
-        ui::Accelerator accelerator =
-            ui::Command::StringToAccelerator(*trigger_string);
-        prefs->autofill_shortcut_key_code = accelerator.key_code();
-        prefs->autofill_shortcut_modifiers = accelerator.modifiers();
-        prefs->autofill_trigger_string = u"";
-      }
-    } else {
-      prefs->autofill_shortcut_key_code = ui::VKEY_UNKNOWN;
-      prefs->autofill_shortcut_modifiers = 0;
-      if (const std::string* trigger_string =
-              autofill_trigger_info.FindString("trigger")) {
-        prefs->autofill_trigger_string = base::UTF8ToUTF16(*trigger_string);
-      } else {
-        prefs->autofill_trigger_string = u"";
-      }
-    }
-
-    const std::string& shortcut_string =
-        pref_service->GetString(autofill::prefs::kAutofillAtMemoryShortcut);
-    if (!shortcut_string.empty()) {
-      ui::Accelerator accelerator =
-          ui::Command::StringToAccelerator(shortcut_string);
-      prefs->autofill_shortcut_key_code = accelerator.key_code();
-      prefs->autofill_shortcut_modifiers = accelerator.modifiers();
-    } else {
-      prefs->autofill_shortcut_key_code = ui::VKEY_UNKNOWN;
-      prefs->autofill_shortcut_modifiers = 0;
-    }
-    prefs->autofill_at_memory_double_ctrl_trigger_enabled =
-        pref_service->GetBoolean(
-            autofill::prefs::kAutofillAtMemoryDoubleCtrlTriggerEnabled);
+  const std::string& shortcut_string =
+      pref_service->GetString(autofill::prefs::kAutofillAtMemoryShortcut);
+  if (!shortcut_string.empty()) {
+    ui::Accelerator accelerator =
+        ui::Command::StringToAccelerator(shortcut_string);
+    prefs->autofill_shortcut_key_code = accelerator.key_code();
+    prefs->autofill_shortcut_modifiers = accelerator.modifiers();
   } else {
     prefs->autofill_shortcut_key_code = ui::VKEY_UNKNOWN;
     prefs->autofill_shortcut_modifiers = 0;
-    prefs->autofill_at_memory_double_ctrl_trigger_enabled = false;
   }
+  prefs->autofill_at_memory_double_ctrl_trigger_enabled =
+      pref_service->GetBoolean(
+          autofill::prefs::kAutofillAtMemoryDoubleCtrlTriggerEnabled);
 
   ui::AXPlatform::GetInstance().SetCaretBrowsingState(
       prefs->caret_browsing_enabled);

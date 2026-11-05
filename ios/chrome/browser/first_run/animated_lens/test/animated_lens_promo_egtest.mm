@@ -5,7 +5,7 @@
 #import "ios/chrome/browser/first_run/model/first_run_metrics.h"
 #import "ios/chrome/browser/first_run/public/first_run_constants.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
-#import "ios/chrome/common/ui/promo_style/constants.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_constants.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
@@ -23,10 +23,6 @@
   config.additional_args.push_back("true");
   // Enable the BestOfAppFRE feature with variant 2.
   config.additional_args.push_back("--enable-features=BestOfAppFRE:variant/2");
-  // Disable the updated first run sequence so the Sign In and Default Browser
-  // screen order is consistent.
-  config.additional_args.push_back(
-      "--disable-features=UpdatedFirstRunSequence");
   // Disable the animated default browser promo so the accessibility ID is
   // correct.
   config.additional_args.push_back(
@@ -40,7 +36,7 @@
 // Taps a promo button.
 - (void)tapPromoButton:(id<GREYMatcher>)buttonMatcher {
   id<GREYMatcher> scrollViewMatcher =
-      grey_accessibilityID(kPromoStyleScrollViewAccessibilityIdentifier);
+      grey_accessibilityID(kButtonStackScrollViewAccessibilityIdentifier);
   id<GREYAction> searchAction = grey_scrollInDirection(kGREYDirectionDown, 200);
   GREYElementInteraction* element =
       [[EarlGrey selectElementWithMatcher:buttonMatcher]
@@ -49,15 +45,7 @@
   [element performAction:grey_tap()];
 }
 
-- (void)skipSignInAndDefaultBrowser {
-  // Skip sign in.
-  [ChromeEarlGrey
-      waitForUIElementToAppearWithMatcher:
-          grey_accessibilityID(
-              first_run::kFirstRunSignInScreenAccessibilityIdentifier)];
-
-  [self tapPromoButton:chrome_test_util::ButtonStackSecondaryButton()];
-
+- (void)skipDefaultBrowser {
   // Skip default browser screen.
   [ChromeEarlGrey
       waitForUIElementToAppearWithMatcher:
@@ -83,7 +71,7 @@
       forHistogram:@(first_run::kFirstRunStageHistogram)]);
 
   // Navigate to the Lens Animated Promo.
-  [self skipSignInAndDefaultBrowser];
+  [self skipDefaultBrowser];
 
   // Wait for the Lens Animated Promo to appear.
   [ChromeEarlGrey

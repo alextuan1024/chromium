@@ -29,6 +29,8 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EXECUTION_CONTEXT_EXECUTION_CONTEXT_H_
 
 #include <memory>
+#include <optional>
+#include <utility>
 
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
@@ -161,7 +163,6 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
   virtual bool IsPaintWorkletGlobalScope() const { return false; }
   virtual bool IsThreadedWorkletGlobalScope() const { return false; }
   virtual bool IsShadowRealmGlobalScope() const { return false; }
-  virtual bool IsSharedStorageWorkletGlobalScope() const { return false; }
   virtual bool IsJSExecutionForbidden() const { return false; }
 
   // Notifies the execution context that new web socket activity (such as
@@ -177,6 +178,16 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
   virtual void MaybeRecordNetworkRequestUrlForPushEvents(const KURL& url) {}
   virtual void MaybeRecordFetchError(int net_error_code,
                                      const FetchRequestData* request_data) {}
+  // Returns a context-specific error message to override the default "Failed
+  // to fetch" TypeError when `request_data` fails before receiving response
+  // headers, or `std::nullopt` to preserve the default message. Must be
+  // queried before `MaybeRecordFetchError()`, which may erase per-request
+  // loader state.
+  virtual std::optional<String> GetCustomFetchErrorMessage(
+      int net_error_code,
+      const FetchRequestData* request_data) const {
+    return std::nullopt;
+  }
 
   virtual void CountUseOnlyInCrossSiteIframe(mojom::blink::WebFeature feature) {
   }
@@ -241,7 +252,7 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
 
   void DispatchErrorEvent(ErrorEvent*, SanitizeScriptErrors);
 
-  virtual void ExceptionThrown(ErrorEvent*) = 0;
+  virtual void ExceptionThrown(ErrorEvent*, SanitizeScriptErrors) = 0;
 
   PublicURLManager& GetPublicURLManager();
 
@@ -541,7 +552,9 @@ class CORE_EXPORT ExecutionContext : public Supplementable<ExecutionContext>,
   unsigned circular_sequential_id_;
 
   bool in_dispatch_error_event_;
-  HeapVector<Member<ErrorEvent> > pending_exceptions_;
+  bool is_draining_pending_exceptions_ = false;
+  HeapVector<std::pair<Member<ErrorEvent>, SanitizeScriptErrors>>
+      pending_exceptions_;
 
   mojom::FrameLifecycleState lifecycle_state_;
 

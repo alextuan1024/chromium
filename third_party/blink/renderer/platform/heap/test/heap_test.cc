@@ -32,6 +32,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
@@ -44,6 +45,8 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_linked_hash_set.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/stable_sort.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/heap_test_objects.h"
@@ -57,18 +60,16 @@
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
+#include "third_party/blink/renderer/platform/wtf/leak_annotations.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
+#include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 #include "v8/include/cppgc/internal/api-constants.h"
 
 namespace blink {
 
 namespace {
 
-class HeapTest : public TestSupportingGC {
-#if DCHECK_IS_ON()
-  void TearDown() override { SetIsBeforeThreadCreatedForTest(); }
-#endif
-};
+class HeapTest : public TestSupportingGC {};
 
 class HeapDeathTest : public TestSupportingGC {};
 
@@ -97,22 +98,23 @@ class IntWrapper : public GarbageCollected<IntWrapper> {
 };
 std::atomic_int IntWrapper::destructor_calls_{0};
 
-struct IntWrapperHashTraits : GenericHashTraits<IntWrapper> {
-  static uint32_t GetHash(const IntWrapper& key) {
-    return HashInt(static_cast<uint32_t>(key.Value()));
+struct IntWrapperHashTraits : GenericHashTraits<Member<IntWrapper>> {
+  static uint32_t GetHash(const Member<IntWrapper>& key) {
+    return HashInt(static_cast<uint32_t>(key->Value()));
   }
 };
 
 static_assert(IsTraceableV<IntWrapper>,
               "IsTraceable<> template failed to recognize trace method.");
-static_assert(IsTraceableV<HeapVector<IntWrapper>>,
-              "HeapVector<IntWrapper> must be traceable.");
-static_assert(IsTraceableV<HeapDeque<IntWrapper>>,
-              "HeapDeque<IntWrapper> must be traceable.");
-static_assert(IsTraceableV<HeapHashSet<IntWrapper, IntWrapperHashTraits>>,
-              "HeapHashSet<IntWrapper> must be traceable.");
+static_assert(IsTraceableV<HeapVector<Member<IntWrapper>>>,
+              "HeapVector<Member<IntWrapper>> must be traceable.");
+static_assert(IsTraceableV<HeapDeque<Member<IntWrapper>>>,
+              "HeapDeque<Member<IntWrapper>> must be traceable.");
+static_assert(
+    IsTraceableV<HeapHashSet<Member<IntWrapper>, IntWrapperHashTraits>>,
+    "HeapHashSet<Member<IntWrapper>> must be traceable.");
 static_assert(IsTraceableV<HeapHashMap<int, Member<IntWrapper>>>,
-              "HeapHashMap<int, IntWrapper> must be traceable.");
+              "HeapHashMap<int, Member<IntWrapper>> must be traceable.");
 
 }  // namespace
 
@@ -371,7 +373,8 @@ class ThreadedTesterBase {
 
  private:
   static void ThreadFunc(ThreadedTesterBase* tester, v8::Platform* platform) {
-    ThreadState::AttachCurrentThreadForTesting(platform);
+    cppgc::StackStartMarker stack_start_marker;
+    ThreadState::AttachCurrentThreadForTesting(platform, stack_start_marker);
     tester->RunThread();
     ThreadState::DetachCurrentThread();
     if (!tester->threads_to_finish_.Decrement())
@@ -1684,57 +1687,23 @@ class ThingWithDestructor {
 };
 int ThingWithDestructor::live_things_with_destructor_;
 
-// This test class served a more important role while Blink
-// was transitioned over to using Oilpan. That required classes
-// that were hybrid, both ref-counted and on the Oilpan heap
-// (the RefCountedGarbageCollected<> class providing just that.)
-//
-// There's no current need for having a ref-counted veneer on
-// top of a GCed class, but we preserve it here to exercise the
-// implementation technique that it used -- keeping an internal
-// "keep alive" persistent reference that is set & cleared across
-// ref-counting operations.
-//
-}  // namespace
-
-class RefCountedAndGarbageCollected final
-    : public GarbageCollected<RefCountedAndGarbageCollected> {
+class SimpleFinalizedObject final
+    : public GarbageCollected<SimpleFinalizedObject> {
  public:
-  RefCountedAndGarbageCollected() = default;
-  ~RefCountedAndGarbageCollected() { ++destructor_calls_; }
-
-  void AddRef() {
-    if (!ref_count_) [[unlikely]] {
-      keep_alive_ = this;
-    }
-    ++ref_count_;
-  }
-
-  void Release() {
-    DCHECK_GT(ref_count_, 0);
-    if (!--ref_count_)
-      keep_alive_.Clear();
-  }
-
-  void Trace(Visitor* visitor) const {}
+  SimpleFinalizedObject() = default;
+  ~SimpleFinalizedObject() { ++destructor_calls_; }
 
   static int destructor_calls_;
 
- private:
-  int ref_count_ = 0;
-  SelfKeepAlive<RefCountedAndGarbageCollected> keep_alive_{{}};
+  void Trace(Visitor* visitor) const {}
 };
-int RefCountedAndGarbageCollected::destructor_calls_ = 0;
-
-namespace {
+int SimpleFinalizedObject::destructor_calls_ = 0;
 
 static void HeapMapDestructorHelper(bool clear_maps) {
-  ThingWithDestructor::live_things_with_destructor_ = 0;
-
-  using RefMap = HeapHashMap<WeakMember<IntWrapper>,
-                             Member<RefCountedAndGarbageCollected>>;
-  using GCedRefMap = GCedHeapHashMap<WeakMember<IntWrapper>,
-                                     Member<RefCountedAndGarbageCollected>>;
+  using RefMap =
+      HeapHashMap<WeakMember<IntWrapper>, Member<SimpleFinalizedObject>>;
+  using GCedRefMap =
+      GCedHeapHashMap<WeakMember<IntWrapper>, Member<SimpleFinalizedObject>>;
   using Map = HeapHashMap<WeakMember<IntWrapper>, ThingWithDestructor>;
   using GCedMap = GCedHeapHashMap<WeakMember<IntWrapper>, ThingWithDestructor>;
 
@@ -1750,31 +1719,25 @@ static void HeapMapDestructorHelper(bool clear_maps) {
     RefMap stack_ref_map;
 
     TestSupportingGC::PreciselyCollectGarbage();
-    TestSupportingGC::PreciselyCollectGarbage();
 
     stack_map.insert(MakeGarbageCollected<IntWrapper>(42),
                      ThingWithDestructor(1729));
     stack_map.insert(luck, ThingWithDestructor(8128));
     stack_ref_map.insert(MakeGarbageCollected<IntWrapper>(42),
-                         MakeGarbageCollected<RefCountedAndGarbageCollected>());
-    stack_ref_map.insert(luck,
-                         MakeGarbageCollected<RefCountedAndGarbageCollected>());
+                         MakeGarbageCollected<SimpleFinalizedObject>());
+    stack_ref_map.insert(luck, MakeGarbageCollected<SimpleFinalizedObject>());
 
     base_line = ThingWithDestructor::live_things_with_destructor_;
-    ref_base_line = RefCountedAndGarbageCollected::destructor_calls_;
+    ref_base_line = SimpleFinalizedObject::destructor_calls_;
 
     // Although the heap maps are on-stack, we can't expect prompt
     // finalization of the elements, so when they go out of scope here we
     // will not necessarily have called the relevant destructors.
   }
 
-  // The RefCountedAndGarbageCollected things need an extra GC to discover
-  // that they are no longer ref counted.
-  TestSupportingGC::PreciselyCollectGarbage();
   TestSupportingGC::PreciselyCollectGarbage();
   EXPECT_EQ(base_line - 2, ThingWithDestructor::live_things_with_destructor_);
-  EXPECT_EQ(ref_base_line + 2,
-            RefCountedAndGarbageCollected::destructor_calls_);
+  EXPECT_EQ(ref_base_line + 2, SimpleFinalizedObject::destructor_calls_);
 
   // Now use maps kept alive with persistents. Here we don't expect any
   // destructors to be called before there have been GCs.
@@ -1782,11 +1745,11 @@ static void HeapMapDestructorHelper(bool clear_maps) {
   map->insert(MakeGarbageCollected<IntWrapper>(42), ThingWithDestructor(1729));
   map->insert(luck, ThingWithDestructor(8128));
   ref_map->insert(MakeGarbageCollected<IntWrapper>(42),
-                  MakeGarbageCollected<RefCountedAndGarbageCollected>());
-  ref_map->insert(luck, MakeGarbageCollected<RefCountedAndGarbageCollected>());
+                  MakeGarbageCollected<SimpleFinalizedObject>());
+  ref_map->insert(luck, MakeGarbageCollected<SimpleFinalizedObject>());
 
   base_line = ThingWithDestructor::live_things_with_destructor_;
-  ref_base_line = RefCountedAndGarbageCollected::destructor_calls_;
+  ref_base_line = SimpleFinalizedObject::destructor_calls_;
 
   luck.Clear();
   if (clear_maps) {
@@ -1795,17 +1758,11 @@ static void HeapMapDestructorHelper(bool clear_maps) {
   } else {
     map.Clear();      // Clear Persistent handle, not map.
     ref_map.Clear();  // Clear Persistent handle, not map.
-    TestSupportingGC::PreciselyCollectGarbage();
-    TestSupportingGC::PreciselyCollectGarbage();
   }
+  TestSupportingGC::PreciselyCollectGarbage();
 
   EXPECT_EQ(base_line - 2, ThingWithDestructor::live_things_with_destructor_);
-
-  // Need a GC to make sure that the RefCountedAndGarbageCollected thing
-  // noticies it's been decremented to zero.
-  TestSupportingGC::PreciselyCollectGarbage();
-  EXPECT_EQ(ref_base_line + 2,
-            RefCountedAndGarbageCollected::destructor_calls_);
+  EXPECT_EQ(ref_base_line + 2, SimpleFinalizedObject::destructor_calls_);
 }
 }  // namespace
 
@@ -2136,38 +2093,6 @@ TEST_F(HeapTest, WeakHeapHashSetToVector) {
   }
 }
 
-TEST_F(HeapTest, RefCountedGarbageCollected) {
-  RefCountedAndGarbageCollected::destructor_calls_ = 0;
-  {
-    scoped_refptr<RefCountedAndGarbageCollected> ref_ptr3;
-    {
-      Persistent<RefCountedAndGarbageCollected> persistent;
-      {
-        Persistent<RefCountedAndGarbageCollected> ref_ptr1 =
-            MakeGarbageCollected<RefCountedAndGarbageCollected>();
-        Persistent<RefCountedAndGarbageCollected> ref_ptr2 =
-            MakeGarbageCollected<RefCountedAndGarbageCollected>();
-        PreciselyCollectGarbage();
-        EXPECT_EQ(0, RefCountedAndGarbageCollected::destructor_calls_);
-        persistent = ref_ptr1.Get();
-      }
-      // Reference count is zero for both objects but one of
-      // them is kept alive by a persistent handle.
-      PreciselyCollectGarbage();
-      EXPECT_EQ(1, RefCountedAndGarbageCollected::destructor_calls_);
-      ref_ptr3 = persistent.Get();
-    }
-    // The persistent handle is gone but the ref count has been
-    // increased to 1.
-    PreciselyCollectGarbage();
-    EXPECT_EQ(1, RefCountedAndGarbageCollected::destructor_calls_);
-  }
-  // Both persistent handle is gone and ref count is zero so the
-  // object can be collected.
-  PreciselyCollectGarbage();
-  EXPECT_EQ(2, RefCountedAndGarbageCollected::destructor_calls_);
-}
-
 TEST_F(HeapTest, CollectionNesting) {
   ClearOutOldGarbage();
   std::array<int, 101> dummy_keys;
@@ -2263,17 +2188,6 @@ TEST_F(HeapTest, CollectionNesting3) {
 }
 
 namespace {
-class SimpleFinalizedObject final
-    : public GarbageCollected<SimpleFinalizedObject> {
- public:
-  SimpleFinalizedObject() = default;
-  ~SimpleFinalizedObject() { ++destructor_calls_; }
-
-  static int destructor_calls_;
-
-  void Trace(Visitor* visitor) const {}
-};
-int SimpleFinalizedObject::destructor_calls_ = 0;
 
 class VectorObject {
   DISALLOW_NEW();
@@ -2288,6 +2202,7 @@ class VectorObject {
 };
 
 class VectorObjectInheritedTrace : public VectorObject {};
+
 }  // namespace
 
 }  // namespace blink
@@ -3075,9 +2990,9 @@ class ThreadedClearOnShutdownTester : public ThreadedTesterBase {
   static HeapObjectSet& GetHeapObjectSet();
 
   static IntWrapper& ThreadSpecificIntWrapper() {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<IntWrapper>>,
-                                    int_wrapper, ());
-    Persistent<IntWrapper>& handle = *int_wrapper;
+    static base::NoDestructor<ThreadSpecific<Persistent<IntWrapper>>>
+        int_wrapper;
+    Persistent<IntWrapper>& handle = **int_wrapper;
     if (!handle) {
       handle = MakeGarbageCollected<IntWrapper>(42);
       LEAK_SANITIZER_IGNORE_OBJECT(&handle);
@@ -3114,9 +3029,9 @@ class ThreadedClearOnShutdownTester::HeapObject final
 
 ThreadedClearOnShutdownTester::WeakHeapObjectSet&
 ThreadedClearOnShutdownTester::GetWeakHeapObjectSet() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<WeakHeapObjectSet>>,
-                                  singleton, ());
-  Persistent<WeakHeapObjectSet>& singleton_persistent = *singleton;
+  static base::NoDestructor<ThreadSpecific<Persistent<WeakHeapObjectSet>>>
+      singleton;
+  Persistent<WeakHeapObjectSet>& singleton_persistent = **singleton;
   if (!singleton_persistent) {
     singleton_persistent = MakeGarbageCollected<WeakHeapObjectSet>();
     LEAK_SANITIZER_IGNORE_OBJECT(&singleton_persistent);
@@ -3126,9 +3041,9 @@ ThreadedClearOnShutdownTester::GetWeakHeapObjectSet() {
 
 ThreadedClearOnShutdownTester::HeapObjectSet&
 ThreadedClearOnShutdownTester::GetHeapObjectSet() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<HeapObjectSet>>,
-                                  singleton, ());
-  Persistent<HeapObjectSet>& singleton_persistent = *singleton;
+  static base::NoDestructor<ThreadSpecific<Persistent<HeapObjectSet>>>
+      singleton;
+  Persistent<HeapObjectSet>& singleton_persistent = **singleton;
   if (!singleton_persistent) {
     singleton_persistent = MakeGarbageCollected<HeapObjectSet>();
     LEAK_SANITIZER_IGNORE_OBJECT(&singleton_persistent);
@@ -3379,6 +3294,173 @@ TEST_F(HeapTest, HeapVectorPromptlyFree) {
   }
 
   ProcessHeap::SetHeapVectorPromptlyFreeEnabledForTesting(was_enabled);
+}
+
+TEST_F(HeapTest, StableSortMemberVector) {
+  auto compare_values = [](const IntWrapper* a, const IntWrapper* b) {
+    return a->Value() < b->Value();
+  };
+
+  // Empty and single-element vectors.
+  {
+    HeapVector<Member<IntWrapper>> empty_vec;
+    StableSort(empty_vec, compare_values);
+    EXPECT_TRUE(empty_vec.empty());
+
+    HeapVector<Member<IntWrapper>> single_vec;
+    auto* only = MakeGarbageCollected<IntWrapper>(7);
+    single_vec.push_back(only);
+    StableSort(single_vec, compare_values);
+    ASSERT_EQ(1u, single_vec.size());
+    EXPECT_EQ(only, single_vec[0]);
+  }
+
+  // Already-sorted vector with duplicate keys preserves exact pointer order.
+  {
+    HeapVector<Member<IntWrapper>> sorted_vec;
+    auto* a1 = MakeGarbageCollected<IntWrapper>(1);
+    auto* a2 = MakeGarbageCollected<IntWrapper>(1);
+    auto* b1 = MakeGarbageCollected<IntWrapper>(2);
+    sorted_vec.push_back(a1);
+    sorted_vec.push_back(a2);
+    sorted_vec.push_back(b1);
+    StableSort(sorted_vec, compare_values);
+    ASSERT_EQ(3u, sorted_vec.size());
+    EXPECT_EQ(a1, sorted_vec[0]);
+    EXPECT_EQ(a2, sorted_vec[1]);
+    EXPECT_EQ(b1, sorted_vec[2]);
+  }
+
+  // Unsorted vector with duplicate keys preserves relative insertion order.
+  {
+    HeapVector<Member<IntWrapper>> vec;
+    std::array<Vector<Persistent<IntWrapper>>, 7> expected_by_key;
+    constexpr int kCount = 50;
+    for (int i = 0; i < kCount; ++i) {
+      const size_t key = static_cast<size_t>((kCount - 1 - i) % 7);
+      auto* item = MakeGarbageCollected<IntWrapper>(static_cast<int>(key));
+      vec.push_back(item);
+      expected_by_key[key].push_back(item);
+    }
+
+    StableSort(vec, compare_values);
+
+    ASSERT_EQ(static_cast<wtf_size_t>(kCount), vec.size());
+    wtf_size_t pos = 0;
+    for (const auto& bucket : expected_by_key) {
+      for (const auto& expected : bucket) {
+        EXPECT_EQ(expected.Get(), vec[pos]);
+        ++pos;
+      }
+    }
+  }
+
+  // Subrange span overload sorts only the requested prefix.
+  {
+    HeapVector<Member<IntWrapper>> span_vec;
+    auto* first_two = MakeGarbageCollected<IntWrapper>(2);
+    auto* first_one = MakeGarbageCollected<IntWrapper>(1);
+    auto* second_two = MakeGarbageCollected<IntWrapper>(2);
+    auto* trailing_zero = MakeGarbageCollected<IntWrapper>(0);
+    span_vec.push_back(first_two);
+    span_vec.push_back(first_one);
+    span_vec.push_back(second_two);
+    span_vec.push_back(trailing_zero);
+
+    StableSort(base::span(span_vec).first(3u), compare_values);
+
+    ASSERT_EQ(4u, span_vec.size());
+    EXPECT_EQ(first_one, span_vec[0]);
+    EXPECT_EQ(first_two, span_vec[1]);
+    EXPECT_EQ(second_two, span_vec[2]);
+    EXPECT_EQ(trailing_zero, span_vec[3]);
+  }
+}
+
+namespace {
+struct SortablePartObject {
+  DISALLOW_NEW();
+
+ public:
+  SortablePartObject() = default;
+  SortablePartObject(int k,
+                     int order,
+                     IntWrapper* w,
+                     IncrementalMarkingTestDriver* d = nullptr)
+      : key(k), original_order(order), wrapper(w), driver(d) {}
+
+  SortablePartObject(SortablePartObject&& other) noexcept
+      : key(other.key),
+        original_order(other.original_order),
+        wrapper(std::move(other.wrapper)),
+        driver(other.driver) {
+    if (driver && ThreadState::Current()->IsIncrementalMarking()) {
+      driver->TriggerMarkingSteps();
+    }
+  }
+
+  SortablePartObject& operator=(SortablePartObject&& other) noexcept {
+    key = other.key;
+    original_order = other.original_order;
+    wrapper = std::move(other.wrapper);
+    driver = other.driver;
+    if (driver && ThreadState::Current()->IsIncrementalMarking()) {
+      driver->TriggerMarkingSteps();
+    }
+    return *this;
+  }
+
+  void Trace(Visitor* visitor) const { visitor->Trace(wrapper); }
+
+  int key = 0;
+  int original_order = 0;
+  Member<IntWrapper> wrapper;
+  IncrementalMarkingTestDriver* driver = nullptr;
+};
+}  // namespace
+
+template <>
+struct VectorTraits<SortablePartObject> : VectorTraitsBase<SortablePartObject> {
+  static constexpr bool kCanClearUnusedSlotsWithMemset = true;
+};
+
+TEST_F(HeapTest, StableSortTraceablePartObjects) {
+  Persistent<GCedHeapVector<SortablePartObject>> vec =
+      MakeGarbageCollected<GCedHeapVector<SortablePartObject>>();
+  IncrementalMarkingTestDriver driver(ThreadState::Current());
+
+  // Populate `vec` with elements whose keys cycle through 0..4 in descending
+  // order so multiple elements share each key. Each element records its
+  // pre-sort insertion index `i` (`original_order`), holds a distinct
+  // `IntWrapper(100 + i)` without any other root keeping it alive, and advances
+  // incremental marking via `driver` whenever it is moved during `StableSort`.
+  constexpr int kCount = 40;
+  for (int i = 0; i < kCount; ++i) {
+    const int key = (kCount - i) % 5;
+    vec->push_back(SortablePartObject(
+        key, i, MakeGarbageCollected<IntWrapper>(100 + i), &driver));
+  }
+
+  driver.StartGC();
+  StableSort(*vec, [](const SortablePartObject& a,
+                      const SortablePartObject& b) { return a.key < b.key; });
+  driver.FinishGC();
+
+  ASSERT_EQ(static_cast<wtf_size_t>(kCount), vec->size());
+  for (wtf_size_t i = 0; i < vec->size(); ++i) {
+    // Verify that incremental GC triggered mid-move kept every element's
+    // `IntWrapper` alive and paired with the element from `original_order`.
+    ASSERT_TRUE((*vec)[i].wrapper);
+    EXPECT_EQ(100 + (*vec)[i].original_order, (*vec)[i].wrapper->Value());
+    if (i > 0) {
+      // Verify that keys are non-decreasing and that elements with equal keys
+      // preserved their pre-sort `original_order` (stability).
+      EXPECT_LE((*vec)[i - 1].key, (*vec)[i].key);
+      if ((*vec)[i - 1].key == (*vec)[i].key) {
+        EXPECT_LT((*vec)[i - 1].original_order, (*vec)[i].original_order);
+      }
+    }
+  }
 }
 
 }  // namespace blink

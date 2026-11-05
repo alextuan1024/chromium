@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "base/dcheck_is_on.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
@@ -115,6 +116,9 @@ class VIEWS_EXPORT FocusChangeListener {
 
   // TODO(crbug.com/348369180): Remove this. Debug only.
   virtual void OnFocusManagerDestroying(FocusManager* focus_manager) {}
+
+  // Called when the keyboard_accessible() setting has changed.
+  virtual void OnKeyboardAccessibleChanged(bool keyboard_accessible) {}
 
  protected:
   virtual ~FocusChangeListener() = default;
@@ -259,11 +263,13 @@ class VIEWS_EXPORT FocusManager : public ViewObserver {
   // This is effective only on x11.
   void MaybeResetMenuKeyState(const ui::KeyEvent& key);
 
-  // Called by a RootView when a view within its hierarchy is removed
-  // from its parent. This will only be called by a RootView in a
-  // hierarchy of Widgets that this FocusManager is attached to the
-  // parent Widget of.
-  void ViewRemoved(View* removed);
+  // Called when `removed` is detached from its parent (`new_parent` is
+  // `removed`'s new parent during reparenting, or null otherwise). Only called
+  // for views in `widget_` or in a child Widget sharing this FocusManager.
+  // Clears focus if `removed` contains `focused_view_`, unless:
+  // - `new_parent` is in the same Widget as `removed`, and
+  // - `removed` has `kRetainsFocusWhenReparented` set.
+  void ViewRemoved(View* removed, View* new_parent);
 
   // Adds/removes a listener.  The FocusChangeListener is notified every time
   // the focused view is about to change.
@@ -273,6 +279,12 @@ class VIEWS_EXPORT FocusManager : public ViewObserver {
 
   // Whether the given |accelerator| is registered.
   bool IsAcceleratorRegistered(const ui::Accelerator& accelerator) const;
+
+#if DCHECK_IS_ON()
+  // Returns the number of accelerators |target| is registered for. This walks
+  // every registered accelerator, so use it only in DCHECKs.
+  size_t GetAcceleratorCountForTarget(ui::AcceleratorTarget* target) const;
+#endif
 
   // Whether the given |accelerator| has a priority handler associated with it.
   bool HasPriorityHandler(const ui::Accelerator& accelerator) const;
@@ -329,9 +341,14 @@ class VIEWS_EXPORT FocusManager : public ViewObserver {
   // and should not be processed further.
   bool ProcessArrowKeyTraversal(const ui::KeyEvent& event);
 
-  // Whether |view| is currently focusable as per the platform's interpretation
-  // of |keyboard_accesible_|.
-  bool IsFocusable(View* view) const;
+  // Returns whether `view` is considered focusable in the current keyboard
+  // access mode.
+  // On Mac, this follows the system's Full Keyboard Access (FKA): when
+  // disabled, only View::IsFocusable() views are considered focusable; when
+  // enabled, accessibility-focusable views (e.g. buttons) are also considered
+  // focusable.
+  // Other platforms behave like Mac's FKA.
+  bool IsFocusableInCurrentMode(View* view) const;
 
   // ViewObserver:
   void OnViewIsDeleting(View* view) override;

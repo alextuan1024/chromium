@@ -8,7 +8,6 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/lobster/lobster_controller.h"
-#include "base/feature_list.h"
 #include "chrome/browser/ash/input_method/assistive_suggester_client_filter.h"
 #include "chrome/browser/ash/input_method/assistive_suggester_switch.h"
 #include "chrome/browser/ash/input_method/autocorrect_manager.h"
@@ -71,17 +70,12 @@ void NativeInputMethodEngine::Initialize(
   autocorrect_manager_ = autocorrect_manager.get();
 
   auto suggestions_service_client =
-      base::FeatureList::IsEnabled(features::kAssistMultiWord)
-          ? std::make_unique<SuggestionsServiceClient>()
-          : nullptr;
+      std::make_unique<SuggestionsServiceClient>();
 
-  auto suggestions_collector =
-      base::FeatureList::IsEnabled(features::kAssistMultiWord)
-          ? std::make_unique<SuggestionsCollector>(
-                assistive_suggester_, std::move(suggestions_service_client))
-          : nullptr;
+  auto suggestions_collector = std::make_unique<SuggestionsCollector>(
+      assistive_suggester_, std::move(suggestions_service_client));
 
-  EditorMediator* editor_event_sink =
+  EditorMediator* editor_mediator =
       chromeos::features::IsOrcaEnabled()
           ? EditorMediatorFactory::GetInstance()->GetForProfile(profile)
           : nullptr;
@@ -97,7 +91,7 @@ void NativeInputMethodEngine::Initialize(
   // Wrap the given observer in our observer that will decide whether to call
   // Mojo directly or forward to the extension.
   auto native_observer = std::make_unique<NativeInputMethodEngineObserver>(
-      profile->GetPrefs(), editor_event_sink, lobster_event_sink,
+      profile->GetPrefs(), editor_mediator, lobster_event_sink,
       std::move(observer), std::move(assistive_suggester),
       std::move(autocorrect_manager), std::move(suggestions_collector),
       std::make_unique<GrammarManager>(

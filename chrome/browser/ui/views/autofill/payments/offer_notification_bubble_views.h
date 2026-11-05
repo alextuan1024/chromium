@@ -23,10 +23,9 @@ namespace autofill {
 
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kOfferNotificationBubbleElementId);
 
-// This class implements the Desktop bubble that displays any eligible offers or
-// rewards linked to the current page domain. This can include card-linked
-// offers, for which "Pay with [card] at checkout" is shown, or merchant promo
-// code offers, which shows the code the user should apply at checkout.
+// This class implements the Desktop bubble that displays an offer saved to the
+// user's Google Wallet for the current page domain. It shows the offer's short
+// title and body text ending with a link.
 class OfferNotificationBubbleViews : public AutofillLocationBarBubble {
   METADATA_HEADER(OfferNotificationBubbleViews, AutofillLocationBarBubble)
  public:
@@ -42,15 +41,18 @@ class OfferNotificationBubbleViews : public AutofillLocationBarBubble {
  private:
   // TODO(crbug.com/40947801) : Remove these friended test and convert the test
   // to use Kombucha framework.
-  FRIEND_TEST_ALL_PREFIXES(OfferNotificationBubbleViewsInteractiveUiTest,
-                           CopyPromoCode);
   FRIEND_TEST_ALL_PREFIXES(
-      OfferNotificationBubbleViewsInteractiveUiTest,
+      OfferNotificationBubbleViewsWithoutOffersAndLoyaltyCardsSettingsInteractiveUiTest,
       ReshowOfferNotificationBubble_OfferDeletedBetweenShows);
-  FRIEND_TEST_ALL_PREFIXES(OfferNotificationBubbleViewsInteractiveUiTest,
-                           ShowGPayPromoCodeBubble);
+  FRIEND_TEST_ALL_PREFIXES(
+      OfferNotificationBubbleViewsWithoutOffersAndLoyaltyCardsSettingsInteractiveUiTest,
+      ShowWalletDirectOfferBubble);
   FRIEND_TEST_ALL_PREFIXES(OfferNotificationBubbleViewsInteractiveUiTest,
                            TooltipAndAccessibleName);
+  // TODO(crbug.com/546252995): Use a TestApi instead of friending tests.
+  FRIEND_TEST_ALL_PREFIXES(
+      OfferNotificationBubbleViewsWithOffersAndLoyaltyCardsSettingsInteractiveUiTest,
+      ShowWalletDirectOfferBubble_ManageOffersLink);
 
   // AutofillBubbleBase:
   void Hide() override;
@@ -58,23 +60,23 @@ class OfferNotificationBubbleViews : public AutofillLocationBarBubble {
   // LocationBarBubbleDelegateView:
   void Init() override;
   void AddedToWidget() override;
+  views::View* GetInitiallyFocusedView() override;
   std::u16string GetWindowTitle() const override;
   void WindowClosing() override;
   void OnWidgetDestroying(views::Widget* widget) override;
 
-  void InitWithCardLinkedOfferContent();
-  void InitWithGPayPromoCodeOfferContent();
+  // Called when the link of the offer's body text is clicked. Browser will
+  // switch to a new tab with the offer details url.
+  void OnOfferDetailsLinkClicked();
 
-  // Called when the See Details link of the value prop text is clicked.
-  // Browser will switch to a new tab with the offer details url.
-  void OnPromoCodeSeeDetailsClicked();
+  // Called when the "Manage offers" link of the offer's body text is clicked.
+  // Opens the Offers and loyalty cards settings leaf.
+  void OnManageOffersLinkClicked();
 
   raw_ptr<OfferNotificationBubbleController> controller_;
 
-  // TODO(crbug.com/40228302): Replace tests with Pixel tests.
-  raw_ptr<views::StyledLabel> promo_code_label_ = nullptr;
-
-  raw_ptr<views::Label> instructions_label_ = nullptr;
+  // Body text of the Wallet direct offer bubble, which ends with a link.
+  raw_ptr<views::StyledLabel> wallet_direct_offer_label_ = nullptr;
 };
 
 }  // namespace autofill

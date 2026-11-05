@@ -87,7 +87,8 @@ public class ModalDialogViewRenderTest {
     @Rule
     public RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(2)
+                    .setRevision(3)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .setBugComponent(RenderTestRule.Component.UI_BROWSER_MOBILE_MESSAGES)
                     .build();
 
@@ -194,6 +195,43 @@ public class ModalDialogViewRenderTest {
                         .with(ModalDialogProperties.TITLE_END_ICON, icon));
         waitForViewToBeRendered(mModalDialogView);
         mRenderTestRule.render(mModalDialogView, "title_and_title_end_icon");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"ModalDialog", "RenderTest"})
+    public void testRender_TitleAndCloseButton() throws IOException {
+        setUpViews(
+                R.style.ThemeOverlay_BrowserUI_ModalDialog_TextPrimaryButton,
+                /* forceWrapContentHeight= */ true);
+        final var paragraphs = new ArrayList<CharSequence>();
+        paragraphs.add("This is the message.");
+        createModel(
+                mModelBuilder
+                        .with(ModalDialogProperties.TITLE, mResources, R.string.title)
+                        .with(ModalDialogProperties.TITLE_CLOSE_BUTTON_VISIBLE, true)
+                        .with(ModalDialogProperties.MESSAGE_PARAGRAPHS, paragraphs)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, mResources, R.string.ok));
+        waitForViewToBeRendered(mModalDialogView);
+        mRenderTestRule.render(mModalDialogView, "title_and_close_button");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"ModalDialog", "RenderTest"})
+    public void testRender_CloseButtonWithoutTitle() throws IOException {
+        setUpViews(
+                R.style.ThemeOverlay_BrowserUI_ModalDialog_TextPrimaryButton,
+                /* forceWrapContentHeight= */ true);
+        final var paragraphs = new ArrayList<CharSequence>();
+        paragraphs.add("This is the message.");
+        createModel(
+                mModelBuilder
+                        .with(ModalDialogProperties.TITLE_CLOSE_BUTTON_VISIBLE, true)
+                        .with(ModalDialogProperties.MESSAGE_PARAGRAPHS, paragraphs)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, mResources, R.string.ok));
+        waitForViewToBeRendered(mModalDialogView);
+        mRenderTestRule.render(mModalDialogView, "close_button_without_title");
     }
 
     @Test
@@ -492,6 +530,35 @@ public class ModalDialogViewRenderTest {
         mRenderTestRule.render(
                 mModalDialogView,
                 "scrollable_contained_custom_view_with_button_group_has_one_scrollable");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"ModalDialog", "RenderTest"})
+    public void testRender_CustomViewWrappedAfterBind() throws IOException {
+        setUpViews(
+                R.style.ThemeOverlay_BrowserUI_ModalDialog_TextPrimaryButton,
+                /* forceWrapContentHeight= */ true);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mCustomTextView1.setText("This is the custom view.");
+                    mCustomFrameLayout.addView(mCustomTextView1);
+                });
+        PropertyModel model =
+                createModel(
+                        mModelBuilder
+                                .with(ModalDialogProperties.TITLE, mResources, R.string.title)
+                                .with(ModalDialogProperties.CUSTOM_VIEW, mCustomFrameLayout)
+                                .with(
+                                        ModalDialogProperties.POSITIVE_BUTTON_TEXT,
+                                        mResources,
+                                        R.string.ok));
+        // The initial bind order isn't defined, so set the key afterwards to cover the case where
+        // it's bound last.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> model.set(ModalDialogProperties.WRAP_CUSTOM_VIEW_IN_SCROLLABLE, true));
+        waitForViewToBeRendered(mModalDialogView);
+        mRenderTestRule.render(mModalDialogView, "custom_view_wrapped_after_bind");
     }
 
     @Test

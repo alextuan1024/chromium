@@ -10,6 +10,7 @@
 #include "base/path_service.h"
 #include "base/scoped_observation.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
@@ -23,6 +24,7 @@
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/overlay/hang_up_button.h"
@@ -48,7 +50,6 @@
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/media_start_stop_observer.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
@@ -59,8 +60,8 @@
 #include "skia/ext/image_operations.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/test/draw_waiter_for_test.h"
@@ -74,6 +75,8 @@
 #include "ui/views/widget/widget_observer.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/wm/window_pin_util.h"
+#include "ui/aura/window.h"
 #include "ui/base/hit_test.h"
 #endif
 
@@ -1284,7 +1287,7 @@ IN_PROC_BROWSER_TEST_F(VideoPictureInPictureWindowControllerBrowserTest,
   ASSERT_TRUE(ExecJs(active_web_contents, "exitPictureInPicture();"));
 
   content::TestNavigationObserver observer(active_web_contents, 1);
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   observer.Wait();
 
   active_web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
@@ -1694,44 +1697,6 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureWindowControllerPrerenderBrowserTest,
   // Picture-in-Picture window should be closed after navigating away.
   prerender_test_helper().NavigatePrimaryPage(prerendering_page_url);
   EXPECT_FALSE(window_controller()->GetWindowForTesting()->IsVisible());
-}
-
-class PictureInPictureWindowControllerFencedFrameBrowserTest
-    : public VideoPictureInPictureWindowControllerBrowserTest {
- public:
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(PictureInPictureWindowControllerFencedFrameBrowserTest,
-                       FencedFrameShouldNotCloseWindow) {
-  GURL test_page_url = embedded_test_server()->GetURL(
-      "example.com", "/media/picture-in-picture/window-size.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_page_url));
-
-  content::WebContents* active_web_contents =
-      browser()->GetTabStripModel()->GetActiveWebContents();
-  ASSERT_TRUE(active_web_contents);
-
-  SetUpWindowController(active_web_contents);
-  ASSERT_TRUE(window_controller() != nullptr);
-
-  // Open Picture-in-Picture window
-  ASSERT_EQ(true, EvalJs(active_web_contents, "enterPictureInPicture();"));
-  EXPECT_TRUE(window_controller()->GetWindowForTesting()->IsVisible());
-
-  // Navigation to fenced frame page should not close Picture-in-Picture window.
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          active_web_contents->GetPrimaryMainFrame(), fenced_frame_url);
-  EXPECT_NE(nullptr, fenced_frame_host);
-  EXPECT_TRUE(window_controller()->GetWindowForTesting()->IsVisible());
 }
 
 class MediaSessionVideoPictureInPictureWindowControllerBrowserTest
@@ -2912,3 +2877,44 @@ INSTANTIATE_TEST_SUITE_P(
                     InteractionTestParam{ui::EventType::kMousePressed, false},
                     InteractionTestParam{ui::EventType::kGestureTap, false},
                     InteractionTestParam{ui::EventType::kMouseMoved, true}));
+
+#if BUILDFLAG(IS_CHROMEOS)
+class VideoPictureInPicturePinnedWindowBrowserTest
+    : public VideoPictureInPictureWindowControllerBrowserTest,
+      public testing::WithParamInterface<bool> {};
+
+IN_PROC_BROWSER_TEST_P(VideoPictureInPicturePinnedWindowBrowserTest,
+                       ExitsExistingPipAndAllowsOpeningFromPinnedWindow) {
+  const bool trusted = GetParam();
+  LoadTabAndEnterPictureInPicture(
+      browser(), base::FilePath(kPictureInPictureWindowSizePage));
+
+  content::WebContents* active_web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_NE(nullptr, active_web_contents);
+  ASSERT_NE(nullptr, GetOverlayWindow());
+  EXPECT_TRUE(GetOverlayWindow()->IsVisible());
+
+  // Entering pinned or trusted-pinned mode exits the pre-existing video PiP.
+  aura::Window* browser_window = browser()->GetWindow()->GetNativeWindow();
+  ash::PinWindow(browser_window, trusted);
+  ASSERT_TRUE(ash::IsWindowPinned(browser_window));
+  ExpectLeavePictureInPicture(active_web_contents);
+
+  // The pinned window itself can still open video PiP while pinned.
+  ASSERT_EQ(true, EvalJs(active_web_contents, "enterPictureInPicture();"));
+  ASSERT_NE(nullptr, GetOverlayWindow());
+  EXPECT_TRUE(GetOverlayWindow()->IsVisible());
+  EXPECT_EQ(true, EvalJs(active_web_contents, "isInPictureInPicture();"));
+
+  // Exiting pinned mode keeps the video PiP window open.
+  ash::UnpinWindow(browser_window);
+  EXPECT_FALSE(ash::IsWindowPinned(browser_window));
+  EXPECT_TRUE(GetOverlayWindow()->IsVisible());
+  EXPECT_EQ(true, EvalJs(active_web_contents, "isInPictureInPicture();"));
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         VideoPictureInPicturePinnedWindowBrowserTest,
+                         testing::Bool());
+#endif  // BUILDFLAG(IS_CHROMEOS)

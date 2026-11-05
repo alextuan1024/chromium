@@ -26,16 +26,6 @@ chromium-metrics-reviews@google.com.
 
 <enums>
 
-<enum name="AntiFingerprintingBlockListResult">
-  <summary>
-    The possible results from checking a network resource URL against the
-    anti-fingerprinting blocklist.
-  </summary>
-  <int value="0" label="Third-party resource Blocked"/>
-  <int value="1" label="Third-party resource Allowed"/>
-  <int value="2" label="First-party resource Allowed"/>
-</enum>
-
 <!-- LINT.IfChange(ContentSettingPatternScope) -->
 
 <enum name="ContentSettingPatternScope">
@@ -190,15 +180,6 @@ chromium-metrics-reviews@google.com.
   <int value="12"
       label="Component installer has not yet checked the attestations file"/>
   <int value="13" label="Attestations file not present"/>
-</enum>
-
-<enum name="PrivacySandboxAttestationLoadAPKAssetStatus">
-  <int value="0" label="Success"/>
-  <int value="1" label="Fail to open the attestations list from APK assets"/>
-  <int value="2"
-      label="Fail to create a memory mapped file of the attestations list
-             from APK assets"/>
-  <int value="3" label="Fail to parse the content of the attestations list"/>
 </enum>
 
 <enum name="PrivacySandboxAttestationParsingStatus">

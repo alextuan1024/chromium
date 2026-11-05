@@ -11,6 +11,7 @@ import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.intent.Intents.intended;
 import static androidx.test.espresso.intent.Intents.intending;
 import static androidx.test.espresso.matcher.RootMatchers.isDialog;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
@@ -22,7 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.app.Activity;
 import android.app.Instrumentation.ActivityResult;
@@ -48,12 +49,9 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.settings.SettingsActivityInterface;
 import org.chromium.chrome.browser.settings.SettingsTestRule;
@@ -62,11 +60,11 @@ import org.chromium.chrome.browser.sync.SyncSettingsUtils;
 import org.chromium.chrome.browser.sync.SyncTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
-import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.test.util.FakeAccountManagerFacade;
 import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.UserActionableError;
+import org.chromium.components.trusted_vault.SecurityDomainId;
 import org.chromium.components.trusted_vault.TrustedVaultClient;
 import org.chromium.google_apis.gaia.GoogleServiceAuthError;
 import org.chromium.google_apis.gaia.GoogleServiceAuthErrorState;
@@ -77,7 +75,6 @@ import java.util.Set;
 /** Test for ManageSyncSettings with FakeSyncServiceImpl. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
 public class ManageSyncSettingsWithFakeSyncServiceImplTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -115,7 +112,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         // Sign in and open settings.
         mSyncTestRule.setUpAccountAndSignInForTesting();
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
         // The error card exists.
         onView(withId(R.id.signin_settings_card)).check(matches(isDisplayed()));
@@ -128,7 +125,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         // Sign in and open settings.
         mSyncTestRule.setUpAccountAndSignInForTesting();
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
         onView(withId(R.id.signin_settings_card)).check(doesNotExist());
     }
@@ -148,7 +145,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         // Sign in and open settings.
         mSyncTestRule.setUpAccountAndSignInForTesting();
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
         // No error card exists right now.
         onView(withId(R.id.signin_settings_card)).check(doesNotExist());
@@ -163,7 +160,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         fakeSyncService.setRequiresClientUpgrade(true);
 
         // Error card is showing now.
-        onViewWaiting(withId(R.id.signin_settings_card)).check(matches(isDisplayed()));
+        waitForView(withId(R.id.signin_settings_card));
         watchIdentityErrorCardShownHistogram.assertExpected();
     }
 
@@ -183,7 +180,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         // Sign in and open settings.
         mSyncTestRule.setUpAccountAndSignInForTesting();
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
         IdentityErrorCardPreference preference =
                 (IdentityErrorCardPreference)
@@ -221,7 +218,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         mSyncTestRule.setUpAccountAndSignInForTesting();
 
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
         // The error card exists.
         onView(withId(R.id.signin_settings_card)).check(matches(isDisplayed()));
@@ -258,7 +255,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         mSyncTestRule.setUpAccountAndSignInForTesting();
 
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
         // The error card exists.
         onView(withId(R.id.signin_settings_card)).check(matches(isDisplayed()));
@@ -286,7 +283,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         mSyncTestRule.setUpAccountAndSignInForTesting();
 
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
         // The error card exists.
         onView(withId(R.id.signin_settings_card)).check(matches(isDisplayed()));
@@ -321,7 +318,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         // TODO(crbug.com/334124078): Simplify the test using FakeTrustedVaultClientBackend once the
         // bug is resolved.
         TestTrustedVaultClientBackend backend = new TestTrustedVaultClientBackend();
-        TrustedVaultClient.get().setBackendForTesting(backend);
+        TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC).setBackendForTesting(backend);
 
         final FakeSyncServiceImpl fakeSyncService =
                 (FakeSyncServiceImpl) mSyncTestRule.getSyncService();
@@ -332,7 +329,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         mSyncTestRule.setUpAccountAndSignInForTesting();
 
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
         Preference encryption = fragment.findPreference(ManageSyncSettings.PREF_ENCRYPTION);
 
@@ -349,10 +346,7 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
     @Test
     @LargeTest
     @Feature({"Sync"})
-    @DisableFeatures({
-        SigninFeatures.SIGN_OUT_OF_CHROME,
-        SigninFeatures.SIGN_OUT_DELETES_BROWSING_DATA
-    })
+    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
     public void testSignOutUnsavedDataDialogShown() {
         final FakeSyncServiceImpl fakeSyncService =
                 (FakeSyncServiceImpl) mSyncTestRule.getSyncService();
@@ -360,9 +354,10 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         // Sign in and open settings.
         mSyncTestRule.setUpAccountAndSignInForTesting();
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
         onView(withText(R.string.sign_out)).perform(click());
 
         onView(withText(R.string.sign_out_unsaved_data_title))
@@ -373,10 +368,6 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
     @Test
     @LargeTest
     @Feature({"Sync"})
-    @EnableFeatures({
-        SigninFeatures.SIGN_OUT_OF_CHROME,
-        SigninFeatures.SIGN_OUT_DELETES_BROWSING_DATA
-    })
     @Restriction(DeviceFormFactor.DESKTOP)
     public void testSignOutUnsavedDataDialogShown_desktopSignOut() {
         final FakeSyncServiceImpl fakeSyncService =
@@ -385,9 +376,10 @@ public class ManageSyncSettingsWithFakeSyncServiceImplTest {
         // Sign in and open settings.
         mSyncTestRule.setUpAccountAndSignInForTesting();
         ManageSyncSettings fragment = startManageSyncPreferences();
-        onViewWaiting(allOf(is(fragment.getView()), isDisplayed()));
+        waitForView(is(fragment.getView()));
 
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
         onView(withText(R.string.manage_sync_settings_sign_out_of_chrome)).perform(click());
 
         onView(withText(R.string.sign_out_unsaved_data_title))

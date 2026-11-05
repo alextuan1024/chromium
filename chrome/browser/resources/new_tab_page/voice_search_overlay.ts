@@ -9,8 +9,8 @@ import {VoiceSearchQuerySource} from 'chrome://resources/cr_components/composebo
 import {assert} from 'chrome://resources/js/assert.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import {loadTimeData} from './i18n_setup.js';
-import {recordEnumeration} from './metrics_utils.js';
+import {I18nMixinLit, loadTimeData} from './i18n_setup.js';
+import {recordEnumeration, recordVoiceAction, VoiceAction as Action, VoiceError as Error} from './metrics_utils.js';
 import {getCss} from './voice_search_overlay.css.js';
 import {getHtml} from './voice_search_overlay.html.js';
 import {WindowProxy} from './window_proxy.js';
@@ -81,45 +81,6 @@ enum State {
 }
 
 /**
- * Action the user can perform while using voice search. This enum must match
- * the numbering for NewTabPageVoiceAction in enums.xml. These values are
- * persisted to logs. Entries should not be renumbered, removed or reused.
- */
-export enum Action {
-  ACTIVATE = 0,
-  ACTIVATE_KEYBOARD = 1,
-  CLOSE_OVERLAY = 2,
-  QUERY_SUBMITTED = 3,
-  SUPPORT_LINK_CLICKED = 4,
-  TRY_AGAIN_LINK = 5,
-  TRY_AGAIN_MIC_BUTTON = 6,  // Deprecated.
-  MAX_VALUE = TRY_AGAIN_MIC_BUTTON,
-}
-
-/**
- * Errors than can occur while using voice search. This enum must match the
- * numbering for NewTabPageVoiceError in enums.xml. These values are persisted
- * to logs. Entries should not be renumbered, removed or reused.
- */
-export enum Error {
-  ABORTED = 0,
-  AUDIO_CAPTURE = 1,
-  BAD_GRAMMAR = 2,
-  LANGUAGE_NOT_SUPPORTED = 3,
-  NETWORK = 4,
-  NO_MATCH = 5,
-  NO_SPEECH = 6,
-  NOT_ALLOWED = 7,
-  OTHER = 8,
-  SERVICE_NOT_ALLOWED = 9,
-  MAX_VALUE = SERVICE_NOT_ALLOWED,
-}
-
-export function recordVoiceAction(action: Action) {
-  recordEnumeration('NewTabPage.VoiceActions', action, Action.MAX_VALUE + 1);
-}
-
-/**
  * Returns the error type based on the error string received from the webkit
  * speech recognition API.
  * @param webkitError The error string received from the webkit speech
@@ -182,8 +143,10 @@ export interface VoiceSearchOverlayElement {
   };
 }
 
+const VoiceSearchOverlayElementBase = I18nMixinLit(CrLitElement);
+
 // Overlay that lats the user perform voice searches.
-export class VoiceSearchOverlayElement extends CrLitElement {
+export class VoiceSearchOverlayElement extends VoiceSearchOverlayElementBase {
   static get is() {
     return 'ntp-voice-search-overlay';
   }

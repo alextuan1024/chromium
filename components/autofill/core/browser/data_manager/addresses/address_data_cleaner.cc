@@ -17,6 +17,7 @@
 #include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_macros.h"
@@ -41,7 +42,6 @@
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace autofill {
 
@@ -121,23 +121,6 @@ std::vector<T> CalculateMinimalIncompatibleTypeSetsImpl(
   return min_incompatible_sets;
 }
 
-// Counts and logs the number of profiles considered for deduplication, grouped
-// by country code. Profiles in `profiles_with_action` with an action of
-// `ProfileAction::kRemove` are excluded from the count.
-void LogNumberOfProfilesConsideredForDedupePerCountryCode(
-    const std::vector<ProfileWithAction>& profiles_with_action) {
-  // Count the number of remaining (non-removed) profiles per country code
-  // and log it to UMA metrics
-  absl::flat_hash_map<std::string, int> profile_count_by_country_code;
-  for (const auto& [profile, action] : profiles_with_action) {
-    if (action != ProfileAction::kRemove) {
-      ++profile_count_by_country_code[profile.GetAddressCountryCode().value()];
-    }
-  }
-  autofill_metrics::LogNumberOfProfilesConsideredForDedupePerCountryCode(
-      profile_count_by_country_code);
-}
-
 // Deduplicates mergeable profiles in `profiles_with_action` and marks profiles
 // for DB update or removal in accordance with `profiles_with_action`.
 void DeduplicateProfiles(const std::string& app_locale,
@@ -171,7 +154,9 @@ void DeduplicateProfiles(const std::string& app_locale,
         continue;
       }
 
-      ++removed_profiles_count;
+      if (profile_action != ProfileAction::kRemove) {
+        ++removed_profiles_count;
+      }
       profile_action = ProfileAction::kRemove;
       superset_action = ProfileAction::kUpdate;
       superset.usage_history().MergeUsageHistories(profile.usage_history());
@@ -266,7 +251,6 @@ void ApplyDeduplicationRoutine(
 
   autofill_metrics::LogNumberOfProfilesConsideredForDedupe(
       profiles_to_deduplicate_count);
-  LogNumberOfProfilesConsideredForDedupePerCountryCode(profiles_with_action);
 
   DeduplicateProfiles(app_locale, profiles_with_action);
 }
@@ -374,8 +358,10 @@ void AddressDataCleaner::MaybeCleanupAddressData() {
   // expensive operation, known to cause ANRs and shutdown hangs.
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::TaskPriority::BEST_EFFORT},
-      base::BindOnce(&CleanupAddressData, address_data_manager_->app_locale(),
-                     should_run_deduplication, std::move(profiles_with_action)),
+      base::BindOnce(
+          &CleanupAddressData,
+          std::string(address_data_manager_->app_locale().tag_string()),
+          should_run_deduplication, std::move(profiles_with_action)),
       base::BindOnce(&ApplyProfileActions,
                      address_data_manager_->GetWeakPtr()));
 }

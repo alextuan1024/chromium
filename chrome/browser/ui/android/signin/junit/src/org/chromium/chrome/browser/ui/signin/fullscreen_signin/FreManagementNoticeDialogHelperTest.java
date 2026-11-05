@@ -31,11 +31,18 @@ import org.mockito.quality.Strictness;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.signin.services.SigninFlowTimestampsLogger;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninManager.SignInCallback;
+import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
+import org.chromium.chrome.browser.signin.services.SigninMetricsUtilsJni;
+import org.chromium.chrome.browser.ui.signin.ConfirmManagedSyncDataDialogCoordinator;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.components.signin.metrics.SigninFunnelEvent;
 import org.chromium.google_apis.gaia.GaiaId;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -53,6 +60,8 @@ public class FreManagementNoticeDialogHelperTest {
     @Mock private SigninManager mSigninManager;
     @Mock private SigninFlowTimestampsLogger mTimestampLogger;
     @Mock private ModalDialogManager mModalDialogManager;
+    @Mock private FullscreenSigninCoordinator.Delegate mHost;
+    @Mock private SigninMetricsUtils.Natives mSigninMetricsUtilsJniMock;
     @Mock private Context mContext;
 
     private final CoreAccountInfo mCoreAccountInfo =
@@ -64,6 +73,7 @@ public class FreManagementNoticeDialogHelperTest {
 
     @Before
     public void setUp() {
+        SigninMetricsUtilsJni.setInstanceForTesting(mSigninMetricsUtilsJniMock);
         when(mSigninManager.extractDomainName(mCoreAccountInfo.getEmail()))
                 .thenReturn("domain.com");
 
@@ -90,7 +100,58 @@ public class FreManagementNoticeDialogHelperTest {
                 .isAccountManaged(eq(mCoreAccountInfo), any());
     }
 
+    private void checkAccountManagementAndSignIn() {
+        checkAccountManagementAndSignIn(/* isSigninForced= */ false);
+    }
+
+    private void checkAccountManagementAndSignIn(boolean isSigninForced) {
+        FreManagementNoticeDialogHelper.checkAccountManagementAndSignIn(
+                mCoreAccountInfo,
+                mSigninManager,
+                mTimestampLogger,
+                SigninAccessPoint.START_PAGE,
+                isSigninForced,
+                mCallback,
+                mContext,
+                mModalDialogManager,
+                mHost);
+    }
+
+    /** Makes the notice displayed by the host get accepted or rejected as soon as it's shown. */
+    private void respondToHostNotice(boolean accept) {
+        doAnswer(
+                        (args) -> {
+                            ConfirmManagedSyncDataDialogCoordinator.Listener listener =
+                                    args.getArgument(1);
+                            if (accept) {
+                                listener.onConfirm();
+                            } else {
+                                listener.onCancel();
+                            }
+                            return null;
+                        })
+                .when(mHost)
+                .displayManagementNotice(eq(mCoreAccountInfo), any());
+    }
+
+    /** Makes {@link SigninManager#signin} complete or abort immediately. */
+    private void respondToSignin(boolean succeed) {
+        doAnswer(
+                        (args) -> {
+                            SignInCallback callback = args.getArgument(2);
+                            if (succeed) {
+                                callback.onSignInComplete();
+                            } else {
+                                callback.onSignInAborted();
+                            }
+                            return null;
+                        })
+                .when(mSigninManager)
+                .signin(eq(mCoreAccountInfo), eq(SigninAccessPoint.START_PAGE), notNull());
+    }
+
     @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
     public void testAccountManagementAccepted_SigninSucceeded() {
         mIsAccountManaged = true;
         @SigninAccessPoint int accessPoint = SigninAccessPoint.START_PAGE;
@@ -120,15 +181,24 @@ public class FreManagementNoticeDialogHelperTest {
                 mSigninManager,
                 mTimestampLogger,
                 accessPoint,
+                /* isSigninForced= */ false,
                 mCallback,
                 mContext,
-                mModalDialogManager);
+                mModalDialogManager,
+                mHost);
         assertTrue(mSignInCompleted);
         assertFalse(mSignInAborted);
         verify(mSigninManager).setUserAcceptedAccountManagement(true);
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(accessPoint, SigninFunnelEvent.MANAGEMENT_NOTICE_SHOWN);
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(accessPoint, SigninFunnelEvent.MANAGEMENT_NOTICE_ACCEPTED);
+        verify(mSigninMetricsUtilsJniMock, never())
+                .logSigninFunnelEvent(accessPoint, SigninFunnelEvent.MANAGEMENT_NOTICE_DECLINED);
     }
 
     @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
     public void testAccountManagementAccepted_SigninAborted() {
         mIsAccountManaged = true;
         InOrder inOrder = inOrder(mSigninManager);
@@ -159,9 +229,11 @@ public class FreManagementNoticeDialogHelperTest {
                 mSigninManager,
                 mTimestampLogger,
                 accessPoint,
+                /* isSigninForced= */ false,
                 mCallback,
                 mContext,
-                mModalDialogManager);
+                mModalDialogManager,
+                mHost);
         assertFalse(mSignInCompleted);
         assertTrue(mSignInAborted);
         inOrder.verify(mSigninManager).setUserAcceptedAccountManagement(true);
@@ -169,6 +241,7 @@ public class FreManagementNoticeDialogHelperTest {
     }
 
     @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
     public void testAccountManagementRejected() {
         mIsAccountManaged = true;
         @SigninAccessPoint int accessPoint = SigninAccessPoint.START_PAGE;
@@ -189,16 +262,25 @@ public class FreManagementNoticeDialogHelperTest {
                 mSigninManager,
                 mTimestampLogger,
                 accessPoint,
+                /* isSigninForced= */ false,
                 mCallback,
                 mContext,
-                mModalDialogManager);
+                mModalDialogManager,
+                mHost);
         assertFalse(mSignInCompleted);
         assertTrue(mSignInAborted);
         verify(mSigninManager, never()).setUserAcceptedAccountManagement(true);
         verify(mSigninManager, never()).signin(any(), anyInt(), any());
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(accessPoint, SigninFunnelEvent.MANAGEMENT_NOTICE_SHOWN);
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(accessPoint, SigninFunnelEvent.MANAGEMENT_NOTICE_DECLINED);
+        verify(mSigninMetricsUtilsJniMock, never())
+                .logSigninFunnelEvent(accessPoint, SigninFunnelEvent.MANAGEMENT_NOTICE_ACCEPTED);
     }
 
     @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
     public void testAccountNotManaged() {
         mIsAccountManaged = false;
         @SigninAccessPoint int accessPoint = SigninAccessPoint.START_PAGE;
@@ -208,11 +290,115 @@ public class FreManagementNoticeDialogHelperTest {
                 mSigninManager,
                 mTimestampLogger,
                 accessPoint,
+                /* isSigninForced= */ false,
                 mCallback,
                 mContext,
-                mModalDialogManager);
+                mModalDialogManager,
+                mHost);
         verify(mSigninManager).signin(eq(mCoreAccountInfo), eq(accessPoint), notNull());
         verify(mSigninManager, never()).setUserAcceptedAccountManagement(anyBoolean());
         verify(mModalDialogManager, never()).showDialog(any(), anyInt());
+        verify(mSigninMetricsUtilsJniMock, never()).logSigninFunnelEvent(anyInt(), anyInt());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testNewNotice_AccountManagementAccepted_SigninSucceeded() {
+        mIsAccountManaged = true;
+        respondToHostNotice(/* accept= */ true);
+        respondToSignin(/* succeed= */ true);
+
+        checkAccountManagementAndSignIn();
+
+        assertTrue(mSignInCompleted);
+        assertFalse(mSignInAborted);
+        verify(mSigninManager).setUserAcceptedAccountManagement(true);
+        verify(mModalDialogManager, never()).showDialog(any(), anyInt());
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(
+                        SigninAccessPoint.START_PAGE, SigninFunnelEvent.MANAGEMENT_NOTICE_SHOWN);
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(
+                        SigninAccessPoint.START_PAGE, SigninFunnelEvent.MANAGEMENT_NOTICE_ACCEPTED);
+        verify(mSigninMetricsUtilsJniMock, never())
+                .logSigninFunnelEvent(
+                        SigninAccessPoint.START_PAGE, SigninFunnelEvent.MANAGEMENT_NOTICE_DECLINED);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testNewNotice_AccountManagementAccepted_SigninForced() {
+        mIsAccountManaged = true;
+        respondToHostNotice(/* accept= */ true);
+
+        checkAccountManagementAndSignIn(/* isSigninForced= */ true);
+
+        verify(mSigninManager)
+                .signin(eq(mCoreAccountInfo), eq(SigninAccessPoint.FORCED_SIGNIN), notNull());
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(
+                        SigninAccessPoint.START_PAGE, SigninFunnelEvent.MANAGEMENT_NOTICE_SHOWN);
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(
+                        SigninAccessPoint.START_PAGE, SigninFunnelEvent.MANAGEMENT_NOTICE_ACCEPTED);
+        verify(mSigninMetricsUtilsJniMock, never())
+                .logSigninFunnelEvent(
+                        SigninAccessPoint.START_PAGE, SigninFunnelEvent.MANAGEMENT_NOTICE_DECLINED);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testNewNotice_AccountManagementAccepted_SigninAborted() {
+        mIsAccountManaged = true;
+        InOrder inOrder = inOrder(mSigninManager);
+        respondToHostNotice(/* accept= */ true);
+        respondToSignin(/* succeed= */ false);
+
+        checkAccountManagementAndSignIn();
+
+        assertFalse(mSignInCompleted);
+        assertTrue(mSignInAborted);
+        inOrder.verify(mSigninManager).setUserAcceptedAccountManagement(true);
+        inOrder.verify(mSigninManager).setUserAcceptedAccountManagement(false);
+        verify(mModalDialogManager, never()).showDialog(any(), anyInt());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testNewNotice_AccountManagementRejected() {
+        mIsAccountManaged = true;
+        respondToHostNotice(/* accept= */ false);
+
+        checkAccountManagementAndSignIn();
+
+        assertFalse(mSignInCompleted);
+        assertTrue(mSignInAborted);
+        verify(mSigninManager, never()).setUserAcceptedAccountManagement(true);
+        verify(mSigninManager, never()).signin(any(), anyInt(), any());
+        verify(mModalDialogManager, never()).showDialog(any(), anyInt());
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(
+                        SigninAccessPoint.START_PAGE, SigninFunnelEvent.MANAGEMENT_NOTICE_SHOWN);
+        verify(mSigninMetricsUtilsJniMock)
+                .logSigninFunnelEvent(
+                        SigninAccessPoint.START_PAGE, SigninFunnelEvent.MANAGEMENT_NOTICE_DECLINED);
+        verify(mSigninMetricsUtilsJniMock, never())
+                .logSigninFunnelEvent(
+                        SigninAccessPoint.START_PAGE, SigninFunnelEvent.MANAGEMENT_NOTICE_ACCEPTED);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testNewNotice_AccountNotManaged() {
+        mIsAccountManaged = false;
+
+        checkAccountManagementAndSignIn();
+
+        verify(mSigninManager)
+                .signin(eq(mCoreAccountInfo), eq(SigninAccessPoint.START_PAGE), notNull());
+        verify(mSigninManager, never()).setUserAcceptedAccountManagement(anyBoolean());
+        verify(mHost, never()).displayManagementNotice(any(), any());
+        verify(mModalDialogManager, never()).showDialog(any(), anyInt());
+        verify(mSigninMetricsUtilsJniMock, never()).logSigninFunnelEvent(anyInt(), anyInt());
     }
 }

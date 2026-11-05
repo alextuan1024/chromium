@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/safety_hub/password_status_check_service.h"
 
+#include <cstddef>
 #include <memory>
 #include <random>
 #include <vector>
@@ -33,6 +34,7 @@
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/ui/bulk_leak_check_service_adapter.h"
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
+#include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/safety_check/features.h"
@@ -69,8 +71,7 @@ std::map<std::string, int> GetDayPrefWeightMap() {
 // randomly while respecting the weights.
 base::TimeDelta FindNewCheckTime() {
   // The password check will be scheculed starting from tomorrow.
-  base::Time tomorrow_midnight =
-      base::Time::Now().LocalMidnight() + base::Days(1);
+  base::Time tomorrow_midnight = base::Time::Now().NextLocalMidnight();
   base::Time::Exploded tomorrow_midnight_exploded;
   tomorrow_midnight.LocalExplode(&tomorrow_midnight_exploded);
   int tomorrow_day_of_week = tomorrow_midnight_exploded.day_of_week;
@@ -103,8 +104,8 @@ base::TimeDelta FindNewCheckTime() {
 
   // Find a random time in the selected day.
   base::Time beg_of_selected_day =
-      tomorrow_midnight + base::Days(selected_day_offset);
-  base::Time end_of_selected_day = beg_of_selected_day + base::Days(1);
+      tomorrow_midnight.LocalMidnightWithOffset(selected_day_offset);
+  base::Time end_of_selected_day = beg_of_selected_day.NextLocalMidnight();
 
   // Pick a random time in the selected day.
   return base::RandTimeDelta(beg_of_selected_day.ToDeltaSinceWindowsEpoch(),
@@ -315,18 +316,19 @@ bool ShouldAddToCompromisedPasswords(
          issues.contains(InsecureType::kPhished);
 }
 
-// Returns saved password forms number
-int GetSavedPasswordsCount(
-    password_manager::SavedPasswordsPresenter* saved_passwords_presenter) {
+// Returns the total number of stored password credentials across stores.
+size_t GetSavedPasswordsCount(const password_manager::SavedPasswordsPresenter*
+                                  saved_passwords_presenter) {
   CHECK(saved_passwords_presenter);
-  const auto& credential_entries =
-      saved_passwords_presenter->GetSavedPasswords();
-  int saved_password_forms = 0;
-  // Each CredentialUIEntry may contain one or more password forms.
-  for (const auto& entry : credential_entries) {
-    saved_password_forms = saved_password_forms + entry.facets.size();
+  size_t saved_passwords = 0;
+  // Each `CredentialUIEntry` may correspond to multiple stored credentials
+  // across affiliated realms or stores (profile and account).
+  for (const auto& entry : saved_passwords_presenter->GetSavedPasswords()) {
+    saved_passwords +=
+        saved_passwords_presenter->GetCorrespondingStoredCredentials(entry)
+            .size();
   }
-  return saved_password_forms;
+  return saved_passwords;
 }
 
 }  // namespace
@@ -344,7 +346,7 @@ PasswordStatusCheckService::PasswordStatusCheckService(Profile* profile)
   // ProfilePasswordStore may not exist for some cases like non-user profiles on
   // Ash. If ProfilePasswordStore does not exist, the service should not be
   // created by the factory.
-  DCHECK(profile_store);
+  CHECK(profile_store, base::NotFatalUntil::M162);
 
   profile_password_store_observation_.Observe(profile_store.get());
   if (account_store) {
@@ -409,7 +411,7 @@ void PasswordStatusCheckService::StartRepeatedUpdates() {
 }
 
 void PasswordStatusCheckService::UpdateInsecureCredentialCountAsync() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // In infrastructure is initilizided OnInsecureCredentialsChanged() will
   // update cache anyway.
   if (IsInfrastructureReady()) {
@@ -423,7 +425,7 @@ void PasswordStatusCheckService::UpdateInsecureCredentialCountAsync() {
 }
 
 void PasswordStatusCheckService::RunPasswordCheckAsync() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // In case there is a running check, do not start checks again.
   if (is_password_check_running()) {
     return;
@@ -475,7 +477,7 @@ void PasswordStatusCheckService::OnWeakAndReuseChecksDone() {
 
 void PasswordStatusCheckService::OnStateChanged(
     password_manager::BulkLeakCheckServiceInterface::State state) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   CHECK(IsInfrastructureReady());
 
   switch (state) {
@@ -644,7 +646,7 @@ void PasswordStatusCheckService::UpdateInsecureCredentialCount() {
 }
 
 void PasswordStatusCheckService::MaybeResetInfrastructure() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (IsUpdateRunning()) {
     return;
   }

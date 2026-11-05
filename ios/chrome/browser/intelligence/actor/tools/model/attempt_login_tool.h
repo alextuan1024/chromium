@@ -60,6 +60,7 @@ class AttemptLoginTool : public ActorTool,
   void Cancel() override;
   base::WeakPtr<web::WebState> GetTargetWebState() const override;
   ToolType GetToolType() const override;
+  std::string DebugString() const override;
 
   // password_manager::PasswordFormManagerObserver:
   void OnPasswordFormParsed(
@@ -70,7 +71,10 @@ class AttemptLoginTool : public ActorTool,
   void WebStateDestroyed(web::WebState* web_state) override;
 
  private:
+  struct LoginTarget;
+
   AttemptLoginTool(base::WeakPtr<web::WebState> web_state,
+                   std::vector<LoginTarget> login_targets,
                    ToolDelegate* tool_delegate);
 
   void OnGetCredentials(actor_login::CredentialsOrError credentials);
@@ -80,11 +84,6 @@ class AttemptLoginTool : public ActorTool,
   void OnAttemptLogin(actor_login::Credential selected_credential,
                       bool should_store_permission,
                       actor_login::LoginStatusResultOrError login_status);
-
-  // Called when the initial DOM extraction step from the rescan attempt
-  // completes. If no forms were found in the DOM, completes rescanning with
-  // failure immediately without waiting for `rescan_timer_`.
-  void OnDomRescanComplete(bool forms_found_in_dom);
 
   // Called when password forms in `web_state_` have finished rescanning and are
   // registered with the password manager. Continues the login attempt if
@@ -98,9 +97,15 @@ class AttemptLoginTool : public ActorTool,
   // Retries login with temporarily stored parameters, if available.
   void RetryLoginWithSavedCredentials();
 
+  // Stops observing `web_state_`'s `PasswordFormCache`. No-op if not observing.
+  void StopObservingFormCache();
+
   // The tab and navigation item this tool actuates on.
   base::WeakPtr<web::WebState> web_state_;
   std::optional<int> navigation_item_id_;
+
+  // Parsed login targets from the action proto, validated in `Validate()`.
+  std::vector<LoginTarget> login_targets_;
 
   // Delegate object for the tool to interact with its invoking task.
   raw_ptr<ToolDelegate> tool_delegate_;

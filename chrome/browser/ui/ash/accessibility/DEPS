@@ -12,15 +12,14 @@ include_rules = [
   # Whenever possible, avoid adding new //chrome dependencies to this list.
   "+chrome/browser/ash/accessibility",
   "+chrome/browser/ui/aura/accessibility",
-  "+chrome/grit",
 ]
 
 specific_include_rules = {
   "accessibility_controller_client\\.cc": [
     "+content/public/browser/tts_controller.h",
   ],
-  "chrome_accessibility_delegate\.cc": [
+  "chrome_accessibility_delegate\\.cc": [
     "+chrome/browser/prefs/pref_service_syncable_util.h",
-    "+chrome/browser/profiles/profile_manager.h"
+    "+chrome/browser/profiles/profile.h",
   ]
 }

@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_GLIC_HOST_CONTEXT_GLIC_PAGE_CONTEXT_FETCHER_H_
 
 #include "chrome/browser/glic/host/context/glic_tab_data.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "chrome/browser/page_content_annotations/multi_source_page_context_fetcher.h"
 
 namespace tabs {
@@ -14,16 +14,17 @@ class TabInterface;
 }  // namespace tabs
 namespace glic {
 
+using FetchPageContextCallback = base::OnceCallback<void(
+    base::expected<glic::mojom::GetContextResultPtr,
+                   page_content_annotations::FetchPageContextErrorDetails>)>;
+
 // `tab` must be non-null.
 // `is_screenshot_annotated` indicates if the screenshot contains a selection
 // region.
 void FetchPageContext(
     tabs::TabInterface* tab,
     const mojom::TabContextOptions& options,
-    base::OnceCallback<void(
-        base::expected<glic::mojom::GetContextResultPtr,
-                       page_content_annotations::FetchPageContextErrorDetails>)>
-        callback,
+    FetchPageContextCallback callback,
     std::unique_ptr<page_content_annotations::FetchPageProgressListener>
         progress_listener,
     bool is_screenshot_annotated);

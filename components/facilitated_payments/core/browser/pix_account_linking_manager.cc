@@ -66,11 +66,6 @@ void PixAccountLinkingManager::DoOnAccountLinkingResult(
       client()->ShowPixAccountLinkingSuccessScreen();
       break;
     case AccountLinkingResultCode::kResultCanceled:
-      // TODO(crbug.com/545056667): Update to show error notification on user
-      // cancellation.
-      DismissPrompt();
-      LogAccountLinkingResult(kPixFopSuffix, /*is_successful=*/false);
-      break;
     case AccountLinkingResultCode::kResultError:
       DismissPrompt();
       LogAccountLinkingResult(kPixFopSuffix, /*is_successful=*/false);
@@ -104,6 +99,7 @@ void PixAccountLinkingManager::MaybeShowPixAccountLinkingPrompt(
 }
 
 void PixAccountLinkingManager::Reset() {
+  NativeAccountLinkingHandler::Reset();
   has_user_returned_to_chrome_ = false;
   has_post_return_delay_passed_ = false;
   is_eligible_for_pix_account_linking_ = std::nullopt;
@@ -208,16 +204,23 @@ void PixAccountLinkingManager::DoOnAccepted() {
 }
 
 void PixAccountLinkingManager::OnUiScreenEvent(UiEvent ui_event_type) {
+  // UI events from the bottom sheet are delivered asynchronously. The account
+  // linking UI may already have been dismissed by Chrome (e.g.
+  // `DismissPrompt()` sets `ui_state_` to `kHidden` before the bottom sheet
+  // finishes closing), so late events for a hidden UI are expected and are
+  // ignored.
+  if (ui_state_ == UiState::kHidden) {
+    return;
+  }
+
   switch (ui_event_type) {
     case UiEvent::kNewScreenShown: {
-      CHECK(ui_state_ != UiState::kHidden);
       if (ui_state_ == UiState::kPrompt) {
         LogPixAccountLinkingPromptShown();
       }
       break;
     }
     case UiEvent::kScreenCouldNotBeShown: {
-      CHECK(ui_state_ != UiState::kHidden);
       if (ui_state_ == UiState::kPrompt) {
         LogAccountLinkingFlowExitedReason(
             kPixFopSuffix, AccountLinkingFlowExitedReason::kScreenNotShown);
@@ -235,7 +238,6 @@ void PixAccountLinkingManager::OnUiScreenEvent(UiEvent ui_event_type) {
       break;
     }
     case UiEvent::kScreenClosedByUser: {
-      CHECK(ui_state_ != UiState::kHidden);
       if (ui_state_ == UiState::kPrompt) {
         LogAccountLinkingFlowExitedReason(
             kPixFopSuffix, AccountLinkingFlowExitedReason::kScreenClosedByUser);

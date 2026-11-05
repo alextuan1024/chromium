@@ -23,6 +23,7 @@
 
 #include "third_party/blink/renderer/core/html/html_script_element.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/script/script_type.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_htmlscriptelement_svgscriptelement.h"
@@ -66,11 +67,11 @@ HTMLScriptElement::HTMLScriptElement(Document& document,
 
 const AttrNameToTrustedType& HTMLScriptElement::GetCheckedAttributeTypes()
     const {
-  DEFINE_STATIC_LOCAL(AttrNameToTrustedType, attribute_map,
-                      ({{trusted_types_names::kSrc,
-                         std::pair{SpecificTrustedType::kScriptURL,
-                                   trusted_types_names::kHTMLScriptElement}}}));
-  return attribute_map;
+  static base::NoDestructor<AttrNameToTrustedType> attribute_map(
+      {{trusted_types_names::kSrc,
+        std::pair{SpecificTrustedType::kScriptURL,
+                  trusted_types_names::kHTMLScriptElement}}});
+  return *attribute_map;
 }
 
 bool HTMLScriptElement::IsURLAttribute(const Attribute& attribute) const {
@@ -157,22 +158,11 @@ void HTMLScriptElement::setInnerTextForBinding(
     const V8UnionStringLegacyNullToEmptyStringOrTrustedScript*
         string_or_trusted_script,
     ExceptionState& exception_state) {
-  // Old behaviour: Run the Trusted Type script when the super-classes
-  //   innerText property is set.
-  // New behaviour (TrustedTypesHTML): Run only the superclass' behaviour.
-  //   Only when HTMLScriptElement's own innerText property is set, run the
-  //   Trusted Types check (in setScriptInnerTextForBinding, below).
-  //
-  // This can be simplified once TrustedTypesHTMLEnabled is removed.
-  if (RuntimeEnabledFeatures::TrustedTypesHTMLEnabled()) {
-    const String string =
-        string_or_trusted_script->IsStringLegacyNullToEmptyString()
-            ? string_or_trusted_script->GetAsStringLegacyNullToEmptyString()
-            : string_or_trusted_script->GetAsTrustedScript()->toString();
-    HTMLElement::setInnerText(string);
-  } else {
-    setScriptInnerTextForBinding(string_or_trusted_script, exception_state);
-  }
+  const String string =
+      string_or_trusted_script->IsStringLegacyNullToEmptyString()
+          ? string_or_trusted_script->GetAsStringLegacyNullToEmptyString()
+          : string_or_trusted_script->GetAsTrustedScript()->toString();
+  HTMLElement::setInnerText(string);
 }
 
 void HTMLScriptElement::setScriptInnerTextForBinding(
@@ -195,21 +185,10 @@ void HTMLScriptElement::setScriptInnerTextForBinding(
 void HTMLScriptElement::setTextContentForBinding(
     const V8UnionStringOrTrustedScript* value,
     ExceptionState& exception_state) {
-  // Old behaviour: Run the Trusted Type script when the super-class'
-  //   textContent property is set.
-  // New behaviour (TrustedTypesHTML): Run only the superclass' behaviour.
-  //   Only when HTMLScriptElement's own textContent property is set, run the
-  //   Trusted Types check (in setScriptTextContentForBinding, below).
-  //
-  // This can be simplified once TrustedTypesHTMLEnabled is removed.
-  if (RuntimeEnabledFeatures::TrustedTypesHTMLEnabled()) {
-    const String string = value->IsString()
-                              ? value->GetAsString()
-                              : value->GetAsTrustedScript()->toString();
-    HTMLElement::setTextContent(string);
-  } else {
-    setScriptTextContentForBinding(value, exception_state);
-  }
+  const String string = value->IsString()
+                            ? value->GetAsString()
+                            : value->GetAsTrustedScript()->toString();
+  HTMLElement::setTextContent(string);
 }
 
 void HTMLScriptElement::setScriptTextContentForBinding(

@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/check_is_test.h"
@@ -483,7 +484,8 @@ void ServiceWorkerGlobalScope::LoadAndRunInstalledClassicScript(
       // TODO(crbug.com/488089240): Plumb Document Policy in Service Workers.
       DocumentPolicy::DocumentPolicyBundle{},
       script_data->CreateOriginTrialTokens().get(),
-      script_data->TakeSourceText(), script_data->TakeMetaData(), stack_id);
+      script_data->TakeSourceText(), script_data->TakeMetaData(), stack_id,
+      script_data->GetScriptEncoding());
 }
 
 ServiceWorkerClients* ServiceWorkerGlobalScope::clients() {
@@ -635,7 +637,8 @@ bool ServiceWorkerGlobalScope::FetchClassicImportedScript(
     const KURL& script_url,
     KURL* out_response_url,
     String* out_source_code,
-    std::unique_ptr<Vector<uint8_t>>* out_cached_meta_data) {
+    std::unique_ptr<Vector<uint8_t>>* out_cached_meta_data,
+    TextEncoding* out_response_encoding) {
   // InstalledScriptsManager is used only for starting installed service
   // workers.
   if (installed_scripts_manager_) {
@@ -649,13 +652,15 @@ bool ServiceWorkerGlobalScope::FetchClassicImportedScript(
     *out_response_url = script_url;
     *out_source_code = script_data->TakeSourceText();
     *out_cached_meta_data = script_data->TakeMetaData();
+    *out_response_encoding = script_data->GetScriptEncoding();
     // TODO(shimazu): Add appropriate probes for inspector.
     return true;
   }
   // This is a new service worker. Proceed with importing scripts and installing
   // them.
   return WorkerGlobalScope::FetchClassicImportedScript(
-      script_url, out_response_url, out_source_code, out_cached_meta_data);
+      script_url, out_response_url, out_source_code, out_cached_meta_data,
+      out_response_encoding);
 }
 
 ResourceLoadScheduler::ThrottleOptionOverride
@@ -786,6 +791,33 @@ void ServiceWorkerGlobalScope::MaybeRecordFetchError(
   }
 }
 
+std::optional<String> ServiceWorkerGlobalScope::GetCustomFetchErrorMessage(
+    int net_error_code,
+    const FetchRequestData* request_data) const {
+  DCHECK(IsContextThread());
+  // Check the $O(1)$ error code and inline token before looking up the
+  // per-token loader state map. Subsequent `fetch(event.request)` calls that
+  // fell back to the default loader (`kFallbackDueToAlreadyConsumed`) do not
+  // match `kRaceLoaderUsed`, and `FeatureList::IsEnabled()` is evaluated last
+  // so unaffected requests pay zero flag-lookup overhead and Finch only
+  // activates on affected clients.
+  if (net_error_code != net::ERR_ABORTED || !request_data ||
+      !request_data->ServiceWorkerRaceNetworkRequestToken()) {
+    return std::nullopt;
+  }
+  if (GetRaceNetworkRequestLoaderState(
+          request_data->ServiceWorkerRaceNetworkRequestToken()) !=
+      ServiceWorkerRaceNetworkRequestLoaderState::kRaceLoaderUsed) {
+    return std::nullopt;
+  }
+  if (!base::FeatureList::IsEnabled(
+          features::kServiceWorkerRaceNetworkRequestAbortedErrorMessage)) {
+    return std::nullopt;
+  }
+  return "The service worker race-network-and-fetch-handler request was "
+         "cancelled before 'fetch()' settled.";
+}
+
 bool ServiceWorkerGlobalScope::HasRangeFetchEvent(
     const KURL& request_url) const {
   auto it = unresponded_fetch_event_counts_.find(request_url);
@@ -808,7 +840,8 @@ bool ServiceWorkerGlobalScope::CrossOriginIsolatedCapability() const {
 }
 
 bool ServiceWorkerGlobalScope::IsIsolatedContext() const {
-  return Agent::IsIsolatedContext();
+  const SecurityOrigin* origin = GetSecurityOrigin();
+  return Agent::IsIsolatedContext() && origin && !origin->IsOpaque();
 }
 
 void ServiceWorkerGlobalScope::importScripts(
@@ -843,18 +876,21 @@ void ServiceWorkerGlobalScope::importScripts(
 CachedMetadataHandler*
 ServiceWorkerGlobalScope::CreateWorkerScriptCachedMetadataHandler(
     const KURL& script_url,
-    std::unique_ptr<Vector<uint8_t>> meta_data) {
+    std::unique_ptr<Vector<uint8_t>> meta_data,
+    TextEncoding encoding) {
   return MakeGarbageCollected<ServiceWorkerScriptCachedMetadataHandler>(
-      this, script_url, std::move(meta_data));
+      this, script_url, std::move(meta_data), std::move(encoding));
 }
 
-void ServiceWorkerGlobalScope::ExceptionThrown(ErrorEvent* event) {
-  WorkerGlobalScope::ExceptionThrown(event);
+void ServiceWorkerGlobalScope::ExceptionThrown(
+    ErrorEvent* event,
+    SanitizeScriptErrors sanitize_script_errors) {
+  WorkerGlobalScope::ExceptionThrown(event, sanitize_script_errors);
   if (WorkerThreadDebugger* debugger =
-          WorkerThreadDebugger::From(GetThread()->GetIsolate()))
+          WorkerThreadDebugger::From(GetThread()->GetIsolate())) {
     debugger->ExceptionThrown(GetThread(), event);
+  }
 }
-
 void ServiceWorkerGlobalScope::CountCacheStorageInstalledScript(
     uint64_t script_size,
     uint64_t script_metadata_size) {
@@ -987,8 +1023,6 @@ void ServiceWorkerGlobalScope::RespondToFetchEventWithNoResponse(
   // out.
   if (!fetch_response_callbacks_.Contains(fetch_event_id))
     return;
-  mojom::blink::ServiceWorkerFetchResponseCallback* response_callback =
-      fetch_response_callbacks_.Take(fetch_event_id)->Value().get();
 
   auto timing = mojom::blink::ServiceWorkerFetchEventTiming::New();
   timing->dispatch_event_time = event_dispatch_time;
@@ -1000,8 +1034,14 @@ void ServiceWorkerGlobalScope::RespondToFetchEventWithNoResponse(
     pending_streaming_upload_fetch_events_.insert(fetch_event_id, fetch_event);
   }
 
-  response_callback->OnFallback(std::move(request_body), std::move(timing),
-                                std::move(errors));
+  // Take and invoke the callback after all Oilpan allocations (such as
+  // `pending_streaming_upload_fetch_events_.insert()`), as a GC triggered
+  // after `Take()` would collect the unrooted `HeapMojoRemote` wrapper and
+  // reset its underlying Mojo proxy before `OnFallback()` is called.
+  fetch_response_callbacks_.Take(fetch_event_id)
+      ->Value()
+      ->OnFallback(std::move(request_body), std::move(timing),
+                   std::move(errors));
 }
 void ServiceWorkerGlobalScope::OnStreamingUploadCompletion(int fetch_event_id) {
   pending_streaming_upload_fetch_events_.erase(fetch_event_id);
@@ -1024,17 +1064,15 @@ void ServiceWorkerGlobalScope::RespondToFetchEvent(
   if (!fetch_response_callbacks_.Contains(fetch_event_id))
     return;
 
-  mojom::blink::ServiceWorkerFetchResponseCallback* response_callback =
-      fetch_response_callbacks_.Take(fetch_event_id)->Value().get();
-
   auto timing = mojom::blink::ServiceWorkerFetchEventTiming::New();
   timing->dispatch_event_time = event_dispatch_time;
   timing->respond_with_settled_time = respond_with_settled_time;
 
   NoteRespondedToFetchEvent(request_url, range_request);
 
-  response_callback->OnResponse(std::move(response), std::move(timing),
-                                std::move(errors));
+  fetch_response_callbacks_.Take(fetch_event_id)
+      ->Value()
+      ->OnResponse(std::move(response), std::move(timing), std::move(errors));
 }
 
 void ServiceWorkerGlobalScope::RespondToFetchEventWithResponseStream(
@@ -1055,8 +1093,6 @@ void ServiceWorkerGlobalScope::RespondToFetchEventWithResponseStream(
   // out.
   if (!fetch_response_callbacks_.Contains(fetch_event_id))
     return;
-  mojom::blink::ServiceWorkerFetchResponseCallback* response_callback =
-      fetch_response_callbacks_.Take(fetch_event_id)->Value().get();
 
   auto timing = mojom::blink::ServiceWorkerFetchEventTiming::New();
   timing->dispatch_event_time = event_dispatch_time;
@@ -1064,9 +1100,10 @@ void ServiceWorkerGlobalScope::RespondToFetchEventWithResponseStream(
 
   NoteRespondedToFetchEvent(request_url, range_request);
 
-  response_callback->OnResponseStream(std::move(response),
-                                      std::move(body_as_stream),
-                                      std::move(timing), std::move(errors));
+  fetch_response_callbacks_.Take(fetch_event_id)
+      ->Value()
+      ->OnResponseStream(std::move(response), std::move(body_as_stream),
+                         std::move(timing), std::move(errors));
 }
 
 void ServiceWorkerGlobalScope::DidHandleFetchEvent(
@@ -1189,9 +1226,9 @@ void ServiceWorkerGlobalScope::RespondToAbortPaymentEvent(
               perfetto::Flow::ProcessScoped(
                   event_id, kServiceWorkerGlobalScopeTraceScope));
   DCHECK(abort_payment_result_callbacks_.Contains(event_id));
-  payments::mojom::blink::PaymentHandlerResponseCallback* result_callback =
-      abort_payment_result_callbacks_.Take(event_id)->Value().get();
-  result_callback->OnResponseForAbortPayment(payment_aborted);
+  abort_payment_result_callbacks_.Take(event_id)
+      ->Value()
+      ->OnResponseForAbortPayment(payment_aborted);
 }
 
 void ServiceWorkerGlobalScope::DidHandleAbortPaymentEvent(
@@ -1218,9 +1255,9 @@ void ServiceWorkerGlobalScope::RespondToCanMakePaymentEvent(
               perfetto::Flow::ProcessScoped(
                   event_id, kServiceWorkerGlobalScopeTraceScope));
   DCHECK(can_make_payment_result_callbacks_.Contains(event_id));
-  payments::mojom::blink::PaymentHandlerResponseCallback* result_callback =
-      can_make_payment_result_callbacks_.Take(event_id)->Value().get();
-  result_callback->OnResponseForCanMakePayment(std::move(response));
+  can_make_payment_result_callbacks_.Take(event_id)
+      ->Value()
+      ->OnResponseForCanMakePayment(std::move(response));
 }
 
 void ServiceWorkerGlobalScope::DidHandleCanMakePaymentEvent(
@@ -1247,9 +1284,9 @@ void ServiceWorkerGlobalScope::RespondToPaymentRequestEvent(
               perfetto::Flow::ProcessScoped(
                   payment_event_id, kServiceWorkerGlobalScopeTraceScope));
   DCHECK(payment_response_callbacks_.Contains(payment_event_id));
-  payments::mojom::blink::PaymentHandlerResponseCallback* response_callback =
-      payment_response_callbacks_.Take(payment_event_id)->Value().get();
-  response_callback->OnResponseForPaymentRequest(std::move(response));
+  payment_response_callbacks_.Take(payment_event_id)
+      ->Value()
+      ->OnResponseForPaymentRequest(std::move(response));
 }
 
 void ServiceWorkerGlobalScope::DidHandlePaymentRequestEvent(
@@ -2661,8 +2698,7 @@ void ServiceWorkerGlobalScope::RecordQueuingTime(base::TimeTicks created_time) {
 }
 
 bool ServiceWorkerGlobalScope::IsInFencedFrame() const {
-  return GetAncestorFrameType() ==
-         mojom::blink::AncestorFrameType::kFencedFrame;
+  return false;
 }
 
 void ServiceWorkerGlobalScope::NotifyWebSocketActivity() {
@@ -2907,6 +2943,18 @@ void ServiceWorkerGlobalScope::OnRaceNetworkRequestDisconnected(
   if (it != race_network_requests_.end()) {
     it->value->HandleDisconnected();
   }
+}
+
+void ServiceWorkerGlobalScope::AllowPopupCapabilityDelegation() {
+  popup_capability_token_.Activate();
+}
+
+bool ServiceWorkerGlobalScope::ConsumePopupCapabilityDelegation() {
+  return popup_capability_token_.ConsumeIfActive();
+}
+
+bool ServiceWorkerGlobalScope::IsPopupCapabilityDelegationAllowed() const {
+  return popup_capability_token_.IsActive();
 }
 
 }  // namespace blink

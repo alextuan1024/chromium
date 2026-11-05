@@ -20,10 +20,12 @@
 #include "base/memory/aligned_memory.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/rand_util.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/types/expected.h"
 #include "base/types/to_address.h"
 #include "media/base/audio_buffer.h"
 #include "media/base/audio_bus.h"
@@ -99,12 +101,26 @@ bool IsPcm(AudioCodec codec) {
 }
 
 constexpr int GetBytesPerSample(AudioCodec codec, SampleFormat sample_format) {
+  // These codecs have a fixed sample width, and Symphonia rejects any other
+  // width. Don't trust `sample_format` for them, since demuxers can't always
+  // report it (for example, FFmpeg built without decoders).
+  switch (codec) {
+    case AudioCodec::kPCM_S16BE:
+    case AudioCodec::kPCM_ALAW:
+    case AudioCodec::kPCM_MULAW:
+      return 2;
+    case AudioCodec::kPCM_S24BE:
+      return 3;
+    default:
+      break;
+  }
+
   // Other than this special case, where Chrome pads 24-bit samples into 32-bit
   // containers, the number of bytes per sample is the same as the bytes per
   // channel. The padding is corrected on the output side in the rust glue
   // code when creating the `symphonia::core::audio::AudioBuffer`.
   // TODO(crbug.com/493720049): as a cleanup, handle the S24 case better.
-  if (sample_format == kSampleFormatS24 || codec == AudioCodec::kPCM_S24BE) {
+  if (sample_format == kSampleFormatS24) {
     return 3;
   }
   return SampleFormatToBytesPerChannel(sample_format);
@@ -120,6 +136,7 @@ SymphoniaDecoderConfig ToSymphoniaConfig(const AudioDecoderConfig& config) {
   out.bytes_per_sample =
       GetBytesPerSample(config.codec(), config.sample_format());
   out.channel_mask = ChannelLayoutToMask(config.channel_layout());
+  out.channel_count = base::checked_cast<uint16_t>(config.channels());
   out.sample_rate = config.samples_per_second();
   return out;
 }
@@ -197,16 +214,48 @@ DecoderStatus ToDecoderStatus(SymphoniaDecodeResult& result) {
   }
 }
 
-// An ExternalMemory implementation that wraps and owns a rust::Vec<uint8_t>.
-class RustVecMemory : public AudioBuffer::ExternalMemory {
- public:
-  explicit RustVecMemory(rust::Vec<uint8_t> vec)
-      : ExternalMemory(vec), vec_(std::move(vec)) {}
-  ~RustVecMemory() override = default;
+bool IsValidChannelLayout(ChannelLayout layout, int channel_count) {
+  return layout != CHANNEL_LAYOUT_UNSUPPORTED &&
+         layout != CHANNEL_LAYOUT_NONE &&
+         (layout == CHANNEL_LAYOUT_DISCRETE ||
+          ChannelLayoutToChannelCount(layout) == channel_count);
+}
 
- private:
-  rust::Vec<uint8_t> vec_;
-};
+// Resolves the channel layout for a decoded frame, taking into account any
+// midstream changes to channel count.
+ChannelLayout ResolveChannelLayout(ChannelLayout current_layout,
+                                   int current_channels,
+                                   uint32_t channel_mask,
+                                   int new_channels) {
+  if (new_channels == current_channels &&
+      IsValidChannelLayout(current_layout, current_channels)) {
+    return current_layout;
+  }
+  ChannelLayout layout = ChannelMaskToLayout(channel_mask);
+  if (IsValidChannelLayout(layout, new_channels)) {
+    return layout;
+  }
+  if (current_layout == CHANNEL_LAYOUT_DISCRETE) {
+    return CHANNEL_LAYOUT_DISCRETE;
+  }
+  layout = GuessChannelLayout(new_channels);
+  return (layout != CHANNEL_LAYOUT_UNSUPPORTED) ? layout
+                                                : CHANNEL_LAYOUT_DISCRETE;
+}
+
+// Returns true if the decoded audio buffer parameters fall within valid limits.
+bool IsValidDecodedParameters(size_t channels,
+                              uint32_t sample_rate,
+                              size_t num_frames,
+                              SampleFormat sample_format) {
+  return channels > 0 &&
+         channels <= static_cast<size_t>(limits::kMaxChannels) &&
+         sample_rate >= static_cast<uint32_t>(limits::kMinSampleRate) &&
+         sample_rate <= static_cast<uint32_t>(limits::kMaxSampleRate) &&
+         num_frames > 0 &&
+         num_frames <= static_cast<size_t>(limits::kMaxSamplesPerPacket) &&
+         sample_format != kUnknownSampleFormat;
+}
 
 }  // namespace
 
@@ -379,19 +428,8 @@ void SymphoniaAudioDecoder::Reset(base::OnceClosure closure) {
 
 // static
 bool SymphoniaAudioDecoder::IsCodecSupported(AudioCodec codec) {
-  if (codec == AudioCodec::kFLAC) {
-    return base::FeatureList::IsEnabled(kSymphoniaAudioDecoding);
-  }
-  if (codec == AudioCodec::kMP3) {
-    return base::FeatureList::IsEnabled(kSymphoniaMp3Decoding);
-  }
-  if (IsPcm(codec)) {
-    return base::FeatureList::IsEnabled(kSymphoniaPcmDecoding);
-  }
-  if (codec == AudioCodec::kVorbis) {
-    return base::FeatureList::IsEnabled(kSymphoniaVorbisDecoding);
-  }
-  return false;
+  return codec == AudioCodec::kFLAC || codec == AudioCodec::kMP3 ||
+         IsPcm(codec) || codec == AudioCodec::kVorbis;
 }
 
 DecoderStatus SymphoniaAudioDecoder::SymphoniaDecode(
@@ -407,7 +445,7 @@ DecoderStatus SymphoniaAudioDecoder::SymphoniaDecode(
   if (buffer.empty()) {
     const bool processed = discard_helper_->ProcessBuffers(
         AudioDiscardHelper::TimeInfo::FromBuffer(buffer), nullptr);
-    DCHECK(!processed);
+    CHECK(!processed);
     return DecoderStatus::Codes::kOk;
   }
 
@@ -445,17 +483,15 @@ DecoderStatus SymphoniaAudioDecoder::SymphoniaDecode(
             << "Symphonia error occurred: " << result.error_str.c_str();
         return ToDecoderStatus(result);
     }
-  } else {
-    consecutive_error_count_ = 0;
   }
 
   // If 0 frames were decoded (either due to a non-fatal decode error or an
   // empty frame), forward the buffer metadata to the discard helper for
   // caching.
-  if (result.buffer.data.empty()) {
+  if (result.buffer.num_frames == 0) {
     const bool processed = discard_helper_->ProcessBuffers(
         AudioDiscardHelper::TimeInfo::FromBuffer(buffer), nullptr);
-    DCHECK(!processed);
+    CHECK(!processed);
     return DecoderStatus::Codes::kOk;
   }
   // Sanity check: if Symphonia thinks things are OK and returned a valid
@@ -463,15 +499,46 @@ DecoderStatus SymphoniaAudioDecoder::SymphoniaDecode(
   // stream.
   CHECK(!buffer.end_of_stream());
 
-  // TODO(crbug.com/40074653): similar to FFMPEG audio decoder, add support
-  // for midstream channel and sample rate changes.
+  const size_t raw_channels = result.buffer.channel_count;
+  const uint32_t raw_sample_rate = result.buffer.sample_rate;
+  const size_t raw_num_frames = result.buffer.num_frames;
+  const SampleFormat sample_format =
+      ToSampleFormat(result.buffer.sample_format);
+
+  if (!IsValidDecodedParameters(raw_channels, raw_sample_rate, raw_num_frames,
+                                sample_format)) {
+    MEDIA_LOG(ERROR, media_log_)
+        << "Invalid decoded buffer parameters: channels=" << raw_channels
+        << ", sample_rate=" << raw_sample_rate
+        << ", num_frames=" << raw_num_frames
+        << ", sample_format=" << SampleFormatToString(sample_format);
+    return DecoderStatus::Codes::kFailed;
+  }
+
+  const int channels = static_cast<int>(raw_channels);
+  const int sample_rate = static_cast<int>(raw_sample_rate);
+
+  const ChannelLayout channel_layout =
+      ResolveChannelLayout(config_.channel_layout(), config_.channels(),
+                           result.buffer.channel_mask, channels);
+  if (!IsValidChannelLayout(channel_layout, channels)) {
+    MEDIA_LOG(ERROR, media_log_)
+        << "Unsupported channel layout for " << channels << " channels.";
+    return DecoderStatus::Codes::kFailed;
+  }
+
+  MaybeUpdateConfig(buffer, sample_rate,
+                    ChannelLayoutConfig(channel_layout, channels));
 
   // Convert the Symphonia buffer to a media::AudioBuffer, using the original
   // timestamp.
   const base::TimeDelta timestamp = buffer.timestamp();
   scoped_refptr<AudioBuffer> decoded_audio =
-      ToMediaAudioBuffer(std::move(result.buffer), timestamp);
-  CHECK(decoded_audio);
+      ToMediaAudioBuffer(result.buffer, timestamp);
+  if (!decoded_audio) {
+    MEDIA_LOG(ERROR, media_log_) << "Failed to allocate decoded audio buffer.";
+    return DecoderStatus::Codes::kFailed;
+  }
 
   // Process potential discards.
   const bool processed = discard_helper_->ProcessBuffers(
@@ -488,27 +555,63 @@ DecoderStatus SymphoniaAudioDecoder::SymphoniaDecode(
 }
 
 scoped_refptr<AudioBuffer> SymphoniaAudioDecoder::ToMediaAudioBuffer(
-    SymphoniaAudioBuffer&& symphonia_buffer,
+    const SymphoniaAudioBuffer& symphonia_buffer,
     base::TimeDelta timestamp) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
   const SampleFormat sample_format =
       ToSampleFormat(symphonia_buffer.sample_format);
-  const int channel_count = symphonia_buffer.channel_count;
-  const int sample_rate = symphonia_buffer.sample_rate;
-  const int num_frames = symphonia_buffer.num_frames;
+  const int channel_count =
+      base::checked_cast<int>(symphonia_buffer.channel_count);
+  const int sample_rate = base::checked_cast<int>(symphonia_buffer.sample_rate);
+  const int num_frames = base::checked_cast<int>(symphonia_buffer.num_frames);
 
-  const bool count_changed = channel_count != config_.channels();
-  const auto layout = count_changed
-                          ? ChannelMaskToLayout(symphonia_buffer.channel_mask)
-                          : config_.channel_layout();
+  scoped_refptr<AudioBuffer> decoded_audio =
+      AudioBuffer::CreateBuffer(sample_format, config_.channel_layout(),
+                                channel_count, sample_rate, num_frames, pool_);
+  if (!decoded_audio) {
+    return nullptr;
+  }
 
-  auto external_memory =
-      std::make_unique<RustVecMemory>(std::move(symphonia_buffer.data));
+  if (IsPlanar(sample_format)) {
+    for (int ch = 0; ch < channel_count; ++ch) {
+      auto channel_span = decoded_audio->planar_channel(ch);
+      const bool copied = symphonia_decoder_.value()->copy_decoded_channel(
+          ch, rust::Slice<uint8_t>(channel_span.data(), channel_span.size()));
+      if (!copied) {
+        MEDIA_LOG(ERROR, media_log_)
+            << "Failed to copy planar decoded audio channel " << ch;
+        return nullptr;
+      }
+    }
+  } else {
+    auto data_span = decoded_audio->interleaved_data();
+    const bool copied = symphonia_decoder_.value()->copy_decoded_samples(
+        rust::Slice<uint8_t>(data_span.data(), data_span.size()));
+    if (!copied) {
+      MEDIA_LOG(ERROR, media_log_)
+          << "Failed to copy interleaved decoded audio samples";
+      return nullptr;
+    }
+  }
 
-  return AudioBuffer::CreateFromExternalMemory(
-      sample_format, layout, channel_count, sample_rate, num_frames, timestamp,
-      std::move(external_memory));
+  decoded_audio->set_timestamp(timestamp);
+  return decoded_audio;
+}
+
+// static
+SymphoniaPacket SymphoniaAudioDecoder::ToSymphoniaPacketForTesting(
+    const DecoderBuffer& buffer,
+    std::optional<base::TimeDelta> first_frame_timestamp) {
+  return ToSymphoniaPacket(buffer, first_frame_timestamp);
+}
+
+// static
+bool SymphoniaAudioDecoder::IsValidDecodedParametersForTesting(
+    size_t channels,
+    uint32_t sample_rate,
+    size_t num_frames,
+    SampleFormat sample_format) {
+  return IsValidDecodedParameters(channels, sample_rate, num_frames,
+                                  sample_format);
 }
 
 void SymphoniaAudioDecoder::ReleaseSymphoniaResources() {
@@ -543,6 +646,45 @@ DecoderStatus SymphoniaAudioDecoder::ConfigureDecoder(
   ResetTimestampState(config);
   symphonia_decoder_ = std::move(result.decoder);
   return DecoderStatus::Codes::kOk;
+}
+
+void SymphoniaAudioDecoder::MaybeUpdateConfig(
+    const DecoderBuffer& buffer,
+    int sample_rate,
+    const ChannelLayoutConfig& layout_config) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  const bool is_sample_rate_change =
+      sample_rate != config_.samples_per_second();
+  const bool is_config_change =
+      is_sample_rate_change || layout_config != config_.channel_layout_config();
+  if (!is_config_change) {
+    return;
+  }
+
+  MEDIA_LOG(DEBUG, media_log_)
+      << "Detected midstream configuration change"
+      << " PTS:" << buffer.timestamp().InMicroseconds()
+      << " Sample Rate: " << sample_rate << " vs "
+      << config_.samples_per_second() << ", ChannelLayout: "
+      << ChannelLayoutToString(layout_config.channel_layout()) << " vs "
+      << ChannelLayoutToString(config_.channel_layout())
+      << ", Channels: " << layout_config.channels() << " vs "
+      << config_.channels();
+
+  const bool should_discard_decoder_delay =
+      config_.should_discard_decoder_delay();
+  config_.Initialize(config_.codec(), config_.sample_format(), layout_config,
+                     sample_rate, config_.extra_data(),
+                     config_.encryption_scheme(), config_.seek_preroll(),
+                     config_.codec_delay());
+  if (!should_discard_decoder_delay) {
+    config_.disable_discard_decoder_delay();
+  }
+
+  if (is_sample_rate_change) {
+    ResetTimestampState(config_);
+  }
 }
 
 // The Symphonia audio decoder implementation currently needs the same discard

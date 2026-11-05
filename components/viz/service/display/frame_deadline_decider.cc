@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/metrics/histogram_macros.h"
+#include "base/rand_util.h"
 #include "base/trace_event/typed_macros.h"
 #include "base/tracing/protos/chrome_track_event.pbzero.h"
 #include "build/build_config.h"
@@ -70,10 +71,10 @@ FrameDeadlineDecider::QueryResult FrameDeadlineDecider::QueryDeadline(
     base::TimeTicks frame_time,
     std::optional<base::TimeTicks> earliest_input_time,
     bool is_handling_interaction) const {
-  CHECK(!possible_deadlines.deadlines.empty());
+  CHECK(!possible_deadlines.empty());
 
   if (use_platform_preferred_deadlines_) {
-    return {possible_deadlines.os_preferred_index,
+    return {possible_deadlines.os_preferred_index(),
             SelectionReason::kPlatformPreferred};
   }
 
@@ -127,22 +128,22 @@ FrameDeadlineDecider::QueryResult FrameDeadlineDecider::QueryDeadline(
   }
 
   auto it = std::upper_bound(
-      possible_deadlines.deadlines.begin(), possible_deadlines.deadlines.end(),
-      target_present_delta,
+      possible_deadlines.deadlines().begin(),
+      possible_deadlines.deadlines().end(), target_present_delta,
       [](base::TimeDelta target, const PossibleDeadline& deadline) {
         return target < deadline.present_delta;
       });
 
-  if (it != possible_deadlines.deadlines.begin()) {
+  if (it != possible_deadlines.deadlines().begin()) {
     --it;
   }
 
   const size_t chrome_preferred_index =
-      std::distance(possible_deadlines.deadlines.begin(), it);
+      std::distance(possible_deadlines.deadlines().begin(), it);
   const PossibleDeadline& chrome_preferred_deadline = *it;
 
   if (chrome_preferred_deadline.present_delta > target_present_delta) {
-    return {possible_deadlines.os_preferred_index,
+    return {possible_deadlines.os_preferred_index(),
             SelectionReason::kOsPreferredNoDeadlineWithinTarget};
   }
 
@@ -150,7 +151,7 @@ FrameDeadlineDecider::QueryResult FrameDeadlineDecider::QueryDeadline(
       possible_deadlines.GetOSPreferredDeadline().present_delta) {
     // Fallback to os preferred deadline instead of reducing the preferred
     // deadline. We are not sure if this would actually happen in field.
-    return {possible_deadlines.os_preferred_index,
+    return {possible_deadlines.os_preferred_index(),
             SelectionReason::kOsPreferredChromePreferredSooner};
   }
 
@@ -173,9 +174,7 @@ size_t FrameDeadlineDecider::SelectDeadline(
       QueryDeadline(possible_deadlines, vsync_interval, max_allowed_buffers,
                     frame_time, earliest_input_time, is_handling_interaction);
   const auto& selected_deadline =
-      possible_deadlines.deadlines[result.deadline_index];
-  UMA_HISTOGRAM_ENUMERATION("Viz.FrameDeadlineDecider.SelectionReason",
-                            result.reason);
+      possible_deadlines.GetDeadlineByIndex(result.deadline_index);
 
   const auto& os_preferred_deadline =
       possible_deadlines.GetOSPreferredDeadline();
@@ -187,8 +186,12 @@ size_t FrameDeadlineDecider::SelectDeadline(
       .last_frame_time = frame_time,
       .is_interaction_active = is_handling_interaction,
   };
-  RecordSelectedSustainableDeadlineHistogram(
-      selected_deadline.present_delta, vsync_interval, max_allowed_buffers);
+  if (base::ShouldRecordSubsampledMetric(0.01)) {
+    UMA_HISTOGRAM_ENUMERATION("Viz.FrameDeadlineDecider.SelectionReason2",
+                              result.reason);
+    RecordSelectedSustainableDeadlineHistogram(
+        selected_deadline.present_delta, vsync_interval, max_allowed_buffers);
+  }
   TRACE_EVENT_END(
       "toplevel,graphics.pipeline,viz", [&](perfetto::EventContext ctx) {
         auto* data = ctx.event<perfetto::protos::pbzero::ChromeTrackEvent>()
@@ -241,20 +244,21 @@ size_t FrameDeadlineDecider::SelectDeadlineOsPreferredLocking(
   // plus the sequence offset established on the first frame. This avoids
   // progressive deadline drift during VSync jitter while seamlessly adapting
   // across refresh rate changes.
-  const auto& os_preferred =
-      possible_deadlines.deadlines[possible_deadlines.os_preferred_index];
+  const auto& os_preferred = possible_deadlines.GetOSPreferredDeadline();
   const base::TimeDelta target_delta =
       os_preferred.present_delta + frame_sequence_state_->os_preferred_offset;
 
   // Fast path: if the cached deadline index from the previous frame is still
   // valid, sustainable, and within 1ms tolerance of target_delta, reuse it.
   const size_t cached_idx = frame_sequence_state_->deadline_index;
-  if (cached_idx < possible_deadlines.deadlines.size() &&
-      possible_deadlines.deadlines[cached_idx].present_delta <=
-          max_sustainable_delta &&
-      (possible_deadlines.deadlines[cached_idx].present_delta - target_delta)
-              .magnitude() <= base::Milliseconds(1)) {
-    return cached_idx;
+  if (cached_idx < possible_deadlines.size()) {
+    const base::TimeDelta cached_present_delta =
+        possible_deadlines.GetDeadlineByIndex(cached_idx).present_delta;
+    if (cached_present_delta <= max_sustainable_delta &&
+        (cached_present_delta - target_delta).magnitude() <=
+            base::Milliseconds(1)) {
+      return cached_idx;
+    }
   }
 
   std::optional<size_t> best_idx;
@@ -263,7 +267,7 @@ size_t FrameDeadlineDecider::SelectDeadlineOsPreferredLocking(
   // Deadlines from Android are guaranteed to be in strictly increasing
   // chronological order.
   size_t current_idx = 0;
-  for (const auto& deadline : possible_deadlines.deadlines) {
+  for (const auto& deadline : possible_deadlines.deadlines()) {
     const size_t idx = current_idx++;
     // Since deadlines are in strictly increasing order, all subsequent
     // candidates will also exceed max_sustainable_delta.
@@ -281,16 +285,15 @@ size_t FrameDeadlineDecider::SelectDeadlineOsPreferredLocking(
     best_idx = idx;
   }
 
-  return best_idx.value_or(possible_deadlines.os_preferred_index);
+  return best_idx.value_or(possible_deadlines.os_preferred_index());
 }
 
 size_t FrameDeadlineDecider::SelectDeadlinePresentationDeltaLocking(
     const PossibleDeadlines& possible_deadlines) const {
   // Check if the cached index is valid and within 1ms of target.
-  if (frame_sequence_state_->deadline_index <
-      possible_deadlines.deadlines.size()) {
-    const auto& cached_deadline =
-        possible_deadlines.deadlines[frame_sequence_state_->deadline_index];
+  if (frame_sequence_state_->deadline_index < possible_deadlines.size()) {
+    const auto& cached_deadline = possible_deadlines.GetDeadlineByIndex(
+        frame_sequence_state_->deadline_index);
     if ((cached_deadline.present_delta - frame_sequence_state_->present_delta)
             .magnitude() <= base::Milliseconds(1)) {
       return frame_sequence_state_->deadline_index;
@@ -301,14 +304,15 @@ size_t FrameDeadlineDecider::SelectDeadlinePresentationDeltaLocking(
   // previous frame in the sequence. Initializing the search with the 0th index
   // is perfectly fine for the baseline comparison.
   size_t best_index = 0;
-  base::TimeDelta min_diff = (possible_deadlines.deadlines[0].present_delta -
-                              frame_sequence_state_->present_delta)
-                                 .magnitude();
+  base::TimeDelta min_diff =
+      (possible_deadlines.GetDeadlineByIndex(0).present_delta -
+       frame_sequence_state_->present_delta)
+          .magnitude();
 
   // Possible deadlines are guaranteed to be in chronological order from
   // Android.
-  for (size_t i = 1; i < possible_deadlines.deadlines.size(); ++i) {
-    const auto& deadline = possible_deadlines.deadlines[i];
+  for (size_t i = 1; i < possible_deadlines.size(); ++i) {
+    const auto& deadline = possible_deadlines.GetDeadlineByIndex(i);
     base::TimeDelta diff =
         (deadline.present_delta - frame_sequence_state_->present_delta)
             .magnitude();
@@ -332,7 +336,7 @@ void FrameDeadlineDecider::RecordSelectedSustainableDeadlineHistogram(
   const base::TimeDelta max_sustainable_delta =
       (max_allowed_buffers * vsync_interval) + base::Milliseconds(1);
   const bool is_sustainable = selected_present_delta <= max_sustainable_delta;
-  UMA_HISTOGRAM_BOOLEAN("Viz.FrameDeadlineDecider.SelectedSustainableDeadline",
+  UMA_HISTOGRAM_BOOLEAN("Viz.FrameDeadlineDecider.SelectedSustainableDeadline2",
                         is_sustainable);
 }
 

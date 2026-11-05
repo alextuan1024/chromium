@@ -12,6 +12,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/raw_ref.h"
 #include "base/time/time.h"
+#include "chrome/browser/ui/extensions/search_override_stack.h"
 #include "chrome/browser/ui/extensions/settings_overridden_dialog_controller.h"
 #include "extensions/common/extension_id.h"
 
@@ -70,9 +71,9 @@ class ExtensionSettingsOverriddenDialog
     // show a survey for the specified trigger.
     std::optional<std::string> hats_survey_trigger;
 
-    // If set, the dialog will be shown repeatedly, until a choice is made.
-    // Otherwise, it will be shown only once per user session.
-    bool unlimited_shows = false;
+    // Set for search dialogs only. Recorded when the dialog is shown, and
+    // again with the user's choice.
+    std::optional<extensions::SearchOverrideStackInfo> search_override_stack;
   };
 
   ExtensionSettingsOverriddenDialog(Params params, Profile& profile);

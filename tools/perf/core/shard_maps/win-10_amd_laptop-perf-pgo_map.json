@@ -1,20 +1,12 @@
 {
     "0": {
-        "benchmarks": {
-            "jetstream2": {
-                "abridged": false
-            }
-        }
+        "benchmarks": {}
     },
     "1": {
         "benchmarks": {}
     },
     "2": {
-        "benchmarks": {
-            "speedometer2": {
-                "abridged": false
-            }
-        }
+        "benchmarks": {}
     },
     "extra_infos": {
         "num_stories": 3,

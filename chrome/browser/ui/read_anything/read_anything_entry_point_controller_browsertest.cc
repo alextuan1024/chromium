@@ -5,14 +5,10 @@
 #include "chrome/browser/ui/read_anything/read_anything_entry_point_controller.h"
 
 #include "base/command_line.h"
-#include "base/metrics/histogram_base.h"
-#include "base/scoped_observation.h"
-#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
-#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
@@ -31,20 +27,21 @@
 #include "chrome/browser/ui/side_panel/side_panel_action_callback.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/user_education/interactive_feature_promo_test.h"
+#include "chrome/test/user_education/mock_browser_user_education_interface.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/prefs/pref_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "url/url_constants.h"
 
@@ -91,10 +88,8 @@ class ReadAnythingEntryPointControllerTestBase
   }
 
   void RegisterPageActionObserver() {
-    auto* page_action_controller = browser()
-                                       ->GetActiveTabInterface()
-                                       ->GetTabFeatures()
-                                       ->page_action_controller();
+    auto* page_action_controller = page_actions::PageActionController::From(
+        browser()->GetActiveTabInterface());
     CHECK(page_action_controller);
     RegisterAsPageActionObserver(*page_action_controller);
   }
@@ -168,6 +163,63 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingEntryPointControllerBrowserTest,
   histogram_tester.ExpectUniqueSample(
       "Accessibility.ReadAnything.ShowTriggered",
       ReadAnythingOpenTrigger::kReadAnythingContextMenu, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingEntryPointControllerBrowserTest,
+                       ShowUIInSidePanel) {
+  base::HistogramTester histogram_tester;
+  auto* controller =
+      ReadAnythingController::From(browser()->GetActiveTabInterface());
+  ASSERT_TRUE(controller);
+
+  // Reading Mode opens in the immersive overlay by default, but kSidePanel
+  // opens it in the side panel.
+  ReadAnythingEntryPointController::ShowUI(
+      browser(), ReadAnythingOpenTrigger::kAppMenu,
+      ReadAnythingEntryPointController::Presentation::kSidePanel);
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return SidePanelUI::From(browser())->IsSidePanelEntryShowing(
+        SidePanelEntryKey(SidePanelEntryId::kReadAnything));
+  }));
+  EXPECT_EQ(controller->GetPresentationState(),
+            ReadAnythingController::PresentationState::kInSidePanel);
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.ShowTriggered",
+      ReadAnythingOpenTrigger::kAppMenu, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingEntryPointControllerBrowserTest,
+                       ShowUIInSidePanelFromImmersiveOverlay) {
+  base::HistogramTester histogram_tester;
+  auto* controller =
+      ReadAnythingController::From(browser()->GetActiveTabInterface());
+  ASSERT_TRUE(controller);
+  ReadAnythingEntryPointController::ShowUI(browser(),
+                                           ReadAnythingOpenTrigger::kAppMenu);
+  VerifyUIState();
+
+  // Reading Mode moves from the immersive overlay to the side panel. It was
+  // already open, so this isn't recorded as another open.
+  ReadAnythingEntryPointController::ShowUI(
+      browser(), ReadAnythingOpenTrigger::kReadAnythingContextMenu,
+      ReadAnythingEntryPointController::Presentation::kSidePanel);
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return SidePanelUI::From(browser())->IsSidePanelEntryShowing(
+        SidePanelEntryKey(SidePanelEntryId::kReadAnything));
+  }));
+  EXPECT_EQ(controller->GetPresentationState(),
+            ReadAnythingController::PresentationState::kInSidePanel);
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.ReadAnything.ShowTriggered",
+      ReadAnythingOpenTrigger::kAppMenu, 1);
+
+  // The immersive overlay was closed and handed its WebUI to the side panel,
+  // so Reading Mode can move back to the immersive overlay. This is checked
+  // right away because the page has no content, so Reading Mode moves itself
+  // to the side panel once it finishes distilling the page.
+  ReadAnythingEntryPointController::ShowUI(browser(),
+                                           ReadAnythingOpenTrigger::kAppMenu);
+  VerifyUIState();
 }
 
 class ReadAnythingEntryPointControllerOmniboxDisabledBrowserTest
@@ -785,7 +837,7 @@ IN_PROC_BROWSER_TEST_F(
     CheckIfShouldSuggestReadingMode_AutomationEnabledIsNotCandidate) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
-      embedded_test_server()->GetURL("/dom_distiller/simple_article.html")));
+      embedded_test_server()->GetURL("/web_distiller/simple_article.html")));
 
   bool is_good_candidate = true;
   base::RunLoop run_loop;
@@ -801,4 +853,57 @@ IN_PROC_BROWSER_TEST_F(
   run_loop.Run();
 
   EXPECT_FALSE(is_good_candidate);
+}
+
+class ReadAnythingEntryPointControllerUserEducationBrowserTest
+    : public ReadAnythingEntryPointControllerTestBase {
+ public:
+  void SetUpInProcessBrowserTestFixture() override {
+    ReadAnythingEntryPointControllerTestBase::
+        SetUpInProcessBrowserTestFixture();
+    user_ed_override_ =
+        BrowserWindowFeatures::GetUserDataFactoryForTesting()
+            .AddOverrideForTesting(
+                base::BindRepeating([](BrowserWindowInterface& window) {
+                  return std::make_unique<
+                      testing::NiceMock<MockBrowserUserEducationInterface>>(
+                      &window);
+                }));
+  }
+
+  MockBrowserUserEducationInterface* mock_user_education_interface() {
+    return static_cast<MockBrowserUserEducationInterface*>(
+        BrowserUserEducationInterface::From(browser()));
+  }
+
+ private:
+  ui::UserDataFactory::ScopedOverride user_ed_override_;
+};
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingEntryPointControllerUserEducationBrowserTest,
+                       ToggleUI_KeyboardShortcutNotifiesFeatureUsed) {
+  EXPECT_CALL(
+      *mock_user_education_interface(),
+      NotifyFeaturePromoFeatureUsed(
+          testing::Ref(
+              feature_engagement::kIPHReadingModeKeyboardShortcutFeature),
+          FeaturePromoFeatureUsedAction::kClosePromoIfPresent))
+      .Times(0);
+  ReadAnythingEntryPointController::ToggleUI(
+      browser(), ReadAnythingOpenTrigger::kOmniboxChip);
+  testing::Mock::VerifyAndClearExpectations(mock_user_education_interface());
+
+  EXPECT_CALL(
+      *mock_user_education_interface(),
+      NotifyFeaturePromoFeatureUsed(
+          testing::Ref(
+              feature_engagement::kIPHReadingModeKeyboardShortcutFeature),
+          FeaturePromoFeatureUsedAction::kClosePromoIfPresent))
+      .Times(2);
+  // Closes Reading Mode.
+  ReadAnythingEntryPointController::ToggleUI(
+      browser(), ReadAnythingOpenTrigger::kKeyboardShortcut);
+  // Opens Reading Mode.
+  ReadAnythingEntryPointController::ToggleUI(
+      browser(), ReadAnythingOpenTrigger::kKeyboardShortcut);
 }

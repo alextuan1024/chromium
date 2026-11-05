@@ -10,12 +10,16 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/check_deref.h"
+#include "base/containers/linear_find.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/notimplemented.h"
+#include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/timer/timer.h"
@@ -30,7 +34,6 @@
 #include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
 #include "chrome/browser/password_manager/password_change_service_factory.h"
 #include "chrome/browser/signin/signin_promo_util.h"
-#include "chrome/browser/sync/sync_ui_util.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/bubble_manager.h"
 #include "chrome/browser/ui/browser_actions.h"
@@ -56,7 +59,6 @@
 #include "chrome/browser/ui/simple_message_box.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/tab_dialogs.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -84,9 +86,12 @@
 #include "components/password_manager/core/browser/password_manager_constants.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
+#include "components/password_manager/core/browser/password_store/actionable_error.h"
 #include "components/password_manager/core/browser/password_store/interactions_stats.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_store/password_store_util.h"
 #include "components/password_manager/core/browser/password_string.h"
+#include "components/password_manager/core/browser/password_sync_util.h"
 #include "components/password_manager/core/browser/password_ui_utils.h"
 #include "components/password_manager/core/browser/ui/password_check_referrer.h"
 #include "components/password_manager/core/browser/undo_password_change_controller.h"
@@ -98,7 +103,9 @@
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/sync/service/sync_service.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/trusted_vault/trusted_vault_client.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
@@ -114,6 +121,9 @@
 
 using password_manager::MovePasswordToAccountStoreHelper;
 using password_manager::PasswordFormManagerForUI;
+using ::password_manager::metrics_util::SaveWithTrustedVaultErrorOutcome;
+
+DEFINE_USER_DATA(ManagePasswordsUIController);
 
 int ManagePasswordsUIController::save_fallback_timeout_in_seconds_ = 90;
 
@@ -163,9 +173,8 @@ std::vector<std::unique_ptr<password_manager::PasswordForm>> CopyFormVector(
 const password_manager::InteractionsStats* FindStatsByUsername(
     base::span<const password_manager::InteractionsStats> stats,
     const std::u16string& username) {
-  auto it = std::ranges::find(
-      stats, username, &password_manager::InteractionsStats::username_value);
-  return it == stats.end() ? nullptr : &*it;
+  return base::LinearFind(stats, username,
+                          &password_manager::InteractionsStats::username_value);
 }
 
 void MaybeShowPasswordManagerShortcutIPH(BrowserWindowInterface* browser) {
@@ -175,6 +184,30 @@ void MaybeShowPasswordManagerShortcutIPH(BrowserWindowInterface* browser) {
   }
   BrowserUserEducationInterface::From(browser)->MaybeShowFeaturePromo(
       feature_engagement::kIPHPasswordManagerShortcutFeature);
+}
+
+void MaybeLogErrorResolutionSaveOutcome(
+    std::optional<password_manager::ActionableError> pending_error,
+    SaveWithTrustedVaultErrorOutcome outcome) {
+  if (!pending_error) {
+    return;
+  }
+  switch (*pending_error) {
+    case password_manager::ActionableError::kTrustedVaultKeyNeeded:
+      password_manager::metrics_util::LogSaveWithTrustedVaultErrorOutcome(
+          outcome);
+      return;
+    case password_manager::ActionableError::kNeedsPassphrase:
+      password_manager::metrics_util::LogSaveWithCustomPassphraseErrorOutcome(
+          outcome);
+      return;
+    case password_manager::ActionableError::kNoError:
+    case password_manager::ActionableError::kInactionable:
+    case password_manager::ActionableError::kInactionableTemporaryError:
+    case password_manager::ActionableError::kSignInNeeded:
+    case password_manager::ActionableError::kKeychainError:
+      NOTREACHED();
+  }
 }
 
 std::optional<password_manager::BrowserSavePasswordProgressLogger>
@@ -192,12 +225,25 @@ GetSaveProgressLogger(password_manager::PasswordManagerClient* client) {
       password_manager::BrowserSavePasswordProgressLogger>(log_manager);
 }
 
+// Returns the browser window hosting `web_contents`, or nullptr if the
+// contents are not attached to a tab/window (e.g. in unit tests).
+BrowserWindowInterface* GetBrowserWindowInterface(
+    const content::WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+  tabs::TabInterface* const tab = tabs::TabInterface::MaybeGetFromContents(
+      const_cast<content::WebContents*>(web_contents));
+  return tab ? tab->GetBrowserWindowInterface() : nullptr;
+}
+
 }  // namespace
 
 ManagePasswordsUIController::ManagePasswordsUIController(
+    tabs::TabInterface& tab,
     content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<ManagePasswordsUIController>(*web_contents) {
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
   passwords_data_.set_client(
       ChromePasswordManagerClient::FromWebContents(web_contents));
   password_manager::PasswordStoreInterface* profile_password_store =
@@ -210,13 +256,41 @@ ManagePasswordsUIController::ManagePasswordsUIController(
   if (account_password_store) {
     account_password_store->AddObserver(this);
   }
+  tab_will_detach_subscription_ = tab.RegisterWillDetach(base::BindRepeating(
+      [](ManagePasswordsUIController* controller, tabs::TabInterface* tab,
+         tabs::TabInterface::DetachReason reason) {
+        if (reason == tabs::TabInterface::DetachReason::kDelete) {
+          controller->Cleanup();
+        }
+      },
+      base::Unretained(this)));
 }
 
-ManagePasswordsUIController::~ManagePasswordsUIController() = default;
+ManagePasswordsUIController::~ManagePasswordsUIController() {
+  Cleanup();
+}
+
+// static
+ManagePasswordsUIController* ManagePasswordsUIController::From(
+    tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+// static
+ManagePasswordsUIController* ManagePasswordsUIController::FromWebContents(
+    content::WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+  tabs::TabInterface* tab = tabs::TabInterface::MaybeGetFromContents(
+      const_cast<content::WebContents*>(web_contents));
+  return From(tab);
+}
 
 void ManagePasswordsUIController::OnPasswordSubmitted(
     std::unique_ptr<PasswordFormManagerForUI> form_manager) {
-  save_password_after_trusted_vault_error_resolution_ = false;
+  ResetAutoSaveAfterErrorResolution(
+      SaveWithTrustedVaultErrorOutcome::kErrorResolutionAbandoned);
   bool password_change_ongoing = IsPasswordChangeOngoing();
 
   if (!password_change_ongoing) {
@@ -255,7 +329,8 @@ void ManagePasswordsUIController::OnPasswordSubmitted(
 
 void ManagePasswordsUIController::OnUpdatePasswordSubmitted(
     std::unique_ptr<PasswordFormManagerForUI> form_manager) {
-  save_password_after_trusted_vault_error_resolution_ = false;
+  ResetAutoSaveAfterErrorResolution(
+      SaveWithTrustedVaultErrorOutcome::kErrorResolutionAbandoned);
   DestroyPopups();
   save_fallback_timer_.Stop();
   passwords_data_.OnUpdatePassword(std::move(form_manager));
@@ -274,6 +349,8 @@ void ManagePasswordsUIController::OnShowManualFallbackForSaving(
     std::unique_ptr<PasswordFormManagerForUI> form_manager,
     bool has_generated_password,
     bool is_update) {
+  ResetAutoSaveAfterErrorResolution(
+      SaveWithTrustedVaultErrorOutcome::kErrorResolutionAbandoned);
   DestroyPopups();
   if (has_generated_password) {
     passwords_data_.OnAutomaticPasswordSave(std::move(form_manager));
@@ -342,7 +419,7 @@ bool ManagePasswordsUIController::OnChooseCredentials(
         local_credentials,
     const url::Origin& origin,
     ManagePasswordsState::CredentialsCallback callback) {
-  DCHECK(!local_credentials.empty());
+  CHECK(!local_credentials.empty(), base::NotFatalUntil::M162);
   if (!HasBrowserWindow()) {
     return false;
   }
@@ -371,7 +448,7 @@ bool ManagePasswordsUIController::OnChooseCredentials(
 void ManagePasswordsUIController::OnAutoSignin(
     std::vector<std::unique_ptr<password_manager::PasswordForm>> local_forms,
     const url::Origin& origin) {
-  DCHECK(!local_forms.empty());
+  CHECK(!local_forms.empty(), base::NotFatalUntil::M162);
   DestroyPopups();
   passwords_data_.OnAutoSignin(std::move(local_forms), origin);
   if (base::FeatureList::IsEnabled(
@@ -421,7 +498,8 @@ void ManagePasswordsUIController::OnPromptEnableAutoSignin() {
 void ManagePasswordsUIController::OnAutomaticPasswordSave(
     std::unique_ptr<PasswordFormManagerForUI> form_manager,
     bool is_update_confirmation) {
-  save_password_after_trusted_vault_error_resolution_ = false;
+  ResetAutoSaveAfterErrorResolution(
+      SaveWithTrustedVaultErrorOutcome::kErrorResolutionAbandoned);
   DestroyPopups();
   save_fallback_timer_.Stop();
   auto ui_state =
@@ -531,8 +609,8 @@ void ManagePasswordsUIController::OnCredentialLeak(
         "PasswordManager.PasswordChange.UserHasPasswordSavedOnAPCLaunch",
         !GetCurrentForms().empty());
 
-    password_change_service->OfferPasswordChangeUi(
-        std::move(details.credentials), web_contents());
+    password_change_service->OfferPasswordChangeUi(std::move(details),
+                                                   web_contents());
     UpdateBubbleAndIconVisibility();
     return;
   }
@@ -555,6 +633,7 @@ void ManagePasswordsUIController::OnShowMoveToAccountBubble(
       "PasswordManager.AccountStorage.MoveToAccountStoreFlowOffered",
       password_manager::metrics_util::MoveToAccountStoreTrigger::
           kSuccessfulLoginWithProfileStorePassword);
+  DestroyPopups();
   passwords_data_.OnPasswordMovable(std::move(form_to_move));
   // TODO(crbug.com/40138077): Add smartness like OnPasswordSubmitted?
   bubble_status_ = BubbleStatus::SHOULD_POP_UP;
@@ -752,13 +831,7 @@ ManagePasswordsUIController::GetPasswordFeatureManager() {
 }
 
 password_manager::ui::State ManagePasswordsUIController::GetState() const {
-  PasswordChangeDelegate* delegate = GetPasswordChangeDelegate();
-  if (delegate) {
-    if (delegate->GetCurrentState() ==
-        PasswordChangeDelegate::State::kPasswordSuccessfullyChanged) {
-      // Prevent any UI being displayed instead of the password change bubble.
-      return password_manager::ui::State::PASSWORD_CHANGE_STATE;
-    }
+  if (IsPasswordChangeOngoing()) {
     // Prevent any UI being displayed during ongoing password change flow.
     return password_manager::ui::State::INACTIVE_STATE;
   }
@@ -821,8 +894,9 @@ ManagePasswordsUIController::GetCurrentInteractionStats() const {
 }
 
 size_t ManagePasswordsUIController::GetTotalNumberCompromisedPasswords() const {
-  DCHECK(GetState() == password_manager::ui::PASSWORD_UPDATED_SAFE_STATE ||
-         GetState() == password_manager::ui::PASSWORD_UPDATED_MORE_TO_FIX);
+  CHECK(GetState() == password_manager::ui::PASSWORD_UPDATED_SAFE_STATE ||
+            GetState() == password_manager::ui::PASSWORD_UPDATED_MORE_TO_FIX,
+        base::NotFatalUntil::M162);
   return post_save_compromised_helper_->compromised_count();
 }
 
@@ -871,7 +945,6 @@ void ManagePasswordsUIController::OnBubbleHidden() {
   } else if (GetState() ==
              password_manager::ui::MOVE_CREDENTIAL_FROM_MANAGE_BUBBLE_STATE) {
     passwords_data_.TransitionToState(password_manager::ui::MANAGE_STATE);
-    passwords_data_.clear_selected_password();
     update_icon = true;
   } else if (GetState() == password_manager::ui::MANAGE_STATE &&
              passwords_data_.single_credential_mode_credential().has_value()) {
@@ -908,19 +981,22 @@ void ManagePasswordsUIController::OnNoInteraction() {
       GetState() == password_manager::ui::PENDING_PASSWORD_UPDATE_STATE;
   password_manager::PasswordFormManagerForUI* form_manager =
       passwords_data_.form_manager();
-  DCHECK(form_manager);
+  CHECK(form_manager, base::NotFatalUntil::M162);
   form_manager->OnNoInteraction(is_update);
 }
 
 void ManagePasswordsUIController::OnNopeUpdateClicked() {
   password_manager::PasswordFormManagerForUI* form_manager =
       passwords_data_.form_manager();
-  DCHECK(form_manager);
+  CHECK(form_manager, base::NotFatalUntil::M162);
   form_manager->OnNopeUpdateClicked();
 }
 
 void ManagePasswordsUIController::NeverSavePassword() {
-  DCHECK_EQ(password_manager::ui::PENDING_PASSWORD_STATE, GetState());
+  CHECK_EQ(password_manager::ui::PENDING_PASSWORD_STATE, GetState(),
+           base::NotFatalUntil::M162);
+  ResetAutoSaveAfterErrorResolution(
+      SaveWithTrustedVaultErrorOutcome::kNeverForThisSite);
   passwords_data_.form_manager()->OnNeverClicked();
   ClearPopUpFlagForBubble();
   if (passwords_data_.GetCurrentForms().empty()) {
@@ -932,13 +1008,14 @@ void ManagePasswordsUIController::NeverSavePassword() {
 }
 
 void ManagePasswordsUIController::OnNotNowClicked() {
-  DCHECK_EQ(password_manager::ui::PENDING_PASSWORD_STATE, GetState());
+  CHECK_EQ(password_manager::ui::PENDING_PASSWORD_STATE, GetState(),
+           base::NotFatalUntil::M162);
   // Treat this identically to dismissing via the X button.
   OnNoInteraction();
 }
 
 void ManagePasswordsUIController::OnPasswordsRevealed() {
-  DCHECK(passwords_data_.form_manager());
+  CHECK(passwords_data_.form_manager(), base::NotFatalUntil::M162);
   passwords_data_.form_manager()->OnPasswordsRevealed();
 }
 
@@ -971,7 +1048,10 @@ void ManagePasswordsUIController::SavePassword(
   }
   UpdatePasswordFormUsernameAndPassword(username, password,
                                         passwords_data_.form_manager());
+  SavePendingPassword();
+}
 
+void ManagePasswordsUIController::SavePendingPassword() {
   if (auto* sentiment_service =
           TrustSafetySentimentServiceFactory::GetForProfile(
               Profile::FromBrowserContext(
@@ -1000,7 +1080,10 @@ void ManagePasswordsUIController::SavePassword(
 
   post_save_compromised_helper_ =
       std::make_unique<password_manager::PostSaveCompromisedHelper>(
-          passwords_data_.form_manager()->GetInsecureCredentials(), username);
+          passwords_data_.form_manager()->GetInsecureCredentials(),
+          passwords_data_.form_manager()
+              ->GetPendingCredentials()
+              .username_value);
   post_save_compromised_helper_->AnalyzeLeakedCredentials(
       passwords_data_.client()->GetProfilePasswordStore(),
       passwords_data_.client()->GetAccountPasswordStore(),
@@ -1241,6 +1324,13 @@ void ManagePasswordsUIController::UpdateBubbleAndIconVisibility() {
     ClearPopUpFlagForBubble();
   }
 
+  // If another browser window owns the global password bubble while this tab's
+  // window is inactive, suppress automatic popups before `UpdateVisibility()`
+  // runs so the omnibox icon keeps its tooltip and accessible name.
+  if (IsBlockedByOtherWindowBubble()) {
+    ClearPopUpFlagForBubble();
+  }
+
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
           web_contents());
@@ -1254,18 +1344,13 @@ void ManagePasswordsUIController::UpdateBubbleAndIconVisibility() {
   if (!tab_interface) {
     return;
   }
-  tabs::TabFeatures* const tab_features = tab_interface->GetTabFeatures();
-  // During tab teardown, TabFeatures is destroyed before WebContents.
-  // Destroying other tab features (like ReadAnything) can trigger
-  // visibility changes on the WebContents, which calls this method
-  // when TabFeatures is already gone.
-  if (!tab_features) {
-    return;
-  }
   // Retrieve the controller responsible for managing the page action's
   // visibility and state.
   ManagePasswordsPageActionController* const controller =
-      tab_features->manage_passwords_page_action_controller();
+      ManagePasswordsPageActionController::From(tab_interface);
+  if (!controller) {
+    return;
+  }
   // Get the action item associated with the passwords UI.
   actions::ActionItem* passwords_action_item =
       actions::ActionManager::Get().FindAction(
@@ -1278,10 +1363,12 @@ void ManagePasswordsUIController::UpdatePasswordIconAndBubbleState(
     ManagePasswordsPageActionController* controller,
     actions::ActionItem* passwords_action_item) {
   password_manager::ui::State state = GetState();
-  // If the UI state has changed since the last update,
-  // close the current bubble to ensure that the UI reflects the new state.
+  // `ManagePasswordsUIController` is per-tab, whereas `PasswordBubbleViewBase`
+  // maintains a single process-global bubble across all tabs and windows. Only
+  // close the bubble on a state transition if it belongs to this tab, so
+  // background tab updates do not dismiss another tab's or window's bubble.
   if (state != last_page_action_state_) {
-    PasswordBubbleViewBase::CloseCurrentBubble();
+    CloseBubbleIfOwnedByThisTab();
   }
   // Update the last known state.
   last_page_action_state_ = state;
@@ -1310,7 +1397,11 @@ void ManagePasswordsUIController::UpdatePasswordIconAndBubbleState(
   controller->UpdateVisibility(state, *this, *passwords_action_item);
 
   if (show_bubble) {
-    PasswordBubbleViewBase::CloseCurrentBubble();
+    // Only close an existing bubble if this tab owns it; if a background tab
+    // transitions into an auto-pop-up state (`show_bubble == true`), its
+    // request will be queued by `BubbleManager` and must not dismiss the active
+    // tab's open bubble first.
+    CloseBubbleIfOwnedByThisTab();
     // This will detach any existing bubble so OnBubbleHidden() isn't called.
     weak_ptr_factory_.InvalidateWeakPtrs();
     QueueOrShowBubble(/*user_action=*/false);
@@ -1376,7 +1467,8 @@ void ManagePasswordsUIController::PrimaryPageChanged(content::Page& page) {
   }
 
   // Otherwise, reset the password manager.
-  save_password_after_trusted_vault_error_resolution_ = false;
+  ResetAutoSaveAfterErrorResolution(
+      SaveWithTrustedVaultErrorOutcome::kErrorResolutionAbandoned);
   DestroyPopups();
   ClearPopUpFlagForBubble();
   passwords_data_.OnInactive();
@@ -1398,17 +1490,6 @@ void ManagePasswordsUIController::OnVisibilityChanged(
 
 bool ManagePasswordsUIController::ShouldReshowOnTabVisible() const {
   return false;
-}
-
-PasswordChangeDelegate* ManagePasswordsUIController::GetPasswordChangeDelegate()
-    const {
-  ChromePasswordChangeService* password_change_service =
-      PasswordChangeServiceFactory::GetForProfile(
-          Profile::FromBrowserContext(web_contents()->GetBrowserContext()));
-  if (!password_change_service) {
-    return nullptr;
-  }
-  return password_change_service->GetPasswordChangeDelegate(web_contents());
 }
 
 PasswordsLeakDialogDelegate*
@@ -1443,6 +1524,41 @@ void ManagePasswordsUIController::ClearPopUpFlagForBubble() {
   }
 }
 
+void ManagePasswordsUIController::CloseBubbleIfOwnedByThisTab() {
+  // `PasswordBubbleViewBase::manage_password_bubble()` is a single
+  // process-global instance shared across all tabs and browser windows. Verify
+  // `GetWebContents()` ownership before closing so state updates on background
+  // tabs do not dismiss an active bubble elsewhere (or record spurious bubble
+  // dismissals).
+  const PasswordBubbleViewBase* bubble =
+      PasswordBubbleViewBase::manage_password_bubble();
+  if (bubble && bubble->GetWebContents() == web_contents()) {
+    PasswordBubbleViewBase::CloseCurrentBubble();
+  }
+}
+
+bool ManagePasswordsUIController::IsBlockedByOtherWindowBubble() const {
+  const PasswordBubbleViewBase* bubble =
+      PasswordBubbleViewBase::manage_password_bubble();
+  if (!bubble || !bubble->GetWebContents() ||
+      bubble->GetWebContents() == web_contents()) {
+    return false;
+  }
+  // `TabInterface::IsActivated()` is true for the selected tab of *every*
+  // browser window, even unfocused ones, so `BubbleManagerImpl` does not queue
+  // requests on the selected tab of a background window. Block replacement when
+  // the global bubble belongs to a different browser window and this tab's
+  // window is inactive.
+  BrowserWindowInterface* const this_browser =
+      GetBrowserWindowInterface(web_contents());
+  BrowserWindowInterface* const bubble_browser =
+      GetBrowserWindowInterface(bubble->GetWebContents());
+  if (!this_browser || !bubble_browser || this_browser == bubble_browser) {
+    return false;
+  }
+  return !this_browser->IsActive();
+}
+
 void ManagePasswordsUIController::DestroyPopups() {
   HideBubble(/*initiated_by_bubble_manager=*/false);
   if (dialog_controller_ && dialog_controller_->IsShowingAccountChooser()) {
@@ -1452,6 +1568,15 @@ void ManagePasswordsUIController::DestroyPopups() {
 }
 
 void ManagePasswordsUIController::WebContentsDestroyed() {
+  Cleanup();
+}
+
+void ManagePasswordsUIController::Cleanup() {
+  ResetAutoSaveAfterErrorResolution(
+      SaveWithTrustedVaultErrorOutcome::kTabDestroyed);
+  if (!web_contents()) {
+    return;
+  }
   password_manager::PasswordStoreInterface* profile_password_store =
       GetProfilePasswordStore(web_contents());
   if (profile_password_store) {
@@ -1462,9 +1587,10 @@ void ManagePasswordsUIController::WebContentsDestroyed() {
   if (account_password_store) {
     account_password_store->RemoveObserver(this);
   }
+  dialog_controller_.reset();
+  auto_signin_toast_delegate_.reset();
   HideBubble(/*initiated_by_bubble_manager=*/false);
-  web_contents()->RemoveUserData(UserDataKey());
-  // `this` is now destroyed - do not add code here.
+  Observe(nullptr);
 }
 
 void ManagePasswordsUIController::OnTriggerPostSaveCompromisedBubble(
@@ -1520,7 +1646,9 @@ bool ManagePasswordsUIController::IsPendingPasswordPhished() const {
 }
 
 bool ManagePasswordsUIController::IsPasswordChangeOngoing() const {
-  return GetPasswordChangeDelegate();
+  auto* password_change_service = GetPasswordChangeService(web_contents());
+  return password_change_service &&
+         password_change_service->GetPasswordChangeDelegate(web_contents());
 }
 
 bool ManagePasswordsUIController::BubbleManagerHasPasswordBubbleInQueue()
@@ -1534,6 +1662,20 @@ bool ManagePasswordsUIController::BubbleManagerHasPasswordBubbleInQueue()
 }
 
 void ManagePasswordsUIController::ShowBubble() {
+  // Suppress automatic (`!user_action_`) bubbles if `BubbleManager` dequeues a
+  // pending request in an unfocused window while another window owns the global
+  // password bubble; explicit user clicks still open the bubble. Clear
+  // `active_bubble_controller_` via `OnBubbleHiddenByController()` and refresh
+  // icon visibility so neither `BubbleManager` nor the omnibox tooltip stays in
+  // an opening state.
+  if (!user_action_ && IsBlockedByOtherWindowBubble()) {
+    if (auto* manager =
+            autofill::BubbleManager::GetForWebContents(web_contents())) {
+      manager->OnBubbleHiddenByController(*this, /*show_next_bubble=*/false);
+    }
+    UpdateBubbleAndIconVisibility();
+    return;
+  }
   if (TabDialogs* tab_dialogs = TabDialogs::FromWebContents(web_contents())) {
     tab_dialogs->ShowManagePasswordsBubble(user_action_);
   }
@@ -1577,67 +1719,135 @@ bool ManagePasswordsUIController::IsMouseHovered() const {
   return is_mouse_hovered_;
 }
 
-void ManagePasswordsUIController::StartTrustedVaultErrorResolutionFlow() {
-  BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
-          web_contents());
-  OpenTabForSyncKeyRetrieval(
-      browser,
-      trusted_vault::TrustedVaultUserActionTriggerForUMA::kPasswordSavePrompt);
+void ManagePasswordsUIController::StartErrorResolutionFlow(
+    password_manager::ActionableError error) {
+  switch (error) {
+    case password_manager::ActionableError::kTrustedVaultKeyNeeded:
+      CHECK_DEREF(passwords_data_.client())
+          .StartTrustedVaultKeyRetrieval(
+              trusted_vault::TrustedVaultUserActionTriggerForUMA::
+                  kPasswordSavePrompt);
+      break;
+    case password_manager::ActionableError::kNeedsPassphrase:
+      CHECK_DEREF(passwords_data_.client()).StartSyncPassphraseDecryption();
+      break;
+    case password_manager::ActionableError::kNoError:
+    case password_manager::ActionableError::kInactionable:
+    case password_manager::ActionableError::kInactionableTemporaryError:
+    case password_manager::ActionableError::kSignInNeeded:
+    case password_manager::ActionableError::kKeychainError:
+      // These error values do not have an in-context resolution flow; kept as
+      // a defensive no-op.
+      break;
+  }
 }
 
-void ManagePasswordsUIController::
-    SavePasswordAfterTrustedVaultErrorResolution() {
-  if (IsSavingBlockedByTrustedVaultError()) {
+void ManagePasswordsUIController::SavePasswordAfterErrorResolution(
+    const std::u16string& username,
+    const password_manager::PasswordString& password) {
+  UpdatePasswordFormUsernameAndPassword(username, password,
+                                        passwords_data_.form_manager());
+  const std::optional<password_manager::ActionableError> error =
+      GetRecoverableErrorBlockingSaving();
+  if (error.has_value()) {
     // Defer saving the password until the password store error is fixed.
-    save_password_after_trusted_vault_error_resolution_ = true;
+    const syncer::SyncService* sync_service =
+        passwords_data_.client()->GetSyncService();
+    CHECK(sync_service);
+    pending_auto_save_error_ = *error;
+    account_id_for_error_resolution_ =
+        sync_service->GetAccountInfo().account_id;
     return;
   }
-  // No trusted vault errors, so we can save the password immediately.
-  save_password_after_trusted_vault_error_resolution_ = false;
-  if (PasswordFormManagerForUI* form_manager = passwords_data_.form_manager()) {
-    password_manager::PasswordForm pending_credentials =
-        form_manager->GetPendingCredentials();
-    SavePassword(pending_credentials.username_value,
-                 pending_credentials.password_value);
-    // SavePassword() sets bubble_status_ to SHOWN_PENDING_ICON_UPDATE.
-    // However, since the bubble was already closed when we started the error
-    // resolution flow, we must reset it to NOT_SHOWN.
+
+  // No blocking errors, so we can save the password immediately.
+  // TODO(crbug.com/574043872): Investigate whether the error blocking saving
+  // can change during recovery in practice, and whether that case needs
+  // handling beyond hiding the bubble.
+  CompleteSavePasswordAfterErrorResolution();
+}
+
+void ManagePasswordsUIController::CompleteSavePasswordAfterErrorResolution() {
+  if (pending_auto_save_error_.has_value() &&
+      !IsAutoSaveAfterErrorResolutionValid()) {
+    ResetAutoSaveAfterErrorResolution(
+        SaveWithTrustedVaultErrorOutcome::kErrorResolutionAbandoned);
+    if (IsShowingBubble()) {
+      HideBubble(/*initiated_by_bubble_manager=*/false);
+    }
+    return;
+  }
+
+  const std::optional<password_manager::ActionableError> pending_error =
+      pending_auto_save_error_;
+  ResetAutoSaveAfterErrorResolution(std::nullopt);
+  if (passwords_data_.form_manager()) {
+    SavePendingPassword();
+    MaybeLogErrorResolutionSaveOutcome(
+        pending_error, SaveWithTrustedVaultErrorOutcome::kSavedSuccessfully);
+    // `SavePendingPassword()` sets `bubble_status_` to
+    // `SHOWN_PENDING_ICON_UPDATE`. Reset it to `NOT_SHOWN` because no bubble
+    // remains open after this save: either the bubble was already closed when
+    // starting the error resolution flow, or `UpdateBubbleAndIconVisibility()`
+    // closes it now on the immediate-save path.
     bubble_status_ = BubbleStatus::NOT_SHOWN;
     UpdateBubbleAndIconVisibility();
+  } else {
+    MaybeLogErrorResolutionSaveOutcome(
+        pending_error,
+        SaveWithTrustedVaultErrorOutcome::kErrorResolutionAbandoned);
   }
 }
 
-bool ManagePasswordsUIController::IsSavingBlockedByTrustedVaultError() const {
+std::optional<password_manager::ActionableError>
+ManagePasswordsUIController::GetRecoverableErrorBlockingSaving() const {
   if (password_manager::PasswordFormManagerForUI* form_manager =
           passwords_data_.form_manager()) {
-    return password_manager_util::IsSavingBlockedByTrustedVaultError(
+    return password_manager_util::GetRecoverableErrorBlockingPasswordSaving(
         passwords_data_.client(), form_manager);
   }
-  return false;
+  return std::nullopt;
 }
 
 void ManagePasswordsUIController::OnErrorStateChanged(
     password_manager::PasswordStoreInterface* store,
     password_manager::ActionableError new_state) {
   if (base::FeatureList::IsEnabled(
-          password_manager::features::kPasswordSaveInContextErrorResolution)) {
+          password_manager::features::kPasswordSaveInContextErrorResolution) ||
+      base::FeatureList::IsEnabled(
+          password_manager::features::
+              kPasswordSaveInContextPassphraseErrorResolution)) {
+    if (pending_auto_save_error_.has_value() &&
+        !IsAutoSaveAfterErrorResolutionValid()) {
+      ResetAutoSaveAfterErrorResolution(
+          SaveWithTrustedVaultErrorOutcome::kErrorResolutionAbandoned);
+      if (IsShowingBubble()) {
+        HideBubble(/*initiated_by_bubble_manager=*/false);
+      }
+      return;
+    }
+
     if (!IsStoreUsedForSavingPendingCredentials(store)) {
       return;
     }
 
-    if (save_password_after_trusted_vault_error_resolution_ &&
+    if (pending_auto_save_error_.has_value() &&
         new_state == password_manager::ActionableError::kNoError) {
-      SavePasswordAfterTrustedVaultErrorResolution();
-    }
-    if (IsShowingBubble()) {
-      // If the error state of the store changed, the safest option is to hide
-      // the password save / update bubble to avoid showing stale UI.
-      using password_manager::ui::State;
-      const State state = GetState();
-      if (state == State::PENDING_PASSWORD_STATE ||
-          state == State::PENDING_PASSWORD_UPDATE_STATE) {
-        HideBubble(/*initiated_by_bubble_manager=*/false);
+      // Entering this block means the current `store` is used for saving the
+      // pending credential and its state is `kNoError`. However, we also need
+      // to address the multi-store edge case (e.g. an update in both profile
+      // and account stores) and ensure the other store doesn't have a blocking
+      // error too before completing auto-save.
+      password_manager::PasswordStoreInterface* profile_store =
+          passwords_data_.client()->GetProfilePasswordStore();
+      password_manager::PasswordStoreInterface* account_store =
+          passwords_data_.client()->GetAccountPasswordStore();
+      password_manager::PasswordStoreInterface* other_store =
+          (store == profile_store) ? account_store : profile_store;
+      if (!other_store ||
+          !IsStoreUsedForSavingPendingCredentials(other_store) ||
+          password_manager::IsAbleToSavePasswords(other_store->GetError())) {
+        CompleteSavePasswordAfterErrorResolution();
       }
     }
   }
@@ -1665,12 +1875,44 @@ bool ManagePasswordsUIController::IsStoreUsedForSavingPendingCredentials(
   return false;
 }
 
-void ManagePasswordsUIController::QueueOrShowBubble(bool user_action) {
-  if (PasswordBubbleViewBase::manage_password_bubble()) {
-    PasswordBubbleViewBase::CloseCurrentBubble();
+bool ManagePasswordsUIController::IsAutoSaveAfterErrorResolutionValid() const {
+  if (!pending_auto_save_error_.has_value() ||
+      account_id_for_error_resolution_.empty()) {
+    return false;
   }
+  const syncer::SyncService* sync_service =
+      passwords_data_.client()->GetSyncService();
+  return sync_service &&
+         password_manager::sync_util::HasChosenToSyncPasswords(sync_service) &&
+         sync_service->GetAccountInfo().account_id ==
+             account_id_for_error_resolution_;
+}
+
+void ManagePasswordsUIController::ResetAutoSaveAfterErrorResolution(
+    std::optional<SaveWithTrustedVaultErrorOutcome> outcome) {
+  account_id_for_error_resolution_ = CoreAccountId();
+  const std::optional<password_manager::ActionableError> pending_error =
+      std::exchange(pending_auto_save_error_, std::nullopt);
+  if (outcome.has_value()) {
+    MaybeLogErrorResolutionSaveOutcome(pending_error, *outcome);
+  }
+}
+
+void ManagePasswordsUIController::QueueOrShowBubble(bool user_action) {
+  // `QueueOrShowBubble()` may be called on a background tab (where
+  // `BubbleManager` queues the request until tab activation), so only close an
+  // existing bubble if it belongs to this tab.
+  CloseBubbleIfOwnedByThisTab();
 
   user_action_ = user_action;
+
+  // Suppress automatic (`!user_action`) bubbles in an unfocused window while
+  // another window owns the global password bubble, before
+  // `RequestShowController()` preempts any active per-window Autofill bubble or
+  // sets `active_bubble_controller_`.
+  if (!user_action && IsBlockedByOtherWindowBubble()) {
+    return;
+  }
 
   if (auto* manager =
           autofill::BubbleManager::GetForWebContents(web_contents())) {
@@ -1678,5 +1920,3 @@ void ManagePasswordsUIController::QueueOrShowBubble(bool user_action) {
     manager->RequestShowController(*this, user_action);
   }
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(ManagePasswordsUIController);

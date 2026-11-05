@@ -26,8 +26,8 @@ import org.chromium.content_public.browser.test.transit.HtmlElementSpec;
 public class TopBottomLinksPageStation extends WebPageStation {
     private static final String PATH =
             "/chrome/test/data/android/edge_to_edge/top-bottom-links.html";
-    private static final HtmlElementSpec TOP_LINK = new HtmlElementSpec("top_link");
-    private static final HtmlElementSpec BOTTOM_LINK = new HtmlElementSpec("bottom_link");
+    private static final HtmlElementSpec TOP_LINK = new HtmlElementSpec("#top_link");
+    private static final HtmlElementSpec BOTTOM_LINK = new HtmlElementSpec("#bottom_link");
 
     protected TopBottomLinksPageStation(Config config) {
         super(config);
@@ -97,7 +97,12 @@ public class TopBottomLinksPageStation extends WebPageStation {
 
         @Override
         public void declareExtraElements() {
-            topElement = declareElement(new HtmlElement(TOP_LINK, mHostStation.webContentsElement));
+            topElement =
+                    declareElement(
+                            new HtmlElement(
+                                    TOP_LINK,
+                                    mHostStation.webContentsElement,
+                                    HtmlElement.inViewportOption()));
         }
 
         /** Open context menu on the top link. */
@@ -122,7 +127,11 @@ public class TopBottomLinksPageStation extends WebPageStation {
         @Override
         public void declareExtraElements() {
             bottomElement =
-                    declareElement(new HtmlElement(BOTTOM_LINK, mHostStation.webContentsElement));
+                    declareElement(
+                            new HtmlElement(
+                                    BOTTOM_LINK,
+                                    mHostStation.webContentsElement,
+                                    HtmlElement.inViewportOption()));
             declareEnterCondition(new ScrollToBottomCondition(mHostStation.webContentsElement));
         }
 

@@ -12,20 +12,7 @@
 #include "base/metrics/field_trial_params.h"
 #include "base/time/time.h"
 
-namespace url {
-class Origin;
-}  // namespace url
-
 namespace network::features {
-
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE(kBlockAcceptClientHints);
-// Note: Do not use BASE_DECLARE_FEATURE_PARAM macro as this is called only once
-// per process to construct a static local instance.
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-extern const base::FeatureParam<std::string> kBlockAcceptClientHintsBlockedSite;
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-bool ShouldBlockAcceptClientHintsFor(const url::Origin& origin);
 
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kNetworkErrorLogging);
@@ -62,6 +49,9 @@ COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kOpaqueResponseBlockingErrorsForAllFetches);
 
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kOrbSniffersInRust);
+
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kAcceptCHFrame);
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kOffloadAcceptCHFrameCheck);
@@ -80,19 +70,15 @@ BASE_DECLARE_FEATURE(kCorsNonWildcardRequestHeadersSupport);
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kCorsPreflightCacheKeyTaintedOrigin);
 
+// When enabled, disallows treating 'Intervention' as a CORS-safelisted header
+// in network/CORS checks (aligning with WHATWG Fetch) and stops attaching the
+// outgoing 'Intervention' HTTP request header to document.write intervention
+// fetches in Blink.
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE(kOmitCorsClientCert);
+BASE_DECLARE_FEATURE(kDisallowInterventionInCorsSafelistedHeaders);
 
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE(kReduceAcceptLanguage);
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE(kReduceAcceptLanguageHTTP);
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kReduceAcceptLanguageCacheDuration);
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE(kReduceAcceptLanguageCount);
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE_PARAM(int, kMaxAcceptLanguage);
+BASE_DECLARE_FEATURE(kOmitCorsClientCert);
 
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kLocalNetworkAccessChecks);
@@ -190,6 +176,13 @@ BASE_DECLARE_FEATURE(kUpdateRequestForCorsRedirect);
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kAvoidCorsURLLoaderRestartOnRedirect);
 
+// https://crbug.com/571161435
+// Kill switch. When enabled, requests with CredentialsMode::kSameOrigin allow
+// credentials and client certificates when `disable_web_security` is enabled on
+// the URLLoaderFactoryParams.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kAllowSameOriginCredentialsWithDisableWebSecurity);
+
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kBrowsingTopics);
 
@@ -221,6 +214,16 @@ BASE_DECLARE_FEATURE(kCSPScriptSrcV2);
 // will be supported in script-src.
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kCSPScriptSrcHashesInV1);
+
+// When enabled, CSP:EE subsumption (network::Subsumes()) includes the
+// 'require-trusted-types-for' and 'trusted-types' directives, in addition to
+// the existing source-list directives. See
+// https://github.com/w3c/webappsec-csp/issues/628 and
+// https://github.com/w3c/webappsec-cspee/pull/36. When disabled, Trusted
+// Types directives are ignored by CSP:EE subsumption, preserving the
+// source-list-only behavior.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kCSPEmbeddedEnforcementTrustedTypes);
 
 // When enabled, fetches for "pervasive" resources that match one of the
 // configured patterns will use a shared, single-keyed cache.
@@ -391,6 +394,68 @@ BASE_DECLARE_FEATURE(kBindURLLoaderFactoryToHighPriorityTaskRunner);
 // ignore_isolated_world_origin is false.
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kEnforceIsolatedWorldOriginLock);
+
+// Kill switch. When enabled, proxy auth challenges for requests with
+// `do_not_prompt_for_login` are forwarded, flagged as such, to the
+// URLLoaderNetworkServiceObserver so that non-UI credential sources (e.g.
+// extensions) can answer them. Server auth challenges for such requests are
+// always cancelled.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kForwardProxyAuthWithoutPrompt);
+
+// Pre-warms `cryptbase.dll` on a background thread during NetworkService
+// startup on Windows so that subsequent `CryptProtectMemory` /
+// `CryptUnprotectMemory` calls by `os_crypt_async` and
+// `crypto::ProcessBoundString` do not block the Network IO thread on
+// synchronous delay-loading of `cryptbase.dll` (via `dpapi.dll`).
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kPrewarmCryptbase);
+
+// Rate-limits cross-process `ProxyConfigPollerClient::OnLazyProxyConfigPoll()`
+// IPCs sent from `ProxyConfigServiceMojo::OnLazyPoll()` during network activity
+// on polling platforms (just Windows), avoiding redundant Browser IO and UI
+// thread wakeups during page-load request bursts that
+// `PollingProxyConfigService` would discard within its 10-second polling
+// interval.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kRateLimitProxyConfigPolls);
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kRateLimitProxyConfigPollsInterval);
+
+// When enabled, applies strictly validated DNS host-mapping rules (restricted
+// to exact `MAP <source_host> <target_host>` clauses within `google.com`) from
+// `kDnsHostMappingExperimentRules` when constructing a `NetworkContext`'s
+// `HostResolver`, unless `--host-resolver-rules` or `--host-rules` is present
+// on the command line.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kDnsHostMappingExperiment);
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(std::string, kDnsHostMappingExperimentRules);
+
+// When enabled, the latency and throughputs of network conditions (e.g. those
+// that DevTools emulates) are applied at the socket layer, so that TCP and TLS
+// handshakes, HTTP/2 prioritization and congestion control experience them,
+// instead of to requests' responses. Their offline emulation still applies at
+// the request level.
+//
+// This feature must not be enabled by default before URL pattern support lands
+// for socket-layer throttling: until then, rules with a URL pattern can only
+// emulate offline, and DevTools clients that throttle requests by URL pattern
+// would break.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kSocketLayerNetworkThrottling);
+
+// When enabled, clearing session-only cookies (e.g. on exit) also deletes
+// partitioned cookies whose partition's top-level site is session-only, even
+// if the cookie's own domain is allowed to persist. See crbug.com/502262216.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kClearPartitionedCookiesOnExitByTopLevelSite);
+
+// When enabled, enforces Storage Access API context restrictions (such as
+// `is_storage_access_potentially_allowed` checks in the Network Service and the
+// `storage-access` Permissions Policy on navigations).
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kEnforceStorageAccessApiRestrictions);
 
 }  // namespace network::features
 

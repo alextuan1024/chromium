@@ -8,14 +8,13 @@ definitions read from policies.yaml.
 If the file was pretty-printed, the updated version is pretty-printed too.
 """
 
-from __future__ import print_function
-
 import argparse
 import os
 import sys
 from xml.dom import minidom
 
 import setup_modules  # pylint: disable=unused-import
+
 
 import chromium_src.third_party.pyyaml as pyyaml
 import chromium_src.tools.metrics.common.diff_util as diff_util

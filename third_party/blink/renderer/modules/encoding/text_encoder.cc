@@ -30,11 +30,19 @@
 
 #include "third_party/blink/renderer/modules/encoding/text_encoder.h"
 
+#include <array>
+#include <optional>
+
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/rand_util.h"
+#include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_text_encoder_encode_into_result.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/encoding/encoding.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding_registry.h"
 
@@ -44,6 +52,70 @@ namespace blink {
 // buffer.
 BASE_FEATURE(kThrowExceptionWhenTextEncodeOOM,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Controls if TextEncode will use fast paths for short strings (direct
+// ASCII copy and stack-buffer encoding) to avoid heap allocation overhead.
+BASE_FEATURE(kTextEncoderFastPath, base::FEATURE_DISABLED_BY_DEFAULT);
+
+namespace {
+
+void RecordEncodeMetrics(wtf_size_t input_length,
+                         TextEncoderFastPathResult result) {
+  if (!base::ShouldRecordSubsampledMetric(0.001)) {
+    return;
+  }
+  UMA_HISTOGRAM_COUNTS_100000("Blink.TextEncoder.Encode.InputLength",
+                              input_length);
+  UMA_HISTOGRAM_ENUMERATION("Blink.TextEncoder.Encode.FastPathResult", result);
+}
+
+NotShared<DOMUint8Array> CreateDOMUint8Array(
+    base::span<const uint8_t> bytes,
+    ExceptionState& exception_state) {
+  if (base::FeatureList::IsEnabled(kThrowExceptionWhenTextEncodeOOM)) {
+    DOMUint8Array* result_array = DOMUint8Array::CreateOrNull(bytes);
+    if (!result_array) {
+      exception_state.ThrowDOMException(DOMExceptionCode::kUnknownError,
+                                        "Failed to allocate buffer.");
+      return NotShared<DOMUint8Array>();
+    }
+    return NotShared<DOMUint8Array>(result_array);
+  }
+  return NotShared<DOMUint8Array>(DOMUint8Array::Create(bytes));
+}
+
+v8::MaybeLocal<v8::Uint8Array> CreateV8Uint8Array(
+    v8::Isolate* isolate,
+    base::span<const uint8_t> bytes,
+    ExceptionState& exception_state) {
+  DCHECK(isolate->InContext());
+
+  v8::Local<v8::ArrayBuffer> v8_buffer;
+  if (base::FeatureList::IsEnabled(kThrowExceptionWhenTextEncodeOOM)) {
+    if (!v8::ArrayBuffer::MaybeNew(
+             isolate, bytes.size(),
+             v8::BackingStoreInitializationMode::kUninitialized)
+             .ToLocal(&v8_buffer)) [[unlikely]] {
+      exception_state.ThrowDOMException(DOMExceptionCode::kUnknownError,
+                                        "Failed to allocate buffer.");
+      return {};
+    }
+  } else {
+    v8_buffer = v8::ArrayBuffer::New(
+        isolate, bytes.size(),
+        v8::BackingStoreInitializationMode::kUninitialized);
+  }
+
+  if (!bytes.empty()) {
+    // SAFETY: `v8_buffer` was just allocated with `bytes.size()` bytes.
+    UNSAFE_BUFFERS(
+        base::span(static_cast<uint8_t*>(v8_buffer->Data()), bytes.size()))
+        .copy_from(bytes);
+  }
+  return v8::Uint8Array::New(v8_buffer, 0, bytes.size());
+}
+
+}  // namespace
 
 TextEncoder* TextEncoder::Create(ExecutionContext* context,
                                  ExceptionState& exception_state) {
@@ -64,27 +136,69 @@ String TextEncoder::encoding() const {
   return name;
 }
 
-NotShared<DOMUint8Array> TextEncoder::encode(const String& input,
-                                             ExceptionState& exception_state) {
+v8::MaybeLocal<v8::Uint8Array> TextEncoder::encode(
+    ScriptState* script_state,
+    const String& input,
+    ExceptionState& exception_state) {
+  v8::Isolate* isolate = script_state->GetIsolate();
+  const bool fast_path_enabled =
+      base::FeatureList::IsEnabled(kTextEncoderFastPath);
+  if (fast_path_enabled) {
+    if (input.empty()) {
+      RecordEncodeMetrics(0, TextEncoderFastPathResult::kEmpty);
+      return CreateV8Uint8Array(isolate, {}, exception_state);
+    }
+
+    if (input.Is8Bit() && input.ContainsOnlyAsciiOrEmpty()) {
+      RecordEncodeMetrics(input.length(), TextEncoderFastPathResult::kAscii8Bit);
+      return CreateV8Uint8Array(isolate, input.Span8(), exception_state);
+    }
+
+    // Short non-ASCII strings can be encoded directly into a stack buffer to
+    // avoid intermediate std::string heap allocation.
+    // The maximum UTF-8 expansion per UTF-16 code unit is 3 bytes (surrogates
+    // take 2 code units and at most 4 bytes).
+    constexpr size_t kStackBufferSize = 256;
+    if (input.length() <= kStackBufferSize / 3) {
+      RecordEncodeMetrics(input.length(),
+                          TextEncoderFastPathResult::kShortNonAscii);
+      std::array<uint8_t, kStackBufferSize> stack_buffer;
+      TextCodec::EncodeIntoResult encode_into_result =
+          VisitCharacters(input, [this, &stack_buffer](auto chars) {
+            return codec_->EncodeInto(chars, base::span(stack_buffer));
+          });
+      CHECK_EQ(encode_into_result.code_units_read, input.length());
+      return CreateV8Uint8Array(
+          isolate,
+          base::span(stack_buffer).first(encode_into_result.bytes_written),
+          exception_state);
+    }
+
+    RecordEncodeMetrics(input.length(), TextEncoderFastPathResult::kLongString);
+  } else {
+    RecordEncodeMetrics(input.length(), TextEncoderFastPathResult::kDisabled);
+  }
+
   // Note that the UnencodableHandling here is never used since the
   // only possible encoding is UTF-8, which will use
   // U+FFFD-replacement rather than ASCII fallback substitution when
   // unencodable sequences (for instance, unpaired UTF-16 surrogates)
   // are present in the input.
-  std::string result = VisitCharacters(input, [this](auto chars) {
+  String non_null_input = input.IsNull() ? g_empty_string : input;
+  std::string result = VisitCharacters(non_null_input, [this](auto chars) {
     return codec_->Encode(chars, UnencodableHandling::kNone);
   });
-  if (base::FeatureList::IsEnabled(kThrowExceptionWhenTextEncodeOOM)) {
-    NotShared<DOMUint8Array> result_array(
-        DOMUint8Array::CreateOrNull(base::as_byte_span(result)));
-    if (result_array.IsNull()) {
-      exception_state.ThrowDOMException(DOMExceptionCode::kUnknownError,
-                                        "Failed to allocate buffer.");
-    }
-    return result_array;
+  if (fast_path_enabled) {
+    return CreateV8Uint8Array(isolate, base::as_byte_span(result),
+                              exception_state);
   }
-  return NotShared<DOMUint8Array>(
-      DOMUint8Array::Create(base::as_byte_span(result)));
+  NotShared<DOMUint8Array> result_array =
+      CreateDOMUint8Array(base::as_byte_span(result), exception_state);
+  if (exception_state.HadException()) [[unlikely]] {
+    return {};
+  }
+  return ToV8Traits<NotShared<DOMUint8Array>>::ToV8(script_state, result_array)
+      .As<v8::Uint8Array>();
 }
 
 TextEncoderEncodeIntoResult* TextEncoder::encodeInto(

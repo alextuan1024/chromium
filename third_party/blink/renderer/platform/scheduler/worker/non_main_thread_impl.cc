@@ -34,9 +34,6 @@ namespace blink {
 
 std::unique_ptr<NonMainThread> NonMainThread::CreateThread(
     const ThreadCreationParams& params) {
-#if DCHECK_IS_ON()
-  WillCreateThread();
-#endif
   auto thread = std::make_unique<scheduler::NonMainThreadImpl>(params);
   thread->Init();
   return std::move(thread);
@@ -55,7 +52,8 @@ NonMainThreadImpl::NonMainThreadImpl(const ThreadCreationParams& params)
   options.thread_type = params.base_thread_type;
 
   base::MessagePumpType message_pump_type = base::MessagePumpType::DEFAULT;
-  if (params.thread_type == ThreadType::kCompositorThread) {
+  if (params.thread_type == ThreadType::kCompositorThread &&
+      mojo::IsDirectReceiverSupported()) {
     message_pump_type = base::MessagePumpType::IO;
   }
   thread_ = std::make_unique<SimpleThreadImpl>(
@@ -156,8 +154,11 @@ void NonMainThreadImpl::SimpleThreadImpl::CreateScheduler() {
           TaskType::kWorkerThreadTaskQueueDefault);
 }
 
-NonMainThreadImpl::GCSupport::GCSupport(NonMainThreadImpl* thread) {
-  ThreadState* thread_state = ThreadState::AttachCurrentThread();
+NonMainThreadImpl::GCSupport::GCSupport(
+    NonMainThreadImpl* thread,
+    cppgc::StackStartMarker stack_start_marker) {
+  ThreadState* thread_state =
+      ThreadState::AttachCurrentThread(stack_start_marker);
   blink_gc_memory_dump_provider_ = std::make_unique<BlinkGCMemoryDumpProvider>(
       thread_state, base::SingleThreadTaskRunner::GetCurrentDefault(),
       BlinkGCMemoryDumpProvider::HeapType::kBlinkWorkerThread);
@@ -188,8 +189,10 @@ void NonMainThreadImpl::SimpleThreadImpl::Run() {
   run_loop_ = &run_loop;
   Thread::UpdateThreadTLS(thread_);
 
-  if (supports_gc_)
-    gc_support_ = std::make_unique<GCSupport>(thread_);
+  if (supports_gc_) {
+    cppgc::StackStartMarker stack_start_marker;
+    gc_support_ = std::make_unique<GCSupport>(thread_, stack_start_marker);
+  }
   run_loop_->Run();
   gc_support_.reset();
 

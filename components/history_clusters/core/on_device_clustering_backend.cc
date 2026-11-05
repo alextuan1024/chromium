@@ -262,33 +262,21 @@ OnDeviceClusteringBackend::ClusterVisitsOnBackgroundThread(
   base::ElapsedThreadTimer compute_clusters_timer;
 
   // 1. Group visits into clusters.
-  base::ElapsedThreadTimer context_clusterer_timer;
   std::unique_ptr<Clusterer> clusterer = std::make_unique<Clusterer>();
   std::vector<history::Cluster> clusters =
       clusterer->CreateInitialClustersFromVisits(std::move(visits));
-  base::UmaHistogramTimes(
-      "History.Clusters.Backend.ContextClusterer.ThreadTime",
-      context_clusterer_timer.Elapsed());
 
   if (requires_ui_and_triggerability) {
     // 2. Determine how the clusters should be displayed.
-    base::ElapsedThreadTimer compute_clusters_for_ui_timer;
     clusters = GetClustersForUIOnBackgroundThread(
         clustering_request_source, QueryClustersFilterParams(),
         engagement_score_provider_is_valid, std::move(clusters),
         /*calculate_triggerability=*/false);
-    base::UmaHistogramTimes(
-        "History.Clusters.Backend.ComputeClustersForUI.ThreadTime",
-        compute_clusters_for_ui_timer.Elapsed());
 
     // 3. Determine the triggerability for the clusters.
-    base::ElapsedThreadTimer cluster_triggerability_timer;
     clusters = GetClusterTriggerabilityOnBackgroundThread(
         engagement_score_provider_is_valid, std::move(clusters),
         /*from_ui=*/true);
-    base::UmaHistogramTimes(
-        "History.Clusters.Backend.ComputeClusterTriggerability2.ThreadTime",
-        cluster_triggerability_timer.Elapsed());
 
     base::UmaHistogramTimes(
         "History.Clusters.Backend.ComputeClusters.ThreadTime",
@@ -338,8 +326,7 @@ OnDeviceClusteringBackend::GetClustersForUIOnBackgroundThread(
   // Apply any filtering after we've decided how to score clusters.
   std::unique_ptr<FilterClusterProcessor> filterer =
       std::make_unique<FilterClusterProcessor>(
-          clustering_request_source, filter_params,
-          engagement_score_provider_is_valid);
+          filter_params, engagement_score_provider_is_valid);
   filterer->ProcessClusters(&clusters);
 
   return calculate_triggerability

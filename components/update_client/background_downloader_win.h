@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <bits.h>
+#include <stddef.h>
 #include <wrl/client.h>
 
 #include <memory>
@@ -51,7 +52,7 @@ class BackgroundDownloader : public CrxDownloader {
 
   // Overrides for CrxDownloader.
   ~BackgroundDownloader() override;
-  base::OnceClosure DoStartDownload(const GURL& url) override;
+  CancelCallback DoStartDownload(const GURL& url) override;
 
   // Called asynchronously on the |com_task_runner_| at different stages during
   // the download. |OnDownloading| can be called multiple times.

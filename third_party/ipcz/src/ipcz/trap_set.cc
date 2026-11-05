@@ -12,7 +12,6 @@
 #include "ipcz/trap_event_dispatcher.h"
 #include "third_party/abseil-cpp/absl/base/macros.h"
 #include "util/ref_counted.h"
-#include "util/safe_math.h"
 
 namespace ipcz {
 
@@ -81,8 +80,8 @@ void TrapSet::RemoveAll(TrapEventDispatcher& dispatcher) {
     flags |= IPCZ_TRAP_WITHIN_API_CALL;
   }
 
-  // Forced trap removal implies the portal has been invalidated by closure or
-  // transfer. In any case, this status is meaningless.
+  // Forced trap removal implies the portal has been invalidated by closure,
+  // transfer, or merging. In any case, this status is meaningless.
   const IpczPortalStatus status{
       .size = sizeof(status),
       .flags = IPCZ_NO_FLAGS,

@@ -148,19 +148,13 @@ public final class ThinWebViewHost {
             ViewEventSink.from(webContents).setAccessDelegate(contentView);
         }
 
+        // Theming makes prefers-color-scheme follow the host activity's night mode. Web
+        // preferences are re-computed on each attach, which keeps them up-to-date across
+        // activity recreations (e.g. when the light / dark theme setting changes).
         mThinWebView.attachWebContents(
-                webContents, contentView, new ThinWebViewAttachParams.Builder().build());
-
-        // TODO(agrieve): Keyboard shortcuts (Ctrl+T, etc.) are not forwarded to the host activity.
-        // Other ThinWebView embedders copy the activity's KeyboardShortcutsDelegate onto the
-        // orphaned WindowAndroid that attachWebContents() makes the top-level window, but that
-        // delegate is only ever read by WebContentsDelegateAndroid, which we intentionally do not
-        // install (it would clobber the owner's C++ content::WebContentsDelegate). The fix is to
-        // handle this on the C++ side instead: have the owning content::WebContentsDelegate
-        // override PreHandleKeyboardEvent()/HandleKeyboardEvent() and forward the event to the
-        // *host activity's* WindowAndroid (i.e. the tab's, not the orphan's), mirroring
-        // WebContentsDelegateAndroid. That also removes the need to reach the orphaned window at
-        // all.
+                webContents,
+                contentView,
+                new ThinWebViewAttachParams.Builder().setSupportTheming(true).build());
     }
 
     /**

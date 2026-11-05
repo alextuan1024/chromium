@@ -318,7 +318,7 @@ ManifestDemuxer::SeekResponse HlsRenditionImpl::Seek(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (is_stopped_for_shutdown_) {
-    return PIPELINE_ERROR_ABORT;
+    return base::unexpected(PIPELINE_ERROR_ABORT);
   }
 
   if (set_stream_end_) {
@@ -367,7 +367,12 @@ void HlsRenditionImpl::ResumeLivePlayback(base::TimeDelta estimated_resume,
   // seek to the start of the loaded ranges that we have.
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   segments_->ResetExpectingFutureManifest(estimated_resume);
-  engine_host_->Remove(role_, base::TimeDelta(), estimated_resume);
+  // Resetting the parser flushes it, which can emit frames (e.g. for MPEG-TS)
+  // back into the buffer, so Remove() has to come after it.
+  engine_host_->ResetParserState(role_, kInfiniteDuration, &parse_offset_);
+  // Drop everything, not just the part before `estimated_resume`, so stale data
+  // can't overlap the re-fetched segments.
+  engine_host_->Remove(role_, base::TimeDelta(), kInfiniteDuration);
   FetchManifestUpdates(
       base::BindOnce(&HlsRenditionImpl::ManifestUpdateForLiveResume,
                      weak_factory_.GetWeakPtr(), std::move(done)),

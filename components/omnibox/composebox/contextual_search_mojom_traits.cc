@@ -137,6 +137,26 @@ UsedModelMode EnumTraits<UsedModelMode, omnibox::ModelMode>::ToMojom(
       return UsedModelMode::kGeminiProLatest;
     case omnibox::ModelMode::MODEL_MODE_GEMINI_PREVIEW:
       return UsedModelMode::kGeminiPreview;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_ALFA:
+      return UsedModelMode::kAimModelAlfa;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_BRAVO:
+      return UsedModelMode::kAimModelBravo;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_CHARLIE:
+      return UsedModelMode::kAimModelCharlie;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_DELTA:
+      return UsedModelMode::kAimModelDelta;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_ECHO:
+      return UsedModelMode::kAimModelEcho;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_FOXTROT:
+      return UsedModelMode::kAimModelFoxtrot;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_GOLF:
+      return UsedModelMode::kAimModelGolf;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_HOTEL:
+      return UsedModelMode::kAimModelHotel;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_INDIA:
+      return UsedModelMode::kAimModelIndia;
+    case omnibox::ModelMode::MODEL_MODE_AIM_MODEL_JULIETT:
+      return UsedModelMode::kAimModelJuliett;
     // The proto compiler generates these sentinel values. We must handle them
     // to satisfy the compiler's exhaustiveness check (since we don't have a
     // default case), but they should never be encountered in practice.
@@ -168,6 +188,26 @@ omnibox::ModelMode EnumTraits<UsedModelMode, omnibox::ModelMode>::FromMojom(
       return omnibox::ModelMode::MODEL_MODE_GEMINI_PRO_LATEST;
     case UsedModelMode::kGeminiPreview:
       return omnibox::ModelMode::MODEL_MODE_GEMINI_PREVIEW;
+    case UsedModelMode::kAimModelAlfa:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_ALFA;
+    case UsedModelMode::kAimModelBravo:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_BRAVO;
+    case UsedModelMode::kAimModelCharlie:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_CHARLIE;
+    case UsedModelMode::kAimModelDelta:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_DELTA;
+    case UsedModelMode::kAimModelEcho:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_ECHO;
+    case UsedModelMode::kAimModelFoxtrot:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_FOXTROT;
+    case UsedModelMode::kAimModelGolf:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_GOLF;
+    case UsedModelMode::kAimModelHotel:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_HOTEL;
+    case UsedModelMode::kAimModelIndia:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_INDIA;
+    case UsedModelMode::kAimModelJuliett:
+      return omnibox::ModelMode::MODEL_MODE_AIM_MODEL_JULIETT;
   }
   NOTREACHED();
 }
@@ -453,6 +493,13 @@ StructTraits<UsedToolConfigDataView, omnibox::ToolConfig>::menu_tooltip(
 }
 
 // static
+const std::string&
+StructTraits<UsedToolConfigDataView, omnibox::ToolConfig>::chip_a11y_label(
+    const omnibox::ToolConfig& config) {
+  return config.chip_a11y_label();
+}
+
+// static
 int32_t StructTraits<UsedToolConfigDataView, omnibox::ToolConfig>::icon(
     const omnibox::ToolConfig& config) {
   if (config.has_icon() && config.icon().has_icon_id()) {
@@ -510,6 +557,12 @@ bool StructTraits<UsedToolConfigDataView, omnibox::ToolConfig>::Read(
     return false;
   }
   output->set_menu_tooltip(menu_tooltip);
+
+  std::string chip_a11y_label;
+  if (!data.ReadChipA11yLabel(&chip_a11y_label)) {
+    return false;
+  }
+  output->set_chip_a11y_label(chip_a11y_label);
 
   int32_t icon_id = data.icon();
   if (omnibox::IconResourceIds_IsValid(icon_id) &&
@@ -789,11 +842,18 @@ bool StructTraits<UsedInputStateDataView, omnibox::InputState>::
 }
 
 // static
+bool StructTraits<UsedInputStateDataView, omnibox::InputState>::
+    will_fulfill_in_aim(const omnibox::InputState& input) {
+  return input.will_fulfill_in_aim;
+}
+
+// static
 bool StructTraits<UsedInputStateDataView, omnibox::InputState>::Read(
     UsedInputStateDataView data,
     omnibox::InputState* output) {
   output->max_total_inputs = data.max_total_inputs();
   output->is_canvas_query_submitted = data.is_canvas_query_submitted();
+  output->will_fulfill_in_aim = data.will_fulfill_in_aim();
   return data.ReadAllowedModels(&output->allowed_models) &&
          data.ReadAllowedTools(&output->allowed_tools) &&
          data.ReadAllowedInputTypes(&output->allowed_input_types) &&

@@ -21,16 +21,12 @@ std::string_view CallSiteToString(CallTimerState::CallSite call_site) {
       return "BatchSelectOptionChange";
     case kDidChangeScrollOffsetImpl:
       return "DidChangeScrollOffsetImpl";
-    case kDidReceiveKeyDown:
-      return "DidReceiveKeyDown";
     case kExtractForm:
       return "ExtractForm";
     case kFocusedElementChanged:
       return "FocusedElementChanged";
-    case kGetFormDataFromUnownedInputElements:
-      return "GetFormDataFromUnownedInputElements";
-    case kGetFormDataFromWebForm:
-      return "GetFormDataFromWebForm";
+    case kGetFormData:
+      return "GetFormData";
     case kGetSubmittedForm:
       return "GetSubmittedForm";
     case kHandleCaretMovedInFormField:

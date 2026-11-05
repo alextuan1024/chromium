@@ -12,7 +12,7 @@
 #include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/network/network_connection_handler.h"
 #include "chromeos/ash/components/network/policy_util.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "components/login/localized_values_builder.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -428,6 +428,8 @@ void AddDetailsLocalizedStrings(content::WebUIDataSource* html_source) {
        IDS_SETTINGS_INTERNET_NETWORK_PROXY_ENFORCED_POLICY},
       {"networkProxyOverrideEnforcedPolicy",
        IDS_SETTINGS_INTERNET_NETWORK_PROXY_OVERRIDE_ENFORCED_POLICY},
+      {"networkProxyOverrideControlledByExtension",
+       IDS_SETTINGS_INTERNET_NETWORK_PROXY_OVERRIDE_CONTROLLED_BY_EXTENSION},
       {"networkProxyEnforcedCombinedPolicies",
        IDS_SETTINGS_INTERNET_NETWORK_PROXY_ENFORCED_COMBINED_POLICIES},
       {"networkProxyExceptionInputA11yLabel",
@@ -545,12 +547,6 @@ void AddDetailsLocalizedStrings(content::WebUIDataSource* html_source) {
        IDS_SETTINGS_INTERNET_NETWORK_SETTING_MANAGED_BY_ADMIN_TOOLTIP},
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
-
-  html_source->AddBoolean("isApnRevampEnabled",
-                          ash::features::IsApnRevampEnabled());
-  html_source->AddBoolean(
-      "isApnRevampAndAllowApnModificationPolicyEnabled",
-      ash::features::IsApnRevampAndAllowApnModificationPolicyEnabled());
 
   html_source->AddBoolean(
       "isESimEmptyActivationCodeSupportEnabled",

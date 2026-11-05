@@ -7,6 +7,7 @@
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
 #include "third_party/blink/renderer/core/layout/background_bleed_avoidance.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_cursor.h"
+#include "third_party/blink/renderer/core/layout/inline/physical_line_box_fragment.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/logical_fragment.h"
 #include "third_party/blink/renderer/core/paint/border_shape_utils.h"
@@ -24,6 +25,7 @@
 #include "third_party/blink/renderer/platform/graphics/graphics_context_state_saver.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/paint/scoped_display_item_fragment.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -130,7 +132,8 @@ void InlineBoxFragmentPainter::PaintMask(const PaintInfo& paint_info,
       GetSlicePaintType(style_.MaskBoxImage(), adjusted_frame_rect,
                         adjusted_clip_rect, object_may_have_multiple_boxes);
   if (border_painting_type == kDontPaint ||
-      (paint_info.IsPrivacyPreserving() && style_.MaskBoxImage().GetImage() &&
+      (paint_info.IsReadBackAllowedRendering() &&
+       style_.MaskBoxImage().GetImage() &&
        !style_.MaskBoxImage().GetImage()->IsCorsSameOrigin())) {
     return;
   }
@@ -235,6 +238,17 @@ void LineBoxFragmentPainter::PaintBackgroundBorderShadow(
     return;
   }
 
+  if (RuntimeEnabledFeatures::FirstLineBoxDecorationInkOverflowEnabled() &&
+      (inline_box_fragment_.IsSvgText() ||
+       inline_box_fragment_.IsHiddenDueToLayout() ||
+       inline_box_item_.IsHiddenDueToLayout() ||
+       block_fragment_.IsHiddenDueToLayout() ||
+       LineBoxFragment().IsEmptyLineBox() ||
+       LineBoxFragment().Metrics().IsEmpty() ||
+       (!line_style_.HasBackground() && !line_style_.BoxShadow()))) {
+    return;
+  }
+
   const DisplayItemClient& display_item_client = GetDisplayItemClient();
   if (DrawingRecorder::UseCachedDrawingIfPossible(
           paint_info.context, display_item_client,
@@ -246,18 +260,10 @@ void LineBoxFragmentPainter::PaintBackgroundBorderShadow(
   // the height of inline box does not. The box "behaves similar to that of an
   // inline-level element".
   // https://drafts.csswg.org/css-pseudo-4/#first-line-styling
-  const PhysicalLineBoxFragment& line_box = LineBoxFragment();
-  const FontHeight line_metrics = line_box.Metrics();
-  const FontHeight text_metrics = line_style_.GetFontHeight();
-  const WritingMode writing_mode = line_style_.GetWritingMode();
-  PhysicalRect rect;
-  if (IsHorizontalWritingMode(writing_mode)) {
-    rect.offset.top = line_metrics.ascent - text_metrics.ascent;
-    rect.size = {line_box.Size().width, text_metrics.LineHeight()};
-  } else {
-    rect.offset.left =
-        line_box.Size().width - line_metrics.ascent - text_metrics.descent;
-    rect.size = {text_metrics.LineHeight(), line_box.Size().height};
+  PhysicalRect rect = LineBoxFragment().ComputeFirstLineBoxRect(line_style_);
+  if (rect.IsEmpty() && !line_style_.BoxShadow() &&
+      RuntimeEnabledFeatures::FirstLineBoxDecorationInkOverflowEnabled()) {
+    return;
   }
   rect.offset += paint_offset;
 
@@ -269,8 +275,20 @@ void LineBoxFragmentPainter::PaintBackgroundBorderShadow(
       *To<LayoutBlockFlow>(block_fragment_.GetLayoutObject());
   BoxFragmentPainter box_painter(block_fragment_);
   BoxBackgroundPaintContext bg_paint_context(layout_block_flow);
+  // Omit compositing info when delegating to `block_fragment_` so a composited
+  // `background-color` PaintWorklet on the originating block does not paint
+  // over `::first-line`'s fill layer.
+  PaintFlags fill_flags = paint_info.GetPaintFlags();
+  if (style_.HasCurrentBackgroundColorAnimation() &&
+      RuntimeEnabledFeatures::FirstLineBoxDecorationInkOverflowEnabled()) {
+    fill_flags |= PaintFlag::kOmitCompositingInfo;
+  }
+  PaintInfo line_paint_info(paint_info.context, paint_info.GetCullRect(),
+                            paint_info.phase,
+                            paint_info.DescendantPaintingBlocked(), fill_flags,
+                            paint_info.GetSvgContextPaints());
   PaintBoxDecorationBackground(
-      box_painter, paint_info, paint_offset, rect, bg_paint_context,
+      box_painter, line_paint_info, paint_offset, rect, bg_paint_context,
       /*object_has_multiple_boxes*/ false, PhysicalBoxSides());
 }
 
@@ -435,11 +453,14 @@ void InlineBoxFragmentPainterBase::PaintBoxDecorationBackground(
   // Shadow comes first and is behind the background and border.
   PaintNormalBoxShadow(paint_info, line_style_, adjusted_frame_rect);
 
-  Color background_color =
-      line_style_.VisitedDependentColor(GetCSSPropertyBackgroundColor());
-  PaintFillLayers(box_painter, paint_info, background_color,
-                  line_style_.BackgroundLayers(), adjusted_frame_rect,
-                  bg_paint_context, object_has_multiple_boxes);
+  if (!inline_box_fragment_.IsLineBox() || line_style_.HasBackground() ||
+      !RuntimeEnabledFeatures::FirstLineBoxDecorationInkOverflowEnabled()) {
+    Color background_color =
+        line_style_.VisitedDependentColor(GetCSSPropertyBackgroundColor());
+    PaintFillLayers(box_painter, paint_info, background_color,
+                    line_style_.BackgroundLayers(), adjusted_frame_rect,
+                    bg_paint_context, object_has_multiple_boxes);
+  }
 
   PaintInsetBoxShadow(paint_info, line_style_, adjusted_frame_rect);
 
@@ -539,7 +560,6 @@ void InlineBoxFragmentPainterBase::PaintFillLayer(
 // self-painting |LayoutInline|.
 void InlineBoxFragmentPainter::PaintAllFragments(
     const LayoutInline& layout_inline,
-    const FragmentData& fragment_data,
     wtf_size_t fragment_data_idx,
     const PaintInfo& paint_info) {
   // TODO(kojii): If the block flow is dirty, children of these fragments
@@ -549,6 +569,8 @@ void InlineBoxFragmentPainter::PaintAllFragments(
     return;
   }
 
+  const FragmentData& fragment_data =
+      layout_inline.FragmentList().at(fragment_data_idx);
   ScopedPaintState paint_state(layout_inline, paint_info, &fragment_data);
   PhysicalOffset paint_offset = paint_state.PaintOffset();
   const PaintInfo& local_paint_info = paint_state.GetPaintInfo();

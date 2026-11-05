@@ -35,6 +35,7 @@
 #include "chrome/browser/ui/autofill/autofill_popup_controller_impl_test_api.h"
 #include "chrome/browser/ui/autofill/autofill_suggestion_controller.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
+#include "chrome/browser/ui/autofill/chrome_autofill_client_test_api.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/translate/translate_bubble_test_utils.h"
 #include "chrome/common/chrome_features.h"
@@ -411,14 +412,7 @@ class AutofillCapturedSitesInteractiveTest
         {{features::kAutofillRequireFocusInFrameForSuggestions, {}},
          {features::debug::kAutofillCapturedSiteTestsUseAutofillFlow, {}},
          {features::debug::kAutofillServerCommunication, {}},
-         {features::debug::kAutofillShowTypePredictions,
-          {
-              // TODO(crbug.com/410879924): Investigate why the test fails
-              // when kAutofillShowTypePredictions is enabled without
-              // parameters.
-              {features::debug::kAutofillShowTypePredictionsAsTitleParam.name,
-               "true"},
-          }}},
+         {features::debug::kAutofillShowTypePredictions, {}}},
         /*disabled_features=*/{});
     command_line->AppendSwitchASCII(
         variations::switches::kVariationsOverrideCountry, "us");
@@ -449,11 +443,10 @@ class AutofillCapturedSitesInteractiveTest
     auto disable_popup_timing_checks = [&frame] {
       auto* web_contents = content::WebContents::FromRenderFrameHost(frame);
       CHECK_NE(web_contents, nullptr);
-      auto* client =
-          ChromeAutofillClient::FromWebContentsForTesting(web_contents);
+      auto* client = ChromeAutofillClientTestApi::FromWebContents(web_contents);
       CHECK_NE(client, nullptr);
       if (base::WeakPtr<AutofillSuggestionController> controller =
-              client->suggestion_controller_for_testing()) {
+              test_api(*client).suggestion_controller()) {
         test_api(static_cast<AutofillPopupControllerImpl&>(*controller))
             .DisableThreshold(true);
       }

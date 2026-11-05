@@ -32,7 +32,8 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
-#include "third_party/icu/source/common/unicode/rbbi.h"
+#include "third_party/icu/source/common/unicode/schriter.h"
+#include "third_party/icu/source/common/unicode/uchar.h"
 #include "third_party/icu/source/common/unicode/uloc.h"
 #include "third_party/icu/source/common/unicode/umachine.h"
 #include "ui/gfx/font_list.h"
@@ -143,25 +144,19 @@ StringSlicer::StringSlicer(std::u16string_view text,
                                                           elide_at_beginning)) {
 }
 
-std::u16string StringSlicer::CutString(size_t length,
-                                       bool insert_ellipsis) const {
-  const std::u16string_view ellipsis_text =
-      insert_ellipsis ? ellipsis_ : std::u16string_view();
-
+std::pair<size_t, size_t> StringSlicer::GetCutBoundaries(size_t length) const {
   // For visual consistency, when eliding at either end of the string, excess
   // space should be trimmed from the text to return "Foo bar..." instead of
   // "Foo bar ...".
 
   if (elide_at_beginning_) {
-    return base::StrCat({ellipsis_text, text_.substr(FindValidBoundaryAfter(
-                                            text_, text_.length() - length,
-                                            elide_whitespace_))});
+    return {0, FindValidBoundaryAfter(text_, text_.length() - length,
+                                      elide_whitespace_)};
   }
 
   if (!elide_in_middle_) {
-    return base::StrCat({text_.substr(0, FindValidBoundaryBefore(
-                                             text_, length, elide_whitespace_)),
-                         ellipsis_text});
+    return {FindValidBoundaryBefore(text_, length, elide_whitespace_),
+            text_.length()};
   }
 
   // Put the extra character, if any, before the cut.
@@ -175,6 +170,14 @@ std::u16string StringSlicer::CutString(size_t length,
       FindValidBoundaryBefore(text_, length - half_length, elide_whitespace_);
   const size_t suffix_start = FindValidBoundaryAfter(
       text_, text_.length() - half_length, elide_whitespace_);
+  return {prefix_length, suffix_start};
+}
+
+std::u16string StringSlicer::CutString(size_t length,
+                                       bool insert_ellipsis) const {
+  const std::u16string_view ellipsis_text =
+      insert_ellipsis ? ellipsis_ : std::u16string_view();
+  const auto [prefix_length, suffix_start] = GetCutBoundaries(length);
   return base::StrCat({text_.substr(0, prefix_length), ellipsis_text,
                        text_.substr(suffix_start)});
 }
@@ -805,22 +808,16 @@ std::u16string TruncateString(std::u16string_view string,
 
   int32_t index = static_cast<int32_t>(length - 1);
   if (word_break) {
-    // Use a word iterator to find the first boundary.
-    UErrorCode status = U_ZERO_ERROR;
-    std::unique_ptr<icu::BreakIterator> bi(
-        icu::RuleBasedBreakIterator::createWordInstance(
-            icu::Locale::getDefault(), status));
-    if (U_FAILURE(status)) {
+    // Use a word iterator to find the last word boundary before |length|. If
+    // there is none other than the beginning of the string, |index| stays at
+    // the end and we'll have to break in the middle of a word.
+    base::i18n::BreakIterator iter(string,
+                                   base::i18n::BreakIterator::BREAK_WORD);
+    if (!iter.Init()) {
       return base::StrCat({string.substr(0, length - 1), kElideString});
     }
-    icu::UnicodeString bi_text(string.data());
-    bi->setText(bi_text);
-    index = bi->preceding(static_cast<int32_t>(length));
-    if (index == icu::BreakIterator::DONE || index == 0) {
-      // We either found no valid word break at all, or one right at the
-      // beginning of the string. Go back to the end; we'll have to break in the
-      // middle of a word.
-      index = static_cast<int32_t>(length - 1);
+    while (iter.Advance() && iter.pos() < length) {
+      index = static_cast<int32_t>(iter.pos());
     }
   }
 

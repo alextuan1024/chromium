@@ -58,10 +58,9 @@ void DateInputType::CountUsage() {
 
 StepRange DateInputType::CreateStepRange(
     AnyStepHandling any_step_handling) const {
-  DEFINE_STATIC_LOCAL(
-      const StepRange::StepDescription, step_description,
-      (kDateDefaultStep, kDateDefaultStepBase, kDateStepScaleFactor,
-       StepRange::kParsedStepValueShouldBeInteger));
+  static const StepRange::StepDescription step_description(
+      kDateDefaultStep, kDateDefaultStepBase, kDateStepScaleFactor,
+      StepRange::kParsedStepValueShouldBeInteger);
 
   return InputType::CreateStepRange(
       any_step_handling, kDateDefaultStepBase,
@@ -109,7 +108,7 @@ String DateInputType::FormatDateTimeFieldsState(
 void DateInputType::SetupLayoutParameters(
     DateTimeEditElement::LayoutParameters& layout_parameters,
     const DateComponents& date) const {
-  layout_parameters.date_time_format = layout_parameters.locale.DateFormat();
+  layout_parameters.date_time_format = layout_parameters.locale->DateFormat();
   layout_parameters.fallback_date_time_format = "yyyy-MM-dd";
   if (!ParseToDateComponents(
           GetElement().FastGetAttribute(html_names::kMinAttr),

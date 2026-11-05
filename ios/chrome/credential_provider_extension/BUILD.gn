@@ -40,6 +40,7 @@ source_set("credential_provider") {
     ":passkey_welcome_screen_util",
     ":reauthentication_handler",
     "//base",
+    "//components/password_manager/core/common:browser_assisted_login_type",
     "//components/webauthn/core/browser:passkey_model",
     "//components/webauthn/ios:passkey_types",
     "//ios/chrome/common/app_group",
@@ -66,35 +67,64 @@ source_set("credential_provider") {
   ]
 }
 
+action("generate_localized_strings") {
+  visibility = [ ":*" ]
+  script = "generate_localized_strings.py"
+  sources = [ "strings/ios_credential_provider_extension_strings.grd" ]
+  outputs = [
+    "$target_gen_dir/credential_provider_extension_localize_strings_config.plist",
+    "$target_gen_dir/generated_localized_strings.h",
+    "$target_gen_dir/generated_localized_strings.mm",
+  ]
+  args = [
+    "--grd",
+    rebase_path(sources[0], root_build_dir),
+    "--plist-out",
+    rebase_path(outputs[0], root_build_dir),
+    "--header-out",
+    rebase_path(outputs[1], root_build_dir),
+    "--source-out",
+    rebase_path(outputs[2], root_build_dir),
+  ]
+}
+
 generate_localizable_strings("system_strings") {
   visibility = [ "//ios/chrome/credential_provider_extension/*" ]
   _packed_resources_target = ":packed_resources"
-  config_file = "credential_provider_extension_localize_strings_config.plist"
+  config_file = "$target_gen_dir/credential_provider_extension_localize_strings_config.plist"
   datapack_dir = get_label_info(_packed_resources_target, "target_gen_dir")
   packed_locales = locales_as_apple_outputs
   output_filenames = [ "Localizable.strings" ]
-  deps = [ _packed_resources_target ]
+  deps = [
+    ":generate_localized_strings",
+    _packed_resources_target,
+  ]
 }
 
 source_set("generated_strings") {
   sources = [
-    "generated_localized_strings.h",
-    "generated_localized_strings.mm",
+    "$target_gen_dir/generated_localized_strings.h",
+    "$target_gen_dir/generated_localized_strings.mm",
   ]
+  public_deps = [ ":generate_localized_strings" ]
   deps = [ ":system_strings" ]
+  frameworks = [ "Foundation.framework" ]
 }
 
 source_set("unit_tests") {
   testonly = true
   sources = [
     "credential_provider_view_controller_unittest.mm",
+    "favicon_util_unittest.mm",
     "metrics_util_unittest.mm",
     "passkey_request_details_unittest.mm",
     "passkey_util_unittest.mm",
     "passkey_welcome_screen_util_unittest.mm",
   ]
   deps = [
+    ":account_verification_provider",
     ":credential_provider",
+    ":favicon_util",
     ":generated_strings",
     ":metrics_util",
     ":passkey_request_details",
@@ -105,13 +135,26 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//components/cbor",
+    "//components/password_manager/core/common:browser_assisted_login_type",
     "//components/sync/protocol",
     "//components/webauthn/core/browser:passkey_model",
     "//components/webauthn/ios:passkey_types",
     "//device/fido",
     "//ios/chrome/common/app_group",
     "//ios/chrome/common/credential_provider",
+    "//ios/chrome/common/credential_provider:passkey_keychain_provider_bridge_extension",
+    "//ios/chrome/common/credential_provider:passkey_keychain_provider_header",
+    "//ios/chrome/common/credential_provider:test_support",
+    "//ios/chrome/common/credential_provider:ui",
     "//ios/chrome/common/credential_provider/ui",
+    "//ios/chrome/common/ui/colors",
+    "//ios/chrome/common/ui/confirmation_alert",
+    "//ios/chrome/common/ui/favicon",
+    "//ios/chrome/common/ui/promo_style",
+    "//ios/chrome/common/ui/reauthentication",
+    "//ios/chrome/common/ui/reauthentication:fake_reauthentication_module",
+    "//ios/chrome/credential_provider_extension/ui",
+    "//ios/chrome/credential_provider_extension/ui:credential_response_handler",
     "//testing/gtest",
     "//third_party/ocmock",
   ]
@@ -143,6 +186,7 @@ source_set("passkey_util") {
   ]
   deps = [
     "//base",
+    "//components/cbor",
     "//components/sync/protocol",
     "//components/webauthn/core/browser:passkey_model",
     "//components/webauthn/ios:passkey_types",
@@ -185,6 +229,7 @@ source_set("favicon_util") {
     "favicon_util.mm",
   ]
   deps = [
+    "//base",
     "//ios/chrome/common/app_group",
     "//ios/chrome/common/ui/favicon",
   ]

@@ -101,6 +101,9 @@ const NSString* kCannotExecuteJSInDocumentErrorMessage =
     @"Cannot execute JavaScript in this document";
 
 void LogScriptResultError(const web::ScriptContext& context) {
+  CHECK(context.web_frame);
+  CHECK(context.web_state);
+
   NSString* ns_exception =
       context.error.userInfo[@"WKJavaScriptExceptionMessage"];
 
@@ -138,21 +141,15 @@ void LogScriptResultError(const web::ScriptContext& context) {
     return;
   }
 
-  // Ignore WKErrorJavaScriptResultTypeIsUnsupported error due to the WebView
-  // or WebFrame being released or navigated while a JavaScript function is
-  // executing. In case of a webstate navigation, the old web_frames are
-  // destroyed, and checking `!web_frame` catches this case.
+  // Cache `WKErrorJavaScriptResultTypeIsUnsupported` errors until a subsequent
+  // JavaScript call succeeds on `web_frame`, confirming the frame has not
+  // navigated or been released while the JavaScript function was executing.
   bool isTypeUnsupportedResultError =
       [context.error.domain isEqualToString:WKErrorDomain] &&
       context.error.code == WKErrorJavaScriptResultTypeIsUnsupported;
 
   if (isTypeUnsupportedResultError) {
-    if (!context.web_state || !context.web_frame) {
-      UMA_HISTOGRAM_BOOLEAN("IOS.JavaScript.InterestingScriptError", false);
-    } else if (context.web_frame) {
-      context.web_frame->CacheError(std::move(context));
-    }
-
+    context.web_frame->CacheError(context);
     return;
   }
 
@@ -164,13 +161,17 @@ void OnJavaScriptExecutedInContentWorld(
     web::ExecuteJavaScriptCallbackWithError callback,
     id value,
     NSError* error) {
+  // Navigation or teardown can destroy `WebFrame` or `WebState` while
+  // JavaScript is in flight; skip error reporting, but still run `callback`.
   if (error) {
-    context.error = error;
-    LogScriptResultError(context);
+    if (context.web_frame && context.web_state) {
+      context.error = error;
+      LogScriptResultError(context);
+    }
 
     std::move(callback).Run(nullptr, error);
   } else {
-    if (context.web_frame) {
+    if (context.web_frame && context.web_state) {
       context.web_frame->ProcessCachedErrors();
     }
     std::move(callback).Run(web::ValueResultFromWKResult(value).get(), nil);
@@ -181,22 +182,31 @@ void JSExecutionCompleteReplyWithResultForMessageId(web::ScriptContext context,
                                                     int message_id,
                                                     id value,
                                                     NSError* error) {
-  if (context.web_frame) {
-    if (error) {
-      context.error = error;
-      LogScriptResultError(context);
-    } else {
-      context.web_frame->ProcessCachedErrors();
-    }
-    context.web_frame->OnJSResultReceivedForMessageWithId(message_id, value);
+  if (!context.web_frame || !context.web_state) {
+    // Navigation or teardown occurred while JavaScript was in flight.
+    return;
   }
-}
 
-void JSExecutionComplete(web::ScriptContext context, id value, NSError* error) {
   if (error) {
     context.error = error;
     LogScriptResultError(context);
-  } else if (context.web_frame) {
+  } else {
+    context.web_frame->ProcessCachedErrors();
+  }
+  context.web_frame->OnJSResultReceivedForMessageWithId(message_id, value);
+}
+
+void JSExecutionComplete(web::ScriptContext context, id value, NSError* error) {
+  if (!context.web_frame || !context.web_state) {
+    // Navigation or teardown can destroy the frame while JavaScript is in
+    // flight; ignore errors from destroyed frames.
+    return;
+  }
+
+  if (error) {
+    context.error = error;
+    LogScriptResultError(context);
+  } else {
     context.web_frame->ProcessCachedErrors();
   }
 }
@@ -254,7 +264,7 @@ GURL WebFrameImpl::GetUrl() const {
 }
 
 BrowserState* WebFrameImpl::GetBrowserState() {
-  return GetWebState()->GetBrowserState();
+  return GetWebState() ? GetWebState()->GetBrowserState() : nullptr;
 }
 
 bool WebFrameImpl::CallJavaScriptFunctionInContentWorld(
@@ -262,6 +272,10 @@ bool WebFrameImpl::CallJavaScriptFunctionInContentWorld(
     const base::ListValue& parameters,
     JavaScriptContentWorld* content_world,
     bool reply_with_result) {
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
+
   int message_id = next_message_id_;
   next_message_id_++;
 
@@ -275,6 +289,10 @@ bool WebFrameImpl::CallJavaScriptFunctionInContentWorld(
 
 bool WebFrameImpl::CallJavaScriptFunction(const std::string& name,
                                           const base::ListValue& parameters) {
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
+
   JavaScriptContentWorld* content_world =
       JavaScriptFeatureManager::GetContentWorldForBrowserState(
           content_world_, GetBrowserState());
@@ -296,6 +314,10 @@ bool WebFrameImpl::CallJavaScriptFunction(
     const base::ListValue& parameters,
     base::OnceCallback<void(const base::Value*)> callback,
     base::TimeDelta timeout) {
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
+
   JavaScriptContentWorld* content_world =
       JavaScriptFeatureManager::GetContentWorldForBrowserState(
           content_world_, GetBrowserState());
@@ -309,6 +331,10 @@ bool WebFrameImpl::CallJavaScriptFunctionInContentWorld(
     JavaScriptContentWorld* content_world,
     base::OnceCallback<void(const base::Value*)> callback,
     base::TimeDelta timeout) {
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
+
   int message_id = next_message_id_;
 
   auto timeout_callback = std::make_unique<TimeoutCallback>(base::BindOnce(
@@ -341,6 +367,10 @@ bool WebFrameImpl::ExecuteJavaScript(const std::u16string& script) {
 bool WebFrameImpl::ExecuteJavaScript(
     const std::u16string& script,
     base::OnceCallback<void(const base::Value*)> callback) {
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
+
   ExecuteJavaScriptCallbackWithError callback_with_error =
       ExecuteJavaScriptCallbackAdapter(std::move(callback));
 
@@ -350,6 +380,10 @@ bool WebFrameImpl::ExecuteJavaScript(
 bool WebFrameImpl::ExecuteJavaScript(
     const std::u16string& script,
     ExecuteJavaScriptCallbackWithError callback) {
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
+
   JavaScriptContentWorld* content_world =
       JavaScriptFeatureManager::GetContentWorldForBrowserState(
           content_world_, GetBrowserState());
@@ -367,6 +401,9 @@ bool WebFrameImpl::ExecuteJavaScriptInContentWorld(
     JavaScriptContentWorld* content_world,
     ExecuteJavaScriptCallbackWithError callback) {
   DCHECK(frame_info_);
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
 
   NSString* ns_script = base::SysUTF16ToNSString(script);
   ScriptContext context(web_state_->GetWeakPtr(),
@@ -386,6 +423,10 @@ bool WebFrameImpl::ExecuteAsyncJavaScript(
     const std::u16string& script,
     const base::DictValue& parameters,
     ExecuteJavaScriptCallbackWithError callback) {
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
+
   JavaScriptContentWorld* content_world =
       JavaScriptFeatureManager::GetContentWorldForBrowserState(
           content_world_, GetBrowserState());
@@ -400,6 +441,9 @@ bool WebFrameImpl::ExecuteAsyncJavaScriptInContentWorld(
     JavaScriptContentWorld* content_world,
     ExecuteJavaScriptCallbackWithError callback) {
   DCHECK(frame_info_);
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
 
   NSString* ns_script = base::SysUTF16ToNSString(script);
 
@@ -422,6 +466,10 @@ bool WebFrameImpl::CallAsyncJavaScriptFunction(
     const std::string& name,
     const base::DictValue& parameters,
     ExecuteJavaScriptCallbackWithError callback) {
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
+
   JavaScriptContentWorld* content_world =
       JavaScriptFeatureManager::GetContentWorldForBrowserState(
           content_world_, GetBrowserState());
@@ -434,6 +482,10 @@ bool WebFrameImpl::CallAsyncJavaScriptFunctionInContentWorld(
     const base::DictValue& parameters,
     JavaScriptContentWorld* content_world,
     ExecuteJavaScriptCallbackWithError callback) {
+  if (IsWebStateDestroyed()) {
+    return false;
+  }
+
   base::DictValue arguments;
   arguments.Set("crw_args", parameters.Clone());
 
@@ -532,6 +584,10 @@ void WebFrameImpl::CancelPendingRequests() {
     CompleteRequest(std::move(it.second), /*result=*/nullptr);
   }
   pending_requests_.clear();
+}
+
+bool WebFrameImpl::IsWebStateDestroyed() const {
+  return !web_state_ || web_state_->IsBeingDestroyed();
 }
 
 void WebFrameImpl::DetachFromWebState() {

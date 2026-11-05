@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "ash/login/ui/login_remove_account_dialog.h"
+
 #include "ash/login/ui/non_accessible_view.h"
 #include "ash/login/ui/views_utils.h"
 #include "ash/public/cpp/login_types.h"
@@ -14,7 +15,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -105,7 +106,9 @@ class RemoveUserButton : public PillButton {
       bubble_->Hide();
       // We explicitly move focus back to the dropdown button so the Tab
       // traversal works correctly.
-      bubble_->GetBubbleOpener()->RequestFocus();
+      if (LoginButton* bubble_opener = bubble_->GetBubbleOpener()) {
+        bubble_opener->RequestFocus();
+      }
     }
 
     if (event->key_code() == ui::VKEY_RETURN) {
@@ -145,7 +148,7 @@ LoginRemoveAccountDialog::LoginRemoveAccountDialog(
     base::RepeatingClosure on_remove_user_warning_shown,
     base::RepeatingClosure on_remove_user_requested)
     : LoginBaseBubbleView(std::move(anchor_view)),
-      bubble_opener_(bubble_opener),
+      bubble_opener_(bubble_opener ? bubble_opener->AsWeakPtr() : nullptr),
       on_remove_user_warning_shown_(on_remove_user_warning_shown),
       on_remove_user_requested_(on_remove_user_requested) {
   const std::u16string& email =
@@ -243,10 +246,14 @@ LoginRemoveAccountDialog::LoginRemoveAccountDialog(
   GetViewAccessibility().SetIsModal(true);
 }
 
-LoginRemoveAccountDialog::~LoginRemoveAccountDialog() = default;
+LoginRemoveAccountDialog::~LoginRemoveAccountDialog() {
+  if (bubble_opener_) {
+    bubble_opener_->GetViewAccessibility().SetIsCollapsed();
+  }
+}
 
 LoginButton* LoginRemoveAccountDialog::GetBubbleOpener() const {
-  return bubble_opener_;
+  return bubble_opener_.get();
 }
 
 void LoginRemoveAccountDialog::RequestFocus() {

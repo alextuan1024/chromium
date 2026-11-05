@@ -105,6 +105,7 @@ class ResumableUploadRequest : public ConnectorUploadRequest {
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const GURL& base_url,
       const std::string& metadata,
+      ScanRequestUploadResult get_data_result,
       scoped_refptr<network::ResourceRequestBody> request_body,
       const std::string& histogram_suffix,
       const net::NetworkTrafficAnnotationTag& traffic_annotation,
@@ -155,6 +156,19 @@ class ResumableUploadRequest : public ConnectorUploadRequest {
       const std::string& metadata,
       ScanRequestUploadResult get_data_result,
       base::ReadOnlySharedMemoryRegion page_region,
+      const std::string& histogram_suffix,
+      const net::NetworkTrafficAnnotationTag& traffic_annotation,
+      VerdictReceivedCallback verdict_received_callback,
+      ContentUploadedCallback content_uploaded_callback,
+      bool force_sync_upload,
+      scoped_refptr<base::SequencedTaskRunner> ui_task_runner);
+
+  static std::unique_ptr<ConnectorUploadRequest> CreateNetworkRequest(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      const GURL& base_url,
+      const std::string& metadata,
+      ScanRequestUploadResult get_data_result,
+      scoped_refptr<network::ResourceRequestBody> request_body,
       const std::string& histogram_suffix,
       const net::NetworkTrafficAnnotationTag& traffic_annotation,
       VerdictReceivedCallback verdict_received_callback,

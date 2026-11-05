@@ -41,6 +41,7 @@
 #include "net/ssl/ssl_info.h"
 #include "net/storage_access_api/status.h"
 #include "net/url_request/url_request_context.h"
+#include "net/url_request/url_request_http_transaction_factory_override.h"
 #include "net/websockets/websocket_basic_stream.h"
 #include "net/websockets/websocket_channel.h"
 #include "net/websockets/websocket_errors.h"
@@ -48,6 +49,7 @@
 #include "net/websockets/websocket_handshake_request_info.h"
 #include "net/websockets/websocket_handshake_response_info.h"
 #include "services/network/local_network_access_checker.h"
+#include "services/network/network_context.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/ip_address_space_util.h"
 #include "services/network/public/cpp/local_network_access_check_result.h"
@@ -207,6 +209,17 @@ void WebSocket::WebSocketEventHandler::OnCreateURLRequest(
     impl_->frame_interceptor_ = std::make_unique<WebSocketInterceptor>(
         url_request->net_log().source().id, url_request->url(),
         impl_->throttling_profile_id_);
+    // Route the handshake - and the connection it establishes - through the
+    // profile's isolated delayed-socket session when socket-layer network
+    // conditions are configured, matching URLLoader-created requests. The
+    // handle was resolved in the WebSocket constructor (see the member
+    // comment) so that a profile update during the per-renderer throttling
+    // delay cannot move this connection to a different session than the one
+    // that was configured when CreateWebSocket() was called.
+    if (impl_->isolated_transaction_factory_handle_) {
+      net::HttpTransactionFactoryOverride::Set(
+          url_request, impl_->isolated_transaction_factory_handle_);
+    }
   }
 
   // If the request is to a URL that we can determine is an LNA request from
@@ -578,7 +591,8 @@ WebSocket::WebSocket(
         pending_connection_tracker,
     base::TimeDelta delay,
     const std::optional<base::UnguessableToken>& throttling_profile_id,
-    mojom::IPAddressSpace required_ip_address_space)
+    mojom::IPAddressSpace required_ip_address_space,
+    net::handles::NetworkHandle target_network)
     : factory_(factory),
       url_loader_network_observer_(std::move(url_loader_network_observer)),
       handshake_client_(std::move(handshake_client)),
@@ -593,6 +607,7 @@ WebSocket::WebSocket(
       client_security_state_(std::move(client_security_state)),
       required_ip_address_space_(required_ip_address_space),
       isolation_info_(isolation_info),
+      target_network_(target_network),
       has_raw_headers_access_(has_raw_headers_access),
       writable_watcher_(FROM_HERE,
                         mojo::SimpleWatcher::ArmingPolicy::MANUAL,
@@ -602,6 +617,18 @@ WebSocket::WebSocket(
                         base::SingleThreadTaskRunner::GetCurrentDefault()),
       throttling_profile_id_(throttling_profile_id) {
   DCHECK(handshake_client_);
+  // Resolve the isolated throttling session now rather than in
+  // OnCreateURLRequest(), so this connection uses the session that was
+  // configured when it was requested. WebSocketPerProcessThrottler can delay
+  // the handshake by seconds (see `delay_` below), and a profile update or
+  // clear during that window would otherwise silently retarget - or
+  // unthrottle - the connection. This matches URLLoader, which captures its
+  // handle in its constructor.
+  if (throttling_profile_id_) {
+    isolated_transaction_factory_handle_ =
+        factory_->context()->GetIsolatedTransactionFactory(
+            *throttling_profile_id_, url_);
+  }
   // |delay| should be zero if this connection is not throttled.
   DCHECK(pending_connection_tracker_.has_value() || delay.is_zero());
   if (auth_handler_) {
@@ -723,11 +750,12 @@ int WebSocket::OnHeadersReceived(
     net::CompletionOnceCallback callback,
     const net::HttpResponseHeaders* original_response_headers,
     scoped_refptr<net::HttpResponseHeaders>* override_response_headers,
+    const net::IPEndPoint& endpoint,
     std::optional<GURL>* preserve_fragment_on_redirect_url,
     const std::optional<net::SSLInfo>& ssl_info) {
   if (header_client_) {
     header_client_->OnHeadersReceived(
-        original_response_headers->raw_headers(), net::IPEndPoint(), ssl_info,
+        original_response_headers->raw_headers(), endpoint, ssl_info,
         base::BindOnce(&WebSocket::OnHeadersReceivedComplete,
                        weak_ptr_factory_.GetWeakPtr(), std::move(callback),
                        override_response_headers,
@@ -792,9 +820,7 @@ void WebSocket::AddChannel(
       (options_ & mojom::kWebSocketOptionMaximumPriority)
           ? net::WebSocketPriorityHint::kMaximum
           : net::WebSocketPriorityHint::kDefault,
-      traffic_annotation_,
-      // TODO(crbug.com/527777927): Support targeting a network in WebSockets.
-      net::handles::kInvalidNetworkHandle);
+      traffic_annotation_, target_network_);
 }
 
 void WebSocket::OnWritable(MojoResult result,

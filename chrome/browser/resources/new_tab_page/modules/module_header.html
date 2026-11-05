@@ -1,4 +1,5 @@
 <div id="titleContainer">
+  <slot name="title-icon"></slot>
   <h2 id="title" ?hidden="${!this.headerText}">${this.headerText}</h2>
   <div id="headerSpacer"></div>
   <slot name="title-actions"></slot>
@@ -8,8 +9,8 @@
 </div>
 
 <cr-action-menu id="actionMenu"
-    role-description="$i18n{moduleHeaderMoreActionsMenu}">
-  ${this.visibleMenuItems_().map(item => html`
+    role-description="${this.i18n('moduleHeaderMoreActionsMenu')}">
+  ${this.menuItems.map(item => html`
     <button id="${item.action}" class="dropdown-item"
         @click="${this.onButtonClick_}" data-action="${item.action}">
       <cr-icon class="action-menu-icon cr-icon" icon="${item.icon}"></cr-icon>
@@ -22,7 +23,7 @@
           @click="${this.onButtonClick_}" data-action="customize-module">
       <cr-icon class="action-menu-icon cr-icon"
           icon="${this.getTuneIcon_()}"></cr-icon>
-      $i18n{modulesCustomizeButtonText}
+      ${this.i18n('modulesCustomizeButtonText')}
     </button>
   ` : ''}
 </cr-action-menu>

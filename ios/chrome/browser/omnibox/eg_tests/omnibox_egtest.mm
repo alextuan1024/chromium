@@ -36,6 +36,7 @@
 #import "ios/chrome/test/earl_grey/test_switches.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/public/test/element_selector.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "net/test/embedded_test_server/http_request.h"
@@ -473,6 +474,7 @@ void FocusFakebox() {
 }
 
 // Tapping on steady view starts editing.
+TAG_SMOKE_TEST(LocationBarSteadyStateTestCase, testTapSwitchesToEditing);
 - (void)testTapSwitchesToEditing {
   [self openPage1];
 
@@ -510,12 +512,6 @@ void FocusFakebox() {
 }
 
 - (void)testCopyPaste {
-#if !TARGET_IPHONE_SIMULATOR
-  // TODO(crbug.com/449210011): Re-enable the test on iPad device.
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iPad.");
-  }
-#endif
   [self openPage1];
 
   // Long pressing should allow copying.
@@ -771,6 +767,7 @@ void FocusFakebox() {
 // Tests that tapping on steady view on webpage and starting typing a query
 // would clear the page url and have instead the typed query in the omnibox text
 // field.
+TAG_SMOKE_TEST(LocationBarPreEditStateTestCase, testTypingOnPreEditState);
 - (void)testTypingOnPreEditState {
   // Load a web page.
   [ChromeEarlGrey loadURL:_URL];
@@ -995,8 +992,7 @@ void FocusFakebox() {
 // fied, Select button should be hidden & SelectAll button should be displayed.
 // If the selected text is the entire omnibox field, select & SelectAll button
 // should be hidden.
-// TODO(crbug.com/460741696): Test is flaky.
-- (void)FLAKY_testSelection {
+- (void)testSelection {
   // Focus omnibox.
   [self focusFakebox];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::Omnibox()]
@@ -1086,8 +1082,7 @@ void FocusFakebox() {
 
 // Verifies that tapping an autocomplete suggestion in the omnibox successfully
 // completes the user's query.
-// TODO(crbug.com/455132352): Test is flaky.
-- (void)FLAKY_testTapBehaviors {
+- (void)testTapBehaviors {
   // Disable all autocomplete providers except the history url provider.
   AppLaunchConfiguration config = [self appConfigurationForTestCase];
   omnibox::DisableAutocompleteProviders(config, 524279);

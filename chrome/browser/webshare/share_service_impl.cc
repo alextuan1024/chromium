@@ -21,6 +21,7 @@
 #include "components/safe_browsing/buildflags.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/visibility.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
@@ -35,9 +36,9 @@
 #endif
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/safe_browsing/db/v5_get_hash_protocol_manager_factory.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
-#include "chrome/browser/safe_browsing/v5_get_hash_protocol_manager_factory.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
 #include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #endif
@@ -48,9 +49,11 @@
 
 ShareServiceImpl::ShareServiceImpl(
     content::RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<blink::mojom::ShareService> receiver)
+    mojo::PendingReceiver<blink::mojom::ShareService> receiver,
+    base::SelfDeletingPassKey key)
     : content::DocumentService<blink::mojom::ShareService>(render_frame_host,
-                                                           std::move(receiver))
+                                                           std::move(receiver),
+                                                           key)
 #if BUILDFLAG(IS_CHROMEOS)
       ,
       sharesheet_client_(
@@ -78,7 +81,8 @@ void ShareServiceImpl::Create(
     return;
   }
 
-  new ShareServiceImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<ShareServiceImpl>(*render_frame_host,
+                                           std::move(receiver));
 }
 
 // static
@@ -219,6 +223,18 @@ void ShareServiceImpl::Share(const std::string& title,
     return;
   }
 
+  // A compromised renderer can call Share() directly, bypassing the check in
+  // NavigatorShare::share(), so the browser enforces user activation itself.
+  // Consume rather than test, so that a single gesture cannot be replayed into
+  // repeated share sheets. NavigatorShare::share() consumes its own copy with
+  // UserActivationUpdateScope::kCurrentRenderer, which leaves the browser-side
+  // state intact for this check.
+  if (!render_frame_host().ConsumeTransientUserActivation()) {
+    VLOG(1) << "Share without transient user activation";
+    std::move(callback).Run(blink::mojom::ShareError::PERMISSION_DENIED);
+    return;
+  }
+
   content::WebContents* const web_contents =
       content::WebContents::FromRenderFrameHost(&render_frame_host());
   if (!web_contents || !IsWebContentsForegroundAndVisible(web_contents)) {
@@ -269,7 +285,7 @@ void ShareServiceImpl::Share(const std::string& title,
   }
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-  DCHECK(!safe_browsing_request_);
+  CHECK(!safe_browsing_request_, base::NotFatalUntil::M162);
   if (should_check_url && g_browser_process->safe_browsing_service()) {
     auto* v5_manager =
         web_contents->GetBrowserContext()
@@ -309,7 +325,7 @@ void ShareServiceImpl::RunShareOperation(
     return;
   }
 
-  content::WebContents* const web_contents =
+  content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(&render_frame_host());
   if (!web_contents || !IsWebContentsForegroundAndVisible(web_contents)) {
     VLOG(1) << "Cannot share if tab is not active and visible";
@@ -345,9 +361,21 @@ void ShareServiceImpl::RunShareOperation(
          blink::mojom::ShareError result) { std::move(callback).Run(result); },
       std::move(sharing_service_operation), std::move(callback)));
 #elif BUILDFLAG(IS_WIN)
+  base::WeakPtr<ShareServiceImpl> weak_this = weak_factory_.GetWeakPtr();
+  content::WeakDocumentPtr weak_document =
+      render_frame_host().GetWeakDocumentPtr();
   auto blocker = web_contents->ForSecurityDropFullscreen(
       /*display_id=*/display::kInvalidDisplayId);
-  if (!blocker) {
+  if (!weak_this) {
+    return;
+  }
+  content::RenderFrameHost* rfh = weak_document.AsRenderFrameHostIfValid();
+  if (!blocker || !rfh || !rfh->IsActive()) {
+    std::move(callback).Run(blink::mojom::ShareError::PERMISSION_DENIED);
+    return;
+  }
+  web_contents = content::WebContents::FromRenderFrameHost(rfh);
+  if (!web_contents || !IsWebContentsForegroundAndVisible(web_contents)) {
     std::move(callback).Run(blink::mojom::ShareError::PERMISSION_DENIED);
     return;
   }

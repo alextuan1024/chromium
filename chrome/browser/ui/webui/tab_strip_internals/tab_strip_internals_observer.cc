@@ -141,14 +141,22 @@ void TabStripInternalsObserver::OnSplitTabChanged(
   FireUpdate();
 }
 
-void TabStripInternalsObserver::OnTabChangedAt(tabs::TabInterface* /*tab*/,
-                                               TabChangeType /*change_type*/) {
+void TabStripInternalsObserver::OnTabChanged(tabs::TabHandle /*tab*/,
+                                             TabChangeType /*change_type*/) {
   FireUpdate();
 }
 
 void TabStripInternalsObserver::OnTabPinnedStateChanged(
-    tabs::TabInterface* /*tab*/,
-    int /*index*/) {
+    tabs::TabHandle /*tab*/) {
+  FireUpdate();
+}
+
+void TabStripInternalsObserver::OnTabBlockedStateChanged(
+    tabs::TabHandle /*tab*/) {
+  FireUpdate();
+}
+
+void TabStripInternalsObserver::OnTabAudioChanged(tabs::TabInterface* /*tab*/) {
   FireUpdate();
 }
 
@@ -156,8 +164,7 @@ void TabStripInternalsObserver::TabGroupedStateChanged(
     TabStripModel* /*tab_strip_model*/,
     std::optional<tab_groups::TabGroupId> /*old_group*/,
     std::optional<tab_groups::TabGroupId> /*new_group*/,
-    tabs::TabInterface* /*tab*/,
-    int /*index*/) {
+    tabs::TabHandle /*tab*/) {
   FireUpdate();
 }
 

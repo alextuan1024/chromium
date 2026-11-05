@@ -47,8 +47,8 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/device/public/cpp/test/scoped_geolocation_overrider.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if defined(TOOLKIT_VIEWS)
@@ -213,7 +213,7 @@ class GeolocationHeaderBrowserTest : public InProcessBrowserTest {
 
     content::OpenURLParams params =
         content::OpenURLParams::CreateBrowserInitiated(
-            search_url, WindowOpenDisposition::CURRENT_TAB,
+            search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
             ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
                                       ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
@@ -262,19 +262,6 @@ class GeolocationHeaderBrowserTest : public InProcessBrowserTest {
   testing::NiceMock<policy::MockConfigurationPolicyProvider> policy_provider_;
 };
 
-class GeolocationHeaderFencedFrameBrowserTest
-    : public GeolocationHeaderBrowserTest {
- public:
-  GeolocationHeaderFencedFrameBrowserTest() {
-    feature_list_.Reset();
-    feature_list_.InitWithFeatures(
-        {omnibox::kPlatformAgnosticXGeo, blink::features::kFencedFrames,
-         features::kPrivacySandboxAdsAPIsOverride},
-        {});
-  }
-};
-
-
 // Test that the X-Geo header is correctly appended for allowed searches.
 IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, AppendsXGeoHeader) {
   base::HistogramTester histogram_tester;
@@ -302,7 +289,7 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, AppendsXGeoHeader) {
 
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          search_url, WindowOpenDisposition::CURRENT_TAB,
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
                                     ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
@@ -351,7 +338,7 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, NoHeaderInIncognito) {
 
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          search_url, WindowOpenDisposition::CURRENT_TAB,
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
                                     ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
@@ -399,7 +386,7 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest,
 
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          search_url, WindowOpenDisposition::CURRENT_TAB,
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
                                     ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
@@ -444,7 +431,7 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, NoHeaderForNonDse) {
 
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          search_url, WindowOpenDisposition::CURRENT_TAB,
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
                                     ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
@@ -488,7 +475,7 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, RedirectToNonDse) {
 
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          redirect_url, WindowOpenDisposition::CURRENT_TAB,
+          redirect_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
                                     ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
@@ -534,7 +521,7 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, RedirectToSameOrigin) {
 
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          redirect_url, WindowOpenDisposition::CURRENT_TAB,
+          redirect_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
                                     ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
@@ -550,70 +537,6 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, RedirectToSameOrigin) {
   EXPECT_TRUE(GetXGeoHeader().starts_with("w "));
   histogram_tester.ExpectBucketCount("Omnibox.Search.XGeoHeaderAttached", true,
                                      2);
-}
-
-IN_PROC_BROWSER_TEST_F(GeolocationHeaderFencedFrameBrowserTest,
-                       NoHeaderForFencedFrame) {
-  device::ScopedGeolocationOverrider overrider(
-      /*latitude=*/12.34, /*longitude=*/56.78);
-
-  Profile* profile = browser()->GetProfile();
-  GeolocationHeaderService* geo_service =
-      GeolocationHeaderServiceFactory::GetForProfile(profile);
-  ASSERT_TRUE(geo_service);
-
-  // Trigger priming by typing in the Omnibox.
-  OmniboxView* omnibox_view =
-      BrowserWindow::FromBrowser(browser())->GetLocationBar()->GetOmniboxView();
-  omnibox_view->OnBeforePossibleChange();
-  omnibox_view->SetUserText(u"test");
-  omnibox_view->OnAfterPossibleChange(true);
-
-  // Wait until the geolocation service completes the query and caches it.
-  EXPECT_TRUE(
-      base::test::RunUntil([&]() { return geo_service->HasCachedLocation(); }));
-
-  // Load a main page first to ensure service is active and primed.
-  GURL main_url = test_server_.GetURL("/search?q=main");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
-
-  // Create a Fenced Frame manually via JS.
-  content::WebContents* web_contents =
-      browser()->GetTabStripModel()->GetActiveWebContents();
-  content::RenderFrameHost* main_frame = web_contents->GetPrimaryMainFrame();
-
-  EXPECT_TRUE(
-      content::ExecJs(main_frame,
-                      "const ff = document.createElement('fencedframe');"
-                      "ff.id = 'my_fenced_frame';"
-                      "document.body.appendChild(ff);"));
-
-  // Find the Fenced Frame RFH.
-  content::RenderFrameHost* fenced_frame_rfh = nullptr;
-  main_frame->ForEachRenderFrameHost([&](content::RenderFrameHost* rfh) {
-    if (rfh->IsFencedFrameRoot()) {
-      fenced_frame_rfh = rfh;
-    }
-  });
-  ASSERT_TRUE(fenced_frame_rfh);
-
-  // Navigate the Fenced Frame manually via JS.
-  GURL fenced_frame_url = test_server_.GetURL("/search?q=fenced");
-
-  content::TestFrameNavigationObserver navigation_observer(fenced_frame_rfh);
-  EXPECT_TRUE(content::ExecJs(
-      fenced_frame_rfh, base::StringPrintf("location.href = '%s';",
-                                           fenced_frame_url.spec().c_str())));
-  navigation_observer.Wait();
-
-  // Verify that the header was NOT sent for the fenced frame request.
-  std::string captured_header;
-  {
-    base::AutoLock lock(header_lock_);
-    captured_header = xgeo_header_;
-  }
-  EXPECT_TRUE(captured_header.empty())
-      << "X-Geo header should not be sent for Fenced Frame navigations.";
 }
 
 IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest,
@@ -643,7 +566,7 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest,
 
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          redirect_url, WindowOpenDisposition::CURRENT_TAB,
+          redirect_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
                                     ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
@@ -679,6 +602,51 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest,
 IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest,
                        DefaultGeolocationPolicyBlocked) {
   RunDefaultPolicyTest(2 /* Block */, /*expect_header=*/false);
+}
+
+// Tests that when the DefaultGeolocationSetting enterprise policy is set to
+// 2 (BLOCK), Omnibox searches do not attach the X-Geo header, and ILLS is
+// also suppressed.
+IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest,
+                       NoIllsWhenDefaultGeolocationPolicyBlocked) {
+  base::HistogramTester histogram_tester;
+
+  Profile* profile = browser()->GetProfile();
+  HostContentSettingsMap* settings_map =
+      HostContentSettingsMapFactory::GetForProfile(profile);
+
+  // Clear site-specific exception so the default setting applies.
+  settings_map->SetContentSettingDefaultScope(
+      test_server_.GetURL("/"), test_server_.GetURL("/"),
+      ContentSettingsType::GEOLOCATION, CONTENT_SETTING_DEFAULT);
+
+  // Set user default content setting to ALLOW to verify that policy takes
+  // precedence.
+  settings_map->SetDefaultContentSetting(ContentSettingsType::GEOLOCATION,
+                                         CONTENT_SETTING_ALLOW);
+
+  SetDefaultGeolocationPolicy(2 /* Block */);
+
+  GeolocationHeaderService* geo_service =
+      GeolocationHeaderServiceFactory::GetForProfile(profile);
+  ASSERT_TRUE(geo_service);
+
+  // Attempt to prime location. It should be blocked by policy and abort.
+  geo_service->PrimeLocation();
+
+  histogram_tester.ExpectBucketCount(
+      "Omnibox.GeolocationHeaderService.PrimeLocationOutcome",
+      4 /* kNotTriedPermissionStatusMismatch */, 1);
+
+  // Attempt to get the location header for ILLS (for_automatic_sending =
+  // false). It should be explicitly suppressed by the policy check.
+  EXPECT_FALSE(
+      geo_service->GetLocationHeader(test_server_.GetURL("/search?q=test"),
+                                     /*for_automatic_sending=*/false));
+
+  histogram_tester.ExpectBucketCount(
+      "Omnibox.GeolocationHeaderService.GetLocationOutcome.InlineSuggestion",
+      2 /* kPermissionStateMismatch */, 1);
 }
 
 // Tests that when the DefaultGeolocationSetting enterprise policy is set to
@@ -754,7 +722,7 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderDisabledBrowserTest,
 
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          search_url, WindowOpenDisposition::CURRENT_TAB,
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
                                     ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 

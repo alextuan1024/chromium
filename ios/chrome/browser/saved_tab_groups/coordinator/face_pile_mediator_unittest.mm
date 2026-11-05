@@ -69,7 +69,7 @@ class FacePileMediatorTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
     browser_ = std::make_unique<TestBrowser>(profile_);
     tab_group_service_ =
@@ -122,8 +122,7 @@ class FacePileMediatorTest : public PlatformTest {
   // Sign out.
   void SignOut() {
     AuthenticationServiceFactory::GetForProfile(profile_)->SignOut(
-        signin_metrics::ProfileSignout::kTest, ^(){
-        });
+        signin_metrics::ProfileSignout::kTest);
   }
 
   web::WebTaskEnvironment task_environment_;

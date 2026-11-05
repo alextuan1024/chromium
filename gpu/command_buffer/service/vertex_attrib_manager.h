@@ -32,7 +32,7 @@ class VertexArrayManager;
 // glDrawXXX time.
 class GPU_GLES2_EXPORT VertexAttrib {
  public:
-  typedef std::list<raw_ptr<VertexAttrib, CtnExperimental>> VertexAttribList;
+  typedef std::list<raw_ptr<VertexAttrib>> VertexAttribList;
 
   VertexAttrib();
   VertexAttrib(const VertexAttrib& other);
@@ -95,14 +95,6 @@ class GPU_GLES2_EXPORT VertexAttrib {
                            GLuint baseinstance) const {
     return divisor_ ? ((primcount - 1) / divisor_) + baseinstance
                     : max_vertex_accessed + basevertex;
-  }
-
-  bool is_client_side_array() const {
-    return is_client_side_array_;
-  }
-
-  void set_is_client_side_array(bool value) {
-    is_client_side_array_ = value;
   }
 
  private:
@@ -173,9 +165,6 @@ class GPU_GLES2_EXPORT VertexAttrib {
 
   GLboolean integer_;
 
-  // Will be true if this was assigned to a client side array.
-  bool is_client_side_array_;
-
   // The buffer bound to this attribute.
   scoped_refptr<Buffer> buffer_;
 
@@ -192,7 +181,7 @@ class GPU_GLES2_EXPORT VertexAttrib {
 class GPU_GLES2_EXPORT VertexAttribManager
     : public base::RefCounted<VertexAttribManager> {
  public:
-  typedef std::list<raw_ptr<VertexAttrib, CtnExperimental>> VertexAttribList;
+  typedef std::list<raw_ptr<VertexAttrib>> VertexAttribList;
 
   explicit VertexAttribManager(bool do_buffer_refcounting);
 

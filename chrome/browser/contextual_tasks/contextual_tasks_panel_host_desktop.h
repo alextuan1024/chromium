@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_PANEL_HOST_DESKTOP_H_
 #define CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_PANEL_HOST_DESKTOP_H_
 
+#include <string>
+
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
@@ -58,6 +60,9 @@ class ContextualTasksPanelHostDesktop : public ContextualTasksPanelHost,
   content::WebContents* GetWebContents() override;
   content::WebContents* GetToolbarWebContents() override;
   void SetWebContents(content::WebContents* web_contents) override;
+  void SetErrorPageVisible(bool visible) override;
+  bool IsErrorPageVisible() const override;
+  void AnnounceAlert(const std::u16string& text) override;
 
   // SidePanelEntryObserver:
   void OnEntryShown(SidePanelEntry* entry) override;
@@ -79,8 +84,17 @@ class ContextualTasksPanelHostDesktop : public ContextualTasksPanelHost,
   // Shows side panel, transitioning from active tab content's bounds.
   void ShowFromTab();
 
+  // Lazily creates the persistent toolbar and scrim `WebContents` when
+  // side panel rearchitecture is enabled.
+  void EnsureWebUiWebContentsCreated();
+
   // Browser window of the current panel.
   const raw_ptr<BrowserWindowInterface> browser_window_;
+
+  // Persistent `WebContents` for the toolbar and scrim across side panel
+  // view recreations (e.g. when switching tabs).
+  std::unique_ptr<content::WebContents> toolbar_web_contents_;
+  std::unique_ptr<content::WebContents> scrim_web_contents_;
 
   // WebView of the current panel.
   base::WeakPtr<ContextualTasksWebView> web_view_ = nullptr;
@@ -90,6 +104,9 @@ class ContextualTasksPanelHostDesktop : public ContextualTasksPanelHost,
 
   // True if the panel should be suppressed for testing.
   bool suppressed_for_testing_ = false;
+
+  // Whether the protected page error scrim should be visible over the panel.
+  bool is_error_page_visible_ = false;
 
   base::WeakPtrFactory<ContextualTasksPanelHostDesktop> weak_factory_{this};
 };

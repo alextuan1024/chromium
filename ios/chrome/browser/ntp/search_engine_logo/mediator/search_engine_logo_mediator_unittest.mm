@@ -44,7 +44,7 @@ class MockGoogleLogoService : public GoogleLogoService {
   MOCK_METHOD3(GetLogo, void(search_provider_logos::LogoCallbacks, bool, bool));
 };
 
-std::unique_ptr<KeyedService> BuildMockGoogleLogoService(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildMockGoogleLogoService(ProfileIOS& profile) {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
   return std::make_unique<MockGoogleLogoService>(
@@ -260,6 +260,22 @@ TEST_F(SearchEngineLogoMediatorTest, TestEmptyCacheDoesNotResetLogo) {
 
   // Now it should be kNone.
   EXPECT_EQ(SearchEngineLogoState::kNone, containerView.logoState);
+}
+
+// Test that setting a missing override logo file path does not crash and falls
+// back gracefully.
+TEST_F(SearchEngineLogoMediatorTest, TestMissingOverrideLogoPathDoesNotCrash) {
+  EXPECT_CALL(*logo_service_, GetLogo(_, false, false))
+      .Times(testing::AtMost(1));
+  SelectSearchEngineWithKeyword(TemplateURLPrepopulateData::google);
+
+  [mediator_
+      setOverrideLogoPath:@"/nonexistent/ephemeral_google_logo_light.png"
+             darkLogoPath:@"/nonexistent/ephemeral_google_logo_dark.png"];
+
+  SearchEngineLogoContainerView* containerView =
+      (SearchEngineLogoContainerView*)[mediator_ view];
+  EXPECT_EQ(SearchEngineLogoState::kLogo, containerView.logoState);
 }
 
 }  // anonymous namespace

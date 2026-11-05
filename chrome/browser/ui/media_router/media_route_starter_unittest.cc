@@ -209,12 +209,12 @@ class MediaRouteStarterTest : public ChromeRenderViewHostTestHarness {
     // Handler so MockMediaRouter will respond to requests to create a route.
     // Will construct a RouteRequestResult based on the set result code and
     // then call the handler's callback.
-    ON_CALL(*media_router(), CreateRouteInternal(_, _, _, _, _, _))
+    ON_CALL(*media_router(), CreateRoute(_, _, _, _, _, _))
         .WillByDefault([this](const MediaSource::Id& source_id,
                               const MediaSink::Id& sink_id,
                               const url::Origin& origin,
                               content::WebContents* web_contents,
-                              MediaRouteResponseCallback& callback,
+                              MediaRouteResponseCallback callback,
                               base::TimeDelta timeout) {
           // This indicates the test did not properly set the expected result
           EXPECT_NE(mojom::RouteRequestResultCode::UNKNOWN_ERROR, result_code_);
@@ -236,8 +236,7 @@ class MediaRouteStarterTest : public ChromeRenderViewHostTestHarness {
   }
   LoggerImpl* logger() { return logger_.get(); }
 
-  const std::vector<raw_ptr<MediaSinksObserver, VectorExperimental>>
-  media_sink_observers() {
+  const std::vector<raw_ptr<MediaSinksObserver>> media_sink_observers() {
     return media_sinks_observers_;
   }
 
@@ -397,10 +396,10 @@ class MediaRouteStarterTest : public ChromeRenderViewHostTestHarness {
         base::BindOnce(&MediaRouteStarterTest::HandleMediaRouteResponse,
                        base::Unretained(this)));
 
-    EXPECT_CALL(*media_router(),
-                CreateRouteInternal(params->source_id, params->request->sink_id,
-                                    params->origin, web_contents(), _,
-                                    params->timeout));
+    EXPECT_CALL(
+        *media_router(),
+        CreateRoute(params->source_id, params->request->sink_id, params->origin,
+                    web_contents(), _, params->timeout));
 
     media_route_starter()->StartRoute(std::move(params));
   }
@@ -424,8 +423,7 @@ class MediaRouteStarterTest : public ChromeRenderViewHostTestHarness {
   std::unique_ptr<TestingProfileManager> profile_manager_;
 
   std::unique_ptr<LoggerImpl> logger_;
-  std::vector<raw_ptr<MediaSinksObserver, VectorExperimental>>
-      media_sinks_observers_;
+  std::vector<raw_ptr<MediaSinksObserver>> media_sinks_observers_;
 
   std::unique_ptr<MockWebContentsPresentationManager> presentation_manager_;
 
@@ -729,6 +727,25 @@ TEST_F(MediaRouteStarterTest, CreateRouteParameters_StartPresentationContext) {
   EXPECT_CALL(*this, RequestError(_));
 }
 
+TEST_F(MediaRouteStarterTest,
+       CreateRouteParameters_StartPresentationContext_RemotePlayback) {
+  auto start_presentation_context = CreateStartPresentationContext(
+      CreatePresentationRequest(kRemotePlaybackUrl, kStartOriginUrl));
+
+  CreateStarter(MediaRouterUIParameters(kDefaultModes, web_contents(),
+                                        std::move(start_presentation_context)));
+
+  UpdateSinks({cast_sink().sink()}, std::vector<url::Origin>());
+
+  auto params = media_route_starter()->CreateRouteParameters(
+      cast_sink().id(), MediaCastMode::REMOTE_PLAYBACK);
+  ASSERT_TRUE(params);
+  EXPECT_EQ(MediaCastMode::REMOTE_PLAYBACK, params->cast_mode);
+  EXPECT_EQ(url::Origin::Create(GURL(kStartOriginUrl)), params->origin);
+
+  EXPECT_CALL(*this, RequestError(_));
+}
+
 // Demonstrates that desktop mirroring routes are created correctly.
 TEST_F(MediaRouteStarterTest, StartRoute_DesktopMirroring) {
   CreateStarterForDefaultModes();
@@ -949,6 +966,104 @@ TEST_F(MediaRouteStarterTest,
   EXPECT_EQ(u"victim.example",
             media_route_starter()->GetPresentationRequestSourceName());
   EXPECT_CALL(*this, RequestError(_));
+}
+
+TEST_F(MediaRouteStarterTest, InitiatorWebContentsDestroyed) {
+  presentation_manager()->SetDefaultPresentationRequest(
+      default_presentation_request());
+  CreateStarterForDefaultModes();
+  UpdateSinks({cast_sink().sink()}, std::vector<url::Origin>());
+
+  EXPECT_EQ(web_contents(), media_route_starter()->GetWebContents());
+  EXPECT_TRUE(media_route_starter()->SinkSupportsCastMode(
+      cast_sink().id(), MediaCastMode::TAB_MIRROR));
+  EXPECT_TRUE(media_route_starter()->SinkSupportsCastMode(
+      cast_sink().id(), MediaCastMode::PRESENTATION));
+  EXPECT_TRUE(media_route_starter()->SinkSupportsCastMode(
+      cast_sink().id(), MediaCastMode::DESKTOP_MIRROR));
+
+  DeleteContents();
+
+  EXPECT_EQ(nullptr, media_route_starter()->GetWebContents());
+  EXPECT_NE(nullptr, media_route_starter()->GetProfile());
+  EXPECT_NE(nullptr, media_route_starter()->GetMediaRouter());
+  EXPECT_FALSE(media_route_starter()->SinkSupportsCastMode(
+      cast_sink().id(), MediaCastMode::TAB_MIRROR));
+  EXPECT_FALSE(media_route_starter()->SinkSupportsCastMode(
+      cast_sink().id(), MediaCastMode::PRESENTATION));
+  EXPECT_EQ(nullptr, media_route_starter()->CreateRouteParameters(
+                         cast_sink().id(), MediaCastMode::TAB_MIRROR));
+  EXPECT_EQ(nullptr, media_route_starter()->CreateRouteParameters(
+                         cast_sink().id(), MediaCastMode::PRESENTATION));
+  EXPECT_TRUE(media_route_starter()->SinkSupportsCastMode(
+      cast_sink().id(), MediaCastMode::DESKTOP_MIRROR));
+  EXPECT_NE(nullptr, media_route_starter()->CreateRouteParameters(
+                         cast_sink().id(), MediaCastMode::DESKTOP_MIRROR));
+}
+
+TEST_F(MediaRouteStarterTest, StartPresentationContext_CancelledOnBFCache) {
+  NavigateAndCommit(GURL(kStartOriginUrl));
+  content::PresentationRequest request(
+      main_rfh()->GetGlobalId(), {GURL(kStartPresentationUrl)},
+      url::Origin::Create(GURL(kStartOriginUrl)));
+  CreateStarter(MediaRouterUIParameters(
+      kDefaultModes, web_contents(), CreateStartPresentationContext(request)));
+  UpdateSinks({cast_sink().sink()}, {request.frame_origin});
+  ASSERT_TRUE(media_route_starter()->CreateRouteParameters(
+      cast_sink().id(), MediaCastMode::PRESENTATION));
+
+  EXPECT_CALL(*this, RequestError(testing::Field(
+                         &blink::mojom::PresentationError::error_type,
+                         blink::mojom::PresentationErrorType::
+                             PRESENTATION_REQUEST_CANCELLED)));
+  media_route_starter()->RenderFrameHostStateChanged(
+      main_rfh(), content::RenderFrameHost::LifecycleState::kActive,
+      content::RenderFrameHost::LifecycleState::kInBackForwardCache);
+  EXPECT_FALSE(media_route_starter()->CreateRouteParameters(
+      cast_sink().id(), MediaCastMode::PRESENTATION));
+}
+
+TEST_F(MediaRouteStarterTest,
+       StartPresentationContext_CancelledOnCrossOriginNavigation) {
+  NavigateAndCommit(GURL(kStartOriginUrl));
+  content::PresentationRequest request(
+      main_rfh()->GetGlobalId(), {GURL(kStartPresentationUrl)},
+      url::Origin::Create(GURL(kStartOriginUrl)));
+  CreateStarter(MediaRouterUIParameters(
+      kDefaultModes, web_contents(), CreateStartPresentationContext(request)));
+  UpdateSinks({cast_sink().sink()}, {request.frame_origin});
+  ASSERT_TRUE(media_route_starter()->CreateRouteParameters(
+      cast_sink().id(), MediaCastMode::PRESENTATION));
+
+  EXPECT_CALL(*this, RequestError(testing::Field(
+                         &blink::mojom::PresentationError::error_type,
+                         blink::mojom::PresentationErrorType::
+                             PRESENTATION_REQUEST_CANCELLED)));
+  NavigateAndCommit(GURL("https://victim.example/"));
+  EXPECT_FALSE(media_route_starter()->CreateRouteParameters(
+      cast_sink().id(), MediaCastMode::PRESENTATION));
+}
+
+TEST_F(MediaRouteStarterTest,
+       StartPresentationContext_ClearedOnNavigationAfterStartRoute) {
+  NavigateAndCommit(GURL(kStartOriginUrl));
+  content::PresentationRequest request(
+      main_rfh()->GetGlobalId(), {GURL(kStartPresentationUrl)},
+      url::Origin::Create(GURL(kStartOriginUrl)));
+  CreateStarter(MediaRouterUIParameters(
+      kDefaultModes, web_contents(), CreateStartPresentationContext(request)));
+  UpdateSinks({cast_sink().sink()}, {request.frame_origin});
+  auto params = media_route_starter()->CreateRouteParameters(
+      cast_sink().id(), MediaCastMode::PRESENTATION);
+  ASSERT_TRUE(params);
+  EXPECT_CALL(*media_router(), CreateRoute(_, _, _, _, _, _))
+      .WillOnce(testing::Return());
+  EXPECT_CALL(*this, RequestError(_));
+  media_route_starter()->StartRoute(std::move(params));
+
+  NavigateAndCommit(GURL("https://victim.example/"));
+  EXPECT_FALSE(media_route_starter()->CreateRouteParameters(
+      cast_sink().id(), MediaCastMode::PRESENTATION));
 }
 
 }  // namespace media_router

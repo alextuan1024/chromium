@@ -120,11 +120,6 @@ std::unique_ptr<ScopedAllowCrashOnStartup> gAllowCrashOnStartup;
 }
 
 - (void)setUp {
-  // `ChromeTestCase:isStartupTest` must be true before calling [super setUp] in
-  // order to avoid opening a new tab on startup. While not strictly necessary,
-  // this let's the test run a little faster.
-  [[self class] testForStartup];
-
   [super setUp];
   [self resetAppState:[self appConfigurationForTestCase]];
   self.continueAfterFailure = YES;
@@ -141,8 +136,7 @@ std::unique_ptr<ScopedAllowCrashOnStartup> gAllowCrashOnStartup;
 //
 // Corresponds to VariationsSafeModeEndToEndBrowserTest.ExtendedSafeSeedEndToEnd
 // in variations_safe_mode_browsertest.cc.
-// TODO(crbug.com/379849501): Test is flaky on various bots.
-- (void)DISABLED_testVariationsSafeModeEndToEnd {
+- (void)testVariationsSafeModeEndToEnd {
   AppLaunchConfiguration config = [self appConfigurationForTestCase];
 
   // Set the safe seed value. Validate that the seed is set but not active.

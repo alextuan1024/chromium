@@ -4,6 +4,7 @@
 
 #include "third_party/unrar/google/unrar_wrapper.h"
 
+#include <algorithm>
 #include <memory>
 
 #include "base/files/file_path.h"
@@ -55,6 +56,7 @@ bool RarReader::Open(std::unique_ptr<RarReaderDelegate> delegate,
                      base::File temp_file) {
   reader_ = std::move(delegate);
   temp_file_ = std::move(temp_file);
+  has_error_ = false;
 
   command_ = std::make_unique<CommandData>();
   // Unrar forbids empty passwords, but requires that a password be provided for
@@ -76,6 +78,12 @@ bool RarReader::Open(std::unique_ptr<RarReaderDelegate> delegate,
   // Disables an optimization that can allow specially crafted archives to
   // bypass analysis. See crbug.com/506473226.
   command_->Recurse = RECURSE_ALWAYS;
+  // Cap the dictionary size limit to UNPACK_MAX_DICT so that fuzzer builds
+  // (where UNPACK_MAX_DICT is reduced below the 4 GiB default WinSizeLimit)
+  // reject oversized RAR5 dictionaries in CmdExtract::CheckWinLimit() before
+  // reaching the fatal abort in Unpack::Init().
+  command_->WinSizeLimit =
+      std::min<uint64_t>(command_->WinSizeLimit, UNPACK_MAX_DICT);
 
   if (!writer_) {
     // If no custom writer is set, use the default FileWriter writing to temp_file.
@@ -101,6 +109,9 @@ bool RarReader::Open(std::unique_ptr<RarReaderDelegate> delegate,
 }
 
 bool RarReader::ExtractNextEntry() {
+  if (has_error_) {
+    return false;
+  }
   write_error_ = false;
   bool success = true, repeat = true;
   while (success || repeat) {
@@ -163,6 +174,11 @@ bool RarReader::ExtractNextEntry() {
         archive_->SeekToNext();
         return true;
       }
+
+      if (!repeat) {
+        has_error_ = true;
+        return false;
+      }
     }
   }
 
@@ -187,6 +203,10 @@ bool RarReader::HeaderDecryptionFailed() const {
 
 bool RarReader::HasWriteError() const {
    return write_error_;
+}
+
+bool RarReader::HasError() const {
+  return has_error_;
 }
 
 }  // namespace third_party_unrar

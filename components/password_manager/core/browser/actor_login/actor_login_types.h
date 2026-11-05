@@ -18,7 +18,6 @@
 #include "components/actor/public/mojom/actor_types.mojom-shared.h"
 #include "components/optimization_guide/proto/features/actor_login.pb.h"
 #include "ui/gfx/image/image.h"
-#include "url/gurl.h"
 #include "url/origin.h"
 
 namespace actor_login {
@@ -199,6 +198,10 @@ enum class LoginStatusResult {
 // Translates `LoginStatusResult` to `actor::mojom::ActionResultCode`.
 actor::mojom::ActionResultCode LoginResultToActorResult(
     LoginStatusResult login_result);
+
+// Returns whether `login_result` indicates successful password credential
+// filling.
+bool IsSuccessfulPasswordCredentialFilling(LoginStatusResult login_result);
 
 using FrameFillingStartedCallback =
     base::OnceCallback<void(base::span<const int> global_frame_ids)>;

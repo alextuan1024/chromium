@@ -11,13 +11,13 @@
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/context/glic_page_context_fetcher.h"
 #include "chrome/browser/glic/host/context/glic_pin_candidate_comparator.h"
@@ -26,6 +26,7 @@
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/service/glic_instance_helper.h"
+#include "chrome/browser/glic/service/metrics/metrics_types.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -54,6 +55,12 @@ const int32_t kMaxPinnedTabs = 256;
 
 bool IsForeground(content::Visibility visibility) {
   return visibility != content::Visibility::HIDDEN;
+}
+
+void RecordTabPinnedForSharing(GlicTabPinnedForSharingResult result) {
+  // Justification: Existing unsplit tab-pinning histogram moved from
+  // GlicMetrics.
+  base::UmaHistogramEnumeration("Glic.Sharing.TabPinnedForSharing", result);
 }
 
 }  // namespace
@@ -296,11 +303,9 @@ class GlicPinnedTabManagerImpl::UpdateThrottler {
 };
 
 GlicPinnedTabManagerImpl::GlicPinnedTabManagerImpl(Profile* profile,
-                                                   GlicInstance* glic_instance,
-                                                   GlicMetrics* metrics)
+                                                   GlicInstance* glic_instance)
     : profile_(profile),
       glic_instance_(glic_instance),
-      metrics_(metrics),
       max_pinned_tabs_(kDefaultMaxPinnedTabs) {
   pin_candidate_updater_ = std::make_unique<UpdateThrottler>(
       base::BindRepeating(&GlicPinnedTabManagerImpl::SendPinCandidatesUpdate,
@@ -342,16 +347,15 @@ bool GlicPinnedTabManagerImpl::PinTabs(
   for (const auto tab_handle : tab_handles) {
     if (pinned_tabs_.size() == static_cast<size_t>(max_pinned_tabs_)) {
       pinning_fully_succeeded = false;
-      metrics_->OnTabPinnedForSharing(
+      RecordTabPinnedForSharing(
           GlicTabPinnedForSharingResult::kPinTabForSharingFailedTooManyTabs);
       continue;
     }
     auto* tab = tab_handle.Get();
     if (!tab || IsTabPinned(tab_handle) || !IsTabValidForPinning(tab)) {
       pinning_fully_succeeded = false;
-      metrics_->OnTabPinnedForSharing(
-          GlicTabPinnedForSharingResult::
-              kPinTabForSharingFailedNotValidForSharing);
+      RecordTabPinnedForSharing(GlicTabPinnedForSharingResult::
+                                    kPinTabForSharingFailedNotValidForSharing);
       continue;
     }
 
@@ -380,7 +384,7 @@ bool GlicPinnedTabManagerImpl::PinTabs(
     pinning_status_event_callback_list_.Notify(tab_handle.Get(),
                                                usage.pin_event);
     pinning_status_changed_callback_list_.Notify(tab_handle.Get(), true);
-    metrics_->OnTabPinnedForSharing(
+    RecordTabPinnedForSharing(
         GlicTabPinnedForSharingResult::kPinTabForSharingSucceeded);
   }
   NotifyPinnedTabsChanged();
@@ -475,9 +479,9 @@ bool GlicPinnedTabManagerImpl::IsTabPinned(tabs::TabHandle tab_handle) const {
   return !!GetPinnedTabEntry(tab_handle);
 }
 
-std::vector<tabs::TabInterface*> GlicPinnedTabManagerImpl::GetPinnedTabs()
-    const {
-  std::vector<tabs::TabInterface*> pinned_tabs;
+std::vector<raw_ptr<tabs::TabInterface>>
+GlicPinnedTabManagerImpl::GetPinnedTabs() const {
+  std::vector<raw_ptr<tabs::TabInterface>> pinned_tabs;
   for (auto& entry : pinned_tabs_) {
     if (auto* tab = entry.tab_handle.Get()) {
       pinned_tabs.push_back(tab);
@@ -542,7 +546,8 @@ void GlicPinnedTabManagerImpl::SendPinCandidatesUpdate() {
     return;
   }
 
-  std::vector<tabs::TabInterface*> candidates = GetUnsortedPinCandidates();
+  std::vector<raw_ptr<tabs::TabInterface>> candidates =
+      GetUnsortedPinCandidates();
   GlicPinCandidateComparator comparator(pin_candidates_options_->query);
   size_t limit =
       std::min(static_cast<size_t>(pin_candidates_options_->max_candidates),
@@ -556,9 +561,9 @@ void GlicPinnedTabManagerImpl::SendPinCandidatesUpdate() {
   pin_candidates_observer_->OnPinCandidatesChanged(std::move(results));
 }
 
-std::vector<tabs::TabInterface*>
+std::vector<raw_ptr<tabs::TabInterface>>
 GlicPinnedTabManagerImpl::GetUnsortedPinCandidates() {
-  std::vector<tabs::TabInterface*> candidates;
+  std::vector<raw_ptr<tabs::TabInterface>> candidates;
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [this, &candidates](BrowserWindowInterface* browser_window_interface) {
         if (browser_window_interface->GetProfile() != profile_ ||
@@ -568,7 +573,7 @@ GlicPinnedTabManagerImpl::GetUnsortedPinCandidates() {
         }
         auto all_tabs =
             TabListInterface::From(browser_window_interface)->GetAllTabs();
-        for (auto* tab : all_tabs) {
+        for (tabs::TabInterface* tab : all_tabs) {
           if (IsTabPinned(tab->GetHandle())) {
             continue;
           }

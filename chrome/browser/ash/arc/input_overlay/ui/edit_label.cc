@@ -8,6 +8,7 @@
 #include "ash/bubble/bubble_utils.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/shell.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/style/typography.h"
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
@@ -21,8 +22,7 @@
 #include "chrome/browser/ash/arc/input_overlay/ui/edit_labels.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/ui_utils.h"
 #include "chrome/browser/ash/arc/input_overlay/util.h"
-#include "chrome/grit/generated_resources.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -113,7 +113,7 @@ void EditLabel::PerformPulseAnimation(int pulse_count) {
   // Initiate pulse layer if it starts to pulse for the first time.
   if (pulse_count == 0) {
     pulse_layer_ = std::make_unique<ui::LayerSolidColor>();
-    pulse_layer_->SetName("EditLabelPulse");
+    pulse_layer_->SetName("EditLabel:Pulse");
     widget->GetLayer()->Add(pulse_layer_.get());
     pulse_layer_->SetColor(
         SkColor4f::FromColor(widget->GetColorProvider()->GetColor(

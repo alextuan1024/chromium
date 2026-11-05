@@ -1,0 +1,152 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//extensions/buildflags/buildflags.gni")
+import("//ui/webui/resources/tools/build_webui.gni")
+import("//ui/webui/webui_features.gni")
+import("../new_tab_page/new_tab_page.gni")
+
+assert(enable_webui_ntp)
+assert(enable_extensions_core)
+
+# Builds the NTP component extension by compiling the chrome://new-tab-page
+# sources (`<ntp-app>`) from ../new_tab_page, with the file lists shared via
+# new_tab_page.gni. Generated Mojo bindings use scheme-relative //resources/
+# imports, which resolve against the extension origin, so they are rewritten to
+# chrome://resources/.
+_rewritten_mojo_files = []
+_rewrite_mojo_args = []
+foreach(_in_file, ntp_mojo_files) {
+  _out_file = "$target_gen_dir/mojo/" + get_path_info(_in_file, "file")
+  _rewritten_mojo_files += [ _out_file ]
+  _rewrite_mojo_args += [
+    rebase_path(_in_file, root_build_dir),
+    rebase_path(_out_file, root_build_dir),
+  ]
+}
+
+action("rewrite_mojo_binding_imports") {
+  visibility = [ ":*" ]
+  script = "//chrome/browser/resources/rewrite_imports.py"
+  inputs = ntp_mojo_files
+  outputs = _rewritten_mojo_files
+  deps = ntp_mojo_files_deps
+  args = _rewrite_mojo_args
+}
+
+generate_grd("build_manifest_grdp") {
+  grd_prefix = "new_tab_page_extension"
+  out_grd = "$target_gen_dir/manifest.grdp"
+  input_files = [ "manifest.json" ]
+  input_files_base_dir = rebase_path(".", "//")
+  resource_path_prefix = "new_tab_page_extension"
+}
+
+generate_grd("build_icons_grdp") {
+  grd_prefix = "new_tab_page_extension_icons"
+  out_grd = "$target_gen_dir/icons_resources.grdp"
+  input_files = ntp_icons_files
+  input_files_base_dir = rebase_path("../new_tab_page/icons", "//")
+  resource_path_prefix = "new_tab_page_extension/icons"
+}
+
+generate_grd("build_authentication_icons_grdp") {
+  grd_prefix = "new_tab_page_extension_authentication"
+  out_grd = "$target_gen_dir/authentication_icons_resources.grdp"
+  input_files = authentication_icons_files
+  input_files_base_dir =
+      rebase_path("../new_tab_page/modules/authentication/icons", "//")
+  resource_path_prefix = "new_tab_page_extension/modules/authentication/icons"
+}
+
+generate_grd("build_calendar_icons_grdp") {
+  grd_prefix = "new_tab_page_extension_calendar"
+  out_grd = "$target_gen_dir/calendar_icons_resources.grdp"
+  input_files = calendar_icons_files
+  input_files_base_dir =
+      rebase_path("../new_tab_page/modules/calendar/icons", "//")
+  resource_path_prefix = "new_tab_page_extension/modules/calendar/icons"
+}
+
+generate_grd("build_tab_groups_icons_grdp") {
+  grd_prefix = "new_tab_page_extension_tab_groups"
+  out_grd = "$target_gen_dir/tab_groups_icons_resources.grdp"
+  input_files = tab_groups_icons_files
+  input_files_base_dir =
+      rebase_path("../new_tab_page/modules/tab_groups/icons", "//")
+  resource_path_prefix = "new_tab_page_extension/modules/tab_groups/icons"
+}
+
+if (!optimize_webui) {
+  generate_grd("build_shared_grdp") {
+    grd_prefix = "new_tab_page_extension_shared"
+    out_grd = "$target_gen_dir/shared_resources.grdp"
+    resource_path_prefix = "new_tab_page_extension/shared"
+    manifest_files = [ "$root_gen_dir/chrome/browser/resources/new_tab_shared/build_ts_manifest.json" ]
+    deps = [ "//chrome/browser/resources/new_tab_shared:build_ts" ]
+  }
+}
+
+build_webui("build") {
+  grd_prefix = "new_tab_page_extension"
+  grd_resource_path_prefix = "new_tab_page_extension"
+
+  in_folder = "../new_tab_page"
+
+  icons_html_files = ntp_icons_html_files
+
+  static_files = [
+    "new_tab_page.html",
+    "shared_vars.css",
+  ]
+
+  extra_grdp_deps = [
+    ":build_authentication_icons_grdp",
+    ":build_calendar_icons_grdp",
+    ":build_icons_grdp",
+    ":build_manifest_grdp",
+    ":build_tab_groups_icons_grdp",
+  ]
+  extra_grdp_files = [
+    "$target_gen_dir/authentication_icons_resources.grdp",
+    "$target_gen_dir/calendar_icons_resources.grdp",
+    "$target_gen_dir/icons_resources.grdp",
+    "$target_gen_dir/manifest.grdp",
+    "$target_gen_dir/tab_groups_icons_resources.grdp",
+  ]
+  if (!optimize_webui) {
+    extra_grdp_deps += [ ":build_shared_grdp" ]
+    extra_grdp_files += [ "$target_gen_dir/shared_resources.grdp" ]
+  }
+
+  web_component_files = all_web_component_files
+  ts_files = all_ts_files
+  css_files = all_css_files
+
+  mojo_files_deps = [ ":rewrite_mojo_binding_imports" ]
+  mojo_files = _rewritten_mojo_files
+
+  ts_tsconfig_base = "../new_tab_page/tsconfig_base.json"
+  ts_definitions = ntp_ts_definitions
+  ts_deps = ntp_ts_deps
+
+  ts_path_mappings =
+      [ "/shared/*|" + rebase_path(
+            "$root_gen_dir/chrome/browser/resources/new_tab_shared/tsc/*",
+            target_gen_dir) ]
+
+  html_to_wrapper_scheme = "chrome"
+  webui_context_type = "trusted_only"
+
+  optimize = optimize_webui
+  if (optimize) {
+    optimize_webui_host = "chrome-extension://hejfefaejbacaldempbfhnjlknekjbja"
+    optimize_webui_in_files = [
+      "new_tab_page.js",
+      "lazy_load.js",
+    ]
+    optimize_webui_excludes = ntp_optimize_excludes
+    optimize_webui_external_paths = ntp_optimize_external_paths
+  }
+}

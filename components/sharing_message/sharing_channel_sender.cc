@@ -4,17 +4,17 @@
 
 #include "components/sharing_message/sharing_channel_sender.h"
 
+#include <optional>
+#include <utility>
+#include <vector>
+
+#include "base/check.h"
 #include "base/check_is_test.h"
-#include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_functions.h"
-#include "base/notimplemented.h"
-#include "base/notreached.h"
 #include "base/trace_event/trace_event.h"
 #include "base/uuid.h"
-#include "base/version.h"
 #include "components/gcm_driver/crypto/gcm_encryption_result.h"
 #include "components/gcm_driver/gcm_driver.h"
 #include "components/sharing_message/ios_push/ios_push_notification_util.h"
@@ -22,34 +22,21 @@
 #include "components/sharing_message/sharing_constants.h"
 #include "components/sharing_message/sharing_message_bridge.h"
 #include "components/sharing_message/sharing_metrics.h"
-#include "components/sharing_message/sharing_sync_preference.h"
 #include "components/sharing_message/sharing_utils.h"
-#include "components/sync/protocol/sync_enums.pb.h"
 #include "components/sync/protocol/unencrypted_sharing_message.pb.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "components/sync_device_info/device_info_tracker.h"
 #include "components/sync_device_info/local_device_info_provider.h"
 
-namespace {
-
-// When enabled, sharing messages sent using sync may be postponed until sync
-// is active.
-BASE_FEATURE(kSharingPostponeFcmMessageSending,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-}  // namespace
-
 SharingChannelSender::SharingChannelSender(
     SharingMessageBridge* sharing_message_bridge,
-    SharingSyncPreference* sync_preference,
     gcm::GCMDriver* gcm_driver,
     const syncer::DeviceInfoTracker* device_info_tracker,
     const syncer::LocalDeviceInfoProvider* local_device_info_provider,
     syncer::SyncService* sync_service,
     syncer::SyncableService::StartSyncFlare start_sync_flare)
     : sharing_message_bridge_(sharing_message_bridge),
-      sync_preference_(sync_preference),
       gcm_driver_(gcm_driver),
       device_info_tracker_(device_info_tracker),
       local_device_info_provider_(local_device_info_provider),
@@ -73,7 +60,7 @@ void SharingChannelSender::SendFcmMessageToDevice(
   TRACE_EVENT0("sharing", "SharingChannelSender::SendFcmMessageToDevice");
 
   const syncer::DeviceInfo* device_info =
-      device_info_tracker_->GetDeviceInfo(device.guid());
+      device_info_tracker_->GetChromeDeviceInfo(device.guid());
   if (!device_info) {
     std::move(callback).Run(SharingSendMessageResult::kDeviceNotFound,
                             /*message_id=*/std::nullopt,
@@ -107,7 +94,7 @@ void SharingChannelSender::SendIosPushMessageToDevice(
   TRACE_EVENT0("sharing", "SharingChannelSender::SendIosPushMessageToDevice");
 
   const syncer::DeviceInfo* target_device_info =
-      device_info_tracker_->GetDeviceInfo(device.guid());
+      device_info_tracker_->GetChromeDeviceInfo(device.guid());
 
   sharing_message::MessageType message_type =
       SharingPayloadCaseToMessageType(message.payload_case());
@@ -157,6 +144,8 @@ void SharingChannelSender::SendIosPushMessageToDevice(
   chime_configuration->set_type_id(type_id);
   specifics->mutable_unencrypted_payload()->CopyFrom(message);
 
+  // TODO(crbug.com/585389233): Consider postponing iOS push messages when Sync
+  // is initializing.
   sharing_message_bridge_->SendSharingMessage(
       std::move(specifics),
       base::BindOnce(&SharingChannelSender::OnMessageSentViaSync,
@@ -176,36 +165,23 @@ void SharingChannelSender::SendMessageToFcmTarget(
   bool can_send_via_sync = !fcm_configuration.sender_id_fcm_token().empty() &&
                            !fcm_configuration.sender_id_p256dh().empty() &&
                            !fcm_configuration.sender_id_auth_secret().empty();
-
-  base::UmaHistogramBoolean(
-      "Sharing.SendMessageUsingSync",
-      can_send_via_sync &&
-          sync_service_->GetActiveDataTypes().Has(syncer::SHARING_MESSAGE));
-
-  if (can_send_via_sync) {
-    message.set_message_id(base::Uuid::GenerateRandomV4().AsLowercaseString());
-
-    sync_pb::SharingMessageSpecifics::ChannelConfiguration
-        channel_configuration;
-    auto* fcm = channel_configuration.mutable_fcm();
-    fcm->set_token(fcm_configuration.sender_id_fcm_token());
-    fcm->set_ttl(time_to_live.InSeconds());
-    fcm->set_priority(10);
-
-    EncryptMessage(
-        kSharingSenderID, fcm_configuration.sender_id_p256dh(),
-        fcm_configuration.sender_id_auth_secret(), message,
-        SharingChannelType::kFcmSenderId, std::move(callback),
-        base::BindOnce(&SharingChannelSender::SendMessageViaSync,
-                       weak_ptr_factory_.GetWeakPtr(),
-                       std::move(channel_configuration),
-                       SharingChannelType::kFcmSenderId, message.message_id()));
+  if (!can_send_via_sync) {
+    std::move(callback).Run(SharingSendMessageResult::kDeviceNotFound,
+                            /*message_id=*/std::nullopt,
+                            SharingChannelType::kUnknown);
     return;
   }
 
-  std::move(callback).Run(SharingSendMessageResult::kDeviceNotFound,
-                          /*message_id=*/std::nullopt,
-                          SharingChannelType::kUnknown);
+  sync_pb::SharingMessageSpecifics::ChannelConfiguration channel_configuration;
+  auto* fcm = channel_configuration.mutable_fcm();
+  fcm->set_token(fcm_configuration.sender_id_fcm_token());
+  fcm->set_ttl(time_to_live.InSeconds());
+  fcm->set_priority(10);
+
+  EncryptMessage(std::move(channel_configuration),
+                 fcm_configuration.sender_id_p256dh(),
+                 fcm_configuration.sender_id_auth_secret(), std::move(message),
+                 SharingChannelType::kFcmSenderId, std::move(callback));
 }
 
 void SharingChannelSender::SendMessageToServerTarget(
@@ -215,34 +191,41 @@ void SharingChannelSender::SendMessageToServerTarget(
     SendMessageCallback callback) {
   TRACE_EVENT0("sharing", "SharingChannelSender::SendMessageToServerTarget");
 
-  message.set_message_id(base::Uuid::GenerateRandomV4().AsLowercaseString());
-
   sync_pb::SharingMessageSpecifics::ChannelConfiguration channel_configuration;
   channel_configuration.set_server(server_channel.configuration());
 
-  EncryptMessage(
-      kSharingSenderID, server_channel.p256dh(), server_channel.auth_secret(),
-      message, SharingChannelType::kServer, std::move(callback),
-      base::BindOnce(&SharingChannelSender::SendMessageViaSync,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     std::move(channel_configuration),
-                     SharingChannelType::kServer, message.message_id()));
+  EncryptMessage(std::move(channel_configuration), server_channel.p256dh(),
+                 server_channel.auth_secret(), std::move(message),
+                 SharingChannelType::kServer, std::move(callback));
 }
 
-void SharingChannelSender::ClearPendingMessages() {
-  pending_messages_.clear();
+void SharingChannelSender::FailPendingMessages() {
+  std::vector<PendingMessage> pending_messages =
+      std::exchange(pending_messages_, {});
+  for (PendingMessage& pending_message : pending_messages) {
+    std::move(pending_message.callback)
+        .Run(SharingSendMessageResult::kInternalError,
+             /*message_id=*/std::nullopt, pending_message.channel_type);
+  }
 }
 
 void SharingChannelSender::OnStateChanged(syncer::SyncService* sync_service) {
-  // Replay pending messages once SHARING_MESSAGE is active.
-  if (pending_messages_.empty() ||
-      !sync_service->GetActiveDataTypes().Has(syncer::SHARING_MESSAGE)) {
+  if (pending_messages_.empty()) {
     return;
   }
 
-  std::vector<PendingMessage> pending_messages = std::move(pending_messages_);
-  pending_messages_.clear();
+  if (IsSyncDisabledForSharing(sync_service)) {
+    FailPendingMessages();
+    return;
+  }
 
+  // Replay pending messages once `SHARING_MESSAGE` is active.
+  if (!sync_service->GetActiveDataTypes().Has(syncer::SHARING_MESSAGE)) {
+    return;
+  }
+
+  std::vector<PendingMessage> pending_messages =
+      std::exchange(pending_messages_, {});
   for (PendingMessage& pending_message : pending_messages) {
     SendMessageViaSync(std::move(pending_message.channel_configuration),
                        pending_message.channel_type,
@@ -253,30 +236,45 @@ void SharingChannelSender::OnStateChanged(syncer::SyncService* sync_service) {
 }
 
 void SharingChannelSender::OnSyncShutdown(syncer::SyncService* sync_service) {
+  // TODO(crbug.com/585389233): Fail pending messages and reset `sync_service_`
+  // on shutdown.
   sync_service_observation_.Reset();
 }
 
-void SharingChannelSender::EncryptMessage(const std::string& authorized_entity,
-                                          const std::string& p256dh,
-                                          const std::string& auth_secret,
-                                          const SharingMessage& message,
-                                          SharingChannelType channel_type,
-                                          SendMessageCallback callback,
-                                          MessageSender message_sender) {
+void SharingChannelSender::EncryptMessage(
+    sync_pb::SharingMessageSpecifics::ChannelConfiguration
+        channel_configuration,
+    const std::string& p256dh,
+    const std::string& auth_secret,
+    SharingMessage message,
+    SharingChannelType channel_type,
+    SendMessageCallback callback) {
+  if (IsSyncDisabledForSharing(sync_service_)) {
+    std::move(callback).Run(SharingSendMessageResult::kInternalError,
+                            /*message_id=*/std::nullopt, channel_type);
+    return;
+  }
+
+  std::string message_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  message.set_message_id(message_id);
   std::string payload;
   message.SerializeToString(&payload);
   gcm_driver_->EncryptMessage(
-      kSharingFCMAppID, authorized_entity, p256dh, auth_secret, payload,
+      kSharingFCMAppID, kSharingSenderID, p256dh, auth_secret, payload,
       base::BindOnce(&SharingChannelSender::OnMessageEncrypted,
-                     weak_ptr_factory_.GetWeakPtr(), channel_type,
-                     std::move(callback), std::move(message_sender)));
+                     weak_ptr_factory_.GetWeakPtr(),
+                     std::move(channel_configuration), channel_type,
+                     std::move(message_id), std::move(callback)));
 }
 
-void SharingChannelSender::OnMessageEncrypted(SharingChannelType channel_type,
-                                              SendMessageCallback callback,
-                                              MessageSender message_sender,
-                                              gcm::GCMEncryptionResult result,
-                                              std::string message) {
+void SharingChannelSender::OnMessageEncrypted(
+    sync_pb::SharingMessageSpecifics::ChannelConfiguration
+        channel_configuration,
+    SharingChannelType channel_type,
+    std::string message_id,
+    SendMessageCallback callback,
+    gcm::GCMEncryptionResult result,
+    std::string message) {
   if (result != gcm::GCMEncryptionResult::ENCRYPTED_DRAFT_08) {
     LOG(ERROR) << "Unable to encrypt message";
     std::move(callback).Run(SharingSendMessageResult::kEncryptionError,
@@ -284,7 +282,9 @@ void SharingChannelSender::OnMessageEncrypted(SharingChannelType channel_type,
     return;
   }
 
-  std::move(message_sender).Run(std::move(message), std::move(callback));
+  SendMessageViaSync(std::move(channel_configuration), channel_type,
+                     std::move(message_id), std::move(message),
+                     std::move(callback));
 }
 
 void SharingChannelSender::SendMessageViaSync(
@@ -294,21 +294,26 @@ void SharingChannelSender::SendMessageViaSync(
     std::string message_id,
     std::string payload,
     SendMessageCallback callback) {
-  // Double check that SHARING_MESSAGE is syncing.
-  if (!sync_service_->GetActiveDataTypes().Has(syncer::SHARING_MESSAGE)) {
-    if (base::FeatureList::IsEnabled(kSharingPostponeFcmMessageSending)) {
-      pending_messages_.emplace_back(std::move(channel_configuration),
-                                     channel_type, std::move(message_id),
-                                     std::move(payload), std::move(callback));
-      if (start_sync_flare_) {
-        start_sync_flare_.Run(syncer::SHARING_MESSAGE);
-        start_sync_flare_.Reset();
-      }
-      return;
-    }
+  CHECK(sync_service_);
 
+  // Fail immediately if Sync is disabled for Sharing (e.g. if Sync was paused
+  // or disabled before an async reply or in-flight encryption completed).
+  if (IsSyncDisabledForSharing(sync_service_)) {
     std::move(callback).Run(SharingSendMessageResult::kInternalError,
                             /*message_id=*/std::nullopt, channel_type);
+    return;
+  }
+
+  // Postpone sending the message if `SHARING_MESSAGE` is not active yet (e.g.
+  // while Sync is initializing or configuring).
+  if (!sync_service_->GetActiveDataTypes().Has(syncer::SHARING_MESSAGE)) {
+    pending_messages_.emplace_back(std::move(channel_configuration),
+                                   channel_type, std::move(message_id),
+                                   std::move(payload), std::move(callback));
+    if (start_sync_flare_) {
+      start_sync_flare_.Run(syncer::SHARING_MESSAGE);
+      start_sync_flare_.Reset();
+    }
     return;
   }
 
@@ -387,8 +392,7 @@ bool SharingChannelSender::CanSendSendTabPushMessage(
     const syncer::DeviceInfo& target_device_info) {
   bool custom_passphrase_enabled =
       sync_service_->GetUserSettings()->IsUsingExplicitPassphrase();
-  return target_device_info.send_tab_to_self_receiving_enabled() &&
-         target_device_info.send_tab_to_self_receiving_type() ==
+  return target_device_info.send_tab_to_self_receiving_type() ==
              syncer::DeviceInfo::SendTabReceivingType::
                  kChromeAndPushNotification &&
          !custom_passphrase_enabled;

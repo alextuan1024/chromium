@@ -9,14 +9,15 @@
 #include "ash/webui/settings/public/constants/routes.mojom.h"
 #include "base/containers/span.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ui/webui/ash/settings/search/mojom/search.mojom.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/browser/ui/webui/ash/settings/test_support/fake_hierarchy.h"
 #include "chrome/browser/ui/webui/ash/settings/test_support/fake_os_settings_sections.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -167,7 +168,7 @@ TEST_F(SearchHandlerTest, AddAndRemove) {
   // Add printing search tags to registry and search for "Print".
   AddSearchTags(GetPrintingSearchConcepts());
   handler_remote_.FlushForTesting();
-  task_environment_.RunUntilIdle();
+  ASSERT_TRUE(base::test::RunUntil([&] { return observer_.num_calls() > 0; }));
   EXPECT_EQ(1u, observer_.num_calls());
 
   std::vector<mojom::SearchResultPtr> search_results;

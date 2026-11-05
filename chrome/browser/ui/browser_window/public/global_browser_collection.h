@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_BROWSER_WINDOW_PUBLIC_GLOBAL_BROWSER_COLLECTION_H_
 #define CHROME_BROWSER_UI_BROWSER_WINDOW_PUBLIC_GLOBAL_BROWSER_COLLECTION_H_
 
+#include <string>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -21,9 +22,6 @@
 //
 // If you only need to observe a single browser, use the callback registrations
 // exposed on BrowserWindowInterface instead.
-//
-// TODO(crbug.com/474120522): The Android implementation does not yet fire
-// OnBrowserActivated and OnBrowserDeactivated BrowserCollectionObserver events.
 class GlobalBrowserCollection : public BrowserCollection {
  public:
   GlobalBrowserCollection();
@@ -31,6 +29,9 @@ class GlobalBrowserCollection : public BrowserCollection {
   GlobalBrowserCollection& operator=(const GlobalBrowserCollection&) = delete;
   ~GlobalBrowserCollection() override;
 
+  // Returns the global GlobalBrowserCollection instance. Never returns
+  // nullptr; CHECK-fails if called outside GlobalFeatures' initialized
+  // lifetime.
   static GlobalBrowserCollection* GetInstance();
 
   // BrowserCollection:
@@ -52,6 +53,23 @@ class GlobalBrowserCollection : public BrowserCollection {
   // excluding DevTools windows.
   size_t GetGuestBrowserCount();
 
+  // Returns the number of isolated browsers across all profiles, excluding
+  // DevTools windows.
+  size_t GetIsolatedBrowserCount();
+
+  // Returns a localized string with the number of incognito and isolated
+  // browsers.
+  // - If there are no isolated browsers, returns the string with the
+  //   incognito message id and the number of incognito browsers.
+  // - If there are no incognito browsers, returns the string with the isolated
+  //   message id and the number of isolated browsers.
+  // - Otherwise, returns the string with the combined message id and the
+  //   number of combined incognito and isolated browsers.
+  std::u16string GetDialogWithIncognitoAndIsolatedVariants(
+      int incognito_message_id,
+      int isolated_message_id,
+      int combined_message_id);
+
  protected:
   // BrowserCollection:
   BrowserVector GetBrowsers(Order order) override;
@@ -66,8 +84,6 @@ class GlobalBrowserCollection : public BrowserCollection {
                                        BrowserCollectionObserver>;
   friend GlobalBrowserCollectionPlatformDelegate;
 
-  GlobalBrowserCollectionPlatformDelegate platform_delegate_;
-
   // References to the global set of browsers in creation order, with the
   // least recently created browser appearing at the front of the vector.
   std::vector<raw_ptr<BrowserWindowInterface>> browsers_creation_order_;
@@ -75,6 +91,12 @@ class GlobalBrowserCollection : public BrowserCollection {
   // References to the global set of browsers in activation order, with the
   // most recently activated browser appearing at the front of the vector.
   std::vector<raw_ptr<BrowserWindowInterface>> browsers_activation_order_;
+
+  // Must be declared after the browser vectors: on Android, the delegate
+  // constructor synchronously invokes OnBrowserCreated/OnBrowserActivated
+  // for existing tasks, requiring both vectors to be initialized before the
+  // delegate attaches and destroyed after the delegate detaches.
+  GlobalBrowserCollectionPlatformDelegate platform_delegate_;
 };
 
 #endif  // CHROME_BROWSER_UI_BROWSER_WINDOW_PUBLIC_GLOBAL_BROWSER_COLLECTION_H_

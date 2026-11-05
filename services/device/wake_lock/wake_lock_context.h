@@ -10,8 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/memory/scoped_refptr.h"
-#include "base/task/single_thread_task_runner.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "services/device/public/mojom/wake_lock_context.mojom.h"
 #include "services/device/wake_lock/wake_lock.h"
@@ -23,7 +21,6 @@ class WakeLockContext : public mojom::WakeLockContext,
                         public device::WakeLock::Observer {
  public:
   WakeLockContext(int context_id,
-                  scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
                   const WakeLockContextCallback& native_view_getter);
 
   WakeLockContext(const WakeLockContext&) = delete;
@@ -44,11 +41,9 @@ class WakeLockContext : public mojom::WakeLockContext,
   void OnWakeLockDeactivated(mojom::WakeLockType type) override;
   void OnWakeLockChanged(mojom::WakeLockType old_type,
                          mojom::WakeLockType new_type) override;
-  void OnConnectionError(mojom::WakeLockType type,
-                         WakeLock* wake_lock) override;
+  void OnConnectionError(WakeLock* wake_lock) override;
 
  private:
-  scoped_refptr<base::SingleThreadTaskRunner> file_task_runner_;
   int context_id_;
   WakeLockContextCallback native_view_getter_;
 

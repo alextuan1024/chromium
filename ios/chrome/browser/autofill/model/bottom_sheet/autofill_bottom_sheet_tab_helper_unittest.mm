@@ -4,7 +4,9 @@
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_tab_helper.h"
 
 #import "base/memory/raw_ptr.h"
+#import "base/strings/string_number_conversions.h"
 #import "base/test/ios/wait_util.h"
+#import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #import "components/autofill/core/browser/data_manager/test_personal_data_manager.h"
@@ -12,19 +14,29 @@
 #import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #import "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #import "components/autofill/core/browser/integrators/autofill_ai/mock_autofill_ai_manager.h"
+#import "components/autofill/core/browser/payments/autofill_save_card_delegate.h"
+#import "components/autofill/core/browser/payments/autofill_save_card_ui_info.h"
+#import "components/autofill/core/browser/payments/payments_autofill_client.h"
 #import "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator_util.h"
 #import "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #import "components/autofill/core/common/autofill_test_util.h"
 #import "components/autofill/ios/browser/autofill_agent.h"
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_factory.h"
+#import "components/autofill/ios/browser/form_suggestion.h"
+#import "components/autofill/ios/browser/form_suggestion_provider.h"
 #import "components/autofill/ios/browser/test_autofill_client_ios.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/infobars/core/infobar.h"
 #import "components/infobars/core/infobar_manager.h"
-#import "components/password_manager/core/browser/features/password_features.h"
-#import "components/personal_context/first_run/personal_context_first_run_service.h"
+#import "components/personal_context/first_run/test_personal_context_first_run_service.h"
+#import "ios/chrome/browser/autofill/model/autofill_ai_save_entity_prompt_model.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_java_script_feature.h"
+#import "ios/chrome/browser/autofill/model/bottom_sheet/save_card_bottom_sheet_model.h"
+#import "ios/chrome/browser/autofill/model/features.h"
+#import "ios/chrome/browser/autofill/model/form_input_suggestions_provider.h"
+#import "ios/chrome/browser/autofill/model/form_suggestion_controller.h"
+#import "ios/chrome/browser/autofill/model/form_suggestion_tab_helper.h"
 #import "ios/chrome/browser/autofill/model/ios_autofill_entity_data_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/strike_database_factory.h"
@@ -32,13 +44,14 @@
 #import "ios/chrome/browser/history/model/history_service_factory.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/personal_context/model/ios_personal_context_first_run_service_factory.h"
-#import "ios/chrome/browser/shared/model/profile/profile_keyed_service_factory_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
 #import "ios/chrome/browser/web/model/chrome_web_client.h"
 #import "ios/chrome/browser/webdata_services/model/web_data_service_factory.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
+#import "ios/testing/scoped_block_swizzler.h"
 #import "ios/web/public/js_messaging/script_message.h"
+#import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/js_test_util.h"
 #import "ios/web/public/test/scoped_testing_web_client.h"
 #import "ios/web/public/test/web_state_test_util.h"
@@ -53,39 +66,14 @@
 
 namespace {
 
+using autofill::AutofillSaveCardDelegate;
+using autofill::AutofillSaveCardUiInfo;
+using autofill::SaveCardBottomSheetModel;
+using autofill::payments::PaymentsAutofillClient;
 using ::testing::NiceMock;
 using ::testing::Return;
 
 constexpr char kTestGuid[] = "00000000-0000-4000-8000-000000000000";
-
-// Fake implementation of PersonalContextFirstRunService to control the notice
-// state.
-class FakePersonalContextFirstRunService
-    : public personal_context::PersonalContextFirstRunService {
- public:
-  FakePersonalContextFirstRunService() = default;
-  ~FakePersonalContextFirstRunService() override = default;
-
-  void MarkPersonalContextAmbientAutofillNoticeAsAcknowledged() override {
-    acknowledged_ = true;
-  }
-  bool ShouldShowPersonalContextAmbientAutofillNotice() const override {
-    return should_show_;
-  }
-  void RecordAmbientAutofillNoticeImpression(uint32_t session_id) override {}
-  void MarkPersonalContextInAtMemoryNoticeAsAcknowledged() override {}
-  bool ShouldShowPersonalContextAtMemoryNotice() const override {
-    return false;
-  }
-  void RecordAtMemoryNoticeImpression(uint32_t session_id) override {}
-
-  void set_should_show(bool should_show) { should_show_ = should_show; }
-  bool acknowledged() const { return acknowledged_; }
-
- private:
-  bool should_show_ = false;
-  bool acknowledged_ = false;
-};
 
 class TestChromeAutofillClientIOS : public autofill::ChromeAutofillClientIOS {
  public:
@@ -106,20 +94,110 @@ class TestChromeAutofillClientIOS : public autofill::ChromeAutofillClientIOS {
 
 }  // namespace
 
-// Fake implementation of AutofillCommands to capture ambient notice triggers.
+// Fake implementation of `AutofillCommands` to capture triggers in tests.
 @interface FakeAutofillCommandsForBottomSheet : NSObject
 @property(nonatomic, assign) BOOL showAmbientAutofillNoticeCalled;
+@property(nonatomic, assign) int dismissEditAddressBottomSheetCallCount;
+@property(nonatomic, assign) BOOL showPaymentsBottomSheetCalled;
+@property(nonatomic, assign) BOOL showCredentialBottomSheetCalled;
+@property(nonatomic, assign) BOOL showSaveEntityDialogCalled;
+@property(nonatomic, assign) BOOL dismissSaveEntityDialogCalled;
+@property(nonatomic, assign) BOOL showSaveCardBottomSheetCalled;
+@property(nonatomic, assign) BOOL dismissSaveCardBottomSheetCalled;
 @end
 
 @implementation FakeAutofillCommandsForBottomSheet
 - (void)showAmbientAutofillNotice:(const autofill::FormActivityParams&)params {
   _showAmbientAutofillNoticeCalled = YES;
 }
+
+- (void)showSaveEntityDialogOnWebState:(web::WebState*)webState {
+  _showSaveEntityDialogCalled = YES;
+}
+
+- (void)dismissSaveEntityDialog {
+  _dismissSaveEntityDialogCalled = YES;
+}
+
+- (void)showSaveCardBottomSheetOnOriginWebState:(web::WebState*)originWebState {
+  _showSaveCardBottomSheetCalled = YES;
+}
+
+- (void)dismissSaveCardBottomSheet {
+  _dismissSaveCardBottomSheetCalled = YES;
+}
+
+- (void)dismissEditAddressBottomSheet {
+  _dismissEditAddressBottomSheetCallCount++;
+}
+
+- (void)showPaymentsBottomSheet:(const autofill::FormActivityParams&)params {
+  _showPaymentsBottomSheetCalled = YES;
+}
+
+- (void)showCredentialBottomSheet:(const autofill::FormActivityParams&)params {
+  _showCredentialBottomSheetCalled = YES;
+}
+@end
+
+// Fake implementation of `FormSuggestionProvider` returning fixed suggestions.
+@interface FakeFormSuggestionProvider : NSObject <FormSuggestionProvider>
+@property(nonatomic, copy) NSArray<FormSuggestion*>* suggestions;
+@end
+
+@implementation FakeFormSuggestionProvider
+
+- (SuggestionProviderType)type {
+  return SuggestionProviderTypeAutofill;
+}
+
+- (autofill::FillingProduct)mainFillingProduct {
+  return autofill::FillingProduct::kCreditCard;
+}
+
+- (void)checkIfSuggestionsAvailableForForm:
+            (FormSuggestionProviderQuery*)formQuery
+                            hasUserGesture:(BOOL)hasUserGesture
+                                  webState:(web::WebState*)webState
+                         completionHandler:
+                             (SuggestionsAvailableCompletion)completion {
+  completion(self.suggestions.count > 0);
+}
+
+- (void)retrieveSuggestionsForForm:(FormSuggestionProviderQuery*)formQuery
+                          webState:(web::WebState*)webState
+                 completionHandler:(SuggestionsReadyCompletion)completion {
+  completion(self.suggestions, self);
+}
+
+- (void)didSelectSuggestion:(FormSuggestion*)suggestion
+                    atIndex:(NSInteger)index
+                       form:(NSString*)formName
+             formRendererID:(autofill::FormRendererId)formRendererID
+            fieldIdentifier:(NSString*)fieldIdentifier
+            fieldRendererID:(autofill::FieldRendererId)fieldRendererID
+                    frameID:(NSString*)frameID
+          completionHandler:(SuggestionHandledCompletion)completion {
+  if (completion) {
+    completion();
+  }
+}
+
 @end
 
 // Test fixture to test AutofillBottomSheetTabHelper class.
 class AutofillBottomSheetTabHelperTest : public PlatformTest {
  public:
+  std::unique_ptr<AutofillAiSaveEntityPromptModel> CreateTestEntityModel() {
+    return std::make_unique<AutofillAiSaveEntityPromptModel>(
+        autofill::SaveEntityParams(autofill::test::GetPassportEntityInstance(),
+                                   /*old_entity=*/std::nullopt,
+                                   /*user_email=*/u"test@example.com",
+                                   /*save_is_synchronous=*/true,
+                                   base::DoNothing(),
+                                   /*public_passes_notice=*/{},
+                                   /*show_explicit_decline_button=*/false));
+  }
   // Returns a valid form message body to trigger the proactive password
   // generation bottom sheet.
   std::unique_ptr<base::Value> ValidFormMessageBody(std::string frame_id) {
@@ -132,16 +210,104 @@ class AutofillBottomSheetTabHelperTest : public PlatformTest {
             .Set("fieldType", "new_password")
             .Set("type", "new_password")
             .Set("value", "new_password")
-            .Set("hasUserGesture", "YES")
+            .Set("hasUserGesture", true)
+            .Set("frameID", frame_id));
+  }
+
+  // Returns a valid form message body to trigger the payments bottom sheet.
+  std::unique_ptr<base::Value> ValidPaymentsFormMessageBody(
+      const std::string& frame_id,
+      autofill::FieldRendererId renderer_id,
+      bool has_user_gesture) {
+    return std::make_unique<base::Value>(
+        base::DictValue()
+            .Set("formName", "test_form")
+            .Set("formRendererID", "1234")
+            .Set("fieldIdentifier", "cc_number")
+            .Set("fieldRendererID", base::NumberToString(renderer_id.value()))
+            .Set("fieldType", "text")
+            .Set("type", "focus")
+            .Set("value", "")
+            .Set("hasUserGesture", has_user_gesture)
             .Set("frameID", frame_id));
   }
 
   // Returns a script message that represents a form.
-  web::ScriptMessage ScriptMessageForForm(std::unique_ptr<base::Value> body) {
-    return web::ScriptMessage(std::move(body),
-                              /*is_user_interacting=*/true,
+  web::ScriptMessage ScriptMessageForForm(std::unique_ptr<base::Value> body,
+                                          bool is_user_interacting = true) {
+    return web::ScriptMessage(std::move(body), is_user_interacting,
                               /*is_main_frame=*/true,
                               /*request_url=*/std::nullopt, url::Origin());
+  }
+
+  // Helper to set up a page, credit card form, and personal data manager with
+  // a card, returning the main web frame, autofill manager, and form global ID.
+  void SetupPaymentsForm(autofill::FieldRendererId cc_renderer_id,
+                         autofill::FieldRendererId exp_renderer_id,
+                         web::WebFrame*& out_frame,
+                         autofill::AutofillManager*& out_manager,
+                         autofill::FormGlobalId& out_form_id) {
+    web::test::LoadHtml(@"<html><body></body></html>", web_state_.get());
+    web::WebFrame* frame = AutofillBottomSheetJavaScriptFeature::GetInstance()
+                               ->GetWebFramesManager(web_state_.get())
+                               ->GetMainWebFrame();
+    ASSERT_NE(frame, nullptr);
+    out_frame = frame;
+
+    autofill::AutofillDriverIOS* driver =
+        autofill::AutofillDriverIOS::FromWebStateAndWebFrame(web_state_.get(),
+                                                             frame);
+    autofill::LocalFrameToken frame_token = driver->GetFrameToken();
+    out_manager = &driver->GetAutofillManager();
+
+    // Add a credit card to the personal data manager.
+    autofill::CreditCard card = autofill::test::GetCreditCard();
+    card.SetExpirationYear(2099);
+    autofill_client_->GetPersonalDataManager()
+        .payments_data_manager()
+        .AddCreditCard(card);
+
+    autofill::FormData form;
+    form.set_url(GURL("https://myform.com"));
+    form.set_action(GURL("https://myform.com/submit"));
+    form.set_renderer_id(autofill::FormRendererId(1234));
+
+    autofill::FormFieldData cc_field;
+    cc_field.set_form_control_type(autofill::FormControlType::kInputText);
+    cc_field.set_id_attribute(u"cc_number");
+    cc_field.set_name(u"cc_number");
+    cc_field.set_name_attribute(cc_field.name());
+    cc_field.set_renderer_id(cc_renderer_id);
+    cc_field.set_host_frame(frame_token);
+
+    autofill::FormFieldData exp_field;
+    exp_field.set_form_control_type(autofill::FormControlType::kInputText);
+    exp_field.set_id_attribute(u"cc_exp");
+    exp_field.set_name(u"cc_exp");
+    exp_field.set_name_attribute(exp_field.name());
+    exp_field.set_label(u"Expiration Date");
+    exp_field.set_renderer_id(exp_renderer_id);
+    exp_field.set_host_frame(frame_token);
+
+    form.set_fields({cc_field, exp_field});
+    out_form_id = form.global_id();
+
+    autofill::TestAutofillManagerWaiter waiter(
+        *out_manager, {autofill::AutofillManagerEvent::kFormsSeen});
+    out_manager->OnFormsSeen({form}, {},
+                             autofill::AutofillManagerTestApi::pass_key());
+    ASSERT_TRUE(waiter.Wait(1));
+
+    autofill::FormStructure* form_structure =
+        const_cast<autofill::FormStructure*>(
+            out_manager->FindCachedFormById(out_form_id));
+    ASSERT_NE(nullptr, form_structure);
+    form_structure->field(0)->SetTypeTo(
+        autofill::AutofillType(autofill::CREDIT_CARD_NUMBER),
+        autofill::AutofillPredictionSource::kHeuristics);
+    form_structure->field(1)->SetTypeTo(
+        autofill::AutofillType(autofill::CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR),
+        autofill::AutofillPredictionSource::kHeuristics);
   }
 
   // Helper to set up a page, form, and fake service, returning the main web
@@ -214,44 +380,64 @@ class AutofillBottomSheetTabHelperTest : public PlatformTest {
     ON_CALL(*mock_ai_manager_, GetSuggestions)
         .WillByDefault(Return(suggestions));
 
-    FakePersonalContextFirstRunService* first_run_service =
-        static_cast<FakePersonalContextFirstRunService*>(
+    personal_context::TestPersonalContextFirstRunService* first_run_service =
+        static_cast<personal_context::TestPersonalContextFirstRunService*>(
             IOSPersonalContextFirstRunServiceFactory::GetForProfile(
                 profile_.get()));
     ASSERT_NE(first_run_service, nullptr);
-    first_run_service->set_should_show(should_show_ambient_notice);
+    first_run_service->set_should_show_ambient_autofill_notice(
+        should_show_ambient_notice);
+  }
+
+  // Installs an idempotent JavaScript spy in the main frame's bottom sheet
+  // content world that records the arguments of each
+  // `bottomSheet.detachListeners` invocation.
+  void InstallDetachListenersSpy() {
+    NSString* script =
+        @"(() => {"
+        @"  window.detachListenersCalls = [];"
+        @"  window.originalDetachListeners ??= "
+        @"      __gCrWeb.registeredApis.bottomSheet.functions.detachListeners;"
+        @"  const originalDetach = window.originalDetachListeners;"
+        @"  __gCrWeb.registeredApis.bottomSheet.functions.detachListeners = "
+        @"      function(...args) {"
+        @"        window.detachListenersCalls.push(args);"
+        @"        return originalDetach.apply(this, args);"
+        @"      };"
+        @"  return typeof originalDetach === 'function';"
+        @"})();";
+    ASSERT_NSEQ(@YES, web::test::ExecuteJavaScriptForFeatureAndReturnResult(
+                          web_state_.get(), script,
+                          AutofillBottomSheetJavaScriptFeature::GetInstance()));
+  }
+
+  // Returns the recorded `[rendererIds, refocus]` argument lists for all calls
+  // to `bottomSheet.detachListeners` since `InstallDetachListenersSpy()` ran.
+  NSArray* GetDetachListenersCalls() {
+    return web::test::ExecuteJavaScriptForFeatureAndReturnResult(
+        web_state_.get(), @"window.detachListenersCalls",
+        AutofillBottomSheetJavaScriptFeature::GetInstance());
   }
 
  protected:
   AutofillBottomSheetTabHelperTest()
       : web_client_(std::make_unique<ChromeWebClient>()) {
     TestProfileIOS::Builder builder;
-    builder.AddTestingFactories(
-        {TestProfileIOS::TestingFactory{
-             static_cast<ProfileKeyedServiceFactoryIOS*>(
-                 autofill::PersonalDataManagerFactory::GetInstance()),
-             base::BindOnce(
-                 [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
-                   std::unique_ptr<autofill::TestPersonalDataManager> service =
-                       std::make_unique<autofill::TestPersonalDataManager>();
-                   service->SetPrefService(profile->GetPrefs());
-                   return std::unique_ptr<KeyedService>(service.release());
-                 })},
-         TestProfileIOS::TestingFactory{
-             static_cast<ProfileKeyedServiceFactoryIOS*>(
-                 IOSPersonalContextFirstRunServiceFactory::GetInstance()),
-             base::BindOnce([](ProfileIOS* profile)
-                                -> std::unique_ptr<KeyedService> {
-               return std::make_unique<FakePersonalContextFirstRunService>();
-             })},
-         TestProfileIOS::TestingFactory{
-             static_cast<ProfileKeyedServiceFactoryIOS*>(
-                 ios::HistoryServiceFactory::GetInstance()),
-             ios::HistoryServiceFactory::GetDefaultFactory()},
-         TestProfileIOS::TestingFactory{
-             static_cast<ProfileKeyedServiceFactoryIOS*>(
-                 ios::WebDataServiceFactory::GetInstance()),
-             ios::WebDataServiceFactory::GetDefaultFactory()}});
+    builder.AddTestingFactory(
+        autofill::PersonalDataManagerFactory::GetInstance(),
+        base::BindOnce([](ProfileIOS& profile) {
+          auto service = std::make_unique<autofill::TestPersonalDataManager>();
+          service->SetPrefService(profile.GetPrefs());
+          return service;
+        }));
+    builder.AddTestingFactory(
+        IOSPersonalContextFirstRunServiceFactory::GetInstance(),
+        base::BindOnce(&std::make_unique<
+                       personal_context::TestPersonalContextFirstRunService>));
+    builder.AddTestingFactory(ios::HistoryServiceFactory::GetInstance(),
+                              ios::HistoryServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(ios::WebDataServiceFactory::GetInstance(),
+                              ios::WebDataServiceFactory::GetDefaultFactory());
     profile_ = std::move(builder).Build();
 
     web::WebState::CreateParams params(profile_.get());
@@ -313,9 +499,6 @@ class AutofillBottomSheetTabHelperTest : public PlatformTest {
 // proactive password generation bottom sheet.
 TEST_F(AutofillBottomSheetTabHelperTest,
        ShowProactivePasswordGenerationBottomSheet) {
-  scoped_feature_list_.InitAndEnableFeature(
-      password_manager::features::kIOSProactivePasswordGenerationBottomSheet);
-
   // Using LoadHtml to fake a real page load. This instantiates the main
   // web::WebFrame and sets up the JS features needed by AttachListeners.
   web::test::LoadHtml(@"<html><body></body></html>", web_state_.get());
@@ -334,7 +517,7 @@ TEST_F(AutofillBottomSheetTabHelperTest,
   OCMExpect([generation_provider_mock
       triggerPasswordGenerationForFormId:form_renderer_ID
                          fieldIdentifier:new_password_rendererID
-                                 inFrame:frame
+                                 inFrame:frame->AsWeakPtr()
                                proactive:YES]);
   helper_->SetPasswordGenerationProvider(generation_provider_mock);
 
@@ -613,4 +796,760 @@ TEST_F(AutofillBottomSheetTabHelperTest,
 
   // Verify that showAmbientAutofillNotice: is triggered.
   EXPECT_TRUE(commands_handler.showAmbientAutofillNoticeCalled);
+}
+
+// Tests that setting the autofill bottom sheet handler to nil triggers
+// dismissal of the edit address bottom sheet.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       DismissesEditAddressBottomSheetWhenHandlerResetToNil) {
+  FakeAutofillCommandsForBottomSheet* commands_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)commands_handler);
+  EXPECT_EQ(commands_handler.dismissEditAddressBottomSheetCallCount, 0);
+
+  // Reset handler to nil.
+  helper_->SetAutofillBottomSheetHandler(nil);
+  EXPECT_EQ(commands_handler.dismissEditAddressBottomSheetCallCount, 1);
+}
+
+// Test that DidFinishNavigation clears registered renderer IDs on
+// cross-document navigation but retains them on same-document navigation.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       DidFinishNavigationClearsRegisteredRendererIds) {
+  web::WebFrame* frame = nullptr;
+  autofill::AutofillManager* manager = nullptr;
+  autofill::FormGlobalId form_id;
+  SetupAmbientNoticeForm(autofill::FieldRendererId(0), frame, manager, form_id);
+
+  // Register the listeners.
+  helper_->UpdateListenersForAmbientAutofillForm(*manager, form_id,
+                                                 /*only_new=*/false);
+
+  // Set up the fake command handler.
+  FakeAutofillCommandsForBottomSheet* commands_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)commands_handler);
+
+  // Simulate same-document navigation: registered IDs should be preserved.
+  web::FakeNavigationContext same_doc_context;
+  same_doc_context.SetIsSameDocument(true);
+  same_doc_context.SetHasCommitted(true);
+  helper_->DidFinishNavigation(web_state_.get(), &same_doc_context);
+
+  web::ScriptMessage form_message =
+      ScriptMessageForForm(ValidFormMessageBody(frame->GetFrameId()));
+  helper_->OnFormMessageReceived(form_message);
+  EXPECT_TRUE(commands_handler.showAmbientAutofillNoticeCalled);
+
+  // Reset handler state.
+  commands_handler.showAmbientAutofillNoticeCalled = NO;
+
+  // Simulate uncommitted cross-document navigation: registered IDs should be
+  // preserved.
+  web::FakeNavigationContext uncommitted_context;
+  uncommitted_context.SetIsSameDocument(false);
+  uncommitted_context.SetHasCommitted(false);
+  helper_->DidFinishNavigation(web_state_.get(), &uncommitted_context);
+
+  helper_->OnFormMessageReceived(form_message);
+  EXPECT_TRUE(commands_handler.showAmbientAutofillNoticeCalled);
+
+  // Reset handler state.
+  commands_handler.showAmbientAutofillNoticeCalled = NO;
+
+  // Simulate committed cross-document navigation: registered IDs should be
+  // cleared.
+  web::FakeNavigationContext cross_doc_context;
+  cross_doc_context.SetIsSameDocument(false);
+  cross_doc_context.SetHasCommitted(true);
+  helper_->DidFinishNavigation(web_state_.get(), &cross_doc_context);
+
+  helper_->OnFormMessageReceived(form_message);
+  EXPECT_FALSE(commands_handler.showAmbientAutofillNoticeCalled);
+}
+
+// Test that DidStartNavigation invalidates pending suggestion retrieval
+// callbacks, preventing bottom sheet presentation on cross-document
+// navigation, while same-document navigation preserves them.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       DidStartNavigationCancelsPendingCallbacks) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kStatelessFormSuggestionController);
+
+  FormSuggestionTabHelper::CreateForWebState(web_state_.get(), @[]);
+
+  __block FormSuggestionsReadyCompletion captured_completion = nil;
+  id swizzle_block =
+      ^(id self, const autofill::FormActivityParams& params,
+        web::WebState* webState, FormSuggestionsReadyCompletion completion) {
+        captured_completion = [completion copy];
+      };
+  ScopedBlockSwizzler swizzler(
+      [FormSuggestionController class],
+      @selector(retrieveSuggestionsForForm:webState:accessoryViewUpdateBlock:),
+      swizzle_block);
+
+  FakeAutofillCommandsForBottomSheet* commands_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)commands_handler);
+
+  autofill::FormActivityParams params;
+  params.form_name = "test_form";
+  params.field_identifier = "test_field";
+  params.frame_id = "test_frame";
+  params.has_user_gesture = true;
+
+  FormSuggestion* test_suggestion = [FormSuggestion
+      suggestionWithValue:@"Visa **** 1234"
+       displayDescription:@"Card description"
+                     icon:nil
+                     type:autofill::SuggestionType::kCreditCardEntry
+                  payload:autofill::Suggestion::Payload()
+           requiresReauth:NO];
+
+  // Request bottom sheet for payments and verify completion is captured.
+  helper_->MaybeShowPaymentsBottomSheet(params);
+  ASSERT_TRUE(captured_completion != nil);
+
+  // Simulate cross-document navigation start: cancels weak pointers.
+  web::FakeNavigationContext cross_doc_context;
+  cross_doc_context.SetIsSameDocument(false);
+  helper_->DidStartNavigation(web_state_.get(), &cross_doc_context);
+
+  // Execute completion block: should be ignored due to weak pointer
+  // invalidation.
+  captured_completion(@[ test_suggestion ], nil);
+  EXPECT_FALSE(commands_handler.showPaymentsBottomSheetCalled);
+
+  // Request bottom sheet again.
+  captured_completion = nil;
+  helper_->MaybeShowPaymentsBottomSheet(params);
+  ASSERT_TRUE(captured_completion != nil);
+
+  // Simulate same-document navigation start: preserves callbacks.
+  web::FakeNavigationContext same_doc_context;
+  same_doc_context.SetIsSameDocument(true);
+  helper_->DidStartNavigation(web_state_.get(), &same_doc_context);
+
+  // Execute completion block: should present the payments bottom sheet.
+  captured_completion(@[ test_suggestion ], nil);
+  EXPECT_TRUE(commands_handler.showPaymentsBottomSheetCalled);
+}
+
+// Test that RenderProcessGone cancels pending suggestion retrieval callbacks
+// and clears registered renderer IDs.
+TEST_F(AutofillBottomSheetTabHelperTest, RenderProcessGoneClearsState) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kStatelessFormSuggestionController);
+
+  FormSuggestionTabHelper::CreateForWebState(web_state_.get(), @[]);
+
+  web::WebFrame* frame = nullptr;
+  autofill::AutofillManager* manager = nullptr;
+  autofill::FormGlobalId form_id;
+  SetupAmbientNoticeForm(autofill::FieldRendererId(0), frame, manager, form_id);
+  helper_->UpdateListenersForAmbientAutofillForm(*manager, form_id,
+                                                 /*only_new=*/false);
+
+  __block FormSuggestionsReadyCompletion captured_completion = nil;
+  id swizzle_block =
+      ^(id self, const autofill::FormActivityParams& params,
+        web::WebState* webState, FormSuggestionsReadyCompletion completion) {
+        captured_completion = [completion copy];
+      };
+  ScopedBlockSwizzler swizzler(
+      [FormSuggestionController class],
+      @selector(retrieveSuggestionsForForm:webState:accessoryViewUpdateBlock:),
+      swizzle_block);
+
+  FakeAutofillCommandsForBottomSheet* commands_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)commands_handler);
+
+  autofill::FormActivityParams params;
+  params.form_name = "test_form";
+  params.field_identifier = "test_field";
+  params.frame_id = "test_frame";
+  params.has_user_gesture = true;
+
+  helper_->MaybeShowPaymentsBottomSheet(params);
+  ASSERT_TRUE(captured_completion != nil);
+
+  helper_->RenderProcessGone(web_state_.get());
+
+  FormSuggestion* test_suggestion = [FormSuggestion
+      suggestionWithValue:@"Visa **** 1234"
+       displayDescription:@"Card description"
+                     icon:nil
+                     type:autofill::SuggestionType::kCreditCardEntry
+                  payload:autofill::Suggestion::Payload()
+           requiresReauth:NO];
+  captured_completion(@[ test_suggestion ], nil);
+  EXPECT_FALSE(commands_handler.showPaymentsBottomSheetCalled);
+
+  web::ScriptMessage form_message =
+      ScriptMessageForForm(ValidFormMessageBody(frame->GetFrameId()));
+  helper_->OnFormMessageReceived(form_message);
+  EXPECT_FALSE(commands_handler.showAmbientAutofillNoticeCalled);
+}
+
+// Tests that receiving a payments form message without a user gesture detaches
+// that frame's payments listeners, does not trigger the payments bottom sheet,
+// and records kNoUserGesture.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       PaymentsBottomSheet_NoUserGesture_DoesNotShowAndLogsMetric) {
+  base::HistogramTester histogram_tester;
+  web::WebFrame* frame = nullptr;
+  autofill::AutofillManager* manager = nullptr;
+  autofill::FormGlobalId form_id;
+  const autofill::FieldRendererId cc_renderer_id(1);
+  const autofill::FieldRendererId exp_renderer_id(2);
+  SetupPaymentsForm(cc_renderer_id, exp_renderer_id, frame, manager, form_id);
+  helper_->UpdateListenersForPaymentsForm(*manager, form_id,
+                                          /*only_new=*/false);
+  InstallDetachListenersSpy();
+
+  FakeAutofillCommandsForBottomSheet* commands_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)commands_handler);
+
+  web::ScriptMessage form_message = ScriptMessageForForm(
+      ValidPaymentsFormMessageBody(frame->GetFrameId(), cc_renderer_id,
+                                   /*has_user_gesture=*/false),
+      /*is_user_interacting=*/true);
+  helper_->OnFormMessageReceived(form_message);
+
+  EXPECT_FALSE(commands_handler.showPaymentsBottomSheetCalled);
+  NSArray* expected_detach_calls = @[ @[ @[ @1, @2 ], @NO ] ];
+  EXPECT_NSEQ(expected_detach_calls, GetDetachListenersCalls());
+  histogram_tester.ExpectUniqueSample(
+      kPaymentsBottomSheetUserGestureStatusHistogram,
+      PaymentsBottomSheetUserGestureStatus::kNoUserGesture, 1);
+}
+
+// Tests that receiving a payments form message when the user is not
+// interacting does not trigger the payments bottom sheet and records
+// kUserNotInteracting.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       PaymentsBottomSheet_UserNotInteracting_DoesNotShowAndLogsMetric) {
+  base::HistogramTester histogram_tester;
+  web::WebFrame* frame = nullptr;
+  autofill::AutofillManager* manager = nullptr;
+  autofill::FormGlobalId form_id;
+  const autofill::FieldRendererId cc_renderer_id(1);
+  const autofill::FieldRendererId exp_renderer_id(2);
+  SetupPaymentsForm(cc_renderer_id, exp_renderer_id, frame, manager, form_id);
+  helper_->UpdateListenersForPaymentsForm(*manager, form_id,
+                                          /*only_new=*/false);
+
+  FakeAutofillCommandsForBottomSheet* commands_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)commands_handler);
+
+  web::ScriptMessage form_message = ScriptMessageForForm(
+      ValidPaymentsFormMessageBody(frame->GetFrameId(), cc_renderer_id,
+                                   /*has_user_gesture=*/true),
+      /*is_user_interacting=*/false);
+  helper_->OnFormMessageReceived(form_message);
+
+  EXPECT_FALSE(commands_handler.showPaymentsBottomSheetCalled);
+  histogram_tester.ExpectUniqueSample(
+      kPaymentsBottomSheetUserGestureStatusHistogram,
+      PaymentsBottomSheetUserGestureStatus::kUserNotInteracting, 1);
+}
+
+// Tests that receiving a payments form message with valid user gesture and user
+// interaction triggers the payments bottom sheet and records kValidGesture.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       PaymentsBottomSheet_ValidUserGesture_ShowsBottomSheetAndLogsMetric) {
+  FakeFormSuggestionProvider* provider =
+      [[FakeFormSuggestionProvider alloc] init];
+  provider.suggestions = @[ [FormSuggestion
+      suggestionWithValue:@"Visa **** 1234"
+       displayDescription:@"Card description"
+                     icon:nil
+                     type:autofill::SuggestionType::kCreditCardEntry
+                  payload:autofill::Suggestion::Payload()
+           requiresReauth:NO] ];
+  FormSuggestionTabHelper::CreateForWebState(web_state_.get(), @[ provider ]);
+
+  base::HistogramTester histogram_tester;
+  web::WebFrame* frame = nullptr;
+  autofill::AutofillManager* manager = nullptr;
+  autofill::FormGlobalId form_id;
+  const autofill::FieldRendererId cc_renderer_id(1);
+  const autofill::FieldRendererId exp_renderer_id(2);
+  SetupPaymentsForm(cc_renderer_id, exp_renderer_id, frame, manager, form_id);
+  helper_->UpdateListenersForPaymentsForm(*manager, form_id,
+                                          /*only_new=*/false);
+
+  FakeAutofillCommandsForBottomSheet* commands_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)commands_handler);
+
+  web::ScriptMessage form_message = ScriptMessageForForm(
+      ValidPaymentsFormMessageBody(frame->GetFrameId(), cc_renderer_id,
+                                   /*has_user_gesture=*/true),
+      /*is_user_interacting=*/true);
+  helper_->OnFormMessageReceived(form_message);
+
+  EXPECT_TRUE(commands_handler.showPaymentsBottomSheetCalled);
+  histogram_tester.ExpectUniqueSample(
+      kPaymentsBottomSheetUserGestureStatusHistogram,
+      PaymentsBottomSheetUserGestureStatus::kValidGesture, 1);
+}
+
+// Tests that `AutofillBottomSheetJavaScriptFeature::DetachListeners` skips
+// JavaScript execution when `renderer_ids` is empty and `refocus` is false,
+// while still executing JavaScript when `refocus` is true.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       DetachListeners_EmptyRendererIdsWithoutRefocusIsNoOp) {
+  web::test::LoadHtml(@"<html><body></body></html>", web_state_.get());
+  AutofillBottomSheetJavaScriptFeature* feature =
+      AutofillBottomSheetJavaScriptFeature::GetInstance();
+  web::WebFrame* frame =
+      feature->GetWebFramesManager(web_state_.get())->GetMainWebFrame();
+  ASSERT_NE(frame, nullptr);
+  InstallDetachListenersSpy();
+
+  feature->DetachListeners(/*renderer_ids=*/{}, frame, /*refocus=*/false);
+  EXPECT_NSEQ(@[], GetDetachListenersCalls());
+
+  feature->DetachListeners(/*renderer_ids=*/{}, frame, /*refocus=*/true);
+  NSArray* expected_calls = @[ @[ @[], @YES ] ];
+  EXPECT_NSEQ(expected_calls, GetDetachListenersCalls());
+}
+
+// Tests that `DetachPasswordListeners` on a frame with no registered listeners
+// skips JavaScript execution when `refocus` is false and does not insert an
+// empty map entry for the frame, while still honoring `refocus` when true.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       DetachPasswordListeners_UnregisteredFrameDoesNotCallJsOrTrackFrame) {
+  web::test::LoadHtml(@"<html><body></body></html>", web_state_.get());
+  web::WebFrame* frame = AutofillBottomSheetJavaScriptFeature::GetInstance()
+                             ->GetWebFramesManager(web_state_.get())
+                             ->GetMainWebFrame();
+  ASSERT_NE(frame, nullptr);
+  InstallDetachListenersSpy();
+
+  helper_->AttachPasswordListeners(/*renderer_ids=*/{}, frame->GetFrameId());
+  helper_->DetachPasswordListeners(frame->GetFrameId(), /*refocus=*/false);
+  // If `AttachPasswordListeners` or `DetachPasswordListeners` had inserted an
+  // empty entry into `registered_password_renderer_ids_`, detaching all frames
+  // with `refocus` true would invoke `bottomSheet.detachListeners([], true)`.
+  helper_->DetachPasswordListenersForAllFrames(/*refocus=*/true);
+  EXPECT_NSEQ(@[], GetDetachListenersCalls());
+
+  helper_->DetachPasswordListeners(frame->GetFrameId(), /*refocus=*/true);
+  helper_->DetachPasswordListenersForAllFrames(/*refocus=*/true);
+  NSArray* expected_calls = @[ @[ @[], @YES ] ];
+  EXPECT_NSEQ(expected_calls, GetDetachListenersCalls());
+}
+
+// Tests that `DetachPasswordListeners` detaches previously attached password
+// listener renderer IDs via JavaScript.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       AttachAndDetachPasswordListeners_RegisteredFrameCallsJs) {
+  web::test::LoadHtml(@"<html><body></body></html>", web_state_.get());
+  web::WebFrame* frame = AutofillBottomSheetJavaScriptFeature::GetInstance()
+                             ->GetWebFramesManager(web_state_.get())
+                             ->GetMainWebFrame();
+  ASSERT_NE(frame, nullptr);
+
+  helper_->AttachPasswordListeners(
+      {autofill::FieldRendererId(1), autofill::FieldRendererId(2)},
+      frame->GetFrameId());
+  InstallDetachListenersSpy();
+
+  helper_->DetachPasswordListeners(frame->GetFrameId(), /*refocus=*/false);
+  NSArray* expected_calls = @[ @[ @[ @1, @2 ], @NO ] ];
+  EXPECT_NSEQ(expected_calls, GetDetachListenersCalls());
+}
+
+// Tests that `UpdateListenersForPaymentsForm` with listener invalidation
+// enabled does not insert an empty frame entry when scanning a non-credit-card
+// form, erases the frame entry once all fields are invalidated, and skips
+// empty detach calls afterward.
+TEST_F(
+    AutofillBottomSheetTabHelperTest,
+    UpdateListenersForPaymentsForm_ListenersInvalidation_SkipsEmptyDetaches) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kStatelessFormSuggestionController,
+       kAutofillPaymentsSheetDetachInvalidatedListenersIos},
+      {});
+
+  web::WebFrame* frame = nullptr;
+  autofill::AutofillManager* manager = nullptr;
+  autofill::FormGlobalId form_id;
+  SetupAmbientNoticeForm(autofill::FieldRendererId(1), frame, manager, form_id,
+                         /*should_show_ambient_notice=*/false);
+  InstallDetachListenersSpy();
+
+  // Scanning a non-credit-card form should neither evaluate JS nor insert an
+  // empty entry into `registered_payments_renderer_ids_`.
+  helper_->UpdateListenersForPaymentsForm(*manager, form_id,
+                                          /*only_new=*/true);
+  EXPECT_TRUE(helper_->registered_payments_renderer_ids_.empty());
+  helper_->DetachPaymentsListenersForAllFrames();
+  EXPECT_NSEQ(@[], GetDetachListenersCalls());
+
+  // Set up a complete credit card form so listeners are attached, then
+  // invalidate its fields back to non-credit-card types.
+  web::WebFrame* cc_frame = nullptr;
+  autofill::AutofillManager* cc_manager = nullptr;
+  autofill::FormGlobalId cc_form_id;
+  SetupPaymentsForm(autofill::FieldRendererId(10),
+                    autofill::FieldRendererId(11), cc_frame, cc_manager,
+                    cc_form_id);
+  InstallDetachListenersSpy();
+  helper_->UpdateListenersForPaymentsForm(*cc_manager, cc_form_id,
+                                          /*only_new=*/false);
+  EXPECT_TRUE(helper_->registered_payments_renderer_ids_.contains(
+      cc_frame->GetFrameId()));
+
+  autofill::FormStructure* form_structure =
+      autofill::test_api(*cc_manager).FindCachedFormById(cc_form_id);
+  ASSERT_NE(form_structure, nullptr);
+  form_structure->field(0)->SetTypeTo(
+      autofill::AutofillType(autofill::UNKNOWN_TYPE),
+      autofill::AutofillPredictionSource::kHeuristics);
+  form_structure->field(1)->SetTypeTo(
+      autofill::AutofillType(autofill::UNKNOWN_TYPE),
+      autofill::AutofillPredictionSource::kHeuristics);
+  helper_->UpdateListenersForPaymentsForm(*cc_manager, cc_form_id,
+                                          /*only_new=*/false);
+  NSArray* expected_invalidation_calls = @[ @[ @[ @10, @11 ], @NO ] ];
+  EXPECT_NSEQ(expected_invalidation_calls, GetDetachListenersCalls());
+  EXPECT_TRUE(helper_->registered_payments_renderer_ids_.empty());
+
+  // Now that all IDs for `cc_frame` were erased by invalidation, subsequent
+  // detaches must not evaluate JavaScript.
+  helper_->DetachPaymentsListenersForAllFrames();
+  EXPECT_NSEQ(expected_invalidation_calls, GetDetachListenersCalls());
+}
+
+// Tests that removing an `<iframe>` clears its tracked renderer IDs across all
+// bottom sheet listener maps via `WebFrameBecameUnavailable`, so late messages
+// from the old subframe are ignored and detaching all frames does not crash.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       WebFrameBecameUnavailable_ErasesDetachedSubframeListeners) {
+  // Set up `FormSuggestionTabHelper` with a credit card suggestion so that a
+  // late payments message would actually trigger the bottom sheet if the
+  // detached subframe's payments listeners were not erased.
+  FakeFormSuggestionProvider* suggestion_provider =
+      [[FakeFormSuggestionProvider alloc] init];
+  suggestion_provider.suggestions = @[ [FormSuggestion
+      suggestionWithValue:@"Visa **** 1234"
+       displayDescription:@"Card description"
+                     icon:nil
+                     type:autofill::SuggestionType::kCreditCardEntry
+                  payload:autofill::Suggestion::Payload()
+           requiresReauth:NO] ];
+  FormSuggestionTabHelper::CreateForWebState(web_state_.get(),
+                                             @[ suggestion_provider ]);
+
+  web::test::LoadHtml(
+      @"<html><body>"
+      @"<iframe id='subframe' srcdoc='<html><body></body></html>'>"
+      @"</iframe>"
+      @"</body></html>",
+      web_state_.get());
+
+  web::WebFramesManager* frames_manager =
+      AutofillBottomSheetJavaScriptFeature::GetInstance()->GetWebFramesManager(
+          web_state_.get());
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::Seconds(5), /*run_message_loop=*/true, ^bool(void) {
+        return frames_manager->GetAllWebFrames().size() == 2u;
+      }));
+
+  web::WebFrame* main_frame = frames_manager->GetMainWebFrame();
+  ASSERT_NE(main_frame, nullptr);
+  web::WebFrame* subframe = nullptr;
+  for (web::WebFrame* candidate : frames_manager->GetAllWebFrames()) {
+    if (!candidate->IsMainFrame()) {
+      subframe = candidate;
+      break;
+    }
+  }
+  ASSERT_NE(subframe, nullptr);
+  const std::string subframe_id = subframe->GetFrameId();
+
+  // Register a password listener on the main frame to verify subframe cleanup
+  // only erases `subframe_id` and preserves other frames.
+  helper_->AttachPasswordListeners({autofill::FieldRendererId(99)},
+                                   main_frame->GetFrameId());
+
+  // Register password and password generation listeners on the subframe.
+  const autofill::FieldRendererId password_id(1);
+  const autofill::FieldRendererId generation_id(0);
+  helper_->AttachPasswordListeners({password_id}, subframe_id);
+  helper_->AttachPasswordGenerationListeners({generation_id}, subframe_id);
+
+  // Register payments and ambient Autofill listeners on the subframe via the
+  // main frame's `AutofillManager` (matching cross-frame form flattening).
+  autofill::CreditCard card = autofill::test::GetCreditCard();
+  card.SetExpirationYear(2099);
+  autofill_client_->GetPersonalDataManager()
+      .payments_data_manager()
+      .AddCreditCard(card);
+
+  autofill::Suggestion suggestion(
+      autofill::SuggestionType::kAutofillAiPrivateInferenceNotice);
+  suggestion.payload = autofill::Suggestion::AutofillAiPayload(
+      autofill::EntityInstance::EntityId(kTestGuid));
+  ON_CALL(*mock_ai_manager_, GetSuggestions)
+      .WillByDefault(Return(std::vector<autofill::Suggestion>{suggestion}));
+  autofill::EntityDataManager* entity_manager =
+      IOSAutofillEntityDataManagerFactory::GetForProfile(profile_.get());
+  ASSERT_NE(entity_manager, nullptr);
+  autofill::test::PassportEntityOptions entity_options;
+  entity_options.guid = kTestGuid;
+  entity_options.record_type =
+      autofill::EntityInstance::RecordType::kPersonalContext;
+  entity_manager->SetPersonalContextEntitiesForTesting(
+      {autofill::test::GetPassportEntityInstance(entity_options)});
+  personal_context::TestPersonalContextFirstRunService* first_run_service =
+      static_cast<personal_context::TestPersonalContextFirstRunService*>(
+          IOSPersonalContextFirstRunServiceFactory::GetForProfile(
+              profile_.get()));
+  ASSERT_NE(first_run_service, nullptr);
+  first_run_service->set_should_show_ambient_autofill_notice(true);
+
+  autofill::AutofillDriverIOS* main_driver =
+      autofill::AutofillDriverIOS::FromWebStateAndWebFrame(web_state_.get(),
+                                                           main_frame);
+  ASSERT_NE(main_driver, nullptr);
+  autofill::AutofillManager& main_manager = main_driver->GetAutofillManager();
+
+  autofill::AutofillDriverIOS* subframe_driver =
+      autofill::AutofillDriverIOS::FromWebStateAndWebFrame(web_state_.get(),
+                                                           subframe);
+  ASSERT_NE(subframe_driver, nullptr);
+  autofill::LocalFrameToken subframe_token = subframe_driver->GetFrameToken();
+
+  const autofill::FieldRendererId cc_id(10);
+  const autofill::FieldRendererId exp_id(11);
+  const autofill::FieldRendererId ambient_id(12);
+
+  autofill::FormFieldData cc_field;
+  cc_field.set_form_control_type(autofill::FormControlType::kInputText);
+  cc_field.set_name(u"cc_number");
+  cc_field.set_name_attribute(cc_field.name());
+  cc_field.set_renderer_id(cc_id);
+  cc_field.set_host_frame(subframe_token);
+
+  autofill::FormFieldData exp_field;
+  exp_field.set_form_control_type(autofill::FormControlType::kInputText);
+  exp_field.set_name(u"cc_exp");
+  exp_field.set_name_attribute(exp_field.name());
+  exp_field.set_renderer_id(exp_id);
+  exp_field.set_host_frame(subframe_token);
+
+  autofill::FormFieldData ambient_field;
+  ambient_field.set_form_control_type(autofill::FormControlType::kInputText);
+  ambient_field.set_name(u"full_name");
+  ambient_field.set_name_attribute(ambient_field.name());
+  ambient_field.set_renderer_id(ambient_id);
+  ambient_field.set_host_frame(subframe_token);
+
+  autofill::FormData form;
+  form.set_url(GURL("https://myform.com"));
+  form.set_action(GURL("https://myform.com/submit"));
+  form.set_renderer_id(autofill::FormRendererId(1234));
+  form.set_fields({cc_field, exp_field, ambient_field});
+
+  main_manager.OnFormsSeen({form}, {},
+                           autofill::AutofillManagerTestApi::pass_key());
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::Seconds(5), /*run_message_loop=*/true, ^bool(void) {
+        return main_manager.FindCachedFormById(form.global_id()) != nullptr;
+      }));
+
+  autofill::FormStructure* form_structure =
+      autofill::test_api(main_manager).FindCachedFormById(form.global_id());
+  ASSERT_NE(form_structure, nullptr);
+  ASSERT_EQ(form_structure->field_count(), 3u);
+  form_structure->field(0)->SetTypeTo(
+      autofill::AutofillType(autofill::CREDIT_CARD_NUMBER),
+      autofill::AutofillPredictionSource::kHeuristics);
+  form_structure->field(1)->SetTypeTo(
+      autofill::AutofillType(autofill::CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR),
+      autofill::AutofillPredictionSource::kHeuristics);
+  form_structure->field(2)->SetTypeTo(
+      autofill::AutofillType(autofill::NAME_FULL),
+      autofill::AutofillPredictionSource::kHeuristics);
+
+  helper_->UpdateListenersForPaymentsForm(main_manager, form.global_id(),
+                                          /*only_new=*/false);
+  helper_->UpdateListenersForAmbientAutofillForm(main_manager, form.global_id(),
+                                                 /*only_new=*/false);
+
+  FakeAutofillCommandsForBottomSheet* commands_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)commands_handler);
+  id<PasswordGenerationProvider> generation_provider_mock =
+      OCMStrictProtocolMock(@protocol(PasswordGenerationProvider));
+  helper_->SetPasswordGenerationProvider(generation_provider_mock);
+
+  // Confirm the subframe password listener is active before detachment.
+  helper_->OnFormMessageReceived(
+      ScriptMessageForForm(ValidPaymentsFormMessageBody(
+          subframe_id, password_id, /*has_user_gesture=*/true)));
+  ASSERT_TRUE(commands_handler.showCredentialBottomSheetCalled);
+  commands_handler.showCredentialBottomSheetCalled = NO;
+
+  // Remove the iframe from the DOM and wait for `WebFrameBecameUnavailable` to
+  // remove it from `WebFramesManager`.
+  InstallDetachListenersSpy();
+  ASSERT_NSEQ(@YES, web::test::ExecuteJavaScriptForFeatureAndReturnResult(
+                        web_state_.get(),
+                        @"document.getElementById('subframe').remove(); true;",
+                        AutofillBottomSheetJavaScriptFeature::GetInstance()));
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::Seconds(5), /*run_message_loop=*/true, ^bool(void) {
+        return frames_manager->GetFrameWithId(subframe_id) == nullptr;
+      }));
+
+  // Late messages referencing the detached subframe's renderer IDs must not
+  // trigger any bottom sheet.
+  helper_->OnFormMessageReceived(
+      ScriptMessageForForm(ValidPaymentsFormMessageBody(
+          subframe_id, password_id, /*has_user_gesture=*/true)));
+  helper_->OnFormMessageReceived(
+      ScriptMessageForForm(ValidFormMessageBody(subframe_id)));
+  helper_->OnFormMessageReceived(
+      ScriptMessageForForm(ValidPaymentsFormMessageBody(
+          subframe_id, cc_id, /*has_user_gesture=*/true)));
+  helper_->OnFormMessageReceived(
+      ScriptMessageForForm(ValidPaymentsFormMessageBody(
+          subframe_id, ambient_id, /*has_user_gesture=*/true)));
+  EXPECT_FALSE(commands_handler.showCredentialBottomSheetCalled);
+  EXPECT_FALSE(commands_handler.showPaymentsBottomSheetCalled);
+  EXPECT_FALSE(commands_handler.showAmbientAutofillNoticeCalled);
+  EXPECT_OCMOCK_VERIFY((id)generation_provider_mock);
+
+  // All-frame and direct stale-frame detaches must safely skip the detached
+  // subframe without hitting `CHECK(frame)`, while preserving the main-frame
+  // password listener registered earlier.
+  helper_->DetachPaymentsListenersForAllFrames();
+  helper_->DetachPasswordGenerationListenersForAllFrames();
+  helper_->DetachAmbientAutofillNoticeListenersForAllFrames(/*refocus=*/true);
+  helper_->DetachPasswordListeners(subframe_id, /*refocus=*/false);
+  helper_->DetachPasswordListeners(subframe_id, /*refocus=*/true);
+  EXPECT_NSEQ(@[], GetDetachListenersCalls());
+
+  helper_->DetachPasswordListenersForAllFrames(/*refocus=*/true);
+  NSArray* expected_main_frame_calls = @[ @[ @[ @99 ], @YES ] ];
+  EXPECT_NSEQ(expected_main_frame_calls, GetDetachListenersCalls());
+}
+
+// Tests that calling `DetachPasswordListeners` directly with a missing or stale
+// `frame_id` safely no-ops for both `refocus` values without crashing or
+// invoking JavaScript.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       DetachPasswordListeners_StaleFrameIdSafelyNoOps) {
+  web::test::LoadHtml(@"<html><body></body></html>", web_state_.get());
+  InstallDetachListenersSpy();
+
+  helper_->DetachPasswordListeners("stale_frame_id", /*refocus=*/false);
+  helper_->DetachPasswordListeners("stale_frame_id", /*refocus=*/true);
+  EXPECT_NSEQ(@[], GetDetachListenersCalls());
+}
+
+// Tests that `ShowAutofillAiSaveEntityBottomSheet` stages the model and
+// notifies the commands handler.
+TEST_F(AutofillBottomSheetTabHelperTest, ShowAutofillAiSaveEntityBottomSheet) {
+  FakeAutofillCommandsForBottomSheet* autofill_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)autofill_handler);
+
+  helper_->ShowAutofillAiSaveEntityBottomSheet(CreateTestEntityModel());
+
+  EXPECT_TRUE(autofill_handler.showSaveEntityDialogCalled);
+  EXPECT_NE(helper_->GetAutofillAiSaveEntityPromptModel(), nullptr);
+
+  std::unique_ptr<AutofillAiSaveEntityPromptModel> taken =
+      helper_->TakeAutofillAiSaveEntityPromptModel();
+  EXPECT_NE(taken, nullptr);
+  EXPECT_EQ(helper_->GetAutofillAiSaveEntityPromptModel(), nullptr);
+}
+
+// Tests that `WasShown` forwards to the pending prompt manager and re-shows
+// the dialog.
+TEST_F(AutofillBottomSheetTabHelperTest, WasShownRestoresPendingPrompt) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kAutofillReshowSavePromptOnTabReturn);
+
+  FakeAutofillCommandsForBottomSheet* autofill_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)autofill_handler);
+
+  helper_->ShowAutofillAiSaveEntityBottomSheet(CreateTestEntityModel());
+  EXPECT_TRUE(autofill_handler.showSaveEntityDialogCalled);
+
+  // Reset the flag and trigger WasShown.
+  autofill_handler.showSaveEntityDialogCalled = NO;
+  helper_->WasShown(web_state_.get());
+  EXPECT_TRUE(autofill_handler.showSaveEntityDialogCalled);
+}
+
+// Tests that `DidFinishNavigation` clears the staged prompt on committed
+// document navigation.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       DidFinishNavigationClearsPendingPrompt) {
+  FakeAutofillCommandsForBottomSheet* autofill_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)autofill_handler);
+
+  helper_->ShowAutofillAiSaveEntityBottomSheet(CreateTestEntityModel());
+  EXPECT_NE(helper_->GetAutofillAiSaveEntityPromptModel(), nullptr);
+
+  web::FakeNavigationContext context;
+  context.SetHasCommitted(true);
+  context.SetIsSameDocument(false);
+  context.SetHasUserGesture(true);
+  context.SetPageTransition(ui::PAGE_TRANSITION_LINK);
+  helper_->DidFinishNavigation(web_state_.get(), &context);
+
+  EXPECT_EQ(helper_->GetAutofillAiSaveEntityPromptModel(), nullptr);
+  EXPECT_TRUE(autofill_handler.dismissSaveEntityDialogCalled);
+}
+
+// Tests that `ShowSaveCardBottomSheet` delegates model staging to the
+// pending prompt manager and commands the UI handler.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       ShowSaveCardBottomSheetDelegatesToPendingPromptManager) {
+  FakeAutofillCommandsForBottomSheet* autofill_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)autofill_handler);
+
+  auto delegate = std::make_unique<autofill::AutofillSaveCardDelegate>(
+      autofill::payments::PaymentsAutofillClient::UploadSaveCardPromptCallback(
+          base::DoNothing()),
+      autofill::payments::PaymentsAutofillClient::SaveCreditCardOptions());
+  auto model = std::make_unique<autofill::SaveCardBottomSheetModel>(
+      autofill::AutofillSaveCardUiInfo(), std::move(delegate));
+
+  helper_->ShowSaveCardBottomSheet(std::move(model));
+  EXPECT_TRUE(autofill_handler.showSaveCardBottomSheetCalled);
+  EXPECT_NE(helper_->GetSaveCardBottomSheetModel(), nullptr);
+
+  std::unique_ptr<autofill::SaveCardBottomSheetModel> taken =
+      helper_->TakeSaveCardBottomSheetModel();
+  EXPECT_NE(taken, nullptr);
+  EXPECT_EQ(helper_->GetSaveCardBottomSheetModel(), nullptr);
 }

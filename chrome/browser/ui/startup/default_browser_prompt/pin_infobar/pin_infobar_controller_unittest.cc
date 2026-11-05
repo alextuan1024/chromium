@@ -8,6 +8,8 @@
 #include <utility>
 
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
+#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/shell_integration.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
@@ -17,9 +19,11 @@
 #include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/infobars/content/content_infobar_manager.h"
+#include "components/prefs/testing_pref_service.h"
 #include "components/profile_metrics/browser_profile_type.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
@@ -76,6 +80,11 @@ class PinInfoBarControllerTest : public testing::Test {
             std::make_unique<TabStripModel>(delegate_.get(), profile())),
         browser_window_interface_(
             std::make_unique<MockBrowserWindowInterface>()) {
+    // Exercises the legacy path.
+    // TODO(crbug.com/567121669): Remove once the legacy delegate is deleted.
+    feature_list_.InitAndEnableFeatureWithParameters(
+        infobars::kCentralizedInfoBarFramework,
+        {{infobars::kMigratedPinInfoBar.name, "false"}});
     ON_CALL(*browser_window_interface_, GetTabStripModel())
         .WillByDefault(::testing::Return(tab_strip_model()));
     ON_CALL(*browser_window_interface_, GetProfile())
@@ -120,6 +129,7 @@ class PinInfoBarControllerTest : public testing::Test {
 
  private:
   // Must be the first member.
+  base::test::ScopedFeatureList feature_list_;
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
 
@@ -193,6 +203,17 @@ TEST_F(PinInfoBarControllerTest, DontShowIfCantPin) {
   PinInfoBarController controller(browser_window_interface());
   EXPECT_FALSE(OnShouldOfferToPinResultAndWait(controller,
                                                /*should_offer_to_pin=*/false));
+  EXPECT_TRUE(infobar_manager()->infobars().empty());
+}
+
+// Don't show the infobar if promotions are disabled by policy.
+TEST_F(PinInfoBarControllerTest, DontShowIfPromotionsDisabled) {
+  SetBrowserType(BrowserWindowInterface::TYPE_NORMAL);
+  TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetManagedPref(
+      prefs::kPromotionsEnabled, base::Value(false));
+  PinInfoBarController controller(browser_window_interface());
+  EXPECT_FALSE(OnShouldOfferToPinResultAndWait(controller,
+                                               /*should_offer_to_pin=*/true));
   EXPECT_TRUE(infobar_manager()->infobars().empty());
 }
 

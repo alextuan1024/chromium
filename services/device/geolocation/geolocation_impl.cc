@@ -7,10 +7,13 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "components/content_settings/core/common/features.h"
 #include "services/device/geolocation/geolocation_context.h"
+#include "services/device/public/mojom/geoposition.mojom.h"
 
 namespace device {
 
@@ -103,32 +106,6 @@ void GeolocationImpl::QueryNextPosition(QueryNextPositionCallback callback) {
   RecordUmaGeolocationImplClientId(client_id_);
 }
 
-void GeolocationImpl::QueryCachedPosition(
-    QueryCachedPositionCallback callback) {
-  if (position_override_) {
-    std::move(callback).Run(position_override_.Clone());
-    return;
-  }
-
-  mojom::GeopositionResultPtr result =
-      GeolocationProvider::GetInstance()->GetCachedPosition();
-
-  // If the cached position is precise but the client only has approximate
-  // permission, treat it as unavailable to avoid leaking precise location.
-  if (!has_precise_permission_ && IsPrecisePosition(result.get())) {
-    result.reset();
-  }
-
-  if (result) {
-    std::move(callback).Run(std::move(result));
-    return;
-  }
-
-  std::move(callback).Run(
-      mojom::GeopositionResult::NewError(mojom::GeopositionError::New(
-          mojom::GeopositionErrorCode::kPositionUnavailable, "", "")));
-}
-
 void GeolocationImpl::SetOverride(const mojom::GeopositionResult& result) {
   if (!position_callback_.is_null()) {
     if (!current_result_) {
@@ -196,6 +173,18 @@ void GeolocationImpl::OnLocationUpdate(const mojom::GeopositionResult& result) {
   }
 
   current_result_ = result.Clone();
+  if (position_override_ && current_result_->is_position() &&
+      base::FeatureList::IsEnabled(
+          content_settings::features::kApproximateGeolocationPermission)) {
+    // Normal provider updates already have `is_precise` set by
+    // GeolocationProviderImpl based on the subscription accuracy. When a
+    // position override is active (e.g. via DevTools/BiDi emulation), the
+    // provider is bypassed and the overridden Geoposition defaults to
+    // `is_precise = true`. Update `is_precise` here to reflect the requested
+    // accuracy mode (`high_accuracy_hint_`) and granted permission level.
+    current_result_->get_position()->is_precise &=
+        high_accuracy_hint_ && has_precise_permission_;
+  }
 
   if (!position_callback_.is_null()) {
     ReportCurrentPosition();
@@ -206,6 +195,13 @@ void GeolocationImpl::ReportCurrentPosition() {
   CHECK(current_result_);
   CHECK(position_override_ || !IsPrecisePosition(current_result_.get()) ||
         has_precise_permission_);
+  if (current_result_->is_position() &&
+      !current_result_->get_position()->is_precise) {
+    current_result_->get_position()->heading = mojom::kBadHeading;
+    current_result_->get_position()->speed = mojom::kBadSpeed;
+    current_result_->get_position()->altitude = mojom::kBadAltitude;
+    current_result_->get_position()->altitude_accuracy = mojom::kBadAccuracy;
+  }
   std::move(position_callback_).Run(std::move(current_result_));
 }
 

@@ -89,6 +89,8 @@ gfx::Image MoveToAccountStoreBubbleController::GetProfileIcon(int size) {
   }
   AccountInfo primary_account_info = identity_manager->FindExtendedAccountInfo(
       identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin));
+  // TODO(crbug.com/587122661): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
   DCHECK(!primary_account_info.IsEmpty());
 
   gfx::Image account_icon = primary_account_info.GetAvatarImage().value_or(

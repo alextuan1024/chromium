@@ -10,6 +10,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/unguessable_token.h"
 #include "components/surface_embed/common/surface_embed.mojom.h"
+#include "components/viz/common/surfaces/local_surface_id.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/surface_embed_connector.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
@@ -53,7 +54,10 @@ class SurfaceEmbedHost : public mojom::SurfaceEmbedHost,
   void SetSurfaceEmbed(mojo::PendingAssociatedRemote<mojom::SurfaceEmbed>
                            surface_embed) override;
   void AttachConnector(const base::UnguessableToken& content_id,
-                       bool is_embed_element_focused) override;
+                       bool is_embed_element_focused,
+                       bool allow_pinch_zoom) override;
+  void SetAllowPinchZoom(bool allow_pinch_zoom) override;
+  void DetachConnector() override;
   void SynchronizeVisualProperties(
       const blink::FrameVisualProperties& visual_properties,
       bool is_visible) override;
@@ -74,14 +78,17 @@ class SurfaceEmbedHost : public mojom::SurfaceEmbedHost,
   void AdvanceFocusFromEmbedElement(bool reverse) override;
   bool IsAttachedForTesting() const override;
 
-  // TODO: Update surface_embed.mojom so that this is an override of a virtual
-  // from mojom::SurfaceEmbedHost.
-  void DetachConnector();
-
   void SetDestructionCallbackForTesting(base::OnceClosure callback);
 
   bool HasReceivedParentAccessibilityInfoForTesting() const {
     return container_accessibility_node_id_ != ui::kInvalidAXNodeID;
+  }
+  bool HasReceivedAttachConnectorForTesting() const {
+    return has_received_attach_connector_for_testing_;
+  }
+  const viz::LocalSurfaceId& GetLastSynchronizedLocalSurfaceIdForTesting()
+      const {
+    return last_synchronized_local_surface_id_for_testing_;
   }
 
  private:
@@ -109,6 +116,8 @@ class SurfaceEmbedHost : public mojom::SurfaceEmbedHost,
   base::WeakPtr<content::WebContents> child_contents_ = nullptr;
 
   bool pending_request_focus_on_embed_element_ = false;
+  bool has_received_attach_connector_for_testing_ = false;
+  viz::LocalSurfaceId last_synchronized_local_surface_id_for_testing_;
 
   ui::AXNodeID container_accessibility_node_id_ = ui::kInvalidAXNodeID;
 

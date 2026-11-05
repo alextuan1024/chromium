@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_GLIC_ACTOR_GLIC_ACTOR_TASK_MANAGER_H_
 #define CHROME_BROWSER_GLIC_ACTOR_GLIC_ACTOR_TASK_MANAGER_H_
 
+#include <string>
 #include <string_view>
 
 #include "base/callback_list.h"
@@ -13,8 +14,8 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
+#include "chrome/browser/actor/actor_keyed_service_proto_wrapper.h"
 #include "chrome/browser/actor/actor_task.h"
-#include "chrome/browser/actor/tab_observation_strategy.h"
 #include "chrome/browser/glic/actor/glic_actor_metrics.h"
 #include "chrome/browser/glic/actor/glic_actor_policy_checker.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
@@ -22,7 +23,6 @@
 #include "chrome/common/actor_webui.mojom.h"
 #include "components/actor/core/task_id.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
-#include "components/page_content_annotations/content/page_context_fetcher.h"
 #include "components/tabs/public/tab_interface.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -30,11 +30,8 @@
 class Profile;
 
 namespace actor {
-struct ActionResultWithLatencyInfo;
 class ActorKeyedService;
 class ActorTaskDelegate;
-struct ObservationResult;
-class TabObservationController;
 }  // namespace actor
 
 namespace glic {
@@ -87,7 +84,7 @@ class GlicActorTaskManager {
   bool IsActuating() const;
 
   // Returns the last acted tabs for the current task.
-  std::vector<tabs::TabInterface*> GetLastActedTabs() const;
+  std::vector<raw_ptr<tabs::TabInterface>> GetLastActedTabs() const;
 
   // Returns the ID of the current active task, if any.
   std::optional<int> current_task_id() const;
@@ -104,6 +101,8 @@ class GlicActorTaskManager {
   Profile* profile() const { return profile_; }
 
   GlicActorClientSessionInterface* GetClientSessionForTesting();
+
+  void NotifyActuatingChangedForTesting(bool is_actuating);
 
   // TODO(b/561944228): CriticalActionService needs conversation_id, this is a
   // temporary solution while b/494212836 is in place; remove once fixed.
@@ -157,6 +156,7 @@ class GlicActorClientSession : public GlicActorClientSessionInterface {
   void CreateTask(actor::webui::mojom::TaskOptionsPtr options,
                   CreateTaskCallback callback) override;
   void PerformActions(const std::vector<uint8_t>& actions_proto,
+                      mojom::PerformActionsOptionsPtr options,
                       PerformActionsCallback callback) override;
   void CancelActions(int32_t task_id, CancelActionsCallback callback) override;
   void StopActorTask(int32_t task_id,
@@ -242,27 +242,14 @@ class GlicActorClientSession : public GlicActorClientSessionInterface {
           params) override;
 
  private:
-  void PerformActionsFinished(
-      PerformActionsCallback callback,
-      actor::TaskId task_id,
-      base::TimeTicks start_time,
-      bool skip_async_observation_information,
-      std::optional<page_content_annotations::ScreenshotOptions::
-                        ScreenshotCollectionOptions>
-          screenshot_collection_options,
-      std::vector<actor::ActionResultWithLatencyInfo> action_results,
-      actor::TabObservationStrategy observation_strategy);
-  void OnPerformActionsComplete(
-      PerformActionsCallback callback,
-      base::TimeTicks start_time,
-      std::vector<actor::ActionResultWithLatencyInfo> action_results,
-      std::unique_ptr<actor::AggregatedJournal::PendingAsyncEntry>
-          journal_entry,
-      actor::TabObservationController* controller_ptr,
-      std::unique_ptr<actor::ObservationResult> result);
   void CreateActorTabFinished(CreateActorTabCallback callback,
                               tabs::TabInterface* new_tab);
   void NotifyActorTaskStateChanged(actor::ActorTask& task);
+  // Runs when the actor accepts the actions of a `PerformActions()` call for
+  // `task_id`, right before the first of them starts. Makes `turn_id` the
+  // conversation anchor of the critical actions those actions cause.
+  void SetConversationAnchorForAcceptedActions(actor::TaskId task_id,
+                                               std::string turn_id);
   void StopTaskImpl(actor::TaskId task_id,
                     actor::ActorTask::StoppedReason reason);
   bool ValidateTaskIdMatchesCurrent(actor::TaskId task_id,
@@ -274,8 +261,6 @@ class GlicActorClientSession : public GlicActorClientSessionInterface {
 
   mojo::Remote<mojom::ActorClient> actor_client_;
   mojo::Receiver<mojom::ActorHandler> receiver_{this};
-  std::vector<std::unique_ptr<actor::TabObservationController>>
-      observation_controllers_;
 
   base::WeakPtr<actor::AutofillSelectionDialogEventHandler>
       autofill_selection_event_handler_;
@@ -285,6 +270,7 @@ class GlicActorClientSession : public GlicActorClientSessionInterface {
       actor_task_state_changed_subscription_;
   base::CallbackListSubscription can_act_on_web_changed_subscription_;
   raw_ref<GlicActorTaskManager> manager_;
+  actor::ActorKeyedServiceProtoWrapper actor_keyed_service_proto_wrapper_;
   std::unique_ptr<GlicActorJournalHandler> journal_handler_;
   base::WeakPtrFactory<GlicActorClientSession> weak_ptr_factory_{this};
 };

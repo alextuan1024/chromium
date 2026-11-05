@@ -6,25 +6,27 @@
 
 #import <UIKit/UIKit.h>
 
+#import <utility>
+
 #import "base/notreached.h"
 #import "components/signin/public/base/consent_level.h"
+#import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/fullscreen_signin_screen/coordinator/fullscreen_signin_screen_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/fullscreen_signin/coordinator/fullscreen_signin_coordinator_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator+protected.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_context_style.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_in_progress.h"
 #import "ios/chrome/browser/first_run/public/first_run_screen_delegate.h"
-#import "ios/chrome/browser/first_run/public/first_run_util.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_provider.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_type.h"
-#import "ios/chrome/browser/shared/coordinator/chrome_coordinator/animated_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/signin/model/system_identity.h"
 
 @interface FullscreenSigninCoordinator () <FirstRunScreenDelegate>
 
@@ -41,6 +43,9 @@
   SigninContextStyle _contextStyle;
   signin_metrics::AccessPoint _accessPoint;
   std::unique_ptr<SigninInProgress> _signinInProgress;
+  // Primary account when the coordinator is started if `canSwitchAccount` is
+  // `YES`. Empty otherwise.
+  GaiaId _initialPrimaryGaiaId;
 }
 
 - (instancetype)
@@ -77,6 +82,11 @@
   CHECK(self.canSwitchAccount ||
         !identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   _signinInProgress = [self.sceneState createSigninInProgress];
+  if (self.canSwitchAccount) {
+    _initialPrimaryGaiaId =
+        identityManager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+            .gaia;
+  }
   self.navigationController =
       [[UINavigationController alloc] initWithNavigationBarClass:nil
                                                     toolbarClass:nil];
@@ -125,14 +135,8 @@
 // presenting the screens.
 - (void)finishPresentingScreens {
   __weak __typeof(self) weakSelf = self;
-  AuthenticationService* authService =
-      AuthenticationServiceFactory::GetForProfile(self.profile);
-  id<SystemIdentity> identity = authService->GetPrimaryIdentity();
   void (^completion)(void) = ^{
-    SigninCoordinatorResult result =
-        identity ? SigninCoordinatorResultSuccess
-                 : SigninCoordinatorResultCanceledByUser;
-    [weakSelf finishWithResult:result identity:identity];
+    [weakSelf finish];
   };
   [self.navigationController dismissViewControllerAnimated:YES
                                                 completion:completion];
@@ -142,7 +146,7 @@
 - (void)presentScreen:(ScreenType)type {
   // If there are no screens remaining, call delegate to stop presenting
   // screens.
-  if (type == kStepsCompleted) {
+  if (type == ScreenType::kStepsCompleted) {
     [self finishPresentingScreens];
     return;
   }
@@ -152,6 +156,7 @@
 
 // Creates a screen coordinator according to `type`.
 - (ChromeCoordinator*)createChildCoordinatorWithScreenType:(ScreenType)type {
+  using enum ScreenType;
   switch (type) {
     case kSignIn: {
       FullscreenSigninScreenCoordinator* coordinator =
@@ -184,13 +189,35 @@
   return nil;
 }
 
-- (void)finishWithResult:(SigninCoordinatorResult)result
-                identity:(id<SystemIdentity>)identity {
+// Returns the current primary identity if the signin was a success and
+// `CanceledByUser` otherwise.
+- (SigninCoordinatorResultOrIdentity)finishResult {
+  id<SystemIdentity> identity =
+      AuthenticationServiceFactory::GetForProfile(self.profile)
+          ->GetPrimaryIdentity();
+  if (!identity) {
+    //  The user is signed-out. Sign-in was canceled.
+    return base::unexpected(SigninCoordinatorResultCanceledByUser);
+  }
+  if (identity.gaiaId == _initialPrimaryGaiaId) {
+    // The primary identity is not changed, thus the user canceled the switch.
+    return base::unexpected(SigninCoordinatorResultCanceledByUser);
+  }
+  // In all other case, it’s a success.
+  return identity;
+}
+
+// Finishes with `SigninCoordinatorResultCanceledByUser` if there is no primary
+// identity, or if the primary account did not change.
+- (void)finish {
+  [self finishWithResult:[self finishResult]];
+}
+
+- (void)finishWithResult:(SigninCoordinatorResultOrIdentity)result {
   [self stopChildCoordinator];
   self.navigationController = nil;
   self.screenProvider = nil;
-  [self.delegate fullscreenSigninCoordinatorWantsToBeStopped:self
-                                                      result:result];
+  [self.delegate fullscreenSigninCoordinatorDone:self result:std::move(result)];
 }
 
 #pragma mark - FirstRunScreenDelegate

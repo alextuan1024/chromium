@@ -2,27 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import <TargetConditionals.h>
-
-#import "base/ios/ios_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/autofill/core/browser/filling/field_filling_util.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/core/common/autofill_features.h"
+#import "components/signin/internal/identity_manager/account_capabilities_constants.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_constants.h"
-#import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
+#import "ios/chrome/browser/autofill/test/autofill_app_interface.h"
+#import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_constants.h"
 #import "ios/chrome/browser/infobars/ui_bundled/infobar_earl_grey_ui_test_util.h"
-#import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_settings_constants.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/settings/autofill/autofill_ai/test/autofill_ai_settings_test_util.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
-#import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
-#import "ios/chrome/test/earl_grey/chrome_matchers_app_interface.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
@@ -59,6 +55,11 @@ constexpr std::string_view kPassportOverrideParam =
     "4641858130178050027_1520818241_172-"
     "4641858130178050027_2813548763_171";
 
+// Timeout for navigating away from the initial New Tab Page on test start.
+// On slower bots and freshly booted simulators, WebKit cold-launches its
+// helper processes before adding the web view to the hierarchy.
+constexpr base::TimeDelta kInitialPageLoadTimeout = base::Seconds(30);
+
 // Save button on the infobar.
 id<GREYMatcher> infoBarSaveButton() {
   return chrome_test_util::ButtonWithAccessibilityLabel(
@@ -90,23 +91,11 @@ void TapSaveEntityButton() {
 
 // Verifies if the view to show the entity is visible.
 void VerifyEntityVisibility(bool is_visible) {
-  [[EarlGrey selectElementWithMatcher:entitiesView()]
-      assertWithMatcher:is_visible ? grey_sufficientlyVisible() : grey_nil()];
-}
-
-// Label within a table view cell in "Addresses and more" settings.
-id<GREYMatcher> GetMatcherForLabel(NSString* label) {
-  return grey_allOf(
-      grey_accessibilityLabel(label),
-      grey_ancestor(grey_accessibilityID(kAutofillProfileTableViewID)),
-      grey_interactable(), nil);
-}
-
-// Verifies if a cell with the given label is visible.
-void VerifyCellVisibility(NSString* entity_label, bool is_visible) {
-  [[EarlGrey selectElementWithMatcher:GetMatcherForLabel(entity_label)]
-      assertWithMatcher:is_visible ? grey_sufficientlyVisible()
-                                   : grey_notVisible()];
+  if (is_visible) {
+    [ChromeEarlGrey waitForUIElementToAppearWithMatcher:entitiesView()];
+  } else {
+    [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:entitiesView()];
+  }
 }
 
 // Verifies the flow of saving a new entity from the infobar banner.
@@ -132,15 +121,17 @@ void VerifySaveNewEntityFlow() {
 @implementation AutofillAIEGTest
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config;
-  config.features_disabled.push_back(kYourSavedInfoSettingsPageIos);
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
   config.features_enabled.push_back(
       autofill::features::kAutofillAiWithDataSchema);
   config.features_enabled.push_back(
       autofill::features::kAutofillAiReauthRequired);
 
+  const BOOL isPrivatePassCapabilityTest = [self isPrivatePassCapabilityTest];
+
   if ([self isRunningTest:@selector(testSubmitRedressForm)] ||
-      [self isRunningTest:@selector(testSavePassportForm)]) {
+      [self isRunningTest:@selector(testSavePassportForm)] ||
+      isPrivatePassCapabilityTest) {
     config.features_enabled.push_back(
         autofill::features::debug::kAutofillAiForceOptIn);
 
@@ -155,6 +146,13 @@ void VerifySaveNewEntityFlow() {
 
     config.features_enabled.push_back(
         autofill::features::kAutofillAiAlwaysTriggerServerModel);
+  }
+
+  if (isPrivatePassCapabilityTest) {
+    config.features_enabled.push_back(
+        autofill::features::kAutofillRegionalizedPrivatePassesUxRefine);
+    config.features_enabled.push_back(
+        autofill::features::kAutofillAiWalletPrivatePasses);
   }
 
   if ([self isRunningTest:@selector(testWalletFailureShowsErrorDialog)]) {
@@ -187,28 +185,54 @@ void VerifySaveNewEntityFlow() {
     GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
   }
 
-  // Enhanced Autofill only works for signed in users.
-  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  if (![self isPrivatePassCapabilityTest]) {
+    // Enhanced Autofill only works for signed in users.
+    [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
+  }
 }
 
 #pragma mark - Helper methods
+
+// Returns whether the running test is a private pass capability test.
+- (BOOL)isPrivatePassCapabilityTest {
+  return
+      [self
+          isRunningTest:@selector(
+                            testSavePrivatePass_CapabilityUnknown_NoPrompt)] ||
+      [self isRunningTest:@selector(
+                              testSavePrivatePass_CapabilityTrue_RefinedUx)] ||
+      [self isRunningTest:@selector(
+                              testSavePrivatePass_CapabilityFalse_StandardUx)];
+}
 
 // Returns the GURL for the redress number page.
 - (GURL)redressNumberPageURL {
   return self.testServer->GetURL("/redress_number.html");
 }
 
-// Loads redress number page on localhost.
+// Loads redress number page on localhost and waits for its field types to be
+// assigned.
 - (void)loadRedressNumberPage {
   // Loads redress number page.
-  [ChromeEarlGrey loadURL:[self redressNumberPageURL]];
+  [ChromeEarlGrey loadURL:[self redressNumberPageURL]
+              withTimeout:kInitialPageLoadTimeout];
   [ChromeEarlGrey waitForWebStateContainingText:"Redress Number"];
+  // Local heuristics don't classify the form's fields; their types are only
+  // assigned asynchronously from `kAutofillOverridePredictions`.
+  GREYAssertTrue([AutofillAppInterface waitForServerPredictionsInMainFrame],
+                 @"Server predictions were not applied to cached forms.");
 }
 
-// Loads simple passport page on localhost.
+// Loads simple passport page on localhost and waits for its field types to be
+// assigned.
 - (void)loadPassportPage {
-  [ChromeEarlGrey loadURL:self.testServer->GetURL("/passport_form.html")];
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/passport_form.html")
+              withTimeout:kInitialPageLoadTimeout];
   [ChromeEarlGrey waitForWebStateContainingText:"Passport"];
+  // Local heuristics don't classify the form's fields; their types are only
+  // assigned asynchronously from `kAutofillOverridePredictions`.
+  GREYAssertTrue([AutofillAppInterface waitForServerPredictionsInMainFrame],
+                 @"Server predictions were not applied to cached forms.");
 }
 
 #pragma mark - Tests
@@ -216,11 +240,6 @@ void VerifySaveNewEntityFlow() {
 // Tests the infobar banner shows and can be tapped. Once tapped, the detailed
 // save entity UI is shown.
 - (void)testSaveEntityUI {
-  // TODO(crbug.com/516443975): Re-enable this flaky test on iOS below 26.
-  if (!base::ios::IsRunningOnIOS26OrLater()) {
-    EARL_GREY_TEST_DISABLED(@"Flaky on iOS below 26.");
-  }
-
   // Simulate a trigger for the infobar.
   [AutofillAppInterface showAutofillAiSaveEntityBubble];
 
@@ -229,19 +248,17 @@ void VerifySaveNewEntityFlow() {
   VerifySaveNewEntityFlow();
 }
 
-// Tests entity deletion from "Addresses and more" in Settings.
+// Tests entity deletion from "Travel" in Settings.
 - (void)testEntityDeletion {
   GREYAssertTrue(
       [AutofillAppInterface saveRedressNumberEntityWithName:kOwnerName
                                                      number:kRedressNumber],
       @"Failed to create an entity.");
-  // Open "Addresses and more" from settings.
-  [ChromeEarlGreyUI openSettingsMenu];
-  [ChromeEarlGreyUI
-      tapSettingsMenuButton:chrome_test_util::AddressesAndMoreButton()];
+  // Open "Travel" from settings.
+  [AutofillAISettingsTestUtil openTravelSettings];
 
   // Verify the entity just saved is visible in settings.
-  VerifyCellVisibility(kOwnerName, true);
+  [AutofillAISettingsTestUtil entityWithLabel:kOwnerName isVisible:YES];
 
   // Tap the Toolbar Edit button to enter edit mode.
   [[EarlGrey
@@ -249,8 +266,7 @@ void VerifySaveNewEntityFlow() {
       performAction:grey_tap()];
 
   // Select the cell containing the entity.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForLabel(kOwnerName)]
-      performAction:grey_tap()];
+  [AutofillAISettingsTestUtil tapEntityWithLabel:kOwnerName];
 
   // Tap the delete button in the bottom toolbar.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::
@@ -263,18 +279,11 @@ void VerifySaveNewEntityFlow() {
                      IDS_IOS_DELETE_ACTION_TITLE)] performAction:grey_tap()];
 
   // Ensure it's deleted.
-  VerifyCellVisibility(kOwnerName, false);
+  [AutofillAISettingsTestUtil entityWithLabel:kOwnerName isVisible:NO];
 }
 
 // Tests submitting a redress form.
-// TODO(crbug.com/506106151): Fix and re-enable on iOS 18 devices.
 - (void)testSubmitRedressForm {
-#if !TARGET_OS_SIMULATOR
-  if (base::ios::IsRunningOnIOS18OrLater()) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Disabled on iOS 18 devices due to crbug.com/506106151");
-  }
-#endif
   [self loadRedressNumberPage];
 
   // Filling is done in JavaScript to avoid flakiness.
@@ -284,18 +293,17 @@ void VerifySaveNewEntityFlow() {
 
   // Wait for the infobar banner to appear.
   [InfobarEarlGreyUI waitUntilInfobarBannerVisibleOrTimeout:YES];
+
+  // Dismiss the banner to prevent interference with subsequent tests.
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kInfobarBannerViewIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
+  [InfobarEarlGreyUI waitUntilInfobarBannerVisibleOrTimeout:NO];
 }
 
 // Tests saving a new passport from a web form, verifying that it appears in
 // Settings and then deleting it.
-// TODO(crbug.com/506106151): Fix and re-enable on iOS 18 devices.
 - (void)testSavePassportForm {
-#if !TARGET_OS_SIMULATOR
-  if (base::ios::IsRunningOnIOS18OrLater()) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Disabled on iOS 18 devices due to crbug.com/506106151");
-  }
-#endif
   [self loadPassportPage];
 
   // Tap on fill button.
@@ -329,13 +337,11 @@ void VerifySaveNewEntityFlow() {
 
   [[EarlGrey selectElementWithMatcher:saveButton] performAction:grey_tap()];
 
-  // Navigate to Settings -> "Addresses and more" menu.
-  [ChromeEarlGreyUI openSettingsMenu];
-  [ChromeEarlGreyUI
-      tapSettingsMenuButton:chrome_test_util::AddressesAndMoreButton()];
+  // Navigate to Settings -> "Autofill and passwords" -> "Identity docs".
+  [AutofillAISettingsTestUtil openIdentityDocsSettings];
 
   // Verify cell visibility of owner name.
-  VerifyCellVisibility(kOwnerName, true);
+  [AutofillAISettingsTestUtil entityWithLabel:kOwnerName isVisible:YES];
 
   // Verify it is displayed as a passport.
   id<GREYMatcher> passportCell = grey_allOf(
@@ -353,8 +359,7 @@ void VerifySaveNewEntityFlow() {
       performAction:grey_tap()];
 
   // Select the cell containing the entity.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForLabel(kOwnerName)]
-      performAction:grey_tap()];
+  [AutofillAISettingsTestUtil tapEntityWithLabel:kOwnerName];
 
   // Tap the delete button in the bottom toolbar.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::
@@ -367,18 +372,11 @@ void VerifySaveNewEntityFlow() {
                      IDS_IOS_DELETE_ACTION_TITLE)] performAction:grey_tap()];
 
   // Ensure it's deleted.
-  VerifyCellVisibility(kOwnerName, false);
+  [AutofillAISettingsTestUtil entityWithLabel:kOwnerName isVisible:NO];
 }
 
 // Tests that a wallet failure shows an error dialog when attempting to fill.
-// TODO(crbug.com/506106151): Fix and re-enable on iOS 18 devices.
 - (void)testWalletFailureShowsErrorDialog {
-#if !TARGET_OS_SIMULATOR
-  if (base::ios::IsRunningOnIOS18OrLater()) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Disabled on iOS 18 devices due to crbug.com/506106151");
-  }
-#endif
   // Add server wallet passport entity.
   NSString* uuid = [AutofillAppInterface saveServerWalletPassportEntity];
 
@@ -412,6 +410,124 @@ void VerifySaveNewEntityFlow() {
 
   // Cleanup.
   [AutofillAppInterface removeEntityWithUUID:uuid];
+}
+
+// Tests that submitting a private pass form when the account capability is
+// unknown suppresses the save prompt completely (neither infobar nor sheet is
+// shown).
+- (void)testSavePrivatePass_CapabilityUnknown_NoPrompt {
+  [self loadPassportPage];
+
+  // Sign in after page load to avoid NTP sign-in race conditions.
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity2];
+  [SigninEarlGrey addFakeIdentity:fakeIdentity withUnknownCapabilities:YES];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+
+  // Fill form and submit.
+  [ChromeEarlGrey tapWebStateElementWithID:@"fill_passport_form"];
+  [ChromeEarlGrey tapWebStateElementWithID:@"submit-button"];
+
+  // Verify that the infobar banner does not show up.
+  [InfobarEarlGreyUI waitUntilInfobarBannerVisibleOrTimeout:NO];
+
+  // Verify that the save entity UI is not visible.
+  VerifyEntityVisibility(false);
+}
+
+// Tests that submitting a private pass form when the account capability is
+// true presents the refined UX with a "No thanks" button and without an "X"
+// cancel button on the top left.
+- (void)testSavePrivatePass_CapabilityTrue_RefinedUx {
+  [self loadPassportPage];
+
+  // Sign in after page load to avoid NTP sign-in race conditions.
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity3];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+  [SigninEarlGrey setCapabilities:@{
+    @(kMustShowEquallyWeightedButtonsForPrivatePassesInAutofillCapabilityName) :
+        @YES,
+  }
+                      forIdentity:fakeIdentity];
+
+  // Fill form and submit.
+  [ChromeEarlGrey tapWebStateElementWithID:@"fill_passport_form"];
+  [ChromeEarlGrey tapWebStateElementWithID:@"submit-button"];
+
+  // Wait for the infobar banner to appear.
+  [InfobarEarlGreyUI waitUntilInfobarBannerVisibleOrTimeout:YES];
+
+  // Tap the infobar save button to open the detailed UI.
+  TapInfoBarSaveButton();
+
+  // Verify "Save" button and "No thanks" button are visible.
+  id<GREYMatcher> saveButton =
+      grey_accessibilityID(kAutofillAISaveEntitySaveButtonId);
+  id<GREYMatcher> noThanksButton =
+      grey_accessibilityID(kAutofillAISaveEntityNoThanksButtonId);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:saveButton];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:noThanksButton];
+
+  // Verify the "X" cancel button on the top left is not present.
+  id<GREYMatcher> cancelButton =
+      grey_accessibilityID(kAutofillAISaveEntityCancelButtonId);
+  [[EarlGrey selectElementWithMatcher:cancelButton]
+      assertWithMatcher:grey_nil()];
+
+  // Tap "No thanks" button.
+  [[EarlGrey selectElementWithMatcher:noThanksButton] performAction:grey_tap()];
+
+  // Verify the save entity UI is dismissed.
+  VerifyEntityVisibility(false);
+  [ChromeEarlGrey waitForWebStateVisible];
+}
+
+// Tests that submitting a private pass form when the account capability is
+// false presents the standard UX with an "X" cancel button on the top left
+// and without a "No thanks" button.
+- (void)testSavePrivatePass_CapabilityFalse_StandardUx {
+  [self loadPassportPage];
+
+  // Sign in after page load to avoid NTP sign-in race conditions.
+  FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity4];
+  [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+  [SigninEarlGrey setCapabilities:@{
+    @(kMustShowEquallyWeightedButtonsForPrivatePassesInAutofillCapabilityName) :
+        @NO,
+  }
+                      forIdentity:fakeIdentity];
+
+  // Fill form and submit.
+  [ChromeEarlGrey tapWebStateElementWithID:@"fill_passport_form"];
+  [ChromeEarlGrey tapWebStateElementWithID:@"submit-button"];
+
+  // Wait for the infobar banner to appear.
+  [InfobarEarlGreyUI waitUntilInfobarBannerVisibleOrTimeout:YES];
+
+  // Tap the infobar save button to open the detailed UI.
+  TapInfoBarSaveButton();
+
+  // Verify "Save" button and the "X" cancel button on the top left are visible.
+  id<GREYMatcher> saveButton =
+      grey_accessibilityID(kAutofillAISaveEntitySaveButtonId);
+  id<GREYMatcher> cancelButton =
+      grey_accessibilityID(kAutofillAISaveEntityCancelButtonId);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:saveButton];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:cancelButton];
+  [[EarlGrey selectElementWithMatcher:cancelButton]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  // Verify the "No thanks" button is not present.
+  id<GREYMatcher> noThanksButton =
+      grey_accessibilityID(kAutofillAISaveEntityNoThanksButtonId);
+  [[EarlGrey selectElementWithMatcher:noThanksButton]
+      assertWithMatcher:grey_nil()];
+
+  // Tap the "X" cancel button.
+  [[EarlGrey selectElementWithMatcher:cancelButton] performAction:grey_tap()];
+
+  // Verify the save entity UI is dismissed.
+  VerifyEntityVisibility(false);
+  [ChromeEarlGrey waitForWebStateVisible];
 }
 
 @end

@@ -7,6 +7,7 @@
 
 #include <optional>
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "build/build_config.h"
@@ -14,6 +15,7 @@
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/pointer/touch_ui_controller.h"
+#include "ui/gfx/geometry/insets.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/widget/widget.h"
 
@@ -138,6 +140,28 @@ class BrowserWidget : public views::Widget,
   void SetTabDragKind(TabDragKind tab_drag_kind);
   TabDragKind tab_drag_kind() const { return tab_drag_kind_; }
 
+  // Returns the insets of the parts of the widget that the platform does not
+  // treat as part of the window, e.g. client-drawn shadows and resize borders
+  // on Linux X11. Window bounds exposed through BrowserWindow exclude them. If
+  // `restored` is true, returns the insets for the restored window state.
+  gfx::Insets GetInvisibleFrameInsets(bool restored) const;
+
+  // Overrides the insets that the platform reports for the normal window state
+  // (Linux only). Insets for other states are derived from them as usual.
+  void SetInvisibleFrameInsetsForTesting(std::optional<gfx::Insets> insets) {
+    invisible_frame_insets_for_testing_ = insets;
+  }
+  const std::optional<gfx::Insets>& invisible_frame_insets_override() const {
+    return invisible_frame_insets_for_testing_;
+  }
+
+  // Registers `callback` to run when a tab drag starts or ends in this window,
+  // i.e. when `tab_drag_kind()` changes to or from `TabDragKind::kNone`.
+  using TabDraggingStatusChangedCallback =
+      base::RepeatingCallback<void(bool is_dragging)>;
+  base::CallbackListSubscription RegisterTabDraggingStatusChanged(
+      TabDraggingStatusChangedCallback callback);
+
  protected:
   // views::Widget:
   void OnNativeThemeUpdated(ui::NativeTheme* observed_theme) override;
@@ -147,7 +171,6 @@ class BrowserWidget : public views::Widget,
   const ui::ThemeProvider* GetBaseThemeProvider() const;
 
   void OnTouchUiChanged();
-  void OnGlassFrameEligibilityChanged(bool is_eligible);
 
   // Callback for MenuRunner.
   void OnMenuClosed();
@@ -174,6 +197,8 @@ class BrowserWidget : public views::Widget,
 
   raw_ptr<BrowserNativeWidget> browser_native_widget_;
 
+  std::optional<gfx::Insets> invisible_frame_insets_for_testing_;
+
   // A weak reference to the root view associated with the window. We save a
   // copy as a BrowserRootView to avoid evil casting later, when we need to call
   // functions that only exist on BrowserRootView (versus RootView).
@@ -196,10 +221,6 @@ class BrowserWidget : public views::Widget,
           base::BindRepeating(&BrowserWidget::OnTouchUiChanged,
                               base::Unretained(this)));
 
-  // Observes changes in glass frame eligibility from GlassFrameService to
-  // trigger a widget theme update when eligibility transitions.
-  base::CallbackListSubscription glass_frame_subscription_;
-
   // Indicates the drag state for this window. The value can be kWindowDrag
   // if the accociated browser is the dragged browser or kTabDrag
   // if this is the source browser that the drag window originates from. During
@@ -207,6 +228,9 @@ class BrowserWidget : public views::Widget,
   // may change, the fast resize strategy will be used to resize its web
   // contents for smoother dragging.
   TabDragKind tab_drag_kind_ = TabDragKind::kNone;
+
+  base::RepeatingCallbackList<void(bool is_dragging)>
+      tab_dragging_status_changed_callbacks_;
 
 #if BUILDFLAG(IS_LINUX)
   bool tiled_ = false;

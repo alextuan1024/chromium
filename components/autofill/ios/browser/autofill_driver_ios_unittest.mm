@@ -12,14 +12,18 @@
 #import "base/test/mock_callback.h"
 #import "base/test/scoped_feature_list.h"
 #import "base/test/test_future.h"
+#import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #import "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #import "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#import "components/autofill/core/common/aliases.h"
 #import "components/autofill/core/common/autofill_test_util.h"
 #import "components/autofill/core/common/form_data.h"
 #import "components/autofill/core/common/form_field_data.h"
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_bridge.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_factory.h"
+#import "components/autofill/ios/browser/autofill_driver_ios_factory_test_api.h"
+#import "components/autofill/ios/browser/autofill_driver_ios_test_api.h"
 #import "components/autofill/ios/browser/autofill_java_script_feature.h"
 #import "components/autofill/ios/browser/test_autofill_client_ios.h"
 #import "components/autofill/ios/common/features.h"
@@ -30,6 +34,7 @@
 #import "ios/web/public/test/web_test.h"
 #import "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest/include/gtest/gtest.h"
+#import "ui/gfx/geometry/rect.h"
 
 // AutofillDriverIosBridge used for testing. Provides a simple implementation of
 // the methods that are used during testing, e.g. call the completion block upon
@@ -133,9 +138,32 @@ namespace autofill {
 
 namespace {
 
+using testing::_;
 using testing::Eq;
 using testing::Optional;
 using testing::Property;
+
+class MockAutofillManager : public BrowserAutofillManager {
+ public:
+  explicit MockAutofillManager(AutofillDriverIOS* driver)
+      : BrowserAutofillManager(driver) {}
+  MOCK_METHOD(void,
+              OnAskForValuesToFill,
+              (const FormData& form,
+               const FieldGlobalId& field_id,
+               const gfx::Rect& caret_bounds,
+               AutofillSuggestionTriggerSource trigger_source,
+               std::optional<PasswordSuggestionRequest> password_request,
+               AutofillManager::RendererEventPassKey pass_key),
+              (override));
+};
+
+// Origin of the frames used in tests.
+constexpr char kTestFrameOrigin[] = "https://example.com";
+// ID of a frame that is never registered in the frames manager.
+constexpr char kUnregisteredFrameId[] = "22222222222222222222222222222222";
+// Name of the form looked up by `FetchFormsFilteredByName`.
+constexpr char16_t kTestFormName[] = u"form";
 
 class AutofillDriverIOSTest : public web::WebTest {
  protected:
@@ -145,7 +173,7 @@ class AutofillDriverIOSTest : public web::WebTest {
     OverrideJavaScriptFeatures(
         {autofill::AutofillJavaScriptFeature::GetInstance()});
 
-    GURL url("https://example.com");
+    GURL url(kTestFrameOrigin);
     web_state_.SetCurrentURL(url);
     web_state_.SetBrowserState(GetBrowserState());
     web_state_.SetContentIsHTML(true);
@@ -189,6 +217,14 @@ class AutofillDriverIOSTest : public web::WebTest {
   AutofillDriverIOS* main_frame_driver() { return main_frame_driver_; }
   AutofillDriverIOS* iframe_driver() { return iframe_driver_; }
   FakeAutofillDriverIOSBridge* bridge() { return test_bridge_; }
+
+  // Returns the driver of `frame`, which isn't registered in the frames
+  // manager, so that the driver's `web_frame()` is null, as it is once the
+  // driver's frame is gone.
+  AutofillDriverIOS* DriverForUnregisteredFrame(web::WebFrame* frame) {
+    return test_api(autofill_client_->GetAutofillDriverFactory())
+        .DriverForFrame(frame);
+  }
 
   FormData MakeForm(bool main_frame) {
     FormGlobalId form_id{main_frame ? main_frame_driver()->GetFrameToken()
@@ -397,7 +433,8 @@ TEST_F(AutofillDriverIOSTest, TriggerFormExtractionInAllFrames_Success) {
   [bridge() setForms:bridge_result];
 
   base::test::TestFuture<bool> future;
-  main_frame_driver()->TriggerFormExtractionInAllFrames(future.GetCallback());
+  main_frame_driver()->TriggerFormExtractionInAllFrames(/*force=*/false,
+                                                        future.GetCallback());
 
   EXPECT_TRUE(future.Get());
   // Forms seen should be notified for both frames since bridge returns forms.
@@ -414,9 +451,32 @@ TEST_F(AutofillDriverIOSTest, TriggerFormExtractionInAllFrames_Failure) {
   [bridge() setFetchFormsCompletionHandler:std::move(callback)];
 
   base::test::TestFuture<bool> future;
-  main_frame_driver()->TriggerFormExtractionInAllFrames(future.GetCallback());
+  main_frame_driver()->TriggerFormExtractionInAllFrames(/*force=*/false,
+                                                        future.GetCallback());
 
   EXPECT_FALSE(future.Get());
+}
+
+// Tests that `FetchFormsFilteredByName` runs its completion with `std::nullopt`
+// when the driver's frame is gone, so that callers querying suggestion
+// availability don't stall.
+TEST_F(AutofillDriverIOSTest, FetchFormsFilteredByName_NoWebFrame) {
+  std::unique_ptr<web::FakeWebFrame> unregistered_frame =
+      web::FakeWebFrame::Create(kUnregisteredFrameId, /*is_main_frame=*/false,
+                                GURL(kTestFrameOrigin));
+  AutofillDriverIOS* driver =
+      DriverForUnregisteredFrame(unregistered_frame.get());
+  ASSERT_TRUE(driver);
+  ASSERT_FALSE(driver->web_frame());
+
+  base::test::TestFuture<std::optional<std::vector<FormData>>> future;
+  driver->FetchFormsFilteredByName(kTestFormName, future.GetCallback());
+
+  // Without a frame there is nothing to wait for: the completion must run
+  // synchronously.
+  ASSERT_TRUE(future.IsReady())
+      << "The completion handler did not run synchronously.";
+  EXPECT_EQ(future.Get(), std::nullopt);
 }
 
 // Test that `ApplyFieldAction` directly calls bridge when the frame has not
@@ -497,6 +557,33 @@ TEST_F(AutofillDriverIOSTest, ApplyFieldActionNoFallbackWhenFeatureDisabled) {
       mojom::ActionPersistence::kFill, field_global_id, test_value);
 
   EXPECT_EQ(bridge().fillSpecificFormFieldRunCount, 0);
+}
+
+// Tests that `AskForValuesToFill` forwards `trigger_source` through the router
+// to the root driver's `AutofillManager::OnAskForValuesToFill`.
+TEST_F(AutofillDriverIOSTest, AskForValuesToFill_ForwardsTriggerSource) {
+  FormData iframe_form = MakeForm(/*main_frame=*/false);
+  FormData main_frame_form = MakeForm(/*main_frame=*/true);
+
+  main_frame_driver()->FormsSeen({main_frame_form}, /*removed_forms=*/{});
+  iframe_driver()->FormsSeen({iframe_form}, /*removed_forms=*/{});
+  ASSERT_EQ(iframe_driver()->GetParent(), main_frame_driver());
+
+  auto manager = std::make_unique<testing::NiceMock<MockAutofillManager>>(
+      main_frame_driver());
+  MockAutofillManager* mock_manager = manager.get();
+  test_api(*main_frame_driver()).SetAutofillManager(std::move(manager));
+
+  const FieldGlobalId field_id = iframe_form.fields()[0].global_id();
+  EXPECT_CALL(
+      *mock_manager,
+      OnAskForValuesToFill(
+          Property(&FormData::global_id, main_frame_form.global_id()), field_id,
+          _, AutofillSuggestionTriggerSource::kTextFieldValueChanged, _, _));
+
+  iframe_driver()->AskForValuesToFill(
+      iframe_form, field_id,
+      AutofillSuggestionTriggerSource::kTextFieldValueChanged);
 }
 
 }  // namespace

@@ -28,10 +28,10 @@ class AX_EXPORT AXTableInfo {
  public:
   struct CellData {
     raw_ptr<AXNode, DanglingUntriaged> cell;
-    size_t col_index;
-    size_t row_index;
-    size_t col_span;
-    size_t row_span;
+    size_t dom_col_index;
+    size_t dom_row_index;
+    size_t dom_col_span;
+    size_t dom_row_span;
     size_t aria_col_index;
     size_t aria_row_index;
   };
@@ -55,11 +55,11 @@ class AX_EXPORT AXTableInfo {
 
   // The real row count, guaranteed to be at least as large as the
   // maximum row index of any cell.
-  size_t row_count = 0;
+  size_t dom_row_count = 0;
 
   // The real column count, guaranteed to be at least as large as the
   // maximum column index of any cell.
-  size_t col_count = 0;
+  size_t dom_col_count = 0;
 
   // List of column header nodes IDs for each column index.
   std::vector<std::vector<AXNodeID>> col_headers;
@@ -88,7 +88,7 @@ class AX_EXPORT AXTableInfo {
   // Extra computed nodes for the accessibility tree for macOS:
   // one column node for each table column, followed by one
   // table header container node.
-  std::vector<raw_ptr<AXNode, VectorExperimental>> extra_mac_nodes;
+  std::vector<raw_ptr<AXNode, DanglingUntriaged>> extra_mac_nodes;
 
   // Map from each cell's node ID to its index in unique_cell_ids.
   std::map<AXNodeID, size_t> cell_id_to_index;
@@ -97,7 +97,7 @@ class AX_EXPORT AXTableInfo {
   std::map<AXNodeID, size_t> row_id_to_index;
 
   // List of ax nodes that represent the rows of the table.
-  std::vector<raw_ptr<AXNode, VectorExperimental>> row_nodes;
+  std::vector<raw_ptr<AXNode, DanglingUntriaged>> row_nodes;
 
   // The ARIA row count and column count, if any ARIA table or grid
   // attributes are used in the table at all.
@@ -122,7 +122,7 @@ class AX_EXPORT AXTableInfo {
 
   void ClearVectors();
   void BuildCellDataVectorFromRowAndCellNodes(
-      const std::vector<raw_ptr<AXNode, VectorExperimental>>& row_node_list,
+      const std::vector<raw_ptr<AXNode, DanglingUntriaged>>& row_node_list,
       const std::vector<std::vector<AXNode*>>& cell_nodes_per_row);
   void BuildCellDataVectorFromCellNodes(
       const std::vector<std::vector<AXNode*>>& cell_nodes_per_row);

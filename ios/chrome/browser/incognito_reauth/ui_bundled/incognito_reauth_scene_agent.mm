@@ -15,6 +15,9 @@
 #import "components/prefs/ios/pref_observer_bridge.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
+#import "ios/chrome/app/profile/profile_state.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service_factory.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_constants.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_activation_level.h"
@@ -23,9 +26,9 @@
 #import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
@@ -90,12 +93,9 @@
 
 #pragma mark - public
 
-- (instancetype)initWithReauthModule:
-    (id<ReauthenticationProtocol>)reauthModule {
+- (instancetype)init {
   self = [super init];
   if (self) {
-    DCHECK(reauthModule);
-    _reauthModule = reauthModule;
     [[NSNotificationCenter defaultCenter]
         addObserver:self
            selector:@selector(appWillTerminate:)
@@ -125,8 +125,6 @@
 
 - (void)authenticateIncognitoContentWithCompletionBlock:
     (void (^)(BOOL success))completion {
-  DCHECK(self.reauthModule);
-
   if (!self.sceneState.incognitoState.isAuthenticationRequired) {
     if ([self areLockFeaturesEnabled]) {
       [self updateLockState];
@@ -308,8 +306,8 @@
     _switchedToIncognitoGrid = YES;
     // TODO(crbug.com/417621249): Add callback that allows specifying animation
     // type.
-    Browser* browser = self.sceneState.browserProviderInterface
-                           .incognitoBrowserProvider.browser;
+    Browser* browser =
+        self.sceneState.browserProviderInterface.incognitoBrowser;
     id<SceneCommands> sceneHandler =
         HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
     [sceneHandler displayTabGridInMode:TabGridOpeningMode::kIncognito];
@@ -328,8 +326,8 @@
       self.sceneState.incognitoState.incognitoContentVisible &&
       self.sceneState.controller.tabGridVisible;
   if (isIncognitoTabGridVisible && _switchedToIncognitoGrid) {
-    Browser* browser = self.sceneState.browserProviderInterface
-                           .incognitoBrowserProvider.browser;
+    Browser* browser =
+        self.sceneState.browserProviderInterface.incognitoBrowser;
     id<TabGridCommands> tabGridHandler =
         HandlerForProtocol(browser->GetCommandDispatcher(), TabGridCommands);
     [tabGridHandler exitTabGrid];
@@ -416,8 +414,7 @@
     return;
   }
 
-  Browser* browser =
-      self.sceneState.browserProviderInterface.incognitoBrowserProvider.browser;
+  Browser* browser = self.sceneState.browserProviderInterface.incognitoBrowser;
   if (browser) {
     if (browser->GetWebStateList() &&
         browser->GetWebStateList()->GetActiveWebState()) {
@@ -446,6 +443,11 @@
 // result).
 - (void)reauthIncognitoContentWithCompletionBlock:
     (void (^)(BOOL success))completion {
+  ProfileIOS* profile = self.sceneState.profileState.profile;
+  if (!profile) {
+    return;
+  }
+
   base::RecordAction(base::UserMetricsAction(
       "MobileIncognitoBiometricAuthenticationRequested"));
 
@@ -466,19 +468,20 @@
           completion(success);
         }
       };
-  [self.reauthModule attemptReauthWithLocalizedReason:authReason
-                                 canReusePreviousAuth:false
-                                              handler:completionHandler];
+  id<ReauthenticationProtocol> reauthModule =
+      ReauthenticationServiceFactory::GetForProfile(profile)->GetReauthModule();
+  [reauthModule attemptReauthWithLocalizedReason:authReason
+                            canReusePreviousAuth:false
+                                         handler:completionHandler];
 }
 
 // Checks whether the window has any Incognito tabs. Called when the browser is
 // backgrounded or foregrounded.
 - (void)updateWindowHasIncognitoContent:(SceneState*)sceneState {
   BOOL hasIncognitoContent = YES;
-  if (sceneState.browserProviderInterface.hasIncognitoBrowserProvider) {
+  if (sceneState.browserProviderInterface.hasIncognitoBrowser) {
     hasIncognitoContent =
-        sceneState.browserProviderInterface.incognitoBrowserProvider.browser
-            ->GetWebStateList()
+        sceneState.browserProviderInterface.incognitoBrowser->GetWebStateList()
             ->count() > 0;
     // If there is no tabs, act as if the user authenticated since last
     // foreground to avoid issue with multiwindows.

@@ -8,8 +8,8 @@
 #include "base/containers/span.h"
 #include "third_party/blink/renderer/platform/fonts/font_orientation.h"
 #include "third_party/blink/renderer/platform/fonts/script_run_iterator.h"
-#include "third_party/blink/renderer/platform/fonts/utf16_text_iterator.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/text/code_point_iterator.h"
 
 namespace blink {
 
@@ -17,14 +17,14 @@ class PLATFORM_EXPORT OrientationIterator {
   STACK_ALLOCATED();
 
  public:
-  enum RenderOrientation {
-    kOrientationKeep,
-    kOrientationRotateSideways,
-    kOrientationInvalid,
+  enum class RenderOrientation : uint32_t {
+    kKeep,
+    kRotateSideways,
+    kInvalid,
 
     // When adding values, ensure `kMaxEnumValue` is the largest value to store
     // (values that can be returned for non-empty inputs).
-    kMaxEnumValue = kOrientationRotateSideways,
+    kMaxEnumValue = kRotateSideways,
   };
 
   OrientationIterator(base::span<const UChar> buffer,
@@ -32,11 +32,11 @@ class PLATFORM_EXPORT OrientationIterator {
   OrientationIterator(const OrientationIterator&) = delete;
   OrientationIterator& operator=(const OrientationIterator&) = delete;
 
-  bool Consume(unsigned* orientation_limit, RenderOrientation*);
+  bool Consume(wtf_size_t* orientation_limit, RenderOrientation*);
 
  private:
-  UTF16TextIterator utf16_iterator_;
-  bool at_end_;
+  const CodePointIterator::Utf16 begin_;
+  CodePointIterator::Utf16 utf16_iterator_;
 };
 
 }  // namespace blink

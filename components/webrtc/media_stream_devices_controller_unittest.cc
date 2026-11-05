@@ -291,7 +291,7 @@ class MediaStreamDevicesControllerTest : public testing::Test {
     }
 
     content::PermissionRequestDescription expected_description{
-        std::move(expected_permissions), false, origin_.GetURL()};
+        std::move(expected_permissions), false};
     expected_description.requested_audio_capture_device_ids =
         requested_audio_device_ids;
     expected_description.requested_video_capture_device_ids =
@@ -367,69 +367,6 @@ TEST_F(MediaStreamDevicesControllerTest,
   EXPECT_TRUE(stream_devices->audio_device->IsSameDevice(
       enumerator_.GetAudioCaptureDevices().front()));
   ASSERT_FALSE(stream_devices->video_device.has_value());
-}
-
-TEST_F(
-    MediaStreamDevicesControllerTest,
-    RequestPermissions_OPEN_DEVICE_PEPPER_ONLY_Audio_UsesDefualtWhenNoRequestedDevices) {
-  auto [result, stream_devices] = MakeRequest(
-      blink::MediaStreamRequestType::MEDIA_OPEN_DEVICE_PEPPER_ONLY,
-      /*requested_audio_device_ids=*/{}, /*requested_video_device_ids=*/{},
-      /*request_audio=*/true, /*request_video=*/false);
-  ASSERT_EQ(result, blink::mojom::MediaStreamRequestResult::OK);
-  ASSERT_TRUE(stream_devices->audio_device.has_value());
-  EXPECT_TRUE(stream_devices->audio_device->IsSameDevice(
-      enumerator_.GetAudioCaptureDevices().front()));
-  ASSERT_FALSE(stream_devices->video_device.has_value());
-}
-
-TEST_F(MediaStreamDevicesControllerTest,
-       RequestPermissions_OPEN_DEVICE_PEPPER_ONLY_Audio_UsesRequestedDevices) {
-  // Request all but the first device to exercise filtering.
-  const auto kRequestedAudioCaptureDeviceIds =
-      GetIds(enumerator_.GetAudioCaptureDevices(), /*start_index=*/1);
-
-  auto [result, stream_devices] = MakeRequest(
-      blink::MediaStreamRequestType::MEDIA_OPEN_DEVICE_PEPPER_ONLY,
-      kRequestedAudioCaptureDeviceIds, /*requested_video_device_ids=*/{},
-      /*request_audio=*/true, /*request_video=*/false);
-  ASSERT_EQ(result, blink::mojom::MediaStreamRequestResult::OK);
-  ASSERT_TRUE(stream_devices->audio_device.has_value());
-  EXPECT_TRUE(stream_devices->audio_device->IsSameDevice(
-      enumerator_.GetAudioCaptureDevices().back()));
-  ASSERT_FALSE(stream_devices->video_device.has_value());
-}
-
-TEST_F(
-    MediaStreamDevicesControllerTest,
-    RequestPermissions_OPEN_DEVICE_PEPPER_ONLY_Video_UsesDefualtWhenNoRequestedDevices) {
-  auto [result, stream_devices] = MakeRequest(
-      blink::MediaStreamRequestType::MEDIA_OPEN_DEVICE_PEPPER_ONLY,
-      /*requested_audio_device_ids=*/{}, /*requested_video_device_ids=*/{},
-      /*request_audio=*/false, /*request_video=*/true);
-  ASSERT_EQ(result, blink::mojom::MediaStreamRequestResult::OK);
-  ASSERT_TRUE(stream_devices->video_device.has_value());
-  EXPECT_TRUE(stream_devices->video_device->IsSameDevice(
-      enumerator_.GetVideoCaptureDevices().front()));
-  ASSERT_FALSE(stream_devices->audio_device.has_value());
-}
-
-TEST_F(MediaStreamDevicesControllerTest,
-       RequestPermissions_OPEN_DEVICE_PEPPER_ONLY_Video_UsesRequestedDevices) {
-  // Request all but the first device to exercise filtering.
-  const auto kRequestedVideoCaptureDeviceIds =
-      GetIds(enumerator_.GetVideoCaptureDevices(), /*start_index=*/1);
-
-  auto [result, stream_devices] = MakeRequest(
-      blink::MediaStreamRequestType::MEDIA_OPEN_DEVICE_PEPPER_ONLY,
-      /*requested_audio_device_ids=*/{},
-      /*requested_video_device_ids=*/kRequestedVideoCaptureDeviceIds,
-      /*request_audio=*/false, /*request_video=*/true);
-  ASSERT_EQ(result, blink::mojom::MediaStreamRequestResult::OK);
-  ASSERT_TRUE(stream_devices->video_device.has_value());
-  EXPECT_TRUE(stream_devices->video_device->IsSameDevice(
-      enumerator_.GetVideoCaptureDevices().back()));
-  ASSERT_FALSE(stream_devices->audio_device.has_value());
 }
 
 #if BUILDFLAG(IS_ANDROID)

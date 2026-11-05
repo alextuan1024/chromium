@@ -22,7 +22,7 @@
 #include "components/download/public/common/download_item.h"
 #include "components/google/core/common/google_util.h"
 #include "components/safe_browsing/android/safe_browsing_api_handler_bridge.h"
-#include "components/safe_browsing/core/browser/referring_app_info.h"
+#include "components/safe_browsing/core/browser/referring_app_info/referring_app_info.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
@@ -67,10 +67,6 @@ GURL ConstructDownloadRequestUrl() {
 
 // Determines whether Android download protection should be active.
 bool IsAndroidDownloadProtectionEnabled(Profile* profile) {
-  if (!base::FeatureList::IsEnabled(kMaliciousApkDownloadCheck)) {
-    return false;
-  }
-
   if (!profile || !profile->GetPrefs()) {
     return false;
   }
@@ -78,6 +74,10 @@ bool IsAndroidDownloadProtectionEnabled(Profile* profile) {
   // Android download protection should only ever be enabled if Safe Browsing is
   // enabled.
   if (!IsSafeBrowsingEnabled(*profile->GetPrefs())) {
+    return false;
+  }
+
+  if (!base::FeatureList::IsEnabled(kMaliciousApkDownloadCheck)) {
     return false;
   }
 
@@ -146,8 +146,8 @@ void PopulateRateLimitingKeyInProto(const std::string& rate_limiting_key,
 
 }  // namespace
 
-DownloadProtectionDelegateAndroid::DownloadProtectionDelegateAndroid()
-    : download_request_url_(ConstructDownloadRequestUrl()) {}
+DownloadProtectionDelegateAndroid::DownloadProtectionDelegateAndroid() =
+    default;
 
 DownloadProtectionDelegateAndroid::~DownloadProtectionDelegateAndroid() =
     default;
@@ -160,7 +160,7 @@ bool DownloadProtectionDelegateAndroid::ShouldCheckDownloadUrl(
 bool DownloadProtectionDelegateAndroid::MayCheckClientDownload(
     download::DownloadItem* item) const {
   bool is_enabled = IsAndroidDownloadProtectionEnabledForDownloadProfile(item);
-  if (is_enabled && !IsDownloadRequestUrlValid(download_request_url_)) {
+  if (is_enabled && !IsDownloadRequestUrlValid(GetDownloadRequestUrl())) {
     DownloadProtectionMetricsData::SetOutcome(item, Outcome::kMisconfigured);
     return false;
   }
@@ -179,7 +179,7 @@ bool DownloadProtectionDelegateAndroid::MayCheckFileSystemAccessWrite(
   if (!IsAndroidDownloadProtectionEnabled(profile)) {
     return false;
   }
-  if (!IsDownloadRequestUrlValid(download_request_url_)) {
+  if (!IsDownloadRequestUrlValid(GetDownloadRequestUrl())) {
     return false;
   }
   DownloadCheckResultReason ignored_reason = REASON_MAX;
@@ -242,7 +242,10 @@ void DownloadProtectionDelegateAndroid::FinalizeResourceRequest(
 }
 
 const GURL& DownloadProtectionDelegateAndroid::GetDownloadRequestUrl() const {
-  return download_request_url_;
+  if (!download_request_url_.has_value()) {
+    download_request_url_ = ConstructDownloadRequestUrl();
+  }
+  return *download_request_url_;
 }
 
 net::NetworkTrafficAnnotationTag DownloadProtectionDelegateAndroid::
@@ -278,7 +281,9 @@ net::NetworkTrafficAnnotationTag DownloadProtectionDelegateAndroid::
               type: SENSITIVE_URL
               type: WEB_CONTENT
             }
-            last_reviewed: "2025-03-10"
+            destination: GOOGLE_OWNED_SERVICE
+            api_service_name: "androidchromeprotect.pa.googleapis.com"
+            last_reviewed: "2026-11-03"
           })");
 }
 

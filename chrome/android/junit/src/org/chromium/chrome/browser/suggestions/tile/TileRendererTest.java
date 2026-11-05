@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.suggestions.tile;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.robolectric.Shadows.shadowOf;
@@ -15,6 +16,11 @@ import android.app.Activity;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.text.Layout;
+import android.view.View;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -33,13 +39,17 @@ import org.robolectric.shadows.ShadowDrawable;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.suggestions.ImageFetcher;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
 import org.chromium.chrome.browser.suggestions.SuggestionsConfig.TileStyle;
 import org.chromium.components.browser_ui.widget.RoundedIconGenerator;
+import org.chromium.components.browser_ui.widget.tile.TileView;
 import org.chromium.components.favicon.IconType;
 import org.chromium.components.favicon.LargeIconBridge.LargeIconCallback;
 import org.chromium.components.search_engines.TemplateUrlService;
@@ -215,6 +225,53 @@ public class TileRendererTest {
     }
 
     @Test
+    public void testBuildTileView_AiMode_ContentDescription() {
+        mTileSource = TileSource.AI_MODE;
+        doReturn("AI Mode shortcut").when(mTileSetupDelegate).getAiModeTileContentDescription();
+        SuggestionsTileView tileView = buildTileView(TileStyle.MODERN, TITLE_LINES);
+        Assert.assertEquals("AI Mode shortcut", tileView.getContentDescription());
+    }
+
+    @Test
+    public void testBuildTileView_AiMode_Icon() {
+        // Verifies that a resource drawable AI Mode icon (1P spark or 3P fallback loupe) is
+        // rendered tinted as ICON_DEFAULT.
+        mTileSource = TileSource.AI_MODE;
+        Drawable sparkDrawable = mActivity.getDrawable(R.drawable.search_spark_white_24dp);
+        doReturn(sparkDrawable).when(mTileSetupDelegate).getAiModeTileIconDrawable();
+        buildTileView(TileStyle.MODERN, TITLE_LINES);
+
+        verify(mTileSetupCallback, never()).run();
+        RobolectricUtil.runAllBackgroundAndUi();
+        verify(mTileSetupCallback).run();
+
+        Assert.assertEquals(TileVisualType.ICON_DEFAULT, mTile.getType());
+        Assert.assertNotNull(mTile.getIconTint());
+        Assert.assertNotEquals(mFakeColorStateList, mTile.getIconTint());
+        ShadowDrawable shadowDrawable = shadowOf(mTile.getIcon());
+        Assert.assertEquals(
+                R.drawable.search_spark_white_24dp, shadowDrawable.getCreatedFromResId());
+    }
+
+    @Test
+    public void testBuildTileView_AiMode_BitmapIcon() {
+        // Verifies that a 3P bitmap AI Mode icon is rendered untinted as ICON_REAL so it uses the
+        // 24dp favicon size rather than stretching to the 26dp monogram size.
+        mTileSource = TileSource.AI_MODE;
+        BitmapDrawable bitmapDrawable = new BitmapDrawable(mActivity.getResources(), mBitmap);
+        doReturn(bitmapDrawable).when(mTileSetupDelegate).getAiModeTileIconDrawable();
+        buildTileView(TileStyle.MODERN, TITLE_LINES);
+
+        verify(mTileSetupCallback, never()).run();
+        RobolectricUtil.runAllBackgroundAndUi();
+        verify(mTileSetupCallback).run();
+
+        Assert.assertEquals(TileVisualType.ICON_REAL, mTile.getType());
+        Assert.assertNull(mTile.getIconTint());
+        Assert.assertEquals(mBitmap, ((BitmapDrawable) mTile.getIcon()).getBitmap());
+    }
+
+    @Test
     public void testTileTitle_multiLineSearch() {
         doReturn(true)
                 .when(mMockTemplateUrlService)
@@ -248,5 +305,85 @@ public class TileRendererTest {
                 .isSearchResultsPageFromDefaultSearchProvider(any());
         SuggestionsTileView tileView = buildTileView(TileStyle.MODERN, 1);
         Assert.assertEquals(1, tileView.getTitleView().getMaxLines());
+    }
+
+    @Test
+    public void testTileTitle_singleLineAiMode_wrapsToTwoLines() {
+        mTileSource = TileSource.AI_MODE;
+        SuggestionsTileView tileView = buildTileView(TileStyle.MODERN, 1);
+        Assert.assertEquals(2, tileView.getTitleView().getMaxLines());
+        Assert.assertEquals(1, tileView.getTitleView().getMinLines());
+        Assert.assertEquals(
+                Layout.BREAK_STRATEGY_SIMPLE, tileView.getTitleView().getBreakStrategy());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA, ChromeFeatureList.NTP_AURORA_V2})
+    public void testIconBackground_AuroraV2Enabled_isRoundedSquare() {
+        for (@TileStyle int style : new int[] {TileStyle.MODERN, TileStyle.MODERN_CONDENSED}) {
+            assertIconBackgroundIsRoundedSquare(buildTileView(style, TITLE_LINES));
+        }
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA, ChromeFeatureList.NTP_AURORA_V2})
+    public void testIconBackground_AuroraV2Enabled_addNewButtonIsRoundedSquare() {
+        TileView tileView =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            TileRenderer tileRenderer =
+                                    new TileRenderer(
+                                            mActivity,
+                                            TileStyle.MODERN,
+                                            TITLE_LINES,
+                                            mMockImageFetcher);
+                            return tileRenderer.buildAddCustomLinksButton(
+                                    mSharedParent, mTileSetupDelegate);
+                        });
+        assertIconBackgroundIsRoundedSquare(tileView);
+    }
+
+    @Test
+    @DisableFeatures({ChromeFeatureList.NTP_AURORA_V2})
+    public void testIconBackground_AuroraV2Disabled_isCircle() {
+        for (@TileStyle int style : new int[] {TileStyle.MODERN, TileStyle.MODERN_CONDENSED}) {
+            SuggestionsTileView tileView = buildTileView(style, TITLE_LINES);
+            Assert.assertEquals(
+                    GradientDrawable.OVAL, getIconBackgroundDrawable(tileView).getShape());
+            Assert.assertEquals(
+                    GradientDrawable.OVAL, getHighlightMaskDrawable(tileView).getShape());
+        }
+    }
+
+    /**
+     * Asserts that both the icon background and the mask of its touch ripple are rectangles with
+     * the Aurora V2 corner radius, so the press highlight is clipped to the same shape as the
+     * background it is drawn over.
+     */
+    private void assertIconBackgroundIsRoundedSquare(TileView tileView) {
+        float expectedRadius =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.tile_view_icon_background_corner_radius);
+
+        GradientDrawable background = getIconBackgroundDrawable(tileView);
+        Assert.assertEquals(GradientDrawable.RECTANGLE, background.getShape());
+        Assert.assertEquals(expectedRadius, background.getCornerRadius(), /* delta= */ 0f);
+
+        GradientDrawable mask = getHighlightMaskDrawable(tileView);
+        Assert.assertEquals(GradientDrawable.RECTANGLE, mask.getShape());
+        Assert.assertEquals(expectedRadius, mask.getCornerRadius(), /* delta= */ 0f);
+    }
+
+    private static GradientDrawable getIconBackgroundDrawable(TileView tileView) {
+        View iconBackground = tileView.findViewById(R.id.tile_view_icon_background);
+        return (GradientDrawable) iconBackground.getBackground();
+    }
+
+    /** Returns the mask that clips the touch ripple drawn over the icon background. */
+    private static GradientDrawable getHighlightMaskDrawable(TileView tileView) {
+        View highlight = tileView.findViewById(R.id.tile_view_highlight);
+        RippleDrawable ripple = (RippleDrawable) highlight.getBackground();
+        return (GradientDrawable) ripple.findDrawableByLayerId(android.R.id.mask);
     }
 }

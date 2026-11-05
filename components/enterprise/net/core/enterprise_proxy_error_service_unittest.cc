@@ -18,21 +18,27 @@
 #include "base/test/test_future.h"
 #include "base/values.h"
 #include "components/enterprise/browser/identifiers/profile_id_service.h"
+#include "components/enterprise/net/core/auth_scope_metadata.h"
 #include "components/enterprise/net/core/enterprise_network_auth_service.h"
 #include "components/enterprise/net/core/enterprise_proxy_error_data.h"
 #include "components/enterprise/net/core/enterprise_proxy_service.h"
 #include "components/enterprise/net/core/features.h"
 #include "components/enterprise/net/core/prefs.h"
+#include "components/enterprise/net/core/scoped_extra_allowed_domains_for_testing.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/strings/grit/components_strings.h"
+#include "components/version_info/channel.h"
 #include "net/base/auth.h"
+#include "net/http/http_status_code.h"
 #include "net/log/net_log.h"
 #include "net/log/test_net_log.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/l10n/l10n_util.h"
 
 namespace enterprise_net {
 
@@ -103,7 +109,7 @@ class EnterpriseProxyErrorServiceTest : public testing::Test {
 
     auth_service_ = std::make_unique<EnterpriseNetworkAuthService>(
         identity_test_env_.identity_manager(), &pref_service_,
-        &profile_id_service_);
+        &profile_id_service_, version_info::Channel::UNKNOWN);
 
     auto callback = base::BindRepeating(
         [](network::TestURLLoaderFactory* factory)
@@ -116,11 +122,16 @@ class EnterpriseProxyErrorServiceTest : public testing::Test {
         &pref_service_, auth_service_.get(), std::move(callback),
         &profile_id_service_, net::NetLog::Get());
 
+    scoped_allowed_domains_ =
+        std::make_unique<ScopedExtraAllowedDomainsForTesting>(
+            std::vector<std::string>{"example.com"});
+
     error_service_ =
         std::make_unique<EnterpriseProxyErrorService>(proxy_service_.get());
   }
 
   void TearDown() override {
+    scoped_allowed_domains_.reset();
     error_service_.reset();
     proxy_service_.reset();
     auth_service_.reset();
@@ -130,7 +141,7 @@ class EnterpriseProxyErrorServiceTest : public testing::Test {
   void SetupManagedDomainWithProxy(std::string_view proxy_host,
                                    bool with_auth = true) {
     base::ListValue policy_domains;
-    policy_domains.Append(CreateDomainPolicyEntry("example-pvd.com", true));
+    policy_domains.Append(CreateDomainPolicyEntry("pvd.example.com", true));
     pref_service_.SetList(kProxyProvisioningDomains, std::move(policy_domains));
 
     std::string auth_block = with_auth ? kAuthBlockJson : "";
@@ -139,17 +150,22 @@ class EnterpriseProxyErrorServiceTest : public testing::Test {
                            std::string(proxy_host).c_str(), auth_block.c_str());
 
     test_url_loader_factory_->SimulateResponseForPendingRequest(
-        "https://example-pvd.com/.well-known/pvd", pvd_config_json);
+        "https://pvd.example.com/.well-known/pvd", pvd_config_json);
   }
 
   net::AuthChallengeInfo CreateProxyAuthChallengeInfo(
       std::string_view host,
-      std::string_view realm = "") {
+      std::string_view realm = "",
+      std::string_view challenge = "") {
     net::AuthChallengeInfo auth_info;
     auth_info.is_proxy = true;
     auth_info.challenger = url::SchemeHostPort("https", std::string(host), 443);
+    auth_info.scheme = "basic";
     if (!realm.empty()) {
       auth_info.realm = std::string(realm);
+    }
+    if (!challenge.empty()) {
+      auth_info.challenge = std::string(challenge);
     }
     return auth_info;
   }
@@ -158,12 +174,19 @@ class EnterpriseProxyErrorServiceTest : public testing::Test {
   std::optional<net::AuthCredentials> InterceptChallenge(
       std::string_view realm = "",
       int64_t navigation_id = kTestNavigationId,
-      const GURL& destination_url = GURL("https://target.example.com/test")) {
+      const GURL& destination_url = GURL("https://target.example.com/test"),
+      std::string_view challenge = "",
+      scoped_refptr<net::HttpResponseHeaders> response_headers = nullptr) {
+    auto interception = error_service_->EvaluateProxyAuthChallenge(
+        CreateProxyAuthChallengeInfo("proxy.example.com", realm, challenge),
+        destination_url, response_headers, navigation_id);
+    EXPECT_TRUE(interception.has_value());
+    if (!interception) {
+      return std::nullopt;
+    }
     base::test::TestFuture<const std::optional<net::AuthCredentials>&> future;
-    bool handled = error_service_->InterceptProxyAuthChallenge(
-        CreateProxyAuthChallengeInfo("proxy.example.com", realm),
-        destination_url, nullptr, navigation_id, future.GetCallback());
-    EXPECT_TRUE(handled);
+    error_service_->ResolveProxyAuthChallenge(*std::move(interception),
+                                              future.GetCallback());
     return future.Get();
   }
 
@@ -184,23 +207,59 @@ class EnterpriseProxyErrorServiceTest : public testing::Test {
   std::unique_ptr<EnterpriseNetworkAuthService> auth_service_;
   std::unique_ptr<EnterpriseProxyService> proxy_service_;
   std::unique_ptr<EnterpriseProxyErrorService> error_service_;
+  std::unique_ptr<ScopedExtraAllowedDomainsForTesting> scoped_allowed_domains_;
 };
 
 TEST_F(EnterpriseProxyErrorServiceTest, NotApplicableWhenNoManagedProxy) {
-  base::test::TestFuture<const std::optional<net::AuthCredentials>&> future;
-  bool handled = error_service_->InterceptProxyAuthChallenge(
-      CreateProxyAuthChallengeInfo("unmanaged.example.com"),
-      GURL("https://target.example.com/test"), nullptr, kTestNavigationId,
-      future.GetCallback());
-
-  EXPECT_FALSE(handled);
-  EXPECT_FALSE(future.IsReady());
+  // Declining involves no callback at all, so there is nothing the caller
+  // could fail to reclaim.
+  EXPECT_FALSE(error_service_
+                   ->EvaluateProxyAuthChallenge(
+                       CreateProxyAuthChallengeInfo("unmanaged.example.com"),
+                       GURL("https://target.example.com/test"), nullptr,
+                       kTestNavigationId)
+                   .has_value());
 }
 
 TEST_F(EnterpriseProxyErrorServiceTest, NoCredentialsNeeded_ReturnsNullopt) {
   SetupManagedDomainWithProxy("proxy.example.com", /*with_auth=*/false);
   std::optional<net::AuthCredentials> credentials = InterceptChallenge();
   EXPECT_FALSE(credentials.has_value());
+}
+
+// A route that matched but cannot authenticate is an error, not a silent
+// cancellation. Without the recorded error data the navigation would commit the
+// proxy's raw 407 body, leaving the user with nothing actionable.
+TEST_F(EnterpriseProxyErrorServiceTest,
+       NoCredentialsNeeded_RecordsGenericError) {
+  SetupManagedDomainWithProxy("proxy.example.com", /*with_auth=*/false);
+
+  EXPECT_FALSE(InterceptChallenge().has_value());
+
+  std::optional<EnterpriseProxyErrorData> error_data =
+      error_service_->TakeDisguisedError(kTestNavigationId);
+  ASSERT_TRUE(error_data.has_value());
+  EXPECT_EQ(EnterpriseProxyErrorData::ErrorCategory::kOther,
+            error_data->error_category());
+  // There is no disguised error code to report, so the challenge's own status
+  // is used rather than the unparsed realm (which would be 0).
+  EXPECT_EQ(net::HTTP_PROXY_AUTHENTICATION_REQUIRED, error_data->error_code());
+  EXPECT_EQ(GURL("https://target.example.com/test"),
+            error_data->destination_url());
+}
+
+// Subresources and background requests have no navigation to attach an error
+// page to, so they must still fail closed but record nothing.
+TEST_F(EnterpriseProxyErrorServiceTest,
+       NoCredentialsNeeded_NoErrorPageWithoutNavigation) {
+  SetupManagedDomainWithProxy("proxy.example.com", /*with_auth=*/false);
+
+  EXPECT_FALSE(
+      InterceptChallenge(/*realm=*/"", /*navigation_id=*/0).has_value());
+
+  EXPECT_FALSE(error_service_->TakeDisguisedError(0).has_value());
+  EXPECT_FALSE(
+      error_service_->TakeDisguisedError(kTestNavigationId).has_value());
 }
 
 TEST_F(EnterpriseProxyErrorServiceTest, ValidAuthChallenge_FetchesCredentials) {
@@ -225,16 +284,18 @@ TEST_F(EnterpriseProxyErrorServiceTest, CredentialFetchFailure_ReturnsNullopt) {
   SetupManagedDomainWithProxy("proxy.example.com");
   identity_test_env_.SetAutomaticIssueOfAccessTokens(false);
 
-  base::test::TestFuture<const std::optional<net::AuthCredentials>&> future;
-  bool handled = error_service_->InterceptProxyAuthChallenge(
+  auto interception = error_service_->EvaluateProxyAuthChallenge(
       CreateProxyAuthChallengeInfo("proxy.example.com", "Enterprise Realm"),
-      GURL("https://target.example.com/test"), nullptr, kTestNavigationId,
-      future.GetCallback());
+      GURL("https://target.example.com/test"), nullptr, kTestNavigationId);
+  ASSERT_TRUE(interception.has_value());
+
+  base::test::TestFuture<const std::optional<net::AuthCredentials>&> future;
+  error_service_->ResolveProxyAuthChallenge(*std::move(interception),
+                                            future.GetCallback());
 
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
       GoogleServiceAuthError::FromServiceUnavailable("error"));
 
-  EXPECT_TRUE(handled);
   EXPECT_FALSE(future.Get().has_value());
 
   std::optional<EnterpriseProxyErrorData> error_data =
@@ -264,6 +325,25 @@ TEST_F(EnterpriseProxyErrorServiceTest,
 }
 
 TEST_F(EnterpriseProxyErrorServiceTest,
+       ForceSignInRequiredParam_ForcesSignInRequired) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      kEnterpriseProxyErrorHandling, {{kForceSignInRequiredParamName, "true"}});
+
+  SetupManagedDomainWithProxy("proxy.example.com");
+  std::optional<net::AuthCredentials> credentials =
+      InterceptChallenge("Enterprise Realm");
+  EXPECT_FALSE(credentials.has_value());
+
+  std::optional<EnterpriseProxyErrorData> error_data =
+      error_service_->TakeDisguisedError(kTestNavigationId);
+  ASSERT_TRUE(error_data.has_value());
+  EXPECT_EQ(error_data->error_code(), 0);
+  EXPECT_EQ(error_data->error_category(),
+            EnterpriseProxyErrorData::ErrorCategory::kAuthentication);
+}
+
+TEST_F(EnterpriseProxyErrorServiceTest,
        DisguisedError_ZeroNavigationId_DoesNotRecord) {
   SetupManagedDomainWithProxy("proxy.example.com");
   std::optional<net::AuthCredentials> credentials =
@@ -277,14 +357,16 @@ TEST_F(EnterpriseProxyErrorServiceTest,
   SetupManagedDomainWithProxy("proxy.example.com");
   identity_test_env_.SetAutomaticIssueOfAccessTokens(false);
 
-  base::test::TestFuture<const std::optional<net::AuthCredentials>&> future;
-  bool handled = error_service_->InterceptProxyAuthChallenge(
+  auto interception = error_service_->EvaluateProxyAuthChallenge(
       CreateProxyAuthChallengeInfo("proxy.example.com", "Enterprise Realm"),
-      GURL("https://target.example.com/test"), nullptr, kTestNavigationId,
-      future.GetCallback());
+      GURL("https://target.example.com/test"), nullptr, kTestNavigationId);
+  ASSERT_TRUE(interception.has_value());
+
+  base::test::TestFuture<const std::optional<net::AuthCredentials>&> future;
+  error_service_->ResolveProxyAuthChallenge(*std::move(interception),
+                                            future.GetCallback());
   TriggerInvalidGaiaCredentials();
 
-  EXPECT_TRUE(handled);
   EXPECT_FALSE(future.Get().has_value());
 
   std::optional<EnterpriseProxyErrorData> error_data =
@@ -292,6 +374,33 @@ TEST_F(EnterpriseProxyErrorServiceTest,
   ASSERT_TRUE(error_data.has_value());
   EXPECT_EQ(error_data->error_category(),
             EnterpriseProxyErrorData::ErrorCategory::kAuthentication);
+}
+
+// The production teardown sequence: KeyedService runs every Shutdown() before
+// any destructor, so EnterpriseProxyService::Shutdown() flushes its pending
+// requests while the error service is still alive and able to answer. This is
+// what keeps the weakly-bound continuation from dropping `callback`.
+TEST_F(EnterpriseProxyErrorServiceTest,
+       ProxyServiceShutdownRunsPendingCallback) {
+  SetupManagedDomainWithProxy("proxy.example.com");
+  identity_test_env_.SetAutomaticIssueOfAccessTokens(false);
+
+  auto interception = error_service_->EvaluateProxyAuthChallenge(
+      CreateProxyAuthChallengeInfo("proxy.example.com", "Enterprise Realm"),
+      GURL("https://target.example.com/test"), nullptr, kTestNavigationId);
+  ASSERT_TRUE(interception.has_value());
+
+  base::test::TestFuture<const std::optional<net::AuthCredentials>&> future;
+  error_service_->ResolveProxyAuthChallenge(*std::move(interception),
+                                            future.GetCallback());
+  ASSERT_FALSE(future.IsReady());
+
+  // Shutdown phase: both services are shut down, neither is destroyed yet.
+  error_service_->Shutdown();
+  proxy_service_->Shutdown();
+
+  ASSERT_TRUE(future.IsReady());
+  EXPECT_FALSE(future.Get().has_value());
 }
 
 TEST_F(EnterpriseProxyErrorServiceTest, RemoveDisguisedError_CleansUpMap) {
@@ -316,6 +425,12 @@ TEST_F(EnterpriseProxyErrorServiceTest, RemoveDisguisedError_CleansUpMap) {
   EXPECT_EQ(502, saved_entries[0].params.FindInt("error_code"));
 
   error_service_->RemoveDisguisedError(kTestNavigationId);
+  EXPECT_FALSE(
+      error_service_->TakeDisguisedError(kTestNavigationId).has_value());
+
+  // KeyedService::Shutdown() also clears any remaining cached disguised errors.
+  error_service_->RecordDisguisedError(kTestNavigationId, data, net_log);
+  error_service_->Shutdown();
   EXPECT_FALSE(
       error_service_->TakeDisguisedError(kTestNavigationId).has_value());
 }
@@ -364,6 +479,47 @@ TEST_F(EnterpriseProxyErrorServiceTest, GetErrorPageParams_ValidData) {
               *params.FindString("error_code"));
     EXPECT_EQ(test_case.expected_category_str,
               *params.FindString("error_category"));
+
+    if (test_case.category ==
+        EnterpriseProxyErrorData::ErrorCategory::kAuthentication) {
+      EXPECT_EQ(
+          l10n_util::GetStringUTF8(IDS_ENTERPRISE_PROXY_AUTHN_ERROR_HEADING),
+          *params.FindString("title"));
+      EXPECT_EQ(
+          l10n_util::GetStringUTF8(IDS_ENTERPRISE_PROXY_AUTHN_ERROR_HEADING),
+          *params.FindString("heading"));
+      EXPECT_EQ(l10n_util::GetStringUTF8(
+                    IDS_ENTERPRISE_PROXY_AUTHN_ERROR_PRIMARY_PARAGRAPH),
+                *params.FindString("primary_paragraph"));
+      EXPECT_EQ(l10n_util::GetStringUTF8(IDS_CONTINUE),
+                *params.FindString("button_text"));
+    } else if (test_case.category ==
+               EnterpriseProxyErrorData::ErrorCategory::kAuthorization) {
+      EXPECT_EQ(
+          l10n_util::GetStringUTF8(IDS_ENTERPRISE_PROXY_AUTHZ_ERROR_HEADING),
+          *params.FindString("title"));
+      EXPECT_EQ(
+          l10n_util::GetStringUTF8(IDS_ENTERPRISE_PROXY_AUTHZ_ERROR_HEADING),
+          *params.FindString("heading"));
+      EXPECT_EQ(l10n_util::GetStringFUTF8(
+                    IDS_ENTERPRISE_PROXY_AUTHZ_ERROR_PRIMARY_PARAGRAPH,
+                    u"https://target.example.com/page"),
+                *params.FindString("primary_paragraph"));
+      EXPECT_EQ(l10n_util::GetStringUTF8(IDS_ENTERPRISE_BLOCK_GO_BACK),
+                *params.FindString("button_text"));
+    } else {
+      EXPECT_EQ(
+          l10n_util::GetStringUTF8(IDS_ENTERPRISE_PROXY_OTHER_ERROR_HEADING),
+          *params.FindString("title"));
+      EXPECT_EQ(
+          l10n_util::GetStringUTF8(IDS_ENTERPRISE_PROXY_OTHER_ERROR_HEADING),
+          *params.FindString("heading"));
+      EXPECT_EQ(l10n_util::GetStringUTF8(
+                    IDS_ENTERPRISE_PROXY_OTHER_ERROR_PRIMARY_PARAGRAPH),
+                *params.FindString("primary_paragraph"));
+      EXPECT_EQ(l10n_util::GetStringUTF8(IDS_ENTERPRISE_BLOCK_GO_BACK),
+                *params.FindString("button_text"));
+    }
 
     histogram_tester.ExpectUniqueSample(
         "Enterprise.Proxy.DisguisedErrorPage.ErrorCode", test_case.error_code,
@@ -444,5 +600,183 @@ INSTANTIATE_TEST_SUITE_P(
                                EnterpriseProxyErrorData::ErrorCategory::kOther},
         DisguisedErrorTestCase{
             504, EnterpriseProxyErrorData::ErrorCategory::kOther}));
+
+TEST_F(EnterpriseProxyErrorServiceTest,
+       DisguisedError_ExtractsAndValidatesRedirectUrl) {
+  base::test::ScopedFeatureList enabled_redirect_feature;
+  enabled_redirect_feature.InitWithFeaturesAndParameters(
+      {{kEnableDynamicRouteFetching, {}},
+       {kEnterpriseProxyErrorHandling,
+        {{kEnableStaticErrorPageRedirectParamName, "true"}}}},
+      {});
+
+  SetupManagedDomainWithProxy("proxy.example.com");
+
+  constexpr char kStaticBlockedUrl[] =
+      "https://error.example.com/blocked.html?txid=test-txid-1";
+  constexpr char kDisguisedChallengeWithUrl[] =
+      "Basic realm=\"403\","
+      "url=\"https://error.example.com/blocked.html?txid=test-txid-1\","
+      "message=\"Your company's policy restricts access to this content.\"";
+
+  // 1. Valid disguised-error challenge in `auth_info.challenge`
+  // (Desktop/Android path), including NetLog `redirect_url` verification.
+  {
+    net::RecordingNetLogObserver observer;
+    EXPECT_FALSE(InterceptChallenge("403", kTestNavigationId,
+                                    GURL("https://target.example.com/test"),
+                                    kDisguisedChallengeWithUrl)
+                     .has_value());
+
+    std::optional<EnterpriseProxyErrorData> error_data =
+        error_service_->TakeDisguisedError(kTestNavigationId);
+    ASSERT_TRUE(error_data.has_value());
+    EXPECT_EQ(403, error_data->error_code());
+    EXPECT_EQ(EnterpriseProxyErrorData::ErrorCategory::kAuthorization,
+              error_data->error_category());
+    ASSERT_TRUE(error_data->redirect_url().has_value());
+    EXPECT_EQ(GURL(kStaticBlockedUrl), *error_data->redirect_url());
+
+    auto saved_entries = observer.GetEntriesWithType(
+        net::NetLogEventType::ENTERPRISE_PROXY_DISGUISED_ERROR_SAVED);
+    ASSERT_EQ(1u, saved_entries.size());
+    const std::string* logged_redirect =
+        saved_entries[0].params.FindString("redirect_url");
+    ASSERT_TRUE(logged_redirect);
+    EXPECT_EQ(kStaticBlockedUrl, *logged_redirect);
+  }
+
+  // 2. Valid disguised-error challenge in `response_headers` when
+  // `auth_info.challenge` is empty (e.g. iOS path), plus case-insensitive
+  // `URL=` parameter name.
+  {
+    auto headers = net::HttpResponseHeaders::TryToCreate(
+        "HTTP/1.1 407 Proxy Authentication Required\r\n"
+        "Proxy-Authenticate: Basic realm=\"502\", "
+        "URL=\"https://error.example.com/gateway.html?txid=99\"\r\n\r\n");
+    ASSERT_TRUE(headers);
+    EXPECT_FALSE(InterceptChallenge("502", kTestNavigationId,
+                                    GURL("https://target.example.com/test"),
+                                    /*challenge=*/"", headers)
+                     .has_value());
+
+    std::optional<EnterpriseProxyErrorData> error_data =
+        error_service_->TakeDisguisedError(kTestNavigationId);
+    ASSERT_TRUE(error_data.has_value());
+    ASSERT_TRUE(error_data->redirect_url().has_value());
+    EXPECT_EQ(GURL("https://error.example.com/gateway.html?txid=99"),
+              *error_data->redirect_url());
+  }
+
+  // 3. Unsafe schemes, embedded credentials, and malformed auth-params must
+  // reject `redirect_url` while still recording the disguised error for the
+  // built-in interstitial fallback.
+  const char* const kRejectedChallenges[] = {
+      // Cleartext HTTP is disallowed.
+      ("Basic realm=\"403\","
+       "url=\"http://error.example.com/blocked.html\""),
+      // Privileged / script / data / local schemes are disallowed.
+      "Basic realm=\"403\",url=\"javascript:alert(1)\"",
+      "Basic realm=\"403\",url=\"data:text/html,<h1>blocked</h1>\"",
+      "Basic realm=\"403\",url=\"chrome://settings\"",
+      ("Basic realm=\"403\","
+       "url=\"chrome-extension://abcdefghijklmnop/page.html\""),
+      "Basic realm=\"403\",url=\"file:///etc/passwd\"",
+      // Embedded credentials in URL are disallowed.
+      ("Basic realm=\"403\","
+       "url=\"https://user:pass@error.example.com/blocked.html\""),
+      // Unclosed quote (`STRICT_QUOTES` rejection).
+      "Basic realm=\"403\",url=\"https://error.example.com/blocked.html",
+      // Duplicate `url=` or `realm=` parameter smuggling rejection.
+      ("Basic realm=\"403\","
+       "url=\"https://a.example.com/\",url=\"https://b.example.com/\""),
+      ("Basic realm=\"502\",realm=\"403\","
+       "url=\"https://error.example.com/blocked.html\""),
+      // Raw whitespace / control characters inside URL value.
+      "Basic realm=\"403\",url=\"https://error.example.com/blocked page\"",
+      // Mismatched realm in challenge text.
+      R"(Basic realm="502",url="https://error.example.com/blocked.html")",
+  };
+
+  {
+    base::HistogramTester histogram_tester;
+    for (const char* bad_challenge : kRejectedChallenges) {
+      SCOPED_TRACE(bad_challenge);
+      EXPECT_FALSE(InterceptChallenge("403", kTestNavigationId,
+                                      GURL("https://target.example.com/test"),
+                                      bad_challenge)
+                       .has_value());
+      std::optional<EnterpriseProxyErrorData> error_data =
+          error_service_->TakeDisguisedError(kTestNavigationId);
+      ASSERT_TRUE(error_data.has_value());
+      EXPECT_FALSE(error_data->redirect_url().has_value());
+    }
+    histogram_tester.ExpectBucketCount(
+        "Enterprise.SecureGateway.StaticErrorPageRedirectOutcome",
+        SecureGatewayStaticErrorPageRedirectOutcome::kRejectedInvalidUrl, 8);
+    histogram_tester.ExpectBucketCount(
+        "Enterprise.SecureGateway.StaticErrorPageRedirectOutcome",
+        SecureGatewayStaticErrorPageRedirectOutcome::kRejectedInvalidChallenge,
+        4);
+    histogram_tester.ExpectTotalCount(
+        "Enterprise.SecureGateway.StaticErrorPageRedirectOutcome", 12);
+  }
+
+  // 4. Non-HTTPS proxy challenger sharing `host:port` with a managed HTTPS
+  // proxy must never populate `redirect_url` (cleartext `Proxy-Authenticate`
+  // headers are attacker-controlled on the wire).
+  {
+    base::HistogramTester histogram_tester;
+    net::AuthChallengeInfo http_auth_info;
+    http_auth_info.is_proxy = true;
+    http_auth_info.challenger =
+        url::SchemeHostPort("http", "proxy.example.com", 443);
+    http_auth_info.scheme = "basic";
+    http_auth_info.realm = "403";
+    http_auth_info.challenge = kDisguisedChallengeWithUrl;
+
+    std::optional<EnterpriseProxyErrorService::PendingInterception>
+        interception = error_service_->EvaluateProxyAuthChallenge(
+            http_auth_info, GURL("https://target.example.com/test"), nullptr,
+            kTestNavigationId);
+    ASSERT_TRUE(interception.has_value());
+    base::test::TestFuture<const std::optional<net::AuthCredentials>&> future;
+    error_service_->ResolveProxyAuthChallenge(*std::move(interception),
+                                              future.GetCallback());
+    EXPECT_FALSE(future.Get().has_value());
+
+    std::optional<EnterpriseProxyErrorData> error_data =
+        error_service_->TakeDisguisedError(kTestNavigationId);
+    ASSERT_TRUE(error_data.has_value());
+    EXPECT_FALSE(error_data->redirect_url().has_value());
+    histogram_tester.ExpectUniqueSample(
+        "Enterprise.SecureGateway.StaticErrorPageRedirectOutcome",
+        SecureGatewayStaticErrorPageRedirectOutcome::kRejectedInvalidUrl, 1);
+  }
+
+  // 5. Setting `enable_static_error_page_redirect` to `false` disables `url=`
+  // extraction while keeping disguised error data for the built-in
+  // interstitial.
+  {
+    base::test::ScopedFeatureList disabled_redirect_feature;
+    disabled_redirect_feature.InitWithFeaturesAndParameters(
+        {{kEnableDynamicRouteFetching, {}},
+         {kEnterpriseProxyErrorHandling,
+          {{kEnableStaticErrorPageRedirectParamName, "false"}}}},
+        {});
+
+    base::HistogramTester histogram_tester;
+    EXPECT_FALSE(InterceptChallenge("403", kTestNavigationId,
+                                    GURL("https://target.example.com/test"),
+                                    kDisguisedChallengeWithUrl)
+                     .has_value());
+    std::optional<EnterpriseProxyErrorData> error_data =
+        error_service_->TakeDisguisedError(kTestNavigationId);
+    ASSERT_TRUE(error_data.has_value());
+    EXPECT_FALSE(error_data->redirect_url().has_value());
+    histogram_tester.ExpectTotalCount(
+        "Enterprise.SecureGateway.StaticErrorPageRedirectOutcome", 0);
+  }
+}
 
 }  // namespace enterprise_net

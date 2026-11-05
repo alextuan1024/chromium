@@ -20,8 +20,9 @@ import org.chromium.chrome.browser.bookmarks.AddToBookmarksToolbarButtonControll
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
-import org.chromium.chrome.browser.glic.GlicButtonDelegate;
-import org.chromium.chrome.browser.glic.GlicToolbarButtonController;
+import org.chromium.chrome.browser.contextual_tasks.AskGoogleToolbarButtonController;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonDelegate;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicToolbarButtonController;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab_group_suggestion.toolbar.GroupSuggestionsButtonController;
@@ -34,6 +35,8 @@ import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonControl
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarFeatures;
 import org.chromium.chrome.browser.toolbar.adaptive.OptionalNewTabButtonController;
+import org.chromium.chrome.browser.toolbar.adaptive.TtcToolbarButtonController;
+import org.chromium.chrome.browser.ttc.TtcEntryPoint;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
 import org.chromium.components.feature_engagement.Tracker;
@@ -63,8 +66,10 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
     private final BrowserControlsVisibilityManager mBrowserControlsVisibilityManager;
     private final NonNullObservableSupplier<Boolean> mIsVerticalTabsActiveSupplier;
     private final NonNullObservableSupplier<Boolean> mIsGlicPinnedSupplier;
+    private final TtcEntryPoint mTtcEntryPoint;
     private @Nullable Callback<Boolean> mGlicVerticalTabsObserver;
     private @Nullable GlicToolbarButtonController mGlicButtonController;
+    private @Nullable AskGoogleToolbarButtonController mAskGoogleButtonController;
 
     /**
      * @param activity The Android activity.
@@ -82,6 +87,7 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
      * @param browserControlsVisibilityManager Manager for browser controls.
      * @param isVerticalTabsActiveSupplier Supplier for VerticalTabs enabled state.
      * @param isGlicPinnedSupplier Supplier for Glic pinned state.
+     * @param ttcEntryPoint The window's TTC entry point.
      */
     public TabbedAdaptiveToolbarBehavior(
             Activity activity,
@@ -98,7 +104,8 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
             Supplier<@Nullable ChromeAndroidTask> chromeAndroidTaskSupplier,
             BrowserControlsVisibilityManager browserControlsVisibilityManager,
             NonNullObservableSupplier<Boolean> isVerticalTabsActiveSupplier,
-            NonNullObservableSupplier<Boolean> isGlicPinnedSupplier) {
+            NonNullObservableSupplier<Boolean> isGlicPinnedSupplier,
+            TtcEntryPoint ttcEntryPoint) {
         mActivity = activity;
         mActivityLifecycleDispatcher = activityLifecycleDispatcher;
         mTabCreatorManagerSupplier = tabCreatorManagerSupplier;
@@ -114,6 +121,7 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
         mBrowserControlsVisibilityManager = browserControlsVisibilityManager;
         mIsVerticalTabsActiveSupplier = isVerticalTabsActiveSupplier;
         mIsGlicPinnedSupplier = isGlicPinnedSupplier;
+        mTtcEntryPoint = ttcEntryPoint;
     }
 
     @Override
@@ -166,6 +174,24 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
             controller.addButtonVariant(AdaptiveToolbarButtonVariant.GLIC, mGlicButtonController);
         }
 
+        if (AdaptiveToolbarFeatures.isAskGoogleEnabledForAdaptiveToolbar()) {
+            mAskGoogleButtonController =
+                    new AskGoogleToolbarButtonController(
+                            mActivityTabProvider,
+                            AppCompatResources.getDrawable(
+                                    mActivity, R.drawable.ic_search_spark_24dp),
+                            mActivity.getString(R.string.contextual_search_open_lens_action_label));
+            controller.addButtonVariant(
+                    AdaptiveToolbarButtonVariant.ASK_GOOGLE, mAskGoogleButtonController);
+        }
+
+        if (AdaptiveToolbarFeatures.isTtcEnabledForAdaptiveToolbar()) {
+            controller.addButtonVariant(
+                    AdaptiveToolbarButtonVariant.TTC,
+                    new TtcToolbarButtonController(
+                            mActivity, mActivityTabProvider, mTtcEntryPoint));
+        }
+
         mGlicVerticalTabsObserver = state -> controller.recomputeUiState();
         mIsVerticalTabsActiveSupplier.addSyncObserver(mGlicVerticalTabsObserver);
         mIsGlicPinnedSupplier.addSyncObserver(mGlicVerticalTabsObserver);
@@ -184,6 +210,10 @@ public class TabbedAdaptiveToolbarBehavior implements AdaptiveToolbarBehavior {
                     && !skipGlic) {
                 return AdaptiveToolbarButtonVariant.GLIC;
             }
+        }
+        if (mAskGoogleButtonController != null
+                && AdaptiveToolbarFeatures.isAskGoogleForcedForAdaptiveToolbar()) {
+            return AdaptiveToolbarButtonVariant.ASK_GOOGLE;
         }
         if (skipGlic) {
             List<Integer> filteredResults = new ArrayList<>();

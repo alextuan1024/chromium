@@ -15,6 +15,7 @@ NSString* kSelectionDirection = @"Chromium.kSelectionDirection";
 @implementation BaseView {
   ui::ScopedCrTrackingArea _trackingArea;
   BOOL _dragging;
+  BOOL _mouseInside;
   NSEvent* __strong _pendingExitEvent;
   NSInteger _pressureEventStage;
 }
@@ -57,8 +58,10 @@ NSString* kSelectionDirection = @"Chromium.kSelectionDirection";
   }
 }
 
-- (void)handleLeftMouseUp:(NSEvent*)theEvent {
-  DCHECK_EQ(theEvent.type, NSEventTypeLeftMouseUp);
+- (void)endDragWithEvent:(NSEvent*)theEvent {
+  CHECK(theEvent.type == NSEventTypeLeftMouseUp ||
+            theEvent.type == NSEventTypeMouseMoved,
+        base::NotFatalUntil::M163);
   _dragging = NO;
   if (!_pendingExitEvent) {
     return;
@@ -112,7 +115,7 @@ NSString* kSelectionDirection = @"Chromium.kSelectionDirection";
 
 - (void)mouseUp:(NSEvent*)theEvent {
   [self mouseEvent:theEvent];
-  [self handleLeftMouseUp:theEvent];
+  [self endDragWithEvent:theEvent];
 }
 
 - (void)rightMouseUp:(NSEvent*)theEvent {
@@ -124,6 +127,18 @@ NSString* kSelectionDirection = @"Chromium.kSelectionDirection";
 }
 
 - (void)mouseMoved:(NSEvent*)theEvent {
+  _mouseInside = YES;
+  // AppKit only sends mouse moved events while no mouse button is pressed, so
+  // a drag still in progress here has ended even though its
+  // NSEventTypeLeftMouseUp never reached this view. That happens when a nested
+  // event-tracking loop, such as the one AppKit runs for a native <select>
+  // popup menu, consumes the mouse-up. End the drag now, before this move, so
+  // that mouse exited events are no longer held back. Otherwise -mouseEvent:
+  // never sees the mouse leave, and e.g. a web page's cursor stays stuck. See
+  // https://crbug.com/573358004.
+  if (_dragging) {
+    [self endDragWithEvent:theEvent];
+  }
   [self mouseEvent:theEvent];
 }
 
@@ -139,7 +154,47 @@ NSString* kSelectionDirection = @"Chromium.kSelectionDirection";
   [self mouseEvent:theEvent];
 }
 
+- (void)viewDidHide {
+  [super viewDidHide];
+
+  // AppKit does not send a mouse exited event when a view is hidden (or has
+  // an ancestor hidden) while the cursor is over it, e.g. on a
+  // keyboard-triggered tab switch. Synthesize one so hover state does not go
+  // stale, similar to what aura::WindowEventDispatcher::
+  // DispatchMouseExitToHidingWindow() does on other platforms. Cursor
+  // containment is tracked via the event stream in |_mouseInside| rather than
+  // queried from the window, since in headless mode the mouse location
+  // reported by the window does not reflect synthesized headless events.
+  NSWindow* window = self.window;
+  if (!window || !_mouseInside) {
+    return;
+  }
+  NSEvent* exitEvent =
+      [NSEvent enterExitEventWithType:NSEventTypeMouseExited
+                             location:window.mouseLocationOutsideOfEventStream
+                        modifierFlags:0
+                            timestamp:NSProcessInfo.processInfo.systemUptime
+                         windowNumber:window.windowNumber
+                              context:nil
+                          eventNumber:0
+                       trackingNumber:0
+                             userData:nil];
+  [self mouseExited:exitEvent];
+}
+
+- (void)viewDidUnhide {
+  [super viewDidUnhide];
+  // Re-create the tracking area when unhiding so AppKit re-evaluates cursor
+  // containment and sends mouseEntered:/mouseMoved: if the cursor is inside
+  // the unhidden view (balancing the synthesized mouseExited: in -viewDidHide).
+  if (_trackingArea.get()) {
+    [self disableTracking];
+    [self enableTracking];
+  }
+}
+
 - (void)mouseEntered:(NSEvent*)theEvent {
+  _mouseInside = YES;
   if (_pendingExitEvent) {
     _pendingExitEvent = nil;
     return;
@@ -149,6 +204,7 @@ NSString* kSelectionDirection = @"Chromium.kSelectionDirection";
 }
 
 - (void)mouseExited:(NSEvent*)theEvent {
+  _mouseInside = NO;
   // The tracking area will send an exit event even during a drag, which isn't
   // how the event flow for drags should work. This stores the exit event, and
   // sends it when the drag completes instead.

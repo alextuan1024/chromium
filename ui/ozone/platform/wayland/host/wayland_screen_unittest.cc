@@ -7,6 +7,7 @@
 #include <wayland-server-protocol.h>
 #include <wayland-server.h>
 
+#include <algorithm>
 #include <memory>
 
 #include "base/memory/raw_ptr.h"
@@ -29,6 +30,7 @@
 #include "ui/ozone/platform/wayland/test/mock_wayland_platform_window_delegate.h"
 #include "ui/ozone/platform/wayland/test/test_output.h"
 #include "ui/ozone/platform/wayland/test/test_wayland_server_thread.h"
+#include "ui/ozone/platform/wayland/test/wayland_connection_test_api.h"
 #include "ui/ozone/platform/wayland/test/wayland_test.h"
 #include "ui/platform_window/platform_window_init_properties.h"
 
@@ -689,6 +691,54 @@ TEST_P(WaylandScreenTest, GetPrimaryDisplayAfterRemoval) {
   platform_screen_->RemoveObserver(&observer);
 }
 
+// Regression test for https://crbug.com/432389800: an output global that is
+// removed and destroyed before the client dispatches its wl_registry.global
+// event must not be bound, as binding a destroyed global is a protocol error.
+TEST_P(WaylandScreenTest, OutputGlobalDestroyedBeforeBind) {
+  ASSERT_EQ(1u, platform_screen_->GetAllDisplays().size());
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* output = server->CreateAndInitializeOutput(
+        wl::TestOutputMetrics({800, 0, 800, 600}));
+    output->DestroyGlobal();
+  });
+  // Round trips instead of SyncDisplay(), which never returns once the display
+  // has a protocol error.
+  connection_->RoundTripQueue();
+  connection_->RoundTripQueue();
+
+  EXPECT_EQ(0, WaylandConnectionTestApi(connection_.get()).GetDisplayError());
+  EXPECT_EQ(1u, output_manager_->GetAllOutputs().size());
+  EXPECT_EQ(1u, platform_screen_->GetAllDisplays().size());
+}
+
+// An output that is removed after it has been bound, but before the compositor
+// has sent wl_output.done for it, was never added to the screen. Removing it
+// must leave the screen untouched.
+TEST_P(WaylandScreenTest, OutputRemovedBeforeDone) {
+  ASSERT_EQ(1u, platform_screen_->GetAllDisplays().size());
+
+  wl::TestOutput* output2 = nullptr;
+  PostToServerAndWait([&output2](wl::TestWaylandServerThread* server) {
+    output2 = server->CreateAndInitializeOutput(
+        wl::TestOutputMetrics({800, 0, 800, 600}));
+    output2->set_suppress_implicit_flush(true);
+  });
+
+  // The output is bound, but not ready.
+  ASSERT_EQ(2u, output_manager_->GetAllOutputs().size());
+  EXPECT_EQ(1u, platform_screen_->GetAllDisplays().size());
+
+  PostToServerAndWait([&output2](wl::TestWaylandServerThread* server) {
+    output2->DestroyGlobal();
+    output2 = nullptr;
+  });
+
+  EXPECT_EQ(0, WaylandConnectionTestApi(connection_.get()).GetDisplayError());
+  EXPECT_EQ(1u, output_manager_->GetAllOutputs().size());
+  EXPECT_EQ(1u, platform_screen_->GetAllDisplays().size());
+}
+
 TEST_P(WaylandScreenTest, GetDisplayForAcceleratedWidget) {
   TestDisplayObserver observer;
   platform_screen_->AddObserver(&observer);
@@ -1163,6 +1213,80 @@ TEST_P(WaylandScreenTest, OutputStateIsConsistentWhenNotifyingObservers) {
   });
 }
 
+using WaylandScreenTestXdgOutput = WaylandScreenTest;
+
+// Mutter with its logical monitor layout mode disabled advertises xdg-output
+// logical bounds in physical pixels along with wl_output.scale. The display
+// bounds must still be in DIPs.
+//
+// Regression test for https://crbug.com/415794355.
+TEST_P(WaylandScreenTestXdgOutput, LogicalBoundsInPhysicalPixels) {
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* output = server->output();
+    output->SetPhysicalAndLogicalBounds(gfx::Rect(0, 0, 3840, 2160));
+    output->SetScale(2);
+    output->Flush();
+  });
+
+  display::Display primary_display = platform_screen_->GetPrimaryDisplay();
+  EXPECT_EQ(2.f, primary_display.device_scale_factor());
+  EXPECT_EQ(gfx::Rect(0, 0, 1920, 1080), primary_display.bounds());
+  EXPECT_EQ(gfx::Size(3840, 2160), primary_display.GetSizeInPixel());
+
+  // The logical position of a second output is in physical pixels too.
+  wl::TestOutput* output2 = nullptr;
+  PostToServerAndWait([&output2](wl::TestWaylandServerThread* server) {
+    wl::TestOutputMetrics metrics(gfx::Rect(3840, 0, 3840, 2160));
+    metrics.wl_scale = 2;
+    output2 = server->CreateAndInitializeOutput(std::move(metrics));
+    ASSERT_TRUE(output2);
+  });
+  WaitForAllDisplaysReady();
+
+  const auto& displays = platform_screen_->GetAllDisplays();
+  ASSERT_EQ(2u, displays.size());
+  const auto second_display =
+      std::ranges::find_if_not(displays, [&](const display::Display& d) {
+        return d.id() == primary_display.id();
+      });
+  ASSERT_NE(second_display, displays.end());
+  EXPECT_EQ(2.f, second_display->device_scale_factor());
+  EXPECT_EQ(gfx::Rect(1920, 0, 1920, 1080), second_display->bounds());
+
+  // A rotated output advertises the transposed mode size as its logical size.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* output = server->output();
+    output->SetPanelTransform(WL_OUTPUT_TRANSFORM_90);
+    output->ApplyLogicalTranspose();
+    output->Flush();
+  });
+
+  primary_display = platform_screen_->GetPrimaryDisplay();
+  EXPECT_EQ(2.f, primary_display.device_scale_factor());
+  EXPECT_EQ(gfx::Rect(0, 0, 1080, 1920), primary_display.bounds());
+
+  PostToServerAndWait([&output2](wl::TestWaylandServerThread* server) {
+    output2->DestroyGlobal();
+    output2 = nullptr;
+  });
+}
+
+// Compositors that scale their global compositor space advertise xdg-output
+// logical bounds in DIPs, which are used as is.
+TEST_P(WaylandScreenTestXdgOutput, LogicalBoundsInDips) {
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* output = server->output();
+    output->SetPhysicalAndLogicalBounds(gfx::Rect(0, 0, 3840, 2160));
+    output->SetLogicalSize(gfx::Size(1920, 1080));
+    output->SetScale(2);
+    output->Flush();
+  });
+
+  const display::Display display = platform_screen_->GetPrimaryDisplay();
+  EXPECT_EQ(2.f, display.device_scale_factor());
+  EXPECT_EQ(gfx::Rect(0, 0, 1920, 1080), display.bounds());
+}
+
 INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
                          WaylandScreenTest,
                          Values(wl::ServerConfig{}));
@@ -1170,5 +1294,9 @@ INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
                          WaylandScreenTestNoFractionalScale,
                          Values(wl::ServerConfig{
                              .supports_viewporter_surface_scaling = false}));
+
+INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
+                         WaylandScreenTestXdgOutput,
+                         Values(wl::ServerConfig{.supports_xdg_output = true}));
 
 }  // namespace ui

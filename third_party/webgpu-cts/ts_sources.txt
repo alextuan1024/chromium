@@ -505,6 +505,7 @@ src/webgpu/shader/execution/expression/binary/u32_arithmetic.cache.ts
 src/webgpu/shader/execution/expression/binary/u32_arithmetic.spec.ts
 src/webgpu/shader/execution/expression/binary/u32_comparison.cache.ts
 src/webgpu/shader/execution/expression/binary/u32_comparison.spec.ts
+src/webgpu/shader/execution/expression/call/mixed_type_aliasing_utils.ts
 src/webgpu/shader/execution/expression/call/builtin/abs.cache.ts
 src/webgpu/shader/execution/expression/call/builtin/builtin.ts
 src/webgpu/shader/execution/expression/call/builtin/abs.spec.ts
@@ -711,6 +712,7 @@ src/webgpu/shader/execution/expression/call/builtin/atomics/atomicStoreMax.spec.
 src/webgpu/shader/execution/expression/call/builtin/atomics/atomicStoreMin.spec.ts
 src/webgpu/shader/execution/expression/call/builtin/atomics/atomicSub.spec.ts
 src/webgpu/shader/execution/expression/call/builtin/atomics/atomicXor.spec.ts
+src/webgpu/shader/execution/expression/call/user/ptr_aliasing.spec.ts
 src/webgpu/shader/execution/expression/call/user/ptr_params.spec.ts
 src/webgpu/shader/execution/expression/constructor/non_zero.spec.ts
 src/webgpu/shader/execution/expression/constructor/zero_value.spec.ts
@@ -761,6 +763,9 @@ src/webgpu/shader/execution/memory_model/barrier.spec.ts
 src/webgpu/shader/execution/memory_model/coherence.spec.ts
 src/webgpu/shader/execution/memory_model/texture_intra_invocation_coherence.spec.ts
 src/webgpu/shader/execution/memory_model/weak.spec.ts
+src/webgpu/shader/execution/mutation/mutation_info.ts
+src/webgpu/shader/execution/mutation/mesa/no_input.spec.ts
+src/webgpu/shader/execution/mutation/mesa/uniform_input.spec.ts
 src/webgpu/shader/execution/shader_io/compute_builtins.spec.ts
 src/webgpu/shader/execution/shader_io/fragment_builtins.spec.ts
 src/webgpu/shader/execution/shader_io/shared_structs.spec.ts

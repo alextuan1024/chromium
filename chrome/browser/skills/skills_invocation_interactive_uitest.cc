@@ -8,10 +8,10 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/skills/skills_interactive_uitest_base.h"
+#include "chrome/browser/skills/skills_ui_tab_controller.h"
 #include "chrome/browser/skills/skills_ui_tab_controller_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
-#include "chrome/browser/ui/webui/skills/skills_dialog_view.h"
 #include "chrome/common/chrome_features.h"
 #include "components/skills/features.h"
 #include "components/tabs/public/tab_interface.h"
@@ -86,7 +86,7 @@ IN_PROC_BROWSER_TEST_F(SkillsInvocationInteractiveUiTest,
   RunTestSequence(
       OpenGlicAndInstrument(), CreateSkill(user_created_skill),
       InstrumentNonTabWebView(kSkillsDialogElementId,
-                              SkillsDialogView::kSkillsDialogElementId),
+                              SkillsUiTabController::kSkillsDialogElementId),
       VerifyAndEditSkillDialogInput(user_created_skill, edited_skill),
       ClickButtonAndVerifyDialogHides(kSaveButtonQuery),
       // Wait for the "Skill saved" toast and click its action button.
@@ -154,12 +154,13 @@ class SkillsInvocationInteractiveUiTestV2 : public SkillsInteractiveUiTestBase {
   }
 
   ui::test::InteractiveTestApi::StepBuilder SendPromptDirectlyV2(
-      const std::string& prompt) {
-    return Do([this, prompt]() {
+      const std::string& prompt,
+      bool new_conversation = false) {
+    return Do([this, prompt, new_conversation]() {
       if (auto* active_tab = browser()->GetActiveTabInterface()) {
         if (auto* tab_controller =
                 skills::SkillsUiTabControllerInterface::From(active_tab)) {
-          tab_controller->SendPrompt(prompt);
+          tab_controller->SendPrompt(prompt, new_conversation);
         }
       }
     });
@@ -197,6 +198,32 @@ IN_PROC_BROWSER_TEST_F(SkillsInvocationInteractiveUiTestV2, SendPromptV2) {
   std::string test_prompt = "Test Prompt";
   RunTestSequence(OpenGlicAndInstrument(), SendPromptDirectlyV2(test_prompt),
                   VerifyPromptInWebUI(test_prompt));
+}
+
+IN_PROC_BROWSER_TEST_F(SkillsInvocationInteractiveUiTestV2,
+                       SendPromptV2_NewConversation) {
+  std::string first_prompt = "First Prompt";
+  std::string second_prompt = "Create a skill";
+  glic::InstanceId initial_instance_id;
+
+  RunTestSequence(
+      OpenGlicAndInstrument(), Do([this, &initial_instance_id]() {
+        ASSERT_TRUE(GetGlicInstanceImpl());
+        initial_instance_id = GetGlicInstanceImpl()->id();
+      }),
+      SendPromptDirectlyV2(first_prompt, /*new_conversation=*/false),
+      VerifyPromptInWebUI(first_prompt),
+      CheckResult([this]() { return GetGlicInstanceImpl()->id(); },
+                  testing::Eq(std::ref(initial_instance_id))),
+      SendPromptDirectlyV2(second_prompt, /*new_conversation=*/true),
+      PollUntil(
+          [this, &initial_instance_id]() {
+            return GetGlicInstanceImpl() &&
+                   GetGlicInstanceImpl()->id() != initial_instance_id;
+          },
+          "waiting for new Glic instance to bind"),
+      WaitForAndInstrumentGlic(GlicInstrumentMode::kHostAndContents),
+      VerifyPromptInWebUI(second_prompt));
 }
 
 }  // namespace skills

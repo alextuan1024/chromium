@@ -7,14 +7,18 @@
 #include <map>
 #include <utility>
 
+#include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted_memory.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "components/image_fetcher/core/cache/image_data_store_disk.h"
 #include "components/image_fetcher/core/cache/image_metadata_store_leveldb.h"
 #include "components/image_fetcher/core/cache/proto/cached_image_metadata.pb.h"
@@ -83,16 +87,15 @@ class CachedImageFetcherImageCacheTest : public testing::Test {
     CreateImageCache();
     InitializeImageCache();
 
-    image_cache()->SaveImage(kImageUrl, kImageData, needs_transcoding,
-                             std::nullopt /* expiration_interval */);
+    image_cache()->SaveImage(
+        kImageUrl, base::MakeRefCounted<base::RefCountedString>(kImageData),
+        needs_transcoding, std::nullopt /* expiration_interval */);
     RunUntilIdle();
 
     ASSERT_TRUE(IsMetadataPresent(kImageUrlHashed));
   }
 
-  bool IsCacheInitialized() {
-    return image_cache()->AreAllDependenciesInitialized();
-  }
+  bool IsCacheInitialized() { return image_cache()->cache_available_; }
 
   void RunEvictionOnStartup(bool success) {
     image_cache()->RunEvictionOnStartup();
@@ -151,12 +154,14 @@ class CachedImageFetcherImageCacheTest : public testing::Test {
   }
 
   void RunReconciliation() {
-    image_cache()->RunReconciliation();
+    StartReconciliation();
     db()->LoadKeysCallback(true);
     RunUntilIdle();
     db()->UpdateCallback(true);
     RunUntilIdle();
   }
+
+  void StartReconciliation() { image_cache()->RunReconciliation(); }
 
   void InjectMetadata(std::string key, int data_size, bool needs_transcoding) {
     metadata_store_->SaveImageMetadata(key, data_size, needs_transcoding,
@@ -164,7 +169,9 @@ class CachedImageFetcherImageCacheTest : public testing::Test {
   }
 
   void InjectData(std::string key, std::string data, bool needs_transcoding) {
-    data_store_->SaveImage(key, data, needs_transcoding);
+    data_store_->SaveImage(key,
+                           base::MakeRefCounted<base::RefCountedString>(data),
+                           needs_transcoding);
     RunUntilIdle();
   }
 
@@ -177,6 +184,24 @@ class CachedImageFetcherImageCacheTest : public testing::Test {
   ImageMetadataStoreLevelDB* metadata_store() { return metadata_store_; }
   FakeDB<CachedImageMetadataProto>* db() { return db_; }
   base::HistogramTester& histogram_tester() { return histogram_tester_; }
+  const base::FilePath& cache_path() const { return temp_dir_.GetPath(); }
+
+  bool WaitForDataStoreTasks() {
+    // Disk-store work posts its initialization reply back to this sequence.
+    // Post completion from a following task so the reply runs first, even when
+    // initialization fails.
+    base::test::TestFuture<void> completed;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, completed.GetSequenceBoundCallback());
+    return completed.Wait();
+  }
+
+  void DestroyImageCache() {
+    metadata_store_ = nullptr;
+    data_store_ = nullptr;
+    db_ = nullptr;
+    image_cache_.reset();
+  }
 
   MOCK_METHOD(void, DataCallback, (bool, std::string), ());
 
@@ -203,10 +228,17 @@ TEST_F(CachedImageFetcherImageCacheTest, HashUrlToKeyTest) {
 TEST_F(CachedImageFetcherImageCacheTest, SanityTest) {
   CreateImageCache();
   InitializeImageCache();
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheDataStoreInitializationFailed, 0);
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheMetadataStoreInitializationFailed, 0);
 
-  image_cache()->SaveImage(kImageUrl, kImageData,
-                           /* needs_transcoding */ false,
-                           /* expiration_interval */ std::nullopt);
+  image_cache()->SaveImage(
+      kImageUrl, base::MakeRefCounted<base::RefCountedString>(kImageData),
+      /* needs_transcoding */ false,
+      /* expiration_interval */ std::nullopt);
   RunUntilIdle();
 
   LoadImage(kImageUrl, kImageData);
@@ -222,26 +254,243 @@ TEST_F(CachedImageFetcherImageCacheTest, SanityTest) {
   RunUntilIdle();
 }
 
+TEST_F(CachedImageFetcherImageCacheTest, RetainsSharedDataWhileInitializing) {
+  CreateImageCache();
+  const std::string bytes("a\0b\xff", 4);
+  auto data = base::MakeRefCounted<base::RefCountedString>(bytes);
+  ASSERT_TRUE(data->HasOneRef());
+  image_cache()->SaveImage(kImageUrl, data, /*needs_transcoding=*/true,
+                           std::nullopt);
+  // The queued save must retain this buffer after the caller releases it,
+  // until initialization finishes and the data can be written.
+  EXPECT_FALSE(data->HasOneRef());
+  data.reset();
+  EXPECT_FALSE(IsCacheInitialized());
+
+  db()->InitStatusCallback(leveldb_proto::Enums::InitStatus::kOK);
+  ASSERT_TRUE(WaitForDataStoreTasks());
+  ASSERT_TRUE(IsCacheInitialized());
+  base::test::TestFuture<bool, std::string> loaded;
+  image_cache()->LoadImage(/*read_only=*/true, kImageUrl, loaded.GetCallback());
+  db()->LoadCallback(true);
+  ASSERT_TRUE(loaded.Wait());
+  EXPECT_TRUE(loaded.Get<0>());
+  EXPECT_EQ(loaded.Get<1>(), bytes);
+  EXPECT_EQ(GetMetadata(kImageUrlHashed).data_size(),
+            static_cast<int64_t>(bytes.size()));
+}
+
 TEST_F(CachedImageFetcherImageCacheTest, SaveCallsInitialization) {
   CreateImageCache();
 
   ASSERT_FALSE(IsCacheInitialized());
-  image_cache()->SaveImage(kImageUrl, kImageData,
-                           /* needs_transcoding */ false,
-                           /* expiration_interval */ std::nullopt);
+  image_cache()->SaveImage(
+      kImageUrl, base::MakeRefCounted<base::RefCountedString>(kImageData),
+      /* needs_transcoding */ false,
+      /* expiration_interval */ std::nullopt);
   db()->InitStatusCallback(leveldb_proto::Enums::InitStatus::kOK);
   RunUntilIdle();
 
   ASSERT_TRUE(IsCacheInitialized());
 }
 
+TEST_F(CachedImageFetcherImageCacheTest,
+       QueuedLoadCompletesWhenDataStoreInitializationFails) {
+  // A regular file at the cache directory path makes initialization fail
+  // deterministically, without depending on the user's filesystem permissions.
+  ASSERT_TRUE(base::WriteFile(cache_path().AppendASCII("image_data_storage"),
+                              "not a directory"));
+  CreateImageCache();
+
+  base::test::TestFuture<bool, std::string> result;
+  image_cache()->LoadImage(/*read_only=*/false, kImageUrl,
+                           result.GetCallback());
+  db()->InitStatusCallback(leveldb_proto::Enums::InitStatus::kOK);
+  ASSERT_TRUE(WaitForDataStoreTasks());
+
+  ASSERT_FALSE(data_store()->IsInitialized());
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheDataStoreInitializationFailed, 1);
+  ASSERT_TRUE(result.IsReady());
+  EXPECT_FALSE(result.Get<0>());
+  EXPECT_TRUE(result.Get<1>().empty());
+}
+
+// The parameter selects whether disk initialization finishes before the
+// metadata initialization callback.
+class ImageCacheInitializationFailureTest
+    : public CachedImageFetcherImageCacheTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  bool FinishInitialization(leveldb_proto::Enums::InitStatus metadata_status) {
+    if (GetParam() && !WaitForDataStoreTasks()) {
+      return false;
+    }
+    db()->InitStatusCallback(metadata_status);
+    return WaitForDataStoreTasks();
+  }
+};
+
+TEST_P(ImageCacheInitializationFailureTest, FailedDiskDoesNotBlockRequests) {
+  ASSERT_TRUE(base::WriteFile(cache_path().AppendASCII("image_data_storage"),
+                              "not a directory"));
+  CreateImageCache();
+
+  base::test::TestFuture<bool, std::string> first_result;
+  base::test::TestFuture<bool, std::string> second_result;
+  image_cache()->SaveImage(
+      kImageUrl, base::MakeRefCounted<base::RefCountedString>(kImageData),
+      /*needs_transcoding=*/false, std::nullopt);
+  image_cache()->LoadImage(/*read_only=*/false, kImageUrl,
+                           first_result.GetCallback());
+  image_cache()->LoadImage(/*read_only=*/true, kOtherImageUrl,
+                           second_result.GetCallback());
+  image_cache()->DeleteImage(kImageUrl);
+  EXPECT_FALSE(first_result.IsReady());
+  EXPECT_FALSE(second_result.IsReady());
+
+  ASSERT_TRUE(FinishInitialization(leveldb_proto::Enums::InitStatus::kOK));
+
+  ASSERT_TRUE(first_result.IsReady());
+  EXPECT_FALSE(first_result.Get<0>());
+  EXPECT_TRUE(first_result.Get<1>().empty());
+  ASSERT_TRUE(second_result.IsReady());
+  EXPECT_TRUE(second_result.Get<1>().empty());
+  EXPECT_FALSE(IsMetadataPresent(kImageUrlHashed));
+
+  base::test::TestFuture<bool, std::string> later_result;
+  image_cache()->SaveImage(
+      kImageUrl, base::MakeRefCounted<base::RefCountedString>(kImageData),
+      /*needs_transcoding=*/false, std::nullopt);
+  image_cache()->DeleteImage(kImageUrl);
+  image_cache()->LoadImage(/*read_only=*/false, kImageUrl,
+                           later_result.GetCallback());
+  ASSERT_TRUE(later_result.IsReady());
+  EXPECT_TRUE(later_result.Get<1>().empty());
+  EXPECT_FALSE(IsMetadataPresent(kImageUrlHashed));
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheStartupEvictionStarted, 0);
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheDataStoreInitializationFailed, 1);
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheMetadataStoreInitializationFailed, 0);
+}
+
+TEST_P(ImageCacheInitializationFailureTest,
+       FailedMetadataDoesNotBlockRequests) {
+  CreateImageCache();
+  base::test::TestFuture<bool, std::string> result;
+  image_cache()->SaveImage(
+      kImageUrl, base::MakeRefCounted<base::RefCountedString>(kImageData),
+      /*needs_transcoding=*/false, std::nullopt);
+  image_cache()->LoadImage(/*read_only=*/false, kImageUrl,
+                           result.GetCallback());
+  image_cache()->DeleteImage(kImageUrl);
+
+  ASSERT_TRUE(FinishInitialization(leveldb_proto::Enums::InitStatus::kError));
+
+  EXPECT_FALSE(metadata_store()->IsInitialized());
+  ASSERT_TRUE(result.IsReady());
+  EXPECT_FALSE(result.Get<0>());
+  EXPECT_TRUE(result.Get<1>().empty());
+  EXPECT_FALSE(base::PathExists(cache_path()
+                                    .AppendASCII("image_data_storage")
+                                    .AppendASCII(kImageUrlHashed)));
+
+  base::test::TestFuture<bool, std::string> later_result;
+  image_cache()->LoadImage(/*read_only=*/true, kImageUrl,
+                           later_result.GetCallback());
+  ASSERT_TRUE(later_result.IsReady());
+  EXPECT_TRUE(later_result.Get<1>().empty());
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheStartupEvictionStarted, 0);
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheMetadataStoreInitializationFailed, 1);
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheDataStoreInitializationFailed, 0);
+}
+
+TEST_P(ImageCacheInitializationFailureTest, BothStoreFailuresAreReportedOnce) {
+  ASSERT_TRUE(base::WriteFile(cache_path().AppendASCII("image_data_storage"),
+                              "not a directory"));
+  CreateImageCache();
+  base::test::TestFuture<bool, std::string> result;
+  image_cache()->LoadImage(/*read_only=*/false, kImageUrl,
+                           result.GetCallback());
+
+  ASSERT_TRUE(FinishInitialization(leveldb_proto::Enums::InitStatus::kError));
+  ASSERT_TRUE(result.IsReady());
+  EXPECT_TRUE(result.Get<1>().empty());
+  EXPECT_FALSE(IsCacheInitialized());
+  image_cache()->SaveImage(
+      kImageUrl, base::MakeRefCounted<base::RefCountedString>(kImageData),
+      /*needs_transcoding=*/false, std::nullopt);
+  image_cache()->DeleteImage(kImageUrl);
+  base::test::TestFuture<bool, std::string> later_result;
+  image_cache()->LoadImage(/*read_only=*/true, kImageUrl,
+                           later_result.GetCallback());
+  ASSERT_TRUE(later_result.IsReady());
+  EXPECT_TRUE(later_result.Get<1>().empty());
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheDataStoreInitializationFailed, 1);
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheMetadataStoreInitializationFailed, 1);
+  histogram_tester().ExpectBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheStartupEvictionStarted, 0);
+}
+
+TEST_P(ImageCacheInitializationFailureTest, CallbackCanReleaseCache) {
+  ASSERT_TRUE(base::WriteFile(cache_path().AppendASCII("image_data_storage"),
+                              "not a directory"));
+  CreateImageCache();
+  base::test::TestFuture<bool, std::string> first_result;
+  base::test::TestFuture<bool, std::string> second_result;
+  image_cache()->LoadImage(
+      /*read_only=*/false, kImageUrl,
+      base::BindOnce(
+          [](ImageCacheInitializationFailureTest* test,
+             ImageDataCallback result, bool needs_transcoding,
+             std::string data) {
+            test->DestroyImageCache();
+            std::move(result).Run(needs_transcoding, std::move(data));
+          },
+          base::Unretained(this), first_result.GetCallback()));
+  image_cache()->LoadImage(/*read_only=*/false, kOtherImageUrl,
+                           second_result.GetCallback());
+
+  ASSERT_TRUE(FinishInitialization(leveldb_proto::Enums::InitStatus::kOK));
+
+  ASSERT_TRUE(first_result.IsReady());
+  EXPECT_TRUE(first_result.Get<1>().empty());
+  ASSERT_TRUE(second_result.IsReady());
+  EXPECT_TRUE(second_result.Get<1>().empty());
+}
+
+INSTANTIATE_TEST_SUITE_P(,
+                         ImageCacheInitializationFailureTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "DiskFirst" : "MetadataFirst";
+                         });
+
 TEST_F(CachedImageFetcherImageCacheTest, Save) {
   CreateImageCache();
   InitializeImageCache();
 
-  image_cache()->SaveImage(kImageUrl, kImageData,
-                           /* needs_transcoding */ false,
-                           /* expiration_interval */ std::nullopt);
+  image_cache()->SaveImage(
+      kImageUrl, base::MakeRefCounted<base::RefCountedString>(kImageData),
+      /* needs_transcoding */ false,
+      /* expiration_interval */ std::nullopt);
   LoadImage(kImageUrl, kImageData);
 }
 
@@ -301,10 +550,14 @@ TEST_F(CachedImageFetcherImageCacheTest, EvictionHoldUtilExpires) {
   PrepareImageCache(false);
   clock()->SetNow(clock()->Now() + base::Days(2));
 
-  image_cache()->SaveImage(kImageUrl, "image_data", false, base::Days(10));
+  image_cache()->SaveImage(
+      kImageUrl, base::MakeRefCounted<base::RefCountedString>("image_data"),
+      false, base::Days(10));
 
-  image_cache()->SaveImage(kOtherImageUrl, "other_image_data", false,
-                           base::Hours(1));
+  image_cache()->SaveImage(
+      kOtherImageUrl,
+      base::MakeRefCounted<base::RefCountedString>("other_image_data"), false,
+      base::Hours(1));
   RunUntilIdle();
 
   // Forward the clock to make image with `kOtherImageUrl` expired.
@@ -385,6 +638,51 @@ TEST_F(CachedImageFetcherImageCacheTest, ReconciliationMismatchMetadata) {
 
   // Metadata should be gone.
   ASSERT_FALSE(IsMetadataPresent("bar"));
+}
+
+TEST_F(CachedImageFetcherImageCacheTest,
+       ReconciliationPreservesMetadataWhenDataEnumerationFails) {
+  PrepareImageCache(/*needs_transcoding=*/false);
+  ASSERT_TRUE(IsMetadataPresent(kImageUrlHashed));
+  ASSERT_TRUE(base::DeletePathRecursively(
+      cache_path().AppendASCII("image_data_storage")));
+
+  const int completed_before = histogram_tester().GetBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheStartupEvictionFinished);
+  StartReconciliation();
+  db()->LoadKeysCallback(true);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return histogram_tester().GetBucketCount(
+               kImageFetcherEventHistogramName,
+               ImageFetcherEvent::kCacheStartupEvictionFinished) >
+           completed_before;
+  }));
+
+  EXPECT_TRUE(IsMetadataPresent(kImageUrlHashed));
+}
+
+TEST_F(CachedImageFetcherImageCacheTest,
+       ReconciliationPreservesDataWhenMetadataEnumerationFails) {
+  PrepareImageCache(/*needs_transcoding=*/false);
+
+  const int completed_before = histogram_tester().GetBucketCount(
+      kImageFetcherEventHistogramName,
+      ImageFetcherEvent::kCacheStartupEvictionFinished);
+  StartReconciliation();
+  db()->LoadKeysCallback(false);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return histogram_tester().GetBucketCount(
+               kImageFetcherEventHistogramName,
+               ImageFetcherEvent::kCacheStartupEvictionFinished) >
+           completed_before;
+  }));
+
+  base::test::TestFuture<bool, std::string> result;
+  data_store()->LoadImage(kImageUrlHashed, /*needs_transcoding=*/false,
+                          result.GetCallback());
+  EXPECT_FALSE(result.Get<0>());
+  EXPECT_EQ(kImageData, result.Get<1>());
 }
 
 }  // namespace image_fetcher

@@ -93,14 +93,16 @@ class UsbChooserContext : public permissions::ObjectPermissionContextBase,
       device::mojom::UsbDeviceManager::RefreshDeviceInfoCallback callback);
 #endif
 
-  // This method should only be called when you are sure that |devices_| has
-  // been initialized. It will return nullptr if the guid cannot be found.
+  // Returns the UsbDeviceInfo for `guid`, or nullptr if `devices_` has not
+  // been initialized yet or the guid cannot be found.
   const device::mojom::UsbDeviceInfo* GetDeviceInfo(const std::string& guid);
 
   base::WeakPtr<UsbChooserContext> AsWeakPtr();
 
   void SetDeviceManagerForTesting(
       mojo::PendingRemote<device::mojom::UsbDeviceManager> fake_device_manager);
+
+  bool is_initialized_for_testing() const { return is_initialized_; }
 
   void InitDeviceList(std::vector<::device::mojom::UsbDeviceInfoPtr> devices);
 
@@ -134,7 +136,6 @@ class UsbChooserContext : public permissions::ObjectPermissionContextBase,
       device::mojom::UsbDeviceInfoPtr device_info);
 #endif
 
-  bool is_incognito_;
   bool is_initialized_ = false;
   base::queue<device::mojom::UsbDeviceManager::GetDevicesCallback>
       pending_get_devices_requests_;

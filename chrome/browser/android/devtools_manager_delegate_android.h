@@ -27,7 +27,7 @@ class DevToolsManagerDelegateAndroid : public content::DevToolsManagerDelegate {
   ~DevToolsManagerDelegateAndroid() override;
 
   static void MarkCreatedByDevTools(content::WebContents& web_contents);
-  static bool IsCreatedByDevTools(const content::WebContents& web_contents);
+  static bool IsCreatedByDevTools(content::WebContents& web_contents);
 
  private:
   // content::DevToolsManagerDelegate implementation.
@@ -43,7 +43,10 @@ class DevToolsManagerDelegateAndroid : public content::DevToolsManagerDelegate {
   content::DevToolsAgentHost::List RemoteDebuggingTargets(
       TargetType target_type) override;
   bool IsBrowserTargetDiscoverable() override;
+  // Evaluates whether DevTools is permitted to inspect the given frame.
+  bool AllowInspectingRenderFrameHost(content::RenderFrameHost* rfh) override;
   bool AllowInspectingTarget(content::DevToolsAgentHost* agent_host) override;
+  void Activate(content::DevToolsAgentHost* agent_host) override;
 
   void HandleCommand(content::DevToolsAgentHostClientChannel* channel,
                      base::span<const uint8_t> message,

@@ -8,10 +8,12 @@
 #include <optional>
 #include <utility>
 
+#include "base/containers/adapters.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/to_string.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
+#include "build/build_config.h"
 #include "components/browser_apis/tab_strip/adapters/platform_adapters_provider.h"
 #include "components/browser_apis/tab_strip/event_broadcaster.h"
 #include "components/browser_apis/tab_strip/events/tab_strip_event_recorder.h"
@@ -87,6 +89,9 @@ TabStripServiceImpl::TabStripServiceImpl(
 TabStripServiceImpl::~TabStripServiceImpl() {
   RemoveObserver(this);
   adapters_provider_->event_bridge().RemoveObserver(recorder_.get());
+  for (auto& observer : observers_) {
+    observer.OnTabStripServiceDestroyed();
+  }
 }
 
 TabStripModelAdapter& TabStripServiceImpl::tab_strip_model_adapter() {
@@ -134,23 +139,17 @@ mojom::TabStripService::GetTabResult TabStripServiceImpl::GetTab(
 
   ASSIGN_OR_RETURN(auto tab_id, utils::GetContentNativeTabId(tab_mojom_id));
 
-  tabs_api::mojom::TabPtr tab_result;
   // TODO (crbug.com/412709270) TabStripModel or TabCollections should have an
   // api that can fetch id without of relying  on indices.
   auto tabs = tab_strip_model_adapter().GetTabs();
-  for (unsigned int i = 0; i < tabs.size(); ++i) {
-    auto& handle = tabs.at(i);
+  for (const auto& handle : tabs) {
     if (tab_id == handle.raw_value()) {
-      ASSIGN_OR_RETURN(tab_result, translation_adapter().ToMojoTab(handle));
+      return translation_adapter().ToMojoTab(handle);
     }
   }
 
-  if (tab_result) {
-    return std::move(tab_result);
-  } else {
-    return base::unexpected(mojo_base::mojom::Error::New(
-        mojo_base::mojom::Code::kNotFound, "Tab not found"));
-  }
+  return base::unexpected(mojo_base::mojom::Error::New(
+      mojo_base::mojom::Code::kNotFound, "Tab not found"));
 }
 
 mojom::TabStripService::CreateTabAtResult TabStripServiceImpl::CreateTabAt(
@@ -237,8 +236,11 @@ void TabStripServiceImpl::CloseTabs(
 
   // Close from last to first, that way the removals won't change the index of
   // the next target.
-  std::ranges::sort(tab_strip_indices, std::ranges::greater());
-  for (auto idx : tab_strip_indices) {
+  // We intentionally avoid using std::ranges::greater() to sort, which would
+  // bypass libc++'s pre-instantiated sort for arithmetic types and inflate
+  // binary size.
+  std::ranges::sort(tab_strip_indices);
+  for (auto idx : base::Reversed(tab_strip_indices)) {
     tab_strip_model_adapter().CloseTab(idx);
   }
 }
@@ -378,6 +380,7 @@ mojom::TabStripService::UpdateResult TabStripServiceImpl::UpdateTabGroup(
   return translation_adapter().ToMojoData(collection_handle);
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 // tabs_api::mojom::TabStripExperimentalService overrides
 //
 // TabStripExperimentalService is intended for quick prototyping for
@@ -396,6 +399,7 @@ TabStripServiceImpl::GetAllTabsForProfile() {
 
   return windows;
 }
+#endif
 
 void TabStripServiceImpl::AddObserver(
     observation::TabStripApiBatchedObserver* observer) {
@@ -421,6 +425,7 @@ void TabStripServiceImpl::OnTabEvents(
   }
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 mojom::TabStripExperimentService::ReplaceTabInSplitResult
 TabStripServiceImpl::ReplaceTabInSplit(const tabs_api::NodeId& tab_to_replace,
                                        const tabs_api::NodeId& tab_to_insert) {
@@ -448,15 +453,18 @@ TabStripServiceImpl::ReplaceTabInSplit(const tabs_api::NodeId& tab_to_replace,
 
   return std::monostate();
 }
+#endif
 
 void TabStripServiceImpl::Accept(
     mojo::PendingReceiver<tabs_api::mojom::TabStripService> client) {
   mojo_clients_.Add(&bridge_, std::move(client));
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 void TabStripServiceImpl::AcceptExperimental(
     mojo::PendingReceiver<tabs_api::mojom::TabStripExperimentService> client) {
   mojo_experiment_clients_.Add(&experimental_bridge_, std::move(client));
 }
+#endif
 
 }  // namespace tabs_api

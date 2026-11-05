@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <string_view>
 
 #include "base/byte_size.h"
 #include "base/check.h"
@@ -330,7 +331,7 @@ constexpr base::MemoryConsumerTraits kSpareRenderProcessHostManagerTraits(
     // Pools pre-warmed renderer processes (tens of MBs each).
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
     // Process termination lets the OS reclaim memory pages directly.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     // Eviction results in a cold start, but no user state is lost.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Cleans up host objects synchronously on the browser main thread.
@@ -340,20 +341,24 @@ constexpr base::MemoryConsumerTraits kSpareRenderProcessHostManagerTraits(
     // Launching a replacement renderer process is expensive.
     base::MemoryConsumerTraits::RecreateMemoryCost::kExpensive);
 
+constexpr std::string_view kMemoryConsumerName =
+    "SpareRenderProcessHostManagerImpl";
+
+// Granular pool scaling requires both stateful memory pressure and killing on
+// pressure; otherwise creation gates use discrete threshold checks.
+bool ShouldScaleSparesWithMemoryLimit() {
+  return base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName) &&
+         base::FeatureList::IsEnabled(kKillSpareRenderOnMemoryPressure);
+}
+
 }  // namespace
 
 SpareRenderProcessHostManagerImpl::SpareRenderProcessHostManagerImpl()
     : memory_consumer_registration_(
-          "SpareRenderProcessHostManagerImpl",
+          kMemoryConsumerName,
           kSpareRenderProcessHostManagerTraits,
           this,
-          base::MemoryConsumerRegistration::CheckUnregister::kDisabled),
-      metrics_heartbeat_timer_(
-          FROM_HERE,
-          base::Minutes(2),
-          base::BindRepeating(
-              &SpareRenderProcessHostManagerImpl::OnMetricsHeartbeatTimerFired,
-              base::Unretained(this)))
+          base::MemoryConsumerRegistration::CheckUnregister::kDisabled)
 #if BUILDFLAG(IS_ANDROID)
       ,
       app_status_listener_(
@@ -362,8 +367,6 @@ SpareRenderProcessHostManagerImpl::SpareRenderProcessHostManagerImpl()
               base::Unretained(this))))
 #endif
 {
-  metrics_heartbeat_timer_.Reset();
-
   // Need to register first before checking the state to make sure we don't miss
   // a notification.
   if (auto performance_scenario_observer_list =
@@ -455,6 +458,15 @@ SpareRenderProcessHostManagerImpl::GetLastSpareRendererCreationInfo() const {
 RenderProcessHost* SpareRenderProcessHostManagerImpl::WarmupSpare(
     BrowserContext* browser_context,
     std::optional<base::TimeDelta> timeout) {
+  // Keep the current spares if no navigation in `browser_context` can use a
+  // spare. `no_spare_renderer_reason_` is kept too, since this doesn't remove
+  // a spare.
+  if (!GetContentClient()
+           ->browser()
+           ->CanBrowserContextUseSpareRenderProcessHost(browser_context)) {
+    return nullptr;
+  }
+
   if (delay_timer_) {
     // If the timeout does not have a value, the delayed creation is no longer
     // required since we will create the spare renderer here.
@@ -520,7 +532,7 @@ RenderProcessHost* SpareRenderProcessHostManagerImpl::WarmupSpare(
   // Don't create a spare renderer when the system is under load.  This is
   // currently approximated by only looking at the memory pressure.  See also
   // https://crbug.com/852905.
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (ShouldScaleSparesWithMemoryLimit()) {
     if (GetTargetSpareRPHCount() == 0) {
       no_spare_renderer_reason_ = NoSpareRendererReason::kMemoryPressure;
       return nullptr;
@@ -656,12 +668,9 @@ RenderProcessHost* SpareRenderProcessHostManagerImpl::MaybeTakeSpare(
       site_instance->HasProcess() ||
       !site_instance->CanAssociateWithSpareProcess() ||
       site_instance->GetSecurityPrincipal().IsGuest() ||
-      site_instance->GetSiteInfo().embedder_isolation_info().is_privileged()
-#if !BUILDFLAG(IS_ANDROID)
-      || GetContentClient()->browser()->IsTopChromeWebUIURL(
-             site_instance->GetSecurityPrincipal().GetDeprecatedSiteURL())
-#endif
-  ) {
+      site_instance->GetSiteInfo().embedder_isolation_info().is_privileged() ||
+      GetContentClient()->browser()->IsTopChromeWebUIURL(
+          site_instance->GetSiteInfo().site_url())) {
     action = SpareProcessMaybeTakeAction::kRefusedBySiteInstance;
   } else if (site_instance->GetSiteInfo().is_pdf()) {
     action = SpareProcessMaybeTakeAction::kRefusedForPdfContent;
@@ -798,7 +807,7 @@ SpareRenderProcessHostManagerImpl::DoesEmbedderAllowSpareUsage(
   // As such spare renderers should not be used when v8 flag overrides are
   // disabled.
   if (GetContentClient()->browser()->DisallowV8FeatureFlagOverridesForSite(
-          site_instance->GetSiteInfo().GetProcessLockURL())) {
+          site_instance->GetSiteInfo().site_url())) {
     return ContentBrowserClient::SpareProcessRefusedByEmbedderReason::
         DisallowV8FeatureFlagOverrides;
   }
@@ -914,12 +923,7 @@ void SpareRenderProcessHostManagerImpl::TrimSpares(
 size_t SpareRenderProcessHostManagerImpl::GetTargetSpareRPHCount() const {
   const size_t baseline = GetSpareRPHCount();
 
-  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
-    return baseline;
-  }
-
-  // If killing on memory pressure is disabled, keep full baseline.
-  if (!base::FeatureList::IsEnabled(kKillSpareRenderOnMemoryPressure)) {
+  if (!ShouldScaleSparesWithMemoryLimit()) {
     return baseline;
   }
 
@@ -933,7 +937,7 @@ size_t SpareRenderProcessHostManagerImpl::GetTargetSpareRPHCount() const {
 
   // Preserve 1 spare if keep-one-alive policy is active.
   if (base::FeatureList::IsEnabled(kSpareRPHKeepOneAliveOnMemoryPressure) &&
-      memory_limit() > 0) {
+      memory_limit() > base::MemoryLimit::FromPercent(0)) {
     target = std::max(size_t{1}, target);
   }
 
@@ -1032,7 +1036,7 @@ void SpareRenderProcessHostManagerImpl::SetIsBrowserIdle(bool is_browser_idle) {
 }
 
 void SpareRenderProcessHostManagerImpl::OnUpdateMemoryLimit() {
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (ShouldScaleSparesWithMemoryLimit()) {
     // If memory limit improved and we have headroom, sequentially warm up extra
     // spares:
     if (spare_rphs_.size() < GetTargetSpareRPHCount()) {
@@ -1049,10 +1053,7 @@ void SpareRenderProcessHostManagerImpl::OnUpdateMemoryLimit() {
 }
 
 void SpareRenderProcessHostManagerImpl::OnReleaseMemory() {
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
-    if (!base::FeatureList::IsEnabled(kKillSpareRenderOnMemoryPressure)) {
-      return;
-    }
+  if (ShouldScaleSparesWithMemoryLimit()) {
     TrimSpares(GetTargetSpareRPHCount(),
                SpareRendererDispatchResult::kMemoryPressure);
     return;
@@ -1107,7 +1108,7 @@ bool SpareRenderProcessHostManagerImpl::ShouldCreateExtraSpare() const {
     return false;
   }
 
-  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (!ShouldScaleSparesWithMemoryLimit()) {
     // Don't create spares when under memory pressure.
     if (memory_limit() < base::MemoryLimit::NoPressureThreshold()) {
       return false;
@@ -1137,11 +1138,6 @@ void SpareRenderProcessHostManagerImpl::MaybeCreateExtraSpare() {
   spare_rphs_.push_back(new_spare_rph);
   new_spare_rph->AddObserver(this);
   new_spare_rph->Init();
-}
-
-void SpareRenderProcessHostManagerImpl::OnMetricsHeartbeatTimerFired() {
-  base::UmaHistogramCounts100("BrowserRenderProcessHost.SpareCount",
-                              spare_rphs_.size());
 }
 
 #if BUILDFLAG(IS_ANDROID)

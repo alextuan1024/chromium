@@ -10,7 +10,9 @@
 #import <memory>
 #import <vector>
 
-#import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
+#import "ios/chrome/browser/settings/password/public/passwords_table_view_constants.h"
+
+@class CrURL;
 
 namespace password_manager {
 struct CredentialUIEntry;
@@ -26,6 +28,9 @@ class AffiliatedGroup;
 
 // Updates whether passwords are being saved to an account or only locally.
 - (void)setSavingPasswordsToAccount:(BOOL)savingPasswordsToAccount;
+
+// Updates whether the user is allowed to add new passwords.
+- (void)setAllowsAddPassword:(BOOL)allowsAddPassword;
 
 // Displays affiliated groups for the Password Manager.
 // This method relates to the -setPasswords method above. This will eventually
@@ -49,6 +54,9 @@ class AffiliatedGroup;
 // Stores an email of a user (the email is being displayed as a part of the
 // TrustedVault widget promo message).
 - (void)setUserEmail:(const std::u16string&)userEmail;
+
+// Sets the localized Password Manager Help Center URL.
+- (void)setHelpCenterURL:(CrURL*)helpCenterURL;
 
 @end
 

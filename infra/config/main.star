@@ -12,6 +12,7 @@ load("@chromium-luci//branches.star", "branches")
 load("@chromium-luci//builders.star", "os")
 load("@chromium-luci//chromium_luci.star", "chromium_luci")
 load("@chromium-luci//targets.star", "targets")
+load("@chromium-luci//try.star", "try_")
 load(
     "//lib/builder_exemptions.star",
     "exempted_from_contact_builders",
@@ -205,7 +206,10 @@ chromium_luci.configure_builders(
         ),
         os.MAC_DEFAULT: "Mac-26",
         os.MAC_BETA: "Mac-26",
-        os.WINDOWS_DEFAULT: os.WINDOWS_10,
+        os.WINDOWS_DEFAULT: chromium_luci.os_dimension_overrides(
+            default = os.WINDOWS_10,
+            overrides = json.decode(io.read_file("//lib/windows-default.json")),
+        ),
     },
     exempted_from_description_builders = exempted_from_description_builders,
 )
@@ -226,10 +230,11 @@ chromium_luci.configure_targets(
             # The following mixins are referenced via
             # //testing/buildbot/waterfalls.pyl
             "11-x86-emulator": True,
+            "17-desktop-x64-emulator": True,
             "android_extra_verbosity": True,
-            "amd_radeon_rx_5500_xt": True,
             "android": True,
             "blink_tests_write_run_histories": True,
+            "chrome_ai_wpt_component_cache": True,
             "chrome-finch-swarming-pool": True,
             "chrome-flame-fleet-pool": True,
             "chrome-intelligence-swarming-pool": True,
@@ -245,7 +250,6 @@ chromium_luci.configure_targets(
             "gpu_force_angle_gles": True,
             "gpu_force_angle_metal": True,
             "gpu_force_angle_swiftshader": True,
-            "gpu_force_angle_vulkan": True,
             "gpu_force_command_decoder_passthrough": True,
             "gpu_force_command_decoder_validating": True,
             "gpu_force_high_performance_gpu": True,
@@ -268,7 +272,6 @@ chromium_luci.configure_targets(
             "linux_gpu_high_tier_ai_wpt_dimensions": True,
             "linux_gpu_high_tier_gemma4_ai_wpt_dimensions": targets.IGNORE_UNUSED,
             "long_skylab_timeout": True,
-            "mac_14_x64": True,
             "mac_default_arm64": True,
             "mac_15_x64": True,
             "mac_toolchain": True,
@@ -292,7 +295,11 @@ chromium_luci.configure_targets(
             "win-arm64": True,
             "win10": True,
             "win10-any": True,
+            "win_cpu_ai_wpt_dimensions": targets.IGNORE_UNUSED,
+            "win_gpu_ai_wpt_dimensions": targets.IGNORE_UNUSED,
             "win_gpu_gemma4_ai_wpt_dimensions": targets.IGNORE_UNUSED,
+            "win_high_perf_amd_gpu": targets.IGNORE_UNUSED,
+            "win_high_perf_nvidia_gpu": targets.IGNORE_UNUSED,
             "xcode_27_main": True,
             "xctest": True,
 
@@ -317,9 +324,10 @@ chromium_luci.configure_targets(
             "linux_intel_uhd_630_experimental": targets.IGNORE_UNUSED,
             "linux_intel_uhd_630_stable": targets.IGNORE_UNUSED,
             "linux_intel_uhd_770_stable": targets.IGNORE_UNUSED,
+            "linux_intel_uhd_770_wayland_stable": targets.IGNORE_UNUSED,
             "linux_nvidia_gtx_1660_experimental": targets.IGNORE_UNUSED,
             "linux_nvidia_gtx_1660_stable": targets.IGNORE_UNUSED,
-            "linux_nvidia_rtx_4070_super_stable": targets.IGNORE_UNUSED,
+            "linux_nvidia_rtx_4070_super_wayland_stable": targets.IGNORE_UNUSED,
             "mac_arm64_apple_m1_gpu_experimental": targets.IGNORE_UNUSED,
             "mac_arm64_apple_m1_gpu_stable": targets.IGNORE_UNUSED,
             "mac_arm64_apple_m2_retina_gpu_experimental": targets.IGNORE_UNUSED,
@@ -368,7 +376,6 @@ chromium_luci.configure_targets(
         variant_overrides = {
             # The following variants are referenced via
             # //testing/buildbot/waterfalls.pyl
-            "AMD_RADEON_RX_5500_XT": True,
             "CHANNEL_BETA": True,
             "CHANNEL_DEV": True,
             "CHANNEL_STABLE": True,
@@ -380,6 +387,9 @@ chromium_luci.configure_targets(
             "IPHONE_13": True,
             "NVIDIA_GEFORCE_GTX_1660": True,
             "SIM_IPHONE_14_18_5": True,
+            "WIN_HIGH_PERF_AMD": True,
+            "WIN_HIGH_PERF_NVIDIA": True,
+            "WIN10_NVIDIA_GTX_1660": True,
         },
     ),
     autoshard_exceptions_file = "//autoshard_exceptions.json",
@@ -405,7 +415,7 @@ luci.realm(
         ),
         # Allow everyone to view Turbo CI workflows
         luci.binding(
-            roles = "role/turboci.nodeReaderExternal",
+            roles = "role/turboci.externalReader",
             groups = "all",
         ),
         # Other roles are inherited from @root which grants them to group:all.
@@ -419,6 +429,11 @@ luci.realm(
         luci.binding(
             roles = "role/resultdb.invocationCreator",
             groups = "project-chromium-ci-task-accounts",
+        ),
+        # Allow everyone to view Turbo CI workflows
+        luci.binding(
+            roles = "role/turboci.externalReader",
+            groups = "all",
         ),
     ],
 )
@@ -443,7 +458,7 @@ luci.realm(
         ),
         # Allow everyone to view Turbo CI workflows
         luci.binding(
-            roles = "role/turboci.nodeReaderExternal",
+            roles = "role/turboci.externalReader",
             groups = "all",
         ),
     ],
@@ -524,6 +539,7 @@ luci.realm(
     ],
 )
 
+try_.defaults.set(reuse_max_commit_distance = 1300 if settings.is_main else None)
 luci.builder.defaults.test_presentation.set(resultdb.test_presentation(grouping_keys = ["status", "v.test_suite"]))
 
 exec("//swarming.star")

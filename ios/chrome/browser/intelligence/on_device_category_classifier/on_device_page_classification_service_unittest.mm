@@ -13,6 +13,7 @@
 #import "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
 #import "components/page_content_annotations/core/page_content_annotations_common.h"
 #import "components/passage_embeddings/core/passage_embeddings_types.h"
+#import "ios/chrome/browser/intelligence/contextual_cueing/features.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/intelligence/on_device_category_classifier/in_process_category_classification_service.h"
 #import "ios/chrome/browser/intelligence/on_device_category_classifier/in_process_category_classification_service_factory.h"
@@ -26,7 +27,7 @@
 namespace {
 
 std::unique_ptr<KeyedService> BuildTestInProcessClassificationService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   static base::NoDestructor<
       optimization_guide::TestOptimizationGuideModelProvider>
       test_model_provider;
@@ -45,7 +46,7 @@ class OnDevicePageClassificationServiceTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         InProcessCategoryClassificationServiceFactory::GetInstance(),
-        base::BindRepeating(&BuildTestInProcessClassificationService));
+        base::BindOnce(&BuildTestInProcessClassificationService));
     profile_ = std::move(builder).Build();
 
     in_process_service_ =
@@ -81,8 +82,7 @@ TEST_F(OnDevicePageClassificationServiceTest, ClassifyWebStateNullWebState) {
 
 // Tests that ClassifyWebState returns early for off-the-record profile.
 TEST_F(OnDevicePageClassificationServiceTest, ClassifyWebStateOffTheRecord) {
-  ProfileIOS* otr_profile =
-      profile_->CreateOffTheRecordProfileWithTestingFactories();
+  ProfileIOS* otr_profile = profile_->GetOffTheRecordProfile();
   auto otr_web_state = std::make_unique<web::FakeWebState>();
   otr_web_state->SetBrowserState(otr_profile);
   otr_web_state->SetCurrentURL(GURL("https://example.com"));
@@ -126,8 +126,10 @@ TEST_F(OnDevicePageClassificationServiceTest,
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitWithFeaturesAndParameters(
       {{kPageActionMenu, {}},
-       {kGeminiContextualSuggestionsCues,
-        {{kGeminiContextualSuggestionsCuesTitleAndUrlOnlyParam, "true"}}}},
+       {contextual_cueing::kGeminiContextualSuggestionsCues,
+        {{contextual_cueing::
+              kGeminiContextualSuggestionsCuesTitleAndUrlOnlyParam,
+          "true"}}}},
       {});
 
   auto web_state = std::make_unique<web::FakeWebState>();
@@ -142,7 +144,7 @@ TEST_F(OnDevicePageClassificationServiceTest,
 
   EXPECT_FALSE(future.IsReady());
 
-  in_process_service_->OnPassageEmbedderLoadedForTesting(1, 768,
+  in_process_service_->OnPassageEmbedderLoadedForTesting(1, 768, 512,
                                                          /*success=*/true);
 
   EXPECT_TRUE(future.Get().has_value());

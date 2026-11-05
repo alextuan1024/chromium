@@ -8,50 +8,59 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import static org.chromium.ui.test.util.MockitoHelper.clearInvocations;
+
+import android.app.Activity;
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.os.Build;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
+import android.view.View.MeasureSpec;
 import android.view.WindowInsets;
+import android.widget.FrameLayout;
 
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
+import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
-import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.LayoutType;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestionsDropdownEmbedder.OmniboxAlignment;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.TopInsetProvider;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.insets.InsetObserver;
 
 import java.lang.ref.WeakReference;
@@ -80,16 +89,18 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private WindowAndroid mWindowAndroid;
-    @Mock private ViewTreeObserver mViewTreeObserver;
-    @Mock private ViewGroup mContentView;
-    @Mock private ViewGroup mAnchorView;
-    @Mock private ViewGroup mIntermediateView;
-    @Mock private View mHorizontalAlignmentView;
     @Mock private DisplayAndroid mDisplay;
     @Mock private InsetObserver mInsetObserver;
     @Mock private TopInsetProvider mTopInsetProvider;
+    @Mock private EdgeToEdgeController mEdgeToEdgeController;
     @Mock private Callback<OmniboxAlignment> mAlignmentChanged;
+    @Captor private ArgumentCaptor<TopInsetProvider.Observer> mTopInsetObserverCaptor;
+    @Captor private ArgumentCaptor<EdgeToEdgePadAdjuster> mPadAdjusterCaptor;
 
+    private FrameLayout mContentView;
+    private FrameLayout mAnchorView;
+    private FrameLayout mIntermediateView;
+    private View mHorizontalAlignmentView;
     private OmniboxResourceProvider mResourceProvider;
     private OmniboxSuggestionsDropdownEmbedderImpl mImpl;
     private Context mContext;
@@ -99,29 +110,40 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
             ObservableSuppliers.createNonNull(FuseboxState.DISABLED);
     private final SettableNonNullObservableSupplier<Integer> mFuseboxLayoutModeSupplier =
             ObservableSuppliers.createNonNull(FuseboxLayoutMode.TOOLBAR);
+    private final SettableMonotonicObservableSupplier<EdgeToEdgeController>
+            mEdgeToEdgeControllerSupplier = ObservableSuppliers.createMonotonic();
     private boolean mIsFullWidthExpansionAllowed = true;
 
     @Before
     public void setUp() {
-        mContext = ContextUtils.getApplicationContext();
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        activity.getApplicationInfo().flags |= ApplicationInfo.FLAG_SUPPORTS_RTL;
+        mContext = activity;
         mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
         lenient().doReturn(mInsetObserver).when(mWindowAndroid).getInsetObserver();
         lenient().doReturn(new WeakReference<>(mContext)).when(mWindowAndroid).getContext();
-        lenient().doReturn(mContext).when(mAnchorView).getContext();
-        lenient().doReturn(mViewTreeObserver).when(mAnchorView).getViewTreeObserver();
-        lenient().doReturn(mContentView).when(mAnchorView).getRootView();
-        lenient().doReturn(mContentView).when(mContentView).findViewById(android.R.id.content);
-        lenient().doReturn(mContentView).when(mAnchorView).getParent();
-        lenient().doReturn(mAnchorView).when(mHorizontalAlignmentView).getParent();
-        lenient().doReturn(Integer.MAX_VALUE).when(mContentView).getMeasuredHeight();
-        lenient().doReturn(ANCHOR_WIDTH).when(mAnchorView).getMeasuredWidth();
-        lenient().doReturn(ANCHOR_WIDTH).when(mAnchorView).getWidth();
-        lenient().doReturn(ALIGNMENT_WIDTH).when(mHorizontalAlignmentView).getMeasuredWidth();
-        lenient().doReturn(ANCHOR_HEIGHT).when(mAnchorView).getMeasuredHeight();
-        lenient().doReturn(ANCHOR_TOP).when(mAnchorView).getTop();
-        lenient().doReturn(ALIGNMENT_TOP).when(mHorizontalAlignmentView).getTop();
-        lenient().doReturn(ALIGNMENT_LEFT).when(mHorizontalAlignmentView).getLeft();
-        lenient().doReturn(ALIGNMENT_HEIGHT).when(mHorizontalAlignmentView).getMeasuredHeight();
+
+        mContentView = new FrameLayout(mContext);
+        activity.setContentView(mContentView);
+        mContentView.setId(android.R.id.content);
+        setBounds(mContentView, 0, 0, ANCHOR_WIDTH, View.MEASURED_SIZE_MASK);
+
+        mAnchorView = new FrameLayout(mContext);
+        setBounds(mAnchorView, 0, ANCHOR_TOP, ANCHOR_WIDTH, ANCHOR_HEIGHT);
+        mContentView.addView(mAnchorView);
+
+        mHorizontalAlignmentView = new View(mContext);
+        setBounds(
+                mHorizontalAlignmentView,
+                ALIGNMENT_LEFT,
+                ALIGNMENT_TOP,
+                ALIGNMENT_WIDTH,
+                ALIGNMENT_HEIGHT);
+        mAnchorView.addView(mHorizontalAlignmentView);
+
+        mIntermediateView = new FrameLayout(mContext);
+        setBounds(mIntermediateView, 0, 0, ANCHOR_WIDTH, View.MEASURED_SIZE_MASK);
+
         lenient().doReturn(mDisplay).when(mWindowAndroid).getDisplay();
         lenient().doReturn(DIP_SCALE).when(mDisplay).getDipScale();
         lenient()
@@ -144,33 +166,54 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
                         mFuseboxStateSupplier,
                         mFuseboxLayoutModeSupplier,
                         mTopInsetProvider,
+                        mEdgeToEdgeControllerSupplier,
                         () -> mIsFullWidthExpansionAllowed);
     }
 
+    private static void setBounds(View view, int left, int top, int width, int height) {
+        view.setLayoutParams(new FrameLayout.LayoutParams(width, height));
+        view.measure(
+                MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+        view.setLeft(left);
+        view.setTop(top);
+        view.setRight(left + width);
+        view.setBottom(top + height);
+    }
+
     @Test
+    @DisableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
     public void testWindowAttachment() {
         // TopInsetProvider observer should be added during construction.
         verify(mTopInsetProvider).addObserver(any(TopInsetProvider.Observer.class));
 
-        verify(mAnchorView, never()).addOnLayoutChangeListener(mImpl);
-        verify(mHorizontalAlignmentView, never()).addOnLayoutChangeListener(mImpl);
-        verify(mAnchorView, never()).getViewTreeObserver();
+        mImpl.addAlignmentObserver(mAlignmentChanged);
+        clearInvocations(mAlignmentChanged);
+
+        // Before attachment, layout changes do not trigger alignment recalculation.
+        mAnchorView.layout(0, ANCHOR_TOP + 1, ANCHOR_WIDTH, ANCHOR_TOP + 1 + ANCHOR_HEIGHT);
+        verify(mAlignmentChanged, never()).onResult(any());
 
         mImpl.onAttachedToWindow();
+        clearInvocations(mAlignmentChanged);
 
-        verify(mAnchorView).addOnLayoutChangeListener(mImpl);
-        verify(mHorizontalAlignmentView).addOnLayoutChangeListener(mImpl);
-        verify(mViewTreeObserver).addOnGlobalLayoutListener(mImpl);
+        // While attached, layout changes recalculate alignment.
+        mAnchorView.layout(0, ANCHOR_TOP + 2, ANCHOR_WIDTH, ANCHOR_TOP + 2 + ANCHOR_HEIGHT);
+        verify(mAlignmentChanged).onResult(any());
+        clearInvocations(mAlignmentChanged);
 
+        // After detachment, layout changes no longer recalculate alignment.
         mImpl.onDetachedFromWindow();
-        verify(mAnchorView).removeOnLayoutChangeListener(mImpl);
-        verify(mHorizontalAlignmentView).removeOnLayoutChangeListener(mImpl);
-        verify(mViewTreeObserver).removeOnGlobalLayoutListener(mImpl);
+        mAnchorView.layout(0, ANCHOR_TOP + 3, ANCHOR_WIDTH, ANCHOR_TOP + 3 + ANCHOR_HEIGHT);
+        verify(mAlignmentChanged, never()).onResult(any());
     }
 
     @Test
     public void testPositionInWindow() {
         mImpl.onAttachedToWindow();
+        // Prime initial vertical and horizontal window offsets.
+        mImpl.onGlobalLayout();
+        mImpl.onGlobalLayout();
         mImpl.addAlignmentObserver(mAlignmentChanged);
         mImpl.recalculateOmniboxAlignment();
         OmniboxAlignment alignment = mImpl.getCurrentAlignment();
@@ -186,18 +229,10 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
                         0),
                 alignment);
 
-        doReturn(ANCHOR_WIDTH - 1).when(mAnchorView).getMeasuredWidth();
+        setBounds(mAnchorView, 0, ANCHOR_TOP, ANCHOR_WIDTH - 1, ANCHOR_HEIGHT);
         mImpl.onGlobalLayout();
 
-        doAnswer(
-                        invocationOnMock -> {
-                            int[] posArray = invocationOnMock.getArgument(0);
-                            posArray[0] = 1;
-                            posArray[1] = 0;
-                            return null;
-                        })
-                .when(mHorizontalAlignmentView)
-                .getLocationInWindow(any());
+        mHorizontalAlignmentView.setLeft(ALIGNMENT_LEFT + 1);
 
         mImpl.onGlobalLayout();
         verify(mAlignmentChanged).onResult(any(OmniboxAlignment.class));
@@ -256,8 +291,9 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
     @Test
     public void testRecalculateOmniboxAlignment_definedBaseChromeLayout() {
         // Add an intermediate view between the anchorView and contentView
-        doReturn(mIntermediateView).when(mAnchorView).getParent();
-        doReturn(Integer.MAX_VALUE).when(mIntermediateView).getMeasuredHeight();
+        mContentView.removeView(mAnchorView);
+        mIntermediateView.addView(mAnchorView);
+        mContentView.addView(mIntermediateView);
 
         OmniboxSuggestionsDropdownEmbedderImpl impl =
                 new OmniboxSuggestionsDropdownEmbedderImpl(
@@ -275,6 +311,7 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
                         mFuseboxStateSupplier,
                         mFuseboxLayoutModeSupplier,
                         mTopInsetProvider,
+                        mEdgeToEdgeControllerSupplier,
                         () -> true);
         impl.recalculateOmniboxAlignment();
         OmniboxAlignment alignment = impl.getCurrentAlignment();
@@ -293,7 +330,7 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
 
     @Test
     public void testRecalculateOmniboxAlignment_contentViewPadding() {
-        doReturn(13).when(mContentView).getPaddingTop();
+        mContentView.setPadding(0, 13, 0, 0);
         mImpl.recalculateOmniboxAlignment();
         OmniboxAlignment alignment = mImpl.getCurrentAlignment();
         assertEquals(
@@ -350,7 +387,14 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
                                 WindowInsets.Type.navigationBars(),
                                 Insets.of(0, 0, 0, navBarHeight))
                         .build();
-        doReturn(windowInsets).when(mContentView).getRootWindowInsets();
+        FrameLayout contentViewWithInsets =
+                new FrameLayout(mContext) {
+                    @Override
+                    public WindowInsets getRootWindowInsets() {
+                        return windowInsets;
+                    }
+                };
+        setBounds(contentViewWithInsets, 0, 0, ANCHOR_WIDTH, View.MEASURED_SIZE_MASK);
 
         OmniboxSuggestionsDropdownEmbedderImpl impl =
                 new OmniboxSuggestionsDropdownEmbedderImpl(
@@ -361,13 +405,14 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
                         () -> 0,
                         () -> 0,
                         false,
-                        mContentView,
+                        contentViewWithInsets,
                         () -> mControlsPosition,
                         () -> keyboardHeight,
                         () -> mBottomWindowPadding,
                         mFuseboxStateSupplier,
                         mFuseboxLayoutModeSupplier,
                         mTopInsetProvider,
+                        mEdgeToEdgeControllerSupplier,
                         () -> true);
 
         impl.recalculateOmniboxAlignment();
@@ -440,7 +485,6 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
     @DisableFeatures(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT)
     public void testRecalculateOmniboxAlignment_tabletToPhoneSwitch() {
         int sideSpacing = mResourceProvider.getDropdownSideSpacing();
-        doReturn(mAnchorView).when(mHorizontalAlignmentView).getParent();
         assertTrue(mImpl.isWideWindow());
         mImpl.recalculateOmniboxAlignment();
         OmniboxAlignment alignment = mImpl.getCurrentAlignment();
@@ -482,7 +526,6 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
         Configuration newConfig = getConfiguration();
         newConfig.screenWidthDp = DeviceFormFactor.MINIMUM_TABLET_WIDTH_DP - 1;
         mImpl.onConfigurationChanged(newConfig);
-        doReturn(mAnchorView).when(mHorizontalAlignmentView).getParent();
         assertFalse(mImpl.isWideWindow());
         mImpl.recalculateOmniboxAlignment();
         OmniboxAlignment alignment = mImpl.getCurrentAlignment();
@@ -533,8 +576,7 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
     @DisableFeatures(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT)
     public void testRecalculateOmniboxAlignment_tablet_ltr() {
         int sideSpacing = mResourceProvider.getDropdownSideSpacing();
-        doReturn(mAnchorView).when(mHorizontalAlignmentView).getParent();
-        doReturn(60).when(mHorizontalAlignmentView).getTop();
+        setBounds(mHorizontalAlignmentView, ALIGNMENT_LEFT, 60, ALIGNMENT_WIDTH, ALIGNMENT_HEIGHT);
         mImpl.recalculateOmniboxAlignment();
         OmniboxAlignment alignment = mImpl.getCurrentAlignment();
         int expectedTop = ANCHOR_HEIGHT + ANCHOR_TOP - TABLET_OVERLAP;
@@ -556,7 +598,6 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
     @EnableFeatures(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT)
     public void testRecalculateOmniboxAlignment_tablet_fusebox() {
         mFuseboxStateSupplier.set(FuseboxState.EXPANDED);
-        doReturn(mAnchorView).when(mHorizontalAlignmentView).getParent();
         mImpl.recalculateOmniboxAlignment();
         OmniboxAlignment alignment = mImpl.getCurrentAlignment();
         int expectedTop = ALIGNMENT_HEIGHT + ANCHOR_TOP + ALIGNMENT_TOP;
@@ -594,10 +635,10 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
                         mFuseboxStateSupplier,
                         mFuseboxLayoutModeSupplier,
                         mTopInsetProvider,
+                        mEdgeToEdgeControllerSupplier,
                         () -> true);
 
-        doReturn(mAnchorView).when(mHorizontalAlignmentView).getParent();
-        doReturn(60).when(mHorizontalAlignmentView).getTop();
+        setBounds(mHorizontalAlignmentView, ALIGNMENT_LEFT, 60, ALIGNMENT_WIDTH, ALIGNMENT_HEIGHT);
         mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
 
         Configuration newConfig = getConfiguration();
@@ -624,9 +665,8 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
     @DisableFeatures(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT)
     public void testRecalculateOmniboxAlignment_tablet_rtl() {
         int sideSpacing = mResourceProvider.getDropdownSideSpacing();
-        doReturn(View.LAYOUT_DIRECTION_RTL).when(mAnchorView).getLayoutDirection();
-        doReturn(mAnchorView).when(mHorizontalAlignmentView).getParent();
-        doReturn(60).when(mHorizontalAlignmentView).getTop();
+        mAnchorView.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        setBounds(mHorizontalAlignmentView, ALIGNMENT_LEFT, 60, ALIGNMENT_WIDTH, ALIGNMENT_HEIGHT);
         mImpl.recalculateOmniboxAlignment();
         int expectedWidth = ALIGNMENT_WIDTH + 2 * sideSpacing;
         OmniboxAlignment alignment = mImpl.getCurrentAlignment();
@@ -648,8 +688,7 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
     @Config(qualifiers = "ldltr-sw600dp")
     @DisableFeatures(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT)
     public void testRecalculateOmniboxAlignment_tablet_mainSpaceAboveWindowBottom() {
-        doReturn(mAnchorView).when(mHorizontalAlignmentView).getParent();
-        doReturn(60).when(mHorizontalAlignmentView).getTop();
+        setBounds(mHorizontalAlignmentView, ALIGNMENT_LEFT, 60, ALIGNMENT_WIDTH, ALIGNMENT_HEIGHT);
         doReturn((int) (DeviceFormFactor.MINIMUM_TABLET_WIDTH_DP * DIP_SCALE))
                 .when(mDisplay)
                 .getDisplayHeight();
@@ -690,38 +729,78 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
     }
 
     @Test
-    public void testOnToEdgeChange() {
+    public void testOnTopInsetChanged() {
         // With controls at top, paddingTop should remain 0.
         mControlsPosition = ControlsPosition.TOP;
-        mImpl.onToEdgeChange(
-                /* systemTopInset= */ 100, /* consumeTopInset= */ true, LayoutType.BROWSING);
+        mImpl.onTopInsetChanged(/* topPadding= */ 100);
         assertEquals(0, mImpl.getCurrentAlignment().paddingTop);
 
-        // With controls at bottom and consumeTopInset=true, paddingTop should match systemTopInset.
+        // With controls at bottom, paddingTop should match topPadding.
         mControlsPosition = ControlsPosition.BOTTOM;
-        mImpl.onToEdgeChange(
+        mImpl.onTopInsetChanged(/* topPadding= */ 100);
+        assertEquals(100, mImpl.getCurrentAlignment().paddingTop);
+
+        // paddingTop should update when topPadding changes or resets to 0.
+        mImpl.onTopInsetChanged(/* topPadding= */ 50);
+        assertEquals(50, mImpl.getCurrentAlignment().paddingTop);
+
+        mImpl.onTopInsetChanged(/* topPadding= */ 0);
+        assertEquals(0, mImpl.getCurrentAlignment().paddingTop);
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    public void testTopInsetAdjustment_EdgeToEdgeRefactorDisabled() {
+        verify(mTopInsetProvider).addObserver(mTopInsetObserverCaptor.capture());
+        TopInsetProvider.Observer observer = mTopInsetObserverCaptor.getValue();
+
+        mControlsPosition = ControlsPosition.BOTTOM;
+        observer.onToEdgeChange(
                 /* systemTopInset= */ 100, /* consumeTopInset= */ true, LayoutType.BROWSING);
         assertEquals(100, mImpl.getCurrentAlignment().paddingTop);
 
         // With consumeTopInset=false, paddingTop should reset to 0.
-        mImpl.onToEdgeChange(
+        observer.onToEdgeChange(
                 /* systemTopInset= */ 100, /* consumeTopInset= */ false, LayoutType.BROWSING);
         assertEquals(0, mImpl.getCurrentAlignment().paddingTop);
+    }
 
-        // paddingTop should update from non-zero to zero when systemTopInset changes.
-        mImpl.onToEdgeChange(
-                /* systemTopInset= */ 50, /* consumeTopInset= */ true, LayoutType.BROWSING);
-        assertEquals(50, mImpl.getCurrentAlignment().paddingTop);
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R)
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    public void testTopInsetAdjustment_EdgeToEdgeRefactorEnabled() {
+        verify(mTopInsetProvider, never()).addObserver(any());
+        mEdgeToEdgeControllerSupplier.set(mEdgeToEdgeController);
+        verify(mEdgeToEdgeController).registerAdjuster(mPadAdjusterCaptor.capture());
+        EdgeToEdgePadAdjuster padAdjuster = mPadAdjusterCaptor.getValue();
 
-        mImpl.onToEdgeChange(
-                /* systemTopInset= */ 0, /* consumeTopInset= */ true, LayoutType.BROWSING);
+        // With controls at top, paddingTop should remain 0.
+        padAdjuster.overrideTopInset(/* inset= */ 100);
         assertEquals(0, mImpl.getCurrentAlignment().paddingTop);
+
+        // Switching controls to bottom applies the cached top inset; switching to top resets it.
+        mControlsPosition = ControlsPosition.BOTTOM;
+        mImpl.recalculateOmniboxAlignment();
+        assertEquals(100, mImpl.getCurrentAlignment().paddingTop);
+        mControlsPosition = ControlsPosition.TOP;
+        mImpl.recalculateOmniboxAlignment();
+        assertEquals(0, mImpl.getCurrentAlignment().paddingTop);
+
+        // Resetting top inset to 0 while at bottom resets paddingTop to 0.
+        mControlsPosition = ControlsPosition.BOTTOM;
+        mImpl.recalculateOmniboxAlignment();
+        padAdjuster.overrideTopInset(/* inset= */ 0);
+        assertEquals(0, mImpl.getCurrentAlignment().paddingTop);
+
+        mImpl.destroy();
+        verify(mEdgeToEdgeController).unregisterAdjuster(padAdjuster);
+        assertFalse(mEdgeToEdgeControllerSupplier.hasObservers());
     }
 
     @Test
     public void testRecalculateOmniboxAlignment_phone_popover() {
         mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
-        doReturn(10).when(mAnchorView).getLeft();
+        setBounds(mAnchorView, 10, ANCHOR_TOP, ANCHOR_WIDTH, ANCHOR_HEIGHT);
         mImpl.recalculateOmniboxAlignment();
         assertEquals(
                 new OmniboxAlignment(
@@ -735,7 +814,7 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
             testRecalculateOmniboxAlignment_narrowWindow_popover_fullWidthExpansionDisallowed() {
         mIsFullWidthExpansionAllowed = false;
         mFuseboxLayoutModeSupplier.set(FuseboxLayoutMode.SUGGESTIONS_POPOVER);
-        doReturn(10).when(mAnchorView).getLeft();
+        setBounds(mAnchorView, 10, ANCHOR_TOP, ANCHOR_WIDTH, ANCHOR_HEIGHT);
         Configuration newConfig = getConfiguration();
         newConfig.screenWidthDp = DeviceFormFactor.MINIMUM_TABLET_WIDTH_DP - 1;
         mImpl.onConfigurationChanged(newConfig);
@@ -749,6 +828,7 @@ public class OmniboxSuggestionsDropdownEmbedderImplUnitTest {
     }
 
     @Test
+    @DisableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
     public void testDestroy_removesTopInsetObserver() {
         mImpl.destroy();
         verify(mTopInsetProvider).removeObserver(any(TopInsetProvider.Observer.class));

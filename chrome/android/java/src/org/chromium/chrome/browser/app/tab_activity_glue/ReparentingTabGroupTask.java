@@ -107,7 +107,7 @@ public class ReparentingTabGroupTask {
      *     launching the new host activity. This intent's URI and action will be overridden. This
      *     may be null if no intent customization is needed.
      * @param finalizeCallback A callback that will be called after the tab group is attached to the
-     *     new host activity in {@link #attachAndFinishReparenting}.
+     *     new host activity in {@link ReparentingTask#finish}.
      */
     public void setupIntent(Intent intent, @Nullable Runnable finalizeCallback) {
         // 1. Create a new Intent if none is provided.
@@ -131,7 +131,13 @@ public class ReparentingTabGroupTask {
         mOriginalWindow = groupedTabs.get(0).getWindowAndroidChecked();
         for (Tab tab : groupedTabs) {
             AsyncTabParamsManagerSingleton.getInstance()
-                    .add(tab.getId(), new TabReparentingParams(tab, finalizeCallback));
+                    .add(
+                            tab.getId(),
+                            new TabReparentingParams(
+                                    tab,
+                                    /* sourceSelector= */ null,
+                                    /* shouldReload= */ false,
+                                    finalizeCallback));
             ReparentingTask.from(tab).detach();
         }
 

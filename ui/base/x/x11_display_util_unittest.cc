@@ -5,6 +5,8 @@
 #include "ui/base/x/x11_display_util.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/x/connection.h"
 
 namespace ui {
 
@@ -155,6 +157,76 @@ TEST(X11DisplayUtilTest, ConvertDisplayBoundsToDips) {
           {{0, 1000, 100, 100}, 2.0f, {25, 1000, 50, 50}},
       },
       0);
+}
+
+TEST(X11DisplayUtilTest, GetDisplayRefreshInterval) {
+  // A 60Hz primary display next to a 144Hz display, both scaled to check that
+  // pixel bounds are used.
+  std::vector<display::Display> displays;
+  displays.emplace_back(0, gfx::Rect(0, 0, 1920, 1080));
+  displays.emplace_back(1, gfx::Rect(1920, 0, 2560, 1440));
+  displays[0].set_display_frequency(60);
+  displays[1].set_display_frequency(144);
+  for (auto& display : displays) {
+    display.set_device_scale_factor(2);
+  }
+  ConvertDisplayBoundsToDips(&displays, 0);
+
+  const auto k60Hz = base::Seconds(1. / 60);
+  const auto k144Hz = base::Seconds(1. / 144);
+
+  // Unknown window bounds use the primary display.
+  EXPECT_EQ(GetDisplayRefreshInterval(displays, 0, std::nullopt), k60Hz);
+  EXPECT_EQ(GetDisplayRefreshInterval(displays, 1, std::nullopt), k144Hz);
+
+  // Windows entirely on one display.
+  EXPECT_EQ(
+      GetDisplayRefreshInterval(displays, 0, gfx::Rect(100, 100, 800, 600)),
+      k60Hz);
+  EXPECT_EQ(
+      GetDisplayRefreshInterval(displays, 0, gfx::Rect(2000, 100, 800, 600)),
+      k144Hz);
+  EXPECT_EQ(
+      GetDisplayRefreshInterval(displays, 1, gfx::Rect(100, 100, 800, 600)),
+      k60Hz);
+
+  // Windows spanning both displays use the one with the larger intersection.
+  EXPECT_EQ(
+      GetDisplayRefreshInterval(displays, 0, gfx::Rect(1800, 100, 800, 600)),
+      k144Hz);
+  EXPECT_EQ(
+      GetDisplayRefreshInterval(displays, 0, gfx::Rect(1400, 100, 800, 600)),
+      k60Hz);
+
+  // Windows outside every display use the primary display.
+  EXPECT_EQ(
+      GetDisplayRefreshInterval(displays, 1, gfx::Rect(0, 2000, 800, 600)),
+      k144Hz);
+
+  // Displays with an unknown refresh rate use 60Hz.
+  displays[1].set_display_frequency(0);
+  EXPECT_EQ(
+      GetDisplayRefreshInterval(displays, 0, gfx::Rect(2000, 100, 800, 600)),
+      k60Hz);
+}
+
+// GtkUi folds the font scale (Xft.dpi / 96) into the primary scale, so it can
+// legitimately be less than 1. The fallback must accept such scales like the
+// XRandR path does.
+TEST(X11DisplayUtilTest, GetFallbackDisplayListScaleBelowOne) {
+  constexpr float kScale = 0.921875f;
+  size_t primary_display_index = 1;
+  std::vector<display::Display> displays =
+      GetFallbackDisplayList(kScale, &primary_display_index);
+  ASSERT_EQ(displays.size(), 1u);
+  EXPECT_EQ(primary_display_index, 0u);
+
+  const auto& screen = x11::Connection::Get()->default_screen();
+  const gfx::Rect bounds_px(screen.width_in_pixels, screen.height_in_pixels);
+  EXPECT_EQ(displays[0].device_scale_factor(), kScale);
+  EXPECT_EQ(displays[0].GetSizeInPixel(), bounds_px.size());
+  EXPECT_EQ(displays[0].bounds(),
+            gfx::ScaleToEnclosingRect(bounds_px, 1.0f / kScale));
 }
 
 }  // namespace ui

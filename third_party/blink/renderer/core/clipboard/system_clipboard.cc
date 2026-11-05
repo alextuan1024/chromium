@@ -23,8 +23,8 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
+#include "third_party/blink/renderer/platform/web_test_support.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/ui_base_features.h"
@@ -431,6 +431,14 @@ void SystemClipboard::CommitWrite() {
   if (!clipboard_.is_bound())
     return;
   clipboard_->CommitWrite();
+  if (WebTestSupport::IsRunningWebTest()) {
+    // Flush the pipe so that subsequent clipboard reads in other frames (which
+    // use separate ClipboardHost pipes) observe the committed write and
+    // updated sequence number.
+    absl::uint128 ignored;
+    clipboard_->GetSequenceNumber(mojom::blink::ClipboardBuffer::kStandard,
+                                  &ignored);
+  }
 }
 
 void SystemClipboard::CopyToFindPboard(const String& text) {
@@ -531,13 +539,13 @@ SystemClipboard::Snapshot::~Snapshot() = default;
 
 bool SystemClipboard::Snapshot::HasPlainText(
     mojom::blink::ClipboardBuffer buffer) const {
-  return GetBufferData(buffer)->plain_text_.has_value();
+  return !GetBufferData(buffer)->plain_text_.IsNull();
 }
 
 const String& SystemClipboard::Snapshot::PlainText(
     mojom::blink::ClipboardBuffer buffer) const {
   DCHECK(HasPlainText(buffer));
-  return GetBufferData(buffer)->plain_text_.value();
+  return GetBufferData(buffer)->plain_text_;
 }
 
 void SystemClipboard::Snapshot::SetPlainText(
@@ -548,7 +556,7 @@ void SystemClipboard::Snapshot::SetPlainText(
 
 bool SystemClipboard::Snapshot::HasHtml(
     mojom::blink::ClipboardBuffer buffer) const {
-  return GetBufferData(buffer)->html_.has_value();
+  return !GetBufferData(buffer)->html_.IsNull();
 }
 
 const KURL& SystemClipboard::Snapshot::Url(
@@ -572,7 +580,7 @@ unsigned SystemClipboard::Snapshot::FragmentEnd(
 const String& SystemClipboard::Snapshot::Html(
     mojom::blink::ClipboardBuffer buffer) const {
   DCHECK(HasHtml(buffer));
-  return GetBufferData(buffer)->html_.value();
+  return GetBufferData(buffer)->html_;
 }
 
 void SystemClipboard::Snapshot::SetHtml(mojom::blink::ClipboardBuffer buffer,
@@ -589,13 +597,13 @@ void SystemClipboard::Snapshot::SetHtml(mojom::blink::ClipboardBuffer buffer,
 
 bool SystemClipboard::Snapshot::HasRtf(
     mojom::blink::ClipboardBuffer buffer) const {
-  return GetBufferData(buffer)->rtf_.has_value();
+  return !GetBufferData(buffer)->rtf_.IsNull();
 }
 
 const String& SystemClipboard::Snapshot::Rtf(
     mojom::blink::ClipboardBuffer buffer) const {
   DCHECK(HasRtf(buffer));
-  return GetBufferData(buffer)->rtf_.value();
+  return GetBufferData(buffer)->rtf_;
 }
 
 void SystemClipboard::Snapshot::SetRtf(mojom::blink::ClipboardBuffer buffer,

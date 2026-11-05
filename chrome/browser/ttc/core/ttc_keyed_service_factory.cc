@@ -4,11 +4,24 @@
 
 #include "chrome/browser/ttc/core/ttc_keyed_service_factory.h"
 
+#include "base/feature_list.h"
+#include "build/build_config.h"
+#include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
+#include "chrome/browser/page_content_annotations/page_content_extraction_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ttc/core/buildflags.h"
 #include "chrome/browser/ttc/core/features.h"
 #include "chrome/browser/ttc/core/ttc_keyed_service.h"
 #include "content/public/browser/browser_context.h"
+
+#if BUILDFLAG(ENABLE_TTC_DEBUG_TOOLS)
+#include "chrome/browser/ttc/debug/ttc_debug_tools_service_factory.h"
+#endif  // BUILDFLAG(ENABLE_TTC_DEBUG_TOOLS)
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/glic/public/glic_enabling.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace ttc {
 
@@ -31,6 +44,13 @@ TtcKeyedServiceFactory::TtcKeyedServiceFactory(
     : ProfileKeyedServiceFactory("TtcKeyedService",
                                  ProfileSelections::BuildForRegularProfile()) {
   DependsOn(OptimizationGuideKeyedServiceFactory::GetInstance());
+  DependsOn(actor::ActorKeyedServiceFactory::GetInstance());
+  DependsOn(page_content_annotations::PageContentExtractionServiceFactory::
+                GetInstance());
+#if BUILDFLAG(ENABLE_TTC_DEBUG_TOOLS)
+  // The debug tools must outlive this service, whose sessions report to them.
+  DependsOn(TtcDebugToolsServiceFactory::GetInstance());
+#endif  // BUILDFLAG(ENABLE_TTC_DEBUG_TOOLS)
 }
 
 TtcKeyedServiceFactory::~TtcKeyedServiceFactory() = default;
@@ -46,6 +66,22 @@ TtcKeyedServiceFactory::BuildServiceInstanceForBrowserContext(
     return nullptr;
   }
   Profile* profile = Profile::FromBrowserContext(context);
+#if BUILDFLAG(IS_CHROMEOS)
+  // TTC shares Glic's ChromeOS session and device eligibility.
+  if (!glic::GlicEnabling::IsChromeOSProfileEligible(profile) ||
+      !glic::GlicEnabling::IsSystemRequirementMet()) {
+    return nullptr;
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS)
+  // TTC's tool calls run in actor tasks, so TTC isn't supported without the
+  // actor service (e.g. if features::kGlicActor is disabled).
+  if (!actor::ActorKeyedServiceFactory::GetActorKeyedService(context)) {
+    return nullptr;
+  }
+  if (!page_content_annotations::PageContentExtractionServiceFactory::
+          GetForProfile(profile)) {
+    return nullptr;
+  }
   return std::make_unique<TtcKeyedService>(profile);
 }
 

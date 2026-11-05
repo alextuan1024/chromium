@@ -4,12 +4,21 @@
 
 #include "components/sync/nigori/pending_local_nigori_commit.h"
 
+#include <cstdint>
+#include <memory>
 #include <utility>
+#include <vector>
 
+#include "base/base64.h"
+#include "base/check.h"
+#include "base/check_op.h"
+#include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "components/sync/base/custom_passphrase_bootstrap_token.h"
+#include "components/sync/base/passphrase_enums.h"
+#include "components/sync/base/time.h"
 #include "components/sync/model/crypto/key_derivation_params.h"
 #include "components/sync/model/crypto/nigori.h"
 #include "components/sync/nigori/cross_user_sharing_public_key.h"
@@ -45,7 +54,7 @@ void InitNewOrFixCorruptedKeyPair(
   CrossUserSharingPublicPrivateKeyPair key_pair(
       cross_user_sharing_key_pair.GetRawPrivateKey());
   state.cryptographer->SetCrossUserSharingKeyPair(std::move(key_pair), version);
-  state.cryptographer->SelectDefaultCrossUserSharingKey(version);
+  state.cryptographer->SelectPrimaryCrossUserSharingKey(version);
 }
 
 class CustomPassphraseSetter : public PendingLocalNigoriCommit {
@@ -83,14 +92,8 @@ class CustomPassphraseSetter : public PendingLocalNigoriCommit {
         break;
     }
 
-    const std::string default_key_name =
-        state.cryptographer->EmplaceKey(passphrase_, key_derivation_params_);
-    if (default_key_name.empty()) {
-      DLOG(ERROR) << "Failed to set encryption passphrase";
-      return false;
-    }
-
-    state.cryptographer->SelectDefaultEncryptionKey(default_key_name);
+    state.cryptographer->RotatePrimaryKeyByDerivation(passphrase_,
+                                                      key_derivation_params_);
     state.pending_keystore_decryptor_token.reset();
     state.passphrase_type = NigoriSpecifics::CUSTOM_PASSPHRASE;
     state.custom_passphrase_key_derivation_params = key_derivation_params_;
@@ -112,7 +115,7 @@ class CustomPassphraseSetter : public PendingLocalNigoriCommit {
                                               /*encrypt_everything=*/true);
     CustomPassphraseBootstrapToken token =
         CustomPassphraseBootstrapToken::FromProto(
-            state.cryptographer->ExportDefaultKey());
+            state.cryptographer->ExportPrimaryKey());
     observer_list.NotifyPassphraseAccepted(token);
   }
 
@@ -121,6 +124,77 @@ class CustomPassphraseSetter : public PendingLocalNigoriCommit {
  private:
   const std::string passphrase_;
   const KeyDerivationParams key_derivation_params_;
+};
+
+class TrustedVaultPassphraseSetter : public PendingLocalNigoriCommit {
+ public:
+  TrustedVaultPassphraseSetter(const std::vector<uint8_t>& key,
+                               int version,
+                               base::OnceCallback<void(bool)> done_cb)
+      : key_(key), version_(version), done_cb_(std::move(done_cb)) {
+    CHECK(!key_.empty());
+    CHECK_GE(version_, 0);
+    CHECK(done_cb_);
+  }
+
+  TrustedVaultPassphraseSetter(const TrustedVaultPassphraseSetter&) = delete;
+  TrustedVaultPassphraseSetter& operator=(const TrustedVaultPassphraseSetter&) =
+      delete;
+
+  ~TrustedVaultPassphraseSetter() override = default;
+
+  bool TryApply(NigoriState& state) const override {
+    if (state.pending_keys.has_value()) {
+      return false;
+    }
+
+    switch (state.passphrase_type) {
+      case NigoriSpecifics::UNKNOWN:
+      case NigoriSpecifics::IMPLICIT_PASSPHRASE:
+      case NigoriSpecifics::CUSTOM_PASSPHRASE:
+      case NigoriSpecifics::FROZEN_IMPLICIT_PASSPHRASE:
+      case NigoriSpecifics::TRUSTED_VAULT_PASSPHRASE:
+        return false;
+      case NigoriSpecifics::KEYSTORE_PASSPHRASE:
+        break;
+    }
+
+    state.cryptographer->RotatePrimaryKeyByDerivation(
+        base::Base64Encode(key_), KeyDerivationParams::CreateForPbkdf2());
+    state.pending_keystore_decryptor_token.reset();
+    state.passphrase_type = NigoriSpecifics::TRUSTED_VAULT_PASSPHRASE;
+    state.custom_passphrase_time = base::Time();
+
+    state.trusted_vault_debug_info.set_migration_time(
+        TimeToProtoTime(creation_time_));
+    state.trusted_vault_debug_info.set_key_version(version_);
+
+    return true;
+  }
+
+  void OnSuccess(const NigoriState& state,
+                 SyncEncryptionHandlerObserverList& observer_list) override {
+    CHECK(!state.pending_keys.has_value());
+
+    observer_list.NotifyPassphraseTypeChanged(
+        PassphraseType::kTrustedVaultPassphrase,
+        /*passphrase_time=*/base::Time());
+    observer_list.NotifyCryptographerStateChanged(state.cryptographer.get(),
+                                                  /*has_pending_keys=*/false);
+    CHECK(done_cb_);
+    std::move(done_cb_).Run(true);
+  }
+
+  void OnFailure(SyncEncryptionHandlerObserverList& observer_list) override {
+    CHECK(done_cb_);
+    std::move(done_cb_).Run(false);
+  }
+
+ private:
+  const std::vector<uint8_t> key_;
+  const int version_;
+  base::OnceCallback<void(bool)> done_cb_;
+  const base::Time creation_time_ = base::Time::Now();
 };
 
 class KeystoreInitializer : public PendingLocalNigoriCommit {
@@ -141,12 +215,10 @@ class KeystoreInitializer : public PendingLocalNigoriCommit {
       return false;
     }
 
-    std::unique_ptr<CryptographerImpl> cryptographer =
-        state.keystore_keys_cryptographer->ToCryptographerImpl();
-    DCHECK(!cryptographer->GetDefaultEncryptionKeyName().empty());
-    state.cryptographer->EmplaceAllNigoriKeysFrom(*cryptographer);
-    state.cryptographer->SelectDefaultEncryptionKey(
-        cryptographer->GetDefaultEncryptionKeyName());
+    CHECK(state.cryptographer->TryFollowRemoteKeyRotation(
+        state.keystore_keys_cryptographer->GetKeystoreKeybag(),
+        state.keystore_keys_cryptographer->GetLastKeystoreKeyName(),
+        /*enforce_key_continuity=*/false));
     state.passphrase_type = NigoriSpecifics::KEYSTORE_PASSPHRASE;
     state.keystore_migration_time = base::Time::Now();
 
@@ -173,7 +245,6 @@ class KeystoreInitializer : public PendingLocalNigoriCommit {
   std::optional<CrossUserSharingPublicPrivateKeyPair>
       cross_user_sharing_public_private_key_pair_;
 };
-
 
 class CrossUserSharingPublicPrivateKeyInitializer
     : public PendingLocalNigoriCommit {
@@ -212,6 +283,65 @@ class CrossUserSharingPublicPrivateKeyInitializer
       cross_user_sharing_public_private_key_pair_;
 };
 
+class ImplicitPassphraseMigrator : public PendingLocalNigoriCommit {
+ public:
+  ImplicitPassphraseMigrator() = default;
+
+  ImplicitPassphraseMigrator(const ImplicitPassphraseMigrator&) = delete;
+  ImplicitPassphraseMigrator& operator=(const ImplicitPassphraseMigrator&) =
+      delete;
+
+  ~ImplicitPassphraseMigrator() override = default;
+
+  bool TryApply(NigoriState& state) const override {
+    if (!state.NeedsImplicitPassphraseMigration()) {
+      return false;
+    }
+
+    if (state.encrypt_everything) {
+      state.passphrase_type = NigoriSpecifics::CUSTOM_PASSPHRASE;
+      state.custom_passphrase_key_derivation_params =
+          KeyDerivationParams::CreateForPbkdf2();
+      // Leave `custom_passphrase_time` unset rather than `base::Time::Now()`
+      // because this is an automatic migration and the timestamp is surfaced in
+      // UI as when the user set their passphrase.
+      state.custom_passphrase_time = base::Time();
+      state.keystore_migration_time = base::Time();
+    } else {
+      CHECK(!state.keystore_keys_cryptographer->IsEmpty());
+      CHECK(state.cryptographer->TryFollowRemoteKeyRotation(
+          state.keystore_keys_cryptographer->GetKeystoreKeybag(),
+          state.keystore_keys_cryptographer->GetLastKeystoreKeyName(),
+          /*enforce_key_continuity=*/false));
+      state.passphrase_type = NigoriSpecifics::KEYSTORE_PASSPHRASE;
+      state.keystore_migration_time = base::Time::Now();
+      state.custom_passphrase_time = base::Time();
+    }
+
+    return true;
+  }
+
+  void OnSuccess(const NigoriState& state,
+                 SyncEncryptionHandlerObserverList& observer_list) override {
+    DCHECK(!state.pending_keys.has_value());
+
+    if (state.passphrase_type == NigoriSpecifics::CUSTOM_PASSPHRASE) {
+      observer_list.NotifyPassphraseTypeChanged(
+          PassphraseType::kCustomPassphrase, state.custom_passphrase_time);
+    } else {
+      DCHECK_EQ(state.passphrase_type, NigoriSpecifics::KEYSTORE_PASSPHRASE);
+      // Note: `passphrase_time` isn't populated for keystore passphrase.
+      observer_list.NotifyPassphraseTypeChanged(
+          PassphraseType::kKeystorePassphrase,
+          /*passphrase_time=*/base::Time());
+    }
+    observer_list.NotifyCryptographerStateChanged(state.cryptographer.get(),
+                                                  /*has_pending_keys=*/false);
+  }
+
+  void OnFailure(SyncEncryptionHandlerObserverList& observer_list) override {}
+};
+
 }  // namespace
 
 // static
@@ -223,15 +353,30 @@ PendingLocalNigoriCommit::ForSetCustomPassphrase(
 
 // static
 std::unique_ptr<PendingLocalNigoriCommit>
+PendingLocalNigoriCommit::ForSetTrustedVaultPassphrase(
+    const std::vector<uint8_t>& key,
+    int version,
+    base::OnceCallback<void(bool)> done_cb) {
+  return std::make_unique<TrustedVaultPassphraseSetter>(key, version,
+                                                        std::move(done_cb));
+}
+
+// static
+std::unique_ptr<PendingLocalNigoriCommit>
 PendingLocalNigoriCommit::ForKeystoreInitialization() {
   return std::make_unique<KeystoreInitializer>();
 }
-
 
 // static
 std::unique_ptr<PendingLocalNigoriCommit>
 PendingLocalNigoriCommit::ForCrossUserSharingPublicPrivateKeyInitializer() {
   return std::make_unique<CrossUserSharingPublicPrivateKeyInitializer>();
+}
+
+// static
+std::unique_ptr<PendingLocalNigoriCommit>
+PendingLocalNigoriCommit::ForImplicitPassphraseMigration() {
+  return std::make_unique<ImplicitPassphraseMigrator>();
 }
 
 }  // namespace syncer

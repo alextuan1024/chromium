@@ -30,7 +30,6 @@ class MockAutofillManager : public AutofillManager {
   ~MockAutofillManager() override;
 
   MOCK_METHOD(bool, ShouldClearPreviewedForm, (), (override));
-  MOCK_METHOD(void, ReparseKnownForms, (), (override));
   MOCK_METHOD(void, OnFocusOnNonFormFieldImpl, (), (override));
   MOCK_METHOD(void, OnDidAutofillFormImpl, (const FormData& form), (override));
   MOCK_METHOD(void,
@@ -108,10 +107,6 @@ class MockAutofillManager : public AutofillManager {
   MOCK_METHOD(void, OnBeforeProcessParsedForms, (), (override));
   MOCK_METHOD(void, OnFormProcessed, (const FormStructure& form), (override));
   MOCK_METHOD(void,
-              ReportAutofillWebOTPMetrics,
-              (bool used_web_otp),
-              (override));
-  MOCK_METHOD(void,
               FillOrPreviewField,
               (mojom::ActionPersistence action_persistence,
                mojom::FieldActionType action_type,
@@ -128,7 +123,7 @@ class MockAutofillManager : public AutofillManager {
   MOCK_METHOD(const CreditCardAccessManager*,
               GetCreditCardAccessManager,
               (),
-              (const override));
+              (const, override));
 
   base::WeakPtr<AutofillManager> GetWeakPtr() override;
 

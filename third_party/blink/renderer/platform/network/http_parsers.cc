@@ -43,6 +43,7 @@
 #include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_view_util.h"
 #include "net/http/http_content_disposition.h"
 #include "net/http/http_no_vary_search_data.h"
@@ -241,10 +242,10 @@ blink::ContentSecurityPolicyPtr ConvertToBlink(
   return blink::ContentSecurityPolicy::New(
       ConvertToBlink(in->self_origin), ConvertToBlink(in->raw_directives),
       ConvertToBlink(in->directives), in->upgrade_insecure_requests,
-      in->treat_as_public_address, in->block_all_mixed_content, in->sandbox,
-      ConvertToBlink(in->header), in->use_reporting_api,
-      ConvertToBlink(in->report_endpoints), in->require_trusted_types_for,
-      ConvertToBlink(in->trusted_types), ConvertToBlink(in->parsing_errors));
+      in->block_all_mixed_content, in->sandbox, ConvertToBlink(in->header),
+      in->use_reporting_api, ConvertToBlink(in->report_endpoints),
+      in->require_trusted_types_for, ConvertToBlink(in->trusted_types),
+      ConvertToBlink(in->parsing_errors));
 }
 
 blink::OriginOrWildcardHeaderValuePtr ConvertToBlink(
@@ -416,12 +417,6 @@ blink::ParsedHeadersPtr ConvertToBlink(const ParsedHeadersPtr& in) {
       in->cookie_indices.has_value()
           ? std::make_optional(ConvertToBlink(in->cookie_indices.value()))
           : std::nullopt,
-      in->avail_language.has_value()
-          ? std::make_optional(ConvertToBlink(in->avail_language.value()))
-          : std::nullopt,
-      in->content_language.has_value()
-          ? std::make_optional(ConvertToBlink(in->content_language.value()))
-          : std::nullopt,
       ConvertToBlink(in->no_vary_search_with_parse_error),
       in->allow_cross_origin_event_reporting,
       /*declarative_performance_observer_policy=*/nullptr,
@@ -442,12 +437,11 @@ const Vector<AtomicString>& ReplaceHeaders() {
   // The list of response headers that we do not copy from the original
   // response when generating a ResourceResponse for a MIME payload.
   // Note: this is called only on the main thread.
-  DEFINE_STATIC_LOCAL(
-      Vector<AtomicString>, headers,
-      ({http_names::kLowerContentType, http_names::kLowerContentLength,
-        http_names::kLowerContentDisposition, http_names::kLowerContentRange,
-        http_names::kLowerRange, http_names::kLowerSetCookie}));
-  return headers;
+  static base::NoDestructor<Vector<AtomicString>> headers(
+      {http_names::kLowerContentType, http_names::kLowerContentLength,
+       http_names::kLowerContentDisposition, http_names::kLowerContentRange,
+       http_names::kLowerRange, http_names::kLowerSetCookie});
+  return *headers;
 }
 
 bool IsWhitespace(UChar chr) {
@@ -1043,14 +1037,14 @@ bool ParseMultipartFormHeadersFromBody(base::span<const uint8_t> bytes,
 }
 
 std::unique_ptr<ServerTimingHeaderVector> ParseServerTimingHeader(
-    const String& headerValue) {
+    const String& header_value) {
   std::unique_ptr<ServerTimingHeaderVector> headers =
       std::make_unique<ServerTimingHeaderVector>();
 
-  if (!headerValue.IsNull()) {
-    DCHECK(headerValue.Is8Bit());
+  if (!header_value.IsNull()) {
+    DCHECK(header_value.Is8Bit());
 
-    HeaderFieldTokenizer tokenizer(headerValue);
+    HeaderFieldTokenizer tokenizer(header_value);
     while (!tokenizer.IsConsumed()) {
       StringView name;
       if (!tokenizer.ConsumeToken(ParsedContentType::Mode::kNormal, name)) {

@@ -24,8 +24,8 @@
 #include "base/thread_annotations.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h"
 #include "chrome/browser/net/net_error_diagnostics_dialog.h"
@@ -82,7 +82,11 @@
 #include "net/test/url_request/url_request_mock_http_job.h"
 #include "services/network/public/cpp/features.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/test/base/scoped_channel_override.h"
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_features.h"
@@ -231,9 +235,10 @@ class ErrorPageTest : public InProcessBrowserTest {
     content::TestNavigationObserver test_navigation_observer(
         browser()->tab_strip_model()->GetActiveWebContents(), 1);
     if (direction == HISTORY_NAVIGATE_BACK) {
-      chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+      chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     } else if (direction == HISTORY_NAVIGATE_FORWARD) {
-      chrome::GoForward(browser(), WindowOpenDisposition::CURRENT_TAB);
+      chrome::GoForward(browser(),
+                        ui::mojom::WindowOpenDisposition::kCurrentTab);
     } else {
       FAIL();
     }
@@ -527,8 +532,6 @@ IN_PROC_BROWSER_TEST_F(DNSErrorPageTest, DNSError_GoBack2Forward2) {
 IN_PROC_BROWSER_TEST_F(DNSErrorPageTest, DNSError_DoReload) {
   // The first navigation should fail, and the second one should be the error
   // page.
-  std::string url =
-      embedded_test_server()->GetURL("mock.http", "/title2.html").spec();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetDnsErrorURL()));
   ExpectDisplayingErrorPage(browser(), net::ERR_NAME_NOT_RESOLVED);
 
@@ -565,8 +568,6 @@ IN_PROC_BROWSER_TEST_F(DNSErrorPageTest, DNSError_DoReload) {
 // traces indicate this may actually happen.  This test may hang on regression.
 IN_PROC_BROWSER_TEST_F(DNSErrorPageTest,
                        DNSError_DoReloadAfterSameDocumentNavigation) {
-  std::string url =
-      embedded_test_server()->GetURL("mock.http", "/title2.html").spec();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetDnsErrorURL()));
   ExpectDisplayingErrorPage(browser(), net::ERR_NAME_NOT_RESOLVED);
 
@@ -786,6 +787,12 @@ class DNSErrorPageIsolatedModeTest : public DNSErrorPageTest {
         enterprise_isolated_mode::switches::
             kForceEnterpriseIsolatedModeReplacesIncognito);
   }
+
+ private:
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  chrome::ScopedChannelOverride channel_override_{
+      chrome::ScopedChannelOverride::Channel::kDev};
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
 };
 
 // Test error page in Enterprise Isolated Mode. This should behave like
@@ -1104,13 +1111,7 @@ class ErrorPageForIDNTest : public InProcessBrowserTest {
   static constexpr char kHostnameJsUtf8[] =
       "\xD0\xBF\xD1\x80\xD0\xB5\xD0\xB7\xD0\xB8\xD0\xB4\xD0\xB5\xD0\xBD\xD1\x82"
       "\x2E\xD1\x80\xD1\x84";
-  ErrorPageForIDNTest() {
-    // TODO(crbug.com/334954143) This test clears the AcceptLanguage Prefs which
-    // causes Accept-Language to not work correctly. Fix the tests when turning
-    // on the reduce accept-language feature.
-    scoped_feature_list_.InitWithFeatures(
-        {}, {network::features::kReduceAcceptLanguage});
-  }
+  ErrorPageForIDNTest() = default;
 
   // InProcessBrowserTest:
   void SetUpOnMainThread() override {
@@ -1118,9 +1119,6 @@ class ErrorPageForIDNTest : public InProcessBrowserTest {
     browser()->GetProfile()->GetPrefs()->SetString(
         language::prefs::kAcceptLanguages, std::string());
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Make sure error page shows correct unicode for IDN.

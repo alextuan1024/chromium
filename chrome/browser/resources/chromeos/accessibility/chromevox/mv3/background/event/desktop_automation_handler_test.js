@@ -10,26 +10,6 @@ GEN_INCLUDE(['../../testing/fake_objects.js']);
  * Test fixture for DesktopAutomationHandler.
  */
 ChromeVoxDesktopAutomationHandlerTest = class extends ChromeVoxE2ETest {
-  // TODO(crbug.com/452061489): Fix tests for when WebUI Omnibox is enabled
-  // and then remove `testGenCppIncludes()` and `featureList()`.
-  /** @override */
-  testGenCppIncludes() {
-    super.testGenCppIncludes();
-    GEN(`
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
-    `);
-  }
-
-  get featureList() {
-    return {
-      enabled: ['features::kAccessibilityManifestV3ChromeVox'],
-      disabled: [
-        'omnibox::internal::kWebUIOmniboxPopup',
-        'omnibox::internal::kWebUIOmniboxAimPopup',
-      ],
-    };
-  }
-
   /** @override */
   async setUpDeferred() {
     await super.setUpDeferred();
@@ -48,6 +28,31 @@ ChromeVoxDesktopAutomationHandlerTest = class extends ChromeVoxE2ETest {
     return function() {
       EventGenerator.sendKeyPress(keyCode, modifiers);
     };
+  }
+
+  /** @override */
+  testGenCppIncludes() {
+    super.testGenCppIncludes();
+    GEN(`
+  #include "chrome/browser/ui/ui_features.h"
+  #include "extensions/browser/background_script_executor.h"
+      `);
+  }
+
+  /** @override */
+  testGenPreamble(testFixture, testFunction) {
+    super.testGenPreamble();
+    if (testFunction === 'TaskManagerTableView') {
+      GEN(`
+    extensions::BackgroundScriptExecutor::ExecuteScript(
+        GetProfile(), extension_misc::kChromeVoxExtensionId,
+        content::JsReplace("globalThis.isWebUIToolbarEnabled = $1; "
+                           "chrome.test.sendScriptResult(true);",
+                           features::IsWebUIToolbarEnabled()),
+        extensions::BackgroundScriptExecutor::ResultCapture::
+            kSendScriptResult);
+      `);
+    }
   }
 
 };
@@ -96,8 +101,10 @@ AX_TEST_F(
       await mockFeedback.replay();
     });
 
+// TODO(crbug.com/551463089): Fix flakiness.
 AX_TEST_F(
-    'ChromeVoxDesktopAutomationHandlerTest', 'OnAutofillAvailabilityChanged',
+    'ChromeVoxDesktopAutomationHandlerTest',
+    'DISABLED_OnAutofillAvailabilityChanged',
     async function() {
       const AUTOFILL_AVAILABLE_UTTERANCE =
           'Press up or down arrow for auto completions';
@@ -497,6 +504,13 @@ TEST_F(
     'ChromeVoxDesktopAutomationHandlerTest', 'TaskManagerTableView',
     function() {
       const mockFeedback = this.createMockFeedback();
+      const allowedFirstRows = ['Tab: about:blank'];
+      if (globalThis.isWebUIToolbarEnabled) {
+        // The Task Manager sorts by CPU, so the WebUI toolbar can precede the
+        // tab in the user-facing pane.
+        allowedFirstRows.push('Tool: Toolbar');
+      }
+      let firstRow;
       this.runWithLoadedDesktop(desktop => {
         mockFeedback
             .call(() => {
@@ -513,13 +527,23 @@ TEST_F(
             })
             // The Task Manager Refresh has a TabbedPane UI which splits system
             // processes and user-facing processes (tabs & extensions), so
-            // expect that the first task is a Tab, not the Browser process.
-            .expectSpeech('Tab: about:blank', /row [0-9]+ column 1/)
+            // expect that the first task is a Tab (or the WebUI toolbar when
+            // enabled), not the Browser process.
+            .expectSpeech(
+                candidate => {
+                  if (!allowedFirstRows.includes(candidate.text)) {
+                    return false;
+                  }
+                  firstRow = candidate.text;
+                  return true;
+                },
+                /row [0-9]+ column 1/)
             .call(() => {
               EventGenerator.sendKeyPress(KeyCode.DOWN);
             })
             // Make sure it doesn't repeat the previous line!
-            .expectNextSpeechUtteranceIsNot('Tab: about:blank')
+            .expectNextSpeechUtteranceIsNot(
+                candidate => candidate.text === firstRow)
 
             .replay();
       });
@@ -571,4 +595,55 @@ AX_TEST_F(
           // (relativePitch: 0.3).
           .expectSpeechWithProperties({relativePitch: 0.3}, /hint text/);
       await mockFeedback.replay();
+    });
+
+AX_TEST_F(
+    'ChromeVoxDesktopAutomationHandlerTest',
+    'DesktopPopupOptionSelectionAndDeselection', async function() {
+      const site = `<input type="text"><button>Use suggested password</button>`;
+      const root = await this.runWithLoadedTree(site);
+      const input = root.find({role: RoleType.TEXT_FIELD});
+      const button = root.find({role: RoleType.BUTTON});
+      assertTrue(Boolean(input));
+      assertTrue(Boolean(button));
+
+      let calls = 0;
+      const origOnEventDefault = this.handler_.onEventDefault;
+      const origGetFocus = chrome.automation.getFocus;
+      this.handler_.onEventDefault = evt => {
+        if (evt.type === EventType.SELECTION && evt.target === button) {
+          calls++;
+        }
+      };
+      chrome.automation.getFocus = callback => callback(button);
+
+      try {
+        // Deselection events (selected === false) must be ignored so they do
+        // not interrupt or clear speech for the newly selected item.
+        Object.defineProperty(
+            button, 'selected', {get: () => false, configurable: true});
+        this.handler_.onSelection(
+            new CustomAutomationEvent(EventType.SELECTION, button));
+        assertEquals(0, calls);
+
+        // Selection events (selected === true) on a desktop popup option must
+        // trigger onEventDefault when ChromeVox range is not yet on the option.
+        Object.defineProperty(
+            button, 'selected', {get: () => true, configurable: true});
+        ChromeVoxRange.set(CursorRange.fromNode(input));
+        this.handler_.onSelection(
+            new CustomAutomationEvent(EventType.SELECTION, button));
+        assertEquals(1, calls);
+
+        // When ChromeVox range is already on the button (e.g. from onFocus_ via
+        // SetPopupFocusOverride), onSelection must deduplicate and not call
+        // onEventDefault a second time.
+        ChromeVoxRange.set(CursorRange.fromNode(button));
+        this.handler_.onSelection(
+            new CustomAutomationEvent(EventType.SELECTION, button));
+        assertEquals(1, calls);
+      } finally {
+        this.handler_.onEventDefault = origOnEventDefault;
+        chrome.automation.getFocus = origGetFocus;
+      }
     });

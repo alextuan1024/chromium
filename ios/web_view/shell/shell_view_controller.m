@@ -66,14 +66,22 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
 @property(nonatomic, strong)
     NSMutableDictionary<CWVLeakCheckCredential*, NSMutableArray<CWVPassword*>*>*
         pendingLeakChecks;
+// Whether -[CWVWebView prewarm] was called on `webView`.
+@property(nonatomic, assign) BOOL webViewPrewarmed;
+// Time at which the last load from the address field was requested.
+@property(nonatomic, assign) NSTimeInterval loadRequestTime;
 
 - (void)back;
 - (void)forward;
 - (void)reloadOrStop;
 // Disconnects and release the |webView|.
 - (void)removeWebView;
+// Sets or resets obscured content insets for testing on iOS 26+.
+- (void)setObscuredContentInsets:(BOOL)enabled;
 // Resets translate settings back to default.
 - (void)resetTranslateSettings;
+// Calls -prewarm on `webView`.
+- (void)prewarmWebView;
 @end
 
 @implementation ShellViewController
@@ -244,6 +252,12 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
       }
              forCommand:@"messageHandlerCommand"];
   self.webView = [self createWebViewWithConfiguration:configuration];
+}
+
+- (void)prewarmWebView {
+  [_webView prewarm];
+  self.webViewPrewarmed = YES;
+  NSLog(@"ShellPrewarm prewarmed web view");
 }
 
 - (void)applicationFinishedRestoringState {
@@ -749,6 +763,45 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
                                   createWebViewWithConfiguration:configuration];
                             }]];
 
+  // Recreates the web view and calls -prewarm on it, so that the next URL
+  // loaded from the address field is its first back/forward item.
+  [alertController
+      addAction:[UIAlertAction
+                    actionWithTitle:@"Recreate and prewarm web view"
+                              style:UIAlertActionStyleDefault
+                            handler:^(UIAlertAction* action) {
+                              CWVWebViewConfiguration* configuration =
+                                  weakSelf.webView.configuration;
+                              [weakSelf removeWebView];
+                              weakSelf.field.text = @"";
+                              weakSelf.webView = [weakSelf
+                                  createWebViewWithConfiguration:configuration];
+                              [weakSelf prewarmWebView];
+                            }]];
+
+  // Recreates the web view and loads about:blank in it, the way an embedder
+  // without -prewarm keeps a web view ready. Unlike the prewarm item above, the
+  // next URL loaded from the address field becomes the second back/forward
+  // item, after about:blank.
+  [alertController
+      addAction:[UIAlertAction
+                    actionWithTitle:@"Recreate and load about:blank"
+                              style:UIAlertActionStyleDefault
+                            handler:^(UIAlertAction* action) {
+                              CWVWebViewConfiguration* configuration =
+                                  weakSelf.webView.configuration;
+                              [weakSelf removeWebView];
+                              weakSelf.field.text = @"";
+                              weakSelf.webView = [weakSelf
+                                  createWebViewWithConfiguration:configuration];
+                              [weakSelf.webView
+                                  loadRequest:[NSURLRequest
+                                                  requestWithURL:
+                                                      [NSURL
+                                                          URLWithString:
+                                                              @"about:blank"]]];
+                            }]];
+
   // Developers can choose to use system or Chrome context menu in the shell
   // app. This will also recreate the web view.
   BOOL chromeContextMenuEnabled = CWVWebView.chromeContextMenuEnabled;
@@ -836,6 +889,21 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
                                          }]];
   }
 
+  if (@available(iOS 26.0, *)) {
+    BOOL zeroInsets = UIEdgeInsetsEqualToEdgeInsets(
+        self.webView.obscuredContentInsets, UIEdgeInsetsZero);
+    NSString* title = zeroInsets
+                          ? @"Simulate Obscured Header/Footer (Set Insets)"
+                          : @"Reset Obscured Insets (UIEdgeInsetsZero)";
+    [alertController
+        addAction:[UIAlertAction
+                      actionWithTitle:title
+                                style:UIAlertActionStyleDefault
+                              handler:^(UIAlertAction* action) {
+                                [weakSelf setObscuredContentInsets:zeroInsets];
+                              }]];
+  }
+
   [self presentViewController:alertController animated:YES completion:nil];
 }
 
@@ -858,6 +926,19 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
                                          style:UIAlertActionStyleCancel
                                        handler:nil]];
   [self presentViewController:alertController animated:YES completion:nil];
+}
+
+- (void)setObscuredContentInsets:(BOOL)enabled {
+  if (@available(iOS 26.0, *)) {
+    if (enabled) {
+      UIEdgeInsets sampleInsets = UIEdgeInsetsMake(80, 0, 80, 0);
+      self.webView.obscuredContentInsets = sampleInsets;
+      NSLog(@"Toggled obscuredContentInsets ON");
+    } else {
+      self.webView.obscuredContentInsets = UIEdgeInsetsZero;
+      NSLog(@"Toggled obscuredContentInsets OFF");
+    }
+  }
 }
 
 - (void)checkLeakedPasswords {
@@ -1153,6 +1234,7 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
   [_webView removeObserver:self forKeyPath:@"loading"];
 
   _webView = nil;
+  self.webViewPrewarmed = NO;
 }
 
 - (void)dealloc {
@@ -1175,6 +1257,7 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
     URL = [NSURL URLWithString:enteredText];
   }
   NSURLRequest* request = [NSURLRequest requestWithURL:URL];
+  self.loadRequestTime = NSProcessInfo.processInfo.systemUptime;
   [_webView loadRequest:request];
   [field resignFirstResponder];
   [self updateToolbar];
@@ -1471,11 +1554,33 @@ NSString* const kWebViewShellJavaScriptDialogTextFieldAccessibilityIdentifier =
 
 - (void)webViewDidCommitNavigation:(CWVWebView*)webView {
   NSLog(@"%@", NSStringFromSelector(_cmd));
+  if (self.loadRequestTime) {
+    NSLog(
+        @"ShellPrewarm prewarmed=%d commit_ms=%.0f", self.webViewPrewarmed,
+        (NSProcessInfo.processInfo.systemUptime - self.loadRequestTime) * 1000);
+  }
   [self updateToolbar];
 }
 
 - (void)webViewDidFinishNavigation:(CWVWebView*)webView {
   NSLog(@"%@", NSStringFromSelector(_cmd));
+  if (self.loadRequestTime) {
+    NSTimeInterval elapsed =
+        NSProcessInfo.processInfo.systemUptime - self.loadRequestTime;
+    self.loadRequestTime = 0;
+    CWVBackForwardList* list = webView.backForwardList;
+    BOOL prewarmed = self.webViewPrewarmed;
+    BOOL canGoBack = webView.canGoBack;
+    NSUInteger backCount = list.backList.count;
+    NSUInteger forwardCount = list.forwardList.count;
+    [webView evaluateJavaScript:@"history.length"
+              completionHandler:^(id result, NSError* error) {
+                NSLog(@"ShellPrewarm prewarmed=%d finish_ms=%.0f back=%lu "
+                      @"forward=%lu canGoBack=%d history.length=%@",
+                      prewarmed, elapsed * 1000, (unsigned long)backCount,
+                      (unsigned long)forwardCount, canGoBack, result);
+              }];
+  }
   // TODO(crbug.com/41294395): Add some visual indication that the page load has
   // finished.
   [self updateToolbar];

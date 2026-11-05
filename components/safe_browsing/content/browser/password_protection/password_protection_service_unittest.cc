@@ -22,6 +22,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/null_task_runner.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
@@ -30,7 +31,7 @@
 #include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_reuse_detector.h"
-#include "components/safe_browsing/content/browser/client_side_detection_feature_cache.h"
+#include "components/safe_browsing/content/browser/client_side_detection/client_side_detection_feature_cache.h"
 #include "components/safe_browsing/content/browser/password_protection/mock_password_protection_service.h"
 #include "components/safe_browsing/content/browser/password_protection/password_protection_commit_deferring_condition.h"
 #include "components/safe_browsing/content/browser/password_protection/password_protection_request_content.h"
@@ -208,14 +209,6 @@ class TestPasswordProtectionService : public MockPasswordProtectionService {
       PasswordProtectionRequest* request,
       RequestOutcome outcome,
       std::unique_ptr<LoginReputationClientResponse> response) override {
-    if (request->HasOtpPhishingVerdictCallback()) {
-      bool is_phishing =
-          response && (response->verdict_type() ==
-                           LoginReputationClientResponse::PHISHING ||
-                       response->verdict_type() ==
-                           LoginReputationClientResponse::LOW_REPUTATION);
-      request->TakeOtpPhishingVerdictCallback().Run(is_phishing);
-    }
     latest_request_ = request;
     latest_response_ = std::move(response);
     run_loop_.Quit();
@@ -459,6 +452,11 @@ TEST_F(PasswordProtectionServiceTest, NoSendPingPrivateIpHostname) {
 
 TEST_F(PasswordProtectionServiceTest,
        MaybeStartPasswordFieldOnFocusRequest_TriggersCSD) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      kProactivePasswordProtection,
+      {{kCsdProactivePasswordProtectionSampleRate.name, "1.0"}});
+
   GURL main_frame_url(kTargetUrl);
   GURL password_form_action(kFormActionUrl);
   GURL password_form_frame_url(kPasswordFrameUrl);
@@ -486,6 +484,85 @@ TEST_F(PasswordProtectionServiceTest,
   password_protection_service_->MaybeStartPasswordFieldOnFocusRequest(
       web_contents_.get(), main_frame_url, password_form_action,
       password_form_frame_url);
+
+  EXPECT_EQ(0u, password_protection_service_->GetPendingRequestsCount());
+}
+
+TEST_F(PasswordProtectionServiceTest,
+       MaybeStartPasswordFieldOnFocusRequest_SampleRate) {
+  GURL main_frame_url(kTargetUrl);
+  GURL password_form_action(kFormActionUrl);
+  GURL password_form_frame_url(kPasswordFrameUrl);
+
+  {
+    // Sample rate 100%: should trigger CSD and not send a PhishGuard ping.
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        kProactivePasswordProtection,
+        {{kCsdProactivePasswordProtectionSampleRate.name, "1.0"}});
+
+    EXPECT_CALL(*password_protection_service_, IsPingingEnabled(_, _))
+        .WillRepeatedly(Return(true));
+
+    EXPECT_CALL(*password_protection_service_,
+                MaybeStartPasswordFieldOnFocusRequest(_, _, _, _))
+        .WillOnce([this](content::WebContents* web_contents,
+                         const GURL& main_frame_url,
+                         const GURL& password_form_action,
+                         const GURL& password_form_frame_url) {
+          password_protection_service_
+              ->PasswordProtectionService::
+                  MaybeStartPasswordFieldOnFocusRequest(
+                      web_contents, main_frame_url, password_form_action,
+                      password_form_frame_url);
+        });
+
+    EXPECT_CALL(*password_protection_service_,
+                MaybeTriggerClientSideDetectionScan(web_contents_.get()))
+        .Times(1);
+
+    password_protection_service_->MaybeStartPasswordFieldOnFocusRequest(
+        web_contents_.get(), main_frame_url, password_form_action,
+        password_form_frame_url);
+
+    EXPECT_EQ(0u, password_protection_service_->GetPendingRequestsCount());
+    testing::Mock::VerifyAndClearExpectations(
+        password_protection_service_.get());
+  }
+
+  {
+    // Sample rate 0%: should send a PhishGuard ping and not trigger CSD.
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        kProactivePasswordProtection,
+        {{kCsdProactivePasswordProtectionSampleRate.name, "0.0"}});
+
+    EXPECT_CALL(*password_protection_service_, IsPingingEnabled(_, _))
+        .WillRepeatedly(Return(true));
+
+    EXPECT_CALL(*password_protection_service_,
+                MaybeStartPasswordFieldOnFocusRequest(_, _, _, _))
+        .WillOnce([this](content::WebContents* web_contents,
+                         const GURL& main_frame_url,
+                         const GURL& password_form_action,
+                         const GURL& password_form_frame_url) {
+          password_protection_service_
+              ->PasswordProtectionService::
+                  MaybeStartPasswordFieldOnFocusRequest(
+                      web_contents, main_frame_url, password_form_action,
+                      password_form_frame_url);
+        });
+
+    EXPECT_CALL(*password_protection_service_,
+                MaybeTriggerClientSideDetectionScan(web_contents_.get()))
+        .Times(0);
+
+    password_protection_service_->MaybeStartPasswordFieldOnFocusRequest(
+        web_contents_.get(), main_frame_url, password_form_action,
+        password_form_frame_url);
+
+    EXPECT_EQ(1u, password_protection_service_->GetPendingRequestsCount());
+  }
 }
 
 class PasswordProtectionServiceBaseTest
@@ -1223,7 +1300,6 @@ TEST_P(PasswordProtectionServiceBaseTest,
 TEST_P(PasswordProtectionServiceBaseTest,
        TestPasswordOnFocusRequestNoEnhancedProtectionShouldNotHaveToken) {
   histograms_.ExpectTotalCount(kPasswordOnFocusRequestWithTokenHistogram, 0);
-  std::string access_token = "fake access token";
   test_url_loader_factory_.SetInterceptor(
       base::BindLambdaForTesting([&](const network::ResourceRequest& request) {
         EXPECT_EQ(
@@ -1384,6 +1460,23 @@ TEST_P(PasswordProtectionServiceBaseTest, TestOtpRequestCallbackIsCalled) {
           [&](bool verdict) { callback_called = true; }));
   password_protection_service_->WaitForResponse();
   EXPECT_TRUE(callback_called);
+}
+
+TEST_P(PasswordProtectionServiceBaseTest, OtpRequestAllowlistMatchIsSafe) {
+  std::unique_ptr<content::WebContents> web_contents = GetWebContents();
+  base::test::TestFuture<bool> verdict;
+  InitializeAndStartOtpRequest(
+      /*match_allowlist=*/true, /*timeout_in_ms=*/10000, web_contents.get(),
+      verdict.GetCallback());
+  EXPECT_FALSE(verdict.Get());
+}
+
+TEST_P(PasswordProtectionServiceBaseTest, OtpRequestCancelDoesNotRunCallback) {
+  std::unique_ptr<content::WebContents> web_contents = GetWebContents();
+  InitializeAndStartOtpRequest(
+      /*match_allowlist=*/false, /*timeout_in_ms=*/10000, web_contents.get(),
+      base::BindOnce([](bool) { ADD_FAILURE(); }));
+  request_->Cancel(/*timed_out=*/false);
 }
 
 TEST_P(PasswordProtectionServiceBaseTest, TestTearDownWithPendingRequests) {

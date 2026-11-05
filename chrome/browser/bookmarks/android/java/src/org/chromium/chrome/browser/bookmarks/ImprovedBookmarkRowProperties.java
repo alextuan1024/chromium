@@ -13,6 +13,7 @@ import androidx.annotation.IntDef;
 
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.bookmarks.ImprovedBookmarkRow.Location;
 import org.chromium.ui.listmenu.ListMenuDelegate;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -82,8 +83,6 @@ public class ImprovedBookmarkRowProperties {
     public static final WritableBooleanPropertyKey EDITABLE = new WritableBooleanPropertyKey();
     public static final WritableBooleanPropertyKey IS_DRAG_ENABLED =
             new WritableBooleanPropertyKey();
-    public static final WritableObjectPropertyKey<BookmarkManagerDragHelper> DRAG_HELPER =
-            new WritableObjectPropertyKey<>();
     public static final WritableObjectPropertyKey<View.OnTouchListener> DRAG_HANDLE_TOUCH_LISTENER =
             new WritableObjectPropertyKey<>();
     public static final WritableObjectPropertyKey<View.OnTouchListener> ROW_BODY_TOUCH_LISTENER =
@@ -125,6 +124,13 @@ public class ImprovedBookmarkRowProperties {
     public static final WritableIntPropertyKey FOLDER_CHILD_COUNT_TEXT_STYLE =
             new WritableIntPropertyKey();
 
+    // The visual position of the row within a run of consecutive bookmark rows, used to style its
+    // corner radii. Unlike BookmarkManagerProperties.REORDER_LOCATION, which only considers
+    // movable rows to enable the move up/down menu items, this considers every row. Left unset
+    // otherwise.
+    public static final WritableIntDefPropertyKey<Location> VISUAL_LOCATION =
+            new WritableIntDefPropertyKey<>(Location.SOLO);
+
     private static final PropertyKey[] IMPROVED_BOOKMARK_ROW_PROPERTIES = {
         ENABLED,
         TITLE,
@@ -143,7 +149,6 @@ public class ImprovedBookmarkRowProperties {
         SELECTION_ACTIVE,
         EDITABLE,
         IS_DRAG_ENABLED,
-        DRAG_HELPER,
         DRAG_HANDLE_TOUCH_LISTENER,
         ROW_BODY_TOUCH_LISTENER,
         DRAG_HANDLE_HOVER_LISTENER,
@@ -160,7 +165,8 @@ public class ImprovedBookmarkRowProperties {
         FOLDER_START_ICON_DRAWABLE,
         FOLDER_START_IMAGE_FOLDER_DRAWABLES,
         FOLDER_CHILD_COUNT,
-        FOLDER_CHILD_COUNT_TEXT_STYLE
+        FOLDER_CHILD_COUNT_TEXT_STYLE,
+        VISUAL_LOCATION
     };
     public static final PropertyKey[] ALL_KEYS =
             PropertyModel.concatKeys(

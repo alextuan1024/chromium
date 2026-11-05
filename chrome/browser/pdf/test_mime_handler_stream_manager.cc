@@ -41,9 +41,12 @@ TestMimeHandlerStreamManager::CreateForWebContents(
 
 void TestMimeHandlerStreamManager::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
+  base::WeakPtr<TestMimeHandlerStreamManager> weak_this =
+      weak_factory_.GetWeakPtr();
   MimeHandlerStreamManager::DidFinishNavigation(navigation_handle);
 
-  if (!on_navigation_finished_) {
+  // The base class deletes `this` once it no longer tracks anything.
+  if (!weak_this || !on_navigation_finished_) {
     return;
   }
 
@@ -127,11 +130,16 @@ TestMimeHandlerStreamManager::WaitUntilPdfLoadedAllowMultipleFrames(
 }
 
 testing::AssertionResult
-TestMimeHandlerStreamManager::WaitUntilPdfLoadedInFirstChild() {
+TestMimeHandlerStreamManager::WaitUntilPdfLoadedInFirstChild(
+    const pdf_extension_test_util::EnsurePDFHasLoadedOptions& options) {
   content::RenderFrameHost* embedder_host =
       ChildFrameAt(web_contents()->GetPrimaryMainFrame(), 0);
   CHECK(embedder_host);
-  return WaitUntilPdfLoaded(embedder_host);
+  WaitUntilNavigationFinished(embedder_host);
+
+  // Wait until the PDF extension and content are loaded.
+  return pdf_extension_test_util::EnsurePDFHasLoadedWithOptions(embedder_host,
+                                                                options);
 }
 
 void TestMimeHandlerStreamManager::GetParamsAndNavigateToExtensionUrl(

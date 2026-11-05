@@ -20,6 +20,7 @@
 
 #include "third_party/blink/renderer/core/svg/svg_text_content_element.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_dom_point_init.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
@@ -117,7 +118,7 @@ float SVGTextContentElement::getComputedTextLength() {
     SvgTextQuery query(*layout_object);
     return NoopWillBeInvScaleScalar(
         query.SubStringLength(0, query.NumberOfCharacters()),
-        layout_object->StyleRef().EffectiveZoom());
+        layout_object->Style().EffectiveZoom());
   }
   return 0;
 }
@@ -145,7 +146,7 @@ float SVGTextContentElement::getSubStringLength(
   if (IsNGTextOrInline(layout_object)) {
     return NoopWillBeInvScaleScalar(
         SvgTextQuery(*layout_object).SubStringLength(charnum, nchars),
-        layout_object->StyleRef().EffectiveZoom());
+        layout_object->Style().EffectiveZoom());
   }
   return 0;
 }
@@ -169,7 +170,7 @@ SVGPointTearOff* SVGTextContentElement::getStartPositionOfChar(
   if (IsNGTextOrInline(layout_object)) {
     point = NoopWillBeInvScalePoint(
         SvgTextQuery(*layout_object).StartPositionOfCharacter(charnum),
-        layout_object->StyleRef().EffectiveZoom());
+        layout_object->Style().EffectiveZoom());
   }
   return SVGPointTearOff::CreateDetached(point);
 }
@@ -193,7 +194,7 @@ SVGPointTearOff* SVGTextContentElement::getEndPositionOfChar(
   if (IsNGTextOrInline(layout_object)) {
     point = NoopWillBeInvScalePoint(
         SvgTextQuery(*layout_object).EndPositionOfCharacter(charnum),
-        layout_object->StyleRef().EffectiveZoom());
+        layout_object->Style().EffectiveZoom());
   }
   return SVGPointTearOff::CreateDetached(point);
 }
@@ -217,7 +218,7 @@ SVGRectTearOff* SVGTextContentElement::getExtentOfChar(
   if (IsNGTextOrInline(layout_object)) {
     rect = NoopWillBeInvScaleRect(
         SvgTextQuery(*layout_object).ExtentOfCharacter(charnum),
-        layout_object->StyleRef().EffectiveZoom());
+        layout_object->Style().EffectiveZoom());
   }
   return SVGRectTearOff::CreateDetached(rect);
 }
@@ -255,7 +256,7 @@ int SVGTextContentElement::getCharNumAtPosition(const DOMPointInit* point) {
     const gfx::PointF local_point(ClampTo<float>(point->x()),
                                   ClampTo<float>(point->y()));
     const gfx::PointF query_point = NoopWillBeScalePoint(
-        local_point, layout_object->StyleRef().EffectiveZoom());
+        local_point, layout_object->Style().EffectiveZoom());
     return SvgTextQuery(*layout_object).CharacterNumberAtPosition(query_point);
   }
   return -1;
@@ -292,9 +293,10 @@ void SVGTextContentElement::CollectStyleForPresentationAttribute(
     const AtomicString& value,
     HeapVector<CSSPropertyValue, 8>& style) {
   if (name.Matches(xml_names::kSpaceAttr)) {
-    DEFINE_STATIC_LOCAL(const AtomicString, preserve_string, ("preserve"));
+    static const base::NoDestructor<AtomicString> preserve_string(
+        AtomicString::FromLiteral<"preserve">());
 
-    if (value == preserve_string) {
+    if (value == *preserve_string) {
       UseCounter::Count(GetDocument(), WebFeature::kWhiteSpacePreFromXMLSpace);
       // Longhands of `white-space: pre`.
       AddPropertyToPresentationAttributeStyle(
@@ -344,11 +346,6 @@ bool SVGTextContentElement::SelfHasRelativeLengths() const {
   // On any window size change, we have to relayout the text subtree, as the
   // effective 'on-screen' font size may change.
   return true;
-}
-
-SVGTextContentElement* SVGTextContentElement::ElementFromLineLayoutItem(
-    const LineLayoutItem& line_layout_item) {
-  return nullptr;
 }
 
 SVGAnimatedPropertyBase* SVGTextContentElement::PropertyFromAttribute(

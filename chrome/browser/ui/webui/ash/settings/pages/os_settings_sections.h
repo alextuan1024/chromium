@@ -9,7 +9,9 @@
 #include <vector>
 
 #include "ash/webui/settings/public/constants/routes.mojom.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_forward.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/os_settings_section.h"
 
@@ -17,6 +19,14 @@ class ApplicationLocaleStorage;
 class ArcAppListPrefs;
 class PrefService;
 class Profile;
+
+namespace metrics {
+class MetricsService;
+}  // namespace metrics
+
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
 
 namespace policy {
 class BrowserPolicyConnectorAsh;
@@ -43,17 +53,35 @@ namespace phonehub {
 class PhoneHubManager;
 }
 
+namespace system {
+class TimeZoneResolverManager;
+}  // namespace system
+
 namespace settings {
 
 // Collection of all OsSettingsSection implementations.
 class OsSettingsSections {
  public:
-  // `local_state`, `application_locale_storage`, and
-  // `browser_policy_connector_ash` must be non-null and must outlive `this`.
+  // TODO(crbug.com/558489113): Revisit callback usage once `MetricsService`
+  // lifetime is resolved to inject `raw_ref`/`raw_ptr` directly.
+  // NOTE: The getter-callback pattern should be avoided if possible and is used
+  // here for `MetricsService` only as an exception (destroyed before
+  // `KeyedService`s). Do NOT apply this pattern to other dependencies without
+  // thoroughly investigating their lifetimes and alternatives first.
+  using MetricsServiceGetter =
+      base::RepeatingCallback<::metrics::MetricsService*()>;
+
+  // `local_state`, `application_locale_storage`,
+  // `browser_policy_connector_ash`, and `timezone_resolver_manager` must be
+  // non-null and must outlive `this`.
+  // `metrics_service_getter` and `url_loader_factory` must be non-null.
   OsSettingsSections(
       PrefService* local_state,
       const ApplicationLocaleStorage* application_locale_storage,
+      MetricsServiceGetter metrics_service_getter,
       policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+      system::TimeZoneResolverManager* timezone_resolver_manager,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       Profile* profile,
       SearchTagRegistry* search_tag_registry,
       multidevice_setup::MultiDeviceSetupClient* multidevice_setup_client,
@@ -80,7 +108,7 @@ class OsSettingsSections {
   OsSettingsSections();
 
   std::unordered_map<chromeos::settings::mojom::Section,
-                     raw_ptr<OsSettingsSection, CtnExperimental>>
+                     raw_ptr<OsSettingsSection, DanglingUntriaged>>
       sections_map_;
   std::vector<std::unique_ptr<OsSettingsSection>> sections_;
 

@@ -230,8 +230,8 @@ ResourceRequest::TrustedParams& ResourceRequest::TrustedParams::operator=(
   response_body_stream = other.response_body_stream;
   expected_response_headers_for_synthetic_response =
       other.expected_response_headers_for_synthetic_response;
-  is_ad_auction_trusted_signals_request =
-      other.is_ad_auction_trusted_signals_request;
+  is_storage_access_potentially_allowed =
+      other.is_storage_access_potentially_allowed;
   return *this;
 }
 
@@ -256,8 +256,8 @@ bool ResourceRequest::TrustedParams::EqualsForTesting(
          (!!response_body_stream == !!other.response_body_stream) &&
          expected_response_headers_for_synthetic_response ==
              other.expected_response_headers_for_synthetic_response &&
-         is_ad_auction_trusted_signals_request ==
-             other.is_ad_auction_trusted_signals_request;
+         is_storage_access_potentially_allowed ==
+             other.is_storage_access_potentially_allowed;
 }
 
 ResourceRequest::WebBundleTokenParams::WebBundleTokenParams() = default;
@@ -337,6 +337,7 @@ bool ResourceRequest::EqualsForTesting(const ResourceRequest& request) const {
          headers.ToString() == request.headers.ToString() &&
          cors_exempt_headers.ToString() ==
              request.cors_exempt_headers.ToString() &&
+         content_user_agent == request.content_user_agent &&
          load_flags == request.load_flags &&
          resource_type == request.resource_type &&
          priority == request.priority &&

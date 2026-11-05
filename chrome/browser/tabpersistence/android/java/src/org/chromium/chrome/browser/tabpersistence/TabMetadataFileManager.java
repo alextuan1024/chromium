@@ -190,8 +190,9 @@ public class TabMetadataFileManager {
      *
      * @param metadataFile File to save TabModel data into.
      * @param metadata TabModel data in copied types.
+     * @return Whether the metadata file was written successfully.
      */
-    public static void saveListToFile(File metadataFile, TabModelSelectorMetadata metadata) {
+    public static boolean saveListToFile(File metadataFile, TabModelSelectorMetadata metadata) {
         synchronized (SAVE_LIST_LOCK) {
             AtomicFile file = new AtomicFile(metadataFile);
             FileOutputStream output = null;
@@ -203,7 +204,7 @@ public class TabMetadataFileManager {
 
                 // Determine how many Tabs there are.
                 int numTabsTotal = incognitoCount + standardCount;
-                Log.d(TAG, "Persisting tab lists; " + standardCount + ", " + incognitoCount);
+                Log.d(TAG, "Persisting tab lists; %d, %d", standardCount, incognitoCount);
 
                 // Save the index file containing the list of tabs to restore. Wrap a
                 // BufferedOutputStream to batch/buffer actual writes. Most urls are far smaller
@@ -228,9 +229,11 @@ public class TabMetadataFileManager {
 
                 stream.flush();
                 file.finishWrite(output);
-
+                return true;
             } catch (IOException e) {
+                Log.e(TAG, "Failed to write metadata file: %s", metadataFile.getName(), e);
                 if (output != null) file.failWrite(output);
+                return false;
             }
         }
     }

@@ -27,7 +27,6 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/segmentation_platform/segmentation_platform_service_factory.h"
-#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -36,6 +35,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -122,10 +122,8 @@ std::unique_ptr<KeyedService> BuildMockOptimizationGuideKeyedService(
 class ChromeComposeClientBrowserTest : public InProcessBrowserTest {
  public:
   ChromeComposeClientBrowserTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {compose::features::kEnableCompose,
-         optimization_guide::features::kOptimizationGuideModelExecution},
-        {});
+    scoped_feature_list_.InitAndEnableFeature(
+        optimization_guide::features::kOptimizationGuideModelExecution);
   }
 
   void SetUpInProcessBrowserTestFixture() override {
@@ -250,11 +248,8 @@ class ChromeComposeClientBrowserTest : public InProcessBrowserTest {
   }
 
   void InsertText() {
-    std::string js =
-        "var el = document.getElementById('test_field');"
-        "el.focus();"
-        "document.execCommand('insertText', false, 'a');";
-    ASSERT_TRUE(content::ExecJs(web_contents(), js));
+    FocusField();
+    content::SimulateCharTyped(web_contents(), u'a');
   }
 
   // Focuses the textarea with id 'test_field' in the DOM.
@@ -497,8 +492,8 @@ IN_PROC_BROWSER_TEST_F(ChromeComposeClientBrowserTest,
 
   // Instead of using an Autofill test environment to mock forms,
   // we trigger the autofill client popup natively from the WebContents.
-  autofill::ChromeAutofillClient* autofill_client =
-      autofill::ChromeAutofillClient::FromWebContentsForTesting(web_contents());
+  autofill::ContentAutofillClient* autofill_client =
+      autofill::ContentAutofillClient::FromWebContents(web_contents());
 
   autofill::AutofillClient::PopupOpenArgs args;
   args.suggestions = {
@@ -1784,10 +1779,6 @@ IN_PROC_BROWSER_TEST_F(ChromeComposeClientBrowserTest, TestCompose) {
       base::StrCat(
           {"Compose.Server", compose::kComposeRequestDurationErrorSuffix}),
       0);
-  // Check that the request metadata had a valid node offset.
-  histograms.ExpectUniqueSample(
-      compose::kInnerTextNodeOffsetFound,
-      compose::ComposeInnerTextNodeOffset::kOffsetFound, 1);
   // Simulate insert call from Compose dialog.
   page_handler()->AcceptComposeResult(base::NullCallback());
   client_page_handler()->CloseUI(compose::mojom::CloseReason::kInsertButton);
@@ -2818,9 +2809,8 @@ class ChromeComposeClientLinksBrowserTest
     : public ChromeComposeClientBrowserTest {
  public:
   ChromeComposeClientLinksBrowserTest() {
-    links_feature_list_.InitWithFeatures(
-        {compose::features::kEnableCompose},
-        {compose::features::kEnableComposeProactiveNudge});
+    links_feature_list_.InitAndDisableFeature(
+        compose::features::kEnableComposeProactiveNudge);
   }
 
  private:

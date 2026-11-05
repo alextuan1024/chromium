@@ -32,6 +32,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EXPORTED_WEB_PAGE_POPUP_IMPL_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
@@ -50,6 +51,7 @@
 #include "third_party/blink/renderer/platform/widget/widget_base_client.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
+#include "ui/gfx/geometry/rect_f.h"
 
 namespace cc {
 class Layer;
@@ -66,7 +68,6 @@ class PagePopupClient;
 class WebViewImpl;
 class LocalDOMWindow;
 class WidgetBase;
-class DOMRect;
 
 class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
                                            public WidgetEventHandler,
@@ -79,6 +80,10 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   WebPagePopupImpl(const WebPagePopupImpl&) = delete;
   WebPagePopupImpl& operator=(const WebPagePopupImpl&) = delete;
   ~WebPagePopupImpl() override;
+
+  // Shows the initialized popup and focuses it. Called by WebViewImpl once it
+  // has verified the popup can be attached.
+  void Show();
 
   // Cancel informs the PopupClient that it should initiate shutdown of this
   // popup via ClosePopup(). It is called to indicate the popup was closed due
@@ -98,6 +103,10 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   // Only HasSamePopupClient() may still be called after ClosePopup() runs.
   void ClosePopup();
 
+  // Clears the back-pointer to the opener WebViewImpl when the popup is
+  // disowned or the opener WebViewImpl is being destroyed.
+  void ClearOpenerWebView() { opener_web_view_ = nullptr; }
+
   // Returns whether another WebPagePopupImpl has the same PopupClient as this
   // instance. May be called after ClosePopup() has run still, in order to
   // determine if a popup sharing the same client was created immediately after
@@ -112,62 +121,6 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   WebDocument GetDocument() override;
   Handle GetHandle() const override;
 
-  // PagePopup implementation.
-  void PostMessageToPopup(const String& message) override;
-  void Update() override;
-
-  // WidgetEventHandler implementation.
-  WebInputEventResult HandleKeyEvent(const WebKeyboardEvent&) override;
-
-  // Return the LayerTreeHost backing this popup widget.
-  cc::LayerTreeHost* LayerTreeHostForTesting();
-
-  // Called when the browser has shown the popup.
-  void DidShowPopup();
-
-  static WebPagePopupImpl* Create(
-      CrossVariantMojoAssociatedRemote<
-          mojom::blink::PopupWidgetHostInterfaceBase> popup_widget_host,
-      CrossVariantMojoAssociatedRemote<mojom::blink::WidgetHostInterfaceBase>
-          widget_host,
-      CrossVariantMojoAssociatedReceiver<mojom::blink::WidgetInterfaceBase>
-          widget,
-      WebViewImpl* opener_impl,
-      AgentGroupScheduler& agent_group_scheduler,
-      const display::ScreenInfos& screen_infos,
-      PagePopupClient*);
-
-  void ExecuteEditCommand(const String& command, const String& value);
-
-  // The element which created this popup.
-  Element& OwnerElement();
-
- private:
-  // WidgetBaseClient overrides:
-  void OnCommitRequested() override;
-  void BeginMainFrame(const viz::BeginFrameArgs& args) override;
-  void SetSuppressFrameRequestsWorkaroundFor704763Only(bool) final;
-  WebInputEventResult DispatchBufferedTouchEvents() override;
-  void WillHandleGestureEvent(const WebGestureEvent& event,
-                              bool* suppress) override;
-  void WillHandleMouseEvent(const WebMouseEvent& event) override;
-  void ObserveGestureEventAndResult(
-      const WebGestureEvent& gesture_event,
-      const gfx::Vector2dF& unused_delta,
-      const cc::OverscrollBehavior& overscroll_behavior,
-      bool event_processed) override;
-  bool SupportsBufferedTouchEvents() override { return true; }
-  void FocusChanged(mojom::blink::FocusState focus_state) override;
-  void ScheduleAnimation(cc::BeginMainFrameReason, bool urgent) override;
-  void UpdateVisualProperties(
-      const VisualProperties& visual_properties) override;
-  gfx::Rect ViewportVisibleRect() override;
-  void ScreenRectToEmulated(gfx::Rect& screen_rect) override;
-  void EmulatedToScreenRect(gfx::Rect& screen_rect) override;
-  KURL GetURLForDebugTrace() override;
-  std::unique_ptr<cc::LayerTreeFrameSink> AllocateNewLayerTreeFrameSink()
-      override;
-
   // WebWidget implementation.
   // NOTE: The WebWidget may still be used after requesting the popup to be
   // closed and destroyed. But the Page and the MainFrame are destroyed
@@ -180,6 +133,7 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
                        DocumentUpdateReason reason) override;
   void Resize(const gfx::Size&) override;
   WebInputEventResult HandleInputEvent(const WebCoalescedInputEvent&) override;
+  WebInputEventResult DispatchBufferedTouchEvents() override;
   void SetFocus(bool) override;
   bool HasFocus() override;
   WebHitTestResult HitTestResultAt(const gfx::PointF&) override;
@@ -209,16 +163,72 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   void CancelComposition() override;
   void ApplyVisualProperties(
       const VisualProperties& visual_properties) override;
-  const display::ScreenInfo& GetScreenInfo() override;
-  const display::ScreenInfos& GetScreenInfos() override;
-  const display::ScreenInfo& GetOriginalScreenInfo() override;
-  const display::ScreenInfos& GetOriginalScreenInfos() override;
   gfx::Rect WindowRect() override;
   gfx::Rect ViewRect() override;
   void SetScreenRects(const gfx::Rect& widget_screen_rect,
                       const gfx::Rect& window_screen_rect) override;
   gfx::Size VisibleViewportSize() override;
   bool IsHidden() const override;
+
+  // PagePopup implementation.
+  void PostMessageToPopup(const String& message) override;
+  void Update() override;
+
+  // WidgetEventHandler implementation.
+  WebInputEventResult HandleKeyEvent(const WebKeyboardEvent&) override;
+
+  // Return the LayerTreeHost backing this popup widget.
+  cc::LayerTreeHost* LayerTreeHostForTesting();
+  void WidgetHostDisconnectedForTesting();
+
+  // Called when the browser has shown the popup.
+  void DidShowPopup();
+
+  static scoped_refptr<WebPagePopupImpl> Create(
+      CrossVariantMojoAssociatedRemote<
+          mojom::blink::PopupWidgetHostInterfaceBase> popup_widget_host,
+      CrossVariantMojoAssociatedRemote<mojom::blink::WidgetHostInterfaceBase>
+          widget_host,
+      CrossVariantMojoAssociatedReceiver<mojom::blink::WidgetInterfaceBase>
+          widget,
+      WebViewImpl* opener_impl,
+      AgentGroupScheduler& agent_group_scheduler,
+      const display::ScreenInfos& screen_infos,
+      PagePopupClient*,
+      const gfx::RectF& popup_owner_client_rect);
+
+  void ExecuteEditCommand(const String& command, const String& value);
+
+  // The element which created this popup.
+  Element& OwnerElement();
+
+  const display::ScreenInfo& GetScreenInfo() const;
+
+ private:
+  // WidgetBaseClient overrides:
+  void OnCommitRequested() override;
+  void BeginMainFrame(const viz::BeginFrameArgs& args) override;
+  void SetSuppressFrameRequestsWorkaroundFor704763Only(bool) final;
+  void WillHandleGestureEvent(const WebGestureEvent& event,
+                              bool* suppress) override;
+  void WillHandleMouseEvent(const WebMouseEvent& event) override;
+  void ObserveGestureEventAndResult(
+      const WebGestureEvent& gesture_event,
+      const gfx::Vector2dF& unused_delta,
+      const cc::OverscrollBehavior& overscroll_behavior,
+      bool event_processed) override;
+  bool SupportsBufferedTouchEvents() override { return true; }
+  void FocusChanged(mojom::blink::FocusState focus_state) override;
+  void ScheduleAnimation(cc::BeginMainFrameReason, bool urgent) override;
+  void UpdateVisualProperties(
+      const VisualProperties& visual_properties) override;
+  const display::ScreenInfos& GetOriginalScreenInfos() override;
+  gfx::Rect ViewportVisibleRect() override;
+  void ScreenRectToEmulated(gfx::Rect& screen_rect) override;
+  void EmulatedToScreenRect(gfx::Rect& screen_rect) override;
+  KURL GetURLForDebugTrace() override;
+  std::unique_ptr<cc::LayerTreeFrameSink> AllocateNewLayerTreeFrameSink()
+      override;
 
   // WidgetEventHandler functions
   WebInputEventResult HandleCharEvent(const WebKeyboardEvent&) override;
@@ -230,7 +240,10 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   // This may only be called if page_ is non-null.
   LocalFrame& MainFrame() const;
 
+  class ScopedDeferClose;
+
   void Close();
+  void FinishClose();
 
   Element* FocusedElement() const;
 
@@ -246,22 +259,22 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   AXObject* RootAXObject(Element* popover_owner) override;
   void SetWindowRect(const gfx::Rect&) override;
 
-  WebPagePopupImpl(
+  WebPagePopupImpl(WebViewImpl* opener_impl,
+                   PagePopupClient* popup_client,
+                   const gfx::RectF& popup_owner_client_rect);
+  bool Initialize(
       CrossVariantMojoAssociatedRemote<
           mojom::blink::PopupWidgetHostInterfaceBase> popup_widget_host,
       CrossVariantMojoAssociatedRemote<mojom::blink::WidgetHostInterfaceBase>
           widget_host,
       CrossVariantMojoAssociatedReceiver<mojom::blink::WidgetInterfaceBase>
           widget,
-      WebViewImpl* opener_impl,
       AgentGroupScheduler& agent_group_scheduler,
-      const display::ScreenInfos& screen_infos,
-      PagePopupClient*);
+      const display::ScreenInfos& screen_infos);
 
   void DestroyPage();
   void MainFrameDetached();
   void SetRootLayer(scoped_refptr<cc::Layer>);
-  void SetWebView(WebViewImpl* web_view);
 
   gfx::Rect WindowRectInScreen() const;
 
@@ -273,9 +286,22 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   void WidgetHostDisconnected();
   void DidSetBounds();
 
+  enum class State {
+    // Popup is active and accepting input/updates.
+    kOpen,
+    // Renderer initiated closing via ClosePopup() and is awaiting browser
+    // disconnect.
+    kClosing,
+    // Browser disconnect arrived while a ScopedDeferClose is active on the
+    // stack; FinishClose() will run when the outermost scope unwinds.
+    kPendingClose,
+    // Browser disconnect has been processed in FinishClose() and the
+    // self-reference is released.
+    kClosed,
+  };
+
   // This is the WebView that opened the popup.
-  raw_ptr<WebViewImpl, UnprotectedInRelease | DanglingUntriaged>
-      opener_web_view_ = nullptr;
+  raw_ptr<WebViewImpl> opener_web_view_;
   Persistent<PagePopupChromeClient> chrome_client_;
   Persistent<EmptyLocalFrameClient> local_frame_client_;
   // WebPagePopupImpl wraps its own Page that renders the content in the popup.
@@ -285,13 +311,14 @@ class CORE_EXPORT WebPagePopupImpl final : public WebPagePopup,
   // Document.
   Persistent<Page> page_;
   Persistent<PagePopupClient> popup_client_;
-  bool closing_ = false;
+  State state_ = State::kOpen;
+  int defer_close_count_ = 0;
 
   scoped_refptr<cc::Layer> root_layer_;
   base::TimeTicks raf_aligned_input_start_time_;
 
   bool suppress_next_keypress_event_ = false;
-  Persistent<DOMRect> popup_owner_client_rect_;
+  gfx::RectF popup_owner_client_rect_;
 
   // When emulation is enabled, and a popup widget is opened, the popup widget
   // needs these values to move between the popup's (non-emulated) coordinates

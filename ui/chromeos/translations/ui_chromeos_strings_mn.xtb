@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Камер</translation>
 <translation id="162175252992296058">АНУ-ын олон улсын гартай португал</translation>
 <translation id="1629521517399325891">Сүлжээний баталгаажуулалтад хэрэглэгчийн сертификат боломжгүй байна.</translation>
+<translation id="1639239467298939599">Ачаалж байна</translation>
 <translation id="1641780993263690097">Хятад пиньинь</translation>
 <translation id="164969095109328410">Chrome төхөөрөмж</translation>
 <translation id="1661207570040737402">Та Google Workspace-н дундын драйвын хадгалах сангаа бүгдийг нь ашигласан байна.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Файлын синкийг унтраасан</translation>
 <translation id="2820957248982571256">Шалгаж байна...</translation>
 <translation id="2830077785865012357">Хятад жуинь</translation>
+<translation id="2838379631617906747">Суулгаж байна</translation>
 <translation id="2843806747483486897">Анхдагч тохиргоог өөрчлөх ...</translation>
 <translation id="2873951654529031587">Хогийн сав</translation>
 <translation id="2887314858867008269">АНУ-ын Colemak</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Буруу нууц үг</translation>
 <translation id="5059127710849015030">Балба галиг</translation>
 <translation id="5068919226082848014">Пицца</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> проксиг дарах дүрмийг тогтоосон</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> файл устгагдах болно</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> зүйлийг <ph name="FOLDER_NAME" /> руу зөөж байна</translation>
 <translation id="509429900233858213">Алдаа гарлаа.</translation>
-<translation id="5102922915594634436">Синк хийсэн фолдерийг удирдах</translation>
 <translation id="5109254780565519649">Алдаа гарлаа. Зарим зүйлийг сэргээгээгүй байж болзошгүй.</translation>
 <translation id="5110329002213341433">Англи (Канад)</translation>
 <translation id="5119780910075847424">Синкийг түр зогсоосон</translation>
@@ -556,7 +558,6 @@
 <translation id="5305688511332277257">Юу ч суугдаагүй байна.</translation>
 <translation id="5317780077021120954">Хадгалах</translation>
 <translation id="5318819489018851358">Linux-р хуваалцах</translation>
-<translation id="5330145655348521461">Эдгээр файлууд өөр компьютер дээр нээгдсэн байна. Нээхийн тулд <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) рүү шилжүүл.</translation>
 <translation id="5330512191124428349">Мэдээлэл авах</translation>
 <translation id="535792325654997756">Мууртай хүн</translation>
 <translation id="5358764674931277">Фреймийн хурд</translation>
@@ -697,7 +698,6 @@
 <translation id="636254897931573416">Домэйн дагаврын тохирлын утга буруу байна</translation>
 <translation id="6364301859968397756">Байгууллагын хадгалах сан дүүрсэн</translation>
 <translation id="6367976544441405720">Битүү ачааны машин</translation>
-<translation id="637062427944097960">Энэ файл нь өөр десктоп дээр нээгдсэн байна. Үүнийг харахын тулд <ph name="USER_NAME" /> ( <ph name="MAIL_ADDRESS" /> ) руу шилжинэ үү.</translation>
 <translation id="6394388407447716302">Зєвхєн унших</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> зүйл</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" />-г шифрлэсэн тул үүнийг зөөж чадсангүй.</translation>
@@ -1019,6 +1019,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> - Порт</translation>
 <translation id="8656407365183407932">Таны офлайн файлуудыг хасах шаардлагатай байсан</translation>
 <translation id="8656768832129462377">Шалгах хэрэггүй</translation>
+<translation id="8662978096466608964">Chrome нь дэлгэцийн зургийг тохируулж чадахгүй байна.</translation>
 <translation id="8688591111840995413">Муу нууц үг</translation>
 <translation id="8698464937041809063">Google-ийн зураг</translation>
 <translation id="8698877009525468705">Энэхүү файл нь нууцлалтай ба администраторын бодлогын дагуу хязгаарлалттай.</translation>

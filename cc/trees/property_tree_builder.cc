@@ -345,10 +345,6 @@ RenderSurfaceReason ComputeRenderSurfaceReason(const MutatorHost& mutator_host,
     return RenderSurfaceReason::kMask;
   }
 
-  if (layer->trilinear_filtering()) {
-    return RenderSurfaceReason::kTrilinearFiltering;
-  }
-
   if (!layer->filters().IsEmpty()) {
     return RenderSurfaceReason::kFilter;
   }
@@ -522,11 +518,12 @@ bool PropertyTreeBuilderContext::AddEffectNodeIfNeeded(
     node->backdrop_mask_element_id = layer->mask_layer()->element_id();
     layer->mask_layer()->SetIsBackdropFilterMask(true);
   }
-  node->trilinear_filtering = layer->trilinear_filtering();
   node->has_potential_opacity_animation = has_potential_opacity_animation;
   node->has_potential_filter_animation = has_potential_filter_animation;
   node->subtree_hidden = layer->hide_layer_and_subtree();
-  node->effect_changed = layer->subtree_property_changed();
+  if (layer->subtree_property_changed()) {
+    node->SetEffectChanged(DamageReason::kUntracked);
+  }
   node->subtree_has_copy_request = layer->subtree_has_copy_request();
   node->render_surface_reason = render_surface_reason;
   node->closest_ancestor_with_cached_render_surface_id =

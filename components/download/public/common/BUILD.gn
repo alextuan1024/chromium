@@ -75,10 +75,7 @@ component("public") {
     "url_loader_factory_provider.h",
   ]
 
-  configs += [
-    ":components_download_implementation",
-    "//build/config/compiler:wexit_time_destructors",
-  ]
+  configs += [ ":components_download_implementation" ]
 
   public_deps = [
     ":interfaces",
@@ -134,6 +131,8 @@ if (is_android) {
   android_library("public_java") {
     srcjar_deps = [ ":jni_enums" ]
 
+    # Required for @CalledByNative JNI bridge classes invoked by native download
+    # code in WebView (crbug.com/1135162).
     deps = [
       "//components/download/internal/common:internal_java",
       "//third_party/androidx:androidx_annotation_annotation_java",

@@ -12,6 +12,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/check.h"
@@ -51,8 +52,8 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 // TODO(crbug.com/376575664): Remove this include directive when the
-// ADVANCED_MEMORY_SAFETY_CHECKS macro is removed.
-#include "base/memory/advanced_memory_safety_checks.h"
+// SANITIZED_OBJECT macro is removed.
+#include "base/memory/sanitized_object.h"
 #endif
 
 namespace cc {
@@ -120,13 +121,13 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
                            public viz::HostFrameSinkClient {
 #if BUILDFLAG(IS_CHROMEOS)
   // TODO(crbug.com/376575664): Remove this macro once the bug gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 #endif
 
  public:
   METADATA_HEADER_BASE(Window);
 
-  using Windows = std::vector<raw_ptr<Window, VectorExperimental>>;
+  using Windows = std::vector<raw_ptr<Window, DanglingUntriaged>>;
 
   // A helper class to ensure that the Window is not deleted while it is
   // notifying observers or doing other operations where re-entrant deletion
@@ -143,8 +144,11 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
 
    private:
     raw_ptr<Window> window_ = nullptr;
-    base::raw_span<const raw_ptr<Window, VectorExperimental>> windows_;
+    base::raw_span<const raw_ptr<Window, DanglingUntriaged>> windows_;
   };
+
+  // Asserts that at least one `ScopedDeleteBlocker` is active on this Window.
+  void AssertDeleteBlocked() const { CHECK(delete_block_count_ > 0u); }
 
   // Initial value of id() for newly created windows.
   static constexpr int kInitialId = -1;
@@ -216,7 +220,7 @@ class AURA_EXPORT Window : public ui::LayerDelegate,
   void SetId(int id);
 
   // ui::GestureConsumer:
-  const std::string& GetName() const override;
+  std::string_view GetName() const override;
   void SetName(const std::string& name);
 
   const std::u16string& GetTitle() const;

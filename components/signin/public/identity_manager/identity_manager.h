@@ -58,7 +58,7 @@ class PrefRegistrySimple;
 class AccountFetcherService;
 class AccountTrackerService;
 class GaiaCookieManagerService;
-class NewTabPageUI;
+class NewTabPageIdentityManagerAccess;
 
 namespace signin {
 
@@ -193,14 +193,12 @@ class IdentityManager : public KeyedService,
 #if BUILDFLAG(IS_IOS)
   // Whether a batch of primary account changes is in progress. See
   // `OnEndBatchOfPrimaryAccountChanges()`.
-  bool IsBatchOfPrimaryAccountChangesInProgress();
+  bool IsBatchOfPrimaryAccountChangesInProgress() const;
 
-  // Starts a batch of primary account changes by setting
-  // `batch_of_primary_account_changes_in_progress_` to `true`. As long as the
-  // batch is running, `OnEndBatchOfPrimaryAccountChanges()` are not sent when
-  // `OnPrimaryAccountChanged()` occurs.
-  // The batch needs to be used when the primary account is switched from one
-  // account to another.
+  // Starts a batch of primary account changes (e.g. when switching from one
+  // primary account to another). `OnEndBatchOfPrimaryAccountChanges()` is not
+  // sent on `OnPrimaryAccountChanged()` while the batch is running, and is sent
+  // when the returned `ScopedClosureRunner` is destructed.
   // See `OnEndBatchOfPrimaryAccountChanges()`.
   base::ScopedClosureRunner StartBatchOfPrimaryAccountChanges();
 #endif  // BUILDFLAG(IS_IOS)
@@ -556,12 +554,6 @@ class IdentityManager : public KeyedService,
   // Provide the reference on the java IdentityMutator.
   base::android::ScopedJavaLocalRef<jobject> GetIdentityMutatorJavaObject();
 
-  // This method refreshes the AccountInfo associated with |account_id| when
-  // the existing account info is stale. Otherwise it's a no-op.
-  // This method triggers an OnExtendedAccountInfoUpdated() callback if the
-  // info was successfully fetched.
-  void RefreshAccountInfoIfStale(const CoreAccountId& account_id);
-
   // Overloads for calls from java:
   bool HasPrimaryAccount(JNIEnv* env) const;
 
@@ -579,10 +571,6 @@ class IdentityManager : public KeyedService,
   FindExtendedAccountInfoByEmailAddress(
       JNIEnv* env,
       const base::android::JavaRef<jstring>& j_email) const;
-
-  // Refreshes all accounts with refresh tokens if they are stale. See
-  // RefreshAccountInfoIfStale(const CoreAccountId&).
-  void RefreshAccountInfoIfStale(JNIEnv* env);
 
   // Returns true if the browser allows the primary account to be cleared.
   bool IsClearPrimaryAccountAllowed(JNIEnv* env) const;
@@ -708,14 +696,15 @@ class IdentityManager : public KeyedService,
   FRIEND_TEST_ALL_PREFIXES(IdentityManagerTest,
                            CallbackSentOnAccountsCookieDeletedByUserAction);
   FRIEND_TEST_ALL_PREFIXES(IdentityManagerTest, OnNetworkInitialized);
-  FRIEND_TEST_ALL_PREFIXES(IdentityManagerTest, RefreshAccountInfoIfStale);
+  FRIEND_TEST_ALL_PREFIXES(IdentityManagerTest,
+                           AccountInfoFetchedWhenRefreshTokenAvailable);
   FRIEND_TEST_ALL_PREFIXES(IdentityManagerTest, FindExtendedPrimaryAccountInfo);
   FRIEND_TEST_ALL_PREFIXES(IdentityManagerTest, BatchOfPrimaryAccountChanges);
 
-  // Both classes only call FindExtendedPrimaryAccountInfo().
+  // Only calls FindExtendedPrimaryAccountInfo(), from new_tab_page_util.cc.
   // TODO(crbug.com/40183609): Delete once the private calls have been
   // removed.
-  friend class ::NewTabPageUI;
+  friend class ::NewTabPageIdentityManagerAccess;
 
   // Returns the extended account info for the primary account. This function
   // does not require tokens to be loaded.
@@ -742,6 +731,9 @@ class IdentityManager : public KeyedService,
   // PrimaryAccountManager::Observer:
   void OnPrimaryAccountChanged(
       const PrimaryAccountChangeEvent& event_details) override;
+#if BUILDFLAG(IS_IOS)
+  void OnEndBatchOfPrimaryAccountChanges() override;
+#endif  // BUILDFLAG(IS_IOS)
 
   // ProfileOAuth2TokenServiceObserver:
   void OnRefreshTokenAvailable(const CoreAccountId& account_id) override;
@@ -786,16 +778,6 @@ class IdentityManager : public KeyedService,
   void OnAccountUpdated(const AccountInfo& info);
   void OnAccountRemoved(const AccountInfo& info);
 
-#if BUILDFLAG(IS_IOS)
-  // Starts and stops the account switching. Those method can only be called by
-  // `StartBatchOfPrimaryAccountChanges()`. Only one account switching can be
-  // started at the same time.
-  void BatchOfPrimaryAccountChangesDone();
-  // Triggers `OnEndBatchOfPrimaryAccountChanges()` events. A batch of primary
-  // account changes should not be in progress when calling this method.
-  void FireOnEndBatchOfPrimaryAccountChanges();
-#endif  // BUILDFLAG(IS_IOS)
-
   // Backing signin classes.
   std::unique_ptr<AccountTrackerService> account_tracker_service_;
   std::unique_ptr<ProfileOAuth2TokenService> token_service_;
@@ -837,11 +819,6 @@ class IdentityManager : public KeyedService,
   // Java-side IdentityManager object.
   base::android::ScopedJavaGlobalRef<jobject> java_identity_manager_;
 #endif
-#if BUILDFLAG(IS_IOS)
-  // `true` if there is an account switching back in progress.
-  // See `StartBatchOfPrimaryAccountChanges()`.
-  bool batch_of_primary_account_changes_in_progress_ = false;
-#endif  // BUILDFLAG(IS_IOS)
   base::WeakPtrFactory<IdentityManager> weak_pointer_factory_;
 };
 

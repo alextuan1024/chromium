@@ -27,6 +27,7 @@
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
 #import "ui/base/l10n/l10n_util.h"
 
 @interface PaymentsScanSaveAndFillEditViewController (Testing)
@@ -444,6 +445,33 @@ TEST_F(PaymentsScanSaveAndFillEditViewControllerTest,
   EXPECT_TRUE(expItem.hasValidText);
 }
 
+// Tests that typing "329" formats the expiration date as "03/29" and notifies
+// the mutator of the formatted value.
+TEST_F(PaymentsScanSaveAndFillEditViewControllerTest,
+       TestExpirationDateFormattedWhileTyping) {
+  CreateController();
+  TableViewTextEditItem* item = GetItem(kSectionIdentifierCardDetails, 1);
+  id<UITextFieldDelegate> delegate = item.textFieldDelegate;
+  ASSERT_TRUE(delegate);
+  UITextField* field = [[UITextField alloc] init];
+  OCMExpect([mock_mutator_ didUpdateValue:@"03/29"
+                                 forField:AutofillCreditCardUIType::kExpMonth]);
+
+  [delegate textField:field
+      shouldChangeCharactersInRange:NSMakeRange(field.text.length, 0)
+                  replacementString:@"3"];
+  [delegate textField:field
+      shouldChangeCharactersInRange:NSMakeRange(field.text.length, 0)
+                  replacementString:@"2"];
+  [delegate textField:field
+      shouldChangeCharactersInRange:NSMakeRange(field.text.length, 0)
+                  replacementString:@"9"];
+
+  EXPECT_NSEQ(@"03/29", field.text);
+  EXPECT_NSEQ(@"03/29", item.textFieldValue);
+  EXPECT_OCMOCK_VERIFY(mock_mutator_);
+}
+
 // Tests the validation timing and focus behavior.
 TEST_F(PaymentsScanSaveAndFillEditViewControllerTest, TestValidationTiming) {
   CreateController();
@@ -637,5 +665,25 @@ TEST_F(PaymentsScanSaveAndFillEditViewControllerTest,
   histogram_tester.ExpectUniqueSample("IOS.ScannedCard.ExpMonthEdited", false,
                                       1);
   histogram_tester.ExpectUniqueSample("IOS.ScannedCard.ExpYearEdited", false,
+                                      1);
+}
+
+// Tests that a scanned single-digit month is shown zero-padded and that the
+// padding alone isn't logged as an edit on Save.
+TEST_F(PaymentsScanSaveAndFillEditViewControllerTest,
+       TestScannedExpirationMonthZeroPaddedWithoutLoggingEdit) {
+  base::HistogramTester histogram_tester;
+  CreateController();
+
+  [view_controller_ setCreditCardNumber:@"4111222233334444"
+                        expirationMonth:@"3"
+                         expirationYear:@"29"];
+  TableViewTextEditItem* expiration_date_item =
+      GetItem(kSectionIdentifierCardDetails, 1);
+  EXPECT_NSEQ(@"03/29", expiration_date_item.textFieldValue);
+
+  [view_controller_ didTapSave];
+
+  histogram_tester.ExpectUniqueSample("IOS.ScannedCard.ExpMonthEdited", false,
                                       1);
 }

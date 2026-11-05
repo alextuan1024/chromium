@@ -8,8 +8,6 @@
 #include <string>
 
 #include "base/android/scoped_java_ref.h"
-#include "base/file_descriptor_posix.h"
-#include "base/files/scoped_file.h"
 #include "printing/mojom/print.mojom.h"
 #include "printing/printing_context.h"
 
@@ -35,15 +33,13 @@ class COMPONENT_EXPORT(PRINTING) PrintingContextAndroid
   // failure.
   static void PdfWritingDone(int page_count, ui::WindowAndroid* window);
 
-  static void SetPendingPrint(
+  // Returns true if the system print dialog took the job, i.e. if a teardown
+  // callback (PdfWritingDone()/finishPrint()) can be expected to follow.
+  static bool StartPrint(
       ui::WindowAndroid* window,
       const base::android::ScopedJavaLocalRef<jobject>& printable,
       int render_process_id,
       int render_frame_id);
-
-  // Called from Java, when printing settings from the user are ready or the
-  // printing operation is canceled.
-  void AskUserForSettingsReply(JNIEnv* env, bool success);
 
   // Called from Java, when a printing process initiated by a script finishes.
   void ShowSystemDialogDone(JNIEnv* env);
@@ -72,11 +68,6 @@ class COMPONENT_EXPORT(PRINTING) PrintingContextAndroid
   // The callback from AskUserForSettings to be called when the settings are
   // ready on the Java side
   PrintSettingsCallback callback_;
-
-  // File descriptor for the PDF file and owned by this layer.
-  base::ScopedFD scoped_fd_;
-
-  bool print_selection_only_ = false;
 };
 
 }  // namespace printing

@@ -172,6 +172,13 @@ class FrameSessionTracker
 
     RenderFrameHost* render_frame_host = RenderFrameHost::FromID(global_id);
     if (!render_frame_host) {
+#if BUILDFLAG(IS_CHROMEOS)
+      if (!global_id.child_id) {
+        // Browser-initiated speech recognition requests on ChromeOS (such as
+        // Dictation) do not have an associated `RenderFrameHost`.
+        return;
+      }
+#endif
       GetIOThreadTaskRunner({})->PostTask(
           FROM_HERE, base::BindOnce(frame_deleted_callback, session_id));
       return;
@@ -257,7 +264,7 @@ class FrameSessionTracker
 
   void SubscribeToPermissionControllerIfNeeded() {
     CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
-    if (mic_sessions_.empty() || !subscription_id_.is_null()) {
+    if (mic_sessions_.empty() || permission_subscription_) {
       return;
     }
     PermissionController* controller =
@@ -265,7 +272,7 @@ class FrameSessionTracker
     if (!controller) {
       return;
     }
-    subscription_id_ = controller->SubscribeToPermissionResultChange(
+    permission_subscription_ = controller->SubscribeToPermissionResultChange(
         PermissionDescriptorUtil::CreatePermissionDescriptorForPermissionType(
             blink::PermissionType::AUDIO_CAPTURE),
         /*render_process_host=*/nullptr, &render_frame_host(),
@@ -284,15 +291,7 @@ class FrameSessionTracker
 
   void UnsubscribeFromPermissionController() {
     CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
-    if (subscription_id_.is_null()) {
-      return;
-    }
-    PermissionController* controller =
-        render_frame_host().GetBrowserContext()->GetPermissionController();
-    if (controller) {
-      controller->UnsubscribeFromPermissionResultChange(subscription_id_);
-    }
-    subscription_id_ = PermissionController::SubscriptionId();
+    permission_subscription_.reset();
   }
 
   void OnPermissionChanged(PermissionResult permission_result) {
@@ -317,7 +316,8 @@ class FrameSessionTracker
   PermissionRevokedCallback permission_revoked_callback_;
   std::set<int> sessions_;
   std::set<int> mic_sessions_;
-  PermissionController::SubscriptionId subscription_id_;
+  std::unique_ptr<PermissionController::PermissionSubscription>
+      permission_subscription_;
   base::WeakPtrFactory<FrameSessionTracker> weak_ptr_factory_{this};
 };
 
@@ -444,8 +444,9 @@ void SpeechRecognitionManagerImpl::RecognitionAllowedCallback(int session_id,
 
   Session* session = iter->second.get();
 
-  if (session->abort_requested)
+  if (session->abort_requested || session->stop_requested) {
     return;
+  }
 
   if (ask_user) {
     SpeechRecognitionSessionContext& context = session->context;
@@ -574,12 +575,13 @@ void SpeechRecognitionManagerImpl::StopAudioCaptureForSession(int session_id) {
   if (iter == sessions_.end())
     return;
 
-  GetUIThreadTaskRunner({})->PostTask(
-      FROM_HERE, base::BindOnce(&FrameSessionTracker::RemoveObserverForSession,
-                                iter->second->config.initial_context.global_id,
-                                session_id));
-
   iter->second->ui.reset();
+
+  if (iter->second->abort_requested || iter->second->stop_requested) {
+    return;
+  }
+
+  iter->second->stop_requested = true;
 
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&SpeechRecognitionManagerImpl::DispatchEvent,
@@ -682,8 +684,15 @@ void SpeechRecognitionManagerImpl::OnRecognitionResults(
     int session_id,
     const std::vector<media::mojom::WebSpeechRecognitionResultPtr>& results) {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
-  if (!SessionExists(session_id))
+  if (!SessionExists(session_id) || GetSession(session_id)->abort_requested) {
     return;
+  }
+
+  if (std::ranges::any_of(results, [](const auto& result) {
+        return !result->hypotheses.empty();
+      })) {
+    GetSession(session_id)->has_received_results = true;
+  }
 
   if (SpeechRecognitionEventListener* delegate_listener = GetDelegateListener())
     delegate_listener->OnRecognitionResults(session_id, results);
@@ -705,6 +714,13 @@ void SpeechRecognitionManagerImpl::OnRecognitionError(
   session->has_error = true;
 
   LogBackendSpecificErrorOccurred(session->config, error.code);
+  if (!session->abort_requested && !session->has_received_results &&
+      UseOnDeviceSpeechRecognition(session->config) &&
+      (error.code == media::mojom::SpeechRecognitionErrorCode::kAborted ||
+       error.code ==
+           media::mojom::SpeechRecognitionErrorCode::kServiceNotAllowed)) {
+    on_device_speech_recognition_failed_ = true;
+  }
 
   if (SpeechRecognitionEventListener* delegate_listener = GetDelegateListener())
     delegate_listener->OnRecognitionError(session_id, error);
@@ -924,6 +940,10 @@ int SpeechRecognitionManagerImpl::CreateSession(
     remote_engine_config.auth_token = config.auth_token;
     remote_engine_config.auth_scope = config.auth_scope;
     remote_engine_config.preamble = config.preamble;
+    if (delegate_) {
+      remote_engine_config.routing_params =
+          delegate_->GetRoutingParams(config.origin);
+    }
 
     std::unique_ptr<NetworkSpeechRecognitionEngineImpl> google_remote_engine =
         std::make_unique<NetworkSpeechRecognitionEngineImpl>(
@@ -984,8 +1004,9 @@ SpeechRecognitionSessionContext SpeechRecognitionManagerImpl::GetSessionContext(
 bool SpeechRecognitionManagerImpl::UseOnDeviceSpeechRecognition(
     const SpeechRecognitionSessionConfig& config) {
 #if !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_ANDROID)
-  return config.on_device &&
-         (config.on_device_available || !config.allow_cloud_fallback);
+  return config.on_device && ((config.on_device_available &&
+                               !on_device_speech_recognition_failed_) ||
+                              !config.allow_cloud_fallback);
 #else
   return false;
 #endif
@@ -1083,8 +1104,9 @@ void SpeechRecognitionManagerImpl::ExecuteTransitionAndGetNextState(
         case EVENT_AUDIO_ENDED:
           return ResetCapturingSessionId(*session);
         case EVENT_START:
-        case EVENT_STOP_CAPTURE:
           return;
+        case EVENT_STOP_CAPTURE:
+          return SessionStopAudioCapture(*session);
         case EVENT_RECOGNITION_ENDED:
           return NotFeasible(*session, event);
       }
@@ -1108,6 +1130,9 @@ SpeechRecognitionManagerImpl::GetSessionState(int session_id) const {
 //  - Are guaranteed to be not reentrant (themselves and each other);
 
 void SpeechRecognitionManagerImpl::SessionStart(const Session& session) {
+  if (session.stop_requested) {
+    return;
+  }
   const blink::MediaStreamDevices& devices = session.context.devices;
   std::string device_id;
   if (devices.empty()) {

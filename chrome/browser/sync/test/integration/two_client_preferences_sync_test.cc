@@ -7,18 +7,20 @@
 
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/uuid.h"
+#include "base/values.h"
 #include "chrome/browser/sync/test/integration/preferences_helper.h"
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/common/pref_names.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/public/base/signin_switches.h"
-#include "components/sync/base/features.h"
 #include "components/sync/engine/cycle/entity_change_metric_recording.h"
 #include "components/sync_preferences/common_syncable_prefs_database.h"
+#include "components/sync_preferences/features.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -38,15 +40,7 @@ class TwoClientPreferencesSyncTest
     : public SyncTest,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  TwoClientPreferencesSyncTest() : SyncTest(TWO_CLIENT) {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitWithFeatures(
-          {syncer::kReplaceSyncPromosWithSignInPromos,
-           switches::kEnablePreferencesAccountStorage,
-           syncer::kSeparateLocalAndAccountSearchEngines},
-          {});
-    }
-  }
+  TwoClientPreferencesSyncTest() : SyncTest(TWO_CLIENT) {}
 
   TwoClientPreferencesSyncTest(const TwoClientPreferencesSyncTest&) = delete;
   TwoClientPreferencesSyncTest& operator=(const TwoClientPreferencesSyncTest&) =
@@ -57,9 +51,6 @@ class TwoClientPreferencesSyncTest
   SyncTest::SetupSyncMode GetSetupSyncMode() const override {
     return GetParam();
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(,
@@ -134,10 +125,11 @@ IN_PROC_BROWSER_TEST_P(TwoClientPreferencesSyncTest,
   ASSERT_TRUE(ResetSyncForPrimaryAccount());
   ASSERT_TRUE(SetupSync());
   ASSERT_TRUE(StringPrefMatchChecker(prefs::kHomePage).Wait());
-  ASSERT_TRUE(BooleanPrefMatchChecker(prefs::kDisableScreenshots).Wait());
+  ASSERT_TRUE(BooleanPrefMatchChecker(policy::policy_prefs::kDisableScreenshots)
+                  .Wait());
 
   // This pref is not syncable.
-  ChangeBooleanPref(0, prefs::kDisableScreenshots);
+  ChangeBooleanPref(0, policy::policy_prefs::kDisableScreenshots);
 
   // This pref is syncable.
   ChangeStringPref(0, prefs::kHomePage, "http://news.google.com");
@@ -145,7 +137,7 @@ IN_PROC_BROWSER_TEST_P(TwoClientPreferencesSyncTest,
   // Wait until the syncable pref is synced, then expect that the non-syncable
   // one is still out of sync.
   ASSERT_TRUE(StringPrefMatchChecker(prefs::kHomePage).Wait());
-  ASSERT_FALSE(BooleanPrefMatches(prefs::kDisableScreenshots));
+  ASSERT_FALSE(BooleanPrefMatches(policy::policy_prefs::kDisableScreenshots));
 }
 
 IN_PROC_BROWSER_TEST_P(TwoClientPreferencesSyncTest, E2E_ENABLED(StringPref)) {
@@ -220,6 +212,109 @@ IN_PROC_BROWSER_TEST_P(TwoClientPreferencesSyncTest,
       Eq(true));
   EXPECT_THAT(GetPrefs(1)->GetString(sync_preferences::kSyncablePrefForTesting),
               Eq(string_value));
+}
+
+class TwoClientPreferencesWithAccountStorageMergeRemovalSyncTest
+    : public TwoClientPreferencesSyncTest {
+ public:
+  TwoClientPreferencesWithAccountStorageMergeRemovalSyncTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        sync_preferences::features::kSyncUnmergeRemotePrefRemovals);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    TwoClientPreferencesWithAccountStorageMergeRemovalSyncTest,
+    GetSyncTestModes(),
+    testing::PrintToStringParamName());
+
+IN_PROC_BROWSER_TEST_P(
+    TwoClientPreferencesWithAccountStorageMergeRemovalSyncTest,
+    ShouldNotReaddRemotelyRemovedListEntries) {
+  ASSERT_TRUE(SetupClients());
+  GetRegistry(GetProfile(0))
+      ->RegisterListPref(sync_preferences::kSyncableMergeableListPrefForTesting,
+                         user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  GetRegistry(GetProfile(1))
+      ->RegisterListPref(sync_preferences::kSyncableMergeableListPrefForTesting,
+                         user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  ASSERT_TRUE(SetupSync());
+
+  const base::ListValue list_u1 = base::ListValue().Append("U1");
+  ChangeListPref(0, sync_preferences::kSyncableMergeableListPrefForTesting,
+                 list_u1);
+  ASSERT_TRUE(
+      PrefValueChecker(GetPrefs(1),
+                       sync_preferences::kSyncableMergeableListPrefForTesting,
+                       base::Value(list_u1.Clone()))
+          .Wait());
+
+  const base::ListValue empty_list;
+  ChangeListPref(1, sync_preferences::kSyncableMergeableListPrefForTesting,
+                 empty_list);
+  ASSERT_TRUE(
+      PrefValueChecker(GetPrefs(0),
+                       sync_preferences::kSyncableMergeableListPrefForTesting,
+                       base::Value(empty_list.Clone()))
+          .Wait());
+
+  const base::ListValue list_u2 = base::ListValue().Append("U2");
+  ChangeListPref(1, sync_preferences::kSyncableMergeableListPrefForTesting,
+                 list_u2);
+  EXPECT_TRUE(
+      PrefValueChecker(GetPrefs(0),
+                       sync_preferences::kSyncableMergeableListPrefForTesting,
+                       base::Value(list_u2.Clone()))
+          .Wait());
+}
+
+IN_PROC_BROWSER_TEST_P(
+    TwoClientPreferencesWithAccountStorageMergeRemovalSyncTest,
+    ShouldNotReaddRemotelyRemovedDictEntries) {
+  ASSERT_TRUE(SetupClients());
+  GetRegistry(GetProfile(0))
+      ->RegisterDictionaryPref(
+          sync_preferences::kSyncableMergeableDictPrefForTesting,
+          user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  GetRegistry(GetProfile(1))
+      ->RegisterDictionaryPref(
+          sync_preferences::kSyncableMergeableDictPrefForTesting,
+          user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  ASSERT_TRUE(SetupSync());
+
+  base::DictValue initial_dict =
+      base::DictValue()
+          .Set("kept.com", "allow")
+          .Set("removed.com", "deny")
+          .Set("nested", base::DictValue()
+                             .Set("kept_sub", "allow")
+                             .Set("removed_sub", "deny"));
+  GetPrefs(0)->SetDict(sync_preferences::kSyncableMergeableDictPrefForTesting,
+                       initial_dict.Clone());
+  ASSERT_TRUE(
+      PrefValueChecker(GetPrefs(1),
+                       sync_preferences::kSyncableMergeableDictPrefForTesting,
+                       base::Value(initial_dict.Clone()))
+          .Wait());
+
+  // Client 1 removes "removed.com" and "nested.removed_sub", and adds
+  // "added_by_1.com".
+  base::DictValue updated_dict =
+      base::DictValue()
+          .Set("kept.com", "allow")
+          .Set("added_by_1.com", "allow")
+          .Set("nested", base::DictValue().Set("kept_sub", "allow"));
+  GetPrefs(1)->SetDict(sync_preferences::kSyncableMergeableDictPrefForTesting,
+                       updated_dict.Clone());
+  EXPECT_TRUE(
+      PrefValueChecker(GetPrefs(0),
+                       sync_preferences::kSyncableMergeableDictPrefForTesting,
+                       base::Value(updated_dict.Clone()))
+          .Wait());
 }
 
 }  // namespace

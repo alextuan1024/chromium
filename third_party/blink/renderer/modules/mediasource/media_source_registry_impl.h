@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_MEDIASOURCE_MEDIA_SOURCE_REGISTRY_IMPL_H_
 
 #include "base/memory/scoped_refptr.h"
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/html/media/media_source_attachment.h"
 #include "third_party/blink/renderer/core/html/media/media_source_registry.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
@@ -24,7 +25,8 @@ class MediaSourceRegistryImpl final : public MediaSourceRegistry {
 
   // MediaSourceRegistry override for registering blob URLs referring to the
   // specified media source attachment.
-  void RegisterUrl(const KURL&, scoped_refptr<MediaSourceAttachment>) override;
+  KURL RegisterUrl(const SecurityOrigin*,
+                   scoped_refptr<MediaSourceAttachment>) override;
 
   // UnregisterUrl() unregisters the attachment and removes its entry from
   // |media_sources_| if the serialized URL is present.
@@ -39,6 +41,8 @@ class MediaSourceRegistryImpl final : public MediaSourceRegistry {
  private:
   // Construction of this singleton informs MediaSourceAttachment of this
   // singleton, for it to use for lookup, registration, and unregistration.
+  friend class base::NoDestructor<MediaSourceRegistryImpl>;
+
   MediaSourceRegistryImpl();
 
   HashMap<String, scoped_refptr<MediaSourceAttachment>> media_sources_;

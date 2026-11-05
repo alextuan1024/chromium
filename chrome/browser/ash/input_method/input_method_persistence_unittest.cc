@@ -10,11 +10,11 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/chrome_constants.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/language_preferences/language_preferences.h"
+#include "chromeos/ash/components/login/session/scoped_process_shutting_down_override_for_testing.h"
 #include "components/prefs/pref_service.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/user_manager/scoped_user_manager.h"
@@ -102,11 +102,12 @@ TEST_F(InputMethodPersistenceTest, TestPrefPersistenceByState) {
 
   mock_manager_.GetActiveIMEState()->SetUIStyle(
       InputMethodManager::UIStyle::kNormal);
-  TestingBrowserProcess::GetGlobal()->SetShuttingDown(true);
-  mock_manager_.SetCurrentInputMethodId(kInputId1);
-  persistence.PersistInputMethod(ProfileManager::GetActiveUserProfile());
-  VerifyPrefs(kInputId2, "", kInputId1);
-  TestingBrowserProcess::GetGlobal()->SetShuttingDown(false);
+  {
+    ScopedProcessShuttingDownOverrideForTesting shutting_down_override;
+    mock_manager_.SetCurrentInputMethodId(kInputId1);
+    persistence.PersistInputMethod(ProfileManager::GetActiveUserProfile());
+    VerifyPrefs(kInputId2, "", kInputId1);
+  }
 
   mock_manager_.GetActiveIMEState()->SetUIStyle(
       InputMethodManager::UIStyle::kLogin);

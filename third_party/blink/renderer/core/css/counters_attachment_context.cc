@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/core/css/counters_attachment_context.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "base/not_fatal_until.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/layout_tree_builder_traversal.h"
@@ -58,7 +59,7 @@ std::optional<std::pair<unsigned, int>> DetermineCounterTypeAndValue(
   if (layout_object.IsText() && !layout_object.IsBR()) {
     return std::nullopt;
   }
-  const ComputedStyle& style = layout_object.StyleRef();
+  const ComputedStyle& style = layout_object.Style();
   if (IsForbiddenForCounter(style.StyleType())) {
     return std::nullopt;
   }
@@ -156,14 +157,21 @@ int CountersAttachmentContext::CalculateInitialValueForReversed(
         style->GetCounterDirectives(counter_name);
 
     if (current_directives.IsReset()) {
-      if (parent == LayoutTreeBuilderTraversal::Parent(*current)) {
+      const Node* current_parent = LayoutTreeBuilderTraversal::Parent(*current);
+      if (current_parent == parent) {
         // It does not include any elements in the scope of a counter with the
         // same name created by a counter-reset on a later sibling of the
         // element.
         break;
       }
+      // A nested counter is also inherited by the following siblings of
+      // `current` and their descendants, so nothing else under
+      // `current_parent` belongs to this counter. `list-item` keeps the narrow
+      // scope, see LeaveObject().
+      const Node* skip_root =
+          counter_name == list_item_name ? current : current_parent;
       current =
-          LayoutTreeBuilderTraversal::NextSkippingChildren(*current, parent);
+          LayoutTreeBuilderTraversal::NextSkippingChildren(*skip_root, parent);
       continue;
     }
 
@@ -209,7 +217,7 @@ void CountersAttachmentContext::EnterObject(const LayoutObject& layout_object,
   if (!attachment_root_is_document_element_) {
     return;
   }
-  const ComputedStyle& style = layout_object.StyleRef();
+  const ComputedStyle& style = layout_object.Style();
   const CounterDirectiveMap* counter_directives = style.GetCounterDirectives();
   if (counter_directives) {
     for (auto& [counter_name, directives] : *counter_directives) {
@@ -251,7 +259,7 @@ void CountersAttachmentContext::EnterObject(const LayoutObject& layout_object,
   // Doing it after counters creation as the element itself is not included
   // in the style containment scope.
   if (style.ContainsStyle()) {
-    EnterStyleContainmentScope();
+    EnterStyleContainmentScope(layout_object);
   }
 }
 
@@ -260,7 +268,7 @@ void CountersAttachmentContext::LeaveObject(const LayoutObject& layout_object,
   if (!attachment_root_is_document_element_) {
     return;
   }
-  const ComputedStyle& style = layout_object.StyleRef();
+  const ComputedStyle& style = layout_object.Style();
   // Remove style containment boundary if the element has contains style.
   // Doing it here as reverse to EnterObject().
   if (style.ContainsStyle()) {
@@ -281,10 +289,25 @@ void CountersAttachmentContext::LeaveObject(const LayoutObject& layout_object,
       if (!IsReset(counter_type)) {
         continue;
       }
-      // Remove self from stack if previous counter on stack is ancestor to
-      // self. This is done since we should always inherit from ancestor first,
-      // and in the case described, all next elements would inherit ancestor
-      // instead of self, so remove self.
+      // Counters are inherited from the preceding sibling first, so a counter
+      // instantiated by this element must stay on the stack for its following
+      // siblings, even if the previous entry was created by an ancestor or by a
+      // preceding sibling of an ancestor.
+      // https://drafts.csswg.org/css-lists/#inheriting-counters
+      //
+      // The `list-item` counter is the exception: HTML ordinals
+      // require the scope of a nested list to end with that list, so that an
+      // <li> following a nested list continues the outer list rather than the
+      // nested one.
+      // TODO(crbug.com/40682542): Remove this divergence once
+      // https://github.com/w3c/csswg-drafts/issues/9076 is resolved.
+      if (RuntimeEnabledFeatures::CSSListCounterAccountingEnabled() &&
+          counter_name != list_item_) {
+        continue;
+      }
+      // The legacy path and the `list-item` counter retain ancestor-first
+      // inheritance. Remove this counter if following siblings would inherit
+      // a counter through an ancestor instead.
       RemoveCounterIfAncestorExists(layout_object, counter_name);
     }
   }
@@ -357,7 +380,7 @@ Vector<int> CountersAttachmentContext::GetCounterValues(
   // of the same name within the document.
   bool is_page_counter = false;
 
-  for (const CounterEntry* entry : base::Reversed(counter_stack)) {
+  for (const CounterEntry* entry : std::views::reverse(counter_stack)) {
     // counter() and counters() can cross style containment boundaries.
     if (!entry) {
       if (is_page_counter) {
@@ -511,29 +534,33 @@ void CountersAttachmentContext::CreateCounter(const LayoutObject& layout_object,
   counter_stack.push_back(new_entry);
 }
 
-// Remove counters parent is not ancestor of current element from stack,
-// meaning that we left the scope of such counter already, e.g.:
+// Remove counters whose originating element's parent is not an ancestor of
+// the current element. Such counters are no longer in scope, e.g.:
 //        ()
 //    ()--------(S)
 // (R)-(I)-()
-// R will create and put on stack counter;
-// I will use it from stack, but when we visit the next sibling of I,
-// we don't remove R from stack, even we leave its scope, as we would have
-// to check every last child in the tree if there were any counters created
-// on this level. Instead, once we reach S we pop all stale counters from stack,
-// here R will be removed from stack.
+// The counter created by R remains in scope for I, its following siblings
+// and their descendants. At S, R's parent is no longer an ancestor, so R's
+// counter is stale. Rather than detecting the end of each scope (which would
+// require checking every last child), cleanup is deferred until a counter is
+// used or modified, or a style containment boundary is pushed.
 void CountersAttachmentContext::RemoveStaleCounters(
     const LayoutObject& layout_object,
     const AtomicString& counter_name) {
-  const auto* element = DynamicTo<Element>(layout_object.GetNode());
-  if (!element) {
-    return;
-  }
   auto counter_stack_it = counter_inheritance_table_->find(counter_name);
   if (counter_stack_it == counter_inheritance_table_->end()) {
     return;
   }
-  CounterStack& counter_stack = *counter_stack_it->value;
+  RemoveStaleCounters(layout_object, *counter_stack_it->value);
+}
+
+void CountersAttachmentContext::RemoveStaleCounters(
+    const LayoutObject& layout_object,
+    CounterStack& counter_stack) {
+  const auto* element = DynamicTo<Element>(layout_object.GetNode());
+  if (!element) {
+    return;
+  }
   while (!counter_stack.empty()) {
     // If we hit style containment boundary, stop.
     const CounterEntry* entry = counter_stack.back();
@@ -553,11 +580,11 @@ void CountersAttachmentContext::RemoveStaleCounters(
   }
 }
 
-// When leaving the element that created counter we might want to
-// pop it from stack, if previous counter on stack is ancestor of it.
-// This is done because we should always inherit counters from ancestor first,
-// so, if the previous counter is ancestor to the last one, the last one will
-// never be inherited, remove it.
+// Apply ancestor-first inheritance when leaving a counter's originating
+// element. Remove its counter if following siblings would inherit a counter
+// through an ancestor instead.
+// This applies to all counters in the legacy path, and only to `list-item`
+// when CSSListCounterAccounting is enabled.
 void CountersAttachmentContext::RemoveCounterIfAncestorExists(
     const LayoutObject& layout_object,
     const AtomicString& counter_name) {
@@ -586,11 +613,9 @@ void CountersAttachmentContext::RemoveCounterIfAncestorExists(
   if (!previous_element || !element) {
     return;
   }
-  // If previous element is ancestor to current element or previous element is
-  // previous sibling of an ancestor to current element, remove last counter
-  // from stack, as it will never be inherited, since we always inherit from
-  // ancestor first, so previous counter will always be inherited instead of
-  // last one.
+  // Under ancestor-first inheritance, following siblings would inherit the
+  // previous counter if it was created by an ancestor or by a preceding sibling
+  // of an ancestor, so the last counter would never be inherited. Remove it.
   if (IsAncestorOf(*previous_element, *element)) {
     counter_stack.pop_back();
     return;
@@ -633,12 +658,17 @@ void CountersAttachmentContext::UpdateCounterValue(
       CalculateCounterValue(counter_type, counter_value, current.value);
 }
 
-void CountersAttachmentContext::EnterStyleContainmentScope() {
+void CountersAttachmentContext::EnterStyleContainmentScope(
+    const LayoutObject& layout_object) {
   // Push a style containment boundary (nullptr) to each existing stack.
   // Note: if there will be counters with new counter_name created later,
   // it still will work correctly as we will remove all counters until
   // counter stack is empty, when we will leave style containment scope.
   for (auto& [counter_name, counter_stack] : *counter_inheritance_table_) {
+    // Stale counters are normally removed lazily, but the boundary would
+    // stop RemoveStaleCounters() from reaching them, and counters() can
+    // see through the boundary.
+    RemoveStaleCounters(layout_object, *counter_stack);
     counter_stack->push_back(nullptr);
   }
 }

@@ -225,7 +225,7 @@ FeedStream::Stream& FeedStream::GetStream(const StreamType& stream_type) {
   FeedStream::Stream& new_stream =
       streams_.emplace(stream_type, stream_type).first->second;
   new_stream.surface_updater = std::make_unique<SurfaceUpdater>(
-      metrics_reporter_, &global_datastore_slice_, &new_stream.surfaces);
+      &global_datastore_slice_, &new_stream.surfaces);
   new_stream.surfaces.AddObserver(new_stream.surface_updater.get());
   return new_stream;
 }
@@ -351,9 +351,6 @@ void FeedStream::StreamLoadComplete(LoadStreamTask::Result result) {
   result_summary.load_from_store_status = result.load_from_store_status;
   result_summary.final_status = result.final_status;
   result_summary.is_initial_load = result.load_type == LoadType::kInitialLoad;
-  result_summary.loaded_new_content_from_network =
-      result.loaded_new_content_from_network;
-  result_summary.stored_content_age = result.stored_content_age;
   result_summary.stream_metadata = stream_metadata;
 
   metrics_reporter_->OnLoadStream(stream.type, result_summary, content_stats,
@@ -552,11 +549,10 @@ bool FeedStream::IsEnabledAndVisible() {
 
 bool FeedStream::IsFeedEnabledByDse() {
 #if BUILDFLAG(IS_ANDROID)
-  if (chrome_info_.is_new_tab_search_engine_url_android_enabled) {
-    return snippets_enabled_by_dse_.GetValue();
-  }
-#endif  // BUILDFLAG(IS_ANDROID)
+  return snippets_enabled_by_dse_.GetValue();
+#else
   return true;
+#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 void FeedStream::EnabledPreferencesChanged() {
@@ -1485,9 +1481,6 @@ void FeedStream::ReportFeedViewed(SurfaceId surface_id) {
   stream->surfaces.FeedViewed(surface_id);
 }
 
-void FeedStream::ReportPageLoaded(SurfaceId /*surface_id*/) {
-  metrics_reporter_->PageLoaded();
-}
 void FeedStream::ReportStreamScrolled(SurfaceId surface_id, int distance_dp) {
   FeedStreamSurface* surface = FindSurface(surface_id);
   if (!surface) {

@@ -7,7 +7,6 @@ import {html} from '//resources/lit/v3_0/lit.rollup.js';
 import type {SettingsDefaultBrowserPageElement} from './default_browser_page.js';
 
 export function getHtml(this: SettingsDefaultBrowserPageElement) {
-  // clang-format off
   return html`<!--_html_template_start_-->
 <settings-section page-title="$i18n{defaultBrowser}"
     class="cr-centered-card-container">
@@ -28,20 +27,7 @@ export function getHtml(this: SettingsDefaultBrowserPageElement) {
     <div class="cr-row first">
       <div class="flex cr-padded-text" ?hidden="${!this.isDefault_}"
           id="isDefault">
-        <!--
-          Shows a more user-centric string when the
-          UserValueDefaultBrowserStrings feature is enabled.
-          TODO(crbug.com/459593729): Clean up by removing the old string
-          and this conditional logic after the feature is launched.
-        -->
-        <span id="defaultString"
-            ?hidden="${this.userValueDefaultBrowserStringsEnabled_}">
-          $i18n{defaultBrowserDefault}
-        </span>
-        <span id="defaultStringThankYou"
-            ?hidden="${!this.userValueDefaultBrowserStringsEnabled_}">
-          $i18n{defaultBrowserDefaultThankYou}
-        </span>
+        $i18n{defaultBrowserDefault}
       </div>
       <div class="flex cr-padded-text" ?hidden="${!this.isSecondaryInstall_}"
           id="isSecondaryInstall">
@@ -55,5 +41,4 @@ export function getHtml(this: SettingsDefaultBrowserPageElement) {
   `}
 </settings-section>
 <!--_html_template_end_-->`;
-  // clang-format on
 }

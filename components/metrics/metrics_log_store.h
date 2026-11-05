@@ -122,11 +122,13 @@ class MetricsLogStore : public LogStore {
   const std::string& staged_log_hash() const override;
   const std::string& staged_log_signature() const override;
   std::optional<uint64_t> staged_log_user_id() const override;
-  const LogMetadata staged_log_metadata() const override;
+  const LogMetadata& staged_log_metadata() const override;
   void StageNextLog() override;
 
  protected:
-  void DiscardStagedLogImpl(std::string_view reason) override;
+  void DiscardStagedLogImpl(
+      std::string_view reason,
+      std::optional<UnsentLogDropReason> drop_reason) override;
 
  public:
   void MarkStagedLogAsSent() override;

@@ -7,9 +7,14 @@
 #include <stddef.h>
 
 #include <memory>
+#include <utility>
 
 #include "base/check.h"
+#include "base/features.h"
 #include "base/format_macros.h"
+#include "base/i18n/icu4c_tag_converter.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/message_formatter.h"
 #include "base/i18n/unicodestring.h"
 #include "base/memory/ptr_util.h"
@@ -18,12 +23,18 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/thread_local.h"
+#include "third_party/icu/source/common/unicode/locid.h"
 #include "third_party/icu/source/common/unicode/ustring.h"
 #include "third_party/icu/source/i18n/unicode/numfmt.h"
 
 namespace base {
 
 namespace {
+
+struct CachedPercentFormatter {
+  i18n::LanguageTag locale;
+  std::unique_ptr<icu::NumberFormat> formatter;
+};
 
 // ICU formatters are not thread-safe for mutation. Using thread-local storage
 // ensures that each thread has its own instance, preventing data races and
@@ -39,6 +50,37 @@ base::ThreadLocalOwnedPointer<icu::NumberFormat>& GetFloatFormatterStorage() {
   static base::NoDestructor<base::ThreadLocalOwnedPointer<icu::NumberFormat>>
       instance;
   return *instance;
+}
+
+base::ThreadLocalOwnedPointer<CachedPercentFormatter>&
+GetPercentFormatterStorage() {
+  static base::NoDestructor<
+      base::ThreadLocalOwnedPointer<CachedPercentFormatter>>
+      percent_formatter;
+  return *percent_formatter;
+}
+
+icu::NumberFormat& GetPercentNumberFormat() {
+  base::ThreadLocalOwnedPointer<CachedPercentFormatter>& storage =
+      GetPercentFormatterStorage();
+  const i18n::LanguageTag default_locale = i18n::GetDefaultIcuLocale();
+  CachedPercentFormatter* cached = storage.Get();
+  if (!cached || cached->locale != default_locale) {
+    UErrorCode status = U_ZERO_ERROR;
+    std::unique_ptr<icu::NumberFormat> formatter =
+        WrapUnique(icu::NumberFormat::createPercentInstance(
+            i18n::IcuLocaleConverter::GetInstance().FromLanguageTag(
+                default_locale),
+            status));
+    CHECK(U_SUCCESS(status));
+    CHECK(formatter);
+    std::unique_ptr<CachedPercentFormatter> new_cached =
+        std::make_unique<CachedPercentFormatter>(default_locale,
+                                                 std::move(formatter));
+    cached = new_cached.get();
+    storage.Set(std::move(new_cached));
+  }
+  return *cached->formatter;
 }
 
 icu::NumberFormat* GetFormatter(
@@ -97,6 +139,11 @@ std::u16string FormatDouble(double number,
 }
 
 std::u16string FormatPercent(int number) {
+  if (features::IsI18nOptimizationsEnabled()) {
+    icu::UnicodeString ustr;
+    GetPercentNumberFormat().format(static_cast<double>(number) / 100.0, ustr);
+    return i18n::UnicodeStringToString16(ustr);
+  }
   return i18n::MessageFormatter::FormatWithNumberedArgs(
       u"{0,number,percent}", static_cast<double>(number) / 100.0);
 }
@@ -104,6 +151,7 @@ std::u16string FormatPercent(int number) {
 void ResetFormattersForTesting() {
   GetIntFormatterStorage().Set(nullptr);
   GetFloatFormatterStorage().Set(nullptr);
+  GetPercentFormatterStorage().Set(nullptr);
 }
 
 }  // namespace base

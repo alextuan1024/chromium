@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "base/functional/function_ref.h"
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_highlight_hit_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_highlights_from_point_options.h"
 #include "third_party/blink/renderer/core/dom/abstract_range.h"
@@ -310,8 +311,8 @@ HighlightRegistry::GetActiveHighlightsForReplacedElement(
     const Element& element) const {
   auto it = active_highlights_in_replaced_element_.find(&element);
   if (it == active_highlights_in_replaced_element_.end()) {
-    DEFINE_STATIC_LOCAL(const HashSet<AtomicString>, empty_set, ());
-    return empty_set;
+    static const base::NoDestructor<HashSet<AtomicString>> empty_set;
+    return *empty_set;
   }
   return it->value;
 }
@@ -343,6 +344,11 @@ void HighlightRegistry::ScheduleRepaint() {
 
 void HighlightRegistry::SetForTesting(AtomicString highlight_name,
                                       Highlight* highlight) {
+  Set(highlight_name, highlight);
+}
+
+void HighlightRegistry::Set(const AtomicString& highlight_name,
+                            Highlight* highlight) {
   // Register before deregistering the Highlight being replaced, so the
   // registration count doesn't transiently drop to zero when a name is set to
   // the Highlight it already maps to.
@@ -383,7 +389,7 @@ HighlightRegistry* HighlightRegistry::setForBinding(
     ExceptionState& exception_state) {
   UseCounter::Count(ExecutionContext::From(script_state),
                     WebFeature::kHighlightAPIRegisterHighlight);
-  SetForTesting(highlight_name, highlight);
+  Set(highlight_name, highlight);
   return this;
 }
 
@@ -579,7 +585,7 @@ HeapVector<Member<HighlightHitResult>> HighlightRegistry::highlightsFromPoint(
     CHECK(highlights_iterator != highlights_.end());
     Highlight* highlight = highlights_iterator->Get()->highlight;
     HeapVector<Member<AbstractRange>> highlight_ranges_hit;
-    for (auto& abstract_range : highlight->GetRanges()) {
+    for (AbstractRange* abstract_range : highlight->GetRanges()) {
       // If the range starts and ends in a different tree scope than the hit
       // node (i.e., the range encloses a shadow tree), do not return it when
       // the hit is on a node inside that shadow tree. Only consider ranges
@@ -589,14 +595,14 @@ HeapVector<Member<HighlightHitResult>> HighlightRegistry::highlightsFromPoint(
         continue;
       }
 
-      auto* node_range = DynamicTo<NodeRange>(abstract_range.Get());
+      auto* node_range = DynamicTo<NodeRange>(abstract_range);
       if (node_range && node_range->startContainer()->GetTreeScope() !=
                             hit_node->GetTreeScope()) {
         continue;
       }
 
       std::optional<EphemeralRange> ephemeral_range =
-          ResolveEphemeralRange(abstract_range.Get(), document);
+          ResolveEphemeralRange(abstract_range, document);
       if (!ephemeral_range) {
         continue;
       }

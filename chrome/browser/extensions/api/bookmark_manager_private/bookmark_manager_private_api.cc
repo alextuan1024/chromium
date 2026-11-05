@@ -77,12 +77,13 @@
 #include "extensions/browser/extension_function_dispatcher.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/view_type_utils.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-shared.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/webui/web_ui_util.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 
 using bookmarks::BookmarkModel;
@@ -140,7 +141,7 @@ const BookmarkNode* GetNodeFromString(BookmarkModel* model,
 bool GetNodesFromVector(
     BookmarkModel* model,
     const std::vector<std::string>& id_strings,
-    std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>* nodes) {
+    std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>* nodes) {
   if (id_strings.empty()) {
     return false;
   }
@@ -209,7 +210,7 @@ bookmark_manager_private::BookmarkNodeData CreateApiBookmarkNodeData(
   node_data.same_profile = data.IsFromProfilePath(profile_path);
 
   if (node_data.same_profile) {
-    std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes =
+    std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>> nodes =
         data.GetNodes(BookmarkModelFactory::GetForBrowserContext(profile),
                       profile_path);
     for (const bookmarks::BookmarkNode* node : nodes) {
@@ -226,7 +227,7 @@ bookmark_manager_private::BookmarkNodeData CreateApiBookmarkNodeData(
 }
 
 bool HasPermanentNodes(
-    const std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>& list) {
+    const std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>& list) {
   for (const BookmarkNode* node : list) {
     if (node->is_permanent_node()) {
       return true;
@@ -272,7 +273,7 @@ BookmarkManagerPrivateEventRouter::~BookmarkManagerPrivateEventRouter() {
 void BookmarkManagerPrivateEventRouter::DispatchEvent(
     events::HistogramValue histogram_value,
     const std::string& event_name,
-    base::ListValue event_args) {
+    scoped_refptr<const EventArgs> event_args) {
   EventRouter::Get(browser_context_)
       ->BroadcastEvent(std::make_unique<Event>(histogram_value, event_name,
                                                std::move(event_args)));
@@ -284,9 +285,7 @@ void BookmarkManagerPrivateEventRouter::BookmarkModelBeingDeleted() {
   // This codepath is unexpected because `this` is owned by a KeyedService that
   // depends on BookmarkModelFactory, which means BookmarkModel must outlive
   // `this`.
-  NOTREACHED(base::NotFatalUntil::M138);
-  bookmark_model_->RemoveObserver(this);
-  bookmark_model_ = nullptr;
+  NOTREACHED();
 }
 
 BookmarkManagerPrivateAPI::BookmarkManagerPrivateAPI(
@@ -339,14 +338,14 @@ BookmarkManagerPrivateDragEventRouter::
 void BookmarkManagerPrivateDragEventRouter::DispatchEvent(
     events::HistogramValue histogram_value,
     const std::string& event_name,
-    base::ListValue args) {
+    scoped_refptr<const EventArgs> args) {
   EventRouter* event_router = EventRouter::Get(profile_);
   if (!event_router) {
     return;
   }
 
-  std::unique_ptr<Event> event(
-      new Event(histogram_value, event_name, std::move(args)));
+  auto event =
+      std::make_unique<Event>(histogram_value, event_name, std::move(args));
   event_router->BroadcastEvent(std::move(event));
 }
 
@@ -355,10 +354,12 @@ void BookmarkManagerPrivateDragEventRouter::OnDragEnter(
   if (!data.is_valid()) {
     return;
   }
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      bookmark_manager_private::OnDragEnter::Create(
+          CreateApiBookmarkNodeData(profile_, data)));
   DispatchEvent(events::BOOKMARK_MANAGER_PRIVATE_ON_DRAG_ENTER,
                 bookmark_manager_private::OnDragEnter::kEventName,
-                bookmark_manager_private::OnDragEnter::Create(
-                    CreateApiBookmarkNodeData(profile_, data)));
+                std::move(event_args));
 }
 
 void BookmarkManagerPrivateDragEventRouter::OnDragOver(
@@ -372,10 +373,12 @@ void BookmarkManagerPrivateDragEventRouter::OnDragLeave(
   if (!data.is_valid()) {
     return;
   }
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      bookmark_manager_private::OnDragLeave::Create(
+          CreateApiBookmarkNodeData(profile_, data)));
   DispatchEvent(events::BOOKMARK_MANAGER_PRIVATE_ON_DRAG_LEAVE,
                 bookmark_manager_private::OnDragLeave::kEventName,
-                bookmark_manager_private::OnDragLeave::Create(
-                    CreateApiBookmarkNodeData(profile_, data)));
+                std::move(event_args));
 }
 
 void BookmarkManagerPrivateDragEventRouter::OnDrop(
@@ -383,10 +386,12 @@ void BookmarkManagerPrivateDragEventRouter::OnDrop(
   if (!data.is_valid()) {
     return;
   }
+  auto event_args =
+      base::MakeRefCounted<EventArgs>(bookmark_manager_private::OnDrop::Create(
+          CreateApiBookmarkNodeData(profile_, data)));
   DispatchEvent(events::BOOKMARK_MANAGER_PRIVATE_ON_DROP,
                 bookmark_manager_private::OnDrop::kEventName,
-                bookmark_manager_private::OnDrop::Create(
-                    CreateApiBookmarkNodeData(profile_, data)));
+                std::move(event_args));
 
   // Make a copy that is owned by this instance.
   ClearBookmarkNodeData();
@@ -409,7 +414,7 @@ ExtensionFunction::ResponseValue ClipboardBookmarkManagerFunction::CopyOrCut(
     bool cut,
     const std::vector<std::string>& id_list) {
   BookmarkModel* model = GetBookmarkModel();
-  std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes;
+  std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>> nodes;
   if (!GetNodesFromVector(model, id_list, &nodes)) {
     return Error(kBookmarkNodesNotFoundFromIdListError,
                  base::JoinString(id_list, ", "));
@@ -509,7 +514,7 @@ void BookmarkManagerPrivatePasteFunction::OnCanPasteFinished(
   }
 
   // We want to use the highest index of the selected nodes as a destination.
-  std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes;
+  std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>> nodes;
   // No need to test return value, if we got an empty list, we insert at end.
   if (selected_id_list) {
     GetNodesFromVector(model, *selected_id_list, &nodes);
@@ -631,7 +636,7 @@ BookmarkManagerPrivateStartDragFunction::RunOnReady() {
 
   BookmarkModel* model =
       BookmarkModelFactory::GetForBrowserContext(GetProfile());
-  std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes;
+  std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>> nodes;
   if (!GetNodesFromVector(model, params->id_list, &nodes)) {
     return RespondNow(Error(kBookmarkNodesNotFoundFromIdListError,
                             base::JoinString(params->id_list, ", ")));
@@ -695,6 +700,16 @@ BookmarkManagerPrivateDropFunction::RunOnReady() {
   // if the renderer invokes drop without an active drag.
   if (!drag_data) {
     return RespondNow(Error(kDropFailedNoDragDataError));
+  }
+  if (drag_data->IsFromProfilePath(GetProfile()->GetPath())) {
+    const std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>
+        dragged_nodes = drag_data->GetNodes(model, GetProfile()->GetPath());
+    if (std::ranges::any_of(dragged_nodes, [&](const BookmarkNode* node) {
+          return drop_parent->HasAncestor(node);
+        })) {
+      router->ClearBookmarkNodeData();
+      return RespondNow(Error(bookmarks_errors::kInvalidMoveDestinationError));
+    }
   }
   const bool copy = false;
   BookmarkUIOperationsHelperNonMergedSurfaces(model, drop_parent)
@@ -869,7 +884,7 @@ BookmarkManagerPrivateOpenInNewWindowFunction::RunOnReady() {
 
   BookmarkModel* model =
       BookmarkModelFactory::GetForBrowserContext(calling_profile);
-  std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes;
+  std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>> nodes;
   if (!GetNodesFromVector(model, params->id_list, &nodes)) {
     return RespondNow(Error(kBookmarkNodesNotFoundFromIdListError,
                             base::JoinString(params->id_list, ", ")));
@@ -915,8 +930,10 @@ BookmarkManagerPrivateOpenInNewWindowFunction::RunOnReady() {
   std::erase_if(url_and_ids, [&urls](const UrlAndId& url_and_id) {
     return !std::ranges::contains(urls, url_and_id.url);
   });
-  DCHECK_EQ(urls.size(), url_and_ids.size());
+  CHECK_EQ(urls.size(), url_and_ids.size(), base::NotFatalUntil::M161);
 
+  // TODO(crbug.com/570603809): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!calling_profile->IsOffTheRecord());
   Profile* window_profile =
       incognito_result == windows_util::IncognitoResult::kIncognito
@@ -929,10 +946,11 @@ BookmarkManagerPrivateOpenInNewWindowFunction::RunOnReady() {
                                    ui::PAGE_TRANSITION_LINK);
     navigate_params.window_action = NavigateParams::WindowAction::kShowWindow;
     navigate_params.disposition =
-        first_tab ? WindowOpenDisposition::NEW_WINDOW
-                  : WindowOpenDisposition::NEW_FOREGROUND_TAB;
+        first_tab ? ui::mojom::WindowOpenDisposition::kNewWindow
+                  : ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     if (params->incognito) {
-      navigate_params.disposition = WindowOpenDisposition::OFF_THE_RECORD;
+      navigate_params.disposition =
+          ui::mojom::WindowOpenDisposition::kOffTheRecord;
     }
     base::WeakPtr<content::NavigationHandle> handle =
         Navigate(&navigate_params);
@@ -969,7 +987,7 @@ BookmarkManagerPrivateOpenInNewTabGroupFunction::RunOnReady() {
 
   BookmarkModel* model =
       BookmarkModelFactory::GetForBrowserContext(browser->GetProfile());
-  std::vector<raw_ptr<const BookmarkNode, VectorExperimental>> nodes;
+  std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>> nodes;
   if (!GetNodesFromVector(model, params->id_list, &nodes)) {
     return RespondNow(Error(kBookmarkNodesNotFoundFromIdListError,
                             base::JoinString(params->id_list, ", ")));
@@ -1004,9 +1022,9 @@ BookmarkManagerPrivateOpenInNewTabGroupFunction::RunOnReady() {
     }
   }
 
-  bookmarks::OpenAllIfAllowed(browser, nodes,
-                              WindowOpenDisposition::NEW_BACKGROUND_TAB,
-                              bookmarks::OpenAllBookmarksContext::kInGroup);
+  bookmarks::OpenAllIfAllowed(
+      browser, nodes, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
+      bookmarks::OpenAllBookmarksContext::kInGroup);
 
   return RespondNow(NoArguments());
 }
@@ -1037,7 +1055,7 @@ void BookmarkManagerPrivateIOFunction::ShowSelectFileDialog(
     return;
   }
 
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Balanced in one of the callbacks of SelectFileDialog:
   // either FileSelectionCanceled, or FileSelected

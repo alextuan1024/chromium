@@ -26,6 +26,9 @@ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.SaveInstanceStateObserver;
 import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabHidingType;
+import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
@@ -82,7 +85,6 @@ public class IncognitoReauthControllerImpl
 
                 @Override
                 public void onIncognitoReauthSuccess() {
-                    mIncognitoReauthPending = false;
                     hideDialogIfShowing(DialogDismissalCause.ACTION_ON_DIALOG_COMPLETED);
                     for (IncognitoReauthManager.IncognitoReauthCallback callback :
                             mIncognitoReauthCallbackList) {
@@ -187,6 +189,9 @@ public class IncognitoReauthControllerImpl
      */
     private final Supplier<Boolean> mIsIncognitoReauthPendingOnRestoreSupplier;
 
+    /** A supplier to indicate if the Activity is being recreated. */
+    private final Supplier<Boolean> mIsActivityRecreatingSupplier;
+
     // No strong reference to this should be made outside of this class because
     // we set this to null in hideDialogIfShowing for it to be garbage collected.
     private @Nullable IncognitoReauthCoordinator mIncognitoReauthCoordinator;
@@ -208,6 +213,8 @@ public class IncognitoReauthControllerImpl
      * @param incognitoReauthPendingOnRestoreSupplier Supplier to indicate where the {@link
      *     IncognitoReauthControllerImpl#KEY_IS_INCOGNITO_REAUTH_PENDING} was set to true in the
      *     saved instance state.
+     * @param isActivityRecreatingSupplier Supplier to indicate whether the {@link ChromeActivity}
+     *     associated with this controller is being recreated.
      * @param taskId The task Id of the {@link ChromeActivity} associated with this controller.
      */
     public IncognitoReauthControllerImpl(
@@ -217,6 +224,7 @@ public class IncognitoReauthControllerImpl
             MonotonicObservableSupplier<Profile> profileSupplier,
             IncognitoReauthCoordinatorFactory incognitoReauthCoordinatorFactory,
             Supplier<Boolean> incognitoReauthPendingOnRestoreSupplier,
+            Supplier<Boolean> isActivityRecreatingSupplier,
             int taskId) {
         mTabModelSelector = tabModelSelector;
         mActivityLifecycleDispatcher = dispatcher;
@@ -228,6 +236,7 @@ public class IncognitoReauthControllerImpl
                 incognitoReauthCoordinatorFactory.getBackPressRunnable();
         mTaskId = taskId;
         mIsIncognitoReauthPendingOnRestoreSupplier = incognitoReauthPendingOnRestoreSupplier;
+        mIsActivityRecreatingSupplier = isActivityRecreatingSupplier;
 
         layoutStateProviderOneshotSupplier.onAvailable(
                 mCallbackController.makeCancelable(
@@ -301,7 +310,7 @@ public class IncognitoReauthControllerImpl
     @Override
     public boolean isIncognitoReauthPending() {
         // A re-authentication is pending only in the context when the re-auth setting is always on.
-        assumeNonNull(mProfile);
+        if (mProfile == null) return false;
         return mIncognitoReauthPending && IncognitoReauthManager.isIncognitoReauthEnabled(mProfile);
     }
 
@@ -366,7 +375,9 @@ public class IncognitoReauthControllerImpl
     @Override
     public void onTaskVisibilityChanged(int taskId, boolean isVisible) {
         if (taskId != mTaskId) return;
-        if (!isVisible) {
+        // A task is also reported as not visible while its Activity is recreated in the foreground.
+        // The user did not leave Chrome then, so keep the current state.
+        if (!isVisible && !mIsActivityRecreatingSupplier.get()) {
             mIncognitoReauthPending =
                     mTabModelSelector.getModel(/* incognito= */ true).getCount() > 0;
         }
@@ -390,11 +401,15 @@ public class IncognitoReauthControllerImpl
         if (mProfile == null) return;
         if (!IncognitoReauthManager.isIncognitoReauthEnabled(mProfile)) return;
 
-        boolean showFullScreen =
-                !mIsTabbedActivity
-                        || !assumeNonNull(mLayoutStateProvider).isLayoutVisible(LayoutType.HUB);
+        boolean showFullScreen = shouldShowFullScreen();
         if (!mIncognitoReauthCoordinatorFactory.areDependenciesReadyFor(showFullScreen)) {
             return;
+        }
+        if (showFullScreen) {
+            Tab currentTab = mTabModelSelector.getCurrentTab();
+            if (currentTab != null && !currentTab.isHidden()) {
+                currentTab.hide(TabHidingType.ACTIVITY_HIDDEN);
+            }
         }
         mIncognitoReauthCoordinator =
                 mIncognitoReauthCoordinatorFactory.createIncognitoReauthCoordinator(
@@ -405,11 +420,27 @@ public class IncognitoReauthControllerImpl
         mOnBackPressedInFullScreenReauthCallback.setEnabled(showFullScreen);
     }
 
+    private boolean shouldShowFullScreen() {
+        return !mIsTabbedActivity
+                || !assumeNonNull(mLayoutStateProvider).isLayoutVisible(LayoutType.HUB);
+    }
+
     private void hideDialogIfShowing(@DialogDismissalCause int dismissalCause) {
+        if (dismissalCause != DialogDismissalCause.DIALOG_INTERACTION_DEFERRED) {
+            mIncognitoReauthPending = false;
+        }
         if (mIncognitoReauthCoordinator != null) {
             mOnBackPressedInFullScreenReauthCallback.setEnabled(false);
             mIncognitoReauthCoordinator.hide(dismissalCause);
             mIncognitoReauthCoordinator = null;
+            if (!mIncognitoReauthPending
+                    && mTabModelSelector.isIncognitoBrandedModelSelected()
+                    && shouldShowFullScreen()) {
+                Tab currentTab = mTabModelSelector.getCurrentTab();
+                if (currentTab != null && !currentTab.isDestroyed() && currentTab.isHidden()) {
+                    currentTab.show(TabSelectionType.FROM_USER);
+                }
+            }
         }
     }
 

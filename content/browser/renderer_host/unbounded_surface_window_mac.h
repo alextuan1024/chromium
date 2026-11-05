@@ -9,6 +9,7 @@
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
 #include "components/viz/host/host_frame_sink_client.h"
 #include "content/browser/renderer_host/unbounded_surface_window.h"
+#include "content/common/content_export.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/mojom/unbounded_element/unbounded_element.mojom.h"
@@ -16,15 +17,8 @@
 #include "ui/display/display.h"
 #include "ui/gfx/display_color_spaces.h"
 
-#ifdef __OBJC__
-@class NSWindow;
-@class NSEvent;
-#else
-class NSWindow;
-class NSEvent;
-#endif
-
 namespace ui {
+class Cursor;
 class LayerSurface;
 class RecyclableCompositorMac;
 class DisplayCALayerTree;
@@ -35,15 +29,13 @@ namespace content {
 class RenderWidgetHostViewMac;
 class RenderWidgetHostViewBase;
 
-class UnboundedSurfaceWindowMac : public UnboundedSurfaceWindow,
-                                  public viz::HostFrameSinkClient,
-                                  public ui::AcceleratedWidgetMacNSView {
+class CONTENT_EXPORT UnboundedSurfaceWindowMac
+    : public UnboundedSurfaceWindow,
+      public viz::HostFrameSinkClient,
+      public ui::AcceleratedWidgetMacNSView {
  public:
   UnboundedSurfaceWindowMac(
       RenderWidgetHostViewMac* parent_view,
-      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
-          client,
       const gfx::Rect& bounds_in_screen,
       base::WeakPtr<RenderWidgetHostViewBase> subframe_view);
   ~UnboundedSurfaceWindowMac() override;
@@ -69,17 +61,20 @@ class UnboundedSurfaceWindowMac : public UnboundedSurfaceWindow,
       override;
   void EnsureSurfaceSynchronizedForWebTest() override;
 
-  // blink::mojom::UnboundedSurfaceHost overrides:
-  void UpdateBounds(const gfx::Rect& bounds) override;
-
-  RenderWidgetHostViewBase* GetParentView() const override;
-
   // Event Routing:
   using UnboundedSurfaceWindow::RouteMouseEvent;
   using UnboundedSurfaceWindow::RouteMouseWheelEvent;
   void RouteMouseEvent(NSEvent* event);
   void RouteWheelEvent(NSEvent* event);
   void RouteKeyboardEvent(NSEvent* event);
+
+  // Shows `cursor` while the pointer is over the surface window. The surface
+  // is a borderless child NSWindow that can never become key, and AppKit only
+  // honors cursor rects and -cursorUpdate: in the key window, so the cursor
+  // has to be set explicitly, as RenderWidgetHostViewCocoa does for the web
+  // contents. The cursor is remembered and applied once the pointer enters the
+  // window if it is not inside yet.
+  void DisplayCursor(const ui::Cursor& cursor) override;
 
   // viz::HostFrameSinkClient overrides:
   void OnFirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override {
@@ -95,6 +90,9 @@ class UnboundedSurfaceWindowMac : public UnboundedSurfaceWindow,
   void TeardownAndDestroy() override;
 
  private:
+  struct ObjCStorage;
+  std::unique_ptr<ObjCStorage> objc_storage_;
+
   struct DisplayInfo {
     float scale_factor = 1.0f;
     gfx::DisplayColorSpaces display_color_spaces;
@@ -104,22 +102,15 @@ class UnboundedSurfaceWindowMac : public UnboundedSurfaceWindow,
 
   DisplayInfo GetDisplayInfo() const;
   void InitWindow(const gfx::Rect& bounds_in_screen);
-  void OnConnectionError();
 
-  raw_ptr<RenderWidgetHostViewMac> parent_view_;
-  base::WeakPtr<RenderWidgetHostViewBase> subframe_view_;
   viz::FrameSinkId frame_sink_id_;
   viz::ParentLocalSurfaceIdAllocator local_surface_id_allocator_;
-  mojo::AssociatedReceiver<blink::mojom::UnboundedSurfaceHost> receiver_{this};
-#ifdef __OBJC__
-  NSWindow* __strong window_ = nil;
-#else
-  raw_ptr<void> window_ = nullptr;
-#endif
 
   std::unique_ptr<ui::RecyclableCompositorMac> recyclable_compositor_;
   std::unique_ptr<ui::LayerSurface> root_layer_;
   std::unique_ptr<ui::DisplayCALayerTree> display_ca_layer_tree_;
+  gfx::Size last_surface_size_;
+  float last_scale_factor_ = 0.0f;
   base::WeakPtrFactory<UnboundedSurfaceWindow> weak_ptr_factory_{this};
 };
 

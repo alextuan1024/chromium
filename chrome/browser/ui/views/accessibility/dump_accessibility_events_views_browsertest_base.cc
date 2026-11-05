@@ -28,7 +28,6 @@
 #endif
 
 #if BUILDFLAG(IS_WIN)
-#include "ui/accessibility/platform/ax_platform_node_win.h"
 #include "ui/accessibility/platform/inspect/ax_event_recorder_win.h"
 #include "ui/accessibility/platform/inspect/ax_event_recorder_win_uia.h"
 #endif
@@ -51,6 +50,7 @@ namespace views {
 std::unique_ptr<ui::AXEventRecorder> CreateViewsAXEventRecorderMac(
     base::ProcessId pid,
     const ui::AXTreeSelector& selector,
+    gfx::NativeWindow target_window,
     gfx::NativeViewAccessible root_element,
     WidgetAXManager* widget_ax_manager);
 void CleanupViewsAXEventRecorderMac();
@@ -58,26 +58,6 @@ void CleanupViewsAXEventRecorderMac();
 #endif
 
 namespace views {
-
-#if BUILDFLAG(IS_WIN)
-namespace {
-
-void WaitForNoGhostAXPlatformNodeWin() {
-  const auto get_ghost_count = [] {
-    return ui::AXPlatformNodeWin::GetCounts().ghost_nodes;
-  };
-  if (get_ghost_count() == 0u) {
-    return;
-  }
-
-  EXPECT_TRUE(base::test::RunUntil([&] { return get_ghost_count() == 0u; }))
-      << "Timed out waiting for Windows accessibility event test teardown; "
-      << get_ghost_count()
-      << " AXPlatformNodeWin COM references are still alive.";
-}
-
-}  // namespace
-#endif
 
 // --- EventRecordingSession implementation ---
 
@@ -148,6 +128,12 @@ void DumpAccessibilityEventsViewsTestBase::SetUp() {
   } else {
     disabled_features.emplace_back(::features::kAccessibilityTreeForViews);
   }
+#if BUILDFLAG(IS_WIN)
+  // Without this, uiautomationcore.dll retains COM references to
+  // AXPlatformNodeWin objects when Views HWNDs are destroyed at test teardown.
+  // This prevents `ghost_nodes` going to 0.
+  enabled_features.emplace_back(::features::kUiaDisconnectRootProviders);
+#endif
 
   ChooseFeatures(&enabled_features, &disabled_features);
 
@@ -230,15 +216,6 @@ void DumpAccessibilityEventsViewsTestBase::TearDownOnMainThread() {
   scoped_ax_mode_.reset();
 
   InProcessBrowserTest::TearDownOnMainThread();
-}
-
-void DumpAccessibilityEventsViewsTestBase::PostRunTestOnMainThread() {
-  InProcessBrowserTest::PostRunTestOnMainThread();
-#if BUILDFLAG(IS_WIN)
-  // Let COM/UIA releases finish after browser windows close and before
-  // gtest's platform-node leak listener.
-  WaitForNoGhostAXPlatformNodeWin();
-#endif
 }
 
 // static
@@ -344,10 +321,12 @@ void DumpAccessibilityEventsViewsTestBase::StopRecordingAndCompare(
 }
 
 void DumpAccessibilityEventsViewsTestBase::WaitForPendingSerialization() {
-  if (!IsViewsAXEnabled() || !widget_ || !widget_->ax_manager()) {
+  Widget* target_widget =
+      GetTargetRootView() ? GetTargetRootView()->GetWidget() : widget_.get();
+  if (!IsViewsAXEnabled() || !target_widget || !target_widget->ax_manager()) {
     return;
   }
-  WidgetAXManagerTestApi test_api(widget_->ax_manager());
+  WidgetAXManagerTestApi test_api(target_widget->ax_manager());
   if (test_api.processing_update_posted()) {
     test_api.WaitForNextSerialization();
   }
@@ -388,7 +367,8 @@ DumpAccessibilityEventsViewsTestBase::CreateEventRecorder() {
   gfx::NativeViewAccessible root_element =
       widget_->GetRootView()->GetNativeViewAccessible();
   return CreateViewsAXEventRecorderMac(base::GetCurrentProcId(), selector,
-                                       root_element, widget_->ax_manager());
+                                       native_window, root_element,
+                                       widget_->ax_manager());
 #elif BUILDFLAG(IS_LINUX)
   if (GetApiType() != ui::AXApiType::kLinux) {
     return nullptr;

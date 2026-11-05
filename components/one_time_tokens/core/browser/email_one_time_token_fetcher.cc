@@ -121,7 +121,7 @@ void EmailOneTimeTokenFetcher::OnAccessTokenFetched(
     base::TimeTicks auth_start_time,
     GoogleServiceAuthError error,
     signin::AccessTokenInfo info) {
-  base::UmaHistogramTimes("Autofill.OneTimeTokens.Backend.Gmail.AuthLatency",
+  base::UmaHistogramTimes("OneTimeTokens.Backend.Gmail.AuthLatency",
                           base::TimeTicks::Now() - auth_start_time);
   access_token_fetcher_.reset();
   bool auth_success = error.state() == GoogleServiceAuthError::NONE;
@@ -141,12 +141,10 @@ void EmailOneTimeTokenFetcher::StartOneTimeTokenServiceCall(
   GURL url = GetOneTimeTokenServiceUrl("v1/onetimetokens:fetchEmail");
 
   // TODO(crbug.com/486806779): figure out correct encoding.
-  std::string encoded_reference;
-  base::Base64UrlEncode(encrypted_message_reference_,
-                        base::Base64UrlEncodePolicy::INCLUDE_PADDING,
-                        &encoded_reference);
-  url = net::AppendQueryParameter(url, "encryptedMessageReference",
-                                  encoded_reference);
+  url = net::AppendQueryParameter(
+      url, "encryptedMessageReference",
+      base::Base64UrlEncode(encrypted_message_reference_,
+                            base::Base64UrlEncodePolicy::INCLUDE_PADDING));
   url = net::AppendQueryParameter(url, "alt", "proto");
   resource_request->url = url;
   resource_request->method = "GET";
@@ -175,6 +173,7 @@ void EmailOneTimeTokenFetcher::StartOneTimeTokenServiceCall(
             "An opaque (encrypted) reference to the message which contains the "
             "OTP. No user data is sent."
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "onetimetoken.pa.googleapis.com"
           last_reviewed: "2026-03-20"
           internal {
             contacts {
@@ -223,7 +222,7 @@ void EmailOneTimeTokenFetcher::StartOneTimeTokenServiceCall(
 void EmailOneTimeTokenFetcher::OnResponseBytesFromOneTimeTokenService(
     base::TimeTicks network_request_start_time,
     std::optional<std::string> response_body) {
-  base::UmaHistogramTimes("Autofill.OneTimeTokens.Backend.Gmail.NetworkLatency",
+  base::UmaHistogramTimes("OneTimeTokens.Backend.Gmail.NetworkLatency",
                           base::TimeTicks::Now() - network_request_start_time);
   std::optional<net::HttpStatusCode> response_code = GetHttpResponseCode();
   simple_url_loader_.reset();

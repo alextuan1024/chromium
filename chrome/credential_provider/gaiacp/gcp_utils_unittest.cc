@@ -503,24 +503,81 @@ TEST_F(GcpProcHelperTest, WaitForProcess) {
   EXPECT_STREQ(input_buffer.data(), output_buffer.data());
 }
 
-TEST_F(GcpProcHelperTest, GetCommandLineForEntrypoint) {
-  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
-
-  // In tests, GetCommandLineForEntrypoint() will always return S_FALSE.
-  ASSERT_EQ(S_FALSE,
-            GetCommandLineForEntrypoint(nullptr, L"entrypoint", &command_line));
-
-  // Get short path name of this binary and build the expect command line.
+// Whether the short path of this binary has spaces depends on the 8.3 setting,
+// so the argument format is tested by GcpEntryPointArgumentTest instead.
+TEST_F(GcpProcHelperTest, GetCommandLineForCrashpadHandler) {
+  // Get the path and short path name of this binary.
   wchar_t path[MAX_PATH];
   wchar_t short_path[MAX_PATH];
   ASSERT_LT(0u, GetModuleFileName(nullptr, path, std::size(path)));
   ASSERT_LT(0u, GetShortPathName(path, short_path, std::size(short_path)));
 
-  std::wstring expected_arg =
-      base::StrCat({L"\"", short_path, L"\",entrypoint"});
+  // This binary is not a dll, so S_FALSE is returned.
+  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+  ASSERT_EQ(S_FALSE, GetCommandLineForCrashpadHandler(base::FilePath(path),
+                                                      &command_line));
 
+  EXPECT_EQ(FILE_PATH_LITERAL("rundll32.exe"),
+            command_line.GetProgram().BaseName().value());
   ASSERT_EQ(1u, command_line.GetArgs().size());
-  ASSERT_EQ(expected_arg, command_line.GetArgs()[0]);
+  EXPECT_EQ(FormatRunDllArgumentForCrashpadHandler(short_path),
+            command_line.GetArgs()[0]);
+}
+
+TEST_F(GcpProcHelperTest, GetCommandLineForPerformPostSigninActions) {
+  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+
+  // This binary is not a dll, so S_FALSE is returned.
+  ASSERT_EQ(S_FALSE,
+            GetCommandLineForPerformPostSigninActions(nullptr, &command_line));
+
+  // Get short path name of this binary.
+  wchar_t path[MAX_PATH];
+  wchar_t short_path[MAX_PATH];
+  ASSERT_LT(0u, GetModuleFileName(nullptr, path, std::size(path)));
+  ASSERT_LT(0u, GetShortPathName(path, short_path, std::size(short_path)));
+
+  EXPECT_EQ(FILE_PATH_LITERAL("rundll32.exe"),
+            command_line.GetProgram().BaseName().value());
+  ASSERT_EQ(1u, command_line.GetArgs().size());
+  EXPECT_EQ(FormatRunDllArgumentForPerformPostSigninActions(short_path),
+            command_line.GetArgs()[0]);
+}
+
+TEST(GcpEntryPointArgumentTest, PathIsNotQuotedForCrashpadHandler) {
+  constexpr wchar_t kDllPath[] = LR"(C:\PROGRA~1\Google\Gaia1_0.dll)";
+  constexpr wchar_t kExpectedArg[] =
+      LR"(C:\PROGRA~1\Google\Gaia1_0.dll,RunAsCrashpadHandler)";
+
+  EXPECT_EQ(kExpectedArg, FormatRunDllArgumentForCrashpadHandler(kDllPath));
+}
+
+// The crashpad handler cannot start in this case.
+TEST(GcpEntryPointArgumentTest, PathWithSpacesIsNotQuotedForCrashpadHandler) {
+  constexpr wchar_t kDllPath[] = LR"(C:\Program Files\Google\Gaia1_0.dll)";
+  constexpr wchar_t kExpectedArg[] =
+      LR"(C:\Program Files\Google\Gaia1_0.dll,RunAsCrashpadHandler)";
+
+  EXPECT_EQ(kExpectedArg, FormatRunDllArgumentForCrashpadHandler(kDllPath));
+}
+
+TEST(GcpEntryPointArgumentTest, PathIsQuotedForPerformPostSigninActions) {
+  constexpr wchar_t kDllPath[] = LR"(C:\PROGRA~1\Google\Gaia1_0.dll)";
+  constexpr wchar_t kExpectedArg[] =
+      LR"("C:\PROGRA~1\Google\Gaia1_0.dll",PerformPostSigninActions)";
+
+  EXPECT_EQ(kExpectedArg,
+            FormatRunDllArgumentForPerformPostSigninActions(kDllPath));
+}
+
+TEST(GcpEntryPointArgumentTest,
+     PathWithSpacesIsQuotedForPerformPostSigninActions) {
+  constexpr wchar_t kDllPath[] = LR"(C:\Program Files\Google\Gaia1_0.dll)";
+  constexpr wchar_t kExpectedArg[] =
+      LR"("C:\Program Files\Google\Gaia1_0.dll",PerformPostSigninActions)";
+
+  EXPECT_EQ(kExpectedArg,
+            FormatRunDllArgumentForPerformPostSigninActions(kDllPath));
 }
 
 TEST(Enroll, EnrollToGoogleMdmIfNeeded_NotEnabled) {
@@ -667,17 +724,49 @@ TEST_F(GcpUtilsSecureCreateDirectoryTest, NewDirectory) {
   EXPECT_TRUE(base::DirectoryExists(new_dir));
   EXPECT_THAT(base::GetFileDacl(new_dir),
               AllOf(StartsWith(L"D:P"), HasSubstr(L";;;BA)"),
-                    HasSubstr(L";;;SY)"), Not(HasSubstr(L";;;WD)"))));
+                    HasSubstr(L";;;SY)"), Not(HasSubstr(L";;;AU)")),
+                    Not(HasSubstr(L";;;AC)")), Not(HasSubstr(L";;;WD)"))));
+  auto sd = base::win::SecurityDescriptor::FromFile(new_dir,
+                                                    OWNER_SECURITY_INFORMATION);
+  ASSERT_TRUE(sd.has_value());
+  EXPECT_EQ(sd->owner(),
+            base::win::Sid(base::win::WellKnownSid::kBuiltinAdministrators));
+}
+
+TEST_F(GcpUtilsSecureCreateDirectoryTest, GrantReadOnChildren) {
+  base::FilePath new_dir = temp_dir_.GetPath().Append(L"ReadableChildrenDir");
+  EXPECT_FALSE(base::DirectoryExists(new_dir));
+  EXPECT_TRUE(SecureCreateDirectory(new_dir, /*grant_read_on_children=*/true));
+  EXPECT_TRUE(base::DirectoryExists(new_dir));
+  EXPECT_THAT(
+      base::GetFileDacl(new_dir),
+      AllOf(StartsWith(L"D:P"), HasSubstr(L";;;BA)"), HasSubstr(L";;;SY)"),
+            HasSubstr(L"(A;OICIIO;RCGR;;;AU)"),
+            HasSubstr(L"(A;OICIIO;RCGR;;;AC)"), Not(HasSubstr(L";;;WD)"))));
 }
 
 TEST_F(GcpUtilsSecureCreateDirectoryTest, ExistingDirectory) {
   base::FilePath existing_dir = temp_dir_.GetPath().Append(L"ExistingDir");
   EXPECT_TRUE(base::CreateDirectory(existing_dir));
   EXPECT_TRUE(base::DirectoryExists(existing_dir));
+
+  // Set the initial owner to the current user SID to simulate a pre-created
+  // directory owned by a user rather than Administrators.
+  if (auto token = base::win::AccessToken::FromCurrentProcess(); token) {
+    base::win::SecurityDescriptor user_sd;
+    user_sd.set_owner(token->User());
+    EXPECT_TRUE(user_sd.WriteToFile(existing_dir, OWNER_SECURITY_INFORMATION));
+  }
+
   EXPECT_TRUE(SecureCreateDirectory(existing_dir));
   EXPECT_THAT(base::GetFileDacl(existing_dir),
               AllOf(StartsWith(L"D:P"), HasSubstr(L";;;BA)"),
                     HasSubstr(L";;;SY)"), Not(HasSubstr(L";;;WD)"))));
+  auto sd = base::win::SecurityDescriptor::FromFile(existing_dir,
+                                                    OWNER_SECURITY_INFORMATION);
+  ASSERT_TRUE(sd.has_value());
+  EXPECT_EQ(sd->owner(),
+            base::win::Sid(base::win::WellKnownSid::kBuiltinAdministrators));
 }
 
 TEST_F(GcpUtilsSecureCreateDirectoryTest,
@@ -716,6 +805,27 @@ TEST_F(GcpUtilsSecureCreateDirectoryTest, FailOnReparsePoint) {
     // reject it.
     EXPECT_FALSE(SecureCreateDirectory(link_dir));
   }
+}
+
+TEST_F(GcpUtilsSecureCreateDirectoryTest, SecureCreateFile) {
+  base::FilePath file_path = temp_dir_.GetPath().Append(L"test_file.txt");
+  EXPECT_TRUE(SecureCreateFile(file_path, "initial long content"));
+  std::string content;
+  EXPECT_TRUE(base::ReadFileToString(file_path, &content));
+  EXPECT_EQ("initial long content", content);
+
+  // Overwriting with shorter data must truncate the file.
+  EXPECT_TRUE(SecureCreateFile(file_path, "short"));
+  EXPECT_TRUE(base::ReadFileToString(file_path, &content));
+  EXPECT_EQ("short", content);
+
+  // Hardlink must be rejected without modifying the original file.
+  base::FilePath hardlink_path = temp_dir_.GetPath().Append(L"hardlink.txt");
+  ASSERT_TRUE(::CreateHardLinkW(hardlink_path.value().c_str(),
+                                file_path.value().c_str(), nullptr));
+  EXPECT_FALSE(SecureCreateFile(hardlink_path, "overwritten"));
+  EXPECT_TRUE(base::ReadFileToString(file_path, &content));
+  EXPECT_EQ("short", content);
 }
 
 class GcpRegUtilsTest : public ::testing::Test {

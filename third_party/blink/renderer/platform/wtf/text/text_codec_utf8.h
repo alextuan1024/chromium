@@ -27,19 +27,38 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_TEXT_CODEC_UTF8_H_
 
 #include <unicode/utf8.h>
+
+#include <array>
 #include <memory>
+#include <optional>
 
 #include "third_party/blink/renderer/platform/wtf/text/text_codec.h"
+#include "third_party/blink/renderer/platform/wtf/wtf_export.h"
 
 namespace blink {
 
 class TextCodecUtf8 : public TextCodec {
  public:
+  struct DecodedBufferResult {
+    size_t length = 0;
+    bool is_8bit = true;
+    bool saw_error = false;
+  };
+
   static void RegisterEncodingNames(EncodingNameRegistrar);
   static void RegisterCodecs(TextCodecRegistrar);
   // Returns true if the given `canonical_name` is supported.
   // This function ignores ASCII cases.
   static bool IsSupported(StringView canonical_name);
+
+  // Decodes a complete (non-streaming) UTF-8 byte span into `dest8` (if all
+  // code points fit in Latin-1) or `dest16` (otherwise). Callers must ensure
+  // `dest8.size() >= bytes.size()` and `dest16.size() >= bytes.size()`.
+  WTF_EXPORT static DecodedBufferResult DecodeToBuffer(
+      base::span<const uint8_t> bytes,
+      base::span<LChar> dest8,
+      base::span<UChar> dest16,
+      bool stop_on_error);
 
  protected:
   TextCodecUtf8() = default;
@@ -70,6 +89,13 @@ class TextCodecUtf8 : public TextCodec {
   EncodeIntoResult EncodeIntoCommon(base::span<const CharType> characters,
                                     base::span<uint8_t> destination);
 
+  // Decodes valid UTF-8 chunks in a single destination String allocation via
+  // simdutf. Returns std::nullopt on malformed UTF-8 so Decode() can fall back
+  // to the scalar state machine without mutating codec state.
+  std::optional<String> TryDecodeWithSimdutf(base::span<const uint8_t> bytes,
+                                             bool do_flush);
+  bool IsSimdutfEnabled();
+
   bool HandlePartialSequence(base::span<LChar>& destination,
                              base::span<const uint8_t>& source,
                              bool flush);
@@ -86,6 +112,7 @@ class TextCodecUtf8 : public TextCodec {
 
   std::array<uint8_t, U8_MAX_LENGTH> partial_sequence_;
   size_t partial_sequence_size_ = 0;
+  std::optional<bool> simdutf_enabled_;
 };
 
 }  // namespace blink

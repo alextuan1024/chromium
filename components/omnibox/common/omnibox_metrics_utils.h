@@ -8,8 +8,7 @@
 #include <string>
 #include <string_view>
 
-#include "third_party/omnibox_proto/model_mode.pb.h"
-#include "third_party/omnibox_proto/tool_mode.pb.h"
+#include "components/omnibox/common/input_state.h"
 
 namespace omnibox {
 
@@ -38,6 +37,21 @@ enum class ContextType {
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(SingleTabMenuItemAction)
+enum class SingleTabMenuItemAction {
+  kRecentTabSelected = 0,
+  kRecentTabDeselected = 1,
+  kRecentTabSubmitted = 2,
+  kCurrentTabSelected = 3,
+  kCurrentTabDeselected = 4,
+  kCurrentTabSubmitted = 5,
+  kMaxValue = kCurrentTabSubmitted,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_search/enums.xml:ContextualSearchSingleTabMenuItemAction,
+// //ui/webui/resources/cr_components/composebox/common.ts:SingleTabMenuItemAction)
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 // LINT.IfChange(ResultToContentReadyEarlyExitReason)
 enum class ResultToContentReadyEarlyExitReason {
   kUnspecified = 0,
@@ -47,9 +61,9 @@ enum class ResultToContentReadyEarlyExitReason {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:OmniboxPopupResultToContentReadyEarlyExitReason)
 
-std::string GetToolModeString(omnibox::ToolMode mode);
+std::string GetToolModeString(ToolKey mode);
 
-std::string GetModelModeString(omnibox::ModelMode mode);
+std::string GetModelModeString(ModelKey mode);
 
 std::string GetContextTypeString(ContextType type);
 

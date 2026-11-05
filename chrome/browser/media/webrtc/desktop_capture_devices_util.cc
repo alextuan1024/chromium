@@ -25,6 +25,7 @@
 #include "chrome/browser/ui/tab_sharing/tab_sharing_ui.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/desktop_capture.h"
@@ -359,7 +360,7 @@ void CreateMediaStreamCaptureIndicatorUI(
     base::OnceCallback<void(blink::mojom::StreamDevices,
                             std::unique_ptr<content::MediaStreamUI>)>
         on_media_stream_capture_indicator_ui_created_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   std::unique_ptr<MediaStreamUI> notification_ui;
 #if BUILDFLAG(IS_ANDROID)
   if (base::FeatureList::IsEnabled(features::kUserMediaScreenCapturing) &&
@@ -419,7 +420,7 @@ void OnAudioDeviceIdObtained(
                             std::unique_ptr<content::MediaStreamUI>)>
         on_media_stream_capture_indicator_ui_created_callback,
     std::optional<std::string> audio_device_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!web_contents) {
     // If the WebContents is destroyed, we don't need to do anything.
@@ -515,7 +516,7 @@ void GetAudioDeviceId(content::DesktopMediaID desktop_media_id,
                       bool restrict_own_audio,
                       base::OnceCallback<void(std::optional<std::string>)>
                           audio_device_id_obtained_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   std::optional<std::string> device_id;
   if (desktop_media_id.type == content::DesktopMediaID::TYPE_WEB_CONTENTS) {
@@ -564,7 +565,7 @@ void GetDevicesForDesktopCapture(
     base::OnceCallback<void(blink::mojom::StreamDevices,
                             std::unique_ptr<content::MediaStreamUI>)>
         on_media_stream_capture_indicator_ui_created_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Add selected desktop source to the list.
   blink::MediaStreamDevice device(
@@ -578,7 +579,8 @@ void GetDevicesForDesktopCapture(
   }
 
   if (capture_audio) {
-    DCHECK_NE(audio_type, blink::mojom::MediaStreamType::NO_SERVICE);
+    CHECK_NE(audio_type, blink::mojom::MediaStreamType::NO_SERVICE,
+             base::NotFatalUntil::M161);
     GetAudioDeviceId(
         media_id, audio_type, disable_local_echo, suppress_local_audio_playback,
         restrict_own_audio,
@@ -627,5 +629,25 @@ content::WebContents* GetWebContentsFromWindowIfCaptureHandleAllowed(
   return active_tab ? active_tab->GetContents() : nullptr;
 #else
   return nullptr;
+#endif
+}
+
+views::Widget* GetWidgetFromWindowId(const content::DesktopMediaID& media_id) {
+#if !BUILDFLAG(IS_ANDROID)
+  if (media_id.type == content::DesktopMediaID::TYPE_WINDOW) {
+    return GetTopLevelWidgetFromNativeWindow(
+        content::DesktopMediaID::GetNativeWindowById(media_id));
+  }
+#endif
+  return nullptr;
+}
+
+bool IsWindowSharingBlockedByDataProtection(
+    const content::DesktopMediaID& media_id) {
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION) && !BUILDFLAG(IS_ANDROID)
+  views::Widget* widget = GetWidgetFromWindowId(media_id);
+  return widget && !widget->AreScreenshotsAllowed();
+#else
+  return false;
 #endif
 }

@@ -28,7 +28,6 @@
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
-#include "third_party/blink/renderer/core/html/fenced_frame/html_fenced_frame_element.h"
 #include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
@@ -37,6 +36,7 @@
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "ui/gfx/geometry/quad_f.h"
 #include "v8/include/v8.h"
@@ -141,7 +141,7 @@ WebRemoteFrameImpl* WebRemoteFrameImpl::CreateMainFrame(
   return frame;
 }
 
-WebRemoteFrameImpl* WebRemoteFrameImpl::CreateForFencedFrame(
+WebRemoteFrameImpl* WebRemoteFrameImpl::CreatePlaceholderForEmbeddedFrameTree(
     mojom::blink::TreeScopeType scope,
     const RemoteFrameToken& frame_token,
     const base::UnguessableToken& devtools_frame_token,
@@ -150,13 +150,10 @@ WebRemoteFrameImpl* WebRemoteFrameImpl::CreateForFencedFrame(
         remote_frame_host,
     mojo::PendingAssociatedReceiver<mojom::blink::RemoteFrame> receiver,
     mojom::blink::FrameReplicationStatePtr replicated_state) {
-  // We first convert this to a raw blink::Element*, and manually convert this
-  // to an HTMLElement*. That is the only way the IsA<> and To<> casts below
-  // will work.
-  DCHECK(IsA<HTMLFencedFrameElement>(frame_owner));
+  DCHECK(frame_owner);
+  CHECK(RuntimeEnabledFeatures::PersistentWidgetAPIEnabled(
+      frame_owner->GetExecutionContext()));
   auto* frame = MakeGarbageCollected<WebRemoteFrameImpl>(scope, frame_token);
-  ExecutionContext* execution_context = frame_owner->GetExecutionContext();
-  DCHECK(RuntimeEnabledFeatures::FencedFramesEnabled(execution_context));
   LocalFrame* host_frame = frame_owner->GetDocument().GetFrame();
   frame->InitializeCoreFrame(
       *host_frame->GetPage(), frame_owner, /*parent=*/nullptr,
@@ -196,12 +193,6 @@ WebRemoteFrame* WebRemoteFrameImpl::ToWebRemoteFrame() {
 
 const WebRemoteFrame* WebRemoteFrameImpl::ToWebRemoteFrame() const {
   return this;
-}
-
-void WebRemoteFrameImpl::Close(DetachReason detach_reason) {
-  WebRemoteFrame::Close(detach_reason);
-
-  self_keep_alive_.Clear();
 }
 
 WebView* WebRemoteFrameImpl::View() const {
@@ -276,9 +267,7 @@ void WebRemoteFrameImpl::InitializeCoreFrame(
 
   // If this is not a top-level frame, we need to send FrameVisualProperties to
   // the remote renderer process. Some of the properties are inherited from the
-  // WebFrameWidget containing this frame, and this is true for regular frames
-  // in the frame tree as well as for fenced frames, which are not in the frame
-  // tree; hence the code to traverse up through FrameOwner.
+  // WebFrameWidget containing this frame.
   WebFrameWidgetImpl* ancestor_widget = nullptr;
   if (parent) {
     if (parent->IsWebLocalFrame()) {
@@ -286,10 +275,12 @@ void WebRemoteFrameImpl::InitializeCoreFrame(
           To<WebLocalFrameImpl>(parent)->LocalRoot()->FrameWidgetImpl();
     }
   } else if (owner && owner->IsLocal()) {
-    // Never gets to this point unless |owner| is a <fencedframe>
-    // element.
+    // Never gets to this point unless |owner| is a <persistentwidget> element.
     HTMLFrameOwnerElement* owner_element = To<HTMLFrameOwnerElement>(owner);
-    DCHECK(owner_element->IsHTMLFencedFrameElement());
+    CHECK(RuntimeEnabledFeatures::PersistentWidgetAPIEnabled(
+        owner_element->GetExecutionContext()));
+    DCHECK_EQ(owner_element->OwnerType(),
+              FrameOwnerElementType::kPersistentwidget);
     LocalFrame& local_frame =
         owner_element->GetDocument().GetFrame()->LocalFrameRoot();
     ancestor_widget =
@@ -362,7 +353,7 @@ void WebRemoteFrameImpl::InitializeFrameVisualProperties(
   visual_properties.page_scale_factor = ancestor_widget->PageScaleInMainFrame();
   visual_properties.is_pinch_gesture_active =
       ancestor_widget->PinchGestureActiveInMainFrame();
-  visual_properties.screen_infos = ancestor_widget->GetOriginalScreenInfos();
+  visual_properties.screen_infos = ancestor_widget->GetScreenInfos();
   visual_properties.visible_viewport_size =
       ancestor_widget->VisibleViewportSize();
   const std::vector<gfx::Rect>& viewport_segments =

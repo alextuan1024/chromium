@@ -254,7 +254,7 @@ TEST_F(KeySystemSupportImplTest, TwoObservers_ObserverAlreadyBound) {
   key_system_support_->SetObserver(std::move(observer_1_remote));
   key_system_support_->SetObserver(std::move(observer_2_remote));
 
-  mojo::SetDefaultProcessErrorHandler(
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler(
       base::BindLambdaForTesting([&](const std::string& error) {
         EXPECT_EQ(error,
                   std::string(media::mojom::KeySystemSupportObserver::Name_) +
@@ -310,6 +310,41 @@ TEST_F(KeySystemSupportImplTest, AllowHWSecureCapability) {
       .WillOnce(RunOnceCallback<1>(KeySystemCapabilities()));
   SetPermissionStatus(blink::mojom::PermissionStatus::GRANTED);
   run_loop_2.RunUntilIdle();
+}
+
+// Scenario 6: Pending capability check IPC forwarding.
+// Validates observer dispatch for capability updates with kPending status.
+TEST_F(KeySystemSupportImplTest, PendingCapabilityCheck) {
+  base::RunLoop run_loop;
+  mojo::PendingRemote<media::mojom::KeySystemSupportObserver> observer_remote;
+  mojo::MakeSelfOwnedReceiver(
+      std::make_unique<KeySystemSupportObserverImpl>(base::BindRepeating(
+          &KeySystemSupportImplTest::OnKeySystemSupportUpdated,
+          base::Unretained(this), run_loop.QuitClosure())),
+      observer_remote.InitWithNewPipeAndPassReceiver());
+
+  // Simulate a pending capability update where checks are currently in
+  // progress.
+  KeySystemCapabilities pending_capabilities;
+  pending_capabilities[kTestKeySystem] = media::KeySystemCapability(
+      base::unexpected(media::CdmCapabilityQueryStatus::kUnknown),
+      base::unexpected(media::CdmCapabilityQueryStatus::kPending));
+
+  EXPECT_CALL(get_support_cb_, Run(_, _))
+      .WillOnce(RunOnceCallback<1>(std::move(pending_capabilities)));
+
+  key_system_support_->SetObserver(std::move(observer_remote));
+  run_loop.Run();
+
+  ASSERT_EQ(results_.size(), 1u);
+  ASSERT_TRUE(results_[0].contains(kTestKeySystem));
+  EXPECT_FALSE(
+      results_[0][kTestKeySystem].sw_cdm_capability_or_status.has_value());
+  EXPECT_FALSE(
+      results_[0][kTestKeySystem].hw_cdm_capability_or_status.has_value());
+  EXPECT_TRUE(results_[0][kTestKeySystem].IsPending());
+  EXPECT_EQ(results_[0][kTestKeySystem].hw_cdm_capability_or_status.error(),
+            media::CdmCapabilityQueryStatus::kPending);
 }
 
 }  // namespace content

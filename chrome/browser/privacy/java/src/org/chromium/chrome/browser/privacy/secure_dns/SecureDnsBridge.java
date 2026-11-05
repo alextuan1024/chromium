@@ -4,10 +4,13 @@
 
 package org.chromium.chrome.browser.privacy.secure_dns;
 
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.net.SecureDnsManagementMode;
+import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.prefs.LocalStatePrefs;
 import org.chromium.net.SecureDnsMode;
 
 import java.util.ArrayList;
@@ -58,7 +61,7 @@ class SecureDnsBridge {
      * @return True if the Secure DNS mode is controlled by a policy.
      */
     static boolean isModeManaged() {
-        return SecureDnsBridgeJni.get().isModeManaged();
+        return LocalStatePrefs.get().isManagedPreference(Pref.DNS_OVER_HTTPS_MODE);
     }
 
     /**
@@ -74,14 +77,13 @@ class SecureDnsBridge {
     }
 
     /**
-     * Get the raw preference value, which can represent multiple templates separated
-     * by whitespace.  The raw value is needed in order to allow direct editing while
-     * preserving whitespace.
+     * Get the raw preference value, which can represent multiple templates separated by whitespace.
+     * The raw value is needed in order to allow direct editing while preserving whitespace.
      *
      * @return The current DoH config for use in "secure" mode, or "" if there is none.
      */
     static String getConfig() {
-        return SecureDnsBridgeJni.get().getConfig();
+        return LocalStatePrefs.get().getString(Pref.DNS_OVER_HTTPS_TEMPLATES);
     }
 
     /**
@@ -128,19 +130,15 @@ class SecureDnsBridge {
 
         void setMode(@SecureDnsMode int mode);
 
-        boolean isModeManaged();
-
         String[][] getProviders();
 
-        String getConfig();
-
-        boolean setConfig(String config);
+        boolean setConfig(@JniType("std::string") String config);
 
         @SecureDnsManagementMode
         int getManagementMode();
 
         void updateValidationHistogram(boolean valid);
 
-        boolean probeConfig(String dohConfig);
+        boolean probeConfig(@JniType("std::string") String dohConfig);
     }
 }

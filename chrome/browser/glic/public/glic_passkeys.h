@@ -6,8 +6,12 @@
 #define CHROME_BROWSER_GLIC_PUBLIC_GLIC_PASSKEYS_H_
 
 #include "base/types/pass_key.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "build/build_config.h"
 #include "chrome/browser/glic/public/glic_context_menu_invocation_helper.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/glic/public/glic_whats_new_invoke.h"
+#endif
 
 namespace tabs {
 class TabInterface;
@@ -16,7 +20,7 @@ class TabInterface;
 namespace extensions {
 class GlicPrivateInvokeFunction;
 class PdfViewerPrivateGlicSummarizeFunction;
-}
+}  // namespace extensions
 
 namespace indigo {
 class IndigoPageActionController;
@@ -24,9 +28,18 @@ class IndigoPageActionController;
 
 class GlicPasswordChangeActuator;
 
+namespace launchpad {
+class LaunchpadService;
+}
+
+namespace actor {
+class ActorGeminiPanelToolBrowserTest;
+}
+
 namespace ttc {
 class AiOverlayTools;
-}
+class ToolController;
+}  // namespace ttc
 
 namespace skills {
 class SkillsUiTabController;
@@ -38,9 +51,7 @@ namespace glic {
 class GlicExperimentalTriggeringCoordinator;
 class GlicInternalsPageHandler;
 class SelectionOverlayController;
-
-template <mojom::InvocationSource Source>
-class AndroidAutoSubmitPasskeyHelper;
+class SelectionSuggestion;
 
 // Passkey for invoking glic with auto submit. Reach out to OWNERS before
 // adding new callers.
@@ -55,11 +66,19 @@ class InvokeWithAutoSubmitPasskeyProvider {
   // friend class SomeClassThatNeedsAutoSubmit;
   // friend void SomeClass::SomeFunctionThatNeedsAutoSubmit();
   friend void GlicContextMenuInvocationHelper::HandleContextualMenuClick(
-      tabs::TabInterface* tab, const std::u16string& selection_text,
+      tabs::TabInterface* tab,
+      const std::u16string& selection_text,
       content::GlobalRenderFrameHostId rfh_id);
+#if !BUILDFLAG(IS_ANDROID)
+  friend void InvokeFromWhatsNewForQuizzes(
+      InvokeFromWhatsNewPasskey,
+      GlicKeyedService& glic_service,
+      BrowserWindowInterface* browser_window);
+#endif
   friend class extensions::GlicPrivateInvokeFunction;
   friend class extensions::PdfViewerPrivateGlicSummarizeFunction;
   friend class ::GlicPasswordChangeActuator;
+  friend class ::launchpad::LaunchpadService;
   friend class GlicInternalsPageHandler;
   friend class GlicInstanceCoordinatorBrowserTest;
   friend class GlicInvokeBrowserTest;
@@ -67,18 +86,37 @@ class InvokeWithAutoSubmitPasskeyProvider {
   friend class GlicApiTestPasskeys;
   friend class GlicExperimentalTriggeringCoordinator;
   friend class GlicCueTarget;
-  friend class GlicSelectionObserver;
+  friend class GlicSelectionWidgetController;
   friend class SelectionOverlayController;
+  friend class SelectionSuggestion;
   friend class ::indigo::IndigoPageActionController;
+  friend class ::actor::ActorGeminiPanelToolBrowserTest;
   friend class ::ttc::AiOverlayTools;
+  friend class ::ttc::ToolController;
   friend class ::skills::SkillsUiTabController;
   friend class ::skills::SkillsInvocationInteractiveUiTest;
-  friend class AndroidAutoSubmitPasskeyHelper<
-      mojom::InvocationSource::kUniversalCart>;
 };
 
 using InvokeWithAutoSubmitPasskey =
     base::PassKey<InvokeWithAutoSubmitPasskeyProvider>;
+
+// Passkey for subscribing to opaque invocation failure diagnostics on
+// `GlicInvokeOptions`. Reach out to c/b/glic/API_OWNERS before adding new
+// callers.
+class InvokeErrorDiagnosticsPasskeyProvider {
+ public:
+  using PassKey = base::PassKey<InvokeErrorDiagnosticsPasskeyProvider>;
+
+ private:
+  static PassKey GetPassKey() { return PassKey(); }
+
+  friend class GlicApiTestPasskeys;
+  friend class GlicExperimentalTriggeringCoordinator;
+  friend class GlicInvokeBrowserTest;
+};
+
+using InvokeErrorDiagnosticsPasskey =
+    base::PassKey<InvokeErrorDiagnosticsPasskeyProvider>;
 
 }  // namespace glic
 

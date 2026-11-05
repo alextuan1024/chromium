@@ -24,7 +24,6 @@ import android.os.Handler;
 import android.os.Looper;
 
 import org.chromium.base.CallbackController;
-import org.chromium.build.annotations.NonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.educational_tip.EducationTipModuleActionDelegate;
 import org.chromium.chrome.browser.educational_tip.EducationalTipCardProvider;
@@ -89,11 +88,7 @@ public class EducationalTipModuleTwoCellCoordinator implements ModuleProvider {
                 mActionDelegate.getContext().getString(R.string.educational_tip_module_name));
 
         mBottomSheetObserver =
-                EducationalTipModuleUtils.createBottomSheetObserver(
-                        () ->
-                                mItem1Type == ModuleType.DEFAULT_BROWSER_PROMO
-                                        || mItem2Type == ModuleType.DEFAULT_BROWSER_PROMO,
-                        this::updateModule);
+                EducationalTipModuleUtils.createBottomSheetObserver(this::updateModule);
         mActionDelegate.getBottomSheetController().addObserver(mBottomSheetObserver);
 
         refreshSlots();
@@ -164,7 +159,6 @@ public class EducationalTipModuleTwoCellCoordinator implements ModuleProvider {
         }
     }
 
-    @NonNull
     private EducationalTipSetupListBottomSheetCoordinator
             getEducationalTipSetupListBottomSheetCoordinator() {
         Supplier<List<EducationalTipSetupListBottomSheetItem>> bottomSheetSupplier =

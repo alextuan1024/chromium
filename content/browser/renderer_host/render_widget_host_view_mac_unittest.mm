@@ -4,19 +4,25 @@
 
 #include "content/browser/renderer_host/render_widget_host_view_mac.h"
 
+#include <Carbon/Carbon.h>
 #include <Cocoa/Cocoa.h>
 #include <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <unistd.h>
 
 #include <limits>
+#include <memory>
+#include <optional>
 #include <string>
+#include <tuple>
 
 #include "base/apple/scoped_cftyperef.h"
 #include "base/apple/scoped_nsautorelease_pool.h"
 #include "base/command_line.h"
 #include "base/containers/queue.h"
+#include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
@@ -24,11 +30,13 @@
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "components/viz/common/surfaces/child_local_surface_id_allocator.h"
 #import "content/app_shim_remote_cocoa/render_widget_host_view_cocoa.h"
@@ -77,8 +85,12 @@
 #include "ui/events/base_event_utils.h"
 #include "ui/events/blink/blink_features.h"
 #include "ui/events/blink/web_input_event_traits.h"
+#include "ui/events/keycodes/dom/dom_code.h"
+#include "ui/events/keycodes/dom/dom_key.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/events/test/cocoa_test_event_utils.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/mac/coordinate_conversion.h"
 #include "ui/gfx/range/range.h"
 #include "ui/latency/latency_info.h"
@@ -599,6 +611,9 @@ class RenderWidgetHostViewMacTest : public RenderViewHostImplTestHarness {
 
   void ActivateViewWithTextInputManager(RenderWidgetHostViewBase* view,
                                         ui::TextInputType type) {
+    if (view && view->host()) {
+      delegate_.set_focused_widget(view->host());
+    }
     ui::mojom::TextInputState state;
     state.type = type;
     view->TextInputStateChanged(state);
@@ -607,6 +622,20 @@ class RenderWidgetHostViewMacTest : public RenderViewHostImplTestHarness {
  protected:
   std::string selected_text() const {
     return base::UTF16ToUTF8(rwhv_mac_->GetTextSelection()->selected_text());
+  }
+
+  // Waits until at least one input event is sent to the renderer, and returns
+  // the names of the input events sent until then.
+  std::string WaitForDispatchedMessageNames() {
+    MockWidgetInputHandler::MessageVector events;
+    EXPECT_TRUE(base::test::RunUntil([&] {
+      MockWidgetInputHandler::MessageVector new_events =
+          host_->GetAndResetDispatchedMessages();
+      std::move(new_events.begin(), new_events.end(),
+                std::back_inserter(events));
+      return !events.empty();
+    }));
+    return GetMessageNames(events);
   }
 
   MockRenderWidgetHostDelegate delegate_;
@@ -704,6 +733,112 @@ TEST_F(RenderWidgetHostViewMacTest, AcceptsFirstResponder) {
   EXPECT_TRUE(rwhv_cocoa_.acceptsFirstResponder);
 }
 
+TEST_F(RenderWidgetHostViewMacTest,
+       AcceptsFirstMouseForClickPostedToInactiveApp) {
+  ASSERT_FALSE(NSApp.active);
+  base::apple::ScopedCFTypeRef<CGEventRef> cg_event(CGEventCreateMouseEvent(
+      /*source=*/nullptr, kCGEventLeftMouseDown, CGPointZero,
+      kCGMouseButtonLeft));
+
+  CGEventSetIntegerValueField(cg_event.get(), kCGEventSourceUnixProcessID, 0);
+  EXPECT_FALSE([rwhv_cocoa_
+      acceptsFirstMouse:[NSEvent eventWithCGEvent:cg_event.get()]]);
+
+  CGEventSetIntegerValueField(cg_event.get(), kCGEventSourceUnixProcessID,
+                              getpid());
+  EXPECT_FALSE([rwhv_cocoa_
+      acceptsFirstMouse:[NSEvent eventWithCGEvent:cg_event.get()]]);
+
+  CGEventSetIntegerValueField(cg_event.get(), kCGEventSourceUnixProcessID, 1);
+  EXPECT_TRUE([rwhv_cocoa_
+      acceptsFirstMouse:[NSEvent eventWithCGEvent:cg_event.get()]]);
+}
+
+// A mouse exited event arriving at a hidden view (synthesized by
+// -[BaseView viewDidHide] when the view hides under the cursor) must still be
+// delivered to the renderer so that stale :hover state is cleared. See
+// https://crbug.com/548314090.
+TEST_F(RenderWidgetHostViewMacTest, HiddenViewDeliversMouseExit) {
+  rwhv_cocoa_.hidden = YES;
+  host_->GetAndResetDispatchedMessages();
+
+  [rwhv_cocoa_ mouseEvent:cocoa_test_event_utils::ExitEvent(NSMakePoint(10, 10),
+                                                            window_)];
+
+  MockWidgetInputHandler::MessageVector events;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    MockWidgetInputHandler::MessageVector new_events =
+        host_->GetAndResetDispatchedMessages();
+    std::move(new_events.begin(), new_events.end(), std::back_inserter(events));
+    return !events.empty();
+  }));
+  EXPECT_EQ("MouseLeave", GetMessageNames(events));
+}
+
+// A nested event-tracking loop, such as the one AppKit runs for a native
+// <select> popup menu, can consume the left mouse-up so that the view never
+// sees it. AppKit only sends mouse moved events while no button is pressed, so
+// the next one must end the open mouse-down. Otherwise the view keeps handling
+// moves over an overlapping view and both views fight over the cursor, e.g.
+// the inspected page over docked DevTools after using a DevTools <select>.
+// See https://crbug.com/573358004.
+TEST_F(RenderWidgetHostViewMacTest, MouseMoveEndsOpenMouseDownWithoutMouseUp) {
+  // Cover the right half of the view with an overlapping view.
+  const NSRect bounds = window_.contentView.bounds;
+  NSView* overlapping_view = [[NSView alloc]
+      initWithFrame:NSMakeRect(NSMidX(bounds), NSMinY(bounds),
+                               NSWidth(bounds) / 2, NSHeight(bounds))];
+  [window_.contentView addSubview:overlapping_view];
+  const NSPoint uncovered_point =
+      NSMakePoint(NSMinX(bounds) + NSWidth(bounds) / 4, NSMidY(bounds));
+  const NSPoint covered_point =
+      NSMakePoint(NSMaxX(bounds) - NSWidth(bounds) / 4, NSMidY(bounds));
+
+  [rwhv_cocoa_ mouseDown:cocoa_test_event_utils::LeftMouseDownAtPointInWindow(
+                             uncovered_point, window_)];
+  EXPECT_EQ("MouseDown", WaitForDispatchedMessageNames());
+
+  // While the button is held, drags over the overlapping view still go to the
+  // view where the mouse-down started.
+  [rwhv_cocoa_
+      mouseDragged:cocoa_test_event_utils::MouseEventAtPointInWindow(
+                       covered_point, NSEventTypeLeftMouseDragged, window_, 1)];
+  EXPECT_EQ("MouseMove", WaitForDispatchedMessageNames());
+
+  // The mouse-up is consumed elsewhere. The next move over the overlapping view
+  // is ignored again.
+  [rwhv_cocoa_
+      mouseMoved:cocoa_test_event_utils::MouseEventAtPointInWindow(
+                     covered_point, NSEventTypeMouseMoved, window_, 0)];
+  EXPECT_EQ("MouseLeave", WaitForDispatchedMessageNames());
+}
+
+// Same as above, but for the mouse leaving the view: the next mouse moved event
+// must also end the drag that BaseView tracks from the mouse-down. Otherwise
+// BaseView holds back the mouse exited event until that drag ends, which never
+// happens, so the page never sees the mouse leave. If the page shows e.g. a
+// pointer cursor where the mouse leaves it, that cursor stays stuck over the
+// browser UI next to the page, such as the bookmark bar.
+TEST_F(RenderWidgetHostViewMacTest, MouseExitAfterMouseDownWithoutMouseUp) {
+  const NSRect bounds = window_.contentView.bounds;
+  const NSPoint down_point = NSMakePoint(NSMidX(bounds), NSMidY(bounds));
+  const NSPoint moved_point = NSMakePoint(NSMidX(bounds), NSMaxY(bounds) - 1);
+  const NSPoint exit_point = NSMakePoint(NSMidX(bounds), NSMaxY(bounds) + 1);
+
+  [rwhv_cocoa_ mouseDown:cocoa_test_event_utils::LeftMouseDownAtPointInWindow(
+                             down_point, window_)];
+  EXPECT_EQ("MouseDown", WaitForDispatchedMessageNames());
+
+  // The mouse-up is consumed elsewhere, then the mouse moves within the view.
+  [rwhv_cocoa_ mouseMoved:cocoa_test_event_utils::MouseEventAtPointInWindow(
+                              moved_point, NSEventTypeMouseMoved, window_, 0)];
+  EXPECT_EQ("MouseMove", WaitForDispatchedMessageNames());
+
+  [rwhv_cocoa_
+      mouseExited:cocoa_test_event_utils::ExitEvent(exit_point, window_)];
+  EXPECT_EQ("MouseLeave", WaitForDispatchedMessageNames());
+}
+
 // This test verifies that RenderWidgetHostViewCocoa's implementation of
 // NSTextInputClientConformance conforms to requirements.
 TEST_F(RenderWidgetHostViewMacTest, NSTextInputClientConformance) {
@@ -797,6 +932,119 @@ TEST_F(RenderWidgetHostViewMacTest, InvalidKeyCode) {
                    0xFF, 0, NSEventTypeFlagsChanged, 0)];
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(0U, host_->GetAndResetDispatchedMessages().size());
+}
+
+// Regression test for https://crbug.com/582864500: when a key (such as Escape)
+// is released during a macOS fullscreen Space transition, AppKit swallows the
+// NSEventTypeKeyUp event. Verify that a balancing KeyUp is synthesized once
+// NSWindowDidExitFullScreenNotification fires, and any late duplicate KeyUp is
+// suppressed.
+TEST_F(RenderWidgetHostViewMacTest,
+       SynthesizesMissingKeyUpAfterExitFullScreen) {
+  rwhv_cocoa_.isKeyDownForTesting = ^(unsigned short key_code) {
+    return NO;
+  };
+  host_->GetAndResetDispatchedMessages();
+
+  [rwhv_cocoa_ keyEvent:cocoa_test_event_utils::SynthesizeKeyEvent(
+                            window_, /*keyDown=*/true, ui::VKEY_ESCAPE, 0)];
+  base::RunLoop().RunUntilIdle();
+  MockWidgetInputHandler::MessageVector events =
+      host_->GetAndResetDispatchedMessages();
+  EXPECT_THAT(GetMessageNames(events), ::testing::HasSubstr("RawKeyDown"));
+  EXPECT_FALSE([rwhv_cocoa_ suppressNextKeyUpForTesting:kVK_Escape]);
+
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:NSWindowDidExitFullScreenNotification
+                    object:window_];
+  base::RunLoop().RunUntilIdle();
+  events = host_->GetAndResetDispatchedMessages();
+  ASSERT_EQ("KeyUp", GetMessageNames(events));
+  ASSERT_TRUE(events[0]->ToEvent());
+
+  const auto& key_up = static_cast<const blink::WebKeyboardEvent&>(
+      events[0]->ToEvent()->Event()->Event());
+  EXPECT_EQ(ui::VKEY_ESCAPE, key_up.windows_key_code);
+  EXPECT_EQ(kVK_Escape, key_up.native_key_code);
+  EXPECT_EQ(static_cast<int>(ui::DomCode::ESCAPE), key_up.dom_code);
+  EXPECT_EQ(ui::DomKey::ESCAPE, key_up.dom_key);
+  EXPECT_TRUE([rwhv_cocoa_ suppressNextKeyUpForTesting:kVK_Escape]);
+
+  // A subsequent NSEventTypeKeyUp for Escape must be ignored as unmatched.
+  [rwhv_cocoa_ keyEvent:cocoa_test_event_utils::SynthesizeKeyEvent(
+                            window_, /*keyDown=*/false, ui::VKEY_ESCAPE, 0)];
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(host_->GetAndResetDispatchedMessages().empty());
+}
+
+// Verify that if a key is still held down when a fullscreen transition
+// finishes, no premature KeyUp is synthesized and the real KeyUp is still
+// delivered when the user eventually releases the key.
+TEST_F(RenderWidgetHostViewMacTest,
+       DoesNotSynthesizeKeyUpWhenKeyRemainsPressedAfterFullScreenTransition) {
+  rwhv_cocoa_.isKeyDownForTesting = ^(unsigned short key_code) {
+    return YES;
+  };
+  host_->GetAndResetDispatchedMessages();
+
+  [rwhv_cocoa_ keyEvent:cocoa_test_event_utils::SynthesizeKeyEvent(
+                            window_, /*keyDown=*/true, ui::VKEY_ESCAPE, 0)];
+  base::RunLoop().RunUntilIdle();
+  ASSERT_FALSE(host_->GetAndResetDispatchedMessages().empty());
+  EXPECT_FALSE([rwhv_cocoa_ suppressNextKeyUpForTesting:kVK_Escape]);
+
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:NSWindowDidExitFullScreenNotification
+                    object:window_];
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(host_->GetAndResetDispatchedMessages().empty());
+  EXPECT_FALSE([rwhv_cocoa_ suppressNextKeyUpForTesting:kVK_Escape]);
+
+  // Releasing the key after the transition delivers KeyUp normally.
+  [rwhv_cocoa_ keyEvent:cocoa_test_event_utils::SynthesizeKeyEvent(
+                            window_, /*keyDown=*/false, ui::VKEY_ESCAPE, 0)];
+  base::RunLoop().RunUntilIdle();
+  MockWidgetInputHandler::MessageVector events =
+      host_->GetAndResetDispatchedMessages();
+  EXPECT_EQ("KeyUp", GetMessageNames(events));
+  EXPECT_TRUE([rwhv_cocoa_ suppressNextKeyUpForTesting:kVK_Escape]);
+}
+
+// Verify that NSWindowDidEnterFullScreenNotification also synthesizes KeyUp
+// only for keys that were released during the transition while preserving keys
+// that remain pressed.
+TEST_F(RenderWidgetHostViewMacTest,
+       SynthesizesMissingKeyUpAfterEnterFullScreen) {
+  rwhv_cocoa_.isKeyDownForTesting = ^(unsigned short key_code) {
+    return key_code == kVK_ANSI_A ? YES : NO;
+  };
+  host_->GetAndResetDispatchedMessages();
+
+  [rwhv_cocoa_ keyEvent:cocoa_test_event_utils::SynthesizeKeyEvent(
+                            window_, /*keyDown=*/true, ui::VKEY_A, 0)];
+  [rwhv_cocoa_ keyEvent:cocoa_test_event_utils::SynthesizeKeyEvent(
+                            window_, /*keyDown=*/true, ui::VKEY_F, 0)];
+  base::RunLoop().RunUntilIdle();
+  host_->GetAndResetDispatchedMessages();
+
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:NSWindowDidEnterFullScreenNotification
+                    object:window_];
+  base::RunLoop().RunUntilIdle();
+  MockWidgetInputHandler::MessageVector events =
+      host_->GetAndResetDispatchedMessages();
+  ASSERT_EQ("KeyUp", GetMessageNames(events));
+  ASSERT_TRUE(events[0]->ToEvent());
+
+  const auto& key_up = static_cast<const blink::WebKeyboardEvent&>(
+      events[0]->ToEvent()->Event()->Event());
+  EXPECT_EQ(ui::VKEY_F, key_up.windows_key_code);
+  EXPECT_EQ(kVK_ANSI_F, key_up.native_key_code);
+  EXPECT_EQ(static_cast<int>(ui::DomCode::US_F), key_up.dom_code);
+  EXPECT_EQ(ui::DomKey::FromCharacter('f'), key_up.dom_key);
+
+  EXPECT_TRUE([rwhv_cocoa_ suppressNextKeyUpForTesting:kVK_ANSI_F]);
+  EXPECT_FALSE([rwhv_cocoa_ suppressNextKeyUpForTesting:kVK_ANSI_A]);
 }
 
 TEST_P(RenderWidgetHostViewMacCachedFirstRectTest,
@@ -1940,7 +2188,7 @@ TEST_F(RenderWidgetHostViewMacTest, EventLatencyOSMouseWheelHistogram) {
 // different variations of RWHVMac::SelectChanged updates.
 TEST_F(RenderWidgetHostViewMacTest, SelectedText) {
   std::u16string sample_text;
-  base::UTF8ToUTF16("hello world!", 12, &sample_text);
+  std::ignore = base::UTF8ToUTF16("hello world!", &sample_text);
   gfx::Range range(6, 11);
 
   // Send a valid selection for the word 'World'.
@@ -2000,6 +2248,9 @@ class InputMethodMacTest : public RenderWidgetHostViewMacTest {
   void SetTextInputType(RenderWidgetHostViewBase* view,
                         ui::TextInputType type,
                         ui::TextInputFlags flags = ui::TEXT_INPUT_FLAG_NONE) {
+    if (view && view->host()) {
+      delegate_.set_focused_widget(view->host());
+    }
     ui::mojom::TextInputState state;
     state.type = type;
     state.flags = flags;
@@ -2215,6 +2466,34 @@ TEST_F(InputMethodMacTest, InsertText) {
   EXPECT_EQ("CommitText", GetMessageNames(events));
 }
 
+// Inserting an empty string after a composition is cancelled must not crash
+// and must leave the selection collapsed where the composition started.
+TEST_F(InputMethodMacTest, InsertEmptyTextAfterCancelledComposition) {
+  SetTextInputType(tab_view(), ui::TEXT_INPUT_TYPE_TEXT);
+  EXPECT_EQ(tab_widget(), text_input_manager()->GetActiveWidget());
+
+  // Start a composition, then cancel it with an empty marked text.
+  [tab_GetInProcessNSView() setMarkedText:@"x"
+                            selectedRange:NSMakeRange(1, 0)
+                         replacementRange:NSMakeRange(2, 0)];
+  [tab_GetInProcessNSView() setMarkedText:@""
+                            selectedRange:NSMakeRange(0, 0)
+                         replacementRange:NSMakeRange(NSNotFound, 0)];
+  EXPECT_EQ((signed)[tab_GetInProcessNSView() markedRange].location,
+            (signed)NSNotFound);
+  EXPECT_NSEQ(NSMakeRange(2, 0), [tab_GetInProcessNSView() selectedRange]);
+
+  // With no marked range, inserted text replaces the selection, so the caret
+  // is predicted to land right after the inserted text.
+  [tab_GetInProcessNSView() insertText:@""
+                      replacementRange:NSMakeRange(NSNotFound, 0)];
+  EXPECT_NSEQ(NSMakeRange(2, 0), [tab_GetInProcessNSView() selectedRange]);
+
+  [tab_GetInProcessNSView() insertText:@"ab"
+                      replacementRange:NSMakeRange(NSNotFound, 0)];
+  EXPECT_NSEQ(NSMakeRange(4, 0), [tab_GetInProcessNSView() selectedRange]);
+}
+
 // This test makes sure that calling finishComposingText on the cocoa view will
 // lead to a finish composing text IPC for a the corresponding active widget.
 TEST_F(InputMethodMacTest, FinishComposingText) {
@@ -2295,6 +2574,33 @@ TEST_F(InputMethodMacTest, SecurePasswordInputDisabledInBackForwardCache) {
   EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
 }
 
+// Secure Event Input must be released when the window resigns key while a
+// password field is focused, and enabled again when the window becomes key.
+// https://crbug.com/577708579
+TEST_F(InputMethodMacTest, SecurePasswordInputDisabledWhenWindowResignsKey) {
+  ASSERT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  EXPECT_CALL(*host_, Focus()).Times(::testing::AnyNumber());
+  EXPECT_CALL(*host_, Blur()).Times(::testing::AnyNumber());
+
+  [window_ makeFirstResponder:tab_view()->GetInProcessNSView()];
+  SetTextInputType(tab_view(), ui::TEXT_INPUT_TYPE_PASSWORD);
+  tab_view()->SetActive(true);
+  ASSERT_TRUE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  // RenderWidgetHostViewCocoa calls OnWindowIsKeyChanged() when the window
+  // resigns or becomes key. Unlike calling SetActive() directly, this updates
+  // the window key status before the view is deactivated.
+  tab_view()->OnWindowIsKeyChanged(false);
+  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  tab_view()->OnWindowIsKeyChanged(true);
+  EXPECT_TRUE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  tab_view()->OnWindowIsKeyChanged(false);
+  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+}
+
 TEST_F(InputMethodMacTest, SecureHasBeenAPasswordInput) {
   ASSERT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
   ASSERT_EQ(text_input_manager(), tab_view()->GetTextInputManager());
@@ -2313,36 +2619,6 @@ TEST_F(InputMethodMacTest, SecureHasBeenAPasswordInput) {
 
   SetTextInputType(child_view_, ui::TEXT_INPUT_TYPE_TEXT,
                    ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD);
-  ASSERT_EQ(child_widget_.get(), text_input_manager()->GetActiveWidget());
-  ASSERT_EQ(text_input_manager(), tab_view()->GetTextInputManager());
-  ASSERT_EQ(ui::TEXT_INPUT_TYPE_TEXT, tab_view()->GetTextInputType());
-
-  // Single matched calls immediately update IsPasswordInputEnabled().
-  tab_view()->SetActive(true);
-  EXPECT_TRUE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  tab_view()->SetActive(false);
-  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-}
-
-TEST_F(InputMethodMacTest, SecureHasBeenACustomPasswordInput) {
-  ASSERT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-  ASSERT_EQ(text_input_manager(), tab_view()->GetTextInputManager());
-
-  // RenderWidgetHostViewMacTest.LostFocusAndGotFocusOnSetActive checks the
-  // GotFocus()/LostFocus() rules, just silence the warnings here.
-  EXPECT_CALL(*host_, Focus()).Times(::testing::AnyNumber());
-  EXPECT_CALL(*host_, Blur()).Times(::testing::AnyNumber());
-
-  [window_ makeFirstResponder:tab_view()->GetInProcessNSView()];
-
-  // Shouldn't enable secure input if it's not a "has been a custom password"
-  // textfield.
-  tab_view()->SetActive(true);
-  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  SetTextInputType(child_view_, ui::TEXT_INPUT_TYPE_TEXT,
-                   ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD);
   ASSERT_EQ(child_widget_.get(), text_input_manager()->GetActiveWidget());
   ASSERT_EQ(text_input_manager(), tab_view()->GetTextInputManager());
   ASSERT_EQ(ui::TEXT_INPUT_TYPE_TEXT, tab_view()->GetTextInputType());
@@ -2413,7 +2689,7 @@ TEST_F(InputMethodMacTest, MonitorCompositionRangeForActiveWidget) {
   state.type = ui::TEXT_INPUT_TYPE_TEXT;
 
   // Make the tab's widget active.
-  tab_view()->TextInputStateChanged(state);
+  SetTextInputType(tab_view(), ui::TEXT_INPUT_TYPE_TEXT);
 
   base::RunLoop().RunUntilIdle();
   MockWidgetInputHandler::MessageVector events =
@@ -2428,7 +2704,7 @@ TEST_F(InputMethodMacTest, MonitorCompositionRangeForActiveWidget) {
   EXPECT_TRUE(message->monitor_request());
 
   // Now make the child view active.
-  child_view_->TextInputStateChanged(state);
+  SetTextInputType(child_view_, ui::TEXT_INPUT_TYPE_TEXT);
 
   // The tab should receive another IPC for composition updates.
   base::RunLoop().RunUntilIdle();
@@ -2452,7 +2728,7 @@ TEST_F(InputMethodMacTest, MonitorCompositionRangeForActiveWidget) {
   EXPECT_TRUE(message->monitor_request());
 
   // Make the tab view active again.
-  tab_view()->TextInputStateChanged(state);
+  SetTextInputType(tab_view(), ui::TEXT_INPUT_TYPE_TEXT);
 
   base::RunLoop().RunUntilIdle();
   events = child_widget_->GetAndResetDispatchedMessages();
@@ -2763,6 +3039,131 @@ TEST_F(RenderWidgetHostViewMacTest, SyncGetFirstRectForRange_Clamped) {
   // Y should be clamped to 0.
   gfx::Rect expected_rect(0, 0, 10 / dsf, 20 / dsf);
   EXPECT_EQ(rect, expected_rect);
+
+  // Restore default delegate.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(nullptr);
+}
+
+// Answers GetFirstRectForRange() requests with a fixed rect. Replies from a
+// separate task, as the renderer does, because TextInputClientMac holds its
+// lock while sending an async request.
+class AsyncFakeTextInputClientMacDelegate
+    : public TextInputClientMac::AsyncRequestDelegate {
+ public:
+  explicit AsyncFakeTextInputClientMacDelegate(const gfx::Rect& response_rect)
+      : response_rect_(response_rect) {}
+
+  void GetCharacterIndexAtPoint(
+      RenderFrameHost* rfh,
+      const TextInputClientMac::RequestToken& request_token,
+      const gfx::Point& point) override {
+    FAIL() << "Unexpected call to GetCharacterIndexAtPoint";
+  }
+
+  void GetFirstRectForRange(
+      RenderFrameHost* rfh,
+      const TextInputClientMac::RequestToken& request_token,
+      const gfx::Range& range) override {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&TextInputClientMac::SetFirstRectAndSignal,
+                       base::Unretained(TextInputClientMac::GetInstance()),
+                       request_token, response_rect_));
+  }
+
+ private:
+  const gfx::Rect response_rect_;
+};
+
+// Verifies that GetFirstRectForRange() returns the renderer's bounds for the
+// requested range, converted to DIPs, when the cache only has the caret's
+// bounds for it.
+TEST_F(RenderWidgetHostViewMacTest, GetFirstRectForRangeAsksRenderer) {
+  base::test::ScopedFeatureList feature_list(
+      features::kCachedFirstRectAllowRangeOutsideSelection);
+
+  // Focus the root frame tree node so GetFocusedRenderFrameHostImpl succeeds.
+  contents()->GetPrimaryFrameTree().SetFocusedFrame(
+      contents()->GetPrimaryFrameTree().root(), nullptr);
+  rwhv_mac_->SetBounds(gfx::Rect(0, 0, 800, 600));
+
+  // With the caret after "omw", the cached bounds for "omw" are the caret's.
+  const gfx::Rect caret_rect(40, 10, 1, 20);
+  rwhv_mac_->SelectionChanged(u"omw", 0, gfx::Range(3, 3));
+  rwhv_mac_->SelectionBoundsChanged(caret_rect, base::i18n::LEFT_TO_RIGHT,
+                                    caret_rect, base::i18n::LEFT_TO_RIGHT,
+                                    gfx::Rect(), false);
+  gfx::Rect cached_rect;
+  ASSERT_EQ(rwhv_mac_->GetCachedFirstRectForCharacterRange(
+                gfx::Range(0, 3), &cached_rect, nullptr),
+            RenderWidgetHostViewMac::GetCachedFirstRectResult::kFound);
+  ASSERT_EQ(cached_rect, caret_rect);
+
+  // The renderer reports the bounds of "omw" in physical pixels.
+  const gfx::Rect text_rect(10, 10, 30, 20);
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(
+      std::make_unique<AsyncFakeTextInputClientMacDelegate>(
+          gfx::ScaleToEnclosingRect(text_rect,
+                                    rwhv_mac_->GetDeviceScaleFactor())));
+
+  base::test::TestFuture<const std::optional<gfx::Rect>&> future;
+  rwhv_mac_->GetFirstRectForRange(gfx::Range(0, 3), future.GetCallback());
+  EXPECT_EQ(future.Get(), text_rect);
+
+  // Restore default delegate.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(nullptr);
+}
+
+// Verifies that GetFirstRectForRange() returns the cached bounds for the
+// requested range when the renderer has none.
+TEST_F(RenderWidgetHostViewMacTest, GetFirstRectForRangeFallsBackToCachedRect) {
+  base::test::ScopedFeatureList feature_list(
+      features::kCachedFirstRectAllowRangeOutsideSelection);
+
+  // Focus the root frame tree node so GetFocusedRenderFrameHostImpl succeeds.
+  contents()->GetPrimaryFrameTree().SetFocusedFrame(
+      contents()->GetPrimaryFrameTree().root(), nullptr);
+  rwhv_mac_->SetBounds(gfx::Rect(0, 0, 800, 600));
+
+  const gfx::Rect caret_rect(40, 10, 1, 20);
+  rwhv_mac_->SelectionChanged(u"omw", 0, gfx::Range(3, 3));
+  rwhv_mac_->SelectionBoundsChanged(caret_rect, base::i18n::LEFT_TO_RIGHT,
+                                    caret_rect, base::i18n::LEFT_TO_RIGHT,
+                                    gfx::Rect(), false);
+
+  // The renderer has no bounds for "omw", e.g. because it's in an EditContext
+  // whose page didn't provide any.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(
+      std::make_unique<AsyncFakeTextInputClientMacDelegate>(gfx::Rect()));
+
+  base::test::TestFuture<const std::optional<gfx::Rect>&> future;
+  rwhv_mac_->GetFirstRectForRange(gfx::Range(0, 3), future.GetCallback());
+  EXPECT_EQ(future.Get(), caret_rect);
+
+  // Restore default delegate.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(nullptr);
+}
+
+// Verifies that GetFirstRectForRange() clamps the renderer's bounds to the
+// visible viewport.
+TEST_F(RenderWidgetHostViewMacTest, GetFirstRectForRangeClamped) {
+  // Focus the root frame tree node so GetFocusedRenderFrameHostImpl succeeds.
+  contents()->GetPrimaryFrameTree().SetFocusedFrame(
+      contents()->GetPrimaryFrameTree().root(), nullptr);
+  rwhv_mac_->SetBounds(gfx::Rect(0, 0, 800, 600));
+
+  // Forged rect outside of the viewport, in physical pixels.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(
+      std::make_unique<AsyncFakeTextInputClientMacDelegate>(
+          gfx::Rect(-100, -200, 10, 20)));
+
+  base::test::TestFuture<const std::optional<gfx::Rect>&> future;
+  rwhv_mac_->GetFirstRectForRange(gfx::Range(1, 2), future.GetCallback());
+
+  // X and Y are clamped to the viewport's origin.
+  const float dsf = rwhv_mac_->GetDeviceScaleFactor();
+  const gfx::Rect expected_rect(0, 0, 10 / dsf, 20 / dsf);
+  EXPECT_EQ(future.Get(), expected_rect);
 
   // Restore default delegate.
   TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(nullptr);

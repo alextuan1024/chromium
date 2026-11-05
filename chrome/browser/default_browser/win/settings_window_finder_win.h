@@ -7,10 +7,13 @@
 
 #include <windows.h>
 
+#include <optional>
 #include <vector>
 
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/weak_ptr.h"
+#include "base/process/process.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -22,7 +25,11 @@
 // sequenced thread.
 class SettingsWindowFinderWin {
  public:
-  using WindowFoundCallback = base::OnceCallback<void(HWND)>;
+  // Run with the window and the process that owns it, opened with
+  // PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE. While the handle is held
+  // the pid is not reused, and the process's exit can be polled with
+  // base::Process::IsRunning().
+  using WindowFoundCallback = base::OnceCallback<void(HWND, base::Process)>;
 
   SettingsWindowFinderWin();
 
@@ -57,11 +64,30 @@ class SettingsWindowFinderWin {
   using WindowMoveSizeCallback = base::RepeatingCallback<void(bool)>;
   virtual void SetMoveSizeCallback(WindowMoveSizeCallback on_move_size);
 
+  using ForegroundChangedCallback = base::RepeatingClosure;
+
+  // Starts observing which window is in the foreground. Unlike the location
+  // observation this is system-wide and includes this process's own windows,
+  // so focus moving to a Chrome window or another app is reported as well as
+  // focus returning to Settings. The callback carries no window: ask
+  // ::GetForegroundWindow() for the current one.
+  virtual void StartObservingForegroundChanges(
+      ForegroundChangedCallback on_foreground_changed);
+
+  // Stops observing foreground changes.
+  virtual void StopObservingForegroundChanges();
+
  protected:
-  virtual HWND FindSettingsTopLevelWindow() const;
+  struct WindowAndProcess {
+    HWND hwnd = nullptr;
+    base::Process process;
+  };
 
   // Virtual for testing.
-  virtual bool IsLikelySettingsWindow(HWND hwnd) const;
+  virtual std::optional<WindowAndProcess> FindSettingsTopLevelWindow() const;
+  // Returns the owner of `hwnd` if it is the Settings window, else an invalid
+  // process.
+  virtual base::Process MatchSettingsWindow(HWND hwnd) const;
   virtual HWND GetRootWindow(HWND hwnd) const;
 
   // Instance-side handler for the static WinEventCallback. Exposed to tests
@@ -84,13 +110,17 @@ class SettingsWindowFinderWin {
   base::OnceClosure on_timeout_;
   WindowResizedCallback on_resized_;
   WindowMoveSizeCallback on_move_size_;
+  ForegroundChangedCallback on_foreground_changed_;
   HWND observed_hwnd_ = nullptr;
   base::OneShotTimer timeout_timer_;
   HWINEVENTHOOK winevent_hook_ = nullptr;
   HWINEVENTHOOK uncloak_hook_ = nullptr;
+  HWINEVENTHOOK foreground_hook_ = nullptr;
 
   // Hooks on `observed_hwnd_`, installed and released as a set.
-  std::vector<HWINEVENTHOOK> observation_hooks_;
+  // RAW_PTR_EXCLUSION: HWINEVENTHOOK is an opaque Win32 handle (not a real
+  // pointer, and never allocated by PartitionAlloc).
+  RAW_PTR_EXCLUSION std::vector<HWINEVENTHOOK> observation_hooks_;
 
   bool is_active_ = false;
 

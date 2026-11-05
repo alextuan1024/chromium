@@ -86,7 +86,6 @@ class CORE_EXPORT Scrollbar : public GarbageCollected<Scrollbar>,
 
   bool HasTickmarks() const;
   Vector<gfx::Rect> GetTickmarks() const;
-  bool IsScrollableAreaActive() const;
 
   gfx::Point ConvertFromRootFrame(const gfx::Point&) const;
 
@@ -255,7 +254,7 @@ class CORE_EXPORT Scrollbar : public GarbageCollected<Scrollbar>,
   void InjectScrollGesture(WebInputEvent::Type type,
                            ScrollOffset delta,
                            ui::ScrollGranularity granularity);
-  ScrollDirectionPhysical PressedPartScrollDirectionPhysical();
+  mojom::blink::ScrollDirectionPhysical PressedPartScrollDirectionPhysical();
   ui::ScrollGranularity PressedPartScrollGranularity();
 
   Member<ScrollableArea> scrollable_area_;

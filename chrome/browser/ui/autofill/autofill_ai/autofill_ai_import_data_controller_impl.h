@@ -11,15 +11,15 @@
 #include <vector>
 
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/language_tag.h"
 #include "base/memory/weak_ptr.h"
 #include "base/types/optional_ref.h"
 #include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_data_controller.h"
-#include "chrome/browser/ui/autofill/autofill_ai/entity_attribute_update_details.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_controller_base.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_manager.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
-#include "content/public/browser/web_contents_observer.h"
+#include "components/autofill/core/browser/ui/autofill_ai/entity_attribute_update_details.h"
 #include "content/public/browser/web_contents_user_data.h"
 
 namespace autofill {
@@ -60,7 +60,10 @@ class AutofillAiImportDataControllerImpl
   int GetSaveUpdateDialogTitleImagesResourceId() const override;
   std::u16string GetPrimaryAccountEmail() const override;
   bool IsWalletableEntity() const override;
+  bool IsBranding2026FeatureEnabled() const override;
+  bool MustShowEquallyWeightedButtons() const override;
   void OnGoToWalletLinkClicked() override;
+  void OnPrivacyPolicyLinkClicked() override;
   std::vector<EntityAttributeUpdateDetails> GetUpdatedAttributesDetails()
       const override;
   bool IsSavePrompt() const override;
@@ -76,19 +79,10 @@ class AutofillAiImportDataControllerImpl
   bool ShouldReshowOnTabVisible() const override;
   base::WeakPtr<BubbleControllerBase> GetBubbleControllerBaseWeakPtr() override;
 
-  // content::WebContentsObserver:
-  // Used to re-show the bubble when it was previously closed due to the user
-  // clicking on a link in the bubble.
-  void OnVisibilityChanged(content::Visibility visibility) override;
-
  protected:
   explicit AutofillAiImportDataControllerImpl(
       content::WebContents* web_contents,
-      const std::string& app_locale);
-
-  // AutofillBubbleControllerBase::
-  std::optional<PageActionIconType> GetPageActionIconType() override;
-  void DoShowBubble() override;
+      const base::i18n::LanguageTag& app_locale);
 
  private:
   friend class content::WebContentsUserData<AutofillAiImportDataControllerImpl>;
@@ -131,6 +125,9 @@ class AutofillAiImportDataControllerImpl
   // is handling a local save notification.
   struct LocalSaveNotificationState {};
 
+  // AutofillBubbleControllerBase:
+  AutofillBubbleBase* DoShowBubble() override;
+
   // Helpers for determining whether the controller is currently showing a
   // save or update prompt and accessing its data.
   bool IsSaveUpdatePrompt() const {
@@ -162,7 +159,7 @@ class AutofillAiImportDataControllerImpl
   void OpenUrlAndReopenBubbleOnReturn(const GURL& url);
 
   // The browser's locale when the object was instantiated.
-  const std::string app_locale_;
+  const base::i18n::LanguageTag app_locale_;
 
   // The type of bubble that is supposed to be shown and its associated state.
   std::variant<std::monostate, SaveUpdateState, LocalSaveNotificationState>

@@ -10,6 +10,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/debug/crash_logging.h"
@@ -22,12 +23,10 @@
 #include "chrome/browser/ash/login/chrome_restart_request.h"
 #include "chrome/browser/ash/shimless_rma/diagnostics_app_profile_helper.h"
 #include "chrome/browser/ash/system/device_disabling_manager.h"
-#include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/ui/webui/ash/diagnostics_dialog/diagnostics_dialog.h"
 #include "chrome/common/chromeos/extensions/chromeos_system_extension_info.h"
 #include "components/qr_code_generator/bitmap_generator.h"
-#include "content/public/browser/web_ui.h"
-#include "extensions/common/extension.h"
+#include "components/webrtc/media_capture_dispatcher.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/image/image_skia.h"
@@ -35,13 +34,16 @@
 namespace ash {
 namespace shimless_rma {
 
-ChromeShimlessRmaDelegate::ChromeShimlessRmaDelegate(content::WebUI* web_ui)
+ChromeShimlessRmaDelegate::ChromeShimlessRmaDelegate(PrefService* local_state)
     : ChromeShimlessRmaDelegate(
+          local_state,
           std::make_unique<DiagnosticsAppProfileHelperDelegate>()) {}
 ChromeShimlessRmaDelegate::ChromeShimlessRmaDelegate(
+    PrefService* local_state,
     std::unique_ptr<DiagnosticsAppProfileHelperDelegate>
         diagnostics_app_profile_helper_delegate)
-    : diagnostics_app_profile_helper_delegate_(
+    : local_state_(CHECK_DEREF(local_state)),
+      diagnostics_app_profile_helper_delegate_(
           std::move(diagnostics_app_profile_helper_delegate)) {}
 
 ChromeShimlessRmaDelegate::~ChromeShimlessRmaDelegate() = default;
@@ -53,7 +55,8 @@ void ChromeShimlessRmaDelegate::ExitRmaThenRestartChrome() {
   command_line.AppendSwitch(::ash::switches::kRmaNotAllowed);
   // Remove any attempts to launch RMA.
   command_line.RemoveSwitch(::ash::switches::kLaunchRma);
-  ash::RestartChrome(command_line, ash::RestartChromeReason::kUserless);
+  ash::RestartChrome(local_state_.get(), command_line,
+                     ash::RestartChromeReason::kUserless);
 }
 
 void ChromeShimlessRmaDelegate::ShowDiagnosticsDialog() {
@@ -123,8 +126,9 @@ void ChromeShimlessRmaDelegate::ProcessMediaAccessRequest(
     const content::MediaStreamRequest& request,
     content::MediaResponseCallback callback,
     const extensions::Extension* extension) {
-  MediaCaptureDevicesDispatcher::GetInstance()->ProcessMediaAccessRequest(
-      web_contents, request, std::move(callback), extension);
+  CHECK(!extension);
+  webrtc::MediaCaptureDispatcher::GetInstance()->ProcessMediaAccessRequest(
+      web_contents, request, std::move(callback));
 }
 
 base::WeakPtr<ShimlessRmaDelegate> ChromeShimlessRmaDelegate::GetWeakPtr() {

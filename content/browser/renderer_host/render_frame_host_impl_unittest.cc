@@ -10,10 +10,13 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/buildflag.h"
 #include "components/input/timeout_monitor.h"
+#include "components/ukm/test_ukm_recorder.h"
 #include "content/browser/bad_message.h"
+#include "content/browser/renderer_host/ipc_utils.h"
 #include "content/browser/renderer_host/navigation_controller_impl.h"
 #include "content/browser/renderer_host/render_frame_host_manager.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
@@ -28,12 +31,15 @@
 #include "content/public/common/content_features.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/fake_local_frame.h"
+#include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_navigation_throttle.h"
 #include "content/public/test/test_utils.h"
 #include "content/test/navigation_simulator_impl.h"
 #include "content/test/storage_partition_test_helpers.h"
 #include "content/test/test_render_frame_host.h"
 #include "content/test/test_render_view_host.h"
 #include "content/test/test_web_contents.h"
+#include "media/mojo/mojom/media_metrics_provider.mojom.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/test_support/fake_message_dispatch_context.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
@@ -51,13 +57,16 @@
 #include "services/network/public/mojom/cors_origin_pattern.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/runtime_feature_state/runtime_feature_state_context.h"
 #include "third_party/blink/public/common/runtime_feature_state/runtime_feature_state_read_context.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom.h"
 #include "third_party/blink/public/mojom/notifications/notification_service.mojom.h"
 #include "third_party/blink/public/mojom/webauthn/authenticator.mojom.h"
+#include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 #include "third_party/blink/public/mojom/worker/dedicated_worker_host_factory.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "url/url_util.h"
@@ -1444,6 +1453,9 @@ class MockWebContentsDelegate : public WebContentsDelegate {
   MOCK_METHOD(void,
               OnTextCopiedToClipboard,
               (RenderFrameHost*, std::u16string));
+#if BUILDFLAG(IS_ANDROID)
+  MOCK_METHOD(void, UpdateUserGestureCarryoverInfo, (WebContents*), (override));
+#endif
 };
 
 }  // namespace
@@ -1591,11 +1603,12 @@ TEST_F(RenderFrameHostImplTest, CapturedMediaStreamAddedRemoved) {
       RenderFrameHostImpl::MediaStreamType::kCapturingMediaStream);
 }
 
-// Ensure that an invalid WindowOpenDisposition in CreateNewWindow causes a bad
-// message.
+// Ensure that an invalid `ui::mojom::WindowOpenDisposition` in CreateNewWindow
+// causes a bad message.
 TEST_F(RenderFrameHostImplTest, CreateNewWindowInvalidDisposition) {
   mojom::CreateNewWindowParamsPtr params = mojom::CreateNewWindowParams::New();
-  params->disposition = WindowOpenDisposition::UNKNOWN;
+  params->disposition = ui::mojom::WindowOpenDisposition::kUnknown;
+  params->features = blink::mojom::WindowFeatures::New();
 
   // The bad message is reported to the process.
   EXPECT_EQ(0, process()->bad_msg_count());
@@ -1604,6 +1617,85 @@ TEST_F(RenderFrameHostImplTest, CreateNewWindowInvalidDisposition) {
       ->CreateNewWindow(std::move(params), base::DoNothing());
 
   EXPECT_EQ(1, process()->bad_msg_count());
+}
+
+class RenderFrameHostImplWindowOpenSplitTabTest
+    : public RenderFrameHostImplTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  RenderFrameHostImplWindowOpenSplitTabTest() {
+    feature_list_.InitWithFeatureState(blink::features::kWindowOpenSplitTab,
+                                       IsSplitTabEnabled());
+  }
+
+  bool IsSplitTabEnabled() const { return GetParam(); }
+
+  // Returns the result of VerifyCreateNewWindowParams() for a window.open()
+  // request with `features`, and expects a bad message if the result is false.
+  bool VerifyFeatures(blink::mojom::WindowFeaturesPtr features) {
+    mojom::CreateNewWindowParamsPtr params =
+        mojom::CreateNewWindowParams::New();
+    params->disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
+    params->features = std::move(features);
+
+    base::HistogramTester histograms;
+    const int initial_bad_msg_count = process()->bad_msg_count();
+    const bool result = VerifyCreateNewWindowParams(
+        *static_cast<RenderFrameHostImpl*>(main_rfh()), *params);
+    EXPECT_EQ(initial_bad_msg_count + (result ? 0 : 1),
+              process()->bad_msg_count());
+    histograms.ExpectBucketCount(
+        "Stability.BadMessageTerminated.Content",
+        bad_message::RFH_CREATE_NEW_WINDOW_INVALID_SPLIT_TAB_FEATURES,
+        result ? 0 : 1);
+    return result;
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         RenderFrameHostImplWindowOpenSplitTabTest,
+                         testing::Bool());
+
+TEST_P(RenderFrameHostImplWindowOpenSplitTabTest, NoSplit) {
+  EXPECT_TRUE(VerifyFeatures(blink::mojom::WindowFeatures::New()));
+}
+
+TEST_P(RenderFrameHostImplWindowOpenSplitTabTest, Split) {
+  auto features = blink::mojom::WindowFeatures::New();
+  features->is_split = true;
+  features->split_position = blink::mojom::SplitTabPosition::kLeft;
+  features->split_size = 30;
+  // Split features are only allowed when the feature is enabled.
+  EXPECT_EQ(IsSplitTabEnabled(), VerifyFeatures(std::move(features)));
+}
+
+TEST_P(RenderFrameHostImplWindowOpenSplitTabTest, PositionWithoutSplit) {
+  auto features = blink::mojom::WindowFeatures::New();
+  features->split_position = blink::mojom::SplitTabPosition::kLeft;
+  EXPECT_FALSE(VerifyFeatures(std::move(features)));
+}
+
+TEST_P(RenderFrameHostImplWindowOpenSplitTabTest, SizeWithoutSplit) {
+  auto features = blink::mojom::WindowFeatures::New();
+  features->split_size = 30;
+  EXPECT_FALSE(VerifyFeatures(std::move(features)));
+}
+
+TEST_P(RenderFrameHostImplWindowOpenSplitTabTest, SizeTooSmall) {
+  auto features = blink::mojom::WindowFeatures::New();
+  features->is_split = true;
+  features->split_size = 0;
+  EXPECT_FALSE(VerifyFeatures(std::move(features)));
+}
+
+TEST_P(RenderFrameHostImplWindowOpenSplitTabTest, SizeTooLarge) {
+  auto features = blink::mojom::WindowFeatures::New();
+  features->is_split = true;
+  features->split_size = 100;
+  EXPECT_FALSE(VerifyFeatures(std::move(features)));
 }
 
 // Ensure that attempting to create a DedicatedWorkerHostFactory from a PDF
@@ -1962,6 +2054,122 @@ TEST_F(RenderFrameHostImplMimeHandlerTest,
                   .is_secure_context_root);
 }
 
+// A throttle can block the response after the commit-time policies were
+// computed, and the frame then commits an error page instead. The error page is
+// not the chrome-extension document the secure-context-root answer was
+// computed for, so it is expected not to become a secure-context root.
+TEST_F(RenderFrameHostImplMimeHandlerTest,
+       BlockedResponseErrorPageIsNotSecureContextRoot) {
+  TestRenderFrameHost* embedder = CommitEmbedder(GURL(kEmbedderUrl));
+  TestRenderFrameHost* child = AppendAndMaybeCommit(embedder, "child", GURL());
+
+  auto navigation =
+      NavigationSimulator::CreateRendererInitiated(GURL(kExtensionUrl), child);
+  navigation->Start();
+  auto& registry = navigation->GetNavigationThrottleRegistry();
+  auto throttle = std::make_unique<TestNavigationThrottle>(registry);
+  throttle->SetResponse(TestNavigationThrottle::WILL_PROCESS_RESPONSE,
+                        TestNavigationThrottle::SYNCHRONOUS,
+                        NavigationThrottle::BLOCK_RESPONSE);
+  registry.AddThrottle(std::move(throttle));
+  navigation->ReadyToCommit();
+  ASSERT_EQ(NavigationThrottle::BLOCK_RESPONSE,
+            navigation->GetLastThrottleCheckResult());
+  navigation->CommitErrorPage();
+
+  EXPECT_FALSE(
+      static_cast<RenderFrameHostImpl*>(navigation->GetFinalRenderFrameHost())
+          ->frame_tree_node()
+          ->current_replication_state()
+          .is_secure_context_root);
+}
+
+// Turns on the DBSC JS API, so that each commit computes
+// `can_use_device_bound_session_js_api`.
+class RenderFrameHostImplDeviceBoundSessionJsApiTest
+    : public RenderFrameHostImplTest {
+ protected:
+  // Commits `navigation` and returns the new document's value. Checks that
+  // the renderer got the same value in the commit params.
+  bool CommitAndCheck(std::unique_ptr<NavigationSimulator> navigation) {
+    navigation->ReadyToCommit();
+    const bool sent = NavigationRequest::From(navigation->GetNavigationHandle())
+                          ->commit_params()
+                          .can_use_device_bound_session_js_api;
+    navigation->Commit();
+    auto* rfh = static_cast<RenderFrameHostImpl*>(
+        navigation->GetFinalRenderFrameHost());
+    EXPECT_EQ(sent, rfh->CanUseDeviceBoundSessionJsApi());
+    return sent;
+  }
+
+  // Commits https://a.test/ in the main frame and returns a new child of it.
+  TestRenderFrameHost* AddChildToHttpsPage(bool credentialless) {
+    NavigationSimulator::NavigateAndCommitFromBrowser(contents(),
+                                                      GURL("https://a.test/"));
+    return credentialless ? main_test_rfh()->AppendCredentiallessChild("child")
+                          : main_test_rfh()->AppendChild("child");
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_{
+      features::kDeviceBoundSessionJsApi};
+};
+
+TEST_F(RenderFrameHostImplDeviceBoundSessionJsApiTest,
+       TopLevelHttpsDocumentCanUse) {
+  EXPECT_TRUE(CommitAndCheck(NavigationSimulator::CreateBrowserInitiated(
+      GURL("https://a.test/"), contents())));
+}
+
+TEST_F(RenderFrameHostImplDeviceBoundSessionJsApiTest, SameSiteIframeCanUse) {
+  TestRenderFrameHost* child = AddChildToHttpsPage(/*credentialless=*/false);
+  EXPECT_TRUE(CommitAndCheck(NavigationSimulator::CreateRendererInitiated(
+      GURL("https://sub.a.test/"), child)));
+}
+
+TEST_F(RenderFrameHostImplDeviceBoundSessionJsApiTest,
+       CrossSiteIframeCannotUse) {
+  TestRenderFrameHost* child = AddChildToHttpsPage(/*credentialless=*/false);
+  EXPECT_FALSE(CommitAndCheck(NavigationSimulator::CreateRendererInitiated(
+      GURL("https://b.test/"), child)));
+}
+
+TEST_F(RenderFrameHostImplDeviceBoundSessionJsApiTest,
+       CredentiallessIframeCannotUse) {
+  TestRenderFrameHost* child = AddChildToHttpsPage(/*credentialless=*/true);
+  EXPECT_FALSE(CommitAndCheck(NavigationSimulator::CreateRendererInitiated(
+      GURL("https://a.test/"), child)));
+}
+
+TEST_F(RenderFrameHostImplDeviceBoundSessionJsApiTest, OpaqueOriginCannotUse) {
+  EXPECT_FALSE(CommitAndCheck(NavigationSimulator::CreateBrowserInitiated(
+      GURL("data:text/html,opaque"), contents())));
+}
+
+TEST_F(RenderFrameHostImplDeviceBoundSessionJsApiTest, HttpDocumentCannotUse) {
+  EXPECT_FALSE(CommitAndCheck(NavigationSimulator::CreateBrowserInitiated(
+      GURL("http://a.test/"), contents())));
+}
+
+// A same-document navigation keeps the document, so it keeps the value.
+TEST_F(RenderFrameHostImplDeviceBoundSessionJsApiTest,
+       SameDocumentNavigationKeepsValue) {
+  ASSERT_TRUE(CommitAndCheck(NavigationSimulator::CreateBrowserInitiated(
+      GURL("https://a.test/"), contents())));
+  NavigationSimulator::CreateRendererInitiated(GURL("https://a.test/#frag"),
+                                               main_test_rfh())
+      ->CommitSameDocument();
+  EXPECT_TRUE(main_test_rfh()->CanUseDeviceBoundSessionJsApi());
+}
+
+TEST_F(RenderFrameHostImplTest,
+       CannotUseDeviceBoundSessionJsApiWhenFeatureOff) {
+  NavigationSimulator::NavigateAndCommitFromBrowser(contents(),
+                                                    GURL("https://a.test/"));
+  EXPECT_FALSE(main_test_rfh()->CanUseDeviceBoundSessionJsApi());
+}
+
 TEST_F(RenderFrameHostImplTest, NotificationServiceBlockedForPdf) {
   UrlInfo url_info(
       UrlInfoInit(GURL("https://foo.com/document.pdf"))
@@ -2054,6 +2262,96 @@ TEST_F(RenderFrameHostImplTest,
       main_test_rfh()->policy_container_host()->policies().Clone();
   EXPECT_NE(initiator_policies, policies);
   EXPECT_EQ(kDefaultPolicies, policies);
+}
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(RenderFrameHostImplTest,
+       UpdateUserGestureCarryoverInfoWithoutActivation) {
+  MockWebContentsDelegate delegate;
+  contents()->SetDelegate(&delegate);
+
+  TestRenderFrameHost* rfh = contents()->GetPrimaryMainFrame();
+  EXPECT_FALSE(rfh->HasTransientUserActivation());
+  EXPECT_CALL(delegate, UpdateUserGestureCarryoverInfo(contents())).Times(0);
+
+  static_cast<mojom::FrameHost*>(rfh)->UpdateUserGestureCarryoverInfo();
+
+  EXPECT_EQ(0, rfh->GetProcess()->bad_msg_count());
+  testing::Mock::VerifyAndClearExpectations(&delegate);
+  contents()->SetDelegate(nullptr);
+}
+
+TEST_F(RenderFrameHostImplTest, UpdateUserGestureCarryoverInfoWithActivation) {
+  MockWebContentsDelegate delegate;
+  contents()->SetDelegate(&delegate);
+
+  TestRenderFrameHost* rfh = contents()->GetPrimaryMainFrame();
+  rfh->SimulateUserActivation();
+  EXPECT_TRUE(rfh->HasTransientUserActivation());
+  EXPECT_CALL(delegate, UpdateUserGestureCarryoverInfo(contents())).Times(1);
+
+  static_cast<mojom::FrameHost*>(rfh)->UpdateUserGestureCarryoverInfo();
+
+  EXPECT_EQ(0, rfh->GetProcess()->bad_msg_count());
+  testing::Mock::VerifyAndClearExpectations(&delegate);
+  contents()->SetDelegate(nullptr);
+}
+#endif
+
+namespace {
+
+// Returns an off-the-record BrowserContext as the user BrowserContext of all
+// WebContents.
+class OffTheRecordUserContentBrowserClient : public ContentBrowserClient {
+ public:
+  OffTheRecordUserContentBrowserClient() {
+    browser_context_.set_is_off_the_record(true);
+  }
+
+  // ContentBrowserClient:
+  BrowserContext* GetUserBrowserContext(WebContents& web_contents) override {
+    return &browser_context_;
+  }
+
+ private:
+  TestBrowserContext browser_context_;
+};
+
+// Reports an encrypted playback in `rfh`, and waits until it is recorded
+// whether it was in an off-the-record context.
+void ReportEncryptedPlayback(RenderFrameHostImpl* rfh,
+                             const base::HistogramTester& histograms) {
+  mojo::Remote<media::mojom::MediaMetricsProvider> provider;
+  rfh->BindMediaMetricsProviderReceiver(provider.BindNewPipeAndPassReceiver());
+  provider->Initialize(/*is_mse=*/false, media::mojom::MediaURLScheme::kHttp,
+                       media::mojom::MediaStreamType::kNone);
+  provider->SetIsEME();
+  provider->SetHasPlayed();
+  provider.reset();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !histograms.GetAllSamples("Media.EME.IsIncognito").empty();
+  }));
+}
+
+}  // namespace
+
+// Tests that media metrics use the off-the-record state of the user
+// BrowserContext, instead of that of the frame.
+TEST_F(RenderFrameHostImplTest, MediaMetricsUseUserBrowserContext) {
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+  {
+    base::HistogramTester histograms;
+    ReportEncryptedPlayback(main_test_rfh(), histograms);
+    histograms.ExpectUniqueSample("Media.EME.IsIncognito", false, 1);
+  }
+
+  OffTheRecordUserContentBrowserClient browser_client;
+  ScopedContentBrowserClientSetting browser_client_setting(&browser_client);
+  {
+    base::HistogramTester histograms;
+    ReportEncryptedPlayback(main_test_rfh(), histograms);
+    histograms.ExpectUniqueSample("Media.EME.IsIncognito", true, 1);
+  }
 }
 
 }  // namespace content

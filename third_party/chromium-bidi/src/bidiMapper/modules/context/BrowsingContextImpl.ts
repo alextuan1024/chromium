@@ -17,10 +17,12 @@
 
 import type {Protocol} from 'devtools-protocol';
 
+import type {CdpClient, CdpEvents} from '../../../cdp/CdpClient.js';
 import {
   BrowsingContext,
   ChromiumBidi,
   type Emulation,
+  type GoogBrowsingContext,
   InvalidArgumentException,
   InvalidSelectorException,
   NoSuchElementException,
@@ -57,17 +59,37 @@ import {
   NavigationTracker,
 } from './NavigationTracker.js';
 
+/** Subscribes to the events of a CDP client. */
+interface CdpEventSubscriber {
+  on<Event extends keyof CdpEvents>(
+    event: Event,
+    handler: (params: CdpEvents[Event]) => void,
+  ): void;
+}
+
+// Shared across all BrowsingContextImpl instances (including sibling Mapper
+// instances in the same tab) so internal helper sandboxes stay hidden across
+// mappers.
+const HIDDEN_SANDBOX = uuidv4();
+
 export class BrowsingContextImpl {
-  static readonly LOGGER_PREFIX = `${LogType.debug}:browsingContext` as const;
+  static readonly LOGGER_PREFIX: `${LogType.debug}:browsingContext` =
+    `${LogType.debug}:browsingContext` as const;
 
   /** Direct children browsing contexts. */
   readonly #children = new Set<BrowsingContext.BrowsingContext>();
   /** The ID of this browsing context. */
   readonly #id: BrowsingContext.BrowsingContext;
   readonly userContext: string;
-  // Used for running helper scripts.
-  readonly #hiddenSandbox = uuidv4();
-  readonly #downloadIdToUrlMap = new Map<string, string>();
+  // Maps active CDP download GUIDs initiated in this context to their info from
+  // `Browser.downloadWillBegin`. Required to populate `browsingContext.downloadEnd`
+  // because CDP's `Browser.downloadProgress` event only provides `guid`, `state`,
+  // and `filePath` (and does not include the downloaded resource's `url` or the
+  // associated BiDi `navigation` ID).
+  readonly #downloadIdToInfoMap = new Map<
+    string,
+    {url: string; navigation: string | null}
+  >();
 
   /**
    * The ID of the parent browsing context.
@@ -90,6 +112,8 @@ export class BrowsingContextImpl {
   readonly #navigationTracker: NavigationTracker;
   readonly #realmStorage: RealmStorage;
   readonly #configStorage: ContextConfigStorage;
+  // Tracks the CDP listeners installed by `#initListeners`.
+  #cdpListeners = new DisposableStack();
 
   // Set when the user prompt is opened. Required to provide the type in closing event.
   #lastUserPromptType?: BrowsingContext.UserPromptType;
@@ -119,7 +143,7 @@ export class BrowsingContextImpl {
     this.#originalOpener = originalOpener;
 
     // Register helper realm as hidden, so that it will not be reported to the user.
-    this.#realmStorage.hiddenSandboxes.add(this.#hiddenSandbox);
+    this.#realmStorage.hiddenSandboxes.add(HIDDEN_SANDBOX);
 
     this.#navigationTracker = new NavigationTracker(
       url,
@@ -161,7 +185,17 @@ export class BrowsingContextImpl {
 
     browsingContextStorage.addContext(context);
     if (!context.isTopLevelContext()) {
-      context.parent!.addChild(context.id);
+      // The parent context may not be in storage yet (e.g. reconnect) or may
+      // have been disposed ahead of an out-of-process child target.
+      context.parent?.addChild(context.id);
+    }
+    // Re-link any out-of-process children that outlived a previous instance of
+    // this parent frame or attached before it.
+    for (const existingContext of browsingContextStorage.getAllContexts()) {
+      if (existingContext.parentId === context.id) {
+        context.addChild(existingContext.id);
+        existingContext.#initListeners();
+      }
     }
 
     // Hold on the `contextCreated` event until the target is unblocked. This is required,
@@ -211,7 +245,9 @@ export class BrowsingContextImpl {
     return this.#navigationTracker.currentNavigationId;
   }
 
-  dispose(emitContextDestroyed: boolean) {
+  dispose(emitContextDestroyed: boolean): void {
+    // A disposed context must not react to CDP events anymore.
+    this.#cdpListeners.dispose();
     this.#navigationTracker.dispose();
 
     // Reject any pending callers awaiting the default realm when the context
@@ -224,15 +260,19 @@ export class BrowsingContextImpl {
       browsingContextId: this.id,
     });
 
-    // Delete context from the parent.
-    if (!this.isTopLevelContext()) {
-      this.parent!.#children.delete(this.id);
+    // Delete context from the parent. An out-of-process descendant's target
+    // can detach after an ancestor frame was already disposed; in that case
+    // `this.top` stops below the top-level context and the ancestor's
+    // `contextDestroyed` event already covered this subtree.
+    const parent = this.parent;
+    if (parent !== null) {
+      parent.#children.delete(this.id);
     }
 
     // Fail all ongoing navigations.
     this.#failLifecycleIfNotFinished();
 
-    if (emitContextDestroyed) {
+    if (emitContextDestroyed && this.top.isTopLevelContext()) {
       this.#eventManager.registerEvent(
         {
           type: 'event',
@@ -243,7 +283,7 @@ export class BrowsingContextImpl {
       );
     }
 
-    // Dispose children after the events are emitted.
+    // Dispose same-target children after the events are emitted.
     this.#deleteAllChildren();
 
     this.#eventManager.clearBufferedEvents(this.id);
@@ -269,20 +309,46 @@ export class BrowsingContextImpl {
       // just return,
       return;
     }
+    if (parentId === null) {
+      return;
+    }
+    const parent = this.#browsingContextStorage.findContext(parentId);
+    if (parent === undefined) {
+      this.#logger?.(LogType.debugError)?.(
+        `Parent context ${parentId} not found`,
+      );
+      return;
+    }
+    // Reject parents that are descendants of this context to prevent cycles in
+    // `top` and `allChildren`.
+    for (
+      let ancestor: BrowsingContextImpl | null = parent;
+      ancestor !== null;
+      ancestor = ancestor.parent
+    ) {
+      if (ancestor === this) {
+        this.#logger?.(LogType.debugError)?.(
+          `Parent context ${parentId} would create a cycle for ${this.id}`,
+        );
+        return;
+      }
+    }
 
     this.#parentId = parentId;
-
-    if (!this.isTopLevelContext()) {
-      this.parent!.addChild(this.id);
-    }
+    parent.addChild(this.id);
+    // The top-level context is known only now: move the dialog listeners to
+    // its CDP target.
+    this.#initListeners();
   }
 
-  /** Returns the parent context. */
+  /** Returns the parent context, or null if top-level or already disposed. */
   get parent(): BrowsingContextImpl | null {
     if (this.parentId === null) {
       return null;
     }
-    return this.#browsingContextStorage.getContext(this.parentId);
+    // Return null instead of throwing when an ancestor frame was disposed
+    // before an out-of-process descendant's target detached.
+    return this.#browsingContextStorage.findContext(this.parentId) ?? null;
   }
 
   /** Returns all direct children contexts. */
@@ -317,19 +383,29 @@ export class BrowsingContextImpl {
     return topContext;
   }
 
-  addChild(childId: BrowsingContext.BrowsingContext) {
+  addChild(childId: BrowsingContext.BrowsingContext): void {
     this.#children.add(childId);
   }
 
   #deleteAllChildren(emitContextDestroyed: boolean = false) {
-    this.directChildren.map((child) => child.dispose(emitContextDestroyed));
+    // Dispose only same-process children (frames without their own target),
+    // including ones inherited from a parent session before this frame moved to
+    // its own target. Out-of-process children (`child.cdpTarget.id ===
+    // child.id`) own their `CdpTarget` and are disposed on
+    // `Target.detachedFromTarget`, preventing a parent renderer from evicting
+    // and re-attaching them.
+    for (const child of this.directChildren) {
+      if (child.cdpTarget.id !== child.id) {
+        child.dispose(emitContextDestroyed);
+      }
+    }
   }
 
   get cdpTarget(): CdpTarget {
     return this.#cdpTarget;
   }
 
-  updateCdpTarget(cdpTarget: CdpTarget) {
+  updateCdpTarget(cdpTarget: CdpTarget): void {
     this.#cdpTarget = cdpTarget;
     if (this.#defaultRealmDeferred.isFinished) {
       this.#defaultRealmDeferred = new Deferred<Realm>();
@@ -341,7 +417,7 @@ export class BrowsingContextImpl {
     return this.#navigationTracker.url;
   }
 
-  async lifecycleLoaded() {
+  async lifecycleLoaded(): Promise<void> {
     await this.#lifecycle.load;
   }
 
@@ -354,7 +430,7 @@ export class BrowsingContextImpl {
 
   /** Returns a sandbox for internal helper scripts which is not exposed to the user.*/
   async getOrCreateHiddenSandbox(): Promise<Realm> {
-    return await this.#getOrCreateSandboxInternal(this.#hiddenSandbox);
+    return await this.#getOrCreateSandboxInternal(HIDDEN_SANDBOX);
   }
 
   /** Returns a sandbox which is exposed to user. */
@@ -429,12 +505,45 @@ export class BrowsingContextImpl {
     };
   }
 
-  onTargetInfoChanged(params: Protocol.Target.TargetInfoChangedEvent) {
+  onTargetInfoChanged(params: Protocol.Target.TargetInfoChangedEvent): void {
     this.#navigationTracker.onTargetInfoChanged(params.targetInfo.url);
   }
 
+  /**
+   * Returns a subscriber to the given CDP client's events which remembers how
+   * to unsubscribe, so that the listeners can be dropped when the context
+   * changes its CDP target or is disposed.
+   */
+  #subscriberFor(cdpClient: CdpClient): CdpEventSubscriber {
+    return {
+      on: <Event extends keyof CdpEvents>(
+        event: Event,
+        handler: (params: CdpEvents[Event]) => void,
+      ) => {
+        cdpClient.on(event, handler);
+        this.#cdpListeners.defer(() => cdpClient.off(event, handler));
+      },
+    };
+  }
+
   #initListeners() {
-    this.#cdpTarget.cdpClient.on('Network.loadingFailed', (params) => {
+    // Drop the listeners of the previous CDP target: events from a session
+    // that no longer hosts this frame must not change its state.
+    this.#cdpListeners.dispose();
+    this.#cdpListeners = new DisposableStack();
+    const cdpTargetClientSubscriber = this.#subscriberFor(
+      this.#cdpTarget.cdpClient,
+    );
+    const cdpTargetBrowserClientSubscriber = this.#subscriberFor(
+      this.#cdpTarget.browserCdpClient,
+    );
+    // JavaScript dialogs of any frame are reported by the top-level page
+    // target, which also handles them (see `handleUserPrompt`).
+    const dialogCdpClientSubscriber = this.#subscriberFor(
+      this.top.#cdpTarget.cdpClient,
+    );
+
+    cdpTargetClientSubscriber.on('Network.loadingFailed', (params) => {
       // Detect navigation errors like `net::ERR_BLOCKED_BY_RESPONSE`.
       // Network related to navigation has request id equals to navigation's loader id.
       this.#navigationTracker.networkLoadingFailed(
@@ -443,7 +552,7 @@ export class BrowsingContextImpl {
       );
     });
 
-    this.#cdpTarget.cdpClient.on('Page.fileChooserOpened', (params) => {
+    cdpTargetClientSubscriber.on('Page.fileChooserOpened', (params) => {
       if (this.id !== params.frameId) {
         return;
       }
@@ -481,7 +590,7 @@ export class BrowsingContextImpl {
       );
     });
 
-    this.#cdpTarget.cdpClient.on('Page.frameNavigated', (params) => {
+    cdpTargetClientSubscriber.on('Page.frameNavigated', (params) => {
       if (this.id !== params.frame.id) {
         return;
       }
@@ -490,7 +599,22 @@ export class BrowsingContextImpl {
         params.frame.loaderId,
         // `unreachableUrl` indicates if the navigation failed.
         params.frame.unreachableUrl,
+        params.type,
       );
+
+      // If the execution context was reused (e.g. navigating from initial about:blank
+      // to a same-site URL), no `Runtime.executionContextCreated` event is emitted.
+      // If we reset the default realm deferred in `Page.frameStartedNavigating`,
+      // we must resolve it here to prevent it from hanging forever.
+      if (!this.#defaultRealmDeferred.isFinished) {
+        const defaultRealms = this.#realmStorage.findRealms({
+          browsingContextId: this.id,
+          sandbox: null,
+        });
+        if (defaultRealms.length > 0) {
+          this.#defaultRealmDeferred.resolve(defaultRealms[0]!);
+        }
+      }
 
       // At the point the page is initialized, all the nested iframes from the
       // previous page are detached and realms are destroyed.
@@ -498,9 +622,15 @@ export class BrowsingContextImpl {
       this.#deleteAllChildren();
 
       this.#documentChanged(params.frame.loaderId);
+      if (params.type === 'BackForwardCacheRestore') {
+        // BFCache restores do not re-emit `DOMContentLoaded` or `load` lifecycle
+        // events because the restored document has already loaded.
+        this.#lifecycle.DOMContentLoaded.resolve();
+        this.#lifecycle.load.resolve();
+      }
     });
 
-    this.#cdpTarget.cdpClient.on('Page.frameStartedNavigating', (params) => {
+    cdpTargetClientSubscriber.on('Page.frameStartedNavigating', (params) => {
       if (this.id !== params.frameId) {
         return;
       }
@@ -525,7 +655,7 @@ export class BrowsingContextImpl {
       );
     });
 
-    this.#cdpTarget.cdpClient.on('Page.navigatedWithinDocument', (params) => {
+    cdpTargetClientSubscriber.on('Page.navigatedWithinDocument', (params) => {
       if (this.id !== params.frameId) {
         return;
       }
@@ -551,7 +681,7 @@ export class BrowsingContextImpl {
       }
     });
 
-    this.#cdpTarget.cdpClient.on('Page.lifecycleEvent', (params) => {
+    cdpTargetClientSubscriber.on('Page.lifecycleEvent', (params) => {
       if (this.id !== params.frameId) {
         return;
       }
@@ -589,7 +719,14 @@ export class BrowsingContextImpl {
                   ChromiumBidi.BrowsingContext.EventNames.DomContentLoaded,
                 params: {
                   context: this.id,
-                  navigation: this.#navigationTracker.currentNavigationId,
+                  // The event belongs to the document of `params.loaderId`.
+                  // It must not use the ID of a pending navigation, which
+                  // has not committed yet (e.g. after a failed navigation,
+                  // the error page can fire lifecycle events after the next
+                  // navigation starts).
+                  navigation: this.#navigationTracker.navigationIdForLoaderId(
+                    params.loaderId,
+                  ),
                   timestamp: getTimestamp(),
                   url: this.#navigationTracker.url,
                   userContext: this.userContext,
@@ -610,7 +747,14 @@ export class BrowsingContextImpl {
                 method: ChromiumBidi.BrowsingContext.EventNames.Load,
                 params: {
                   context: this.id,
-                  navigation: this.#navigationTracker.currentNavigationId,
+                  // The event belongs to the document of `params.loaderId`.
+                  // It must not use the ID of a pending navigation, which
+                  // has not committed yet (e.g. after a failed navigation,
+                  // the error page can fire lifecycle events after the next
+                  // navigation starts).
+                  navigation: this.#navigationTracker.navigationIdForLoaderId(
+                    params.loaderId,
+                  ),
                   timestamp: getTimestamp(),
                   url: this.#navigationTracker.url,
                   userContext: this.userContext,
@@ -626,7 +770,7 @@ export class BrowsingContextImpl {
       }
     });
 
-    this.#cdpTarget.cdpClient.on(
+    cdpTargetClientSubscriber.on(
       'Runtime.executionContextCreated',
       (params) => {
         const {auxData, name, uniqueId, id} = params.context;
@@ -685,22 +829,21 @@ export class BrowsingContextImpl {
             this.#defaultRealmDeferred = new Deferred<Realm>();
           }
           this.#defaultRealmDeferred.resolve(realm);
-
-          // Initialize ChannelProxy listeners for all the channels of all the
-          // preload scripts related to this BrowsingContext.
-          // TODO: extend for not default realms by the sandbox name.
-          void Promise.all(
-            this.#cdpTarget
-              .getChannels()
-              .map((channel) =>
-                channel.startListenerFromWindow(realm, this.#eventManager),
-              ),
-          );
         }
+
+        // Initialize ChannelProxy listeners for all the channels of all the
+        // preload scripts related to this BrowsingContext and sandbox.
+        void Promise.all(
+          this.#cdpTarget
+            .getChannels(sandbox)
+            .map((channel) =>
+              channel.startListenerFromWindow(realm, this.#eventManager),
+            ),
+        );
       },
     );
 
-    this.#cdpTarget.cdpClient.on(
+    cdpTargetClientSubscriber.on(
       'Runtime.executionContextDestroyed',
       (params) => {
         // If the destroyed context is the currently resolved default realm,
@@ -721,7 +864,7 @@ export class BrowsingContextImpl {
       },
     );
 
-    this.#cdpTarget.cdpClient.on('Runtime.executionContextsCleared', () => {
+    cdpTargetClientSubscriber.on('Runtime.executionContextsCleared', () => {
       // Only replace `#defaultRealmDeferred` if it was already resolved.
       // If it is currently pending, do not reject it so callers waiting for
       // a navigating context's realm will resolve when the new default realm
@@ -734,7 +877,7 @@ export class BrowsingContextImpl {
       });
     });
 
-    this.#cdpTarget.cdpClient.on('Page.javascriptDialogClosed', (params) => {
+    dialogCdpClientSubscriber.on('Page.javascriptDialogClosed', (params) => {
       // Checking for `params.frameId` for comptaibility with Chrome
       // versions that do not have a frameId. TODO: remove once
       // https://crrev.com/c/6487891 is in stable.
@@ -744,9 +887,8 @@ export class BrowsingContextImpl {
       if (
         !params.frameId &&
         this.#parentId &&
-        this.#cdpTarget.cdpClient !==
-          this.#browsingContextStorage.getContext(this.#parentId)?.cdpTarget
-            .cdpClient
+        // Use `this.parent` so a disposed parent frame does not throw.
+        this.#cdpTarget.cdpClient !== this.parent?.cdpTarget.cdpClient
       ) {
         // If CDP event `Page.javascriptDialogClosed` does not have a frameId, this
         // heuristic emits the event only for top-level per-cdp target context, ignoring
@@ -784,7 +926,7 @@ export class BrowsingContextImpl {
       this.#lastUserPromptType = undefined;
     });
 
-    this.#cdpTarget.cdpClient.on('Page.javascriptDialogOpening', (params) => {
+    dialogCdpClientSubscriber.on('Page.javascriptDialogOpening', (params) => {
       // Checking for `params.frameId` for comptaibility with Chrome
       // versions that do not have a frameId. TODO: remove once
       // https://crrev.com/c/6487891 is in stable.
@@ -794,9 +936,8 @@ export class BrowsingContextImpl {
       if (
         !params.frameId &&
         this.#parentId &&
-        this.#cdpTarget.cdpClient !==
-          this.#browsingContextStorage.getContext(this.#parentId)?.cdpTarget
-            .cdpClient
+        // Use `this.parent` so a disposed parent frame does not throw.
+        this.#cdpTarget.cdpClient !== this.parent?.cdpTarget.cdpClient
       ) {
         // If CDP event `Page.javascriptDialogClosed` does not have a frameId, this
         // heuristic emits the event only for top-level per-cdp target context, ignoring
@@ -826,52 +967,103 @@ export class BrowsingContextImpl {
         this.id,
       );
 
+      const handlePromptAutomatically = (accept: boolean) => {
+        void this.handleUserPrompt(accept).catch((error) => {
+          // Another Mapper instance or session teardown may have already
+          // closed the dialog or detached the session while this command was
+          // in flight.
+          if (
+            !this.#cdpTarget.cdpClient.isCloseError(error) &&
+            !(error as {message?: string})?.message?.includes(
+              'No dialog is showing',
+            )
+          ) {
+            this.#logger?.(LogType.debugError)?.(error);
+          }
+        });
+      };
+
       switch (promptHandler) {
         // Based on `unhandledPromptBehavior`, check if the prompt should be handled
         // automatically (`accept`, `dismiss`) or wait for the user to do it.
         case Session.UserPromptHandlerType.Accept:
-          void this.handleUserPrompt(true);
+          handlePromptAutomatically(true);
           break;
         case Session.UserPromptHandlerType.Dismiss:
-          void this.handleUserPrompt(false);
+          handlePromptAutomatically(false);
           break;
         case Session.UserPromptHandlerType.Ignore:
           break;
       }
     });
 
-    this.#cdpTarget.browserCdpClient.on(
+    cdpTargetBrowserClientSubscriber.on(
       'Browser.downloadWillBegin',
       (params) => {
         if (this.id !== params.frameId) {
           return;
         }
 
-        this.#downloadIdToUrlMap.set(params.guid, params.url);
+        let openerContext: BrowsingContextImpl | undefined;
+        if (
+          this.#originalOpener !== undefined &&
+          this.#navigationTracker.isInitialCommittedNavigation
+        ) {
+          openerContext = this.#browsingContextStorage.findContext(
+            this.#originalOpener,
+          );
+        }
+        const targetContext = openerContext ?? this;
+
+        const navigation = this.#navigationTracker.downloadWillBegin();
+        targetContext.#downloadIdToInfoMap.set(params.guid, {
+          url: params.url,
+          navigation,
+        });
+
+        if (openerContext !== undefined && navigation !== null) {
+          // When a download starts in a temporary `_blank` browsing context
+          // that has not committed any navigation, attribute the navigation
+          // and download events to the opener context.
+          this.#eventManager.registerEvent(
+            {
+              type: 'event',
+              method: ChromiumBidi.BrowsingContext.EventNames.NavigationStarted,
+              params: {
+                context: openerContext.id,
+                navigation,
+                timestamp: getTimestamp(),
+                url: params.url,
+                userContext: openerContext.userContext,
+              },
+            },
+            openerContext.id,
+          );
+        }
 
         this.#eventManager.registerEvent(
-          // @ts-expect-error we do not support download yet. https://github.com/GoogleChromeLabs/chromium-bidi/issues/4155.
           {
             type: 'event',
             method: ChromiumBidi.BrowsingContext.EventNames.DownloadWillBegin,
             params: {
-              context: this.id,
+              context: targetContext.id,
+              download: params.guid,
               suggestedFilename: params.suggestedFilename,
-              navigation: params.guid,
+              navigation,
               timestamp: getTimestamp(),
               url: params.url,
-              userContext: this.userContext,
+              userContext: targetContext.userContext,
             },
           },
-          this.id,
+          targetContext.id,
         );
       },
     );
 
-    this.#cdpTarget.browserCdpClient.on(
+    cdpTargetBrowserClientSubscriber.on(
       'Browser.downloadProgress',
       (params) => {
-        if (!this.#downloadIdToUrlMap.has(params.guid)) {
+        if (!this.#downloadIdToInfoMap.has(params.guid)) {
           // The event is not related to this browsing context.
           return;
         }
@@ -881,19 +1073,20 @@ export class BrowsingContextImpl {
           return;
         }
 
-        const url = this.#downloadIdToUrlMap.get(params.guid)!;
+        const {url, navigation} = this.#downloadIdToInfoMap.get(params.guid)!;
+        this.#downloadIdToInfoMap.delete(params.guid);
 
         switch (params.state) {
           case 'canceled':
             this.#eventManager.registerEvent(
-              // @ts-expect-error we do not support download yet. https://github.com/GoogleChromeLabs/chromium-bidi/issues/4155.
               {
                 type: 'event',
                 method: ChromiumBidi.BrowsingContext.EventNames.DownloadEnd,
                 params: {
                   status: 'canceled',
                   context: this.id,
-                  navigation: params.guid,
+                  download: params.guid,
+                  navigation,
                   timestamp: getTimestamp(),
                   url,
                   userContext: this.userContext,
@@ -904,7 +1097,6 @@ export class BrowsingContextImpl {
             break;
           case 'completed':
             this.#eventManager.registerEvent(
-              // @ts-expect-error we do not support download yet. https://github.com/GoogleChromeLabs/chromium-bidi/issues/4155.
               {
                 type: 'event',
                 method: ChromiumBidi.BrowsingContext.EventNames.DownloadEnd,
@@ -912,7 +1104,8 @@ export class BrowsingContextImpl {
                   filepath: params.filePath ?? null,
                   status: 'complete',
                   context: this.id,
-                  navigation: params.guid,
+                  download: params.guid,
+                  navigation,
                   timestamp: getTimestamp(),
                   url,
                   userContext: this.userContext,
@@ -1185,7 +1378,7 @@ export class BrowsingContextImpl {
     viewport: BrowsingContext.Viewport | null,
     devicePixelRatio: number | null,
     screenOrientation: Emulation.ScreenOrientation | null,
-  ) {
+  ): Promise<void> {
     // Set the target's viewport.
     const config = this.#configStorage.getActiveConfig(
       this.id,
@@ -1198,6 +1391,7 @@ export class BrowsingContextImpl {
       config.screenArea ?? null,
       config.scrollbarType ?? null,
       config.viewportMeta ?? null,
+      config.textLayoutMode ?? null,
     );
   }
 
@@ -1216,7 +1410,7 @@ export class BrowsingContextImpl {
   }
 
   async captureScreenshot(
-    params: BrowsingContext.CaptureScreenshotParameters,
+    params: ChromiumBidi.WithGoogParams<BrowsingContext.CaptureScreenshotParameters>,
   ): Promise<BrowsingContext.CaptureScreenshotResult> {
     if (!this.isTopLevelContext()) {
       throw new UnsupportedOperationException(
@@ -1280,18 +1474,38 @@ export class BrowsingContextImpl {
       );
     }
 
+    // The specification requires `scale` to be reduced if the given `imageSize` dimensions
+    // result in a smaller viewport scale relative to the unscaled CSS framebuffer dimensions.
+    let scale = 1.0;
+    if (params.imageSize) {
+      if (
+        params.imageSize.maxWidth !== undefined &&
+        params.imageSize.maxWidth / rect.width < scale
+      ) {
+        scale = params.imageSize.maxWidth / rect.width;
+      }
+      if (
+        params.imageSize.maxHeight !== undefined &&
+        params.imageSize.maxHeight / rect.height < scale
+      ) {
+        scale = params.imageSize.maxHeight / rect.height;
+      }
+    }
+
     return await this.#cdpTarget.cdpClient.sendCommand(
       'Page.captureScreenshot',
       {
-        clip: {...rect, scale: 1.0},
+        // Standard BiDi options take precedence over `goog:` extensions.
+        ...params['goog:params'],
+        clip: {...rect, scale},
         ...formatParameters,
         captureBeyondViewport,
-      },
+      } as Protocol.Page.CaptureScreenshotRequest,
     );
   }
 
   async print(
-    params: BrowsingContext.PrintParameters,
+    params: ChromiumBidi.WithGoogParams<BrowsingContext.PrintParameters>,
   ): Promise<BrowsingContext.PrintResult> {
     if (!this.isTopLevelContext()) {
       throw new UnsupportedOperationException(
@@ -1299,7 +1513,10 @@ export class BrowsingContextImpl {
       );
     }
 
-    const cdpParams: Protocol.Page.PrintToPDFRequest = {};
+    // Standard BiDi options set below take precedence over `goog:` extensions.
+    const cdpParams: Protocol.Page.PrintToPDFRequest = {
+      ...params['goog:params'],
+    };
 
     if (params.background !== undefined) {
       cdpParams.printBackground = params.background;
@@ -1418,12 +1635,15 @@ export class BrowsingContextImpl {
           );
         }
         {
+          // getBoundingClientRect() is viewport-relative; add viewport offset
+          // for document coordinates.
           const result = await hiddenSandboxRealm.callFunction(
             String((element: Element) => {
               const rect = element.getBoundingClientRect();
+              const viewport = window.visualViewport!;
               return {
-                x: rect.x,
-                y: rect.y,
+                x: rect.x + viewport.pageLeft,
+                y: rect.y + viewport.pageTop,
                 height: rect.height,
                 width: rect.width,
               };
@@ -1822,13 +2042,15 @@ export class BrowsingContextImpl {
       throw new InvalidArgumentException('Start nodes are not supported');
     }
     const contextId = locator.value.context;
-    if (!contextId) {
-      throw new InvalidSelectorException('Invalid context');
-    }
     const context = this.#browsingContextStorage.getContext(contextId);
     const parent = context.parent;
     if (!parent) {
       throw new InvalidArgumentException('This context has no container');
+    }
+    if (parent.id !== this.id) {
+      throw new InvalidArgumentException(
+        `Context ${contextId} is not a child of context ${this.id}`,
+      );
     }
     try {
       const {backendNodeId} = await parent.#cdpTarget.cdpClient.sendCommand(
@@ -1875,15 +2097,29 @@ export class BrowsingContextImpl {
 
     const startBackendNodeIds: number[] = [];
     if (startNodes.length === 0) {
-      const {root: documentRoot} =
-        await this.#cdpTarget.cdpClient.sendCommand('DOM.getDocument');
-      startBackendNodeIds.push(documentRoot.backendNodeId);
+      // Fetch the root AX node of this frame to get its document backendNodeId.
+      const {node: rootNode} = await this.#cdpTarget.cdpClient.sendCommand(
+        'Accessibility.getRootAXNode',
+        {
+          frameId: this.id,
+        },
+      );
+      if (rootNode.backendDOMNodeId !== undefined) {
+        // Default to the current frame's document when no startNodes are given.
+        startBackendNodeIds.push(rootNode.backendDOMNodeId);
+      }
     } else {
       for (const node of startNodes) {
         if (node.sharedId) {
           const parsed = parseSharedId(node.sharedId);
           if (!parsed) {
             throw new NoSuchNodeException(`Invalid sharedId: ${node.sharedId}`);
+          }
+          // Reject stale sharedIds from unloaded documents.
+          if (this.navigableId !== parsed.documentId) {
+            throw new NoSuchNodeException(
+              `SharedId "${node.sharedId}" belongs to different document. Current document is ${this.navigableId}.`,
+            );
           }
           startBackendNodeIds.push(parsed.backendNodeId);
         } else {
@@ -1909,7 +2145,14 @@ export class BrowsingContextImpl {
     }
 
     const matchedBackendNodeIds = new Set<number>();
+    const isMaxNodeCountReached = () =>
+      maxNodeCount !== undefined &&
+      maxNodeCount > 0 &&
+      matchedBackendNodeIds.size >= maxNodeCount;
     for (const backendNodeId of startBackendNodeIds) {
+      if (isMaxNodeCountReached()) {
+        break;
+      }
       const {nodes} = await this.#cdpTarget.cdpClient.sendCommand(
         'Accessibility.queryAXTree',
         {
@@ -1922,11 +2165,7 @@ export class BrowsingContextImpl {
       for (const node of nodes) {
         if (node.backendDOMNodeId && node.role?.type === 'role') {
           matchedBackendNodeIds.add(node.backendDOMNodeId);
-          if (
-            maxNodeCount !== undefined &&
-            maxNodeCount > 0 &&
-            matchedBackendNodeIds.size >= maxNodeCount
-          ) {
+          if (isMaxNodeCountReached()) {
             break;
           }
         }
@@ -1939,6 +2178,8 @@ export class BrowsingContextImpl {
           'DOM.resolveNode',
           {
             backendNodeId,
+            // Resolve the node in the requested realm instead of the main world.
+            executionContextId: realm.executionContextId,
           },
         );
         // We need to use `serializeCdpObject` to convert it to BiDi format.
@@ -1953,6 +2194,191 @@ export class BrowsingContextImpl {
     return {
       nodes: resultNodes.filter((result) => result.type === 'node'),
     };
+  }
+
+  /**
+   * Returns the accessibility tree of the document of this context. The tree
+   * does not include the documents of the child contexts.
+   */
+  async getAccessibilityTree(): Promise<GoogBrowsingContext.GetAccessibilityTreeResult> {
+    // `Accessibility.enable` keeps the accessibility node IDs consistent
+    // between the calls.
+    await this.#cdpTarget.cdpClient.sendCommand('Accessibility.enable');
+
+    // A shared ID contains the document ID. Read the document ID before the
+    // CDP command and compare it after the command. A different value shows
+    // that the context navigated, and the nodes can belong to the previous
+    // document.
+    const documentId = this.#loaderId;
+    if (documentId === undefined) {
+      throw new UnsupportedOperationException(
+        `Context ${this.id} has no document`,
+      );
+    }
+    const {nodes: axNodes} = await this.#cdpTarget.cdpClient.sendCommand(
+      'Accessibility.getFullAXTree',
+      {frameId: this.id},
+    );
+    if (documentId !== this.#loaderId) {
+      throw new UnsupportedOperationException(
+        `Context ${this.id} navigated during the command`,
+      );
+    }
+    return {root: this.#buildAccessibilityTree(axNodes, documentId)};
+  }
+
+  /**
+   * Returns true if the CDP node is the root node of the document of a child
+   * context. Only the root node of a document has the `frameId` attribute.
+   */
+  #isChildDocumentAxNode(axNode: Protocol.Accessibility.AXNode): boolean {
+    return axNode.frameId !== undefined && axNode.frameId !== this.id;
+  }
+
+  #buildAccessibilityTree(
+    axNodes: Protocol.Accessibility.AXNode[],
+    documentId: string,
+  ): GoogBrowsingContext.AccessibilityNode {
+    const axNodesById = new Map<string, Protocol.Accessibility.AXNode>();
+    for (const axNode of axNodes) {
+      axNodesById.set(axNode.nodeId, axNode);
+    }
+    const axRoot = axNodes.find(
+      (axNode) =>
+        axNode.parentId === undefined && !this.#isChildDocumentAxNode(axNode),
+    );
+    if (axRoot === undefined) {
+      throw new UnsupportedOperationException(
+        `Context ${this.id} has no accessibility tree`,
+      );
+    }
+
+    // CDP returns also the ignored nodes. The accessibility tree does not
+    // contain them. The result contains the root node and each node that is
+    // not ignored. The tree excludes the documents of the child contexts.
+    const nodesById = new Map<string, GoogBrowsingContext.AccessibilityNode>();
+    for (const axNode of axNodes) {
+      if (
+        this.#isChildDocumentAxNode(axNode) ||
+        (axNode.ignored && axNode !== axRoot)
+      ) {
+        continue;
+      }
+      nodesById.set(
+        axNode.nodeId,
+        this.#toAccessibilityNode(axNode, documentId),
+      );
+    }
+
+    for (const [nodeId, node] of nodesById) {
+      node.children.push(
+        ...this.#getAccessibilityNodeChildren(
+          axNodesById.get(nodeId)!,
+          axNodesById,
+          nodesById,
+        ),
+      );
+    }
+    return nodesById.get(axRoot.nodeId)!;
+  }
+
+  /**
+   * Returns the children of the given CDP node in the result tree, in tree
+   * order.
+   *
+   * `nodesById` contains only the nodes of the result tree. A CDP child node
+   * that is not in `nodesById` is an ignored node. The children of the ignored
+   * node replace the ignored node. The replacement applies again to each
+   * ignored node below. For example, the CDP tree
+   *
+   *   list
+   *   ├── none (ignored)
+   *   │   ├── listitem "A"
+   *   │   └── listitem "B"
+   *   └── listitem "C"
+   *
+   * gives the children `listitem "A"`, `listitem "B"`, `listitem "C"` for the
+   * `list` node.
+   *
+   * The method uses a stack and not recursion, because a chain of ignored
+   * nodes can be long.
+   */
+  #getAccessibilityNodeChildren(
+    axNode: Protocol.Accessibility.AXNode,
+    axNodesById: Map<string, Protocol.Accessibility.AXNode>,
+    nodesById: Map<string, GoogBrowsingContext.AccessibilityNode>,
+  ): GoogBrowsingContext.AccessibilityNode[] {
+    const children: GoogBrowsingContext.AccessibilityNode[] = [];
+    // The stack contains the IDs of the CDP nodes to examine. The last element
+    // is the next node in tree order.
+    const pendingIds = [...(axNode.childIds ?? [])].reverse();
+    while (pendingIds.length > 0) {
+      const axChild = axNodesById.get(pendingIds.pop()!);
+      if (axChild === undefined || this.#isChildDocumentAxNode(axChild)) {
+        continue;
+      }
+      const child = nodesById.get(axChild.nodeId);
+      if (child !== undefined) {
+        children.push(child);
+        continue;
+      }
+      // The child is an ignored node. Examine its children in its place.
+      pendingIds.push(...[...(axChild.childIds ?? [])].reverse());
+    }
+    return children;
+  }
+
+  #toAccessibilityNode(
+    axNode: Protocol.Accessibility.AXNode,
+    documentId: string,
+  ): GoogBrowsingContext.AccessibilityNode {
+    const toText = (value: unknown) =>
+      typeof value === 'string' ? value : JSON.stringify(value);
+
+    const node: GoogBrowsingContext.AccessibilityNode = {
+      accessibilityId: axNode.nodeId,
+      children: [],
+    };
+    const properties: Record<string, string> = {};
+    for (const property of axNode.properties ?? []) {
+      const {value, relatedNodes} = property.value;
+      if (relatedNodes !== undefined) {
+        // The data of a relation property is in `relatedNodes`. The value is
+        // the space-separated list of the shared IDs of the related DOM nodes.
+        properties[property.name] = relatedNodes
+          .map((related) =>
+            getSharedId(this.id, documentId, related.backendDOMNodeId),
+          )
+          .join(' ');
+      } else if (value !== undefined) {
+        properties[property.name] = toText(value);
+      }
+    }
+    // The node type has no `description` and `value` fields. Add them to the
+    // properties.
+    if (
+      axNode.description?.value !== undefined &&
+      axNode.description.value !== ''
+    ) {
+      properties['description'] = toText(axNode.description.value);
+    }
+    if (axNode.value?.value !== undefined) {
+      properties['value'] = toText(axNode.value.value);
+    }
+
+    if (axNode.name?.value !== undefined && axNode.name.value !== '') {
+      node.name = toText(axNode.name.value);
+    }
+    if (Object.keys(properties).length > 0) {
+      node.properties = properties;
+    }
+    if (axNode.role?.value !== undefined) {
+      node.role = toText(axNode.role.value);
+    }
+    if (axNode.backendDOMNodeId !== undefined) {
+      node.sharedId = getSharedId(this.id, documentId, axNode.backendDOMNodeId);
+    }
+    return node;
   }
 
   #getAllRelatedCdpTargets() {
@@ -1991,7 +2417,15 @@ export class BrowsingContextImpl {
     );
   }
 
-  async setScriptingEnabled(scriptingEnabled: false | null) {
+  async setBypassCSP(bypassCSP: true | null): Promise<void> {
+    await Promise.all(
+      this.#getAllRelatedCdpTargets().map(
+        async (cdpTarget) => await cdpTarget.setBypassCSP(bypassCSP),
+      ),
+    );
+  }
+
+  async setScriptingEnabled(scriptingEnabled: false | null): Promise<void> {
     await Promise.all(
       this.#getAllRelatedCdpTargets().map(
         async (cdpTarget) =>
@@ -2005,7 +2439,7 @@ export class BrowsingContextImpl {
     acceptLanguage: string | null | undefined,
     clientHints:
       UAClientHints.UserAgentClientHints.ClientHintsMetadata | null | undefined,
-  ) {
+  ): Promise<void> {
     await Promise.all(
       this.#getAllRelatedCdpTargets().map(
         async (cdpTarget) =>
@@ -2020,7 +2454,7 @@ export class BrowsingContextImpl {
 
   async setEmulatedNetworkConditions(
     networkConditions: Emulation.NetworkConditions | null,
-  ) {
+  ): Promise<void> {
     await Promise.all(
       this.#getAllRelatedCdpTargets().map(
         async (cdpTarget) =>
@@ -2029,7 +2463,7 @@ export class BrowsingContextImpl {
     );
   }
 
-  async setTouchOverride(maxTouchPoints: number | null) {
+  async setTouchOverride(maxTouchPoints: number | null): Promise<void> {
     await Promise.allSettled(
       this.#getAllRelatedCdpTargets().map(
         async (cdpTarget) => await cdpTarget.setTouchOverride(maxTouchPoints),
@@ -2037,13 +2471,17 @@ export class BrowsingContextImpl {
     );
   }
 
-  async setMediaFeaturesOverride(
+  async setEmulatedMedia(
     mediaFeatures: Emulation.MediaFeatures | null,
+    forcedColorsModeTheme: Emulation.ForcedColorsModeTheme | null,
   ): Promise<void> {
     await Promise.all(
       this.#getAllRelatedCdpTargets().map(
         async (cdpTarget) =>
-          await cdpTarget.setMediaFeaturesOverride(mediaFeatures),
+          await cdpTarget.setEmulatedMedia(
+            mediaFeatures,
+            forcedColorsModeTheme,
+          ),
       ),
     );
   }
@@ -2072,6 +2510,7 @@ export class BrowsingContextImpl {
       config.screenArea ?? null,
       scrollbarType,
       config.viewportMeta ?? null,
+      config.textLayoutMode ?? null,
     );
   }
 
@@ -2087,11 +2526,30 @@ export class BrowsingContextImpl {
       config.screenArea ?? null,
       config.scrollbarType ?? null,
       viewportMeta,
+      config.textLayoutMode ?? null,
+    );
+  }
+
+  async setTextLayoutModeOverride(
+    textLayoutMode: Emulation.TextLayoutMode | null,
+  ): Promise<void> {
+    const config = this.#configStorage.getActiveConfig(
+      this.id,
+      this.userContext,
+    );
+    await this.cdpTarget.setDeviceMetricsOverride(
+      config.viewport ?? null,
+      config.devicePixelRatio ?? null,
+      config.screenOrientation ?? null,
+      config.screenArea ?? null,
+      config.scrollbarType ?? null,
+      config.viewportMeta ?? null,
+      textLayoutMode,
     );
   }
 }
 
-export function serializeOrigin(origin: string) {
+export function serializeOrigin(origin: string): string {
   // https://html.spec.whatwg.org/multipage/origin.html#ascii-serialisation-of-an-origin
   if (['://', ''].includes(origin)) {
     origin = 'null';

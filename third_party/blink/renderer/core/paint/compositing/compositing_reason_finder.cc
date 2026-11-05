@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/paint/compositing/compositing_reason_finder.h"
 
+#include "third_party/blink/renderer/core/animation/compositor_animations.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/properties/css_bitset.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -19,6 +20,7 @@
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_content.h"
+#include "third_party/blink/renderer/core/layout/layout_html_canvas.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_transformable_container.h"
 #include "third_party/blink/renderer/core/layout/transform_utils.h"
@@ -63,9 +65,8 @@ CompositingReasons BackfaceInvisibility3DAncestorReason(
     const PaintLayer& layer) {
   if (RuntimeEnabledFeatures::BackfaceVisibilityInteropEnabled()) {
     if (auto* painting_container = layer.PaintingContainer()) {
-      if (painting_container->GetLayoutObject()
-              .StyleRef()
-              .BackfaceVisibility() == EBackfaceVisibility::kHidden) {
+      if (painting_container->GetLayoutObject().Style().BackfaceVisibility() ==
+          EBackfaceVisibility::kHidden) {
         return {CompositingReason::kBackfaceInvisibility3DAncestor};
       }
     }
@@ -149,7 +150,7 @@ CompositingReasons CompositingReasonsFor3DTransform(
     return {};
   }
 
-  const ComputedStyle& style = layout_object.StyleRef();
+  const ComputedStyle& style = layout_object.Style();
   CompositingReasons reasons =
       CompositingReasonFinder::PotentialCompositingReasonsFor3DTransform(style);
 
@@ -203,10 +204,10 @@ CompositingReasons CompositingReasonsFor3DSceneLeaf(
     return {};
   }
 
-  if (!layout_object.IsAnonymous() && !layout_object.StyleRef().Preserves3D()) {
+  if (!layout_object.IsAnonymous() && !layout_object.Style().Preserves3D()) {
     const LayoutObject* parent_object =
         layout_object.NearestAncestorForElement();
-    if (parent_object && parent_object->StyleRef().Preserves3D()) {
+    if (parent_object && parent_object->Style().Preserves3D()) {
       return {CompositingReason::kTransform3DSceneLeaf};
     }
   }
@@ -225,7 +226,7 @@ CompositingReasons DirectReasonsForSVGChildPaintProperties(
   // scene that contains it.
   auto reasons = CompositingReasonsFor3DSceneLeaf(object);
 
-  const ComputedStyle& style = object.StyleRef();
+  const ComputedStyle& style = object.Style();
   reasons.PutAll(
       CompositingReasonFinder::CompositingReasonsForAnimation(object));
   reasons.PutAll(CompositingReasonsForWillChange(style));
@@ -288,11 +289,11 @@ CompositingReasons CompositingReasonsForViewportScrollEffect(
   // safe-area-inset-relative positioning) are mirrored in
   // LayoutBox::StyleDidChange() to invalidate paint properties on the next
   // document lifecycle update. Keep the two in sync.
-  if (layout_object.StyleRef().IsFixedToBottom()) {
+  if (layout_object.Style().IsFixedToBottom()) {
     reasons.Put(CompositingReason::kFixedPosition);
     reasons.Put(CompositingReason::kAffectedByOuterViewportBoundsDelta);
 
-    if (layout_object.StyleRef().IsBottomRelativeToSafeAreaInset()) {
+    if (layout_object.Style().IsBottomRelativeToSafeAreaInset()) {
       reasons.Put(CompositingReason::kAffectedBySafeAreaBottom);
     }
   }
@@ -335,18 +336,6 @@ CompositingReasons CompositingReasonsForScrollDependentPosition(
   return reasons;
 }
 
-bool ObjectTypeSupportsCompositedTransformAnimation(
-    const LayoutObject& object) {
-  if (object.IsSVGChild()) {
-    // Transforms are not supported on hidden containers, inlines, text, or
-    // filter primitives.
-    return !object.IsSVGHiddenContainer() && !object.IsLayoutInline() &&
-           !object.IsText() && !object.IsSVGFilterPrimitive();
-  }
-  // Transforms don't apply on non-replaced inline elements.
-  return object.IsBox();
-}
-
 // Defined by the Element Capture specification:
 // https://screen-share.github.io/element-capture/#elements-eligible-for-restriction
 bool IsEligibleForElementCapture(const LayoutObject& object) {
@@ -377,6 +366,20 @@ bool IsEligibleForElementCapture(const LayoutObject& object) {
 
 }  // anonymous namespace
 
+bool CompositingReasonFinder::ObjectTypeSupportsCompositedTransformAnimation(
+    const LayoutObject& object) {
+  if (object.IsSVGChild()) {
+    // Transforms are not supported on hidden containers, inlines, text, or
+    // filter primitives.
+    return !object.IsSVGHiddenContainer() && !object.IsLayoutInline() &&
+           !object.IsText() && !object.IsSVGFilterPrimitive() &&
+           CompositorAnimations::CanStartTransformAnimationOnCompositorForSVG(
+               *To<SVGElement>(object.GetNode()));
+  }
+  // Transforms don't apply on non-replaced inline elements.
+  return object.IsBox();
+}
+
 CompositingReasons CompositingReasonFinder::DirectReasonsForPaintProperties(
     const LayoutObject& object,
     const LayoutObject* container_for_fixed_position) {
@@ -388,28 +391,36 @@ CompositingReasons CompositingReasonFinder::DirectReasonsForPaintProperties(
 
   auto* element = DynamicTo<Element>(object.GetNode());
 
-  if (element && element->IsInCanvasSubtree() &&
-      !object.StyleRef().IsRenderedInTopLayer(*element)) [[unlikely]] {
-    if (IsA<LayoutBoxModelObject>(object)) {
-      if (auto* canvas = element->CanvasForDrawing()) {
-        if (auto* canvas_layout_object = canvas->GetLayoutObject()) {
-          if (canvas_layout_object->IsCanvas()) {
-            reasons.Put(CompositingReason::kCanvasChild);
+  if (element && element->IsInCanvasSubtree()) [[unlikely]] {
+    bool top_layer = false;
+    if (auto* canvas = object.CanvasForDrawingLayoutObject()) {
+      for (auto* ancestor = &object; ancestor != canvas;
+           ancestor = ancestor->Parent()) {
+        if (auto* ancestor_element = DynamicTo<Element>(ancestor->GetNode())) {
+          if (ancestor->Style().IsRenderedInTopLayer(*ancestor_element)) {
+            top_layer = true;
+            break;
           }
         }
       }
+      if (!top_layer) {
+        reasons.Put(CompositingReason::kCanvasDrawableElement);
+      }
     }
-    // In canvas subtrees, only drawable elements can have a compositing
-    // reason (kCanvasChild), and no other compositing reasons apply.
-    return reasons;
+    if (!top_layer) {
+      // In canvas subtrees, only drawable elements can have a compositing
+      // reason (kCanvasDrawableElement), and no other compositing reasons
+      // apply.
+      return reasons;
+    }
   }
 
   reasons.PutAll(CompositingReasonsFor3DSceneLeaf(object));
 
-  if (object.StyleRef().IsUnboundedElementActive()) {
+  if (object.Style().IsUnboundedElementActive()) {
     DCHECK(RuntimeEnabledFeatures::UnboundedElementEnabled());
     auto* html_element = DynamicTo<HTMLElement>(element);
-    DCHECK(!html_element || object.StyleRef().IsUnboundedElementActive() ==
+    DCHECK(!html_element || object.Style().IsUnboundedElementActive() ==
                                 html_element->IsUnboundedElementActive());
     reasons.Put(CompositingReason::kUnboundedElement);
   }
@@ -425,7 +436,7 @@ CompositingReasons CompositingReasonFinder::DirectReasonsForPaintProperties(
     return reasons;
   }
 
-  const ComputedStyle& style = object.StyleRef();
+  const ComputedStyle& style = object.Style();
   reasons.PutAll(CompositingReasonsForAnimation(object));
   reasons.PutAll(CompositingReasonsForWillChange(style));
 
@@ -493,6 +504,19 @@ CompositingReasons CompositingReasonFinder::DirectReasonsForPaintProperties(
     reasons.Put(CompositingReason::kFixedBackdropInOverscrollAreaParent);
   }
 
+  // Overscroll containers need composited scrolling, so that the compositor
+  // can move the content of non-overlay ones with their overscroll areas, and
+  // to avoid main thread scroll hit testing (e.g. with non-composited scrollers
+  // inside them). Preferring composited scrolling is not enough, because it's
+  // ignored for scrolls that are not user-scrollable, e.g. those of overscroll
+  // containers with visible overflow, such as <body overscrollcontainer>.
+  // ::-internal-overscroll-area-parent scrollers are regular scroll containers.
+  // TODO(crbug.com/486987060): Support raster inducing scroll on non-overlay
+  // overscroll areas.
+  if (object.IsOverscrollContainer()) {
+    reasons.Put(CompositingReason::kOverscrollContainer);
+  }
+
   return reasons;
 }
 
@@ -511,19 +535,20 @@ bool CompositingReasonFinder::ShouldForcePreferCompositingToLCDText(
 
   // TODO(crbug.com/486987060): Support raster inducing scroll on non-overlay
   // overscroll areas.
-  if (object.IsContentMovingOverscrollContainer()) {
+  if (object.IsOverscrollAreaParent()) {
     return true;
   }
 
-  if (object.StyleRef().HasWillChangeScrollPosition()) {
+  if (object.Style().HasWillChangeScrollPosition()) {
     return true;
   }
 
   // Though we don't treat hidden backface as a direct compositing reason, it's
   // very likely that the object will be composited, and it also indicates
   // preference of compositing, so we prefer composited scrolling here.
-  if (object.StyleRef().BackfaceVisibility() == EBackfaceVisibility::kHidden)
+  if (object.Style().BackfaceVisibility() == EBackfaceVisibility::kHidden) {
     return true;
+  }
 
   if (auto* layout_view = DynamicTo<LayoutView>(object))
     return ShouldPreferCompositingForLayoutView(*layout_view);
@@ -563,7 +588,7 @@ CompositingReasonFinder::PotentialCompositingReasonsFor3DTransform(
 CompositingReasons CompositingReasonFinder::CompositingReasonsForAnimation(
     const LayoutObject& object) {
   CompositingReasons reasons;
-  const auto& style = object.StyleRef();
+  const auto& style = object.Style();
   if (style.SubtreeWillChangeContents())
     return reasons;
 
@@ -595,7 +620,14 @@ CompositingReasons CompositingReasonFinder::CompositingReasonsForAnimation(
   if (style.HasCurrentFilterAnimation()) {
     reasons.Put(CompositingReason::kActiveFilterAnimation);
   }
-  if (style.HasCurrentBackdropFilterAnimation()) {
+  // Only composite a backdrop-filter animation if the value may change, because
+  // a composited backdrop-filter effect requires render surfaces for the
+  // element and for its backdrop root. An animation whose value can't change
+  // still makes the element a stacking context, see
+  // HasCurrentBackdropFilterAnimation().
+  // TODO(crbug.com/569098933): Consider the same for other properties, e.g.
+  // filter, whose composited effect also requires a render surface.
+  if (style.HasCurrentDynamicBackdropFilterAnimation()) {
     reasons.Put(CompositingReason::kActiveBackdropFilterAnimation);
   }
   return reasons;

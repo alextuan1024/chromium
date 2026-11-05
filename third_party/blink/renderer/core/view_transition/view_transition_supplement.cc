@@ -29,6 +29,7 @@
 #include "third_party/blink/renderer/core/view_transition/view_transition.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_utils.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/graphics/compositing/paint_artifact_compositor.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
@@ -49,6 +50,7 @@ DOMViewTransition* ViewTransitionSupplement::StartViewTransitionForElement(
     Element* element,
     V8ViewTransitionCallback* callback,
     const std::optional<Vector<String>>& types,
+    const HeapVector<Member<ShadowRoot>>* shadow_roots,
     ExceptionState& exception_state) {
   DCHECK(script_state);
   if (!element) {
@@ -56,7 +58,7 @@ DOMViewTransition* ViewTransitionSupplement::StartViewTransitionForElement(
   }
 
   return element->GetDocument().GetViewTransitions().StartTransition(
-      *element, callback, types, exception_state);
+      *element, callback, types, shadow_roots, exception_state);
 }
 
 DOMViewTransition* ViewTransitionSupplement::startViewTransition(
@@ -64,8 +66,9 @@ DOMViewTransition* ViewTransitionSupplement::startViewTransition(
     Document& document,
     V8ViewTransitionCallback* callback,
     ExceptionState& exception_state) {
-  return StartViewTransitionForElement(script_state, document.documentElement(),
-                                       callback, std::nullopt, exception_state);
+  return StartViewTransitionForElement(
+      script_state, document.documentElement(), callback, std::nullopt,
+      /*shadow_roots=*/nullptr, exception_state);
 }
 
 DOMViewTransition* ViewTransitionSupplement::startViewTransition(
@@ -74,10 +77,12 @@ DOMViewTransition* ViewTransitionSupplement::startViewTransition(
     ViewTransitionOptions* options,
     ExceptionState& exception_state) {
   CHECK(!options || (options->hasUpdate() && options->hasTypes()));
+  const HeapVector<Member<ShadowRoot>>* shadow_roots =
+      (options && options->hasShadowRoots()) ? &options->shadowRoots() : nullptr;
   return StartViewTransitionForElement(
       script_state, document.documentElement(),
       options ? options->update() : nullptr,
-      options ? options->types() : std::nullopt, exception_state);
+      options ? options->types() : std::nullopt, shadow_roots, exception_state);
 }
 
 DOMViewTransition* ViewTransitionSupplement::startViewTransition(
@@ -87,7 +92,7 @@ DOMViewTransition* ViewTransitionSupplement::startViewTransition(
   return StartViewTransitionForElement(
       script_state, document.documentElement(),
       static_cast<V8ViewTransitionCallback*>(nullptr), std::nullopt,
-      exception_state);
+      /*shadow_roots=*/nullptr, exception_state);
 }
 
 // static
@@ -106,6 +111,7 @@ DOMViewTransition* ViewTransitionSupplement::StartTransition(
     Element& element,
     V8ViewTransitionCallback* callback,
     const std::optional<Vector<String>>& types,
+    const HeapVector<Member<ShadowRoot>>* shadow_roots,
     ExceptionState& exception_state) {
   bool for_document = element.IsDocumentElement();
   Document& document = element.GetDocument();
@@ -149,7 +155,7 @@ DOMViewTransition* ViewTransitionSupplement::StartTransition(
   }
 
   ViewTransition* transition = ViewTransition::CreateFromScript(
-      &element, callback, types, this, active_transition);
+      &element, callback, types, shadow_roots, this, active_transition);
   DCHECK(transition);
 
   if (for_document) {
@@ -348,9 +354,11 @@ void ViewTransitionSupplement::OnTransitionFinished(
     element_transitions_.erase(scope);
   }
 
-  if (!captured_transitions_.empty() && !HasActiveCaptures()) {
-    AdvanceCapturedTransitions();
-  }
+  // Note that this can be called during the rendering lifecycle (e.g. if the
+  // transition is skipped during view transition steps), in which case
+  // advancing the captured transitions is deferred to a task, since it runs
+  // the DOM callbacks.
+  MaybeAdvanceCapturedTransitions();
 
   // Notify the animator if the set of active view transitions is empty.
   if (!document_transition_ && element_transitions_.empty()) {
@@ -396,13 +404,7 @@ bool ViewTransitionSupplement::HasNonScriptTransitions() const {
 }
 
 bool ViewTransitionSupplement::IsEarlyCallbackEnabled() const {
-  if (!RuntimeEnabledFeatures::ViewTransitionDOMCallbackAfterCommitEnabled()) {
-    return false;
-  }
-  if (HasNonScriptTransitions()) {
-    return false;
-  }
-  return true;
+  return !HasNonScriptTransitions();
 }
 
 bool ViewTransitionSupplement::HasActiveCaptures() const {
@@ -418,6 +420,39 @@ bool ViewTransitionSupplement::HasActiveCaptures() const {
     }
   }
   return false;
+}
+
+void ViewTransitionSupplement::MaybeAdvanceCapturedTransitions() {
+  if (captured_transitions_.empty() || HasActiveCaptures()) {
+    return;
+  }
+
+  // Advancing captured transitions runs the DOM callbacks, which must not run
+  // while script is forbidden, e.g. in the middle of the rendering lifecycle:
+  // script could dirty style, layout or the DOM after the lifecycle has
+  // already processed them.
+  if (!ScriptForbiddenScope::WillBeScriptForbidden() &&
+      !ScriptForbiddenScope::IsScriptForbidden()) {
+    AdvanceCapturedTransitions();
+    return;
+  }
+
+  if (advance_captured_transitions_scheduled_) {
+    return;
+  }
+  advance_captured_transitions_scheduled_ = true;
+  document_->GetTaskRunner(TaskType::kDOMManipulation)
+      ->PostTask(FROM_HERE,
+                 BindOnce(
+                     [](ViewTransitionSupplement* supplement) {
+                       if (!supplement) {
+                         return;
+                       }
+                       supplement->advance_captured_transitions_scheduled_ =
+                           false;
+                       supplement->MaybeAdvanceCapturedTransitions();
+                     },
+                     WrapWeakPersistent(this)));
 }
 
 void ViewTransitionSupplement::AdvanceCapturedTransitions() {
@@ -441,9 +476,7 @@ void ViewTransitionSupplement::OnDOMCallbackReadyToRun(
     return;
   }
   captured_transitions_.push_back(transition);
-  if (!HasActiveCaptures()) {
-    AdvanceCapturedTransitions();
-  }
+  MaybeAdvanceCapturedTransitions();
 }
 
 void ViewTransitionSupplement::OnTransitionCaptured(
@@ -543,6 +576,7 @@ void ViewTransitionSupplement::Trace(Visitor* visitor) const {
   visitor->Trace(element_transitions_);
   visitor->Trace(skipped_with_pending_dom_callback_);
   visitor->Trace(captured_transitions_);
+  ViewTransition::Delegate::Trace(visitor);
 }
 
 void ViewTransitionSupplement::AddPendingRequest(

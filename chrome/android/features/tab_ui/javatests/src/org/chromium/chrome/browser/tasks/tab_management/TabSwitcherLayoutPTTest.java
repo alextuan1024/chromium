@@ -38,7 +38,6 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
@@ -53,12 +52,12 @@ import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.composeplate.ComposeplateUtils;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManagerChrome;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.hub.Pane;
 import org.chromium.chrome.browser.hub.PaneId;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.signin.signin_promo.SigninPromoCoordinator;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
@@ -99,15 +98,11 @@ import java.util.function.Supplier;
 /** Tests for the {@link TabSwitcherLayout}. */
 @SuppressWarnings("ConstantConditions")
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 // TODO(https://crbug.com/392634251): Fix line height when elegant text height is used with Roboto
 // or enable Google Sans (Text) in //chrome/ tests on Android T+.
-// TODO(crbug.com/419289558): Re-enable color surface feature flags
 @DisableFeatures({
     ANDROID_ELEGANT_TEXT_HEIGHT,
-    ChromeFeatureList.ANDROID_SURFACE_COLOR_UPDATE,
-    ChromeFeatureList.GRID_TAB_SWITCHER_SURFACE_COLOR_UPDATE,
     ChromeFeatureList.ANDROID_THEME_MODULE,
     TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS
 })
@@ -193,23 +188,21 @@ public class TabSwitcherLayoutPTTest {
     /** Enters the regular Tab Switcher, making sure all tabs have a thumbnail. */
     private RegularTabSwitcherStation enterRegularHtsWithThumbnailChecking(
             CtaPageStation currentStation) {
+        TabModelSelector selector = currentStation.getTabModelSelector();
         return currentStation
-                .openRegularTabSwitcherAnd()
-                .enterStateAnd(
-                        new TabThumbnailsCapturedCarryOn(
-                                currentStation.getTabModelSelector(), /* isIncognito= */ false))
-                .completeAndGet(RegularTabSwitcherStation.class);
+                .clickTabSwitcherButtonTo()
+                .enterStateAnd(new TabThumbnailsCapturedCarryOn(selector, /* isIncognito= */ false))
+                .arriveAt(RegularTabSwitcherStation.from(selector));
     }
 
     /** Enters the Incognito Tab Switcher, making sure all tabs have a thumbnail. */
     private IncognitoTabSwitcherStation enterIncognitoHtsWithThumbnailChecking(
             CtaPageStation currentStation) {
+        TabModelSelector selector = currentStation.getTabModelSelector();
         return currentStation
-                .openIncognitoTabSwitcherAnd()
-                .enterStateAnd(
-                        new TabThumbnailsCapturedCarryOn(
-                                currentStation.getTabModelSelector(), /* isIncognito= */ true))
-                .completeAndGet(IncognitoTabSwitcherStation.class);
+                .clickTabSwitcherButtonTo()
+                .enterStateAnd(new TabThumbnailsCapturedCarryOn(selector, /* isIncognito= */ true))
+                .arriveAt(IncognitoTabSwitcherStation.from(selector));
     }
 
     @Test
@@ -457,7 +450,6 @@ public class TabSwitcherLayoutPTTest {
     @Test
     @MediumTest
     @EnableAnimations
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // Flaky on desktop crbug.com/485611939
     public void testTabToGridAndBack_SoftCleanup() {
         WebPageStation firstPage = mCtaTestRule.startOnBlankPage();
         ChromeTabbedActivity cta = mCtaTestRule.getActivity();
@@ -725,7 +717,6 @@ public class TabSwitcherLayoutPTTest {
 
     @Test
     @MediumTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // Flaky on desktop crbug.com/510238011
     public void testTabGroupCreation_dismissSavesState() {
         WebPageStation firstPage = mCtaTestRule.startOnBlankPage();
 
@@ -754,6 +745,7 @@ public class TabSwitcherLayoutPTTest {
 
     @Test
     @MediumTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/574600173
     public void testTabGroupOverflowMenuInTabSwitcher_closeGroup() {
         WebPageStation firstPage = mCtaTestRule.startOnBlankPage();
 

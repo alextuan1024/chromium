@@ -19,7 +19,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/memory/enterprise_memory_limit_pref_observer.h"
 #include "chrome/browser/performance_manager/decorators/helpers/page_live_state_decorator_helper.h"
-#include "chrome/browser/performance_manager/execution_context_priority/side_panel_loading_voter.h"
 #include "chrome/browser/performance_manager/metrics/metrics_provider_desktop.h"
 #include "chrome/browser/performance_manager/observers/page_load_metrics_observer.h"
 #include "chrome/browser/performance_manager/policies/background_tab_loading_policy.h"
@@ -32,6 +31,7 @@
 #include "chrome/browser/performance_manager/policies/termination_target_policy.h"
 #include "chrome/browser/performance_manager/policies/transient_keep_alive_policy.h"
 #include "chrome/browser/performance_manager/policies/working_set_trimmer_policy.h"
+#include "chrome/browser/performance_manager/priority/side_panel_loading_voter.h"
 #include "chrome/browser/performance_manager/user_tuning/profile_discard_opt_out_list_helper.h"
 #include "chrome/browser/performance_manager/user_tuning/profile_force_foreground_priority_list_helper.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -48,10 +48,10 @@
 #include "components/performance_manager/public/decorators/page_live_state_decorator.h"
 #include "components/performance_manager/public/decorators/page_load_tracker_decorator_helper.h"
 #include "components/performance_manager/public/decorators/process_metrics_decorator.h"
-#include "components/performance_manager/public/execution_context_priority/priority_voting_system.h"
 #include "components/performance_manager/public/features.h"
 #include "components/performance_manager/public/graph/graph.h"
 #include "components/performance_manager/public/metrics/page_resource_monitor.h"
+#include "components/performance_manager/public/priority/priority_voting_system.h"
 #include "components/performance_manager/public/user_tuning/tab_revisit_tracker.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -76,13 +76,14 @@
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE) && !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/performance_manager/execution_context_priority/extension_service_worker_priority_voter.h"
+#include "chrome/browser/performance_manager/priority/extension_service_worker_priority_voter.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/performance_manager/policies/discard_page_with_crashed_subframe_policy.h"
 #include "chrome/browser/performance_manager/policies/process_rank_policy_android.h"
+#include "chrome/browser/performance_manager/policies/swap_pressure_discarding_policy_android.h"
 #else
 #include "chrome/browser/performance_manager/policies/memory_saver_mode_policy.h"
 #include "chrome/browser/performance_manager/policies/urgent_page_discarding_policy.h"
@@ -137,13 +138,13 @@ ChromeBrowserMainExtraPartsPerformanceManager::
               performance_manager::PerformanceManagerFeatureObserverClient>()),
       global_performance_scenario_memory_(
           std::make_unique<performance_manager::ScopedGlobalScenarioMemory>()) {
-  DCHECK(!g_instance);
+  CHECK(!g_instance, base::NotFatalUntil::M163);
   g_instance = this;
 }
 
 ChromeBrowserMainExtraPartsPerformanceManager::
     ~ChromeBrowserMainExtraPartsPerformanceManager() {
-  DCHECK_EQ(this, g_instance);
+  CHECK_EQ(this, g_instance, base::NotFatalUntil::M163);
   g_instance = nullptr;
 }
 
@@ -293,26 +294,33 @@ void ChromeBrowserMainExtraPartsPerformanceManager::CreatePoliciesAndDecorators(
         std::make_unique<performance_manager::policies::
                              DiscardPageWithCrashedSubframePolicy>());
   }
+
+  if (base::FeatureList::IsEnabled(
+          chrome::android::kAndroidSwapPressureTabDiscard) &&
+      base::FeatureList::IsEnabled(features::kWebContentsDiscard)) {
+    graph->PassToGraph(
+        std::make_unique<performance_manager::policies::
+                             SwapPressureDiscardingPolicyAndroid>());
+  }
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID)
-  if (auto* voting_system = graph->GetRegisteredObjectAs<
-                            performance_manager::execution_context_priority::
-                                PriorityVotingSystem>()) {
+  if (auto* voting_system =
+          graph->GetRegisteredObjectAs<
+              performance_manager::priority::PriorityVotingSystem>()) {
     // Ensures the contents of a Side Panel loads at a high priority, even when
     // it is not visible.
-    voting_system
-        ->AddPriorityVoter<performance_manager::execution_context_priority::
-                               SidePanelLoadingVoter>();
+    // TODO(crbug.com/549552319): Remove once kPMWithheldFromViewVoter ships.
+    voting_system->AddPriorityVoter<
+        performance_manager::priority::SidePanelLoadingVoter>();
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
     // Keeps the renderer of a navigation-blocking extension service worker out
     // of EcoQoS. See crbug.com/484218883.
     if (base::FeatureList::IsEnabled(
             features::kExtensionServiceWorkerPriorityVoter)) {
-      voting_system
-          ->AddPriorityVoter<performance_manager::execution_context_priority::
-                                 ExtensionServiceWorkerPriorityVoter>();
+      voting_system->AddPriorityVoter<
+          performance_manager::priority::ExtensionServiceWorkerPriorityVoter>();
     }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   }
@@ -349,7 +357,8 @@ void ChromeBrowserMainExtraPartsPerformanceManager::PostCreateThreads() {
           g_browser_process->local_state());
 
   // There are no existing loaded profiles.
-  DCHECK(g_browser_process->profile_manager()->GetLoadedProfiles().empty());
+  CHECK(g_browser_process->profile_manager()->GetLoadedProfiles().empty(),
+        base::NotFatalUntil::M163);
 
   g_browser_process->profile_manager()->AddObserver(this);
 

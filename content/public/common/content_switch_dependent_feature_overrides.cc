@@ -4,6 +4,9 @@
 
 #include "content/public/common/content_switch_dependent_feature_overrides.h"
 
+#include <functional>
+
+#include "build/build_config.h"
 #include "content/common/features.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
@@ -11,6 +14,7 @@
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/switches.h"
 #include "ui/gfx/switches.h"
 
@@ -29,12 +33,6 @@ GetSwitchDependentFeatureOverrides(const base::CommandLine& command_line) {
     base::FeatureList::OverrideState override_state;
   } override_info[] = {
       // Overrides for --enable-experimental-web-platform-features.
-      {switches::kEnableExperimentalWebPlatformFeatures,
-       std::cref(blink::features::kHTMLProcessingInstruction),
-       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
-      {switches::kEnableExperimentalWebPlatformFeatures,
-       std::cref(blink::features::kJavaScriptImportText),
-       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
       {switches::kEnableExperimentalWebPlatformFeatures,
        std::cref(net::features::kCookieSameSiteConsidersRedirectChain),
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
@@ -69,14 +67,26 @@ GetSwitchDependentFeatureOverrides(const base::CommandLine& command_line) {
        std::cref(net::features::kHstsTopLevelNavigationsOnly),
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
       {switches::kEnableExperimentalWebPlatformFeatures,
-       std::cref(blink::features::kResponsiveIframes),
+       std::cref(blink::features::kGlobalPrivacyControlApi),
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
       {switches::kEnableExperimentalWebPlatformFeatures,
-       std::cref(blink::features::kGlobalPrivacyControlTest),
+       std::cref(blink::features::kPermissionsPolicyForSharedWorkers),
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
       {switches::kEnableExperimentalWebPlatformFeatures,
-       std::cref(blink::features::kSpecCompliantXmlMimeTypes),
+       std::cref(blink::features::kCapabilityDelegationPopup),
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
+      {switches::kEnableExperimentalWebPlatformFeatures,
+       std::cref(features::kDeviceBoundSessionJsApi),
+       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
+      {switches::kEnableExperimentalWebPlatformFeatures,
+       std::cref(blink::features::kWebMCPWaitForToolsUntil),
+       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
+      {switches::kEnableExperimentalWebPlatformFeatures,
+       std::cref(blink::features::kAIPromptAPIThinkingMode),
+       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
+#endif
 
       // Overrides for --enable-experimental-cookie-features.
       {switches::kEnableExperimentalCookieFeatures,
@@ -115,16 +125,6 @@ GetSwitchDependentFeatureOverrides(const base::CommandLine& command_line) {
       // Override for --reduce-user-agent-minor-version.
       {switches::kReduceUserAgentMinorVersion,
        std::cref(blink::features::kReduceUserAgentMinorVersion),
-       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
-
-      // Override for --reduce-accept-language.
-      {switches::kReduceAcceptLanguage,
-       std::cref(network::features::kReduceAcceptLanguage),
-       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
-
-      // Override for --reduce-accept-language-http.
-      {switches::kReduceAcceptLanguageHTTP,
-       std::cref(network::features::kReduceAcceptLanguageHTTP),
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
 
       // Override for --privacy-sandbox-ads-apis. See also chrome layer

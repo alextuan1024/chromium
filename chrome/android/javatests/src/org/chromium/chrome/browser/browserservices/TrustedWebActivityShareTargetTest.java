@@ -30,13 +30,14 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.webapps.WebApkPostShareTargetNavigator;
 import org.chromium.chrome.browser.webapps.WebApkPostShareTargetNavigatorJni;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.chrome.test.transit.CctTransitTestRule;
+import org.chromium.chrome.test.transit.page.CctPageStation;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.net.test.EmbeddedTestServerRule;
+import org.chromium.url.GURL;
 
 import java.util.Collections;
 import java.util.concurrent.TimeUnit;
@@ -74,8 +75,10 @@ public class TrustedWebActivityShareTargetTest {
                                             "received_file",
                                             Collections.singletonList("text/plain")))));
 
-    @Rule
-    public CustomTabActivityTestRule mCustomTabActivityTestRule = new CustomTabActivityTestRule();
+    @Rule public CctTransitTestRule mCctTransitTestRule = new CctTransitTestRule();
+
+    private final CustomTabActivityTestRule mCustomTabActivityTestRule =
+            mCctTransitTestRule.getActivityTestRule();
 
     @Rule public EmbeddedTestServerRule mEmbeddedTestServerRule = new EmbeddedTestServerRule();
 
@@ -91,6 +94,9 @@ public class TrustedWebActivityShareTargetTest {
     private Intent mIntent;
     private ShareTarget mGetShareTarget;
 
+    // The TWA's launch URL.
+    private String mTestPage;
+
     // Expected URL when using mGetShareTarget as input.
     private String mExpectedGetRequestUrl;
 
@@ -102,6 +108,7 @@ public class TrustedWebActivityShareTargetTest {
         LibraryLoader.getInstance().ensureInitialized();
         mEmbeddedTestServerRule.setServerUsesHttps(true);
         String testPage = mEmbeddedTestServerRule.getServer().getURL(TEST_PAGE);
+        mTestPage = testPage;
         String shareTestPage = mEmbeddedTestServerRule.getServer().getURL(SHARE_TEST_PAGE);
         mGetShareTarget =
                 new ShareTarget(
@@ -121,8 +128,7 @@ public class TrustedWebActivityShareTargetTest {
     @MediumTest
     public void sharesDataWithGet_FromInitialIntent() {
         putShareData(mIntent, mGetShareTarget);
-        mCustomTabActivityTestRule.startCustomTabActivityWithIntent(mIntent);
-        assertGetRequestUrl(mExpectedGetRequestUrl);
+        mCctTransitTestRule.startCustomTabActivityWithIntent(mIntent, mExpectedGetRequestUrl);
     }
 
     @Test
@@ -131,6 +137,8 @@ public class TrustedWebActivityShareTargetTest {
         putShareData(mIntent, POST_SHARE_TARGET);
         mCustomTabActivityTestRule.startCustomTabActivityWithIntentNotWaitingForFirstFrame(mIntent);
         assertPostNavigatorCalled();
+        // The TWA's launch URL is passed to bootstrap the app's service worker if needed.
+        Assert.assertEquals(mTestPage, mPostNavigatorNatives.mBootstrapUrl.getSpec());
     }
 
     @Test
@@ -141,17 +149,21 @@ public class TrustedWebActivityShareTargetTest {
         deliverNewIntent(mIntent);
 
         assertPostNavigatorCalled();
+        Assert.assertEquals(mTestPage, mPostNavigatorNatives.mBootstrapUrl.getSpec());
     }
 
     @Test
     @MediumTest
     public void sharesDataWithGet_FromNewIntent() {
-        mCustomTabActivityTestRule.startCustomTabActivityWithIntent(mIntent);
+        CctPageStation page =
+                mCctTransitTestRule.startCustomTabActivityWithIntent(mIntent, mTestPage);
         putShareData(mIntent, mGetShareTarget);
 
-        deliverNewIntent(mIntent);
-
-        assertGetRequestUrl(mExpectedGetRequestUrl);
+        page.runTo(() -> deliverNewIntent(mIntent))
+                .arriveAt(
+                        CctPageStation.newBuilder()
+                                .initForLoadingUrlOnSameTab(mExpectedGetRequestUrl, page)
+                                .build());
     }
 
     @Test(expected = TimeoutException.class)
@@ -166,12 +178,6 @@ public class TrustedWebActivityShareTargetTest {
         ShareData shareData = new ShareData("test_title", "test_text", Collections.emptyList());
         intent.putExtra(TrustedWebActivityIntentBuilder.EXTRA_SHARE_DATA, shareData.toBundle());
         intent.putExtra(TrustedWebActivityIntentBuilder.EXTRA_SHARE_TARGET, shareTarget.toBundle());
-    }
-
-    private void assertGetRequestUrl(final String expectedGetRequestUrl) {
-        // startCustomTabActivityWithIntent waits for native, so the tab must be present already.
-        Tab tab = mCustomTabActivityTestRule.getActivity().getActivityTab();
-        ChromeTabUtils.waitForTabPageLoaded(tab, expectedGetRequestUrl);
     }
 
     private void assertPostNavigatorCalled() throws TimeoutException {
@@ -224,6 +230,7 @@ public class TrustedWebActivityShareTargetTest {
         public boolean[] mIsValueFileUris;
         public String[] mFilenames;
         public String[] mTypes;
+        public GURL mBootstrapUrl;
 
         @Override
         public void nativeLoadViewForShareTargetPost(
@@ -234,12 +241,14 @@ public class TrustedWebActivityShareTargetTest {
                 String[] filenames,
                 String[] types,
                 String startUrl,
+                GURL bootstrapUrl,
                 WebContents webContents) {
             mNames = names;
             mValues = values;
             mIsValueFileUris = isValueFileUris;
             mFilenames = filenames;
             mTypes = types;
+            mBootstrapUrl = bootstrapUrl;
             mPostNavigatorCallback.notifyCalled();
         }
     }

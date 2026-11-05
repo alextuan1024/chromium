@@ -14,8 +14,6 @@ static_library("profiles") {
     "user_profile_migration.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash/constants",
     "//base",
@@ -25,6 +23,7 @@ static_library("profiles") {
     "//chrome/browser/profiles:profile_manager",
     "//chromeos/ash/components/browser_context_helper",
     "//components/user_manager",
+    "//content/public/browser",
   ]
 }
 
@@ -33,8 +32,6 @@ static_library("signin_profile_handler") {
     "signin_profile_handler.cc",
     "signin_profile_handler.h",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   deps = [
     "//base",

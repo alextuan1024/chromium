@@ -262,7 +262,6 @@ void XRWebGLDrawingBuffer::UseSharedBuffer(
   //
   // TODO(https://crbug.com/1111526): Investigate handling context loss and
   // recovery for cases where these assumptions may not be accurate.
-  DCHECK(buffer_sync_token.HasData());
   DCHECK(buffer_shared_image);
   DVLOG(3) << __func__
            << ": mailbox=" << buffer_shared_image->mailbox().ToDebugString()
@@ -337,6 +336,14 @@ XRWebGLDrawingBuffer::DoneWithSharedBuffer() {
     gl->BindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
     gl->DiscardFramebufferEXT(GL_FRAMEBUFFER, 2, kAttachments);
   }
+
+  // Detach the shared buffer from the framebuffer to prevent access to an
+  // orphaned attachment.
+  gl->BindFramebuffer(GL_FRAMEBUFFER, WantExplicitResolve()
+                                          ? resolved_framebuffer_
+                                          : framebuffer_);
+  gl->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           0, 0);
 
   // Always bind to the default framebuffer as a hint to the GPU to start
   // rendering now.
@@ -632,26 +639,14 @@ void XRWebGLDrawingBuffer::SwapColorBuffers() {
 
 std::unique_ptr<SharedImageHolder>
 XRWebGLDrawingBuffer::TransferToSharedImageHolder() {
-  scoped_refptr<ColorBuffer> buffer;
-  bool success = false;
-
-  // Ensure the context isn't lost and the framebuffer is complete before
-  // continuing.
-  if (!ContextLost()) {
-    SwapColorBuffers();
-
-    buffer = front_color_buffer_;
-    success = true;
+  // Ensure the context isn't lost before swapping and exporting the buffer.
+  if (ContextLost()) {
+    return nullptr;
   }
 
-  // If we can't get a mailbox, simply crash here since the image returned
-  // by the current function will be used in XRFrameProvider::SubmitLayer()
-  // later, where an UnacceleratedStaticBitmapImage will cause a crash anyway.
-  // The only situation in which this could happen is when two or more calls
-  // to transferToImageBitmap are made back-to-back, if the framebuffer is
-  // incomplete (likely due to a failed buffer allocation), or when the
-  // context gets lost.
-  CHECK(success) << "WebXR requires hardware-accelerated rendering to texture";
+  SwapColorBuffers();
+  scoped_refptr<ColorBuffer> buffer = front_color_buffer_;
+  CHECK(buffer);
 
   // This holds a ref on the XRWebGLDrawingBuffer that will keep it alive
   // until the mailbox is released (and while the callback is running).

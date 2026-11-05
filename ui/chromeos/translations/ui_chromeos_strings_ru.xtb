@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Камера</translation>
 <translation id="162175252992296058">Португальский, американская международная раскладка</translation>
 <translation id="1629521517399325891">Сертификат пользователя нельзя использовать для аутентификации сети.</translation>
+<translation id="1639239467298939599">Загрузка…</translation>
 <translation id="1641780993263690097">Китайский, пиньинь</translation>
 <translation id="164969095109328410">Устройство Chrome</translation>
 <translation id="1661207570040737402">Закончилось место на общем диске Google Workspace.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Синхронизация файлов отключена</translation>
 <translation id="2820957248982571256">Поиск…</translation>
 <translation id="2830077785865012357">Китайский, чжуинь</translation>
+<translation id="2838379631617906747">Установка...</translation>
 <translation id="2843806747483486897">Изменить настройки по умолчанию…</translation>
 <translation id="2873951654529031587">Корзина</translation>
 <translation id="2887314858867008269">США (Colemak)</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Неправильный пароль</translation>
 <translation id="5059127710849015030">Непальский, транслитерация</translation>
 <translation id="5068919226082848014">Пицца</translation>
+<translation id="5075336522277785691">Расширение "<ph name="EXTENSION_NAME" />" задало правила переопределения прокси-сервера</translation>
 <translation id="5081517858322016911">Будут удалены файлы общим объемом <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Перемещение объектов (<ph name="NUMBER_OF_ITEMS" />) в папку "<ph name="FOLDER_NAME" />"…</translation>
 <translation id="509429900233858213">Произошла ошибка.</translation>
-<translation id="5102922915594634436">Настроить синхронизированные папки</translation>
 <translation id="5109254780565519649">Произошла ошибка. Возможно, не все объекты были восстановлены.</translation>
 <translation id="5110329002213341433">Английский (Канада)</translation>
 <translation id="5119780910075847424">Синхронизация приостановлена</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Не установлено</translation>
 <translation id="5317780077021120954">Сохранить</translation>
 <translation id="5318819489018851358">Предоставить доступ Linux</translation>
-<translation id="5330145655348521461">Эти файлы открыты на другом рабочем столе. Чтобы увидеть их, переключитесь на профиль пользователя <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="5330512191124428349">Сведения о файле</translation>
 <translation id="535792325654997756">Человек с кошками</translation>
 <translation id="5358764674931277">Частота кадров</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Недопустимое значение совпадения с доменным суффиксом</translation>
 <translation id="6364301859968397756">Хранилище организации заполнено</translation>
 <translation id="6367976544441405720">Грузовик</translation>
-<translation id="637062427944097960">Этот файл открыт на другом рабочем столе. Чтобы увидеть его, переключитесь на профиль пользователя <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="6394388407447716302">Только чтение</translation>
 <translation id="6395575651121294044">Объектов: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Не удалось переместить файл "<ph name="FILE_NAME" />", так как он зашифрован.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – порт</translation>
 <translation id="8656407365183407932">Доступ к файлам в офлайн-режиме закрыт</translation>
 <translation id="8656768832129462377">Не проверять</translation>
+<translation id="8662978096466608964">Chrome не может установить выбранное изображение в качестве обоев рабочего стола.</translation>
 <translation id="8688591111840995413">Неверный пароль</translation>
 <translation id="8698464937041809063">Рисунок Google</translation>
 <translation id="8698877009525468705">Это конфиденциальный файл, и администратор ограничил его использование</translation>

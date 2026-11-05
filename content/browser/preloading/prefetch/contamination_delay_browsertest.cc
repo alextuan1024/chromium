@@ -5,12 +5,12 @@
 #include <optional>
 
 #include "base/strings/string_number_conversions.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_timeouts.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
+#include "build/build_config.h"
 #include "content/browser/preloading/prefetch/mock_prefetch_service_delegate.h"
 #include "content/browser/preloading/prefetch/prefetch_document_manager.h"
 #include "content/browser/preloading/prefetch/prefetch_features.h"
@@ -21,6 +21,7 @@
 #include "content/public/browser/prefetch_service_delegate.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/referrer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -146,7 +147,6 @@ IN_PROC_BROWSER_TEST_F(ContaminationDelayBrowserTest, CrossSite) {
 
   scoped_refptr<SiteInstance> site_instance =
       shell()->web_contents()->GetSiteInstance();
-  base::HistogramTester histogram_tester;
   BrowsingContextGroupSwapObserver swap_observer(shell()->web_contents());
   base::ElapsedTimer timer;
   ASSERT_TRUE(NavigateToURLFromRenderer(shell(), prefetch_url));
@@ -155,8 +155,6 @@ IN_PROC_BROWSER_TEST_F(ContaminationDelayBrowserTest, CrossSite) {
             swap_observer.Get().type());
   EXPECT_FALSE(site_instance->IsRelatedSiteInstance(
       shell()->web_contents()->GetSiteInstance()));
-  histogram_tester.ExpectUniqueSample(
-      "Preloading.PrefetchBCGSwap.RelatedActiveContents", 1, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(ContaminationDelayBrowserTest, IgnoresSameOrigin) {
@@ -220,9 +218,10 @@ IN_PROC_BROWSER_TEST_F(ContaminationDelayBrowserTest, IgnoresIfExempt) {
                                BrowsingContextGroupSwapType::kProactiveSwap));
 }
 
-#ifndef NDEBUG
-// TODO(http://crbug.com/404944178): This test is flaky on debug builds.
+// TODO(http://crbug.com/404944178): This test is flaky on debug builds and on
+// Fuchsia.
 // https://ci.chromium.org/ui/test/chromium/ninja%3A%2F%2Fcontent%2Ftest%3Acontent_browsertests%2FContaminationDelayBrowserTest.IgnoresIfExempt_BrowserInitiated
+#if BUILDFLAG(IS_FUCHSIA) || !defined(NDEBUG)
 #define MAYBE_IgnoresIfExempt_BrowserInitiated \
   DISABLED_IgnoresIfExempt_BrowserInitiated
 #else
@@ -255,7 +254,8 @@ IN_PROC_BROWSER_TEST_F(ContaminationDelayBrowserTest,
       /*attempt=*/nullptr,
       /*holdback_status_override=*/PreloadingHoldbackStatus::kUnspecified,
       /*ttl=*/std::nullopt,
-      /*should_ignore_saver_modes=*/false);
+      /*should_ignore_saver_modes=*/false,
+      /*is_ahead_of_imminent_navigation=*/false);
   test_prefetch_watcher->WaitUntilPrefetchResponseCompleted(std::nullopt,
                                                             prefetch_url);
 
@@ -314,7 +314,6 @@ IN_PROC_BROWSER_TEST_F(ContaminationDelayBrowserTest,
 
   scoped_refptr<SiteInstance> site_instance =
       shell()->web_contents()->GetSiteInstance();
-  base::HistogramTester histogram_tester;
   BrowsingContextGroupSwapObserver swap_observer(shell()->web_contents());
   base::ElapsedTimer timer;
   ASSERT_TRUE(NavigateToURLFromRenderer(shell(), prefetch_url));
@@ -323,8 +322,6 @@ IN_PROC_BROWSER_TEST_F(ContaminationDelayBrowserTest,
             swap_observer.Get().type());
   EXPECT_FALSE(site_instance->IsRelatedSiteInstance(
       shell()->web_contents()->GetSiteInstance()));
-  histogram_tester.ExpectUniqueSample(
-      "Preloading.PrefetchBCGSwap.RelatedActiveContents", 2, 1);
 }
 
 }  // namespace

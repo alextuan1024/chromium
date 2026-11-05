@@ -25,6 +25,7 @@
 
 #include "third_party/blink/renderer/core/svg/svg_use_element.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
@@ -300,21 +301,36 @@ static bool IsDisallowedElement(const Element& element) {
     return true;
   }
 
-  DEFINE_STATIC_LOCAL(HashSet<QualifiedName>, allowed_element_tags,
-                      ({
-                          svg_names::kATag,        svg_names::kCircleTag,
-                          svg_names::kDescTag,     svg_names::kEllipseTag,
-                          svg_names::kGTag,        svg_names::kImageTag,
-                          svg_names::kLineTag,     svg_names::kMetadataTag,
-                          svg_names::kPathTag,     svg_names::kPolygonTag,
-                          svg_names::kPolylineTag, svg_names::kRectTag,
-                          svg_names::kSVGTag,      svg_names::kSwitchTag,
-                          svg_names::kSymbolTag,   svg_names::kTextTag,
-                          svg_names::kTextPathTag, svg_names::kTitleTag,
-                          svg_names::kTSpanTag,    svg_names::kUseTag,
-                      }));
-  return !allowed_element_tags.Contains<SVGAttributeHashTranslator>(
-      element.TagQName());
+  static base::NoDestructor<HashSet<QualifiedName>> allowed_element_tags({
+      svg_names::kATag,       svg_names::kCircleTag,   svg_names::kDescTag,
+      svg_names::kEllipseTag, svg_names::kGTag,        svg_names::kImageTag,
+      svg_names::kLineTag,    svg_names::kMetadataTag, svg_names::kPathTag,
+      svg_names::kPolygonTag, svg_names::kPolylineTag, svg_names::kRectTag,
+      svg_names::kSVGTag,     svg_names::kSwitchTag,   svg_names::kSymbolTag,
+      svg_names::kTextTag,    svg_names::kTextPathTag, svg_names::kTitleTag,
+      svg_names::kTSpanTag,   svg_names::kUseTag,
+  });
+  if (!allowed_element_tags->Contains<SVGAttributeHashTranslator>(
+          element.TagQName())) {
+    // SMIL animation elements, and the <mpath> an <animateMotion> may
+    // contain, are instanced into the use-element shadow tree per
+    // https://svgwg.org/svg2-draft/struct.html#UseAnimations. Dropping them
+    // leaves animations of an externally referenced SVG dead, since that
+    // document has no view to drive its own SMIL timeline.
+    if (RuntimeEnabledFeatures::SvgUseInstanceAnimationsEnabled()) {
+      static base::NoDestructor<HashSet<QualifiedName>> animation_element_tags({
+          svg_names::kAnimateTag,
+          svg_names::kAnimateTransformTag,
+          svg_names::kAnimateMotionTag,
+          svg_names::kMPathTag,
+          svg_names::kSetTag,
+      });
+      return !animation_element_tags->Contains<SVGAttributeHashTranslator>(
+          element.TagQName());
+    }
+    return true;
+  }
+  return false;
 }
 
 void SVGUseElement::ScheduleShadowTreeRecreation() {
@@ -619,7 +635,7 @@ gfx::RectF SVGUseElement::GetBBox() {
   gfx::RectF bbox = transformable_container.ObjectBoundingBox();
   bbox.Offset(transformable_container.AdditionalTranslation());
   return NoopWillBeInvScaleRect(
-      bbox, transformable_container.StyleRef().EffectiveZoom());
+      bbox, transformable_container.Style().EffectiveZoom());
 }
 
 void SVGUseElement::QueueOrDispatchPendingEvent(

@@ -5,7 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_WIDGET_INPUT_MAIN_THREAD_EVENT_QUEUE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WIDGET_INPUT_MAIN_THREAD_EVENT_QUEUE_H_
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -191,6 +190,7 @@ class PLATFORM_EXPORT MainThreadEventQueue
   friend class MainThreadEventQueueInitializationTest;
   raw_ptr<MainThreadEventQueueClient> client_;
   const bool allow_raf_aligned_input_;
+  const base::TimeDelta async_touch_move_interval_;
 
   // Contains data that are read and written on the main thread only.
   struct MainThreadOnly {

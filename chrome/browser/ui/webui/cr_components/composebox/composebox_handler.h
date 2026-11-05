@@ -18,6 +18,7 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 #include "url/gurl.h"
@@ -42,9 +43,9 @@ class ComposeboxOmniboxClient : public ContextualOmniboxClient {
   void OnAutocompleteAccept(
       const GURL& destination_url,
       TemplateURLRef::PostContent* post_content,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       ui::PageTransition transition,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       base::TimeTicks match_selection_timestamp,
       bool destination_url_entered_without_scheme,
       bool destination_url_entered_with_http_scheme,
@@ -116,7 +117,7 @@ class ComposeboxHandler : public composebox::mojom::PageHandler,
   // If there is a match present in navigation, `additional_params` from the
   // match's `detination_url` will be appended during url creation.
   void SubmitQuery(const std::string& query_text,
-                   WindowOpenDisposition disposition,
+                   ui::mojom::WindowOpenDisposition disposition,
                    omnibox::ChromeAimEntryPoint aim_entrypoint,
                    std::map<std::string, std::string> additional_params,
                    bool is_voice_search);
@@ -147,7 +148,7 @@ class ComposeboxHandler : public composebox::mojom::PageHandler,
   // ContextualSearchboxHandler:
   void ProcessContextAndOpenUrl(
       GURL url,
-      const WindowOpenDisposition disposition) override;
+      const ui::mojom::WindowOpenDisposition disposition) override;
 
  private:
   ClearSessionHandleCallback clear_session_callback_;

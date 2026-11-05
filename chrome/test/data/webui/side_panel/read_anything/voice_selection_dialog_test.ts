@@ -10,13 +10,12 @@ import type {CrRadioButtonElement} from '//resources/cr_elements/cr_radio_button
 import type {CrRadioGroupElement} from '//resources/cr_elements/cr_radio_group/cr_radio_group.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {VoiceSelectionDialogElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {AudioBrowserProxyImpl, ReadAloudSettingsChange, spinnerDebounceTimeout, stringToHtmlTestId, ToolbarEvent, VoiceClientSideStatusCode, VoiceNotificationManager} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {getVoiceNatureNaming, spinnerDebounceTimeout, stringToHtmlTestId, ToolbarEvent, VoiceClientSideStatusCode, VoiceNotificationManager} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {MockTimer} from 'chrome-untrusted://webui-test/mock_timer.js';
 import {eventToPromise, microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
 import {createSpeechSynthesisVoice, setupTestEnvironment} from './common.js';
-import type {TestAudioBrowserProxy} from './test_audio_browser_proxy.js';
 import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 
 suite('VoiceSelectionDialog', () => {
@@ -29,6 +28,12 @@ suite('VoiceSelectionDialog', () => {
       createSpeechSynthesisVoice({name: 'Google US English', lang: 'en-US'});
   const googleItalianVoice =
       createSpeechSynthesisVoice({name: 'Google Italian Voice', lang: 'it-IT'});
+  // Key for getVoiceNatureNaming. googleNaturalVoice can't be used as key
+  // due to the missing voice number.
+  const mappedVoice = createSpeechSynthesisVoice(
+      {name: 'Google US English 1 (Natural)', lang: 'en-US'});
+  const mappedSpanishVoice = createSpeechSynthesisVoice(
+      {name: 'Google español de Estados Unidos 1 (Natural)', lang: 'es-US'});
 
   async function setAvailableVoicesAndEnabledLangs(
       availableVoices: SpeechSynthesisVoice[],
@@ -49,9 +54,35 @@ suite('VoiceSelectionDialog', () => {
         `cr-radio-button[data-test-id="${stringToHtmlTestId(voice.name)}"]`)!;
   }
 
+  function getPreviewButtonForVoice(voice: SpeechSynthesisVoice):
+      CrIconButtonElement {
+    const radioButton = getDropdownItemForVoice(voice);
+    return radioButton.closest('.voice-row')!
+        .querySelector<CrIconButtonElement>('#preview-icon')!;
+  }
+
   function getRadioGroup(): CrRadioGroupElement {
     return dialog.$.voiceSelectionDialog.querySelector<CrRadioGroupElement>(
         '#voiceRadioGroup')!;
+  }
+
+  function getSaveButton(): CrButtonElement {
+    return dialog.$.voiceSelectionDialog.querySelector<CrButtonElement>(
+        '#saveButton')!;
+  }
+
+  function dispatchKeyDown(
+      target: HTMLElement, key: string,
+      options?: KeyboardEventInit): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      ...options,
+    });
+    target.dispatchEvent(event);
+    return event;
   }
 
   function getGroupTitles(): NodeListOf<HTMLElement> {
@@ -68,9 +99,7 @@ suite('VoiceSelectionDialog', () => {
     const result = setupTestEnvironment();
     metrics = result.metrics;
 
-    const audioBrowserProxy =
-        AudioBrowserProxyImpl.getInstance() as TestAudioBrowserProxy;
-    audioBrowserProxy.localeToDisplayName = {
+    result.audioBrowserProxy.localeToDisplayName = {
       'it': 'Italian',
       'it-it': 'Italian',
       'en-us': 'English (United States)',
@@ -81,8 +110,8 @@ suite('VoiceSelectionDialog', () => {
       save: 'Save',
       voiceSelectionLabel: 'Voice Selection',
       previewTooltip: 'Preview voice',
+      previewVoiceLabel: 'Preview $1',
       stopLabel: 'Stop preview',
-      readingModeLanguageMenuItemLabel: 'Select $1',
       readingModeVoiceMenuDownloading: 'Downloading $1',
     });
 
@@ -94,6 +123,13 @@ suite('VoiceSelectionDialog', () => {
     await setAvailableVoicesAndEnabledLangs(
         [googleNaturalVoice, googleStandardVoice, googleItalianVoice]);
     dialog.selectedVoice = googleNaturalVoice;
+  });
+
+  // Clearing the DOM doesn't close a modal dialog, so close it here.
+  teardown(() => {
+    if (dialog.isConnected) {
+      dialog.close();
+    }
   });
 
   test('does not render close icon button in dialog header', async () => {
@@ -166,16 +202,13 @@ suite('VoiceSelectionDialog', () => {
       async () => {
         await drawDialog();
 
-        const selectedItem = getDropdownItemForVoice(googleNaturalVoice);
-        const unselectedItem = getDropdownItemForVoice(googleStandardVoice);
-
-        const selectedPreview =
-            selectedItem.querySelector<CrIconButtonElement>('#preview-icon')!;
-        const unselectedPreview =
-            unselectedItem.querySelector<CrIconButtonElement>('#preview-icon')!;
+        const selectedPreview = getPreviewButtonForVoice(googleNaturalVoice);
+        const unselectedPreview = getPreviewButtonForVoice(googleStandardVoice);
+        const italianPreview = getPreviewButtonForVoice(googleItalianVoice);
 
         assertEquals('0', selectedPreview.getAttribute('tabindex'));
         assertEquals('-1', unselectedPreview.getAttribute('tabindex'));
+        assertEquals('-1', italianPreview.getAttribute('tabindex'));
       });
 
   test(
@@ -304,8 +337,7 @@ suite('VoiceSelectionDialog', () => {
     await drawDialog();
 
     const standardVoiceItem = getDropdownItemForVoice(googleStandardVoice);
-    const previewBtn =
-        standardVoiceItem.querySelector<CrIconButtonElement>('#preview-icon')!;
+    const previewBtn = getPreviewButtonForVoice(googleStandardVoice);
 
     previewBtn.click();
     await microtasksFinished();
@@ -331,16 +363,10 @@ suite('VoiceSelectionDialog', () => {
             createSpeechSynthesisVoice({name: 'Missing Voice', lang: 'fr-FR'});
         await drawDialog();
 
-        const naturalItem = getDropdownItemForVoice(googleNaturalVoice);
-        const standardItem = getDropdownItemForVoice(googleStandardVoice);
-        const naturalPreview =
-            naturalItem.querySelector<CrIconButtonElement>('#preview-icon')!;
+        const naturalPreview = getPreviewButtonForVoice(googleNaturalVoice);
+        const standardPreview = getPreviewButtonForVoice(googleStandardVoice);
 
         assertEquals('0', naturalPreview.getAttribute('tabindex'));
-
-        const standardPreview =
-            standardItem.querySelector<CrIconButtonElement>('#preview-icon')!;
-
         assertEquals('-1', standardPreview.getAttribute('tabindex'));
       });
 
@@ -380,9 +406,7 @@ suite('VoiceSelectionDialog', () => {
         const playPreviewPromise = eventToPromise<
             CustomEvent<{previewVoice: SpeechSynthesisVoice | null}>>(
             ToolbarEvent.PLAY_PREVIEW, dialog);
-        const standardItem = getDropdownItemForVoice(googleStandardVoice);
-        const previewBtn =
-            standardItem.querySelector<CrIconButtonElement>('#preview-icon')!;
+        const previewBtn = getPreviewButtonForVoice(googleStandardVoice);
         const mockTimer = new MockTimer();
         mockTimer.install();
         previewBtn.click();
@@ -394,8 +418,7 @@ suite('VoiceSelectionDialog', () => {
         mockTimer.uninstall();
         await microtasksFinished();
 
-        const updatedPreviewBtn =
-            standardItem.querySelector<CrIconButtonElement>('#preview-icon')!;
+        const updatedPreviewBtn = getPreviewButtonForVoice(googleStandardVoice);
 
         assertEquals(
             'read-anything-20:stop-circle', updatedPreviewBtn.ironIcon);
@@ -413,9 +436,7 @@ suite('VoiceSelectionDialog', () => {
           playPreviewPayloads.push(e.detail.previewVoice);
         });
 
-        const standardItem = getDropdownItemForVoice(googleStandardVoice);
-        const previewBtn =
-            standardItem.querySelector<CrIconButtonElement>('#preview-icon')!;
+        const previewBtn = getPreviewButtonForVoice(googleStandardVoice);
 
         const mockTimer = new MockTimer();
         mockTimer.install();
@@ -443,9 +464,7 @@ suite('VoiceSelectionDialog', () => {
   test('closing dialog stops active preview', async () => {
     await drawDialog();
 
-    const standardItem = getDropdownItemForVoice(googleStandardVoice);
-    const previewBtn =
-        standardItem.querySelector<CrIconButtonElement>('#preview-icon')!;
+    const previewBtn = getPreviewButtonForVoice(googleStandardVoice);
 
     const mockTimer = new MockTimer();
     mockTimer.install();
@@ -464,24 +483,6 @@ suite('VoiceSelectionDialog', () => {
     assertEquals(null, event.detail.previewVoice);
   });
 
-  test('clicking Save logs UMA speech settings change metric', async () => {
-    await drawDialog();
-
-    const standardVoiceItem = getDropdownItemForVoice(googleStandardVoice);
-    standardVoiceItem.click();
-    await microtasksFinished();
-
-    const saveBtn =
-        dialog.$.voiceSelectionDialog.querySelector<CrButtonElement>(
-            '#saveButton')!;
-    saveBtn.click();
-    await microtasksFinished();
-
-    assertEquals(
-        ReadAloudSettingsChange.VOICE_NAME_CHANGE,
-        await metrics.whenCalled('recordSpeechSettingsChange'));
-  });
-
   test(
       'displays download notifications from notification manager', async () => {
         await drawDialog();
@@ -496,5 +497,361 @@ suite('VoiceSelectionDialog', () => {
                 '.download-message')!;
 
         assertTrue(downloadMessage.textContent.includes('Italian'));
+      });
+
+  test(
+      'renders the nature name and descriptor for a mapped voice',
+      async () => {
+        await setAvailableVoicesAndEnabledLangs(
+            [mappedVoice, mappedSpanishVoice]);
+        await drawDialog();
+
+        for (const voice of [mappedVoice, mappedSpanishVoice]) {
+          const expected = getVoiceNatureNaming(voice.name)!;
+          const row = getDropdownItemForVoice(voice);
+          const nameSpan = row.querySelector<HTMLElement>('.voice-name')!;
+          const descriptionSpan =
+              row.querySelector<HTMLElement>('.voice-description')!;
+
+          assertEquals(expected.natureName, nameSpan.textContent);
+          assertEquals(expected.description, descriptionSpan.textContent);
+          // The nature name duplicates the accessible name, so it is hidden
+          // from assistive technology; the descriptor is not, because it
+          // contributes to the row's accessible description.
+          assertEquals('true', nameSpan.getAttribute('aria-hidden'));
+          assertFalse(descriptionSpan.hasAttribute('aria-hidden'));
+        }
+      });
+
+  test('synthesizes no joiner between the two identity lines', async () => {
+    await setAvailableVoicesAndEnabledLangs([mappedVoice, mappedSpanishVoice]);
+    await drawDialog();
+
+    for (const voice of [mappedVoice, mappedSpanishVoice]) {
+      const expected = getVoiceNatureNaming(voice.name)!;
+      const row = getDropdownItemForVoice(voice);
+      const text = row.textContent;
+      const nameIndex = text.indexOf(expected.natureName);
+      const descriptionIndex = text.indexOf(expected.description);
+
+      assertTrue(nameIndex >= 0);
+      assertTrue(descriptionIndex > nameIndex);
+
+      assertEquals(
+          '',
+          text.substring(
+                  nameIndex + expected.natureName.length, descriptionIndex)
+              .trim());
+    }
+  });
+
+  test('labels a mapped row with the nature name only', async () => {
+    await setAvailableVoicesAndEnabledLangs([mappedVoice, mappedSpanishVoice]);
+    await drawDialog();
+
+    for (const voice of [mappedVoice, mappedSpanishVoice]) {
+      const expected = getVoiceNatureNaming(voice.name)!;
+      const row = getDropdownItemForVoice(voice);
+
+      assertEquals(expected.natureName, row.label);
+      assertEquals(expected.natureName, row.getAttribute('label'));
+    }
+  });
+
+  test('falls back to the engine name when a voice is unmapped', async () => {
+    await setAvailableVoicesAndEnabledLangs([googleNaturalVoice]);
+    await drawDialog();
+
+    const row = getDropdownItemForVoice(googleNaturalVoice);
+    const nameSpan = row.querySelector<HTMLElement>('.voice-name')!;
+
+    assertEquals(googleNaturalVoice.name, nameSpan.textContent);
+    assertEquals(googleNaturalVoice.name, row.label);
+    assertEquals(googleNaturalVoice.name, row.getAttribute('label'));
+    // Absent from the DOM, not present and empty.
+    assertEquals(null, row.querySelector('.voice-description'));
+  });
+
+  test('tags both identity lines with the voice language', async () => {
+    await setAvailableVoicesAndEnabledLangs([mappedVoice, mappedSpanishVoice]);
+    await drawDialog();
+
+    for (const voice of [mappedVoice, mappedSpanishVoice]) {
+      const row = getDropdownItemForVoice(voice);
+      const nameSpan = row.querySelector<HTMLElement>('.voice-name')!;
+      const descriptionSpan =
+          row.querySelector<HTMLElement>('.voice-description')!;
+
+      // Emitted verbatim: the engine's value is never normalised or validated.
+      assertEquals(voice.lang, nameSpan.getAttribute('lang'));
+      assertEquals(voice.lang, descriptionSpan.getAttribute('lang'));
+    }
+  });
+
+  test('leaves an unmapped row untagged despite a valid lang', async () => {
+    await setAvailableVoicesAndEnabledLangs([googleNaturalVoice]);
+    await drawDialog();
+
+    const row = getDropdownItemForVoice(googleNaturalVoice);
+    const nameSpan = row.querySelector<HTMLElement>('.voice-name')!;
+
+    // googleNaturalVoice.lang is 'en-US', so this is not about the value
+    // being unusable. An unmapped row shows the engine's own string, which
+    // is predominantly English with an embedded native fragment; claiming it
+    // is written in the voice's locale asserts something we do not know.
+    assertFalse(nameSpan.hasAttribute('lang'));
+  });
+
+  test('tags only the identity spans, never the row host', async () => {
+    await setAvailableVoicesAndEnabledLangs([
+      mappedVoice,
+      mappedSpanishVoice,
+      googleNaturalVoice,
+      googleItalianVoice,
+    ]);
+    await drawDialog();
+
+    const rows =
+        dialog.$.voiceSelectionDialog.querySelectorAll<CrRadioButtonElement>(
+            'cr-radio-button');
+
+    assertEquals(4, rows.length);
+    for (const row of rows) {
+      // Unmapped voices show English engine strings even for non-English
+      // locales, so lang is set only on mapped identity spans, not the host.
+      assertFalse(row.hasAttribute('lang'));
+
+      for (const tagged of row.querySelectorAll('[lang]')) {
+        assertTrue(
+            tagged.classList.contains('voice-name') ||
+                tagged.classList.contains('voice-description'),
+            `unexpected lang on ${tagged.className}`);
+      }
+    }
+  });
+
+  test('saving a mapped row still commits the engine voice', async () => {
+    await setAvailableVoicesAndEnabledLangs([mappedVoice, googleStandardVoice]);
+    dialog.selectedVoice = googleStandardVoice;
+    await drawDialog();
+
+    const voiceEventPromise =
+        eventToPromise<CustomEvent<{selectedVoice: SpeechSynthesisVoice}>>(
+            ToolbarEvent.VOICE, dialog);
+
+    getDropdownItemForVoice(mappedVoice).click();
+    await microtasksFinished();
+
+    dialog.$.voiceSelectionDialog
+        .querySelector<CrButtonElement>('#saveButton')!.click();
+    const event = await voiceEventPromise;
+
+    // The display name is the nature name; the identity is not.
+    assertEquals(mappedVoice.name, event.detail.selectedVoice.name);
+  });
+
+  test('Tab on Save button wraps focus to active preview button', async () => {
+    // Override setup()'s row 0 default to verify wrap targets the active row.
+    dialog.selectedVoice = googleStandardVoice;
+    await drawDialog();
+    const saveButton = getSaveButton();
+    const activePreview = getPreviewButtonForVoice(googleStandardVoice);
+
+    saveButton.focus();
+    assertEquals(saveButton, dialog.shadowRoot.activeElement);
+
+    const tabEvent = dispatchKeyDown(saveButton, 'Tab');
+
+    assertTrue(tabEvent.defaultPrevented);
+    assertEquals(activePreview, dialog.shadowRoot.activeElement);
+  });
+
+  test(
+      'Shift+Tab on active preview button wraps focus to Save button',
+      async () => {
+        // Select row 1 (not setup()'s row 0) so row 0 precedes activePreview.
+        dialog.selectedVoice = googleStandardVoice;
+        await drawDialog();
+        const saveButton = getSaveButton();
+        const activePreview = getPreviewButtonForVoice(googleStandardVoice);
+
+        assertEquals(
+            dialog.$.voiceSelectionDialog, dialog.shadowRoot.activeElement);
+        const initialShiftTab = dispatchKeyDown(
+            dialog.$.voiceSelectionDialog, 'Tab', {shiftKey: true});
+
+        assertTrue(initialShiftTab.defaultPrevented);
+        assertEquals(saveButton, dialog.shadowRoot.activeElement);
+
+        activePreview.focus();
+        assertEquals(activePreview, dialog.shadowRoot.activeElement);
+
+        const previewShiftTab =
+            dispatchKeyDown(activePreview, 'Tab', {shiftKey: true});
+
+        assertTrue(previewShiftTab.defaultPrevented);
+        assertEquals(saveButton, dialog.shadowRoot.activeElement);
+      });
+
+  test(
+      'Tab and Shift+Tab from mouse-focused unselected preview button' +
+          ' preserve 4-stop loop',
+      async () => {
+        // Select middle row 1 so unselected rows exist both above and below.
+        dialog.selectedVoice = googleStandardVoice;
+        await drawDialog();
+        const saveButton = getSaveButton();
+        const firstPreview = getPreviewButtonForVoice(googleNaturalVoice);
+        const standardRadio = getDropdownItemForVoice(googleStandardVoice);
+        const italianPreview = getPreviewButtonForVoice(googleItalianVoice);
+
+        // Unselected preview buttons both above (firstPreview) and below
+        // (italianPreview) the active row wrap Shift+Tab to Save and move Tab
+        // to the active radio without mutating candidate selection.
+        for (const preview of [firstPreview, italianPreview]) {
+          preview.focus();
+          const shiftTab = dispatchKeyDown(preview, 'Tab', {shiftKey: true});
+          assertTrue(shiftTab.defaultPrevented);
+          assertEquals(saveButton, dialog.shadowRoot.activeElement);
+          assertEquals(googleStandardVoice.name, getRadioGroup().selected);
+
+          preview.focus();
+          const tab = dispatchKeyDown(preview, 'Tab');
+          assertTrue(tab.defaultPrevented);
+          assertEquals(standardRadio, dialog.shadowRoot.activeElement);
+          assertEquals(
+              standardRadio.$.button, standardRadio.shadowRoot.activeElement);
+          assertEquals(googleStandardVoice.name, getRadioGroup().selected);
+        }
+
+        // Missing candidate (!hasSelectedVoice_): Tab from mouse-focused
+        // non-first preview falls back to first visible radio (Radio[0]).
+        dialog.selectedVoice =
+            createSpeechSynthesisVoice({name: 'Missing Voice', lang: 'fr-FR'});
+        await microtasksFinished();
+        const naturalRadio = getDropdownItemForVoice(googleNaturalVoice);
+        italianPreview.focus();
+        const tabMissingCandidate = dispatchKeyDown(italianPreview, 'Tab');
+        assertTrue(tabMissingCandidate.defaultPrevented);
+        assertEquals(naturalRadio, dialog.shadowRoot.activeElement);
+        assertEquals(
+            naturalRadio.$.button, naturalRadio.shadowRoot.activeElement);
+      });
+
+  test(
+      'horizontal arrow keys switch focus between preview button and radio' +
+          ' button in the same row while vertical arrows on preview do not' +
+          ' change selection',
+      async () => {
+        await drawDialog();
+
+        const naturalPreview = getPreviewButtonForVoice(googleNaturalVoice);
+        const naturalRadio = getDropdownItemForVoice(googleNaturalVoice);
+        const standardPreview = getPreviewButtonForVoice(googleStandardVoice);
+        const standardRadio = getDropdownItemForVoice(googleStandardVoice);
+        const italianPreview = getPreviewButtonForVoice(googleItalianVoice);
+        const italianRadio = getDropdownItemForVoice(googleItalianVoice);
+
+        // Vertical arrow on preview button does not hijack focus or selection
+        naturalPreview.focus();
+        dispatchKeyDown(naturalPreview, 'ArrowDown');
+        assertEquals(naturalPreview, dialog.shadowRoot.activeElement);
+        assertEquals(googleNaturalVoice.name, getRadioGroup().selected);
+
+        // Active row (k = m): ArrowRight -> radio, ArrowLeft -> preview
+        dispatchKeyDown(naturalPreview, 'ArrowRight');
+        assertEquals(naturalRadio, dialog.shadowRoot.activeElement);
+        assertEquals(googleNaturalVoice.name, getRadioGroup().selected);
+
+        dispatchKeyDown(naturalRadio, 'ArrowLeft');
+        assertEquals(naturalPreview, dialog.shadowRoot.activeElement);
+
+        // Unselected row (k != m): backward arrow stays on preview; forward
+        // arrow moves to row's radio, stages it, and syncs roving tabindex.
+        standardPreview.focus();
+        dispatchKeyDown(standardPreview, 'ArrowLeft');
+        assertEquals(standardPreview, dialog.shadowRoot.activeElement);
+        assertEquals(googleNaturalVoice.name, getRadioGroup().selected);
+
+        dispatchKeyDown(standardPreview, 'ArrowRight');
+        await microtasksFinished();
+        assertEquals(standardRadio, dialog.shadowRoot.activeElement);
+        assertEquals(googleStandardVoice.name, getRadioGroup().selected);
+        assertEquals('0', standardPreview.getAttribute('tabindex'));
+        assertEquals('-1', naturalPreview.getAttribute('tabindex'));
+
+        // Forward arrow on radio button stays on radio button without cycling
+        dispatchKeyDown(standardRadio, 'ArrowRight');
+        await microtasksFinished();
+        assertEquals(standardRadio, dialog.shadowRoot.activeElement);
+        assertEquals(googleStandardVoice.name, getRadioGroup().selected);
+
+        // Backward arrow on radio button moves back to row's preview button
+        dispatchKeyDown(standardRadio, 'ArrowLeft');
+        assertEquals(standardPreview, dialog.shadowRoot.activeElement);
+        assertEquals(googleStandardVoice.name, getRadioGroup().selected);
+
+        // RTL: ArrowLeft is forward (preview -> radio), ArrowRight is backward
+        document.documentElement.dir = 'rtl';
+        try {
+          italianPreview.focus();
+          dispatchKeyDown(italianPreview, 'ArrowLeft');
+          await microtasksFinished();
+          assertEquals(italianRadio, dialog.shadowRoot.activeElement);
+          assertEquals(googleItalianVoice.name, getRadioGroup().selected);
+          assertEquals('0', italianPreview.getAttribute('tabindex'));
+
+          dispatchKeyDown(italianRadio, 'ArrowRight');
+          assertEquals(italianPreview, dialog.shadowRoot.activeElement);
+        } finally {
+          document.documentElement.dir = '';
+        }
+      });
+
+  test(
+      'preview buttons have unique voice-specific aria-labels and keep Play' +
+          ' tooltip',
+      async () => {
+        await setAvailableVoicesAndEnabledLangs(
+            [mappedVoice, googleStandardVoice]);
+        await drawDialog();
+
+        const mappedNatureName = getVoiceNatureNaming(mappedVoice.name)!;
+        const mappedPreviewBtn = getPreviewButtonForVoice(mappedVoice);
+        const standardPreviewBtn =
+            getPreviewButtonForVoice(googleStandardVoice);
+
+        assertEquals(
+            `Preview ${mappedNatureName.natureName}`,
+            mappedPreviewBtn.getAttribute('aria-label'));
+        assertEquals('Preview voice', mappedPreviewBtn.getAttribute('title'));
+
+        assertEquals(
+            `Preview ${googleStandardVoice.name}`,
+            standardPreviewBtn.getAttribute('aria-label'));
+        assertEquals('Preview voice', standardPreviewBtn.getAttribute('title'));
+      });
+
+  test(
+      'preview button aria-label and title switch to stopLabel while playing',
+      async () => {
+        await drawDialog();
+
+        const previewBtn = getPreviewButtonForVoice(googleStandardVoice);
+        assertEquals(
+            `Preview ${googleStandardVoice.name}`,
+            previewBtn.getAttribute('aria-label'));
+
+        const mockTimer = new MockTimer();
+        mockTimer.install();
+        previewBtn.click();
+        mockTimer.tick(spinnerDebounceTimeout);
+        mockTimer.uninstall();
+        await microtasksFinished();
+
+        const updatedPreviewBtn = getPreviewButtonForVoice(googleStandardVoice);
+        assertEquals(
+            'Stop preview', updatedPreviewBtn.getAttribute('aria-label'));
+        assertEquals('Stop preview', updatedPreviewBtn.getAttribute('title'));
       });
 });

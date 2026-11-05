@@ -75,6 +75,7 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_chromeos_version_info.h"
 #include "base/test/scoped_feature_list.h"
 #include "chromeos/ui/base/window_state_type.h"
@@ -97,6 +98,7 @@
 #include "ui/base/accelerators/test_accelerator_target.h"
 #include "ui/base/ime/ash/fake_ime_keyboard.h"
 #include "ui/base/ime/ash/mock_input_method_manager.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 #include "ui/base/ime/init/input_method_factory.h"
 #include "ui/base/ime/mock_input_method.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -441,7 +443,10 @@ class AcceleratorControllerTest : public AshTestBase {
                        ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN);
     if (IsConfirmationDialogOpen()) {
       AcceptConfirmationDialog();
-      base::RunLoop().RunUntilIdle();
+      // The dialog's widget closes in a posted task. Wait for it, so that the
+      // next call doesn't find this dialog still open and accept it again.
+      ASSERT_TRUE(
+          base::test::RunUntil([&] { return !IsConfirmationDialogOpen(); }));
     }
   }
 
@@ -1095,7 +1100,10 @@ TEST_F(AcceleratorControllerTest, RotateScreen) {
   EXPECT_TRUE(IsConfirmationDialogOpen());
   // Cancel on the dialog should have no effect.
   CancelConfirmationDialog();
-  base::RunLoop().RunUntilIdle();
+  // The dialog's widget closes in a posted task. Wait for it, so that the
+  // shortcut below opens a new dialog.
+  ASSERT_TRUE(
+      base::test::RunUntil([&] { return !IsConfirmationDialogOpen(); }));
   EXPECT_FALSE(accessibility_controller
                    ->HasDisplayRotationAcceleratorDialogBeenAccepted());
 
@@ -1109,10 +1117,9 @@ TEST_F(AcceleratorControllerTest, RotateScreen) {
                      ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN);
   EXPECT_TRUE(IsConfirmationDialogOpen());
   AcceptConfirmationDialog();
-  base::RunLoop().RunUntilIdle();
-
-  // Dialog should be closed.
-  EXPECT_FALSE(IsConfirmationDialogOpen());
+  // The dialog's widget closes in a posted task.
+  ASSERT_TRUE(
+      base::test::RunUntil([&] { return !IsConfirmationDialogOpen(); }));
   EXPECT_TRUE(accessibility_controller
                   ->HasDisplayRotationAcceleratorDialogBeenAccepted());
   display::Display::Rotation rotation_after_accept =
@@ -1558,28 +1565,23 @@ TEST_F(AcceleratorControllerTest, GlobalAcceleratorsToggleAppList) {
   // The press event should not toggle the AppList, the release should instead.
   EXPECT_FALSE(
       ProcessInController(ui::Accelerator(ui::VKEY_LWIN, ui::EF_NONE)));
-  base::RunLoop().RunUntilIdle();
   EXPECT_EQ(ui::VKEY_LWIN, GetCurrentAccelerator().key_code());
   GetAppListTestHelper()->CheckVisibility(false);
 
   EXPECT_TRUE(ProcessInController(
       CreateReleaseAccelerator(ui::VKEY_LWIN, ui::EF_NONE)));
-  base::RunLoop().RunUntilIdle();
   GetAppListTestHelper()->CheckVisibility(true);
 
   EXPECT_TRUE(ProcessInController(
       CreateReleaseAccelerator(ui::VKEY_LWIN, ui::EF_NONE)));
-  base::RunLoop().RunUntilIdle();
   GetAppListTestHelper()->CheckVisibility(false);
 
   // The press of VKEY_BROWSER_SEARCH should toggle the AppList
   EXPECT_TRUE(ProcessInController(
       ui::Accelerator(ui::VKEY_BROWSER_SEARCH, ui::EF_NONE)));
-  base::RunLoop().RunUntilIdle();
   GetAppListTestHelper()->CheckVisibility(true);
   EXPECT_FALSE(ProcessInController(
       CreateReleaseAccelerator(ui::VKEY_BROWSER_SEARCH, ui::EF_NONE)));
-  base::RunLoop().RunUntilIdle();
   GetAppListTestHelper()->CheckVisibility(true);
 
   // Verifies VKEY_RWIN triggers AppList, too. This happens if modifier
@@ -1587,13 +1589,11 @@ TEST_F(AcceleratorControllerTest, GlobalAcceleratorsToggleAppList) {
   GetAppListTestHelper()->DismissAndRunLoop();
   EXPECT_FALSE(
       ProcessInController(ui::Accelerator(ui::VKEY_RWIN, ui::EF_NONE)));
-  base::RunLoop().RunUntilIdle();
   EXPECT_EQ(ui::VKEY_RWIN, GetCurrentAccelerator().key_code());
   GetAppListTestHelper()->CheckVisibility(false);
 
   EXPECT_TRUE(ProcessInController(
       CreateReleaseAccelerator(ui::VKEY_RWIN, ui::EF_NONE)));
-  base::RunLoop().RunUntilIdle();
   GetAppListTestHelper()->CheckVisibility(true);
   EXPECT_EQ(ui::VKEY_RWIN, GetPreviousAccelerator().key_code());
 }
@@ -1617,7 +1617,7 @@ TEST_F(AcceleratorControllerTest, GlobalAcceleratorsToggleQuickSettings) {
 
 TEST_F(AcceleratorControllerTest, ToggleMultitaskMenu) {
   // Simulate fake user login to ensure pref registration is done correctly.
-  SimulateUserLogin({"fakeuser"});
+  SimulateUserLogin(AccountId::FromUserEmail("fakeuser"));
   // Enabling `kShortcutCustomization` will start letting
   // `AcceleratorControllerImpl` to observe changes to the accelerator list.
   // This includes accelerators added by enabling flags.
@@ -2608,11 +2608,10 @@ class SystemShortcutBehaviorTest : public AcceleratorControllerTest {
   void SetUp() override {
     AcceleratorControllerTest::SetUp();
 
-    auto user_prefs = std::make_unique<TestingPrefServiceSimple>();
-    user_prefs_ = user_prefs.get();
-    RegisterUserProfilePrefs(user_prefs->registry(), /*country=*/"",
-                             /*for_test=*/true);
-    SimulateUserLogin({kUserEmail}, std::nullopt, std::move(user_prefs));
+    AccountId account_id =
+        SimulateUserLogin({.account_id = AccountId::FromUserEmail(kUserEmail)});
+    user_prefs_ = static_cast<TestingPrefServiceSimple*>(
+        GetSessionControllerClient()->GetUserPrefService(account_id));
   }
 
   void TearDown() override {
@@ -2834,12 +2833,6 @@ class AcceleratorControllerImprovedKeyboardShortcutsTest
   };
 
   void SetUp() override {
-    // Setup our own |InputMethodManager| to test that the accelerator
-    // controller respects ArePositionalShortcutsUsedByCurrentInputMethod value
-    // from the |InputMethodManager|.
-    input_method_manager_ = new TestInputMethodManager();
-    input_method::InputMethodManager::Initialize(input_method_manager_);
-
     AcceleratorControllerTest::SetUp();
     EXPECT_TRUE(
         input_method_manager_->observers_.HasObserver(controller_.get()));
@@ -2849,14 +2842,13 @@ class AcceleratorControllerImprovedKeyboardShortcutsTest
     AcceleratorControllerTest::TearDown();
     EXPECT_FALSE(
         input_method_manager_->observers_.HasObserver(controller_.get()));
-
-    input_method_manager_ = nullptr;
-    input_method::InputMethodManager::Shutdown();
   }
 
  protected:
-  raw_ptr<TestInputMethodManager> input_method_manager_ =
-      nullptr;  // Not owned.
+  // Used to test that `AcceleratorController` respects the
+  // `ArePositionalShortcutsUsedByCurrentInputMethod` value.
+  input_method::ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager_;
 };
 
 TEST_F(AcceleratorControllerImprovedKeyboardShortcutsTest, InputMethodChanged) {
@@ -3108,7 +3100,7 @@ class MagnifiersAcceleratorsTester : public AcceleratorControllerTest {
   void SetUp() override {
     AcceleratorControllerTest::SetUp();
     // Create user session and simulate its login.
-    SimulateUserLogin({kUserEmail});
+    SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
   }
 };
 

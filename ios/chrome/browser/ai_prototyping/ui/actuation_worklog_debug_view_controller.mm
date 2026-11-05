@@ -4,6 +4,13 @@
 
 #import "ios/chrome/browser/ai_prototyping/ui/actuation_worklog_debug_view_controller.h"
 
+#import <cmath>
+#import <optional>
+#import <utility>
+
+#import "base/apple/foundation_util.h"
+#import "base/ios/block_types.h"
+#import "base/notreached.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_constants.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view_data.h"
@@ -16,21 +23,138 @@ namespace {
 using intelligence::actor::kSpacingLarge;
 using intelligence::actor::kSpacingMedium;
 using intelligence::actor::kSpacingSmall;
-using intelligence::actor::kSpacingTiny;
 
 const CGFloat kIconSize = 16.0;
 
+// Reuse identifiers for the sandbox collection view cells.
+NSString* const kWorklogCellIdentifier = @"WorklogCell";
+NSString* const kResponseCellIdentifier = @"ResponseCell";
+
+// Number of cells in the sandbox collection view (inline worklog + summary).
+constexpr NSInteger kSandboxCellCount = 2;
+
+// Mock sibling block rendered below the worklog cell to verify self-sizing.
+NSString* const kMockResponseSummary =
+    @"Mock response block below the inline worklog. Collapsing, expanding, "
+    @"adding steps, or toggling the chip above shifts this cell.";
+
 }  // namespace
 
-@interface ActuationWorklogDebugViewController () <UITextFieldDelegate> {
-  UIScrollView* _scrollView;
+// Replicates the Gemini SDK's `FloatyCustomContentCell.ContainerView`, which
+// notifies its owning cell whenever its bounds change during layout.
+@interface ActuationWorklogSandboxContainerView : UIView
+@property(nonatomic, copy) ProceduralBlock onLayout;
+@end
+
+@implementation ActuationWorklogSandboxContainerView
+
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  if (self.onLayout) {
+    self.onLayout();
+  }
+}
+
+@end
+
+// Replicates the Gemini SDK's `GMNFloatyCustomContentCell` layout and height
+// invalidation contract so the sandbox exercises the exact host cell behavior.
+@interface ActuationWorklogSandboxHostCell : UICollectionViewCell
+@property(nonatomic, copy) ProceduralBlock hostedViewHeightDidChange;
+// Hosts `view` inside the container, replacing any previously hosted view.
+- (void)hostView:(UIView*)view;
+@end
+
+@implementation ActuationWorklogSandboxHostCell {
+  ActuationWorklogSandboxContainerView* _container;
+  __weak UIView* _lastHostedView;
+  std::optional<CGFloat> _lastReportedHeight;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+  self = [super initWithFrame:frame];
+  if (self) {
+    _container = [[ActuationWorklogSandboxContainerView alloc] init];
+    _container.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentView addSubview:_container];
+    AddSameConstraintsToSides(
+        _container, self.contentView,
+        LayoutSides::kTop | LayoutSides::kLeading | LayoutSides::kTrailing);
+    NSLayoutConstraint* bottomConstraint = [_container.bottomAnchor
+        constraintEqualToAnchor:self.contentView.bottomAnchor];
+    bottomConstraint.priority = UILayoutPriorityDefaultLow - 1;
+    bottomConstraint.active = YES;
+
+    __weak __typeof(self) weakSelf = self;
+    _container.onLayout = ^{
+      [weakSelf handleContainerLayout];
+    };
+  }
+  return self;
+}
+
+- (void)prepareForReuse {
+  [super prepareForReuse];
+  self.hostedViewHeightDidChange = nil;
+  [self hostView:nil];
+}
+
+- (void)hostView:(UIView*)view {
+  if (_lastHostedView == view && view.superview == _container) {
+    return;
+  }
+  // Only remove the previous view if another cell hasn't taken it.
+  if (_lastHostedView.superview == _container) {
+    [_lastHostedView removeFromSuperview];
+  }
+  _lastHostedView = view;
+  _lastReportedHeight = std::nullopt;
+  if (view) {
+    view.translatesAutoresizingMaskIntoConstraints = NO;
+    [_container addSubview:view];
+    AddSameConstraints(view, _container);
+  }
+  [self.contentView setNeedsLayout];
+}
+
+#pragma mark - Private
+
+// Reports height changes when `_container` diverges from `contentView` bounds.
+- (void)handleContainerLayout {
+  UIView* hostedView = _lastHostedView;
+  if (!hostedView || hostedView.superview != _container) {
+    return;
+  }
+  CGFloat containerHeight = _container.bounds.size.height;
+  CGFloat cellHeight = self.contentView.bounds.size.height;
+  if (std::abs(containerHeight - cellHeight) < 1.0) {
+    return;
+  }
+  if (_lastReportedHeight == containerHeight) {
+    return;
+  }
+  _lastReportedHeight = containerHeight;
+  if (self.hostedViewHeightDidChange) {
+    self.hostedViewHeightDidChange();
+  }
+}
+
+@end
+
+@interface ActuationWorklogDebugViewController () <UICollectionViewDataSource,
+                                                   UITextFieldDelegate> {
+  UICollectionView* _collectionView;
   ActuationWorklogView* _worklogView;
   NSMutableArray<ActuationWorklogItem*>* _worklogItems;
+  BOOL _worklogResizeScheduled;
+  // Set while a scroll to the bottom waits for the scheduled worklog cell
+  // resize; holds whether to animate it.
+  std::optional<BOOL> _pendingScrollToBottomAnimated;
 
   UITextField* _titleField;
   UITextField* _subtitleField;
   UISegmentedControl* _stepStyleSelector;
-  UISwitch* _activeSwitch;
+  UISwitch* _actuatingSwitch;
 
   UITextField* _chipField;
   UISegmentedControl* _chipIconSelector;
@@ -45,13 +169,28 @@ const CGFloat kIconSize = 16.0;
   self.view.backgroundColor = [UIColor colorNamed:kPrimaryBackgroundColor];
   self.view.keyboardLayoutGuide.usesBottomSafeArea = NO;
 
-  _scrollView = [[UIScrollView alloc] init];
-  _scrollView.translatesAutoresizingMaskIntoConstraints = NO;
-  [self.view addSubview:_scrollView];
+  UICollectionLayoutListConfiguration* listConfig =
+      [[UICollectionLayoutListConfiguration alloc]
+          initWithAppearance:UICollectionLayoutListAppearancePlain];
+  listConfig.showsSeparators = NO;
+  listConfig.backgroundColor = [UIColor clearColor];
+  UICollectionViewCompositionalLayout* layout =
+      [UICollectionViewCompositionalLayout
+          layoutWithListConfiguration:listConfig];
+
+  _collectionView = [[UICollectionView alloc] initWithFrame:CGRectZero
+                                       collectionViewLayout:layout];
+  _collectionView.backgroundColor = [UIColor clearColor];
+  _collectionView.dataSource = self;
+  _collectionView.translatesAutoresizingMaskIntoConstraints = NO;
+  [_collectionView registerClass:[ActuationWorklogSandboxHostCell class]
+      forCellWithReuseIdentifier:kWorklogCellIdentifier];
+  [_collectionView registerClass:[UICollectionViewCell class]
+      forCellWithReuseIdentifier:kResponseCellIdentifier];
+  [self.view addSubview:_collectionView];
 
   _worklogView = [[ActuationWorklogView alloc] initWithFrame:CGRectZero];
   _worklogView.translatesAutoresizingMaskIntoConstraints = NO;
-  [_scrollView addSubview:_worklogView];
 
   UIView* panelContainer = [[UIView alloc] init];
   panelContainer.translatesAutoresizingMaskIntoConstraints = NO;
@@ -87,15 +226,19 @@ const CGFloat kIconSize = 16.0;
   _titleField = [self textField:@"Step Title"];
   [stepTitleRow addArrangedSubview:_titleField];
 
-  _activeSwitch = [[UISwitch alloc] init];
-  _activeSwitch.on = YES;
-  [stepTitleRow addArrangedSubview:[self labelWithText:@"Active"]];
-  [stepTitleRow addArrangedSubview:_activeSwitch];
+  _actuatingSwitch = [[UISwitch alloc] init];
+  _actuatingSwitch.on = YES;
+  [_actuatingSwitch addTarget:self
+                       action:@selector(actuatingSwitchChanged:)
+             forControlEvents:UIControlEventValueChanged];
+  [stepTitleRow addArrangedSubview:[self labelWithText:@"Actuating"]];
+  [stepTitleRow addArrangedSubview:_actuatingSwitch];
 
   _subtitleField = [self textField:@"Step Subtitle (optional)"];
   [stepInputsStack addArrangedSubview:_subtitleField];
 
-  _stepStyleSelector = [self segmentedControl:@[ @"Dot", @"Label", @"Card" ]];
+  _stepStyleSelector =
+      [self segmentedControl:@[ @"Dot", @"Label", @"Card", @"Text" ]];
   [stepInputsStack addArrangedSubview:_stepStyleSelector];
 
   UIStackView* stepButtonsStack =
@@ -167,11 +310,10 @@ const CGFloat kIconSize = 16.0;
   [inputStack addArrangedSubview:resetButton];
 
   [NSLayoutConstraint activateConstraints:@[
-    [_scrollView.topAnchor
+    [_collectionView.topAnchor
         constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-    [_scrollView.bottomAnchor constraintEqualToAnchor:panelContainer.topAnchor],
-    [_worklogView.widthAnchor
-        constraintEqualToAnchor:_scrollView.frameLayoutGuide.widthAnchor],
+    [_collectionView.bottomAnchor
+        constraintEqualToAnchor:panelContainer.topAnchor],
     [panelContainer.bottomAnchor
         constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor],
     [inputStack.bottomAnchor
@@ -182,9 +324,9 @@ const CGFloat kIconSize = 16.0;
   ]];
 
   AddSameConstraintsToSidesWithInsets(
-      _scrollView, self.view, LayoutSides::kLeading | LayoutSides::kTrailing,
+      _collectionView, self.view,
+      LayoutSides::kLeading | LayoutSides::kTrailing,
       NSDirectionalEdgeInsetsMake(0, kSpacingMedium, 0, kSpacingMedium));
-  AddSameConstraints(_worklogView, _scrollView.contentLayoutGuide);
   AddSameConstraintsToSides(panelContainer, self.view,
                             LayoutSides::kLeading | LayoutSides::kTrailing);
   AddSameConstraintsToSides(
@@ -205,12 +347,11 @@ const CGFloat kIconSize = 16.0;
            subtitle:@"Use Gemini carefully and take control if needed. You are "
                     @"responsible for Gemini's actions during tasks."
                icon:SymbolTemplateWithPointSize(SymbolPlayFill, kIconSize)
-              style:ActuationWorklogItemStyle::kLabeled
-             active:NO];
-  ActuationWorklogItem* step2 = [self item:@"Opening a new Tab." active:NO];
-  ActuationWorklogItem* step3 = [self item:@"Searching theaters." active:NO];
-  ActuationWorklogItem* step4 = [self item:@"Searching showtimes." active:NO];
-  ActuationWorklogItem* step5 = [self item:@"Finding MTL venues." active:YES];
+              style:ActuationWorklogItemStyle::kLabeled];
+  ActuationWorklogItem* step2 = [self item:@"Opening a new Tab."];
+  ActuationWorklogItem* step3 = [self item:@"Searching theaters."];
+  ActuationWorklogItem* step4 = [self item:@"Searching showtimes."];
+  ActuationWorklogItem* step5 = [self item:@"Finding MTL venues."];
 
   _worklogItems = [@[ step1, step2, step3, step4, step5 ] mutableCopy];
   [_worklogView setItems:_worklogItems];
@@ -219,8 +360,6 @@ const CGFloat kIconSize = 16.0;
 #pragma mark - Actions
 
 - (void)add:(id)sender {
-  [self updateLastItemActive:NO];
-
   ActuationWorklogItem* newItem = [self stepFromInputs:@"New Step"];
   [_worklogItems addObject:newItem];
   [_worklogView addItem:newItem];
@@ -234,7 +373,6 @@ const CGFloat kIconSize = 16.0;
   }
   [_worklogItems removeLastObject];
   [_worklogView setLastItem:nil];
-  [self updateLastItemActive:YES];
   [self scrollToBottomAnimated:YES];
 }
 
@@ -268,38 +406,76 @@ const CGFloat kIconSize = 16.0;
   [self populateMockWorklog];
   [self resetStepConfigSection];
   [self resetChipSection];
+  _actuatingSwitch.on = YES;
+  _worklogView.actuating = YES;
   [self scrollToBottomAnimated:YES];
+}
+
+- (void)actuatingSwitchChanged:(UISwitch*)sender {
+  _worklogView.actuating = sender.on;
 }
 
 #pragma mark - Helpers
 
-- (void)updateLastItemActive:(BOOL)active {
-  ActuationWorklogItem* lastItem = _worklogItems.lastObject;
-  if (lastItem) {
-    NSUInteger lastIndex = _worklogItems.count - 1;
-    ActuationWorklogItem* updatedItem = [lastItem withActive:active];
-    _worklogItems[lastIndex] = updatedItem;
-    [_worklogView setLastItem:updatedItem];
+// Coalesces height-change callbacks from `ActuationWorklogSandboxHostCell` onto
+// the next main-queue turn, matching the Gemini SDK's
+// `remeasureCustomContentItemWithBlockID:`.
+- (void)scheduleWorklogCellResize {
+  if (_worklogResizeScheduled) {
+    return;
+  }
+  _worklogResizeScheduled = YES;
+  __weak __typeof(self) weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [weakSelf performWorklogCellResize];
+  });
+}
+
+// Reconfigures the hosted worklog cell inside an animated batch update so
+// sibling response blocks animate their Y-position changes, then performs any
+// scroll that was waiting for the new cell height.
+- (void)performWorklogCellResize {
+  _worklogResizeScheduled = NO;
+  [_collectionView
+      performBatchUpdates:^{
+        [_collectionView
+            reconfigureItemsAtIndexPaths:@[ [NSIndexPath indexPathForItem:0
+                                                                inSection:0] ]];
+      }
+               completion:nil];
+  if (std::optional<BOOL> animated =
+          std::exchange(_pendingScrollToBottomAnimated, std::nullopt)) {
+    [self applyScrollToBottomAnimated:*animated];
   }
 }
 
+// Scrolls to the bottom of the collection view. Laying out first lets a worklog
+// height change schedule its cell resize; the scroll then waits for that resize
+// so it targets the new content size.
 - (void)scrollToBottomAnimated:(BOOL)animated {
   [self.view layoutIfNeeded];
-  CGPoint bottomOffset = CGPointMake(
-      0, _scrollView.contentSize.height - _scrollView.bounds.size.height +
-             _scrollView.adjustedContentInset.bottom);
+  if (_worklogResizeScheduled) {
+    _pendingScrollToBottomAnimated = animated;
+    return;
+  }
+  [self applyScrollToBottomAnimated:animated];
+}
+
+// Scrolls to the bottom of the current content size.
+- (void)applyScrollToBottomAnimated:(BOOL)animated {
+  [self.view layoutIfNeeded];
+  [_collectionView layoutIfNeeded];
+  CGPoint bottomOffset =
+      CGPointMake(0, _collectionView.contentSize.height -
+                         _collectionView.bounds.size.height +
+                         _collectionView.adjustedContentInset.bottom);
   if (bottomOffset.y > 0) {
-    [_scrollView setContentOffset:bottomOffset animated:animated];
+    [_collectionView setContentOffset:bottomOffset animated:animated];
   }
 }
 
-- (ActuationWorklogItem*)item:(NSString*)title active:(BOOL)active {
-  return [[ActuationWorklogItem alloc]
-      initWithTitle:title
-           subtitle:nil
-               icon:nil
-              style:ActuationWorklogItemStyle::kSimple
-             active:active];
+- (ActuationWorklogItem*)item:(NSString*)title {
+  return [ActuationWorklogItem simpleItemWithTitle:title];
 }
 
 - (ActuationWorklogItem*)stepFromInputs:(NSString*)defaultTitle {
@@ -310,12 +486,14 @@ const CGFloat kIconSize = 16.0;
   NSString* subtitle = _subtitleField.text;
   UIImage* icon = SymbolTemplateWithPointSize(SymbolPlayFill, kIconSize);
   ActuationWorklogItemStyle style = [self currentItemStyle];
+  if (style == ActuationWorklogItemStyle::kFreeform) {
+    return [ActuationWorklogItem freeformItemWithText:title];
+  }
 
   return [[ActuationWorklogItem alloc] initWithTitle:title
                                             subtitle:subtitle
                                                 icon:icon
-                                               style:style
-                                              active:_activeSwitch.on];
+                                               style:style];
 }
 
 - (UILabel*)headerLabel:(NSString*)text {
@@ -387,7 +565,6 @@ const CGFloat kIconSize = 16.0;
   _titleField.text = @"";
   _subtitleField.text = @"";
   _stepStyleSelector.selectedSegmentIndex = 0;
-  _activeSwitch.on = YES;
   [_titleField resignFirstResponder];
   [_subtitleField resignFirstResponder];
 }
@@ -400,21 +577,75 @@ const CGFloat kIconSize = 16.0;
 }
 
 - (UIImage*)currentChipIcon {
-  if (_chipIconSelector.selectedSegmentIndex == 1) {
-    return SymbolTemplateWithPointSize(SymbolMagnifyingglass, kIconSize);
-  } else if (_chipIconSelector.selectedSegmentIndex == 2) {
-    return SymbolTemplateWithPointSize(SymbolGlobe, kIconSize);
+  switch (_chipIconSelector.selectedSegmentIndex) {
+    case 0:
+      return nil;
+    case 1:
+      return SymbolTemplateWithPointSize(SymbolMagnifyingglass, kIconSize);
+    case 2:
+      return SymbolTemplateWithPointSize(SymbolGlobe, kIconSize);
+    default:
+      NOTREACHED();
   }
-  return nil;
 }
 
 - (ActuationWorklogItemStyle)currentItemStyle {
-  if (_stepStyleSelector.selectedSegmentIndex == 0) {
-    return ActuationWorklogItemStyle::kSimple;
-  } else if (_stepStyleSelector.selectedSegmentIndex == 1) {
-    return ActuationWorklogItemStyle::kLabeled;
+  switch (_stepStyleSelector.selectedSegmentIndex) {
+    case 0:
+      return ActuationWorklogItemStyle::kSimple;
+    case 1:
+      return ActuationWorklogItemStyle::kLabeled;
+    case 2:
+      return ActuationWorklogItemStyle::kCard;
+    case 3:
+      return ActuationWorklogItemStyle::kFreeform;
+    default:
+      NOTREACHED();
   }
-  return ActuationWorklogItemStyle::kCard;
+}
+
+#pragma mark - UICollectionViewDataSource
+
+- (NSInteger)collectionView:(UICollectionView*)collectionView
+     numberOfItemsInSection:(NSInteger)section {
+  return kSandboxCellCount;
+}
+
+- (UICollectionViewCell*)collectionView:(UICollectionView*)collectionView
+                 cellForItemAtIndexPath:(NSIndexPath*)indexPath {
+  if (indexPath.item == 0) {
+    ActuationWorklogSandboxHostCell* cell =
+        base::apple::ObjCCastStrict<ActuationWorklogSandboxHostCell>(
+            [collectionView
+                dequeueReusableCellWithReuseIdentifier:kWorklogCellIdentifier
+                                          forIndexPath:indexPath]);
+    cell.backgroundConfiguration =
+        [UIBackgroundConfiguration clearConfiguration];
+    __weak __typeof(self) weakSelf = self;
+    cell.hostedViewHeightDidChange = ^{
+      [weakSelf scheduleWorklogCellResize];
+    };
+    [cell hostView:_worklogView];
+    return cell;
+  }
+
+  UICollectionViewCell* cell = [collectionView
+      dequeueReusableCellWithReuseIdentifier:kResponseCellIdentifier
+                                forIndexPath:indexPath];
+  UIListContentConfiguration* content =
+      [UIListContentConfiguration cellConfiguration];
+  content.text = kMockResponseSummary;
+  content.textProperties.font =
+      [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+  content.textProperties.color = [UIColor colorNamed:kTextSecondaryColor];
+  cell.contentConfiguration = content;
+
+  UIBackgroundConfiguration* background =
+      [UIBackgroundConfiguration clearConfiguration];
+  background.backgroundColor = [UIColor colorNamed:kSecondaryBackgroundColor];
+  background.cornerRadius = kSpacingMedium;
+  cell.backgroundConfiguration = background;
+  return cell;
 }
 
 #pragma mark - UITextFieldDelegate

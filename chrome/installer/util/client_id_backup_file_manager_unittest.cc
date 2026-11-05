@@ -176,7 +176,23 @@ TEST_F(ClientIdBackupFileManagerTest, ClientIdFromCacheOrDisk_FileTooLarge) {
 
   EXPECT_THAT(
       ClientIdBackupFileManager::GetInstance().ClientIdFromCacheOrDisk(),
-      Optional(file_content));
+      Optional(file_content.substr(0, 64)));
+  EXPECT_TRUE(base::PathExists(file_path));
+
+  histogram_tester.ExpectUniqueSample("UMA.ClientIdBackupValidation", 3, 1);
+}
+
+TEST_F(ClientIdBackupFileManagerTest,
+       ClientIdFromCacheOrDisk_UuidWithTrailingDataOverCap) {
+  base::HistogramTester histogram_tester;
+  const base::FilePath file_path =
+      ClientIdBackupFileManager::GetBackupFilePathForTesting();
+  std::string file_content = std::string(kValidUuid1) + std::string(4096, 'x');
+  ASSERT_TRUE(base::WriteFile(file_path, file_content));
+
+  EXPECT_THAT(
+      ClientIdBackupFileManager::GetInstance().ClientIdFromCacheOrDisk(),
+      Optional(file_content.substr(0, 64)));
   EXPECT_TRUE(base::PathExists(file_path));
 
   histogram_tester.ExpectUniqueSample("UMA.ClientIdBackupValidation", 3, 1);
@@ -254,4 +270,22 @@ TEST_F(ClientIdBackupFileManagerTest, CacheUpdateOnSet) {
   ClientIdBackupFileManager::GetInstance().SetClientIdForTesting(kValidUuid2);
   EXPECT_THAT(ClientIdBackupFileManager::GetInstance().ClientIdFromCache(),
               Optional(std::string(kValidUuid2)));
+}
+
+TEST_F(ClientIdBackupFileManagerTest, MissingUserDataDir) {
+  base::ScopedPathOverride empty_user_data_dir(
+      chrome::DIR_USER_DATA, base::FilePath(), /*should_skip_check=*/true);
+
+  EXPECT_TRUE(ClientIdBackupFileManager::GetBackupFilePathForTesting().empty());
+  EXPECT_THAT(
+      ClientIdBackupFileManager::GetInstance().ClientIdFromCacheOrDisk(),
+      Eq(std::nullopt));
+  EXPECT_FALSE(ClientIdBackupFileManager::GetInstance().SetClientIdForTesting(
+      kValidUuid1));
+  EXPECT_THAT(ClientIdBackupFileManager::GetInstance().ClientIdFromCache(),
+              Optional(std::string(kValidUuid1)));
+  EXPECT_FALSE(
+      ClientIdBackupFileManager::GetInstance().ClearClientIdForTesting());
+  EXPECT_THAT(ClientIdBackupFileManager::GetInstance().ClientIdFromCache(),
+              Eq(std::nullopt));
 }

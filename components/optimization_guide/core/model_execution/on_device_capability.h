@@ -5,7 +5,10 @@
 #ifndef COMPONENTS_OPTIMIZATION_GUIDE_CORE_MODEL_EXECUTION_ON_DEVICE_CAPABILITY_H_
 #define COMPONENTS_OPTIMIZATION_GUIDE_CORE_MODEL_EXECUTION_ON_DEVICE_CAPABILITY_H_
 
+#include <cstdint>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
@@ -13,6 +16,7 @@
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/proto/model_quality_metadata.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
@@ -51,6 +55,14 @@ enum class OnDeviceError : int {
   kFailedToRunSafety = 13,
   // Insert new values before this line.
   kMaxValue = kFailedToRunSafety
+};
+
+// Whether a response is complete or not.
+enum class ResponseCompleteness {
+  // This is a partial response, more output may follow.
+  kPartial,
+  // The response is complete and no more output will be produced.
+  kComplete,
 };
 
 // A response type used for OnDeviceSession.
@@ -105,6 +117,23 @@ using OptimizationGuideModelExecutionResultStreamingCallback =
 // The callback for receiving the token size of the given input.
 using OptimizationGuideModelSizeInTokenCallback =
     base::OnceCallback<void(std::optional<uint32_t>)>;
+
+// The token sizes of a request's input, counted separately for the input
+// context and the execution input.
+struct InputSizeInTokens {
+  // Tokens in the input context, as formatted by `SetInput()`/`AddContext()`
+  // (rendered from `input_context_substitutions`).
+  uint32_t input_context = 0;
+  // Tokens in the execution input, as formatted by `ExecuteModel()` (rendered
+  // from `execute_substitutions`).
+  uint32_t execution = 0;
+
+  uint32_t total() const { return input_context + execution; }
+};
+
+// The callback for receiving the token sizes of a request's input.
+using OptimizationGuideModelInputSizeInTokensCallback =
+    base::OnceCallback<void(std::optional<InputSizeInTokens>)>;
 
 // The callback for adding a download progress observer to
 // OnDeviceModelDownloadProgressManager.
@@ -253,7 +282,8 @@ class OnDeviceSession {
   // for use in later prompt templates based on the request. Calling this will
   // cancel any ongoing executions and invoke their 'callback' methods with
   // the 'kCancelled' error. `callback` will be called with either the number
-  // of tokens processed from `request` or an error.
+  // of tokens processed from `request` or an error, and may safely destroy
+  // `this` session.
   using SetInputCallback =
       base::OnceCallback<void(base::expected<size_t, OnDeviceError>)>;
   virtual void SetInput(MultimodalMessage request,
@@ -303,18 +333,22 @@ class OnDeviceSession {
       MultimodalMessageReadView request_metadata,
       OptimizationGuideModelSizeInTokenCallback callback) = 0;
 
-  // Gets the size in tokens used by request_metadata as it would be formatted
-  // by a call to `AddContext()`. The result will be passed back through the
-  // callback.
-  virtual void GetContextSizeInTokens(
+  // Gets the sizes in tokens used by request_metadata as it would be formatted
+  // as input context (by `SetInput()`/`AddContext()`) and as execution input
+  // (by `ExecuteModel()`), counted concurrently. The result, or nullopt on
+  // failure, will be passed back through the callback.
+  virtual void GetInputSizeInTokens(
       MultimodalMessageReadView request_metadata,
-      OptimizationGuideModelSizeInTokenCallback callback) = 0;
+      OptimizationGuideModelInputSizeInTokensCallback callback) = 0;
 
   // Return the sampling params for the current session.
   virtual const SamplingParams GetSamplingParams() const = 0;
 
   // Return the capabilities for the current session.
   virtual on_device_model::Capabilities GetCapabilities() const = 0;
+
+  // Returns the base model backing this session, or `kUnknown`.
+  virtual OnDeviceBaseModel GetBaseModel() const;
 
   // Returns the feature_metadata from the
   // OnDeviceModelExecutionFeatureConfig.
@@ -328,6 +362,87 @@ class OnDeviceSession {
 
   // Sets the priority for this session and any future clones.
   virtual void SetPriority(on_device_model::mojom::Priority priority) = 0;
+};
+
+// Interface for managing, observing, and controlling on-device models.
+class OnDeviceModelControl {
+ public:
+  // Persistent base model status in prefs; do not renumber.
+  enum class ModelInstallState {
+    // Never completed installation (including initial registration/download).
+    kNeverInstalled = 0,
+    // Model weights are ready on disk (`OnAssetReady()`).
+    kInstalled = 1,
+    // Previously installed and later uninstalled.
+    kUninstalled = 2,
+    // Previously installed and retired as obsolete by a manifest update.
+    kUninstalledObsolete = 3,
+    kMaxValue = kUninstalledObsolete,
+  };
+
+  // Observes base model lifecycle events without replaying history.
+  class Observer : public base::CheckedObserver {
+   public:
+    // Called when a newly downloaded `base_model` transitions to `kInstalled`.
+    virtual void OnModelInstalled(OnDeviceBaseModel base_model);
+    // Called when an installed `base_model` finishes uninstalling.
+    virtual void OnModelUninstalled(OnDeviceBaseModel base_model);
+  };
+
+  // Installation status of a base model supported by the current manifest.
+  // LINT.IfChange(OnDeviceModelStatus)
+  enum class ModelStatus {
+    // Model is downloaded on disk and ready to serve requests.
+    kReady = 0,
+    // Model is supported on this device and available to be downloaded.
+    kDownloadable = 1,
+    // Model is being downloaded for the first time.
+    kDownloading = 2,
+    // A new version of an already-installed model is being downloaded.
+    kUpdating = 3,
+  };
+  // LINT.ThenChange(//chrome/browser/resources/settings/ai_page/on_device_ai_browser_proxy.ts:OnDeviceModelStatus)
+
+  // Information about a base model in the manifest.
+  struct ModelInfo {
+    bool operator==(const ModelInfo& other) const = default;
+
+    // Identifier of the base model.
+    OnDeviceBaseModel base_model = OnDeviceBaseModel::kUnknown;
+    // Current installation status of the model.
+    ModelStatus status = ModelStatus::kReady;
+    // Disk size of the installed base model directory in bytes (computed via
+    // base::ComputeDirectorySize()), or 0 if `status` is not `kReady`.
+    uint64_t size_bytes = 0;
+  };
+  using ModelsCallback = base::OnceCallback<void(std::vector<ModelInfo>)>;
+
+  virtual ~OnDeviceModelControl() = default;
+
+  // Uninstalls all downloaded on-device models and clears their usage history.
+  virtual void UninstallModels() = 0;
+
+  // Installs a specific base model capability identified by `base_model` along
+  // with any dependent adaptations and safety models. No-op unless the model
+  // is currently in `kDownloadable` status.
+  virtual void InstallCapability(OnDeviceBaseModel base_model) = 0;
+
+  // Uninstalls a specific base model capability identified by `base_model`
+  // along with any dependent adaptations and unshared safety models. No-op
+  // unless the model is currently in `kReady` status.
+  virtual void UninstallCapability(OnDeviceBaseModel base_model) = 0;
+
+  // Waits for broker initialization (raising manifest load priority), then
+  // replies on the calling sequence with supported base models, their status,
+  // and their sizes (for `kReady` models) already computed.
+  virtual void GetModels(ModelsCallback callback) = 0;
+
+  // Returns the ledger-tracked installation status for `base_model`.
+  virtual ModelInstallState GetModelInstallState(
+      OnDeviceBaseModel base_model) const = 0;
+
+  virtual void AddObserver(Observer* observer) = 0;
+  virtual void RemoveObserver(Observer* observer) = 0;
 };
 
 // Provides capability information about the on-device models to be served by
@@ -348,6 +463,10 @@ class OnDeviceCapability {
   virtual void BindModelBrokerDebug(
       base::PassKey<on_device_internals::PageHandler> key,
       mojo::PendingReceiver<mojom::ModelBrokerDebug> receiver) {}
+
+  // Returns the interface for managing installed on-device models, or nullptr
+  // if not supported.
+  virtual OnDeviceModelControl* GetModelControl();
 
   // Starts a session which allows streaming input and output from the model.
   // May return nullptr if model execution is not supported. This session should

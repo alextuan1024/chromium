@@ -55,20 +55,20 @@ public class ChildProcessLauncherIntegrationTest {
                 Context context,
                 ComponentName serviceName,
                 ComponentName fallbackServiceName,
-                boolean bindToCaller,
                 boolean bindAsExternalService,
                 Bundle serviceBundle,
                 String instanceName,
                 boolean independentFallback,
+                boolean allowBindFailure,
                 boolean isSandboxedForHistograms) {
             TestChildProcessConnection connection =
                     new TestChildProcessConnection(
                             context,
                             serviceName,
-                            bindToCaller,
                             bindAsExternalService,
                             serviceBundle,
                             independentFallback,
+                            allowBindFailure,
                             isSandboxedForHistograms);
             mConnections.add(connection);
             return connection;
@@ -85,20 +85,20 @@ public class ChildProcessLauncherIntegrationTest {
         public TestChildProcessConnection(
                 Context context,
                 ComponentName serviceName,
-                boolean bindToCaller,
                 boolean bindAsExternalService,
                 Bundle childProcessCommonParameters,
                 boolean independentFallback,
+                boolean allowBindFailure,
                 boolean isSandboxedForHistograms) {
             super(
                     context,
                     serviceName,
                     /* fallbackServiceName= */ null,
-                    bindToCaller,
                     bindAsExternalService,
                     childProcessCommonParameters,
                     /* instanceName= */ null,
                     independentFallback,
+                    allowBindFailure,
                     isSandboxedForHistograms);
         }
 
@@ -144,6 +144,7 @@ public class ChildProcessLauncherIntegrationTest {
     @CommandLineFlags.Add({
         "disable-features=SpareRendererForSitePerProcess,AndroidWarmUpSpareRendererWithTimeout"
     })
+    @DisabledTest(message = "https://crbug.com/563051722")
     public void testCrossDomainNavigationDoNotLoseImportance() throws Throwable {
         testCrossDomainNavigationDoNotLoseImportance(null);
     }
@@ -167,7 +168,7 @@ public class ChildProcessLauncherIntegrationTest {
         final TestChildProcessConnectionFactory factory = new TestChildProcessConnectionFactory();
         final List<TestChildProcessConnection> connections = factory.getConnections();
         ChildProcessLauncherHelperImpl.setSandboxServicesSettingsForTesting(
-                factory, 10 /* arbitrary number, only really need 2 */, serviceName);
+                factory, 2 /* only really need 2 */, serviceName);
 
         // TODO(boliu,nasko): Ensure navigation is actually successful
         // before proceeding.
@@ -270,18 +271,18 @@ public class ChildProcessLauncherIntegrationTest {
         public CrashOnLaunchChildProcessConnection(
                 Context context,
                 ComponentName serviceName,
-                boolean bindToCaller,
                 boolean bindAsExternalService,
                 Bundle childProcessCommonParameters,
                 boolean independentFallback,
+                boolean allowBindFailure,
                 boolean isSandboxedForHistograms) {
             super(
                     context,
                     serviceName,
-                    bindToCaller,
                     bindAsExternalService,
                     childProcessCommonParameters,
                     independentFallback,
+                    allowBindFailure,
                     isSandboxedForHistograms);
         }
 
@@ -337,21 +338,21 @@ public class ChildProcessLauncherIntegrationTest {
                 Context context,
                 ComponentName serviceName,
                 ComponentName fallbackServiceName,
-                boolean bindToCaller,
                 boolean bindAsExternalService,
                 Bundle serviceBundle,
                 String instanceName,
                 boolean independentFallback,
+                boolean allowBindFailure,
                 boolean isSandboxedForHistograms) {
             if (mCrashConnection == null) {
                 mCrashConnection =
                         new CrashOnLaunchChildProcessConnection(
                                 context,
                                 serviceName,
-                                bindToCaller,
                                 bindAsExternalService,
                                 serviceBundle,
                                 independentFallback,
+                                allowBindFailure,
                                 isSandboxedForHistograms);
                 return mCrashConnection;
             }
@@ -359,11 +360,11 @@ public class ChildProcessLauncherIntegrationTest {
                     context,
                     serviceName,
                     fallbackServiceName,
-                    bindToCaller,
                     bindAsExternalService,
                     serviceBundle,
                     instanceName,
                     independentFallback,
+                    allowBindFailure,
                     isSandboxedForHistograms);
         }
 

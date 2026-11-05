@@ -109,16 +109,32 @@ mojom::OnNodeMovedEventPtr ToEvent(
 
 mojom::OnDataChangedEventPtr ToEvent(
     const tabs_api::TabStripModelAdapter& adapter,
-    tabs::TabInterface* tab,
+    tabs::TabHandle handle,
     TabChangeType change_type) {
   auto tab_change = mojom::TabChange::New();
-  if (tab) {
-    tabs::TabHandle handle = tab->GetHandle();
+  if (tabs::TabInterface* tab = handle.Get()) {
     const ui::ColorProvider& color_provider = adapter.GetColorProvider();
 
     tab_change->data = tabs_api::converters::BuildMojoTab(
         tab, color_provider, adapter.GetTabStates(handle));
     tab_change->mask = tabs_api::converters::BuildTabFieldMask(change_type);
+  }
+
+  return mojom::OnDataChangedEvent::NewTab(std::move(tab_change));
+}
+
+mojom::OnDataChangedEventPtr ToBlockedStateChangedEvent(
+    const tabs_api::TabStripModelAdapter& adapter,
+    tabs::TabHandle handle) {
+  auto tab_change = mojom::TabChange::New();
+  if (tabs::TabInterface* tab = handle.Get()) {
+    const ui::ColorProvider& color_provider = adapter.GetColorProvider();
+
+    tab_change->data = tabs_api::converters::BuildMojoTab(
+        tab, color_provider, adapter.GetTabStates(handle));
+    auto mask = tabs_api::mojom::TabFieldMask::New();
+    mask->is_blocked = true;
+    tab_change->mask = std::move(mask);
   }
 
   return mojom::OnDataChangedEvent::NewTab(std::move(tab_change));

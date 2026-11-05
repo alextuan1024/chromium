@@ -4,8 +4,12 @@
 
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_task_form_filling_handler.h"
 
+#import <utility>
+
 #import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
 #import "base/memory/ptr_util.h"
+#import "base/task/bind_post_task.h"
 #import "base/task/sequenced_task_runner.h"
 #import "components/actor/core/aggregated_journal.h"
 #import "components/autofill/core/browser/actor/actor_form_filling_service_impl.h"
@@ -14,6 +18,7 @@
 #import "components/password_manager/core/browser/actor_login/actor_login_service_impl.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_task_intervention_delegate.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_form_suggestion.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/actor_form_suggestion_favicon_loader.h"
 
 namespace actor {
 
@@ -21,11 +26,13 @@ namespace actor {
 std::unique_ptr<ActorTaskFormFillingHandler>
 ActorTaskFormFillingHandler::Create(base::PassKey<ActorEngine> pass_key,
                                     AggregatedJournal& journal,
-                                    ActorTaskId task_id) {
+                                    ActorTaskId task_id,
+                                    FaviconLoader* favicon_loader) {
   return base::WrapUnique(new ActorTaskFormFillingHandler(
       task_id, std::make_unique<actor_login::ActorLoginServiceImpl>(),
       std::make_unique<autofill::ActorFormFillingServiceImpl>(
-          journal.GetSafeRef(), task_id)));
+          journal.GetSafeRef(), task_id),
+      favicon_loader));
 }
 
 // static
@@ -33,20 +40,27 @@ std::unique_ptr<ActorTaskFormFillingHandler>
 ActorTaskFormFillingHandler::CreateForTesting(
     ActorTaskId task_id,
     std::unique_ptr<actor_login::ActorLoginService> login_service,
-    std::unique_ptr<autofill::ActorFormFillingService> form_filling_service) {
+    std::unique_ptr<autofill::ActorFormFillingService> form_filling_service,
+    FaviconLoader* favicon_loader) {
   return base::WrapUnique(new ActorTaskFormFillingHandler(
-      task_id, std::move(login_service), std::move(form_filling_service)));
+      task_id, std::move(login_service), std::move(form_filling_service),
+      favicon_loader));
 }
 
 ActorTaskFormFillingHandler::ActorTaskFormFillingHandler(
     ActorTaskId task_id,
     std::unique_ptr<actor_login::ActorLoginService> login_service,
-    std::unique_ptr<autofill::ActorFormFillingService> form_filling_service)
+    std::unique_ptr<autofill::ActorFormFillingService> form_filling_service,
+    FaviconLoader* favicon_loader)
     : task_id_(task_id),
       login_service_(std::move(login_service)),
-      form_filling_service_(std::move(form_filling_service)) {}
+      form_filling_service_(std::move(form_filling_service)),
+      favicon_loader_([[ActorFormSuggestionFaviconLoader alloc]
+          initWithFaviconLoader:favicon_loader]) {}
 
-ActorTaskFormFillingHandler::~ActorTaskFormFillingHandler() = default;
+ActorTaskFormFillingHandler::~ActorTaskFormFillingHandler() {
+  [favicon_loader_ disconnect];
+}
 
 void ActorTaskFormFillingHandler::PromptToSelectCredential(
     const std::vector<actor_login::Credential>& credentials,
@@ -55,8 +69,8 @@ void ActorTaskFormFillingHandler::PromptToSelectCredential(
   CHECK(!autofill_suggestion_selected_callback_);
   CHECK(!credentials.empty());
 
-  // TODO(crbug.com/496195979): This will be converted into a CHECK when the UI
-  // stabilizes.
+  // TODO(crbug.com/501043031): Drop the `respondsToSelector:` check once the
+  // selector is no longer `@optional`.
   if (!intervention_delegate_ ||
       ![intervention_delegate_
           respondsToSelector:
@@ -72,21 +86,25 @@ void ActorTaskFormFillingHandler::PromptToSelectCredential(
 
   NSMutableArray<ActorFormSuggestion*>* suggestions = [NSMutableArray array];
   for (const auto& credential : credentials) {
-    [suggestions
-        addObject:[[ActorFormSuggestion alloc] initWithCredential:credential]];
+    ActorFormSuggestion* suggestion =
+        [[ActorFormSuggestion alloc] initWithCredential:credential];
+    suggestion.faviconDataSource = favicon_loader_;
+    [suggestions addObject:suggestion];
   }
 
   credential_selected_callback_ = std::move(callback);
-  auto weak_this = weak_ptr_factory_.GetWeakPtr();
+  has_pending_prompt_ = true;
+  // Posted so that a delegate completing synchronously never re-enters the
+  // handler or the tool.
+  auto on_selected = base::CallbackToBlock(base::BindPostTaskToCurrentDefault(
+      base::BindOnce(&ActorTaskFormFillingHandler::OnCredentialSelectedByUser,
+                     weak_ptr_factory_.GetWeakPtr())));
 
   [intervention_delegate_ actorTask:task_id_
               selectFromSuggestions:suggestions
                   completionHandler:^(ActorFormSuggestion* selected_credential,
                                       BOOL always_allow) {
-                    if (weak_this) {
-                      weak_this->OnCredentialSelectedByUser(selected_credential,
-                                                            always_allow);
-                    }
+                    on_selected(selected_credential, always_allow);
                   }];
 }
 
@@ -135,8 +153,8 @@ void ActorTaskFormFillingHandler::PromptToSelectAutofillSuggestion(
     return;
   }
 
-  // TODO(crbug.com/496195979): This will be converted into a CHECK when the UI
-  // stabilizes.
+  // TODO(crbug.com/501043031): Drop the `respondsToSelector:` check once the
+  // selector is no longer `@optional`.
   if (!intervention_delegate_ ||
       ![intervention_delegate_
           respondsToSelector:
@@ -153,27 +171,41 @@ void ActorTaskFormFillingHandler::PromptToSelectAutofillSuggestion(
   }
 
   NSArray<ActorFormSuggestion*>* suggestions = autofill_suggestions_[index];
-  auto weak_this = weak_ptr_factory_.GetWeakPtr();
+  has_pending_prompt_ = true;
+  // Posted so that a delegate completing synchronously never re-enters the
+  // handler or the tool.
+  auto on_selected =
+      base::CallbackToBlock(base::BindPostTaskToCurrentDefault(base::BindOnce(
+          &ActorTaskFormFillingHandler::OnAutofillSuggestionSelectedByUser,
+          weak_ptr_factory_.GetWeakPtr(), index)));
 
   [intervention_delegate_ actorTask:task_id_
               selectFromSuggestions:suggestions
                   completionHandler:^(ActorFormSuggestion* selected_suggestion,
                                       BOOL always_allow) {
-                    if (weak_this) {
-                      weak_this->OnAutofillSuggestionSelectedByUser(
-                          selected_suggestion, index);
-                    }
+                    on_selected(selected_suggestion);
                   }];
+}
+
+void ActorTaskFormFillingHandler::CancelPendingPrompt() {
+  credential_selected_callback_.Reset();
+  autofill_suggestion_selected_callback_.Reset();
+  autofill_suggestions_ = nil;
+  if (!std::exchange(has_pending_prompt_, false)) {
+    return;
+  }
+  // Ignore late answers to the dropped prompt.
+  weak_ptr_factory_.InvalidateWeakPtrs();
+  [intervention_delegate_ actorTaskDidCancelSuggestionSelection:task_id_];
 }
 
 void ActorTaskFormFillingHandler::OnCredentialSelectedByUser(
     ActorFormSuggestion* selected_suggestion,
     bool always_allow) {
+  has_pending_prompt_ = false;
   CHECK(credential_selected_callback_);
   if (!selected_suggestion.formSuggestion) {
-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(std::move(credential_selected_callback_), std::nullopt));
+    std::move(credential_selected_callback_).Run(std::nullopt);
     return;
   }
   CHECK(selected_suggestion.type == autofill::SuggestionType::kPasswordEntry);
@@ -181,23 +213,20 @@ void ActorTaskFormFillingHandler::OnCredentialSelectedByUser(
 }
 
 void ActorTaskFormFillingHandler::OnAutofillSuggestionSelectedByUser(
-    ActorFormSuggestion* selected_suggestion,
-    size_t form_index) {
+    size_t form_index,
+    ActorFormSuggestion* selected_suggestion) {
+  has_pending_prompt_ = false;
   CHECK(autofill_suggestion_selected_callback_);
   if (!selected_suggestion.formSuggestion) {
-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(autofill_suggestion_selected_callback_,
-                                  form_index, std::nullopt));
+    autofill_suggestion_selected_callback_.Run(form_index, std::nullopt);
     return;
   }
   CHECK(selected_suggestion.type == autofill::SuggestionType::kAddressEntry ||
         selected_suggestion.type == autofill::SuggestionType::kCreditCardEntry);
   CHECK(selected_suggestion.autofillSuggestion.has_value());
 
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE,
-      base::BindOnce(autofill_suggestion_selected_callback_, form_index,
-                     *selected_suggestion.autofillSuggestion));
+  autofill_suggestion_selected_callback_.Run(
+      form_index, *selected_suggestion.autofillSuggestion);
 }
 
 std::optional<CredentialWithPermission>
@@ -224,9 +253,7 @@ void ActorTaskFormFillingHandler::SetUserSelectedCredential(
 
   // TODO(crbug.com/472291829): Implement affiliation service related logic
   // to fetch affiliated domains so we can reuse the permission.
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(credential_selected_callback_),
-                                credential_with_permission));
+  std::move(credential_selected_callback_).Run(credential_with_permission);
 }
 
 }  // namespace actor

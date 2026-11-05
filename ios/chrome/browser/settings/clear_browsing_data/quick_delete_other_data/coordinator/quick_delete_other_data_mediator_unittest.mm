@@ -48,7 +48,7 @@ class QuickDeleteOtherDataMediatorTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
 
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
@@ -471,7 +471,7 @@ TEST_F(QuickDeleteOtherDataMediatorTest,
   OCMExpect([consumer_ setShouldShowMyActivityCell:NO]);
   OCMExpect([consumer_ setShouldShowSearchHistoryCell:NO]);
 
-  auth_service_->SignOut(signin_metrics::ProfileSignout::kTest, nil);
+  auth_service_->SignOut(signin_metrics::ProfileSignout::kTest);
 
   EXPECT_OCMOCK_VERIFY(consumer_);
 }

@@ -139,6 +139,23 @@ void PassStartupTracingConfigSharedMemoryHandle(
   TransferSharedMemorySwitchDescriptor(shared_memory_switch, files_to_register);
 }
 
+void PassRendererProcessSecurityStateSharedMemoryHandle(
+    const base::ReadOnlySharedMemoryRegion& read_only_memory_region,
+    base::CommandLine& command_line,
+    base::LaunchOptions* launch_options,
+    [[maybe_unused]] FileMappedForLaunch* files_to_register) {
+  if (!read_only_memory_region.IsValid()) {
+    return;
+  }
+
+  base::shared_memory::SharedMemorySwitch shared_memory_switch(
+      switches::kRendererProcessSecurityStateHandle, 'rpss',
+      kRendererProcessSecurityStateDescriptor);
+  shared_memory_switch.AddToLaunchParameters(read_only_memory_region,
+                                             &command_line, launch_options);
+  TransferSharedMemorySwitchDescriptor(shared_memory_switch, files_to_register);
+}
+
 void PassStartupTracingOutputSharedMemoryHandle(
     const base::UnsafeSharedMemoryRegion* trace_output_memory_region,
     base::CommandLine& command_line,
@@ -219,7 +236,8 @@ ChildProcessLauncherHelper::ChildProcessLauncherHelper(
     scoped_refptr<base::RefCountedData<base::ReadOnlySharedMemoryRegion>>
         tracing_config_memory_region,
     scoped_refptr<base::RefCountedData<base::UnsafeSharedMemoryRegion>>
-        tracing_output_memory_region)
+        tracing_output_memory_region,
+    base::ReadOnlySharedMemoryRegion renderer_process_security_state_region)
     : child_process_id_(child_process_id),
       client_task_runner_(base::SequencedTaskRunner::GetCurrentDefault()),
       command_line_(std::move(command_line)),
@@ -237,6 +255,8 @@ ChildProcessLauncherHelper::ChildProcessLauncherHelper(
       histogram_memory_region_(std::move(histogram_memory_region)),
       tracing_config_memory_region_(std::move(tracing_config_memory_region)),
       tracing_output_memory_region_(std::move(tracing_output_memory_region)),
+      renderer_process_security_state_region_(
+          std::move(renderer_process_security_state_region)),
       init_start_time_(base::TimeTicks::Now()) {
   if (!mojo::core::GetConfiguration().is_broker_process &&
       !command_line_->HasSwitch(switches::kDisableMojoBroker)) {
@@ -341,6 +361,9 @@ void ChildProcessLauncherHelper::LaunchOnLauncherThread() {
       tracing_output_memory_region_ ? &tracing_output_memory_region_->data
                                     : nullptr,
       *command_line(), options_ptr, files_to_register.get());
+  PassRendererProcessSecurityStateSharedMemoryHandle(
+      renderer_process_security_state_region_, *command_line(), options_ptr,
+      files_to_register.get());
   PassPseudonymizationSaltSharedMemoryHandle(*command_line(), options_ptr,
                                              files_to_register.get());
 
@@ -381,6 +404,7 @@ void ChildProcessLauncherHelper::PostLaunchOnLauncherThread(
     DWORD last_error,
 #endif
     int launch_result) {
+  base::TimeTicks launch_complete_time = base::TimeTicks::Now();
 #if BUILDFLAG(IS_WIN)
   const bool launch_elevated = delegate_->ShouldLaunchElevated();
 #else
@@ -388,6 +412,14 @@ void ChildProcessLauncherHelper::PostLaunchOnLauncherThread(
 #endif
   if (mojo_channel_)
     mojo_channel_->RemoteProcessLaunchAttempted();
+
+  // The launch (synchronous or asynchronous) has finished, so the child holds
+  // its own handle to the security state. Elevated Windows processes instead
+  // duplicate the handle from this process after launch, so keep it for them.
+  if (!launch_elevated) {
+    renderer_process_security_state_region_ =
+        base::ReadOnlySharedMemoryRegion();
+  }
 
   if (process.process.IsValid()) {
     RecordHistogramsOnLauncherThread(base::TimeTicks::Now() -
@@ -429,12 +461,20 @@ void ChildProcessLauncherHelper::PostLaunchOnLauncherThread(
           std::move(invitation), process.process.Handle(),
           mojo_channel_->TakeLocalEndpoint(), process_error_callback_);
     }
+
+    // Keep a launcher thread copy of the handle so that later operations on
+    // the child don't have to duplicate it on the client thread. See
+    // `child_process_`. If this fails the copy is left invalid and those
+    // operations are skipped, which at worst means the child keeps its launch
+    // priority; nothing here depends on the copy for correctness.
+    child_process_ = process.process.Duplicate();
   }
 
   client_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&ChildProcessLauncherHelper::PostLaunchOnClientThread,
-                     this, std::move(process),
+                     this, std::move(process), begin_launch_time_,
+                     launch_complete_time,
 #if BUILDFLAG(IS_WIN)
                      last_error,
 #endif
@@ -443,6 +483,8 @@ void ChildProcessLauncherHelper::PostLaunchOnLauncherThread(
 
 void ChildProcessLauncherHelper::PostLaunchOnClientThread(
     ChildProcessLauncherHelper::Process process,
+    base::TimeTicks launch_begin_time,
+    base::TimeTicks launch_complete_time,
 #if BUILDFLAG(IS_WIN)
     DWORD last_error,
 #endif
@@ -452,7 +494,8 @@ void ChildProcessLauncherHelper::PostLaunchOnClientThread(
     UMA_HISTOGRAM_TIMES("MPArch.ChildProcessLauncher.Notify",
                         base::TimeTicks::Now() - init_start_time_);
 
-    child_process_launcher_->Notify(std::move(process),
+    child_process_launcher_->Notify(std::move(process), launch_begin_time,
+                                    launch_complete_time,
 #if BUILDFLAG(IS_WIN)
                                     last_error,
 #endif
@@ -465,6 +508,22 @@ void ChildProcessLauncherHelper::PostLaunchOnClientThread(
 
 std::string ChildProcessLauncherHelper::GetProcessType() {
   return command_line()->GetSwitchValueASCII(switches::kProcessType);
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+void ChildProcessLauncherHelper::SetProcessPriorityOnLauncherThread(
+    base::Process::Priority priority) {
+  CHECK(CurrentlyOnProcessLauncherTaskRunner(), base::NotFatalUntil::M160);
+  if (!child_process_.IsValid()) {
+    return;
+  }
+  ApplyProcessPriorityOnLauncherThread(child_process_, priority);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+void ChildProcessLauncherHelper::CloseProcessOnLauncherThread() {
+  CHECK(CurrentlyOnProcessLauncherTaskRunner(), base::NotFatalUntil::M160);
+  child_process_.Close();
 }
 
 // static

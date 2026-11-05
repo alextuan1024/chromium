@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.customtabs.content;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -16,39 +17,60 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
+import android.view.View;
+
+import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.autofill.AndroidAutofillAvailabilityStatus;
 import org.chromium.chrome.browser.autofill.AutofillClientProviderUtils;
 import org.chromium.chrome.browser.cookies.CookiesFetcher;
 import org.chromium.chrome.browser.cookies.CookiesFetcherJni;
+import org.chromium.chrome.browser.customtabs.CustomTabResumeManager;
+import org.chromium.chrome.browser.customtabs.HiddenTabHolder.HiddenTab;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImpl;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabReparentingParams;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefsJni;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.net.NetId;
+
+import java.util.List;
 
 /** Tests for {@link CustomTabActivityTabController}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -65,6 +87,8 @@ public class CustomTabActivityTabControllerUnitTest {
     @Mock private UserPrefsJni mMockUserPrefsJni;
 
     @Mock private CookiesFetcher.Natives mCookiesFetcherJni;
+
+    @Captor private ArgumentCaptor<TabObserver> mTabObserverCaptor;
 
     private static final long TEST_TARGET_NETWORK = 1000;
 
@@ -115,6 +139,123 @@ public class CustomTabActivityTabControllerUnitTest {
     }
 
     @Test
+    public void requestsFocusOnContentChanged_IfRestoredTabViewIsNull() {
+        // A restored tab whose NativePage is still frozen (e.g. a PDF CCT recreated on rotation)
+        // has no View yet. Initialization must not NPE in requestFocus() (crbug.com/568278676).
+        Tab savedTab = env.prepareTab();
+        when(savedTab.getView()).thenReturn(null);
+        env.saveTab(savedTab);
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+        assertEquals(savedTab, env.tabProvider.getTab());
+        verify(savedTab, atLeastOnce()).addObserver(mTabObserverCaptor.capture());
+        List<TabObserver> observers = mTabObserverCaptor.getAllValues();
+
+        // While the View is still null, onContentChanged() is a no-op that keeps observing.
+        View view = new View(ApplicationProvider.getApplicationContext());
+        view.setFocusableInTouchMode(true);
+        notifyContentChanged(observers, savedTab);
+        verify(savedTab, never()).removeObserver(any());
+        assertFalse(view.isFocused());
+
+        // Once the tab gains a View, focus should be requested on it and the observer removed.
+        when(savedTab.getView()).thenReturn(view);
+        notifyContentChanged(observers, savedTab);
+        assertTrue(view.isFocused());
+        verify(savedTab).removeObserver(any());
+    }
+
+    @Test
+    public void setsBackgroundColorOnContentChanged_IfRestoredTabViewIsNull() {
+        // prepareTabBackground() only runs for trusted CCTs with a non-transparent initial color.
+        when(env.intentDataProvider.isTrustedIntent()).thenReturn(true);
+        when(env.colorProvider.getInitialBackgroundColor()).thenReturn(Color.RED);
+
+        // A restored tab whose NativePage is still frozen has no View yet; initialization must not
+        // NPE when applying the initial background (crbug.com/568278676).
+        Tab savedTab = env.prepareTab();
+        when(savedTab.getView()).thenReturn(null);
+        env.saveTab(savedTab);
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+        assertEquals(savedTab, env.tabProvider.getTab());
+        verify(savedTab, atLeastOnce()).addObserver(mTabObserverCaptor.capture());
+        List<TabObserver> observers = mTabObserverCaptor.getAllValues();
+
+        // While the View is still null, onContentChanged() is a no-op that keeps observing.
+        View view = new View(ApplicationProvider.getApplicationContext());
+        notifyContentChanged(observers, savedTab);
+        verify(savedTab, never()).removeObserver(any());
+        assertNull(view.getBackground());
+
+        // Once the tab gains a View, the initial background color should be applied to it. Both
+        // deferred actions (requestFocus() and prepareTabBackground()) unregister their observer.
+        when(savedTab.getView()).thenReturn(view);
+        notifyContentChanged(observers, savedTab);
+        assertTrue(view.getBackground() instanceof ColorDrawable);
+        assertEquals(Color.RED, ((ColorDrawable) view.getBackground()).getColor());
+        verify(savedTab, times(2)).removeObserver(any());
+    }
+
+    @Test
+    public void setsInitialBackgroundColor_WhenIntentDataProviderIsTrusted() {
+        assertNull(env.mIntent.getExtras());
+        when(env.intentDataProvider.isTrustedIntent()).thenReturn(true);
+        when(env.colorProvider.getInitialBackgroundColor()).thenReturn(Color.BLUE);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        Tab tab = env.tabProvider.getTab();
+        assertNotNull(tab);
+        View tabView = tab.getView();
+        assertNotNull(tabView);
+        assertTrue(tabView.getBackground() instanceof ColorDrawable);
+        assertEquals(Color.BLUE, ((ColorDrawable) tabView.getBackground()).getColor());
+    }
+
+    @Test
+    public void doesNotSetInitialBackgroundColor_WhenIntentDataProviderIsUntrusted() {
+        when(env.connection.isFirstParty(any())).thenReturn(true);
+        when(env.intentDataProvider.isTrustedIntent()).thenReturn(false);
+        when(env.colorProvider.getInitialBackgroundColor()).thenReturn(Color.BLUE);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        Tab tab = env.tabProvider.getTab();
+        assertNotNull(tab);
+        View tabView = tab.getView();
+        assertNotNull(tabView);
+        assertNull(tabView.getBackground());
+    }
+
+    @Test
+    public void unregistersDeferredViewObserver_IfRestoredTabDestroyedBeforeContentChanged() {
+        Tab savedTab = env.prepareTab();
+        when(savedTab.getView()).thenReturn(null);
+        env.saveTab(savedTab);
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+        verify(savedTab, atLeastOnce()).addObserver(mTabObserverCaptor.capture());
+        List<TabObserver> observers = mTabObserverCaptor.getAllValues();
+        verify(savedTab, never()).removeObserver(any());
+
+        // Destroying the tab before a View exists must unregister the deferred observer rather
+        // than wait for an onContentChanged() that will never come.
+        for (TabObserver observer : observers) {
+            observer.onDestroyed(savedTab);
+        }
+        verify(savedTab).removeObserver(any());
+    }
+
+    private static void notifyContentChanged(List<TabObserver> observers, Tab tab) {
+        for (TabObserver observer : observers) {
+            observer.onContentChanged(tab);
+        }
+    }
+
+    @Test
     public void usesRestoredTab_IfOffTheRecord_IfAvailable() {
         env.isOffTheRecord = true;
         Tab savedTab = env.prepareTab();
@@ -136,6 +277,114 @@ public class CustomTabActivityTabControllerUnitTest {
         mTabController.finishNativeInitialization();
         assertEquals(env.tabFromFactory, env.tabProvider.getTab());
         assertEquals(TabCreationMode.DEFAULT, env.tabProvider.getInitialTabCreationMode());
+    }
+
+    @Test
+    public void doesntCreateTabAfterRestoreCookies_IfControllerDestroyed() {
+        env.isOffTheRecord = true;
+        mTabController = env.createTabController();
+        when(env.intentDataProvider.isOffTheRecord()).thenReturn(true);
+        when(env.cipherFactory.restoreFromBundle(any())).thenReturn(true);
+
+        CookiesFetcher mockFetcher = mock(CookiesFetcher.class);
+        mTabController.setCookiesFetcherForTesting(mockFetcher);
+
+        mTabController.setUpInitialTab(null);
+        clearInvocations(env.tabFactory);
+
+        mTabController.finishNativeInitialization();
+        ArgumentCaptor<Runnable> callbackCaptor = ArgumentCaptor.forClass(Runnable.class);
+        verify(mockFetcher).restoreCookies(callbackCaptor.capture());
+
+        mTabController.destroy();
+        callbackCaptor.getValue().run();
+
+        verify(env.tabFactory, never()).createTab(any(), any(), any());
+        verify(env.tabModel, never()).addTab(any(), anyInt(), anyInt(), anyInt());
+    }
+
+    /**
+     * Sets up an off-the-record Custom Tab restored from a bundle with a cipher key, using a mock
+     * {@link CookiesFetcher}, and returns that mock.
+     */
+    private CookiesFetcher setUpOffTheRecordRestoreWithCipherKey(Tab savedTab) {
+        env.saveTab(savedTab);
+        mTabController = env.createTabController();
+        when(env.intentDataProvider.isOffTheRecord()).thenReturn(true);
+        when(env.cipherFactory.restoreFromBundle(any())).thenReturn(true);
+
+        CookiesFetcher mockFetcher = mock(CookiesFetcher.class);
+        mTabController.setCookiesFetcherForTesting(mockFetcher);
+        return mockFetcher;
+    }
+
+    @Test
+    public void skipsCookieRestore_IfOffTheRecordTabAwaitsReparenting() {
+        env.isOffTheRecord = true;
+        Tab savedTab = env.prepareTab();
+        CookiesFetcher mockFetcher = setUpOffTheRecordRestoreWithCipherKey(savedTab);
+        env.setOffTheRecordProfileExists(true);
+        env.addTabAwaitingReparenting(savedTab);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        verify(mockFetcher, never()).restoreCookies(any());
+        assertEquals(savedTab, env.tabProvider.getTab());
+        assertEquals(TabCreationMode.RESTORED, env.tabProvider.getInitialTabCreationMode());
+    }
+
+    @Test
+    public void restoresCookies_IfProfileExistsButNoTabAwaitsReparenting() {
+        // After process death, startup code may create the profile before
+        // finishNativeInitialization(). The cookies must still be restored from the file.
+        env.isOffTheRecord = true;
+        Tab savedTab = env.prepareTab();
+        CookiesFetcher mockFetcher = setUpOffTheRecordRestoreWithCipherKey(savedTab);
+        env.setOffTheRecordProfileExists(true);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        ArgumentCaptor<Runnable> callbackCaptor = ArgumentCaptor.forClass(Runnable.class);
+        verify(mockFetcher).restoreCookies(callbackCaptor.capture());
+        assertNull(env.tabProvider.getTab());
+
+        callbackCaptor.getValue().run();
+        assertEquals(savedTab, env.tabProvider.getTab());
+    }
+
+    @Test
+    public void restoresCookies_IfTabAwaitingReparentingUsesAnotherProfile() {
+        env.isOffTheRecord = true;
+        Tab savedTab = env.prepareTab();
+        CookiesFetcher mockFetcher = setUpOffTheRecordRestoreWithCipherKey(savedTab);
+        env.setOffTheRecordProfileExists(true);
+        Tab otherTab = env.prepareTab();
+        when(otherTab.getId()).thenReturn(2);
+        when(otherTab.getProfile()).thenReturn(mock(Profile.class));
+        env.addTabAwaitingReparenting(otherTab);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        verify(mockFetcher).restoreCookies(any());
+        assertNull(env.tabProvider.getTab());
+    }
+
+    @Test
+    public void restoresCookies_IfProfileDoesNotExist() {
+        env.isOffTheRecord = true;
+        Tab savedTab = env.prepareTab();
+        CookiesFetcher mockFetcher = setUpOffTheRecordRestoreWithCipherKey(savedTab);
+        env.setOffTheRecordProfileExists(false);
+        env.addTabAwaitingReparenting(savedTab);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        verify(mockFetcher).restoreCookies(any());
+        assertNull(env.tabProvider.getTab());
     }
 
     @Test
@@ -195,7 +444,7 @@ public class CustomTabActivityTabControllerUnitTest {
         Tab hiddenTab = env.prepareHiddenTab();
         mTabController.setUpInitialTab(hiddenTab);
         mTabController.finishNativeInitialization();
-        verify(env.reparentingTask).finish(any(), any());
+        verify(env.reparentingTask).finish(any(), any(), any(), any());
     }
 
     @Test
@@ -350,6 +599,97 @@ public class CustomTabActivityTabControllerUnitTest {
     }
 
     @Test
+    public void usesTabFromIntent_RunsFinalizeCallbackAndDetachesBeforeAddTab() {
+        Tab tab = env.prepareTransferredTab();
+        TabModelSelector sourceSelector = mock(TabModelSelector.class);
+        Runnable finalizeCallback = mock(Runnable.class);
+        AsyncTabParamsManagerSingleton.getInstance().remove(tab.getId());
+        AsyncTabParamsManagerSingleton.getInstance()
+                .add(
+                        tab.getId(),
+                        new TabReparentingParams(
+                                tab, sourceSelector, /* shouldReload= */ false, finalizeCallback));
+        doAnswer(
+                        invocation -> {
+                            Runnable callback = invocation.getArgument(3);
+                            if (callback != null) callback.run();
+                            return null;
+                        })
+                .when(env.reparentingTask)
+                .finish(any(), any(), any(), any());
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        InOrder inOrder = inOrder(finalizeCallback, sourceSelector, env.tabModel);
+        inOrder.verify(finalizeCallback).run();
+        inOrder.verify(sourceSelector).detachTabForReparenting(tab);
+        inOrder.verify(env.tabModel).addTab(eq(tab), anyInt(), anyInt(), anyInt());
+    }
+
+    @Test
+    public void usesTabFromIntent_TakesPrecedenceOverRestoredTab() {
+        Tab transferredTab = env.prepareTransferredTab();
+        when(transferredTab.getLaunchType()).thenReturn(TabLaunchType.FROM_RESTORE);
+        env.mIntent.putExtra(IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, true);
+        env.mIntent.putExtra(CustomTabResumeManager.EXTRA_EMBEDDER_TAB_ID, "session-1");
+        env.mIntent.putExtra(CustomTabResumeManager.EXTRA_RESTORE_TAB, true);
+        when(env.intentDataProvider.getEmbedderTabId()).thenReturn("session-1");
+        when(env.intentDataProvider.isRestoreTabRequested()).thenReturn(true);
+        doAnswer(
+                        invocation -> {
+                            when(env.intentDataProvider.getEmbedderTabId()).thenReturn(null);
+                            when(env.intentDataProvider.isRestoreTabRequested()).thenReturn(false);
+                            return null;
+                        })
+                .when(env.intentDataProvider)
+                .clearResumptionExtras();
+        when(env.connection.getClientPackageNameForSession(env.session))
+                .thenReturn("com.example.app");
+
+        Tab hiddenTab = env.prepareTab();
+        doReturn(
+                        new HiddenTab(
+                                hiddenTab,
+                                env.tabObserverRegistrar,
+                                env.customTabObserver,
+                                env.navigationEventObserver,
+                                CustomTabActivityContentTestEnvironment.INITIAL_URL))
+                .when(env.connection)
+                .takeHiddenTab(any(), any(), any());
+
+        Tab restoredTab = env.prepareTab();
+        env.resumeManager =
+                spy(new CustomTabResumeManager(env.intentDataProvider, env.cipherFactory));
+        doReturn(restoredTab)
+                .when(env.resumeManager)
+                .maybeRestoreTab(
+                        any(), any(), any(), anyBoolean(), any(), any(), eq("com.example.app"));
+        mTabController = env.createTabController();
+
+        HiddenTab takenHiddenTab =
+                CustomTabActivityTabController.takeHiddenTab(env.intentDataProvider);
+        mTabController.setUpInitialTab(takenHiddenTab != null ? takenHiddenTab.tab : null);
+        mTabController.finishNativeInitialization();
+
+        assertNull(takenHiddenTab);
+        verify(env.connection, never()).takeHiddenTab(any(), any(), any());
+        assertEquals(transferredTab, env.tabProvider.getTab());
+        assertEquals(TabCreationMode.EARLY, env.tabProvider.getInitialTabCreationMode());
+        assertFalse(
+                AsyncTabParamsManagerSingleton.getInstance()
+                        .hasParamsForTabId(transferredTab.getId()));
+        assertTrue(
+                env.mIntent.getBooleanExtra(IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, false));
+        assertFalse(env.mIntent.hasExtra(CustomTabResumeManager.EXTRA_EMBEDDER_TAB_ID));
+        assertFalse(env.mIntent.hasExtra(CustomTabResumeManager.EXTRA_RESTORE_TAB));
+        assertFalse(CustomTabResumeManager.shouldCreateTabResumeManager(env.intentDataProvider));
+        assertFalse(CustomTabResumeManager.isTabResumptionRequested(env.intentDataProvider));
+        verify(env.resumeManager, never())
+                .maybeRestoreTab(any(), any(), any(), anyBoolean(), any(), any(), any());
+    }
+
+    @Test
     public void doesNotUseTabFromIntent_IfNotInAsyncParamsManager() {
         Tab tab = env.prepareTransferredTab();
         AsyncTabParamsManagerSingleton.getInstance().remove(tab.getId());
@@ -410,5 +750,28 @@ public class CustomTabActivityTabControllerUnitTest {
         assertNotNull(env.tabProvider.getTab());
 
         verify(mTabController, never()).updateIntentInTab(any(), anyBoolean());
+    }
+
+    @Test
+    public void restoresAllTabsInOrder_WhenMultipleTabsSaved() {
+        Tab openerTab = env.prepareTab();
+        when(openerTab.getId()).thenReturn(101);
+        when(openerTab.getParentId()).thenReturn(Tab.INVALID_TAB_ID);
+        Tab childTab = env.prepareTab();
+        when(childTab.getId()).thenReturn(102);
+        when(childTab.getParentId()).thenReturn(101);
+
+        env.saveTab(childTab);
+        when(env.tabModel.iterator()).thenAnswer(inv -> List.of(openerTab, childTab).iterator());
+        when(env.tabModel.getTabById(101)).thenReturn(openerTab);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        verify(env.tabModelOrchestrator).loadState(false, false, null);
+        verify(env.tabModelOrchestrator).restoreTabs(true);
+        assertEquals(childTab, env.tabProvider.getTab());
+        verify(mTabController).updateIntentInTab(eq(openerTab), eq(true));
+        verify(mTabController, never()).updateIntentInTab(eq(childTab), anyBoolean());
     }
 }

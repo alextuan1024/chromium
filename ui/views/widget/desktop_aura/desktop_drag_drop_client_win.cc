@@ -4,13 +4,21 @@
 
 #include "ui/views/widget/desktop_aura/desktop_drag_drop_client_win.h"
 
+#include <bit>
 #include <memory>
+#include <utility>
 
 #include "base/auto_reset.h"
+#include "base/check_op.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
+#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/scoped_observation.h"
 #include "base/threading/hang_watcher.h"
 #include "ui/aura/env.h"
+#include "ui/aura/env_input_state_controller.h"
 #include "ui/aura/window_observer.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/base/dragdrop/drag_source_win.h"
@@ -19,6 +27,7 @@
 #include "ui/base/dragdrop/os_exchange_data_provider_win.h"
 #include "ui/base/win/event_creation_utils.h"
 #include "ui/display/win/screen_win.h"
+#include "ui/events/pointer_details.h"
 #include "ui/views/views_features.h"
 #include "ui/views/widget/desktop_aura/desktop_drop_target_win.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_win.h"
@@ -26,6 +35,11 @@
 namespace views {
 
 namespace {
+
+base::RepeatingClosure& GetOnDragStartedCallback() {
+  static base::NoDestructor<base::RepeatingClosure> callback;
+  return *callback;
+}
 
 class SourceWindowObserver : public aura::WindowObserver {
  public:
@@ -50,7 +64,28 @@ class SourceWindowObserver : public aura::WindowObserver {
 
 bool g_is_dragging = false;
 
+// Number of live ScopedSuppressForWindowMove() scopes. A counter allows
+// independent scopes, such as a pre-threshold click-hold and a move loop, to
+// overlap and be destroyed in any order without leaving drags permanently
+// suppressed or prematurely enabled.
+int g_window_move_suppression_count = 0;
+
 }  // namespace
+
+// static
+base::ScopedClosureRunner
+DesktopDragDropClientWin::ScopedSuppressForWindowMove() {
+  ++g_window_move_suppression_count;
+  return base::ScopedClosureRunner(base::BindOnce([] {
+    CHECK_GT(g_window_move_suppression_count, 0);
+    --g_window_move_suppression_count;
+  }));
+}
+
+// static
+bool DesktopDragDropClientWin::IsDragInProgressOrSuppressedForTesting() {
+  return g_is_dragging || g_window_move_suppression_count > 0;
+}
 
 DesktopDragDropClientWin::DesktopDragDropClientWin(
     aura::Window* root_window,
@@ -75,7 +110,8 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
     int allowed_operations,
     ui::mojom::DragEventSource source) {
   CHECK(!g_is_dragging);
-  if (desktop_host_->IsInNativeMoveResizeLoop()) {
+  if (desktop_host_->IsInNativeMoveResizeLoop() ||
+      g_window_move_suppression_count > 0) {
     return ui::PreferredDragOperation(
         ui::DragDropTypes::DropEffectToDragOperation(DROPEFFECT_NONE));
   }
@@ -87,16 +123,24 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
         screen->GetWindowAtScreenPoint(screen->GetCursorScreenPoint());
     touch_screen_point = screen_location;
     source_window->GetHost()->ConvertDIPToPixels(&touch_screen_point);
-    bool touch_down = aura::Env::GetInstance()->is_touch_down();
-    bool touch_over_other_window =
+    // TODO(crbug.com/585657789): Track active touch pointers per host on
+    // Windows instead of relying on process-global touch_ids_down(), which
+    // can collide across HWNDs.
+    const uint32_t touch_ids_down =
+        aura::Env::GetInstance()->env_controller()->touch_ids_down();
+    const bool touch_over_other_window =
         !window || window->GetRootWindow() != root_window;
-    // Check that the cursor is over the window being dragged from. If not,
-    // don't start the drag because ::DoDragDrop will not do the drag.
-    if (!touch_down || touch_over_other_window) {
+    // Check that the cursor is over the window being dragged from; if not,
+    // ::DoDragDrop will not do the drag. Also require a single active touch so
+    // the drag can be bound to it; another touch already down (e.g. on browser
+    // UI) could otherwise move the system cursor during ::DoDragDrop.
+    if (!std::has_single_bit(touch_ids_down) || touch_over_other_window) {
       return ui::PreferredDragOperation(
           ui::DragDropTypes::DropEffectToDragOperation(DROPEFFECT_NONE));
     }
-    desktop_host_->StartTouchDrag(touch_screen_point);
+    desktop_host_->StartTouchDrag(
+        touch_screen_point,
+        static_cast<ui::PointerId>(std::countr_zero(touch_ids_down)));
   }
   // Observe the source window to avoid accessing it if the window is
   // destroyed while the drag is ongoing.
@@ -117,6 +161,10 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
   // drag. (http://crbug.com/806174)
   base::HangWatcher::InvalidateActiveExpectations();
 
+  if (auto& callback = GetOnDragStartedCallback()) {
+    callback.Run();
+  }
+
   HRESULT result = ::DoDragDrop(
       ui::OSExchangeDataProviderWin::GetIDataObject(*data.get()),
       drag_source_.Get(),
@@ -126,6 +174,9 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
     if (source_window_observer.source_window_alive()) {
       // Kill the gesture that initiated the drag to avoid issues with lingering
       // touch events.
+      // TODO(crbug.com/585657789): On Windows, this synthetic kTouchCancelled
+      // clears the touch's bit in touch_ids_down() even if the finger is still
+      // physically down (e.g. Esc mid-drag).
       source_window->CleanupGestureState();
     }
     if (alive) {
@@ -160,6 +211,12 @@ void DesktopDragDropClientWin::AddObserver(
 void DesktopDragDropClientWin::RemoveObserver(
     aura::client::DragDropClientObserver* observer) {
   NOTIMPLEMENTED();
+}
+
+// static
+void DesktopDragDropClientWin::SetOnDragStartedCallbackForTesting(
+    base::RepeatingClosure callback) {
+  GetOnDragStartedCallback() = std::move(callback);
 }
 
 void DesktopDragDropClientWin::OnNativeWidgetDestroying(HWND window) {

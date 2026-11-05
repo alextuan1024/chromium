@@ -60,7 +60,7 @@ public class LocaleManagerDelegate {
 
     // LocaleManager is a singleton and it should not have strong reference to UI objects.
     // SnackbarManager is owned by ChromeActivity and is not null as long as the activity is alive.
-    private WeakReference<SnackbarManager> mSnackbarManager = new WeakReference<>(null);
+    private WeakReference<@Nullable SnackbarManager> mSnackbarManager = new WeakReference<>(null);
 
     /**
      * Stores the prepopulate ID of a search engine for which we need to show a snackbar notifying
@@ -300,8 +300,8 @@ public class LocaleManagerDelegate {
      *
      * @see LocaleManager#setSnackbarManager
      */
-    public void setSnackbarManager(SnackbarManager manager) {
-        mSnackbarManager = new WeakReference<SnackbarManager>(manager);
+    public void setSnackbarManager(@Nullable SnackbarManager manager) {
+        mSnackbarManager = new WeakReference<>(manager);
         if (mIsSnackbarQueuedForDeviceSearchEngineType != SearchEngineType.SEARCH_ENGINE_UNKNOWN) {
             showSnackbarForDeviceSearchEngineUpdate();
         }
@@ -413,7 +413,11 @@ public class LocaleManagerDelegate {
 
     private LocaleTemplateUrlLoader getLocaleTemplateUrlLoader() {
         if (mLocaleTemplateUrlLoader == null) {
-            mLocaleTemplateUrlLoader = new LocaleTemplateUrlLoader(getSpecialLocaleId());
+            // TODO(crbug.com/344633755): Pass Profile instead of calling
+            // getLastUsedRegularProfile().
+            mLocaleTemplateUrlLoader =
+                    new LocaleTemplateUrlLoader(
+                            getSpecialLocaleId(), ProfileManager.getLastUsedRegularProfile());
         }
         return mLocaleTemplateUrlLoader;
     }

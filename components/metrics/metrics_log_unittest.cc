@@ -43,6 +43,9 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/android_info.h"
+#include "base/android/device_info.h"
+#include "components/metrics/version_utils.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -219,6 +222,44 @@ TEST_F(MetricsLogTest, SessionHash) {
   EXPECT_TRUE(log2.uma_proto()->system_profile().has_session_hash());
   EXPECT_EQ(log1.uma_proto()->system_profile().session_hash(),
             log2.uma_proto()->system_profile().session_hash());
+}
+
+// Verifies that RecordCoreSystemProfile() only records the UMA session
+// identifiers when explicitly requested.
+TEST_F(MetricsLogTest, RecordCoreSystemProfileSessionIdentifiers) {
+  SystemProfileProto excluded;
+  MetricsLog::RecordCoreSystemProfile(&client_, &excluded);
+  EXPECT_FALSE(excluded.has_session_hash());
+  EXPECT_FALSE(excluded.has_fg_bg_id());
+
+  SystemProfileProto included;
+  MetricsLog::RecordCoreSystemProfile(&client_, &included,
+                                      MetricsLog::SessionIdentifiers::kInclude);
+  EXPECT_TRUE(included.has_session_hash());
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+  EXPECT_TRUE(included.has_fg_bg_id());
+#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+
+  // The included session hash should match the one in UMA logs.
+  MetricsLog log(kClientId, kSessionId, MetricsLog::ONGOING_LOG, &client_);
+  EXPECT_EQ(included.session_hash(),
+            log.uma_proto()->system_profile().session_hash());
+}
+
+// Verifies that ClearSessionIdentifiers() clears every field that
+// RecordCoreSystemProfile() records only with SessionIdentifiers::kInclude. If
+// this fails, a new session identifier was added to RecordCoreSystemProfile()
+// without also being cleared in ClearSessionIdentifiers().
+TEST_F(MetricsLogTest, ClearSessionIdentifiersMatchesExclude) {
+  SystemProfileProto excluded;
+  MetricsLog::RecordCoreSystemProfile(&client_, &excluded);
+
+  SystemProfileProto cleared;
+  MetricsLog::RecordCoreSystemProfile(&client_, &cleared,
+                                      MetricsLog::SessionIdentifiers::kInclude);
+  MetricsLog::ClearSessionIdentifiers(&cleared);
+
+  EXPECT_EQ(excluded.SerializeAsString(), cleared.SerializeAsString());
 }
 
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
@@ -877,5 +918,33 @@ TEST_F(MetricsLogTest, ToInstallerPackage) {
   EXPECT_EQ(SystemProfileProto::INSTALLER_PACKAGE_OTHER,
             ToInstallerPackage("foo"));
 }
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(MetricsLogTest, AndroidDesktopOperatingSystemName) {
+  absl::Cleanup reset_is_desktop = [] {
+    base::android::device_info::reset_is_desktop_for_testing();
+  };
+
+  base::android::device_info::set_is_desktop_for_testing(true);
+  EXPECT_EQ("Android Desktop", GetOperatingSystemName());
+  {
+    TestMetricsLog log(kClientId, kSessionId, MetricsLog::ONGOING_LOG,
+                       &client_);
+    DelegatingProvider delegating_provider;
+    log.RecordEnvironment(&delegating_provider);
+    EXPECT_EQ("Android Desktop", log.uma_proto().system_profile().os().name());
+  }
+
+  base::android::device_info::set_is_desktop_for_testing(false);
+  EXPECT_EQ("Android", GetOperatingSystemName());
+  {
+    TestMetricsLog log(kClientId, kSessionId, MetricsLog::ONGOING_LOG,
+                       &client_);
+    DelegatingProvider delegating_provider;
+    log.RecordEnvironment(&delegating_provider);
+    EXPECT_EQ("Android", log.uma_proto().system_profile().os().name());
+  }
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace metrics

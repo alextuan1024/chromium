@@ -4,8 +4,7 @@
 
 #include "components/optimization_guide/core/model_execution/repetition_checker.h"
 
-#include "base/containers/adapters.h"
-#include "components/optimization_guide/core/optimization_guide_features.h"
+#include <ranges>
 
 namespace optimization_guide {
 
@@ -35,17 +34,17 @@ bool HasRepeatingSuffix(int min_chars, int num_repeats, std::string_view text) {
 }
 
 bool HasRepeatingSuffix(std::string_view text) {
-  int num_repeats = features::GetOnDeviceModelNumRepeats();
+  int num_repeats = GetOnDeviceModelNumRepeats();
   if (num_repeats <= 1) {
     return false;
   }
-  return HasRepeatingSuffix(features::GetOnDeviceModelMinRepeatChars(),
-                            num_repeats, text);
+  return HasRepeatingSuffix(GetOnDeviceModelMinRepeatChars(), num_repeats,
+                            text);
 }
 
 size_t GetNumTrailingNewlines(std::string_view text) {
   size_t num_trailing_newlines = 0;
-  for (const char it : base::Reversed(text)) {
+  for (const char it : std::views::reverse(text)) {
     if (it == '\n') {
       num_trailing_newlines++;
     } else {

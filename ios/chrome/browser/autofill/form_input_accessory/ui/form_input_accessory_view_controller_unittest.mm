@@ -7,25 +7,39 @@
 #import <UIKit/UIKit.h>
 
 #import "base/apple/foundation_util.h"
+#import "base/location.h"
 #import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
+#import "base/test/scoped_mock_clock_override.h"
 #import "base/time/time.h"
+#import "components/autofill/core/browser/suggestions/suggestion_type.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
+#import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/autofill/branding/ui/branding_view_controller.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/public/autofill_suggestion_context_menu_handler.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_input_accessory_view_controller+testing.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_input_accessory_view_controller_delegate.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_suggestion_label.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_suggestion_view.h"
 #import "ios/chrome/browser/autofill/model/features.h"
-#import "ios/chrome/browser/autofill/ui_bundled/branding/branding_view_controller.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_utils.h"
+#import "ios/chrome/browser/toolbar/ui/toolbar_constants.h"
 #import "ios/chrome/common/ui/elements/form_input_accessory_view.h"
 #import "ios/chrome/common/ui/elements/form_input_accessory_view_text_data.h"
+#import "ios/chrome/grit/ios_strings.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
+#import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "ui/base/l10n/l10n_util.h"
+
+using autofill::SuggestionType;
 
 namespace {
 
@@ -120,6 +134,69 @@ FormSuggestion* PasskeyFormSuggestion(NSString* username,
        acceptanceA11yAnnouncement:nil];
 }
 
+// Returns the height constraint constant of `_omniboxTypingShield` inside
+// `accessory_view`.
+CGFloat OmniboxTypingShieldHeightConstant(UIView* accessory_view) {
+  UIView* shield = chrome_test_util::FindViewById(
+      accessory_view,
+      kFormInputAccessoryViewOmniboxTypingShieldAccessibilityID);
+  if (!shield) {
+    ADD_FAILURE() << "Missing omnibox typing shield subview.";
+    return -1.0;
+  }
+  for (NSLayoutConstraint* constraint in shield.constraints) {
+    if (constraint.firstItem == shield &&
+        constraint.firstAttribute == NSLayoutAttributeHeight &&
+        constraint.secondItem == nil) {
+      return constraint.constant;
+    }
+  }
+  ADD_FAILURE() << "Missing height constraint on omnibox typing shield.";
+  return -1.0;
+}
+
+// Updates `controller`'s size-class traits and omnibox position, then returns
+// the resulting omnibox typing shield height constraint constant.
+CGFloat TypingShieldHeightForTraits(
+    FormInputAccessoryViewController* controller,
+    UIUserInterfaceSizeClass horizontal,
+    UIUserInterfaceSizeClass vertical,
+    BOOL is_bottom_omnibox,
+    UIContentSizeCategory content_size_category = UIContentSizeCategoryLarge) {
+  controller.traitOverrides.preferredContentSizeCategory =
+      content_size_category;
+  controller.traitOverrides.horizontalSizeClass = horizontal;
+  controller.traitOverrides.verticalSizeClass = vertical;
+  [controller newOmniboxPositionIsBottom:is_bottom_omnibox];
+  return OmniboxTypingShieldHeightConstant(controller.view);
+}
+
+// Creates a `FormInputAccessoryViewController` attached to
+// `navigation_delegate` so `FormInputAccessoryView` initializes its full view
+// hierarchy (including the omnibox typing shield).
+FormInputAccessoryViewController* CreateControllerWithNavigationDelegate(
+    id<FormInputAccessoryViewDelegate> navigation_delegate) {
+  FormInputAccessoryViewController* controller =
+      [[FormInputAccessoryViewController alloc]
+          initWithFormInputAccessoryViewControllerDelegate:nil];
+  controller.brandingViewController = [[BrandingViewController alloc] init];
+  controller.navigationDelegate = navigation_delegate;
+  [controller loadView];
+  return controller;
+}
+
+// Creates a mock `FormInputAccessoryViewDelegate` that returns stubbed text
+// data.
+id<FormInputAccessoryViewDelegate> CreateNavigationDelegateMock() {
+  id<FormInputAccessoryViewDelegate> delegate_mock =
+      OCMProtocolMock(@protocol(FormInputAccessoryViewDelegate));
+  FormInputAccessoryViewTextData* text_data_mock =
+      OCMClassMock([FormInputAccessoryViewTextData class]);
+  OCMStub([delegate_mock textDataforFormInputAccessoryView:[OCMArg any]])
+      .andReturn(text_data_mock);
+  return delegate_mock;
+}
+
 }  // namespace
 
 class FormInputAccessoryViewControllerTest : public PlatformTest {
@@ -133,6 +210,18 @@ class FormInputAccessoryViewControllerTest : public PlatformTest {
   }
 
  protected:
+  // Returns the unique `FormSuggestionView` subview inside
+  // `view_controller_.view` and expects it to be non-nil (reporting failures
+  // at `location`).
+  FormSuggestionView* GetFormSuggestionView(
+      const base::Location& location = FROM_HERE) {
+    FormSuggestionView* suggestion_view =
+        chrome_test_util::FindViewByClass<FormSuggestionView>(
+            view_controller_.view, /*expect_uniqueness=*/true, location);
+    EXPECT_NE(suggestion_view, nil) << location.ToString();
+    return suggestion_view;
+  }
+
   FormInputAccessoryViewController* view_controller_;
 };
 
@@ -360,8 +449,7 @@ TEST_F(FormInputAccessoryViewControllerTest,
   NSArray<FormSuggestion*>* suggestions = @[ suggestion1, suggestion2 ];
   [view_controller_ showAccessorySuggestions:suggestions];
 
-  FormSuggestionView* suggestion_view = view_controller_.formSuggestionView;
-  EXPECT_NE(suggestion_view, nil);
+  FormSuggestionView* suggestion_view = GetFormSuggestionView();
 
   NSString* desc1 = [(id<FormSuggestionLabelDelegate>)suggestion_view
       displayDescriptionForSuggestion:suggestion1];
@@ -398,8 +486,7 @@ TEST_F(FormInputAccessoryViewControllerTest,
   NSArray<FormSuggestion*>* suggestions = @[ suggestion1, suggestion2 ];
   [view_controller_ showAccessorySuggestions:suggestions];
 
-  FormSuggestionView* suggestion_view = view_controller_.formSuggestionView;
-  EXPECT_NE(suggestion_view, nil);
+  FormSuggestionView* suggestion_view = GetFormSuggestionView();
 
   NSString* desc1 = [(id<FormSuggestionLabelDelegate>)suggestion_view
       displayDescriptionForSuggestion:suggestion1];
@@ -433,8 +520,7 @@ TEST_F(FormInputAccessoryViewControllerTest,
   NSArray<FormSuggestion*>* suggestions = @[ suggestion1, suggestion2 ];
   [view_controller_ showAccessorySuggestions:suggestions];
 
-  FormSuggestionView* suggestion_view = view_controller_.formSuggestionView;
-  EXPECT_NE(suggestion_view, nil);
+  FormSuggestionView* suggestion_view = GetFormSuggestionView();
 
   NSString* desc1 = [(id<FormSuggestionLabelDelegate>)suggestion_view
       displayDescriptionForSuggestion:suggestion1];
@@ -469,8 +555,7 @@ TEST_F(FormInputAccessoryViewControllerTest,
   NSArray<FormSuggestion*>* suggestions = @[ suggestion1, suggestion2 ];
   [view_controller_ showAccessorySuggestions:suggestions];
 
-  FormSuggestionView* suggestion_view = view_controller_.formSuggestionView;
-  EXPECT_NE(suggestion_view, nil);
+  FormSuggestionView* suggestion_view = GetFormSuggestionView();
 
   NSString* desc1 = [(id<FormSuggestionLabelDelegate>)suggestion_view
       displayDescriptionForSuggestion:suggestion1];
@@ -555,4 +640,254 @@ TEST_F(FormInputAccessoryViewControllerTest,
       suppressPersonalContextSuggestion:suggestion];
 
   EXPECT_OCMOCK_VERIFY(context_menu_handler);
+}
+
+// Tests that `FormInputAccessoryViewController` forwards
+// `openSettingsForSuggestion:` to the context menu handler.
+TEST_F(FormInputAccessoryViewControllerTest, OpenSettingsForSuggestion) {
+  id context_menu_handler =
+      OCMProtocolMock(@protocol(AutofillSuggestionContextMenuHandler));
+  view_controller_.contextMenuHandler = context_menu_handler;
+
+  FormSuggestion* suggestion = SimpleFormSuggestion(
+      u"Test Suggestion", autofill::SuggestionType::kFillAutofillAi);
+
+  OCMExpect([context_menu_handler openSettingsForSuggestion:suggestion]);
+
+  [(id<FormSuggestionViewDelegate>)view_controller_
+      openSettingsForSuggestion:suggestion];
+
+  EXPECT_OCMOCK_VERIFY(context_menu_handler);
+}
+
+// Tests that `FormInputAccessoryViewController` forwards
+// `isPersonalContextSuggestion:` to the context menu handler.
+TEST_F(FormInputAccessoryViewControllerTest, IsPersonalContextSuggestion) {
+  id context_menu_handler =
+      OCMProtocolMock(@protocol(AutofillSuggestionContextMenuHandler));
+  view_controller_.contextMenuHandler = context_menu_handler;
+
+  FormSuggestion* suggestion = SimpleFormSuggestion(
+      u"Test Suggestion", autofill::SuggestionType::kFillAutofillAi);
+
+  OCMStub([context_menu_handler isPersonalContextSuggestion:suggestion])
+      .andReturn(YES);
+
+  EXPECT_TRUE([(id<FormSuggestionViewDelegate>)view_controller_
+      isPersonalContextSuggestion:suggestion]);
+}
+
+// Tests that showing a personal context Autofill AI suggestion populates the
+// suggestion label's accessibility label with "Suggested by Gemini".
+TEST_F(FormInputAccessoryViewControllerTest,
+       PersonalContextSuggestionAccessibilityLabel) {
+  id context_menu_handler =
+      OCMProtocolMock(@protocol(AutofillSuggestionContextMenuHandler));
+  view_controller_.contextMenuHandler = context_menu_handler;
+
+  FormSuggestion* suggestion = [FormSuggestion
+      suggestionWithValue:@"BMW"
+       displayDescription:@"Vehicle · Series 2"
+                     icon:nil
+                     type:autofill::SuggestionType::kFillAutofillAi
+                  payload:autofill::Suggestion::Payload()
+           requiresReauth:NO];
+
+  OCMStub([context_menu_handler isPersonalContextSuggestion:suggestion])
+      .andReturn(YES);
+
+  [view_controller_ showAccessorySuggestions:@[ suggestion ]];
+
+  FormSuggestionLabel* label =
+      chrome_test_util::FindViewByClass<FormSuggestionLabel>(
+          view_controller_.view);
+  ASSERT_NE(label, nil);
+
+  std::u16string base_label = l10n_util::GetStringFUTF16(
+      IDS_IOS_AUTOFILL_ACCNAME_SUGGESTION, u"BMW", u"Vehicle · Series 2");
+  NSString* expected_label = l10n_util::GetNSStringF(
+      IDS_IOS_AUTOFILL_ACCNAME_SUGGESTION, base_label,
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_AI_SUGGESTED_BY_GEMINI));
+  EXPECT_NSEQ(expected_label, label.accessibilityLabel);
+}
+
+// Tests that `formSuggestionContainerView`'s layer mask frame matches its
+// bounds after layout changes.
+TEST_F(FormInputAccessoryViewControllerTest,
+       SuggestionContainerMaskFrameMatchesBoundsAfterLayout) {
+  NSArray<FormSuggestion*>* suggestions = @[ SimpleFormSuggestion(
+      u"value", autofill::SuggestionType::kAutocompleteEntry) ];
+  [view_controller_ showAccessorySuggestions:suggestions];
+
+  FormSuggestionView* suggestion_view = GetFormSuggestionView();
+  UIStackView* container_view =
+      base::apple::ObjCCastStrict<UIStackView>(suggestion_view.superview);
+  ASSERT_NE(container_view, nil);
+  ASSERT_NE(container_view.layer.mask, nil);
+
+  container_view.frame = CGRectMake(0, 0, 200, 44);
+  container_view.layer.mask.frame = CGRectZero;
+  [container_view setNeedsLayout];
+  [container_view layoutIfNeeded];
+  EXPECT_TRUE(CGRectEqualToRect(container_view.layer.mask.frame,
+                                container_view.bounds));
+
+  container_view.frame = CGRectMake(0, 0, 350, 44);
+  container_view.layer.mask.frame = CGRectZero;
+  [container_view setNeedsLayout];
+  [container_view layoutIfNeeded];
+  EXPECT_TRUE(CGRectEqualToRect(container_view.layer.mask.frame,
+                                container_view.bounds));
+}
+
+// Tests that the duration `SuggestionType::kFetchingAmbientData` stays on the
+// keyboard accessory bar is recorded once a subsequent batch of suggestions
+// without it is shown or when the view disappears.
+TEST_F(FormInputAccessoryViewControllerTest,
+       RecordsFetchingAmbientDataShownToRemovedDuration) {
+  constexpr base::TimeDelta kFetchingAmbientDataStepDuration = base::Seconds(2);
+  base::ScopedMockClockOverride mock_clock;
+  base::HistogramTester histogram_tester;
+
+  FormSuggestion* fetching_suggestion = SimpleFormSuggestion(
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_AI_FETCHING_AMBIENT_DATA),
+      SuggestionType::kFetchingAmbientData);
+  FormSuggestion* standard_suggestion =
+      SimpleFormSuggestion(u"John Doe", SuggestionType::kAddressEntry);
+
+  // Showing `kFetchingAmbientData` starts the timer without emitting a sample.
+  [view_controller_ showAccessorySuggestions:@[ fetching_suggestion ]];
+  histogram_tester.ExpectTotalCount(kFetchingAmbientDataShownToRemovedHistogram,
+                                    0);
+
+  // Refreshing suggestions while `kFetchingAmbientData` is still present keeps
+  // the original start timestamp and does not emit a sample yet.
+  mock_clock.Advance(kFetchingAmbientDataStepDuration);
+  [view_controller_
+      showAccessorySuggestions:@[ standard_suggestion, fetching_suggestion ]];
+  histogram_tester.ExpectTotalCount(kFetchingAmbientDataShownToRemovedHistogram,
+                                    0);
+
+  // Showing the next batch of suggestions without `kFetchingAmbientData` emits
+  // the total elapsed duration.
+  mock_clock.Advance(kFetchingAmbientDataStepDuration);
+  [view_controller_ showAccessorySuggestions:@[ standard_suggestion ]];
+  histogram_tester.ExpectUniqueTimeSample(
+      kFetchingAmbientDataShownToRemovedHistogram,
+      2 * kFetchingAmbientDataStepDuration, 1);
+
+  // Subsequent updates without `kFetchingAmbientData` do not emit again.
+  mock_clock.Advance(kFetchingAmbientDataStepDuration);
+  [view_controller_ showAccessorySuggestions:@[]];
+  histogram_tester.ExpectTotalCount(kFetchingAmbientDataShownToRemovedHistogram,
+                                    1);
+
+  // If the keyboard accessory view disappears while `kFetchingAmbientData` is
+  // shown, the duration until disappearance is recorded and the timer resets.
+  [view_controller_ showAccessorySuggestions:@[ fetching_suggestion ]];
+  mock_clock.Advance(kFetchingAmbientDataStepDuration);
+  [view_controller_ viewDidDisappear:NO];
+  histogram_tester.ExpectTimeBucketCount(
+      kFetchingAmbientDataShownToRemovedHistogram,
+      kFetchingAmbientDataStepDuration, 1);
+  histogram_tester.ExpectTotalCount(kFetchingAmbientDataShownToRemovedHistogram,
+                                    2);
+}
+
+// Tests that the omnibox typing shield height matches `ToolbarCollapsedHeight`
+// in split toolbar mode and is zero otherwise when `kChromeNextIa` is disabled.
+TEST_F(FormInputAccessoryViewControllerTest, OmniboxTypingShieldHeight_Legacy) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(kChromeNextIa);
+
+  id<FormInputAccessoryViewDelegate> delegate_mock =
+      CreateNavigationDelegateMock();
+  FormInputAccessoryViewController* controller =
+      CreateControllerWithNavigationDelegate(delegate_mock);
+
+  // Portrait (Compact x Regular) with bottom omnibox.
+  EXPECT_EQ(
+      TypingShieldHeightForTraits(controller, UIUserInterfaceSizeClassCompact,
+                                  UIUserInterfaceSizeClassRegular,
+                                  /*is_bottom_omnibox=*/YES),
+      ToolbarCollapsedHeight(UIContentSizeCategoryLarge));
+
+  // Portrait with top omnibox has no typing shield.
+  EXPECT_EQ(
+      TypingShieldHeightForTraits(controller, UIUserInterfaceSizeClassCompact,
+                                  UIUserInterfaceSizeClassRegular,
+                                  /*is_bottom_omnibox=*/NO),
+      0.0);
+
+  // Landscape has no typing shield when `kChromeNextIa` is disabled.
+  EXPECT_EQ(
+      TypingShieldHeightForTraits(controller, UIUserInterfaceSizeClassCompact,
+                                  UIUserInterfaceSizeClassCompact,
+                                  /*is_bottom_omnibox=*/YES),
+      0.0);
+}
+
+// Tests that the omnibox typing shield includes the Next IA keyboard-attached
+// padding in portrait and landscape when `kChromeNextIa` is enabled.
+TEST_F(FormInputAccessoryViewControllerTest,
+       OmniboxTypingShieldHeight_ChromeNextIa) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kChromeNextIa);
+
+  id<FormInputAccessoryViewDelegate> delegate_mock =
+      CreateNavigationDelegateMock();
+  FormInputAccessoryViewController* controller =
+      CreateControllerWithNavigationDelegate(delegate_mock);
+
+  // Unspecified size classes should not produce a non-zero typing shield.
+  EXPECT_EQ(TypingShieldHeightForTraits(controller,
+                                        UIUserInterfaceSizeClassUnspecified,
+                                        UIUserInterfaceSizeClassUnspecified,
+                                        /*is_bottom_omnibox=*/YES),
+            0.0);
+
+  // Portrait (Compact x Regular): collapsed height + portrait padding.
+  EXPECT_EQ(
+      TypingShieldHeightForTraits(controller, UIUserInterfaceSizeClassCompact,
+                                  UIUserInterfaceSizeClassRegular,
+                                  /*is_bottom_omnibox=*/YES),
+      ToolbarCollapsedHeight(UIContentSizeCategoryLarge) +
+          kKeyboardAttachedOmniboxBottomPadding);
+
+  // Portrait with larger Dynamic Type scales with `ToolbarCollapsedHeight`.
+  EXPECT_EQ(
+      TypingShieldHeightForTraits(controller, UIUserInterfaceSizeClassCompact,
+                                  UIUserInterfaceSizeClassRegular,
+                                  /*is_bottom_omnibox=*/YES,
+                                  UIContentSizeCategoryAccessibilityExtraLarge),
+      ToolbarCollapsedHeight(UIContentSizeCategoryAccessibilityExtraLarge) +
+          kKeyboardAttachedOmniboxBottomPadding);
+
+  // Landscape (Compact x Compact): full landscape height.
+  EXPECT_EQ(
+      TypingShieldHeightForTraits(controller, UIUserInterfaceSizeClassCompact,
+                                  UIUserInterfaceSizeClassCompact,
+                                  /*is_bottom_omnibox=*/YES),
+      kKeyboardAttachedOmniboxBottomPaddingLandscape);
+
+  // Landscape on larger phones (Regular x Compact): full landscape height.
+  EXPECT_EQ(
+      TypingShieldHeightForTraits(controller, UIUserInterfaceSizeClassRegular,
+                                  UIUserInterfaceSizeClassCompact,
+                                  /*is_bottom_omnibox=*/YES),
+      kKeyboardAttachedOmniboxBottomPaddingLandscape);
+
+  // Regular x Regular (tablet): no typing shield.
+  EXPECT_EQ(
+      TypingShieldHeightForTraits(controller, UIUserInterfaceSizeClassRegular,
+                                  UIUserInterfaceSizeClassRegular,
+                                  /*is_bottom_omnibox=*/YES),
+      0.0);
+
+  // Top omnibox in portrait: no typing shield.
+  EXPECT_EQ(
+      TypingShieldHeightForTraits(controller, UIUserInterfaceSizeClassCompact,
+                                  UIUserInterfaceSizeClassRegular,
+                                  /*is_bottom_omnibox=*/NO),
+      0.0);
 }

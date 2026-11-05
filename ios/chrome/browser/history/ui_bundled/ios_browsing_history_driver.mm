@@ -9,6 +9,8 @@
 #import "base/check.h"
 #import "base/strings/utf_string_conversions.h"
 #import "components/browsing_data/core/history_notice_utils.h"
+#import "components/history/core/common/pref_names.h"
+#import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/history/model/history_utils.h"
 #import "ios/chrome/browser/history/ui_bundled/history_consumer.h"
 #import "ios/chrome/browser/history/ui_bundled/ios_browsing_history_driver_delegate.h"
@@ -18,10 +20,11 @@ using history::BrowsingHistoryService;
 #pragma mark - IOSBrowsingHistoryDriver
 
 IOSBrowsingHistoryDriver::IOSBrowsingHistoryDriver(
-    WebHistoryServiceGetter history_service_getter,
+    PrefService* prefs,
     IOSBrowsingHistoryDriverDelegate* delegate)
-    : history_service_getter_(history_service_getter), delegate_(delegate) {
-  DCHECK(!history_service_getter_.is_null());
+    : prefs_(prefs), delegate_(delegate) {
+  CHECK(prefs_);
+  CHECK(delegate_);
 }
 
 IOSBrowsingHistoryDriver::~IOSBrowsingHistoryDriver() = default;
@@ -60,18 +63,11 @@ void IOSBrowsingHistoryDriver::HasOtherFormsOfBrowsingHistory(
 }
 
 bool IOSBrowsingHistoryDriver::AllowHistoryDeletions() {
-  // Current reasons for suppressing history deletions are from features that
-  // are not currently supported on iOS. Reasons being administrator policy and
-  // supervised users.
-  return true;
+  return prefs_->GetBoolean(prefs::kAllowDeletingBrowserHistory);
 }
 
 bool IOSBrowsingHistoryDriver::ShouldHideWebHistoryUrl(const GURL& url) {
   return !ios::CanAddURLToHistory(url);
-}
-
-history::WebHistoryService* IOSBrowsingHistoryDriver::GetWebHistoryService() {
-  return history_service_getter_.Run();
 }
 
 void IOSBrowsingHistoryDriver::ShouldShowNoticeAboutOtherFormsOfBrowsingHistory(

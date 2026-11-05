@@ -9,6 +9,7 @@
 #include "base/containers/fixed_flat_map.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/grit/renderer_resources_resources.h"
+#include "chrome/renderer/extensions/api/experimental_ai_data_hooks_delegate.h"
 #include "chrome/renderer/extensions/api/extension_hooks_delegate.h"
 #include "chrome/renderer/extensions/api/identity_hooks_delegate.h"
 #include "chrome/renderer/extensions/api/notifications_native_handler.h"
@@ -34,7 +35,9 @@
 #include "chrome/renderer/extensions/api/accessibility_private_hooks_delegate.h"
 #include "chrome/renderer/extensions/api/file_browser_handler_custom_bindings.h"
 #include "chrome/renderer/extensions/api/file_manager_private_custom_bindings.h"
+#include "chrome/renderer/extensions/api/file_manager_private_internal_hooks_delegate.h"
 #include "chrome/renderer/extensions/api/media_galleries_custom_bindings.h"
+#include "chrome/renderer/extensions/api/media_galleries_hooks_delegate.h"
 #include "chrome/renderer/extensions/api/platform_keys_natives.h"
 #if BUILDFLAG(USE_CUPS)
 #include "chrome/renderer/extensions/api/printing_hooks_delegate.h"
@@ -104,6 +107,9 @@ void ChromeExtensionsRendererAPIProvider::AddBindingsSystemHooks(
   // Bindings are stored in a map so the order of registration doesn't matter.
   APIBindingsSystem* bindings = bindings_system->api_system();
   bindings->RegisterHooksDelegate(
+      "experimentalAiData",
+      std::make_unique<ExperimentalAiDataHooksDelegate>());
+  bindings->RegisterHooksDelegate(
       "extension", std::make_unique<extensions::ExtensionHooksDelegate>(
                        bindings_system->messaging_service()));
   bindings->RegisterHooksDelegate(
@@ -121,6 +127,11 @@ void ChromeExtensionsRendererAPIProvider::AddBindingsSystemHooks(
   bindings->RegisterHooksDelegate(
       "accessibilityPrivate",
       std::make_unique<extensions::AccessibilityPrivateHooksDelegate>());
+  bindings->RegisterHooksDelegate(
+      "fileManagerPrivateInternal",
+      std::make_unique<FileManagerPrivateInternalHooksDelegate>());
+  bindings->RegisterHooksDelegate(
+      "mediaGalleries", std::make_unique<MediaGalleriesHooksDelegate>());
 #if BUILDFLAG(USE_CUPS)
   bindings->RegisterHooksDelegate(
       "printing", std::make_unique<extensions::PrintingHooksDelegate>());

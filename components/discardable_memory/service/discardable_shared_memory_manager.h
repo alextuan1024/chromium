@@ -9,9 +9,11 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/format_macros.h"
 #include "base/functional/callback.h"
 #include "base/memory/discardable_memory_allocator.h"
@@ -72,7 +74,7 @@ class DISCARDABLE_MEMORY_EXPORT DiscardableSharedMemoryManager
 
   // Overridden from base::DiscardableMemoryAllocator:
   std::unique_ptr<base::DiscardableMemory> AllocateLockedDiscardableMemory(
-      size_t size) override;
+      base::ByteSize size) override;
 
   // Overridden from base::trace_event::MemoryDumpProvider:
   bool OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
@@ -103,7 +105,7 @@ class DISCARDABLE_MEMORY_EXPORT DiscardableSharedMemoryManager
   void EnforceMemoryPolicy();
 
   // Returns bytes of allocated discardable memory.
-  size_t GetBytesAllocated() const override;
+  base::ByteSize GetAllocatedSize() const override;
 
   void ReleaseFreeMemory() override {
     // Do nothing since we already subscribe to memory pressure notifications.
@@ -197,7 +199,7 @@ class DISCARDABLE_MEMORY_EXPORT DiscardableSharedMemoryManager
   base::CurrentThread mojo_thread_message_loop_;
   scoped_refptr<base::SingleThreadTaskRunner> mojo_thread_task_runner_;
 
-  base::MemoryConsumerRegistration memory_consumer_registration_;
+  std::optional<base::MemoryConsumerRegistration> memory_consumer_registration_;
 
   // A task runner to process memory consumer notifications on worker threads so
   // that `OnUpdateMemoryLimit` and `OnReleaseMemory` work happens on the worker

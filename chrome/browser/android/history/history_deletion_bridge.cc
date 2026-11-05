@@ -14,7 +14,7 @@
 #include "content/public/browser/browser_thread.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
-#include "chrome/android/chrome_jni_headers/HistoryDeletionBridge_jni.h"
+#include "chrome/browser/history/jni_headers/HistoryDeletionBridge_jni.h"
 
 using base::android::JavaRef;
 using base::android::ScopedJavaGlobalRef;
@@ -58,7 +58,7 @@ void HistoryDeletionBridge::Destroy(JNIEnv* env) {
 void HistoryDeletionBridge::OnHistoryDeletions(
     history::HistoryService* history_service,
     const history::DeletionInfo& deletion_info) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   JNIEnv* env = jni_zero::AttachCurrentThread();
   history::DeletionInfo sanitized_info = SanitizeDeletionInfo(deletion_info);
   Java_HistoryDeletionBridge_onURLsDeleted(

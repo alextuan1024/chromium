@@ -24,7 +24,7 @@
 #include "ui/gfx/geometry/point_conversions.h"
 #include "ui/wm/core/coordinate_conversion.h"
 #include "ui/wm/core/cursor_manager.h"
-#include "ui/wm/core/shadow_controller.h"
+#include "ui/wm/core/decoration_controller.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
@@ -36,7 +36,8 @@ DragWindowResizer::~DragWindowResizer() {
   Shell* shell = Shell::Get();
   if (window_state_) {
     window_state_->DeleteDragDetails();
-    shell->shadow_controller()->UpdateShadowForWindow(window_state_->window());
+    shell->decoration_controller()->UpdateDecorationForWindow(
+        window_state_->window());
   }
   shell->mouse_cursor_filter()->set_mouse_warp_enabled(true);
   shell->mouse_cursor_filter()->HideSharedEdgeIndicator();
@@ -45,11 +46,11 @@ DragWindowResizer::~DragWindowResizer() {
 }
 
 void DragWindowResizer::Drag(const gfx::PointF& location, int event_flags) {
-  base::WeakPtr<DragWindowResizer> resizer(weak_ptr_factory_.GetWeakPtr());
+  WindowResizer::ScopedDeleteBlocker blocker(this);
   next_window_resizer_->Drag(location, event_flags);
-
-  if (!resizer)
+  if (IsDragCompleted()) {
     return;
+  }
 
   last_mouse_location_ = location;
   // Show a phantom window for dragging in another root window.
@@ -79,6 +80,11 @@ void DragWindowResizer::Pinch(const gfx::PointF& location, float scale) {
   next_window_resizer_->Pinch(location, scale);
 }
 
+void DragWindowResizer::OnDragCompleted() {
+  WindowResizer::OnDragCompleted();
+  next_window_resizer_->OnDragCompleted();
+}
+
 DragWindowResizer::DragWindowResizer(
     std::unique_ptr<WindowResizer> next_window_resizer,
     WindowState* window_state)
@@ -93,7 +99,7 @@ DragWindowResizer::DragWindowResizer(
   mouse_cursor_filter->set_mouse_warp_enabled(ShouldAllowMouseWarp());
   if (ShouldAllowMouseWarp())
     mouse_cursor_filter->ShowSharedEdgeIndicator(GetTarget()->GetRootWindow());
-  Shell::Get()->shadow_controller()->UpdateShadowForWindow(GetTarget());
+  Shell::Get()->decoration_controller()->UpdateDecorationForWindow(GetTarget());
   instance_ = this;
 }
 

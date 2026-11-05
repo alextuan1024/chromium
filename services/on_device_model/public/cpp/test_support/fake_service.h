@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
@@ -30,6 +31,9 @@ inline constexpr std::string FakeTsData() {
 }
 inline constexpr std::string FakeLanguageModel() {
   return "fake_language_model";
+}
+inline constexpr std::string FakeDecisionData() {
+  return "fake_decision_data";
 }
 
 // Hooks for tests to control the FakeOnDeviceService behavior.
@@ -56,6 +60,12 @@ struct FakeOnDeviceServiceSettings final {
 
   // If non-empty, tool calls are simulated during Generate().
   std::vector<mojom::ToolCallPtr> simulated_tool_calls;
+
+  // Tool declarations received by `FakeOnDeviceSession::Append()`.
+  std::vector<mojom::ToolDeclarationPtr> recorded_tool_declarations;
+
+  // Response constraints received by `FakeOnDeviceSession::Generate()`.
+  std::vector<mojom::ResponseConstraintPtr> recorded_constraints;
 
   std::optional<ServiceDisconnectReason> service_disconnect_reason;
 
@@ -154,10 +164,13 @@ class FakeOnDeviceModel : public mojom::OnDeviceModel {
 
     std::string base_weight = "";
     std::string adaptation_model_weight = "";
+    std::string postprocessor_weight = "";
     std::string cache_weight = "";
     std::string encoder_cache_weight = "";
     std::string adapter_cache_weight = "";
     std::string shader_cache_data = "";
+    std::string mtp_drafter_cache_weight = "";
+    std::string mtp_drafter_shader_cache_data = "";
     std::vector<uint32_t> adaptation_ranks;
   };
   explicit FakeOnDeviceModel(FakeOnDeviceServiceSettings* settings,
@@ -179,6 +192,10 @@ class FakeOnDeviceModel : public mojom::OnDeviceModel {
   void LoadAdaptation(mojom::LoadAdaptationParamsPtr params,
                       mojo::PendingReceiver<mojom::OnDeviceModel> model,
                       LoadAdaptationCallback callback) override;
+
+  void LoadPostProcessor(mojom::LoadPostProcessorParamsPtr params,
+                         mojo::PendingReceiver<mojom::OnDeviceModel> model,
+                         LoadPostProcessorCallback callback) override;
 
   void AddSession(
       mojo::PendingReceiver<on_device_model::mojom::Session> receiver,
@@ -238,6 +255,51 @@ class FakeSafetyModelHolder final {
   mojo::UniqueReceiverSet<on_device_model::mojom::TextSafetyModel> model_;
 };
 
+class FakeDecisionModel final : public mojom::DecisionModel,
+                                public mojom::DecisionSession {
+ public:
+  explicit FakeDecisionModel(mojom::DecisionModelParamsPtr params);
+  ~FakeDecisionModel() override;
+
+  // mojom::DecisionModel:
+  void StartSession(
+      mojom::DecisionQueryPtr query,
+      mojo::PendingReceiver<mojom::DecisionSession> session) override;
+
+  // mojom::DecisionSession:
+  void Decide(const std::string& input, DecideCallback callback) override;
+
+  const std::string& data() const { return data_; }
+
+ private:
+  bool has_decision_model_ = false;
+  std::string data_;
+  mojo::ReceiverSet<mojom::DecisionSession, mojom::DecisionQueryPtr> sessions_;
+};
+
+// FakeDecisionModelHolder holds a single FakeDecisionModel for testing.
+class FakeDecisionModelHolder final {
+ public:
+  FakeDecisionModelHolder();
+  ~FakeDecisionModelHolder();
+
+  void Reset(mojom::DecisionModelParamsPtr params,
+             mojo::PendingReceiver<mojom::DecisionModel> model_receiver);
+
+  FakeDecisionModel* model() {
+    auto contexts = model_.GetAllContexts();
+    if (contexts.size() != 1) {
+      return nullptr;
+    }
+    return *contexts.begin()->second;
+  }
+
+ private:
+  mojo::UniqueReceiverSet<on_device_model::mojom::DecisionModel,
+                          FakeDecisionModel*>
+      model_;
+};
+
 class FakeOnDeviceModelService : public mojom::OnDeviceModelService {
  public:
   explicit FakeOnDeviceModelService(FakeOnDeviceServiceSettings* settings);
@@ -255,6 +317,8 @@ class FakeOnDeviceModelService : public mojom::OnDeviceModelService {
     return *contexts.begin()->second;
   }
 
+  FakeDecisionModel* decision_model() { return decision_model_holder_.model(); }
+
  private:
   // mojom::OnDeviceModelService:
   void LoadModel(mojom::LoadModelParamsPtr params,
@@ -265,11 +329,15 @@ class FakeOnDeviceModelService : public mojom::OnDeviceModelService {
   void LoadTextSafetyModel(
       mojom::TextSafetyModelParamsPtr params,
       mojo::PendingReceiver<mojom::TextSafetyModel> model) override;
+  void LoadDecisionModel(mojom::DecisionModelParamsPtr params,
+                         mojo::PendingReceiver<mojom::DecisionModel> model,
+                         LoadDecisionModelCallback callback) override;
   void GetDeviceAndPerformanceInfo(
       GetDeviceAndPerformanceInfoCallback callback) override;
 
   raw_ptr<FakeOnDeviceServiceSettings> settings_;
   FakeSafetyModelHolder safety_model_holder_;
+  FakeDecisionModelHolder decision_model_holder_;
   mojo::UniqueReceiverSet<mojom::OnDeviceModel, FakeOnDeviceModel*>
       model_receivers_;
 };

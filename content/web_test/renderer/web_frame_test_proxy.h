@@ -60,10 +60,6 @@ class WebFrameTestProxy : public RenderFrameImpl,
 
   // WebLocalFrameClient implementation.
   blink::WebPlugin* CreatePlugin(const blink::WebPluginParams& params) override;
-  void DidAddMessageToConsole(const blink::WebConsoleMessage& message,
-                              const blink::WebString& source_name,
-                              unsigned source_line,
-                              const blink::WebString& stack_trace) override;
   void DidStartLoading() override;
   void DidStopLoading() override;
   void DidChangeSelection(bool is_selection_empty,
@@ -116,6 +112,7 @@ class WebFrameTestProxy : public RenderFrameImpl,
   void ReplicateWebTestRuntimeFlagsChanges(
       base::DictValue changed_layout_test_runtime_flags) override;
   void ResetRendererAfterWebTest() override;
+  void ResetTestRunnerForNewWebTest() override;
 
   mojom::WebTestControlHost* GetWebTestControlHostRemote();
 

@@ -42,7 +42,7 @@ class FormSubmissionTracker : public content::RenderFrameObserver,
  public:
   using ElementDidChangeCallback =
       base::OnceCallback<void(const blink::WebFormControlElement&,
-                              const SynchronousFormCache&)>;
+                              SynchronousFormCache&)>;
 
   explicit FormSubmissionTracker(
       content::RenderFrame* render_frame,
@@ -217,7 +217,10 @@ class FormSubmissionTracker : public content::RenderFrameObserver,
 
   SEQUENCE_CHECKER(form_submission_tracker_sequence_checker_);
 
-  base::WeakPtrFactory<FormSubmissionTracker> weak_ptr_factory_{this};
+  base::WeakPtrFactory<FormSubmissionTracker>
+      form_control_did_change_weak_ptr_factory_{this};
+  base::WeakPtrFactory<FormSubmissionTracker>
+      same_document_navigation_weak_ptr_factory_{this};
 };
 
 }  // namespace autofill

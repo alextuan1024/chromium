@@ -30,6 +30,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/picture_in_picture/auto_picture_in_picture_tab_helper.h"
 #include "chrome/browser/picture_in_picture/auto_pip_setting_overlay_view.h"
+#include "chrome/browser/picture_in_picture/document_pip_show_mode.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_occlusion_tracker.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window.h"
 #include "chrome/browser/ui/views/picture_in_picture/document_pip_host.h"
@@ -70,14 +71,15 @@ constexpr double kMaxWindowSizeRatio = 0.8;
 // `kMaxWindowSizeRatio`.
 constexpr double kMaxSiteRequestedWindowSizeRatio = 0.25;
 
-// Returns true if a document picture-in-picture window should be focused upon
-// opening it.
-bool ShouldFocusPictureInPictureWindow(const NavigateParams& params) {
-  // All document picture-in-picture openings must have a source_contents.
-  CHECK(params.source_contents);
-
+// Returns true if a document picture-in-picture window opened by
+// `source_contents` should be focused upon opening it. Only reliable once the
+// opener's picture-in-picture state has been updated by
+// EnterDocumentPictureInPicture(), because that is what makes the
+// AutoPictureInPictureTabHelper report IsInAutoPictureInPicture().
+bool ShouldFocusPictureInPictureWindow(
+    const content::WebContents& source_contents) {
   const auto* auto_picture_in_picture_tab_helper =
-      AutoPictureInPictureTabHelper::FromWebContents(params.source_contents);
+      AutoPictureInPictureTabHelper::FromWebContents(&source_contents);
   if (!auto_picture_in_picture_tab_helper) {
     return true;
   }
@@ -156,8 +158,6 @@ void PictureInPictureWindowManager::EnterPictureInPictureWithController(
     // Don't exit picture-in-picture synchronously since exiting in the middle
     // of opening leaves us in a bad state.
     ExitPictureInPictureSoon();
-    RecordPictureInPictureDisallowed(
-        PictureInPictureDisallowedType::kNewWindowClosed);
   }
 
   MaybeRecordPictureInPictureChanged(true);
@@ -167,12 +167,28 @@ void PictureInPictureWindowManager::EnterPictureInPictureWithController(
 void PictureInPictureWindowManager::EnterDocumentPictureInPicture(
     content::WebContents* parent_web_contents,
     content::WebContents* child_web_contents) {
+  // A Document Picture-in-Picture child WebContents cannot open another
+  // Document Picture-in-Picture window. Reject the request before closing the
+  // existing window, which would close `parent_web_contents` itself.
+  if (!parent_web_contents || !child_web_contents ||
+      GetChildWebContents() == parent_web_contents) {
+    return;
+  }
+
   // If there was already a controller, close the existing window before
   // creating the next one. This needs to happen before creating the new
   // controller so that its precondition (no child_web_contents_) remains
   // valid.
-  if (pip_window_controller_)
+  if (pip_window_controller_) {
+    base::WeakPtr<content::WebContents> weak_parent =
+        parent_web_contents->GetWeakPtr();
+    base::WeakPtr<content::WebContents> weak_child =
+        child_web_contents->GetWeakPtr();
     CloseWindowInternal();
+    if (!weak_parent || !weak_child) {
+      return;
+    }
+  }
 
   // Start observing the parent web contents.
   document_web_contents_observer_ =
@@ -193,6 +209,13 @@ void PictureInPictureWindowManager::EnterDocumentPictureInPicture(
 content::PictureInPictureResult
 PictureInPictureWindowManager::EnterVideoPictureInPicture(
     content::WebContents* web_contents) {
+  // A Document Picture-in-Picture child WebContents cannot enter video
+  // Picture-in-Picture. Reject the request before closing the existing
+  // window, which would close `web_contents` itself.
+  if (web_contents && GetChildWebContents() == web_contents) {
+    return content::PictureInPictureResult::kNotSupported;
+  }
+
   // Create or update |pip_window_controller_| for the current WebContents, if
   // it is a WebContents based video PIP.
   if (!pip_window_controller_ ||
@@ -200,8 +223,14 @@ PictureInPictureWindowManager::EnterVideoPictureInPicture(
       !pip_window_controller_->GetWebContents()->HasPictureInPictureVideo()) {
     // If there was already a video PiP controller, close the existing window
     // before creating the next one.
-    if (pip_window_controller_)
+    if (pip_window_controller_) {
+      base::WeakPtr<content::WebContents> weak_web_contents =
+          web_contents->GetWeakPtr();
       CloseWindowInternal();
+      if (!weak_web_contents) {
+        return content::PictureInPictureResult::kNotSupported;
+      }
+    }
 
     CreateWindowInternal(web_contents);
   }
@@ -585,8 +614,10 @@ void PictureInPictureWindowManager::SetWindowParams(NavigateParams& params) {
 #if !BUILDFLAG(IS_ANDROID)
   // Always show document picture-in-picture in a new window. When this is
   // not opened via the AutoPictureInPictureTabHelper, focus the window.
+  // All document picture-in-picture openings must have a source_contents.
+  CHECK(params.source_contents);
   params.window_action =
-      ShouldFocusPictureInPictureWindow(params)
+      ShouldFocusPictureInPictureWindow(*params.source_contents)
           ? NavigateParams::WindowAction::kShowWindow
           : NavigateParams::WindowAction::kShowWindowInactive;
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -634,14 +665,13 @@ void PictureInPictureWindowManager::CreateWindowInternal(
     // Don't exit picture-in-picture synchronously since exiting in the middle
     // of opening leaves us in a bad state.
     ExitPictureInPictureSoon();
-    RecordPictureInPictureDisallowed(
-        PictureInPictureDisallowedType::kNewWindowClosed);
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
 }
 
 void PictureInPictureWindowManager::CloseWindowInternal() {
   video_web_contents_observer_.reset();
+  document_web_contents_observer_.reset();
 
 #if !BUILDFLAG(IS_ANDROID)
   // Close the standalone Document PiP window, if one is open. The host itself
@@ -697,7 +727,7 @@ void PictureInPictureWindowManager::EnterStandaloneDocumentPictureInPicture(
     content::WebContents* parent_web_contents,
     std::unique_ptr<content::WebContents> child_web_contents,
     blink::mojom::PictureInPictureWindowOptions pip_options,
-    bool focus_contents) {
+    bool user_gesture) {
   CHECK(child_web_contents);
 
   // Reuse the shared document picture-in-picture setup: it closes any existing
@@ -713,6 +743,9 @@ void PictureInPictureWindowManager::EnterStandaloneDocumentPictureInPicture(
   // and computing bounds with `pip_window_controller_` already set matches the
   // established ordering.
   EnterDocumentPictureInPicture(parent_web_contents, child_web_contents.get());
+  if (GetChildWebContents() != child_web_contents.get()) {
+    return;
+  }
 
   // Compute the initial outer window bounds on the opener's display so the
   // window opens on the same monitor as the opener, positioned inside that
@@ -728,17 +761,25 @@ void PictureInPictureWindowManager::EnterStandaloneDocumentPictureInPicture(
   const gfx::Rect initial_bounds =
       CalculateInitialPictureInPictureWindowBounds(pip_options, opener_display);
 
+  // Choose how to show the window. This must come after
+  // EnterDocumentPictureInPicture(): that is what updates the opener's
+  // picture-in-picture state, and only then does the
+  // AutoPictureInPictureTabHelper report that the opener is in auto-pip. This
+  // mirrors the Browser-backed path, where SetWindowParams() runs after
+  // EnterDocumentPictureInPicture() for the same reason, and
+  // ScopedBrowserShower focuses the contents for a user-gesture open.
+  DocumentPipShowMode show_mode = DocumentPipShowMode::kInactive;
+  if (ShouldFocusPictureInPictureWindow(*parent_web_contents)) {
+    show_mode = user_gesture ? DocumentPipShowMode::kActivateAndFocus
+                             : DocumentPipShowMode::kActivate;
+  }
+
   // Create the standalone host on the opener and hand it the child WebContents.
   DocumentPipHost::CreateForWebContents(parent_web_contents);
   auto* host = DocumentPipHost::FromWebContents(parent_web_contents);
   host->CreateAndShowPipWindow(std::move(child_web_contents),
-                               std::move(pip_options), initial_bounds);
-  // Match ScopedBrowserShower's user-gesture behavior for Browser-backed
-  // Document PiP windows instead of relying solely on native activation.
-  if (focus_contents) {
-    host->GetChildWebContents()->Focus();
-    host->GetWidget()->Activate();
-  }
+                               std::move(pip_options), initial_bounds,
+                               show_mode);
   document_pip_host_ = host->GetWeakPtr();
 }
 
@@ -828,8 +869,6 @@ void PictureInPictureWindowManager::OnScopedDisallowPictureInPictureCreated(
   number_of_existing_scoped_disallow_picture_in_pictures_++;
   if (pip_window_controller_) {
     ExitPictureInPicture();
-    RecordPictureInPictureDisallowed(
-        PictureInPictureDisallowedType::kExistingWindowClosed);
   }
 }
 
@@ -936,11 +975,6 @@ void PictureInPictureWindowManager::
         "Media.DocumentPictureInPicture.RequestedSizeToScreenRatio",
         recorded_percent);
   }
-}
-
-void PictureInPictureWindowManager::RecordPictureInPictureDisallowed(
-    PictureInPictureDisallowedType type) {
-  base::UmaHistogramEnumeration("Media.PictureInPicture.Disallowed", type);
 }
 
 void PictureInPictureWindowManager::RecordPictureInPictureTucked(

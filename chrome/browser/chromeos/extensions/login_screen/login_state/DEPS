@@ -12,9 +12,7 @@ include_rules = [
   # b/332804822. Whenever possible, avoid adding new //chrome dependencies to
   # this list.
   "+chrome/browser/extensions/extension_apitest.h",
-  "+chrome/browser/extensions/extension_api_unittest.h",
   "+chrome/browser/profiles/profile.h",
-  "+chrome/common",
   "+chrome/test",
   "+chrome/browser/ash/login/lock/screen_locker_tester.h",
   "+chrome/browser/ash/login/test/device_state_mixin.h",
@@ -22,6 +20,19 @@ include_rules = [
   "+chrome/browser/ash/profiles/profile_helper.h",
   "+chrome/browser/browser_process.h",
   "+chrome/browser/policy/extension_force_install_mixin.h",
-  "+chrome/browser/profiles/profile_manager.h",
   "+chrome/browser/ash/extensions/authentication_screen_extensions_external_loader.h",
 ]
+
+specific_include_rules = {
+  # Only tests need these //chrome dependencies.
+  "login_state_api_unittest\\.cc": [
+    "+chrome/browser/extensions/extension_api_unittest.h",
+    "+chrome/common/chrome_constants.h",
+  ],
+  "login_state_apitest\\.cc": [
+    "+chrome/common/chrome_paths.h",
+  ],
+  "session_state_changed_event_dispatcher_ash_unittest\\.cc": [
+    "+chrome/common/chrome_constants.h",
+  ],
+}

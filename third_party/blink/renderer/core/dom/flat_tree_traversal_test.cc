@@ -19,7 +19,6 @@
 #include "third_party/blink/renderer/core/html/html_slot_element.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
@@ -285,7 +284,7 @@ TEST_F(FlatTreeTraversalTest, ChildrenOf) {
       "<p id=sample>ZERO<span slot=three>three</b><span "
       "slot=one>one</b>FOUR</p>",
       "zero<slot name=one></slot>two<slot name=three></slot>four", 0);
-  Element* const sample = GetDocument().getElementById(AtomicString("sample"));
+  Element* const sample = GetElementById("sample");
 
   HeapVector<Member<Node>> expected_nodes;
   for (Node* runner = FlatTreeTraversal::FirstChild(*sample); runner;
@@ -451,7 +450,7 @@ TEST_F(FlatTreeTraversalTest, SkippingChildrenFunctions) {
 
 TEST_F(FlatTreeTraversalTest, AncestorsOf) {
   SetupDocumentTree("<div><div><div id=sample></div></div></div>");
-  Element* const sample = GetDocument().getElementById(AtomicString("sample"));
+  Element* const sample = GetElementById("sample");
 
   HeapVector<Member<Node>> expected_nodes;
   for (Node* parent = FlatTreeTraversal::Parent(*sample); parent;
@@ -468,7 +467,7 @@ TEST_F(FlatTreeTraversalTest, AncestorsOf) {
 
 TEST_F(FlatTreeTraversalTest, InclusiveAncestorsOf) {
   SetupDocumentTree("<div><div><div id=sample></div></div></div>");
-  Element* const sample = GetDocument().getElementById(AtomicString("sample"));
+  Element* const sample = GetElementById("sample");
 
   HeapVector<Member<Node>> expected_nodes;
   for (Node* parent = sample; parent;

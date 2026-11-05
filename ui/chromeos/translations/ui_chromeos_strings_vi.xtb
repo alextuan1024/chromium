@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Camera</translation>
 <translation id="162175252992296058">Tiếng Bồ Đào Nha bằng bàn phím quốc tế Hoa Kỳ</translation>
 <translation id="1629521517399325891">Không có chứng chỉ người dùng để xác thực mạng.</translation>
+<translation id="1639239467298939599">Đang tải</translation>
 <translation id="1641780993263690097">Tiếng Trung (bính âm)</translation>
 <translation id="164969095109328410">Thiết bị Chrome</translation>
 <translation id="1661207570040737402">Bạn đã dùng hết bộ nhớ dùng chung trên Google Workspace.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Tính năng đồng bộ hoá tệp đã tắt</translation>
 <translation id="2820957248982571256">Đang quét...</translation>
 <translation id="2830077785865012357">Tiếng Trung (chú âm)</translation>
+<translation id="2838379631617906747">Đang cài đặt</translation>
 <translation id="2843806747483486897">Thay đổi ứng dụng mặc định...</translation>
 <translation id="2873951654529031587">Thùng rác</translation>
 <translation id="2887314858867008269">Bàn phím Colemak tiêu chuẩn Hoa Kỳ</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Mật khẩu sai</translation>
 <translation id="5059127710849015030">Tiếng Nepal (chuyển tự)</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> đã thiết lập các quy tắc ghi đè proxy</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> dung lượng tệp sẽ bị xóa</translation>
 <translation id="508423945471810158">Đang di chuyển <ph name="NUMBER_OF_ITEMS" /> mục vào <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Đã xảy ra lỗi.</translation>
-<translation id="5102922915594634436">Quản lý các thư mục được đồng bộ hoá</translation>
 <translation id="5109254780565519649">Đã xảy ra lỗi. Một số mục có thể chưa được khôi phục.</translation>
 <translation id="5110329002213341433">Tiếng Anh (Canada)</translation>
 <translation id="5119780910075847424">Tính năng đồng bộ hoá đã tạm dừng</translation>
@@ -540,7 +542,7 @@
 <translation id="5181896909298187506">Không có tệp nào gần đây</translation>
 <translation id="5194713942430106590">Nhấp để sắp xếp cột theo thứ tự tăng dần.</translation>
 <translation id="5211614973734216083">Tiếng Faroe</translation>
-<translation id="5234764350956374838">Bỏ qua</translation>
+<translation id="5234764350956374838">Đóng</translation>
 <translation id="5253070652067921974">Người tạo:</translation>
 <translation id="5254207638927440400">Không thể di chuyển tệp. Tệp đang được sử dụng.</translation>
 <translation id="5257456363153333584">Chuồn chuồn</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Chưa cài đặt chứng chỉ nào</translation>
 <translation id="5317780077021120954">Lưu</translation>
 <translation id="5318819489018851358">Chia sẻ với Linux</translation>
-<translation id="5330145655348521461">Những tệp này được mở trên máy tính khác. Chuyển tới <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) để xem tệp đó.</translation>
 <translation id="5330512191124428349">Nhận thông tin</translation>
 <translation id="535792325654997756">Người với mèo</translation>
 <translation id="5358764674931277">Tốc độ khung hình</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Giá trị so khớp hậu tố tên miền không hợp lệ</translation>
 <translation id="6364301859968397756">Đã dùng hết bộ nhớ của tổ chức</translation>
 <translation id="6367976544441405720">Xe tải</translation>
-<translation id="637062427944097960">Tệp này được mở trên máy tính khác. Chuyển sang <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) để xem tệp này.</translation>
 <translation id="6394388407447716302">Chỉ có thể đọc</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> mục</translation>
 <translation id="6407769893376380348">Không di chuyển được <ph name="FILE_NAME" /> vì tệp này đã được mã hoá.</translation>
@@ -942,7 +942,7 @@
 <translation id="813913629614996137">Đang khởi chạy...</translation>
 <translation id="8147028810663464959">Độ rộng ký tự là Đầy đủ</translation>
 <translation id="8151638057146502721">Định cấu hình</translation>
-<translation id="8154666764013920974">{NUM_ERROR,plural, =1{1 lỗi.}other{# lỗi.}}</translation>
+<translation id="8154666764013920974">{NUM_ERROR,plural, =1{1 lỗi.}one{# errors.}other{# lỗi.}}</translation>
 <translation id="8154842056504218462">Đã chọn tất cả các mục.</translation>
 <translation id="8175731104491895765">Tiếng Pháp (Bỉ)</translation>
 <translation id="8175799081768705361">Đang đồng bộ hoá <ph name="NUMBER_OF_FILES_SYNCING" /> tệp trên Drive</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – Cổng</translation>
 <translation id="8656407365183407932">Hệ thống buộc phải xoá các tệp ngoại tuyến của bạn</translation>
 <translation id="8656768832129462377">Không kiểm tra</translation>
+<translation id="8662978096466608964">Chrome không thể đặt hình nền.</translation>
 <translation id="8688591111840995413">Mật khẩu không chính xác</translation>
 <translation id="8698464937041809063">Bản vẽ Google</translation>
 <translation id="8698877009525468705">Tệp này được bảo mật và phải tuân thủ các hạn chế theo chính sách dành cho quản trị viên.</translation>
@@ -1032,7 +1033,7 @@
 <translation id="8787254343425541995">Cho phép các proxy đối với mạng chia sẻ</translation>
 <translation id="8790981080411996443">Người tưới cây</translation>
 <translation id="8798099450830957504">Mặc định</translation>
-<translation id="8806832560029769670">{NUM_WARNING,plural, =1{1 cảnh báo.}other{# cảnh báo.}}</translation>
+<translation id="8806832560029769670">{NUM_WARNING,plural, =1{1 cảnh báo.}one{# warnings.}other{# cảnh báo.}}</translation>
 <translation id="8808686172382650546">Mèo</translation>
 <translation id="8810671769985673465">Không nén được, mục tồn tại: "<ph name="FILE_NAME" />"</translation>
 <translation id="8813284582615685103">Tiếng Tây Ban Nha (Tây Ban Nha)</translation>

@@ -4,20 +4,26 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.os.SystemClock;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.PointerIcon;
 import android.view.View;
+import android.view.View.MeasureSpec;
+import android.view.ViewGroup;
 
 import androidx.recyclerview.widget.ItemTouchHelper;
+import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
@@ -36,11 +42,49 @@ import org.chromium.components.bookmarks.BookmarkType;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 import org.chromium.ui.base.TestActivity;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /** Unit tests for {@link BookmarkManagerDragHelper}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class BookmarkManagerDragHelperTest {
+    private static class TestRecyclerView extends RecyclerView {
+        final List<Boolean> mDisallowInterceptCalls = new ArrayList<>();
+
+        TestRecyclerView(Activity activity) {
+            super(activity);
+        }
+
+        @Override
+        public void requestDisallowInterceptTouchEvent(boolean disallowIntercept) {
+            mDisallowInterceptCalls.add(disallowIntercept);
+            super.requestDisallowInterceptTouchEvent(disallowIntercept);
+        }
+    }
+
+    private class SingleHolderAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+        private int mItemCount = 1;
+
+        void removeItemWithoutLayout() {
+            mItemCount = 0;
+            notifyItemRemoved(0);
+        }
+
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            return mViewHolder;
+        }
+
+        @Override
+        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {}
+
+        @Override
+        public int getItemCount() {
+            return mItemCount;
+        }
+    }
+
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
@@ -49,12 +93,13 @@ public class BookmarkManagerDragHelperTest {
 
     @Mock SelectionDelegate<BookmarkId> mSelectionDelegate;
     @Mock ItemTouchHelper mItemTouchHelper;
-    @Mock RecyclerView mRecyclerView;
-    @Mock View mItemView;
+    @Mock View.OnClickListener mClickListener;
 
-    @Mock View mDragHandle;
-
-    RecyclerView.ViewHolder mViewHolder;
+    private TestRecyclerView mRecyclerView;
+    private SingleHolderAdapter mAdapter;
+    private ImprovedBookmarkRow mItemView;
+    private View mDragHandle;
+    private RecyclerView.ViewHolder mViewHolder;
     private Activity mActivity;
     private BookmarkManagerDragHelper mDragHelper;
     private BookmarkId mBookmarkId;
@@ -63,11 +108,22 @@ public class BookmarkManagerDragHelperTest {
     public void setUp() {
         mActivityScenarioRule.getScenario().onActivity((activity) -> mActivity = activity);
 
-        mBookmarkId = new BookmarkId(12345L, BookmarkType.NORMAL);
+        mBookmarkId = new BookmarkId(/* id= */ 12345L, BookmarkType.NORMAL);
+        mRecyclerView = new TestRecyclerView(mActivity);
+        mDragHandle = new View(mActivity);
+        mDragHandle.setId(R.id.drag_handle);
+        mItemView = new ImprovedBookmarkRow(mActivity, /* attrs= */ null);
+        mItemView.addView(mDragHandle);
         mViewHolder = new RecyclerView.ViewHolder(mItemView) {};
 
-        when(mItemView.getContext()).thenReturn(mActivity);
-        doReturn(mDragHandle).when(mItemView).findViewById(R.id.drag_handle);
+        mAdapter = new SingleHolderAdapter();
+        mRecyclerView.setLayoutManager(new LinearLayoutManager(mActivity));
+        mRecyclerView.setAdapter(mAdapter);
+        mActivity.setContentView(mRecyclerView);
+        int spec = MeasureSpec.makeMeasureSpec(/* size= */ 500, MeasureSpec.EXACTLY);
+        mRecyclerView.measure(spec, spec);
+        mRecyclerView.layout(/* l= */ 0, /* t= */ 0, /* r= */ 500, /* b= */ 500);
+        mRecyclerView.mDisallowInterceptCalls.clear();
 
         mDragHelper =
                 new BookmarkManagerDragHelper(
@@ -116,9 +172,42 @@ public class BookmarkManagerDragHelperTest {
     }
 
     @Test
-    public void testTouch_Scenario2_AlreadySelectedStartsDragQuickly() {
-        // Scenario 2: Item is already selected.
-        doReturn(true).when(mSelectionDelegate).isItemSelected(mBookmarkId);
+    public void testTouch_Scenario1_LongPressSelectsThenMoveImmediatelyStartsDrag() {
+        // Scenario 1b: Item is not selected. User holds for 500ms (selection triggers), then
+        // immediately moves finger during the 500ms-600ms window. Drag should start immediately
+        // instead of being cancelled.
+        doReturn(/* toBeReturned= */ false).when(mSelectionDelegate).isItemSelected(mBookmarkId);
+
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+
+        ShadowLooper.idleMainLooper(/* duration= */ 500, TimeUnit.MILLISECONDS);
+        verify(mSelectionDelegate).toggleSelectionForItem(mBookmarkId);
+        verify(mItemTouchHelper, never()).startDrag(any());
+
+        // Move finger past touch slop before the 100ms drag timer fires.
+        boolean consumed =
+                mDragHelper.onRowBodyTouch(
+                        mItemView,
+                        obtainEvent(
+                                /* action= */ MotionEvent.ACTION_MOVE,
+                                /* x= */ 100f,
+                                /* y= */ 100f,
+                                /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        assertTrue(consumed);
+        verify(mItemTouchHelper).startDrag(mViewHolder);
+    }
+
+    @Test
+    public void testTouch_Scenario2_AlreadySelectedHoldStartsDrag() {
+        // Scenario 2: Item is already selected. A stationary hold starts drag after
+        // SELECTION_START_DELAY_MS, without toggling selection.
+        doReturn(/* toBeReturned= */ true).when(mSelectionDelegate).isItemSelected(mBookmarkId);
 
         // Perform action down.
         mDragHelper.onRowBodyTouch(
@@ -129,15 +218,115 @@ public class BookmarkManagerDragHelperTest {
                         /* y= */ 50f,
                         /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
 
-        // Verify drag starts quickly (100ms) without toggling selection.
-        ShadowLooper.idleMainLooper(100, TimeUnit.MILLISECONDS);
+        // Verify a normal tap window does not prematurely start drag while stationary.
+        ShadowLooper.idleMainLooper(/* duration= */ 499, TimeUnit.MILLISECONDS);
+        verify(mItemTouchHelper, never()).startDrag(any());
+
+        ShadowLooper.idleMainLooper(/* duration= */ 1, TimeUnit.MILLISECONDS);
         verify(mItemTouchHelper).startDrag(mViewHolder);
         verify(mSelectionDelegate, never()).toggleSelectionForItem(any());
     }
 
     @Test
+    public void testTouch_Scenario2_AlreadySelectedMoveScrolls() {
+        // Scenario 2b: Item is already selected. Moving past touch slop before the hold timer
+        // fires is a scroll: the event is not consumed and no drag starts.
+        doReturn(/* toBeReturned= */ true).when(mSelectionDelegate).isItemSelected(mBookmarkId);
+
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        boolean consumed =
+                mDragHelper.onRowBodyTouch(
+                        mItemView,
+                        obtainEvent(
+                                /* action= */ MotionEvent.ACTION_MOVE,
+                                /* x= */ 100f,
+                                /* y= */ 100f,
+                                /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        assertFalse(consumed);
+
+        ShadowLooper.idleMainLooper(/* duration= */ 1000, TimeUnit.MILLISECONDS);
+        verify(mItemTouchHelper, never()).startDrag(any());
+    }
+
+    @Test
+    public void testTouch_CanDragAgainWithoutRebind() {
+        // Scenario: A row-body drag finishes without the row being rebound, so the same helper
+        // handles the next gesture. The second long-press + move should still start a drag.
+        doReturn(/* toBeReturned= */ false).when(mSelectionDelegate).isItemSelected(mBookmarkId);
+
+        for (int i = 0; i < 2; i++) {
+            mDragHelper.onRowBodyTouch(
+                    mItemView,
+                    obtainEvent(
+                            /* action= */ MotionEvent.ACTION_DOWN,
+                            /* x= */ 50f,
+                            /* y= */ 50f,
+                            /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+            ShadowLooper.idleMainLooper(/* duration= */ 500, TimeUnit.MILLISECONDS);
+            mDragHelper.onRowBodyTouch(
+                    mItemView,
+                    obtainEvent(
+                            /* action= */ MotionEvent.ACTION_MOVE,
+                            /* x= */ 100f,
+                            /* y= */ 100f,
+                            /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+            // ItemTouchHelper takes over the gesture and cancels the row's touch stream.
+            mDragHelper.onRowBodyTouch(
+                    mItemView,
+                    obtainEvent(
+                            /* action= */ MotionEvent.ACTION_CANCEL,
+                            /* x= */ 100f,
+                            /* y= */ 100f,
+                            /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        }
+
+        verify(mItemTouchHelper, times(/* wantedNumberOfInvocations= */ 2)).startDrag(mViewHolder);
+    }
+
+    @Test
+    public void testTouch_MovePastSlopThenUpDoesNotClick() {
+        // Scenario: User moves past touch slop on an unselected row (e.g. a swipe the
+        // RecyclerView did not intercept), then lifts. This must not be treated as a tap.
+        doReturn(/* toBeReturned= */ false).when(mSelectionDelegate).isItemSelected(mBookmarkId);
+        mItemView.setOnClickListener(mClickListener);
+
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_MOVE,
+                        /* x= */ 100f,
+                        /* y= */ 100f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_UP,
+                        /* x= */ 100f,
+                        /* y= */ 100f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+
+        verify(mClickListener, never()).onClick(any());
+    }
+
+    @Test
     public void test_onViewDetachedFromWindow() {
-        // Perform action down.
+        assertTrue(mItemView.isAttachedToWindow());
+        ViewGroup parent = (ViewGroup) mRecyclerView.getParent();
+
+        // Perform action down (before 500ms, disallowIntercept has not been requested).
         mDragHelper.onRowBodyTouch(
                 mItemView,
                 obtainEvent(
@@ -146,44 +335,235 @@ public class BookmarkManagerDragHelperTest {
                         /* y= */ 50f,
                         /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
 
-        // Simulate the recyclerView recycling the view (ImprovedBookmarkRow gets detached).
-        mDragHelper.onViewDetachedFromWindow(mItemView);
+        // Detach the hierarchy so ImprovedBookmarkRow receives onViewDetachedFromWindow.
+        parent.removeView(mRecyclerView);
+        assertFalse(mItemView.isAttachedToWindow());
+
+        // Detaching without having requested disallow-intercept must not clear another row's
+        // disallow-intercept state.
+        assertTrue(mRecyclerView.mDisallowInterceptCalls.isEmpty());
 
         // Fast forward time significantly.
-        ShadowLooper.idleMainLooper(10000, TimeUnit.MILLISECONDS);
+        ShadowLooper.idleMainLooper(/* duration= */ 10000, TimeUnit.MILLISECONDS);
 
         // Verify that the timer has died and that selection and drag have not happened.
         verify(mSelectionDelegate, never()).toggleSelectionForItem(any());
         verify(mItemTouchHelper, never()).startDrag(any());
 
-        // Verify that the we cleaned up the listener.
-        verify(mItemView).removeOnAttachStateChangeListener(mDragHelper);
+        // Verify that after a transient detach/re-attach, the helper stays active and subsequent
+        // detaches still cancel pending timers.
+        parent.addView(mRecyclerView);
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        parent.removeView(mRecyclerView);
+        ShadowLooper.idleMainLooper(/* duration= */ 600, TimeUnit.MILLISECONDS);
+        verify(mSelectionDelegate, never()).toggleSelectionForItem(any());
+
+        // Re-attaching still allows normal long-press selection while attached.
+        parent.addView(mRecyclerView);
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        ShadowLooper.idleMainLooper(/* duration= */ 500, TimeUnit.MILLISECONDS);
+        verify(mSelectionDelegate).toggleSelectionForItem(mBookmarkId);
+
+        // Explicit destroy() is idempotent and disables touch/hover handlers.
+        mDragHelper.destroy();
+        mItemView.setPressed(/* pressed= */ true);
+        mDragHelper.destroy();
+        assertTrue(mItemView.isPressed());
+
+        assertFalse(
+                mDragHelper.onRowBodyTouch(
+                        mItemView,
+                        obtainEvent(
+                                /* action= */ MotionEvent.ACTION_DOWN,
+                                /* x= */ 50f,
+                                /* y= */ 50f,
+                                /* toolType= */ MotionEvent.TOOL_TYPE_FINGER)));
+        MotionEvent handleDown =
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER);
+        handleDown.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        assertFalse(mDragHelper.onDragHandleTouch(mDragHandle, handleDown));
+        mDragHandle.setVisibility(View.GONE);
+        MotionEvent hoverEnter =
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_HOVER_ENTER,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_MOUSE);
+        assertFalse(mDragHelper.onRowBodyHover(mItemView, hoverEnter));
+        assertFalse(mDragHelper.onDragHandleHover(mDragHandle, hoverEnter));
+        assertEquals(View.GONE, mDragHandle.getVisibility());
+        verify(mItemTouchHelper, never()).startDrag(any());
+    }
+
+    @Test
+    public void test_onViewDetachedFromWindow_AfterSelection_DoesNotStartDragOnMove() {
+        doReturn(/* toBeReturned= */ false).when(mSelectionDelegate).isItemSelected(mBookmarkId);
+        ViewGroup parent = (ViewGroup) mRecyclerView.getParent();
+
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+
+        // Hold for 500ms so selection triggers, disallow-intercept is requested, and
+        // mIsLongPressTriggered is set.
+        ShadowLooper.idleMainLooper(/* duration= */ 500, TimeUnit.MILLISECONDS);
+        verify(mSelectionDelegate).toggleSelectionForItem(mBookmarkId);
+        assertEquals(List.of(true), mRecyclerView.mDisallowInterceptCalls);
+
+        // Detach the view (e.g. search filters out the row) before the finger moves; destroy()
+        // resets disallow-intercept because this helper requested it.
+        parent.removeView(mRecyclerView);
+        assertEquals(List.of(true, false), mRecyclerView.mDisallowInterceptCalls);
+
+        // Subsequent ACTION_MOVE on the in-flight gesture stream must not start a drag.
+        boolean consumed =
+                mDragHelper.onRowBodyTouch(
+                        mItemView,
+                        obtainEvent(
+                                /* action= */ MotionEvent.ACTION_MOVE,
+                                /* x= */ 100f,
+                                /* y= */ 100f,
+                                /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        assertFalse(consumed);
+        verify(mItemTouchHelper, never()).startDrag(any());
+    }
+
+    @Test
+    public void test_selectAndStartDrag_SkipWhenDetachedFromAdapterOrAdapterNull() {
+        doReturn(/* toBeReturned= */ false).when(mSelectionDelegate).isItemSelected(mBookmarkId);
+        assertTrue(mItemView.isAttachedToWindow());
+        assertEquals(0, mViewHolder.getBindingAdapterPosition());
+
+        // Remove the item from the adapter without running layout yet so mItemView stays attached
+        // to the window while getBindingAdapterPosition() becomes NO_POSITION.
+        mAdapter.removeItemWithoutLayout();
+        assertTrue(mItemView.isAttachedToWindow());
+        assertEquals(RecyclerView.NO_POSITION, mViewHolder.getBindingAdapterPosition());
+
+        // 1. selectItem() (500ms timer) skips when bindingAdapterPosition == NO_POSITION.
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        ShadowLooper.idleMainLooper(/* duration= */ 600, TimeUnit.MILLISECONDS);
+        verify(mSelectionDelegate, never()).toggleSelectionForItem(any());
+        verify(mItemTouchHelper, never()).startDrag(any());
+
+        // 2. startDrag() (immediate finger handle touch) skips when bindingAdapterPosition ==
+        // NO_POSITION.
+        MotionEvent handleDown =
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER);
+        handleDown.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        mDragHelper.onDragHandleTouch(mDragHandle, handleDown);
+        verify(mItemTouchHelper, never()).startDrag(any());
+
+        // 3. Clearing the adapter (getAdapter() == null) also treats the ViewHolder as detached.
+        mRecyclerView.setAdapter(/* adapter= */ null);
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        ShadowLooper.idleMainLooper(/* duration= */ 600, TimeUnit.MILLISECONDS);
+        mDragHelper.onDragHandleTouch(mDragHandle, handleDown);
+        verify(mSelectionDelegate, never()).toggleSelectionForItem(any());
+        verify(mItemTouchHelper, never()).startDrag(any());
+    }
+
+    @Test
+    public void testImprovedBookmarkRow_SetDragHelperDestroysPreviousHelperOnRebind() {
+        assertTrue(mItemView.isAttachedToWindow());
+        assertEquals(0, mViewHolder.getBindingAdapterPosition());
+        ViewGroup parent = (ViewGroup) mRecyclerView.getParent();
+        mItemView.setDragHelper(mDragHelper);
+
+        // Simulate a transient detach/re-attach before the row is rebound; mItemView must still
+        // track mDragHelper so setDragHelper(secondHelper) destroys it.
+        parent.removeView(mRecyclerView);
+        parent.addView(mRecyclerView);
+
+        mDragHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+
+        // Rebinding mItemView in-place to a new BookmarkManagerDragHelper must destroy mDragHelper
+        // and cancel its pending timers even though mViewHolder stays attached and bound.
+        BookmarkId reboundBookmarkId = new BookmarkId(/* id= */ 67890L, BookmarkType.NORMAL);
+        BookmarkManagerDragHelper secondHelper =
+                new BookmarkManagerDragHelper(
+                        mActivity,
+                        reboundBookmarkId,
+                        mSelectionDelegate,
+                        mItemTouchHelper,
+                        mRecyclerView,
+                        mViewHolder,
+                        /* isDragEnabled= */ true);
+        mItemView.setDragHelper(secondHelper);
+
+        ShadowLooper.idleMainLooper(/* duration= */ 600, TimeUnit.MILLISECONDS);
+        verify(mSelectionDelegate, never()).toggleSelectionForItem(any());
+        verify(mItemTouchHelper, never()).startDrag(any());
+
+        // Positive control: the newly bound helper still selects its rebound BookmarkId.
+        secondHelper.onRowBodyTouch(
+                mItemView,
+                obtainEvent(
+                        /* action= */ MotionEvent.ACTION_DOWN,
+                        /* x= */ 50f,
+                        /* y= */ 50f,
+                        /* toolType= */ MotionEvent.TOOL_TYPE_FINGER));
+        ShadowLooper.idleMainLooper(/* duration= */ 500, TimeUnit.MILLISECONDS);
+        verify(mSelectionDelegate).toggleSelectionForItem(reboundBookmarkId);
     }
 
     @Test
     public void testDragHandle_DragWithFinger() {
-        // Scenario: User touches the drag handle.
-        // Expectation: It behaves like a normal semi-instant drag (100ms delay).
+        // Scenario: User touches the drag handle on a touchscreen.
+        // Expectation: Drag starts immediately on ACTION_DOWN with zero delay. SOURCE_TOUCHSCREEN
+        // also sets the SOURCE_CLASS_POINTER bit, so it must not be mistaken for a mouse.
 
-        // 1. Action Down.
         MotionEvent event =
                 obtainEvent(
                         /* action= */ MotionEvent.ACTION_DOWN,
                         /* x= */ 50f,
                         /* y= */ 50f,
                         /* toolType= */ MotionEvent.TOOL_TYPE_FINGER);
+        event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         mDragHelper.onDragHandleTouch(mDragHandle, event);
 
-        // 2. Verify that the drag has not started immediately.
-        verify(mItemTouchHelper, never()).startDrag(any());
-
-        // 3. Fast forward 99ms. The drag should still not have started.
-        ShadowLooper.idleMainLooper(99, TimeUnit.MILLISECONDS);
-        verify(mItemTouchHelper, never()).startDrag(any());
-
-        // 4. Fast forward an additional 100ms, now we are at 199s. The drag should have started at
-        // the 100ms mark.
-        ShadowLooper.idleMainLooper(100, TimeUnit.MILLISECONDS);
         verify(mItemTouchHelper).startDrag(mViewHolder);
     }
 
@@ -218,8 +598,9 @@ public class BookmarkManagerDragHelperTest {
         verify(mItemTouchHelper).startDrag(mViewHolder);
 
         // 5. Verify the Row View (mItemView) gets the "closed hand" cursor.
-        verify(mItemView)
-                .setPointerIcon(PointerIcon.getSystemIcon(mActivity, PointerIcon.TYPE_GRABBING));
+        assertEquals(
+                PointerIcon.getSystemIcon(mActivity, PointerIcon.TYPE_GRABBING),
+                mItemView.getPointerIcon());
     }
 
     @Test
@@ -242,7 +623,7 @@ public class BookmarkManagerDragHelperTest {
 
         // Verify: Icon becomes "Closed Hand" (GRABBING).
         PointerIcon grabbingIcon = PointerIcon.getSystemIcon(mActivity, PointerIcon.TYPE_GRABBING);
-        verify(mDragHandle).setPointerIcon(grabbingIcon);
+        assertEquals(grabbingIcon, mDragHandle.getPointerIcon());
 
         // 2. Mouse up.
         MotionEvent upEvent =
@@ -255,13 +636,14 @@ public class BookmarkManagerDragHelperTest {
 
         // Verify: Icon reverts to "Open Hand" (GRAB).
         PointerIcon grabIcon = PointerIcon.getSystemIcon(mActivity, PointerIcon.TYPE_GRAB);
-        verify(mDragHandle).setPointerIcon(grabIcon);
+        assertEquals(grabIcon, mDragHandle.getPointerIcon());
     }
 
     @Test
     public void testHover_DragHandle_ShowsOpenHand() {
         // Scenario: Mouse hovers over the drag handle.
         // Expectation: Cursor changes from default to open hand.
+        mDragHandle.setVisibility(View.GONE);
 
         MotionEvent hoverEvent =
                 obtainEvent(
@@ -273,11 +655,11 @@ public class BookmarkManagerDragHelperTest {
 
         // Verify cursor set to Open Hand.
         PointerIcon openHand = PointerIcon.getSystemIcon(mActivity, PointerIcon.TYPE_GRAB);
-        verify(mDragHandle).setPointerIcon(openHand);
+        assertEquals(openHand, mDragHandle.getPointerIcon());
 
         // Also verify it ensures the handle is visible (by calling onRowBodyHover logic
         // internally).
-        verify(mDragHandle).setVisibility(View.VISIBLE);
+        assertEquals(View.VISIBLE, mDragHandle.getVisibility());
     }
 
     @Test
@@ -285,6 +667,7 @@ public class BookmarkManagerDragHelperTest {
         // Scenario: Mouse enters row -> Handle is visible. Mouse exits -> Handle disappear after a
         // 50ms delay. This case only happens when the item is unselected.
         doReturn(false).when(mSelectionDelegate).isItemSelected(mBookmarkId);
+        mDragHandle.setVisibility(View.GONE);
 
         // 1. Mouse hover enter.
         MotionEvent enterEvent =
@@ -296,7 +679,7 @@ public class BookmarkManagerDragHelperTest {
         mDragHelper.onRowBodyHover(mItemView, enterEvent);
 
         // Verify handle becomes visible.
-        verify(mDragHandle).setVisibility(View.VISIBLE);
+        assertEquals(View.VISIBLE, mDragHandle.getVisibility());
 
         // 2. Mouse hover exit.
         MotionEvent exitEvent =
@@ -308,13 +691,13 @@ public class BookmarkManagerDragHelperTest {
         mDragHelper.onRowBodyHover(mItemView, exitEvent);
 
         // Verify handle is not hidden immediately.
-        verify(mDragHandle, never()).setVisibility(View.GONE);
+        assertEquals(View.VISIBLE, mDragHandle.getVisibility());
 
         // 3. Fast forward 50ms.
         ShadowLooper.idleMainLooper(50, TimeUnit.MILLISECONDS);
 
         // Verify handle is now hidden.
-        verify(mDragHandle).setVisibility(View.GONE);
+        assertEquals(View.GONE, mDragHandle.getVisibility());
     }
 
     @Test
@@ -335,7 +718,7 @@ public class BookmarkManagerDragHelperTest {
         ShadowLooper.idleMainLooper(50, TimeUnit.MILLISECONDS);
 
         // Verify handle is still visible.
-        verify(mDragHandle, never()).setVisibility(View.GONE);
+        assertEquals(View.VISIBLE, mDragHandle.getVisibility());
     }
 
     // Obtain the action event we want to perform (ACTION_DOWN, etc.).

@@ -48,6 +48,7 @@
 #include "ui/gfx/image/image_skia_rep.h"
 #include "ui/gfx/image/image_skia_source.h"
 #include "ui/linux/device_scale_factor_observer.h"
+#include "ui/linux/linux_key_bindings_handler.h"
 #include "ui/linux/linux_ui.h"
 #include "ui/linux/linux_ui_delegate.h"
 #include "ui/linux/nav_button_provider.h"
@@ -60,6 +61,10 @@
 
 #if BUILDFLAG(ENABLE_PRINTING)
 #include "printing/print_dialog_linux_interface.h"  // nogncheck
+#endif
+
+#if defined(USE_GSETTINGS)
+#include "ui/base/glib/gsettings.h"
 #endif
 
 namespace qt {
@@ -188,11 +193,30 @@ bool IsGtkDesktop(base::Environment* env) {
          desktop_session == "pantheon";
 }
 
+// Returns true if QT must be prevented from loading GTK3 (eg. via its GTK3
+// platform theme or style plugins).
+bool ShouldPreventQtFromLoadingGtk3(ui::LinuxUiBackend backend) {
+  // GTK3 and GTK4 symbols collide, so GTK3 can't be loaded if Chrome is using
+  // GTK4.
+  if (IsGtk4Loaded()) {
+    return true;
+  }
+  // On Wayland, GDK3 aborts during initialization if the GSettings font
+  // schemas are invalid.  This is the case where GtkUi refuses to initialize,
+  // and QT is used as a fallback.  See https://crbug.com/573086583.
+#if defined(USE_GSETTINGS)
+  return backend == ui::LinuxUiBackend::kWayland &&
+         !ui::AreGdkWaylandFontSchemasValid();
+#else
+  return false;
+#endif
+}
+
 std::vector<std::unique_ptr<base::ScopedEnvironmentVariableOverride>>
-GetGtkQtCollisionPreventionOverrides() {
+GetGtkQtCollisionPreventionOverrides(ui::LinuxUiBackend backend) {
   std::vector<std::unique_ptr<base::ScopedEnvironmentVariableOverride>>
       env_overrides;
-  if (!IsGtk4Loaded()) {
+  if (!ShouldPreventQtFromLoadingGtk3(backend)) {
     return env_overrides;
   }
 
@@ -274,7 +298,7 @@ gfx::FontRenderParams QtUi::GetDefaultFontRenderParams() {
 }
 
 ui::SelectFileDialog* QtUi::CreateSelectFileDialog(
-    void* listener,
+    ui::SelectFileDialogListener* listener,
     std::unique_ptr<ui::SelectFilePolicy> policy) const {
   return fallback_linux_ui_ ? fallback_linux_ui_->CreateSelectFileDialog(
                                   listener, std::move(policy))
@@ -297,28 +321,31 @@ bool QtUi::Initialize() {
   // [3] https://crbug.com/396193145
   base::ScopedEnvironmentVariableOverride qt_xcb_no_xi2("QT_XCB_NO_XI2", "1");
 
-  // If Chrome is using GTK4, prevent QT from loading GTK3, otherwise
-  // the symbols from both versions will collide and crash the browser process.
-  auto env_overrides = GetGtkQtCollisionPreventionOverrides();
+  auto* delegate = ui::LinuxUiDelegate::GetInstance();
+  const auto backend =
+      delegate ? delegate->GetBackend() : ui::LinuxUiBackend::kStub;
+
+  // Prevent QT from loading GTK3 if it would crash the browser process: either
+  // because Chrome is using GTK4 and the symbols from both versions would
+  // collide, or because GDK3 would abort due to invalid GSettings schemas.
+  auto env_overrides = GetGtkQtCollisionPreventionOverrides(backend);
 
   // Set up command line.
   auto cmd_line = *base::CommandLine::ForCurrentProcess();
-  if (auto* delegate = ui::LinuxUiDelegate::GetInstance()) {
-    // Ensure QT is initialized with the same display server protocol as Chrome.
-    // In particular, when running under XWayland, make sure to use the xcb QT
-    // backend instead of the wayland backend.
-    switch (delegate->GetBackend()) {
-      case ui::LinuxUiBackend::kStub:
-        break;
-      case ui::LinuxUiBackend::kX11:
-        cmd_line.AppendArg("-platform");
-        cmd_line.AppendArg("xcb");
-        break;
-      case ui::LinuxUiBackend::kWayland:
-        cmd_line.AppendArg("-platform");
-        cmd_line.AppendArg("wayland");
-        break;
-    }
+  // Ensure QT is initialized with the same display server protocol as Chrome.
+  // In particular, when running under XWayland, make sure to use the xcb QT
+  // backend instead of the wayland backend.
+  switch (backend) {
+    case ui::LinuxUiBackend::kStub:
+      break;
+    case ui::LinuxUiBackend::kX11:
+      cmd_line.AppendArg("-platform");
+      cmd_line.AppendArg("xcb");
+      break;
+    case ui::LinuxUiBackend::kWayland:
+      cmd_line.AppendArg("-platform");
+      cmd_line.AppendArg("wayland");
+      break;
   }
   cmd_line_ = CopyCmdLine(cmd_line);
 
@@ -341,7 +368,7 @@ bool QtUi::Initialize() {
     return false;
   }
   void* create_qt_interface = dlsym(libqt_shim, "CreateQtInterface");
-  DCHECK(create_qt_interface);
+  CHECK(create_qt_interface, base::NotFatalUntil::M163);
   shim_.reset((reinterpret_cast<decltype(&CreateQtInterface)>(
       create_qt_interface)(this, &cmd_line_.argc, cmd_line_.argv.data())));
 
@@ -577,8 +604,10 @@ int QtUi::GetCursorThemeSize() {
 
 ui::TextEditCommand QtUi::GetTextEditCommandForEvent(const ui::Event& event,
                                                      int text_flags) {
-  // QT doesn't have "key themes" (eg. readline bindings) like GTK.
-  return ui::TextEditCommand::INVALID_COMMAND;
+  if (!key_bindings_handler_) {
+    key_bindings_handler_ = std::make_unique<ui::LinuxKeyBindingsHandler>();
+  }
+  return key_bindings_handler_->MatchEvent(event);
 }
 
 #if BUILDFLAG(ENABLE_PRINTING)
@@ -635,15 +664,10 @@ void QtUi::AddNativeColorMixer(ui::ColorProvider* provider,
     ColorState state = ColorState::kNormal;
   } const kMaps[] = {
       // Core colors
-      {ui::kColorDisabledForeground, ColorType::kWindowFg,
-       ColorState::kDisabled},
       {ui::kColorEndpointBackground, ColorType::kEntryBg},
       {ui::kColorEndpointForeground, ColorType::kEntryFg},
       {ui::kColorMidground, ColorType::kMidground},
       {ui::kColorPrimaryBackground, ColorType::kWindowBg},
-      {ui::kColorPrimaryForeground, ColorType::kWindowFg},
-      {ui::kColorSecondaryForeground, ColorType::kWindowFg,
-       ColorState::kDisabled},
       {ui::kColorSubtleAccent, ColorType::kHighlightBg, ColorState::kInactive},
       {ui::kColorSubtleEmphasisBackground, ColorType::kWindowBg},
 
@@ -672,6 +696,22 @@ void QtUi::AddNativeColorMixer(ui::ColorProvider* provider,
   for (const auto& map : kMaps) {
     mixer[map.id] = {shim_->GetColor(map.role, map.state)};
   }
+
+  // Some palettes provide text colors with little or no contrast against their
+  // own window background (e.g. a white disabled text color on a light
+  // window). Nudge them just enough to stay legible: readable for regular and
+  // secondary text, and visible for disabled text.
+  const SkColor window_fg =
+      shim_->GetColor(ColorType::kWindowFg, ColorState::kNormal);
+  const SkColor window_fg_disabled =
+      shim_->GetColor(ColorType::kWindowFg, ColorState::kDisabled);
+  mixer[ui::kColorDisabledForeground] = ui::BlendForMinContrast(
+      window_fg_disabled, ui::kColorPrimaryBackground, std::nullopt,
+      color_utils::kMinimumVisibleContrastRatio);
+  mixer[ui::kColorPrimaryForeground] =
+      ui::BlendForMinContrast(window_fg, ui::kColorPrimaryBackground);
+  mixer[ui::kColorSecondaryForeground] =
+      ui::BlendForMinContrast(window_fg_disabled, ui::kColorPrimaryBackground);
 
   const ui::ColorId kAccentIds[] = {
       ui::kColorAccent,
@@ -776,11 +816,10 @@ void QtUi::ScaleFactorMaybeChangedImpl() {
   display::DisplayConfig new_config;
   size_t n_monitors =
       shim_->GetMonitorConfig(&qt_monitors, &new_config.primary_scale);
-  std::vector<display::DisplayGeometry> ui_monitors;
-  ui_monitors.reserve(n_monitors);
+  new_config.display_geometries.reserve(n_monitors);
   for (size_t i = 0; i < n_monitors; i++) {
     const qt::MonitorScale& monitor = UNSAFE_TODO(qt_monitors[i]);
-    ui_monitors.push_back(display::DisplayGeometry{
+    new_config.display_geometries.push_back(display::DisplayGeometry{
         {monitor.x_px, monitor.y_px, monitor.width_px, monitor.height_px},
         monitor.scale});
   }

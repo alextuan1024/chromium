@@ -22,10 +22,6 @@
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
 
-#if BUILDFLAG(IS_CHROMEOS)
-#include "base/memory/raw_ref.h"
-#endif
-
 class BrowserWindowInterface;
 
 namespace tab_groups {
@@ -39,6 +35,7 @@ class Separator;
 
 class ColorPickerView;
 class ManageSharingRow;
+class TabGroupEditorTitleField;
 
 // A dialog for changing a tab group's visual parameters.
 class TabGroupEditorBubbleView : public views::BubbleDialogDelegateView,
@@ -66,6 +63,7 @@ class TabGroupEditorBubbleView : public views::BubbleDialogDelegateView,
   static constexpr int TAB_GROUP_HEADER_CXMENU_FOCUS_GROUP = 12;
   static constexpr int TAB_GROUP_HEADER_CXMENU_HOME = 13;
   static constexpr int TAB_GROUP_HEADER_CXMENU_ASK_GEMINI = 14;
+  static constexpr int TAB_GROUP_HEADER_CXMENU_COPY_LINKS = 15;
 
   // The default size of icons displayed in the tab group editor bubble menu.
   static constexpr int kDefaultIconSize = 16;
@@ -131,6 +129,7 @@ class TabGroupEditorBubbleView : public views::BubbleDialogDelegateView,
   std::unique_ptr<views::LabelButton> BuildNewTabInGroupButton();
   std::unique_ptr<views::LabelButton> BuildHomeButton();
   std::unique_ptr<views::LabelButton> BuildAskGeminiButton();
+  std::unique_ptr<views::LabelButton> BuildCopyLinksButton();
   std::unique_ptr<views::LabelButton> BuildUngroupButton();
   std::unique_ptr<views::LabelButton> BuildCloseGroupButton();
   std::unique_ptr<views::LabelButton> BuildDeleteGroupButton();
@@ -145,6 +144,7 @@ class TabGroupEditorBubbleView : public views::BubbleDialogDelegateView,
   void NewTabInGroupPressed();
   void HomePressed();
   void AskGeminiPressed();
+  void CopyLinksPressed();
   void UngroupPressed();
   void ShareOrManagePressed();
   void CloseGroupPressed();
@@ -160,12 +160,6 @@ class TabGroupEditorBubbleView : public views::BubbleDialogDelegateView,
   bool CanMoveGroupToNewWindow();
 
   void OnBubbleClose();
-
-#if BUILDFLAG(IS_CHROMEOS)
-  void PreventCloseOnDeactivateForEmoji();
-  void ClearCloseOnDeactivatePin();
-  void OnEmojiPickerClosed(ui::TrackedElement* element);
-#endif
 
   // Creates the set of tab group colors to display and returns the color that
   // is initially selected.
@@ -192,34 +186,8 @@ class TabGroupEditorBubbleView : public views::BubbleDialogDelegateView,
     const raw_ptr<TabGroupEditorBubbleView> parent_;
   };
 
-  class TitleField : public views::Textfield {
-    METADATA_HEADER(TitleField, views::Textfield)
-
-   public:
-    explicit TitleField(TabGroupEditorBubbleView& parent,
-                        bool stop_context_menu_propagation)
-        : parent_(parent),
-          stop_context_menu_propagation_(stop_context_menu_propagation) {}
-    ~TitleField() override = default;
-
-    // views::Textfield:
-    void ShowContextMenu(const gfx::Point& p,
-                         ui::mojom::MenuSourceType source_type) override;
-
-#if BUILDFLAG(IS_CHROMEOS)
-    void ExecuteCommand(int command_id, int event_flags) override;
-#endif
-
-   private:
-    const raw_ref<TabGroupEditorBubbleView> parent_;
-
-    // Whether the context menu should be hidden the first time it shows.
-    // Needed because there is no easy way to stop the propagation of a
-    // ShowContextMenu event, which is sometimes used to open the bubble
-    // itself.
-    bool stop_context_menu_propagation_;
-  };
-  std::unique_ptr<TitleField> BuildTitleField(const std::u16string& title);
+  std::unique_ptr<TabGroupEditorTitleField> BuildTitleField(
+      const std::u16string& title);
   std::u16string GetGroupTitle();
 
   class Footer : public views::View {
@@ -239,7 +207,7 @@ class TabGroupEditorBubbleView : public views::BubbleDialogDelegateView,
 
   // Ptr access to specific children. Must be cleared and reset by
   // RebuildMenuContents.
-  raw_ptr<TitleField> title_field_ = nullptr;
+  raw_ptr<TabGroupEditorTitleField> title_field_ = nullptr;
   raw_ptr<ColorPickerView> color_selector_ = nullptr;
   raw_ptr<Footer> footer_ = nullptr;
   raw_ptr<ManageSharingRow> manage_shared_group_button_ = nullptr;
@@ -268,16 +236,6 @@ class TabGroupEditorBubbleView : public views::BubbleDialogDelegateView,
   // is one tracker per group header but at most one open bubble, so scoping it
   // to the bubble registers exactly one observer and only while one is open.
   display::ScopedDisplayObserver display_observer_{this};
-
-#if BUILDFLAG(IS_CHROMEOS)
-  // Ensures the bubble dialog remains open when the emoji picker menu steals
-  // focus (crbug.com/485778122). Needed as both are browser-managed UIs in
-  // ChromeOS.
-  std::unique_ptr<views::BubbleDialogDelegate::CloseOnDeactivatePin>
-      close_on_deactivate_pin_;
-
-  base::CallbackListSubscription emoji_picker_hidden_subscription_;
-#endif
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_GROUPS_TAB_GROUP_EDITOR_BUBBLE_VIEW_H_

@@ -17,6 +17,7 @@
 #include "content/browser/embedder_isolation_info.h"
 #include "content/browser/renderer_host/navigation_throttle_runner.h"
 #include "content/browser/site_info.h"
+#include "content/browser/site_shard.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/browser/url_info.h"
 #include "content/browser/web_exposed_isolation_info.h"
@@ -53,6 +54,7 @@
 #include "third_party/blink/public/common/origin_trials/scoped_test_origin_trial_policy.h"
 #include "third_party/blink/public/common/runtime_feature_state/runtime_feature_state_context.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom.h"
+#include "url/url_constants.h"
 
 namespace content {
 
@@ -72,6 +74,25 @@ class ProcessSelectionTestData
 };
 
 PROCESS_SELECTION_USER_DATA_KEY_IMPL(ProcessSelectionTestData);
+
+#if BUILDFLAG(IS_ANDROID)
+class MockShouldOverrideUrlLoadingBrowserClient : public ContentBrowserClient {
+ public:
+  MOCK_METHOD(bool,
+              ShouldOverrideUrlLoading,
+              (FrameTreeNodeId frame_tree_node_id,
+               bool browser_initiated,
+               const GURL& url,
+               const std::string& request_method,
+               bool has_user_gesture,
+               bool is_redirect,
+               bool is_outermost_main_frame,
+               bool is_prerendering,
+               ui::PageTransition transition,
+               bool* ignore_navigation),
+              (override));
+};
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 
@@ -298,6 +319,84 @@ class NavigationRequestTest : public RenderViewHostImplTestHarness {
   bool was_callback_called_ = false;
   NavigationThrottle::ThrottleCheckResult callback_result_;
 };
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(NavigationRequestTest,
+       ShouldOverrideUrlLoadingDestroysNavigationRequest) {
+  // The fixture's browser-initiated navigation would take precedence over a
+  // renderer-initiated navigation without a user gesture.
+  contents()->Stop();
+  ASSERT_FALSE(main_test_rfh()->frame_tree_node()->navigation_request());
+
+  MockShouldOverrideUrlLoadingBrowserClient browser_client;
+  ScopedContentBrowserClientSetting setting(&browser_client);
+
+  for (bool success : {false, true}) {
+    SCOPED_TRACE(success);
+    EXPECT_CALL(browser_client, ShouldOverrideUrlLoading).WillOnce([&]() {
+      auto* frame_tree_node = main_test_rfh()->frame_tree_node();
+      auto request = frame_tree_node->navigation_request()->GetWeakPtr();
+      EXPECT_EQ(NavigationRequest::WILL_START_NAVIGATION, request->state());
+      contents()->Stop();
+      EXPECT_FALSE(request);
+      // A false return models an exception thrown after stopping the load.
+      return success;
+    });
+
+    main_test_rfh()->SendRendererInitiatedNavigationRequest(
+        GURL("https://example.com/"), /*has_user_gesture=*/false);
+    EXPECT_FALSE(main_test_rfh()->frame_tree_node()->navigation_request());
+  }
+}
+
+TEST_F(NavigationRequestTest, ShouldOverrideUrlLoadingException) {
+  // Clear the fixture's browser-initiated navigation before issuing a
+  // renderer-initiated navigation without a user gesture.
+  contents()->Stop();
+  ASSERT_FALSE(main_test_rfh()->frame_tree_node()->navigation_request());
+
+  MockShouldOverrideUrlLoadingBrowserClient browser_client;
+  ScopedContentBrowserClientSetting setting(&browser_client);
+  testing::NiceMock<MockWebContentsObserver> observer(contents());
+  EXPECT_CALL(observer, DidStartNavigation).Times(0);
+  EXPECT_CALL(browser_client, ShouldOverrideUrlLoading)
+      .WillOnce(testing::Return(false));
+
+  main_test_rfh()->SendRendererInitiatedNavigationRequest(
+      GURL("https://example.com/"), /*has_user_gesture=*/false);
+
+  auto* request = main_test_rfh()->frame_tree_node()->navigation_request();
+  ASSERT_TRUE(request);
+  EXPECT_EQ(NavigationRequest::WILL_START_NAVIGATION, request->state());
+}
+
+TEST_F(NavigationRequestTest, ShouldOverrideUrlLoadingResult) {
+  MockShouldOverrideUrlLoadingBrowserClient browser_client;
+  ScopedContentBrowserClientSetting setting(&browser_client);
+
+  for (bool ignore_navigation : {false, true}) {
+    SCOPED_TRACE(ignore_navigation);
+    EXPECT_CALL(browser_client, ShouldOverrideUrlLoading)
+        .WillOnce(testing::DoAll(testing::SetArgPointee<9>(ignore_navigation),
+                                 testing::Return(true)));
+
+    auto navigation = NavigationSimulatorImpl::CreateRendererInitiated(
+        GURL("https://example.com/"), main_rfh());
+    navigation->Start();
+    if (ignore_navigation) {
+      EXPECT_FALSE(main_test_rfh()->frame_tree_node()->navigation_request());
+    } else {
+      ASSERT_TRUE(main_test_rfh()->frame_tree_node()->navigation_request());
+      EXPECT_EQ(
+          NavigationRequest::WILL_START_REQUEST,
+          main_test_rfh()->frame_tree_node()->navigation_request()->state());
+      navigation->Commit();
+      EXPECT_EQ(GURL("https://example.com/"),
+                contents()->GetLastCommittedURL());
+    }
+  }
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 // Checks that the request_context_type is properly set.
 // Note: can be extended to cover more internal members.
@@ -1211,6 +1310,67 @@ TEST_F(NavigationRequestWithoutSubframeErrorPageIsolationTest,
   }
 }
 
+// Construct GURLs in the test body, after the test suite registers URL schemes.
+class NavigationRequestNonStandardErrorPageURLTest
+    : public NavigationRequestWithoutSubframeErrorPageIsolationTest,
+      public testing::WithParamInterface<const char*> {};
+
+TEST_P(NavigationRequestNonStandardErrorPageURLTest, SanitizeFinalURL) {
+  base::test::ScopedFeatureList feature_list{{
+      features::kSanitizeFailedSubframeNavigationUrls,
+      features::kSanitizeLocationHeadersDuringNavigation,
+  }};
+
+  NavigationSimulator::NavigateAndCommitFromDocument(GURL("https://a.com/"),
+                                                     main_test_rfh());
+  auto* child_frame = static_cast<TestRenderFrameHost*>(
+      RenderFrameHostTester::For(main_rfh())->AppendChild("child"));
+
+  const GURL start_url("https://b.com/start?secret=1");
+  const GURL final_url(GetParam());
+  auto navigation =
+      NavigationSimulator::CreateRendererInitiated(start_url, child_frame);
+  navigation->Start();
+
+  auto headers =
+      base::MakeRefCounted<net::HttpResponseHeaders>("HTTP/1.1 302 Found");
+  headers->SetHeader("Location", final_url.spec());
+  navigation->SetRedirectHeaders(headers);
+  navigation->Redirect(final_url);
+  navigation->Fail(net::ERR_BLOCKED_BY_CSP);
+
+  NavigationRequest* request =
+      NavigationRequest::From(navigation->GetNavigationHandle());
+  ASSERT_EQ(ErrorPageProcess::kCurrentProcess,
+            request->ComputeErrorPageProcess());
+
+  // A nonstandard URL sanitizes to an empty URL. Keep the failed-navigation URL
+  // nonempty without disclosing any of the redirect target to the renderer.
+  EXPECT_EQ(GURL(kBlockedURL), request->common_params().url);
+  ASSERT_EQ(1u, request->commit_params().redirects.size());
+  EXPECT_EQ(GURL("https://b.com/"), request->commit_params().redirects[0]);
+  ASSERT_EQ(1u, request->commit_params().redirect_params.size());
+  EXPECT_TRUE(request->commit_params()
+                  .redirect_params[0]
+                  ->redirect_info.new_url.is_empty());
+
+  size_t iter = 0;
+  auto location =
+      request->commit_params()
+          .redirect_params[0]
+          ->response_head->headers->EnumerateHeader(&iter, "Location");
+  ASSERT_TRUE(location);
+  EXPECT_EQ("", location.value());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    NavigationRequestNonStandardErrorPageURLTest,
+    testing::Values("custom-scheme://host/path?secret=2#fragment",
+                    "data:text/html,secret",
+                    "about:blank#secret",
+                    "blob:https://c.com/secret"));
+
 TEST_F(
     NavigationRequestWithoutSubframeErrorPageIsolationTest,
     SanitizeRedirectsForCommitErrorPageInCurrentProcess_FinalURLFeatureDisabled) {
@@ -1322,6 +1482,73 @@ TEST_F(NavigationRequestWithoutSubframeErrorPageIsolationTest,
     ASSERT_TRUE(location.has_value());
     EXPECT_EQ("https://c.com/path?param=2", location.value());
   }
+}
+
+TEST_F(
+    NavigationRequestWithoutSubframeErrorPageIsolationTest,
+    DontSanitizeRedirectsForCommitErrorPageInCurrentProcessSameOriginNewRFH) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      /*enabled_features=*/
+      {{features::kSanitizeFailedSubframeNavigationUrls, {}},
+       {features::kSanitizeLocationHeadersDuringNavigation, {}},
+       {features::kRenderDocument, {{"level", "all-frames"}}}},
+      /*disabled_features=*/{});
+
+  // Commit an initial page and a same-origin subframe document so that a
+  // subsequent failed navigation under RenderDocument selects a new
+  // RenderFrameHost in `ErrorPageProcess::kCurrentProcess` whose own
+  // `GetLastCommittedOrigin()` is still opaque before commit.
+  NavigationSimulator::NavigateAndCommitFromDocument(GURL("https://c.com/"),
+                                                     main_test_rfh());
+  auto* child_frame = static_cast<TestRenderFrameHost*>(
+      content::RenderFrameHostTester::For(main_rfh())->AppendChild("child"));
+  child_frame = static_cast<TestRenderFrameHost*>(
+      NavigationSimulator::NavigateAndCommitFromDocument(
+          GURL("https://c.com/initial"), child_frame));
+  ASSERT_TRUE(child_frame->has_committed_any_navigation());
+
+  const GURL start_url("https://b.com/start?param=1");
+  const GURL final_url("https://c.com/path?param=2");
+  std::unique_ptr<NavigationSimulator> navigation =
+      NavigationSimulator::CreateRendererInitiated(start_url, child_frame);
+  navigation->Start();
+
+  auto headers =
+      base::MakeRefCounted<net::HttpResponseHeaders>("HTTP/1.1 302 Found");
+  headers->SetHeader("Location", "https://c.com/path?param=2");
+  navigation->SetRedirectHeaders(headers);
+
+  navigation->Redirect(final_url);
+  navigation->Fail(net::ERR_BLOCKED_BY_CLIENT);
+
+  NavigationRequest* request =
+      NavigationRequest::From(navigation->GetNavigationHandle());
+  ASSERT_EQ(ErrorPageProcess::kCurrentProcess,
+            request->ComputeErrorPageProcess());
+  ASSERT_NE(child_frame, request->GetRenderFrameHost());
+  ASSERT_EQ(child_frame->GetProcess(),
+            request->GetRenderFrameHost()->GetProcess());
+  ASSERT_TRUE(request->GetRenderFrameHost()->GetLastCommittedOrigin().opaque());
+
+  // Even though the error page commits in a new RenderFrameHost that has not
+  // committed any navigation yet, the frame's current origin in the receiving
+  // process is `https://c.com`, so same-origin redirect URLs and Location
+  // headers should NOT be stripped to origin.
+  EXPECT_EQ(final_url, request->common_params().url);
+  ASSERT_EQ(1u, request->commit_params().redirect_params.size());
+  EXPECT_EQ(final_url,
+            request->commit_params().redirect_params[0]->redirect_info.new_url);
+  ASSERT_EQ(1u, request->commit_params().redirects.size());
+  EXPECT_EQ(GURL("https://b.com/"), request->commit_params().redirects[0]);
+
+  size_t iter = 0;
+  std::optional<std::string_view> location =
+      request->commit_params()
+          .redirect_params[0]
+          ->response_head->headers->EnumerateHeader(&iter, "Location");
+  ASSERT_TRUE(location.has_value());
+  EXPECT_EQ("https://c.com/path?param=2", location.value());
 }
 
 // Test that when a subframe navigation with multiple redirects (same-origin to
@@ -1526,7 +1753,7 @@ TEST_F(CSPEmbeddedEnforcementUnitTest, ChildSiblingNoCSP) {
   TestRenderFrameHost* child_document = AddChild(top_document);
   NavigateWithRequiredCSP(&child_document, "script-src 'none'");
   TestRenderFrameHost* sibling_document = AddChild(top_document);
-  std::string sec_required_csp = NavigateWithRequiredCSP(&sibling_document, "");
+  NavigateWithRequiredCSP(&sibling_document, "");
   EXPECT_FALSE(sibling_document->required_csp());
 }
 
@@ -1955,6 +2182,43 @@ TEST_F(NavigationRequestTest, SubframeWithoutMimeHandlerParentDoesNotInherit) {
       request->GetUrlInfo().embedder_isolation_info.is_unique_instance());
 }
 
+// about:blank takes only unique-instance isolation from its initiator. An
+// about:blank document that a PDF document navigates to should not get PDF
+// isolation.
+TEST_F(NavigationRequestTest, AboutBlankDoesNotInheritPdfIsolation) {
+  // On Android, NavigationSimulator can't commit a PDF navigation, so the PDF
+  // document is represented by its SiteInstance.
+  const GURL kPdfUrl("https://example.com/document.pdf");
+  scoped_refptr<SiteInstanceImpl> pdf_site_instance =
+      SiteInstanceImpl::CreateForUrlInfo(
+          browser_context(),
+          UrlInfo(UrlInfoInit(kPdfUrl).WithEmbedderIsolationInfo(
+              EmbedderIsolationInfo::CreateForPdf())),
+          /*is_guest=*/false,
+          /*is_fenced=*/false,
+          /*is_fixed_storage_partition=*/false);
+  ASSERT_TRUE(
+      pdf_site_instance->GetSiteInfo().embedder_isolation_info().is_pdf());
+
+  // When LoadURLWithParams() returns, the frame no longer holds the
+  // about:blank navigation, so read the isolation when the navigation starts.
+  EmbedderIsolationInfo observed_isolation =
+      EmbedderIsolationInfo::CreateNone();
+  testing::NiceMock<MockWebContentsObserver> observer(contents());
+  EXPECT_CALL(observer, DidStartNavigation(testing::_))
+      .WillOnce([&observed_isolation](NavigationHandle* navigation_handle) {
+        observed_isolation = NavigationRequest::From(navigation_handle)
+                                 ->GetUrlInfo()
+                                 .embedder_isolation_info;
+      });
+  NavigationController::LoadURLParams params{GURL(url::kAboutBlankURL)};
+  params.source_site_instance = pdf_site_instance;
+  params.initiator_origin = url::Origin::Create(kPdfUrl);
+  contents()->GetController().LoadURLWithParams(params);
+
+  EXPECT_TRUE(observed_isolation.is_none());
+}
+
 namespace {
 
 // A throttle that accesses request headers before modifying them.
@@ -2065,7 +2329,8 @@ TEST_F(NavigationRequestTest,
         params.is_fenced,
         /*browser_context_id=*/base::UnguessableToken(),
         params.embedder_isolation_info.value_or(
-            EmbedderIsolationInfo::CreateNone()));
+            EmbedderIsolationInfo::CreateNone()),
+        SiteShard::kDefault);
   };
 
   request->set_isolation_info_for_testing(kValidIsolationInfo);
@@ -2223,7 +2488,7 @@ TEST_F(NavigationRequestTest,
       /*does_site_request_dedicated_process_for_coop=*/false,
       /*is_jit_disabled=*/false, /*are_v8_optimizations_disabled=*/false,
       /*is_fenced=*/false, /*browser_context_id=*/base::UnguessableToken(),
-      EmbedderIsolationInfo::CreateNone());
+      EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault);
   request->set_site_info_for_testing(in_memory_site_info);
 
   EXPECT_EQ(request->GetNetworkIsolationKeyForRendererAccessibleHttpCache(),
@@ -2277,7 +2542,7 @@ TEST_F(
       /*does_site_request_dedicated_process_for_coop=*/false,
       /*is_jit_disabled=*/false, /*are_v8_optimizations_disabled=*/false,
       /*is_fenced=*/false, /*browser_context_id=*/base::UnguessableToken(),
-      EmbedderIsolationInfo::CreateNone());
+      EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault);
   request->set_site_info_for_testing(non_default_site_info);
 
   EXPECT_EQ(request->GetNetworkIsolationKeyForRendererAccessibleHttpCache(),

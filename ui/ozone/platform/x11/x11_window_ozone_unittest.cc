@@ -3,13 +3,18 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <ostream>
 #include <utility>
+#include <vector>
 
 #include "base/nix/xdg_util.h"
 #include "base/run_loop.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/x/x11_pointer_grab.h"
 #include "ui/base/x/x11_util.h"
 #include "ui/display/display.h"
 #include "ui/display/screen_base.h"
@@ -17,7 +22,7 @@
 #include "ui/events/event.h"
 #include "ui/events/platform/x11/x11_event_source.h"
 #include "ui/events/test/events_test_utils_x11.h"
-#include "ui/gfx/x/atom_cache.h"
+#include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/event.h"
 #include "ui/ozone/platform/x11/x11_window.h"
 #include "ui/ozone/platform/x11/x11_window_manager.h"
@@ -25,6 +30,7 @@
 #include "ui/platform_window/extensions/x11_extension_delegate.h"
 #include "ui/platform_window/platform_window_delegate.h"
 #include "ui/platform_window/platform_window_init_properties.h"
+#include "ui/platform_window/wm/wm_move_loop_handler.h"
 
 namespace ui {
 
@@ -323,12 +329,13 @@ TEST_F(X11WindowOzoneTest, StartupIdProperty) {
   x11::Window xid = static_cast<x11::Window>(widget);
 
   // Read the _NET_STARTUP_ID property from the window.
+  auto* connection = x11::Connection::Get();
   scoped_refptr<base::RefCountedMemory> data;
   x11::Atom type;
-  ASSERT_TRUE(GetRawBytesOfProperty(xid, x11::GetAtom("_NET_STARTUP_ID"),
+  ASSERT_TRUE(GetRawBytesOfProperty(xid, connection->GetAtom("_NET_STARTUP_ID"),
                                     &data, &type));
 
-  EXPECT_EQ(type, x11::GetAtom("UTF8_STRING"));
+  EXPECT_EQ(type, connection->GetAtom("UTF8_STRING"));
   std::string value(reinterpret_cast<const char*>(data->data()), data->size());
   EXPECT_EQ(value, kStartupId);
 }
@@ -358,12 +365,13 @@ TEST_F(X11WindowOzoneTest, StartupIdPropertyFromInitProperties) {
   x11::Window xid = static_cast<x11::Window>(widget);
 
   // Read the _NET_STARTUP_ID property from the window.
+  auto* connection = x11::Connection::Get();
   scoped_refptr<base::RefCountedMemory> data;
   x11::Atom type;
-  ASSERT_TRUE(GetRawBytesOfProperty(xid, x11::GetAtom("_NET_STARTUP_ID"),
+  ASSERT_TRUE(GetRawBytesOfProperty(xid, connection->GetAtom("_NET_STARTUP_ID"),
                                     &data, &type));
 
-  EXPECT_EQ(type, x11::GetAtom("UTF8_STRING"));
+  EXPECT_EQ(type, connection->GetAtom("UTF8_STRING"));
   std::string value(reinterpret_cast<const char*>(data->data()), data->size());
   EXPECT_EQ(value, kStartupId);
 }
@@ -383,6 +391,234 @@ TEST_F(X11WindowOzoneTest, NotifyStartupCompletePreservesGeometryCache) {
   x11::Connection::Get()->Sync();
   x11::Connection::Get()->DispatchAll();
   EXPECT_EQ(window->GetBoundsInPixels(), kNewBounds);
+}
+
+// Verifies that _GTK_FRAME_EXTENTS is not set when the window manager can't
+// handle it (https://crbug.com/396808830).
+TEST_F(X11WindowOzoneTest, NoFrameExtentsWhenDecorationInsetsUnsupported) {
+  testing::NiceMock<MockPlatformWindowDelegate> delegate;
+  ON_CALL(delegate, CalculateInsetsInDIP(_))
+      .WillByDefault(testing::Return(gfx::Insets(4)));
+  gfx::AcceleratedWidget widget;
+  auto window = CreatePlatformWindow(&delegate, gfx::Rect(10, 20, 300, 400),
+                                     &widget, nullptr);
+  if (window->CanSetDecorationInsets()) {
+    GTEST_SKIP() << "The window manager supports _GTK_FRAME_EXTENTS.";
+  }
+
+  window->Show(/*inactive=*/false);
+  x11::Connection::Get()->Sync();
+
+  scoped_refptr<base::RefCountedMemory> data;
+  x11::Atom type;
+  EXPECT_FALSE(GetRawBytesOfProperty(
+      static_cast<x11::Window>(widget),
+      x11::Connection::Get()->GetAtom("_GTK_FRAME_EXTENTS"), &data, &type));
+}
+
+namespace {
+
+constexpr int kTouchDeviceId = 0;
+
+// A touch event received by a MockPlatformWindowDelegate.
+struct ReceivedTouch {
+  EventType type;
+  PointerId id;
+
+  bool operator==(const ReceivedTouch&) const = default;
+
+  friend void PrintTo(const ReceivedTouch& touch, std::ostream* os) {
+    *os << "{type=" << static_cast<int>(touch.type) << ", id=" << touch.id
+        << "}";
+  }
+};
+
+// Dispatches an XI2 touch event of `evtype` for `tracking_id`, reported
+// relative to `event_window`.
+void DispatchTouch(int evtype, int tracking_id, x11::Window event_window) {
+  ScopedXI2Event xi_event;
+  xi_event.InitTouchEvent(kTouchDeviceId, evtype, tracking_id,
+                          gfx::Point(100, 100), {});
+  x11::Event* event = xi_event;
+  event->As<x11::Input::DeviceEvent>()->event = event_window;
+  x11::Connection::Get()->DispatchEvent(*event);
+}
+
+}  // namespace
+
+class X11WindowOzoneTouchTest : public X11WindowOzoneTest {
+ public:
+  void SetUp() override {
+    X11WindowOzoneTest::SetUp();
+    // Start each test with fresh touch id assignments.
+    TouchFactory::GetInstance()->ResetForTest();
+    SetUpTouchDevicesForTest({kTouchDeviceId});
+
+    EXPECT_CALL(delegate_, OnClosed()).Times(1);
+    window_ = CreatePlatformWindow(&delegate_, gfx::Rect(30, 80, 800, 600),
+                                   &widget_, nullptr);
+    ON_CALL(delegate_, DispatchEvent(_)).WillByDefault([this](Event* event) {
+      if (event->IsTouchEvent()) {
+        received_touches_.push_back(
+            {event->type(), event->AsTouchEvent()->pointer_details().id});
+      }
+    });
+  }
+
+  void TearDown() override {
+    window_.reset();
+    X11WindowOzoneTest::TearDown();
+  }
+
+ protected:
+  x11::Window xwindow() const { return static_cast<x11::Window>(widget_); }
+
+  // Runs the window's move loop. `during_loop` runs once the loop has started
+  // and must end it.
+  void RunMoveLoop(base::OnceClosure during_loop) {
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, std::move(during_loop));
+    GetWmMoveLoopHandler(*window_)->RunMoveLoop(gfx::Vector2d());
+  }
+
+  void EndMoveLoop() { GetWmMoveLoopHandler(*window_)->EndMoveLoop(); }
+
+  testing::NiceMock<MockPlatformWindowDelegate> delegate_;
+  gfx::AcceleratedWidget widget_;
+  std::unique_ptr<PlatformWindow> window_;
+  std::vector<ReceivedTouch> received_touches_;
+};
+
+// A move loop that grabs the pointer itself ends every active touch sequence
+// when it releases the grab, and the X server reports their end relative to
+// the loop's input window. The windows must still see those touches end, even
+// if the loop ends while they are down (e.g. on Escape) and even if they did
+// not start the move. (The grab itself is not taken here, since tests may share
+// the X server with other test processes.)
+TEST_F(X11WindowOzoneTouchTest, CancelsAllActiveTouchesAfterGrabbedMoveLoop) {
+  DispatchTouch(x11::Input::DeviceEvent::TouchBegin, 10, xwindow());
+  DispatchTouch(x11::Input::DeviceEvent::TouchBegin, 11, xwindow());
+  ASSERT_EQ((std::vector<ReceivedTouch>{{EventType::kTouchPressed, 0},
+                                        {EventType::kTouchPressed, 1}}),
+            received_touches_);
+  received_touches_.clear();
+
+  X11Window::CancelTouchesEndedByMoveLoop(/*consumed_touches=*/{},
+                                          /*grabbed_pointer=*/true);
+
+  EXPECT_EQ((std::vector<ReceivedTouch>{{EventType::kTouchCancelled, 0},
+                                        {EventType::kTouchCancelled, 1}}),
+            received_touches_);
+
+  // The touches are no longer active, so they are not cancelled again.
+  received_touches_.clear();
+  X11Window::CancelTouchesEndedByMoveLoop(/*consumed_touches=*/{},
+                                          /*grabbed_pointer=*/true);
+  EXPECT_TRUE(received_touches_.empty());
+}
+
+// A touch release consumed by the move loop must end the touch sequence on the
+// window it was dispatched to, whichever window the X server reported the
+// release relative to (e.g. a window that is not an X11Window).
+TEST_F(X11WindowOzoneTouchTest, MoveLoopCancelsConsumedTouchRelease) {
+  // With capture, the loop does not grab the pointer.
+  window_->SetCapture();
+  DispatchTouch(x11::Input::DeviceEvent::TouchBegin, 10, xwindow());
+  ASSERT_EQ((std::vector<ReceivedTouch>{{EventType::kTouchPressed, 0}}),
+            received_touches_);
+  received_touches_.clear();
+
+  const auto other_window = x11::Connection::Get()->GenerateId<x11::Window>();
+  RunMoveLoop(base::BindLambdaForTesting([other_window]() {
+    // The release ends the loop.
+    DispatchTouch(x11::Input::DeviceEvent::TouchEnd, 10, other_window);
+  }));
+
+  EXPECT_EQ((std::vector<ReceivedTouch>{{EventType::kTouchCancelled, 0}}),
+            received_touches_);
+  window_->ReleaseCapture();
+}
+
+// A move loop that did not grab the pointer must leave touch sequences that
+// are still down alone, e.g. so that a tab drag can re-attach to a tab strip
+// with the finger still down.
+TEST_F(X11WindowOzoneTouchTest, MoveLoopWithoutPointerGrabKeepsActiveTouches) {
+  window_->SetCapture();
+  DispatchTouch(x11::Input::DeviceEvent::TouchBegin, 10, xwindow());
+  received_touches_.clear();
+
+  RunMoveLoop(base::BindLambdaForTesting([this]() { EndMoveLoop(); }));
+
+  EXPECT_TRUE(received_touches_.empty());
+  window_->ReleaseCapture();
+}
+
+// Setting and releasing capture on a window while a drag or move loop holds the
+// pointer grab must leave the loop's grab in place.
+TEST_F(X11WindowOzoneTest, CaptureKeepsMoveLoopPointerGrab) {
+  testing::NiceMock<MockPlatformWindowDelegate> delegate;
+  gfx::AcceleratedWidget widget;
+  EXPECT_CALL(delegate, OnClosed()).Times(1);
+  auto window = CreatePlatformWindow(&delegate, gfx::Rect(0, 0, 100, 100),
+                                     &widget, nullptr);
+
+  // Stand in for the input window of a move loop.
+  auto* connection = x11::Connection::Get();
+  const auto loop_window = connection->GenerateId<x11::Window>();
+  connection->CreateWindow(x11::CreateWindowRequest{
+      .wid = loop_window,
+      .parent = connection->default_root(),
+      .x = -100,
+      .y = -100,
+      .width = 10,
+      .height = 10,
+      .c_class = x11::WindowClass::InputOnly,
+      .override_redirect = x11::Bool32(true),
+  });
+  connection->MapWindow(loop_window);
+  connection->Sync();
+  if (GrabPointer(loop_window, false, nullptr) != x11::GrabStatus::Success) {
+    connection->DestroyWindow({loop_window});
+    GTEST_SKIP() << "Another client holds the pointer grab.";
+  }
+
+  window->SetCapture();
+  EXPECT_TRUE(window->HasCapture());
+  EXPECT_EQ(loop_window, GetActivePointerGrabWindow());
+
+  window->ReleaseCapture();
+  EXPECT_FALSE(window->HasCapture());
+  EXPECT_EQ(loop_window, GetActivePointerGrabWindow());
+
+  // The X server must still report the grab: another client can't grab the
+  // pointer.
+  connection->Sync();
+  x11::Connection other_connection;
+  const auto other_window = other_connection.GenerateId<x11::Window>();
+  other_connection.CreateWindow(x11::CreateWindowRequest{
+      .wid = other_window,
+      .parent = other_connection.default_root(),
+      .width = 10,
+      .height = 10,
+      .c_class = x11::WindowClass::InputOnly,
+      .override_redirect = x11::Bool32(true),
+  });
+  other_connection.MapWindow(other_window);
+  auto reply = other_connection
+                   .GrabPointer(x11::GrabPointerRequest{
+                       .grab_window = other_window,
+                       .pointer_mode = x11::GrabMode::Async,
+                       .keyboard_mode = x11::GrabMode::Async,
+                       .time = x11::Time::CurrentTime,
+                   })
+                   .Sync();
+  ASSERT_TRUE(reply);
+  EXPECT_EQ(x11::GrabStatus::AlreadyGrabbed, reply->status);
+  other_connection.UngrabPointer();
+  other_connection.Sync();
+
+  UngrabPointer();
+  connection->DestroyWindow({loop_window});
 }
 
 }  // namespace ui

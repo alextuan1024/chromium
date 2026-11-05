@@ -4,7 +4,9 @@
 
 /* #css_wrapper_metadata_start
  * #type=style-lit
+ * #import=//resources/cr_elements/cr_hidden_style_lit.css.js
  * #scheme=relative
+ * #include=cr-hidden-style-lit
  * #css_wrapper_metadata_end */
 
 :host {
@@ -15,7 +17,8 @@
 
 .description-parts {
   align-items: center;
-  color: var(--cr-secondary-text-color);
+  color: var(--color-organizer-panel-foreground-subtle,
+      var(--cr-secondary-text-color));
   display: flex;
   font-size: 11px;
   font-weight: 400;
@@ -57,7 +60,8 @@
 }
 
 .separator {
-  color: var(--cr-secondary-text-color);
+  color: var(--color-organizer-panel-foreground-subtle,
+      var(--cr-secondary-text-color));
   flex-shrink: 0;
   font-size: 11px;
   font-weight: 400;

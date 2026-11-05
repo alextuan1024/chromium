@@ -15,7 +15,6 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
@@ -29,6 +28,7 @@
 #include "content/browser/cache_storage/cache_storage_manager.h"
 #include "content/browser/cache_storage/cache_storage_trace_utils.h"
 #include "content/common/background_fetch/background_fetch_types.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "net/http/http_response_headers.h"
@@ -116,10 +116,8 @@ blink::mojom::MatchResponsePtr EagerlyReadResponseBody(
   mojo::Remote<blink::mojom::Blob> blob(std::move(response->blob->blob));
   blob->ReadAll(std::move(producer_handle), std::move(reader_client));
 
-  // Clear the main body blob entry.  There should still be a |side_data_blob|
-  // value for reading code cache, however.
+  // Clear the main body blob entry.
   response->blob = nullptr;
-  CHECK(response->side_data_blob, base::NotFatalUntil::M158);
 
   return blink::mojom::MatchResponse::NewEagerResponse(
       blink::mojom::EagerResponse::New(std::move(response),
@@ -225,6 +223,12 @@ class CacheStorageDispatcherHost::CacheImpl
                 CacheStorageTracedValue(request), "options",
                 CacheStorageTracedValue(match_options));
 
+    callback = mojo::WrapCallbackWithDefaultInvokeCallbackIfNotRun(
+        std::move(callback), base::BindOnce([](MatchCallback callback) {
+          std::move(callback).Run(base::unexpected(
+              MakeErrorStorage(ErrorStorageType::kMatchBackendClosed)));
+        }));
+
     content::CacheStorageCache* cache = cache_handle_.value();
     bool cache_initialized =
         cache ? cache->GetInitState() ==
@@ -325,6 +329,12 @@ class CacheStorageDispatcherHost::CacheImpl
                 CacheStorageTracedValue(request), "options",
                 CacheStorageTracedValue(match_options));
 
+    callback = mojo::WrapCallbackWithDefaultInvokeCallbackIfNotRun(
+        std::move(callback), base::BindOnce([](MatchAllCallback callback) {
+          std::move(callback).Run(base::unexpected(
+              MakeErrorStorage(ErrorStorageType::kMatchAllBackendClosed)));
+        }));
+
     auto cb = base::BindOnce(
         [](base::WeakPtr<CacheImpl> self, base::TimeTicks start_time,
            int64_t trace_id,
@@ -398,6 +408,13 @@ class CacheStorageDispatcherHost::CacheImpl
                 CacheStorageTracedValue(request), "options",
                 CacheStorageTracedValue(match_options));
 
+    callback = mojo::WrapCallbackWithDefaultInvokeCallbackIfNotRun(
+        std::move(callback),
+        base::BindOnce([](GetAllMatchedEntriesCallback callback) {
+          std::move(callback).Run(base::unexpected(MakeErrorStorage(
+              ErrorStorageType::kStorageGetAllMatchedEntriesBackendClosed)));
+        }));
+
     auto cb = base::BindOnce(
         [](base::WeakPtr<CacheImpl> self, base::TimeTicks start_time,
            int64_t trace_id, GetAllMatchedEntriesCallback callback,
@@ -467,6 +484,12 @@ class CacheStorageDispatcherHost::CacheImpl
                 CacheStorageTracedValue(request), "options",
                 CacheStorageTracedValue(match_options));
 
+    callback = mojo::WrapCallbackWithDefaultInvokeCallbackIfNotRun(
+        std::move(callback), base::BindOnce([](KeysCallback callback) {
+          std::move(callback).Run(base::unexpected(
+              MakeErrorStorage(ErrorStorageType::kKeysBackendClosed)));
+        }));
+
     auto cb = base::BindOnce(
         [](base::TimeTicks start_time, int64_t trace_id,
            blink::mojom::CacheStorageCache::KeysCallback callback,
@@ -514,6 +537,13 @@ class CacheStorageDispatcherHost::CacheImpl
     TRACE_EVENT("CacheStorage", "CacheStorageDispatchHost::CacheImpl::Batch",
                 perfetto::Flow::Global(trace_id), "operation_list",
                 CacheStorageTracedValue(batch_operations));
+
+    callback = mojo::WrapCallbackWithDefaultInvokeCallbackIfNotRun(
+        std::move(callback), base::BindOnce([](BatchCallback callback) {
+          std::move(callback).Run(CacheStorageVerboseError::New(
+              MakeErrorStorage(ErrorStorageType::kBatchBackendClosed),
+              std::nullopt));
+        }));
 
     if (!ValidBatchOperations(batch_operations)) {
       host_->cache_receivers_.ReportBadMessage("CSDH_UNEXPECTED_OPERATION");
@@ -565,33 +595,8 @@ class CacheStorageDispatcherHost::CacheImpl
 
     cache->BatchOperation(
         std::move(batch_operations), trace_id, std::move(cb),
-        base::BindOnce(
-            [](mojo::ReportBadMessageCallback bad_message_callback) {
-              std::move(bad_message_callback).Run("CSDH_UNEXPECTED_OPERATION");
-            },
-            host_->cache_receivers_.GetBadMessageCallback()));
-  }
-
-  void WriteSideData(const GURL& url,
-                     base::Time expected_response_time,
-                     mojo_base::BigBuffer data,
-                     int64_t trace_id,
-                     WriteSideDataCallback callback) override {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    TRACE_EVENT("CacheStorage",
-                "CacheStorageDispatchHost::CacheImpl::WriteSideData",
-                perfetto::Flow::Global(trace_id), "url", url.spec());
-
-    content::CacheStorageCache* cache = cache_handle_.value();
-    if (!cache) {
-      std::move(callback).Run(CacheStorageError::kErrorNotFound);
-      return;
-    }
-
-    auto buf = base::MakeRefCounted<net::VectorIOBuffer>(data);
-
-    cache->WriteSideData(std::move(callback), url, expected_response_time,
-                         trace_id, std::move(buf), data.size());
+        base::BindOnce(host_->cache_receivers_.GetBadMessageCallback(),
+                       "CSDH_UNEXPECTED_OPERATION"));
   }
 
   // Owns this.
@@ -666,6 +671,9 @@ class CacheStorageDispatcherHost::CacheStorageImpl final
                 "CacheStorageDispatchHost::CacheStorageImpl::Keys",
                 perfetto::Flow::Global(trace_id));
 
+    callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+        std::move(callback), std::vector<std::u16string>());
+
     auto cb = base::BindOnce(
         [](base::TimeTicks start_time, int64_t trace_id,
            blink::mojom::CacheStorage::KeysCallback callback,
@@ -709,6 +717,13 @@ class CacheStorageDispatcherHost::CacheStorageImpl final
     TRACE_EVENT(
         "CacheStorage", "CacheStorageDispatchHost::CacheStorageImpl::Delete",
         perfetto::Flow::Global(trace_id), "cache_name", utf8_cache_name);
+
+    callback = mojo::WrapCallbackWithDefaultInvokeCallbackIfNotRun(
+        std::move(callback),
+        base::BindOnce([](blink::mojom::CacheStorage::DeleteCallback callback) {
+          std::move(callback).Run(
+              MakeErrorStorage(ErrorStorageType::kStorageHandleNull));
+        }));
 
     auto cb = base::BindOnce(
         [](base::TimeTicks start_time, int64_t trace_id,
@@ -756,6 +771,13 @@ class CacheStorageDispatcherHost::CacheStorageImpl final
     TRACE_EVENT(
         "CacheStorage", "CacheStorageDispatchHost::CacheStorageImpl::Has",
         perfetto::Flow::Global(trace_id), "cache_name", utf8_cache_name);
+
+    callback = mojo::WrapCallbackWithDefaultInvokeCallbackIfNotRun(
+        std::move(callback),
+        base::BindOnce([](blink::mojom::CacheStorage::HasCallback callback) {
+          std::move(callback).Run(
+              MakeErrorStorage(ErrorStorageType::kStorageHandleNull));
+        }));
 
     auto cb = base::BindOnce(
         [](base::TimeTicks start_time, int64_t trace_id,
@@ -811,6 +833,13 @@ class CacheStorageDispatcherHost::CacheStorageImpl final
                 perfetto::Flow::Global(trace_id), "request",
                 CacheStorageTracedValue(request), "options",
                 CacheStorageTracedValue(match_options));
+
+    callback = mojo::WrapCallbackWithDefaultInvokeCallbackIfNotRun(
+        std::move(callback),
+        base::BindOnce([](blink::mojom::CacheStorage::MatchCallback callback) {
+          std::move(callback).Run(base::unexpected(MakeErrorStorage(
+              ErrorStorageType::kStorageMatchAllBackendClosed)));
+        }));
 
     auto cb = BindOnce(
         [](base::WeakPtr<CacheStorageImpl> self, base::TimeTicks start_time,
@@ -921,6 +950,14 @@ class CacheStorageDispatcherHost::CacheStorageImpl final
     TRACE_EVENT(
         "CacheStorage", "CacheStorageDispatchHost::CacheStorageImpl::Open",
         perfetto::Flow::Global(trace_id), "cache_name", utf8_cache_name);
+
+    callback = mojo::WrapCallbackWithDefaultInvokeCallbackIfNotRun(
+        std::move(callback),
+        base::BindOnce([](blink::mojom::CacheStorage::OpenCallback callback) {
+          std::move(callback).Run(base::unexpected(
+              MakeErrorStorage(ErrorStorageType::kStorageHandleNull)));
+        }));
+
     auto cb = base::BindOnce(
         [](base::WeakPtr<CacheStorageImpl> self, base::TimeTicks start_time,
            int64_t trace_id, blink::mojom::CacheStorage::OpenCallback callback,
@@ -1091,15 +1128,11 @@ void CacheStorageDispatcherHost::AddReceiver(
     const DocumentIsolationPolicy& document_isolation_policy,
     mojo::PendingRemote<network::mojom::DocumentIsolationPolicyReporter>
         dip_reporter,
-    const blink::StorageKey& storage_key,
     const std::optional<storage::BucketLocator>& bucket,
     storage::mojom::CacheStorageOwner owner,
     mojo::PendingReceiver<blink::mojom::CacheStorage> receiver) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (bucket.has_value()) {
-    // TODO(crbug.com/562197478): CHECK-exclusion: Convert to a CHECK once we
-    // are confident it won't be triggered.
-    DCHECK_EQ(bucket->storage_key, storage_key);
     if (WasNotifiedOfBucketDataDeletion(bucket.value())) {
       // The list of deleted buckets gets added to each time
       // `CacheStorageManager::DeleteBucketData()` is called, but it's not
@@ -1134,7 +1167,7 @@ CacheStorageHandle CacheStorageDispatcherHost::OpenCacheStorage(
   if (!context_ || !OriginCanAccessCacheStorage(storage_key.origin()))
     return CacheStorageHandle();
 
-  scoped_refptr<CacheStorageManager> manager = context_->cache_manager();
+  CacheStorageManager* manager = context_->cache_manager();
   if (!manager)
     return CacheStorageHandle();
 
@@ -1148,7 +1181,7 @@ void CacheStorageDispatcherHost::UpdateOrCreateDefaultBucket(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   quota_manager_proxy_->UpdateOrCreateBucket(
       storage::BucketInitParams::ForDefaultBucket(storage_key),
-      base::SequencedTaskRunner::GetCurrentDefault(), std::move(callback));
+      std::move(callback));
 }
 
 bool CacheStorageDispatcherHost::WasNotifiedOfBucketDataDeletion(

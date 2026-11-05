@@ -26,9 +26,8 @@ static_library("handlers") {
     "wallpaper_image_external_data_handler.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
+    "//ash/constants",
     "//base",
     "//chrome/browser/ash/login/users/avatar",
     "//chrome/browser/ash/policy/core",
@@ -36,7 +35,6 @@ static_library("handlers") {
     "//chrome/browser/ash/printing/enterprise",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile",
-    "//chrome/common:constants",
     "//chromeos/ash/components/settings",
     "//components/policy:generated",
     "//components/prefs",

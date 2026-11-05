@@ -6,14 +6,11 @@
 
 #include <optional>
 
-#include "base/feature_list.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/logging.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/installer/util/initial_preferences_constants.h"
 #include "components/crx_file/id_util.h"
-#include "components/search_engines/search_engines_pref_names.h"
-#include "components/search_engines/search_engines_switches.h"
 
 BrandcodedDefaultSettings::BrandcodedDefaultSettings() = default;
 
@@ -37,14 +34,6 @@ BrandcodedDefaultSettings::BrandcodedDefaultSettings(const std::string& prefs) {
 
 BrandcodedDefaultSettings::~BrandcodedDefaultSettings() = default;
 
-std::optional<base::ListValue>
-BrandcodedDefaultSettings::GetSearchProviderOverrides() const {
-  if (base::FeatureList::IsEnabled(switches::kIgnoreSearchProviderOverrides)) {
-    return std::nullopt;
-  }
-  return ExtractList(prefs::kSearchProviderOverrides);
-}
-
 bool BrandcodedDefaultSettings::GetHomepage(std::string* homepage) const {
   const std::string* val = master_dictionary_.FindString(prefs::kHomePage);
   if (!val)
@@ -63,7 +52,7 @@ std::optional<bool> BrandcodedDefaultSettings::GetShowHomeButton() const {
 
 bool BrandcodedDefaultSettings::GetExtensions(
     std::vector<std::string>* extension_ids) const {
-  DCHECK(extension_ids);
+  CHECK(extension_ids, base::NotFatalUntil::M163);
   const base::DictValue* extensions = master_dictionary_.FindDictByDottedPath(
       installer::initial_preferences::kExtensionsBlock);
   if (extensions) {

@@ -47,6 +47,15 @@ void ServiceWorkerMainResourceHandle::set_service_worker_client(
   isolation_info_ = isolation_info;
 
   CHECK(service_worker_client());
+  if (parent_service_worker_client_ &&
+      parent_service_worker_client_->disallows_service_worker_control()) {
+    service_worker_client()->SetDisallowsServiceWorkerControl();
+  }
+}
+
+void ServiceWorkerMainResourceHandle::ResetServiceWorkerClient() {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  std::exchange(scoped_service_worker_client_, nullptr).reset();
 }
 
 base::WeakPtr<ServiceWorkerClient>

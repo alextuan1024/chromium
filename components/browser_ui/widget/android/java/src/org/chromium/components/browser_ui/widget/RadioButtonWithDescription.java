@@ -170,6 +170,10 @@ public class RadioButtonWithDescription extends RelativeLayout
         mIcon = getIcon();
         mPrimary = getPrimaryTextView();
         mDescription = getDescriptionTextView();
+        // TextViewWithClickableSpans sets a long-click listener in its constructor, which marks the
+        // view long-clickable. Reset it here so plain-text descriptions (e.g. set via XML) are not
+        // treated as separate interactive accessibility nodes unless LinkMovementMethod is applied.
+        mDescription.setLongClickable(false);
 
         int endStubLayoutResourceId = getEndStubLayoutResourceId();
         if (endStubLayoutResourceId != NO_LAYOUT_ID) {
@@ -186,16 +190,12 @@ public class RadioButtonWithDescription extends RelativeLayout
         return R.layout.radio_button_with_description;
     }
 
-    /**
-     * @return RadioButton View inside this {@link RadioButtonWithDescription}.
-     */
+    /** Returns RadioButton View inside this {@link RadioButtonWithDescription}. */
     protected RadioButton getRadioButtonView() {
         return findViewById(R.id.radio_button);
     }
 
-    /**
-     * @return ImageView inside this {@link RadioButtonWithDescription}.
-     */
+    /** Returns ImageView inside this {@link RadioButtonWithDescription}. */
     protected ImageView getIcon() {
         return findViewById(R.id.icon);
     }
@@ -215,23 +215,19 @@ public class RadioButtonWithDescription extends RelativeLayout
         mIcon.setLayoutParams(params);
     }
 
-    /**
-     * @return TextView displayed as primary inside this {@link RadioButtonWithDescription}.
-     */
+    /** Returns TextView displayed as primary inside this {@link RadioButtonWithDescription}. */
     protected TextView getPrimaryTextView() {
         return findViewById(R.id.primary);
     }
 
-    /**
-     * @return TextView displayed as description inside this {@link RadioButtonWithDescription}.
-     */
+    /** Returns TextView displayed as description inside this {@link RadioButtonWithDescription}. */
     protected TextView getDescriptionTextView() {
         return findViewById(R.id.description);
     }
 
     /**
-     * @return Resource id that is used to replace the end_view_stub inside this {@link
-     *         RadioButtonWithDescription}.
+     * Returns resource id that is used to replace the end_view_stub inside this {@link
+     * RadioButtonWithDescription}.
      */
     protected int getEndStubLayoutResourceId() {
         return NO_LAYOUT_ID;
@@ -304,25 +300,33 @@ public class RadioButtonWithDescription extends RelativeLayout
         mPrimary.setText(text);
     }
 
-    /** @return The text shown in the primary section. */
+    /** Returns the text shown in the primary section. */
     public CharSequence getPrimaryText() {
         return mPrimary.getText();
     }
 
-    /** Sets the text shown in the description section. */
+    /**
+     * Sets the text shown in the description section. If {@code text} contains clickable spans,
+     * sets a link movement method on the description view so the links are clickable and
+     * keyboard-focusable.
+     */
     public void setDescriptionText(CharSequence text) {
         mDescription.setText(text);
+        // Clear any existing LinkMovementMethod (and reset focusable/clickable/longClickable)
+        // before re-evaluating whether the updated text contains a ClickableSpan.
+        mDescription.setMovementMethod(null);
 
         if (TextUtils.isEmpty(text)) {
             ((LayoutParams) mPrimary.getLayoutParams()).addRule(RelativeLayout.CENTER_VERTICAL);
             mDescription.setVisibility(View.GONE);
         } else {
             ((LayoutParams) mPrimary.getLayoutParams()).removeRule(RelativeLayout.CENTER_VERTICAL);
+            UiUtils.maybeSetLinkMovementMethod(mDescription);
             mDescription.setVisibility(View.VISIBLE);
         }
     }
 
-    /** @return The text shown in the description section. */
+    /** Returns the text shown in the description section. */
     public CharSequence getDescriptionText() {
         return mDescription.getText();
     }
@@ -430,9 +434,9 @@ public class RadioButtonWithDescription extends RelativeLayout
 
     @Override
     protected void onRestoreInstanceState(Parcelable state) {
-        if (state instanceof Bundle) {
-            super.onRestoreInstanceState(((Bundle) state).getParcelable(SUPER_STATE_KEY));
-            setChecked(((Bundle) state).getBoolean(CHECKED_KEY));
+        if (state instanceof Bundle bundle) {
+            super.onRestoreInstanceState(bundle.getParcelable(SUPER_STATE_KEY));
+            setChecked(bundle.getBoolean(CHECKED_KEY));
         } else {
             super.onRestoreInstanceState(state);
         }

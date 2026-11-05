@@ -18,7 +18,6 @@ import androidx.annotation.StringRes;
 import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
@@ -26,6 +25,7 @@ import org.chromium.components.browser_ui.widget.ListItemBuilder;
 import org.chromium.components.collaboration.CollaborationService;
 import org.chromium.components.data_sharing.member_role.MemberRole;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.widget.ViewRectProvider;
@@ -45,6 +45,7 @@ public class TabListGroupMenuCoordinator extends TabGroupOverflowMenuCoordinator
      * @param onItemClicked A callback for listening to clicks.
      * @param tabModelSupplier The supplier of the tab model.
      * @param tabGroupSyncService Used to checking if a group is shared or synced.
+     * @param collaborationService Used to fetch collaboration and group data.
      * @param activity The {@link Context} that the coordinator resides in.
      */
     public TabListGroupMenuCoordinator(
@@ -65,18 +66,18 @@ public class TabListGroupMenuCoordinator extends TabGroupOverflowMenuCoordinator
         mActivity = activity;
     }
 
-    /** Creates a {@link TabActionListener} that creates the menu and shows it when clicked. */
-    TabActionListener getTabActionListener() {
+    /**
+     * Creates a {@link TabActionListener} that creates and shows the tab group overflow menu.
+     *
+     * @param tabGroupId The {@link Token} ID of the tab group.
+     * @return The {@link TabActionListener} that opens the overflow menu.
+     */
+    TabActionListener getTabGroupActionListener(Token tabGroupId) {
         return new TabActionListener() {
             @Override
             public void run(View view, int tabId, @Nullable MotionEventInfo triggeringMotion) {
                 TabModel tabModel = getTabModel();
-
-                @Nullable Tab tab = tabModel.getTabById(tabId);
-                if (tab == null) return;
-
-                @Nullable Token tabGroupId = tab.getTabGroupId();
-                if (tabGroupId == null) return;
+                if (!tabModel.containsTabGroup(TabGroupId.fromOptionalToken(tabGroupId))) return;
 
                 mIsMenuFocusableUponCreation = true;
                 createAndShowMenu(

@@ -66,16 +66,17 @@ class WebNavigationEventRouter::TabHelper : public TabModelListObserver,
   TabHelper& operator=(const TabHelper&) = delete;
   ~TabHelper() override {
     tab_model_observations_.RemoveAllObservations();
-    TabModelList::RemoveObserver(this);
+    TabModelList::RemoveGlobalObserver(this);
   }
 
   void Init() {
     // Equivalent to observing for new windows (a TabModel is like a window).
-    TabModelList::AddObserver(this);
+    TabModelList::AddGlobalObserver(this);
     // Add models for existing windows.
-    for (TabModel* model : TabModelList::models()) {
+    TabModelList::ForEachAll([this](TabModel* model) {
       OnTabModelAdded(model);
-    }
+      return true;
+    });
   }
 
   // TabModelListObserver:
@@ -186,7 +187,8 @@ void WebNavigationEventRouter::TabReplaced(content::WebContents* old_contents,
   if (!tab_observer) {
     // If you hit this DCHECK(), please add reproduction steps to
     // http://crbug.com/40135496.
-    DCHECK(GetViewType(old_contents) != mojom::ViewType::kTabContents);
+    CHECK(GetViewType(old_contents) != mojom::ViewType::kTabContents,
+          base::NotFatalUntil::M161);
     return;
   }
   if (!FrameNavigationState::IsValidUrl(old_contents->GetLastCommittedURL()) ||
@@ -213,7 +215,8 @@ void WebNavigationEventRouter::RecordNewWebContents(
   if (!tab_observer) {
     // If you hit this DCHECK(), please add reproduction steps to
     // http://crbug.com/40135496.
-    DCHECK(GetViewType(source_web_contents) != mojom::ViewType::kTabContents);
+    CHECK(GetViewType(source_web_contents) != mojom::ViewType::kTabContents,
+          base::NotFatalUntil::M161);
     return;
   }
 

@@ -33,7 +33,7 @@ public class SendTabToSelfMetricsRecorder {
     public static void attachScrollObserverToTab(Tab tab, @Nullable String scrollToTextFragment) {
         boolean hasScrollPosition = !TextUtils.isEmpty(scrollToTextFragment);
         recordHasScrollPositionOnOpened(hasScrollPosition);
-        SendTabToSelfAndroidBridge.runWhenWebContentsAvailable(
+        PageContextBridge.runWhenWebContentsAvailable(
                 tab, webContents -> attachScrollObserver(webContents, hasScrollPosition));
     }
 
@@ -52,21 +52,12 @@ public class SendTabToSelfMetricsRecorder {
         SendTabToSelfMetricsRecorderJni.get().recordNotificationStatus(status);
     }
 
-    public static void recordScrollPositionGenerationOutcome(
-            @ScrollPositionGenerationOutcome int outcome) {
-        SendTabToSelfMetricsRecorderJni.get().recordScrollPositionGenerationOutcome(outcome);
-    }
-
-    public static void recordScrollPositionGenerationTime(long durationMs) {
-        SendTabToSelfMetricsRecorderJni.get().recordScrollPositionGenerationTime(durationMs);
-    }
-
-    public static void recordScrollPositionSelectorLength(int length) {
-        SendTabToSelfMetricsRecorderJni.get().recordScrollPositionSelectorLength(length);
-    }
-
     public static void recordEntryPointInvoked(@ShareEntryPoint int entryPoint) {
         SendTabToSelfMetricsRecorderJni.get().recordEntryPointInvoked(entryPoint);
+    }
+
+    public static void recordOpenedInNativeApp(@NativeAppOpenEntryPoint int entryPoint) {
+        SendTabToSelfMetricsRecorderJni.get().recordOpenedInNativeApp(entryPoint);
     }
 
     @NativeMethods
@@ -80,16 +71,11 @@ public class SendTabToSelfMetricsRecorder {
 
         void recordHasScrollPositionOnOpened(boolean hasScrollPosition);
 
-        void recordScrollPositionGenerationOutcome(
-                @JniType("send_tab_to_self::ScrollPositionGenerationOutcome")
-                        @ScrollPositionGenerationOutcome
-                        int outcome);
-
-        void recordScrollPositionGenerationTime(long durationMs);
-
-        void recordScrollPositionSelectorLength(int length);
-
         void recordEntryPointInvoked(
                 @JniType("send_tab_to_self::ShareEntryPoint") @ShareEntryPoint int entryPoint);
+
+        void recordOpenedInNativeApp(
+                @JniType("send_tab_to_self::NativeAppOpenEntryPoint") @NativeAppOpenEntryPoint
+                        int entryPoint);
     }
 }

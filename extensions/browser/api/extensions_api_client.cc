@@ -34,7 +34,7 @@ void ExtensionsAPIClient::AddAdditionalValueStoreCaches(
     const scoped_refptr<value_store::ValueStoreFactory>& factory,
     SettingsChangedCallback observer,
     std::map<settings_namespace::Namespace,
-             raw_ptr<ValueStoreCache, CtnExperimental>>* caches) {}
+             raw_ptr<ValueStoreCache, DanglingUntriaged>>* caches) {}
 
 void ExtensionsAPIClient::AttachWebContentsHelpers(
     content::WebContents* web_contents) const {}
@@ -160,6 +160,10 @@ MetricsPrivateDelegate* ExtensionsAPIClient::GetMetricsPrivateDelegate() {
 }
 
 MessagingDelegate* ExtensionsAPIClient::GetMessagingDelegate() {
+  return nullptr;
+}
+
+CookiesApiDelegate* ExtensionsAPIClient::GetCookiesApiDelegate() {
   return nullptr;
 }
 

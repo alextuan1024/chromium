@@ -14,6 +14,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.autofill.PersonalDataManagerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+import org.chromium.components.autofill.autofill_ai.DetailsForUpsertPass;
 import org.chromium.components.autofill.autofill_ai.EntityInstance;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
@@ -31,13 +32,18 @@ public class EntityEditorCoordinator {
          * The user committed changes by pressing the "Done" button.
          *
          * @param entityInstance the entity instance with all updates applied.
-         * @param descriptionStringId the resource ID of the string used to describe the storage
+         * @param descriptionStringIds the resource IDs of the strings used to describe the storage
          *     used.
          * @param acceptButtonStringId the resource ID of the string used as the accept button for
          *     the consent.
+         * @param legalMessageToken the legal message token certifying disclosure notice acceptance,
+         *     or null.
          */
         default void onDone(
-                EntityInstance entityInstance, int descriptionStringId, int acceptButtonStringId) {}
+                EntityInstance entityInstance,
+                int[] descriptionStringIds,
+                int acceptButtonStringId,
+                byte @Nullable [] legalMessageToken) {}
 
         /**
          * The user has confirmed deletion of this entity instance.
@@ -61,12 +67,14 @@ public class EntityEditorCoordinator {
      * @param delegate The delegate to be notified of editor events.
      * @param profile The user's profile.
      * @param entityInstance The entity instance to be edited.
+     * @param detailsForUpsertPass The details response containing legal message lines or null.
      */
     public EntityEditorCoordinator(
             FragmentActivity activity,
             Delegate delegate,
             Profile profile,
-            EntityInstance entityInstance) {
+            EntityInstance entityInstance,
+            @Nullable DetailsForUpsertPass detailsForUpsertPass) {
         mMediator =
                 new EntityEditorMediator(
                         activity,
@@ -74,7 +82,13 @@ public class EntityEditorCoordinator {
                         profile,
                         assumeNonNull(IdentityServicesProvider.get().getIdentityManager(profile)),
                         PersonalDataManagerFactory.getForProfile(profile),
-                        entityInstance);
+                        entityInstance,
+                        detailsForUpsertPass != null
+                                ? detailsForUpsertPass.getLegalMessageLines()
+                                : null,
+                        detailsForUpsertPass != null
+                                ? detailsForUpsertPass.getLegalMessageToken()
+                                : null);
         mEditorView = new EntityEditorView(activity);
     }
 
@@ -89,20 +103,6 @@ public class EntityEditorCoordinator {
         PropertyModelChangeProcessor.create(
                 mEditorModel, mEditorView, EntityEditorViewBinder::bindEditorDialogView);
         mEditorModel.set(VISIBLE, true);
-    }
-
-    /**
-     * Check if current editor dialog is visible to the user.
-     *
-     * @return true if this editor is visible to the user, false otherwise.
-     */
-    public boolean isShowing() {
-        return mEditorView.isShowing();
-    }
-
-    /** Dismiss currently visible editor dialog. */
-    public void dismiss() {
-        mEditorView.dismiss();
     }
 
     EntityEditorView getEntityEditorViewForTest() {

@@ -13,6 +13,7 @@ import android.view.InputDevice;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
@@ -21,6 +22,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Objects;
 
 /**
  * A singleton that helps detecting changes in input devices through the interface {@link
@@ -32,19 +34,19 @@ public class InputDeviceObserver implements InputDeviceListener {
     private static final InputDeviceObserver INSTANCE = new InputDeviceObserver();
 
     /**
-     * Notifies the InputDeviceObserver that an observer is attached and it
-     * should prepare itself for listening input changes.
+     * Notifies the InputDeviceObserver that an observer is attached and it should prepare itself
+     * for listening input changes.
      */
     @CalledByNative
     public static void addObserver() {
-        assert ThreadUtils.runningOnUiThread();
+        ThreadUtils.assertOnUiThread();
         INSTANCE.attachObserver();
     }
 
     /** Notifies the InputDeviceObserver that an observer has been removed. */
     @CalledByNative
     public static void removeObserver() {
-        assert ThreadUtils.runningOnUiThread();
+        ThreadUtils.assertOnUiThread();
         INSTANCE.detachObserver();
     }
 
@@ -54,20 +56,24 @@ public class InputDeviceObserver implements InputDeviceListener {
     // Override InputDeviceListener methods
     @Override
     public void onInputDeviceChanged(int deviceId) {
+        ThreadUtils.assertOnUiThread();
         InputDeviceObserverJni.get().inputConfigurationChanged();
     }
 
     @Override
     public void onInputDeviceRemoved(int deviceId) {
+        ThreadUtils.assertOnUiThread();
         InputDeviceObserverJni.get().inputConfigurationChanged();
     }
 
     @Override
     public void onInputDeviceAdded(int deviceId) {
+        ThreadUtils.assertOnUiThread();
         InputDeviceObserverJni.get().inputConfigurationChanged();
     }
 
     private void attachObserver() {
+        ThreadUtils.assertOnUiThread();
         if (mObserversCounter++ == 0) {
             Context context = ContextUtils.getApplicationContext();
             mInputManager = (InputManager) context.getSystemService(Context.INPUT_SERVICE);
@@ -77,6 +83,7 @@ public class InputDeviceObserver implements InputDeviceListener {
     }
 
     private void detachObserver() {
+        ThreadUtils.assertOnUiThread();
         assert mObserversCounter > 0;
         if (--mObserversCounter == 0) {
             assumeNonNull(mInputManager);
@@ -86,57 +93,25 @@ public class InputDeviceObserver implements InputDeviceListener {
     }
 
     @CalledByNative
-    public static InputDeviceData[] getKeyboards() {
+    public static @JniType("std::vector<jni_zero::ScopedJavaLocalRef<jobject>>") InputDeviceData[]
+            getInputDevices() {
+        ThreadUtils.assertOnBackgroundThread();
         ArrayList<InputDeviceData> devices = new ArrayList<>();
         for (int deviceId : InputDevice.getDeviceIds()) {
             InputDevice device = getValidDevice(deviceId);
             if (device == null) continue;
             int sources = device.getSources();
-            if ((sources & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD
-                    && device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
-                devices.add(createDeviceData(device));
-            }
-        }
-        return devices.toArray(new InputDeviceData[0]);
-    }
-
-    @CalledByNative
-    public static InputDeviceData[] getMice() {
-        ArrayList<InputDeviceData> devices = new ArrayList<>();
-        for (int deviceId : InputDevice.getDeviceIds()) {
-            InputDevice device = getValidDevice(deviceId);
-            if (device == null) continue;
-            int sources = device.getSources();
-            if ((sources & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) {
-                devices.add(createDeviceData(device));
-            }
-        }
-        return devices.toArray(new InputDeviceData[0]);
-    }
-
-    @CalledByNative
-    public static InputDeviceData[] getTouchpads() {
-        ArrayList<InputDeviceData> devices = new ArrayList<>();
-        for (int deviceId : InputDevice.getDeviceIds()) {
-            InputDevice device = getValidDevice(deviceId);
-            if (device == null) continue;
-            int sources = device.getSources();
-            if ((sources & InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD) {
-                devices.add(createDeviceData(device));
-            }
-        }
-        return devices.toArray(new InputDeviceData[0]);
-    }
-
-    @CalledByNative
-    public static InputDeviceData[] getTouchscreens() {
-        ArrayList<InputDeviceData> devices = new ArrayList<>();
-        for (int deviceId : InputDevice.getDeviceIds()) {
-            InputDevice device = getValidDevice(deviceId);
-            if (device == null) continue;
-            int sources = device.getSources();
-            if ((sources & InputDevice.SOURCE_TOUCHSCREEN) == InputDevice.SOURCE_TOUCHSCREEN) {
-                devices.add(createDeviceData(device));
+            boolean isKeyboard =
+                    (sources & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD
+                            && device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+            boolean isMouse = (sources & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE;
+            boolean isTouchpad =
+                    (sources & InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD;
+            boolean isTouchscreen =
+                    (sources & InputDevice.SOURCE_TOUCHSCREEN) == InputDevice.SOURCE_TOUCHSCREEN;
+            if (isKeyboard || isMouse || isTouchpad || isTouchscreen) {
+                devices.add(
+                        createDeviceData(device, isKeyboard, isMouse, isTouchpad, isTouchscreen));
             }
         }
         return devices.toArray(new InputDeviceData[0]);
@@ -156,14 +131,23 @@ public class InputDeviceObserver implements InputDeviceListener {
         return device;
     }
 
-    private static InputDeviceData createDeviceData(InputDevice device) {
+    private static InputDeviceData createDeviceData(
+            InputDevice device,
+            boolean isKeyboard,
+            boolean isMouse,
+            boolean isTouchpad,
+            boolean isTouchscreen) {
         return new InputDeviceData(
                 device.getId(),
-                device.getName(),
+                Objects.requireNonNullElse(device.getName(), ""),
                 device.isExternal(),
                 device.isVirtual(),
                 device.getVendorId(),
-                device.getProductId());
+                device.getProductId(),
+                isKeyboard,
+                isMouse,
+                isTouchpad,
+                isTouchscreen);
     }
 
     public static class InputDeviceData {
@@ -173,21 +157,33 @@ public class InputDeviceObserver implements InputDeviceListener {
         private final boolean mIsVirtual;
         private final int mVendorId;
         private final int mProductId;
+        private final boolean mIsKeyboard;
+        private final boolean mIsMouse;
+        private final boolean mIsTouchpad;
+        private final boolean mIsTouchscreen;
 
         @CalledByNative
         public InputDeviceData(
                 int id,
-                String name,
+                @JniType("std::string") String name,
                 boolean isExternal,
                 boolean isVirtual,
                 int vendorId,
-                int productId) {
+                int productId,
+                boolean isKeyboard,
+                boolean isMouse,
+                boolean isTouchpad,
+                boolean isTouchscreen) {
             mId = id;
             mName = name;
             mIsExternal = isExternal;
             mIsVirtual = isVirtual;
             mVendorId = vendorId;
             mProductId = productId;
+            mIsKeyboard = isKeyboard;
+            mIsMouse = isMouse;
+            mIsTouchpad = isTouchpad;
+            mIsTouchscreen = isTouchscreen;
         }
 
         @CalledByNative
@@ -196,7 +192,7 @@ public class InputDeviceObserver implements InputDeviceListener {
         }
 
         @CalledByNative
-        public String getName() {
+        public @JniType("std::string") String getName() {
             return mName;
         }
 
@@ -218,6 +214,26 @@ public class InputDeviceObserver implements InputDeviceListener {
         @CalledByNative
         public int getProductId() {
             return mProductId;
+        }
+
+        @CalledByNative
+        public boolean isKeyboard() {
+            return mIsKeyboard;
+        }
+
+        @CalledByNative
+        public boolean isMouse() {
+            return mIsMouse;
+        }
+
+        @CalledByNative
+        public boolean isTouchpad() {
+            return mIsTouchpad;
+        }
+
+        @CalledByNative
+        public boolean isTouchscreen() {
+            return mIsTouchscreen;
         }
     }
 

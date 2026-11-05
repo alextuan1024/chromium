@@ -6,7 +6,7 @@
 #define ASH_SYSTEM_POWER_POWER_BUTTON_MENU_CURTAIN_VIEW_H_
 
 #include "ash/ash_export.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "base/check_deref.h"
 #include "base/memory/raw_ptr.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -33,9 +33,6 @@ class ASH_EXPORT PowerButtonMenuCurtainView
 
   void ScheduleShowHideAnimation(bool show);
 
-  // views::View:
-  void OnThemeChanged() override;
-
  private:
   void Initialize();
 
@@ -53,7 +50,7 @@ class ASH_EXPORT PowerButtonMenuCurtainView
   raw_ptr<views::ImageView> enterprise_icon_;
   raw_ptr<views::Label> title_text_;
   raw_ptr<views::Label> description_text_;
-  std::unique_ptr<ash::SystemShadow> shadow_;
+  std::unique_ptr<ash::SystemDecoration> decoration_;
 };
 
 }  // namespace ash

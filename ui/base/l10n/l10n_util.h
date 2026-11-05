@@ -18,12 +18,15 @@
 #include "base/component_export.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
-#include "base/i18n/language_tag.h"
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_APPLE)
 #include "ui/base/l10n/l10n_util_mac.h"
 #endif  // BUILDFLAG(IS_APPLE)
+
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
 
 namespace l10n_util {
 
@@ -62,12 +65,6 @@ COMPONENT_EXPORT(UI_BASE)
 std::string GetApplicationLocale(std::string_view pref_locale,
                                  bool set_icu_locale = true);
 
-// Returns true if a display name for |locale| is available in the locale
-// |display_locale|.
-COMPONENT_EXPORT(UI_BASE)
-bool IsLocaleNameTranslated(std::string_view locale,
-                            std::string_view display_locale);
-
 // This method returns the display name of the locale code in |display_locale|.
 // For example, for |locale| = "en-US" and |display_locale| = "en",
 // it returns "English (United States)". To get the display name of
@@ -95,10 +92,12 @@ std::u16string GetDisplayNameForLocale(
     bool disallow_default = false);
 
 // Returns the display name of the `country_code` in `display_locale`.
-// Returns an empty string if `country_code` is empty.
+// Returns an empty string if `country_code` is empty or invalid, or if
+// `display_locale` is "und".
 COMPONENT_EXPORT(UI_BASE)
-std::u16string GetDisplayNameForCountry(std::string_view country_code,
-                                        std::string_view display_locale);
+std::u16string GetDisplayNameForCountry(
+    std::string_view country_code,
+    const base::i18n::LanguageTag& display_locale);
 
 //
 // Mac Note: See l10n_util_mac.h for some NSString versions and other support.
@@ -232,7 +231,7 @@ void SortStrings16(const std::string& locale,
 // locale. This is similar to CheckAndResolveLocale, except that it excludes
 // some languages from being shown.
 COMPONENT_EXPORT(UI_BASE)
-bool IsUserFacingUILocale(std::string_view locale);
+bool IsUserFacingUILocale(const base::i18n::LanguageTag& locale);
 
 // Returns the subset of locales from GetAcceptLanguages which should be shown
 // to the user as a supported UI locale.
@@ -245,6 +244,12 @@ COMPONENT_EXPORT(UI_BASE)
 std::vector<std::string> GetAcceptLanguagesForLocale(
     std::string_view display_locale);
 
+// Same as `GetAcceptLanguagesForLocale()`, but takes and returns
+// `LanguageTag`s.
+COMPONENT_EXPORT(UI_BASE)
+std::vector<base::i18n::LanguageTag> GetAcceptLanguageTagsForLocale(
+    const base::i18n::LanguageTag& display_locale);
+
 // Returns a vector of untranslated locale codes usable for accept-languages.
 COMPONENT_EXPORT(UI_BASE)
 void GetAcceptLanguages(std::vector<std::string>* locale_codes);
@@ -256,19 +261,14 @@ bool IsPossibleAcceptLanguage(std::string_view locale);
 // Returns true if `locale` is in a predefined `kAcceptLanguageList` and
 // a display name for the `locale` is available in the locale `display_locale`.
 COMPONENT_EXPORT(UI_BASE)
-bool IsAcceptLanguageDisplayable(std::string_view display_locale,
-                                 std::string_view locale);
+bool IsAcceptLanguageDisplayable(const base::i18n::LanguageTag& display_locale,
+                                 const base::i18n::LanguageTag& locale);
 
 // Filters the input vector of languages. Returns only those in the
 // `kAcceptLanguageList`.
 COMPONENT_EXPORT(UI_BASE)
-std::vector<std::string> KeepAcceptedLanguages(
-    base::span<const std::string> languages);
-
-// Returns the preferred size of the contents view of a window based on
-// designer given constraints which might dependent on the language used.
-COMPONENT_EXPORT(UI_BASE)
-int GetLocalizedContentsWidthInPixels(int pixel_resource_id);
+std::vector<base::i18n::LanguageTag> KeepAcceptedLanguages(
+    base::span<const base::i18n::LanguageTag> languages);
 
 COMPONENT_EXPORT(UI_BASE)
 std::vector<std::string_view> GetAcceptLanguageListForTesting();

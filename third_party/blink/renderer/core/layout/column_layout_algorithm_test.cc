@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/core/layout/block_layout_algorithm.h"
 #include "third_party/blink/renderer/core/layout/length_utils.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 namespace {
@@ -2094,6 +2095,7 @@ TEST_F(ColumnLayoutAlgorithmTest, UnsatisfiableOrphansAndWidows) {
 }
 
 TEST_F(ColumnLayoutAlgorithmTest, WidowsAndAbspos) {
+  ScopedFragmentedOofInCbForTest enable_flag(true);
   SetBodyInnerHTML(R"HTML(
     <style>
       #parent {
@@ -2134,9 +2136,10 @@ TEST_F(ColumnLayoutAlgorithmTest, WidowsAndAbspos) {
           offset:0,0 size:0x20
           offset:0,20 size:0x20
           offset:0,40 size:0x20
-        offset:0,40 size:33x30
+          offset:0,40 size:33x30
       offset:220,0 size:100x70
-        offset:0,0 size:33x3
+        offset:0,0 size:100x0
+          offset:0,0 size:33x3
 )DUMP";
   EXPECT_EQ(expectation, dump);
 }
@@ -2760,7 +2763,7 @@ TEST_F(ColumnLayoutAlgorithmTest, MinMax) {
   // (which is the only thing resembling spec that we currently have); in
   // particular, if column-width is non-auto, we ignore column-count for min
   // inline-size, and also clamp it down to the specified column-width.
-  ComputedStyleBuilder builder(layout_object->StyleRef());
+  ComputedStyleBuilder builder(layout_object->Style());
   builder.SetColumnCount(3);
   builder.SetColumnWidth(80);
   layout_object->SetStyle(*builder.TakeStyle(),
@@ -2771,7 +2774,7 @@ TEST_F(ColumnLayoutAlgorithmTest, MinMax) {
   EXPECT_EQ(LayoutUnit(320), sizes->max_size);
 
   // Only column-count set.
-  builder = ComputedStyleBuilder(layout_object->StyleRef());
+  builder = ComputedStyleBuilder(layout_object->Style());
   builder.SetHasAutoColumnWidth();
   layout_object->SetStyle(*builder.TakeStyle(),
                           LayoutObject::ApplyStyleChanges::kNo);
@@ -2781,7 +2784,7 @@ TEST_F(ColumnLayoutAlgorithmTest, MinMax) {
   EXPECT_EQ(LayoutUnit(320), sizes->max_size);
 
   // Only column-width set.
-  builder = ComputedStyleBuilder(layout_object->StyleRef());
+  builder = ComputedStyleBuilder(layout_object->Style());
   builder.SetColumnWidth(80);
   builder.SetHasAutoColumnCount();
   layout_object->SetStyle(*builder.TakeStyle(),
@@ -4382,6 +4385,7 @@ TEST_F(ColumnLayoutAlgorithmTest, NestedWithTallSpanner) {
 }
 
 TEST_F(ColumnLayoutAlgorithmTest, AbsposFitsInOneColumn) {
+  ScopedFragmentedOofInCbForTest enable_flag(true);
   SetBodyInnerHTML(R"HTML(
     <div id="container">
       <div style="columns:3; width:320px; height:100px; column-gap:10px; column-fill:auto;">
@@ -4398,7 +4402,7 @@ TEST_F(ColumnLayoutAlgorithmTest, AbsposFitsInOneColumn) {
     offset:0,0 size:320x100
       offset:0,0 size:100x100
         offset:0,0 size:222x100
-        offset:0,0 size:111x50
+          offset:0,0 size:111x50
       offset:110,0 size:100x100
         offset:0,0 size:222x100
       offset:220,0 size:100x100
@@ -6546,6 +6550,47 @@ TEST_F(ColumnLayoutAlgorithmTest, GapDecorationBasic) {
 }
 
 TEST_F(ColumnLayoutAlgorithmTest,
+       GapDecorationsInkOverflowWithNegativeMarginSpanner) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #multicol {
+        width: 200px;
+        column-count: 2;
+        column-gap: 20px;
+        column-rule: 4px solid blue;
+      }
+      #before { height: 600px; }
+      #spanner {
+        column-span: all;
+        height: 0;
+        margin-top: -290px;
+      }
+      #after { height: 10px; }
+    </style>
+    <div id="multicol">
+      <div id="before"></div>
+      <div id="spanner"></div>
+      <div id="after"></div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  const PhysicalBoxFragment* fragment =
+      GetLayoutBoxByElementId("multicol")->GetPhysicalFragment(0);
+  ASSERT_NE(fragment, nullptr);
+  const GapGeometry* gaps = fragment->GetGapGeometry();
+  ASSERT_NE(gaps, nullptr);
+  ASSERT_EQ(gaps->MainGapCount(), 2u);
+  const MainGap& spanner_start = gaps->GetMainGaps()[0];
+  ASSERT_TRUE(spanner_start.IsStartSpannerMainGap());
+  ASSERT_GT(spanner_start.GetGapOffset(), gaps->GetContentBlockEnd());
+  const PhysicalRect gap_overflow = gaps->ComputeInkOverflowForGaps(
+      {WritingMode::kHorizontalTb, TextDirection::kLtr}, fragment->Size(),
+      LayoutUnit(4), LayoutUnit(), {});
+  EXPECT_GE(gap_overflow.Bottom(), spanner_start.GetGapOffset());
+}
+
+TEST_F(ColumnLayoutAlgorithmTest,
        GapDecorationContentEndPastContainer) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -6874,7 +6919,7 @@ TEST_F(ColumnLayoutAlgorithmTest,
   EXPECT_EQ(gap_geometry->GetContentInlineStart(), LayoutUnit(2));
   EXPECT_EQ(gap_geometry->GetContentBlockStart(), LayoutUnit(2));
   EXPECT_EQ(gap_geometry->GetContentInlineEnd(), LayoutUnit(202));
-  EXPECT_EQ(gap_geometry->GetContentBlockEnd(), LayoutUnit(202));
+  EXPECT_EQ(gap_geometry->GetContentBlockEnd(), LayoutUnit(172));
 
   EXPECT_TRUE(main_gaps[0].IsSpannerMainGap());
   EXPECT_TRUE(main_gaps[0].IsStartSpannerMainGap());

@@ -12,6 +12,9 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/location.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/page_action/multi_icon_button.h"
@@ -29,11 +32,19 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
+#include "ui/compositor/layer.h"
+#include "ui/compositor/layer_animator.h"
+#include "ui/gfx/animation/animation.h"
+#include "ui/gfx/animation/tween.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/outsets.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/text_constants.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/animation/animation_builder.h"
+#include "ui/views/animation/widget_fade_animator.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/controls/button/button.h"
@@ -54,6 +65,23 @@
 
 namespace page_actions {
 
+namespace {
+
+constexpr base::TimeDelta kAnchoredMessageAnimateInDuration =
+    base::Milliseconds(250);
+constexpr base::TimeDelta kAnchoredMessageAnimateOutDuration =
+    base::Milliseconds(150);
+constexpr int kAnchoredMessageAnimationSlideDistance = 16;
+constexpr gfx::Tween::Type kAnchoredMessageAnimationTween =
+    gfx::Tween::ACCEL_45_DECEL_88;
+
+bool ShouldAnimate() {
+  return gfx::Animation::ShouldRenderRichAnimation() &&
+         !gfx::ScopedAnimationDurationScaleMode::is_zero();
+}
+
+}  // namespace
+
 const int kChipContainerHeight = 36;
 const int kChipIconSize = 20;
 const int kAnchoredMessageHeight = 52;
@@ -64,6 +92,8 @@ const int kAnchoredMessageIconSize = 18;
 const int kAnchoredMessageSpaceLeftOfChip = 16;
 const gfx::Insets kAnchoreMessageActionIconMarginsInset =
     gfx::Insets::TLBR(0, 8, 0, 0);
+const int kIconCenterToBubbleEdgeOffset = 24;
+const int kAnchoredMessageVerticalGap = 2;
 
 // ChipContainerView holds the clickable chip of the anchored message, similar
 // to the Suggestion Chip version of the Page Action View.
@@ -158,14 +188,16 @@ AnchoredMessageBubbleView::AnchoredMessageBubbleView(
   set_margins(gfx::Insets());
   set_highlight_button_when_shown(false);
 
-  auto* animating_layout =
+  animating_layout_ =
       SetLayoutManager(std::make_unique<views::AnimatingLayoutManager>());
-  animating_layout
+  animating_layout_
       ->SetBoundsAnimationMode(
           views::AnimatingLayoutManager::BoundsAnimationMode::kAnimateMainAxis)
-      .SetOrientation(views::LayoutOrientation::kVertical);
+      .SetOrientation(views::LayoutOrientation::kVertical)
+      .SetDefaultFadeMode(
+          views::AnimatingLayoutManager::FadeInOutMode::kScaleFromZero);
 
-  auto* layout = animating_layout->SetTargetLayoutManager(
+  auto* layout = animating_layout_->SetTargetLayoutManager(
       std::make_unique<views::FlexLayout>());
   layout->SetOrientation(views::LayoutOrientation::kVertical);
   layout->SetCrossAxisAlignment(views::LayoutAlignment::kStretch);
@@ -245,8 +277,8 @@ AnchoredMessageBubbleView::AnchoredMessageBubbleView(
   bottom_container_ = AddChildView(std::make_unique<views::View>());
   bottom_container_->SetProperty(views::kElementIdentifierKey,
                                  kAnchoredMessageExpandedContentId);
-  bottom_container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0));
+  bottom_container_->SetLayoutManager(std::make_unique<views::FlexLayout>())
+      ->SetOrientation(views::LayoutOrientation::kVertical);
   bottom_container_->SetVisible(false);
 
   UpdateContent(model);
@@ -254,6 +286,9 @@ AnchoredMessageBubbleView::AnchoredMessageBubbleView(
 
 void AnchoredMessageBubbleView::UpdateContent(
     const PageActionModelInterface& model) {
+  if (fade_animator_ && fade_animator_->IsFadingIn()) {
+    fade_animator_->CancelSlide(/*snap_to_target=*/false);
+  }
   const bool chip_has_icon = !model.GetAnchoredMessageIcon();
   // Ensure that the anchored message always has a chip showing - that is it has
   // an icon and/or non-empty text.
@@ -276,6 +311,106 @@ void AnchoredMessageBubbleView::UpdateContent(
           0));
 
   OnThemeChanged();
+}
+
+void AnchoredMessageBubbleView::AddedToWidget() {
+  views::View::AddedToWidget();
+  // Animate at the widget level (rather than painting BubbleFrameView to a
+  // zero-opacity layer) so macOS WindowServer computes the native window
+  // shadow from fully opaque frame pixels on the first frame swap and fades
+  // the shadow smoothly with the bubble.
+  views::Widget* widget = GetWidget();
+  widget->SetVisibilityChangedAnimationsEnabled(false);
+  fade_animator_ = std::make_unique<views::WidgetFadeAnimator>(widget);
+  fade_animator_->set_fade_in_duration(kAnchoredMessageAnimateInDuration);
+  fade_animator_->set_fade_out_duration(kAnchoredMessageAnimateOutDuration);
+  fade_animator_->set_tween_type(kAnchoredMessageAnimationTween);
+  fade_animator_->set_show_type(
+      views::WidgetFadeAnimator::WidgetShowType::kShowInactive);
+  fade_complete_subscription_ =
+      fade_animator_->AddFadeCompleteCallback(base::BindRepeating(
+          [](base::WeakPtr<AnchoredMessageBubbleView> view,
+             views::WidgetFadeAnimator*,
+             views::WidgetFadeAnimator::FadeType fade_type) {
+            if (fade_type == views::WidgetFadeAnimator::FadeType::kFadeOut) {
+              base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+                  FROM_HERE,
+                  base::BindOnce(&AnchoredMessageBubbleView::CloseWidget,
+                                 view));
+            }
+          },
+          weak_factory_.GetWeakPtr()));
+}
+
+void AnchoredMessageBubbleView::AnimateIn() {
+  views::Widget* widget = GetWidget();
+  if (!widget || widget->IsClosed()) {
+    return;
+  }
+
+  // Reverse an in-progress AnimateOut() and catch up with any anchor moves
+  // ignored while closing.
+  if (is_closing_) {
+    is_closing_ = false;
+    has_animated_in_ = true;
+    if (fade_animator_) {
+      fade_animator_->CancelFadeOut();
+    }
+    if (!widget->IsVisible()) {
+      widget->SetOpacity(1.0f);
+      widget->ShowInactive();
+    }
+    OnAnchorBoundsChanged();
+    return;
+  }
+
+  if (has_animated_in_) {
+    return;
+  }
+  has_animated_in_ = true;
+
+  if (!ShouldAnimate() || !fade_animator_) {
+    widget->SetOpacity(1.0f);
+    if (!widget->IsVisible()) {
+      widget->ShowInactive();
+    }
+    return;
+  }
+
+  fade_animator_->FadeIn(kAnchoredMessageAnimationSlideDistance,
+                         views::WidgetFadeAnimator::SlideDirection::kDown);
+}
+
+void AnchoredMessageBubbleView::AnimateOut() {
+  if (is_closing_) {
+    return;
+  }
+  is_closing_ = true;
+  if (menu_runner_ && menu_runner_->IsRunning()) {
+    menu_runner_->Cancel();
+  }
+  menu_model_ = nullptr;
+
+  if (!ShouldAnimate() || !fade_animator_) {
+    CloseWidget();
+    return;
+  }
+
+  if (fade_animator_->IsFadingIn()) {
+    fade_animator_->CancelFadeIn();
+  }
+  fade_animator_->FadeOut(kAnchoredMessageAnimationSlideDistance,
+                          views::WidgetFadeAnimator::SlideDirection::kDown);
+}
+
+void AnchoredMessageBubbleView::CloseWidget() {
+  if (!is_closing_) {
+    return;
+  }
+  views::Widget* widget = GetWidget();
+  if (widget && !widget->IsClosed()) {
+    widget->Close();
+  }
 }
 
 void AnchoredMessageBubbleView::OnThemeChanged() {
@@ -314,6 +449,36 @@ bool AnchoredMessageBubbleView::CanActivate() const {
   return true;  // Needed for the widget buttons to work on Windows
 }
 
+gfx::Rect AnchoredMessageBubbleView::GetAnchorRect() const {
+  gfx::Rect anchor_rect = BubbleDialogDelegate::GetAnchorRect();
+  if (anchor_rect.IsEmpty()) {
+    return anchor_rect;
+  }
+
+  // Center horizontally so the bubble's trailing edge aligns 24px past the
+  // icon's center in both LTR and RTL.
+  const int center_x = anchor_rect.CenterPoint().x();
+  anchor_rect.set_x(center_x - kIconCenterToBubbleEdgeOffset);
+  anchor_rect.set_width(2 * kIconCenterToBubbleEdgeOffset);
+
+  // Outset vertically so the 2px gap holds both below the icon
+  // and above it if the bubble flips.
+  anchor_rect.Outset(gfx::Outsets::VH(kAnchoredMessageVerticalGap, 0));
+  return anchor_rect;
+}
+
+void AnchoredMessageBubbleView::OnAnchorBoundsChanged() {
+  // Hold position while animating out, since hiding the page action moves the
+  // anchor.
+  if (is_closing_) {
+    return;
+  }
+  if (fade_animator_ && fade_animator_->IsFadingIn()) {
+    fade_animator_->CancelSlide(/*snap_to_target=*/false);
+  }
+  BubbleDialogDelegate::OnAnchorBoundsChanged();
+}
+
 views::View* AnchoredMessageBubbleView::GetContentsView() {
   return this;
 }
@@ -331,8 +496,25 @@ AnchoredMessageBubbleView::~AnchoredMessageBubbleView() {
 }
 
 void AnchoredMessageBubbleView::OnExpandButtonPressed() {
+  if (fade_animator_ && fade_animator_->IsFadingIn()) {
+    fade_animator_->CancelSlide(/*snap_to_target=*/false);
+  }
   expanded_ = !expanded_;
   bottom_container_->SetVisible(expanded_);
+  if (items_container_) {
+    const float opacity = expanded_ ? 1.0f : 0.0f;
+    if (gfx::Animation::ShouldRenderRichAnimation()) {
+      views::AnimationBuilder()
+          .SetPreemptionStrategy(
+              ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET)
+          .Once()
+          .SetDuration(animating_layout_->animation_duration())
+          .SetOpacity(items_container_, opacity,
+                      animating_layout_->tween_type());
+    } else {
+      items_container_->layer()->SetOpacity(opacity);
+    }
+  }
   UpdateExpandButtonTooltip();
   if (expandable_content_ &&
       expandable_content_->expand_button_style == ExpandButtonStyle::kChevron) {
@@ -399,6 +581,7 @@ void AnchoredMessageBubbleView::OnWidgetDestroying(views::Widget* widget) {
     menu_runner_->Cancel();
   }
   menu_runner_ = nullptr;
+  menu_model_ = nullptr;
   BubbleDialogDelegate::OnWidgetDestroying(widget);
 }
 
@@ -520,21 +703,25 @@ void AnchoredMessageBubbleView::UpdateExpandableContent(
     UpdateExpandButtonTooltip();
     expand_button_->SetVisible(true);
 
+    items_container_ = nullptr;
     bottom_container_->RemoveAllChildViews();
 
     auto* separator =
         bottom_container_->AddChildView(std::make_unique<views::Separator>());
     separator->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(0, 0, 6, 0));
 
-    auto* items_container =
+    items_container_ =
         bottom_container_->AddChildView(std::make_unique<views::View>());
-    items_container->SetLayoutManager(std::make_unique<views::BoxLayout>(
+    items_container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical,
         gfx::Insets::TLBR(0, kAnchoredMessageLeftInset, 8, 12), 0));
+    items_container_->SetPaintToLayer();
+    items_container_->layer()->SetFillsBoundsOpaquely(false);
+    items_container_->layer()->SetOpacity(expanded_ ? 1.0f : 0.0f);
 
     if (expandable_content_->heading) {
       auto* heading_row =
-          items_container->AddChildView(std::make_unique<views::View>());
+          items_container_->AddChildView(std::make_unique<views::View>());
       auto* heading_layout =
           heading_row->SetLayoutManager(std::make_unique<views::BoxLayout>(
               views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 8));
@@ -548,6 +735,7 @@ void AnchoredMessageBubbleView::UpdateExpandableContent(
       title_label->SetTextStyle(views::style::STYLE_BODY_4_MEDIUM);
       title_label->SetEnabledColor(ui::kColorSysOnSurfaceSubtle);
       title_label->SetElideBehavior(gfx::ELIDE_TAIL);
+      title_label->SetSubpixelRenderingEnabled(false);
       // Set width to 0 so the text will fill available space, but not stretch
       // the bubble.
       title_label->SetPreferredSize(
@@ -557,7 +745,7 @@ void AnchoredMessageBubbleView::UpdateExpandableContent(
 
     for (const auto& item : expandable_content_->items) {
       auto* item_row =
-          items_container->AddChildView(std::make_unique<views::View>());
+          items_container_->AddChildView(std::make_unique<views::View>());
       auto* item_layout =
           item_row->SetLayoutManager(std::make_unique<views::BoxLayout>(
               views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 8));
@@ -582,6 +770,7 @@ void AnchoredMessageBubbleView::UpdateExpandableContent(
       item_label->SetEnabledColor(ui::kColorSysOnSurface);
       item_label->SetMultiLine(false);
       item_label->SetElideBehavior(gfx::ELIDE_TAIL);
+      item_label->SetSubpixelRenderingEnabled(false);
       // Set width to 0 so the text will fill available space, but not stretch
       // the bubble.
       item_label->SetPreferredSize(
@@ -590,6 +779,7 @@ void AnchoredMessageBubbleView::UpdateExpandableContent(
     }
   } else {
     expand_button_->SetVisible(false);
+    items_container_ = nullptr;
     bottom_container_->RemoveAllChildViews();
     bottom_container_->SetVisible(false);
   }

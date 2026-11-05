@@ -26,7 +26,12 @@ class NoOpkeyboardVisibilityDelegate extends KeyboardVisibilityDelegate {
     }
 
     @Override
-    public boolean isKeyboardShowing(View view) {
+    public boolean isKeyboardObscuring(View view) {
+        return false;
+    }
+
+    @Override
+    public boolean isKeyboardVisible(View view) {
         return false;
     }
 

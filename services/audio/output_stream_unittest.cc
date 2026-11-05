@@ -60,9 +60,9 @@ class MockStream : public media::AudioOutputStream {
   MOCK_METHOD0(Flush, void());
 };
 
-const uint32_t kPlatformErrorDisconnectReason = static_cast<uint32_t>(
+constexpr uint32_t kPlatformErrorDisconnectReason = static_cast<uint32_t>(
     media::mojom::AudioOutputStreamObserver::DisconnectReason::kPlatformError);
-const uint32_t kTerminatedByClientDisconnectReason =
+constexpr uint32_t kTerminatedByClientDisconnectReason =
     static_cast<uint32_t>(media::mojom::AudioOutputStreamObserver::
                               DisconnectReason::kTerminatedByClient);
 
@@ -136,17 +136,12 @@ class TestEnvironment {
                         /*ml_model_manager=*/nullptr),
         stream_factory_receiver_(
             &stream_factory_,
-            remote_stream_factory_.BindNewPipeAndPassReceiver()) {
-    mojo::SetDefaultProcessErrorHandler(bad_message_callback_.Get());
-  }
+            remote_stream_factory_.BindNewPipeAndPassReceiver()) {}
 
   TestEnvironment(const TestEnvironment&) = delete;
   TestEnvironment& operator=(const TestEnvironment&) = delete;
 
-  ~TestEnvironment() {
-    audio_manager_.Shutdown();
-    mojo::SetDefaultProcessErrorHandler(base::NullCallback());
-  }
+  ~TestEnvironment() { audio_manager_.Shutdown(); }
 
   using MockDeleteCallback = base::MockCallback<OutputStream::DeleteCallback>;
   using MockBadMessageCallback =
@@ -227,6 +222,8 @@ class TestEnvironment {
   NiceMock<MockLog> log_;
   StrictMock<MockCreatedCallback> created_callback_;
   StrictMock<MockBadMessageCallback> bad_message_callback_;
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler_{
+      bad_message_callback_.Get()};
 };
 
 TEST(AudioServiceOutputStreamTest, ConstructDestruct) {
@@ -980,8 +977,8 @@ TEST_F(OutputStreamAudibilityHelperTest, Poll_SmallGlitches_StaysAudible) {
 
   // These values are taken directly from AudibilityHelper's implementation,
   // in output_stream.cc.
-  const base::TimeDelta kGlitchTolerance = base::Milliseconds(100);
-  const base::TimeDelta kPollingPeriod = base::Seconds(1) / 15;
+  constexpr base::TimeDelta kGlitchTolerance = base::Milliseconds(100);
+  constexpr base::TimeDelta kPollingPeriod = base::Seconds(1) / 15;
 
   base::TimeDelta glitch_length;
   std::optional<base::TimeTicks> glitch_start;

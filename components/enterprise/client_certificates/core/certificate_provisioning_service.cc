@@ -14,11 +14,11 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/enterprise/client_certificates/core/certificate_store.h"
 #include "components/enterprise/client_certificates/core/constants.h"
 #include "components/enterprise/client_certificates/core/context_delegate.h"
+#include "components/enterprise/client_certificates/core/features.h"
 #include "components/enterprise/client_certificates/core/key_upload_client.h"
 #include "components/enterprise/client_certificates/core/metrics_util.h"
 #include "components/enterprise/client_certificates/core/private_key.h"
@@ -29,19 +29,6 @@
 #include "net/cert/x509_certificate.h"
 
 namespace client_certificates {
-
-namespace {
-
-constexpr int kDaysBeforeExpiration = 7;
-
-// Returns true if `certificate` expires within the next `kDaysBeforeExpiration`
-// days.
-bool IsCertExpiringSoon(const net::X509Certificate& certificate) {
-  return (base::Time::Now() + base::Days(kDaysBeforeExpiration)) >
-         certificate.valid_expiry();
-}
-
-}  // namespace
 
 CertificateProvisioningService::Status::Status(bool is_provisioning)
     : is_provisioning(is_provisioning) {}
@@ -84,6 +71,8 @@ class CertificateProvisioningServiceImpl
   void OnTemporaryIdentityLoaded(
       StoreErrorOr<std::optional<ClientIdentity>> expected_temporary_identity);
 
+  void OnStaleTemporaryIdentityDeleted(std::optional<StoreError> error);
+
   void OnPrivateKeyCreated(
       StoreErrorOr<scoped_refptr<PrivateKey>> expected_private_key);
 
@@ -119,6 +108,10 @@ class CertificateProvisioningServiceImpl
     return context_delegate_->GetPolicyPref();
   }
 
+  const std::string config_policy_pref() const {
+    return context_delegate_->GetConfigPolicyPref();
+  }
+
   PrefChangeRegistrar pref_observer_;
   raw_ptr<PrefService> pref_service_;
   raw_ptr<CertificateStore> certificate_store_;
@@ -126,11 +119,13 @@ class CertificateProvisioningServiceImpl
   std::unique_ptr<KeyUploadClient> upload_client_;
 
   std::optional<ProvisioningContext> provisioning_context_{std::nullopt};
+  std::optional<std::string> active_expected_common_name_{std::nullopt};
 
   // Callbacks waiting for an identity to be available.
   std::vector<GetManagedIdentityCallback> pending_callbacks_;
 
   std::optional<ClientIdentity> cached_identity_ = std::nullopt;
+  bool needs_renewal_ = false;
   std::optional<HttpCodeOrClientError> last_upload_code_;
 
   base::WeakPtrFactory<CertificateProvisioningServiceImpl> weak_factory_{this};
@@ -173,6 +168,14 @@ CertificateProvisioningServiceImpl::CertificateProvisioningServiceImpl(
       policy_pref(),
       base::BindRepeating(&CertificateProvisioningServiceImpl::OnPolicyUpdated,
                           weak_factory_.GetWeakPtr()));
+  std::string config_pref = config_policy_pref();
+  if (!config_pref.empty()) {
+    CHECK(pref_service_->FindPreference(config_pref));
+    pref_observer_.Add(config_pref,
+                       base::BindRepeating(
+                           &CertificateProvisioningServiceImpl::OnPolicyUpdated,
+                           weak_factory_.GetWeakPtr()));
+  }
 
   // Call once to initialize the watcher with the current pref's values.
   OnPolicyUpdated();
@@ -189,7 +192,7 @@ void CertificateProvisioningServiceImpl::GetManagedIdentity(
   }
 
   if (!IsProvisioning() && cached_identity_ && cached_identity_->is_valid() &&
-      !IsCertExpiringSoon(*cached_identity_->certificate)) {
+      !IsCertExpiringSoon(*cached_identity_->certificate) && !needs_renewal_) {
     // A valid identity is already cached, just return it.
     std::move(callback).Run(cached_identity_);
     return;
@@ -242,16 +245,13 @@ bool CertificateProvisioningServiceImpl::IsProvisioning() const {
 
 void CertificateProvisioningServiceImpl::OnPolicyUpdated() {
   if (!IsPolicyEnabled()) {
-#if BUILDFLAG(IS_CHROMEOS)
-    // The policy is disabled, so delete any leftover managed key material.
-    // Whether anything was actually provisioned is the store's concern: it
-    // exits early when nothing is persisted, so we always delegate to it. This
-    // also catches a policy that was removed while Chrome was not running.
-    //
-    // Abort any in-flight provisioning first, as DeleteManagedIdentities is a
-    // no-op while provisioning. Invalidating the provisioning weak pointers
-    // cancels the in-flight async callbacks so they can neither resurrect the
-    // identity in the store nor access the reset provisioning_context_.
+    active_expected_common_name_.reset();
+    needs_renewal_ = false;
+    // Abort any in-flight provisioning and notify pending callers with
+    // std::nullopt when the policy becomes disabled. Invalidating the
+    // provisioning weak pointers cancels the in-flight async callbacks so they
+    // can neither resurrect the identity in the store nor access the reset
+    // provisioning_context_.
     if (IsProvisioning()) {
       provisioning_weak_factory_.InvalidateWeakPtrs();
       provisioning_context_.reset();
@@ -259,6 +259,11 @@ void CertificateProvisioningServiceImpl::OnPolicyUpdated() {
         std::move(pending_callback).Run(std::nullopt);
       }
     }
+#if BUILDFLAG(IS_CHROMEOS)
+    // On ChromeOS, also delete any leftover managed key material from the
+    // store. Whether anything was actually provisioned is the store's concern:
+    // it exits early when nothing is persisted, so we always delegate to it.
+    // This also catches a policy that was removed while Chrome was not running.
     // Log the cleanup outcome so a persistently failing deletion is visible.
     DeleteManagedIdentities(base::BindOnce(
         [](std::string logging_context, bool success) {
@@ -268,6 +273,19 @@ void CertificateProvisioningServiceImpl::OnPolicyUpdated() {
 #endif  // BUILDFLAG(IS_CHROMEOS)
     return;
   }
+
+  std::string current_expected_common_name =
+      context_delegate_->GetExpectedCommonName();
+  if (IsProvisioning() &&
+      active_expected_common_name_ != current_expected_common_name) {
+    // If a policy update arrives while provisioning or renewal is in flight
+    // (e.g. switching common_name_source between default and computer_name),
+    // cancel the in-flight attempt so we re-evaluate with the updated
+    // configuration.
+    provisioning_weak_factory_.InvalidateWeakPtrs();
+    provisioning_context_.reset();
+  }
+  active_expected_common_name_ = std::move(current_expected_common_name);
 
   if (!IsProvisioning()) {
     // Start by trying to load the current identity.
@@ -313,12 +331,21 @@ void CertificateProvisioningServiceImpl::OnPermanentIdentityLoaded(
     std::optional<ClientIdentity>& permanent_identity_optional =
         expected_permanent_identity.value();
     if (permanent_identity_optional->is_valid()) {
+      if (cached_identity_ && cached_identity_->certificate &&
+          !cached_identity_->certificate->EqualsExcludingChain(
+              permanent_identity_optional->certificate.get())) {
+        context_delegate_->OnClientCertificateDeleted(
+            cached_identity_->certificate);
+      }
       // Already have a full identity, so cache it.
       cached_identity_ = permanent_identity_optional.value();
 
-      // If the certificate has expired (or is close to), then update it before
-      // responding to pending callbacks.
-      if (!IsCertExpiringSoon(*permanent_identity_optional->certificate)) {
+      // If the certificate does not need to be renewed, then respond to pending
+      // callbacks.
+      needs_renewal_ = context_delegate_->ShouldCertificateBeRenewed(
+          *permanent_identity_optional->certificate,
+          active_expected_common_name_.value_or(std::string()));
+      if (!needs_renewal_) {
         provisioning_context_->scenario =
             ProvisioningScenario::kExistingIdentity;
         OnFinishedProvisioning(/*success=*/true);
@@ -326,7 +353,7 @@ void CertificateProvisioningServiceImpl::OnPermanentIdentityLoaded(
       }
 
       LOG_POLICY(INFO, DEVICE_TRUST)
-          << "Certificate expiring soon, renewing...";
+          << "Certificate is invalid or expiring soon, renewing...";
       provisioning_context_->scenario =
           ProvisioningScenario::kCertificateRenewal;
     }
@@ -339,6 +366,7 @@ void CertificateProvisioningServiceImpl::OnPermanentIdentityLoaded(
              "from the server...";
       upload_client_->CreateCertificate(
           permanent_identity_optional->private_key,
+          active_expected_common_name_.value_or(std::string()),
           base::BindOnce(
               &CertificateProvisioningServiceImpl::OnCertificateCreatedResponse,
               provisioning_weak_factory_.GetWeakPtr(),
@@ -372,10 +400,33 @@ void CertificateProvisioningServiceImpl::OnTemporaryIdentityLoaded(
     StoreErrorOr<std::optional<ClientIdentity>> expected_temporary_identity) {
   if (!expected_temporary_identity.has_value()) {
     // At this point, we failed to create a new private key due to a conflict,
-    // and failed to get the conflicting identity; so just give up.
+    // and failed to get the conflicting identity; the current attempt fails.
     LOG_POLICY(ERROR, DEVICE_TRUST)
         << "Temporary identity loading failed: "
         << StoreErrorToString(expected_temporary_identity.error());
+
+    if (expected_temporary_identity.error() == StoreError::kLoadKeyFailed) {
+      // The temporary identity's private key can no longer be loaded, e.g. it
+      // was lost from the OS key store (key factories also report transient
+      // key store failures this way). Keeping the identity would make every
+      // subsequent attempt fail at this same point, so delete it: it has no
+      // certificate, so this only costs a key regeneration, and the next
+      // attempt starts over with a new key.
+      // TODO(crbug.com/585520234): If the failure was transient, the OS key
+      // still exists and is orphaned, as the stores only delete the metadata.
+      LOG_POLICY(INFO, DEVICE_TRUST)
+          << "Deleting the temporary identity so that the next provisioning "
+             "attempt creates a new key.";
+      // The attempt is only reported as failed once the deletion completed,
+      // so that the next attempt cannot start while the store is updated.
+      certificate_store_->DeleteIdentities(
+          {temporary_identity_name()},
+          base::BindOnce(&CertificateProvisioningServiceImpl::
+                             OnStaleTemporaryIdentityDeleted,
+                         provisioning_weak_factory_.GetWeakPtr()));
+      return;
+    }
+
     OnProvisioningError(ProvisioningError::kTemporaryIdentityLoadingFailed,
                         expected_temporary_identity.error());
     return;
@@ -397,6 +448,17 @@ void CertificateProvisioningServiceImpl::OnTemporaryIdentityLoaded(
                                     "key from temporary storage...";
   OnPrivateKeyCreated(
       std::move(expected_temporary_identity->value().private_key));
+}
+
+void CertificateProvisioningServiceImpl::OnStaleTemporaryIdentityDeleted(
+    std::optional<StoreError> error) {
+  if (error.has_value()) {
+    LOG_POLICY(ERROR, DEVICE_TRUST) << "Temporary identity deletion failed: "
+                                    << StoreErrorToString(error.value());
+  }
+  // The attempt fails with the key load error that caused the deletion.
+  OnProvisioningError(ProvisioningError::kTemporaryIdentityLoadingFailed,
+                      StoreError::kLoadKeyFailed);
 }
 
 void CertificateProvisioningServiceImpl::OnPrivateKeyCreated(
@@ -431,7 +493,7 @@ void CertificateProvisioningServiceImpl::OnPrivateKeyCreated(
 
   LOG_POLICY(INFO, DEVICE_TRUST) << "Fetching a certificate from the server...";
   upload_client_->CreateCertificate(
-      private_key,
+      private_key, active_expected_common_name_.value_or(std::string()),
       base::BindOnce(
           &CertificateProvisioningServiceImpl::OnCertificateCreatedResponse,
           provisioning_weak_factory_.GetWeakPtr(),
@@ -472,6 +534,19 @@ void CertificateProvisioningServiceImpl::OnCertificateCreatedResponse(
   }
 
   LOG_POLICY(INFO, DEVICE_TRUST) << "Certificate received from the server...";
+
+  if (features::IsClientCertCommonNameAttributeEnabled() &&
+      active_expected_common_name_.has_value() &&
+      !active_expected_common_name_->empty() &&
+      certificate->subject().common_name != *active_expected_common_name_) {
+    LOG_POLICY(WARNING, DEVICE_TRUST)
+        << "[" << GetLoggingContext()
+        << "] Issued certificate Subject Common Name does not match requested "
+           "identity.";
+    LogCertificateValidationResult(
+        GetLoggingContext(),
+        CertificateValidationResult::kIssuedCertificateIdentityMismatch);
+  }
 
   if (is_permanent_identity) {
     // For some reason, the permanent identity only had a private key, so store
@@ -519,6 +594,7 @@ void CertificateProvisioningServiceImpl::OnCertificateCommitted(
       << "Storage successfully updated, updating cached identity...";
   cached_identity_.emplace(identity_name(), std::move(private_key),
                            std::move(certificate));
+  needs_renewal_ = false;
 
   OnFinishedProvisioning(/*success=*/true);
 }
@@ -545,6 +621,7 @@ void CertificateProvisioningServiceImpl::OnIdentitiesDeleted(
           cached_identity_->certificate);
     }
     cached_identity_ = std::nullopt;
+    needs_renewal_ = false;
   }
 
   std::move(callback).Run(true);
@@ -558,7 +635,8 @@ void CertificateProvisioningServiceImpl::OnProvisioningError(
   // The temporary key left behind by a failed attempt is intentionally kept:
   // provisioning is eventually consistent and a subsequent attempt resumes from
   // it (see OnPrivateKeyCreated's kConflictingIdentity handling), avoiding an
-  // unnecessary key regeneration. It is cleaned up if the policy is disabled.
+  // unnecessary key regeneration. It is cleaned up if the policy is disabled,
+  // or by `OnTemporaryIdentityLoaded()` if its key can no longer be loaded.
   OnFinishedProvisioning(/*success=*/false);
 }
 

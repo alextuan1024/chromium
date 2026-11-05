@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ash/app_restore/browser_restore_observer.h"
 
+#include <optional>
+
 #include "base/check.h"
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
@@ -13,13 +15,10 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_io_data.h"
 #include "chrome/browser/sessions/session_restore.h"
-#include "chrome/browser/sessions/session_service_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
-#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/waap/window_creation.h"
 #include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/browser_delegate/browser_type.h"
@@ -28,7 +27,6 @@
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace ash {
@@ -161,7 +159,9 @@ void BrowserRestoreObserver::OnSessionRestoreDone(Profile* profile,
   auto create_params =
       BrowserWindowCreateParams(profile, /*user_gesture=*/false);
   BrowserDelegate* browser = BrowserController::GetInstance()->GetDelegate(
-      CreateBrowserWindow(std::move(create_params)));
+      waap::CreateBrowserWindowAndRecordCreationSource(
+          std::move(create_params),
+          waap::NewWindowCreationSource::kSessionRestore));
   RestoreUrls(browser);
   browser->Show();
   browser->Activate();
@@ -187,12 +187,9 @@ void BrowserRestoreObserver::RestoreUrls(BrowserDelegate* browser) {
       continue;
     }
 
-    int add_types = AddTabTypes::ADD_NONE | AddTabTypes::ADD_FORCE_INDEX;
-    NavigateParams params(&browser->GetBrowser(), url,
-                          ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-    params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
-    params.tabstrip_add_types = add_types;
-    Navigate(&params);
+    browser->AddTab(url, /*index=*/std::nullopt,
+                    BrowserDelegate::TabDisposition::kBackground,
+                    ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
   }
 }
 

@@ -24,11 +24,11 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/arc/file_system_watcher/arc_file_system_watcher_util.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_paths.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "chromeos/ash/experiences/arc/mojom/file_system.mojom.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
+#include "components/user_manager/user.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -376,10 +376,14 @@ void ArcFileSystemWatcherService::StartWatchingFileSystem() {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(!myfiles_watcher_, base::NotFatalUntil::M160);
 
+  // ARC is only started for a user, after their home directory is mounted.
+  const user_manager::User* const user =
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(context_);
+  CHECK(user);
+
   // Attach a watcher to MyFiles and trigger SendAllMountEvents().
-  Profile* profile = Profile::FromBrowserContext(context_);
   myfiles_watcher_ = CreateAndStartFileSystemWatcher(
-      file_manager::util::GetMyFilesFolderForProfile(profile),
+      file_manager::util::GetMyFilesFolder(*user),
       base::FilePath(kAndroidMyFilesDir),
       base::BindOnce(&ArcFileSystemWatcherService::OnMyFilesWatcherStarted,
                      weak_ptr_factory_.GetWeakPtr()));
@@ -399,7 +403,9 @@ void ArcFileSystemWatcherService::StopWatchingFileSystem() {
 
 void ArcFileSystemWatcherService::OnMyFilesWatcherStarted() {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
-  CHECK(myfiles_watcher_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/573397873): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(myfiles_watcher_);
   watching_file_system_changes_ = true;
   TriggerSendAllMountEvents();
 }

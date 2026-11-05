@@ -10,6 +10,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -35,6 +36,7 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.hub.HubPaneHostView.InteractiveElementChecker;
 import org.chromium.chrome.browser.hub.HubPaneHostView.PaneViewProvider;
+import org.chromium.chrome.browser.hub.PaneId;
 import org.chromium.ui.base.TestActivity;
 
 import java.util.concurrent.TimeUnit;
@@ -92,20 +94,44 @@ public class HubPaneSwipeCoordinatorUnitTest {
         Activity activity = mActivityController.get();
         View rootView = new View(activity);
 
-        mCoordinator.setRootView(rootView, false);
+        mCoordinator.setRootView(
+                rootView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
 
         assertEquals(1, mPaneFrame.getChildCount());
         assertEquals(rootView, mPaneFrame.getChildAt(0));
     }
 
     @Test
+    public void testSetRootView_slideNotifiesProvider() {
+        Activity activity = mActivityController.get();
+        mCoordinator.setRootView(
+                new View(activity), false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
+
+        mCoordinator.setRootView(
+                new View(activity),
+                /* isSlideAnimationLeftToRight= */ false,
+                PaneId.TAB_SWITCHER,
+                PaneId.INCOGNITO_TAB_SWITCHER);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.SECONDS);
+
+        verify(mPaneViewProvider, atLeastOnce())
+                .onSlideTransitionProgress(
+                        eq(PaneId.TAB_SWITCHER),
+                        eq(PaneId.INCOGNITO_TAB_SWITCHER),
+                        anyFloat(),
+                        eq(true));
+        verify(mPaneViewProvider).onSlideTransitionEnd();
+    }
+
+    @Test
     public void testSetRootView_nullClearsChildren() {
         Activity activity = mActivityController.get();
         View rootView = new View(activity);
-        mCoordinator.setRootView(rootView, false);
+        mCoordinator.setRootView(
+                rootView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         assertEquals(1, mPaneFrame.getChildCount());
 
-        mCoordinator.setRootView(null, false);
+        mCoordinator.setRootView(null, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         assertEquals(0, mPaneFrame.getChildCount());
     }
 
@@ -130,7 +156,8 @@ public class HubPaneSwipeCoordinatorUnitTest {
         View currentView = new View(activity);
         View adjacentView = new View(activity);
 
-        mCoordinator.setRootView(currentView, false);
+        mCoordinator.setRootView(
+                currentView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         when(mPaneViewProvider.prepareAndGetAdjacentPaneView(true)).thenReturn(adjacentView);
         mCoordinator.onSwipeStarted(true);
 
@@ -147,7 +174,8 @@ public class HubPaneSwipeCoordinatorUnitTest {
         View currentView = new View(activity);
         View adjacentView = new View(activity);
 
-        mCoordinator.setRootView(currentView, false);
+        mCoordinator.setRootView(
+                currentView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         when(mPaneViewProvider.prepareAndGetAdjacentPaneView(true)).thenReturn(adjacentView);
         mCoordinator.onSwipeStarted(true);
         mCoordinator.onSwipeProgress(-400f, 0.4f, true);
@@ -159,7 +187,8 @@ public class HubPaneSwipeCoordinatorUnitTest {
         verify(mPaneViewProvider).onSwipeSwitchComplete(true);
 
         // When mediator reacts to complete and sets new root view:
-        mCoordinator.setRootView(adjacentView, false);
+        mCoordinator.setRootView(
+                adjacentView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         assertEquals(1, mPaneFrame.getChildCount());
         assertEquals(adjacentView, mPaneFrame.getChildAt(0));
         assertEquals(0f, adjacentView.getTranslationX(), 0.01f);
@@ -171,7 +200,8 @@ public class HubPaneSwipeCoordinatorUnitTest {
         View currentView = new View(activity);
         View adjacentView = new View(activity);
 
-        mCoordinator.setRootView(currentView, false);
+        mCoordinator.setRootView(
+                currentView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         when(mPaneViewProvider.prepareAndGetAdjacentPaneView(true)).thenReturn(adjacentView);
         mCoordinator.onSwipeStarted(true);
         mCoordinator.onSwipeProgress(-100f, 0.1f, true);
@@ -192,7 +222,8 @@ public class HubPaneSwipeCoordinatorUnitTest {
         View currentView = new View(activity);
         View adjacentView = new View(activity);
 
-        mCoordinator.setRootView(currentView, false);
+        mCoordinator.setRootView(
+                currentView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         when(mPaneViewProvider.prepareAndGetAdjacentPaneView(true)).thenReturn(adjacentView);
         mCoordinator.onSwipeStarted(true);
         mCoordinator.onSwipeProgress(-100f, 0.1f, true);
@@ -212,7 +243,8 @@ public class HubPaneSwipeCoordinatorUnitTest {
         View currentView = new View(activity);
         View adjacentView = new View(activity);
 
-        mCoordinator.setRootView(currentView, false);
+        mCoordinator.setRootView(
+                currentView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         when(mPaneViewProvider.prepareAndGetAdjacentPaneView(false)).thenReturn(adjacentView);
         mCoordinator.onSwipeStarted(false);
         mCoordinator.onSwipeProgress(100f, 0.1f, false);
@@ -230,7 +262,8 @@ public class HubPaneSwipeCoordinatorUnitTest {
     public void testIsTouchOnInteractiveElement() {
         Activity activity = mActivityController.get();
         View currentView = new View(activity);
-        mCoordinator.setRootView(currentView, false);
+        mCoordinator.setRootView(
+                currentView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
 
         when(mInteractiveChecker.isTouchOnInteractiveElement(anyFloat(), anyFloat()))
                 .thenReturn(true);
@@ -247,7 +280,8 @@ public class HubPaneSwipeCoordinatorUnitTest {
         View currentView = new View(activity);
         View adjacentView = new View(activity);
 
-        mCoordinator.setRootView(currentView, false);
+        mCoordinator.setRootView(
+                currentView, false, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         when(mPaneViewProvider.prepareAndGetAdjacentPaneView(true)).thenReturn(adjacentView);
         mCoordinator.onSwipeStarted(true);
         mCoordinator.onSwipeProgress(-400f, 0.4f, true);
@@ -261,7 +295,8 @@ public class HubPaneSwipeCoordinatorUnitTest {
         // If next setRootView happens with old and new view, it should animate regular slide
         // rather than doing instant interactive switch swap.
         View nextView = new View(activity);
-        mCoordinator.setRootView(nextView, true);
+        mCoordinator.setRootView(
+                nextView, true, PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER);
         // Both old and new views will be in paneFrame during slide transition rather than immediate
         // removal.
         assertEquals(2, mPaneFrame.getChildCount());

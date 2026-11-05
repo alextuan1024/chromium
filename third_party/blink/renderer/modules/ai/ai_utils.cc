@@ -51,9 +51,7 @@ bool ContainsNoneType(const base::Value& value) {
   return false;
 }
 
-namespace {
-
-mojom::blink::PerformancePreference ToMojoSummarizerPreference(
+mojom::blink::PerformancePreference ToMojoPerformancePreference(
     V8PerformancePreference preference) {
   switch (preference.AsEnum()) {
     case V8PerformancePreference::Enum::kAuto:
@@ -64,6 +62,8 @@ mojom::blink::PerformancePreference ToMojoSummarizerPreference(
       return mojom::blink::PerformancePreference::kCapability;
   }
 }
+
+namespace {
 
 mojom::blink::AISummarizerType ToMojoSummarizerType(V8SummarizerType type) {
   switch (type.AsEnum()) {
@@ -171,7 +171,7 @@ mojom::blink::AISummarizerCreateOptionsPtr ToMojoSummarizerCreateOptionsImpl(
       shared_context, ToMojoSummarizerType(options->type()),
       ToMojoSummarizerFormat(options->format()),
       ToMojoSummarizerLength(options->length()),
-      ToMojoSummarizerPreference(options->preference()),
+      ToMojoPerformancePreference(options->preference()),
       ToMojoLanguageCodes(options->getExpectedInputLanguagesOr({})),
       ToMojoLanguageCodes(options->getExpectedContextLanguagesOr({})),
       mojom::blink::AILanguageCode::New(
@@ -284,6 +284,40 @@ std::optional<V8LanguageModelSamplingMode> ConvertSamplingModeToV8(
   NOTREACHED();
 }
 
+mojom::blink::AILanguageModelThinkingEffort ConvertThinkingEffortToMojo(
+    V8LanguageModelThinkingEffort effort) {
+  switch (effort.AsEnum()) {
+    case V8LanguageModelThinkingEffort::Enum::kNone:
+      return mojom::blink::AILanguageModelThinkingEffort::kNone;
+    case V8LanguageModelThinkingEffort::Enum::kLow:
+      return mojom::blink::AILanguageModelThinkingEffort::kLow;
+    case V8LanguageModelThinkingEffort::Enum::kMedium:
+      return mojom::blink::AILanguageModelThinkingEffort::kMedium;
+    case V8LanguageModelThinkingEffort::Enum::kHigh:
+      return mojom::blink::AILanguageModelThinkingEffort::kHigh;
+  }
+  NOTREACHED();
+}
+
+V8LanguageModelThinkingEffort ConvertThinkingEffortToV8(
+    mojom::blink::AILanguageModelThinkingEffort effort) {
+  switch (effort) {
+    case mojom::blink::AILanguageModelThinkingEffort::kNone:
+      return V8LanguageModelThinkingEffort(
+          V8LanguageModelThinkingEffort::Enum::kNone);
+    case mojom::blink::AILanguageModelThinkingEffort::kLow:
+      return V8LanguageModelThinkingEffort(
+          V8LanguageModelThinkingEffort::Enum::kLow);
+    case mojom::blink::AILanguageModelThinkingEffort::kMedium:
+      return V8LanguageModelThinkingEffort(
+          V8LanguageModelThinkingEffort::Enum::kMedium);
+    case mojom::blink::AILanguageModelThinkingEffort::kHigh:
+      return V8LanguageModelThinkingEffort(
+          V8LanguageModelThinkingEffort::Enum::kHigh);
+  }
+  NOTREACHED();
+}
+
 Vector<mojom::blink::AILanguageCodePtr> ToMojoLanguageCodes(
     const Vector<String>& language_codes) {
   Vector<mojom::blink::AILanguageCodePtr> result;
@@ -331,7 +365,8 @@ ResolveSamplingParamsOption(const LanguageModelCreateCoreOptions* options,
         mojom::blink::WebFeature::kLanguageModel_Temperature);
   }
 
-  if (!RuntimeEnabledFeatures::AIPromptAPILegacyParamsEnabled(
+  if (options->hasSamplingMode() ||
+      !RuntimeEnabledFeatures::AIPromptAPILegacyParamsEnabled(
           execution_context)) {
     return nullptr;
   }
@@ -476,7 +511,7 @@ HeapVector<Member<LanguageModelMessageContent>> ConvertMojoToolCallsToMessages(
 
     // Create init dictionary for the interface.
     auto* tool_call_init = LanguageModelToolCallInit::Create();
-    tool_call_init->setCallID(tc->call_id);
+    tool_call_init->setCallId(tc->call_id);
     tool_call_init->setName(tc->name);
     ScriptObject arguments_object(isolate, arguments_v8);
     tool_call_init->setArguments(arguments_object);

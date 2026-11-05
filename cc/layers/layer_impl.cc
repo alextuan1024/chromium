@@ -4,10 +4,10 @@
 
 #include "cc/layers/layer_impl.h"
 
-#include <stddef.h>
-#include <stdint.h>
-
 #include <algorithm>
+#include <cinttypes>
+#include <cstddef>
+#include <cstdint>
 #include <utility>
 
 #include "base/atomic_sequence_num.h"
@@ -15,6 +15,7 @@
 #include "base/json/json_writer.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
 #include "cc/base/math_util.h"
@@ -30,6 +31,7 @@
 #include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/layer_tree_settings.h"
 #include "cc/trees/mutator_host.h"
+#include "cc/trees/property_tree.h"
 #include "cc/trees/proxy.h"
 #include "cc/trees/scroll_node.h"
 #include "cc/trees/transform_node.h"
@@ -123,9 +125,13 @@ LayerImpl::LayerImpl(LayerTreeImpl* tree_impl, int id)
 }
 
 LayerImpl::~LayerImpl() {
+  // Emit both the pointer-based "id" (used by Catapult's ObjectCollection to
+  // match the implicit snapshot id in AsValueInto) and "layer_id".
   TRACE_EVENT_INSTANT(
       TRACE_DISABLED_BY_DEFAULT("cc.debug"), "cc::LayerImpl:deleted",
-      perfetto::TerminatingFlow::FromPointer(this, "LayerImpl"));
+      perfetto::TerminatingFlow::FromPointer(this, "LayerImpl"), "id",
+      base::StringPrintf("0x%" PRIxPTR, reinterpret_cast<uintptr_t>(this)),
+      "layer_id", layer_id_);
 }
 
 mojom::LayerType LayerImpl::GetLayerType() const {
@@ -425,9 +431,9 @@ void LayerImpl::SetTrackedElementRects(viz::TrackedElementRects rects) {
   }
 }
 
-void LayerImpl::SetCanvasChildId(ElementId id) {
+void LayerImpl::SetCanvasDrawableId(ElementId id) {
   if (rare_properties_ || id) {
-    EnsureRareProperties().canvas_child_id = id;
+    EnsureRareProperties().canvas_drawable_id = id;
     SetNeedsPushProperties();
   }
 }
@@ -525,9 +531,7 @@ DamageReasonSet LayerImpl::GetDamageReasonsFromLayerPropertyChange() const {
   }
   if (effect_tree_index() != kInvalidPropertyNodeId) {
     const EffectNode& effect_node = GetEffectTree().Node(effect_tree_index());
-    if (effect_node.effect_changed) {
-      reasons.Put(DamageReason::kUntracked);
-    }
+    reasons.PutAll(effect_node.damage_reasons());
   }
   return reasons;
 }
@@ -551,7 +555,7 @@ bool LayerImpl::LayerPropertyChangedFromPropertyTrees() const {
   if (effect_tree_index() == kInvalidPropertyNodeId)
     return false;
   const EffectNode& effect_node = GetEffectTree().Node(effect_tree_index());
-  if (effect_node.effect_changed) {
+  if (effect_node.effect_changed()) {
     return true;
   }
   return false;
@@ -671,10 +675,12 @@ bool LayerImpl::HitTestable() const {
 }
 
 bool LayerImpl::OpaqueToHitTest() const {
+  // Masked layers are not opaque to hit testing, to force main-thread hit
+  // testing when a hit may be clipped out by a mask.
+  // TODO(crbug.com/40572334): Exclude fast rounded corners when their fast
+  // hit testing is supported.
   return HitTestable() && hit_test_opaqueness_ == HitTestOpaqueness::kOpaque &&
-         !GetEffectTree()
-              .Node(effect_tree_index())
-              .node_or_ancestor_has_fast_rounded_corner;
+         !GetEffectTree().HitTestMayBeAffectedByMask(effect_tree_index());
 }
 
 void LayerImpl::SetBackgroundColor(SkColor4f background_color) {
@@ -1116,10 +1122,6 @@ bool LayerImpl::is_surface_layer() const {
 
 std::string LayerImpl::DebugName() const {
   return debug_info_ ? debug_info_->name : "";
-}
-
-gfx::ContentColorUsage LayerImpl::GetContentColorUsage() const {
-  return gfx::ContentColorUsage::kSRGB;
 }
 
 viz::ViewTransitionElementResourceId LayerImpl::ViewTransitionResourceId()

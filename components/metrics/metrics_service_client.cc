@@ -17,7 +17,6 @@
 #include "components/metrics/metrics_features.h"
 #include "components/metrics/metrics_switches.h"
 #include "components/metrics/server_urls.h"
-#include "components/regional_capabilities/regional_capabilities_country_id.h"
 
 namespace metrics {
 
@@ -56,11 +55,13 @@ constexpr LogTrimmingDefaults GetLogTrimmingDefaults() {
       .max_ongoing_log_size_bytes = 1024 * 1024,  // 1 MiB
   };
 #elif BUILDFLAG(IS_ANDROID)
+  // Note: This branch is also compiled into Android WebView, but WebView
+  // overrides GetStorageLimits() and does not read these values.
   return {
       .initial_log_count_trim_threshold = 40,
       .ongoing_log_count_trim_threshold = 16,
-      .log_bytes_trim_threshold = 600 * 1024,    // 600 KiB
-      .max_ongoing_log_size_bytes = 200 * 1024,  // 200 KiB
+      .log_bytes_trim_threshold = 3 * 1024 * 1024,  // 3 MiB
+      .max_ongoing_log_size_bytes = 1024 * 1024,    // 1 MiB
   };
 #else
   return {
@@ -138,10 +139,6 @@ ukm::UkmService* MetricsServiceClient::GetUkmService() {
 }
 
 metrics::dwa::DwaService* MetricsServiceClient::GetDwaService() {
-  return nullptr;
-}
-
-metrics::private_metrics::PumaService* MetricsServiceClient::GetPumaService() {
   return nullptr;
 }
 
@@ -285,6 +282,10 @@ bool MetricsServiceClient::IsMetricsReportingForceEnabled() const {
   return ::metrics::IsMetricsReportingForceEnabled();
 }
 
+bool MetricsServiceClient::IsUkmDebugDataAllowed() const {
+  return true;
+}
+
 #if BUILDFLAG(IS_CHROMEOS)
 bool MetricsServiceClient::ShouldUploadMetricsForUserId(uint64_t user_id) {
   return true;
@@ -298,10 +299,5 @@ std::optional<std::string> MetricsServiceClient::GetCurrentUserId() const {
   return std::nullopt;
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-std::optional<regional_capabilities::CountryIdHolder>
-MetricsServiceClient::GetProfileCountryIdForPrivateMetricsReporting() {
-  return std::nullopt;
-}
 
 }  // namespace metrics

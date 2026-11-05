@@ -30,7 +30,7 @@
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "components/language/core/browser/language_prefs.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/user_manager/user_manager.h"
@@ -184,10 +184,6 @@ class LoginScreenLocalePolicyWithVPDTest
  public:
   LoginScreenLocalePolicyWithVPDTest()
       : LoginScreenLocalePolicyTestBase("fr-FR") {
-    // TODO(crbug.com/334954143) Fix the tests when turning on the reduce
-    // accept-language feature.
-    scoped_feature_list_.InitWithFeatures(
-        {}, {network::features::kReduceAcceptLanguage});
     // Set a different locale in VPD.
     fake_statistics_provider_.SetMachineStatistic("initial_locale", "en-US");
   }
@@ -198,7 +194,6 @@ class LoginScreenLocalePolicyWithVPDTest
 
  private:
   system::ScopedFakeStatisticsProvider fake_statistics_provider_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Verifies that for the network service the device policy locale takes

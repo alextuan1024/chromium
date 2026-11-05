@@ -99,6 +99,7 @@ class WaylandEventSource : public PlatformEventSource,
   void OnKeyboardModifiersChanged(int modifiers) override;
   uint32_t OnKeyboardKeyEvent(EventType type,
                               DomCode dom_code,
+                              std::optional<uint32_t> xkb_keycode,
                               bool repeat,
                               std::optional<uint32_t> serial,
                               base::TimeTicks timestamp,
@@ -171,6 +172,13 @@ class WaylandEventSource : public PlatformEventSource,
   void OnTouchFocusChanged(WaylandWindow* window) override;
   std::vector<PointerId> GetActiveTouchPointIds() override;
   const WaylandWindow* GetTouchTarget(PointerId id) const override;
+
+  // Dispatches a synthetic touch cancel for every active touch point and stops
+  // tracking them. Used when the compositor takes over the touch sequences
+  // (e.g. a touch-driven drag-and-drop or interactive move) and may never send
+  // the matching wl_touch.up. This is the touch analogue of
+  // ReleasePressedPointerButtons().
+  void CancelActiveTouches(base::TimeTicks timestamp);
 
   // WaylandZwpPointerGesture::Delegate:
   void OnPinchEvent(EventType event_type,

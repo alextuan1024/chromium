@@ -4,10 +4,24 @@
 
 #include "chrome/browser/ui/views/tabs/common/tab_strip_utils.h"
 
+#include <cmath>
+
+#include "base/check_op.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
+#include "ui/base/class_property.h"
+#include "ui/compositor/layer.h"
+#include "ui/events/event.h"
+#include "ui/views/controls/scroll_view.h"
 #include "ui/views/view.h"
 #include "ui/views/view_utils.h"
+
+namespace {
+
+// Number of outstanding AcquireViewLayer() calls on the view.
+DEFINE_UI_CLASS_PROPERTY_KEY(int, kViewLayerRefCount, 0)
+
+}  // namespace
 
 gfx::Rect GetTabStripViewTargetBounds(const views::View* view) {
   CHECK(view);
@@ -27,11 +41,57 @@ gfx::Rect GetTabStripViewTargetBounds(const views::View* view) {
   return view_layout ? view_layout->bounds : view->bounds();
 }
 
-TabStripView* GetTabStripView(views::View* view) {
-  for (views::View* v = view->parent(); v; v = v->parent()) {
-    if (auto* tab_strip = views::AsViewClass<TabStripView>(v)) {
+const TabStripView* GetTabStripView(const views::View* view) {
+  for (const views::View* v = view->parent(); v; v = v->parent()) {
+    if (const auto* tab_strip = views::AsViewClass<TabStripView>(v)) {
       return tab_strip;
     }
   }
   return nullptr;
+}
+
+TabStripView* GetTabStripView(views::View* view) {
+  return const_cast<TabStripView*>(
+      GetTabStripView(static_cast<const views::View*>(view)));
+}
+
+bool CanScrollAlongAxis(const views::View* view,
+                        TabStripOrientation orientation,
+                        const ui::GestureEvent& event) {
+  const views::ScrollView* scroll_view = nullptr;
+  for (const views::View* curr = view->parent(); curr; curr = curr->parent()) {
+    if (const auto* sv = views::AsViewClass<views::ScrollView>(curr)) {
+      scroll_view = sv;
+      break;
+    }
+  }
+  if (!scroll_view) {
+    return false;
+  }
+  const float dx = std::abs(event.details().scroll_x_hint());
+  const float dy = std::abs(event.details().scroll_y_hint());
+  if (orientation == TabStripOrientation::kVertical) {
+    return scroll_view->IsVerticalContentOverflowing() && dy >= dx;
+  }
+  return scroll_view->IsHorizontalContentOverflowing() && dx >= dy;
+}
+
+void AcquireViewLayer(views::View* view) {
+  const int count = view->GetProperty(kViewLayerRefCount);
+  view->SetProperty(kViewLayerRefCount, count + 1);
+  if (count == 0) {
+    view->SetPaintToLayer();
+    view->layer()->SetFillsBoundsOpaquely(false);
+  }
+}
+
+void ReleaseViewLayer(views::View* view) {
+  const int count = view->GetProperty(kViewLayerRefCount);
+  CHECK_GT(count, 0);
+  if (count == 1) {
+    view->ClearProperty(kViewLayerRefCount);
+    view->DestroyLayer();
+  } else {
+    view->SetProperty(kViewLayerRefCount, count - 1);
+  }
 }

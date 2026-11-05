@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/mock_rtc_peer_connection_handler_platform.h"
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -48,6 +47,7 @@
 #include "third_party/webrtc/api/rtp_transceiver_direction.h"
 #include "third_party/webrtc/api/rtp_transceiver_interface.h"
 #include "third_party/webrtc/api/scoped_refptr.h"
+#include "third_party/webrtc/api/sframe/sframe_encryptor_interface.h"
 #include "third_party/webrtc/api/test/mock_peerconnectioninterface.h"
 
 namespace blink {
@@ -153,6 +153,19 @@ class DummyRTCRtpSenderPlatform : public RTCRtpSenderPlatform {
   CreateEncodedAudioFrameInjector(
       webrtc::TargetBitrateCallback bitrate_callback) override {
     return nullptr;
+  }
+
+  webrtc::RTCErrorOr<scoped_refptr<webrtc::SframeEncryptorInterface>>
+  CreateSframeEncryptor(const webrtc::SframeEncryptorInit& init) override {
+    return webrtc::RTCError::UnsupportedOperation();
+  }
+
+  void GenerateKeyFrame(
+      const String& rid,
+      CrossThreadOnceFunction<void(Vector<String>)> on_layers_selected,
+      CrossThreadOnceFunction<void(webrtc::RTCError)> on_encoder_error)
+      override {
+    std::move(on_layers_selected).Run({});
   }
 
  private:

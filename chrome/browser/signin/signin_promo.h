@@ -5,9 +5,11 @@
 #ifndef CHROME_BROWSER_SIGNIN_SIGNIN_PROMO_H_
 #define CHROME_BROWSER_SIGNIN_SIGNIN_PROMO_H_
 
+#include <optional>
 #include <string>
 
 #include "base/functional/callback_forward.h"
+#include "base/memory/scoped_refptr.h"
 #include "build/build_config.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_metrics.h"
@@ -18,12 +20,18 @@ class BrowserContext;
 class StoragePartition;
 }  // namespace content
 
+namespace device {
+class BluetoothAdapter;
+}
+
 namespace user_prefs {
 class PrefRegistrySyncable;
 }
 
 // Utility functions for sign in promos.
 namespace signin {
+
+class AccountsInCookieJarInfo;
 
 extern const char kSignInPromoQueryKeyAccessPoint[];
 // TODO(crbug.com/40764426): Auto close is unused. Remove it.
@@ -54,7 +62,8 @@ GURL GetEmbeddedReauthURLWithEmail(signin_metrics::AccessPoint access_point,
 // Controls the information displayed around the Gaia Sign In page via the
 // "flow" url parameter.
 enum class Flow {
-  // No value set for the "flow" parameter.
+  // Default value ("history_opt_in") for the "flow" parameter: uses a
+  // customized sign-in screen that does not mention history sync benefits.
   NONE,
   // The "promo" flow indicates to the user that they are signing in to Chrome
   // but unlike the default dice sign-in page, they don't mention sync
@@ -97,27 +106,83 @@ struct ChromeSyncUrlArgs {
 // See `ChromeSyncUrlArgs` docs for details on the arguments.
 GURL GetChromeSyncURLForDice(ChromeSyncUrlArgs args);
 
+// Called with whether hybrid transport is supported, and with the Bluetooth
+// adapter used for the check, which is null if Bluetooth LE is not supported.
+using HybridTransportSupportedCallback =
+    base::OnceCallback<void(bool, scoped_refptr<device::BluetoothAdapter>)>;
+
 // Checks asynchronously whether bluetooth is supported and enabled on the
-// device.
+// device. Callers may hold the adapter passed to `callback` to keep it alive,
+// so that later `device::BluetoothAdapterFactory::GetAdapter()` calls reuse it
+// instead of creating a new one.
 void IsHybridTransportSupportedForQrCodeSignin(
-    base::OnceCallback<void(bool)> callback);
+    HybridTransportSupportedCallback callback);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
-// Returns the URL to be used to reauth.
-// As part of `args` only `email` and `continue_url` are used:
-// `email` is used to be able to preview the URL with the appropriate email:
-// - if the value is empty: the regular sign in page is opened with no prefill.
-// - if the value is set and correspond to an existing account used within the
-// profile previously: the "Verify it's you" page is opened with the preselected
-// account on the next page requesting the authentication. Note: the email can
-// still be modified by the user and does not guarantee that the reauth attempt
-// will be done on this email/account.
-// - if the value is set but the email does not correspond to an account
-// previously used within the profile: the regular sign in gaia page is
-// displayed with the prefilled email.
-// `continue_url` is used to redirect to the given url in case of successful
-// reauth.
-GURL GetChromeReauthURL(ChromeSyncUrlArgs args);
+// Wraps arguments for `GetChromeReauthURL()`. They are all optional.
+struct ChromeReauthUrlArgs {
+  // Used to be able to preview the URL with the appropriate email:
+  // - if the value is empty: the regular sign in page is opened with no
+  // prefill.
+  // - if the value is set and correspond to an existing account used within the
+  // profile previously: the "Verify it's you" page is opened with the
+  // preselected account on the next page requesting the authentication. Note:
+  // the email can still be modified by the user and does not guarantee that the
+  // reauth attempt will be done on this email/account.
+  // - if the value is set but the email does not correspond to an account
+  // previously used within the profile: the regular sign in gaia page is
+  // displayed with the prefilled email.
+  const std::string email;
+  // Used to redirect to the given url in case of successful reauth.
+  const GURL continue_url;
+  // If true, appends the `ptc=1` ("Proceed To Challenge") parameter so that
+  // Gaia skips the identifier page and goes straight to the challenge (e.g.
+  // password) page for `email`.
+  bool proceed_to_challenge = false;
+};
+
+// Returns the URL to be used to reauth. See `ChromeReauthUrlArgs` docs for
+// details on the arguments.
+GURL GetChromeReauthURL(ChromeReauthUrlArgs args);
+
+// Outcome of checking whether a reauth for an account can use
+// `GetChromeReauthURL()` with `proceed_to_challenge` based on the cookie jar.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(ReauthProceedToChallengeResult)
+enum class ReauthProceedToChallengeResult {
+  // `/AccountChooser` with `ptc=1` is used and the account is present in the
+  // cookie jar (signed out or invalid), so Gaia skips the identifier page.
+  kProceedToChallenge = 0,
+  // `/AccountChooser` with `ptc=1` is used, but the account is not in the
+  // cookie jar (e.g. cookies were cleared), so Gaia still shows the prefilled
+  // identifier page.
+  kAccountNotInCookies = 1,
+  // kAddSessionFallback = 2,  // deprecated, split into subcategories
+  // Falls back to `/AddSession` because cookie jar info is stale.
+  kAddSessionFallbackStaleCookies = 3,
+  // Falls back to `/AddSession` because the account still has a valid signed-in
+  // Gaia session.
+  kAddSessionFallbackValidSession = 4,
+  kMaxValue = kAddSessionFallbackValidSession,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:ReauthProceedToChallengeResult)
+
+// Returns the result of checking whether a reauth for `email` can use
+// `GetChromeReauthURL()` with `proceed_to_challenge`, based on
+// `accounts_in_cookie_jar`.
+// Returns an `/AddSession` fallback (i.e. callers should keep using
+// `GetAddAccountURLForDice()`) if the cookie jar info is stale, or if `email`
+// still has a valid signed-in Gaia session.
+// Returns `std::nullopt` if `email` is empty.
+std::optional<ReauthProceedToChallengeResult> GetReauthProceedToChallengeResult(
+    const std::string& email,
+    const AccountsInCookieJarInfo& accounts_in_cookie_jar);
+
+// Records `Signin.Reauth.ProceedToChallengeResult2`. Call it when loading the
+// URL selected with `GetReauthProceedToChallengeResult()`.
+void RecordReauthProceedToChallengeResult(
+    ReauthProceedToChallengeResult result);
 
 // Returns the URL to be used to add (secondary) account when DICE is enabled.
 // If email is not empty, then it will pass email as hint to the page so that it

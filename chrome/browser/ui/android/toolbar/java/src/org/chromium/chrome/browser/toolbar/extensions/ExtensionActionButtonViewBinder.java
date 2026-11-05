@@ -23,6 +23,8 @@ public class ExtensionActionButtonViewBinder {
         if (key == ExtensionActionButtonProperties.ACCESSIBLE_NAME) {
             String accessibleName = model.get(ExtensionActionButtonProperties.ACCESSIBLE_NAME);
             button.setContentDescription(accessibleName);
+        } else if (key == ExtensionActionButtonProperties.ALPHA) {
+            button.setAlpha(model.get(ExtensionActionButtonProperties.ALPHA));
         } else if (key == ExtensionActionButtonProperties.ICON) {
             Bitmap bitmap = model.get(ExtensionActionButtonProperties.ICON);
             button.setImageBitmap(bitmap);
@@ -32,6 +34,8 @@ public class ExtensionActionButtonViewBinder {
             button.setOnClickListener(model.get(ExtensionActionButtonProperties.ON_CLICK_LISTENER));
         } else if (key == ExtensionActionButtonProperties.ON_HOVER_LISTENER) {
             button.setOnHoverListener(model.get(ExtensionActionButtonProperties.ON_HOVER_LISTENER));
+        } else if (key == ExtensionActionButtonProperties.ON_KEY_LISTENER) {
+            button.setOnKeyListener(model.get(ExtensionActionButtonProperties.ON_KEY_LISTENER));
         } else if (key == ExtensionActionButtonProperties.ON_LONG_CLICK_LISTENER) {
             button.setOnLongClickListener(
                     model.get(ExtensionActionButtonProperties.ON_LONG_CLICK_LISTENER));

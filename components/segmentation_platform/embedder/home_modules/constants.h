@@ -42,6 +42,14 @@ inline constexpr char kIsDefaultBrowserChromeIos[] =
     "is_default_browser_chrome_ios";
 inline constexpr char kNumPriceDropsInShoppingList[] =
     "num_price_drops_in_shopping_list";
+inline constexpr char kLacksNTPBackground[] = "lacks_ntp_background";
+inline constexpr char kNTPBackgroundNotSelectedRecently[] =
+    "ntp_background_not_selected_recently";
+inline constexpr char kNotOptInTipsNotifications[] =
+    "not_opt_in_tips_notifications";
+inline constexpr char kTipsOptInPromptNotReceivedRecently[] =
+    "tips_opt_in_prompt_not_received_recently";
+inline constexpr char kNeverCustomizeNTP[] = "never_customize_ntp";
 
 // Input Context keys for emphemeral android modules.
 const char kIsUserSignedIn[] = "is_user_signed_in";
@@ -69,6 +77,9 @@ const char kHasThemeTipBottomSheetBeenShown[] =
     "has_theme_tip_bottom_sheet_been_shown";
 const char kThemeTipBottomSheetShownCount[] =
     "theme_tip_bottom_sheet_shown_count";
+const char kIsEligibleToTipsOptIn[] = "is_eligible_to_tips_opt_in";
+const char kTipsNotificationsPromoShownCount[] =
+    "tips_notifications_promo_shown_count";
 
 const char kAuxiliarySearchAvailable[] = "auxiliary_search_available";
 
@@ -92,6 +103,11 @@ inline constexpr char kAppBundlePromoEphemeralModule[] =
     "app_bundle_promo_ephemeral_module";
 inline constexpr char kDefaultBrowserPromoEphemeralModule[] =
     "default_browser_promo_ephemeral_module";
+inline constexpr char kNTPThemeEphemeralModule[] = "ntp_theme_ephemeral_module";
+inline constexpr char kTipsNotificationsEphemeralModule[] =
+    "tips_notifications_ephemeral_module";
+inline constexpr char kNTPCustomizationEphemeralModule[] =
+    "ntp_customization_ephemeral_module";
 
 // Variation labels for emphemeral IOS modules.
 // Lens variation labels
@@ -115,6 +131,7 @@ inline constexpr char kTabGroupSyncPromo[] = "TabGroupSyncPromo";
 inline constexpr char kQuickDeletePromo[] = "QuickDeletePromo";
 inline constexpr char kHistorySyncPromo[] = "HistorySyncPromo";
 inline constexpr char kNtpThemePromo[] = "NtpThemePromo";
+inline constexpr char kTipsNotificationsPromo[] = "TipsNotificationsPromo";
 
 // General limits for emphemeral android modules.
 // This controls the display frequency limit for the general educational tip

@@ -10,10 +10,8 @@ TestOptimizationGuideDecider::TestOptimizationGuideDecider() = default;
 TestOptimizationGuideDecider::~TestOptimizationGuideDecider() = default;
 
 void TestOptimizationGuideDecider::RegisterOptimizationTypes(
-    const std::vector<proto::OptimizationType>& optimization_types) {
-  registered_optimization_types_.insert(registered_optimization_types_.end(),
-                                        optimization_types.begin(),
-                                        optimization_types.end());
+    OptimizationTypeSet optimization_types) {
+  registered_optimization_types_.PutAll(optimization_types);
 }
 
 void TestOptimizationGuideDecider::CanApplyOptimization(
@@ -33,7 +31,7 @@ OptimizationGuideDecision TestOptimizationGuideDecider::CanApplyOptimization(
 
 void TestOptimizationGuideDecider::CanApplyOptimizationOnDemand(
     const std::vector<GURL>& urls,
-    const base::flat_set<proto::OptimizationType>& optimization_types,
+    OptimizationTypeSet optimization_types,
     proto::RequestContext request_context,
     OnDemandOptimizationGuideDecisionRepeatingCallback callback,
     std::optional<proto::RequestContextMetadata> request_context_metadata) {
@@ -41,7 +39,7 @@ void TestOptimizationGuideDecider::CanApplyOptimizationOnDemand(
     base::flat_map<proto::OptimizationType,
                    OptimizationGuideDecisionWithMetadata>
         decisions;
-    for (const auto optimization_type : optimization_types) {
+    for (proto::OptimizationType optimization_type : optimization_types) {
       decisions[optimization_type] = {OptimizationGuideDecision::kFalse,
                                       /*optimization_metadata=*/{}};
     }

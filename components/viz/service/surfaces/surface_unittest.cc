@@ -147,20 +147,19 @@ TEST_F(SurfaceTest, CopyRequestLifetime) {
 
   CompositorRenderPassId last_pass_id{(max_frame - 1) * 3 + start_id + 2};
 
-  // The copy request should stay on the Surface until TakeCopyOutputRequests
-  // is called.
+  // The copy request should stay on the Surface as new frames are activated.
   EXPECT_FALSE(copy_called);
-  EXPECT_EQ(
-      1u,
-      surface->GetActiveFrame().render_pass_list.back()->copy_requests.size());
+  ASSERT_EQ(3u, surface->GetActiveFrame().render_pass_list.size());
+  EXPECT_TRUE(
+      surface->GetActiveFrame().render_pass_list[0]->copy_requests.empty());
+  EXPECT_TRUE(
+      surface->GetActiveFrame().render_pass_list[1]->copy_requests.empty());
+  auto& last_pass = surface->GetActiveFrame().render_pass_list.back();
+  EXPECT_EQ(last_pass_id, last_pass->id);
+  EXPECT_EQ(1u, last_pass->copy_requests.size());
 
-  Surface::CopyRequestsMap copy_requests;
-  surface->TakeCopyOutputRequests(&copy_requests);
-  EXPECT_EQ(1u, copy_requests.size());
-  // Last (root) pass should receive copy request.
-  ASSERT_EQ(1u, copy_requests.count(last_pass_id));
-  EXPECT_FALSE(copy_called);
-  copy_requests.clear();  // Deleted requests will auto-send an empty result.
+  // Deleted requests will auto-send an empty result.
+  last_pass->copy_requests.clear();
   copy_runloop.Run();
   EXPECT_TRUE(copy_called);
 }
@@ -308,6 +307,94 @@ TEST_F(SurfaceTest, PendingCopySurfaceIncludedInActiveReferencedSurfaces) {
 
   curr_surface->ResetPendingCopySurfaceId();
   ASSERT_TRUE(curr_surface->active_referenced_surfaces().empty());
+}
+
+// Verifies that when a pending parent surface activates as a fallback, any
+// referenced child surfaces that activate via deadline inheritance are
+// properly included in the parent's active referenced surfaces.
+TEST_F(SurfaceTest, ActiveReferencedSurfacesOnFallbackActivation) {
+  SurfaceManager* surface_manager = frame_sink_manager_.surface_manager();
+
+  constexpr FrameSinkId fs_child(10, 1);
+  constexpr FrameSinkId fs_parent(20, 1);
+  constexpr FrameSinkId fs_embedder(30, 1);
+
+  auto child_support = std::make_unique<CompositorFrameSinkSupport>(
+      nullptr, &frame_sink_manager_, fs_child, /*is_root=*/false);
+  auto parent_support = std::make_unique<CompositorFrameSinkSupport>(
+      nullptr, &frame_sink_manager_, fs_parent, /*is_root=*/false);
+  auto embedder_support = std::make_unique<CompositorFrameSinkSupport>(
+      nullptr, &frame_sink_manager_, fs_embedder, /*is_root=*/false);
+
+  const base::UnguessableToken token_child = base::UnguessableToken::Create();
+  const base::UnguessableToken token_parent = base::UnguessableToken::Create();
+  const base::UnguessableToken token_embedder =
+      base::UnguessableToken::Create();
+
+  SurfaceId unresolvable_dep(
+      FrameSinkId(99, 1),
+      LocalSurfaceId(1, 1, base::UnguessableToken::Create()));
+
+  auto build_frame = [](std::vector<SurfaceId> deps,
+                        std::vector<SurfaceRange> refs) {
+    return CompositorFrameBuilder()
+        .AddRenderPass(gfx::Rect(10, 10), gfx::Rect(10, 10))
+        .SetActivationDependencies(std::move(deps))
+        .SetReferencedSurfaces(std::move(refs))
+        .SetDeadline(FrameDeadline(base::TimeTicks::Now(), 10000u,
+                                   base::Milliseconds(16), false))
+        .Build();
+  };
+
+  // Step 1: Submit child frame with an unresolvable dependency. Child stays
+  // pending and has a temporary reference.
+  LocalSurfaceId child_lsid(1, 1, token_child);
+  SurfaceId child_id(fs_child, child_lsid);
+  child_support->SubmitCompositorFrame(
+      child_lsid,
+      build_frame({unresolvable_dep}, {SurfaceRange(unresolvable_dep)}));
+
+  Surface* child_surface = surface_manager->GetSurfaceForId(child_id);
+  ASSERT_TRUE(child_surface);
+  EXPECT_FALSE(child_surface->HasActiveFrame());
+  EXPECT_TRUE(child_surface->HasPendingFrame());
+
+  // Step 2: Submit parent frame referencing the child surface, but blocked
+  // on an unresolvable dependency. Parent stays pending.
+  LocalSurfaceId parent_lsid(1, 1, token_parent);
+  SurfaceId parent_id(fs_parent, parent_lsid);
+  parent_support->SubmitCompositorFrame(
+      parent_lsid,
+      build_frame({unresolvable_dep},
+                  {SurfaceRange(child_id), SurfaceRange(unresolvable_dep)}));
+
+  Surface* parent_surface = surface_manager->GetSurfaceForId(parent_id);
+  ASSERT_TRUE(parent_surface);
+  EXPECT_FALSE(parent_surface->HasActiveFrame());
+  EXPECT_TRUE(parent_surface->HasPendingFrame());
+
+  // Step 3: Embedder submits a frame depending on a newer surface in parent's
+  // allocation group. This triggers fallback activation of parent(1, 1).
+  LocalSurfaceId embedder_lsid(1, 1, token_embedder);
+  SurfaceId parent_newer_id(fs_parent, LocalSurfaceId(2, 1, token_parent));
+  embedder_support->SubmitCompositorFrame(embedder_lsid,
+                                          build_frame({parent_newer_id}, {}));
+
+  // Parent(1, 1) should now be activated as a fallback.
+  EXPECT_TRUE(parent_surface->HasActiveFrame());
+  EXPECT_FALSE(parent_surface->HasPendingFrame());
+
+  // Child(1, 1) should also be activated via inherited deadline.
+  EXPECT_TRUE(child_surface->HasActiveFrame());
+  EXPECT_FALSE(child_surface->HasPendingFrame());
+
+  // Parent must include child in its active referenced surfaces.
+  EXPECT_THAT(parent_surface->active_referenced_surfaces(),
+              testing::Contains(child_id));
+
+  // SurfaceManager must record the reference from parent to child.
+  EXPECT_THAT(surface_manager->GetSurfacesReferencedByParent(parent_id),
+              testing::Contains(child_id));
 }
 
 class ImmediateActivationSurfaceTest : public SurfaceTest {

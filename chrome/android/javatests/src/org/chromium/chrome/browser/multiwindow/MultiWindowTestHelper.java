@@ -11,7 +11,7 @@ import android.content.Intent;
 import android.net.Uri;
 
 import androidx.annotation.Nullable;
-import androidx.test.runner.lifecycle.Stage;
+import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.hamcrest.Matchers;
 import org.junit.Assert;
@@ -20,17 +20,21 @@ import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.ApplicationTestUtils;
+import org.chromium.base.test.transit.Triggers;
+import org.chromium.base.test.transit.TripBuilder;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.CriteriaNotSatisfiedException;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.ChromeTabbedActivity2;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.NewWindowAppSource;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.TabList;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
+import org.chromium.chrome.test.util.MenuUtils;
 import org.chromium.content_public.browser.LoadUrlParams;
 
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.List;
 
 /** Utilities helper class for multi-window tests. */
 public class MultiWindowTestHelper {
@@ -48,6 +52,8 @@ public class MultiWindowTestHelper {
     /**
      * Creates a new {@link ChromeTabbedActivity2}.
      *
+     * <p>Enters a {@link CtaPageStation} in the new window and leaves it ACTIVE.
+     *
      * @param activity A current running activity that will handle the intent to start another
      *     activity.
      * @param params {@link LoadUrlParams} used to create the launch intent. May be null if no
@@ -58,9 +64,6 @@ public class MultiWindowTestHelper {
             Activity activity, @Nullable LoadUrlParams params) {
         // TODO(twellington): after there is test support for putting an activity into multi-window
         // mode, this should be changed to use the menu item for opening a new window.
-
-        // Number of expected activities after the second ChromeTabbedActivity is created.
-        int numExpectedActivities = ApplicationStatus.getRunningActivities().size() + 1;
 
         // Get the class name to use for the second ChromeTabbedActivity. This step is important
         // for initializing things in MultiWindowUtils.java.
@@ -83,36 +86,40 @@ public class MultiWindowTestHelper {
         }
 
         MultiWindowUtils.setOpenInOtherWindowIntentExtras(intent, activity, secondActivityClass);
-        MultiInstanceManager.onMultiInstanceModeStarted();
-        activity.startActivity(intent);
-
-        // Wait for ChromeTabbedActivity2 to be created.
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            ApplicationStatus.getRunningActivities().size(),
-                            Matchers.is(numExpectedActivities));
-                });
-
-        return waitForSecondChromeTabbedActivity();
+        return (ChromeTabbedActivity2)
+                arriveInNewWindow(
+                                Triggers.runTo(
+                                        () -> {
+                                            MultiInstanceManager.onMultiInstanceModeStarted();
+                                            activity.startActivity(intent);
+                                        }),
+                                /* isIncognito= */ false,
+                                /* allowSubclasses= */ true)
+                        .getActivity();
     }
 
-    /** Waits for an instance of ChromeTabbedActivity2, and then waits until it's resumed. */
+    /**
+     * Waits for an instance of ChromeTabbedActivity2 with a regular tab, and then waits until it's
+     * resumed and its tab state is initialized.
+     *
+     * <p>Enters a {@link CtaPageStation} in that window and leaves it ACTIVE.
+     */
     public static ChromeTabbedActivity2 waitForSecondChromeTabbedActivity() {
-        AtomicReference<ChromeTabbedActivity2> returnActivity = new AtomicReference<>();
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    for (Activity runningActivity : ApplicationStatus.getRunningActivities()) {
-                        if (runningActivity.getClass().equals(ChromeTabbedActivity2.class)) {
-                            returnActivity.set((ChromeTabbedActivity2) runningActivity);
-                            return;
-                        }
-                    }
-                    throw new CriteriaNotSatisfiedException(
-                            "Couldn't find instance of ChromeTabbedActivity2");
-                });
-        waitUntilActivityResumed(returnActivity.get());
-        return returnActivity.get();
+        return waitForSecondChromeTabbedActivity(/* isIncognito= */ false);
+    }
+
+    /**
+     * Waits for an instance of ChromeTabbedActivity2, and then waits until it's resumed and its tab
+     * state is initialized.
+     *
+     * <p>Enters a {@link CtaPageStation} in that window and leaves it ACTIVE.
+     *
+     * @param isIncognito Whether the active tab in the second window is incognito.
+     */
+    public static ChromeTabbedActivity2 waitForSecondChromeTabbedActivity(boolean isIncognito) {
+        return (ChromeTabbedActivity2)
+                arriveInNewWindow(Triggers.noopTo(), isIncognito, /* allowSubclasses= */ true)
+                        .getActivity();
     }
 
     private static void waitUntilActivityResumed(final Activity activity) {
@@ -124,7 +131,12 @@ public class MultiWindowTestHelper {
                 });
     }
 
-    /** Moves the given activity to the foreground so it can receive user input. */
+    /**
+     * Moves the given activity to the foreground so it can receive user input.
+     *
+     * @deprecated From a Station, use {@code Station#bringWindowToFront()} instead.
+     */
+    @Deprecated
     public static void moveActivityToFront(final Activity activity) {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -139,6 +151,48 @@ public class MultiWindowTestHelper {
                     }
                 });
         waitUntilActivityResumed(activity);
+    }
+
+    /**
+     * Moves {@code tab} from {@code sourceActivity} to {@code destActivity}, bringing the latter to
+     * front.
+     *
+     * <p>On Android S+, uses {@link MultiInstanceOrchestrator#moveTabsToWindowByIdChecked}. Before
+     * S, uses the "Move to other window" menu item of {@code sourceActivity}, which moves its
+     * current tab, so {@code tab} must be the current tab.
+     *
+     * @return a {@link TripBuilder} with the move as its trigger. Wait with it for the tab to be in
+     *     {@code destActivity}, e.g. with {@code TabInModelCondition}.
+     */
+    public static TripBuilder moveTabToWindowTo(
+            ChromeTabbedActivity sourceActivity, ChromeTabbedActivity destActivity, Tab tab) {
+        if (MultiWindowUtils.isMultiInstanceApi31Enabled()) {
+            int destWindowId = destActivity.getWindowId();
+            return Triggers.runOnUiThreadTo(
+                    () ->
+                            MultiInstanceOrchestratorFactory.getInstance()
+                                    .moveTabsToWindowByIdChecked(
+                                            destWindowId,
+                                            List.of(tab),
+                                            /* destTabIndex= */ TabList.INVALID_TAB_INDEX,
+                                            /* destGroupTabId= */ Tab.INVALID_TAB_ID,
+                                            /* bringToFront= */ true));
+        }
+
+        Tab currentTab =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> sourceActivity.getTabModelSelector().getCurrentTab());
+        Assert.assertSame(
+                "Before Android S, \"Move to other window\" moves the current tab of the source"
+                        + " window",
+                tab,
+                currentTab);
+        return Triggers.runTo(
+                () ->
+                        MenuUtils.invokeCustomMenuActionSync(
+                                InstrumentationRegistry.getInstrumentation(),
+                                sourceActivity,
+                                R.id.move_to_other_window_menu_id));
     }
 
     /**
@@ -169,10 +223,29 @@ public class MultiWindowTestHelper {
     /**
      * Creates a new ChromeTabbedActivity (API 31 only) for use in tests.
      *
+     * <p>From a page Station on tablet or desktop, prefer {@code
+     * PageAppMenuFacility#openNewWindow()} or {@code CtaPageStation#openNewWindowFast()}.
+     *
      * @param context The context used to build the intent to start the new activity.
-     * @return The newly created ChromeTabbedActivity after it is resumed.
+     * @return The newly created ChromeTabbedActivity after it is resumed and its tab state is
+     *     initialized.
+     * @see #createNewChromeTabbedActivityWindow(Context)
      */
     public static ChromeTabbedActivity createNewChromeTabbedActivity(Context context) {
+        return createNewChromeTabbedActivityWindow(context).getActivity();
+    }
+
+    /**
+     * Creates a new ChromeTabbedActivity (API 31 only) and enters a {@link CtaPageStation} there.
+     *
+     * <p>From a page Station on tablet or desktop, prefer {@code
+     * PageAppMenuFacility#openNewWindow()} or {@code CtaPageStation#openNewWindowFast()}.
+     *
+     * @param context The context used to build the intent to start the new activity.
+     * @return The ACTIVE {@link CtaPageStation} in the new window, after it is resumed and its tab
+     *     state is initialized.
+     */
+    public static CtaPageStation createNewChromeTabbedActivityWindow(Context context) {
         Intent intent =
                 MultiWindowUtils.createNewWindowIntent(
                         context,
@@ -180,9 +253,46 @@ public class MultiWindowTestHelper {
                         /* preferNew= */ true,
                         /* openAdjacently= */ false,
                         NewWindowAppSource.MENU);
-        return ApplicationTestUtils.waitForActivityWithClass(
-                ChromeTabbedActivity.class,
-                Stage.RESUMED,
-                () -> ContextUtils.getApplicationContext().startActivity(intent));
+        return arriveInNewWindow(
+                Triggers.runOnUiThreadTo(
+                        () -> ContextUtils.getApplicationContext().startActivity(intent)),
+                /* isIncognito= */ false,
+                /* allowSubclasses= */ false);
+    }
+
+    /**
+     * Runs {@code trigger} on the UI thread and waits for a newly created {@link
+     * ChromeTabbedActivity} (excluding any already-running instances) to reach {@link
+     * ActivityState#RESUMED} and complete tab state initialization.
+     *
+     * <p>Enters a {@link CtaPageStation} in the new window and leaves it ACTIVE. The windows that
+     * were already open are told apart by their active Stations.
+     *
+     * <p>From an active Station, prefer transitioning to the new window's Station with {@code
+     * TripBuilder#inNewTask()}.
+     *
+     * @param trigger Runnable that initiates creation of the new window.
+     * @return The newly created {@link ChromeTabbedActivity}.
+     */
+    public static ChromeTabbedActivity waitForNewChromeTabbedActivity(Runnable trigger) {
+        return arriveInNewWindow(
+                        Triggers.runOnUiThreadTo(trigger),
+                        /* isIncognito= */ false,
+                        /* allowSubclasses= */ false)
+                .getActivity();
+    }
+
+    /** Enters a {@link CtaPageStation} in the window that {@code trip} opens, in a new task. */
+    private static CtaPageStation arriveInNewWindow(
+            TripBuilder trip, boolean isIncognito, boolean allowSubclasses) {
+        CtaPageStation station =
+                CtaPageStation.newGenericBuilder()
+                        .withEntryPoint()
+                        .withIncognito(isIncognito)
+                        .build();
+        if (allowSubclasses) {
+            station.getActivityElement().allowSubclasses();
+        }
+        return trip.inNewTask().arriveAt(station);
     }
 }

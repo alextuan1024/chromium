@@ -4,6 +4,7 @@
 
 #include "chrome/browser/password_manager/chrome_password_change_service.h"
 
+#include <optional>
 #include <utility>
 
 #include "base/command_line.h"
@@ -16,15 +17,20 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "components/affiliations/core/browser/affiliation_service.h"
 #include "components/affiliations/core/browser/mock_affiliation_service.h"
 #include "components/autofill/core/browser/logging/log_router.h"
 #include "components/metrics/enabled_state_provider.h"
 #include "components/metrics/metrics_state_manager.h"
 #include "components/metrics/test/test_enabled_state_provider.h"
+#include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
 #include "components/password_manager/core/browser/features/password_features.h"
+#include "components/password_manager/core/browser/leak_detection_dialog_utils.h"
 #include "components/password_manager/core/browser/mock_password_feature_manager.h"
 #include "components/password_manager/core/browser/mock_password_manager_settings_service.h"
+#include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_switches.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -42,25 +48,22 @@
 namespace {
 
 struct TestCase {
-  using TupleT = std::tuple<bool, bool, bool, bool>;
+  using TupleT = std::tuple<bool, bool, bool>;
 
   explicit TestCase(TupleT configuration)
       : is_generation_available(std::get<0>(configuration)),
-        is_model_execution_allowed(std::get<1>(configuration)),
-        is_saving_allowed(std::get<2>(configuration)),
-        is_disabled_by_policy(std::get<3>(configuration)) {}
+        is_saving_allowed(std::get<1>(configuration)),
+        is_disabled_by_policy(std::get<2>(configuration)) {}
 
   bool expected_outcome() const {
 #if BUILDFLAG(IS_ANDROID)
     return false;
 #else
-    return is_generation_available & is_model_execution_allowed &
-           is_saving_allowed & !is_disabled_by_policy;
+    return is_generation_available & is_saving_allowed & !is_disabled_by_policy;
 #endif  // BUILDFLAG(IS_ANDROID)
   }
 
   const bool is_generation_available;
-  const bool is_model_execution_allowed;
   const bool is_saving_allowed;
   const bool is_disabled_by_policy;
 };
@@ -91,6 +94,18 @@ password_manager::PasswordForm CreateTestForm(const GURL& url,
 
   form.form_data.set_fields({username_field, password_field});
   return form;
+}
+
+password_manager::LeakedPasswordDetails CreateLeakDetails(
+    password_manager::PasswordForm form,
+    GURL change_password_url = GURL()) {
+  std::optional<affiliations::AffiliationService::ChangePasswordUrlMatch> match;
+  if (change_password_url.is_valid()) {
+    match.emplace(std::move(change_password_url));
+  }
+  return password_manager::LeakedPasswordDetails(
+      /*leak_type=*/0, std::move(form), /*in_account_store=*/false,
+      std::move(match));
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -130,9 +145,6 @@ class ChromePasswordChangeServiceBase {
 
   ~ChromePasswordChangeServiceBase() = default;
 
-  affiliations::MockAffiliationService& affiliation_service() {
-    return mock_affiliation_service_;
-  }
   MockOptimizationGuideKeyedService& mock_optimization_service() {
     return mock_optimization_service_;
   }
@@ -182,11 +194,6 @@ class ChromePasswordChangeServiceTest : public testing::Test,
                                         public ChromePasswordChangeServiceBase {
  public:
   ChromePasswordChangeServiceTest() {
-#if !BUILDFLAG(IS_ANDROID)
-    feature_list_.InitAndDisableFeature(
-        password_change::features::
-            kSkipModelExecutionAllowedCheckForPasswordChange);
-#endif
     variations::TestVariationsService::RegisterPrefs(prefs()->registry());
     metrics_state_manager_ = metrics::MetricsStateManager::Create(
         prefs(), &enabled_state_provider_, std::wstring(), base::FilePath());
@@ -204,7 +211,6 @@ class ChromePasswordChangeServiceTest : public testing::Test,
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
   metrics::TestEnabledStateProvider enabled_state_provider_{/*consent=*/false,
                                                             /*enabled=*/false};
   std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;
@@ -218,17 +224,15 @@ TEST_F(ChromePasswordChangeServiceTest, PasswordChangeSupportedForURL) {
 
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
       .WillOnce(testing::Return(true));
   password_manager::PasswordForm form =
       CreateTestForm(url, /*is_signup_form=*/false);
-  form.change_password_url = GURL("https://test.com/password/");
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
+      CreateLeakDetails(form, GURL("https://test.com/password/")),
+      /*is_non_password_login_detected=*/false));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
       PasswordChangeAvailability::kAvailable, 1);
@@ -241,8 +245,6 @@ TEST_F(ChromePasswordChangeServiceTest,
 
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
@@ -250,9 +252,9 @@ TEST_F(ChromePasswordChangeServiceTest,
 
   password_manager::PasswordForm form =
       CreateTestForm(url, /*is_signup_form=*/false);
-  form.change_password_url = GURL("https://test.com/password/");
   EXPECT_FALSE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/true));
+      CreateLeakDetails(form, GURL("https://test.com/password/")),
+      /*is_non_password_login_detected=*/true));
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
@@ -266,8 +268,6 @@ TEST_F(ChromePasswordChangeServiceTest,
 
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
@@ -275,7 +275,6 @@ TEST_F(ChromePasswordChangeServiceTest,
 
   password_manager::PasswordForm form =
       CreateTestForm(url, /*is_signup_form=*/false);
-  form.change_password_url = GURL("https://test.com/password/");
 
   autofill::FormFieldData password_field;
   password_field.set_renderer_id(form.password_element_renderer_id);
@@ -285,7 +284,8 @@ TEST_F(ChromePasswordChangeServiceTest,
   form.form_data.set_fields({password_field});
 
   EXPECT_FALSE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
+      CreateLeakDetails(form, GURL("https://test.com/password/")),
+      /*is_non_password_login_detected=*/false));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
       PasswordChangeAvailability::kInvisiblePasswordField, 1);
@@ -295,14 +295,12 @@ TEST_F(ChromePasswordChangeServiceTest,
        PasswordChangeNotSupportedForSignupForm) {
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_FALSE(change_service()->IsPasswordChangeSupported(
-      CreateTestForm(url, /*is_signup_form=*/true),
+      CreateLeakDetails(CreateTestForm(url, /*is_signup_form=*/true)),
       /*is_non_password_login_detected=*/false));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
@@ -315,14 +313,12 @@ TEST_F(ChromePasswordChangeServiceTest, NoChangePasswordUrl) {
 
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_FALSE(change_service()->IsPasswordChangeSupported(
-      CreateTestForm(url, /*is_signup_form=*/false),
+      CreateLeakDetails(CreateTestForm(url, /*is_signup_form=*/false)),
       /*is_non_password_login_detected=*/false));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
@@ -335,17 +331,15 @@ TEST_F(ChromePasswordChangeServiceTest, DifferentCountry) {
 
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
       .WillOnce(testing::Return(true));
   password_manager::PasswordForm form =
       CreateTestForm(url, /*is_signup_form=*/false);
-  form.change_password_url = GURL("https://test.com/password/");
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
+      CreateLeakDetails(form, GURL("https://test.com/password/")),
+      /*is_non_password_login_detected=*/false));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
       PasswordChangeAvailability::kAvailable, 1);
@@ -357,37 +351,18 @@ TEST_F(ChromePasswordChangeServiceTest, DifferentLanguage) {
 
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
       .WillOnce(testing::Return(true));
   password_manager::PasswordForm form =
       CreateTestForm(url, /*is_signup_form=*/false);
-  form.change_password_url = GURL("https://test.com/password/");
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
-  histogram_tester.ExpectUniqueSample(
-      "PasswordManager.PasswordChangeAvailability",
-      PasswordChangeAvailability::kAvailable, 1);
-}
-
-TEST_F(ChromePasswordChangeServiceTest,
-       PasswordChangeNotSupportedSettingNotVisible) {
-  base::HistogramTester histogram_tester;
-  GURL url("https://test.com/");
-  EXPECT_CALL(affiliation_service(), GetChangePasswordURL).Times(0);
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(false));
-  EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
-      .WillOnce(testing::Return(true));
-  EXPECT_FALSE(change_service()->IsPasswordChangeSupported(
-      CreateTestForm(url, /*is_signup_form=*/false),
+      CreateLeakDetails(form, GURL("https://test.com/password/")),
       /*is_non_password_login_detected=*/false));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
-      PasswordChangeAvailability::kModelExecutionNotAllowed, 1);
+      PasswordChangeAvailability::kAvailable, 1);
 }
 
 TEST_F(ChromePasswordChangeServiceTest,
@@ -398,10 +373,9 @@ TEST_F(ChromePasswordChangeServiceTest,
 
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(affiliation_service(), GetChangePasswordURL).Times(0);
 
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      CreateTestForm(url, /*is_signup_form=*/false),
+      CreateLeakDetails(CreateTestForm(url, /*is_signup_form=*/false)),
       /*is_non_password_login_detected=*/false));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
@@ -416,10 +390,9 @@ TEST_F(ChromePasswordChangeServiceTest,
 
   base::HistogramTester histogram_tester;
   GURL url("https://www.test.com/");
-  EXPECT_CALL(affiliation_service(), GetChangePasswordURL).Times(0);
 
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      CreateTestForm(url, /*is_signup_form=*/false),
+      CreateLeakDetails(CreateTestForm(url, /*is_signup_form=*/false)),
       /*is_non_password_login_detected=*/false));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
@@ -429,17 +402,13 @@ TEST_F(ChromePasswordChangeServiceTest,
 TEST_F(ChromePasswordChangeServiceTest,
        PasswordChangeSupportedIfRuntimeOverrideProvided) {
   GURL url("https://test.com/");
-  EXPECT_CALL(affiliation_service(), GetChangePasswordURL)
-      .WillRepeatedly(testing::Return(GURL()));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
-      .WillRepeatedly(testing::Return(true));
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
       .WillRepeatedly(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillRepeatedly(testing::Return(true));
 
   EXPECT_FALSE(change_service()->IsPasswordChangeSupported(
-      CreateTestForm(url, /*is_signup_form=*/false),
+      CreateLeakDetails(CreateTestForm(url, /*is_signup_form=*/false)),
       /*is_non_password_login_detected=*/false));
 
   ChromePasswordChangeService* service =
@@ -447,7 +416,7 @@ TEST_F(ChromePasswordChangeServiceTest,
   service->AddChangePasswordUrlOverride(GURL("https://test.com/new_password/"));
 
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      CreateTestForm(url, /*is_signup_form=*/false),
+      CreateLeakDetails(CreateTestForm(url, /*is_signup_form=*/false)),
       /*is_non_password_login_detected=*/false));
 }
 
@@ -460,15 +429,13 @@ TEST_F(ChromePasswordChangeServiceTest,
   GURL url("https://test.com/");
   prefs()->SetInteger(
       password_manager::prefs::kTotalPasswordsAvailableForAccount, 0);
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
       .WillOnce(testing::Return(true));
 
   EXPECT_FALSE(change_service()->IsPasswordChangeSupported(
-      CreateTestForm(url, /*is_signup_form=*/false),
+      CreateLeakDetails(CreateTestForm(url, /*is_signup_form=*/false)),
       /*is_non_password_login_detected=*/false));
 }
 
@@ -478,17 +445,15 @@ TEST_F(ChromePasswordChangeServiceTest, PasswordChangeThrottledAfterFailure) {
 
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillRepeatedly(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillRepeatedly(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
       .WillRepeatedly(testing::Return(true));
   password_manager::PasswordForm form =
       CreateTestForm(url, /*is_signup_form=*/false);
-  form.change_password_url = GURL("https://test.com/password/");
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
+      CreateLeakDetails(form, GURL("https://test.com/password/")),
+      /*is_non_password_login_detected=*/false));
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
       PasswordChangeAvailability::kAvailable, 1);
@@ -497,7 +462,7 @@ TEST_F(ChromePasswordChangeServiceTest, PasswordChangeThrottledAfterFailure) {
       password_manager::prefs::kLastNegativePasswordChangeTimestamp,
       base::Time::Now());
   EXPECT_FALSE(change_service()->IsPasswordChangeSupported(
-      CreateTestForm(url, /*is_signup_form=*/false),
+      CreateLeakDetails(CreateTestForm(url, /*is_signup_form=*/false)),
       /*is_non_password_login_detected=*/false));
 
   EXPECT_THAT(histogram_tester.GetAllSamples(
@@ -509,7 +474,8 @@ TEST_F(ChromePasswordChangeServiceTest, PasswordChangeThrottledAfterFailure) {
   AdvanceClock(base::Days(14) + base::Seconds(1));
 
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
+      CreateLeakDetails(form, GURL("https://test.com/password/")),
+      /*is_non_password_login_detected=*/false));
   EXPECT_THAT(histogram_tester.GetAllSamples(
                   "PasswordManager.PasswordChangeAvailability"),
               testing::ElementsAre(
@@ -517,171 +483,8 @@ TEST_F(ChromePasswordChangeServiceTest, PasswordChangeThrottledAfterFailure) {
                   base::Bucket(PasswordChangeAvailability::kThrottled, 1)));
 }
 
-#endif  // !BUILDFLAG(IS_ANDROID)
-
-class ChromePasswordChangeServiceAvailabilityTest
-    : public testing::TestWithParam<TestCase>,
-      public ChromePasswordChangeServiceBase {
- public:
-  ChromePasswordChangeServiceAvailabilityTest() {
-#if !BUILDFLAG(IS_ANDROID)
-    feature_list_.InitAndDisableFeature(
-        password_change::features::
-            kSkipModelExecutionAllowedCheckForPasswordChange);
-#endif
-    if (GetParam().is_disabled_by_policy) {
-      constexpr int kPolicyDisabled =
-          std::to_underlying(optimization_guide::model_execution::prefs::
-                                 ModelExecutionEnterprisePolicyValue::kDisable);
-      prefs()->SetInteger(optimization_guide::prefs::
-                              kAutomatedPasswordChangeEnterprisePolicyAllowed,
-                          kPolicyDisabled);
-    }
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-TEST_P(ChromePasswordChangeServiceAvailabilityTest, TestWithNoArgs) {
-#if !BUILDFLAG(IS_ANDROID)
-  EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
-      .WillOnce(testing::Return(GetParam().is_generation_available));
-  if (GetParam().is_generation_available) {
-    EXPECT_CALL(mock_optimization_service(),
-                ShouldModelExecutionBeAllowedForUser)
-        .WillOnce(testing::Return(GetParam().is_model_execution_allowed));
-    if (GetParam().is_model_execution_allowed) {
-      EXPECT_CALL(
-          settings_service(),
-          IsSettingEnabled(
-              password_manager::PasswordManagerSetting::kOfferToSavePasswords))
-          .WillOnce(testing::Return(GetParam().is_saving_allowed));
-    }
-  }
-#endif  // !BUILDFLAG(IS_ANDROID)
-
-  EXPECT_EQ(change_service()->IsPasswordChangeAvailable(),
-            GetParam().expected_outcome());
-}
-
-TEST_P(ChromePasswordChangeServiceAvailabilityTest, TestWithChangePwdUrlArg) {
-  base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-      password_manager::kPasswordChangeUrl, "https://test.com/new_password/");
-  RecreateService();
-
-  EXPECT_CALL(*feature_manager(), IsGenerationEnabled).Times(0);
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .Times(0);
-#if !BUILDFLAG(IS_ANDROID)
-  EXPECT_TRUE(change_service()->IsPasswordChangeAvailable());
-#else
-  EXPECT_FALSE(change_service()->IsPasswordChangeAvailable());
-#endif  // !BUILDFLAG(IS_ANDROID)
-}
-
-TEST_P(ChromePasswordChangeServiceAvailabilityTest,
-       UserEnrollmentIntoPasswordChangeServiceyWithPrefOff) {
-  EXPECT_CALL(*feature_manager(), IsGenerationEnabled).Times(0);
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .Times(0);
-  EXPECT_CALL(settings_service(), IsSettingEnabled).Times(0);
-  // Always false because pref is not set.
-  EXPECT_FALSE(static_cast<ChromePasswordChangeService*>(change_service())
-                   ->UserIsActivePasswordChangeUser());
-}
-
-TEST_P(ChromePasswordChangeServiceAvailabilityTest,
-       UserEnrollmentIntoPasswordChangeServiceWithPrefOn) {
-  prefs()->SetInteger(
-      optimization_guide::prefs::GetSettingEnabledPrefName(
-          optimization_guide::UserVisibleFeatureKey::kPasswordChangeSubmission),
-      1);
-#if !BUILDFLAG(IS_ANDROID)
-  EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
-      .WillOnce(testing::Return(GetParam().is_generation_available));
-  if (GetParam().is_generation_available) {
-    EXPECT_CALL(mock_optimization_service(),
-                ShouldModelExecutionBeAllowedForUser)
-        .WillOnce(testing::Return(GetParam().is_model_execution_allowed));
-    if (GetParam().is_model_execution_allowed) {
-      EXPECT_CALL(
-          settings_service(),
-          IsSettingEnabled(
-              password_manager::PasswordManagerSetting::kOfferToSavePasswords))
-          .WillOnce(testing::Return(GetParam().is_saving_allowed));
-    }
-  }
-#endif  // !BUILDFLAG(IS_ANDROID)
-  EXPECT_EQ(static_cast<ChromePasswordChangeService*>(change_service())
-                ->UserIsActivePasswordChangeUser(),
-            GetParam().expected_outcome());
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    Availability,
-    ChromePasswordChangeServiceAvailabilityTest,
-    testing::ConvertGenerator<TestCase::TupleT>(
-        testing::Combine(testing::Bool(),
-                         testing::Bool(),
-                         testing::Bool(),
-                         testing::Bool())),
-    [](const ::testing::TestParamInfo<TestCase>& info) {
-      std::string test_name;
-      test_name +=
-          info.param.is_generation_available ? "GenerationOn" : "GenerationOff";
-      test_name += info.param.is_model_execution_allowed ? "ExecutionOn"
-                                                         : "ExecutionOff";
-      test_name += info.param.is_saving_allowed ? "SavingOn" : "SavingOff";
-      test_name += info.param.is_disabled_by_policy ? "DisabledByPolicy" : "";
-      return test_name;
-    });
-
-#if !BUILDFLAG(IS_ANDROID)
-class ChromePasswordChangeServiceFeatureEnabledTest
-    : public testing::Test,
-      public ChromePasswordChangeServiceBase {
- public:
-  ChromePasswordChangeServiceFeatureEnabledTest() {
-    feature_list_.InitAndEnableFeature(
-        password_change::features::
-            kSkipModelExecutionAllowedCheckForPasswordChange);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-TEST_F(ChromePasswordChangeServiceFeatureEnabledTest,
-       ShouldModelExecutionBeAllowedCheckIsBypassed) {
+TEST_F(ChromePasswordChangeServiceTest, PasswordChangeDisabledByUserPref) {
   base::HistogramTester histogram_tester;
-  GURL url("https://test.com/");
-
-  // We do NOT mock ShouldModelExecutionBeAllowedForUser. A call to it on strict
-  // mock would trigger a failure.
-  EXPECT_CALL(settings_service(), IsSettingEnabled)
-      .WillOnce(testing::Return(true));
-  EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
-      .WillOnce(testing::Return(true));
-
-  password_manager::PasswordForm form =
-      CreateTestForm(url, /*is_signup_form=*/false);
-  form.change_password_url = GURL("https://test.com/password/");
-
-  EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
-
-  histogram_tester.ExpectUniqueSample(
-      "PasswordManager.PasswordChangeAvailability",
-      PasswordChangeAvailability::kAvailable, 1);
-}
-
-TEST_F(ChromePasswordChangeServiceFeatureEnabledTest,
-       PasswordChangeDisabledByUserPref) {
-  base::HistogramTester histogram_tester;
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      password_change::features::kPasswordChangeWithPrivateInferenceLoginCheck);
   GURL url("https://test.com/");
 
   prefs()->SetBoolean(password_manager::prefs::kAutomatedPasswordChangeEnabled,
@@ -694,17 +497,17 @@ TEST_F(ChromePasswordChangeServiceFeatureEnabledTest,
 
   password_manager::PasswordForm form =
       CreateTestForm(url, /*is_signup_form=*/false);
-  form.change_password_url = GURL("https://test.com/password/");
 
   EXPECT_FALSE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
+      CreateLeakDetails(form, GURL("https://test.com/password/")),
+      /*is_non_password_login_detected=*/false));
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
       PasswordChangeAvailability::kDisabledByUser, 1);
 }
 
-TEST_F(ChromePasswordChangeServiceFeatureEnabledTest,
+TEST_F(ChromePasswordChangeServiceTest,
        PasswordChangeDisabledByUserPrefIgnoredWhenFeatureDisabled) {
   base::HistogramTester histogram_tester;
   base::test::ScopedFeatureList feature_list;
@@ -722,25 +525,116 @@ TEST_F(ChromePasswordChangeServiceFeatureEnabledTest,
 
   password_manager::PasswordForm form =
       CreateTestForm(url, /*is_signup_form=*/false);
-  form.change_password_url = GURL("https://test.com/password/");
 
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
+      CreateLeakDetails(form, GURL("https://test.com/password/")),
+      /*is_non_password_login_detected=*/false));
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",
       PasswordChangeAvailability::kAvailable, 1);
 }
 
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+class ChromePasswordChangeServiceAvailabilityTest
+    : public testing::TestWithParam<TestCase>,
+      public ChromePasswordChangeServiceBase {
+ public:
+  ChromePasswordChangeServiceAvailabilityTest() {
+    if (GetParam().is_disabled_by_policy) {
+      constexpr int kPolicyDisabled = std::to_underlying(
+          optimization_guide::EnterprisePolicyValue::kDisable);
+      prefs()->SetInteger(optimization_guide::prefs::
+                              kAutomatedPasswordChangeEnterprisePolicyAllowed,
+                          kPolicyDisabled);
+    }
+  }
+};
+
+TEST_P(ChromePasswordChangeServiceAvailabilityTest, TestWithNoArgs) {
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
+      .WillOnce(testing::Return(GetParam().is_generation_available));
+  if (GetParam().is_generation_available) {
+    EXPECT_CALL(
+        settings_service(),
+        IsSettingEnabled(
+            password_manager::PasswordManagerSetting::kOfferToSavePasswords))
+        .WillOnce(testing::Return(GetParam().is_saving_allowed));
+  }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+  EXPECT_EQ(change_service()->IsPasswordChangeAvailable(),
+            GetParam().expected_outcome());
+}
+
+TEST_P(ChromePasswordChangeServiceAvailabilityTest, TestWithChangePwdUrlArg) {
+  base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+      password_manager::kPasswordChangeUrl, "https://test.com/new_password/");
+  RecreateService();
+
+  EXPECT_CALL(*feature_manager(), IsGenerationEnabled).Times(0);
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_TRUE(change_service()->IsPasswordChangeAvailable());
+#else
+  EXPECT_FALSE(change_service()->IsPasswordChangeAvailable());
+#endif  // !BUILDFLAG(IS_ANDROID)
+}
+
+TEST_P(ChromePasswordChangeServiceAvailabilityTest,
+       UserEnrollmentIntoPasswordChangeServiceyWithPrefOff) {
+  EXPECT_CALL(*feature_manager(), IsGenerationEnabled).Times(0);
+  EXPECT_CALL(settings_service(), IsSettingEnabled).Times(0);
+  // Always false because pref is not set.
+  EXPECT_FALSE(static_cast<ChromePasswordChangeService*>(change_service())
+                   ->UserIsActivePasswordChangeUser());
+}
+
+TEST_P(ChromePasswordChangeServiceAvailabilityTest,
+       UserEnrollmentIntoPasswordChangeServiceWithPrefOn) {
+  prefs()->SetInteger(
+      optimization_guide::prefs::GetSettingEnabledPrefName(
+          optimization_guide::UserVisibleFeatureKey::kPasswordChangeSubmission),
+      1);
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
+      .WillOnce(testing::Return(GetParam().is_generation_available));
+  if (GetParam().is_generation_available) {
+    EXPECT_CALL(
+        settings_service(),
+        IsSettingEnabled(
+            password_manager::PasswordManagerSetting::kOfferToSavePasswords))
+        .WillOnce(testing::Return(GetParam().is_saving_allowed));
+  }
+#endif  // !BUILDFLAG(IS_ANDROID)
+  EXPECT_EQ(static_cast<ChromePasswordChangeService*>(change_service())
+                ->UserIsActivePasswordChangeUser(),
+            GetParam().expected_outcome());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Availability,
+    ChromePasswordChangeServiceAvailabilityTest,
+    testing::ConvertGenerator<TestCase::TupleT>(
+        testing::Combine(testing::Bool(), testing::Bool(), testing::Bool())),
+    [](const ::testing::TestParamInfo<TestCase>& info) {
+      std::string test_name;
+      test_name +=
+          info.param.is_generation_available ? "GenerationOn" : "GenerationOff";
+      test_name += info.param.is_saving_allowed ? "SavingOn" : "SavingOff";
+      test_name += info.param.is_disabled_by_policy ? "DisabledByPolicy" : "";
+      return test_name;
+    });
+
+#if !BUILDFLAG(IS_ANDROID)
 class ChromePasswordChangeServiceGlicEnabledTest
     : public testing::Test,
       public ChromePasswordChangeServiceBase {
  public:
   ChromePasswordChangeServiceGlicEnabledTest() {
-    feature_list_.InitWithFeatures(
-        {password_change::features::kPasswordChangeWithGlic},
-        {password_change::features::
-             kSkipModelExecutionAllowedCheckForPasswordChange});
+    feature_list_.InitAndEnableFeature(
+        password_change::features::kPasswordChangeWithGlic);
   }
 
  private:
@@ -754,8 +648,6 @@ TEST_F(ChromePasswordChangeServiceGlicEnabledTest,
 
   base::HistogramTester histogram_tester;
   GURL url("https://test.com/");
-  EXPECT_CALL(mock_optimization_service(), ShouldModelExecutionBeAllowedForUser)
-      .WillOnce(testing::Return(true));
   EXPECT_CALL(settings_service(), IsSettingEnabled)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(*feature_manager(), IsGenerationEnabled)
@@ -764,7 +656,7 @@ TEST_F(ChromePasswordChangeServiceGlicEnabledTest,
   password_manager::PasswordForm form =
       CreateTestForm(url, /*is_signup_form=*/false);
   EXPECT_TRUE(change_service()->IsPasswordChangeSupported(
-      form, /*is_non_password_login_detected=*/false));
+      CreateLeakDetails(form), /*is_non_password_login_detected=*/false));
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.PasswordChangeAvailability",

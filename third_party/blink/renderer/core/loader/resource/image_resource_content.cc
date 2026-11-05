@@ -11,7 +11,6 @@
 #include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_info.h"
@@ -26,7 +25,6 @@
 #include "third_party/blink/renderer/platform/network/mime/mime_type_registry.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
@@ -95,9 +93,9 @@ class NullImageResourceInfo final
 
 ImageResourceContent::ImageResourceContent(scoped_refptr<blink::Image> image)
     : image_(std::move(image)) {
-  DEFINE_STATIC_LOCAL(Persistent<NullImageResourceInfo>, null_info,
-                      (MakeGarbageCollected<NullImageResourceInfo>()));
-  info_ = null_info;
+  static base::NoDestructor<Persistent<NullImageResourceInfo>> null_info(
+      MakeGarbageCollected<NullImageResourceInfo>());
+  info_ = *null_info;
 }
 
 ImageResourceContent* ImageResourceContent::CreateLoaded(
@@ -222,7 +220,6 @@ void ImageResourceContent::UpdateResourceInfoFromObservers() {
   ProhibitAddRemoveObserverInScope prohibit_add_remove_observer_in_scope(this);
 
   cached_info_.priority_.emplace();
-  cached_info_.priority_excluding_image_loader_.emplace();
   cached_info_.max_size_ = gfx::Size();
   cached_info_.max_interpolation_quality_ = kInterpolationNone;
 
@@ -248,14 +245,10 @@ void ImageResourceContent::ApplyPriorityAndSpeculativeDecodeParams(
   if (!cached_info_.priority_.has_value()) {
     cached_info_.priority_.emplace();
   }
-  if (!cached_info_.priority_excluding_image_loader_.has_value()) {
-    cached_info_.priority_excluding_image_loader_.emplace();
-  }
 
   if (new_priority.is_lcp_resource) {
     // Mark the resource as predicted LCP despite its visibility.
     cached_info_.priority_->is_lcp_resource = true;
-    cached_info_.priority_excluding_image_loader_->is_lcp_resource = true;
   }
 
   if (new_priority.visibility == ResourcePriority::kNotVisible) {
@@ -265,13 +258,6 @@ void ImageResourceContent::ApplyPriorityAndSpeculativeDecodeParams(
   cached_info_.priority_->visibility = ResourcePriority::kVisible;
   cached_info_.priority_->intra_priority_value +=
       new_priority.intra_priority_value;
-
-  if (new_priority.source != ResourcePriority::Source::kImageLoader) {
-    cached_info_.priority_excluding_image_loader_->visibility =
-        ResourcePriority::kVisible;
-    cached_info_.priority_excluding_image_loader_->intra_priority_value +=
-        new_priority.intra_priority_value;
-  }
   cached_info_.max_size_.SetToMax(new_size);
   cached_info_.max_interpolation_quality_ =
       std::max(cached_info_.max_interpolation_quality_, new_quality);
@@ -291,10 +277,9 @@ bool ImageResourceContent::CanBeSpeculativelyDecoded() const {
   return true;
 }
 
-std::pair<std::optional<ResourcePriority>, std::optional<ResourcePriority>>
-ImageResourceContent::PriorityFromObservers() const {
-  return std::make_pair(cached_info_.priority_,
-                        cached_info_.priority_excluding_image_loader_);
+std::optional<ResourcePriority> ImageResourceContent::PriorityFromObservers()
+    const {
+  return cached_info_.priority_;
 }
 
 std::optional<WebURLRequest::Priority> ImageResourceContent::RequestPriority()
@@ -406,10 +391,11 @@ scoped_refptr<Image> ImageResourceContent::CreateImage(bool is_multipart) {
     device_pixel_ratio_header_value_ = 1.0;
     has_device_pixel_ratio_header_value_ = false;
   }
+  const bool is_cors_same_origin = response.IsCorsSameOrigin();
   if (response.MimeType() == "image/svg+xml") {
-    return SVGImage::Create(this, is_multipart);
+    return SVGImage::Create(this, is_multipart, is_cors_same_origin);
   }
-  return BitmapImage::Create(this, is_multipart);
+  return BitmapImage::Create(this, is_multipart, is_cors_same_origin);
 }
 
 void ImageResourceContent::ClearImage() {
@@ -491,10 +477,8 @@ ImageResourceContent::UpdateImageResult ImageResourceContent::UpdateImage(
     bool is_multipart) {
   TRACE_EVENT0("blink", "ImageResourceContent::updateImage");
 
-#if DCHECK_IS_ON()
-  DCHECK(!is_update_image_being_called_);
+  CHECK(!is_update_image_being_called_);
   base::AutoReset<bool> scope(&is_update_image_being_called_, true);
-#endif
 
   // Clears the existing image, if instructed by |updateImageOption|.
   switch (update_image_option) {
@@ -521,7 +505,10 @@ ImageResourceContent::UpdateImageResult ImageResourceContent::UpdateImage(
         if (!image_)
           image_ = CreateImage(is_multipart);
         DCHECK(image_);
-        size_available_ = image_->SetData(std::move(data), all_data_received);
+        // Hold a local reference across `SetData()` as defense-in-depth in
+        // case `image_` is cleared before `SetData()` returns.
+        scoped_refptr<Image> image = image_;
+        size_available_ = image->SetData(std::move(data), all_data_received);
         DCHECK(all_data_received ||
                size_available_ !=
                    Image::kSizeAvailableAndLoadingAsynchronously);
@@ -590,15 +577,18 @@ ImageDecoder::CompressionFormat ImageResourceContent::GetCompressionFormat()
                                             GetResponse().HttpContentType());
 }
 
+std::optional<size_t> ImageResourceContent::ImageDataSize() const {
+  if (image_ && image_->HasData()) {
+    return image_->DataSize();
+  }
+  return std::nullopt;
+}
+
 uint64_t ImageResourceContent::ContentSizeForEntropy() const {
   int64_t resource_length = GetResponse().ExpectedContentLength();
   if (resource_length <= 0) {
-    if (image_ && image_->HasData()) {
-      // WPT and LayoutTests server returns -1 or 0 for the content length.
-      resource_length = image_->DataSize();
-    } else {
-      resource_length = 0;
-    }
+    // WPT and LayoutTests server returns -1 or 0 for the content length.
+    resource_length = ImageDataSize().value_or(0);
   }
   return resource_length;
 }

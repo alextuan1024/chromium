@@ -10,7 +10,7 @@
 #import "base/memory/raw_ptr.h"
 #import "base/run_loop.h"
 #import "base/test/mock_callback.h"
-#import "components/optimization_guide/core/model_execution/feature_keys.h"
+#import "components/optimization_guide/core/feature_registry/feature_keys.h"
 #import "components/optimization_guide/proto/features/ios_smart_tab_grouping.pb.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
@@ -34,12 +34,12 @@ namespace {
 
 // Helper function to create a FakeOptimizationGuideService.
 std::unique_ptr<KeyedService> CreateFakeOptimizationGuideService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   return std::make_unique<FakeOptimizationGuideService>(
-      profile->GetProtoDatabaseProvider(), profile->GetStatePath(),
-      profile->IsOffTheRecord(), "en",
+      profile.GetProtoDatabaseProvider(), profile.GetStatePath(),
+      profile.IsOffTheRecord(), "en",
       base::WeakPtr<optimization_guide::OptimizationGuideStore>(),
-      profile->GetPrefs(), nullptr, nullptr,
+      profile.GetPrefs(), nullptr, nullptr,
       IdentityManagerFactory::GetForProfile(profile));
 }
 
@@ -53,11 +53,11 @@ class SmartTabGroupingServiceImplTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         OptimizationGuideServiceFactory::GetInstance(),
-        base::BindRepeating(&CreateFakeOptimizationGuideService));
+        base::BindOnce(&CreateFakeOptimizationGuideService));
     builder.AddTestingFactory(
         IdentityManagerFactory::GetInstance(),
-        base::BindRepeating(&IdentityTestEnvironmentBrowserStateAdaptor::
-                                BuildIdentityManagerForTests));
+        base::BindOnce(&IdentityTestEnvironmentBrowserStateAdaptor::
+                           BuildIdentityManagerForTests));
     profile_ = std::move(builder).Build();
 
     // Cache the fake service pointer for testing.

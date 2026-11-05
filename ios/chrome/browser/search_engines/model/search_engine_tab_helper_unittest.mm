@@ -7,8 +7,8 @@
 #import <algorithm>
 
 #import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
 #import "base/strings/utf_string_conversions.h"
-#import "base/test/bind.h"
 #import "base/test/ios/wait_util.h"
 #import "components/favicon/core/favicon_service.h"
 #import "components/favicon/ios/web_favicon_driver.h"
@@ -21,6 +21,10 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/web/model/chrome_web_client.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
+#import "ios/web/public/navigation/navigation_manager.h"
+#import "ios/web/public/test/fakes/fake_navigation_context.h"
+#import "ios/web/public/test/fakes/fake_navigation_manager.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/scoped_testing_web_client.h"
 #import "ios/web/public/test/web_state_test_util.h"
 #import "ios/web/public/test/web_task_environment.h"
@@ -31,6 +35,7 @@
 #import "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
+#import "ui/base/page_transition_types.h"
 
 using base::test::ios::kWaitForJSCompletionTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
@@ -60,12 +65,8 @@ class SearchEngineTabHelperTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         ios::TemplateURLServiceFactory::GetInstance(),
-        base::BindLambdaForTesting(
-            [this](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
-              std::unique_ptr<TemplateURLService> model =
-                  search_engines_test_environment_.ReleaseTemplateURLService();
-              return model;
-            }));
+        base::ReturnValueOnce(
+            search_engines_test_environment_.ReleaseTemplateURLService()));
 
     profile_ = std::move(builder).Build();
     web::WebState::CreateParams params(profile_.get());
@@ -108,7 +109,7 @@ TEST_F(SearchEngineTabHelperTest, AddTemplateURLByOpenSearch) {
   GURL osdd_url = server_.GetURL(kOpenSearchXmlFilePath);
 
   // Record the original TemplateURLs in TemplateURLService.
-  std::vector<raw_ptr<TemplateURL, VectorExperimental>> old_urls =
+  std::vector<raw_ptr<TemplateURL, DanglingUntriaged>> old_urls =
       template_url_service()->GetTemplateURLs();
 
   // Load an empty page, and send a message of openSearchUrl from Js.
@@ -157,7 +158,7 @@ TEST_F(SearchEngineTabHelperTest, AddTemplateURLBySearchableURL) {
                        server_.GetURL(kPonyHtmlFilePath).spec().c_str()];
 
   // Record the original TemplateURLs in TemplateURLService.
-  std::vector<raw_ptr<TemplateURL, VectorExperimental>> old_urls =
+  std::vector<raw_ptr<TemplateURL, DanglingUntriaged>> old_urls =
       template_url_service()->GetTemplateURLs();
 
   // Load an empty page, and send a message of openSearchUrl from Js.
@@ -242,7 +243,7 @@ TEST_F(SearchEngineTabHelperIncognitoTest,
   GURL osdd_url = server_.GetURL(kOpenSearchXmlFilePath);
 
   // Record the original TemplateURLs in TemplateURLService.
-  std::vector<raw_ptr<TemplateURL, VectorExperimental>> old_urls =
+  std::vector<raw_ptr<TemplateURL, DanglingUntriaged>> old_urls =
       template_url_service()->GetTemplateURLs();
 
   // Load an empty page, and send a message of openSearchUrl from Js.
@@ -274,7 +275,7 @@ TEST_F(SearchEngineTabHelperIncognitoTest,
                        server_.GetURL(kPonyHtmlFilePath).spec().c_str()];
 
   // Record the original TemplateURLs in TemplateURLService.
-  std::vector<raw_ptr<TemplateURL, VectorExperimental>> old_urls =
+  std::vector<raw_ptr<TemplateURL, DanglingUntriaged>> old_urls =
       template_url_service()->GetTemplateURLs();
 
   // Load an empty page, and send a message of openSearchUrl from Js.
@@ -298,4 +299,69 @@ TEST_F(SearchEngineTabHelperTest, AddTemplateURLByOSDDWithNullNavigationItem) {
   GURL osdd_url = server_.GetURL(kOpenSearchXmlFilePath);
   SearchEngineTabHelper::FromWebState(web_state())
       ->AddTemplateURLByOSDD(GURL(), osdd_url);
+}
+
+// Tests that `SearchEngineTabHelper` does not add a `TemplateURL` when a
+// navigation finishes without committing, and clears the stored searchable URL.
+TEST_F(SearchEngineTabHelperTest,
+       NotAddTemplateURLBySearchableURLOnUncommittedNavigation) {
+  GURL page_url("https://chromium.test");
+  GURL second_page_url = server_.GetURL(kPonyHtmlFilePath);
+  GURL searchable_url(
+      "https://chromium.test/index.php?title=chrooome&search={searchTerms}");
+
+  // Record the original `TemplateURL`s in `TemplateURLService`.
+  std::vector<raw_ptr<TemplateURL, DanglingUntriaged>> old_urls =
+      template_url_service()->GetTemplateURLs();
+
+  web::FakeWebState fake_web_state;
+  fake_web_state.SetBrowserState(profile_.get());
+  auto navigation_manager = std::make_unique<web::FakeNavigationManager>();
+  navigation_manager->AddItem(page_url, ui::PAGE_TRANSITION_TYPED);
+  navigation_manager->AddItem(second_page_url, ui::PAGE_TRANSITION_LINK);
+  fake_web_state.SetNavigationManager(std::move(navigation_manager));
+  favicon::WebFaviconDriver::CreateForWebState(
+      &fake_web_state, ios::FaviconServiceFactory::GetForProfile(
+                           profile_.get(), ServiceAccessType::IMPLICIT_ACCESS));
+  SearchEngineTabHelper::CreateForWebState(&fake_web_state);
+
+  ASSERT_GT(fake_web_state.GetNavigationManager()->GetLastCommittedItemIndex(),
+            0);
+  ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^{
+    base::RunLoop().RunUntilIdle();
+    return template_url_service()->loaded();
+  }));
+
+  SearchEngineTabHelper* tab_helper =
+      SearchEngineTabHelper::FromWebState(&fake_web_state);
+  tab_helper->SetSearchableUrl(searchable_url);
+
+  web::FakeNavigationContext uncommitted_context;
+  uncommitted_context.SetHasCommitted(false);
+  uncommitted_context.SetIsSameDocument(false);
+  uncommitted_context.SetError(nil);
+  fake_web_state.OnNavigationFinished(&uncommitted_context);
+
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(old_urls, template_url_service()->GetTemplateURLs());
+
+  // Verify `searchable_url_` was cleared even though the navigation did not
+  // commit.
+  web::FakeNavigationContext committed_context;
+  committed_context.SetHasCommitted(true);
+  committed_context.SetIsSameDocument(false);
+  committed_context.SetError(nil);
+  fake_web_state.OnNavigationFinished(&committed_context);
+
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(old_urls, template_url_service()->GetTemplateURLs());
+
+  // Positive control: when `searchable_url` is set and a committed,
+  // non-same-document, error-free navigation finishes, a `TemplateURL` is
+  // added.
+  tab_helper->SetSearchableUrl(searchable_url);
+  fake_web_state.OnNavigationFinished(&committed_context);
+
+  base::RunLoop().RunUntilIdle();
+  EXPECT_GT(template_url_service()->GetTemplateURLs().size(), old_urls.size());
 }

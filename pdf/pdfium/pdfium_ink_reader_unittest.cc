@@ -99,10 +99,13 @@ TEST_P(PDFiumInkReaderTest, BasicTextAnnotation) {
           .alignment = TextAlignment::kLeft,
           .orientation = 0,
           .viewport_orientation = PageOrientation::kOriginal,
-          .is_bold = true,
-          .is_italic = false,
-          .is_strikethrough = false,
-          .is_underline = false,
+          .styles =
+              {
+                  .is_bold = true,
+                  .is_italic = false,
+                  .is_strikethrough = false,
+                  .is_underline = false,
+              },
           .text = "Hello\n!",
       }));
 
@@ -115,10 +118,10 @@ TEST_P(PDFiumInkReaderTest, BasicTextAnnotation) {
   EXPECT_NE(text_objects[0], text_objects[1]);
 }
 
-TEST_P(PDFiumInkReaderTest, StrikethroughTextAnnotation) {
+TEST_P(PDFiumInkReaderTest, LineDecorationTextAnnotation) {
   TestClient client(/*use_skia_renderer=*/GetParam());
   std::unique_ptr<PDFiumEngine> engine = InitializeEngine(
-      &client, FILE_PATH_LITERAL("ink_text_strikethrough.pdf"));
+      &client, FILE_PATH_LITERAL("ink_text_line_decorations.pdf"));
   ASSERT_TRUE(engine);
 
   constexpr int kPageIndex = 0;
@@ -143,22 +146,27 @@ TEST_P(PDFiumInkReaderTest, StrikethroughTextAnnotation) {
           .alignment = TextAlignment::kLeft,
           .orientation = 0,
           .viewport_orientation = PageOrientation::kOriginal,
-          .is_bold = true,
-          .is_italic = false,
-          .is_strikethrough = true,
-          .is_underline = false,
+          .styles =
+              {
+                  .is_bold = true,
+                  .is_italic = false,
+                  .is_strikethrough = true,
+                  .is_underline = true,
+              },
           .text = "Hello\n!",
       }));
 
-  // "Hello\n!" with strikethrough has 2 text page objects and 2 path page
-  // objects.
+  // "Hello\n!" with strikethrough and underline has 2 text page objects and 4
+  // path page objects.
   const std::vector<base::RawPtrIfPtrT<FPDF_PAGEOBJECT, DanglingUntriaged>>&
       page_objects = results[0].text_objects;
-  ASSERT_EQ(4u, page_objects.size());
+  ASSERT_EQ(6u, page_objects.size());
   EXPECT_EQ(FPDF_PAGEOBJ_TEXT, FPDFPageObj_GetType(page_objects[0]));
   EXPECT_EQ(FPDF_PAGEOBJ_TEXT, FPDFPageObj_GetType(page_objects[1]));
   EXPECT_EQ(FPDF_PAGEOBJ_PATH, FPDFPageObj_GetType(page_objects[2]));
   EXPECT_EQ(FPDF_PAGEOBJ_PATH, FPDFPageObj_GetType(page_objects[3]));
+  EXPECT_EQ(FPDF_PAGEOBJ_PATH, FPDFPageObj_GetType(page_objects[4]));
+  EXPECT_EQ(FPDF_PAGEOBJ_PATH, FPDFPageObj_GetType(page_objects[5]));
 }
 
 TEST_P(PDFiumInkReaderTest, InvalidTextAnnotation) {
@@ -208,10 +216,13 @@ TEST_P(PDFiumInkReaderTest, MultipleTextboxesOnOnePage) {
           .alignment = TextAlignment::kLeft,
           .orientation = 0,
           .viewport_orientation = PageOrientation::kOriginal,
-          .is_bold = true,
-          .is_italic = false,
-          .is_strikethrough = false,
-          .is_underline = false,
+          .styles =
+              {
+                  .is_bold = true,
+                  .is_italic = false,
+                  .is_strikethrough = false,
+                  .is_underline = false,
+              },
           .text = "Hello",
       }));
   const std::vector<base::RawPtrIfPtrT<FPDF_PAGEOBJECT, DanglingUntriaged>>&
@@ -233,10 +244,13 @@ TEST_P(PDFiumInkReaderTest, MultipleTextboxesOnOnePage) {
           .alignment = TextAlignment::kLeft,
           .orientation = 0,
           .viewport_orientation = PageOrientation::kOriginal,
-          .is_bold = false,
-          .is_italic = true,
-          .is_strikethrough = false,
-          .is_underline = false,
+          .styles =
+              {
+                  .is_bold = false,
+                  .is_italic = true,
+                  .is_strikethrough = false,
+                  .is_underline = false,
+              },
           .text = "World",
       }));
   const std::vector<base::RawPtrIfPtrT<FPDF_PAGEOBJECT, DanglingUntriaged>>&

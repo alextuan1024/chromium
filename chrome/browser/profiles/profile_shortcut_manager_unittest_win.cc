@@ -8,12 +8,15 @@
 #include <string>
 
 #include "base/base_paths.h"
+#include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/test/scoped_path_override.h"
 #include "base/test/test_shortcut_win.h"
@@ -26,6 +29,8 @@
 #include "chrome/browser/profiles/profile_shortcut_manager.h"
 #include "chrome/browser/profiles/profile_shortcut_manager_win.h"
 #include "chrome/browser/shell_integration_win.h"
+#include "chrome/common/chrome_switches.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/installer/util/install_util.h"
 #include "chrome/installer/util/shell_util.h"
@@ -33,6 +38,7 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/account_id/account_id.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -202,7 +208,7 @@ class ProfileShortcutManagerTest : public testing::Test {
     expected_properties.set_target(GetExePath());
     expected_properties.set_description(InstallUtil::GetAppDescription());
     expected_properties.set_arguments(
-        profiles::internal::CreateProfileShortcutFlags(profile_path));
+        profiles::internal::CreateProfileDesktopShortcutFlags(profile_path));
     expected_properties.set_icon(icon_path, 0);
     PostValidateShortcut(location, shortcut_path, expected_properties);
   }
@@ -225,7 +231,7 @@ class ProfileShortcutManagerTest : public testing::Test {
     base::win::ShortcutProperties expected_properties;
     expected_properties.set_target(GetExePath());
     expected_properties.set_arguments(
-        profiles::internal::CreateProfileShortcutFlags(profile_path));
+        profiles::internal::CreateProfileDesktopShortcutFlags(profile_path));
     expected_properties.set_icon(GetExePath(), 0);
     expected_properties.set_description(InstallUtil::GetAppDescription());
     PostValidateShortcut(location, shortcut_path, expected_properties);
@@ -285,7 +291,8 @@ class ProfileShortcutManagerTest : public testing::Test {
   // returns its path. Fails the test if an error occurs.
   base::FilePath CreateRegularShortcutWithName(
       const base::Location& location,
-      const std::wstring& shortcut_name) {
+      const std::wstring& shortcut_name,
+      const std::wstring& arguments = std::wstring()) {
     const base::FilePath shortcut_path =
         GetUserShortcutsDirectory().Append(shortcut_name + installer::kLnkExt);
     EXPECT_FALSE(base::PathExists(shortcut_path)) << location.ToString();
@@ -293,6 +300,9 @@ class ProfileShortcutManagerTest : public testing::Test {
     ShellUtil::ShortcutProperties properties(ShellUtil::CURRENT_USER);
     ShellUtil::AddDefaultShortcutProperties(GetExePath(), &properties);
     properties.set_shortcut_name(shortcut_name);
+    if (!arguments.empty()) {
+      properties.set_arguments(arguments);
+    }
     PostCreateOrUpdateShortcut(location, ShellUtil::SHORTCUT_LOCATION_DESKTOP,
                                properties);
     EXPECT_TRUE(base::PathExists(shortcut_path)) << location.ToString();
@@ -403,8 +413,16 @@ TEST_F(ProfileShortcutManagerTest, ShortcutFlags) {
   const std::wstring kProfileName = L"MyProfileX";
   const base::FilePath profile_path =
       profile_manager_->profiles_dir().Append(kProfileName);
-  EXPECT_EQ(L"--profile-directory=\"" + kProfileName + L"\"",
+  EXPECT_EQ(base::StrCat({L"--", base::ASCIIToWide(switches::kProfileDirectory),
+                          L"=\"", kProfileName, L"\""}),
             profiles::internal::CreateProfileShortcutFlags(profile_path));
+  EXPECT_EQ(
+      base::StrCat(
+          {L"--", base::ASCIIToWide(switches::kProfileDirectory), L"=\"",
+           kProfileName, L"\" --",
+           base::ASCIIToWide(switches::kSourceShortcutLocation), L"=",
+           base::ASCIIToWide(switches::kSourceShortcutLocationDesktop)}),
+      profiles::internal::CreateProfileDesktopShortcutFlags(profile_path));
 }
 
 TEST_F(ProfileShortcutManagerTest, DesktopShortcutsCreate) {
@@ -690,6 +708,45 @@ TEST_F(ProfileShortcutManagerTest, UpdateTwoShortcutsWithNoFlags) {
   ValidateProfileShortcutAtPath(FROM_HERE, customized_regular_shortcut_path,
                                 profile_1_path_);
   ValidateProfileShortcut(FROM_HERE, profile_1_name_, profile_1_path_);
+}
+
+TEST_F(ProfileShortcutManagerTest, CustomShortcutsPreserved) {
+  SetupDefaultProfileShortcut(FROM_HERE);
+
+  // Replace the default shortcut with an installer-tagged non-profile shortcut
+  // (--source-shortcut-location=desktop), and also create custom user shortcuts
+  // (a URL shortcut and an incognito profile shortcut).
+  ASSERT_TRUE(
+      base::DeleteFile(GetDefaultShortcutPathForProfile(std::u16string())));
+  const base::FilePath tagged_regular_shortcut = CreateRegularShortcutWithName(
+      FROM_HERE, InstallUtil::GetShortcutName(),
+      base::StrCat(
+          {L"--", base::ASCIIToWide(switches::kSourceShortcutLocation), L"=",
+           base::ASCIIToWide(switches::kSourceShortcutLocationDesktop)}));
+  const std::wstring kUrlArgs = L"https://example.com";
+  const base::FilePath url_shortcut =
+      CreateRegularShortcutWithName(FROM_HERE, L"CustomUrl", kUrlArgs);
+  const std::wstring incognito_profile_args =
+      profiles::internal::CreateProfileDesktopShortcutFlags(profile_1_path_,
+                                                            /*incognito=*/true);
+  const base::FilePath incognito_shortcut = CreateRegularShortcutWithName(
+      FROM_HERE, L"CustomIncognito", incognito_profile_args);
+
+  // Adding a second profile should badge the installer-tagged default shortcut,
+  // while leaving the custom URL and incognito shortcuts untouched.
+  CreateProfileWithShortcut(FROM_HERE, profile_2_name_, profile_2_path_);
+  EXPECT_FALSE(base::PathExists(tagged_regular_shortcut));
+  ValidateProfileShortcut(FROM_HERE, profile_1_name_, profile_1_path_);
+
+  base::win::ShortcutProperties expected_url_props;
+  expected_url_props.set_target(GetExePath());
+  expected_url_props.set_arguments(kUrlArgs);
+  PostValidateShortcut(FROM_HERE, url_shortcut, expected_url_props);
+
+  base::win::ShortcutProperties expected_incognito_props;
+  expected_incognito_props.set_target(GetExePath());
+  expected_incognito_props.set_arguments(incognito_profile_args);
+  PostValidateShortcut(FROM_HERE, incognito_shortcut, expected_incognito_props);
 }
 
 TEST_F(ProfileShortcutManagerTest, RemoveProfileShortcuts) {
@@ -1174,4 +1231,70 @@ TEST_F(ProfileShortcutManagerTest, GetPinnedShortcutsForProfile) {
   EXPECT_EQ(pinned_shortcuts.size(), 2U);
   EXPECT_TRUE(expected_files.find(pinned_shortcuts[0]) != expected_files.end());
   EXPECT_TRUE(expected_files.find(pinned_shortcuts[1]) != expected_files.end());
+}
+
+TEST_F(ProfileShortcutManagerTest, GetShortcutProperties) {
+  auto expect_shortcut_properties = [&](const base::FilePath& path,
+                                        const std::wstring& expected_name,
+                                        const base::Location& location =
+                                            base::Location::Current()) {
+    SCOPED_TRACE(location.ToString());
+    base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+    std::wstring name;
+    base::FilePath icon_path;
+    profile_shortcut_manager_->GetShortcutProperties(path, &command_line, &name,
+                                                     &icon_path);
+    EXPECT_EQ(expected_name, name);
+    EXPECT_EQ(GetExePath(), command_line.GetProgram());
+    EXPECT_EQ(path.BaseName().value(),
+              command_line.GetSwitchValueNative(switches::kProfileDirectory));
+    EXPECT_FALSE(command_line.HasSwitch(switches::kSourceShortcutLocation));
+    EXPECT_EQ(profiles::internal::GetProfileIconPath(path), icon_path);
+  };
+
+  // Single registered profile in storage uses the unbadged shortcut name.
+  ProfileAttributesInitParams params_1;
+  params_1.profile_path = profile_1_path_;
+  params_1.profile_name = profile_1_name_;
+  profile_attributes_storage_->AddProfile(std::move(params_1));
+  task_environment_.RunUntilIdle();
+
+  expect_shortcut_properties(profile_1_path_, InstallUtil::GetShortcutName());
+
+  // Multiple registered profiles in storage include the profile name.
+  ProfileAttributesInitParams params_2;
+  params_2.profile_path = profile_2_path_;
+  params_2.profile_name = profile_2_name_;
+  profile_attributes_storage_->AddProfile(std::move(params_2));
+  task_environment_.RunUntilIdle();
+
+  const std::wstring expected_badged_name =
+      base::AsWString(profile_1_name_) + L" - " +
+      base::AsWString(l10n_util::GetStringUTF16(IDS_SHORT_PRODUCT_NAME));
+  expect_shortcut_properties(profile_1_path_, expected_badged_name);
+}
+
+TEST_F(ProfileShortcutManagerTest,
+       IconCreationAfterProfileRemovedDoesNotUpdatePrefs) {
+  TestingProfile* profile = profile_manager_->CreateTestingProfile("Profile 1");
+  ASSERT_NE(profile, nullptr);
+  task_environment_.RunUntilIdle();
+  ASSERT_TRUE(profile->GetPrefs()->HasPrefPath(prefs::kProfileIconVersion));
+  ASSERT_TRUE(profile->GetPrefs()->HasPrefPath(prefs::kProfileIconWin11Format));
+
+  profile->GetPrefs()->ClearPref(prefs::kProfileIconVersion);
+  profile->GetPrefs()->ClearPref(prefs::kProfileIconWin11Format);
+  ASSERT_FALSE(profile->GetPrefs()->HasPrefPath(prefs::kProfileIconVersion));
+  ASSERT_FALSE(
+      profile->GetPrefs()->HasPrefPath(prefs::kProfileIconWin11Format));
+
+  // Start an async icon update, then remove the profile from
+  // `ProfileAttributesStorage` while the `Profile` instance is still alive.
+  profile_shortcut_manager_->CreateOrUpdateProfileIcon(profile->GetPath());
+  profile_attributes_storage_->RemoveProfile(profile->GetPath());
+  task_environment_.RunUntilIdle();
+
+  EXPECT_FALSE(profile->GetPrefs()->HasPrefPath(prefs::kProfileIconVersion));
+  EXPECT_FALSE(
+      profile->GetPrefs()->HasPrefPath(prefs::kProfileIconWin11Format));
 }

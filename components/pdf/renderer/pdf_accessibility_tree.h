@@ -19,12 +19,12 @@
 #include "pdf/pdf_accessibility_data_handler.h"
 #include "services/screen_ai/buildflags/buildflags.h"
 #include "third_party/blink/public/web/web_ax_object.h"
+#include "third_party/blink/public/web/web_local_frame_observer.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_id_forward.h"
 #include "ui/accessibility/ax_tree.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/accessibility/ax_tree_source.h"
-#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace blink {
@@ -34,11 +34,11 @@ class WebPluginContainer;
 namespace chrome_pdf {
 
 class PdfAccessibilityActionHandler;
+class PdfAccessibilityImageFetcher;
 
 }  // namespace chrome_pdf
 
 namespace content {
-class RenderAccessibility;
 class RenderFrame;
 }  // namespace content
 
@@ -48,40 +48,18 @@ class Transform;
 
 namespace pdf {
 
-// LINT.IfChange(HeadingClassifier)
-// Heuristic rules used to classify a text block as a heading.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class HeadingClassifier {
-  // Not classified as a heading. This value is not logged.
-  kNone = 0,
-  // Classified based on font size.
-  kFontSize = 1,
-  // Classified based on bold styling.
-  kBoldStyle = 2,
-  // Classified because all characters are uppercase.
-  kAllUppercase = 3,
-  // Classified due to semi-bold font weight (600).
-  kSemiBoldWeight = 4,
-  // Classified by looking at the font name to determine styling.
-  kFontName = 5,
-  // Classified by looking at text color when it differs from body text color.
-  kTextColor = 6,
-
-  kMaxValue = kTextColor,
-};
-// LINT.ThenChange(//tools/metrics/histograms/enums.xml:PdfAccessibilityHeadingClassifier)
-
 class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
                                                      ui::AXTreeData*,
                                                      ui::AXNodeData>,
                              public content::PluginAXTreeActionTargetAdapter,
                              public content::RenderFrameObserver,
+                             public blink::WebLocalFrameObserver,
                              public chrome_pdf::PdfAccessibilityDataHandler {
  public:
   PdfAccessibilityTree(
       content::RenderFrame* render_frame,
       chrome_pdf::PdfAccessibilityActionHandler* action_handler,
+      chrome_pdf::PdfAccessibilityImageFetcher* image_fetcher,
       blink::WebPluginContainer* plugin_container);
   ~PdfAccessibilityTree() override;
 
@@ -98,6 +76,15 @@ class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
 
     uint32_t page_index;
     uint32_t annotation_index;
+  };
+
+  // Stores the page index and image object index in the page.
+  struct ImageInfo {
+    friend constexpr bool operator==(const ImageInfo&,
+                                     const ImageInfo&) = default;
+
+    uint32_t page_index = 0;
+    int32_t page_object_index = 0;
   };
 
   // chrome_pdf::PdfAccessibilityDataHandler:
@@ -117,6 +104,11 @@ class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
   void HandleAction(const chrome_pdf::AccessibilityActionData& action_data);
   std::optional<AnnotationInfo> GetPdfAnnotationInfoFromAXNode(
       int32_t ax_node_id) const;
+
+  // Resolves an accessibility node ID to its underlying PDF page and object
+  // index, or returns `std::nullopt` if `ax_node_id` does not correspond to a
+  // tracked image node.
+  std::optional<ImageInfo> GetImageInfo(int32_t ax_node_id) const;
 
   // Given the AXNode and the character offset within the AXNode, finds the
   // respective page index and character index within the page. Returns
@@ -150,6 +142,9 @@ class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
   // content::RenderFrameObserver:
   void AccessibilityModeChanged(const ui::AXMode& mode) override;
   void OnDestruct() override {}
+
+  // blink::WebLocalFrameObserver:
+  void OnFrameDetached() override {}
   void WasHidden() override;
   void WasShown() override;
 
@@ -254,6 +249,7 @@ class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
 
   // Unowned. Must outlive `this`.
   const raw_ptr<chrome_pdf::PdfAccessibilityActionHandler> action_handler_;
+  const raw_ptr<chrome_pdf::PdfAccessibilityImageFetcher> image_fetcher_;
   const raw_ptr<blink::WebPluginContainer> plugin_container_;
 
   // `zoom_` signifies the zoom level set in for the browser content.
@@ -265,11 +261,9 @@ class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
   // From PDF plugin we receive all the data in logical pixels. Which is
   // without the zoom and scale factor applied. We apply the `zoom_` and
   // `scale_` to generate the final bounding boxes of elements in accessibility
-  // tree. `orientation_` represents page rotations as multiples of 90 degrees,
-  // based on `chrome_pdf::PageOrientation`.
+  // tree.
   double zoom_ = 1.0;
   double scale_ = 1.0;
-  int32_t orientation_ = 0;
   gfx::Vector2dF scroll_;
   gfx::Vector2dF offset_;
   chrome_pdf::Selection selection_;
@@ -297,6 +291,13 @@ class PdfAccessibilityTree : public ui::AXTreeSource<const ui::AXNode*,
   // Map between AXNode id to annotation object. Used to find the annotation
   // object to which an action can be passed.
   std::map<int32_t, AnnotationInfo> node_id_to_annotation_info_;
+
+  // Map between AXNode id to image object info. Used to resolve an image AXNode
+  // back to its page index and PDFium page object index. Assumes PDF editing
+  // does not add or erase images, and that adding or removing Ink annotations
+  // (strokes and text) does not shift `page_object_index` for existing images.
+  std::map<int32_t, ImageInfo> node_id_to_image_info_;
+
   bool invalid_plugin_message_received_ = false;
 
   // Index of the next expected PDF accessibility page info, used to ignore

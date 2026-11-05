@@ -6,6 +6,7 @@
 #define COMPONENTS_VIZ_TEST_TEST_RASTER_INTERFACE_H_
 
 #include <utility>
+#include <vector>
 
 #include "base/functional/callback.h"
 #include "components/viz/common/resources/shared_image_format.h"
@@ -27,6 +28,14 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
 
   gpu::SyncToken last_waited_sync_token() const {
     return last_waited_sync_token_;
+  }
+  const std::vector<gpu::SyncToken>& waited_sync_tokens() const {
+    return waited_sync_tokens_;
+  }
+  void ClearWaitedSyncTokens() { waited_sync_tokens_.clear(); }
+
+  void set_command_buffer_id(uint64_t command_buffer_id) {
+    test_command_buffer_id_ = command_buffer_id;
   }
 
   void set_context_lost_callback(base::OnceClosure callback) {
@@ -85,7 +94,6 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
   void WritePixels(const gpu::Mailbox& dest_mailbox,
                    int dst_x_offset,
                    int dst_y_offset,
-                   GLenum texture_target,
                    const SkPixmap& src_sk_pixmap) override {}
   void WritePixelsYUV(const gpu::Mailbox& dest_mailbox,
                       const SkYUVAPixmaps& src_yuv_pixmap) override {}
@@ -94,7 +102,6 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
                            GLuint msaa_sample_count,
                            gpu::raster::MsaaMode msaa_mode,
                            GLboolean can_use_lcd_text,
-                           GLboolean visible,
                            const gfx::ColorSpace& color_space,
                            float hdr_headroom,
                            const GLbyte* mailbox) override {}
@@ -106,7 +113,7 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
                       const gfx::Vector2dF& post_translate,
                       const gfx::Vector2dF& post_scale,
                       bool requires_clear,
-                      const ScrollOffsetMap* raster_inducing_scroll_offsets,
+                      const cc::RasterInducingValues* raster_inducing_values,
                       size_t* max_op_size_hint,
                       base::RepeatingCallback<void(SkCanvas*, uint32_t)>
                           custom_raster_callback) override {}
@@ -114,35 +121,25 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
   void FlushTileRasterGraphiteCommandsCHROMIUM() override {}
   void ReadbackARGBPixelsAsync(
       const gpu::Mailbox& source_mailbox,
-      GLenum source_target,
       GrSurfaceOrigin source_origin,
       const gfx::Size& source_size,
       const gfx::Point& source_starting_point,
-      const SkImageInfo& dst_info,
-      GLuint dst_row_bytes,
-      base::span<uint8_t> out,
+      const SkPixmap& dst_pixmap,
       base::OnceCallback<void(bool)> readback_done) override {}
   void ReadbackYUVPixelsAsync(
       const gpu::Mailbox& source_mailbox,
-      GLenum source_target,
       const gfx::Rect& source_rect,
-      const gfx::Rect& output_rect,
       bool vertically_flip_texture,
-      int y_plane_row_stride_bytes,
-      base::span<uint8_t> y_plane_data,
-      int u_plane_row_stride_bytes,
-      base::span<uint8_t> u_plane_data,
-      int v_plane_row_stride_bytes,
-      base::span<uint8_t> v_plane_data,
+      const SkYUVAPixmaps& dst_pixmaps,
+      sk_sp<SkColorSpace> dst_color_space,
       base::OnceCallback<void()> release_mailbox,
       base::OnceCallback<void(bool)> readback_done) override {}
   bool ReadbackImagePixels(const gpu::Mailbox& source_mailbox,
-                           const SkImageInfo& dst_info,
-                           GLuint dst_row_bytes,
+                           const gfx::Size& source_size,
                            int src_x,
                            int src_y,
                            int plane_index,
-                           void* dst_pixels) override;
+                           const SkPixmap& dst_pixmap) override;
   void TraceBeginCHROMIUM(const char* category_name,
                           const char* trace_name) override {}
   void TraceEndCHROMIUM() override {}
@@ -159,11 +156,12 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
   gpu::Capabilities caps_;
   base::OnceClosure context_lost_callback_;
   raw_ptr<TestContextSupport> test_support_ = nullptr;
-  const uint64_t test_command_buffer_id_ = 2u;
+  uint64_t test_command_buffer_id_ = 2u;
 
   bool context_lost_ = false;
   uint64_t next_insert_fence_sync_ = 1;
   gpu::SyncToken last_waited_sync_token_;
+  std::vector<gpu::SyncToken> waited_sync_tokens_;
 };
 
 }  // namespace viz

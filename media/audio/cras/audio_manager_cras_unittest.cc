@@ -4,19 +4,27 @@
 
 #include "media/audio/cras/audio_manager_cras.h"
 
+#include <atomic>
+#include <memory>
+
 #include "base/command_line.h"
+#include "base/functional/bind.h"
+#include "base/location.h"
+#include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/test/scoped_feature_list.h"
+#include "base/synchronization/waitable_event.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
+#include "media/audio/audio_device_description.h"
+#include "media/audio/audio_io.h"
 #include "media/audio/cras/cras_util.h"
 #include "media/audio/fake_audio_log_factory.h"
 #include "media/audio/test_audio_thread.h"
+#include "media/base/audio_parameters.h"
+#include "media/base/channel_layout.h"
 #include "media/base/limits.h"
-#include "media/base/media_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#include "base/logging.h"
 
 using testing::StrictMock;
 
@@ -421,10 +429,12 @@ class AudioManagerCrasTestAEC
         .WillOnce(testing::Return(aec_supported));
     EXPECT_CALL(*util, CrasGetAecGroupId())
         .WillOnce(testing::Return(aec_group));
-    EXPECT_CALL(*util, CrasGetNsSupported())
-        .WillOnce(testing::Return(ns_supported));
-    EXPECT_CALL(*util, CrasGetAgcSupported())
-        .WillOnce(testing::Return(agc_supported));
+    if (!aec_supported) {
+      EXPECT_CALL(*util, CrasGetNsSupported())
+          .WillOnce(testing::Return(ns_supported));
+      EXPECT_CALL(*util, CrasGetAgcSupported())
+          .WillOnce(testing::Return(agc_supported));
+    }
 
     audio_manager_->SetCrasUtil(std::move(util));
   }
@@ -441,6 +451,8 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(AudioManagerCrasTestAEC, DefaultBehavior) {
   AudioParameters params = audio_manager_->GetInputStreamParameters("");
   EXPECT_TRUE(AecActive(params));
+  EXPECT_EQ(params.channel_layout(), ChannelLayout::CHANNEL_LAYOUT_STEREO);
+  EXPECT_EQ(params.channels(), 2);
   auto aec_supported = std::get<0>(GetParam());
   auto ns_supported = std::get<2>(GetParam());
   auto agc_supported = std::get<3>(GetParam());
@@ -449,153 +461,6 @@ TEST_P(AudioManagerCrasTestAEC, DefaultBehavior) {
   // control are not applied in CRAS if a tuned AEC is used.
   EXPECT_EQ(NsActive(params), ns_supported && (!aec_supported));
   EXPECT_EQ(AgcActive(params), agc_supported && (!aec_supported));
-}
-
-TEST_P(AudioManagerCrasTestAEC, DefaultBehaviorSystemAecEnforcedByPolicy) {
-  base::test::ScopedFeatureList feature_list;
-
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      switches::kSystemAecEnabled);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
-
-  EXPECT_TRUE(AecActive(params));
-}
-
-TEST_P(AudioManagerCrasTestAEC,
-       BehaviorWithCrOSEnforceSystemAecDisabledButEnforcedByPolicy) {
-  base::test::ScopedFeatureList feature_list;
-
-  feature_list.InitAndDisableFeature(media::kCrOSSystemAEC);
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      switches::kSystemAecEnabled);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
-
-  EXPECT_TRUE(AecActive(params));
-}
-
-TEST_P(AudioManagerCrasTestAEC, BehaviorWithCrOSEnforceSystemAecDisallowed) {
-  base::test::ScopedFeatureList feature_list;
-  std::vector<base::test::FeatureRef> enabled_features;
-  std::vector<base::test::FeatureRef> disabled_features;
-  disabled_features.emplace_back(media::kCrOSEnforceSystemAec);
-  disabled_features.emplace_back(media::kCrOSSystemAEC);
-  feature_list.InitWithFeatures(enabled_features, disabled_features);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
-
-  EXPECT_FALSE(AecActive(params));
-  EXPECT_FALSE(NsActive(params));
-  EXPECT_FALSE(AgcActive(params));
-}
-
-TEST_P(AudioManagerCrasTestAEC, BehaviorWithCrOSEnforceSystemAecNsAgc) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(media::kCrOSEnforceSystemAecNsAgc);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
-
-  auto aec_supported = std::get<0>(GetParam());
-
-  EXPECT_TRUE(AecActive(params));
-  if (aec_supported) {
-    EXPECT_FALSE(NsActive(params));
-    EXPECT_FALSE(AgcActive(params));
-  } else {
-    EXPECT_TRUE(NsActive(params));
-    EXPECT_TRUE(AgcActive(params));
-  }
-}
-
-TEST_P(AudioManagerCrasTestAEC, BehaviorWithCrOSEnforceSystemAecNsAndAecAgc) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeaturesAndParameters(
-      {{media::kCrOSEnforceSystemAecNs, {}},
-       {media::kCrOSEnforceSystemAecAgc, {}}},
-      {});
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
-
-  auto aec_supported = std::get<0>(GetParam());
-
-  EXPECT_TRUE(AecActive(params));
-  if (aec_supported) {
-    EXPECT_FALSE(NsActive(params));
-    EXPECT_FALSE(AgcActive(params));
-  } else {
-    EXPECT_TRUE(NsActive(params));
-    EXPECT_TRUE(AgcActive(params));
-  }
-}
-
-TEST_P(AudioManagerCrasTestAEC,
-       BehaviorWithCrOSEnforceSystemAecNsAgcAndDisallowedSystemAec) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeaturesAndParameters(
-      {{media::kCrOSEnforceSystemAecNsAgc, {}}}, {{media::kCrOSSystemAEC}});
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
-
-  auto aec_supported = std::get<0>(GetParam());
-
-  EXPECT_TRUE(AecActive(params));
-  if (aec_supported) {
-    EXPECT_FALSE(NsActive(params));
-    EXPECT_FALSE(AgcActive(params));
-  } else {
-    EXPECT_TRUE(NsActive(params));
-    EXPECT_TRUE(AgcActive(params));
-  }
-}
-
-TEST_P(AudioManagerCrasTestAEC, BehaviorWithCrOSEnforceSystemAecNs) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(media::kCrOSEnforceSystemAecNs);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
-
-  auto aec_supported = std::get<0>(GetParam());
-  auto agc_supported = std::get<3>(GetParam());
-
-  EXPECT_TRUE(AecActive(params));
-  if (aec_supported) {
-    EXPECT_FALSE(NsActive(params));
-    EXPECT_FALSE(AgcActive(params));
-  } else {
-    EXPECT_TRUE(NsActive(params));
-    EXPECT_EQ(AgcActive(params), agc_supported);
-  }
-}
-
-TEST_P(AudioManagerCrasTestAEC, BehaviorWithCrOSEnforceSystemAecAgc) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(media::kCrOSEnforceSystemAecAgc);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
-
-  auto aec_supported = std::get<0>(GetParam());
-  auto ns_supported = std::get<2>(GetParam());
-
-  EXPECT_TRUE(AecActive(params));
-  if (aec_supported) {
-    EXPECT_FALSE(NsActive(params));
-    EXPECT_FALSE(AgcActive(params));
-  } else {
-    EXPECT_EQ(NsActive(params), ns_supported);
-    EXPECT_TRUE(AgcActive(params));
-  }
-}
-
-TEST_P(AudioManagerCrasTestAEC, BehaviorWithCrOSEnforceSystemAec) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(media::kCrOSEnforceSystemAec);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
-
-  auto aec_supported = std::get<0>(GetParam());
-  auto ns_supported = std::get<2>(GetParam());
-  auto agc_supported = std::get<3>(GetParam());
-
-  EXPECT_TRUE(AecActive(params));
-  if (aec_supported) {
-    EXPECT_FALSE(NsActive(params));
-    EXPECT_FALSE(AgcActive(params));
-  } else {
-    EXPECT_EQ(NsActive(params), ns_supported);
-    EXPECT_EQ(AgcActive(params), agc_supported);
-  }
 }
 
 class AudioManagerCrasTestDSP : public AudioManagerCrasTest {
@@ -610,8 +475,6 @@ class AudioManagerCrasTestDSP : public AudioManagerCrasTest {
 
     audio_manager_->SetCrasUtil(std::move(util));
   }
-  std::vector<base::test::FeatureRef> enabled_features_;
-  std::vector<base::test::FeatureRef> disabled_features_;
 };
 
 TEST_F(AudioManagerCrasTestDSP, BehaviorWithoutAnyEnforcedEffects) {
@@ -622,48 +485,95 @@ TEST_F(AudioManagerCrasTestDSP, BehaviorWithoutAnyEnforcedEffects) {
   EXPECT_FALSE(DspAgcAllowed(params));
 }
 
-TEST_F(AudioManagerCrasTestDSP, BehaviorWithCrOSEnforceSystemAec) {
-  base::test::ScopedFeatureList feature_list;
-  enabled_features_.emplace_back(media::kCrOSEnforceSystemAec);
-  feature_list.InitWithFeatures(enabled_features_, disabled_features_);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
+TEST(AudioManagerCrasShutdownTest, ShutdownSkipsCrasConnections) {
+  class UnblockingAudioThread : public AudioThread {
+   public:
+    explicit UnblockingAudioThread(base::WaitableEvent* unblock_event)
+        : unblock_event_(unblock_event) {}
+    void Stop() override {
+      unblock_event_->Signal();
+      inner_.Stop();
+    }
+    bool IsHung() const override { return inner_.IsHung(); }
+    base::SingleThreadTaskRunner* GetTaskRunner() override {
+      return inner_.GetTaskRunner();
+    }
+    base::SingleThreadTaskRunner* GetWorkerTaskRunner() override {
+      return inner_.GetWorkerTaskRunner();
+    }
 
-  EXPECT_TRUE(DspAecAllowed(params));
-  EXPECT_FALSE(DspNsAllowed(params));
-  EXPECT_FALSE(DspAgcAllowed(params));
-}
+   private:
+    TestAudioThread inner_{/*use_real_thread=*/true};
+    raw_ptr<base::WaitableEvent> unblock_event_;
+  };
 
-TEST_F(AudioManagerCrasTestDSP, BehaviorWithCrOSEnforceSystemAecNs) {
-  base::test::ScopedFeatureList feature_list;
-  enabled_features_.emplace_back(media::kCrOSEnforceSystemAecNs);
-  feature_list.InitWithFeatures(enabled_features_, disabled_features_);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
+  base::test::SingleThreadTaskEnvironment task_environment;
+  base::HistogramTester histogram_tester;
+  FakeAudioLogFactory fake_audio_log_factory;
+  base::WaitableEvent task_started(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+  base::WaitableEvent unblock_audio_thread(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
 
-  EXPECT_TRUE(DspAecAllowed(params));
-  EXPECT_TRUE(DspNsAllowed(params));
-  EXPECT_FALSE(DspAgcAllowed(params));
-}
+  auto manager = std::make_unique<AudioManagerCras>(
+      std::make_unique<UnblockingAudioThread>(&unblock_audio_thread),
+      &fake_audio_log_factory);
 
-TEST_F(AudioManagerCrasTestDSP, BehaviorWithCrOSEnforceSystemAecAgc) {
-  base::test::ScopedFeatureList feature_list;
-  enabled_features_.emplace_back(media::kCrOSEnforceSystemAecAgc);
-  feature_list.InitWithFeatures(enabled_features_, disabled_features_);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
+  EXPECT_FALSE(manager->IsShuttingDown());
 
-  EXPECT_TRUE(DspAecAllowed(params));
-  EXPECT_FALSE(DspNsAllowed(params));
-  EXPECT_TRUE(DspAgcAllowed(params));
-}
+  std::atomic<bool> task_ran{false};
 
-TEST_F(AudioManagerCrasTestDSP, BehaviorWithCrOSEnforceSystemAecNsAgc) {
-  base::test::ScopedFeatureList feature_list;
-  enabled_features_.emplace_back(media::kCrOSEnforceSystemAecNsAgc);
-  feature_list.InitWithFeatures(enabled_features_, disabled_features_);
-  AudioParameters params = audio_manager_->GetInputStreamParameters("");
+  manager->GetTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](base::WaitableEvent* started, base::WaitableEvent* unblock) {
+            started->Signal();
+            unblock->Wait();
+          },
+          &task_started, &unblock_audio_thread));
 
-  EXPECT_TRUE(DspAecAllowed(params));
-  EXPECT_TRUE(DspNsAllowed(params));
-  EXPECT_TRUE(DspAgcAllowed(params));
+  manager->GetTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](AudioManagerCras* mgr, std::atomic<bool>* ran) {
+            EXPECT_TRUE(mgr->IsShuttingDown());
+
+            AudioDeviceNames device_names;
+            EXPECT_FALSE(mgr->GetAudioOutputDeviceNames(&device_names));
+            EXPECT_TRUE(device_names.empty());
+
+            AudioParameters params(AudioParameters::AUDIO_PCM_LOW_LATENCY,
+                                   ChannelLayoutConfig::Stereo(), 48000, 512);
+            AudioOutputStream* out_stream = mgr->MakeAudioOutputStream(
+                params, AudioDeviceDescription::kDefaultDeviceId,
+                AudioManager::LogCallback());
+            ASSERT_NE(out_stream, nullptr);
+            EXPECT_FALSE(out_stream->Open());
+            out_stream->Close();
+
+            AudioInputStream* in_stream = mgr->MakeAudioInputStream(
+                params, AudioDeviceDescription::kDefaultDeviceId,
+                AudioManager::LogCallback());
+            ASSERT_NE(in_stream, nullptr);
+            EXPECT_EQ(in_stream->Open(),
+                      AudioInputStream::OpenOutcome::kFailed);
+            in_stream->Close();
+
+            ran->store(true);
+          },
+          base::Unretained(manager.get()), &task_ran));
+
+  task_started.Wait();
+
+  EXPECT_TRUE(manager->Shutdown());
+  EXPECT_TRUE(manager->IsShuttingDown());
+  EXPECT_TRUE(task_ran.load());
+  histogram_tester.ExpectTotalCount("Media.Audio.CrasUnifiedStreamOpenSuccess",
+                                    0);
+  histogram_tester.ExpectTotalCount("Media.Audio.CrasInputStreamOpenSuccess",
+                                    0);
 }
 
 }  // namespace

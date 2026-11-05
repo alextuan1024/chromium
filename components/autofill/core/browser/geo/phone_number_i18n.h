@@ -11,6 +11,8 @@
 #include <string>
 #include <string_view>
 
+#include "components/autofill/core/browser/field_types.h"
+
 namespace i18n::phonenumbers {
 class PhoneNumber;
 }  // namespace i18n::phonenumbers
@@ -101,9 +103,12 @@ std::u16string GetFormattedPhoneNumberForDisplay(const AutofillProfile& profile,
 
 // Returns `phone_number` in i18n::phonenumbers::PhoneNumberUtil::
 // PhoneNumberFormat::NATIONAL format if the number is valid for
-// `country_code`. Otherwise, returns the given `phone_number`.
+// `country_code` (without a trunk prefix if `field_type` is
+// `PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX`). Otherwise, returns the
+// given `phone_number`.
 std::string FormatPhoneNationallyForDisplay(std::string_view phone_number,
-                                            const std::string& country_code);
+                                            const std::string& country_code,
+                                            FieldType field_type);
 
 // Formats the given number `phone_number` to
 // i18n::phonenumbers::PhoneNumberUtil::PhoneNumberFormat::INTERNATIONAL format
@@ -135,6 +140,12 @@ class PhoneObject final {
   ~PhoneObject();
 
   const std::string& region() const { return region_; }
+  const std::string& creation_region_hint() const {
+    return creation_region_hint_;
+  }
+  bool infer_country_code_from_region_hint() const {
+    return infer_country_code_from_region_hint_;
+  }
 
   const std::u16string& country_code() const { return country_code_; }
   const std::u16string& city_code() const { return city_code_; }
@@ -151,8 +162,20 @@ class PhoneObject final {
   // empty or "ZZ" if the region cannot be inferred.
   std::string region_;
 
+  // The `default_region` passed to the constructor, i.e. the region in which
+  // numbers without a country calling code are interpreted. Unlike `region_`,
+  // it doesn't depend on the outcome of parsing. Together with
+  // `infer_country_code_from_region_hint_`, it allows callers that cache a
+  // `PhoneObject` to check whether parsing the number again would give the
+  // same result. Empty for a default constructed object.
+  std::string creation_region_hint_;
+
+  // The `infer_country_code` passed to the constructor, i.e. whether
+  // `country_code_` is set to the calling code of `creation_region_hint_` if
+  // the number doesn't contain one. False for a default constructed object.
+  bool infer_country_code_from_region_hint_ = false;
+
   // The parsed number and its components.
-  //
   std::unique_ptr<::i18n::phonenumbers::PhoneNumber> i18n_number_;
   std::u16string city_code_;
   std::u16string country_code_;

@@ -8,7 +8,6 @@
 #import <Cocoa/Cocoa.h>
 
 #include <optional>
-#include <set>
 #include <vector>
 
 #include "base/containers/flat_set.h"
@@ -62,6 +61,10 @@ CONTENT_EXPORT
 
 @property(nonatomic, strong) NSSpellChecker* spellCheckerForTesting;
 
+// Overrides CGEventSourceKeyState() when checking whether keys are still
+// pressed after a fullscreen transition.
+@property(nonatomic, copy) BOOL (^isKeyDownForTesting)(unsigned short);
+
 // Inject a magnify event. Identical to the processing that happens with the
 // -magnifyWithEvent: message, but if `injected` is set to YES, then the pinch
 // threshold is bypassed.
@@ -76,6 +79,9 @@ CONTENT_EXPORT
 // Confirm ongoing composition.
 - (void)finishComposingText;
 - (void)updateCursor:(NSCursor*)cursor;
+// Returns YES when the key-tracking window is key and neither cursor
+// autohide nor a context menu suppresses cursor updates.
+- (BOOL)canChangeCurrentCursor;
 - (void)tabletEvent:(NSEvent*)theEvent;
 - (void)quickLookWithEvent:(NSEvent*)event;
 - (void)showLookUpDictionaryOverlayFromRange:(NSRange)range;

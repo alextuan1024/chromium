@@ -5,6 +5,7 @@
 #include "ui/views/controls/scroll_view.h"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 #include "base/check_op.h"
@@ -33,6 +34,7 @@
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/focus_ring.h"
+#include "ui/views/deprecated_layout_immediately_pass_key.h"
 #include "ui/views/metadata/type_conversion.h"
 #include "ui/views/property_effects.h"
 #include "ui/views/style/platform_style.h"
@@ -48,19 +50,22 @@ constexpr float kGradientLeadingFadeStart = 0.0f;
 constexpr float kGradientPixelSize = 16.0f;
 constexpr float kGradientTrailingFadeEnd = 1.0f;
 
-// Returns the combined scroll amount given separate x and y offsets. This is
-// used in the "treat all scroll events as horizontal" case when there is both
-// an x and y offset and we do not want them to add in unintuitive ways.
-//
-// The current approach is to return whichever offset has the larger absolute
-// value, which should at least handle the case in which the gesture is mostly
-// vertical or horizontal. It does mean that for a gesture at 135° or 315° from
-// the x axis there is a breakpoint where scroll direction reverses, but we do
-// not typically expect users to try to scroll a horizontal-scroll-only view at
-// this exact angle.
-template <class T>
-T CombineScrollOffsets(T x, T y) {
-  return std::abs(x) >= std::abs(y) ? x : y;
+// Minimum accumulated scroll offset before locking the scroll axis when
+// treating all scroll events as horizontal.
+constexpr float kScrollAxisLockThreshold = 8.0f;
+
+// Inactivity timeout to reset the axis lock when phase end events are omitted.
+constexpr base::TimeDelta kScrollAxisLockTimeout = base::Milliseconds(150);
+
+bool ShouldLockVerticalAxis(float cumulative_x, float cumulative_y) {
+  return std::abs(cumulative_y) > std::abs(cumulative_x);
+}
+
+bool IsScrollAxisLockExpired(base::TimeTicks last_event_time,
+                             base::TimeTicks event_time) {
+  return !last_event_time.is_null() &&
+         (event_time - last_event_time > kScrollAxisLockTimeout ||
+          event_time < last_event_time);
 }
 
 class ScrollCornerView : public View {
@@ -115,9 +120,9 @@ void ConstrainScrollToBounds(View* viewport,
   const bool scrolls_with_layers =
       scroll_with_layers_enabled && viewport->layer() != nullptr;
   if (scrolls_with_layers) {
-    DCHECK(view->layer());
-    DCHECK_EQ(0, view->x());
-    DCHECK_EQ(0, view->y());
+    CHECK(view->layer(), base::NotFatalUntil::M163);
+    CHECK_EQ(0, view->x(), base::NotFatalUntil::M163);
+    CHECK_EQ(0, view->y(), base::NotFatalUntil::M163);
   }
   gfx::PointF offset = scrolls_with_layers
                            ? view->layer()->CurrentScrollOffset()
@@ -193,8 +198,8 @@ class ScrollView::Viewport : public View {
     if (scroll_view_->ScrollsWithLayers()) {
       // With layer scrolling, there's no need to "undo" the offset done in the
       // child's View::ScrollRectToVisible() before it calls this.
-      DCHECK_EQ(0, contents->x());
-      DCHECK_EQ(0, contents->y());
+      CHECK_EQ(0, contents->x(), base::NotFatalUntil::M163);
+      CHECK_EQ(0, contents->y(), base::NotFatalUntil::M163);
     } else {
       scroll_rect.Offset(-contents->x(), -contents->y());
     }
@@ -241,6 +246,7 @@ class ScrollView::Viewport : public View {
     bool layer_needs_update = layer()->type() != new_layer_type;
     if (layer_needs_update) {
       SetContentsViewportLayer(new_layer_type);
+      scroll_view_->UpdateBackground();
     }
   }
 
@@ -280,8 +286,8 @@ class ScrollView::Viewport : public View {
   void SetContentsViewportLayer(ui::LayerType layer_type) {
     // Only LAYER_NOT_DRAWN and LAYER_TEXTURED are allowed since
     // contents_viewport is a container view.
-    DCHECK(layer_type == ui::LAYER_TEXTURED ||
-           layer_type == ui::LAYER_NOT_DRAWN);
+    CHECK(layer_type == ui::LAYER_TEXTURED || layer_type == ui::LAYER_NOT_DRAWN,
+          base::NotFatalUntil::M163);
 
     SetPaintToLayer(layer_type);
   }
@@ -296,6 +302,184 @@ class ScrollView::Viewport : public View {
 BEGIN_METADATA(ScrollView, Viewport)
 ADD_READONLY_PROPERTY_METADATA(bool, IsContentsViewport)
 END_METADATA
+
+// Transposes vertical scroll events onto the horizontal axis when
+// `treat_all_scroll_events_as_horizontal_` is true, locking the gesture to
+// the dominant axis once enough motion is accumulated so diagonal scrolls
+// don't flip direction mid-gesture.
+class ScrollView::ScrollTransposer {
+ public:
+  void set_treat_all_scroll_events_as_horizontal(
+      bool treat_all_scroll_events_as_horizontal) {
+    if (treat_all_scroll_events_as_horizontal_ ==
+        treat_all_scroll_events_as_horizontal) {
+      return;
+    }
+    treat_all_scroll_events_as_horizontal_ =
+        treat_all_scroll_events_as_horizontal;
+    if (!treat_all_scroll_events_as_horizontal_) {
+      Reset();
+    }
+  }
+
+  bool treat_all_scroll_events_as_horizontal() const {
+    return treat_all_scroll_events_as_horizontal_;
+  }
+
+  // Forces `event` to horizontal using the active scroll axis when
+  // `treat_all_scroll_events_as_horizontal_` is true; updates lock state only
+  // when `update_lock` is true.
+  ui::ScrollEvent ProcessScrollEvent(const ui::ScrollEvent& event,
+                                     bool update_lock) {
+    if (!treat_all_scroll_events_as_horizontal_) {
+      return event;
+    }
+
+    const bool is_fling_cancel =
+        event.type() == ui::EventType::kScrollFlingCancel;
+    const bool is_fling_start =
+        event.type() == ui::EventType::kScrollFlingStart;
+
+    // Reset the axis lock when a new gesture starts or when scrolling/fling is
+    // blocked or canceled. Do not reset on kEnd/END because momentum updates
+    // may follow.
+    if (is_fling_cancel ||
+        event.scroll_event_phase() == ui::ScrollEventPhase::kBegan ||
+        event.momentum_phase() == ui::EventMomentumPhase::MAY_BEGIN ||
+        event.momentum_phase() == ui::EventMomentumPhase::BLOCKED) {
+      Reset();
+    }
+
+    LockedAxis axis = LockedAxis::kHorizontal;
+    if (!is_fling_cancel) {
+      const base::TimeTicks event_time = event.time_stamp().is_null()
+                                             ? base::TimeTicks::Now()
+                                             : event.time_stamp();
+      if (!update_lock || is_fling_start) {
+        // Determine the axis without updating lock state on fling start or when
+        // falling back to OnMouseWheel().
+        if (IsScrollAxisLockExpired(last_event_time_, event_time)) {
+          Reset();
+        }
+        const float x =
+            (is_fling_start ? 0.0f : cumulative_x_) + event.x_offset();
+        const float y =
+            (is_fling_start ? 0.0f : cumulative_y_) + event.y_offset();
+        axis = locked_axis_ != LockedAxis::kNone
+                   ? locked_axis_
+                   : (ShouldLockVerticalAxis(x, y) ? LockedAxis::kVertical
+                                                   : LockedAxis::kHorizontal);
+      } else {
+        axis = UpdateLock(event.x_offset(), event.y_offset(), event_time,
+                          /*can_lock_on_first_event=*/true);
+      }
+    }
+
+    const float x_offset =
+        axis == LockedAxis::kVertical ? event.y_offset() : event.x_offset();
+    const float x_offset_ordinal = axis == LockedAxis::kVertical
+                                       ? event.y_offset_ordinal()
+                                       : event.x_offset_ordinal();
+
+    // Reset the axis lock after transposing the fling start event.
+    if (is_fling_start) {
+      Reset();
+    }
+
+    return ui::ScrollEvent(event.type(), event.location_f(),
+                           event.root_location_f(), event.time_stamp(),
+                           event.flags(), x_offset, 0.0f, x_offset_ordinal,
+                           0.0f, event.finger_count(), event.momentum_phase(),
+                           event.scroll_event_phase());
+  }
+
+  // Forces `event` to horizontal using the active scroll axis and updates lock
+  // state when `treat_all_scroll_events_as_horizontal_` is true.
+  ui::MouseWheelEvent ProcessMouseWheelEvent(const ui::MouseWheelEvent& event) {
+    if (!treat_all_scroll_events_as_horizontal_) {
+      return event;
+    }
+
+    if (event.x_offset() == 0 && event.y_offset() == 0) {
+      return ui::MouseWheelEvent(event, 0, 0);
+    }
+
+    const base::TimeTicks event_time = event.time_stamp().is_null()
+                                           ? base::TimeTicks::Now()
+                                           : event.time_stamp();
+    const bool is_2d_wheel_event =
+        event.x_offset() != 0 && event.y_offset() != 0;
+    const LockedAxis axis =
+        UpdateLock(static_cast<float>(event.x_offset()),
+                   static_cast<float>(event.y_offset()), event_time,
+                   /*can_lock_on_first_event=*/is_2d_wheel_event);
+    const int x_offset =
+        axis == LockedAxis::kVertical ? event.y_offset() : event.x_offset();
+    return ui::MouseWheelEvent(event, x_offset, 0);
+  }
+
+ private:
+  enum class LockedAxis {
+    kNone,
+    kHorizontal,
+    kVertical,
+  };
+
+  void Reset() {
+    locked_axis_ = LockedAxis::kNone;
+    cumulative_x_ = 0.0f;
+    cumulative_y_ = 0.0f;
+    last_event_time_ = base::TimeTicks();
+    wheel_events_in_gesture_ = 0;
+  }
+
+  // Accumulates scroll offsets and locks the scroll axis for the current
+  // gesture.
+  LockedAxis UpdateLock(float x,
+                        float y,
+                        base::TimeTicks event_time,
+                        bool can_lock_on_first_event) {
+    if (IsScrollAxisLockExpired(last_event_time_, event_time)) {
+      Reset();
+    }
+    last_event_time_ = event_time;
+
+    if (locked_axis_ != LockedAxis::kNone) {
+      return locked_axis_;
+    }
+
+    cumulative_x_ += x;
+    cumulative_y_ += y;
+    if (!can_lock_on_first_event && (x != 0.0f || y != 0.0f)) {
+      ++wheel_events_in_gesture_;
+    }
+
+    const LockedAxis axis = ShouldLockVerticalAxis(cumulative_x_, cumulative_y_)
+                                ? LockedAxis::kVertical
+                                : LockedAxis::kHorizontal;
+    const bool has_sufficient_motion =
+        std::max(std::abs(cumulative_x_), std::abs(cumulative_y_)) >=
+        kScrollAxisLockThreshold;
+    const bool ready_to_lock =
+        can_lock_on_first_event || wheel_events_in_gesture_ >= 2;
+    if (has_sufficient_motion && ready_to_lock) {
+      locked_axis_ = axis;
+    }
+    return axis;
+  }
+
+  // Causes vertical scroll events (e.g. scrolling with the mousewheel) to be
+  // interpreted as horizontal events.
+  bool treat_all_scroll_events_as_horizontal_ = false;
+  LockedAxis locked_axis_ = LockedAxis::kNone;
+  float cumulative_x_ = 0.0f;
+  float cumulative_y_ = 0.0f;
+  base::TimeTicks last_event_time_;
+  // On Windows, diagonal touchpad scrolls can arrive as interleaved
+  // single-axis MouseWheelEvents; wait for two non-zero wheel events before
+  // locking so both axes contribute to the scroll direction.
+  int wheel_events_in_gesture_ = 0;
+};
 
 ScrollView::ScrollView()
     : ScrollView(base::FeatureList::IsEnabled(
@@ -314,7 +498,8 @@ ScrollView::ScrollView(ScrollWithLayers scroll_with_layers)
       more_content_right_(AddChildView(std::make_unique<Separator>())),
       more_content_bottom_(AddChildView(std::make_unique<Separator>())),
       scroll_with_layers_enabled_(scroll_with_layers ==
-                                  ScrollWithLayers::kEnabled) {
+                                  ScrollWithLayers::kEnabled),
+      scroll_transposer_(std::make_unique<ScrollTransposer>()) {
   SetNotifyEnterExitOnChild(true);
 
   // Since |contents_viewport_| is accessed during the AddChildView call, make
@@ -393,13 +578,12 @@ ScrollView* ScrollView::GetScrollViewForContents(View* contents) {
   }
 
   auto* scroll_view = static_cast<ScrollView*>(grandparent);
-  DCHECK_EQ(contents, scroll_view->contents());
-  return scroll_view;
+  return contents == scroll_view->contents() ? scroll_view : nullptr;
 }
 
 void ScrollView::SetContentsImpl(std::unique_ptr<View> a_view) {
   // Protect against clients passing a contents view that has its own Layer.
-  DCHECK(!a_view || !a_view->layer());
+  CHECK(!a_view || !a_view->layer(), base::NotFatalUntil::M163);
 
   if (a_view && ScrollsWithLayers()) {
     a_view->SetPaintToLayer(layer_type_);
@@ -420,12 +604,13 @@ void ScrollView::SetContents(std::nullptr_t) {
 void ScrollView::SetContentsLayerType(ui::LayerType layer_type) {
   // This function should only be called when scroll with layers is enabled and
   // before `contents_` is set.
-  DCHECK(ScrollsWithLayers());
-  DCHECK(!contents_);
+  CHECK(ScrollsWithLayers(), base::NotFatalUntil::M163);
+  CHECK(!contents_, base::NotFatalUntil::M163);
 
   // Currently only allow LAYER_TEXTURED and LAYER_NOT_DRAWN. If other types of
   // layer are needed, consult with the owner.
-  DCHECK(layer_type == ui::LAYER_TEXTURED || layer_type == ui::LAYER_NOT_DRAWN);
+  CHECK(layer_type == ui::LAYER_TEXTURED || layer_type == ui::LAYER_NOT_DRAWN,
+        base::NotFatalUntil::M163);
 
   if (layer_type_ == layer_type) {
     return;
@@ -515,8 +700,9 @@ void ScrollView::SetVerticalScrollBarMode(
 
   // Enabling vertical scrolling is incompatible with all scrolling being
   // interpreted as horizontal.
-  DCHECK(!treat_all_scroll_events_as_horizontal_ ||
-         vertical_scroll_bar_mode == ScrollBarMode::kDisabled);
+  CHECK(!GetTreatAllScrollEventsAsHorizontal() ||
+            vertical_scroll_bar_mode == ScrollBarMode::kDisabled,
+        base::NotFatalUntil::M163);
 
   vertical_scroll_bar_mode_ = vertical_scroll_bar_mode;
   OnPropertyChanged(&vertical_scroll_bar_mode_, PropertyEffects::kPaint);
@@ -528,16 +714,19 @@ void ScrollView::SetVerticalScrollBarMode(
   vert_sb_->GetViewAccessibility().SetIsLeaf(is_disabled);
 }
 
+bool ScrollView::GetTreatAllScrollEventsAsHorizontal() const {
+  return scroll_transposer_->treat_all_scroll_events_as_horizontal();
+}
+
 void ScrollView::SetTreatAllScrollEventsAsHorizontal(
     bool treat_all_scroll_events_as_horizontal) {
-  if (treat_all_scroll_events_as_horizontal_ ==
+  if (scroll_transposer_->treat_all_scroll_events_as_horizontal() ==
       treat_all_scroll_events_as_horizontal) {
     return;
   }
-  treat_all_scroll_events_as_horizontal_ =
-      treat_all_scroll_events_as_horizontal;
-  OnPropertyChanged(&treat_all_scroll_events_as_horizontal_,
-                    PropertyEffects::kNone);
+  scroll_transposer_->set_treat_all_scroll_events_as_horizontal(
+      treat_all_scroll_events_as_horizontal);
+  OnPropertyChanged(&scroll_transposer_, PropertyEffects::kNone);
 
   // Since this effectively disables vertical scrolling, don't show a
   // vertical scrollbar.
@@ -737,7 +926,7 @@ ScrollBar* ScrollView::SetHorizontalScrollBar(
 
 ScrollBar* ScrollView::SetVerticalScrollBar(
     std::unique_ptr<ScrollBar> vert_sb) {
-  DCHECK(vert_sb);
+  CHECK(vert_sb, base::NotFatalUntil::M163);
   vert_sb->SetVisible(vert_sb_->GetVisible());
   vert_sb->set_controller(this);
   RemoveChildViewT(vert_sb_.ExtractAsDangling());
@@ -759,11 +948,11 @@ void ScrollView::SetHasFocusIndicator(bool has_focus_indicator) {
 }
 
 bool ScrollView::IsHorizontalContentOverflowing() const {
-  return contents_->width() > contents_viewport_->width();
+  return contents_ && contents_->width() > contents_viewport_->width();
 }
 
 bool ScrollView::IsVerticalContentOverflowing() const {
-  return contents_->height() > contents_viewport_->height();
+  return contents_ && contents_->height() > contents_viewport_->height();
 }
 
 base::CallbackListSubscription ScrollView::AddContentsScrolledCallback(
@@ -803,11 +992,13 @@ void ScrollView::Layout(PassKey) {
       return;
     }
 #endif
-    DCHECK_EQ(horiz_sb_->OverlapsContent(), vert_sb_->OverlapsContent());
+    CHECK_EQ(horiz_sb_->OverlapsContent(), vert_sb_->OverlapsContent(),
+             base::NotFatalUntil::M163);
   }
 
   if (views::FocusRing::Get(this)) {
-    views::FocusRing::Get(this)->DeprecatedLayoutImmediately();
+    views::FocusRing::Get(this)->DeprecatedLayoutImmediately(
+        DeprecatedLayoutImmediatelyPassKey());
   }
 
   gfx::Rect available_rect = GetContentsBounds();
@@ -844,7 +1035,8 @@ void ScrollView::Layout(PassKey) {
     // otherwise be unaware of changes to its bounds or visibility status.
     contents_viewport_->SetBoundsRect(viewport_bounds);
     if (contents_) {
-      contents_->DeprecatedLayoutImmediately();
+      contents_->DeprecatedLayoutImmediately(
+          DeprecatedLayoutImmediatelyPassKey());
     }
     return;
   }
@@ -878,7 +1070,8 @@ void ScrollView::Layout(PassKey) {
   // Give |contents_| a chance to update its bounds if it depends on the
   // viewport.
   if (contents_) {
-    contents_->DeprecatedLayoutImmediately();
+    contents_->DeprecatedLayoutImmediately(
+        DeprecatedLayoutImmediatelyPassKey());
   }
 
   bool should_layout_contents = false;
@@ -948,7 +1141,8 @@ void ScrollView::Layout(PassKey) {
   // Update to the real client size with the visible scrollbars.
   contents_viewport_->SetBoundsRect(viewport_bounds);
   if (should_layout_contents && contents_) {
-    contents_->DeprecatedLayoutImmediately();
+    contents_->DeprecatedLayoutImmediately(
+        DeprecatedLayoutImmediatelyPassKey());
   }
 
   // Even when |contents_| needs to scroll, it can still be narrower or wider
@@ -992,7 +1186,7 @@ void ScrollView::Layout(PassKey) {
   header_viewport_->SetBounds(contents_x, contents_y, viewport_bounds.width(),
                               header_height);
   if (header_) {
-    header_->DeprecatedLayoutImmediately();
+    header_->DeprecatedLayoutImmediately(DeprecatedLayoutImmediatelyPassKey());
   }
 
   ConstrainScrollToBounds(header_viewport_, header_,
@@ -1010,22 +1204,6 @@ void ScrollView::Layout(PassKey) {
     // TODO(tluk): Consider adding a CHECK on needs_layout() once layout
     // invalidation issues with overflow indicators have been resolved.
     post_layout_callback_.Run(this);
-  }
-
-  if (next_successful_frame_post_layout_callback_) {
-    // Layout should only occur to Widget parented Views.
-    views::Widget* const widget = GetWidget();
-    CHECK(widget);
-    widget->GetCompositor()->RequestSuccessfulPresentationTimeForNextFrame(
-        base::BindOnce(
-            [](base::WeakPtr<ScrollView> self, base::OnceClosure callback,
-               const viz::FrameTimingDetails& frame_timing_details) {
-              if (self) {
-                std::move(callback).Run();
-              }
-            },
-            weak_ptr_factory_.GetWeakPtr(),
-            std::move(next_successful_frame_post_layout_callback_)));
   }
 }
 
@@ -1052,10 +1230,7 @@ bool ScrollView::OnMouseWheel(const ui::MouseWheelEvent& e) {
   bool processed = false;
 
   const ui::MouseWheelEvent to_propagate =
-      treat_all_scroll_events_as_horizontal_
-          ? ui::MouseWheelEvent(
-                e, CombineScrollOffsets(e.x_offset(), e.y_offset()), 0)
-          : e;
+      scroll_transposer_->ProcessMouseWheelEvent(e);
 
   // TODO(crbug.com/40471184): Use composited scrolling.
   if (IsVerticalScrollEnabled()) {
@@ -1076,25 +1251,18 @@ void ScrollView::OnScrollEvent(ui::ScrollEvent* event) {
     return;
   }
 
-  // Possibly force the scroll event to horizontal based on the configuration
-  // option.
-  ui::ScrollEvent e =
-      treat_all_scroll_events_as_horizontal_
-          ? ui::ScrollEvent(
-                event->type(), event->location_f(), event->root_location_f(),
-                event->time_stamp(), event->flags(),
-                CombineScrollOffsets(event->x_offset(), event->y_offset()),
-                0.0f,
-                CombineScrollOffsets(event->y_offset_ordinal(),
-                                     event->x_offset_ordinal()),
-                0.0f, event->finger_count(), event->momentum_phase(),
-                event->scroll_event_phase())
-          : *event;
-
   ui::ScrollInputHandler* compositor_scroller =
       GetWidget()->GetCompositor()->scroll_input_handler();
-  if (compositor_scroller && scroll_synchronizer_count_ == 0) {
-    DCHECK(scroll_with_layers_enabled_);
+  const bool will_compositor_scroll =
+      compositor_scroller && scroll_synchronizer_count_ == 0;
+
+  // Possibly force the scroll event to horizontal based on the configuration
+  // option.
+  ui::ScrollEvent e = scroll_transposer_->ProcessScrollEvent(
+      *event, /*update_lock=*/will_compositor_scroll);
+
+  if (will_compositor_scroll) {
+    CHECK(scroll_with_layers_enabled_, base::NotFatalUntil::M163);
     if (compositor_scroller->OnScrollEvent(e, contents_->layer())) {
       e.SetHandled();
       e.StopPropagation();
@@ -1233,6 +1401,7 @@ void ScrollView::UpdateViewportLayerForClipping() {
     EnableViewportLayer();
   } else {
     contents_viewport_->DestroyLayer();
+    UpdateBackground();
   }
 }
 
@@ -1521,10 +1690,6 @@ void ScrollView::UpdateBorder() {
 }
 
 void ScrollView::UpdateBackground() {
-  if (!GetWidget()) {
-    return;
-  }
-
   const std::optional<ui::ColorVariant> background_color = GetBackgroundColor();
 
   auto create_background = [background_color]() {
@@ -1534,9 +1699,14 @@ void ScrollView::UpdateBackground() {
 
   SetBackground(create_background());
   // In addition to setting the background of |this|, set the background on
-  // the viewport as well. This way if the viewport has a layer
+  // the viewport as well when it has a textured layer so that
   // SetFillsBoundsOpaquely() is honored.
-  contents_viewport_->SetBackground(create_background());
+  if (contents_viewport_->layer() &&
+      contents_viewport_->layer()->type() == ui::LAYER_TEXTURED) {
+    contents_viewport_->SetBackground(create_background());
+  } else {
+    contents_viewport_->SetBackground(nullptr);
+  }
   if (contents_ && ScrollsWithLayers()) {
     contents_->SetBackground(create_background());
     // Contents views may not be aware they need to fill their entire bounds -
@@ -1619,11 +1789,6 @@ void ScrollView::UpdateOverflowIndicatorVisibility(const gfx::PointF& offset) {
 void ScrollView::RegisterPostLayoutCallback(
     base::RepeatingCallback<void(ScrollView*)> post_layout_callback) {
   post_layout_callback_ = post_layout_callback;
-}
-
-void ScrollView::RegisterNextSuccessfulFramePostLayoutCallback(
-    base::OnceClosure callback) {
-  next_successful_frame_post_layout_callback_ = std::move(callback);
 }
 
 View* ScrollView::GetContentsViewportForTest() const {
@@ -1723,7 +1888,7 @@ FixedRowHeightScrollHelper::FixedRowHeightScrollHelper(int top_margin,
     : VariableRowHeightScrollHelper(nullptr),
       top_margin_(top_margin),
       row_height_(row_height) {
-  DCHECK_GT(row_height, 0);
+  CHECK_GT(row_height, 0, base::NotFatalUntil::M163);
 }
 
 VariableRowHeightScrollHelper::RowInfo FixedRowHeightScrollHelper::GetRowInfo(

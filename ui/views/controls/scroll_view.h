@@ -11,8 +11,8 @@
 
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
 #include "ui/color/color_variant.h"
 #include "ui/compositor/layer_type.h"
 #include "ui/views/controls/focus_ring.h"
@@ -180,9 +180,7 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   ScrollBarMode GetVerticalScrollBarMode() const {
     return vertical_scroll_bar_mode_;
   }
-  bool GetTreatAllScrollEventsAsHorizontal() const {
-    return treat_all_scroll_events_as_horizontal_;
-  }
+  bool GetTreatAllScrollEventsAsHorizontal() const;
   void SetHorizontalScrollBarMode(ScrollBarMode horizontal_scroll_bar_mode);
   void SetVerticalScrollBarMode(ScrollBarMode vertical_scroll_bar_mode);
   void SetTreatAllScrollEventsAsHorizontal(
@@ -301,16 +299,6 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   void RegisterPostLayoutCallback(
       base::RepeatingCallback<void(ScrollView*)> post_layout_callback);
 
-  // Registers a callback that will be invoked after the compositor has
-  // submitted the next successful frame following the next layout pass. Waiting
-  // for the next frame post layout is necessary as a given layout pass will not
-  // be reflected on a content view's layer until a frame has been produced.
-  // Failing to wait for frame production will result in incorrect scroll
-  // behavior of APIs such as `ScrollToOffset()` and `ScrollByOffset()`.
-  // TODO(tluk): Remove this once remaining callsites have been migrated.
-  void RegisterNextSuccessfulFramePostLayoutCallback(
-      base::OnceClosure callback);
-
   bool is_scrolling() const {
     return horiz_sb_->is_scrolling() || vert_sb_->is_scrolling();
   }
@@ -322,6 +310,7 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   friend class test::ScrollViewTestApi;
 
   class Viewport;
+  class ScrollTransposer;
 
   bool IsHorizontalScrollEnabled() const;
   bool IsVerticalScrollEnabled() const;
@@ -448,11 +437,6 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   ScrollBarMode horizontal_scroll_bar_mode_ = ScrollBarMode::kEnabled;
   ScrollBarMode vertical_scroll_bar_mode_ = ScrollBarMode::kEnabled;
 
-  // Causes vertical scroll events (e.g. scrolling with the mousewheel) as
-  // horizontal events, to make scrolling in horizontal-only scroll situations
-  // easier for the user.
-  bool treat_all_scroll_events_as_horizontal_ = false;
-
   // In Harmony, the indicator is a focus ring. Pre-Harmony, the indicator is a
   // different border painter.
   bool draw_focus_indicator_ = false;
@@ -487,8 +471,6 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
   // Post-layout callback.
   base::RepeatingCallback<void(ScrollView*)> post_layout_callback_;
 
-  base::OnceClosure next_successful_frame_post_layout_callback_;
-
   GradientDirection gradient_direction_ = GradientDirection::kNone;
 
   // Track if the leading gradient is shown
@@ -499,7 +481,9 @@ class VIEWS_EXPORT ScrollView : public View, public ScrollBarController {
 
   int scroll_synchronizer_count_ = 0;
 
-  base::WeakPtrFactory<ScrollView> weak_ptr_factory_{this};
+  // Handles forcing and locking scroll events to the horizontal axis when
+  // `SetTreatAllScrollEventsAsHorizontal(true)` is active.
+  std::unique_ptr<ScrollTransposer> scroll_transposer_;
 };
 
 // When building with GCC this ensures that an instantiation of the

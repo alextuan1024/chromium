@@ -25,6 +25,7 @@
 #include "chrome/browser/enterprise/signin/user_policy_oidc_signin_service.h"
 #include "chrome/browser/enterprise/signin/user_policy_oidc_signin_service_factory.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
+#include "chrome/browser/policy/cloud/cloud_policy_test_utils.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service_factory.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service_test_util.h"
@@ -38,6 +39,8 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "components/account_id/account_id.h"
+#include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/core/common/cloud/mock_cloud_external_data_manager.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_store.h"
 #include "components/policy/core/common/cloud/mock_device_management_service.h"
@@ -152,16 +155,8 @@ class UserPolicyOidcSigninServiceTestBase
     policy_data->set_gaia_id(kExampleGaiaId.ToString());
     policy_data->set_command_invalidation_topic("fake-topic");
     policy_data->set_cec_enabled(true);
-    if (main_profile->GetUserCloudPolicyManager()) {
-      main_profile->GetUserCloudPolicyManager()
-          ->core()
-          ->store()
-          ->set_policy_data_for_testing(std::move(policy_data));
-    } else if (main_profile->GetProfileCloudPolicyManager()) {
-      main_profile->GetProfileCloudPolicyManager()
-          ->core()
-          ->store()
-          ->set_policy_data_for_testing(std::move(policy_data));
+    if (CloudPolicyStore* store = GetCloudPolicyStore(main_profile)) {
+      store->set_policy_data_for_testing(std::move(policy_data));
     }
   }
 
@@ -362,6 +357,21 @@ class UserPolicyOidcSigninServiceTestBase
     }
   }
 
+  bool FetchOidcPolicy(const std::string& dm_token) {
+    bool fetch_succeeded = true;
+    base::RunLoop run_loop;
+    oidc_signin_service_->FetchPolicyForOidcUser(
+        AccountId(), dm_token, kExampleClientId, kExampleUserEmail,
+        /*user_affiliation_ids=*/{}, base::TimeTicks::Now(),
+        /*switch_to_entry=*/true, test_url_loader_factory_.GetSafeWeakWrapper(),
+        base::BindLambdaForTesting([&fetch_succeeded, &run_loop](bool success) {
+          fetch_succeeded = success;
+          run_loop.Quit();
+        }));
+    run_loop.Run();
+    return fetch_succeeded;
+  }
+
   using ProfileAttributesStorageObserver::OnProfileAdded;
   using ProfileManagerObserver::OnProfileAdded;
 
@@ -538,12 +548,15 @@ class UserPolicyOidcSigninServiceTest
       DeviceManagementService::JobConfiguration::JobType* job_type_1,
       DeviceManagementService::JobConfiguration::JobType* job_type_2,
       DeviceManagementService::JobForTesting* job,
-      base::RunLoop* run_loop) {
+      base::RunLoop* run_loop,
+      AccountId* fetch_time_account_id) {
     if (is_3p_identity_synced()) {
       EXPECT_CALL(*job_creation_handler_, OnJobCreation)
           .WillOnce(DoAll(
               device_management_service_->CaptureJobType(job_type_1),
-              [this](auto&&...) {
+              [this, fetch_time_account_id](auto&&...) {
+                *fetch_time_account_id =
+                    mock_user_cloud_policy_store_->signin_account_id();
                 SetPolicyData();
                 mock_user_cloud_policy_store_->NotifyStoreLoaded();
               },
@@ -661,7 +674,9 @@ IN_PROC_BROWSER_TEST_P(UserPolicyOidcSigninServiceTest,
 
   base::RunLoop run_loop;
 
-  SetupPolicyRecoveryExpectations(&job_type_1, &job_type_2, &job, &run_loop);
+  AccountId fetch_time_account_id;
+  SetupPolicyRecoveryExpectations(&job_type_1, &job_type_2, &job, &run_loop,
+                                  &fetch_time_account_id);
 
   CreateProfileAndInitializeSigninService(
       /*user_email_missing=*/false,
@@ -678,6 +693,13 @@ IN_PROC_BROWSER_TEST_P(UserPolicyOidcSigninServiceTest,
   VerifyPolicyRecoveryJobTypes(job_type_1, job_type_2);
 
   ConfirmHasPolicy();
+  if (is_3p_identity_synced()) {
+    EXPECT_EQ(fetch_time_account_id,
+              AccountId::FromUserEmail(kExampleUserEmail));
+    EXPECT_TRUE(mock_user_cloud_policy_store_->signin_account_id().is_valid());
+    EXPECT_EQ(mock_user_cloud_policy_store_->signin_account_id().GetGaiaId(),
+              kExampleGaiaId);
+  }
 }
 
 IN_PROC_BROWSER_TEST_P(UserPolicyOidcSigninServiceTest,
@@ -689,8 +711,10 @@ IN_PROC_BROWSER_TEST_P(UserPolicyOidcSigninServiceTest,
   DeviceManagementService::JobForTesting job;
 
   base::RunLoop run_loop;
+  AccountId fetch_time_account_id;
 
-  SetupPolicyRecoveryExpectations(&job_type_1, &job_type_2, &job, &run_loop);
+  SetupPolicyRecoveryExpectations(&job_type_1, &job_type_2, &job, &run_loop,
+                                  &fetch_time_account_id);
 
   CreateProfileAndInitializeSigninService(
       /*user_email_missing=*/false,
@@ -702,6 +726,13 @@ IN_PROC_BROWSER_TEST_P(UserPolicyOidcSigninServiceTest,
   VerifyPolicyRecoveryJobTypes(job_type_1, job_type_2);
 
   ConfirmHasPolicy();
+  if (is_3p_identity_synced()) {
+    EXPECT_EQ(fetch_time_account_id,
+              AccountId::FromUserEmail(kExampleUserEmail));
+    EXPECT_TRUE(mock_user_cloud_policy_store_->signin_account_id().is_valid());
+    EXPECT_EQ(mock_user_cloud_policy_store_->signin_account_id().GetGaiaId(),
+              kExampleGaiaId);
+  }
 }
 
 IN_PROC_BROWSER_TEST_P(UserPolicyOidcSigninServiceTest,
@@ -770,6 +801,36 @@ IN_PROC_BROWSER_TEST_P(UserPolicyOidcSigninServiceTest,
   base::RunLoop().RunUntilIdle();
 }
 
+IN_PROC_BROWSER_TEST_P(UserPolicyOidcSigninServiceTest,
+                       SkipResetAndFetchWhenIneligible) {
+  EXPECT_CALL(*job_creation_handler_, OnJobCreation).Times(0);
+
+  CreateProfileAndInitializeSigninService(
+      /*user_email_missing=*/false,
+      /*is_store_initialized=*/true, CloudPolicyStore::Status::STATUS_OK);
+  ConfirmHasPolicy();
+
+  // Empty DM token must abort OIDC policy fetch without clearing cached policy.
+  EXPECT_FALSE(FetchOidcPolicy(/*dm_token=*/std::string()));
+  ConfirmHasPolicy();
+
+  // Non-OIDC profiles (Dasher-based) must ignore both GAIA policy reset and
+  // OIDC policy fetch.
+  if (is_3p_identity_synced()) {
+    ProfileAttributesEntry* entry =
+        g_browser_process->profile_manager()
+            ->GetProfileAttributesStorage()
+            .GetProfileAttributesWithPath(profile_path_);
+    ASSERT_TRUE(entry);
+    entry->SetProfileManagementOidcTokens(ProfileManagementOidcTokens());
+
+    oidc_signin_service_->ResetGaiaPolicyManagement();
+    ConfirmHasPolicy();
+    EXPECT_FALSE(FetchOidcPolicy(kExampleDmToken));
+    ConfirmHasPolicy();
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(All, UserPolicyOidcSigninServiceTest, testing::Bool());
 
 class UserPolicySigninServicesInteractionTest
@@ -825,6 +886,16 @@ IN_PROC_BROWSER_TEST_P(UserPolicySigninServicesInteractionTest,
   }
 
   ConfirmHasPolicy();
+  if (!is_managed() || !has_policy()) {
+    EXPECT_TRUE(mock_user_cloud_policy_store_->signin_account_id().is_valid());
+    EXPECT_EQ(mock_user_cloud_policy_store_->signin_account_id().GetUserEmail(),
+              kExampleUserEmail);
+    if (is_managed()) {
+      EXPECT_FALSE(mock_user_cloud_policy_store_->signin_account_id()
+                       .GetGaiaId()
+                       .empty());
+    }
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(All,

@@ -1,5 +1,5 @@
 > [!NOTE]
-> If you are viewing this on GitHub, the source was moved to [Chromium](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi). Please contribute there.
+> If you are viewing this on GitHub, the source was moved to [Chromium](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi). Please contribute there and [file issues on `crbug.com`](https://issues.chromium.org/issues/new?component=1608258).
 
 # WebDriver BiDi for Chromium [![chromium-bidi on npm](https://img.shields.io/npm/v/chromium-bidi)](https://www.npmjs.com/package/chromium-bidi)
 
@@ -23,27 +23,15 @@ Note that performance data can be sensitive to CI environment fluctuations, espe
 
 ## BiDi+
 
-**"BiDi+"** is an extension of the WebDriver BiDi protocol. In addition to [WebDriver BiDi](https://w3c.github.io/webdriver-bidi/) it has:
+**"BiDi+"** is an extension of the WebDriver BiDi protocol. The `goog:` commands
+and events are described in [`src/protocol/goog.cddl`](src/protocol/goog.cddl),
+which is the source of truth for their types. To add or change a `goog:` command
+or event, edit the CDDL and regenerate the TypeScript and Zod definitions as
+described in [Update CDDL types](#update-cddl-types).
+
+In addition to [WebDriver BiDi](https://w3c.github.io/webdriver-bidi/) it has:
 
 ### Command `goog:cdp.sendCommand`
-
-```cddl
-CdpSendCommandCommand = {
-  method: "goog:cdp.sendCommand",
-  params: CdpSendCommandParameters,
-}
-
-CdpSendCommandParameters = {
-   method: text,
-   params: any,
-   session?: text,
-}
-
-CdpSendCommandResult = {
-   result: any,
-   session: text,
-}
-```
 
 The command runs the
 described [CDP command](https://chromedevtools.github.io/devtools-protocol)
@@ -51,58 +39,85 @@ and returns the result.
 
 ### Command `goog:cdp.getSession`
 
-```cddl
-CdpGetSessionCommand = {
-   method: "goog:cdp.getSession",
-   params: CdpGetSessionParameters,
-}
-
-CdpGetSessionParameters = {
-   context: BrowsingContext,
-}
-
-CdpGetSessionResult = {
-   session: text,
-}
-```
-
 The command returns the default CDP session for the selected browsing context.
 
 ### Command `goog:cdp.resolveRealm`
 
-```cddl
-CdpResolveRealmCommand = {
-   method: "goog:cdp.resolveRealm",
-   params: CdpResolveRealmParameters,
-}
+The command resolves a BiDi realm to its CDP execution context ID.
 
-CdpResolveRealmParameters = {
-   realm: Script.Realm,
-}
+### Command `goog:browsingContext.getAccessibilityTree`
 
-CdpResolveRealmResult = {
-   executionContextId: text,
-}
-```
+The command returns the accessibility tree of the active document of a
+top-level browsing context. The command implements the specification draft
+[w3c/webdriver-bidi#1216](https://github.com/w3c/webdriver-bidi/pull/1216).
 
-The command returns resolves a BiDi realm to its CDP execution context ID.
+- The command supports only top-level browsing contexts. A non-top-level
+  `context` causes an `invalid argument` error.
+- The tree contains only the document of the top-level browsing context. The
+  tree contains the accessibility node of an `iframe` element, but not the
+  document in the iframe.
+- The tree does not contain the ignored accessibility nodes. The children of an
+  ignored node replace the ignored node.
+- `sharedId` refers to the DOM node of the accessibility node.
+- `role` can be a Chrome-internal role, for example `RootWebArea`.
+- Each value in `properties` is a text. The properties include `description`
+  and `value`.
+- The value of a relation property in `properties`, for example `labelledby`, is
+  the space-separated list of the shared IDs of the related DOM nodes.
 
 ### Events `goog:cdp`
 
-```cddl
-CdpEventReceivedEvent = {
-   method: "goog:cdp.<CDP Event Name>",
-   params: CdpEventReceivedParameters,
-}
+The event `goog:cdp.<CDP Event Name>` contains a CDP event.
 
-CdpEventReceivedParameters = {
-   event: text,
-   params: any,
-   session: text,
-}
-```
+### Capability `goog:sessionType`
 
-The event contains a CDP event.
+`"goog:sessionType": "restricted"` in `session.new` starts a restricted session,
+per the proposal
+[WICG/agentic-webdriver-bidi](https://github.com/WICG/agentic-webdriver-bidi).
+
+- A restricted session starts with an empty ACL. Only `goog:session.setAcl`
+  changes the ACL.
+- A restricted session cannot use `acceptInsecureCerts: true`,
+  `unhandledPromptBehavior`, `'goog:prerenderingDisabled': true`, or
+  `'goog:disableNetworkDurableMessages': true`. Requesting them in
+  `session.new` fails with `session not created`.
+- The Mapper's `session.new` result contains
+  `"goog:sessionType": "restricted"`.
+- Other values of `goog:sessionType` are ignored: the session is not restricted,
+  and the result does not contain `goog:sessionType`.
+- If the Mapper is started in restricted mode (`restrictedMode` is `true` in
+  `runMapperInstance`), `session.new` without
+  `"goog:sessionType": "restricted"` causes a `session not created` error.
+- Before `session.new`, all commands except `session.new` and `session.status`
+  fail with `invalid session id`.
+
+### Command `goog:session.setAcl`
+
+The command requests or retracts access for a restricted session. It takes
+the full desired access control list (ACL) in `acl` and an optional `reason`,
+and returns the ACL now in effect. In a standard (non-restricted) session, the
+command fails with `unsupported operation`. The command implements the proposal
+[WICG/agentic-webdriver-bidi](https://github.com/WICG/agentic-webdriver-bidi).
+
+- The client sends the full desired ACL, not a diff, so the call is idempotent.
+- `reason` tells the user why the access is needed. It is untrusted
+  client text.
+- Unsupported commands and events, and unknown or non-top-level navigables,
+  are dropped. The rest becomes the session ACL and is returned.
+- `events` lists the events the session gets. Supported events are
+  `browsingContext.contextCreated`, `browsingContext.contextDestroyed`,
+  `browsingContext.fragmentNavigated`, `browsingContext.historyUpdated`,
+  `browsingContext.navigationCommitted`, `browsingContext.userPromptClosed`,
+  `browsingContext.userPromptOpened` and `log.entryAdded`. Events without a
+  navigable need a `default` grant.
+- `session.subscribe` and `session.unsubscribe` need no grant. Clients can
+  subscribe to any event, but get only the events the ACL allows when the event
+  is sent. Events are not buffered in restricted sessions (buffer size is 0).
+- If the browser refuses part of the request, the result lists the refused
+  entries in `denied`, with an optional `reason`. Until the browser can decide
+  on requests, every request is allowed as is.
+- `goog:session.setAcl` commands are processed one at a time, in order. Other
+  commands don't wait for them and are checked against the ACL in effect.
 
 ### Field `goog:channel`
 
@@ -449,6 +464,8 @@ There are 2 main components:
 The `chromium-bidi` source code lives in the Chromium repository under `third_party/chromium-bidi`.
 Contributions should follow the [Chromium Contributing Guide](https://chromium.googlesource.com/chromium/src/+/main/docs/contributing.md).
 
+Issues are tracked in the [Chromium issue tracker (`Chromium > Platform > Browser Automation > ChromeDriver`)](https://issues.chromium.org/issues?q=componentid:1608258). If you find a bug, please [file an issue on `crbug.com`](https://issues.chromium.org/issues/new?component=1608258).
+
 The BiDi commands are processed in `src/bidiMapper/CommandProcessor.ts`. To add a
 new command, add it to `_processCommand`, write and call the module processor for it.
 
@@ -480,24 +497,31 @@ new command, add it to `_processCommand`, write and call the module processor fo
 
 ### Publish new `npm` release
 
-TODO(crbug.com/540164671): describe the process.
+Publishing to npm is automated and is part of the [Chrome for Testing (CfT)](https://developer.chrome.com/blog/chrome-for-testing/) release pipeline, replacing the GitHub Actions workflow that was used before the move to Chromium. There are no manual steps: since `chromium-bidi` is tightly coupled with ChromeDriver, which is released through the CfT infrastructure, one `npm publish` happens per Chrome release.
+
+**How it works.** The package is published by the [`linux64-cft`](https://ci.chromium.org/ui/p/chrome/builders/official.cft/linux64-cft) official builder (Googlers: see the `npm_archive_datas` section of `internal/testing/buildbot/archive/linux64-cft.json`). The builder does not run `npm publish` itself and holds no npm credentials; the final release is delegated to the OSS Exit Gate, an internal Google service for publishing to external registries.
+
+**Versioning.** The published version follows the Chrome version, not the `version` field in `package.json`. The fourth component becomes a semver pre-release suffix, e.g. Chrome `153.0.8009.0` is published as `153.0.8009-0`.
+
+**Tagging.** Every release is tagged as `latest`.
 
 ### Syncing from Chromium to GitHub
 
-[Chromium (`third_party/chromium-bidi`)](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi) is the source of truth, and changes are synced out to the GitHub mirror at [GoogleChromeLabs/chromium-bidi](https://github.com/GoogleChromeLabs/chromium-bidi) using [Copybara](https://goto.google.com/copybara).
+[Chromium (`third_party/chromium-bidi`)](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi) is the source of truth. Every commit on `main` that touches this directory is mirrored automatically to [GoogleChromeLabs/chromium-bidi](https://github.com/GoogleChromeLabs/chromium-bidi) by [Copybara](https://goto.google.com/copybara): one GitHub commit per Chromium commit, carrying a `GitOrigin-RevId` trailer. Chromium-specific files (`README.chromium`, `OWNERS`, `DIR_METADATA`, `licenses/`, `copy.bara.sky`) are not exported.
 
-The configuration file is located at [`third_party/chromium-bidi/copy.bara.sky`](copy.bara.sky).
+The workflow is defined in [`third_party/chromium-bidi/copy.bara.sky`](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi/copy.bara.sky). The automated run is registered in Copybara-as-a-Service from an internal copy of that file (Googlers: the location is documented in its header). When changing `origin_files` or `transformations`, update both copies. Sync failures are emailed to browser-automation@google.com.
 
-TODO(crbug.com/549520316): Automate the sync process.
+#### Running Copybara manually (fallback)
 
-#### Running Copybara manually
+Only needed if the automated sync is paused or broken.
 
 > [!NOTE]
-> The Copybara sync takes ~10 minutes to run as it iteratively processes commits from Chromium history.
+> Copybara processes pending Chromium commits one by one, and the first run on a machine also has to fetch Chromium, so expect tens of minutes. If a single git step exceeds the default 15-minute timeout, pass `--repo-timeout=30m`.
 
-1. **Prerequisites:**
+1. **Prerequisites (Googlers):**
    - Set up the `copybara` CLI alias (see [go/copybara-setup](https://goto.google.com/copybara-setup)).
-   - Ensure your credentials for pushing to GitHub are configured via SSH.
+   - Create a GitHub token for `GoogleChromeLabs/chromium-bidi` (fine-grained: `Contents` and `Workflows` set to _Read and write_; classic: `repo` and `workflow` scopes) and store it where Copybara's git looks up HTTPS credentials, `~/.googlekeys/copybara_git_credentials` (one line: `https://<github-user>:<token>@github.com`).
+   - Ask a repository admin to add your GitHub account to the bypass list of the `main` branch ruleset; direct pushes to `main` are rejected otherwise.
 
 2. **Launch directory:**
    Run Copybara from the **root of the Chromium repository** (`src/`):
@@ -508,7 +532,8 @@ TODO(crbug.com/549520316): Automate the sync process.
 
 3. **Sync:**
    ```sh
-   copybara third_party/chromium-bidi/copy.bara.sky default
+   copybara third_party/chromium-bidi/copy.bara.sky default --dry-run  # verify first
+   copybara third_party/chromium-bidi/copy.bara.sky default            # push to GitHub
    ```
 
 ## Update CDDL types
@@ -517,14 +542,21 @@ TODO(crbug.com/549520316): Automate the sync process.
 
 - **cddlconv**: We use [cddlconv](https://github.com/google/cddlconv) to generate our WebDriverBiDi types.
   1. Install [Rust](https://rustup.rs/).
-  2. Run `cargo install cddlconv@0.1.10`
+  2. Run `cargo install cddlconv@0.2.0`
 - **parse5**: [parse5](https://github.com/inikulin/parse5) is required by the `webdriver-bidi` specification repository to extract CDDL definitions from specifications.
   1. Run `npm install -g parse5`
 
 Run the following steps from the `third_party/chromium-bidi` directory:
 
 1. (Optional) If you want to add a new specification, add it to the `tools/update_bidi_types.py` script.
-2. Run the `tools/update_bidi_types.py` script.
+2. Run the `tools/update_bidi_types.py` script. To only regenerate the `goog:` types from [`src/protocol/goog.cddl`](src/protocol/goog.cddl), run:
+   ```sh
+   tools/update_bidi_types.py --cddl-file src/protocol/goog.cddl \
+     --ts-file src/protocol/generated/goog.ts \
+     --zod-file src/protocol-parser/generated/goog.ts
+   ./tools/node.py node_modules/prettier/bin/prettier.cjs --write \
+     src/protocol/generated/goog.ts src/protocol-parser/generated/goog.ts
+   ```
 3. Build the project (`autoninja -C ../../out/Default third_party/chromium-bidi:default`). If a new WebDriver BiDi command was added, compilation will fail with `Switch is not exhaustive. Cases not matched ...`.
 4. Add the new BiDi command to `CommandProcessor.#processCommand` in `src/bidiMapper/CommandProcessor.ts`. For now, just have it throw an UnknownErrorException.
 

@@ -5,6 +5,7 @@
 #include "net/base/url_util.h"
 
 #include "build/build_config.h"
+#include "url/url_canon_stdstring.h"
 
 #if BUILDFLAG(IS_POSIX)
 #include <netinet/in.h>
@@ -58,8 +59,7 @@ std::u16string UnescapeIdentityString(std::string_view escaped_text) {
   if (base::UnescapeBinaryURLComponentSafe(
           escaped_text, false /* fail_on_path_separators */, &unescaped_text)) {
     std::u16string result;
-    if (base::UTF8ToUTF16(unescaped_text.data(), unescaped_text.length(),
-                          &result)) {
+    if (base::UTF8ToUTF16(unescaped_text, &result)) {
       return result;
     }
   }

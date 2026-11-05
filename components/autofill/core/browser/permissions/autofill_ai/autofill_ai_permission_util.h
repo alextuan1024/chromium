@@ -24,10 +24,6 @@ namespace personal_context {
 enum class PersonalContextEligibilityState;
 }
 
-namespace subscription_eligibility {
-class SubscriptionEligibilityService;
-}
-
 namespace syncer {
 class SyncService;
 }
@@ -139,8 +135,6 @@ bool MayPerformAutofillAiAction(
     bool is_wallet_public_pass_storage_enabled,
     bool is_off_the_record,
     const GeoIpCountryCode& country_code,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     personal_context::PersonalContextEligibilityState
         personal_context_eligibility_state,
     AutofillAiAction action,
@@ -190,8 +184,6 @@ bool SetAutofillAiOptInStatus(
     bool is_wallet_public_pass_storage_enabled,
     bool is_off_the_record,
     const GeoIpCountryCode& country_code,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     personal_context::PersonalContextEligibilityState
         personal_context_eligibility_state,
     AutofillAiOptInStatus opt_in_status);
@@ -215,16 +207,20 @@ bool IsAutofillAiEntityTypeBlockedByPolicy(const AutofillClient& client,
 // `kAutofillAiAvailableByDefault` is enabled.
 [[nodiscard]] bool IsAutofillAiDefaultAvailabilityEnabled();
 
-// Returns whether the user's subscription tier is eligible for Ambient
-// Autofill. Note that this does not check other requirements (e.g. user sign-in
-// state or enterprise policy).
-[[nodiscard]] bool IsSubscriptionTierEligibleForAmbientAutofill(
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_eligibility_service);
-
-// Returns the set of supported entity types configured by the feature parameter
-// for Ambient Autofill.
+// Returns the set of supported entity types configured by feature flags and
+// parameters for Ambient Autofill.
 DenseSet<EntityType> GetAutofillAmbientAutofillSupportedEntityTypes();
+
+// Returns whether equally weighted buttons must be shown. Returns `false` if
+// `identity_manager` is `nullptr`.
+[[nodiscard]] bool MustShowEquallyWeightedButtons(
+    const signin::IdentityManager* identity_manager,
+    EntityType entity_type);
+
+// Same as `MustShowEquallyWeightedButtons()`, but assumes the entity is a
+// private pass.
+[[nodiscard]] bool MustShowEquallyWeightedButtonsForPrivatePasses(
+    const signin::IdentityManager* identity_manager);
 
 }  // namespace autofill
 

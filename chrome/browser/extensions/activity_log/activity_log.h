@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
@@ -81,20 +82,29 @@ class ActivityLog : public BrowserContextKeyedAPI,
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
-  // Controls enterprise telemetry logging.
-  // If enabled, all active renderers are notified to send telemetry
-  // events. The `callback` is stored and invoked for each extension
-  // activity received from a renderer.
-  // If disabled, all active renderers are notified to stop sending
-  // telemetry events and the stored `callback` is cleared.
-  // Note that the `callback` parameter is ignored when `enabled` is
-  // false.
   using TelemetryCallback =
       base::RepeatingCallback<void(scoped_refptr<Action>)>;
-  void SetTelemetryLoggingEnabled(bool enabled, TelemetryCallback callback);
 
-  // Returns true if the telemetry service is currently active.
+  // Adds an enterprise telemetry subscriber for `context`, which is this
+  // ActivityLog's profile or one of its Off-The-Record profiles. `callback` is
+  // invoked for each extension activity of `context` passed to LogAction()
+  // until the returned subscription is destroyed. If
+  // IsExtensionTelemetryEnabledInIsolatedMode() is true, activity marked with
+  // Action::isolated_mode() only goes to the Isolated Mode profile's
+  // subscribers, and all other activity to the other subscribers. Telemetry
+  // logging is active for a context's renderers while it has subscribers, and
+  // they are notified when that changes. Returns an empty subscription if
+  // kEnterpriseExtensionDOMActivityTelemetry is disabled.
+  [[nodiscard]] base::CallbackListSubscription AddTelemetrySubscriber(
+      content::BrowserContext* context,
+      TelemetryCallback callback);
+
+  // Returns true if any telemetry subscriber exists.
   bool IsTelemetryLoggingActive() const;
+
+  // Returns true if renderers of `context` should send telemetry events.
+  bool IsTelemetryLoggingActiveForContext(
+      content::BrowserContext* context) const;
 
   // Logs an extension action: passes it to any installed policy to be logged
   // to the database, to any observers, and logs to the console if in testing
@@ -196,6 +206,15 @@ class ActivityLog : public BrowserContextKeyedAPI,
   // Called once the ExtensionSystem is ready.
   void OnExtensionSystemReady();
 
+  // Notifies renderers once the last subscriber of the regular list, or of the
+  // Isolated Mode list if `isolated`, is removed.
+  void OnTelemetrySubscriberRemoved(bool isolated);
+
+  // Notifies running renderers of their telemetry logging state: those of the
+  // Enterprise Isolated Mode profile if `isolated`, otherwise those of the
+  // regular profile.
+  void NotifyRenderersOfTelemetryLogging(bool isolated);
+
   // BrowserContextKeyedAPI implementation.
   static const char* service_name() { return "ActivityLog"; }
   static const bool kServiceRedirectedInIncognito = true;
@@ -254,11 +273,15 @@ class ActivityLog : public BrowserContextKeyedAPI,
   // reasons.
   bool is_active_;
 
-  // A callback that is notified of extension activity even if the
-  // standard activity log is inactive.
-  TelemetryCallback telemetry_callback_;
-
-  void NotifyRenderersOfTelemetryLogging();
+  // Telemetry subscribers, notified of extension activity even if the
+  // standard activity log is inactive. If
+  // IsExtensionTelemetryEnabledInIsolatedMode() is true, Isolated Mode
+  // subscribers receive the activity of the Enterprise Isolated Mode profile,
+  // and regular subscribers all other activity.
+  using TelemetryCallbackList =
+      base::RepeatingCallbackList<void(scoped_refptr<Action>)>;
+  TelemetryCallbackList telemetry_subscribers_;
+  TelemetryCallbackList isolated_telemetry_subscribers_;
 
   base::WeakPtrFactory<ActivityLog> weak_factory_{this};
 

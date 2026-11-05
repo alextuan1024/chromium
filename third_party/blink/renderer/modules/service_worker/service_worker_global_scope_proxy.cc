@@ -60,7 +60,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 namespace blink {
@@ -122,7 +121,8 @@ void ServiceWorkerGlobalScopeProxy::CountFeature(WebFeature feature) {
 void ServiceWorkerGlobalScopeProxy::ReportException(
     const String& error_message,
     const SourceLocation* location,
-    int exception_id) {
+    int exception_id,
+    SanitizeScriptErrors sanitize_script_errors) {
   DCHECK_CALLED_ON_VALID_THREAD(worker_thread_checker_);
   Client().ReportException(error_message, location->LineNumber(),
                            location->ColumnNumber(), location->Url());

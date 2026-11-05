@@ -37,12 +37,16 @@
 #include <memory>
 #include <optional>
 #include <tuple>
+#include <vector>
 
 #include "base/compiler_specific.h"
 #include "base/containers/to_vector.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/unsafe_shared_memory_region.h"
+#include "base/no_destructor.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
@@ -58,9 +62,8 @@
 #include "cc/trees/scroll_node.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/self_owned_receiver.h"
-#include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "mojo/public/cpp/system/data_pipe_utils.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "skia/public/mojom/skcolor.mojom-blink.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -105,6 +108,7 @@
 #include "third_party/blink/public/web/web_history_item.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_local_frame_client.h"
+#include "third_party/blink/public/web/web_local_frame_observer.h"
 #include "third_party/blink/public/web/web_navigation_timings.h"
 #include "third_party/blink/public/web/web_navigation_type.h"
 #include "third_party/blink/public/web/web_print_page_description.h"
@@ -121,6 +125,7 @@
 #include "third_party/blink/public/web/web_text_checking_completion.h"
 #include "third_party/blink/public/web/web_text_checking_result.h"
 #include "third_party/blink/public/web/web_view_client.h"
+#include "third_party/blink/renderer/bindings/core/v8/local_window_proxy.h"
 #include "third_party/blink/renderer/bindings/core/v8/serialization/serialized_script_value.h"
 #include "third_party/blink/renderer/bindings/core/v8/serialization/serialized_script_value_factory.h"
 #include "third_party/blink/renderer/bindings/core/v8/serialization/v8_script_value_serializer.h"
@@ -137,6 +142,7 @@
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/document_fragment.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/dom/range.h"
 #include "third_party/blink/renderer/core/editing/editor.h"
@@ -171,12 +177,14 @@
 #include "third_party/blink/renderer/core/frame/web_remote_frame_impl.h"
 #include "third_party/blink/renderer/core/fullscreen/fullscreen.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
+#include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/html/image_document.h"
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/inspector/dev_tools_emulator.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
@@ -209,7 +217,6 @@
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/core/testing/wait_for_event.h"
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
-#include "third_party/blink/renderer/platform/blob/testing/fake_blob.h"
 #include "third_party/blink/renderer/platform/exported/wrapped_resource_request.h"
 #include "third_party/blink/renderer/platform/keyboard_codes.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_context.h"
@@ -1155,13 +1162,13 @@ TEST_F(WebFrameTest, CapabilityDelegationMessageEventTest) {
   }
 
   {
+    // The delegation info is passed through a postMessage that is sent with
+    // both user activation and the delegation option for known `fullscreen`
+    // capability.
     String post_message_w_fullscreen_request(
         "window.frames[0].postMessage("
         "'1', {targetOrigin: '/', delegate: 'fullscreen'});");
 
-    // The delegation info is passed through a postMessage that is sent with
-    // both user activation and the delegation option for another known
-    // capability.
     ScriptExecutionCallbackHelper callback_helper;
     ExecuteScriptInMainWorld(web_view_helper.GetWebView()->MainFrameImpl(),
                              post_message_w_fullscreen_request,
@@ -1174,13 +1181,41 @@ TEST_F(WebFrameTest, CapabilityDelegationMessageEventTest) {
   }
 
   {
+    // The delegation info is not passed through a frame-to-frame postMessage
+    // that is sent with user activation and the delegation option for the
+    // `popup` capability, because `popup` delegation is only supported from
+    // Service Workers (`Client.postMessage`) and throws `NotSupportedError` on
+    // `Window.postMessage`.
+    String post_message_w_popup_request(R"JS(
+        var result = 'success';
+        try {
+          window.frames[0].postMessage('1', {targetOrigin: '/', delegate: 'popup'});
+        } catch (e) {
+          result = e.name;
+        }
+        result;
+    )JS");
+
+    ScriptExecutionCallbackHelper callback_helper;
+    ExecuteScriptInMainWorld(web_view_helper.GetWebView()->MainFrameImpl(),
+                             post_message_w_popup_request,
+                             callback_helper.Callback(),
+                             blink::mojom::PromiseResultOption::kAwait,
+                             blink::mojom::UserActivationOption::kActivate);
+    RunPendingTasks();
+    EXPECT_TRUE(callback_helper.DidComplete());
+    EXPECT_EQ(callback_helper.SingleStringValue(), "NotSupportedError");
+    EXPECT_FALSE(message_event_listener->DelegateCapability());
+  }
+
+  {
+    // The delegation info is passed through a postMessage that is sent with
+    // both user activation and the delegation option for known
+    // `display-capture` capability.
     String post_message_w_display_capture_request(
         "window.frames[0].postMessage("
         "'1', {targetOrigin: '/', delegate: 'display-capture'});");
 
-    // The delegation info is passed through a postMessage that is sent with
-    // both user activation and the delegation option for another known
-    // capability.
     ScriptExecutionCallbackHelper callback_helper;
     ExecuteScriptInMainWorld(web_view_helper.GetWebView()->MainFrameImpl(),
                              post_message_w_display_capture_request,
@@ -1193,12 +1228,12 @@ TEST_F(WebFrameTest, CapabilityDelegationMessageEventTest) {
   }
 
   {
+    // The delegation info is not passed through a postMessage that is sent with
+    // user activation and the delegation option for an unknown capability.
     String post_message_w_unknown_request(
         "window.frames[0].postMessage("
         "'1', {targetOrigin: '/', delegate: 'foo'});");
 
-    // The delegation info is not passed through a postMessage that is sent with
-    // user activation and the delegation option for an unknown capability.
     ScriptExecutionCallbackHelper callback_helper;
     ExecuteScriptInMainWorld(web_view_helper.GetWebView()->MainFrameImpl(),
                              post_message_w_unknown_request,
@@ -1253,12 +1288,6 @@ TEST_F(WebFrameTest, ChromePageNoJavascript) {
   web_view_helper.InitializeAndLoad(chrome_url_ + "history.html");
 
   // Try to run JS against the chrome-style URL after prohibiting it.
-#if DCHECK_IS_ON()
-  // TODO(crbug.com/1329535): Remove if threaded preload scanner doesn't launch.
-  // This is needed because the preload scanner creates a thread when loading a
-  // page.
-  SetIsBeforeThreadCreatedForTest();
-#endif
   WebSecurityPolicy::RegisterURLSchemeAsNotAllowingJavascriptURLs("chrome");
   frame_test_helpers::LoadFrame(web_view_helper.GetWebView()->MainFrameImpl(),
                                 "javascript:document.body.appendChild(document."
@@ -1701,6 +1730,118 @@ TEST_F(WebFrameTest, PostMessageEvent) {
   EXPECT_EQ(std::string::npos, content.find("Message 2."));
 }
 
+#if BUILDFLAG(IS_ANDROID)
+namespace {
+
+// Reports what actually arrived, rather than just that something did, so that
+// a null payload or a message downgraded to "messageerror" is distinguishable
+// from a real SharedArrayBuffer. Object.prototype.toString is used instead of
+// `instanceof SharedArrayBuffer` because the SharedArrayBuffer constructor is
+// only exposed to script in cross-origin isolated documents.
+constexpr char kSharedArrayBufferTestPage[] = R"HTML(
+    <body>
+    <script>
+    function report(text) {
+      document.body.appendChild(document.createTextNode(text));
+    }
+    onmessage = e => report('message: ' +
+                            Object.prototype.toString.call(e.data) + ' ' +
+                            (e.data && e.data.byteLength) + '.');
+    onmessageerror = () => report('messageerror.');
+    </script>
+    </body>
+)HTML";
+
+}  // namespace
+
+TEST_F(WebFrameTest, PostEmbedderMessageEvent) {
+  RegisterMockedHttpURLLoad("postmessage_test.html");
+
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.InitializeAndLoad(base_url_ + "postmessage_test.html");
+
+  WebLocalFrame* frame = web_view_helper.LocalMainFrame();
+
+  // Send a message with the correct origin.
+  frame->PostEmbedderMessageEvent(WebSecurityOrigin::Create(ToKURL(base_url_)),
+                                  /*ports=*/{},
+                                  base::UnsafeSharedMemoryRegion::Create(100));
+
+  // Send another message with an incorrect origin.
+  frame->PostEmbedderMessageEvent(
+      WebSecurityOrigin::Create(ToKURL(chrome_url_)), /*ports=*/{},
+      base::UnsafeSharedMemoryRegion::Create(100));
+
+  // Verify that only the first addition is in the body of the page.
+  std::string content = TestWebFrameContentDumper::DumpWebViewAsText(
+                            web_view_helper.GetWebView(), 1024)
+                            .Utf8();
+  EXPECT_NE(std::string::npos, content.find("Message 1."));
+  EXPECT_EQ(std::string::npos, content.find("Message 2."));
+}
+
+// A null target origin is a wildcard: the message is delivered whatever the
+// document's origin is.
+TEST_F(WebFrameTest, PostEmbedderMessageEventWildcardOrigin) {
+  RegisterMockedHttpURLLoad("postmessage_test.html");
+
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.InitializeAndLoad(base_url_ + "postmessage_test.html");
+
+  web_view_helper.LocalMainFrame()->PostEmbedderMessageEvent(
+      WebSecurityOrigin(), /*ports=*/{},
+      base::UnsafeSharedMemoryRegion::Create(100));
+
+  std::string content = TestWebFrameContentDumper::DumpWebViewAsText(
+                            web_view_helper.GetWebView(), 1024)
+                            .Utf8();
+  EXPECT_NE(std::string::npos, content.find("Message 1."));
+}
+
+// The region handed to the public API is mapped into this renderer, serialized
+// here, and delivered as the message's data, so script sees a real
+// SharedArrayBuffer of the right size.
+TEST_F(WebFrameTest, PostEmbedderMessageEventDeliversSharedArrayBuffer) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize();
+  frame_test_helpers::LoadHTMLString(web_view_helper.LocalMainFrame(),
+                                     kSharedArrayBufferTestPage,
+                                     ToKURL(base_url_));
+
+  web_view_helper.LocalMainFrame()->PostEmbedderMessageEvent(
+      WebSecurityOrigin::Create(ToKURL(base_url_)), /*ports=*/{},
+      base::UnsafeSharedMemoryRegion::Create(100));
+
+  std::string content = TestWebFrameContentDumper::DumpWebViewAsText(
+                            web_view_helper.GetWebView(), 1024)
+                            .Utf8();
+  EXPECT_NE(std::string::npos,
+            content.find("message: [object SharedArrayBuffer] 100."))
+      << content;
+}
+
+// The target origin check has to hold for SharedArrayBuffers too: a mismatch
+// must drop the message rather than hand the buffer to a document the embedder
+// did not address.
+TEST_F(WebFrameTest, PostEmbedderMessageEventSharedArrayBufferWrongOrigin) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize();
+  frame_test_helpers::LoadHTMLString(web_view_helper.LocalMainFrame(),
+                                     kSharedArrayBufferTestPage,
+                                     ToKURL(base_url_));
+
+  web_view_helper.LocalMainFrame()->PostEmbedderMessageEvent(
+      WebSecurityOrigin::Create(ToKURL(chrome_url_)), /*ports=*/{},
+      base::UnsafeSharedMemoryRegion::Create(100));
+
+  std::string content = TestWebFrameContentDumper::DumpWebViewAsText(
+                            web_view_helper.GetWebView(), 1024)
+                            .Utf8();
+  EXPECT_EQ(std::string::npos, content.find("SharedArrayBuffer")) << content;
+  EXPECT_EQ(std::string::npos, content.find("message")) << content;
+}
+#endif
+
 namespace {
 
 scoped_refptr<SerializedScriptValue> SerializeString(
@@ -1787,7 +1928,7 @@ void UpdateScreenInfoAndResizeView(
     int viewport_width,
     int viewport_height) {
   display::ScreenInfo screen_info =
-      web_view_helper->GetMainFrameWidget()->GetOriginalScreenInfo();
+      web_view_helper->GetMainFrameWidget()->GetOriginalScreenInfos().current();
   screen_info.rect = gfx::Rect(viewport_width, viewport_height);
   UpdateScreenInfoAndResizeView(web_view_helper, screen_info);
 }
@@ -5464,6 +5605,212 @@ TEST_F(WebFrameTest, ExecuteScriptDuringDidCreateScriptContext) {
       web_view_helper.GetWebView()->MainFrameImpl());
 }
 
+// Mimics an embedder which, when a main world script context is created, reads
+// `window.chrome` and sets a property on it (as Chrome does for
+// `chrome.loadTimes`). If `window.chrome` resolves to a page-controlled object,
+// this can run page script.
+class SetChromePropertyOnContextCreationWebFrameClient
+    : public frame_test_helpers::TestWebFrameClient {
+ public:
+  SetChromePropertyOnContextCreationWebFrameClient() = default;
+  ~SetChromePropertyOnContextCreationWebFrameClient() override = default;
+
+  // frame_test_helpers::TestWebFrameClient:
+  WebLocalFrame* CreateChildFrame(
+      mojom::blink::TreeScopeType scope,
+      const WebString& name,
+      const WebString& fallback_name,
+      const FramePolicy& frame_policy,
+      const WebFrameOwnerProperties&,
+      FrameOwnerElementType,
+      WebPolicyContainerBindParams policy_container_bind_params,
+      ukm::SourceId document_ukm_source_id,
+      FinishChildFrameCreationFn finish_creation) override {
+    auto client =
+        std::make_unique<SetChromePropertyOnContextCreationWebFrameClient>();
+    // Propagate the sandbox flags, so that they are applied when the child
+    // frame commits a navigation.
+    client->set_sandbox_flags(frame_policy.sandbox_flags);
+    return CreateLocalChild(*Frame(), scope, std::move(client),
+                            std::move(policy_container_bind_params),
+                            finish_creation);
+  }
+
+  void DidCreateScriptContext(v8::Local<v8::Context> context,
+                              int32_t world_id) override {
+    if (world_id != DOMWrapperWorld::kMainWorldId) {
+      return;
+    }
+    v8::Isolate* isolate = Frame()->GetAgentGroupScheduler()->Isolate();
+    v8::MicrotasksScope microtasks_scope(
+        context, v8::MicrotasksScope::kDoNotRunMicrotasks);
+    v8::TryCatch try_catch(isolate);
+    v8::Local<v8::Value> chrome;
+    if (!context->Global()
+             ->Get(context, V8AtomicString(isolate, "chrome"))
+             .ToLocal(&chrome) ||
+        !chrome->IsObject()) {
+      return;
+    }
+    std::ignore = chrome.As<v8::Object>()->Set(
+        context, V8AtomicString(isolate, "loadTimes"), v8::Null(isolate));
+  }
+};
+
+base::RepeatingClosure& LoadTimesSetterCallback() {
+  static base::NoDestructor<base::RepeatingClosure> callback;
+  return *callback;
+}
+
+// Sets up a sandboxed iframe without allow-scripts, whose script context is
+// therefore not initialized eagerly, containing a child frame named "chrome"
+// with a `loadTimes` setter that runs LoadTimesSetterCallback(). If the
+// sandboxed frame's script context gets initialized, the embedder (see
+// SetChromePropertyOnContextCreationWebFrameClient) invokes that setter.
+class NamedItemInsertionTest : public WebFrameTest {
+ protected:
+  void SetUp() override {
+    WebFrameTest::SetUp();
+    LoadTimesSetterCallback() = base::DoNothing();
+    helper_.Initialize(&client_);
+    frame_test_helpers::LoadHTMLString(MainFrame(),
+                                       "<!DOCTYPE html><body></body>",
+                                       ToKURL("http://example.test/"));
+    MainFrame()->ExecuteScript(
+        WebScriptSource("const sandbox = document.createElement('iframe');"
+                        "sandbox.sandbox = 'allow-same-origin';"
+                        "document.body.appendChild(sandbox);"));
+    sandbox_frame_ =
+        To<LocalFrame>(MainFrame()->GetFrame()->Tree().FirstChild());
+
+    Document& document = SandboxDocument();
+    document.body()->AppendChild(
+        document.CreateRawElement(html_names::kIFrameTag));
+    auto* chrome_frame = To<LocalFrame>(sandbox_frame_->Tree().FirstChild());
+    chrome_frame->Tree().SetName(AtomicString("chrome"));
+
+    v8::Isolate* isolate = Isolate();
+    v8::HandleScope handle_scope(isolate);
+    ScriptState* script_state = ToScriptStateForMainWorld(chrome_frame);
+    ScriptState::Scope scope(script_state);
+    v8::Local<v8::Context> context = script_state->GetContext();
+    v8::Local<v8::Function> getter =
+        v8::Function::New(context,
+                          [](const v8::FunctionCallbackInfo<v8::Value>&) {})
+            .ToLocalChecked();
+    v8::Local<v8::Function> setter =
+        v8::Function::New(context,
+                          [](const v8::FunctionCallbackInfo<v8::Value>&) {
+                            LoadTimesSetterCallback().Run();
+                          })
+            .ToLocalChecked();
+    context->Global()->SetAccessorProperty(V8AtomicString(isolate, "loadTimes"),
+                                           getter, setter);
+  }
+
+  void TearDown() override {
+    LoadTimesSetterCallback().Reset();
+    sandbox_frame_ = nullptr;
+    helper_.Reset();
+    WebFrameTest::TearDown();
+  }
+
+  WebLocalFrameImpl* MainFrame() { return helper_.LocalMainFrame(); }
+  v8::Isolate* Isolate() { return helper_.GetAgentGroupScheduler().Isolate(); }
+  Document& SandboxDocument() { return *sandbox_frame_->GetDocument(); }
+
+  bool SandboxContextIsInitialized() {
+    v8::HandleScope handle_scope(Isolate());
+    return !sandbox_frame_
+                ->WindowProxyMaybeUninitialized(
+                    DOMWrapperWorld::MainWorld(Isolate()))
+                ->ContextIfInitialized()
+                .IsEmpty();
+  }
+
+  // Checks that the named item is exposed on the sandboxed document, once its
+  // script context is initialized.
+  void ExpectNamedItemIsExposed() {
+    LoadTimesSetterCallback() = base::DoNothing();
+    v8::HandleScope handle_scope(Isolate());
+    v8::Local<v8::Value> result =
+        MainFrame()->ExecuteScriptAndReturnValue(WebScriptSource(R"JS(
+          (() => {
+            const doc = document.querySelector('iframe').contentDocument;
+            return doc.target_item === doc.getElementsByName('target_item')[0];
+          })()
+        )JS"));
+    ASSERT_FALSE(result.IsEmpty());
+    EXPECT_TRUE(result->IsTrue());
+  }
+
+  SetChromePropertyOnContextCreationWebFrameClient client_;
+  frame_test_helpers::WebViewHelper helper_;
+  Persistent<LocalFrame> sandbox_frame_;
+};
+
+// Regression test for crbug.com/584687193: inserting a named item from a
+// DocumentFragment must not run script, which could move the remaining
+// fragment children before they are inserted.
+TEST_F(NamedItemInsertionTest, FragmentInsertionDoesNotRunScript) {
+  ASSERT_FALSE(SandboxContextIsInitialized());
+  Document& document = SandboxDocument();
+  Persistent<Element> img = document.CreateRawElement(html_names::kImgTag);
+  img->setAttribute(html_names::kNameAttr, AtomicString("target_item"));
+  Persistent<Element> victim = document.CreateRawElement(html_names::kSpanTag);
+  Persistent<Element> other = document.CreateRawElement(html_names::kDivTag);
+  auto* fragment = DocumentFragment::Create(document);
+  fragment->AppendChild(img);
+  fragment->AppendChild(victim);
+  bool setter_called = false;
+  LoadTimesSetterCallback() = base::BindLambdaForTesting([&]() {
+    setter_called = true;
+    other->AppendChild(victim);
+  });
+
+  document.body()->AppendChild(fragment);
+
+  EXPECT_FALSE(setter_called);
+  EXPECT_FALSE(SandboxContextIsInitialized());
+  EXPECT_EQ(document.body(), img->parentNode());
+  EXPECT_EQ(document.body(), victim->parentNode());
+  EXPECT_TRUE(victim->isConnected());
+  EXPECT_FALSE(other->hasChildren());
+  ExpectNamedItemIsExposed();
+}
+
+// Regression test for crbug.com/584675198: notifying the nodes of an inserted
+// subtree that contains a named item must not run script, which could move
+// the node being notified out of the inserted subtree.
+TEST_F(NamedItemInsertionTest, SubtreeInsertionDoesNotRunScript) {
+  ASSERT_FALSE(SandboxContextIsInitialized());
+  Document& document = SandboxDocument();
+  Persistent<Element> root = document.CreateRawElement(html_names::kDivTag);
+  Persistent<Element> img = document.CreateRawElement(html_names::kImgTag);
+  img->setAttribute(html_names::kNameAttr, AtomicString("target_item"));
+  Persistent<Element> sibling = document.CreateRawElement(html_names::kSpanTag);
+  root->AppendChild(img);
+  root->AppendChild(sibling);
+  Persistent<Element> other = document.CreateRawElement(html_names::kDivTag);
+  Persistent<Element> outside = document.CreateRawElement(html_names::kSpanTag);
+  other->AppendChild(outside);
+  bool setter_called = false;
+  LoadTimesSetterCallback() = base::BindLambdaForTesting([&]() {
+    setter_called = true;
+    other->InsertBefore(img, outside);
+  });
+
+  document.body()->AppendChild(root);
+
+  EXPECT_FALSE(setter_called);
+  EXPECT_FALSE(SandboxContextIsInitialized());
+  EXPECT_EQ(root, img->parentNode());
+  EXPECT_TRUE(img->isConnected());
+  EXPECT_TRUE(sibling->isConnected());
+  EXPECT_FALSE(outside->isConnected());
+  ExpectNamedItemIsExposed();
+}
+
 class TestFindInPageClient : public mojom::blink::FindInPageClient {
  public:
   TestFindInPageClient() = default;
@@ -6174,6 +6521,44 @@ TEST_F(WebFrameTest, SelectRange) {
   selection_string = SelectionAsString(frame);
   EXPECT_TRUE(selection_string == "Some offscreen test text for testing." ||
               selection_string == "Some offscreen test text for testing");
+}
+
+// Regression test for crbug.com/326503108: SelectionAsText() should match
+// clipboard plain-text serialization by skipping unselectable content and not
+// emitting U+FFFC object replacement characters.
+TEST_F(WebFrameTest,
+       SelectionAsTextSkipsUnselectableContentAndReplacedObjects) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize();
+  WebLocalFrameImpl* frame = web_view_helper.LocalMainFrame();
+  frame_test_helpers::LoadHTMLString(
+      frame,
+      "<table>"
+      "<tr><td style='user-select: none;'><button>+</button>dont select me</td>"
+      "<td>select me</td></tr>"
+      "<tr><td style='user-select: none;'>left2</td><td>right2</td></tr>"
+      "</table>",
+      ToKURL("about:blank"));
+
+  frame->ExecuteCommand(WebString("SelectAll"));
+  EXPECT_TRUE(frame->HasSelection());
+#if BUILDFLAG(IS_WIN)
+  EXPECT_EQ("select me\r\nright2", SelectionAsString(frame));
+#else
+  EXPECT_EQ("select me\nright2", SelectionAsString(frame));
+#endif
+
+  // Selecting only an image without alt text produces an empty plain-text
+  // string while still reporting an active range selection.
+  frame_test_helpers::LoadHTMLString(
+      frame,
+      "<img src='data:image/gif;base64,"
+      "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'>",
+      ToKURL("about:blank"));
+  EXPECT_FALSE(frame->HasSelection());
+  frame->ExecuteCommand(WebString("SelectAll"));
+  EXPECT_TRUE(frame->HasSelection());
+  EXPECT_EQ("", SelectionAsString(frame));
 }
 
 TEST_F(WebFrameTest, SelectRangeDefaultHandleVisibility) {
@@ -7567,6 +7952,7 @@ class FakeMainLocalFrameHost : public mojom::blink::LocalMainFrameHost {
       Vector<mojom::blink::DraggableRegionPtr> regions) override {}
   void OnFirstContentfulPaint(base::TimeTicks presentation_time) override {}
   void OnLargestContentfulPaint(base::TimeTicks presentation_time) override {}
+  void UpdateEncoding(const String& encoding_name) override {}
 
  private:
   void BindFrameHostReceiver(mojo::ScopedInterfaceEndpointHandle handle) {
@@ -7776,7 +8162,7 @@ class TestScrolledFrameClient : public frame_test_helpers::TestWebFrameClient {
       return;
     }
     EXPECT_FALSE(did_scroll_frame_);
-    LocalFrameView* view = To<WebLocalFrameImpl>(Frame())->GetFrameView();
+    LocalFrameView* view = Frame()->GetFrameView();
     // LocalFrameView can be scrolled in
     // LocalFrameView::SetFixedVisibleContentRect which is called from
     // LocalFrame::CreateView (before the frame is associated with the the
@@ -9520,10 +9906,10 @@ TEST_F(WebFrameTest, EmbedderTriggeredDetachWithRemoteMainFrame) {
 
 class WebFrameSwapTestClient : public frame_test_helpers::TestWebFrameClient {
  public:
-  explicit WebFrameSwapTestClient(WebFrameSwapTestClient* parent = nullptr) {
+  WebFrameSwapTestClient() {
     local_frame_host_ =
         std::make_unique<TestLocalFrameHostForFrameOwnerPropertiesChanges>(
-            parent);
+            this);
     local_frame_host_->Init(GetRemoteNavigationAssociatedInterfaces());
   }
 
@@ -9538,7 +9924,7 @@ class WebFrameSwapTestClient : public frame_test_helpers::TestWebFrameClient {
       ukm::SourceId document_ukm_source_id,
       FinishChildFrameCreationFn finish_creation) override {
     return CreateLocalChild(
-        *Frame(), scope, std::make_unique<WebFrameSwapTestClient>(this),
+        *Frame(), scope, std::make_unique<WebFrameSwapTestClient>(),
         std::move(policy_container_bind_params), finish_creation);
   }
 
@@ -9548,7 +9934,13 @@ class WebFrameSwapTestClient : public frame_test_helpers::TestWebFrameClient {
   }
 
   bool DidPropagateDisplayNoneProperty() const {
+    Frame()->GetFrame()->FlushLocalFrameHostForTesting();
     return did_propagate_display_none_;
+  }
+
+  void ResetDidPropagateDisplayNoneProperty() {
+    Frame()->GetFrame()->FlushLocalFrameHostForTesting();
+    did_propagate_display_none_ = false;
   }
 
  private:
@@ -9556,22 +9948,19 @@ class WebFrameSwapTestClient : public frame_test_helpers::TestWebFrameClient {
       : public FakeLocalFrameHost {
    public:
     explicit TestLocalFrameHostForFrameOwnerPropertiesChanges(
-        WebFrameSwapTestClient* parent)
-        : parent_(parent) {}
+        WebFrameSwapTestClient* client)
+        : client_(client) {}
     ~TestLocalFrameHostForFrameOwnerPropertiesChanges() override = default;
 
     // FakeLocalFrameHost:
     void DidChangeFrameOwnerProperties(
         const blink::FrameToken& child_frame_token,
         mojom::blink::FrameOwnerPropertiesPtr properties) override {
-      if (parent_) {
-        parent_->DidChangeFrameOwnerProperties(std::move(properties));
-      }
+      client_->DidChangeFrameOwnerProperties(std::move(properties));
     }
 
-    bool did_propagate_display_none_ = false;
     raw_ptr<WebFrameSwapTestClient, UnprotectedInRelease | DanglingUntriaged>
-        parent_ = nullptr;
+        client_;
   };
 
   std::unique_ptr<TestLocalFrameHostForFrameOwnerPropertiesChanges>
@@ -9855,7 +10244,8 @@ TEST_F(WebFrameTest, SwapChildAddFrameInUnload) {
 
   // This triggers the unload handler in the child frame's Document, mutating
   // the frame tree during the `Frame::Swap()` call.
-  web_view_helper.LocalMainFrame()->FirstChild()->Swap(new_frame);
+  frame_test_helpers::SwapLocalFrame(
+      web_view_helper.LocalMainFrame()->FirstChild(), new_frame);
 
   // TODO(dcheng): This is currently required to trigger a crash when the bug is
   // not fixed. Removing a frame from the frame tree will fail one of the
@@ -9872,7 +10262,8 @@ void WebFrameTest::SwapAndVerifyFirstChildConsistency(const char* const message,
                                                       WebFrame* new_child) {
   SCOPED_TRACE(message);
   if (new_child->IsWebLocalFrame()) {
-    parent->FirstChild()->Swap(new_child->ToWebLocalFrame());
+    frame_test_helpers::SwapLocalFrame(parent->FirstChild(),
+                                       new_child->ToWebLocalFrame());
   } else {
     frame_test_helpers::SwapRemoteFrame(parent->FirstChild(),
                                         new_child->ToWebRemoteFrame());
@@ -9920,7 +10311,38 @@ TEST_F(WebFrameSwapTest, DISABLED_DoNotPropagateDisplayNonePropertyOnSwap) {
 
   WebLocalFrame* local_frame =
       web_view_helper_.CreateProvisional(*remote_frame);
-  remote_frame->Swap(local_frame);
+  frame_test_helpers::SwapLocalFrame(remote_frame, local_frame);
+  EXPECT_FALSE(main_frame_client->DidPropagateDisplayNoneProperty());
+  Reset();
+}
+
+// FrameLoader::CommitNavigation() (1) detaches a provisional LocalFrame's
+// initial empty document, (2) swaps the new frame in, and (3) creates the new
+// LocalFrameView and attaches it to the owner. The frame owner element has no
+// embedded_content_view_ until step 3, so we rely on the FrameSwapScope in
+// CommitNavigation() to defer FrameOwnerPropertiesChanged() until the view
+// is attached. Otherwise the browser would be incorrectly told that the frame
+// is display:none.
+TEST_F(WebFrameSwapTest, DoNotPropagateDisplayNoneOnProvisionalFrameCommit) {
+  WebFrameSwapTestClient* main_frame_client =
+      static_cast<WebFrameSwapTestClient*>(MainFrame()->Client());
+
+  UpdateAllLifecyclePhases(WebView());
+  RunPendingTasks();
+  main_frame_client->ResetDidPropagateDisplayNoneProperty();
+
+  WebLocalFrame* child_frame = MainFrame()->FirstChild()->ToWebLocalFrame();
+  WebRemoteFrame* remote_frame = frame_test_helpers::CreateRemote();
+  frame_test_helpers::SwapRemoteFrame(child_frame, remote_frame);
+  EXPECT_FALSE(main_frame_client->DidPropagateDisplayNoneProperty());
+
+  WebLocalFrame* local_frame =
+      web_view_helper_.CreateProvisional(*remote_frame);
+  EXPECT_FALSE(main_frame_client->DidPropagateDisplayNoneProperty());
+
+  // Committing a navigation in the provisional frame swaps it in.
+  frame_test_helpers::LoadFrame(local_frame, base_url_ + "subframe-hello.html");
+  EXPECT_EQ(local_frame, MainFrame()->FirstChild());
   EXPECT_FALSE(main_frame_client->DidPropagateDisplayNoneProperty());
   Reset();
 }
@@ -9932,7 +10354,8 @@ void WebFrameTest::SwapAndVerifyMiddleChildConsistency(
   SCOPED_TRACE(message);
 
   if (new_child->IsWebLocalFrame()) {
-    parent->FirstChild()->NextSibling()->Swap(new_child->ToWebLocalFrame());
+    frame_test_helpers::SwapLocalFrame(parent->FirstChild()->NextSibling(),
+                                       new_child->ToWebLocalFrame());
   } else {
     frame_test_helpers::SwapRemoteFrame(parent->FirstChild()->NextSibling(),
                                         new_child->ToWebRemoteFrame());
@@ -9975,7 +10398,8 @@ void WebFrameTest::SwapAndVerifyLastChildConsistency(const char* const message,
                                                      WebFrame* new_child) {
   SCOPED_TRACE(message);
   if (new_child->IsWebLocalFrame()) {
-    parent->LastChild()->Swap(new_child->ToWebLocalFrame());
+    frame_test_helpers::SwapLocalFrame(parent->LastChild(),
+                                       new_child->ToWebLocalFrame());
   } else {
     frame_test_helpers::SwapRemoteFrame(parent->LastChild(),
                                         new_child->ToWebRemoteFrame());
@@ -10039,7 +10463,7 @@ void WebFrameTest::SwapAndVerifySubframeConsistency(const char* const message,
   EXPECT_TRUE(old_frame->FirstChild());
 
   if (new_frame->IsWebLocalFrame()) {
-    old_frame->Swap(new_frame->ToWebLocalFrame());
+    frame_test_helpers::SwapLocalFrame(old_frame, new_frame->ToWebLocalFrame());
   } else {
     frame_test_helpers::SwapRemoteFrame(old_frame,
                                         new_frame->ToWebRemoteFrame());
@@ -10154,7 +10578,7 @@ TEST_F(WebFrameSwapTest, SwapPreservesGlobalContext) {
   // code path.
   WebLocalFrame* local_frame =
       web_view_helper_.CreateProvisional(*remote_frame);
-  remote_frame->Swap(local_frame);
+  frame_test_helpers::SwapLocalFrame(remote_frame, local_frame);
   v8::Local<v8::Value> local_window = MainFrame()->ExecuteScriptAndReturnValue(
       WebScriptSource("document.querySelector('#frame2').contentWindow;"));
   EXPECT_TRUE(original_window->StrictEquals(local_window));
@@ -10702,7 +11126,7 @@ TEST_F(WebFrameTest, ResizeInvalidatesDeviceMediaQueries) {
   ASSERT_TRUE(element);
 
   display::ScreenInfo screen_info =
-      web_view_helper.GetMainFrameWidget()->GetOriginalScreenInfo();
+      web_view_helper.GetMainFrameWidget()->GetOriginalScreenInfos().current();
   screen_info.rect = screen_info.available_rect = gfx::Rect(700, 500);
   UpdateScreenInfoAndResizeView(&web_view_helper, screen_info);
   EXPECT_EQ(300, element->OffsetWidth());
@@ -10743,8 +11167,9 @@ class DeviceEmulationTest : public WebFrameTest {
   }
 
   void TestResize(const gfx::Size& size, const String& expected_size) {
-    display::ScreenInfo screen_info =
-        web_view_helper_.GetMainFrameWidget()->GetOriginalScreenInfo();
+    display::ScreenInfo screen_info = web_view_helper_.GetMainFrameWidget()
+                                          ->GetOriginalScreenInfos()
+                                          .current();
     screen_info.rect = screen_info.available_rect = gfx::Rect(size);
     UpdateScreenInfoAndResizeView(&web_view_helper_, screen_info);
     EXPECT_EQ(expected_size, DumpSize("test"));
@@ -10850,12 +11275,6 @@ TEST_F(WebFrameTest, SiteForCookiesFromChildWithRemoteMainFrame) {
   frame_test_helpers::LoadFrame(local_frame, base_url_ + "foo.html");
   EXPECT_TRUE(local_frame->GetDocument().SiteForCookies().IsNull());
 
-#if DCHECK_IS_ON()
-  // TODO(crbug.com/1329535): Remove if threaded preload scanner doesn't launch.
-  // This is needed because the preload scanner creates a thread when loading a
-  // page.
-  SetIsBeforeThreadCreatedForTest();
-#endif
   SchemeRegistry::RegisterURLSchemeAsFirstPartyWhenTopLevel("http");
   EXPECT_TRUE(net::SiteForCookies::FromUrl(GURL(not_base_url_))
                   .IsEquivalent(local_frame->GetDocument().SiteForCookies()));
@@ -11721,6 +12140,263 @@ TEST_F(WebFrameTest, ImeSelectionCommitDoesNotChangeClipboard) {
   widget->SetHandlingInputEvent(false);
 }
 
+namespace {
+
+// Loads `html` and focuses its element with id "target".
+WebLocalFrameImpl* LoadAndFocusTarget(
+    frame_test_helpers::WebViewHelper& web_view_helper,
+    const std::string& html) {
+  web_view_helper.Initialize();
+  // Without a default font size, text gets a font size of 0, and the bounds of
+  // all its characters can be empty.
+  web_view_helper.GetWebView()->GetSettings()->SetDefaultFontSize(16);
+  web_view_helper.Resize(gfx::Size(640, 480));
+  WebLocalFrameImpl* web_frame = web_view_helper.LocalMainFrame();
+  frame_test_helpers::LoadHTMLString(web_frame, html, ToKURL("about:blank"));
+  web_frame->GetFrame()
+      ->GetDocument()
+      ->getElementById(AtomicString("target"))
+      ->Focus();
+  return web_frame;
+}
+
+// Checks that the fast computation of the bounds of the `length` characters of
+// the current composition matches the legacy per-character computation.
+void ExpectCurrentCompositionCharacterBoundsMatchLegacy(
+    WebInputMethodController& controller,
+    int length) {
+  std::vector<gfx::Rect> fast_bounds;
+  {
+    ScopedFastCompositionCharacterBoundsForTest scoped_feature(true);
+    ASSERT_TRUE(controller.GetCompositionCharacterBounds(fast_bounds));
+  }
+  std::vector<gfx::Rect> legacy_bounds;
+  {
+    ScopedFastCompositionCharacterBoundsForTest scoped_feature(false);
+    ASSERT_TRUE(controller.GetCompositionCharacterBounds(legacy_bounds));
+  }
+  ASSERT_EQ(static_cast<size_t>(length), legacy_bounds.size());
+  // Make sure the comparison can't pass just because neither computation
+  // produced any real bounds.
+  EXPECT_TRUE(std::ranges::any_of(legacy_bounds, [](const gfx::Rect& rect) {
+    return !rect.IsEmpty();
+  })) << ::testing::PrintToString(legacy_bounds);
+  EXPECT_EQ(legacy_bounds, fast_bounds);
+}
+
+// Loads `html`, focuses its element with id "target", sets a composition over
+// the plain text offsets [start, end) of the focused editable, and checks that
+// the fast computation of the composition character bounds matches the legacy
+// per-character computation.
+void ExpectCompositionCharacterBoundsMatchLegacy(const std::string& html,
+                                                 int start,
+                                                 int end) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  WebLocalFrameImpl* web_frame = LoadAndFocusTarget(web_view_helper, html);
+  web_frame->GetFrame()
+      ->GetInputMethodController()
+      .SetCompositionFromExistingText(Vector<ImeTextSpan>(), start, end);
+  WebInputMethodController* controller = web_frame->GetInputMethodController();
+  const WebRange range = controller->CompositionRange();
+  ASSERT_EQ(start, range.StartOffset());
+  ASSERT_EQ(end, range.EndOffset());
+  ExpectCurrentCompositionCharacterBoundsMatchLegacy(*controller, end - start);
+}
+
+}  // namespace
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsMatchLegacyComputation) {
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      "<div id='target' contenteditable>first line<br>"
+      "second <b>bold</b> line<br>third line</div>",
+      8, 30);
+}
+
+// TextIterator only emits the separator that follows a block once it has
+// emitted text before it, so a composition that starts at the end of a block
+// has to be iterated in the context of the whole editable for its characters
+// to line up with their plain text offsets.
+TEST_F(WebFrameTest, CompositionCharacterBoundsStartingAtEndOfBlock) {
+  {
+    SCOPED_TRACE("paragraph");
+    // "first\n\nsecond"; the composition is "\n\nse".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><p>first</p><p>second</p></div>", 5,
+        9);
+  }
+  {
+    SCOPED_TRACE("table cell");
+    // "ab\tcd"; the composition is "\tc".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><table><tr><td>ab</td><td>cd</td>"
+        "</tr></table></div>",
+        2, 4);
+  }
+  {
+    SCOPED_TRACE("div");
+    // "first\nsecond"; the composition is "\nsec".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><div>first</div><div>second</div>"
+        "</div>",
+        5, 9);
+  }
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsWithReplacedElement) {
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      "<div id='target' contenteditable>ab"
+      "<img style='width: 10px; height: 10px'>cd</div>",
+      1, 4);
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsInTextArea) {
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      "<textarea id='target'>line one\nline two\nline three</textarea>", 5, 20);
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsInInput) {
+  // "hello   world"; the composition is "lo   wo".
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      "<input id='target' value='hello   world'>", 3, 10);
+}
+
+// Collapsed whitespace isn't part of the plain text, so the plain text offsets
+// of the characters after it differ from their offsets in the DOM.
+TEST_F(WebFrameTest, CompositionCharacterBoundsWithCollapsibleWhitespace) {
+  {
+    SCOPED_TRACE("spaces");
+    // "a b c"; the composition is " b ".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable>a   b    c</div>", 1, 4);
+  }
+  {
+    SCOPED_TRACE("spans");
+    // "abcd ef gh"; the composition is "bcd ef g".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><span>ab</span><span>cd</span>   "
+        "<span> ef </span>  <span>gh</span></div>",
+        1, 9);
+  }
+  {
+    SCOPED_TRACE("indented blocks");
+    // "first line\nsecond line"; the composition is "line\nsec".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable>\n"
+        "  <div>  first   line  </div>\n"
+        "  <div>second <span> line </span> </div>\n"
+        "</div>",
+        6, 14);
+  }
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsAtStartAndEndOfEditable) {
+  {
+    SCOPED_TRACE("whole editable");
+    // "first line"; the composition is all of it.
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable>first line</div>", 0, 10);
+  }
+  {
+    SCOPED_TRACE("starting with a line break");
+    // "\nab\ncd\n"; the composition is "\nab".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><br>ab<br>cd<br></div>", 0, 3);
+  }
+  {
+    SCOPED_TRACE("ending with a line break");
+    // "\nab\ncd\n"; the composition is "cd\n".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<div id='target' contenteditable><br>ab<br>cd<br></div>", 4, 7);
+  }
+  {
+    SCOPED_TRACE("end of a textarea");
+    // "line one\nline two"; the composition is "line two".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        "<textarea id='target'>line one\nline two</textarea>", 9, 17);
+  }
+}
+
+// Plain text offsets count UTF-16 code units, so a surrogate pair takes up two
+// offsets.
+TEST_F(WebFrameTest, CompositionCharacterBoundsWithSurrogatePairs) {
+  // U+20B9F, which is a surrogate pair in UTF-16.
+  constexpr char kPair[] = "\xF0\xA0\xAE\x9F";
+  {
+    SCOPED_TRACE("contenteditable");
+    // "a\U00020B9Fb\U00020B9F\U00020B9Fc\U00020B9Fd"; the composition is
+    // "b\U00020B9F\U00020B9Fc".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        base::StrCat({"<div id='target' contenteditable>a", kPair, "b", kPair,
+                      kPair, "c", kPair, "d</div>"}),
+        3, 9);
+  }
+  {
+    SCOPED_TRACE("textarea");
+    // "\U00020B9Fa\U00020B9F\nb\U00020B9F"; the composition is
+    // "a\U00020B9F\nb".
+    ExpectCompositionCharacterBoundsMatchLegacy(
+        base::StrCat({"<textarea id='target'>", kPair, "a", kPair, "\nb", kPair,
+                      "</textarea>"}),
+        2, 7);
+  }
+}
+
+TEST_F(WebFrameTest, CompositionCharacterBoundsWithCombiningMarks) {
+  // U+0301 COMBINING ACUTE ACCENT and U+0308 COMBINING DIAERESIS.
+  constexpr char kAcute[] = "\xCC\x81";
+  constexpr char kDiaeresis[] = "\xCC\x88";
+  // "ae\u0301i\u0308o"; the composition is "e\u0301i\u0308".
+  ExpectCompositionCharacterBoundsMatchLegacy(
+      base::StrCat({"<div id='target' contenteditable>ae", kAcute, "i",
+                    kDiaeresis, "o</div>"}),
+      1, 5);
+}
+
+// An IME that replaces selected text types its composition over the selection.
+// Unlike SetCompositionFromExistingText(), that changes the DOM: here, it
+// merges the lines around the replaced line break.
+TEST_F(WebFrameTest, CompositionCharacterBoundsReplacingSelection) {
+  // Selects the plain text offsets [start, end) of the focused editable in
+  // `html` and types a composition over them, as an IME does. Then moves the
+  // editable, as a page's input event handler might, so that the bounds are
+  // computed starting with stale layout.
+  auto expect_bounds_match_legacy = [](const std::string& html, int start,
+                                       int end) {
+    frame_test_helpers::WebViewHelper web_view_helper;
+    WebLocalFrameImpl* web_frame = LoadAndFocusTarget(web_view_helper, html);
+    WebInputMethodController* controller =
+        web_frame->GetInputMethodController();
+    const WebString composition = WebString::FromUtf8("xyz");
+    const int length = static_cast<int>(composition.length());
+    ASSERT_TRUE(controller->SetComposition(
+        composition, {}, WebRange(start, end - start), length, length));
+    const WebRange range = controller->CompositionRange();
+    ASSERT_EQ(start, range.StartOffset());
+    ASSERT_EQ(start + length, range.EndOffset());
+
+    Document* document = web_frame->GetFrame()->GetDocument();
+    document->body()->setAttribute(html_names::kStyleAttr,
+                                   AtomicString("padding-top: 20px"));
+    ASSERT_TRUE(document->NeedsLayoutTreeUpdate());
+    ExpectCurrentCompositionCharacterBoundsMatchLegacy(*controller, length);
+  };
+  {
+    SCOPED_TRACE("contenteditable");
+    // "first line\nsecond bold line\nthird line"; " line\n" is replaced.
+    expect_bounds_match_legacy(
+        "<div id='target' contenteditable>first line<br>"
+        "second <b>bold</b> line<br>third line</div>",
+        5, 11);
+  }
+  {
+    SCOPED_TRACE("textarea");
+    // "line one\nline two\nline three"; "e one\n" is replaced.
+    expect_bounds_match_legacy(
+        "<textarea id='target'>line one\nline two\nline three</textarea>", 3,
+        9);
+  }
+}
+
 TEST_F(WebFrameTest, SetSelectionForAccessibilityHandlingInputEvent) {
   RegisterMockedHttpURLLoad("foo.html");
   SelectionMockWebFrameClient web_frame_client;
@@ -12075,100 +12751,22 @@ TEST(WebFrameGlobalReuseTest, ReuseForMainFrameIfEnabled) {
                              .ToLocalChecked()));
 }
 
-// This class intercepts the registration of Blob instances.
-//
-// Given that the content of the Blob is known (data URL)
-// it gets the data from the DataElement's BytesProvider, and creates
-// FakeBlob's accordingly.
-class BlobRegistryForSaveImageFromDataURL : public mojom::blink::BlobRegistry {
- public:
-  void Register(mojo::PendingReceiver<mojom::blink::Blob> blob,
-                const String& uuid,
-                const String& content_type,
-                const String& content_disposition,
-                Vector<mojom::blink::DataElementPtr> elements,
-                RegisterCallback callback) override {
-    DCHECK_EQ(elements.size(), 1u);
-    DCHECK(elements[0]->is_bytes());
-
-    auto& element0 = elements[0];
-    const auto& bytes = element0->get_bytes();
-    auto length = bytes->length;
-    String body(
-        base::span(*bytes->embedded_data).first(static_cast<uint32_t>(length)));
-    mojo::MakeSelfOwnedReceiver(std::make_unique<FakeBlob>(uuid, body),
-                                std::move(blob));
-    std::move(callback).Run();
-  }
-
-  void RegisterFromStream(
-      const String& content_type,
-      const String& content_disposition,
-      uint64_t expected_length,
-      mojo::ScopedDataPipeConsumerHandle,
-      mojo::PendingAssociatedRemote<mojom::blink::ProgressClient>,
-      RegisterFromStreamCallback) override {
-    NOTREACHED();
-  }
-};
-
-// blink::mojom::LocalFrameHost instance that intecepts DownloadURL() mojo
-// calls and reads the blob data URL sent by the renderer accordingly.
+// blink::mojom::LocalFrameHost instance that intercepts DownloadURL() calls.
 class TestLocalFrameHostForSaveImageFromDataURL : public FakeLocalFrameHost {
  public:
-  TestLocalFrameHostForSaveImageFromDataURL()
-      : blob_registry_receiver_(
-            &blob_registry_,
-            blob_registry_remote_.BindNewPipeAndPassReceiver()) {
-    BlobDataHandle::SetBlobRegistryForTesting(blob_registry_remote_.get());
-  }
-  ~TestLocalFrameHostForSaveImageFromDataURL() override {
-    BlobDataHandle::SetBlobRegistryForTesting(nullptr);
-  }
+  TestLocalFrameHostForSaveImageFromDataURL() = default;
+  ~TestLocalFrameHostForSaveImageFromDataURL() override = default;
 
   // FakeLocalFrameHost:
   void DownloadURL(mojom::blink::DownloadURLParamsPtr params) override {
-    mojo::Remote<mojom::blink::Blob> blob(std::move(params->data_url_blob));
-    mojo::ScopedDataPipeProducerHandle producer_handle;
-    mojo::ScopedDataPipeConsumerHandle consumer_handle;
-    auto result =
-        mojo::CreateDataPipe(nullptr, producer_handle, consumer_handle);
-    DCHECK(result == MOJO_RESULT_OK);
-
-    blob->ReadAll(std::move(producer_handle), mojo::NullRemote());
-
-    DataPipeDrainerClient client(&data_url_);
-    auto data_pipe_drainer = std::make_unique<mojo::DataPipeDrainer>(
-        &client, std::move(consumer_handle));
-    client.Run();
+    ASSERT_TRUE(params->data_url_buffer);
+    data_url_ = String(base::span(*params->data_url_buffer));
   }
 
   const String& Result() const { return data_url_; }
   void Reset() { data_url_ = String(); }
 
  private:
-  // Helper class to copy a blob to a string.
-  class DataPipeDrainerClient : public mojo::DataPipeDrainer::Client {
-   public:
-    explicit DataPipeDrainerClient(String* output)
-        : run_loop_(base::RunLoop::Type::kNestableTasksAllowed),
-          output_(output) {}
-    void Run() { run_loop_.Run(); }
-
-    void OnDataAvailable(base::span<const uint8_t> data) override {
-      *output_ = String(data);
-    }
-    void OnDataComplete() override { run_loop_.Quit(); }
-
-   private:
-    base::RunLoop run_loop_;
-    raw_ptr<String, UnprotectedInRelease | DanglingUntriaged> output_;
-  };
-
-  BlobRegistryForSaveImageFromDataURL blob_registry_;
-  mojo::Remote<mojom::blink::BlobRegistry> blob_registry_remote_;
-  mojo::Receiver<mojom::blink::BlobRegistry> blob_registry_receiver_;
-
   // Data URL retrieved from the blob.
   String data_url_;
 };
@@ -12196,9 +12794,6 @@ TEST_F(WebFrameTest, SaveImageAt) {
 
   frame_host.Reset();
   local_frame->SaveImageAt(gfx::Point(1, 1));
-  // Note that in this test does not use RunPendingTasks() since
-  // TestLocalFrameHostForSaveImageFromDataURL trigger its own loops, so nesting
-  // must be allowed.
   base::RunLoop(base::RunLoop::Type::kNestableTasksAllowed).RunUntilIdle();
 
   EXPECT_EQ(
@@ -12307,6 +12902,79 @@ TEST_F(WebFrameTest, CopyImageWithImageMap) {
   helper.Reset();
 }
 
+TEST_F(WebFrameTest, CopyAndSaveImageCanvas) {
+  TestLocalFrameHostForSaveImageFromDataURL frame_host;
+  frame_test_helpers::WebViewHelper helper;
+  frame_test_helpers::TestWebFrameClient client;
+  frame_host.Init(client.GetRemoteNavigationAssociatedInterfaces());
+  WebViewImpl* web_view = helper.Initialize(&client);
+  web_view->MainFrameViewWidget()->Resize(gfx::Size(400, 400));
+
+  WebLocalFrameImpl* web_frame = web_view->MainFrameImpl();
+  LocalFrame* local_frame = web_frame->GetFrame();
+  Document* document = local_frame->GetDocument();
+  ASSERT_TRUE(document);
+
+  document->body()->SetInnerHTMLWithoutTrustedTypes(
+      "<canvas id='canvas' width='50' height='50' "
+      "style='position:absolute; left:0; top:0; width:50px; height:50px'>"
+      "</canvas>");
+  UpdateAllLifecyclePhases(web_view);
+
+  auto* canvas =
+      To<HTMLCanvasElement>(document->getElementById(AtomicString("canvas")));
+  ASSERT_TRUE(canvas);
+  EXPECT_TRUE(canvas->OriginClean());
+
+  PageTestBase::MockClipboardHostProvider mock_clipboard_host_provider(
+      local_frame->GetBrowserInterfaceBroker());
+  SystemClipboard* system_clipboard = local_frame->GetSystemClipboard();
+  ASSERT_TRUE(system_clipboard);
+  EXPECT_TRUE(system_clipboard->ReadAvailableTypes().empty());
+
+  // Origin-clean canvas can be copied and saved.
+  web_frame->CopyImageAtForTesting(gfx::Point(25, 25));
+  RunPendingTasks();
+
+  Vector<String> types = system_clipboard->ReadAvailableTypes();
+  EXPECT_EQ(2u, types.size());
+  EXPECT_EQ("text/html", types[0]);
+  EXPECT_EQ("image/png", types[1]);
+  EXPECT_GT(system_clipboard->ReadPng(mojom::blink::ClipboardBuffer::kStandard)
+                .size(),
+            0u);
+
+  frame_host.Reset();
+  local_frame->SaveImageAt(gfx::Point(25, 25));
+  frame_host.FlushForTesting();
+  EXPECT_TRUE(frame_host.Result().starts_with("data:image/png;base64,"));
+
+  // Clear the clipboard and mark the canvas as not origin-clean.
+  system_clipboard->WritePlainText("");
+  system_clipboard->CommitWrite();
+  RunPendingTasks();
+  EXPECT_TRUE(system_clipboard->ReadAvailableTypes().empty());
+
+  canvas->SetOriginTainted();
+  ASSERT_FALSE(canvas->OriginClean());
+  EXPECT_TRUE(canvas->ImageSourceURL().IsNull());
+
+  // Non-origin-clean canvas must not be copied to the clipboard or saved.
+  web_frame->CopyImageAtForTesting(gfx::Point(25, 25));
+  RunPendingTasks();
+  EXPECT_TRUE(system_clipboard->ReadAvailableTypes().empty());
+  EXPECT_EQ(0u,
+            system_clipboard->ReadPng(mojom::blink::ClipboardBuffer::kStandard)
+                .size());
+
+  frame_host.Reset();
+  local_frame->SaveImageAt(gfx::Point(25, 25));
+  frame_host.FlushForTesting();
+  EXPECT_EQ(String(), frame_host.Result());
+
+  helper.Reset();
+}
+
 TEST_F(WebFrameTest, LoadJavascriptURLInNewFrame) {
   frame_test_helpers::WebViewHelper helper;
   helper.Initialize();
@@ -12350,6 +13018,30 @@ TEST_F(WebFrameTest, DiscardFrame) {
                     ->GetDocument()
                     ->documentElement()
                     ->innerText());
+}
+
+TEST_F(WebFrameTest, DiscardFrameRunsUnloadEvents) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      network::features::kDeprecateUnload);
+  DisableRendererSchedulerThrottling();
+  RegisterMockedHttpURLLoad("foo.html");
+
+  frame_test_helpers::WebViewHelper helper;
+  helper.InitializeAndLoad(base_url_ + "foo.html");
+
+  helper.LocalMainFrame()->ExecuteScript(
+      WebScriptSource("window.name = '';"
+                      "window.addEventListener('pagehide', () => { window.name "
+                      "+= 'pagehide,'; });"
+                      "window.addEventListener('unload', () => { window.name "
+                      "+= 'unload'; });"));
+
+  helper.LocalMainFrame()->GetFrame()->Discard();
+  RunPendingTasks();
+
+  EXPECT_EQ("pagehide,unload",
+            helper.LocalMainFrame()->GetFrame()->Tree().GetName());
 }
 
 // Tests to ensure that DocumentResourceCoordinators are not instantiated for
@@ -12759,8 +13451,7 @@ TEST_F(WebFrameSimTest, HitTestWithIgnoreClippingAtNegativeOffset) {
   HitTestResult result(request, location);
   frame_view->GetLayoutView()->HitTest(location, result);
 
-  EXPECT_EQ(GetDocument().getElementById(AtomicString("top")),
-            result.InnerNode());
+  EXPECT_EQ(GetElementById("top"), result.InnerNode());
 }
 
 TEST_F(WebFrameSimTest, TickmarksDocumentRelative) {
@@ -12848,8 +13539,8 @@ TEST_F(WebFrameSimTest, FindInPageSelectNextMatch) {
   auto* local_frame = To<LocalFrame>(WebView().GetPage()->MainFrame());
   auto* frame_view = local_frame->View();
 
-  Element* box1 = GetDocument().getElementById(AtomicString("box1"));
-  Element* box2 = GetDocument().getElementById(AtomicString("box2"));
+  Element* box1 = GetElementById("box1");
+  Element* box2 = GetElementById("box2");
 
   gfx::Rect box1_rect = box1->GetLayoutObject()->AbsoluteBoundingBoxRect();
   gfx::Rect box2_rect = box2->GetLayoutObject()->AbsoluteBoundingBoxRect();
@@ -12912,7 +13603,7 @@ TEST_F(WebFrameSimTest, TallBlockRectFindTest) {
   auto* local_frame = To<LocalFrame>(WebView().GetPage()->MainFrame());
   auto* frame_view = local_frame->View();
 
-  Element* target = GetDocument().getElementById(AtomicString("textnode"));
+  Element* target = GetElementById("textnode");
   gfx::Rect span_rect = target->GetLayoutObject()->AbsoluteBoundingBoxRect();
   WebView().ZoomToFindInPageRect(span_rect);
 
@@ -13066,7 +13757,7 @@ TEST_F(WebFrameSimTest, TestFocusPreventScrollNotScrollElementIntoView) {
   Compositor().BeginFrame();
 
   ScrollableArea* area = GetDocument().View()->LayoutViewport();
-  Element* input = GetDocument().getElementById(AtomicString("target"));
+  Element* input = GetElementById("target");
   gfx::Rect input_rect(0, 1000, 100, 20);
 
   // Focus the element with `preventScroll: true` to ensure it does not scroll
@@ -13263,7 +13954,7 @@ TEST_F(WebFrameSimTest, TestScrollFocusedEditableInRootScroller) {
   TopDocumentRootScrollerController& rs_controller =
       GetDocument().GetPage()->GlobalRootScrollerController();
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   ASSERT_EQ(scroller, rs_controller.GlobalRootScroller());
 
   auto* frame = To<LocalFrame>(WebView().GetPage()->MainFrame());
@@ -13379,7 +14070,7 @@ TEST_F(WebFrameSimTest, ScrollFocusedIntoViewClipped) {
       ->FrameWidget()
       ->ScrollFocusedEditableElementIntoView();
 
-  Element* input = GetDocument().getElementById(AtomicString("target"));
+  Element* input = GetElementById("target");
   gfx::Rect input_rect(input->GetBoundingClientRect()->top(),
                        input->GetBoundingClientRect()->left(),
                        input->GetBoundingClientRect()->width(),
@@ -13402,7 +14093,7 @@ TEST_F(WebFrameSimTest, ScrollFocusedIntoViewClipped) {
 
   // Additional gut-check that we actually scrolled the non-user-scrollable
   // clip element to make sure the input is in view.
-  Element* clip = GetDocument().getElementById(AtomicString("clip"));
+  Element* clip = GetElementById("clip");
   EXPECT_GT(clip->scrollTop(), 0);
 }
 
@@ -13439,8 +14130,7 @@ TEST_F(WebFrameSimTest, ScrollFocusedSelectionIntoView) {
   Compositor().BeginFrame();
   WebView().AdvanceFocus(false);
 
-  auto* input = To<HTMLInputElement>(
-      GetDocument().getElementById(AtomicString("target")));
+  auto* input = To<HTMLInputElement>(GetElementById("target"));
   input->select();
 
   // Simulate the keyboard being shown and resizing the widget. Cause a scroll
@@ -13596,7 +14286,7 @@ TEST_F(WebFrameSimTest, ScrollFocusedEditableIntoViewNoLayoutObject) {
 
   Compositor().BeginFrame();
 
-  Element* input = GetDocument().getElementById(AtomicString("target"));
+  Element* input = GetElementById("target");
   input->Focus();
 
   ScrollableArea* area = GetDocument().View()->LayoutViewport();
@@ -13680,13 +14370,27 @@ TEST_F(WebFrameSimTest, DisplayNoneIFrameHasNoLayoutObjects) {
   element->SetInlineStyleProperty(CSSPropertyID::kDisplay, CSSValueID::kBlock);
   Compositor().BeginFrame();
   EXPECT_TRUE(iframe_doc->documentElement()->GetLayoutObject());
+  LocalFrameView* iframe_view = iframe_doc->View();
+  LayoutView* iframe_layout_view = iframe_doc->GetLayoutView();
+  EXPECT_TRUE(iframe_view->IsAttached());
 
   // Changing the display from 'block' -> 'none' should cause layout objects to
-  // disappear.
+  // disappear, except for the LayoutView itself.
   element->SetInlineStyleProperty(CSSPropertyID::kDisplay, CSSValueID::kNone);
 
   Compositor().BeginFrame();
   EXPECT_FALSE(iframe_doc->documentElement()->GetLayoutObject());
+  EXPECT_EQ(iframe_view, iframe_doc->View());
+  EXPECT_EQ(iframe_layout_view, iframe_doc->GetLayoutView());
+  EXPECT_FALSE(iframe_view->IsAttached());
+
+  // Redisplaying the iframe will reattach the existing LocalFrameView.
+  element->SetInlineStyleProperty(CSSPropertyID::kDisplay, CSSValueID::kBlock);
+  Compositor().BeginFrame();
+  EXPECT_TRUE(iframe_doc->documentElement()->GetLayoutObject());
+  EXPECT_EQ(iframe_view, iframe_doc->View());
+  EXPECT_EQ(iframe_layout_view, iframe_doc->GetLayoutView());
+  EXPECT_TRUE(iframe_view->IsAttached());
 }
 
 // Although it is not spec compliant, many websites intentionally call
@@ -14502,7 +15206,7 @@ TEST_F(WebFrameTest, MediaQueriesInLocalFrameInsideRemote) {
       static_cast<frame_test_helpers::TestWebFrameWidget*>(
           local_frame->FrameWidgetImpl());
   display::ScreenInfos screen_infos(
-      local_frame_widget->GetOriginalScreenInfo());
+      local_frame_widget->GetOriginalScreenInfos().current());
   screen_infos.mutable_current().is_monochrome = false;
   screen_infos.mutable_current().depth_per_component = 8;
   local_frame_widget->UpdateScreenInfo(screen_infos);
@@ -15393,9 +16097,237 @@ TEST_F(WebFrameTest, FindFrameByNameCurrent) {
 
   EXPECT_EQ(frame->FindFrameByName(WebString("_self")), frame);
   EXPECT_EQ(frame->FindFrameByName(WebString("_current")), nullptr);
+}
 
-  ScopedRemoveTargetCurrentForTest scoped_feature(false);
-  EXPECT_EQ(frame->FindFrameByName(WebString("_current")), frame);
+TEST_F(WebFrameTest, FromWindow) {
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize();
+  WebLocalFrameImpl* main_frame = web_view_helper.LocalMainFrame();
+
+  v8::Isolate* isolate = main_frame->GetAgentGroupScheduler()->Isolate();
+  v8::HandleScope handle_scope(isolate);
+  v8::Local<v8::Context> context = main_frame->MainWorldScriptContext();
+  v8::Context::Scope context_scope(context);
+
+  // Test with main window.
+  v8::Local<v8::Value> window =
+      main_frame->ExecuteScriptAndReturnValue(WebScriptSource("window"));
+  EXPECT_EQ(main_frame, WebFrame::FromWindow(isolate, window));
+
+  // Test with child frame window.
+  v8::Local<v8::Value> child_window = main_frame->ExecuteScriptAndReturnValue(
+      WebScriptSource("(() => {"
+                      "  const iframe = document.createElement('iframe');"
+                      "  document.body.appendChild(iframe);"
+                      "  return iframe.contentWindow;"
+                      "})()"));
+  ASSERT_TRUE(main_frame->FirstChild());
+  EXPECT_EQ(main_frame->FirstChild(),
+            WebFrame::FromWindow(isolate, child_window));
+
+  // Test with detached frame window.
+  main_frame->ExecuteScriptAndReturnValue(
+      WebScriptSource("document.querySelector('iframe').remove()"));
+  EXPECT_EQ(nullptr, WebFrame::FromWindow(isolate, child_window));
+
+  // Test with invalid / non-window values.
+  EXPECT_EQ(nullptr, WebFrame::FromWindow(isolate, v8::Object::New(isolate)));
+  EXPECT_EQ(nullptr, WebFrame::FromWindow(isolate, v8::Null(isolate)));
+  EXPECT_EQ(nullptr, WebFrame::FromWindow(isolate, v8::Undefined(isolate)));
+  EXPECT_EQ(nullptr,
+            WebFrame::FromWindow(isolate, v8::Number::New(isolate, 123)));
+}
+
+class TestConsoleLocalFrameHost : public FakeLocalFrameHost {
+ public:
+  struct ConsoleMessage {
+    mojom::blink::ConsoleMessageLevel level;
+    String message;
+    String untrusted_stack_trace;
+  };
+
+  void DidAddMessageToConsole(mojom::blink::ConsoleMessageLevel log_level,
+                              const String& message,
+                              uint32_t line_no,
+                              const String& source_id,
+                              const String& untrusted_stack_trace) override {
+    messages_.emplace_back(log_level, message, untrusted_stack_trace);
+  }
+
+  const Vector<ConsoleMessage>& messages() const { return messages_; }
+  void ClearMessages() { messages_.clear(); }
+
+ private:
+  Vector<ConsoleMessage> messages_;
+};
+
+TEST_F(WebFrameTest, SetWantErrorMessageStackTrace) {
+  TestConsoleLocalFrameHost frame_host;
+  frame_test_helpers::TestWebFrameClient web_frame_client;
+  frame_host.Init(web_frame_client.GetRemoteNavigationAssociatedInterfaces());
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize(&web_frame_client);
+
+  WebLocalFrameImpl* main_frame = web_view_helper.LocalMainFrame();
+  frame_test_helpers::LoadHTMLString(
+      main_frame, "<html><body></body></html>",
+      url_test_helpers::ToKURL("http://example.com/"));
+  RunPendingTasks();
+  frame_host.ClearMessages();
+
+  const KURL script_url = url_test_helpers::ToKURL("http://example.com/app.js");
+
+  // Before SetWantErrorMessageStackTrace(), neither console.error nor uncaught
+  // exceptions include a stack trace.
+  main_frame->ExecuteScript(
+      WebScriptSource("function errOuter() { errInner(); }\n"
+                      "function errInner() { console.error('error before'); }\n"
+                      "errOuter();",
+                      script_url));
+  main_frame->ExecuteScript(WebScriptSource(
+      "function throwOuter() { throwInner(); }\n"
+      "function throwInner() { throw new Error('uncaught before'); }\n"
+      "throwOuter();",
+      script_url));
+  RunPendingTasks();
+
+  ASSERT_EQ(2u, frame_host.messages().size());
+  EXPECT_EQ(mojom::blink::ConsoleMessageLevel::kError,
+            frame_host.messages()[0].level);
+  EXPECT_TRUE(frame_host.messages()[0].untrusted_stack_trace.empty());
+  EXPECT_EQ(mojom::blink::ConsoleMessageLevel::kError,
+            frame_host.messages()[1].level);
+  EXPECT_TRUE(frame_host.messages()[1].untrusted_stack_trace.empty());
+  frame_host.ClearMessages();
+
+  // Enable stack trace capture and restore isolate state on exit.
+  v8::Isolate* isolate = main_frame->GetAgentGroupScheduler()->Isolate();
+  base::ScopedClosureRunner reset_capture(base::BindOnce(
+      [](v8::Isolate* isolate) {
+        isolate->SetCaptureStackTraceForUncaughtExceptions(false);
+      },
+      isolate));
+  main_frame->GetFrame()->SetWantErrorMessageStackTrace();
+
+  // Non-error messages still do not include a stack trace.
+  main_frame->ExecuteScript(
+      WebScriptSource("function warnOuter() { warnInner(); }\n"
+                      "function warnInner() { console.warn('warn after'); }\n"
+                      "warnOuter();",
+                      script_url));
+  // console.error and uncaught exceptions include stack traces.
+  main_frame->ExecuteScript(
+      WebScriptSource("function errOuter2() { errInner2(); }\n"
+                      "function errInner2() { console.error('error after'); }\n"
+                      "errOuter2();",
+                      script_url));
+  main_frame->ExecuteScript(WebScriptSource(
+      "function throwOuter2() { throwInner2(); }\n"
+      "function throwInner2() { throw new Error('uncaught after'); }\n"
+      "throwOuter2();",
+      script_url));
+  RunPendingTasks();
+
+  ASSERT_EQ(3u, frame_host.messages().size());
+  EXPECT_EQ(mojom::blink::ConsoleMessageLevel::kWarning,
+            frame_host.messages()[0].level);
+  EXPECT_TRUE(frame_host.messages()[0].untrusted_stack_trace.empty());
+
+  EXPECT_EQ(mojom::blink::ConsoleMessageLevel::kError,
+            frame_host.messages()[1].level);
+  EXPECT_THAT(frame_host.messages()[1].untrusted_stack_trace.Utf8(),
+              testing::AllOf(testing::HasSubstr("errOuter2"),
+                             testing::HasSubstr("errInner2")));
+
+  EXPECT_EQ(mojom::blink::ConsoleMessageLevel::kError,
+            frame_host.messages()[2].level);
+  EXPECT_THAT(frame_host.messages()[2].untrusted_stack_trace.Utf8(),
+              testing::AllOf(testing::HasSubstr("throwOuter2"),
+                             testing::HasSubstr("throwInner2")));
+
+  web_view_helper.Reset();
+}
+
+namespace {
+
+class DetailedConsoleMessageTestPlatform : public TestingPlatformSupport {
+ public:
+  bool ShouldReportDetailedMessageForSource(const WebString& source) override {
+    return source == "http://example.com/detailed.js";
+  }
+};
+
+class ConsoleMessageObserver : public WebLocalFrameObserver {
+ public:
+  struct Message {
+    WebConsoleMessage message;
+    WebString source_name;
+    unsigned source_line;
+    WebString stack_trace;
+  };
+
+  explicit ConsoleMessageObserver(WebLocalFrame* frame)
+      : WebLocalFrameObserver(frame) {}
+
+  void DidAddMessageToConsole(const WebConsoleMessage& message,
+                              const WebString& source_name,
+                              unsigned source_line,
+                              const WebString& stack_trace) override {
+    messages_.push_back({message, source_name, source_line, stack_trace});
+  }
+
+  void OnFrameDetached() override {}
+
+  const std::vector<Message>& messages() const { return messages_; }
+
+ private:
+  std::vector<Message> messages_;
+};
+
+}  // namespace
+
+TEST_F(WebFrameTest, DidAddMessageToConsole) {
+  ScopedTestingPlatformSupport<DetailedConsoleMessageTestPlatform> platform;
+  frame_test_helpers::WebViewHelper web_view_helper;
+  web_view_helper.Initialize();
+
+  WebLocalFrameImpl* main_frame = web_view_helper.LocalMainFrame();
+  ConsoleMessageObserver observer(main_frame);
+  frame_test_helpers::LoadHTMLString(
+      main_frame, "<html><body></body></html>",
+      url_test_helpers::ToKURL("http://example.com/"));
+  RunPendingTasks();
+
+  main_frame->ExecuteScript(WebScriptSource(
+      "console.error('regular error');",
+      url_test_helpers::ToKURL("http://example.com/regular.js")));
+  main_frame->ExecuteScript(WebScriptSource(
+      "function outer() { inner(); }\n"
+      "function inner() { console.error('detailed error'); }\n"
+      "outer();",
+      url_test_helpers::ToKURL("http://example.com/detailed.js")));
+  RunPendingTasks();
+
+  ASSERT_EQ(2u, observer.messages().size());
+  EXPECT_EQ("regular error", observer.messages()[0].message.text.Utf8());
+  EXPECT_EQ(mojom::ConsoleMessageLevel::kError,
+            observer.messages()[0].message.level);
+  EXPECT_EQ("http://example.com/regular.js",
+            observer.messages()[0].source_name.Utf8());
+  EXPECT_EQ(1u, observer.messages()[0].source_line);
+  EXPECT_TRUE(observer.messages()[0].stack_trace.IsEmpty());
+
+  EXPECT_EQ("detailed error", observer.messages()[1].message.text.Utf8());
+  EXPECT_EQ(mojom::ConsoleMessageLevel::kError,
+            observer.messages()[1].message.level);
+  EXPECT_EQ("http://example.com/detailed.js",
+            observer.messages()[1].source_name.Utf8());
+  EXPECT_EQ(2u, observer.messages()[1].source_line);
+  EXPECT_THAT(
+      observer.messages()[1].stack_trace.Utf8(),
+      testing::AllOf(testing::HasSubstr("outer"), testing::HasSubstr("inner")));
+
+  web_view_helper.Reset();
 }
 
 }  // namespace blink

@@ -45,8 +45,7 @@ class COMPONENT_EXPORT(EVENTS_OZONE_LAYOUT) XkbKeyboardLayoutEngine
       base::OnceCallback<void(bool success)> callback) override;
   // Required by Ozone/Wayland (at least) for non ChromeOS builds. See
   // http://xkbcommon.org/doc/current/md_doc_quick-guide.html for further info.
-  bool SetCurrentLayoutFromBuffer(const char* keymap_string,
-                                  size_t size) override;
+  bool SetCurrentLayoutFromBuffer(std::string_view keymap_string) override;
 
   bool UsesISOLevel5Shift() const override;
   bool UsesAltGr() const override;
@@ -55,6 +54,12 @@ class COMPONENT_EXPORT(EVENTS_OZONE_LAYOUT) XkbKeyboardLayoutEngine
               int flags,
               DomKey* dom_key,
               KeyboardCode* key_code) const override;
+  bool LookupNativeKeycode(uint32_t native_keycode,
+                           int flags,
+                           DomKey* dom_key,
+                           KeyboardCode* key_code) const override;
+  std::optional<uint32_t> LookupKeysym(DomCode dom_code,
+                                       int flags) const override;
 
   void SetInitCallbackForTest(base::OnceClosure closure) override;
 
@@ -62,6 +67,9 @@ class COMPONENT_EXPORT(EVENTS_OZONE_LAYOUT) XkbKeyboardLayoutEngine
                       uint32_t latched,
                       uint32_t locked,
                       uint32_t group);
+
+  bool HasKeymap() const;
+  bool KeyRepeats(xkb_keycode_t xkb_keycode) const;
 
   // modifiers is optional for backward compatibility purpose.
   // This should be removed when we no longer need to support older platform,
@@ -131,6 +139,15 @@ class COMPONENT_EXPORT(EVENTS_OZONE_LAYOUT) XkbKeyboardLayoutEngine
     raw_ptr<xkb_keymap> keymap;
   };
   std::vector<XkbKeymapEntry> xkb_keymaps_;
+
+  // Shared implementation of Lookup() and LookupNativeKeycode().
+  // `dom_code` may be DomCode::NONE. Returns false, without setting the output
+  // parameters, if `xkb_keycode` has no keysym in the current layout.
+  bool LookupXkbKeycode(DomCode dom_code,
+                        xkb_keycode_t xkb_keycode,
+                        int flags,
+                        DomKey* dom_key,
+                        KeyboardCode* key_code) const;
 
   // Returns the XKB modifiers flags corresponding to the given EventFlags.
   xkb_mod_mask_t EventFlagsToXkbFlags(int ui_flags) const;

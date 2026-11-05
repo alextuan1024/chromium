@@ -43,7 +43,7 @@
 #include "components/compose/core/browser/compose_utils.h"
 #include "components/compose/core/browser/config.h"
 #include "components/content_extraction/content/browser/inner_text.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
@@ -64,8 +64,8 @@
 #include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_tree_update.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect_f.h"
 
 namespace {
@@ -244,7 +244,6 @@ ComposeSession::ComposeSession(
     base::Token session_id,
     InnerTextProvider* inner_text,
     autofill::FieldGlobalId node_id,
-    bool is_page_language_supported,
     Observer* observer,
     ComposeCallback callback)
     : executor_(executor),
@@ -259,7 +258,6 @@ ComposeSession::ComposeSession(
       inner_text_caller_(inner_text),
       ukm_source_id_(web_contents->GetPrimaryMainFrame()->GetPageUkmSourceId()),
       node_id_(node_id),
-      is_page_language_supported_(is_page_language_supported),
       session_id_(session_id),
       weak_ptr_factory_(this) {
   session_duration_ = std::make_unique<base::ElapsedTimer>();
@@ -554,7 +552,6 @@ void ComposeSession::RequestWithSession(
 void ComposeSession::ComposeRequestTimeout(int id) {
   request_timeouts_.erase(id);
   compose::LogComposeRequestStatus(
-      is_page_language_supported_,
       compose::mojom::ComposeStatus::kRequestTimeout);
 
   active_mojo_state_->has_pending_request = false;
@@ -600,8 +597,7 @@ void ComposeSession::ModelExecutionCallback(
 
     compose::LogComposeRequestReason(eval_location, request_reason);
     compose::LogComposeRequestStatus(
-        eval_location, is_page_language_supported_,
-        compose::mojom::ComposeStatus::kRequestTimeout);
+        eval_location, compose::mojom::ComposeStatus::kRequestTimeout);
     return;
   }
 
@@ -738,9 +734,8 @@ void ComposeSession::ModelExecutionComplete(
   }
 
   // Log successful response status.
-  compose::LogComposeRequestStatus(is_page_language_supported_,
-                                   compose::mojom::ComposeStatus::kOk);
-  compose::LogComposeRequestStatus(eval_location, is_page_language_supported_,
+  compose::LogComposeRequestStatus(compose::mojom::ComposeStatus::kOk);
+  compose::LogComposeRequestStatus(eval_location,
                                    compose::mojom::ComposeStatus::kOk);
   compose::LogComposeRequestDuration(request_delta, eval_location,
                                      /* is_ok */ true);
@@ -770,9 +765,8 @@ void ComposeSession::ProcessError(
     compose::EvalLocation eval_location,
     compose::mojom::ComposeStatus error,
     compose::ComposeRequestReason request_reason) {
-  compose::LogComposeRequestStatus(is_page_language_supported_, error);
-  compose::LogComposeRequestStatus(eval_location, is_page_language_supported_,
-                                   error);
+  compose::LogComposeRequestStatus(error);
+  compose::LogComposeRequestStatus(eval_location, error);
   ++session_events_.failed_requests_count;
 
   // Feedback can not be given for a request with an error so report now.
@@ -890,7 +884,7 @@ void ComposeSession::OpenBugReportingLink() {
   }
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
-          GURL(url), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          GURL(url), ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
@@ -909,7 +903,8 @@ void ComposeSession::OpenComposeLearnMorePage() {
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
           GURL(kComposeLearnMorePageURL),
-          WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 
@@ -917,7 +912,8 @@ void ComposeSession::OpenEnterpriseComposeLearnMorePage() {
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
           GURL(kEnterpriseComposeLearnMorePageURL),
-          WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 
@@ -933,7 +929,7 @@ void ComposeSession::OpenFeedbackSurveyLink() {
   }
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
-          GURL(url), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          GURL(url), ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
@@ -941,7 +937,8 @@ void ComposeSession::OpenFeedbackSurveyLink() {
 void ComposeSession::OpenSignInPage() {
   web_contents_->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
-          GURL(kSignInPageURL), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          GURL(kSignInPageURL),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
@@ -1136,7 +1133,6 @@ void ComposeSession::UpdateInnerTextAndContinueComposeIfNecessary(
           inner_text.size() - config.inner_text_max_bytes);
       inner_text.erase(config.inner_text_max_bytes);
     }
-    compose::LogComposeDialogInnerTextOffsetFound(node_offset.has_value());
   }
 
   if (!executor_) {

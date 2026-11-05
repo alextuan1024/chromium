@@ -232,9 +232,6 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterBlueZ final
   void NotifyDeviceAddressChanged(BluetoothDeviceBlueZ* device,
                                   const std::string& old_address);
 
-  // Announce to observers MTU change in ATT communication to |device|.
-  void NotifyDeviceMTUChanged(BluetoothDeviceBlueZ* device, uint16_t mtu);
-
   // Announce to observers advertisement received from |device|.
   void NotifyDeviceAdvertisementReceived(BluetoothDeviceBlueZ* device,
                                          int16_t rssi,
@@ -584,17 +581,18 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterBlueZ final
 
   // The profiles we have registered with the bluetooth daemon.
   std::map<device::BluetoothUUID,
-           raw_ptr<BluetoothAdapterProfileBlueZ, CtnExperimental>>
+           raw_ptr<BluetoothAdapterProfileBlueZ, DanglingUntriaged>>
       profiles_;
 
   // Profiles that have been released and are pending removal.
   std::map<device::BluetoothUUID,
-           raw_ptr<BluetoothAdapterProfileBlueZ, CtnExperimental>>
+           raw_ptr<BluetoothAdapterProfileBlueZ, DanglingUntriaged>>
       released_profiles_;
 
   // Queue of delegates waiting for a profile to register.
-  std::map<device::BluetoothUUID,
-           raw_ptr<std::vector<RegisterProfileCompletionPair>, CtnExperimental>>
+  std::map<
+      device::BluetoothUUID,
+      raw_ptr<std::vector<RegisterProfileCompletionPair>, DanglingUntriaged>>
       profile_queues_;
 
   // List of GATT services that are owned by this adapter.
@@ -603,7 +601,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapterBlueZ final
 
   // GATT services that are currently available on the GATT server.
   std::map<dbus::ObjectPath,
-           raw_ptr<BluetoothLocalGattServiceBlueZ, CtnExperimental>>
+           raw_ptr<BluetoothLocalGattServiceBlueZ, DanglingUntriaged>>
       registered_gatt_services_;
 
   // DBus Object Manager that acts as a service provider for all the services

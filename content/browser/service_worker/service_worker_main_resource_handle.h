@@ -61,6 +61,14 @@ class CONTENT_EXPORT ServiceWorkerMainResourceHandle {
       ScopedServiceWorkerClient scoped_service_worker_client,
       const net::IsolationInfo& isolation_info);
 
+  // Destroys the unclaimed `ScopedServiceWorkerClient` if the request becomes
+  // ineligible for service worker control (e.g., upon redirect), while keeping
+  // `*this` alive so worker script loaders continue tracking host liveness.
+  // Ownership is extracted before destruction in case releasing the client
+  // drops the last worker refcount on the `RenderProcessHost` and synchronously
+  // destroys the owning worker host and `*this`.
+  void ResetServiceWorkerClient();
+
   base::WeakPtr<ServiceWorkerClient> service_worker_client();
 
   base::WeakPtr<ServiceWorkerClient> parent_service_worker_client() {
@@ -113,7 +121,9 @@ class CONTENT_EXPORT ServiceWorkerMainResourceHandle {
   // controller of the to-be-created global scope.
   std::unique_ptr<ScopedServiceWorkerClient> scoped_service_worker_client_;
 
-  // Only set and used for workers with a blob URL.
+  // Set for workers and about:srcdoc iframes to inherit state (such as
+  // service-worker ineligibility, and the controller for blob/srcdoc URLs)
+  // from their creator client.
   const base::WeakPtr<ServiceWorkerClient> parent_service_worker_client_;
 
   // FetchEvent.clientId

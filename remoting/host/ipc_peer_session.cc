@@ -11,8 +11,10 @@
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
+#include "build/build_config.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "remoting/protocol/errors.h"
 #include "remoting/signaling/signaling_id_util.h"
 
 namespace remoting {
@@ -49,7 +51,7 @@ void IpcPeerSession::Start(
   event_handler_ = event_handler;
   if (!remote_.is_bound()) {
     LOG(WARNING) << "Start called when PeerSession remote is not bound.";
-    NotifySessionClosed(protocol::ErrorCode::CHANNEL_CONNECTION_ERROR,
+    NotifySessionClosed(protocol::ErrorCode::INVALID_STATE,
                         "PeerSession remote is not bound.", FROM_HERE);
     return;
   }
@@ -59,8 +61,12 @@ void IpcPeerSession::Start(
   desktop_session_options_ = mojom::DesktopSessionOptions::New();
   SplitSignalingIdResource(client_jid, &desktop_session_options_->client_id,
                            /*resource=*/nullptr);
-  desktop_session_options_->is_curtained =
+  desktop_session_options_->curtain_required =
       desktop_environment_options.enable_curtaining();
+#if BUILDFLAG(IS_LINUX)
+  desktop_session_options_->terminate_local_session =
+      session_options.terminate_local_session.value_or(false);
+#endif  // BUILDFLAG(IS_LINUX)
 
   DCHECK(!desktop_session_requester_receiver_.is_bound());
   mojo::PendingRemote<mojom::DesktopSessionRequester>
@@ -195,7 +201,7 @@ void IpcPeerSession::OnPeerSessionDisconnected() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   LOG(ERROR) << "PeerSession remote dropped unexpectedly.";
   remote_.reset();
-  NotifySessionClosed(protocol::ErrorCode::CHANNEL_CONNECTION_ERROR,
+  NotifySessionClosed(protocol::ErrorCode::INVALID_STATE,
                       "PeerSession remote dropped unexpectedly.", FROM_HERE);
 }
 
@@ -203,7 +209,7 @@ void IpcPeerSession::OnEventHandlerDisconnected() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   LOG(ERROR) << "PeerSessionEventHandler remote dropped unexpectedly.";
   event_handler_receiver_.reset();
-  NotifySessionClosed(protocol::ErrorCode::CHANNEL_CONNECTION_ERROR,
+  NotifySessionClosed(protocol::ErrorCode::INVALID_STATE,
                       "PeerSessionEventHandler dropped unexpectedly.",
                       FROM_HERE);
 }

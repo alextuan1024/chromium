@@ -24,15 +24,13 @@ import type {TabStripObserver} from '/tab_strip_api/tab_strip_observer.js';
 import {DropTargetReceiver, DropTargetRegistrationRemote, TabDragService} from '../tab_drag_api.mojom-webui.js';
 import type {DropTargetInterface, DropTargetRegistrationRemote as DropTargetRegistrationRemoteType, TabDragServiceRemote} from '../tab_drag_api.mojom-webui.js';
 
-import type {TabActivated, TabAdded, TabClosed, TabUpdated} from './events.js';
-import type {TabGroupItem, TabItem, TabStripItem} from './items.js';
+import type {TabAdded, TabClosed, TabUpdated} from './events.js';
+import type {TabGroupItem, TabStripItem} from './items.js';
 import type {TabElement} from './tab.js';
 import {TabDragDelegate} from './tab_drag_delegate.js';
 import type {TabDragHost} from './tab_drag_host.js';
 import {getCss} from './tab_strip.css.js';
 import {getHtml} from './tab_strip.html.js';
-
-export type {TabGroupItem, TabItem, TabStripItem};
 
 export interface TabStripElement {
   $: {
@@ -104,9 +102,9 @@ export class TabStripElement extends CrLitElement implements
   }
 
   protected accessor items_: TabStripItem[] = [];
-  protected accessor activeTab_: string = '';
+  private accessor activeTab_: string = '';
   protected accessor dragInProgress_ = false;
-  protected accessor inactiveFrame = false;
+  accessor inactiveFrame = false;
 
   private readonly tabStripService_: TabStripServiceRemote;
   private readonly tabDragService_: TabDragServiceRemote;
@@ -336,15 +334,11 @@ export class TabStripElement extends CrLitElement implements
     this.tabStripService_.closeNodes([e.detail.id]);
   }
 
-  protected activateTab(tabId: NodeId) {
-    const item = this.findItem_<TabItem>(tabId, 'tab');
-    if (!item) {
-      return;
-    }
-
-    this.setActiveTab_(tabId);
+  private activateTab(tabId: NodeId) {
+    // Only request the activation. The active state is applied when the
+    // browser reports the change through OnDataChanged (see updateTab()), so
+    // the UI never disagrees with the TabStripModel.
     this.tabStripService_.activateTab(tabId);
-    this.fire<TabActivated>('tab-activated', item.tabData);
   }
 
   // TODO(webium): implement this.
@@ -400,7 +394,7 @@ export class TabStripElement extends CrLitElement implements
         undefined;
   }
 
-  protected getTabElement_(id: string): TabElement|null {
+  private getTabElement_(id: string): TabElement|null {
     return this.shadowRoot.querySelector<TabElement>(
         `webui-browser-tab#${this.tabIdToDomId(id)}`);
   }
@@ -409,7 +403,7 @@ export class TabStripElement extends CrLitElement implements
     this.activeTab_ = id;
   }
 
-  protected setItems_(items: TabStripItem[]) {
+  private setItems_(items: TabStripItem[]) {
     this.items_ = items;
   }
 

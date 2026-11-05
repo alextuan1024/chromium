@@ -76,9 +76,9 @@ public class ChromePaymentRequestService
         implements BrowserPaymentRequest, PaymentUiService.Delegate {
     private static final String TAG = "ChromePaymentReqServ";
     private static final String SPC_TRANSACTION_OUTCOME_HISTOGRAM =
-            "SecurePaymentRequest.Transaction.Outcome";
+            "PaymentRequest.SecurePaymentConfirmation.Transaction.Outcome";
     private static final String SPC_FALLBACK_OUTCOME_HISTOGRAM =
-            "SecurePaymentRequest.Fallback.Outcome";
+            "PaymentRequest.SecurePaymentConfirmation.Fallback.Outcome";
 
     // Null-check is necessary because retainers of ChromePaymentRequestService could still
     // reference ChromePaymentRequestService after mPaymentRequestService is set null, e.g.,
@@ -551,10 +551,15 @@ public class ChromePaymentRequestService
 
     // Implements BrowserPaymentRequest:
     @Override
-    public @Nullable WebContents openPaymentHandlerWindow(GURL url, long ukmSourceId) {
+    public @Nullable WebContents openPaymentHandlerWindow(
+            GURL url, long ukmSourceId, @Nullable Integer preferredHeightCssPx) {
+        if (mPaymentRequestService == null) return null;
 
         @Nullable WebContents paymentHandlerWebContents =
-                mPaymentUiService.showPaymentHandlerUi(url);
+                mPaymentUiService.showPaymentHandlerUi(
+                        url,
+                        mPaymentRequestService.getPaymentRequestSecurityOrigin(),
+                        preferredHeightCssPx);
         if (paymentHandlerWebContents != null) {
             ServiceWorkerPaymentAppBridge.onOpeningPaymentAppWindow(
                     /* paymentRequestWebContents= */ mWebContents,

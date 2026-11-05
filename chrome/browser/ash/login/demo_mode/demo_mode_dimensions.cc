@@ -7,13 +7,13 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
 #include "base/version.h"
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
 #include "chrome/browser/ash/login/demo_mode/demo_setup_controller.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/version_info/version_info.h"
@@ -27,7 +27,9 @@ bool AreDemoDimensionsAccessible() {
 }
 
 std::string Country(PrefService& local_state) {
-  CHECK(AreDemoDimensionsAccessible(), base::NotFatalUntil::M160);
+  // TODO(crbug.com/568446975): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(AreDemoDimensionsAccessible());
   // TODO(b/328305607): Remove this conversion part once all
   // prefs::kDemoModeCountry are converted.
   const std::string country = local_state.GetString(prefs::kDemoModeCountry);
@@ -40,22 +42,23 @@ std::string Country(PrefService& local_state) {
 }
 
 std::string RetailerName(const PrefService& local_state) {
-  CHECK(AreDemoDimensionsAccessible(), base::NotFatalUntil::M160);
+  // TODO(crbug.com/568459773): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(AreDemoDimensionsAccessible());
   return local_state.GetString(prefs::kDemoModeRetailerId);
 }
 
 std::string StoreNumber(const PrefService& local_state) {
-  CHECK(AreDemoDimensionsAccessible(), base::NotFatalUntil::M160);
+  // TODO(crbug.com/568456475): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(AreDemoDimensionsAccessible());
   return local_state.GetString(prefs::kDemoModeStoreId);
 }
 
-bool IsCloudGamingDevice() {
-  CHECK(AreDemoDimensionsAccessible(), base::NotFatalUntil::M160);
-  return chromeos::features::IsCloudGamingDeviceEnabled();
-}
-
 bool IsFeatureAwareDevice() {
-  CHECK(AreDemoDimensionsAccessible(), base::NotFatalUntil::M160);
+  // TODO(crbug.com/568458409): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(AreDemoDimensionsAccessible());
   return ash::features::IsFeatureAwareDeviceDemoModeEnabled();
 }
 
@@ -124,10 +127,6 @@ enterprise_management::DemoModeDimensions GetDemoModeDimensions(
   dimensions.set_country(Country(local_state));
   dimensions.set_retailer_name(RetailerName(local_state));
   dimensions.set_store_number(StoreNumber(local_state));
-  if (IsCloudGamingDevice()) {
-    dimensions.add_customization_facets(
-        enterprise_management::DemoModeDimensions::CLOUD_GAMING_DEVICE);
-  }
   if (IsFeatureAwareDevice()) {
     dimensions.add_customization_facets(
         enterprise_management::DemoModeDimensions::FEATURE_AWARE_DEVICE);

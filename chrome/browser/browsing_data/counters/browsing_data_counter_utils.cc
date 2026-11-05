@@ -28,8 +28,6 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_utils.h"
 #include "components/strings/grit/components_strings.h"
-#include "components/sync/base/features.h"
-#include "components/sync/service/sync_service.h"
 #include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/core_account_id.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -79,11 +77,7 @@ std::u16string FormatBytesMBOrHigher(base::ByteSize bytes) {
 bool ShouldShowCookieException(Profile* profile) {
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
   if (AccountConsistencyModeManager::IsMirrorEnabledForProfile(profile)) {
-    signin::ConsentLevel consent_level =
-        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-            ? signin::ConsentLevel::kSignin
-            : signin::ConsentLevel::kSync;
-    return identity_manager->HasPrimaryAccount(consent_level);
+    return identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
   }
 
   if (AccountConsistencyModeManager::IsDiceEnabledForProfile(profile)) {
@@ -185,9 +179,10 @@ std::u16string GetChromeCounterTextFromResult(
         static_cast<const HostedAppsCounter::HostedAppsResult*>(result);
     int hosted_apps_count = hosted_apps_result->Value();
 
-    DCHECK_GE(
+    CHECK_GE(
         hosted_apps_result->Value(),
-        base::checked_cast<ResultInt>(hosted_apps_result->examples().size()));
+        base::checked_cast<ResultInt>(hosted_apps_result->examples().size()),
+        base::NotFatalUntil::M161);
 
     std::vector<std::u16string> replacements;
     if (hosted_apps_count > 0) {

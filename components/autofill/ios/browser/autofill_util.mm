@@ -333,9 +333,12 @@ base::expected<FormData, ExtractFormDataFailure> ExtractFormData(
   form_data.set_fields(std::move(fields));
 
   FormSignature form_signature = CalculateFormSignature(form_data);
+  FormSignature structural_form_signature =
+      CalculateStructuralFormSignature(form_data);
   std::vector<FormFieldData> form_fields = form_data.ExtractFields();
   for (FormFieldData& field : form_fields) {
     field.set_host_form_signature(form_signature);
+    field.set_host_form_structural_signature(structural_form_signature);
   }
   form_data.set_fields(std::move(form_fields));
   return form_data;
@@ -365,8 +368,10 @@ bool ExtractFormFieldData(const base::DictValue& field,
     FieldRendererId field_renderer_id;
     StringToUint(*renderer_id, &field_renderer_id.value());
     field_data->set_renderer_id(field_renderer_id);
+    field_data->set_form_control_ax_id(field_renderer_id.value());
   } else {
     field_data->set_renderer_id(FieldRendererId());
+    field_data->set_form_control_ax_id(0);
   }
 
   // Optional fields.

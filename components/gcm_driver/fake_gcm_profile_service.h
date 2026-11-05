@@ -51,10 +51,6 @@ class FakeGCMProfileService : public GCMProfileService {
 
   const std::string& last_receiver_id() const { return last_receiver_id_; }
 
-  const std::string& last_registered_app_id() const {
-    return last_registered_app_id_;
-  }
-
   const std::vector<std::string>& last_registered_sender_ids() const {
     return last_registered_sender_ids_;
   }
@@ -64,7 +60,8 @@ class FakeGCMProfileService : public GCMProfileService {
   void set_collect(bool collect) { collect_ = collect; }
 
   // Crude offline simulation: requests fail and never run their callbacks (in
-  // reality, callbacks run within GetGCMBackoffPolicy().maximum_backoff_ms).
+  // reality, callbacks run within
+  // fcm::GetBackoffPolicy().maximum_backoff_ms).
   void set_offline(bool is_offline) { is_offline_ = is_offline; }
 
  private:
@@ -74,7 +71,6 @@ class FakeGCMProfileService : public GCMProfileService {
   bool collect_ = false;
   bool is_offline_ = false;
 
-  std::string last_registered_app_id_;
   std::vector<std::string> last_registered_sender_ids_;
   std::list<GCMClient::Result> unregister_responses_;
   OutgoingMessage last_sent_message_;

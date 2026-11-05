@@ -32,6 +32,8 @@
 
 #include <limits>
 
+#include "base/memory/raw_ptr_exclusion.h"
+#include "base/no_destructor.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -94,8 +96,9 @@ class HeapSizeCache {
 
   void Update(MemoryInfo::Precision precision) {
     GetHeapSize(info_);
-    if (precision == MemoryInfo::Precision::kPrecise)
+    if (precision == MemoryInfo::Precision::kPrecise) {
       return;
+    }
 
     info_.used_js_heap_size = QuantizeMemorySize(info_.used_js_heap_size);
     info_.total_js_heap_size = QuantizeMemorySize(info_.total_js_heap_size);
@@ -103,7 +106,8 @@ class HeapSizeCache {
   }
 
   std::optional<base::TimeTicks> last_update_time_;
-  const base::TickClock* clock_;
+  // RAW_PTR_EXCLUSION: #global-scope
+  RAW_PTR_EXCLUSION const base::TickClock* clock_;
 
   HeapInfo info_;
 };
@@ -113,11 +117,9 @@ class HeapSizeCache {
 // tuning, and hence don't need to be as refined when the value is large, so we
 // threshold at a list of exponentially separated buckets.
 size_t QuantizeMemorySize(size_t size) {
-  const int kNumberOfBuckets = 100;
-  DEFINE_STATIC_LOCAL(Vector<size_t>, bucket_size_list, ());
-
-  if (bucket_size_list.empty()) {
-    bucket_size_list.resize(kNumberOfBuckets);
+  constexpr int kNumberOfBuckets = 100;
+  static const base::NoDestructor<Vector<size_t>> bucket_size_list([]() {
+    Vector<size_t> list(kNumberOfBuckets);
 
     float size_of_next_bucket =
         10000000.0;  // First bucket size is roughly 10M.
@@ -133,8 +135,7 @@ size_t QuantizeMemorySize(size_t size) {
 
     for (int i = 0; i < kNumberOfBuckets; ++i) {
       size_t current_bucket_size = static_cast<size_t>(size_of_next_bucket);
-      bucket_size_list[i] =
-          current_bucket_size - (current_bucket_size % granularity);
+      list[i] = current_bucket_size - (current_bucket_size % granularity);
 
       size_of_next_bucket *= scaling_factor;
       if (size_of_next_bucket >= next_power_of_ten) {
@@ -147,17 +148,20 @@ size_t QuantizeMemorySize(size_t size) {
       }
 
       // Watch out for overflow, if the range is too large for size_t.
-      if (i > 0 && bucket_size_list[i] < bucket_size_list[i - 1])
-        bucket_size_list[i] = std::numeric_limits<size_t>::max();
+      if (i > 0 && list[i] < list[i - 1]) {
+        list[i] = std::numeric_limits<size_t>::max();
+      }
+    }
+    return list;
+  }());
+
+  for (int i = 0; i < kNumberOfBuckets; ++i) {
+    if (size <= (*bucket_size_list)[i]) {
+      return (*bucket_size_list)[i];
     }
   }
 
-  for (int i = 0; i < kNumberOfBuckets; ++i) {
-    if (size <= bucket_size_list[i])
-      return bucket_size_list[i];
-  }
-
-  return bucket_size_list[kNumberOfBuckets - 1];
+  return (*bucket_size_list)[kNumberOfBuckets - 1];
 }
 
 MemoryInfo::MemoryInfo(Precision precision) {
@@ -165,10 +169,11 @@ MemoryInfo::MemoryInfo(Precision precision) {
   // bucketize or cache values, regardless of the value of |precision|. When the
   // flag is off then our cache is used and |precision| determines the
   // granularity of the values and the timer of the cache we use.
-  if (RuntimeEnabledFeatures::PreciseMemoryInfoEnabled())
+  if (RuntimeEnabledFeatures::PreciseMemoryInfoEnabled()) {
     GetHeapSize(info_);
-  else
+  } else {
     HeapSizeCache::ForCurrentThread().GetCachedHeapSize(info_, precision);
+  }
   // The values must have been computed, so totalJSHeapSize must be greater than
   // 0.
   DCHECK_GT(totalJSHeapSize(), 0u);

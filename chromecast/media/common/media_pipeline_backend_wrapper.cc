@@ -140,6 +140,9 @@ class ActiveMediaPipelineBackendWrapper : public DecoderCreatorCmaBackend {
   const AudioContentType content_type_;
 
   bool playing_;
+  // True between a successful Start() and the next Stop(). The platform
+  // backend may only be stopped in the Playing/Paused states.
+  bool started_ = false;
 };
 
 ActiveMediaPipelineBackendWrapper::ActiveMediaPipelineBackendWrapper(
@@ -156,8 +159,8 @@ ActiveMediaPipelineBackendWrapper::ActiveMediaPipelineBackendWrapper(
       audio_stream_type_(params.audio_type),
       content_type_(params.content_type),
       playing_(false) {
-  DCHECK(backend_);
-  DCHECK(backend_manager_);
+  CHECK(backend_, base::NotFatalUntil::M163);
+  CHECK(backend_manager_, base::NotFatalUntil::M163);
 }
 
 ActiveMediaPipelineBackendWrapper::~ActiveMediaPipelineBackendWrapper() {
@@ -196,7 +199,7 @@ void ActiveMediaPipelineBackendWrapper::LogicalResume() {
 
 std::unique_ptr<AudioDecoderWrapper>
 ActiveMediaPipelineBackendWrapper::CreateAudioDecoderWrapper() {
-  DCHECK(!audio_decoder_ptr_);
+  CHECK(!audio_decoder_ptr_, base::NotFatalUntil::M163);
 
   if (!backend_manager_->IncrementDecoderCount(
           IsSfx() ? DecoderType::SFX_DECODER : DecoderType::AUDIO_DECODER))
@@ -223,7 +226,7 @@ ActiveMediaPipelineBackendWrapper::CreateAudioDecoderWrapper() {
 
 std::unique_ptr<VideoDecoderWrapper>
 ActiveMediaPipelineBackendWrapper::CreateVideoDecoderWrapper() {
-  DCHECK(!video_decoder_created_);
+  CHECK(!video_decoder_created_, base::NotFatalUntil::M163);
   backend_manager_->BackendUseVideoDecoder(wrapping_backend_);
 
   if (!backend_manager_->IncrementDecoderCount(DecoderType::VIDEO_DECODER))
@@ -255,12 +258,16 @@ bool ActiveMediaPipelineBackendWrapper::Start(int64_t start_pts) {
   if (!backend_->Start(start_pts)) {
     return false;
   }
+  started_ = true;
   SetPlaying(true);
   return true;
 }
 
 void ActiveMediaPipelineBackendWrapper::Stop() {
-  backend_->Stop();
+  if (started_) {
+    backend_->Stop();
+    started_ = false;
+  }
   SetPlaying(false);
 }
 
@@ -319,19 +326,29 @@ MediaPipelineBackendWrapper::~MediaPipelineBackendWrapper() {
 void MediaPipelineBackendWrapper::Revoke() {
   if (!revoked_) {
     revoked_ = true;
+    // Read the current PTS and stop the platform backend BEFORE the decoder
+    // wrappers are replaced. Revoking the wrappers destroys buffers that the
+    // platform decoders may still reference: a push that returned
+    // kBufferPending lets the platform keep the raw CastDecoderBuffer* until
+    // OnPushBufferComplete() or Stop() (media_pipeline_backend.h). In
+    // particular the software-decoded PCM buffer is owned solely by the
+    // AudioDecoderSoftwareWrapper that AudioDecoderWrapper::Revoke() destroys.
+    // Stop() aborts those pending pushes, after which the buffers can go away.
+    const int64_t current_pts = backend_->GetCurrentPts();
+    backend_->Stop();
     if (audio_decoder_)
       audio_decoder_->Revoke();
     if (video_decoder_)
       video_decoder_->Revoke();
 
     backend_ = std::make_unique<RevokedMediaPipelineBackendWrapper>(
-        content_type_, backend_->GetCurrentPts());
+        content_type_, current_pts);
   }
 }
 
 CmaBackend::AudioDecoder* MediaPipelineBackendWrapper::CreateAudioDecoder() {
   LOG(INFO) << "Beginning creation of AudioDecoder...";
-  DCHECK(!audio_decoder_);
+  CHECK(!audio_decoder_, base::NotFatalUntil::M163);
   audio_decoder_ = backend_->CreateAudioDecoderWrapper();
   LOG(INFO) << "Completed creation of AudioDecoder!";
   return audio_decoder_.get();
@@ -339,7 +356,7 @@ CmaBackend::AudioDecoder* MediaPipelineBackendWrapper::CreateAudioDecoder() {
 
 CmaBackend::VideoDecoder* MediaPipelineBackendWrapper::CreateVideoDecoder() {
   LOG(INFO) << "Beginning creation of VideoDecoder...";
-  DCHECK(!video_decoder_);
+  CHECK(!video_decoder_, base::NotFatalUntil::M163);
   video_decoder_ = backend_->CreateVideoDecoderWrapper();
   LOG(INFO) << "VideoDecoder creation of AudioDecoder!";
   return video_decoder_.get();

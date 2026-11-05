@@ -2,47 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote, SuggestStyle} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import type {AutocompleteMatch} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 
 import {PageHandlerFactory, PageHandlerRemote} from './composebox.mojom-webui.js';
-
-export function createAutocompleteMatch(
-    config: Partial<AutocompleteMatch> = {}): AutocompleteMatch {
-  return {
-    isHidden: false,
-    a11yLabel: '',
-    actions: [],
-    allowedToBeDefaultMatch: false,
-    isSearchType: false,
-    isEnterpriseSearchAggregatorPeopleType: false,
-    swapContentsAndDescription: false,
-    showContextualDescription: false,
-    supportsDeletion: false,
-    suggestionGroupId: -1,
-    contents: '',
-    contentsClass: [{offset: 0, style: 0}],
-    description: '',
-    descriptionClass: [{offset: 0, style: 0}],
-    destinationUrl: '',
-    inlineAutocompletion: '',
-    fillIntoEdit: '',
-    iconPath: '',
-    iconUrl: '',
-    imageDominantColor: '',
-    imageUrl: '',
-    isNoncannedAimSuggestion: false,
-    removeButtonA11yLabel: '',
-    type: '',
-    isContextualSuggestion: false,
-    isTwoRowSuggestion: false,
-    tailSuggestCommonPrefix: null,
-    keywordModel: null,
-    fuseboxAction: null,
-    suggestStyle: SuggestStyle.kUnspecified,
-    ...config,
-  };
-}
 
 export interface ComposeboxProxy {
   handler: PageHandlerRemote;
@@ -52,6 +14,7 @@ export interface ComposeboxProxy {
   // <if expr="not is_android">
   getSmartTabSharingActive(): Promise<{active: boolean}>;
   setSmartTabSharingActive(active: boolean): void;
+  resetSmartTabSharing(): Promise<{active: boolean}>;
   observeSmartTabSharingActive(callback: (active: boolean) => void): number;
   // </if>
 }
@@ -75,6 +38,10 @@ export class ComposeboxProxyImpl implements ComposeboxProxy {
 
   setSmartTabSharingActive(active: boolean): void {
     this.searchboxHandler.setSmartTabSharingActive(active);
+  }
+
+  resetSmartTabSharing(): Promise<{active: boolean}> {
+    return this.searchboxHandler.resetSmartTabSharing();
   }
 
   observeSmartTabSharingActive(callback: (active: boolean) => void): number {

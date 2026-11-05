@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_PERFORMANCE_MANAGER_POLICIES_BACKGROUND_TAB_LOADING_POLICY_H_
 #define CHROME_BROWSER_PERFORMANCE_MANAGER_POLICIES_BACKGROUND_TAB_LOADING_POLICY_H_
 
+#include <array>
 #include <map>
 #include <optional>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory_coordinator/memory_consumer.h"
+#include "base/timer/timer.h"
 #include "components/performance_manager/public/graph/graph.h"
 #include "components/performance_manager/public/graph/graph_registered.h"
 #include "components/performance_manager/public/graph/node_data_describer.h"
@@ -56,6 +58,7 @@ class BackgroundTabLoadingPolicy
   void OnTakenFromGraph(Graph* graph) override;
 
   // PageNodeObserver implementation:
+  void OnIsVisibleChanged(const PageNode* page_node) override;
   void OnLoadingStateChanged(const PageNode* page_node,
                              PageNode::LoadingState previous_state) override;
   void OnBeforePageNodeRemoved(const PageNode* page_node) override;
@@ -92,6 +95,53 @@ class BackgroundTabLoadingPolicy
  private:
   friend class ::performance_manager::BackgroundTabLoadingBrowserTest;
   friend class BackgroundTabLoadingPolicyTest;
+
+  // Decision returned by `ShouldLoad()`.
+  enum class LoadDecision {
+    kLoad,
+    kSkipForMaxTabs,
+    kSkipForFreeMemory,
+    kSkipForTabAge,
+  };
+
+  // Mutually exclusive outcomes for tabs passed to
+  // `ScheduleLoadForRestoredTabs()`.
+  // LINT.IfChange(TabLoadOutcome)
+  enum class TabLoadOutcome {
+    kLoadedByPolicy,
+    kAlreadyLoading,
+    kLoadedExternally,
+    kClosedBeforeLoading,
+    kSkippedForMaxTabs,
+    kSkippedForFreeMemory,
+    kSkippedForTabAge,
+    kStoppedForMemoryPressure,
+    kMaxValue = kStoppedForMemoryPressure,
+  };
+  // LINT.ThenChange(//chrome/browser/performance_manager/policies/background_tab_loading_policy.cc:TabLoadOutcomeHistogramNames)
+
+  // Tab counts for the active restore wave.
+  //
+  // Invariant while a wave is active (prior to `OnTakenFromGraph()`):
+  //   `num_tabs_scheduled ==
+  //       sum(num_tabs_per_outcome) + page_nodes_to_load_.size()`
+  // Every non-null PageNode passed to `ScheduleLoadForRestoredTabs()`
+  // increments `num_tabs_scheduled` and either immediately records
+  // `kAlreadyLoading` or enters `page_nodes_to_load_` (recording one outcome
+  // when removed). When `RecordRestoreTabCountMetrics()` runs, all queued tabs
+  // have recorded an outcome, so `num_tabs_scheduled ==
+  // sum(num_tabs_per_outcome)`.
+  struct RestoreTabCounts {
+    // Number of tabs passed to `ScheduleLoadForRestoredTabs()` in the wave.
+    // Recorded to `SessionRestore.BackgroundTabLoading.TabCount` and checked
+    // against the sum of `num_tabs_per_outcome` to verify that every scheduled
+    // tab recorded exactly one outcome.
+    size_t num_tabs_scheduled = 0;
+
+    // Number of tabs per `TabLoadOutcome` in the wave.
+    std::array<size_t, static_cast<size_t>(TabLoadOutcome::kMaxValue) + 1>
+        num_tabs_per_outcome{};
+  };
 
   // Holds data about a PageNode waiting to be loaded by this policy.
   struct PageNodeToLoadData {
@@ -134,11 +184,9 @@ class BackgroundTabLoadingPolicy
   // testing.
   virtual SiteDataReader* GetSiteDataReader(const PageNode* page_node) const;
 
-  // Determines whether or not the given PageNode should be loaded. If this
-  // returns false, then the policy no longer attempts to load |page_node| and
-  // removes it from the policy's internal state. This is called immediately
-  // prior to trying to load the PageNode.
-  bool ShouldLoad(const PageNodeToLoadData& page_node_data);
+  // Determines whether `page_node_data` should be loaded or why it should be
+  // skipped. Called immediately prior to trying to load the PageNode.
+  LoadDecision ShouldLoad(const PageNodeToLoadData& page_node_data) const;
 
   // This will initialize |page_node_to_load_data->used_in_bg| to the proper
   // value, score the tab and call DispatchNotifyAllTabsScoredIfNeeded().
@@ -168,9 +216,11 @@ class BackgroundTabLoadingPolicy
   // Helper to load a single PageNode.
   void InitiateSinglePageLoad(const PageNode* page_node);
 
-  // Removes the PageNode from all the sets of PageNodes that the policy is
-  // tracking.
-  void RemovePageNode(const PageNode* page_node);
+  // Removes `page_node` from all sets of PageNodes tracked by the policy. If
+  // `page_node` was still queued in `page_nodes_to_load_`, records
+  // `outcome_if_queued`.
+  void RemovePageNode(const PageNode* page_node,
+                      TabLoadOutcome outcome_if_queued);
 
   // Initiates the load of enough tabs to fill all loading slots. No-ops if all
   // loading slots are occupied.
@@ -180,6 +230,20 @@ class BackgroundTabLoadingPolicy
   // avoid exceeding the number of loading slots.
   size_t GetMaxNewTabLoads() const;
 
+  // Returns true if any page in `page_nodes_loading_` is currently visible.
+  bool HasLoadingVisiblePage() const;
+
+  // Starts `visible_page_load_timeout_timer_` when background tab loads are
+  // deferred by a loading visible page, or stops the timer and resets
+  // `has_visible_page_load_timed_out_` once the deferral window ends (when no
+  // restored tabs remain in `page_nodes_to_load_` or no visible page is
+  // loading).
+  void UpdateVisiblePageLoadDeferralTimeout();
+
+  // Invoked when `visible_page_load_timeout_timer_` expires so a slow or hung
+  // visible page load cannot block background tab restoration indefinitely.
+  void OnVisiblePageLoadTimedOut();
+
   // Loads the next tab. This should only be called if there is a next tab to
   // load. This will always start loading a next tab even if the number of
   // simultaneously loading tabs is exceeded.
@@ -188,9 +252,17 @@ class BackgroundTabLoadingPolicy
   // Compute the amount of free memory on the system.
   size_t GetFreePhysicalMemoryMib() const;
 
-  // If `page_node` is in the set of page nodes to load, removes it and returns
-  // true.
-  bool ErasePageNodeToLoadData(const PageNode* page_node);
+  // If `page_node` is in `page_nodes_to_load_`, removes it, records `outcome`,
+  // and returns true.
+  bool ErasePageNodeToLoadData(const PageNode* page_node,
+                               TabLoadOutcome outcome);
+
+  // Increments the count for `outcome` in `restore_tab_counts_` by `count`.
+  void RecordTabOutcomes(TabLoadOutcome outcome, size_t count);
+
+  // Emits `SessionRestore.BackgroundTabLoading.TabCount*` histograms for
+  // `restore_tab_counts_` and resets `restore_tab_counts_`.
+  void RecordRestoreTabCountMetrics();
 
   // Returns the `PageNodeToLoadData` for `page_node` if it exists, nullptr
   // otherwise.
@@ -226,8 +298,7 @@ class BackgroundTabLoadingPolicy
   // The set of PageNodes that BackgroundTabLoadingPolicy has initiated loading,
   // and for which we are waiting for the loading to actually start. This signal
   // will be received from |OnIsLoadingChanged|.
-  std::vector<raw_ptr<const PageNode, VectorExperimental>>
-      page_nodes_load_initiated_;
+  std::vector<raw_ptr<const PageNode>> page_nodes_load_initiated_;
 
   // PageNodes that are currently loading, mapped to a boolean indicating
   // whether this policy was responsible for scheduling the load.
@@ -236,6 +307,9 @@ class BackgroundTabLoadingPolicy
   // The number of simultaneous tab loads that are permitted by policy. This
   // is computed based on the number of cores on the machine.
   size_t max_simultaneous_tab_loads_;
+
+  // Counts of scheduled tabs and their outcomes for the active restore.
+  RestoreTabCounts restore_tab_counts_;
 
   // The number of tab loads that have started. Every call to InitiateLoad
   // increments this value.
@@ -274,6 +348,24 @@ class BackgroundTabLoadingPolicy
   // The number of CPU cores required per permitted simultaneous tab
   // load.
   static constexpr uint32_t kCoresPerSimultaneousTabLoad = 2;
+
+  // Maximum time to defer initiating background tab loads per contiguous
+  // window in which at least one visible page is loading. This bounds
+  // deferral both while a visible page is in `kLoadedBusy` (which
+  // `PageLoadTrackerDecorator` otherwise keeps active for up to
+  // `kWaitingForIdleTimeout` = 1 minute) and if a visible page hangs in
+  // post-commit `kLoading` without firing `DidStopLoading()`.
+  static constexpr base::TimeDelta kMaxVisibleLoadingDeferralTimeout =
+      base::Seconds(15);
+
+  // Whether `visible_page_load_timeout_timer_` has expired for the current
+  // contiguous visible-loading episode. Reset once no visible page is in
+  // `page_nodes_loading_` or `page_nodes_to_load_` becomes empty.
+  bool has_visible_page_load_timed_out_ = false;
+
+  // Bounds how long background tab restoration waits for a loading visible
+  // page.
+  base::OneShotTimer visible_page_load_timeout_timer_;
 
   // It's possible for this policy object to be destroyed while it has posted
   // tasks. The tasks are bound to a weak pointer so that they are not executed

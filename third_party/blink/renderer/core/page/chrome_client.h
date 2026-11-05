@@ -187,6 +187,7 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual void DidChangeThemeColor(std::optional<SkColor> theme_color) = 0;
   virtual void DidChangeBackgroundColor(SkColor4f background_color,
                                         bool color_adjust) = 0;
+  virtual void UpdateEncoding(const String& encoding_name) = 0;
 
   // This gives the rect of the top level window that the given LocalFrame is a
   // part of.
@@ -221,10 +222,10 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   // local main frames.
   virtual void BeginLifecycleUpdates(LocalFrame& main_frame) = 0;
 
-  // Notifies clients immediately before a newly committed main frame is pushed
-  // to the compositor thread.
+  // Notifies clients immediately before the compositor commit state is
+  // snapshotted, while compositor animation state can still be updated.
   struct CORE_EXPORT CommitObserver : public GarbageCollectedMixin {
-    virtual void WillCommitCompositorFrame() {}
+    virtual void WillSnapshotCommitState() {}
 
    protected:
     virtual ~CommitObserver() = default;
@@ -233,7 +234,7 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual void RegisterForCommitObservation(CommitObserver*) = 0;
   virtual void UnregisterFromCommitObservation(CommitObserver*) = 0;
 
-  virtual void WillCommitCompositorFrame() = 0;
+  virtual void WillSnapshotCommitState() = 0;
   virtual void RequestFrameWithoutVSyncFromRoot(LocalFrame& frame) {}
 
   virtual bool StartDeferringCommits(LocalFrame& main_frame,
@@ -325,10 +326,6 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual void SetOverscrollBehavior(LocalFrame& main_frame,
                                      const cc::OverscrollBehavior&) = 0;
 
-  virtual bool ShouldReportDetailedMessageForSourceAndSeverity(
-      LocalFrame&,
-      mojom::blink::ConsoleMessageLevel log_level,
-      const String& source) = 0;
   virtual void AddMessageToConsole(LocalFrame*,
                                    mojom::ConsoleMessageSource,
                                    mojom::ConsoleMessageLevel,
@@ -356,8 +353,7 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual const display::ScreenInfos& GetScreenInfos(
       LocalFrame& frame) const = 0;
 
-  virtual const display::ScreenInfo& GetOriginalScreenInfo(
-      LocalFrame& frame) const = 0;
+  virtual float GetOriginalDeviceScaleFactor(LocalFrame& frame) const = 0;
 
   virtual void SetCursor(const ui::Cursor&, LocalFrame* local_root) = 0;
   virtual void SetCursorOverridden(bool) = 0;
@@ -529,10 +525,8 @@ class CORE_EXPORT ChromeClient : public GarbageCollected<ChromeClient> {
   virtual void DidClearValueInTextField(HTMLFormControlElement&) {}
   virtual void DidUserChangeContentEditableContent(Element&) {}
   virtual void DidEndEditingOnTextField(HTMLInputElement&) {}
-  virtual bool HandleKeyboardEventOnEditableElement(HTMLElement&,
-                                                    KeyboardEvent&) {
-    return false;
-  }
+  virtual void HandleKeyboardEventOnTextField(HTMLInputElement&,
+                                              KeyboardEvent&) {}
   virtual void TextFieldDataListChanged(HTMLInputElement&) {}
 
   // Called when the selected option of a <select> control is changed as a

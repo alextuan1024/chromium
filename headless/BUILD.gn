@@ -203,15 +203,14 @@ inspector_protocol_generate("protocol_sources") {
 }
 
 static_library("backend_cdp_bindings") {
+  public_deps = [ ":protocol_sources" ]
   deps = [
-    ":protocol_sources",
     "//base",
     "//third_party/inspector_protocol:crdtp",
   ]
   sources = get_target_outputs(":protocol_sources")
   visibility = [ ":headless_browser" ]
   configs += [
-    "//build/config/compiler:wexit_time_destructors",
     ":headless_defines_config",
     ":inside_headless_component",
   ]
@@ -227,7 +226,6 @@ source_set("headless_common") {
   ]
   deps = [ "//base" ]
   configs += [
-    "//build/config/compiler:wexit_time_destructors",
     ":inside_headless_component",
     ":headless_defines_config",
   ]
@@ -266,7 +264,6 @@ source_set("headless_renderer") {
     ]
   }
   configs += [
-    "//build/config/compiler:wexit_time_destructors",
     ":inside_headless_component",
     ":headless_defines_config",
   ]
@@ -285,6 +282,8 @@ source_set("headless_utility") {
     ":headless_common",
     "//mojo/public/cpp/bindings",
     "//printing/buildflags",
+    "//services/proxy_resolver:lib",
+    "//services/proxy_resolver/public/mojom",
   ]
   if (enable_printing) {
     deps += [
@@ -295,7 +294,6 @@ source_set("headless_utility") {
   configs += [
     ":headless_defines_config",
     ":inside_headless_component",
-    "//build/config/compiler:wexit_time_destructors",
   ]
 }
 
@@ -397,8 +395,10 @@ source_set("headless_browser") {
     "//content/public/browser",
     "//content/public/common",
     "//printing/buildflags",
+    "//sandbox/policy",
     "//services/cert_verifier/public/mojom",
     "//services/device/public/cpp/geolocation",
+    "//services/proxy_resolver/public/mojom",
     "//services/service_manager/public/cpp",
     "//third_party/inspector_protocol:crdtp",
     "//third_party/re2",
@@ -407,6 +407,7 @@ source_set("headless_browser") {
     "//ui/display",
     "//ui/display/util",
     "//ui/events/devices",
+    "//ui/events/platform",
     "//ui/gfx",
     "//url",
   ]
@@ -449,7 +450,6 @@ source_set("headless_browser") {
   }
 
   configs += [
-    "//build/config/compiler:wexit_time_destructors",
     ":inside_headless_component",
     ":headless_defines_config",
   ]
@@ -797,15 +797,16 @@ component("headless_shell_lib") {
     "//components/embedder_support",
     "//components/embedder_support/origin_trials",
     "//components/headless/command_handler",
+    "//components/headless/gpu_util",
     "//components/policy/content",
     "//components/security_state/content",
-    "//content",
     "//content/public/app",
     "//content/public/browser",
     "//content/public/child",
     "//content/public/common",
     "//content/public/utility",
     "//printing/buildflags",
+    "//sandbox/policy",
     "//v8",
   ]
 
@@ -814,6 +815,8 @@ component("headless_shell_lib") {
   }
 
   public_deps = [
+    ":embedded_resource_pack_data",
+    ":embedded_resource_pack_strings",
     ":headless_browser",
     ":headless_renderer",
     ":headless_utility",
@@ -824,7 +827,6 @@ component("headless_shell_lib") {
   configs += [
     ":headless_defines_config",
     ":inside_headless_component",
-    "//build/config/compiler:wexit_time_destructors",
   ]
 
   if (use_ozone) {
@@ -837,7 +839,7 @@ component("headless_shell_lib") {
 
   if (headless_use_embedded_resources) {
     defines += [ "HEADLESS_USE_EMBEDDED_RESOURCES" ]
-    deps += [
+    public_deps += [
       ":embedded_resource_pack_data",
       ":embedded_resource_pack_strings",
     ]
@@ -940,8 +942,5 @@ executable("headless_shell") {
     deps += [ "//components/crash/core/app" ]
   }
 
-  configs += [
-    ":headless_defines_config",
-    "//build/config/compiler:wexit_time_destructors",
-  ]
+  configs += [ ":headless_defines_config" ]
 }

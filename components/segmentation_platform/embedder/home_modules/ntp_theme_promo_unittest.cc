@@ -4,7 +4,6 @@
 
 #include "components/segmentation_platform/embedder/home_modules/ntp_theme_promo.h"
 
-#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
@@ -12,7 +11,6 @@
 #include "components/segmentation_platform/embedder/home_modules/constants.h"
 #include "components/segmentation_platform/embedder/home_modules/home_modules_card_registry_android.h"
 #include "components/segmentation_platform/embedder/home_modules/test_utils.h"
-#include "components/segmentation_platform/public/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace segmentation_platform::home_modules {
@@ -61,6 +59,7 @@ class NtpThemePromoTest : public testing::Test {
 // Verifies that the `GetInputs(…)` method returns the expected inputs.
 TEST_F(NtpThemePromoTest, GetInputsReturnsExpectedInputs) {
   auto card = std::make_unique<NtpThemePromo>(&pref_service_);
+  STACK_ALLOCATED_IGNORE("https://crbug.com/350256130")
   std::map<SignalKey, FeatureQuery> inputs = card->GetInputs();
   EXPECT_EQ(inputs.size(), 6u);
   // Verify that the inputs map contains the expected keys.
@@ -172,11 +171,6 @@ TEST_F(NtpThemePromoTest, TestComputeCardResultWithCardDisabledForHasCustomizedN
 // Validates that `IsEnabled()` returns true when under the impression limit and
 // false otherwise.
 TEST_F(NtpThemePromoTest, IsEnabledReturnsFalseWhenImpressionLimitReached) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeatureWithParameters(
-      segmentation_platform::features::kNewTabPageCustomizationV2,
-      {{"show_promo", "true"}});
-
   auto card = std::make_unique<NtpThemePromo>(&pref_service_);
 
   EXPECT_TRUE(NtpThemePromo::IsEnabled(&pref_service_));
@@ -195,36 +189,16 @@ TEST_F(NtpThemePromoTest, IsEnabledReturnsFalseWhenImpressionLimitReached) {
   EXPECT_FALSE(NtpThemePromo::IsEnabled(&pref_service_));
 }
 
-// Validates that `IsEnabled()` returns false when the feature flag is disabled.
-TEST_F(NtpThemePromoTest, IsEnabledReturnsFalseWhenFeatureDisabled) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      segmentation_platform::features::kNewTabPageCustomizationV2);
-
-  EXPECT_FALSE(NtpThemePromo::IsEnabled(&pref_service_));
+// Validates that `IsEnabled()` returns true by default.
+TEST_F(NtpThemePromoTest, IsEnabledReturnsTrueByDefault) {
+  EXPECT_TRUE(NtpThemePromo::IsEnabled(&pref_service_));
 }
 
 // Validates that `IsEnabled()` returns false when the preference is managed.
 TEST_F(NtpThemePromoTest, IsEnabledReturnsFalseWhenPrefManaged) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeatureWithParameters(
-      segmentation_platform::features::kNewTabPageCustomizationV2,
-      {{"show_promo", "true"}});
-
   pref_service_.SetManagedPref(
       "ntp.custom_background_dict2",
       std::make_unique<base::Value>(base::Value::Type::DICT));
-
-  EXPECT_FALSE(NtpThemePromo::IsEnabled(&pref_service_));
-}
-
-// Validates that `IsEnabled()` returns false when the show_promo parameter is
-// disabled.
-TEST_F(NtpThemePromoTest, IsEnabledReturnsFalseWhenShowPromoParamDisabled) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeatureWithParameters(
-      segmentation_platform::features::kNewTabPageCustomizationV2,
-      {{"show_promo", "false"}});
 
   EXPECT_FALSE(NtpThemePromo::IsEnabled(&pref_service_));
 }

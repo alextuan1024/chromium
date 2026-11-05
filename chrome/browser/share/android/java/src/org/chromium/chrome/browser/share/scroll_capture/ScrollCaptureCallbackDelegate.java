@@ -11,6 +11,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.SystemClock;
 import android.util.Size;
@@ -20,7 +21,10 @@ import android.view.View;
 import org.chromium.base.Callback;
 import org.chromium.base.FeatureList;
 import org.chromium.base.MemoryPressureLevel;
-import org.chromium.base.memory.MemoryPressureMonitor;
+import org.chromium.base.memory_coordinator.MemoryConsumerRegistration;
+import org.chromium.base.memory_coordinator.MemoryConsumerTraits;
+import org.chromium.base.memory_coordinator.MemoryLimit;
+import org.chromium.base.memory_coordinator.PassiveMemoryConsumer;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -38,7 +42,7 @@ import org.chromium.content_public.browser.WebContents;
 
 /** An delegate to provide an Android API level independent implementation Scroll Capture. */
 @NullMarked
-public class ScrollCaptureCallbackDelegate {
+public class ScrollCaptureCallbackDelegate implements PassiveMemoryConsumer {
     private static final int BITMAP_HEIGHT_THRESHOLD = 20;
 
     /** Wrapper class for {@link EntryManager}. */
@@ -49,6 +53,8 @@ public class ScrollCaptureCallbackDelegate {
     }
 
     private final EntryManagerWrapper mEntryManagerWrapper;
+    private final MemoryConsumerRegistration mMemoryConsumerRegistration;
+    private MemoryLimit mMemoryLimit = MemoryLimit.DEFAULT;
     private @Nullable Tab mCurrentTab;
     private @Nullable EntryManager mEntryManager;
 
@@ -60,31 +66,63 @@ public class ScrollCaptureCallbackDelegate {
     private float mMinPageScaleFactor;
 
     private long mCaptureStartTime;
+    // Tracks the minimum and maximum Y coordinates captured during a session for metrics.
+    private int mMinCapturedY = Integer.MAX_VALUE;
+    private int mMaxCapturedY = Integer.MIN_VALUE;
 
     public ScrollCaptureCallbackDelegate(EntryManagerWrapper entryManagerWrapper) {
         mEntryManagerWrapper = entryManagerWrapper;
+        mMemoryConsumerRegistration =
+                MemoryConsumerRegistration.create(
+                        "ScrollCaptureCallbackDelegate",
+                        MemoryConsumerTraits.createPassive(),
+                        this);
+    }
+
+    @Override
+    public void onUpdateMemoryLimit(MemoryLimit memoryLimit) {
+        mMemoryLimit = memoryLimit;
+    }
+
+    public void destroy() {
+        mMemoryConsumerRegistration.close();
+    }
+
+    private static @MemoryPressureLevel int memoryPressureLevelFromMemoryLimit(MemoryLimit limit) {
+        if (limit.getPercent() >= MemoryLimit.NO_PRESSURE.getPercent()) {
+            return MemoryPressureLevel.NONE;
+        } else if (limit.getPercent() >= MemoryLimit.MODERATE_PRESSURE.getPercent()) {
+            return MemoryPressureLevel.MODERATE;
+        }
+        return MemoryPressureLevel.CRITICAL;
     }
 
     /** See {@link ScrollCaptureCallback#onScrollCaptureSearch}. */
     public Rect onScrollCaptureSearch(CancellationSignal cancellationSignal) {
         assert mCurrentTab != null;
 
-        int pressure = MemoryPressureMonitor.INSTANCE.getLastReportedPressure();
+        int pressure = memoryPressureLevelFromMemoryLimit(mMemoryLimit);
         RecordHistogram.recordEnumeratedHistogram(
                 "Sharing.ScrollCapture.MemoryPressureOnSearch",
                 pressure,
                 MemoryPressureLevel.CRITICAL + 1);
 
-        int threshold =
-                (FeatureList.isNativeInitialized()
+        boolean noMemoryCheck = ChromeFeatureList.sLongScreenshotsNoMemoryCheck.isEnabled();
+        boolean useCriticalThreshold =
+                noMemoryCheck
+                        || (FeatureList.isNativeInitialized()
                                 && ChromeFeatureList.isEnabled(
-                                        ChromeFeatureList.LONG_SCREENSHOTS_LENIENT_MEMORY_CHECK))
-                        ? MemoryPressureLevel.CRITICAL
-                        : MemoryPressureLevel.MODERATE;
+                                        ChromeFeatureList.LONG_SCREENSHOTS_LENIENT_MEMORY_CHECK));
+        int threshold =
+                useCriticalThreshold ? MemoryPressureLevel.CRITICAL : MemoryPressureLevel.MODERATE;
 
         // If the system is under memory pressure, don't give the user the option to create
-        // a long screenshot.
-        boolean skipMemoryCheck = ChromeFeatureList.sLongScreenshotsNoMemoryCheck.isEnabled();
+        // a long screenshot. On Android < 16 (BAKLAVA), ScrollCaptureConnection#startCapture can
+        // throw a NullPointerException when the connection closes or times out under critical
+        // memory pressure (b/278379299, fixed in ag/32423253), so only skip the memory check
+        // entirely on Android 16+.
+        boolean skipMemoryCheck =
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && noMemoryCheck;
         if (!skipMemoryCheck && pressure >= threshold) {
             return new Rect();
         }
@@ -113,6 +151,8 @@ public class ScrollCaptureCallbackDelegate {
         assert mCurrentTab != null;
 
         mCaptureStartTime = SystemClock.elapsedRealtime();
+        mMinCapturedY = Integer.MAX_VALUE;
+        mMaxCapturedY = Integer.MIN_VALUE;
         mEntryManager = mEntryManagerWrapper.create(mCurrentTab);
         mEntryManager.addBitmapGeneratorObserver(
                 new BitmapGeneratorObserver() {
@@ -163,6 +203,8 @@ public class ScrollCaptureCallbackDelegate {
         // Reposition the captureArea to the content area coordinates.
         captureArea.offset(0, mInitialYOffset);
         if (mContentArea == null
+                || signal.isCanceled()
+                || !surface.isValid()
                 || !captureArea.intersect(mContentArea)
                 || captureArea.height() < BITMAP_HEIGHT_THRESHOLD) {
             onComplete.onResult(new Rect());
@@ -176,16 +218,28 @@ public class ScrollCaptureCallbackDelegate {
                     if (status == EntryStatus.BITMAP_GENERATION_IN_PROGRESS) return;
 
                     Bitmap bitmap = entry.getBitmap();
-                    if (status != EntryStatus.BITMAP_GENERATED || bitmap == null) {
+                    if (status != EntryStatus.BITMAP_GENERATED
+                            || bitmap == null
+                            || signal.isCanceled()
+                            || !surface.isValid()) {
                         onComplete.onResult(new Rect());
                         return;
                     }
 
                     Rect destRect = new Rect(0, 0, captureArea.width(), captureArea.height());
-                    Canvas canvas = surface.lockCanvas(destRect);
-                    canvas.drawColor(Color.WHITE);
-                    canvas.drawBitmap(bitmap, null, destRect, null);
-                    surface.unlockCanvasAndPost(canvas);
+                    try {
+                        Canvas canvas = surface.lockCanvas(destRect);
+                        canvas.drawColor(Color.WHITE);
+                        canvas.drawBitmap(bitmap, null, destRect, null);
+                        surface.unlockCanvasAndPost(canvas);
+                    } catch (IllegalArgumentException
+                            | IllegalStateException
+                            | Surface.OutOfResourcesException e) {
+                        onComplete.onResult(new Rect());
+                        return;
+                    }
+                    mMinCapturedY = Math.min(mMinCapturedY, captureArea.top);
+                    mMaxCapturedY = Math.max(mMaxCapturedY, captureArea.bottom);
                     // Translate the captureArea Rect back to its original coordinates.
                     captureArea.offset(0, -mInitialYOffset);
                     onComplete.onResult(captureArea);
@@ -205,7 +259,17 @@ public class ScrollCaptureCallbackDelegate {
                     "Sharing.ScrollCapture.SuccessfulCaptureDuration",
                     SystemClock.elapsedRealtime() - mCaptureStartTime);
         }
+        if (mMinCapturedY < mMaxCapturedY && mViewportRect != null && mViewportRect.height() > 0) {
+            RecordHistogram.recordLinearCountHistogram(
+                    "Sharing.ScrollCapture.CapturedHeightPercentageOfViewport",
+                    Math.round(100f * (mMaxCapturedY - mMinCapturedY) / mViewportRect.height()),
+                    /* min= */ 1,
+                    /* max= */ 1001,
+                    /* numBuckets= */ 52);
+        }
         mCaptureStartTime = 0;
+        mMinCapturedY = Integer.MAX_VALUE;
+        mMaxCapturedY = Integer.MIN_VALUE;
         mContentArea = null;
         mViewportRect = null;
         mInitialYOffset = 0;

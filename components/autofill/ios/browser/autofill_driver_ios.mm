@@ -12,6 +12,7 @@
 #import <type_traits>
 #import <utility>
 #import <variant>
+#import <vector>
 
 #import "base/barrier_callback.h"
 #import "base/check_deref.h"
@@ -30,7 +31,6 @@
 #import "components/autofill/core/browser/form_structure.h"
 #import "components/autofill/core/browser/foundations/autofill_driver_router.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
-#import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/core/common/field_data_manager.h"
 #import "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #import "components/autofill/core/common/unique_ids.h"
@@ -170,6 +170,10 @@ AutofillDriverIOS::AutofillDriverIOS(
 }
 
 AutofillDriverIOS::~AutofillDriverIOS() {
+  // Destroy the AutofillManager first because its destructor calls into `this`.
+  // That is known and accepted. See crbug.com/587056767 for pros and cons.
+  manager_observation_.Reset();
+  manager_.reset();
   Unregister();
   RecordTriggeredFormExtractionMetrics();
 }
@@ -207,7 +211,7 @@ AutofillClient& AutofillDriverIOS::GetAutofillClient() {
 }
 
 BrowserAutofillManager& AutofillDriverIOS::GetAutofillManager() {
-  return *manager_;
+  return CHECK_DEREF(manager_);
 }
 
 ukm::SourceId AutofillDriverIOS::GetPageUkmSourceId() const {
@@ -239,6 +243,10 @@ bool AutofillDriverIOS::IsPolicyControlledFeatureManualTextEnabled() const {
 
 bool AutofillDriverIOS::CanShowAutofillUi() const {
   return true;
+}
+
+bool AutofillDriverIOS::DocumentUsedWebOtp() const {
+  return false;
 }
 
 base::flat_set<FieldGlobalId> AutofillDriverIOS::ApplyFormAction(
@@ -385,15 +393,13 @@ void AutofillDriverIOS::RendererShouldAcceptDataListSuggestion(
     const std::u16string& value) {}
 
 void AutofillDriverIOS::TriggerFormExtractionInDriverFrame(
-    AutofillDriverRouterAndFormForestPassKey pass_key) {
+    AutofillDriverRouterAndFormForestPassKey pass_key,
+    bool force) {
   if (!is_processed()) {
     return;
   }
 
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillAcrossIframesIosTriggerFormExtraction)) {
-    ScanForms();
-  }
+  ScanForms();
 }
 
 void AutofillDriverIOS::ScanForms(bool immediately,
@@ -436,6 +442,11 @@ void AutofillDriverIOS::FetchFormsFilteredByName(
     const std::u16string& form_name,
     FormFetchCompletion completion) {
   if (!web_frame()) {
+    // Report the failed lookup instead of dropping `completion` so callers
+    // querying suggestion availability (e.g. `AutofillAgent`, on behalf of
+    // `FormSuggestionController`'s provider loop) don't stall waiting for a
+    // reply.
+    std::move(completion).Run(std::nullopt);
     return;
   }
 
@@ -451,39 +462,22 @@ void AutofillDriverIOS::FetchFormsFilteredByName(
 }
 
 void AutofillDriverIOS::TriggerFormExtractionInAllFrames(
+    bool force,
     base::OnceCallback<void(bool)> form_extraction_finished_callback) {
-  if (!web_state_) {
-    std::move(form_extraction_finished_callback).Run(false);
-    return;
-  }
-
-  web::WebFramesManager* frames_manager =
-      AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(web_state_);
-  if (!frames_manager) {
-    std::move(form_extraction_finished_callback).Run(false);
-    return;
-  }
-
-  std::vector<AutofillDriverIOS*> drivers;
-  for (web::WebFrame* frame : frames_manager->GetAllWebFrames()) {
-    if (AutofillDriverIOS* driver =
-            FromWebStateAndWebFrame(web_state_, frame)) {
-      drivers.push_back(driver);
-    }
-  }
+  std::vector<AutofillDriver*> drivers =
+      client_->GetAutofillDriverFactory().GetExistingDrivers();
+  std::erase_if(drivers, [](const AutofillDriver* driver) {
+    return !driver->IsActive();
+  });
 
   auto barrier_callback = base::BarrierCallback<bool>(
       drivers.size(), base::BindOnce([](const std::vector<bool>& successes) {
                         return std::ranges::all_of(successes, std::identity());
                       }).Then(std::move(form_extraction_finished_callback)));
 
-  for (AutofillDriverIOS* driver : drivers) {
-    driver->ScanForms(/*immediately=*/false, barrier_callback);
+  for (AutofillDriver* driver : drivers) {
+    cast(driver)->ScanForms(/*immediately=*/false, barrier_callback);
   }
-}
-
-void AutofillDriverIOS::ClearFormCacheInAllFrames() {
-  // iOS does not maintain a renderer-side form cache across scans.
 }
 
 void AutofillDriverIOS::ObserveFieldVisibility(
@@ -506,6 +500,10 @@ void AutofillDriverIOS::ExtractLabeledTextNodeValue(
     const std::u16string& label_regex,
     uint32_t number_of_ancestor_levels_to_search,
     base::OnceCallback<void(const std::string& amount)> response_callback) {
+  NOTIMPLEMENTED();
+}
+
+void AutofillDriverIOS::LoadCustomFormControlScript(const std::string& script) {
   NOTIMPLEMENTED();
 }
 
@@ -536,8 +534,10 @@ web::WebFrame* AutofillDriverIOS::web_frame() const {
   return frames_manager->GetFrameWithId(web_frame_id_);
 }
 
-void AutofillDriverIOS::AskForValuesToFill(const FormData& form,
-                                           const FieldGlobalId& field_id) {
+void AutofillDriverIOS::AskForValuesToFill(
+    const FormData& form,
+    const FieldGlobalId& field_id,
+    AutofillSuggestionTriggerSource trigger_source) {
   auto callback =
       [](AutofillDriver& driver, const FormData& form,
          const FieldGlobalId& field_id, const gfx::Rect& bounding_box,
@@ -550,10 +550,8 @@ void AutofillDriverIOS::AskForValuesToFill(const FormData& form,
       };
   // The caret position is currently not extracted on iOS.
   gfx::Rect caret_bounds;
-  // TODO(crbug.com/40269303): Distinguish between different trigger sources.
   router_->AskForValuesToFill(callback, *this, form, field_id, caret_bounds,
-                              AutofillSuggestionTriggerSource::kiOS,
-                              std::nullopt);
+                              trigger_source, std::nullopt);
 }
 
 void AutofillDriverIOS::DidAutofillForm(const FormData& form) {

@@ -43,7 +43,7 @@ class POLICY_EXPORT PolicyServiceImpl
       public ConfigurationPolicyProvider::Observer {
  public:
   using Providers =
-      std::vector<raw_ptr<ConfigurationPolicyProvider, VectorExperimental>>;
+      std::vector<raw_ptr<ConfigurationPolicyProvider, DanglingUntriaged>>;
   using Migrators = std::vector<std::unique_ptr<PolicyMigrator>>;
 
   static constexpr char kInitTimeHistogramPrefix[] =
@@ -55,7 +55,7 @@ class POLICY_EXPORT PolicyServiceImpl
   static constexpr char kWith1to50PoliciesHistogramSuffix[] =
       ".With_1_to_50_Policies";
   static constexpr char kWith51to100PoliciesHistogramSuffix[] =
-      ".With_1_to_50_Policies";
+      ".With_51_to_100_Policies";
   static constexpr char kWith101PlusPoliciesHistogramSuffix[] =
       ".With_101_Plus_Policies";
 
@@ -173,6 +173,13 @@ class POLICY_EXPORT PolicyServiceImpl
   // of namespaces whose policies have been modified.
   void MergeAndTriggerUpdates();
 
+  // Records, for each POLICY_SOURCE_MERGED entry outside the Chrome namespace,
+  // whether its merged value differs from what precedence alone would have
+  // selected. Samples are taken when an entry first appears and whenever its
+  // merge result differs from `old_bundle`, split by list vs. dictionary
+  // policy. Only profile-level services (`ScopeForMetrics::kUser`) record.
+  void RecordNonChromeNamespaceMergeMetrics(const PolicyBundle& old_bundle);
+
   // Checks if all providers are initialized or have loaded their policies and
   // sets |policy_domain_status_| accordingly.
   // Returns the updated domains. The returned domains should be passed to
@@ -215,7 +222,7 @@ class POLICY_EXPORT PolicyServiceImpl
 
   // Set of providers that have a pending update that was triggered by a
   // call to RefreshPolicies().
-  std::set<raw_ptr<ConfigurationPolicyProvider, SetExperimental>>
+  std::set<raw_ptr<ConfigurationPolicyProvider, DanglingUntriaged>>
       refresh_pending_;
 
   // List of callbacks to invoke once all providers refresh after a
@@ -232,7 +239,7 @@ class POLICY_EXPORT PolicyServiceImpl
   // Note that this is intentionally a set - if multiple updates from the same
   // provider come in faster than they can be processed, they should only
   // trigger one notification to |provider_update_observers_|.
-  std::set<raw_ptr<ConfigurationPolicyProvider, SetExperimental>>
+  std::set<raw_ptr<ConfigurationPolicyProvider, DanglingUntriaged>>
       provider_update_pending_;
 
   // If this is true, IsInitializationComplete should be returning false for all

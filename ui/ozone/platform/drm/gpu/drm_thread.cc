@@ -63,6 +63,10 @@ void CreateBufferWithGbmFlags(const scoped_refptr<DrmDevice>& drm,
 
 }  // namespace
 
+DrmBufferAllocation::DrmBufferAllocation() = default;
+
+DrmBufferAllocation::~DrmBufferAllocation() = default;
+
 DrmThread::TaskInfo::TaskInfo(base::OnceClosure task, base::WaitableEvent* done)
     : task(std::move(task)), done(done) {}
 
@@ -129,8 +133,7 @@ void DrmThread::CreateBuffer(gfx::AcceleratedWidget widget,
                              viz::SharedImageFormat format,
                              NativePixmapUsageSet usage,
                              uint32_t client_flags,
-                             std::unique_ptr<GbmBuffer>* buffer,
-                             scoped_refptr<DrmFramebuffer>* framebuffer) {
+                             DrmBufferAllocation* allocation) {
   TRACE_EVENT0("drm", "DrmThread::CreateBuffer");
   scoped_refptr<ui::DrmDevice> drm = device_manager_->GetDrmDevice(widget);
   CHECK(drm) << "No devices available for buffer allocation.";
@@ -158,7 +161,8 @@ void DrmThread::CreateBuffer(gfx::AcceleratedWidget widget,
   }
 
   CreateBufferWithGbmFlags(drm, fourcc_format, size, framebuffer_size, flags,
-                           modifiers, buffer, framebuffer);
+                           modifiers, &allocation->buffer,
+                           &allocation->framebuffer);
 
   // NativePixmapUsages corresponding to SCANOUT is used to create buffers
   // that will be explicitly set via kms on a CRTC (e.g: BufferQueue buffers).
@@ -174,23 +178,26 @@ void DrmThread::CreateBuffer(gfx::AcceleratedWidget widget,
   // TODO(crbug.com/404958317): Historically, usages were checked
   // opportunistically for SCANOUT and PROTECTED. Ideally, this should be
   // checked by the caller using some Capabilities.
-  if (!*buffer && can_create_fallback) {
+  if (!allocation->buffer && can_create_fallback) {
     flags &= ~GBM_BO_USE_SCANOUT;
     CreateBufferWithGbmFlags(drm, fourcc_format, size, framebuffer_size, flags,
-                             modifiers, buffer, framebuffer);
+                             modifiers, &allocation->buffer,
+                             &allocation->framebuffer);
+  }
+
+  if (allocation->buffer) {
+    allocation->drm_device = std::move(drm);
   }
 }
 
-void DrmThread::CreateBufferFromHandle(
-    gfx::AcceleratedWidget widget,
-    const gfx::Size& size,
-    viz::SharedImageFormat format,
-    gfx::NativePixmapHandle handle,
-    std::unique_ptr<GbmBuffer>* out_buffer,
-    scoped_refptr<DrmFramebuffer>* out_framebuffer) {
+void DrmThread::CreateBufferFromHandle(gfx::AcceleratedWidget widget,
+                                       const gfx::Size& size,
+                                       viz::SharedImageFormat format,
+                                       gfx::NativePixmapHandle handle,
+                                       DrmBufferAllocation* allocation) {
   TRACE_EVENT0("drm", "DrmThread::CreateBufferFromHandle");
   scoped_refptr<ui::DrmDevice> drm = device_manager_->GetDrmDevice(widget);
-  DCHECK(drm);
+  CHECK(drm, base::NotFatalUntil::M163);
 
   std::unique_ptr<GbmBuffer> buffer = drm->gbm_device()->CreateBufferFromHandle(
       GetFourCCFormatFromSharedImageFormat(format), size, std::move(handle));
@@ -205,8 +212,9 @@ void DrmThread::CreateBufferFromHandle(
         DrmFramebuffer::AddFramebuffer(drm, buffer.get(), buffer->GetSize());
   }
 
-  *out_buffer = std::move(buffer);
-  *out_framebuffer = std::move(framebuffer);
+  allocation->drm_device = std::move(drm);
+  allocation->buffer = std::move(buffer);
+  allocation->framebuffer = std::move(framebuffer);
 }
 
 void DrmThread::SetDisplaysConfiguredCallback(base::RepeatingClosure callback) {
@@ -263,7 +271,7 @@ void DrmThread::SetDrmModifiersFilter(
 void DrmThread::CreateWindow(gfx::AcceleratedWidget widget,
                              const gfx::Rect& initial_bounds) {
   TRACE_EVENT0("drm", "DrmThread::CreateWindow");
-  DCHECK_GT(widget, last_created_window_);
+  CHECK_GT(widget, last_created_window_, base::NotFatalUntil::M163);
   last_created_window_ = widget;
 
   std::unique_ptr<DrmWindow> window(
@@ -331,12 +339,17 @@ void DrmThread::GetHardwareCapabilities(
     gfx::AcceleratedWidget widget,
     HardwareCapabilitiesCallback receive_callback) {
   TRACE_EVENT0("drm,hwoverlays", "DrmThread::GetHardwareCapabilities");
-  DCHECK(screen_manager_->GetWindow(widget));
-  DCHECK(device_manager_->GetDrmDevice(widget));
-  HardwareDisplayController* hdc =
-      screen_manager_->GetWindow(widget)->GetController();
-  HardwareDisplayPlaneManager* plane_manager =
-      device_manager_->GetDrmDevice(widget)->plane_manager();
+  DrmWindow* window = screen_manager_->GetWindow(widget);
+  scoped_refptr<ui::DrmDevice> drm_device =
+      device_manager_->GetDrmDevice(widget);
+  if (!window || !drm_device) {
+    HardwareCapabilities hardware_capabilities;
+    hardware_capabilities.is_valid = false;
+    std::move(receive_callback).Run(hardware_capabilities);
+    return;
+  }
+  HardwareDisplayController* hdc = window->GetController();
+  HardwareDisplayPlaneManager* plane_manager = drm_device->plane_manager();
 
   if (!hdc || !plane_manager) {
     HardwareCapabilities hardware_capabilities;
@@ -491,7 +504,7 @@ void DrmThread::AddDrmDeviceReceiver(
 }
 
 void DrmThread::ProcessPendingTasks() {
-  DCHECK(!device_manager_->GetDrmDevices().empty());
+  CHECK(!device_manager_->GetDrmDevices().empty(), base::NotFatalUntil::M163);
 
   for (auto& task_info : pending_tasks_) {
     std::move(task_info.task).Run();

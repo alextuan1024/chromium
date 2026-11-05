@@ -12,9 +12,12 @@
 #include <vector>
 
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notimplemented.h"
 #include "base/scoped_observation.h"
+#include "ui/aura/env.h"
+#include "ui/aura/env_input_state_controller.h"
 #include "ui/aura/null_window_targeter.h"
 #include "ui/aura/scoped_window_targeter.h"
 #include "ui/aura/window.h"
@@ -38,6 +41,8 @@
 #include "ui/platform_window/wm/wm_move_resize_handler.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/views_delegate.h"
+#include "ui/views/widget/desktop_aura/desktop_capture_client.h"
+#include "ui/views/widget/desktop_aura/window_event_filter_linux.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/frame_view_linux.h"
 #include "ui/views/window/frame_view_utils_linux.h"
@@ -47,8 +52,6 @@
 #if BUILDFLAG(USE_ATK)
 #include "ui/accessibility/platform/atk_util_auralinux.h"
 #endif
-
-#include "ui/views/widget/desktop_aura/window_event_filter_linux.h"
 
 namespace views {
 namespace {
@@ -73,13 +76,15 @@ class SwapWithNewSizeObserverHelper : public ui::CompositorObserver {
 #if BUILDFLAG(SUPPORTS_OZONE_X11)
   void OnCompositingCompleteSwapWithNewSize(ui::Compositor* compositor,
                                             const gfx::Size& size) override {
-    DCHECK(compositor_observation_.IsObservingSource(compositor));
+    CHECK(compositor_observation_.IsObservingSource(compositor),
+          base::NotFatalUntil::M163);
     callback_.Run(size);
   }
 #endif  // BUILDFLAG(SUPPORTS_OZONE_X11)
 
   void OnCompositingShuttingDown(ui::Compositor* compositor) override {
-    DCHECK(compositor_observation_.IsObservingSource(compositor));
+    CHECK(compositor_observation_.IsObservingSource(compositor),
+          base::NotFatalUntil::M163);
     compositor_observation_.Reset();
   }
 
@@ -148,10 +153,18 @@ std::unique_ptr<FrameView> DesktopWindowTreeHostLinux::CreateFrameView() {
   return frame_view;
 }
 
+void DesktopWindowTreeHostLinux::FrameTypeChanged() {
+  DesktopWindowTreeHostPlatform::FrameTypeChanged();
+  if (auto* x11_extension = GetX11Extension()) {
+    x11_extension->OnFrameTypeChanged();
+  }
+  UpdateFrameHints();
+}
+
 gfx::Rect DesktopWindowTreeHostLinux::GetXRootWindowOuterBounds() const {
   // TODO(msisov): must be removed as soon as all X11 low-level bits are moved
   // to Ozone.
-  DCHECK(GetX11Extension());
+  CHECK(GetX11Extension(), base::NotFatalUntil::M163);
   return GetX11Extension()->GetXRootWindowOuterBounds();
 }
 
@@ -167,6 +180,19 @@ base::OnceClosure DesktopWindowTreeHostLinux::DisableEventListening() {
   // Allows to open multiple file-pickers. See https://crbug.com/678982
   modal_dialog_counter_++;
   if (modal_dialog_counter_ == 1) {
+    // The modal dialog may consume any in-progress mouse or touch release, so
+    // clear tracked button and press state and cancel active touches before
+    // installing the null targeter. The counter is incremented first so a
+    // dialog opened re-entrantly during the cleanup does not repeat it.
+    auto* env = aura::Env::GetInstance();
+    env->set_mouse_button_flags(0);
+    env->env_controller()->ResetLeftMousePress();
+    OnLostMouseGrab();
+    auto weak_this = weak_factory_.GetWeakPtr();
+    window()->CleanupGestureState();
+    if (!weak_this) {
+      return base::DoNothing();
+    }
     // ScopedWindowTargeter is used to temporarily replace the event-targeter
     // with NullWindowEventTargeter to make |dialog| modal.
     targeter_for_modal_ = std::make_unique<aura::ScopedWindowTargeter>(
@@ -214,7 +240,9 @@ gfx::Insets DesktopWindowTreeHostLinux::CalculateInsetsInDIP(
 
   auto* frame_view_linux = views::AsViewClass<FrameViewLinux>(
       widget->non_client_view()->frame_view());
-  if (!frame_view_linux) {
+  // Without client-side shadows, the frame border is opaque and part of the
+  // visible window, so it is not a decoration inset.
+  if (!frame_view_linux || !frame_view_linux->ShouldDrawRestoredFrameShadow()) {
     return DesktopWindowTreeHostPlatform::CalculateInsetsInDIP(window_state);
   }
 
@@ -366,6 +394,21 @@ Widget::MoveLoopResult DesktopWindowTreeHostLinux::RunMoveLoop(
 
   Widget::MoveLoopResult result = DesktopWindowTreeHostPlatform::RunMoveLoop(
       drag_offset, source, escape_behavior);
+
+  // The platform may consume the button release that ends the loop (e.g. when
+  // the X11 window manager performs the move), which would leave aura::Env
+  // reporting the button as held and suppress tooltips until the next click.
+  // Keep the state only if capture was transferred to another window during
+  // the loop, which happens when a tab drag attaches to another tab strip
+  // while the button is still held.
+  aura::Window* capture_window = DesktopCaptureClient::GetCaptureWindowGlobal();
+  const bool capture_transferred =
+      capture_window &&
+      (!weak_this || !GetContentWindow()->Contains(capture_window));
+  if (!capture_transferred) {
+    aura::Env::GetInstance()->set_mouse_button_flags(0);
+  }
+
   if (weak_this.get()) {
     GetContentWindow()->ReleaseCapture();
   }
@@ -514,10 +557,12 @@ void DesktopWindowTreeHostLinux::AddAdditionalInitProperties(
   properties->wayland_app_id = params.wayland_app_id;
   properties->startup_id = params.startup_id;
 
-  DCHECK(!properties->x11_extension_delegate);
+  CHECK(!properties->x11_extension_delegate, base::NotFatalUntil::M163);
   properties->x11_extension_delegate = this;
 
-  properties->prefer_dark_theme = ui::LinuxUiTheme::GetForProfile(nullptr);
+  const auto* linux_ui_theme = ui::LinuxUiTheme::GetDefault();
+  properties->prefer_dark_theme =
+      linux_ui_theme && linux_ui_theme->PreferDarkTheme();
 }
 
 base::flat_map<std::string, std::string>
@@ -565,7 +610,7 @@ void DesktopWindowTreeHostLinux::OnCompleteSwapWithNewSize(
 }
 
 void DesktopWindowTreeHostLinux::CreateNonClientEventFilter() {
-  DCHECK(!non_client_window_event_filter_);
+  CHECK(!non_client_window_event_filter_, base::NotFatalUntil::M163);
   non_client_window_event_filter_ = std::make_unique<WindowEventFilterClass>(
       this, GetWmMoveResizeHandler(*platform_window()));
 }
@@ -579,7 +624,7 @@ void DesktopWindowTreeHostLinux::OnLostMouseGrab() {
 }
 
 void DesktopWindowTreeHostLinux::EnableEventListening() {
-  DCHECK_GT(modal_dialog_counter_, 0UL);
+  CHECK_GT(modal_dialog_counter_, 0UL, base::NotFatalUntil::M163);
   if (!--modal_dialog_counter_) {
     targeter_for_modal_.reset();
   }

@@ -16,7 +16,6 @@
 #include "components/record_replay/core/browser/task_service.h"
 #include "components/record_replay/core/common/record_replay.mojom.h"
 #include "components/tabs/public/tab_interface.h"
-#include "content/public/browser/web_contents_user_data.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 class GURL;
@@ -50,6 +49,7 @@ class ChromeRecordReplayClient : public record_replay::RecordReplayClient,
   ~ChromeRecordReplayClient() override;
 
   DECLARE_USER_DATA(ChromeRecordReplayClient);
+  static ChromeRecordReplayClient* From(tabs::TabInterface* tab);
 
   static void BindRecordReplayDriver(
       content::RenderFrameHost* render_frame_host,
@@ -91,6 +91,8 @@ class ChromeRecordReplayClient : public record_replay::RecordReplayClient,
   std::optional<record_replay::TaskDefinition> offered_task_definition_;
   std::optional<std::vector<record_replay::TaskParameter>>
       offered_task_parameter_values_;
+
+  ui::ScopedUnownedUserData<ChromeRecordReplayClient> scoped_unowned_user_data_;
 
   base::WeakPtrFactory<ChromeRecordReplayClient> weak_ptr_factory_{this};
 };

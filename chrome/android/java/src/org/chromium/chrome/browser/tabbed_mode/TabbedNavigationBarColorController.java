@@ -32,6 +32,7 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchManager;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
 import org.chromium.chrome.browser.keyboard_accessory.ManualFillingComponent;
@@ -72,7 +73,7 @@ class TabbedNavigationBarColorController
     private final FullscreenManager.@Nullable Observer mFullscreenObserver;
     private final MonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeControllerSupplier;
     private final MonotonicObservableSupplier<Integer> mOverviewColorSupplier;
-    private final Callback<Integer> mOnOverviewColorChanged = color -> updateNavigationBarColor();
+    private final Callback<Integer> mOnOverviewColorChanged = this::onOverviewColorChanged;
     private final Callback<EdgeToEdgeController> mEdgeToEdgeRegisterChangeObserverCallback;
     private EdgeToEdgeSystemBarColorHelper mEdgeToEdgeSystemBarColorHelper;
     private final BottomAttachedUiObserver mBottomAttachedUiObserver;
@@ -89,6 +90,9 @@ class TabbedNavigationBarColorController
      * transparent (as in edge-to-edge mode).
      */
     private @ColorInt int mNavigationBarColor;
+
+    private @ColorInt int mNavigationBarDividerColor;
+    private boolean mHasInitializedNavigationBarColor;
 
     /**
      * The target color for the {@link Window}'s navigation bar. This will have a value set during
@@ -287,6 +291,18 @@ class TabbedNavigationBarColorController
         updateNavigationBarColor(forceShowDivider, disableAnimation);
     }
 
+    private void onOverviewColorChanged(@ColorInt @Nullable Integer color) {
+        // Only react while the Hub layout is active. mOverviewMode is cleared at the start of
+        // hiding, but the Hub keeps emitting colors during its fade-out (per-frame alpha updates,
+        // plus a final TRANSPARENT at done-hiding). Since these updates pass disableAnimation=true,
+        // they skip the no-op early return in updateNavigationBarColor() and would end() the
+        // nav bar color transition started by onStartedHiding(), snapping it to its final color.
+        // Skipping is safe: outside overview mode the nav bar color never reads this supplier.
+        if (!mOverviewMode) return;
+
+        updateNavigationBarColor(/* forceShowDivider= */ false, /* disableAnimation= */ true);
+    }
+
     /**
      * @param layoutManager The {@link LayoutStateProvider} used to determine whether overview mode
      *     is showing.
@@ -305,9 +321,12 @@ class TabbedNavigationBarColorController
                             enableOverviewMode();
                             updateNavigationBarColor();
                         } else if (layoutType == LayoutType.TOOLBAR_SWIPE
-                                && isBottomChinEnabled()) {
-                            // Hide the nav bar during omnibox swipes.
+                                && isBottomChinEnabled()
+                                && !useBottomAttachedUiColor()) {
+                            // Hide the nav bar during omnibox swipes when no bottom UI is attached.
                             mNavigationBarColor = Color.TRANSPARENT;
+                            mNavigationBarDividerColor = Color.TRANSPARENT;
+                            endNavigationBarColorAnimationIfRunning();
                             mEdgeToEdgeSystemBarColorHelper.setNavigationBarColor(
                                     Color.TRANSPARENT);
                             mEdgeToEdgeSystemBarColorHelper.setNavigationBarDividerColor(
@@ -353,6 +372,7 @@ class TabbedNavigationBarColorController
     @SuppressLint("NewApi")
     private void updateNavigationBarColor(boolean forceShowDivider, boolean disableAnimation) {
         assumeNonNull(mTabModelSelector);
+        boolean previousForceDarkNavigationBarColor = mForceDarkNavigationBarColor;
         mForceDarkNavigationBarColor = mTabModelSelector.isIncognitoSelected() || mIsInFullscreen;
 
         final @ColorInt int newNavigationBarColor =
@@ -370,11 +390,28 @@ class TabbedNavigationBarColorController
                         getNavigationBarDividerColor(
                                 mForceDarkNavigationBarColor, forceShowDivider));
 
+        final boolean jankImprovement =
+                ChromeFeatureList.sBottomControlsJankImprovement.isEnabled();
+        if (jankImprovement
+                && mHasInitializedNavigationBarColor
+                && currentNavigationBarColor == newNavigationBarColor
+                && mNavigationBarDividerColor == newNavigationBarDividerColor
+                && previousForceDarkNavigationBarColor == mForceDarkNavigationBarColor
+                && mForceShowDivider == forceShowDivider
+                && (mNavbarColorTransitionAnimation == null
+                        || !mNavbarColorTransitionAnimation.isRunning())) {
+            return;
+        }
+
+        mHasInitializedNavigationBarColor = true;
         mNavigationBarColor = newNavigationBarColor;
+        mNavigationBarDividerColor = newNavigationBarDividerColor;
         mForceShowDivider = forceShowDivider;
 
         endNavigationBarColorAnimationIfRunning();
-        if (shouldEnableNavBarBottomChinColorAnimations() && !disableAnimation) {
+        if (shouldEnableNavBarBottomChinColorAnimations()
+                && !disableAnimation
+                && (!jankImprovement || currentNavigationBarColor != newNavigationBarColor)) {
             animateNavigationBarColor(currentNavigationBarColor, newNavigationBarColor);
         } else {
             mEdgeToEdgeSystemBarColorHelper.setNavigationBarColor(newNavigationBarColor);
@@ -541,8 +578,8 @@ class TabbedNavigationBarColorController
             return mEnabledBottomChinForTesting == TriState.TRUE;
         }
 
-        return mContext instanceof Activity
-                && EdgeToEdgeUtils.isEdgeToEdgeBottomChinEnabled((Activity) mContext);
+        return mContext instanceof Activity activity
+                && EdgeToEdgeUtils.isEdgeToEdgeBottomChinSupportedByDevice(activity);
     }
 
     @Override

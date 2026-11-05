@@ -18,6 +18,7 @@
 #include "base/observer_list.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/trusted_vault/trusted_vault_client.h"
+#include "components/trusted_vault/trusted_vault_server_constants.h"
 
 // JNI bridge for a Java implementation of the TrustedVaultClient interface,
 // used on Android.
@@ -30,7 +31,8 @@ class TrustedVaultClientAndroid : public trusted_vault::TrustedVaultClient {
   using GetAccountInfoByGaiaIdCallback =
       base::RepeatingCallback<CoreAccountInfo(const GaiaId& gaia_id)>;
 
-  explicit TrustedVaultClientAndroid(
+  TrustedVaultClientAndroid(
+      trusted_vault::SecurityDomainId security_domain_id,
       const GetAccountInfoByGaiaIdCallback& gaia_account_info_by_gaia_id_cb);
   ~TrustedVaultClientAndroid() override;
 
@@ -62,7 +64,20 @@ class TrustedVaultClientAndroid : public trusted_vault::TrustedVaultClient {
   // Called from Java to notify the completion of a
   // AddTrustedRecoveryMethod() operation previously initiated from C++ and
   // identified by |request_id|.
-  void AddTrustedRecoveryMethodCompleted(JNIEnv* env, int32_t request_id);
+  void AddTrustedRecoveryMethodCompleted(JNIEnv* env,
+                                         int32_t request_id,
+                                         bool succeeded);
+
+  // Called from Java to notify the completion of a `CanEnroll()` operation
+  // previously initiated from C++ and identified by `request_id`.
+  void CanEnrollCompleted(JNIEnv* env, int32_t request_id, bool can_enroll);
+
+  // Called from Java to notify the completion of an `Enroll()` operation
+  // previously initiated from C++ and identified by `request_id`.
+  void EnrollCompleted(JNIEnv* env,
+                       int32_t request_id,
+                       const base::android::JavaRef<jbyteArray>& key,
+                       int32_t key_version);
 
   // Called from Java to notify that the keys in the vault may have changed.
   void NotifyKeysChanged(JNIEnv* env, std::optional<int32_t> trigger);
@@ -91,7 +106,12 @@ class TrustedVaultClientAndroid : public trusted_vault::TrustedVaultClient {
   void AddTrustedRecoveryMethod(const GaiaId& gaia_id,
                                 const std::vector<uint8_t>& public_key,
                                 int method_type_hint,
-                                base::OnceClosure cb) override;
+                                base::OnceCallback<void(bool)> cb) override;
+  void CanEnroll(const CoreAccountInfo& account_info,
+                 base::OnceCallback<void(bool)> cb) override;
+  void Enroll(
+      const CoreAccountInfo& account_info,
+      base::OnceCallback<void(const std::vector<uint8_t>&, int)> cb) override;
   void ClearLocalDataForAccount(const CoreAccountInfo& account_info) override;
 
  private:
@@ -133,22 +153,45 @@ class TrustedVaultClientAndroid : public trusted_vault::TrustedVaultClient {
   // Struct representing an in-flight AddTrustedRecoveryMethod() invoked from
   // C++.
   struct OngoingAddTrustedRecoveryMethod {
-    explicit OngoingAddTrustedRecoveryMethod(base::OnceClosure callback);
+    explicit OngoingAddTrustedRecoveryMethod(
+        base::OnceCallback<void(bool)> callback);
     OngoingAddTrustedRecoveryMethod(OngoingAddTrustedRecoveryMethod&&);
     ~OngoingAddTrustedRecoveryMethod();
 
-    base::OnceClosure callback;
+    base::OnceCallback<void(bool)> callback;
+  };
+
+  // Struct representing an in-flight CanEnroll() invoked from C++.
+  struct OngoingCanEnroll {
+    explicit OngoingCanEnroll(base::OnceCallback<void(bool)> callback);
+    OngoingCanEnroll(OngoingCanEnroll&&) noexcept;
+    ~OngoingCanEnroll();
+
+    base::OnceCallback<void(bool)> callback;
+  };
+
+  // Struct representing an in-flight Enroll() invoked from C++.
+  struct OngoingEnroll {
+    explicit OngoingEnroll(
+        base::OnceCallback<void(const std::vector<uint8_t>&, int)> callback);
+    OngoingEnroll(OngoingEnroll&&) noexcept;
+    ~OngoingEnroll();
+
+    base::OnceCallback<void(const std::vector<uint8_t>&, int)> callback;
   };
 
   using RequestId = int32_t;
   using OngoingRequest = std::variant<OngoingFetchKeys,
                                       OngoingMarkLocalKeysAsStale,
                                       OngoingGetIsRecoverabilityDegraded,
-                                      OngoingAddTrustedRecoveryMethod>;
+                                      OngoingAddTrustedRecoveryMethod,
+                                      OngoingCanEnroll,
+                                      OngoingEnroll>;
 
   RequestId RegisterNewOngoingRequest(OngoingRequest request);
   OngoingRequest GetAndUnregisterOngoingRequest(RequestId id);
 
+  const trusted_vault::SecurityDomainId security_domain_id_;
   const GetAccountInfoByGaiaIdCallback gaia_account_info_by_gaia_id_cb_;
 
   // Each in-flight request gets assigned an auto-increment ID and gets cached

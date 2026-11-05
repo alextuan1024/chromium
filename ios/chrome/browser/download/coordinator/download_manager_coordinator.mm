@@ -26,6 +26,8 @@
 #import "components/prefs/pref_service.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/download/coordinator/activities/open_downloads_folder_activity.h"
+#import "ios/chrome/browser/download/coordinator/auto_deletion/auto_deletion_coordinator.h"
+#import "ios/chrome/browser/download/coordinator/auto_deletion/auto_deletion_coordinator_delegate.h"
 #import "ios/chrome/browser/download/coordinator/download_manager_mediator.h"
 #import "ios/chrome/browser/download/model/confirm_download_closing_overlay.h"
 #import "ios/chrome/browser/download/model/confirm_download_replacing_overlay.h"
@@ -58,7 +60,6 @@
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer.h"
-#import "ios/chrome/browser/shared/public/commands/auto_deletion_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/download_list_commands.h"
@@ -69,7 +70,6 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/store_kit/model/store_kit_coordinator.h"
 #import "ios/chrome/browser/store_kit/model/store_kit_coordinator_delegate.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -82,7 +82,8 @@
 #import "net/base/net_errors.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
-@interface DownloadManagerCoordinator () <ContainedPresenterDelegate,
+@interface DownloadManagerCoordinator () <AutoDeletionCoordinatorDelegate,
+                                          ContainedPresenterDelegate,
                                           DownloadManagerViewControllerDelegate,
                                           StoreKitCoordinatorDelegate> {
   // View controller for presenting Download Manager UI.
@@ -92,6 +93,7 @@
   UIActivityViewController* _openInController;
   DownloadManagerMediator _mediator;
   StoreKitCoordinator* _storeKitCoordinator;
+  AutoDeletionCoordinator* _autoDeletionCoordinator;
   UnopenedDownloadsTracker _unopenedDownloads;
   // YES after _stop has been called.
   BOOL _stopped;
@@ -109,7 +111,7 @@
 @implementation DownloadManagerCoordinator
 
 - (void)dealloc {
-  CHECK(_stopped, base::NotFatalUntil::M150);
+  CHECK(_stopped);
 }
 
 - (void)start {
@@ -118,8 +120,8 @@
 
 // Similar to start but can be called after pause.
 - (void)restart {
-  CHECK(self.presenter, base::NotFatalUntil::M150);
-  CHECK(self.browser, base::NotFatalUntil::M150);
+  CHECK(self.presenter);
+  CHECK(self.browser);
   if (IsPageActionMenuEnabled()) {
     _geminiHandler = HandlerForProtocol(self.browser->GetCommandDispatcher(),
                                         GeminiCommands);
@@ -161,7 +163,6 @@
 
   _mediator.SetIsIncognito(isIncognito);
   ProfileIOS* profile = self.profile;
-  _mediator.SetIdentityManager(IdentityManagerFactory::GetForProfile(profile));
   _mediator.SetDriveService(drive::DriveServiceFactory::GetForProfile(profile));
   _mediator.SetPrefService(profile->GetPrefs());
   _mediator.SetAuthenticationService(
@@ -199,10 +200,11 @@
   _mediator.SetDriveService(nullptr);
   _mediator.SetPrefService(nullptr);
   _mediator.SetAuthenticationService(nullptr);
-  _mediator.SetIdentityManager(nullptr);
   if (IsDownloadListEnabled()) {
     _mediator.SetDownloadRecordService(nullptr);
   }
+
+  [self stopAutoDeletionCoordinator];
 
   if (_viewController) {
     [self.presenter dismissAnimated:self.animatesPresentation];
@@ -230,6 +232,10 @@
 
 - (UIViewController*)viewController {
   return _viewController;
+}
+
+- (void)clearPresentedState {
+  [self stopAutoDeletionCoordinator];
 }
 
 #pragma mark - DownloadManagerTabHelperDelegate
@@ -296,7 +302,7 @@
 - (void)downloadManagerTabHelper:(DownloadManagerTabHelper*)tabHelper
                  didHideDownload:(web::DownloadTask*)download
                         animated:(BOOL)animated {
-  CHECK_EQ(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_EQ(_downloadTask.get(), download);
   self.animatesPresentation = animated;
   [self stop];
   self.animatesPresentation = YES;
@@ -305,7 +311,7 @@
 - (void)downloadManagerTabHelper:(DownloadManagerTabHelper*)tabHelper
                  didShowDownload:(web::DownloadTask*)download
                         animated:(BOOL)animated {
-  CHECK_NE(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_NE(_downloadTask.get(), download);
   _downloadTask = download->GetWeakPtr();
   self.animatesPresentation = animated;
   [self start];
@@ -320,7 +326,7 @@
     // observer is called.
     return;
   }
-  CHECK_EQ(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_EQ(_downloadTask.get(), download);
   self.animatesPresentation = NO;
   [self pause];
   self.animatesPresentation = YES;
@@ -350,7 +356,7 @@
 
 - (void)downloadManagerTabHelper:(DownloadManagerTabHelper*)tabHelper
             wantsToStartDownload:(web::DownloadTask*)download {
-  CHECK_EQ(_downloadTask.get(), download, base::NotFatalUntil::M150);
+  CHECK_EQ(_downloadTask.get(), download);
   [self tryDownload];
 }
 
@@ -373,12 +379,12 @@
 }
 
 - (void)containedPresenterDidPresent:(id<ContainedPresenter>)presenter {
-  CHECK_EQ(presenter, self.presenter, base::NotFatalUntil::M150);
+  CHECK_EQ(presenter, self.presenter);
   [_viewController disableCurrentButtonTemporarily];
 }
 
 - (void)containedPresenterDidDismiss:(id<ContainedPresenter>)presenter {
-  CHECK_EQ(presenter, self.presenter, base::NotFatalUntil::M150);
+  CHECK_EQ(presenter, self.presenter);
   // The view controller may not be dealloced immediately.
   presenter.presentedViewController = nil;
   if (_restartPending) {
@@ -574,6 +580,13 @@
   _storeKitCoordinator = nil;
 }
 
+// Stops the Auto-deletion coordinator, if any.
+- (void)stopAutoDeletionCoordinator {
+  _autoDeletionCoordinator.delegate = nil;
+  [_autoDeletionCoordinator stop];
+  _autoDeletionCoordinator = nil;
+}
+
 - (void)cleanupCurrentDownload {
   if (!_downloadTask) {
     return;
@@ -636,16 +649,27 @@
                                  forScheme:kGoogleDriveAppURLScheme];
 }
 
-// Presents the Download auto-deletion action sheet if the feature flag is
-// enabled and the user has the enabled in settings.
+// Presents the Download auto-deletion promo or action sheet if the feature flag
+// is enabled.
 - (void)maybePresentAutoDeletionActionSheet {
-  if (!IsDownloadAutoDeletionFeatureEnabled()) {
+  if (!IsDownloadAutoDeletionFeatureEnabled() || _autoDeletionCoordinator ||
+      !_viewController) {
     return;
   }
 
-  id<AutoDeletionCommands> autoDeletionHandler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), AutoDeletionCommands);
-  [autoDeletionHandler presentAutoDeletionActionSheet];
+  _autoDeletionCoordinator = [[AutoDeletionCoordinator alloc]
+      initWithBaseViewController:_viewController
+                         browser:self.browser];
+  _autoDeletionCoordinator.delegate = self;
+  [_autoDeletionCoordinator start];
+}
+
+#pragma mark - AutoDeletionCoordinatorDelegate
+
+- (void)autoDeletionCoordinatorWantsToBeStopped:
+    (AutoDeletionCoordinator*)coordinator {
+  CHECK_EQ(coordinator, _autoDeletionCoordinator);
+  [self stopAutoDeletionCoordinator];
 }
 
 #pragma mark - Notification callback

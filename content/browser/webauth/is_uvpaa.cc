@@ -4,17 +4,21 @@
 
 #include "content/browser/webauth/is_uvpaa.h"
 
-#include <optional>
 #include <utility>
 
+#include "base/functional/callback.h"
 #include "build/build_config.h"
-#include "content/public/browser/authenticator_request_client_delegate.h"
-#include "content/public/common/content_client.h"
 
 #if BUILDFLAG(IS_MAC)
+#include <optional>
+
+#include "base/feature_list.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/web_authentication_delegate.h"
+#include "content/public/common/content_client.h"
 #include "device/fido/mac/authenticator.h"
+#include "device/fido/mac/icloud_keychain.h"
+#include "device/fido/public/features.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -28,10 +32,21 @@
 
 namespace content {
 
-#if BUILDFLAG(IS_MAC)
 void IsUVPlatformAuthenticatorAvailable(
-    BrowserContext* browser_context,
+    [[maybe_unused]] BrowserContext* browser_context,
     IsUVPlatformAuthenticatorAvailableCallback callback) {
+#if BUILDFLAG(IS_MAC)
+  if (base::FeatureList::IsEnabled(
+          device::kWebAuthnICloudKeychainUseDeviceConfiguredForPasskeys) &&
+      device::fido::icloud_keychain::IsSupported()) {
+    if (__builtin_available(macOS 26.2, *)) {
+      if (device::fido::icloud_keychain::IsConfiguredForPasskeys()) {
+        std::move(callback).Run(true);
+        return;
+      }
+    }
+  }
+
   const std::optional<device::fido::mac::AuthenticatorConfig> config =
       GetContentClient()
           ->browser()
@@ -43,22 +58,16 @@ void IsUVPlatformAuthenticatorAvailable(
   }
   device::fido::mac::TouchIdAuthenticator::IsAvailable(*config,
                                                        std::move(callback));
-}
-
 #elif BUILDFLAG(IS_WIN)
-void IsUVPlatformAuthenticatorAvailable(
-    IsUVPlatformAuthenticatorAvailableCallback callback) {
   device::WinWebAuthnApiAuthenticator::
       IsUserVerifyingPlatformAuthenticatorAvailable(
           device::WinWebAuthnApi::GetDefault(), std::move(callback));
-}
-
 #elif BUILDFLAG(IS_CHROMEOS)
-void IsUVPlatformAuthenticatorAvailable(
-    IsUVPlatformAuthenticatorAvailableCallback callback) {
   device::ChromeOSAuthenticator::IsUVPlatformAuthenticatorAvailable(
       std::move(callback));
-}
+#else
+  std::move(callback).Run(false);
 #endif
+}
 
 }  // namespace content

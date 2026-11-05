@@ -94,8 +94,6 @@ CrossOriginIsolatedCrossOriginRedirectHandler(
     const net::test_server::HttpRequest& request) {
   GURL request_url = request.GetURL();
   std::string dest = base::UnescapeBinaryURLComponent(request_url.query());
-  net::test_server::RequestQuery query =
-      net::test_server::ParseQuery(request_url);
 
   auto http_response = std::make_unique<net::test_server::BasicHttpResponse>();
   http_response->set_code(net::HttpStatusCode::HTTP_FOUND);
@@ -109,8 +107,6 @@ CrossOriginIsolatedCrossOriginRedirectHandler(
 std::unique_ptr<net::test_server::HttpResponse>
 CoopAndCspSandboxRedirectHandler(const net::test_server::HttpRequest& request) {
   std::string dest = base::UnescapeBinaryURLComponent(request.GetURL().query());
-  net::test_server::RequestQuery query =
-      net::test_server::ParseQuery(request.GetURL());
 
   auto http_response = std::make_unique<net::test_server::BasicHttpResponse>();
   http_response->set_code(net::HttpStatusCode::HTTP_FOUND);
@@ -1274,12 +1270,7 @@ IN_PROC_BROWSER_TEST_P(CrossOriginOpenerPolicyBrowserTest,
     TestNavigationManager coop_navigation(web_contents(), coop_page);
     shell()->LoadURL(coop_page);
     if (ShouldCreateNewHostForAllFrames()) {
-      // If the feature ResumeNavigationWithSpeculativeRFHProcessGone is
-      // enabled, the result of the navigation with a process kill depends on
-      // whether the navigation has reached the response stage. We use
-      // WaitForResponse rather than WaitForSpeculativeRenderFrameHostCreation
-      // to deflake the test.
-      EXPECT_TRUE(coop_navigation.WaitForResponse());
+      coop_navigation.WaitForSpeculativeRenderFrameHostCreation();
     } else {
       EXPECT_TRUE(coop_navigation.WaitForRequestStart());
     }
@@ -1394,12 +1385,7 @@ IN_PROC_BROWSER_TEST_P(CrossOriginOpenerPolicyBrowserTest,
     TestNavigationManager non_coop_navigation(web_contents(), non_coop_page);
     shell()->LoadURL(non_coop_page);
     if (ShouldCreateNewHostForAllFrames()) {
-      // If the feature ResumeNavigationWithSpeculativeRFHProcessGone is
-      // enabled, the result of the navigation with a process kill depends on
-      // whether the navigation has reached the response stage. We use
-      // WaitForResponse rather than WaitForSpeculativeRenderFrameHostCreation
-      // to deflake the test.
-      EXPECT_TRUE(non_coop_navigation.WaitForResponse());
+      non_coop_navigation.WaitForSpeculativeRenderFrameHostCreation();
     } else {
       EXPECT_TRUE(non_coop_navigation.WaitForRequestStart());
     }
@@ -1516,12 +1502,7 @@ IN_PROC_BROWSER_TEST_P(CrossOriginOpenerPolicyBrowserTest,
                                           coop_allow_popups_page);
     shell()->LoadURL(coop_allow_popups_page);
     if (ShouldCreateNewHostForAllFrames()) {
-      // If the feature ResumeNavigationWithSpeculativeRFHProcessGone is
-      // enabled, the result of the navigation with a process kill depends on
-      // whether the navigation has reached the response stage. We use
-      // WaitForResponse rather than WaitForSpeculativeRenderFrameHostCreation
-      // to deflake the test.
-      EXPECT_TRUE(coop_navigation.WaitForResponse());
+      coop_navigation.WaitForSpeculativeRenderFrameHostCreation();
     } else {
       EXPECT_TRUE(coop_navigation.WaitForRequestStart());
     }

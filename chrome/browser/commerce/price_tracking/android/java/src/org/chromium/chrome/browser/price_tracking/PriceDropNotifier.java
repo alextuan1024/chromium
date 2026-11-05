@@ -23,6 +23,8 @@ import org.chromium.chrome.browser.notifications.NotificationUmaTracker.SystemNo
 import org.chromium.chrome.browser.notifications.NotificationWrapperBuilderFactory;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions.ChannelId;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileTokenUtils;
+import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxy;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.NotificationMetadata;
 import org.chromium.components.browser_ui.notifications.NotificationWrapper;
@@ -31,6 +33,7 @@ import org.chromium.components.browser_ui.notifications.PendingIntentProvider;
 import org.chromium.components.image_fetcher.ImageFetcher;
 import org.chromium.components.image_fetcher.ImageFetcherConfig;
 import org.chromium.components.image_fetcher.ImageFetcherFactory;
+import org.chromium.net.NetworkTrafficAnnotationTag;
 
 import java.util.List;
 
@@ -40,7 +43,50 @@ import java.util.List;
  */
 @NullMarked
 public class PriceDropNotifier {
+    private static final NetworkTrafficAnnotationTag TRAFFIC_ANNOTATION =
+            NetworkTrafficAnnotationTag.createComplete(
+                    "price_drop_notification_android_images",
+                    """
+                    semantics {
+                        sender: "Price drop notifications"
+                        description:
+                            "Downloads the product image shown in a price drop notification."
+                        trigger:
+                            "A price tracking notification is received and passes shopping "
+                            "eligibility and notification-permission checks."
+                        data:
+                            "The product image URL from the notification payload, including "
+                            "any path and query parameters."
+                        destination: GOOGLE_OWNED_SERVICE
+                        user_data { type: SENSITIVE_URL }
+                        internal { contacts { owners: "chrome/browser/commerce/OWNERS" } }
+                        last_reviewed: "2026-11-17"
+                    }
+                    policy {
+                        cookies_allowed: NO
+                        setting:
+                            "Users can disable Chrome notifications or the price tracking "
+                            "notification channel in Android settings. Shopping eligibility "
+                            "requires sign-in, bookmark synchronization and URL-keyed "
+                            "anonymized data collection before fetching the image."
+                        chrome_policy { ShoppingListEnabled { ShoppingListEnabled: false } }
+                        chrome_policy { BrowserSignin { BrowserSignin: 0 } }
+                        chrome_policy { UrlKeyedAnonymizedDataCollectionEnabled { UrlKeyedAnonymizedDataCollectionEnabled: false } }
+                        chrome_policy { SyncDisabled { SyncDisabled: true } }
+                        chrome_policy {
+                            SyncTypesListDisabled {
+                                SyncTypesListDisabled: { entries: "bookmarks" }
+                            }
+                        }
+                    }
+                    """);
+
     private static final String TAG = "PriceTrackNotif";
+
+    /**
+     * Prefix of the per-Profile notification tag (see {@link #getNotificationTag}). Notifications
+     * posted before the tag was scoped per Profile use this tag as is.
+     */
     public static final String NOTIFICATION_TAG = "price_drop";
 
     static class NotificationData {
@@ -136,7 +182,17 @@ public class PriceDropNotifier {
             @SystemNotificationType int notificationType, int notificationId) {
         return NotificationWrapperBuilderFactory.createNotificationWrapperBuilder(
                 ChannelId.PRICE_DROP_DEFAULT,
-                new NotificationMetadata(notificationType, NOTIFICATION_TAG, notificationId));
+                new NotificationMetadata(
+                        notificationType, getNotificationTag(mProfile), notificationId));
+    }
+
+    /**
+     * Returns the tag of the price drop notifications posted for {@code profile}. The tag is scoped
+     * to the Profile so that notifications for the same offer in different Profiles don't replace
+     * each other.
+     */
+    static String getNotificationTag(Profile profile) {
+        return ProfileTokenUtils.getNotificationTag(NOTIFICATION_TAG, profile);
     }
 
     private void maybeFetchIcon(
@@ -148,7 +204,9 @@ public class PriceDropNotifier {
 
         ImageFetcher.Params params =
                 ImageFetcher.Params.create(
-                        notificationData.iconUrl, ImageFetcher.PRICE_DROP_NOTIFICATION);
+                        notificationData.iconUrl,
+                        ImageFetcher.PRICE_DROP_NOTIFICATION,
+                        TRAFFIC_ANNOTATION);
         getImageFetcher()
                 .fetchImage(
                         params,
@@ -200,7 +258,12 @@ public class PriceDropNotifier {
             }
         }
         NotificationWrapper notificationWrapper = notificationBuilder.buildNotificationWrapper();
-        BaseNotificationManagerProxyFactory.create().notify(notificationWrapper);
+        BaseNotificationManagerProxy notificationManager =
+                BaseNotificationManagerProxyFactory.create();
+        // TODO(crbug.com/585922618): Remove this in M163 once notifications posted before
+        // per-Profile notification tags were added have expired.
+        notificationManager.cancel(NOTIFICATION_TAG, notificationId);
+        notificationManager.notify(notificationWrapper);
         NotificationUmaTracker.getInstance()
                 .onNotificationShown(notificationType, notificationWrapper.getNotification());
         mPriceDropNotificationManager.updateNotificationTimestamps(notificationType, true);
@@ -216,12 +279,18 @@ public class PriceDropNotifier {
         return ActionType.UNKNOWN;
     }
 
+    // PendingIntents that differ only in their extras are treated as the same PendingIntent, so
+    // use the notification id as the request code to keep each notification's intents (and the
+    // Profile token they carry) from being overwritten by a later notification.
     private PendingIntentProvider createContentIntent(String destinationUrl, int notificationId) {
         Intent intent =
                 mPriceDropNotificationManager.getNotificationClickIntent(
                         destinationUrl, notificationId);
         return PendingIntentProvider.getActivity(
-                ContextUtils.getApplicationContext(), 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+                ContextUtils.getApplicationContext(),
+                notificationId,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
     private PendingIntentProvider createClickIntent(
@@ -234,7 +303,10 @@ public class PriceDropNotifier {
                 mPriceDropNotificationManager.getNotificationActionClickIntent(
                         actionId, url, offerId, clusterId, notificationId);
         return PendingIntentProvider.getActivity(
-                ContextUtils.getApplicationContext(), 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+                ContextUtils.getApplicationContext(),
+                notificationId,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
     private int getNotificationId(String offerId) {

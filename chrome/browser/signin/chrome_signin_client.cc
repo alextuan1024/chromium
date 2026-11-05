@@ -17,6 +17,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/browser/browser_process.h"
@@ -33,9 +34,7 @@
 #include "chrome/browser/signin/chrome_device_id_helper.h"
 #include "chrome/browser/signin/force_signin_verifier.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/signin_hats_util.h"
 #include "chrome/browser/signin/signin_util.h"
-#include "chrome/browser/ui/hats/survey_config.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_features.h"
@@ -94,6 +93,11 @@
 #if !BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/signin/wait_for_network_callback_helper_chrome.h"
 #endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "chrome/browser/signin/signin_hats_util.h"
+#include "chrome/browser/ui/hats/survey_config.h"
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #include "chrome/browser/signin/bound_session_credentials/bound_session_cookie_refresh_service.h"
@@ -162,16 +166,15 @@ signin_metrics::ProfileSignout kAlwaysAllowedSignoutSources[] = {
     signin_metrics::ProfileSignout::kUserDeclinedEnterpriseSignalsDisclaimer,
 };
 
-// Returns the HaTS survey trigger corresponding to the given AccessPoint, or
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// Returns the HaTS survey trigger corresponding to the given `access_point`, or
 // the empty string if there is no such survey.
 std::string HatsSurveyTriggerForAccessPoint(
     signin_metrics::AccessPoint access_point) {
   switch (access_point) {
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
     case signin_metrics::AccessPoint::kAddressBubble:
       return kHatsSurveyTriggerIdentityAddressBubbleSignin;
-    case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
-    case signin_metrics::AccessPoint::kAvatarBubbleSignInWithSyncPromo:
+    case signin_metrics::AccessPoint::kProfileMenuPrimaryButton:
       return kHatsSurveyTriggerIdentityProfileMenuSignin;
     case signin_metrics::AccessPoint::kForYouFre:
       return kHatsSurveyTriggerIdentityFirstRunSignin;
@@ -181,12 +184,12 @@ std::string HatsSurveyTriggerForAccessPoint(
       return kHatsSurveyTriggerIdentitySigninInterceptProfileSeparation;
     case signin_metrics::AccessPoint::kUserManager:
       return kHatsSurveyTriggerIdentityProfilePickerAddProfileSignin;
-#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
     default:
       // No HaTS survey is defined for the rest of the access point.
       return std::string();
   }
 }
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 class ChromeOAuthConsumerRegistry : public signin::OAuthConsumerRegistry {
  protected:
@@ -284,6 +287,15 @@ class ChromeOAuthConsumerRegistry : public signin::OAuthConsumerRegistry {
   }
 };
 
+void ClearPrefsForOtrProfile(PrefService* prefs) {
+  prefs->SetBoolean(prefs::kSigninAllowed, false);
+  prefs->SetString(prefs::kGaiaCookieLastListAccountsBinaryData, "");
+  prefs->SetString(prefs::kGoogleServicesAccountId, "");
+  prefs->SetBoolean(prefs::kGoogleServicesConsentedToSync, false);
+  prefs->SetString(prefs::kGoogleServicesSigninScopedDeviceId, "");
+  prefs->SetList(prefs::kAccountInfo, base::ListValue());
+}
+
 }  // namespace
 
 ChromeSigninClient::ChromeSigninClient(Profile* profile)
@@ -298,6 +310,12 @@ ChromeSigninClient::ChromeSigninClient(Profile* profile)
       profile_(profile),
       oauth_consumer_registry_(
           std::make_unique<ChromeOAuthConsumerRegistry>()) {
+  if (profile_->IsOffTheRecord()) {
+    // Off-the-record (e.g. Isolated Mode) profiles start with an empty cookie
+    // jar and no accounts signed in to the browser or the content area,
+    // so do not inherit the parent profile's prefs.
+    ClearPrefsForOtrProfile(profile_->GetPrefs());
+  }
 }
 
 ChromeSigninClient::~ChromeSigninClient() = default;
@@ -371,7 +389,7 @@ bool ChromeSigninClient::IsClearPrimaryAccountAllowed() const {
 void ChromeSigninClient::PreSignOut(
     base::OnceCallback<void(SignoutDecision)> on_signout_decision_reached,
     signin_metrics::ProfileSignout signout_source_metric) {
-  DCHECK(on_signout_decision_reached);
+  CHECK(on_signout_decision_reached, base::NotFatalUntil::M162);
   DCHECK(!on_signout_decision_reached_) << "SignOut already in-progress!";
   on_signout_decision_reached_ = std::move(on_signout_decision_reached);
 
@@ -399,8 +417,7 @@ void ChromeSigninClient::PreSignOut(
       signout_source_metric == signin_metrics::ProfileSignout::kPrefChanged ||
       user_declines_sync_after_consenting_to_management;
   if (signin_util::IsForceSigninEnabled() && !profile_->IsSystemProfile() &&
-      !profile_->IsGuestSession() && !profile_->IsChild() &&
-      !keep_window_opened) {
+      !profile_->IsGuestSession() && !keep_window_opened) {
     chrome::CloseAllBrowsersWithProfile(
         profile_,
         signout_source_metric == signin_metrics::ProfileSignout::kAbortSignin ||
@@ -464,18 +481,20 @@ void ChromeSigninClient::OnPrimaryAccountChanged(
         break;
       case signin::PrimaryAccountChangeEvent::Type::kSet:
         CHECK(event_details.GetSetPrimaryAccountAccessPoint().has_value());
+#if !BUILDFLAG(IS_CHROMEOS)
         signin_metrics::AccessPoint access_point =
             event_details.GetSetPrimaryAccountAccessPoint().value();
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
         if (consent_level == signin::ConsentLevel::kSignin) {
           std::string trigger = HatsSurveyTriggerForAccessPoint(access_point);
           signin::LaunchHatsSurveyForProfile(trigger, profile_,
                                              /*defer_if_no_browser=*/true);
         }
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-#if !BUILDFLAG(IS_CHROMEOS)
         RecordOpenTabCount(access_point, consent_level);
-#endif
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
         break;
     }
@@ -499,6 +518,23 @@ ChromeSigninClient::CreateBoundSessionOAuthMultiloginDelegate() const {
 signin::OAuthConsumer ChromeSigninClient::GetOAuthConsumerFromId(
     signin::OAuthConsumerId oauth_consumer_id) const {
   return oauth_consumer_registry_->GetOAuthConsumerFromId(oauth_consumer_id);
+}
+
+bool ChromeSigninClient::IsAccountSignedInOnOtherProfile(
+    const GaiaId& gaia_id) const {
+  if (gaia_id.empty() || !g_browser_process ||
+      !g_browser_process->profile_manager()) {
+    return false;
+  }
+  std::vector<ProfileAttributesEntry*> entries =
+      g_browser_process->profile_manager()
+          ->GetProfileAttributesStorage()
+          .GetAllProfilesAttributes();
+  return std::ranges::any_of(
+      entries, [this, &gaia_id](const ProfileAttributesEntry* entry) {
+        return !entry->IsOmitted() && entry->GetPath() != profile_->GetPath() &&
+               entry->GetGAIAId() == gaia_id;
+      });
 }
 
 SigninClient::SignoutDecision ChromeSigninClient::GetSignoutDecision(
@@ -543,7 +579,7 @@ void ChromeSigninClient::VerifySyncToken() {
   // We only verify the token once when Profile is just created.
   if (signin_util::IsForceSigninEnabled() && !force_signin_verifier_) {
     force_signin_verifier_ = std::make_unique<ForceSigninVerifier>(
-        profile_, IdentityManagerFactory::GetForProfile(profile_),
+        IdentityManagerFactory::GetForProfile(profile_),
         base::BindOnce(&ChromeSigninClient::OnTokenFetchComplete,
                        base::Unretained(this)));
   }
@@ -580,15 +616,10 @@ void ChromeSigninClient::RecordOpenTabCount(
   size_t tabs_count = 0;
 
 #if BUILDFLAG(IS_ANDROID)
-  for (const TabModel* model : TabModelList::models()) {
-    // Note: Even though on Android only a single regular profile is supported,
-    // there can also be an incognito profile which should be excluded here.
-    if (model->GetProfile() != profile_) {
-      continue;
-    }
-
+  TabModelList::ForEach(profile_, [&tabs_count](TabModel* model) {
     tabs_count += model->GetTabCount();
-  }
+    return true;
+  });
 #else   // !BUILDFLAG(IS_ANDROID)
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [this, &tabs_count](BrowserWindowInterface* browser) {

@@ -7,9 +7,13 @@ package org.chromium.content.browser.input;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
+import android.view.View;
+
+import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniRawPtr;
 
 import org.chromium.base.Callback;
 import org.chromium.base.UserData;
@@ -25,13 +29,13 @@ import org.chromium.content_public.browser.WebContents.UserDataFactory;
 import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.WindowAndroid;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
- * Handles displaying the Android spellcheck/text suggestion menu (provided by
- * SuggestionsPopupWindow) when requested by the C++ class TextSuggestionHostAndroid and applying
- * the commands in that menu (by calling back to the C++ class).
+ * Handles displaying and hiding the Android spellcheck/text suggestion menu (provided by {@link
+ * SuggestionsPopupWindow}) when requested by the C++ class TextSuggestionHostAndroid. {@link
+ * TextSuggestionHost} handles applying menu commands back to C++.
  *
  * <p>TextSuggestionPopupController is owned by the WebContents to prevent multiple text suggestion
  * popups from showing up at the same time.
@@ -45,19 +49,16 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
     }
 
     private @Nullable TextSuggestionHost mLastShownHost;
-    // The load bearing Java strong reference to the TextSuggestionHost is owned by this class. This
-    // avoids the issue where the C++ TextSuggestionHost owns a strong JavaRef to the
-    // TextSuggestionHost, which would prevent WebView from being GC'd.
-    //
-    // This map also handles parallel TextSuggestionHosts from existing at the same time due to the
-    // asynchronous destruction order of Android popups.
-    private final Map<Long, TextSuggestionHost> mTextSuggestionHosts = new HashMap<>();
+    // One TextSuggestionHost per document, created on demand by the native
+    // TextSuggestionHostAndroid, which holds it weakly so WebView can still be garbage collected.
+    // Holding the strong references here also guarantees destroy() releases each host's JniRawPtr
+    // when WebContentsImpl.clearNativePtr() destroys this controller. Several hosts can coexist
+    // across frames and navigations; this controller shows at most one popup at a time.
+    private final Set<TextSuggestionHost> mTextSuggestionHosts = new HashSet<>();
     private final WebContentsImpl mWebContents;
-    private final Context mContext;
     private final ViewAndroidDelegate mViewDelegate;
 
     private boolean mIsAttachedToWindow;
-    private @Nullable WindowAndroid mWindowAndroid;
 
     private @Nullable SpellCheckPopupWindow mSpellCheckPopupWindow;
     private @Nullable TextSuggestionsPopupWindow mTextSuggestionsPopupWindow;
@@ -81,10 +82,6 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
      */
     public TextSuggestionPopupController(WebContents webContents) {
         mWebContents = (WebContentsImpl) webContents;
-        Context context = mWebContents.getContext();
-        assert context != null;
-        mContext = context;
-        mWindowAndroid = mWebContents.getTopLevelNativeWindow();
 
         ViewAndroidDelegate viewDelegate = mWebContents.getViewAndroidDelegate();
         assert viewDelegate != null;
@@ -100,7 +97,7 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
     @Override
     public void destroy() {
         boolean lastShownDestroyed = mLastShownHost == null;
-        for (TextSuggestionHost host : mTextSuggestionHosts.values()) {
+        for (TextSuggestionHost host : mTextSuggestionHosts) {
             if (host == mLastShownHost) {
                 lastShownDestroyed = true;
             }
@@ -113,15 +110,37 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
     }
 
     @CalledByNative
+    static @Nullable TextSuggestionHost createTextSuggestionHost(
+            WebContents webContents,
+            JniRawPtr<TextSuggestionHost.NativeTextSuggestionHostAndroid> nativePtr) {
+        TextSuggestionPopupController controller = fromWebContents(webContents);
+        if (controller == null) {
+            nativePtr.release();
+            return null;
+        }
+        return controller.createTextSuggestionHost(nativePtr);
+    }
+
+    private TextSuggestionHost createTextSuggestionHost(
+            JniRawPtr<TextSuggestionHost.NativeTextSuggestionHostAndroid> nativePtr) {
+        TextSuggestionHost host =
+                new TextSuggestionHost(
+                        nativePtr,
+                        () -> {
+                            mSpellCheckPopupWindow = null;
+                            mTextSuggestionsPopupWindow = null;
+                        });
+        mTextSuggestionHosts.add(host);
+        return host;
+    }
+
+    @CalledByNative
     private static void onNativeTextSuggestionHostDestroyed(
-            WebContents webContents, long nativeTextSuggestionHostPtr) {
+            WebContents webContents, TextSuggestionHost textSuggestionHost) {
         TextSuggestionPopupController host =
                 webContents.getOrSetUserData(TextSuggestionPopupController.class, null);
         if (host == null) return;
-
-        TextSuggestionHost textSuggestionHost =
-                host.mTextSuggestionHosts.remove(nativeTextSuggestionHostPtr);
-        if (textSuggestionHost == null) return;
+        if (!host.mTextSuggestionHosts.remove(textSuggestionHost)) return;
 
         textSuggestionHost.destroy();
         if (host.mLastShownHost == textSuggestionHost) {
@@ -130,21 +149,21 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
         }
     }
 
-    private float getContentOffsetYPix() {
-        return mWebContents.getRenderCoordinates().getContentOffsetYPix();
+    @VisibleForTesting
+    double calculateYOffset(double caretYPx) {
+        float contentOffsetYPix = mWebContents.getRenderCoordinates().getContentOffsetTopPix();
+        if (Double.isNaN(caretYPx)) return contentOffsetYPix;
+
+        int containerHeight = assumeNonNull(mViewDelegate.getContainerView()).getHeight();
+        double maxOffset = Math.max((double) contentOffsetYPix, (double) containerHeight);
+        return Math.clamp(caretYPx + contentOffsetYPix, contentOffsetYPix, maxOffset);
     }
 
     // WindowEventObserver
 
     @Override
     public void onWindowAndroidChanged(@Nullable WindowAndroid newWindowAndroid) {
-        mWindowAndroid = newWindowAndroid;
-        if (mSpellCheckPopupWindow != null) {
-            mSpellCheckPopupWindow.updateWindowAndroid(mWindowAndroid);
-        }
-        if (mTextSuggestionsPopupWindow != null) {
-            mTextSuggestionsPopupWindow.updateWindowAndroid(mWindowAndroid);
-        }
+        hidePopups();
     }
 
     @Override
@@ -168,26 +187,10 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
         hidePopups();
     }
 
-    private TextSuggestionHost getOrCreateTextSuggestionHost(long nativeTextSuggestionHostPtr) {
-        TextSuggestionHost textSuggestionHost =
-                mTextSuggestionHosts.get(nativeTextSuggestionHostPtr);
-        if (textSuggestionHost == null) {
-            textSuggestionHost =
-                    new TextSuggestionHost(
-                            nativeTextSuggestionHostPtr,
-                            () -> {
-                                mSpellCheckPopupWindow = null;
-                                mTextSuggestionsPopupWindow = null;
-                            });
-            mTextSuggestionHosts.put(nativeTextSuggestionHostPtr, textSuggestionHost);
-        }
-        return textSuggestionHost;
-    }
-
     @CalledByNative
-    private static void showSpellCheckSuggestionMenu(
+    static void showSpellCheckSuggestionMenu(
             WebContents webContents,
-            long nativeTextSuggestionHostPtr,
+            TextSuggestionHost textSuggestionHost,
             double caretXPx,
             double caretYPx,
             String markedText,
@@ -195,19 +198,22 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
         TextSuggestionPopupController controller = fromWebContents(webContents);
         if (controller == null) return;
         controller.showSpellCheckSuggestionMenu(
-                nativeTextSuggestionHostPtr, caretXPx, caretYPx, markedText, suggestions);
+                textSuggestionHost, caretXPx, caretYPx, markedText, suggestions);
     }
 
     private void showSpellCheckSuggestionMenu(
-            long nativeTextSuggestionHostPtr,
+            TextSuggestionHost textSuggestionHost,
             double caretXPx,
             double caretYPx,
             String markedText,
             String[] suggestions) {
-        TextSuggestionHost textSuggestionHost =
-                getOrCreateTextSuggestionHost(nativeTextSuggestionHostPtr);
-
-        if (!mIsAttachedToWindow) {
+        Context context = mWebContents.getContext();
+        WindowAndroid windowAndroid = mWebContents.getTopLevelNativeWindow();
+        View containerView = mViewDelegate.getContainerView();
+        if (!mIsAttachedToWindow
+                || context == null
+                || windowAndroid == null
+                || containerView == null) {
             textSuggestionHost.onSuggestionMenuClosed(false);
             return;
         }
@@ -216,19 +222,19 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
         mLastShownHost = textSuggestionHost;
         mSpellCheckPopupWindow =
                 new SpellCheckPopupWindow(
-                        mContext,
-                        textSuggestionHost,
-                        mWindowAndroid,
-                        assumeNonNull(mViewDelegate.getContainerView()));
+                        context, textSuggestionHost, windowAndroid, containerView);
 
-        mSpellCheckPopupWindow.show(
-                caretXPx, caretYPx + getContentOffsetYPix(), markedText, suggestions);
+        mSpellCheckPopupWindow.show(caretXPx, calculateYOffset(caretYPx), markedText, suggestions);
+        if (!mSpellCheckPopupWindow.isShowing()) {
+            mSpellCheckPopupWindow = null;
+            textSuggestionHost.onSuggestionMenuClosed(false);
+        }
     }
 
     @CalledByNative
-    private static void showTextSuggestionMenu(
+    static void showTextSuggestionMenu(
             WebContents webContents,
-            long nativeTextSuggestionHostPtr,
+            TextSuggestionHost textSuggestionHost,
             double caretXPx,
             double caretYPx,
             String markedText,
@@ -236,19 +242,22 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
         TextSuggestionPopupController controller = fromWebContents(webContents);
         if (controller == null) return;
         controller.showTextSuggestionMenu(
-                nativeTextSuggestionHostPtr, caretXPx, caretYPx, markedText, suggestions);
+                textSuggestionHost, caretXPx, caretYPx, markedText, suggestions);
     }
 
     private void showTextSuggestionMenu(
-            long nativeTextSuggestionHostPtr,
+            TextSuggestionHost textSuggestionHost,
             double caretXPx,
             double caretYPx,
             String markedText,
             SuggestionInfo[] suggestions) {
-        TextSuggestionHost textSuggestionHost =
-                getOrCreateTextSuggestionHost(nativeTextSuggestionHostPtr);
-
-        if (!mIsAttachedToWindow) {
+        Context context = mWebContents.getContext();
+        WindowAndroid windowAndroid = mWebContents.getTopLevelNativeWindow();
+        View containerView = mViewDelegate.getContainerView();
+        if (!mIsAttachedToWindow
+                || context == null
+                || windowAndroid == null
+                || containerView == null) {
             textSuggestionHost.onSuggestionMenuClosed(false);
             return;
         }
@@ -257,13 +266,14 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
         mLastShownHost = textSuggestionHost;
         mTextSuggestionsPopupWindow =
                 new TextSuggestionsPopupWindow(
-                        mContext,
-                        textSuggestionHost,
-                        mWindowAndroid,
-                        assumeNonNull(mViewDelegate.getContainerView()));
+                        context, textSuggestionHost, windowAndroid, containerView);
 
         mTextSuggestionsPopupWindow.show(
-                caretXPx, caretYPx + getContentOffsetYPix(), markedText, suggestions);
+                caretXPx, calculateYOffset(caretYPx), markedText, suggestions);
+        if (!mTextSuggestionsPopupWindow.isShowing()) {
+            mTextSuggestionsPopupWindow = null;
+            textSuggestionHost.onSuggestionMenuClosed(false);
+        }
     }
 
     /** Hides the text suggestion menu (and informs Blink that it was closed). */
@@ -310,7 +320,7 @@ public class TextSuggestionPopupController implements WindowEventObserver, Hidea
         mLastShownHost = host;
     }
 
-    public Map<Long, TextSuggestionHost> getTextSuggestionHostsForTesting() {
+    public Set<TextSuggestionHost> getTextSuggestionHostsForTesting() {
         return mTextSuggestionHosts;
     }
 }

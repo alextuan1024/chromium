@@ -4,6 +4,7 @@
 
 #import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_view_controller.h"
 
+#import "base/check.h"
 #import "base/i18n/rtl.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
@@ -19,12 +20,11 @@
 #import "ios/chrome/browser/location_bar/badge/model/badge_type.h"
 #import "ios/chrome/browser/location_bar/badge/model/location_bar_badge_configuration.h"
 #import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_constants.h"
+#import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_item.h"
 #import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_mutator.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/highlight_utils.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_constants.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_metrics.h"
-#import "ios/chrome/browser/price_insights/model/price_insights_model.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/ui/reader_mode_chip_visibility_delegate.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -56,9 +56,7 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 }  // anonymous namespace
 
 @implementation LocationBarBadgeViewController {
-  /// Whether the contextual panel badge should be visible. The placeholder
-  /// view trumps the entrypoint when kLensOverlayPriceInsightsCounterfactual is
-  /// enabled.
+  /// Whether the contextual panel badge should be visible.
   BOOL _contextualPanelEntrypointShouldBeVisible;
   // Whether the location bar badge should be visible.
   BOOL _locationBarBadgeShouldBeVisible;
@@ -100,9 +98,15 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
   UISwipeGestureRecognizer* _swipeRecognizer;
   // Configuration for updating the badge.
   LocationBarBadgeConfiguration* _badgeConfig;
+  // Badge items last set via `-setBadgeItems:`; only the first is displayed.
+  // Mutually exclusive with `_badgeConfig`; `nil` while hidden or on the legacy
+  // config path.
+  NSArray<LocationBarBadgeItem*>* _badgeItems;
   // View that displays a blue dot on the top-right corner of the displayed
   // badge if there are unread badges to be shown in the overflow menu.
   UIView* _unreadIndicatorView;
+  // Vertical separator view displayed trailing the badge.
+  UIView* _separatorView;
 }
 
 #pragma mark - Public
@@ -118,6 +122,8 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 
   _badgeStackView = [[UIStackView alloc] init];
   _badgeStackView.isAccessibilityElement = NO;
+  _badgeStackView.accessibilityIdentifier =
+      kLocationBarBadgeStackViewAccessibilityIdentifier;
   _badgeStackView.axis = UILayoutConstraintAxisHorizontal;
   _badgeStackView.alignment = UIStackViewAlignmentCenter;
   _badgeStackView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -138,6 +144,19 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
   [_badgeStackView addArrangedSubview:_buttonContainer];
   [_badgeStackView setCustomSpacing:kLeadingSeparatorSpace
                           afterView:_buttonContainer];
+
+  if (IsLocationBarBadgeMigrationEnabled()) {
+    _separatorView = [[UIView alloc] init];
+    _separatorView.translatesAutoresizingMaskIntoConstraints = NO;
+    _separatorView.isAccessibilityElement = NO;
+    _separatorView.accessibilityIdentifier =
+        kLocationBarBadgeSeparatorAccessibilityIdentifier;
+    _separatorView.backgroundColor = [UIColor colorNamed:kGrey300Color];
+    _separatorView.layer.cornerRadius = kSeparatorWidthConstant / 2.0;
+    _separatorView.clipsToBounds = YES;
+    _separatorView.hidden = YES;
+    [_badgeStackView addArrangedSubview:_separatorView];
+  }
 
   [self updateAccessibilityStatus];
 
@@ -164,7 +183,6 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 
   _badgeContentView.layer.cornerRadius =
       _badgeContentView.bounds.size.height / 2.0;
-
 }
 
 - (CGPoint)helpAnchorUsingBottomOmnibox:(BOOL)isBottomOmnibox {
@@ -213,17 +231,17 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 
 #pragma mark - LocationBarBadgeConsumer
 
-// TODO(crbug.com/448422022): Trigger visibility refresh when a new badge comes
-// in and store the badge for multi-badge setup.
+// TODO(crbug.com/574559217): Trigger visibility refresh when a new badge comes
+// in.
 - (void)setBadgeConfig:(LocationBarBadgeConfiguration*)config {
   if (!config) {
     return;
   }
 
+  _badgeItems = nil;
+  _buttonContainer.accessibilityIdentifier = nil;
   _buttonContainer.accessibilityLabel = config.accessibilityLabel;
-  if (config.accessibilityHint) {
-    _buttonContainer.accessibilityHint = config.accessibilityHint;
-  }
+  _buttonContainer.accessibilityHint = config.accessibilityHint;
 
   if (config.badgeText) {
     _label.text = config.badgeText;
@@ -232,11 +250,64 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 
   _badgeIcon.image = config.badgeImage;
   _badgeConfig = config;
+  if (![config isContextualPanelEntrypointBadge]) {
+    // Clear any stale `ReaderModeItem` type so `BadgesContainerView` does not
+    // suppress non-Contextual-Panel badges (such as Ask Gemini).
+    [self setContextualPanelItemType:std::nullopt];
+  }
+}
+
+- (void)setBadgeItems:(NSArray<LocationBarBadgeItem*>*)badgeItems {
+  if (!IsLocationBarBadgeMigrationEnabled() ||
+      (_badgeItems.count == 0 && badgeItems.count == 0) ||
+      [_badgeItems isEqualToArray:badgeItems]) {
+    return;
+  }
+  LocationBarBadgeItem* primaryBadgeItem = badgeItems.firstObject;
+  if (!primaryBadgeItem) {
+    [self hideBadge];
+    return;
+  }
+  const LocationBarBadgeType previousBadgeType = [self displayedBadgeType];
+  const LocationBarBadgeType newBadgeType = primaryBadgeItem.badgeType;
+  if (_locationBarBadgeShouldBeVisible && previousBadgeType != newBadgeType) {
+    // Hides the outgoing badge before swapping state so type-keyed teardown
+    // applies to the old badge.
+    [self hideBadge];
+  }
+  _badgeConfig = nil;
+  _badgeItems = [badgeItems copy];
+  [self loadViewIfNeeded];
+  _badgeIcon.image = primaryBadgeItem.iconImage;
+  _buttonContainer.accessibilityIdentifier =
+      primaryBadgeItem.accessibilityIdentifier;
+  _buttonContainer.accessibilityLabel = primaryBadgeItem.accessibilityLabel;
+  _buttonContainer.accessibilityHint = nil;
+  _label.text = primaryBadgeItem.labelText;
+  [self showUnreadBadge:primaryBadgeItem.hasUnreadIndicator];
+  // `-showBadge` returns early while the badge is visible, so refresh colors
+  // here to apply them to same-type updates too.
+  [self refreshEntrypointVisualElements];
+  [self showBadge];
+  const LocationBarBadgeDisplayState displayState =
+      primaryBadgeItem.displayState;
+  [self highlightBadge:displayState ==
+                       LocationBarBadgeDisplayState::kHighlighted];
+  switch (displayState) {
+    case LocationBarBadgeDisplayState::kCollapsed:
+    case LocationBarBadgeDisplayState::kHighlighted:
+      [self collapseBadgeContainer];
+      break;
+    case LocationBarBadgeDisplayState::kExpanded:
+      [self expandBadgeContainer];
+      break;
+  }
+  [self updateViewsVisibility];
 }
 
 #pragma mark - ContextualPanelEntrypointVisibilityDelegate
 
-// TODO(crbug.com/429140788): Remove after migration and BadgesContainerView
+// TODO(crbug.com/569998074): Remove after migration and `BadgesContainerView`
 // is obsolete. Should not be used to update Location Bar Badge visibility.
 // Should instead use `setLocationBarBadgeHidden`.
 - (void)setContextualPanelEntrypointHidden:(BOOL)hidden {
@@ -265,6 +336,9 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
   }
 
   _incognitoBadgeViewShouldBeVisible = !hidden;
+  if (IsLocationBarBadgeMigrationEnabled()) {
+    return;
+  }
   _leadingSpacer.hidden = !hidden;
   [self setLocationBarBadgeHidden:hidden];
 }
@@ -273,35 +347,41 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 
 // Updates the hidden state of the views.
 - (void)updateViewsVisibility {
-  if (_incognitoBadgeView && !_incognitoBadgeViewShouldBeVisible) {
-    HideViewIfNecessary(_badgeStackView, YES);
-  } else {
-    HideViewIfNecessary(_badgeStackView, !_locationBarBadgeShouldBeVisible);
+  BOOL hideBadgeStackView = !_locationBarBadgeShouldBeVisible;
+  if (IsLocationBarBadgeMigrationEnabled()) {
+    HideViewIfNecessary(_separatorView, ![self shouldShowSeparator]);
+  } else if (_incognitoBadgeView && !_incognitoBadgeViewShouldBeVisible) {
+    hideBadgeStackView = YES;
   }
+  HideViewIfNecessary(_badgeStackView, hideBadgeStackView);
 
   // Whether the default/placeholder badge should show. Only shown if no other
   // badge or chip is shown.
-  BOOL placeholderHidden = self.view && !_badgeConfig;
+  BOOL placeholderHidden = self.view && !_badgeConfig && _badgeItems.count == 0;
 
   if (!self.view || placeholderHidden == self.view.hidden) {
     return;
   }
 
-  // TODO(crbug.com/453296003): If no priority badge shows, manipulate self.view
-  // to change into "placeholder" badge.
   // Records why the placeholder view is hidden. These are not mutually
   // exclusive, price tracking will take precedence over messages.
   if (placeholderHidden) {
     if (_contextualPanelEntrypointShouldBeVisible) {
-      // TODO(crbug.com/454072799): Adapt to record hiding badges for any badge
+      // TODO(crbug.com/574546707): Adapt to record hiding badges for any badge
       // that goes through LocationBarBadge.
       RecordLensEntrypointHidden(IOSLocationBarLeadingIconType::kPriceTracking);
     } else if ([_badgeConfig fromBadgeFactory]) {
       RecordLensEntrypointHidden(IOSLocationBarLeadingIconType::kMessage);
-    } else if (_badgeConfig.badgeType == LocationBarBadgeType::kReaderMode) {
+    } else if ([self displayedBadgeType] == LocationBarBadgeType::kReaderMode) {
       RecordLensEntrypointHidden(IOSLocationBarLeadingIconType::kReaderMode);
     }
   }
+}
+
+// Returns YES if `_separatorView` should be visible.
+- (BOOL)shouldShowSeparator {
+  return _badgeItems.count > 0 && _locationBarBadgeShouldBeVisible &&
+         !_shouldCollapseForFullscreen;
 }
 
 // Updates the button container's configuration with the given background color.
@@ -413,7 +493,6 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
   return label;
 }
 
-
 - (void)activateInitialConstraints {
   UILayoutGuide* labelLeadingSpace = [[UILayoutGuide alloc] init];
   UILayoutGuide* labelTrailingSpace = [[UILayoutGuide alloc] init];
@@ -471,6 +550,16 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
         constraintEqualToAnchor:labelLeadingSpace.trailingAnchor],
   ]];
 
+  if (IsLocationBarBadgeMigrationEnabled()) {
+    [NSLayoutConstraint activateConstraints:@[
+      [_separatorView.widthAnchor
+          constraintEqualToConstant:kSeparatorWidthConstant],
+      [_separatorView.heightAnchor
+          constraintEqualToAnchor:self.view.heightAnchor
+                       multiplier:kSeparatorHeightMultiplier],
+    ]];
+  }
+
   AddSameConstraints(_badgeContentView, _buttonContainer);
 }
 
@@ -504,15 +593,24 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
       UIContentSizeCategoryAccessibilityLarge);
 }
 
+// Returns the currently displayed badge type across legacy or item paths.
+- (LocationBarBadgeType)displayedBadgeType {
+  LocationBarBadgeItem* primaryBadgeItem = _badgeItems.firstObject;
+  if (primaryBadgeItem) {
+    return primaryBadgeItem.badgeType;
+  }
+  return _badgeConfig ? _badgeConfig.badgeType : LocationBarBadgeType::kNone;
+}
+
 // Refreshes the VoiceOver bounding box and notifies the mutator that the
-// animation to collapse the badge container is complete.
-- (void)didCollapseBadgeContainer {
+// animation to collapse the `badgeType` badge container is complete.
+- (void)didCollapseBadgeContainer:(LocationBarBadgeType)badgeType {
   [self refreshVoiceOverBoundingBoxIfFocused];
   if ([_badgeConfig isContextualPanelEntrypointBadge]) {
     [self.contextualPanelEntryPointMutator
             didCompleteTransitionToSmallEntrypoint];
   } else {
-    [self.mutator handleBadgeContainerCollapse:_badgeConfig.badgeType];
+    [self.mutator handleBadgeContainerCollapse:badgeType];
   }
 
   if (_badgeConfig.shouldHideBadgeAfterChipCollapse) {
@@ -543,16 +641,15 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 // Returns the default badge tint color. Ignores applying a tint color in favor
 // of using an image gradient layer.
 - (UIColor*)defaultBadgeTintColor {
-  BOOL useImageGradient =
-      _badgeConfig &&
-      _badgeConfig.badgeType == LocationBarBadgeType::kGeminiContextualCueChip;
+  BOOL useImageGradient = [self displayedBadgeType] ==
+                          LocationBarBadgeType::kGeminiContextualCueChip;
   return useImageGradient ? nil : [UIColor colorNamed:kBlue600Color];
 }
 
 // User swiped the expanded badge towards the leading edge to dismiss it.
 - (void)expandedBadgeSwiped {
   [self collapseBadgeContainer];
-  // TODO(crbug.com/454072799): Create and use a metric for Location Bar Badge.
+  // TODO(crbug.com/574546267): Create and use a metric for Location Bar Badge.
   base::RecordAction(base::UserMetricsAction(
       "IOSContextualPanelEntrypointLargeChipDismissedWithSwipe"));
 }
@@ -584,11 +681,11 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 // Sets visibility for location bar badge in the omnibox.
 - (void)setLocationBarBadgeHidden:(BOOL)hidden {
   _locationBarBadgeShouldBeVisible = !hidden;
-  self.view.hidden = hidden;
   [self updateViewsVisibility];
-  // TODO(crbug.com/429140788): Remove after migration and BadgesContainerView
+  // TODO(crbug.com/569998074): Remove after migration and `BadgesContainerView`
   // is obsolete.
   [self.visibilityDelegate setContextualPanelEntrypointHidden:hidden];
+  HideViewIfNecessary(self.view, hidden);
 }
 
 // Sets center positioning for location bar label.
@@ -603,7 +700,7 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 
 - (BOOL)useMultiBadge {
   return IsProactiveSuggestionsFrameworkEnabled() &&
-         _badgeConfig.badgeType !=
+         [self displayedBadgeType] !=
              LocationBarBadgeType::kGeminiContextualCueChip;
 }
 
@@ -616,16 +713,13 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
       case ContextualPanelItemType::SamplePanelItem:
         badgeType = LocationBarBadgeType::kContextualPanelEntryPointSample;
         break;
-      case ContextualPanelItemType::PriceInsightsItem:
-        badgeType = LocationBarBadgeType::kPriceInsights;
-        break;
       case ContextualPanelItemType::ReaderModeItem:
         badgeType = LocationBarBadgeType::kReaderMode;
         break;
     }
 
     RecordLocationBarBadgeUpdate(badgeType);
-    // TODO(crbug.com/448422022): Store Contextual Panel Entrypoint badges
+    // TODO(crbug.com/574559217): Store Contextual Panel Entrypoint badges
     // instead of preventing them.
     if (_locationBarBadgeShouldBeVisible) {
       return;
@@ -647,12 +741,6 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
     if (config->accessibility_hint.size() > 0) {
       badgeConfig.accessibilityHint =
           base::SysUTF8ToNSString(config->accessibility_hint);
-    }
-
-    if (config->item_type == ContextualPanelItemType::PriceInsightsItem) {
-      PriceInsightsItemConfiguration* priceInsightsConfig =
-          static_cast<PriceInsightsItemConfiguration*>(config);
-      badgeConfig.active = priceInsightsConfig->is_subscribed;
     }
 
     [self setBadgeConfig:badgeConfig];
@@ -737,8 +825,8 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
     return;
   }
 
-  if (_badgeConfig.badgeType ==
-      LocationBarBadgeType::kGeminiContextualCueChip) {
+  const LocationBarBadgeType badgeType = [self displayedBadgeType];
+  if (badgeType == LocationBarBadgeType::kGeminiContextualCueChip) {
     if ([self.visibilityDelegate
             respondsToSelector:@selector(disableProactiveSuggestionOverlay:)]) {
       [self.visibilityDelegate disableProactiveSuggestionOverlay:YES];
@@ -761,7 +849,7 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 
   [self updateAccessibilityStatus];
 
-  if (_badgeConfig.badgeType == LocationBarBadgeType::kReaderMode) {
+  if (badgeType == LocationBarBadgeType::kReaderMode) {
     [self.layoutGuideCenter referenceView:_buttonContainer
                                 underName:kReaderModeOptionsEntrypointGuide];
   }
@@ -785,13 +873,17 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
   [self collapseBadgeContainer];
   [self transitionToContextualPanelOpenedState:NO];
 
+  // Reset the item type before `setLocationBarBadgeHidden:YES` so
+  // `BadgesContainerView` does not run an intermediate visibility update with a
+  // stale `ReaderModeItem` type.
+  [self setContextualPanelItemType:std::nullopt];
   [self setLocationBarBadgeHidden:YES];
-  if (_badgeConfig.badgeType == LocationBarBadgeType::kReaderMode) {
+  const LocationBarBadgeType badgeType = [self displayedBadgeType];
+  if (badgeType == LocationBarBadgeType::kReaderMode) {
     [self.layoutGuideCenter referenceView:nil
                                 underName:kReaderModeOptionsEntrypointGuide];
   }
-  if (_badgeConfig.badgeType ==
-      LocationBarBadgeType::kGeminiContextualCueChip) {
+  if (badgeType == LocationBarBadgeType::kGeminiContextualCueChip) {
     if ([self.visibilityDelegate
             respondsToSelector:@selector(disableProactiveSuggestionOverlay:)]) {
       [self.visibilityDelegate disableProactiveSuggestionOverlay:NO];
@@ -804,7 +896,10 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
   [self.view layoutIfNeeded];
 
   [self refreshVoiceOverBoundingBoxIfFocused];
+  _buttonContainer.accessibilityIdentifier = nil;
+  _buttonContainer.accessibilityHint = nil;
   _badgeConfig = nil;
+  _badgeItems = nil;
 }
 
 - (void)collapseBadgeContainer {
@@ -812,6 +907,9 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
     return;
   }
 
+  // Captured now because `-setBadgeItems:` may swap in a different badge before
+  // the collapse animation completes.
+  const LocationBarBadgeType collapsingBadgeType = [self displayedBadgeType];
   __weak LocationBarBadgeViewController* weakSelf = self;
 
   void (^animateBadgeContainerCollapse)() = ^{
@@ -832,7 +930,7 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
                                UIViewAnimationOptionAllowUserInteraction)
                    animations:animateBadgeContainerCollapse
                    completion:^(BOOL completed) {
-                     [weakSelf didCollapseBadgeContainer];
+                     [weakSelf didCollapseBadgeContainer:collapsingBadgeType];
                    }];
 
   [_buttonContainer removeGestureRecognizer:_swipeRecognizer];
@@ -896,7 +994,7 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
     _unreadIndicatorView.accessibilityIdentifier =
         kBadgeUnreadIndicatorAccessibilityIdentifier;
 
-    // TODO(crbug.com/457567241): Add _unreadIndicatorView as a subview and
+    // TODO(crbug.com/584805159): Add _unreadIndicatorView as a subview and
     // related constraints.
     _unreadIndicatorView.hidden = !unread;
   }
@@ -906,56 +1004,41 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 
 - (void)updateForFullscreenProgress:(CGFloat)progress {
   _shouldCollapseForFullscreen = progress <= kFullscreenProgressThreshold;
+  CGFloat alphaValue = 0;
   if (_shouldCollapseForFullscreen) {
     _buttonContainer.hidden = YES;
   } else {
     // Fade in/out the badge.
-    CGFloat alphaValue = fmax((progress - kFullscreenProgressThreshold) /
-                                  (1 - kFullscreenProgressThreshold),
-                              0);
+    alphaValue = fmax((progress - kFullscreenProgressThreshold) /
+                          (1 - kFullscreenProgressThreshold),
+                      0);
     _buttonContainer.alpha = alphaValue;
     _buttonContainer.hidden = NO;
   }
 
+  if (IsLocationBarBadgeMigrationEnabled()) {
+    _separatorView.alpha = alphaValue;
+    HideViewIfNecessary(_separatorView, ![self shouldShowSeparator]);
+  }
+
   [self updateAccessibilityStatus];
-}
-
-// Helper to determine if the badge is in the Price Insights "Available" state.
-- (BOOL)isAvailablePriceInsights {
-  return _badgeConfig.badgeType == LocationBarBadgeType::kPriceInsights &&
-         !_badgeConfig.isActive;
-}
-
-// Returns whether the badge style should be the active one.
-- (BOOL)isBadgeStyleActive {
-  return ![self isAvailablePriceInsights];
 }
 
 // Returns the foreground color for the unified container elements (icon and
 // text).
 - (UIColor*)foregroundColorForUnifiedContainer {
   CHECK(!IsChromeNextIaEnabled());
-  return [self isBadgeStyleActive] ? [UIColor colorNamed:kSolidWhiteColor]
-                                   : [UIColor colorNamed:kBlue600Color];
+  return [UIColor colorNamed:kSolidWhiteColor];
 }
 
 // Helper to refresh entrypoint visual elements for the unified container.
 - (void)refreshBadgeForUnifiedContainer {
-  ContextualPanelEntrypointState state =
-      [self isAvailablePriceInsights]
-          ? ContextualPanelEntrypointState::kAvailable
-          : ContextualPanelEntrypointState::kActive;
-  [self.visibilityDelegate setContextualPanelEntrypointState:state];
+  [self.visibilityDelegate setContextualPanelEntrypointState:
+                               ContextualPanelEntrypointState::kActive];
 
   if (IsChromeNextIaEnabled()) {
-    if ([self isBadgeStyleActive]) {
-      _label.textColor = [UIColor colorNamed:kSolidWhiteColor];
-      ConfigureIPHImageStyleForImageView(_badgeIcon);
-
-    } else {
-      _label.textColor = [UIColor colorNamed:kBlue600Color];
-      RemoveIPHImageStyleFromImageView(_badgeIcon);
-    }
+    _label.textColor = [UIColor colorNamed:kSolidWhiteColor];
+    ConfigureIPHImageStyleForImageView(_badgeIcon);
   } else {
     UIColor* foregroundColor = [self foregroundColorForUnifiedContainer];
     _badgeIcon.tintColor = foregroundColor;
@@ -970,6 +1053,7 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
 - (void)refreshBadgeForSingleBadgeContainer {
   BOOL shouldShowMutedColors = _badgeTapped;
 
+  _label.textColor = [UIColor colorNamed:kTextPrimaryColor];
   _badgeIcon.tintColor = shouldShowMutedColors
                              ? [UIColor colorNamed:kGrey600Color]
                              : [self defaultBadgeTintColor];
@@ -989,10 +1073,8 @@ const CGFloat kLeadingSeparatorSpace = 5.0;
   if (IsChromeNextIaEnabled()) {
     if (highlighted) {
       _badgeIcon.tintColor = [UIColor colorNamed:kBackgroundColor];
-    } else if ([self isBadgeStyleActive]) {
-      ConfigureIPHImageStyleForImageView(_badgeIcon);
     } else {
-      RemoveIPHImageStyleFromImageView(_badgeIcon);
+      ConfigureIPHImageStyleForImageView(_badgeIcon);
     }
   } else {
     _badgeIcon.tintColor = highlighted

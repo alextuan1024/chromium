@@ -216,6 +216,9 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   void OnResourceDataUseObserved(
       content::RenderFrameHost* rfh,
       const std::vector<mojom::ResourceDataUpdatePtr>& resources) override {}
+  void OnSubresourceLoadMetricsObserved(
+      content::RenderFrameHost* rfh,
+      const blink::SubresourceLoadMetrics& subresource_load_metrics) override {}
   void MediaStartedPlaying(
       const content::WebContentsObserver::MediaPlayerInfo& video_type,
       content::RenderFrameHost* render_frame_host) override {}
@@ -239,6 +242,9 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
                                 bool is_display_none) override {}
   void FrameSizeChanged(content::RenderFrameHost* render_frame_host,
                         const gfx::Size& frame_size) override {}
+  void OnFrameVisibilityChanged(
+      content::RenderFrameHost* render_frame_host,
+      blink::mojom::FrameVisibility visibility) override {}
   void OnRenderFrameDeleted(
       content::RenderFrameHost* render_frame_host) override {}
   void OnSubFrameDeleted(content::FrameTreeNodeId frame_tree_node_id) override {
@@ -264,8 +270,6 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
                          StorageType access_type) override {}
   void DidActivatePrerenderedPage(
       content::NavigationHandle* navigation_handle) override {}
-  void OnSharedStorageWorkletHostCreated() override {}
-  void OnSharedStorageSelectURLCalled() override {}
   void OnCustomUserTimingMarkObserved(
       const std::vector<mojom::CustomUserTimingMarkPtr>& timings) override {}
   void OnPrimaryPageRenderProcessGone() override {}

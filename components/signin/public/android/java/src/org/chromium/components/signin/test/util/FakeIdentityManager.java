@@ -4,9 +4,9 @@
 
 package org.chromium.components.signin.test.util;
 
-
 import androidx.annotation.MainThread;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -20,20 +20,22 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /** Fake implementation of {@link IdentityManager} for testing. */
 @NullMarked
 public class FakeIdentityManager implements IdentityManager {
-    private final List<Observer> mObservers = new ArrayList<>();
+    private final CopyOnWriteArrayList<Observer> mObservers = new CopyOnWriteArrayList<>();
     private final Map<CoreAccountId, AccountInfo> mExtendedAccountInfos = new LinkedHashMap<>();
     private @Nullable CoreAccountInfo mPrimaryAccount;
     private boolean mIsOnExtendedAccountInfoUpdatedBlocked;
     private boolean mIsClearPrimaryAccountAllowed;
-    private boolean mAreRefreshTokensLoaded = true;
+    private @RefreshTokensLoadingState int mRefreshTokensLoadingState =
+            RefreshTokensLoadingState.SUCCEEDED;
 
     @Override
     public void addObserver(Observer observer) {
-        ThreadUtils.runOnUiThreadBlocking(() -> mObservers.add(observer));
+        ThreadUtils.runOnUiThreadBlocking(() -> mObservers.addIfAbsent(observer));
     }
 
     @Override
@@ -72,9 +74,6 @@ public class FakeIdentityManager implements IdentityManager {
     }
 
     @Override
-    public void refreshAccountInfoIfStale() {}
-
-    @Override
     public boolean isClearPrimaryAccountAllowed() {
         return mIsClearPrimaryAccountAllowed;
     }
@@ -89,8 +88,8 @@ public class FakeIdentityManager implements IdentityManager {
     }
 
     @Override
-    public boolean areRefreshTokensLoaded() {
-        return mAreRefreshTokensLoaded;
+    public @RefreshTokensLoadingState int getRefreshTokensLoadingState() {
+        return mRefreshTokensLoadingState;
     }
 
     /**
@@ -102,15 +101,13 @@ public class FakeIdentityManager implements IdentityManager {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mExtendedAccountInfos.put(accountInfo.getId(), accountInfo);
-                    if (mAreRefreshTokensLoaded) {
-                        for (Observer observer : mObservers) {
-                            observer.onRefreshTokenUpdatedForAccount(accountInfo);
-                        }
+                    if (mRefreshTokensLoadingState == RefreshTokensLoadingState.SUCCEEDED) {
+                        notifyObservers(
+                                observer -> observer.onRefreshTokenUpdatedForAccount(accountInfo));
                     }
                     if (!mIsOnExtendedAccountInfoUpdatedBlocked) {
-                        for (Observer observer : mObservers) {
-                            observer.onExtendedAccountInfoUpdated(accountInfo);
-                        }
+                        notifyObservers(
+                                observer -> observer.onExtendedAccountInfoUpdated(accountInfo));
                     }
                 });
     }
@@ -126,14 +123,14 @@ public class FakeIdentityManager implements IdentityManager {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mPrimaryAccount = accountInfo;
-                    for (Observer observer : mObservers) {
-                        @PrimaryAccountChangeEvent.Type
-                        int type =
-                                mPrimaryAccount == null
-                                        ? PrimaryAccountChangeEvent.Type.SET
-                                        : PrimaryAccountChangeEvent.Type.CLEARED;
-                        observer.onPrimaryAccountChanged(new PrimaryAccountChangeEvent(type));
-                    }
+                    @PrimaryAccountChangeEvent.Type
+                    int eventType =
+                            mPrimaryAccount != null
+                                    ? PrimaryAccountChangeEvent.Type.SET
+                                    : PrimaryAccountChangeEvent.Type.CLEARED;
+                    PrimaryAccountChangeEvent eventDetails =
+                            new PrimaryAccountChangeEvent(eventType);
+                    notifyObservers(observer -> observer.onPrimaryAccountChanged(eventDetails));
                 });
     }
 
@@ -145,15 +142,14 @@ public class FakeIdentityManager implements IdentityManager {
                     if (mPrimaryAccount != null && mPrimaryAccount.getId().equals(accountId)) {
                         mPrimaryAccount = null;
                     }
-                    if (mAreRefreshTokensLoaded) {
-                        for (Observer observer : mObservers) {
-                            observer.onRefreshTokenRemovedForAccount(accountId);
-                        }
+                    if (mRefreshTokensLoadingState == RefreshTokensLoadingState.SUCCEEDED) {
+                        notifyObservers(
+                                observer -> observer.onRefreshTokenRemovedForAccount(accountId));
                     }
                     if (!mIsOnExtendedAccountInfoUpdatedBlocked && removedAccountInfo != null) {
-                        for (Observer observer : mObservers) {
-                            observer.onExtendedAccountInfoUpdated(removedAccountInfo);
-                        }
+                        notifyObservers(
+                                observer ->
+                                        observer.onExtendedAccountInfoUpdated(removedAccountInfo));
                     }
                 });
     }
@@ -170,11 +166,30 @@ public class FakeIdentityManager implements IdentityManager {
                 });
     }
 
-    public void setAreRefreshTokensLoaded(boolean areRefreshTokensLoaded) {
-        mAreRefreshTokensLoaded = areRefreshTokensLoaded;
-        if (mAreRefreshTokensLoaded) {
-            for (Observer observer : mObservers) {
-                observer.onRefreshTokensLoaded();
+    /**
+     * Sets the refresh tokens loading state.
+     *
+     * @param refreshTokensLoadingState The refresh tokens loading state.
+     */
+    public void setRefreshTokensLoadingState(
+            @RefreshTokensLoadingState int refreshTokensLoadingState) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mRefreshTokensLoadingState = refreshTokensLoadingState;
+                    if (mRefreshTokensLoadingState != RefreshTokensLoadingState.IN_PROGRESS) {
+                        notifyObservers(
+                                observer ->
+                                        observer.onRefreshTokensLoaded(mRefreshTokensLoadingState));
+                    }
+                });
+    }
+
+    @MainThread
+    private void notifyObservers(Callback<Observer> notification) {
+        ThreadUtils.assertOnUiThread();
+        for (Observer observer : mObservers) {
+            if (mObservers.contains(observer)) {
+                notification.onResult(observer);
             }
         }
     }

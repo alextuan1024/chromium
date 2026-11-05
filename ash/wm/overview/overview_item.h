@@ -103,15 +103,14 @@ class ASH_EXPORT OverviewItem : public OverviewItemBase,
   void UpdateMirrorsForDragging(bool is_touch_dragging) override;
   void DestroyMirrorsForDragging() override;
   aura::Window* GetWindow() override;
-  std::vector<raw_ptr<aura::Window, VectorExperimental>> GetWindows() override;
+  std::vector<raw_ptr<aura::Window, DanglingUntriaged>> GetWindows() override;
   bool HasVisibleOnAllDesksWindow() override;
   bool Contains(const aura::Window* target) const override;
   OverviewItem* GetLeafItemForWindow(aura::Window* window) override;
   void RestoreWindow(bool reset_transform, bool animate) override;
   void SetBounds(const gfx::RectF& target_bounds,
                  OverviewAnimationType animation_type) override;
-  gfx::Transform ComputeTargetTransform(
-      const gfx::RectF& target_bounds) override;
+  gfx::Transform ComputeTargetTransform(const gfx::RectF& target_bounds);
   float GetItemScale(int height) override;
   void ScaleUpSelectedItem(OverviewAnimationType animation_type) override;
   void EnsureVisible() override;
@@ -130,8 +129,6 @@ class ASH_EXPORT OverviewItem : public OverviewItemBase,
   void StartDrag() override;
   void OnOverviewItemDragStarted() override;
   void OnOverviewItemDragEnded(bool snap) override;
-  void OnOverviewItemContinuousScroll(const gfx::Transform& target_transform,
-                                      float scroll_ratio) override;
   void UpdateCannotSnapWarningVisibility(bool animate) override;
   void HideCannotSnapWarning(bool animate) override;
   void OnMovingItemToAnotherDesk() override;

@@ -10,9 +10,10 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
+import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeatures;
@@ -75,19 +76,21 @@ public class EducationalTipCardProviderSignalHandler {
                 inputContext.addEntry(
                         "support_customized_ntp_theme",
                         ProcessedValue.fromBoolean(actionDelegate.supportCustomizedNtpTheme()));
-                boolean isBottomSheetDisabled =
-                        !ChromeFeatureList.sNewTabPageCustomizationV2ShowTipBottomSheet.getValue();
-                boolean hasThemeTipBottomSheetBeenShown =
-                        NtpCustomizationUtils.isThemeTipBottomSheetShownFromSharedPreference();
                 inputContext.addEntry(
                         "has_theme_tip_bottom_sheet_been_shown",
                         ProcessedValue.fromBoolean(
-                                isBottomSheetDisabled || hasThemeTipBottomSheetBeenShown));
+                                NtpCustomizationUtils
+                                        .isThemeTipBottomSheetShownFromSharedPreference()));
                 return inputContext;
             case ModuleType.HISTORY_SYNC_PROMO:
                 inputContext.addEntry(
                         "is_eligible_to_history_opt_in",
                         ProcessedValue.fromFloat(isEligibleToHistoryOptIn(profile)));
+                return inputContext;
+            case ModuleType.TIPS_NOTIFICATIONS_PROMO:
+                inputContext.addEntry(
+                        "is_eligible_to_tips_opt_in",
+                        ProcessedValue.fromFloat(isEligibleToTipsOptIn()));
                 return inputContext;
             default:
                 assert false : "Card type not supported: " + moduleType;
@@ -103,9 +106,7 @@ public class EducationalTipCardProviderSignalHandler {
     private static float shouldShowNonRoleManagerDefaultBrowserPromo(
             EducationTipModuleActionDelegate actionDelegate) {
         return DefaultBrowserPromoUtils.getInstance()
-                                .shouldShowNonRoleManagerPromo(actionDelegate.getContext())
-                        && ChromeFeatureList.isEnabled(
-                                ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2)
+                        .shouldShowNonRoleManagerPromo(actionDelegate.getContext())
                 ? 1.0f
                 : 0.0f;
     }
@@ -199,5 +200,18 @@ public class EducationalTipCardProviderSignalHandler {
         }
 
         return 0.0f;
+    }
+
+    /**
+     * Returns a value of 1.0f if the user is eligible to see the Tips notifications opt-in card.
+     * Otherwise, it returns 0.0f.
+     */
+    private static float isEligibleToTipsOptIn() {
+        boolean eligible =
+                ChromeSharedPreferences.getInstance()
+                        .readBoolean(
+                                ChromePreferenceKeys.TIPS_NOTIFICATIONS_OPT_IN_ELIGIBLE,
+                                /* defaultValue= */ false);
+        return eligible ? 1.0f : 0.0f;
     }
 }

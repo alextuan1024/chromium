@@ -16,6 +16,7 @@ import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.TAB_P
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.TAB_PERSISTENCE_STORE_MANAGER_VERSION;
 
 import androidx.test.filters.MediumTest;
+import androidx.test.runner.lifecycle.Stage;
 
 import org.hamcrest.Matchers;
 import org.junit.After;
@@ -26,6 +27,7 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.Holder;
 import org.chromium.base.Token;
+import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
@@ -45,12 +47,14 @@ import org.chromium.chrome.browser.tab.TabStateStorageService;
 import org.chromium.chrome.browser.tab.TabStateStorageServiceFactory;
 import org.chromium.chrome.browser.tabmodel.PersistentStoreMigrationManager.StoreType;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
+import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.List;
 
@@ -232,7 +236,10 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             return mTabModel.getTabById(tabId1).getTabGroupId();
                         });
         assertNotNull(groupId);
@@ -273,10 +280,13 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             Token id = mTabModel.getTabById(tabId1).getTabGroupId();
-                            mTabModel.setTabGroupTitle(id, newTitle);
-                            mTabModel.setTabGroupColor(id, newColor);
+                            mTabModel.setTabGroupTitle(TabGroupId.fromRawToken(id), newTitle);
+                            mTabModel.setTabGroupColor(TabGroupId.fromRawToken(id), newColor);
                             return id;
                         });
 
@@ -310,7 +320,10 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             Token id = mTabModel.getTabById(tabId1).getTabGroupId();
                             assertNotNull(id);
                             Tab tab2 = mTabModel.getTabById(tabId2);
@@ -397,13 +410,18 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
 
                             Token groupIdInternal = mTabModel.getTabById(tabId1).getTabGroupId();
                             assertNotNull(groupIdInternal);
 
                             TabClosureParams params =
-                                    TabClosureParams.forCloseTabGroup(mTabModel, groupIdInternal)
+                                    TabClosureParams.forCloseTabGroup(
+                                                    mTabModel,
+                                                    TabGroupId.fromRawToken(groupIdInternal))
                                             .allowUndo(true)
                                             .build();
                             mTabModel.getTabRemover().closeTabs(params, /* allowDialog= */ false);
@@ -446,9 +464,12 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             Token id = mTabModel.getTabById(tabId1).getTabGroupId();
-                            mTabModel.setTabGroupCollapsed(id, true);
+                            mTabModel.setTabGroupCollapsed(TabGroupId.fromRawToken(id), true);
                             return id;
                         });
 
@@ -505,11 +526,15 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             Token id = mTabModel.getTabById(tabId1).getTabGroupId();
                             assertNotNull(id);
                             TabClosureParams params =
-                                    TabClosureParams.forCloseTabGroup(mTabModel, id)
+                                    TabClosureParams.forCloseTabGroup(
+                                                    mTabModel, TabGroupId.fromRawToken(id))
                                             .allowUndo(false)
                                             .build();
                             mTabModel.getTabRemover().closeTabs(params, /* allowDialog= */ false);
@@ -586,8 +611,12 @@ public class TabbedModeTabModelStoreTest {
 
         runOnUiThreadBlocking(
                 () -> {
-                    mTabModel.mergeTabsToGroup(tabId1, tabId0);
-                    mTabModel.moveRelatedTabs(tabId0, 2);
+                    mTabModel.mergeListOfTabsToGroup(
+                            List.of(mTabModel.getTabByIdChecked(tabId1)),
+                            mTabModel.getTabByIdChecked(tabId0),
+                            TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
+                    Token tabGroupId = mTabModel.getTabById(tabId0).getTabGroupId();
+                    mTabModel.moveGroupToIndex(TabGroupId.fromRawToken(tabGroupId), 2);
                 });
 
         StorageLoadedData data = loadAllDataSync(WINDOW_TAG, false);
@@ -646,20 +675,16 @@ public class TabbedModeTabModelStoreTest {
 
         // Save state and recreate activity.
         runOnUiThreadBlocking(() -> orchestrator.saveState());
+        waitForTabInStorage(newTabId, 2);
 
-        mActivityTestRule.recreateActivity();
+        recreateActivityAndWait();
 
         ChromeTabbedActivity newActivity = mActivityTestRule.getActivity();
         TabModelSelector newSelector = newActivity.getTabModelSelector();
 
-        CriteriaHelper.pollUiThread(
-                newSelector::isTabStateInitialized,
-                "Recreated activity tab state never initialized");
-
         TabModel newModel = runOnUiThreadBlocking(() -> newSelector.getModel(false));
         CriteriaHelper.pollUiThread(
-                () -> runOnUiThreadBlocking(() -> newModel.getCount() >= 2),
-                "Tabs were not properly restored on app load");
+                () -> newModel.getCount() >= 2, "Tabs were not properly restored on app load");
 
         // Verify restored tab state.
         assertNotNull(
@@ -700,32 +725,33 @@ public class TabbedModeTabModelStoreTest {
         @TabId int newTabId = getActiveTabId();
 
         // Save active tab in ActiveTabCache and persist state in TabStateStore.
+        CallbackHelper cacheFlushHelper = new CallbackHelper();
         runOnUiThreadBlocking(
                 () -> {
-                    ActiveTabCache cache =
+                    ActiveTabCache activeTabCache =
                             new ActiveTabCache(
                                     WINDOW_TAG,
                                     mActivityTestRule.getActivity().getTabModelSelector(),
                                     null);
-                    cache.saveActiveTab(mActivityTestRule.getActivity().getActivityTab());
+                    activeTabCache.saveActiveTab(mActivityTestRule.getActivity().getActivityTab());
                     orchestrator.saveState();
+                    TabCacheManager.getOrCreateDirScope(ActiveTabCache.CACHE_TAG)
+                            .getTaskRunner()
+                            .execute(cacheFlushHelper::notifyCalled);
                 });
+        cacheFlushHelper.waitForOnly();
+        waitForTabInStorage(newTabId, 2);
 
         // Recreate activity to trigger restoration from ActiveTabCache + authoritative
         // TabStateStore.
-        mActivityTestRule.recreateActivity();
+        recreateActivityAndWait();
 
         ChromeTabbedActivity newActivity = mActivityTestRule.getActivity();
         TabModelSelector newSelector = newActivity.getTabModelSelector();
 
-        CriteriaHelper.pollUiThread(
-                newSelector::isTabStateInitialized,
-                "Recreated activity tab state never initialized");
-
         TabModel newModel = runOnUiThreadBlocking(() -> newSelector.getModel(false));
         CriteriaHelper.pollUiThread(
-                () -> runOnUiThreadBlocking(() -> newModel.getCount() >= 2),
-                "Tabs were not properly restored on app load");
+                () -> newModel.getCount() >= 2, "Tabs were not properly restored on app load");
 
         // Verify restored tab state.
         assertNotNull(
@@ -758,19 +784,16 @@ public class TabbedModeTabModelStoreTest {
 
         // Save state and recreate activity.
         runOnUiThreadBlocking(() -> orchestrator.saveState());
+        waitForTabInStorage(newTabId, 2);
 
-        mActivityTestRule.recreateActivity();
+        recreateActivityAndWait();
 
         ChromeTabbedActivity newActivity = mActivityTestRule.getActivity();
         TabModelSelector newSelector = newActivity.getTabModelSelector();
 
-        CriteriaHelper.pollUiThread(
-                newSelector::isTabStateInitialized,
-                "Recreated activity tab state never initialized");
-
         TabModel newModel = runOnUiThreadBlocking(() -> newSelector.getModel(false));
         CriteriaHelper.pollUiThread(
-                () -> runOnUiThreadBlocking(() -> newModel.getCount() >= 2),
+                () -> newModel.getCount() >= 2,
                 "Tabs were not properly restored on shadow app load");
 
         // Verify restored tab state.
@@ -808,6 +831,16 @@ public class TabbedModeTabModelStoreTest {
     }
 
     private void setupActivityStore(@StoreType int authoritativeStoreType) {
+        @TabId int initialTabId = getActiveTabId();
+        runOnUiThreadBlocking(
+                () ->
+                        mActivityTestRule
+                                .getActivity()
+                                .getTabModelOrchestratorSupplier()
+                                .get()
+                                .saveState());
+        waitForTabInStorage(initialTabId, 1);
+
         ChromeSharedPreferences.getInstance()
                 .writeIntSync(TAB_PERSISTENCE_STORE_MANAGER_VERSION, MANAGER_VERSION);
         ChromeSharedPreferences.getInstance()
@@ -819,7 +852,7 @@ public class TabbedModeTabModelStoreTest {
                         TAB_PERSISTENCE_SHADOW_WRITTEN_STORE.createKey(WINDOW_TAG),
                         StoreType.UNKNOWN);
 
-        mActivityTestRule.recreateActivity();
+        recreateActivityAndWait();
 
         runOnUiThreadBlocking(
                 () -> {
@@ -835,7 +868,44 @@ public class TabbedModeTabModelStoreTest {
                 });
 
         CriteriaHelper.pollUiThread(
+                () -> mTabModel.getCount() >= 1, "Initial tab was not restored");
+    }
+
+    private void recreateActivityAndWait() {
+        ChromeTabbedActivity previousActivity = mActivityTestRule.getActivity();
+        mActivityTestRule.recreateActivity();
+        ApplicationTestUtils.waitForActivityState(previousActivity, Stage.DESTROYED);
+        mActivityTestRule.waitForActivityNativeInitializationComplete();
+        mActivityTestRule.waitForActivityCompletelyLoaded();
+        CriteriaHelper.pollUiThread(
                 () -> mActivityTestRule.getActivity().getTabModelSelector().isTabStateInitialized(),
-                "Tab state never initialized");
+                "Recreated activity tab state never initialized");
+    }
+
+    private void waitForTabInStorage(@TabId int expectedTabId, int expectedMinCount) {
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    try {
+                        StorageLoadedData data = loadAllDataSync(WINDOW_TAG, false);
+                        StorageLoadedData.LoadedTabState[] states = data.getLoadedTabStates();
+                        Criteria.checkThat(
+                                "Expected at least " + expectedMinCount + " tabs in storage",
+                                states.length,
+                                Matchers.greaterThanOrEqualTo(expectedMinCount));
+                        boolean found = false;
+                        for (StorageLoadedData.LoadedTabState lts : states) {
+                            if (lts.tabId == expectedTabId) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        Criteria.checkThat(
+                                "Expected tab " + expectedTabId + " in storage",
+                                found,
+                                Matchers.is(true));
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
     }
 }

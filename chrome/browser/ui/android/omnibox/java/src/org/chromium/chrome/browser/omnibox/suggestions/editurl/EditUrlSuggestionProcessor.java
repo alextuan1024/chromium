@@ -24,13 +24,13 @@ import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.ShareDelegate.ShareOrigin;
 import org.chromium.chrome.browser.tab.SadTab;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.suggestions.OmniboxSuggestionUiType;
 import org.chromium.components.ukm.UkmRecorder;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
@@ -177,7 +177,8 @@ public class EditUrlSuggestionProcessor extends BaseSuggestionViewProcessor {
     /** Invoked when user interacts with Share action button. */
     private void onShareLink() {
         RecordUserAction.record("Omnibox.EditUrlSuggestion.Share");
-        Tab tab = assumeNonNull(mTabSupplier.get());
+        Tab tab = mTabSupplier.get();
+        if (tab == null) return;
         var webContents = tab.getWebContents();
         if (webContents != null) {
             // TODO(ender): find out if this is still captured anywhere.
@@ -194,9 +195,9 @@ public class EditUrlSuggestionProcessor extends BaseSuggestionViewProcessor {
     /** Invoked when user interacts with Copy action button. */
     private void onCopyLink(AutocompleteMatch suggestion) {
         RecordUserAction.record("Omnibox.EditUrlSuggestion.Copy");
-        Tab tab = assumeNonNull(mTabSupplier.get());
-        HistoryClustersTabHelper.onCurrentTabUrlCopied(tab.getWebContents());
-        GURL cleanUrl = DomDistillerUrlUtils.getOriginalUrlFromDistillerUrl(suggestion.getUrl());
+        Tab tab = mTabSupplier.get();
+        if (tab != null) HistoryClustersTabHelper.onCurrentTabUrlCopied(tab.getWebContents());
+        GURL cleanUrl = WebDistillerUrlUtils.getOriginalUrlFromDistillerUrl(suggestion.getUrl());
         Clipboard.getInstance().copyUrlToClipboard(cleanUrl);
     }
 

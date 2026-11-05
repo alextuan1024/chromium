@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import './icons.html.js';
-import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import './page_favicon.js';
 import '../icons.html.js';
@@ -17,7 +15,7 @@ import {I18nMixinLit, loadTimeData} from '../../i18n_setup.js';
 import {recordEnumeration, recordLogValue, recordOccurrence, recordSmallCount} from '../../metrics_utils.js';
 import {ScoredURLUserAction} from '../../most_relevant_tab_resumption.mojom-webui.js';
 import type {URLVisit} from '../../url_visit_types.mojom-webui.js';
-import {FormFactor, VisitSource} from '../../url_visit_types.mojom-webui.js';
+import {VisitSource} from '../../url_visit_types.mojom-webui.js';
 import {ModuleDescriptor} from '../module_descriptor.js';
 import type {MenuItem, ModuleHeaderElement} from '../module_header.js';
 
@@ -60,12 +58,6 @@ export class MostRelevantTabResumptionModuleElement extends I18nMixinLit
       urlVisits: {type: Array},
 
       /**
-       * To determine whether the favicon service should use the host if
-       * the url does not produce a match.
-       */
-      fallbackToHost_: {type: Boolean},
-
-      /**
        * To determine whether to show the module with the device icon.
        */
       shouldShowDeviceIcon_: {
@@ -74,30 +66,25 @@ export class MostRelevantTabResumptionModuleElement extends I18nMixinLit
       },
 
       showInfoDialog_: {type: Boolean},
-
-      allowFaviconServerFallback_: {type: Boolean},
     };
   }
 
   accessor format: string = 'wide';
   accessor urlVisits: URLVisit[] = [];
-  protected accessor fallbackToHost_: boolean =
+  /**
+   * To determine whether the favicon service should use the host if
+   * the url does not produce a match.
+   */
+  protected readonly fallbackToHost_: boolean =
       loadTimeData.getBoolean('mostRelevantTabResumptionModuleFallbackToHost');
   protected accessor shouldShowDeviceIcon_: boolean = false;
   protected accessor showInfoDialog_: boolean = false;
-  protected accessor allowFaviconServerFallback_: boolean =
+  protected readonly allowFaviconServerFallback_: boolean =
       loadTimeData.getBoolean(
           'mostRelevantTabResumptionAllowFaviconServerFallback');
 
   protected getMenuItems_(): MenuItem[] {
     return [
-      {
-        action: 'dismiss',
-        icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-            'modules:thumb-down' :
-            'modules:thumb_down-old',
-        text: this.i18n('modulesMostRelevantTabResumptionDismissAll'),
-      },
       {
         action: 'disable',
         icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
@@ -121,16 +108,6 @@ export class MostRelevantTabResumptionModuleElement extends I18nMixinLit
       message: loadTimeData.getStringF(
           'modulesDisableToastMessage',
           loadTimeData.getString('modulesThisTypeOfCardText')),
-    });
-  }
-
-  protected onHeaderDismissButtonClick_() {
-    MostRelevantTabResumptionProxyImpl.getInstance().handler.dismissModule(
-        this.urlVisits);
-    this.fire('dismiss-module-instance', {
-      message: loadTimeData.getString('modulesTabResumptionMultiDismiss'),
-      restoreCallback: () => MostRelevantTabResumptionProxyImpl.getInstance()
-                                 .handler.restoreModule(this.urlVisits),
     });
   }
 
@@ -203,31 +180,6 @@ export class MostRelevantTabResumptionModuleElement extends I18nMixinLit
     return domain;
   }
 
-  protected computeIcon_(urlVisit: URLVisit): string {
-    switch (urlVisit.formFactor) {
-      case FormFactor.kDesktop:
-        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-            'tab_resumption:desktop-windows' :
-            'tab_resumption:computer-old';
-      case FormFactor.kPhone:
-        return 'tab_resumption:phone-custom';
-      case FormFactor.kTablet:
-        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-            'tab_resumption:tablet-android' :
-            'tab_resumption:tablet-old';
-      case FormFactor.kAutomotive:
-        return 'tab_resumption:automotive-custom';
-      case FormFactor.kWearable:
-        return 'tab_resumption:wearable-custom';
-      case FormFactor.kTv:
-        return 'tab_resumption:tv';
-      default:
-        return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-            'tab_resumption:public' :
-            'tab_resumption:globe-old';
-    }
-  }
-
   protected computeDeviceName_(urlVisit: URLVisit): string|null {
     return urlVisit.sessionName;
   }
@@ -276,7 +228,8 @@ async function createElement():
     return null;
   }
 
-  const element = new MostRelevantTabResumptionModuleElement();
+  const element =
+      document.createElement('ntp-most-relevant-tab-resumption-module');
   element.urlVisits = urlVisits;
 
   urlVisits.slice(0, MAX_URL_VISITS).forEach((urlVisit) => {

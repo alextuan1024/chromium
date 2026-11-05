@@ -11,12 +11,19 @@ import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.hardware.serial.SerialManager;
+import android.hardware.serial.SerialPort;
+import android.hardware.serial.SerialPortResponse;
+import android.os.Build;
 import android.os.OutcomeReceiver;
 import android.os.ParcelFileDescriptor;
 
+import org.jni_zero.JniRawPtr;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -27,16 +34,15 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.annotation.Config;
 
-import org.chromium.base.serial.SerialManager;
-import org.chromium.base.serial.SerialPort;
-import org.chromium.base.serial.SerialPortResponse;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
 import java.util.List;
 
 /** Unit tests for ChromeSerialManager. */
 @RunWith(BaseRobolectricTestRunner.class)
+@Config(sdk = Build.VERSION_CODES.CINNAMON_BUN)
 public class ChromeSerialManagerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -52,12 +58,19 @@ public class ChromeSerialManagerTest {
     private ChromeSerialManager mChromeSerialManager;
 
     private static final long NATIVE_POINTER = 123456789L;
+    private JniRawPtr<ChromeSerialManager.NativeSerialDeviceEnumeratorAndroid> mNativePointer;
 
     @Before
     public void setUp() {
         mInOrder = inOrder(mSerialManager);
         ChromeSerialManagerJni.setInstanceForTesting(mNativeMock);
-        mChromeSerialManager = new ChromeSerialManager(NATIVE_POINTER, mSerialManager);
+        mNativePointer = JniRawPtr.createForTesting(NATIVE_POINTER);
+        mChromeSerialManager = new ChromeSerialManager(mNativePointer, mSerialManager);
+    }
+
+    @After
+    public void tearDown() {
+        mChromeSerialManager.close();
     }
 
     @Test
@@ -72,14 +85,14 @@ public class ChromeSerialManagerTest {
         mInOrder.verify(mSerialManager).getPorts();
         verify(mNativeMock)
                 .addPortViaJni(
-                        eq(NATIVE_POINTER),
+                        eq(mNativePointer),
                         eq("ttyS0"),
                         eq(-1),
                         eq(-1),
                         /* initialEnumeration= */ eq(true));
         verify(mNativeMock)
                 .addPortViaJni(
-                        eq(NATIVE_POINTER),
+                        eq(mNativePointer),
                         eq("ttyS1"),
                         eq(-1),
                         eq(-1),
@@ -94,7 +107,7 @@ public class ChromeSerialManagerTest {
 
         verify(mNativeMock)
                 .addPortViaJni(
-                        eq(NATIVE_POINTER),
+                        eq(mNativePointer),
                         eq("ttyS0"),
                         eq(-1),
                         eq(-1),
@@ -107,7 +120,7 @@ public class ChromeSerialManagerTest {
 
         mChromeSerialManager.onSerialPortDisconnected(port);
 
-        verify(mNativeMock).removePortViaJni(eq(NATIVE_POINTER), eq("ttyS0"));
+        verify(mNativeMock).removePortViaJni(eq(mNativePointer), eq("ttyS0"));
     }
 
     @Test
@@ -161,7 +174,31 @@ public class ChromeSerialManagerTest {
         OutcomeReceiver<SerialPortResponse, Exception> receiver = mOutcomeReceiverCaptor.getValue();
         receiver.onResult(createSerialPortResponse(port, 1234));
 
-        verify(mNativeMock).openPathCallbackViaJni(eq(NATIVE_POINTER), eq("ttyS0"), eq(1234));
+        verify(mNativeMock).openPathCallbackViaJni(eq(mNativePointer), eq("ttyS0"), eq(1234));
+    }
+
+    @Test
+    public void openPorts_onSuccessAfterClose_closesFileDescriptor() throws Exception {
+        SerialPort port = createMockSerialPort("ttyS0");
+        when(mSerialManager.getPorts()).thenReturn(List.of(port));
+        mChromeSerialManager.registerListenerAndEnumeratePorts();
+
+        mChromeSerialManager.openPort("ttyS0");
+        verify(port)
+                .requestOpen(
+                        anyInt(),
+                        /* exclusive= */ eq(true),
+                        any(),
+                        mOutcomeReceiverCaptor.capture());
+        OutcomeReceiver<SerialPortResponse, Exception> receiver = mOutcomeReceiverCaptor.getValue();
+        SerialPortResponse response = createSerialPortResponse(port, 1234);
+
+        mChromeSerialManager.close();
+        receiver.onResult(response);
+
+        verify(response.getFileDescriptor()).close();
+        verify(response.getFileDescriptor(), never()).detachFd();
+        verify(mNativeMock, never()).openPathCallbackViaJni(any(), any(), anyInt());
     }
 
     @Test
@@ -180,7 +217,7 @@ public class ChromeSerialManagerTest {
         OutcomeReceiver<SerialPortResponse, Exception> receiver = mOutcomeReceiverCaptor.getValue();
         receiver.onError(new Exception("test"));
 
-        verify(mNativeMock).errorCallbackViaJni(eq(NATIVE_POINTER), eq("ttyS0"), any(), any());
+        verify(mNativeMock).errorCallbackViaJni(eq(mNativePointer), eq("ttyS0"), any(), any());
     }
 
     private SerialPort createMockSerialPort(String name) {
@@ -196,19 +233,12 @@ public class ChromeSerialManagerTest {
     }
 
     private SerialPortResponse createSerialPortResponse(SerialPort port, int fd) {
-        return new SerialPortResponse() {
-            @Override
-            public SerialPort getPort() {
-                return port;
-            }
-
-            @Override
-            public ParcelFileDescriptor getFileDescriptor() {
-                ParcelFileDescriptor pfd = mock(ParcelFileDescriptor.class);
-                when(pfd.getFd()).thenReturn(fd);
-                when(pfd.detachFd()).thenReturn(fd);
-                return pfd;
-            }
-        };
+        ParcelFileDescriptor pfd = mock(ParcelFileDescriptor.class);
+        when(pfd.getFd()).thenReturn(fd);
+        when(pfd.detachFd()).thenReturn(fd);
+        SerialPortResponse response = mock(SerialPortResponse.class);
+        when(response.getPort()).thenReturn(port);
+        when(response.getFileDescriptor()).thenReturn(pfd);
+        return response;
     }
 }

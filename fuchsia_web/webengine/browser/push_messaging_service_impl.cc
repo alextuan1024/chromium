@@ -149,7 +149,6 @@ void PushMessagingServiceImpl::Unsubscribe(
     blink::mojom::PushUnregistrationReason reason,
     const GURL& origin,
     int64_t service_worker_registration_id,
-    const std::string& sender_id,
     UnregisterCallback callback) {
   // Same as DoSubscribe, PushMessagingManager shouldn't send this pair of
   // parameters to PushMessagingService, but let's make it safer.
@@ -178,8 +177,7 @@ void PushMessagingServiceImpl::DidDeleteServiceWorkerRegistration(
     int64_t service_worker_registration_id) {
   Unsubscribe(
       blink::mojom::PushUnregistrationReason::SERVICE_WORKER_UNREGISTERED,
-      origin, service_worker_registration_id, /*sender_id=*/std::string{},
-      base::DoNothing());
+      origin, service_worker_registration_id, base::DoNothing());
 }
 
 void PushMessagingServiceImpl::DidDeleteServiceWorkerDatabase() {
@@ -233,12 +231,6 @@ void PushMessagingServiceImpl::OnSendError(
   NOTREACHED() << "The Push API shouldn't have sent messages upstream";
 }
 
-void PushMessagingServiceImpl::OnSendAcknowledged(
-    const std::string& app_id,
-    const std::string& message_id) {
-  NOTREACHED() << "The Push API shouldn't have sent messages upstream";
-}
-
 bool PushMessagingServiceImpl::CanHandle(const std::string& app_id) const {
   return base::StartsWith(app_id, push_messaging::kAppIdentifierPrefix,
                           base::CompareCase::INSENSITIVE_ASCII);
@@ -255,7 +247,7 @@ gcm::GCMDriver& PushMessagingServiceImpl::GetGCMDriver() {
              base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
 
     gcm_driver_ = gcm::CreateGCMDriverDesktop(
-        std::make_unique<gcm::GCMClientFactory>(), /*prefs=*/nullptr,
+        std::make_unique<gcm::GCMClientFactory>(),
         parent_context_.IsOffTheRecord()
             ? base::FilePath("/tmp")
             : parent_context_.GetPath().Append(gcm_driver::kGCMStoreDirname),

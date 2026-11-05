@@ -7,6 +7,8 @@
 #include <memory>
 #include <utility>
 
+#include "base/check.h"
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/animation/css_angle_interpolation_type.h"
 #include "third_party/blink/renderer/core/animation/css_aspect_ratio_interpolation_type.h"
 #include "third_party/blink/renderer/core/animation/css_basic_shape_interpolation_type.h"
@@ -42,6 +44,7 @@
 #include "third_party/blink/renderer/core/animation/css_length_pair_interpolation_type.h"
 #include "third_party/blink/renderer/core/animation/css_number_interpolation_type.h"
 #include "third_party/blink/renderer/core/animation/css_offset_rotate_interpolation_type.h"
+#include "third_party/blink/renderer/core/animation/css_opacity_interpolation_type.h"
 #include "third_party/blink/renderer/core/animation/css_overlay_interpolation_type.h"
 #include "third_party/blink/renderer/core/animation/css_paint_interpolation_type.h"
 #include "third_party/blink/renderer/core/animation/css_path_interpolation_type.h"
@@ -71,11 +74,13 @@
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
 #include "third_party/blink/renderer/core/css/properties/css_property.h"
 #include "third_party/blink/renderer/core/css/property_registry.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -95,14 +100,15 @@ static const PropertyRegistration* GetRegistration(
 
 const InterpolationTypes* InterpolationTypesMap::Get(
     const PropertyHandle& property) const {
+  DCHECK(IsMainThread());
   using ApplicableTypesMap =
       GCedHeapHashMap<PropertyHandle, Member<InterpolationTypes>>;
-  DEFINE_STATIC_LOCAL(Persistent<ApplicableTypesMap>, all_applicable_types_map,
-                      (MakeGarbageCollected<ApplicableTypesMap>()));
+  static base::NoDestructor<Persistent<ApplicableTypesMap>>
+      all_applicable_types_map(MakeGarbageCollected<ApplicableTypesMap>());
 
-  DEFINE_STATIC_LOCAL(Persistent<ApplicableTypesMap>,
-                      reduce_motion_applicable_types_map,
-                      (MakeGarbageCollected<ApplicableTypesMap>()));
+  static base::NoDestructor<Persistent<ApplicableTypesMap>>
+      reduce_motion_applicable_types_map(
+          MakeGarbageCollected<ApplicableTypesMap>());
 
   // Custom property interpolation types may change over time so don't trust the
   // applicable_types_map without checking the registry. Also since the static
@@ -116,8 +122,8 @@ const InterpolationTypes* InterpolationTypesMap::Get(
   bool reduce_motion = document_.ShouldForceReduceMotion();
 
   ApplicableTypesMap& applicable_types_map =
-      reduce_motion ? *reduce_motion_applicable_types_map
-                    : *all_applicable_types_map;
+      reduce_motion ? **reduce_motion_applicable_types_map
+                    : **all_applicable_types_map;
 
   auto entry = applicable_types_map.find(property);
   if (entry != applicable_types_map.end()) {
@@ -147,8 +153,8 @@ const InterpolationTypes* InterpolationTypesMap::Get(
       case CSSPropertyID::kRowRuleInsetJunctionStart:
       case CSSPropertyID::kCx:
       case CSSPropertyID::kCy:
+      case CSSPropertyID::kFitTolerance:
       case CSSPropertyID::kFlexBasis:
-      case CSSPropertyID::kFlowTolerance:
       case CSSPropertyID::kHeight:
       case CSSPropertyID::kLeft:
       case CSSPropertyID::kLetterSpacing:
@@ -236,7 +242,6 @@ const InterpolationTypes* InterpolationTypesMap::Get(
       case CSSPropertyID::kFillOpacity:
       case CSSPropertyID::kFloodOpacity:
       case CSSPropertyID::kMathDepth:
-      case CSSPropertyID::kOpacity:
       case CSSPropertyID::kOrder:
       case CSSPropertyID::kOrphans:
       case CSSPropertyID::kReadingOrder:
@@ -249,6 +254,10 @@ const InterpolationTypes* InterpolationTypesMap::Get(
       case CSSPropertyID::kZIndex:
         applicable_types->push_back(
             MakeGarbageCollected<CSSNumberInterpolationType>(property));
+        break;
+      case CSSPropertyID::kOpacity:
+        applicable_types->push_back(
+            MakeGarbageCollected<CSSOpacityInterpolationType>(property));
         break;
       case CSSPropertyID::kZoom:
         if (RuntimeEnabledFeatures::CSSZoomAnimationEnabled()) {

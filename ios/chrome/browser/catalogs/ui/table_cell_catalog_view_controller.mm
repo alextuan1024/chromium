@@ -12,13 +12,13 @@
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_table_view_item.h"
+#import "ios/chrome/browser/settings/password/public/passwords_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/address_bar_preference/cells/address_bar_options_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/inline_promo_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/settings_check_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/settings_image_detail_text_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/sync_switch_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/elements/enterprise_info_popover_view_controller.h"
-#import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_icon_item.h"
@@ -649,9 +649,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
   TableViewAccountItem* accountItemDetailWithError =
       [[TableViewAccountItem alloc] initWithType:ItemTypeAccount];
   accountItemDetailWithError.image = defaultAvatar;
-  accountItemDetailWithError.text = @"Account User Name";
-  accountItemDetailWithError.detailText =
-      @"Syncing to AccountUserNameAccount@example.com";
+  accountItemDetailWithError.name = @"Account User Name";
+  accountItemDetailWithError.email = @"AccountUserNameAccount@example.com";
   accountItemDetailWithError.accessoryType =
       UITableViewCellAccessoryDisclosureIndicator;
   accountItemDetailWithError.detailImage = TableViewAccountDetailImage::kError;
@@ -661,12 +660,8 @@ typedef NS_ENUM(NSInteger, ItemType) {
   TableViewAccountItem* accountItemCheckMark =
       [[TableViewAccountItem alloc] initWithType:ItemTypeAccount];
   accountItemCheckMark.image = defaultAvatar;
-  accountItemCheckMark.text = @"Lorem ipsum dolor sit amet, consectetur "
-                              @"adipiscing elit, sed do eiusmod tempor "
-                              @"incididunt ut labore et dolore magna aliqua.";
-  accountItemCheckMark.detailText =
-      @"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do "
-      @"eiusmod tempor incididunt ut labore et dolore magna aliqua.";
+  accountItemCheckMark.name = @"Account User name.";
+  accountItemCheckMark.email = @"foo@bar.com";
   accountItemCheckMark.accessoryType = UITableViewCellAccessoryCheckmark;
   [model addItem:accountItemCheckMark
       toSectionWithIdentifier:SectionIdentifierAccount];

@@ -12,6 +12,7 @@ import androidx.annotation.IntDef;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
+import org.chromium.ui.modelutil.PropertyModel.WritableFloatPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
 import java.lang.annotation.Retention;
@@ -36,6 +37,9 @@ public class ExtensionActionButtonProperties {
     public static final WritableObjectPropertyKey<String> ACCESSIBLE_NAME =
             new WritableObjectPropertyKey<>();
 
+    /** The alpha of the action button (e.g. dimmed when the window is unfocused). */
+    public static final WritableFloatPropertyKey ALPHA = new WritableFloatPropertyKey();
+
     /** The {@link ExtensionActionDragHelper} to distinguish input events. */
     public static final WritableObjectPropertyKey<ExtensionActionDragHelper> DRAG_HELPER =
             new WritableObjectPropertyKey<>();
@@ -57,6 +61,10 @@ public class ExtensionActionButtonProperties {
     public static final WritableObjectPropertyKey<View.OnHoverListener> ON_HOVER_LISTENER =
             new WritableObjectPropertyKey<>();
 
+    /** The key listener. */
+    public static final WritableObjectPropertyKey<View.OnKeyListener> ON_KEY_LISTENER =
+            new WritableObjectPropertyKey<>();
+
     /** The context-click listener. */
     public static final WritableObjectPropertyKey<View.OnLongClickListener> ON_LONG_CLICK_LISTENER =
             new WritableObjectPropertyKey<>();
@@ -69,12 +77,14 @@ public class ExtensionActionButtonProperties {
     public static final PropertyKey[] ALL_KEYS =
             new PropertyKey[] {
                 ACCESSIBLE_NAME,
+                ALPHA,
                 DRAG_HELPER,
                 ICON,
                 ID,
                 IS_DRAGGABLE,
                 ON_CLICK_LISTENER,
                 ON_HOVER_LISTENER,
+                ON_KEY_LISTENER,
                 ON_LONG_CLICK_LISTENER,
                 TOUCH_LISTENER
             };

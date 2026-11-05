@@ -10,8 +10,6 @@ static_library("metrics") {
     "arc_metrics_service_proxy.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//base",
     "//chrome/browser:browser_process",
@@ -19,7 +17,7 @@ static_library("metrics") {
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/ash/arc/session",
     "//chrome/browser/memory",
-    "//chrome/browser/profiles:profile_manager",
+    "//chrome/browser/profiles:profile",
     "//chromeos/ash/experiences/arc",
     "//components/keyed_service/core",
   ]

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "ui/base/ime/text_input_mode.h"
 #include "ui/base/ime/text_input_type.h"
 #include "ui/gfx/geometry/rect.h"
@@ -38,14 +39,23 @@ class ZwpTextInputV3Client {
                                const gfx::Range& preedit_cursor) = 0;
 
   // Called when client needs to delete all or part of the text surrounding
-  // the cursor. |index| and |length| are expected to be a byte offset of |text|
-  // passed via ZwpTextInputV3::SetSurroundingText, including preedit.
-  virtual void OnDeleteSurroundingText(int32_t index, uint32_t length) = 0;
+  // the cursor. |before_length| and |after_length| are the number of bytes
+  // before and after the current cursor index (excluding the selection) to
+  // delete. If preedit text is present, it is removed first and the deletion
+  // happens around it.
+  virtual void OnDeleteSurroundingText(uint32_t before_length,
+                                       uint32_t after_length) = 0;
 
   // Called when a complete input sequence has been entered.  The text to
   // commit could be either just a single character after a key press or the
   // result of some composing (pre-edit).
   virtual void OnCommitString(std::string_view text) = 0;
+
+  // Called after the input events of a done event have been applied, before
+  // the pending state is sent. The client should update the surrounding text
+  // to reflect the applied events, as the text input client may only update
+  // it asynchronously, i.e. after the next done event.
+  virtual void OnInputEventsApplied() = 0;
 };
 
 class ZwpTextInputV3 {
@@ -54,11 +64,18 @@ class ZwpTextInputV3 {
 
   virtual void SetClient(ZwpTextInputV3Client* context) = 0;
   virtual void OnClientDestroyed(ZwpTextInputV3Client* context) = 0;
+  // Enables text input. Since enabling resets all text input state on the
+  // compositor side, the most recently requested surrounding text and cursor
+  // rectangle (if any) are sent together with the enable request.
   virtual void Enable(TextInputType type,
                       uint32_t flags,
                       bool should_do_learning) = 0;
   virtual void Disable() = 0;
   virtual void Reset() = 0;
+  // Clears the cached surrounding text and cursor rectangle that would
+  // otherwise be sent on the next Enable(). Should be called when the focused
+  // text input client changes, as the cached state is no longer valid.
+  virtual void ClearCachedState() = 0;
   virtual void SetCursorRect(const gfx::Rect& rect) = 0;
   virtual void SetSurroundingText(const std::string& text_with_preedit,
                                   const gfx::Range& preedit_range,
@@ -84,6 +101,7 @@ class ZwpTextInputV3Impl : public ZwpTextInputV3 {
               bool should_do_learning) override;
   void Disable() override;
   void Reset() override;
+  void ClearCachedState() override;
 
   void SetCursorRect(const gfx::Rect& rect) override;
   void SetSurroundingText(const std::string& text_with_preedit,
@@ -103,15 +121,11 @@ class ZwpTextInputV3Impl : public ZwpTextInputV3 {
     uint32_t content_purpose = ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL;
   };
   struct SurroundingText {
-    // Checks equality for the sent surrounding text data.
-    bool operator==(const SurroundingText& other) const;
+    bool operator==(const SurroundingText& other) const = default;
     // These fields are sent to IME.
     std::string text;
     int32_t cursor = 0;
     int32_t anchor = 0;
-    // The following fields are used for caching only and not sent or compared.
-    size_t full_length;
-    gfx::Range delete_around_range;
   };
   struct PreeditData {
     constexpr PreeditData() = default;
@@ -140,8 +154,6 @@ class ZwpTextInputV3Impl : public ZwpTextInputV3 {
     std::unique_ptr<PreeditData> preedit;
     std::string commit;
     std::unique_ptr<DeleteSurroundingText> delete_surrounding_text;
-    // Only used when applied.
-    uint32_t last_done_serial = 0;
   };
 
   // Data sent to IME.
@@ -152,21 +164,24 @@ class ZwpTextInputV3Impl : public ZwpTextInputV3 {
     std::unique_ptr<gfx::Rect> cursor_rect;
     std::unique_ptr<ContentType> content_type;
     std::unique_ptr<SurroundingText> surrounding_text;
-    // Only used when committed.
-    uint32_t commit_count = 0;
   };
-
-  bool DoneSerialEqualsCommitCount();
 
   static ContentType GetContentType(TextInputType type,
                                     uint32_t flags,
                                     bool should_do_learning);
 
-  bool SendCursorRect();
-  bool SendContentType();
-  bool SendSurroundingText();
+  // Sends an enable request along with `content_type` and the latest
+  // surrounding text and cursor rectangle.
+  void SendEnable(const ContentType& content_type);
+  // Enables text input again after Reset() disabled it, unless text input was
+  // disabled or enabled in the meantime.
+  void EnableAfterReset();
 
-  void SendPendingImeData();
+  // These send the request without committing it, and record the sent value
+  // in `sent_ime_data_`.
+  void SendCursorRect(const gfx::Rect& rect);
+  void SendContentType(const ContentType& content_type);
+  void SendSurroundingText(const SurroundingText& surrounding_text);
 
   void Commit();
 
@@ -203,11 +218,26 @@ class ZwpTextInputV3Impl : public ZwpTextInputV3 {
   // Input events applied on done event.
   InputEvents applied_input_events_;
 
-  // Pending data to be sent to IME.
-  ImeData pending_ime_data_;
+  // Data that was last sent to IME and committed. State requests are sent and
+  // committed right away rather than after a done event with a matching serial,
+  // since some compositors (e.g. wlroots and Smithay based ones) only send done
+  // events in response to input method commits.
+  ImeData sent_ime_data_;
 
-  // Data that was last sent to IME and committed.
-  ImeData committed_ime_data_;
+  // Most recently requested surrounding text and cursor rect. Unlike
+  // `sent_ime_data_`, these survive Enable() and Disable() so that they can be
+  // re-sent along with the enable request, since text-input-v3 state is reset
+  // by the compositor on each enable.
+  std::optional<SurroundingText> latest_surrounding_text_;
+  std::optional<gfx::Rect> latest_cursor_rect_;
+
+  // The most recently requested content type while text input is enabled, or
+  // nullopt while it is disabled.
+  std::optional<ContentType> enabled_content_type_;
+
+  // Has a weak pointer while Reset() has disabled text input and the enable
+  // that follows is still pending.
+  base::WeakPtrFactory<ZwpTextInputV3Impl> enable_after_reset_factory_{this};
 };
 
 }  // namespace ui

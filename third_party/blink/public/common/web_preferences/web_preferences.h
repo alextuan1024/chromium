@@ -88,10 +88,15 @@ struct BLINK_COMMON_EXPORT WebPreferences {
   bool tabs_to_links = true;
   bool disable_ipc_flooding_protection = false;
   bool hyperlink_auditing_enabled = true;
+  // If false then the values of allow_universal_access_from_file_urls and
+  // allow_file_access_from_file_urls are disregarded.
+  bool allow_file_access_from_workers = true;
   bool allow_universal_access_from_file_urls = false;
   bool allow_file_access_from_file_urls = false;
   bool webgl1_enabled = true;
   bool webgl2_enabled = true;
+  // Whether WebGPU (navigator.gpu.requestAdapter()) may return adapters.
+  bool webgpu_enabled = true;
   bool privileged_webgl_extensions_enabled = false;
   bool webgl_errors_to_console_enabled = true;
   bool hide_scrollbars = false;
@@ -489,6 +494,16 @@ struct BLINK_COMMON_EXPORT WebPreferences {
   // Set if this is in a WebView for chrome/browser/indigo/onboarding/.
   // Consumed only in chrome/renderer/ (not by Blink).
   bool is_indigo_onboarding = false;
+
+  // True if the user dismissed the XSLT deprecation warning banner with the
+  // "Never show this warning" checkbox checked. The banner is injected into the
+  // document by the renderer, so this state has to be sent from the embedder,
+  // which stores it as a profile preference.
+  // TODO(crbug.com/560233256): This preference is temporary, and is only
+  // required before XSLT is disabled by default in M158. It can be removed in
+  // M158, or whenever XSLT is disabled by default (other than for origin
+  // trials and enterprise policy).
+  bool is_xslt_deprecation_banner_suppressed = false;
 
   // We try to keep the default values the same as the default values in
   // chrome, except for the cases where it would require lots of extra work for

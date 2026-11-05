@@ -14,8 +14,6 @@ import androidx.test.filters.SmallTest;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -44,11 +42,9 @@ public class RadioButtonWithIconRenderTest {
     private static final List<ParameterSet> sClassParams =
             new NightModeTestUtils.NightModeParams().getParameters();
 
-    @ClassRule
-    public static final BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
+    @Rule
+    public final BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
-
-    private static Activity sActivity;
 
     private static final int REVISION = 3;
     private static final String REVISION_DESCRIPTION =
@@ -77,11 +73,6 @@ public class RadioButtonWithIconRenderTest {
         mRenderTestRule.setNightModeEnabled(nightModeEnabled);
     }
 
-    @BeforeClass
-    public static void setupSuite() {
-        sActivity = sActivityTestRule.launchActivity(null);
-    }
-
     @AfterClass
     public static void tearDownSuite() {
         NightModeTestUtils.tearDownNightModeForBlankUiTestActivity();
@@ -89,7 +80,9 @@ public class RadioButtonWithIconRenderTest {
 
     @Before
     public void setUp() throws Exception {
-        Activity activity = sActivity;
+        // Launch the activity after NightModeTestUtils configures the default night mode in the
+        // parameterized constructor so the activity is created with the expected theme resources.
+        Activity activity = mActivityTestRule.launchActivity(null);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     View content =

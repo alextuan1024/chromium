@@ -82,9 +82,11 @@ void BrowserTabsModelProviderImpl::AttemptBrowserTabsModelUpdate() {
     return;
   }
 
-  std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
+  std::vector<raw_ptr<const sync_sessions::SyncedSession, DanglingUntriaged>>
       sessions;
-  bool was_fetch_successful = open_tabs->GetAllForeignSessions(&sessions);
+  bool was_fetch_successful = open_tabs->GetAllForeignSessions(
+      &sessions,
+      sync_sessions::OpenTabsUIDelegate::ForeignSessionFilter::kPresentable);
   // No tabs were found, clear all tab metadata.
   if (!was_fetch_successful) {
     InvalidateWeakPtrsAndClearTabMetadata(/*is_tab_sync_enabled=*/true);

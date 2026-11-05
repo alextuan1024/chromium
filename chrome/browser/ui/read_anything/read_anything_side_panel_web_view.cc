@@ -4,15 +4,12 @@
 
 #include "chrome/browser/ui/read_anything/read_anything_side_panel_web_view.h"
 
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/read_anything/read_anything_controller.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_scope.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/web_contents_delegate.h"
-#include "ui/accessibility/accessibility_features.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 
 using SidePanelWebUIViewT_ReadAnythingUntrustedUI =
@@ -23,7 +20,6 @@ BEGIN_TEMPLATE_METADATA(SidePanelWebUIViewT_ReadAnythingUntrustedUI,
 END_METADATA
 
 ReadAnythingSidePanelWebView::ReadAnythingSidePanelWebView(
-    Profile* profile,
     SidePanelEntryScope& scope,
     std::unique_ptr<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>
         contents_wrapper)
@@ -67,7 +63,7 @@ bool ReadAnythingSidePanelWebView::HandleKeyboardEvent(
       glue->controller()->HandleEscapeKey(event)) {
     return true;
   }
-  return SidePanelWebUIViewT::HandleKeyboardEvent(source, event);
+  return views::WebView::HandleKeyboardEvent(source, event);
 }
 
 base::WeakPtr<ReadAnythingSidePanelWebView>
@@ -78,6 +74,7 @@ ReadAnythingSidePanelWebView::GetWeakPtr() {
 std::unique_ptr<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>
 ReadAnythingSidePanelWebView::TakeContentsWrapper() {
   SetWebContents(nullptr);
+  contents_wrapper_->SetHost(nullptr);
   return std::move(contents_wrapper_);
 }
 

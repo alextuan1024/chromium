@@ -9,6 +9,7 @@
 #include <optional>
 #include <utility>
 
+#include "base/numerics/angle_conversions.h"
 #include "third_party/blink/renderer/platform/geometry/contoured_rect.h"
 #include "third_party/blink/renderer/platform/geometry/path.h"
 #include "third_party/blink/renderer/platform/geometry/path_types.h"
@@ -55,10 +56,10 @@ std::array<gfx::Vector2dF, 3> ApproximateSuperellipseHalfCornerAsBezierCurve(
   // the middle of the corner.
   const float half_corner = Corner::HalfCornerForCurvature(curvature);
 
-  const gfx::Vector2dF P1(a, 1);
-  const gfx::Vector2dF P2(half_corner - b, half_corner + b);
-  const gfx::Vector2dF P3(half_corner, half_corner);
-  return {P1, P2, P3};
+  const gfx::Vector2dF p1(a, 1);
+  const gfx::Vector2dF p2(half_corner - b, half_corner + b);
+  const gfx::Vector2dF p3(half_corner, half_corner);
+  return {p1, p2, p3};
 }
 
 // Adds a curved corner to a path. The vertex argument is the 4 points
@@ -370,7 +371,7 @@ PathBuilder& PathBuilder::AddContouredRect(
     const ContouredRect& contoured_rect) {
   const FloatRoundedRect& target_rect = contoured_rect.AsRoundedRect();
 
-  if (contoured_rect.HasRoundCurvature()) {
+  if (contoured_rect.CanRenderAsRoundedRect()) {
     AddRoundedRect(target_rect);
     return *this;
   }
@@ -453,8 +454,8 @@ PathBuilder& PathBuilder::AddEllipse(const gfx::PointF& p,
   const SkRect oval = SkRect::MakeLTRB(p.x() - radius_x, p.y() - radius_y,
                                        p.x() + radius_x, p.y() + radius_y);
 
-  const float start_degrees = Rad2deg(start_angle);
-  const float sweep_degrees = Rad2deg(end_angle - start_angle);
+  const float start_degrees = base::RadToDeg(start_angle);
+  const float sweep_degrees = base::RadToDeg(end_angle - start_angle);
 
   // We can't use SkPath::addOval(), because addOval() makes a new sub-path.
   // addOval() calls moveTo() and close() internally.

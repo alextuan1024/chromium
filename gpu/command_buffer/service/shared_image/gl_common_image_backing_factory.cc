@@ -9,14 +9,15 @@
 #include <optional>
 
 #include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "components/viz/common/resources/shared_image_format.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
-#include "gpu/command_buffer/service/shared_image/gl_texture_holder.h"
 #include "gpu/config/gpu_preferences.h"
+#include "third_party/skia/include/core/SkColorType.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gl/gl_version_info.h"
 #include "ui/gl/progress_reporter.h"
 
 namespace gpu {
@@ -24,39 +25,40 @@ namespace gpu {
 // GLCommonImageBackingFactory
 
 namespace {
-std::optional<viz::SharedImageFormat> GetFallbackFormatIfNotSupported(
-    viz::SharedImageFormat plane_format,
+
+// Returns the equivalent SharedImageFormat for plane specified by
+// `plane_index` if supported by `caps`.
+std::optional<viz::SharedImageFormat> GetSupportedPlaneFormat(
+    viz::SharedImageFormat format,
+    int plane_index,
     const GLFormatCaps& caps) {
-  if (plane_format == viz::SinglePlaneFormat::kR_8) {
-    bool fallback = !caps.ext_texture_rg();
-    base::UmaHistogramBoolean("GPU.SharedImage.R8ToAlpha8Fallback", fallback);
-    if (fallback) {
-      // Fallback to ALPHA_8 for R_8 format.
-      return viz::SinglePlaneFormat::kALPHA_8;
-    }
+  DCHECK(format.IsValidPlaneIndex(plane_index));
+  DCHECK(format.is_multi_plane());
+
+  int num_channels = format.NumChannelsInPlane(plane_index);
+  DCHECK_LE(num_channels, 2);
+  switch (format.channel_format()) {
+    case viz::SharedImageFormat::ChannelFormat::k8:
+      if (!caps.ext_texture_rg()) {
+        return std::nullopt;
+      }
+      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_88
+                               : viz::SinglePlaneFormat::kR_8;
+    case viz::SharedImageFormat::ChannelFormat::k10:
+    case viz::SharedImageFormat::ChannelFormat::k16:
+      if (!caps.ext_texture_norm16()) {
+        return std::nullopt;
+      }
+      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_1616
+                               : viz::SinglePlaneFormat::kR_16;
+    case viz::SharedImageFormat::ChannelFormat::k16F:
+      if (num_channels != 1 || (!caps.is_atleast_gles3() &&
+                                !caps.enable_texture_half_float_linear())) {
+        return std::nullopt;
+      }
+      return viz::SinglePlaneFormat::kR_F16;
   }
-  if (plane_format == viz::SinglePlaneFormat::kRG_88 &&
-      !caps.ext_texture_rg()) {
-    // No fallback for RG_88 format.
-    return std::nullopt;
-  }
-  if ((plane_format == viz::SinglePlaneFormat::kR_16 ||
-       plane_format == viz::SinglePlaneFormat::kRG_1616) &&
-      !caps.ext_texture_norm16()) {
-    // No fallback for R_16, RG_1616 format.
-    return std::nullopt;
-  }
-  if (plane_format == viz::SinglePlaneFormat::kR_F16) {
-    bool fallback =
-        !caps.is_atleast_gles3() && !caps.enable_texture_half_float_linear();
-    base::UmaHistogramBoolean("GPU.SharedImage.R16FToLuminanceF16Fallback",
-                              fallback);
-    if (fallback) {
-      // Fallback to LUMINANCE_F16 for R_F16 format.
-      return viz::SinglePlaneFormat::kLUMINANCE_F16;
-    }
-  }
-  return plane_format;
+  NOTREACHED();
 }
 
 // Returns a vector of FormatInfo for multiplanar formats. The returned
@@ -69,16 +71,14 @@ std::vector<GLCommonImageBackingFactory::FormatInfo> GetMultiPlaneFormatInfo(
     viz::SharedImageFormat format) {
   std::vector<viz::SharedImageFormat> plane_formats;
   for (int plane = 0; plane < format.NumberOfPlanes(); plane++) {
-    viz::SharedImageFormat plane_format =
-        GLTextureHolder::GetPlaneFormat(format, plane);
-    auto fallback_format =
-        GetFallbackFormatIfNotSupported(plane_format, gl_format_caps);
-    if (!fallback_format) {
+    std::optional<viz::SharedImageFormat> plane_format =
+        GetSupportedPlaneFormat(format, plane, gl_format_caps);
+    if (!plane_format) {
       // Could not find supported single plane format for the requested
       // multiplane format.
       return {};
     }
-    plane_formats.emplace_back(fallback_format.value());
+    plane_formats.emplace_back(plane_format.value());
   }
 
   std::vector<GLCommonImageBackingFactory::FormatInfo> plane_infos;
@@ -126,6 +126,12 @@ GLCommonImageBackingFactory::GLCommonImageBackingFactory(
     if (format == viz::SinglePlaneFormat::kBGR_565) {
       continue;
     }
+    // Formats with no SkColorType at the image size can't be allocated as a
+    // texture of the image size. Y210's GL format, for example, is the
+    // half-width R16G16B16A16 view of a packed 4:2:2 D3D texture.
+    if (viz::ToClosestSkColorType(format) == kUnknown_SkColorType) {
+      continue;
+    }
     const GLFormatDesc format_desc =
         gl_format_caps_.ToGLFormatDescOverrideHalfFloatType(format,
                                                             /*plane_index=*/0);
@@ -134,14 +140,22 @@ GLCommonImageBackingFactory::GLCommonImageBackingFactory(
     CHECK_NE(gl_format, static_cast<GLenum>(GL_ZERO));
     const GLenum gl_type = format_desc.data_type;
 
-    // kRGBA_F16 is a core part of ES3.
-    const bool at_least_es3 = gl::g_current_gl_version->IsAtLeastGLES(3, 0);
+    // kRGBA_F16 and kR_F16 are core parts of ES3.
+    const bool at_least_es3 = gl_format_caps_.is_atleast_gles3();
+    const bool es3_half_float_available =
+        at_least_es3 && (image_internal_format == GL_RGBA16F ||
+                         (image_internal_format == GL_R16F &&
+                          gl_format_caps_.ext_texture_rg()));
     const bool supports_data_type =
         (gl_type == GL_HALF_FLOAT && at_least_es3) ||
         validators->pixel_type.IsValid(gl_type);
     const bool supports_internal_format =
-        (image_internal_format == GL_RGBA16F && at_least_es3) ||
+        es3_half_float_available ||
         validators->texture_internal_format.IsValid(image_internal_format);
+    const bool supports_storage_internal_format =
+        es3_half_float_available ||
+        validators->texture_internal_format_storage.IsValid(
+            format_desc.storage_internal_format);
 
     const bool uncompressed_format_valid =
         supports_internal_format &&
@@ -167,15 +181,7 @@ GLCommonImageBackingFactory::GLCommonImageBackingFactory(
         gles2::TextureManager::AdjustTexFormat(feature_info, gl_format);
 
     if (enable_texture_storage && !info.is_compressed &&
-        validators->texture_internal_format_storage.IsValid(
-            info.storage_internal_format)) {
-      // GL_ALPHA8_EXT requires EXT_texture_storage even with ES3. We should not
-      // rely on validating command decoder logic that allows GL_ALPHA8, but
-      // working around here for now until proper fix.
-      if (info.storage_internal_format == GL_ALPHA8_EXT && use_passthrough_) {
-        continue;
-      }
-
+        supports_storage_internal_format) {
       info.supports_storage = true;
       info.adjusted_storage_internal_format =
           gles2::TextureManager::AdjustTexStorageFormat(

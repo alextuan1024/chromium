@@ -71,6 +71,7 @@ source_set("coordinator") {
     "//ios/chrome/browser/sharing/ui_bundled/activity_services",
     "//ios/chrome/browser/side_swipe/ui_bundled",
     "//ios/chrome/browser/signin/model",
+    "//ios/chrome/browser/signin/model:account_preview_data_service_factory",
     "//ios/chrome/browser/signin/model:authentication_service",
     "//ios/chrome/browser/signin/model:authentication_service_factory",
     "//ios/chrome/browser/sync/model",
@@ -251,6 +252,7 @@ source_set("eg2_tests") {
     "//ios/chrome/browser/signin/model:fake_system_identity",
     "//ios/chrome/common/ui/table_view:cells_constants",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
+    "//ios/testing:test_tag_registry",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//ios/testing/earl_grey:launch_configuration",
     "//ios/web/common:features",
@@ -271,11 +273,17 @@ source_set("eg_app_support+eg2") {
     "reading_list_app_interface.mm",
   ]
   deps = [
+    "//base",
     "//base/test:test_support",
     "//components/reading_list/core",
+    "//components/sync:test_support",
+    "//components/sync/base",
+    "//components/sync/protocol",
     "//ios/chrome/browser/reading_list/model",
     "//ios/chrome/test/app:test_support",
     "//ios/testing:nserror_support",
+    "//net",
+    "//url",
   ]
 }
 

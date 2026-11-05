@@ -10,6 +10,7 @@
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/web_url_request.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/probe/async_task_context.h"
 #include "third_party/blink/renderer/core/script/modulator.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
@@ -75,7 +76,7 @@ class CORE_EXPORT ModuleTreeLinker final : public SingleModuleClient {
   void AdvanceState(State);
 
   void NotifyModuleLoadFinished(ModuleScript*, v8::ModuleImportPhase) override;
-  void FetchDescendants(const ModuleScript*);
+  void FetchDescendants(ModuleScript*);
 
   // Completion of [FD].
   void FinalizeFetchDescendantsForOneModuleScript();
@@ -108,6 +109,8 @@ class CORE_EXPORT ModuleTreeLinker final : public SingleModuleClient {
   bool found_parse_error_ = false;
 
   size_t num_incomplete_fetches_ = 0;
+
+  probe::AsyncTaskContext async_task_context_;
 
 #if DCHECK_IS_ON()
   KURL original_url_;

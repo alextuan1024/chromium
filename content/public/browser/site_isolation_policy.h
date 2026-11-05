@@ -20,7 +20,10 @@ enum class SiteIsolationDisabledReason {
   kDisabledByEmbedder = 3,
   kNotEnabledByDefault = 4,
   kUnknownReason = 5,
-  kMaxValue = kUnknownReason,
+  // Site isolation is enabled for all sites except ads. See
+  // SiteIsolationPolicy::UseDedicatedProcessesForAllSitesExceptAds().
+  kAdsExcludedFromSiteIsolation = 6,
+  kMaxValue = kAdsExcludedFromSiteIsolation,
 };
 
 class BrowserContext;
@@ -40,6 +43,13 @@ class CONTENT_EXPORT SiteIsolationPolicy {
   // Returns true if every site should be placed in a dedicated process.
   static bool UseDedicatedProcessesForAllSites();
 
+  // Returns true if every site except ads should be placed in a dedicated
+  // process (features::kExcludeAdsFromSiteIsolation). This mode is only an
+  // upgrade from partial site isolation: it is never true when
+  // UseDedicatedProcessesForAllSites() is true, so that no user who has full
+  // site isolation loses it.
+  static bool UseDedicatedProcessesForAllSitesExceptAds();
+
   // Returns true if sandboxed iframes should be isolated.
   static bool AreIsolatedSandboxedIframesEnabled();
 
@@ -50,7 +60,11 @@ class CONTENT_EXPORT SiteIsolationPolicy {
   // isolation uses origins instead of scheme and eTLD+1.
   static bool IsStrictOriginIsolationEnabled();
 
-  // Returns true if error page isolation is enabled.
+  // Returns true if error page isolation is enabled for main frames (if
+  // `in_main_frame` is true) or subframes (otherwise). Subframe error page
+  // isolation is disabled whenever partial site isolation is disabled (e.g.,
+  // on low-memory Android devices), unless it has been explicitly enabled from
+  // the command line.
   static bool IsErrorPageIsolationEnabled(bool in_main_frame);
 
   // Returns true if isolated origins may be added at runtime in response

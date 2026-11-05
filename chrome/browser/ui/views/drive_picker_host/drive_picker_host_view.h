@@ -9,11 +9,11 @@
 #include "chrome/browser/ui/webui/drive_picker_host/drive_picker_host_request.h"
 #include "chrome/browser/ui/webui/drive_picker_host/drive_picker_host_ui.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
-#include "content/public/browser/web_contents_delegate.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom-forward.h"
 #include "ui/base/metadata/metadata_header_macros.h"
-#include "ui/base/window_open_disposition.h"
-#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
+#include "ui/gfx/geometry/size.h"
+#include "ui/views/controls/webview/web_contents_delegate_views.h"
 #include "ui/views/view.h"
 #include "ui/views/view_tracker.h"
 #include "url/gurl.h"
@@ -22,9 +22,6 @@ class Profile;
 class BrowserWindowInterface;
 namespace content {
 class WebContents;
-}
-namespace input {
-struct NativeWebKeyboardEvent;
 }
 
 // `DrivePickerHostView` provides the UI container and management for the Google
@@ -46,16 +43,27 @@ struct NativeWebKeyboardEvent;
 // managed by the `views::Widget` that hosts it. It is created by
 // `DrivePickerHostController`, which tracks its existence to relay results
 // back to the AI Mode/Compose components.
-class DrivePickerHostView : public views::View,
-                            public content::WebContentsDelegate,
-                            public DrivePickerHostUI::Delegate {
+class DrivePickerHostView
+    : public views::View,
+      public views::WebContentsDelegateViews<DrivePickerHostView>,
+      public DrivePickerHostUI::Delegate {
   METADATA_HEADER(DrivePickerHostView, views::View)
 
  public:
+  static constexpr gfx::Size kConsentDialogSize{520, 580};
+  static constexpr gfx::Size kErrorDialogSize{512, 180};
+  static constexpr gfx::Size kPickerDialogSize{830, 600};
+  static constexpr gfx::Size kGlicPickerDialogSize{1050, 650};
+  static constexpr float kGlicCornerRadius = 28.0f;
+
+  // Selects the dialog size and corner radius of the picker.
+  using Style = drive_picker_host::DrivePickerHostRequest::Style;
+
   explicit DrivePickerHostView(
       Profile* profile,
       BrowserWindowInterface* browser_window_interface,
-      drive_picker_host::DrivePickerHostRequest::RequestType initial_ui_type);
+      drive_picker_host::DrivePickerHostRequest::RequestType initial_ui_type,
+      Style style = Style::kDefault);
   DrivePickerHostView(const DrivePickerHostView&) = delete;
   DrivePickerHostView& operator=(const DrivePickerHostView&) = delete;
   ~DrivePickerHostView() override;
@@ -68,6 +76,10 @@ class DrivePickerHostView : public views::View,
   void TriggerDrivePickerHostUi(
       std::unique_ptr<drive_picker_host::DrivePickerHostRequest> request);
 
+  // Centers `widget` at `size` over its parent widget (if any) while keeping
+  // top-level desktop widgets clamped within the display work area.
+  static void CenterPickerWidget(views::Widget* widget, const gfx::Size& size);
+
   // `views::View`:
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override;
@@ -78,6 +90,7 @@ class DrivePickerHostView : public views::View,
   // DrivePickerHostUI::Delegate:
   void OnTransitionToPicker() override;
   void OnTransitionToError() override;
+  void OnTransitionToConsent() override;
 
   // `content::WebContentsDelegate`:
   content::WebContents* OpenURLFromTab(
@@ -89,41 +102,21 @@ class DrivePickerHostView : public views::View,
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
-  content::KeyboardEventProcessingResult PreHandleKeyboardEvent(
-      content::WebContents* source,
-      const input::NativeWebKeyboardEvent& event) override;
-  // `HandleKeyboardEvent()` is called when the `WebContents` (the `WebView`)
-  // receives a keyboard event that was not handled by the page's JavaScript or
-  // consumed by the renderer.
-  //
-  // These unhandled keyboard events are bubbled back to the Views
-  // `FocusManager` (using `unhandled_keyboard_event_handler_`) so that standard
-  // browser-level keyboard shortcuts (like Cmd+T, Cmd+W) and tab focus
-  // traversal continue to work.
-  //
-  // Escape Key Handling:
-  // The Escape key is handled at two different levels to guarantee
-  // responsiveness:
-  // 1. When focus is inside the `WebContents` (specifically inside the
-  //    cross-origin Google Drive Picker iframe, which traps keyboard inputs),
-  //    the Escape key is intercepted at the very beginning of the pipeline by
-  //    `PreHandleKeyboardEvent()`. Since it returns `HANDLED` there, the key
-  //    event is consumed early and will never bubble down here.
-  // 2. When focus is outside the `WebContents` (e.g. on the dialog delegate
-  //    borders), the event is handled via the `views::FocusManager`
-  //    accelerator registered in the constructor (`AcceleratorPressed()`).
-  bool HandleKeyboardEvent(content::WebContents* source,
-                           const input::NativeWebKeyboardEvent& event) override;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(DrivePickerHostViewTest, Initialization);
   FRIEND_TEST_ALL_PREFIXES(DrivePickerHostViewTest, TriggerDrivePickerHostUi);
   FRIEND_TEST_ALL_PREFIXES(DrivePickerHostViewTest,
                            SetsCornerRadiusOnAddedToWidget);
+  FRIEND_TEST_ALL_PREFIXES(DrivePickerHostViewTest,
+                           SetsGlicCornerRadiusAndSizeWhenIsGlic);
+
+  // Centers the hosting widget at this view's preferred size.
+  void CenterInWidget();
 
   // Reports an error back to the result handler in the request.
   void SendErrorToRequest(
@@ -132,9 +125,9 @@ class DrivePickerHostView : public views::View,
 
   views::ViewTracker view_tracker_;
   raw_ptr<BrowserWindowInterface> browser_window_interface_;
-  views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
   drive_picker_host::DrivePickerHostRequest::RequestType current_ui_type_ =
       drive_picker_host::DrivePickerHostRequest::RequestType::kPickerUi;
+  Style style_ = Style::kDefault;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_DRIVE_PICKER_HOST_DRIVE_PICKER_HOST_VIEW_H_

@@ -15,8 +15,6 @@ import android.graphics.drawable.Drawable;
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
-import jp.tomorrowkey.android.gifplayer.BaseGifImage;
-
 import org.chromium.base.Callback;
 import org.chromium.base.Log;
 import org.chromium.base.ObserverList;
@@ -25,7 +23,6 @@ import org.chromium.base.task.AsyncTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.logo.LogoBridge.Logo;
 import org.chromium.chrome.browser.logo.LogoBridge.LogoObserver;
 import org.chromium.chrome.browser.logo.LogoCoordinator.VisibilityObserver;
@@ -40,6 +37,7 @@ import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.search_engines.TemplateUrlService.TemplateUrlServiceObserver;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.net.NetworkTrafficAnnotationTag;
 import org.chromium.ui.base.PageTransition;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.util.ColorUtils;
@@ -52,6 +50,36 @@ import java.nio.ByteBuffer;
 /** Mediator used to fetch and load logo image for Start surface and NTP. */
 @NullMarked
 public class LogoMediator implements TemplateUrlServiceObserver {
+    @VisibleForTesting
+    static final NetworkTrafficAnnotationTag TRAFFIC_ANNOTATION =
+            NetworkTrafficAnnotationTag.createComplete(
+                    "ntp_animated_logo_android",
+                    """
+                    semantics {
+                        sender: "Animated search logo"
+                        description:
+                            "Downloads the animation for the search-provider logo displayed "
+                            "on Android."
+                        trigger:
+                            "The user clicks a logo with an animation URL, and the animation "
+                            "is not cached."
+                        data: "The animation URL provided by the search provider."
+                        destination: OTHER
+                        destination_other:
+                            "The animation server specified by the current search provider."
+                        user_data { type: NONE }
+                        internal { contacts { owners: "chrome/browser/ui/android/logo/OWNERS" } }
+                        last_reviewed: "2026-11-17"
+                    }
+                    policy {
+                        cookies_allowed: NO
+                        setting:
+                            "The user can avoid playing the animation or choose another "
+                            "search engine in Chrome settings."
+                        chrome_policy { DefaultSearchProviderEnabled { DefaultSearchProviderEnabled: false } }
+                    }
+                    """);
+
     // UMA enum constants. CTA means the "click-to-action" icon.
     private static final String LOGO_SHOWN_UMA_NAME = "NewTabPage.LogoShown";
     private static final String LOGO_SHOWN_FROM_CACHE_UMA_NAME = "NewTabPage.LogoShown.FromCache";
@@ -59,17 +87,26 @@ public class LogoMediator implements TemplateUrlServiceObserver {
 
     private static final String TAG = "Logo";
 
+    // This enum must match the numbering for NewTabPageLogoShown in enums.xml and
+    // LogoImpressionType in ntp_user_data_logger.h, which records the same histograms
+    // from the Android WebUI NTP and must therefore use an identical bucket layout.
+    // LINT.IfChange(LogoShownId)
     @IntDef({
         LogoShownId.STATIC_LOGO_SHOWN,
         LogoShownId.CTA_IMAGE_SHOWN,
+        LogoShownId.ANIMATED_LOGO_SHOWN,
         LogoShownId.LOGO_SHOWN_COUNT
     })
     @Retention(RetentionPolicy.SOURCE)
     private @interface LogoShownId {
         int STATIC_LOGO_SHOWN = 0;
         int CTA_IMAGE_SHOWN = 1;
-        int LOGO_SHOWN_COUNT = 2;
+        int ANIMATED_LOGO_SHOWN = 2;
+        int LOGO_SHOWN_COUNT = 3;
     }
+
+    // LINT.ThenChange(//chrome/browser/ui/search/ntp_user_data_logger.h:LogoImpressionType,
+    // //tools/metrics/histograms/metadata/new_tab_page/enums.xml:NewTabPageLogoShown)
 
     private static final String LOGO_SHOWN_TIME_UMA_NAME = "NewTabPage.LogoShownTime2";
 
@@ -268,7 +305,7 @@ public class LogoMediator implements TemplateUrlServiceObserver {
         }
 
         @Nullable Logo cachedDoodle =
-                DoodleCache.getInstance().getCachedDoodle(mSearchEngineKeyword);
+                DoodleCache.getForProfile(mProfile).getCachedDoodle(mSearchEngineKeyword);
         boolean isCacheHit = cachedDoodle != null;
 
         mHasLogoLoadedForCurrentSearchEngine = true;
@@ -315,7 +352,8 @@ public class LogoMediator implements TemplateUrlServiceObserver {
                                     getDefaultGoogleLogoDrawable());
                         }
                         updateModelWithLogo(logo);
-                        DoodleCache.getInstance().updateCachedDoodle(logo, mSearchEngineKeyword);
+                        DoodleCache.getForProfile(assumeNonNull(mProfile))
+                                .updateCachedDoodle(logo, mSearchEngineKeyword);
                     }
                 });
     }
@@ -404,46 +442,42 @@ public class LogoMediator implements TemplateUrlServiceObserver {
         }
 
         mImageFetcher.fetchGif(
-                ImageFetcher.Params.create(
-                        mAnimatedLogoUrl, ImageFetcher.NTP_ANIMATED_LOGO_UMA_CLIENT_NAME),
+                ImageFetcher.Params.createFromTrustedSource(
+                        mAnimatedLogoUrl,
+                        ImageFetcher.NTP_ANIMATED_LOGO_UMA_CLIENT_NAME,
+                        TRAFFIC_ANNOTATION),
                 (ImageDataFetchResult animatedLogoImageFetchResult) -> {
                     if (mLogoBridge == null || animatedLogoImageFetchResult.imageData == null) {
                         return;
                     }
 
-                    if (ChromeFeatureList.isEnabled(ChromeFeatureList.ANIMATED_GIF_REFACTOR)) {
-                        new AsyncTask<@Nullable Drawable>() {
-                            @Override
-                            protected @Nullable Drawable doInBackground() {
-                                try {
-                                    Drawable drawable =
-                                            ImageDecoder.decodeDrawable(
-                                                    ImageDecoder.createSource(
-                                                            ByteBuffer.wrap(
-                                                                    animatedLogoImageFetchResult
-                                                                            .imageData)));
-                                    if (!(drawable instanceof AnimatedImageDrawable)) {
-                                        Log.e(TAG, "Drawable is not animated.", drawable);
-                                        return null;
-                                    }
-                                    return drawable;
-                                } catch (IOException ex) {
-                                    Log.e(TAG, "Failed to parse logo", ex);
+                    new AsyncTask<@Nullable AnimatedImageDrawable>() {
+                        @Override
+                        protected @Nullable AnimatedImageDrawable doInBackground() {
+                            try {
+                                Drawable drawable =
+                                        ImageDecoder.decodeDrawable(
+                                                ImageDecoder.createSource(
+                                                        ByteBuffer.wrap(
+                                                                animatedLogoImageFetchResult
+                                                                        .imageData)));
+                                if (!(drawable instanceof AnimatedImageDrawable)) {
+                                    Log.e(TAG, "Drawable is not animated.", drawable);
                                     return null;
                                 }
+                                return (AnimatedImageDrawable) drawable;
+                            } catch (IOException ex) {
+                                Log.e(TAG, "Failed to parse logo", ex);
+                                return null;
                             }
+                        }
 
-                            @Override
-                            protected void onPostExecute(@Nullable Drawable result) {
-                                if (result == null) return;
-                                mLogoModel.set(LogoProperties.ANIMATED_LOGO, result);
-                            }
-                        }.executeWithTaskTraits(TaskTraits.USER_VISIBLE);
-                    } else {
-                        mLogoModel.set(
-                                LogoProperties.ANIMATED_LOGO,
-                                new BaseGifImage(animatedLogoImageFetchResult.imageData));
-                    }
+                        @Override
+                        protected void onPostExecute(@Nullable AnimatedImageDrawable result) {
+                            if (result == null) return;
+                            mLogoModel.set(LogoProperties.ANIMATED_LOGO, result);
+                        }
+                    }.executeWithTaskTraits(TaskTraits.USER_VISIBLE);
                 });
     }
 

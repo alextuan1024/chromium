@@ -17,6 +17,7 @@
 #include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "testing/gtest_mac.h"
 #include "testing/platform_test.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/clipboard/clipboard_buffer.h"
@@ -26,6 +27,7 @@
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/skia_util.h"
+#include "url/gurl.h"
 
 namespace ui {
 
@@ -53,6 +55,24 @@ class TestClipboardObserver : public ClipboardObserver {
 
  private:
   int data_changed_count_ = 0;
+};
+
+// Uses a random UUID pasteboard name instead of `UniquePasteboard` because
+// `+[NSPasteboard pasteboardWithUniqueName]` can return the same name to
+// parallel test processes started in the same microsecond.
+class ScopedTestPasteboard {
+ public:
+  ScopedTestPasteboard()
+      : pasteboard_(
+            [NSPasteboard pasteboardWithName:[NSUUID UUID].UUIDString]) {}
+  ScopedTestPasteboard(const ScopedTestPasteboard&) = delete;
+  ScopedTestPasteboard& operator=(const ScopedTestPasteboard&) = delete;
+  ~ScopedTestPasteboard() { [pasteboard_ releaseGlobally]; }
+
+  NSPasteboard* get() const { return pasteboard_; }
+
+ private:
+  NSPasteboard* __strong pasteboard_;
 };
 
 }  // namespace
@@ -95,6 +115,12 @@ class ClipboardMacTest : public PlatformTest {
     return future.Get();
   }
 
+  void WriteURLs(ClipboardMac* clipboard_mac,
+                 base::span<const ClipboardUrlInfo> url_infos,
+                 NSPasteboard* pasteboard) {
+    clipboard_mac->WriteURLsInternal(url_infos, pasteboard);
+  }
+
   void WriteBitmap(ClipboardMac* clipboard_mac,
                    const SkBitmap& bitmap,
                    NSPasteboard* pasteboard) {
@@ -122,6 +148,16 @@ class ClipboardMacTest : public PlatformTest {
         ClipboardBuffer::kCopyPaste, /*objects=*/{}, /*raw_objects=*/{},
         /*platform_representations=*/{}, std::move(data_src), pasteboard,
         /*privacy_types=*/0);
+  }
+
+  ClipboardSequenceNumberToken GetSequenceNumber(
+      const ClipboardMac* clipboard_mac,
+      NSPasteboard* pasteboard) {
+    return clipboard_mac->GetSequenceNumber(pasteboard);
+  }
+
+  void ClipboardChanged(ClipboardMac* clipboard_mac, NSPasteboard* pasteboard) {
+    clipboard_mac->ClipboardChanged(pasteboard);
   }
 
   // Helper method to run assertion with given count value
@@ -301,6 +337,106 @@ TEST_F(ClipboardMacTest, ClipboardChangeAPI_ExternallyTriggered) {
   AssertClipboardObserverCount(observer, 1);
 
   Clear(clipboard_mac, nspasteboard);
+}
+
+// Regression test for crbug.com/568453825: an external app writes to the
+// pasteboard and immediately triggers a paste. Blink reads the sequence number
+// at the start of the paste (minting a token for the new changeCount) before
+// the asynchronous pasteboard-changed notification has been delivered. When
+// that notification arrives for the same changeCount, it must not mint a
+// second token, or Blink will conclude the clipboard changed mid-paste and
+// drop the paste.
+//
+// A private pasteboard is used, and the change notification is delivered
+// directly, so that test processes running in parallel on the same machine
+// (which share the general pasteboard) cannot perturb the changeCount.
+TEST_F(ClipboardMacTest, SequenceNumberStableAcrossChangeNotification) {
+  TestClipboardObserver observer;
+  scoped_refptr<UniquePasteboard> pasteboard = new UniquePasteboard;
+
+  Clipboard* clipboard = Clipboard::GetForCurrentThread();
+  ClipboardMac* clipboard_mac = static_cast<ClipboardMac*>(clipboard);
+
+  // Simulate an external application writing to the pasteboard.
+  [pasteboard->get() clearContents];
+  [pasteboard->get() setString:@"Hello from external app"
+                       forType:NSPasteboardTypeString];
+
+  // Simulate Blink reading the sequence number at the start of a paste, before
+  // the change notification has been processed.
+  const ClipboardSequenceNumberToken token_before =
+      GetSequenceNumber(clipboard_mac, pasteboard->get());
+
+  // Deliver the change notification for the same changeCount. Observers must
+  // be told, but the token must not change.
+  const int count_before = observer.data_changed_count();
+  ClipboardChanged(clipboard_mac, pasteboard->get());
+  EXPECT_EQ(observer.data_changed_count(), count_before + 1);
+  EXPECT_EQ(token_before, GetSequenceNumber(clipboard_mac, pasteboard->get()));
+
+  // Re-delivering a notification for an unchanged changeCount is a no-op.
+  ClipboardChanged(clipboard_mac, pasteboard->get());
+  EXPECT_EQ(observer.data_changed_count(), count_before + 1);
+  EXPECT_EQ(token_before, GetSequenceNumber(clipboard_mac, pasteboard->get()));
+
+  // A real change must still produce a new token and a notification.
+  [pasteboard->get() clearContents];
+  [pasteboard->get() setString:@"Something else"
+                       forType:NSPasteboardTypeString];
+  ClipboardChanged(clipboard_mac, pasteboard->get());
+  EXPECT_EQ(observer.data_changed_count(), count_before + 2);
+  EXPECT_NE(token_before, GetSequenceNumber(clipboard_mac, pasteboard->get()));
+}
+
+TEST_F(ClipboardMacTest, WriteURLsWritesMultiplePasteboardItems) {
+  ScopedTestPasteboard pasteboard;
+  [pasteboard.get() clearContents];
+
+  Clipboard* clipboard = Clipboard::GetForCurrentThread();
+  ClipboardMac* clipboard_mac = static_cast<ClipboardMac*>(clipboard);
+
+  const std::vector<ClipboardUrlInfo> url_infos = {
+      {.url = GURL("https://a.example/1"), .title = u"First"},
+      {.url = GURL("https://b.example/2"), .title = u"Second"},
+  };
+  WriteURLs(clipboard_mac, url_infos, pasteboard.get());
+
+  ASSERT_EQ(2u, pasteboard.get().pasteboardItems.count);
+
+  NSArray<URLAndTitle*>* urls_and_titles =
+      clipboard_util::URLsAndTitlesFromPasteboard(pasteboard.get(),
+                                                  /*include_files=*/false);
+  ASSERT_EQ(2u, urls_and_titles.count);
+  EXPECT_NSEQ(@"https://a.example/1", urls_and_titles[0].URL);
+  EXPECT_NSEQ(@"First", urls_and_titles[0].title);
+  EXPECT_NSEQ(@"https://b.example/2", urls_and_titles[1].URL);
+  EXPECT_NSEQ(@"Second", urls_and_titles[1].title);
+
+  // NSPasteboard joins plain-text items with a newline on demand.
+  EXPECT_NSEQ(@"https://a.example/1\nhttps://b.example/2",
+              [pasteboard.get() stringForType:NSPasteboardTypeString]);
+  EXPECT_NSEQ(@"https://a.example/1",
+              [pasteboard.get() stringForType:NSPasteboardTypeURL]);
+}
+
+TEST_F(ClipboardMacTest, WriteURLsSingleItemSharesFirstPasteboardItem) {
+  ScopedTestPasteboard pasteboard;
+  [pasteboard.get() clearContents];
+  [pasteboard.get() setString:@"Custom text" forType:NSPasteboardTypeString];
+
+  Clipboard* clipboard = Clipboard::GetForCurrentThread();
+  ClipboardMac* clipboard_mac = static_cast<ClipboardMac*>(clipboard);
+
+  const std::vector<ClipboardUrlInfo> url_infos = {
+      {.url = GURL("https://a.example/"), .title = u"Example"},
+  };
+  WriteURLs(clipboard_mac, url_infos, pasteboard.get());
+
+  EXPECT_EQ(1u, pasteboard.get().pasteboardItems.count);
+  EXPECT_NSEQ(@"Custom text",
+              [pasteboard.get() stringForType:NSPasteboardTypeString]);
+  EXPECT_NSEQ(@"https://a.example/",
+              [pasteboard.get() stringForType:NSPasteboardTypeURL]);
 }
 
 }  // namespace ui

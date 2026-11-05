@@ -132,10 +132,6 @@ class CC_EXPORT TileBasedLayerImpl : public LayerImpl {
                           const Occlusion& scaled_occlusion,
                           Functor functor) const;
 
-  // Invoked when a tile is determined to be ready to draw, allowing subclasses
-  virtual void WillProcessReadyToDrawTile(
-      const TilingSetCoverageIterator<Tiling>& iter) {}
-
   // Returns true if the subclass wants to track the approximated visible
   // content area for the given resolution.
   virtual bool ShouldUpdateApproximatedVisibleContentArea(
@@ -190,7 +186,7 @@ class CC_EXPORT TileBasedLayerImpl : public LayerImpl {
   // into this method to allow implementations to operate on the original state
   // (e.g., to locate tiles in layer space). However, it will be properly
   // adjusted before AppendQuads() returns to the caller.
-  bool AppendQuadForTile(TilingSetCoverageIterator<Tiling> iter,
+  bool AppendQuadForTile(const TilingSetCoverageIterator<Tiling>& iter,
                          const AppendQuadsContext& context,
                          viz::CompositorRenderPass* render_pass,
                          AppendQuadsData* append_quads_data,
@@ -566,7 +562,7 @@ void TileBasedLayerImpl<Tiling>::GetContentsResourceId(
 
 template <typename Tiling>
 bool TileBasedLayerImpl<Tiling>::AppendQuadForTile(
-    TilingSetCoverageIterator<Tiling> iter,
+    const TilingSetCoverageIterator<Tiling>& iter,
     const AppendQuadsContext& context,
     viz::CompositorRenderPass* render_pass,
     AppendQuadsData* append_quads_data,
@@ -581,8 +577,6 @@ bool TileBasedLayerImpl<Tiling>::AppendQuadForTile(
   auto* tile = *iter;
   bool has_draw_quad = false;
   if (tile && tile->IsReadyToDraw()) {
-    WillProcessReadyToDrawTile(iter);
-
     if (auto resource_id = tile->GetResourceId()) {
       auto* quad = render_pass->CreateAndAppendDrawQuad<viz::TileDrawQuad>();
       quad->SetNew(shared_quad_state, offset_geometry_rect,

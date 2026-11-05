@@ -129,10 +129,12 @@ void TabSessionSource::AddTabRanks(const std::string& session_tag,
       }
     }
   }
-  std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
+  std::vector<raw_ptr<const sync_sessions::SyncedSession, DanglingUntriaged>>
       sessions;
   int session_rank_overall = 0;
-  if (open_tab_delegate->GetAllForeignSessions(&sessions)) {
+  if (open_tab_delegate->GetAllForeignSessions(
+          &sessions, sync_sessions::OpenTabsUIDelegate::ForeignSessionFilter::
+                         kPresentable)) {
     for (const sync_sessions::SyncedSession* session : sessions) {
       if (session->GetModifiedTime() > session_tab->timestamp) {
         session_rank_overall++;

@@ -8,7 +8,9 @@
 #include <string_view>
 #include <utility>
 
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/webui_url_constants.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/strings/stringprintf.h"
@@ -20,18 +22,17 @@
 #include "chrome/browser/chromeos/extensions/echo_private/echo_private_api_util.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/window_controller.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
-#include "chrome/common/extensions/api/echo_private.h"
-#include "chrome/common/pref_names.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/report/utils/time_utils.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/components/settings/cros_settings_provider.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/echo_private.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/user_manager/user.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_file_task_runner.h"
 #include "extensions/browser/view_type_utils.h"
@@ -39,8 +40,7 @@
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
 #include "ui/aura/window.h"
-#include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace {
 std::string GetRegistrationCode(std::string_view type) {
@@ -98,7 +98,8 @@ ExtensionFunction::ResponseAction EchoPrivateSetOfferInfoFunction::Run() {
   chromeos::echo_offer::RemoveEmptyValueDicts(dict);
 
   PrefService* local_state = g_browser_process->local_state();
-  ScopedDictPrefUpdate offer_update(local_state, prefs::kEchoCheckedOffers);
+  ScopedDictPrefUpdate offer_update(local_state,
+                                    ash::prefs::kEchoCheckedOffers);
   offer_update->Set("echo." + service_id, std::move(dict));
   return RespondNow(NoArguments());
 }
@@ -115,7 +116,7 @@ ExtensionFunction::ResponseAction EchoPrivateGetOfferInfoFunction::Run() {
   const std::string& service_id = params->id;
   PrefService* local_state = g_browser_process->local_state();
   const base::DictValue& offer_infos =
-      local_state->GetDict(prefs::kEchoCheckedOffers);
+      local_state->GetDict(ash::prefs::kEchoCheckedOffers);
 
   const base::Value* offer_info = offer_infos.Find("echo." + service_id);
   if (!offer_info || !offer_info->is_dict()) {
@@ -192,7 +193,7 @@ ExtensionFunction::ResponseAction EchoPrivateGetUserConsentFunction::Run() {
     }
   }
 
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   ash::CrosSettingsProvider::TrustedStatus status =
       ash::CrosSettings::Get()->PrepareTrustedValues(base::BindOnce(
@@ -251,13 +252,15 @@ void EchoPrivateGetUserConsentFunction::OnCancel() {
 }
 
 void EchoPrivateGetUserConsentFunction::OnMoreInfoLinkClicked() {
-  NavigateParams params(Profile::FromBrowserContext(browser_context()),
-                        GURL(ash::kChromeUIEchoLearnMoreURL),
-                        ui::PAGE_TRANSITION_LINK);
+  const AccountId& account_id =
+      CHECK_DEREF(ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
+                      browser_context()))
+          .GetAccountId();
   // Open the link in a new window. The echo dialog is modal, so the current
   // window is useless until the dialog is closed.
-  params.disposition = WindowOpenDisposition::NEW_WINDOW;
-  Navigate(&params);
+  ash::BrowserController::GetInstance()->OpenUrl(
+      account_id, GURL(ash::kChromeUIEchoLearnMoreURL),
+      {.disposition = ui::mojom::WindowOpenDisposition::kNewWindow});
 }
 
 void EchoPrivateGetUserConsentFunction::Finalize(bool consent) {

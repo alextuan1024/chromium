@@ -6,20 +6,26 @@
 #define CHROME_BROWSER_ACTOR_ACTOR_PROTO_CONVERSION_H_
 
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/safe_ref.h"
 #include "base/types/expected.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/page_content_annotations/multi_source_page_context_fetcher.h"
 #include "chrome/common/actor.mojom-forward.h"
 #include "chrome/common/actor/action_result.h"
 #include "components/actor/core/aggregated_journal.h"
 #include "components/actor/public/mojom/actor_types.mojom-forward.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
+#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/origin_gating/core/task_policy_config.h"
 #include "components/page_content_annotations/content/page_context_fetcher.h"
+#include "components/page_content_annotations/content/page_context_fetcher_metrics.h"
 #include "components/tabs/public/tab_interface.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 // Conversion function for turning optimization_guide::proto::* types into
 // ToolRequests usable by the actor framework.
@@ -27,14 +33,30 @@ namespace content {
 class BrowserContext;
 }
 
-namespace optimization_guide::proto {
-class Actions;
-class AgentContainerConfig;
-}  // namespace optimization_guide::proto
+class Profile;
+
+namespace origin_gating {
+template <>
+inline const ToolDomain ToolDomain::kInstance<
+    optimization_guide::proto::RuleMetadata::ActuationCapability>{};
+}  // namespace origin_gating
 
 namespace actor {
+class ActorSurface;
 class ActorTask;
 class ToolRequest;
+
+// Returns the set of all supported Actor ClientTools.
+absl::flat_hash_set<origin_gating::ClientTool> GetAllActorTools();
+
+// Converts RuleMetadata capabilities into a set of allowed ClientTools.
+absl::flat_hash_set<origin_gating::ClientTool> ConvertCapabilitiesToTools(
+    const optimization_guide::proto::RuleMetadata& metadata);
+
+// Returns the ClientTool corresponding to a ToolRequest. Requests without a
+// corresponding capability map to `CAPABILITY_UNKNOWN`, which is never allowed
+// by a TaskPolicyConfig.
+origin_gating::ClientTool GetClientToolForRequest(const ToolRequest& request);
 
 origin_gating::TaskPolicyConfig ConvertAgentContainerConfig(
     const optimization_guide::proto::AgentContainerConfig& config);
@@ -61,6 +83,23 @@ BuildToolRequestResult BuildToolRequest(
 bool ValidateActionsAreScriptTools(
     const optimization_guide::proto::Actions& actions);
 
+// Resolves document identifiers to tab IDs for script tool actions in `actions`
+// that lack a tab ID, searching open tabs within `profile`.
+// `active_tab` is used solely as a fast-path cache for document identifier
+// resolution; actions do not fall back to `active_tab` if both `tab_id` and
+// `document_identifier` are missing.
+// Normally tab IDs should be pre-populated; this is primarily to support the
+// Glic experimental triggering path.
+// TODO(crbug.com/541366310): Remove or consolidate once callers populate tab
+// IDs directly.
+// Returns true if every script tool action has a valid tab ID or a document
+// identifier successfully resolved to an open tab in `profile`, false
+// otherwise.
+bool PopulateTabIdsForScriptToolActions(
+    Profile& profile,
+    optimization_guide::proto::Actions& actions,
+    tabs::TabInterface* active_tab = nullptr);
+
 // Builds the ActionsResult proto from the output of a call to the
 // ActorKeyedService::PerformActions API and fetches new observations for
 // tabs relevant to the actions.
@@ -68,7 +107,7 @@ bool ValidateActionsAreScriptTools(
 void BuildActionsResultWithObservations(
     content::BrowserContext& browser_context,
     base::TimeTicks start_time,
-    std::vector<actor::ActionResultWithLatencyInfo> action_results,
+    std::vector<actor::ToolResultWithLatencyInfo> action_results,
     const ActorTask& task,
     bool skip_async_observation_information,
     std::optional<page_content_annotations::ScreenshotOptions::
@@ -76,7 +115,7 @@ void BuildActionsResultWithObservations(
         screenshot_collection_options,
     base::OnceCallback<
         void(base::TimeTicks start_time,
-             std::vector<actor::ActionResultWithLatencyInfo> action_results,
+             std::vector<actor::ToolResultWithLatencyInfo> action_results,
              actor::TaskId task_id,
              bool skip_async_observation_information,
              std::optional<page_content_annotations::ScreenshotOptions::
@@ -117,13 +156,26 @@ void FillInTabObservation(
     const page_content_annotations::FetchPageContextResult& page_context_result,
     optimization_guide::proto::TabObservation& tab_observation);
 
+// Converts an `AIPageContentExtractionStatus` to the corresponding
+// `TabObservation::AnnotatedPageContentResult` proto enum.
+optimization_guide::proto::TabObservation::AnnotatedPageContentResult
+ToAnnotatedPageContentResult(
+    optimization_guide::AIPageContentExtractionStatus status);
+
+// Converts a `ScreenshotCaptureStatus` to the corresponding
+// `TabObservation::ScreenshotResult` proto enum.
+optimization_guide::proto::TabObservation::ScreenshotResult ToScreenshotResult(
+    page_content_annotations::ScreenshotCaptureStatus status);
+
 // Copies script tool results in `action_results` to the input proto.
 template <typename T>
 void CopyScriptToolResults(
     T& proto,
-    const std::vector<ActionResultWithLatencyInfo>& action_results) {
+    const std::vector<ToolResultWithLatencyInfo>& action_results) {
   for (size_t i = 0; i < action_results.size(); ++i) {
-    const auto& response = action_results[i].result->script_tool_response;
+    const auto& response = action_results[i]
+                               .tool_result.deprecated_action_result()
+                               ->script_tool_response;
     if (response && response->result) {
       auto* script_tool_result = proto.add_script_tool_results();
       script_tool_result->set_index_of_script_tool_action(i);
@@ -144,6 +196,67 @@ void CopyScriptToolResults(
   }
 }
 
+// Converts a `JavaScriptDialogType` to the corresponding
+// `ExecuteJsResult::JavaScriptDialog::Type` proto enum.
+optimization_guide::proto::ExecuteJsResult::JavaScriptDialog::Type
+ToProtoJavaScriptDialogType(JavaScriptDialogType type);
+
+// Returns true if `tool_name` identifies an `ExecuteJsToolRequest`.
+bool IsExecuteJsToolName(std::string_view tool_name);
+
+// Copies ExecuteJS action results in `action_results` to the input proto. For a
+// failed action, copies the JavaScript error and/or console output the renderer
+// reported, if any, along with any intercepted JavaScript dialogs. Only
+// ExecuteJsToolHost retains `execute_js_response` (after
+// `ExecuteJsToolHost::SanitizeResponse()`); non-ExecuteJS renderer tool hosts
+// strip it at the IPC boundary.
+template <typename T>
+void CopyExecuteJsResults(
+    T& proto,
+    const std::vector<ToolResultWithLatencyInfo>& action_results) {
+  for (size_t i = 0; i < action_results.size(); ++i) {
+    const mojom::ActionResult& result =
+        *action_results[i].tool_result.deprecated_action_result();
+    const auto& response = result.execute_js_response;
+    const bool is_execute_js_action =
+        action_results[i].tool_name.empty()
+            ? static_cast<bool>(response)
+            : IsExecuteJsToolName(action_results[i].tool_name);
+    if (!is_execute_js_action) {
+      // TODO(b/586645337): Surface dialogs intercepted during non-ExecuteJs
+      // actions (e.g. Click) in ActionsResult.
+      continue;
+    }
+
+    const auto& javascript_dialogs = action_results[i].javascript_dialogs;
+    const bool has_ok_response = IsOk(result) && response;
+    const bool has_js_error = response && response->js_error_message;
+    const bool has_console_logs = response && !response->console_logs.empty();
+    const bool has_dialogs = !javascript_dialogs.empty();
+    if (!has_ok_response && !has_js_error && !has_console_logs &&
+        !has_dialogs) {
+      continue;
+    }
+
+    auto* execute_js_result = proto.add_execute_js_results();
+    execute_js_result->set_index_of_execute_js_action(i);
+    if (has_ok_response) {
+      execute_js_result->set_result(response->result);
+      execute_js_result->set_truncated(response->truncated);
+    } else if (has_js_error) {
+      execute_js_result->set_js_error_message(*response->js_error_message);
+    }
+    if (has_console_logs) {
+      execute_js_result->set_console_logs(response->console_logs);
+    }
+    for (const InterceptedJavaScriptDialog& dialog : javascript_dialogs) {
+      auto* proto_dialog = execute_js_result->add_javascript_dialogs();
+      proto_dialog->set_type(ToProtoJavaScriptDialogType(dialog.type));
+      proto_dialog->set_dialog_message(dialog.dialog_message);
+    }
+  }
+}
+
 // Creates a FetchPageProgressListener that logs events to the journal.
 std::unique_ptr<page_content_annotations::FetchPageProgressListener>
 CreateActorJournalFetchPageProgressListener(
@@ -153,8 +266,8 @@ CreateActorJournalFetchPageProgressListener(
 
 std::string ToBase64(const google::protobuf::MessageLite& proto);
 
-std::optional<mojom::ActionResultCode> MaybeGetErrorCodeForTab(
-    tabs::TabInterface* tab);
+std::optional<mojom::ActionResultCode> MaybeGetErrorCodeForActorSurface(
+    ActorSurface* actor_surface);
 
 }  // namespace actor
 

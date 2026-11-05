@@ -21,6 +21,7 @@ namespace blink {
 
 struct PaintInfo;
 struct PhysicalRect;
+class AnimatedColor;
 class DisplayItemClient;
 class ScopedPaintState;
 class LayoutReplaced;
@@ -52,7 +53,6 @@ class ReplacedPainter {
 
  private:
   bool ShouldPaintBoxDecorationBackground(const PaintInfo&);
-  void MeasureOverflowMetrics() const;
 
   void PaintBoxDecorationBackground(const PaintInfo&,
                                     const PhysicalOffset& paint_offset);
@@ -68,7 +68,7 @@ class ReplacedPainter {
 
   void PaintBackground(const PaintInfo&,
                        const PhysicalRect&,
-                       const Color& background_color,
+                       const AnimatedColor& background_color,
                        BackgroundBleedAvoidance = kBackgroundBleedNone);
 
   void PaintMask(const PaintInfo&, const PhysicalOffset& paint_offset);

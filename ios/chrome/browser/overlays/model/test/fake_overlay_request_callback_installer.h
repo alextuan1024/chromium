@@ -71,7 +71,7 @@ class FakeOverlayRequestCallbackInstaller
   // response.
   FakeOverlayRequestCallbackInstaller(
       FakeOverlayRequestCallbackReceiver* receiver,
-      const std::set<const OverlayResponseSupport*>& dispatch_supports);
+      const std::set<raw_ptr<const OverlayResponseSupport>>& dispatch_supports);
 
   ~FakeOverlayRequestCallbackInstaller() override;
 
@@ -85,11 +85,10 @@ class FakeOverlayRequestCallbackInstaller
   const OverlayRequestSupport* GetRequestSupport() const override;
   void InstallCallbacksInternal(OverlayRequest* request) override;
 
-  raw_ptr<FakeOverlayRequestCallbackReceiver, DanglingUntriaged> receiver_ =
-      nullptr;
-  raw_ptr<const OverlayRequestSupport, DanglingUntriaged> request_support_ =
+  raw_ptr<FakeOverlayRequestCallbackReceiver> receiver_ = nullptr;
+  raw_ptr<const OverlayRequestSupport> request_support_ =
       OverlayRequestSupport::All();
-  const std::set<const OverlayResponseSupport*> dispatch_supports_;
+  const std::set<raw_ptr<const OverlayResponseSupport>> dispatch_supports_;
 };
 
 #endif  // IOS_CHROME_BROWSER_OVERLAYS_MODEL_TEST_FAKE_OVERLAY_REQUEST_CALLBACK_INSTALLER_H_

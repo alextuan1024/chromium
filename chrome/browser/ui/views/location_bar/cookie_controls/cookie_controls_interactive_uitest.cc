@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
@@ -14,13 +15,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/controls/rich_controls_container_view.h"
-#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/location_bar/cookie_controls/cookie_controls_bubble_view.h"
 #include "chrome/browser/ui/views/location_bar/cookie_controls/cookie_controls_content_view.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
-#include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
-#include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/browser/ui/webui/feedback/feedback_dialog.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
@@ -107,12 +107,11 @@ class CookieControlsInteractiveTestBase : public InteractiveFeaturePromoTest {
     content::SetupCrossSiteRedirector(https_server());
     https_server()->StartAcceptingConnections();
     if (features::IsWebUILocationBarEnabled()) {
-      auto* webview = ToolbarButtonProvider::From(browser())
-                          ->GetWebUIToolbarViewForTesting();
-      if (webview && webview->GetLocationBar()) {
-        webview->GetLocationBar()->SetSuppressionThresholdForTesting(
-            base::TimeDelta());
-      }
+      // Several tests close the bubble (e.g. by switching tabs) and then
+      // immediately press the icon again, which the WebUI toolbar would
+      // otherwise treat as the click that dismissed the bubble and drop.
+      ASSERT_TRUE(SetWebUIToolbarClickSuppressionThreshold(browser(),
+                                                           base::TimeDelta()));
     }
   }
 
@@ -130,9 +129,9 @@ class CookieControlsInteractiveTestBase : public InteractiveFeaturePromoTest {
     StepBuilder builder;
     builder.SetDescription("CheckIcon()");
     builder.SetElement(view);
-    builder.SetStartCallback(base::BindOnce(
-        [](std::string expected_name, ui::InteractionSequence* sequence,
-           ui::TrackedElement* element) {
+    builder.SetStartCallback(base::BindLambdaForTesting(
+        [this, expected_name](ui::InteractionSequence* sequence,
+                              ui::TrackedElement* element) {
           auto* vector_icon = AsView<views::ImageView>(element)
                                   ->GetImageModel()
                                   .GetVectorIcon()
@@ -140,8 +139,7 @@ class CookieControlsInteractiveTestBase : public InteractiveFeaturePromoTest {
           if (vector_icon->name != expected_name) {
             sequence->FailForTesting();
           }
-        },
-        expected_name));
+        }));
     return builder;
   }
 

@@ -24,6 +24,7 @@
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/mojom/frame.mojom.h"
 #include "extensions/common/mojom/message_port.mojom-shared.h"
+#include "extensions/common/mojom/response_wrapper.mojom.h"
 #include "extensions/renderer/api/messaging/message_target.h"
 #include "extensions/renderer/api/messaging/native_renderer_messaging_service.h"
 #include "extensions/renderer/api/messaging/send_message_tester.h"
@@ -220,6 +221,25 @@ TEST_F(RuntimeHooksDelegateTest, GetURL) {
   get_url("'/foo'", extension()->GetResourceURL("foo"));
   get_url("'https://www.google.com'",
           GURL(extension()->url().spec() + "https://www.google.com"));
+}
+
+TEST_F(RuntimeHooksDelegateTest, GetDocumentIdInvalidTargets) {
+  base::test::ScopedFeatureList feature_list{
+      extensions_features::kApiRuntimeGetDocumentId};
+  v8::HandleScope handle_scope(isolate());
+  v8::Local<v8::Context> context = MainContext();
+
+  v8::Local<v8::Value> get_document_id =
+      V8ValueFromScriptSource(context, "chrome.runtime.getDocumentId");
+  ASSERT_FALSE(get_document_id.IsEmpty());
+  ASSERT_TRUE(get_document_id->IsFunction());
+
+  CallAPIAndExpectError(context, "getDocumentId", "");
+  CallAPIAndExpectError(context, "getDocumentId", "null");
+  CallAPIAndExpectError(context, "getDocumentId", "undefined");
+  CallAPIAndExpectError(context, "getDocumentId", "123");
+  CallAPIAndExpectError(context, "getDocumentId", "'not_a_target'");
+  CallAPIAndExpectError(context, "getDocumentId", "true");
 }
 
 TEST_F(RuntimeHooksDelegateTest, Connect) {
@@ -584,7 +604,9 @@ TEST_F(RuntimeHooksDelegateMV3Test, RequestUpdateCheck) {
 
     bindings_system()->HandleResponse(
         last_params().request_id,
-        /*success=*/true, ListValueFromString(kUpdateAvailableAPIResponse),
+        /*success=*/true,
+        mojom::ResponseWrapper::NewList(
+            ListValueFromString(kUpdateAvailableAPIResponse)),
         /*error=*/std::string());
 
     EXPECT_EQ(v8::Promise::kFulfilled, promise->State());
@@ -610,7 +632,9 @@ TEST_F(RuntimeHooksDelegateMV3Test, RequestUpdateCheck) {
 
     bindings_system()->HandleResponse(
         last_params().request_id,
-        /*success=*/true, ListValueFromString(kUpdateAvailableAPIResponse),
+        /*success=*/true,
+        mojom::ResponseWrapper::NewList(
+            ListValueFromString(kUpdateAvailableAPIResponse)),
         /*error=*/std::string());
 
     EXPECT_EQ(
@@ -637,10 +661,12 @@ TEST_F(RuntimeHooksDelegateMV3Test, RequestUpdateCheck) {
     v8::Local<v8::Function> func = FunctionFromString(context, kFunctionCall);
     RunFunctionOnGlobal(func, context, 0, nullptr);
 
-    bindings_system()->HandleResponse(last_params().request_id,
-                                      /*success=*/true,
-                                      ListValueFromString(kNoUpdateAPIResponse),
-                                      /*error=*/std::string());
+    bindings_system()->HandleResponse(
+        last_params().request_id,
+        /*success=*/true,
+        mojom::ResponseWrapper::NewList(
+            ListValueFromString(kNoUpdateAPIResponse)),
+        /*error=*/std::string());
 
     EXPECT_EQ(R"("no_update")", GetStringPropertyFromObject(
                                     context->Global(), context, "argument1"));

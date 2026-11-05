@@ -298,6 +298,9 @@ class CORE_EXPORT InputType : public GarbageCollected<InputType> {
   virtual HTMLFormControlElement::PopoverTriggerSupport
   SupportsPopoverTriggering() const;
   virtual bool ShouldRespectHeightAndWidthAttributes();
+  // hspace, vspace and border map to style only in the Image Button state.
+  // https://html.spec.whatwg.org/C/#attributes-for-embedded-content-and-images
+  virtual bool ShouldRespectHspaceVspaceAndBorderAttributes();
   virtual int MaxLength() const;
   virtual int MinLength() const;
   virtual bool SupportsPlaceholder() const;
@@ -343,6 +346,8 @@ class CORE_EXPORT InputType : public GarbageCollected<InputType> {
   InputType(Type type, HTMLInputElement& element)
       : type_(type), element_(element) {}
   HTMLInputElement& GetElement() const { return *element_; }
+  bool ShouldSuppressChangeEventForDisabledStateChange(
+      DisabledChangedReason) const;
   ChromeClient* GetChromeClient() const;
   Locale& GetLocale() const;
   Decimal ParseToNumberOrNaN(const String&) const;

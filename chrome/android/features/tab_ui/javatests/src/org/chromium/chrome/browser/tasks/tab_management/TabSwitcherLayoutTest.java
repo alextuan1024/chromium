@@ -12,9 +12,7 @@ import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.Visibility.GONE;
 import static androidx.test.espresso.matcher.ViewMatchers.Visibility.VISIBLE;
-import static androidx.test.espresso.matcher.ViewMatchers.isCompletelyDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withEffectiveVisibility;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
@@ -23,9 +21,11 @@ import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.core.AllOf.allOf;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.base.test.transit.ViewElement.displayingAtLeastOption;
 import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.closeFirstTabGroupInTabSwitcher;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.closeFirstTabInTabSwitcher;
@@ -37,7 +37,6 @@ import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.g
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.mergeAllNormalTabsToAGroup;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.verifyTabModelTabCount;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.verifyTabSwitcherCardCount;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
@@ -63,7 +62,6 @@ import org.hamcrest.Description;
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -72,7 +70,6 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.Token;
 import org.chromium.base.supplier.NonNullObservableSupplier;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
@@ -80,28 +77,29 @@ import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab_ui.TabCardThemeUtil;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabThumbnailView;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarController;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoGroupSnackbarController;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.tabmodel.TabGroupColorUtils;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarController;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ChromeTriggers;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.util.ActivityTestUtils;
-import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.MenuUtils;
 import org.chromium.components.tab_groups.TabGroupColorId;
 import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.KeyboardVisibilityDelegate;
@@ -122,7 +120,6 @@ import java.util.concurrent.ExecutionException;
 /** Tests for the {@link TabSwitcherLayout}. */
 @SuppressWarnings("ConstantConditions")
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @Restriction(DeviceFormFactor.PHONE)
 public class TabSwitcherLayoutTest {
     @Rule
@@ -164,14 +161,6 @@ public class TabSwitcherLayoutTest {
         if (mModalDialogManagerSupplier != null) {
             dismissAllModalDialogs();
         }
-    }
-
-    @AfterClass
-    public static void tearDownAfterActivityDestroyed() {
-        // Flip the night-mode pref only after the activity is gone; otherwise the live
-        // activity recreates and strands entries in AsyncTabParamsManager.
-        ThreadUtils.runOnUiThreadBlocking(
-                ChromeNightModeTestUtils::tearDownNightModeAfterChromeActivityDestroyed);
     }
 
     /**
@@ -216,7 +205,7 @@ public class TabSwitcherLayoutTest {
     public void testThumbnailAspectRatio_default() {
         prepareTabs(2, 0, "about:blank");
         enterTabSwitcher(mActivityTestRule.getActivity());
-        onViewWaiting(tabSwitcherViewMatcher())
+        waitForView(tabSwitcherViewMatcher())
                 .check(
                         ThumbnailAspectRatioAssertion.havingAspectRatio(
                                 TabCardThemeUtil.getTabThumbnailAspectRatio(
@@ -243,14 +232,12 @@ public class TabSwitcherLayoutTest {
 
         enterTabSwitcher(mActivityTestRule.getActivity());
 
-        onViewWaiting(
-                        allOf(
-                                isDescendantOfA(
-                                        withId(
-                                                TabUiTestHelper.getTabSwitcherAncestorId(
-                                                        mActivityTestRule.getActivity()))),
-                                withId(R.id.tab_thumbnail)))
-                .check(matches(isDisplayed()));
+        waitForView(
+                isDescendantOfA(
+                        withId(
+                                TabUiTestHelper.getTabSwitcherAncestorId(
+                                        mActivityTestRule.getActivity()))),
+                withId(R.id.tab_thumbnail));
 
         histograms.assertExpected();
     }
@@ -259,7 +246,7 @@ public class TabSwitcherLayoutTest {
     @MediumTest
     public void testRecycling_defaultAspectRatio() {
         prepareTabs(10, 0, mUrl);
-        ChromeTabUtils.switchTabInCurrentTabModel(mActivityTestRule.getActivity(), 0);
+        ChromeTriggers.selectTabProgrammatically(mActivityTestRule.getActivity(), 0);
         enterTabSwitcher(mActivityTestRule.getActivity());
         onView(tabSwitcherViewMatcher()).perform(RecyclerViewActions.scrollToPosition(9));
     }
@@ -414,7 +401,6 @@ public class TabSwitcherLayoutTest {
                         InstrumentationRegistry.getInstrumentation(), ChromeTabbedActivity.class);
         assertTrue(ColorUtils.inNightMode(ctaNightMode));
         CriteriaHelper.pollUiThread(ctaNightMode.getTabModelSelector()::isTabStateInitialized);
-        enterTabSwitcher(ctaNightMode);
         verifyTabSwitcherCardCount(ctaNightMode, 2);
     }
 
@@ -492,7 +478,7 @@ public class TabSwitcherLayoutTest {
         // Wait until the keyboard is showing.
         KeyboardVisibilityDelegate delegate = cta.getWindowAndroid().getKeyboardDelegate();
         CriteriaHelper.pollUiThread(
-                () -> delegate.isKeyboardShowing(cta.getCompositorViewHolderForTesting()));
+                () -> delegate.isKeyboardObscuring(cta.getCompositorViewHolderForTesting()));
 
         // Change the title.
         editGroupVisualDataDialogTitle(cta, "Test");
@@ -538,7 +524,7 @@ public class TabSwitcherLayoutTest {
         // Wait until the keyboard is showing.
         KeyboardVisibilityDelegate delegate = cta.getWindowAndroid().getKeyboardDelegate();
         CriteriaHelper.pollUiThread(
-                () -> delegate.isKeyboardShowing(cta.getCompositorViewHolderForTesting()));
+                () -> delegate.isKeyboardObscuring(cta.getCompositorViewHolderForTesting()));
 
         // Change the title.
         editGroupVisualDataDialogTitle(cta, "Test");
@@ -889,7 +875,10 @@ public class TabSwitcherLayoutTest {
         List<Tab> tabGroup = getTabsAtIndices(0, 1);
         createTabGroup(cta, false, tabGroup);
         ThreadUtils.runOnUiThreadBlocking(
-                () -> tabModel.setTabGroupTitle(normalTabModel.getTabAt(0).getTabGroupId(), "Foo"));
+                () ->
+                        tabModel.setTabGroupTitle(
+                                TabGroupId.fromRawToken(normalTabModel.getTabAt(0).getTabGroupId()),
+                                "Foo"));
         verifyTabSwitcherCardCount(cta, 2);
 
         // Assert default color was set properly.
@@ -917,9 +906,14 @@ public class TabSwitcherLayoutTest {
                     assertEquals(tab0.getTabGroupId(), tab1.getTabGroupId());
                     assertEquals(tab0.getTabGroupId(), tab1.getTabGroupId());
                     assertNull(tab2.getTabGroupId());
-                    assertEquals("Foo", tabModel.getTabGroupTitle(tab1.getTabGroupId()));
                     assertEquals(
-                            nextSuggestedColorId, tabModel.getTabGroupColor(tab1.getTabGroupId()));
+                            "Foo",
+                            tabModel.getTabGroupTitle(
+                                    TabGroupId.fromRawToken(tab1.getTabGroupId())));
+                    assertEquals(
+                            nextSuggestedColorId,
+                            tabModel.getTabGroupColor(
+                                    TabGroupId.fromRawToken(tab1.getTabGroupId())));
                 });
     }
 
@@ -939,7 +933,7 @@ public class TabSwitcherLayoutTest {
         // Merge tab group of 2 at first index with the 3rd tab.
         mergeAllNormalTabsToAGroup(cta);
 
-        onViewWaiting(withId(R.id.snackbar_button)).check(matches(isCompletelyDisplayed()));
+        waitForView(withId(R.id.snackbar_button), displayingAtLeastOption(100));
 
         String ungroupButtonText = cta.getString(R.string.ungroup_tab_group_menu_item);
         onView(withId(R.id.action_button)).perform(click());
@@ -979,8 +973,12 @@ public class TabSwitcherLayoutTest {
         verifyTabSwitcherCardCount(cta, 3);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    tabModel.setTabGroupTitle(normalTabModel.getTabAt(3).getTabGroupId(), "Foo");
-                    tabModel.setTabGroupTitle(normalTabModel.getTabAt(1).getTabGroupId(), "Bar");
+                    tabModel.setTabGroupTitle(
+                            TabGroupId.fromRawToken(normalTabModel.getTabAt(3).getTabGroupId()),
+                            "Foo");
+                    tabModel.setTabGroupTitle(
+                            TabGroupId.fromRawToken(normalTabModel.getTabAt(1).getTabGroupId()),
+                            "Bar");
                 });
 
         // Assert default color 2 was set properly.
@@ -1005,16 +1003,24 @@ public class TabSwitcherLayoutTest {
                 () -> {
                     assertEquals(
                             "Foo",
-                            tabModel.getTabGroupTitle(normalTabModel.getTabAt(4).getTabGroupId()));
+                            tabModel.getTabGroupTitle(
+                                    TabGroupId.fromRawToken(
+                                            normalTabModel.getTabAt(4).getTabGroupId())));
                     assertEquals(
                             "Bar",
-                            tabModel.getTabGroupTitle(normalTabModel.getTabAt(0).getTabGroupId()));
+                            tabModel.getTabGroupTitle(
+                                    TabGroupId.fromRawToken(
+                                            normalTabModel.getTabAt(0).getTabGroupId())));
                     assertEquals(
                             nextSuggestedColorId1,
-                            tabModel.getTabGroupColor(normalTabModel.getTabAt(4).getTabGroupId()));
+                            tabModel.getTabGroupColor(
+                                    TabGroupId.fromRawToken(
+                                            normalTabModel.getTabAt(4).getTabGroupId())));
                     assertEquals(
                             nextSuggestedColorId2,
-                            tabModel.getTabGroupColor(normalTabModel.getTabAt(0).getTabGroupId()));
+                            tabModel.getTabGroupColor(
+                                    TabGroupId.fromRawToken(
+                                            normalTabModel.getTabAt(0).getTabGroupId())));
                 });
     }
 
@@ -1096,7 +1102,9 @@ public class TabSwitcherLayoutTest {
         createTabGroup(cta, false, tabGroup);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    tabModel.setTabGroupTitle(normalTabModel.getTabAt(0).getTabGroupId(), "Foo");
+                    tabModel.setTabGroupTitle(
+                            TabGroupId.fromRawToken(normalTabModel.getTabAt(0).getTabGroupId()),
+                            "Foo");
                 });
         verifyTabSwitcherCardCount(cta, 2);
 
@@ -1118,7 +1126,9 @@ public class TabSwitcherLayoutTest {
                 () -> {
                     assertEquals(
                             "Foo",
-                            tabModel.getTabGroupTitle(normalTabModel.getTabAt(0).getTabGroupId()));
+                            tabModel.getTabGroupTitle(
+                                    TabGroupId.fromRawToken(
+                                            normalTabModel.getTabAt(0).getTabGroupId())));
                 });
 
         // Assert color still exists post snackbar dismissal.
@@ -1171,7 +1181,6 @@ public class TabSwitcherLayoutTest {
     public void testUndoClosure_AcceptGroupClosure() {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         SnackbarManager snackbarManager = mActivityTestRule.getActivity().getSnackbarManager();
-        TabModel tabModel = getCurrentModel();
         createTabs(cta, false, 2);
 
         enterTabSwitcher(cta);
@@ -1191,9 +1200,10 @@ public class TabSwitcherLayoutTest {
         assertEquals(nextSuggestedColorId, getTabGroupColorForTabAt(1));
         ThreadUtils.runOnUiThreadBlocking(() -> snackbarManager.dismissAllSnackbars());
 
-        // Temporarily save the rootID to check during closure.
+        // Check that the tab group ID is set before closure.
         Tab tab2 = ThreadUtils.runOnUiThreadBlocking(() -> normalTabModel.getTabAt(1));
         Token groupId = tab2.getTabGroupId();
+        assertNotNull(groupId);
 
         closeFirstTabGroupInTabSwitcher(cta);
         assertTrue(
@@ -1292,7 +1302,7 @@ public class TabSwitcherLayoutTest {
         // Wait until the keyboard is showing.
         KeyboardVisibilityDelegate delegate = cta.getWindowAndroid().getKeyboardDelegate();
         CriteriaHelper.pollUiThread(
-                () -> delegate.isKeyboardShowing(cta.getCompositorViewHolderForTesting()));
+                () -> delegate.isKeyboardObscuring(cta.getCompositorViewHolderForTesting()));
         // Dismiss the tab group visual data dialog.
         dismissAllModalDialogs();
         // Verify that the modal dialog is now hidden.
@@ -1307,7 +1317,7 @@ public class TabSwitcherLayoutTest {
         // Wait until the keyboard is hidden to make sure the edit has taken effect.
         KeyboardVisibilityDelegate delegate = cta.getWindowAndroid().getKeyboardDelegate();
         CriteriaHelper.pollUiThread(
-                () -> !delegate.isKeyboardShowing(cta.getCompositorViewHolderForTesting()));
+                () -> !delegate.isKeyboardObscuring(cta.getCompositorViewHolderForTesting()));
     }
 
     private void verifyFirstCardTitle(String title) {
@@ -1472,7 +1482,8 @@ public class TabSwitcherLayoutTest {
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     TabModel tabModel = getCurrentModel();
-                    return tabModel.getTabGroupColor(tabModel.getTabAt(index).getTabGroupId());
+                    return tabModel.getTabGroupColor(
+                            TabGroupId.fromRawToken(tabModel.getTabAt(index).getTabGroupId()));
                 });
     }
 

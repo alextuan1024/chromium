@@ -76,6 +76,9 @@
                 "begin": 69,
                 "abridged": false
             },
+            "blink_perf.service_worker": {
+                "abridged": false
+            },
             "blink_perf.owp_storage": {
                 "abridged": false
             }
@@ -145,9 +148,6 @@
                 "abridged": false
             },
             "dummy_benchmark.stable_benchmark_1": {
-                "abridged": false
-            },
-            "jetstream2": {
                 "abridged": false
             }
         }

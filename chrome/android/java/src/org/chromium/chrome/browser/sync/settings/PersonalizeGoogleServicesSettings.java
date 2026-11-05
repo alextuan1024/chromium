@@ -28,7 +28,7 @@ import org.chromium.chrome.browser.sync.SyncSettingsUtils;
 import org.chromium.chrome.browser.ui.signin.GoogleActivityController;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
-import org.chromium.components.signin.base.CoreAccountInfo;
+import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.sync.SyncService;
 
 /*
@@ -82,7 +82,7 @@ public class PersonalizeGoogleServicesSettings extends ChromeBaseSettingsFragmen
 
     private void updatePreferences() {
         String signedInAccountName =
-                CoreAccountInfo.getEmailFrom(
+                AccountInfo.getEmailFrom(
                         assumeNonNull(
                                         IdentityServicesProvider.get()
                                                 .getIdentityManager(getProfile()))
@@ -92,7 +92,8 @@ public class PersonalizeGoogleServicesSettings extends ChromeBaseSettingsFragmen
             if (SettingsIndexData.getInstance() != null) {
                 SettingsIndexData.getInstance().setNeedsIndexing();
             }
-            SettingsNavigationFactory.createSettingsNavigation().finishCurrentSettings(this);
+            SettingsNavigationFactory.createSettingsNavigation(requireActivity())
+                    .finishCurrentSettings(this);
             return;
         }
 
@@ -116,8 +117,9 @@ public class PersonalizeGoogleServicesSettings extends ChromeBaseSettingsFragmen
         RecordUserAction.record("Signin_AccountSettings_LinkedGoogleServicesClicked");
     }
 
-    private static boolean isEeaChoiceCountry(Profile profile) {
-        return RegionalCapabilitiesServiceFactory.getForProfile(profile).isInEeaCountry();
+    private static boolean mayShowLinkedGoogleServicesSetting(Profile profile) {
+        return RegionalCapabilitiesServiceFactory.getForProfile(profile)
+                .mayShowLinkedGoogleServicesSetting();
     }
 
     @Override
@@ -130,7 +132,8 @@ public class PersonalizeGoogleServicesSettings extends ChromeBaseSettingsFragmen
                     PersonalizeGoogleServicesSettings.class.getName(), 0) {
                 @Override
                 public int getXmlRes(Profile profile) {
-                    if (!SignInPreference.isSignedIn(profile) || !isEeaChoiceCountry(profile)) {
+                    if (!SignInPreference.isSignedIn(profile)
+                            || !mayShowLinkedGoogleServicesSetting(profile)) {
                         return 0;
                     }
                     return R.xml.personalize_google_services_preferences;

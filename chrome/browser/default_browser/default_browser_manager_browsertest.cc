@@ -21,7 +21,6 @@
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/grit/branded_strings.h"
@@ -34,6 +33,7 @@
 #include "ui/base/unowned_user_data/user_data_factory.h"
 
 #if BUILDFLAG(IS_WIN)
+#include "base/test/scoped_os_info_override_win.h"
 #include "base/test/test_reg_util_win.h"
 #include "base/win/registry.h"
 #endif  // BUILDFLAG(IS_WIN)
@@ -57,11 +57,8 @@ constexpr wchar_t kRegistryPath[] =
 class DefaultBrowserManagerWinBrowserTest : public InProcessBrowserTest {
  protected:
   DefaultBrowserManagerWinBrowserTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enable_features*/ {kDefaultBrowserFramework,
-                             kDefaultBrowserChangedOsNotification},
-        /*disabled_features=*/{omnibox::internal::kWebUIOmniboxPopup,
-                               omnibox::internal::kWebUIOmniboxAimPopup});
+    scoped_feature_list_.InitAndEnableFeature(
+        kDefaultBrowserChangedOsNotification);
   }
   ~DefaultBrowserManagerWinBrowserTest() override = default;
 
@@ -146,6 +143,8 @@ class DefaultBrowserManagerWinBrowserTest : public InProcessBrowserTest {
   base::HistogramTester histogram_tester_;
 
  private:
+  base::test::ScopedOSInfoOverride win11_os_{
+      base::test::ScopedOSInfoOverride::Type::kWin11Pro};
   base::test::ScopedFeatureList scoped_feature_list_;
   ui::UserDataFactory::ScopedOverride global_feature_override_;
   registry_util::RegistryOverrideManager registry_override_manager_;
@@ -286,8 +285,9 @@ IN_PROC_BROWSER_TEST_F(DefaultBrowserManagerWinBrowserTest,
       "DefaultBrowser.ChangeDetectedNotification.ShellIntegration.Shown", 1, 1);
 }
 
+// TODO(crbug.com/526025707): Re-enable this test.
 IN_PROC_BROWSER_TEST_F(DefaultBrowserManagerWinBrowserTest,
-                       NoNotificationWhenChromeRemainsDefault) {
+                       DISABLED_NoNotificationWhenChromeRemainsDefault) {
   fake_shell_delegate_ptr_->set_default_state(shell_integration::IS_DEFAULT);
   CreateDefaultBrowserKey(L"ChromeHTML");
 

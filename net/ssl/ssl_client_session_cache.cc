@@ -5,6 +5,7 @@
 
 #include "net/ssl/ssl_client_session_cache.h"
 
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -14,6 +15,7 @@
 #include "base/memory_coordinator/utils.h"
 #include "base/time/clock.h"
 #include "base/time/default_clock.h"
+#include "build/build_config.h"
 #include "net/base/features.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
 
@@ -31,12 +33,19 @@ auto TieKeyFields(const SSLClientSessionCache::Key& key) {
 constexpr base::MemoryConsumerTraits kSSLClientSessionCacheTraits(
     // Bounded capacity of sessions; way under 10MB.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    // Iterates base::LRUCache and triggers BoringSSL session frees.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // Iterates base::LRUCache, reading the BoringSSL sessions being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     // Full handshake can be done if not cached.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Cache trimming runs synchronously on the calling thread.
     base::MemoryConsumerTraits::ExecutionType::kSynchronous);
+
+// The SuppressMemoryListeners experiment showed that reacting to memory
+// pressure is not beneficial on Mac and Windows.
+constexpr bool kRegisterMemoryConsumer =
+    !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN);
+
+constexpr std::string_view kMemoryConsumerName = "SSLClientSessionCache";
 
 }  // namespace
 
@@ -60,12 +69,13 @@ bool SSLClientSessionCache::Key::operator<(const Key& other) const {
 SSLClientSessionCache::SSLClientSessionCache(const Config& config)
     : clock_(base::DefaultClock::GetInstance()),
       config_(config),
-      cache_(config.max_entries),
-      memory_consumer_registration_(
-          "SSLClientSessionCache",
-          kSSLClientSessionCacheTraits,
-          this,
-          base::AsyncMemoryConsumerRegistration::CheckUnregister::kDisabled) {}
+      cache_(config.max_entries) {
+  if (kRegisterMemoryConsumer) {
+    memory_consumer_registration_.emplace(
+        kMemoryConsumerName, kSSLClientSessionCacheTraits, this,
+        base::AsyncMemoryConsumerRegistration::CheckUnregister::kDisabled);
+  }
+}
 
 SSLClientSessionCache::~SSLClientSessionCache() {
   Flush();
@@ -228,12 +238,11 @@ void SSLClientSessionCache::FlushExpiredSessions() {
 }
 
 void SSLClientSessionCache::OnUpdateMemoryLimit() {
-  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (!base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     return;
   }
 
-  size_t target_size =
-      base::ScaleByMemoryLimit(config_.max_entries, memory_limit());
+  size_t target_size = memory_limit().Scale(config_.max_entries);
 
   // IMPORTANT: Ensure no memory is released during this call.
   // By using std::max, we ensure the new limit is at least the current size,
@@ -250,10 +259,9 @@ void SSLClientSessionCache::OnReleaseMemory() {
     // additional roundtrips replacing all of the entries.
     return;
   }
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     // Now we actually evict entries to reach the target size.
-    cache_.UpdateMaxSize(
-        base::ScaleByMemoryLimit(config_.max_entries, memory_limit()));
+    cache_.UpdateMaxSize(memory_limit().Scale(config_.max_entries));
     return;
   }
 

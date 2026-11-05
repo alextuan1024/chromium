@@ -11,6 +11,7 @@ import android.webkit.WebSettings;
 import org.chromium.android_webview.common.Lifetime;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 
 /**
@@ -26,7 +27,7 @@ public class AwServiceWorkerSettings {
     private static final String TAG = "AwSWSettings";
     private static final boolean TRACE = false;
     private int mCacheMode = WebSettings.LOAD_DEFAULT;
-    private boolean mAllowContentUrlAccess = true;
+    private boolean mAllowContentUrlAccess;
     private boolean mAllowFileUrlAccess = true;
     private boolean mBlockNetworkLoads; // Default depends on permission of the embedding APK
     private boolean mBlockSpecialFileUrls;
@@ -45,6 +46,8 @@ public class AwServiceWorkerSettings {
         synchronized (mAwServiceWorkerSettingsLock) {
             mHasInternetPermission = hasInternetPermission;
             mBlockNetworkLoads = !hasInternetPermission;
+            mAllowContentUrlAccess =
+                    CompatQuirks.isEnabled(CompatQuirks.Quirk.ALLOW_CONTENT_URL_ACCESS_BY_DEFAULT);
 
             // The application context we receive in the sdk runtime is a separate
             // context from the context that actual SDKs receive (and contains asset
@@ -75,6 +78,8 @@ public class AwServiceWorkerSettings {
     /** See {@link android.webkit.ServiceWorkerWebSettings#setAllowContentAccess}. */
     public void setAllowContentAccess(boolean allow) {
         if (TRACE) Log.d(TAG, "setAllowContentAccess=%b", allow);
+        RecordHistogram.recordBooleanHistogram(
+                "Android.WebView.ServiceWorker.SetAllowContentAccess", allow);
         synchronized (mAwServiceWorkerSettingsLock) {
             if (mAllowContentUrlAccess != allow) {
                 mAllowContentUrlAccess = allow;
@@ -92,6 +97,8 @@ public class AwServiceWorkerSettings {
     /** See {@link android.webkit.ServiceWorkerWebSettings#setAllowFileAccess}. */
     public void setAllowFileAccess(boolean allow) {
         if (TRACE) Log.d(TAG, "setAllowFileAccess=%b", allow);
+        RecordHistogram.recordBooleanHistogram(
+                "Android.WebView.ServiceWorker.SetAllowFileAccess", allow);
         synchronized (mAwServiceWorkerSettingsLock) {
             if (mAllowFileUrlAccess != allow) {
                 mAllowFileUrlAccess = allow;

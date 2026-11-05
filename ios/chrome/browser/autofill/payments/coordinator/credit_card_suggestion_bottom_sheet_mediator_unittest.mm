@@ -21,11 +21,24 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_opener.h"
 #import "ios/testing/scoped_block_swizzler.h"
+#import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+
+class AutofillBottomSheetTabHelper;
+@class CreditCardData;
+@class FormSuggestion;
+
+@interface CreditCardSuggestionBottomSheetMediator (Testing)
+- (void)onSuggestionsRetrieved:(NSArray<FormSuggestion*>*)suggestions;
+- (void)fillCreditCard:(CreditCardData*)creditCardData
+               atIndex:(NSInteger)index
+         crossProvider:(id<FormInputSuggestionsProvider>)crossProvider;
+- (AutofillBottomSheetTabHelper*)tabHelper;
+@end
 
 namespace {
 
@@ -36,20 +49,21 @@ class CreditCardSuggestionBottomSheetMediatorTest : public PlatformTest {
  protected:
   CreditCardSuggestionBottomSheetMediatorTest()
       : test_web_state_(std::make_unique<web::FakeWebState>()) {
-    scoped_feature_list_.InitAndDisableFeature(kAutofillPaymentsSheetV2Ios);
-
     web_state_list_ = std::make_unique<WebStateList>(&web_state_list_delegate_);
 
     test_web_state_->SetCurrentURL(GURL("http://foo.com"));
 
     consumer_ = OCMStrictProtocolMock(
         @protocol(CreditCardSuggestionBottomSheetConsumer));
+    delegate_ = OCMStrictProtocolMock(
+        @protocol(CreditCardSuggestionBottomSheetMediatorDelegate));
 
     FormSuggestionTabHelper::CreateForWebState(test_web_state_.get(), @[]);
   }
 
   ~CreditCardSuggestionBottomSheetMediatorTest() override {
     EXPECT_OCMOCK_VERIFY(consumer_);
+    EXPECT_OCMOCK_VERIFY(delegate_);
   }
 
   void SetUp() override {
@@ -67,10 +81,13 @@ class CreditCardSuggestionBottomSheetMediatorTest : public PlatformTest {
         std::move(test_web_state_),
         WebStateList::InsertionParams::Automatic().Activate());
 
+    autofill::FormActivityParams params;
+    params.has_user_gesture = true;
     mediator_ = [[CreditCardSuggestionBottomSheetMediator alloc]
         initWithWebStateList:web_state_list_.get()
-                      params:autofill::FormActivityParams()
+                      params:params
          personalDataManager:&personal_data_manager_];
+    mediator_.delegate = delegate_;
   }
 
   // Add credit card to personal data manager.
@@ -114,9 +131,9 @@ class CreditCardSuggestionBottomSheetMediatorTest : public PlatformTest {
   FakeWebStateListDelegate web_state_list_delegate_;
   std::unique_ptr<WebStateList> web_state_list_;
   id consumer_;
+  id delegate_;
   autofill::TestPersonalDataManager personal_data_manager_;
   CreditCardSuggestionBottomSheetMediator* mediator_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Tests CreditCardSuggestionBottomSheetMediator can be initialized.
@@ -161,18 +178,19 @@ TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
 // Tests that the mediator is correctly cleaned up when the WebStateList is
 // destroyed. There are a lot of checked observer lists that could potentially
 // cause a crash in the process, so this test ensures they're executed.
-// TODO(crbug.com/422436424): re-enable.
 TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
-       DISABLED_CleansUpWhenWebStateListDestroyed) {
+       CleansUpWhenWebStateListDestroyed) {
   CreateMediatorWithSuggestions();
   ASSERT_TRUE(mediator_);
   OCMExpect([consumer_ setCreditCardData:[OCMArg isNotNil]
                        showGooglePayLogo:YES]);
   [mediator_ setConsumer:consumer_];
 
-  OCMExpect([consumer_ dismiss]);
+  OCMExpect([delegate_
+      creditCardSuggestionBottomSheetMediatorDidRequestDismissal:mediator_]);
   web_state_list_.reset();
   EXPECT_OCMOCK_VERIFY(consumer_);
+  EXPECT_OCMOCK_VERIFY(delegate_);
 }
 
 // Tests that filling the suggestion is only allowed once past the minimal
@@ -240,15 +258,263 @@ TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
   CreateMediator();
 
   id mediator_mock = OCMPartialMock(mediator_);
-  OCMExpect([mediator_mock disableBottomSheetAndRefocus:YES]);
+  OCMExpect([mediator_mock refocus]);
 
   [mediator_mock didSelectCreditCard:nil atIndex:0];
 
   EXPECT_OCMOCK_VERIFY(mediator_mock);
+  [mediator_mock stopMocking];
   histogram_tester.ExpectUniqueSample(
       "IOS.PaymentsBottomSheet.ExitReason",
       /*sample=*/PaymentsSuggestionBottomSheetExitReason::kBadProvider,
       /*expected_bucket_count=*/1);
+}
+
+// Tests that cross-document navigation start dismisses the bottom sheet and
+// ignores card selection without filling or refocusing.
+TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
+       DismissesAndInvalidatesOnCrossDocumentNavigation) {
+  base::HistogramTester histogram_tester;
+  CreateMediatorWithSuggestions();
+  ASSERT_TRUE(mediator_);
+  OCMExpect([consumer_ setCreditCardData:[OCMArg isNotNil]
+                       showGooglePayLogo:YES]);
+  [mediator_ setConsumer:consumer_];
+
+  // Expect dismissal on navigation start.
+  OCMExpect([delegate_
+      creditCardSuggestionBottomSheetMediatorDidRequestDismissal:mediator_]);
+
+  web::FakeNavigationContext cross_doc_context;
+  cross_doc_context.SetIsSameDocument(false);
+
+  web::WebState* active_web_state = web_state_list_->GetActiveWebState();
+  ASSERT_TRUE(active_web_state);
+  static_cast<web::FakeWebState*>(active_web_state)
+      ->OnNavigationStarted(&cross_doc_context);
+
+  id mediator_mock = OCMPartialMock(mediator_);
+  OCMReject([mediator_mock refocus]);
+  OCMReject([mediator_mock fillCreditCard:[OCMArg any]
+                                  atIndex:0
+                            crossProvider:[OCMArg any]]);
+
+  // Selecting a credit card when context is invalidated should neither fill nor
+  // refocus, and should not log an exit reason metric.
+  [mediator_mock didSelectCreditCard:nil atIndex:0];
+
+  EXPECT_OCMOCK_VERIFY(mediator_mock);
+  [mediator_mock stopMocking];
+  histogram_tester.ExpectTotalCount("IOS.PaymentsBottomSheet.ExitReason", 0);
+}
+
+// Tests that cross-document navigation finish dismisses the bottom sheet and
+// ignores card selection without filling or refocusing when navigation has
+// committed.
+TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
+       DismissesAndInvalidatesOnCrossDocumentNavigationFinished) {
+  base::HistogramTester histogram_tester;
+  CreateMediatorWithSuggestions();
+  ASSERT_TRUE(mediator_);
+  OCMExpect([consumer_ setCreditCardData:[OCMArg isNotNil]
+                       showGooglePayLogo:YES]);
+  [mediator_ setConsumer:consumer_];
+
+  OCMExpect([delegate_
+      creditCardSuggestionBottomSheetMediatorDidRequestDismissal:mediator_]);
+
+  web::FakeNavigationContext cross_doc_context;
+  cross_doc_context.SetIsSameDocument(false);
+  cross_doc_context.SetHasCommitted(true);
+
+  web::WebState* active_web_state = web_state_list_->GetActiveWebState();
+  ASSERT_TRUE(active_web_state);
+  static_cast<web::FakeWebState*>(active_web_state)
+      ->OnNavigationFinished(&cross_doc_context);
+
+  id mediator_mock = OCMPartialMock(mediator_);
+  OCMReject([mediator_mock refocus]);
+  OCMReject([mediator_mock fillCreditCard:[OCMArg any]
+                                  atIndex:0
+                            crossProvider:[OCMArg any]]);
+
+  // Selecting a credit card when context is invalidated should neither fill nor
+  // refocus, and should not log an exit reason metric.
+  [mediator_mock didSelectCreditCard:nil atIndex:0];
+
+  EXPECT_OCMOCK_VERIFY(mediator_mock);
+  [mediator_mock stopMocking];
+  histogram_tester.ExpectTotalCount("IOS.PaymentsBottomSheet.ExitReason", 0);
+}
+
+// Test that cross-document navigation finish does not dismiss the bottom sheet
+// when the navigation has not committed.
+TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
+       PreservesContextOnCrossDocumentNavigationFinishedUncommitted) {
+  CreateMediatorWithSuggestions();
+  ASSERT_TRUE(mediator_);
+  OCMExpect([consumer_ setCreditCardData:[OCMArg isNotNil]
+                       showGooglePayLogo:YES]);
+  [mediator_ setConsumer:consumer_];
+
+  OCMReject([delegate_
+      creditCardSuggestionBottomSheetMediatorDidRequestDismissal:mediator_]);
+
+  web::FakeNavigationContext cross_doc_context;
+  cross_doc_context.SetIsSameDocument(false);
+  cross_doc_context.SetHasCommitted(false);
+
+  web::WebState* active_web_state = web_state_list_->GetActiveWebState();
+  ASSERT_TRUE(active_web_state);
+  static_cast<web::FakeWebState*>(active_web_state)
+      ->OnNavigationFinished(&cross_doc_context);
+
+  EXPECT_OCMOCK_VERIFY(consumer_);
+  EXPECT_OCMOCK_VERIFY(delegate_);
+}
+
+// Test that same-document navigation does not dismiss the bottom sheet and
+// allows card selection to fill credit card details.
+TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
+       PreservesContextOnSameDocumentNavigation) {
+  CreateMediatorWithSuggestions();
+  ASSERT_TRUE(mediator_);
+  OCMExpect([consumer_ setCreditCardData:[OCMArg isNotNil]
+                       showGooglePayLogo:YES]);
+  [mediator_ setConsumer:consumer_];
+
+  web::FakeNavigationContext same_doc_context;
+  same_doc_context.SetIsSameDocument(true);
+
+  web::WebState* active_web_state = web_state_list_->GetActiveWebState();
+  ASSERT_TRUE(active_web_state);
+  static_cast<web::FakeWebState*>(active_web_state)
+      ->OnNavigationStarted(&same_doc_context);
+  static_cast<web::FakeWebState*>(active_web_state)
+      ->OnNavigationFinished(&same_doc_context);
+
+  // Swizzle FormSuggestionController type to return
+  // SuggestionProviderTypeAutofill.
+  id type_block = ^SuggestionProviderType(id self) {
+    return SuggestionProviderTypeAutofill;
+  };
+  ScopedBlockSwizzler type_swizzler([FormSuggestionController class],
+                                    @selector(type), type_block);
+
+  id mediator_mock = OCMPartialMock(mediator_);
+  OCMExpect([mediator_mock fillCreditCard:[OCMArg any]
+                                  atIndex:0
+                            crossProvider:[OCMArg isNotNil]]);
+
+  [mediator_mock didSelectCreditCard:nil atIndex:0];
+
+  EXPECT_OCMOCK_VERIFY(mediator_mock);
+  [mediator_mock stopMocking];
+}
+
+// Test that cross-document navigation invalidation takes precedence over empty
+// suggestions, ensuring the fill context status is not downgraded.
+TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
+       NavigationInvalidationTakesPrecedenceOverEmptySuggestions) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{kStatelessFormSuggestionController,
+                            kAutofillPaymentsSheetStateless},
+      /*disabled_features=*/{});
+  base::HistogramTester histogram_tester;
+  CreateMediatorWithSuggestions();
+  ASSERT_TRUE(mediator_);
+  OCMExpect([consumer_ setCreditCardData:[OCMArg isNotNil]
+                       showGooglePayLogo:YES]);
+  [mediator_ setConsumer:consumer_];
+
+  // Expect dismissal on navigation start.
+  OCMExpect([delegate_
+      creditCardSuggestionBottomSheetMediatorDidRequestDismissal:mediator_]);
+
+  web::FakeNavigationContext cross_doc_context;
+  cross_doc_context.SetIsSameDocument(false);
+
+  web::WebState* active_web_state = web_state_list_->GetActiveWebState();
+  ASSERT_TRUE(active_web_state);
+  static_cast<web::FakeWebState*>(active_web_state)
+      ->OnNavigationStarted(&cross_doc_context);
+
+  // An in-flight asynchronous suggestion callback arrives with empty
+  // suggestions. The latch must prevent transitioning to
+  // kInvalidatedNoSuggestions.
+  [mediator_ onSuggestionsRetrieved:@[]];
+
+  id mediator_mock = OCMPartialMock(mediator_);
+  OCMReject([mediator_mock refocus]);
+  OCMReject([mediator_mock fillCreditCard:[OCMArg any]
+                                  atIndex:0
+                            crossProvider:[OCMArg any]]);
+
+  // If the status were downgraded to `kInvalidatedNoSuggestions`,
+  // `didSelectCreditCard` would call `refocus` and log `kBadProvider`. With
+  // `kInvalidatedByWebStateChange` preserved, it returns early without filling
+  // or refocusing.
+  [mediator_mock didSelectCreditCard:nil atIndex:0];
+
+  EXPECT_OCMOCK_VERIFY(mediator_mock);
+  [mediator_mock stopMocking];
+
+  histogram_tester.ExpectTotalCount("IOS.PaymentsBottomSheet.ExitReason", 0);
+}
+
+// Tests that calling `refocus` invokes the tab helper when the fill context is
+// valid.
+TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
+       Refocus_CallsTabHelperWhenValid) {
+  CreateMediatorWithSuggestions();
+  ASSERT_TRUE(mediator_);
+
+  OCMExpect([consumer_ setCreditCardData:[OCMArg isNotNil]
+                       showGooglePayLogo:YES]);
+  [mediator_ setConsumer:consumer_];
+
+  id mediator_mock = OCMPartialMock(mediator_);
+  OCMExpect([mediator_mock tabHelper]).andForwardToRealObject();
+
+  [mediator_mock refocus];
+
+  EXPECT_OCMOCK_VERIFY(mediator_mock);
+  [mediator_mock stopMocking];
+}
+
+// Tests that calling `refocus` does not trigger refocusing when the bottom
+// sheet was dismissed due to navigation.
+TEST_F(CreditCardSuggestionBottomSheetMediatorTest,
+       Refocus_NavigationSuppressesRefocus) {
+  CreateMediatorWithSuggestions();
+  ASSERT_TRUE(mediator_);
+
+  OCMExpect([consumer_ setCreditCardData:[OCMArg isNotNil]
+                       showGooglePayLogo:YES]);
+  [mediator_ setConsumer:consumer_];
+
+  // Expect dismissal on navigation start.
+  OCMExpect([delegate_
+      creditCardSuggestionBottomSheetMediatorDidRequestDismissal:mediator_]);
+
+  web::FakeNavigationContext cross_doc_context;
+  cross_doc_context.SetIsSameDocument(false);
+
+  web::WebState* active_web_state = web_state_list_->GetActiveWebState();
+  ASSERT_TRUE(active_web_state);
+  static_cast<web::FakeWebState*>(active_web_state)
+      ->OnNavigationStarted(&cross_doc_context);
+
+  id mediator_mock = OCMPartialMock(mediator_);
+  OCMReject([mediator_mock tabHelper]);
+
+  // Requesting refocus while dismissed due to navigation should suppress
+  // refocusing.
+  [mediator_mock refocus];
+
+  EXPECT_OCMOCK_VERIFY(mediator_mock);
+  [mediator_mock stopMocking];
 }
 
 }  // namespace

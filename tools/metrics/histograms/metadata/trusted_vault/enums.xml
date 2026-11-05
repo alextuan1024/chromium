@@ -43,6 +43,21 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_histograms.h:RecoveryKeyStoreCertificatesFetchStatus) -->
 
+<!-- LINT.IfChange(TrustedVaultCanEnrollOutcome) -->
+
+<enum name="TrustedVaultCanEnrollOutcome">
+  <int value="0" label="Eligible"/>
+  <int value="1" label="Unsupported security domain"/>
+  <int value="2" label="No primary account"/>
+  <int value="3" label="Persistent auth error"/>
+  <int value="4" label="Already enrolled"/>
+  <int value="5" label="No local keys"/>
+  <int value="6" label="No eligible Gaia password"/>
+  <int value="7" label="Gaia password fetch failed"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_histograms.h:TrustedVaultCanEnrollOutcome) -->
+
 <!-- LINT.IfChange(TrustedVaultDegradedRecoverabilityValue) -->
 
 <enum name="TrustedVaultDegradedRecoverabilityValue">
@@ -77,6 +92,26 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_histograms.h:TrustedVaultDownloadKeysStatus) -->
 
+<!-- LINT.IfChange(TrustedVaultEnrollOutcome) -->
+
+<enum name="TrustedVaultEnrollOutcome">
+  <int value="0" label="Success"/>
+  <int value="1" label="Success after retry"/>
+  <int value="2" label="Unsupported security domain"/>
+  <int value="3" label="No primary account"/>
+  <int value="4" label="Persistent auth error"/>
+  <int value="5" label="Already enrolled"/>
+  <int value="6" label="No local keys"/>
+  <int value="7" label="Already in progress"/>
+  <int value="8" label="No eligible Gaia password"/>
+  <int value="9" label="Gaia password fetch failed"/>
+  <int value="10" label="Local data obsolete"/>
+  <int value="11" label="Gaia password registration failed"/>
+  <int value="12" label="Key rotation failed"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_histograms.h:TrustedVaultEnrollOutcome) -->
+
 <!-- LINT.IfChange(TrustedVaultFileReadStatus) -->
 
 <enum name="TrustedVaultFileReadStatus">
@@ -87,18 +122,48 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="File proto deserialization failed"/>
   <int value="5" label="Data proto deserialization failed"/>
   <int value="6" label="SHA256 digest mismatch"/>
+  <int value="7" label="Unsupported version"/>
+  <int value="8" label="Decryption failed"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_histograms.h:TrustedVaultFileReadStatus) -->
+
+<!-- LINT.IfChange(TrustedVaultFileWriteStatus) -->
+
+<enum name="TrustedVaultFileWriteStatus">
+  <int value="0" label="Success"/>
+  <int value="1" label="Encryption failed"/>
+  <int value="2" label="File write failed"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_histograms.h:TrustedVaultFileWriteStatus) -->
 
 <!-- LINT.IfChange(TrustedVaultHintDegradedRecoverabilityChangedReason) -->
 
 <enum name="TrustedVaultHintDegradedRecoverabilityChangedReason">
   <int value="0" label="Recovery method added"/>
   <int value="1" label="Persistent auth error resolved"/>
+  <int value="2" label="Enrolled"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_histograms.h:TrustedVaultHintDegradedRecoverabilityChangedReason) -->
+
+<!-- LINT.IfChange(TrustedVaultKeyRotationStatus) -->
+
+<enum name="TrustedVaultKeyRotationStatus">
+  <int value="0" label="Success"/>
+  <int value="1" label="Local data obsolete"/>
+  <int value="2" label="Membership mismatch"/>
+  <int value="3" label="Empty security domain"/>
+  <int value="4" label="Transient access token fetching error"/>
+  <int value="5" label="Persistent access token fetching error"/>
+  <int value="6" label="Primary account changed access token fetching error"/>
+  <int value="7" label="Network error"/>
+  <int value="8" label="Key proofs verification failed"/>
+  <int value="9" label="Other error"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_connection.h:TrustedVaultKeyRotationStatus) -->
 
 <!-- LINT.IfChange(TrustedVaultListSecurityDomainMembersPinStatus) -->
 
@@ -109,6 +174,18 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_histograms.h:TrustedVaultListSecurityDomainMembersPinStatus) -->
+
+<!-- LINT.IfChange(TrustedVaultLocalDomainsMigrationStatus) -->
+
+<enum name="TrustedVaultLocalDomainsMigrationStatus">
+  <int value="0" label="Migrated successfully"/>
+  <int value="1" label="No legacy file found"/>
+  <int value="2" label="Legacy file was empty"/>
+  <int value="3" label="Failed to read legacy file"/>
+  <int value="4" label="Failed to write new file"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/trusted_vault/trusted_vault_histograms.h:TrustedVaultLocalDomainsMigrationStatus) -->
 
 <!-- LINT.IfChange(TrustedVaultRecoverabilityStatus) -->
 

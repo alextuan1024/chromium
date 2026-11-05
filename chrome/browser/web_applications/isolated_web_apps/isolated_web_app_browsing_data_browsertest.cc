@@ -13,6 +13,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/to_string.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -27,10 +28,12 @@
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
 #include "chrome/browser/web_applications/commands/web_app_uninstall_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/get_isolated_web_app_browsing_data.h"
+#include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/iwa_command_scheduler.h"
 #include "chrome/browser/web_applications/isolated_web_apps/remove_isolated_web_app_data.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
+#include "chrome/browser/web_applications/isolated_web_apps/test/key_distribution/test_utils.h"
 #include "chrome/browser/web_applications/jobs/uninstall/remove_web_app_job.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
@@ -45,9 +48,11 @@
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/services/storage/public/mojom/local_storage_control.mojom.h"
 #include "components/webapps/common/web_app_id.h"
+#include "components/webapps/isolated_web_apps/test_support/signing_keys.h"
 #include "content/public/browser/browsing_data_filter_builder.h"
 #include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/service_worker_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
@@ -65,6 +70,7 @@
 #include "services/network/test/test_network_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -117,7 +123,8 @@ class IsolatedWebAppBrowsingDataTest : public IsolatedWebAppBrowserTestHarness {
 
   int64_t GetIwaUsage(const IsolatedWebAppUrlInfo& url_info) {
     base::test::TestFuture<base::flat_map<url::Origin, uint64_t>> future;
-    web_app::GetIsolatedWebAppBrowsingData(profile(), future.GetCallback());
+    IwaCommandScheduler::From(web_app_provider())
+        .GetIsolatedWebAppBrowsingData(future.GetCallback());
     base::flat_map<url::Origin, uint64_t> result = future.Get();
     return result.contains(url_info.origin()) ? result.at(url_info.origin())
                                               : 0;
@@ -152,7 +159,7 @@ class IsolatedWebAppBrowsingDataTest : public IsolatedWebAppBrowserTestHarness {
   [[nodiscard]] bool CreateControlledFrame(content::WebContents* web_contents,
                                            const GURL& src,
                                            const std::string& partition) {
-    static std::string kCreateControlledFrame = R"(
+    static constexpr char kCreateControlledFrame[] = R"(
       (async function() {
         const controlledframe = document.createElement('controlledframe');
         controlledframe.setAttribute('src', $1);
@@ -183,6 +190,26 @@ class IsolatedWebAppBrowsingDataTest : public IsolatedWebAppBrowserTestHarness {
               return content::RenderFrameHost::FrameIterationAction::kContinue;
             });
     return web_view_guests;
+  }
+
+  // Waits until onload has run in every Controlled Frame embedded in
+  // `embedder_web_contents`. `CreateControlledFrame()` only waits for
+  // `loadcommit`, at which point the response body (and its HTTP cache entry)
+  // may still be in flight. The HTTP cache writes each chunk of the body
+  // before handing it to the renderer, so once onload has run, the cache
+  // entries for these loads are fully written.
+  [[nodiscard]] bool WaitForControlledFramesToFinishLoading(
+      content::WebContents* embedder_web_contents) {
+    return base::test::RunUntil([&]() {
+      for (extensions::WebViewGuest* guest :
+           GetWebViewGuests(embedder_web_contents)) {
+        if (!guest->GetGuestMainFrame()
+                 ->IsDocumentOnLoadCompletedInMainFrame()) {
+          return false;
+        }
+      }
+      return true;
+    });
   }
 
  private:
@@ -240,6 +267,73 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataTest,
   AddLocalStorageIfMissing(guests[1]);
   AddLocalStorageIfMissing(guests[2]);
   EXPECT_THAT(GetIwaUsage(url_info), IsApproximately(3000));
+}
+
+// Regression test for b/581298429: when a K2-signed bundle is force-installed
+// atop a user-installed app whose signing key K1 was revoked by a key rotation,
+// service workers registered by the K1 version must be removed, while other
+// user data is kept.
+IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataTest,
+                       PolicyInstallAtopRevokedKeyRemovesServiceWorkers) {
+  const web_package::test::EcdsaP256KeyPair k2 =
+      test::GetDefaultEcdsaP256KeyPair();
+  std::unique_ptr<ScopedBundledIsolatedWebApp> user_app =
+      IsolatedWebAppBuilder(ManifestBuilder().SetVersion("1.0.0"))
+          .AddJs("/sw.js", "self.addEventListener('fetch', () => {});")
+          .BuildBundle(test::GetDefaultEd25519KeyPair());
+  user_app->TrustSigningKey();
+  const IsolatedWebAppUrlInfo url_info = user_app->InstallChecked(profile());
+  content::ServiceWorkerContext* sw_context =
+      profile()
+          ->GetStoragePartition(url_info.storage_partition_config(profile()))
+          ->GetServiceWorkerContext();
+  auto has_service_worker = [&] {
+    base::test::TestFuture<content::ServiceWorkerCapability> future;
+    sw_context->CheckHasServiceWorker(
+        url_info.origin().GetURL(),
+        blink::StorageKey::CreateFirstParty(url_info.origin()),
+        future.GetCallback());
+    return future.Get() != content::ServiceWorkerCapability::NO_SERVICE_WORKER;
+  };
+
+  content::WebContents* web_contents =
+      LaunchWebAppBrowserAndWait(url_info.app_id())
+          ->tab_strip_model()
+          ->GetActiveWebContents();
+  ASSERT_TRUE(ExecJs(web_contents, R"(
+    (async () => {
+      const policy = trustedTypes.createPolicy('sw', {
+        createScriptURL: (url) => url,
+      });
+      await navigator.serviceWorker.register(policy.createScriptURL('/sw.js'));
+      await navigator.serviceWorker.ready;
+    })();
+  )"));
+  SetLocalStorageValue(web_contents, "key", "value");
+  ASSERT_TRUE(has_service_worker());
+
+  // Hard-rotate K1 to K2 and force-install a newer K2-signed version atop.
+  test::KeyDistributionComponentBuilder(base::Version("1.0.0"))
+      .AddToManagedAllowlist(url_info.web_bundle_id())
+      .AddToKeyRotations(url_info.web_bundle_id(), k2.public_key.bytes())
+      .Build()
+      .InjectComponentDataDirectly();
+  std::unique_ptr<ScopedBundledIsolatedWebApp> policy_app =
+      IsolatedWebAppBuilder(ManifestBuilder().SetVersion("2.0.0"))
+          .BuildBundle(url_info.web_bundle_id(), {k2});
+  policy_app->TrustSigningKey();
+  ASSERT_TRUE(
+      policy_app
+          ->InstallWithSource(profile(),
+                              &IsolatedWebAppInstallSource::FromExternalPolicy)
+          .has_value());
+
+  EXPECT_FALSE(has_service_worker());
+  EXPECT_EQ(GetLocalStorageValue(LaunchWebAppBrowserAndWait(url_info.app_id())
+                                     ->tab_strip_model()
+                                     ->GetActiveWebContents(),
+                                 "key"),
+            "value");
 }
 
 class IsolatedWebAppBrowsingDataClearingTest
@@ -461,6 +555,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest, CacheCleared) {
                                     "persist:partition_name_0"));
   ASSERT_TRUE(
       CreateControlledFrame(web_contents, cache_url, "partition_name_1"));
+  ASSERT_TRUE(WaitForControlledFramesToFinishLoading(web_contents));
 
   std::vector<content::StoragePartitionConfig> storage_partition_configs{
       url_info.storage_partition_config(profile()),
@@ -514,7 +609,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest, CookieCleared) {
       url_info.GetStoragePartitionConfigForControlledFrame(
           profile(), "partition_name_1", /*in_memory=*/true)};
 
-  // Set a partitioned and an unpartitioned cookie for each storage partition.
+  // Set a partitioned and an unpartitioned cookie for each storage partition
+  // and verify initial cookie state.
   for (const auto& config : storage_partition_configs) {
     SCOPED_TRACE("partition_name: " + config.partition_name());
     content::StoragePartition* partition =
@@ -528,13 +624,6 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest, CookieCleared) {
         partition, GURL("https://c.com"), base::Time::Now(),
         "A=0; secure; partitioned",
         net::CookiePartitionKey::FromURLForTesting(GURL("https://d.com"))));
-  }
-
-  for (const auto& config : storage_partition_configs) {
-    SCOPED_TRACE("partition_name: " + config.partition_name());
-    content::StoragePartition* partition =
-        profile()->GetStoragePartition(config, false);
-    ASSERT_TRUE(partition);
     ASSERT_EQ(GetAllCookies(partition).size(), 2UL);
   }
 
@@ -602,7 +691,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
       url_info.GetStoragePartitionConfigForControlledFrame(
           profile(), "partition_name_1", /*in_memory=*/true)};
 
-  // Set a partitioned and an unpartitioned cookie for each storage partition.
+  // Set a partitioned and an unpartitioned cookie for each storage partition
+  // and verify initial cookie state.
   for (const auto& config : storage_partition_configs) {
     SCOPED_TRACE("partition_name: " + config.partition_name());
     content::StoragePartition* partition =
@@ -616,13 +706,6 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
         partition, GURL("https://c.com"), base::Time::Now(),
         "A=0; secure; partitioned",
         net::CookiePartitionKey::FromURLForTesting(GURL("https://d.com"))));
-  }
-
-  for (const auto& config : storage_partition_configs) {
-    SCOPED_TRACE("partition_name: " + config.partition_name());
-    content::StoragePartition* partition =
-        profile()->GetStoragePartition(config, false);
-    ASSERT_TRUE(partition);
     ASSERT_EQ(GetAllCookies(partition).size(), 2UL);
   }
 
@@ -662,6 +745,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
                                     "persist:partition_name_0"));
   ASSERT_TRUE(
       CreateControlledFrame(web_contents, cache_url, "partition_name_1"));
+  ASSERT_TRUE(WaitForControlledFramesToFinishLoading(web_contents));
 
   std::vector<content::StoragePartitionConfig> storage_partition_configs{
       url_info.storage_partition_config(profile()),
@@ -681,7 +765,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
   // 2000 because non-persistent partitions are not counted toward usage.
   ASSERT_THAT(GetIwaUsage(url_info), IsApproximately(2000));
 
-  // Set a partitioned and an unpartitioned cookie for each storage partition.
+  // Set a partitioned and an unpartitioned cookie for each storage partition
+  // and verify initial cookie and cache state.
   for (const auto& config : storage_partition_configs) {
     SCOPED_TRACE("partition_name: " + config.partition_name());
     content::StoragePartition* partition =
@@ -695,17 +780,9 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
         partition, GURL("https://c.com"), base::Time::Now(),
         "A=0; secure; partitioned",
         net::CookiePartitionKey::FromURLForTesting(GURL("https://d.com"))));
-  }
-
-  for (const auto& config : storage_partition_configs) {
-    SCOPED_TRACE("partition_name: " + config.partition_name());
-    content::StoragePartition* partition =
-        profile()->GetStoragePartition(config, false);
-    ASSERT_TRUE(partition);
     // Each partition should have 2 cookies.
     ASSERT_EQ(GetAllCookies(partition).size(), 2UL);
     // Each partition should have cache.
-
     ASSERT_GT(GetCacheSize(partition), 0);
   }
 
@@ -749,6 +826,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
                                     "persist:partition_name_0"));
   ASSERT_TRUE(
       CreateControlledFrame(web_contents, cache_url, "partition_name_1"));
+  ASSERT_TRUE(WaitForControlledFramesToFinishLoading(web_contents));
   // Put the IWA in the uninstalling stage.
   {
     ScopedRegistryUpdate update =
@@ -767,31 +845,20 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
       url_info.GetStoragePartitionConfigForControlledFrame(
           profile(), "partition_name_1", /*in_memory=*/true)};
 
-  // Set a partitioned and an unpartitioned cookie for each storage partition.
+  // Set a partitioned and an unpartitioned cookie for each storage partition
+  // and verify initial cookie and cache state.
   for (const auto& config : storage_partition_configs) {
     SCOPED_TRACE("partition_name: " + config.partition_name());
     content::StoragePartition* partition =
         profile()->GetStoragePartition(config, false);
     ASSERT_TRUE(partition);
-    // Unpartitioned Cookie
     ASSERT_TRUE(SetCookie(partition, GURL("http://a.com"), base::Time::Now(),
                           "A=0", std::nullopt));
-    // Partitioned Cookie
     ASSERT_TRUE(SetCookie(
         partition, GURL("https://c.com"), base::Time::Now(),
         "A=0; secure; partitioned",
         net::CookiePartitionKey::FromURLForTesting(GURL("https://d.com"))));
-  }
-
-  for (const auto& config : storage_partition_configs) {
-    SCOPED_TRACE("partition_name: " + config.partition_name());
-    content::StoragePartition* partition =
-        profile()->GetStoragePartition(config, false);
-    ASSERT_TRUE(partition);
-    // Each partition should have 2 cookies.
     ASSERT_EQ(GetAllCookies(partition).size(), 2UL);
-    // Each partition should have cache.
-
     ASSERT_GT(GetCacheSize(partition), 0);
   }
 
@@ -981,6 +1048,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
     ASSERT_EQ(GetLocalStorageCount(controlled_frame_rfh), 1);
     ASSERT_EQ(GetLocalStorageValue(controlled_frame_rfh, "foo"), "bar");
 
+    ASSERT_TRUE(WaitForControlledFramesToFinishLoading(web_contents));
     int64_t old_cache_size = GetCacheSize(controlled_frame_partition);
 
     GURL clear_site_data_url = embedded_https_test_server().GetURL(

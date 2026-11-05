@@ -37,6 +37,8 @@
 #include "third_party/blink/renderer/core/probe/async_task_context.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer_entry.h"
+#include "third_party/blink/renderer/core/timing/dom_window_performance.h"
+#include "third_party/blink/renderer/core/timing/window_performance.h"
 #include "third_party/blink/renderer/modules/event_target_modules.h"
 #include "third_party/blink/renderer/modules/xr/vr_service_type_converters.h"
 #include "third_party/blink/renderer/modules/xr/xr_anchor_set.h"
@@ -52,6 +54,7 @@
 #include "third_party/blink/renderer/modules/xr/xr_image_tracking_result.h"
 #include "third_party/blink/renderer/modules/xr/xr_input_source_event.h"
 #include "third_party/blink/renderer/modules/xr/xr_input_sources_change_event.h"
+#include "third_party/blink/renderer/modules/xr/xr_layer.h"
 #include "third_party/blink/renderer/modules/xr/xr_light_probe.h"
 #include "third_party/blink/renderer/modules/xr/xr_mesh_manager.h"
 #include "third_party/blink/renderer/modules/xr/xr_plane_manager.h"
@@ -69,6 +72,7 @@
 #include "third_party/blink/renderer/platform/bindings/enumeration_base.h"
 #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "ui/gfx/geometry/point3_f.h"
 #include "ui/gfx/geometry/transform.h"
 
@@ -94,6 +98,10 @@ const char kBaseLayerAndLayers[] =
 
 const char kMultiLayersNotEnabled[] =
     "This session does not support multiple layers.";
+
+const char kNonProjectionLayerNotEnabled[] =
+    "Non-projection layers are not allowed when layers feature is not "
+    "enabled.";
 
 const char kDuplicateLayer[] = "All layers in render state must be unique.";
 
@@ -131,6 +139,8 @@ const char kEntityTypesNotSpecified[] =
 
 const char kSessionNotHaveSetFrameRate[] =
     "Session does not have a set frame rate.";
+
+const char kFrameRateNotSupported[] = "Frame rate is not supported.";
 
 const float kMinDefaultFramebufferScale = 0.1f;
 const float kMaxDefaultFramebufferScale = 1.0f;
@@ -316,9 +326,10 @@ void XRSession::MetricsReporter::ReportFeatureUsed(
   using device::mojom::blink::XRSessionFeature;
 
   // If we've already reported using this feature, no need to report again.
-  if (!reported_features_.insert(feature).is_new_entry) {
+  if (reported_features_.Has(feature)) {
     return;
   }
+  reported_features_.Put(feature);
 
   switch (feature) {
     case XRSessionFeature::REF_SPACE_VIEWER:
@@ -392,7 +403,7 @@ XRSession::XRSession(
       sensorless_session_(sensorless_session),
       trace_id_(trace_id) {
   FrozenArray<IDLString>::VectorType enabled_features;
-  for (const auto& feature : enabled_feature_set_) {
+  for (device::mojom::XRSessionFeature feature : enabled_feature_set_) {
     enabled_features.push_back(XRSessionFeatureToString(feature).ToString());
   }
   enabled_features_ =
@@ -418,6 +429,8 @@ XRSession::XRSession(
   // frame is sent to us, so we're okay to move it here, the other values on
   // device_config_ may be referenced throughout the lifetime of the session.
   UpdateViews(std::move(device_config_->views));
+
+  frame_rate_ = device_config_->frame_rate;
 
   DVLOG(2) << __func__
            << ": supports_viewport_scaling_=" << supports_viewport_scaling_;
@@ -456,8 +469,8 @@ XRSession::XRSession(
 
 void XRSession::SetDOMOverlayElement(Element* element) {
   DVLOG(2) << __func__ << ": element=" << element;
-  DCHECK(enabled_feature_set_.Contains(
-      device::mojom::XRSessionFeature::DOM_OVERLAY));
+  DCHECK(
+      enabled_feature_set_.Has(device::mojom::XRSessionFeature::DOM_OVERLAY));
   DCHECK(element);
 
   overlay_element_ = element;
@@ -560,22 +573,6 @@ void XRSession::updateRenderState(XRRenderStateInit* init,
       return;
     }
 
-    // Validate that the session was created with the layers feature enabled
-    // when the user wishes to render multiple layers at once.
-    if (init->layers()->size() > 1 &&
-        !IsFeatureEnabled(device::mojom::XRSessionFeature::LAYERS)) {
-      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
-                                        kMultiLayersNotEnabled);
-      return;
-    }
-
-    // Validate that the number of layers is allowed.
-    if (init->layers()->size() > maxRenderLayers()) {
-      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
-                                        kTooManyLayers);
-      return;
-    }
-
     HeapHashSet<Member<const XRLayer>> unique_layers;
     for (const XRLayer* layer : *init->layers()) {
       // Check for duplicate layers.
@@ -589,6 +586,32 @@ void XRSession::updateRenderState(XRRenderStateInit* init,
         exception_state.ThrowTypeError(kIncompatibleLayer);
         return;
       }
+    }
+
+    // Validate that the session was created with the layers feature enabled
+    // when the user wishes to render multiple layers at once or non-projection
+    // layers.
+    if (!IsFeatureEnabled(device::mojom::XRSessionFeature::LAYERS)) {
+      if (init->layers()->size() > 1) {
+        exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                          kMultiLayersNotEnabled);
+        return;
+      }
+      for (const XRLayer* layer : *init->layers()) {
+        if (layer->LayerType() != XRLayerType::kProjectionLayer) {
+          exception_state.ThrowDOMException(
+              DOMExceptionCode::kNotSupportedError,
+              kNonProjectionLayerNotEnabled);
+          return;
+        }
+      }
+    }
+
+    // Validate that the number of layers is allowed.
+    if (init->layers()->size() > maxRenderLayers()) {
+      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                        kTooManyLayers);
+      return;
     }
   }
 
@@ -811,12 +834,84 @@ void XRSession::UpdateStageParameters(
   }
 }
 
+NotShared<DOMFloat32Array> XRSession::supportedFrameRates() {
+  if (!FrameRateController()) {
+    return NotShared<DOMFloat32Array>();
+  }
+  return NotShared<DOMFloat32Array>(
+      DOMFloat32Array::Create(device_config_->supported_frame_rates));
+}
+
 ScriptPromise<IDLUndefined> XRSession::updateTargetFrameRate(
+    ScriptState* script_state,
     float rate,
     ExceptionState& exception_state) {
-  exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
-                                    kSessionNotHaveSetFrameRate);
-  return EmptyPromise();
+  if (!frame_rate_) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      kSessionNotHaveSetFrameRate);
+    return EmptyPromise();
+  }
+
+  if (ended_) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      kSessionEnded);
+    return EmptyPromise();
+  }
+
+  auto* frame_rate_controller = FrameRateController();
+  if (!frame_rate_controller ||
+      !std::ranges::contains(device_config_->supported_frame_rates, rate)) {
+    exception_state.ThrowTypeError(kFrameRateNotSupported);
+    return EmptyPromise();
+  }
+
+  auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(
+      script_state, exception_state.GetContext());
+  auto promise = resolver->Promise();
+
+  // The device replies once it has the request. Frames report any switch.
+  update_target_frame_rate_promises_.insert(resolver);
+  frame_rate_controller->UpdateTargetFrameRate(
+      rate, resolver->WrapCallbackInScriptScope(blink::BindOnce(
+                &XRSession::OnUpdateTargetFrameRate, WrapPersistent(this))));
+
+  return promise;
+}
+
+void XRSession::OnUpdateTargetFrameRate(
+    ScriptPromiseResolver<IDLUndefined>* resolver) {
+  CHECK(update_target_frame_rate_promises_.Take(resolver));
+  if (ended_) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     kSessionEnded);
+    return;
+  }
+  resolver->Resolve();
+}
+
+void XRSession::SetFrameRate(float frame_rate) {
+  if (frame_rate_ == frame_rate) {
+    return;
+  }
+  // The first known rate is not a change.
+  const bool changed = frame_rate_.has_value();
+  frame_rate_ = frame_rate;
+  if (changed &&
+      RuntimeEnabledFeatures::WebXRFrameRateEnabled(GetExecutionContext())) {
+    // Queued, as this can run in the middle of a frame update.
+    EnqueueEvent(
+        *XRSessionEvent::Create(event_type_names::kFrameratechange, this),
+        TaskType::kMiscPlatformAPI);
+  }
+}
+
+device::mojom::blink::XRFrameRateController* XRSession::FrameRateController() {
+  // The controller belongs to the immersive session, like LayerManager().
+  // XRSystem checked that it comes with a list of rates.
+  if (ended_ || !immersive()) {
+    return nullptr;
+  }
+  return xr_->frameProvider()->frame_rate_controller();
 }
 
 ScriptPromise<XRReferenceSpace> XRSession::requestReferenceSpace(
@@ -1633,6 +1728,7 @@ void XRSession::HandleShutdown() {
       end_session_resolver_->Detach();
       end_session_resolver_ = nullptr;
     }
+    update_target_frame_rate_promises_.clear();
     return;
   }
 
@@ -1642,6 +1738,15 @@ void XRSession::HandleShutdown() {
   // provider thinking there's still an active immersive session.
   xr_->frameProvider()->OnSessionEnded(this);
   xr_->OnSessionEnded(this);
+
+  // The device's pending replies were dropped with the session.
+  HeapHashSet<Member<ScriptPromiseResolver<IDLUndefined>>>
+      update_target_frame_rate_promises;
+  update_target_frame_rate_promises_.swap(update_target_frame_rate_promises);
+  for (auto& resolver : update_target_frame_rate_promises) {
+    resolver->RejectWithDOMException(DOMExceptionCode::kInvalidStateError,
+                                     kSessionEnded);
+  }
 
   if (end_session_resolver_) {
     DVLOG(3) << __func__ << ": Resolving end_session_resolver_";
@@ -1921,6 +2026,23 @@ void XRSession::UpdatePresentationFrameState(
   if (ended_)
     return;
 
+  // Immersive frames are displayed later than the animation frame time, when
+  // the device knows when.
+  predicted_display_time_ = timestamp;
+  if (immersive() && frame_data && frame_data->predicted_display_time) {
+    DOMHighResTimeStamp display_time =
+        DOMWindowPerformance::performance(
+            *To<LocalDOMWindow>(xr_->GetExecutionContext()))
+            ->MonotonicTimeToDOMHighResTimeStamp(
+                *frame_data->predicted_display_time);
+    if (display_time < timestamp) {
+      DVLOG(1) << __func__ << ": predicted_display_time (" << display_time
+               << ") earlier than timestamp (" << timestamp << "), clamping";
+    } else {
+      predicted_display_time_ = display_time;
+    }
+  }
+
   // If there are pending render state changes, apply them now, as they may
   // update the depthNear/Far used by the views.
   // TODO(crbug.com/452595360): Apply pending frame data on frame submit.
@@ -2029,6 +2151,10 @@ void XRSession::UpdatePresentationFrameState(
     // Check if the session was ended by the |OnMojoSpaceReset| callback.
     if (ended_) {
       return;
+    }
+
+    if (frame_data->frame_rate) {
+      SetFrameRate(*frame_data->frame_rate);
     }
   } else {
     UpdateWorldUnderstandingStateForFrame(timestamp, frame_data);
@@ -2199,7 +2325,7 @@ void XRSession::UpdateWorldUnderstandingStateForFrame(
 
 bool XRSession::IsFeatureEnabled(
     device::mojom::XRSessionFeature feature) const {
-  return enabled_feature_set_.Contains(feature);
+  return enabled_feature_set_.Has(feature);
 }
 
 void XRSession::SetMetricsReporter(std::unique_ptr<MetricsReporter> reporter) {
@@ -2264,7 +2390,8 @@ void XRSession::OnFrame(double timestamp,
     auto* transport_delegate = render_state_->GetTransportDelegate();
     CHECK(transport_delegate);
 
-    if (shared_images.empty() && layers_enabled_) {
+    if (shared_images.empty() &&
+        (layers_enabled_ || !render_state_->layers().empty())) {
       DVLOG(2) << __func__ << ": there is no shared images.";
       xr_->frameProvider()->SubmitFrame(transport_delegate);
       return;
@@ -2282,7 +2409,6 @@ void XRSession::OnFrame(double timestamp,
         // allow the layer sequence to be updated by the backend compositor
         // without dropping the current frame.
         render_state_->UpdateLayersBackend(LayerManager());
-        render_state_->OnLayersUpdated();
 
         // Submit this animation frame without changes and request a new one
         // immediately.
@@ -2292,8 +2418,8 @@ void XRSession::OnFrame(double timestamp,
       }
     }
 
-    // If LayerManager is not available, the shared image lacks an associated
-    // layer ID. The shared image must then be bound to the first layer.
+    // If baseLayer is used or LayerManager is not available, bind the shared
+    // image with the first layer's ID.
     layer_shared_image_manager_.SetSharedImages(
         LayerManager() ? render_state_->baseLayer()
                        : render_state_->GetFirstLayer(),
@@ -2350,14 +2476,20 @@ void XRSession::OnFrame(double timestamp,
     for (auto& binding : graphics_bindings_) {
       gpu::SyncToken camera_sync_token = binding->OnFrameEnd();
       if (camera_sync_token.HasData()) {
-        transport_delegate->VerifySyncToken(camera_sync_token);
-        camera_sync_tokens.push_back(camera_sync_token);
+        if (!camera_sync_token.verified_flush()) {
+          if (auto* binding_delegate = binding->GetTransportDelegate()) {
+            binding_delegate->VerifySyncToken(camera_sync_token);
+          }
+        }
+        if (camera_sync_token.verified_flush()) {
+          camera_sync_tokens.push_back(camera_sync_token);
+        }
       }
     }
 
     auto shared_image =
         LayerSharedImageManager().CameraSharedImage().shared_image;
-    if (shared_image && !camera_sync_tokens.empty()) {
+    if (shared_image) {
       gpu::SharedImageExportResult camera_export_result =
           shared_image->EndImport(std::move(camera_sync_tokens));
       // Submit frame with cached layers data.
@@ -2366,6 +2498,8 @@ void XRSession::OnFrame(double timestamp,
     } else {
       xr_->frameProvider()->SubmitFrame(transport_delegate);
     }
+
+    layer_shared_image_manager_.Reset();
 
     // Ensure the XRFrame cannot be used outside the callbacks.
     animation_frame_->Deactivate();
@@ -2782,6 +2916,7 @@ void XRSession::Trace(Visitor* visitor) const {
   visitor->Trace(client_receiver_);
   visitor->Trace(callback_collection_);
   visitor->Trace(create_anchor_promises_);
+  visitor->Trace(update_target_frame_rate_promises_);
   visitor->Trace(request_hit_test_source_promises_);
   visitor->Trace(graphics_bindings_);
   visitor->Trace(reference_spaces_);

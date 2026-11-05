@@ -11,6 +11,7 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -18,7 +19,7 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContents;
-import org.chromium.android_webview.metrics.AwMetricsServiceClient;
+import org.chromium.android_webview.common.PlatformServiceBridge;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Feature;
@@ -41,6 +42,13 @@ public class AwPageLoadMetricsTest extends AwParameterizedTest {
     private AwTestContainerView mTestContainerView;
     private TestAwContentsClient mContentsClient;
     private TestWebServer mWebServer;
+
+    @BeforeClass
+    public static void setUpClass() {
+        // Injected before the batch's first test starts the browser process, so the single
+        // metrics consent query is answered by this bridge.
+        PlatformServiceBridge.injectInstance(new MetricsTestPlatformServiceBridge());
+    }
 
     public AwPageLoadMetricsTest(AwSettingsMutation param) {
         this.mRule = new AwActivityTestRule(param.getMutation());
@@ -177,10 +185,6 @@ public class AwPageLoadMetricsTest extends AwParameterizedTest {
                 HistogramWatcher.newBuilder()
                         .expectAnyRecord("PageLoad.PageTiming.ForegroundDuration")
                         .build();
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    AwMetricsServiceClient.setConsentSetting(true);
-                });
         loadUrlSync(url);
         // Remove the WebView from the container, to simulate app going to background.
         ThreadUtils.runOnUiThreadBlocking(

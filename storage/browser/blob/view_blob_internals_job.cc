@@ -6,7 +6,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <sstream>
 
 #include "base/compiler_specific.h"
 #include "base/format_macros.h"
@@ -34,7 +33,6 @@ namespace {
 
 const char kEmptyBlobStorageMessage[] = "No available blob data.";
 const char kContentType[] = "Content Type: ";
-const char kContentDisposition[] = "Content Disposition: ";
 const char kCount[] = "Count: ";
 const char kIndex[] = "Index: ";
 const char kType[] = "Type: ";
@@ -142,10 +140,9 @@ std::string ViewBlobInternalsJob::GenerateHTML(
     for (const auto& uuid_entry_pair :
          blob_storage_context->registry().blob_map_) {
       AddHTMLBoldText(uuid_entry_pair.first, &out);
-      BlobEntry* entry = uuid_entry_pair.second.get();
+      scoped_refptr<BlobEntry> entry = uuid_entry_pair.second;
       GenerateHTMLForBlobData(*entry, entry->content_type(),
-                              entry->content_disposition(), entry->refcount(),
-                              &out);
+                              entry->handle_count(), &out);
     }
     // TODO(crbug.com/40709731): Bring back information about blob URLs.
   }
@@ -156,7 +153,6 @@ std::string ViewBlobInternalsJob::GenerateHTML(
 void ViewBlobInternalsJob::GenerateHTMLForBlobData(
     const BlobEntry& blob_data,
     const std::string& content_type,
-    const std::string& content_disposition,
     size_t refcount,
     std::string* out) {
   StartHTMLList(out);
@@ -165,8 +161,6 @@ void ViewBlobInternalsJob::GenerateHTMLForBlobData(
   AddHTMLListItem(kStatus, StatusToString(blob_data.status()), out);
   if (!content_type.empty())
     AddHTMLListItem(kContentType, content_type, out);
-  if (!content_disposition.empty())
-    AddHTMLListItem(kContentDisposition, content_disposition, out);
 
   bool has_multi_items = blob_data.items().size() > 1;
   if (has_multi_items) {
@@ -204,13 +198,9 @@ void ViewBlobInternalsJob::GenerateHTMLForBlobData(
               out);
         }
         break;
-      case BlobDataItem::Type::kReadableDataHandle: {
+      case BlobDataItem::Type::kReadableDataHandle:
         AddHTMLListItem(kType, "readable data handle", out);
-        std::stringstream ss;
-        item.data_handle()->PrintTo(&ss);
-        AddHTMLListItem(kURL, ss.str(), out);
         break;
-      }
       case BlobDataItem::Type::kBytesDescription:
         AddHTMLListItem(kType, "pending data", out);
         break;

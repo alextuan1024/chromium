@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import unittest
 
 import mojom.generate.check as check
 from mojom_bindings_generator import LoadChecks, _Generate
@@ -23,6 +22,7 @@ class FakeArgs:
     self.generators_string = ''
     self.import_directories = []
     self.output_dir = tester.GetPath('out')
+    self.scrambled_message_id_salts = None
     self.scrambled_message_id_salt_paths = None
     self.typemaps = []
     self.variant = 'none'

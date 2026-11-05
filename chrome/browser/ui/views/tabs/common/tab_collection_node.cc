@@ -4,11 +4,13 @@
 
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
 
+#include <algorithm>
 #include <vector>
 
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
+#include "chrome/browser/ui/views/tabs/common/root_tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
@@ -17,6 +19,7 @@
 #include "components/tabs/public/tab_collection.h"
 #include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_interface.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/view.h"
 
@@ -71,35 +74,13 @@ tabs::TabCollectionNodeHandle GetHandleFromNode(tabs::ConstChildPtr node_data) {
 
 }  // anonymous namespace
 
-base::CallbackListSubscription TabCollectionNode::RegisterWillDestroyCallback(
-    base::OnceClosure callback) {
-  return on_will_destroy_callback_list_.Add(std::move(callback));
-}
-
-base::CallbackListSubscription
-TabCollectionNode::RegisterTabSelectionChangedCallback(
-    base::RepeatingClosure callback) {
-  return on_tab_selection_changed_callback_list_.Add(std::move(callback));
-}
-
-void TabCollectionNode::NotifyTabSelectionChanged() {
-  on_tab_selection_changed_callback_list_.Notify();
-}
-
-void TabCollectionNode::SetController(
-    TabStripCollectionController* controller) {
-  tab_strip_controller_ = controller;
-  for (const auto& child : children_) {
-    child->SetController(controller);
-  }
-}
-
 // static
 std::unique_ptr<views::View> TabCollectionNode::CreateViewForNode(
     TabCollectionNode* node_for_view) {
   switch (node_for_view->type()) {
     case Type::TABSTRIP:
-      return std::make_unique<TabStripView>(node_for_view);
+      return std::make_unique<TabStripView>(
+          static_cast<RootTabCollectionNode*>(node_for_view));
     case Type::PINNED:
       return std::make_unique<PinnedTabContainerView>(node_for_view);
     case Type::UNPINNED:
@@ -159,50 +140,17 @@ std::unique_ptr<views::View> TabCollectionNode::Initialize() {
 }
 
 void TabCollectionNode::Deinitialize() {
-  if (std::holds_alternative<tabs::ConstDanglingUntriagedTabCollection>(
-          node_data_)) {
-    const tabs::TabCollection* collection =
-        std::get<tabs::ConstDanglingUntriagedTabCollection>(node_data_);
-    for (const auto& child_data : collection->GetChildren()) {
-      tabs::TabCollectionNodeHandle child_handle;
-      if (std::holds_alternative<std::unique_ptr<tabs::TabCollection>>(
-              child_data)) {
-        child_handle =
-            std::get<std::unique_ptr<tabs::TabCollection>>(child_data)
-                ->GetHandle();
-      } else {
-        CHECK(std::holds_alternative<tabs::ScopedTab>(child_data));
-        child_handle = std::get<tabs::ScopedTab>(child_data)->GetHandle();
-      }
-      RemoveChild(GetPassKey(), child_handle,
-                  /*perform_deinitialization=*/true);
-    }
-  } else {
-    CHECK(std::holds_alternative<tabs::ConstDanglingUntriagedTabInterface>(
-        node_data_));
+  while (!children_.empty()) {
+    RemoveChildNode(children_.end() - 1, RemoveChildReason::kClosed);
   }
 }
 
-TabCollectionNode* TabCollectionNode::GetNodeForHandle(
-    const tabs::TabCollectionNodeHandle& handle) {
-  return const_cast<TabCollectionNode*>(
-      std::as_const(*this).GetNodeForHandle(handle));
-}
-
-// TODO(crbug.com/450976282): Consider having a map at the root level.
-const TabCollectionNode* TabCollectionNode::GetNodeForHandle(
+bool TabCollectionNode::Contains(
     const tabs::TabCollectionNodeHandle& handle) const {
-  if (GetHandle() == handle) {
-    return this;
-  }
-
-  for (const auto& child : children_) {
-    if (TabCollectionNode* node = child->GetNodeForHandle(handle)) {
-      return node;
-    }
-  }
-
-  return nullptr;
+  return GetHandle() == handle ||
+         std::ranges::any_of(children_, [&handle](const auto& child) {
+           return child->Contains(handle);
+         });
 }
 
 TabCollectionNode* TabCollectionNode::GetParentNodeForHandle(
@@ -239,10 +187,12 @@ TabCollectionNode* TabCollectionNode::GetChildNodeOfType(const Type type) {
   return it != children_.end() ? it->get() : nullptr;
 }
 
-void TabCollectionNode::AddNewChild(base::PassKey<TabCollectionNode> pass_key,
-                                    tabs::ConstChildPtr node_data,
-                                    size_t model_index,
-                                    bool perform_initialization) {
+void TabCollectionNode::AddNewChild(
+    base::PassKey<TabCollectionNode> pass_key,
+    tabs::ConstChildPtr node_data,
+    size_t model_index,
+    bool perform_initialization,
+    base::OnceCallback<void(TabCollectionNode*)> on_node_created) {
   auto child_node =
       std::make_unique<TabCollectionNode>(node_data, orientation_);
   auto* child_node_ptr = child_node.get();
@@ -255,6 +205,10 @@ void TabCollectionNode::AddNewChild(base::PassKey<TabCollectionNode> pass_key,
     child_node_view = child_node_ptr->CreateAndSetView();
   }
 
+  // Adding the view below may already look the new nodes up through the root,
+  // e.g. TabView::AddedToWidget() resolves the tab's accessible name that way.
+  std::move(on_node_created).Run(child_node_ptr);
+
   if (add_child_to_node_) {
     add_child_to_node_.Run(std::move(child_node_view));
   } else {
@@ -266,32 +220,13 @@ void TabCollectionNode::AddNewChild(base::PassKey<TabCollectionNode> pass_key,
 
 void TabCollectionNode::RemoveChild(base::PassKey<TabCollectionNode> pass_key,
                                     const tabs::TabCollectionNodeHandle& handle,
-                                    bool perform_deinitialization) {
+                                    RemoveChildReason remove_reason) {
   for (auto it = children_.begin(); it != children_.end(); ++it) {
-    TabCollectionNode* child_node = it->get();
-
-    if (child_node->GetHandle() != handle) {
+    if ((*it)->GetHandle() != handle) {
       continue;
     }
 
-    if (perform_deinitialization) {
-      child_node->Deinitialize();
-    }
-
-    views::View* node_view_to_remove = child_node->node_view_;
-
-    // We must remove the TabCollectionNode from `children_` before destroying
-    // the node itself to prevent potential UAF issues resulting from listeners
-    // fired in its destructor. See crbug.com/491286738 for details.
-    std::unique_ptr<TabCollectionNode> node_to_remove = std::move(*it);
-    children_.erase(it);
-    node_to_remove.reset();
-
-    if (remove_child_from_node_) {
-      remove_child_from_node_.Run(node_view_to_remove);
-    } else {
-      node_view_->RemoveChildViewT(node_view_to_remove);
-    }
+    RemoveChildNode(it, remove_reason);
     return;
   }
 
@@ -346,14 +281,18 @@ void TabCollectionNode::MoveChild(base::PassKey<TabCollectionNode> pass_key,
         child_node->node_view_->GetBoundsInScreen();
     const bool was_focused = child_node->node_view_->HasFocus();
 
+    // Remove the node from `src_parent_node->children_` before detaching the
+    // view so that layout recalculations triggered during view removal do not
+    // include the removed node.
+    std::unique_ptr<TabCollectionNode> removed_node = std::move(*it);
+    src_parent_node->children_.erase(it);
+
     std::unique_ptr<views::View> removed_view =
         src_parent_node->detach_child_from_node_
             ? src_parent_node->detach_child_from_node_.Run(
                   child_node->node_view_)
             : src_parent_node->node_view_->RemoveChildViewT(
                   child_node->node_view_);
-    std::unique_ptr<TabCollectionNode> removed_node = std::move(*it);
-    src_parent_node->children_.erase(it);
 
     dst_parent_node->AddChildNode(std::move(removed_node), new_index);
     if (dst_parent_node->attach_child_to_node_) {
@@ -391,6 +330,30 @@ void TabCollectionNode::AddChildNode(
   children_.insert(children_.begin() + model_index, std::move(child_node));
 }
 
+void TabCollectionNode::RemoveChildNode(NodeChildren::iterator child_it,
+                                        RemoveChildReason remove_reason) {
+  TabCollectionNode* child_node = child_it->get();
+  if (remove_reason == RemoveChildReason::kClosed) {
+    child_node->Deinitialize();
+  }
+
+  views::View* node_view_to_remove = child_node->node_view_;
+
+  // We must remove the TabCollectionNode from `children_` before destroying
+  // the node itself to prevent potential UAF issues resulting from listeners
+  // fired in its destructor. See crbug.com/491286738 for details.
+  std::unique_ptr<TabCollectionNode> node_to_remove = std::move(*child_it);
+  children_.erase(child_it);
+  node_to_remove.reset();
+
+  if (remove_child_from_node_ &&
+      remove_reason != RemoveChildReason::kDetached) {
+    remove_child_from_node_.Run(node_view_to_remove);
+  } else {
+    node_view_->RemoveChildViewT(node_view_to_remove);
+  }
+}
+
 void TabCollectionNode::EnsureFocusOrder(size_t child_index) {
   if (type() == Type::TABSTRIP) {
     return;
@@ -402,5 +365,43 @@ void TabCollectionNode::EnsureFocusOrder(size_t child_index) {
   } else if (children_.size() > 1) {
     children_[child_index]->node_view_->InsertBeforeInFocusList(
         children_[1]->node_view_);
+  }
+}
+
+base::CallbackListSubscription TabCollectionNode::RegisterWillDestroyCallback(
+    base::OnceClosure callback) {
+  return on_will_destroy_callback_list_.Add(std::move(callback));
+}
+
+base::CallbackListSubscription
+TabCollectionNode::RegisterTabSelectionChangedCallback(
+    base::RepeatingClosure callback) {
+  return on_tab_selection_changed_callback_list_.Add(std::move(callback));
+}
+
+void TabCollectionNode::NotifyTabSelectionChanged() {
+  on_tab_selection_changed_callback_list_.Notify();
+}
+
+void TabCollectionNode::UpdateAccessibleTabIndex(int pos_in_set, int set_size) {
+  CHECK_EQ(type_, Type::TAB);
+  if (!node_view_) {
+    return;
+  }
+  if (ax_pos_in_set_ != pos_in_set) {
+    ax_pos_in_set_ = pos_in_set;
+    node_view_->GetViewAccessibility().SetPosInSet(pos_in_set);
+  }
+  if (ax_set_size_ != set_size) {
+    ax_set_size_ = set_size;
+    node_view_->GetViewAccessibility().SetSetSize(set_size);
+  }
+}
+
+void TabCollectionNode::SetController(
+    TabStripCollectionController* controller) {
+  tab_strip_controller_ = controller;
+  for (const auto& child : children_) {
+    child->SetController(controller);
   }
 }

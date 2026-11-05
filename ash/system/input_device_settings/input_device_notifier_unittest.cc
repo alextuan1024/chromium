@@ -266,7 +266,7 @@ TEST_F(InputDeviceStateNotifierTest, BluetoothKeyboardTest) {
   ON_CALL(*mock_device, GetProductID)
       .WillByDefault(testing::Return(test_product_id));
 
-  std::vector<raw_ptr<const device::BluetoothDevice, VectorExperimental>>
+  std::vector<raw_ptr<const device::BluetoothDevice, DanglingUntriaged>>
       devices;
   devices.push_back(mock_device.get());
   ON_CALL(*bluetooth_adapter_, GetDevices)
@@ -398,7 +398,7 @@ TEST_F(InputDeviceStateLoginScreenNotifierTest, ImpostersIgnoredOnLoginScreen) {
   EXPECT_EQ(kSampleKeyboardUsb2.name, devices_to_add_[1].name);
   EXPECT_EQ(kSampleKeyboardUsb2.id, devices_to_add_[1].id);
 
-  SimulateUserLogin({kUserEmail});
+  SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
   ASSERT_EQ(1u, devices_to_add_.size());
   EXPECT_EQ(kSampleKeyboardUsb2.name, devices_to_add_[0].name);
   EXPECT_EQ(kSampleKeyboardUsb2.id, devices_to_add_[0].id);
@@ -432,7 +432,7 @@ TEST_F(InputDeviceStateLoginScreenNotifierTest,
 
   // Remove the imposter keyboard and then login.
   ui::DeviceDataManagerTestApi().SetKeyboardDevices({kSampleKeyboardUsb2});
-  SimulateUserLogin({kUserEmail});
+  SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
   ASSERT_EQ(1u, devices_to_add_.size());
   EXPECT_EQ(kSampleKeyboardUsb2.name, devices_to_add_[0].name);
   EXPECT_EQ(kSampleKeyboardUsb2.id, devices_to_add_[0].id);
@@ -682,7 +682,7 @@ TEST_F(InputDeviceMouseNotifierTest, BluetoothMouseTest) {
   ON_CALL(*mock_device, GetProductID)
       .WillByDefault(testing::Return(test_product_id));
 
-  std::vector<raw_ptr<const device::BluetoothDevice, VectorExperimental>>
+  std::vector<raw_ptr<const device::BluetoothDevice, DanglingUntriaged>>
       devices;
   devices.push_back(mock_device.get());
   ON_CALL(*bluetooth_adapter_, GetDevices)

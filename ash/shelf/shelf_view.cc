@@ -338,11 +338,9 @@ ShelfView::ShelfView(ShelfModel* model,
   set_context_menu_controller(this);
   set_allow_deactivate_on_esc(true);
 
-  if (features::IsUserEducationEnabled()) {
-    // NOTE: Set `kHelpBubbleContextKey` before `views::kElementIdentifierKey`
-    // in case registration causes a help bubble to be created synchronously.
-    SetProperty(kHelpBubbleContextKey, HelpBubbleContext::kAsh);
-  }
+  // NOTE: Set `kHelpBubbleContextKey` before `views::kElementIdentifierKey`
+  // in case registration causes a help bubble to be created synchronously.
+  SetProperty(kHelpBubbleContextKey, HelpBubbleContext::kAsh);
   SetProperty(views::kElementIdentifierKey, kShelfViewElementId);
 
   announcement_view_ = new views::View();
@@ -502,6 +500,43 @@ bool ShelfView::ShouldHideTooltip(const gfx::Point& cursor_location,
   // in the gaps, but the tooltip should hide if the mouse moved totally outside
   // of the buttons area.
   return !LocationInsideVisibleShelfItemBounds(cursor_location);
+}
+
+base::expected<aura::Window*, ShelfView::NoPreviewReason>
+ShelfView::GetPreviewWindowOrShowAppMenu(views::View* view,
+                                         bool show_app_menu) {
+  const ShelfItem* item = ShelfItemForView(view);
+  if (!item) {
+    return base::unexpected(NoPreviewReason::kNoSingleWindow);
+  }
+
+  ShelfItemDelegate* delegate = model_->GetShelfItemDelegate(item->id);
+  if (!delegate) {
+    return base::unexpected(NoPreviewReason::kNoSingleWindow);
+  }
+
+  ShelfItemDelegate::AppMenuItems menu_items = delegate->GetAppMenuItems(
+      ui::EF_NONE, base::BindRepeating(&ShouldIncludeMenuItem));
+  if (menu_items.size() > 1) {
+    if (show_app_menu) {
+      ShowMenu(std::make_unique<ShelfApplicationMenuModel>(
+                   item->title, std::move(menu_items), delegate),
+               view, item->id, {}, /*context_menu=*/false,
+               ui::mojom::MenuSourceType::kNone, /*opened_by_hover=*/true);
+      shelf_->UpdateVisibilityState();
+    }
+    return base::unexpected(NoPreviewReason::kUseAppMenu);
+  }
+
+  if (menu_items.size() == 1) {
+    aura::Window* window =
+        delegate->GetAppMenuItemWindow(menu_items[0].command_id)
+            .value_or(nullptr);
+    if (window) {
+      return window;
+    }
+  }
+  return base::unexpected(NoPreviewReason::kNoSingleWindow);
 }
 
 std::u16string ShelfView::GetTitleForView(const views::View* view) const {
@@ -811,8 +846,9 @@ void ShelfView::OnShelfConfigUpdated() {
   for (size_t i = 0; i < view_model_->view_size(); i++) {
     ShelfAppButton* button =
         static_cast<ShelfAppButton*>(view_model_->view_at(i));
-    if (!button->IsIconSizeCurrent())
-      ShelfItemChanged(i, model_->items()[i]);
+    if (!button->IsIconSizeCurrent()) {
+      button->UpdateMainAndMaybeHostBadgeIconImage();
+    }
   }
 }
 
@@ -973,7 +1009,7 @@ views::View* ShelfView::CreateViewForItem(const ShelfItem& item) {
     case TYPE_DIALOG: {
       ShelfAppButton* button = new ShelfAppButton(
           this, shelf_button_delegate_ ? shelf_button_delegate_.get() : this);
-      UpdateButton(button, item);
+      UpdateButton(button, item, /*should_update_image=*/true);
       view = button;
       break;
     }
@@ -988,10 +1024,14 @@ views::View* ShelfView::CreateViewForItem(const ShelfItem& item) {
   return view;
 }
 
-void ShelfView::UpdateButton(ShelfAppButton* button, const ShelfItem& item) {
+void ShelfView::UpdateButton(ShelfAppButton* button,
+                             const ShelfItem& item,
+                             bool should_update_image) {
   button->ReflectItemStatus(item);
-  button->SetMainAndMaybeHostBadgeImage(item.image, item.has_placeholder_icon,
-                                        item.badge_image);
+  if (should_update_image) {
+    button->SetMainAndMaybeHostBadgeImage(item.image, item.has_placeholder_icon,
+                                          item.badge_image);
+  }
   button->SetNotificationBadgeColor(item.notification_badge_color);
   button->GetViewAccessibility().SetName(item.accessible_name);
   // If an empty accessible name of the item is provided, in such a case we want
@@ -1184,7 +1224,10 @@ void ShelfView::EndDrag(bool cancel) {
       AnimateToIdealBounds();
       // TODO(crbug.com/40266934): Remove the check below once the bounds
       // animator works better with zero animation duration.
-      if (!bounds_animator_->GetAnimationDuration().is_zero()) {
+      // SetAnimationDelegate requires an active animation; if the view was
+      // already at its ideal bounds, CancelDrag already restored its opacity.
+      if (!bounds_animator_->GetAnimationDuration().is_zero() &&
+          bounds_animator_->IsAnimating(drag_and_drop_view)) {
         bounds_animator_->SetAnimationDelegate(drag_and_drop_view,
                                                std::move(animation_delegate));
       }
@@ -1423,10 +1466,8 @@ void ShelfView::LayoutToIdealBounds() {
   UpdateVisibleShelfItemBoundsUnion();
 
   // Notify user education features that anchor bounds have changed.
-  if (features::IsUserEducationEnabled()) {
-    views::ElementTrackerViews::GetInstance()->NotifyCustomEvent(
-        views::ViewSubregionAnchor::kAnchorBoundsChangedEvent, this);
-  }
+  views::ElementTrackerViews::GetInstance()->NotifyCustomEvent(
+      views::ViewSubregionAnchor::kAnchorBoundsChangedEvent, this);
 }
 
 bool ShelfView::IsItemPinned(const ShelfItem& item) const {
@@ -1444,12 +1485,18 @@ void ShelfView::OnTabletModeChanged() {
 void ShelfView::AnimateToIdealBounds() {
   CalculateIdealBounds();
 
-  for (size_t i = 0; i < view_model_->view_size(); ++i) {
-    View* view = view_model_->view_at(i);
-    bounds_animator_->AnimateViewTo(view, view_model_->ideal_bounds(i));
-    // Now that the item animation starts, we have to make sure that the
-    // padding of the first gets properly transferred to the new first item.
-    view->SetBorder(nullptr);
+  // Only animate when items move or an animation is already in progress, since
+  // BoundsAnimator::AnimateViewTo runs a full-duration animation even when
+  // already at target bounds.
+  if (bounds_animator_->IsAnimating() ||
+      !views::ViewModelUtils::IsAtIdealBounds(*view_model_)) {
+    for (size_t i = 0; i < view_model_->view_size(); ++i) {
+      View* view = view_model_->view_at(i);
+      bounds_animator_->AnimateViewTo(view, view_model_->ideal_bounds(i));
+      // Now that the item animation starts, we have to make sure that the
+      // padding of the first gets properly transferred to the new first item.
+      view->SetBorder(nullptr);
+    }
   }
 
   UpdateSeparatorBounds(/*animate=*/true);
@@ -1487,10 +1534,14 @@ void ShelfView::UpdateSeparatorBounds(bool animate) {
       shelf()->PrimaryAxisValue(kSeparatorThickness, kSeparatorSize),
       shelf()->PrimaryAxisValue(kSeparatorSize, kSeparatorThickness));
 
-  if (animate)
+  // Only animate if the separator moves or is already mid-animation, to avoid
+  // starting a zero-distance animation.
+  if (animate && (separator_->bounds() != separator_bounds ||
+                  bounds_animator_->IsAnimating(separator_))) {
     bounds_animator_->AnimateViewTo(separator_, separator_bounds);
-  else
+  } else {
     separator_->SetBoundsRect(separator_bounds);
+  }
 }
 
 void ShelfView::FadeIn(views::View* view) {
@@ -2222,8 +2273,16 @@ void ShelfView::ShelfItemAdded(int model_index) {
   // TODO(crbug.com/40266934): Remove the check below once the bounds animator
   // works better with zero animation duration.
   if (!bounds_animator_->GetAnimationDuration().is_zero()) {
-    bounds_animator_->SetAnimationDelegate(
-        view, std::make_unique<StartFadeAnimationDelegate>(this, view));
+    if (bounds_animator_->IsAnimating(view)) {
+      // Wait for existing items to finish making space before fading in.
+      bounds_animator_->SetAnimationDelegate(
+          view, std::make_unique<StartFadeAnimationDelegate>(this, view));
+    } else {
+      // No existing items moved (e.g. first item on an empty shelf), so notify
+      // observers and fade in immediately.
+      shelf_->NotifyShelfIconPositionsChanged();
+      FadeIn(view);
+    }
   }
 }
 
@@ -2344,7 +2403,15 @@ void ShelfView::ShelfItemChanged(int model_index, const ShelfItem& old_item) {
     case TYPE_DIALOG: {
       CHECK(views::IsViewClass<ShelfAppButton>(view));
       ShelfAppButton* button = static_cast<ShelfAppButton*>(view);
-      UpdateButton(button, item);
+      // Skip rebuilding the resized and drop-shadowed icon on status or title
+      // updates. Promise apps always update since their icon size and shadow
+      // also depend on installation status and progress.
+      const bool should_update_image =
+          old_item.is_promise_app || item.is_promise_app ||
+          old_item.has_placeholder_icon != item.has_placeholder_icon ||
+          !old_item.image.BackedBySameObjectAs(item.image) ||
+          !old_item.badge_image.BackedBySameObjectAs(item.badge_image);
+      UpdateButton(button, item, should_update_image);
       break;
     }
     case TYPE_UNDEFINED:
@@ -2448,10 +2515,10 @@ void ShelfView::OnShelfAlignmentChanged(aura::Window* root_window,
 }
 
 void ShelfView::OnPinnedStateChanged(aura::Window* pinned_window) {
-  // Close context menus in locked fullscreen mode to prevent users from exiting
+  // Close context menus in trusted pinned mode to prevent users from exiting
   // this mode.
   if ((GetWindowPinType(pinned_window) ==
-       chromeos::WindowPinType::kLockedFullscreen) &&
+       chromeos::WindowPinType::kTrustedPinned) &&
       IsShowingMenu()) {
     shelf_menu_model_adapter_->Cancel();
   }
@@ -2519,7 +2586,8 @@ void ShelfView::ShowMenu(std::unique_ptr<ui::SimpleMenuModel> menu_model,
                          const ShelfID& shelf_id,
                          const gfx::Point& click_point,
                          bool context_menu,
-                         ui::mojom::MenuSourceType source_type) {
+                         ui::mojom::MenuSourceType source_type,
+                         bool opened_by_hover) {
   // Delayed callbacks to show context and application menus may conflict; hide
   // the old menu before showing a new menu in that case.
   if (IsShowingMenu())
@@ -2555,6 +2623,8 @@ void ShelfView::ShowMenu(std::unique_ptr<ui::SimpleMenuModel> menu_model,
     run_types |= views::MenuRunner::SEND_GESTURE_EVENTS_TO_OWNER;
   }
 
+  ShelfItemDelegate* delegate =
+      context_menu ? nullptr : model_->GetShelfItemDelegate(shelf_id);
   // UnsafeDangling triaged in https://crbug.com/1423849.
   shelf_menu_model_adapter_ = std::make_unique<ShelfMenuModelAdapter>(
       item ? item->id.app_id : std::string(), std::move(menu_model), source,
@@ -2562,7 +2632,8 @@ void ShelfView::ShowMenu(std::unique_ptr<ui::SimpleMenuModel> menu_model,
       base::BindOnce(&ShelfView::OnMenuClosed, base::Unretained(this),
                      base::UnsafeDangling(source)),
       display::Screen::Get()->InTabletMode(),
-      /*for_application_menu_items*/ !context_menu);
+      /*for_application_menu_items=*/!context_menu,
+      delegate ? delegate->GetWeakPtr() : nullptr, opened_by_hover);
   shelf_menu_model_adapter_->Run(
       GetMenuAnchorRect(*source, click_point, context_menu),
       shelf_->IsHorizontalAlignment()
@@ -2592,16 +2663,27 @@ void ShelfView::OnMenuClosed(MayBeDangling<views::View> source) {
   // should be kept as visible during shelf item drag even menu is closed.
   if (!is_in_drag)
     shelf_->UpdateVisibilityState();
+
+  // The menu held mouse capture, so the tooltip manager missed mouse moves.
+  // Restart the hover timer for the shelf button under the cursor, if any.
+  if (GetWidget() && parent()) {
+    gfx::Point cursor_point = display::Screen::Get()->GetCursorScreenPoint();
+    ConvertPointFromScreen(parent(), &cursor_point);
+    views::View* hovered_view =
+        parent()->GetTooltipHandlerForPoint(cursor_point);
+    if (hovered_view && hovered_view->parent() == this &&
+        hovered_view != source) {
+      shelf_->tooltip()->ShowTooltipWithDelay(hovered_view);
+    }
+  }
 }
 
 void ShelfView::OnBoundsAnimatorProgressed(views::BoundsAnimator* animator) {
   shelf_->NotifyShelfIconPositionsChanged();
 
   // Notify user education features that anchor bounds have changed.
-  if (features::IsUserEducationEnabled()) {
-    views::ElementTrackerViews::GetInstance()->NotifyCustomEvent(
-        views::ViewSubregionAnchor::kAnchorBoundsChangedEvent, this);
-  }
+  views::ElementTrackerViews::GetInstance()->NotifyCustomEvent(
+      views::ViewSubregionAnchor::kAnchorBoundsChangedEvent, this);
 
   // Do not call PreferredSizeChanged() so that container does not re-layout
   // during the bounds animation.

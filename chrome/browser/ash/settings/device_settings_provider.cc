@@ -67,6 +67,7 @@ constexpr auto kKnownSettings = base::MakeFixedFlatSet<std::string_view>({
     kAccountsPrefDeviceLocalAccountAutoLoginId,
     kAccountsPrefDeviceLocalAccountPromptForNetworkWhenOffline,
     kAccountsPrefDeviceLocalAccounts,
+    kAccountsPrefDeviceMaxUserProfiles,
     kAccountsPrefEphemeralUsersEnabled,
     kAccountsPrefLoginScreenDomainAutoComplete,
     kAccountsPrefShowUserNamesOnSignIn,
@@ -105,6 +106,7 @@ constexpr auto kKnownSettings = base::MakeFixedFlatSet<std::string_view>({
     kDeviceShowLowDiskSpaceNotification,
     kDeviceShowNumericKeyboardForPassword,
     kDeviceOffHours,
+    kDeviceOsMigrationTargetDate,
     kDeviceOwner,
     kDevicePrintersAccessMode,
     kDevicePrintersBlocklist,
@@ -136,7 +138,6 @@ constexpr auto kKnownSettings = base::MakeFixedFlatSet<std::string_view>({
     kReleaseChannelDelegated,
     kReleaseLtsTag,
     kDeviceChannelDowngradeBehavior,
-    kDeviceSystemAecEnabled,
     kDeviceReportRuntimeCounters,
     kDeviceReportRuntimeCountersCheckingRateMs,
     kReportDeviceActivityTimes,
@@ -389,6 +390,12 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
       policy.has_ephemeral_users_enabled() &&
           policy.ephemeral_users_enabled().has_ephemeral_users_enabled() &&
           policy.ephemeral_users_enabled().ephemeral_users_enabled());
+
+  if (policy.has_devicemaxuserprofiles() &&
+      policy.devicemaxuserprofiles().has_value()) {
+    new_values_cache->SetInteger(kAccountsPrefDeviceMaxUserProfiles,
+                                 policy.devicemaxuserprofiles().value());
+  }
 
   {
     base::ListValue list;
@@ -722,6 +729,19 @@ void DecodeAutoUpdatePolicies(const em::ChromeDeviceSettingsProto& policy,
                                  base::Value(container.value()));
     }
   }
+
+  if (policy.has_deviceosmigrationtargetdate()) {
+    // See DeviceOsMigrationTargetDate.yaml for description of values.
+    constexpr int64_t kMinValidValue = 0;
+    constexpr int64_t kMaxValidValue = 2147483647;
+    const em::IntegerPolicyProto& container(
+        policy.deviceosmigrationtargetdate());
+    if (container.has_value() && container.value() >= kMinValidValue &&
+        container.value() <= kMaxValidValue) {
+      new_values_cache->SetInteger(kDeviceOsMigrationTargetDate,
+                                   static_cast<int>(container.value()));
+    }
+  }
 }
 
 void DecodeReportingPolicies(const em::ChromeDeviceSettingsProto& policy,
@@ -932,13 +952,6 @@ void DecodeGenericPolicies(const em::ChromeDeviceSettingsProto& policy,
     // enrolled devices, c.f. crbug.com/41156165.
     new_values_cache->SetBoolean(
         kStatsReportingPref, InstallAttributes::Get()->IsEnterpriseManaged());
-  }
-
-  if (policy.has_device_system_aec_enabled() &&
-      policy.device_system_aec_enabled().has_device_system_aec_enabled()) {
-    new_values_cache->SetBoolean(
-        kDeviceSystemAecEnabled,
-        policy.device_system_aec_enabled().device_system_aec_enabled());
   }
 
   if (!policy.has_release_channel() ||
@@ -1676,8 +1689,6 @@ bool DeviceSettingsProvider::MitigateMissingPolicy() {
   LOG(ERROR) << "Corruption of the policy data has been detected."
              << "Switching to \"safe-mode\" policies until the owner logs in "
              << "to regenerate the policy data.";
-  base::UmaHistogramBoolean("Enterprise.DeviceSettings.MissingPolicyMitigated",
-                            true);
 
   device_settings_.Clear();
   device_settings_.mutable_allow_new_users()->set_allow_new_users(true);

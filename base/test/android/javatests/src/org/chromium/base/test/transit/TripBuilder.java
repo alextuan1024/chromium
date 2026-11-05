@@ -5,6 +5,7 @@
 package org.chromium.base.test.transit;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
 
 import com.google.errorprone.annotations.CheckReturnValue;
 
@@ -16,7 +17,6 @@ import org.chromium.base.test.transit.Transition.Trigger;
 import org.chromium.build.annotations.Nullable;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -27,19 +27,17 @@ import java.util.List;
 public class TripBuilder {
     private static final String TAG = "Transit";
 
-    private final List<Facility<?>> mFacilitiesToEnter = new ArrayList<>();
-    private final List<Facility<?>> mFacilitiesToExit = new ArrayList<>();
-    private final List<State> mStatesToEnter = new ArrayList<>();
-    private final List<State> mStatesToExit = new ArrayList<>();
-    private final List<Condition> mConditions = new ArrayList<>();
+    /**
+     * The state changes of the Trip; the methods below that are not about the Trigger add to it.
+     */
+    private final Outcome<?> mOutcome = Outcome.nothing();
+
     private final List<Trigger> mTriggers = new ArrayList<>();
     private TransitionOptions mOptions = TransitionOptions.DEFAULT;
-    private @Nullable Station<?> mDestinationStation;
     private @Nullable Station<?> mOriginStation;
     private @Nullable Station<?> mContextStation;
     private @Nullable Facility<?> mContextFacility;
     private @Nullable State mContextState;
-    private boolean mInNewTask;
     private boolean mIsComplete;
 
     public TripBuilder() {}
@@ -153,21 +151,20 @@ public class TripBuilder {
      */
     @CheckReturnValue
     public TripBuilder inNewTask() {
-        mInNewTask = true;
+        mOutcome.setInNewTask();
         return this;
     }
 
     /** Add a Transition |condition| that will be checked as part of the Transition. */
     @CheckReturnValue
     public TripBuilder waitForAnd(Condition... conditions) {
-        mConditions.addAll(Arrays.asList(conditions));
+        var _ = mOutcome.andWaitFor(conditions);
         return this;
     }
 
     @CheckReturnValue
     public TripBuilder enterStateAnd(State state) {
-        state.assertInPhase(Phase.NEW);
-        mStatesToEnter.add(state);
+        var _ = mOutcome.and(state);
         return this;
     }
 
@@ -181,15 +178,14 @@ public class TripBuilder {
     @CheckReturnValue
     public TripBuilder exitStateAnd(State state) {
         state.assertInPhase(Phase.ACTIVE);
-        mStatesToExit.add(state);
+        var _ = mOutcome.andExit(state);
         return this;
     }
 
     /** Add a |facility| to enter as part of the Transition. */
     @CheckReturnValue
     public TripBuilder enterFacilityAnd(Facility<?> facility) {
-        facility.assertInPhase(Phase.NEW);
-        mFacilitiesToEnter.add(facility);
+        var _ = mOutcome.and(facility);
         return this;
     }
 
@@ -214,7 +210,7 @@ public class TripBuilder {
     @CheckReturnValue
     public TripBuilder exitFacilityAnd(Facility<?> facility) {
         facility.assertInPhase(Phase.ACTIVE);
-        mFacilitiesToExit.add(facility);
+        var _ = mOutcome.andExit(facility);
         return this;
     }
 
@@ -230,10 +226,7 @@ public class TripBuilder {
     /** Add a |destination| Station to enter as part of the Transition. */
     @CheckReturnValue
     public TripBuilder arriveAtAnd(Station<?> destination) {
-        assert mDestinationStation == null
-                : "Destination already set to " + mDestinationStation.getName();
-        destination.assertInPhase(Phase.NEW);
-        mDestinationStation = destination;
+        mOutcome.setDestination(destination, /* hopOnActivity= */ null);
         return this;
     }
 
@@ -291,40 +284,142 @@ public class TripBuilder {
         return destination;
     }
 
-    /** Exit |lastStation|. */
+    /**
+     * Hop on Public Transit: enter |destination| in |activity| without coming from an origin
+     * Station.
+     *
+     * <p>This is the counterpart of {@link #arriveAt(Station, Facility[])} for code that is not
+     * running inside Public Transit, most notably test utils shared with non-migrated tests. No
+     * exit Conditions are checked, since there is no origin Station to exit.
+     *
+     * <p>Contract: hop on only when there is no live Station to transition from. A test util that
+     * takes an Activity rather than a Station is, by its signature, in that position: it cannot
+     * know where its caller is, so it hops on and the destination becomes the one ACTIVE Station.
+     * Code that does hold a live Station should transition from it with {@link #arriveAt(Station,
+     * Facility[])} instead, which verifies the exit Conditions and keeps the caller's Station
+     * usable. Hopping on over an ACTIVE Station in the same Activity is logged as a warning.
+     *
+     * <p>The Activity is required rather than searched for: hopping on means the UI already exists,
+     * so the caller always holds the Activity it is acting on, and with more than one window open,
+     * matching by class either finds the wrong window or matches two and fails. The flip side is
+     * that the instance must be the one that will be RESUMED: do not hop on by instance when an
+     * Activity recreation (e.g. a theme change) may be in flight.
+     *
+     * <p>Hopping on means being outside Public Transit, so any Stations still considered active, in
+     * every window, are hopped off from first; see {@link TrafficControl#hopOffPublicTransit()}.
+     * This happens before the trigger runs, so if the hop-on Transition fails there is no ACTIVE
+     * Station left: the next hop-on starts clean rather than inheriting a half-finished state.
+     */
+    @CheckReturnValue
+    public TripBuilder hopOnToAnd(Activity activity, Station<?> destination) {
+        mOutcome.setDestination(destination, activity);
+        return this;
+    }
+
+    /**
+     * Execute the transition synchronously, hopping on Public Transit at |destination| in
+     * |activity|.
+     *
+     * @see #hopOnToAnd(Activity, Station)
+     */
+    public <T extends Station<?>> T hopOnTo(
+            Activity activity, T destination, Facility<?>... facilities) {
+        enterFacilitiesAnd(facilities).hopOnToAnd(activity, destination).complete();
+        return destination;
+    }
+
+    /**
+     * Exit |lastStation| without entering another Station, expecting its Activity (if any) to be
+     * destroyed.
+     */
     @CheckReturnValue
     public TripBuilder reachLastStopAnd(Station<?> lastStation) {
         assert mOriginStation == null : "Origin already set to " + mOriginStation.getName();
-        assert mDestinationStation == null
+        assert mOutcome.getDestination() == null
                 : "Last stop should not have a destination Station "
-                        + mDestinationStation.getName();
+                        + mOutcome.getDestination().getName();
         lastStation.assertInPhase(Phase.ACTIVE);
+        ActivityElement<?> activityElement = lastStation.getActivityElement();
+        if (activityElement != null) {
+            activityElement.expectActivityDestroyed();
+        }
         mOriginStation = lastStation;
         return this;
     }
 
-    /** Execute the transition synchronously, exiting the context Station and not entering any. */
+    /**
+     * Execute the transition synchronously, exiting the context Station without entering another
+     * Station and expecting its Activity (if any) to be destroyed.
+     */
     public void reachLastStop() {
         assert mContextStation != null : "Context Station not set";
         reachLastStopAnd(mContextStation).complete();
+    }
+
+    /**
+     * Execute the transition synchronously, replacing the context Facility with |next|.
+     *
+     * <p>The context Facility is the one that owns the Element or offers the Trigger, e.g. {@code
+     * doneButtonElement.clickTo().replaceFacility(new ResultsFacility())}. Elsewhere, use {@code
+     * reach(facility.replacedBy(next))}.
+     *
+     * @return |next|, entered.
+     * @see Facility#replacedBy(Facility)
+     */
+    public <FacilityT extends Facility<?>> FacilityT replaceFacility(FacilityT next) {
+        return exitFacilityAnd().enterFacility(next);
+    }
+
+    /**
+     * Execute the transition synchronously, making the state changes in |outcome|.
+     *
+     * <p>Joins this TripBuilder's Trigger and options with the state changes of an {@link Outcome}
+     * built separately, e.g. by the destination.
+     *
+     * @return the result of |outcome|, e.g. the Station or Facility it enters.
+     */
+    public <R extends @Nullable Object> R reach(Outcome<R> outcome) {
+        mOutcome.mergeFrom(outcome);
+        complete();
+        return outcome.getResult();
     }
 
     /** Build and perform the Transition synchronously. */
     public Trip complete() {
         assert !mIsComplete : "Transition already completed";
         assert !mTriggers.isEmpty() : "Trigger not set";
-        assert !mInNewTask || mDestinationStation != null
+        @Nullable Station<?> destinationStation = mOutcome.getDestination();
+        @Nullable Activity hopOnActivity = mOutcome.getHopOnActivity();
+        boolean hopOn = hopOnActivity != null;
+        boolean inNewTask = mOutcome.isInNewTask();
+        assert !hopOn || !inNewTask : "Hopping on cannot be combined with a new task";
+        List<Facility<?>> facilitiesToEnter = mOutcome.getFacilitiesToEnter();
+        assert !inNewTask || destinationStation != null
                 : "A new Station needs to be entered in the new task";
+
+        // Hopping on means entering Public Transit from outside of it: there is no origin Station
+        // to infer, and whatever was still considered active is abandoned.
+        if (hopOnActivity != null) {
+            assert destinationStation != null;
+            assert mContextStation == null
+                    : String.format(
+                            "hopOnTo() enters Public Transit, so it cannot have %s as context"
+                                    + " Station",
+                            mContextStation.getName());
+            warnIfHoppingOnOverActiveStation(hopOnActivity, destinationStation);
+            TrafficControl.hopOffPublicTransit();
+        }
 
         // If a context Station is required, infer it from the active Stations.
         // A context Station is required to travel to a Station or to enter Facilities.
-        if (mContextStation == null
-                && (mDestinationStation != null || !mFacilitiesToEnter.isEmpty())) {
+        if (!hopOn
+                && mContextStation == null
+                && (destinationStation != null || !facilitiesToEnter.isEmpty())) {
             List<Station<?>> activeStations = TrafficControl.getActiveStations();
             if (activeStations.size() == 1) {
                 mContextStation = activeStations.get(0);
             } else {
-                assert mInNewTask
+                assert inNewTask
                         : String.format(
                                 "Context Station not set with withContext(), cannot infer because"
                                         + " there isn't exactly one active Station. Had %d active"
@@ -333,57 +428,83 @@ public class TripBuilder {
             }
         }
 
-        if (mDestinationStation != null) {
-            if (mInNewTask) {
-                mDestinationStation.requireToBeInNewTask();
+        if (destinationStation != null) {
+            if (hopOnActivity != null) {
+                destinationStation.requireActivityInstance(hopOnActivity);
+            } else if (inNewTask) {
+                destinationStation.requireToBeInNewTask();
             } else {
                 // If entering a station and not in a new task, assume to be exiting an active
                 // Station too.
                 mOriginStation = mContextStation;
                 mOriginStation.assertInPhase(Phase.ACTIVE);
-                mDestinationStation.requireToBeInSameTask(mOriginStation);
+                destinationStation.requireToBeInSameTask(mOriginStation);
             }
-            for (Facility<?> facility : mFacilitiesToEnter) {
-                mDestinationStation.registerFacility(facility);
-            }
-        } else {
-            // TODO(crbug.com/406325581): Support entering Facilities from multiple Stations in
-            // multi-window.
-            for (Facility<?> facility : mFacilitiesToEnter) {
-                mContextStation.registerFacility(facility);
-            }
-        }
-
-        if (mOriginStation != null) {
-            for (Facility<?> facility : mOriginStation.getFacilitiesWithPhase(Phase.ACTIVE)) {
-                // Avoid trying to exit the same facility multiple times.
-                if (!mFacilitiesToExit.contains(facility)) {
-                    mFacilitiesToExit.add(facility);
+            for (Facility<?> facility : destinationStation.getDefaultFacilities()) {
+                if (!facilitiesToEnter.contains(facility)) {
+                    facilitiesToEnter.add(facility);
                 }
             }
+            for (Facility<?> facility : facilitiesToEnter) {
+                facility.setParent(destinationStation);
+            }
+        } else if (!facilitiesToEnter.isEmpty()) {
+            assert mContextStation != null : "No Station to enter the Facilities in";
+            mContextStation.assertInPhase(Phase.ACTIVE);
+            // TODO(crbug.com/406325581): Support entering Facilities from multiple Stations in
+            // multi-window.
+            for (Facility<?> facility : facilitiesToEnter) {
+                facility.setParent(mContextStation);
+            }
         }
 
-        if (!mConditions.isEmpty()) {
+        addActiveDescendantsToExit();
+
+        List<Condition> conditions = mOutcome.getConditions();
+        if (!conditions.isEmpty()) {
             mOptions =
                     TransitionOptions.merge(
-                            Transition.conditionOption(mConditions.toArray(new Condition[0])),
+                            Transition.conditionOption(conditions.toArray(new Condition[0])),
                             mOptions);
         }
 
         Trip trip =
                 new Trip(
                         mOriginStation,
-                        mDestinationStation,
-                        mFacilitiesToExit,
-                        mFacilitiesToEnter,
-                        mStatesToExit,
-                        mStatesToEnter,
+                        destinationStation,
+                        mOutcome.getFacilitiesToExit(),
+                        facilitiesToEnter,
+                        mOutcome.getStatesToExit(),
+                        mOutcome.getStatesToEnter(),
                         mOptions,
                         buildCompleteTrigger());
         trip.transitionSync();
 
         mIsComplete = true;
         return trip;
+    }
+
+    /**
+     * Hopping on is for code that is outside Public Transit. If an ACTIVE Station exists in the
+     * very Activity being hopped on at, the caller most likely is a Public Transit test calling a
+     * converted test util, and should transition from its Station instead. That is not an error,
+     * since the util cannot know whether that Station is still accurate, but it is worth surfacing:
+     * the discarded Station becomes unusable, and its exit Conditions are never checked.
+     */
+    private static void warnIfHoppingOnOverActiveStation(
+            Activity hopOnActivity, Station<?> destinationStation) {
+        for (Station<?> station : TrafficControl.getActiveStations()) {
+            ActivityElement<?> activityElement = station.getActivityElement();
+            if (activityElement == null || activityElement.get() != hopOnActivity) continue;
+            Log.w(
+                    TAG,
+                    "hopOnTo(%s) discards %s, which is ACTIVE in the same Activity. If the caller"
+                            + " is a Public Transit test, transition from %s instead of calling a"
+                            + " util that hops on.",
+                    destinationStation.getName(),
+                    station.getName(),
+                    station.getName());
+        }
     }
 
     /**
@@ -396,6 +517,44 @@ public class TripBuilder {
     }
 
     /**
+     * Add the ACTIVE children of the ConditionalStates to exit, and their children, to the
+     * ConditionalStates to exit, e.g. the Facilities of the origin Station.
+     */
+    private void addActiveDescendantsToExit() {
+        List<Facility<?>> facilitiesToExit = mOutcome.getFacilitiesToExit();
+        List<State> statesToExit = mOutcome.getStatesToExit();
+        List<ConditionalState> statesToExpand = new ArrayList<>(facilitiesToExit);
+        statesToExpand.addAll(statesToExit);
+        if (mOriginStation != null) {
+            statesToExpand.add(mOriginStation);
+        }
+        for (int i = 0; i < statesToExpand.size(); i++) {
+            for (ConditionalState child : statesToExpand.get(i).getActiveChildren()) {
+                // Avoid trying to exit the same ConditionalState multiple times.
+                boolean added = false;
+                if (child instanceof Facility<?> facility) {
+                    if (!facilitiesToExit.contains(facility)) {
+                        facilitiesToExit.add(facility);
+                        added = true;
+                    }
+                } else if (child instanceof State state) {
+                    if (!statesToExit.contains(state)) {
+                        statesToExit.add(state);
+                        added = true;
+                    }
+                } else {
+                    throw new AssertionError(
+                            String.format(
+                                    "Unexpected child %s of %s", child, statesToExpand.get(i)));
+                }
+                if (added) {
+                    statesToExpand.add(child);
+                }
+            }
+        }
+    }
+
+    /**
      * Execute the trigger without waiting for any Conditions.
      *
      * @throws AssertionError if there are any Conditions to wait for already set.
@@ -405,12 +564,12 @@ public class TripBuilder {
         String justRunErrorMessage =
                 "justRun() will not enter or leave any ConditionalStates or check any Conditions";
         assert mOriginStation == null : justRunErrorMessage;
-        assert mDestinationStation == null : justRunErrorMessage;
-        assert mFacilitiesToExit.isEmpty() : justRunErrorMessage;
-        assert mFacilitiesToEnter.isEmpty() : justRunErrorMessage;
-        assert mStatesToExit.isEmpty() : justRunErrorMessage;
-        assert mStatesToEnter.isEmpty() : justRunErrorMessage;
-        assert mConditions.isEmpty() : justRunErrorMessage;
+        assert mOutcome.getDestination() == null : justRunErrorMessage;
+        assert mOutcome.getFacilitiesToExit().isEmpty() : justRunErrorMessage;
+        assert mOutcome.getFacilitiesToEnter().isEmpty() : justRunErrorMessage;
+        assert mOutcome.getStatesToExit().isEmpty() : justRunErrorMessage;
+        assert mOutcome.getStatesToEnter().isEmpty() : justRunErrorMessage;
+        assert mOutcome.getConditions().isEmpty() : justRunErrorMessage;
 
         Trigger trigger = buildCompleteTrigger();
         assert trigger != null;

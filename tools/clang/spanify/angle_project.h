@@ -6,7 +6,6 @@
 #define TOOLS_CLANG_SPANIFY_ANGLE_PROJECT_H_
 
 #include <string>
-#include <vector>
 
 #include "RawPtrHelpers.h"
 #include "Util.h"
@@ -53,18 +52,14 @@ class AngleProject : public Project {
   std::string_view GetRawSpanIncludePath() const override {
     return "PATH_TO_RAW_SPAN_H_NOT_AVAILABLE";
   }
-  std::string_view GetAutoSpanificationHelperIncludePath() const override {
-    return "NOT_AVAILABLE base/containers/auto_spanification_helper.h";
-  }
   std::string_view GetUnsafeTodoMacroName() const override {
     return "ANGLE_UNSAFE_TODO";
   }
+  std::string_view GetUnsafeBuffersMacroName() const override {
+    return "ANGLE_UNSAFE_BUFFERS";
+  }
   std::string_view GetUnsafeTodoIncludePath() const override {
     return "common/unsafe_buffers.h";
-  }
-  const std::vector<FuncMapping>& GetFuncMappingTable() const override {
-    static const std::vector<FuncMapping> kFuncMappingTable = {};
-    return kFuncMappingTable;
   }
   bool UseExplicitSizeForImplicitArrays() const override { return true; }
   bool IsExcludedFromProject(const clang::Decl& Node) const override {
@@ -80,13 +75,16 @@ class AngleProject : public Project {
     // A file is off limits when it is not hand-maintained ANGLE C++: either a
     // code generator owns it (/shaders/gen/, context_private_call.inl.h) or it
     // is a flex/bison grammar rather than a translation unit (.l, .y). The
+    // span implementation (span.h) is the rewrite target itself, and
+    // anglebase/ is ported from Chromium //base and tracks upstream. The
     // remaining cases -- autogen paths, code outside the submodule, and
     // third-party libraries vendored inside it -- are shared by all four 2P
     // projects.
     auto is_excluded = [](llvm::StringRef f) -> bool {
       return f.contains("/shaders/gen/") ||
              f.contains("context_private_call.inl.h") || f.ends_with(".l") ||
-             f.ends_with(".y") ||
+             f.ends_with(".y") || f.ends_with("/src/common/span.h") ||
+             f.contains("/src/common/base/anglebase/") ||
              IsExcludedFromSubmodule(f, "third_party/angle/",
                                      "tools/clang/spanify/tests/angle/");
     };

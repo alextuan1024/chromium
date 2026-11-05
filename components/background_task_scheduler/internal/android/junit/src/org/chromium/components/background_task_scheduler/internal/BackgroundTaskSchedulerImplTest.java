@@ -4,9 +4,12 @@
 
 package org.chromium.components.background_task_scheduler.internal;
 
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -53,10 +56,10 @@ public class BackgroundTaskSchedulerImplTest {
     @Test
     @Feature({"BackgroundTaskScheduler"})
     public void testScheduleTaskSuccessful() {
-        doReturn(true).when(mDelegate).schedule(eq(RuntimeEnvironment.application), eq(mTask));
+        doReturn(true).when(mDelegate).schedule(eq(RuntimeEnvironment.getApplication()), eq(mTask));
         BackgroundTaskSchedulerFactoryInternal.getScheduler()
-                .schedule(RuntimeEnvironment.application, mTask);
-        verify(mDelegate, times(1)).schedule(eq(RuntimeEnvironment.application), eq(mTask));
+                .schedule(RuntimeEnvironment.getApplication(), mTask);
+        verify(mDelegate, times(1)).schedule(eq(RuntimeEnvironment.getApplication()), eq(mTask));
         verify(mBackgroundTaskSchedulerUma, times(1))
                 .reportTaskScheduled(eq(TaskIds.TEST), eq(true));
     }
@@ -64,18 +67,39 @@ public class BackgroundTaskSchedulerImplTest {
     @Test
     @Feature({"BackgroundTaskScheduler"})
     public void testScheduleTaskFailed() {
-        doReturn(false).when(mDelegate).schedule(eq(RuntimeEnvironment.application), eq(mTask));
+        doReturn(false)
+                .when(mDelegate)
+                .schedule(eq(RuntimeEnvironment.getApplication()), eq(mTask));
         BackgroundTaskSchedulerFactoryInternal.getScheduler()
-                .schedule(RuntimeEnvironment.application, mTask);
-        verify(mDelegate, times(1)).schedule(eq(RuntimeEnvironment.application), eq(mTask));
+                .schedule(RuntimeEnvironment.getApplication(), mTask);
+        verify(mDelegate, times(1)).schedule(eq(RuntimeEnvironment.getApplication()), eq(mTask));
     }
 
     @Test
     @Feature({"BackgroundTaskScheduler"})
     public void testCancel() {
-        doNothing().when(mDelegate).cancel(eq(RuntimeEnvironment.application), eq(TaskIds.TEST));
+        doNothing()
+                .when(mDelegate)
+                .cancel(eq(RuntimeEnvironment.getApplication()), eq(TaskIds.TEST));
         BackgroundTaskSchedulerFactoryInternal.getScheduler()
-                .cancel(RuntimeEnvironment.application, TaskIds.TEST);
-        verify(mDelegate, times(1)).cancel(eq(RuntimeEnvironment.application), eq(TaskIds.TEST));
+                .cancel(RuntimeEnvironment.getApplication(), TaskIds.TEST);
+        verify(mDelegate, times(1))
+                .cancel(eq(RuntimeEnvironment.getApplication()), eq(TaskIds.TEST));
+    }
+
+    // Verifies that passing null to `setSchedulerForTesting` clears the test override
+    // so `getScheduler` recreates the default `BackgroundTaskSchedulerImpl`.
+    @Test
+    @Feature({"BackgroundTaskScheduler"})
+    public void testSetSchedulerForTestingNullRestoresDefaultScheduler() {
+        BackgroundTaskScheduler customScheduler = mock(BackgroundTaskScheduler.class);
+        BackgroundTaskSchedulerFactoryInternal.setSchedulerForTesting(customScheduler);
+
+        BackgroundTaskSchedulerFactoryInternal.setSchedulerForTesting(null);
+        BackgroundTaskScheduler restoredScheduler =
+                BackgroundTaskSchedulerFactoryInternal.getScheduler();
+
+        assertNotSame(customScheduler, restoredScheduler);
+        assertTrue(restoredScheduler instanceof BackgroundTaskSchedulerImpl);
     }
 }

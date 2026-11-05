@@ -13,6 +13,7 @@
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
@@ -71,7 +72,16 @@ testing::Matcher<HardwareDisplayControllerInfo> InfoHasTilePropertyWithLocation(
 
 }  // namespace
 
-class DrmUtilTest : public testing::Test {};
+class DrmUtilTest : public testing::Test {
+ protected:
+  base::test::SingleThreadTaskEnvironment task_environment_;
+};
+
+using ConsolidateTiledDisplayInfoTest = DrmUtilTest;
+using CreateDisplaySnapshotTest = DrmUtilTest;
+using GetPossibleCrtcIdsFromBitmaskTest = DrmUtilTest;
+using GetPossibleCrtcsBitmaskFromEncodersTest = DrmUtilTest;
+using GetVariableRefreshRateStateTest = DrmUtilTest;
 
 TEST_F(DrmUtilTest, TestDisplayModesExtraction) {
   // Initialize a list of display modes.
@@ -319,7 +329,7 @@ TEST(PathBlobParser, ValidPathFormat) {
   }
 }
 
-TEST(GetPossibleCrtcsBitmaskFromEncoders, MultipleCrtcsMultipleEncoders) {
+TEST_F(GetPossibleCrtcsBitmaskFromEncodersTest, MultipleCrtcsMultipleEncoders) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -357,7 +367,7 @@ TEST(GetPossibleCrtcsBitmaskFromEncoders, MultipleCrtcsMultipleEncoders) {
             0b11u);
 }
 
-TEST(GetPossibleCrtcsBitmaskFromEncoders, EmptyEncodersList) {
+TEST_F(GetPossibleCrtcsBitmaskFromEncodersTest, EmptyEncodersList) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -381,7 +391,7 @@ TEST(GetPossibleCrtcsBitmaskFromEncoders, EmptyEncodersList) {
             0u);
 }
 
-TEST(GetPossibleCrtcsBitmaskFromEncoders, InvalidEncoderID) {
+TEST_F(GetPossibleCrtcsBitmaskFromEncodersTest, InvalidEncoderID) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -406,7 +416,7 @@ TEST(GetPossibleCrtcsBitmaskFromEncoders, InvalidEncoderID) {
               0u);
 }
 
-TEST(GetPossibleCrtcIdsFromBitmask, ValidBitmask) {
+TEST_F(GetPossibleCrtcIdsFromBitmaskTest, ValidBitmask) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -443,7 +453,7 @@ TEST(GetPossibleCrtcIdsFromBitmask, ValidBitmask) {
               UnorderedElementsAre(crtc_1_id, crtc_2_id));
 }
 
-TEST(GetPossibleCrtcIdsFromBitmask, ZeroBitmask) {
+TEST_F(GetPossibleCrtcIdsFromBitmaskTest, ZeroBitmask) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -472,7 +482,7 @@ TEST(GetPossibleCrtcIdsFromBitmask, ZeroBitmask) {
       IsEmpty());
 }
 
-TEST(GetPossibleCrtcIdsFromBitmask, BitmaskTooLong) {
+TEST_F(GetPossibleCrtcIdsFromBitmaskTest, BitmaskTooLong) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -571,7 +581,7 @@ TEST(ParseTileBlobTest, TileBlobNotParsable) {
   EXPECT_FALSE(tile_prop.has_value());
 }
 
-TEST(CreateDisplaySnapshotTest, TiledDisplay) {
+TEST_F(CreateDisplaySnapshotTest, TiledDisplay) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -664,7 +674,44 @@ TEST(CreateDisplaySnapshotTest, TiledDisplay) {
               Property(&display::DisplayMode::refresh_rate, Eq(60))))));
 }
 
-TEST(ConsolidateTiledDisplayInfoTest, OnlyNontiled) {
+// Reading the EDID can fail, leaving |edid_parser| disengaged. A VRR capable
+// connector must not dereference it in that case.
+TEST_F(GetVariableRefreshRateStateTest, VrrCapableWithoutEdid) {
+  std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
+      std::make_unique<FakeDrmDeviceGenerator>();
+  scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
+      base::FilePath("/test/dri/card0"), base::ScopedFD(),
+      /*is_primary_device=*/true);
+  FakeDrmDevice* fake_drm = static_cast<FakeDrmDevice*>(device.get());
+
+  fake_drm->ResetStateWithAllProperties();
+  uint32_t crtc_id = 0, connector_id = 0;
+  {
+    auto& crtc = fake_drm->AddCrtc();
+    crtc_id = crtc.id;
+
+    auto& encoder = fake_drm->AddEncoder();
+    encoder.possible_crtcs = 1;
+
+    auto& connector = fake_drm->AddConnector();
+    connector_id = connector.id;
+    connector.connection = true;
+    connector.modes =
+        std::vector<ResolutionAndRefreshRate>{{gfx::Size(1920, 1080), 60}};
+    connector.encoders = std::vector<uint32_t>{encoder.id};
+    fake_drm->AddProperty(connector_id, {.id = kVrrCapablePropId, .value = 1});
+  }
+  fake_drm->InitializeState(/*use_atomic=*/true);
+
+  HardwareDisplayControllerInfo info(fake_drm->GetConnector(connector_id),
+                                     fake_drm->GetCrtc(crtc_id), /*index=*/0,
+                                     /*edid_parser=*/std::nullopt);
+
+  EXPECT_EQ(GetVariableRefreshRateState(*fake_drm, &info),
+            display::VariableRefreshRateState::kVrrNotCapable);
+}
+
+TEST_F(ConsolidateTiledDisplayInfoTest, OnlyNontiled) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -720,7 +767,7 @@ TEST(ConsolidateTiledDisplayInfoTest, OnlyNontiled) {
                          Pointee(InfoEqCrtcConnectorIds(connector_2, crtc_2))));
 }
 
-TEST(ConsolidateTiledDisplayInfoTest, SingleTiled) {
+TEST_F(ConsolidateTiledDisplayInfoTest, SingleTiled) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -771,7 +818,7 @@ TEST(ConsolidateTiledDisplayInfoTest, SingleTiled) {
   EXPECT_THAT(infos[0]->nonprimary_tile_infos(), IsEmpty());
 }
 
-TEST(ConsolidateTiledDisplayInfoTest, AllTilesPresent) {
+TEST_F(ConsolidateTiledDisplayInfoTest, AllTilesPresent) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -854,7 +901,7 @@ TEST(ConsolidateTiledDisplayInfoTest, AllTilesPresent) {
                   Pointee(InfoHasTilePropertyWithLocation(gfx::Point(1, 0)))));
 }
 
-TEST(ConsolidateTiledDisplayInfoTest, AllTilesPresentMultipleGroups) {
+TEST_F(ConsolidateTiledDisplayInfoTest, AllTilesPresentMultipleGroups) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -995,7 +1042,7 @@ TEST(ConsolidateTiledDisplayInfoTest, AllTilesPresentMultipleGroups) {
   EXPECT_EQ(infos[1]->tile_property()->location, gfx::Point(0, 0));
 }
 
-TEST(ConsolidateTiledDisplayInfoTest, PreferMoreModes) {
+TEST_F(ConsolidateTiledDisplayInfoTest, PreferMoreModes) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -1078,7 +1125,7 @@ TEST(ConsolidateTiledDisplayInfoTest, PreferMoreModes) {
                   Pointee(InfoHasTilePropertyWithLocation(gfx::Point(0, 0)))));
 }
 
-TEST(ConsolidateTiledDisplayInfoTest, PreferScaleToFit) {
+TEST_F(ConsolidateTiledDisplayInfoTest, PreferScaleToFit) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -1159,7 +1206,7 @@ TEST(ConsolidateTiledDisplayInfoTest, PreferScaleToFit) {
   EXPECT_TRUE(infos[0]->tile_property()->scale_to_fit_display);
 }
 
-TEST(CreateDisplaySnapshotTest, TiledDisplayWithoutOtherTilesConnected) {
+TEST_F(CreateDisplaySnapshotTest, TiledDisplayWithoutOtherTilesConnected) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
   scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
@@ -1292,11 +1339,5 @@ TEST(GetFourCCFormatForOpaqueFramebufferTest, SupportedFormats) {
   EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
                 viz::SinglePlaneFormat::kRGBA_F16)),
             DRM_FORMAT_XBGR16161616F);
-  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
-                viz::SinglePlaneFormat::kR_8)),
-            DRM_FORMAT_R8);
-  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
-                viz::SinglePlaneFormat::kRG_88)),
-            DRM_FORMAT_GR88);
 }
 }  // namespace ui

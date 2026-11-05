@@ -12,7 +12,6 @@
 #include "chrome/browser/sync/test/integration/sync_engine_stopped_checker.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
 #include "chrome/browser/sync/test/integration/user_events_helper.h"
 #include "chrome/browser/sync/user_event_service_factory.h"
 #include "chrome/common/pref_names.h"
@@ -23,7 +22,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/engine/sync_protocol_error.h"
 #include "components/sync/model/data_type_controller_delegate.h"
 #include "components/sync/model/type_entities_count.h"
@@ -32,6 +30,7 @@
 #include "components/sync_user_events/user_event_service.h"
 #include "content/public/test/browser_test.h"
 #include "google_apis/gaia/google_service_auth_error.h"
+#include "url/gurl.h"
 
 using bookmarks::BookmarkNode;
 using bookmarks_helper::AddFolder;
@@ -125,11 +124,7 @@ class SyncErrorTest
   SyncErrorTest() : SyncTest(SINGLE_CLIENT) {
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
       scoped_feature_list_.InitWithFeatures(
-          {syncer::kReplaceSyncPromosWithSignInPromos,
-           switches::kSyncEnableBookmarksInTransportMode,
-           switches::kEnablePreferencesAccountStorage,
-           syncer::kSeparateLocalAndAccountSearchEngines},
-          {});
+          {switches::kSyncEnableBookmarksInTransportMode}, {});
     }
   }
 
@@ -203,7 +198,9 @@ IN_PROC_BROWSER_TEST_P(SyncErrorTest, UpgradeClientErrorDuringIncrementalSync) {
 
   const BookmarkNode* node1 = AddFolder(0, 0, u"title1", GetStoreType());
   SetTitle(0, node1, u"new_title1");
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  ASSERT_TRUE(bookmarks_helper::ServerBookmarksEqualityChecker(
+                  {{u"new_title1", GURL()}}, /*cryptographer=*/nullptr)
+                  .Wait());
 
   std::string description = "Not My Fault";
   std::string url = "www.google.com";
@@ -300,10 +297,9 @@ IN_PROC_BROWSER_TEST_P(SyncErrorTest, ClientDataObsoleteTest) {
 
   const BookmarkNode* node1 = AddFolder(0, 0, u"title1", GetStoreType());
   SetTitle(0, node1, u"new_title1");
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
-
-  std::string description = "Not My Fault";
-  std::string url = "www.google.com";
+  ASSERT_TRUE(bookmarks_helper::ServerBookmarksEqualityChecker(
+                  {{u"new_title1", GURL()}}, /*cryptographer=*/nullptr)
+                  .Wait());
 
   // Remember cache_guid before actionable error.
   syncer::SyncStatus status;
@@ -333,7 +329,9 @@ IN_PROC_BROWSER_TEST_P(SyncErrorTest, EncryptionObsoleteErrorTest) {
 
   const BookmarkNode* node1 = AddFolder(0, 0, u"title1", GetStoreType());
   SetTitle(0, node1, u"new_title1");
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  ASSERT_TRUE(bookmarks_helper::ServerBookmarksEqualityChecker(
+                  {{u"new_title1", GURL()}}, /*cryptographer=*/nullptr)
+                  .Wait());
 
   GetFakeServer()->TriggerActionableProtocolError(
       sync_pb::SyncEnums::ENCRYPTION_OBSOLETE, "Not My Fault", "www.google.com",
@@ -369,7 +367,9 @@ IN_PROC_BROWSER_TEST_P(SyncErrorTest, DisableDatatypeWhileRunning) {
 
   const BookmarkNode* node1 = AddFolder(0, 0, u"title1", GetStoreType());
   SetTitle(0, node1, u"new_title1");
-  ASSERT_TRUE(UpdatedProgressMarkerChecker(GetSyncService(0)).Wait());
+  ASSERT_TRUE(bookmarks_helper::ServerBookmarksEqualityChecker(
+                  {{u"new_title1", GURL()}}, /*cryptographer=*/nullptr)
+                  .Wait());
 }
 
 // Tests that the unsynced entity will be eventually committed even after failed
@@ -380,7 +380,7 @@ IN_PROC_BROWSER_TEST_P(SyncErrorTest,
 
   GetFakeServer()->TriggerCommitError(sync_pb::SyncEnums::TRANSIENT_ERROR);
   syncer::UserEventService* event_service =
-      browser_sync::UserEventServiceFactory::GetForProfile(GetProfile(0));
+      UserEventServiceFactory::GetForProfile(GetProfile(0));
   const sync_pb::UserEventSpecifics specifics =
       CreateTestEvent(base::Time::FromDeltaSinceWindowsEpoch(
           base::Microseconds(kUserEventTimeUsec)));
@@ -418,7 +418,7 @@ IN_PROC_BROWSER_TEST_P(SyncErrorTest,
                   .Wait())
       << "Non-tombstone entities: "
       << GetTypeNonTombstoneEntitiesCount(
-             browser_sync::UserEventServiceFactory::GetForProfile(GetProfile(0))
+             UserEventServiceFactory::GetForProfile(GetProfile(0))
                  ->GetControllerDelegate()
                  .get());
 }

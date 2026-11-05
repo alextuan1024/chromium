@@ -56,7 +56,6 @@
 #include "ui/display/util/gpu_info_util.h"
 #include "ui/gfx/buffer_usage_util.h"
 #include "ui/gfx/gpu_extra_info.h"
-#include "ui/gl/gpu_switching_manager.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_version.h"
@@ -131,6 +130,10 @@ base::ListValue GetBasicGpuInfo(const gpu::GPUInfo& gpu_info,
       base::Value(gpu_info.passthrough_cmd_decoder)));
   basic_info.Append(
       display::BuildGpuInfoEntry("Sandboxed", base::Value(gpu_info.sandboxed)));
+#if BUILDFLAG(IS_ANDROID)
+  basic_info.Append(display::BuildGpuInfoEntry(
+      "Android isolated", base::Value(gpu_info.android_isolated)));
+#endif
   basic_info.Append(
       display::BuildGpuInfoEntry("GPU0", GPUDeviceToString(gpu_info.gpu)));
   for (size_t i = 0; i < gpu_info.secondary_gpus.size(); ++i) {
@@ -148,9 +151,6 @@ base::ListValue GetBasicGpuInfo(const gpu::GPUInfo& gpu_info,
   basic_info.Append(display::BuildGpuInfoEntry(
       "AMD switchable", base::Value(gpu_info.amd_switchable)));
 #if BUILDFLAG(IS_WIN)
-  basic_info.Append(
-      display::BuildGpuInfoEntry("Desktop compositing", "Aero Glass"));
-
   basic_info.Append(display::BuildGpuInfoEntry(
       "Direct composition",
       base::Value(gpu_info.overlay_info.direct_composition)));
@@ -207,8 +207,6 @@ base::ListValue GetBasicGpuInfo(const gpu::GPUInfo& gpu_info,
                                                gpu_info.pixel_shader_version));
   basic_info.Append(display::BuildGpuInfoEntry("Vertex shader version",
                                                gpu_info.vertex_shader_version));
-  basic_info.Append(display::BuildGpuInfoEntry("Max. MSAA samples",
-                                               gpu_info.max_msaa_samples));
   basic_info.Append(display::BuildGpuInfoEntry("Machine model name",
                                                gpu_info.machine_model_name));
   basic_info.Append(display::BuildGpuInfoEntry("Machine model version",
@@ -297,18 +295,6 @@ base::DictValue GetGpuInfo() {
 #endif
 
   return info;
-}
-
-base::ListValue CompositorInfo() {
-  base::ListValue compositor_info;
-
-  compositor_info.Append(display::BuildGpuInfoEntry(
-      "Tile Update Mode",
-      IsZeroCopyUploadEnabled() ? "Zero-copy" : "One-copy"));
-
-  compositor_info.Append(display::BuildGpuInfoEntry(
-      "Partial Raster", IsPartialRasterEnabled() ? "Enabled" : "Disabled"));
-  return compositor_info;
 }
 
 base::ListValue GetDisplayInfo() {
@@ -531,6 +517,20 @@ const char* GetProfileName(gpu::VideoCodecProfile profile) {
       return "av1 profile high";
     case gpu::AV1PROFILE_PROFILE_PRO:
       return "av1 profile pro";
+    case gpu::AV2PROFILE_MAIN_420_10_IP0:
+      return "av2 main 420 10 ip0";
+    case gpu::AV2PROFILE_MAIN_420_10_IP1:
+      return "av2 main 420 10 ip1";
+    case gpu::AV2PROFILE_MAIN_420_10_IP2:
+      return "av2 main 420 10 ip2";
+    case gpu::AV2PROFILE_MAIN_422_10_IP1:
+      return "av2 main 422 10 ip1";
+    case gpu::AV2PROFILE_MAIN_444_10_IP1:
+      return "av2 main 444 10 ip1";
+    case gpu::AV2PROFILE_MAIN_444C_12_IP2:
+      return "av2 main 444c 12 ip2";
+    case gpu::AV2PROFILE_CONFIGURABLE:
+      return "av2 configurable";
   }
   NOTREACHED();
 }
@@ -624,10 +624,8 @@ base::Value GetDawnInfo() {
 // This class receives javascript messages from the renderer.
 // Note that the WebUI infrastructure runs on the UI thread, therefore all of
 // this class's methods are expected to run on the UI thread.
-class GpuMessageHandler
-    : public WebUIMessageHandler,
-      public GpuDataManagerObserver,
-      public ui::GpuSwitchingObserver {
+class GpuMessageHandler : public WebUIMessageHandler,
+                          public GpuDataManagerObserver {
  public:
   GpuMessageHandler();
 
@@ -712,8 +710,14 @@ void GpuMessageHandler::HandleGetGpuInfo(const base::ListValue& args) {
 
   // Tell GpuDataManager it should have full GpuInfo. If the
   // Gpu process has not run yet, this will trigger its launch.
+  uint32_t request = GpuDataManagerImpl::kGpuInfoRequestAll;
+  if (WebContents* web_contents = web_ui()->GetWebContents();
+      web_contents &&
+      web_contents->GetLastCommittedURL().query().contains("skip-dawn-info")) {
+    request &= ~GpuDataManagerImpl::kGpuInfoRequestDawnInfo;
+  }
   GpuDataManagerImpl::GetInstance()->RequestGpuInfoIfNeeded(
-      GpuDataManagerImpl::kGpuInfoRequestAll,
+      static_cast<GpuDataManagerImpl::GpuInfoRequest>(request),
       /*delayed=*/false);
 
   // Send current snapshot of gpu info. Any future updates will be communicated
@@ -812,7 +816,6 @@ base::DictValue GpuMessageHandler::GetGpuInfoDict() {
                        std::move(gpu_info_for_hardware_gpu_val));
     }
   }
-  gpu_info_val.Set("compositorInfo", CompositorInfo());
   gpu_info_val.Set("displayInfo", GetDisplayInfo());
   gpu_info_val.Set("videoAcceleratorsInfo", GetVideoAcceleratorsInfo());
   gpu_info_val.Set("ANGLEFeatures", GetANGLEFeatures());

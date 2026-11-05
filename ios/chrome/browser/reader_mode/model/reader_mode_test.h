@@ -54,22 +54,23 @@ class ReaderModeTest : public PlatformTest {
   void WaitForPageLoadDelayAndRunUntilIdle();
 
   // Waits for Reader mode content availability.
-  bool WaitForAvailableReaderModeContentInWebState(web::WebState* web_state);
+  [[nodiscard]] bool WaitForAvailableReaderModeContentInWebState(
+      web::WebState* web_state);
 
   web::WebTaskEnvironment* task_environment() { return &task_environment_; }
 
   TestProfileIOS* profile() { return profile_.get(); }
 
  private:
-  // Triggers the Reading Mode with the result from the DOM distiller heuristic.
+  // Triggers Reading Mode with the result from the distillability heuristic.
   void OnDomFeaturesRetrieved(base::WeakPtr<web::WebState> weak_web_state,
                               base::WeakPtr<web::WebFrame> weak_web_frame,
                               ReaderModeHeuristicResult result);
 
-  // Adds the given heuristic result to the Readability heuristic JavasScript
-  // callback for the specified frame.
-  void AddReadabilityHeuristicResultToFrame(ReaderModeHeuristicResult result,
-                                            web::FakeWebFrame* web_frame);
+  // Adds the given heuristic result to the heuristic JavaScript callback for
+  // the specified frame.
+  void AddHeuristicResultToFrame(ReaderModeHeuristicResult result,
+                                 web::FakeWebFrame* web_frame);
 
   web::WebTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
@@ -80,7 +81,7 @@ class ReaderModeTest : public PlatformTest {
   translate::LanguageDetectionModel language_detection_model_;
 
   std::vector<std::unique_ptr<base::Value>> distiller_result_values_;
-  std::unique_ptr<base::Value> readability_heuristic_value_;
+  std::unique_ptr<base::Value> heuristic_value_;
 
   base::WeakPtrFactory<ReaderModeTest> weak_ptr_factory_{this};
 };

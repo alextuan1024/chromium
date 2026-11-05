@@ -13,7 +13,6 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.url.GURL;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -70,17 +69,18 @@ public interface TabCreator {
             int position);
 
     /**
-     * On restore, allows us to create a frozen version of a tab using saved tab state we read from
-     * disk.
+     * On restore or undo, creates a frozen version of a tab using saved tab state and the specified
+     * launch type.
      *
      * @param state The tab state that the tab can be restored from.
      * @param id The id to give the new tab.
      * @param index The index for where to place the tab.
+     * @param type The {@link TabLaunchType} for the tab.
      * @return The newly created tab or null if no tab was created. No tab may be created due to a
      *     problem with the data, the current model, or just because this creator implementation
      *     doesn't create tabs.
      */
-    @Nullable Tab createFrozenTab(TabState state, int id, int index);
+    @Nullable Tab createFrozenTab(TabState state, int id, int index, @TabLaunchType int type);
 
     /**
      * Returns true if a tab with this ID is being reparented.
@@ -109,11 +109,10 @@ public interface TabCreator {
      * @param shouldPin Whether the newly created tab should be pinned.
      * @param webContents The web contents to create a Tab around.
      * @param type The TabLaunchType describing how this Tab was created.
-     * @param url URL to show in the Tab. (Needed only for asynchronous tab creation.)
      * @param addTabToModel A CompletableFuture that should be eventually completed by the caller
      *     with the decision whether the newly created Tab should be added to the tab model.
-     *     Typically this Future should be already completed with |true| before passing it to this
-     *     method, however, sometimes it is beneficial to create a Tab without adding it to the
+     *     Typically this Future should be already completed with {@code true} before passing it to
+     *     this method, however, sometimes it is beneficial to create a Tab without adding it to the
      *     current TabModel (e.g. if the Tab will ultimately be shown to the user in a new window
      *     and it's not possible to make this decision at new Tab's creation time).
      * @return The new Tab or null if a Tab was not created successfully.
@@ -123,16 +122,9 @@ public interface TabCreator {
             boolean shouldPin,
             WebContents webContents,
             @TabLaunchType int type,
-            GURL url,
             CompletableFuture<Boolean> addTabToModel) {
         return createTabWithWebContents(
-                parent,
-                shouldPin,
-                webContents,
-                type,
-                url,
-                TabList.INVALID_TAB_INDEX,
-                addTabToModel);
+                parent, shouldPin, webContents, type, TabList.INVALID_TAB_INDEX, addTabToModel);
     }
 
     /**
@@ -142,12 +134,11 @@ public interface TabCreator {
      * @param shouldPin Whether the newly created tab should be pinned.
      * @param webContents The web contents to create a Tab around.
      * @param type The TabLaunchType describing how this Tab was created.
-     * @param url URL to show in the Tab. (Needed only for asynchronous tab creation.)
      * @param index The index to insert the tab at.
      * @param addTabToModel A CompletableFuture that should be eventually completed by the caller
      *     with the decision whether the newly created Tab should be added to the tab model.
-     *     Typically this Future should be already completed with |true| before passing it to this
-     *     method, however, sometimes it is beneficial to create a Tab without adding it to the
+     *     Typically this Future should be already completed with {@code true} before passing it to
+     *     this method, however, sometimes it is beneficial to create a Tab without adding it to the
      *     current TabModel (e.g. if the Tab will ultimately be shown to the user in a new window
      *     and it's not possible to make this decision at new Tab's creation time).
      * @return The new Tab or null if a Tab was not created successfully.
@@ -157,7 +148,6 @@ public interface TabCreator {
             boolean shouldPin,
             WebContents webContents,
             @TabLaunchType int type,
-            GURL url,
             int index,
             CompletableFuture<Boolean> addTabToModel);
 

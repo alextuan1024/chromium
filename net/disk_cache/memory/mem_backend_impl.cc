@@ -8,10 +8,10 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "base/byte_size.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory_coordinator/memory_consumer.h"
@@ -57,9 +57,9 @@ int32_t CalculateDefaultMaxSize() {
 // Returns the next entry after |node| in |lru_list| that's not a child
 // of |node|.  This is useful when dooming, since dooming a parent entry
 // will also doom its children.
-base::LinkNode<MemEntryImpl>* NextSkippingChildren(
-    const base::LinkedList<MemEntryImpl>& lru_list,
-    base::LinkNode<MemEntryImpl>* node) {
+base::UnsafeLinkNode<MemEntryImpl>* NextSkippingChildren(
+    const base::UnsafeLinkedList<MemEntryImpl>& lru_list,
+    base::UnsafeLinkNode<MemEntryImpl>* node) {
   MemEntryImpl* cur = node->value();
   do {
     node = node->next();
@@ -70,12 +70,14 @@ base::LinkNode<MemEntryImpl>* NextSkippingChildren(
 constexpr base::MemoryConsumerTraits kMemBackendImplTraits(
     // Scales with system RAM up to a cap in the tens of MBs.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
-    // Eviction traverses linked list and erases map entries.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // Eviction walks the linked list, reading the entries being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     // Evicted entries can be re-fetched from network.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Eviction runs inline synchronously.
     base::MemoryConsumerTraits::ExecutionType::kSynchronous);
+
+constexpr std::string_view kMemoryConsumerName = "MemBackendImpl";
 
 }  // namespace
 
@@ -83,7 +85,7 @@ MemBackendImpl::MemBackendImpl(net::NetLog* net_log)
     : Backend(net::MEMORY_CACHE),
       net_log_(net_log),
       memory_consumer_registration_(
-          "MemBackendImpl",
+          kMemoryConsumerName,
           kMemBackendImplTraits,
           this,
           base::AsyncMemoryConsumerRegistration::CheckUnregister::kDisabled) {}
@@ -123,7 +125,7 @@ void MemBackendImpl::OnEntryInserted(MemEntryImpl* entry) {
 }
 
 void MemBackendImpl::OnEntryUpdated(MemEntryImpl* entry) {
-  // LinkedList<>::RemoveFromList() removes |entry| from |lru_list_|.
+  // UnsafeLinkedList<>::RemoveFromList() removes |entry| from |lru_list_|.
   entry->RemoveFromList();
   lru_list_.Append(entry);
 }
@@ -131,7 +133,7 @@ void MemBackendImpl::OnEntryUpdated(MemEntryImpl* entry) {
 void MemBackendImpl::OnEntryDoomed(MemEntryImpl* entry) {
   if (entry->type() == MemEntryImpl::EntryType::kParent)
     entries_.erase(entry->key());
-  // LinkedList<>::RemoveFromList() removes |entry| from |lru_list_|.
+  // UnsafeLinkedList<>::RemoveFromList() removes |entry| from |lru_list_|.
   entry->RemoveFromList();
 }
 
@@ -227,7 +229,7 @@ net::Error MemBackendImpl::DoomEntriesBetween(Time initial_time,
     end_time = Time::Max();
   DCHECK_GE(end_time, initial_time);
 
-  base::LinkNode<MemEntryImpl>* node = lru_list_.head();
+  base::UnsafeLinkNode<MemEntryImpl>* node = lru_list_.head();
   while (node != lru_list_.end()) {
     MemEntryImpl* candidate = node->value();
     node = NextSkippingChildren(lru_list_, node);
@@ -260,7 +262,7 @@ int64_t MemBackendImpl::CalculateSizeOfEntriesBetween(
   DCHECK_GE(end_time, initial_time);
 
   int size = 0;
-  base::LinkNode<MemEntryImpl>* node = lru_list_.head();
+  base::UnsafeLinkNode<MemEntryImpl>* node = lru_list_.head();
   while (node != lru_list_.end()) {
     MemEntryImpl* entry = node->value();
     if (entry->GetLastUsed() >= initial_time &&
@@ -328,7 +330,7 @@ void MemBackendImpl::OnExternalCacheHit(const std::string& key) {
 
 void MemBackendImpl::SetMaxBytes(base::ByteSize max_bytes) {
   max_size_ = base::saturated_cast<int32_t>(max_bytes.InBytes());
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     current_max_size_ = CalculateTargetMemoryLimit();
   } else {
     current_max_size_ = max_size_;
@@ -356,7 +358,7 @@ void MemBackendImpl::EvictIfNeeded() {
 }
 
 void MemBackendImpl::EvictTill(int target_size) {
-  base::LinkNode<MemEntryImpl>* entry = lru_list_.head();
+  base::UnsafeLinkNode<MemEntryImpl>* entry = lru_list_.head();
   while (current_size_ > target_size && entry != lru_list_.end()) {
     MemEntryImpl* to_doom = entry->value();
     entry = NextSkippingChildren(lru_list_, entry);
@@ -381,7 +383,7 @@ int32_t MemBackendImpl::CalculateTargetMemoryLimit() const {
 }
 
 void MemBackendImpl::OnUpdateMemoryLimit() {
-  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (!base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     return;
   }
   // IMPORTANT: Ensure no memory is released during this call.
@@ -391,7 +393,7 @@ void MemBackendImpl::OnUpdateMemoryLimit() {
 }
 
 void MemBackendImpl::OnReleaseMemory() {
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     // Now we actually evict entries to reach the target size.
     current_max_size_ = CalculateTargetMemoryLimit();
     EvictTill(current_max_size_);

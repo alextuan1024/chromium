@@ -29,6 +29,7 @@ const NSInteger kNumberOfTitleLines = 2;
 @synthesize timeText = _timeText;
 @synthesize URL = _URL;
 @synthesize timestamp = _timestamp;
+@synthesize allTimestamps = _allTimestamps;
 
 - (instancetype)initWithType:(NSInteger)type
        accessibilityDelegate:(id<HistoryEntryItemDelegate>)delegate {
@@ -76,12 +77,18 @@ const NSInteger kNumberOfTitleLines = 2;
 #pragma mark - Accessibility
 
 - (NSArray*)accessibilityActions {
-  UIAccessibilityCustomAction* deleteAction =
-      [[UIAccessibilityCustomAction alloc]
-          initWithName:l10n_util::GetNSString(
-                           IDS_HISTORY_ENTRY_ACCESSIBILITY_DELETE)
-                target:self
-              selector:@selector(deleteHistoryEntry)];
+  NSMutableArray<UIAccessibilityCustomAction*>* actions =
+      [[NSMutableArray alloc] init];
+  if (!_accessibilityDelegate ||
+      [_accessibilityDelegate isHistoryDeletionAllowed]) {
+    UIAccessibilityCustomAction* deleteAction =
+        [[UIAccessibilityCustomAction alloc]
+            initWithName:l10n_util::GetNSString(
+                             IDS_HISTORY_ENTRY_ACCESSIBILITY_DELETE)
+                  target:self
+                selector:@selector(deleteHistoryEntry)];
+    [actions addObject:deleteAction];
+  }
   UIAccessibilityCustomAction* openInNewTabAction =
       [[UIAccessibilityCustomAction alloc]
           initWithName:l10n_util::GetNSString(
@@ -99,9 +106,10 @@ const NSInteger kNumberOfTitleLines = 2;
           initWithName:l10n_util::GetNSString(IDS_IOS_CONTENT_CONTEXT_COPY)
                 target:self
               selector:@selector(copyURL)];
-  return @[
-    deleteAction, openInNewTabAction, openInNewIncognitoTabAction, copyURLAction
-  ];
+  [actions addObjectsFromArray:@[
+    openInNewTabAction, openInNewIncognitoTabAction, copyURLAction
+  ]];
+  return actions;
 }
 
 - (void)deleteHistoryEntry {

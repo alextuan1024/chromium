@@ -64,6 +64,8 @@ class TestPerformance : public Performance {
     return HasObserverFor(entry_type);
   }
 
+  using Performance::NotifyObserversOfEntry;
+
   base::TimeTicks MsAfterTimeOrigin(uint32_t ms) {
     LocalDOMWindow* window = DynamicTo<LocalDOMWindow>(GetExecutionContext());
     DocumentLoader* loader = window->GetFrame()->Loader().GetDocumentLoader();
@@ -214,33 +216,73 @@ TEST_F(PerformanceTest, BackForwardCacheRestoration) {
   NonThrowableExceptionState exception_state;
   PerformanceObserverInit* options = PerformanceObserverInit::Create();
 
-  Vector<String> entry_type_vec;
-  entry_type_vec.push_back("back-forward-cache-restoration");
-  options->setEntryTypes(entry_type_vec);
-  observer_->observe(scope.GetScriptState(), options, exception_state);
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationExplicitlyRequested));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationEntryEmitted));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationObserved));
 
-  EXPECT_TRUE(base_->HasPerformanceObserverFor(
-      PerformanceEntry::kBackForwardCacheRestoration));
-
+  // Emit an entry before any observer is registered: only EntryEmitted counts.
   base_->AddBackForwardCacheRestoration(
       base::TimeTicks() + base::Milliseconds(kEvent1Time),
       base::TimeTicks() + base::Milliseconds(kEvent1PageshowStart),
       base::TimeTicks() + base::Milliseconds(kEvent1PageshowEnd));
 
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationEntryEmitted));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationExplicitlyRequested));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationObserved));
+
+  // Observe without buffered:true: ExplicitlyRequested counts, Observed does
+  // not yet.
+  options->setType("back-forward-cache-restoration");
+  options->setBuffered(false);
+  observer_->observe(scope.GetScriptState(), options, exception_state);
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationExplicitlyRequested));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationObserved));
+
+  // Observe with buffered:true: the already-buffered kEvent1 entry is enqueued
+  // and triggers Observed.
+  options->setBuffered(true);
+  observer_->observe(scope.GetScriptState(), options, exception_state);
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationObserved));
+  EXPECT_TRUE(base_->HasPerformanceObserverFor(
+      PerformanceEntry::kBackForwardCacheRestoration));
+
+  // Clear Observed and emit a live entry to verify live notification also
+  // triggers Observed.
+  scope.GetDocument().ClearUseCounterForTesting(
+      WebFeature::kBackForwardCacheRestorationObserved);
   base_->AddBackForwardCacheRestoration(
       base::TimeTicks() + base::Milliseconds(kEvent2Time),
       base::TimeTicks() + base::Milliseconds(kEvent2PageshowStart),
       base::TimeTicks() + base::Milliseconds(kEvent2PageshowEnd));
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationObserved));
 
   auto entries = PerformanceEntriesInObserver();
   CheckBackForwardCacheRestoration(entries);
 
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationPotentiallyObserved));
   entries = base_->getEntries();
   CheckBackForwardCacheRestoration(entries);
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationPotentiallyObserved));
 
+  scope.GetDocument().ClearUseCounterForTesting(
+      WebFeature::kBackForwardCacheRestorationObserved);
   entries = base_->getEntriesByType(
       performance_entry_names::kBackForwardCacheRestoration);
   CheckBackForwardCacheRestoration(entries);
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(
+      WebFeature::kBackForwardCacheRestorationObserved));
 }
 
 // Validate ordering after insertion into an empty vector.
@@ -253,16 +295,18 @@ TEST_F(PerformanceTest, InsertEntryOnEmptyBuffer) {
   PerformanceEventTiming::EventTimingReportingInfo info{
       .creation_time = base_->MsAfterTimeOrigin(0),
       .processing_start_time = base_->MsAfterTimeOrigin(0),
-      .processing_end_time = base_->MsAfterTimeOrigin(0)};
+      .processing_end_time = base_->MsAfterTimeOrigin(0),
+      .fallback_time = base_->MsAfterTimeOrigin(0)};
 
   auto* window = LocalDOMWindow::From(scope.GetScriptState());
   ASSERT_TRUE(window);
   auto* performance = DOMWindowPerformance::performance(*window);
   ASSERT_TRUE(performance);
 
-  PerformanceEventTiming* test_entry = PerformanceEventTiming::Create(
-      AtomicString("event"), info, false, window,
-      performance->NavigationId().web_exposed_id);
+  PerformanceEventTiming* test_entry =
+      PerformanceEventTiming::Create(AtomicString("event"), info, false, window,
+                                     performance->NavigationId().web_exposed_id,
+                                     PerformanceTimelineEntryIdInfo::kNone);
 
   base_->InsertEntryIntoSortedBuffer(test_buffer_, *test_entry);
 
@@ -289,22 +333,26 @@ TEST_F(PerformanceTest, InsertEntryOnExistingBuffer) {
     PerformanceEventTiming::EventTimingReportingInfo info{
         .creation_time = base_->MsAfterTimeOrigin(tmp * i),
         .processing_start_time = base_->MsAfterTimeOrigin(0),
-        .processing_end_time = base_->MsAfterTimeOrigin(0)};
+        .processing_end_time = base_->MsAfterTimeOrigin(0),
+        .fallback_time = base_->MsAfterTimeOrigin(0)};
 
     PerformanceEventTiming* entry = PerformanceEventTiming::Create(
         AtomicString("event"), info, false, window,
-        performance->NavigationId().web_exposed_id);
+        performance->NavigationId().web_exposed_id,
+        PerformanceTimelineEntryIdInfo::kNone);
     test_buffer_.push_back(*entry);
   }
 
   PerformanceEventTiming::EventTimingReportingInfo info{
       .creation_time = base_->MsAfterTimeOrigin(1),
       .processing_start_time = base_->MsAfterTimeOrigin(0),
-      .processing_end_time = base_->MsAfterTimeOrigin(0)};
+      .processing_end_time = base_->MsAfterTimeOrigin(0),
+      .fallback_time = base_->MsAfterTimeOrigin(0)};
 
-  PerformanceEventTiming* test_entry = PerformanceEventTiming::Create(
-      AtomicString("event"), info, false, window,
-      performance->NavigationId().web_exposed_id);
+  PerformanceEventTiming* test_entry =
+      PerformanceEventTiming::Create(AtomicString("event"), info, false, window,
+                                     performance->NavigationId().web_exposed_id,
+                                     PerformanceTimelineEntryIdInfo::kNone);
 
   // Create copy of the test_buffer_.
   PerformanceEntryVector sorted_buffer_ = test_buffer_;
@@ -336,22 +384,26 @@ TEST_F(PerformanceTest, InsertEntryToFrontOfBuffer) {
     PerformanceEventTiming::EventTimingReportingInfo info{
         .creation_time = base_->MsAfterTimeOrigin(tmp * i),
         .processing_start_time = base_->MsAfterTimeOrigin(0),
-        .processing_end_time = base_->MsAfterTimeOrigin(0)};
+        .processing_end_time = base_->MsAfterTimeOrigin(0),
+        .fallback_time = base_->MsAfterTimeOrigin(0)};
 
     PerformanceEventTiming* entry = PerformanceEventTiming::Create(
         AtomicString("event"), info, false, window,
-        performance->NavigationId().web_exposed_id);
+        performance->NavigationId().web_exposed_id,
+        PerformanceTimelineEntryIdInfo::kNone);
     test_buffer_.push_back(*entry);
   }
 
   PerformanceEventTiming::EventTimingReportingInfo info{
       .creation_time = base_->MsAfterTimeOrigin(0),
       .processing_start_time = base_->MsAfterTimeOrigin(0),
-      .processing_end_time = base_->MsAfterTimeOrigin(0)};
+      .processing_end_time = base_->MsAfterTimeOrigin(0),
+      .fallback_time = base_->MsAfterTimeOrigin(0)};
 
-  PerformanceEventTiming* test_entry = PerformanceEventTiming::Create(
-      AtomicString("event"), info, false, window,
-      performance->NavigationId().web_exposed_id);
+  PerformanceEventTiming* test_entry =
+      PerformanceEventTiming::Create(AtomicString("event"), info, false, window,
+                                     performance->NavigationId().web_exposed_id,
+                                     PerformanceTimelineEntryIdInfo::kNone);
 
   // Create copy of the test_buffer_.
   PerformanceEntryVector sorted_buffer_ = test_buffer_;
@@ -465,40 +517,177 @@ TEST_F(PerformanceTest, DeclarativePerformanceObserverOptimization) {
 }
 
 TEST_F(PerformanceTest, GetEntriesByTypeUseCounters) {
-  struct TestCase {
-    const char* entry_type;
-    std::vector<WebFeature> expected_features;
-  };
+  ScopedContainerTimingForTest enable_container_timing(true);
+  ScopedScrollPerformanceTimingForTest enable_scroll_timing(true);
 
-  const TestCase kTestCases[] = {
-      {"resource", {WebFeature::kResourceTiming}},
-      {"navigation", {WebFeature::kNavigationTimingL2}},
-      {"paint", {WebFeature::kPaintTimingRequested}},
-      {"long-animation-frame", {WebFeature::kLongAnimationFrameRequested}},
-      {"first-input",
-       {WebFeature::kEventTimingExplicitlyRequested,
-        WebFeature::kEventTimingFirstInputExplicitlyRequested}},
-      {"soft-navigation",
-       {WebFeature::kSoftNavigationHeuristics,
-        WebFeature::kSoftNavigationExplicitlyRequested}},
-  };
-
-  for (const auto& test_case : kTestCases) {
-    SCOPED_TRACE(test_case.entry_type);
+  for (const auto& counters : PerformanceEntry::GetUseCounters()) {
+    const AtomicString& entry_type_str =
+        PerformanceEntry::ToEntryTypeString(counters.entry_type);
+    SCOPED_TRACE(entry_type_str);
     V8TestingScope scope;
     auto* window = LocalDOMWindow::From(scope.GetScriptState());
     auto* performance = DOMWindowPerformance::performance(*window);
 
-    for (WebFeature feature : test_case.expected_features) {
-      EXPECT_FALSE(scope.GetDocument().IsUseCounted(feature));
-    }
+    EXPECT_FALSE(
+        scope.GetDocument().IsUseCounted(counters.explicitly_requested));
+    EXPECT_FALSE(
+        scope.GetDocument().IsUseCounted(counters.potentially_observed));
+    EXPECT_FALSE(scope.GetDocument().IsUseCounted(counters.observed));
 
-    performance->getEntriesByType(AtomicString(test_case.entry_type));
+    performance->getEntriesByType(entry_type_str);
 
-    for (WebFeature feature : test_case.expected_features) {
-      EXPECT_TRUE(scope.GetDocument().IsUseCounted(feature));
-    }
+    EXPECT_EQ(scope.GetDocument().IsUseCounted(counters.explicitly_requested),
+              PerformanceEntry::IsValidTimelineEntryType(counters.entry_type));
+    EXPECT_FALSE(
+        scope.GetDocument().IsUseCounted(counters.potentially_observed));
+    // Navigation and initial visibility-state entries are emitted when the
+    // window is initialized, so getEntriesByType() returns a non-empty list
+    // and records *Observed for those two types.
+    const bool has_initial_entry =
+        counters.entry_type == PerformanceEntry::kNavigation ||
+        counters.entry_type == PerformanceEntry::kVisibilityState;
+    EXPECT_EQ(scope.GetDocument().IsUseCounted(counters.observed),
+              has_initial_entry);
   }
+}
+
+TEST_F(PerformanceTest, FourStageTimelineUseCounters) {
+  V8TestingScope scope;
+  auto* window = LocalDOMWindow::From(scope.GetScriptState());
+  auto* performance = DOMWindowPerformance::performance(*window);
+
+  const auto* mark_counters =
+      PerformanceEntry::GetUseCountersForType(PerformanceEntry::kMark);
+  ASSERT_TRUE(mark_counters);
+
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(mark_counters->emitted));
+  EXPECT_FALSE(
+      scope.GetDocument().IsUseCounted(mark_counters->explicitly_requested));
+  EXPECT_FALSE(
+      scope.GetDocument().IsUseCounted(mark_counters->potentially_observed));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(mark_counters->observed));
+
+  // 1. Emitting a mark records only *EntryEmitted.
+  performance->mark(scope.GetScriptState(), AtomicString("test_mark"), nullptr,
+                    scope.GetExceptionState());
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(mark_counters->emitted));
+  EXPECT_FALSE(
+      scope.GetDocument().IsUseCounted(mark_counters->explicitly_requested));
+  EXPECT_FALSE(
+      scope.GetDocument().IsUseCounted(mark_counters->potentially_observed));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(mark_counters->observed));
+
+  // 2. Unfiltered getEntries() records kPerformanceGetEntriesWithoutType and
+  // *PotentiallyObserved, but not kPerformanceGetEntriesWithType,
+  // *ExplicitlyRequested, or *Observed.
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kPerformanceGetEntriesWithoutType));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kPerformanceGetEntriesWithType));
+  performance->getEntries();
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(
+      WebFeature::kPerformanceGetEntriesWithoutType));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(
+      WebFeature::kPerformanceGetEntriesWithType));
+  EXPECT_TRUE(
+      scope.GetDocument().IsUseCounted(mark_counters->potentially_observed));
+  EXPECT_FALSE(
+      scope.GetDocument().IsUseCounted(mark_counters->explicitly_requested));
+  EXPECT_FALSE(scope.GetDocument().IsUseCounted(mark_counters->observed));
+
+  // 3. Explicit getEntriesByType("mark") records
+  // kPerformanceGetEntriesWithType, *ExplicitlyRequested, and *Observed (since
+  // an entry is present).
+  performance->getEntriesByType(performance_entry_names::kMark);
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(
+      WebFeature::kPerformanceGetEntriesWithType));
+  EXPECT_TRUE(
+      scope.GetDocument().IsUseCounted(mark_counters->explicitly_requested));
+  EXPECT_TRUE(scope.GetDocument().IsUseCounted(mark_counters->observed));
+}
+
+TEST_F(PerformanceTest, EntryEmittedUseCounters) {
+  class DummyPerformanceEntry final : public PerformanceEntry {
+   public:
+    explicit DummyPerformanceEntry(EntryType entry_type)
+        : PerformanceEntry(/*duration=*/0.0,
+                           g_empty_atom,
+                           /*start_time=*/0.0,
+                           /*source=*/nullptr,
+                           /*navigation_id=*/0),
+          entry_type_(entry_type) {}
+
+    const AtomicString& entryType() const override {
+      return PerformanceEntry::ToEntryTypeString(entry_type_);
+    }
+    PerformanceEntryType EntryTypeEnum() const override { return entry_type_; }
+
+   private:
+    EntryType entry_type_;
+  };
+
+  for (const auto& counters : PerformanceEntry::GetUseCounters()) {
+    const AtomicString& entry_type_str =
+        PerformanceEntry::ToEntryTypeString(counters.entry_type);
+    SCOPED_TRACE(entry_type_str);
+
+    V8TestingScope scope;
+    auto* test_performance =
+        MakeGarbageCollected<TestPerformance>(scope.GetScriptState());
+    // Clear any *EntryEmitted counter recorded during initial window creation
+    // (navigation and visibility-state).
+    scope.GetDocument().ClearUseCounterForTesting(counters.emitted);
+
+    EXPECT_FALSE(scope.GetDocument().IsUseCounted(counters.emitted));
+    EXPECT_FALSE(
+        scope.GetDocument().IsUseCounted(counters.explicitly_requested));
+    EXPECT_FALSE(
+        scope.GetDocument().IsUseCounted(counters.potentially_observed));
+    EXPECT_FALSE(scope.GetDocument().IsUseCounted(counters.observed));
+
+    auto* entry =
+        MakeGarbageCollected<DummyPerformanceEntry>(counters.entry_type);
+    test_performance->NotifyObserversOfEntry(*entry);
+
+    EXPECT_TRUE(scope.GetDocument().IsUseCounted(counters.emitted));
+    EXPECT_FALSE(
+        scope.GetDocument().IsUseCounted(counters.explicitly_requested));
+    EXPECT_FALSE(
+        scope.GetDocument().IsUseCounted(counters.potentially_observed));
+    EXPECT_FALSE(scope.GetDocument().IsUseCounted(counters.observed));
+  }
+}
+
+TEST_F(PerformanceTest, CanExposeNodeRequiresMatchingSourceWindow) {
+  V8TestingScope main_scope;
+  V8TestingScope other_scope;
+
+  LocalDOMWindow* main_window = main_scope.GetFrame().DomWindow();
+  LocalDOMWindow* other_window = other_scope.GetFrame().DomWindow();
+  ASSERT_TRUE(main_window);
+  ASSERT_TRUE(other_window);
+
+  Node* main_node = main_scope.GetDocument().documentElement();
+  Node* other_node = other_scope.GetDocument().documentElement();
+  ASSERT_TRUE(main_node);
+  ASSERT_TRUE(other_node);
+
+  EXPECT_TRUE(Performance::CanExposeNode(main_node, main_window));
+  EXPECT_TRUE(Performance::CanExposeNode(other_node, other_window));
+  EXPECT_FALSE(Performance::CanExposeNode(other_node, main_window));
+  EXPECT_FALSE(Performance::CanExposeNode(main_node, other_window));
+  EXPECT_FALSE(Performance::CanExposeNode(main_node, nullptr));
+
+  auto* main_performance = DOMWindowPerformance::performance(*main_window);
+  PerformanceEventTiming* entry = PerformanceEventTiming::Create(
+      AtomicString("pointerdown"),
+      PerformanceEventTiming::EventTimingReportingInfo{}, false, main_window,
+      main_performance->NavigationId().web_exposed_id);
+  entry->SetTarget(other_node);
+  EXPECT_EQ(nullptr, entry->target());
+
+  entry->SetTarget(main_node);
+  EXPECT_EQ(main_node, entry->target());
 }
 
 }  // namespace blink

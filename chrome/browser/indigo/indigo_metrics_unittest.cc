@@ -44,7 +44,7 @@ TEST(IndigoMetricsTest, RecordClickedEntryPoint_AnchoredMessageContextualCue) {
 
   RecordClickedEntryPoint(
       EntryPoint::kAnchoredMessage,
-      page_actions::PageActionPriorityCategory::kContextualCue);
+      page_actions::PageActionPriorityCategory::kProactiveSuggestion);
 
   histogram_tester.ExpectUniqueSample(
       kClickedEntryPointHistogram,
@@ -76,6 +76,41 @@ TEST(IndigoMetricsTest, RecordClickedEntryPoint_ErrorToast) {
   histogram_tester.ExpectUniqueSample(
       kClickedEntryPointHistogram, IndigoPageActionEntryPoint::kErrorToast, 1);
   EXPECT_EQ(1, user_action_tester.GetActionCount(kErrorToastRetryClickAction));
+}
+
+TEST(IndigoMetricsTest, RecordShownEntryPoint_ContextMenu) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  RecordShownEntryPoint(IndigoPageActionEntryPoint::kContextMenu);
+
+  histogram_tester.ExpectUniqueSample(
+      kShownEntryPointHistogram, IndigoPageActionEntryPoint::kContextMenu, 1);
+  EXPECT_EQ(1, user_action_tester.GetActionCount(kContextMenuShowAction));
+}
+
+TEST(IndigoMetricsTest, RecordClickedEntryPoint_ContextMenu) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  RecordClickedEntryPoint(EntryPoint::kContextMenu, std::nullopt);
+
+  histogram_tester.ExpectUniqueSample(
+      kClickedEntryPointHistogram, IndigoPageActionEntryPoint::kContextMenu, 1);
+  EXPECT_EQ(1, user_action_tester.GetActionCount(kContextMenuClickAction));
+}
+
+TEST(IndigoMetricsTest, RecordContextMenuTargetType) {
+  base::HistogramTester histogram_tester;
+
+  RecordContextMenuTargetType(IndigoContextMenuTargetType::kPage);
+  histogram_tester.ExpectBucketCount(kContextMenuTargetTypeHistogram,
+                                     IndigoContextMenuTargetType::kPage, 1);
+
+  RecordContextMenuTargetType(IndigoContextMenuTargetType::kImage);
+  histogram_tester.ExpectBucketCount(kContextMenuTargetTypeHistogram,
+                                     IndigoContextMenuTargetType::kImage, 1);
+  histogram_tester.ExpectTotalCount(kContextMenuTargetTypeHistogram, 2);
 }
 
 TEST(IndigoMetricsTest, RecordTransformationTrigger) {
@@ -137,6 +172,10 @@ TEST(IndigoMetricsTest,
        IndigoTransformationResult::kGlicDisabledForProfile},
       {LocalEligibility::kEnterpriseDisallowed,
        IndigoTransformationResult::kEnterpriseDisallowed},
+      {LocalEligibility::kCountryNotAllowed,
+       IndigoTransformationResult::kCountryNotAllowed},
+      {LocalEligibility::kLocaleNotAllowed,
+       IndigoTransformationResult::kLocaleNotAllowed},
   };
 
   for (const auto& test_case : test_cases) {
@@ -190,6 +229,17 @@ TEST(IndigoMetricsTest,
     EXPECT_EQ(1,
               user_action_tester.GetActionCount(kTransformationFailureAction));
   }
+}
+
+TEST(IndigoMetricsTest, RecordRegionFilterResultOncePerSession) {
+  ScopedRegionFilterResultForTesting scoped_region_filter_result;
+  base::HistogramTester histogram_tester;
+  RecordRegionFilterResultOncePerSession(
+      IndigoRegionFilterResult::kCountryNotAllowed);
+  RecordRegionFilterResultOncePerSession(IndigoRegionFilterResult::kAllowed);
+  histogram_tester.ExpectUniqueSample(
+      "Indigo.RegionFilterResult", IndigoRegionFilterResult::kCountryNotAllowed,
+      1);
 }
 
 }  // namespace

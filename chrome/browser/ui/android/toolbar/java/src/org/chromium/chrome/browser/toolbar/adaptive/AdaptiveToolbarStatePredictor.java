@@ -194,6 +194,8 @@ public class AdaptiveToolbarStatePredictor {
             case AdaptiveToolbarButtonVariant.READ_ALOUD:
             case AdaptiveToolbarButtonVariant.OPEN_IN_BROWSER:
             case AdaptiveToolbarButtonVariant.GLIC:
+            case AdaptiveToolbarButtonVariant.ASK_GOOGLE:
+            case AdaptiveToolbarButtonVariant.TTC:
                 return true;
             case AdaptiveToolbarButtonVariant.UNKNOWN:
             case AdaptiveToolbarButtonVariant.NONE:
@@ -256,13 +258,18 @@ public class AdaptiveToolbarStatePredictor {
                 return !isBottomBarEnabled();
             case AdaptiveToolbarButtonVariant.VOICE:
                 if (mAndroidPermissionDelegate == null) return true;
-                return VoiceRecognitionUtil.isVoiceSearchEnabled(mAndroidPermissionDelegate);
+                return VoiceRecognitionUtil.isVoiceSearchEnabled(
+                        mAndroidPermissionDelegate, mProfile);
             case AdaptiveToolbarButtonVariant.READ_ALOUD:
                 return AdaptiveToolbarFeatures.isAdaptiveToolbarReadAloudEnabled(mProfile);
             case AdaptiveToolbarButtonVariant.TRANSLATE:
                 return AdaptiveToolbarFeatures.isTranslateEnabled(mProfile);
             case AdaptiveToolbarButtonVariant.GLIC:
                 return AdaptiveToolbarFeatures.isGlicEnabledForAdaptiveToolbar(mContext, mProfile);
+            case AdaptiveToolbarButtonVariant.TTC:
+                return AdaptiveToolbarFeatures.isTtcEnabledForAdaptiveToolbar();
+            case AdaptiveToolbarButtonVariant.ASK_GOOGLE:
+                return AdaptiveToolbarFeatures.isAskGoogleEnabledForAdaptiveToolbar();
             default:
                 return true;
         }
@@ -300,7 +307,8 @@ public class AdaptiveToolbarStatePredictor {
 
     /** For testing only. */
     public static void setToolbarStateForTesting(Integer toolbarState) {
+        Integer oldValue = sToolbarStateForTesting;
         sToolbarStateForTesting = toolbarState;
-        ResettersForTesting.register(() -> sToolbarStateForTesting = null);
+        ResettersForTesting.register(() -> sToolbarStateForTesting = oldValue);
     }
 }

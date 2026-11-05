@@ -17,6 +17,7 @@
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
@@ -94,6 +95,12 @@ EmbeddedPermissionPromptBaseView::EmbeddedPermissionPromptBaseView(
       delegate_(delegate) {
   SetProperty(views::kElementIdentifierKey, kMainViewId);
 
+  // The embedded permission prompt appears as a direct result of a user action
+  // and receives focus when shown. Using an alert-like role (the default when
+  // GetInitiallyFocusedView() is nullptr) would fire an alert event and cause
+  // screen readers to double-announce the dialog content.
+  SetAccessibleWindowRole(ax::mojom::Role::kDialog);
+
   CHECK_GT(delegate_->Requests().size(), 0u);
   element_rect_ = delegate_->Requests()[0]->GetAnchorElementPosition().value_or(
       gfx::Rect());
@@ -139,8 +146,12 @@ bool EmbeddedPermissionPromptBaseView::ShowLoadingIcon() const {
   return false;
 }
 
+bool EmbeddedPermissionPromptBaseView::ShouldShowMediaPreview() const {
+  return false;
+}
+
 void EmbeddedPermissionPromptBaseView::CreateWidget() {
-  DCHECK(GetNativeWindow());
+  CHECK(GetNativeWindow(), base::NotFatalUntil::M162);
   views::Widget* widget = views::BubbleDialogDelegateView::CreateBubble(this);
 
   widget->SetZOrderSublevel(ChromeWidgetSublevel::kSublevelSecurity);
@@ -259,6 +270,7 @@ void EmbeddedPermissionPromptBaseView::OnWidgetVisibilityChanged(
 
 // For clicking a button in the PEPC permission prompt:
 void EmbeddedPermissionPromptBaseView::ClosingPermission() {
+  ResetMediaPreview();
   if (delegate()) {
     delegate()->Dismiss();
   }
@@ -275,6 +287,7 @@ void EmbeddedPermissionPromptBaseView::ClosingPermission() {
 }
 
 void EmbeddedPermissionPromptBaseView::PrepareToClose() {
+  ResetMediaPreview();
   DialogDelegate::SetCloseCallback(base::DoNothing());
 }
 
@@ -334,6 +347,12 @@ void EmbeddedPermissionPromptBaseView::Init() {
   int index = 0;
   for (auto& request : requests_configuration) {
     AddRequestLine(request, index++);
+  }
+
+  if (base::FeatureList::IsEnabled(
+          blink::features::kMediaCaptureElementPreview) &&
+      ShouldShowMediaPreview()) {
+    MaybeAddMediaPreview(index, /*allow_empty_device_ids=*/true);
   }
 
   if (delegate_ && delegate_->GetPermissionPromptDelegate()) {

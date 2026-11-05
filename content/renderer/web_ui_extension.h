@@ -22,6 +22,9 @@ class Arguments;
 
 namespace content {
 
+// Installs the chrome.* bindings used by WebUI pages. These are for WebUI
+// only: they are installed in, and respond to calls from, frames the browser
+// has granted WebUI bindings via RenderFrameHostImpl::AllowBindings.
 class WebUIExtension {
  public:
   WebUIExtension() = delete;
@@ -36,6 +39,7 @@ class WebUIExtension {
                                            v8::Local<v8::Object> chrome);
   static void Send(gin::Arguments* args);
   static std::string GetVariableValue(const std::string& name);
+  static v8::Local<v8::Value> RequestPresentationTime(gin::Arguments* args);
 };
 
 }  // namespace content

@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <utility>
@@ -17,17 +18,20 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "cloud_policy_validator.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/cloud_policy_util.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "components/policy/core/common/policy_switches.h"
+#include "components/policy/proto/cloud_policy.pb.h"
 #include "components/policy/proto/device_management_backend.pb.h"
+#include "crypto/keypair.h"
 #include "crypto/sign.h"
-#include "crypto/signature_verifier.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_id.h"
 
@@ -40,6 +44,23 @@ namespace em = enterprise_management;
 namespace policy {
 
 namespace {
+
+// crbug.com/579054636
+bool IsDomainBlockedFromPolicyCache(const std::string& domain) {
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  // Allow custom keys in test runs.
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kPolicyVerificationKey)) {
+    CHECK_IS_TEST();
+    return false;
+  }
+
+  return std::ranges::contains(kPolicyCacheBlockedDomains,
+                               base::ToLowerASCII(domain));
+#else
+  return false;
+#endif
+}
 
 const char kMetricPolicyUserVerification[] =
     "Enterprise.PolicyUserVerification";
@@ -265,7 +286,6 @@ bool CloudPolicyValidatorBase::VerifySignature(const std::string& data,
                                                const std::string& key,
                                                const std::string& signature,
                                                SignatureType signature_type) {
-  crypto::SignatureVerifier verifier;
   crypto::sign::SignatureKind algorithm;
   switch (signature_type) {
     case em::PolicyFetchRequest::SHA1_RSA:
@@ -282,14 +302,16 @@ bool CloudPolicyValidatorBase::VerifySignature(const std::string& data,
       return false;
   }
 
-  if (!verifier.VerifyInit(algorithm, base::as_byte_span(signature),
-                           base::as_byte_span(key))) {
+  std::optional<crypto::keypair::PublicKey> public_key =
+      crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(
+          base::as_byte_span(key));
+  if (!public_key || !public_key->IsRsa()) {
     DLOG_POLICY(ERROR, CBCM_ENROLLMENT)
         << "Invalid verification signature/key format";
     return false;
   }
-  verifier.VerifyUpdate(base::as_byte_span(data));
-  return verifier.VerifyFinal();
+  return crypto::sign::Verify(algorithm, *public_key, base::as_byte_span(data),
+                              base::as_byte_span(signature));
 }
 
 CloudPolicyValidatorBase::CloudPolicyValidatorBase(
@@ -637,6 +659,19 @@ CloudPolicyValidatorBase::Status CloudPolicyValidatorBase::CheckCachedKey() {
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+  // crbug.com/579054636
+  for (const std::string& domain :
+       {owning_domain_, ExtractDomainFromPolicy()}) {
+    if (!domain.empty() && IsDomainBlockedFromPolicyCache(domain)) {
+      LOG_POLICY(ERROR, POLICY_FETCHING)
+          << PolicyTypeLogPrefix(policy_type_, settings_entity_id_)
+          << "Blocked domain rejected from policy cache: " << domain;
+      UMA_HISTOGRAM_ENUMERATION(kMetricKeySignatureVerification,
+                                MetricKeySignatureVerification::kFailed);
+      return VALIDATION_BAD_KEY_VERIFICATION_SIGNATURE;
+    }
+  }
+
   if (VerifySignature(new_cached_key_, verification_key_.value(),
                       new_cached_key_signature_,
                       em::PolicyFetchRequest::SHA256_RSA) &&
@@ -723,14 +758,13 @@ CloudPolicyValidatorBase::Status CloudPolicyValidatorBase::CheckDMToken() {
        policy_data_->request_token().empty())) {
     LOG_POLICY(ERROR, POLICY_FETCHING)
         << PolicyTypeLogPrefix(policy_type_, settings_entity_id_)
-        << "Empty DM token encountered - expected: " << dm_token_;
+        << "Empty DM token encountered";
     return VALIDATION_BAD_DM_TOKEN;
   }
   if (!dm_token_.empty() && policy_data_->request_token() != dm_token_) {
     LOG_POLICY(ERROR, POLICY_FETCHING)
         << PolicyTypeLogPrefix(policy_type_, settings_entity_id_)
-        << "Invalid DM token: " << policy_data_->request_token()
-        << " - expected: " << dm_token_;
+        << "Invalid DM token encountered";
     return VALIDATION_BAD_DM_TOKEN;
   }
 

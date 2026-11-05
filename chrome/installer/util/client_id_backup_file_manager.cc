@@ -4,7 +4,8 @@
 
 #include "chrome/installer/util/client_id_backup_file_manager.h"
 
-#include "base/check.h"
+#include <stddef.h>
+
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/metrics/histogram_functions.h"
@@ -29,12 +30,17 @@ constexpr base::FilePath::CharType kClientIdBackupFileName[] =
     FILE_PATH_LITERAL("Consent To Send Stats");
 #endif
 
-base::FilePath GetBackupFileDir() {
-  return base::PathService::CheckedGet(chrome::DIR_USER_DATA);
-}
+// Maximum number of bytes read from the client ID backup file. A valid UUID is
+// 36 ASCII bytes; capping reads to 64 bytes bounds memory and I/O on oversized
+// files while ensuring any file exceeding the cap still fails UUID validation.
+constexpr size_t kMaxBackupFileSize = 64;
 
 base::FilePath GetBackupFilePath() {
-  return GetBackupFileDir().Append(kClientIdBackupFileName);
+  base::FilePath dir;
+  if (!base::PathService::Get(chrome::DIR_USER_DATA, &dir) || dir.empty()) {
+    return base::FilePath();
+  }
+  return dir.Append(ClientIdBackupFileManager::GetBackupFileName());
 }
 
 void SetClientIdBackupFilePermissionIfNeeded(
@@ -83,6 +89,11 @@ ClientIdBackupFileManager& ClientIdBackupFileManager::GetInstance() {
 }
 
 // static
+base::FilePath ClientIdBackupFileManager::GetBackupFileName() {
+  return base::FilePath(kClientIdBackupFileName);
+}
+
+// static
 base::FilePath ClientIdBackupFileManager::GetBackupFilePathForTesting() {
   return GetBackupFilePath();
 }
@@ -102,12 +113,20 @@ ClientIdBackupFileManager::ClientIdFromCacheOrDisk() {
                                                 base::BlockingType::MAY_BLOCK);
 
   const base::FilePath backup_file_path = GetBackupFilePath();
+  if (backup_file_path.empty()) {
+    return std::nullopt;
+  }
   std::string client_id;
 
-  if (!base::ReadFileToString(backup_file_path, &client_id)) {
-    // The file doesn't exist or can't be read. Treat both cases as if UMA was
-    // never activated.
-    return std::nullopt;
+  if (!base::ReadFileToStringWithMaxSize(backup_file_path, &client_id,
+                                         kMaxBackupFileSize)) {
+    if (client_id.empty()) {
+      // The file doesn't exist or can't be read. Treat both cases as if UMA was
+      // never activated.
+      return std::nullopt;
+    }
+    // Otherwise, `kMaxBackupFileSize` was exceeded and `client_id` holds the
+    // truncated prefix; let it through for validation below.
   }
   const ClientIdBackupValidationResult validation_result =
       ValidateClientId(client_id);
@@ -146,6 +165,9 @@ bool ClientIdBackupFileManager::SetClientIdInternal(
                                                 base::BlockingType::MAY_BLOCK);
 
   const base::FilePath backup_file = GetBackupFilePath();
+  if (backup_file.empty()) {
+    return false;
+  }
 
   bool persistence_update_success =
       client_id.has_value() ? base::WriteFile(backup_file, *client_id)

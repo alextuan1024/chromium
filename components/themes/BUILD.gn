@@ -28,6 +28,7 @@ source_set("themes") {
     "//components/keyed_service/core",
     "//components/prefs",
     "//components/signin/public/identity_manager",
+    "//components/themes/common",
     "//net",
     "//services/network/public/cpp",
     "//skia",
@@ -67,6 +68,7 @@ source_set("unit_tests") {
   deps = [
     ":themes",
     "//base",
+    "//base/i18n:language_tag",
     "//base/test:test_support",
     "//components/application_locale_storage",
     "//components/policy/core/browser",

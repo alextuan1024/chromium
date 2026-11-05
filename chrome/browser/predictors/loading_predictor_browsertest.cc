@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/base64.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
@@ -70,7 +71,6 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_mock_cert_verifier.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/preconnect_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/simple_url_loader_test_helper.h"
@@ -373,7 +373,13 @@ class TestPreconnectManagerObserver
   void Wait() {
     base::RunLoop run_loop;
     DCHECK(!run_loop_);
-    run_loop_ = &run_loop;
+
+    // `-Wlifetime-safety` has no way to know that `run_loop_` is reset
+    // at its end, and so points out that it looks like frame-local
+    // `run_loop` is smuggled out by member assignment. `AutoReset`
+    // spells out that this cannot happen.
+    base::AutoReset<decltype(run_loop_)> resetter{&run_loop_, &run_loop};
+
     CheckForWaitingLoop();
     run_loop.Run();
   }
@@ -3522,6 +3528,60 @@ IN_PROC_BROWSER_TEST_P(
     EXPECT_FALSE(preconnect_manager_observer()->HasHostBeenLookedUp(
         "blocked.com", network_anonymization_key2));
   }
+}
+
+// A history navigation initiated by a document with a Connection-Allowlist
+// should not trigger any speculative preconnects, since those would be checked
+// against (and reported to) the initiator's Connection-Allowlist and disclose
+// the session history entry to it.
+IN_PROC_BROWSER_TEST_P(
+    LoadingPredictorBrowserTestWithOptimizationGuideAndConnectionAllowlist,
+    NoPreconnectForHistoryNavigationFromConnectionAllowlistInitiator) {
+  content::WebContents* tab =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  // Disable BFCache so that the history navigation below goes to the network.
+  content::DisableBackForwardCacheForTesting(
+      tab, content::BackForwardCache::DisableForTestingReason::
+               TEST_REQUIRES_NO_CACHING);
+
+  // secondnav.com is in the allowlist of `allowlist_url`, so the history
+  // navigation to it is not blocked.
+  GURL history_url =
+      embedded_test_server()->GetURL("secondnav.com", "/title1.html");
+  GURL allowlist_url = embedded_test_server()->GetURL(
+      "test.com", "/preload/connection_allowlist_redirect_allowed.html");
+  SetUpOptimizationHint(
+      history_url, {Subresource("https://example.com",
+                                optimization_guide::proto::RESOURCE_TYPE_CSS,
+                                /*preconnect_only=*/true)});
+
+  // 1. Create the session history entry, then navigate to a document with a
+  // Connection-Allowlist.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), history_url));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), allowlist_url));
+  ASSERT_TRUE(tab->GetPrimaryMainFrame()
+                  ->GetConnectionAllowlists()
+                  .enforced.has_value());
+
+  auto count_attempts = [&]() {
+    const std::vector<GURL>& history =
+        preconnect_manager_observer()->PreconnectUrlAttemptsHistory();
+    return std::ranges::count_if(history, [&](const GURL& origin) {
+      return origin == history_url.DeprecatedGetOriginAsURL() ||
+             origin == GURL("https://example.com");
+    });
+  };
+  const auto attempts_before_history_navigation = count_attempts();
+
+  // 2. Go back from the Connection-Allowlist document.
+  content::TestNavigationObserver back_observer(tab);
+  EXPECT_TRUE(content::ExecJs(tab, "history.back();"));
+  back_observer.Wait();
+  EXPECT_EQ(history_url, tab->GetLastCommittedURL());
+  base::RunLoop().RunUntilIdle();
+
+  // No preconnects should have been made for the history navigation.
+  EXPECT_EQ(attempts_before_history_navigation, count_attempts());
 }
 
 class LoadingPredictorPrefetchBrowserTestWithConnectionAllowlist

@@ -5,11 +5,11 @@
 #ifndef COMPONENTS_SYNC_ENGINE_SYNC_ENGINE_H_
 #define COMPONENTS_SYNC_ENGINE_SYNC_ENGINE_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
@@ -22,7 +22,6 @@
 #include "components/sync/engine/sync_credentials.h"
 #include "components/sync/engine/sync_encryption_handler.h"
 #include "components/sync/engine/sync_manager_factory.h"
-#include "url/gurl.h"
 
 namespace os_crypt_async {
 class Encryptor;
@@ -32,7 +31,6 @@ namespace syncer {
 
 class CustomPassphraseBootstrapToken;
 class EngineComponentsFactory;
-class HttpPostProviderFactory;
 class SyncEngineHost;
 struct SyncStatus;
 
@@ -41,9 +39,6 @@ struct SyncStatus;
 // Lives on the UI thread.
 class SyncEngine : public DataTypeConfigurer {
  public:
-  using HttpPostProviderFactoryGetter =
-      base::OnceCallback<std::unique_ptr<HttpPostProviderFactory>()>;
-
   // Utility struct for holding initialization options.
   struct InitParams {
     InitParams();
@@ -58,12 +53,8 @@ class SyncEngine : public DataTypeConfigurer {
     raw_ptr<SyncEngineHost> host = nullptr;
     std::unique_ptr<SyncEncryptionHandler::Observer> encryption_observer_proxy;
     scoped_refptr<ExtensionsActivity> extensions_activity;
-    GURL service_url;
-    SyncEngine::HttpPostProviderFactoryGetter http_factory_getter;
     CoreAccountInfo authenticated_account_info;
     std::unique_ptr<SyncManagerFactory> sync_manager_factory;
-    bool enable_local_sync_backend = false;
-    base::FilePath local_sync_backend_folder;
     std::unique_ptr<EngineComponentsFactory> engine_components_factory;
     scoped_refptr<os_crypt_async::Encryptor> encryptor;
   };
@@ -124,6 +115,17 @@ class SyncEngine : public DataTypeConfigurer {
   // - An explicit passphrase has already been set
   // - We have pending keys.
   virtual void SetEncryptionPassphrase(const std::string& passphrase) = 0;
+
+  // Asynchronously transitions from `KEYSTORE_PASSPHRASE` to
+  // `TRUSTED_VAULT_PASSPHRASE` using `key` and `version`. Invokes `done_cb`
+  // with `true` once committed, or `false` if ignored or superseded. Ignored if
+  // there are pending keys or if the current passphrase type is not
+  // `KEYSTORE_PASSPHRASE`. `key` must not be empty and `version` must be
+  // non-negative (`version >= 0`).
+  virtual void SetTrustedVaultEncryptionPassphrase(
+      const std::vector<uint8_t>& key,
+      int version,
+      base::OnceCallback<void(bool)> done_cb) = 0;
 
   // Use the provided decryption key to asynchronously attempt decryption. If
   // new encrypted keys arrive during the asynchronous call,

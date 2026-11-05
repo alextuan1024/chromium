@@ -8,7 +8,10 @@
 #include <utility>
 
 #include "base/android/jni_string.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/no_destructor.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
@@ -47,9 +50,12 @@ std::vector<DropdownKeyValueAndroid> BuildSupportedCountries(
   std::vector<std::string> country_codes = GetRegionCodes();
   std::vector<DropdownKeyValueAndroid> display_countries;
   display_countries.reserve(country_codes.size());
+  const base::i18n::LanguageTag display_locale =
+      base::i18n::GetLanguageTagFromString(locale).value_or(
+          base::i18n::GetKnownLanguageTag("und"));
   for (std::string& country_code : country_codes) {
     std::u16string country_name =
-        l10n_util::GetDisplayNameForCountry(country_code, locale);
+        l10n_util::GetDisplayNameForCountry(country_code, display_locale);
     // Don't display a country code for which a name is not known yet.
     if (country_name != base::UTF8ToUTF16(country_code)) {
       display_countries.emplace_back(std::move(country_code),
@@ -115,21 +121,21 @@ JNI_AutofillProfileBridge_GetAddressEditorUiInfo(
 
   AddressValidationType validation_type =
       static_cast<AddressValidationType>(j_validation_type);
-  std::vector<AutofillAddressUiComponentAndroid> components;
-  components.reserve(ui_components.size());
-  for (const auto& ui_component : ui_components) {
-    bool is_required = false;
-    switch (validation_type) {
-      case AddressValidationType::kPaymentRequest:
-        is_required = i18n::IsFieldRequired(ui_component.field, country_code);
-        break;
-      case AddressValidationType::kAccount:
-        is_required = country.IsAddressFieldRequired(ui_component.field);
-    }
-    components.emplace_back(
-        ui_component.field, ui_component.name, is_required,
-        ui_component.length_hint == AutofillAddressUIComponent::HINT_LONG);
-  }
+  std::vector<AutofillAddressUiComponentAndroid> components =
+      base::ToVector(ui_components, [&](const auto& ui_component) {
+        bool is_required = false;
+        switch (validation_type) {
+          case AddressValidationType::kPaymentRequest:
+            is_required =
+                i18n::IsFieldRequired(ui_component.field, country_code);
+            break;
+          case AddressValidationType::kAccount:
+            is_required = country.IsAddressFieldRequired(ui_component.field);
+        }
+        return AutofillAddressUiComponentAndroid(
+            ui_component.field, ui_component.name, is_required,
+            ui_component.length_hint == AutofillAddressUIComponent::HINT_LONG);
+      });
 
   return AutofillAddressEditorUiInfoAndroid(best_language_tag, components);
 }

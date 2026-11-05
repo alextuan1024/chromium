@@ -22,6 +22,7 @@
 #include "ui/aura/window.h"
 #include "ui/aura/window_occlusion_tracker.h"
 #include "ui/display/screen.h"
+#include "ui/events/event_constants.h"
 #include "ui/events/event_observer.h"
 #include "ui/events/event_target_iterator.h"
 #include "ui/events/gestures/gesture_recognizer_impl.h"
@@ -52,7 +53,7 @@ class EventObserverAdapter : public ui::EventHandler,
  public:
   EventObserverAdapter(ui::EventObserver* observer,
                        ui::EventTarget* target,
-                       const std::set<ui::EventType>& types)
+                       ui::EventTypeSet types)
       : observer_(observer), target_(target), types_(types) {
     target_->AddPreTargetHandler(this);
   }
@@ -64,11 +65,11 @@ class EventObserverAdapter : public ui::EventHandler,
 
   ui::EventObserver* observer() { return observer_; }
   ui::EventTarget* target() { return target_; }
-  const std::set<ui::EventType>& types() const { return types_; }
+  ui::EventTypeSet types() const { return types_; }
 
   // ui::EventHandler:
   void OnEvent(ui::Event* event) override {
-    if (types_.count(event->type()) > 0) {
+    if (types_.Has(event->type())) {
       std::unique_ptr<ui::Event> cloned_event = event->Clone();
       ui::Event::DispatcherApi(cloned_event.get()).set_target(event->target());
       // The root location of located events should be in screen coordinates.
@@ -84,7 +85,7 @@ class EventObserverAdapter : public ui::EventHandler,
  private:
   raw_ptr<ui::EventObserver> observer_;
   raw_ptr<ui::EventTarget> target_;
-  const std::set<ui::EventType> types_;
+  const ui::EventTypeSet types_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -99,7 +100,7 @@ Env::~Env() {
 
 // static
 std::unique_ptr<Env> Env::CreateInstance() {
-  DCHECK(!g_primary_instance);
+  CHECK(!g_primary_instance, base::NotFatalUntil::M163);
   // No make_unique as constructor is private.
   std::unique_ptr<Env> env(new Env());
   if (!env->Init())
@@ -134,6 +135,12 @@ bool Env::IsMouseButtonDown() const {
       mouse_button_flags_ != 0;
 }
 
+bool Env::IsLeftMouseButtonDown() const {
+  return input_state_lookup_.get()
+             ? input_state_lookup_->IsLeftMouseButtonDown()
+             : (mouse_button_flags_ & ui::EF_LEFT_MOUSE_BUTTON) != 0;
+}
+
 void Env::SetLastMouseLocation(const gfx::Point& last_mouse_location) {
   last_mouse_location_ = last_mouse_location;
 }
@@ -148,6 +155,15 @@ void Env::SetTouchDown(bool is_touch_down) {
     last_touch_locations_.clear();
   }
   is_touch_down_ = is_touch_down;
+}
+
+std::optional<gfx::Point> Env::ConsumeTouchForDrag(const Window* window) {
+  return env_controller_->ConsumeTouchForDrag(window);
+}
+
+bool Env::ConsumeLeftMousePressForDrag(const Window* window) {
+  return IsLeftMouseButtonDown() &&
+         env_controller_->ConsumeLeftMousePressForDrag(window);
 }
 
 void Env::SetGestureRecognizer(
@@ -191,7 +207,7 @@ void Env::UnpauseWindowOcclusionTracking() {
 
 void Env::AddEventObserver(ui::EventObserver* observer,
                            ui::EventTarget* target,
-                           const std::set<ui::EventType>& types) {
+                           ui::EventTypeSet types) {
   DCHECK(!types.empty()) << "Observers must observe at least one event type";
   auto adapter(std::make_unique<EventObserverAdapter>(observer, target, types));
   event_observer_adapter_list_.AddObserver(adapter.get());
@@ -210,7 +226,7 @@ void Env::RemoveEventObserver(ui::EventObserver* observer) {
 
 void Env::NotifyEventObservers(const ui::Event& event) {
   for (auto& adapter : event_observer_adapter_list_) {
-    if (adapter.types().count(event.type()) > 0 &&
+    if (adapter.types().Has(event.type()) &&
         (adapter.target() == event.target() || adapter.target() == this)) {
       adapter.observer()->OnEvent(event);
     }

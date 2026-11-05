@@ -338,10 +338,12 @@ class UnifiedAudioDetailedViewControllerTest : public AshTestBase {
         AudioDetailedView::AudioDetailedViewID::kNbsWarningView);
   }
 
-  std::map<uint64_t, raw_ptr<views::View, CtnExperimental>> input_sliders_map_;
-  std::map<uint64_t, raw_ptr<views::View, CtnExperimental>> output_sliders_map_;
-  std::map<uint64_t, raw_ptr<views::View, CtnExperimental>> toggles_map_;
-  std::map<uint64_t, raw_ptr<views::View, CtnExperimental>>
+  std::map<uint64_t, raw_ptr<views::View, DanglingUntriaged>>
+      input_sliders_map_;
+  std::map<uint64_t, raw_ptr<views::View, DanglingUntriaged>>
+      output_sliders_map_;
+  std::map<uint64_t, raw_ptr<views::View, DanglingUntriaged>> toggles_map_;
+  std::map<uint64_t, raw_ptr<views::View, DanglingUntriaged>>
       style_transfer_toggles_map_;
   MicGainSliderController::MapDeviceSliderCallback
       map_input_device_sliders_callback_;
@@ -431,7 +433,19 @@ TEST_F(UnifiedAudioDetailedViewControllerTest, OneOutputSlider) {
       output_sliders_map_.find(kInternalSpeakerId)->second->GetVisible());
 }
 
-TEST_F(UnifiedAudioDetailedViewControllerTest, DualInternalMicSlider) {
+// TODO(crbug.com/559797899): Segfaults during TearDown on ASan when the 500ms
+// AudioSelectionNotificationHandler debounce timer fires after MessageCenter
+// destruction.
+#if defined(ADDRESS_SANITIZER)
+#define MAYBE_DualInternalMicSlider DISABLED_DualInternalMicSlider
+#define MAYBE_DualInternalMicSliderActiveState \
+  DISABLED_DualInternalMicSliderActiveState
+#else
+#define MAYBE_DualInternalMicSlider DualInternalMicSlider
+#define MAYBE_DualInternalMicSliderActiveState DualInternalMicSliderActiveState
+#endif
+
+TEST_F(UnifiedAudioDetailedViewControllerTest, MAYBE_DualInternalMicSlider) {
   fake_cras_audio_client()->SetAudioNodesAndNotifyObserversForTesting(
       GenerateAudioNodeList({kFrontMic, kRearMic}));
 
@@ -449,7 +463,7 @@ TEST_F(UnifiedAudioDetailedViewControllerTest, DualInternalMicSlider) {
 }
 
 TEST_F(UnifiedAudioDetailedViewControllerTest,
-       DualInternalMicSliderActiveState) {
+       MAYBE_DualInternalMicSliderActiveState) {
   fake_cras_audio_client()->SetAudioNodesAndNotifyObserversForTesting(
       GenerateAudioNodeList({kFrontMic, kRearMic}));
 

@@ -8,6 +8,7 @@ import calendar
 import collections
 import dataclasses
 import datetime
+import functools
 import itertools
 import logging
 import os
@@ -105,6 +106,8 @@ def _ComputeUnattributedElfSize(elf_info, section_ranges):
 
 def _AddSourcePathsUsingObjectPaths(ninja_source_mapper, raw_symbols):
   logging.info('Looking up source paths from ninja files')
+  # Object paths are shared by many symbols, so cache results.
+  find_source_for_path = functools.cache(ninja_source_mapper.FindSourceForPath)
   for symbol in raw_symbols:
     # Native symbols and pak symbols use object paths.
     object_path = symbol.object_path
@@ -113,7 +116,7 @@ def _AddSourcePathsUsingObjectPaths(ninja_source_mapper, raw_symbols):
 
     # We don't have source info for prebuilt .a files.
     if not os.path.isabs(object_path) and not object_path.startswith('..'):
-      symbol.source_path = ninja_source_mapper.FindSourceForPath(object_path)
+      symbol.source_path = find_source_for_path(object_path)
   assert ninja_source_mapper.unmatched_paths_count == 0, (
     'One or more source file paths could not be found. Likely caused by '
     '.ninja files being generated at a different time than the .map file.'
@@ -661,7 +664,7 @@ def _AddUnattributedSectionSymbols(raw_symbols, section_ranges, source_path):
     sym = None  # Needed for pylint.
     for sym in group:
       pass
-    end_address = sym.end_address  # pylint: disable=undefined-loop-variable
+    end_address = sym.end_address
     section_range = section_ranges.get(section_name)
     if not section_range:
       logging.warning(
@@ -768,15 +771,6 @@ def _ElfInfoFromApk(apk_path, apk_so_path):
     return _CreateElfInfo(temp)
 
 
-def _CountRelocationsFromElf(elf_path):
-  args = [path_util.GetReadElfPath(), '-r', elf_path]
-  stdout = subprocess.check_output(args).decode('ascii')
-  relocations = re.findall(
-    r'Relocation section .* at offset .* contains (\d+) entries', stdout
-  )
-  return sum([int(i) for i in relocations])
-
-
 def _FindToolchainSubdirs(output_directory):
   return [
     n
@@ -845,7 +839,7 @@ def CreateSymbols(
     )
 
   raw_symbols = []
-  dwarf_source_mapper = None
+  dwarf_source_mapper_result = None
   ninja_elf_object_paths = None
   metrics_by_file = {}
   if ninja_source_mapper and native_spec.map_path:
@@ -856,13 +850,8 @@ def CreateSymbols(
       assert ninja_elf_object_paths, 'Failed to find link step for ' + elf_path
   elif native_spec.elf_path:
     logging.info('Parsing source path info via dwarfdump')
-    dwarf_source_mapper = dwarfdump.CreateAddressSourceMapper(
-      native_spec.elf_path
-    )
-    logging.info(
-      'Found %d source paths across %s ranges',
-      dwarf_source_mapper.NumberOfPaths(),
-      dwarf_source_mapper.num_ranges,
+    dwarf_source_mapper_result = parallel.ForkAndCall(
+      dwarfdump.CreateAddressSourceMapper, (native_spec.elf_path,)
     )
 
   # Start by finding elf_object_paths so that nm can run on them while the
@@ -946,6 +935,7 @@ def CreateSymbols(
       logging.debug('Extracting pak IDs from symbol names')
       pak_id_map.Update(object_paths_by_name, ninja_source_mapper)
 
+  relocation_addresses = []
   if elf_info:
     # Prefer the readelf output, since the size of .shstrtab changes after
     # removing debug sections.
@@ -957,7 +947,9 @@ def CreateSymbols(
         f'{models.METRICS_SIZE}/{k}': size
         for (k, (offset, size)) in section_ranges.items()
       }
-      relocations_count = _CountRelocationsFromElf(native_spec.elf_path)
+      relocation_addresses, relocations_count = (
+        readelf.CollectRelocationsFromElf(native_spec.elf_path)
+      )
       metrics_by_file[key][
         f'{models.METRICS_COUNT}/{models.METRICS_COUNT_RELOCATIONS}'
       ] = relocations_count
@@ -1000,9 +992,17 @@ def CreateSymbols(
     )
   )
 
-  if ninja_source_mapper:
+  # Use the same condition as when deciding whether to start dwarfdump above.
+  if ninja_source_mapper and native_spec.map_path:
+    assert dwarf_source_mapper_result is None
     _AddSourcePathsUsingObjectPaths(ninja_source_mapper, raw_symbols)
-  elif dwarf_source_mapper:
+  elif dwarf_source_mapper_result:
+    dwarf_source_mapper = dwarf_source_mapper_result.get()
+    logging.info(
+      'Found %d source paths across %s ranges',
+      dwarf_source_mapper.NumberOfPaths(),
+      dwarf_source_mapper.num_ranges,
+    )
     _AddSourcePathsUsingAddress(dwarf_source_mapper, raw_symbols)
 
   raw_symbols.extend(other_symbols)
@@ -1024,4 +1024,10 @@ def CreateSymbols(
     logging.debug('Connecting nm aliases')
     _ConnectNmAliases(raw_symbols)
 
-  return section_ranges, raw_symbols, elf_info, metrics_by_file
+  return (
+    section_ranges,
+    raw_symbols,
+    elf_info,
+    metrics_by_file,
+    relocation_addresses,
+  )

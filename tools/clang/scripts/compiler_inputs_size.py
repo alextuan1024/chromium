@@ -21,7 +21,7 @@ information. On a fast machine, it should take less than a minute for the
 
 This currently doesnt work on Windows due to different deps handling.
 
-Example usage: (Remove use_remoteexec=true if you don't have reclient access.)
+Example usage: (Remove use_remoteexec=true if you don't have remote execution access.)
 
 $ gn gen out/Debug --args="system_headers_in_deps=true \
       symbol_level=0 use_remoteexec=true"
@@ -51,7 +51,7 @@ norm_paths = {}  # Memoization cache for norm_path().
 
 
 def norm_path(build_dir, filename):
-  if not filename in norm_paths:
+  if filename not in norm_paths:
     p = pathlib.Path(os.path.join(build_dir, filename)).resolve()
     x = os.path.relpath(p)
     norm_paths[filename] = x
@@ -63,7 +63,7 @@ file_sizes = {}  # Memoization cache for size().
 
 def size(filename):
   """Get the size of a file."""
-  if not filename in file_sizes:
+  if filename not in file_sizes:
     file_sizes[filename] = os.path.getsize(filename)
   return file_sizes[filename]
 

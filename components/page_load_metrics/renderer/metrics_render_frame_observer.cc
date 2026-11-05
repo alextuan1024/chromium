@@ -65,6 +65,7 @@ mojom::ScriptType MapToMojoScriptType(UScriptCode script_code, bool is_emoji) {
     case USCRIPT_KATAKANA:
       return mojom::ScriptType::kKatakana;
     case USCRIPT_ARABIC:
+    case USCRIPT_ARABIC_NASTALIQ:
       return mojom::ScriptType::kArabic;
     case USCRIPT_BENGALI:
       return mojom::ScriptType::kBengali;
@@ -140,20 +141,12 @@ MetricsRenderFrameObserver::MetricsRenderFrameObserver(
     content::RenderFrame* render_frame)
     : content::RenderFrameObserver(render_frame),
       blink::WebLocalFrameObserver(render_frame ? render_frame->GetWebFrame()
-                                                : nullptr) {
+                                                : nullptr),
+      blink::WebLocalFrameMetricsObserver(
+          render_frame ? render_frame->GetWebFrame() : nullptr) {
   if (base::FeatureList::IsEnabled(
           features::kMetricsRenderFrameObserverImprovement) &&
       render_frame) {
-    // If the optimization is enabled, `DidObserveNewFeatureUsage()` will be
-    // called as a callback instead of the observer interface.
-    render_frame->SetNewFeatureUsageCallback(base::BindRepeating(
-        &MetricsRenderFrameObserver::DidObserveNewFeatureUsage,
-        weak_factory_.GetWeakPtr()));
-    // If the optimization is enabled, `DidObserveSubresourceLoad()` will be
-    // called as a callback instead of the observer interface.
-    render_frame->SetSubresourceLoadCallback(base::BindRepeating(
-        &MetricsRenderFrameObserver::DidObserveSubresourceLoad,
-        weak_factory_.GetWeakPtr()));
     // If the optimization is enabled, `DidLoadResourceFromMemoryCache()` will
     // be called as a callback instead of the observer interface.
     render_frame->SetLoadFromMemoryCacheCallback(base::BindRepeating(
@@ -199,14 +192,15 @@ void MetricsRenderFrameObserver::DidObserveUserInteraction(
       performance_timeline_navigation_id);
 }
 
-void MetricsRenderFrameObserver::DidChangeCpuTiming(base::TimeDelta time) {
+void MetricsRenderFrameObserver::DidChangeCpuTiming(base::TimeDelta time,
+                                                    base::TimeDelta ad_time) {
   if (!page_timing_metrics_sender_) {
     return;
   }
   if (HasNoRenderFrame()) {
     return;
   }
-  page_timing_metrics_sender_->UpdateCpuTiming(time);
+  page_timing_metrics_sender_->UpdateCpuTiming(time, ad_time);
 }
 
 void MetricsRenderFrameObserver::DidObserveLoadingBehavior(

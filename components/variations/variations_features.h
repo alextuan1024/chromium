@@ -9,10 +9,27 @@
 #include "base/feature_list.h"
 #include "base/metrics/field_trial.h"
 
-namespace variations::internal {
+namespace variations {
+
+// Skips invalidating cached variation headers when a finalized field trial has
+// no associated `VariationID`, and skips notifying observers when regenerated
+// headers are unchanged.
+COMPONENT_EXPORT(VARIATIONS)
+BASE_DECLARE_FEATURE(kOptimizeVariationsIpc);
+
+// Controls user opt-in for experiment overlays.
+COMPONENT_EXPORT(VARIATIONS_FEATURES)
+BASE_DECLARE_FEATURE(kEnableExperimentOverlay);
+
+// Remote kill switch for experiment overlays.
+COMPONENT_EXPORT(VARIATIONS_FEATURES)
+BASE_DECLARE_FEATURE(kExperimentOverlayKillSwitch);
+
+namespace internal {
 
 // Add Variations Features here...
 
-}  // namespace variations::internal
+}  // namespace internal
+}  // namespace variations
 
 #endif  // COMPONENTS_VARIATIONS_VARIATIONS_FEATURES_H_

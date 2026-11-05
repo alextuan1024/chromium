@@ -4,19 +4,21 @@
 
 #include "third_party/blink/renderer/core/style/anchor_specifier_value.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/style/scoped_css_name.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/hash_functions.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
 // static
 AnchorSpecifierValue* AnchorSpecifierValue::Default() {
-  DEFINE_STATIC_LOCAL(
-      Persistent<AnchorSpecifierValue>, instance,
-      {MakeGarbageCollected<AnchorSpecifierValue>(
-          base::PassKey<AnchorSpecifierValue>(), Type::kDefault)});
-  return instance;
+  static base::NoDestructor<Persistent<AnchorSpecifierValue>> instance(
+      MakeGarbageCollected<AnchorSpecifierValue>(
+          base::PassKey<AnchorSpecifierValue>(), Type::kDefault));
+  CHECK(IsMainThread());
+  return *instance;
 }
 
 AnchorSpecifierValue::AnchorSpecifierValue(base::PassKey<AnchorSpecifierValue>,

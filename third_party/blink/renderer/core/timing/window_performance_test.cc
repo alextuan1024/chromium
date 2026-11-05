@@ -4,10 +4,11 @@
 
 #include "third_party/blink/renderer/core/timing/window_performance.h"
 
+#include <algorithm>
 #include <array>
-#include <cstdint>
 #include <type_traits>
 
+#include "base/json/json_reader.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -16,6 +17,7 @@
 #include "base/test/tracing/trace_event_analyzer.h"
 #include "base/test/tracing/trace_test_utils.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "components/viz/common/frame_timing_details.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
@@ -24,9 +26,13 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/responsiveness_metrics/user_interaction_latency.h"
 #include "third_party/blink/public/mojom/page/page_visibility_state.mojom-blink.h"
+#include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_keyboard_event_init.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_performance_observer_callback.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_performance_observer_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_pointer_event_init.h"
 #include "third_party/blink/renderer/core/dom/document_init.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
@@ -38,14 +44,20 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/performance_monitor.h"
+#include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/loader/document_load_timing.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/performance_entry_names.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
 #include "third_party/blink/renderer/core/testing/mock_policy_container_host.h"
+#include "third_party/blink/renderer/core/testing/sim/sim_request.h"
+#include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
 #include "third_party/blink/renderer/core/timing/event_timing.h"
+#include "third_party/blink/renderer/core/timing/performance_container_timing.h"
+#include "third_party/blink/renderer/core/timing/performance_element_timing.h"
 #include "third_party/blink/renderer/core/timing/performance_event_timing.h"
+#include "third_party/blink/renderer/core/timing/performance_observer.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -177,6 +189,9 @@ class WindowPerformanceTest : public testing::Test,
   void RemoveLongTaskObserver() {
     // simulate with filter options.
     performance_->observer_filter_options_ = PerformanceEntry::kInvalid;
+  }
+  void AddLongAnimationFrameEntry(PerformanceEntry* entry) {
+    performance_->AddLongAnimationFrameEntry(entry);
   }
   void SimulatePaintAndCommit() {
     performance_->OnPaintFinished();
@@ -1575,12 +1590,15 @@ TEST_P(WindowPerformanceTest, ElementTimingTraceEvent) {
   using trace_analyzer::Query;
   trace_analyzer::Start("*");
   // |element| needs to be non-null to prevent a crash.
-  performance_->AddElementTiming(
+  PerformanceElementTiming* entry = PerformanceElementTiming::Create(
       AtomicString("image-paint"), "url", gfx::RectF(10, 20, 30, 40),
-      DOMPaintTimingInfo{2000, 2000},
-      GetTimeOrigin() + base::Milliseconds(1000), AtomicString("identifier"),
-      gfx::Size(200, 300), AtomicString("id"),
-      /*element*/ page_holder_->GetDocument().documentElement());
+      /*load_time=*/1000, AtomicString("identifier"), 200, 300,
+      AtomicString("id"),
+      /*element=*/page_holder_->GetDocument().documentElement(),
+      performance_->DomWindow());
+  entry->FinalizeEntry(DOMPaintTimingInfo{2000, 2000},
+                       performance_->NavigationId().web_exposed_id);
+  performance_->AddElementTiming(entry);
   auto analyzer = trace_analyzer::Stop();
   trace_analyzer::TraceEventVector events;
   Query q = Query::EventNameIs("PerformanceElementTiming");
@@ -1888,11 +1906,14 @@ TEST_P(WindowPerformanceTest, EventTimingCombinedTraceEvents) {
 TEST_P(WindowPerformanceTest, ContainerTimingTraceEvent) {
   using trace_analyzer::Query;
   trace_analyzer::Start("*");
-  performance_->AddContainerTiming(
-      DOMPaintTimingInfo{.paint_time = 2000, .presentation_time = 2000},
-      gfx::Rect(10, 20, 30, 40), 1200, nullptr, AtomicString("identifier"),
-      /*element*/ nullptr,
-      DOMPaintTimingInfo{.paint_time = 1000, .presentation_time = 1000});
+  PerformanceContainerTiming* entry = PerformanceContainerTiming::Create(
+      gfx::Rect(10, 20, 30, 40), 1200, /*root_element=*/nullptr,
+      AtomicString("identifier"), /*last_painted_element=*/nullptr,
+      performance_->DomWindow());
+  entry->FinalizeEntry(DOMPaintTimingInfo{2000, 2000},
+                       performance_->NavigationId().web_exposed_id,
+                       /*first_render_time=*/1000);
+  performance_->AddContainerTiming(entry);
   auto analyzer = trace_analyzer::Stop();
   trace_analyzer::TraceEventVector events;
   Query q = Query::EventNameIs("PerformanceContainerTiming");
@@ -1917,6 +1938,26 @@ TEST_P(WindowPerformanceTest, ContainerTimingTraceEvent) {
   std::string* identifier = arg_dict.FindString("identifier");
   ASSERT_TRUE(identifier);
   EXPECT_EQ(*identifier, "identifier");
+}
+
+TEST_P(WindowPerformanceTest, ContainerTimingDroppedEntriesCount) {
+  // Matches kDefaultContainerTimingBufferSize in performance.cc.
+  constexpr wtf_size_t kBufferSize = 150;
+  for (wtf_size_t i = 0; i <= kBufferSize; ++i) {
+    PerformanceContainerTiming* entry = PerformanceContainerTiming::Create(
+        gfx::Rect(10, 20, 30, 40), 1200, /*root_element=*/nullptr,
+        AtomicString("identifier"), /*last_painted_element=*/nullptr,
+        performance_->DomWindow());
+    entry->FinalizeEntry(DOMPaintTimingInfo{2000, 2000},
+                         performance_->NavigationId().web_exposed_id,
+                         /*first_render_time=*/1000);
+    performance_->AddContainerTiming(entry);
+  }
+  EXPECT_EQ(
+      kBufferSize,
+      performance_->getBufferedEntriesByType(AtomicString("container")).size());
+  EXPECT_EQ(1, performance_->GetDroppedEntriesForTypesForTesting(
+                   PerformanceEntry::kContainer));
 }
 
 TEST_P(WindowPerformanceTest, InteractionID) {
@@ -1986,6 +2027,128 @@ TEST_P(WindowPerformanceTest, InteractionID) {
   CheckEntriesAreReportedToRendererUKM({keydown_entry, keyup_entry,
                                         pointerdown_entry, pointerup_entry,
                                         click_entry});
+}
+
+TEST_P(WindowPerformanceTest, EventTimingUseCounters) {
+  Document& document = page_holder_->GetDocument();
+  EXPECT_FALSE(document.IsUseCounted(WebFeature::kEventTimingEntryEmitted));
+  EXPECT_FALSE(
+      document.IsUseCounted(WebFeature::kEventTimingExplicitlyRequested));
+  EXPECT_FALSE(document.IsUseCounted(WebFeature::kEventTimingObserved));
+
+  // Dispatch an event without an observer: only EntryEmitted is counted.
+  PointerId pointer_id = 1;
+  auto* event1 = CreatePointerEvent(event_type_names::kClick,
+                                    base::TimeTicks::Now(), pointer_id);
+  SimulateEventDispatch(*event1, base::Milliseconds(20));
+  SimulateAllRenderingStages();
+
+  EXPECT_TRUE(document.IsUseCounted(WebFeature::kEventTimingEntryEmitted));
+  EXPECT_FALSE(
+      document.IsUseCounted(WebFeature::kEventTimingExplicitlyRequested));
+  EXPECT_FALSE(document.IsUseCounted(WebFeature::kEventTimingObserved));
+
+  // Register an observer for "event" with durationThreshold 104ms.
+  ScriptState* script_state = GetScriptState();
+  ScriptState::Scope scope(script_state);
+  v8::Local<v8::Function> callback =
+      v8::Function::New(script_state->GetContext(), nullptr).ToLocalChecked();
+  auto* observer = MakeGarbageCollected<PerformanceObserver>(
+      GetWindow(), performance_,
+      V8PerformanceObserverCallback::Create(callback));
+  PerformanceObserverInit* options = PerformanceObserverInit::Create();
+  options->setType("event");
+  options->setDurationThreshold(104);
+  options->setBuffered(false);
+  NonThrowableExceptionState exception_state;
+  observer->observe(script_state, options, exception_state);
+
+  EXPECT_TRUE(
+      document.IsUseCounted(WebFeature::kEventTimingExplicitlyRequested));
+  EXPECT_FALSE(document.IsUseCounted(WebFeature::kEventTimingObserved));
+
+  // Dispatch a short event (20ms < 104ms threshold): CanObserve() is false,
+  // so kEventTimingObserved should remain false.
+  auto* short_event = CreatePointerEvent(event_type_names::kClick,
+                                         base::TimeTicks::Now(), pointer_id);
+  SimulateEventDispatch(*short_event, base::Milliseconds(20));
+  SimulateAllRenderingStages();
+  EXPECT_FALSE(document.IsUseCounted(WebFeature::kEventTimingObserved));
+
+  // Dispatch a long event (120ms >= 104ms threshold): CanObserve() is true,
+  // so kEventTimingObserved becomes true.
+  auto* long_event = CreatePointerEvent(event_type_names::kClick,
+                                        base::TimeTicks::Now(), pointer_id);
+  SimulateEventDispatch(*long_event, base::Milliseconds(120));
+  SimulateAllRenderingStages();
+  EXPECT_TRUE(document.IsUseCounted(WebFeature::kEventTimingObserved));
+}
+
+TEST_P(WindowPerformanceTest, LongAnimationFrameUseCounters) {
+  class DummyLongAnimationFrameEntry final : public PerformanceEntry {
+   public:
+    explicit DummyLongAnimationFrameEntry(DOMWindow* source)
+        : PerformanceEntry(/*duration=*/100.0,
+                           performance_entry_names::kLongAnimationFrame,
+                           /*start_time=*/0.0,
+                           source,
+                           /*navigation_id=*/1) {}
+    const AtomicString& entryType() const override {
+      return performance_entry_names::kLongAnimationFrame;
+    }
+    PerformanceEntryType EntryTypeEnum() const override {
+      return PerformanceEntry::kLongAnimationFrame;
+    }
+  };
+
+  Document& document = page_holder_->GetDocument();
+  EXPECT_FALSE(
+      document.IsUseCounted(WebFeature::kLongAnimationFrameEntryEmitted));
+  EXPECT_FALSE(document.IsUseCounted(
+      WebFeature::kLongAnimationFrameExplicitlyRequested));
+  EXPECT_FALSE(document.IsUseCounted(WebFeature::kLongAnimationFrameObserved));
+
+  // Emit a LoAF entry before any observer is registered: only EntryEmitted
+  // is counted.
+  AddLongAnimationFrameEntry(
+      MakeGarbageCollected<DummyLongAnimationFrameEntry>(GetWindow()));
+  EXPECT_TRUE(
+      document.IsUseCounted(WebFeature::kLongAnimationFrameEntryEmitted));
+  EXPECT_FALSE(document.IsUseCounted(
+      WebFeature::kLongAnimationFrameExplicitlyRequested));
+  EXPECT_FALSE(document.IsUseCounted(WebFeature::kLongAnimationFrameObserved));
+
+  // Observe without buffered:true: ExplicitlyRequested is counted, Observed
+  // remains false.
+  ScriptState* script_state = GetScriptState();
+  ScriptState::Scope scope(script_state);
+  v8::Local<v8::Function> callback =
+      v8::Function::New(script_state->GetContext(), nullptr).ToLocalChecked();
+  auto* observer = MakeGarbageCollected<PerformanceObserver>(
+      GetWindow(), performance_,
+      V8PerformanceObserverCallback::Create(callback));
+  PerformanceObserverInit* options = PerformanceObserverInit::Create();
+  options->setType("long-animation-frame");
+  options->setBuffered(false);
+  NonThrowableExceptionState exception_state;
+  observer->observe(script_state, options, exception_state);
+
+  EXPECT_TRUE(document.IsUseCounted(
+      WebFeature::kLongAnimationFrameExplicitlyRequested));
+  EXPECT_FALSE(document.IsUseCounted(WebFeature::kLongAnimationFrameObserved));
+
+  // Observe with buffered:true: the buffered LoAF entry is enqueued and
+  // triggers Observed.
+  options->setBuffered(true);
+  observer->observe(script_state, options, exception_state);
+  EXPECT_TRUE(document.IsUseCounted(WebFeature::kLongAnimationFrameObserved));
+
+  // Clear Observed and emit a live LoAF entry to verify live notification also
+  // triggers Observed.
+  document.ClearUseCounterForTesting(WebFeature::kLongAnimationFrameObserved);
+  AddLongAnimationFrameEntry(
+      MakeGarbageCollected<DummyLongAnimationFrameEntry>(GetWindow()));
+  EXPECT_TRUE(document.IsUseCounted(WebFeature::kLongAnimationFrameObserved));
 }
 
 INSTANTIATE_TEST_SUITE_P(All, WindowPerformanceTest, ::testing::Bool());
@@ -2476,16 +2639,18 @@ TEST_F(WindowPerformanceNavigationIdTest, NavigationIdHardNavigations) {
     EXPECT_EQ(performance->NavigationId().non_web_exposed_id, 1u);
     ids.push_back(performance->NavigationId().web_exposed_id);
   }
-  // We allow 10 collisions, since the IDs are randomly generated between 100
-  // and 10000.
-  auto last = std::unique(ids.begin(), ids.end());
-  auto num_collisions = std::distance(last, ids.end());
-  EXPECT_LT(num_collisions, 10u);
-  ids.erase(last, ids.end());
   // The IDs are not in sorted order.
   std::vector<uint64_t> sorted_ids(ids.begin(), ids.end());
   std::sort(sorted_ids.begin(), sorted_ids.end());
   EXPECT_NE(sorted_ids, ids);
+
+  // We allow 10 collisions, since the IDs are randomly generated between 100
+  // and 10000.
+  std::sort(ids.begin(), ids.end());
+  auto last = std::unique(ids.begin(), ids.end());
+  auto num_collisions = std::distance(last, ids.end());
+  EXPECT_LT(num_collisions, 10u);
+  ids.erase(last, ids.end());
 }
 
 TEST_F(WindowPerformanceNavigationIdTest, NavigationIdSoftNavigations) {
@@ -2502,5 +2667,246 @@ TEST_F(WindowPerformanceNavigationIdTest, NavigationIdSoftNavigations) {
   uint64_t navigation_id3 = performance->NavigationId().web_exposed_id;
   EXPECT_NE(navigation_id1, navigation_id3);
   EXPECT_LT(navigation_id1, navigation_id3);
+}
+
+class WindowPerformanceSimTest : public SimTest {
+ protected:
+  base::DictValue GetFirstAttributionDict(LocalDOMWindow* window,
+                                          const PerformanceEntry* entry) {
+    ScriptState* script_state = ToScriptStateForMainWorld(window->GetFrame());
+    ScriptState::Scope scope(script_state);
+    v8::Isolate* isolate = script_state->GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::MicrotasksScope microtasks_scope(
+        isolate, script_state->GetContext()->GetMicrotaskQueue(),
+        v8::MicrotasksScope::kDoNotRunMicrotasks);
+    const ScriptObject json_object = entry->toJSONForBinding(script_state);
+    const String json_string = ToBlinkString<String>(
+        isolate,
+        v8::JSON::Stringify(script_state->GetContext(), json_object.V8Object())
+            .ToLocalChecked(),
+        kDoNotExternalize);
+    std::optional<base::DictValue> parsed = base::JSONReader::ReadDict(
+        json_string.Utf8(), base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    CHECK(parsed.has_value());
+    const base::ListValue* attribution_list = parsed->FindList("attribution");
+    CHECK(attribution_list);
+    CHECK_EQ(1u, attribution_list->size());
+    CHECK((*attribution_list)[0].is_dict());
+    return (*attribution_list)[0].GetDict().Clone();
+  }
+
+  void ExpectLongTaskAttribution(LocalDOMWindow* observer_window,
+                                 const PerformanceEntry* entry,
+                                 const char* expected_name,
+                                 const char* expected_container_type,
+                                 const char* expected_container_id,
+                                 const char* expected_container_name,
+                                 const char* expected_container_src) {
+    EXPECT_EQ(expected_name, entry->name());
+    base::DictValue attr = GetFirstAttributionDict(observer_window, entry);
+    const std::string* container_type = attr.FindString("containerType");
+    const std::string* container_id = attr.FindString("containerId");
+    const std::string* container_name = attr.FindString("containerName");
+    const std::string* container_src = attr.FindString("containerSrc");
+    ASSERT_TRUE(container_type);
+    ASSERT_TRUE(container_id);
+    ASSERT_TRUE(container_name);
+    ASSERT_TRUE(container_src);
+    EXPECT_EQ(expected_container_type, *container_type);
+    EXPECT_EQ(expected_container_id, *container_id);
+    EXPECT_EQ(expected_container_name, *container_name);
+    EXPECT_EQ(expected_container_src, *container_src);
+  }
+};
+
+TEST_F(WindowPerformanceSimTest, LongTaskContainerAttributionOriginChecks) {
+  SimRequest main_resource("https://example.com/main.html", "text/html");
+  SimRequest cross_origin_child_resource("https://sub.example.com/child.html",
+                                         "text/html");
+  SimRequest grandchild_resource("https://example.com/grandchild.html",
+                                 "text/html");
+  SimRequest cross_grandchild_resource(
+      "https://sub.example.com/cross_grandchild.html", "text/html");
+  SimRequest same_origin_child_resource(
+      "https://example.com/same_origin_child.html", "text/html");
+
+  LoadURL("https://example.com/main.html");
+  main_resource.Complete(R"HTML(
+    <body>
+      <iframe id="cross-child-id"
+              name="cross-child-name"
+              src="https://sub.example.com/child.html"></iframe>
+      <iframe id="same-child-id"
+              name="same-child-name"
+              src="https://example.com/same_origin_child.html"></iframe>
+    </body>
+  )HTML");
+  cross_origin_child_resource.Complete(R"HTML(
+    <body>
+      <iframe id="grandchild-id"
+              name="grandchild-name"
+              src="https://example.com/grandchild.html"></iframe>
+      <iframe id="cross-grandchild-id"
+              name="cross-grandchild-name"
+              src="https://sub.example.com/cross_grandchild.html"></iframe>
+    </body>
+  )HTML");
+  grandchild_resource.Complete("<body></body>");
+  cross_grandchild_resource.Complete("<body></body>");
+  same_origin_child_resource.Complete("<body></body>");
+
+  auto* cross_iframe = To<HTMLIFrameElement>(
+      GetDocument().getElementById(AtomicString("cross-child-id")));
+  ASSERT_TRUE(cross_iframe);
+  Document* cross_child_doc = cross_iframe->contentDocument();
+  ASSERT_TRUE(cross_child_doc);
+
+  auto* grandchild_iframe = To<HTMLIFrameElement>(
+      cross_child_doc->getElementById(AtomicString("grandchild-id")));
+  ASSERT_TRUE(grandchild_iframe);
+  Document* grandchild_doc = grandchild_iframe->contentDocument();
+  ASSERT_TRUE(grandchild_doc);
+
+  auto* cross_grandchild_iframe = To<HTMLIFrameElement>(
+      cross_child_doc->getElementById(AtomicString("cross-grandchild-id")));
+  ASSERT_TRUE(cross_grandchild_iframe);
+  Document* cross_grandchild_doc = cross_grandchild_iframe->contentDocument();
+  ASSERT_TRUE(cross_grandchild_doc);
+
+  auto* same_iframe = To<HTMLIFrameElement>(
+      GetDocument().getElementById(AtomicString("same-child-id")));
+  ASSERT_TRUE(same_iframe);
+  Document* same_child_doc = same_iframe->contentDocument();
+  ASSERT_TRUE(same_child_doc);
+
+  WindowPerformance* main_perf =
+      DOMWindowPerformance::performance(*GetDocument().domWindow());
+  WindowPerformance* cross_child_perf =
+      DOMWindowPerformance::performance(*cross_child_doc->domWindow());
+  WindowPerformance* grandchild_perf =
+      DOMWindowPerformance::performance(*grandchild_doc->domWindow());
+  WindowPerformance* cross_grandchild_perf =
+      DOMWindowPerformance::performance(*cross_grandchild_doc->domWindow());
+  WindowPerformance* same_child_perf =
+      DOMWindowPerformance::performance(*same_child_doc->domWindow());
+  ASSERT_TRUE(main_perf);
+  ASSERT_TRUE(cross_child_perf);
+  ASSERT_TRUE(grandchild_perf);
+  ASSERT_TRUE(cross_grandchild_perf);
+  ASSERT_TRUE(same_child_perf);
+
+  const base::TimeTicks start_time = base::TimeTicks::Now();
+  const base::TimeTicks end_time = start_time + base::Milliseconds(60);
+
+  // 1. Cross-origin child frame observing its own long task ("self"):
+  // The container <iframe> belongs to the cross-origin parent document
+  // (https://example.com), so container attributes must be withheld.
+  cross_child_perf->ReportLongTask(start_time, end_time,
+                                   cross_child_doc->domWindow(),
+                                   /*has_multiple_contexts=*/false);
+  PerformanceEntryVector cross_child_entries =
+      cross_child_perf->getBufferedEntriesByType(
+          performance_entry_names::kLongtask);
+  ASSERT_EQ(1u, cross_child_entries.size());
+  ExpectLongTaskAttribution(cross_child_doc->domWindow(),
+                            cross_child_entries[0].Get(), "self", "window", "",
+                            "", "");
+
+  // 2. Top-level frame observing a long task in a same-origin grandchild frame
+  // embedded inside an intermediate cross-origin frame
+  // ("same-origin-descendant"):
+  // The grandchild's container <iframe> belongs to the cross-origin child
+  // document (https://sub.example.com), so container attributes must be
+  // withheld.
+  main_perf->ReportLongTask(start_time, end_time, grandchild_doc->domWindow(),
+                            /*has_multiple_contexts=*/false);
+  PerformanceEntryVector main_entries =
+      main_perf->getBufferedEntriesByType(performance_entry_names::kLongtask);
+  ASSERT_EQ(1u, main_entries.size());
+  ExpectLongTaskAttribution(GetDocument().domWindow(), main_entries[0].Get(),
+                            "same-origin-descendant", "window", "", "", "");
+
+  // 3. Unrelated same-origin frame observing a long task in a same-origin
+  // frame whose embedding parent document is cross-origin ("same-origin"):
+  // container attributes must be withheld.
+  same_child_perf->ReportLongTask(start_time, end_time,
+                                  grandchild_doc->domWindow(),
+                                  /*has_multiple_contexts=*/false);
+  PerformanceEntryVector same_child_entries =
+      same_child_perf->getBufferedEntriesByType(
+          performance_entry_names::kLongtask);
+  ASSERT_EQ(1u, same_child_entries.size());
+  ExpectLongTaskAttribution(same_child_doc->domWindow(),
+                            same_child_entries[0].Get(), "same-origin",
+                            "window", "", "", "");
+
+  // 4. Descendant frame observing a long task in a same-origin ancestor whose
+  // embedding parent document is cross-origin ("same-origin-ancestor"):
+  // cross_grandchild (https://sub.example.com) observes cross_child
+  // (https://sub.example.com), whose container <iframe> lives in main_doc
+  // (https://example.com), so container attributes must be withheld.
+  cross_grandchild_perf->ReportLongTask(start_time, end_time,
+                                        cross_child_doc->domWindow(),
+                                        /*has_multiple_contexts=*/false);
+  PerformanceEntryVector cross_grandchild_entries =
+      cross_grandchild_perf->getBufferedEntriesByType(
+          performance_entry_names::kLongtask);
+  ASSERT_EQ(1u, cross_grandchild_entries.size());
+  ExpectLongTaskAttribution(cross_grandchild_doc->domWindow(),
+                            cross_grandchild_entries[0].Get(),
+                            "same-origin-ancestor", "window", "", "", "");
+
+  // 5. Positive controls: When the embedding parent document is same-origin
+  // with the observing frame ("self", "same-origin-descendant", "same-origin",
+  // and "cross-origin-descendant"), container attributes are populated.
+  same_child_perf->ReportLongTask(start_time + base::Milliseconds(100),
+                                  end_time + base::Milliseconds(100),
+                                  same_child_doc->domWindow(),
+                                  /*has_multiple_contexts=*/false);
+  same_child_entries = same_child_perf->getBufferedEntriesByType(
+      performance_entry_names::kLongtask);
+  ASSERT_EQ(2u, same_child_entries.size());
+  ExpectLongTaskAttribution(same_child_doc->domWindow(),
+                            same_child_entries[1].Get(), "self", "iframe",
+                            "same-child-id", "same-child-name",
+                            "https://example.com/same_origin_child.html");
+
+  main_perf->ReportLongTask(start_time + base::Milliseconds(100),
+                            end_time + base::Milliseconds(100),
+                            same_child_doc->domWindow(),
+                            /*has_multiple_contexts=*/false);
+  main_entries =
+      main_perf->getBufferedEntriesByType(performance_entry_names::kLongtask);
+  ASSERT_EQ(2u, main_entries.size());
+  ExpectLongTaskAttribution(GetDocument().domWindow(), main_entries[1].Get(),
+                            "same-origin-descendant", "iframe", "same-child-id",
+                            "same-child-name",
+                            "https://example.com/same_origin_child.html");
+
+  grandchild_perf->ReportLongTask(start_time + base::Milliseconds(100),
+                                  end_time + base::Milliseconds(100),
+                                  same_child_doc->domWindow(),
+                                  /*has_multiple_contexts=*/false);
+  PerformanceEntryVector grandchild_entries =
+      grandchild_perf->getBufferedEntriesByType(
+          performance_entry_names::kLongtask);
+  ASSERT_EQ(1u, grandchild_entries.size());
+  ExpectLongTaskAttribution(grandchild_doc->domWindow(),
+                            grandchild_entries[0].Get(), "same-origin",
+                            "iframe", "same-child-id", "same-child-name",
+                            "https://example.com/same_origin_child.html");
+
+  main_perf->ReportLongTask(start_time + base::Milliseconds(200),
+                            end_time + base::Milliseconds(200),
+                            cross_child_doc->domWindow(),
+                            /*has_multiple_contexts=*/false);
+  main_entries =
+      main_perf->getBufferedEntriesByType(performance_entry_names::kLongtask);
+  ASSERT_EQ(3u, main_entries.size());
+  ExpectLongTaskAttribution(GetDocument().domWindow(), main_entries[2].Get(),
+                            "cross-origin-descendant", "iframe",
+                            "cross-child-id", "cross-child-name",
+                            "https://sub.example.com/child.html");
 }
 }  // namespace blink

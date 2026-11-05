@@ -7,13 +7,20 @@
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_WIN)
-#include "base/logging.h"
-#include "base/strings/utf_string_conversions.h"
-
 // Needed for GetComputerNameExW/ComputerNameDnsFullyQualified.
 #include <windows.h>
+
+#include <string_view>
+
+#include "base/logging.h"
+#include "base/strings/utf_string_conversions.h"
 #else
 #include "net/base/network_interfaces.h"
+#endif
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#include "base/strings/string_number_conversions.h"
+#include "crypto/obsolete/md5.h"
 #endif
 
 namespace remoting {
@@ -27,7 +34,7 @@ std::string GetFqdn() {
     return std::string();
   }
   std::string fqdn;
-  if (!base::WideToUTF8(buffer, size, &fqdn)) {
+  if (!base::WideToUTF8(std::wstring_view(buffer, size), &fqdn)) {
     LOG(ERROR) << "Failed to convert from Wide to UTF8";
     return std::string();
   }
@@ -36,5 +43,12 @@ std::string GetFqdn() {
   return net::GetHostName();
 #endif
 }
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+std::string GetHostHash() {
+  return "host#" +
+         base::HexEncodeLower(crypto::obsolete::Md5::Hash(net::GetHostName()));
+}
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace remoting

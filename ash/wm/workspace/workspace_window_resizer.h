@@ -14,7 +14,6 @@
 #include "ash/wm/workspace/magnetism_matcher.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "ui/aura/window_tracker.h"
 #include "ui/compositor/presentation_time_recorder.h"
@@ -45,7 +44,7 @@ class ASH_EXPORT WorkspaceWindowResizer : public WindowResizer {
 
   static std::unique_ptr<WorkspaceWindowResizer> Create(
       WindowState* window_state,
-      const std::vector<raw_ptr<aura::Window, VectorExperimental>>&
+      const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>&
           attached_windows);
 
   // WindowResizer:
@@ -61,7 +60,7 @@ class ASH_EXPORT WorkspaceWindowResizer : public WindowResizer {
 
   WorkspaceWindowResizer(
       WindowState* window_state,
-      const std::vector<raw_ptr<aura::Window, VectorExperimental>>&
+      const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>&
           attached_windows);
   WorkspaceWindowResizer(const WorkspaceWindowResizer&) = delete;
   WorkspaceWindowResizer& operator=(const WorkspaceWindowResizer&) = delete;
@@ -177,15 +176,10 @@ class ASH_EXPORT WorkspaceWindowResizer : public WindowResizer {
   WindowState* window_state() { return window_state_; }
   const WindowState* window_state() const { return window_state_; }
 
-  base::WeakPtr<WorkspaceWindowResizer> GetWeakPtr() {
-    return weak_ptr_factory_.GetWeakPtr();
-  }
-
   // Returns the currently used instance for test.
   static WorkspaceWindowResizer* GetInstanceForTest();
 
-  const std::vector<raw_ptr<aura::Window, VectorExperimental>>
-      attached_windows_;
+  const std::vector<raw_ptr<aura::Window, DanglingUntriaged>> attached_windows_;
 
   bool did_lock_cursor_ = false;
 
@@ -247,10 +241,6 @@ class ASH_EXPORT WorkspaceWindowResizer : public WindowResizer {
 
   // Optional window splitter for tiling groups.
   std::unique_ptr<WindowSplitter> window_splitter_;
-
-  // Used to determine if this has been deleted during a drag such as when a tab
-  // gets dragged into another browser window.
-  base::WeakPtrFactory<WorkspaceWindowResizer> weak_ptr_factory_{this};
 };
 
 }  // namespace ash

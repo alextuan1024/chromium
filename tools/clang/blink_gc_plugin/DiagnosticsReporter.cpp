@@ -85,6 +85,10 @@ const char kGCedVar[] =
     "[blink-gc] Using GC managed class %1 as variable %0 is not allowed "
     "(Allocate with MakeGarbageCollected and use raw pointer instead):";
 
+const char kGCedReturn[] =
+    "[blink-gc] Using GC managed class %1 as return type of %0 is not allowed "
+    "(Allocate with MakeGarbageCollected and use raw pointer instead):";
+
 const char kRedundantTraceDispatchMethod[] =
     "[blink-gc] Class %1 inherits from a hierarchy that uses "
     "TraceAfterDispatch to dispatch tracing. Only the hierarchy base class %0 "
@@ -275,6 +279,11 @@ const char kCollectionOfMembers[] =
     "[blink-gc] Disallowed collection %0 found; %1 is a "
     "Member type. Use heap collections to hold Members.";
 
+const char kCollectionOfStackAllocated[] =
+    "[blink-gc] Disallowed collection %0 found; %1 is a "
+    "stack-allocated type. STL collections cannot hold stack-allocated "
+    "objects.";
+
 } // namespace
 
 DiagnosticBuilder DiagnosticsReporter::ReportDiagnostic(
@@ -347,6 +356,7 @@ DiagnosticsReporter::DiagnosticsReporter(
       diagnostic_.getCustomDiagID(getErrorLevel(), kWeakPtrToGCManagedClass);
   diag_gced_field_ = diagnostic_.getCustomDiagID(getErrorLevel(), kGCedField);
   diag_gced_var_ = diagnostic_.getCustomDiagID(getErrorLevel(), kGCedVar);
+  diag_gced_return_ = diagnostic_.getCustomDiagID(getErrorLevel(), kGCedReturn);
   diag_redundant_trace_dispatch_method_ = diagnostic_.getCustomDiagID(
       getErrorLevel(), kRedundantTraceDispatchMethod);
   diag_redundant_finalize_dispatch_method_ = diagnostic_.getCustomDiagID(
@@ -431,6 +441,8 @@ DiagnosticsReporter::DiagnosticsReporter(
       diagnostic_.getCustomDiagID(getErrorLevel(), kCollectionOfGced);
   diag_collection_of_members_ =
       diagnostic_.getCustomDiagID(getErrorLevel(), kCollectionOfMembers);
+  diag_collection_of_stack_allocated_ =
+      diagnostic_.getCustomDiagID(getErrorLevel(), kCollectionOfStackAllocated);
 }
 
 bool DiagnosticsReporter::hasErrorOccurred() const
@@ -804,11 +816,19 @@ void DiagnosticsReporter::NoteOverriddenNonVirtualTrace(
 }
 
 void DiagnosticsReporter::UniquePtrUsedWithGC(
+    const clang::Decl* decl,
+    const clang::CXXRecordDecl* unique_ptr,
+    const clang::CXXRecordDecl* gc_type) {
+  ReportDiagnostic(decl->getBeginLoc(), diag_unique_ptr_used_with_gc_)
+      << unique_ptr << gc_type << decl->getSourceRange();
+}
+
+void DiagnosticsReporter::UniquePtrUsedWithGC(
     const clang::Expr* expr,
-    const clang::FunctionDecl* bad_function,
+    const clang::CXXRecordDecl* unique_ptr,
     const clang::CXXRecordDecl* gc_type) {
   ReportDiagnostic(expr->getBeginLoc(), diag_unique_ptr_used_with_gc_)
-      << bad_function << gc_type << expr->getSourceRange();
+      << unique_ptr << gc_type << expr->getSourceRange();
 }
 
 void DiagnosticsReporter::OptionalDeclUsedWithGC(
@@ -862,6 +882,14 @@ void DiagnosticsReporter::RawPtrOrRefNewExprUsedWithGC(
 }
 
 void DiagnosticsReporter::VariantUsedWithGC(
+    const clang::Decl* decl,
+    const clang::CXXRecordDecl* variant,
+    const clang::CXXRecordDecl* gc_type) {
+  ReportDiagnostic(decl->getBeginLoc(), diag_variant_used_with_gc_)
+      << variant << gc_type << decl->getSourceRange();
+}
+
+void DiagnosticsReporter::VariantUsedWithGC(
     const clang::Expr* expr,
     const clang::CXXRecordDecl* variant,
     const clang::CXXRecordDecl* gc_type) {
@@ -901,9 +929,25 @@ void DiagnosticsReporter::CollectionOfMembers(
       << collection << member << expr->getSourceRange();
 }
 
-void DiagnosticsReporter::MemberOnStack(const clang::VarDecl* var) {
+void DiagnosticsReporter::CollectionOfStackAllocated(
+    const clang::Decl* decl,
+    const clang::CXXRecordDecl* collection,
+    const clang::CXXRecordDecl* stack_allocated) {
+  ReportDiagnostic(decl->getBeginLoc(), diag_collection_of_stack_allocated_)
+      << collection << stack_allocated << decl->getSourceRange();
+}
+
+void DiagnosticsReporter::CollectionOfStackAllocated(
+    const clang::Expr* expr,
+    const clang::CXXRecordDecl* collection,
+    const clang::CXXRecordDecl* stack_allocated) {
+  ReportDiagnostic(expr->getBeginLoc(), diag_collection_of_stack_allocated_)
+      << collection << stack_allocated << expr->getSourceRange();
+}
+
+void DiagnosticsReporter::MemberOnStack(const clang::NamedDecl* var) {
   ReportDiagnostic(var->getBeginLoc(), diag_member_on_stack_)
-      << var->getName() << var->getSourceRange();
+      << var->getNameAsString() << var->getSourceRange();
 }
 
 void DiagnosticsReporter::AdditionalPadding(const clang::RecordDecl* record,
@@ -919,6 +963,13 @@ void DiagnosticsReporter::WeakPtrToGCed(const clang::Decl* decl,
       << weak_ptr << gc_type << decl->getSourceRange();
 }
 
+void DiagnosticsReporter::WeakPtrToGCed(const clang::Expr* expr,
+                                        const clang::CXXRecordDecl* weak_ptr,
+                                        const clang::CXXRecordDecl* gc_type) {
+  ReportDiagnostic(expr->getBeginLoc(), diag_weak_ptr_to_gc_managed_class_)
+      << weak_ptr << gc_type << expr->getSourceRange();
+}
+
 void DiagnosticsReporter::GCedField(const clang::FieldDecl* field,
                                     const clang::CXXRecordDecl* gctype) {
   ReportDiagnostic(field->getBeginLoc(), diag_gced_field_)
@@ -928,4 +979,9 @@ void DiagnosticsReporter::GCedVar(const clang::VarDecl* var,
                                   const clang::CXXRecordDecl* gctype) {
   ReportDiagnostic(var->getBeginLoc(), diag_gced_var_)
       << var << gctype << var->getSourceRange();
+}
+void DiagnosticsReporter::GCedReturn(const clang::FunctionDecl* func,
+                                     const clang::CXXRecordDecl* gctype) {
+  ReportDiagnostic(func->getBeginLoc(), diag_gced_return_)
+      << func << gctype << func->getSourceRange();
 }

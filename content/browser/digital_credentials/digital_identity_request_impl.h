@@ -17,7 +17,6 @@
 #include "content/public/browser/digital_identity_provider.h"
 #include "content/public/browser/document_service.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "services/data_decoder/public/cpp/data_decoder.h"
 #include "third_party/blink/public/mojom/webid/digital_identity_request.mojom.h"
 
 namespace content {
@@ -30,30 +29,37 @@ class RenderFrameHost;
 //
 // In practice, it is owned and managed by a RenderFrameHost. It accomplishes
 // that via subclassing DocumentService, which observes the lifecycle of a
-// RenderFrameHost and manages its own memory.
+// RenderFrameHost and manages its own memory. Because DocumentService stays
+// alive when a document enters BackForwardCache, DigitalIdentityRequestImpl
+// also subclasses WebContentsObserver to detect transitions out of the active
+// lifecycle state and abort pending requests (dismissing platform UI) without
+// disabling BackForwardCache.
 // Create() creates a self-managed instance of DigitalIdentityRequestImpl and
 // binds it to the receiver.
 class CONTENT_EXPORT DigitalIdentityRequestImpl
-    : public DocumentService<blink::mojom::DigitalIdentityRequest> {
+    : public DocumentService<blink::mojom::DigitalIdentityRequest>,
+      public WebContentsObserver {
  public:
   // The return value is only intended to be used in tests.
   static base::WeakPtr<DigitalIdentityRequestImpl> CreateInstance(
       RenderFrameHost&,
       mojo::PendingReceiver<blink::mojom::DigitalIdentityRequest>);
 
-  // Returns the type of interstitial to show based on the request contents and
-  // the origin of the request.
-  static std::optional<DigitalIdentityInterstitialType> ComputeInterstitialType(
+  // Returns the UI warning level to hint to the credential provider based on
+  // the request contents and the origin of the request.
+  static DigitalIdentityProvider::UiWarningLevel ComputeUiWarningLevel(
       RenderFrameHost& render_frame_host,
-      const DigitalIdentityProvider* provider,
+      const DigitalIdentityProvider& provider,
       const std::vector<blink::mojom::DigitalCredentialGetRequestPtr>&
           digital_credential_requests);
 
+  DigitalIdentityRequestImpl(
+      RenderFrameHost&,
+      mojo::PendingReceiver<blink::mojom::DigitalIdentityRequest>,
+      base::SelfDeletingPassKey key);
   DigitalIdentityRequestImpl(const DigitalIdentityRequestImpl&) = delete;
   DigitalIdentityRequestImpl& operator=(const DigitalIdentityRequestImpl&) =
       delete;
-
-  ~DigitalIdentityRequestImpl() override;
 
   // blink::mojom::DigitalIdentityRequest:
   void Get(std::vector<blink::mojom::DigitalCredentialGetRequestPtr>
@@ -66,10 +72,16 @@ class CONTENT_EXPORT DigitalIdentityRequestImpl
 
   void Abort() override;
 
+  // WebContentsObserver:
+  // Aborts any in-flight request if the owning `render_frame_host()` becomes
+  // inactive (e.g. enters BackForwardCache).
+  void RenderFrameHostStateChanged(
+      RenderFrameHost* render_frame_host,
+      RenderFrameHost::LifecycleState old_state,
+      RenderFrameHost::LifecycleState new_state) override;
+
  private:
-  DigitalIdentityRequestImpl(
-      RenderFrameHost&,
-      mojo::PendingReceiver<blink::mojom::DigitalIdentityRequest>);
+  ~DigitalIdentityRequestImpl() override;
 
   // Returns the active virtual wallet action for this frame, or
   // std::nullopt if none is configured (request should proceed normally).
@@ -77,26 +89,6 @@ class CONTENT_EXPORT DigitalIdentityRequestImpl
 
   // Returns true if the request was handled by the virtual wallet.
   bool HandleVirtualWalletAction();
-
-  // Called when the create request JSON has been parsed.
-  void OnCreateRequestJsonParsed(
-      std::string protocol,
-      base::Value request_to_send,
-      data_decoder::DataDecoder::ValueOrError parsed_result);
-
-  // Called after fetching the user's identity. Shows an interstitial if needed.
-  void ShowInterstitialIfNeeded(
-      bool is_only_requesting_age,
-      base::expected<std::string,
-                     DigitalIdentityProvider::RequestStatusForMetrics>
-          response);
-
-  // Called when the user has fulfilled the interstitial requirement. Will be
-  // called immediately after OnGetRequestJsonParsed() if no interstitial is
-  // needed.
-  void OnInterstitialDone(base::Value request_to_send,
-                          DigitalIdentityProvider::RequestStatusForMetrics
-                              status_after_interstitial);
 
   // Infers blink::mojom::RequestDigitalIdentityStatus based on
   // `status_for_metrics`.
@@ -114,11 +106,6 @@ class CONTENT_EXPORT DigitalIdentityRequestImpl
 
   std::unique_ptr<DigitalIdentityProvider> provider_;
   GetCallback callback_;
-
-  // Callback which updates interstitial to inform user that the credential
-  // request has been aborted.
-  DigitalIdentityProvider::DigitalIdentityInterstitialAbortCallback
-      update_interstitial_on_abort_callback_;
 
   base::WeakPtrFactory<DigitalIdentityRequestImpl> weak_ptr_factory_{this};
 };

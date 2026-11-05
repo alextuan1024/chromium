@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
 
@@ -51,10 +52,13 @@ void WorkletModuleScriptFetcher::Fetch(
       kNoCompileHintsProducer = nullptr;
   constexpr v8_compile_hints::V8CrowdsourcedCompileHintsConsumer*
       kNoCompileHintsConsumer = nullptr;
+  // The isolate is only used for streaming and for consuming a code cache off
+  // the main thread, and NotifyFinished() takes neither (the params may be
+  // passed to another thread), so pass none even for a main-thread worklet.
+  constexpr v8::Isolate* kNoIsolate = nullptr;
   ScriptResource::Fetch(fetch_params, fetch_client_settings_object_fetcher,
-                        this, global_scope_->GetIsolate(),
-                        ScriptResource::kNoStreaming, kNoCompileHintsProducer,
-                        kNoCompileHintsConsumer,
+                        this, kNoIsolate, ScriptResource::kNoStreaming,
+                        kNoCompileHintsProducer, kNoCompileHintsConsumer,
                         v8_compile_hints::MagicCommentMode::kNone);
 }
 
@@ -145,8 +149,7 @@ void WorkletModuleScriptFetcher::NotifyFinished(Resource* resource) {
         "Failed to load worklet module script: " + url_.GetString();
     switch (error_type) {
       case WorkletModuleError::Type::kHttp:
-        message = message +
-                  " (HTTP status: " + String::Number(http_status_code) + ")";
+        message = Format("{} (HTTP status: {})", message, http_status_code);
         break;
       case WorkletModuleError::Type::kCors:
         message = message + " (CORS or access check error)";

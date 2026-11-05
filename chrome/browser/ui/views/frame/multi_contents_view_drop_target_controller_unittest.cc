@@ -13,7 +13,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
@@ -113,13 +112,6 @@ class MockTabDragController : public TabDragTarget::DragController {
   MOCK_METHOD(const TabDragContext*, GetAttachedContext, (), (const, override));
 };
 
-class MockTabSlotView : public TabSlotView {
- public:
-  // TabSlotView's pure virtual methods:
-  MOCK_METHOD(ViewType, GetTabSlotViewType, (), (const, override));
-  MOCK_METHOD(TabSizeInfo, GetTabSizeInfo, (), (const, override));
-};
-
 class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
  public:
   MultiContentsViewDropTargetControllerTest() = default;
@@ -131,8 +123,6 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
         gfx::AnimationTestApi::SetPrefersReducedMotionForTesting(false);
     SetAnimationModeForTesting(
         gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED);
-    feature_list_.InitWithFeaturesAndParameters(EnabledFeaturesAndParameters(),
-                                                {});
     scoped_rtl_.emplace(false);
     multi_contents_view_ = std::make_unique<views::View>();
     drop_target_view_ = multi_contents_view_->AddChildView(
@@ -148,11 +138,9 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
     multi_contents_view_->SetSize(kMultiContentsViewSize);
 
     session_data_.tab_drag_data_ = {
-        TabDragData(&tab_drag_context_, &tab_slot_view_),
+        TabDragData(&tab_drag_context_, &tab_view_),
     };
-    session_data_.tab_drag_data_[0].attached_view = &tab_slot_view_;
-    EXPECT_CALL(tab_slot_view_, GetTabSlotViewType)
-        .WillRepeatedly(testing::Return(TabSlotView::ViewType::kTab));
+    session_data_.tab_drag_data_[0].attached_view = &tab_view_;
     EXPECT_CALL(mock_tab_drag_controller_, GetSessionData)
         .WillRepeatedly(testing::ReturnRef(session_data_));
   }
@@ -179,12 +167,6 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
   MultiContentsViewDropTargetController& controller() { return *controller_; }
   MultiContentsDropTargetView& drop_target_view() { return *drop_target_view_; }
   PrefService* prefs() { return prefs_.get(); }
-
-  virtual const std::vector<base::test::FeatureRefAndParams>
-  EnabledFeaturesAndParameters() {
-    return std::vector<base::test::FeatureRefAndParams>{
-        {tabs::kSplitViewHorizontal, {}}};
-  }
 
   // Fast forwards by an arbitrary time to ensure timed events are executed.
   void FastForward(base::TimeDelta amount) {
@@ -346,14 +328,11 @@ class MultiContentsViewDropTargetControllerTest : public ChromeViewsTestBase {
 
   MockDropDelegate& drop_delegate() { return drop_delegate_; }
 
- protected:
-  base::test::ScopedFeatureList feature_list_;
-
  private:
   MockDropDelegate drop_delegate_;
   MockTabDragController mock_tab_drag_controller_;
   DragSessionData session_data_;
-  MockTabSlotView tab_slot_view_;
+  views::View tab_view_;
   MockTabDragContext tab_drag_context_;
   std::unique_ptr<MultiContentsViewDropTargetController> controller_;
   std::unique_ptr<views::View> multi_contents_view_;
@@ -504,8 +483,9 @@ TEST_P(MultiContentsViewDropTargetControllerParamTest,
   selection.old_contents = reinterpret_cast<content::WebContents*>(1);
   selection.new_contents = reinterpret_cast<content::WebContents*>(2);
 
-  controller().OnTabStripModelChanged(&tab_strip_model, TabStripModelChange(),
-                                      selection);
+  controller().OnTabStripModelChanged(
+      &tab_strip_model,
+      TabStripModelChange(TabStripModelChange::SelectionOnly()), selection);
   FastForward(kDropTargetAnimationDuration);
 
   // The drop target should be hidden.
@@ -517,8 +497,8 @@ TEST_P(MultiContentsViewDropTargetControllerParamTest,
        OnTabDragUpdated_HidesTargetWhenDraggingMultipleTabs) {
   MockTabDragController mock_tab_drag_controller;
   DragSessionData session_data;
-  MockTabSlotView tab1;
-  MockTabSlotView tab2;
+  views::View tab1;
+  views::View tab2;
   MockTabDragContext tab_drag_context;
   session_data.tab_drag_data_ = {
       TabDragData(&tab_drag_context, &tab1),
@@ -526,10 +506,6 @@ TEST_P(MultiContentsViewDropTargetControllerParamTest,
   };
   session_data.tab_drag_data_[0].attached_view = &tab1;
   session_data.tab_drag_data_[1].attached_view = &tab2;
-  EXPECT_CALL(tab1, GetTabSlotViewType)
-      .WillRepeatedly(testing::Return(TabSlotView::ViewType::kTab));
-  EXPECT_CALL(tab2, GetTabSlotViewType)
-      .WillRepeatedly(testing::Return(TabSlotView::ViewType::kTab));
 
   // Simulate showing the drop target first.
   DragTabTo(DragPointForDropTargetShow());
@@ -550,15 +526,13 @@ TEST_P(MultiContentsViewDropTargetControllerParamTest,
        OnTabDragUpdated_HidesTargetWhenDraggingGroup) {
   MockTabDragController mock_tab_drag_controller;
   DragSessionData session_data;
-  MockTabSlotView tab1;
+  views::View tab1;
   MockTabDragContext tab_drag_context;
   session_data.tab_drag_data_ = {
       TabDragData(&tab_drag_context, &tab1),
   };
   session_data.tab_drag_data_[0].attached_view = &tab1;
   session_data.dragging_groups.insert(tab_groups::TabGroupId::GenerateNew());
-  EXPECT_CALL(tab1, GetTabSlotViewType)
-      .WillRepeatedly(testing::Return(TabSlotView::ViewType::kTab));
 
   // Simulate showing the drop target first.
   DragTabTo(DragPointForDropTargetShow());
@@ -579,14 +553,12 @@ TEST_P(MultiContentsViewDropTargetControllerParamTest,
        OnTabDragUpdated_ShowsAndHidesTargetWhenDraggingSingleTab) {
   MockTabDragController mock_tab_drag_controller;
   DragSessionData session_data;
-  MockTabSlotView tab1;
+  views::View tab1;
   MockTabDragContext tab_drag_context;
   session_data.tab_drag_data_ = {
       TabDragData(&tab_drag_context, &tab1),
   };
   session_data.tab_drag_data_[0].attached_view = &tab1;
-  EXPECT_CALL(tab1, GetTabSlotViewType)
-      .WillRepeatedly(testing::Return(TabSlotView::ViewType::kTab));
   EXPECT_CALL(mock_tab_drag_controller, GetSessionData)
       .WillRepeatedly(testing::ReturnRef(session_data));
 
@@ -635,14 +607,12 @@ TEST_P(MultiContentsViewDropTargetControllerParamTest,
        OnTabDragUpdated_HideDropTargetOnOutOfBounds) {
   MockTabDragController mock_tab_drag_controller;
   DragSessionData session_data;
-  MockTabSlotView tab1;
+  views::View tab1;
   MockTabDragContext tab_drag_context;
   session_data.tab_drag_data_ = {
       TabDragData(&tab_drag_context, &tab1),
   };
   session_data.tab_drag_data_[0].attached_view = &tab1;
-  EXPECT_CALL(tab1, GetTabSlotViewType)
-      .WillRepeatedly(testing::Return(TabSlotView::ViewType::kTab));
   EXPECT_CALL(mock_tab_drag_controller, GetSessionData)
       .WillRepeatedly(testing::ReturnRef(session_data));
 
@@ -735,24 +705,6 @@ TEST_F(MultiContentsViewDropTargetControllerTest, BottomDropTargetTab) {
 
 // Tests that link dragging does not show a bottom drop target.
 TEST_F(MultiContentsViewDropTargetControllerTest, BottomDropTargetLink) {
-  DragURLTo(DragPointForDropTargetShow(DropSide::BOTTOM, false));
-  FastForward(MultiContentsViewDropTargetController::
-                  kShowDropTargetForLinkAfterHideDelay);
-  EXPECT_FALSE(drop_target_view().GetVisible());
-}
-
-class MultiContentsViewDropTargetControllerHorizontalDisabledTest
-    : public MultiContentsViewDropTargetControllerTest {
- public:
-  const std::vector<base::test::FeatureRefAndParams>
-  EnabledFeaturesAndParameters() override {
-    return std::vector<base::test::FeatureRefAndParams>{};
-  }
-};
-
-// Tests that the bottom drop target is disabled when the feature flag is off.
-TEST_F(MultiContentsViewDropTargetControllerHorizontalDisabledTest,
-       BottomDropTargetDisabled) {
   DragURLTo(DragPointForDropTargetShow(DropSide::BOTTOM, false));
   FastForward(MultiContentsViewDropTargetController::
                   kShowDropTargetForLinkAfterHideDelay);
@@ -927,7 +879,7 @@ TEST_P(MultiContentsViewDropTargetControllerParamTest, NudgeToFullToHidden) {
 TEST_P(MultiContentsViewDropTargetControllerParamTest, HandleTabDrop) {
   MockTabDragController mock_tab_drag_controller;
   DragSessionData session_data;
-  MockTabSlotView tab1;
+  views::View tab1;
   MockTabDragContext tab_drag_context;
 
   // Show the drop target on the END side by simulating a single tab drag.
@@ -936,8 +888,6 @@ TEST_P(MultiContentsViewDropTargetControllerParamTest, HandleTabDrop) {
   };
   session_data.tab_drag_data_[0].attached_view = &tab1;
 
-  EXPECT_CALL(tab1, GetTabSlotViewType)
-      .WillRepeatedly(testing::Return(TabSlotView::ViewType::kTab));
   EXPECT_CALL(mock_tab_drag_controller, GetSessionData)
       .WillRepeatedly(testing::ReturnRef(session_data));
 
@@ -1073,14 +1023,12 @@ TEST_P(MultiContentsViewDropTargetControllerParamTest,
        OnTabDragUpdated_SetsDragTypeToTab) {
   MockTabDragController mock_tab_drag_controller;
   DragSessionData session_data;
-  MockTabSlotView tab1;
+  views::View tab1;
   MockTabDragContext tab_drag_context;
   session_data.tab_drag_data_ = {
       TabDragData(&tab_drag_context, &tab1),
   };
   session_data.tab_drag_data_[0].attached_view = &tab1;
-  EXPECT_CALL(tab1, GetTabSlotViewType)
-      .WillRepeatedly(testing::Return(TabSlotView::ViewType::kTab));
   EXPECT_CALL(mock_tab_drag_controller, GetSessionData)
       .WillRepeatedly(testing::ReturnRef(session_data));
 

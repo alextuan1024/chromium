@@ -18,7 +18,7 @@ public class PersistentStoreCleanerFactory {
     private PersistentStoreCleanerFactory() {}
 
     private static final ProfileKeyedMap<PersistentStoreCleaner> sProfileMap =
-            new ProfileKeyedMap<>(ProfileKeyedMap.noRequiredCleanupAction());
+            ProfileKeyedMap.createMapOfDestroyables();
     private static @Nullable PersistentStoreCleaner sCleanerForTesting;
 
     /**
@@ -38,6 +38,27 @@ public class PersistentStoreCleanerFactory {
                                 localProfile,
                                 new TabStateStoreCleaner(),
                                 new TabPersistentStoreImplCleaner()));
+    }
+
+    /**
+     * Look up the cleaner if instantiated for the given profile, or null otherwise.
+     *
+     * @param profile The profile used to lookup the cleaner.
+     * @return The {@link PersistentStoreCleaner} instance if instantiated, or null.
+     */
+    public static @Nullable PersistentStoreCleaner getIfInstantiatedForProfile(
+            @Nullable Profile profile) {
+        if (sCleanerForTesting != null) {
+            return sCleanerForTesting;
+        }
+        if (profile == null || profile.shutdownStarted()) {
+            return null;
+        }
+        Profile originalProfile = profile.getOriginalProfile();
+        if (originalProfile.shutdownStarted()) {
+            return null;
+        }
+        return sProfileMap.getForProfile(originalProfile);
     }
 
     /**

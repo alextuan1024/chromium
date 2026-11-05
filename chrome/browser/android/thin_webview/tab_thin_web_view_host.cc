@@ -9,9 +9,10 @@
 #include "base/functional/bind.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/android/window_android.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 // Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/android/thin_webview/jni_headers/ThinWebViewHost_jni.h"
@@ -99,14 +100,52 @@ content::WebContents* TabThinWebViewHost::OpenURLFromTab(
     return nullptr;
   }
   content::OpenURLParams new_params = params;
-  if (new_params.disposition == WindowOpenDisposition::CURRENT_TAB) {
+  if (new_params.disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) {
     // `browser` would interpret CURRENT_TAB as "the window's active tab", but
     // the source here is the side panel, not that tab. Never replace the
     // current tab: open a new one instead, as the desktop Customize Chrome
     // side panel does in customize_chrome_page_handler.cc.
-    new_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    new_params.disposition =
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   }
   return browser->OpenURL(new_params, std::move(navigation_handle_callback));
+}
+
+// Forward keyboard events to the main WebContent's delegate, so that shortcuts
+// like Ctrl-T continue to work when the ThinWebView has focus.
+content::KeyboardEventProcessingResult
+TabThinWebViewHost::PreHandleKeyboardEvent(
+    content::WebContents* source,
+    const input::NativeWebKeyboardEvent& event) {
+  content::WebContents* tab_contents = tab_->GetContents();
+  content::WebContentsDelegate* delegate =
+      tab_contents ? tab_contents->GetDelegate() : nullptr;
+  if (delegate) {
+    // Guard against recursion.
+    CHECK(delegate != this);
+    // Pass |tab_contents| rather than |source| so that
+    // WebContentsDelegateAndroid resolves GetTopLevelNativeWindow() to the
+    // host Activity's WindowAndroid (owns the KeyboardShortcutsDelegate),
+    // rather than the `ThinWebView`'s internal `WindowAndroid`.
+    return delegate->PreHandleKeyboardEvent(tab_contents, event);
+  }
+  return content::KeyboardEventProcessingResult::NOT_HANDLED;
+}
+
+// Forward keyboard events to the main WebContent's delegate, so that shortcuts
+// like Ctrl-T continue to work when the ThinWebView has focus.
+bool TabThinWebViewHost::HandleKeyboardEvent(
+    content::WebContents* source,
+    const input::NativeWebKeyboardEvent& event) {
+  content::WebContents* tab_contents = tab_->GetContents();
+  content::WebContentsDelegate* delegate =
+      tab_contents ? tab_contents->GetDelegate() : nullptr;
+  if (delegate) {
+    // Guard against recursion.
+    CHECK(delegate != this);
+    return delegate->HandleKeyboardEvent(tab_contents, event);
+  }
+  return false;
 }
 
 }  // namespace thin_webview::android

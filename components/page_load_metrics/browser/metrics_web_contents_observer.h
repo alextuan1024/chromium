@@ -134,6 +134,9 @@ class MetricsWebContentsObserver
                                 bool is_display_none) override;
   void FrameSizeChanged(content::RenderFrameHost* render_frame_host,
                         const gfx::Size& frame_size) override;
+  void OnFrameVisibilityChanged(
+      content::RenderFrameHost* render_frame_host,
+      blink::mojom::FrameVisibility visibility) override;
   void OnCookiesAccessed(content::NavigationHandle* navigation,
                          const content::CookieAccessDetails& details) override;
   void OnCookiesAccessed(content::RenderFrameHost* rfh,
@@ -200,13 +203,6 @@ class MetricsWebContentsObserver
 
   void OnCustomUserTimingUpdated(content::RenderFrameHost* rfh,
                                  mojom::CustomUserTimingMarkPtr custom_timing);
-
-  // Called when a `SharedStorageWorkletHost` is created for `rfh`.
-  void OnSharedStorageWorkletHostCreated(content::RenderFrameHost* rfh);
-
-  // Called when `sharedStorage.selectURL()` is called for some frame on a page
-  // whose main frame is `main_rfh`.
-  void OnSharedStorageSelectURLCalled(content::RenderFrameHost* main_rfh);
 
   // Returns the time this MetricsWebContentsObserver was created.
   base::TimeTicks GetCreated();

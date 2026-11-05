@@ -31,6 +31,7 @@
 
 #include "base/memory/values_equivalent.h"
 #include "base/notreached.h"
+#include "base/numerics/angle_conversions.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
 #include "third_party/blink/renderer/core/css/css_alpha_color_value.h"
 #include "third_party/blink/renderer/core/css/css_color.h"
@@ -56,6 +57,7 @@
 #include "third_party/blink/renderer/platform/graphics/gradient.h"
 #include "third_party/blink/renderer/platform/graphics/gradient_generated_image.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/stable_sort.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
@@ -399,10 +401,13 @@ static Color ResolveStopColor(const CSSToLengthConversionData& conversion_data,
   const ResolveColorValueContext context{
       .length_resolver = conversion_data,
       .text_link_colors = document.GetTextLinkColors(),
-      .used_color_scheme = color_scheme,
-      .color_provider = document.GetColorProviderForPainting(color_scheme),
-      .can_expose_accent_color =
-          document.IsInWebAppScope() && document.IsInitialProfile()};
+      .theme_info = {
+          .color_provider = document.GetColorProviderForPainting(color_scheme),
+          .color_scheme = color_scheme,
+          .in_forced_colors = document.InForcedColorsMode(),
+          .accent_color = style.ResolveMirroredAccentColor(),
+          .can_expose_system_accent_color =
+              document.IsInWebAppScope() && document.IsInitialProfile()}};
   const StyleColor style_stop_color = ResolveColorValue(stop_color, context);
   return style_stop_color.Resolve(
       style.VisitedDependentColor(GetCSSPropertyColor()), color_scheme);
@@ -423,7 +428,7 @@ void CSSGradientValue::AddDeprecatedStops(
                                        const CSSGradientColorStop& b) {
     return CompareStops(a, b, conversion_data);
   };
-  std::stable_sort(stops_sorted.begin(), stops_sorted.end(), comparator);
+  StableSort(stops_sorted, comparator);
 
   for (const auto& stop : stops_sorted) {
     float offset;
@@ -455,7 +460,7 @@ static const CSSValue* GetComputedStopColor(const CSSValue& color,
   const ResolveColorValueContext context{
       .length_resolver = CSSToLengthConversionData(/*element=*/nullptr),
       .text_link_colors = TextLinkColors(),
-      .used_color_scheme = color_scheme};
+      .theme_info = {.color_scheme = color_scheme}};
   const StyleColor style_stop_color = ResolveColorValue(color, context);
   const Color current_color =
       style.VisitedDependentColor(GetCSSPropertyColor());
@@ -1321,7 +1326,7 @@ static void EndPointsFromAngle(float angle_deg,
 
   // angleDeg is a "bearing angle" (0deg = N, 90deg = E),
   // but tan expects 0deg = E, 90deg = N.
-  float slope = tan(Deg2rad(90 - angle_deg));
+  float slope = tan(base::DegToRad(90 - angle_deg));
 
   // We find the endpoint by computing the intersection of the line formed by
   // the slope, and a line perpendicular to it that intersects the corner.
@@ -1425,7 +1430,7 @@ std::unique_ptr<Gradient> CSSLinearGradientValue::CreateGradient(
             rise *= -1;
           }
           // Compute angle, and flip it back to "bearing angle" degrees.
-          float angle = 90 - Rad2deg(atan2(rise, run));
+          float angle = 90 - base::RadToDeg(atan2(rise, run));
           EndPointsFromAngle(angle, size, first_point, second_point,
                              gradient_type_);
         } else if (first_x_ || first_y_) {
@@ -1583,8 +1588,10 @@ static bool IsUsingCurrentColor(const CSSValue& value) {
     return identifier_value->GetValueID() == CSSValueID::kCurrentcolor;
   }
   if (const auto* mix_value = DynamicTo<CSSColorMixValue>(value)) {
-    return IsUsingCurrentColor(mix_value->Color1()) ||
-           IsUsingCurrentColor(mix_value->Color2());
+    return std::ranges::any_of(mix_value->Items(),
+                               [](const CSSColorMixItem& item) {
+                                 return IsUsingCurrentColor(*item.color);
+                               });
   }
   if (const auto* alpha_color_value = DynamicTo<CSSAlphaColorValue>(value)) {
     return IsUsingCurrentColor(alpha_color_value->OriginColor());

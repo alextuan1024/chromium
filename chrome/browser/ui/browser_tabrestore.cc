@@ -11,6 +11,7 @@
 #include "base/containers/span.h"
 #include "build/build_config.h"
 #include "chrome/browser/apps/app_service/web_contents_app_id_utils.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_tab_restore_data.h"
 #include "chrome/browser/glic/glic_tab_restore_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_restore.h"
@@ -83,6 +84,8 @@ std::unique_ptr<WebContents> CreateRestoredTab(
                                extension_app_id);
 
   glic::RestoreGlicStateFromExtraData(web_contents.get(), extra_data);
+  contextual_tasks::ContextualTasksTabRestoreData::RestoreFromExtraData(
+      web_contents.get(), extra_data);
   send_tab_to_self::SendTabToSelfActivationTracker::RestoreFromExtraData(
       web_contents.get(), extra_data);
 
@@ -119,15 +122,14 @@ void LoadRestoredTabIfVisible(BrowserWindowInterface* browser,
   DCHECK_EQ(browser->tab_strip_model()->GetActiveWebContents(), web_contents);
   // A layout should already have been performed to determine the contents size.
   // The contents size should not be empty, unless the browser size and restored
-  // size are also empty.
+  // size are also empty. The WebContents size isn't compared to it because the
+  // WebContents can be smaller, e.g. when the NTP footer is shown below it.
   // WebUI browser's content size is not available until the WebUI page is
   // loaded.
   if (!webui_browser::IsWebUIBrowserEnabled()) {
     DCHECK(!BrowserWindow::FromBrowser(browser)->GetContentsSize().IsEmpty() ||
            (browser->GetWindow()->GetBounds().IsEmpty() &&
             browser->GetWindow()->GetRestoredBounds().IsEmpty()));
-    DCHECK_EQ(web_contents->GetSize(),
-              BrowserWindow::FromBrowser(browser)->GetContentsSize());
   }
 
   web_contents->GetController().LoadIfNecessary();

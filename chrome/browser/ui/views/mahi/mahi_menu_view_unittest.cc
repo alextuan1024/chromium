@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "base/i18n/language_tag.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ash/mahi/web_contents/test_support/fake_mahi_web_contents_manager.h"
@@ -19,7 +20,7 @@
 #include "chromeos/components/mahi/public/cpp/mahi_browser_util.h"
 #include "chromeos/components/mahi/public/cpp/mahi_util.h"
 #include "chromeos/components/mahi/public/cpp/mahi_web_contents_manager.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -87,11 +88,11 @@ void TypeTestResponse(ui::test::EventGenerator* event_generator) {
   }
 }
 
-const std::string& GetApplicationLocale() {
+const base::i18n::LanguageTag& GetApplicationLocale() {
   return TestingBrowserProcess::GetGlobal()
       ->GetFeatures()
       ->application_locale_storage()
-      ->Get();
+      ->GetTag();
 }
 
 std::unique_ptr<MahiMenuView> CreateMahiMenuView(

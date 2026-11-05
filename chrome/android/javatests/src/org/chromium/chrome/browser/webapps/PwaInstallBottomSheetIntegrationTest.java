@@ -22,6 +22,7 @@ import android.graphics.Color;
 import androidx.core.widget.NestedScrollView;
 import androidx.test.filters.SmallTest;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -31,9 +32,7 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
@@ -50,7 +49,6 @@ import org.chromium.components.webapps.bottomsheet.PwaBottomSheetControllerProvi
 /** Integration tests for PWA Install bottom sheet UI and vertical scroll offset. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class PwaInstallBottomSheetIntegrationTest {
     @Rule
     public final FreshCtaTransitTestRule mActivityTestRule =
@@ -88,7 +86,7 @@ public class PwaInstallBottomSheetIntegrationTest {
                     icon.eraseColor(Color.BLUE);
 
                     controller.requestBottomSheetInstaller(
-                            /* nativePwaBottomSheetController= */ 1L,
+                            JniUniquePtr.createForTesting(1L),
                             mActivityTestRule.getActivity().getWindowAndroid(),
                             mActivityTestRule.getActivity().getCurrentWebContents(),
                             icon,
@@ -119,26 +117,29 @@ public class PwaInstallBottomSheetIntegrationTest {
     public void testVerticalScrollOffset() {
         showPwaInstallBottomSheet();
 
-        BottomSheetContent content = mBottomSheetController.getCurrentSheetContent();
+        BottomSheetContent content =
+                runOnUiThreadBlocking(() -> mBottomSheetController.getCurrentSheetContent());
         assertNotNull(content);
 
         // Initially, the vertical scroll offset should be 0.
-        assertEquals(0, content.getVerticalScrollOffset());
+        assertEquals(0, getVerticalScrollOffset(content));
 
         NestedScrollView scrollView = content.getContentView().findViewById(R.id.scroll_view);
         assertNotNull(scrollView);
 
-        // Add padding to create scrollable headroom and scroll the NestedScrollView.
+        // Lock the NestedScrollView height before adding padding so wrap_content does not expand
+        // the view height on Tablet/Desktop layout passes and clamp scrollY back to 0.
         runOnUiThreadBlocking(
                 () -> {
+                    scrollView.getLayoutParams().height = scrollView.getMeasuredHeight();
                     scrollView.setPadding(0, 0, 0, 500);
                     scrollView.setScrollY(50);
                 });
-        assertEquals(50, content.getVerticalScrollOffset());
+        assertEquals(50, getVerticalScrollOffset(content));
 
         // Scroll back to top.
         runOnUiThreadBlocking(() -> scrollView.setScrollY(0));
-        assertEquals(0, content.getVerticalScrollOffset());
+        assertEquals(0, getVerticalScrollOffset(content));
     }
 
     @Test
@@ -154,5 +155,9 @@ public class PwaInstallBottomSheetIntegrationTest {
         assertEquals(
                 R.string.pwa_install_bottom_sheet_accessibility,
                 content.getSheetFullHeightAccessibilityStringId());
+    }
+
+    private static int getVerticalScrollOffset(BottomSheetContent content) {
+        return runOnUiThreadBlocking(content::getVerticalScrollOffset);
     }
 }

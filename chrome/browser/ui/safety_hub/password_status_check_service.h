@@ -48,6 +48,7 @@ class PasswordStatusCheckService
   }
   size_t weak_credential_count() const { return weak_credential_count_; }
   size_t reused_credential_count() const { return reused_credential_count_; }
+  size_t saved_credential_count() const { return saved_credential_count_; }
 
   bool is_password_check_running() const;
 
@@ -115,6 +116,12 @@ class PasswordStatusCheckService
                            CheckTimeUpdatedAfterRunScheduledInThePast);
   FRIEND_TEST_ALL_PREFIXES(PasswordStatusCheckServiceBaseTest,
                            CheckTimeUpdatedAfterRunScheduledLongTimeInThePast);
+  FRIEND_TEST_ALL_PREFIXES(PasswordStatusCheckServiceBaseTest,
+                           PasswordCheckSignedOutWithPasswords);
+  FRIEND_TEST_ALL_PREFIXES(PasswordStatusCheckServiceBaseTest,
+                           PasswordCheck_FindCompromised);
+  FRIEND_TEST_ALL_PREFIXES(PasswordStatusCheckServiceBaseTest,
+                           PasswordCheck_Error);
   // The enum to hold 4 password check states.
   // As soon as the check is started, the state will be kStarting.
   // When the state is kStarting:

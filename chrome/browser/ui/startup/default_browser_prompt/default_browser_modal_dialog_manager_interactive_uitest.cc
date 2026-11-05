@@ -22,6 +22,10 @@
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/views_switches.h"
 
+#if BUILDFLAG(IS_WIN)
+#include "base/test/scoped_os_info_override_win.h"
+#endif
+
 class DefaultBrowserModalDialogManagerInteractiveTest
     : public InteractiveBrowserTest,
       public testing::WithParamInterface<bool> {
@@ -30,11 +34,15 @@ class DefaultBrowserModalDialogManagerInteractiveTest
   ~DefaultBrowserModalDialogManagerInteractiveTest() override = default;
 
   void SetUp() override {
-    feature_list_.InitAndEnableFeatureWithParameters(
-        default_browser::kDefaultBrowserPromptSurfaces,
-        {{"prompt_surface",
-          GetParam() ? "modal_dialog_with_settings_illustration"
-                     : "modal_dialog_without_settings_illustration"}});
+    // Explicitly disable the sticky modal so these tests are not affected by
+    // the fieldtrial testing config, which enables it.
+    const char* prompt_surface =
+        GetParam() ? "modal_dialog_with_settings_illustration"
+                   : "modal_dialog_without_settings_illustration";
+    feature_list_.InitWithFeaturesAndParameters(
+        /*enabled_features=*/{{default_browser::kDefaultBrowserPromptSurfaces,
+                               {{"prompt_surface", prompt_surface}}}},
+        /*disabled_features=*/{default_browser::kDefaultBrowserStickyModal});
     InteractiveBrowserTest::SetUp();
   }
 
@@ -80,6 +88,10 @@ class DefaultBrowserModalDialogManagerInteractiveTest
     return steps;
   }
 
+#if BUILDFLAG(IS_WIN)
+  base::test::ScopedOSInfoOverride win11_os_{
+      base::test::ScopedOSInfoOverride::Type::kWin11Pro};
+#endif
   base::HistogramTester histogram_tester_;
   base::test::ScopedFeatureList feature_list_;
 };
@@ -175,6 +187,36 @@ IN_PROC_BROWSER_TEST_P(DefaultBrowserModalDialogManagerInteractiveTest,
                        "ShellIntegration.Interaction",
           static_cast<int>(
               default_browser::DefaultBrowserInteractionType::kDismissed),
+          1));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DefaultBrowserModalDialogManagerInteractiveTest,
+    ClosingSecondaryBrowserClosesItsPromptWithoutDismissing) {
+  BrowserWindowInterface* second_browser = CreateBrowser(GetProfile());
+  const char* interaction_histogram =
+      GetParam() ? "DefaultBrowser.ModalDialogWithSettingsIllustration."
+                   "ShellIntegration.Interaction"
+                 : "DefaultBrowser.ModalDialogWithoutSettingsIllustration."
+                   "ShellIntegration.Interaction";
+  RunTestSequence(
+      Do([this]() { ShowDialog(); }),
+      InAnyContext(WaitForShow(default_browser::kDefaultBrowserModalDialogId)));
+
+  CloseBrowserSynchronously(std::exchange(second_browser, nullptr));
+
+  RunTestSequence(
+      VerifyHistogram(
+          interaction_histogram,
+          static_cast<int>(
+              default_browser::DefaultBrowserInteractionType::kDismissed),
+          0),
+      Do([this]() { CloseDialogs(); }),
+      InAnyContext(WaitForHide(default_browser::kDefaultBrowserModalDialogId)),
+      VerifyHistogram(
+          interaction_histogram,
+          static_cast<int>(
+              default_browser::DefaultBrowserInteractionType::kIgnored),
           1));
 }
 

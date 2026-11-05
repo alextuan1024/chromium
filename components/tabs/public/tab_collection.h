@@ -65,6 +65,7 @@ class TabCollection : public SupportsHandles<TabCollectionHandleFactory> {
                 bool is_end = false);
     explicit TabIterator(TabInterface* tab);
     TabIterator(const TabIterator& iterator);
+    TabIterator& operator=(const TabIterator& iterator);
     ~TabIterator();
 
     pointer operator->() const { return cur_; }
@@ -310,7 +311,8 @@ class TabCollection : public SupportsHandles<TabCollectionHandleFactory> {
   void NotifyOnChildrenRemoved(base::PassKey<TabCollection> pass_key,
                                const Position& position,
                                const NodeHandles& handles,
-                               TabCollection* stop_notification_root);
+                               TabCollection* stop_notification_root,
+                               bool remove_for_detach = false);
 
   void NotifyOnChildMoved(base::PassKey<TabCollection> pass_key,
                           const NodeHandle& handle,

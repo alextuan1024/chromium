@@ -15,6 +15,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabUiMetricsHelper.TabGr
 import org.chromium.chrome.browser.tasks.tab_management.TabUiMetricsHelper.TabGroupCreationFinalSelections;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -41,7 +42,7 @@ public class TabGroupCreationDialogManager {
 
         private TabGroupCreationDialogController(@Nullable Token tabGroupId, TabModel tabModel) {
             assert tabGroupId != null;
-            assert tabModel.tabGroupExists(tabGroupId);
+            assert tabModel.containsTabGroup(TabGroupId.fromOptionalToken(tabGroupId));
 
             mTabGroupId = tabGroupId;
             mTabModel = tabModel;
@@ -63,7 +64,8 @@ public class TabGroupCreationDialogManager {
 
         @Override
         public void onDismiss(PropertyModel model, @DialogDismissalCause int dismissalCause) {
-            boolean stillExists = mTabModel.tabGroupExists(mTabGroupId);
+            boolean stillExists =
+                    mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(mTabGroupId));
 
             final @TabGroupColorId int defaultColorId =
                     mTabGroupVisualDataDialogManager.getDefaultColorId();
@@ -71,7 +73,7 @@ public class TabGroupCreationDialogManager {
                     mTabGroupVisualDataDialogManager.getCurrentColorId();
             boolean didChangeColor = currentColorId != defaultColorId;
             if (stillExists) {
-                mTabModel.setTabGroupColor(mTabGroupId, currentColorId);
+                mTabModel.setTabGroupColor(TabGroupId.fromRawToken(mTabGroupId), currentColorId);
             }
 
             // Only save the group title input text if it has been changed from the suggested
@@ -80,7 +82,7 @@ public class TabGroupCreationDialogManager {
             String inputGroupTitle = mTabGroupVisualDataDialogManager.getCurrentGroupTitle();
             boolean didChangeTitle = !Objects.equals(initialGroupTitle, inputGroupTitle);
             if (didChangeTitle && !TextUtils.isEmpty(inputGroupTitle) && stillExists) {
-                mTabModel.setTabGroupTitle(mTabGroupId, inputGroupTitle);
+                mTabModel.setTabGroupTitle(TabGroupId.fromRawToken(mTabGroupId), inputGroupTitle);
             }
 
             recordDialogSelectionHistogram(didChangeColor, didChangeTitle);

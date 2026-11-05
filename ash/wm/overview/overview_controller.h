@@ -16,6 +16,7 @@
 #include "ash/wm/overview/overview_session_metrics_recorder.h"
 #include "ash/wm/overview/overview_types.h"
 #include "ash/wm/overview/overview_window_occlusion_calculator.h"
+#include "ash/wm/scoped_decoration_hider.h"
 #include "base/auto_reset.h"
 #include "base/cancelable_callback.h"
 #include "base/memory/weak_ptr.h"
@@ -82,10 +83,6 @@ class ASH_EXPORT OverviewController : public OverviewDelegate,
     return disable_app_id_check_for_saved_desks_;
   }
 
-  bool is_continuous_scroll_in_progress() const {
-    return is_continuous_scroll_in_progress_;
-  }
-
   // Starts/Ends overview with `type`. Returns true if enter or exit overview
   // successful. Depending on `type` the enter/exit animation will look
   // different. `start_action`/`end_action` is used by UMA to record the reasons
@@ -103,12 +100,6 @@ class ASH_EXPORT OverviewController : public OverviewDelegate,
 
   // Returns true if overview mode is active.
   bool InOverviewSession() const;
-
-  // Receives a continuous scroll event from the gesture handler and either
-  // initializes overview mode in preparation for future continuous scrolls, or
-  // immediately calls `OverviewGrid::PositionWindowsForContinuousScrolls()` if
-  // overview mode has already been initialized.
-  bool HandleContinuousScroll(float y_offset, OverviewEnterExitType type);
 
   // Moves the current selection forward or backward.
   void IncrementSelection(bool forward);
@@ -129,6 +120,13 @@ class ASH_EXPORT OverviewController : public OverviewDelegate,
 
   // Post a task to update the shadow and rounded corners of overview windows.
   void DelayedUpdateRoundedCornersAndShadow();
+
+  // Hides `window`'s decoration until the overview exit animation completes, or
+  // until `RemoveDecorationHider()` is called if `window` leaves overview while
+  // the session is still active (e.g. snapped into split view in partial
+  // overview, where its highlight border should be shown).
+  void AddDecorationHider(aura::Window* window);
+  void RemoveDecorationHider(const aura::Window* window);
 
   // OverviewDelegate:
   void AddExitAnimationObserver(
@@ -192,16 +190,13 @@ class ASH_EXPORT OverviewController : public OverviewDelegate,
   // completed.
   bool should_focus_overview_ = false;
 
-  // Used when feature ContinuousOverviewScrollAnimation is enabled to
-  // determine the start/end positions of overview items as well as their shadow
-  // bounds and corner radii during a continuous scroll. It's true only if the
-  // last scroll event was the start of a continuous scroll or a continuous
-  // scroll update that is within the threshold.
-  bool is_continuous_scroll_in_progress_ = false;
-
   // We may pause occlusion tracking on enter and exit overview mode.
   std::optional<ScopedOcclusionPauser> enter_pauser_;
   std::optional<ScopedOcclusionPauser> exit_pauser_;
+
+  // Hide the decorations (e.g. shadow) of the windows in overview until the
+  // exit animation completes.
+  std::vector<ScopedDecorationHider> decoration_hiders_;
 
   // The following state tracks occlusion pausing and its delayed unpausing for
   // overview mode.

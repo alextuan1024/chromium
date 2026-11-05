@@ -118,6 +118,8 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   CreateWebSocketHandshakeThrottleProvider() override;
   bool ShouldUseCodeCacheWithHashing(
       const blink::WebURL& request_url) const override;
+  bool ShouldUsePerBrowsingInstanceWindowAgent(
+      const blink::WebSecurityOrigin& origin) override;
   bool IsolateStartsInBackground() override;
   blink::WebString DefaultLocale() override;
   void SetSuddenTerminationAllowed(bool allowed) override;
@@ -146,7 +148,7 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
       const blink::WebAudioLatencyHint& latency_hint,
       std::optional<float> context_sample_rate,
       media::AudioRendererSink::RenderCallback* callback) override;
-  std::unique_ptr<blink::Platform::DecodedAudioFile> DecodeAudioFileData(
+  std::unique_ptr<blink::WebAudioBus> DecodeAudioFileData(
       base::span<const char> audio_file_data) override;
   scoped_refptr<media::AudioCapturerSource> NewAudioCapturerSource(
       blink::WebLocalFrame* web_frame,
@@ -162,6 +164,7 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   bool IsGpuRemoteDisconnected() override;
   scoped_refptr<gpu::GpuChannelHost> EstablishGpuChannelSync() override;
   void EstablishGpuChannel(EstablishGpuChannelCallback callback) override;
+  void FlushGpuChannelIfEstablished() override;
   bool RTCSmoothnessAlgorithmEnabled() override;
   std::optional<double> GetWebRtcMaxCaptureFrameRate() override;
   scoped_refptr<media::AudioRendererSink> NewAudioRendererSink(
@@ -270,6 +273,8 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
   bool IsUserLevelMemoryPressureSignalEnabled() override;
 #endif  // BUILDFLAG(IS_ANDROID)
   void OnV8HeapLastResortGC() override;
+  bool ShouldReportDetailedMessageForSource(
+      const blink::WebString& source) override;
 
   // Tells this platform that the renderer is locked to a site (i.e., a scheme
   // plus eTLD+1, such as https://google.com), or to a more specific origin.

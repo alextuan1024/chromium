@@ -13,8 +13,10 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/sync/sync_service_factory.h"
+#include "components/sync/base/data_type.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
+#include "components/sync/service/sync_service_utils.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -112,7 +114,7 @@ void MetricProvider::Init() {
 
 bool MetricProvider::GetSampledProfiles(
     std::vector<SampledProfile>* sampled_profiles) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (cached_profile_data_.empty()) {
     base::UmaHistogramExactLinear(upload_uma_histogram_, 0,
                                   kMaxValueUploadReports);
@@ -134,7 +136,7 @@ bool MetricProvider::GetSampledProfiles(
 }
 
 void MetricProvider::OnUserLoggedIn() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   const base::TimeTicks now = base::TimeTicks::Now();
   collector_task_runner_->PostTask(
@@ -144,7 +146,7 @@ void MetricProvider::OnUserLoggedIn() {
 }
 
 void MetricProvider::Deactivate() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Notifies the collector to turn off the timer. Does not delete any data that
   // was already collected and stored in |cached_profile_data|.
@@ -154,7 +156,7 @@ void MetricProvider::Deactivate() {
 }
 
 void MetricProvider::SuspendDone(base::TimeDelta sleep_duration) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   collector_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&MetricCollector::ScheduleSuspendDoneCollection,
                                 base::Unretained(metric_collector_.get()),
@@ -162,7 +164,7 @@ void MetricProvider::SuspendDone(base::TimeDelta sleep_duration) {
 }
 
 void MetricProvider::OnSessionRestoreDone(int num_tabs_restored) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   collector_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&MetricCollector::ScheduleSessionRestoreCollection,
@@ -192,12 +194,12 @@ void MetricProvider::OnJankStopped() {
 }
 
 void MetricProvider::EnableRecording() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   recording_enabled_ = true;
 }
 
 void MetricProvider::DisableRecording() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   recording_enabled_ = false;
 }
 
@@ -205,17 +207,24 @@ MetricProvider::RecordAttemptStatus MetricProvider::AppSyncStateForUserProfile(
     Profile* profile) {
   syncer::SyncService* sync_service =
       SyncServiceFactory::GetForProfile(profile);
-  if (!sync_service)
+  if (!sync_service) {
     return RecordAttemptStatus::kSyncServiceUnavailable;
-  syncer::SyncUserSettings* sync_settings = sync_service->GetUserSettings();
+  }
 
-  if (!sync_service->IsSyncFeatureEnabled())
-    return RecordAttemptStatus::kChromeSyncFeatureDisabled;
-
-  if (!sync_settings->GetSelectedOsTypes().Has(
-          syncer::UserSelectableOsType::kOsApps))
-    return RecordAttemptStatus::kOSAppSyncDisabled;
-  return RecordAttemptStatus::kAppSyncEnabled;
+  switch (
+      syncer::GetUploadToGoogleState(sync_service, syncer::DataType::APPS)) {
+    case syncer::UploadState::NOT_ACTIVE:
+      if (!sync_service->GetUserSettings()->GetSelectedOsTypes().Has(
+              syncer::UserSelectableOsType::kOsApps)) {
+        return RecordAttemptStatus::kOSAppSyncDisabled;
+      }
+      return RecordAttemptStatus::kAppSyncDisabled;
+    case syncer::UploadState::INITIALIZING:
+      // Note that INITIALIZING is considered good enough, because syncing apps
+      // is known to be enabled, and transient errors don't really matter here.
+    case syncer::UploadState::ACTIVE:
+      return RecordAttemptStatus::kAppSyncEnabled;
+  }
 }
 
 // Check the current state of App Sync in the settings. This is done by getting
@@ -250,7 +259,7 @@ MetricProvider::RecordAttemptStatus MetricProvider::GetAppSyncState() {
 
 void MetricProvider::AddProfileToCache(
     std::unique_ptr<SampledProfile> sampled_profile) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!recording_enabled_) {
     base::UmaHistogramEnumeration(record_uma_histogram_,
                                   RecordAttemptStatus::kRecordingDisabled);

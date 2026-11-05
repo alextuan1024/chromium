@@ -4,12 +4,18 @@
 
 #include "chrome/browser/background/glic/glic_launcher_configuration.h"
 
+#include <utility>
+
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "chrome/browser/glic/common/local_hotkey_manager.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_provider.h"
+#include "chrome/browser/glic/public/provider_features.h"
+#include "chrome/browser/glic/test_support/scoped_glic_provider_override.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "chrome/test/base/testing_profile.h"
 #include "components/prefs/testing_pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -42,15 +48,17 @@ class GlicLauncherConfigurationTest : public testing::Test {
   void SetUp() override {
     local_state()->ClearPref(prefs::kGlicLauncherEnabled);
     local_state()->ClearPref(prefs::kGlicLauncherHotkey);
+    local_state()->ClearPref(prefs::kGlicSelectionHotkey);
     local_state()->ClearPref(prefs::kGlicHotkeyGlobalScopeEnabled);
-    local_state()->ClearPref(prefs::kGlicHotkeyGlobalScopeMigratedV2);
+    local_state()->ClearPref(prefs::kGlicDefaultHotkeyScope);
   }
 
   void TearDown() override {
     local_state()->ClearPref(prefs::kGlicLauncherEnabled);
     local_state()->ClearPref(prefs::kGlicLauncherHotkey);
+    local_state()->ClearPref(prefs::kGlicSelectionHotkey);
     local_state()->ClearPref(prefs::kGlicHotkeyGlobalScopeEnabled);
-    local_state()->ClearPref(prefs::kGlicHotkeyGlobalScopeMigratedV2);
+    local_state()->ClearPref(prefs::kGlicDefaultHotkeyScope);
   }
 
  private:
@@ -58,12 +66,12 @@ class GlicLauncherConfigurationTest : public testing::Test {
       base::test::TaskEnvironment::MainThreadType::UI};
 };
 
-TEST_F(GlicLauncherConfigurationTest, IsEnabled) {
-  EXPECT_FALSE(GlicLauncherConfiguration::IsEnabled());
+TEST_F(GlicLauncherConfigurationTest, IsLauncherIconEnabled) {
+  EXPECT_FALSE(GlicLauncherConfiguration::IsLauncherIconEnabled());
 
   local_state()->SetBoolean(prefs::kGlicLauncherEnabled, true);
 
-  EXPECT_TRUE(GlicLauncherConfiguration::IsEnabled());
+  EXPECT_TRUE(GlicLauncherConfiguration::IsLauncherIconEnabled());
 }
 
 TEST_F(GlicLauncherConfigurationTest, GetToggleHotkey_Default) {
@@ -141,7 +149,8 @@ TEST_F(GlicLauncherConfigurationTest,
   GlicLauncherConfiguration config{&observer};
   // Should migrate to true (Global scope).
   EXPECT_TRUE(local_state()->GetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled));
-  EXPECT_TRUE(local_state()->GetBoolean(prefs::kGlicHotkeyGlobalScopeMigratedV2));
+  EXPECT_EQ(local_state()->GetInteger(prefs::kGlicDefaultHotkeyScope),
+            std::to_underlying(prefs::DefaultHotkeyScope::kGlobal));
   EXPECT_EQ(GlicLauncherConfiguration::GetToggleHotkey(),
             LocalHotkeyManager::GetDefaultAccelerator(
                 LocalHotkeyManager::Command::kPanelToggle));
@@ -162,7 +171,8 @@ TEST_F(GlicLauncherConfigurationTest,
   GlicLauncherConfiguration config{&observer};
   // Should migrate to true.
   EXPECT_TRUE(local_state()->GetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled));
-  EXPECT_TRUE(local_state()->GetBoolean(prefs::kGlicHotkeyGlobalScopeMigratedV2));
+  EXPECT_EQ(local_state()->GetInteger(prefs::kGlicDefaultHotkeyScope),
+            std::to_underlying(prefs::DefaultHotkeyScope::kGlobal));
   EXPECT_EQ(GlicLauncherConfiguration::GetToggleHotkey(), hotkey);
 }
 
@@ -180,7 +190,8 @@ TEST_F(GlicLauncherConfigurationTest,
   // false.
   EXPECT_TRUE(GlicLauncherConfiguration::GetToggleHotkey().IsEmpty());
   EXPECT_FALSE(local_state()->GetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled));
-  EXPECT_TRUE(local_state()->GetBoolean(prefs::kGlicHotkeyGlobalScopeMigratedV2));
+  EXPECT_EQ(local_state()->GetInteger(prefs::kGlicDefaultHotkeyScope),
+            std::to_underlying(prefs::DefaultHotkeyScope::kLocal));
 }
 
 TEST_F(GlicLauncherConfigurationTest, HotkeyScope_Migration_NewUser) {
@@ -195,7 +206,8 @@ TEST_F(GlicLauncherConfigurationTest, HotkeyScope_Migration_NewUser) {
   GlicLauncherConfiguration config{&observer};
   // Should migrate to false (Local scope).
   EXPECT_FALSE(local_state()->GetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled));
-  EXPECT_TRUE(local_state()->GetBoolean(prefs::kGlicHotkeyGlobalScopeMigratedV2));
+  EXPECT_EQ(local_state()->GetInteger(prefs::kGlicDefaultHotkeyScope),
+            std::to_underlying(prefs::DefaultHotkeyScope::kLocal));
   // Default hotkey is still preserved for local scope.
   EXPECT_EQ(GlicLauncherConfiguration::GetToggleHotkey(),
             LocalHotkeyManager::GetDefaultAccelerator(
@@ -210,13 +222,33 @@ TEST_F(GlicLauncherConfigurationTest, HotkeyScope_AlreadyMigrated) {
   const ui::Accelerator hotkey(ui::VKEY_K, ui::EF_ALT_DOWN);
   local_state()->SetString(prefs::kGlicLauncherHotkey,
                            ui::Command::AcceleratorToString(hotkey));
-  local_state()->SetBoolean(prefs::kGlicHotkeyGlobalScopeMigratedV2, true);
+  local_state()->SetInteger(
+      prefs::kGlicDefaultHotkeyScope,
+      std::to_underlying(prefs::DefaultHotkeyScope::kGlobal));
   local_state()->SetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled, false);
 
   MockObserver observer;
   GlicLauncherConfiguration config{&observer};
   // Should NOT change because already migrated.
   EXPECT_FALSE(local_state()->GetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled));
+  EXPECT_EQ(local_state()->GetInteger(prefs::kGlicDefaultHotkeyScope),
+            std::to_underlying(prefs::DefaultHotkeyScope::kGlobal));
+}
+
+TEST_F(GlicLauncherConfigurationTest, GetSelectionHotkey_ProviderSpec) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(features::kGlicCaptureRegion);
+
+  TestingProfile consumer_profile;
+  EXPECT_EQ(GlicLauncherConfiguration::GetSelectionHotkey(&consumer_profile),
+            LocalHotkeyManager::GetDefaultAccelerator(
+                LocalHotkeyManager::Command::kCaptureRegion));
+
+  ScopedGlicProviderOverride provider_override(
+      GlicProvider::kGeminiEnterprise);
+  TestingProfile ge_profile;
+  EXPECT_EQ(GlicLauncherConfiguration::GetSelectionHotkey(&ge_profile),
+            ui::Accelerator());
 }
 
 }  // namespace glic

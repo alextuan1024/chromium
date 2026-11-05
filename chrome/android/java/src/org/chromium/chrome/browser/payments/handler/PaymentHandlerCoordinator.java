@@ -7,7 +7,7 @@ package org.chromium.chrome.browser.payments.handler;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
-import android.view.View;
+import android.graphics.Rect;
 
 import org.chromium.base.version_info.VersionInfo;
 import org.chromium.build.annotations.NullMarked;
@@ -16,10 +16,12 @@ import org.chromium.build.annotations.RequiresNonNull;
 import org.chromium.chrome.browser.content.WebContentsFactory;
 import org.chromium.chrome.browser.payments.handler.toolbar.PaymentHandlerToolbarCoordinator;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
+import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.components.payments.PaymentFeatureList;
 import org.chromium.components.payments.PaymentHandlerNavigationThrottle;
@@ -36,6 +38,7 @@ import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.ui.base.IntentRequestTracker;
 import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.display.DisplayUtil;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
@@ -78,12 +81,20 @@ public class PaymentHandlerCoordinator {
      * @param paymentRequestWebContents The WebContents of the merchant's frame.
      * @param url The url of the payment handler app, i.e., that of
      *     "PaymentRequestEvent.openWindow(url)".
+     * @param initiatorOrigin The security origin of the frame that invoked PaymentRequest.
+     * @param preferredHeightCssPx The preferred height of the payment app's web content in CSS
+     *     pixels, i.e., "PaymentRequestEvent.openWindow(url, {preferredSize}).height" (or a
+     *     default), or null for the legacy ServiceTabLauncher path.
      * @param uiObserver The {@link PaymentHandlerUiObserver} that observes this Payment Handler UI.
      * @return The WebContents of the payment handler that's just opened when the showing is
      *     successful; null if failed. When null is returned, caller should also call hide().
      */
     public @Nullable WebContents show(
-            WebContents paymentRequestWebContents, GURL url, PaymentHandlerUiObserver uiObserver) {
+            WebContents paymentRequestWebContents,
+            GURL url,
+            Origin initiatorOrigin,
+            @Nullable Integer preferredHeightCssPx,
+            PaymentHandlerUiObserver uiObserver) {
         assert mHider == null : "Already showing payment-handler UI";
         assert paymentRequestWebContents != null;
         WindowAndroid windowAndroid = paymentRequestWebContents.getTopLevelNativeWindow();
@@ -91,7 +102,15 @@ public class PaymentHandlerCoordinator {
         Activity activity = windowAndroid.getActivity().get();
         if (activity == null) return null;
         Profile profile = Profile.fromWebContents(paymentRequestWebContents);
-        if (profile == null) return null;
+        // onProfileDestroyed() may already have fired, so the observer below would never run.
+        if (profile == null || profile.shutdownStarted()) return null;
+
+        BottomSheetController bottomSheetController =
+                BottomSheetControllerProvider.from(windowAndroid);
+        Tab currentTab = TabModelSelectorSupplier.getCurrentTabFrom(windowAndroid);
+        if (bottomSheetController == null || currentTab == null) {
+            return null;
+        }
 
         mInputProtector.markShowTime();
         mPaymentHandlerWebContents =
@@ -102,7 +121,8 @@ public class PaymentHandlerCoordinator {
         PaymentHandlerNavigationThrottle.markPaymentHandlerWebContents(mPaymentHandlerWebContents);
         ContentView webContentView =
                 ContentView.createContentView(activity, mPaymentHandlerWebContents);
-        initializeWebContents(windowAndroid, webContentView, paymentRequestWebContents, url);
+        initializeWebContents(
+                windowAndroid, webContentView, paymentRequestWebContents, initiatorOrigin, url);
 
         mToolbarCoordinator =
                 new PaymentHandlerToolbarCoordinator(
@@ -116,17 +136,16 @@ public class PaymentHandlerCoordinator {
                             return modalDialogManager;
                         });
 
-        BottomSheetController bottomSheetController =
-                BottomSheetControllerProvider.from(windowAndroid);
-        Tab currentTab = TabModelSelectorSupplier.getCurrentTabFrom(windowAndroid);
-        if (bottomSheetController == null || currentTab == null) {
-            return null;
-        }
-
         PropertyModel model = new PropertyModel.Builder(PaymentHandlerProperties.ALL_KEYS).build();
-        View tabView = currentTab.getView();
-        assert tabView != null;
 
+        // One CSS pixel is one dp at 100% page zoom (page zoom is not applied, matching desktop).
+        // Scale with DisplayAndroid rather than Activity DisplayMetrics to match Blink and
+        // WebContents::GetContainerBounds(), which differ from Activity UI scaling on Automotive
+        // (crbug.com/586512452).
+        @Nullable Integer preferredContentHeightPx =
+                preferredHeightCssPx != null
+                        ? DisplayUtil.dpToPx(windowAndroid.getDisplay(), preferredHeightCssPx)
+                        : null;
         PaymentHandlerMediator mediator =
                 new PaymentHandlerMediator(
                         model,
@@ -134,11 +153,12 @@ public class PaymentHandlerCoordinator {
                         /* paymentRequestWebContents= */ paymentRequestWebContents,
                         /* paymentHandlerWebContents= */ mPaymentHandlerWebContents,
                         uiObserver,
-                        tabView,
+                        bottomSheetController,
                         mToolbarCoordinator.getToolbarHeightPx(),
+                        preferredContentHeightPx,
                         activity,
+                        windowAndroid.getDisplay(),
                         mInputProtector);
-        activity.getWindow().getDecorView().addOnLayoutChangeListener(mediator);
 
         bottomSheetController.addObserver(mediator);
         mediator.observe(mPaymentHandlerWebContents);
@@ -153,29 +173,54 @@ public class PaymentHandlerCoordinator {
                         intentRequestTracker,
                         /* enablePermissionRequests= */ false);
         assert webContentView.getParent() == null;
+        // Only attach a delegate with the feature on, so that the ThinWebView keeps its default
+        // behavior otherwise.
+        @Nullable WebContentsDelegateAndroid webContentsDelegate = null;
+        if (PaymentFeatureList.isEnabled(PaymentFeatureList.PAYMENT_HANDLER_DYNAMIC_CUSTOM_SIZE)) {
+            webContentsDelegate =
+                    new WebContentsDelegateAndroid() {
+                        @Override
+                        public void setContentsBounds(WebContents source, Rect bounds) {
+                            mediator.onDynamicHeightChanged(bounds.height());
+                        }
+                    };
+        }
         thinWebView.attachWebContents(
                 mPaymentHandlerWebContents,
                 webContentView,
-                new ThinWebViewAttachParams.Builder().build());
+                new ThinWebViewAttachParams.Builder()
+                        .setWebContentsDelegate(webContentsDelegate)
+                        .build());
         PaymentHandlerView view =
                 new PaymentHandlerView(
                         activity,
                         mPaymentHandlerWebContents,
                         mToolbarCoordinator.getView(),
                         thinWebView.getView(),
-                        mInputProtector);
+                        mInputProtector,
+                        /* hasPreferredHeight= */ preferredContentHeightPx != null);
         assert mToolbarCoordinator.getToolbarHeightPx() == view.getToolbarHeightPx();
         PropertyModelChangeProcessor changeProcessor =
                 PropertyModelChangeProcessor.create(model, view, PaymentHandlerViewBinder::bind);
+        // TODO(crbug.com/584179079): Add an instrumentation test for the profile being
+        // destroyed while the payment handler UI is showing.
+        ProfileManager.Observer profileObserver =
+                new ProfileManager.Observer() {
+                    @Override
+                    public void onProfileAdded(Profile p) {}
+
+                    @Override
+                    public void onProfileDestroyed(Profile destroyedProfile) {
+                        if (destroyedProfile == profile) hide();
+                    }
+                };
         mHider =
                 () -> {
+                    ProfileManager.removeObserver(profileObserver);
                     changeProcessor.destroy();
                     bottomSheetController.removeObserver(mediator);
                     bottomSheetController.hideContent(/* content= */ view, /* animate= */ true);
                     uiObserver.onPaymentHandlerUiClosed();
-                    assert activity.getWindow() != null;
-                    assert activity.getWindow().getDecorView() != null;
-                    activity.getWindow().getDecorView().removeOnLayoutChangeListener(mediator);
                     mediator.destroy();
                     assumeNonNull(mToolbarCoordinator);
                     mToolbarCoordinator.destroy();
@@ -183,7 +228,8 @@ public class PaymentHandlerCoordinator {
                     assumeNonNull(mPaymentHandlerWebContents);
                     mPaymentHandlerWebContents.destroy();
                 };
-        boolean hasFrameworkCloseButton = bottomSheetController.isLargeFormFactorUiEnabled(view);
+        ProfileManager.addObserver(profileObserver);
+        boolean hasFrameworkCloseButton = bottomSheetController.willShowFrameworkCloseButton(view);
         mToolbarCoordinator.setCloseButtonVisibility(!hasFrameworkCloseButton);
 
         boolean isShowSuccess = bottomSheetController.requestShowContent(view, /* animate= */ true);
@@ -197,6 +243,7 @@ public class PaymentHandlerCoordinator {
             WindowAndroid windowAndroid,
             ContentView webContentView,
             WebContents paymentRequestWebContents,
+            Origin initiatorOrigin,
             GURL url) {
         mPaymentHandlerWebContents.setDelegates(
                 VersionInfo.getProductVersion(),
@@ -216,7 +263,11 @@ public class PaymentHandlerCoordinator {
         if (PaymentFeatureList.isEnabled(
                 PaymentFeatureList.PAYMENT_HANDLER_DIALOG_USE_INITIATOR_IN_URL_LOAD)) {
             params.setInitiatorOrigin(
-                    Origin.create(paymentRequestWebContents.getLastCommittedUrl()));
+                    PaymentFeatureList.isEnabled(
+                                    PaymentFeatureList
+                                            .PAYMENT_HANDLER_DIALOG_USE_FRAME_ORIGIN_AS_INITIATOR)
+                            ? initiatorOrigin
+                            : Origin.create(paymentRequestWebContents.getLastCommittedUrl()));
         }
         mPaymentHandlerWebContents.getNavigationController().loadUrl(params);
     }
@@ -233,9 +284,9 @@ public class PaymentHandlerCoordinator {
 
     /** Hides the payment-handler UI. */
     public void hide() {
-        if (mHider == null) return;
-        mHider.run();
+        Runnable hider = mHider;
         mHider = null;
+        if (hider != null) hider.run();
     }
 
     public void clickSecurityIconForTest() {

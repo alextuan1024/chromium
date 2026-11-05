@@ -7,6 +7,8 @@
 
 #include <array>
 #include <memory>
+#include <optional>
+#include <string_view>
 
 #include "base/feature_list.h"
 #include "base/functional/function_ref.h"
@@ -17,28 +19,28 @@
 #include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
+#include "third_party/blink/renderer/core/page/page_visibility_observer.h"
 #include "third_party/blink/renderer/core/paint/paint_event.h"
 #include "third_party/blink/renderer/core/paint/timing/first_meaningful_paint_detector.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_callbacks.h"
 #include "third_party/blink/renderer/core/timing/animation_frame_timing_info.h"
+#include "third_party/blink/renderer/core/timing/performance_entry.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_deque.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
-#include "third_party/blink/renderer/platform/wtf/hash_set.h"
 
 namespace blink {
 class AnimationFrameTimingInfo;
-struct DOMPaintTimingInfo;
-struct ElementTimingInfo;
+class ElementTiming;
 class LargestContentfulPaintManager;
+struct HeapTimeTicks;
 class ImageRecord;
-class ImageElementTiming;
 class LocalFrame;
 class PaintTimingClient;
 class PaintTimingDetector;
-class TextElementTiming;
 class TextRecord;
 
 CORE_EXPORT BASE_DECLARE_FEATURE(kPaintTimingWaitForPresentationFrameIndex);
@@ -46,7 +48,9 @@ CORE_EXPORT BASE_DECLARE_FEATURE(kPaintTimingWaitForPresentationFrameIndex);
 // PaintTiming is responsible for tracking paint-related timings for a given
 // document.
 class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
-                                      public Supplement<Document> {
+                                      public Supplement<Document>,
+                                      public ExecutionContextLifecycleObserver,
+                                      public PageVisibilityObserver {
   using RequestAnimationFrameTimesAfterBackForwardCacheRestore = std::array<
       base::TimeTicks,
       WebPerformanceMetricsForReporting::
@@ -76,7 +80,7 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   explicit PaintTiming(Document&);
   PaintTiming(const PaintTiming&) = delete;
   PaintTiming& operator=(const PaintTiming&) = delete;
-  ~PaintTiming() = default;
+  ~PaintTiming() override = default;
 
   static PaintTiming& From(Document&);
   static const PaintTiming* From(const Document&);
@@ -206,6 +210,8 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   void MarkPaintTiming();
 
   void Trace(Visitor*) const override;
+  void ContextDestroyed() override;
+  void PageVisibilityChanged() override;
 
   // Returns the `LargestContentfulPaintManager` associated with this
   // `PaintTiming`. Returns null if hard LCP is no longer being recorded, e.g.
@@ -226,7 +232,7 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
     return *paint_timing_detector_.Get();
   }
 
-  ImageElementTiming* GetImageElementTiming() { return image_element_timing_; }
+  ElementTiming* GetElementTiming() { return element_timing_; }
 
   // Adds a `PaintTimingClient` to observe contentful paints. The client must
   // not have been previously added.
@@ -244,7 +250,7 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   friend class RecodingTimeAfterBackForwardCacheRestoreFrameCallback;
 
   struct PendingPaintTimingRecord {
-    HashSet<PaintEvent> paint_events;
+    PaintEventSet paint_events;
     base::TimeTicks rendering_update_end_time;
   };
 
@@ -258,14 +264,13 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
         AnimationFrameTimingInfo*,
         HeapVector<Member<TextRecord>> text_records,
         HeapVector<Member<ImageRecord>> image_records,
-        HeapVector<Member<ElementTimingInfo>> image_element_timings,
-        HeapVector<Member<ImageRecord>> animated_images);
+        Vector<PaintTimingCallback> client_callbacks,
+        HeapVector<Member<HeapTimeTicks>> pending_timestamps);
 
     bool HasPaintTimingInfo() const { return paint_timing_info.has_value(); }
 
     bool ShouldNotifyClientsOnFramePresented() const {
-      return !text_records.empty() || !image_records.empty() ||
-             !image_element_timings.empty();
+      return !text_records.empty() || !image_records.empty();
     }
 
     void Trace(Visitor*) const;
@@ -279,12 +284,13 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
     const Member<AnimationFrameTimingInfo> animation_frame_timing_info;
     const HeapVector<Member<TextRecord>> text_records;
     const HeapVector<Member<ImageRecord>> image_records;
-    const HeapVector<Member<ElementTimingInfo>> image_element_timings;
-    const HeapVector<Member<ImageRecord>> animated_images;
+    Vector<PaintTimingCallback> client_callbacks;
+    const HeapVector<Member<HeapTimeTicks>> pending_timestamps;
 
     // Values set at presentation time.
     base::TimeTicks raw_presentation_timestamp;
     std::optional<DOMPaintTimingInfo> paint_timing_info;
+    uint64_t navigation_id = 0;
 
     // The presentation timestamp of the first arriving presentation feedback
     // with id greater or equal to `id`. This is only used when
@@ -349,7 +355,8 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
       const PendingPaintTimingRecord&,
       AnimationFrameTimingInfo*,
       const base::TimeTicks& raw_presentation_timestamp,
-      const DOMPaintTimingInfo&);
+      const DOMPaintTimingInfo&,
+      uint64_t navigation_id);
 
   // Sets the paint timing info for the `PresentationCallbackData` associated
   // with `id` and flushes any `PresentationCallbackData` whose paint timing
@@ -361,7 +368,8 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   void SetPresentationTimeAndMaybeFlushPaintTimingsOnFramePresented(
       uint32_t id,
       const base::TimeTicks& raw_presentation_timestamp,
-      const DOMPaintTimingInfo&);
+      const DOMPaintTimingInfo&,
+      uint64_t navigation_id);
 
   // Flushes pending paint timing entries for a single frame, e.g. LCP and ICP
   // entries, element timings, LoAF entries, etc., after the frame has been
@@ -375,6 +383,11 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   void FlushPaintTimingsOnFramePresented(PresentationCallbackData&);
 
   void OnInputOrScroll();
+
+  bool ShouldRecordContentfulPaintCountHistograms() const;
+  void RecordContentfulPaintCountHistogram(std::string_view metric_suffix);
+  void MaybeRecordBeforeInputOrScrollHistogram();
+  void MaybeRecordHistogramsOnPageHiddenOrContextDestroyed();
 
   // Propagates the paint timing info and presentation time to the
   // `PaintTimingRecord`s owned by the `PresentationCallbackData`.
@@ -401,8 +414,6 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
 
   PaintDetails& GetRelevantPaintDetails() { return paint_details_; }
 
-  DOMPaintTimingInfo ToDOMPaintTimingInfo(const PaintTimingInfo&) const;
-
   PaintDetails paint_details_;
   // Timestamps used for UKM reporting.
   base::TimeTicks first_paint_presentation_for_ukm_;
@@ -415,15 +426,14 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   base::TimeTicks lcp_mouse_over_dispatch_time_;
 
   Member<PaintTimingDetector> paint_timing_detector_;
-  Member<ImageElementTiming> image_element_timing_;
-  Member<TextElementTiming> text_element_timing_;
+  Member<ElementTiming> element_timing_;
   Member<LargestContentfulPaintManager> largest_contentful_paint_manager_;
   Member<FirstMeaningfulPaintDetector> fmp_detector_;
   // The callback ID for requestAnimationFrame to record its time after the page
   // is restored from the back-forward cache.
   int raf_after_bfcache_restore_measurement_callback_id_ = 0;
 
-  HashSet<PaintEvent> pending_paint_events_;
+  PaintEventSet pending_paint_events_;
 
   // Set in some unit tests.
   Member<CallbackManager> callback_manager_;
@@ -434,6 +444,11 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   HeapVector<Member<PaintTimingClient>> clients_;
   // Used to enforce `clients_` is not modified during iteration.
   bool allow_client_modifications_ = true;
+
+  const std::optional<bool> is_outermost_main_frame_;
+  bool recorded_before_input_or_scroll_ = false;
+  bool recorded_until_hidden_or_destroyed_ = false;
+  uint32_t contentful_paint_count_ = 0;
 
   // A strictly increasing ID associated with `PresentationCallbackData`,
   // incremented when the data is created.

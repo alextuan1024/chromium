@@ -78,14 +78,14 @@ using network_config::CrosNetworkConfigTestHelper;
 using ::testing::IsNull;
 using ::testing::NotNull;
 
-const std::string kCellularName = "cellular";
-const std::string kCellularName2 = "cellular_2";
+constexpr char kCellularName[] = "cellular";
+constexpr char kCellularName2[] = "cellular_2";
 const char kCellularTestIccid[] = "1234567890";
 
 const char kTetherName[] = "tether";
 
-const std::string kEthernetName = "ethernet";
-const std::string kEthernetName2 = "ethernet_2";
+constexpr char kEthernetName[] = "ethernet";
+constexpr char kEthernetName2[] = "ethernet_2";
 
 const char kVpnName[] = "vpn";
 
@@ -128,8 +128,6 @@ ManagedPropertiesPtr CreateManagedPropertiesWithVPN(bool is_managed) {
           std::move(vpn));
   managed_properties->ip_address_config_type = ManagedString::New();
   managed_properties->name_servers_config_type = ManagedString::New();
-  managed_properties->traffic_counter_properties =
-      chromeos::network_config::mojom::TrafficCounterProperties::New();
   return managed_properties;
 }
 
@@ -151,8 +149,6 @@ ManagedPropertiesPtr CreateManagedPropertiesWithProxy(bool is_managed) {
   managed_properties->proxy_settings = std::move(proxy_settings);
   managed_properties->ip_address_config_type = ManagedString::New();
   managed_properties->name_servers_config_type = ManagedString::New();
-  managed_properties->traffic_counter_properties =
-      chromeos::network_config::mojom::TrafficCounterProperties::New();
   return managed_properties;
 }
 
@@ -365,7 +361,7 @@ class NetworkListViewControllerTest : public AshTestBase {
   }
 
   void LoginAsSecondaryUser() {
-    SimulateUserLogin({kUser1Email});
+    SimulateUserLogin(AccountId::FromUserEmail(kUser1Email));
     GetSessionControllerClient()->SetSessionState(
         session_manager::SessionState::LOGIN_SECONDARY);
     base::RunLoop().RunUntilIdle();

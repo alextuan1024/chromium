@@ -17,6 +17,7 @@
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/dom_key.h"
+#include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
 #include "ui/events/ozone/layout/scoped_keyboard_layout_engine.h"
@@ -153,6 +154,33 @@ class VkTestXkbKeyboardLayoutEngine : public XkbKeyboardLayoutEngine {
   raw_ptr<const PrintableEntry> printable_entry_;
   raw_ptr<const KeysymEntry> keysym_entry_;
 };
+
+// Compiles an XKB keymap for the given |layout| (pc101 model) and installs it
+// as the current layout of |layout_engine|. Uses gtest assertions, so callers
+// should wrap it in ASSERT_NO_FATAL_FAILURE.
+void SetLayoutFromName(XkbKeyboardLayoutEngine& layout_engine,
+                       const char* layout,
+                       const char* variant = "",
+                       const char* options = "") {
+  std::unique_ptr<xkb_context, XkbContextDeleter> xkb_context(
+      xkb_context_new(XKB_CONTEXT_NO_FLAGS));
+  ASSERT_TRUE(xkb_context);
+  xkb_rule_names names = {
+      .rules = nullptr,
+      .model = "pc101",
+      .layout = layout,
+      .variant = variant,
+      .options = options,
+  };
+  std::unique_ptr<xkb_keymap, XkbKeymapDeleter> xkb_keymap(
+      xkb_keymap_new_from_names(xkb_context.get(), &names,
+                                XKB_KEYMAP_COMPILE_NO_FLAGS));
+  ASSERT_TRUE(xkb_keymap) << "Failed to compile keymap for layout: " << layout;
+  std::unique_ptr<char, base::FreeDeleter> keymap_string(
+      xkb_keymap_get_as_string(xkb_keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
+  ASSERT_TRUE(keymap_string);
+  ASSERT_TRUE(layout_engine.SetCurrentLayoutFromBuffer(keymap_string.get()));
+}
 
 }  // anonymous namespace
 
@@ -346,7 +374,7 @@ TEST_F(XkbLayoutEngineVkTest, KeyboardCodeForPrintable) {
       /* 82 */ {{0x002F, 0x2460, 0x2461, DomCode::SLASH}, VKEY_OEM_2},
       // solidus, *, *
       /* 83 */
-      {{0x002F, 0x2460, 0x2461, DomCode::CONTROL_RIGHT}, VKEY_RCONTROL},
+      {{0x002F, 0x2460, 0x2461, DomCode::CONTROL_RIGHT}, VKEY_OEM_2},
       // colon, *, *
       /* 84 */ {{0x003A, 0x2460, 0x2461, DomCode::DIGIT1}, VKEY_1},
       // colon, *, *
@@ -775,6 +803,9 @@ TEST_F(XkbLayoutEngineVkTest, KeyboardCodeForPrintable) {
       /* 296 */ {{'9', '(', '+', DomCode::NONE}, VKEY_9},
       /* 297 */ {{'0', ')', '-', DomCode::NONE}, VKEY_0},
 
+      // solidus, *, * on IntlRo (Brazilian ABNT2).
+      /* 298 */ {{0x002F, 0x2460, 0x2461, DomCode::INTL_RO}, VKEY_OEM_2},
+
   });
 
   for (size_t i = 0; i < std::size(kVkeyTestCase); ++i) {
@@ -822,6 +853,22 @@ TEST_F(XkbLayoutEngineVkTest, KeyboardCodeForNonPrintable) {
       {{DomCode::ALT_LEFT, EF_NONE, XKB_KEY_Alt_L}, VKEY_MENU},
       {{DomCode::ALT_RIGHT, EF_NONE, XKB_KEY_Alt_R}, VKEY_MENU},
       {{DomCode::ALT_RIGHT, EF_NONE, XKB_KEY_ISO_Level3_Shift}, VKEY_ALTGR},
+      {{DomCode::ALT_RIGHT, EF_NONE, XKB_KEY_ISO_Level5_Shift}, VKEY_OEM_8},
+      {{DomCode::INTL_BACKSLASH, EF_NONE, XKB_KEY_ISO_Level5_Shift},
+       VKEY_OEM_8},
+      // Modifier and group-switching keysyms without a VKEY equivalent must
+      // return VKEY_UNKNOWN rather than falling back to the physical US layout.
+      {{DomCode::ALT_RIGHT, EF_NONE, XKB_KEY_ISO_Level3_Latch}, VKEY_UNKNOWN},
+      {{DomCode::CAPS_LOCK, EF_NONE, XKB_KEY_ISO_Level5_Lock}, VKEY_UNKNOWN},
+      {{DomCode::CONTEXT_MENU, EF_NONE, XKB_KEY_ISO_Next_Group}, VKEY_UNKNOWN},
+      {{DomCode::ALT_RIGHT, EF_NONE, XKB_KEY_ISO_Next_Group}, VKEY_UNKNOWN},
+      {{DomCode::CAPS_LOCK, EF_NONE, XKB_KEY_ISO_Prev_Group}, VKEY_UNKNOWN},
+      {{DomCode::SHIFT_LEFT, EF_ALT_DOWN, XKB_KEY_ISO_First_Group},
+       VKEY_UNKNOWN},
+      {{DomCode::SHIFT_RIGHT, EF_ALT_DOWN, XKB_KEY_ISO_Last_Group},
+       VKEY_UNKNOWN},
+      {{DomCode::CAPS_LOCK, EF_NONE, XKB_KEY_Hyper_L}, VKEY_UNKNOWN},
+      {{DomCode::CAPS_LOCK, EF_NONE, XKB_KEY_Shift_Lock}, VKEY_UNKNOWN},
       {{DomCode::DIGIT1, EF_NONE, XKB_KEY_1}, VKEY_1},
       {{DomCode::NUMPAD1, EF_NONE, XKB_KEY_KP_1}, VKEY_1},
       {{DomCode::CAPS_LOCK, EF_NONE, XKB_KEY_Caps_Lock}, VKEY_CAPITAL},
@@ -951,25 +998,7 @@ TEST_F(XkbLayoutEngineVkTest, XkbRuleNamesForLayoutName) {
 }
 
 TEST_F(XkbLayoutEngineVkTest, GetDomCodeByKeysym) {
-  // Set up US keyboard layout.
-  {
-    std::unique_ptr<xkb_context, ui::XkbContextDeleter> xkb_context(
-        xkb_context_new(XKB_CONTEXT_NO_FLAGS));
-    xkb_rule_names names = {
-        .rules = nullptr,
-        .model = "pc101",
-        .layout = "us",
-        .variant = "",
-        .options = "",
-    };
-    std::unique_ptr<xkb_keymap, ui::XkbKeymapDeleter> xkb_keymap(
-        xkb_keymap_new_from_names(xkb_context.get(), &names,
-                                  XKB_KEYMAP_COMPILE_NO_FLAGS));
-    std::unique_ptr<char, base::FreeDeleter> layout(
-        xkb_keymap_get_as_string(xkb_keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
-    layout_engine_->SetCurrentLayoutFromBuffer(layout.get(),
-                                               std::strlen(layout.get()));
-  }
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(*layout_engine_, "us"));
 
   constexpr int32_t kNullopt = -1;
   constexpr int32_t kShiftMask = 1;
@@ -1030,25 +1059,7 @@ TEST(XkbKeyboardLayoutEngineTest, NumpadDecimal) {
   XkbEvdevCodes evdev_codes;
   XkbKeyboardLayoutEngine layout_engine(evdev_codes);
 
-  // Set up US keyboard layout.
-  {
-    std::unique_ptr<xkb_context, ui::XkbContextDeleter> xkb_context(
-        xkb_context_new(XKB_CONTEXT_NO_FLAGS));
-    xkb_rule_names names = {
-        .rules = nullptr,
-        .model = "pc101",
-        .layout = "us",
-        .variant = "",
-        .options = "",
-    };
-    std::unique_ptr<xkb_keymap, ui::XkbKeymapDeleter> xkb_keymap(
-        xkb_keymap_new_from_names(xkb_context.get(), &names,
-                                  XKB_KEYMAP_COMPILE_NO_FLAGS));
-    std::unique_ptr<char, base::FreeDeleter> layout(
-        xkb_keymap_get_as_string(xkb_keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
-    layout_engine.SetCurrentLayoutFromBuffer(layout.get(),
-                                             std::strlen(layout.get()));
-  }
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "us"));
 
   DomKey dom_key;
   KeyboardCode key_code;
@@ -1102,6 +1113,452 @@ TEST(XkbKeyboardLayoutEngineTest, NumpadDecimal) {
                                    &dom_key, &key_code));
   EXPECT_EQ(ui::DomKey::FromCharacter('.'), dom_key);
   EXPECT_EQ(ui::VKEY_DECIMAL, key_code);
+}
+
+// Regression test for crbug.com/567348639. In the German layout, the numpad
+// decimal key is KP_Delete at level 1 and KP_Separator (',') at level 2 (i.e.
+// with NumLock on). The resulting key code must not be VKEY_DELETE, because
+// on ChromeOS EventRewriterAsh rewrites numpad VKEY_DELETE to '.'.
+TEST(XkbKeyboardLayoutEngineTest, NumpadDecimalGerman) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "de"));
+
+  DomKey dom_key = DomKey::NONE;
+  KeyboardCode key_code = VKEY_UNKNOWN;
+
+  // With NumLock enabled, NUMPAD_DECIMAL should produce ','.
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::NUMPAD_DECIMAL,
+                                   ui::EF_NUM_LOCK_ON, &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter(','), dom_key);
+  EXPECT_EQ(ui::VKEY_DECIMAL, key_code);
+
+  // With NumLock enabled and Shift down, NumLock behavior is inverted (acts as
+  // disabled), which selects level 1 (KP_Delete) and maps to DomKey::DEL and
+  // VKEY_DELETE.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::NUMPAD_DECIMAL,
+                                   ui::EF_SHIFT_DOWN | ui::EF_NUM_LOCK_ON,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::DEL, dom_key);
+  EXPECT_EQ(ui::VKEY_DELETE, key_code);
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // On ChromeOS NumLock is always on, but key events do not carry
+  // EF_NUM_LOCK_ON. Both the DomKey and the key code must still be derived
+  // as if NumLock were on.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::NUMPAD_DECIMAL, ui::EF_NONE,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter(','), dom_key);
+  EXPECT_EQ(ui::VKEY_DECIMAL, key_code);
+#else
+  // With NumLock disabled, NUMPAD_DECIMAL should act as Delete.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::NUMPAD_DECIMAL, ui::EF_NONE,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::DEL, dom_key);
+  EXPECT_EQ(ui::VKEY_DELETE, key_code);
+#endif
+}
+
+// Regression test for crbug.com/467734216. XKB's Control transformation maps
+// Ctrl+Space (and Ctrl+`) to NUL. Per the UI Events key guidelines, the key
+// must then be the character produced without the non-shiftlike modifier, not
+// DomKey::UNIDENTIFIED.
+TEST(XkbKeyboardLayoutEngineTest, ControlTransformedToNul) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "us"));
+
+  DomKey dom_key = DomKey::NONE;
+  KeyboardCode key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::SPACE, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter(' '), dom_key);
+  EXPECT_EQ(ui::VKEY_SPACE, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::SPACE,
+                                   ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter(' '), dom_key);
+  EXPECT_EQ(ui::VKEY_SPACE, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::BACKQUOTE, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter('`'), dom_key);
+  EXPECT_EQ(ui::VKEY_OEM_3, key_code);
+
+  // Ctrl+2 and Ctrl+Shift+2 (^@) keep producing the unmodified characters.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::DIGIT2, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter('2'), dom_key);
+  EXPECT_EQ(ui::VKEY_2, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::DIGIT2,
+                                   ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter('@'), dom_key);
+  EXPECT_EQ(ui::VKEY_2, key_code);
+
+  // Ctrl+A is unaffected.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::US_A, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::FromCharacter('a'), dom_key);
+  EXPECT_EQ(ui::VKEY_A, key_code);
+
+  // Ctrl+Enter remains DomKey::ENTER.
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(ui::DomCode::ENTER, ui::EF_CONTROL_DOWN,
+                                   &dom_key, &key_code));
+  EXPECT_EQ(ui::DomKey::ENTER, dom_key);
+  EXPECT_EQ(ui::VKEY_RETURN, key_code);
+}
+
+// Regression test for crbug.com/547963398. The punctuation keys of the
+// Turkish Q layout must produce the same key codes as the Windows Turkish Q
+// layout (KBDTUQ), e.g. '.' must map to VKEY_OEM_PERIOD rather than to the
+// key code of the US key at the same position.
+TEST(XkbKeyboardLayoutEngineTest, TurkishQPunctuation) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "tr"));
+
+  constexpr struct {
+    DomCode dom_code;
+    char16_t character;
+    KeyboardCode key_code;
+  } kTestCases[] = {
+      {DomCode::BACKSLASH, u',', VKEY_OEM_COMMA},
+      {DomCode::COMMA, u'\u00F6', VKEY_OEM_2},   // o diaeresis
+      {DomCode::PERIOD, u'\u00E7', VKEY_OEM_5},  // c cedilla
+      {DomCode::SLASH, u'.', VKEY_OEM_PERIOD},
+      {DomCode::SEMICOLON, u'\u015F', VKEY_OEM_1},  // s cedilla
+  };
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(static_cast<int>(test_case.dom_code));
+    DomKey dom_key = DomKey::NONE;
+    KeyboardCode key_code = VKEY_UNKNOWN;
+    EXPECT_TRUE(
+        layout_engine.Lookup(test_case.dom_code, EF_NONE, &dom_key, &key_code));
+    EXPECT_EQ(DomKey::FromCharacter(test_case.character), dom_key);
+    EXPECT_EQ(test_case.key_code, key_code);
+  }
+}
+
+// Layouts with '.' and ',' on the US slash key (e.g. Russian) keep
+// VKEY_OEM_2 for that key, as on Windows.
+TEST(XkbKeyboardLayoutEngineTest, RussianSlashKey) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "ru"));
+
+  DomKey dom_key = DomKey::NONE;
+  KeyboardCode key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(
+      layout_engine.Lookup(DomCode::SLASH, EF_NONE, &dom_key, &key_code));
+  EXPECT_EQ(DomKey::FromCharacter('.'), dom_key);
+  EXPECT_EQ(VKEY_OEM_2, key_code);
+}
+
+// Regression test for crbug.com/470131728. The Brazilian layouts put '/' on
+// IntlRo (ABNT2) or on ControlRight (ThinkPad). It must map to VKEY_OEM_2,
+// matching X11, rather than to the US layout VKEY of the physical key.
+TEST(XkbKeyboardLayoutEngineTest, BrazilianSlash) {
+  XkbEvdevCodes evdev_codes;
+  const struct {
+    const char* variant;
+    DomCode dom_code;
+  } kTestCases[] = {
+      {"", DomCode::INTL_RO},
+      {"thinkpad", DomCode::CONTROL_RIGHT},
+  };
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.variant);
+    XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+    ASSERT_NO_FATAL_FAILURE(
+        SetLayoutFromName(layout_engine, "br", test_case.variant));
+
+    DomKey dom_key = DomKey::NONE;
+    KeyboardCode key_code = VKEY_UNKNOWN;
+    EXPECT_TRUE(
+        layout_engine.Lookup(test_case.dom_code, EF_NONE, &dom_key, &key_code));
+    EXPECT_EQ(DomKey::FromCharacter('/'), dom_key);
+    EXPECT_EQ(VKEY_OEM_2, key_code);
+
+    dom_key = DomKey::NONE;
+    key_code = VKEY_UNKNOWN;
+    EXPECT_TRUE(layout_engine.Lookup(test_case.dom_code, EF_SHIFT_DOWN,
+                                     &dom_key, &key_code));
+    EXPECT_EQ(DomKey::FromCharacter('?'), dom_key);
+    EXPECT_EQ(VKEY_OEM_2, key_code);
+
+    // Ctrl+/ is a common shortcut.
+    dom_key = DomKey::NONE;
+    key_code = VKEY_UNKNOWN;
+    EXPECT_TRUE(layout_engine.Lookup(test_case.dom_code, EF_CONTROL_DOWN,
+                                     &dom_key, &key_code));
+    EXPECT_EQ(DomKey::FromCharacter('/'), dom_key);
+    EXPECT_EQ(VKEY_OEM_2, key_code);
+  }
+}
+
+TEST(XkbKeyboardLayoutEngineTest, NoStateBeforeKeymap) {
+  // GTK IM events (e.g. from fcitx5 on first input activation) can arrive
+  // before the compositor delivers the first keymap. The engine must not
+  // crash on a null XKB state (crbug.com/558945735).
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  EXPECT_EQ(0, layout_engine.UpdateModifiers(/*depressed=*/0, /*latched=*/0,
+                                             /*locked=*/0, /*group=*/0));
+  EXPECT_EQ(DomCode::NONE,
+            layout_engine.GetDomCodeByKeysym(XKB_KEY_a, std::nullopt));
+}
+
+// Keymaps may map keycodes that have no DomCode, e.g. XKB keycodes above 202
+// (evdev KEY_F24). LookupNativeKeycode() resolves them from the keymap.
+TEST(XkbKeyboardLayoutEngineTest, LookupNativeKeycodeWithoutDomCode) {
+  constexpr char kKeymap[] = R"(xkb_keymap {
+    xkb_keycodes "test" {
+      minimum = 8;
+      maximum = 400;
+      <AC01> = 38;
+      <I203> = 203;
+      <I300> = 300;
+      <I301> = 301;
+      <I302> = 302;
+      <I303> = 303;
+      <I304> = 304;
+      <I305> = 305;
+      <I306> = 306;
+      <I307> = 307;
+    };
+    xkb_types "test" {
+      type "ONE_LEVEL" {
+        modifiers = none;
+        level_name[Level1] = "Any";
+      };
+      type "TWO_LEVEL" {
+        modifiers = Shift;
+        map[Shift] = Level2;
+        level_name[Level1] = "Base";
+        level_name[Level2] = "Shift";
+      };
+    };
+    xkb_compatibility "test" {
+      interpret Shift_L {
+        action = SetMods(modifiers=Shift);
+      };
+      interpret Control_L {
+        action = SetMods(modifiers=Control);
+      };
+    };
+    xkb_symbols "test" {
+      key <AC01> { type = "TWO_LEVEL", [ a, A ] };
+      key <I203> { type = "TWO_LEVEL", [ b, B ] };
+      key <I300> { type = "TWO_LEVEL", [ c, C ] };
+      key <I301> { type = "ONE_LEVEL", [ space ] };
+      key <I302> { type = "TWO_LEVEL", [ period, greater ] };
+      key <I303> { type = "TWO_LEVEL", [ comma, less ] };
+      key <I304> { type = "TWO_LEVEL", [ minus, underscore ] };
+      key <I305> { type = "TWO_LEVEL", [ equal, plus ] };
+      key <I306> { type = "TWO_LEVEL", [ NoSymbol, exclam ] };
+      key <I307> { type = "ONE_LEVEL", [ XF86Close ] };
+    };
+  };)";
+
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+  ASSERT_TRUE(layout_engine.SetCurrentLayoutFromBuffer(kKeymap));
+
+  // Keycodes without a DomCode.
+  for (uint32_t code : {203u, 300u, 301u, 302u, 303u, 304u, 305u, 306u, 307u}) {
+    ASSERT_EQ(DomCode::NONE, KeycodeConverter::XkbKeycodeToDomCode(code))
+        << code;
+  }
+
+  const auto expect_lookup = [&](uint32_t keycode, int flags,
+                                 DomKey expected_key,
+                                 KeyboardCode expected_vkey) {
+    SCOPED_TRACE(testing::Message()
+                 << "keycode=" << keycode << " flags=" << flags);
+    DomKey dom_key = DomKey::NONE;
+    KeyboardCode key_code = VKEY_UNKNOWN;
+    EXPECT_TRUE(
+        layout_engine.LookupNativeKeycode(keycode, flags, &dom_key, &key_code));
+    EXPECT_EQ(expected_key, dom_key);
+    EXPECT_EQ(expected_vkey, key_code);
+  };
+
+  expect_lookup(203, EF_NONE, DomKey::FromCharacter('b'), VKEY_B);
+  expect_lookup(203, EF_SHIFT_DOWN, DomKey::FromCharacter('B'), VKEY_B);
+  expect_lookup(300, EF_NONE, DomKey::FromCharacter('c'), VKEY_C);
+
+  // Space and ASCII punctuation fall back to US-layout VKEYs when DomCode is
+  // DomCode::NONE.
+  expect_lookup(301, EF_NONE, DomKey::FromCharacter(' '), VKEY_SPACE);
+  expect_lookup(301, EF_CONTROL_DOWN, DomKey::FromCharacter(' '), VKEY_SPACE);
+  expect_lookup(302, EF_NONE, DomKey::FromCharacter('.'), VKEY_OEM_PERIOD);
+  expect_lookup(302, EF_SHIFT_DOWN, DomKey::FromCharacter('>'),
+                VKEY_OEM_PERIOD);
+  expect_lookup(303, EF_NONE, DomKey::FromCharacter(','), VKEY_OEM_COMMA);
+  expect_lookup(303, EF_SHIFT_DOWN, DomKey::FromCharacter('<'), VKEY_OEM_COMMA);
+  expect_lookup(304, EF_NONE, DomKey::FromCharacter('-'), VKEY_OEM_MINUS);
+  expect_lookup(304, EF_SHIFT_DOWN, DomKey::FromCharacter('_'), VKEY_OEM_MINUS);
+  expect_lookup(305, EF_NONE, DomKey::FromCharacter('='), VKEY_OEM_PLUS);
+  expect_lookup(305, EF_SHIFT_DOWN, DomKey::FromCharacter('+'), VKEY_OEM_PLUS);
+
+  // Key with unmapped Level1 (NoSymbol) and printable shifted character falls
+  // back via the resolved DomKey.
+  expect_lookup(306, EF_SHIFT_DOWN, DomKey::FromCharacter('!'), VKEY_1);
+
+  // Non-printable keysym whose VKEY comes from the DomCode fallback table.
+  expect_lookup(307, EF_NONE, DomKey::CLOSE, VKEY_CLOSE);
+
+  // A keycode with a DomCode gives the same result as Lookup().
+  expect_lookup(38, EF_NONE, DomKey::FromCharacter('a'), VKEY_A);
+
+  // Keycodes (or levels) the keymap doesn't map are not resolved, and the
+  // outputs are left untouched.
+  DomKey dom_key = DomKey::NONE;
+  KeyboardCode key_code = VKEY_UNKNOWN;
+  EXPECT_FALSE(
+      layout_engine.LookupNativeKeycode(204, EF_NONE, &dom_key, &key_code));
+  EXPECT_FALSE(
+      layout_engine.LookupNativeKeycode(306, EF_NONE, &dom_key, &key_code));
+  EXPECT_FALSE(
+      layout_engine.LookupNativeKeycode(1000, EF_NONE, &dom_key, &key_code));
+  EXPECT_EQ(DomKey::NONE, dom_key);
+  EXPECT_EQ(VKEY_UNKNOWN, key_code);
+}
+
+// Regression test for crbug.com/581081916. In the German Neo2 layout, AltRight
+// and IntlBackslash produce ISO_Level5_Shift (Mod4). They must map to
+// DomKey::SHIFT_LEVEL5 and VKEY_OEM_8 rather than falling back to VKEY_MENU or
+// VKEY_OEM_102.
+TEST(XkbKeyboardLayoutEngineTest, Neo2Modifiers) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "de", "neo"));
+
+  DomKey dom_key = DomKey::NONE;
+  KeyboardCode key_code = VKEY_UNKNOWN;
+
+  EXPECT_TRUE(
+      layout_engine.Lookup(DomCode::ALT_RIGHT, EF_NONE, &dom_key, &key_code));
+  EXPECT_EQ(DomKey::SHIFT_LEVEL5, dom_key);
+  EXPECT_EQ(VKEY_OEM_8, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(layout_engine.Lookup(DomCode::INTL_BACKSLASH, EF_NONE, &dom_key,
+                                   &key_code));
+  EXPECT_EQ(DomKey::SHIFT_LEVEL5, dom_key);
+  EXPECT_EQ(VKEY_OEM_8, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(
+      layout_engine.Lookup(DomCode::CAPS_LOCK, EF_NONE, &dom_key, &key_code));
+  EXPECT_EQ(DomKey::ALT_GRAPH, dom_key);
+  EXPECT_EQ(VKEY_ALTGR, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(
+      layout_engine.Lookup(DomCode::BACKSLASH, EF_NONE, &dom_key, &key_code));
+  EXPECT_EQ(DomKey::ALT_GRAPH, dom_key);
+  EXPECT_EQ(VKEY_ALTGR, key_code);
+
+  dom_key = DomKey::NONE;
+  key_code = VKEY_UNKNOWN;
+  EXPECT_TRUE(
+      layout_engine.Lookup(DomCode::ALT_LEFT, EF_NONE, &dom_key, &key_code));
+  EXPECT_EQ(DomKey::ALT, dom_key);
+  EXPECT_EQ(VKEY_MENU, key_code);
+}
+
+// Regression test for crbug.com/578545242. Keys rebound to XKB group switching
+// (such as Menu with grp:menu_toggle, CapsLock with grp:caps_toggle, or
+// AltRight with grp:toggle) must map to VKEY_UNKNOWN rather than falling back
+// to VKEY_APPS, VKEY_CAPITAL, or VKEY_MENU.
+TEST(XkbKeyboardLayoutEngineTest, GroupSwitchKeys) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+
+  ASSERT_NO_FATAL_FAILURE(
+      SetLayoutFromName(layout_engine, "us,ru", "",
+                        "grp:menu_toggle,grp:caps_toggle,grp:toggle"));
+
+  for (DomCode code :
+       {DomCode::CONTEXT_MENU, DomCode::CAPS_LOCK, DomCode::ALT_RIGHT}) {
+    SCOPED_TRACE(static_cast<int>(code));
+    DomKey dom_key = DomKey::NONE;
+    KeyboardCode key_code = VKEY_APPS;
+    EXPECT_TRUE(layout_engine.Lookup(code, EF_NONE, &dom_key, &key_code));
+    EXPECT_EQ(DomKey::GROUP_NEXT, dom_key);
+    EXPECT_EQ(VKEY_UNKNOWN, key_code);
+  }
+}
+
+// Super+Space bound to ISO_Next_Group (grp:win_space_toggle) must not be
+// reported as a US-layout VKEY. https://crbug.com/393384255
+TEST(XkbKeyboardLayoutEngineTest, WinSpaceToggle) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+  ASSERT_NO_FATAL_FAILURE(
+      SetLayoutFromName(layout_engine, "us,ru", "", "grp:win_space_toggle"));
+  DomKey dom_key = DomKey::NONE;
+  KeyboardCode key_code = VKEY_APPS;
+  EXPECT_TRUE(layout_engine.Lookup(DomCode::SPACE, EF_COMMAND_DOWN, &dom_key,
+                                   &key_code));
+  EXPECT_EQ(DomKey::GROUP_NEXT, dom_key);
+  EXPECT_EQ(VKEY_UNKNOWN, key_code);
+  // Plain Space is unaffected.
+  EXPECT_TRUE(
+      layout_engine.Lookup(DomCode::SPACE, EF_NONE, &dom_key, &key_code));
+  EXPECT_EQ(DomKey::FromCharacter(' '), dom_key);
+  EXPECT_EQ(VKEY_SPACE, key_code);
+}
+
+TEST(XkbKeyboardLayoutEngineTest, KeyRepeats) {
+  XkbEvdevCodes evdev_codes;
+  XkbKeyboardLayoutEngine layout_engine(evdev_codes);
+  EXPECT_FALSE(layout_engine.HasKeymap());
+  EXPECT_FALSE(layout_engine.KeyRepeats(38 /* <AC01> / 'a' */));
+
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "us"));
+  EXPECT_TRUE(layout_engine.HasKeymap());
+  EXPECT_TRUE(layout_engine.KeyRepeats(38 /* <AC01> / 'a' */));
+  EXPECT_TRUE(layout_engine.KeyRepeats(22 /* <BKSP> */));
+  EXPECT_FALSE(layout_engine.KeyRepeats(50 /* <LFSH> */));
+  EXPECT_FALSE(layout_engine.KeyRepeats(66 /* <CAPS> */));
+
+  // Colemak remaps CapsLock (<CAPS>, XKB keycode 66) to BackSpace with
+  // repeat=yes.
+  ASSERT_NO_FATAL_FAILURE(SetLayoutFromName(layout_engine, "us", "colemak"));
+  EXPECT_TRUE(layout_engine.KeyRepeats(66 /* <CAPS> */));
+  EXPECT_FALSE(layout_engine.KeyRepeats(50 /* <LFSH> */));
 }
 
 }  // namespace ui

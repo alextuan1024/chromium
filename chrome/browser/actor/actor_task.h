@@ -8,10 +8,12 @@
 #include <iosfwd>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "base/callback_list.h"
 #include "base/cancelable_callback.h"
+#include "base/check.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -22,10 +24,12 @@
 #include "base/types/pass_key.h"
 #include "build/build_config.h"
 #include "chrome/browser/actor/actor_navigation_throttle.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_task_delegate.h"
+#include "chrome/browser/actor/actor_task_options.h"
+#include "chrome/browser/actor/execution_engine.h"
 #include "chrome/browser/actor/tools/tool_request.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
-#include "chrome/common/actor_webui.mojom-forward.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "chrome/common/glic_enums.mojom.h"
 #include "components/actor/core/actor_ui_mode.h"
 #include "components/actor/core/aggregated_journal.h"
@@ -45,13 +49,12 @@ namespace actor {
 class ActionTrackerForMetrics;
 class ActorKeyedService;
 class EnterprisePolicyChecker;
-class ExecutionEngine;
 class TabObservationStrategy;
 
 namespace ui {
 class UiEventDispatcher;
 }
-struct ActionResultWithLatencyInfo;
+struct ToolResultWithLatencyInfo;
 
 // Represents a task that Chrome is executing on behalf of the user.
 //
@@ -69,8 +72,10 @@ struct ActionResultWithLatencyInfo;
 class ActorTask : public base::SupportsUserData {
  public:
   using ActCallback =
-      base::OnceCallback<void(std::vector<ActionResultWithLatencyInfo>,
+      base::OnceCallback<void(std::vector<ToolResultWithLatencyInfo>,
                               TabObservationStrategy)>;
+
+  using AllowedSchemes = ExecutionEngine::AllowedSchemes;
 
   // Created only via ActorKeyedService::CreateTask or the CreateForTesting
   // method in this class.
@@ -78,12 +83,9 @@ class ActorTask : public base::SupportsUserData {
             ActorKeyedService& service,
             TaskId id,
             std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher,
-            webui::mojom::TaskOptionsPtr options,
             const TaskSourceInfo& source_info,
             const EnterprisePolicyChecker* policy_checker,
-            base::WeakPtr<ActorTaskDelegate> delegate = nullptr,
-            std::optional<glic::mojom::InvocationSource>
-                initial_invocation_source = std::nullopt);
+            const ActorTaskOptions& options);
   ~ActorTask() override;
 
   ActorTask() = delete;
@@ -94,23 +96,36 @@ class ActorTask : public base::SupportsUserData {
       ActorKeyedService& service,
       TaskId id,
       std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher,
-      webui::mojom::TaskOptionsPtr options,
       const TaskSourceInfo& source_info,
       const EnterprisePolicyChecker* policy_checker,
-      base::WeakPtr<ActorTaskDelegate> delegate,
-      std::optional<glic::mojom::InvocationSource> initial_invocation_source =
-          std::nullopt);
+      const ActorTaskOptions& options);
 
   TaskId id() const { return id_; }
 
   const TaskSourceInfo& source_info() const { return source_info_; }
 
+  // Used for late registration/backfilling of the source-defined ID (e.g. Glic
+  // conversation ID or TTC session ID) when it is not yet known at task
+  // creation time.
+  void SetSourceId(std::string id) {
+    CHECK(!id.empty(), base::NotFatalUntil::M161);
+    CHECK(!source_info_.id.has_value() || source_info_.id == id,
+          base::NotFatalUntil::M161);
+    source_info_.id = std::move(id);
+  }
+
   glic::mojom::FeatureMode feature_mode() const { return feature_mode_; }
 
-  std::optional<glic::mojom::InvocationSource> initial_invocation_source()
+  // Returns true if navigations and critical actions performed during the task
+  // should be excluded from Chrome history and critical action logging.
+  bool skip_history_recording() const { return skip_history_recording_; }
+
+  std::optional<glic::mojom::InvocationSource> glic_initial_invocation_source()
       const {
-    return initial_invocation_source_;
+    return glic_initial_invocation_source_;
   }
+
+  bool IsExperimentalTriggering() const;
 
   const std::string& title() const { return title_; }
   base::WeakPtr<ActorTaskDelegate> delegate() const { return delegate_; }
@@ -165,10 +180,12 @@ class ActorTask : public base::SupportsUserData {
     kUserLoadedPreviousChat = 7,
     kUserNavigatedAway = 8,
     kTimeout = 9,
-    kMaxValue = kTimeout,
+    kAbortedByPolicy = 10,
+    kMaxValue = kAbortedByPolicy,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/histograms.xml:StoppedReason,
-  // //tools/metrics/histograms/metadata/actor/enums.xml:StoppedReasonEnum)
+  // //tools/metrics/histograms/metadata/actor/enums.xml:StoppedReasonEnum,
+  // //chrome/browser/actor/android/java/src/org/chromium/chrome/browser/actor/ActorMetrics.java:StoppedReasonName)
 
   enum class TaskDuration {
     kDefault = 0,
@@ -204,6 +221,14 @@ class ActorTask : public base::SupportsUserData {
 
   void Act(std::vector<std::unique_ptr<ToolRequest>>&& actions,
            ActCallback callback);
+  // Same as above, but also runs `on_actions_accepted` once the execution
+  // engine accepts `actions`, right before the first of them starts. It never
+  // runs if `actions` are rejected (e.g. because the task is paused, stopped or
+  // already executing other actions, or a tab can't be added), or if a later
+  // call to `Act()` supersedes this one before `actions` start.
+  void Act(std::vector<std::unique_ptr<ToolRequest>>&& actions,
+           base::OnceClosure on_actions_accepted,
+           ActCallback callback);
 
   // Converts stopped_reason to the final state of the task.
   static State GetTaskStateFromStoppedReason(StoppedReason stopped_reason);
@@ -212,11 +237,9 @@ class ActorTask : public base::SupportsUserData {
   void Stop(StoppedReason stop_reason);
 
   // Pause() is called to indicate that either the actor or user is pausing
-  // actor actions, determined by the `from_actor` flag. If the
-  // `cancel_existing_action` flag is true, any in-progress action will be
-  // cancelled. If there is an existing action and it's not canceled, its
-  // completion will resume the task.
-  void Pause(bool from_actor, bool cancel_existing_action = true);
+  // actor actions, determined by the `from_actor` flag. This will cancel any
+  // in-progress action.
+  void Pause(bool from_actor);
 
   // Resume() puts the task back into an actor-controlled state. The caller is
   // responsible for updating the actor with the latest state of the browser.
@@ -251,41 +274,62 @@ class ActorTask : public base::SupportsUserData {
   bool IsCompleted() const;
   static bool IsCompletedState(State state);
 
+  std::optional<StoppedReason> stopped_reason() const {
+    return stopped_reason_;
+  }
+
   ExecutionEngine& GetExecutionEngine() const;
 
-  // Add/remove the given TabHandle to the set of tabs this task is operating
-  // over and notify the UI if this is a new tab for the task. Added tabs will
-  // enter actuation mode and be kept as visible. If `stop_task_on_detach` is
-  // true, then the task will be stopped when the given tab is detached.
+  // Add/remove the given surface to the set of pages this task is operating
+  // over and notify the UI if this is a new page for the task. Added pages
+  // will enter actuation mode and be kept as visible. If `stop_task_on_detach`
+  // is true, then the task will be stopped when the page goes away: its tab is
+  // closed, or its headless page is destroyed.
   using AddTabCallback = base::OnceCallback<void(mojom::ActionResultPtr)>;
+  void AddActorSurface(ActorSurfaceHandle actor_surface_handle,
+                       bool stop_task_on_detach,
+                       AddTabCallback callback);
+  void RemoveActorSurface(ActorSurfaceHandle actor_surface_handle);
+
+  // Tab versions of the above.
   void AddTab(tabs::TabHandle tab,
               bool stop_task_on_detach,
               AddTabCallback callback);
   void RemoveTab(tabs::TabHandle tab);
 
-  // Transient version of the above. The tab will enter the same
+  // Transient version of the above. The page will enter the same
   // simulated-visible state but only until the next call to Act. Until then it
   // will always be be included in the LastActedTabs set.
+  void ObserveActorSurfaceOnce(ActorSurfaceHandle actor_surface_handle);
   void ObserveTabOnce(tabs::TabHandle tab_handle);
 
-  // Returns true if the given tab is part of this task's tab set.
+  // Returns true if the given surface or tab is part of this task's set.
+  bool HasActorSurface(ActorSurfaceHandle actor_surface_handle) const;
   bool HasTab(tabs::TabHandle tab) const;
 
-  // Returns true if the given tab is part of this task's controlled tab set and
-  // the task is under actor control.
+  // Returns true if the given surface or tab is part of this task's controlled
+  // set and the task is under actor control.
+  bool IsActingOnActorSurface(ActorSurfaceHandle actor_surface_handle) const;
   bool IsActingOnTab(tabs::TabHandle tab) const;
+
+  using ActorSurfaceHandleSet = absl::flat_hash_set<ActorSurfaceHandle>;
+
+  // The set of surfaces that have been acted on at any point during this task.
+  ActorSurfaceHandleSet GetActorSurfaces() const;
+
+  // The set of surfaces that were acted on by the last call to Act.
+  ActorSurfaceHandleSet GetLastActedActorSurfaces() const;
+
+  // The surface that was most recently added or actuated on. Unlike
+  // GetActorSurfaces() and GetLastActedActorSurfaces(), this handle is
+  // preserved after task completion.
+  ActorSurfaceHandle GetLastActuatedActorSurface() const;
 
   using TabHandleSet = absl::flat_hash_set<tabs::TabHandle>;
 
-  // The set of tabs that have been acted on at any point during this task.
+  // Tab versions of the above.
   TabHandleSet GetTabs() const;
-
-  // The set of tabs that were acted on by the last call to Act.
   TabHandleSet GetLastActedTabs() const;
-
-  // The tab that was most recently added or actuated on. Unlike GetTabs()
-  // and GetLastActedTabs(), this handle is preserved after task completion
-  // as long as the underlying tab has not been destroyed.
   tabs::TabInterface* GetLastActuatedTab() const;
   tabs::TabHandle GetLastActuatedTabHandle() const;
 
@@ -320,10 +364,27 @@ class ActorTask : public base::SupportsUserData {
     return additional_tab_observations_;
   }
 
-  void OnTabWillDetach(tabs::TabHandle handle);
+  // Method to be called when a surface this task acts on or observes is about
+  // to go away: its tab is closing (ActorTabStripTrackerDesktop) or the
+  // headless surface is being destroyed (ActorKeyedService). Stops the task if
+  // the surface was added with `stop_task_on_detach`.
+  void OnActorSurfaceWillDetach(ActorSurfaceHandle actor_surface_handle);
+
+  // Called when a headless surface in this task's set has become a tab
+  // (`ActorKeyedService::PromoteHeadlessActorSurface()`). Runs the tab-only
+  // setup that `AddActorSurface()` skips for a headless surface: tells the UI
+  // about the tab, even while the task is paused, recomputes tab visibility,
+  // and, while under actor control, follows the tab's contents across
+  // discards. Does nothing if the surface isn't in the set.
+  void OnActorSurfacePromoted(ActorSurfaceHandle actor_surface_handle);
 
   const std::string& step_progress() const { return step_progress_; }
   void SetStepProgress(std::string step_progress);
+  // Sends UiEventDispatcher::ActRequested, which tells ActorUiStateManager
+  // that a client requested an act. Call this before validating the request,
+  // so that requests that fail before Act() also reach ActorUiStateManager.
+  // This method does not change the task state.
+  void OnActRequested();
 
  private:
   class ActorControlledTabState : public content::WebContentsObserver {
@@ -357,20 +418,34 @@ class ActorTask : public base::SupportsUserData {
 
   // Transitions a tab/contents into a state where only the actor is responsible
   // for interacting with the tab.
-  void DidTabEnterActorControl(tabs::TabHandle handle);
+  void DidTabEnterActorControl(ActorSurfaceHandle actor_surface_handle);
   void DidContentsEnterActorControl(ActorControlledTabState* state,
                                     content::WebContents* contents);
 
+  // Makes `state` follow `tab`'s contents when the tab discards them.
+  void ObserveTabDiscard(ActorControlledTabState& state,
+                         tabs::TabInterface& tab);
+
+  // Tells the UI that `tab_handle` was added to this task. `callback` runs once
+  // the UI is done.
+  void NotifyUiOfAddedTab(tabs::TabHandle tab_handle, AddTabCallback callback);
+
   // Transitions the tab from being actor controlled back to user being able to
   // interact with in.
-  void DidTabExitActorControl(tabs::TabHandle handle);
+  void DidTabExitActorControl(ActorSurfaceHandle actor_surface_handle);
   void DidContentsExitActorControl(ActorControlledTabState* state,
                                    content::WebContents* contents);
 
-  // Returns true if the tab does not exist or belongs to a different profile
-  // than the task, and logs an error to the journal.
-  bool CheckCrossProfileAndLog(tabs::TabInterface* tab,
-                               tabs::TabHandle tab_handle,
+  // Removes the JavaScriptDialogInterceptor UserData from `contents` unless
+  // another active task is still acting on `actor_surface_handle`.
+  void MaybeRemoveJavaScriptDialogInterceptor(
+      ActorSurfaceHandle actor_surface_handle,
+      content::WebContents& contents);
+
+  // Returns true if the surface does not exist or belongs to a different
+  // profile than the task, and logs an error to the journal.
+  bool CheckCrossProfileAndLog(ActorSurface* actor_surface,
+                               ActorSurfaceHandle actor_surface_handle,
                                std::string_view method_name);
 
   // Callback from TabInterface for when the WebContents change.
@@ -378,7 +453,7 @@ class ActorTask : public base::SupportsUserData {
                              content::WebContents* old_contents,
                              content::WebContents* new_contents);
 
-  void OnFinishedAct(std::vector<ActionResultWithLatencyInfo> action_results,
+  void OnFinishedAct(std::vector<ToolResultWithLatencyInfo> action_results,
                      TabObservationStrategy observation_strategy);
 
   void ResetToObserveTabsSet();
@@ -391,6 +466,7 @@ class ActorTask : public base::SupportsUserData {
   void UpdateVisibilityTimes();
 
   void DidEarlyAddTabs(std::vector<std::unique_ptr<ToolRequest>>&& actions,
+                       base::OnceClosure on_actions_accepted,
                        std::vector<mojom::ActionResultPtr> add_tab_results);
 
   State state_ = State::kCreated;
@@ -428,9 +504,14 @@ class ActorTask : public base::SupportsUserData {
   // The feature mode for the task.
   const glic::mojom::FeatureMode feature_mode_;
 
+  // Whether navigations and critical actions performed during the task should
+  // be excluded from Chrome history and critical action logging.
+  const bool skip_history_recording_ = false;
+
   // Invocation source that first opened the Glic instance this task was
   // created from. nullopt for tasks not created via Glic.
-  const std::optional<glic::mojom::InvocationSource> initial_invocation_source_;
+  const std::optional<glic::mojom::InvocationSource>
+      glic_initial_invocation_source_;
 
   // The callback to notify the client of the result of calling Act().
   ActCallback callback_for_act_;
@@ -455,19 +536,23 @@ class ActorTask : public base::SupportsUserData {
   // Total time this task has been actuating with no tabs visible.
   base::TimeDelta total_time_not_visible_;
 
-  // A map from a tab's handle to state associated with that tab. The presence
-  // of a tab in this map signifies that it is part of this task.
-  absl::flat_hash_map<tabs::TabHandle, std::unique_ptr<ActorControlledTabState>>
+  // A map from an ActorSurfaceHandle to the state associated with the
+  // associated tab. The presence of a surface in this map signifies that its
+  // tab is part of this task.
+  absl::flat_hash_map<ActorSurfaceHandle,
+                      std::unique_ptr<ActorControlledTabState>>
       controlled_tabs_;
 
-  // An additional set of tabs to capture for observations at the end of an Act
-  // turn. Reset at the beginning of each call to Act.
-  absl::flat_hash_map<tabs::TabHandle, std::unique_ptr<ActorControlledTabState>>
+  // An additional set of tabs, keyed by surface handle, to capture for
+  // observations at the end of an Act turn. Reset at the beginning of each
+  // call to Act.
+  absl::flat_hash_map<ActorSurfaceHandle,
+                      std::unique_ptr<ActorControlledTabState>>
       to_observe_tabs_;
 
-  // The handle of the tab most recently added for actuation, preserved across
-  // task completion.
-  tabs::TabHandle last_actuated_tab_;
+  // The surface handle of the tab most recently added for actuation, preserved
+  // across task completion.
+  ActorSurfaceHandle last_actuated_tab_;
 
   // A set of additional tab observations performed directly by the tools.
   std::vector<optimization_guide::proto::TabObservation>

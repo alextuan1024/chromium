@@ -148,11 +148,6 @@ bool IsFormatSupported(viz::SharedImageFormat format,
     }
   }
 
-  // ALPHA_8 is only used by UI and should never need GL/Vulkan interop.
-  if (format == viz::SinglePlaneFormat::kALPHA_8) {
-    return false;
-  }
-
   return true;
 }
 
@@ -310,6 +305,18 @@ bool ExternalVkImageBackingFactory::IsSupported(
   if (enable_webgpu_on_vk_via_gl_interop_) {
     if (!usage.HasAny(kWebGPUUsages)) {
       // Only support GL vulkan webgpu interop.
+      return false;
+    }
+
+    // WebGPU-on-Vulkan-via-GL interop requires aliasing a single external
+    // VkImage into both Vulkan and GL. ExternalVkImageBacking does not support
+    // GL access when CanImportIntoGL() is false. The drivers interop is enabled
+    // on all support external objects, and Blink always allocates the WebGPU
+    // swap texture with the preferred canvas format (RGBA on Linux; see
+    // GPU::GetPreferredCanvasFormat()), but the format is renderer-controlled,
+    // so enforce the invariant here.
+    if (!ExternalVkImageBacking::CanImportIntoGL(context_state_.get(),
+                                                 format)) {
       return false;
     }
   }

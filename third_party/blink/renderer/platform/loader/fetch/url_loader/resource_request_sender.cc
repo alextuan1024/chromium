@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/to_vector.h"
 #include "base/debug/alias.h"
@@ -40,6 +41,7 @@
 #include "services/network/public/cpp/url_util.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/blink/public/common/client_hints/client_hints.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/loader/inter_process_time_ticks_converter.h"
@@ -64,9 +66,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/sync_load_response.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 
@@ -138,7 +137,6 @@ void ResourceRequestSender::SendSync(
   CheckSchemeForReferrerPolicy(*request);
 
   DCHECK(loader_options & network::mojom::kURLLoadOptionSynchronous);
-  DCHECK(request->load_flags & net::LOAD_IGNORE_LIMITS);
 
   std::unique_ptr<network::PendingSharedURLLoaderFactory> pending_factory =
       url_loader_factory->Clone();
@@ -152,32 +150,32 @@ void ResourceRequestSender::SendSync(
   }
 
   // A task is posted to a separate thread to execute the request so that
-  // this thread may block on a waitable event. It is safe to pass raw
-  // pointers to on-stack objects as this stack frame will
-  // survive until the request is complete.
+  // this thread may block on a waitable event. `context` is held on this stack
+  // frame and released on `task_runner` via `ReleaseSoon` when `SendSync()`
+  // returns, so it outlives all tasks posted to `task_runner` below.
   scoped_refptr<base::SingleThreadTaskRunner> task_runner =
       base::ThreadPool::CreateSingleThreadTaskRunner({});
-  SyncLoadContext* context_for_redirect = nullptr;
+  scoped_refptr<SyncLoadContext> context = SyncLoadContext::Create(task_runner);
+  absl::Cleanup release_context = [&]() {
+    task_runner->ReleaseSoon(FROM_HERE, std::move(context));
+  };
   PostCrossThreadTask(
       *task_runner, FROM_HERE,
-      CrossThreadBindOnce(&SyncLoadContext::StartAsyncWithWaitableEvent,
-                          std::move(request), task_runner, traffic_annotation,
-                          loader_options, std::move(pending_factory),
-                          std::move(throttles), CrossThreadUnretained(response),
-                          CrossThreadUnretained(&context_for_redirect),
-                          CrossThreadUnretained(&redirect_or_response_event),
-                          CrossThreadUnretained(terminate_sync_load_event),
-                          timeout, std::move(download_to_blob_registry),
-                          cors_exempt_header_list,
-                          std::move(resource_load_info_notifier_wrapper)));
+      CrossThreadBindOnce(
+          &SyncLoadContext::StartAsyncWithWaitableEvent,
+          CrossThreadUnretained(context.get()), std::move(request),
+          traffic_annotation, loader_options, std::move(pending_factory),
+          std::move(throttles), CrossThreadUnretained(response),
+          CrossThreadUnretained(&redirect_or_response_event),
+          CrossThreadUnretained(terminate_sync_load_event), timeout,
+          std::move(download_to_blob_registry), cors_exempt_header_list,
+          std::move(resource_load_info_notifier_wrapper)));
 
   // `redirect_or_response_event` will signal when each redirect completes, and
   // when the final response is complete.
   redirect_or_response_event.Wait();
 
-  while (context_for_redirect) {
-    DCHECK(response->redirect_info);
-
+  while (response->redirect_info.has_value()) {
     using RefCountedOptionalStringVector =
         base::RefCountedData<std::optional<std::vector<std::string>>>;
     const scoped_refptr<RefCountedOptionalStringVector> removed_headers =
@@ -207,15 +205,15 @@ void ResourceRequestSender::SendSync(
     CHECK(removed_headers->HasOneRef());
     redirect_or_response_event.Reset();
     if (removed_headers->data.has_value()) {
-      task_runner->PostTask(
-          FROM_HERE, base::BindOnce(&SyncLoadContext::FollowRedirect,
-                                    base::Unretained(context_for_redirect),
-                                    std::move(*removed_headers->data),
-                                    std::move(*modified_headers->data)));
+      task_runner->PostTask(FROM_HERE,
+                            base::BindOnce(&SyncLoadContext::FollowRedirect,
+                                           base::Unretained(context.get()),
+                                           std::move(*removed_headers->data),
+                                           std::move(*modified_headers->data)));
     } else {
-      task_runner->PostTask(
-          FROM_HERE, base::BindOnce(&SyncLoadContext::CancelRedirect,
-                                    base::Unretained(context_for_redirect)));
+      task_runner->PostTask(FROM_HERE,
+                            base::BindOnce(&SyncLoadContext::CancelRedirect,
+                                           base::Unretained(context.get())));
     }
     redirect_or_response_event.Wait();
   }
@@ -233,6 +231,7 @@ int ResourceRequestSender::SendAsync(
     std::unique_ptr<ResourceLoadInfoNotifierWrapper>
         resource_load_info_notifier_wrapper,
     CodeCacheHost* code_cache_host,
+    bool should_fetch_code_cache,
     base::OnceCallback<void(mojom::blink::RendererEvictionReason)>
         evict_from_bfcache_callback,
     base::RepeatingCallback<void(size_t)>
@@ -269,10 +268,14 @@ int ResourceRequestSender::SendAsync(
     }
   }
 #endif
-  code_cache_fetcher_ = CodeCacheFetcher::TryCreateAndStart(
-      *request, code_cache_host, loading_task_runner_,
-      blink::BindOnce(&ResourceRequestSender::DidReceiveCachedCode,
-                      weak_factory_.GetWeakPtr()));
+  if (should_fetch_code_cache) {
+    code_cache_fetcher_ = CodeCacheFetcher::TryCreateAndStart(
+        *request, code_cache_host, loading_task_runner_,
+        blink::BindOnce(&ResourceRequestSender::DidReceiveCachedCode,
+                        weak_factory_.GetWeakPtr()));
+  } else {
+    CHECK_EQ(code_cache_host, nullptr);
+  }
   used_code_cache_fetcher_ = !!code_cache_fetcher_;
 
   // Compute a unique request_id for this renderer process.
@@ -505,14 +508,16 @@ void ResourceRequestSender::OnReceivedResponse(
   CHECK(!response_sent_to_client_);
   response_sent_to_client_ = true;
 
+  auto head_without_side_data_writer = response_head.Clone();
   request_info_->client->OnReceivedResponse(
-      response_head.Clone(), std::move(body), std::move(cached_metadata));
+      std::move(response_head), std::move(body), std::move(cached_metadata));
   if (!request_info_) {
     return;
   }
 
   request_info_->resource_load_info_notifier_wrapper
-      ->NotifyResourceResponseReceived(std::move(response_head));
+      ->NotifyResourceResponseReceived(
+          std::move(head_without_side_data_writer));
 }
 
 void ResourceRequestSender::OnReceivedRedirect(

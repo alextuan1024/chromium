@@ -8,11 +8,14 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -43,6 +46,7 @@ import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewProperties;
@@ -52,7 +56,7 @@ import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.ShareDelegate.ShareOrigin;
 import org.chromium.chrome.browser.tab.SadTab;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
@@ -62,6 +66,7 @@ import org.chromium.components.omnibox.action.OmniboxActionDelegate;
 import org.chromium.components.omnibox.suggestions.OmniboxSuggestionUiType;
 import org.chromium.components.ukm.UkmRecorder;
 import org.chromium.components.ukm.UkmRecorderJni;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtilsJni;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.base.ClipboardImpl;
@@ -103,7 +108,7 @@ public final class EditUrlSuggestionProcessorUnitTest {
     @Mock private BookmarkState mBookmarkState;
     @Mock private OmniboxActionDelegate mActionDelegate;
     @Mock private UkmRecorder.Natives mUkmRecorderJniMock;
-    @Mock private DomDistillerUrlUtilsJni mDomDistillerUrlUtilsJni;
+    @Mock private WebDistillerUrlUtilsJni mWebDistillerUrlUtilsJni;
     @Mock private SadTab mSadTab;
     @Captor private ArgumentCaptor<ClipData> mClipDataCaptor;
 
@@ -116,6 +121,7 @@ public final class EditUrlSuggestionProcessorUnitTest {
     private AutocompleteMatch mChromeDistillerMatch;
     private ClipboardManager mOldClipboardManager;
     private EditUrlSuggestionProcessor mProcessor;
+    private OmniboxResourceProvider mResourceProvider;
     private PropertyModel mModel;
 
     @Before
@@ -144,10 +150,12 @@ public final class EditUrlSuggestionProcessorUnitTest {
                         .setDescription(MATCH_TITLE)
                         .setUrl(CHROME_DISTILLER_URL)
                         .build();
+        mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
 
         AutocompleteUIContext uiContext =
                 new AutocompleteUIContext(
                         mContext,
+                        mResourceProvider,
                         mSuggestionHost,
                         mTextProvider,
                         mImageSupplier,
@@ -163,9 +171,9 @@ public final class EditUrlSuggestionProcessorUnitTest {
         lenient().doReturn(TAB_TITLE).when(mTab).getTitle();
         lenient().doReturn(mTabUserData).when(mTab).getUserDataHost();
         lenient().doReturn(true).when(mTab).isInitialized();
-        DomDistillerUrlUtilsJni.setInstanceForTesting(mDomDistillerUrlUtilsJni);
+        WebDistillerUrlUtilsJni.setInstanceForTesting(mWebDistillerUrlUtilsJni);
         lenient()
-                .when(mDomDistillerUrlUtilsJni.getOriginalUrlFromDistillerUrl(anyString()))
+                .when(mWebDistillerUrlUtilsJni.getOriginalUrlFromDistillerUrl(anyString()))
                 .thenReturn(SEARCH_URL_1);
 
         mProcessor.onOmniboxSessionStateChange(true);
@@ -350,6 +358,15 @@ public final class EditUrlSuggestionProcessorUnitTest {
     }
 
     @Test
+    public void shareButton_click_tabGone() {
+        mProcessor.populateModel(mInput, mMatch, mModel, 0);
+        mTab = null;
+        mModel.get(BaseSuggestionViewProperties.ACTION_BUTTONS).get(ACTION_SHARE).callback.run();
+        verify(mSuggestionHost, never()).finishInteraction();
+        verify(mShareDelegate, never()).share(any(), anyBoolean(), anyInt());
+    }
+
+    @Test
     public void suggestionView_clickReloadsPage() {
         mProcessor.populateModel(mInput, mMatch, mModel, 0);
 
@@ -387,8 +404,16 @@ public final class EditUrlSuggestionProcessorUnitTest {
     }
 
     @Test
+    public void copyButton_click_tabGone() {
+        mProcessor.populateModel(mInput, mMatch, mModel, 0);
+        mTab = null;
+        mModel.get(BaseSuggestionViewProperties.ACTION_BUTTONS).get(ACTION_COPY).callback.run();
+        verify(mClipboardManager).setPrimaryClip(any());
+    }
+
+    @Test
     public void copyButton_click_chromeDistillerUrl() {
-        when(mDomDistillerUrlUtilsJni.getOriginalUrlFromDistillerUrl(anyString()))
+        when(mWebDistillerUrlUtilsJni.getOriginalUrlFromDistillerUrl(anyString()))
                 .thenReturn(CHROME_DISTILLER_ORIGINAL_URL);
 
         mProcessor.populateModel(mInput, mChromeDistillerMatch, mModel, 0);

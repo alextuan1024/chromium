@@ -19,6 +19,7 @@
 
 #include "third_party/blink/renderer/core/svg/graphics/filters/svg_filter_builder.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/css/css_identifier_value_mappings.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
@@ -41,24 +42,27 @@ namespace {
 class FilterInputKeywords {
  public:
   static const AtomicString& GetSourceGraphic() {
-    DEFINE_STATIC_LOCAL(const AtomicString, source_graphic_name,
-                        ("SourceGraphic"));
-    return source_graphic_name;
+    static const base::NoDestructor<AtomicString> source_graphic_name(
+        AtomicString::FromLiteral<"SourceGraphic">());
+    return *source_graphic_name;
   }
 
   static const AtomicString& SourceAlpha() {
-    DEFINE_STATIC_LOCAL(const AtomicString, source_alpha_name, ("SourceAlpha"));
-    return source_alpha_name;
+    static const base::NoDestructor<AtomicString> source_alpha_name(
+        AtomicString::FromLiteral<"SourceAlpha">());
+    return *source_alpha_name;
   }
 
   static const AtomicString& FillPaint() {
-    DEFINE_STATIC_LOCAL(const AtomicString, fill_paint_name, ("FillPaint"));
-    return fill_paint_name;
+    static const base::NoDestructor<AtomicString> fill_paint_name(
+        AtomicString::FromLiteral<"FillPaint">());
+    return *fill_paint_name;
   }
 
   static const AtomicString& StrokePaint() {
-    DEFINE_STATIC_LOCAL(const AtomicString, stroke_paint_name, ("StrokePaint"));
-    return stroke_paint_name;
+    static const base::NoDestructor<AtomicString> stroke_paint_name(
+        AtomicString::FromLiteral<"StrokePaint">());
+    return *stroke_paint_name;
   }
 };
 
@@ -130,6 +134,11 @@ SVGFilterBuilder::SVGFilterBuilder(FilterEffect* source_graphic,
       entry.value->SetOriginTainted();
     }
   }
+  if (source_graphic->ContainsBackdrop()) {
+    for (auto& entry : builtin_effects_) {
+      entry.value->SetContainsBackdrop();
+    }
+  }
   AddBuiltinEffects();
 }
 
@@ -145,7 +154,7 @@ static EColorInterpolation ColorInterpolationForElement(
     SVGElement& element,
     EColorInterpolation parent_color_interpolation) {
   if (const LayoutObject* layout_object = element.GetLayoutObject())
-    return layout_object->StyleRef().ColorInterpolationFilters();
+    return layout_object->Style().ColorInterpolationFilters();
 
   // No layout has been performed, try to determine the property value
   // "manually" (used by external SVG files.)
@@ -200,6 +209,9 @@ void SVGFilterBuilder::BuildGraph(
         ResolveInterpolationSpace(color_interpolation));
     if (effect->InputsTaintOrigin() || effect_element.TaintsOrigin())
       effect->SetOriginTainted();
+    if (effect->InputsContainBackdrop()) {
+      effect->SetContainsBackdrop();
+    }
 
     Add(AtomicString(effect_element.result()->CurrentValue()->Value()), effect);
   }

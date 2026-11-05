@@ -4,7 +4,11 @@
 
 #include "chrome/browser/ui/views/passwords/password_bubble_view_base.h"
 
+#include <utility>
+
+#include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
@@ -58,8 +62,7 @@ void PasswordBubbleViewBase::ShowBubble(content::WebContents* web_contents,
   if (!browser) {
     return;
   }
-  DCHECK(!g_manage_passwords_bubble_ ||
-         !g_manage_passwords_bubble_->GetWidget()->IsVisible());
+  CHECK(!g_manage_passwords_bubble_, base::NotFatalUntil::M162);
 
   auto* button_provider = ToolbarButtonProvider::From(browser);
   if (!button_provider) {
@@ -70,8 +73,8 @@ void PasswordBubbleViewBase::ShowBubble(content::WebContents* web_contents,
       button_provider->GetBubbleAnchor(kActionShowPasswordsBubbleOrPage);
 
   PasswordBubbleViewBase* bubble = CreateBubble(web_contents, anchor, reason);
-  DCHECK(bubble);
-  DCHECK_EQ(bubble, g_manage_passwords_bubble_);
+  CHECK(bubble, base::NotFatalUntil::M162);
+  CHECK_EQ(bubble, g_manage_passwords_bubble_, base::NotFatalUntil::M162);
   // TODO(crbug.com/40218026): In non-DCHECK mode we could fall through here and
   // hard-crash if we requested a bubble and were in the wrong state. In the
   // meantime we will abort if we did not create a bubble.
@@ -196,18 +199,18 @@ PasswordBubbleViewBase* PasswordBubbleViewBase::CreateBubble(
 
 // static
 void PasswordBubbleViewBase::CloseCurrentBubble() {
-  if (g_manage_passwords_bubble_) {
+  if (PasswordBubbleViewBase* bubble =
+          std::exchange(g_manage_passwords_bubble_, nullptr)) {
     // It can be the case that a password bubble is being closed while another
     // password bubble is being opened. The metrics recorder can be shared
     // between them and it doesn't understand the sequence [open1, open2,
     // close1, close2]. Therefore, we reset the model early (before the bubble
     // destructor) to get the following sequence of events [open1, close1,
     // open2, close2].
-    PasswordBubbleControllerBase* controller =
-        g_manage_passwords_bubble_->GetController();
-    DCHECK(controller);
+    PasswordBubbleControllerBase* controller = bubble->GetController();
+    CHECK(controller, base::NotFatalUntil::M162);
     controller->OnBubbleClosing();
-    if (auto* const widget = g_manage_passwords_bubble_->GetWidget()) {
+    if (auto* const widget = bubble->GetWidget()) {
       widget->Close();
     }
   }
@@ -215,14 +218,15 @@ void PasswordBubbleViewBase::CloseCurrentBubble() {
 
 // static
 void PasswordBubbleViewBase::ActivateBubble() {
-  DCHECK(g_manage_passwords_bubble_);
-  DCHECK(g_manage_passwords_bubble_->GetWidget()->IsVisible());
+  CHECK(g_manage_passwords_bubble_, base::NotFatalUntil::M162);
+  CHECK(g_manage_passwords_bubble_->GetWidget()->IsVisible(),
+        base::NotFatalUntil::M162);
   g_manage_passwords_bubble_->GetWidget()->Activate();
 }
 
 const content::WebContents* PasswordBubbleViewBase::GetWebContents() const {
   const PasswordBubbleControllerBase* controller = GetController();
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   return controller->GetWebContents();
 }
 
@@ -248,8 +252,13 @@ PasswordBubbleViewBase::PasswordBubbleViewBase(
 
 PasswordBubbleViewBase::~PasswordBubbleViewBase() {
   CHECK(this != g_manage_passwords_bubble_);
-  // It is possible in tests for |browser_| not to exist.
-  if (browser_ && BrowserActions::From(browser_)->root_action_item()) {
+  // It is possible in tests for `browser_` not to exist, and for a replacement
+  // bubble to already be open on `browser_` before async widget destruction of
+  // the previous bubble finishes.
+  if (browser_ &&
+      (!g_manage_passwords_bubble_ ||
+       g_manage_passwords_bubble_->browser_ != browser_) &&
+      BrowserActions::From(browser_)->root_action_item()) {
     if (auto* passwords_action_item = actions::ActionManager::Get().FindAction(
             kActionShowPasswordsBubbleOrPage,
             BrowserActions::From(browser_)->root_action_item())) {
@@ -263,9 +272,7 @@ void PasswordBubbleViewBase::SetBubbleHeader(int light_image_id,
   ui::ResourceBundle& bundle = ui::ResourceBundle::GetSharedInstance();
   auto image_view = std::make_unique<ThemeTrackingNonAccessibleImageView>(
       *bundle.GetImageSkiaNamed(light_image_id),
-      *bundle.GetImageSkiaNamed(dark_image_id),
-      base::BindRepeating(&views::BubbleDialogDelegate::background_color,
-                          base::Unretained(this)));
+      *bundle.GetImageSkiaNamed(dark_image_id), background_color());
 
   gfx::Size preferred_size = image_view->GetPreferredSize();
   if (preferred_size.width()) {
@@ -300,7 +307,7 @@ void PasswordBubbleViewBase::SetBubbleHeaderLottie(int lottie_image_id) {
 void PasswordBubbleViewBase::Init() {
   LocationBarBubbleDelegateView::Init();
   const PasswordBubbleControllerBase* controller = GetController();
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   SetTitle(controller->GetTitle());
   SetShowTitle(!controller->GetTitle().empty());
 }

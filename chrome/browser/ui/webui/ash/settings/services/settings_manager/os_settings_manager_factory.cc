@@ -4,7 +4,8 @@
 
 #include "chrome/browser/ui/webui/ash/settings/services/settings_manager/os_settings_manager_factory.h"
 
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
+#include "base/check.h"
+#include "base/functional/bind.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs_factory.h"
 #include "chrome/browser/ash/eche_app/eche_app_manager_factory.h"
@@ -20,6 +21,7 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/webui/ash/settings/services/settings_manager/os_settings_manager.h"
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy_factory.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash::settings {
 
@@ -72,8 +74,21 @@ OsSettingsManagerFactory::BuildServiceInstanceForBrowserContext(
   return std::make_unique<OsSettingsManager>(
       g_browser_process->local_state(),
       g_browser_process->GetFeatures()->application_locale_storage(),
+      // TODO(crbug.com/558489113): Revisit callback usage once `MetricsService`
+      // lifetime is resolved.
+      // NOTE: The getter-callback pattern should be avoided if possible and is
+      // used here for `MetricsService` only as an exception. Do NOT apply this
+      // pattern to other dependencies without thoroughly investigating their
+      // lifetimes and alternatives first.
+      base::BindRepeating([]() {
+        ::metrics::MetricsService* metrics_service =
+            g_browser_process->metrics_service();
+        CHECK(metrics_service);
+        return metrics_service;
+      }),
       g_browser_process->platform_part()->browser_policy_connector_ash(),
-      profile,
+      g_browser_process->platform_part()->GetTimezoneResolverManager(),
+      g_browser_process->shared_url_loader_factory(), profile,
       local_search_service::LocalSearchServiceProxyFactory::
           GetForBrowserContext(context),
       multidevice_setup::MultiDeviceSetupClientFactory::GetForProfile(profile),

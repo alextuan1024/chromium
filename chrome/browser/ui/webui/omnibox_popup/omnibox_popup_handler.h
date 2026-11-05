@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_OMNIBOX_POPUP_OMNIBOX_POPUP_HANDLER_H_
 #define CHROME_BROWSER_UI_WEBUI_OMNIBOX_POPUP_OMNIBOX_POPUP_HANDLER_H_
 
+#include <string>
+
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -16,7 +18,10 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "ui/base/ime/input_method_observer.h"
 #include "ui/gfx/range/range.h"
+
+class GURL;
 
 namespace content {
 class WebContents;
@@ -24,13 +29,15 @@ class WebContents;
 
 class OmniboxController;
 
-// Returns the WebUI resource path or favicon URL for the default search
-// provider.
+// Returns the WebUI resource path or favicon URL for the DSE. In dark mode,
+// Google DSE uses the monochrome Super G icon.
 std::string GetDefaultSearchProviderIcon(
-    const TemplateURLService* template_url_service);
+    const TemplateURLService* template_url_service,
+    bool is_dark_mode);
 
 class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
-                            public TemplateURLServiceObserver {
+                            public TemplateURLServiceObserver,
+                            public ui::InputMethodObserver {
  public:
   OmniboxPopupHandler(
       mojo::PendingReceiver<omnibox_popup::mojom::PageHandler> receiver,
@@ -48,6 +55,15 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
     embedder_ = embedder;
   }
 
+  // Stops using the omnibox of the browser window that embeds the popup and
+  // drops the text state the page reported there. Called before the popup's
+  // WebContents moves to another browser window.
+  void DetachFromOmniboxController();
+
+  // Uses `controller`, the omnibox of the browser window that now embeds the
+  // popup.
+  void AttachToOmniboxController(OmniboxController* controller);
+
   // omnibox_popup::mojom::PageHandler:
   void ShowContextMenu(const gfx::Point& point) override;
   void CloseUI() override;
@@ -55,9 +71,11 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
                           uint32_t sequence_number,
                           bool show_full_url) override;
   void Revert(uint32_t sequence_number) override;
+  void RevertTemporaryText(uint32_t sequence_number) override;
   void LogEscapeAction(
       omnibox_popup::mojom::OmniboxEscapeAction action) override;
   void OnInputCleared(uint32_t sequence_number) override;
+  void StartUserInput(uint32_t sequence_number) override;
   void OnPaste(const std::string& text,
                const gfx::Range& selection,
                uint32_t sequence_number) override;
@@ -69,23 +87,40 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
                    const gfx::Range& selection) override;
   void SetEditHistoryState(bool can_undo, bool can_redo) override;
   void OpenDevTools() override;
+  void OpenDogfoodFeedback() override;
+  void AdvanceFocus(bool reverse) override;
+  void RequestAimHint(RequestAimHintCallback callback) override;
+
+  // Computes URL emphasis metadata for the given text.
+  // This implementation is based on `OmniboxViewViews::UpdateTextStyle()`
+  // (for URL component parsing and deemphasis mode determination) and
+  // `OmniboxViewViews::UpdateSchemeStyle()` (for security-related scheme
+  // styling).
+  searchbox::mojom::UrlEmphasisPtr ComputeUrlEmphasis(
+      const std::string& text) const;
 
   // omnibox_popup::mojom::Page:
   void OnShow();
   void OnContextMenuClosed();
-  void SetInputState(const std::string& text,
-                     const gfx::Range& selection,
-                     bool user_input_in_progress,
-                     const std::string& full_url,
-                     bool is_focused,
-                     const std::string& permanent_display_text,
-                     bool show_full_url,
-                     bool query_zps,
-                     searchbox::mojom::InputKeywordModelPtr keyword_model,
-                     bool is_tab_switch);
+  // For `SetInputState()`, a non-null `latency_journey` ends on the frame that
+  // shows the new state, and the page records it.
+  void SetInputState(
+      const std::string& text,
+      const gfx::Range& selection,
+      bool user_input_in_progress,
+      const std::string& full_url,
+      bool is_focused,
+      const std::string& permanent_display_text,
+      bool show_full_url,
+      omnibox_popup::mojom::MatchesUpdate matches_update,
+      searchbox::mojom::InputKeywordModelPtr keyword_model,
+      bool is_tab_switch,
+      omnibox_popup::mojom::LatencyJourneyPtr latency_journey = nullptr);
   void SetFocus(bool is_focused,
                 bool query_zps = false,
-                bool select_all = false);
+                bool select_all = false,
+                bool show_full_url = false);
+  void FocusSearchWithDefaultSearchEngineKeywordMode();
   void ClearAutocompleteMatches();
   void ClearPopup(base::OnceClosure callback);
 
@@ -93,13 +128,27 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
   void OnTemplateURLServiceChanged() override;
   void OnTemplateURLServiceShuttingDown() override;
 
+  // ui::InputMethodObserver:
+  void OnFocus() override {}
+  void OnBlur() override {}
+  void OnCaretBoundsChanged(const ui::TextInputClient* client) override {}
+  void OnTextInputStateChanged(const ui::TextInputClient* client) override {}
+  void OnInputMethodDestroyed(const ui::InputMethod* input_method) override;
+  void OnInputLocaleChanged() override;
+
+  // Notifies the WebUI of the current DSE icon and placeholder type.
+  void NotifyDefaultSearchProviderChanged();
+
   const gfx::Range& latest_selection() const { return latest_selection_; }
   bool show_full_url() const { return show_full_url_; }
   bool can_undo() const { return can_undo_; }
   bool can_redo() const { return can_redo_; }
 
  private:
-  void NotifyDefaultSearchProviderChanged();
+  // Returns the URL for `OmniboxInputState.drag_url`: the one to drag when all
+  // of the unedited `permanent_display_text` is dragged out of the omnibox, or
+  // an empty URL if there is none or the page may not drag it.
+  GURL GetDragUrl(const std::string& permanent_display_text) const;
 
   mojo::Receiver<omnibox_popup::mojom::PageHandler> receiver_;
   mojo::Remote<omnibox_popup::mojom::Page> page_;
@@ -108,6 +157,10 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
   raw_ptr<OmniboxController> controller_;
   base::ScopedObservation<TemplateURLService, TemplateURLServiceObserver>
       template_url_service_observation_{this};
+  // Observes the input method of the popup's widget, which Windows tells about
+  // input language changes while the user types in the popup.
+  base::ScopedObservation<ui::InputMethod, ui::InputMethodObserver>
+      input_method_observation_{this};
   // Caches the latest selection range reported by the WebUI to allow
   // synchronous access on tab switches.
   gfx::Range latest_selection_;

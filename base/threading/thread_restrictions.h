@@ -186,7 +186,6 @@ class MojoUtils;
 }
 namespace system {
 class StatisticsProviderImpl;
-class ProcStatFile;
 }  // namespace system
 }  // namespace ash
 namespace audio {
@@ -227,7 +226,7 @@ int NumberOfPhysicalCores();
 }  // namespace system
 }  // namespace chromeos
 namespace component_updater {
-class PlatformRuntimeComponentInstallerPolicy;
+class ScopedAllowWaitForProductComponentInstallExit;
 }  // namespace component_updater
 namespace content {
 class BrowserGpuChannelHostFactory;
@@ -413,7 +412,6 @@ class SelectFileDialogBridge;
 }  // namespace remote_cocoa
 namespace remoting {
 class AutoThread;
-class ScopedAllowBlockingForCrashReporting;
 class ScopedBypassIOThreadRestrictions;
 namespace protocol {
 class ScopedAllowSyncPrimitivesForWebRtcDataStreamAdapter;
@@ -489,7 +487,9 @@ namespace internal {
 class GetAppOutputScopedAllowBaseSyncPrimitives;
 class JobTaskSource;
 class TaskTracker;
-bool ReadProcFile(const FilePath& file, std::string* buffer);
+bool ReadProcFile(const FilePath& file,
+                  const FilePath& proc_dir,
+                  std::string* buffer);
 }  // namespace internal
 
 namespace sequence_manager::internal {
@@ -503,6 +503,7 @@ class PlatformSharedMemoryRegion;
 namespace win {
 class OSInfo;
 class ObjectWatcher;
+class ScopedAllowBlockingForUser32AndGdi32;
 class ScopedAllowBlockingForUserAccountControl;
 }  // namespace win
 
@@ -609,7 +610,6 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class ash::StartupCustomizationDocument;  // http://crosbug.com/11103
   friend class ash::StartupUtils;
   friend class ash::converters::diagnostics::MojoUtils;  // http://b/322741627
-  friend class ash::system::ProcStatFile;
   friend class base::AdjustOOMScoreHelper;
   friend class base::ChromeOSVersionInfo;
   friend class base::Process;
@@ -620,6 +620,7 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class base::android::PmfUtils;
   friend class base::debug::StackTrace;
   friend class base::subtle::PlatformSharedMemoryRegion;
+  friend class base::win::ScopedAllowBlockingForUser32AndGdi32;
   friend class base::win::ScopedAllowBlockingForUserAccountControl;
   friend class blink::DiskDataAllocator;
   friend class chromecast::CrashUtil;
@@ -661,7 +662,6 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class remote_cocoa::SelectFileDialogBridge;
   friend class remoting::
       ScopedBypassIOThreadRestrictions;  // http://crbug.com/1144161
-  friend class remoting::ScopedAllowBlockingForCrashReporting;
   friend class ui::DrmDisplayHostManager;
   friend class ui::ScopedAllowBlockingForGbmSurface;
   friend class ui::SelectFileDialogLinux;
@@ -691,6 +691,7 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend bool ash::CameraAppUIShouldEnableLocalOverride(const std::string&);
   friend base::FilePath base::apple::internal::GetExecutablePath();
   friend bool base::internal::ReadProcFile(const FilePath& file,
+                                           const FilePath& proc_dir,
                                            std::string* buffer);
   friend bool chrome::PathProvider(int,
                                    base::FilePath*);  // http://crbug.com/259796
@@ -767,7 +768,6 @@ class BASE_EXPORT ScopedAllowBaseSyncPrimitives {
   friend class ::ChromeNSSCryptoModuleDelegate;
   friend class ::PartnerBookmarksReader;
   friend class ::tracing::FuchsiaPerfettoProducerConnector;
-  friend class android_webview::JsSandboxIsolate;
   friend class base::SimpleThread;
   friend class base::internal::GetAppOutputScopedAllowBaseSyncPrimitives;
   friend class blink::SourceStream;
@@ -775,7 +775,7 @@ class BASE_EXPORT ScopedAllowBaseSyncPrimitives {
   friend class blink::WorkerThread;
   friend class blink::scheduler::NonMainThreadImpl;
   friend class cc::CategorizedWorkerPoolJob;
-  friend class component_updater::PlatformRuntimeComponentInstallerPolicy;
+  friend class component_updater::ScopedAllowWaitForProductComponentInstallExit;
   friend class content::BrowserMainLoop;
   friend class content::BrowserProcessIOThread;
   friend class content::DWriteFontCollectionProxy;
@@ -857,8 +857,10 @@ class BASE_EXPORT
   friend class ::ChromeContentRendererClient;
   friend class ::KeyStorageLinux;
   friend class ::NativeDesktopMediaList;
+  friend class ::ash::system::StatisticsProviderImpl;
   friend class android::JavaHandlerThread;
   friend class android_webview::CookieManager;
+  friend class android_webview::JsSandboxIsolate;
   friend class android_webview::VizCompositorThreadRunnerWebView;
   friend class audio::OutputDevice;
   friend class base::FileDescriptorWatcher;
@@ -899,7 +901,6 @@ class BASE_EXPORT
   friend class vr::VrShell;
 
   // Usage that should be fixed:
-  friend class ::ash::system::StatisticsProviderImpl;  // http://b/261818124
   friend class ::chromeos::BlockingMethodCaller;  // http://crbug.com/125360
   friend class base::Thread;                      // http://crbug.com/918039
   friend class cc::CompletionEvent;               // http://crbug.com/902653

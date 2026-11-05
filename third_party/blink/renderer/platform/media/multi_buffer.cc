@@ -192,7 +192,7 @@ MultiBuffer::~MultiBuffer() {
 }
 
 void MultiBuffer::AddReader(const BlockId& pos, Reader* reader) {
-  std::set<raw_ptr<Reader, SetExperimental>>* set_of_readers = &readers_[pos];
+  std::set<raw_ptr<Reader>>* set_of_readers = &readers_[pos];
   bool already_waited_for = !set_of_readers->empty();
   set_of_readers->insert(reader);
 
@@ -427,7 +427,6 @@ void MultiBuffer::OnDataProviderEvent(DataProvider* provider_tmp) {
         present_.find(start_pos).interval();
     NotifyAvailableRange(expanded_range, expanded_range);
     lru_->IncrementDataSize(blocks_added);
-    Prune(static_cast<size_t>(blocks_added) * kMaxFreesPerAdd + 1);
   } else {
     // Make sure to give progress reports even when there
     // aren't any new blocks yet.
@@ -453,6 +452,13 @@ void MultiBuffer::OnDataProviderEvent(DataProvider* provider_tmp) {
         RemoveProvider(provider_tmp);
         break;
     }
+  }
+
+  if (pos > start_pos) {
+    // Prune must run after writer_index_ is updated above, since ReleaseBlocks
+    // may invoke OnEmpty() and drop the UrlIndex reference to the owning
+    // UrlData.
+    Prune(static_cast<size_t>(blocks_added) * kMaxFreesPerAdd + 1);
   }
 }
 

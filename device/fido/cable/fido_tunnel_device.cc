@@ -4,6 +4,7 @@
 
 #include "device/fido/cable/fido_tunnel_device.h"
 
+#include <optional>
 #include <variant>
 
 #include "base/containers/to_array.h"
@@ -156,7 +157,7 @@ FidoTunnelDevice::FidoTunnelDevice(
                           base::Unretained(this)));
   network_context_factory.Run()->CreateWebSocket(
       url, {kCableWebSocketProtocol}, net::StorageAccessApiStatus::kNone,
-      net::IsolationInfo(),
+      GetTunnelIsolationInfo(),
       /*additional_headers=*/{}, network::OriginatingProcessId::browser(),
       url::Origin::Create(url), network::mojom::ClientSecurityState::New(),
       GetWebSocketOptions(),
@@ -169,7 +170,8 @@ FidoTunnelDevice::FidoTunnelDevice(
       // This is a browser-internal connection for the caBLE rendezvous tunnel.
       // It does not belong to any webpage, so we bypass connection allowlists.
       /*network_restrictions_id=*/network::GetNoOpNetworkRestrictionsId(),
-      /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown);
+      /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+      /*target_network=*/std::nullopt);
 }
 
 FidoTunnelDevice::FidoTunnelDevice(
@@ -191,7 +193,7 @@ FidoTunnelDevice::FidoTunnelDevice(
   client_payload.emplace(2, base::span<const uint8_t>(client_nonce));
   client_payload.emplace(3, RequestTypeToString(request_type));
   const std::optional<std::vector<uint8_t>> client_payload_bytes =
-      cbor::Writer::Write(cbor::Value(std::move(client_payload)));
+      cbor::Writer::Write(client_payload);
   CHECK(client_payload_bytes.has_value());
   const std::string client_payload_hex = base::HexEncode(*client_payload_bytes);
 
@@ -219,7 +221,7 @@ FidoTunnelDevice::FidoTunnelDevice(
       network::mojom::HttpHeader::New(kCableSignalConnectionHeader, "true"));
   network_context_factory.Run()->CreateWebSocket(
       url, {kCableWebSocketProtocol}, net::StorageAccessApiStatus::kNone,
-      net::IsolationInfo(), std::move(headers),
+      GetTunnelIsolationInfo(), std::move(headers),
       network::OriginatingProcessId::browser(), url::Origin::Create(url),
       network::mojom::ClientSecurityState::New(), GetWebSocketOptions(),
       net::MutableNetworkTrafficAnnotationTag(kTrafficAnnotation),
@@ -231,7 +233,8 @@ FidoTunnelDevice::FidoTunnelDevice(
       // This is a browser-internal connection for the caBLE rendezvous tunnel.
       // It does not belong to any webpage, so we bypass connection allowlists.
       /*network_restrictions_id=*/network::GetNoOpNetworkRestrictionsId(),
-      /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown);
+      /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+      /*target_network=*/std::nullopt);
 }
 
 FidoTunnelDevice::~FidoTunnelDevice() {
@@ -322,13 +325,15 @@ FidoTunnelDevice* FidoTunnelDevice::GetTunnelDevice() {
   return this;
 }
 
-base::flat_set<cablev2::Feature> FidoTunnelDevice::features() const {
+const std::optional<base::flat_set<cablev2::Feature>>&
+FidoTunnelDevice::features() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(features_.has_value())
-      << "features() was called before it was ready. This should never "
-         "happen because no requests should be sent prior the post-handshake "
-         "message.";
-  return *features_;
+  // features() may only be called after
+  // DiscoverSupportedProtocolAndDeviceInfo() finished, which either initializes
+  // `features_` or transitions to `State::kError` if an error occurred before
+  // handshake completion.
+  DCHECK(features_.has_value() || state_ == State::kError);
+  return features_;
 }
 
 base::WeakPtr<FidoDevice> FidoTunnelDevice::GetWeakPtr() {
@@ -661,6 +666,7 @@ void FidoTunnelDevice::OnError() {
     established_connection_->Close();
     established_connection_.reset();
   } else {
+    features_.reset();
     websocket_client_.reset();
     if (discover_callback_) {
       DiscoverSupportedProtocolAndDeviceInfo(std::move(discover_callback_));

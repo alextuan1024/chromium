@@ -10,6 +10,7 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/timer/wall_clock_timer.h"
@@ -19,8 +20,11 @@
 #include "chrome/browser/ash/policy/skyvault/policy_utils.h"
 #include "chrome/browser/chromeos/extensions/login_screen/login/cleanup/files_cleanup_handler.h"
 #include "chrome/browser/profiles/profile_keyed_service_factory.h"
-#include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "components/keyed_service/core/keyed_service.h"
+
+namespace user_data_auth {
+class SetUserDataStorageWriteEnabledReply;
+}  // namespace user_data_auth
 
 class PrefService;
 
@@ -50,9 +54,26 @@ class LocalFilesMigrationManager : public LocalUserFilesPolicyObserver,
     virtual void OnMigrationReset() = 0;
   };
 
-  // Creates an instance of LocalFilesMigrationManager.
-  LocalFilesMigrationManager(PrefService* local_state,
-                             content::BrowserContext* context);
+  // Creates an instance of LocalFilesMigrationManager. `user` and
+  // `pref_service` must not be null and must outlive this instance;
+  // `coordinator` must not be null and its ownership transfers to this
+  // instance; `notification_manager` isn't owned and may be null only in
+  // tests.
+  //
+  // `pref_service` can't be sourced from `user->GetProfilePrefs()` here:
+  // this class is built eagerly, before UserManagerImpl::
+  // OnUserProfileCreated() wires that up, so the caller resolves it
+  // separately instead, via Profile::GetPrefs().
+  //
+  // This class never holds a content::BrowserContext/Profile of its own --
+  // resolving one for any of the above is the caller's job. See
+  // crbug.com/569954060.
+  LocalFilesMigrationManager(
+      PrefService* local_state,
+      user_manager::User* user,
+      PrefService* pref_service,
+      std::unique_ptr<MigrationCoordinator> coordinator,
+      MigrationNotificationManager* notification_manager);
   LocalFilesMigrationManager(const LocalFilesMigrationManager&) = delete;
   LocalFilesMigrationManager& operator=(const LocalFilesMigrationManager&) =
       delete;
@@ -189,8 +210,13 @@ class LocalFilesMigrationManager : public LocalUserFilesPolicyObserver,
   // The name of the device-unique upload root folder on Drive
   std::string upload_root_;
 
-  // Context for which this instance is created.
-  raw_ptr<content::BrowserContext> context_;
+  // The user this instance was created for.
+  const raw_ref<user_manager::User> user_;
+
+  // The PrefService this instance reads and writes migration state to.
+  // Stored separately from `user_` rather than derived on demand via
+  // user_->GetProfilePrefs() -- see the constructor's own comment for why.
+  const raw_ref<PrefService> profile_prefs_;
 
   // Shows and manages migration notifications and dialogs.
   raw_ptr<MigrationNotificationManager> notification_manager_;

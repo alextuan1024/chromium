@@ -4,6 +4,7 @@
 
 #include "base/command_line.h"
 #include "base/no_destructor.h"
+#include "build/build_config.h"
 #include "chrome/browser/vr/test/mock_xr_device_hook_base.h"
 #include "chrome/browser/vr/test/multi_class_browser_test.h"
 #include "chrome/browser/vr/test/ui_utils.h"
@@ -11,6 +12,10 @@
 #include "device/vr/buildflags/buildflags.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gl/gl_switches.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/android_info.h"
+#endif
 
 #if BUILDFLAG(ENABLE_OPENXR)
 
@@ -148,6 +153,46 @@ WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(TestLayers) {
         SkColorSetARGB(128, 128, 128, 0));
   }
 
+  mock.VerifyFrame(expected_views, expected_layers);
+
+  t->EndTest();
+}
+
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(TestCubeLayer) {
+#if BUILDFLAG(IS_ANDROID)
+  // TODO(https://crbug.com/578048203): Cube map layer rendering fails on
+  // Android 14 physical devices when layer shared images are cleared on access.
+  if (base::android::android_info::sdk_int() ==
+          base::android::android_info::SDK_VERSION_U &&
+      base::android::android_info::hardware() != "ranchu") {
+    GTEST_SKIP() << "Cube map layers fail on Android 14 physical devices.";
+  }
+#endif
+  UiUtils::DisableOverlayForTesting();
+  MockForLayers mock;
+
+  t->LoadFileAndAwaitInitialization("test_openxr_cube_layer");
+  t->EnterSessionWithUserGestureOrFail();
+
+  t->WaitOnJavaScriptStep();
+  t->AssertNoJavaScriptErrors();
+
+  mock.WaitForTotalFrameCount(1);
+
+  // See device/vr/openxr/test/openxr_test_helper.h.
+  constexpr uint32_t view_dimension = 128;
+
+  std::vector<device::ViewData> expected_views;
+  expected_views.push_back(
+      {.color = SK_ColorRED,
+       .eye = device::mojom::XREye::kLeft,
+       .viewport = {0, 0, view_dimension, view_dimension}});
+  expected_views.push_back(
+      {.color = SK_ColorRED,
+       .eye = device::mojom::XREye::kRight,
+       .viewport = {view_dimension, 0, view_dimension, view_dimension}});
+
+  std::vector<device::LayerData> expected_layers;
   expected_layers.emplace_back(device::LayerType::kCube);
   expected_layers.back().face_colors.push_back(SK_ColorRED);
   expected_layers.back().face_colors.push_back(SK_ColorCYAN);
@@ -196,6 +241,103 @@ WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(TestMediaLayers) {
 
   t->EndTest();
 }
+
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(TestProjectionLayerWithoutLayersFeature) {
+  UiUtils::DisableOverlayForTesting();
+  MockForLayers mock;
+
+  t->LoadFileAndAwaitInitialization("test_openxr_projection_layer");
+  t->EnterSessionWithUserGestureOrFail();
+
+  t->WaitOnJavaScriptStep();
+  t->AssertNoJavaScriptErrors();
+
+  mock.WaitForTotalFrameCount(1);
+
+  constexpr uint32_t view_dimension = 128;
+
+  std::vector<device::ViewData> expected_views;
+  expected_views.push_back(
+      {.color = SK_ColorRED,
+       .eye = device::mojom::XREye::kLeft,
+       .viewport = {0, 0, view_dimension, view_dimension}});
+  expected_views.push_back(
+      {.color = SK_ColorRED,
+       .eye = device::mojom::XREye::kRight,
+       .viewport = {view_dimension, 0, view_dimension, view_dimension}});
+
+  std::vector<device::LayerData> expected_layers;
+  mock.VerifyFrame(expected_views, expected_layers);
+
+  t->EndTest();
+}
+
+WEBXR_VR_ALL_RUNTIMES_BROWSER_TEST_F(TestWebGpuProjectionLayer) {
+#if BUILDFLAG(IS_ANDROID)
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_S) {
+    GTEST_SKIP() << "WebGPU on Vulkan requires Android 12 (S) or higher.";
+  }
+#endif
+  UiUtils::DisableOverlayForTesting();
+  MockForLayers mock;
+
+  t->LoadFileAndAwaitInitialization("test_openxr_webgpu_projection_layer");
+  t->EnterSessionWithUserGestureOrFail();
+
+  t->WaitOnJavaScriptStep();
+  t->AssertNoJavaScriptErrors();
+
+  mock.WaitForTotalFrameCount(2);
+
+  constexpr uint32_t view_dimension = 128;
+
+  std::vector<device::ViewData> expected_views;
+  expected_views.push_back(
+      {.color = SK_ColorRED,
+       .eye = device::mojom::XREye::kLeft,
+       .viewport = {0, 0, view_dimension, view_dimension}});
+  expected_views.push_back(
+      {.color = SK_ColorRED,
+       .eye = device::mojom::XREye::kRight,
+       .viewport = {view_dimension, 0, view_dimension, view_dimension}});
+
+  std::vector<device::LayerData> expected_layers;
+  mock.VerifyFrame(expected_views, expected_layers);
+
+  t->EndTest();
+}
+
+#if BUILDFLAG(ENABLE_CARDBOARD)
+IN_PROC_BROWSER_TEST_F(WebXrVrCardboardBrowserTest,
+                       TestProjectionLayerWithoutLayersFeature) {
+  LoadFileAndAwaitInitialization("test_openxr_projection_layer");
+  EnterSessionWithUserGestureOrFail();
+
+  WaitOnJavaScriptStep();
+  AssertNoJavaScriptErrors();
+
+  EndSessionOrFail();
+  EndTest();
+}
+
+IN_PROC_BROWSER_TEST_F(WebXrVrCardboardBrowserTest, TestWebGpuProjectionLayer) {
+#if BUILDFLAG(IS_ANDROID)
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_S) {
+    GTEST_SKIP() << "WebGPU on Vulkan requires Android 12 (S) or higher.";
+  }
+#endif
+  LoadFileAndAwaitInitialization("test_openxr_webgpu_projection_layer");
+  EnterSessionWithUserGestureOrFail();
+
+  WaitOnJavaScriptStep();
+  AssertNoJavaScriptErrors();
+
+  EndSessionOrFail();
+  EndTest();
+}
+#endif  // BUILDFLAG(ENABLE_CARDBOARD)
 
 }  // namespace vr
 

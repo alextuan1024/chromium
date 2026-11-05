@@ -30,7 +30,7 @@ Font* CreateVerticalUprightTestFont(const AtomicString& family_name,
                                     float size) {
   return CreateTestFont(
       family_name, font_path, size, /* ligatures */ nullptr,
-      kNormalVariantEmoji, [](FontDescription* font_description) {
+      FontVariantEmoji::kNormal, [](FontDescription* font_description) {
         font_description->SetOrientation(FontOrientation::kVerticalUpright);
       });
 }
@@ -78,10 +78,30 @@ TEST_F(FontTest, ConvertBaseline) {
   const FontMetrics& metrics = font_data->GetFontMetrics();
   EXPECT_EQ(metrics.FixedAscent(), 80);
   EXPECT_EQ(metrics.FixedDescent(), 20);
-  EXPECT_EQ(metrics.FixedAlphabetic(FontBaseline::kAlphabeticBaseline), 0);
-  EXPECT_EQ(metrics.FixedAlphabetic(FontBaseline::kCentralBaseline), -30);
-  EXPECT_EQ(metrics.FixedCapHeight(FontBaseline::kAlphabeticBaseline), 80);
-  EXPECT_EQ(metrics.FixedCapHeight(FontBaseline::kCentralBaseline), 50);
+  EXPECT_EQ(metrics.FixedAlphabetic(FontBaseline::kAlphabetic), 0);
+  EXPECT_EQ(metrics.FixedAlphabetic(FontBaseline::kCentral), -30);
+  EXPECT_EQ(metrics.FixedCapHeight(FontBaseline::kAlphabetic), 80);
+  EXPECT_EQ(metrics.FixedCapHeight(FontBaseline::kCentral), 50);
+}
+
+TEST_F(FontTest, PrimaryFontGenericFamilyOrLastResort) {
+  Font* named_font = test::CreateAhemFont(100);
+  const FontFallbackList::PrimaryFontData* named_data =
+      named_font->EnsureFontFallbackList()->PrimaryFontDataWithSpace(
+          named_font->GetFontDescription());
+  EXPECT_FALSE(named_data->is_generic_family_or_last_resort);
+
+  Font* generic_font = CreateTestFont(
+      AtomicString("Ahem"), test::PlatformTestDataPath("Ahem.woff"), 100,
+      /*ligatures=*/nullptr, FontVariantEmoji::kNormal,
+      [](FontDescription* font_description) {
+        font_description->SetFamily(FontFamily(
+            AtomicString("AhemFamily"), FontFamily::Type::kGenericFamily));
+      });
+  const FontFallbackList::PrimaryFontData* generic_data =
+      generic_font->EnsureFontFallbackList()->PrimaryFontDataWithSpace(
+          generic_font->GetFontDescription());
+  EXPECT_TRUE(generic_data->is_generic_family_or_last_resort);
 }
 
 TEST_F(FontTest, FixedPitchMatchesTypeface) {
@@ -193,7 +213,7 @@ TEST_F(FontTest, TextIntercepts) {
   Vector<Font::TextIntercept> text_intercepts;
   // 4 intercept ranges for below baseline p glyphs in the test string
   font->GetTextIntercepts(text_paint_info,
-                          Font::InkSkipCJKHandling::kExcludeCJK, default_paint,
+                          Font::InkSkipCjkHandling::kExcludeCjk, default_paint,
                           below_baseline_bounds, text_intercepts);
   EXPECT_EQ(text_intercepts.size(), 4u);
   for (auto text_intercept : text_intercepts) {
@@ -203,7 +223,7 @@ TEST_F(FontTest, TextIntercepts) {
   std::tuple<float, float> above_baseline_bounds = std::make_tuple(-4, -2);
   // 5 intercept ranges for the above baseline E ACUTE glyphs
   font->GetTextIntercepts(text_paint_info,
-                          Font::InkSkipCJKHandling::kExcludeCJK, default_paint,
+                          Font::InkSkipCjkHandling::kExcludeCjk, default_paint,
                           above_baseline_bounds, text_intercepts);
   EXPECT_EQ(text_intercepts.size(), 5u);
   for (auto text_intercept : text_intercepts) {
@@ -244,12 +264,24 @@ TEST_F(FontTest, TabWidthWithSpacing) {
               kTolerance);
 }
 
-TEST_F(FontTest, NullifyPrimaryFontForTesting) {
+TEST_F(FontTest, SimulateMissingLastResortFontForTesting) {
   Font* font = CreateTestFont(AtomicString("Ahem"),
                               test::PlatformTestDataPath("Ahem.woff"), 0);
-  EXPECT_TRUE(font->PrimaryFont());
-  font->NullifyPrimaryFontForTesting();
-  EXPECT_FALSE(font->PrimaryFont());
+  ASSERT_TRUE(font->PrimaryFont());
+  EXPECT_GT(font->PrimaryFont()->PlatformData().Typeface()->countGlyphs(), 0);
+  font->SimulateMissingLastResortFontForTesting();
+  if (RuntimeEnabledFeatures::FontNonNullPrimaryFontEnabled()) {
+    ASSERT_TRUE(font->PrimaryFont());
+    EXPECT_EQ(font->PrimaryFont()->PlatformData().Typeface()->countGlyphs(), 0);
+    EXPECT_TRUE(font->PrimaryFontWithDigitZero());
+    EXPECT_TRUE(font->PrimaryFontWithCjkWater());
+    EXPECT_TRUE(font->PrimaryFontForTabSize());
+  } else {
+    EXPECT_FALSE(font->PrimaryFont());
+    EXPECT_FALSE(font->PrimaryFontWithDigitZero());
+    EXPECT_FALSE(font->PrimaryFontWithCjkWater());
+    EXPECT_FALSE(font->PrimaryFontForTabSize());
+  }
 }
 
 }  // namespace blink

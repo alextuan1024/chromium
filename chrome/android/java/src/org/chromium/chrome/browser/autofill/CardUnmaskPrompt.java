@@ -201,6 +201,8 @@ public class CardUnmaskPrompt
                         cardArtUrl, /* isVirtualCard= */ isVirtualCard));
 
         updateTitleForCustomView(title);
+        ImageView titleIconView = mMainView.findViewById(R.id.title_icon);
+        titleIconView.setImageResource(AutofillUiUtils.getGPayLogoDrawableId());
         mInstructions = mMainView.findViewById(R.id.instructions);
         mInstructions.setText(instructions);
         mNoRetryErrorMessage = mMainView.findViewById(R.id.no_retry_error_message);
@@ -366,7 +368,7 @@ public class CardUnmaskPrompt
     }
 
     public void verificationFinished(String errorMessage, boolean allowRetry) {
-        if (errorMessage != null) {
+        if (!errorMessage.isEmpty()) {
             setOverlayVisibility(View.GONE);
             if (allowRetry) {
                 AutofillUiUtils.showErrorMessage(errorMessage, mErrorMessage);
@@ -572,8 +574,8 @@ public class CardUnmaskPrompt
         ViewCompat.setImportantForAccessibility(
                 mControlsContainer,
                 contentsShowing
-                        ? View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
-                        : View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+                        ? ViewCompat.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+                        : ViewCompat.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         mControlsContainer.setDescendantFocusability(
                 contentsShowing
                         ? ViewGroup.FOCUS_BEFORE_DESCENDANTS

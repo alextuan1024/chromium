@@ -86,12 +86,14 @@ class TestURLLoaderFactory : public mojom::URLLoaderFactory {
       return last_headers_update_params_;
     }
     const std::optional<GURL>& last_new_url() const { return last_new_url_; }
+    bool is_receiver_disconnected() const { return is_disconnected_; }
 
    private:
     mojo::Receiver<mojom::URLLoader> receiver_;
     size_t follow_redirect_count_ = 0;
     network::HttpRequestHeadersUpdateParams last_headers_update_params_;
     std::optional<GURL> last_new_url_;
+    bool is_disconnected_ = false;
   };
 
   TestURLLoaderFactory();
@@ -204,6 +206,7 @@ class CorsURLLoaderTestBase : public testing::Test {
     bool ignore_isolated_world_origin;
     std::optional<url::Origin> isolated_world_origin_lock;
     mojom::ClientSecurityStatePtr client_security_state;
+    bool is_storage_access_potentially_allowed;
 
     // Member of `mojom::URLLoaderFactoryOverride`.
     bool skip_cors_enabled_scheme_check;
@@ -333,6 +336,8 @@ class CorsURLLoaderTestBase : public testing::Test {
     DCHECK(test_url_loader_factory_);
     return test_url_loader_factory_->ResetClientRemote();
   }
+
+  void ResetURLLoader() { url_loader_.reset(); }
 
   // Methods forwarded to the `CorsURLLoader` under test.
   void FollowRedirect(

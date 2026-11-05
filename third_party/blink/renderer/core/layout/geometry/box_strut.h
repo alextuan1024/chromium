@@ -16,6 +16,7 @@
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/text/writing_mode.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
+#include "ui/gfx/geometry/outsets.h"
 #include "ui/gfx/geometry/outsets_f.h"
 
 namespace blink {
@@ -62,6 +63,7 @@ struct CORE_EXPORT BoxStrut {
   LayoutUnit BlockSum() const { return block_start + block_end; }
 
   LogicalOffset StartOffset() const { return {inline_start, block_start}; }
+  LogicalOffset EndOffset() const { return {inline_end, block_end}; }
 
   bool IsEmpty() const { return *this == BoxStrut(); }
 
@@ -145,6 +147,8 @@ struct CORE_EXPORT LineBoxStrut {
            line_under == other.line_under;
   }
 
+  inline PhysicalBoxStrut ConvertToPhysical(WritingDirectionMode) const;
+
   LayoutUnit inline_start;
   LayoutUnit inline_end;
   LayoutUnit line_over;
@@ -173,6 +177,10 @@ struct CORE_EXPORT PhysicalBoxStrut {
 
   // Create a strut based on an inner rectangle positioned within an area.
   PhysicalBoxStrut(const PhysicalSize& outer_size,
+                   const PhysicalRect& inner_rect);
+
+  // Create a strut based on an outer and inner rectangle (insets are inwards).
+  PhysicalBoxStrut(const PhysicalRect& outer_rect,
                    const PhysicalRect& inner_rect);
 
   // Creates new PhysicalBoxStrut instance from the specified `outsets`.
@@ -274,6 +282,14 @@ struct CORE_EXPORT PhysicalBoxStrut {
            left == other.left;
   }
 
+  gfx::Outsets ToRoundedOutsets() const {
+    return gfx::Outsets()
+        .set_top(top.Round())
+        .set_right(right.Round())
+        .set_bottom(bottom.Round())
+        .set_left(left.Round());
+  }
+
   explicit operator gfx::OutsetsF() const {
     return gfx::OutsetsF()
         .set_left(left.ToFloat())
@@ -320,6 +336,12 @@ inline PhysicalBoxStrut BoxStrut::ConvertToPhysical(
     default:
       NOTREACHED();
   }
+}
+
+inline PhysicalBoxStrut LineBoxStrut::ConvertToPhysical(
+    WritingDirectionMode writing_direction) const {
+  return BoxStrut(*this, writing_direction.IsFlippedLines())
+      .ConvertToPhysical(writing_direction);
 }
 
 inline PhysicalBoxStrut operator-(const PhysicalBoxStrut& a) {

@@ -31,10 +31,12 @@ class DevToolsWindowTesting {
   static DevToolsWindow* OpenDevToolsWindowSync(
       content::WebContents* inspected_web_contents,
       Profile* profile,
-      bool is_docked);
+      bool is_docked,
+      bool is_under_test = true);
   static DevToolsWindow* OpenDevToolsWindowSync(
       content::WebContents* inspected_web_contents,
-      bool is_docked);
+      bool is_docked,
+      bool is_under_test = true);
   static DevToolsWindow* OpenDevToolsWindowSync(BrowserWindowInterface* browser,
                                                 bool is_docked);
   static DevToolsWindow* OpenDevToolsWindowSync(
@@ -104,7 +106,7 @@ class DevToolsWindowCreationObserver {
   ~DevToolsWindowCreationObserver();
 
   using DevToolsWindows =
-      std::vector<raw_ptr<DevToolsWindow, VectorExperimental>>;
+      std::vector<raw_ptr<DevToolsWindow, DanglingUntriaged>>;
   const DevToolsWindows& devtools_windows() { return devtools_windows_; }
   DevToolsWindow* devtools_window();
 

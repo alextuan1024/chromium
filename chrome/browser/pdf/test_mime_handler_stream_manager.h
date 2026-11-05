@@ -9,6 +9,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "chrome/browser/pdf/pdf_extension_test_util.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "extensions/browser/mime_handler/mime_handler_stream_manager.h"
@@ -78,8 +79,10 @@ class TestMimeHandlerStreamManager : public MimeHandlerStreamManager {
 
   // Same as `WaitUntilPdfLoaded()`, but the first child of the primary main
   // frame should be the embedder. This is a common case where an HTML page
-  // embeds a single handled MIME type.
-  [[nodiscard]] testing::AssertionResult WaitUntilPdfLoadedInFirstChild();
+  // embeds a single handled MIME type. `options` customizes how to check
+  // whether the PDF has loaded.
+  [[nodiscard]] testing::AssertionResult WaitUntilPdfLoadedInFirstChild(
+      const pdf_extension_test_util::EnsurePDFHasLoadedOptions& options = {});
 
  private:
   // Gathers all the necessary navigation params and navigates to the extension
@@ -140,7 +143,8 @@ class TestMimeHandlerStreamManagerFactory
  private:
   // Tracks managers this factory has created. It's safe to track raw pointers,
   // since the pointers are only for comparison and aren't dereferenced.
-  base::flat_set<raw_ptr<MimeHandlerStreamManager, CtnExperimental>> managers_;
+  base::flat_set<raw_ptr<MimeHandlerStreamManager, DanglingUntriaged>>
+      managers_;
 };
 
 }  // namespace pdf

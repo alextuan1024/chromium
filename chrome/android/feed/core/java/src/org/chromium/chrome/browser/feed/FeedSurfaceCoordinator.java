@@ -126,7 +126,6 @@ public class FeedSurfaceCoordinator
     private final long mEmbeddingSurfaceCreatedTimeNs;
 
     private FeedSurfaceMediator mMediator;
-    private final boolean mIsNtpCustomizationV2Enabled;
     private final UiConfig mUiConfig;
     private final FrameLayout mRootView;
     private boolean mIsActive;
@@ -162,13 +161,13 @@ public class FeedSurfaceCoordinator
 
     // Used to handle padding adjustment when edge to edge is enabled.
     private final EdgeToEdgePadAdjuster mEdgePadAdjuster;
-    private final boolean mIsNewTabPageCustomizationV2Enabled;
     private @Nullable ImageButton mNtpCustomizationButton;
     private @Nullable NtpCustomizationConfigManager mNtpCustomizationConfigManager;
     private @Nullable NtpBackgroundImageCoordinator mNtpBackgroundImageCoordinator;
     private @Nullable HomepageStateListener mHomepageStateListener;
     private @Nullable ItemDecoration mItemDecoration;
     private @Nullable OnScrollListener mOnScrollListener;
+    private boolean mHasDrawnFrame;
 
     /** Provides the additional capabilities needed for the container view. */
     private class RootView extends FrameLayout {
@@ -179,6 +178,12 @@ public class FeedSurfaceCoordinator
             super(context);
             setFocusable(true);
             setFocusableInTouchMode(true);
+        }
+
+        @Override
+        protected void dispatchDraw(Canvas canvas) {
+            super.dispatchDraw(canvas);
+            mHasDrawnFrame = true;
         }
 
         @Override
@@ -430,8 +435,8 @@ public class FeedSurfaceCoordinator
         mHeaderIndex = 0;
         mTabStripHeightSupplier = tabStripHeightSupplier;
         mUseStaggeredLayout = DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity);
-        mIsNewTabPageCustomizationV2Enabled =
-                NtpCustomizationUtils.isNtpThemeCustomizationEnabled();
+        boolean isNtpThemeCustomizationEnabledByPolicy =
+                NtpCustomizationUtils.isNtpThemeCustomizationEnabledByPolicy();
         mDefaultBackgroundColor = ChromeSemanticColorUtils.getHomeSurfaceBackgroundColor(mActivity);
 
         mRootView = new RootView(mActivity);
@@ -451,8 +456,7 @@ public class FeedSurfaceCoordinator
         mFeedStreamViewResizer =
                 FeedStreamViewResizer.createAndAttach(mActivity, mRecyclerView, mUiConfig);
 
-        mIsNtpCustomizationV2Enabled = NtpCustomizationUtils.isNtpThemeCustomizationEnabled();
-        if (mIsNewTabPageCustomizationV2Enabled) {
+        if (isNtpThemeCustomizationEnabledByPolicy) {
             mNtpBackgroundImageCoordinator =
                     new NtpBackgroundImageCoordinator(
                             mActivity, mRootView, mUiConfig, mDefaultBackgroundColor);
@@ -481,7 +485,7 @@ public class FeedSurfaceCoordinator
             mRootView.addView(mNtpCustomizationButton);
         }
 
-        if (mIsNtpCustomizationV2Enabled) {
+        if (isNtpThemeCustomizationEnabledByPolicy) {
             mNtpCustomizationConfigManager = NtpCustomizationConfigManager.getInstance();
             mHomepageStateListener =
                     new HomepageStateListener() {
@@ -766,6 +770,11 @@ public class FeedSurfaceCoordinator
     }
 
     @Override
+    public boolean hasDrawnFrame() {
+        return mHasDrawnFrame;
+    }
+
+    @Override
     public void reload() {
         manualRefresh();
     }
@@ -873,7 +882,7 @@ public class FeedSurfaceCoordinator
         if (processScope != null) {
             mDependencyProvider =
                     new FeedSurfaceScopeDependencyProviderImpl(
-                            mActivity, mActivity, mShowDarkBackground);
+                            mActivity, mActivity, mShowDarkBackground, mProfile);
 
             mSurfaceScope = processScope.obtainFeedSurfaceScope(mDependencyProvider);
             if (mScrollableContainerDelegate != null) {
@@ -941,7 +950,9 @@ public class FeedSurfaceCoordinator
                             (resId) -> {
                                 return AppCompatResources.getDrawable(mActivity, resId);
                             },
-                            gutterPadding);
+                            gutterPadding,
+                            ChromeFeatureList.isEnabled(
+                                    ChromeFeatureList.FEED_CONTAINMENT_CLIP_FIRST_CARD));
             view.addItemDecoration(mItemDecoration);
         }
 

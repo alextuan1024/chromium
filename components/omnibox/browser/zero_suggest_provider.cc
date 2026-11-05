@@ -35,9 +35,6 @@
 #include "components/omnibox/browser/page_classification_functions.h"
 #include "components/omnibox/browser/remote_suggestions_service.h"
 #include "components/omnibox/browser/search_suggestion_parser.h"
-#if !BUILDFLAG(IS_ANDROID)
-#include "components/omnibox/browser/suggest_inventory_fallback_utils.h"
-#endif
 #include "components/omnibox/browser/suggestion_group_util.h"
 #include "components/omnibox/browser/zero_suggest_cache_service.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
@@ -53,9 +50,14 @@
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "third_party/metrics_proto/omnibox_focus_type.pb.h"
 #include "third_party/metrics_proto/omnibox_input_type.pb.h"
+#include "ui/webui/buildflags.h"
 #include "url/gurl.h"
 #include "url/url_canon.h"
 #include "url/url_util.h"
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+#include "components/omnibox/browser/suggest_inventory_fallback_utils.h"
+#endif
 
 using OEP = metrics::OmniboxEventProto;
 using OFT = metrics::OmniboxFocusType;
@@ -376,8 +378,10 @@ void MaybeAddContextualSuggestParams(
     TemplateURLRef::SearchTermsArgs& search_terms_args) {
   // Do not add the contextual suggest params if Lens is not enabled to fulfill
   // the suggestion, unless the input contains context data, in which case lens
-  // will not be used to fulfill the suggestion.
-  if (!client->IsLensEnabled() && input.context_tab_title().empty()) {
+  // will not be used to fulfill the suggestion, or the client can fulfill
+  // contextual suggestions without Lens (e.g. on desktop Android).
+  if (!client->IsLensEnabled() && input.context_tab_title().empty() &&
+      !client->CanFulfillContextualSuggestionsWithoutLens()) {
     return;
   }
 
@@ -763,7 +767,7 @@ void ZeroSuggestProvider::AddProviderInfo(ProvidersInfo* provider_info) const {
 
 ZeroSuggestProvider::ZeroSuggestProvider(AutocompleteProviderClient* client,
                                          AutocompleteProviderListener* listener)
-    : BaseSearchProvider(AutocompleteProvider::TYPE_ZERO_SUGGEST, client) {
+    : BaseSearchProvider(AutocompleteProvider::Type::kZeroSuggest, client) {
   AddListener(listener);
 
   if (base::FeatureList::IsEnabled(omnibox::kZeroSuggestPrefetchDebouncing)) {
@@ -913,7 +917,7 @@ void ZeroSuggestProvider::OnPrefetchURLLoadComplete(
 void ZeroSuggestProvider::MaybePopulateFallbackMatches(
     const AutocompleteInput& input) {
   matches_.clear();
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
   matches_ = omnibox::MaybeCreateFallbackMatchesForSuggestInventory(
       this, client(), input,
       /*num_suggestions=*/omnibox::kDefaultFallbackNumSuggestions);

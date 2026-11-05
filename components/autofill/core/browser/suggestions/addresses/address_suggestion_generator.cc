@@ -11,6 +11,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -26,6 +27,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/function_ref.h"
 #include "base/i18n/case_conversion.h"
+#include "base/i18n/language_tag.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -77,9 +79,6 @@
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_data.h"
 #include "third_party/libaddressinput/src/cpp/include/libaddressinput/address_formatter.h"
 #include "ui/base/l10n/l10n_util.h"
-
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-#endif
 
 namespace autofill {
 
@@ -154,16 +153,17 @@ bool ShouldUseNationalFormatPhoneNumber(FieldType trigger_field_type) {
 
 std::u16string GetFormattedPhoneNumber(const AutofillProfile& profile,
                                        const std::string& app_locale,
-                                       bool should_use_national_format) {
+                                       FieldType trigger_field_type) {
   const std::string phone_home_whole_number =
       base::UTF16ToUTF8(profile.GetInfo(PHONE_HOME_WHOLE_NUMBER, app_locale));
   const std::string address_home_country =
       base::UTF16ToUTF8(profile.GetRawInfo(ADDRESS_HOME_COUNTRY));
 
   const std::string formatted_phone_number =
-      should_use_national_format
+      ShouldUseNationalFormatPhoneNumber(trigger_field_type)
           ? i18n::FormatPhoneNationallyForDisplay(phone_home_whole_number,
-                                                  address_home_country)
+                                                  address_home_country,
+                                                  trigger_field_type)
           : i18n::FormatPhoneForDisplay(phone_home_whole_number,
                                         address_home_country);
   return base::UTF8ToUTF16(formatted_phone_number);
@@ -196,7 +196,7 @@ bool ShouldTransliterateMainTextToKatakana(
 // handles type-specific formatting.
 std::u16string GetProfileSuggestionMainText(
     const AutofillProfile& profile,
-    const std::string& app_locale,
+    std::string_view app_locale,
     const FormFieldData& trigger_field,
     const FieldType trigger_field_type) {
   if (trigger_field_type == ADDRESS_HOME_STREET_ADDRESS) {
@@ -456,13 +456,13 @@ std::vector<AutofillProfile> GetProfilesToSuggest(
     FieldType trigger_field_type,
     const FieldTypeSet& field_types) {
   // Get the profiles with text to suggest, which are already sorted.
-  std::vector<ProfileWithText> profiles_to_suggest =
-      base::ToVector(address_data.GetProfilesToSuggest(),
-                     [&](const AutofillProfile* profile) -> ProfileWithText {
-                       return {profile, GetProfileSuggestionMainText(
-                                            *profile, address_data.app_locale(),
-                                            trigger_field, trigger_field_type)};
-                     });
+  std::vector<ProfileWithText> profiles_to_suggest = base::ToVector(
+      address_data.GetProfilesToSuggest(),
+      [&](const AutofillProfile* profile) -> ProfileWithText {
+        return {profile, GetProfileSuggestionMainText(
+                             *profile, address_data.app_locale().tag_string(),
+                             trigger_field, trigger_field_type)};
+      });
 
   // Erase profiles which has empty value for the trigger field type.
   std::erase_if(profiles_to_suggest, [](const ProfileWithText& profile) {
@@ -496,7 +496,7 @@ std::vector<AutofillProfile> GetProfilesToSuggest(
   // another profile that is later removed by another filtering strategy.
   profiles_to_suggest = DeduplicatedProfilesForSuggestions(
       profiles_to_suggest, field_types,
-      AutofillProfileComparator(address_data.app_locale()));
+      AutofillProfileComparator(address_data.app_locale().tag_string()));
 
   // For field-by-field filling suggestions, we also want to remove suggestions
   // that have the same value as the trigger field. Such suggestions would be
@@ -565,9 +565,8 @@ std::vector<Suggestion> CreateSuggestionsFromProfiles(
     std::u16string main_text = GetProfileSuggestionMainText(
         profile, app_locale, trigger_field, trigger_field_type);
     if (trigger_field_type_group == FieldTypeGroup::kPhone) {
-      main_text = GetFormattedPhoneNumber(
-          profile, app_locale,
-          ShouldUseNationalFormatPhoneNumber(trigger_field_type));
+      main_text =
+          GetFormattedPhoneNumber(profile, app_locale, trigger_field_type);
     }
     Suggestion& suggestion =
         suggestions.emplace_back(main_text, suggestion_type);
@@ -648,12 +647,22 @@ SuggestionType GetSuggestionType(FormFieldData trigger_field) {
 // available for filling or the filling conditions were not met.
 std::vector<AddressOnTypingSuggestionData>
 MaybeFetchAddressOnTypingSuggestionData(
-    const AddressDataManager& address_data_manager,
+    AutofillClient& client,
     const FormFieldData& trigger_field,
     const AutofillField* trigger_autofill_field) {
-  if (!trigger_field.should_autocomplete() ||
+  if constexpr (BUILDFLAG(IS_IOS)) {
+    return {};
+  }
+  if ((!trigger_field.should_autocomplete() &&
+       !base::FeatureList::IsEnabled(
+           features::kAutofillOnTypingIgnoresAutocompleteOff)) ||
       !base::FeatureList::IsEnabled(
           features::kAutofillAddressSuggestionsOnTyping)) {
+    return {};
+  }
+  if (trigger_autofill_field &&
+      SuppressSuggestionsForAutocompleteUnrecognizedField(
+          *trigger_autofill_field, GetAcUnrecognizedBehavior(client))) {
     return {};
   }
 
@@ -666,6 +675,8 @@ MaybeFetchAddressOnTypingSuggestionData(
   }
 
   // Get the profiles to suggest, which are already sorted by relevance.
+  const AddressDataManager& address_data_manager =
+      client.GetPersonalDataManager().address_data_manager();
   std::vector<const AutofillProfile*> profiles =
       address_data_manager.GetProfilesToSuggest();
   if (profiles.empty()) {
@@ -696,9 +707,82 @@ MaybeFetchAddressOnTypingSuggestionData(
 
   // Field types we are interested in showing suggestions for.
   const FieldTypeSet field_types = GetAutofillOnTypingPossibleTypes();
+  auto get_normalized_field_contents =
+      [&](FieldType type) -> std::optional<std::u16string> {
+    std::u16string normalized_field_contents =
+        NormalizeForComparisonForType(trigger_field.value(), type);
+    if (normalized_field_contents.size() < min_number_of_characters_to_match ||
+        normalized_field_contents.size() > max_number_of_characters_to_match) {
+      // Sometimes normalizing the string makes it shorter because of trimming
+      // spaces.
+      return std::nullopt;
+    }
+    return normalized_field_contents;
+  };
 
   std::set<std::u16string> suggestions_text;
   std::vector<AddressOnTypingSuggestionData> suggestion_data;
+  const AddressOnTypingSuggestionStrikeDatabase* strike_database =
+      address_data_manager.GetAddressOnTypingSuggestionStrikeDatabase();
+  auto maybe_add_suggestion =
+      [&](const AutofillProfile& profile, FieldType type,
+          const std::u16string& normalized_field_contents,
+          std::u16string suggestion_text, const std::u16string& profile_data) {
+        if (strike_database &&
+            strike_database->ShouldBlockFeature(base::NumberToString(type))) {
+          return;
+        }
+        if (!IsValidAddressSuggestionForFieldContents(
+                profile_data, normalized_field_contents, type)) {
+          return;
+        }
+        if (profile_data.size() - normalized_field_contents.size() <
+            min_missing_characters_number) {
+          return;
+        }
+        // Do not allow duplicated suggestions, for example if
+        // `ADDRESS_HOME_LINE1` and `ADDRESS_HOME_STREET_ADDRESS` hold the same
+        // data.
+        if (suggestions_text.insert(suggestion_text).second) {
+          suggestion_data.push_back(
+              {std::move(suggestion_text), type, profile.guid()});
+        }
+      };
+
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillAddressSuggestionsOnTypingLimitPerFieldType)) {
+    // For each `FieldType`, inspect up to `kMaxValuesToUsePerFieldType`
+    // distinct non-empty normalized values across `profiles` (which are sorted
+    // by relevance).
+    static constexpr size_t kMaxValuesToUsePerFieldType = 3;
+    for (FieldType type : field_types) {
+      const std::optional<std::u16string> normalized_field_contents =
+          get_normalized_field_contents(type);
+      if (!normalized_field_contents) {
+        continue;
+      }
+
+      std::set<std::u16string> seen_profile_data;
+      for (const AutofillProfile* profile : profiles) {
+        if (seen_profile_data.size() == kMaxValuesToUsePerFieldType) {
+          break;
+        }
+        std::u16string suggestion_text = profile->GetInfo(
+            type, address_data_manager.app_locale().tag_string());
+        const std::u16string profile_data =
+            NormalizeForComparisonForType(suggestion_text, type);
+        if (profile_data.empty() ||
+            !seen_profile_data.insert(profile_data).second) {
+          continue;
+        }
+
+        maybe_add_suggestion(*profile, type, *normalized_field_contents,
+                             std::move(suggestion_text), profile_data);
+      }
+    }
+    return suggestion_data;
+  }
+
   // The number of profiles that data will be derived from when generating
   // suggestions.
   static constexpr size_t kMaxNumberProfilesToUse = 2;
@@ -710,51 +794,22 @@ MaybeFetchAddressOnTypingSuggestionData(
     profiles_used_count++;
 
     for (FieldType type : field_types) {
-      const AddressOnTypingSuggestionStrikeDatabase* strike_database =
-          address_data_manager.GetAddressOnTypingSuggestionStrikeDatabase();
-      if (strike_database &&
-          strike_database->ShouldBlockFeature(base::NumberToString(type))) {
-        continue;
-      }
-      const std::u16string normalized_field_contents =
-          NormalizeForComparisonForType(trigger_field.value(), type);
-      if (normalized_field_contents.size() <
-          min_number_of_characters_to_match) {
-        // Sometimes normalizing the string makes it shorter because of trimming
-        // spaces.
+      const std::optional<std::u16string> normalized_field_contents =
+          get_normalized_field_contents(type);
+      if (!normalized_field_contents) {
         continue;
       }
 
-      if (normalized_field_contents.size() >
-          max_number_of_characters_to_match) {
-        continue;
-      }
-
-      std::u16string suggestion_text =
-          profile->GetInfo(type, address_data_manager.app_locale());
+      std::u16string suggestion_text = profile->GetInfo(
+          type, address_data_manager.app_locale().tag_string());
       const std::u16string profile_data =
           NormalizeForComparisonForType(suggestion_text, type);
       if (profile_data.empty()) {
         continue;
       }
 
-      if (!IsValidAddressSuggestionForFieldContents(
-              profile_data, normalized_field_contents, type)) {
-        continue;
-      }
-
-      if (profile_data.size() - normalized_field_contents.size() <
-          min_missing_characters_number) {
-        continue;
-      }
-
-      // Do not allow duplicated suggestions, for example if
-      // `ADDRESS_HOME_LINE1` and
-      // `ADDRESS_HOME_STREET_ADDRESS` hold the same data.
-      if (!suggestions_text.contains(suggestion_text)) {
-        suggestion_data.push_back({suggestion_text, type, profile->guid()});
-        suggestions_text.insert(suggestion_text);
-      }
+      maybe_add_suggestion(*profile, type, *normalized_field_contents,
+                           std::move(suggestion_text), profile_data);
     }
   }
 
@@ -804,14 +859,14 @@ std::vector<Suggestion> GenerateAddressSuggestions(
           .email,
       field_types, GetSuggestionType(trigger_field),
       trigger_autofill_field->Type().GetAddressType(), trigger_field,
-      client.GetAppLocale());
+      std::string(client.GetAppLocale().tag_string()));
 
   // Add devtools test addresses suggestion if it exists.
   if (std::optional<Suggestion> test_addresses_suggestion =
           GetSuggestionForTestAddresses(
               std::vector(std::make_move_iterator(partition_it),
                           std::make_move_iterator(profiles_to_suggest.end())),
-              client.GetAppLocale())) {
+              std::string(client.GetAppLocale().tag_string()))) {
     suggestions.push_back(std::move(*test_addresses_suggestion));
   }
   if (suggestions.empty()) {
@@ -1033,9 +1088,8 @@ void AddressSuggestionGenerator::GenerateSuggestions(
   }
 
   if (std::vector<AddressOnTypingSuggestionData> addresses_to_suggest =
-          MaybeFetchAddressOnTypingSuggestionData(
-              client.GetPersonalDataManager().address_data_manager(),
-              trigger_field, trigger_autofill_field);
+          MaybeFetchAddressOnTypingSuggestionData(client, trigger_field,
+                                                  trigger_autofill_field);
       !addresses_to_suggest.empty()) {
     callback({SuggestionDataSource::kAddressOnTyping,
               GenerateAddressOnTypingSuggestions(addresses_to_suggest)});

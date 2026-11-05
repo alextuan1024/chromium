@@ -152,7 +152,7 @@ static STATE_MACHINE: [(u16, u8, u8, u8); 113] = [
 
 /// A statistics entry; used to dynamically estimate the local probability of a decision
 #[derive(Clone, Copy, Default, Debug)]
-struct StatisticsEntry {
+pub(crate) struct StatisticsEntry {
     qe_index: u8,
     /// MPS (more probable symbol) register, either false=0 or true=1
     mps: bool,
@@ -283,15 +283,20 @@ impl BitStreamArithmetic {
     where
         T: ZByteReaderTrait,
     {
-        let b = if self.marker.is_some() {
-            // When a marker is present, the decoder is repeatedly fed zero bytes
+        let b = if self.marker.is_some() || self.seen_eoi {
+            // When a marker is present, the decoder is repeatedly fed zero bytes.
+            // An EOI stays in force after the decoder acknowledges it: whatever follows
+            // it is not part of this image's entropy data.
             0
         } else {
             reader.read_u8_err()?
         };
 
         if b == 0xFF {
-            let b2 = reader.read_u8_err()?;
+            let mut b2 = reader.read_u8_err()?;
+            while b2 == 0xff {
+                b2 = reader.read_u8_err()?;
+            }
             if b2 == 0 {
                 self.c |= 0xFF00;
             } else {
@@ -360,7 +365,7 @@ impl BitStreamArithmetic {
     }
 
     /// Decode the next bit, using the provided context index
-    fn decode_bit<T>(
+    pub(crate) fn decode_bit<T>(
         &mut self, context: &mut StatisticsEntry, reader: &mut ZReader<T>,
     ) -> Result<u8, DecodeErrors>
     where
@@ -563,15 +568,22 @@ impl BitStreamArithmetic {
     }
 }
 
-/// Minimal snapshot for arithmetic bitstream — only captures enough to detect
-/// whether the stream was exhausted. True per-MCU resume is not feasible for
-/// arithmetic coding due to statistical context coupling.
+/// Arithmetic bitstream registers captured at a stable pull-row boundary.
+/// Statistical contexts remain in `EntropyTables` and are preserved separately
+/// by the borrowing raw-output session.
 #[derive(Clone, Copy)]
 pub(crate) struct ArithBitstreamState {
-    pub(crate) marker:      Option<Marker>,
-    pub(crate) overread_by: usize,
-    pub(crate) seen_eoi:    bool,
-    pub(crate) eob_run:     i32
+    initialized:         bool,
+    a:                   u32,
+    c:                   u32,
+    ct:                  u8,
+    marker:              Option<Marker>,
+    successive_low_mask: i16,
+    spec_start:          u8,
+    spec_end:            u8,
+    overread_by:         usize,
+    seen_eoi:            bool,
+    eob_run:             i32
 }
 
 impl BitStream for BitStreamArithmetic {
@@ -701,6 +713,11 @@ impl BitStream for BitStreamArithmetic {
     }
 
     #[inline(always)]
+    fn marker_ends_data() -> bool {
+        false
+    }
+
+    #[inline(always)]
     fn supports_mcu_checkpoint() -> bool {
         false
     }
@@ -708,19 +725,30 @@ impl BitStream for BitStreamArithmetic {
     #[inline(always)]
     fn save_state(&self) -> ArithBitstreamState {
         ArithBitstreamState {
-            marker:      self.marker,
-            overread_by: self.overread_by,
-            seen_eoi:    self.seen_eoi,
-            eob_run:     self.eob_run
+            initialized:         self.initialized,
+            a:                   self.a,
+            c:                   self.c,
+            ct:                  self.ct,
+            marker:              self.marker,
+            successive_low_mask: self.successive_low_mask,
+            spec_start:          self.spec_start,
+            spec_end:            self.spec_end,
+            overread_by:         self.overread_by,
+            seen_eoi:            self.seen_eoi,
+            eob_run:             self.eob_run
         }
     }
 
-    /// Arithmetic restore is a no-op for the A/C/CT registers — those are
-    /// only reset via `reset()` at RST/scan boundaries. This restores the
-    /// marker/EOF detection state only.
     #[inline(always)]
     fn restore_state(&mut self, state: ArithBitstreamState) {
+        self.initialized = state.initialized;
+        self.a = state.a;
+        self.c = state.c;
+        self.ct = state.ct;
         self.marker = state.marker;
+        self.successive_low_mask = state.successive_low_mask;
+        self.spec_start = state.spec_start;
+        self.spec_end = state.spec_end;
         self.overread_by = state.overread_by;
         self.seen_eoi = state.seen_eoi;
         self.eob_run = state.eob_run;
@@ -847,10 +875,10 @@ impl BitStream for BitStreamArithmetic {
     #[inline]
     fn decode_prog_dc_first<T>(
         &mut self, reader: &mut ZReader<T>, dc_table: &mut ArithDCTables, block: &mut i16,
-        dc_prediction: &mut i32, last_dc_diff: &mut i32,
+        dc_prediction: &mut i32, last_dc_diff: &mut i32, _suspend_at_eof: bool
     ) -> Result<(), DecodeErrors>
     where
-        T: ZByteReaderTrait,
+        T: ZByteReaderTrait
     {
         self.decode_dc(reader, dc_table, dc_prediction, last_dc_diff)?;
         *block = (*dc_prediction as i16).wrapping_mul(self.successive_low_mask);

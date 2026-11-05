@@ -25,6 +25,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/task_environment.h"
+#include "base/threading/platform_thread.h"
 #include "components/persistent_cache/pending_backend.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -59,7 +60,6 @@
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
-#include "third_party/blink/renderer/platform/wtf/threading.h"
 #include "url/gurl.h"
 
 namespace blink {
@@ -140,9 +140,6 @@ class TestPlatformForRedirects final : public TestingPlatformSupport {
 };
 
 void RegisterURLSchemeAsCodeCacheWithHashing() {
-#if DCHECK_IS_ON()
-  SetIsBeforeThreadCreatedForTest();  // Required for next operation:
-#endif
   SchemeRegistry::RegisterURLSchemeAsCodeCacheWithHashing(
       "codecachewithhashing");
 }
@@ -301,11 +298,6 @@ class DummyCodeCacheHost final : public mojom::blink::CodeCacheHost {
                            const KURL& url) override {
     did_clear_code_cache_entry_ = true;
   }
-  void DidGenerateCacheableMetadataInCacheStorage(
-      const KURL& url,
-      base::Time expected_response_time,
-      mojo_base::BigBuffer data,
-      const String& cache_storage_cache_name) override {}
 
   blink::CodeCacheHost* GetCodeCacheHost() { return host_.get(); }
   bool did_clear_code_cache_entry() const {
@@ -353,7 +345,8 @@ class ResourceRequestSenderTestBase : public testing::Test,
 
   void StartAsync(std::unique_ptr<network::ResourceRequest> request,
                   scoped_refptr<ResourceRequestClient> client,
-                  CodeCacheHost* code_cache_host = nullptr) {
+                  CodeCacheHost* code_cache_host = nullptr,
+                  bool should_fetch_code_cache = true) {
     sender()->SendAsync(
         std::move(request), scheduler::GetSingleThreadTaskRunnerForTesting(),
         TRAFFIC_ANNOTATION_FOR_TESTS, false,
@@ -362,7 +355,7 @@ class ResourceRequestSenderTestBase : public testing::Test,
         std::vector<std::unique_ptr<URLLoaderThrottle>>(),
         std::make_unique<ResourceLoadInfoNotifierWrapper>(
             /*resource_load_info_notifier=*/nullptr),
-        code_cache_host,
+        code_cache_host, should_fetch_code_cache,
         /*evict_from_bfcache_callback=*/
         base::OnceCallback<void(mojom::blink::RendererEvictionReason)>(),
         /*did_buffer_load_while_in_bfcache_callback=*/
@@ -1458,7 +1451,8 @@ TEST_F(ResourceRequestSenderTest,
 
   auto response = CreateResponse();
   response->was_fetched_via_service_worker = true;
-  response->cache_storage_cache_name = "dummy";
+  response->service_worker_response_source =
+      network::mojom::FetchResponseSource::kCacheStorage;
 
   // Send a cached data from CodeCacheHost.
   std::vector<uint8_t> cache_data{1, 2, 3, 4, 5, 6};
@@ -2003,6 +1997,186 @@ TEST_F(ResourceRequestSenderSyncTest, SendSyncRedirectCancel) {
   EXPECT_FALSE(response.data);
 }
 
+TEST_F(ResourceRequestSenderSyncTest,
+       SendSyncRedirectCompleteBeforeFollowRedirect) {
+  base::WaitableEvent complete_processed_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+
+  scoped_refptr<MockRequestClient> mock_client =
+      base::MakeRefCounted<MockRequestClient>();
+  mock_client->SetOnReceivedRedirectCallback(base::BindLambdaForTesting(
+      [&](const net::RedirectInfo& redirect_info,
+          network::mojom::URLResponseHeadPtr head,
+          ResourceRequestClient::FollowRedirectCallback callback) {
+        EXPECT_EQ(GURL(kRedirectedUrl), redirect_info.new_url);
+        complete_processed_event.Wait();
+        std::move(callback).Run({}, {});
+      }));
+
+  auto loader_factory = base::MakeRefCounted<
+      FakeURLLoaderFactoryForBackgroundThread>(base::BindLambdaForTesting(
+      [&](mojo::PendingReceiver<network::mojom::URLLoader> loader,
+          mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
+        std::unique_ptr<MockLoader> mock_loader =
+            std::make_unique<MockLoader>();
+        MockLoader* mock_loader_ptr = mock_loader.get();
+        mojo::MakeSelfOwnedReceiver(std::move(mock_loader), std::move(loader));
+
+        mojo::Remote<network::mojom::URLLoaderClient> loader_client(
+            std::move(client));
+
+        net::RedirectInfo redirect_info;
+        redirect_info.new_url = GURL(kRedirectedUrl);
+        loader_client->OnReceiveRedirect(
+            redirect_info, network::mojom::URLResponseHead::New());
+        loader_client->OnComplete(
+            network::URLLoaderCompletionStatus(net::ERR_FAILED));
+
+        scoped_refptr<RefCountedURLLoaderClientRemote> refcounted_client =
+            base::MakeRefCounted<RefCountedURLLoaderClientRemote>(
+                std::move(loader_client));
+        refcounted_client->data.FlushAsyncForTesting(
+            base::BindLambdaForTesting([&]() {
+              base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+                  FROM_HERE,
+                  base::BindOnce(&base::WaitableEvent::Signal,
+                                 base::Unretained(&complete_processed_event)));
+            }));
+
+        mock_loader_ptr->SetFollowRedirectCallback(base::BindRepeating(
+            [](scoped_refptr<RefCountedURLLoaderClientRemote> refcounted_client,
+               const std::vector<std::string>& removed_headers,
+               const net::HttpRequestHeaders& modified_headers) {
+              // FollowRedirect() must not be called after OnComplete().
+              NOTREACHED();
+            },
+            std::move(refcounted_client)));
+      }));
+
+  SyncLoadResponse response = SendSync(mock_client, std::move(loader_factory));
+  EXPECT_EQ(net::ERR_FAILED, response.error_code);
+  EXPECT_FALSE(response.redirect_info.has_value());
+  EXPECT_FALSE(response.data);
+}
+
+TEST_F(ResourceRequestSenderSyncTest,
+       SendSyncRedirectCompleteBeforeCancelRedirect) {
+  base::WaitableEvent complete_processed_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+
+  scoped_refptr<MockRequestClient> mock_client =
+      base::MakeRefCounted<MockRequestClient>();
+  mock_client->SetOnReceivedRedirectCallback(base::BindLambdaForTesting(
+      [&](const net::RedirectInfo& redirect_info,
+          network::mojom::URLResponseHeadPtr head,
+          ResourceRequestClient::FollowRedirectCallback callback) {
+        EXPECT_EQ(GURL(kRedirectedUrl), redirect_info.new_url);
+        complete_processed_event.Wait();
+        // Don't call callback to cancel the request.
+      }));
+
+  auto loader_factory = base::MakeRefCounted<
+      FakeURLLoaderFactoryForBackgroundThread>(base::BindLambdaForTesting(
+      [&](mojo::PendingReceiver<network::mojom::URLLoader> loader,
+          mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
+        std::unique_ptr<MockLoader> mock_loader =
+            std::make_unique<MockLoader>();
+        MockLoader* mock_loader_ptr = mock_loader.get();
+        mojo::MakeSelfOwnedReceiver(std::move(mock_loader), std::move(loader));
+
+        mojo::Remote<network::mojom::URLLoaderClient> loader_client(
+            std::move(client));
+
+        net::RedirectInfo redirect_info;
+        redirect_info.new_url = GURL(kRedirectedUrl);
+        loader_client->OnReceiveRedirect(
+            redirect_info, network::mojom::URLResponseHead::New());
+        loader_client->OnComplete(
+            network::URLLoaderCompletionStatus(net::ERR_FAILED));
+
+        scoped_refptr<RefCountedURLLoaderClientRemote> refcounted_client =
+            base::MakeRefCounted<RefCountedURLLoaderClientRemote>(
+                std::move(loader_client));
+        refcounted_client->data.FlushAsyncForTesting(
+            base::BindLambdaForTesting([&]() {
+              base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+                  FROM_HERE,
+                  base::BindOnce(&base::WaitableEvent::Signal,
+                                 base::Unretained(&complete_processed_event)));
+            }));
+
+        mock_loader_ptr->SetFollowRedirectCallback(base::BindRepeating(
+            [](scoped_refptr<RefCountedURLLoaderClientRemote> refcounted_client,
+               const std::vector<std::string>& removed_headers,
+               const net::HttpRequestHeaders& modified_headers) {
+              // FollowRedirect() must not be called.
+              NOTREACHED();
+            },
+            std::move(refcounted_client)));
+      }));
+
+  SyncLoadResponse response = SendSync(mock_client, std::move(loader_factory));
+  EXPECT_EQ(net::ERR_ABORTED, response.error_code);
+  EXPECT_FALSE(response.redirect_info.has_value());
+  EXPECT_FALSE(response.data);
+}
+
+TEST_F(ResourceRequestSenderSyncTest,
+       SendSyncRedirectMojoDisconnectBeforeFollowRedirect) {
+  base::WaitableEvent disconnect_processed_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+
+  scoped_refptr<MockRequestClient> mock_client =
+      base::MakeRefCounted<MockRequestClient>();
+  mock_client->SetOnReceivedRedirectCallback(base::BindLambdaForTesting(
+      [&](const net::RedirectInfo& redirect_info,
+          network::mojom::URLResponseHeadPtr head,
+          ResourceRequestClient::FollowRedirectCallback callback) {
+        EXPECT_EQ(GURL(kRedirectedUrl), redirect_info.new_url);
+        disconnect_processed_event.Wait();
+        std::move(callback).Run({}, {});
+      }));
+
+  auto loader_factory =
+      base::MakeRefCounted<FakeURLLoaderFactoryForBackgroundThread>(
+          base::BindLambdaForTesting(
+              [&](mojo::PendingReceiver<network::mojom::URLLoader> loader,
+                  mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
+                mojo::MakeSelfOwnedReceiver(std::make_unique<MockLoader>(),
+                                            std::move(loader));
+
+                mojo::Remote<network::mojom::URLLoaderClient> loader_client(
+                    std::move(client));
+
+                net::RedirectInfo redirect_info;
+                redirect_info.new_url = GURL(kRedirectedUrl);
+                loader_client->OnReceiveRedirect(
+                    redirect_info, network::mojom::URLResponseHead::New());
+                // Drop the URLLoaderClient remote while the redirect is being
+                // handled on the calling thread, triggering
+                // ThrottlingURLLoader's disconnect handler ->
+                // OnComplete(ERR_ABORTED).
+                loader_client.reset();
+                base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+                    FROM_HERE, base::BindLambdaForTesting([&]() {
+                      base::SingleThreadTaskRunner::GetCurrentDefault()
+                          ->PostTask(
+                              FROM_HERE,
+                              base::BindOnce(&base::WaitableEvent::Signal,
+                                             base::Unretained(
+                                                 &disconnect_processed_event)));
+                    }));
+              }));
+
+  SyncLoadResponse response = SendSync(mock_client, std::move(loader_factory));
+  EXPECT_EQ(net::ERR_ABORTED, response.error_code);
+  EXPECT_FALSE(response.redirect_info.has_value());
+  EXPECT_FALSE(response.data);
+}
+
 class TimeConversionTest : public ResourceRequestSenderTest {
  public:
   void PerformTest(network::mojom::URLResponseHeadPtr response_head) {
@@ -2160,6 +2334,7 @@ class TestingPlatformForWebUIBundledCodeCache : public TestingPlatformSupport {
   // TestingPlatformSupport:
   scoped_refptr<base::RefCountedMemory> GetDataResourceBytes(
       int resource_id) override {
+    ++get_data_resource_bytes_count_;
     return resource_data_;
   }
   std::optional<int> GetWebUIBundledCodeCacheResourceId(
@@ -2173,10 +2348,14 @@ class TestingPlatformForWebUIBundledCodeCache : public TestingPlatformSupport {
     webui_bundled_code_cache_url_ = webui_bundled_code_cache_url;
   }
   void reset_resource_data() { resource_data_ = nullptr; }
+  int get_data_resource_bytes_count() const {
+    return get_data_resource_bytes_count_;
+  }
 
  private:
   GURL webui_bundled_code_cache_url_;
   scoped_refptr<base::RefCountedMemory> resource_data_;
+  int get_data_resource_bytes_count_ = 0;
 };
 
 // Fixture to test the WebUI bundled code cache feature.
@@ -2192,22 +2371,18 @@ class WebUIBundledCodeCacheResourceRequestSenderTest
   // ResourceRequestSenderTestBase:
   void SetUp() override {
     ResourceRequestSenderTestBase::SetUp();
-#if DCHECK_IS_ON()
-    SetIsBeforeThreadCreatedForTest();
-#endif
     SchemeRegistry::RegisterURLSchemeAsWebUIBundledBytecode("chrome");
   }
 
   void TearDown() override {
-#if DCHECK_IS_ON()
-    SetIsBeforeThreadCreatedForTest();
-#endif
     SchemeRegistry::RemoveURLSchemeAsWebUIBundledBytecodeForTest("chrome");
     ResourceRequestSenderTestBase::TearDown();
   }
 
   // Loads a resource and checks the status of the code cache.
-  void LoadResourceAndCheck(const GURL& resource_url, bool expect_code_cache) {
+  void LoadResourceAndCheck(const GURL& resource_url,
+                            bool expect_code_cache,
+                            bool should_fetch_code_cache = true) {
     scoped_refptr<MockRequestClient> mock_client =
         base::MakeRefCounted<MockRequestClient>();
 
@@ -2215,7 +2390,8 @@ class WebUIBundledCodeCacheResourceRequestSenderTest
     request->url = resource_url;
     request->destination = network::mojom::RequestDestination::kScript;
 
-    StartAsync(std::move(request), mock_client);
+    StartAsync(std::move(request), mock_client, /*code_cache_host=*/nullptr,
+               should_fetch_code_cache);
     EXPECT_EQ(1u, loader_and_clients_.size());
     mojo::Remote<network::mojom::URLLoaderClient> client(
         std::move(loader_and_clients_[0].second));
@@ -2297,6 +2473,22 @@ TEST_F(WebUIBundledCodeCacheResourceRequestSenderTest,
   histogram_tester.ExpectUniqueSample(
       "Blink.ResourceRequest.WebUIBundledCodeCacheFetcher.DidReceiveCachedCode",
       false, 1);
+}
+
+TEST_F(WebUIBundledCodeCacheResourceRequestSenderTest,
+       ShouldFetchCodeCacheFalseSkipsWebUIBundledCodeCacheFetch) {
+  base::HistogramTester histogram_tester;
+
+  const GURL test_url("chrome://example/script.js");
+  platform_->set_webui_bundled_code_cache_url(test_url);
+  EXPECT_TRUE(platform_->GetWebUIBundledCodeCacheResourceId(test_url));
+
+  LoadResourceAndCheck(test_url, /*expect_code_cache=*/false,
+                       /*should_fetch_code_cache=*/false);
+  EXPECT_EQ(0, platform_->get_data_resource_bytes_count());
+  histogram_tester.ExpectTotalCount(
+      "Blink.ResourceRequest.WebUIBundledCodeCacheFetcher.DidReceiveCachedCode",
+      0);
 }
 
 }  // namespace

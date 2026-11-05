@@ -13,7 +13,6 @@ static_library("privacy_sandbox_prefs") {
 
   deps = [
     ":features",
-    "//components/pref_registry",
     "//components/prefs",
   ]
 
@@ -151,8 +150,4 @@ source_set("unit_tests") {
       "//net",
     ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

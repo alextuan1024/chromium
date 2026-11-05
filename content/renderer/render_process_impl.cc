@@ -24,7 +24,6 @@
 #include "base/debug/crash_logging.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/system/sys_info.h"
@@ -41,8 +40,6 @@
 #include "services/network/public/cpp/features.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/web_runtime_features.h"
-#include "third_party/blink/public/web/blink.h"
-#include "third_party/blink/public/web/web_frame.h"
 #include "v8/include/v8-initialization.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -97,6 +94,11 @@ namespace content {
 
 RenderProcessImpl::RenderProcessImpl()
     : RenderProcess(GetThreadPoolInitParams()) {
+  // Do not apply V8 flag overrides if disallowed.
+  const bool disallow_v8_feature_flag_overrides =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kDisallowV8FeatureFlagOverrides);
+
 #if BUILDFLAG(DCHECK_IS_CONFIGURABLE)
   // Some official builds ship with DCHECKs compiled in. Failing DCHECKs then
   // are either fatal or simply log the error, based on a feature flag.
@@ -104,7 +106,8 @@ RenderProcessImpl::RenderProcessImpl()
   // the Chrome base logging implementation.
   v8::V8::SetDcheckErrorHandler(&V8DcheckCallbackHandler);
 
-  if (!base::FeatureList::IsEnabled(base::kDCheckIsFatalFeature)) {
+  if (!base::FeatureList::IsEnabled(base::kDCheckIsFatalFeature) &&
+      !disallow_v8_feature_flag_overrides) {
     // These V8 flags default on in this build configuration. This triggers
     // additional verification and code generation, which both slows down V8,
     // and can lead to fatal CHECKs. Turn these flags down to get something
@@ -118,10 +121,6 @@ RenderProcessImpl::RenderProcessImpl()
   }
 #endif  // BUILDFLAG(DCHECK_IS_CONFIGURABLE)
 
-  // Do not apply V8 flag overrides if disallowed.
-  const bool disallow_v8_feature_flag_overrides =
-      base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kDisallowV8FeatureFlagOverrides);
   if (!disallow_v8_feature_flag_overrides) {
     if (base::SysInfo::IsLowEndDevice()) {
       std::string_view optimize_flag("--optimize-for-size");
@@ -212,12 +211,6 @@ RenderProcessImpl::RenderProcessImpl()
 }
 
 RenderProcessImpl::~RenderProcessImpl() {
-#ifndef NDEBUG
-  int count = blink::WebFrame::InstanceCount();
-  if (count)
-    DLOG(ERROR) << "WebFrame LEAKED " << count << " TIMES";
-#endif
-
   GetShutDownEvent()->Signal();
 }
 

@@ -28,12 +28,12 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/installer/util/google_update_settings.h"
+#include "chrome/installer/util/helper.h"
 #include "chrome/installer/util/initial_preferences.h"
 #include "chrome/installer/util/initial_preferences_constants.h"
 #include "chrome/installer/util/install_util.h"
 #include "chrome/installer/util/util_constants.h"
 #include "components/strings/grit/components_locale_settings.h"
-#include "content/public/browser/browser_thread.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/win/shell.h"
 
@@ -46,11 +46,10 @@ namespace {
 // to bounce the user back to the desktop, then returns immediately.
 bool LaunchSetupForEula(const base::FilePath::StringType& value,
                         int* ret_code) {
-  base::FilePath exe_dir;
-  if (!base::PathService::Get(base::DIR_MODULE, &exe_dir))
+  const base::FilePath exe_path = installer::GetCurrentSetupPath();
+  if (exe_path.empty()) {
     return false;
-  exe_dir = exe_dir.Append(installer::kInstallerDir);
-  base::FilePath exe_path = exe_dir.Append(installer::kSetupExe);
+  }
 
   base::CommandLine cl(base::CommandLine::NO_PROGRAM);
   cl.AppendSwitchNative(installer::switches::kShowEula, value);
@@ -115,11 +114,10 @@ void DoPostImportPlatformSpecificTasks() {
   // Trigger the Active Setup command for system-level Chromes to finish
   // configuring this user's install (e.g. per-user shortcuts).
   if (!InstallUtil::IsPerUserInstall()) {
-    content::BrowserThread::PostBestEffortTask(
+    base::ThreadPool::PostTask(
         FROM_HERE,
-        base::ThreadPool::CreateTaskRunner(
-            {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
-             base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN}),
+        {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+         base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
         base::BindOnce(&InstallUtil::TriggerActiveSetupCommand));
   }
 }

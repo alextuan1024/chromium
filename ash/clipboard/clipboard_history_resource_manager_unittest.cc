@@ -17,6 +17,7 @@
 #include "base/functional/callback.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
+#include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/gmock_callback_support.h"
@@ -26,7 +27,9 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
 #include "ui/gfx/image/image_skia.h"
+#include "url/gurl.h"
 
 namespace ash {
 
@@ -34,6 +37,7 @@ namespace {
 
 using ::testing::_;
 using ::testing::Bool;
+using ::testing::Optional;
 using ::testing::StrictMock;
 using ::testing::WithArg;
 using ::testing::WithParamInterface;
@@ -45,6 +49,7 @@ class MockClipboardImageModelFactory : public ClipboardImageModelFactory {
               (const base::UnguessableToken&,
                const std::string&,
                const gfx::Size&,
+               const std::optional<ui::DataTransferEndpoint>&,
                ImageModelCallback),
               (override));
   MOCK_METHOD(void, CancelRequest, (const base::UnguessableToken&), (override));
@@ -63,7 +68,7 @@ void FlushMessageLoop() {
 }
 
 SkBitmap GetRandomBitmap() {
-  SkColor color = rand() % 0xFFFFFF + 1;
+  SkColor color = base::RandIntInclusive(1, 0xFFFFFF);
 
   SkBitmap bitmap;
   bitmap.allocN32Pixels(24, 24);
@@ -131,7 +136,7 @@ class ClipboardHistoryResourceManagerTest : public AshTestBase {
 TEST_F(ClipboardHistoryResourceManagerTest, BasicImgCachedImageModel) {
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(WithArg<3>(
+      .WillByDefault(WithArg<4>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_model);
           }));
@@ -154,7 +159,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, BasicImgCachedImageModel) {
 TEST_F(ClipboardHistoryResourceManagerTest, BasicTableCachedImageModel) {
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(WithArg<3>(
+      .WillByDefault(WithArg<4>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_model);
           }));
@@ -178,7 +183,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, BasicTableCachedImageModel) {
 TEST_F(ClipboardHistoryResourceManagerTest, BasicIneligibleCachedImageModel) {
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(WithArg<3>(
+      .WillByDefault(WithArg<4>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_model);
           }));
@@ -201,7 +206,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, BasicIneligibleCachedImageModel) {
 TEST_F(ClipboardHistoryResourceManagerTest, DuplicateHTML) {
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(WithArg<3>(
+      .WillByDefault(WithArg<4>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_model);
           }));
@@ -239,7 +244,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, DifferentHTML) {
   std::deque<ui::ImageModel> expected_image_models{first_expected_image_model,
                                                    second_expected_image_model};
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(WithArg<3>(
+      .WillByDefault(WithArg<4>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_models.front());
             expected_image_models.pop_front();
@@ -312,7 +317,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, PlaceholderDuringRender) {
   constexpr const auto kRenderDelay = base::Seconds(1);
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(WithArg<3>(
+      .WillByDefault(WithArg<4>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             // Delay the processing of the rendered image until after the
             // clipboard history item has been created.
@@ -356,6 +361,82 @@ TEST_F(ClipboardHistoryResourceManagerTest, PlaceholderDuringRender) {
   // cached in the clipboard history item.
   ASSERT_TRUE(item.display_image().has_value());
   EXPECT_EQ(item.display_image().value(), expected_image_model);
+}
+
+// Tests that the clipboard history item's data source is forwarded to
+// ClipboardImageModelFactory::Render.
+TEST_F(ClipboardHistoryResourceManagerTest, ForwardsDataSourceToRender) {
+  const ui::DataTransferEndpoint expected_source(
+      GURL("https://www.example.com"));
+  ui::ImageModel expected_image_model = GetRandomImageModel();
+  EXPECT_CALL(*mock_image_factory(),
+              Render(_, _, _, Optional(expected_source), _))
+      .WillOnce(WithArg<4>(
+          [&](ClipboardImageModelFactory::ImageModelCallback callback) {
+            std::move(callback).Run(expected_image_model);
+          }));
+  EXPECT_CALL(*mock_image_factory(), CancelRequest).Times(0);
+
+  {
+    ui::ScopedClipboardWriter scw(
+        ui::ClipboardBuffer::kCopyPaste,
+        std::make_unique<ui::DataTransferEndpoint>(expected_source));
+    scw.WriteHTML(u"<img test>", "source_url");
+  }
+  FlushMessageLoop();
+
+  ASSERT_EQ(clipboard_history()->GetItems().size(), 1u);
+  const auto& item = clipboard_history()->GetItems().front();
+  ASSERT_TRUE(item.display_image().has_value());
+  EXPECT_EQ(item.display_image().value(), expected_image_model);
+}
+
+// Tests that copying identical HTML markup from different DataTransferEndpoint
+// sources issues separate render requests with each item's own data source.
+TEST_F(ClipboardHistoryResourceManagerTest,
+       DuplicateHTMLWithDifferentDataSource) {
+  const ui::DataTransferEndpoint first_source(GURL("https://www.first.com"));
+  const ui::DataTransferEndpoint second_source(GURL("https://www.second.com"));
+  ui::ImageModel first_expected_image_model = GetRandomImageModel();
+  ui::ImageModel second_expected_image_model = GetRandomImageModel();
+
+  EXPECT_CALL(*mock_image_factory(), Render(_, _, _, Optional(first_source), _))
+      .WillOnce(WithArg<4>(
+          [&](ClipboardImageModelFactory::ImageModelCallback callback) {
+            std::move(callback).Run(first_expected_image_model);
+          }));
+  EXPECT_CALL(*mock_image_factory(),
+              Render(_, _, _, Optional(second_source), _))
+      .WillOnce(WithArg<4>(
+          [&](ClipboardImageModelFactory::ImageModelCallback callback) {
+            std::move(callback).Run(second_expected_image_model);
+          }));
+  EXPECT_CALL(*mock_image_factory(), CancelRequest).Times(0);
+
+  {
+    ui::ScopedClipboardWriter scw(
+        ui::ClipboardBuffer::kCopyPaste,
+        std::make_unique<ui::DataTransferEndpoint>(first_source));
+    scw.WriteHTML(u"<img test>", "source_url");
+  }
+  FlushMessageLoop();
+
+  {
+    ui::ScopedClipboardWriter scw(
+        ui::ClipboardBuffer::kCopyPaste,
+        std::make_unique<ui::DataTransferEndpoint>(second_source));
+    scw.WriteHTML(u"<img test>", "source_url");
+  }
+  FlushMessageLoop();
+
+  std::list<ClipboardHistoryItem> items = clipboard_history()->GetItems();
+  ASSERT_EQ(items.size(), 2u);
+  ASSERT_TRUE(items.front().display_image().has_value());
+  EXPECT_EQ(items.front().display_image().value(), second_expected_image_model);
+
+  items.pop_front();
+  ASSERT_TRUE(items.front().display_image().has_value());
+  EXPECT_EQ(items.front().display_image().value(), first_expected_image_model);
 }
 
 }  // namespace ash

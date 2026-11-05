@@ -175,6 +175,7 @@ class StartupBrowserCreator {
       const base::CommandLine& command_line);
 
  private:
+  friend class StartupBrowserCreatorActivationTest;
   friend class StartupBrowserCreatorImpl;
   friend class StartupBrowserCreatorInfobarsTest;
   friend class StartupBrowserCreatorInfobarsWithoutStartupWindowTest;
@@ -231,6 +232,10 @@ class StartupBrowserCreator {
                            LastUsedProfilesWithWebApp);
   FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
                            KSameTabSwitchReplacesActiveTab);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
+                           OpenInBackgroundSwitchKeepsActiveTab);
+  FRIEND_TEST_ALL_PREFIXES(StartupBrowserCreatorTest,
+                           OpenInBackgroundSwitchActivatesFirstTabOfNewWindow);
 
   bool ProcessCmdLineImpl(const base::CommandLine& command_line,
                           const base::FilePath& cur_dir,
@@ -266,9 +271,23 @@ class StartupBrowserCreator {
       StartupProfileMode mode,
       Profile* profile);
 
+  // Callback after the Guest profile has been loaded asynchronously for a
+  // Guest launch handled by `ProcessCommandLineAlreadyRunning()`.
+  static void OnGuestProfileLoadedForAlreadyRunning(
+      const base::CommandLine& command_line,
+      const base::FilePath& cur_dir,
+      const StartupProfilePathInfo& profile_path_info,
+      Profile* guest_profile);
+
   // Returns true once a profile was activated. Used by the
   // StartupBrowserCreatorTest.LastUsedProfileActivated test.
   static bool ActivatedProfile();
+
+#if BUILDFLAG(IS_LINUX)
+  // Discards the launch activation token if a session restore on process
+  // startup left it unconsumed.
+  void DiscardLeftoverActivationTokenIfNeeded();
+#endif
 
   // Additional tabs to open during first run.
   std::vector<GURL> first_run_tabs_;
@@ -290,6 +309,17 @@ class StartupBrowserCreator {
   static bool in_synchronous_profile_launch_;
 
   static bool is_launching_browser_for_last_profiles_;
+
+#if BUILDFLAG(IS_LINUX)
+  // True while ProcessLastOpenedProfiles() launches profiles.
+  bool launching_last_opened_profiles_ = false;
+
+  // Set by StartupBrowserCreatorImpl when a session restore on process startup
+  // leaves the launch activation token unconsumed. The token is discarded once
+  // all startup profiles are launched, so a new window opened for a later
+  // profile can still use it.
+  bool discard_activation_token_after_launch_ = false;
+#endif
 };
 
 // Returns true if |profile| has exited uncleanly and has not been launched

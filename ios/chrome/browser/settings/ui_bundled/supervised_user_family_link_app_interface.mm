@@ -9,7 +9,7 @@
 #import "base/functional/callback.h"
 #import "base/ios/block_types.h"
 #import "base/memory/ptr_util.h"
-#import "base/memory/singleton.h"
+#import "base/no_destructor.h"
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/signin/public/base/consent_level.h"
@@ -23,7 +23,6 @@
 #import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -61,7 +60,8 @@ GetSupervisedUserServicesForProfile(ProfileIOS* profile) {
 class TestFamilyLinkSettingsStateHelper {
  public:
   static TestFamilyLinkSettingsStateHelper* SharedInstance() {
-    return base::Singleton<TestFamilyLinkSettingsStateHelper>::get();
+    static base::NoDestructor<TestFamilyLinkSettingsStateHelper> kInstance;
+    return kInstance.get();
   }
 
   void TearDown() { family_link_settings_state_.reset(); }

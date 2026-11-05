@@ -26,9 +26,6 @@
                 "target_platform": "linux"
               },
               "legacy_gclient_config": {
-                "apply_configs": [
-                  "checkout_mesa"
-                ],
                 "config": "chromium"
               }
             }
@@ -64,6 +61,7 @@
     ]
   },
   "archive_path": "linux32-release-asan/libfuzzer-linux32-release",
+  "archive_schema_version": 1,
   "builder_group": "chromium.fuzz",
   "gardener_rotations": [
     "chromium"

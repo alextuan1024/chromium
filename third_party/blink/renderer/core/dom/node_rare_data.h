@@ -48,6 +48,7 @@ class ElementInternals;
 class ElementIntersectionObserverData;
 class ExplicitlySetAttrElementsMap;
 class FlatTreeNodeData;
+class FloatClipRect;
 class HTMLElement;
 class InlineStylePropertyMap;
 class InterestInvokerTargetData;
@@ -270,7 +271,8 @@ class CORE_EXPORT NodeRareData final : public GarbageCollected<NodeRareData> {
   const ElementInternals* GetElementInternals() const;
   RareDataUpdate<ElementInternals> EnsureElementInternals(HTMLElement& target);
 
-  RareDataUpdate<DisplayLockContext> EnsureDisplayLockContext(Element* element);
+  RareDataUpdate<DisplayLockContext> SetDisplayLockContext(
+      DisplayLockContext& context);
   DisplayLockContext* GetDisplayLockContext() const;
 
   RareDataUpdate<ContainerQueryData> EnsureContainerQueryData();
@@ -422,6 +424,8 @@ class CORE_EXPORT NodeRareData final : public GarbageCollected<NodeRareData> {
   }
   bool MayBeImplicitAnchor() const { return flags_.may_be_implicit_anchor; }
   void SetMayBeImplicitAnchor() { flags_.may_be_implicit_anchor = true; }
+  [[nodiscard]] RareDataUpdate<void> SetImplicitAnchor(Element* element);
+  Element* GetImplicitAnchor() const;
 
   FocusgroupData GetFocusgroupData() const;
   [[nodiscard]] RareDataUpdate<void> SetFocusgroupData(FocusgroupData data);
@@ -522,6 +526,10 @@ class CORE_EXPORT NodeRareData final : public GarbageCollected<NodeRareData> {
       const gfx::Transform& transform);
   void ClearCanvasTransform();
 
+  const FloatClipRect* GetCanvasClip() const;
+  [[nodiscard]] RareDataUpdate<void> SetCanvasClip(const FloatClipRect& clip);
+  void ClearCanvasClip();
+
   bool WasLastFocusFromUserGesture() const {
     return flags_.was_last_focus_from_user_gesture;
   }
@@ -577,7 +585,7 @@ class CORE_EXPORT NodeRareData final : public GarbageCollected<NodeRareData> {
     kIsValue = 21,
     kSavedLayerScrollOffset = 22,
     kAnchorPositionScrollData = 23,
-    kMayBeImplicitAnchor = 24,
+    kImplicitAnchor = 24,
     kLastRememberedBlockSize = 25,
     kLastRememberedInlineSize = 26,
     kRestrictionTargetId = 27,
@@ -607,7 +615,8 @@ class CORE_EXPORT NodeRareData final : public GarbageCollected<NodeRareData> {
     kLastSentUnboundedBounds = 51,
     kUnboundedEventTask = 52,
     kCanvasTransform = 53,
-    kNumFields = 54,
+    kCanvasClip = 54,
+    kNumFields = 55,
   };
 
   inline const Member<NodeRareDataField>* ArrayBase() const {

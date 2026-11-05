@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/graphics/dom_node_id.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions.h"
 
 namespace blink {
 
@@ -30,9 +31,18 @@ class CORE_EXPORT AnimatedSourceHandle {
   // Returns true if this handle references a valid element.
   constexpr bool IsValid() const { return animator_ != kInvalidDOMNodeId; }
 
+  // Returns the referenced element's DOMNodeId, or kInvalidDOMNodeId if none.
+  constexpr DOMNodeId GetDOMNodeId() const { return animator_; }
+
   // Returns true if this handle matches the given element.
   // Note: Guaranteed not to allocate.
   bool IsOwnedBy(const Element& element) const;
+
+  // Returns the referenced element, or null if it no longer exists.
+  // Note: Guaranteed not to allocate.
+  Element* GetElement() const;
+
+  constexpr uint32_t GetHash() const { return HashInt(animator_); }
 
   constexpr auto operator<=>(const AnimatedSourceHandle& other) const = default;
 

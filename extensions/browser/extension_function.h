@@ -20,6 +20,7 @@
 #include "base/process/process.h"
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "base/timer/elapsed_timer.h"
+#include "base/types/optional_util.h"
 #include "base/types/pass_key.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_function_histogram_value.h"
@@ -34,7 +35,10 @@
 #include "extensions/common/features/feature.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/mojom/extra_response_data.mojom.h"
+#include "extensions/common/mojom/response_wrapper.mojom-forward.h"
 #include "extensions/common/stack_frame.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom-forward.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-forward.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_database.mojom-forward.h"
@@ -147,7 +151,7 @@ class ExtensionFunction : public base::RefCountedThreadSafe<
 
   using ResponseCallback = base::OnceCallback<void(
       ResponseType type,
-      base::ListValue results,
+      extensions::mojom::ResponseWrapperPtr response_wrapper,
       const std::string& error,
       extensions::mojom::ExtraResponseDataPtr response_data)>;
 
@@ -300,6 +304,10 @@ class ExtensionFunction : public base::RefCountedThreadSafe<
 
   // Specifies the raw arguments to the function, as a JSON value.
   void SetArgs(base::ListValue args);
+  // These args are Blobs, which don't fit into a base::Value. The meaning and
+  // ordering of the args is function-dependent.
+  void SetBlobArgs(
+      std::vector<mojo::PendingRemote<blink::mojom::Blob>> blob_args);
 
   // Retrieves the results of the function as a base::ListValue for testing
   // purposes.
@@ -405,11 +413,13 @@ class ExtensionFunction : public base::RefCountedThreadSafe<
   bool did_initialize() const { return did_initialize_; }
   void set_did_initialize() { did_initialize_ = true; }
 
-  ResponseType* response_type() const { return response_type_.get(); }
+  const ResponseType* response_type() const {
+    return base::OptionalToPtr(response_type_);
+  }
 
   // Whether this function has responded.
   bool did_respond() const {
-    return response_type_ != nullptr || should_ignore_did_respond_for_testing;
+    return response_type_.has_value() || should_ignore_did_respond_for_testing;
   }
 
   // Set the browser context which contains the extension that has originated
@@ -451,8 +461,8 @@ class ExtensionFunction : public base::RefCountedThreadSafe<
   // via `AddResponseTarget()`.
   virtual void OnResponseAck();
 
-  // Returns original args, as they were set by SetArgs() (doesn't include
-  // modifications via GetMutableArgs()).
+  // Returns original args, as they were set by `SetArgs()`. Must not be called
+  // after `GetMutableArgs()`.
   const base::ListValue& GetOriginalArgs() const;
 
   // Sets did_respond_ to true so that the function won't DCHECK if it never
@@ -597,6 +607,10 @@ class ExtensionFunction : public base::RefCountedThreadSafe<
   // Sets the Blobs whose ownership is being transferred to the renderer.
   void SetTransferredBlobs(std::vector<blink::mojom::SerializedBlobPtr> blobs);
 
+  // Takes ownership of the blob argument at `index`. Returns a null remote if
+  // `index` is out of range or the argument is null or has already been taken.
+  mojo::PendingRemote<blink::mojom::Blob> TakeBlobArg(int index);
+
   bool has_args() const { return args_.has_value(); }
 
   // Returns args. They may have been modified via GetMutableArgs() since they
@@ -606,6 +620,7 @@ class ExtensionFunction : public base::RefCountedThreadSafe<
     return *args_;
   }
 
+  // Returns mutable args. `GetOriginalArgs()` must not be called after this.
   base::ListValue& GetMutableArgs();
 
   // The extension that called this function.
@@ -639,13 +654,12 @@ class ExtensionFunction : public base::RefCountedThreadSafe<
   std::optional<base::ListValue> args_;
 
   // Original arguments to the API. Populated from `args_` when GetMutableArgs()
-  // is first invoked, otherwise nullopt. This exists because an extension
-  // function may modify its args via GetMutableArgs(), but the owner of this
-  // object may need to access the original args via GetOriginalArgs() (the
-  // owner could also copy the args before passing them to the extension
-  // function, but that would result in an unnecessary copy when the extension
-  // function doesn't modify its args).
+  // is first invoked and `kAvoidCloneMutableExtensionFunctionArgs` is disabled,
+  // otherwise nullopt.
   std::optional<base::ListValue> original_args_;
+
+  // True once `GetMutableArgs()` has been called for the current `args_`.
+  bool args_modified_ = false;
 
   base::ElapsedTimer timer_;
 
@@ -725,7 +739,7 @@ class ExtensionFunction : public base::RefCountedThreadSafe<
   std::unique_ptr<extensions::ServiceWorkerKeepalive> service_worker_keepalive_;
 
   // The response type of the function, if the response has been sent.
-  std::unique_ptr<ResponseType> response_type_;
+  std::optional<ResponseType> response_type_;
 
   // If set to true, preserves `results_`, even after SendResponseImpl() was
   // called.
@@ -758,6 +772,9 @@ class ExtensionFunction : public base::RefCountedThreadSafe<
 
   // The blobs transferred to the renderer process.
   std::vector<blink::mojom::SerializedBlobPtr> transferred_blobs_;
+
+  // Blob arguments received with the request.
+  std::vector<mojo::PendingRemote<blink::mojom::Blob>> blob_args_;
 
   // The JS call stack snapshot captured at function invocation time.
   std::optional<extensions::StackTrace> js_callstack_;

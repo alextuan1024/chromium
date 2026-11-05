@@ -43,7 +43,7 @@ import org.chromium.chrome.browser.safety_check.PasswordsCheckPreferenceProperti
 import org.chromium.chrome.browser.safety_check.SafetyCheckProperties.SafeBrowsingState;
 import org.chromium.chrome.browser.safety_check.SafetyCheckProperties.UpdatesState;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 import org.chromium.components.sync.SyncService;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -101,7 +101,7 @@ class SafetyCheckMediator {
      * Used to open a p-link help center article in a custom tab. Needed by the password manager
      * settings.
      */
-    private final SettingsCustomTabLauncher mSettingsCustomTabLauncher;
+    private final CustomTabLauncher mCustomTabLauncher;
 
     private final MonotonicObservableSupplier<ModalDialogManager> mModalDialogManagerSupplier;
 
@@ -194,7 +194,7 @@ class SafetyCheckMediator {
             PasswordCheckControllerFactory passwordCheckControllerFactory,
             PasswordManagerHelper passwordManagerHelper,
             MonotonicObservableSupplier<ModalDialogManager> modalDialogManagerSupplier,
-            SettingsCustomTabLauncher settingsCustomTabLauncher) {
+            CustomTabLauncher customTabLauncher) {
         mSafetyCheckModel = safetyCheckModel;
         mPasswordsCheckAccountStorageModel = passwordsCheckAccountModel;
         mPasswordsCheckLocalStorageModel = passwordsCheckLocalModel;
@@ -208,7 +208,7 @@ class SafetyCheckMediator {
                         syncService, passwordStoreBridge, passwordManagerHelper);
         mPasswordManagerHelper = passwordManagerHelper;
         mModalDialogManagerSupplier = modalDialogManagerSupplier;
-        mSettingsCustomTabLauncher = settingsCustomTabLauncher;
+        mCustomTabLauncher = customTabLauncher;
         // Set the listener for clicking the updates element.
         mSafetyCheckModel.set(
                 SafetyCheckProperties.UPDATES_CLICK_LISTENER,
@@ -233,14 +233,13 @@ class SafetyCheckMediator {
                                     SafetyCheckInteractions.SAFE_BROWSING_MANAGE,
                                     SafetyCheckInteractions.MAX_VALUE + 1);
                             // Open the Safe Browsing settings.
-                            Intent intent =
-                                    SettingsNavigationFactory.createSettingsNavigation()
-                                            .createSettingsIntent(
-                                                    p.getContext(),
-                                                    SafeBrowsingSettingsFragment.class,
-                                                    SafeBrowsingSettingsFragment.createArguments(
-                                                            SettingsAccessPoint.SAFETY_CHECK));
-                            p.getContext().startActivity(intent);
+                            SettingsNavigationFactory.createSettingsNavigation(p.getContext())
+                                    .startSettings(
+                                            p.getContext(),
+                                            SafeBrowsingSettingsFragment.class,
+                                            SafeBrowsingSettingsFragment.createArguments(
+                                                    SettingsAccessPoint.SAFETY_CHECK),
+                                            /* addToBackStack= */ true);
                             return true;
                         });
         // Set the listener for clicking the passwords element.
@@ -320,8 +319,6 @@ class SafetyCheckMediator {
         mSafetyCheckModel.set(SafetyCheckProperties.LAST_RUN_TIMESTAMP, currentTime);
         mPreferenceManager.writeLong(
                 ChromePreferenceKeys.SETTINGS_SAFETY_CHECK_LAST_RUN_TIMESTAMP, currentTime);
-        // Increment the stored number of Safety check starts.
-        mPreferenceManager.incrementInt(ChromePreferenceKeys.SETTINGS_SAFETY_CHECK_RUN_COUNTER);
         // Set the checking state for all elements.
         setPasswordsState(mPasswordsCheckAccountStorageModel, PasswordsState.CHECKING);
         setPasswordsState(mPasswordsCheckLocalStorageModel, PasswordsState.CHECKING);
@@ -482,7 +479,7 @@ class SafetyCheckMediator {
                                 mModalDialogManagerSupplier.asNonNull().get(),
                                 /* managePasskeys= */ false,
                                 account,
-                                mSettingsCustomTabLauncher);
+                                mCustomTabLauncher);
                         return true;
                     };
         } else if (state == PasswordsState.COMPROMISED_EXIST || state == PasswordsState.SAFE) {
@@ -508,7 +505,7 @@ class SafetyCheckMediator {
                                 PasswordCheckReferrer.SAFETY_CHECK,
                                 mModalDialogManagerSupplier.asNonNull(),
                                 account,
-                                mSettingsCustomTabLauncher);
+                                mCustomTabLauncher);
                         return true;
                     };
         }

@@ -88,6 +88,7 @@ void XRWebGLTextureArraySwapChain::SetLayer(XRCompositionLayer* layer) {
 }
 
 void XRWebGLTextureArraySwapChain::OnFrameStart() {
+  XRWebGLSwapChain::OnFrameStart();
   wrapped_swap_chain_->OnFrameStart();
 }
 
@@ -99,6 +100,7 @@ void XRWebGLTextureArraySwapChain::OnFrameEnd() {
 
   gpu::gles2::GLES2Interface* gl = context()->ContextGL();
   if (!gl) {
+    wrapped_swap_chain_->OnFrameEnd();
     return;
   }
 
@@ -225,6 +227,11 @@ GLuint XRWebGLTextureArraySwapChain::GetCopyProgram() {
 std::unique_ptr<SharedImageHolder>
 XRWebGLTextureArraySwapChain::TransferToSharedImageHolder() {
   return wrapped_swap_chain_->TransferToSharedImageHolder();
+}
+
+std::unique_ptr<SharedImageHolder>
+XRWebGLTextureArraySwapChain::DoneWithSharedBuffer() {
+  return wrapped_swap_chain_->DoneWithSharedBuffer();
 }
 
 void XRWebGLTextureArraySwapChain::Trace(Visitor* visitor) const {

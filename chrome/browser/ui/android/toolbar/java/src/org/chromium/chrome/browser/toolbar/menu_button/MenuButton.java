@@ -264,9 +264,7 @@ public class MenuButton extends FrameLayout implements TintObserver {
         mMenuBadgeAnimatorSet.start();
     }
 
-    /**
-     * @return Whether the update badge is showing.
-     */
+    /** Returns whether the update badge is showing. */
     boolean isShowingAppMenuUpdateBadge() {
         return mUpdateBadgeView != null && mUpdateBadgeView.getVisibility() == View.VISIBLE;
     }
@@ -329,6 +327,7 @@ public class MenuButton extends FrameLayout implements TintObserver {
     public void onTintChanged(
             @Nullable ColorStateList tintList,
             @Nullable ColorStateList activityFocusTintList,
+            float unfocusedAlpha,
             @BrandedColorScheme int brandedColorScheme) {
         ImageViewCompat.setImageTintList(mMenuImageButton, tintList);
         mBrandedColorScheme = brandedColorScheme;

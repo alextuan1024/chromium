@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
@@ -36,6 +38,7 @@
 #include "device/fido/large_blob.h"
 #include "device/fido/mock_fido_device.h"
 #include "device/fido/multiple_virtual_fido_device_factory.h"
+#include "device/fido/public/features.h"
 #include "device/fido/public/fido_constants.h"
 #include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/public/fido_types.h"
@@ -50,6 +53,7 @@
 #include "crypto/apple/scoped_fake_keychain_v2.h"
 #include "device/fido/mac/authenticator_config.h"
 #include "device/fido/mac/credential_store.h"
+#include "device/fido/mac/fake_icloud_keychain.h"
 #include "device/fido/mac/icloud_keychain.h"
 #include "device/fido/mac/scoped_icloud_keychain_test_environment.h"
 #include "device/fido/mac/scoped_touch_id_test_environment.h"
@@ -2299,7 +2303,18 @@ class ICloudKeychainAuthenticatorImplTest : public AuthenticatorImplTest {
         std::optional<std::string_view> user_name,
         bool is_enclave_authenticator_available,
         device::FidoDiscoveryFactory* fido_discovery_factory) override {
+      request_type_ = request_type;
       fido_discovery_factory->set_allow_no_nswindow_for_testing(true);
+    }
+
+    bool EmbedderControlsAuthenticatorDispatch(
+        const device::FidoAuthenticator& authenticator) override {
+      // Hold dispatch until `OnTransportAvailabilityEnumerated()` runs so tests
+      // inspecting `TransportAvailabilityInfo` do not race with async platform
+      // credential enumeration on `base::ThreadPool`.
+      return request_type_ == device::FidoRequestType::kGetAssertion &&
+             authenticator.GetType() ==
+                 device::AuthenticatorType::kICloudKeychain;
     }
 
     void OnTransportAvailabilityEnumerated(
@@ -2321,6 +2336,7 @@ class ICloudKeychainAuthenticatorImplTest : public AuthenticatorImplTest {
     Callback callback_;
     device::FidoRequestHandlerBase::RequestCallback request_callback_;
     std::optional<std::string> icloud_keychain_id_;
+    std::optional<device::FidoRequestType> request_type_;
   };
 
   class InspectTAIContentBrowserClient : public ContentBrowserClient {
@@ -2398,6 +2414,9 @@ TEST_F(ICloudKeychainAuthenticatorImplTest, Discovery) {
                        kHasRecognizedCredential);
 
           CHECK_EQ(tai.recognized_credentials[0].user.name.value(), "name");
+          CHECK(icloud_keychain_id.has_value());
+          base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+              FROM_HERE, base::BindOnce(request_callback, *icloud_keychain_id));
         });
 
     auto options = GetTestPublicKeyCredentialRequestOptions();
@@ -2495,6 +2514,52 @@ TEST_F(ICloudKeychainAuthenticatorImplTest, PRFOnGet) {
     EXPECT_TRUE(callback_was_called);
   } else {
     GTEST_SKIP() << "Need macOS 15.0 for this test";
+  }
+}
+
+TEST_F(ICloudKeychainAuthenticatorImplTest, IsUVPAA_FeatureEnabled) {
+  if (__builtin_available(macOS 26.2, *)) {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndEnableFeature(
+        device::kWebAuthnICloudKeychainUseDeviceConfiguredForPasskeys);
+
+    NavigateAndCommit(GURL(kTestOrigin1));
+    {
+      std::unique_ptr<device::fido::icloud_keychain::Fake> fake =
+          device::fido::icloud_keychain::NewFake();
+      EXPECT_TRUE(AuthenticatorIsUvpaa());
+    }
+
+    {
+      std::unique_ptr<device::fido::icloud_keychain::Fake> fake = device::fido::
+          icloud_keychain::NewFakeWithDeviceNotConfiguredForPasskeys();
+      EXPECT_FALSE(AuthenticatorIsUvpaa());
+    }
+  } else {
+    GTEST_SKIP() << "Need macOS 26.2 for this test";
+  }
+}
+
+TEST_F(ICloudKeychainAuthenticatorImplTest, IsUVPAA_FeatureDisabled) {
+  if (__builtin_available(macOS 26.2, *)) {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndDisableFeature(
+        device::kWebAuthnICloudKeychainUseDeviceConfiguredForPasskeys);
+
+    NavigateAndCommit(GURL(kTestOrigin1));
+    {
+      std::unique_ptr<device::fido::icloud_keychain::Fake> fake =
+          device::fido::icloud_keychain::NewFake();
+      EXPECT_FALSE(AuthenticatorIsUvpaa());
+    }
+
+    {
+      std::unique_ptr<device::fido::icloud_keychain::Fake> fake = device::fido::
+          icloud_keychain::NewFakeWithDeviceNotConfiguredForPasskeys();
+      EXPECT_FALSE(AuthenticatorIsUvpaa());
+    }
+  } else {
+    GTEST_SKIP() << "Need macOS 26.2 for this test";
   }
 }
 

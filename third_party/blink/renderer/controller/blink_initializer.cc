@@ -31,10 +31,10 @@
 #include "third_party/blink/renderer/controller/blink_initializer.h"
 
 #include <algorithm>
-#include <memory>
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
@@ -76,6 +76,7 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
+#include "third_party/blink/renderer/controller/memory_usage_monitor.h"
 #include "third_party/blink/renderer/controller/oom_intervention_impl.h"
 #include "third_party/blink/renderer/controller/private_memory_footprint_provider.h"
 #include "third_party/blink/renderer/controller/user_level_memory_pressure_signal_generator.h"
@@ -112,8 +113,7 @@ class EndOfTaskRunner : public Thread::TaskObserver {
 Thread::TaskObserver* g_end_of_task_runner = nullptr;
 
 BlinkInitializer& GetBlinkInitializer() {
-  DEFINE_STATIC_LOCAL(std::unique_ptr<BlinkInitializer>, initializer,
-                      (std::make_unique<BlinkInitializer>()));
+  static base::NoDestructor<BlinkInitializer> initializer;
   return *initializer;
 }
 
@@ -169,13 +169,6 @@ void InitializeCommon(Platform* platform, mojo::BinderMap* binders) {
   // has been initialized.
   Partitions::InitializeArrayBufferPartition();
   V8Initializer::InitializeInSandboxAllocator();
-
-#if BUILDFLAG(IS_ANDROID)
-  if (base::FeatureList::IsEnabled(features::kAndroidSystemFontPrewarming)) {
-    DEFINE_STATIC_LOCAL(FontPrewarmer, font_prewarmer, ());
-    FontCache::SetFontPrewarmer(&font_prewarmer);
-  }
-#endif
 }
 
 void InitializeCommonWithIsolate(v8::Isolate* isolate) {
@@ -191,6 +184,12 @@ void Initialize(Platform* platform,
   DCHECK(binders);
   Platform::InitializeMainThread(platform, main_thread_scheduler);
   InitializeCommon(platform, binders);
+#if BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(features::kAndroidSystemFontPrewarming)) {
+    static base::NoDestructor<FontPrewarmer> font_prewarmer;
+    FontCache::SetFontPrewarmer(font_prewarmer.get());
+  }
+#endif
   v8::Isolate* isolate = V8Initializer::InitializeMainThread();
   InitializeCommonWithIsolate(isolate);
 }
@@ -305,6 +304,12 @@ void BlinkInitializer::RegisterMemoryWatchers(Platform* platform) {
   CrashMemoryMetricsReporterImpl::Instance();
 
 #if BUILDFLAG(IS_ANDROID)
+  // RenderProcessHostImpl initializes applied_priority_.visible to false
+  // (!kLaunchingProcessIsBackgrounded) on Android and only sends
+  // SetProcessState when visibility or priority changes from that initial
+  // state.
+  MemoryUsageMonitor::Instance().SetRendererVisible(false);
+
   // Initialize UserLevelMemoryPressureSignalGenerator so it starts monitoring.
   if (platform->IsUserLevelMemoryPressureSignalEnabled()) {
     UserLevelMemoryPressureSignalGenerator::Initialize(main_thread_task_runner);

@@ -25,7 +25,7 @@
 #include "net/base/net_errors.h"
 
 namespace web_app {
-class WebAppCommandScheduler;
+class IwaCommandScheduler;
 class WebAppRegistrar;
 
 class IwaUpdateCheckAndPrepareTaskParams {
@@ -86,7 +86,7 @@ class IsolatedWebAppUpdateCheckAndPrepareTask {
 
   IsolatedWebAppUpdateCheckAndPrepareTask(
       IwaUpdateCheckAndPrepareTaskParams task_params,
-      WebAppCommandScheduler& command_scheduler,
+      IwaCommandScheduler& command_scheduler,
       WebAppRegistrar& registrar,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       Profile& profile);
@@ -123,18 +123,23 @@ class IsolatedWebAppUpdateCheckAndPrepareTask {
   void FailWith(Error error);
 
   void OnUpdateManifestFetched(
-      base::expected<UpdateManifest, UpdateManifestFetcher::Error>
-          fetch_result);
+      base::expected<UpdateManifestWithAddressSpace,
+                     UpdateManifestFetcher::Error> fetch_result);
 
   void CheckIntegrityBundleForRotatedKey(
       UpdateManifest::VersionEntry version_entry,
+      network::mojom::IPAddressSpace update_manifest_address_space,
       std::vector<uint8_t> rotated_key,
       std::optional<std::string> initial_bytes);
 
-  void CreateTempFile(UpdateManifest::VersionEntry version_entry);
+  void CreateTempFile(
+      UpdateManifest::VersionEntry version_entry,
+      network::mojom::IPAddressSpace update_manifest_address_space);
 
-  void OnTempFileCreated(UpdateManifest::VersionEntry version_entry,
-                         ScopedTempWebBundleFile bundle);
+  void OnTempFileCreated(
+      UpdateManifest::VersionEntry version_entry,
+      network::mojom::IPAddressSpace update_manifest_address_space,
+      ScopedTempWebBundleFile bundle);
 
   void OnWebBundleDownloaded(const IwaVersion& expected_version,
                              int32_t net_error);
@@ -148,7 +153,7 @@ class IsolatedWebAppUpdateCheckAndPrepareTask {
 
   const IwaUpdateCheckAndPrepareTaskParams task_params_;
 
-  raw_ref<WebAppCommandScheduler> command_scheduler_;
+  raw_ref<IwaCommandScheduler> command_scheduler_;
   raw_ref<WebAppRegistrar> registrar_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   // Set on Start:

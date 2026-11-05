@@ -6,6 +6,7 @@ import 'chrome://omnibox-everywhere.top-chrome/fre_modal.js';
 
 import type {FreModalElement} from 'chrome://omnibox-everywhere.top-chrome/fre_modal.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import {isMac} from 'chrome://resources/js/platform.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
 
@@ -16,9 +17,9 @@ suite('FreModalTest', () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     loadTimeData.resetForTesting({
       loomniboxFreTitle: 'Search with Chrome from anywhere',
-      loomniboxFreLensPrimary: 'Share what’s on your screen with Google Lens',
+      loomniboxFreLensPrimary: 'Ask about what’s on your screen with Google Lens',
       loomniboxFreLensSecondary:
-          'Ask about content outside of Chrome, like other apps or files',
+          'Share a screenshot of content outside of Chrome, like other apps or files',
       loomniboxFreWhereToFindPrimary: 'Open from the Mac menu bar',
       loomniboxFreCloseButtonAria: 'Close',
       isFuseboxEligible: true,
@@ -48,7 +49,7 @@ suite('FreModalTest', () => {
     const lensPrimary = listItems[0]!.querySelector('.primary-text');
     assertTrue(!!lensPrimary);
     assertEquals(
-        'Share what’s on your screen with Google Lens',
+        'Ask about what’s on your screen with Google Lens',
         lensPrimary.textContent.trim());
 
     const whereToFindPrimary = listItems[1]!.querySelector('.primary-text');
@@ -61,6 +62,9 @@ suite('FreModalTest', () => {
 
     const img = listItems[1]!.querySelector('img');
     assertTrue(!!img);
+    if (isMac) {
+      assertEquals('images/mac_menu_bar.png', img.getAttribute('src'));
+    }
   });
 
   test('clicking close button fires close event', async () => {
@@ -75,9 +79,9 @@ suite('FreModalTest', () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     loadTimeData.resetForTesting({
       loomniboxFreTitle: 'Search with Chrome from anywhere',
-      loomniboxFreLensPrimary: 'Share what’s on your screen with Google Lens',
+      loomniboxFreLensPrimary: 'Ask about what’s on your screen with Google Lens',
       loomniboxFreLensSecondary:
-          'Ask about content outside of Chrome, like other apps or files',
+          'Share a screenshot of content outside of Chrome, like other apps or files',
       loomniboxFreWhereToFindPrimary: 'Open from the Mac menu bar',
       loomniboxFreCloseButtonAria: 'Close',
       isFuseboxEligible: false,
@@ -94,5 +98,47 @@ suite('FreModalTest', () => {
     assertTrue(!!whereToFindPrimary);
     assertEquals(
         'Open from the Mac menu bar', whereToFindPrimary.textContent.trim());
+  });
+
+  test(
+      'renders small illustration when small loomnibox is enabled',
+      async () => {
+        freModal.smallLoomnibox = true;
+        await freModal.updateComplete;
+
+        assertTrue(freModal.hasAttribute('small-loomnibox'));
+        if (isMac) {
+          const img = freModal.shadowRoot.querySelector<HTMLImageElement>(
+              '.mac-menubar-img');
+          assertTrue(!!img);
+          assertEquals(
+              'images/mac_menu_bar_small.png', img.getAttribute('src'));
+        } else {
+          const imgs = freModal.shadowRoot.querySelectorAll<HTMLImageElement>(
+              '.windows-taskbar-img');
+          assertEquals(2, imgs.length);
+        }
+      });
+
+  test('resolves dark mode surface and text tokens', () => {
+    const rootStyle = document.documentElement.style;
+    const darkTokens: Array<[string, string]> = [
+      ['--color-new-tab-page-background', 'rgb(60, 60, 60)'],
+      ['--color-sys-surface', 'rgb(31, 31, 31)'],
+      ['--color-sys-surface-container-high', 'rgb(42, 42, 42)'],
+      ['--color-sys-on-surface', 'rgb(227, 227, 227)'],
+    ];
+    darkTokens.forEach(([k, v]) => rootStyle.setProperty(k, v));
+
+    try {
+      const q = (sel: string) =>
+          window.getComputedStyle(freModal.shadowRoot.querySelector(sel)!);
+      assertEquals('rgb(60, 60, 60)', q('.fre-card').backgroundColor);
+      assertEquals('rgb(31, 31, 31)', q('.second-container').backgroundColor);
+      assertEquals('rgb(42, 42, 42)', q('.list-item').backgroundColor);
+      assertEquals('rgb(227, 227, 227)', q('.title').color);
+    } finally {
+      darkTokens.forEach(([k]) => rootStyle.removeProperty(k));
+    }
   });
 });

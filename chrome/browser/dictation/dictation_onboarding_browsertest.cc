@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/metrics/user_action_tester.h"
 #include "chrome/browser/dictation/dictation_interactive_browser_test_base.h"
 #include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/dictation/metrics.h"
@@ -43,6 +44,12 @@ class DictationOnboardingInteractiveTest
     });
   }
 
+  StepBuilder CheckShouldShowSettingsPage(bool expected) {
+    return CheckResult(
+        [this]() { return dictation_service().ShouldShowSettingsPage(); },
+        expected);
+  }
+
   void SetUpOnMainThread() override {
     DictationInteractiveBrowserTestBase::SetUpOnMainThread();
     // Ensure onboarding is NOT complete at the start of the test.
@@ -60,6 +67,12 @@ class DictationOnboardingMetricsInteractiveTest
   StepBuilder CheckNoFirstRunExitStatusSample() {
     return Do([this]() {
       histogram_tester_.ExpectTotalCount(kFirstRunExitStatusHistogramName, 0);
+      EXPECT_EQ(user_action_tester_.GetActionCount(
+                    kFirstRunExperienceAcceptedActionName),
+                0);
+      EXPECT_EQ(user_action_tester_.GetActionCount(
+                    kFirstRunExperienceDismissedActionName),
+                0);
     });
   }
 
@@ -68,11 +81,20 @@ class DictationOnboardingMetricsInteractiveTest
     return Do([this, expected_status]() {
       histogram_tester_.ExpectUniqueSample(kFirstRunExitStatusHistogramName,
                                            expected_status, 1);
+      EXPECT_EQ(
+          user_action_tester_.GetActionCount(
+              kFirstRunExperienceAcceptedActionName),
+          expected_status == DictationFirstRunExitStatus::kCompleted ? 1 : 0);
+      EXPECT_EQ(
+          user_action_tester_.GetActionCount(
+              kFirstRunExperienceDismissedActionName),
+          expected_status == DictationFirstRunExitStatus::kCancelled ? 1 : 0);
     });
   }
 
  protected:
   base::HistogramTester histogram_tester_;
+  base::UserActionTester user_action_tester_;
 };
 
 IN_PROC_BROWSER_TEST_F(DictationOnboardingInteractiveTest,
@@ -87,11 +109,13 @@ IN_PROC_BROWSER_TEST_F(DictationOnboardingInteractiveTest,
       // Try starting a session. It should show the onboarding dialog since it's
       // the first run.
       CheckHasSession(false),
+      CheckShouldShowSettingsPage(false),
       StartSession(),
       WaitForShow(kDictationOnboardingDialogElementId),
 
       // The session must not be started.
       CheckHasSession(false),
+      CheckShouldShowSettingsPage(false),
 
       // Complete the onboarding
       PressButton(kDictationOnboardingOkButtonElementId),
@@ -99,6 +123,7 @@ IN_PROC_BROWSER_TEST_F(DictationOnboardingInteractiveTest,
 
       // Verify the pref is set to completed and the session started.
       CheckHasCompletedOnboardingPref(true),
+      CheckShouldShowSettingsPage(true),
       CheckHasSession(true)
   );
   // clang-format on
@@ -111,6 +136,7 @@ IN_PROC_BROWSER_TEST_F(DictationOnboardingInteractiveTest,
       // Try starting a session. It should show the onboarding dialog since it's
       // the first run.
       CheckHasSession(false),
+      CheckShouldShowSettingsPage(false),
       StartSession(),
       WaitForShow(kDictationOnboardingDialogElementId),
 
@@ -123,6 +149,7 @@ IN_PROC_BROWSER_TEST_F(DictationOnboardingInteractiveTest,
 
       // Verify the pref is still false, and no session is started.
       CheckHasCompletedOnboardingPref(false),
+      CheckShouldShowSettingsPage(false),
       CheckHasSession(false)
   );
   // clang-format on

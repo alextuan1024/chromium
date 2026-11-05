@@ -12,10 +12,8 @@
 #include "ash/public/cpp/test/test_new_window_delegate.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/webui/ash/settings/pref_names.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/test_chrome_web_ui_controller_factory.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
@@ -24,7 +22,6 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/pref_names.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/test/test_sync_service.h"
@@ -362,12 +359,8 @@ class OsSyncHandlerTestWithoutSyncConsent : public OsSyncHandlerTest {
   }
 };
 
-TEST_F(
-    OsSyncHandlerTestWithoutSyncConsent,
-    NavigateToPageClearsSyncFeatureDisabledViaDashboardWhenFlagEnabledAndNoSyncConsent) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
-
+TEST_F(OsSyncHandlerTestWithoutSyncConsent,
+       NavigateToPageClearsSyncFeatureDisabledViaDashboardWhenNoSyncConsent) {
   static_cast<syncer::TestSyncUserSettings*>(user_settings_)
       ->SetSyncFeatureDisabledViaDashboard();
   ASSERT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());
@@ -376,28 +369,20 @@ TEST_F(
   EXPECT_FALSE(user_settings_->IsSyncFeatureDisabledViaDashboard());
 }
 
-TEST_F(
-    OsSyncHandlerTest,
-    NavigateToPageDoesNotClearSyncFeatureDisabledViaDashboardWithSyncConsent) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
-
-  // ConsentLevel::kSync is set by default in SetUp().
-  static_cast<syncer::TestSyncUserSettings*>(user_settings_)
-      ->SetSyncFeatureDisabledViaDashboard();
-  ASSERT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());
-
-  handler_->HandleDidNavigateToOsSyncPage(base::ListValue());
-  EXPECT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());
+TEST_F(OsSyncHandlerTestWithoutSyncConsent, OpenBrowserSyncSettings) {
+  EXPECT_CALL(new_window_delegate(),
+              OpenUrl(GURL(ash::chrome_urls::kChromeUISettingsURL)
+                          .Resolve(ash::chrome_urls::kAccountSubPage),
+                      ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
+                      ash::NewWindowDelegate::Disposition::kSwitchToTab));
+  base::ListValue empty_args;
+  web_ui_->HandleReceivedMessage("OpenBrowserSyncSettings", empty_args);
 }
 
 TEST_F(
-    OsSyncHandlerTestWithoutSyncConsent,
-    NavigateToPageDoesNotClearSyncFeatureDisabledViaDashboardWhenFlagDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      syncer::kReplaceSyncPromosWithSignInPromos);
-
+    OsSyncHandlerTest,
+    NavigateToPageDoesNotClearSyncFeatureDisabledViaDashboardWithSyncConsent) {
+  // ConsentLevel::kSync is set by default in SetUp().
   static_cast<syncer::TestSyncUserSettings*>(user_settings_)
       ->SetSyncFeatureDisabledViaDashboard();
   ASSERT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());

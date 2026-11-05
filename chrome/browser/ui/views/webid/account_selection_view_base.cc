@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/check_op.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/i18n/message_formatter.h"
 #include "base/i18n/unicodestring.h"
@@ -160,7 +161,7 @@ END_METADATA
 
 }  // namespace
 
-AccountHoverButtonSecondaryView::AccountHoverButtonSecondaryView() {
+HoverButtonSecondaryView::HoverButtonSecondaryView() {
   constexpr int kSecondaryViewRightPadding = 8;
   SetBorder(views::CreateEmptyBorder(
       gfx::Insets::TLBR(/*top=*/0, /*left=*/0, /*bottom=*/0,
@@ -176,7 +177,7 @@ AccountHoverButtonSecondaryView::AccountHoverButtonSecondaryView() {
   arrow_image_view_ = AddChildView(std::move(arrow_image_view));
 }
 
-void AccountHoverButtonSecondaryView::ReplaceWithSpinner() {
+void HoverButtonSecondaryView::ReplaceWithSpinner() {
   std::unique_ptr<views::Throbber> spinner =
       std::make_unique<views::Throbber>();
   constexpr int kSpinnerSize = 24;
@@ -187,7 +188,7 @@ void AccountHoverButtonSecondaryView::ReplaceWithSpinner() {
   AddChildView(std::move(spinner));
 }
 
-void AccountHoverButtonSecondaryView::SetDisabledOpacity() {
+void HoverButtonSecondaryView::SetDisabledOpacity() {
   if (!arrow_image_view_) {
     return;
   }
@@ -225,7 +226,77 @@ bool BrandIconImageView::SetBrandIconImage(const gfx::Image& image,
   return true;
 }
 
+bool BrandIconImageView::SetBrandIconImageOrGlobe(const gfx::Image& image) {
+  if (!image.IsEmpty() &&
+      SetBrandIconImage(image, /*should_circle_crop=*/true)) {
+    return true;
+  }
+  SetImage(ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled() ? kGlobeIcon : kWebidGlobeOldIcon,
+      ui::kColorIconSecondary, image_size_));
+  return false;
+}
+
 BEGIN_METADATA(BrandIconImageView)
+END_METADATA
+
+namespace {
+
+std::unique_ptr<views::View> CreateIdpRowIcon(
+    const content::IdentityProviderData& idp_data) {
+  auto icon_view =
+      std::make_unique<BrandIconImageView>(kModalIdpPickerIconSize);
+  icon_view->SetBrandIconImageOrGlobe(idp_data.idp_metadata.brand_decoded_icon);
+  // Center the icon where the avatar sits in the multi-IDP account rows, and
+  // make the icon column as wide as the badged avatar, so that the IDP domains
+  // line up with the account names in the account chooser.
+  constexpr int kIdpIconLeftPadding =
+      (webid::kModalAvatarSize - kModalIdpPickerIconSize) / 2;
+  constexpr int kIdpIconRightPadding =
+      webid::kModalAvatarSize + webid::kIdpBadgeOffset -
+      kModalIdpPickerIconSize - kIdpIconLeftPadding;
+  icon_view->SetBorder(views::CreateEmptyBorder(
+      gfx::Insets::TLBR(/*top=*/0, /*left=*/kIdpIconLeftPadding, /*bottom=*/0,
+                        /*right=*/kIdpIconRightPadding)));
+  return icon_view;
+}
+
+}  // namespace
+
+IdpHoverButton::IdpHoverButton(views::Button::PressedCallback callback,
+                               const content::IdentityProviderData& idp_data)
+    : HoverButton(std::move(callback),
+                  CreateIdpRowIcon(idp_data),
+                  /*title=*/base::UTF8ToUTF16(idp_data.idp_for_display),
+                  /*subtitle=*/std::u16string(),
+                  /*secondary_view=*/
+                  std::make_unique<HoverButtonSecondaryView>(),
+                  /*add_vertical_label_spacing=*/true,
+                  /*footer=*/std::u16string()) {
+  constexpr int kIdpRowVerticalPadding = 4;
+  SetBorder(views::CreateEmptyBorder(
+      gfx::Insets::VH(/*vertical=*/kIdpRowVerticalPadding,
+                      /*horizontal=*/kModalHorizontalSpacing)));
+  // Use the same text style as the modal account rows.
+  SetTitleTextStyle(views::style::STYLE_BODY_3_MEDIUM,
+                    ui::kColorDialogBackground, /*color_id=*/std::nullopt);
+  AddExtraAccessibleText(
+      l10n_util::GetStringUTF16(IDS_ACCOUNT_SELECTION_OPENS_IN_NEW_TAB));
+  // Highlight on hover as well as focus, like the account rows.
+  views::InkDrop::UseInkDropForFloodFillRipple(views::InkDrop::Get(this),
+                                               /*highlight_on_hover=*/true,
+                                               /*highlight_on_focus=*/true);
+}
+
+IdpHoverButton::~IdpHoverButton() = default;
+
+void IdpHoverButton::StateChanged(ButtonState old_state) {
+  // Do not focus on hover since it causes odd scrolling, like the account
+  // rows. Do this by skipping the code in HoverButton::StateChanged.
+  views::LabelButton::StateChanged(old_state);
+}
+
+BEGIN_METADATA(IdpHoverButton)
 END_METADATA
 
 AccountHoverButton::AccountHoverButton(
@@ -310,7 +381,7 @@ void AccountHoverButton::SetDisabledOpacity() {
   }
 
   if (secondary_view()) {
-    static_cast<AccountHoverButtonSecondaryView*>(secondary_view())
+    static_cast<HoverButtonSecondaryView*>(secondary_view())
         ->SetDisabledOpacity();
   }
 
@@ -326,13 +397,41 @@ bool AccountHoverButton::HasDisabledOpacity() {
 
 void AccountHoverButton::ReplaceSecondaryViewWithSpinner() {
   has_spinner_ = true;
-  static_cast<AccountHoverButtonSecondaryView*>(secondary_view())
+  static_cast<HoverButtonSecondaryView*>(secondary_view())
       ->ReplaceWithSpinner();
 }
 
 void AccountHoverButton::SetCallbackForTesting(
     AccountSelectionCallback callback) {
   callback_ = std::move(callback);
+}
+
+void SetTextWithLinks(views::StyledLabel& label,
+                      int message_id,
+                      std::vector<std::u16string> replacements,
+                      std::vector<views::Link::ClickedCallback> link_callbacks,
+                      views::style::TextStyle link_style) {
+  // Each link has both <ph name="BEGIN_LINK"> and <ph name="END_LINK">.
+  replacements.insert(replacements.end(), link_callbacks.size() * 2,
+                      std::u16string());
+
+  std::vector<size_t> offsets;
+  label.SetText(l10n_util::GetStringFUTF16(message_id, replacements, &offsets));
+
+  // `offsets` is sorted by placeholder number, so the link offsets come last.
+  // Counting from the end allows a placeholder in `replacements` to appear more
+  // than once in the message.
+  CHECK_GE(offsets.size(), link_callbacks.size() * 2);
+  size_t offset_index = offsets.size() - link_callbacks.size() * 2;
+  for (views::Link::ClickedCallback& callback : link_callbacks) {
+    views::StyledLabel::RangeStyleInfo link_info =
+        views::StyledLabel::RangeStyleInfo::CreateForLink(std::move(callback));
+    link_info.text_style = link_style;
+    label.AddStyleRange(
+        gfx::Range(offsets[offset_index], offsets[offset_index + 1]),
+        link_info);
+    offset_index += 2;
+  }
 }
 
 AccountSelectionViewBase::AccountSelectionViewBase(
@@ -431,7 +530,7 @@ std::unique_ptr<views::View> AccountSelectionViewBase::CreateAccountRow(
                             base::Unretained(owner_), account),
         std::move(account_image_view), title, subtitle,
         /*secondary_view=*/
-        is_modal_dialog ? std::make_unique<AccountHoverButtonSecondaryView>()
+        is_modal_dialog ? std::make_unique<HoverButtonSecondaryView>()
                         : nullptr,
         /*add_vertical_label_spacing=*/true, footer, *clickable_position);
     row->SetProperty(views::kElementIdentifierKey,
@@ -498,7 +597,8 @@ std::unique_ptr<views::View> AccountSelectionViewBase::CreateAccountRow(
 
 std::unique_ptr<views::StyledLabel>
 AccountSelectionViewBase::CreateDisclosureLabel(
-    const IdentityRequestAccountPtr& account) {
+    const IdentityRequestAccountPtr& account,
+    views::style::TextStyle link_style) {
   // It requires a StyledLabel so that we can add the links
   // to the privacy policy and terms of service URLs.
   std::unique_ptr<views::StyledLabel> disclosure_label =
@@ -517,39 +617,24 @@ AccountSelectionViewBase::CreateDisclosureLabel(
   int disclosure_resource_id = SelectDisclosureTextResourceId(
       client_metadata.privacy_policy_url, client_metadata.terms_of_service_url);
 
-  // The order that the links are added to `link_data` should match the order of
-  // the links in `disclosure_resource_id`.
-  std::vector<std::pair<LinkType, GURL>> link_data;
+  // The order that the links are added to `link_callbacks` should match the
+  // order of the links in `disclosure_resource_id`.
+  std::vector<views::Link::ClickedCallback> link_callbacks;
   if (!client_metadata.privacy_policy_url.is_empty()) {
-    link_data.emplace_back(LinkType::PRIVACY_POLICY,
-                           client_metadata.privacy_policy_url);
+    link_callbacks.push_back(base::BindRepeating(
+        &FedCmAccountSelectionView::OnLinkClicked, base::Unretained(owner_),
+        LinkType::PRIVACY_POLICY, client_metadata.privacy_policy_url));
   }
   if (!client_metadata.terms_of_service_url.is_empty()) {
-    link_data.emplace_back(LinkType::TERMS_OF_SERVICE,
-                           client_metadata.terms_of_service_url);
+    link_callbacks.push_back(base::BindRepeating(
+        &FedCmAccountSelectionView::OnLinkClicked, base::Unretained(owner_),
+        LinkType::TERMS_OF_SERVICE, client_metadata.terms_of_service_url));
   }
 
-  // Each link has both <ph name="BEGIN_LINK"> and <ph name="END_LINK">.
-  std::vector<std::u16string> replacements = {
-      base::UTF8ToUTF16(idp_data.idp_for_display),
-      GetPermissionFieldsString(account->fields)};
-  replacements.insert(replacements.end(), link_data.size() * 2,
-                      std::u16string());
-
-  std::vector<size_t> offsets;
-  const std::u16string disclosure_text = l10n_util::GetStringFUTF16(
-      disclosure_resource_id, replacements, &offsets);
-  disclosure_label->SetText(disclosure_text);
-
-  size_t offset_index = 2u;
-  for (const std::pair<LinkType, GURL>& link_data_item : link_data) {
-    disclosure_label->AddStyleRange(
-        gfx::Range(offsets[offset_index], offsets[offset_index + 1]),
-        views::StyledLabel::RangeStyleInfo::CreateForLink(base::BindRepeating(
-            &FedCmAccountSelectionView::OnLinkClicked, base::Unretained(owner_),
-            link_data_item.first, link_data_item.second)));
-    offset_index += 2;
-  }
+  SetTextWithLinks(*disclosure_label, disclosure_resource_id,
+                   {base::UTF8ToUTF16(idp_data.idp_for_display),
+                    GetPermissionFieldsString(account->fields)},
+                   std::move(link_callbacks), link_style);
 
   return disclosure_label;
 }

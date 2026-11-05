@@ -167,6 +167,12 @@ scheme host and port.""")
                                       help="Enable tests that require WebTransport over HTTP/3 server (default: false)")
     test_selection_group.add_argument("--no-enable-webtransport-h3", action="store_false", dest="enable_webtransport_h3",
                                       help="Do not enable WebTransport tests on experimental channels")
+    test_selection_group.add_argument("--enable-websocket-h3", action="store_true",
+                                      default=None,
+                                      help="Enable the WebSocket over HTTP/3 server (default: false)")
+    test_selection_group.add_argument("--no-enable-websocket-h3", action="store_false",
+                                      dest="enable_websocket_h3",
+                                      help="Disable the WebSocket over HTTP/3 server")
     test_selection_group.add_argument("--enable-dns",
                                       action="store_true",
                                       default=None,
@@ -353,6 +359,9 @@ scheme host and port.""")
     gecko_view_group = parser.add_argument_group("GeckoView-specific")
     gecko_view_group.add_argument("--setenv", dest="env", action="append", default=[],
                                   help="Set target environment variable, like FOO=BAR")
+    gecko_view_group.add_argument("--enable-isolated-process", dest="isolated_process",
+                                  action="store_true", default=False,
+                                  help="Enable content service isolated process.")
 
     servo_group = parser.add_argument_group("Servo-specific")
     servo_group.add_argument("--user-stylesheet",

@@ -6,6 +6,7 @@
 
 #include <stdlib.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "base/check.h"
@@ -15,6 +16,7 @@
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "remoting/base/branding.h"
@@ -24,6 +26,8 @@
 #if BUILDFLAG(IS_WIN)
 #include "base/base_paths.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/win/access_token.h"
+#include "base/win/sid.h"
 #elif BUILDFLAG(IS_LINUX)
 #include <sys/types.h>
 #include <unistd.h>
@@ -73,12 +77,33 @@ std::string FormatTime(base::Time time) {
 
 }  // namespace
 
+#if BUILDFLAG(IS_WIN)
+bool IsCurrentProcessLocalSystem() {
+  auto token = base::win::AccessToken::FromCurrentProcess();
+  return token.has_value() &&
+         token->User() == base::win::Sid(base::win::WellKnownSid::kLocalSystem);
+}
+#endif  // BUILDFLAG(IS_WIN)
+
 base::FilePath GetCrashpadDatabasePath() {
   static const base::NoDestructor<base::FilePath> database_path([]() {
 #if BUILDFLAG(IS_WIN)
-    base::FilePath path;
-    base::PathService::Get(base::BasePathKey::DIR_ASSETS, &path);
-    return path.Append(kChromotingCrashpadDatabasePath);
+    if (IsCurrentProcessLocalSystem()) {
+      // Place the LocalSystem Crashpad database under DIR_ASSETS (inside
+      // Program Files, where all ancestor directories are system/admin-owned)
+      // rather than GetConfigDir() (%ProgramData%\...), where intermediate
+      // directories may be pre-created by unprivileged users and converted into
+      // junctions (see crbug.com/501808060) that remoting_crashpad_handler.exe
+      // does not validate against.
+      base::FilePath path;
+      base::PathService::Get(base::BasePathKey::DIR_ASSETS, &path);
+      return path.empty() ? base::FilePath()
+                          : path.Append(kChromotingCrashpadDatabasePath);
+    }
+    base::FilePath user_data_dir = GetPerUserDataDir();
+    return user_data_dir.empty()
+               ? base::FilePath()
+               : user_data_dir.Append(kChromotingCrashpadDatabasePath);
 #elif BUILDFLAG(IS_LINUX)
     if (getuid() == 0) {
       // Used by the daemon process or the elevated start-host process.
@@ -132,6 +157,74 @@ base::FilePath GetCrashpadDatabasePath() {
   return *database_path;
 }
 
+bool IsValidCrashpadUploadUrlOverride(std::string_view url) {
+  if (url.empty() || url.size() > kMaxCrashpadUploadUrlChars ||
+      url.find('#') != std::string_view::npos) {
+    return false;
+  }
+  for (unsigned char c : url) {
+    if (c <= 0x20 || c >= 0x7f) {
+      return false;
+    }
+  }
+
+  constexpr std::string_view kHttpsPrefix = "https://";
+  constexpr std::string_view kHttpPrefix = "http://";
+  bool is_http = false;
+  size_t scheme_len = 0;
+  if (base::StartsWith(url, kHttpsPrefix, base::CompareCase::SENSITIVE)) {
+    scheme_len = kHttpsPrefix.size();
+  } else if (base::StartsWith(url, kHttpPrefix, base::CompareCase::SENSITIVE)) {
+    is_http = true;
+    scheme_len = kHttpPrefix.size();
+  } else {
+    return false;
+  }
+
+  const size_t authority_end = url.find_first_of("/?", scheme_len);
+  if (authority_end == std::string_view::npos || url[authority_end] != '/') {
+    return false;
+  }
+
+  const std::string_view authority =
+      url.substr(scheme_len, authority_end - scheme_len);
+  if (authority.empty() || authority.find('@') != std::string_view::npos) {
+    return false;
+  }
+
+  std::string_view host = authority;
+  const size_t colon_pos = authority.find(':');
+  if (colon_pos != std::string_view::npos) {
+    host = authority.substr(0, colon_pos);
+    const std::string_view port_str = authority.substr(colon_pos + 1);
+    unsigned int port = 0;
+    if (port_str.empty() ||
+        !std::ranges::all_of(port_str,
+                             [](char c) { return base::IsAsciiDigit(c); }) ||
+        !base::StringToUint(port_str, &port) || port < 1 || port > 65535) {
+      return false;
+    }
+  }
+
+  if (host.empty() || host.front() == '.' || host.back() == '.' ||
+      host.front() == '-' || host.back() == '-' ||
+      host.find("..") != std::string_view::npos ||
+      host.find(".-") != std::string_view::npos ||
+      host.find("-.") != std::string_view::npos ||
+      !std::ranges::all_of(host, [](char c) {
+        return base::IsAsciiAlphaNumeric(c) || c == '.' || c == '-';
+      })) {
+    return false;
+  }
+
+  if (is_http && host != "127.0.0.1" &&
+      !base::EqualsCaseInsensitiveASCII(host, "localhost")) {
+    return false;
+  }
+
+  return true;
+}
+
 CrashpadDatabaseManager::CrashpadDatabaseManager(Logger& logger)
     : logger_(logger) {}
 
@@ -168,6 +261,19 @@ bool CrashpadDatabaseManager::InitializeCrashpadDatabase(
   }
 
   return true;
+}
+
+bool CrashpadDatabaseManager::InitializeCrashpadDatabaseWithoutCreating(
+    const base::FilePath& database_path) {
+  base::FilePath target_database_path =
+      database_path.empty() ? GetCrashpadDatabasePath() : database_path;
+  database_ = crashpad::CrashReportDatabase::InitializeWithoutCreating(
+      target_database_path);
+  if (!database_) {
+    logger_->LogError("Unable to open existing crash database");
+    return false;
+  }
+  return LoadCompletedReports() && LoadPendingReports();
 }
 
 bool CrashpadDatabaseManager::EnableReportUploads() {

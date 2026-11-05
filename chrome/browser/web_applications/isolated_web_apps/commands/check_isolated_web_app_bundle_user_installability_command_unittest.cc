@@ -14,19 +14,18 @@
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/iwa_command_scheduler.h"
 #include "chrome/browser/web_applications/isolated_web_apps/signed_web_bundle_metadata.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
-#include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/common/chrome_features.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/test_support/fake_iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/types/source.h"
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "content/public/common/content_features.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -92,14 +91,14 @@ class CheckIsolatedWebAppBundleUserInstallabilityCommandTest
       const SignedWebBundleMetadata& bundle_metadata,
       base::OnceCallback<void(IsolatedInstallabilityCheckResult,
                               std::optional<IwaVersion>)> callback) {
-    fake_provider().scheduler().CheckIsolatedWebAppBundleUserInstallability(
-        bundle_metadata, std::move(callback));
+    IwaCommandScheduler::From(fake_provider())
+        .CheckIsolatedWebAppBundleUserInstallability(bundle_metadata,
+                                                     std::move(callback));
   }
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_{
       features::kIsolatedWebApps};
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
   web_package::test::KeyPair key_pair_ =
       web_package::test::Ed25519KeyPair::CreateRandom();
   FakeIwaRuntimeDataProvider data_provider_;

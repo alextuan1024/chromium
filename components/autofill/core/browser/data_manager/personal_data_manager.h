@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 
+#include "base/i18n/language_tag.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -81,13 +82,12 @@ class PersonalDataManager : public KeyedService,
       scoped_refptr<AutofillWebDataService> profile_database,
       scoped_refptr<AutofillWebDataService> account_database,
       PrefService* pref_service,
-      PrefService* local_state,
       signin::IdentityManager* identity_manager,
       history::HistoryService* history_service,
       syncer::SyncService* sync_service,
       strike_database::StrikeDatabaseBase* strike_database,
       AutofillImageFetcherBase* image_fetcher,
-      std::string app_locale,
+      const base::i18n::LanguageTag& app_locale,
       std::string country_code,
       AutofillOptimizationGuideDecider* autofill_optimization_guide_decider);
   PersonalDataManager(const PersonalDataManager&) = delete;

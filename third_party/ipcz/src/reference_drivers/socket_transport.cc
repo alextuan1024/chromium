@@ -17,15 +17,16 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/logging.h"
+#include "base/numerics/checked_math.h"
+#include "base/numerics/safe_conversions.h"
 #include "reference_drivers/file_descriptor.h"
 #include "reference_drivers/handle_eintr.h"
 #include "reference_drivers/socket_transport.h"
 #include "third_party/abseil-cpp/absl/synchronization/mutex.h"
 #include "third_party/abseil-cpp/absl/types/span.h"
-#include "util/log.h"
 #include "util/ref_counted.h"
-#include "util/safe_math.h"
-#include "util/unsafe_buffers.h"
 
 namespace ipcz::reference_drivers {
 
@@ -146,9 +147,10 @@ void SocketTransport::Deactivate(std::function<void()> shutdown_callback) {
 
 bool SocketTransport::Send(Message message) {
   Header header = {
-      .num_bytes =
-          checked_cast<uint32_t>(CheckAdd(message.data.size(), sizeof(Header))),
-      .num_descriptors = checked_cast<uint32_t>(message.descriptors.size()),
+      .num_bytes = base::CheckAdd(message.data.size(), sizeof(Header))
+                       .ValueOrDie<uint32_t>(),
+      .num_descriptors =
+          base::checked_cast<uint32_t>(message.descriptors.size()),
   };
   auto header_bytes =
       absl::MakeSpan(reinterpret_cast<uint8_t*>(&header), sizeof(header));
@@ -228,8 +230,8 @@ std::optional<size_t> SocketTransport::TrySend(absl::Span<uint8_t> header,
   size_t next_descriptor = 0;
   for (const FileDescriptor& fd : message.descriptors) {
     ABSL_ASSERT(fd.is_valid());
-    IPCZ_UNSAFE_TODO(
-        reinterpret_cast<int*>(CMSG_DATA(cmsg))[next_descriptor++]) = fd.get();
+    UNSAFE_TODO(reinterpret_cast<int*>(CMSG_DATA(cmsg))[next_descriptor++]) =
+        fd.get();
   }
 
   for (;;) {
@@ -349,7 +351,7 @@ void SocketTransport::RunIOThread() {
           const int* fds = reinterpret_cast<int*>(CMSG_DATA(cmsg));
           descriptors.resize(num_fds);
           for (size_t i = 0; i < num_fds; ++i) {
-            descriptors[i] = FileDescriptor(IPCZ_UNSAFE_TODO(fds[i]));
+            descriptors[i] = FileDescriptor(UNSAFE_TODO(fds[i]));
           }
         }
       }

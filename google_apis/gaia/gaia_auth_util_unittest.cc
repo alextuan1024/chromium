@@ -7,6 +7,7 @@
 #include "base/base64.h"
 #include "base/base64url.h"
 #include "google_apis/gaia/gaia_auth_test_util.h"
+#include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/gaia_id_literal.h"
 #include "google_apis/gaia/list_accounts_response.pb.h"
@@ -231,6 +232,27 @@ TEST(GaiaAuthUtilTest, ParseBinaryListAccountsData) {
   ASSERT_TRUE(accounts[0].valid);
   ASSERT_EQ(CanonicalizeEmail("u.2@g.c"), accounts[1].email);
   ASSERT_TRUE(accounts[1].valid);
+}
+
+TEST(GaiaAuthUtilTest, ParseBinaryListAccountsDataProfileInfo) {
+  ListAccountsResponse response;
+  Account* account1 = response.add_account();
+  account1->set_display_email("u1@g.c");
+  account1->set_obfuscated_id("1");
+  account1->set_display_name("User One");
+  account1->set_photo_url("https://example.com/photo1.jpg");
+  Account* account2 = response.add_account();
+  account2->set_display_email("u2@g.c");
+  account2->set_obfuscated_id("2");
+
+  std::vector<ListedAccount> accounts;
+  ASSERT_TRUE(ParseBinaryListAccountsData(
+      CreateBinaryListAccountsData(response), &accounts));
+  ASSERT_EQ(2u, accounts.size());
+  EXPECT_EQ("User One", accounts[0].display_name);
+  EXPECT_EQ("https://example.com/photo1.jpg", accounts[0].photo_url);
+  EXPECT_EQ("", accounts[1].display_name);
+  EXPECT_EQ("", accounts[1].photo_url);
 }
 
 TEST(GaiaAuthUtilTest, ParseBinaryListAccountsDataValidSession) {
@@ -550,6 +572,23 @@ TEST(GaiaAuthUtilTest, CreateMultiOAuthHeaderEmpty) {
   std::string actual = CreateMultiOAuthHeader(
       {MultiloginAccountAuthCredentials(GaiaId(), "", "")});
   EXPECT_EQ(actual, kExpected);
+}
+
+TEST(GaiaAuthUtilTest, ClassifyTokenBindingAssertionFailure) {
+  EXPECT_EQ(ClassifyTokenBindingAssertionFailure(""),
+            GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                CREDENTIALS_REJECTED_BY_SERVER);
+  EXPECT_EQ(ClassifyTokenBindingAssertionFailure(
+                GaiaConstants::kTokenBindingAssertionSentinel),
+            GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                CREDENTIALS_REJECTED_BY_SERVER);
+  EXPECT_EQ(ClassifyTokenBindingAssertionFailure(
+                GaiaConstants::kTokenBindingAssertionFailedPlaceholder),
+            GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                TOKEN_BINDING_ASSERTION_GENERATION_FAILED);
+  EXPECT_EQ(ClassifyTokenBindingAssertionFailure("signed_assertion"),
+            GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                TOKEN_BINDING_ASSERTION_REJECTED_BY_SERVER);
 }
 
 }  // namespace gaia

@@ -24,11 +24,11 @@
 #include "components/offline_pages/core/offline_page_item.h"
 #include "components/offline_pages/core/offline_page_model.h"
 #include "components/offline_pages/core/offline_page_test_archiver.h"
+#include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/navigation_simulator.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
 #include "ui/base/page_transition_types.h"
 
 namespace offline_pages {
@@ -96,6 +96,7 @@ class RecentTabHelperTest
   ~RecentTabHelperTest() override = default;
 
   void SetUp() override;
+  void TearDown() override;
   const std::vector<OfflinePageItem>& GetAllPages();
 
   void FailLoad(const GURL& url);
@@ -106,6 +107,8 @@ class RecentTabHelperTest
   void FastForwardSnapshotController();
 
   void NavigateAndCommit(const GURL& url);
+  void NavigateAndCommitWithRedirect(const GURL& initial_url,
+                                     const GURL& final_url);
   void Reload();
 
   // Navigates to the URL and commit as if it has been typed in the address bar.
@@ -120,7 +123,9 @@ class RecentTabHelperTest
 
   ClientId NewDownloadClientId();
 
-  RecentTabHelper* recent_tab_helper() const { return recent_tab_helper_; }
+  RecentTabHelper* recent_tab_helper() const {
+    return recent_tab_helper_.get();
+  }
 
   OfflinePageModel* model() const { return model_; }
 
@@ -164,7 +169,8 @@ class RecentTabHelperTest
 
   void OnGetAllPagesDone(const std::vector<OfflinePageItem>& result);
 
-  raw_ptr<RecentTabHelper> recent_tab_helper_;   // Owned by WebContents.
+  tabs::MockTabInterface tab_;
+  std::unique_ptr<RecentTabHelper> recent_tab_helper_;
   raw_ptr<OfflinePageModel> model_;              // Keyed service.
   raw_ptr<TestDelegate> default_test_delegate_;  // Created at SetUp.
   size_t page_added_count_;
@@ -203,7 +209,6 @@ bool TestDelegate::GetTabId(content::WebContents* web_contents, int* tab_id) {
 RecentTabHelperTest::RecentTabHelperTest()
     : ChromeRenderViewHostTestHarness(
           base::test::TaskEnvironment::TimeSource::MOCK_TIME),
-      recent_tab_helper_(nullptr),
       model_(nullptr),
       default_test_delegate_(nullptr),
       page_added_count_(0),
@@ -222,8 +227,7 @@ void RecentTabHelperTest::SetUp() {
       profile(), base::BindRepeating(&BuildTestRequestCoordinator));
   RunUntilIdle();
 
-  RecentTabHelper::CreateForWebContents(web_contents());
-  recent_tab_helper_ = RecentTabHelper::FromWebContents(web_contents());
+  recent_tab_helper_ = std::make_unique<RecentTabHelper>(tab_, web_contents());
 
   std::unique_ptr<TestDelegate> test_delegate(
       new TestDelegate(this, kTabId, true));
@@ -234,6 +238,12 @@ void RecentTabHelperTest::SetUp() {
   model_->AddObserver(this);
 
   histogram_tester_ = std::make_unique<base::HistogramTester>();
+}
+
+void RecentTabHelperTest::TearDown() {
+  default_test_delegate_ = nullptr;
+  recent_tab_helper_.reset();
+  ChromeRenderViewHostTestHarness::TearDown();
 }
 
 void RecentTabHelperTest::FailLoad(const GURL& url) {
@@ -286,6 +296,19 @@ void RecentTabHelperTest::StartAndCommitNavigation(
 void RecentTabHelperTest::NavigateAndCommit(const GURL& url) {
   StartAndCommitNavigation(content::NavigationSimulator::CreateBrowserInitiated(
       url, web_contents()));
+}
+
+void RecentTabHelperTest::NavigateAndCommitWithRedirect(const GURL& initial_url,
+                                                        const GURL& final_url) {
+  auto simulator = content::NavigationSimulator::CreateBrowserInitiated(
+      initial_url, web_contents());
+  simulator->SetAutoAdvance(false);
+  simulator->SetKeepLoading(true);
+  simulator->Start();
+  RunUntilIdle();
+  simulator->Redirect(final_url);
+  RunUntilIdle();
+  simulator->Commit();
 }
 
 void RecentTabHelperTest::Reload() {
@@ -686,6 +709,35 @@ TEST_F(RecentTabHelperTest, NoCaptureOnErrorPage) {
   ASSERT_EQ(0U, GetAllPages().size());
 }
 
+// Verifies that committing an error page does not delete a previously saved
+// last_n snapshot for the tab, while a subsequent normal navigation does.
+TEST_F(RecentTabHelperTest, LastNSnapshotPreservedOnErrorPage) {
+  const GURL kTestUrl("http://mystery.site/foo.html");
+  NavigateAndCommit(kTestUrl);
+  recent_tab_helper()->DocumentOnLoadCompletedInPrimaryMainFrame();
+  FastForwardSnapshotController();
+  recent_tab_helper()->OnVisibilityChanged(content::Visibility::HIDDEN);
+  RunUntilIdle();
+  EXPECT_EQ(1U, page_added_count());
+  EXPECT_EQ(0U, model_removed_count());
+  ASSERT_EQ(1U, GetAllPages().size());
+  const int64_t saved_offline_id = GetAllPages()[0].offline_id;
+
+  // Committing an error page preserves the saved last_n snapshot so the
+  // subsequent NET_ERROR reload can still serve it.
+  FailLoad(GURL("http://mystery.site/error.html"));
+  RunUntilIdle();
+  EXPECT_EQ(0U, model_removed_count());
+  ASSERT_EQ(1U, GetAllPages().size());
+  EXPECT_EQ(saved_offline_id, GetAllPages()[0].offline_id);
+
+  // A subsequent normal navigation still cleans up the previous snapshot.
+  NavigateAndCommitTyped(GURL("http://other.site/bar.html"));
+  RunUntilIdle();
+  EXPECT_EQ(1U, model_removed_count());
+  EXPECT_EQ(0U, GetAllPages().size());
+}
+
 // Simulates a download request to offline the current page made early during
 // loading. Should execute two captures but only the final one is kept.
 TEST_F(RecentTabHelperTest, DownloadRequestEarlyInLoad) {
@@ -1007,54 +1059,42 @@ TEST_F(RecentTabHelperTest, NoSaveOfflinePageCacheForPost) {
   ASSERT_EQ(1U, GetAllPages().size());
 }
 
-class RecentTabHelperFencedFrameTest : public RecentTabHelperTest {
- public:
-  RecentTabHelperFencedFrameTest() {
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        blink::features::kFencedFrames, {{"implementation_type", "mparch"}});
-  }
-  ~RecentTabHelperFencedFrameTest() override = default;
+TEST_F(RecentTabHelperTest, OriginalUrlRecordedForNonFragmentRedirect) {
+  const GURL kCrossSiteInitialUrl("http://other.site/redirect.html");
+  const GURL kSameSiteInitialUrl("http://sub.mystery.site/redirect.html");
+  const GURL kFinalUrl("http://mystery.site/foo.html");
 
-  content::RenderFrameHost* CreateFencedFrame(
-      content::RenderFrameHost* parent) {
-    content::RenderFrameHost* fenced_frame =
-        content::RenderFrameHostTester::For(parent)->AppendFencedFrame();
-    return fenced_frame;
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-// Tests that FencedFrame does not change the current page quality via resetting
-// the snapshot controller.
-TEST_F(RecentTabHelperFencedFrameTest, FencedFrameDoesNotChangePageQuality) {
-  // Navigate and finish loading, then move the snapshot controller's time
-  // forward so it sets the current page quality to FAIR_AND_IMPROVING.
-  NavigateAndCommitPost(GURL("http://mystery.site/foo.html"));
-
-  recent_tab_helper()->PrimaryMainDocumentElementAvailable();
+  // Cross-site redirects (e.g. URL shorteners) should still record
+  // original_url; cross-site isolation is enforced by redirecting on serve.
+  NavigateAndCommitWithRedirect(kCrossSiteInitialUrl, kFinalUrl);
+  recent_tab_helper()->DocumentOnLoadCompletedInPrimaryMainFrame();
   FastForwardSnapshotController();
+  recent_tab_helper()->OnVisibilityChanged(content::Visibility::HIDDEN);
+  RunUntilIdle();
+  ASSERT_EQ(1U, GetAllPages().size());
+  EXPECT_EQ(kFinalUrl, GetAllPages()[0].url);
+  EXPECT_EQ(kCrossSiteInitialUrl, GetAllPages()[0].original_url_if_different);
 
-  EXPECT_EQ(recent_tab_helper()->snapshot_controller_->current_page_quality(),
-            SnapshotController::PageQuality::FAIR_AND_IMPROVING);
+  // Same-site redirects should record the initial URL as original_url.
+  NavigateAndCommitWithRedirect(kSameSiteInitialUrl, kFinalUrl);
+  recent_tab_helper()->DocumentOnLoadCompletedInPrimaryMainFrame();
+  FastForwardSnapshotController();
+  recent_tab_helper()->OnVisibilityChanged(content::Visibility::HIDDEN);
+  RunUntilIdle();
+  ASSERT_EQ(1U, GetAllPages().size());
+  EXPECT_EQ(kFinalUrl, GetAllPages()[0].url);
+  EXPECT_EQ(kSameSiteInitialUrl, GetAllPages()[0].original_url_if_different);
 
-  // Create a fenced frame.
-  content::RenderFrameHostTester::For(main_rfh())
-      ->InitializeRenderFrameIfNeeded();
-  content::RenderFrameHost* fenced_frame_rfh = CreateFencedFrame(main_rfh());
-  GURL kFencedFrameUrl("https://fencedframe.com");
-  std::unique_ptr<content::NavigationSimulator> navigation_simulator =
-      content::NavigationSimulator::CreateRendererInitiated(kFencedFrameUrl,
-                                                            fenced_frame_rfh);
-  navigation_simulator->Commit();
-  EXPECT_TRUE(
-      navigation_simulator->GetFinalRenderFrameHost()->IsFencedFrameRoot());
-
-  // Navigating the fenced frame to the fenced frame url should not change the
-  // current page quality to POOR.
-  EXPECT_EQ(recent_tab_helper()->snapshot_controller_->current_page_quality(),
-            SnapshotController::PageQuality::FAIR_AND_IMPROVING);
+  // Fragment-only redirects should not record an original_url.
+  const GURL kFragmentUrl("http://mystery.site/foo.html#section");
+  NavigateAndCommitWithRedirect(kFinalUrl, kFragmentUrl);
+  recent_tab_helper()->DocumentOnLoadCompletedInPrimaryMainFrame();
+  FastForwardSnapshotController();
+  recent_tab_helper()->OnVisibilityChanged(content::Visibility::HIDDEN);
+  RunUntilIdle();
+  ASSERT_EQ(1U, GetAllPages().size());
+  EXPECT_EQ(kFragmentUrl, GetAllPages()[0].url);
+  EXPECT_TRUE(GetAllPages()[0].original_url_if_different.is_empty());
 }
 
 }  // namespace offline_pages

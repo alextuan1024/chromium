@@ -13,6 +13,7 @@
 #include "ash/wm/desks/desks_controller.h"
 #include "ash/wm/mru_window_tracker.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -24,6 +25,10 @@ class Window;
 namespace ui {
 class LocatedEvent;
 }  // namespace ui
+
+namespace views {
+class Widget;
+}  // namespace views
 
 namespace ash {
 
@@ -40,7 +45,7 @@ class WindowCycleList;
 class ASH_EXPORT WindowCycleController : public SessionObserver,
                                          public DesksController::Observer {
  public:
-  using WindowList = std::vector<raw_ptr<aura::Window, VectorExperimental>>;
+  using WindowList = std::vector<raw_ptr<aura::Window, DanglingUntriaged>>;
 
   enum class WindowCyclingDirection { kForward, kBackward };
   enum class KeyboardNavDirection { kUp, kDown, kLeft, kRight, kInvalid };
@@ -70,11 +75,8 @@ class ASH_EXPORT WindowCycleController : public SessionObserver,
   }
 
   // Cycles between windows in the given |direction|. This moves the focus ring
-  // to the window in the given |direction| and also scrolls the list. If
-  // same_app_only is provided whether or not to cycle exclusively between
-  // windows of the same app from now on will be updated.
-  void HandleCycleWindow(WindowCyclingDirection direction,
-                         bool same_app_only = false);
+  // to the window in the given |direction| and also scrolls the list.
+  void HandleCycleWindow(WindowCyclingDirection direction);
 
   // Navigates between cycle windows and tab slider if the move is valid.
   // This moves the focus ring to the active button or the last focused window
@@ -92,7 +94,7 @@ class ASH_EXPORT WindowCycleController : public SessionObserver,
 
   // Call to start cycling windows. This function adds a pre-target handler to
   // listen to the alt key release.
-  void StartCycling(bool same_app_only);
+  void StartCycling();
 
   // Both of these functions stop the current window cycle and removes the event
   // filter. The former indicates success (i.e. the new window should be
@@ -187,6 +189,13 @@ class ASH_EXPORT WindowCycleController : public SessionObserver,
 
   void StopCycling();
 
+  // Takes the alt-tab `widget`, which the window cycle list has just closed,
+  // and deletes it in a later task.
+  void TakeClosedCycleUiWidget(std::unique_ptr<views::Widget> widget);
+
+  // Deletes `closed_cycle_ui_widget_`.
+  void DeleteClosedCycleUiWidget();
+
   void InitFromUserPrefs();
 
   // Triggers alt-tab UI updates when the alt-tab mode is updated in the active
@@ -199,6 +208,10 @@ class ASH_EXPORT WindowCycleController : public SessionObserver,
   bool IsValidKeyboardNavigation(KeyboardNavDirection direction) const;
 
   std::unique_ptr<WindowCycleList> window_cycle_list_;
+
+  // The alt-tab widget after the window cycle list closed it, kept until it
+  // can be deleted outside of its own event handling.
+  std::unique_ptr<views::Widget> closed_cycle_ui_widget_;
 
   // Tracks the ID of the active desk container before window cycling starts. It
   // is used to determine whether a desk switch occurred when cycling ends.
@@ -224,6 +237,8 @@ class ASH_EXPORT WindowCycleController : public SessionObserver,
 
   base::ScopedObservation<DesksController, DesksController::Observer>
       desks_observation_{this};
+
+  base::WeakPtrFactory<WindowCycleController> weak_ptr_factory_{this};
 };
 
 }  // namespace ash

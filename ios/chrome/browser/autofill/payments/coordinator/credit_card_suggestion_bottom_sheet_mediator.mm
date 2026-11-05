@@ -7,7 +7,6 @@
 #import "base/feature_list.h"
 #import "base/memory/raw_ptr.h"
 #import "base/metrics/histogram_functions.h"
-#import "base/not_fatal_until.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
 #import "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
@@ -24,7 +23,6 @@
 #import "components/autofill/ios/form_util/form_activity_params.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/model/autofill_tab_helper.h"
-#import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_java_script_feature.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_tab_helper.h"
 #import "ios/chrome/browser/autofill/model/credit_card/credit_card_data.h"
 #import "ios/chrome/browser/autofill/model/features.h"
@@ -36,7 +34,7 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
 #import "ios/chrome/grit/ios_strings.h"
-#import "ios/web/public/js_messaging/web_frames_manager.h"
+#import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_observer_bridge.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -52,10 +50,17 @@ bool IsStateless() {
          base::FeatureList::IsEnabled(kAutofillPaymentsSheetStateless);
 }
 
-// Returns true if the payments bottom sheet is stateless.
-bool IsV3() {
-  return base::FeatureList::IsEnabled(kAutofillPaymentsSheetV3Ios);
-}
+// Status of the form fill context for the payments bottom sheet.
+enum class FillContextStatus {
+  // Context is valid; suggestions may be accepted and filled.
+  kValid,
+  // Context was invalidated by cross-document navigation, tab detachment, or
+  // WebState destruction. Selecting a card must NOT refocus the field.
+  kInvalidatedByWebStateChange,
+  // Context was invalidated because retrieved suggestions contained no credit
+  // cards. Selecting a card dismisses the sheet and refocuses the field.
+  kInvalidatedNoSuggestions,
+};
 
 }  // namespace
 
@@ -63,14 +68,6 @@ bool IsV3() {
     CRWWebStateObserver,
     PersonalDataManagerObserver,
     WebStateListObserving>
-
-// YES if the context is still valid for filling. Determined based the outcome
-// of a best effort to retrieve suggestions before the user accepts a
-// suggestion. The context is deemed valid by default to keep the status quo.
-// Context is invalidated if the suggestions are retrieved in time and
-// contradict the context (i.e. suggestions aren't credit card suggestions).
-@property(nonatomic, assign) BOOL fillContextIsValid;
-
 @end
 
 @implementation CreditCardSuggestionBottomSheetMediator {
@@ -104,6 +101,9 @@ bool IsV3() {
   // to when the presentation animation is done. Countdowns start once this
   // timestamp is set with a value.
   std::optional<base::TimeTicks> _viewDidAppearTimestamp;
+
+  // Status of the fill context.
+  FillContextStatus _fillContextStatus;
 }
 
 #pragma mark - Properties
@@ -121,7 +121,7 @@ bool IsV3() {
     _hasCreditCards = NO;
     _webStateList = webStateList;
     // Context deemed valid by default; status quo.
-    _fillContextIsValid = YES;
+    _fillContextStatus = FillContextStatus::kValid;
     if (personalDataManager) {
       _personalDataManager = personalDataManager;
       _personalDataManagerObserver =
@@ -152,6 +152,11 @@ bool IsV3() {
 }
 
 - (void)disconnect {
+  // Clearing the consumer goes through `-setConsumer:`, which is a no-op for a
+  // nil consumer; it only drops the reference.
+  self.consumer = nil;
+  self.delegate = nil;
+
   _personalDataManagerObserver = nullptr;
   _personalDataManager = nullptr;
 
@@ -170,10 +175,6 @@ bool IsV3() {
       _personalDataManager->payments_data_manager().GetCreditCardByGUID(
           base::SysNSStringToUTF8(identifier));
   return card ? std::make_optional(*card) : std::nullopt;
-}
-
-- (BOOL)hasCreditCards {
-  return _hasCreditCards;
 }
 
 - (void)logExitReason:(PaymentsSuggestionBottomSheetExitReason)exitReason {
@@ -235,6 +236,14 @@ bool IsV3() {
 
 - (void)didSelectCreditCard:(CreditCardData*)creditCardData
                     atIndex:(NSInteger)index {
+  // Navigation or WebState change has occurred; the originating frame is
+  // detached or destroyed. Return early without filling or refocusing to
+  // prevent improperly focusing elements or summoning the keyboard on the new
+  // page. No metric is logged as this is not a suggestion provider error.
+  if (_fillContextStatus == FillContextStatus::kInvalidatedByWebStateChange) {
+    return;
+  }
+
   web::WebState* activeWebState = [self getActiveWebState];
   if (!activeWebState) {
     return;
@@ -251,14 +260,8 @@ bool IsV3() {
   // Last resort safety exit: On the unlikely event that the provider was
   // set incorrectly (for example if local predictions and server
   // predictions are different), simply exit and open the keyboard.
-  if (IsStateless()) {
-    if (!self.fillContextIsValid) {
-      [self disableBottomSheetAndRefocus:YES];
-      [self logExitReason:kBadProvider];
-      return;
-    }
-  } else if (!IsV3() && crossProvider.type != SuggestionProviderTypeAutofill) {
-    [self disableBottomSheetAndRefocus:YES];
+  if (IsStateless() && _fillContextStatus != FillContextStatus::kValid) {
+    [self refocus];
     [self logExitReason:kBadProvider];
     return;
   }
@@ -271,8 +274,6 @@ bool IsV3() {
 - (void)fillCreditCard:(CreditCardData*)creditCardData
                atIndex:(NSInteger)index
          crossProvider:(id<FormInputSuggestionsProvider>)crossProvider {
-  [self disableBottomSheetAndRefocus:NO];
-
   // Create a form suggestion containing the selected credit card's backend
   // id so that the suggestion provider can properly fill the form.
   FormSuggestion* suggestion = [FormSuggestion
@@ -296,44 +297,38 @@ bool IsV3() {
            base::SysUTF16ToNSString(l10n_util::GetStringUTF16(
                IDS_AUTOFILL_A11Y_ANNOUNCE_FILLED_FORM))];
 
-  // Attach the extra contextual information to the suggestion when using the
-  // Stateless sheet.
-  if (IsStateless() || IsV3()) {
-    AutofillTabHelper* autofillTabHelper = [self autofillTabHelper];
-    // At this point we know that there is a valid active webstate so there must
-    // be an autofill tab helper. Also, the bottom sheet can only be triggered
-    // when this helper exists.
-    CHECK(autofillTabHelper);
+  // Attach the Autofill suggestion provider and form activity params directly
+  // to the suggestion so the controller can route it without relying on cached
+  // provider state.
+  AutofillTabHelper* autofillTabHelper = [self autofillTabHelper];
+  // At this point we know that there is a valid active webstate so there must
+  // be an autofill tab helper. Also, the bottom sheet can only be triggered
+  // when this helper exists.
+  CHECK(autofillTabHelper);
 
-    // Attach
-    id<FormSuggestionProvider> autofillProvider =
-        autofillTabHelper->GetSuggestionProvider();
-    suggestion = [FormSuggestion copy:suggestion
-                         andSetParams:_params
-                             provider:autofillProvider];
-  }
+  id<FormSuggestionProvider> autofillProvider =
+      autofillTabHelper->GetSuggestionProvider();
+  suggestion = [FormSuggestion copy:suggestion
+                       andSetParams:_params
+                           provider:autofillProvider];
   [crossProvider didSelectSuggestion:suggestion
                              atIndex:index
                               params:_params
                           completion:nil];
 }
 
-- (void)disableBottomSheetAndRefocus:(BOOL)shouldRefocus {
-  bool useV2 = base::FeatureList::IsEnabled(kAutofillPaymentsSheetV2Ios);
-  if (useV2) {
-    // Do not remove the listeners for the bottom sheet (aka disable) in V2
-    // since the listeners were already removed, as soon as the presentation
-    // started. Hence, just refocus if needed.
-    if (shouldRefocus) {
-      [self refocus];
-    }
+- (void)refocus {
+  // Suppress refocusing when the context was invalidated by navigation or
+  // WebState change. Callers (such as `viewDidDisappear:`) default to
+  // requesting refocus on exit, but if the WebState has navigated to a new
+  // document or changed, refocusing would improperly summon the keyboard or
+  // focus an element on the new page.
+  if (_fillContextStatus == FillContextStatus::kInvalidatedByWebStateChange) {
     return;
   }
 
-  CHECK(!useV2);
-
   if (AutofillBottomSheetTabHelper* tabHelper = [self tabHelper]) {
-    tabHelper->DetachPaymentsListenersForAllFrames(shouldRefocus);
+    tabHelper->RefocusElementIfNeeded(_params.frame_id);
   }
 }
 
@@ -375,13 +370,38 @@ bool IsV3() {
 
 - (void)webStateListDestroyed:(WebStateList*)webStateList {
   DCHECK_EQ(webStateList, _webStateList);
-  // `disconnect` cleans up all references to `_webStateList` and objects that
-  // depend on it.
-  [self disconnect];
+  // Dismiss and clean up UI before disconnecting from WebStateList.
   [self onWebStateChange];
+  [self disconnect];
 }
 
 #pragma mark - CRWWebStateObserver
+
+// Invalidation happens as soon as the navigation starts, before the new
+// document can be committed, so that a suggestion retrieved for the previous
+// document can never be filled into the next one. The trade-off is that a
+// cross-document navigation that ends up being aborted still tears the sheet
+// down, which is the safe outcome.
+- (void)webState:(web::WebState*)webState
+    didStartNavigation:(web::NavigationContext*)navigationContext {
+  CHECK(navigationContext);
+  if (navigationContext->IsSameDocument()) {
+    return;
+  }
+
+  [self onWebStateChange];
+}
+
+- (void)webState:(web::WebState*)webState
+    didFinishNavigation:(web::NavigationContext*)navigationContext {
+  CHECK(navigationContext);
+  if (navigationContext->IsSameDocument() ||
+      !navigationContext->HasCommitted()) {
+    return;
+  }
+
+  [self onWebStateChange];
+}
 
 - (void)webStateDestroyed:(web::WebState*)webState {
   [self onWebStateChange];
@@ -393,8 +413,25 @@ bool IsV3() {
 
 #pragma mark - Private
 
+// Sets `fillContextStatus`. Acts as a one-way latch: once set to an invalid
+// state, it cannot return to `kValid`. `kInvalidatedByWebStateChange` is
+// terminal and cannot be overwritten, but takes precedence over
+// `kInvalidatedNoSuggestions`.
+- (void)setFillContextStatus:(FillContextStatus)fillContextStatus {
+  if (_fillContextStatus == FillContextStatus::kInvalidatedByWebStateChange ||
+      fillContextStatus == FillContextStatus::kValid) {
+    return;
+  }
+  _fillContextStatus = fillContextStatus;
+}
+
+// Handles state changes in the observed WebState (such as cross-document
+// navigation, destruction, or tab switching) by invalidating the fill context
+// and requesting dismissal of the bottom sheet.
 - (void)onWebStateChange {
-  [self.consumer dismiss];
+  [self setFillContextStatus:FillContextStatus::kInvalidatedByWebStateChange];
+  [self.delegate
+      creditCardSuggestionBottomSheetMediatorDidRequestDismissal:self];
 }
 
 // Make sure the suggestions provider is properly set up. We need to make sure
@@ -416,11 +453,10 @@ bool IsV3() {
 
   id<FormInputSuggestionsProvider> provider =
       tabHelper->GetAccessoryViewProvider();
-  // Setting this to true only when we are retrieving suggestions for the bottom
-  // sheet. We are not using the results from this call, it is just to set the
-  // provider so the bottom sheet can fill the fields later.
-  autofill::FormActivityParams params = _params;
-  params.has_user_gesture = true;
+
+  // This is enforced earlier. Verify the invariant here to avoid getting
+  // unexpected behavior, especially silent fill failures, later on.
+  CHECK(_params.has_user_gesture);
 
   FormSuggestionsReadyCompletion completion = nil;
   if (IsStateless()) {
@@ -430,23 +466,35 @@ bool IsV3() {
     __weak __typeof(self) weakSelf = self;
     completion = ^(NSArray<FormSuggestion*>* suggestions,
                    id<FormInputSuggestionsProvider> delegate) {
-      BOOL hasCreditCard =
-          [suggestions
-              indexOfObjectPassingTest:^BOOL(FormSuggestion* suggestion,
-                                             NSUInteger idx, BOOL* stop) {
-                return suggestion.type ==
-                           autofill::SuggestionType::kCreditCardEntry ||
-                       suggestion.type ==
-                           autofill::SuggestionType::kVirtualCreditCardEntry;
-              }] != NSNotFound;
-
-      weakSelf.fillContextIsValid = hasCreditCard;
+      [weakSelf onSuggestionsRetrieved:suggestions];
     };
   }
 
-  [provider retrieveSuggestionsForForm:params
+  [provider retrieveSuggestionsForForm:_params
                               webState:activeWebState
               accessoryViewUpdateBlock:completion];
+}
+
+// Processes retrieved suggestions to determine if the fill context is still
+// valid. If no credit card suggestions were returned, invalidates the fill
+// context so subsequent selection attempts refocus the form field instead of
+// attempting to autofill.
+- (void)onSuggestionsRetrieved:(NSArray<FormSuggestion*>*)suggestions {
+  if (_fillContextStatus != FillContextStatus::kValid) {
+    return;
+  }
+  BOOL hasCreditCard =
+      suggestions.count > 0 &&
+      [suggestions indexOfObjectPassingTest:^BOOL(FormSuggestion* suggestion,
+                                                  NSUInteger idx, BOOL* stop) {
+        return suggestion.type == autofill::SuggestionType::kCreditCardEntry ||
+               suggestion.type ==
+                   autofill::SuggestionType::kVirtualCreditCardEntry;
+      }] != NSNotFound;
+
+  if (!hasCreditCard) {
+    [self setFillContextStatus:FillContextStatus::kInvalidatedNoSuggestions];
+  }
 }
 
 // Returns the icon associated with the provided credit card.
@@ -479,14 +527,6 @@ bool IsV3() {
   return activeWebState
              ? AutofillBottomSheetTabHelper::FromWebState(activeWebState)
              : nullptr;
-}
-
-// Refocuses the field that was blurred to show the payments suggestion
-// bottom sheet, if deemded needed.
-- (void)refocus {
-  if (AutofillBottomSheetTabHelper* tabHelper = [self tabHelper]) {
-    tabHelper->RefocusElementIfNeeded(_params.frame_id);
-  }
 }
 
 // Returns the currently active WebState. Returns nullptr if there is none.

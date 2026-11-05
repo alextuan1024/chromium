@@ -10,6 +10,7 @@
 
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
+#include "base/functional/function_ref.h"
 #include "base/time/time.h"
 #include "components/history/core/browser/history_types.h"
 
@@ -106,22 +107,23 @@ class VisitAnnotationsDatabase {
 
   // Updates the triggerability attributes for each cluster in `clusters`.
   void UpdateClusterTriggerability(
-      const std::vector<history::Cluster>& clusters);
+      const std::vector<Cluster>& clusters);
 
   // Updates the cluster visit with the same visit ID as `cluster_visit` that
   // belongs to `cluster_id`.
   void UpdateClusterVisit(ClusterId cluster_id,
-                          const history::ClusterVisit& cluster_visit);
+                          const ClusterVisit& cluster_visit);
 
   // Get a `Cluster`. Does not include the cluster's `visits` or
   // `keyword_to_data_map`.
   Cluster GetCluster(ClusterId cluster_id);
 
-  // Get the most recent clusters within the constraints. The most recent visit
-  // of a cluster represents the cluster's time.
-  std::vector<ClusterId> GetMostRecentClusterIds(base::Time inclusive_min_time,
-                                                 base::Time exclusive_max_time,
-                                                 int max_clusters);
+  // Visits cluster candidates within the time range, newest first. Equal
+  // times are ordered by ascending cluster ID. Stops when `callback` returns
+  // false. The callback may read, but must not modify, the database.
+  void ForEachRecentCluster(base::Time inclusive_min_time,
+                            base::Time exclusive_max_time,
+                            base::FunctionRef<bool(ClusterId)> callback);
 
   // Get `VisitID`s in a cluster.
   std::vector<VisitID> GetVisitIdsInCluster(ClusterId cluster_id);

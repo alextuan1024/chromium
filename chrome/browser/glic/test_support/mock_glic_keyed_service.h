@@ -27,11 +27,7 @@ class MockGlicKeyedService : public GlicKeyedService {
                        actor::ActorKeyedService* actor_keyed_service);
   ~MockGlicKeyedService() override;
 
-  MOCK_METHOD(base::WeakPtr<GlicInstance>,
-              Invoke,
-              (GlicInvokeOptions),
-              (override));
-  MOCK_METHOD(void, CloseFloatingPanel, (), (override));
+  MOCK_METHOD(GlicInvocationHandle, Invoke, (GlicInvokeOptions), (override));
   MOCK_METHOD(void,
               ShowUI,
               (BrowserWindowInterface*, mojom::InvocationSource),
@@ -48,27 +44,24 @@ class MockGlicKeyedService : public GlicKeyedService {
               IsPanelShowingForBrowser,
               (const BrowserWindowInterface&),
               (const, override));
-  MOCK_METHOD(base::WeakPtr<GlicInstance>,
+  MOCK_METHOD(GlicInvocationHandle,
               InvokeWithAutoSubmit,
               (InvokeWithAutoSubmitPasskey, GlicInvokeOptions),
               (override));
-  MOCK_METHOD(base::WeakPtr<GlicInstance>,
+  MOCK_METHOD(GlicInvocationHandle,
               InvokeWithAutoSubmit,
               (InvokeWithAutoSubmitPasskey,
                GlicInvokeOptions,
                GlicInvokeWithAutoSubmitOptions),
               (override));
 
-  bool IsWindowDetached() const override { return detached_; }
-  void SetWindowDetached(bool detached) { detached_ = detached; }
-
   GlicInstanceCoordinator& instance_coordinator() const override {
     return const_cast<MockGlicInstanceCoordinator&>(mock_coordinator_);
   }
   MockGlicInstanceCoordinator& mock_coordinator() { return mock_coordinator_; }
+  GlicActivityManagerImpl& activity_manager_impl();
 
  private:
-  bool detached_ = false;
   MockGlicInstanceCoordinator mock_coordinator_;
 };
 

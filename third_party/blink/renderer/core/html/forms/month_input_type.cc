@@ -83,10 +83,9 @@ Decimal MonthInputType::DefaultValueForStepUp() const {
 
 StepRange MonthInputType::CreateStepRange(
     AnyStepHandling any_step_handling) const {
-  DEFINE_STATIC_LOCAL(
-      const StepRange::StepDescription, step_description,
-      (kMonthDefaultStep, kMonthDefaultStepBase, kMonthStepScaleFactor,
-       StepRange::kParsedStepValueShouldBeInteger));
+  static const StepRange::StepDescription step_description(
+      kMonthDefaultStep, kMonthDefaultStepBase, kMonthStepScaleFactor,
+      StepRange::kParsedStepValueShouldBeInteger);
 
   return InputType::CreateStepRange(
       any_step_handling, Decimal::FromDouble(kMonthDefaultStepBase),
@@ -143,7 +142,7 @@ String MonthInputType::FormatDateTimeFieldsState(
 void MonthInputType::SetupLayoutParameters(
     DateTimeEditElement::LayoutParameters& layout_parameters,
     const DateComponents& date) const {
-  layout_parameters.date_time_format = layout_parameters.locale.MonthFormat();
+  layout_parameters.date_time_format = layout_parameters.locale->MonthFormat();
   layout_parameters.fallback_date_time_format = "yyyy-MM";
   if (!ParseToDateComponents(
           GetElement().FastGetAttribute(html_names::kMinAttr),

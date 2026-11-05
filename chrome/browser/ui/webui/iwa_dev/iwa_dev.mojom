@@ -29,12 +29,19 @@ union IwaDevModeSource {
   UpdateInfo update_info;                // Manifest install source
 };
 
+// Represents a sub-app installed under a parent dev mode IWA.
+struct SubAppInfo {
+  string app_id;
+  string name;
+};
+
 struct IwaDevModeAppInfo {
   string app_id;
   string web_bundle_id;
   string name;
   IwaDevModeSource source;
   string installed_version;
+  array<SubAppInfo> sub_apps;
 };
 
 // Mimics web_app::UpdateManifest::VersionEntry.
@@ -70,24 +77,30 @@ interface PageHandler {
                                UpdateInfo update_info)
       => result<mojo_base.mojom.Empty, mojo_base.mojom.Error>;
 
+  // Launches a dev mode IWA or its sub-app with a given ID.
+  LaunchApp(string app_id) => (bool success);
+
   // Attempts to fetch and parse an IWA update manifest from the provided url.
   ParseUpdateManifestFromUrl(url.mojom.Url update_manifest_url)
       => result<UpdateManifest, mojo_base.mojom.Error>;
 
-  // Opens a file picker for the user to select a Web Bundle and installs it.
-  SelectAndInstallAppFromLocalWebBundle()
-      => result<mojo_base.mojom.Empty, mojo_base.mojom.Error>;
+  // Restarts the browser to apply updated feature flag.
+  RestartBrowser();
 
   // Opens a file picker for the user to select a Web Bundle and
   // updates the app.
   SelectAndUpdateAppFromLocalWebBundle(string app_id)
       => result<mojo_base.mojom.Empty, mojo_base.mojom.Error>;
 
+  // Enables or disables the Isolated Web App Developer Mode feature flag.
+  // Requires a browser restart to take effect.
+  SetIwaDevModeEnabled(bool enabled) => ();
+
   // Sets the update channel for an app installed from an update manifest.
   SetUpdateChannel(string app_id, string update_channel)
       => result<mojo_base.mojom.Empty, mojo_base.mojom.Error>;
 
-  // Uninstalls an IWA with a given ID.
+  // Uninstalls a dev mode IWA or its sub-app with a given ID.
   UninstallApp(string app_id) => (bool success);
 
   // Triggers an update for an app installed through dev proxy.
@@ -97,6 +110,34 @@ interface PageHandler {
   // Triggers an update for a manifest-installed dev mode app.
   UpdateManifestInstalledApp(string app_id, UpdateManifestOptions options)
       => result<mojo_base.mojom.Empty, mojo_base.mojom.Error>;
+
+  // Opens a file picker for the user to select a Web Bundle and stages it in
+  // the browser process. Returns the display filename if a valid bundle was
+  // selected, or an error if invalid or canceled.
+  SelectLocalWebBundle()
+      => result<string, mojo_base.mojom.Error>;
+
+  // Stages a Web Bundle dropped onto the page/dropzone. Returns the display
+  // filename if a valid bundle was dropped, or an error if invalid.
+  StageDroppedLocalWebBundle()
+      => result<string, mojo_base.mojom.Error>;
+
+  // Installs the currently staged local Web Bundle. Fails with
+  // kFailedPrecondition if no bundle is currently staged.
+  InstallStagedLocalWebBundle()
+      => result<mojo_base.mojom.Empty, mojo_base.mojom.Error>;
+
+  // Clears any currently staged local Web Bundle.
+  ClearStagedLocalWebBundle();
+
+  // Notifies the browser that a dragged file has entered the bundle drop
+  // target, allowing the browser to capture the file path from active drop
+  // data.
+  NotifyDragBundleEnter();
+
+  // Notifies the browser that a drag operation has left the bundle drop target
+  // or was canceled, clearing temporary drag state.
+  NotifyDragBundleLeave();
 };
 
 // Interface for the browser to push events to the WebUI page.
@@ -104,7 +145,7 @@ interface Page {
   // Notifies the page that an app has been installed.
   OnAppInstalled(IwaDevModeAppInfo app_info);
 
-  // Notifies the page that an app's manifest has been updated.
+  // Notifies the page that an app's manifest or sub-apps list has been updated.
   OnAppUpdated(IwaDevModeAppInfo app_info);
 
   // Notifies the page that an app has been uninstalled.

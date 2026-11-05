@@ -8,12 +8,12 @@
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
 #include "chrome/browser/sync/test/integration/user_events_helper.h"
 #include "chrome/browser/sync/user_event_service_factory.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/browser_sync/browser_sync_switches.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/sync/base/passphrase_enums.h"
 #include "components/sync/protocol/user_event_specifics.pb.h"
 #include "components/sync_user_events/user_event_service.h"
 #include "content/public/test/browser_test.h"
@@ -36,10 +36,8 @@ class TwoClientUserEventsSyncTest
  public:
   TwoClientUserEventsSyncTest() : SyncTest(TWO_CLIENT) {
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitWithFeatures(
-          {syncer::kReplaceSyncPromosWithSignInPromos,
-           switches::kSyncEnableBookmarksInTransportMode},
-          {});
+      scoped_feature_list_.InitAndEnableFeature(
+          switches::kSyncEnableBookmarksInTransportMode);
     }
   }
 
@@ -89,19 +87,18 @@ IN_PROC_BROWSER_TEST_P(TwoClientUserEventsSyncTest,
   GetSyncService(kEncryptingClientId)
       ->GetUserSettings()
       ->SetEncryptionPassphrase("hunter2");
-  UpdatedProgressMarkerChecker update_checker(
-      GetSyncService(kEncryptingClientId));
   ASSERT_TRUE(
       PassphraseAcceptedChecker(GetSyncService(kEncryptingClientId)).Wait());
   // Make sure the updates are committed before proceeding with the test.
-  ASSERT_TRUE(update_checker.Wait());
+  ASSERT_TRUE(
+      ServerPassphraseTypeChecker(syncer::PassphraseType::kCustomPassphrase)
+          .Wait());
 
   // Record a user event on the second client before setting up sync (before
   // knowing it will be encrypted). This event should not get recorded while
   // starting up sync because the user has custom passphrase setup.
   syncer::UserEventService* event_service =
-      browser_sync::UserEventServiceFactory::GetForProfile(
-          GetProfile(kDecryptingClientId));
+      UserEventServiceFactory::GetForProfile(GetProfile(kDecryptingClientId));
   event_service->RecordUserEvent(std::make_unique<sync_pb::UserEventSpecifics>(
       user_events_helper::CreateTestEvent(base::Time() +
                                           base::Microseconds(1))));

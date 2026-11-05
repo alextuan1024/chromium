@@ -25,6 +25,7 @@
 #include "base/logging.h"
 #include "base/memory/discardable_memory_allocator.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/shared_memory_switch.h"
 #include "base/memory/structured_shared_memory.h"
 #include "base/message_loop/message_pump.h"
 #include "base/message_loop/message_pump_type.h"
@@ -142,6 +143,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/origin_trials/origin_trials_settings_provider.h"
 #include "third_party/blink/public/common/page/launching_process_state.h"
+#include "third_party/blink/public/common/scheme_registry.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/cpu_performance.mojom.h"
@@ -175,7 +177,9 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include <cpu-features.h>
+
 #include "media/base/android/media_codec_util.h"
+#include "third_party/blink/public/web/web_memory_features.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
@@ -430,7 +434,8 @@ RenderThreadImpl::DeprecatedGetMainTaskRunner() {
 RenderThreadImpl::RenderThreadImpl(
     const InProcessChildThreadParams& params,
     int32_t client_id,
-    std::unique_ptr<blink::scheduler::WebThreadScheduler> scheduler)
+    std::unique_ptr<blink::scheduler::WebThreadScheduler> scheduler,
+    base::ReadOnlySharedMemoryRegion renderer_process_security_state)
     : ChildThreadImpl(
           base::DoNothing(),
           Options::Builder()
@@ -442,7 +447,7 @@ RenderThreadImpl::RenderThreadImpl(
       main_thread_scheduler_(std::move(scheduler)),
       client_id_(client_id) {
   TRACE_EVENT0("startup", "RenderThreadImpl::Create");
-  Init();
+  Init(std::move(renderer_process_security_state));
 }
 
 namespace {
@@ -475,7 +480,8 @@ RenderThreadImpl::RenderThreadImpl(
   Init();
 }
 
-void RenderThreadImpl::Init() {
+void RenderThreadImpl::Init(
+    base::ReadOnlySharedMemoryRegion renderer_process_security_state) {
   TRACE_EVENT0("startup", "RenderThreadImpl::Init");
 
   SCOPED_UMA_HISTOGRAM_TIMER("Renderer.RenderThreadImpl.Init");
@@ -540,9 +546,10 @@ void RenderThreadImpl::Init() {
     int client_id = 0;
     CHECK(base::StringToInt(
         command_line.GetSwitchValueASCII(switches::kGpuClientId), &client_id));
-    gpu_ = viz::Gpu::Create(std::move(remote_gpu), GetIOTaskRunner(), client_id,
-                            std::move(initial_gpu_channel),
-                            std::move(gpu_channel_established_callback));
+    gpu_ = viz::Gpu::CreateWithMessagePipe(
+        std::move(remote_gpu), GetIOTaskRunner(), client_id,
+        viz::mojom::GpuClientType::kRenderer, std::move(initial_gpu_channel),
+        std::move(gpu_channel_established_callback));
   } else {
     // In the standard path, we create a new pipe and ask the browser to
     // connect it on demand.
@@ -556,11 +563,12 @@ void RenderThreadImpl::Init() {
   // modify the definition of |ExposeRendererInterfacesToBrowser()| to ensure
   // security review coverage.
   mojo::BinderMap binders;
-  InitializeWebKit(&binders);
+  InitializeWebKit(&binders, std::move(renderer_process_security_state));
 
   vc_manager_ = std::make_unique<blink::WebVideoCaptureImplManager>();
 
   GetContentClient()->renderer()->RenderThreadStarted();
+  WebSecurityPolicy::LockSchemeRegistries();
   ExposeRendererInterfacesToBrowser(weak_factory_.GetWeakPtr(), &binders);
   ExposeInterfacesToBrowser(std::move(binders));
 
@@ -608,8 +616,9 @@ void RenderThreadImpl::Init() {
 #endif
   }
 
-  if (command_line.HasSwitch(switches::kDisableGpuCompositing))
+  if (command_line.HasSwitch(switches::kDisableGpu)) {
     is_gpu_compositing_disabled_ = true;
+  }
 
   // Note that under Linux, the media library will normally already have
   // been initialized by the Zygote before this instance became a Renderer.
@@ -807,11 +816,26 @@ void RenderThreadImpl::InitializeCompositorThread() {
       compositor_task_runner_.get());
 }
 
-void RenderThreadImpl::InitializeWebKit(mojo::BinderMap* binders) {
+void RenderThreadImpl::InitializeWebKit(
+    mojo::BinderMap* binders,
+    base::ReadOnlySharedMemoryRegion renderer_process_security_state) {
   DCHECK(!blink_platform_impl_);
 
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
+
+  if (!renderer_process_security_state.IsValid()) {
+    CHECK(
+        command_line.HasSwitch(switches::kRendererProcessSecurityStateHandle));
+    auto region_from_switch =
+        base::shared_memory::ReadOnlySharedMemoryRegionFrom(
+            command_line.GetSwitchValueASCII(
+                switches::kRendererProcessSecurityStateHandle));
+    CHECK(region_from_switch);
+    renderer_process_security_state = std::move(*region_from_switch);
+  }
+  blink::WebRuntimeFeatures::InitializeRendererProcessSecurityState(
+      std::move(renderer_process_security_state));
 
 #ifdef ENABLE_VTUNE_JIT_INTERFACE
   if (command_line.HasSwitch(switches::kEnableVtune))
@@ -899,6 +923,7 @@ void RenderThreadImpl::RegisterSchemes() {
       chrome_untrusted_scheme);
   WebSecurityPolicy::RegisterURLSchemeAsAllowingWasmEvalCSP(
       chrome_untrusted_scheme);
+  WebSecurityPolicy::RegisterURLSchemeAsWebUIUntrusted(chrome_untrusted_scheme);
 
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
@@ -911,6 +936,11 @@ void RenderThreadImpl::RegisterSchemes() {
     WebSecurityPolicy::RegisterURLSchemeAsCodeCacheWithHashing(chrome_scheme);
     WebSecurityPolicy::RegisterURLSchemeAsCodeCacheWithHashing(
         chrome_untrusted_scheme);
+  }
+  for (const std::string& scheme :
+       blink::CommonSchemeRegistry::CodeCacheAllowedSchemes()) {
+    WebSecurityPolicy::RegisterURLSchemeAsCodeCacheWithHashing(
+        WebString::FromAscii(scheme));
   }
 
   if (base::FeatureList::IsEnabled(features::kWebUIBundledCodeCache)) {
@@ -1586,10 +1616,13 @@ RenderThreadImpl::SharedCompositorWorkerContextProvider(
       support_gpu_rasterization ? gpu::SharedMemoryLimits::ForGPURasterContext()
                                 : gpu::SharedMemoryLimits();
   base::TimeTicks create_start_time = base::TimeTicks::Now();
+  const gpu::SchedulingPriority stream_priority =
+      base::FeatureList::IsEnabled(features::kLowPriorityGpuWorkerStream)
+          ? gpu::SchedulingPriority::kLow
+          : kGpuStreamPriorityWorker;
   shared_worker_context_provider_ =
       viz::ContextProviderCommandBuffer::CreateForRaster(
-          std::move(gpu_channel_host), kGpuStreamIdWorker,
-          kGpuStreamPriorityWorker,
+          std::move(gpu_channel_host), kGpuStreamIdWorker, stream_priority,
           GURL("chrome://gpu/RenderThreadImpl::CreateOffscreenContext/"
                "RenderWorker"),
           /*automatic_flushes=*/false, /*support_locking=*/true,
@@ -1635,8 +1668,12 @@ void RenderThreadImpl::SharedMediaContextProvider(
 
   auto shared_memory_limits = gpu::SharedMemoryLimits::ForGPURasterContext();
 
+  const gpu::SchedulingPriority stream_priority =
+      base::FeatureList::IsEnabled(features::kLowPriorityGpuWorkerStream)
+          ? gpu::SchedulingPriority::kLow
+          : kGpuStreamPriorityWorker;
   auto context_provider = viz::ContextProviderCommandBuffer::CreateForRaster(
-      std::move(gpu_channel_host), kGpuStreamIdWorker, kGpuStreamPriorityWorker,
+      std::move(gpu_channel_host), kGpuStreamIdWorker, stream_priority,
       GURL("chrome://gpu/RenderThreadImpl::CreateOffscreenContext/"
            "MediaWorker"),
       /*automatic_flushes=*/false, /*support_locking=*/true,
@@ -1680,6 +1717,9 @@ void RenderThreadImpl::OnRendererHidden() {
   }
 
   blink_isolates_pressure_listener_.OnRendererHidden();
+#if BUILDFLAG(IS_ANDROID)
+  blink::WebMemoryFeatures::SetRendererVisible(false);
+#endif
 }
 
 void RenderThreadImpl::OnRendererVisible() {
@@ -1689,6 +1729,9 @@ void RenderThreadImpl::OnRendererVisible() {
         base::Process::Priority::kUserBlocking);
   }
   blink_isolates_pressure_listener_.OnRendererVisible();
+#if BUILDFLAG(IS_ANDROID)
+  blink::WebMemoryFeatures::SetRendererVisible(true);
+#endif
 }
 
 bool RenderThreadImpl::RendererIsBackgrounded() const {
@@ -1698,7 +1741,6 @@ bool RenderThreadImpl::RendererIsBackgrounded() const {
 void RenderThreadImpl::OnRendererBackgrounded() {
   UpdateForegroundCrashKey(/*foreground=*/false);
   main_thread_scheduler_->SetRendererBackgrounded(true);
-  discardable_memory_allocator_->OnBackgrounded();
   base::allocator::PartitionAllocSupport::Get()->OnBackgrounded();
   blink::OnProcessBackgrounded();
 }
@@ -1706,7 +1748,6 @@ void RenderThreadImpl::OnRendererBackgrounded() {
 void RenderThreadImpl::OnRendererForegrounded() {
   UpdateForegroundCrashKey(/*foreground=*/true);
   main_thread_scheduler_->SetRendererBackgrounded(false);
-  discardable_memory_allocator_->OnForegrounded();
   base::allocator::PartitionAllocSupport::Get()->OnForegrounded(
       MainFrameCounter::has_main_frame());
   blink::OnProcessForegrounded();

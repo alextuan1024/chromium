@@ -25,23 +25,6 @@
 namespace blink {
 
 namespace {
-class StackStringViewAllocator {
- public:
-  explicit StackStringViewAllocator(
-      StringView::StackBackingStore& backing_store)
-      : backing_store_(backing_store) {}
-  using ResultStringType = StringView;
-
-  template <typename CharType>
-  StringView Alloc(wtf_size_t length, base::span<CharType>& buffer) {
-    buffer = backing_store_.Realloc<CharType>(length);
-    return StringView(buffer);
-  }
-
- private:
-  StringView::StackBackingStore& backing_store_;
-};
-
 template <typename CharType1, typename CharType2>
 int CodeUnitCompareIgnoringAsciiCase(base::span<const CharType1> c1,
                                      base::span<const CharType2> c2) {
@@ -49,6 +32,11 @@ int CodeUnitCompareIgnoringAsciiCase(base::span<const CharType1> c1,
 }
 
 }  // namespace
+
+StringView::StringView(const char* chars, FromCStringTag)
+    : impl_(const_cast<StringImpl*>(&StringImpl::g_global_empty)),
+      bytes_(chars),
+      length_(chars ? base::checked_cast<size_type>(strlen(chars)) : 0) {}
 
 #if DCHECK_IS_ON()
 StringView::~StringView() {
@@ -324,7 +312,7 @@ String StringView::EncodeForDebugging() const {
     }
   });
   builder.Append('"');
-  return builder.ToString();
+  return builder.ReleaseString();
 }
 
 bool EqualStringView(const StringView& a, const StringView& b) {
@@ -366,15 +354,6 @@ bool EqualIgnoringAsciiCase(const StringView& a, const StringView& b) {
     return b.Is8Bit() ? EqualIgnoringAsciiCase(chars, b.Span8())
                       : EqualIgnoringAsciiCase(chars, b.Span16());
   });
-}
-
-StringView StringView::LowerAsciiMaybeUsingBuffer(
-    StackBackingStore& buffer) const {
-  if (ContainsNoAsciiUpper()) {
-    return *this;
-  }
-  return ConvertAsciiCase(*this, LowerConverter(),
-                          StackStringViewAllocator(buffer));
 }
 
 int CodeUnitCompareIgnoringAsciiCase(const StringView& a, const StringView& b) {

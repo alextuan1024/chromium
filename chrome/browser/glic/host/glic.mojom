@@ -34,7 +34,8 @@ import "url/mojom/url.mojom";
 // chrome/browser/resources/glic/glic_api_impl/generate.py
 
 // @generate glic_api
-// Settings for Gemini Enterprise.
+// TODO(b/570016708): Remove once web client usages are eliminated.
+// Deprecated: Formerly settings for Gemini Enterprise as a Tool.
 struct GeminiEnterpriseSettings {
   string project_id;
   string app_id;
@@ -303,7 +304,8 @@ struct WebClientInitialState {
   bool enable_get_tab_favicon_by_id;
   // Whether the processCounterAbuseVerdict API is enabled.
   bool enable_process_counter_abuse_verdict;
-  // Settings for Gemini Enterprise.
+  // TODO(b/570016708): Remove once web client usages are eliminated.
+  // Deprecated: Formerly settings for Gemini Enterprise as a Tool.
   GeminiEnterpriseSettings? gemini_enterprise_settings;
   // Whether features::kGlicActorAutofillOneTimePassword is enabled.
   bool enable_gmail_otp_opt_in;
@@ -311,6 +313,10 @@ struct WebClientInitialState {
   bool enable_gmail_otp_confirmation;
   // Whether file upload is allowed by the enterprise policy.
   FileUploadPolicyState file_upload_policy_state;
+  // Whether features::kGlicClientDataStorage is enabled.
+  bool enable_client_storage;
+  // Initial key-value pairs for the prefs-backed client data storage.
+  map<string, string> client_storage;
 };
 
 // @generate glic_api
@@ -883,6 +889,32 @@ struct CreateActorTabOptions {
   bool open_in_background;
 };
 
+// @generate glic_api
+// Optional parameters for `GlicBrowserHost#performActions`.
+struct PerformActionsOptions {
+  // Opaque identifier of the conversation turn initiating these actions. Once
+  // the host starts executing the actions, it is stored on the critical
+  // actions (e.g. downloads) logged for the task until the next accepted
+  // `performActions` call. It is intended for reopening the conversation at
+  // this turn. Older hosts ignore it.
+  //
+  // Contract for the web client:
+  // * It must be the ID of the user-visible response turn that should be
+  //   reopened. Pass the same ID for every `performActions` call of that turn
+  //   (e.g. all actuation rounds of one prompt); the turn associated with the
+  //   task only changes when the ID does.
+  // * It must be at most 512 bytes.
+  // * It must be sent on every `performActions` call for the task. Omitting it,
+  //   or passing an empty or longer ID, clears the turn associated with the
+  //   task, so critical actions logged for these actions are recorded without
+  //   a turn rather than attributed to an earlier turn.
+  // * Calls that are rejected, or superseded by a later call, before any of
+  //   their actions run leave the turn previously associated with the task
+  //   unchanged.
+  // @glic_type string?
+  string turn_id = "";
+};
+
 // Interface for actor-related functionality.
 interface ActorHandler {
   // Called when a form is presented in the autofill selection dialog.
@@ -916,12 +948,14 @@ interface ActorHandler {
   CreateTask(actor.webui.mojom.TaskOptions? task_options)
       => result<int32, CreateTaskErrorReason>;
 
-  // Executes the given actions. `action_proto` is a serialized proto of type
-  // optimization_guide::proto::Actions. Returns the result of the actions as a
-  // serialized proto of type optimization_guide::proto::ActionsResult.
+  // Executes the given actions. `actions_proto` is a serialized proto of type
+  // optimization_guide::proto::Actions. `options` provides optional metadata
+  // for the action batch (such as the originating conversation turn ID).
+  // Returns the result of the actions as a serialized proto of type
+  // optimization_guide::proto::ActionsResult.
   //
   // It is an error to act with a paused task.
-  PerformActions(array<uint8> actions_proto)
+  PerformActions(array<uint8> actions_proto, PerformActionsOptions? options)
       => result<mojo_base.mojom.ProtoWrapper, PerformActionsErrorReason>;
 
   // Cancel the actions for the specified actor task. Does not revert actions
@@ -1031,6 +1065,12 @@ struct CaptureRegionParams {
   // @glic_type string
   int32 tab_id;
   TabContextOptions options;
+
+  // Set when this capture answers an invoke that asked the panel to take over
+  // the user's selection (see InvocationPayload). Lets the browser tell it
+  // apart from the user starting a capture.
+  // @glic_optional
+  bool capture_region_handoff;
 };
 
 // Interface for annotation-related functionality, used by the web client.
@@ -1108,12 +1148,48 @@ struct CreateTabOptions {
   int32? window_id;
 };
 
+// LINT.IfChange(GlicRequestEvent)
 enum GlicRequestEvent {
   kRequestReceived = 0,
   kResponseSent = 1,
   kRequestHandlerException = 2,
   kRequestReceivedWhileInactive = 4,
 };
+
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicRequestEvent)
+
+// @generate glic_api
+// A device that can receive tabs sent via Send Tab to Self.
+struct SendTabToSelfDevice {
+  // A unique identifier for the device. Pass this as the target device when
+  // sending a tab.
+  string device_guid;
+  // The user-visible name of the device.
+  string device_name;
+  // The form factor of the device.
+  FormFactor form_factor;
+  // The time when the device last updated its sync metadata.
+  mojo_base.mojom.Time? last_updated_time;
+};
+
+// @generate glic_api
+// Types of multi-tab sharing tooltip impressions.
+// LINT.IfChange(TooltipImpressionType)
+[Stable, Extensible]
+enum TooltipImpressionType {
+  // Default value for unknown or unrecognized tooltip variants.
+  [Default] kUnknown = 0,
+  // Step 1: Initial contextual tooltip shown when a tab is first shared.
+  kTooltip1 = 1,
+  // Step 2 (Copy A): Follow-up tooltip highlighting multi-tab comparison.
+  kTooltip2a = 2,
+  // Step 2 (Copy B): Follow-up tooltip highlighting managing shared tabs.
+  kTooltip2b = 3,
+  // Step 3: Tooltip shown inside the tab picker guiding multi-tab selection.
+  kTooltip3 = 4,
+};
+
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicTooltipMultiTabImpression)
 
 // Access to the browser from the web client by proxy through the WebUI.
 // A single WebClientHandler will provide access to the browser for only
@@ -1376,9 +1452,25 @@ interface WebClientHandler {
   // Called when the opt-in CTA is shown.
   OnOptinImpression();
 
+  // Called when the user explicitly declines the opt-in CTA ("No thanks").
+  // The web client closes the panel afterwards; this tells the browser the
+  // close was a decision rather than a dismissal.
+  OnOptinRejected();
+
+  // Called when the web client's main prompt input field receives focus
+  // after opening or warm-reopening the panel.
+  OnInputFocused();
+
   // Called when the user submits input.
   OnUserInputSubmitted(
       WebClientMode mode, [MinVersion=1] PromptType prompt_type);
+
+  // Called when the web client holds a submitted prompt until the user
+  // completes the FRE (message-first onboarding), at the time it is held.
+  // The prompt itself is reported through OnUserInputSubmitted() once the
+  // user has consented and the client releases it; this lets the browser
+  // attribute that turn to the pre-consent submission.
+  OnUserInputHeldForOnboarding();
 
   // Called when starting to upload context to the server.
   OnContextUploadStarted();
@@ -1467,6 +1559,56 @@ interface WebClientHandler {
   // Creates the Gemini Enterprise handler.
   CreateGeminiEnterpriseHandler(
       pending_receiver<GeminiEnterpriseHandler> receiver);
+
+  // Sets or deletes a key in the prefs-backed client data storage.
+  // If `value` is null, the key is removed. Replies once the browser has
+  // updated the authoritative in-memory storage and scheduled a pref write.
+  SetClientStorageItem(string key, string? value) => ();
+
+  // Clears all items in the prefs-backed client data storage. Replies once the
+  // browser has cleared the authoritative in-memory storage and scheduled a
+  // pref write.
+  ClearClientStorage() => ();
+
+  // Sets or clears (when `value` is null) a query parameter to append to
+  // future Glic/GEiC guest URL loads for the active provider on this profile.
+  // Reserved keys (`hl`, `authuser`, `configId`, `location`), keys/values
+  // exceeding 256 bytes, or writes beyond the 32-parameter cap are ignored as
+  // a no-op.
+  SetGuestUrlQueryParam(string key, string? value) => ();
+
+  // Returns the list of target devices available for Send Tab to Self.
+  [RuntimeFeature=glic.mojom.features.kGlicSendTabToSelf]
+  GetSendTabToSelfDevices() => (array<SendTabToSelfDevice> devices);
+
+  // Reports when a multi-tab sharing tooltip is shown to the user in the web
+  // client. Records the impression timestamp to track whether the user closes
+  // the Glic panel or floaty window within 10 seconds of the tooltip
+  // impression.
+  // `impression`: The specific tooltip step and copy variant shown.
+  OnTooltipImpression(TooltipImpressionType impression);
+
+  // Reports when a currently shown multi-tab sharing tooltip is hidden (e.g.
+  // close button, click outside, timeout, typing, or engaging with the
+  // tooltip) so Chrome stops considering it visible for ClosedWhileShown
+  // tracking.
+  OnTooltipHidden();
+
+  // Switches the active assistant selection preference for the current profile
+  // to `options.target` and triggers a browser relaunch if switching is
+  // allowed (advertised via `HostCapability.kSwitchAssistant`).
+  SwitchAssistant(SwitchAssistantOptions options)
+      => (SwitchAssistantResponse response);
+
+  // Shows a modal Google Drive file picker dialog.
+  // Must only be called when `HostCapability::kDrivePicker` is advertised in
+  // `WebClientInitialState.host_capabilities`; otherwise the browser rejects
+  // the call as a bad message.
+  // Only one picker may be open at a time per profile; calling again while a
+  // picker is already open immediately returns
+  // `DrivePickerErrorReason::kAlreadyActive` without affecting the active
+  // picker.
+  ShowDrivePicker(DrivePickerOptions options) => (DrivePickerResult result);
 };
 
 // Accesses zero state suggestions from the web client.
@@ -1607,11 +1749,35 @@ struct UniversalCartPayload {
   array<uint8> serialized_metadata;
 };
 
+// @generate glic_api
+// Payload for Experimental Triggering invocation.
+struct ExperimentalTriggeringPayload {
+  // Opaque payment metadata received from the server as part of the request
+  // that triggered this invocation. Passed through verbatim; opaque to the
+  // browser. May be empty.
+  // @glic_type ArrayBuffer
+  array<uint8> payment_metadata;
+};
+
+// @generate glic_api
+// Payload for invoking region capture.
+struct CaptureRegionPayload {
+  // Set when the browser asks the client to start a capture so the panel can
+  // take over a region selection the user already started on the page. Pass
+  // it back in CaptureRegionParams when starting that capture.
+  bool capture_region_handoff;
+};
+
 union InvocationPayload {
   UniversalCartPayload universal_cart;
 
   [MinVersion=3]
   SkillsPayload skills_payload;
+
+  [MinVersion=4]
+  ExperimentalTriggeringPayload experimental_triggering;
+
+  CaptureRegionPayload capture_region;
 };
 
 // @generate glic_api
@@ -1649,7 +1815,10 @@ struct InvokeOptions {
   // Source-specific payload for the invocation.
   InvocationPayload? payload;
 
-  // The ID of the tab to actuate on, if actuationTarget is kTargetSurface.
+  // TODO(b/582448011): Replace actuation_target and actuation_tab_id with one
+  // union that matches Target::actuation_target in glic_invoke_options.h.
+  // The ID of the ActorSurface (which can be a tab or a headless surface), to
+  // actuate on, if actuation_target == kTargetSurface.
   [MinVersion=1]
   int32? actuation_tab_id;
 };
@@ -1737,12 +1906,17 @@ enum ClientErrorDialogType {
 };
 
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicClientErrorDialogType)
+// LINT.IfChange(ResponseStopCause)
 [Stable, Extensible]
 enum ResponseStopCause {
+  // The stop cause was omitted by the web client (`cause === undefined`),
+  // indicating normal, successful response completion.
   [Default] kUnknown = 0,
   kUser = 1,
   kOther = 2,
 };
+
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicResponseStopCause)
 
 // @generate glic_api
 // Details for metrics recording purposes.
@@ -1795,6 +1969,7 @@ union AdditionalContextPart {
   AnnotatedPageData annotated_page_data;
   PdfDocumentData pdf_document_data;
   TabContextResult tab_context;
+  // @deprecated Chrome no longer sends `region`. Use `pending_region` instead.
   CapturedRegion region;
   PendingCapturedRegion pending_region;
   ParentConversationMetadata parent_conversation_metadata;
@@ -1830,6 +2005,41 @@ struct AdditionalContext {
   url.mojom.Url? frameUrl;
   // The parts of the context.
   array<AdditionalContextPart> parts;
+};
+
+// @generate glic_api
+// The user data-transfer action that attempted to send input into Glic.
+// Note: New actions may be added over time; callers switching on this enum
+// should handle unknown/default values gracefully.
+[Stable, Extensible]
+enum DataTransferAction {
+  [Default] kUnknown = 0,
+  kPaste = 1,
+  kDrop = 2,
+};
+
+// @generate glic_api
+// The reason a data-transfer action into Glic was blocked by product or context
+// eligibility checks.
+// Note: New reasons may be added over time; callers switching on this enum
+// should handle unknown/default values gracefully.
+[Stable, Extensible]
+enum DataTransferActionsBlockedReason {
+  [Default] kUnknown = 0,
+  // The source page's context is ineligible for sharing with Glic.
+  kIneligiblePageContext = 1,
+  // The source belongs to a different browser profile (e.g., Incognito).
+  kCrossProfile = 2,
+  // The source is not a supported tab or was invalidated before completion.
+  kUnsupportedOrExpiredSource = 3,
+};
+
+// @generate glic_api
+// Notice emitted when a data-transfer action into Glic is blocked by
+// eligibility checks.
+struct DataTransferActionsBlockedNotice {
+  DataTransferAction action;
+  DataTransferActionsBlockedReason reason;
 };
 
 // @generate glic_api
@@ -1897,6 +2107,17 @@ interface ExperimentalTriggeringClient {
   GetExperimentalTriggeringUpdates(
       pending_remote<ExperimentalTriggeringUpdatesHandler> handler)
       => (bool success);
+
+  // Delivers a confirmation decision made by the user on a remote surface.
+  //
+  // `response` is a serialized proto which is opaque to the browser. The web
+  // client is responsible for decoding it, matching it against a pending
+  // confirmation dialog, and resolving that dialog.
+  //
+  // Replies true if the response was matched to a pending confirmation dialog
+  // and applied, false otherwise.
+  SubmitExperimentalTriggeringConfirmationResponse(array<uint8> response)
+      => (bool accepted);
 };
 
 // Access from the browser to the Glic web client by proxy of the WebUI page.
@@ -1999,7 +2220,9 @@ interface WebClient {
   // The onboarding completed state has changed.
   NotifyOnboardingCompletedChanged(bool completed);
 
-  // Informs the client that the Gemini Enterprise settings have changed.
+  // TODO(b/570016708): Remove once web client usages are eliminated.
+  // Deprecated: Formerly informed the client that Gemini Enterprise settings
+  // have changed.
   NotifyGeminiEnterpriseSettingsChanged(GeminiEnterpriseSettings? settings);
 
   // Notifies the client that the user has clicked on a row in the actor task
@@ -2008,6 +2231,17 @@ interface WebClient {
 
   // Invokes Glic with specific options. Expects a return to signal completion.
   Invoke(InvokeOptions options) => ();
+
+  // Informs the client that an entry in the prefs-backed client data storage
+  // has been set or removed (when `value` is null).
+  NotifyClientStorageItemChanged(string key, string? value);
+
+  // Informs the client that the prefs-backed client data storage was cleared.
+  NotifyClientStorageCleared();
+
+  // Informs the client that a paste or drop into Glic was blocked by product
+  // or context eligibility checks.
+  NotifyDataTransferActionsBlocked(DataTransferActionsBlockedNotice notice);
 };
 
 // @generate glic_api
@@ -2277,8 +2511,7 @@ struct Screenshot {
   uint32 width_pixels;
   uint32 height_pixels;
   // Encoded image data. If `encryption_scheme` is not `kNone`, this contains
-  // the encrypted ciphertext payload. ArrayBuffer is transferable, so it should
-  // be copied more efficiently over postMessage.
+  // the encrypted ciphertext payload.
   // @glic_type ArrayBuffer
   array<uint8> data;
   // The unencrypted source image format represented as a MIME type (e.g.,
@@ -2389,6 +2622,88 @@ enum HostCapability {
   // Indicates that the host supports bytes extraction of embedded PDF rendered
   // in the Chrome PDF viewer.
   kEmbeddedPdfBytesExtraction = 18,
+  // Indicates that the host operates in NoWebview mode.
+  kNoWebview = 19,
+  // Indicates that the host supports Send Tab to Self APIs.
+  kSendTabToSelf = 20,
+  // Indicates that the host supports isolated-world JavaScript execution for
+  // browser actuation.
+  kExecuteJs = 21,
+  // Indicates that the current profile is eligible to switch to another
+  // assistant provider via switchAssistant().
+  kSwitchAssistant = 22,
+  // Indicates that the host supports the drive picker.
+  kDrivePicker = 23,
+};
+
+// @generate glic_api
+// Represents a file selected from Google Drive.
+struct DriveFileSelection {
+  // The Google Drive file ID, used to identify and fetch the file.
+  string id;
+  // The user-visible display name of the file (e.g. "Q3 Report.pdf").
+  string title;
+  // The file's MIME type (e.g. "application/pdf", "image/png"), used to
+  // validate upload support and choose client rendering.
+  string mime_type;
+  // The file size in bytes, when reported by Drive (0 for Google Docs editors
+  // files that have no raw byte size).
+  uint64 size_bytes;
+  // Optional resource key required alongside `id` to access link-shared Drive
+  // files.
+  string? resource_key;
+};
+
+// @generate glic_api
+// Options for showing the Drive picker.
+struct DrivePickerOptions {
+  // The web client's obfuscated Gaia ID. The browser fails with
+  // kAccountMismatch if this is empty or does not match the primary account,
+  // whose files the picker shows.
+  string account_id;
+};
+
+// @generate glic_api
+// Reason why showDrivePicker() failed.
+[Stable, Extensible]
+enum DrivePickerErrorReason {
+  [Default] kUnknown = 0,
+  // The primary account is absent from or signed out of the browser's Google
+  // cookie jar, either before the picker opened or while it was open.
+  kWebSessionSignedOut = 1,
+  // Chrome has no signed-in primary account or its refresh token is missing or
+  // in a persistent error state (e.g. sign-in paused), so the browser cannot
+  // mint an OAuth token for the picker.
+  kChromeSignInRequired = 2,
+  // The web client's account isn't the browser's primary account.
+  kAccountMismatch = 3,
+  // A picker is already open.
+  kAlreadyActive = 4,
+  // There is no active browser window or floating Glic window to anchor the
+  // picker dialog to.
+  kNoAnchorWindow = 5,
+  // The picker failed to load, returned no valid files, or encountered a token
+  // or IPC error.
+  kLoadFailed = 6,
+  // The picker is disabled by policy or Glic is not enabled and consented for
+  // the profile.
+  kDisabledByPolicy = 7,
+  // The picker isn't supported on this platform, provider, or feature
+  // configuration.
+  kUnsupported = 8,
+};
+
+// @generate glic_api
+// Result of showing the Drive picker. Exactly one field is set: either the
+// selected files (empty if the user cancelled or the picker was closed before
+// a selection was made), or the error reason if the picker could not be shown
+// or failed.
+union DrivePickerResult {
+  // The files selected by the user, or an empty array if the picker was
+  // cancelled.
+  array<DriveFileSelection> files;
+  // The reason the picker could not be shown or failed.
+  DrivePickerErrorReason error_reason;
 };
 
 // @generate glic_api
@@ -2397,4 +2712,57 @@ enum ClientCapabilities {
   // The glic web client does not use favicons in TabData, so they can
   // be omitted from TabData.
   kIgnoresTabDataFavicons = 0,
+};
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(AssistantTarget)
+// @generate glic_api
+// Target assistant for switching the profile's active assistant provider.
+[Extensible]
+enum AssistantTarget {
+  // Unknown or unsupported target (e.g. sent by a newer web client). Always
+  // rejected.
+  [Default] kUnknown = 0,
+  // Consumer Gemini in Chrome (GiC).
+  kGeminiConsumer = 1,
+  // Gemini Enterprise in Chrome (GEiC).
+  kGeminiEnterprise = 2,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/histograms.xml:GlicAssistantTarget, //chrome/browser/glic/host/glic_assistant_switcher.cc:GlicAssistantTargetSuffix)
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(SwitchAssistantResult)
+// @generate glic_api
+// Result of attempting to switch the active assistant provider.
+enum SwitchAssistantResult {
+  kUnknown = 0,
+  // The assistant selection preference was updated to the requested target and
+  // a browser relaunch was initiated.
+  kSuccess = 1,
+  // Switching to the requested assistant target is not allowed for the current
+  // profile (e.g. no machine-scoped `GeminiEnterpriseUrl` policy,
+  // off-the-record or managed profile, consumer Gemini disabled by
+  // `GeminiSettings` policy, or already latched to the requested target).
+  kErrorNotAllowed = 2,
+  // The requested assistant target is unknown or unsupported.
+  kErrorInvalidTarget = 3,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicSwitchAssistantResult)
+
+// @generate glic_api
+// Options for `SwitchAssistant`.
+struct SwitchAssistantOptions {
+  // The assistant target to switch the current profile to.
+  AssistantTarget target;
+};
+
+// @generate glic_api
+// Response for `SwitchAssistant`. A struct (rather than a bare enum) so that
+// fields can be added later without breaking the glic API's backwards
+// compatibility.
+struct SwitchAssistantResponse {
+  // The result of attempting to switch the active assistant provider.
+  SwitchAssistantResult result;
 };

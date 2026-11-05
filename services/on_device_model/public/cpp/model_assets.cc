@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -15,12 +16,10 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/callback_helpers.h"
-#include "base/strings/strcat.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
-#include "components/version_info/version_info.h"
 #include "mojo/public/cpp/bindings/default_construct_tag.h"
 #include "third_party/dawn/include/dawn/dawn_proc.h"
 
@@ -70,44 +69,94 @@ void PrefetchFile(const base::FilePath& path) {
 #endif
 }
 
-base::File OpenAndValidateProgramCache(const base::FilePath& path) {
-  // dawnProcGetVersion() returns a static array of uint8_t of size 20.
-  constexpr int kDawnVersionSize = 20;
+// Extension of the file stored next to each cache recording the fingerprint of
+// the configuration that last wrote the cache.
+constexpr base::FilePath::CharType kCacheFingerprintExtension[] =
+    FILE_PATH_LITERAL(".fingerprint");
 
-  if (path.empty()) {
-    return base::File();
-  }
+// Legacy extension of the program cache fingerprint file, which only ever
+// stored the Dawn version.
+// TODO(crbug.com/585215282): Remove the migration once most clients have
+// loaded a GPU model with the new file name.
+constexpr base::FilePath::CharType kLegacyDawnVersionExtension[] =
+    FILE_PATH_LITERAL(".dawn_version");
 
-  PrefetchFile(path);
+// Opens the cache at `path`. If the fingerprint stored alongside the cache is
+// missing or differs from `fingerprint`, the cache is truncated so the backend
+// rebuilds it from scratch, and `fingerprint` is stored for the next load.
+// Returns an invalid file if the cache can't be invalidated.
+base::File OpenAndValidateCache(const base::FilePath& path,
+                                std::string_view fingerprint) {
+  DCHECK(!path.empty());
+
   base::File cache_file(path, kCacheFlags);
   if (!cache_file.IsValid()) {
     return cache_file;
   }
 
-  base::FilePath version_path =
-      path.AddExtension(FILE_PATH_LITERAL(".dawn_version"));
-  std::string_view dawn_rev(
-      reinterpret_cast<const char*>(dawnProcGetVersion()), kDawnVersionSize);
-  // TODO(crbug.com/538727789): Remove Chrome version check once ML Drift
-  // incorporates kernel revision versioning into fingerprint keys.
-  std::string current_version =
-      base::StrCat({version_info::GetVersionNumber(), "_", dawn_rev});
-  std::string cached_version;
+  base::FilePath fingerprint_path = GetCacheFingerprintPath(path);
+  std::string cached_fingerprint;
+  bool fingerprint_match =
+      base::ReadFileToString(fingerprint_path, &cached_fingerprint) &&
+      cached_fingerprint == fingerprint;
 
-  bool version_match = base::ReadFileToString(version_path, &cached_version) &&
-                       cached_version == current_version;
+  if (fingerprint_match) {
+    PrefetchFile(path);
+    return cache_file;
+  }
 
-  if (!version_match) {
-    // Dawn or Chrome version changed (or first run). Invalidate by truncating
-    // file to 0.
-    cache_file.SetLength(0);
-    base::WriteFile(version_path, current_version);
+  // First run or the cache was written by a different configuration.
+  // Invalidate by truncating the file to 0. If either step fails, drop the
+  // fingerprint and skip the cache so a stale cache is never marked valid.
+  if (!cache_file.SetLength(0) ||
+      !base::WriteFile(fingerprint_path, fingerprint)) {
+    base::DeleteFile(fingerprint_path);
+    return base::File();
   }
 
   return cache_file;
 }
 
+// Opens a weight cache, validating it against `fingerprint` if non-empty.
+base::File OpenWeightCache(const base::FilePath& path,
+                           std::string_view fingerprint) {
+  if (path.empty()) {
+    return base::File();
+  }
+  if (!fingerprint.empty()) {
+    return OpenAndValidateCache(path, fingerprint);
+  }
+  PrefetchFile(path);
+  return base::File(path, kCacheFlags);
+}
+
+// Opens a program cache, validating it against the current Dawn version.
+base::File OpenAndValidateProgramCache(const base::FilePath& path) {
+  // dawnProcGetVersion() returns a static array of uint8_t of size 20.
+  constexpr size_t kDawnVersionSize = 20;
+
+  if (path.empty()) {
+    return base::File();
+  }
+
+  // Move the legacy Dawn version file to the new fingerprint file so existing
+  // program caches are not invalidated by the rename.
+  base::FilePath legacy_path = path.AddExtension(kLegacyDawnVersionExtension);
+  if (base::PathExists(legacy_path)) {
+    base::Move(legacy_path, GetCacheFingerprintPath(path));
+  }
+
+  return OpenAndValidateCache(
+      path,
+      std::string_view(reinterpret_cast<const char*>(dawnProcGetVersion()),
+                       kDawnVersionSize));
+}
+
 }  // namespace
+
+base::FilePath GetCacheFingerprintPath(const base::FilePath& cache_path) {
+  return cache_path.AddExtension(kCacheFingerprintExtension);
+}
 
 ModelAssetPaths::ModelAssetPaths() = default;
 ModelAssetPaths::ModelAssetPaths(const ModelAssetPaths&) = default;
@@ -186,7 +235,9 @@ ModelAssets::ModelAssets(const ModelAssets& other)
       adapter_cache(other.adapter_cache.Duplicate()),
       program_cache(other.program_cache.Duplicate()),
       encoder_program_cache(other.encoder_program_cache.Duplicate()),
-      adapter_program_cache(other.adapter_program_cache.Duplicate()) {}
+      adapter_program_cache(other.adapter_program_cache.Duplicate()),
+      mtp_drafter_cache(other.mtp_drafter_cache.Duplicate()),
+      mtp_drafter_program_cache(other.mtp_drafter_program_cache.Duplicate()) {}
 
 ModelAssets& ModelAssets::operator=(const ModelAssets& other) {
   weights = other.weights;
@@ -197,6 +248,8 @@ ModelAssets& ModelAssets::operator=(const ModelAssets& other) {
   program_cache = other.program_cache.Duplicate();
   encoder_program_cache = other.encoder_program_cache.Duplicate();
   adapter_program_cache = other.adapter_program_cache.Duplicate();
+  mtp_drafter_cache = other.mtp_drafter_cache.Duplicate();
+  mtp_drafter_program_cache = other.mtp_drafter_program_cache.Duplicate();
   return *this;
 }
 
@@ -215,34 +268,24 @@ ModelAssets LoadModelAssets(const ModelAssetPaths& paths) {
           ? ModelAssets::FromPath(std::move(paths.weights))
           : ModelAssets::FromFile(base::File(paths.weights, kWeightsFlags));
 
-  if (!paths.cache.empty()) {
-    PrefetchFile(paths.cache);
-    assets.cache = base::File(paths.cache, kCacheFlags);
-  }
+  // Weight caches are validated against the configuration that uses them, and
+  // program caches against the Dawn version.
+  const std::string& weight_fingerprint = paths.weight_cache_fingerprint;
+  assets.cache = OpenWeightCache(paths.cache, weight_fingerprint);
+  assets.encoder_cache =
+      OpenWeightCache(paths.encoder_cache, weight_fingerprint);
+  assets.adapter_cache =
+      OpenWeightCache(paths.adapter_cache, weight_fingerprint);
+  assets.mtp_drafter_cache =
+      OpenWeightCache(paths.mtp_drafter_cache, weight_fingerprint);
 
-  if (!paths.encoder_cache.empty()) {
-    PrefetchFile(paths.encoder_cache);
-    assets.encoder_cache = base::File(paths.encoder_cache, kCacheFlags);
-  }
-
-  if (!paths.adapter_cache.empty()) {
-    PrefetchFile(paths.adapter_cache);
-    assets.adapter_cache = base::File(paths.adapter_cache, kCacheFlags);
-  }
-
-  if (!paths.program_cache.empty()) {
-    assets.program_cache = OpenAndValidateProgramCache(paths.program_cache);
-  }
-
-  if (!paths.encoder_program_cache.empty()) {
-    assets.encoder_program_cache =
-        OpenAndValidateProgramCache(paths.encoder_program_cache);
-  }
-
-  if (!paths.adapter_program_cache.empty()) {
-    assets.adapter_program_cache =
-        OpenAndValidateProgramCache(paths.adapter_program_cache);
-  }
+  assets.program_cache = OpenAndValidateProgramCache(paths.program_cache);
+  assets.encoder_program_cache =
+      OpenAndValidateProgramCache(paths.encoder_program_cache);
+  assets.adapter_program_cache =
+      OpenAndValidateProgramCache(paths.adapter_program_cache);
+  assets.mtp_drafter_program_cache =
+      OpenAndValidateProgramCache(paths.mtp_drafter_program_cache);
 
   return assets;
 }

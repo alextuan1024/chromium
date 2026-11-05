@@ -6,13 +6,12 @@
 #define CHROME_BROWSER_ASH_SYSTEM_WEB_APPS_APPS_RECORDER_APP_CHROME_RECORDER_APP_UI_DELEGATE_H_
 
 #include "ash/webui/recorder_app_ui/recorder_app_ui_delegate.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "components/account_id/account_id.h"
 #include "components/soda/constants.h"
-#include "content/public/browser/web_ui.h"
 
 class ApplicationLocaleStorage;
-class PrefService;
 
 namespace consent_auditor {
 class ConsentAuditor;
@@ -36,11 +35,11 @@ class VariationsService;
  */
 class ChromeRecorderAppUIDelegate : public ash::RecorderAppUIDelegate {
  public:
-  // `local_state`, `application_locale_storage`, `variations_service`,
-  // `user_manager`, `identity_manager`, and `consent_auditor` must not be null
-  // and must outlive `this`.
+  // `application_locale_storage`, `variations_service` and `user_manager` must
+  // not be null and must outlive `this`. `identity_manager` and
+  // `consent_auditor` are null in a guest session. If non-null, they must
+  // outlive `this`.
   ChromeRecorderAppUIDelegate(
-      PrefService* local_state,
       const ApplicationLocaleStorage* application_locale_storage,
       variations::VariationsService* variations_service,
       user_manager::UserManager* user_manager,
@@ -53,8 +52,6 @@ class ChromeRecorderAppUIDelegate : public ash::RecorderAppUIDelegate {
       delete;
 
   // ash::RecorderAppUIDelegate
-  void InstallSoda(speech::LanguageCode language_code) override;
-
   std::u16string GetLanguageDisplayName(
       speech::LanguageCode language_code) override;
 
@@ -70,18 +67,15 @@ class ChromeRecorderAppUIDelegate : public ash::RecorderAppUIDelegate {
       const sync_pb::UserConsentTypes::RecorderSpeakerLabelConsent& consent)
       override;
 
-  media_device_salt::MediaDeviceSaltService* GetMediaDeviceSaltService(
-      content::BrowserContext* context) override;
 
  private:
-  const raw_ref<PrefService> local_state_;
   const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
   const raw_ref<variations::VariationsService> variations_service_;
   const raw_ref<user_manager::UserManager> user_manager_;
 
   const AccountId account_id_;
-  const raw_ref<signin::IdentityManager> identity_manager_;
-  const raw_ref<consent_auditor::ConsentAuditor> consent_auditor_;
+  const raw_ptr<signin::IdentityManager> identity_manager_;
+  const raw_ptr<consent_auditor::ConsentAuditor> consent_auditor_;
 };
 
 #endif  // CHROME_BROWSER_ASH_SYSTEM_WEB_APPS_APPS_RECORDER_APP_CHROME_RECORDER_APP_UI_DELEGATE_H_

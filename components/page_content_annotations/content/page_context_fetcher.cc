@@ -24,11 +24,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
@@ -47,7 +45,6 @@
 #include "components/page_content_annotations/content/page_context_fetcher_options.h"
 #include "components/paint_preview/common/mojom/paint_preview_types.mojom.h"
 #include "components/paint_preview/common/redaction_params.h"
-#include "components/pdf/common/constants.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "content/public/browser/render_frame_host.h"
@@ -56,11 +53,11 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "net/base/schemeful_site.h"
-#include "pdf/buildflags.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
+#include "third_party/blink/public/mojom/content_extraction/inner_text.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -73,14 +70,12 @@
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "url/origin.h"
 
-#if BUILDFLAG(ENABLE_PDF)
-#include "components/pdf/browser/pdf_document_helper.h"
-#include "pdf/mojom/pdf.mojom.h"
-#endif  // BUILDFLAG(ENABLE_PDF)
-
 namespace page_content_annotations {
 
 namespace {
+
+constexpr char kScreenshotBlockedByEnterprisePolicyMessage[] =
+    "Screenshot blocked by enterprise policy";
 
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kPageContextFetcherAndroidViewportCrop,
@@ -280,32 +275,6 @@ std::string_view ToString(content::CopyFromSurfaceError error) {
   }
 }
 
-// Combination of tracked states for when a PDF contents request is made by
-// Glic. Must be kept in sync with PdfRequestStates in
-// src/tools/metrics/histograms/metadata/glic/enums.xml.
-enum class PdfRequestStates {
-  kPdfMainDoc_PdfFound = 0,
-  kPdfMainDoc_PdfNotFound = 1,
-  kNonPdfMainDoc_PdfFound = 2,
-  kNonPdfMainDoc_PdfNotFound = 3,
-  kMaxValue = kNonPdfMainDoc_PdfNotFound,
-};
-
-// PDF support is controlled by the buildflag, not just by platform.
-#if BUILDFLAG(ENABLE_PDF)
-void RecordPdfRequestState(bool is_pdf_document, bool pdf_found) {
-  PdfRequestStates state;
-  if (is_pdf_document) {
-    state = pdf_found ? PdfRequestStates::kPdfMainDoc_PdfFound
-                      : PdfRequestStates::kPdfMainDoc_PdfNotFound;
-  } else {
-    state = pdf_found ? PdfRequestStates::kNonPdfMainDoc_PdfFound
-                      : PdfRequestStates::kNonPdfMainDoc_PdfNotFound;
-  }
-  UMA_HISTOGRAM_ENUMERATION("Glic.TabContext.PdfContentsRequested", state);
-}
-#endif  // BUILDFLAG(ENABLE_PDF)
-
 // Truncate the UTF-8 string to the nearest UTF-8 character that will leave the
 // string size less than or equal to the byte limit. Returns true if the text
 // was truncated.
@@ -390,9 +359,11 @@ std::optional<std::vector<uint8_t>> EncodeScreenshot(
 
 PageContextFetcher::PageContextFetcher(
     GetScreenshotServiceCallback get_screenshot_service_callback,
-    std::unique_ptr<FetchPageProgressListener> progress_listener)
+    std::unique_ptr<FetchPageProgressListener> progress_listener,
+    FetchPdfContentCallback fetch_pdf_content_callback)
     : get_screenshot_service_callback_(
           std::move(get_screenshot_service_callback)),
+      fetch_pdf_content_callback_(std::move(fetch_pdf_content_callback)),
       progress_listener_(std::move(progress_listener)) {}
 PageContextFetcher::~PageContextFetcher() {
   if (callback_) {
@@ -414,8 +385,9 @@ void PageContextFetcher::FetchStart(content::WebContents& aweb_contents,
   // checking and signaling.
   callback_ = std::move(callback);
 
-  if (options.screenshot_options) {
-    GetTabScreenshot(*web_contents(), options.screenshot_options.value());
+  screenshot_options_ = options.screenshot_options;
+  if (screenshot_options_) {
+    GetTabScreenshot(*web_contents());
   } else {
     screenshot_done_ = true;
   }
@@ -426,20 +398,34 @@ void PageContextFetcher::FetchStart(content::WebContents& aweb_contents,
     // This could be more efficient if GetInnerText
     // supported a max length. Instead, we truncate after generating the full
     // text.
-    GetInnerText(
-        *frame,
-        /*node_id=*/std::nullopt,
+    auto params = blink::mojom::InnerTextParams::New();
+    params->include_edit_context = options.inner_text_include_edit_context;
+    content_extraction::GetInnerTextWithParams(
+        *frame, std::move(params),
         base::BindOnce(&PageContextFetcher::ReceivedInnerText, GetWeakPtr()));
   } else {
     inner_text_done_ = true;
   }
 
   pdf_done_ = true;  // Will not fetch PDF contents by default.
-#if BUILDFLAG(ENABLE_PDF)
-  if (options.pdf_options && options.pdf_options->size_limit() > 0) {
-    FetchPdfContent(*(options.pdf_options));
+  if (options.pdf_options && options.pdf_options->size_limit() > 0 &&
+      fetch_pdf_content_callback_) {
+    // Set `pdf_done_` to false before running `fetch_pdf_content_callback_`,
+    // because it may invoke the result callback synchronously. For example,
+    // `PDFDocumentHelper::GetPdfBytes` invokes the callback immediately if it
+    // finds `remote_pdf_client_` is invalid.
+    pdf_done_ = false;  // Will fetch PDF contents.
+    fetch_pdf_content_callback_.Run(
+        *web_contents(), *(options.pdf_options),
+        base::BindOnce(&PageContextFetcher::ReceivedPdfResult,
+                       pdf_weak_ptr_factory_.GetWeakPtr()));
+    // Schedule a timeout to prevent a hanging PDF extraction from making the
+    // entire page context fetch wait for the PDF extraction result
+    // indefinitely.
+    if (!pdf_done_) {
+      SchedulePdfExtractionTimeout();
+    }
   }
-#endif  // BUILDFLAG(ENABLE_PDF)
 
   if (options.annotated_page_content_options) {
     blink::mojom::AIPageContentOptionsPtr ai_page_content_options =
@@ -484,144 +470,54 @@ void PageContextFetcher::FetchStart(content::WebContents& aweb_contents,
   RunCallbackIfComplete();
 }
 
-// TODO: Enable pdf fetching for Android.
-// PDF support is compiled out on some platforms, including Fuchsia.
-#if BUILDFLAG(ENABLE_PDF)
-void PageContextFetcher::FetchPdfContent(const PdfOptions& options) {
-  bool is_pdf_document =
-      web_contents()->GetContentsMimeType() == pdf::kPDFMimeType;
-  pdf::PDFDocumentHelper* pdf_helper =
-      pdf::PDFDocumentHelper::MaybeGetForWebContents(*web_contents());
-
-  if (options.format() == PdfOptions::Format::kBytes) {
-    // This metric is specific to Glic, which requests PDF bytes only.
-    RecordPdfRequestState(is_pdf_document,
-                          /*pdf_found=*/pdf_helper != nullptr);
-  }
-
-  // When document load is not complete:
-  // - GetPdfBytes() is not safe.
-  // - GetPageText() is safe but returns an empty string.
-  //
-  // PageContextFetcher is only responsible for fetching page context. It is not
-  // responsible for waiting for the page (including PDF) being stable --
-  // clients should ensure page stability and manage the timing of extraction.
-  // Clients should not rely on the `IsDocumentLoadComplete()` check below.
-  //
-  // See comments in `AnnotatedPageContentRequest::RequestPdfText` for more
-  // information about the timing of PDF text extraction.
-  if (is_pdf_document && pdf_helper && pdf_helper->IsDocumentLoadComplete()) {
-    switch (options.format()) {
-      case PdfOptions::Format::kBytes: {
-        pdf_helper->GetPdfBytes(
-            options.size_limit(),
-            base::BindOnce(
-                &PageContextFetcher::ReceivedPdfBytes, GetWeakPtr(),
-                pdf_helper->render_frame_host().GetLastCommittedOrigin(),
-                options.size_limit()));
-        pdf_done_ = false;  // Will fetch PDF bytes.
-        break;
-      }
-      case PdfOptions::Format::kText: {
-        // The PDF text is restricted to first page only. This is intentional
-        // for performance considerations. Extracting from a rendered page is
-        // more efficient than extracting from an unrendered page.
-        //
-        // TODO(b/506129567): The size limit is currently enforced after the
-        // text is retrieved from `PDFDocumentHelper::GetPageText`. It can be
-        // more efficient if enforced within this method, inside the PDFium.
-        pdf_helper->GetPageText(
-            /*page_index=*/0,
-            base::BindOnce(
-                &PageContextFetcher::ReceivedPdfText, GetWeakPtr(),
-                pdf_helper->render_frame_host().GetLastCommittedOrigin(),
-                options.size_limit()));
-        pdf_done_ = false;  // Will fetch PDF first page text.
-        break;
-      }
-    }
-  } else if (options.format() == PdfOptions::Format::kText) {
-    // The PDF text extraction is requested but not executed, record failure
-    // status.
-    if (!is_pdf_document) {
-      RecordPdfTextExtractionStatus(PdfTextExtractionStatus::kNotPdf);
-    } else if (!pdf_helper) {
-      RecordPdfTextExtractionStatus(
-          PdfTextExtractionStatus::kPdfExtractionNotAvailable);
-    } else if (!pdf_helper->IsDocumentLoadComplete()) {
-      RecordPdfTextExtractionStatus(
-          PdfTextExtractionStatus::kPdfDocumentNotLoaded);
-    }
-  }
+void PageContextFetcher::SchedulePdfExtractionTimeout() {
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&PageContextFetcher::AbortPdfExtraction, GetWeakPtr()),
+      kPdfExtractionTimeout.Get());
 }
 
-void PageContextFetcher::ReceivedPdfBytes(
-    url::Origin pdf_origin,
-    uint32_t pdf_size_limit,
-    pdf::mojom::PdfListener::GetPdfBytesStatus status,
-    const std::vector<uint8_t>& pdf_bytes,
-    uint32_t page_count) {
+void PageContextFetcher::AbortPdfExtraction() {
+  if (pdf_done_) {
+    return;
+  }
+
+  // Cancel the pending PDF result callback, so that a late extraction result
+  // is ignored by the `FetchPdfContentCallback` implementation.
+  pdf_weak_ptr_factory_.InvalidateWeakPtrs();
+
+  // PDF extraction is aborted. Continue extracting page context and treat PDF
+  // extraction as complete with a null result.
   pdf_done_ = true;
+  RunCallbackIfComplete();
+}
 
-  // Warning!: `pdf_bytes_` can be larger than pdf_size_limit.
-  // `pdf_size_limit` applies to the original PDF size, but the PDF is
-  // re-serialized and returned, so it is not identical to the original.
-  bool size_limit_exceeded =
-      status == pdf::mojom::PdfListener_GetPdfBytesStatus::kSizeLimitExceeded ||
-      pdf_bytes.size() > pdf_size_limit;
-
-  if (size_limit_exceeded) {
-    pending_result_->pdf_result.emplace(std::move(pdf_origin));
-  } else {
-    pending_result_->pdf_result.emplace(std::move(pdf_origin), pdf_bytes);
+void PageContextFetcher::ReceivedPdfResult(
+    std::optional<PdfResult> pdf_result) {
+  // This function can be called after PDF extraction has reached timeout.
+  // Early return in that case.
+  if (pdf_done_) {
+    return;
+  }
+  pdf_done_ = true;
+  if (pdf_result.has_value()) {
+    pending_result_->pdf_result = std::move(pdf_result);
   }
   RunCallbackIfComplete();
 }
 
-void PageContextFetcher::ReceivedPdfText(url::Origin pdf_origin,
-                                         uint32_t text_byte_limit,
-                                         const std::u16string& text) {
-  pdf_done_ = true;
-
-  base::UmaHistogramTimes(kPdfTextExtractionLatencyHistogram,
-                          elapsed_timer_.Elapsed());
-
-  if (text.empty()) {
-    // Note an empty text does not necessarily imply there is something wrong
-    // with the extraction. It is possible that the PDF is blank.
-    RecordPdfTextExtractionStatus(PdfTextExtractionStatus::kEmptyText);
-  } else {
-    RecordPdfTextExtractionStatus(PdfTextExtractionStatus::kSuccess);
+void PageContextFetcher::GetTabScreenshot(content::WebContents& web_contents) {
+  CHECK(screenshot_options_);
+  const ScreenshotOptions& screenshot_options = *screenshot_options_;
+  if (!IsScreenshotAllowed()) {
+    pending_result_->screenshot_result = base::unexpected(
+        ScreenshotError{ScreenshotCaptureStatus::kBlockedByEnterprisePolicy,
+                        kScreenshotBlockedByEnterprisePolicyMessage});
+    screenshot_done_ = true;
+    RunCallbackIfComplete();
+    return;
   }
 
-  // Create a UTF-16 string view that contains at most `text_byte_limit` number
-  // of chars. There is no need to convert the UTF-16 chars beyond this view
-  // since they cannot be within the byte limit, as one char occupies at least
-  // one bytes.
-  std::u16string_view text_view(text);
-  if (text_view.size() > text_byte_limit) {
-    text_view = text_view.substr(0, text_byte_limit);
-  }
-
-  // Convert to UTF-8 string.
-  std::string utf8_text = base::UTF16ToUTF8(text_view);
-  base::UmaHistogramCounts1M(kPdfTextExtractionSizeHistogram, utf8_text.size());
-
-  // Truncate the `utf8_text` to the `text_byte_limit`.
-  bool size_exceeded = TruncateUTF8ToByteLimit(utf8_text, text_byte_limit);
-
-  // Move construct the PDF result.
-  pending_result_->pdf_result.emplace(std::move(pdf_origin),
-                                      std::move(utf8_text));
-  pending_result_->pdf_result->size_exceeded = size_exceeded;
-
-  RunCallbackIfComplete();
-}
-#endif  // BUILDFLAG(ENABLE_PDF)
-
-void PageContextFetcher::GetTabScreenshot(
-    content::WebContents& web_contents,
-    const ScreenshotOptions& screenshot_options) {
   auto* view = web_contents.GetRenderWidgetHostView();
   if (progress_listener_) {
     progress_listener_->BeginScreenshot();
@@ -629,13 +525,11 @@ void PageContextFetcher::GetTabScreenshot(
 
   if (!view || !view->IsSurfaceAvailableForCopy()) {
     ReceivedEncodedScreenshot(
-        base::unexpected("Could not retrieve RenderWidgetHostView."));
+        base::unexpected(ScreenshotError{
+            ScreenshotCaptureStatus::kNoViewOrSurface,
+            "Could not retrieve RenderWidgetHostView."}));
     return;
   }
-
-  screenshot_redaction_color_ = screenshot_options.redaction_color();
-  screenshot_collection_options_ =
-      screenshot_options.screenshot_collection_options();
 
   gfx::Size view_size = view->GetViewBounds().size();
   float dsf = view->GetDeviceScaleFactor();
@@ -646,7 +540,9 @@ void PageContextFetcher::GetTabScreenshot(
         get_screenshot_service_callback_.Run(web_contents.GetBrowserContext());
     if (!service) {
       ReceivedEncodedScreenshot(
-          base::unexpected("Could not get PageContentScreenshotService."));
+          base::unexpected(ScreenshotError{
+              ScreenshotCaptureStatus::kPaintPreviewError,
+              "Could not get PageContentScreenshotService."}));
       return;
     }
 
@@ -656,7 +552,9 @@ void PageContextFetcher::GetTabScreenshot(
             web_contents,
             screenshot_options.paint_preview_options()->iframe_redaction_scope),
         [&](std::string error) {
-          ReceivedEncodedScreenshot(base::unexpected(std::move(error)));
+          ReceivedEncodedScreenshot(base::unexpected(ScreenshotError{
+              ScreenshotCaptureStatus::kPaintPreviewError,
+              std::move(error)}));
           return;
         });
 
@@ -678,8 +576,9 @@ void PageContextFetcher::GetTabScreenshot(
         .clip_rect = clip_rect,
         .scale_factor = GetScreenshotScaleFactor(
             original_view_size_pixels_,
-            GetScreenshotSize(original_view_size_pixels_,
-                              screenshot_collection_options_)),
+            GetScreenshotSize(
+                original_view_size_pixels_,
+                screenshot_options.screenshot_collection_options())),
         .clip_x_coord_override = clip_coord_override,
         .clip_y_coord_override = clip_coord_override,
         .redaction_params = std::move(redaction_params),
@@ -718,7 +617,7 @@ void PageContextFetcher::GetTabScreenshot(
     view->CopyFromSurface(
         src_rect,
         GetScreenshotSize(original_view_size_pixels_,
-                          screenshot_collection_options_),
+                          screenshot_options.screenshot_collection_options()),
         kScreenshotTimeout.Get(),
         base::BindOnce(&PageContextFetcher::ReceivedViewportBitmap,
                        GetWeakPtr()));
@@ -746,9 +645,12 @@ void PageContextFetcher::ReceivedViewportBitmap(
   if (!result.has_value()) {
     base::UmaHistogramEnumeration("Glic.PageContextFetcher.GetScreenshotError",
                                   result.error());
-    ReceivedViewportBitmapOrError(
-        viz::TrackedElementRects(),
-        base::unexpected<std::string>(ToString(result.error())));
+    ScreenshotCaptureStatus status =
+        result.error() == content::CopyFromSurfaceError::kTimeout
+            ? ScreenshotCaptureStatus::kTimeout
+            : ScreenshotCaptureStatus::kCopyFromSurfaceError;
+    ReceivedEncodedScreenshot(base::unexpected(
+        ScreenshotError{status, std::string(ToString(result.error()))}));
     return;
   }
 
@@ -764,6 +666,13 @@ void PageContextFetcher::ReceivedViewportBitmapOrError(
     return;
   }
   if (bitmap_result.has_value()) {
+    // Policy may have changed during capture; do not hand off the pixels.
+    if (!IsScreenshotAllowed()) {
+      ReceivedEncodedScreenshot(base::unexpected(
+          ScreenshotError{ScreenshotCaptureStatus::kBlockedByEnterprisePolicy,
+                          kScreenshotBlockedByEnterprisePolicyMessage}));
+      return;
+    }
     const SkBitmap* bitmap = bitmap_result.value();
     pending_result_->screenshot_result.emplace(
         gfx::SkISizeToSize(bitmap->dimensions()));
@@ -775,10 +684,11 @@ void PageContextFetcher::ReceivedViewportBitmapOrError(
       progress_listener_->ScreenshotCaptured(*bitmap);
     }
     ProcessTrackedElementRects(tracked_element_rects);
-    MaybeAddIframeInfo();
     RedactAndEncodeScreenshotIfNeeded();
   } else {
-    ReceivedEncodedScreenshot(base::unexpected(bitmap_result.error()));
+    ReceivedEncodedScreenshot(base::unexpected(ScreenshotError{
+        ScreenshotCaptureStatus::kPaintPreviewError,
+        std::move(bitmap_result.error())}));
   }
 }
 
@@ -795,27 +705,30 @@ void PageContextFetcher::RedactAndEncodeScreenshot(
              std::optional<ScreenshotOptions::ScreenshotCollectionOptions>
                  screenshot_collection_options)
               -> base::expected<std::pair<std::vector<uint8_t>, SkBitmap>,
-                                std::string> {
-            ASSIGN_OR_RETURN(SkBitmap redacted_bitmap,
-                             PageContextFetcher::RedactScreenshotOnWorkerThread(
-                                 bitmap, visible_bounding_boxes_for_redaction,
-                                 redaction_color));
-
-            std::optional<std::vector<uint8_t>> encoded =
-                EncodeScreenshot(redacted_bitmap, screenshot_collection_options);
-            base::expected<std::pair<std::vector<uint8_t>, SkBitmap>,
-                           std::string>
-                reply;
-            if (encoded) {
-              reply.emplace(
-                  std::make_pair(std::move(encoded.value()), redacted_bitmap));
-            } else {
-              reply = base::unexpected("JPEGCodec failed to encode");
+                                ScreenshotError> {
+            base::expected<SkBitmap, std::string> redacted_bitmap =
+                PageContextFetcher::RedactScreenshotOnWorkerThread(
+                    bitmap, visible_bounding_boxes_for_redaction,
+                    redaction_color);
+            if (!redacted_bitmap.has_value()) {
+              return base::unexpected(ScreenshotError{
+                  ScreenshotCaptureStatus::kRedactionError,
+                  std::move(redacted_bitmap.error())});
             }
-            return reply;
+
+            std::optional<std::vector<uint8_t>> encoded = EncodeScreenshot(
+                *redacted_bitmap, screenshot_collection_options);
+            if (!encoded) {
+              return base::unexpected(ScreenshotError{
+                  ScreenshotCaptureStatus::kEncodingError,
+                  "JPEGCodec failed to encode"});
+            }
+            return std::make_pair(std::move(*encoded),
+                                  std::move(*redacted_bitmap));
           },
           *screenshot_bitmap_, std::move(visible_bounding_boxes_for_redaction),
-          screenshot_redaction_color_, screenshot_collection_options_),
+          screenshot_options_->redaction_color(),
+          screenshot_options_->screenshot_collection_options()),
       base::BindOnce(&PageContextFetcher::ReceivedEncodedScreenshot,
                      GetWeakPtr()));
   screenshot_bitmap_.reset();
@@ -888,11 +801,12 @@ void PageContextFetcher::OnScreenshotTimeout() {
     return;
   }
 
-  ReceivedEncodedScreenshot(base::unexpected("ScreenshotTimeout"));
+  ReceivedEncodedScreenshot(base::unexpected(ScreenshotError{
+      ScreenshotCaptureStatus::kTimeout, "ScreenshotTimeout"}));
 }
 
 void PageContextFetcher::ReceivedEncodedScreenshot(
-    base::expected<std::pair<std::vector<uint8_t>, SkBitmap>, std::string>
+    base::expected<std::pair<std::vector<uint8_t>, SkBitmap>, ScreenshotError>
         screenshot_data) {
   // This function can be called multiple times, for timeout behavior. Early
   // exit if it's already been called.
@@ -902,10 +816,20 @@ void PageContextFetcher::ReceivedEncodedScreenshot(
   auto elapsed = elapsed_timer_.Elapsed();
   screenshot_done_ = true;
   capture_count_lock_ = {};
+  // Policy may have changed while redacting and encoding on the worker thread;
+  // do not hand off the redacted pixels or the encoded screenshot.
+  if (screenshot_data.has_value() && !IsScreenshotAllowed()) {
+    DiscardScreenshotBitmap();
+    screenshot_data = base::unexpected(
+        ScreenshotError{ScreenshotCaptureStatus::kBlockedByEnterprisePolicy,
+                        kScreenshotBlockedByEnterprisePolicyMessage});
+  }
   if (screenshot_data.has_value()) {
+    RecordScreenshotCaptureStatus(ScreenshotCaptureStatus::kSuccess);
     pending_result_->screenshot_result.value().screenshot_data =
         std::move(screenshot_data.value().first);
-    switch (GetScreenshotImageType(screenshot_collection_options_)) {
+    switch (GetScreenshotImageType(
+        screenshot_options_->screenshot_collection_options())) {
       case ScreenshotImageType::kJpeg:
         pending_result_->screenshot_result.value().mime_type = "image/jpeg";
         break;
@@ -925,12 +849,14 @@ void PageContextFetcher::ReceivedEncodedScreenshot(
       progress_listener_->EndScreenshot(std::nullopt);
     }
   } else {
+    RecordScreenshotCaptureStatus(screenshot_data.error().status);
     pending_result_->screenshot_result =
-        base::unexpected(screenshot_data.error());
+        base::unexpected(std::move(screenshot_data.error()));
     base::UmaHistogramTimes(
         "Glic.PageContextFetcher.GetEncodedScreenshot.Failure", elapsed);
     if (progress_listener_) {
-      progress_listener_->EndScreenshot(screenshot_data.error());
+      progress_listener_->EndScreenshot(
+          pending_result_->screenshot_result.error().message);
     }
   }
   if (pending_result_->screenshot_result.has_value()) {
@@ -977,32 +903,35 @@ void PageContextFetcher::ReceivedAnnotatedPageContent(
       progress_listener_->EndAPC(std::nullopt);
     } else {
       progress_listener_->EndAPC(
-          absl::StrFormat("Failed: %s", content.error()));
+          absl::StrFormat("Failed: %s", content.error().message));
     }
   }
 
-  MaybeAddIframeInfo();
   RedactAndEncodeScreenshotIfNeeded();
 
   RunCallbackIfComplete();
 }
 
 void PageContextFetcher::RunCallbackIfComplete() {
-  if (!initialization_done_) {
+  // `callback_` may already be null if the fetch completed earlier.
+  if (!initialization_done_ || !callback_) {
     return;
   }
 
-  // Continue only if the primary page changed or work is complete.
-  bool work_complete = (screenshot_done_ && inner_text_done_ &&
-                        annotated_page_content_done_ && pdf_done_) ||
-                       primary_page_changed_;
-  if (!work_complete) {
+  bool web_contents_went_away =
+      !web_contents() || !web_contents()->GetPrimaryMainFrame();
+
+  bool all_tasks_complete = (screenshot_done_ && inner_text_done_ &&
+                             annotated_page_content_done_ && pdf_done_);
+  bool page_still_valid = !primary_page_changed_ && !web_contents_went_away;
+  if (!all_tasks_complete && page_still_valid) {
     return;
   }
+
   base::UmaHistogramTimes("Glic.PageContextFetcher.Total",
                           elapsed_timer_.Elapsed());
 
-  if (!web_contents() || !web_contents()->GetPrimaryMainFrame()) {
+  if (web_contents_went_away) {
     std::move(callback_).Run(base::unexpected(FetchPageContextErrorDetails{
         FetchPageContextError::kWebContentsWentAway,
         "web contents went away"}));
@@ -1013,6 +942,23 @@ void PageContextFetcher::RunCallbackIfComplete() {
     std::move(callback_).Run(base::unexpected(FetchPageContextErrorDetails{
         FetchPageContextError::kWebContentsChanged, "web contents changed"}));
     return;
+  }
+
+  // Policy may have changed while other tasks finished after the screenshot
+  // was encoded; do not hand off the result with the screenshot.
+  if (pending_result_->screenshot_result.has_value() &&
+      !IsScreenshotAllowed()) {
+    DiscardScreenshotBitmap();
+    pending_result_->screenshot_result = base::unexpected(
+        ScreenshotError{ScreenshotCaptureStatus::kBlockedByEnterprisePolicy,
+                        kScreenshotBlockedByEnterprisePolicyMessage});
+  }
+
+  // Build the screenshot metadata only now, after the final policy check and
+  // only if there is a screenshot to describe, so nothing is populated for a
+  // blocked or failed screenshot.
+  if (pending_result_->screenshot_result.has_value()) {
+    MaybeAddIframeInfo();
   }
 
   std::move(callback_).Run(base::ok(std::move(pending_result_)));
@@ -1163,6 +1109,20 @@ void PageContextFetcher::CollectTrackedElementRectsForPassword(
   }
 }
 
+bool PageContextFetcher::IsScreenshotAllowed() const {
+  if (!web_contents()) {
+    return false;
+  }
+  const auto& callback = screenshot_options_->is_screenshot_allowed_callback();
+  return !callback || callback.Run(web_contents());
+}
+
+void PageContextFetcher::DiscardScreenshotBitmap() {
+  screenshot_capture_done_ = false;
+  screenshot_bitmap_.reset();
+  iframe_info_.clear();
+}
+
 base::WeakPtr<PageContextFetcher> PageContextFetcher::GetWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
 }
@@ -1191,6 +1151,12 @@ BASE_FEATURE(kGlicScreenshotSensitivePaymentRedaction,
 BASE_FEATURE(kGlicEmbeddedPdfBytesExtraction,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kPageContextFetcherPdfExtraction,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+const base::FeatureParam<base::TimeDelta> kPdfExtractionTimeout{
+    &kPageContextFetcherPdfExtraction, "timeout", base::Seconds(5)};
+
 const base::FeatureParam<int> kMaxScreenshotWidthParam{
     &kGlicTabScreenshotExperiment, "max_screenshot_width", 0};
 
@@ -1211,8 +1177,12 @@ const base::FeatureParam<base::TimeDelta> kScreenshotTimeoutBrowserAllowance{
     base::Milliseconds(500)};
 
 FetchPageContextResult::FetchPageContextResult()
-    : screenshot_result(base::unexpected("Uninitialized")),
-      annotated_page_content_result(base::unexpected("Uninitialized")) {}
+    : screenshot_result(base::unexpected(
+          ScreenshotError{ScreenshotCaptureStatus::kUnknown, "Uninitialized"})),
+      annotated_page_content_result(base::unexpected(
+          optimization_guide::AIPageContentError{
+              optimization_guide::AIPageContentExtractionStatus::kUnknown,
+              "Uninitialized"})) {}
 
 FetchPageContextResult::FetchPageContextResult(FetchPageContextResult&&) =
     default;

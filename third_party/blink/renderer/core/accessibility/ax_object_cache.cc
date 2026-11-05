@@ -31,7 +31,11 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
+#include "base/time/time.h"
 #include "third_party/blink/public/web/web_ax_enums.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
@@ -40,8 +44,34 @@
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/text/case_folding_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "ui/accessibility/ax_error_types.h"
+#include "ui/accessibility/ax_mode.h"
+#include "ui/accessibility/ax_tree_update.h"
 
 namespace blink {
+
+namespace {
+
+constexpr char kAXTreeSnapshotterErrorHistogramName[] =
+    "Accessibility.AXTreeSnapshotter.Snapshot.Error";
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(AXTreeSnapshotErrorReason)
+enum class AXTreeSnapshotErrorReason {
+  kGenericSerializationError = 0,
+  kNoWebFrame = 1,
+  kNoActiveDocument = 2,
+  kNoExistingAXObjectCache = 3,
+  kSerializeMaxNodesReached = 4,
+  kSerializeTimeoutReached = 5,
+  kSerializeMaxNodesAndTimeoutReached = 6,
+  kMaxValue = kSerializeMaxNodesAndTimeoutReached,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/accessibility/enums.xml:AXTreeSnapshotErrorReason)
+
+}  // namespace
 
 AXObjectCache::AXObjectCacheCreateFunction AXObjectCache::create_function_ =
     nullptr;
@@ -63,13 +93,59 @@ AXObjectCache* AXObjectCache::CreateSnapshotter(Document& document,
   return create_function_(document, ax_mode, /*for_snapshot_only*/ true);
 }
 
+void AXObjectCache::SnapshotAccessibilityTree(Document* document,
+                                              size_t max_nodes,
+                                              base::TimeDelta timeout,
+                                              ui::AXTreeUpdate* response,
+                                              const ui::AXMode& ax_mode) {
+  base::UmaHistogramBoolean("Accessibility.AXTreeSnapshotter.Snapshot.Request",
+                            true);
+
+  if (!document || !document->IsActive()) {
+    base::UmaHistogramEnumeration(kAXTreeSnapshotterErrorHistogramName,
+                                  AXTreeSnapshotErrorReason::kNoActiveDocument);
+    return;
+  }
+
+  // Do not generate inline textboxes, which are expensive to create and just
+  // present extra noise to snapshot consumers.
+  ui::AXMode snapshot_mode(ax_mode);
+  snapshot_mode.set_mode(ui::AXMode::kInlineTextBoxes, false);
+
+  ui::AXSerializationErrorFlagSet out_error;
+  // This creates a different AXObjectCache from any owned by document for the
+  // case where a11y stays on, because the AXMode may require a different set
+  // of nodes.
+  AXObjectCache* cache = CreateSnapshotter(*document, snapshot_mode);
+  cache->SerializeEntireTreeAndDispose(max_nodes, timeout, response,
+                                       &out_error);
+
+  bool max_nodes_reached =
+      out_error.Has(ui::AXSerializationErrorFlag::kMaxNodesReached);
+  bool timeout_reached =
+      out_error.Has(ui::AXSerializationErrorFlag::kTimeoutReached);
+  if (max_nodes_reached && timeout_reached) {
+    base::UmaHistogramEnumeration(
+        kAXTreeSnapshotterErrorHistogramName,
+        AXTreeSnapshotErrorReason::kSerializeMaxNodesAndTimeoutReached);
+  } else if (max_nodes_reached) {
+    base::UmaHistogramEnumeration(
+        kAXTreeSnapshotterErrorHistogramName,
+        AXTreeSnapshotErrorReason::kSerializeMaxNodesReached);
+  } else if (timeout_reached) {
+    base::UmaHistogramEnumeration(
+        kAXTreeSnapshotterErrorHistogramName,
+        AXTreeSnapshotErrorReason::kSerializeTimeoutReached);
+  }
+}
+
 namespace {
 
 using ARIAWidgetSet = HashSet<String, DeprecatedCaseFoldingHashTraits<String>>;
 
 const ARIAWidgetSet& ARIARoleWidgetSet() {
   // clang-format off
-  DEFINE_STATIC_LOCAL(ARIAWidgetSet, widget_set, ({
+  static base::NoDestructor<ARIAWidgetSet> widget_set({
     // From http://www.w3.org/TR/wai-aria/roles#widget_roles
     "alert", "alertdialog", "button", "checkbox", "dialog", "gridcell", "link",
     "log", "marquee", "menuitem", "menuitemcheckbox", "menuitemradio", "option",
@@ -79,9 +155,9 @@ const ARIAWidgetSet& ARIARoleWidgetSet() {
     // This list is also from the w3.org site referenced above.
     "combobox", "grid", "listbox", "menu", "menubar", "radiogroup", "tablist",
     "tree", "treegrid",
-  }));
+  });
   // clang-format on
-  return widget_set;
+  return *widget_set;
 }
 
 bool IncludesARIAWidgetRole(const String& role) {
@@ -127,16 +203,19 @@ bool AXObjectCache::IsInsideFocusableElementOrARIAWidget(const Node& node) {
   const Node* cur_node = &node;
   do {
     if (const auto* element = DynamicTo<Element>(cur_node)) {
-      if (element->IsFocusable())
+      if (element->IsFocusable()) {
         return true;
+      }
       String role = element->getAttribute(html_names::kRoleAttr);
-      if (!role.empty() && IncludesARIAWidgetRole(role))
+      if (!role.empty() && IncludesARIAWidgetRole(role)) {
         return true;
-      if (HasInteractiveARIAAttribute(*element))
+      }
+      if (HasInteractiveARIAAttribute(*element)) {
         return true;
+      }
     }
     cur_node = cur_node->parentNode();
-  } while (cur_node && !IsA<HTMLBodyElement>(node));
+  } while (cur_node && !IsA<HTMLBodyElement>(cur_node));
   return false;
 }
 

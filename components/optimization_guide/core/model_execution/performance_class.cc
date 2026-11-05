@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "base/functional/callback_helpers.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -21,10 +22,7 @@
 #include "base/version_info/version_info.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
-#include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
 #include "components/optimization_guide/optimization_guide_buildflags.h"
 #include "components/optimization_guide/public/mojom/model_broker_debug.mojom.h"
 #include "components/prefs/pref_service.h"
@@ -40,6 +38,18 @@
 
 namespace optimization_guide {
 
+BASE_FEATURE(kLogOnDeviceMetricsOnStartup, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelFetchPerformanceClassEveryStartup,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+base::TimeDelta GetOnDeviceStartupMetricDelay() {
+  static const base::FeatureParam<base::TimeDelta> kOnDeviceStartupMetricDelay{
+      &kLogOnDeviceMetricsOnStartup, "on_device_startup_metric_delay",
+      base::Minutes(3)};
+  return kOnDeviceStartupMetricDelay.Get();
+}
+
 namespace {
 
 #if BUILDFLAG(BUILD_WITH_INTERNAL_OPTIMIZATION_GUIDE)
@@ -47,7 +57,7 @@ namespace {
 // performance class requirement.
 uint64_t GetMinimumVramRequired() {
   std::string perf_classes_string =
-      optimization_guide::features::kPerformanceClassListForOnDeviceModel.Get();
+      on_device_model::features::kPerformanceClassListForOnDeviceModel.Get();
 
   if (optimization_guide::IsPerformanceClassCompatible(
           perf_classes_string,
@@ -86,7 +96,7 @@ const char kOverridePerformanceClassSwitch[] =
 
 bool NeedsPerformanceClassUpdate(const PrefService& local_state) {
   if (base::FeatureList::IsEnabled(
-          features::kOnDeviceModelFetchPerformanceClassEveryStartup)) {
+          kOnDeviceModelFetchPerformanceClassEveryStartup)) {
     return true;
   }
   return local_state.GetString(model_execution::prefs::localstate::
@@ -327,7 +337,7 @@ void PerformanceClassifier::ScheduleEvaluation() {
       FROM_HERE,
       base::BindOnce(&PerformanceClassifier::EnsurePerformanceClassAvailable,
                      weak_ptr_factory_.GetWeakPtr(), base::DoNothing()),
-      optimization_guide::features::GetOnDeviceStartupMetricDelay());
+      GetOnDeviceStartupMetricDelay());
 }
 
 void PerformanceClassifier::EnsurePerformanceClassAvailable(
@@ -372,7 +382,7 @@ OnDeviceModelPerformanceClass PerformanceClassifier::GetPerformanceClass()
 
 bool PerformanceClassifier::IsDeviceGPUCapable() const {
   return IsPerformanceClassCompatible(
-      features::kPerformanceClassListForOnDeviceModel.Get(),
+      on_device_model::features::kPerformanceClassListForOnDeviceModel.Get(),
       GetPerformanceClass());
 }
 
@@ -382,14 +392,16 @@ bool PerformanceClassifier::IsDeviceCapable() const {
 
 bool PerformanceClassifier::IsLowTierDevice() const {
   return IsPerformanceClassCompatible(
-      features::kLowTierPerformanceClassListForOnDeviceModel.Get(),
+      on_device_model::features::kLowTierPerformanceClassListForOnDeviceModel
+          .Get(),
       GetPerformanceClass());
 }
 
 bool PerformanceClassifier::SupportsImageInput() const {
   return (IsDeviceGPUCapable() &&
           IsPerformanceClassCompatible(
-              features::kPerformanceClassListForImageInput.Get(),
+              on_device_model::features::kPerformanceClassListForImageInput
+                  .Get(),
               GetPerformanceClass())) ||
          (IsDeviceCapable() &&
           base::FeatureList::IsEnabled(kOnDeviceModelCpuImageInput));

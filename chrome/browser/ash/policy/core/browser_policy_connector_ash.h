@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -188,10 +189,6 @@ class BrowserPolicyConnectorAsh : public ChromeBrowserPolicyConnector,
     return tpm_auto_update_mode_policy_handler_.get();
   }
 
-  SystemProxyHandler* GetSystemProxyHandler() const {
-    return system_proxy_handler_.get();
-  }
-
   DeviceNamePolicyHandler* GetDeviceNamePolicyHandler() const {
     return device_name_policy_handler_.get();
   }
@@ -340,6 +337,8 @@ class BrowserPolicyConnectorAsh : public ChromeBrowserPolicyConnector,
   // RequiredClientCertificateForDevice device policy.
   std::unique_ptr<ash::cert_provisioning::CertProvisioningScheduler>
       device_cert_provisioning_scheduler_;
+
+  base::CallbackListSubscription timezone_policy_subscription_;
 
   base::WeakPtrFactory<BrowserPolicyConnectorAsh> weak_ptr_factory_{this};
 };

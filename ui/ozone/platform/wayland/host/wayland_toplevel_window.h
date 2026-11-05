@@ -5,15 +5,18 @@
 #ifndef UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_TOPLEVEL_WINDOW_H_
 #define UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_TOPLEVEL_WINDOW_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <ostream>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-shared.h"
 #include "ui/display/types/native_display_delegate.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
 #include "ui/ozone/platform/wayland/host/xdg_session.h"
@@ -57,6 +60,7 @@ class WaylandToplevelWindow : public WaylandWindow,
   void UpdateActivationState();
 
   // WaylandWindow overrides:
+  void SetBoundsInDIP(const gfx::Rect& bounds_dip) override;
   void UpdateWindowScale(bool update_bounds) override;
   WaylandToplevelWindow* AsWaylandToplevelWindow() override;
 
@@ -71,7 +75,10 @@ class WaylandToplevelWindow : public WaylandWindow,
       int32_t height,
       const WindowStates& window_states) override;
   void HandleSurfaceConfigure(uint32_t serial) override;
+  void OnCloseRequest() override;
+  uint32_t DispatchEvent(const PlatformEvent& event) override;
   void OnSequencePoint(int64_t seq) override;
+  void OnFrameCommitted(int64_t seq) override;
   bool IsSurfaceConfigured() override;
   void AckConfigure(uint32_t serial) override;
 
@@ -95,6 +102,9 @@ class WaylandToplevelWindow : public WaylandWindow,
   void Hide() override;
   bool IsVisible() const override;
   void SetTitle(const std::u16string& title) override;
+  void SetWindowClass(const std::string& wm_class_name,
+                      const std::string& wm_class_class,
+                      const std::string& wayland_app_id) override;
   void SetFullscreen(bool fullscreen, int64_t target_display_id) override;
   void Maximize() override;
   void Minimize() override;
@@ -170,6 +180,10 @@ class WaylandToplevelWindow : public WaylandWindow,
   // Calls UpdateWindowShape, set_input_region and set_opaque_region for this
   // toplevel window.
   void UpdateWindowMask() override;
+  void OnStateRequestApplied(const PlatformWindowDelegate::State& old_state,
+                             const PlatformWindowDelegate::State& new_state,
+                             int64_t viz_seq,
+                             bool from_client) override;
 
   void UpdateSystemModal();
 
@@ -184,6 +198,35 @@ class WaylandToplevelWindow : public WaylandWindow,
   bool ShouldTriggerStateChange(PlatformWindowState state,
                                 int64_t target_display_id) const;
 
+  // Sends set_minimized and a wl_display.sync to track when the compositor has
+  // processed it.
+  void SendSetMinimized();
+
+  // wl_callback_listener callback for `minimize_sync_callback_`.
+  static void OnMinimizeSyncDone(void* data,
+                                 wl_callback* callback,
+                                 uint32_t time);
+
+  // Sends set_fullscreen and a wl_display.sync to track when the compositor has
+  // processed it.
+  void SendSetFullscreen(int64_t fullscreen_display_id);
+
+  // wl_callback_listener callback for `fullscreen_sync_callback_`.
+  static void OnFullscreenSyncDone(void* data,
+                                   wl_callback* callback,
+                                   uint32_t time);
+
+  // Sends a wl_display.sync after committing a client-resized frame to track
+  // when the compositor has processed the updated window geometry.
+  void SendBoundsSync();
+
+  // wl_callback_listener callback for `bounds_sync_callback_`.
+  static void OnBoundsSyncDone(void* data,
+                               wl_callback* callback,
+                               uint32_t time);
+
+  void ClearPendingBoundsSync();
+
   // We want to remember whether it was previously maximized, for cases like
   // restoring from fullscreen or compositor-initiated tiling, so we can
   // restore back to the correct state.
@@ -192,6 +235,16 @@ class WaylandToplevelWindow : public WaylandWindow,
 
   // Activates the surface using XDG activation given an activation token.
   void ActivateWithToken(std::string token);
+
+  // Destroys the xdg_toplevel right away, see Hide().
+  void HideNow();
+
+  // Runs a Hide() that was deferred until an activation token request
+  // completed.
+  void OnDeferredHide();
+
+  // Whether this toplevel restores a toplevel of a session.
+  bool IsRestoredFromSession() const;
 
   WaylandOutput* GetWaylandOutputForDisplayId(int64_t display_id);
 
@@ -232,6 +285,28 @@ class WaylandToplevelWindow : public WaylandWindow,
 
   bool pending_minimize_ = false;
 
+  // Set while the compositor has not yet processed the last set_minimized
+  // request. Configures received in the meantime were sent before the
+  // compositor minimized the window, so their activated state must not be
+  // taken to mean that the window was restored.
+  wl::Object<wl_callback> minimize_sync_callback_;
+
+  // Set while the compositor has not yet processed the last set_fullscreen
+  // request. Configures received in the meantime were sent before the
+  // compositor fullscreened the window, so their non-fullscreen state must not
+  // be taken to mean that fullscreen was exited.
+  wl::Object<wl_callback> fullscreen_sync_callback_;
+
+  // Tracks window geometries sent to the compositor prior to an uncommitted or
+  // un-synced client-initiated resize. Compositors such as Mutter echo the last
+  // committed window geometry on state-only configures (e.g. activation), so
+  // configures carrying one of these sizes before the resized frame commits and
+  // syncs must not overwrite the client-requested bounds.
+  gfx::Size last_sent_geometry_size_dip_;
+  std::vector<gfx::Size> stale_geometry_sizes_dip_;
+  std::optional<int64_t> pending_bounds_viz_seq_;
+  wl::Object<wl_callback> bounds_sync_callback_;
+
   bool is_active_ = false;
   bool is_xdg_active_ = false;
   bool is_suspended_ = false;
@@ -248,6 +323,11 @@ class WaylandToplevelWindow : public WaylandWindow,
   // When use_native_frame is false, client-side decoration is set.
   // When use_native_frame is true, server-side decoration is set.
   bool use_native_frame_ = false;
+  // Set when the frame type changes, until the next configure. The frame
+  // insets change with the frame type, so the next configure derives the
+  // bounds from the window geometry size if the compositor leaves the size to
+  // the client.
+  bool frame_type_changed_ = false;
 
   std::optional<std::vector<gfx::Rect>> opaque_region_px_;
   std::optional<std::vector<gfx::Rect>> input_region_px_;
@@ -265,6 +345,12 @@ class WaylandToplevelWindow : public WaylandWindow,
   // Activation will only be done if the surface is configured.
   // If it is requested before, it is stored and executed in ack configure.
   std::optional<std::string> pending_configure_activation_token_ = std::nullopt;
+
+  // Set while Hide() is deferred until an activation token requested on behalf
+  // of this window has been used. See Hide(). Configure, close and input
+  // events are ignored meanwhile, as the delegate considers the window hidden
+  // and may already be tearing down.
+  bool hide_deferred_ = false;
 
   raw_ptr<WorkspaceExtensionDelegate> workspace_extension_delegate_ = nullptr;
 

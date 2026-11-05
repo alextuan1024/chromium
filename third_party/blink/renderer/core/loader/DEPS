@@ -26,9 +26,6 @@ specific_include_rules = {
       "+third_party/blink/public/common/switches.h",
       "+third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
     ],
-    "frame_fetch_context.cc" : [
-      "+base/command_line.h"
-    ],
     "frame_fetch_context_test.cc" : [
       "+base/files/file_util.h",
       "+base/files/scoped_temp_dir.h"
@@ -36,6 +33,7 @@ specific_include_rules = {
 }
 include_rules = [
   "+base/containers/flat_map.h",
+  "+base/containers/flat_set.h",
   "+base/no_destructor.h",
   "+base/strings/utf_string_conversions.h",
   "+services/network/public/cpp/client_hints.h",

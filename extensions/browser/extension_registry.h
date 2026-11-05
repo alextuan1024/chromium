@@ -116,8 +116,14 @@ class ExtensionRegistry : public KeyedService {
                          UnloadedExtensionReason reason);
 
   // Invokes the observer method OnExtensionEnabled(). The extension must be
-  // enabled at the time of the call.
+  // enabled at the time of the call. Called when an extension goes from
+  // disabled to enabled, and when a blocklisted or blocked extension is loaded
+  // again as enabled.
   void TriggerOnEnabled(const Extension* extension);
+
+  // Invokes the observer method `OnExtensionReloaded()`. The `extension` must
+  // be enabled at the time of the call.
+  void TriggerOnReloaded(const Extension* extension);
 
   // If this is a fresh install then `is_update` is false and there must not be
   // any installed extension with `extension`'s ID. If this is an update then

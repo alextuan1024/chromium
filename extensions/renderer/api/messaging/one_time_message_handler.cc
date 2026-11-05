@@ -126,7 +126,7 @@ v8::Local<v8::Array> GetListenerResultArray(v8::Isolate* isolate,
 
 void DelayedOneTimeMessageCallbackHelper(
     const v8::FunctionCallbackInfo<v8::Value>& info) {
-  CHECK(info.Data()->IsString());
+  CHECK(info.Data().As<v8::Value>()->IsString());
 
   gin::Arguments arguments(info);
   v8::Isolate* isolate = arguments.isolate();

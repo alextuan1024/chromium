@@ -8,12 +8,14 @@
 #include <set>
 #include <vector>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
@@ -21,12 +23,15 @@
 #include "chrome/browser/contextual_tasks/active_task_context_provider.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_panel_controller.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_service_factory.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_test_utils.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_web_contents_user_data.h"
 #include "chrome/browser/contextual_tasks/mock_contextual_tasks_panel_controller.h"
 #include "chrome/browser/tab_list/mock_tab_list_interface.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/tab_list/tab_list_interface_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#include "chrome/browser/ui/tabs/page_context_eligibility_helper.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/contextual_search/mock_contextual_search_session_handle.h"
 #include "components/contextual_tasks/public/context_decoration_params.h"
@@ -35,6 +40,8 @@
 #include "components/contextual_tasks/public/features.h"
 #include "components/contextual_tasks/public/mock_contextual_tasks_service.h"
 #include "components/omnibox/common/composebox_features.h"
+#include "components/optimization_guide/content/browser/page_context_eligibility.h"
+#include "components/optimization_guide/content/browser/page_context_eligibility_observer.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
@@ -44,8 +51,13 @@
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/lens_server_proto/search_communication.pb.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "ui/gfx/range/range.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
+#endif
 
 namespace contextual_tasks {
 
@@ -67,6 +79,7 @@ class MockObserver : public ActiveTaskContextProvider::Observer {
 class ActiveTaskContextProviderImplTest : public testing::Test {
  public:
   void SetUp() override {
+    SKIP_IF_CONTEXTUAL_TASKS_UNSUPPORTED();
     InitializeFeatureList();
     profile_ = std::make_unique<TestingProfile>();
     browser_window_ = std::make_unique<NiceMock<MockBrowserWindowInterface>>();
@@ -114,6 +127,9 @@ class ActiveTaskContextProviderImplTest : public testing::Test {
   }
 
   void TearDown() override {
+    if (IsSkipped()) {
+      return;
+    }
     provider_->RemoveObserver(&observer_);
     provider_.reset();
     contextual_tasks_panel_controller_.reset();
@@ -142,6 +158,8 @@ class ActiveTaskContextProviderImplTest : public testing::Test {
                                                          tab.get());
 
     ON_CALL(*tab, GetContents()).WillByDefault(Return(web_contents_ptr));
+    ON_CALL(*tab, GetBrowserWindowInterface())
+        .WillByDefault(Return(browser_window_.get()));
 
     tabs::TabInterface* tab_ptr = tab.get();
     tabs_.push_back(std::move(tab));
@@ -212,6 +230,144 @@ TEST_F(ActiveTaskContextProviderImplTest, RefreshContextWithTabs) {
   std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
   base::RunLoop run_loop;
   EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  provider_->RefreshContext();
+  run_loop.Run();
+}
+
+// Regression test: the underline must survive even when the task context
+// (populated from server-echoed URL resources) has no attachment carrying a
+// tab id, as long as the session still holds the tab as submitted/persisted
+// context.
+TEST_F(ActiveTaskContextProviderImplTest,
+       RefreshContextUsesSessionSubmittedTabsWhenContextLacksTabId) {
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+  const GURL url("https://example.com");
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+  // Server-style resource: same URL, but no tab id.
+  task.AddUrlResource(UrlResource(url, ResourceType::kWebpage));
+
+  contextual_search::FileInfo file_info;
+  file_info.tab_session_id = id1;
+  file_info.tab_url = url;
+  file_info.tab_title = "Example";
+  EXPECT_CALL(dummy_handle_, GetSubmittedContextFileInfos())
+      .WillRepeatedly(
+          Return(std::vector<contextual_search::FileInfo>{file_info}));
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillOnce(Return(std::make_pair(task_id, &dummy_handle_)));
+
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillOnce([&task](const base::Uuid&,
+                        const std::set<ContextualTaskContextSource>&,
+                        std::unique_ptr<ContextDecorationParams>,
+                        base::OnceCallback<void(
+                            std::unique_ptr<ContextualTaskContext>)> callback) {
+        std::move(callback).Run(std::make_unique<ContextualTaskContext>(task));
+      });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+
+  std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
+  base::RunLoop run_loop;
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  provider_->RefreshContext();
+  run_loop.Run();
+}
+
+// Session-sourced tabs are subject to the same token gate as context
+// attachments: if the session no longer has a token for the tab, it is not
+// underlined.
+TEST_F(ActiveTaskContextProviderImplTest,
+       RefreshContextIgnoresSessionSubmittedTabWithoutToken) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kContextManagementInComposebox);
+
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+  const GURL url("https://example.com");
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+
+  contextual_search::FileInfo file_info;
+  file_info.tab_session_id = id1;
+  file_info.tab_url = url;
+  EXPECT_CALL(dummy_handle_, GetSubmittedContextFileInfos())
+      .WillRepeatedly(
+          Return(std::vector<contextual_search::FileInfo>{file_info}));
+  // `dummy_handle_` holds no uploaded/submitted/persisted tokens, so
+  // GetTokenForTab(id1) is empty.
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillOnce(Return(std::make_pair(task_id, &dummy_handle_)));
+
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillOnce([&task](const base::Uuid&,
+                        const std::set<ContextualTaskContextSource>&,
+                        std::unique_ptr<ContextDecorationParams>,
+                        base::OnceCallback<void(
+                            std::unique_ptr<ContextualTaskContext>)> callback) {
+        std::move(callback).Run(std::make_unique<ContextualTaskContext>(task));
+      });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  provider_->RefreshContext();
+  run_loop.Run();
+}
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       RefreshContextClearsUnderlinesWhenSmartTabSharingToggled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kContextManagementInComposebox);
+
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+  UrlResource resource(GURL("https://example.com"), ResourceType::kWebpage);
+  resource.tab_id = id1;
+  task.AddUrlResource(resource);
+
+  dummy_handle_.set_smart_tab_sharing_toggled_since_last_turn(true);
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillOnce(Return(std::make_pair(task_id, &dummy_handle_)));
+
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillOnce([&task](const base::Uuid&,
+                        const std::set<ContextualTaskContextSource>&,
+                        std::unique_ptr<ContextDecorationParams>,
+                        base::OnceCallback<void(
+                            std::unique_ptr<ContextualTaskContext>)> callback) {
+        std::move(callback).Run(std::make_unique<ContextualTaskContext>(task));
+      });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
       .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
 
   provider_->RefreshContext();
@@ -509,26 +665,6 @@ TEST_F(ActiveTaskContextProviderImplTest, ObserverNotifiedOnDestruction) {
   local_provider.reset();
 }
 
-class ActiveTaskContextProviderImplFeatureDisabledTest
-    : public ActiveTaskContextProviderImplTest {
- public:
-  void InitializeFeatureList() override {
-    feature_list_.InitWithFeatures(
-        {}, {kContextualTasksSidePanel, kContextualTasks});
-  }
-};
-
-TEST_F(ActiveTaskContextProviderImplFeatureDisabledTest,
-       RefreshContextWhenFeatureDisabled) {
-  EXPECT_CALL(*contextual_tasks_panel_controller_,
-              GetSessionHandleForActiveTabOrPanel())
-      .Times(0);
-  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
-      .Times(1);
-
-  provider_->RefreshContext();
-}
-
 class ActiveTaskContextProviderImplSidePanelOnlyTest
     : public ActiveTaskContextProviderImplTest {
  public:
@@ -545,6 +681,474 @@ TEST_F(ActiveTaskContextProviderImplSidePanelOnlyTest,
       .WillOnce(testing::Return(std::make_pair(std::nullopt, nullptr)));
 
   provider_->RefreshContext();
+}
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       Rearchitecture_TabNavigationClearsUnderlineAndRemovesSessionTabContext) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kContextualTasks, kContextualTasksRearchitecture}, {});
+
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+  const GURL url1("https://example.com/1");
+  const GURL url2("https://other.com/2");
+  content::WebContentsTester::For(tab1->GetContents())->NavigateAndCommit(url1);
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+  UrlResource resource(url1, ResourceType::kWebpage);
+  resource.tab_id = id1;
+  task.AddUrlResource(resource);
+
+  base::UnguessableToken token = base::UnguessableToken::Create();
+  dummy_handle_.GetUploadedContextTokensForTesting().push_back(token);
+  dummy_handle_.AttachTabPendingUpload(token, id1.id(), url1, "Example 1");
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillRepeatedly(Return(std::make_pair(task_id, &dummy_handle_)));
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillRepeatedly(
+          [&task](
+              const base::Uuid&, const std::set<ContextualTaskContextSource>&,
+              std::unique_ptr<ContextDecorationParams>,
+              base::OnceCallback<void(std::unique_ptr<ContextualTaskContext>)>
+                  callback) {
+            std::move(callback).Run(
+                std::make_unique<ContextualTaskContext>(task));
+          });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+  EXPECT_CALL(*tab_list_, GetActiveTab()).WillRepeatedly(Return(tab1));
+
+  // Add a local tab underline (as `CaptureAndUploadTabContext` does) and
+  // refresh backend context.
+  provider_->AddLocalTabUnderline(tab1->GetHandle());
+  std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .Times(testing::AtLeast(1));
+  provider_->RefreshContext();
+  ASSERT_EQ(1u, dummy_handle_.GetTabContextState().attached.size());
+
+  // Navigating `tab1` to `url2` must clear both its local and backend
+  // underlines and remove `tab1` from the session handle's attached tabs.
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .Times(testing::AtLeast(1));
+  content::WebContentsTester::For(tab1->GetContents())->NavigateAndCommit(url2);
+  EXPECT_TRUE(dummy_handle_.GetTabContextState().attached.empty());
+
+  // Even after `TakeRemovedContexts()` drains `displaced_submitted_tabs_`,
+  // navigating `tab1` back to `url1` must not restore the backend underline.
+  dummy_handle_.TakeRemovedContexts();
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .Times(testing::AtLeast(1));
+  content::WebContentsTester::For(tab1->GetContents())->NavigateAndCommit(url1);
+}
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       Rearchitecture_TabCloseClearsUnderlineAndRemovesSessionTabContext) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kContextualTasks, kContextualTasksRearchitecture}, {});
+
+  tabs::TabInterface* tab1 = CreateMockTab();
+  SessionID id1 = sessions::SessionTabHelper::IdForTab(tab1->GetContents());
+  const GURL url1("https://example.com/1");
+  content::WebContentsTester::For(tab1->GetContents())->NavigateAndCommit(url1);
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  ContextualTask task(task_id);
+
+  contextual_search::TabInfo restored_tab;
+  restored_tab.tab_id = id1.id();
+  restored_tab.url = url1;
+  restored_tab.title = "Example 1";
+  restored_tab.submitted = true;
+  dummy_handle_.SetRestoredTabs({restored_tab});
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillRepeatedly(Return(std::make_pair(task_id, &dummy_handle_)));
+  EXPECT_CALL(*contextual_tasks_service_, GetContextForTask(task_id, _, _, _))
+      .WillRepeatedly(
+          [&task](
+              const base::Uuid&, const std::set<ContextualTaskContextSource>&,
+              std::unique_ptr<ContextDecorationParams>,
+              base::OnceCallback<void(std::unique_ptr<ContextualTaskContext>)>
+                  callback) {
+            std::move(callback).Run(
+                std::make_unique<ContextualTaskContext>(task));
+          });
+
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(1));
+  EXPECT_CALL(*tab_list_, GetTab(0)).WillRepeatedly(Return(tab1));
+  EXPECT_CALL(*tab_list_, GetActiveTab()).WillRepeatedly(Return(tab1));
+
+  provider_->AddLocalTabUnderline(tab1->GetHandle());
+  std::set<tabs::TabHandle> expected_tabs = {tab1->GetHandle()};
+  EXPECT_CALL(observer_, OnContextTabsChanged(expected_tabs))
+      .Times(testing::AtLeast(1));
+  provider_->RefreshContext();
+  ASSERT_EQ(1u, dummy_handle_.GetTabContextState().restored.size());
+
+  // Simulate closing `tab1`.
+  EXPECT_CALL(*tab_list_, GetTabCount()).WillRepeatedly(Return(0));
+  EXPECT_CALL(observer_, OnContextTabsChanged(std::set<tabs::TabHandle>()))
+      .Times(testing::AtLeast(1));
+  for (auto& observer : tab_list_observers_) {
+    observer.OnTabRemoved(*tab_list_, tab1, TabRemovedReason::kDeleted);
+  }
+  EXPECT_TRUE(dummy_handle_.GetTabContextState().restored.empty());
+}
+
+namespace {
+
+class FakePageContextEligibilityHelper
+    : public tabs::PageContextEligibilityHelper {
+ public:
+  FakePageContextEligibilityHelper(
+      tabs::TabInterface& tab,
+      optimization_guide::PageContextEligibilityStatus status)
+      : tabs::PageContextEligibilityHelper(tab), status_(status) {}
+
+  optimization_guide::PageContextEligibilityStatus IsPageContextEligible()
+      const override {
+    return status_;
+  }
+
+  optimization_guide::PageContextEligibilityStatus
+  GetLastKnownPageContextEligibility() const override {
+    return status_;
+  }
+
+ private:
+  optimization_guide::PageContextEligibilityStatus status_;
+};
+
+}  // namespace
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       UpdateTabPickerVisibilityOnTabLifecycleEvents) {
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillRepeatedly(Return(std::make_pair(std::nullopt, nullptr)));
+
+  // Set up a tab-hosted AIM WebContents (completed handshake) and a non-AIM
+  // tab carrying `ContextualTasksWebContentsUserData` without handshake.
+  tabs::TabInterface* aim_tab = CreateMockTab();
+  content::WebContentsTester::For(aim_tab->GetContents())
+      ->NavigateAndCommit(GURL("https://www.google.com/search?udm=50"));
+  tabs::TabInterface* non_aim_tab = CreateMockTab();
+  content::WebContentsTester::For(non_aim_tab->GetContents())
+      ->NavigateAndCommit(GURL("chrome://newtab"));
+
+  std::vector<tabs::TabInterface*> open_tabs = {aim_tab, non_aim_tab};
+  ON_CALL(*tab_list_, GetAllTabs())
+      .WillByDefault(testing::ReturnPointee(&open_tabs));
+  ON_CALL(*tab_list_, GetTabCount()).WillByDefault([&]() {
+    return static_cast<int>(open_tabs.size());
+  });
+  ON_CALL(*tab_list_, GetTab(_)).WillByDefault([&](int index) {
+    return open_tabs[index];
+  });
+
+  auto* aim_tab_user_data =
+      ContextualTasksWebContentsUserData::GetOrCreateForWebContents(
+          aim_tab->GetContents());
+  auto* non_aim_user_data =
+      ContextualTasksWebContentsUserData::GetOrCreateForWebContents(
+          non_aim_tab->GetContents());
+
+  std::vector<bool> aim_tab_picker_states;
+  aim_tab_user_data->SetSearchMessageDispatcherForTesting(
+      base::BindLambdaForTesting([&](const lens::ClientToSearchMessage& msg) {
+        if (msg.has_inject_chrome_input() &&
+            msg.inject_chrome_input().input_type() ==
+                lens::ClientToSearchMessage::InjectChromeInput::TAB_PICKER) {
+          aim_tab_picker_states.push_back(
+              msg.inject_chrome_input().is_active());
+        }
+      }));
+  std::vector<bool> non_aim_tab_picker_states;
+  non_aim_user_data->SetSearchMessageDispatcherForTesting(
+      base::BindLambdaForTesting([&](const lens::ClientToSearchMessage& msg) {
+        if (msg.has_inject_chrome_input() &&
+            msg.inject_chrome_input().input_type() ==
+                lens::ClientToSearchMessage::InjectChromeInput::TAB_PICKER) {
+          non_aim_tab_picker_states.push_back(
+              msg.inject_chrome_input().is_active());
+        }
+      }));
+
+#if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<content::WebContents> panel_contents =
+      content::WebContentsTester::CreateTestWebContents(profile_.get(),
+                                                        nullptr);
+  webui::SetBrowserWindowInterface(panel_contents.get(), browser_window_.get());
+  auto* panel_user_data =
+      ContextualTasksWebContentsUserData::GetOrCreateForWebContents(
+          panel_contents.get());
+  std::vector<bool> panel_tab_picker_states;
+  panel_user_data->SetSearchMessageDispatcherForTesting(
+      base::BindLambdaForTesting([&](const lens::ClientToSearchMessage& msg) {
+        if (msg.has_inject_chrome_input() &&
+            msg.inject_chrome_input().input_type() ==
+                lens::ClientToSearchMessage::InjectChromeInput::TAB_PICKER) {
+          panel_tab_picker_states.push_back(
+              msg.inject_chrome_input().is_active());
+        }
+      }));
+  // Return `panel_contents` in both `GetPanelWebContentsList()` and
+  // `GetActiveWebContents()` to verify deduplication.
+  ON_CALL(*contextual_tasks_panel_controller_, GetPanelWebContentsList())
+      .WillByDefault(
+          Return(std::vector<content::WebContents*>{panel_contents.get()}));
+  ON_CALL(*contextual_tasks_panel_controller_, GetActiveWebContents())
+      .WillByDefault(Return(panel_contents.get()));
+  panel_user_data->OnHandshakeComplete();
+#endif
+
+  aim_tab_user_data->OnHandshakeComplete();
+  EXPECT_TRUE(aim_tab_picker_states.empty());
+
+  // `OnTabAdded` with an eligible tab injects `TAB_PICKER` (`true`).
+  tabs::TabInterface* eligible_tab = CreateMockTab();
+  FakePageContextEligibilityHelper eligibility_helper(
+      *eligible_tab,
+      optimization_guide::PageContextEligibilityStatus::kEligible);
+  content::WebContentsTester::For(eligible_tab->GetContents())
+      ->NavigateAndCommit(GURL("https://example.com/1"));
+  open_tabs.push_back(eligible_tab);
+  for (auto& observer : tab_list_observers_) {
+    observer.OnTabAdded(*tab_list_, eligible_tab, 2);
+  }
+  EXPECT_THAT(aim_tab_picker_states, testing::ElementsAre(true));
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_THAT(panel_tab_picker_states, testing::ElementsAre(true));
+#endif
+
+  // Navigating `eligible_tab` to `chrome://newtab` hides `TAB_PICKER`
+  // (`false`).
+  content::WebContentsTester::For(eligible_tab->GetContents())
+      ->NavigateAndCommit(GURL("chrome://newtab"));
+  EXPECT_THAT(aim_tab_picker_states, testing::ElementsAre(true, false));
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_THAT(panel_tab_picker_states, testing::ElementsAre(true, false));
+#endif
+
+  // `OnWebContentsReplaced` with an eligible WebContents re-injects
+  // `TAB_PICKER` (`true`).
+  content::WebContents* old_contents = eligible_tab->GetContents();
+  std::unique_ptr<content::WebContents> replacement_contents =
+      content::WebContentsTester::CreateTestWebContents(profile_.get(),
+                                                        nullptr);
+  content::WebContents* replacement_ptr = replacement_contents.get();
+  sessions::SessionTabHelper::CreateForWebContents(replacement_ptr,
+                                                   base::NullCallback());
+  content::WebContentsTester::For(replacement_ptr)
+      ->NavigateAndCommit(GURL("https://example.com/replaced"));
+  web_contents_.push_back(std::move(replacement_contents));
+  ON_CALL(*static_cast<tabs::MockTabInterface*>(eligible_tab), GetContents())
+      .WillByDefault(Return(replacement_ptr));
+  for (auto& observer : tab_list_observers_) {
+    observer.OnWebContentsReplaced(*tab_list_, eligible_tab, old_contents,
+                                   replacement_ptr);
+  }
+  EXPECT_THAT(aim_tab_picker_states, testing::ElementsAre(true, false, true));
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_THAT(panel_tab_picker_states, testing::ElementsAre(true, false, true));
+#endif
+
+  // `OnTabRemoved` hides `TAB_PICKER` (`false`).
+  open_tabs.pop_back();
+  for (auto& observer : tab_list_observers_) {
+    observer.OnTabRemoved(*tab_list_, eligible_tab, TabRemovedReason::kDeleted);
+  }
+  EXPECT_THAT(aim_tab_picker_states,
+              testing::ElementsAre(true, false, true, false));
+  EXPECT_TRUE(non_aim_tab_picker_states.empty());
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_THAT(panel_tab_picker_states,
+              testing::ElementsAre(true, false, true, false));
+  webui::SetBrowserWindowInterface(panel_contents.get(), nullptr);
+#endif
+}
+
+namespace {
+
+bool g_provider_test_is_eligible = false;
+
+bool ProviderTestIsPageContextEligible(
+    const std::string& /*host*/,
+    const std::string& /*path*/,
+    const std::vector<optimization_guide::FrameMetadata>& /*metadata*/) {
+  return g_provider_test_is_eligible;
+}
+
+bool ProviderTestIsPageContextEligibleWithAccount(
+    const std::string& /*host*/,
+    const std::string& /*path*/,
+    const std::string& /*account*/,
+    const std::vector<optimization_guide::FrameMetadata>& /*metadata*/) {
+  return g_provider_test_is_eligible;
+}
+
+bool ProviderTestShouldReextractPageContext(
+    const std::string& /*host*/,
+    const std::string& /*path*/,
+    const std::vector<std::string>& /*updated_meta_tags*/) {
+  return false;
+}
+
+optimization_guide::PageEligibilityResult ProviderTestCheckPageEligibility(
+    const std::vector<optimization_guide::FrameUrl>& /*frames*/) {
+  return optimization_guide::PageEligibilityResult{
+      .status = g_provider_test_is_eligible
+                    ? optimization_guide::PageEligibility::kEligible
+                    : optimization_guide::PageEligibility::kIneligible,
+      .meta_tag_names_affecting_eligibility = {.data = nullptr, .size = 0}};
+}
+
+constexpr optimization_guide::PageContextEligibilityAPI kProviderTestApi = {
+    .IsPageContextEligible = &ProviderTestIsPageContextEligible,
+    .IsPageContextEligibleWithAccount =
+        &ProviderTestIsPageContextEligibleWithAccount,
+    .ShouldReextractPageContext = &ProviderTestShouldReextractPageContext,
+    .GetMetaTagNamesAffectingEligibility = nullptr,
+    .CheckPageEligibility = &ProviderTestCheckPageEligibility,
+};
+
+}  // namespace
+
+TEST_F(ActiveTaskContextProviderImplTest,
+       UpdateTabPickerVisibilityAndExtensionFramesOnEligibilityChanges) {
+  g_provider_test_is_eligible = false;
+  optimization_guide::PageContextEligibility test_eligibility(
+      &kProviderTestApi);
+  optimization_guide::PageContextEligibility::SetForTesting(&test_eligibility);
+
+  EXPECT_CALL(*contextual_tasks_panel_controller_,
+              GetSessionHandleForActiveTabOrPanel())
+      .WillRepeatedly(Return(std::make_pair(std::nullopt, nullptr)));
+
+  tabs::TabInterface* aim_tab = CreateMockTab();
+  content::WebContentsTester::For(aim_tab->GetContents())
+      ->NavigateAndCommit(GURL("https://www.google.com/search?udm=50"));
+
+  tabs::TabInterface* target_tab = CreateMockTab();
+  ON_CALL(*static_cast<tabs::MockTabInterface*>(target_tab), GetProfile())
+      .WillByDefault(Return(profile_.get()));
+  content::WebContentsTester::For(target_tab->GetContents())
+      ->NavigateAndCommit(GURL("https://restricted.example.com/1"));
+
+  // Construct `PageContextEligibilityHelper` before `GetAsync()` runs so the
+  // tab initially has `kUnknown` status when added to `tab_list_`.
+  auto eligibility_helper =
+      std::make_unique<tabs::PageContextEligibilityHelper>(*target_tab);
+  std::vector<tabs::TabInterface*> open_tabs = {aim_tab, target_tab};
+  std::vector<bool> aim_tab_picker_states;
+  int extension_frame_updates = 0;
+  const int handler_tag = 0;
+  ContextualTasksWebContentsUserData* aim_tab_user_data = nullptr;
+  base::ScopedClosureRunner cleanup(base::BindLambdaForTesting([&]() {
+    if (aim_tab_user_data) {
+      aim_tab_user_data->UnregisterExtensionFrame(&handler_tag);
+      aim_tab_user_data->SetSearchMessageDispatcherForTesting(
+          base::NullCallback());
+    }
+    testing::Mock::VerifyAndClearExpectations(tab_list_.get());
+    eligibility_helper.reset();
+    optimization_guide::PageContextEligibility::SetForTesting(nullptr);
+  }));
+
+  ASSERT_EQ(eligibility_helper->IsPageContextEligible(),
+            optimization_guide::PageContextEligibilityStatus::kUnknown);
+
+  ON_CALL(*tab_list_, GetAllTabs())
+      .WillByDefault(testing::ReturnPointee(&open_tabs));
+  ON_CALL(*tab_list_, GetTabCount()).WillByDefault([&]() {
+    return static_cast<int>(open_tabs.size());
+  });
+  ON_CALL(*tab_list_, GetTab(_)).WillByDefault([&](int index) {
+    return open_tabs[index];
+  });
+  for (auto& observer : tab_list_observers_) {
+    observer.OnTabAdded(*tab_list_, aim_tab, 0);
+    observer.OnTabAdded(*tab_list_, target_tab, 1);
+  }
+
+  aim_tab_user_data =
+      ContextualTasksWebContentsUserData::GetOrCreateForWebContents(
+          aim_tab->GetContents());
+  aim_tab_user_data->SetSearchMessageDispatcherForTesting(
+      base::BindLambdaForTesting([&](const lens::ClientToSearchMessage& msg) {
+        if (msg.has_inject_chrome_input() &&
+            msg.inject_chrome_input().input_type() ==
+                lens::ClientToSearchMessage::InjectChromeInput::TAB_PICKER) {
+          aim_tab_picker_states.push_back(
+              msg.inject_chrome_input().is_active());
+        }
+      }));
+
+  aim_tab_user_data->RegisterExtensionFrame(&handler_tag);
+  aim_tab_user_data->UpdateExtensionFrameBound(
+      &handler_tag, /*is_page_bound=*/true, base::DoNothing(),
+      base::BindLambdaForTesting([&]() { ++extension_frame_updates; }));
+
+  // `target_tab` has never resolved, so `OnHandshakeComplete()` doesn't inject
+  // `TAB_PICKER`.
+  aim_tab_user_data->OnHandshakeComplete();
+  EXPECT_TRUE(aim_tab_picker_states.empty());
+
+  // Resolving to `kNotEligible` keeps the tab out of the picker, so neither
+  // `TAB_PICKER` nor bound extension frames are updated.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return eligibility_helper->IsPageContextEligible() ==
+           optimization_guide::PageContextEligibilityStatus::kNotEligible;
+  }));
+  EXPECT_TRUE(aim_tab_picker_states.empty());
+  EXPECT_EQ(extension_frame_updates, 0);
+
+  // Navigating to an eligible page shows `TAB_PICKER` (`true`) and notifies
+  // bound extension frames once the new page resolves to `kEligible`.
+  g_provider_test_is_eligible = true;
+  const GURL eligible_url("https://example.com/eligible");
+  content::WebContentsTester::For(target_tab->GetContents())
+      ->NavigateAndCommit(eligible_url);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return eligibility_helper->IsPageContextEligible() ==
+               optimization_guide::PageContextEligibilityStatus::kEligible &&
+           extension_frame_updates == 1;
+  }));
+  EXPECT_THAT(aim_tab_picker_states, testing::ElementsAre(true));
+
+  // Reloading keeps the last known `kEligible` result while the page is
+  // `kUnknown`, so `TAB_PICKER` doesn't flash.
+  content::WebContentsTester::For(target_tab->GetContents())
+      ->NavigateAndCommit(eligible_url);
+  EXPECT_EQ(eligibility_helper->IsPageContextEligible(),
+            optimization_guide::PageContextEligibilityStatus::kUnknown);
+  EXPECT_THAT(aim_tab_picker_states, testing::ElementsAre(true));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return eligibility_helper->IsPageContextEligible() ==
+           optimization_guide::PageContextEligibilityStatus::kEligible;
+  }));
+  EXPECT_THAT(aim_tab_picker_states, testing::ElementsAre(true));
+  EXPECT_EQ(extension_frame_updates, 1);
+
+  // Navigating to an ineligible page hides `TAB_PICKER` (`false`) and notifies
+  // bound extension frames once the new page resolves to `kNotEligible`.
+  g_provider_test_is_eligible = false;
+  content::WebContentsTester::For(target_tab->GetContents())
+      ->NavigateAndCommit(GURL("https://restricted.example.com/2"));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return eligibility_helper->IsPageContextEligible() ==
+               optimization_guide::PageContextEligibilityStatus::kNotEligible &&
+           extension_frame_updates == 2;
+  }));
+  EXPECT_THAT(aim_tab_picker_states, testing::ElementsAre(true, false));
 }
 
 }  // namespace contextual_tasks

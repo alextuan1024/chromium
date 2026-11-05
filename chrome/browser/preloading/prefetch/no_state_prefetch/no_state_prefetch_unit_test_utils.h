@@ -32,6 +32,8 @@ class FakeNoStatePrefetchContents : public NoStatePrefetchContents {
   void StartPrerendering(
       const gfx::Rect& bounds,
       content::SessionStorageNamespaceHandle* session_storage_namespace,
+      scoped_refptr<content::InitiatorNavigationState>
+          initiator_navigation_state,
       base::WeakPtr<content::PreloadingAttempt> preloading_attempt) override;
 
   FinalStatus expected_final_status() const { return expected_final_status_; }
@@ -116,8 +118,7 @@ class UnitTestNoStatePrefetchManager : public NoStatePrefetchManager {
   // Maintain a map from route pairs to NoStatePrefetchContents for
   // GetNoStatePrefetchContentsForRoute.
   using NoStatePrefetchContentsMap =
-      std::map<std::pair<int, int>,
-               raw_ptr<NoStatePrefetchContents, CtnExperimental>>;
+      std::map<std::pair<int, int>, raw_ptr<NoStatePrefetchContents>>;
   NoStatePrefetchContentsMap no_state_prefetch_contents_map_;
 
   std::unique_ptr<NoStatePrefetchContents> next_no_state_prefetch_contents_;

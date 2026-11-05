@@ -40,6 +40,7 @@ import org.chromium.components.tab_group_sync.OpeningSource;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.components.tab_group_sync.TriggerSource;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.url.GURL;
 
 import java.util.List;
@@ -85,9 +86,7 @@ public class TabGroupSyncRemoteObserverUnitTest {
                         mIsActiveWindowSupplier);
         mEnabledLocalObservers = true;
 
-        when(mTabModel.getGroupLastShownTabId(any())).thenReturn(Tab.INVALID_TAB_ID);
-        when(mTabModel.getGroupLastShownTabId(TOKEN_1)).thenReturn(TAB_ID_1);
-        when(mTabModel.tabGroupExists(TOKEN_1)).thenReturn(true);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TOKEN_1))).thenReturn(true);
         when(mPrefService.getBoolean(eq(Pref.AUTO_OPEN_SYNCED_TAB_GROUPS))).thenReturn(true);
         when(mIsActiveWindowSupplier.get()).thenReturn(true);
     }
@@ -102,7 +101,8 @@ public class TabGroupSyncRemoteObserverUnitTest {
         mTabModel.addTab(TAB_ID_1);
         Tab tab = mTabModel.getTabAt(0);
         tab.setTabGroupId(TOKEN_1);
-        when(mTabModel.getTabsInGroup(eq(TOKEN_1))).thenReturn(List.of(tab));
+        when(mTabModel.getTabsInGroup(eq(TabGroupId.fromOptionalToken(TOKEN_1))))
+                .thenReturn(List.of(tab));
     }
 
     @Test

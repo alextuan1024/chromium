@@ -52,15 +52,19 @@ OpenURLParams::OpenURLParams(const GURL& url,
       is_renderer_initiated(is_renderer_initiated),
       user_gesture(!is_renderer_initiated) {}
 
-OpenURLParams::OpenURLParams(const OpenURLParams& other) = default;
-
 OpenURLParams::~OpenURLParams() = default;
+
+OpenURLParams::OpenURLParams(const OpenURLParams& other) = default;
+OpenURLParams& OpenURLParams::operator=(const OpenURLParams& other) = default;
+OpenURLParams::OpenURLParams(OpenURLParams&& other) noexcept = default;
+OpenURLParams& OpenURLParams::operator=(OpenURLParams&& other) noexcept =
+    default;
 
 // static
 OpenURLParams OpenURLParams::FromNavigationHandle(NavigationHandle* handle) {
   OpenURLParams params(
       handle->GetURL(), Referrer(handle->GetReferrer()),
-      handle->GetFrameTreeNodeId(), WindowOpenDisposition::CURRENT_TAB,
+      handle->GetFrameTreeNodeId(), WindowOpenDisposition::kCurrentTab,
       handle->GetPageTransition(), handle->IsRendererInitiated());
 
   params.initiator_origin = handle->GetInitiatorOrigin();
@@ -71,6 +75,10 @@ OpenURLParams OpenURLParams::FromNavigationHandle(NavigationHandle* handle) {
   params.started_from_context_menu = handle->WasStartedFromContextMenu();
   params.href_translate = handle->GetHrefTranslate();
   params.reload_type = handle->GetReloadType();
+  if (handle->IsInOutermostMainFrame() && handle->GetNavigationUIData()) {
+    params.navigation_ui_data =
+        handle->GetNavigationUIData()->MaybeCreateForRedispatchedNavigation();
+  }
 
   // NavigationHandle will include all redirects that happened on the way to the
   // the current page in its redirect chain, including the current page itself
@@ -104,6 +112,28 @@ OpenURLParams OpenURLParams::CreateBrowserInitiated(
   OpenURLParams params(url, referrer, frame_tree_node_id, disposition,
                        transition, /*is_renderer_initiated=*/false);
   params.started_from_context_menu = started_from_context_menu;
+  return params;
+}
+
+// static
+OpenURLParams OpenURLParams::CreateRendererInitiated(
+    const GURL& url,
+    WindowOpenDisposition disposition,
+    ui::PageTransition transition,
+    const Referrer& referrer,
+    scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
+    bool started_from_context_menu,
+    FrameTreeNodeId frame_tree_node_id) {
+  // TODO(crbug.com/510258191): Check that the `initiator_navigation_state` is
+  // not null. This can only be done once we also enforce that all
+  // NavigationHandles for a renderer-initiated navigation have a non-null
+  // InitiatorNavigationState because some callers of
+  // OpenURLParams::CreateRendererInitiated will pass an
+  // InitiatorNavigationState retrieved from a NavigationHandle.
+  OpenURLParams params(url, referrer, frame_tree_node_id, disposition,
+                       transition, /*is_renderer_initiated=*/true);
+  params.started_from_context_menu = started_from_context_menu;
+  params.initiator_navigation_state = initiator_navigation_state;
   return params;
 }
 

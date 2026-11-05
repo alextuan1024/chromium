@@ -13,14 +13,18 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/actions/actions_util.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/animation/browser_animation_controller.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -29,14 +33,18 @@
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
+#include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
+#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/root_tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
+#include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h"
 #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h"
 #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_browser_test_mixin.h"
@@ -48,20 +56,27 @@
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/display/screen.h"
 #include "ui/events/event.h"
+#include "ui/gfx/animation/animation_test_api.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/controls/button/button_controller.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/resize_area.h"
+#include "ui/views/controls/scroll_view.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/focus/focus_manager.h"
+#include "ui/views/test/mock_activation_controller.h"
+#include "ui/views/view_utils.h"
+#include "ui/views/widget/widget.h"
 
 namespace {
 
@@ -74,6 +89,33 @@ constexpr int kClippedScrollViewHeight = 400;
 class VerticalTabStripRegionViewTest
     : public VerticalTabsBrowserTestMixin<InProcessBrowserTest> {
  public:
+  void SetUp() override {
+#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
+    activation_controller_ =
+        std::make_unique<views::test::MockActivationController>();
+#endif
+    VerticalTabsBrowserTestMixin<InProcessBrowserTest>::SetUp();
+  }
+
+  void SetUpOnMainThread() override {
+    VerticalTabsBrowserTestMixin<InProcessBrowserTest>::SetUpOnMainThread();
+#if BUILDFLAG(IS_MAC)
+    // MockActivationController bypasses NativeWidgetMacNSWindowHost, preventing
+    // InProcessBrowserTest's ScopedFakeFullKeyboardAccess from propagating to
+    // FocusManager.
+    BrowserView::GetBrowserViewForBrowser(browser())
+        ->GetFocusManager()
+        ->SetKeyboardAccessible(true);
+#endif
+  }
+
+  void TearDownOnMainThread() override {
+#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
+    activation_controller_.reset();
+#endif
+    VerticalTabsBrowserTestMixin<InProcessBrowserTest>::TearDownOnMainThread();
+  }
+
   VerticalTabStripRegionView* region_view() {
     return BrowserView::GetBrowserViewForBrowser(browser())
         ->vertical_tab_strip_region_view_for_testing();
@@ -89,9 +131,20 @@ class VerticalTabStripRegionViewTest
     return tabs::VerticalTabStripStateController::From(browser());
   }
 
-  TabStrip* horizontal_tab_strip() {
-    return BrowserView::GetBrowserViewForBrowser(browser())
-        ->horizontal_tab_strip_for_testing();
+  int GetHorizontalTabCount() {
+    auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+    if (auto* tab_strip = browser_view->horizontal_tab_strip_for_testing()) {
+      return tab_strip->GetTabCount();
+    }
+    auto* region = views::AsViewClass<BaseTabStripRegionView>(
+        browser_view->horizontal_tab_strip_region_view_for_testing());
+    if (!region || !region->root_node_for_testing()) {
+      return 0;
+    }
+    if (auto* controller = region->GetTabStripCollectionController()) {
+      return controller->GetTabCount();
+    }
+    return 0;
   }
 
  protected:
@@ -174,6 +227,13 @@ class VerticalTabStripRegionViewTest
     return BrowserAnimationController::From(browser())->IsAnimating(
         TabStripAnimations::kVerticalTabStrip);
   }
+
+ private:
+#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
+  // Emulates widget activation in-process via RAII so parallel browser_tests
+  // shards cannot steal OS window activation and clobber FocusManager focus.
+  std::unique_ptr<views::test::MockActivationController> activation_controller_;
+#endif
 };
 
 class VerticalTabStripRegionViewGlassFrameTest
@@ -218,6 +278,10 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeAreaBounds) {
 }
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewSmaller) {
+  auto render_mode = gfx::AnimationTestApi::SetRichAnimationRenderMode(
+      gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
   const int initial_width = tabs::kVerticalTabStripDefaultUncollapsedWidth;
 
   // Verify the initial state of the region view.
@@ -234,7 +298,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewSmaller) {
   {
     const int resize_amount = -20;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LE(VerticalTabStripRegionView::kUncollapsedMinWidth, resize_width);
+    ASSERT_LE(tabs::kVerticalTabStripUncollapsedMinWidth, resize_width);
 
     region_view()->OnResize(resize_amount, false);
     EXPECT_EQ(resize_width, region_view()->GetPreferredSize().width());
@@ -251,15 +315,15 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewSmaller) {
   {
     const int resize_amount = -120;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LT(VerticalTabStripRegionView::kCollapseSnapWidth, resize_width);
-    ASSERT_LT(resize_width, VerticalTabStripRegionView::kUncollapsedMinWidth);
+    ASSERT_LT(tabs::kVerticalTabStripCollapseSnapWidth, resize_width);
+    ASSERT_LT(resize_width, tabs::kVerticalTabStripUncollapsedMinWidth);
 
     region_view()->OnResize(resize_amount, false);
-    EXPECT_EQ(VerticalTabStripRegionView::kUncollapsedMinWidth,
+    EXPECT_EQ(tabs::kVerticalTabStripUncollapsedMinWidth,
               region_view()->GetPreferredSize().width());
     EXPECT_FALSE(region_view()->target_collapse_state_for_testing().collapsed);
     EXPECT_EQ(
-        VerticalTabStripRegionView::kUncollapsedMinWidth,
+        tabs::kVerticalTabStripUncollapsedMinWidth,
         region_view()->target_collapse_state_for_testing().uncollapsed_width);
     EXPECT_FALSE(IsAnimatingSize());
     EXPECT_FALSE(state_controller()->IsCollapsed());
@@ -270,12 +334,12 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewSmaller) {
   {
     const int resize_amount = -180;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LE(resize_width, VerticalTabStripRegionView::kCollapseSnapWidth);
+    ASSERT_LE(resize_width, tabs::kVerticalTabStripCollapseSnapWidth);
 
     region_view()->OnResize(resize_amount, false);
     EXPECT_TRUE(region_view()->target_collapse_state_for_testing().collapsed);
     EXPECT_EQ(
-        VerticalTabStripRegionView::kUncollapsedMinWidth,
+        tabs::kVerticalTabStripUncollapsedMinWidth,
         region_view()->target_collapse_state_for_testing().uncollapsed_width);
     EXPECT_TRUE(IsAnimatingSize());
 
@@ -287,7 +351,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewSmaller) {
     // When the animation completes, the preferred width will be the collapsed
     // width.
     ASSERT_TRUE(base::test::RunUntil([&]() { return !IsAnimatingSize(); }));
-    EXPECT_EQ(0, region_view()->GetPreferredSize().width());
+    EXPECT_EQ(tabs::kVerticalTabStripCollapsedWidth,
+              region_view()->GetPreferredSize().width());
   }
 }
 
@@ -342,7 +407,11 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeSnapsToDefault) {
 }
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewBigger) {
-  const int initial_width = VerticalTabStripRegionView::kCollapsedWidth;
+  auto render_mode = gfx::AnimationTestApi::SetRichAnimationRenderMode(
+      gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  const int initial_width = tabs::kVerticalTabStripCollapsedWidth;
 
   // Start this test from the collapsed state.
   state_controller()->RequestCollapse(true);
@@ -361,7 +430,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewBigger) {
   {
     const int resize_amount = 10;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LE(resize_width, VerticalTabStripRegionView::kCollapseSnapWidth);
+    ASSERT_LE(resize_width, tabs::kVerticalTabStripCollapseSnapWidth);
 
     region_view()->OnResize(resize_amount, false);
     EXPECT_EQ(initial_width, region_view()->GetPreferredSize().width());
@@ -376,15 +445,15 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewBigger) {
   // Grow the area beyond the snap point and tab strip will start expanding.
   {
     const int resize_amount =
-        VerticalTabStripRegionView::kCollapseSnapWidth - initial_width + 1;
+        tabs::kVerticalTabStripCollapseSnapWidth - initial_width + 1;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LT(VerticalTabStripRegionView::kCollapseSnapWidth, resize_width);
-    ASSERT_LT(resize_width, VerticalTabStripRegionView::kUncollapsedMinWidth);
+    ASSERT_LT(tabs::kVerticalTabStripCollapseSnapWidth, resize_width);
+    ASSERT_LT(resize_width, tabs::kVerticalTabStripUncollapsedMinWidth);
 
     region_view()->OnResize(resize_amount, false);
     EXPECT_FALSE(region_view()->target_collapse_state_for_testing().collapsed);
     EXPECT_EQ(
-        VerticalTabStripRegionView::kUncollapsedMinWidth,
+        tabs::kVerticalTabStripUncollapsedMinWidth,
         region_view()->target_collapse_state_for_testing().uncollapsed_width);
     EXPECT_TRUE(IsAnimatingSize());
 
@@ -396,7 +465,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewBigger) {
     // When the animation completes, the preferred width will be the minimum
     // expanded width.
     ASSERT_TRUE(base::test::RunUntil([&]() { return !IsAnimatingSize(); }));
-    EXPECT_EQ(VerticalTabStripRegionView::kUncollapsedMinWidth,
+    EXPECT_EQ(tabs::kVerticalTabStripUncollapsedMinWidth,
               region_view()->GetPreferredSize().width());
   }
 
@@ -405,8 +474,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewBigger) {
   {
     const int resize_amount = 100;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LE(VerticalTabStripRegionView::kUncollapsedMinWidth, resize_width);
-    ASSERT_LE(resize_width, VerticalTabStripRegionView::kUncollapsedMaxWidth);
+    ASSERT_LE(tabs::kVerticalTabStripUncollapsedMinWidth, resize_width);
+    ASSERT_LE(resize_width, tabs::kVerticalTabStripUncollapsedMaxWidth);
 
     region_view()->OnResize(resize_amount, false);
     EXPECT_EQ(resize_width, region_view()->GetPreferredSize().width());
@@ -423,18 +492,109 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, ResizeViewBigger) {
   {
     const int resize_amount = 500;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LT(VerticalTabStripRegionView::kUncollapsedMaxWidth, resize_width);
+    ASSERT_LT(tabs::kVerticalTabStripUncollapsedMaxWidth, resize_width);
 
     region_view()->OnResize(resize_amount, false);
-    EXPECT_EQ(VerticalTabStripRegionView::kUncollapsedMaxWidth,
+    EXPECT_EQ(tabs::kVerticalTabStripUncollapsedMaxWidth,
               region_view()->GetPreferredSize().width());
     EXPECT_FALSE(region_view()->target_collapse_state_for_testing().collapsed);
     EXPECT_EQ(
-        VerticalTabStripRegionView::kUncollapsedMaxWidth,
+        tabs::kVerticalTabStripUncollapsedMaxWidth,
         region_view()->target_collapse_state_for_testing().uncollapsed_width);
     EXPECT_FALSE(IsAnimatingSize());
     EXPECT_FALSE(state_controller()->IsCollapsed());
   }
+}
+
+class VerticalTabStripRegionViewOrganizerPanelTest
+    : public VerticalTabStripRegionViewTest {
+ public:
+  const std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
+      override {
+    std::vector<base::test::FeatureRefAndParams> enabled_features =
+        VerticalTabStripRegionViewTest::GetEnabledFeatures();
+    enabled_features.push_back({organizer_panel::kOrganizerPanel, {}});
+    return enabled_features;
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewOrganizerPanelTest,
+                       IsPositionInWindowCaptionIgnoresHiddenContentAreaViews) {
+  RunScheduledLayouts();
+
+  views::View* tab_view = GetTabViewAt(0);
+  ASSERT_NE(tab_view, nullptr);
+  gfx::Point point_in_tab = tab_view->GetLocalBounds().CenterPoint();
+  views::View::ConvertPointToTarget(tab_view, region_view(), &point_in_tab);
+
+  auto* bottom_container = region_view()->GetBottomContainer();
+  ASSERT_NE(bottom_container, nullptr);
+  ASSERT_FALSE(bottom_container->children().empty());
+  views::View* new_tab_button = bottom_container->children()[0];
+  gfx::Point point_in_new_tab_button =
+      new_tab_button->GetLocalBounds().CenterPoint();
+  views::View::ConvertPointToTarget(new_tab_button, region_view(),
+                                    &point_in_new_tab_button);
+
+  // Empty space in the bottom container (below the new tab button) is treated
+  // as window caption when the tab strip is visible.
+  gfx::Point point_in_bottom_container =
+      bottom_container->GetLocalBounds().bottom_center() - gfx::Vector2d(0, 5);
+  views::View::ConvertPointToTarget(bottom_container, region_view(),
+                                    &point_in_bottom_container);
+
+  gfx::Point point_in_resize_area =
+      region_view()->resize_area_for_testing()->GetLocalBounds().CenterPoint();
+  views::View::ConvertPointToTarget(region_view()->resize_area_for_testing(),
+                                    region_view(), &point_in_resize_area);
+
+  // When the organizer panel is not shown, hits on the tab view, new tab
+  // button, and resize area are not in the window caption, while empty space in
+  // the bottom container is in the window caption.
+  EXPECT_FALSE(region_view()->IsPositionInWindowCaption(point_in_tab));
+  EXPECT_FALSE(
+      region_view()->IsPositionInWindowCaption(point_in_new_tab_button));
+  EXPECT_TRUE(
+      region_view()->IsPositionInWindowCaption(point_in_bottom_container));
+  EXPECT_FALSE(region_view()->IsPositionInWindowCaption(point_in_resize_area));
+
+  // Show the organizer panel, hiding `content_area_view_` and `resize_area_`.
+  OrganizerPanelController::From(browser())->SetOrganizerVisible(
+      true, /*immediate=*/true);
+  RunScheduledLayouts();
+
+  // The hidden `bottom_button_container_` should no longer intercept hits as
+  // window caption before `organizer_panel_view_` (which has no draggable
+  // region by default).
+  EXPECT_FALSE(
+      region_view()->IsPositionInWindowCaption(point_in_bottom_container));
+
+  // When the organizer panel defines a draggable region covering its bounds,
+  // the hidden `content_area_view_` (tab view, new tab button) and
+  // `resize_area_` should not block caption hit tests on the organizer panel.
+  views::View* organizer_panel =
+      BrowserElementsViews::From(browser())->GetView(kOrganizerPanelElementId);
+  ASSERT_NE(organizer_panel, nullptr);
+  ASSERT_FALSE(organizer_panel->children().empty());
+  auto* web_view =
+      views::AsViewClass<views::WebView>(organizer_panel->children()[0]);
+  ASSERT_NE(web_view, nullptr);
+  content::WebContents* web_contents = web_view->GetWebContents();
+  ASSERT_NE(web_contents, nullptr);
+
+  std::vector<blink::mojom::DraggableRegionPtr> regions;
+  auto region = blink::mojom::DraggableRegion::New();
+  region->bounds = web_view->GetLocalBounds();
+  region->draggable = true;
+  regions.push_back(std::move(region));
+  web_contents->GetDelegate()->DraggableRegionsChanged(regions, web_contents);
+
+  EXPECT_TRUE(region_view()->IsPositionInWindowCaption(point_in_tab));
+  EXPECT_TRUE(
+      region_view()->IsPositionInWindowCaption(point_in_new_tab_button));
+  EXPECT_TRUE(
+      region_view()->IsPositionInWindowCaption(point_in_bottom_container));
+  EXPECT_TRUE(region_view()->IsPositionInWindowCaption(point_in_resize_area));
 }
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
@@ -450,8 +610,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   {
     const int resize_amount = 20;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LE(VerticalTabStripRegionView::kUncollapsedMinWidth, resize_width);
-    ASSERT_LE(resize_width, VerticalTabStripRegionView::kUncollapsedMaxWidth);
+    ASSERT_LE(tabs::kVerticalTabStripUncollapsedMinWidth, resize_width);
+    ASSERT_LE(resize_width, tabs::kVerticalTabStripUncollapsedMaxWidth);
 
     region_view()->OnResize(resize_amount, false);
     EXPECT_EQ(resize_width, region_view()->GetPreferredSize().width());
@@ -463,8 +623,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   {
     const int resize_amount = -20;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LE(VerticalTabStripRegionView::kUncollapsedMinWidth, resize_width);
-    ASSERT_LE(resize_width, VerticalTabStripRegionView::kUncollapsedMaxWidth);
+    ASSERT_LE(tabs::kVerticalTabStripUncollapsedMinWidth, resize_width);
+    ASSERT_LE(resize_width, tabs::kVerticalTabStripUncollapsedMaxWidth);
 
     region_view()->OnResize(resize_amount, true);
     EXPECT_EQ(resize_width, region_view()->GetPreferredSize().width());
@@ -477,7 +637,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   // should be restored to the state controller's uncollapsed width.
   PressCollapseButton();
   ASSERT_TRUE(base::test::RunUntil([&]() { return !IsAnimatingSize(); }));
-  EXPECT_EQ(VerticalTabStripRegionView::kCollapsedWidth,
+  EXPECT_EQ(tabs::kVerticalTabStripCollapsedWidth,
             region_view()->GetPreferredSize().width());
   PressCollapseButton();
   ASSERT_TRUE(base::test::RunUntil([&]() { return !IsAnimatingSize(); }));
@@ -488,11 +648,11 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   {
     const int resize_amount = -120;
     const int resize_width = last_uncollapsed_width + resize_amount;
-    ASSERT_LT(VerticalTabStripRegionView::kCollapseSnapWidth, resize_width);
-    ASSERT_LT(resize_width, VerticalTabStripRegionView::kUncollapsedMinWidth);
+    ASSERT_LT(tabs::kVerticalTabStripCollapseSnapWidth, resize_width);
+    ASSERT_LT(resize_width, tabs::kVerticalTabStripUncollapsedMinWidth);
 
     region_view()->OnResize(resize_amount, false);
-    EXPECT_EQ(VerticalTabStripRegionView::kUncollapsedMinWidth,
+    EXPECT_EQ(tabs::kVerticalTabStripUncollapsedMinWidth,
               region_view()->GetPreferredSize().width());
     EXPECT_EQ(last_uncollapsed_width,
               state_controller()->GetUncollapsedWidth());
@@ -503,11 +663,11 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   {
     const int resize_amount = -180;
     const int resize_width = last_uncollapsed_width + resize_amount;
-    ASSERT_LE(resize_width, VerticalTabStripRegionView::kCollapseSnapWidth);
+    ASSERT_LE(resize_width, tabs::kVerticalTabStripCollapseSnapWidth);
 
     region_view()->OnResize(resize_amount, true);
     ASSERT_TRUE(base::test::RunUntil([&]() { return !IsAnimatingSize(); }));
-    EXPECT_EQ(VerticalTabStripRegionView::kCollapsedWidth,
+    EXPECT_EQ(tabs::kVerticalTabStripCollapsedWidth,
               region_view()->GetPreferredSize().width());
     EXPECT_EQ(last_uncollapsed_width,
               state_controller()->GetUncollapsedWidth());
@@ -538,8 +698,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, LogsResizeMetrics) {
   {
     const int resize_amount = 20;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LE(VerticalTabStripRegionView::kUncollapsedMinWidth, resize_width);
-    ASSERT_LE(resize_width, VerticalTabStripRegionView::kUncollapsedMaxWidth);
+    ASSERT_LE(tabs::kVerticalTabStripUncollapsedMinWidth, resize_width);
+    ASSERT_LE(resize_width, tabs::kVerticalTabStripUncollapsedMaxWidth);
 
     region_view()->OnResize(resize_amount, false);
     EXPECT_EQ(0, user_action_tester.GetActionCount(
@@ -554,8 +714,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, LogsResizeMetrics) {
   {
     const int resize_amount = -20;
     const int resize_width = initial_width + resize_amount;
-    ASSERT_LE(VerticalTabStripRegionView::kUncollapsedMinWidth, resize_width);
-    ASSERT_LE(resize_width, VerticalTabStripRegionView::kUncollapsedMaxWidth);
+    ASSERT_LE(tabs::kVerticalTabStripUncollapsedMinWidth, resize_width);
+    ASSERT_LE(resize_width, tabs::kVerticalTabStripUncollapsedMaxWidth);
 
     region_view()->OnResize(resize_amount, true);
     EXPECT_EQ(0, user_action_tester.GetActionCount(
@@ -573,7 +733,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, LogsResizeMetrics) {
     const int resize_amount = -180;
     const int resize_width =
         region_view()->GetPreferredSize().width() + resize_amount;
-    ASSERT_LE(resize_width, VerticalTabStripRegionView::kCollapseSnapWidth);
+    ASSERT_LE(resize_width, tabs::kVerticalTabStripCollapseSnapWidth);
 
     region_view()->OnResize(resize_amount, true);
     EXPECT_EQ(1, user_action_tester.GetActionCount(
@@ -581,16 +741,18 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, LogsResizeMetrics) {
     EXPECT_EQ(1, user_action_tester.GetActionCount(
                      "VerticalTabs_TabStrip_ResizeToUncollapsed"));
     histogram_tester.ExpectTotalCount("Tabs.VerticalTabs.TabStripSize", 2);
-    histogram_tester.ExpectBucketCount(
-        "Tabs.VerticalTabs.TabStripSize",
-        VerticalTabStripRegionView::kCollapsedWidth, 1);
+    histogram_tester.ExpectBucketCount("Tabs.VerticalTabs.TabStripSize",
+                                       tabs::kVerticalTabStripCollapsedWidth,
+                                       1);
   }
 }
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
                        CancelCollapseAnimationUpdatesCollapseButton) {
   actions::ActionItem* collapse_action =
-      actions::ActionManager::Get().FindAction(kActionToggleCollapseVertical);
+      actions::ActionManager::Get().FindAction(
+          kActionToggleCollapseVertical,
+          BrowserActions::From(browser())->root_action_item());
   const ui::Accelerator accelerator = collapse_action->GetAccelerator();
 
   // Request that the tabstrip collapses. The state controller collapse state
@@ -600,11 +762,11 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
   // The collapse button should be updated immediately to use the expand icon,
   // text, and tooltip.
-  EXPECT_EQ(BrowserActions::GetCleanTitleAndTooltipText(
-                l10n_util::GetStringUTF16(IDS_EXPAND_VERTICAL_TABS)),
-            collapse_action->GetText());
   EXPECT_EQ(
-      BrowserActions::GetCleanTitleAndTooltipText(l10n_util::GetStringFUTF16(
+      chrome::GetCleanText(l10n_util::GetStringUTF16(IDS_EXPAND_VERTICAL_TABS)),
+      collapse_action->GetText());
+  EXPECT_EQ(
+      chrome::GetCleanText(l10n_util::GetStringFUTF16(
           IDS_EXPAND_VERTICAL_TABS_TOOLTIP, accelerator.GetShortcutText())),
       collapse_action->GetTooltipText());
 
@@ -614,11 +776,11 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
   // The collapse button should be updated immediately to use the collapse icon,
   // text, and tooltip.
-  EXPECT_EQ(BrowserActions::GetCleanTitleAndTooltipText(
+  EXPECT_EQ(chrome::GetCleanText(
                 l10n_util::GetStringUTF16(IDS_COLLAPSE_VERTICAL_TABS)),
             collapse_action->GetText());
   EXPECT_EQ(
-      BrowserActions::GetCleanTitleAndTooltipText(l10n_util::GetStringFUTF16(
+      chrome::GetCleanText(l10n_util::GetStringFUTF16(
           IDS_COLLAPSE_VERTICAL_TABS_TOOLTIP, accelerator.GetShortcutText())),
       collapse_action->GetTooltipText());
 }
@@ -656,8 +818,8 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
     bounds.set_width(width);
     EXPECT_LE(region_view()
                   ->GetPinnedTabsContainer()
-                  ->CalculateProposedLayout(bounds)
-                  .host_size.width(),
+                  ->GetPreferredSize(bounds)
+                  .width(),
               bounds.width());
   };
   // Test for a variety of bounding widths.
@@ -666,186 +828,6 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
   verify_for_width(195);
   verify_for_width(140);
   verify_for_width(75);
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
-                       GetTabAnchorViewReturnsCorrectView) {
-  // Add a few tabs.
-  AppendTab();
-  AppendTab();
-  AppendTab();
-
-  // Verify GetTabAnchorView for a valid tab handle.
-  const int tab_index = 1;
-  tabs::TabInterface* tab =
-      browser()->GetTabStripModel()->GetTabAtIndex(tab_index);
-  views::View* tab_anchor_view =
-      region_view()->GetTabAnchorView(tab->GetHandle());
-  EXPECT_NE(nullptr, tab_anchor_view);
-
-  // Get the tab from the model and its corresponding node view for comparison.
-  const TabCollectionNode* node =
-      region_view()->root_node_for_testing()->GetNodeForHandle(
-          tab->GetHandle());
-  EXPECT_EQ(node->view(), tab_anchor_view);
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
-                       GetTabGroupAnchorViewReturnsCorrectView) {
-  // Add a few tabs.
-  AppendTab();
-  AppendTab();
-  AppendTab();
-
-  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
-
-  // Create a tab group.
-  std::vector<int> tab_indices = {0, 1};
-  std::optional<tab_groups::TabGroupId> group_id =
-      tab_strip_model->AddToNewGroup(tab_indices);
-  ASSERT_TRUE(group_id.has_value());
-
-  // Verify GetTabGroupAnchorView for the created group.
-  views::View* group_anchor_view =
-      region_view()->GetTabGroupAnchorView(group_id.value());
-  EXPECT_NE(nullptr, group_anchor_view);
-
-  // Get the tab group from the model and its corresponding node view for
-  // comparison.
-  const TabGroup* tab_group =
-      tab_strip_model->group_model()->GetTabGroup(group_id.value());
-  const TabCollectionNode* node =
-      region_view()->root_node_for_testing()->GetNodeForHandle(
-          tab_group->GetCollectionHandle());
-  EXPECT_EQ(node->view(), group_anchor_view);
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
-                       AccessiblePaneViewDefaultFocusableChild) {
-  // Ensure the default focusable element is the VerticalTabStripTopContainer.
-  views::View* view = region_view()->GetDefaultFocusableChild();
-  ASSERT_TRUE(view);
-  EXPECT_EQ(view, GetTabViewAt(0));
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
-                       CanFocusVerticalTabView) {
-  // Add a tab.
-  AppendTab();
-
-  // Get the view for the first tab.
-  views::View* first_tab_view = GetTabViewAt(0);
-  ASSERT_TRUE(first_tab_view);
-
-  // Directly set focus using the FocusManager.
-  views::FocusManager* focus_manager =
-      BrowserView::GetBrowserViewForBrowser(browser())->GetFocusManager();
-  ASSERT_NE(nullptr, focus_manager);
-  focus_manager->SetFocusedView(first_tab_view);
-
-  // Verify that the first tab is focused. Setting focus is only synchronous if
-  // the widget is active. Activating the widget is an asynchronous process so
-  // wait until the view has focus.
-  ASSERT_TRUE(
-      base::test::RunUntil([&]() { return first_tab_view->HasFocus(); }));
-  EXPECT_EQ(first_tab_view, focus_manager->GetFocusedView());
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
-                       GetFocusedTabIndexReturnsCorrectIndex) {
-  // 1. Verify no tab is focused to start.
-  EXPECT_EQ(std::nullopt, region_view()->GetFocusedTabIndex());
-
-  // Add a few tabs.
-  AppendTab();
-  AppendTab();
-  AppendTab();
-
-  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
-
-  // 2. Activate the first tab and explicitly set the focus on the tab's view
-  // using FocusManager.
-  const int focused_tab_index = 1;
-  tab_strip_model->ActivateTabAt(
-      focused_tab_index, TabStripUserGestureDetails(
-                             TabStripUserGestureDetails::GestureType::kOther));
-
-  views::View* tab_view = GetTabViewAt(focused_tab_index);
-
-  views::FocusManager* focus_manager =
-      BrowserView::GetBrowserViewForBrowser(browser())->GetFocusManager();
-  ASSERT_NE(nullptr, focus_manager);
-
-  focus_manager->SetFocusedView(tab_view);
-  ASSERT_TRUE(base::test::RunUntil([&]() { return tab_view->HasFocus(); }));
-
-  std::optional<int> focused_index = region_view()->GetFocusedTabIndex();
-  ASSERT_TRUE(focused_index.has_value());
-  EXPECT_EQ(focused_tab_index, focused_index.value());
-
-  // 3. Verify unfocusing the tab returns the correct value.
-  focus_manager->SetFocusedView(nullptr);
-  ASSERT_TRUE(base::test::RunUntil([&]() { return !tab_view->HasFocus(); }));
-
-  EXPECT_EQ(std::nullopt, region_view()->GetFocusedTabIndex());
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
-                       SplitTabsShareSpace) {
-  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
-  // Add split tabs.
-  content::WebContents* contents1 = AppendTab();
-  content::WebContents* contents2 = AppendTab();
-
-  const int index1 = tab_strip_model->GetIndexOfWebContents(contents1);
-  const int index2 = tab_strip_model->GetIndexOfWebContents(contents2);
-
-  tab_strip_model->ActivateTabAt(
-      index1, TabStripUserGestureDetails(
-                  TabStripUserGestureDetails::GestureType::kOther));
-
-  tab_strip_model->AddToNewSplit(
-      {index2}, {}, split_tabs::SplitTabCreatedSource::kTabContextMenu);
-
-  // Add pinned split tabs.
-  content::WebContents* contents3 = AppendPinnedTab();
-  content::WebContents* contents4 = AppendPinnedTab();
-
-  const int index3 = tab_strip_model->GetIndexOfWebContents(contents3);
-  const int index4 = tab_strip_model->GetIndexOfWebContents(contents4);
-
-  tab_strip_model->ActivateTabAt(
-      index3, TabStripUserGestureDetails(
-                  TabStripUserGestureDetails::GestureType::kOther));
-
-  tab_strip_model->AddToNewSplit(
-      {index4}, {}, split_tabs::SplitTabCreatedSource::kTabContextMenu);
-
-  auto* pinned_tabs = root_node()->children()[0]->view();
-  EXPECT_TRUE(views::IsViewClass<PinnedTabContainerView>(pinned_tabs));
-  EXPECT_EQ(pinned_tabs->children().size(), 1);
-  auto* unpinned_tabs = root_node()->children()[1]->view();
-  EXPECT_TRUE(views::IsViewClass<UnpinnedTabContainerView>(unpinned_tabs));
-  ASSERT_TRUE(base::test::RunUntil(
-      [&]() { return unpinned_tabs->children().size() == 2; }));
-
-  // Expect pinned tabs to have equal width.
-  auto pinned_split_tab = pinned_tabs->children()[0];
-  EXPECT_TRUE(views::IsViewClass<SplitTabView>(pinned_split_tab));
-  EXPECT_EQ(pinned_split_tab->children().size(), 2);
-  ASSERT_TRUE(base::test::RunUntil([&]() {
-    return pinned_split_tab->children()[0]->size().width() ==
-           pinned_split_tab->children()[1]->size().width();
-  }));
-
-  // Expect unpinned tabs to have equal width.
-  auto unpinned_split_tab = unpinned_tabs->children()[1];
-  EXPECT_TRUE(views::IsViewClass<SplitTabView>(unpinned_split_tab));
-  EXPECT_EQ(unpinned_split_tab->children().size(), 2);
-  ASSERT_TRUE(base::test::RunUntil([&]() {
-    return unpinned_split_tab->children()[0]->size().width() ==
-           unpinned_split_tab->children()[1]->size().width();
-  }));
 }
 
 // Simulates swapping between horizontal and vertical modes. The inactive
@@ -914,7 +896,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, SwitchModes) {
   auto* unpinned_tabs_view = root_node()->children()[1]->view();
 
   // Horizontal tabstrip should be empty when in vertical mode.
-  EXPECT_EQ(horizontal_tab_strip()->GetTabCount(), 0);
+  EXPECT_EQ(GetHorizontalTabCount(), 0);
 
   // Vertical tabstrip should have the tabs.
   // Pinned: 1 single + 1 split = 2 children.
@@ -932,21 +914,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, SwitchModes) {
   // Horizontal tabstrip should have the tabs.
   // 1 pinned + 1 unpinned + 2 split + 2 pinned split + 1 grouped +
   // 2 grouped split = 10.
-  EXPECT_EQ(horizontal_tab_strip()->GetTabCount(), 9);
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, TabStripEditableState) {
-  // Default state should be editable.
-  EXPECT_TRUE(region_view()->IsTabStripEditable());
-
-  // Disable editing.
-  region_view()->DisableTabStripEditingForTesting();
-  EXPECT_FALSE(region_view()->IsTabStripEditable());
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest, TabStripCloseableState) {
-  // Default state should be closeable (no drag session).
-  EXPECT_TRUE(region_view()->IsTabStripCloseable());
+  EXPECT_EQ(GetHorizontalTabCount(), 9);
 }
 
 // Verifies that entering Touch UI mode with vertical tabs enabled doesn't
@@ -1229,6 +1197,11 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
                        ExpandOnHoverEnabledChanged) {
+  auto render_mode = gfx::AnimationTestApi::SetRichAnimationRenderMode(
+      gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED);
+  gfx::ScopedAnimationDurationScaleMode scoped_animation_duration_scale_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+
   // Fully collapse the tabstrip.
   state_controller()->RequestCollapse(true);
   ASSERT_TRUE(base::test::RunUntil(
@@ -1645,7 +1618,7 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeLegacyTest,
              TabStripUserGestureDetails::GestureType::kOther));
 
   // Focus the tab group.
-  tab_strip_model()->SetFocusedGroup(group_id);
+  tab_strip_model()->EnterFocusMode(group_id);
   EXPECT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
 
   // Switch to vertical tabs mode.
@@ -1661,230 +1634,6 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeLegacyTest,
 
   // Focus state must be preserved and no crash.
   EXPECT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeLegacyTest,
-                       ToggleOrientationUnfocusedHidesUnfocusButton) {
-  // Start in vertical mode, create tabs and group.
-  AppendTab();
-  AppendTab();
-  ASSERT_EQ(3, tab_strip_model()->count());
-
-  const tab_groups::TabGroupId group_id =
-      tab_strip_model()->AddToNewGroup({1, 2});
-  tab_strip_model()->ActivateTabAt(
-      1, TabStripUserGestureDetails(
-             TabStripUserGestureDetails::GestureType::kOther));
-
-  // Focus the group while in vertical mode.
-  tab_strip_model()->SetFocusedGroup(group_id);
-  EXPECT_TRUE(
-      region_view()->GetTopContainer()->GetUnfocusButton()->GetVisible());
-  EXPECT_FALSE(
-      region_view()->GetTopContainer()->GetCollapseButton()->GetVisible());
-
-  // Switch to horizontal mode.
-  ExitVerticalTabsMode();
-  EXPECT_FALSE(state_controller()->ShouldDisplayVerticalTabs());
-
-  // Unfocus the tab group while in horizontal mode.
-  tab_strip_model()->SetFocusedGroup(std::nullopt);
-  EXPECT_EQ(tab_strip_model()->GetFocusedGroup(), std::nullopt);
-
-  // Switch back to vertical mode.
-  EnterVerticalTabsMode();
-  EXPECT_TRUE(state_controller()->ShouldDisplayVerticalTabs());
-
-  // In vertical mode, the unfocus button must NOT be visible, and the
-  // collapse button MUST be visible.
-  EXPECT_FALSE(
-      region_view()->GetTopContainer()->GetUnfocusButton()->GetVisible());
-  EXPECT_TRUE(
-      region_view()->GetTopContainer()->GetCollapseButton()->GetVisible());
-}
-
-class VerticalTabStripFocusModeUnifiedTest
-    : public VerticalTabStripRegionViewTest {
- public:
-  const std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
-      override {
-    auto enabled = VerticalTabsBrowserTestMixin<
-        InProcessBrowserTest>::GetEnabledFeatures();
-    enabled.push_back({features::kTabGroupsFocusing, {}});
-    enabled.push_back({tabs::kTabStripUnification, {}});
-    return enabled;
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
-                       ToggleOrientationPreservesFocusMode) {
-  // Start in horizontal mode.
-  ExitVerticalTabsMode();
-  EXPECT_FALSE(state_controller()->ShouldDisplayVerticalTabs());
-
-  // Create 3 tabs: Tab 0 (ungrouped), Tab 1 and Tab 2 in a group.
-  AppendTab();
-  AppendTab();
-  ASSERT_EQ(3, tab_strip_model()->count());
-
-  const tab_groups::TabGroupId group_id =
-      tab_strip_model()->AddToNewGroup({1, 2});
-
-  // Activate a tab within the group.
-  tab_strip_model()->ActivateTabAt(
-      1, TabStripUserGestureDetails(
-             TabStripUserGestureDetails::GestureType::kOther));
-
-  // Focus the tab group.
-  tab_strip_model()->SetFocusedGroup(group_id);
-  EXPECT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
-
-  // Switch to vertical tabs mode.
-  EnterVerticalTabsMode();
-  EXPECT_TRUE(state_controller()->ShouldDisplayVerticalTabs());
-
-  // Focus state must be preserved and no crash.
-  EXPECT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
-
-  // Switch back to horizontal tabs mode.
-  ExitVerticalTabsMode();
-  EXPECT_FALSE(state_controller()->ShouldDisplayVerticalTabs());
-
-  // Focus state must be preserved and no crash.
-  EXPECT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
-                       MoveFocusedGroupToNewWindowPreservesFocus) {
-  AppendTab();
-  AppendTab();
-  ASSERT_EQ(3, tab_strip_model()->count());
-
-  const tab_groups::TabGroupId group_id =
-      tab_strip_model()->AddToNewGroup({1, 2});
-
-  tab_strip_model()->ActivateTabAt(
-      1, TabStripUserGestureDetails(
-             TabStripUserGestureDetails::GestureType::kOther));
-
-  tab_strip_model()->SetFocusedGroup(group_id);
-  ASSERT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
-
-  ui_test_utils::BrowserCreatedObserver observer;
-  chrome::MoveGroupToNewWindow(browser(), group_id);
-  BrowserWindowInterface* new_browser = observer.Wait();
-  ASSERT_TRUE(new_browser);
-
-  // Source browser should no longer have the group or focus.
-  EXPECT_EQ(1, tab_strip_model()->count());
-  EXPECT_FALSE(tab_strip_model()->GetFocusedGroup().has_value());
-
-  // New browser should contain the group and have it focused.
-  EXPECT_EQ(2, new_browser->GetTabStripModel()->count());
-  EXPECT_EQ(new_browser->GetTabStripModel()->GetFocusedGroup(), group_id);
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
-                       MoveAllTabsIngroupToNewWindowPreservesFocus) {
-  AppendTab();
-  AppendTab();
-  ASSERT_EQ(3, tab_strip_model()->count());
-
-  const tab_groups::TabGroupId group_id =
-      tab_strip_model()->AddToNewGroup({1, 2});
-
-  tab_strip_model()->ActivateTabAt(
-      1, TabStripUserGestureDetails(
-             TabStripUserGestureDetails::GestureType::kOther));
-
-  tab_strip_model()->SetFocusedGroup(group_id);
-  ASSERT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
-
-  ui_test_utils::BrowserCreatedObserver observer;
-  chrome::MoveTabsToNewWindow(browser(), {1, 2});
-  BrowserWindowInterface* new_browser = observer.Wait();
-  ASSERT_TRUE(new_browser);
-
-  // Source browser should no longer have the group or focus.
-  EXPECT_EQ(1, tab_strip_model()->count());
-  EXPECT_FALSE(tab_strip_model()->GetFocusedGroup().has_value());
-
-  // New browser should contain the group and have it focused.
-  EXPECT_EQ(2, new_browser->GetTabStripModel()->count());
-  EXPECT_EQ(new_browser->GetTabStripModel()->GetFocusedGroup(), group_id);
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
-                       MoveGroupAndPinnedTabsToNewWindowPreservesFocus) {
-  AppendTab();
-  AppendTab();
-  AppendTab();
-  ASSERT_EQ(4, tab_strip_model()->count());
-
-  tab_strip_model()->SetTabPinned(0, true);
-  ASSERT_TRUE(tab_strip_model()->IsTabPinned(0));
-
-  const tab_groups::TabGroupId group_id =
-      tab_strip_model()->AddToNewGroup({1, 2});
-
-  tab_strip_model()->ActivateTabAt(
-      1, TabStripUserGestureDetails(
-             TabStripUserGestureDetails::GestureType::kOther));
-
-  tab_strip_model()->SetFocusedGroup(group_id);
-  ASSERT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
-
-  ui_test_utils::BrowserCreatedObserver observer;
-  chrome::MoveTabsToNewWindow(browser(), {0, 1, 2});
-  BrowserWindowInterface* new_browser = observer.Wait();
-  ASSERT_TRUE(new_browser);
-
-  // Source browser should retain the remaining tab and have no focused group.
-  EXPECT_EQ(1, tab_strip_model()->count());
-  EXPECT_FALSE(tab_strip_model()->GetFocusedGroup().has_value());
-
-  // New browser should contain the pinned tab and the group, with the group
-  // focused.
-  EXPECT_EQ(3, new_browser->GetTabStripModel()->count());
-  EXPECT_TRUE(new_browser->GetTabStripModel()->IsTabPinned(0));
-  EXPECT_EQ(new_browser->GetTabStripModel()->GetFocusedGroup(), group_id);
-}
-
-IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusModeUnifiedTest,
-                       MoveFocusedGroupToExistingWindowDoesNotFocus) {
-  AppendTab();
-  AppendTab();
-  ASSERT_EQ(3, tab_strip_model()->count());
-
-  const tab_groups::TabGroupId group_id =
-      tab_strip_model()->AddToNewGroup({1, 2});
-
-  tab_strip_model()->ActivateTabAt(
-      1, TabStripUserGestureDetails(
-             TabStripUserGestureDetails::GestureType::kOther));
-
-  tab_strip_model()->SetFocusedGroup(group_id);
-  ASSERT_EQ(tab_strip_model()->GetFocusedGroup(), group_id);
-
-  BrowserWindowInterface* target_browser =
-      CreateBrowser(browser()->GetProfile());
-  ASSERT_TRUE(target_browser);
-  ASSERT_EQ(1, target_browser->GetTabStripModel()->count());
-
-  chrome::MoveGroupToExistingWindow(browser(), target_browser, group_id);
-
-  // Source browser should no longer have the group or focus.
-  EXPECT_EQ(1, tab_strip_model()->count());
-  EXPECT_FALSE(tab_strip_model()->GetFocusedGroup().has_value());
-
-  // Target browser contains the moved group along with its original tab, so the
-  // group should not be focused in the target window.
-  EXPECT_EQ(3, target_browser->GetTabStripModel()->count());
-  EXPECT_TRUE(
-      target_browser->GetTabStripModel()->group_model()->ContainsTabGroup(
-          group_id));
-  EXPECT_FALSE(
-      target_browser->GetTabStripModel()->GetFocusedGroup().has_value());
 }
 
 class VerticalTabStripFocusSwipeTest : public VerticalTabStripRegionViewTest {
@@ -1943,13 +1692,20 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
 
   const tab_groups::TabGroupId group0 =
       tab_strip_model()->AddToNewGroup({1, 2});
-  tab_strip_model()->AddToNewGroup({3, 4});
+  const tab_groups::TabGroupId group1 =
+      tab_strip_model()->AddToNewGroup({3, 4});
 
   EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
 
-  // Forward swipe (negative x_offset for physical rightward swipe).
+  // Swiping while not in focus mode is a no-op.
   SendMouseWheelEvent(-static_cast<int>(kSwipeOverThreshold), 0);
+  EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
+
+  // Enter focus mode on group0; forward swipe rotates to group1.
+  tab_strip_model()->EnterFocusMode(group0);
   EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
+  SendMouseWheelEvent(-static_cast<int>(kSwipeOverThreshold), 0);
+  EXPECT_EQ(group1, tab_strip_model()->GetFocusedGroup());
 }
 #elif BUILDFLAG(IS_MAC)
 IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
@@ -1971,22 +1727,31 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
 
   EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
 
-  // Forward swipe (negative x_offset for physical rightward swipe on trackpad).
-  SendScrollEvent(-kSwipeOverThreshold, 0.0f);
-  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
-  SendScrollEvent(0.0f, 0.0f, ui::ScrollEventPhase::kEnd);
-
-  // Swipe forward again -> group1.
-  SendScrollEvent(-kSwipeOverThreshold, 0.0f);
-  EXPECT_EQ(group1, tab_strip_model()->GetFocusedGroup());
-  SendScrollEvent(0.0f, 0.0f, ui::ScrollEventPhase::kEnd);
-
-  // Swipe forward again -> unfocused (std::nullopt).
+  // Swiping while not in focus mode does not enter focus mode.
   SendScrollEvent(-kSwipeOverThreshold, 0.0f);
   EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
   SendScrollEvent(0.0f, 0.0f, ui::ScrollEventPhase::kEnd);
 
-  // Backward swipe (positive x_offset) -> group1.
+  SendScrollEvent(kSwipeOverThreshold, 0.0f);
+  EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
+  SendScrollEvent(0.0f, 0.0f, ui::ScrollEventPhase::kEnd);
+
+  // Enter focus mode on group0.
+  tab_strip_model()->EnterFocusMode(group0);
+  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
+
+  // Forward swipe (negative x_offset for physical rightward swipe on trackpad)
+  // -> group1.
+  SendScrollEvent(-kSwipeOverThreshold, 0.0f);
+  EXPECT_EQ(group1, tab_strip_model()->GetFocusedGroup());
+  SendScrollEvent(0.0f, 0.0f, ui::ScrollEventPhase::kEnd);
+
+  // Swipe forward again -> wraps around to group0 without unfocusing.
+  SendScrollEvent(-kSwipeOverThreshold, 0.0f);
+  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
+  SendScrollEvent(0.0f, 0.0f, ui::ScrollEventPhase::kEnd);
+
+  // Backward swipe (positive x_offset) -> wraps around to group1.
   SendScrollEvent(kSwipeOverThreshold, 0.0f);
   EXPECT_EQ(group1, tab_strip_model()->GetFocusedGroup());
   SendScrollEvent(0.0f, 0.0f, ui::ScrollEventPhase::kEnd);
@@ -2002,21 +1767,26 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
   EnterVerticalTabsMode();
   AppendTab();
   AppendTab();
+  AppendTab();
+  AppendTab();
   const tab_groups::TabGroupId group0 =
       tab_strip_model()->AddToNewGroup({1, 2});
-  EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
+  const tab_groups::TabGroupId group1 =
+      tab_strip_model()->AddToNewGroup({3, 4});
+  tab_strip_model()->EnterFocusMode(group0);
+  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
 
   // Initial vertical scroll exceeding kAxisLockThreshold.
   SendScrollEvent(0.0f, kAxisLockOverThreshold);
 
   // Subsequent horizontal swipe in the same gesture is ignored.
   SendScrollEvent(-kSwipeOverThreshold, 0.0f);
-  EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
+  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
 
   // Once the gesture ends, subsequent horizontal swipe triggers rotation.
   SendScrollEvent(0.0f, 0.0f, ui::ScrollEventPhase::kEnd);
   SendScrollEvent(-kSwipeOverThreshold, 0.0f);
-  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
+  EXPECT_EQ(group1, tab_strip_model()->GetFocusedGroup());
 }
 
 IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
@@ -2024,13 +1794,18 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
   EnterVerticalTabsMode();
   AppendTab();
   AppendTab();
-  tab_strip_model()->AddToNewGroup({1, 2});
-  EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
+  AppendTab();
+  AppendTab();
+  const tab_groups::TabGroupId group0 =
+      tab_strip_model()->AddToNewGroup({1, 2});
+  tab_strip_model()->AddToNewGroup({3, 4});
+  tab_strip_model()->EnterFocusMode(group0);
+  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
 
   // Momentum event with large delta should be ignored.
   SendScrollEvent(-kSwipeOverThreshold, 0.0f, ui::ScrollEventPhase::kNone,
                   ui::EventMomentumPhase::INERTIAL_UPDATE);
-  EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
+  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
 }
 
 // TODO(crbug.com/546848427): Fix wall-clock timing race with kGestureResetTimeout.
@@ -2041,28 +1816,33 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
   AppendTab();
   AppendTab();
   AppendTab();
+  AppendTab();
+  AppendTab();
   const tab_groups::TabGroupId group0 =
       tab_strip_model()->AddToNewGroup({1, 2});
   const tab_groups::TabGroupId group1 =
       tab_strip_model()->AddToNewGroup({3, 4});
-  EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
+  const tab_groups::TabGroupId group2 =
+      tab_strip_model()->AddToNewGroup({5, 6});
+  tab_strip_model()->EnterFocusMode(group0);
+  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
 
   // Small movement below kSwipeThreshold does not trigger.
   SendScrollEvent(-kSwipeUnderThreshold, 0.0f);
-  EXPECT_EQ(std::nullopt, tab_strip_model()->GetFocusedGroup());
+  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
 
   // Accumulating across threshold triggers once.
   SendScrollEvent(-kSwipeUnderThreshold, 0.0f);
-  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
+  EXPECT_EQ(group1, tab_strip_model()->GetFocusedGroup());
 
   // Further continuous scrolling in the same gesture stream does not advance to
-  // group1.
+  // group2.
   SendScrollEvent(-kSwipeOverThreshold, 0.0f);
-  EXPECT_EQ(group0, tab_strip_model()->GetFocusedGroup());
+  EXPECT_EQ(group1, tab_strip_model()->GetFocusedGroup());
 
   // Ending the gesture allows next swipe to advance.
   SendScrollEvent(0.0f, 0.0f, ui::ScrollEventPhase::kEnd);
   SendScrollEvent(-kSwipeOverThreshold, 0.0f);
-  EXPECT_EQ(group1, tab_strip_model()->GetFocusedGroup());
+  EXPECT_EQ(group2, tab_strip_model()->GetFocusedGroup());
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)

@@ -54,6 +54,7 @@ class V8UnionHTMLElementOrLong;
 class V8UnionHTMLOptGroupElementOrHTMLOptionElement;
 class HTMLSelectedContentElement;
 class SelectMutationObserver;
+class UIEvent;
 
 enum class SelectPopupHideBehavior {
   kNormal,
@@ -133,6 +134,8 @@ class CORE_EXPORT HTMLSelectElement final
 
   // It is possible to pass WebAutofillState::kNotFilled here in case we need
   // to simulate a reset of a <select> element.
+  void SetAutofillState(
+      WebAutofillState = WebAutofillState::kAutofilled) override;
   void SetAutofillValue(const String& value, WebAutofillState);
   void SetAutofillOption(HTMLOptionElement* option, WebAutofillState);
 
@@ -218,7 +221,6 @@ class CORE_EXPORT HTMLSelectElement final
 
   // For use in the implementation of HTMLOptionElement.
   void OptionSelectionStateChanged(HTMLOptionElement*, bool option_is_selected);
-  void ElementInserted(Node& node);
   void OptionInserted(HTMLOptionElement&,
                       Node* nearest_ancestor_select_child,
                       bool option_is_selected);
@@ -231,6 +233,9 @@ class CORE_EXPORT HTMLSelectElement final
 
   void OptGroupInsertedOrRemoved(HTMLOptGroupElement&);
   void HrInsertedOrRemoved(HTMLHRElement&);
+  // ResetSelectedness calls ResetToDefaultSelection, but will also update all
+  // descendant selectedcontent elements if the selected option was changed.
+  void ResetSelectedness();
 
   HTMLOptionElement* SpatialNavigationFocusedOption();
 
@@ -295,7 +300,8 @@ class CORE_EXPORT HTMLSelectElement final
   bool IsValidBuiltinCommand(HTMLElement& invoker,
                              CommandEventType command) override;
   bool HandleCommandInternal(HTMLElement& invoker,
-                             CommandEventType command) override;
+                             CommandEventType command,
+                             UIEvent* activate_event) override;
 
   // SlottedButton returns the first child <button> in the light dom tree. If
   // this select is in a state where the <button> can't be rendered, such as a
@@ -358,8 +364,6 @@ class CORE_EXPORT HTMLSelectElement final
   // This should only be called when UsesMenuList() returns true.
   void SetIsAppearanceBasePickerForDisplayNone(bool);
 
-  void SelectedContentElementInsertedLegacy(
-      HTMLSelectedContentElement* selectedcontent);
   void SelectedContentElementInserted(
       HTMLSelectedContentElement* selectedcontent);
   void SelectedContentElementRemoved(
@@ -376,6 +380,8 @@ class CORE_EXPORT HTMLSelectElement final
   void setSelectedContentElement(HTMLSelectedContentElement*);
 
   void DefaultEventHandler(Event&) override;
+  bool HasActivationBehavior() const override;
+  void RunActivationBehavior(Event&, EventDispatchHandlingState*) override;
   void ChildrenChanged(const ChildrenChange&) override;
 
   // UpdateAllSelectedcontentsSingle and UpdateAllSelectedcontentsMultiple both
@@ -394,6 +400,12 @@ class CORE_EXPORT HTMLSelectElement final
   // elements into the provided selectedcontent element. This is called when the
   // provided selectedcontent is added to the subtree of this select element.
   void UpdateIndividualSelectedcontent(HTMLSelectedContentElement&);
+  // Queues a microtask which will run UpdateAllSelectedcontentsIfPending(),
+  // unless an update is already pending.
+  void QueueSelectedcontentUpdate();
+  // Runs UpdateAllSelectedcontents() if an update was queued by
+  // QueueSelectedcontentUpdate() and hasn't run yet.
+  void UpdateAllSelectedcontentsIfPending();
 
   // Returns the localized "X selected" text used for MenuList multiple select
   // elements.
@@ -432,6 +444,7 @@ class CORE_EXPORT HTMLSelectElement final
     return children_descendant_counts_map_;
   }
   unsigned NumDescendantInputs() const;
+  HTMLElement* ListBoxForFilter() const;
 
  private:
   mojom::blink::FormControlType FormControlType() const override;
@@ -481,7 +494,8 @@ class CORE_EXPORT HTMLSelectElement final
     kResetReasonOptionInsertedOrRemoved,
     kResetReasonOthers
   };
-  void ResetToDefaultSelection(ResetReason = kResetReasonOthers);
+  // Returns true if the selectedness of any option was changed.
+  bool ResetToDefaultSelection(ResetReason = kResetReasonOthers);
   void TypeAheadFind(const KeyboardEvent&);
 
   bool IsOptionalFormControl() const override {
@@ -538,7 +552,7 @@ class CORE_EXPORT HTMLSelectElement final
   // Helper to update the select descendants' mutation observer.
   void UpdateMutationObserver();
 
-  void DidChangeIsInCanvasSubtree() final;
+  void DidChangeIsInCanvasSubtree(CanvasSubtreePropagation) final;
 
   // last_on_change_option_ is the currently selected option. It provides faster
   // access to the currently selected option than iterating through each option
@@ -592,6 +606,11 @@ class CORE_EXPORT HTMLSelectElement final
   // called, and never gets set back to false again. It is used for parsing
   // <input> in <select>.
   bool was_option_inserted_ = false;
+  // Tracks whether an update to all descendant <selectedcontent> elements has
+  // been queued (when <option> or <selectedcontent> elements are inserted,
+  // removed, or moved), so that multiple mutations coalesce into a single
+  // update of all descendant <selectedcontent> elements.
+  bool has_pending_selectedcontent_update_ = false;
 
   friend class ListBoxSelectType;
   friend class MenuListSelectType;

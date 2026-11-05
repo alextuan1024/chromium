@@ -16,7 +16,7 @@
 #include "build/build_config.h"
 #include "chrome/common/safe_browsing/binary_feature_extractor.h"
 #include "chrome/common/safe_browsing/download_type_util.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #include "crypto/hash.h"
 #include "url/gurl.h"
 
@@ -118,10 +118,10 @@ void UpdateArchiveAnalyzerResultsWithFile(base::FilePath path,
     }
   } else {
 #if BUILDFLAG(IS_MAC)
-    // This check prevents running analysis on .app files since they are
-    // really just directories and will cause binary feature extraction
-    // to fail.
-    if (path.Extension().compare(".app") == 0) {
+    // This check prevents running analysis on .app bundle directories, since
+    // they will cause binary feature extraction to fail. Regular files with
+    // an .app extension must still be recorded.
+    if (is_directory && path.Extension().compare(".app") == 0) {
       DVLOG(2) << "Downloaded a zipped .app directory: " << path.value();
     } else {
 #endif  // BUILDFLAG(IS_MAC)

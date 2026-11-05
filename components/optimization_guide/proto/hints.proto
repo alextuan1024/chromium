@@ -144,7 +144,7 @@ message GetHintsResponse {
 // OptimizationType enum at http://shortn/_t8G1sv8yAS (Google-internal link).
 // Additionally, these values must be synchronized with the OptimizationType
 // enum in enums.xml and optimization/histograms.xml for metric recording.
-// Next ID: 134
+// Next ID: 137
 enum OptimizationType {
   // Values for obsolete optimizations.
   reserved 11, 12, 16, 29, 32, 66, 68, 72, 73, 89, 94, 95, 96, 101;
@@ -426,6 +426,19 @@ enum OptimizationType {
   // Autofill AtMemory feature.
   AUTOFILL_AT_MEMORY_BLOCKED = 132;
   FILTER_EXECUTION_STRATEGY = 133;
+  // This optimization provides information about merchant URLs on which
+  // payment QR code detection should run. This allowlist uses page pattern
+  // matching to perform regex match against entire URLs. It is kept separate
+  // from PIX_MERCHANT_ORIGINS_ALLOWLIST so that QR code detection and Pix
+  // clipboard detection can be expanded to different sets of merchants
+  // independently.
+  PAYMENT_QR_CODE_MERCHANT_URL_REGEX_ALLOWLIST = 134;
+  // Provides information about whether the page is eligible for Quick Answers.
+  QUICK_ANSWERS = 135;
+  // This optimization provides information about whether a page is eligible
+  // for Dictation page context extraction. The verdict is carried in
+  // DictationMetadata.
+  DICTATION_ELIGIBLE = 136;
 }
 
 // Presents semantics for how page load URLs should be matched.

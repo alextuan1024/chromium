@@ -274,8 +274,6 @@ class DownloadRequestLimiter
                            CreateBubbleModel);
   FRIEND_TEST_ALL_PREFIXES(PrerenderDownloadTest,
                            DownloadRequestLimiterIsUnaffectedByPrerendering);
-  FRIEND_TEST_ALL_PREFIXES(FencedFrameDownloadTest,
-                           DownloadRequestLimiterIsUnaffectedByFencedFrame);
   FRIEND_TEST_ALL_PREFIXES(
       ContentSettingBubbleModelUnusedPermissionRevocationForAllSurfacesTest,
       AutomaticDownloads_LastVisited);
@@ -348,9 +346,7 @@ class DownloadRequestLimiter
   // if the state is other than ALLOW_ONE_DOWNLOAD. Similarly once the state
   // transitions from anything but ALLOW_ONE_DOWNLOAD back to ALLOW_ONE_DOWNLOAD
   // the TabDownloadState is removed and deleted (by way of Remove).
-  typedef std::map<content::WebContents*,
-                   raw_ptr<TabDownloadState, CtnExperimental>>
-      StateMap;
+  typedef std::map<content::WebContents*, raw_ptr<TabDownloadState>> StateMap;
   StateMap state_map_;
 
   CanDownloadDecidedCallback on_can_download_decided_callback_;

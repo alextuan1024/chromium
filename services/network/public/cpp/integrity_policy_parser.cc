@@ -24,6 +24,12 @@ void HandleKeyValue(const std::string_view key,
                     net::structured_headers::ParameterizedMember&& value,
                     const std::string_view header_name,
                     IntegrityPolicy& policy) {
+  if (key != "blocked-destinations" && key != "sources" && key != "endpoints") {
+    policy.parsing_errors.emplace_back(base::StringPrintf(
+        "Unrecognized %s in %s header.", key, header_name));
+    return;
+  }
+
   net::structured_headers::InnerList* inner_list = value.GetIfInnerList();
   if (!inner_list) {
     policy.parsing_errors.emplace_back(
@@ -56,11 +62,9 @@ void HandleKeyValue(const std::string_view key,
             base::StringPrintf("The %s source '%s' is not supported.",
                                header_name, *parameter_value));
       }
-    } else if (key == "endpoints") {
-      policy.endpoints.emplace_back(std::move(*parameter_value));
     } else {
-      policy.parsing_errors.emplace_back(base::StringPrintf(
-          "Unrecognized %s in %s header.", key, header_name));
+      DCHECK(key == "endpoints");
+      policy.endpoints.emplace_back(std::move(*parameter_value));
     }
   }
 }
@@ -95,9 +99,8 @@ IntegrityPolicy ParseIntegrityPolicyFromHeaders(
   }
 
   bool has_sources_key = false;
-  // Loop through the policy dictionary
-  //
-  // https://datatracker.ietf.org/doc/html/rfc9421#section-4-4
+  // Loop through the policy dictionary:
+  // https://w3c.github.io/webappsec-subresource-integrity/#processing-an-integrity-policy
   for (auto& [key, value] : integrity_policy_dictionary.value()) {
     if (key == "sources") {
       has_sources_key = true;

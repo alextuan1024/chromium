@@ -994,6 +994,133 @@ TEST_F(AutofillCrowdsourcingManagerTest, CacheQueryTest) {
   EXPECT_EQ(response_contents[0], responses().front().response);
 }
 
+// Tests that two queries whose forms share the same `FormSignature` (because
+// `StripDigitsIfRequired` strips 5+ digit runs from field names in
+// `CalculateFormSignature`) but have different `FieldSignature`s do not collide
+// in the in-memory query cache.
+TEST_F(AutofillCrowdsourcingManagerTest,
+       CacheQueryTest_DifferentFieldSignaturesWithSameFormSignature) {
+  std::vector<FormData> forms0 = {test::GetFormData(
+      {.fields = {{.name = u"tracking_number_0_397947770635"}}})};
+  std::vector<FormData> forms1 = {test::GetFormData(
+      {.fields = {{.name = u"tracking_number_0_383157324618"}}})};
+
+  ASSERT_EQ(CalculateFormSignature(forms0[0]),
+            CalculateFormSignature(forms1[0]));
+  ASSERT_NE(CalculateFieldSignatureForField(forms0[0].fields()[0]),
+            CalculateFieldSignatureForField(forms1[0].fields()[0]));
+
+  EXPECT_TRUE(StartQueryRequest(forms0));
+  EXPECT_THAT(responses(), IsEmpty());
+
+  network::TestURLLoaderFactory::PendingRequest* request0 =
+      url_loader_factory().GetPendingRequest(0);
+  ASSERT_NE(request0, nullptr);
+  url_loader_factory().SimulateResponseWithoutRemovingFromPendingList(
+      request0, "response_0");
+  ASSERT_THAT(responses(), SizeIs(1));
+  EXPECT_EQ(responses().front().response, "response_0");
+  responses().clear();
+
+  // Querying `forms1` must miss the cache because the serialized request
+  // payload differs (different `FieldSignature`).
+  EXPECT_TRUE(StartQueryRequest(forms1));
+  EXPECT_THAT(responses(), IsEmpty());
+
+  network::TestURLLoaderFactory::PendingRequest* request1 =
+      url_loader_factory().GetPendingRequest(1);
+  ASSERT_NE(request1, nullptr);
+  url_loader_factory().SimulateResponseWithoutRemovingFromPendingList(
+      request1, "response_1");
+  ASSERT_THAT(responses(), SizeIs(1));
+  EXPECT_EQ(responses().front().response, "response_1");
+  responses().clear();
+
+  // Re-querying `forms0` and `forms1` hits the cache for each distinct payload.
+  EXPECT_TRUE(StartQueryRequest(forms0));
+  EXPECT_TRUE(StartQueryRequest(forms1));
+  EXPECT_EQ(url_loader_factory().total_requests(), 2u);
+  ASSERT_THAT(responses(), SizeIs(2));
+  EXPECT_EQ(responses().front().response, "response_0");
+  EXPECT_EQ(responses().back().response, "response_1");
+}
+
+// Tests that for two forms with identical `FormSignature` and `FieldSignature`
+// values (e.g. unnamed inputs) but different field labels:
+// - When `kAutofillServerExperimentalSignatures` is disabled, the two queries
+//   have identical payloads (no 3-bit hashed field metadata), so the second
+//   query should be served from the cache.
+// - When `kAutofillServerExperimentalSignatures` is enabled, the two queries
+//   have different payloads (different 3-bit hashed field metadata), so the
+//   second query must not be served from the cache and must trigger a new
+//   network request.
+TEST_F(AutofillCrowdsourcingManagerTest,
+       CacheQueryTest_DifferentThreeBitMetadataWithSameSignatures) {
+  std::vector<FormData> forms0 = {
+      test::GetFormData({.fields = {{.label = u""}}})};
+  std::vector<FormData> forms1 = {
+      test::GetFormData({.fields = {{.label = u"Confirmation code"}}})};
+
+  ASSERT_EQ(CalculateFormSignature(forms0[0]),
+            CalculateFormSignature(forms1[0]));
+  ASSERT_EQ(CalculateFieldSignatureForField(forms0[0].fields()[0]),
+            CalculateFieldSignatureForField(forms1[0].fields()[0]));
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(
+        features::kAutofillServerExperimentalSignatures);
+
+    EXPECT_TRUE(StartQueryRequest(forms0));
+    network::TestURLLoaderFactory::PendingRequest* request0 =
+        url_loader_factory().GetPendingRequest(0);
+    ASSERT_NE(request0, nullptr);
+    url_loader_factory().SimulateResponseWithoutRemovingFromPendingList(
+        request0, "response_1");
+    ASSERT_THAT(responses(), SizeIs(1));
+    EXPECT_EQ(responses().front().response, "response_1");
+    responses().clear();
+
+    // Without 3-bit metadata, `forms1` serializes to the exact same payload as
+    // `forms0` and is served from the cache without a new network request.
+    EXPECT_TRUE(StartQueryRequest(forms1));
+    EXPECT_THAT(*url_loader_factory().pending_requests(), SizeIs(1));
+    ASSERT_THAT(responses(), SizeIs(1));
+    EXPECT_EQ(responses().front().response, "response_1");
+    responses().clear();
+    url_loader_factory().pending_requests()->clear();
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list{
+        features::kAutofillServerExperimentalSignatures};
+
+    EXPECT_TRUE(StartQueryRequest(forms0));
+    network::TestURLLoaderFactory::PendingRequest* request0 =
+        url_loader_factory().GetPendingRequest(0);
+    ASSERT_NE(request0, nullptr);
+    url_loader_factory().SimulateResponseWithoutRemovingFromPendingList(
+        request0, "response_2");
+    ASSERT_THAT(responses(), SizeIs(1));
+    EXPECT_EQ(responses().front().response, "response_2");
+    responses().clear();
+
+    // With 3-bit metadata enabled, `forms1` has a different payload and must
+    // not be served from the cache.
+    EXPECT_TRUE(StartQueryRequest(forms1));
+    EXPECT_THAT(responses(), IsEmpty());
+
+    network::TestURLLoaderFactory::PendingRequest* request1 =
+        url_loader_factory().GetPendingRequest(1);
+    ASSERT_NE(request1, nullptr);
+    url_loader_factory().SimulateResponseWithoutRemovingFromPendingList(
+        request1, "response_3");
+    EXPECT_THAT(*url_loader_factory().pending_requests(), SizeIs(2));
+    ASSERT_THAT(responses(), SizeIs(1));
+    EXPECT_EQ(responses().front().response, "response_3");
+  }
+}
+
 namespace {
 
 enum ServerCommunicationMode {
@@ -1708,6 +1835,21 @@ TEST_P(AutofillUploadTest, MAYBE_ThrottlingStructuralFormSignatures) {
   AutofillUploadRequest request_2;
   ASSERT_TRUE(request_2.ParseFromString(payloads()[1]));
   EXPECT_FALSE(request_2.upload().has_structural_form_signature());
+
+  // After clearing the upload throttling history, the structural form signature
+  // should be included again.
+  AutofillCrowdsourcingManager::ClearUploadHistory(
+      autofill_client().GetPrefs());
+  EXPECT_TRUE(SendUploadRequest(form_structure_2, *randomized_encoder,
+                                LanguageCode(""), /*available_field_types=*/{},
+                                /*login_form_signature=*/std::nullopt,
+                                /*observed_submission=*/true,
+                                /*is_password_manager_upload=*/false));
+  ASSERT_THAT(payloads(), SizeIs(3));
+  AutofillUploadRequest request_3;
+  ASSERT_TRUE(request_3.ParseFromString(payloads()[2]));
+  EXPECT_EQ(request_3.upload().structural_form_signature(),
+            kStructuralFormSignature.value());
   payloads().clear();
 }
 
@@ -1821,7 +1963,7 @@ TEST_P(AutofillUploadTest, MAYBE_PeriodicReset) {
 
   base::HistogramTester histogram_tester;
 
-  TestAutofillClock test_clock;
+  TestAutofillClockDeprecated test_clock;
   test_clock.SetNow(AutofillClock::Now());
 
   // The first attempt should succeed.
@@ -1862,7 +2004,13 @@ TEST_P(AutofillUploadTest, MAYBE_PeriodicReset) {
       1, 2);
 }
 
-TEST_P(AutofillUploadTest, ResetOnClearUploadHistory) {
+// Flaky on fuchsia bots, see crbug.com/446943496.
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_ResetOnClearUploadHistory DISABLED_ResetOnClearUploadHistory
+#else
+#define MAYBE_ResetOnClearUploadHistory ResetOnClearUploadHistory
+#endif
+TEST_P(AutofillUploadTest, MAYBE_ResetOnClearUploadHistory) {
   ASSERT_NE(DISABLED, GetParam());
 
   AutofillCrowdsourcingManager crowdsourcing_manager(
@@ -1880,7 +2028,7 @@ TEST_P(AutofillUploadTest, ResetOnClearUploadHistory) {
 
   base::HistogramTester histogram_tester;
 
-  TestAutofillClock test_clock;
+  TestAutofillClockDeprecated test_clock;
   test_clock.SetNow(AutofillClock::Now());
 
   // The first attempt should succeed.
@@ -2070,6 +2218,159 @@ TEST_F(AutofillCrowdsourcingManagerTest, RequestsInLastMinute) {
   // Sliding window has now requests #4 and #5
   histogram.ExpectBucketCount("Autofill.Query.RequestsInLastMinute", 2, 2);
   histogram.ExpectTotalCount("Autofill.Query.RequestsInLastMinute", 4);
+}
+
+// Tests that repeated form and structural signatures within a single query are
+// counted only once.
+TEST_F(AutofillCrowdsourcingManagerTest,
+       QuerySignatureCountMetrics_DeduplicatesSignatures) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillServerExperimentalSignatures};
+
+  // Form signatures depend on field names while structural signatures depend on
+  // control types, so all 4 forms have distinct (form, structural) signature
+  // pairs and are included in the query, yielding 3 unique form signatures
+  // ("a", "b", "c") and 2 unique structural signatures (text, email).
+  std::vector<FormData> forms = {
+      test::GetFormData(
+          {.fields = {{.name = u"a",
+                       .form_control_type = FormControlType::kInputText}}}),
+      test::GetFormData(
+          {.fields = {{.name = u"a",
+                       .form_control_type = FormControlType::kInputEmail}}}),
+      test::GetFormData(
+          {.fields = {{.name = u"b",
+                       .form_control_type = FormControlType::kInputText}}}),
+      test::GetFormData(
+          {.fields = {{.name = u"c",
+                       .form_control_type = FormControlType::kInputText}}}),
+  };
+
+  base::HistogramTester histogram;
+  EXPECT_TRUE(StartQueryRequest(forms));
+  histogram.ExpectTotalCount(
+      AutofillCrowdsourcingManager::kUmaUniqueFormSignaturesCount, 0);
+  histogram.ExpectTotalCount(
+      AutofillCrowdsourcingManager::kUmaUniqueStructuralSignaturesCount, 0);
+
+  network::TestURLLoaderFactory::PendingRequest* request =
+      url_loader_factory().GetPendingRequest(0);
+  ASSERT_NE(request, nullptr);
+  url_loader_factory().SimulateResponseWithoutRemovingFromPendingList(request,
+                                                                      "");
+  histogram.ExpectUniqueSample(
+      AutofillCrowdsourcingManager::kUmaUniqueFormSignaturesCount, 3, 1);
+  histogram.ExpectUniqueSample(
+      AutofillCrowdsourcingManager::kUmaUniqueStructuralSignaturesCount, 2, 1);
+}
+
+// Tests that unique form and structural signatures are deduplicated across a
+// flattened form and its cross-iframe subqueries.
+TEST_F(AutofillCrowdsourcingManagerTest,
+       QuerySignatureCountMetrics_DeduplicatesIframeSubquerySignatures) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kAutofillServerExperimentalSignatures,
+       features::kAutofillQueryPerIframeStructuralSignatures},
+      {});
+
+  FormData form = test::GetFormData({
+      .fields =
+          {{.name = u"a"}, {.name = u"b"}, {.name = u"c"}, {.name = u"d"}},
+  });
+  const FormSignature kFlattenedFormSignature = CalculateFormSignature(form);
+  const FormSignature kFlattenedStructuralSignature =
+      CalculateStructuralFormSignature(form);
+  constexpr FormSignature kSubqueryFormSignature1(12345UL);
+  constexpr FormSignature kSubqueryFormSignature2(67890UL);
+  constexpr FormSignature kSubqueryStructuralSignature1(11111UL);
+  constexpr FormSignature kSubqueryStructuralSignature2(22222UL);
+
+  test_api(form).field(0).set_host_form_signature(kFlattenedFormSignature);
+  test_api(form).field(0).set_host_form_structural_signature(
+      kFlattenedStructuralSignature);
+  test_api(form).field(1).set_host_form_signature(kSubqueryFormSignature1);
+  test_api(form).field(1).set_host_form_structural_signature(
+      kSubqueryStructuralSignature1);
+  test_api(form).field(2).set_host_form_signature(kSubqueryFormSignature1);
+  test_api(form).field(2).set_host_form_structural_signature(
+      kSubqueryStructuralSignature2);
+  test_api(form).field(3).set_host_form_signature(kSubqueryFormSignature2);
+  test_api(form).field(3).set_host_form_structural_signature(
+      kSubqueryStructuralSignature1);
+
+  base::HistogramTester histogram;
+  EXPECT_TRUE(StartQueryRequest({form}));
+  network::TestURLLoaderFactory::PendingRequest* request =
+      url_loader_factory().GetPendingRequest(0);
+  ASSERT_NE(request, nullptr);
+  url_loader_factory().SimulateResponseWithoutRemovingFromPendingList(request,
+                                                                      "");
+
+  // The encoded query contains 4 distinct (form, structural) pairs:
+  // (F0, S0) for the flattened form, plus subqueries (F1, S1), (F1, S2), and
+  // (F2, S1).
+  // - Unique form signatures: {F0, F1, F2} -> 3 (F1 is shared).
+  // - Unique structural signatures: {S0, S1, S2} -> 3 (S1 is shared).
+  histogram.ExpectUniqueSample(
+      AutofillCrowdsourcingManager::kUmaUniqueFormSignaturesCount, 3, 1);
+  histogram.ExpectUniqueSample(
+      AutofillCrowdsourcingManager::kUmaUniqueStructuralSignaturesCount, 3, 1);
+}
+
+// Tests that queries served from the in-memory cache do not emit signature
+// count metrics.
+TEST_F(AutofillCrowdsourcingManagerTest,
+       QuerySignatureCountMetrics_ExcludesInMemoryCacheHits) {
+  std::vector<FormData> forms = {
+      test::GetFormData({.fields = {{.name = u"first_name"}}}),
+  };
+
+  // The first request populates the in-memory cache.
+  EXPECT_TRUE(StartQueryRequest(forms));
+  network::TestURLLoaderFactory::PendingRequest* request =
+      url_loader_factory().GetPendingRequest(0);
+  ASSERT_NE(request, nullptr);
+  url_loader_factory().SimulateResponseWithoutRemovingFromPendingList(request,
+                                                                      "");
+  ASSERT_THAT(responses(), SizeIs(1));
+  responses().clear();
+
+  // The second request is served from the in-memory cache and should not emit
+  // signature count metrics.
+  base::HistogramTester histogram;
+  EXPECT_TRUE(StartQueryRequest(forms));
+  ASSERT_THAT(responses(), SizeIs(1));
+  histogram.ExpectTotalCount(
+      AutofillCrowdsourcingManager::kUmaUniqueFormSignaturesCount, 0);
+  histogram.ExpectTotalCount(
+      AutofillCrowdsourcingManager::kUmaUniqueStructuralSignaturesCount, 0);
+}
+
+// Tests that queries served from the HTTP cache do not emit signature count
+// metrics.
+TEST_F(AutofillCrowdsourcingManagerTest,
+       QuerySignatureCountMetrics_ExcludesHttpCacheHits) {
+  std::vector<FormData> forms = {
+      test::GetFormData({.fields = {{.name = u"first_name"}}}),
+  };
+
+  base::HistogramTester histogram;
+  EXPECT_TRUE(StartQueryRequest(forms));
+  network::TestURLLoaderFactory::PendingRequest* request =
+      url_loader_factory().GetPendingRequest(0);
+  ASSERT_NE(request, nullptr);
+  network::URLLoaderCompletionStatus status(net::OK);
+  status.exists_in_cache = true;
+  url_loader_factory().SimulateResponseWithoutRemovingFromPendingList(
+      request, network::CreateURLResponseHead(net::HTTP_OK), "", status);
+  ASSERT_THAT(responses(), SizeIs(1));
+  histogram.ExpectUniqueSample(AutofillCrowdsourcingManager::kUmaWasInCache,
+                               CACHE_HIT, 1);
+  histogram.ExpectTotalCount(
+      AutofillCrowdsourcingManager::kUmaUniqueFormSignaturesCount, 0);
+  histogram.ExpectTotalCount(
+      AutofillCrowdsourcingManager::kUmaUniqueStructuralSignaturesCount, 0);
 }
 
 }  // namespace

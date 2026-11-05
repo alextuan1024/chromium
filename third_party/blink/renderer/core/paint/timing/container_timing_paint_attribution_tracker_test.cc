@@ -23,6 +23,9 @@ namespace blink {
 class ContainerTimingPaintAttributionTrackerTest : public PageTestBase {
  protected:
   ContainerTimingPaintAttributionTracker* Tracker() { return tracker_.Get(); }
+  HTMLElement* GetHTMLElementById(const char* id) {
+    return To<HTMLElement>(GetElementById(id));
+  }
 
  private:
   void SetUp() override {
@@ -45,10 +48,10 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, SingleRoot) {
 
   auto* tracker = Tracker();
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
+  Element* root = GetElementById("root");
   ASSERT_TRUE(root);
 
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* img = GetElementById("img");
   ASSERT_TRUE(img);
 
   // Image node should map to the container root.
@@ -68,12 +71,12 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, NestedRoots) {
 
   auto* tracker = Tracker();
 
-  Element* outer = GetDocument().getElementById(AtomicString("outer"));
-  Element* inner = GetDocument().getElementById(AtomicString("inner"));
+  HTMLElement* outer = GetHTMLElementById("outer");
+  HTMLElement* inner = GetHTMLElementById("inner");
   ASSERT_TRUE(outer);
   ASSERT_TRUE(inner);
 
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* img = GetElementById("img");
   ASSERT_TRUE(img);
 
   // Image maps to innermost root.
@@ -101,7 +104,7 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, ContainerTimingIgnore) {
 
   auto* tracker = Tracker();
 
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* img = GetElementById("img");
   ASSERT_TRUE(img);
 
   // Image is under an ignore node — should not be tracked.
@@ -120,8 +123,8 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, BothAttrsOnSameElement) {
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* outer = GetDocument().getElementById(AtomicString("outer"));
-  Element* both = GetDocument().getElementById(AtomicString("both"));
+  Element* outer = GetElementById("outer");
+  HTMLElement* both = GetHTMLElementById("both");
   ASSERT_TRUE(outer);
   ASSERT_TRUE(both);
 
@@ -131,7 +134,7 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, BothAttrsOnSameElement) {
   EXPECT_EQ(parent, nullptr);
 
   // Image inside "both" maps to "both" root.
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* img = GetElementById("img");
   ASSERT_TRUE(img);
   Element* found = tracker->GetContainerRootFor(img);
   EXPECT_EQ(found, both);
@@ -146,8 +149,8 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, TextAggregationNodeTracked) {
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* box = GetDocument().getElementById(AtomicString("box"));
+  Element* root = GetElementById("root");
+  Element* box = GetElementById("box");
   ASSERT_TRUE(root);
   ASSERT_TRUE(box);
 
@@ -164,7 +167,7 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, ShadowTreeElementsExcluded) {
   )HTML");
   UpdateAllLifecyclePhasesForTest();
 
-  Element* host = GetDocument().getElementById(AtomicString("host"));
+  Element* host = GetElementById("host");
   ASSERT_TRUE(host);
   ShadowRoot& shadow_root =
       host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
@@ -189,7 +192,7 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, ImageIsContainerRoot) {
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  HTMLElement* img = GetHTMLElementById("img");
   ASSERT_TRUE(img);
 
   // The img maps to itself as the container root.
@@ -212,8 +215,8 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* outer = GetDocument().getElementById(AtomicString("outer"));
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* outer = GetElementById("outer");
+  HTMLElement* img = GetHTMLElementById("img");
   ASSERT_TRUE(outer);
   ASSERT_TRUE(img);
 
@@ -236,7 +239,7 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* bg = GetDocument().getElementById(AtomicString("bg"));
+  Element* bg = GetElementById("bg");
   ASSERT_TRUE(bg);
 
   // The bg element is both the container root and the image node, so it maps
@@ -262,8 +265,8 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, AnonymousImageLayoutObject) {
   )HTML");
   UpdateAllLifecyclePhasesForTest();
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* bg = GetDocument().getElementById(AtomicString("bg"));
+  Element* root = GetElementById("root");
+  Element* bg = GetElementById("bg");
   ASSERT_TRUE(root);
   ASSERT_TRUE(bg);
 
@@ -298,8 +301,8 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, AnonymousTextLayoutObject) {
   )HTML");
   UpdateAllLifecyclePhasesForTest();
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* bg = GetDocument().getElementById(AtomicString("bg"));
+  Element* root = GetElementById("root");
+  Element* bg = GetElementById("bg");
   ASSERT_TRUE(root);
   ASSERT_TRUE(bg);
 
@@ -331,7 +334,7 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  HTMLElement* img = GetHTMLElementById("img");
   ASSERT_TRUE(img);
 
   ASSERT_EQ(tracker->GetContainerRootFor(img), img);
@@ -358,8 +361,8 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  HTMLElement* root = GetHTMLElementById("root");
+  Element* img = GetElementById("img");
   ASSERT_TRUE(root);
   ASSERT_TRUE(img);
 
@@ -385,8 +388,8 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* outer = GetDocument().getElementById(AtomicString("outer"));
-  Element* inner = GetDocument().getElementById(AtomicString("inner"));
+  Element* outer = GetElementById("outer");
+  Element* inner = GetElementById("inner");
   ASSERT_TRUE(outer);
   ASSERT_TRUE(inner);
 
@@ -417,8 +420,8 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  HTMLElement* root = GetHTMLElementById("root");
+  Element* img = GetElementById("img");
   ASSERT_TRUE(root);
   ASSERT_TRUE(img);
 
@@ -446,9 +449,9 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* mid = GetDocument().getElementById(AtomicString("mid"));
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* root = GetElementById("root");
+  Element* mid = GetElementById("mid");
+  Element* img = GetElementById("img");
   ASSERT_TRUE(root);
   ASSERT_TRUE(mid);
   ASSERT_TRUE(img);
@@ -475,9 +478,9 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* mid = GetDocument().getElementById(AtomicString("mid"));
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* root = GetElementById("root");
+  Element* mid = GetElementById("mid");
+  Element* img = GetElementById("img");
   ASSERT_TRUE(root);
   ASSERT_TRUE(mid);
   ASSERT_TRUE(img);
@@ -502,9 +505,9 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, IgnoreAddedToExistingRoot) {
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* outer = GetDocument().getElementById(AtomicString("outer"));
-  Element* inner = GetDocument().getElementById(AtomicString("inner"));
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* outer = GetElementById("outer");
+  HTMLElement* inner = GetHTMLElementById("inner");
+  Element* img = GetElementById("img");
   ASSERT_TRUE(outer);
   ASSERT_TRUE(inner);
   ASSERT_TRUE(img);
@@ -534,9 +537,9 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* outer = GetDocument().getElementById(AtomicString("outer"));
-  Element* inner = GetDocument().getElementById(AtomicString("inner"));
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* outer = GetElementById("outer");
+  HTMLElement* inner = GetHTMLElementById("inner");
+  Element* img = GetElementById("img");
   ASSERT_TRUE(outer);
   ASSERT_TRUE(inner);
   ASSERT_TRUE(img);
@@ -566,10 +569,10 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, SiblingSubtreeUnaffected) {
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* a = GetDocument().getElementById(AtomicString("a"));
-  Element* b = GetDocument().getElementById(AtomicString("b"));
-  Element* img_a = GetDocument().getElementById(AtomicString("img_a"));
-  Element* img_b = GetDocument().getElementById(AtomicString("img_b"));
+  Element* a = GetElementById("a");
+  HTMLElement* b = GetHTMLElementById("b");
+  Element* img_a = GetElementById("img_a");
+  Element* img_b = GetElementById("img_b");
   ASSERT_TRUE(a);
   ASSERT_TRUE(b);
   ASSERT_TRUE(img_a);
@@ -600,7 +603,7 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest, IgnoreOnlyOnImageLeaf) {
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* img = GetElementById("img");
   ASSERT_TRUE(img);
 
   // CTI on the image means it must not be attributed to the ancestor root.
@@ -623,10 +626,10 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   UpdateAllLifecyclePhasesForTest();
 
   auto* tracker = Tracker();
-  Element* a = GetDocument().getElementById(AtomicString("a"));
-  Element* b = GetDocument().getElementById(AtomicString("b"));
-  Element* c = GetDocument().getElementById(AtomicString("c"));
-  Element* img = GetDocument().getElementById(AtomicString("img"));
+  Element* a = GetElementById("a");
+  HTMLElement* b = GetHTMLElementById("b");
+  HTMLElement* c = GetHTMLElementById("c");
+  Element* img = GetElementById("img");
   ASSERT_TRUE(a);
   ASSERT_TRUE(b);
   ASSERT_TRUE(c);
@@ -641,6 +644,44 @@ TEST_F(ContainerTimingPaintAttributionTrackerTest,
   EXPECT_EQ(tracker->GetContainerRootFor(img), a);
   EXPECT_EQ(tracker->GetParentContainerRootFor(b), nullptr);
   EXPECT_EQ(tracker->GetParentContainerRootFor(c), nullptr);
+}
+
+// Only HTML elements can be container roots: containertiming on SVG or MathML
+// elements has no effect.
+TEST_F(ContainerTimingPaintAttributionTrackerTest, NonHTMLRootsIgnored) {
+  SetBodyContent(R"HTML(
+    <svg id="svg" containertiming="svg" width="10" height="10">
+      <image id="svg_img" width="10" height="10"/>
+    </svg>
+    <math id="math" containertiming="math"><mi id="mi">x</mi></math>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* tracker = Tracker();
+  EXPECT_EQ(tracker->GetContainerRootFor(GetElementById("svg_img")), nullptr);
+  EXPECT_EQ(tracker->GetContainerRootFor(GetElementById("mi")), nullptr);
+}
+
+// SVG content still contributes to an HTML ancestor root, and
+// containertimingignore on an SVG element does not stop propagation.
+TEST_F(ContainerTimingPaintAttributionTrackerTest,
+       SVGContentAttributedToHTMLRoot) {
+  SetBodyContent(R"HTML(
+    <div id="root" containertiming="root">
+      <svg width="20" height="10">
+        <image id="img1" width="10" height="10"/>
+        <g containertimingignore>
+          <image id="img2" x="10" width="10" height="10"/>
+        </g>
+      </svg>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* tracker = Tracker();
+  Element* root = GetElementById("root");
+  EXPECT_EQ(tracker->GetContainerRootFor(GetElementById("img1")), root);
+  EXPECT_EQ(tracker->GetContainerRootFor(GetElementById("img2")), root);
 }
 
 }  // namespace blink

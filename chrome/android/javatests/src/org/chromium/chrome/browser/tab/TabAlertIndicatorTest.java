@@ -27,6 +27,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
@@ -34,15 +35,13 @@ import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.media.MediaCapturePickerDelegate;
 import org.chromium.chrome.browser.media.MediaCapturePickerManager;
 import org.chromium.chrome.browser.media.PictureInPicture;
+import org.chromium.chrome.browser.media.PictureInPictureActivity;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabRemover;
@@ -70,14 +69,11 @@ import java.util.concurrent.TimeoutException;
 /** Tests for {@link TabAlert} and {@link MediaState}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     MediaSwitches.AUTOPLAY_NO_GESTURE_REQUIRED_POLICY,
     ContentSwitches.USE_FAKE_DEVICE_FOR_MEDIA_STREAM,
     "enable-experimental-web-platform-features",
-    "enable-features=UserMediaScreenCapturing,AndroidMediaPicker",
+    "enable-features=UserMediaScreenCapturing,AndroidMediaPicker"
 })
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 @Batch(Batch.PER_CLASS)
 public class TabAlertIndicatorTest {
     @Rule
@@ -136,6 +132,7 @@ public class TabAlertIndicatorTest {
     @Before
     public void setUp() throws Exception {
         ChromeTabbedActivity.interceptMoveTaskToBackForTesting();
+        ForegroundServiceUtils.setInstanceForTesting(Mockito.mock(ForegroundServiceUtils.class));
         mPage = mActivityTestRule.startOnBlankPage();
         mTabModel = mActivityTestRule.getActivity().getTabModelSelector().getModel(false);
         mTab = mPage.getTab();
@@ -145,8 +142,6 @@ public class TabAlertIndicatorTest {
         assertEquals(TabAlert.NONE, mTab.getAlertState());
 
         grantRecordingPermissions();
-
-        ForegroundServiceUtils.setInstanceForTesting(Mockito.mock(ForegroundServiceUtils.class));
 
         mMediaPickerDelegate = new MockMediaCapturePickerDelegate();
         ServiceLoaderUtil.setInstanceForTesting(
@@ -258,8 +253,9 @@ public class TabAlertIndicatorTest {
 
     @Test
     @SmallTest
-    // PictureInPicture#isEnabled() is true on Android 11+.
+    // Web Picture-in-Picture requires Android 11+.
     @DisableIf.Build(sdk_is_less_than = Build.VERSION_CODES.R)
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/583907929
     // PiP is not supported for automotive.
     @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
     public void testAlertStatePipPlaying() throws TimeoutException {
@@ -280,6 +276,7 @@ public class TabAlertIndicatorTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/583907929
     public void testAlertStatePriority() throws TimeoutException {
         // MUTED
         setMuteState(true);
@@ -439,6 +436,9 @@ public class TabAlertIndicatorTest {
             enterPictureInPicture();
             waitForMediaState(mTab, MediaState.PICTURE_IN_PICTURE);
             watcher.assertExpected();
+
+            exitPictureInPicture();
+            waitForMediaState(mTab, MediaState.NONE);
         }
     }
 
@@ -467,6 +467,16 @@ public class TabAlertIndicatorTest {
 
     private void exitPictureInPicture() {
         DOMUtils.clickNodeWithJavaScript(mTab.getWebContents(), EXIT_PIP_ID);
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    for (Activity activity : ApplicationStatus.getRunningActivities()) {
+                        if (activity instanceof PictureInPictureActivity) {
+                            return false;
+                        }
+                    }
+                    return true;
+                },
+                "PictureInPictureActivity did not close.");
     }
 
     private void requestMic() {
@@ -600,6 +610,11 @@ public class TabAlertIndicatorTest {
     }
 
     private boolean isPiPEnabled() {
-        return PictureInPicture.isEnabled(mActivityTestRule.getActivity());
+        // Web Picture-in-Picture also requires Android R. See
+        // ActivityTabWebContentsDelegateAndroid#isPictureInPictureEnabled.
+        // TODO(crbug.com/568761242): Remove the SDK check once the minimum SDK is Android R+.
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                && ThreadUtils.runOnUiThreadBlocking(
+                        () -> PictureInPicture.isEnabled(mActivityTestRule.getActivity()));
     }
 }

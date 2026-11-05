@@ -21,6 +21,7 @@ source_set("help") {
     public_deps += [ "//chromeos/ash/components/dbus/update_engine" ]
     deps += [
       "//ash/constants",
+      "//ash/strings",
       "//chrome/app:generated_resources_grit",
       "//chrome/browser:browser_process",
       "//chrome/browser/ash/ownership",
@@ -28,10 +29,14 @@ source_set("help") {
       "//chromeos/ash/components/network",
       "//chromeos/ash/components/settings",
       "//chromeos/dbus/power",
-      "//chromeos/strings:strings_grit",
+      "//chromeos/resources:strings",
       "//components/policy/core/common",
       "//content/public/browser",
       "//ui/base",
+
+      # TODO(crbug.com/556482973): Use //chrome/browser/ash/login instead after
+      # fixing cyclic dependency.
+      "//ash/webui/common/mojom:webui_syslog_emitter",
     ]
   }
 

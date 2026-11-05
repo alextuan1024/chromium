@@ -10,9 +10,10 @@
 #include <string_view>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/functional/callback.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/safe_ref.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/supports_user_data.h"
 #include "base/unguessable_token.h"
@@ -90,7 +91,7 @@ class WebContents;
 class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // Do not remove this macro!
   // The macro is maintained by the memory safety team.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   // Execution mode for the beforeunload handling.
@@ -201,7 +202,7 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
 
   // If the navigation was triggered by a script tool, this contains the
   // ID of the tool invocation.
-  virtual const std::optional<base::UnguessableToken>&
+  virtual const std::optional<blink::ToolInvocationToken>&
   GetScriptToolInvocationId() const = 0;
 
   // Whether the navigation is taking place in a main frame which does not have
@@ -358,15 +359,18 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // Whether the navigation was initiated by a user gesture.
   //
   // Differences from `StartedWithTransientActivation()`:
-  // 1. This returns `true` for browser-initiated navigations.
-  // 2. For renderer-initiated navigations, this is filtered out during proxy
-  //    navigations, to prevent it from being exposed to the committed document.
+  // 1. This can return `true` for browser-initiated navigations. (Note that
+  //    some browser-initiated navigations won't have a user gesture, such as
+  //    from session restore or extensions.)
+  // 2. For renderer-initiated navigations, this is filtered out if the
+  //    navigation went through NavigateFromFrameProxy(), to prevent it from
+  //    being exposed to the committed document.
   virtual bool HasUserGesture() = 0;
 
   // Whether the navigation started with a transient user activation.
   //
   // Differences from `HasUserGesture()`:
-  // 1. This returns `false` for browser-initiated navigations.
+  // 1. This always returns `false` for browser-initiated navigations.
   // 2. For renderer-initiated navigations, this provides the raw, unfiltered
   //    initiator state.
   virtual bool StartedWithTransientActivation() = 0;
@@ -377,7 +381,19 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // Returns the page transition type.
   virtual ui::PageTransition GetPageTransition() = 0;
 
-  // Returns the NavigationUIData associated with the navigation.
+  // Returns the `NavigationUIData` associated with the navigation.
+  //
+  // - If upfront `NavigationUIData` was supplied (via `LoadURLParams`,
+  //   `OpenURLParams`, or `WebContents::StartPrerendering()`), this is non-null
+  //   from `NavigationHandle` creation onward, and
+  //   `NavigationUIData::PopulateFromNavigationHandle()` is called in
+  //   `NavigationRequest::StartNavigation()` before `DidStartNavigation()`.
+  // - If no upfront `NavigationUIData` was supplied, this is still `nullptr`
+  //   during `DidStartNavigation()` and is only created in `WillStartRequest()`
+  //   via `ContentBrowserClient::GetNavigationUIData()` (or remains `nullptr`
+  //   if the navigation does not use a `NavigationURLLoader`).
+  //
+  // See `NavigationUIData` for full lifecycle details.
   virtual NavigationUIData* GetNavigationUIData() = 0;
 
   // Whether the target URL cannot be handled by the browser's internal protocol
@@ -687,7 +703,7 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // Retrieves any DNS aliases for the requested URL. Includes all known
   // aliases, e.g. from A, AAAA, or HTTPS, not just from the address used for
   // the connection, in no particular order.
-  virtual const std::vector<std::string>& GetDnsAliases() = 0;
+  virtual base::span<const std::string> GetDnsAliases() = 0;
 
   // Whether the new document will be hosted in the same process as the current
   // document or not. Set only when the navigation commits.

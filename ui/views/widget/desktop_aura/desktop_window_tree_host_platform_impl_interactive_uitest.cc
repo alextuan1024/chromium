@@ -14,6 +14,7 @@
 #include "ui/base/ime/input_method.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/linux/linux_ui.h"
+#include "ui/ozone/public/ozone_platform.h"
 #include "ui/platform_window/platform_window.h"
 #include "ui/platform_window/wm/wm_move_resize_handler.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -180,7 +181,7 @@ class HitTestWidgetDelegate : public WidgetDelegate {
 
   // WidgetDelegate:
   std::unique_ptr<FrameView> CreateFrameView(Widget* widget) override {
-    DCHECK(!frame_view_);
+    CHECK(!frame_view_, base::NotFatalUntil::M163);
     auto frame_view =
         std::make_unique<test::ConfigurableTestNativeFrameView>(widget);
     frame_view_ = frame_view->GetWeakPtr();
@@ -223,8 +224,15 @@ class TestDesktopWindowTreeHostPlatformImpl
     DesktopWindowTreeHostPlatformImpl::Maximize();
   }
 
+  int window_controls_menu_count() const { return window_controls_menu_count_; }
+  // Records the request instead of asking the window manager for a real menu.
+  void ShowWindowControlsMenu(const gfx::Point& point) override {
+    ++window_controls_menu_count_;
+  }
+
  private:
   bool called_maximize_ = false;
+  int window_controls_menu_count_ = 0;
 };
 
 }  // namespace
@@ -262,14 +270,14 @@ class DesktopWindowTreeHostPlatformImplTest
   }
 
   void DispatchEvent(ui::Event* event) {
-    DCHECK(host_);
+    CHECK(host_, base::NotFatalUntil::M163);
     std::unique_ptr<ui::Event> owned_event(event);
     host_->DispatchEvent(owned_event.get());
   }
 
   void GenerateAndDispatchClickMouseEvent(const gfx::Point& click_location,
                                           int flags) {
-    DCHECK(host_);
+    CHECK(host_, base::NotFatalUntil::M163);
     DispatchEvent(GenerateMouseEvent(ui::EventType::kMousePressed,
                                      click_location, flags));
     DispatchEvent(GenerateMouseEvent(ui::EventType::kMouseReleased,
@@ -296,6 +304,13 @@ class DesktopWindowTreeHostPlatformImplTest
       const ui::GestureEventDetails& gesture_details) {
     return new ui::GestureEvent(gesture_location.x(), gesture_location.y(), 0,
                                 base::TimeTicks::Now(), gesture_details);
+  }
+
+  ui::TouchEvent* GenerateTouchEvent(ui::EventType event_type,
+                                     const gfx::Point& touch_location) {
+    return new ui::TouchEvent(
+        event_type, touch_location, base::TimeTicks::Now(),
+        ui::PointerDetails(ui::EventPointerType::kTouch, /*pointer_id=*/0));
   }
 
   // views::WidgetObserver:
@@ -412,6 +427,12 @@ TEST_P(DesktopWindowTreeHostPlatformImplTestWithTouch, HitTest) {
                                       expected_pointer_location_in_px);
     // Make sure the bounds of the content window are correct.
     EXPECT_EQ(window->GetBoundsInScreen().ToString(), bounds.ToString());
+
+    if (IsNonClientComponent(hittest) && !use_touch_event()) {
+      // The window manager owns the pointer after an interactive move/resize
+      // starts, so aura must not keep reporting the button as held.
+      EXPECT_FALSE(aura::Env::GetInstance()->IsMouseButtonDown());
+    }
 
     // Dispatch mouse/touch release event to release a mouse/touch pressed
     // handler and be able to consume future events.
@@ -544,6 +565,41 @@ TEST_F(DesktopWindowTreeHostPlatformImplTest,
   flags_left_button |= ui::EF_IS_DOUBLE_CLICK;
   GenerateAndDispatchClickMouseEvent(gfx::Point(), flags_left_button);
   EXPECT_FALSE(host_->called_maximize());
+
+  widget->CloseNow();
+}
+
+// Tests that a right press on a window control button shows the window controls
+// menu and is marked as handled, so the widget doesn't also process the press
+// (e.g. by taking capture while the window manager shows the menu).
+TEST_F(DesktopWindowTreeHostPlatformImplTest,
+       RightPressOnWindowControlShowsWindowControlsMenu) {
+  if (!ui::OzonePlatform::GetInstance()
+           ->GetPlatformRuntimeProperties()
+           .supports_server_window_menus) {
+    GTEST_SKIP() << "Server-side window menus are not supported.";
+  }
+
+  std::unique_ptr<Widget> widget(
+      BuildTopLevelDesktopWidget(gfx::Rect(0, 0, 100, 100)));
+  widget->Show();
+  RunPendingMessages();
+
+  auto* frame_view = delegate_->frame_view();
+  ASSERT_TRUE(frame_view);
+
+  int expected_menu_count = 0;
+  for (int hittest : {HTMINBUTTON, HTMAXBUTTON, HTCLOSE}) {
+    frame_view->set_hit_test_result(hittest);
+    std::unique_ptr<ui::MouseEvent> press(GenerateMouseEvent(
+        ui::EventType::kMousePressed, gfx::Point(), ui::EF_RIGHT_MOUSE_BUTTON));
+    host_->DispatchEvent(press.get());
+    EXPECT_EQ(host_->window_controls_menu_count(), ++expected_menu_count);
+    EXPECT_TRUE(press->handled());
+    EXPECT_FALSE(widget->HasCapture());
+    DispatchEvent(GenerateMouseEvent(ui::EventType::kMouseReleased,
+                                     gfx::Point(), ui::EF_RIGHT_MOUSE_BUTTON));
+  }
 
   widget->CloseNow();
 }
@@ -685,6 +741,59 @@ TEST_F(DesktopWindowTreeHostPlatformImplTest, InputMethodFocus) {
   EXPECT_FALSE(widget->IsActive());
   EXPECT_EQ(ui::TEXT_INPUT_TYPE_NONE,
             widget->GetInputMethod()->GetTextInputType());
+}
+
+// Tests that a left button hold on the caption is handed off to the window
+// manager only once the window-drag threshold is reached, and that the button
+// state is cleared at that point.
+TEST_F(DesktopWindowTreeHostPlatformImplTest,
+       CaptionHoldHandsOffMoveAfterThreshold) {
+  std::unique_ptr<Widget> widget(
+      BuildTopLevelDesktopWidget(gfx::Rect(0, 0, 100, 100)));
+  widget->Show();
+
+  auto handler =
+      std::make_unique<FakeWmMoveResizeHandler>(host_->platform_window());
+  handler->set_bounds(widget->GetNativeWindow()->GetBoundsInScreen());
+  host_->DestroyNonClientEventFilter();
+  host_->non_client_window_event_filter_ =
+      std::make_unique<WindowEventFilterLinux>(host_, handler.get());
+
+  auto* frame_view = delegate_->frame_view();
+  ASSERT_TRUE(frame_view);
+  frame_view->set_hit_test_result(HTCAPTION);
+
+  const gfx::Point press_location(10, 10);
+  DispatchEvent(GenerateMouseEvent(ui::EventType::kMousePressed, press_location,
+                                   ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_TRUE(aura::Env::GetInstance()->IsMouseButtonDown());
+
+  // A drag below the threshold doesn't start a move.
+  gfx::Point small_drag_location(press_location);
+  small_drag_location.Offset(1, 1);
+  DispatchEvent(GenerateMouseEvent(ui::EventType::kMouseDragged,
+                                   small_drag_location,
+                                   ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_TRUE(aura::Env::GetInstance()->IsMouseButtonDown());
+  EXPECT_FALSE(handler->hittest().has_value());
+
+  // Crossing the threshold hands the move off to the window manager. The
+  // window manager may consume the terminating button release (e.g. X11's
+  // _NET_WM_MOVERESIZE), so the button state is cleared rather than left
+  // reporting the button as held indefinitely.
+  auto* linux_ui = ui::LinuxUi::instance();
+  const int threshold = linux_ui ? linux_ui->GetWindowDragThresholdPx()
+                                 : ui::LinuxUi::kDefaultWindowDragThreshold;
+  gfx::Point drag_location(press_location);
+  drag_location.Offset(threshold, threshold);
+  DispatchEvent(GenerateMouseEvent(ui::EventType::kMouseDragged, drag_location,
+                                   ui::EF_LEFT_MOUSE_BUTTON));
+  ASSERT_TRUE(handler->hittest().has_value());
+  EXPECT_EQ(HTCAPTION, *handler->hittest());
+  EXPECT_FALSE(aura::Env::GetInstance()->IsMouseButtonDown());
+
+  handler->set_platform_window(nullptr);
+  widget->CloseNow();
 }
 
 INSTANTIATE_TEST_SUITE_P(,

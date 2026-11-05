@@ -78,6 +78,14 @@ class AppMenuItemViewBinder {
             }
         } else if (key == AppMenuItemProperties.TITLE_CONDENSED) {
             setContentDescription(view.findViewById(R.id.menu_item_text), model);
+        } else if (key == AppMenuItemProperties.SHORTCUT_TEXT) {
+            TextView shortcutView = view.findViewById(R.id.menu_item_shortcut);
+            if (shortcutView != null) {
+                CharSequence shortcutText = model.get(AppMenuItemProperties.SHORTCUT_TEXT);
+                boolean hasShortcut = !TextUtils.isEmpty(shortcutText);
+                shortcutView.setVisibility(hasShortcut ? View.VISIBLE : View.GONE);
+                if (hasShortcut) shortcutView.setText(shortcutText);
+            }
         } else if (key == AppMenuItemProperties.ENABLED) {
             boolean enabled = model.get(AppMenuItemProperties.ENABLED);
             view.setEnabled(enabled);

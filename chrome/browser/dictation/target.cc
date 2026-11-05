@@ -4,6 +4,8 @@
 
 #include "chrome/browser/dictation/target.h"
 
+#include <utility>
+
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -14,6 +16,7 @@
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 #include "ui/base/ime/ime_text_span.h"
 
 namespace dictation {
@@ -78,6 +81,18 @@ content::RenderWidgetHost* Target::GetRenderWidgetHost() const {
   return rfh ? rfh->GetRenderWidgetHost() : nullptr;
 }
 
+blink::mojom::DictationAgent* Target::GetDictationAgent() {
+  content::RenderFrameHost* rfh = GetRenderFrameHost();
+  if (!rfh) {
+    return nullptr;
+  }
+  if (!dictation_agent_.is_bound()) {
+    rfh->GetRemoteInterfaces()->GetInterface(
+        dictation_agent_.BindNewPipeAndPassReceiver());
+  }
+  return dictation_agent_.get();
+}
+
 void Target::SetComposition(const std::u16string& text, bool is_final) {
   QueuedOperation op{
       .type = is_final ? QueuedOperation::Type::kSetFinalComposition
@@ -137,8 +152,18 @@ void Target::ExecuteSetComposition(const std::u16string& text,
     // composition, if any, but we'll need to handle this more robustly if we
     // want to show partial transcripts.
     paste_fallback_required_ = true;
+    if (last_sent_composition_.empty()) {
+      // Nothing has been composed yet, so there is no composition to cancel.
+      // Committing empty text here would delete any selected content as a
+      // separate edit, splitting the eventual paste across two undo steps.
+      // Instead, leave the selection intact so the paste replaces it in a
+      // single edit.
+      return;
+    }
     last_sent_composition_ = u"";
-    CommitExternallySourcedComposition(u"",
+    gfx::Range replacement_range =
+        std::exchange(last_composition_range_, gfx::Range::InvalidRange());
+    CommitExternallySourcedComposition(u"", replacement_range,
                                        scoped_operation_complete.Release());
     return;
   }
@@ -154,35 +179,43 @@ void Target::ExecuteSetComposition(const std::u16string& text,
 
   last_sent_composition_ = text;
 
-  SetExternallySourcedComposition(text, {text_span},
-                                  scoped_operation_complete.Release());
+  SetExternallySourcedComposition(
+      text, {text_span}, last_composition_range_,
+      base::BindOnce(&Target::OnSetCompositionComplete,
+                     weak_factory_.GetWeakPtr(),
+                     scoped_operation_complete.Release()));
 }
 
 void Target::ExecuteCommitComposition(const std::u16string& text,
                                       base::OnceClosure operation_complete) {
+  gfx::Range replacement_range =
+      std::exchange(last_composition_range_, gfx::Range::InvalidRange());
+
   if (paste_fallback_required_) {
     PasteIntoNode(text);
     CompleteAsync(std::move(operation_complete));
     return;
   }
 
-  // If we've lost focus, then some of the previously composed text has already
-  // been committed. Determine what has already been sent to avoid duplication.
-  // TODO(b/539566748): This will be incorrect if the stream rewrites text. We
-  // should instead determine the last composition range and replace the text in
-  // that range.
-  std::u16string text_to_commit =
-      has_lost_focus_during_composition_
-          ? RemovePrefix(text, last_sent_composition_)
-          : text;
-
-  if (richly_editable() && text_to_commit.find(u'\n') != std::u16string::npos) {
-    PasteIntoNode(text_to_commit);
+  if (richly_editable() && text.find(u'\n') != std::u16string::npos) {
+    // If we've lost focus, then some of the previously composed text has
+    // already been committed. Determine what has already been sent to avoid
+    // duplication.
+    // TODO(b/539566748): This will be incorrect if the stream rewrites text. We
+    // should instead determine the last composition range and replace the text
+    // in that range.
+    std::u16string text_to_paste =
+        has_lost_focus_during_composition_
+            ? RemovePrefix(text, last_sent_composition_)
+            : text;
+    if (!text_to_paste.empty()) {
+      PasteIntoNode(text_to_paste);
+    }
     CompleteAsync(std::move(operation_complete));
     return;
   }
 
-  CommitExternallySourcedComposition(text_to_commit,
+  CommitExternallySourcedComposition(text, replacement_range,
                                      std::move(operation_complete));
 }
 
@@ -208,6 +241,12 @@ void Target::ExecuteOperation(QueuedOperation op) {
   }
 }
 
+void Target::OnSetCompositionComplete(base::OnceClosure operation_complete,
+                                      const gfx::Range& composition_range) {
+  last_composition_range_ = composition_range;
+  std::move(operation_complete).Run();
+}
+
 void Target::OnOperationComplete(base::OnceClosure on_commit_complete) {
   is_waiting_on_operation_completion_ = false;
 
@@ -223,20 +262,25 @@ void Target::OnOperationComplete(base::OnceClosure on_commit_complete) {
 void Target::SetExternallySourcedComposition(
     const std::u16string& text,
     const std::vector<ui::ImeTextSpan>& spans,
-    base::OnceClosure on_complete) {
+    const gfx::Range& replacement_range,
+    base::OnceCallback<void(const gfx::Range&)> on_complete) {
   if (content::RenderWidgetHost* rwh = GetRenderWidgetHost()) {
-    rwh->SetExternallySourcedComposition(text, spans, global_dom_node_id(),
+    rwh->SetExternallySourcedComposition(text, spans, replacement_range,
+                                         global_dom_node_id(),
                                          std::move(on_complete));
-  } else {
-    CompleteAsync(std::move(on_complete));
+  } else if (on_complete) {
+    CompleteAsync(
+        base::BindOnce(std::move(on_complete), gfx::Range::InvalidRange()));
   }
 }
 
-void Target::CommitExternallySourcedComposition(const std::u16string& text,
-                                                base::OnceClosure on_complete) {
+void Target::CommitExternallySourcedComposition(
+    const std::u16string& text,
+    const gfx::Range& replacement_range,
+    base::OnceClosure on_complete) {
   if (content::RenderWidgetHost* rwh = GetRenderWidgetHost()) {
-    rwh->CommitExternallySourcedComposition(text, global_dom_node_id(),
-                                            std::move(on_complete));
+    rwh->CommitExternallySourcedComposition(
+        text, replacement_range, global_dom_node_id(), std::move(on_complete));
   } else {
     CompleteAsync(std::move(on_complete));
   }
@@ -260,15 +304,13 @@ std::u16string Target::FormatTextForInsertion(const std::u16string& text) {
     return text;
   }
 
+  // Snapshot the preceding text before the first composition replaces the
+  // selection.
   if (!preceding_text_.has_value()) {
-    std::optional<std::u16string_view> text_preceding_selection =
-        GetTextPrecedingSelection();
-    preceding_text_ = text_preceding_selection
-                          ? std::u16string(*text_preceding_selection)
-                          : std::u16string();
+    preceding_text_ = std::u16string(GetTextPrecedingSelection().value_or(u""));
   }
 
-  return FormatTranscription(text, *preceding_text_);
+  return FormatTranscription(text, *preceding_text_, selected_text_);
 }
 
 }  // namespace dictation

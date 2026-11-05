@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.base;
 
+import android.app.ActivityManager;
 import android.app.Application;
 import android.content.ComponentName;
 import android.content.Context;
@@ -11,6 +12,7 @@ import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Process;
 
@@ -39,7 +41,6 @@ import org.chromium.build.NativeLibraries;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.ProductConfig;
 import org.chromium.chrome.browser.crash.ApplicationStatusTracker;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.language.AppLocaleUtils;
@@ -51,8 +52,8 @@ import org.chromium.components.crash.PureJavaExceptionHandler.JavaExceptionRepor
 import org.chromium.components.crash.PureJavaExceptionHandler.JavaExceptionReporterFactory;
 import org.chromium.components.module_installer.util.ModuleUtil;
 import org.chromium.components.policy.PolicyCache;
-import org.chromium.ui.base.ResourceBundle;
 
+import java.nio.charset.StandardCharsets;
 import java.util.function.Supplier;
 
 /**
@@ -157,8 +158,8 @@ public class SplitCompatApplication extends Application {
         // Perform initialization of globals common to all processes.
         ContextUtils.initApplicationContext(this);
 
-        // Do not call ApkInfo here, as ApkInfo reads CommandLine switches which have not yet been
-        // initialized in child processes at this point.
+        // Do not call ApkInfo here, as child processes do not receive ApkInfo from the parent
+        // process until later.
         String versionName = "";
         long versionCode = BuildConfig.ORIGINAL_VERSION_CODE;
         if (!isIsolatedProcess) {
@@ -220,8 +221,6 @@ public class SplitCompatApplication extends Application {
         }
 
         maybeInitProcessType();
-        LibraryLoader.getInstance().setLinkerImplementation(ProductConfig.USE_CHROMIUM_LINKER);
-        ResourceBundle.setAvailablePakLocales(ProductConfig.LOCALES);
 
         if (isBrowserProcess) {
             // Renderer and GPU processes have command line passed to them via IPC
@@ -233,6 +232,15 @@ public class SplitCompatApplication extends Application {
             // created and is needed only by processes that use the ApplicationStatus api (which
             // for Chrome is just the browser process).
             ApplicationStatus.initialize(this);
+            // Feature list initialization depends on locale, so do this before the feature list
+            // initialization in performBrowserProcessPreloading().
+            if (AppLocaleUtils.shouldUseSystemManagedLocale()) {
+                AppLocaleUtils.maybeMigrateOverrideLanguage();
+            }
+            // Process state summary must be set before the potentially slow
+            // performBrowserProcessPreloading(). Otherwise ANRs in this function will not be
+            // reported.
+            setProcessStateSummaryForAnrs(versionName);
             performBrowserProcessPreloading(context);
         }
 
@@ -260,18 +268,12 @@ public class SplitCompatApplication extends Application {
             // Disable MemoryPressureMonitor polling when Chrome goes to the background.
             ApplicationStatus.registerApplicationStateListener(
                     SplitCompatApplication::updateMemoryPressurePolling);
-
-            if (AppLocaleUtils.shouldUseSystemManagedLocale()) {
-                AppLocaleUtils.maybeMigrateOverrideLanguage();
-            }
         }
 
         // Write installed modules to crash keys.
         ModuleUtil.updateCrashKeys();
 
         // WebView installs its own PureJavaExceptionHandler.
-        // Incremental install disables process isolation, so things in this block will
-        // actually be run for incremental apks, but not normal apks.
         if (!isIsolatedProcess && !isWebViewProcess()) {
             JavaExceptionReporterFactory factory =
                     () -> {
@@ -362,7 +364,8 @@ public class SplitCompatApplication extends Application {
         // Child processes set their own process type when bound.
         String processName = ContextUtils.getProcessName();
         if (processName.contains("privileged_process")
-                || processName.contains("sandboxed_process")) {
+                || processName.contains("sandboxed_process")
+                || processName.contains("sandboxed_gpu_process")) {
             return;
         }
 
@@ -372,6 +375,28 @@ public class SplitCompatApplication extends Application {
 
     private static Boolean shouldUseDebugFlags() {
         return ChromeFeatureList.sCommandLineOnNonRooted.isEnabled();
+    }
+
+    /**
+     * Stores the version in the process state summary, for use in ANR reports.
+     *
+     * <p>{@code ActivityManager#setProcessStateSummary()} saves up to 128 bytes. Use it to store
+     * the version early in startup. Android returns it in the {@code ApplicationExitInfo} of this
+     * process after exit.
+     *
+     * <p>Later in startup {@code AnrCollector#saveVariations()} replaces the summary with one that
+     * also holds the Build ID of the native library and an MD5 of the variations state (the list of
+     * Finch experiments).
+     *
+     * <p>A later run of Chrome reads the summary back in {@code AnrCollector} and attaches it to
+     * the ANR report. It discards ANRs that have no summary, because it cannot tell which version
+     * they happened on.
+     */
+    private static void setProcessStateSummaryForAnrs(String versionName) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return;
+        ActivityManager am =
+                ContextUtils.getApplicationContext().getSystemService(ActivityManager.class);
+        am.setProcessStateSummary(versionName.getBytes(StandardCharsets.UTF_8));
     }
 
     private static void updateMemoryPressurePolling(@ApplicationState int newState) {

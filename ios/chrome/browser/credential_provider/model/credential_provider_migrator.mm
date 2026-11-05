@@ -4,8 +4,15 @@
 
 #import "ios/chrome/browser/credential_provider/model/credential_provider_migrator.h"
 
-#import <UIKit/UIKit.h>
+#import <utility>
+#import <vector>
 
+#import "base/check.h"
+#import "base/check_op.h"
+#import "base/containers/flat_set.h"
+#import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
+#import "base/memory/raw_ptr.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
@@ -25,8 +32,19 @@ using password_manager::PasswordStoreInterface;
 NSErrorDomain const kCredentialProviderMigratorErrorDomain =
     @"kCredentialProviderMigratorErrorDomain";
 
-// Name of the passkey migration related histogram.
-static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
+namespace {
+
+// Logs the passkey migration status to UMA.
+void LogPasskeyMigrationStatus(PasskeysMigrationStatus status) {
+  base::UmaHistogramEnumeration("Passkeys.IOSMigration", status);
+}
+
+// Logs the passkey signal action to UMA.
+void LogPasskeySignalMigrationAction(PasskeysSignalMigrationAction action) {
+  base::UmaHistogramEnumeration("Passkeys.IOSMigration.SignalAction", action);
+}
+
+}  // namespace
 
 @interface CredentialProviderMigrator () <PasskeyModelObserverDelegate> {
   // Passkey store.
@@ -77,14 +95,16 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
   return self;
 }
 
-- (void)startMigrationWithCompletion:(void (^)(BOOL success,
-                                               NSError* error))completion {
+#pragma mark - Public
+
+- (void)startMigrationWithCompletion:(CredentialMigrationCompletion)completion {
+  CHECK(completion);
   if (self.temporalStore) {
     NSError* error =
         [NSError errorWithDomain:kCredentialProviderMigratorErrorDomain
                             code:kCredentialProviderMigratorErrorAlreadyRunning
                         userInfo:nil];
-    completion(NO, error);
+    std::move(completion).Run(base::unexpected(error));
     return;
   }
 
@@ -99,6 +119,7 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
     syncIds = _passkeyStore->GetAllSyncIds();
   }
 
+  std::vector<sync_pb::WebauthnCredentialSpecifics> createdPasskeys;
   for (id<Credential> credential in credentials) {
     if (credential.isPasskey) {
       // For passkeys, gaiaID cannot be nil as passkeys require a user to be
@@ -134,14 +155,17 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
         }
 
         if (credential_specifics->hidden() != credential.hidden) {
-          // TODO(crbug.com/432260316): Log metrics.
-          // TODO(crbug.com/432260316): Add PasskeyChangeQuotaTracker.
+          // TODO(crbug.com/564349705): Add PasskeyChangeQuotaTracker.
           if (credential.hidden) {
             _passkeyStore->HidePasskey(
                 credentialId, base::Time::FromMillisecondsSinceUnixEpoch(
                                   credential.hiddenTime));
+            LogPasskeySignalMigrationAction(
+                PasskeysSignalMigrationAction::kPasskeyHidden);
           } else {
             _passkeyStore->UnhidePasskey(credentialId);
+            LogPasskeySignalMigrationAction(
+                PasskeysSignalMigrationAction::kPasskeyRestored);
           }
         }
 
@@ -152,6 +176,8 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
               {.user_name = username,
                .user_display_name = credential_specifics->user_display_name()},
               /*updated_by_user=*/false);
+          LogPasskeySignalMigrationAction(
+              PasskeysSignalMigrationAction::kPasskeyDetailsUpdated);
         }
 
         if (credential_specifics->last_used_time_windows_epoch_micros() <
@@ -159,19 +185,17 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
           _passkeyStore->UpdatePasskeyTimestamp(
               credentialId, base::Time::FromDeltaSinceWindowsEpoch(
                                 base::Microseconds(credential.lastUsedTime)));
-          base::UmaHistogramEnumeration(
-              kPasskeysIOSMigration, PasskeysMigrationStatus::kPasskeyUpdated);
+          LogPasskeyMigrationStatus(PasskeysMigrationStatus::kPasskeyUpdated);
         }
       } else {
         sync_pb::WebauthnCredentialSpecifics passkey =
             PasskeyFromCredential(credential);
         if (webauthn::passkey_model_utils::IsGpmPasskeyValid(passkey)) {
           _passkeyStore->CreatePasskey(passkey);
-          base::UmaHistogramEnumeration(
-              kPasskeysIOSMigration, PasskeysMigrationStatus::kPasskeyCreated);
+          createdPasskeys.push_back(std::move(passkey));
+          LogPasskeyMigrationStatus(PasskeysMigrationStatus::kPasskeyCreated);
         } else {
-          base::UmaHistogramEnumeration(
-              kPasskeysIOSMigration, PasskeysMigrationStatus::kInvalidPasskey);
+          LogPasskeyMigrationStatus(PasskeysMigrationStatus::kInvalidPasskey);
         }
       }
     } else {
@@ -194,12 +218,21 @@ static constexpr char kPasskeysIOSMigration[] = "Passkeys.IOSMigration";
     [self.temporalStore
         removeCredentialWithRecordIdentifier:credential.recordIdentifier];
   }
-  __weak __typeof__(self) weakSelf = self;
-  [self.temporalStore saveDataWithCompletion:^(NSError* error) {
-    DCHECK(!error);
-    weakSelf.temporalStore = nil;
-    completion(error == nil, error);
-  }];
+  __weak CredentialProviderMigrator* weakSelf = self;
+  [self.temporalStore
+      saveDataWithCompletion:
+          base::CallbackToBlock(base::BindOnce(
+              [](CredentialProviderMigrator* migrator,
+                 std::vector<sync_pb::WebauthnCredentialSpecifics> passkeys,
+                 CredentialMigrationCompletion callback, NSError* error) {
+                migrator.temporalStore = nil;
+                if (error) {
+                  std::move(callback).Run(base::unexpected(error));
+                  return;
+                }
+                std::move(callback).Run(std::move(passkeys));
+              },
+              weakSelf, std::move(createdPasskeys), std::move(completion)))];
 }
 
 #pragma mark - PasskeyModelObserverDelegate

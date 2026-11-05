@@ -70,7 +70,11 @@ _MODULE_ATTRIBUTES = _COMMON_ATTRIBUTES | {
   'IncludeSendValidation',
 }
 
-_PARAMETER_ATTRIBUTES = _COMMON_FIELD_ATTRIBUTES
+_PARAMETER_ATTRIBUTES = _COMMON_FIELD_ATTRIBUTES | {
+  module.ATTRIBUTE_UNVERIFIED,
+}
+
+_RESPONSE_PARAMETER_ATTRIBUTES = _COMMON_FIELD_ATTRIBUTES
 
 _STRUCT_ATTRIBUTES = _COMMON_ATTRIBUTES | {
   'CustomSerializer',
@@ -182,7 +186,7 @@ class Check(check.Check):
     if not attributes:
       return
     for attribute in attributes:
-      if not attribute in allowed:
+      if attribute not in allowed:
         # Is there a close misspelling?
         hint = self._Respell(allowed, attribute)
         raise check.CheckException(
@@ -193,7 +197,7 @@ class Check(check.Check):
     if enum.attributes:
       self._CheckAttributes("enum", _ENUM_ATTRIBUTES, enum.attributes)
       full_name = f"{self.module.mojom_namespace}.{enum.mojom_name}"
-      if 'Stable' in enum.attributes and not 'Extensible' in enum.attributes:
+      if 'Stable' in enum.attributes and 'Extensible' not in enum.attributes:
         raise check.CheckException(
           self.module, f"[Extensible] required on [Stable] enum {full_name}"
         )
@@ -204,7 +208,7 @@ class Check(check.Check):
           "no new uses should be introduced",
         )
       if full_name in _NATIVE_ALLOWLIST and (
-        not enum.attributes or not 'Native' in enum.attributes
+        not enum.attributes or 'Native' not in enum.attributes
       ):
         raise check.CheckException(
           self.module, f"{full_name} can be removed from _NATIVE_ALLOWLIST"
@@ -213,6 +217,38 @@ class Check(check.Check):
       self._CheckAttributes(
         "enum value", _ENUMVAL_ATTRIBUTES, enumval.attributes
       )
+
+  def _CheckUnverifiedParameter(self, interface, method, param):
+    val = param.attributes[module.ATTRIBUTE_UNVERIFIED]
+    if val is not True:
+      raise check.CheckException(
+        self.module,
+        f"attribute Unverified on parameter "
+        f"{interface.mojom_name}.{method.mojom_name}.{param.mojom_name} "
+        f"must not specify a value",
+      )
+    # TODO(crbug.com/570738039): Consider adding support for these, the reason
+    # for dropping support was (1) a lack of a clear need and (2) the work
+    # required to manage their memory. There isn't a reason why these can't be
+    # supported when passed outside a Union/Struct/container.
+    if module.IsAnyHandleKind(param.kind):
+      disallowed_kind = "handle"
+    elif module.IsPendingRemoteKind(param.kind):
+      disallowed_kind = "pending_remote"
+    elif module.IsPendingReceiverKind(param.kind):
+      disallowed_kind = "pending_receiver"
+    elif module.IsPendingAssociatedRemoteKind(param.kind):
+      disallowed_kind = "pending_associated_remote"
+    elif module.IsPendingAssociatedReceiverKind(param.kind):
+      disallowed_kind = "pending_associated_receiver"
+    else:
+      assert not module.IsAnyHandleOrInterfaceKind(param.kind)
+      return
+    raise check.CheckException(
+      self.module,
+      f"attribute Unverified not allowed on {disallowed_kind} parameter "
+      f"{interface.mojom_name}.{method.mojom_name}.{param.mojom_name}",
+    )
 
   def _CheckInterfaceAttributes(self, interface):
     self._CheckAttributes(
@@ -224,10 +260,14 @@ class Check(check.Check):
         self._CheckAttributes(
           "parameter", _PARAMETER_ATTRIBUTES, param.attributes
         )
+        if param.attributes and module.ATTRIBUTE_UNVERIFIED in param.attributes:
+          self._CheckUnverifiedParameter(interface, method, param)
       if method.response_parameters:
         for param in method.response_parameters:
           self._CheckAttributes(
-            "parameter", _PARAMETER_ATTRIBUTES, param.attributes
+            "response parameter",
+            _RESPONSE_PARAMETER_ATTRIBUTES,
+            param.attributes,
           )
     for enum in interface.enums:
       self._CheckEnumAttributes(enum)
@@ -246,7 +286,7 @@ class Check(check.Check):
           "no new uses should be introduced",
         )
     if full_name in _NATIVE_ALLOWLIST and (
-      not struct.attributes or not 'Native' in struct.attributes
+      not struct.attributes or 'Native' not in struct.attributes
     ):
       raise check.CheckException(
         self.module, f"{full_name} can be removed from _NATIVE_ALLOWLIST"
@@ -268,9 +308,7 @@ class Check(check.Check):
 
   def CheckModule(self):
     """Note that duplicate attributes are forbidden at the parse phase.
-    We also do not need to look at the types of any parameters, as they will be
-    checked where they are defined. Consts do not have attributes so can be
-    skipped."""
+    Consts do not have attributes so can be skipped."""
     self._CheckModuleAttributes()
     for interface in self.module.interfaces:
       self._CheckInterfaceAttributes(interface)

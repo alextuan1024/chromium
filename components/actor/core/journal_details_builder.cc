@@ -36,6 +36,21 @@ JournalDetailsBuilder JournalDetailsBuilder::AddUiState(ActorUiMode mode) && {
   return std::move(*this);
 }
 
+JournalDetailsBuilder& JournalDetailsBuilder::AddActorSurface(
+    int32_t actor_surface_id,
+    int32_t tab_id) & {
+  if (tab_id == 0) {
+    return Add("actor_surface_id", actor_surface_id);
+  }
+  return Add("tab_id", tab_id);
+}
+JournalDetailsBuilder JournalDetailsBuilder::AddActorSurface(
+    int32_t actor_surface_id,
+    int32_t tab_id) && {
+  AddActorSurface(actor_surface_id, tab_id);
+  return std::move(*this);
+}
+
 std::string_view JournalEntryTypeToString(mojom::JournalEntryType type) {
   switch (type) {
     case mojom::JournalEntryType::kBegin:
@@ -57,6 +72,18 @@ std::string TrackToString(uint64_t track_uuid, TaskId task_id) {
   }
   if (MakeRendererTrackUUID(task_id) == track_uuid) {
     return "Renderer";
+  }
+  if (MakeTtcBackendTrackUUID(task_id) == track_uuid) {
+    return "TtcBackend";
+  }
+  if (MakeTtcCurrentTurnTrackUUID(task_id) == track_uuid) {
+    return "TtcCurrentTurn";
+  }
+  if (MakeTtcMesClientRecvTrackUUID(task_id) == track_uuid) {
+    return "TtcMESClientRecv";
+  }
+  if (MakeTtcMesClientSendTrackUUID(task_id) == track_uuid) {
+    return "TtcMESClientSend";
   }
   if (IsGlicExperimentalTriggeringTrack(track_uuid)) {
     return "GlicExperimentalTriggering";

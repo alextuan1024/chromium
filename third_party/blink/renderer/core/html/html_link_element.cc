@@ -42,6 +42,7 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/html/link_manifest.h"
+#include "third_party/blink/renderer/core/html/link_module_import.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/loader/link_loader.h"
@@ -143,12 +144,23 @@ void HTMLLinkElement::ParseAttribute(
   } else if (name == html_names::kHrefAttr) {
     // Log href attribute before logging resource fetching in process().
     LogUpdateAttributeIfIsolatedWorldAndInDocument("link", params);
-    HandleExpectHrefChanges(params.old_value, value);
+    HandleExpectHrefChanges(value);
     MaybeHandlePaymentLink();
     HandleSkeletonPrefetchLink();
     // We can respond to attribute mutations as usual, per the above code, but
     // the link fetch & processing model must not be re-invoked for idempotent
     // attribute mutations. See https://github.com/whatwg/html/issues/11400.
+    if (value == params.old_value &&
+        RuntimeEnabledFeatures::HTMLLinkElementAttributeValueChangesEnabled()) {
+      return;
+    }
+    Process();
+  } else if (name == html_names::kImportAttr &&
+             RuntimeEnabledFeatures::ModuleLinkStyleSheetEnabled(
+                 GetExecutionContext())) {
+    // We can respond to attribute mutations as usual, but the link fetch &
+    // processing model must not be re-invoked for idempotent attribute
+    // mutations. See https://github.com/whatwg/html/issues/11400.
     if (value == params.old_value &&
         RuntimeEnabledFeatures::HTMLLinkElementAttributeValueChangesEnabled()) {
       return;
@@ -221,14 +233,22 @@ void HTMLLinkElement::ParseAttribute(
     fetch_priority_hint_ = value;
   } else if (name == html_names::kDisabledAttr) {
     UseCounter::Count(GetDocument(), WebFeature::kHTMLLinkElementDisabled);
-    if (params.reason == AttributeModificationReason::kByParser)
-      UseCounter::Count(GetDocument(), WebFeature::kHTMLLinkElementDisabledByParser);
-    LinkStyle* link = GetLinkStyle();
-    if (!link) {
-      link = MakeGarbageCollected<LinkStyle>(this);
-      link_ = link;
+    if (params.reason == AttributeModificationReason::kByParser) {
+      UseCounter::Count(GetDocument(),
+                        WebFeature::kHTMLLinkElementDisabledByParser);
     }
-    link->SetDisabledState(!value.IsNull());
+    const DisabledState old_disabled_state = disabled_state_;
+    disabled_state_ = value.IsNull() ? DisabledState::kEnabledViaScript
+                                     : DisabledState::kDisabled;
+    if (old_disabled_state == disabled_state_) {
+      return;
+    }
+    if (LinkStyle* link = GetLinkStyle()) {
+      link->DisabledStateChanged(old_disabled_state ==
+                                 DisabledState::kDisabled);
+    } else if (auto* module_import = GetLinkModuleImport()) {
+      module_import->DisabledStateChanged();
+    }
   } else {
     if (name == html_names::kTitleAttr) {
       if (LinkStyle* link = GetLinkStyle())
@@ -258,6 +278,12 @@ bool HTMLLinkElement::ShouldLoadLink() {
   // parsing of some other element on the page.
   if (rel_attribute_.IsExpect()) {
     return false;
+  }
+
+  // Module stylesheet links resolve `import` as a module specifier (which may
+  // be a bare specifier), so the classic dangling-markup check does not apply.
+  if (IsModuleStyleSheetLink()) {
+    return true;
   }
 
   const KURL& href = GetNonEmptyURLAttribute(html_names::kHrefAttr);
@@ -304,20 +330,29 @@ LinkResource* HTMLLinkElement::LinkResourceToProcess() {
     return nullptr;
   }
 
+  // Replace an idle classic resource when this link becomes a module link.
+  if (IsModuleStyleSheetLink() && GetLinkStyle() &&
+      !GetLinkStyle()->HasSheet() && !GetLinkStyle()->StyleSheetIsLoading()) {
+    link_ = nullptr;
+  }
   if (!link_) {
-    if (rel_attribute_.IsManifest()) {
+    if (IsModuleStyleSheetLink()) {
+      link_ = MakeGarbageCollected<LinkModuleImport>(this);
+    } else if (rel_attribute_.IsManifest()) {
       link_ = MakeGarbageCollected<LinkManifest>(this);
     } else {
-      auto* link = MakeGarbageCollected<LinkStyle>(this);
-      if (FastHasAttribute(html_names::kDisabledAttr)) {
-        UseCounter::Count(GetDocument(), WebFeature::kHTMLLinkElementDisabled);
-        link->SetDisabledState(true);
-      }
-      link_ = link;
+      link_ = MakeGarbageCollected<LinkStyle>(this);
     }
   }
 
   return link_.Get();
+}
+
+LinkResource* HTMLLinkElement::GetStyleSheetResource() const {
+  if (LinkStyle* style = GetLinkStyle()) {
+    return style;
+  }
+  return GetLinkModuleImport();
 }
 
 LinkStyle* HTMLLinkElement::GetLinkStyle() const {
@@ -326,9 +361,20 @@ LinkStyle* HTMLLinkElement::GetLinkStyle() const {
   return static_cast<LinkStyle*>(link_.Get());
 }
 
+LinkModuleImport* HTMLLinkElement::GetLinkModuleImport() const {
+  if (!link_ || link_->GetType() != LinkResource::kStyleModule) {
+    return nullptr;
+  }
+  CHECK(RuntimeEnabledFeatures::ModuleLinkStyleSheetEnabled(
+      GetExecutionContext()));
+  return static_cast<LinkModuleImport*>(link_.Get());
+}
+
 void HTMLLinkElement::Process(LinkLoadParameters::Reason reason) {
   if (LinkResource* link = LinkResourceToProcess()) {
     link->Process(reason);
+  } else if (auto* module_import = GetLinkModuleImport()) {
+    module_import->Reset();
   }
 }
 
@@ -405,7 +451,32 @@ bool HTMLLinkElement::HasActivationBehavior() const {
 }
 
 bool HTMLLinkElement::StyleSheetIsLoading() const {
-  return GetLinkStyle() && GetLinkStyle()->StyleSheetIsLoading();
+  const LinkResource* resource = GetStyleSheetResource();
+  return resource && resource->StyleSheetIsLoading();
+}
+
+CSSStyleSheet* HTMLLinkElement::sheet() const {
+  const LinkResource* resource = GetStyleSheetResource();
+  return resource ? resource->Sheet() : nullptr;
+}
+
+bool HTMLLinkElement::IsDisabled() const {
+  return disabled_state_ == DisabledState::kDisabled;
+}
+
+bool HTMLLinkElement::IsEnabledViaScript() const {
+  return disabled_state_ == DisabledState::kEnabledViaScript;
+}
+
+bool HTMLLinkElement::HasStyleModuleResource() const {
+  return GetLinkModuleImport();
+}
+
+bool HTMLLinkElement::IsModuleStyleSheetLink() const {
+  return RuntimeEnabledFeatures::ModuleLinkStyleSheetEnabled(
+             GetExecutionContext()) &&
+         rel_attribute_.IsStyleSheet() &&
+         FastHasAttribute(html_names::kImportAttr);
 }
 
 void HTMLLinkElement::LinkLoaded() {
@@ -544,13 +615,12 @@ void HTMLLinkElement::HandleExpectBlockingChanges() {
   }
 }
 
-void HTMLLinkElement::HandleExpectHrefChanges(const String& old_value,
-                                              const String& new_value) {
+void HTMLLinkElement::HandleExpectHrefChanges(const String& new_value) {
   if (!rel_attribute_.IsExpect()) {
     return;
   }
 
-  RemoveExpectRenderBlockingLink(old_value);
+  RemoveExpectRenderBlockingLink();
   AddExpectRenderBlockingLinkIfNeeded(new_value);
 }
 
@@ -578,15 +648,14 @@ void HTMLLinkElement::HandleExpectMediaChanges() {
   }
 }
 
-void HTMLLinkElement::RemoveExpectRenderBlockingLink(const String& href) {
+void HTMLLinkElement::RemoveExpectRenderBlockingLink() {
   if (!rel_attribute_.IsExpect()) {
     return;
   }
 
   if (auto* render_blocking_resource_manager =
           GetDocument().GetRenderBlockingResourceManager()) {
-    render_blocking_resource_manager->RemovePendingParsingElementLink(
-        ParseSameDocumentIdFromHref(href), this);
+    render_blocking_resource_manager->RemovePendingParsingElementLink(this);
   }
 }
 
@@ -617,8 +686,7 @@ void HTMLLinkElement::AddExpectRenderBlockingLinkIfNeeded(
   UseCounter::CountWebDXFeature(&GetDocument(), WebDXFeature::kLinkRelExpect);
 
   bool media_matches = media_known_to_match || MediaQueryMatches();
-  RenderBlockingLevel blocking_level = blocking_attribute_->GetBlockingLevel();
-  if (!media_matches || blocking_level == RenderBlockingLevel::kNone ||
+  if (!media_matches || !blocking_attribute_->HasRenderToken() ||
       !isConnected()) {
     return;
   }
@@ -626,7 +694,7 @@ void HTMLLinkElement::AddExpectRenderBlockingLinkIfNeeded(
   if (auto* render_blocking_resource_manager =
           GetDocument().GetRenderBlockingResourceManager()) {
     render_blocking_resource_manager->AddPendingParsingElementLink(
-        ParseSameDocumentIdFromHref(href), this, blocking_level);
+        ParseSameDocumentIdFromHref(href), this);
   }
 }
 

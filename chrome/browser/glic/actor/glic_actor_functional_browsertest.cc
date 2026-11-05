@@ -7,8 +7,10 @@
 #include "base/base64.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
+#include "chrome/browser/glic/public/features.h"
 #include "components/actor/core/actor_features.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "net/dns/mock_host_resolver.h"
@@ -62,9 +64,8 @@ base::expected<ActionsResult, std::string> AsyncActionWaiter::Wait() {
 GlicActorFunctionalBrowserTestBase::GlicActorFunctionalBrowserTestBase() {
   scoped_feature_list_.InitWithFeaturesAndParameters(
       /*enabled_features=*/{{::actor::kActorBindCreatedTabToTask, {}},
-                            {features::kGlicActor,
-                             {{features::kGlicActorPolicyControlExemption.name,
-                               "true"}}}},
+                            {features::kGlicActor, {}},
+                            {features::kGlicActorPolicyControlExemption, {}}},
       /*disabled_features=*/{});
 }
 

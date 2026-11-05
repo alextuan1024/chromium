@@ -6,7 +6,6 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "base/time/default_clock.h"
-#include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
@@ -73,46 +72,6 @@ void LogDbLatencyHistogram(ContextClustererDbLatencyType db_latency_type,
                           base::TimeTicks::Now() - start_time);
 }
 
-enum class VisitProcessingStage {
-  kUrlVisited = 0,
-  kUrlsDeleted = 1,
-  kCleanUpTimer = 2,
-
-  // If adding more values here, please add the new stage to the variants under
-  // the `History.Clusters.ContextClusterer.VisitProcessingLatency` in
-  // history/histograms.xml.
-};
-
-std::string VisitProcessingStageHistogramSuffix(
-    VisitProcessingStage visit_processing_stage) {
-  switch (visit_processing_stage) {
-    case VisitProcessingStage::kUrlVisited:
-      return ".UrlVisited";
-    case VisitProcessingStage::kUrlsDeleted:
-      return ".UrlsDeleted";
-    case VisitProcessingStage::kCleanUpTimer:
-      return ".CleanUpTimer";
-  };
-}
-
-class ScopedVisitProcessingTimer {
- public:
-  explicit ScopedVisitProcessingTimer(
-      VisitProcessingStage visit_processing_stage)
-      : visit_processing_stage_(visit_processing_stage) {}
-  ~ScopedVisitProcessingTimer() {
-    base::UmaHistogramTimes(
-        "History.Clusters.ContextClusterer.VisitProcessingLatency" +
-            VisitProcessingStageHistogramSuffix(visit_processing_stage_),
-        elapsed_timer_.Elapsed());
-  }
-
- private:
-  VisitProcessingStage visit_processing_stage_;
-
-  base::ElapsedTimer elapsed_timer_;
-};
-
 }  // namespace
 
 InProgressCluster::InProgressCluster() = default;
@@ -162,9 +121,6 @@ void ContextClustererHistoryServiceObserver::OnURLVisited(
     return;
   }
 
-  ScopedVisitProcessingTimer url_visited_processing_timer(
-      VisitProcessingStage::kUrlVisited);
-
   // Update the normalized URL if it's a search URL.
   const history::URLRow& url_row = visited_url_info.url_row;
   std::string normalized_url = url_row.url().possibly_invalid_spec();
@@ -187,21 +143,19 @@ void ContextClustererHistoryServiceObserver::OnURLVisited(
   if (!new_visit.originator_cache_guid.empty()) {
     // Skip determining the exact cluster id for remote synced visits.
 
-    if (ShouldUseNavigationContextClustersFromPersistence()) {
-      // Remote synced visits are context clustered on the originator machine
-      // and persisted via `HistorySyncBridge`; however, it still requires it's
-      // ClusterVisit metadata. It is calculated here instead of in
-      // `HistorySyncBridge` to avoid a circular dependency.
-      //
-      // If the sender device does not have context clustering at nav time
-      // enabled, this ends up being a no-op.
-      history_service_->UpdateClusterVisit(
-          std::move(cluster_visit),
-          base::BindOnce(&LogDbLatencyHistogram,
-                         ContextClustererDbLatencyType::kUpdateClusterVisit,
-                         base::TimeTicks::Now()),
-          &task_tracker_);
-    }
+    // Remote synced visits are context clustered on the originator machine
+    // and persisted via `HistorySyncBridge`; however, it still requires it's
+    // ClusterVisit metadata. It is calculated here instead of in
+    // `HistorySyncBridge` to avoid a circular dependency.
+    //
+    // If the sender device does not have context clustering at nav time
+    // enabled, this ends up being a no-op.
+    history_service_->UpdateClusterVisit(
+        std::move(cluster_visit),
+        base::BindOnce(&LogDbLatencyHistogram,
+                       ContextClustererDbLatencyType::kUpdateClusterVisit,
+                       base::TimeTicks::Now()),
+        &task_tracker_);
     return;
   }
 
@@ -278,8 +232,7 @@ void ContextClustererHistoryServiceObserver::OnURLVisited(
 
   // Only persist the visit if the transition is visible. Still add it to the
   // cluster maps in case newer visits reference it though.
-  if (ShouldUseNavigationContextClustersFromPersistence() &&
-      IsTransitionUserVisible(new_visit.transition)) {
+  if (IsTransitionUserVisible(new_visit.transition)) {
     // For new clusters, asyncly reserve an ID and have the
     //   `OnPersistedClusterIdReceived()` callback add the visits.
     // For clusters created recently for which history service hasn't yet
@@ -321,8 +274,6 @@ void ContextClustererHistoryServiceObserver::OnHistoryDeletions(
     const history::DeletionInfo& deletion_info) {
   TRACE_EVENT0("browser",
                "ContextClusteringHistoryServiceObserver::OnHistoryDeletions");
-  ScopedVisitProcessingTimer urls_deleted_processing_timer(
-      VisitProcessingStage::kUrlsDeleted);
 
   // Clear out everything if the user deleted all history.
   if (deletion_info.IsAllHistory()) {
@@ -362,9 +313,6 @@ void ContextClustererHistoryServiceObserver::CleanUpClusters() {
   TRACE_EVENT0("browser",
                "ContextClusteringHistoryServiceObserver::CleanUpClusters");
 
-  ScopedVisitProcessingTimer clean_up_timer(
-      VisitProcessingStage::kCleanUpTimer);
-
   if (in_progress_clusters_.empty()) {
     // Nothing to clean up, just return.
     return;
@@ -403,10 +351,8 @@ void ContextClustererHistoryServiceObserver::FinalizeCluster(
   }
 
   // Only delete the cluster if the persisted cluster ID is not needed because
-  // clusters are not being persisted or the persisted cluster ID has been
-  // received and there are unpersisted visits.
-  if (!ShouldUseNavigationContextClustersFromPersistence() ||
-      cluster.unpersisted_visits.empty()) {
+  // there are no unpersisted visits.
+  if (cluster.unpersisted_visits.empty()) {
     in_progress_clusters_.erase(cluster_id);
   } else {
     cluster.cleaned_up = true;
@@ -428,11 +374,6 @@ void ContextClustererHistoryServiceObserver::OnPersistedClusterIdReceived(
   cluster_it->second.persisted_cluster_id = persisted_cluster_id;
 
   if (!cluster_it->second.unpersisted_visits.empty()) {
-    base::UmaHistogramCounts100(
-        "History.Clusters.ContextClusterer."
-        "NumUnpersistedVisitsBeforeClusterPersisted",
-        cluster_it->second.unpersisted_visits.size());
-
     // Persist all visits we've seen so far.
     history_service_->AddVisitsToCluster(
         persisted_cluster_id, cluster_it->second.unpersisted_visits,

@@ -74,11 +74,12 @@ absl_cc_test(
     absl::flat_hash_set
     absl::hash
     absl::hash_testing
-    absl::memory
-    absl::meta
     absl::spy_hash_state
     absl::string_view
+    absl::strings
     GTest::gmock_main
+  SHARD_COUNT
+    4
 )
 
 absl_cc_test(
@@ -161,6 +162,37 @@ absl_cc_library(
     ${ABSL_DEFAULT_COPTS}
   DEPS
     absl::config
+)
+
+# Internal-only target, do not depend on directly.
+absl_cc_library(
+  NAME
+    canonical_hash
+  HDRS
+    "internal/canonical_hash.h"
+  COPTS
+    ${ABSL_DEFAULT_COPTS}
+  DEPS
+    absl::base
+    absl::config
+    absl::hash
+    absl::type_traits
+  PUBLIC
+)
+
+absl_cc_test(
+  NAME
+    canonical_hash_test
+  SRCS
+    "internal/canonical_hash_test.cc"
+  COPTS
+    ${ABSL_TEST_COPTS}
+  DEPS
+    absl::canonical_hash
+    absl::config
+    absl::hash
+    absl::string_view
+    GTest::gmock_main
 )
 
 absl_cc_test(

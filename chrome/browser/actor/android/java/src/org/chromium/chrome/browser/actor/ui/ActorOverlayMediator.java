@@ -25,7 +25,9 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.components.browser_ui.widget.floating_pill.FloatingPillContainer;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
+import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyObservable;
@@ -45,14 +47,14 @@ class ActorOverlayMediator
     private final TabObscuringHandler mTabObscuringHandler;
     private final MonotonicObservableSupplier<LayoutManager> mLayoutManagerSupplier;
     private final Callback<LayoutManager> mLayoutManagerAvailableCallback;
+    private final NonNullObservableSupplier<Boolean> mOmniboxFocusStateSupplier;
+    private final Callback<Boolean> mOmniboxFocusObserver;
     private final SettableNonNullObservableSupplier<Boolean> mBackPressChangedSupplier =
             ObservableSuppliers.createNonNull(false);
     private final Runnable mInflateOverlayCallback;
     private final Runnable mBackPressCallback;
     private final Runnable mDismissSnackbarCallback;
-    private final int mButtonContainerHeight;
-    private final int mButtonMarginTop;
-    private final int mGlowPadding;
+    private final Resources mResources;
     private final PropertyObservable.PropertyObserver<PropertyKey> mModelObserver;
 
     private @Nullable Tab mCurrentTab;
@@ -67,6 +69,9 @@ class ActorOverlayMediator
      * @param browserControlsVisibilityManager The BrowserControlsVisibilityManager to observe.
      * @param tabObscuringHandler The TabObscuringHandler to obscure the web content.
      * @param layoutManagerSupplier The LayoutManager supplier to observe layout changes.
+     * @param omniboxFocusStateSupplier Supplier for whether the omnibox currently has focus. The
+     *     take-over button is hidden while the omnibox is focused. On phones and tablets, the
+     *     overlay is also suppressed so it does not cover the full-width suggestions list.
      * @param inflateOverlayCallback The callback to ensure the overlay view is inflated.
      * @param backPressCallback The callback to show the snackbar.
      * @param dismissSnackbarCallback The callback to dismiss the snackbar.
@@ -78,16 +83,12 @@ class ActorOverlayMediator
             BrowserControlsVisibilityManager browserControlsVisibilityManager,
             TabObscuringHandler tabObscuringHandler,
             MonotonicObservableSupplier<LayoutManager> layoutManagerSupplier,
+            NonNullObservableSupplier<Boolean> omniboxFocusStateSupplier,
             Runnable inflateOverlayCallback,
             Runnable backPressCallback,
             Runnable dismissSnackbarCallback) {
         mModel = model;
-        Resources res = context.getResources();
-        mButtonContainerHeight =
-                res.getDimensionPixelSize(R.dimen.actor_overlay_button_height)
-                        + 2 * res.getDimensionPixelSize(R.dimen.actor_overlay_button_glow_padding);
-        mButtonMarginTop = res.getDimensionPixelSize(R.dimen.actor_overlay_button_margin_top);
-        mGlowPadding = res.getDimensionPixelSize(R.dimen.actor_overlay_button_glow_padding);
+        mResources = context.getResources();
 
         mModelObserver =
                 (source, key) -> {
@@ -102,6 +103,7 @@ class ActorOverlayMediator
         mBrowserControlsVisibilityManager = browserControlsVisibilityManager;
         mTabObscuringHandler = tabObscuringHandler;
         mLayoutManagerSupplier = layoutManagerSupplier;
+        mOmniboxFocusStateSupplier = omniboxFocusStateSupplier;
         mInflateOverlayCallback = inflateOverlayCallback;
         mBackPressCallback = backPressCallback;
         mDismissSnackbarCallback = dismissSnackbarCallback;
@@ -110,16 +112,22 @@ class ActorOverlayMediator
                 new TabObserver() {
                     @Override
                     public void onShown(Tab tab, int type) {
-                        updateVisibility();
-                        updateTakeOverButtonVisibility();
+                        updateOverlayState();
                     }
 
                     @Override
                     public void onHidden(Tab tab, int reason) {
-                        updateVisibility();
-                        updateTakeOverButtonVisibility();
+                        updateOverlayState();
+                    }
+
+                    @Override
+                    public void onContentChanged(Tab tab) {
+                        updateOverlayState();
                     }
                 };
+
+        mOmniboxFocusObserver = ignored -> updateOverlayState();
+        mOmniboxFocusStateSupplier.addSyncObserver(mOmniboxFocusObserver);
 
         mCurrentTabObserver = this::onCurrentTabChanged;
         mCurrentTabSupplier.addSyncObserverAndCallIfNonNull(mCurrentTabObserver);
@@ -162,20 +170,17 @@ class ActorOverlayMediator
     private void onLayoutManagerAvailable(LayoutManager layoutManager) {
         mLayoutManager = layoutManager;
         mLayoutManager.addObserver(this);
-        updateVisibility();
-        updateTakeOverButtonVisibility();
+        updateOverlayState();
     }
 
     @Override
     public void onStartedShowing(int layoutType) {
-        updateVisibility();
-        updateTakeOverButtonVisibility();
+        updateOverlayState();
     }
 
     @Override
     public void onUiTabStateChanged(ActorUiTabController.UiTabState state) {
-        updateVisibility();
-        updateTakeOverButtonVisibility();
+        updateOverlayState();
     }
 
     private boolean isHandoffButtonActive() {
@@ -184,19 +189,34 @@ class ActorOverlayMediator
         return state != null && state.handoffButton.isActive;
     }
 
+    /**
+     * Recomputes the overlay scrim and the take-over button together. Both derive from {@link
+     * #calculateCanShowOverlay}, so they must always be refreshed as a pair; updating only one
+     * would let the button show through without its scrim, or vice versa.
+     */
+    private void updateOverlayState() {
+        updateVisibility();
+        updateTakeOverButtonVisibility();
+    }
+
     private void updateTakeOverButtonVisibility() {
         if (mCurrentTab == null) {
             mModel.set(ActorOverlayProperties.TAKE_OVER_TASK_BUTTON_VISIBLE, false);
             return;
         }
-        boolean visible = calculateCanShowOverlay(mCurrentTab) && isHandoffButtonActive();
+        // Like desktop Chrome's kGlicHandoffButtonHideWhenOmniboxPopupOpened, hide the button
+        // whenever the omnibox is focused, since it sits where the suggestions are drawn.
+        boolean isOmniboxFocused = Boolean.TRUE.equals(mOmniboxFocusStateSupplier.get());
+        boolean visible =
+                !isOmniboxFocused
+                        && calculateCanShowOverlay(mCurrentTab)
+                        && isHandoffButtonActive();
         mModel.set(ActorOverlayProperties.TAKE_OVER_TASK_BUTTON_VISIBLE, visible);
     }
 
     /** Called when a task state changes, to re-evaluate visibility. */
     void onTaskStateChanged() {
-        updateVisibility();
-        updateTakeOverButtonVisibility();
+        updateOverlayState();
     }
 
     private void updateVisibility() {
@@ -213,8 +233,7 @@ class ActorOverlayMediator
 
     private void onCurrentTabChanged(@Nullable Tab tab) {
         mDismissSnackbarCallback.run();
-        // TODO(crbug.com/520161144): We had to remove "assert mTabController != null;" to pass the
-        // test in ActorOverlayCoordinatorTest#testTabSwitchToDestroyedTab.
+        // mTabController is legitimately null for destroyed, Incognito, or actor-off tabs.
         if (mCurrentTab != null) {
             mCurrentTab.removeObserver(mTabObserver);
             if (mTabController != null) {
@@ -234,15 +253,22 @@ class ActorOverlayMediator
             mTabController = null;
         }
 
-        updateVisibility();
-        updateTakeOverButtonVisibility();
+        updateOverlayState();
     }
 
     private boolean calculateCanShowOverlay(@Nullable Tab tab) {
         boolean isBrowsing =
                 mLayoutManager != null
                         && mLayoutManager.getActiveLayoutType() == LayoutType.BROWSING;
+        // On phones and tablets, the focused omnibox's full-width suggestions list is drawn below
+        // the overlay, so suppress the overlay to avoid covering the list. Desktop platforms show
+        // the suggestions as an elevated popover drawn above the overlay, so the overlay stays
+        // visible behind it, matching desktop Chrome.
+        boolean wouldCoverOmniboxSuggestions =
+                Boolean.TRUE.equals(mOmniboxFocusStateSupplier.get())
+                        && !OmniboxCapabilities.isDesktopPlatform();
         return isBrowsing
+                && !wouldCoverOmniboxSuggestions
                 && tab != null
                 && !tab.isDestroyed()
                 && !tab.isClosing()
@@ -290,12 +316,9 @@ class ActorOverlayMediator
         int topControlsHeight = mModel.get(ActorOverlayProperties.TOP_MARGIN);
         @ControlsPosition
         int controlsPosition = mModel.get(ActorOverlayProperties.CONTROLS_POSITION);
-        int topMargin;
-        if (controlsPosition == ControlsPosition.BOTTOM) {
-            topMargin = topControlsHeight + mButtonMarginTop - mGlowPadding;
-        } else {
-            topMargin = topControlsHeight - mButtonContainerHeight / 2;
-        }
+        int topMargin =
+                FloatingPillContainer.getTopMargin(
+                        mResources, topControlsHeight, controlsPosition == ControlsPosition.BOTTOM);
         mModel.set(ActorOverlayProperties.HANDOFF_BUTTON_TOP_MARGIN, topMargin);
     }
 
@@ -319,6 +342,7 @@ class ActorOverlayMediator
             mTabObscuringToken = null;
         }
         mCurrentTabSupplier.removeObserver(mCurrentTabObserver);
+        mOmniboxFocusStateSupplier.removeObserver(mOmniboxFocusObserver);
         mBrowserControlsVisibilityManager.removeObserver(mBrowserControlsObserver);
         mLayoutManagerSupplier.removeObserver(mLayoutManagerAvailableCallback);
         if (mLayoutManager != null) {

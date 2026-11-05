@@ -117,7 +117,8 @@ ChildProcessLauncher::ChildProcessLauncher(
     scoped_refptr<base::RefCountedData<base::ReadOnlySharedMemoryRegion>>
         tracing_config_memory_region,
     scoped_refptr<base::RefCountedData<base::UnsafeSharedMemoryRegion>>
-        tracing_output_memory_region)
+        tracing_output_memory_region,
+    base::ReadOnlySharedMemoryRegion renderer_process_security_state_region)
     : client_(client),
       starting_(true),
 #if defined(ADDRESS_SANITIZER) || defined(LEAK_SANITIZER) ||  \
@@ -146,7 +147,8 @@ ChildProcessLauncher::ChildProcessLauncher(
       std::move(mojo_invitation), process_error_callback, std::move(file_data),
       std::move(histogram_memory_region),
       std::move(tracing_config_memory_region),
-      std::move(tracing_output_memory_region));
+      std::move(tracing_output_memory_region),
+      std::move(renderer_process_security_state_region));
   helper_->StartLaunchOnClientThread();
 }
 
@@ -163,12 +165,11 @@ ChildProcessLauncher::~ChildProcessLauncher() {
 void ChildProcessLauncher::SetRenderProcessPriority(
     const RenderProcessPriority& priority) {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
-  base::Process to_pass = process_.process.Duplicate();
   GetProcessLauncherTaskRunner()->PostTask(
       FROM_HERE,
       base::BindOnce(
           &ChildProcessLauncherHelper::SetRenderProcessPriorityOnLauncherThread,
-          helper_, std::move(to_pass), priority, base::TimeTicks::Now()));
+          helper_, priority, base::TimeTicks::Now()));
 }
 #else   // !BUILDFLAG(IS_ANDROID)
 void ChildProcessLauncher::SetProcessPriority(
@@ -184,6 +185,8 @@ void ChildProcessLauncher::SetProcessPriority(
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 void ChildProcessLauncher::Notify(ChildProcessLauncherHelper::Process process,
+                                  base::TimeTicks launch_begin_time,
+                                  base::TimeTicks launch_complete_time,
 #if BUILDFLAG(IS_WIN)
                                   DWORD last_error,
 #endif
@@ -198,7 +201,8 @@ void ChildProcessLauncher::Notify(ChildProcessLauncherHelper::Process process,
   process_ = std::move(process);
 
   if (process_.process.IsValid()) {
-    process_start_time_ = base::TimeTicks::Now();
+    launch_begin_time_ = launch_begin_time;
+    launch_complete_time_ = launch_complete_time;
 
 #if BUILDFLAG(IS_MAC)
     // On mac, the task port is required to change the priority of the child
@@ -252,23 +256,26 @@ void ChildProcessLauncher::OnReceivedTaskPort(
 void ChildProcessLauncher::SetProcessPriorityImpl(
     base::Process::Priority priority) {
   priority_ = priority;
-  base::Process to_pass = process_.process.Duplicate();
   GetProcessLauncherTaskRunner()->PostTask(
       FROM_HERE,
       base::BindOnce(
           &ChildProcessLauncherHelper::SetProcessPriorityOnLauncherThread,
-          helper_, std::move(to_pass), priority));
+          helper_, priority));
 }
 #endif
 
 bool ChildProcessLauncher::IsStarting() {
-  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  // TODO(crbug.com/581809102): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
   return starting_;
 }
 
 const base::Process& ChildProcessLauncher::GetProcess() const {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
-  CHECK(!starting_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/582211833): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!starting_);
   return process_.process;
 }
 
@@ -309,6 +316,13 @@ ChildProcessTerminationInfo ChildProcessLauncher::GetChildTerminationInfo(
   // close the handle here.
   if (termination_info_.status != base::TERMINATION_STATUS_STILL_RUNNING) {
     process_.process.Close();
+    // Release the launcher thread's copy of the handle as well, so that it
+    // doesn't keep the process object alive now that the child has exited.
+    GetProcessLauncherTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            &ChildProcessLauncherHelper::CloseProcessOnLauncherThread,
+            helper_));
   }
 
   return termination_info_;
@@ -332,11 +346,15 @@ ChildProcessLauncher::GetEffectiveChildBindingState() {
   return helper_->GetEffectiveChildBindingState();
 }
 
+bool ChildProcessLauncher::HasIsolatedUid() const {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  return helper_->HasIsolatedUid();
+}
+
 void ChildProcessLauncher::DumpProcessStack() {
-  base::Process to_pass = process_.process.Duplicate();
   GetProcessLauncherTaskRunner()->PostTask(
-      FROM_HERE, base::BindOnce(&ChildProcessLauncherHelper::DumpProcessStack,
-                                helper_, std::move(to_pass)));
+      FROM_HERE,
+      base::BindOnce(&ChildProcessLauncherHelper::DumpProcessStack, helper_));
 }
 
 void ChildProcessLauncher::OnSpareRendererPriorityGraduated(bool is_alive) {
@@ -360,6 +378,7 @@ RenderProcessPriority::RenderProcessPriority(bool visible,
                                              bool boost_for_pending_views,
                                              bool boost_for_loading,
                                              bool boost_for_discard,
+                                             bool boost_for_background_execution,
 #if BUILDFLAG(IS_ANDROID)
                                              bool is_spare_renderer,
                                              ChildProcessImportance importance
@@ -373,6 +392,7 @@ RenderProcessPriority::RenderProcessPriority(bool visible,
       has_media_stream(has_media_stream),
       has_immersive_xr_session(has_immersive_xr_session),
       has_foreground_service_worker(has_foreground_service_worker),
+      boost_for_background_execution(boost_for_background_execution),
       frame_depth(frame_depth),
       intersects_viewport(intersects_viewport),
       boost_for_pending_views(boost_for_pending_views),
@@ -411,6 +431,7 @@ bool RenderProcessPriority::is_background() const {
     // background priority and the worker can starve and miss its start
     // timeout (crbug.com/484218883).
     if (boost_for_loading || boost_for_discard ||
+        boost_for_background_execution ||
         has_foreground_service_worker) {
       return false;
     }
@@ -420,6 +441,7 @@ bool RenderProcessPriority::is_background() const {
 #endif
   return !visible && !has_media_stream && !has_immersive_xr_session &&
          !boost_for_pending_views && !has_foreground_service_worker &&
+         !boost_for_background_execution &&
          !boost_for_loading && !boost_for_discard;
 }
 
@@ -438,6 +460,7 @@ base::Process::Priority RenderProcessPriority::GetProcessPriority() const {
     // priority, or it can starve and miss its start timeout
     // (crbug.com/484218883).
     if (boost_for_loading || boost_for_discard ||
+        boost_for_background_execution ||
         has_foreground_service_worker) {
       return base::Process::Priority::kUserBlocking;
     }

@@ -11,6 +11,8 @@
 extern const CGFloat kOmniboxMinHeight;
 extern const CGFloat kOmniboxCobrowseMinHeight;
 extern const CGFloat kOmniboxIPadMinHeight;
+/// The minimum width as percentage of the containing window.
+extern const CGFloat kOmniboxIPadMinWidthPercentage;
 /// The  margin  for the input plate container with its parent view.
 extern const CGFloat kInputPlateMargin;
 extern const CGFloat kInputPlateIpadMargin;
@@ -39,12 +41,16 @@ extern NSString* const kComposeboxSendButtonAccessibilityIdentifier;
 extern NSString* const kComposeboxAIMButtonAccessibilityIdentifier;
 // Accessibility identifier for the image generation button in the composebox.
 extern NSString* const kComposeboxImageGenerationButtonAccessibilityIdentifier;
+// Accessibility identifier for the PTM button in the composebox.
+extern NSString* const kComposeboxPTMButtonAccessibilityIdentifier;
 
 // ==== Actions in the plus menu.
 // Accessibility identifier for the AI mode action in the plus menu.
 extern NSString* const kComposeboxAIMActionAccessibilityIdentifier;
 // Accessibility identifier for the create image action in the plus menu.
 extern NSString* const kComposeboxImageGenerationActionAccessibilityIdentifier;
+// Accessibility identifier for the PTM action in the plus menu.
+extern NSString* const kComposeboxPTMActionAccessibilityIdentifier;
 // Accessibility identifier for the Attach File button in the plus menu.
 extern NSString* const kComposeboxAttachFileActionAccessibilityIdentifier;
 // Accessibility identifier for the Gallery button in the plus menu.
@@ -67,5 +73,11 @@ extern NSString* const
     kComposeboxInputItemCellCloseButtonAccessibilityIdentifier;
 // Accessibility identifier for the tabs accordion in cobrowse mode.
 extern NSString* const kComposeboxTabsAccordionAccessibilityIdentifier;
+
+// Accessibility identifier for the disclaimer in the Shared Tabs sheet.
+extern NSString* const kComposeboxSharedTabsDisclaimerAccessibilityIdentifier;
+
+// Accessibility identifier for the close button in the Shared Tabs sheet.
+extern NSString* const kComposeboxSharedTabsCloseButtonAccessibilityIdentifier;
 
 #endif  // IOS_CHROME_BROWSER_COMPOSEBOX_SHARED_UI_COMPOSEBOX_UI_CONSTANTS_H_

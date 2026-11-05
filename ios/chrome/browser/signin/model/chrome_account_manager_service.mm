@@ -15,10 +15,9 @@
 #import "components/prefs/pref_service.h"
 #import "components/signin/public/base/signin_pref_names.h"
 #import "components/signin/public/identity_manager/account_info.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/signin/model/account_profile_mapper.h"
-#import "ios/public/provider/chrome/browser/signin/signin_identity_api.h"
-#import "ios/public/provider/chrome/browser/signin/signin_resources_api.h"
 
 namespace {
 
@@ -281,9 +280,6 @@ bool ChromeAccountManagerService::IsServiceSupported() const {
 }
 
 void ChromeAccountManagerService::Shutdown() {
-  for (auto& observer : observer_list_) {
-    observer.OnChromeAccountManagerServiceShutdown(this);
-  }
   if (local_state_) {
     registrar_.RemoveAll();
     local_state_ = nullptr;
@@ -365,6 +361,8 @@ void ChromeAccountManagerService::OnIdentityInProfileUpdated(
 
 void ChromeAccountManagerService::OnIdentityOnDeviceUpdated(
     id<SystemIdentity> identity) {
+  // TODO(crbug.com/576575308): Filter out identities that do not match
+  // `kRestrictAccountsToPatterns`.
   for (auto& observer : observer_list_) {
     observer.OnIdentityOnDeviceUpdated(identity);
   }
@@ -400,4 +398,5 @@ ChromeAccountManagerService::GetWeakPtr() {
 void ChromeAccountManagerService::UpdateRestriction() {
   restriction_ = PatternAccountRestrictionFromPreference(local_state_);
   OnIdentitiesInProfileChanged();
+  // TODO(crbug.com/576575308): Also call `OnIdentitiesOnDeviceChanged()`.
 }

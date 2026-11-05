@@ -4,10 +4,10 @@
 
 #include "chrome/browser/favicon/favicon_utils.h"
 
-#include "base/hash/sha1.h"
 #include "build/build_config.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/search/search.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/platform_locale_settings.h"
@@ -18,6 +18,7 @@
 #include "content/public/browser/favicon_status.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "crypto/hash.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/color/color_provider.h"
@@ -48,8 +49,8 @@ SkColor ComputeBackgroundColorForUrl(const GURL& icon_url) {
   if (!icon_url.is_valid())
     return SK_ColorGRAY;
 
-  base::SHA1Digest hash = base::SHA1Hash(
-      base::as_byte_span(icon_url.DeprecatedGetOriginAsURL().spec()));
+  const auto hash =
+      crypto::hash::Sha256(icon_url.DeprecatedGetOriginAsURL().spec());
   return SkColorSetRGB(hash[0u], hash[1u], hash[2u]);
 }
 
@@ -65,7 +66,7 @@ gfx::Image GetDefaultFaviconForColorScheme(bool is_dark) {
 
 void CreateContentFaviconDriverForWebContents(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   if (ContentFaviconDriver::FromWebContents(web_contents))
     return;
 
@@ -182,12 +183,8 @@ bool ShouldThemifyFaviconForEntry(content::NavigationEntry* entry) {
   }
 
   // Themify favicon for the default NTP and incognito NTP.
-  if (actual_url.SchemeIs(content::kChromeUIScheme)) {
-    return actual_url.host() == chrome::kChromeUINewTabPageHost ||
-           actual_url.host() == chrome::kChromeUINewTabHost;
-  }
-
-  return false;
+  return search::IsNewTabPageOrigin(actual_url) ||
+         search::IsNewTabOrigin(actual_url);
 }
 
 gfx::ImageSkia ThemeFavicon(const gfx::ImageSkia& source,

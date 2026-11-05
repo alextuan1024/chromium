@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -56,7 +57,8 @@ const char
 base::DictValue
 ReportingJobConfigurationBase::DeviceDictionaryBuilder::BuildDeviceDictionary(
     const std::string& dm_token,
-    const std::string& client_id) {
+    const std::string& client_id,
+    NetworkNameCache* network_name_cache) {
   base::DictValue device_dictionary;
   device_dictionary.Set(kDMToken, dm_token);
   device_dictionary.Set(kClientId, client_id);
@@ -66,7 +68,7 @@ ReportingJobConfigurationBase::DeviceDictionaryBuilder::BuildDeviceDictionary(
   if (base::FeatureList::IsEnabled(
           policy::features::kEnhancedSecurityEventFields)) {
     device_dictionary.Set(kDeviceFqdn, GetDeviceFqdn());
-    device_dictionary.Set(kNetworkName, GetNetworkName());
+    device_dictionary.Set(kNetworkName, GetNetworkName(network_name_cache));
   }
   return device_dictionary;
 }
@@ -75,7 +77,8 @@ ReportingJobConfigurationBase::DeviceDictionaryBuilder::BuildDeviceDictionary(
 ::chrome::cros::reporting::proto::Device
 ReportingJobConfigurationBase::DeviceDictionaryBuilder::BuildDeviceProto(
     const std::string& dm_token,
-    const std::string& client_id) {
+    const std::string& client_id,
+    NetworkNameCache* network_name_cache) {
   ::chrome::cros::reporting::proto::Device device;
   device.set_dm_token(dm_token);
   device.set_client_id(client_id);
@@ -85,7 +88,7 @@ ReportingJobConfigurationBase::DeviceDictionaryBuilder::BuildDeviceProto(
   if (base::FeatureList::IsEnabled(
           policy::features::kEnhancedSecurityEventFields)) {
     device.set_device_fqdn(GetDeviceFqdn());
-    device.set_network_name(GetNetworkName());
+    device.set_network_name(GetNetworkName(network_name_cache));
   }
   return device;
 }
@@ -354,10 +357,11 @@ ReportingJobConfigurationBase::~ReportingJobConfigurationBase() = default;
 
 void ReportingJobConfigurationBase::InitializePayloadWithDeviceInfo(
     const std::string& dm_token,
-    const std::string& client_id) {
-  payload_.Set(
-      DeviceDictionaryBuilder::kDeviceKey,
-      DeviceDictionaryBuilder::BuildDeviceDictionary(dm_token, client_id));
+    const std::string& client_id,
+    NetworkNameCache* network_name_cache) {
+  payload_.Set(DeviceDictionaryBuilder::kDeviceKey,
+               DeviceDictionaryBuilder::BuildDeviceDictionary(
+                   dm_token, client_id, network_name_cache));
   InitializePayload(/*include_device_info=*/true);
 }
 

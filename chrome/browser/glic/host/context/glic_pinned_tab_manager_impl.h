@@ -20,14 +20,12 @@
 class Profile;
 
 namespace glic {
-class GlicMetrics;
 
 // Manages a collection of tabs that have been selected to be shared.
 class GlicPinnedTabManagerImpl : public GlicPinnedTabManager {
  public:
   explicit GlicPinnedTabManagerImpl(Profile* profile,
-                                    GlicInstance* glic_instance,
-                                    GlicMetrics* metrics);
+                                    GlicInstance* glic_instance);
   ~GlicPinnedTabManagerImpl() override;
 
   // GlicPinnedTabManagerInterface implementation.
@@ -65,7 +63,7 @@ class GlicPinnedTabManagerImpl : public GlicPinnedTabManager {
   std::optional<GlicPinnedTabUsage> GetPinnedTabUsage(
       tabs::TabHandle tab_handle) const override;
 
-  std::vector<tabs::TabInterface*> GetPinnedTabs() const override;
+  std::vector<raw_ptr<tabs::TabInterface>> GetPinnedTabs() const override;
 
   void SubscribeToPinCandidates(
       mojom::GetPinCandidatesOptionsPtr options,
@@ -96,7 +94,7 @@ class GlicPinnedTabManagerImpl : public GlicPinnedTabManager {
 
   // Returns a vector of tabs for potential pin candidates. The vector
   // is not sorted or truncated.
-  std::vector<tabs::TabInterface*> GetUnsortedPinCandidates();
+  std::vector<raw_ptr<tabs::TabInterface>> GetUnsortedPinCandidates();
 
   class PinnedTabObserver;
   friend PinnedTabObserver;
@@ -137,7 +135,8 @@ class GlicPinnedTabManagerImpl : public GlicPinnedTabManager {
 
   // List of callbacks to invoke when the collection of pinned tabs changes
   // (including changes to metadata).
-  base::RepeatingCallbackList<void(const std::vector<tabs::TabInterface*>&)>
+  base::RepeatingCallbackList<void(
+      const std::vector<raw_ptr<tabs::TabInterface>>&)>
       pinned_tabs_changed_callback_list_;
 
   // List of callbacks to invoke when the tab data for a pinned tab changes.
@@ -157,9 +156,6 @@ class GlicPinnedTabManagerImpl : public GlicPinnedTabManager {
   raw_ptr<Profile> profile_;
 
   raw_ptr<GlicInstance> glic_instance_;
-
-  // Enables providing pin-related input to metrics.
-  raw_ptr<GlicMetrics> metrics_;
 
   // Using a vector lets us store the pinned tabs in the order that they are
   // pinned. Searching for a pinned tab is currently linear.

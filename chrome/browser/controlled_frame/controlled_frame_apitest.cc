@@ -18,6 +18,7 @@
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/controlled_frame/controlled_frame_test_base.h"
 #include "chrome/browser/extensions/browsertest_util.h"
+#include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/menu_manager.h"
 #include "chrome/browser/extensions/service_worker_apitest.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -25,12 +26,13 @@
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/pref_names.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/embedder_support/user_agent_utils.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/service_worker_context.h"
 #include "content/public/browser/service_worker_running_info.h"
 #include "content/public/browser/storage_partition.h"
@@ -43,11 +45,13 @@
 #include "content/public/test/test_utils.h"
 #include "content/public/test/web_transport_simple_test_server.h"
 #include "extensions/browser/api/web_request/extension_web_request_event_router.h"
+#include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
 #include "extensions/browser/service_worker/service_worker_test_utils.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/test/extension_test_message_listener.h"
+#include "extensions/test/test_extension_dir.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/install_default_websocket_handlers.h"
 #include "net/test/test_data_directory.h"
@@ -136,6 +140,7 @@ const content::EvalJsResult VerifyBackgroundColorIsRed(
 
 const content::EvalJsResult ExecuteScriptRequestFullScreen(
     content::RenderFrameHost* app_frame) {
+  app_frame->GetView()->SetHasFocusForTesting(true);
   return content::EvalJs(app_frame, R"(
     (async function() {
       const frame = document.getElementsByTagName('controlledframe')[0];
@@ -158,15 +163,21 @@ const content::EvalJsResult ExecuteScriptRequestFullScreen(
   )");
 }
 
-const content::EvalJsResult VerifyFullscreen(extensions::WebViewGuest* guest) {
+// requestFullscreen() resolves asynchronously, so wait for the fullscreen
+// change if it hasn't happened yet.
+const content::EvalJsResult WaitForFullscreen(extensions::WebViewGuest* guest) {
   return content::EvalJs(guest->GetGuestMainFrame(), R"(
-    (function() {
+    new Promise(resolve => {
       if (document.fullscreenElement !== null) {
-        return 'SUCCESS';
-      } else {
-        return 'FAIL';
+        resolve('SUCCESS');
+        return;
       }
-    })();
+      document.addEventListener('fullscreenchange', () => {
+        resolve(document.fullscreenElement !== null ? 'SUCCESS' : 'FAIL');
+      }, {once: true});
+      document.addEventListener('fullscreenerror', () => resolve('FAIL'),
+                                {once: true});
+    });
   )");
 }
 // TODO(odejesush): Add tests for the rest of the Promise API methods.
@@ -498,7 +509,8 @@ IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest,
   ASSERT_TRUE(CreateControlledFrame(
       app_frame, embedded_https_test_server().GetURL("/index.html")));
 
-  profile()->GetPrefs()->SetBoolean(prefs::kDisableScreenshots, true);
+  profile()->GetPrefs()->SetBoolean(policy::policy_prefs::kDisableScreenshots,
+                                    true);
 
   const std::string script = R"(
     (async function() {
@@ -544,7 +556,7 @@ IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest, EnterFullScreenControlledFrame) {
   auto* web_view_guest = GetWebViewGuest(app_frame);
 
   EXPECT_EQ(kEvalSuccessStr, ExecuteScriptRequestFullScreen(app_frame));
-  EXPECT_EQ(kEvalSuccessStr, VerifyFullscreen(web_view_guest));
+  EXPECT_EQ(kEvalSuccessStr, WaitForFullscreen(web_view_guest));
 }
 
 IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest, DisabledInDataIframe) {
@@ -967,6 +979,72 @@ IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest, Histograms) {
   histogram_tester.ExpectBucketCount(
       "Blink.UseCounter.Features",
       blink::mojom::WebFeature::kHTMLControlledFrameElement, 1);
+}
+
+// Tests that network requests initiated by a guest Service Worker (such as
+// importScripts and subresource fetches) are classified as web view requests
+// and are not dispatched to an unrelated extension's webRequest listeners.
+// Regression test for https://crbug.com/495471295.
+IN_PROC_BROWSER_TEST_F(ControlledFrameApiTest,
+                       GuestServiceWorkerRequestsNotDispatchedToExtension) {
+  extensions::TestExtensionDir test_dir;
+  test_dir.WriteManifest(R"({
+    "name": "WebRequest Observer",
+    "version": "0.1",
+    "manifest_version": 3,
+    "background": {
+      "service_worker": "background.js"
+    },
+    "permissions": ["webRequest"],
+    "host_permissions": ["<all_urls>"]
+  })");
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), R"(
+    let interceptedUrls = [];
+    chrome.webRequest.onBeforeRequest.addListener(
+      (details) => {
+        interceptedUrls.push(details.url);
+      },
+      {urls: ['*://*/*']}
+    );
+    chrome.test.sendMessage('READY');
+  )");
+
+  ExtensionTestMessageListener ready_listener("READY");
+  extensions::ChromeTestExtensionLoader loader(profile());
+  scoped_refptr<const extensions::Extension> extension =
+      loader.LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
+
+  web_app::IsolatedWebAppUrlInfo url_info =
+      CreateAndInstallEmptyApp(web_app::ManifestBuilder());
+  content::RenderFrameHost* app_frame = OpenApp(url_info.app_id());
+
+  const GURL guest_sw_test_url =
+      embedded_https_test_server().GetURL("/guest_sw_test.html");
+  ASSERT_TRUE(CreateControlledFrame(app_frame, guest_sw_test_url));
+
+  extensions::WebViewGuest* web_view_guest = GetWebViewGuest(app_frame);
+  ASSERT_TRUE(web_view_guest);
+
+  EXPECT_EQ("DONE",
+            content::EvalJs(web_view_guest->GetGuestMainFrame(), "startSW()"));
+
+  base::Value intercepted_urls =
+      extensions::BackgroundScriptExecutor::ExecuteScript(
+          profile(), extension->id(),
+          "chrome.test.sendScriptResult(interceptedUrls);",
+          extensions::BackgroundScriptExecutor::ResultCapture::
+              kSendScriptResult);
+  ASSERT_TRUE(intercepted_urls.is_list());
+  ASSERT_FALSE(intercepted_urls.GetList().empty());
+
+  for (const auto& url_value : intercepted_urls.GetList()) {
+    EXPECT_THAT(url_value.GetString(),
+                Not(HasSubstr("guest_sw_fetch_worker.js")));
+    EXPECT_THAT(url_value.GetString(),
+                Not(HasSubstr("guest_sw_fetch_from_worker.txt")));
+  }
 }
 
 class ControlledFrameServiceWorkerAutoPreloadTest

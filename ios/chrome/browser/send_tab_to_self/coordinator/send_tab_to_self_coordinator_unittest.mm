@@ -12,12 +12,11 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
-#import "base/test/scoped_feature_list.h"
 #import "base/test/test_future.h"
 #import "components/send_tab_to_self/fake_send_tab_to_self_model.h"
-#import "components/send_tab_to_self/features.h"
 #import "components/send_tab_to_self/send_tab_to_self_model.h"
 #import "components/send_tab_to_self/stub_send_tab_to_self_sync_service.h"
+#import "components/sync_device_info/remote_device_info.h"
 #import "ios/chrome/browser/send_tab_to_self/coordinator/send_tab_to_self_coordinator_delegate.h"
 #import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_browser_agent.h"
 #import "ios/chrome/browser/send_tab_to_self/ui/send_tab_to_self_modal_delegate.h"
@@ -60,23 +59,17 @@ constexpr char kTargetDeviceName[] = "My Target Device";
 class SendTabToSelfCoordinatorTest : public PlatformTest {
  protected:
   SendTabToSelfCoordinatorTest() {
-    feature_list_.InitAndEnableFeature(
-        send_tab_to_self::kSendTabToSelfPostSendToast);
-
     TestProfileIOS::Builder test_profile_builder;
     test_profile_builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     test_profile_builder.AddTestingFactory(
         SyncServiceFactory::GetInstance(),
-        base::BindRepeating(&CreateTestSyncService));
+        base::BindOnce(&CreateTestSyncService));
     test_profile_builder.AddTestingFactory(
         SendTabToSelfSyncServiceFactory::GetInstance(),
-        base::BindRepeating(
-            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
-              return std::make_unique<
-                  send_tab_to_self::StubSendTabToSelfSyncService>();
-            }));
+        base::BindOnce(
+            &std::make_unique<send_tab_to_self::StubSendTabToSelfSyncService>));
 
     profile_ =
         profile_manager_.AddProfileWithBuilder(std::move(test_profile_builder));
@@ -177,7 +170,6 @@ class SendTabToSelfCoordinatorTest : public PlatformTest {
     return coordinator_;
   }
 
-  base::test::ScopedFeatureList feature_list_;
   web::WebTaskEnvironment task_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
@@ -206,10 +198,10 @@ TEST_F(SendTabToSelfCoordinatorTest, SendsTabDirectToDeviceSuccessfully) {
 
   // Configure fake model.
   model_->SetSendResult(send_tab_to_self::SendTabToSelfResult::kSuccess);
-  model_->AddTargetDevice(send_tab_to_self::TargetDeviceInfo(
+  model_->AddTargetDevice(syncer::RemoteDeviceInfo(
       kTargetDeviceName, kTargetDeviceGUID,
       syncer::DeviceInfo::FormFactor::kPhone, syncer::DeviceInfo::OsType::kIOS,
-      base::Time::Now()));
+      base::Time::Now(), /*has_high_precision_timestamp=*/false));
 
   __block base::test::TestFuture<void> stop_future;
   __block base::test::TestFuture<void> snackbar_future;
@@ -277,10 +269,10 @@ TEST_F(SendTabToSelfCoordinatorTest,
   // Configure fake model with connection failure.
   model_->SetSendResult(
       send_tab_to_self::SendTabToSelfResult::kFailureNoInternetConnection);
-  model_->AddTargetDevice(send_tab_to_self::TargetDeviceInfo(
+  model_->AddTargetDevice(syncer::RemoteDeviceInfo(
       kTargetDeviceName, kTargetDeviceGUID,
       syncer::DeviceInfo::FormFactor::kPhone, syncer::DeviceInfo::OsType::kIOS,
-      base::Time::Now()));
+      base::Time::Now(), /*has_high_precision_timestamp=*/false));
 
   __block base::test::TestFuture<void> stop_future;
   __block base::test::TestFuture<void> snackbar_future;
@@ -328,10 +320,10 @@ TEST_F(SendTabToSelfCoordinatorTest,
 
   // Configure fake model.
   model_->SetSendResult(send_tab_to_self::SendTabToSelfResult::kSuccess);
-  model_->AddTargetDevice(send_tab_to_self::TargetDeviceInfo(
+  model_->AddTargetDevice(syncer::RemoteDeviceInfo(
       kTargetDeviceName, kTargetDeviceGUID,
       syncer::DeviceInfo::FormFactor::kPhone, syncer::DeviceInfo::OsType::kIOS,
-      base::Time::Now()));
+      base::Time::Now(), /*has_high_precision_timestamp=*/false));
 
   __block base::test::TestFuture<void> stop_future;
   __block base::test::TestFuture<void> snackbar_future;

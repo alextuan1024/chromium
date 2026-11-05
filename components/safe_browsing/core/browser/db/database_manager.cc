@@ -21,6 +21,11 @@ namespace safe_browsing {
 SafeBrowsingDatabaseManager::Client::Client(base::PassKey<Client> pass_key) {}
 SafeBrowsingDatabaseManager::Client::~Client() = default;
 
+scoped_refptr<base::SequencedTaskRunner>
+SafeBrowsingDatabaseManager::Client::GetCustomCallbackTaskRunner() {
+  return nullptr;
+}
+
 base::WeakPtr<SafeBrowsingDatabaseManager::Client>
 SafeBrowsingDatabaseManager::Client::GetWeakPtr() {
   return weak_factory_.GetWeakPtr();
@@ -92,8 +97,14 @@ bool SafeBrowsingDatabaseManager::CheckNotificationAbuseUrl(const GURL& url,
           std::move(full_hash),
           std::vector<SBThreatType>{SBThreatType::SB_THREAT_TYPE_API_ABUSE});
     }
+    std::optional<V5GetHashProtocolManager::CheckContext> check_context;
+    if (v5_get_hash_protocol_manager->HasWebUIListener()) {
+      check_context = V5GetHashProtocolManager::CheckContext{
+          /*urls=*/{url},
+          /*check_type=*/ClientCallbackType::CHECK_NOTIFICATION_ABUSE};
+    }
     v5_get_hash_protocol_manager->GetFullHashes(
-        full_hash_to_threat_types,
+        std::move(full_hash_to_threat_types),
         // Wrap with WrapCallbackWithDefaultInvokeIfNotRun to ensure
         // OnNotificationAbuseFullHashesResponse runs if
         // V5GetHashProtocolManager is destroyed, which ensure the caller gets
@@ -103,7 +114,8 @@ bool SafeBrowsingDatabaseManager::CheckNotificationAbuseUrl(const GURL& url,
                                OnNotificationAbuseFullHashesResponse,
                            weak_factory_.GetWeakPtr(), std::move(check)),
             /*threat_type=*/SBThreatType::SB_THREAT_TYPE_SAFE,
-            /*metadata=*/ThreatMetadata()));
+            /*metadata=*/ThreatMetadata()),
+        std::move(check_context));
     return false;
   }
 

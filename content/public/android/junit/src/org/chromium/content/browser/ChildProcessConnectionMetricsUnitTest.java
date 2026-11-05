@@ -35,8 +35,7 @@ public class ChildProcessConnectionMetricsUnitTest {
         mRanking = new ArrayList<ChildProcessConnection>();
         mBindingManager =
                 new BindingManager(
-                        RuntimeEnvironment.application,
-                        BindingManager.NO_MAX_SIZE,
+                        RuntimeEnvironment.getApplication(),
                         mRanking,
                         /* onChangedImplicitly= */ null);
         mConnectionMetrics = new ChildProcessConnectionMetrics();
@@ -230,7 +229,6 @@ public class ChildProcessConnectionMetricsUnitTest {
         ChildProcessConnection connection =
                 new TestChildProcessConnection(
                         new ComponentName("pkg", "cls"),
-                        /* bindToCaller= */ false,
                         /* bindAsExternalService= */ false,
                         /* serviceBundle= */ null);
         connection.start(ChildBindingState.VISIBLE, /* serviceCallback= */ null);

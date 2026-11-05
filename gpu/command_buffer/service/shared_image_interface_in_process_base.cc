@@ -187,6 +187,9 @@ SharedImageInterfaceInProcessBase::CreateSharedImage(
       (handle_info.handle.type ==
        gfx::GpuMemoryBufferType::SHARED_MEMORY_BUFFER)) {
     si_info_copy.format.ClearPrefersExternalSampler();
+    if (si_info_copy.alpha_type == kPremul_SkAlphaType) {
+      si_info_copy.alpha_type = kUnpremul_SkAlphaType;
+    }
   }
 
   return base::MakeRefCounted<ClientSharedImage>(
@@ -430,13 +433,6 @@ void SharedImageInterfaceInProcessBase::DestroySharedImage(
           &SharedImageInterfaceInProcessBase::DestroySharedImageOnGpuThread,
           this, mailbox),
       /*sync_token_fences=*/std::move(sync_tokens), SyncToken());
-}
-
-void SharedImageInterfaceInProcessBase::DestroySharedImage(
-    const SyncToken& sync_token,
-    scoped_refptr<ClientSharedImage> client_shared_image) {
-  CHECK(client_shared_image->HasOneRef());
-  client_shared_image->UpdateDestructionSyncToken(sync_token);
 }
 
 void SharedImageInterfaceInProcessBase::DestroySharedImageOnGpuThread(

@@ -20,6 +20,7 @@
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/browser/global_request_id.h"
 #include "content/public/browser/initiator_navigation_state.h"
+#include "content/public/browser/navigation_ui_data.h"
 #include "content/public/browser/reload_type.h"
 #include "content/public/common/referrer.h"
 #include "ipc/constants.mojom-forward.h"
@@ -58,8 +59,13 @@ struct CONTENT_EXPORT OpenURLParams {
                 WindowOpenDisposition disposition,
                 ui::PageTransition transition,
                 bool is_renderer_initiated);
-  OpenURLParams(const OpenURLParams& other);
   ~OpenURLParams();
+
+  // Movable and copyable.
+  OpenURLParams(const OpenURLParams& other);
+  OpenURLParams& operator=(const OpenURLParams& other);
+  OpenURLParams(OpenURLParams&& other) noexcept;
+  OpenURLParams& operator=(OpenURLParams&& other) noexcept;
 
   // Creates OpenURLParams that 1) preserve all applicable |handle| properties
   // (URL, referrer, initiator, etc.) with OpenURLParams equivalents and 2) fill
@@ -72,6 +78,20 @@ struct CONTENT_EXPORT OpenURLParams {
       WindowOpenDisposition disposition,
       ui::PageTransition transition,
       const Referrer& referrer = Referrer(),
+      bool started_from_context_menu = false,
+      FrameTreeNodeId frame_tree_node_id = FrameTreeNodeId());
+
+  // Creates OpenURLParams for a renderer-initiated navigation.
+  // `initiator_navigation_state` should be non-null.
+  // TODO(crbug.com/510258191): Enforce that `initiator_navigation_state` be
+  // non-null, once we enforce that all renderer-initiated NavigationHandles
+  // have a non-null InitiatorNavigationState.
+  static OpenURLParams CreateRendererInitiated(
+      const GURL& url,
+      WindowOpenDisposition disposition,
+      ui::PageTransition transition,
+      const Referrer& referrer,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       bool started_from_context_menu = false,
       FrameTreeNodeId frame_tree_node_id = FrameTreeNodeId());
 
@@ -217,6 +237,12 @@ struct CONTENT_EXPORT OpenURLParams {
   // as an opaque string. It should never be parsed or evaluated in the
   // browser process, and must only be parsed by the sandboxed renderer.
   std::optional<std::string> internal_scroll_to_text_fragment;
+
+  // Used to specify NavigationUIData for the request.
+  // This value should only be set for main frame navigations. Subframe
+  // navigations will always get their NavigationUIData from
+  // ContentBrowserClient::GetNavigationUIData.
+  CloneableNavigationUIDataPtr navigation_ui_data;
 };
 
 class PageNavigator {

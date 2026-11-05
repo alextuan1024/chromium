@@ -2,27 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {CrWebApi, gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
 import {sendWebKitMessageWithReply, trim} from '//ios/web/public/js_messaging/resources/utils.js';
 
 const MESSAGE_HANDLER_NAME = 'DeviceTrustMessageHandler';
-const REQUEST_TIMEOUT_MS = 30000;
 
 // LINT.IfChange(MaxChallengeRequestLength)
 const MAX_CHALLENGE_REQUEST_LENGTH = 1024;
 // LINT.ThenChange(//ios/chrome/browser/enterprise/connectors/device_trust/model/device_trust_java_script_feature.mm:MaxChallengeRequestLength)
-const MAX_CONCURRENT_REQUESTS = 3;
-
-let pendingRequestCount = 0;
 
 interface AttestationReply {
   signedPayload?: unknown;
   errorCode?: unknown;
   errorMessage?: unknown;
+  errorDetail?: unknown;
 }
 
 class DeviceTrustError extends Error {
-  constructor(readonly code: string, message: string) {
+  // `code` identifies the error category. `detail`, when present, names the
+  // specific attestation step that failed (e.g. 'missing_signing_key').
+  constructor(
+      readonly code: string, message: string, readonly detail?: string) {
     super(message);
     this.name = 'DeviceTrustError';
   }
@@ -48,7 +47,12 @@ function parseAttestationReply(reply: unknown): string {
       attestationReply.errorMessage :
       'Unknown internal error occurred.';
 
-  throw new DeviceTrustError(errorCode, errorMessage);
+  const errorDetail = typeof attestationReply.errorDetail === 'string' &&
+          attestationReply.errorDetail.length > 0 ?
+      attestationReply.errorDetail :
+      undefined;
+
+  throw new DeviceTrustError(errorCode, errorMessage, errorDetail);
 }
 
 const DeviceTrustAPI = {
@@ -68,28 +72,10 @@ const DeviceTrustAPI = {
           'INVALID_CHALLENGE_REQUEST', 'challengeRequest is too large.');
     }
 
-    if (pendingRequestCount >= MAX_CONCURRENT_REQUESTS) {
-      throw new DeviceTrustError(
-          'TOO_MANY_REQUESTS', 'Too many pending device attestation requests.');
-    }
-
-    pendingRequestCount++;
-
-    const browserRequest = sendWebKitMessageWithReply(MESSAGE_HANDLER_NAME, {
-      challengeRequest: challengeRequest,
-    });
-
-    let timeoutId = 0;
-    const timeout = new Promise<never>((_, reject) => {
-      timeoutId = window.setTimeout(() => {
-        reject(new DeviceTrustError(
-            'ATTESTATION_TIMEOUT',
-            'Timed out waiting for device attestation response.'));
-      }, REQUEST_TIMEOUT_MS);
-    });
-
     try {
-      const reply = await Promise.race([browserRequest, timeout]);
+      const reply = await sendWebKitMessageWithReply(MESSAGE_HANDLER_NAME, {
+        challengeRequest: challengeRequest,
+      });
       return parseAttestationReply(reply);
     } catch (error: unknown) {
       if (error instanceof DeviceTrustError) {
@@ -97,9 +83,6 @@ const DeviceTrustAPI = {
       }
       throw new DeviceTrustError(
           'INTERNAL_ERROR', 'Unknown internal error occurred.');
-    } finally {
-      clearTimeout(timeoutId);
-      pendingRequestCount--;
     }
   },
 };
@@ -141,6 +124,7 @@ function setupDeviceTrustAPI(): void {
   }
 }
 
-const deviceTrust = new CrWebApi('deviceTrust');
-deviceTrust.addFunction('setupDeviceTrustAPI', setupDeviceTrustAPI);
-gCrWeb.registerApi(deviceTrust);
+// This script is executed by the browser only in the main frame of pages
+// allowlisted by the Device Trust policies, so the API is installed as soon as
+// the script runs.
+setupDeviceTrustAPI();

@@ -22,9 +22,14 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/notifications/scheduler/public/notification_params.h"
+#include "chrome/browser/notifications/scheduler/public/notification_scheduler_constant.h"
 #include "chrome/browser/tips/core/tips_feature.h"
 #include "chrome/browser/tips/core/tips_prefs.h"
 #include "chrome/browser/tips/core/tips_service_test_base.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/flags/android/chrome_feature_list.h"
+#endif
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -54,14 +59,19 @@ class MockTipsFeature : public TipsFeature {
   }
   bool IsEligible(const std::map<std::string, float>& signal_values,
                   const PrefService& pref_service) const override {
+    is_eligible_call_count_++;
     last_signal_values_ = signal_values;
     return is_eligible_;
   }
   notifications::NotificationData GetNotificationData() const override {
-    return notifications::NotificationData();
+    notifications::NotificationData data;
+    data.custom_data[notifications::kTipsNotificationsFeatureType] =
+        base::NumberToString(static_cast<int>(type_));
+    return data;
   }
 
   mutable std::map<std::string, float> last_signal_values_;
+  mutable int is_eligible_call_count_ = 0;
 
  private:
   TipFeatureRank rank_;
@@ -82,11 +92,15 @@ TEST_F(TipsServiceTest, DetermineBestTip_NoDatabaseClient) {
       std::vector<SignalDefinition>{UserAction("SomeAction", 7)},
       /*is_eligible=*/true));
 
-  std::optional<TipsNotificationsFeatureType> result;
-  service_->DetermineBestTip(base::BindOnce(
-      [](std::optional<TipsNotificationsFeatureType>* out,
-         std::optional<TipsNotificationsFeatureType> res) { *out = res; },
-      &result));
+  std::optional<notifications::NotificationData> result;
+  service_->DetermineBestTip(
+      /*custom_signals=*/{},
+      base::BindOnce(
+          [](std::optional<notifications::NotificationData>* out,
+             std::optional<notifications::NotificationData> res) {
+            *out = std::move(res);
+          },
+          &result));
   EXPECT_FALSE(result.has_value());
 }
 
@@ -118,16 +132,18 @@ TEST_F(TipsServiceTest, DetermineBestTip_DatabaseFailure) {
       std::vector<SignalDefinition>{UserAction("SomeAction", 7)},
       /*is_eligible=*/true));
 
-  std::optional<TipsNotificationsFeatureType> result;
+  std::optional<notifications::NotificationData> result;
   base::RunLoop run_loop;
-  service_->DetermineBestTip(base::BindOnce(
-      [](std::optional<TipsNotificationsFeatureType>* out,
-         base::OnceClosure quit,
-         std::optional<TipsNotificationsFeatureType> res) {
-        *out = res;
-        std::move(quit).Run();
-      },
-      &result, run_loop.QuitClosure()));
+  service_->DetermineBestTip(
+      /*custom_signals=*/{},
+      base::BindOnce(
+          [](std::optional<notifications::NotificationData>* out,
+             base::OnceClosure quit,
+             std::optional<notifications::NotificationData> res) {
+            *out = std::move(res);
+            std::move(quit).Run();
+          },
+          &result, run_loop.QuitClosure()));
   run_loop.Run();
 
   EXPECT_FALSE(result.has_value());
@@ -173,38 +189,50 @@ TEST_F(TipsServiceTest, VerifyMetadataConstruction) {
       },
       /*is_eligible=*/true));
 
-  std::optional<TipsNotificationsFeatureType> result;
+  std::optional<notifications::NotificationData> result;
   base::RunLoop run_loop;
-  service_->DetermineBestTip(base::BindOnce(
-      [](std::optional<TipsNotificationsFeatureType>* out,
-         base::OnceClosure quit,
-         std::optional<TipsNotificationsFeatureType> res) {
-        *out = res;
-        std::move(quit).Run();
-      },
-      &result, run_loop.QuitClosure()));
+  service_->DetermineBestTip(
+      /*custom_signals=*/{},
+      base::BindOnce(
+          [](std::optional<notifications::NotificationData>* out,
+             base::OnceClosure quit,
+             std::optional<notifications::NotificationData> res) {
+            *out = std::move(res);
+            std::move(quit).Run();
+          },
+          &result, run_loop.QuitClosure()));
   run_loop.Run();
 
   ASSERT_TRUE(test_segmentation_service_->test_database_client());
   const auto& captured_metadata =
       test_segmentation_service_->test_database_client()->last_metadata_;
 
-  // Verify captured_metadata
-  EXPECT_EQ(captured_metadata.input_features_size(), 3);
+  // Verify captured_metadata (1 global cooldown signal + 3 feature signals)
+  EXPECT_EQ(captured_metadata.input_features_size(), 4);
+
+  // Verify global cooldown signal at index 0
+  const auto& f0 = captured_metadata.input_features(0).uma_feature();
+  EXPECT_EQ(f0.name(), TipsService::kGlobalTipsShownSignal);
+  EXPECT_EQ(f0.type(),
+            segmentation_platform::proto::SignalType::HISTOGRAM_ENUM);
+  EXPECT_EQ(f0.bucket_count(),
+            static_cast<uint64_t>(TipsService::kGlobalCooldownDays));
+  ASSERT_EQ(f0.enum_ids_size(), 1);
+  EXPECT_EQ(f0.enum_ids(0), TipsService::kNotificationLifeCycleEventShown);
 
   // Verify Action1
-  const auto& f1 = captured_metadata.input_features(0).uma_feature();
+  const auto& f1 = captured_metadata.input_features(1).uma_feature();
   EXPECT_EQ(f1.name(), "Action1");
   EXPECT_EQ(f1.type(), segmentation_platform::proto::SignalType::USER_ACTION);
 
   // Verify Sum1
-  const auto& f2 = captured_metadata.input_features(1).uma_feature();
+  const auto& f2 = captured_metadata.input_features(2).uma_feature();
   EXPECT_EQ(f2.name(), "Sum1");
   EXPECT_EQ(f2.type(),
             segmentation_platform::proto::SignalType::HISTOGRAM_VALUE);
 
   // Verify Enum1
-  const auto& f3 = captured_metadata.input_features(2).uma_feature();
+  const auto& f3 = captured_metadata.input_features(3).uma_feature();
   EXPECT_EQ(f3.name(), "Enum1");
   EXPECT_EQ(f3.type(),
             segmentation_platform::proto::SignalType::HISTOGRAM_ENUM);
@@ -251,5 +279,154 @@ TEST_F(TipsServiceTest, DetermineBestTip_MultipleFeaturesAndSignals) {
   EXPECT_EQ(feature1_ptr->last_signal_values_["Sum1"], 20.0f);
   EXPECT_EQ(feature2_ptr->last_signal_values_["Enum1"], 30.0f);
 }
+
+TEST_F(TipsServiceTest, DetermineBestTip_GlobalCooldown_SuppressesTips) {
+  auto feature = std::make_unique<MockTipsFeature>(
+      TipFeatureRank::kQuickDelete, TipsNotificationsFeatureType::kQuickDelete,
+      std::vector<SignalDefinition>{UserAction("SomeAction", 7)},
+      /*is_eligible=*/true);
+
+  std::vector<FeatureTestConfig> configs;
+  configs.push_back(FeatureTestConfig{
+      .feature = std::move(feature),
+      .mock_signal_values = std::map<std::string, float>{{"SomeAction", 1.0f}},
+  });
+
+  // A tip was shown within the last 7 days (count = 1.0f).
+  // Expect std::nullopt even though the feature is eligible.
+  RunDetermineBestTipTestWithOverrides(
+      std::move(configs), /*expected_best_tip=*/std::nullopt,
+      /*mock_global_cooldown_shown_count=*/1.0f);
+}
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(TipsServiceTest,
+       DetermineBestTip_GlobalCooldown_BypassedByDedicatedParam) {
+  // Dedicated Finch param on kTipsSelfService bypasses the 7-day cooldown.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      chrome::android::kTipsSelfService, {{"instant_scheduling", "true"}});
+
+  auto feature = std::make_unique<MockTipsFeature>(
+      TipFeatureRank::kQuickDelete, TipsNotificationsFeatureType::kQuickDelete,
+      std::vector<SignalDefinition>{UserAction("SomeAction", 7)},
+      /*is_eligible=*/true);
+
+  std::vector<FeatureTestConfig> configs;
+  configs.push_back(FeatureTestConfig{
+      .feature = std::move(feature),
+      .mock_signal_values = std::map<std::string, float>{{"SomeAction", 1.0f}},
+  });
+
+  // A tip was shown within the last 7 days (count = 1.0f), but the dedicated
+  // param bypasses the cooldown so the eligible feature is chosen.
+  RunDetermineBestTipTestWithOverrides(
+      std::move(configs), TipsNotificationsFeatureType::kQuickDelete,
+      /*mock_global_cooldown_shown_count=*/1.0f);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
+TEST_F(TipsServiceTest, DetermineBestTip_CustomSignalsForwardedToFeature) {
+  auto feature = std::make_unique<MockTipsFeature>(
+      TipFeatureRank::kQuickDelete, TipsNotificationsFeatureType::kQuickDelete,
+      std::vector<SignalDefinition>{UserAction("Action1", 7)},
+      /*is_eligible=*/true);
+  MockTipsFeature* feature_ptr = feature.get();
+
+  std::vector<FeatureTestConfig> configs;
+  configs.push_back(FeatureTestConfig{
+      .feature = std::move(feature),
+      .mock_signal_values = std::map<std::string, float>{{"Action1", 10.0f}},
+  });
+
+  std::map<std::string, float> custom_signals = {
+      {"custom_signal_1", 1.0f},
+      {"custom_signal_2", 42.0f},
+  };
+
+  RunDetermineBestTipTestWithOverrides(
+      std::move(configs), TipsNotificationsFeatureType::kQuickDelete,
+      /*mock_global_cooldown_shown_count=*/0.0f, custom_signals);
+
+  EXPECT_EQ(feature_ptr->last_signal_values_["Action1"], 10.0f);
+  EXPECT_EQ(feature_ptr->last_signal_values_["custom_signal_1"], 1.0f);
+  EXPECT_EQ(feature_ptr->last_signal_values_["custom_signal_2"], 42.0f);
+}
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(TipsServiceTest, DetermineBestTip_AllTipsShown_SkipsQuery) {
+  auto feature = std::make_unique<MockTipsFeature>(
+      TipFeatureRank::kQuickDelete, TipsNotificationsFeatureType::kQuickDelete,
+      std::vector<SignalDefinition>{UserAction("SomeAction", 7)},
+      /*is_eligible=*/true);
+  MockTipsFeature* feature_ptr = feature.get();
+  pref_service_.SetBoolean(prefs::kAndroidTipNotificationShownQuickDelete,
+                           true);
+
+  std::vector<std::unique_ptr<TipsFeature>> features;
+  features.push_back(std::move(feature));
+  RunDetermineBestTipTest(std::move(features), std::nullopt);
+
+  EXPECT_EQ(test_segmentation_service_->test_database_client()
+                ->process_features_call_count_,
+            0);
+  EXPECT_EQ(feature_ptr->is_eligible_call_count_, 0);
+}
+
+TEST_F(TipsServiceTest, HasRemainingTips) {
+  service_->RegisterFeature(std::make_unique<MockTipsFeature>(
+      TipFeatureRank::kQuickDelete, TipsNotificationsFeatureType::kQuickDelete,
+      std::vector<SignalDefinition>{}, /*is_eligible=*/true));
+  service_->RegisterFeature(std::make_unique<MockTipsFeature>(
+      TipFeatureRank::kGoogleLens, TipsNotificationsFeatureType::kGoogleLens,
+      std::vector<SignalDefinition>{}, /*is_eligible=*/true));
+  EXPECT_TRUE(service_->HasRemainingTips());
+
+  pref_service_.SetBoolean(prefs::kAndroidTipNotificationShownQuickDelete,
+                           true);
+  EXPECT_TRUE(service_->HasRemainingTips());
+
+  pref_service_.SetBoolean(prefs::kAndroidTipNotificationShownLens, true);
+  EXPECT_FALSE(service_->HasRemainingTips());
+}
+
+TEST_F(TipsServiceTest, DetermineBestTip_SkipsShownTips) {
+  // Higher-ranked and eligible, but already shown.
+  auto shown_feature = std::make_unique<MockTipsFeature>(
+      TipFeatureRank::kQuickDelete, TipsNotificationsFeatureType::kQuickDelete,
+      std::vector<SignalDefinition>{UserAction("ShownAction", 7)},
+      /*is_eligible=*/true);
+  MockTipsFeature* shown_feature_ptr = shown_feature.get();
+  auto remaining_feature = std::make_unique<MockTipsFeature>(
+      TipFeatureRank::kGoogleLens, TipsNotificationsFeatureType::kGoogleLens,
+      std::vector<SignalDefinition>{UserAction("RemainingAction", 7)},
+      /*is_eligible=*/true);
+  MockTipsFeature* remaining_feature_ptr = remaining_feature.get();
+  pref_service_.SetBoolean(prefs::kAndroidTipNotificationShownQuickDelete,
+                           true);
+
+  std::vector<FeatureTestConfig> configs;
+  configs.push_back(FeatureTestConfig{.feature = std::move(shown_feature)});
+  configs.push_back(FeatureTestConfig{
+      .feature = std::move(remaining_feature),
+      .mock_signal_values =
+          std::map<std::string, float>{{"RemainingAction", 3.0f}},
+  });
+
+  RunDetermineBestTipTestWithOverrides(
+      std::move(configs), TipsNotificationsFeatureType::kGoogleLens);
+
+  EXPECT_EQ(test_segmentation_service_->test_database_client()
+                ->process_features_call_count_,
+            1);
+  EXPECT_EQ(shown_feature_ptr->is_eligible_call_count_, 0);
+  EXPECT_EQ(remaining_feature_ptr->is_eligible_call_count_, 1);
+  // Only the remaining feature's signal was queried, so its value lines up.
+  EXPECT_EQ(remaining_feature_ptr->last_signal_values_["RemainingAction"],
+            3.0f);
+  EXPECT_FALSE(
+      remaining_feature_ptr->last_signal_values_.contains("ShownAction"));
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace tips

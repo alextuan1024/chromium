@@ -13,6 +13,7 @@
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
 
@@ -56,7 +57,8 @@ Response WebMCPHandler::CancelInvocation(const std::string& invocation_id) {
 }
 
 void WebMCPHandler::InvokeTool(const std::string& frame_id,
-                               const std::string& tool_name,
+                               std::optional<std::string> tool_id,
+                               std::optional<std::string> tool_name,
                                std::unique_ptr<protocol::DictionaryValue> input,
                                std::unique_ptr<InvokeToolCallback> callback) {
   if (!enabled_) {
@@ -85,6 +87,26 @@ void WebMCPHandler::InvokeTool(const std::string& frame_id,
     return;
   }
 
+  if (tool_id.has_value() == tool_name.has_value()) {
+    callback->sendFailure(Response::InvalidParams(
+        "Exactly one of toolId and toolName must be specified"));
+    return;
+  }
+
+  blink::mojom::ScriptToolSelectorPtr tool;
+  if (tool_id) {
+    std::optional<base::UnguessableToken> token =
+        base::UnguessableToken::DeserializeFromString(*tool_id);
+    if (!token) {
+      callback->sendFailure(Response::InvalidParams("Invalid toolId"));
+      return;
+    }
+    tool =
+        blink::mojom::ScriptToolSelector::NewId(blink::ScriptToolToken(*token));
+  } else {
+    tool = blink::mojom::ScriptToolSelector::NewName(*tool_name);
+  }
+
   RenderFrameHostImpl* rfh = frame_tree_node->current_frame_host();
 
   std::string input_arguments;
@@ -98,14 +120,14 @@ void WebMCPHandler::InvokeTool(const std::string& frame_id,
     input_arguments = "{}";
   }
 
-  base::UnguessableToken invocation_token = base::UnguessableToken::Create();
+  blink::ToolInvocationToken invocation_token;
   initiated_invocations_[invocation_token] = rfh->GetLastCommittedOrigin();
 
   rfh->GetAssociatedLocalFrame()->InvokeScriptToolForInspector(
-      invocation_token, tool_name, input_arguments,
+      invocation_token, std::move(tool), input_arguments,
       base::BindOnce(
           [](std::unique_ptr<InvokeToolCallback> callback,
-             base::UnguessableToken invocation_token, bool success) {
+             blink::ToolInvocationToken invocation_token, bool success) {
             if (success) {
               callback->sendSuccess(invocation_token.ToString());
             } else {
@@ -121,7 +143,7 @@ void WebMCPHandler::DidFinishNavigation(NavigationHandle* navigation_handle) {
     return;
   }
 
-  std::optional<base::UnguessableToken> invocation_id =
+  std::optional<blink::ToolInvocationToken> invocation_id =
       navigation_handle->GetScriptToolInvocationId();
   if (!invocation_id) {
     return;

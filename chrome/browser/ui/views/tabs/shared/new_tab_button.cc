@@ -5,6 +5,8 @@
 #include "chrome/browser/ui/views/tabs/shared/new_tab_button.h"
 
 #include "base/feature_list.h"
+#include "base/metrics/user_metrics.h"
+#include "base/metrics/user_metrics_action.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
@@ -12,6 +14,9 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/browser_frame_view.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/tabs/shared/new_tab_button_menu_model.h"
 #include "ui/actions/actions.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -35,7 +40,7 @@ NewTabButton::NewTabButton(BrowserWindowInterface* browser,
 
   SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_CENTER);
 
-  SetPreferredSize(gfx::Size(button_size, button_size));
+  SetButtonSize(button_size);
 
   SetIconSize(icon_size);
 
@@ -116,10 +121,12 @@ void NewTabButton::SetMiddleClickCallbackForTesting(
 }
 
 void NewTabButton::NotifyClick(const ui::Event& event) {
+  base::RecordAction(base::UserMetricsAction("NewTab_Button"));
 #if BUILDFLAG(IS_LINUX)
   if (event.IsMouseEvent()) {
     const ui::MouseEvent& mouse = static_cast<const ui::MouseEvent&>(event);
     if (mouse.IsOnlyMiddleMouseButton()) {
+      NotifyWillInvokeAction();
       views::InkDrop::Get(this)->AnimateToState(
           views::InkDropState::ACTION_TRIGGERED,
           ui::LocatedEvent::FromIfValid(&event));
@@ -133,6 +140,18 @@ void NewTabButton::NotifyClick(const ui::Event& event) {
   }
 #endif
   TabStripFlatEdgeButton::NotifyClick(event);
+}
+
+bool NewTabButton::IsFrameCondensed() const {
+  if (!browser_) {
+    return false;
+  }
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
+  if (!browser_view || !browser_view->browser_widget()) {
+    return false;
+  }
+  BrowserFrameView* frame_view = browser_view->browser_widget()->GetFrameView();
+  return frame_view && frame_view->IsFrameCondensed();
 }
 
 BEGIN_METADATA(NewTabButton)

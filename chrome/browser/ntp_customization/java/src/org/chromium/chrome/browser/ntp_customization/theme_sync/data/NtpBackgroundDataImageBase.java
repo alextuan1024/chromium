@@ -20,8 +20,6 @@ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.CustomBackgroundInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.upload_image.BackgroundImageInfo;
 
-import java.util.Objects;
-
 /** Base data class for NTP image-based background data. */
 @NullMarked
 public abstract class NtpBackgroundDataImageBase extends NtpBackgroundDataBase {
@@ -34,6 +32,10 @@ public abstract class NtpBackgroundDataImageBase extends NtpBackgroundDataBase {
     private @Nullable String mLastUploadImageFilePath;
     private @Nullable Bitmap mBitmap;
     private boolean mIsBitmapSaved;
+    // The primary seed color of this background. NtpBackgroundDataThemeCollection#equals leaves it
+    // out, so that a theme collection entry keeps its identity when the color is lazily computed
+    // or updated from sync, whereas NtpBackgroundDataUploadImage#equals compares it. Use
+    // #isIdentical to tell whether the color has changed.
     private @Nullable @ColorInt Integer mPrimaryColor;
 
     /**
@@ -155,8 +157,8 @@ public abstract class NtpBackgroundDataImageBase extends NtpBackgroundDataBase {
         NtpBackgroundDataBase currentBackgroundData =
                 NtpCustomizationConfigManager.getInstance().getNtpBackgroundData();
         if (currentBackgroundData instanceof NtpBackgroundDataImageBase imageBaseData
-                && Objects.equals(currentBackgroundData, this)) {
-            mBitmap = imageBaseData.getBitmap();
+                && hasSameImage(imageBaseData)) {
+            borrowFromCurrentBackground(imageBaseData);
             onImageLoadedCallback.onResult(mBitmap);
         } else if (getPreviewBitmap() != null) {
             onImageLoadedCallback.onResult(getPreviewBitmap());
@@ -167,6 +169,40 @@ public abstract class NtpBackgroundDataImageBase extends NtpBackgroundDataBase {
                         onImageLoadedCallback.onResult(mBitmap);
                     },
                     mLastUploadImageFilePath);
+        }
+    }
+
+    /**
+     * Returns whether this background and {@code other} show the same image, whatever their colors,
+     * so that the bitmap and the image file of one fit the other. See the class comment of {@link
+     * NtpBackgroundDataBase}.
+     *
+     * <p>{@link #equals} is enough for an uploaded image, since it compares the image file. A theme
+     * collection compares the image URL instead, see {@link
+     * NtpBackgroundDataThemeCollection#hasSameImage}.
+     */
+    public boolean hasSameImage(@Nullable NtpBackgroundDataBase other) {
+        return equals(other);
+    }
+
+    /**
+     * Borrows the bitmap of the current background, which shows the same image as this one, as well
+     * as its {@link BackgroundImageInfo}, primary color and file ID hash if this one doesn't have
+     * them yet. This completes e.g. a recommended theme collection card, which only has a preview
+     * bitmap, so that it can be applied without fetching the image.
+     *
+     * @param currentBackgroundData The current background, which shows the same image as this one.
+     */
+    private void borrowFromCurrentBackground(NtpBackgroundDataImageBase currentBackgroundData) {
+        mBitmap = currentBackgroundData.getBitmap();
+        if (mBackgroundImageInfo == null) {
+            mBackgroundImageInfo = currentBackgroundData.getBackgroundImageInfo();
+        }
+        if (mPrimaryColor == null) {
+            mPrimaryColor = currentBackgroundData.getPrimaryColor();
+        }
+        if (mFileIdHash == null) {
+            setFileIdHash(currentBackgroundData.getFileIdHash());
         }
     }
 
@@ -189,19 +225,6 @@ public abstract class NtpBackgroundDataImageBase extends NtpBackgroundDataBase {
     /** Reads the isBitmapSaved value from the given JSON and sets it on this object. */
     public void setIsBitmapSavedFromJson(JSONObject json) {
         setIsBitmapSaved(json.optBoolean(IS_BITMAP_SAVED_KEY, false));
-    }
-
-    @Override
-    public boolean equals(@Nullable Object obj) {
-        if (obj instanceof NtpBackgroundDataImageBase other) {
-            return super.equals(obj) && Objects.equals(mPrimaryColor, other.mPrimaryColor);
-        }
-        return false;
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(super.hashCode(), mPrimaryColor);
     }
 
     @Override

@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/platform/text/mathml_operator_dictionary.h"
 
+#include <algorithm>
+
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -140,14 +142,13 @@ static const UChar32 category_m[]{
 
 template <typename T, size_t kSize>
 bool IsInCategory(const T (&table)[kSize], UChar32 character) {
-  return std::binary_search(table, UNSAFE_TODO(table + std::size(table)),
-                            character);
+  return std::ranges::binary_search(table, character);
 }
 
 String FromUChar32(UChar32 c) {
   StringBuilder input;
   input.Append(c);
-  return input.ToString();
+  return input.ReleaseString();
 }
 
 TEST(MathOperatorDictionaryTest, Infix) {
@@ -156,22 +157,22 @@ TEST(MathOperatorDictionaryTest, Infix) {
     s.Ensure16Bit();
     if (ch >= uchar::kCombiningMinusSignBelow &&
         ch <= uchar::kGreekCapitalReversedDottedLunateSigmaSymbol) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kInfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kInfix) ==
                   MathMLOperatorDictionaryCategory::kNone);
     } else if (IsInCategory(category_a, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kInfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kInfix) ==
                   MathMLOperatorDictionaryCategory::kA);
     } else if (IsInCategory(category_b, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kInfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kInfix) ==
                   MathMLOperatorDictionaryCategory::kB);
     } else if (IsInCategory(category_c, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kInfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kInfix) ==
                   MathMLOperatorDictionaryCategory::kC);
     } else if (IsInCategory(category_k, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kInfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kInfix) ==
                   MathMLOperatorDictionaryCategory::kDorEorK);
     } else if (IsInCategory(category_m, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kInfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kInfix) ==
                   MathMLOperatorDictionaryCategory::kM);
     }
   }
@@ -183,25 +184,25 @@ TEST(MathOperatorDictionaryTest, Prefix) {
     s.Ensure16Bit();
     if (ch >= uchar::kCombiningMinusSignBelow &&
         ch <= uchar::kGreekCapitalReversedDottedLunateSigmaSymbol) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPrefix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPrefix) ==
                   MathMLOperatorDictionaryCategory::kNone);
     } else if (IsInCategory(category_d, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPrefix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPrefix) ==
                   MathMLOperatorDictionaryCategory::kDorEorK);
     } else if (IsInCategory(category_f, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPrefix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPrefix) ==
                   MathMLOperatorDictionaryCategory::kForG);
     } else if (IsInCategory(category_h, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPrefix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPrefix) ==
                   MathMLOperatorDictionaryCategory::kH);
     } else if (IsInCategory(category_j, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPrefix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPrefix) ==
                   MathMLOperatorDictionaryCategory::kJ);
     } else if (IsInCategory(category_l, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPrefix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPrefix) ==
                   MathMLOperatorDictionaryCategory::kL);
     } else {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPrefix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPrefix) ==
                   MathMLOperatorDictionaryCategory::kNone);
     }
   }
@@ -213,23 +214,23 @@ TEST(MathOperatorDictionaryTest, Postfix) {
     s.Ensure16Bit();
     if (ch >= uchar::kCombiningMinusSignBelow &&
         ch <= uchar::kGreekCapitalReversedDottedLunateSigmaSymbol) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPostfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPostfix) ==
                   MathMLOperatorDictionaryCategory::kNone);
     } else if (ch == uchar::kArabicMathematicalOperatorMeemWithHahWithTatweel ||
                ch == uchar::kArabicMathematicalOperatorHahWithDal) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPostfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPostfix) ==
                   MathMLOperatorDictionaryCategory::kI);
     } else if (IsInCategory(category_e, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPostfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPostfix) ==
                   MathMLOperatorDictionaryCategory::kDorEorK);
     } else if (IsInCategory(category_g, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPostfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPostfix) ==
                   MathMLOperatorDictionaryCategory::kForG);
     } else if (IsInCategory(category_i, ch)) {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPostfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPostfix) ==
                   MathMLOperatorDictionaryCategory::kI);
     } else {
-      EXPECT_TRUE(FindCategory(s, MathMLOperatorDictionaryForm::kPostfix) ==
+      EXPECT_TRUE(FindCategory(s, MathMlOperatorDictionaryForm::kPostfix) ==
                   MathMLOperatorDictionaryCategory::kNone);
     }
   }

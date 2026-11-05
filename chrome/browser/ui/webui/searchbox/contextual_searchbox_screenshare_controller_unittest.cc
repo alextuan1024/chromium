@@ -694,13 +694,45 @@ TEST_F(ContextualSearchboxScreenshareControllerTest,
   EXPECT_FALSE(future.Get().has_value());
 }
 
+#if BUILDFLAG(IS_WIN)
+TEST_F(ContextualSearchboxScreenshareControllerTest,
+       CaptureRegionScreenshot_NoPickerDelayOnWindows) {
+  // Restore production delay behavior (no testing override).
+  controller().set_screen_capture_delay_for_testing(std::nullopt);
+
+  const base::TimeTicks start_time = base::TimeTicks::Now();
+  bool overlay_shown = false;
+  EXPECT_CALL(delegate(), ShowRegionSelectOverlay)
+      .WillOnce([&](const SkBitmap& screenshot,
+                    const ContextualSearchboxScreenshareController::
+                        RegionCaptureSource& source,
+                    ContextualSearchboxScreenshareController::Delegate::
+                        RegionSelectedCallback callback) {
+        overlay_shown = true;
+        std::move(callback).Run(SkBitmap());
+      });
+
+  content::desktop_capture::ScopedDesktopCapturerForTesting scoped_capturer(
+      std::make_unique<FakeDesktopCapturer>(webrtc::DesktopSize(1000, 800)));
+
+  base::test::TestFuture<const std::optional<base::UnguessableToken>&> future;
+  controller().CaptureRegionScreenshot(future.GetCallback());
+
+  EXPECT_FALSE(future.Get().has_value());
+  EXPECT_TRUE(overlay_shown);
+  // Under TimeSource::MOCK_TIME, `future.Get()` only advances mock time if a
+  // delayed task was posted. Verify that no 500ms picker close delay elapsed.
+  EXPECT_EQ(base::TimeTicks::Now() - start_time, base::TimeDelta());
+}
+#endif
+
 #if BUILDFLAG(IS_MAC)
 using content::desktop_capture::ScopedNativePickerForTesting;
 
 TEST_F(ContextualSearchboxScreenshareControllerTest,
        StartScreenshare_NativePicker_Success) {
-  if (base::mac::MacOSMajorVersion() < 14) {
-    GTEST_SKIP() << "Native picker only supported on macOS 14+";
+  if (base::mac::MacOSVersion() < 26'04'00) {
+    GTEST_SKIP() << "Native picker only enabled on macOS 26.4+";
   }
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -710,7 +742,10 @@ TEST_F(ContextualSearchboxScreenshareControllerTest,
       /*disabled_features=*/{});
   SetupScreenshotUploadConfig();
 
-  EXPECT_CALL(delegate(), OnScreensharePickerOpened());
+  bool picker_opened_synchronously = false;
+  EXPECT_CALL(delegate(), OnScreensharePickerOpened()).WillOnce([&]() {
+    picker_opened_synchronously = true;
+  });
   EXPECT_CALL(delegate(), OnScreensharePickerClosed());
 
   content::desktop_capture::ScopedDesktopCapturerForTesting scoped_capturer(
@@ -745,6 +780,8 @@ TEST_F(ContextualSearchboxScreenshareControllerTest,
   base::test::TestFuture<const std::optional<base::UnguessableToken>&> future;
   controller().StartScreenshare(/*prefer_entire_screen=*/false,
                                 future.GetCallback());
+  EXPECT_TRUE(picker_opened_synchronously);
+  EXPECT_TRUE(controller().IsScreenshareInProgressForTesting());
 
   EXPECT_TRUE(future.Get().has_value());
   EXPECT_EQ(*future.Get(), expected_token);
@@ -752,8 +789,8 @@ TEST_F(ContextualSearchboxScreenshareControllerTest,
 
 TEST_F(ContextualSearchboxScreenshareControllerTest,
        StartScreenshare_NativePicker_Cancelled) {
-  if (base::mac::MacOSMajorVersion() < 14) {
-    GTEST_SKIP() << "Native picker only supported on macOS 14+";
+  if (base::mac::MacOSVersion() < 26'04'00) {
+    GTEST_SKIP() << "Native picker only enabled on macOS 26.4+";
   }
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -777,8 +814,8 @@ TEST_F(ContextualSearchboxScreenshareControllerTest,
 
 TEST_F(ContextualSearchboxScreenshareControllerTest,
        StartScreenshare_NativePicker_Error_FallsBackToDefaultPicker) {
-  if (base::mac::MacOSMajorVersion() < 14) {
-    GTEST_SKIP() << "Native picker only supported on macOS 14+";
+  if (base::mac::MacOSVersion() < 26'04'00) {
+    GTEST_SKIP() << "Native picker only enabled on macOS 26.4+";
   }
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -873,9 +910,9 @@ TEST_F(ContextualSearchboxScreenshareControllerTest,
 
 TEST_F(ContextualSearchboxScreenshareControllerTest,
        CaptureRegionScreenshot_NativePicker_Success) {
-  if (base::mac::MacOSMajorVersion() < 14) {
+  if (base::mac::MacOSVersion() < 26'04'00) {
     GTEST_SKIP()
-        << "Native picker for region capture only supported on macOS 14+";
+        << "Native picker for region capture only enabled on macOS 26.4+";
   }
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -934,9 +971,9 @@ TEST_F(ContextualSearchboxScreenshareControllerTest,
 
 TEST_F(ContextualSearchboxScreenshareControllerTest,
        CaptureRegionScreenshot_NativePicker_Cancelled) {
-  if (base::mac::MacOSMajorVersion() < 14) {
+  if (base::mac::MacOSVersion() < 26'04'00) {
     GTEST_SKIP()
-        << "Native picker for region capture only supported on macOS 14+";
+        << "Native picker for region capture only enabled on macOS 26.4+";
   }
 
   base::test::ScopedFeatureList scoped_feature_list;

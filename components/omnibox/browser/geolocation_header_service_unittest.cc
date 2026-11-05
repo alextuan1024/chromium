@@ -64,7 +64,6 @@ class GeolocationHeaderServiceTest : public testing::Test {
   GeolocationHeaderServiceTest() {
     scoped_feature_list_.InitWithFeatures(
         {omnibox::kPlatformAgnosticXGeo,
-         omnibox::kOmniboxXGeoPermissionGranularity,
          content_settings::features::kApproximateGeolocationPermission},
         {});
   }
@@ -698,9 +697,7 @@ class GeolocationHeaderServiceInlineLocationTest
  public:
   GeolocationHeaderServiceInlineLocationTest() {
     feature_list_.InitWithFeatures(
-        {omnibox::kPlatformAgnosticXGeo,
-         omnibox::kOmniboxXGeoPermissionGranularity,
-         omnibox::kInlineLocationSignaling,
+        {omnibox::kPlatformAgnosticXGeo, omnibox::kInlineLocationSignaling,
          content_settings::features::kApproximateGeolocationPermission},
         {});
   }
@@ -729,14 +726,11 @@ TEST_F(GeolocationHeaderServiceInlineLocationTest, PrimeLocationCacheOnly) {
 
   service->PrimeLocation();
 
-  // Wait for the call to complete (connection reset). If a non-cached location
-  // was used, it would stay bound waiting for an update.
+  // Wait for the cache query and its callback to complete.
   EXPECT_TRUE(base::test::RunUntil([&]() {
     return !GeolocationHeaderServiceTestApi(service.get())
                 .is_geolocation_bound();
   }));
-
-  EXPECT_EQ(geolocation_overrider_.GetQueryCachedPositionCount(), 1u);
   EXPECT_EQ(geolocation_overrider_.GetQueryNextPositionCount(), 0u);
   EXPECT_FALSE(service->HasCachedLocation());
 }
@@ -772,7 +766,6 @@ TEST_F(GeolocationHeaderServiceInlineLocationTest, PrimeLocationStandard) {
                 .is_geolocation_bound();
   }));
 
-  EXPECT_EQ(geolocation_overrider_.GetQueryCachedPositionCount(), 0u);
   EXPECT_EQ(geolocation_overrider_.GetQueryNextPositionCount(), 1u);
   EXPECT_TRUE(service->HasCachedLocation());
 }
@@ -798,7 +791,6 @@ TEST_F(GeolocationHeaderServiceTest, PrimeLocationFlagDisabled) {
 
   // Since the flag was disabled and DSE not allowed, it should have aborted
   // early.
-  EXPECT_EQ(geolocation_overrider_.GetQueryCachedPositionCount(), 0u);
   EXPECT_EQ(geolocation_overrider_.GetQueryNextPositionCount(), 0u);
   EXPECT_FALSE(service->HasCachedLocation());
   EXPECT_FALSE(
@@ -1102,7 +1094,7 @@ TEST_F(GeolocationHeaderServiceInlineLocationTest,
 
   // Normal non-inline location suggestion match -> should not log.
   AutocompleteMatch match(nullptr, 0, false,
-                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   service->MaybeRecordInlineLocationSuggestionClicked(match);
   histograms.ExpectTotalCount("Omnibox.InlineLocationSuggestion.Ask.Clicked",
                               0);
@@ -1110,8 +1102,8 @@ TEST_F(GeolocationHeaderServiceInlineLocationTest,
       "Omnibox.InlineLocationSuggestion.Ask.ParentClicked", 0);
 
   // Clicked inline location suggestion match.
-  AutocompleteMatch inline_match(nullptr, 0, false,
-                                 AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+  AutocompleteMatch inline_match(
+      nullptr, 0, false, omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   inline_match.subtypes.insert(omnibox::SUBTYPE_LOCATION_SUGGEST_TRIGGER);
   inline_match.extra_headers[kXGeoHeader] = "dummy";
   service->MaybeRecordInlineLocationSuggestionClicked(inline_match);
@@ -1121,8 +1113,8 @@ TEST_F(GeolocationHeaderServiceInlineLocationTest,
       "Omnibox.InlineLocationSuggestion.Ask.ParentClicked", 0);
 
   // Parent clicked inline location suggestion match.
-  AutocompleteMatch parent_match(nullptr, 0, false,
-                                 AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+  AutocompleteMatch parent_match(
+      nullptr, 0, false, omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   parent_match.subtypes.insert(omnibox::SUBTYPE_LOCATION_SUGGEST_TRIGGER);
   service->MaybeRecordInlineLocationSuggestionClicked(parent_match);
   histograms.ExpectUniqueSample("Omnibox.InlineLocationSuggestion.Ask.Clicked",
@@ -1143,8 +1135,8 @@ TEST_F(GeolocationHeaderServiceInlineLocationTest,
   base::HistogramTester histograms;
 
   // Clicked inline location suggestion match.
-  AutocompleteMatch inline_match(nullptr, 0, false,
-                                 AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+  AutocompleteMatch inline_match(
+      nullptr, 0, false, omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   inline_match.subtypes.insert(omnibox::SUBTYPE_LOCATION_SUGGEST_TRIGGER);
   inline_match.extra_headers[kXGeoHeader] = "dummy";
   service->MaybeRecordInlineLocationSuggestionClicked(inline_match);
@@ -1154,8 +1146,8 @@ TEST_F(GeolocationHeaderServiceInlineLocationTest,
       "Omnibox.InlineLocationSuggestion.Deny.ParentClicked", 0);
 
   // Parent clicked inline location suggestion match.
-  AutocompleteMatch parent_match(nullptr, 0, false,
-                                 AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+  AutocompleteMatch parent_match(
+      nullptr, 0, false, omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   parent_match.subtypes.insert(omnibox::SUBTYPE_LOCATION_SUGGEST_TRIGGER);
   service->MaybeRecordInlineLocationSuggestionClicked(parent_match);
   histograms.ExpectUniqueSample("Omnibox.InlineLocationSuggestion.Deny.Clicked",
@@ -1175,14 +1167,14 @@ TEST_F(GeolocationHeaderServiceInlineLocationTest,
 
   base::HistogramTester histograms;
 
-  AutocompleteMatch inline_match(nullptr, 0, false,
-                                 AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+  AutocompleteMatch inline_match(
+      nullptr, 0, false, omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   inline_match.subtypes.insert(omnibox::SUBTYPE_LOCATION_SUGGEST_TRIGGER);
   inline_match.extra_headers[kXGeoHeader] = "dummy";
   service->MaybeRecordInlineLocationSuggestionClicked(inline_match);
 
-  AutocompleteMatch parent_match(nullptr, 0, false,
-                                 AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+  AutocompleteMatch parent_match(
+      nullptr, 0, false, omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   parent_match.subtypes.insert(omnibox::SUBTYPE_LOCATION_SUGGEST_TRIGGER);
   service->MaybeRecordInlineLocationSuggestionClicked(parent_match);
 
@@ -1286,12 +1278,43 @@ TEST_F(GeolocationHeaderServiceInlineLocationTest, PrimeLocationTelemetryIlls) {
       "Omnibox.GeolocationHeaderService.PrimeLocationOutcome",
       7 /* kTriedQueryCachedPosition */, 1);
 
-  // Run pending tasks to ensure background Geolocation service connections are
-  // torn down.
-  // RunUntilIdle is never good, use a different approach, wait for some
-  // specific event.
+  // Wait for the cache query and its callback to complete.
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return !GeolocationHeaderServiceTestApi(service.get())
                 .is_geolocation_bound();
   }));
+}
+
+TEST_F(GeolocationHeaderServiceInlineLocationTest,
+       PrimeLocationCacheOnlyFreshLocation) {
+  std::unique_ptr<GeolocationHeaderService> service = CreateService();
+
+  // Setup DSE but without permissions (ASK)
+  SetDefaultSearchProviderUrl(kGoogleUrl);
+  SetSitePermissionWithOptions(
+      GURL(kGoogleUrl), {PermissionOption::kAsk, PermissionOption::kAsk});
+
+  // Inject a fresh precise cached location directly into the service's state.
+  auto position = device::mojom::Geoposition::New();
+  position->latitude = 12.3;
+  position->longitude = 45.6;
+  position->accuracy = 78.9;
+  position->timestamp = base::Time::Now();
+  position->is_precise = true;
+  GeolocationHeaderServiceTestApi(service.get())
+      .SetLocation(std::move(position));
+  GeolocationHeaderServiceTestApi(service.get())
+      .SetLocationAge(base::Minutes(1));
+
+  base::HistogramTester histogram_tester;
+
+  service->PrimeLocation();
+
+  // Since it's fresh and use_cache_only is true, it should return early
+  // without triggering a new query.
+  histogram_tester.ExpectUniqueSample(
+      "Omnibox.GeolocationHeaderService.PrimeLocationOutcome",
+      5 /* kNotTriedCachedLocationFresh */, 1);
+
+  EXPECT_EQ(geolocation_overrider_.GetQueryNextPositionCount(), 0u);
 }

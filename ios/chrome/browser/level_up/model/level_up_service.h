@@ -9,8 +9,10 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/observer_list.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -21,6 +23,7 @@ class BrowserList;
 class IOSChromePasswordCheckManager;
 class PrefService;
 class SessionRestorationService;
+class LevelUpServiceObserver;
 
 // Service that manages the "Level Up" feature, tracking user progress and
 // stats. It also holds the definitions of all tasks.
@@ -42,12 +45,15 @@ class LevelUpService : public KeyedService {
   // Enables or disables the feature UI.
   void SetUIEnabled(bool ui_enabled);
 
-  // Returns the current level of the user.
+  // Returns the user's current level, which is the higher of the stored
+  // highest-level pref and the level calculated from completed task that are
+  // available on this device.
   int GetCurrentLevel() const;
 
-  // Returns the number of tasks remaining to reach the next level, or 0 if
-  // the max level is reached.
-  int GetTasksRemainingForNextLevel() const;
+  // Returns a pair of (the number of tasks remaining to reach the next level,
+  // total number of tasks required for the next level), or (0,0) if the max
+  // level is reached.
+  std::pair<int, int> GetTasksRemainingForNextLevel() const;
 
   // Marks a task as completed.
   void MarkTaskCompleted(TaskType task_type);
@@ -63,6 +69,10 @@ class LevelUpService : public KeyedService {
 
   // Returns the current count/value for the given stat type.
   int GetStatValue(LevelUpTaskStatType stat_type) const;
+
+  // Returns all stat types ordered by the completion recency of their
+  // associated task (most recent first).
+  std::vector<LevelUpTaskStatType> GetOrderedStatTypes() const;
 
   // Increments the stat type by `delta`.
   void IncrementStatValue(LevelUpTaskStatType stat_type, int delta = 1);
@@ -84,20 +94,29 @@ class LevelUpService : public KeyedService {
   // Registers profile preferences.
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
+  // Adds/Removes LevelUpServiceObserver observers.
+  void AddObserver(LevelUpServiceObserver* observer);
+  void RemoveObserver(LevelUpServiceObserver* observer);
+
  private:
   class LevelUpPasswordCheckObserver;
   class LevelUpTabGroupObserver;
 
+  // Notifies observers of the level up level and pref changes.
+  void NotifyObserversOfTaskComplete();
+
+  // Notifies observers of stat value changes.
+  void NotifyObserversOfStatUpdate();
+
   // Populates the map of available tasks.
   void PopulateTasks();
 
-  // Loads saved completed tasks and UI state from preferences.
-  void LoadPrefs();
+  // Returns the list of completed task as strings from preferences in the
+  // order they were completed.
+  std::vector<std::string> GetCompletedTasks() const;
 
-  // Recalculates the user's level based on completed tasks, enforcing
-  // monotonicity, and updates the saved highest level preference if the level
-  // increases.
-  void UpdateLevelAndPref();
+  // Updates the kLevelUpHighestLevel when level has changed locally.
+  void UpdateHighestLevelPref();
 
   // Returns the additional completed tasks required to reach the given level
   // from the previous level.
@@ -111,8 +130,18 @@ class LevelUpService : public KeyedService {
   // Declared const since it does not modify any service state.
   int CalculateLevel(size_t completed_count) const;
 
-  // Called when the `kLevelUpUIEnabled` preference changes.
-  void OnUIEnabledPrefChanged();
+  // Returns the number of completed tasks that are available on this device.
+  size_t GetAvailableCompletedTaskCount() const;
+
+  // Called when the `kLevelUpOptIn` preference changes.
+  void OnOptInPrefChanged();
+
+  // Called when `kLevelUpCompletedTasks` or `kLevelUpHighestLevel` preferences
+  // changes.
+  void OnCompletedTasksAndHighestLevelPrefsChanged();
+
+  // Called when any Level Up stat preference changes.
+  void OnStatsPrefsChanged();
 
   raw_ptr<PrefService> pref_service_ = nullptr;
   PrefChangeRegistrar pref_change_registrar_;
@@ -120,12 +149,7 @@ class LevelUpService : public KeyedService {
   std::unique_ptr<LevelUpTabGroupObserver> tab_group_observer_;
   std::map<TaskType, std::unique_ptr<TaskInfo>> tasks_;
   std::map<std::string, LevelUpTaskStatType> stat_trigger_user_actions_;
-  // List of completed task identifiers in the order they were completed.
-  // Stored as strings rather than TaskType enums to support storing unknown
-  // tasks received via sync from newer versions of the app.
-  std::vector<std::string> completed_tasks_;
-  int current_level_ = 1;
-  bool is_ui_enabled_ = false;
+  base::ObserverList<LevelUpServiceObserver> observers_;
 };
 
 #endif  // IOS_CHROME_BROWSER_LEVEL_UP_MODEL_LEVEL_UP_SERVICE_H_

@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_video_frame.h"
 
-#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <utility>
@@ -868,7 +867,7 @@ TEST_F(RTCEncodedVideoFrameTest, ReadingDataOnEmptyFrameGivesDetachedFrame) {
   encoded_frame->PassWebRtcFrame(v8_scope.GetIsolate(),
                                  /*detach_frame_data=*/false);
 
-  DOMArrayBuffer* data = encoded_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* data = encoded_frame->data();
   EXPECT_NE(data, nullptr);
   EXPECT_TRUE(data->IsDetached());
 }
@@ -907,7 +906,7 @@ TEST_F(RTCEncodedVideoFrameTest, PassWebRTCDetachesFrameData) {
   RTCEncodedVideoFrame* encoded_frame =
       MakeGarbageCollected<RTCEncodedVideoFrame>(std::move(frame));
 
-  DOMArrayBuffer* data = encoded_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* data = encoded_frame->data();
   encoded_frame->PassWebRtcFrame(v8_scope.GetIsolate(),
                                  /*detach_frame_data=*/true);
   EXPECT_NE(data, nullptr);
@@ -992,7 +991,7 @@ TEST_F(RTCEncodedVideoFrameTest, ConstructorFromInitDictionary) {
   // for RtpTimestamp.
   EXPECT_EQ(new_frame->timestamp(), 0u);
 
-  DOMArrayBuffer* frame_data = new_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* frame_data = new_frame->data();
   ASSERT_NE(frame_data, nullptr);
   EXPECT_EQ(frame_data->ByteLength(), 10u);
 
@@ -1049,7 +1048,7 @@ TEST_F(RTCEncodedVideoFrameTest,
             V8RTCEncodedVideoFrameType::Enum::kDelta);
   EXPECT_EQ(new_frame->timestamp(), 0u);
 
-  DOMArrayBuffer* frame_data = new_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* frame_data = new_frame->data();
   ASSERT_NE(frame_data, nullptr);
   EXPECT_EQ(frame_data->ByteLength(), 5u);
 

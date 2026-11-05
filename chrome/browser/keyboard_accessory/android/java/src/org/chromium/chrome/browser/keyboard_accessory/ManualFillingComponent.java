@@ -21,6 +21,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.components.autofill.AutofillDelegate;
 import org.chromium.components.autofill.AutofillSuggestion;
+import org.chromium.components.autofill.autofill_ai.AutofillAiSourceAttributionInfo;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.content_public.browser.WebContents;
@@ -84,7 +85,7 @@ public interface ManualFillingComponent extends BackPressHandler {
          * @return The soft keyboard size in pixels.
          */
         @Px
-        int calculateSoftKeyboardHeight(View rootView);
+        int calculateSoftKeyboardHeight(@Nullable View rootView);
     }
 
     /** A delegate that can be used to request updates for accessory sheets. */
@@ -148,7 +149,7 @@ public interface ManualFillingComponent extends BackPressHandler {
     void registerSheetDataProvider(
             WebContents webContents,
             @AccessoryTabType int sheetType,
-            Provider<KeyboardAccessoryData.AccessorySheetData> sheetDataProvider);
+            Provider<KeyboardAccessoryData.@Nullable AccessorySheetData> sheetDataProvider);
 
     /**
      * Registers an updater delegate which requests new accessory sheets for a given `webContents`.
@@ -194,13 +195,19 @@ public interface ManualFillingComponent extends BackPressHandler {
     void setSelectedSuggestion(@Nullable Integer suggestionIndex);
 
     /**
-     * Navigates to the next or previous suggestion in the accessory bar.
+     * Performs a keyboard navigation action in the accessory bar.
      *
-     * @param direction The {@link NavigationDirection} indicating whether to navigate forward or
-     *     backward.
-     * @return True if a suggestion was selected, false otherwise.
+     * @param action The {@link NavigationAction} to perform.
+     * @return Whether the action was handled, i.e. whether the key event should be consumed.
      */
-    boolean navigateSuggestions(@NavigationDirection int direction);
+    boolean navigate(@NavigationAction int action);
+
+    /**
+     * Clicks the keyboard-selected manual fallback icon.
+     *
+     * @return Whether a manual fallback icon was selected.
+     */
+    boolean acceptFallback();
 
     /**
      * Signals that the accessory has permission to show.
@@ -208,12 +215,13 @@ public interface ManualFillingComponent extends BackPressHandler {
      * @param waitForKeyboard signals if the keyboard is requested.
      * @param shouldShowOnLargeFormFactor signals if the accessory should be shown on Large Form
      *     Factors.
-     * @param isContentEditable signals if the currently focused field is a contenteditable element.
+     * @param isUnstructuredField signals if the currently focused field is an unstructured field
+     *     (contenteditable or textarea) that only supports AtMemory.
      */
     void show(
             boolean waitForKeyboard,
             boolean shouldShowOnLargeFormFactor,
-            boolean isContentEditable);
+            boolean isUnstructuredField);
 
     /**
      * Requests to close the active tab in the keyboard accessory. If there is no active tab, this
@@ -305,6 +313,7 @@ public interface ManualFillingComponent extends BackPressHandler {
             String body,
             String confirmButtonText,
             String primaryButtonText,
+            List<AutofillAiSourceAttributionInfo> sources,
             Runnable confirmedCallback,
             Runnable declinedCallback);
 

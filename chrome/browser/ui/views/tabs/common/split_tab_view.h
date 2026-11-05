@@ -6,9 +6,12 @@
 #define CHROME_BROWSER_UI_VIEWS_TABS_COMMON_SPLIT_TAB_VIEW_H_
 
 #include "base/callback_list.h"
+#include "base/functional/function_ref.h"
 #include "base/memory/raw_ptr.h"
+#include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/views/frame/browser_root_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_z_order_manager.h"
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/layout/delegating_layout_manager.h"
 #include "ui/views/view.h"
@@ -51,8 +54,14 @@ class SplitTabView : public TabCollectionZOrderManager,
       const views::SizeBounds& size_bounds) const override;
   gfx::Size GetMinimumSize() const override;
 
+  int GetCrossoverWidth() const;
+
   std::optional<BrowserRootView::DropIndex> GetLinkDropIndex(
       const gfx::Point& loc_in_view);
+
+  void ShowHover(TabStyle::ShowHoverStyle style);
+  void HideHover(TabStyle::HideHoverStyle style);
+  bool IsHovering() const { return hovered_; }
 
   // Used by children to sync their animation values with the parent.
   double GetHoverAnimationValue() const;
@@ -68,6 +77,8 @@ class SplitTabView : public TabCollectionZOrderManager,
   void UpdateBorder();
   void UpdateHovered(bool hovered);
 
+  int ComputeHorizontalWidth(
+      base::FunctionRef<int(const views::View*)> get_child_width) const;
   views::ProposedLayout CalculateHorizontalLayout(
       const views::SizeBounds& size_bounds) const;
   views::ProposedLayout CalculateVerticalLayout(
@@ -81,6 +92,7 @@ class SplitTabView : public TabCollectionZOrderManager,
   std::unique_ptr<views::View> RemoveChildViewForReparenting(
       views::View* child_view);
 
+  const TabStripOrientation orientation_;
   raw_ptr<TabCollectionNode> collection_node_ = nullptr;
   bool hovered_ = false;
   bool pinned_ = false;

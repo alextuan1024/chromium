@@ -128,12 +128,15 @@ class MEDIA_EXPORT VideoEncodeAcceleratorAdapter
   void ChangeOptionsOnAcceleratorThread(const Options options,
                                         OutputCB output_cb,
                                         EncoderStatusCB done_cb);
+  // Sends the rates in `options_` to the accelerator if ChangeOptions() updated
+  // them while the accelerator was initializing or reconfiguring.
+  void ApplyPendingRatesChange();
 
   template <class T>
   T WrapCallback(T cb);
-  EncoderStatus::Or<scoped_refptr<VideoFrame>> PrepareGpuFrame(
+  base::expected<scoped_refptr<VideoFrame>, EncoderStatus> PrepareGpuFrame(
       scoped_refptr<VideoFrame> src_frame);
-  EncoderStatus::Or<scoped_refptr<VideoFrame>> PrepareCpuFrame(
+  base::expected<scoped_refptr<VideoFrame>, EncoderStatus> PrepareCpuFrame(
       scoped_refptr<VideoFrame> src_frame);
 
   scoped_refptr<ReadOnlyRegionPool> input_pool_;
@@ -198,6 +201,11 @@ class MEDIA_EXPORT VideoEncodeAcceleratorAdapter
   EncoderInfoCB info_cb_;
   OutputCB output_cb_;
   EncoderStatusCB reconfigure_cb_;
+
+  // True if ChangeOptions() updated the rates while the accelerator was
+  // initializing or reconfiguring. The new rates are already in `options_`.
+  bool pending_rates_change_ GUARDED_BY_CONTEXT(accelerator_sequence_checker_) =
+      false;
 
   gfx::Size input_coded_size_;
 

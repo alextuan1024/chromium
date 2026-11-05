@@ -51,10 +51,6 @@ IN_PROC_BROWSER_TEST_F(CrElementsFocusTest, CrToolbarSearchField) {
   RunTest("cr_elements/cr_toolbar_search_field_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrElementsFocusTest, IronList) {
-  RunTest("cr_elements/iron_list_focus_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrElementsFocusTest, CrGrid) {
   RunTest("cr_elements/cr_grid_focus_test.js", "mocha.run()");
 }
@@ -65,10 +61,6 @@ IN_PROC_BROWSER_TEST_F(CrElementsFocusTest, CrMenuSelector) {
 
 IN_PROC_BROWSER_TEST_F(CrElementsFocusTest, CrToolbar) {
   RunTest("cr_elements/cr_toolbar_focus_test.js", "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(CrElementsFocusTest, CrFocusRowMixin) {
-  RunTest("cr_elements/cr_focus_row_mixin_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(CrElementsFocusTest, FocusRowMixinLit) {

@@ -170,6 +170,7 @@ aggregate_vector_icons("ash_vector_icons") {
     "hotspot_off.icon",
     "hotspot_on.icon",
     "hotspot_one_arc.icon",
+    "hover_text.icon",
     "ime_menu_emoticon.icon",
     "ime_menu_microphone.icon",
     "ime_menu_on_screen_keyboard.icon",
@@ -611,9 +612,8 @@ component("vector_icons") {
   sources = get_target_outputs(":ash_vector_icons")
 
   defines = [ "ASH_IMPLEMENTATION" ]
-
+  public_deps = [ ":ash_vector_icons" ]
   deps = [
-    ":ash_vector_icons",
     "//base",
     "//skia",
     "//ui/gfx",

@@ -16,11 +16,9 @@
 #include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/containers/enum_set.h"
-#include "base/containers/extend.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/map_util.h"
-#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -34,8 +32,8 @@
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/web_applications/commands/manifest_silent_update_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/link_capturing_features.h"
+#include "chrome/browser/web_applications/model/management_data.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
@@ -56,8 +54,6 @@
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/chrome_features.h"
 #include "components/webapps/common/web_app_id.h"
-#include "content/public/browser/isolated_web_apps_policy.h"
-#include "content/public/browser/storage_partition_config.h"
 #include "content/public/common/content_features.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/blink/public/common/features.h"
@@ -262,11 +258,6 @@ bool WebAppRegistrar::IsSupportedDisplayModeForNavigationCapture(
   }
 }
 
-FindBestAppInScopeOptions::FindBestAppInScopeOptions(WebAppFilter filter)
-    : filter(std::move(filter)) {}
-
-FindBestAppInScopeOptions::~FindBestAppInScopeOptions() = default;
-
 WebAppRegistrar::WebAppRegistrar(Profile* profile) : profile_(profile) {}
 
 WebAppRegistrar::~WebAppRegistrar() {
@@ -282,19 +273,7 @@ bool WebAppRegistrar::IsPlaceholderApp(
   if (!web_app) {
     return false;
   }
-
-  const WebApp::ExternalConfigMap& config_map =
-      web_app->management_to_external_config_map();
-  auto it = config_map.find(source_type);
-
-  if (it == config_map.end()) {
-    return false;
-  }
-  // Only kiosk and policy sources currently have placeholder apps.
-  CHECK(!it->second.is_placeholder ||
-        (source_type == WebAppManagement::kPolicy ||
-         source_type == WebAppManagement::kKiosk));
-  return it->second.is_placeholder;
+  return web_app->management_data().IsPlaceholder(source_type);
 }
 
 // TODO(crbug.com/40264854): Revert changes back to old code
@@ -304,16 +283,10 @@ std::optional<webapps::AppId> WebAppRegistrar::LookupPlaceholderAppId(
     const GURL& install_url,
     const WebAppManagement::Type source_type) const {
   for (const WebApp& web_app : GetApps()) {
-    const WebApp::ExternalConfigMap& config_map =
-        web_app.management_to_external_config_map();
-    auto it = config_map.find(source_type);
-
-    if (it == config_map.end()) {
-      continue;
-    }
-
-    if (it->second.install_urls.contains(install_url) &&
-        it->second.is_placeholder) {
+    if (web_app.management_data().IsPlaceholder(source_type) &&
+        web_app.management_data()
+            .GetInstallUrls(source_type)
+            .contains(install_url)) {
       return web_app.app_id();
     }
   }
@@ -477,11 +450,10 @@ WebAppRegistrar::GetExternallyInstalledApps(
   WebAppManagement::Type management_source =
       ConvertExternalInstallSourceToSource(install_source);
   for (const WebApp& web_app : GetApps()) {
-    const WebApp::ExternalConfigMap& config_map =
-        web_app.management_to_external_config_map();
-    auto it = config_map.find(management_source);
-    if (it != config_map.end() && !it->second.install_urls.empty()) {
-      installed_apps[web_app.app_id()] = it->second.install_urls;
+    const base::flat_set<GURL>& install_urls =
+        web_app.management_data().GetInstallUrls(management_source);
+    if (!install_urls.empty()) {
+      installed_apps[web_app.app_id()] = install_urls;
     }
   }
   return installed_apps;
@@ -509,7 +481,7 @@ bool WebAppRegistrar::HasExternalAppWithInstallSource(
   }
 
   const WebApp* web_app = GetAppById(app_id);
-  return web_app && web_app->management_to_external_config_map().contains(
+  return web_app && web_app->management_data().HasSource(
                         ConvertExternalInstallSourceToSource(install_source));
 }
 
@@ -844,15 +816,6 @@ std::vector<webapps::AppId> WebAppRegistrar::GetAppsPendingUninstall() const {
   return app_ids;
 }
 
-bool WebAppRegistrar::AppsExistWithExternalConfigData() const {
-  for (const WebApp& web_app : GetApps()) {
-    if (web_app.management_to_external_config_map().size() > 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
 void WebAppRegistrar::SetProvider(base::PassKey<WebAppProvider>,
                                   WebAppProvider& provider) {
   provider_ = &provider;
@@ -916,10 +879,8 @@ base::WeakPtr<WebAppRegistrar> WebAppRegistrar::AsWeakPtr() {
 std::optional<webapps::AppId> WebAppRegistrar::LookUpAppIdByInstallUrl(
     const GURL& install_url) const {
   for (const WebApp& web_app : GetApps()) {
-    for (const auto& it : web_app.management_to_external_config_map()) {
-      if (it.second.install_urls.contains(install_url)) {
-        return web_app.app_id();
-      }
+    if (web_app.management_data().HasInstallUrl(install_url)) {
+      return web_app.app_id();
     }
   }
   return std::nullopt;
@@ -929,13 +890,10 @@ const WebApp* WebAppRegistrar::LookUpAppByInstallSourceInstallUrl(
     WebAppManagement::Type install_source,
     const GURL& install_url) const {
   for (const WebApp& app : GetApps()) {
-    const WebApp::ExternalConfigMap& config_map =
-        app.management_to_external_config_map();
-    auto it = config_map.find(install_source);
-    if (it != config_map.end()) {
-      if (it->second.install_urls.contains(install_url)) {
-        return &app;
-      }
+    if (app.management_data()
+            .GetInstallUrls(install_source)
+            .contains(install_url)) {
+      return &app;
     }
   }
   return nullptr;
@@ -1019,6 +977,9 @@ bool WebAppRegistrar::AppMatches(const webapps::AppId& app_id,
               case WebAppFilter::SimpleCondition::kIsolatedSubApp:
                 return app.parent_app_id() &&
                        IsIsolatedApp(*app.parent_app_id());
+              case WebAppFilter::SimpleCondition::kIsolatedSubAppDevMode:
+                return app.parent_app_id() &&
+                       IsIsolatedAppInDevMode(*app.parent_app_id());
               case WebAppFilter::SimpleCondition::kOpensInDedicatedWindow: {
                 DisplayMode display_mode = GetAppEffectiveDisplayMode(app_id);
                 return display_mode != DisplayMode::kBrowser &&
@@ -1048,14 +1009,6 @@ bool WebAppRegistrar::AppMatches(const webapps::AppId& app_id,
 std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
     const GURL& url,
     const WebAppFilter& filter,
-    WebAppScopeScoreOptions scope_score_options) const {
-  FindBestAppInScopeOptions options(filter);
-  options.scope_score_options = std::move(scope_score_options);
-  return FindBestAppWithUrlInScope(url, options);
-}
-
-std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
-    const GURL& url,
     const FindBestAppInScopeOptions& options) const {
   if (!url.is_valid()) {
     return std::nullopt;
@@ -1063,6 +1016,8 @@ std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
 
   std::optional<webapps::AppId> best_app_id;
   int best_score = 0;
+  const WebAppFilter is_isolated =
+      WebAppFilter::IsIsolatedApp() | WebAppFilter::IsIsolatedSubApp();
 
   for (const webapps::AppId& app_id : GetAppIds(options.eligibility_filter)) {
     std::optional<WebAppScope> scope = GetEffectiveScope(app_id);
@@ -1070,15 +1025,25 @@ std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
       continue;
     }
 
-    int score = scope->GetScopeScore(url, options.scope_score_options);
+    WebAppScopeScoreOptions scope_score_options = options.scope_score_options;
+    if (!options.include_isolated_web_app_scope_extensions &&
+        !scope_score_options.exclude_scope_extensions &&
+        !scope->validated_scope_extensions().empty() &&
+        AppMatches(app_id, is_isolated)) {
+      if (scope_score_options.only_consider_scope_extensions) {
+        continue;
+      }
+      scope_score_options.exclude_scope_extensions = true;
+    }
+
+    int score = scope->GetScopeScore(url, scope_score_options);
     if (score > 0 && score > best_score) {
       best_app_id = app_id;
       best_score = score;
     }
   }
 
-  if (best_app_id.has_value() &&
-      AppMatches(best_app_id.value(), options.filter)) {
+  if (best_app_id.has_value() && AppMatches(best_app_id.value(), filter)) {
     return best_app_id;
   }
 
@@ -1097,7 +1062,7 @@ std::vector<webapps::AppId> WebAppRegistrar::FindAllAppsNestedInUrl(
   std::vector<webapps::AppId> apps_in_outer_scope;
   for (const auto& app_id : GetAppIds(filter)) {
     std::string app_scope = GetAppScope(app_id).spec();
-    DCHECK(!app_scope.empty());
+    CHECK(!app_scope.empty(), base::NotFatalUntil::M162);
 
     if (!base::StartsWith(app_scope, outer_scope_spec,
                           base::CompareCase::SENSITIVE)) {
@@ -1217,62 +1182,6 @@ int WebAppRegistrar::CountUserInstalledApps() const {
 int WebAppRegistrar::CountUserInstalledDiyApps() const {
   return std::get<DiyAppCount>(CountTotalUserInstalledAppsIncludingDiy())
       .value();
-}
-
-std::vector<content::StoragePartitionConfig>
-WebAppRegistrar::GetIsolatedWebAppStoragePartitionConfigs(
-    const webapps::AppId& app_id) const {
-  if (!content::AreIsolatedWebAppsEnabled(profile_)) {
-    return {};
-  }
-  // Note: This function is called after is_uninstalling is set to true; hence
-  // we cannot use filters here.
-  const auto* iwa = GetAppById(app_id);
-  if (!iwa || !iwa->isolation_data()) {
-    return {};
-  }
-
-  auto url_info = *IsolatedWebAppUrlInfo::Create(iwa->scope());
-
-  // Start with IWA's base on-disk partition.
-  std::vector<content::StoragePartitionConfig> partitions = {
-      url_info.storage_partition_config(profile_)};
-
-  auto collect_partitions = [&](const auto& partitions, bool in_memory) {
-    return base::ToVector(partitions, [&](const std::string& partition) {
-      return url_info.GetStoragePartitionConfigForControlledFrame(
-          profile_, partition, in_memory);
-    });
-  };
-
-  // Get all on-disk Controlled Frame partitions.
-  base::Extend(
-      partitions,
-      collect_partitions(iwa->isolation_data()->controlled_frame_partitions(),
-                         /*in_memory=*/false));
-  // Get all in-memory Controlled Frame partitions.
-  if (auto* stored_partitions = base::FindOrNull(
-          isolated_web_app_in_memory_controlled_frame_partitions_, app_id)) {
-    base::Extend(partitions,
-                 collect_partitions(*stored_partitions, /*in_memory=*/true));
-  }
-
-  return partitions;
-}
-
-std::optional<content::StoragePartitionConfig>
-WebAppRegistrar::SaveAndGetInMemoryControlledFramePartitionConfig(
-    const IsolatedWebAppUrlInfo& url_info,
-    const std::string& partition_name) {
-  if (!AppMatches(url_info.app_id(), WebAppFilter::IsIsolatedApp())) {
-    return std::nullopt;
-  }
-
-  isolated_web_app_in_memory_controlled_frame_partitions_[url_info.app_id()]
-      .insert(partition_name);
-
-  return url_info.GetStoragePartitionConfigForControlledFrame(
-      profile_, partition_name, true);
 }
 
 bool WebAppRegistrar::CanCaptureLinksInScope(
@@ -1899,7 +1808,8 @@ WebAppRegistrar::AppSet::AppSet(const WebAppRegistrar* registrar, Filter filter)
 
 WebAppRegistrar::AppSet::~AppSet() {
 #if DCHECK_IS_ON()
-  DCHECK_EQ(mutations_count_, registrar_->mutations_count_);
+  CHECK_EQ(mutations_count_, registrar_->mutations_count_,
+           base::NotFatalUntil::M162);
 #endif
 }
 
@@ -1994,17 +1904,6 @@ base::Value WebAppRegistrar::AsDebugValue() const {
     run_on_os_login_fields.Set("user_controllable",
                                run_on_os_login_mode.user_controllable);
 
-    base::ListValue* in_mem_controlled_frame_partitions =
-        app_debug_dict.EnsureDict("isolated_data_in_memory")
-            ->EnsureList("controlled_frame_partitions (in-memory)");
-    auto it = isolated_web_app_in_memory_controlled_frame_partitions_.find(
-        web_app->app_id());
-    if (it != isolated_web_app_in_memory_controlled_frame_partitions_.end()) {
-      for (const std::string& partition : it->second) {
-        in_mem_controlled_frame_partitions->Append(partition);
-      }
-    }
-
     web_app_details.Append(std::move(app_debug_value));
   }
 
@@ -2027,7 +1926,7 @@ WebAppRegistrarMutable::WebAppRegistrarMutable(Profile* profile)
 WebAppRegistrarMutable::~WebAppRegistrarMutable() = default;
 
 void WebAppRegistrarMutable::InitRegistry(Registry&& registry) {
-  DCHECK(is_empty());
+  CHECK(is_empty(), base::NotFatalUntil::M162);
   SetRegistry(std::move(registry));
 }
 

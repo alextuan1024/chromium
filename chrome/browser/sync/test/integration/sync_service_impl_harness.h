@@ -10,12 +10,14 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/enum_set.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "chrome/browser/sync/test/integration/sync_test_account.h"
+#include "components/sync/base/data_type.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/engine/cycle/sync_cycle_snapshot.h"
 #include "components/sync/service/local_data_description.h"
@@ -175,6 +177,13 @@ class SyncServiceImplHarness {
   // Blocks the caller until invalidations are enabled or disabled.
   [[nodiscard]] bool AwaitInvalidationsStatus(bool expected_status);
 
+  // Triggers a refresh for `types` (all registered non-commit-only types by
+  // default) and blocks until the resulting refresh sync cycle completes.
+  [[nodiscard]] bool TriggerRefreshAndWait(
+      const syncer::DataTypeSet& types =
+          base::Difference(syncer::DataTypeSet::All(),
+                           syncer::CommitOnlyTypes()));
+
   // Returns the SyncServiceImpl member of the sync client.
   syncer::SyncServiceImpl* service() { return service_; }
   const syncer::SyncServiceImpl* service() const { return service_; }
@@ -183,29 +192,29 @@ class SyncServiceImplHarness {
   const std::string& profile_debug_name() const { return profile_debug_name_; }
 
   // Enables the history-related sync types. This includes
-  // UserSelectableType::kHistory and UserSelectableType::kTabs. The user must
-  // already be signed in, or this will have no effect. Returns true on success.
+  // `UserSelectableType::kHistory` and `UserSelectableType::kTabs`. The user
+  // must already be signed in. Returns true on success.
   [[nodiscard]] bool EnableHistorySyncNoWaitForCompletion();
 
   // Enables/disables a particular selectable type. The user must already be
-  // signed in, or this has no effect.
+  // signed in.
   [[nodiscard]] bool EnableSelectableType(syncer::UserSelectableType type);
   [[nodiscard]] bool DisableSelectableType(syncer::UserSelectableType type);
 
 #if BUILDFLAG(IS_CHROMEOS)
   // Enables a particular selectable OS type. The user must already be signed
-  // in, or this has no effect.
+  // in.
   [[nodiscard]] bool EnableSelectableOsType(syncer::UserSelectableOsType type);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Enables/disables all available selectable types. The user must already be
-  // signed in, or this has no effect.
+  // signed in.
   [[nodiscard]] bool EnableAllSelectableTypes();
   [[nodiscard]] bool DisableAllSelectableTypes();
 
 #if BUILDFLAG(IS_CHROMEOS)
   // Disables all available selectable OS types. The user must already be signed
-  // in, or this has no effect.
+  // in.
   [[nodiscard]] bool DisableAllSelectableOsTypes();
 #endif  // BUILDFLAG(IS_CHROMEOS)
 

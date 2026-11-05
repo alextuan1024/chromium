@@ -10,15 +10,22 @@
 
 #include "base/check.h"
 #include "base/compiler_specific.h"
+#include "base/functional/bind.h"
+#include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
+#include "build/build_config.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/service/gl_utils.h"
 #include "gpu/command_buffer/service/graphite_shared_context.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+#include "gpu/command_buffer/service/skia_utils.h"
 #include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "skia/ext/rgba_to_yuva.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/libyuv/include/libyuv/planar_functions.h"
@@ -26,6 +33,7 @@
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkRect.h"
+#include "third_party/skia/include/core/SkSize.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/gpu/ganesh/GrBackendSemaphore.h"
 #include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
@@ -36,7 +44,9 @@
 #include "third_party/skia/include/gpu/graphite/Context.h"
 #include "third_party/skia/include/gpu/graphite/Image.h"
 #include "third_party/skia/include/gpu/graphite/Recorder.h"
+#include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gl/progress_reporter.h"
 
 namespace gpu {
 
@@ -115,6 +125,8 @@ sk_sp<SkSurface> CreateSkSurfaceWrappingGLTexture(
       dest_color_space, nullptr);
 }
 
+// If the copy is performed, returns true and sets `upload_error` to any GL
+// error reported by the driver during the upload.
 bool CopyPixelsToTexture(
     GLint xoffset,
     GLint yoffset,
@@ -129,7 +141,9 @@ bool CopyPixelsToTexture(
     SharedImageRepresentationFactory* representation_factory,
     SharedContextState* shared_context_state,
     const std::vector<GrBackendSemaphore>& begin_semaphores,
-    std::vector<GrBackendSemaphore>& end_semaphores) {
+    std::vector<GrBackendSemaphore>& end_semaphores,
+    gl::GLApi* gl_api,
+    GLenum& upload_error) {
   // We have implemented CompoundImageBacking::ProduceMemory() which can lead
   // to a performance regression when it's underlying GPU backing holds the
   // latest data. Previously, an unimplemented
@@ -163,7 +177,7 @@ bool CopyPixelsToTexture(
 
   gfx::Size source_size = source_shared_image->size();
   gfx::Rect source_rect(x, y, width, height);
-  if (!gfx::Rect(source_size).Contains(source_rect)) {
+  if (source_rect.IsEmpty() || !gfx::Rect(source_size).Contains(source_rect)) {
     return false;
   }
 
@@ -180,21 +194,30 @@ bool CopyPixelsToTexture(
   }
 
   if (!begin_semaphores.empty()) {
-    bool result = dest_scoped_access->surface()->wait(
-        begin_semaphores.size(), begin_semaphores.data(),
-        /*deleteSemaphoresAfterWait=*/false);
-    DCHECK(result);
+    // Wait will only fail if the context is abandoned, in which case it
+    // doesn't matter that it failed.
+    dest_scoped_access->surface()->wait(begin_semaphores.size(),
+                                        begin_semaphores.data(),
+                                        /*deleteSemaphoresAfterWait=*/false);
   }
 
-  dest_scoped_access->surface()->writePixels(subset, xoffset, yoffset);
+  bool success = dest_scoped_access->surface()->getCanvas()->writePixels(
+      subset.info(), subset.addr(), subset.rowBytes(), xoffset, yoffset);
 
-  bool success = shared_context_state->FlushWriteAccess(dest_scoped_access);
-  shared_context_state->SubmitIfNecessary(
+  // Always flush and submit, even on write failure, to avoid leaving open work
+  // on the SkSurface.
+  success &= shared_context_state->FlushWriteAccess(dest_scoped_access);
+  success &= shared_context_state->SubmitIfNecessary(
       std::move(end_semaphores),
       dest_scoped_access->NeedGraphiteContextSubmit());
 
-  if (success && !dest_shared_image->IsCleared()) {
-    dest_shared_image->SetClearedRect(dest_cleared_rect);
+  if (!success) {
+    upload_error = GL_INVALID_OPERATION;
+  } else if (!dest_shared_image->IsCleared()) {
+    upload_error = DrainGLErrors(gl_api);
+    if (upload_error == GL_NO_ERROR) {
+      dest_shared_image->SetClearedRect(dest_cleared_rect);
+    }
   }
 
   return true;
@@ -204,6 +227,16 @@ struct ReadPixelsContext {
   std::unique_ptr<const SkImage::AsyncReadResult> async_result;
   bool finished = false;
 };
+
+// Returns true if a device reset happened and the results of a readback must
+// not be delivered: a reset can fire the async-read completion over
+// never-written buffers. CheckResetStatus() marks the context lost when it
+// returns true.
+bool ShouldDiscardReadbackAfterDeviceReset(
+    CopySharedImageHelper::ReadbackDelegate* delegate) {
+  return delegate->workarounds().check_graphics_reset_status_after_readback &&
+         !delegate->WasContextLost() && delegate->CheckResetStatus();
+}
 
 void OnReadPixelsDone(
     void* raw_ctx,
@@ -272,7 +305,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
 
   gfx::Size dest_size = dest_shared_image->size();
   gfx::Rect dest_rect(xoffset, yoffset, dst_width, dst_height);
-  if (!gfx::Rect(dest_size).Contains(dest_rect)) {
+  if (dest_rect.IsEmpty() || !gfx::Rect(dest_size).Contains(dest_rect)) {
     return base::unexpected(GLError(GL_INVALID_VALUE, "CopySharedImage",
                                     "destination texture bad dimensions."));
   }
@@ -294,13 +327,23 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
   bool update_cleared_rect = false;
   gfx::Rect new_cleared_rect;
 
+  // Skia does not report GL errors from uploads, so check for driver errors
+  // before marking an uncleared destination as cleared.
+  const bool check_gl_upload_errors = !dest_shared_image->IsCleared() &&
+                                      shared_context_state_->GrContextIsGL() &&
+                                      !shared_context_state_->context_lost();
+  gl::GLApi* const gl_api =
+      check_gl_upload_errors ? gl::g_current_gl_context : nullptr;
+  DrainGLErrors(gl_api);
+
   // Flush dest surface and submit if necessary before exiting.
   absl::Cleanup cleanup = [&]() {
     bool success =
         shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
-    shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
-                                             need_graphite_submit);
-    if (success && update_cleared_rect) {
+    success &= shared_context_state_->SubmitIfNecessary(
+        std::move(end_semaphores), need_graphite_submit);
+    if (success && update_cleared_rect &&
+        DrainGLErrors(gl_api) == GL_NO_ERROR) {
       dest_shared_image->SetClearedRect(new_cleared_rect);
     }
   };
@@ -318,14 +361,20 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
 
   // Attempt to upload directly from CPU shared memory to destination texture.
   // Only do this if no scaling is happening.
+  GLenum upload_error = GL_NO_ERROR;
   if (src_width == dst_width && src_height == dst_height &&
-      CopyPixelsToTexture(xoffset, yoffset, x, y, src_width, src_height,
-                          new_cleared_rect, source_mailbox,
-                          dest_shared_image.get(), dest_scoped_access.get(),
-                          representation_factory_, shared_context_state_,
-                          begin_semaphores, end_semaphores)) {
+      CopyPixelsToTexture(
+          xoffset, yoffset, x, y, src_width, src_height, new_cleared_rect,
+          source_mailbox, dest_shared_image.get(), dest_scoped_access.get(),
+          representation_factory_, shared_context_state_, begin_semaphores,
+          end_semaphores, gl_api, upload_error)) {
     // Cancel cleanup as CopyPixelsToTexture already handles it.
     std::move(cleanup).Cancel();
+    if (upload_error != GL_NO_ERROR) {
+      return base::unexpected(
+          GLError(upload_error, "CopySharedImage",
+                  "GL driver reported an error during texture upload"));
+    }
     return base::ok();
   }
 
@@ -377,7 +426,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
 
   gfx::Size source_size = source_shared_image->size();
   gfx::Rect source_rect(x, y, src_width, src_height);
-  if (!gfx::Rect(source_size).Contains(source_rect)) {
+  if (source_rect.IsEmpty() || !gfx::Rect(source_size).Contains(source_rect)) {
     return base::unexpected(GLError(GL_INVALID_VALUE, "CopySharedImage",
                                     "source texture bad dimensions."));
   }
@@ -474,11 +523,20 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImage(
   bool success =
       shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
   source_scoped_access->ApplyBackendSurfaceEndState();
-  shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
-                                           need_graphite_submit);
+  success &= shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
+                                                      need_graphite_submit);
 
   if (success && update_cleared_rect) {
-    dest_shared_image->SetClearedRect(new_cleared_rect);
+    GLenum error = DrainGLErrors(gl_api);
+    if (error != GL_NO_ERROR) {
+      if (result.has_value()) {
+        result = base::unexpected(
+            GLError(error, "CopySharedImage",
+                    "GL driver reported an error during texture upload"));
+      }
+    } else {
+      dest_shared_image->SetClearedRect(new_cleared_rect);
+    }
   }
   return result;
 }
@@ -543,7 +601,7 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImageToGLTexture(
 
   gfx::Size source_size = source_shared_image->size();
   gfx::Rect source_rect(src_x, src_y, width, height);
-  if (!gfx::Rect(source_size).Contains(source_rect)) {
+  if (source_rect.IsEmpty() || !gfx::Rect(source_size).Contains(source_rect)) {
     return base::unexpected<GLError>(GLError(GL_INVALID_VALUE,
                                              "CopySharedImageToGLTexture",
                                              "source texture bad dimensions."));
@@ -605,12 +663,9 @@ base::expected<void, GLError> CopySharedImageHelper::CopySharedImageToGLTexture(
 namespace {
 
 // Graphite only supports asynchronous reads, and the asynchronous reads require
-// that the src rect is contained within the image. This function automatically
-// adjusts the parameters to match the permissiveness of Ganesh's
-// SkImage::readPixels and makes it synchronous.
+// that the src rect is contained within the image.
 bool GraphiteImageReadPixels(GraphiteSharedContext* graphite_shared_context,
                              sk_sp<SkImage> sk_image,
-                             GrSurfaceOrigin src_surface_origin,
                              int src_x,
                              int src_y,
                              const SkImageInfo& dst_info,
@@ -618,66 +673,20 @@ bool GraphiteImageReadPixels(GraphiteSharedContext* graphite_shared_context,
                              size_t row_bytes) {
   gfx::Rect src_rect(src_x, src_y, dst_info.width(), dst_info.height());
   gfx::Rect src_image_bounds(sk_image->width(), sk_image->height());
+  CHECK(!src_rect.IsEmpty() && src_image_bounds.Contains(src_rect));
 
-  // TODO(crbug.com/40942998): Once all src rects are required to be contained
-  // in the image, the !Contains branch can be removed.
-  if (!src_image_bounds.Contains(src_rect)) {
-    src_rect.Intersect(src_image_bounds);
-    if (src_rect.IsEmpty()) {
-      // NOTE: This is consistent with SkImage::readPixels on a Ganesh image,
-      // which permits src_rect to not be fully contained, but can't be disjoint
-      return false;
-    }
-
-    // Adjust the pixel address to account for any intersection, so that the
-    // available content remains aligned with the intended dst pixel data.
-    // When `src_rect` was originally contained in the src image bounds, this
-    // is equal to the original `pixel_address`.
-    uint8_t* subset_pixel_addr =
-        UNSAFE_TODO(static_cast<uint8_t*>(pixel_address) +
-                    (src_rect.y() - src_y) * row_bytes +
-                    (src_rect.x() - src_x) * dst_info.bytesPerPixel());
-    SkImageInfo subset_dst_info =
-        dst_info.makeWH(src_rect.width(), src_rect.height());
-
-    // src_rect.Intersect(src_image_bounds) should ensure this call skips the
-    // !Contains branch and actually reads the pixels. Check here to prevent
-    // infinite recursion.
-    CHECK(src_image_bounds.Contains(src_rect));
-    return GraphiteImageReadPixels(graphite_shared_context, std::move(sk_image),
-                                   src_surface_origin, src_rect.x(),
-                                   src_rect.y(), subset_dst_info,
-                                   subset_pixel_addr, row_bytes);
-  }
-
-  // Now that `src_rect` meets the requirements of the asyncRead API, call the
-  // async function, then submit and block until it's completed.
   CHECK(graphite_shared_context);
   ReadPixelsContext context;
 
-#if !defined(SK_GRAPHITE_READ_PIXELS_SUPPORTS_BOTTOM_LEFT)
-  // Make the `src_rect` relative to the bottom left origin if needed. This
-  // works around lack of support for bottom-left origin data during readback in
-  // Graphite. Graphite correctly handles bottom-left origins when rendering, so
-  // if asyncRescaleAndReadPixels() were to render `sk_image` for any reason,
-  // this adjustment won't work. But this call isn't scaling and is presumably
-  // for a shared image that has copy-src usage, so it shouldn't happen. This is
-  // also a no-op when the src rect is the entire image, regardless of origin.
-  if (src_surface_origin == kBottomLeft_GrSurfaceOrigin) {
-    src_y = src_image_bounds.height() - src_rect.y() - src_rect.height();
-    src_rect = gfx::Rect(
-        src_rect.x(), src_y, src_rect.width(), src_rect.height());
-    // This adjustment should not change the fact that src_rect is still valid
-    CHECK(src_image_bounds.Contains(src_rect));
-  }
-#endif
-
   // We don't need to insert a recording since asyncRescaleAndReadPixels is a
   // context operation that inserts its own recording internally.
-  if (!graphite_shared_context->asyncRescaleAndReadPixelsAndSubmit(
-          sk_image.get(), dst_info, RectToSkIRect(src_rect),
-          SkImage::RescaleGamma::kSrc, SkImage::RescaleMode::kRepeatedLinear,
-          base::BindOnce(&OnReadPixelsDone), &context)) {
+  const bool submitted = graphite_shared_context->RunLockedAndSubmitSync([&] {
+    graphite_shared_context->asyncRescaleAndReadPixels(
+        sk_image.get(), dst_info, RectToSkIRect(src_rect),
+        SkImage::RescaleGamma::kSrc, SkImage::RescaleMode::kRepeatedLinear,
+        base::BindOnce(&OnReadPixelsDone), &context);
+  });
+  if (!submitted) {
     return false;
   }
 
@@ -690,19 +699,9 @@ bool GraphiteImageReadPixels(GraphiteSharedContext* graphite_shared_context,
     return false;
   }
 
-#if !defined(SK_GRAPHITE_READ_PIXELS_SUPPORTS_BOTTOM_LEFT)
-  // Use CopyPlane to flip as Graphite doesn't support bottom left origin
-  // images. Using a negative height causes CopyPlane to flip while copying.
-  // TODO(crbug.com/40269891): Remove this if Graphite performs the flip
-  // once it supports bottom left origin images.
-  const int height = src_surface_origin == kTopLeft_GrSurfaceOrigin
-                         ? dst_info.height()
-                         : -dst_info.height();
-#else
   // Must copy the async results (often a GPU-mapped buffer) to the CPU
   // pixel_address.
   const int height = dst_info.height();
-#endif
   libyuv::CopyPlane(static_cast<const uint8_t*>(context.async_result->data(0)),
                     context.async_result->rowBytes(0),
                     static_cast<uint8_t*>(pixel_address), row_bytes,
@@ -762,8 +761,17 @@ base::expected<void, GLError> CopySharedImageHelper::ReadPixels(
                                     "Couldn't create SkImage for reading."));
   }
 
-  // TODO(crbug.com/40942998): Add back src_rect validation once renderer passes
-  // a correct rect size.
+  gfx::Rect src_rect(src_x, src_y, dst_info.width(), dst_info.height());
+  gfx::Rect src_image_bounds(sk_image->width(), sk_image->height());
+  if (src_rect.IsEmpty() || !src_image_bounds.Contains(src_rect)) {
+    source_scoped_access->ApplyBackendSurfaceEndState();
+    shared_context_state_->SubmitIfNecessary(
+        std::move(end_semaphores),
+        source_scoped_access->NeedGraphiteContextSubmit());
+    return base::unexpected(GLError(GL_INVALID_VALUE, "ReadPixels",
+                                    "Trying to read outside source image."));
+  }
+
   bool success = false;
   if (gr_context) {
     success = sk_image->readPixels(gr_context, dst_info, pixel_address,
@@ -775,15 +783,332 @@ base::expected<void, GLError> CopySharedImageHelper::ReadPixels(
   } else {
     auto* graphite_shared_context =
         shared_context_state_->graphite_shared_context();
-    success =
-        GraphiteImageReadPixels(graphite_shared_context, std::move(sk_image),
-                                source_shared_image->surface_origin(), src_x,
-                                src_y, dst_info, pixel_address, row_bytes);
+    success = GraphiteImageReadPixels(graphite_shared_context,
+                                      std::move(sk_image), src_x, src_y,
+                                      dst_info, pixel_address, row_bytes);
   }
   if (!success) {
     return base::unexpected(GLError(GL_INVALID_OPERATION, "ReadPixels",
                                     "Failed to read pixels from SkImage"));
   }
+  return base::ok();
+}
+
+base::expected<void, GLError> CopySharedImageHelper::ReadPixelsYUV(
+    ReadbackDelegate* delegate,
+    GLuint src_x,
+    GLuint src_y,
+    GLuint src_width,
+    GLuint src_height,
+    GLuint dst_width,
+    GLuint dst_height,
+    uint8_t* y_out,
+    GLuint y_stride,
+    uint8_t* u_out,
+    GLuint u_stride,
+    uint8_t* v_out,
+    GLuint v_stride,
+    std::unique_ptr<SkiaImageRepresentation> source_shared_image) {
+  std::vector<GrBackendSemaphore> begin_semaphores;
+  std::vector<GrBackendSemaphore> end_semaphores;
+
+  // We don't use |end_semaphores| here because we're going to sync with
+  // with the CPU later regardless.
+  std::unique_ptr<SkiaImageRepresentation::ScopedReadAccess>
+      source_scoped_access = source_shared_image->BeginScopedReadAccess(
+          &begin_semaphores, &end_semaphores);
+
+  if (!begin_semaphores.empty()) {
+    CHECK(shared_context_state_->gr_context());
+    bool wait_result = shared_context_state_->gr_context()->wait(
+        begin_semaphores.size(), begin_semaphores.data(),
+        /*deleteSemaphoresAfterWait=*/false);
+    DCHECK(wait_result);
+  }
+
+  if (!source_scoped_access) {
+    return base::unexpected(GLError(GL_INVALID_VALUE, "glReadbackImagePixels",
+                                    "Source shared image is not accessible"));
+  }
+
+  const SkIRect src_rect =
+      SkIRect::MakeXYWH(src_x, src_y, src_width, src_height);
+  const SkISize dst_size = SkISize::Make(dst_width, dst_height);
+
+  // NV12 sources are read back plane by plane: the Y and UV planes are
+  // rescaled and read as R8 / RG8 images and the UV plane is split on the CPU.
+  // This avoids the YUV->RGB conversion, the RGB->YUV conversion and the extra
+  // render passes of the generic YUV420 readback used for everything else.
+  // The chroma plane is subsampled, so the source rect and destination size
+  // must be even for the per plane rects to be exact.
+  const viz::SharedImageFormat format = source_shared_image->format();
+  bool read_planes = format == viz::MultiPlaneFormat::kNV12 &&
+                     !format.PrefersExternalSampler() && src_x % 2 == 0 &&
+                     src_y % 2 == 0 && src_width % 2 == 0 &&
+                     src_height % 2 == 0 && dst_width % 2 == 0 &&
+                     dst_height % 2 == 0 && dst_width > 0 && dst_height > 0;
+#if BUILDFLAG(IS_WIN)
+  // With Ganesh on GL (ANGLE over D3D11) a plane can be drawn but not read
+  // directly: glReadPixels() from the plane texture into a pixel pack buffer
+  // tries to create an NV12 staging texture and crashes. Skia reads directly
+  // when no rescale is needed, so leave the unscaled case to the generic path
+  // there.
+  const bool is_unscaled = src_width == dst_width && src_height == dst_height;
+  if (is_unscaled && shared_context_state_->GrContextIsGL()) {
+    read_planes = false;
+  }
+#endif  // BUILDFLAG(IS_WIN)
+  if (read_planes) {
+    return ReadPixelsYUVInternalNV12(
+        delegate, source_scoped_access.get(), std::move(end_semaphores),
+        src_rect, dst_size, y_out, y_stride, u_out, u_stride, v_out, v_stride);
+  }
+  return ReadPixelsYUVInternalRGB(
+      delegate, *source_shared_image, source_scoped_access.get(),
+      std::move(end_semaphores), src_rect, dst_size, y_out, y_stride, u_out,
+      u_stride, v_out, v_stride);
+}
+
+base::unexpected<GLError> CopySharedImageHelper::EndReadAccessWithError(
+    SkiaImageRepresentation::ScopedReadAccess* source_scoped_access,
+    std::vector<GrBackendSemaphore> end_semaphores,
+    GLenum error,
+    const char* msg) {
+  source_scoped_access->ApplyBackendSurfaceEndState();
+  shared_context_state_->SubmitIfNecessary(
+      std::move(end_semaphores),
+      source_scoped_access->NeedGraphiteContextSubmit());
+  return base::unexpected(GLError(error, "glReadbackYUVImagePixels", msg));
+}
+
+void CopySharedImageHelper::FinishGaneshReadback(
+    ReadbackDelegate* delegate,
+    SkiaImageRepresentation::ScopedReadAccess* source_scoped_access,
+    std::vector<GrBackendSemaphore> end_semaphores) {
+  source_scoped_access->ApplyBackendSurfaceEndState();
+  if (!end_semaphores.empty()) {
+    GrFlushInfo flush_info = {
+        .fNumSemaphores = end_semaphores.size(),
+        .fSignalSemaphores = end_semaphores.data(),
+    };
+    AddVulkanCleanupTaskForSkiaFlush(
+        shared_context_state_->vk_context_provider(), &flush_info);
+    shared_context_state_->gr_context()->flush(flush_info);
+  }
+
+  // TODO(crbug.com/40106956): Use COMMANDS_COMPLETED query for async
+  // readback.
+  delegate->DoFinish();
+}
+
+base::expected<void, GLError> CopySharedImageHelper::ReadPixelsYUVInternalNV12(
+    ReadbackDelegate* delegate,
+    SkiaImageRepresentation::ScopedReadAccess* source_scoped_access,
+    std::vector<GrBackendSemaphore> end_semaphores,
+    const SkIRect& src_rect,
+    const SkISize& dst_size,
+    uint8_t* y_out,
+    GLuint y_stride,
+    uint8_t* u_out,
+    GLuint u_stride,
+    uint8_t* v_out,
+    GLuint v_stride) {
+  sk_sp<SkImage> sk_y_image =
+      source_scoped_access->CreateSkImageForPlane(0, shared_context_state_);
+  sk_sp<SkImage> sk_uv_image =
+      source_scoped_access->CreateSkImageForPlane(1, shared_context_state_);
+  if (!sk_y_image || !sk_uv_image) {
+    return EndReadAccessWithError(
+        source_scoped_access, std::move(end_semaphores), GL_INVALID_OPERATION,
+        "Couldn't create SkImage for reading NV12 planes.");
+  }
+  if (src_rect.isEmpty() ||
+      !SkIRect::MakeSize(sk_y_image->dimensions()).contains(src_rect)) {
+    return EndReadAccessWithError(
+        source_scoped_access, std::move(end_semaphores), GL_INVALID_VALUE,
+        "SRC rect is outside of source image dimensions");
+  }
+
+  // The planes keep their own color spaces so that no color conversion is
+  // attempted; they are read as-is. The caller guarantees that the rect and
+  // the size are even, so the half size UV plane rects are exact.
+  const SkIRect uv_src_rect =
+      SkIRect::MakeXYWH(src_rect.x() / 2, src_rect.y() / 2,
+                        src_rect.width() / 2, src_rect.height() / 2);
+  const SkImageInfo y_info =
+      SkImageInfo::Make(dst_size, kR8_unorm_SkColorType, kOpaque_SkAlphaType,
+                        sk_y_image->refColorSpace());
+  const SkImageInfo uv_info = SkImageInfo::Make(
+      dst_size.width() / 2, dst_size.height() / 2, kR8G8_unorm_SkColorType,
+      kOpaque_SkAlphaType, sk_uv_image->refColorSpace());
+
+  // Readback is potentially slow, so report progress here.
+  gl::ScopedProgressReporter report_progress(
+      shared_context_state_->progress_reporter());
+
+  // While the Skia functions are asynchronous, the sync with the GPU below
+  // runs their callbacks before this function returns.
+  ReadPixelsContext y_result;
+  ReadPixelsContext uv_result;
+  bool finished = false;
+  bool is_context_lost = false;
+  if (auto* graphite_shared_context =
+          shared_context_state_->graphite_shared_context()) {
+    // SkImage/SkSurface asyncRescaleAndReadPixels methods won't be implemented
+    // for Graphite. Instead the equivalent methods are on the Graphite context.
+    // Both reads and the submit that waits for them happen under one lock, so
+    // that their callbacks run on this thread before RunLockedAndSubmitSync()
+    // returns.
+    const bool submitted = graphite_shared_context->RunLockedAndSubmitSync([&] {
+      graphite_shared_context->asyncRescaleAndReadPixels(
+          sk_y_image.get(), y_info, src_rect, SkImage::RescaleGamma::kSrc,
+          SkImage::RescaleMode::kRepeatedLinear,
+          base::BindOnce(&OnReadPixelsDone), &y_result);
+      graphite_shared_context->asyncRescaleAndReadPixels(
+          sk_uv_image.get(), uv_info, uv_src_rect, SkImage::RescaleGamma::kSrc,
+          SkImage::RescaleMode::kRepeatedLinear,
+          base::BindOnce(&OnReadPixelsDone), &uv_result);
+    });
+    finished = submitted && y_result.finished && uv_result.finished;
+    is_context_lost = !finished && graphite_shared_context->IsContextLost();
+  } else {
+    auto* gr_context = shared_context_state_->gr_context();
+    CHECK(gr_context);
+    sk_y_image->asyncRescaleAndReadPixels(
+        y_info, src_rect, SkImage::RescaleGamma::kSrc,
+        SkImage::RescaleMode::kRepeatedLinear, &OnReadPixelsDone, &y_result);
+    sk_uv_image->asyncRescaleAndReadPixels(
+        uv_info, uv_src_rect, SkImage::RescaleGamma::kSrc,
+        SkImage::RescaleMode::kRepeatedLinear, &OnReadPixelsDone, &uv_result);
+    FinishGaneshReadback(delegate, source_scoped_access,
+                         std::move(end_semaphores));
+    finished = y_result.finished && uv_result.finished;
+    is_context_lost =
+        !finished && (delegate->WasContextLost() || gr_context->abandoned());
+  }
+
+  // The sync above must have run the callbacks unless the context was lost;
+  // otherwise they could still run later and write to the stack contexts.
+  CHECK(finished || is_context_lost);
+  if (!y_result.async_result || !uv_result.async_result || is_context_lost) {
+    return base::unexpected(GLError(GL_INVALID_OPERATION,
+                                    "glReadbackYUVImagePixels",
+                                    "Failed to read pixels from SkImage"));
+  }
+  if (ShouldDiscardReadbackAfterDeviceReset(delegate)) {
+    return base::unexpected(GLError(GL_INVALID_OPERATION,
+                                    "glReadbackYUVImagePixels",
+                                    "readback aborted: device reset detected"));
+  }
+
+  const auto& y = y_result.async_result;
+  const auto& uv = uv_result.async_result;
+  libyuv::CopyPlane(static_cast<const uint8_t*>(y->data(0)), y->rowBytes(0),
+                    y_out, y_stride, dst_size.width(), dst_size.height());
+  libyuv::SplitUVPlane(static_cast<const uint8_t*>(uv->data(0)),
+                       uv->rowBytes(0), u_out, u_stride, v_out, v_stride,
+                       uv_info.width(), uv_info.height());
+  return base::ok();
+}
+
+base::expected<void, GLError> CopySharedImageHelper::ReadPixelsYUVInternalRGB(
+    ReadbackDelegate* delegate,
+    const SkiaImageRepresentation& source_shared_image,
+    SkiaImageRepresentation::ScopedReadAccess* source_scoped_access,
+    std::vector<GrBackendSemaphore> end_semaphores,
+    const SkIRect& src_rect,
+    const SkISize& dst_size,
+    uint8_t* y_out,
+    GLuint y_stride,
+    uint8_t* u_out,
+    GLuint u_stride,
+    uint8_t* v_out,
+    GLuint v_stride) {
+  sk_sp<SkImage> sk_image =
+      source_scoped_access->CreateSkImage(shared_context_state_.get());
+  if (!sk_image) {
+    return EndReadAccessWithError(
+        source_scoped_access, std::move(end_semaphores), GL_INVALID_OPERATION,
+        "Couldn't create SkImage for reading.");
+  }
+  if (src_rect.isEmpty() ||
+      !SkIRect::MakeSize(sk_image->dimensions()).contains(src_rect)) {
+    return EndReadAccessWithError(
+        source_scoped_access, std::move(end_semaphores), GL_INVALID_VALUE,
+        "SRC rect is outside of source image dimensions");
+  }
+
+  // YUV readback requires knowing what SkColorSpace the RGB data should be
+  // converted to AND the SkYUVColorSpace that defines how YUV is derived from
+  // the RGB data. To avoid colorspace conversion, this always uses the
+  // SkColorSpace on `sk_image` (derived from the gfx::ColorSpace of the shared
+  // image). If the source image is multi-planar, try to match its YUV color
+  // space, otherwise default to Rec 709 for multi-planar and Rec 601 for
+  // single-plane formats.
+  SkYUVColorSpace yuv_cs = kRec601_Limited_SkYUVColorSpace;
+  if (source_shared_image.format().is_multi_plane()) {
+    yuv_cs = kRec709_Limited_SkYUVColorSpace;
+    source_shared_image.color_space().ToSkYUVColorSpace(&yuv_cs);
+  }
+
+  // Readback is potentially slow, so report progress here.
+  gl::ScopedProgressReporter report_progress(
+      shared_context_state_->progress_reporter());
+
+  // While the Skia functions are asynchronous, the sync with the GPU below
+  // runs their callbacks before this function returns.
+  ReadPixelsContext yuv_result;
+  bool finished = false;
+  bool is_context_lost = false;
+  if (auto* graphite_shared_context =
+          shared_context_state_->graphite_shared_context()) {
+    // SkImage/SkSurface asyncRescaleAndReadPixels methods won't be implemented
+    // for Graphite. Instead the equivalent methods are on the Graphite context.
+    // The read and the submit that waits for it happen under one lock, so
+    // that its callback runs on this thread before RunLockedAndSubmitSync()
+    // returns.
+    const bool submitted = graphite_shared_context->RunLockedAndSubmitSync([&] {
+      graphite_shared_context->asyncRescaleAndReadPixelsYUV420(
+          sk_image.get(), yuv_cs, sk_image->refColorSpace(), src_rect, dst_size,
+          SkImage::RescaleGamma::kSrc, SkImage::RescaleMode::kRepeatedLinear,
+          base::BindOnce(&OnReadPixelsDone), &yuv_result);
+    });
+    finished = submitted && yuv_result.finished;
+    is_context_lost = !finished && graphite_shared_context->IsContextLost();
+  } else {
+    auto* gr_context = shared_context_state_->gr_context();
+    CHECK(gr_context);
+    sk_image->asyncRescaleAndReadPixelsYUV420(
+        yuv_cs, sk_image->refColorSpace(), src_rect, dst_size,
+        SkImage::RescaleGamma::kSrc, SkImage::RescaleMode::kRepeatedLinear,
+        &OnReadPixelsDone, &yuv_result);
+    FinishGaneshReadback(delegate, source_scoped_access,
+                         std::move(end_semaphores));
+    finished = yuv_result.finished;
+    is_context_lost =
+        !finished && (delegate->WasContextLost() || gr_context->abandoned());
+  }
+
+  // The sync above must have run the callback unless the context was lost;
+  // otherwise it could still run later and write to the stack context.
+  CHECK(finished || is_context_lost);
+  if (!yuv_result.async_result || is_context_lost) {
+    return base::unexpected(GLError(GL_INVALID_OPERATION,
+                                    "glReadbackYUVImagePixels",
+                                    "Failed to read pixels from SkImage"));
+  }
+  if (ShouldDiscardReadbackAfterDeviceReset(delegate)) {
+    return base::unexpected(GLError(GL_INVALID_OPERATION,
+                                    "glReadbackYUVImagePixels",
+                                    "readback aborted: device reset detected"));
+  }
+
+  const auto& yuv = yuv_result.async_result;
+  libyuv::I420Copy(static_cast<const uint8_t*>(yuv->data(0)), yuv->rowBytes(0),
+                   static_cast<const uint8_t*>(yuv->data(1)), yuv->rowBytes(1),
+                   static_cast<const uint8_t*>(yuv->data(2)), yuv->rowBytes(2),
+                   y_out, y_stride, u_out, u_stride, v_out, v_stride,
+                   dst_size.width(), dst_size.height());
   return base::ok();
 }
 
@@ -803,6 +1128,15 @@ base::expected<void, GLError> CopySharedImageHelper::WritePixelsYUV(
   auto* gr_context = shared_context_state_->gr_context();
   const bool need_graphite_submit =
       dest_scoped_access->NeedGraphiteContextSubmit();
+  const bool check_gl_upload_errors = !dest_shared_image->IsCleared() &&
+                                      shared_context_state_->GrContextIsGL() &&
+                                      !shared_context_state_->context_lost();
+  gl::GLApi* const gl_api =
+      check_gl_upload_errors ? gl::g_current_gl_context : nullptr;
+  if (gl_api) {
+    DrainGLErrors(gl_api);
+  }
+
   for (int plane = 0; plane < dest_format.NumberOfPlanes(); plane++) {
     bool written = false;
     if (gr_context) {
@@ -825,7 +1159,8 @@ base::expected<void, GLError> CopySharedImageHelper::WritePixelsYUV(
                         /*numLevels=*/1, release_proc, graphite_texture_ptr);
     }
     if (!written) {
-      dest_scoped_access->ApplyBackendSurfaceEndState();
+      // Ensure that any recorded work for planes is inserted.
+      shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
       shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
                                                need_graphite_submit);
       return base::unexpected(
@@ -836,10 +1171,18 @@ base::expected<void, GLError> CopySharedImageHelper::WritePixelsYUV(
 
   bool success =
       shared_context_state_->FlushWriteAccess(dest_scoped_access.get());
-  shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
-                                           need_graphite_submit);
+  success &= shared_context_state_->SubmitIfNecessary(std::move(end_semaphores),
+                                                      need_graphite_submit);
 
   if (success && !dest_shared_image->IsCleared()) {
+    if (gl_api) {
+      GLenum error = DrainGLErrors(gl_api);
+      if (error != GL_NO_ERROR) {
+        return base::unexpected(
+            GLError(error, "WritePixelsYUV",
+                    "GL driver reported an error during texture upload"));
+      }
+    }
     dest_shared_image->SetClearedRect(gfx::Rect(src_width, src_height));
   }
   return base::ok();

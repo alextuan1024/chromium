@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/feature.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
@@ -57,7 +58,9 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/element_tracker_views.h"
+#include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
 namespace user_education {
 
@@ -70,6 +73,7 @@ BASE_FEATURE(kCustomActionIPHFeature, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kDefaultCustomActionIPHFeature, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kLegalNoticeFeature, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kLegalNoticeFeature2, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kLightweightLegalNoticeFeature, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kActionableAlertIPHFeature, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kActionableAlertIPHFeature2, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kKeyedPromoFeature, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -394,14 +398,19 @@ BrowserFeaturePromoControllerTestBase::bubble_factory() {
 }
 
 views::View* BrowserFeaturePromoControllerTestBase::GetAnchorView() {
-  return views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-      kToolbarAppMenuButtonElementId, browser_view()->GetElementContext());
+  auto* const element = GetAnchorElement();
+  if (auto* const view_element = element->AsA<views::TrackedElementViews>()) {
+    return view_element->view();
+  }
+  if (auto* const webui_element = element->AsA<ui::TrackedElementWebUI>()) {
+    return webui_element->GetWebView();
+  }
+  return nullptr;
 }
 
 ui::TrackedElement* BrowserFeaturePromoControllerTestBase::GetAnchorElement() {
-  auto* const result =
-      views::ElementTrackerViews::GetInstance()->GetElementForView(
-          GetAnchorView());
+  auto* const result = BrowserElements::From(browser())->GetElement(
+      kToolbarAppMenuButtonElementId);
   CHECK(result);
   return result;
 }

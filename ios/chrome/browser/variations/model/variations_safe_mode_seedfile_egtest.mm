@@ -38,12 +38,12 @@
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config;
   config.relaunch_policy = ForceRelaunchByCleanShutdown;
-  // Force the channel to stable so that the client participates in the
-  // SeedFileTrial study. Using any channel other than UNKNOWN will participate
-  // in the study.
+  // Use Dev to participate in both Seed File trials, and force deferred
+  // initialization so every run exercises the delayed read path.
   config.additional_args = {"--disable-field-trial-config",
                             "--disable-variations-seed-fetch",
-                            "--force-fieldtrials=SeedFileTrial/SeedFiles_V12",
+                            "--force-fieldtrials=SeedFileTrial/SeedFiles_V16/"
+                            "SafeSeedStartupReadTrial/Treatment_Deferred",
                             "--fake-variations-channel=dev"};
   return config;
 }
@@ -56,12 +56,12 @@
 - (AppLaunchConfiguration)appConfigurationForCrashing {
   AppLaunchConfiguration config;
   config.relaunch_policy = ForceRelaunchByKilling;
-  // Force the channel to stable so that the client participates in the
-  // SeedFileTrial study. Using any channel other than UNKNOWN will participate
-  // in the study.
+  // Use Dev to participate in both Seed File trials, and force deferred
+  // initialization so every run exercises the delayed read path.
   config.additional_args = {"--disable-field-trial-config",
                             "--disable-variations-seed-fetch",
-                            "--force-fieldtrials=SeedFileTrial/SeedFiles_V12",
+                            "--force-fieldtrials=SeedFileTrial/SeedFiles_V16/"
+                            "SafeSeedStartupReadTrial/Treatment_Deferred",
                             "--fake-variations-channel=dev"};
   return config;
 }
@@ -75,7 +75,7 @@
   // SeedFileTrial study. Using any channel other than UNKNOWN will participate
   // in the study.
   config.additional_args = {"--disable-variations-seed-fetch",
-                            "--force-fieldtrials=SeedFileTrial/SeedFiles_V12",
+                            "--force-fieldtrials=SeedFileTrial/SeedFiles_V16",
                             "--fake-variations-channel=stable"};
   return config;
 }

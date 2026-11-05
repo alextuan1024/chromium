@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
@@ -28,7 +29,6 @@
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_labels.h"
-#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_util.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/management_util.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -85,8 +85,6 @@ void EntityInstanceToPrivateApiEntityInstanceWithLabels(
   // main text) while
   // `autofill_private::EntityInstanceWithLabels::entity_instance_sub_label` is
   // the second line.
-  std::vector<autofill_private::EntityInstanceWithLabels>
-      entities_instances_with_labels;
   CHECK_EQ(entity_instances.size(), labels_for_entities.size());
   for (size_t i = 0; i < entity_instances.size(); i++) {
     const EntityInstance& entity_instance = *entity_instances[i];
@@ -108,8 +106,14 @@ void EntityInstanceToPrivateApiEntityInstanceWithLabels(
         entity_instance.record_type() ==
         EntityInstance::RecordType::kServerWallet;
     if (entity_instance_with_labels.stored_in_wallet) {
+      CHECK(std::holds_alternative<EntityInstance::WalletRecordTypePayload>(
+          entity_instance.record_type_data()));
       entity_instance_with_labels.wallet_entity_url =
-          autofill::GetWalletManagementURL(entity_instance);
+          std::get<EntityInstance::WalletRecordTypePayload>(
+              entity_instance.record_type_data())
+              .GetManagementUrlWithFallback(entity_instance.type(),
+                                            entity_instance.guid())
+              .spec();
     }
     entity_instance_with_labels.is_read_only =
         entity_instance.are_attributes_read_only().value();
@@ -215,7 +219,8 @@ std::optional<EntityInstance> PrivateApiEntityInstanceToEntityInstance(
           // Wallet passes can only be created (not updated) from settings, at
           // which point the server-provided management URL is not yet known.
           ? EntityInstance::RecordTypeData(
-                EntityInstance::WalletRecordTypePayload{.management_url = ""})
+                EntityInstance::WalletRecordTypePayload{.management_url =
+                                                            GURL()})
           : EntityInstance::RecordTypeData(
                 EntityInstance::LocalRecordTypePayload{});
 
@@ -327,16 +332,6 @@ api::autofill_private::EntityType EntityTypeToPrivateApiEntityType(
   api_type.type_name = std::to_underlying(entity_type.name());
   api_type.type_name_as_string =
       base::UTF16ToUTF8(entity_type.GetNameForI18n());
-  api_type.add_entity_type_string = autofill::GetAddEntityTypeStringForI18n(
-      entity_type,
-      /*is_wallet_branded=*/supports_wallet_storage &&
-          base::FeatureList::IsEnabled(
-              autofill::features::kAutofillAiWalletPassBranding2026));
-  api_type.edit_entity_type_string =
-      autofill::GetEditEntityTypeStringForI18n(entity_type);
-  api_type.delete_entity_type_string =
-      autofill::GetDeleteEntityTypeStringForI18n(entity_type);
-  api_type.supports_wallet_storage = supports_wallet_storage;
   switch (entity_type.name()) {
     case EntityTypeName::kPassport:
     case EntityTypeName::kDriversLicense:
@@ -354,6 +349,18 @@ api::autofill_private::EntityType EntityTypeToPrivateApiEntityType(
       // pass_type is unset for non-pass type entities.
       break;
   }
+  const bool is_wallet_branded =
+      api_type.pass_type == autofill_private::EntityPassType::kPrivatePass &&
+      supports_wallet_storage &&
+      base::FeatureList::IsEnabled(
+          autofill::features::kAutofillAiWalletPassBranding2026);
+  api_type.add_entity_type_string =
+      autofill::GetAddEntityTypeStringForI18n(entity_type, is_wallet_branded);
+  api_type.edit_entity_type_string =
+      autofill::GetEditEntityTypeStringForI18n(entity_type);
+  api_type.delete_entity_type_string =
+      autofill::GetDeleteEntityTypeStringForI18n(entity_type);
+  api_type.supports_wallet_storage = supports_wallet_storage;
   return api_type;
 }
 

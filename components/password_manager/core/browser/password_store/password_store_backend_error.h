@@ -20,6 +20,7 @@ namespace password_manager {
 // This should be kept in sync with PasswordStoreBackendErrorType in enums.xml.
 enum class PasswordStoreBackendErrorType {
   kUncategorized = 0,
+  kMinValue = kUncategorized,
   // An authentication error that prevents the password store from accessing
   // passwords, for which the resolution intent has been received.
   kAuthErrorResolvable = 1,
@@ -42,8 +43,10 @@ enum class PasswordStoreBackendErrorType {
   kIrretrievableSecurityDomain = 8,
   // Indicates that the passphrase is required to continue with e.g. saving.
   kNeedsPassphrase = 9,
+  // The operation was cancelled (e.g., due to a sync state change or shutdown).
+  kCancelled = 10,
 
-  kMaxValue = kNeedsPassphrase,
+  kMaxValue = kCancelled,
 };
 
 struct PasswordStoreBackendError {

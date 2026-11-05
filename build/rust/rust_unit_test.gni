@@ -124,6 +124,10 @@ template("rust_unit_test") {
     metadata = {
       # Consumed by "rust_unit_tests_group" gni template.
       rust_unit_test_executables = [ _crate_name ]
+      if (defined(invoker.aliased_deps) && invoker.aliased_deps != {
+                                           }) {
+        rust_aliased_deps = [ invoker.aliased_deps ]
+      }
     }
 
     # Duplicated from rust_target since we didn't use the rust_executable
@@ -131,6 +135,11 @@ template("rust_unit_test") {
     if (!defined(deps)) {
       deps = []
     }
+
+    # `rustc --test` generates a test harness that links against the `test`
+    # crate (and its transitive dependencies like `getopts`), which are excluded
+    # from the default `//build/rust/std` group.
+    deps += [ "//build/rust/std:test_support" ]
     if (!defined(invoker.no_chromium_prelude) || !invoker.no_chromium_prelude) {
       if (enable_chromium_prelude) {
         deps += [ "//build/rust/chromium_prelude" ]

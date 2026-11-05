@@ -26,7 +26,7 @@ namespace base {
 class CommandLine;
 class SequencedTaskRunner;
 #if !BUILDFLAG(USE_BLINK)
-class MemoryPressureListenerRegistry;
+class MemoryPressureSource;
 #endif
 }  // namespace base
 
@@ -117,6 +117,7 @@ class ApplicationContextImpl : public ApplicationContext {
   supervised_user::DeviceParentalControls& GetDeviceParentalControls() override;
   optimization_guide::OptimizationGuideGlobalState*
   GetOptimizationGuideGlobalState() override;
+  OmahaService& GetOmahaService() override;
 
  private:
   // Represents the possible application states the app can be in.
@@ -212,9 +213,10 @@ class ApplicationContextImpl : public ApplicationContext {
       optimization_guide_global_state_;
 
 #if !BUILDFLAG(USE_BLINK)
-  std::unique_ptr<base::MemoryPressureListenerRegistry>
-      memory_pressure_listener_registry_;
+  std::unique_ptr<base::MemoryPressureSource> memory_pressure_source_;
 #endif
+
+  std::unique_ptr<OmahaService> omaha_service_;
 
   // Must be the last member variable.
   base::WeakPtrFactory<ApplicationContextImpl> weak_ptr_factory_{this};

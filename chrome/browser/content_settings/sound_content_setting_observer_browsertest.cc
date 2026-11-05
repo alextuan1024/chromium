@@ -18,9 +18,9 @@
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_utils.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
@@ -259,7 +259,7 @@ IN_PROC_BROWSER_TEST_F(SoundContentSettingObserverBrowserTest,
   run_loop.Run();
 
   SoundContentSettingObserver* observer =
-      SoundContentSettingObserver::FromWebContents(web_contents());
+      SoundContentSettingObserver::From(browser()->GetActiveTabInterface());
   // `logged_site_muted_ukm_` should be set.
   EXPECT_TRUE(observer->HasLoggedSiteMutedUkmForTesting());
 

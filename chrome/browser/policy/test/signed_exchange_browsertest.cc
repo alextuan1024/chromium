@@ -8,10 +8,8 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/policy/core/common/policy_map.h"
@@ -34,14 +32,6 @@ class SignedExchangePolicyTest : public PolicyTest {
   ~SignedExchangePolicyTest() override = default;
 
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
-
     embedded_test_server()->ServeFilesFromSourceDirectory("content/test/data");
     embedded_test_server()->RegisterRequestMonitor(base::BindRepeating(
         &SignedExchangePolicyTest::MonitorRequest, base::Unretained(this)));
@@ -85,7 +75,6 @@ class SignedExchangePolicyTest : public PolicyTest {
         it->second;
   }
 
-  base::test::ScopedFeatureList scoped_feature_list_;
   content::SignedExchangeBrowserTestHelper sxg_test_helper_;
   std::map<GURL, std::string> url_accept_header_map_;
 };
@@ -103,7 +92,7 @@ IN_PROC_BROWSER_TEST_F(SignedExchangePolicyTest, SignedExchangeDisabled) {
   download_observer.WaitForFinished();
 
   // Check that the SXG file was not loaded as a page, but downloaded.
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   browser()->GetProfile()->GetDownloadManager()->GetAllDownloads(&downloads);
   ASSERT_EQ(1u, downloads.size());
   EXPECT_EQ(downloads[0]->GetURL(), url);

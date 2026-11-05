@@ -8,6 +8,7 @@ import android.app.Activity;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.actor.background_tabs.ActorTabStateHelper;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.init.AsyncInitializationActivity;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
@@ -34,7 +35,6 @@ public class LiveBackgroundTab implements BackgroundPoolTab {
     private final BackgroundTabPool mPool;
     private final Tab mTab;
     private final @TabId int mPlaceholderTabId;
-    private final @Nullable Integer mTaskId;
     private final int mOriginalTabIndex;
     private boolean mAttached;
     private @Nullable TabObserver mTabObserver;
@@ -45,39 +45,17 @@ public class LiveBackgroundTab implements BackgroundPoolTab {
      * @param pool The {@link BackgroundTabPool} that owns this tab.
      * @param tab The live in-memory {@link Tab} instance.
      * @param placeholderTabId The placeholder tab ID associated with this background tab.
-     * @param taskId The task ID associated with the background session, or null if none.
-     */
-    public LiveBackgroundTab(
-            BackgroundTabPool pool,
-            Tab tab,
-            @TabId int placeholderTabId,
-            @Nullable Integer taskId) {
-        this(pool, tab, placeholderTabId, taskId, TabModel.INVALID_TAB_INDEX);
-    }
-
-    /**
-     * Constructs a {@link LiveBackgroundTab} with an original tab index.
-     *
-     * @param pool The {@link BackgroundTabPool} that owns this tab.
-     * @param tab The live in-memory {@link Tab} instance.
-     * @param placeholderTabId The placeholder tab ID associated with this background tab.
-     * @param taskId The task ID associated with the background session, or null if none.
      * @param originalTabIndex The original tab model index before detachment, or {@link
      *     TabModel#INVALID_TAB_INDEX}.
      */
     public LiveBackgroundTab(
-            BackgroundTabPool pool,
-            Tab tab,
-            @TabId int placeholderTabId,
-            @Nullable Integer taskId,
-            int originalTabIndex) {
+            BackgroundTabPool pool, Tab tab, @TabId int placeholderTabId, int originalTabIndex) {
         assert !tab.hasParentCollection() : "LiveBackgroundTab must not have a parent collection.";
         assert !tab.isDestroyed() : "LiveBackgroundTab must not wrap a destroyed tab.";
         assert !tab.isOffTheRecord() : "LiveBackgroundTab does not support incognito tabs.";
         mPool = pool;
         mTab = tab;
         mPlaceholderTabId = placeholderTabId;
-        mTaskId = taskId;
         mOriginalTabIndex = originalTabIndex;
 
         mTabObserver =
@@ -135,12 +113,8 @@ public class LiveBackgroundTab implements BackgroundPoolTab {
             placeholderTab.destroy();
         }
 
-        if (placeholderTabState != null && placeholderTabState.contentsState != null) {
-            placeholderTabState.contentsState.destroy();
-            placeholderTabState.contentsState = null;
-        }
-
         if (placeholderTabState != null) {
+            placeholderTabState.contentsState = null;
             transferPlaceholderMetadata(mTab, placeholderTabState);
         }
         tabModel.addTab(
@@ -155,8 +129,7 @@ public class LiveBackgroundTab implements BackgroundPoolTab {
     }
 
     /**
-     * Symmetrically transfers grouping and root ID metadata from a placeholder TabState to this
-     * live Tab.
+     * Symmetrically transfers grouping metadata from a placeholder TabState to this live Tab.
      *
      * <p>Note: Pinned status is not transferred here because for a live {@link Tab}, pinned state
      * is maintained by the {@link TabModel} and must be applied via {@link TabModel#pinTab(int,
@@ -165,9 +138,6 @@ public class LiveBackgroundTab implements BackgroundPoolTab {
     private static void transferPlaceholderMetadata(Tab targetTab, TabState placeholderState) {
         if (placeholderState.tabGroupId != null) {
             targetTab.setTabGroupId(placeholderState.tabGroupId);
-        }
-        if (placeholderState.rootId != Tab.INVALID_TAB_ID) {
-            targetTab.setRootId(placeholderState.rootId);
         }
     }
 
@@ -209,19 +179,9 @@ public class LiveBackgroundTab implements BackgroundPoolTab {
         return mTab;
     }
 
-    /** Returns the task ID associated with the background session, or null if none. */
-    public @Nullable Integer getTaskId() {
-        return mTaskId;
-    }
-
     /** Returns the original tab index in the tab model before detachment. */
     public int getOriginalTabIndex() {
         return mOriginalTabIndex;
-    }
-
-    /** Marks this background tab dirty to trigger disk persistence by BackgroundTabPool. */
-    public void markDirty() {
-        markDirty(mTab);
     }
 
     /** Marks the given tab dirty so its storage observer (BackgroundTabPool) saves it to disk. */

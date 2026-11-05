@@ -57,15 +57,24 @@ class OnDeviceTailModelExecutor {
 
   // Initializes the model executor.
   bool Init();
-  bool Init(const base::FilePath& model_filepath,
-            const std::vector<base::FilePath>& additional_files,
-            const ModelMetadata& metadata);
+
+  // Stores the model files and metadata without loading the model, and unloads
+  // the model loaded from the previous files, if any. The model is loaded by
+  // the next call to `Init()`. Returns false, leaving the executor unchanged,
+  // if `model_filepath` is empty or `additional_files` has no vocabulary file.
+  bool SetModelFiles(const base::FilePath& model_filepath,
+                     const std::vector<base::FilePath>& additional_files,
+                     const ModelMetadata& metadata);
 
   // Returns whether the executor is initialized.
   bool IsReady() const { return interpreter_ != nullptr; }
 
   // Resets the model executor.
   void Reset();
+
+  // Resets the model executor and forgets the model files, so that `Init()`
+  // fails until `SetModelFiles()` is called again.
+  void ClearModelFiles();
 
   // Returns at most `max_num_suggestions` suggestions and their probabilities,
   // with minimum probability `probability_threshold` for the given `prefix` and

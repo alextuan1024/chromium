@@ -23,7 +23,6 @@
 #include "components/live_caption/caption_util.h"
 #include "components/soda/constants.h"
 #include "components/strings/grit/components_strings.h"
-#include "components/sync/base/features.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/common/content_features.h"
@@ -149,6 +148,18 @@ void AddLiveCaptionSectionStrings(content::WebUIDataSource* html_source) {
        IDS_SETTINGS_CAPTIONS_MASK_OFFENSIVE_WORDS_TITLE},
       {"captionsEnableLiveCaptionSubtitle",
        IDS_SETTINGS_CAPTIONS_ENABLE_LIVE_CAPTION_SUBTITLE},
+      {"speechRecognitionSmallExpertModelTitle",
+       IDS_SETTINGS_CAPTIONS_SPEECH_RECOGNITION_SMALL_EXPERT_MODEL_SECTION_TITLE},
+      {"speechRecognitionSmallExpertModelSubtitle",
+       IDS_SETTINGS_CAPTIONS_SPEECH_RECOGNITION_SMALL_EXPERT_MODEL_SECTION_SUBTITLE},
+      {"speechRecognitionSmallExpertModelDeleteButton",
+       IDS_SETTINGS_CAPTIONS_SPEECH_RECOGNITION_SMALL_EXPERT_MODEL_DELETE_BUTTON},
+      {"speechRecognitionSmallExpertModelDownloadProgress",
+       IDS_SETTINGS_CAPTIONS_LIVE_CAPTION_DOWNLOAD_PROGRESS},
+      {"speechRecognitionSmallExpertModelDownloadComplete",
+       IDS_SETTINGS_CAPTIONS_LIVE_CAPTION_DOWNLOAD_COMPLETE},
+      {"speechRecognitionSmallExpertModelDownloadError",
+       IDS_SETTINGS_CAPTIONS_LIVE_CAPTION_DOWNLOAD_ERROR},
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
@@ -157,22 +168,13 @@ void AddLiveCaptionSectionStrings(content::WebUIDataSource* html_source) {
   html_source->AddBoolean("enableLiveCaption",
                           captions::IsLiveCaptionFeatureSupported());
   html_source->AddBoolean("enableLiveCaptionMultiLanguage", true);
+  html_source->AddBoolean(
+      "enableLiveCaptionSpeechRecognitionSmallExpertModel",
+      base::FeatureList::IsEnabled(
+          media::kLiveCaptionSpeechRecognitionSmallExpertModel));
 
   html_source->AddBoolean("enableLiveTranslate", liveTranslateEnabled);
 }
-
-#if BUILDFLAG(IS_CHROMEOS)
-void AddPasswordPromptDialogStrings(content::WebUIDataSource* html_source) {
-  static constexpr webui::LocalizedString kLocalizedStrings[] = {
-      {"passwordPromptTitle", IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_TITLE},
-      {"passwordPromptInvalidPassword",
-       IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_INVALID_PASSWORD},
-      {"passwordPromptPasswordLabel",
-       IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_PASSWORD_LABEL},
-  };
-  html_source->AddLocalizedStrings(kLocalizedStrings);
-}
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 void AddSharedSyncPageStrings(content::WebUIDataSource* html_source) {
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
@@ -196,15 +198,19 @@ void AddSharedSyncPageStrings(content::WebUIDataSource* html_source) {
       {"enterPassphraseLabel", IDS_SYNC_ENTER_PASSPHRASE_BODY},
       {"enterPassphraseLabelWithDate",
        IDS_SYNC_ENTER_PASSPHRASE_BODY_WITH_DATE},
+      {"encryptWithGoogleCredentialsLabel",
+       IDS_SETTINGS_ENCRYPT_ACCOUNT_DATA_WITH_GOOGLE_CREDENTIALS_LABEL},
+      {"existingPassphraseLabelWithDate",
+       IDS_SYNC_FULL_ACCOUNT_DATA_ENCRYPTION_BODY_CUSTOM_WITH_DATE},
+      {"existingPassphraseLabel",
+       IDS_SYNC_FULL_ACCOUNT_DATA_ENCRYPTION_BODY_CUSTOM},
+      {"manageSyncedDataTitle", IDS_SETTINGS_ACCOUNT_DATA_DASHBOARD},
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
   std::string sync_dashboard_url =
       google_util::AppendGoogleLocaleParam(
-          GURL(base::FeatureList::IsEnabled(
-                   syncer::kSyncEnableNewSyncDashboardUrl)
-                   ? chrome::kNewSyncGoogleDashboardURL
-                   : chrome::kLegacySyncGoogleDashboardURL),
+          GURL(chrome::kSyncGoogleDashboardURL),
           g_browser_process->GetApplicationLocale())
           .spec();
 
@@ -215,50 +221,20 @@ void AddSharedSyncPageStrings(content::WebUIDataSource* html_source) {
   html_source->AddString("syncDashboardUrl", sync_dashboard_url);
   html_source->AddString("syncErrorsHelpUrl", chrome::kSyncErrorsHelpURL);
 
-  const bool updateAccountSettingsStrings =
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled();
-
-  html_source->AddLocalizedString(
-      "encryptWithGoogleCredentialsLabel",
-      updateAccountSettingsStrings
-          ? IDS_SETTINGS_ENCRYPT_ACCOUNT_DATA_WITH_GOOGLE_CREDENTIALS_LABEL
-          : IDS_SETTINGS_ENCRYPT_WITH_GOOGLE_CREDENTIALS_LABEL);
-  html_source->AddLocalizedString(
-      "existingPassphraseLabelWithDate",
-      updateAccountSettingsStrings
-          ? IDS_SYNC_FULL_ACCOUNT_DATA_ENCRYPTION_BODY_CUSTOM_WITH_DATE
-          : IDS_SYNC_FULL_ENCRYPTION_BODY_CUSTOM_WITH_DATE);
-  html_source->AddLocalizedString(
-      "existingPassphraseLabel",
-      updateAccountSettingsStrings
-          ? IDS_SYNC_FULL_ACCOUNT_DATA_ENCRYPTION_BODY_CUSTOM
-          : IDS_SYNC_FULL_ENCRYPTION_BODY_CUSTOM);
-  html_source->AddLocalizedString(
-      "manageSyncedDataTitle",
-      updateAccountSettingsStrings
-          ? IDS_SETTINGS_ACCOUNT_DATA_DASHBOARD
-          : IDS_SETTINGS_NEW_MANAGE_SYNCED_DATA_TITLE_UNIFIED_CONSENT);
-
   html_source->AddString(
       "passphraseResetHintEncryption",
       l10n_util::GetStringFUTF8(
-          updateAccountSettingsStrings
-              ? IDS_SETTINGS_PASSPHRASE_RESET_HINT_ACCOUNT_DATA_ENCRYPTION
-              : IDS_SETTINGS_PASSPHRASE_RESET_HINT_ENCRYPTION,
+          IDS_SETTINGS_PASSPHRASE_RESET_HINT_ACCOUNT_DATA_ENCRYPTION,
           base::ASCIIToUTF16(sync_dashboard_url)));
   html_source->AddString(
       "passphraseExplanationText",
       l10n_util::GetStringFUTF8(
-          updateAccountSettingsStrings
-              ? IDS_SETTINGS_ENCRYPT_ACCOUNT_DATA_WITH_PASSPHRASE_EXPLANATION_TEXT
-              : IDS_SETTINGS_PASSPHRASE_EXPLANATION_TEXT,
+          IDS_SETTINGS_ENCRYPT_ACCOUNT_DATA_WITH_PASSPHRASE_EXPLANATION_TEXT,
           base::ASCIIToUTF16(sync_dashboard_url)));
   html_source->AddString(
       "encryptWithSyncPassphraseLabel",
       l10n_util::GetStringFUTF8(
-          updateAccountSettingsStrings
-              ? IDS_SETTINGS_ENCRYPT_ACCOUNT_DATA_WITH_PASSPHRASE_LABEL
-              : IDS_SETTINGS_ENCRYPT_WITH_SYNC_PASSPHRASE_LABEL,
+          IDS_SETTINGS_ENCRYPT_ACCOUNT_DATA_WITH_PASSPHRASE_LABEL,
 #if BUILDFLAG(IS_CHROMEOS)
           GetHelpUrlWithBoard(chrome::kSyncEncryptionHelpURL)));
 #else

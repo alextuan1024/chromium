@@ -9,6 +9,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/blob/blob_url_store.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/web_url_request.h"
@@ -21,6 +22,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/code_cache_host.h"
 #include "third_party/blink/renderer/platform/mojo/browser_interface_broker_proxy_impl.h"
+#include "third_party/blink/renderer/platform/scheduler/public/worker_scheduler.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 
 namespace blink {
@@ -55,6 +57,7 @@ class CORE_EXPORT WorkletGlobalScope : public WorkerOrWorkletGlobalScope {
   ExecutionContext* GetExecutionContext() const override;
 
   // ExecutionContext
+  void SetIsInBackForwardCache(bool) override;
   const KURL& Url() const final { return url_; }
   const KURL& BaseURL() const final { return url_; }
   KURL CompleteURL(const String&) const final;
@@ -62,7 +65,7 @@ class CORE_EXPORT WorkletGlobalScope : public WorkerOrWorkletGlobalScope {
   bool IsContextThread() const final;
   void AddConsoleMessageImpl(ConsoleMessage*, bool discard_duplicates) final;
   void AddInspectorIssue(AuditsIssue) final;
-  void ExceptionThrown(ErrorEvent*) final;
+  void ExceptionThrown(ErrorEvent*, SanitizeScriptErrors) final;
   CoreProbeSink* GetProbeSink() final;
   scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner(TaskType) final;
   FrameOrWorkerScheduler* GetScheduler() final;
@@ -74,6 +77,14 @@ class CORE_EXPORT WorkletGlobalScope : public WorkerOrWorkletGlobalScope {
   // WorkerOrWorkletGlobalScope
   void Dispose() override;
   WorkerThread* GetThread() const final;
+  void Freeze(bool is_in_back_forward_cache);
+  void Resume();
+
+  // BackForwardCacheLoaderHelperImpl::Delegate
+  void EvictFromBackForwardCache(mojom::blink::RendererEvictionReason reason,
+                                 SourceLocation* source_location) override;
+  void DidBufferLoadWhileInBackForwardCache(bool update_process_wide_count,
+                                            size_t num_bytes) override;
   const base::UnguessableToken& GetDevToolsToken() const override;
   CodeCacheHost* GetCodeCacheHost() override;
   std::optional<mojo::PendingRemote<network::mojom::blink::URLLoaderFactory>>
@@ -151,6 +162,9 @@ class CORE_EXPORT WorkletGlobalScope : public WorkerOrWorkletGlobalScope {
     return frame_token_;
   }
 
+ protected:
+  base::TimeTicks TimeOrigin() const { return time_origin_; }
+
  private:
   enum class ThreadType {
     // Indicates this global scope lives on the main thread.
@@ -195,6 +209,15 @@ class CORE_EXPORT WorkletGlobalScope : public WorkerOrWorkletGlobalScope {
   raw_ptr<WorkerThread, UnprotectedInRelease | DanglingUntriaged>
       worker_thread_;
 
+  // Held while Freeze() is in effect; keeps this scope's WorkerScheduler
+  // paused. Only used for threaded worklets.
+  std::unique_ptr<scheduler::WorkerScheduler::PauseHandle> freeze_pause_handle_;
+
+  // The total bytes buffered by all network requests in this worklet while
+  // frozen due to back-forward cache. This number gets reset when the worklet
+  // gets out of the back-forward cache.
+  size_t total_bytes_buffered_while_in_back_forward_cache_ = 0;
+
   // The token identifying the LocalFrame that caused this scope to be created.
   const LocalFrameToken frame_token_;
 
@@ -211,13 +234,15 @@ class CORE_EXPORT WorkletGlobalScope : public WorkerOrWorkletGlobalScope {
   // TODO(crbug.com/1206150): We need a spec for this capability.
   const bool parent_is_isolated_context_;
 
+  const base::TimeTicks time_origin_;
+
   // This is the interface that handles generated code cache
   // requests both to fetch code cache when loading resources
   // and to store generated code cache to disk.
   std::unique_ptr<CodeCacheHost> code_cache_host_;
 
   // The interface through which the worklet may request interfaces from the
-  // browser. It's currently only set for SharedStorageWorklet.
+  // browser.
   blink::BrowserInterfaceBrokerProxyImpl browser_interface_broker_proxy_;
 
   // A PendingRemote for use in threaded worklets that gets created from the

@@ -15,6 +15,7 @@
 #include "build/build_config.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/shell_dialogs/base_shell_dialog.h"
+#include "ui/shell_dialogs/select_file_dialog_listener.h"
 #include "ui/shell_dialogs/shell_dialogs_export.h"
 
 class GURL;
@@ -23,7 +24,6 @@ namespace ui {
 
 class SelectFileDialogFactory;
 class SelectFilePolicy;
-struct SelectedFileInfo;
 
 // Shows a dialog box for selecting a file or a folder.
 class SHELL_DIALOGS_EXPORT SelectFileDialog
@@ -53,30 +53,7 @@ class SHELL_DIALOGS_EXPORT SelectFileDialog
     SELECT_OPEN_MULTI_FILE
   };
 
-  // An interface implemented by a Listener object wishing to know about the
-  // the result of the Select File/Folder action. For any given call to
-  // SelectFile(), exactly one of these callbacks will be invoked once, possibly
-  // *but not necessarily* while SelectFile() is still on the stack.
-  class SHELL_DIALOGS_EXPORT Listener {
-   public:
-    // Notifies the Listener that a file/folder selection has been made. The
-    // file/folder path is in |file|. |index| specifies the index of the filter
-    // passed to the initial call to SelectFile.
-    virtual void FileSelected(const SelectedFileInfo& file, int index) {}
-
-    // Notifies the Listener that many files have been selected. The files are
-    // in |files|.
-    // Implementing this method is optional if no multi-file selection is ever
-    // made, as the default implementation will call NOTREACHED.
-    virtual void MultiFilesSelected(const std::vector<SelectedFileInfo>& files);
-
-    // Notifies the Listener that the file/folder selection was canceled (via
-    // the user canceling or closing the selection dialog box, for example).
-    virtual void FileSelectionCanceled() {}
-
-   protected:
-    virtual ~Listener() = default;
-  };
+  using Listener = SelectFileDialogListener;
 
   // Sets the factory that creates SelectFileDialog objects, overriding default
   // behaviour.
@@ -248,6 +225,8 @@ class SHELL_DIALOGS_EXPORT SelectFileDialog
   // The listener to be notified of selection completion.
   raw_ptr<Listener> listener_;
 
+  SelectFilePolicy* select_file_policy() { return select_file_policy_.get(); }
+
  private:
   // Tests if the file selection dialog can be displayed by
   // testing if the AllowFileSelectionDialogs-Policy is
@@ -267,6 +246,23 @@ class SHELL_DIALOGS_EXPORT SelectFileDialog
 SelectFileDialog* CreateSelectFileDialog(
     SelectFileDialog::Listener* listener,
     std::unique_ptr<SelectFilePolicy> policy);
+
+// Sets ui::SelectFileDialogFactory for the duration of this object's lifetime,
+// restoring the previous factory (if any) upon destruction.
+class SHELL_DIALOGS_EXPORT ScopedSetSelectFileDialogFactory {
+ public:
+  explicit ScopedSetSelectFileDialogFactory(
+      std::unique_ptr<SelectFileDialogFactory> factory);
+  ~ScopedSetSelectFileDialogFactory();
+
+  ScopedSetSelectFileDialogFactory(const ScopedSetSelectFileDialogFactory&) =
+      delete;
+  ScopedSetSelectFileDialogFactory& operator=(
+      const ScopedSetSelectFileDialogFactory&) = delete;
+
+ private:
+  std::unique_ptr<SelectFileDialogFactory> previous_factory_;
+};
 
 }  // namespace ui
 

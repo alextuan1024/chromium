@@ -12,6 +12,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/trace_event/common/trace_event_common.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -53,9 +54,9 @@ base::AtomicSequenceNumber g_sequence_num_for_counters;
 // static
 template <typename Traits>
 const CodecTraceNames* EncoderBase<Traits>::GetTraceNames() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const CodecTraceNames, trace_names,
-                                  (Traits::GetName()));
-  return &trace_names;
+  static const base::NoDestructor<CodecTraceNames> trace_names(
+      Traits::GetName());
+  return trace_names.get();
 }
 
 template <typename Traits>
@@ -178,6 +179,7 @@ void EncoderBase<Traits>::close(ExceptionState& exception_state) {
 
 template <typename Traits>
 ScriptPromise<IDLUndefined> EncoderBase<Traits>::flush(
+    ScriptState* script_state,
     ExceptionState& exception_state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (ThrowIfCodecStateClosed(state_, "flush", exception_state))
@@ -189,12 +191,13 @@ ScriptPromise<IDLUndefined> EncoderBase<Traits>::flush(
   MarkCodecActive();
 
   Request* request = MakeGarbageCollected<Request>();
-  request->resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state_);
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  request->resolver = resolver;
   request->reset_count = reset_count_;
   request->type = Request::Type::kFlush;
   EnqueueRequest(request);
-  return request->resolver->Promise();
+  return resolver->Promise();
 }
 
 template <typename Traits>
@@ -236,6 +239,7 @@ void EncoderBase<Traits>::ResetInternal(DOMException* ex) {
   }
 
   blocking_request_in_progress_ = nullptr;
+  has_pending_error_ = false;
 
   // Schedule deletion of |media_encoder_| for later.
   // ResetInternal() might be called by an error reporting callback called by
@@ -251,15 +255,20 @@ void EncoderBase<Traits>::ResetInternal(DOMException* ex) {
 
 template <typename Traits>
 void EncoderBase<Traits>::QueueHandleError(DOMException* ex) {
+  has_pending_error_ = true;
   callback_runner_->PostTask(
-      FROM_HERE, BindOnce(&EncoderBase<Traits>::HandleError,
-                          WrapWeakPersistent(this), WrapPersistent(ex)));
+      FROM_HERE,
+      BindOnce(&EncoderBase<Traits>::HandleError, WrapWeakPersistent(this),
+               WrapPersistent(ex), reset_count_));
 }
 
 template <typename Traits>
-void EncoderBase<Traits>::HandleError(DOMException* ex) {
-  if (state_.AsEnum() == V8CodecState::Enum::kClosed)
+void EncoderBase<Traits>::HandleError(DOMException* ex,
+                                      std::optional<uint32_t> reset_count) {
+  if (state_.AsEnum() == V8CodecState::Enum::kClosed ||
+      (reset_count && reset_count_ != *reset_count)) {
     return;
+  }
 
   TRACE_EVENT0(kCategory, GetTraceNames()->handle_error.c_str());
 
@@ -307,7 +316,13 @@ void EncoderBase<Traits>::ProcessRequests() {
         ProcessReconfigure(request);
         break;
       case Request::Type::kEncode:
+        CHECK_GT(requested_encodes_, 0u);
+        --requested_encodes_;
+        ScheduleDequeueEvent();
         ProcessEncode(request);
+        if (request->input) {
+          request->input.Release()->close();
+        }
         break;
       case Request::Type::kFlush:
         ProcessFlush(request);
@@ -322,7 +337,7 @@ void EncoderBase<Traits>::ProcessRequests() {
 
 template <typename Traits>
 bool EncoderBase<Traits>::ReadyToProcessNextRequest() {
-  return !blocking_request_in_progress_;
+  return !blocking_request_in_progress_ && !has_pending_error_;
 }
 
 template <typename Traits>
@@ -393,7 +408,8 @@ void EncoderBase<Traits>::ContextDestroyed() {
 
 template <typename Traits>
 bool EncoderBase<Traits>::HasPendingActivity() const {
-  return blocking_request_in_progress_ || !requests_.empty();
+  return blocking_request_in_progress_ || has_pending_error_ ||
+         !requests_.empty();
 }
 
 template <typename Traits>

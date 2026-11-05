@@ -36,6 +36,8 @@ component("service") {
     "gpu_config.h",
     "gpu_init.cc",
     "gpu_init.h",
+    "gpu_init_2.cc",
+    "gpu_init_2.h",
     "gpu_watchdog_thread.cc",
     "gpu_watchdog_thread.h",
     "image_transport_surface.h",
@@ -43,8 +45,6 @@ component("service") {
     "raster_command_buffer_stub.h",
     "shared_image_stub.cc",
     "shared_image_stub.h",
-    "webgpu_command_buffer_stub.cc",
-    "webgpu_command_buffer_stub.h",
   ]
   defines = [ "GPU_IPC_SERVICE_IMPLEMENTATION" ]
   if (subpixel_font_rendering_disabled) {
@@ -60,6 +60,7 @@ component("service") {
     "//gpu/config",
     "//gpu/ipc/common",
     "//ipc",
+    "//services/viz/privileged/mojom/gl:gpu_client_type",
     "//ui/base",
     "//ui/display",
     "//ui/gfx",
@@ -93,6 +94,8 @@ component("service") {
     sources += [
       "dcomp_texture_win.cc",
       "dcomp_texture_win.h",
+      "gpu_init_win.cc",
+      "gpu_init_win.h",
       "image_transport_surface_win.cc",
     ]
     if (skia_use_dawn) {
@@ -152,12 +155,23 @@ component("service") {
   }
   if (use_ozone) {
     deps += [ "//ui/ozone" ]
+    sources += [
+      "gpu_init_ozone.cc",
+      "gpu_init_ozone.h",
+    ]
   }
   if (is_fuchsia) {
     sources += [ "image_transport_surface_fuchsia.cc" ]
   }
   if (enable_vulkan) {
     deps += [ "//gpu/vulkan/init" ]
+  }
+
+  if (use_dawn) {
+    sources += [
+      "webgpu_command_buffer_stub.cc",
+      "webgpu_command_buffer_stub.h",
+    ]
   }
 
   if (use_dawn || skia_use_dawn) {

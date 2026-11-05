@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/base_switches.h"
 #include "base/i18n/language_tag.h"
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
@@ -15,6 +16,7 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
@@ -231,6 +233,39 @@ class TranslateManagerTest : public ::testing::Test {
     EXPECT_CALL(*mock_translate_metrics_logger_, LogTriggerDecision(_))
         .Times(::testing::AnyNumber())
         .After(highest_priority_trigger_decision_expectation);
+  }
+
+  void ExpectTranslateTriggerDisabled() {
+    PrepareTranslateManager();
+    manager_->set_application_locale("en");
+
+    ON_CALL(mock_translate_client_, IsTranslatableURL(GURL()))
+        .WillByDefault(Return(true));
+    language::AcceptLanguagesService accept_languages(&prefs_,
+                                                      accept_languages_prefs);
+    ON_CALL(mock_translate_client_, GetAcceptLanguagesService())
+        .WillByDefault(Return(&accept_languages));
+
+    mock_translate_metrics_logger_ =
+        std::make_unique<MockTranslateMetricsLogger>();
+    translate_manager_->RegisterTranslateMetricsLogger(
+        mock_translate_metrics_logger_->GetWeakPtr());
+
+    prefs_.SetBoolean(prefs::kOfferTranslateEnabled, true);
+    network_notifier_.SimulateOnline();
+    // Simulate a French page.
+    translate_manager_->GetLanguageState()->LanguageDetermined("fr", true);
+
+    // Expect 0 calls to show the UI and the metrics logger due to early exit.
+    EXPECT_CALL(mock_translate_client_, ShowTranslateUI(_, _, _, _, _))
+        .Times(0);
+    EXPECT_CALL(*mock_translate_metrics_logger_, LogTriggerDecision(_))
+        .Times(0);
+
+    translate_manager_->InitiateTranslation("fr");
+
+    // Manual translation should still be possible.
+    EXPECT_TRUE(translate_manager_->CanManuallyTranslate());
   }
 
   // Required to instantiate a net::test::MockNetworkChangeNotifier, because it
@@ -1067,9 +1102,52 @@ TEST_F(TranslateManagerTest, CanManuallyTranslate_ImagePage) {
 
   EXPECT_FALSE(translate_manager_->CanManuallyTranslate());
   EXPECT_FALSE(translate_manager_->CanManuallyTranslate(true));
+  EXPECT_FALSE(translate_manager_->CanPartiallyTranslate());
+}
+
+TEST_F(TranslateManagerTest, CanPartiallyTranslate_PdfPage) {
+  scoped_feature_list_.InitAndDisableFeature(translate::kEnableTranslatePdf);
+
+  PrepareTranslateManager();
+  manager_->set_application_locale("en");
+
+  network_notifier_.SimulateOnline();
+  ON_CALL(mock_translate_client_, IsTranslatableURL(GURL()))
+      .WillByDefault(Return(true));
+  language::AcceptLanguagesService accept_languages(&prefs_,
+                                                    accept_languages_prefs);
+  ON_CALL(mock_translate_client_, GetAcceptLanguagesService())
+      .WillByDefault(Return(&accept_languages));
+
+  translate_manager_->GetLanguageState()->LanguageDetermined("de", true);
+  driver_.SetPageMimeType(kPdfMimeType);
+
+  // When kEnableTranslatePdf is disabled, full-page manual translation is
+  // disabled on PDFs (regardless of PdfTranslatabilityStatus), while partial
+  // translation remains enabled.
+  for (auto status : {LanguageState::PdfTranslatabilityStatus::kUntranslatable,
+                      LanguageState::PdfTranslatabilityStatus::kTranslatable,
+                      LanguageState::PdfTranslatabilityStatus::kNotChecked}) {
+    translate_manager_->GetLanguageState()->set_pdf_translatability_status(
+        status);
+    EXPECT_FALSE(translate_manager_->CanManuallyTranslate());
+    EXPECT_FALSE(translate_manager_->CanManuallyTranslate(true));
+    EXPECT_TRUE(translate_manager_->CanPartiallyTranslate());
+  }
+
+  // Initiating page-level translation on a PDF when kEnableTranslatePdf is
+  // disabled must not show the translate UI or enable the omnibox icon
+  // (crbug.com/565171599).
+  EXPECT_CALL(mock_translate_client_, ShowTranslateUI(_, _, _, _, _)).Times(0);
+  ExpectHighestPriorityTriggerDecision(
+      TriggerDecision::kDisabledMIMETypeNotSupported);
+  translate_manager_->InitiateTranslation("de");
+  EXPECT_FALSE(translate_manager_->GetLanguageState()->translate_enabled());
 }
 
 TEST_F(TranslateManagerTest, CanManuallyTranslate_PdfTranslatabilityStatus) {
+  scoped_feature_list_.InitAndEnableFeature(translate::kEnableTranslatePdf);
+
   TranslateManager::SetIgnoreMissingKeyForTesting(true);
   translate_manager_ = std::make_unique<TranslateManager>(
       &mock_translate_client_, &mock_translate_ranker_, &mock_language_model_);
@@ -1081,23 +1159,62 @@ TEST_F(TranslateManagerTest, CanManuallyTranslate_PdfTranslatabilityStatus) {
   translate_manager_->GetLanguageState()->LanguageDetermined("de", true);
   driver_.SetPageMimeType(kPdfMimeType);
 
-  // Untranslatable PDF should disable manual translation.
+  // PDF translatability status should not affect manual translation
+  // availability, so that partial translation remains available. Full page
+  // translation of untranslatable PDFs is blocked in TranslatePage().
   translate_manager_->GetLanguageState()->set_pdf_translatability_status(
       LanguageState::PdfTranslatabilityStatus::kUntranslatable);
-  EXPECT_FALSE(translate_manager_->CanManuallyTranslate());
-  EXPECT_FALSE(translate_manager_->CanManuallyTranslate(true));
+  EXPECT_TRUE(translate_manager_->CanManuallyTranslate());
+  EXPECT_TRUE(translate_manager_->CanManuallyTranslate(true));
 
-  // Translatable PDF should allow manual translation.
   translate_manager_->GetLanguageState()->set_pdf_translatability_status(
       LanguageState::PdfTranslatabilityStatus::kTranslatable);
   EXPECT_TRUE(translate_manager_->CanManuallyTranslate());
   EXPECT_TRUE(translate_manager_->CanManuallyTranslate(true));
 
-  // NotChecked PDF should allow manual translation.
   translate_manager_->GetLanguageState()->set_pdf_translatability_status(
       LanguageState::PdfTranslatabilityStatus::kNotChecked);
   EXPECT_TRUE(translate_manager_->CanManuallyTranslate());
   EXPECT_TRUE(translate_manager_->CanManuallyTranslate(true));
+}
+
+TEST_F(TranslateManagerTest, TranslatePage_UntranslatablePdf) {
+  TranslateManager::SetIgnoreMissingKeyForTesting(true);
+  translate_manager_ = std::make_unique<TranslateManager>(
+      &mock_translate_client_, &mock_translate_ranker_, &mock_language_model_);
+
+  network_notifier_.SimulateOnline();
+  ON_CALL(mock_translate_client_, IsTranslatableURL(GURL()))
+      .WillByDefault(Return(true));
+
+  translate_manager_->GetLanguageState()->LanguageDetermined("de", true);
+  driver_.SetPageMimeType(kPdfMimeType);
+  translate_manager_->GetLanguageState()->set_pdf_translatability_status(
+      LanguageState::PdfTranslatabilityStatus::kUntranslatable);
+
+  // Translation should not start; an error should be shown instead.
+  EXPECT_CALL(mock_translate_client_,
+              ShowTranslateUI(translate::TRANSLATE_STEP_TRANSLATING, _, _, _,
+                              _))
+      .Times(0);
+  EXPECT_CALL(mock_translate_client_, OnPdfTranslationRequested()).Times(0);
+
+  // The error is shown asynchronously, so that the translate bubble has
+  // finished switching its view by the time the error arrives.
+  EXPECT_CALL(mock_translate_client_,
+              ShowTranslateUI(translate::TRANSLATE_STEP_TRANSLATE_ERROR, _, _,
+                              _, _))
+      .Times(0);
+  translate_manager_->TranslatePage("de", "en", /*triggered_from_menu=*/true);
+  ::testing::Mock::VerifyAndClearExpectations(&mock_translate_client_);
+
+  EXPECT_CALL(mock_translate_client_,
+              ShowTranslateUI(translate::TRANSLATE_STEP_TRANSLATE_ERROR, "de",
+                              "en", TranslateErrors::TRANSLATION_ERROR,
+                              /*triggered_from_menu=*/true))
+      .WillOnce(Return(true));
+  EXPECT_CALL(mock_translate_client_, OnPdfTranslationRequested()).Times(0);
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(TranslateManagerTest,
@@ -1763,8 +1880,8 @@ TEST_F(TranslateManagerTest, DoTranslatePagePDF) {
   ON_CALL(mock_translate_client_, GetAcceptLanguagesService())
       .WillByDefault(::testing::Return(&accept_languages));
 
-  // Expect that TriggerPdfTranslation is called on the mock client.
-  EXPECT_CALL(mock_translate_client_, TriggerPdfTranslation()).Times(1);
+  // Expect that OnPdfTranslationRequested is called on the mock client.
+  EXPECT_CALL(mock_translate_client_, OnPdfTranslationRequested()).Times(1);
 
   // Calling TranslatePage should trigger the script request.
   translate_manager_->GetLanguageState()->LanguageDetermined("fr", true);
@@ -1786,44 +1903,160 @@ TEST_F(TranslateManagerTest, DoTranslatePagePDF) {
             expected_target);
 }
 
-TEST_F(TranslateManagerTest, DisableTranslateTriggerFlag) {
-  PrepareTranslateManager();
-  manager_->set_application_locale("en");
+TEST_F(TranslateManagerTest, DoTranslatePagePDF_ReadingModeOpen) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(translate::kEnableTranslatePdf);
 
-  ON_CALL(mock_translate_client_, IsTranslatableURL(GURL()))
-      .WillByDefault(Return(true));
+  PrepareTranslateManager();
+  driver_.SetPageMimeType(kPdfMimeType);
+
+  // Setup TestURLLoaderFactory to intercept script request and return success.
+  network::TestURLLoaderFactory test_url_loader_factory;
+  scoped_refptr<network::SharedURLLoaderFactory> test_shared_loader_factory =
+      base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
+          &test_url_loader_factory);
+  TranslateDownloadManager::GetInstance()->set_url_loader_factory(
+      test_shared_loader_factory);
+
+  test_url_loader_factory.SetInterceptor(
+      base::BindLambdaForTesting([&](const network::ResourceRequest& request) {
+        test_url_loader_factory.AddResponse(request.url.spec(),
+                                            "dummy_script_content");
+      }));
+
+  ON_CALL(mock_translate_client_, IsTranslatableURL(_))
+      .WillByDefault(::testing::Return(true));
+  ON_CALL(mock_translate_client_, ShowTranslateUI(_, _, _, _, _))
+      .WillByDefault(::testing::Return(true));
+  ON_CALL(mock_translate_client_, IsReadingModeOpen())
+      .WillByDefault(::testing::Return(true));
   language::AcceptLanguagesService accept_languages(&prefs_,
                                                     accept_languages_prefs);
   ON_CALL(mock_translate_client_, GetAcceptLanguagesService())
-      .WillByDefault(Return(&accept_languages));
+      .WillByDefault(::testing::Return(&accept_languages));
 
-  // Enable command line flag.
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      switches::kDisableTranslateTrigger);
+  // Reading Mode already shows the PDF's content, so the PDF is translated
+  // directly rather than pending, but the client is still notified so that
+  // closing Reading Mode reverts the translation.
+  EXPECT_CALL(mock_translate_client_, OnPdfTranslationRequested()).Times(1);
 
-  mock_translate_metrics_logger_ =
-      std::make_unique<MockTranslateMetricsLogger>();
-  translate_manager_->RegisterTranslateMetricsLogger(
-      mock_translate_metrics_logger_->GetWeakPtr());
-
-  network_notifier_.SimulateOnline();
-  // Simulate a French page.
   translate_manager_->GetLanguageState()->LanguageDetermined("fr", true);
+  translate_manager_->TranslatePage("fr", "en", false);
 
-  // Expect 0 calls to show the UI and the metrics logger due to early exit.
-  EXPECT_CALL(mock_translate_client_, ShowTranslateUI(_, _, _, _, _)).Times(0);
-  EXPECT_CALL(*mock_translate_metrics_logger_, LogTriggerDecision(_)).Times(0);
-
-  translate_manager_->InitiateTranslation("fr");
-
-  // Disable command line flag for subsequent tests.
-  base::CommandLine::ForCurrentProcess()->RemoveSwitch(
-      switches::kDisableTranslateTrigger);
+  // Run loop to let URL loader finish fetching the script.
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return driver_.TranslatePage_is_called(); }));
+  EXPECT_FALSE(translate_manager_->GetLanguageState()
+                   ->pending_source_language()
+                   .has_value());
 }
 
-TEST_F(TranslateManagerTest, DisableTranslateTriggerFlag_ManualTranslation) {
+TEST_F(TranslateManagerTest, RevertTranslationTriggersRevertPdfTranslation) {
+  PrepareTranslateManager();
+
+  ON_CALL(mock_translate_client_, IsTranslatableURL(_))
+      .WillByDefault(::testing::Return(true));
+  ON_CALL(mock_translate_client_, ShowTranslateUI(_, _, _, _, _))
+      .WillByDefault(::testing::Return(true));
+
+  translate_manager_->GetLanguageState()->LanguageDetermined("fr", true);
+  translate_manager_->GetLanguageState()->SetCurrentLanguage("en");
+
+  EXPECT_CALL(mock_translate_client_, RevertPdfTranslation()).Times(1);
+
+  translate_manager_->RevertTranslation();
+}
+
+TEST_F(TranslateManagerTest, CancelPendingTranslationRevertsTranslation) {
+  PrepareTranslateManager();
+  LanguageState* language_state = translate_manager_->GetLanguageState();
+  language_state->LanguageDetermined("fr", true);
+  // A translation is in progress, e.g. of a PDF in Reading Mode.
+  language_state->set_translation_pending(true);
+
+  translate_manager_->CancelPendingTranslation();
+
+  // Reverting stops the translation, which the renderer then reports as
+  // cancelled, so the page isn't marked as translated.
+  EXPECT_TRUE(driver_.RevertTranslation_is_called());
+  EXPECT_FALSE(language_state->translation_pending());
+  EXPECT_FALSE(language_state->IsPageTranslated());
+}
+
+TEST_F(TranslateManagerTest,
+       CancelPendingTranslationClearsPendingTranslationLanguages) {
+  PrepareTranslateManager();
+  LanguageState* language_state = translate_manager_->GetLanguageState();
+  // A PDF translation that's waiting for Reading Mode to open.
+  language_state->set_translation_pending(true);
+  language_state->SetPendingTranslationLanguages(GetKnownLanguageTag("fr"),
+                                                 GetKnownLanguageTag("en"));
+
+  translate_manager_->CancelPendingTranslation();
+
+  EXPECT_FALSE(language_state->translation_pending());
+  EXPECT_FALSE(language_state->pending_source_language().has_value());
+  EXPECT_FALSE(language_state->pending_target_language().has_value());
+}
+
+TEST_F(TranslateManagerTest,
+       CancelPendingTranslationDoesNothingWithoutPendingTranslation) {
+  PrepareTranslateManager();
+  LanguageState* language_state = translate_manager_->GetLanguageState();
+  language_state->LanguageDetermined("fr", true);
+  language_state->SetCurrentLanguage("en");
+
+  translate_manager_->CancelPendingTranslation();
+
+  // A translated page isn't reverted.
+  EXPECT_FALSE(driver_.RevertTranslation_is_called());
+  EXPECT_TRUE(language_state->IsPageTranslated());
+}
+
+TEST_F(TranslateManagerTest, TranslationAfterCancelledTranslationIsApplied) {
+  PrepareTranslateManager();
+  LanguageState* language_state = translate_manager_->GetLanguageState();
+  language_state->LanguageDetermined("fr", true);
+  language_state->set_translation_pending(true);
+  translate_manager_->CancelPendingTranslation();
+
+  // A later translation finishing isn't affected by the cancellation.
+  EXPECT_CALL(mock_translate_client_,
+              ShowTranslateUI(TRANSLATE_STEP_AFTER_TRANSLATE, "fr", "en",
+                              TranslateErrors::NONE, _))
+      .WillOnce(Return(true));
+  translate_manager_->PageTranslated("fr", "en", TranslateErrors::NONE);
+  EXPECT_TRUE(language_state->IsPageTranslated());
+}
+
+TEST_F(TranslateManagerTest, DisableTranslateTriggerFeature) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(kTranslateTrigger);
+
+  ExpectTranslateTriggerDisabled();
+}
+
+TEST_F(TranslateManagerTest, DisableTranslateTrigger_EnableBenchmarkingFlag) {
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitch(
+      ::switches::kEnableBenchmarking);
+
+  ExpectTranslateTriggerDisabled();
+}
+
+TEST_F(TranslateManagerTest,
+       EnableTranslateTriggerFeatureOverridesEnableBenchmarkingFlag) {
+  // Explicitly enabling kTranslateTrigger via command line should override
+  // --enable-benchmarking.
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitch(
+      ::switches::kEnableBenchmarking);
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kTranslateTrigger);
+
   PrepareTranslateManager();
   manager_->set_application_locale("en");
+  ASSERT_TRUE(TranslateDownloadManager::IsSupportedLanguage("zu"));
 
   ON_CALL(mock_translate_client_, IsTranslatableURL(GURL()))
       .WillByDefault(Return(true));
@@ -1832,21 +2065,24 @@ TEST_F(TranslateManagerTest, DisableTranslateTriggerFlag_ManualTranslation) {
   ON_CALL(mock_translate_client_, GetAcceptLanguagesService())
       .WillByDefault(Return(&accept_languages));
 
-  // Enable command line flag.
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      switches::kDisableTranslateTrigger);
-
-  prefs_.SetBoolean(prefs::kOfferTranslateEnabled, true);
   network_notifier_.SimulateOnline();
-  // Simulate a French page.
-  translate_manager_->GetLanguageState()->LanguageDetermined("fr", true);
 
-  // Manual translation should be possible with flag enabled.
-  EXPECT_TRUE(translate_manager_->CanManuallyTranslate());
+  // Use a predefined target language so that InitiateTranslation()
+  // deterministically shows the "Translate this page?" UI.
+  translate_manager_->SetPredefinedTargetLanguage(GetKnownLanguageTag("ru"));
 
-  // Disable command line flag for subsequent tests.
-  base::CommandLine::ForCurrentProcess()->RemoveSwitch(
-      switches::kDisableTranslateTrigger);
+  // Simulate a Zulu page.
+  translate_manager_->GetLanguageState()->LanguageDetermined("zu", true);
+
+  // Expect the "Translate this page?" UI to be shown.
+  EXPECT_CALL(
+      mock_translate_client_,
+      ShowTranslateUI(translate::TRANSLATE_STEP_BEFORE_TRANSLATE, "zu", "ru",
+                      TranslateErrors::NONE, /*triggered_from_menu=*/false))
+      .WillOnce(Return(true));
+
+  ExpectHighestPriorityTriggerDecision(TriggerDecision::kShowUI);
+  translate_manager_->InitiateTranslation("zu");
 }
 
 }  // namespace testing

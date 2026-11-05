@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "base/gtest_prod_util.h"
-#include "base/memory/advanced_memory_safety_checks.h"
+#include "base/memory/sanitized_object.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/omnibox/browser/actions/omnibox_action.h"
@@ -41,13 +41,15 @@ class TemplateURLService;
 // match.
 class AutocompleteResult {
   // TODO(crbug.com/449894891): Remove this macro once it gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   typedef ACMatches::const_iterator const_iterator;
   typedef ACMatches::iterator iterator;
-  using MatchDedupComparator = ACMatchKey<std::string,  // URL
-                                          AutocompleteMatchDedupeType>;
+  using MatchDedupComparator =
+      ACMatchKey<std::string,  // URL
+                 AutocompleteMatchDedupeType,
+                 std::string>;  // Suggest template behavior.
 
   // Max number of matches we'll show from the various providers. This limit
   // may be different for zero suggest and non zero suggest. Does not take into
@@ -198,7 +200,11 @@ class AutocompleteResult {
                              const AutocompleteProviderClient& client);
 
   // Sets a takeover action on all matches to issue a contextual search.
-  void AttachContextualSearchFulfillmentActionToMatches();
+  // If `include_lens_search_matches` is true, the action is also attached to
+  // matches that the server marked as fulfillable by Lens; this is used when
+  // contextual suggestions are fulfilled without Lens (e.g. desktop Android).
+  void AttachContextualSearchFulfillmentActionToMatches(
+      bool include_lens_search_matches = false);
 
   // Sets a takeover action on all matches to open Lens.
   void AttachContextualSearchOpenLensActionToMatches();
@@ -258,13 +264,12 @@ class AutocompleteResult {
       const ACMatches& matches,
       const CompareWithDemoteByType<AutocompleteMatch>& comparing_object);
   // Determines how many matches to keep depending on how many URLs would be
-  // shown. Increases the match limit if there are TYPE_UNSCOPED_EXTENSION
-  // suggestions available so they don't replace other match types.
-  // CalculateNumMatches defers to CalculateNumMatchesPerUrlCount if
-  // all of the following are true:
-  // 1) not in zero suggest.
-  // 2) not in exact featured keyword mode.
-  // 3) `kDynamicMaxAutocomplete` feature is enabled.
+  // shown. Increases the match limit if there are
+  // AutocompleteProvider::Type::kUnscopedExtension suggestions available so
+  // they don't replace other match types. CalculateNumMatches defers to
+  // CalculateNumMatchesPerUrlCount if all of the following are true: 1) not in
+  // zero suggest. 2) not in exact featured keyword mode. 3)
+  // `kDynamicMaxAutocomplete` feature is enabled.
   static size_t CalculateNumMatchesPerUrlCount(
       const ACMatches& matches,
       const CompareWithDemoteByType<AutocompleteMatch>& comparing_object);
@@ -365,6 +370,10 @@ class AutocompleteResult {
         default:
           break;
       }
+    }
+
+    if (match.IsAgenticUpdateSuggestion()) {
+      session_.agentic_update_suggestions_shown_in_session |= true;
     }
   }
 

@@ -8,6 +8,7 @@ import {getRequiredElement} from 'chrome://resources/js/util.js';
 import {BrowserProxyImpl} from './browser_proxy.js';
 import {GlicAppController} from './glic_app_controller.js';
 import {PanelStateKind} from './glic_enums.mojom-webui.js';
+import {ClientLoadErrorReason} from './glic_webui.mojom-webui.js';
 import type {ProfileReadyState, ZoomAction} from './glic_webui.mojom-webui.js';
 
 export enum AppView {
@@ -33,6 +34,9 @@ export class AppRouter {
     this.browserProxy.pageCallbackRouter.intentToShow.addListener(
         this.intentToShow_.bind(this),
     );
+    this.browserProxy.pageCallbackRouter.waitForLoad.addListener(
+        this.waitForLoad_.bind(this),
+    );
     this.browserProxy.pageCallbackRouter.updatePageState.addListener(
         this.updatePageState_.bind(this),
     );
@@ -52,7 +56,28 @@ export class AppRouter {
     this.browserProxy.pageCallbackRouter.clientReadyStateChanged.addListener(
         this.clientReadyStateChanged_.bind(this),
     );
+    this.browserProxy.pageCallbackRouter.showPendingProviderChange.addListener(
+        this.showPendingProviderChange_.bind(this),
+    );
+    this.browserProxy.pageCallbackRouter.showProviderSwitchNotice.addListener(
+        this.showProviderSwitchNotice_.bind(this),
+    );
+    this.browserProxy.pageCallbackRouter.hideProviderSwitchNotice.addListener(
+        this.hideProviderSwitchNotice_.bind(this),
+    );
     this.switchToView(AppView.GLIC);
+  }
+
+  private showPendingProviderChange_() {
+    this.glicController?.showPendingProviderChange();
+  }
+
+  private showProviderSwitchNotice_() {
+    this.glicController?.showProviderSwitchNotice();
+  }
+
+  private hideProviderSwitchNotice_() {
+    this.glicController?.hideProviderSwitchNotice();
   }
 
   private clientReadyStateChanged_(ready: boolean) {
@@ -83,6 +108,13 @@ export class AppRouter {
 
   private intentToShow_() {
     this.glicController?.intentToShow();
+  }
+
+  private waitForLoad_(): Promise<{errorReason: ClientLoadErrorReason | null}> {
+    if (!this.glicController) {
+      return Promise.resolve({errorReason: ClientLoadErrorReason.kUnknown});
+    }
+    return this.glicController.waitForLoad();
   }
 
   private setProfileReadyState_(state: ProfileReadyState) {
@@ -128,9 +160,5 @@ export class AppRouter {
 
   reload(): void {
     this.glicController?.reload();
-  }
-
-  showDebug(): void {
-    this.glicController?.showDebug();
   }
 }

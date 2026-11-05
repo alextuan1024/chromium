@@ -32,14 +32,20 @@ gfx::Point NullAXActionTarget::MaximumScrollOffset() const {
 
 void NullAXActionTarget::SetScrollOffset(const gfx::Point& point) const {}
 
-bool NullAXActionTarget::SetSelection(const AXActionTarget* anchor_object,
-                                      int anchor_offset,
-                                      const AXActionTarget* focus_object,
-                                      int focus_offset) const {
+bool NullAXActionTarget::SetSelection(
+    const AXActionTarget* anchor_object,
+    int anchor_offset,
+    std::optional<ax::mojom::OffsetType> anchor_offset_type,
+    const AXActionTarget* focus_object,
+    int focus_offset,
+    std::optional<ax::mojom::OffsetType> focus_offset_type) const {
   return false;
 }
 
-bool NullAXActionTarget::ScrollToMakeVisible() const {
+bool NullAXActionTarget::ScrollToMakeVisible(
+    ax::mojom::ScrollAlignment horizontal_scroll_alignment,
+    ax::mojom::ScrollAlignment vertical_scroll_alignment,
+    ax::mojom::ScrollBehavior scroll_behavior) const {
   return false;
 }
 

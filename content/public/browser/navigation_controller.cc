@@ -43,6 +43,7 @@ NavigationController::LoadURLParams::LoadURLParams(const OpenURLParams& input)
       has_user_gesture(input.user_gesture),
       started_from_context_menu(input.started_from_context_menu),
       blob_url_loader_factory(input.blob_url_loader_factory),
+      navigation_ui_data(input.navigation_ui_data.Clone()),
       href_translate(input.href_translate),
       reload_type(input.reload_type),
       is_pdf(input.is_pdf),
@@ -69,7 +70,6 @@ NavigationController::LoadURLParams::LoadURLParams(const OpenURLParams& input)
   //     frame_name
   //     from_download_cross_origin_redirect
   //     input_start
-  //     navigation_ui_data
   //     override_user_agent
   //     should_clear_history_list
   //     was_activated
@@ -88,5 +88,12 @@ NavigationController::LoadURLParams::~LoadURLParams() = default;
 NavigationController::LoadURLParams&
 NavigationController::LoadURLParams::operator=(
     NavigationController::LoadURLParams&&) = default;
+
+base::WeakPtr<NavigationHandle> NavigationController::LoadURLWithParams(
+    const LoadURLParams& params) {
+  // Callers of this overload cannot act on the reason a navigation failed to
+  // start, so collapse every error to a null handle.
+  return LoadURLWithParamsForResult(params).value_or(nullptr);
+}
 
 }  // namespace content

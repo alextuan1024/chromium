@@ -6,24 +6,35 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <vector>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory_coordinator/test_memory_consumer_registry.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/top_chrome/preload_candidate_selector.h"
 #include "chrome/browser/ui/webui/top_chrome/preload_context.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager_test_api.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_state.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/visibility.h"
+#include "content/public/common/url_constants.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/scoped_web_ui_controller_factory_registration.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -50,6 +61,25 @@ class MockPreloadCandidateSelector : public webui::PreloadCandidateSelector {
               (const, override));
 };
 
+constexpr char kSharedWebUIURL[] = "chrome://webui-toolbar.top-chrome/";
+
+class SharedTestUI : public TopChromeWebUIController {
+ public:
+  explicit SharedTestUI(content::WebUI* web_ui)
+      : TopChromeWebUIController(web_ui) {}
+  static constexpr std::string_view GetWebUIName() { return "SharedTest"; }
+};
+
+// A preloadable WebUI that replaces the WebUI toolbar, which is created in
+// TopChromeWebUIProfile.
+class SharedTestUIConfig : public DefaultTopChromeWebUIConfig<SharedTestUI> {
+ public:
+  SharedTestUIConfig()
+      : DefaultTopChromeWebUIConfig(content::kChromeUIScheme,
+                                    chrome::kChromeUIWebUIToolbarHost) {}
+  bool IsPreloadable() override { return true; }
+};
+
 }  // namespace
 
 class WebUIContentsPreloadManagerTest : public ChromeRenderViewHostTestHarness {
@@ -72,7 +102,7 @@ class WebUIContentsPreloadManagerTest : public ChromeRenderViewHostTestHarness {
   }
   void TearDown() override {
     test_memory_consumer_registry_.NotifyUpdateMemoryLimit(
-        base::MemoryConsumer::kDefaultMemoryLimit);
+        base::MemoryLimit::Default());
     preload_candidate_selector_ = nullptr;
     // The mock object does not expect itself to leak outside of the test.
     // Clearing it from the preload manager to destroy it.
@@ -125,7 +155,8 @@ TEST_F(WebUIContentsPreloadManagerTest, PreloadedContentsIsNotNullAfterWarmup) {
 TEST_F(WebUIContentsPreloadManagerTest, NoPreloadUnderHeavyMemoryPressure) {
   // Don't preload if the memory pressure is moderate or higher.
   preload_manager();
-  test_memory_consumer_registry_.NotifyUpdateMemoryLimit(50);
+  test_memory_consumer_registry_.NotifyUpdateMemoryLimit(
+      base::MemoryLimit::FromPercent(50));
   std::unique_ptr<content::BrowserContext> browser_context =
       std::make_unique<TestingProfile>();
   test_api().MaybePreloadForBrowserContext(browser_context.get());
@@ -149,6 +180,23 @@ TEST_F(WebUIContentsPreloadManagerTest,
   preload_manager()->Request(GURL("about:blank"), browser_context.get());
   FastForwardToTriggerPreload();
   EXPECT_NE(preload_manager()->preloaded_web_contents(), nullptr);
+}
+
+// With kTopChromeWebUISharedRenderer, a request for a WebUI that has moved to
+// TopChromeWebUIProfile creates it there for the user profile.
+TEST_F(WebUIContentsPreloadManagerTest,
+       RequestCreatesMovedWebUIInTopChromeWebUIProfile) {
+  base::test::ScopedFeatureList feature_list(
+      features::kTopChromeWebUISharedRenderer);
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_profile;
+  std::unique_ptr<TestingProfile> user_profile =
+      std::make_unique<TestingProfile>();
+  RequestResult result = preload_manager()->Request(
+      GURL(chrome::kChromeUIWebUIToolbarURL), user_profile.get());
+  EXPECT_EQ(webui::GetTopChromeWebUIProfile(),
+            result.web_contents->GetBrowserContext());
+  EXPECT_EQ(user_profile.get(),
+            webui::GetUserProfile(result.web_contents.get()));
 }
 
 TEST_F(WebUIContentsPreloadManagerTest,
@@ -291,6 +339,30 @@ TEST_F(WebUIContentsPreloadManagerTest, IsReadyToShow) {
   // `is_ready_to_show` should be true after ShowUI() call.
   result = preload_manager()->Request(preloaded_url, browser_context.get());
   EXPECT_TRUE(result.is_ready_to_show);
+}
+
+// The preloaded contents loads visible, then hides once it's ready to show so
+// that it doesn't keep the shared top-chrome renderer at foreground priority.
+TEST_F(WebUIContentsPreloadManagerTest, HidesPreloadedContentsWhenReadyToShow) {
+  base::test::ScopedFeatureList feature_list{
+      features::kPreloadTopChromeWebUIHideWhenReady};
+  std::unique_ptr<content::BrowserContext> browser_context =
+      std::make_unique<TestingProfile>();
+  test_api().MaybePreloadForBrowserContext(browser_context.get());
+  FastForwardToTriggerPreload();
+  content::WebContents* preloaded_web_contents =
+      preload_manager()->preloaded_web_contents();
+  ASSERT_NE(preloaded_web_contents, nullptr);
+  EXPECT_EQ(preloaded_web_contents->GetVisibility(),
+            content::Visibility::VISIBLE);
+
+  auto* webui_controller = static_cast<TopChromeWebUIController*>(
+      preloaded_web_contents->GetWebUI()->GetController());
+  ASSERT_NE(webui_controller, nullptr);
+  webui_controller->embedder()->ShowUI();
+
+  EXPECT_EQ(preloaded_web_contents->GetVisibility(),
+            content::Visibility::HIDDEN);
 }
 
 // Regression test for crbug.com/329954901.
@@ -544,4 +616,109 @@ TEST_F(WebUIContentsPreloadManagerTest,
   test_api().SetPreloadedContents(std::move(new_preloaded_contents));
   EXPECT_TRUE(old_preloaded_contents.WasInvalidated());
   EXPECT_FALSE(test_api().HasPendingPreload());
+}
+
+TEST_F(WebUIContentsPreloadManagerTest, NoPreloadWhenBrowserShuttingDown) {
+  std::unique_ptr<content::BrowserContext> browser_context =
+      std::make_unique<TestingProfile>();
+
+  // Schedule a delayed preload before shutdown starts, then begin shutdown
+  // before the deadline passes.
+  test_api().MaybePreloadForBrowserContextLater(browser_context.get(), nullptr,
+                                                base::Seconds(3));
+  EXPECT_TRUE(test_api().HasPendingPreload());
+
+  TestingBrowserProcess::GetGlobal()->SetShuttingDown(true);
+  base::ScopedClosureRunner reset_shutting_down(base::BindOnce(
+      [](TestingBrowserProcess* browser_process) {
+        browser_process->SetShuttingDown(false);
+      },
+      TestingBrowserProcess::GetGlobal()));
+
+  FastForwardToTriggerPreload();
+  EXPECT_EQ(preload_manager()->preloaded_web_contents(), nullptr);
+
+  // Neither immediate nor delayed preloads should be started during shutdown.
+  test_api().MaybePreloadForBrowserContext(browser_context.get());
+  EXPECT_EQ(preload_manager()->preloaded_web_contents(), nullptr);
+
+  test_api().MaybePreloadForBrowserContextLater(browser_context.get(), nullptr,
+                                                base::Seconds(3));
+  EXPECT_FALSE(test_api().HasPendingPreload());
+  FastForwardToTriggerPreload();
+  EXPECT_EQ(preload_manager()->preloaded_web_contents(), nullptr);
+}
+
+// Tests that a WebUI that uses TopChromeWebUIProfile is preloaded there for the
+// user profile, and that only a request for that user profile takes it.
+TEST_F(WebUIContentsPreloadManagerTest, PreloadsInTopChromeWebUIProfile) {
+  base::test::ScopedFeatureList feature_list(
+      features::kTopChromeWebUISharedRenderer);
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_profile;
+  Profile* top_chrome_webui_profile = webui::GetTopChromeWebUIProfile();
+  ASSERT_TRUE(top_chrome_webui_profile);
+  content::ScopedWebUIConfigRegistration config_registration(
+      std::make_unique<SharedTestUIConfig>());
+  const GURL url(kSharedWebUIURL);
+  ON_CALL(preload_candidate_selector(), GetURLToPreload(_))
+      .WillByDefault(Return(url));
+  std::unique_ptr<TestingProfile> user_profile =
+      std::make_unique<TestingProfile>();
+  std::unique_ptr<TestingProfile> other_user_profile =
+      std::make_unique<TestingProfile>();
+
+  test_api().MaybePreloadForBrowserContext(user_profile.get());
+  content::WebContents* preloaded = preload_manager()->preloaded_web_contents();
+  ASSERT_TRUE(preloaded);
+  EXPECT_EQ(top_chrome_webui_profile, preloaded->GetBrowserContext());
+  EXPECT_EQ(user_profile.get(), webui::GetUserProfile(preloaded));
+
+  // A request for another user profile doesn't take it.
+  RequestResult other_result =
+      preload_manager()->Request(url, other_user_profile.get());
+  EXPECT_NE(preloaded, other_result.web_contents.get());
+  EXPECT_EQ(top_chrome_webui_profile,
+            other_result.web_contents->GetBrowserContext());
+  EXPECT_EQ(other_user_profile.get(),
+            webui::GetUserProfile(other_result.web_contents.get()));
+  EXPECT_EQ(preloaded, preload_manager()->preloaded_web_contents());
+
+  // A request for the user profile takes it.
+  RequestResult result = preload_manager()->Request(url, user_profile.get());
+  EXPECT_EQ(preloaded, result.web_contents.get());
+
+  // Destroying the user profile destroys its preloaded contents.
+  FastForwardToTriggerPreload();
+  ASSERT_TRUE(preload_manager()->preloaded_web_contents());
+  EXPECT_EQ(user_profile.get(),
+            webui::GetUserProfile(preload_manager()->preloaded_web_contents()));
+  result.web_contents.reset();
+  other_result.web_contents.reset();
+  user_profile.reset();
+  EXPECT_FALSE(preload_manager()->preloaded_web_contents());
+}
+
+// Tests that a WebUI that uses TopChromeWebUIProfile isn't preloaded for an
+// Incognito user profile, like a WebUI in the user profile.
+TEST_F(WebUIContentsPreloadManagerTest,
+       DoesNotPreloadInTopChromeWebUIProfileForIncognito) {
+  base::test::ScopedFeatureList feature_list(
+      features::kTopChromeWebUISharedRenderer);
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_profile;
+  ASSERT_TRUE(webui::GetTopChromeWebUIProfile());
+  content::ScopedWebUIConfigRegistration config_registration(
+      std::make_unique<SharedTestUIConfig>());
+  std::unique_ptr<TestingProfile> profile = std::make_unique<TestingProfile>();
+  Profile* incognito_profile =
+      profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+
+  ON_CALL(preload_candidate_selector(), GetURLToPreload(_))
+      .WillByDefault(Return(GURL("chrome://example1")));
+  test_api().MaybePreloadForBrowserContext(incognito_profile);
+  EXPECT_FALSE(preload_manager()->preloaded_web_contents());
+
+  ON_CALL(preload_candidate_selector(), GetURLToPreload(_))
+      .WillByDefault(Return(GURL(kSharedWebUIURL)));
+  test_api().MaybePreloadForBrowserContext(incognito_profile);
+  EXPECT_FALSE(preload_manager()->preloaded_web_contents());
 }

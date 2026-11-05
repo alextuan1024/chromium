@@ -5,6 +5,7 @@
 #include "components/sync_device_info/test_device_info_builder.h"
 
 #include <optional>
+#include <utility>
 
 #include "base/notreached.h"
 #include "base/time/time.h"
@@ -75,8 +76,6 @@ TestDeviceInfoBuilder::TestDeviceInfoBuilder(const DeviceInfo& other)
           other.android_os_build_fingerprint_prefix()),
       last_updated_timestamp_(other.last_updated_timestamp()),
       pulse_interval_(other.pulse_interval()),
-      send_tab_to_self_receiving_enabled_(
-          other.send_tab_to_self_receiving_enabled()),
       send_tab_to_self_receiving_type_(other.send_tab_to_self_receiving_type()),
       sharing_info_(other.sharing_info()),
       paask_info_(other.paask_info()),
@@ -95,7 +94,8 @@ TestDeviceInfoBuilder::TestDeviceInfoBuilder(const DeviceInfo& other)
       glic_experimental_triggering_capabilities_(
           other.glic_experimental_triggering_capabilities()),
       server_determined_model_name_(other.server_determined_model_name()),
-      personal_context_info_(other.personal_context_info()) {}
+      personal_context_info_(other.personal_context_info()),
+      browser_actuator_info_(other.browser_actuator_info()) {}
 
 TestDeviceInfoBuilder::~TestDeviceInfoBuilder() = default;
 
@@ -109,15 +109,16 @@ std::unique_ptr<DeviceInfo> TestDeviceInfoBuilder::Build() const {
       os_type_, form_factor_, signin_scoped_device_id_, manufacturer_name_,
       model_name_, server_determined_model_name_, full_hardware_class_,
       last_updated_timestamp_, pulse_interval_,
-      send_tab_to_self_receiving_enabled_, send_tab_to_self_receiving_type_,
-      sharing_info_, paask_info_, fcm_registration_token_,
-      interested_data_types_, auto_sign_out_last_signin_timestamp_,
+      send_tab_to_self_receiving_type_, sharing_info_, paask_info_,
+      fcm_registration_token_, interested_data_types_,
+      auto_sign_out_last_signin_timestamp_,
       desktop_to_ios_promo_receiving_enabled_,
       desktop_to_ios_promo_receiving_types_,
       glic_experimental_triggering_state_,
       glic_experimental_triggering_version_,
       glic_experimental_triggering_capabilities_,
-      android_os_build_fingerprint_prefix_, personal_context_info_);
+      android_os_build_fingerprint_prefix_, personal_context_info_,
+      browser_actuator_info_);
 }
 
 TestDeviceInfoBuilder& TestDeviceInfoBuilder::WithGuid(
@@ -201,12 +202,6 @@ TestDeviceInfoBuilder& TestDeviceInfoBuilder::WithLastUpdatedTimestamp(
 TestDeviceInfoBuilder& TestDeviceInfoBuilder::WithPulseInterval(
     base::TimeDelta pulse_interval) {
   pulse_interval_ = pulse_interval;
-  return *this;
-}
-
-TestDeviceInfoBuilder& TestDeviceInfoBuilder::WithSendTabToSelfReceivingEnabled(
-    bool send_tab_to_self_receiving_enabled) {
-  send_tab_to_self_receiving_enabled_ = send_tab_to_self_receiving_enabled;
   return *this;
 }
 
@@ -302,6 +297,12 @@ TestDeviceInfoBuilder& TestDeviceInfoBuilder::WithPersonalContextInfo(
     const std::optional<DeviceInfo::PersonalContextInfo>&
         personal_context_info) {
   personal_context_info_ = personal_context_info;
+  return *this;
+}
+
+TestDeviceInfoBuilder& TestDeviceInfoBuilder::WithBrowserActuatorInfo(
+    std::optional<DeviceInfo::BrowserActuatorInfo> browser_actuator_info) {
+  browser_actuator_info_ = std::move(browser_actuator_info);
   return *this;
 }
 

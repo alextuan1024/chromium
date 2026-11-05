@@ -9,6 +9,8 @@
 
 namespace browser_ui {
 
+BASE_DECLARE_FEATURE(kBottomSheetDeferContentSwapOnHidden);
+BASE_DECLARE_FEATURE(kBottomSheetSmoothKeyboardTransition);
 BASE_DECLARE_FEATURE(kBottomSheetTypes);
 
 }  // namespace browser_ui

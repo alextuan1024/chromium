@@ -7,6 +7,8 @@
 
 #include <memory>
 
+#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "net/http/http_connection_info.h"
 #include "services/network/public/mojom/fetch_api.mojom-blink-forward.h"
@@ -17,6 +19,7 @@
 #include "third_party/blink/renderer/core/fetch/fetch_request_data.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
+#include "third_party/blink/renderer/platform/loader/fetch/url_loader/cached_metadata_handler.h"
 #include "third_party/blink/renderer/platform/network/http_header_set.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
@@ -81,6 +84,8 @@ class CORE_EXPORT FetchResponseData final
   String InternalMIMEType() const;
   base::Time ResponseTime() const { return response_time_; }
   String CacheStorageCacheName() const { return cache_storage_cache_name_; }
+  mojo::PendingRemote<network::mojom::blink::CacheStorageSideDataWriter>
+  TakeCacheStorageSideDataWriter();
   const HTTPHeaderSet& CorsExposedHeaderNames() const {
     return cors_exposed_header_names_;
   }
@@ -111,6 +116,12 @@ class CORE_EXPORT FetchResponseData final
   }
   void SetCacheStorageCacheName(const String& cache_storage_cache_name) {
     cache_storage_cache_name_ = cache_storage_cache_name;
+  }
+  void SetCacheStorageSideDataWriter(
+      mojo::PendingRemote<network::mojom::blink::CacheStorageSideDataWriter>
+          cache_storage_side_data_writer) {
+    cache_storage_side_data_writer_->data =
+        std::move(cache_storage_side_data_writer);
   }
   void SetCorsExposedHeaderNames(const HTTPHeaderSet& header_names) {
     cors_exposed_header_names_ = header_names;
@@ -153,6 +164,10 @@ class CORE_EXPORT FetchResponseData final
   void Trace(Visitor*) const;
 
  private:
+  mojom::blink::FetchAPIResponsePtr PopulateFetchAPIResponseInternal(
+      const KURL& request_url,
+      bool parse_headers);
+
   network::mojom::FetchResponseType type_;
   int64_t padding_;
   network::mojom::FetchResponseSource response_source_;
@@ -167,6 +182,9 @@ class CORE_EXPORT FetchResponseData final
   AtomicString request_method_;
   base::Time response_time_;
   String cache_storage_cache_name_;
+  scoped_refptr<CacheStorageSideDataWriterHolder>
+      cache_storage_side_data_writer_ =
+          base::MakeRefCounted<CacheStorageSideDataWriterHolder>();
   HTTPHeaderSet cors_exposed_header_names_;
   net::HttpConnectionInfo connection_info_ = net::HttpConnectionInfo::kUNKNOWN;
   AtomicString alpn_negotiated_protocol_;

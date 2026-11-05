@@ -13,17 +13,22 @@
 #import "components/affiliations/core/browser/fake_affiliation_service.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/test/mock_tracker.h"
+#import "components/google/core/common/google_util.h"
 #import "components/keyed_service/core/service_access_type.h"
+#import "components/password_manager/core/browser/password_manager_constants.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
 #import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
+#import "components/password_manager/core/common/password_manager_pref_names.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/sync/test/mock_sync_service.h"
+#import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "ios/chrome/browser/affiliations/model/ios_chrome_affiliation_service_factory.h"
 #import "ios/chrome/browser/favicon/model/favicon_loader.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
+#import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_profile_password_store_factory.h"
@@ -43,6 +48,8 @@
 
 namespace {
 
+constexpr char kApplicationLocale[] = "en-US";
+
 using ::password_manager::InsecureType;
 using ::password_manager::PasswordForm;
 using ::password_manager::TestPasswordStore;
@@ -56,12 +63,6 @@ password_manager::StoredCredential CreateStoredCredential() {
   cred.signon_realm = "http://www.example.com/";
   cred.in_store = PasswordForm::Store::kProfileStore;
   return cred;
-}
-
-// Create the Feature Engagement Mock Tracker.
-std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
-    ProfileIOS* profile) {
-  return std::make_unique<feature_engagement::test::MockTracker>();
 }
 
 }  // namespace
@@ -81,6 +82,8 @@ std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
 
 @property(nonatomic, assign) BOOL shouldShowPasswordManagerWidgetPromoCalled;
 @property(nonatomic, assign) BOOL shouldShowTrustedVaultWidgetPromoCalled;
+@property(nonatomic, assign) BOOL allowsAddPassword;
+@property(nonatomic, strong) CrURL* helpCenterURL;
 
 @end
 
@@ -99,6 +102,10 @@ std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
 }
 
 - (void)setSavingPasswordsToAccount:(BOOL)savingPasswordsToAccount {
+}
+
+- (void)setAllowsAddPassword:(BOOL)allowsAddPassword {
+  _allowsAddPassword = allowsAddPassword;
 }
 
 - (void)setAffiliatedGroups:
@@ -128,6 +135,10 @@ std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
 - (void)setUserEmail:(const std::u16string&)userEmail {
 }
 
+- (void)setHelpCenterURL:(CrURL*)helpCenterURL {
+  _helpCenterURL = helpCenterURL;
+}
+
 @end
 
 // Tests for Passwords mediator.
@@ -139,17 +150,15 @@ class PasswordsMediatorTest : public BlockCleanupTest {
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
         base::BindOnce(
-            &password_manager::BuildPasswordStore<ProfileIOS,
-                                                  TestPasswordStore>));
+            &password_manager::BuildPasswordStore<TestPasswordStore>));
     builder.AddTestingFactory(
         IOSChromeAffiliationServiceFactory::GetInstance(),
-        base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
-          return std::make_unique<affiliations::FakeAffiliationService>();
-        }));
-
+        base::BindOnce(
+            &std::make_unique<affiliations::FakeAffiliationService>));
     builder.AddTestingFactory(
         feature_engagement::TrackerFactory::GetInstance(),
-        base::BindRepeating(&BuildFeatureEngagementMockTracker));
+        base::BindOnce(
+            &std::make_unique<feature_engagement::test::MockTracker>));
     profile_ = std::move(builder).Build();
 
     store_ =
@@ -166,7 +175,9 @@ class PasswordsMediatorTest : public BlockCleanupTest {
         initWithPasswordCheckManager:password_check_
                        faviconLoader:IOSChromeFaviconLoaderFactory::
                                          GetForProfile(profile_.get())
-                         syncService:&sync_service_];
+                         syncService:&sync_service_
+                         prefService:profile_->GetPrefs()
+                   applicationLocale:kApplicationLocale];
 
     mock_tracker_ = static_cast<feature_engagement::test::MockTracker*>(
         feature_engagement::TrackerFactory::GetForProfile(profile()));
@@ -177,7 +188,7 @@ class PasswordsMediatorTest : public BlockCleanupTest {
 
   PasswordsMediator* mediator() { return mediator_; }
 
-  ProfileIOS* profile() { return profile_.get(); }
+  TestProfileIOS* profile() { return profile_.get(); }
 
   TestPasswordStore* store() { return store_.get(); }
 
@@ -297,4 +308,36 @@ TEST_F(PasswordsMediatorTest, NotifiesFETToDismissPromoOnPromoClosed) {
   [mediator() notifyFETOfPasswordManagerWidgetPromoDismissal];
 
   EXPECT_FALSE(mediator().shouldNotifyFETToDismissPasswordManagerWidgetPromo);
+}
+
+// Tests that `allowsAddPassword` is NO when `kCredentialsEnableService` is
+// managed and set to false, and YES otherwise.
+TEST_F(PasswordsMediatorTest, NotifiesConsumerAllowsAddPassword) {
+  EXPECT_TRUE(consumer().allowsAddPassword);
+
+  profile()->GetTestingPrefService()->SetManagedPref(
+      password_manager::prefs::kCredentialsEnableService,
+      std::make_unique<base::Value>(false));
+  PasswordsMediator* restricted_mediator = [[PasswordsMediator alloc]
+      initWithPasswordCheckManager:IOSChromePasswordCheckManagerFactory::
+                                       GetForProfile(profile())
+                     faviconLoader:IOSChromeFaviconLoaderFactory::GetForProfile(
+                                       profile())
+                       syncService:syncService()
+                       prefService:profile()->GetPrefs()
+                 applicationLocale:kApplicationLocale];
+  FakePasswordsConsumer* restricted_consumer =
+      [[FakePasswordsConsumer alloc] init];
+  restricted_mediator.consumer = restricted_consumer;
+
+  EXPECT_FALSE(restricted_consumer.allowsAddPassword);
+  [restricted_mediator disconnect];
+}
+
+// Tests that the localized Help Center URL is pushed to the consumer.
+TEST_F(PasswordsMediatorTest, NotifiesConsumerHelpCenterURL) {
+  GURL expected_url = google_util::AppendGoogleLocaleParam(
+      GURL(password_manager::kPasswordManagerHelpCenteriOSURL),
+      kApplicationLocale);
+  EXPECT_EQ(expected_url, consumer().helpCenterURL.gurl);
 }

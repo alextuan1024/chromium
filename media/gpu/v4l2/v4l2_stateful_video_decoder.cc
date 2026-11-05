@@ -283,15 +283,21 @@ void V4L2StatefulVideoDecoder::Initialize(const VideoDecoderConfig& config,
   // Verify there's still room for more decoders before querying whether
   // |config| is supported because some drivers (e.g. Qualcomm Venus on SC7180)
   // would not allow for opening the device fd and we'd think it an error.
-  static const auto decoder_instances_limit =
-      V4L2StatefulVideoDecoder::GetMaxNumDecoderInstances();
-  const bool can_create_decoder =
-      num_decoder_instances_.Increment() < decoder_instances_limit;
-  if (!can_create_decoder) {
-    num_decoder_instances_.Decrement();
-    LOG(ERROR) << "Too many decoder instances, max=" << decoder_instances_limit;
-    std::move(init_cb).Run(DecoderStatus::Codes::kTooManyDecoders);
-    return;
+  // Only take a slot if this instance doesn't already hold one, e.g. when
+  // re-Initialize()d to change configuration.
+  if (!holds_decoder_instance_slot_) {
+    static const auto decoder_instances_limit =
+        V4L2StatefulVideoDecoder::GetMaxNumDecoderInstances();
+    const bool can_create_decoder =
+        num_decoder_instances_.Increment() < decoder_instances_limit;
+    if (!can_create_decoder) {
+      num_decoder_instances_.Decrement();
+      LOG(ERROR) << "Too many decoder instances, max="
+                 << decoder_instances_limit;
+      std::move(init_cb).Run(DecoderStatus::Codes::kTooManyDecoders);
+      return;
+    }
+    holds_decoder_instance_slot_ = true;
   }
 
   if (supported_configs_.empty()) {
@@ -580,7 +586,7 @@ void V4L2StatefulVideoDecoder::Reset(base::OnceClosure closure) {
   device_fd_.reset();
 
   event_task_runner_.reset();
-  num_decoder_instances_.Decrement();
+  ReleaseDecoderInstanceSlot();
   encoding_timestamps_.clear();
 
   if (flush_cb_) {
@@ -666,7 +672,7 @@ V4L2StatefulVideoDecoder::~V4L2StatefulVideoDecoder() {
 
   CAPTURE_queue_.reset();
   OUTPUT_queue_.reset();
-  num_decoder_instances_.Decrement();
+  ReleaseDecoderInstanceSlot();
 
   if (event_task_runner_) {
     // Destroy the two ScopedFDs (hence the PostTask business ISO DeleteSoon) on
@@ -722,13 +728,12 @@ bool V4L2StatefulVideoDecoder::InitializeCAPTUREQueue() {
 
   // Ask the pipeline to pick the output format from |CAPTURE_queue_|'s
   // |candidates|. If needed, it will try to instantiate an ImageProcessor.
-  CroStatus::Or<ImageProcessor::PixelLayoutCandidate> status_or_output_format =
-      client_->PickDecoderOutputFormat(
-          candidates, *visible_rect,
-          config_.aspect_ratio().GetNaturalSize(*visible_rect),
-          /*output_size=*/std::nullopt, num_codec_reference_frames,
-          /*use_protected=*/false, /*need_aux_frame_pool=*/false,
-          /*allocator=*/std::nullopt);
+  auto status_or_output_format = client_->PickDecoderOutputFormat(
+      candidates, *visible_rect,
+      config_.aspect_ratio().GetNaturalSize(*visible_rect),
+      /*output_size=*/std::nullopt, num_codec_reference_frames,
+      /*use_protected=*/false, /*need_aux_frame_pool=*/false,
+      /*allocator=*/std::nullopt);
   if (!status_or_output_format.has_value()) {
     return false;
   }
@@ -1202,6 +1207,15 @@ void V4L2StatefulVideoDecoder::PrintAndTraceQueueStates(
                                     : 0));
 }
 
+void V4L2StatefulVideoDecoder::ReleaseDecoderInstanceSlot() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!holds_decoder_instance_slot_) {
+    return;
+  }
+  num_decoder_instances_.Decrement();
+  holds_decoder_instance_slot_ = false;
+}
+
 bool V4L2StatefulVideoDecoder::IsInitialized() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return !!OUTPUT_queue_;
@@ -1221,8 +1235,15 @@ int V4L2StatefulVideoDecoder::GetMaxNumDecoderInstances() {
     PLOG(ERROR) << "Failed querying caps";
     return std::numeric_limits<int>::max();
   }
-  const bool is_mtk8173 =
-      std::string(reinterpret_cast<const char*>(caps.card)).contains("8173");
+  const std::string card(reinterpret_cast<const char*>(caps.card));
+
+  // bcm2835-codec decodes from a small pool of VPU firmware memory that runs
+  // out quickly, so allow far fewer decoders than other drivers.
+  if (card.contains("bcm2835")) {
+    return 2;
+  }
+
+  const bool is_mtk8173 = card.contains("8173");
   // Experimentally MTK8173 (e.g. Hana) can initialize the driver  up to 30
   // times simultaneously, however legacy code limits this to 10 [1] . All other
   // drivers used to limit this to 32 [2] but in practice I could only open up

@@ -10,6 +10,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
@@ -34,6 +35,8 @@ class PLATFORM_EXPORT V8HistogramAccumulator {
   V8HistogramAccumulator& operator=(const V8HistogramAccumulator&) = delete;
 
  private:
+  friend class base::NoDestructor<V8HistogramAccumulator>;
+
   V8HistogramAccumulator();
   ~V8HistogramAccumulator() = default;
 
@@ -46,11 +49,6 @@ class PLATFORM_EXPORT V8HistogramAccumulator {
     raw_ptr<base::HistogramBase> original_histogram;
     raw_ptr<std::atomic<int>> sum_microseconds = nullptr;
   };
-
-  void* RegisterHistogramImpl(base::HistogramBase* histogram,
-                              const std::string& name);
-  void AddSampleImpl(void* raw_histogram, int sample);
-  void GenerateDataInteractiveImpl();
 
  private:
   struct AccumulatingHistograms {

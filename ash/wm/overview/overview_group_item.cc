@@ -34,6 +34,7 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
+#include "ui/gfx/geometry/size_conversions.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
@@ -136,9 +137,9 @@ aura::Window* OverviewGroupItem::GetWindow() {
   return overview_items_.empty() ? nullptr : overview_items_[0]->GetWindow();
 }
 
-std::vector<raw_ptr<aura::Window, VectorExperimental>>
+std::vector<raw_ptr<aura::Window, DanglingUntriaged>>
 OverviewGroupItem::GetWindows() {
-  std::vector<raw_ptr<aura::Window, VectorExperimental>> windows;
+  std::vector<raw_ptr<aura::Window, DanglingUntriaged>> windows;
   for (const auto& item : overview_items_) {
     windows.push_back(item->GetWindow());
   }
@@ -239,11 +240,6 @@ void OverviewGroupItem::SetBounds(const gfx::RectF& target_bounds,
   item1_bounds.set_height(item1_height);
   item1_bounds.set_y(target_bounds.bottom() - item1_height);
   item1->SetBounds(item1_bounds, animation_type);
-}
-
-gfx::Transform OverviewGroupItem::ComputeTargetTransform(
-    const gfx::RectF& target_bounds) {
-  return gfx::Transform();
 }
 
 gfx::RectF OverviewGroupItem::GetWindowsUnionScreenBounds() const {
@@ -447,10 +443,6 @@ void OverviewGroupItem::OnOverviewItemDragEnded(bool snap) {
   // to receive the events.
   Restack();
 }
-
-void OverviewGroupItem::OnOverviewItemContinuousScroll(
-    const gfx::Transform& target_transform,
-    float scroll_ratio) {}
 
 void OverviewGroupItem::UpdateCannotSnapWarningVisibility(bool animate) {}
 

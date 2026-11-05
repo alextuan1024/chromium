@@ -19,7 +19,7 @@ const CGFloat kSymbolSize = 16.0;
 struct ShowcaseItemConfig {
   NSString* title;
   NSString* subtitle = nil;
-  BOOL active = YES;
+  BOOL current = YES;
   ActuationWorklogItemStyle style = ActuationWorklogItemStyle::kCard;
   ActuationWorklogConnectorVisibility visibility;
 };
@@ -31,25 +31,26 @@ ActuationWorklogItemView* CreateWorklogItemView(
   ActuationWorklogItem* item;
   switch (config.style) {
     case ActuationWorklogItemStyle::kSimple:
-      item = [ActuationWorklogItem simpleItemWithTitle:config.title
-                                                active:config.active];
+      item = [ActuationWorklogItem simpleItemWithTitle:config.title];
       break;
     case ActuationWorklogItemStyle::kLabeled:
       item = [ActuationWorklogItem labeledItemWithTitle:config.title
                                                subtitle:config.subtitle
-                                                   icon:icon
-                                                 active:config.active];
+                                                   icon:icon];
       break;
     case ActuationWorklogItemStyle::kCard:
       item = [ActuationWorklogItem cardItemWithTitle:config.title
                                             subtitle:config.subtitle
-                                                icon:icon
-                                              active:config.active];
+                                                icon:icon];
+      break;
+    case ActuationWorklogItemStyle::kFreeform:
+      item = [ActuationWorklogItem freeformItemWithText:config.title];
       break;
   }
 
   ActuationWorklogItemView* view = [[ActuationWorklogItemView alloc] init];
   [view configureWithItem:item];
+  view.current = config.current;
   view.connectorVisibility = config.visibility;
   return view;
 }
@@ -115,7 +116,7 @@ ActuationWorklogItemView* CreateWorklogItemView(
 
   const ShowcaseItemConfig timelineConfigs[] = {
       {.title = @"Timeline Step 1 (Start)",
-       .active = NO,
+       .current = NO,
        .style = ActuationWorklogItemStyle::kSimple,
        .visibility = ActuationWorklogConnectorVisibility::kBottom},
       {.title = @"Timeline Step 2 (Active Simple)",
@@ -127,9 +128,12 @@ ActuationWorklogItemView* CreateWorklogItemView(
        .visibility = ActuationWorklogConnectorVisibility::kBoth},
       {.title = @"Timeline Step 4 (End Card)",
        .subtitle = @"Final step in card style.",
-       .active = NO,
+       .current = NO,
        .style = ActuationWorklogItemStyle::kCard,
        .visibility = ActuationWorklogConnectorVisibility::kTop},
+      {.title = @"Freeform: which shipping address should I use?",
+       .style = ActuationWorklogItemStyle::kFreeform,
+       .visibility = ActuationWorklogConnectorVisibility::kNone},
   };
 
   for (const ShowcaseItemConfig& config : timelineConfigs) {
@@ -156,7 +160,6 @@ ActuationWorklogItemView* CreateWorklogItemView(
                         @"for you."
                    icon:SymbolWithPointSize(SymbolPersonBadgeKeyFill,
                                             kSymbolSize)
-                 active:YES
           accessoryItem:credentialAccessory];
 
   ActuationWorklogItemView* credentialView =
@@ -182,7 +185,6 @@ ActuationWorklogItemView* CreateWorklogItemView(
                    @"To continue the task, Interthings can ask Waffle Ballet "
                    @"to fill out your credit card info."
                    icon:SymbolWithPointSize(SymbolCreditCard, kSymbolSize)
-                 active:YES
           accessoryItem:paymentAccessory];
 
   ActuationWorklogItemView* paymentView =

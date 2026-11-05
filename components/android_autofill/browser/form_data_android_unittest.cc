@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/android_autofill/browser/android_autofill_bridge_factory.h"
@@ -26,6 +27,7 @@
 #include "components/autofill/core/common/unique_ids.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace autofill {
 namespace {
@@ -110,14 +112,14 @@ class FormDataAndroidTest : public ::testing::Test {
   }
 
  protected:
-  const std::vector<MockFormFieldDataAndroidBridge*>& field_bridges() {
+  const std::vector<raw_ptr<MockFormFieldDataAndroidBridge>>& field_bridges() {
     return field_bridges_;
   }
   MockFormDataAndroidBridge& form_bridge() { return *form_bridge_; }
 
  private:
   test::AutofillUnitTestEnvironment autofill_test_environment_;
-  std::vector<MockFormFieldDataAndroidBridge*> field_bridges_;
+  std::vector<raw_ptr<MockFormFieldDataAndroidBridge>> field_bridges_;
   raw_ptr<MockFormDataAndroidBridge> form_bridge_;
 };
 
@@ -197,6 +199,53 @@ TEST_F(FormDataAndroidTest, SimilarFormAs_Fields) {
   // Forms with fields that are not similar, are not similar either.
   f = af.form();
   test_api(f).field(0).set_name(f.fields().front().name() + u"x");
+  EXPECT_FALSE(af.SimilarFormAs(f));
+}
+
+// Tests that when `kAutofillAndroidUseGlobalIdForFormComparison` is enabled,
+// `SimilarFormAs()` compares only `FormGlobalId` (`host_frame` and
+// `renderer_id`), ignoring form attribute, field count, and field attribute
+// changes.
+TEST_F(FormDataAndroidTest, SimilarFormAs_GlobalIdComparison) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillAndroidUseGlobalIdForFormComparison};
+
+  FormData f = CreateTestForm();
+  f.set_host_frame(test::MakeLocalFrameToken());
+  f.set_fields({CreateTestField(), CreateTestField()});
+  FormDataAndroid af(f, kSampleSessionId);
+
+  EXPECT_TRUE(af.SimilarFormAs(f));
+
+  // Form-level attribute changes keep the form similar when `FormGlobalId`
+  // matches.
+  f.set_name(af.form().name() + u"x");
+  f.set_name_attribute(af.form().name_attribute() + u"x");
+  f.set_id_attribute(af.form().id_attribute() + u"x");
+  f.set_url(GURL("https://other.com"));
+  f.set_action(GURL("https://other.com/submit"));
+  EXPECT_TRUE(af.SimilarFormAs(f));
+
+  // Field attribute changes and dynamically added fields also keep the form
+  // similar when `FormGlobalId` matches.
+  f = af.form();
+  test_api(f).field(0).set_name(f.fields().front().name() + u"x");
+  test_api(f).field(0).set_label(u"Changed label");
+  test_api(f).Append(CreateTestField(u"InjectedField"));
+  EXPECT_TRUE(af.SimilarFormAs(f));
+
+  // The same holds for dynamically removed fields.
+  f = af.form();
+  test_api(f).Remove(0);
+  EXPECT_TRUE(af.SimilarFormAs(f));
+
+  // Forms with different `renderer_id` or `host_frame` are not similar.
+  f = af.form();
+  f.set_renderer_id(FormRendererId(f.renderer_id().value() + 1));
+  EXPECT_FALSE(af.SimilarFormAs(f));
+
+  f = af.form();
+  f.set_host_frame(test::MakeLocalFrameToken());
   EXPECT_FALSE(af.SimilarFormAs(f));
 }
 

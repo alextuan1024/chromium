@@ -5,9 +5,12 @@
 #include "components/safe_browsing/content/browser/safe_browsing_network_context.h"
 
 #include <memory>
+#include <optional>
 #include <utility>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/memory/ptr_util.h"
 #include "base/trace_event/trace_event.h"
 #include "components/safe_browsing/core/browser/utils/url_loader_factory_params.h"
 #include "components/safe_browsing/core/common/safebrowsing_constants.h"
@@ -27,6 +30,13 @@ namespace safe_browsing {
 class SafeBrowsingNetworkContext::SharedURLLoaderFactory
     : public network::SharedURLLoaderFactory {
  public:
+  explicit SharedURLLoaderFactory(
+      NetworkContextParamsFactory network_context_params_factory)
+      : network_context_params_factory_(
+            std::move(network_context_params_factory)) {
+    CHECK(network_context_params_factory_);
+  }
+
   SharedURLLoaderFactory(
       const base::FilePath& user_data_dir,
       bool trigger_migration,
@@ -34,19 +44,27 @@ class SafeBrowsingNetworkContext::SharedURLLoaderFactory
       : user_data_dir_(user_data_dir),
         trigger_migration_(trigger_migration),
         network_context_params_factory_(
-            std::move(network_context_params_factory)) {}
+            std::move(network_context_params_factory)) {
+    CHECK(!user_data_dir.empty());
+    CHECK(network_context_params_factory_);
+  }
 
   SharedURLLoaderFactory(const SharedURLLoaderFactory&) = delete;
   SharedURLLoaderFactory& operator=(const SharedURLLoaderFactory&) = delete;
 
   void Reset() {
     DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+    shutting_down_ = true;
+    network_context_params_factory_.Reset();
     url_loader_factory_.reset();
     network_context_.reset();
   }
 
   network::mojom::NetworkContext* GetNetworkContext() {
     DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+    if (shutting_down_) {
+      return nullptr;
+    }
     if (!network_context_ || !network_context_.is_connected()) {
       network_context_.reset();
       content::CreateNetworkContextInNetworkService(
@@ -69,6 +87,34 @@ class SafeBrowsingNetworkContext::SharedURLLoaderFactory
       url_loader_factory_.FlushForTesting();
   }
 
+  network::mojom::NetworkContextParamsPtr CreateNetworkContextParams() {
+    TRACE_EVENT0("startup",
+                 "SafeBrowsingNetworkContext::CreateNetworkContextParams");
+    DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+    network::mojom::NetworkContextParamsPtr network_context_params =
+        network_context_params_factory_.Run();
+
+    network_context_params->http_cache_enabled = false;
+
+    if (user_data_dir_.has_value()) {
+      network_context_params->file_paths =
+          network::mojom::NetworkContextFilePaths::New();
+      network_context_params->file_paths->data_directory =
+          user_data_dir_->Append(base::FilePath(
+              base::FilePath::StringType(kSafeBrowsingBaseFilename) +
+              FILE_PATH_LITERAL(" Network")));
+      network_context_params->file_paths->unsandboxed_data_path =
+          *user_data_dir_;
+      network_context_params->file_paths->trigger_migration =
+          trigger_migration_;
+      network_context_params->file_paths->cookie_database_name = base::FilePath(
+          base::FilePath::StringType(kSafeBrowsingBaseFilename) + kCookiesFile);
+      network_context_params->enable_encrypted_cookies = false;
+    }
+
+    return network_context_params;
+  }
+
  protected:
   // network::URLLoaderFactory implementation:
   void CreateLoaderAndStart(
@@ -80,6 +126,9 @@ class SafeBrowsingNetworkContext::SharedURLLoaderFactory
       const net::MutableNetworkTrafficAnnotationTag& traffic_annotation)
       override {
     DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+    if (shutting_down_) {
+      return;
+    }
     GetURLLoaderFactory()->CreateLoaderAndStart(
         std::move(loader), request_id, options, request, std::move(client),
         traffic_annotation);
@@ -87,6 +136,10 @@ class SafeBrowsingNetworkContext::SharedURLLoaderFactory
 
   void Clone(mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver)
       override {
+    CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+    if (shutting_down_) {
+      return;
+    }
     GetURLLoaderFactory()->Clone(std::move(receiver));
   }
 
@@ -97,6 +150,7 @@ class SafeBrowsingNetworkContext::SharedURLLoaderFactory
 
   network::mojom::URLLoaderFactory* GetURLLoaderFactory() {
     DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+    CHECK(!shutting_down_);
     if (!url_loader_factory_ || !url_loader_factory_.is_connected()) {
       url_loader_factory_.reset();
       GetNetworkContext()->CreateURLLoaderFactory(
@@ -110,35 +164,40 @@ class SafeBrowsingNetworkContext::SharedURLLoaderFactory
   friend class base::RefCounted<SharedURLLoaderFactory>;
   ~SharedURLLoaderFactory() override = default;
 
-  network::mojom::NetworkContextParamsPtr CreateNetworkContextParams() {
-    TRACE_EVENT0("startup",
-                 "SafeBrowsingNetworkContext::CreateNetworkContextParams");
-    DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
-    network::mojom::NetworkContextParamsPtr network_context_params =
-        network_context_params_factory_.Run();
-
-    network_context_params->http_cache_enabled = false;
-
-    network_context_params->file_paths =
-        network::mojom::NetworkContextFilePaths::New();
-    network_context_params->file_paths->data_directory = user_data_dir_.Append(
-        base::FilePath(base::FilePath::StringType(kSafeBrowsingBaseFilename) +
-                       FILE_PATH_LITERAL(" Network")));
-    network_context_params->file_paths->unsandboxed_data_path = user_data_dir_;
-    network_context_params->file_paths->trigger_migration = trigger_migration_;
-    network_context_params->file_paths->cookie_database_name = base::FilePath(
-        base::FilePath::StringType(kSafeBrowsingBaseFilename) + kCookiesFile);
-    network_context_params->enable_encrypted_cookies = false;
-
-    return network_context_params;
-  }
-
-  base::FilePath user_data_dir_;
-  bool trigger_migration_;
+  // Directory for on-disk persistence. Can be `std::nullopt` for in-memory
+  // off-the-record network contexts for certain consumers.
+  std::optional<base::FilePath> user_data_dir_;
+  bool trigger_migration_ = false;
+  // Set to true once `Reset()` is called (on shutdown or destruction) to
+  // prevent recreating the `NetworkContext` or invoking
+  // `network_context_params_factory_`.
+  bool shutting_down_ = false;
   NetworkContextParamsFactory network_context_params_factory_;
   mojo::Remote<network::mojom::NetworkContext> network_context_;
   mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory_;
 };
+
+// static
+std::unique_ptr<SafeBrowsingNetworkContext> SafeBrowsingNetworkContext::Create(
+    bool is_off_the_record,
+    const base::FilePath& user_data_dir,
+    bool trigger_migration,
+    NetworkContextParamsFactory network_context_params_factory) {
+  if (is_off_the_record) {
+    return base::WrapUnique(new SafeBrowsingNetworkContext(
+        std::move(network_context_params_factory)));
+  }
+  return base::WrapUnique(new SafeBrowsingNetworkContext(
+      user_data_dir, trigger_migration,
+      std::move(network_context_params_factory)));
+}
+
+SafeBrowsingNetworkContext::SafeBrowsingNetworkContext(
+    NetworkContextParamsFactory network_context_params_factory) {
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  url_loader_factory_ = base::MakeRefCounted<SharedURLLoaderFactory>(
+      std::move(network_context_params_factory));
+}
 
 SafeBrowsingNetworkContext::SafeBrowsingNetworkContext(
     const base::FilePath& user_data_dir,
@@ -152,6 +211,7 @@ SafeBrowsingNetworkContext::SafeBrowsingNetworkContext(
 
 SafeBrowsingNetworkContext::~SafeBrowsingNetworkContext() {
   DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  url_loader_factory_->Reset();
 }
 
 scoped_refptr<network::SharedURLLoaderFactory>
@@ -169,6 +229,12 @@ SafeBrowsingNetworkContext::GetNetworkContext() {
 void SafeBrowsingNetworkContext::FlushForTesting() {
   DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
   url_loader_factory_->FlushForTesting();
+}
+
+network::mojom::NetworkContextParamsPtr
+SafeBrowsingNetworkContext::CreateNetworkContextParamsForTesting() {
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  return url_loader_factory_->CreateNetworkContextParams();
 }
 
 void SafeBrowsingNetworkContext::ServiceShuttingDown() {

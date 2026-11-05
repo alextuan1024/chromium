@@ -7,13 +7,16 @@ package org.chromium.ui.base;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyFloat;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -38,6 +41,7 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.Spy;
+import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.GraphicsMode;
 import org.robolectric.shadows.ShadowLooper;
@@ -46,6 +50,7 @@ import org.robolectric.shadows.ShadowSystemClock;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.display.DisplayUtil;
 import org.chromium.ui.insets.InsetObserver;
@@ -195,6 +200,7 @@ public class WindowAndroidTest {
                 HistogramWatcher.newSingleRecordWatcher(
                         "Android.Window.OcclusionExperimental.Duration", 5000);
 
+        mWindowAndroid.setIsOcclusionTracked(true);
         mWindowAndroid.setOccluded(true, null, null);
         ShadowSystemClock.advanceBy(Duration.ofSeconds(5));
         mWindowAndroid.setOccluded(false, null, null);
@@ -222,6 +228,7 @@ public class WindowAndroidTest {
                 HistogramWatcher.newSingleRecordWatcher(
                         "Android.Window.OcclusionExperimental.Duration", 5000);
 
+        mWindowAndroid.setIsOcclusionTracked(true);
         mWindowAndroid.setOccluded(true, null, null);
         ShadowSystemClock.advanceBy(Duration.ofSeconds(5));
         mWindowAndroid.destroy();
@@ -262,23 +269,53 @@ public class WindowAndroidTest {
     @Test
     public void testOcclusionOptimizationsEnabled() {
         UiAndroidFeatureList.sAndroidWindowOcclusionOptimizations.setForTesting(true);
+        assertFalse(mWindowAndroid.isOccluded());
+        mWindowAndroid.setIsOcclusionTracked(true);
+        assertFalse(mWindowAndroid.isOccluded());
+        verify(mWindowAndroidNativeInterface, never()).onOcclusionChanged(anyLong(), anyBoolean());
 
         mWindowAndroid.setOccluded(true, null, null);
         assertTrue(mWindowAndroid.getOcclusionSupplier().get());
+        assertTrue(mWindowAndroid.isOccluded());
+        verify(mWindowAndroidNativeInterface).onOcclusionChanged(MOCK_NATIVE_POINTER, true);
 
         mWindowAndroid.setOccluded(false, null, null);
         assertFalse(mWindowAndroid.getOcclusionSupplier().get());
+        assertFalse(mWindowAndroid.isOccluded());
+        verify(mWindowAndroidNativeInterface).onOcclusionChanged(MOCK_NATIVE_POINTER, false);
+
+        // Disabling occlusion tracking while occluded resets occlusion state and ignores
+        // subsequent setOccluded calls until tracking is re-enabled.
+        clearInvocations(mWindowAndroidNativeInterface);
+        mWindowAndroid.setOccluded(true, null, null);
+        assertTrue(mWindowAndroid.isOccluded());
+        verify(mWindowAndroidNativeInterface).onOcclusionChanged(MOCK_NATIVE_POINTER, true);
+        mWindowAndroid.setIsOcclusionTracked(false);
+        assertFalse(mWindowAndroid.getOcclusionSupplier().get());
+        assertFalse(mWindowAndroid.isOccluded());
+        verify(mWindowAndroidNativeInterface).onOcclusionChanged(MOCK_NATIVE_POINTER, false);
+        clearInvocations(mWindowAndroidNativeInterface);
+        mWindowAndroid.setIsOcclusionTracked(false);
+        verify(mWindowAndroidNativeInterface, never()).onOcclusionChanged(anyLong(), anyBoolean());
+        mWindowAndroid.setOccluded(true, null, null);
+        assertFalse(mWindowAndroid.getOcclusionSupplier().get());
+        assertFalse(mWindowAndroid.isOccluded());
+        verify(mWindowAndroidNativeInterface, never()).onOcclusionChanged(anyLong(), anyBoolean());
     }
 
     @Test
     public void testOcclusionOptimizationsDisabled() {
         UiAndroidFeatureList.sAndroidWindowOcclusionOptimizations.setForTesting(false);
+        mWindowAndroid.setIsOcclusionTracked(true);
 
         mWindowAndroid.setOccluded(true, null, null);
         assertFalse(mWindowAndroid.getOcclusionSupplier().get());
+        assertFalse(mWindowAndroid.isOccluded());
 
         mWindowAndroid.setOccluded(false, null, null);
         assertFalse(mWindowAndroid.getOcclusionSupplier().get());
+        assertFalse(mWindowAndroid.isOccluded());
+        verify(mWindowAndroidNativeInterface, never()).onOcclusionChanged(anyLong(), anyBoolean());
     }
 
     @Test
@@ -494,8 +531,7 @@ public class WindowAndroidTest {
         DisplayUtil.setIsOnDefaultDisplayForTesting(true);
 
         // Build a real Robolectric activity.
-        Activity activity =
-                org.robolectric.Robolectric.buildActivity(Activity.class).create().get();
+        Activity activity = Robolectric.buildActivity(Activity.class).create().get();
 
         // Create a real ActivityWindowAndroid using the real activity.
         ActivityWindowAndroid windowAndroid =
@@ -535,8 +571,7 @@ public class WindowAndroidTest {
         DisplayUtil.setIsOnDefaultDisplayForTesting(true);
 
         // Build a real Robolectric activity.
-        Activity activity =
-                org.robolectric.Robolectric.buildActivity(Activity.class).create().get();
+        Activity activity = Robolectric.buildActivity(Activity.class).create().get();
 
         // Create a real ActivityWindowAndroid using the real activity.
         ActivityWindowAndroid windowAndroid =
@@ -572,8 +607,7 @@ public class WindowAndroidTest {
     public void testConstructor_initializesAllowChangeRefreshRateCorrectly_onDefaultDisplay()
             throws Exception {
         DisplayUtil.setIsOnDefaultDisplayForTesting(true);
-        Activity activity =
-                org.robolectric.Robolectric.buildActivity(Activity.class).create().get();
+        Activity activity = Robolectric.buildActivity(Activity.class).create().get();
         ActivityWindowAndroid windowAndroid =
                 new ActivityWindowAndroid(activity, false, null, mInsetObserver, true);
 
@@ -587,8 +621,7 @@ public class WindowAndroidTest {
     public void testConstructor_initializesAllowChangeRefreshRateCorrectly_onExternalDisplay()
             throws Exception {
         DisplayUtil.setIsOnDefaultDisplayForTesting(false);
-        Activity activity =
-                org.robolectric.Robolectric.buildActivity(Activity.class).create().get();
+        Activity activity = Robolectric.buildActivity(Activity.class).create().get();
         ActivityWindowAndroid windowAndroid =
                 new ActivityWindowAndroid(activity, false, null, mInsetObserver, true);
 
@@ -596,6 +629,32 @@ public class WindowAndroidTest {
                 "mAllowChangeRefreshRate should be false on external display",
                 getAllowChangeRefreshRate(windowAndroid));
         windowAndroid.destroy();
+    }
+
+    @Test
+    public void testDestroyHeadlessWindowDoesNotResetActivityKeyboardDelegate() {
+        KeyboardVisibilityDelegate initialDelegate = KeyboardVisibilityDelegate.getInstance();
+        try {
+            Activity activity = Robolectric.buildActivity(Activity.class).create().get();
+            ActivityWindowAndroid activityWindow =
+                    new ActivityWindowAndroid(activity, false, null, mInsetObserver, true);
+            assertSame(
+                    activityWindow.getKeyboardDelegate(), KeyboardVisibilityDelegate.getInstance());
+
+            WindowAndroid headlessWindow =
+                    new WindowAndroid(mContext, /* occlusionTrackingAllowed= */ false);
+            assertSame(activityWindow.getKeyboardDelegate(), headlessWindow.getKeyboardDelegate());
+
+            headlessWindow.destroy();
+            assertSame(
+                    activityWindow.getKeyboardDelegate(), KeyboardVisibilityDelegate.getInstance());
+
+            activityWindow.destroy();
+            assertNotSame(
+                    activityWindow.getKeyboardDelegate(), KeyboardVisibilityDelegate.getInstance());
+        } finally {
+            KeyboardVisibilityDelegate.setInstance(initialDelegate);
+        }
     }
 
     private boolean getAllowChangeRefreshRate(WindowAndroid windowAndroid) throws Exception {

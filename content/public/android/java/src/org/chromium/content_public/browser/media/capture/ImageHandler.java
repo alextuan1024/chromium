@@ -50,6 +50,7 @@ class ImageHandler implements ImageReader.OnImageAvailableListener {
     private final ImageReader mImageReader;
     private int mAcquiredImageCount;
     private boolean mClosing;
+    private boolean mClosed;
 
     /** Whether we are actively acquiring and dispatching images. */
     private boolean mIsAcquiring;
@@ -62,6 +63,10 @@ class ImageHandler implements ImageReader.OnImageAvailableListener {
      * @param handler The handler on which to run callbacks.
      */
     ImageHandler(ScreenCapture.CaptureState captureState, Delegate delegate, Handler handler) {
+        // The native side holds the latest image until it is consumed by CaptureFrame(). If more
+        // than one new image is queued while that image is held (e.g. on high refresh rate
+        // displays, or when the capture thread is busy), `acquireLatestImage()` needs two
+        // additional slots to skip to the newest image.
         this(
                 captureState,
                 delegate,
@@ -70,7 +75,7 @@ class ImageHandler implements ImageReader.OnImageAvailableListener {
                         captureState.width,
                         captureState.height,
                         captureState.format,
-                        /* maxImages= */ 2));
+                        /* maxImages= */ 3));
     }
 
     @VisibleForTesting
@@ -101,6 +106,8 @@ class ImageHandler implements ImageReader.OnImageAvailableListener {
      * immediately.
      */
     void close() {
+        if (mClosed || mClosing) return;
+
         // If we have no acquired images, then it's safe to close the ImageReader because
         // we are guaranteed that the native side is not using any of those Images.
         if (mAcquiredImageCount == 0) {
@@ -118,6 +125,9 @@ class ImageHandler implements ImageReader.OnImageAvailableListener {
      * safety issues) to access data from an `Image` after it is closed.
      */
     void closeNow() {
+        if (mClosed) return;
+
+        mClosed = true;
         mImageReader.close();
         mAcquiredImageCount = 0;
         mDelegate.onClose(this);
@@ -169,16 +179,22 @@ class ImageHandler implements ImageReader.OnImageAvailableListener {
             mAcquiredImageCount--;
         }
 
+        if (mClosed) return;
+
         if (mClosing) {
             if (mAcquiredImageCount == 0) closeNow();
         } else {
             // Now that we closed an image, we may be able to acquire a new image.
-            onImageAvailable(reader);
+            mHandler.post(() -> onImageAvailable(reader));
         }
     }
 
     @Override
     public void onImageAvailable(ImageReader reader) {
+        // `releaseImage()` posts this callback, so a queued task can still run after
+        // `closeNow()` or `close()`. Bail out rather than touch a closed/closing reader.
+        if (mClosed || mClosing) return;
+
         // Prevent re-entrant recursion if the delegate synchronously releases the image
         // during frame processing, which calls releaseImage() -> onImageAvailable().
         if (mIsAcquiring) return;

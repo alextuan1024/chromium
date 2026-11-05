@@ -223,13 +223,13 @@ class GpuRasterPixelTest : public testing::Test,
                                           : gpu::raster::kNoMSAA;
 
     if (options.preclear) {
-      ri->BeginRasterCHROMIUM(
-          options.preclear_color,
-          /*needs_clear=*/options.preclear, options.msaa_sample_count,
-          msaa_mode, options.use_lcd_text,
-          /*visible=*/true, options.target_color_params.color_space,
-          options.target_color_params.GetHdrHeadroom(),
-          client_shared_image->mailbox().name);
+      ri->BeginRasterCHROMIUM(options.preclear_color,
+                              /*needs_clear=*/options.preclear,
+                              options.msaa_sample_count, msaa_mode,
+                              options.use_lcd_text,
+                              options.target_color_params.color_space,
+                              options.target_color_params.GetHdrHeadroom(),
+                              client_shared_image->mailbox().name);
       ri->EndRasterCHROMIUM();
     }
 
@@ -240,27 +240,25 @@ class GpuRasterPixelTest : public testing::Test,
     ri->BeginRasterCHROMIUM(
         options.background_color,
         /*needs_clear=*/!options.preclear, options.msaa_sample_count, msaa_mode,
-        options.use_lcd_text,
-        /*visible=*/true, options.target_color_params.color_space,
+        options.use_lcd_text, options.target_color_params.color_space,
         options.target_color_params.GetHdrHeadroom(),
         client_shared_image->mailbox().name);
     size_t max_op_size_limit =
         gpu::raster::RasterInterface::kDefaultMaxOpSizeHint;
-    ri->RasterCHROMIUM(
-        display_item_list.get(), &image_provider, options.content_size,
-        options.full_raster_rect, options.playback_rect, options.post_translate,
-        gfx::Vector2dF(options.post_scale, options.post_scale),
-        options.requires_clear, /*raster_inducing_scroll_offsets=*/nullptr,
-        &max_op_size_limit,
-        base::RepeatingCallback<void(SkCanvas*, uint32_t)>());
+    ri->RasterCHROMIUM(display_item_list.get(), &image_provider,
+                       options.content_size, options.full_raster_rect,
+                       options.playback_rect, options.post_translate,
+                       gfx::Vector2dF(options.post_scale, options.post_scale),
+                       options.requires_clear,
+                       /*raster_inducing_values=*/nullptr, &max_op_size_limit,
+                       base::RepeatingCallback<void(SkCanvas*, uint32_t)>());
     for (const auto& list : options.additional_lists) {
       ri->RasterCHROMIUM(list.get(), &image_provider, options.content_size,
                          options.full_raster_rect, options.playback_rect,
                          options.post_translate,
                          gfx::Vector2dF(options.post_scale, options.post_scale),
                          options.requires_clear,
-                         /*raster_inducing_scroll_offsets=*/nullptr,
-                         &max_op_size_limit,
+                         /*raster_inducing_values=*/nullptr, &max_op_size_limit,
                          base::RepeatingCallback<void(SkCanvas*, uint32_t)>());
     }
     ri->EndRasterCHROMIUM();
@@ -283,8 +281,8 @@ class GpuRasterPixelTest : public testing::Test,
         image_size.width(), image_size.height(), color_space);
     SkBitmap result;
     result.allocPixels(image_info);
-    ri->ReadbackImagePixels(mailbox, image_info, image_info.minRowBytes(), 0, 0,
-                            /*plane_index=*/0, result.getPixels());
+    ri->ReadbackImagePixels(mailbox, image_size, 0, 0, /*plane_index=*/0,
+                            result.pixmap());
     return result;
   }
 
@@ -317,7 +315,6 @@ class GpuRasterPixelTest : public testing::Test,
         ri, shared_image->creation_sync_token(), /*readonly=*/false);
     ri->WritePixels(shared_image->mailbox(), /*dst_x_offset=*/0,
                     /*dst_y_offset=*/0,
-                    /*texture_target=*/0,
                     SkPixmap(info, bitmap.getPixels(), info.minRowBytes()));
     EXPECT_EQ(ri->GetError(), static_cast<unsigned>(GL_NO_ERROR));
     return gpu::RasterScopedAccess::EndAccess(std::move(ri_access));
@@ -827,7 +824,7 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImage) {
   {
     RasterOptions options(kSize);
     options.target_color_params.color_space =
-        gfx::ColorSpace(*dest_color_space);
+        gfx::ColorSpace(dest_color_space.get());
     options.target_color_params.hdr_headroom = 0.f;
     auto result = Raster(display_item_list, options);
     auto out_color = result.getColor4f(0, 0);
@@ -841,7 +838,7 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImage) {
   {
     RasterOptions options(kSize);
     options.target_color_params.color_space =
-        gfx::ColorSpace(*dest_color_space);
+        gfx::ColorSpace(dest_color_space.get());
     options.target_color_params.hdr_headroom = std::log2(kDestScale);
     auto result = Raster(display_item_list, options);
     auto out_color = result.getColor4f(0, 0);
@@ -915,7 +912,7 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImageCubic) {
   {
     auto dest_color_space = SkColorSpace::MakeSRGBLinear();
     options.target_color_params.color_space =
-        gfx::ColorSpace(*dest_color_space);
+        gfx::ColorSpace(dest_color_space.get());
     options.target_color_params.hdr_headroom = std::log2(kRatioMax);
   }
   auto result = Raster(display_item_list, options);
@@ -961,8 +958,8 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImageFiltering) {
 
   // The gainmap is fully applied at headroom 2, and has a maximum scale of 4.
   const float kRatioMax = 4.f;
-  auto gain_info = SkImageInfo::MakeN32Premul(
-      kGainSize.width(), kGainSize.height(), SkColorSpace::MakeSRGBLinear());
+  auto gain_info =
+      SkImageInfo::MakeN32Premul(kGainSize.width(), kGainSize.height());
   auto gain_image_generator = sk_make_sp<FakePaintImageGenerator>(gain_info);
   SkGainmapInfo gainmap_info = {
       {1.f, 1.f, 1.f, 1.f},
@@ -977,21 +974,16 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImageFiltering) {
       nullptr,
   };
 
-  // The gainmap scales by 2 on the left and 3 on the right.
+  // Store raw gain values for scales of 2 on the left and 3 on the right.
   float kGainValue0 = std::log(2.f) / std::log(kRatioMax);
   float kGainValue1 = std::log(3.f) / std::log(kRatioMax);
-  {
-    SkBitmap bitmap;
-    bitmap.installPixels(gain_image_generator->GetPixmap());
-    SkCanvas canvas(bitmap, SkSurfaceProps{});
-
-    SkPaint paint;
-
-    paint.setColor({kGainValue0, kGainValue0, kGainValue0, 1.f});
-    canvas.drawRect(SkRect::MakeXYWH(0, 0, 1, 2), paint);
-
-    paint.setColor({kGainValue1, kGainValue1, kGainValue1, 1.f});
-    canvas.drawRect(SkRect::MakeXYWH(1, 0, 1, 2), paint);
+  const auto left = static_cast<uint8_t>(std::round(255.f * kGainValue0));
+  const auto right = static_cast<uint8_t>(std::round(255.f * kGainValue1));
+  SkPixmap gain_pixmap = gain_image_generator->GetPixmap();
+  for (int y = 0; y < kGainSize.height(); ++y) {
+    *gain_pixmap.writable_addr32(0, y) = SkColorSetARGB(255, left, left, left);
+    *gain_pixmap.writable_addr32(1, y) =
+        SkColorSetARGB(255, right, right, right);
   }
 
   static int counter = 0;
@@ -1018,7 +1010,7 @@ TEST_F(GpuRasterPixelTest, DrawGainmapImageFiltering) {
   {
     auto dest_color_space = SkColorSpace::MakeSRGBLinear();
     options.target_color_params.color_space =
-        gfx::ColorSpace(*dest_color_space);
+        gfx::ColorSpace(dest_color_space.get());
     options.target_color_params.hdr_headroom = std::log2(kRatioMax);
   }
   auto result = Raster(display_item_list, options);
@@ -1077,7 +1069,7 @@ TEST_F(GpuRasterPixelTest, DrawHdrImageWithMetadata) {
               peak_luminance.value(), kContentAvgNits});
         }
         if (white_luminance.has_value()) {
-          hdr_metadata.SetNDWL(white_luminance.value());
+          hdr_metadata.SetHdrReferenceWhite(white_luminance.value());
         }
 
         auto image_generator = sk_make_sp<FakePaintImageGenerator>(
@@ -1270,8 +1262,8 @@ TEST_F(GpuRasterPixelTest, DrawImageWithSourceAndTargetColorSpace) {
                comparator);
 }
 
-#if BUILDFLAG(IS_FUCHSIA) && defined(ARCH_CPU_ARM64)
-// SwiftShader crashes when running this test on ARM64 on Fuchsia,
+#if BUILDFLAG(IS_FUCHSIA) && defined(ARCH_CPU_ARM64) && !defined(NDEBUG)
+// SwiftShader crashes when running this test on ARM64 debug builds on Fuchsia,
 // see b/369849405.
 #define MAYBE_DrawImageReinterpretedAsSRGB DISABLED_DrawImageReinterpretedAsSRGB
 #else
@@ -1347,14 +1339,11 @@ class TestMailboxBacking : public TextureBacking {
 
   const SkImageInfo& GetSkImageInfo() override { return info_; }
   gpu::Mailbox GetMailbox() const override { return mailbox_; }
+  void set_mailbox(const gpu::Mailbox& mailbox) { mailbox_ = mailbox; }
   void Bind(scoped_refptr<TextureBackingContext>) override {}
   void Unbind() override {}
   sk_sp<SkImage> GetSkImageViaReadback() override { return nullptr; }
-  bool readPixels(const SkImageInfo& dstInfo,
-                  void* dstPixels,
-                  size_t dstRowBytes,
-                  int srcX,
-                  int srcY) override {
+  bool readPixels(const SkPixmap& dst_pixmap, int src_x, int src_y) override {
     return false;
   }
 
@@ -1402,6 +1391,79 @@ TEST_F(GpuRasterPixelTest, DrawMailboxBackedImage) {
 
   auto actual_bitmap = Raster(display_item_list, options);
   ExpectEquals(actual_bitmap, expected_bitmap);
+}
+
+// A record shader that draws a SharedImage must not be reused from the GPU
+// process's transfer cache by a later raster, since the client can destroy the
+// SharedImage once the raster that used it ends.
+TEST_F(GpuRasterPixelTest, RecordShaderDoesNotReuseDestroyedSharedImage) {
+  RasterOptions options(gfx::Size(16, 16));
+  options.image_provider_raster_mode = PlaybackImageProvider::RasterMode::kGpu;
+  SkImageInfo info = SkImageInfo::MakeN32Premul(options.resource_size.width(),
+                                                options.resource_size.height());
+
+  auto* ri = raster_context_provider_->RasterInterface();
+  auto* sii = raster_context_provider_->SharedImageInterface();
+  auto create_image = [&](const SkColor4f& color) {
+    SkBitmap bitmap;
+    bitmap.allocPixels(info);
+    bitmap.eraseColor(color);
+    scoped_refptr<gpu::ClientSharedImage> shared_image =
+        CreateClientSharedImage(ri, sii, options,
+                                viz::SinglePlaneFormat::kRGBA_8888);
+    shared_image->UpdateDestructionSyncToken(
+        UploadPixels(ri, shared_image, info, bitmap));
+    return shared_image;
+  };
+  scoped_refptr<gpu::ClientSharedImage> red_image =
+      create_image(SkColors::kRed);
+  scoped_refptr<gpu::ClientSharedImage> green_image =
+      create_image(SkColors::kGreen);
+
+  // The record shader draws a texture-backed image, which is serialized as its
+  // SharedImage mailbox. Both rasters use the same shader, so they send the
+  // same shader id and tile, and only the mailbox changes.
+  auto backing = sk_make_sp<TestMailboxBacking>(red_image->mailbox(), info);
+  auto paint_image =
+      PaintImageBuilder::WithDefault()
+          .set_id(PaintImage::GetNextId())
+          .set_texture_backing(backing, PaintImage::GetNextContentId())
+          .TakePaintImage();
+  PaintOpBuffer shader_buffer;
+  shader_buffer.push<DrawImageOp>(paint_image, 0.f, 0.f);
+  auto shader = PaintShader::MakePaintRecord(
+      shader_buffer.ReleaseAsRecord(), gfx::RectToSkRect(gfx::Rect(16, 16)),
+      SkTileMode::kClamp, SkTileMode::kClamp, nullptr,
+      PaintShader::ScalingBehavior::kFixedScale);
+
+  auto display_item_list = base::MakeRefCounted<DisplayItemList>();
+  display_item_list->StartPaint();
+  PaintFlags flags;
+  flags.setShader(shader);
+  display_item_list->push<DrawRectOp>(gfx::RectToSkRect(gfx::Rect(16, 16)),
+                                      flags);
+  display_item_list->EndPaintOfUnpaired(gfx::Rect(options.resource_size));
+  display_item_list->Finalize();
+
+  SkBitmap first_result = Raster(display_item_list, options);
+  EXPECT_EQ(SK_ColorRED, first_result.getColor(8, 8));
+
+  // The client destroys the red image after the first raster. New images may
+  // reuse its texture. Finishing lets backends that defer texture deletion
+  // until the GPU is done (e.g. Vulkan) actually delete it.
+  gpu::SyncToken post_raster_token;
+  ri->GenUnverifiedSyncTokenCHROMIUM(post_raster_token.GetData());
+  red_image->UpdateDestructionSyncToken(post_raster_token);
+  red_image.reset();
+  std::vector<scoped_refptr<gpu::ClientSharedImage>> other_images;
+  for (int i = 0; i < 4; ++i) {
+    other_images.push_back(create_image(SkColors::kBlue));
+    ri->Finish();
+  }
+
+  backing->set_mailbox(green_image->mailbox());
+  SkBitmap second_result = Raster(display_item_list, options);
+  EXPECT_EQ(SK_ColorGREEN, second_result.getColor(8, 8));
 }
 
 TEST_F(GpuRasterPixelTest, Preclear) {
@@ -2746,7 +2808,7 @@ TEST_F(GpuRasterPixelTest, CopySharedImage) {
         ri, source_client_si->creation_sync_token(), /*readonly=*/false);
 
     ri->WritePixels(source_client_si->mailbox(), /*dst_x_offset=*/0,
-                    /*dst_y_offset=*/0, GL_TEXTURE_2D, upload_bitmap.pixmap());
+                    /*dst_y_offset=*/0, upload_bitmap.pixmap());
     gpu::RasterScopedAccess::EndAccess(std::move(ri_access));
   }
 
@@ -2774,9 +2836,8 @@ TEST_F(GpuRasterPixelTest, CopySharedImage) {
     readback_bitmap.allocPixels(SkImageInfo::MakeN32Premul(
         size.width(), size.height(), dest_color_space.ToSkColorSpace()));
 
-    ri->ReadbackImagePixels(dest_client_si->mailbox(), readback_bitmap.info(),
-                            readback_bitmap.rowBytes(), 0, 0,
-                            /*plane_index=*/0, readback_bitmap.getPixels());
+    ri->ReadbackImagePixels(dest_client_si->mailbox(), size, 0, 0,
+                            /*plane_index=*/0, readback_bitmap.pixmap());
   }
 
   // The pixel value should be unchanged, even though the source and dest are

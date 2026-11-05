@@ -251,6 +251,21 @@ TEST_F(TranslateKitClientTest, SplitSentences) {
   ASSERT_EQ(sentences.size(), 2u);
 }
 
+// Tests that SplitSentences splits text when the source language code includes
+// a script subtag.
+TEST_F(TranslateKitClientTest, SplitSentencesWithScriptSubtag) {
+  auto client = CreateClient(GetMockLibraryPath(), {{"zh-Hant", "en"}},
+                             {
+                                 {"0/dict.dat", "ZhHant to En - "},
+                             });
+  ASSERT_OK_AND_ASSIGN(auto* translator,
+                       client->GetTranslator("zh-Hant", "en"));
+  ASSERT_TRUE(translator);
+  std::vector<std::string> sentences =
+      translator->SplitSentences("This is a sentence. This is another one.");
+  ASSERT_EQ(sentences.size(), 2u);
+}
+
 // Tests that the SplitSentences method handles empty input.
 TEST_F(TranslateKitClientTest, SplitSentencesEmptyInput) {
   auto client = CreateClient(GetMockLibraryPath(), {{"en", "ja"}},
@@ -261,6 +276,19 @@ TEST_F(TranslateKitClientTest, SplitSentencesEmptyInput) {
   ASSERT_TRUE(translator);
   std::vector<std::string> sentences = translator->SplitSentences("");
   ASSERT_EQ(sentences.size(), 0u);
+}
+
+// Tests that `SplitSentences()` returns the original content when the library
+// emits zero sentences for non-empty text.
+TEST_F(TranslateKitClientTest, SplitSentencesNoSentenceFound) {
+  auto client = CreateClient(GetMockLibraryPath(), {{"en", "ja"}},
+                             {
+                                 {"0/dict.dat", "En to Ja - "},
+                             });
+  ASSERT_OK_AND_ASSIGN(auto* translator, client->GetTranslator("en", "ja"));
+  ASSERT_TRUE(translator);
+  // The mock library splits at each period and drops empty pieces.
+  EXPECT_THAT(translator->SplitSentences("..."), testing::ElementsAre("..."));
 }
 
 // Tests that the SplitSentences method returns the original content if the

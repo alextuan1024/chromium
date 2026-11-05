@@ -19,6 +19,17 @@
             (GeminiZeroStateViewController*)viewController
                   didSelectSuggestion:(ZeroStateSuggestion*)suggestion;
 
+// Called when the user taps the close button in the zero-state view.
+- (void)didTapZeroStateCloseButton;
+
+// Returns the first name of the primary identity, used to personalize the
+// greeting. Returns nil when there is no signed-in user.
+- (NSString*)userFirstName;
+
+// Called when the zero-state content size changed on its own (e.g. after a
+// Dynamic Type size change), so that dependent heights can be recomputed.
+- (void)zeroStateContentSizeDidChange;
+
 @end
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_ZERO_STATE_SUGGESTIONS_UI_GEMINI_ZERO_STATE_MUTATOR_H_

@@ -8,16 +8,14 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/string_number_conversions.h"
-#import "base/strings/sys_string_conversions.h"
 #import "build/branding_buildflags.h"
 #import "components/autofill/core/browser/data_model/payments/credit_card.h"
 #import "components/autofill/core/common/autofill_payments_features.h"
-#import "components/autofill/ios/common/features.h"
 #import "components/grit/components_scaled_resources.h"
-#import "components/url_formatter/elide_url.h"
 #import "ios/chrome/browser/autofill/model/credit_card/credit_card_data.h"
 #import "ios/chrome/browser/autofill/payments/ui/credit_card_suggestion_bottom_sheet_delegate.h"
 #import "ios/chrome/browser/autofill/payments/ui/credit_card_suggestion_bottom_sheet_handler.h"
+#import "ios/chrome/browser/shared/ui/bottom_sheet/bottom_sheet_util.h"
 #import "ios/chrome/browser/shared/ui/bottom_sheet/table_view_bottom_sheet_view_controller+subclassing.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_icon_item.h"
@@ -67,8 +65,8 @@ CGFloat const kTitleLogoHeight = 32;
 // YES if the GPay logo should be shown to the user.
 @property(nonatomic, assign) BOOL showGooglePayLogo;
 
-// Whether the bottom sheet will be disabled on exit. Default is YES.
-@property(nonatomic, assign) BOOL disableBottomSheetOnExit;
+// Whether the triggering field should be refocused on exit. Default is YES.
+@property(nonatomic, assign) BOOL refocusOnExit;
 
 @end
 
@@ -81,7 +79,7 @@ CGFloat const kTitleLogoHeight = 32;
   if (self) {
     self.handler = handler;
     _URL = URL;
-    self.disableBottomSheetOnExit = YES;
+    self.refocusOnExit = YES;
     _primaryButtonActive = NO;
   }
   return self;
@@ -102,11 +100,9 @@ CGFloat const kTitleLogoHeight = 32;
   self.customSpacingBeforeImage = kSpacingBeforeImage;
   self.customSpacingAfterImage = kSpacingAfterImage;
   self.subtitleTextStyle = UIFontTextStyleFootnote;
-  std::u16string formattedURL =
-      url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
-          _URL);
-  self.subtitleString = l10n_util::GetNSStringF(
-      IDS_IOS_PAYMENT_BOTTOM_SHEET_SUBTITLE, formattedURL);
+  self.subtitleString =
+      l10n_util::GetNSStringF(IDS_IOS_PAYMENT_BOTTOM_SHEET_SUBTITLE,
+                              FormatUrlForBottomSheetDisplay(_URL));
   self.customSpacing = kSpacing;
 
   // Set the properties read by the super when constructing the
@@ -137,8 +133,8 @@ CGFloat const kTitleLogoHeight = 32;
 
 - (void)viewDidDisappear:(BOOL)animated {
   [super viewDidDisappear:animated];
-  if (self.disableBottomSheetOnExit) {
-    [self.delegate disableBottomSheetAndRefocus:YES];
+  if (self.refocusOnExit) {
+    [self.delegate refocus];
   }
   [self.handler viewDidDisappear];
 }
@@ -233,7 +229,7 @@ CGFloat const kTitleLogoHeight = 32;
     return;
   }
 
-  self.disableBottomSheetOnExit = NO;
+  self.refocusOnExit = NO;
 
   base::RecordAction(
       base::UserMetricsAction("BottomSheet_CreditCard_SuggestionAccepted"));
@@ -284,11 +280,11 @@ CGFloat const kTitleLogoHeight = 32;
 #pragma mark - UIResponder
 
 - (BOOL)canBecomeFirstResponder {
-  // In V2, since the listeners are removed early as soon as the presentation
-  // started, allow the sheet to become a first responder to not allow the
-  // keyboard popping over the sheet when there is a focus event on the WebView
+  // Since the listeners are removed early as soon as the presentation started,
+  // allow the sheet to become a first responder to not allow the keyboard
+  // popping over the sheet when there is a focus event on the WebView
   // underneath the sheet.
-  return base::FeatureList::IsEnabled(kAutofillPaymentsSheetV2Ios);
+  return YES;
 }
 
 #pragma mark - Private
@@ -330,11 +326,9 @@ CGFloat const kTitleLogoHeight = 32;
   return [_creditCardData[row] icon];
 }
 
-// Returns an accessible card name at a given row in the table view.
+// Returns an accessible card name at a given `row` in the table view.
 - (NSString*)accessibleCardNameAtRow:(NSInteger)row {
-  return l10n_util::GetNSStringF(
-      IDS_IOS_AUTOFILL_ACCNAME_SUGGESTION,
-      base::SysNSStringToUTF16([_creditCardData[row] accessibleCardName]), u"");
+  return _creditCardData[row].accessibleCardName;
 }
 
 // Returns the accessibility value for the card at a given row in the table
@@ -350,7 +344,7 @@ CGFloat const kTitleLogoHeight = 32;
   __weak __typeof(self) weakSelf = self;
   void (^paymentMethodsButtonTapHandler)(UIAction*) = ^(UIAction* action) {
     // Open Payment Methods.
-    weakSelf.disableBottomSheetOnExit = NO;
+    weakSelf.refocusOnExit = NO;
     [weakSelf.handler displayPaymentMethods];
   };
   UIImage* creditCardIcon =
@@ -373,7 +367,7 @@ CGFloat const kTitleLogoHeight = 32;
 
   void (^showDetailsButtonTapHandler)(UIAction*) = ^(UIAction* action) {
     // Open Payments Details.
-    weakSelf.disableBottomSheetOnExit = NO;
+    weakSelf.refocusOnExit = NO;
     [weakSelf.handler
         displayPaymentDetailsForCreditCardIdentifier:creditCardIdentifier];
   };

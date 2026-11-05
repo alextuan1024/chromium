@@ -4,11 +4,14 @@
 
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_form_suggestion.h"
 
+#import <UIKit/UIKit.h>
+
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/autofill/core/browser/integrators/actor/actor_form_filling_types.h"
 #import "components/autofill/core/browser/suggestions/suggestion_type.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/actor_form_suggestion_favicon_data_source.h"
 
 namespace {
 
@@ -33,7 +36,14 @@ autofill::SuggestionType SuggestionTypeFromRequestedData(
 
 }  // namespace
 
-@implementation ActorFormSuggestion
+@implementation ActorFormSuggestion {
+  // Favicon image loaded asynchronously via `faviconDataSource`.
+  UIImage* _loadedIcon;
+  // Latest handler awaiting an asynchronous `_loadedIcon` update.
+  ProceduralBlock _iconUpdateHandler;
+  // Whether favicon loading has already been initiated (or completed).
+  BOOL _faviconLoadingInitiated;
+}
 
 - (instancetype)initWithCredential:(const actor_login::Credential&)credential {
   self = [super init];
@@ -80,8 +90,24 @@ autofill::SuggestionType SuggestionTypeFromRequestedData(
     NSString* display_description = base::SysUTF8ToNSString(suggestion.details);
 
     UIImage* icon = nil;
+    SuggestionIconType suggestionIconType = SuggestionIconType::kNone;
+
     if (suggestion.icon.has_value()) {
       icon = suggestion.icon->ToUIImage();
+    } else {
+      switch (dataType) {
+        case autofill::ActorFormFillingRequestedData::kHomeAddress:
+          suggestionIconType = SuggestionIconType::kAccountHome;
+          break;
+        case autofill::ActorFormFillingRequestedData::kWorkAddress:
+          suggestionIconType = SuggestionIconType::kAccountWork;
+          break;
+        case autofill::ActorFormFillingRequestedData::kContactInformation:
+          suggestionIconType = SuggestionIconType::kContact;
+          break;
+        default:
+          break;
+      }
     }
 
     _formSuggestion =
@@ -90,8 +116,47 @@ autofill::SuggestionType SuggestionTypeFromRequestedData(
                                        icon:icon
                                        type:suggestionType
                                     payload:autofill::Suggestion::Payload()
-                             requiresReauth:YES];
+                             requiresReauth:NO];
+    _formSuggestion.suggestionIconType = suggestionIconType;
   }
   return self;
 }
+
+- (UIImage*)icon {
+  return _formSuggestion.icon ?: _loadedIcon;
+}
+
+- (void)loadIconWithUpdateHandler:(ProceduralBlock)updateHandler {
+  if (self.icon) {
+    return;
+  }
+  _iconUpdateHandler = [updateHandler copy];
+  if (_faviconLoadingInitiated) {
+    return;
+  }
+  __weak __typeof(self) weakSelf = self;
+  _faviconLoadingInitiated = YES;
+  if (![self.faviconDataSource actorFormSuggestion:self
+                         loadFaviconWithCompletion:^(UIImage* icon) {
+                           [weakSelf didFinishLoadingFavicon:icon];
+                         }]) {
+    _faviconLoadingInitiated = NO;
+    _iconUpdateHandler = nil;
+  }
+}
+
+#pragma mark - Private
+
+// Updates `_loadedIcon` and notifies `_iconUpdateHandler` whenever a new
+// non-nil `icon` arrives.
+- (void)didFinishLoadingFavicon:(UIImage*)icon {
+  if (!icon || _loadedIcon == icon) {
+    return;
+  }
+  _loadedIcon = icon;
+  if (_iconUpdateHandler) {
+    _iconUpdateHandler();
+  }
+}
+
 @end

@@ -58,7 +58,11 @@ feature kWebNNOnnxRuntime {
 [EnableIf=is_win|is_apple]
 feature kWebNNCompilerProcess {
   const string name = "WebNNCompilerProcess";
-  const bool default_state = false;
+  [EnableIf=is_apple]
+  const bool default_state = true;
+
+  [EnableIf=is_win]
+  const bool default_state = true;
 };
 
 // Enables LiteRT WebGPU execution in the renderer.

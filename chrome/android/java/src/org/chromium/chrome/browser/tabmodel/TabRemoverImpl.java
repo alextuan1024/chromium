@@ -13,9 +13,10 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.actor.ActorServiceTabUtils;
+import org.chromium.chrome.browser.actor.background_tabs.ActorServiceTabUtils;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabGroupUtils;
 import org.chromium.chrome.browser.data_sharing.DataSharingTabGroupUtils.GroupsPendingDestroy;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_ui.ActionConfirmationManager;
 import org.chromium.chrome.browser.tab_ui.ActionConfirmationManager.MaybeBlockingResult;
@@ -38,6 +39,8 @@ import java.util.function.Supplier;
 @NullMarked
 public class TabRemoverImpl implements TabRemover {
     private final TabModelRemover mTabModelRemover;
+    private final TabRemover.TabClosePrompter mBeforeUnloadPrompter =
+            new BeforeUnloadTabClosePrompter();
 
     /**
      * @param context The activity context.
@@ -80,12 +83,30 @@ public class TabRemoverImpl implements TabRemover {
                         ? TabModelUtils.convertTabListToListOfTabs(
                                 mTabModelRemover.getTabModelInternal())
                         : tabClosureParams.tabs;
+        if (tabsToClose == null) {
+            proceedWithClose(tabClosureParams, allowDialog, listener, onPreparedCallback);
+            return;
+        }
+
         TabRemover.checkBeforeUnloadAndProceed(
+                tabClosureParams,
                 tabsToClose,
+                mBeforeUnloadPrompter,
+                /* abandonBatchOnCancel= */ tabClosureParams.isAllTabs,
                 listener,
-                () ->
-                        proceedWithClose(
-                                tabClosureParams, allowDialog, listener, onPreparedCallback));
+                confirmedTabs ->
+                        TabRemover.proceedWithConfirmedTabs(
+                                tabClosureParams,
+                                mTabModelRemover.getTabModelInternal(),
+                                tabsToClose,
+                                confirmedTabs,
+                                listener,
+                                params ->
+                                        proceedWithClose(
+                                                params,
+                                                allowDialog,
+                                                listener,
+                                                onPreparedCallback)));
     }
 
     private void proceedWithClose(
@@ -387,10 +408,16 @@ public class TabRemoverImpl implements TabRemover {
                         if (params.undoRunnable != null) {
                             params.undoRunnable.run();
                         }
+                        // Under the undoable closure rework, undo is served from recently closed
+                        // entries, so closing the placeholders must not add a recently closed
+                        // entry of its own.
+                        boolean savePlaceholders =
+                                !ChromeFeatureList.sUndoableTabClosureRework.isEnabled();
                         tabModel.getTabRemover()
                                 .forceCloseTabs(
                                         TabClosureParams.closeTabs(placeholderTabs)
                                                 .allowUndo(false)
+                                                .saveToTabRestoreService(savePlaceholders)
                                                 .build());
                     };
         }

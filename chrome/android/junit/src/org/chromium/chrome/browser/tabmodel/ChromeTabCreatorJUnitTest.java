@@ -4,15 +4,21 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,8 +28,14 @@ import android.content.Intent;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 
 import org.chromium.base.IntentUtils;
@@ -36,21 +48,51 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestrator;
+import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
+import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabState;
+import org.chromium.chrome.browser.tab.TabStateAttributes;
+import org.chromium.chrome.browser.tab.TabStateAttributes.DirtinessState;
+import org.chromium.chrome.browser.tab.TabStateAttributesRegistry;
+import org.chromium.chrome.browser.tab.TabTestUtils;
+import org.chromium.chrome.browser.tab.WebContentsState;
+import org.chromium.content_public.browser.AdditionalNavigationParams;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 
 import java.lang.ref.WeakReference;
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /** Unit tests for {@link ChromeTabCreator}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class ChromeTabCreatorJUnitTest {
+    private static final String PRIMARY_URL = "https://primary.com";
+    private static final String URL_1 = "https://url1.com";
+    private static final String URL_2 = "https://url2.com";
+
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    @Mock private TabModel mTabModel;
+    @Mock private Tab mParentTab;
+    @Mock private Tab mFirstTab;
+    @Mock private Tab mTab1;
+    @Mock private Tab mTab2;
+    @Captor private ArgumentCaptor<LoadUrlParams> mParamsCaptor;
+    @Captor private ArgumentCaptor<Integer> mLaunchTypeCaptor;
+    @Captor private ArgumentCaptor<Tab> mParentCaptor;
+    @Captor private ArgumentCaptor<Integer> mPositionCaptor;
+
     private ChromeTabCreator mTabCreator;
 
     @Before
@@ -69,11 +111,55 @@ public class ChromeTabCreatorJUnitTest {
     @Test
     public void testCreateNewTab_NullTabModel() {
         // mTabModel is null by default.
+        LoadUrlParams loadUrlParams = new LoadUrlParams("about:blank");
+        AdditionalNavigationParams additionalParams = mock(AdditionalNavigationParams.class);
+        loadUrlParams.setAdditionalNavigationParams(additionalParams);
         assertNull(
                 mTabCreator.createNewTab(
-                        new LoadUrlParams("about:blank"),
+                        loadUrlParams, TabLaunchType.FROM_CHROME_UI, /* parent= */ null));
+        verify(additionalParams).destroy();
+    }
+
+    @Test
+    public void testCreateNewTab_StubTabModel_ReturnsNull() {
+        mTabCreator.setTabModel(new StubTabModel(/* isIncognito= */ true, /* profile= */ null));
+        mTabCreator.setTabModelOrderController(mock(TabModelOrderController.class));
+
+        LoadUrlParams loadUrlParams = new LoadUrlParams("about:blank");
+        AdditionalNavigationParams additionalParams = mock(AdditionalNavigationParams.class);
+        loadUrlParams.setAdditionalNavigationParams(additionalParams);
+        assertNull(
+                mTabCreator.createNewTab(
+                        loadUrlParams, TabLaunchType.FROM_CHROME_UI, /* parent= */ null));
+        verify(additionalParams).destroy();
+    }
+
+    @Test
+    public void testCreateTabWithWebContents_StubTabModel_ReturnsNull() {
+        mTabCreator.setTabModel(new StubTabModel(/* isIncognito= */ true, /* profile= */ null));
+        mTabCreator.setTabModelOrderController(mock(TabModelOrderController.class));
+
+        assertNull(
+                mTabCreator.createTabWithWebContents(
+                        /* parent= */ null,
+                        /* shouldPin= */ false,
+                        mock(WebContents.class),
                         TabLaunchType.FROM_CHROME_UI,
-                        /* parent= */ null));
+                        TabModel.INVALID_TAB_INDEX,
+                        CompletableFuture.completedFuture(true)));
+    }
+
+    @Test
+    public void testCreateFrozenTab_StubTabModel_ReturnsNull() {
+        mTabCreator.setTabModel(new StubTabModel(/* isIncognito= */ true, /* profile= */ null));
+        mTabCreator.setTabModelOrderController(mock(TabModelOrderController.class));
+
+        assertNull(
+                mTabCreator.createFrozenTab(
+                        new TabState(),
+                        /* id= */ 1,
+                        TabModel.INVALID_TAB_INDEX,
+                        TabLaunchType.FROM_RESTORE));
     }
 
     @Test
@@ -103,12 +189,12 @@ public class ChromeTabCreatorJUnitTest {
         // mTabModel is null by default.
         assertNull(
                 mTabCreator.createNewTabs(
-                        new LoadUrlParams("https://primary.com"),
-                        List.of("https://url1.com", "https://url2.com"),
+                        new LoadUrlParams(PRIMARY_URL),
+                        List.of(URL_1, URL_2),
                         TabLaunchType.FROM_CHROME_UI,
-                        null,
-                        false,
-                        null));
+                        /* parent= */ null,
+                        /* openInTabGroup= */ false,
+                        /* intent= */ null));
     }
 
     @Test
@@ -116,12 +202,95 @@ public class ChromeTabCreatorJUnitTest {
         // mTabModel is null by default.
         assertNull(
                 mTabCreator.createNewTabs(
-                        new LoadUrlParams("https://primary.com"),
-                        List.of("https://url1.com", "https://url2.com"),
+                        new LoadUrlParams(PRIMARY_URL),
+                        List.of(URL_1, URL_2),
                         TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP,
-                        null,
-                        true,
-                        null));
+                        /* parent= */ null,
+                        /* openInTabGroup= */ true,
+                        /* intent= */ null));
+    }
+
+    @Test
+    public void testCreateNewTabs_BookmarkBarBackground() {
+        when(mTabModel.indexOf(/* tab= */ null)).thenReturn(TabModel.INVALID_TAB_INDEX);
+        ChromeTabCreator tabCreator = setupSpyTabCreatorForBatchTest(/* firstTabIndex= */ 2);
+
+        Tab result =
+                tabCreator.createNewTabs(
+                        new LoadUrlParams(PRIMARY_URL),
+                        List.of(URL_1, URL_2),
+                        TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND,
+                        /* parent= */ null,
+                        /* openInTabGroup= */ true,
+                        /* intent= */ null);
+
+        assertEquals(mFirstTab, result);
+        assertEquals(
+                List.of(PRIMARY_URL, URL_1, URL_2),
+                mParamsCaptor.getAllValues().stream().map(LoadUrlParams::getUrl).toList());
+        assertEquals(
+                List.of(
+                        TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND,
+                        TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND,
+                        TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND),
+                mLaunchTypeCaptor.getAllValues());
+        assertEquals(List.of(TabModel.INVALID_TAB_INDEX, 3, 4), mPositionCaptor.getAllValues());
+        assertEquals(Arrays.asList(null, null, null), mParentCaptor.getAllValues());
+        verify(mTabModel)
+                .mergeListOfTabsToGroup(
+                        List.of(mTab1, mTab2),
+                        mFirstTab,
+                        TabGroupMergeNotificationType.DONT_NOTIFY);
+    }
+
+    @Test
+    public void testCreateNewTabs_ForegroundLaunch() {
+        when(mTabModel.indexOf(mParentTab)).thenReturn(1);
+        ChromeTabCreator tabCreator = setupSpyTabCreatorForBatchTest(/* firstTabIndex= */ 2);
+
+        Tab result =
+                tabCreator.createNewTabs(
+                        new LoadUrlParams(PRIMARY_URL),
+                        List.of(URL_1, URL_2),
+                        TabLaunchType.FROM_CHROME_UI,
+                        /* parent= */ mParentTab,
+                        /* openInTabGroup= */ true,
+                        /* intent= */ null);
+
+        assertEquals(mFirstTab, result);
+        assertEquals(
+                List.of(PRIMARY_URL, URL_1, URL_2),
+                mParamsCaptor.getAllValues().stream().map(LoadUrlParams::getUrl).toList());
+        assertEquals(
+                List.of(
+                        TabLaunchType.FROM_CHROME_UI,
+                        TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP,
+                        TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP),
+                mLaunchTypeCaptor.getAllValues());
+        assertEquals(List.of(2, 3, 4), mPositionCaptor.getAllValues());
+        assertEquals(Arrays.asList(mParentTab, null, null), mParentCaptor.getAllValues());
+        verify(mTabModel)
+                .mergeListOfTabsToGroup(
+                        List.of(mTab1, mTab2),
+                        mFirstTab,
+                        TabGroupMergeNotificationType.DONT_NOTIFY);
+    }
+
+    private ChromeTabCreator setupSpyTabCreatorForBatchTest(int firstTabIndex) {
+        mTabCreator.setTabModel(mTabModel);
+        when(mTabModel.indexOf(mFirstTab)).thenReturn(firstTabIndex);
+        ChromeTabCreator tabCreator = spy(mTabCreator);
+        doReturn(mFirstTab, mTab1, mTab2)
+                .when(tabCreator)
+                .createNewTab(
+                        mParamsCaptor.capture(),
+                        /* title= */ isNull(),
+                        mLaunchTypeCaptor.capture(),
+                        mParentCaptor.capture(),
+                        mPositionCaptor.capture(),
+                        /* intent= */ any(),
+                        /* copyHistory= */ eq(false));
+        return tabCreator;
     }
 
     @Test
@@ -134,6 +303,281 @@ public class ChromeTabCreatorJUnitTest {
     @DisableFeatures(ChromeFeatureList.PRECONNECT_ON_TAB_CREATION)
     public void testCreateNewTab_AsyncParamsRemovedAfterAddTab_Standard() {
         runTestAsyncParamsRemovedAfterAddTab(/* incognito= */ false);
+    }
+
+    @Test
+    public void testCreateFrozenTab_ReparentingDetachesBeforeAddAndRemovesParamsAfter() {
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        ChromeTabCreator tabCreator = createTabCreator(activity, /* incognito= */ false);
+        TabModel tabModel = mock(TabModel.class);
+        TabModelOrderController orderController = mock(TabModelOrderController.class);
+        tabCreator.setTabModel(tabModel);
+        tabCreator.setTabModelOrderController(orderController);
+
+        int tabId = 456;
+        Tab mockTab = mock(Tab.class);
+        when(mockTab.getId()).thenReturn(tabId);
+        when(mockTab.isIncognito()).thenReturn(false);
+        when(mockTab.getUrl()).thenReturn(GURL.emptyGURL());
+        when(mockTab.getUserDataHost()).thenReturn(new UserDataHost());
+
+        boolean[] finalizeRan = new boolean[1];
+        TabReparentingParams params =
+                new TabReparentingParams(
+                        mockTab,
+                        /* sourceSelector= */ null,
+                        /* shouldReload= */ false,
+                        () -> finalizeRan[0] = true);
+        AsyncTabParamsManagerSingleton.getInstance().add(tabId, params);
+
+        doAnswer(
+                        invocation -> {
+                            assertTrue(
+                                    "Finalize callback must detach from old model before addTab",
+                                    finalizeRan[0]);
+                            assertTrue(
+                                    "AsyncTabParams must remain in manager during addTab",
+                                    AsyncTabParamsManagerSingleton.getInstance()
+                                            .hasParamsForTabId(tabId));
+                            return null;
+                        })
+                .when(tabModel)
+                .addTab(any(Tab.class), anyInt(), anyInt(), anyInt());
+
+        tabCreator.createFrozenTab(
+                /* state= */ null, tabId, /* index= */ 0, TabLaunchType.FROM_RESTORE);
+
+        assertFalse(
+                "AsyncTabParams must be removed after createFrozenTab",
+                AsyncTabParamsManagerSingleton.getInstance().hasParamsForTabId(tabId));
+        verify(tabModel).addTab(eq(mockTab), eq(0), eq(TabLaunchType.FROM_RESTORE), anyInt());
+    }
+
+    @Test
+    public void testCreateFrozenTab_ReparentingReloadsOnlyWhenRequestedOrFileScheme() {
+        mTabCreator.setTabModel(mTabModel);
+        mTabCreator.setTabModelOrderController(mock(TabModelOrderController.class));
+
+        Tab unloadedTab =
+                createReparentedFrozenTab(
+                        /* tabId= */ 101,
+                        PRIMARY_URL,
+                        /* shouldReload= */ false,
+                        /* needsReload= */ true,
+                        /* index= */ 0);
+        verify(unloadedTab, never()).reload();
+        verify(unloadedTab, never()).reloadIgnoringCache();
+
+        Tab reloadingTab =
+                createReparentedFrozenTab(
+                        /* tabId= */ 102,
+                        PRIMARY_URL,
+                        /* shouldReload= */ true,
+                        /* needsReload= */ false,
+                        /* index= */ 1);
+        verify(reloadingTab).reload();
+        verify(reloadingTab, never()).reloadIgnoringCache();
+
+        Tab fileTab =
+                createReparentedFrozenTab(
+                        /* tabId= */ 103,
+                        "file:///sdcard/photo.jpg",
+                        /* shouldReload= */ false,
+                        /* needsReload= */ false,
+                        /* index= */ 2);
+        verify(fileTab).reloadIgnoringCache();
+        verify(fileTab, never()).reload();
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.LOAD_ALL_TABS_AT_STARTUP)
+    public void testCreateFrozenTab_FromUndoClosure() {
+        PriceTrackingFeatures.setIsSignedInAndSyncEnabledForTesting(
+                /* isSignedInAndSyncEnabled= */ false);
+        PriceTrackingFeatures.setPriceAnnotationsEnabledForTesting(/* enabled= */ false);
+        TabTestUtils.mockTabJni();
+
+        TabModelOrderController orderController = mock(TabModelOrderController.class);
+        mTabCreator.setTabModel(mTabModel);
+        mTabCreator.setTabModelOrderController(orderController);
+
+        TabState tabState = new TabState();
+        WebContentsState contentsState = mock(WebContentsState.class);
+        when(contentsState.getVirtualUrlFromState()).thenReturn(PRIMARY_URL);
+        when(contentsState.getDisplayTitleFromState()).thenReturn("Title");
+        tabState.contentsState = contentsState;
+
+        Tab tab =
+                mTabCreator.createFrozenTab(
+                        tabState, /* id= */ 1, /* index= */ 0, TabLaunchType.FROM_UNDO_CLOSURE);
+
+        assertNotNull(tab);
+        assertEquals(TabLaunchType.FROM_UNDO_CLOSURE, tab.getLaunchType());
+        TabStateAttributes attributes =
+                TabStateAttributesRegistry.getAttributesFor(tab, TabPersistentStoreImpl.class);
+        assertNotNull(attributes);
+        assertEquals(DirtinessState.DIRTY, attributes.getDirtinessState());
+        verify(orderController)
+                .willOpenInForeground(
+                        TabLaunchType.FROM_UNDO_CLOSURE, /* isNewTabIncognitoBranded= */ false);
+        verify(mTabModel)
+                .addTab(
+                        tab,
+                        /* index= */ 0,
+                        TabLaunchType.FROM_UNDO_CLOSURE,
+                        TabCreationState.FROZEN_ON_RESTORE);
+    }
+
+    @Test
+    public void testRedirectTabCreator_ReparentingDestroysAsyncParams() {
+        MultiInstanceOrchestrator orchestrator = mock(MultiInstanceOrchestrator.class);
+        MultiInstanceOrchestratorFactory.setInstanceForTesting(orchestrator);
+
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        RedirectTabCreator redirectTabCreator =
+                createRedirectTabCreator(activity, /* incognito= */ true);
+        redirectTabCreator.setTabModel(mock(TabModel.class));
+
+        int tabId = 321;
+        Tab mockTab = mock(Tab.class);
+        TabReparentingParams params =
+                new TabReparentingParams(
+                        mockTab,
+                        /* sourceSelector= */ null,
+                        /* shouldReload= */ false,
+                        /* finalizeCallback= */ null);
+        AsyncTabParamsManagerSingleton.getInstance().add(tabId, params);
+
+        Intent intent = new Intent();
+        IntentHandler.setTabId(intent, tabId);
+
+        redirectTabCreator.createNewTab(
+                new LoadUrlParams("about:blank"),
+                TabLaunchType.FROM_REPARENTING,
+                /* parent= */ null,
+                intent);
+
+        assertFalse(
+                "AsyncTabParams must be removed after RedirectTabCreator.createNewTab",
+                AsyncTabParamsManagerSingleton.getInstance().hasParamsForTabId(tabId));
+        verify(mockTab).destroy();
+    }
+
+    @Test
+    public void testRedirectTabCreator_PreservesAdditionalNavigationParamsAcrossDestroy() {
+        MultiInstanceOrchestrator orchestrator = mock(MultiInstanceOrchestrator.class);
+        MultiInstanceOrchestratorFactory.setInstanceForTesting(orchestrator);
+
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        RedirectTabCreator redirectTabCreator =
+                createRedirectTabCreator(activity, /* incognito= */ true);
+
+        int tabId = 322;
+        LoadUrlParams loadUrlParams = new LoadUrlParams("https://example.com");
+        AdditionalNavigationParams additionalParams = mock(AdditionalNavigationParams.class);
+        loadUrlParams.setAdditionalNavigationParams(additionalParams);
+        AsyncTabCreationParams asyncParams = new AsyncTabCreationParams(loadUrlParams);
+        AsyncTabParamsManagerSingleton.getInstance().add(tabId, asyncParams);
+
+        Intent intent = new Intent();
+        IntentHandler.setTabId(intent, tabId);
+
+        redirectTabCreator.createNewTabs(
+                loadUrlParams,
+                /* additionalUrls= */ null,
+                TabLaunchType.FROM_CHROME_UI,
+                /* parent= */ null,
+                /* openInTabGroup= */ false,
+                intent);
+
+        assertFalse(
+                "AsyncTabParams must be removed after RedirectTabCreator.createNewTabs",
+                AsyncTabParamsManagerSingleton.getInstance().hasParamsForTabId(tabId));
+        verify(additionalParams, never()).destroy();
+        assertEquals(additionalParams, loadUrlParams.getAdditionalNavigationParams());
+        verify(orchestrator)
+                .openUrlsInOtherWindow(
+                        eq(activity),
+                        eq(loadUrlParams),
+                        isNull(),
+                        eq(Tab.INVALID_TAB_ID),
+                        eq(false),
+                        eq(true),
+                        eq(false));
+    }
+
+    @Test
+    public void testAsyncTabCreationParams_DestroyDestroysAdditionalNavigationParams() {
+        LoadUrlParams destroyLoadUrlParams = new LoadUrlParams("https://example.com");
+        AdditionalNavigationParams destroyAdditionalParams = mock(AdditionalNavigationParams.class);
+        destroyLoadUrlParams.setAdditionalNavigationParams(destroyAdditionalParams);
+        WebContents destroyWebContents = mock(WebContents.class);
+        AsyncTabCreationParams destroyParams =
+                new AsyncTabCreationParams(destroyLoadUrlParams, destroyWebContents);
+
+        destroyParams.destroy();
+
+        verify(destroyAdditionalParams).destroy();
+        verify(destroyWebContents).destroy();
+        assertNull(destroyLoadUrlParams.getAdditionalNavigationParams());
+
+        LoadUrlParams preservedLoadUrlParams = new LoadUrlParams("https://example.com");
+        AdditionalNavigationParams preservedAdditionalParams =
+                mock(AdditionalNavigationParams.class);
+        preservedLoadUrlParams.setAdditionalNavigationParams(preservedAdditionalParams);
+        WebContents preservedWebContents = mock(WebContents.class);
+        AsyncTabCreationParams preservedParams =
+                new AsyncTabCreationParams(preservedLoadUrlParams, preservedWebContents);
+
+        preservedParams.destroyPreservingLoadUrlParams();
+
+        verify(preservedAdditionalParams, never()).destroy();
+        verify(preservedWebContents).destroy();
+        assertEquals(
+                preservedAdditionalParams, preservedLoadUrlParams.getAdditionalNavigationParams());
+    }
+
+    @Test
+    public void testRedirectTabCreator_CreateFrozenTabReturnsNullAndDestroysAsyncParams() {
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        RedirectTabCreator redirectTabCreator =
+                createRedirectTabCreator(activity, /* incognito= */ false);
+        TabModel tabModel = mock(TabModel.class);
+        TabModelOrderController orderController = mock(TabModelOrderController.class);
+        redirectTabCreator.setTabModel(tabModel);
+        redirectTabCreator.setTabModelOrderController(orderController);
+
+        int tabId = 654;
+        Tab mockTab = mock(Tab.class);
+        TabReparentingParams params =
+                new TabReparentingParams(
+                        mockTab,
+                        /* sourceSelector= */ null,
+                        /* shouldReload= */ false,
+                        /* finalizeCallback= */ null);
+        AsyncTabParamsManagerSingleton.getInstance().add(tabId, params);
+
+        assertNull(
+                redirectTabCreator.createFrozenTab(
+                        /* state= */ null, tabId, /* index= */ 0, TabLaunchType.FROM_RESTORE));
+
+        assertFalse(
+                "AsyncTabParams must be removed after RedirectTabCreator.createFrozenTab",
+                AsyncTabParamsManagerSingleton.getInstance().hasParamsForTabId(tabId));
+        verify(mockTab).destroy();
+        verify(tabModel, never()).addTab(any(Tab.class), anyInt(), anyInt(), anyInt());
+    }
+
+    private RedirectTabCreator createRedirectTabCreator(Activity activity, boolean incognito) {
+        return new RedirectTabCreator(
+                activity,
+                mock(WindowAndroid.class),
+                () -> mock(TabDelegateFactory.class),
+                new OneshotSupplierImpl<>(),
+                incognito,
+                AsyncTabParamsManagerSingleton.getInstance(),
+                SupplierUtils.ofNull(),
+                SupplierUtils.ofNull());
     }
 
     private ChromeTabCreator createTabCreator(Activity activity, boolean incognito) {
@@ -180,7 +624,12 @@ public class ChromeTabCreatorJUnitTest {
         when(mockTab.getUrl()).thenReturn(GURL.emptyGURL());
         when(mockTab.getUserDataHost()).thenReturn(new UserDataHost());
 
-        TabReparentingParams params = new TabReparentingParams(mockTab, null);
+        TabReparentingParams params =
+                new TabReparentingParams(
+                        mockTab,
+                        /* sourceSelector= */ null,
+                        /* shouldReload= */ false,
+                        /* finalizeCallback= */ null);
         AsyncTabParamsManagerSingleton.getInstance().add(tabId, params);
 
         Intent intent = new Intent();
@@ -208,5 +657,36 @@ public class ChromeTabCreatorJUnitTest {
                 AsyncTabParamsManagerSingleton.getInstance().hasParamsForTabId(tabId));
         verify(tabModel)
                 .addTab(eq(mockTab), anyInt(), eq(TabLaunchType.FROM_REPARENTING), anyInt());
+    }
+
+    private Tab createReparentedFrozenTab(
+            int tabId, String url, boolean shouldReload, boolean needsReload, int index) {
+        Tab tab = mock(Tab.class);
+        when(tab.isIncognito()).thenReturn(false);
+        when(tab.getUrl()).thenReturn(new GURL(url));
+        if (needsReload) {
+            when(tab.needsReload()).thenReturn(true);
+        }
+        when(tab.getUserDataHost()).thenReturn(new UserDataHost());
+        AsyncTabParamsManagerSingleton.getInstance()
+                .add(
+                        tabId,
+                        new TabReparentingParams(
+                                tab,
+                                /* sourceSelector= */ null,
+                                shouldReload,
+                                /* finalizeCallback= */ null));
+
+        assertEquals(
+                tab,
+                mTabCreator.createFrozenTab(
+                        new TabState(), tabId, index, TabLaunchType.FROM_RESTORE));
+        verify(mTabModel)
+                .addTab(
+                        tab,
+                        index,
+                        TabLaunchType.FROM_RESTORE,
+                        TabCreationState.LIVE_IN_BACKGROUND);
+        return tab;
     }
 }

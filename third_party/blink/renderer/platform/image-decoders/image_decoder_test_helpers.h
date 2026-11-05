@@ -5,7 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_IMAGE_DECODER_TEST_HELPERS_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_IMAGE_DECODER_TEST_HELPERS_H_
 
-#include <cstdint>
 #include <memory>
 
 #include "base/containers/span.h"
@@ -35,11 +34,20 @@ inline void PrepareReferenceData(base::span<uint8_t> buffer) {
 }
 
 Vector<char> ReadFile(StringView file_name);
-Vector<char> ReadFile(const char* dir, const char* file_name);
+Vector<char> ReadFile(const StringView& dir, const char* file_name);
 
 scoped_refptr<SharedBuffer> ReadFileToSharedBuffer(StringView file_name);
 scoped_refptr<SharedBuffer> ReadFileToSharedBuffer(const char* dir,
                                                    const char* file_name);
+
+constexpr wtf_size_t kIcoHeaderSize = 6;
+constexpr wtf_size_t kIcoDirectoryEntrySize = 16;
+constexpr wtf_size_t kIcoImageCountOffset = 4;
+constexpr wtf_size_t kIcoEntryHeightOffset = 1;
+constexpr wtf_size_t kIcoEntryImageOffset = 12;
+
+uint32_t IcoImageDataOffset(base::span<const char> data,
+                            wtf_size_t image_index);
 
 uint32_t HashBitmap(const SkBitmap&);
 void CreateDecodingBaseline(DecoderCreator,

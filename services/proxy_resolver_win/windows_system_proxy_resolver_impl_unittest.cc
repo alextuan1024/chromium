@@ -14,9 +14,12 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/heap_array.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
@@ -32,7 +35,7 @@
 #include "net/proxy_resolution/win/windows_system_proxy_resolution_service.h"
 #include "net/proxy_resolution/win/winhttp_status.h"
 #include "net/test/test_with_task_environment.h"
-#include "services/proxy_resolver/public/mojom/proxy_resolver.mojom.h"
+#include "services/proxy_resolver/public/mojom/system_proxy_resolver.mojom.h"
 #include "services/proxy_resolver_win/winhttp_api_wrapper.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -103,10 +106,13 @@ void CopySettingToIEProxyConfigString(const std::wstring& setting,
                                       LPWSTR* ie_proxy_config_string) {
   // The trailing null for the string is provided by GlobalAlloc, which
   // zero-initializes the memory when using the GPTR flag.
-  *ie_proxy_config_string = static_cast<LPWSTR>(
-      GlobalAlloc(GPTR, sizeof(wchar_t) * (setting.length() + 1)));
-  UNSAFE_TODO(memcpy(*ie_proxy_config_string, setting.data(),
-                     sizeof(wchar_t) * setting.length()));
+  const size_t buffer_size = setting.length() + 1;
+  *ie_proxy_config_string =
+      static_cast<LPWSTR>(GlobalAlloc(GPTR, sizeof(wchar_t) * buffer_size));
+  // SAFETY: GlobalAlloc() above allocated `buffer_size` wchar_t elements.
+  base::span<wchar_t> buffer =
+      UNSAFE_BUFFERS(base::span(*ie_proxy_config_string, buffer_size));
+  buffer.copy_prefix_from(setting);
 }
 
 // This class will internally validate behavior that MUST be present in the code
@@ -278,7 +284,7 @@ class MockWinHttpAPIWrapper final : public WinHttpAPIWrapper {
   void AddBypassToProxyResults() {
     ASSERT_LT(proxy_result_.cEntries, kMaxProxyEntryLimit - 1);
     AllocateProxyResultEntriesIfNeeded();
-    UNSAFE_TODO(proxy_result_.pEntries[proxy_result_.cEntries]).fBypass = TRUE;
+    proxy_result_entries_[proxy_result_.cEntries].fBypass = TRUE;
     proxy_result_.cEntries++;
   }
   void AddDirectToProxyResults() {
@@ -295,13 +301,12 @@ class MockWinHttpAPIWrapper final : public WinHttpAPIWrapper {
     proxy_list_.push_back(std::move(proxy_host));
     wchar_t* proxy_host_raw = const_cast<wchar_t*>(proxy_list_.back().data());
 
-    UNSAFE_TODO(proxy_result_.pEntries[proxy_result_.cEntries]).fProxy = TRUE;
-    UNSAFE_TODO(proxy_result_.pEntries[proxy_result_.cEntries]).ProxyScheme =
-        scheme;
-    UNSAFE_TODO(proxy_result_.pEntries[proxy_result_.cEntries]).pwszProxy =
-        proxy_host_raw;
-    UNSAFE_TODO(proxy_result_.pEntries[proxy_result_.cEntries]).ProxyPort =
-        port;
+    WINHTTP_PROXY_RESULT_ENTRY& entry =
+        proxy_result_entries_[proxy_result_.cEntries];
+    entry.fProxy = TRUE;
+    entry.ProxyScheme = scheme;
+    entry.pwszProxy = proxy_host_raw;
+    entry.ProxyPort = port;
 
     proxy_result_.cEntries++;
   }
@@ -334,8 +339,7 @@ class MockWinHttpAPIWrapper final : public WinHttpAPIWrapper {
 
   void ResetWinHttpResults() {
     if (proxy_result_.pEntries) {
-      delete[] proxy_result_.pEntries;
-      proxy_result_.pEntries = nullptr;
+      proxy_result_entries_ = base::HeapArray<WINHTTP_PROXY_RESULT_ENTRY>();
       proxy_result_ = {0};
     }
     proxy_list_.clear();
@@ -363,11 +367,11 @@ class MockWinHttpAPIWrapper final : public WinHttpAPIWrapper {
     if (proxy_result_.cEntries != 0)
       return;
 
-    proxy_result_.pEntries =
-        new WINHTTP_PROXY_RESULT_ENTRY[kMaxProxyEntryLimit];
-    UNSAFE_TODO(
-        std::memset(proxy_result_.pEntries, 0,
-                    kMaxProxyEntryLimit * sizeof(WINHTTP_PROXY_RESULT_ENTRY)));
+    // `WithSize()` value-initializes (zeroes) the entries.
+    proxy_result_entries_ =
+        base::HeapArray<WINHTTP_PROXY_RESULT_ENTRY>::WithSize(
+            kMaxProxyEntryLimit);
+    proxy_result_.pEntries = proxy_result_entries_.data();
 
     // The memory of the strings above will be backed by a vector of strings.
     proxy_list_.reserve(kMaxProxyEntryLimit);
@@ -388,6 +392,8 @@ class MockWinHttpAPIWrapper final : public WinHttpAPIWrapper {
   std::wstring proxy_;
   std::wstring proxy_bypass_;
   WINHTTP_PROXY_RESULT proxy_result_ = {0};
+  // Backing storage for `proxy_result_.pEntries`.
+  base::HeapArray<WINHTTP_PROXY_RESULT_ENTRY> proxy_result_entries_;
   std::vector<std::wstring> proxy_list_;
 
   // Data used internally in the mock to function and validate its own behavior.
@@ -396,7 +402,7 @@ class MockWinHttpAPIWrapper final : public WinHttpAPIWrapper {
   bool did_call_set_status_callback_ = false;
   bool did_call_get_ie_proxy_config_ = false;
   int proxy_resolver_identifier_ = 1;
-  std::set<HINTERNET> opened_proxy_resolvers_;
+  std::set<base::RawPtrIfPtrT<HINTERNET>> opened_proxy_resolvers_;
   bool did_call_create_proxy_resolver_ = false;
   bool did_call_get_proxy_for_url_ = false;
   bool did_call_get_proxy_result_ = false;

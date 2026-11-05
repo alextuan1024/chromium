@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.omnibox;
 import android.os.Bundle;
 import android.text.Editable;
 import android.view.KeyEvent;
+import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.CompletionInfo;
 import android.view.inputmethod.CorrectionInfo;
 import android.view.inputmethod.EditorInfo;
@@ -285,9 +286,10 @@ class AutocompleteInputConnection extends InputConnectionWrapper {
         if (DEBUG) Log.i(TAG, "onEndImeCommand: " + mInputDelegate.isInBatchEdit());
         AutocompleteState currentState = mInputDelegate.getCurrentState();
         String diff = currentState.getBackwardDeletedTextFrom(mPreBatchEditState);
+        boolean retVal;
         if (diff != null) {
             // Update selection first such that keyboard app gets what it expects.
-            boolean retVal = decrementBatchEditCount();
+            retVal = decrementBatchEditCount();
 
             // Ensure this deletion is for autocomplete and not a site search transition.
             // When site search is activated (e.g. hitting <space> on "yahoo[ suggestion]")
@@ -300,23 +302,25 @@ class AutocompleteInputConnection extends InputConnectionWrapper {
             }
             mInputDelegate.setLastEditWasTyping(false);
             mInputDelegate.clearAutocompleteText();
-            mInputDelegate.notifyAutocompleteTextStateChanged();
-            return retVal;
-        }
-        if (!setAutocompleteSpan()) {
-            mInputDelegate.clearAutocompleteText();
-        }
-        boolean retVal = decrementBatchEditCount();
-        // Simply typed some characters or whole text selection has been overridden.
-        if (currentState.isForwardTypedFrom(mPreBatchEditState)
-                || currentState.isForwardReplacementFrom(mPreBatchEditState)
-                || (mPreBatchEditState.isWholeUserTextSelected()
-                        && currentState.getUserText().length() > 0
-                        && currentState.getSelection().isCollapsed()
-                        && currentState.isCursorAtEndOfUserText())) {
-            mInputDelegate.setLastEditWasTyping(true);
+        } else {
+            if (!setAutocompleteSpan()) {
+                mInputDelegate.clearAutocompleteText();
+            }
+            retVal = decrementBatchEditCount();
+            // Simply typed some characters or whole text selection has been overridden.
+            if (currentState.isForwardTypedFrom(mPreBatchEditState)
+                    || currentState.isForwardReplacementFrom(mPreBatchEditState)
+                    || (mPreBatchEditState.isWholeUserTextSelected()
+                            && currentState.getUserText().length() > 0
+                            && currentState.getSelection().isCollapsed()
+                            && currentState.isCursorAtEndOfUserText())) {
+                mInputDelegate.setLastEditWasTyping(true);
+            }
         }
         mInputDelegate.notifyAutocompleteTextStateChanged();
+        if (!mInputDelegate.isInBatchEdit()) {
+            mPreBatchEditState.copyFrom(currentState);
+        }
         return retVal;
     }
 
@@ -350,10 +354,25 @@ class AutocompleteInputConnection extends InputConnectionWrapper {
     @Override
     public boolean finishComposingText() {
         if (DEBUG) Log.i(TAG, "finishComposingText");
+        if (mInputDelegate.getDeletePostfixOnNextBeginImeCommand() == 0 && !hasComposingRegion()) {
+            // Nothing is being composed, so finishing the composition cannot alter the text.
+            // Wrapping the call in onBegin/onEndImeCommand() would only strip and re-append the
+            // autocomplete suffix, forcing two full relayouts of the UrlBar text. IMEs (notably
+            // Gboard) issue this call after every text change they did not make, i.e. after every
+            // keystroke the model rewrites. See b/576773721.
+            return super.finishComposingText();
+        }
         onBeginImeCommand();
         boolean retVal = super.finishComposingText();
         onEndImeCommand();
         return retVal;
+    }
+
+    private boolean hasComposingRegion() {
+        Editable editable =
+                mInputDelegate.getAutocompleteEditTextModelBaseDelegate().getEditableText();
+        return BaseInputConnection.getComposingSpanStart(editable) != -1
+                || BaseInputConnection.getComposingSpanEnd(editable) != -1;
     }
 
     @Override

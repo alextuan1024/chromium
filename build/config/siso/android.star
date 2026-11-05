@@ -42,28 +42,26 @@ def __filegroups(ctx):
     return fg
 
 def __step_config(ctx, step_config):
-    remote_run = config.get(ctx, "googlechrome")  # Turn this to False when you do file access trace.
+    remote_all = config.get(ctx, "googlechrome")  # Turn this to False when you do file access trace.
 
-    # Run static analysis steps locally when build server is enabled.
-    # android_static_analysis = "build_server" by default.
-    # https://chromium.googlesource.com/chromium/src/+/main/docs/android_build_instructions.md#asynchronous-static-analysis
-    remote_run_static_analysis = False
     if "args.gn" in ctx.metadata:
         gn_args = gn.args(ctx)
-
-        if gn_args.get("android_static_analysis") in ('"on"', '"off"'):
-            remote_run_static_analysis = True
         if gn_args.get("enable_kythe_annotations") == "true":
             # Remote Kythe annotations isn't supported.
-            remote_run = False
+            remote_all = False
+
+    # These actions are fast enough that running them locally on developer
+    # workstations is faster than running them remotely.
+    remote_run = remote_all and (config.get(ctx, "remote-android") or config.get(ctx, "default-remote") or config.get(ctx, "builder"))
 
     step_config["rules"].extend([
         # See also https://chromium.googlesource.com/chromium/src/build/+/HEAD/android/docs/java_toolchain.md
         {
             "name": "android/write_build_config",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/write_build_config.py",
-            "handler": "android_write_build_config",
+            "command_prefix": platform.python_bin + " obj/build/android/write_build_config.pyz",
+            "handler": "android_write_build_config" if remote_run else None,
             "remote": remote_run,
+            "restat_content": True,
             "timeout": "2m",
             "remote_command": platform.remote_python_bin,
         },
@@ -71,12 +69,13 @@ def __step_config(ctx, step_config):
             "name": "android/ijar",
             "command_prefix": platform.python_bin + " ../../build/android/gyp/ijar.py",
             "remote": remote_run,
+            "restat_content": True,
             "timeout": "2m",
             "remote_command": platform.remote_python_bin,
         },
         {
             "name": "android/turbine",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/turbine.py",
+            "command_prefix": platform.python_bin + " obj/build/android/turbine.pyz",
             "handler": "android_turbine",
             # TODO: crbug.com/396220357 - fix gn to remove unnecessary deps
             "exclude_input_patterns": [
@@ -98,6 +97,7 @@ def __step_config(ctx, step_config):
                 "*.xml",
             ],
             "remote": remote_run and not config.get(ctx, "no-remote-javac"),
+            "restat_content": True,
             "platform_ref": "large",
             "timeout": "2m",
             "remote_command": platform.remote_python_bin,
@@ -117,6 +117,7 @@ def __step_config(ctx, step_config):
                 "*.sql",
             ],
             "remote": remote_run,
+            "restat_content": True,
             "timeout": "5m",
             "remote_command": platform.remote_python_bin,
         },
@@ -140,13 +141,14 @@ def __step_config(ctx, step_config):
             "ignore_extra_input_pattern": ".*srcjars.*\\.java",
             "ignore_extra_output_pattern": ".*srcjars.*\\.java",
             "remote": remote_run and not config.get(ctx, "no-remote-javac"),
+            "restat_content": True,
             "platform_ref": "large",
             "timeout": "2m",
             "remote_command": platform.remote_python_bin,
         },
         {
             "name": "android/errorprone",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/errorprone.py",
+            "command_prefix": platform.python_bin + " obj/build/android/errorprone.pyz",
             "handler": "android_compile_java",
             "exclude_input_patterns": [
                 "*.a",
@@ -158,7 +160,7 @@ def __step_config(ctx, step_config):
                 "*.pak",
                 "*.sql",
             ],
-            "remote": remote_run_static_analysis and not config.get(ctx, "no-remote-javac"),
+            "remote": not config.get(ctx, "no-remote-javac"),
             "platform_ref": "large",
             # obj/chrome/android/chrome_java__errorprone.stamp step takes too
             # long.
@@ -167,7 +169,7 @@ def __step_config(ctx, step_config):
         },
         {
             "name": "android/compile_kt",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/compile_kt.py",
+            "command_prefix": platform.python_bin + " obj/build/android/compile_kt.pyz",
             "handler": "android_compile_java",
             "exclude_input_patterns": [
                 "*.a",
@@ -182,16 +184,17 @@ def __step_config(ctx, step_config):
             # Don't include files under --generated-dir.
             # This is probably optimization for local incrmental builds.
             # However, this is harmful for remote build cache hits.
-            "ignore_extra_input_pattern": ".*srcjars.*\\.java",
-            "ignore_extra_output_pattern": ".*srcjars.*\\.java",
+            "ignore_extra_input_pattern": ".*srcjars.*\\.(java|kt)",
+            "ignore_extra_output_pattern": ".*srcjars.*\\.(java|kt)",
             "remote": remote_run,
+            "restat_content": True,
             "platform_ref": "large",
             "timeout": "2m",
             "remote_command": platform.remote_python_bin,
         },
         {
             "name": "android/dex",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/dex.py",
+            "command_prefix": platform.python_bin + " obj/build/android/dex.pyz",
             "handler": "android_dex",
             "exclude_input_patterns": [
                 "*.a",
@@ -203,11 +206,8 @@ def __step_config(ctx, step_config):
                 "*.pak",
                 "*.sql",
             ],
-            # *.dex files are intermediate files used in incremental builds.
-            # Fo remote actions, let's ignore them, assuming remote cache hits compensate.
-            "ignore_extra_input_pattern": ".*\\.dex",
-            "ignore_extra_output_pattern": ".*\\.dex",
             "remote": remote_run,
+            "restat_content": True,
             "platform_ref": "large",
             "timeout": "2m",
             "remote_command": platform.remote_python_bin,
@@ -216,6 +216,7 @@ def __step_config(ctx, step_config):
             "name": "android/filter_zip",
             "command_prefix": platform.python_bin + " ../../build/android/gyp/filter_zip.py",
             "remote": remote_run,
+            "restat_content": True,
             "timeout": "2m",
             "remote_command": platform.remote_python_bin,
         },
@@ -228,12 +229,16 @@ def __step_config(ctx, step_config):
             # Downloading all .o, .a to remote worker is slower than doing that
             # on the host machine.
             "remote": False,
+            "restat_content": True,
         },
         {
             "name": "android/trace_event_bytecode_rewriter",
             "command_prefix": platform.python_bin + " ../../build/android/gyp/trace_event_bytecode_rewriter.py",
             "handler": "android_trace_event_bytecode_rewriter",
-            "remote": remote_run,
+            "remote": remote_all,
+            # The GN action declares only an empty .stamp output that
+            # downstream proguard steps depend on.
+            "restat_content": False,
             "platform_ref": "large",
             "timeout": "10m",
             "remote_command": platform.remote_python_bin,
@@ -247,6 +252,7 @@ def __step_config(ctx, step_config):
                 "./obj/chrome/test/android_browsertests__apk/android_browsertests__apk.r8dex.jar",
             ],
             "remote": False,
+            "restat_content": True,
         },
         {
             "name": "android/proguard",
@@ -262,7 +268,8 @@ def __step_config(ctx, step_config):
                 "*.pak",
                 "*.sql",
             ],
-            "remote": remote_run,
+            "remote": remote_all,
+            "restat_content": True,
             "platform_ref": "large",
             "timeout": "10m",
             "remote_command": platform.remote_python_bin,
@@ -281,7 +288,7 @@ def __step_config(ctx, step_config):
                 "*.pak",
                 "*.sql",
             ],
-            "remote": remote_run_static_analysis,
+            "remote": True,
             "platform_ref": "large",
             "timeout": "10m",
             "remote_command": platform.remote_python_bin,
@@ -291,6 +298,7 @@ def __step_config(ctx, step_config):
             "command_prefix": platform.python_bin + " ../../build/android/gyp/apkbuilder.py",
             "handler": "android_apkbuilder",
             "remote": config.get(ctx, "remote-link") or config.get(ctx, "default-remote") or config.get(ctx, "builder"),
+            "restat_content": True,
             "platform_ref": "large",
             "timeout": "5m",
             "exclude_input_patterns": [
@@ -301,10 +309,19 @@ def __step_config(ctx, step_config):
             "remote_command": platform.remote_python_bin,
         },
         {
+            # Runs locally to avoid transferring large .aab outputs. The
+            # handler ensures the .zipspec inputs are materialized locally.
+            "name": "android/create_app_bundle",
+            "command_prefix": platform.python_bin + " ../../build/android/gyp/create_app_bundle.py",
+            "handler": "android_create_app_bundle",
+            "remote": False,
+        },
+        {
             "name": "android/create_size_info_files",
             "command_prefix": platform.python_bin + " ../../build/android/gyp/create_size_info_files.py",
             "handler": "android_create_size_info_files",
             "remote": remote_run,
+            "restat_content": True,
             "platform_ref": "large",
             "exclude_input_patterns": [
                 "*.o",
@@ -400,11 +417,6 @@ def __android_compile_java_handler(ctx, cmd):
     #   --enable-errorprone
     #   @gen/chrome/android/chrome_test_java.sources
 
-    out = cmd.outputs[0]
-    outputs = [
-        out + ".md5.stamp",
-    ]
-
     inputs = []
     for i, arg in enumerate(cmd.args):
         for k in ["--classpath=", "--processorpath="]:
@@ -419,20 +431,11 @@ def __android_compile_java_handler(ctx, cmd):
 
     ctx.actions.fix(
         inputs = cmd.inputs + inputs,
-        outputs = cmd.outputs + outputs,
     )
 
 def __android_dex_handler(ctx, cmd):
-    out = cmd.outputs[0]
     inputs = []
-
-    # Add __dex.desugardeps to the outputs.
-    outputs = [
-        out + ".md5.stamp",
-    ]
-    for i, arg in enumerate(cmd.args):
-        if arg == "--desugar-dependencies":
-            outputs.append(ctx.fs.canonpath(cmd.args[i + 1]))
+    for arg in cmd.args:
         for k in ["--class-inputs=", "--bootclasspath=", "--classpath=", "--class-inputs-filearg=", "--dex-inputs-filearg=", "--dex-inputs="]:
             if arg.startswith(k):
                 arg = arg.removeprefix(k)
@@ -442,11 +445,8 @@ def __android_dex_handler(ctx, cmd):
                     f = ctx.fs.canonpath(f)
                     inputs.append(f)
 
-    # TODO: dex.py takes --incremental-dir to reuse the .dex produced in a previous build.
-    # Should remote dex action also take this?
     ctx.actions.fix(
         inputs = cmd.inputs + inputs,
-        outputs = cmd.outputs + outputs,
     )
 
 def __android_trace_event_bytecode_rewriter(ctx, cmd):
@@ -509,7 +509,7 @@ def __android_proguard_handler(ctx, cmd):
                     f, _, _ = f.partition(":")
                     inputs.append(ctx.fs.canonpath(f))
                 break
-        if arg in ["--sdk-jars", "--sdk-extension-jars"]:
+        if arg in ["--sdk-jars", "--sdk-extension-jars", "--sdk-api-databases"]:
             fn, v = __filearg(ctx, cmd.args[i + 1])
             if fn:
                 inputs.append(ctx.fs.canonpath(fn))
@@ -535,9 +535,9 @@ def __android_proguard_handler(ctx, cmd):
 def __android_trace_references_handler(ctx, cmd):
     # Sample command:
     # python3 ../../build/android/gyp/tracereferences.py \
-    #   --depfile gen/chrome/android/monochrome_public_bundle__dex.d \
-    #   --tracerefs-json gen/chrome/android/monochrome_public_bundle__dex.tracerefs.json \
-    #   --stamp obj/chrome/android/monochrome_public_bundle__dex.tracereferences.stamp --warnings-as-errors
+    #   --depfile gen/chrome/android/chrome_public_bundle__dex.d \
+    #   --tracerefs-json gen/chrome/android/chrome_public_bundle__dex.tracerefs.json \
+    #   --stamp obj/chrome/android/chrome_public_bundle__dex.tracereferences.stamp --warnings-as-errors
     # Sample tracerefs.json:
     # {
     #   "r8jar": "../../third_party/r8/cipd/lib/r8.jar",
@@ -550,17 +550,17 @@ def __android_trace_references_handler(ctx, cmd):
     #     {
     #       "name": "",
     #       "jars": [
-    #         "obj/chrome/android/monochrome_public_bundle__base_bundle_module/monochrome_public_bundle__base_bundle_module.r8dex.jar",
-    #         "obj/chrome/android/monochrome_public_bundle__chrome_bundle_module/monochrome_public_bundle__chrome_bundle_module.r8dex.jar",
-    #         "obj/chrome/android/monochrome_public_bundle__dev_ui_bundle_module/monochrome_public_bundle__dev_ui_bundle_module.r8dex.jar",
-    #         "obj/chrome/android/monochrome_public_bundle__stack_unwinder_bundle_module/monochrome_public_bundle__stack_unwinder_bundle_module.r8dex.jar",
-    #         "obj/chrome/android/monochrome_public_bundle__test_dummy_bundle_module/monochrome_public_bundle__test_dummy_bundle_module.r8dex.jar"
+    #         "obj/chrome/android/chrome_public_bundle__base_bundle_module/chrome_public_bundle__base_bundle_module.r8dex.jar",
+    #         "obj/chrome/android/chrome_public_bundle__chrome_bundle_module/chrome_public_bundle__chrome_bundle_module.r8dex.jar",
+    #         "obj/chrome/android/chrome_public_bundle__dev_ui_bundle_module/chrome_public_bundle__dev_ui_bundle_module.r8dex.jar",
+    #         "obj/chrome/android/chrome_public_bundle__stack_unwinder_bundle_module/chrome_public_bundle__stack_unwinder_bundle_module.r8dex.jar",
+    #         "obj/chrome/android/chrome_public_bundle__test_dummy_bundle_module/chrome_public_bundle__test_dummy_bundle_module.r8dex.jar"
     #       ]
     #     },
     #     {
     #       "name": "base",
     #       "jars": [
-    #         "obj/chrome/android/monochrome_public_bundle__base_bundle_module/monochrome_public_bundle__base_bundle_module.r8dex.jar"
+    #         "obj/chrome/android/chrome_public_bundle__base_bundle_module/chrome_public_bundle__base_bundle_module.r8dex.jar"
     #       ]
     #     }
     #   ]
@@ -640,9 +640,14 @@ def __android_write_build_config_handler(ctx, cmd):
     ctx.actions.fix(inputs = cmd.inputs + inputs)
 
 def __android_apkbuilder_handler(ctx, cmd):
+    flags = ["--assets=", "--uncompressed-assets=", "--java-resources=", "--dex-file="]
+    if "--output-spec" not in cmd.args:
+        # With --output-spec, apkbuilder.py only records .so paths in the
+        # zipspec without reading them; create_app_bundle.py reads them instead.
+        flags += ["--native-libs=", "--secondary-native-libs="]
     inputs = []
     for i, arg in enumerate(cmd.args):
-        for k in ["--assets=", "--uncompressed-assets=", "--java-resources=", "--native-libs=", "--secondary-native-libs=", "--dex-file="]:
+        for k in flags:
             if arg.startswith(k):
                 arg = arg.removeprefix(k)
                 fn, v = __filearg(ctx, arg)
@@ -654,6 +659,28 @@ def __android_apkbuilder_handler(ctx, cmd):
                 break
 
     ctx.actions.fix(inputs = cmd.inputs + inputs)
+
+def __android_create_app_bundle_handler(ctx, cmd):
+    inputs = {}
+    for arg in cmd.args:
+        if arg.startswith("--module-specs="):
+            _, specs = __filearg(ctx, arg.removeprefix("--module-specs="))
+            for spec in specs:
+                for line in str(ctx.fs.read(ctx.fs.canonpath(spec))).splitlines():
+                    if line:
+                        # Columns: dest_name, compress_level, alignment,
+                        # src_path[, src_entry_name]
+                        inputs[ctx.fs.canonpath(line.split("\t")[3])] = True
+        elif arg.startswith(("--rtxt-in-paths=", "--pathmap-in-paths=")):
+            _, v = __filearg(ctx, arg.partition("=")[2])
+            for f in v:
+                if not f:
+                    continue
+                p = ctx.fs.canonpath(f)
+                if ctx.fs.exists(p):
+                    inputs[p] = True
+
+    ctx.actions.fix(inputs = cmd.inputs + inputs.keys())
 
 def __android_create_size_info_files_handler(ctx, cmd):
     inputs = []
@@ -708,6 +735,7 @@ def __android_create_size_info_files_handler(ctx, cmd):
 
 __handlers = {
     "android_apkbuilder": __android_apkbuilder_handler,
+    "android_create_app_bundle": __android_create_app_bundle_handler,
     "android_compile_java": __android_compile_java_handler,
     "android_compile_resources": __android_compile_resources_handler,
     "android_dex": __android_dex_handler,

@@ -7,6 +7,8 @@
 
 #import <Foundation/Foundation.h>
 
+#import <memory>
+
 #import "base/ios/block_types.h"
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile_continuation_provider.h"
 
@@ -17,6 +19,8 @@ class ChromeAccountManagerService;
 @protocol FullscreenSigninScreenMediatorDelegate;
 class PrefService;
 namespace signin {
+class AccountPreviewDataService;
+class AccountSwitchingPromoLogger;
 class IdentityManager;
 }  // namespace signin
 namespace signin_metrics {
@@ -45,8 +49,6 @@ class SyncService;
 @property(nonatomic, assign) BOOL TOSLinkWasTapped;
 // Whether the user tapped on the UMA link.
 @property(nonatomic, assign) BOOL UMALinkWasTapped;
-// Whether an account has been added. Must be set externally.
-@property(nonatomic, assign) BOOL addedAccount;
 // Whether dismiss gestures should be ignored (e.g. swipe away).
 @property(nonatomic, assign, readonly) BOOL ignoreDismissGesture;
 // Delegate of the mediator.
@@ -54,20 +56,29 @@ class SyncService;
 @property(nonatomic, assign, readonly) BOOL signinInProgress;
 
 // The designated initializer.
-// `accountManagerService` account manager service.
-// `authenticationService` authentication service.
-// `localPrefService` application local pref.
-// `prefService` user pref.
-// `syncService` sync service.
+// - `accountManagerService` account manager service.
+// - `authenticationService` authentication service.
+// - `accountPreviewDataService` for fetching the preferred account preference.
+// May be `nullptr`.
+// - `localPrefService` application local pref.
+// - `prefService` user pref. `syncService` sync service.
+// - `accountSwitchingPromoLogger` logger for the account switching promo
+// events. Required if and only if `accessPoint` is
+// `signin_metrics::AccessPoint::kAccountSwitchingPromo`.
 - (instancetype)
         initWithAccountManagerService:
             (ChromeAccountManagerService*)accountManagerService
                 authenticationService:
                     (AuthenticationService*)authenticationService
                       identityManager:(signin::IdentityManager*)identityManager
+            accountPreviewDataService:
+                (signin::AccountPreviewDataService*)accountPreviewDataService
                      localPrefService:(PrefService*)localPrefService
                           prefService:(PrefService*)prefService
                           syncService:(syncer::SyncService*)syncService
+          accountSwitchingPromoLogger:
+              (std::unique_ptr<signin::AccountSwitchingPromoLogger>)
+                  accountSwitchingPromoLogger
                      selectedIdentity:(id<SystemIdentity>)selectedIdentity
                           accessPoint:(signin_metrics::AccessPoint)accessPoint
                           promoAction:(signin_metrics::PromoAction)promoAction
@@ -86,12 +97,16 @@ class SyncService;
 - (void)startSignInWithAuthenticationFlow:
     (AuthenticationFlow*)authenticationFlow;
 
-// Signs out the user if needed.
+// Cancels the sign-in screen, verifying preconditions, and invokes
+// `completion`.
 - (void)cancelSignInScreenWithCompletion:(ProceduralBlock)completion;
 
 // User attempted to sign-in by either add an account or by tapping on sing-in
 // button.
 - (void)userAttemptedToSignin;
+
+// Records when an identity is added during the sign-in flow.
+- (void)systemIdentityAdded:(id<SystemIdentity>)identity;
 
 // Called when the coordinator is finished.
 - (void)finishPresentingWithSignIn:(BOOL)signIn;

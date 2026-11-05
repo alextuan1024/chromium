@@ -27,14 +27,16 @@ class PLATFORM_EXPORT SkiaImageDecoderBase : public ImageDecoder {
                        wtf_size_t max_decoded_bytes,
                        wtf_size_t reading_offset = kNoReadingOffset,
                        HighBitDepthDecodingOption bit_depth_option =
-                           HighBitDepthDecodingOption::kDefaultBitDepth);
+                           HighBitDepthDecodingOption::kDefaultBitDepth,
+                       const gfx::Size& desired_size = gfx::Size(),
+                       cc::AuxImage aux_image = cc::AuxImage::kDefault);
 
   SkiaImageDecoderBase(const SkiaImageDecoderBase&) = delete;
   SkiaImageDecoderBase& operator=(const SkiaImageDecoderBase&) = delete;
   ~SkiaImageDecoderBase() override;
 
   // ImageDecoder:
-  void OnSetData(scoped_refptr<SegmentReader> data) final;
+  void OnSetData(scoped_refptr<SegmentReader> data) override;
   int RepetitionCount() const final;
   bool FrameIsReceivedAtIndex(wtf_size_t) const final;
   base::TimeDelta FrameDurationAtIndex(wtf_size_t) const final;
@@ -48,6 +50,17 @@ class PLATFORM_EXPORT SkiaImageDecoderBase : public ImageDecoder {
   // OnCreateSkCodec needs to read enough of the image to get the image size.
   virtual std::unique_ptr<SkCodec> OnCreateSkCodec(std::unique_ptr<SkStream>,
                                                    SkCodec::Result* result) = 0;
+
+  // Called after the codec size and common metadata are available.
+  virtual void OnSkCodecCreated() {}
+
+  // Overrides can finalize incomplete output without resetting the active
+  // codec.
+  virtual SkCodec::Result OnIncrementalDecode(wtf_size_t);
+
+  const SkCodec* codec() const { return codec_.get(); }
+  // Default decode dimensions can differ from a codec's all-frame bounds.
+  virtual gfx::Size GetSizeFromSkCodec() const;
 
  private:
   // ImageDecoder:

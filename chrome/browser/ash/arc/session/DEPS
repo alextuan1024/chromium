@@ -22,10 +22,7 @@ include_rules = [
   "+chrome/browser/ash/policy/arc",
   "+chrome/browser/ash/policy/core",
   "+chrome/browser/ash/policy/test_support",
-  "+chrome/browser/ash/profiles",
   "+chrome/browser/ash/settings",
-  "+chrome/browser/consent_auditor",
-  "+chrome/browser/global_features.h",
   "+chrome/browser/net",
   "+chrome/browser/policy",
   "+chrome/browser/profiles",
@@ -55,15 +52,15 @@ specific_include_rules = {
   ],
 
   "arc_session_manager_unittest\\.cc": [
+    "+chrome/browser/consent_auditor",
+    "+chrome/browser/global_features.h",
     "+chrome/browser/signin",
   ],
 
-  "arc_play_store_enabled_preference_handler\\.cc": [
-    "+chrome/grit",
-  ],
-
+  # Only the test still installs the ConsentAuditor through the //chrome-side
+  # factory; production goes through ash::ConsentAuditorProvider.
   "arc_play_store_enabled_preference_handler_unittest\\.cc": [
+    "+chrome/browser/consent_auditor",
     "+chrome/browser/signin",
-    "+chrome/grit",
   ],
 }

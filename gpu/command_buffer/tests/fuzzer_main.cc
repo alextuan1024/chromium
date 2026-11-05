@@ -432,8 +432,7 @@ class CommandBufferSetup {
         shared_image_manager_.get(), context_state_, /*is_privileged=*/true);
     decoder_->GetLogger()->set_log_synthesized_gl_errors(false);
 
-    auto result =
-        decoder_->Initialize(/*lose_context_when_out_of_memory=*/false);
+    auto result = decoder_->Initialize();
     if (result != gpu::ContextResult::kSuccess) {
       return false;
     }
@@ -458,7 +457,7 @@ class CommandBufferSetup {
     auto result =
         decoder_->Initialize(context->default_surface(), context,
                              /*offscreen=*/true, config_.context_type,
-                             /*lose_context_when_out_of_memory=*/false);
+                             /*lose_context_when_out_of_memory=*/true);
     if (result != gpu::ContextResult::kSuccess) {
       return false;
     }

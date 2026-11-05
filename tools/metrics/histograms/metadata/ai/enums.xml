@@ -34,9 +34,22 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Balanced"/>
   <int value="3" label="Creative"/>
   <int value="4" label="MostCreative"/>
+  <int value="5" label="SlightlyPredictable"/>
+  <int value="6" label="SlightlyCreative"/>
 </enum>
 
 <!-- LINT.ThenChange(//third_party/blink/public/mojom/ai/ai_language_model.mojom:AILanguageModelSamplingMode) -->
+
+<!-- LINT.IfChange(AILanguageModelThinkingEffort) -->
+
+<enum name="AILanguageModelThinkingEffort">
+  <int value="0" label="None"/>
+  <int value="1" label="Low"/>
+  <int value="2" label="Medium"/>
+  <int value="3" label="High"/>
+</enum>
+
+<!-- LINT.ThenChange(//third_party/blink/public/mojom/ai/ai_language_model.mojom:AILanguageModelThinkingEffort) -->
 
 <!-- LINT.IfChange(AIModelStreamingResponseStatus) -->
 
@@ -140,6 +153,7 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Audio"/>
   <int value="3" label="ToolCall"/>
   <int value="4" label="ToolResponse"/>
+  <int value="5" label="Thought"/>
 </enum>
 
 <!-- LINT.ThenChange(//third_party/blink/renderer/modules/ai/ai_metrics.h:LanguageModelInputType) -->
@@ -162,6 +176,19 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//components/on_device_translation/service/translate_kit_client.h:LoadTranslateKitResult) -->
+
+<!-- LINT.IfChange(TranslateKitModelUnloadReason) -->
+
+<enum name="TranslateKitModelUnloadReason">
+  <int value="0" label="Idle">
+    The translator was not used for the idle unload timeout.
+  </int>
+  <int value="1" label="MemoryPressure">
+    The process was under moderate or critical memory pressure.
+  </int>
+</enum>
+
+<!-- LINT.ThenChange(//components/on_device_translation/service/translate_kit_client.h:TranslateKitModelUnloadReason) -->
 
 <!-- LINT.IfChange(WritingAssistanceMetricsOptionFormat) -->
 

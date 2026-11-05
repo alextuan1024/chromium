@@ -27,6 +27,7 @@
 
 #include <algorithm>
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -421,7 +422,8 @@ static bool ShouldNotInheritStyleFrom(const Node& node) {
 namespace {
 
 struct HtmlEquivalentTagDefinition {
-  const HTMLQualifiedName* tag;
+  // RAW_PTR_EXCLUSION: #global-scope
+  RAW_PTR_EXCLUSION const HTMLQualifiedName* tag;
   CSSPropertyID property;
   CSSValueID value_id;
 };
@@ -1042,7 +1044,7 @@ void DeleteSelectionCommand::FixupWhitespace(const Position& position) {
   if (IsRenderedCharacter(position))
     return;
   DCHECK(!text_node->GetLayoutObject() ||
-         text_node->GetLayoutObject()->StyleRef().ShouldCollapseWhiteSpaces())
+         text_node->GetLayoutObject()->Style().ShouldCollapseWhiteSpaces())
       << text_node;
   ReplaceTextInNode(text_node, position.ComputeOffsetInContainerNode(), 1,
                     NonBreakingSpaceString(),
@@ -1197,7 +1199,8 @@ void DeleteSelectionCommand::MergeParagraphs(EditingState* editing_state) {
   bool paragraph_to_merge_is_empty =
       start_of_paragraph_to_move.DeepEquivalent() ==
       end_of_paragraph_to_move.DeepEquivalent();
-  MoveParagraph(
+  // Flat-tree paragraph bounds need not delimit a whole DOM paragraph.
+  MoveParagraphs(
       start_of_paragraph_to_move, end_of_paragraph_to_move, merge_destination,
       editing_state, kDoNotPreserveSelection,
       paragraph_to_merge_is_empty ? kDoNotPreserveStyle : kPreserveStyle);

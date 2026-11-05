@@ -159,6 +159,12 @@ SkiaOutputDeviceBufferQueue::SkiaOutputDeviceBufferQueue(
       ui::OzonePlatform::GetInstance()
           ->GetPlatformRuntimeProperties()
           .supports_single_pixel_buffer;
+  const auto& runtime_properties =
+      ui::OzonePlatform::GetInstance()->GetPlatformRuntimeProperties();
+  capabilities_.compositor_tone_maps_using_clli =
+      runtime_properties.compositor_tone_maps_using_clli;
+  capabilities_.compositor_tone_maps_using_mdcv =
+      runtime_properties.compositor_tone_maps_using_mdcv;
 
 #elif BUILDFLAG(IS_APPLE)
   capabilities_.supports_non_backed_solid_color_overlays = true;
@@ -313,27 +319,46 @@ void SkiaOutputDeviceBufferQueue::Present(
     OutputSurfaceFrame frame) {
   StartSwapBuffers({});
 
-  const gfx::FrameData frame_data = frame.data;
+  // Queue before presenting: `Present()` may run the completion callback
+  // synchronously, and `ScheduleOverlays()` requires an empty pending list.
+  submitted_overlay_mailboxes_.push(std::move(pending_overlay_mailboxes_));
+  pending_overlay_mailboxes_.clear();
+
+  gfx::FrameData frame_data = std::move(frame.data);
   presenter_->Present(
       base::BindOnce(&SkiaOutputDeviceBufferQueue::DoFinishSwapBuffers,
                      weak_ptr_.GetWeakPtr(), GetSwapBuffersSize(),
-                     std::move(frame), std::move(committed_overlay_mailboxes_)),
-      std::move(feedback), frame_data);
-  committed_overlay_mailboxes_.clear();
-  std::swap(committed_overlay_mailboxes_, pending_overlay_mailboxes_);
+                     std::move(frame)),
+      std::move(feedback), std::move(frame_data));
 }
 
 void SkiaOutputDeviceBufferQueue::DoFinishSwapBuffers(
     const gfx::Size& size,
     OutputSurfaceFrame frame,
-    std::vector<gpu::Mailbox> overlay_mailboxes,
     gfx::SwapCompletionResult result) {
   last_swap_time_ = swap_time_clock_->NowTicks();
   has_overlays_scheduled_but_swap_not_finished_ = false;
 
-  // |overlay_mailboxes| are for overlays used by previous frame, they should
-  // have been replaced.
-  for (const auto& mailbox : overlay_mailboxes) {
+  // Swaps complete in submission order, as `pending_swaps_` already requires.
+  CHECK(!submitted_overlay_mailboxes_.empty());
+  std::vector<gpu::Mailbox> swapped_overlay_mailboxes =
+      std::move(submitted_overlay_mailboxes_.front());
+  submitted_overlay_mailboxes_.pop();
+
+  // This must match `did_present` in SkiaRenderer::SwapBuffersComplete().
+  // SWAP_NAK_RECREATE_BUFFERS is treated as presented since its meaning
+  // differs between platforms.
+  std::vector<gpu::Mailbox> released_overlay_mailboxes;
+  if (result.swap_result != gfx::SwapResult::SWAP_FAILED) {
+    released_overlay_mailboxes = std::move(presented_overlay_mailboxes_);
+    presented_overlay_mailboxes_ = std::move(swapped_overlay_mailboxes);
+  } else {
+    // A failed swap never reaches the screen, so the previously presented
+    // overlays stay up and this frame's are the ones which can be released.
+    released_overlay_mailboxes = std::move(swapped_overlay_mailboxes);
+  }
+
+  for (const auto& mailbox : released_overlay_mailboxes) {
     auto it = overlays_.find(mailbox);
     CHECK(it != overlays_.end());
     it->Unref();
@@ -525,6 +550,11 @@ bool SkiaOutputDeviceBufferQueue::OverlayDataKeyEqual::operator()(
     const gpu::Mailbox& lhs,
     const OverlayData& rhs) const {
   return lhs == rhs.mailbox();
+}
+
+bool SkiaOutputDeviceBufferQueue::HasOverlayForTesting(
+    const gpu::Mailbox& mailbox) const {
+  return overlays_.find(mailbox) != overlays_.end();
 }
 
 void SkiaOutputDeviceBufferQueue::SetVSyncDisplayID(int64_t display_id,

@@ -10,6 +10,7 @@ source_set("renderer_host") {
     "chrome_navigation_ui_data.h",
   ]
   public_deps = [
+    "//base",
     "//chrome/common",
     "//components/actor/core:task_id",
     "//components/offline_pages/buildflags",
@@ -20,15 +21,57 @@ source_set("renderer_host") {
   deps = [
     "//chrome/browser/actor",
     "//chrome/browser/preloading/prefetch/no_state_prefetch",
+    "//components/no_state_prefetch/browser",
   ]
 
-  if (enable_extensions) {
+  if (enable_extensions_core) {
     public_deps += [ "//extensions/browser" ]
   }
 
   if (is_android) {
     sources += [ "android/chrome_navigation_ui_data_android.cc" ]
     deps += [ "//chrome/android:chrome_jni_headers" ]
+  }
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "chrome_navigation_ui_data_unittest.cc" ]
+  deps = [
+    ":renderer_host",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/actor",
+    "//chrome/browser/actor:test_support",
+    "//chrome/browser/preloading/prefetch/no_state_prefetch",
+    "//chrome/browser/profiles:profile",
+    "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//components/actor/core:task_id",
+    "//components/keyed_service/core",
+    "//components/no_state_prefetch/browser",
+    "//components/offline_pages/buildflags",
+    "//components/offline_pages/core/request_header",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//content/public/common",
+    "//content/test:test_support",
+    "//extensions/buildflags",
+    "//testing/gtest",
+    "//third_party/blink/public/common:headers",
+    "//ui/gfx/geometry",
+    "//url",
+  ]
+
+  if (is_mac) {
+    sources +=
+        [ "chrome_render_widget_host_view_mac_history_swiper_unittest.mm" ]
+    deps += [
+      ":history_swiper",
+      ":history_swiping_control",
+      "//third_party/ocmock",
+      "//ui/events/blink",
+    ]
   }
 }
 
@@ -47,7 +90,6 @@ if (is_mac) {
     frameworks = [ "Cocoa.framework" ]
 
     deps = [
-      "//chrome/browser/ui",
       "//chrome/browser/ui/cocoa",
       "//third_party/blink/public/common:headers",
     ]
@@ -69,22 +111,6 @@ if (is_mac) {
     public_deps = [ "//content/public/browser" ]
   }
 
-  source_set("unit_tests") {
-    testonly = true
-    sources =
-        [ "chrome_render_widget_host_view_mac_history_swiper_unittest.mm" ]
-    deps = [
-      ":history_swiper",
-      ":history_swiping_control",
-      "//base",
-      "//chrome/test:test_support",
-      "//testing/gtest",
-      "//third_party/blink/public/common:headers",
-      "//third_party/ocmock",
-      "//ui/events/blink",
-    ]
-  }
-
   # TODO(crbug.com/479890756): Merge :delegate and :delegate_impl targets when
   # c/b/ui/views/tab_contents/chrome_web_contents_view_delegate_views_mac.mm
   # gets componentized.
@@ -98,7 +124,8 @@ if (is_mac) {
       "//chrome/browser/actor/ui:actor_overlay",
       "//chrome/browser/devtools",
       "//chrome/browser/glic",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui/webui:webui_url_utils",
       "//components/spellcheck/browser",
     ]
   }
@@ -119,23 +146,27 @@ if (!is_android) {
       "//chrome/browser/devtools",
       "//chrome/browser/extensions",
       "//chrome/browser/history",
+      "//chrome/browser/infobars",
       "//chrome/browser/preloading:test_support",
       "//chrome/browser/safe_browsing",
       "//chrome/browser/search",
       "//chrome/browser/site_protection",
       "//chrome/browser/site_protection:utils",
-      "//chrome/browser/ui",
       "//chrome/browser/ui:browser_actions",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui:singleton_tabs",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/page_action",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/views/infobars",
       "//chrome/browser/ui/views/js_optimization",
+      "//chrome/browser/ui/views/page_action:interactive_test_support",
       "//chrome/browser/ui/views/page_action:page_action_test_support",
       "//chrome/common:chrome_features",
       "//chrome/common:constants",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:chrome_test_utils",
+      "//chrome/test/base:platform_browser_test",
       "//chrome/test/interaction",
       "//components/content_settings/core/browser",
       "//components/history/core/browser",
@@ -177,6 +208,7 @@ if (!is_android) {
       "//chrome/browser:chrome_content_browser_client",
       "//chrome/browser/content_settings:content_settings_factory",
       "//chrome/browser/history",
+      "//chrome/browser/infobars",
       "//chrome/browser/safe_browsing",
       "//chrome/browser/site_protection",
       "//chrome/browser/site_protection:utils",

@@ -13,6 +13,8 @@
 #import "components/prefs/pref_service.h"
 #import "components/regional_capabilities/regional_capabilities_service.h"
 #import "components/subscription_eligibility/subscription_eligibility_service.h"
+#import "ios/chrome/browser/aim/model/ai_mode_button_service_ios.h"
+#import "ios/chrome/browser/aim/model/ai_mode_button_service_ios_factory.h"
 #import "ios/chrome/browser/aim/model/ios_chrome_aim_eligibility_service_factory.h"
 #import "ios/chrome/browser/browser_view/model/browser_view_visibility_notifier_browser_agent.h"
 #import "ios/chrome/browser/content_suggestions/coordinator/content_suggestions_coordinator.h"
@@ -122,6 +124,8 @@
       feature_engagement::TrackerFactory::GetForProfile(profile);
   AimEligibilityService* aimEligibilityService =
       IOSChromeAimEligibilityServiceFactory::GetForProfile(profile);
+  AIModeButtonServiceIOS* aiModeButtonServiceIOS =
+      AIModeButtonServiceIOSFactory::GetForProfile(profile);
   return [[NewTabPageMediator alloc]
               initWithTemplateURLService:templateURLService
                                URLLoader:URLLoadingBrowserAgent
@@ -143,6 +147,7 @@
       discoverFeedVisibilityBrowserAgent:discoverFeedVisibilityBrowserAgent
                 featureEngagementTracker:tracker
                    aimEligibilityService:aimEligibilityService
+                  aiModeButtonServiceIOS:aiModeButtonServiceIOS
                   fullscreenBrowserAgent:IsFullscreenRefactoringEnabled()
                                              ? FullscreenBrowserAgent::
                                                    FromBrowser(browser)

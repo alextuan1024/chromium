@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/pickle.h"
@@ -17,12 +18,14 @@
 #include "base/test/test_future.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/clipboard_data.h"
+#include "ui/base/clipboard/clipboard_url_info.h"
 #include "ui/base/clipboard/custom_data_helper.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/gfx/skia_util.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(IS_OZONE)
 #include "base/command_line.h"
@@ -30,6 +33,11 @@
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/ozone/public/ozone_switches.h"
 #endif  // BUILDFLAG(IS_OZONE)
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ui/base/clipboard/clipboard_constants.h"
+#include "ui/ozone/public/platform_clipboard.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace ui {
 namespace {
@@ -41,6 +49,74 @@ std::vector<std::string> UTF8Types(std::vector<std::u16string> types) {
   }
   return result;
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+class FakePlatformClipboard : public PlatformClipboard {
+ public:
+  FakePlatformClipboard() = default;
+  ~FakePlatformClipboard() override = default;
+
+  void OfferClipboardData(ClipboardBuffer buffer,
+                          const DataMap& data_map) override {
+    data_map_[buffer] = data_map;
+    is_owner_[buffer] = true;
+    if (callback_) {
+      callback_.Run(buffer);
+    }
+  }
+
+  void RequestClipboardData(ClipboardBuffer buffer,
+                            const std::string& mime_type,
+                            RequestDataClosure callback) override {
+    auto it = data_map_[buffer].find(mime_type);
+    if (it != data_map_[buffer].end()) {
+      std::move(callback).Run(it->second);
+    } else {
+      std::move(callback).Run(nullptr);
+    }
+  }
+
+  void GetAvailableMimeTypes(ClipboardBuffer buffer,
+                             GetMimeTypesClosure callback) override {
+    std::vector<std::string> mime_types;
+    for (const auto& item : data_map_[buffer]) {
+      mime_types.push_back(item.first);
+    }
+    std::move(callback).Run(mime_types);
+  }
+
+  void IsSelectionOwner(ClipboardBuffer buffer,
+                        IsSelectionOwnerClosure callback) override {
+    std::move(callback).Run(is_owner_[buffer]);
+  }
+
+  void SetClipboardDataChangedCallback(
+      ClipboardDataChangedCallback callback) override {
+    callback_ = std::move(callback);
+  }
+
+  bool IsSelectionBufferAvailable() const override { return true; }
+
+  void SetExternalData(ClipboardBuffer buffer, const DataMap& data_map) {
+    data_map_[buffer] = data_map;
+    is_owner_[buffer] = false;
+    if (callback_) {
+      callback_.Run(buffer);
+    }
+  }
+
+  const DataMap& GetDataMap(ClipboardBuffer buffer) const {
+    static const base::NoDestructor<DataMap> empty_map;
+    auto it = data_map_.find(buffer);
+    return it != data_map_.end() ? it->second : *empty_map;
+  }
+
+ private:
+  base::flat_map<ClipboardBuffer, DataMap> data_map_;
+  base::flat_map<ClipboardBuffer, bool> is_owner_;
+  ClipboardDataChangedCallback callback_;
+};
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace
 
@@ -81,6 +157,11 @@ class ClipboardNonBackedTest : public ClipboardNonBackedTestBase {
   ClipboardNonBackedTest()
       : ClipboardNonBackedTestBase(
             base::test::TaskEnvironment::TimeSource::SYSTEM_TIME) {}
+
+#if BUILDFLAG(IS_CHROMEOS)
+ protected:
+  FakePlatformClipboard fake_platform_clipboard_;
+#endif
 };
 
 // Verifies that GetClipboardData() returns the same instance of ClipboardData
@@ -180,8 +261,8 @@ TEST_F(ClipboardNonBackedTest, PlainText) {
 // IsFormatAvailable('text/uri-list') is only true for files.
 TEST_F(ClipboardNonBackedTest, BookmarkURL) {
   auto data = std::make_unique<ClipboardData>();
-  data->set_bookmark_title("Example Page");
-  data->set_bookmark_url("http://example.com");
+  data->set_bookmarks(
+      {{.url = GURL("http://example.com"), .title = u"Example Page"}});
   clipboard()->WriteClipboardData(std::move(data));
 
   // Bookmark data returns available type 'text/plain'.
@@ -212,9 +293,43 @@ TEST_F(ClipboardNonBackedTest, BookmarkURL) {
                                     &url);
   EXPECT_EQ(u"Example Page", title);
   EXPECT_EQ("http://example.com/", url);
-  EXPECT_EQ(u"http://example.com", clipboard_test_util::ReadText(
-                                       clipboard(), ClipboardBuffer::kCopyPaste,
-                                       /*data_dst=*/nullptr));
+  EXPECT_EQ(
+      u"http://example.com/",
+      clipboard_test_util::ReadText(clipboard(), ClipboardBuffer::kCopyPaste,
+                                    /*data_dst=*/nullptr));
+}
+
+TEST_F(ClipboardNonBackedTest, WriteURLsKeepsEveryLink) {
+  const GURL a("https://a.test/");
+  const GURL b("https://b.test/");
+  {
+    ScopedClipboardWriter writer(ClipboardBuffer::kCopyPaste);
+    writer.WriteURLs({{.url = a, .title = u"A"}, {.url = b, .title = u"B"}});
+  }
+
+  EXPECT_EQ(
+      u"https://a.test/\nhttps://b.test/",
+      clipboard_test_util::ReadText(clipboard(), ClipboardBuffer::kCopyPaste,
+                                    /*data_dst=*/nullptr));
+  EXPECT_EQ(
+      std::vector<std::string>({"text/plain"}),
+      UTF8Types(clipboard_test_util::ReadAvailableTypes(
+          clipboard(), ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr)));
+
+  std::u16string title;
+  std::string url;
+  clipboard_test_util::ReadBookmark(clipboard(), /*data_dst=*/nullptr, &title,
+                                    &url);
+  EXPECT_EQ("https://a.test/", url);
+  EXPECT_EQ(u"A", title);
+
+  const std::vector<ClipboardUrlInfo> url_infos =
+      clipboard_test_util::ReadURLs(clipboard(), /*data_dst=*/nullptr);
+  ASSERT_EQ(2u, url_infos.size());
+  EXPECT_EQ(a, url_infos[0].url);
+  EXPECT_EQ(u"A", url_infos[0].title);
+  EXPECT_EQ(b, url_infos[1].url);
+  EXPECT_EQ(u"B", url_infos[1].title);
 }
 
 // Filenames data uses mime type 'text/uri-list'.
@@ -412,9 +527,9 @@ TEST_F(ClipboardNonBackedTest, EncodeMultipleImages) {
 
 // Tests that different clipboard buffers have independent data.
 TEST_F(ClipboardNonBackedTest, ClipboardBufferTypes) {
-  static const struct ClipboardBufferInfo {
+  static constexpr struct ClipboardBufferInfo {
     ui::ClipboardBuffer buffer;
-    std::u16string paste_text;
+    std::u16string_view paste_text;
   } clipboard_buffers[] = {
       {ui::ClipboardBuffer::kCopyPaste, u"kCopyPaste"},
       {ui::ClipboardBuffer::kSelection, u"kSelection"},
@@ -443,6 +558,108 @@ TEST_F(ClipboardNonBackedTest, ClipboardBufferTypes) {
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
+TEST_F(ClipboardNonBackedTest, SyncToPlatform) {
+  clipboard()->SetPlatformClipboard(&fake_platform_clipboard_);
+
+  {
+    ScopedClipboardWriter writer(ClipboardBuffer::kCopyPaste);
+    writer.WriteText(u"Test Text");
+    writer.WriteHTML(u"<p>Test HTML</p>", "https://example.com");
+  }
+
+  const auto& copy_paste_map =
+      fake_platform_clipboard_.GetDataMap(ClipboardBuffer::kCopyPaste);
+  EXPECT_TRUE(copy_paste_map.contains(kMimeTypePlainText));
+  auto text_data = copy_paste_map.at(kMimeTypePlainText);
+  EXPECT_EQ(std::string(reinterpret_cast<const char*>(text_data->data()),
+                        text_data->size()),
+            "Test Text");
+
+  EXPECT_TRUE(copy_paste_map.contains(kMimeTypeHtml));
+  auto html_data = copy_paste_map.at(kMimeTypeHtml);
+  EXPECT_EQ(std::string(reinterpret_cast<const char*>(html_data->data()),
+                        html_data->size()),
+            "<p>Test HTML</p>");
+
+  // On platforms with selection buffer, text is also offered to kSelection.
+  const auto& selection_map =
+      fake_platform_clipboard_.GetDataMap(ClipboardBuffer::kSelection);
+  EXPECT_TRUE(selection_map.contains(kMimeTypePlainText));
+}
+
+TEST_F(ClipboardNonBackedTest, SyncFromPlatform) {
+  clipboard()->SetPlatformClipboard(&fake_platform_clipboard_);
+
+  std::string host_text = "Hello from Host";
+  std::string host_html = "<b>Host HTML</b>";
+  PlatformClipboard::DataMap host_data;
+  host_data[kMimeTypePlainText] = base::MakeRefCounted<base::RefCountedBytes>(
+      base::as_byte_span(host_text));
+  host_data[kMimeTypeHtml] = base::MakeRefCounted<base::RefCountedBytes>(
+      base::as_byte_span(host_html));
+
+  fake_platform_clipboard_.SetExternalData(ClipboardBuffer::kCopyPaste,
+                                           host_data);
+
+  const auto* clipboard_data = clipboard()->GetClipboardData(nullptr);
+  ASSERT_TRUE(clipboard_data);
+  EXPECT_EQ(clipboard_data->text(), host_text);
+  EXPECT_EQ(clipboard_data->markup_data(), host_html);
+
+  std::u16string read_text = clipboard_test_util::ReadText(
+      clipboard(), ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr);
+  EXPECT_EQ(base::UTF16ToUTF8(read_text), host_text);
+
+  std::u16string markup;
+  std::string src_url;
+  uint32_t fragment_start;
+  uint32_t fragment_end;
+  clipboard_test_util::ReadHTML(clipboard(), ClipboardBuffer::kCopyPaste,
+                                /*data_dst=*/nullptr, &markup, &src_url,
+                                &fragment_start, &fragment_end);
+  EXPECT_EQ(base::UTF16ToUTF8(markup), host_html);
+}
+
+TEST_F(ClipboardNonBackedTest, SyncFromPlatformClear) {
+  clipboard()->SetPlatformClipboard(&fake_platform_clipboard_);
+
+  // Write some data first.
+  {
+    ScopedClipboardWriter writer(ClipboardBuffer::kCopyPaste);
+    writer.WriteText(u"Initial Text");
+  }
+  EXPECT_TRUE(clipboard()->GetClipboardData(nullptr));
+
+  // External host clears clipboard.
+  fake_platform_clipboard_.SetExternalData(ClipboardBuffer::kCopyPaste, {});
+
+  EXPECT_FALSE(clipboard()->GetClipboardData(nullptr));
+}
+
+TEST_F(ClipboardNonBackedTest, IgnoreSyncFromPlatformSelection) {
+  clipboard()->SetPlatformClipboard(&fake_platform_clipboard_);
+
+  {
+    ScopedClipboardWriter writer(ClipboardBuffer::kCopyPaste);
+    writer.WriteText(u"Initial Text");
+  }
+  const auto* clipboard_data = clipboard()->GetClipboardData(nullptr);
+  ASSERT_TRUE(clipboard_data);
+  EXPECT_EQ(clipboard_data->text(), "Initial Text");
+
+  // Selection change from external host should be ignored on ChromeOS.
+  std::string selection_text = "Selection Text";
+  PlatformClipboard::DataMap host_data;
+  host_data[kMimeTypePlainText] = base::MakeRefCounted<base::RefCountedBytes>(
+      base::as_byte_span(selection_text));
+  fake_platform_clipboard_.SetExternalData(ClipboardBuffer::kSelection,
+                                           host_data);
+
+  clipboard_data = clipboard()->GetClipboardData(nullptr);
+  ASSERT_TRUE(clipboard_data);
+  EXPECT_EQ(clipboard_data->text(), "Initial Text");
+}
+
 // Base class for tests of `ClipboardNonBacked` which use mock time.
 class ClipboardNonBackedMockTimeTest : public ClipboardNonBackedTestBase {
  public:

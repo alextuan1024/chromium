@@ -5,11 +5,8 @@
 #import "ios/chrome/browser/composebox/coordinator/composebox_coordinator.h"
 
 #import "base/ios/ios_util.h"
-#import "components/omnibox/browser/omnibox_pref_names.h"
 #import "components/open_from_clipboard/clipboard_recent_content.h"
-#import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/composebox/coordinator/composebox_input_plate_coordinator.h"
-#import "ios/chrome/browser/composebox/coordinator/composebox_mode_holder.h"
 #import "ios/chrome/browser/composebox/coordinator/composebox_navigation_mediator.h"
 #import "ios/chrome/browser/composebox/debugger/composebox_debugger_coordinator.h"
 #import "ios/chrome/browser/composebox/public/composebox_animation_base.h"
@@ -28,7 +25,6 @@
 #import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
 #import "ios/chrome/browser/omnibox/ui/popup/omnibox_popup_util.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
-#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -63,8 +59,6 @@
   ComposeboxViewController* _viewController;
   // The base of the composebox animations.
   __weak id<ComposeboxAnimationBase> _animationBase;
-  // The holder for the composebox mode.
-  ComposeboxModeHolder* _modeHolder;
   // Coordinator for the debugging UI of the composebox.
   ComposeboxDebuggerCoordinator* _debuggerCoordinator;
   // Parameters used to focus and initialize the composebox.
@@ -80,8 +74,6 @@
   if (self) {
     _entrypoint = focusParams.entrypoint;
     _animationBase = animationBase;
-    _modeHolder = [[ComposeboxModeHolder alloc] init];
-    _modeHolder.mode = focusParams.toolMode;
     _focusParams = focusParams;
   }
   return self;
@@ -125,8 +117,7 @@
                          browser:self.browser
                      focusParams:_focusParams
                        URLLoader:_navigationMediator
-                           theme:[self createTheme]
-                      modeHolder:_modeHolder];
+                           theme:[self createTheme]];
   _aimComposeboxCoordinator.omniboxPopupPresenterDelegate = _viewController;
   _aimComposeboxCoordinator.debugLogger = _debuggerCoordinator;
   [_aimComposeboxCoordinator start];
@@ -200,7 +191,6 @@
 
   [_navigationMediator disconnect];
   _navigationMediator = nil;
-  _modeHolder = nil;
 }
 
 - (BOOL)isPresented {
@@ -268,6 +258,15 @@
   [self dismissComposebox];
 }
 
+- (void)composeboxViewControllerDidCloseTab:
+    (ComposeboxViewController*)viewController {
+  id<BrowserCoordinatorCommands> browserCoordinatorHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), BrowserCoordinatorCommands);
+  [browserCoordinatorHandler hideComposeboxWithCompletion:^{
+    [browserCoordinatorHandler closeCurrentTab];
+  }];
+}
+
 - (void)composeboxHorizontalSizeClassDidChange {
   _viewController.view.hidden = YES;
   __weak __typeof(self) weakSelf = self;
@@ -328,12 +327,6 @@
 - (ComposeboxInputPlatePosition)inputPlatePositionPreference {
   if (ShouldApplyOmniboxPopoutLayout(self.baseViewController)) {
     return ComposeboxInputPlatePosition::kiPad;
-  }
-
-  if (IsBottomOmniboxAvailable() &&
-      GetApplicationContext()->GetLocalState()->GetBoolean(
-          omnibox::kIsOmniboxInBottomPosition)) {
-    return ComposeboxInputPlatePosition::kBottom;
   }
 
   return ComposeboxInputPlatePosition::kTop;
@@ -405,8 +398,8 @@
   return _viewController.incognitoView;
 }
 
-- (void)setComposeboxMode:(ComposeboxMode)mode {
-  _modeHolder.mode = mode;
+- (void)setComposeboxToolMode:(omnibox::ToolMode)toolMode {
+  [_aimComposeboxCoordinator setToolMode:toolMode];
 }
 
 - (void)expandInputPlateForDismissalToFrame:(CGRect)targetFrame {

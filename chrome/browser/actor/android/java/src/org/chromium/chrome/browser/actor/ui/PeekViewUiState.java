@@ -12,7 +12,6 @@ import androidx.annotation.DimenRes;
 import androidx.annotation.DrawableRes;
 import androidx.annotation.IntDef;
 import androidx.annotation.StringRes;
-import androidx.annotation.StyleRes;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.util.ViewVisibility;
@@ -34,14 +33,12 @@ public class PeekViewUiState {
         int DEFAULT = 3;
     }
 
-    private static final @DrawableRes int PEEK_ICON = R.drawable.ic_spark_blue_16dp;
     private static final @DrawableRes int BUTTON_ICON_ACTING = R.drawable.ic_pause_white_24dp;
     private static final @DrawableRes int BUTTON_ICON_PAUSED = R.drawable.ic_play_arrow_white_24dp;
     private static final @DrawableRes int BUTTON_ICON_WAITING = Resources.ID_NULL;
     private static final @DrawableRes int BUTTON_ICON_DEFAULT = Resources.ID_NULL;
 
     public final @StateType int type;
-    public final @DrawableRes int peekIconResId;
 
     // The status of the actor task based on its current state (acting, paused, or waiting)
     public final @StringRes int descriptionResId;
@@ -53,13 +50,11 @@ public class PeekViewUiState {
     public final @ViewVisibility int buttonVisibility;
     public final @StringRes int buttonTextResId;
     public final @ViewVisibility int descriptionVisibility;
-    public final @StyleRes int titleTextAppearanceResId;
     public final @ColorRes int buttonBackgroundResId;
     public final @StringRes int buttonContentDescriptionResId;
 
     private PeekViewUiState(
             @StateType int type,
-            @DrawableRes int peekIconResId,
             @StringRes int descriptionResId,
             @DrawableRes int buttonIconResId,
             @ColorRes int buttonBackgroundResId,
@@ -68,10 +63,8 @@ public class PeekViewUiState {
             @ViewVisibility int buttonVisibility,
             @StringRes int buttonTextResId,
             @ViewVisibility int descriptionVisibility,
-            @StyleRes int titleTextAppearanceResId,
             @StringRes int buttonContentDescriptionResId) {
         this.type = type;
-        this.peekIconResId = peekIconResId;
         this.descriptionResId = descriptionResId;
         this.buttonIconResId = buttonIconResId;
         this.buttonBackgroundResId = buttonBackgroundResId;
@@ -80,35 +73,7 @@ public class PeekViewUiState {
         this.buttonVisibility = buttonVisibility;
         this.buttonTextResId = buttonTextResId;
         this.descriptionVisibility = descriptionVisibility;
-        this.titleTextAppearanceResId = titleTextAppearanceResId;
         this.buttonContentDescriptionResId = buttonContentDescriptionResId;
-    }
-
-    /**
-     * Returns the visibility of the actor control button.
-     *
-     * @return The visibility of the actor control button.
-     */
-    public @ViewVisibility int getButtonVisibility() {
-        return buttonVisibility;
-    }
-
-    /**
-     * Returns the visibility of the description view.
-     *
-     * @return The visibility of the description view.
-     */
-    public @ViewVisibility int getDescriptionVisibility() {
-        return descriptionVisibility;
-    }
-
-    /**
-     * Returns the text appearance resource id for the title view.
-     *
-     * @return The text appearance resource id for the title view.
-     */
-    public @StyleRes int getTitleTextAppearanceResId() {
-        return titleTextAppearanceResId;
     }
 
     @Override
@@ -121,7 +86,6 @@ public class PeekViewUiState {
         }
         PeekViewUiState that = (PeekViewUiState) o;
         return type == that.type
-                && peekIconResId == that.peekIconResId
                 && descriptionResId == that.descriptionResId
                 && buttonIconResId == that.buttonIconResId
                 && buttonBackgroundResId == that.buttonBackgroundResId
@@ -130,7 +94,6 @@ public class PeekViewUiState {
                 && buttonVisibility == that.buttonVisibility
                 && buttonTextResId == that.buttonTextResId
                 && descriptionVisibility == that.descriptionVisibility
-                && titleTextAppearanceResId == that.titleTextAppearanceResId
                 && buttonContentDescriptionResId == that.buttonContentDescriptionResId;
     }
 
@@ -138,7 +101,6 @@ public class PeekViewUiState {
     public int hashCode() {
         return Objects.hash(
                 type,
-                peekIconResId,
                 descriptionResId,
                 buttonIconResId,
                 buttonBackgroundResId,
@@ -147,7 +109,6 @@ public class PeekViewUiState {
                 buttonVisibility,
                 buttonTextResId,
                 descriptionVisibility,
-                titleTextAppearanceResId,
                 buttonContentDescriptionResId);
     }
 
@@ -155,7 +116,6 @@ public class PeekViewUiState {
     public static final PeekViewUiState ACTING =
             new PeekViewUiState(
                     /* type= */ StateType.ACTING,
-                    /* peekIconResId= */ PEEK_ICON,
                     /* descriptionResId= */ R.string.peek_state_acting,
                     /* buttonIconResId= */ BUTTON_ICON_ACTING,
                     /* buttonBackgroundResId= */ R.color.actor_control_icon_button_background_color,
@@ -164,15 +124,12 @@ public class PeekViewUiState {
                     /* buttonVisibility= */ View.VISIBLE,
                     /* buttonTextResId= */ Resources.ID_NULL,
                     /* descriptionVisibility= */ View.VISIBLE,
-                    /* titleTextAppearanceResId= */ R.style
-                            .TextAppearance_TextAccentMediumThick_Primary,
                     /* buttonContentDescriptionResId= */ R.string
                             .peek_state_pause_button_a11y_label);
 
     public static final PeekViewUiState PAUSED =
             new PeekViewUiState(
                     /* type= */ StateType.PAUSED,
-                    /* peekIconResId= */ PEEK_ICON,
                     /* descriptionResId= */ R.string.peek_state_paused,
                     /* buttonIconResId= */ BUTTON_ICON_PAUSED,
                     /* buttonBackgroundResId= */ R.color.actor_control_icon_button_background_color,
@@ -181,15 +138,12 @@ public class PeekViewUiState {
                     /* buttonVisibility= */ View.VISIBLE,
                     /* buttonTextResId= */ Resources.ID_NULL,
                     /* descriptionVisibility= */ View.VISIBLE,
-                    /* titleTextAppearanceResId= */ R.style
-                            .TextAppearance_TextAccentMediumThick_Primary,
                     /* buttonContentDescriptionResId= */ R.string
                             .peek_state_play_button_a11y_label);
 
     public static final PeekViewUiState WAITING =
             new PeekViewUiState(
                     /* type= */ StateType.WAITING,
-                    /* peekIconResId= */ PEEK_ICON,
                     /* descriptionResId= */ R.string.peek_state_waiting,
                     /* buttonIconResId= */ BUTTON_ICON_WAITING,
                     /* buttonBackgroundResId= */ R.color.actor_view_button_background_color,
@@ -199,14 +153,11 @@ public class PeekViewUiState {
                     /* buttonVisibility= */ View.VISIBLE,
                     /* buttonTextResId= */ R.string.peek_state_view_button_label,
                     /* descriptionVisibility= */ View.VISIBLE,
-                    /* titleTextAppearanceResId= */ R.style
-                            .TextAppearance_TextAccentMediumThick_Primary,
                     /* buttonContentDescriptionResId= */ Resources.ID_NULL);
 
     public static final PeekViewUiState DEFAULT =
             new PeekViewUiState(
                     /* type= */ StateType.DEFAULT,
-                    /* peekIconResId= */ PEEK_ICON,
                     /* descriptionResId= */ Resources.ID_NULL,
                     /* buttonIconResId= */ BUTTON_ICON_DEFAULT,
                     /* buttonBackgroundResId= */ Resources.ID_NULL,
@@ -215,7 +166,5 @@ public class PeekViewUiState {
                     /* buttonVisibility= */ View.GONE,
                     /* buttonTextResId= */ Resources.ID_NULL,
                     /* descriptionVisibility= */ View.GONE,
-                    /* titleTextAppearanceResId= */ R.style
-                            .TextAppearance_TextAccentMediumThick_Primary,
                     /* buttonContentDescriptionResId= */ Resources.ID_NULL);
 }

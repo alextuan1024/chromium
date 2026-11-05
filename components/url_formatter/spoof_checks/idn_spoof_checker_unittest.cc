@@ -363,6 +363,9 @@ const IDNTestCase kIdnCases[] = {
     {"xn--e1anqp.ru", u"\u043c\u0435\u0445\u0441.ru", kSafe},
     // мехс.рф (Cyrillic whole-script confusable allowed in Cyrillic IDN TLD)
     {"xn--e1anqp.xn--p1ai", u"\u043c\u0435\u0445\u0441.\u0440\u0444", kSafe},
+    // мехс.рус (likewise; .рус isn't in the allowed list)
+    {"xn--e1anqp.xn--p1acf", u"\u043c\u0435\u0445\u0441.\u0440\u0443\u0441",
+     kSafe},
 
     // The same as above three, but in IDN TLD (рф).
     // 1) ѕсоре.рф with ѕсоре in Cyrillic.
@@ -1083,8 +1086,9 @@ const IDNTestCase kIdnCases[] = {
     // Test case for https://crbug.com/1156531 (missed skeleton map)
     {"xn--office65-hts.com", u"office\u0a5c65.com", kUnsafe},
 
-    // Check that ı has multiple skeletons.
+    // Check that ı and ɩ have multiple skeletons.
     {"xn--googe-q4a.com", u"goog\u0131e.com", kUnsafe},
+    {"xn--googe-7nc.com", u"goog\u0269e.com", kUnsafe},
 
     // appӏe.com, apple with U+04CF
     {"xn--appe-xre.com", u"xn--appe-xre.com", kUnsafe},
@@ -1169,6 +1173,17 @@ const IDNTestCase kIdnCases[] = {
     {"xn--h2by8byc123p.in", u"xn--h2by8byc123p.in", kUnsafe},
     // U+200C(ZWJ)
     {"xn--11b6iy14e.in", u"xn--11b6iy14e.in", kUnsafe},
+    // U+045F (Cyrillic small letter dzhe) top-domain skeleton and WSC
+    {"xn--e1armc1c2gb.com", u"\u0443\u043e\u045f\u0442\u045f\u044c\u0435.com",
+     kUnsafe},
+    {"xn--p1a6b2a.com", u"\u045f\u0440\u0455.com", kUnsafe},
+    // Cyrillic whole-script confusables with combining diacritical marks:
+    // ѕсоре́.com (Cyrillic "ѕсоре" + U+0301)
+    {"xn--lsa92d0aid3j.com", u"\u0455\u0441\u043e\u0440\u0435\u0301.com",
+     kUnsafe},
+    // ѕсоре̦.com (Cyrillic "ѕсоре" + U+0326)
+    {"xn--nta55c0aid3j.com", u"\u0455\u0441\u043e\u0440\u0435\u0326.com",
+     kUnsafe},
 
     // New test cases go ↑↑ above.
 
@@ -1287,7 +1302,10 @@ TEST_F(IDNSpoofCheckerTest, GetSimilarTopDomain) {
       // Test case for https://crbug.com/1156531
       {u"კ9.com", "39.com"},
       // Test case for https://crbug.com/1156531 (missed skeleton map)
-      {u"ੜ9.com", "39.com"}};
+      {u"ੜ9.com", "39.com"},
+      // Test cases for https://crbug.com/563001657:
+      {u"digk\u0269mo68.com", "digklmo68.com"},
+      {u"d\u0269gklmo68.com", "digklmo68.com"}};
   for (const TestCase& test_case : kTestCases) {
     const TopDomainEntry entry =
         IDNSpoofChecker().GetSimilarTopDomain(test_case.hostname);
@@ -1428,7 +1446,9 @@ TEST(IDNSpoofCheckerNoFixtureTest, Skeletons) {
       {GURL("http://丆est.net"), "test.net"},
       {GURL("http://c丫xe.com"), "cyxe.corn"},
       {GURL("http://cy乂e.com"), "cyxe.corn"},
-      {GURL("http://丩3.com"), "43.corn"}};
+      {GURL("http://丩3.com"), "43.corn"},
+      {GURL("http://уоџтџье.com"), "youtube.corn"},
+      {GURL("http://џрѕ.com"), "ups.corn"}};
 
   IDNSpoofChecker checker;
   for (const TestCase& test_case : kTestCases) {

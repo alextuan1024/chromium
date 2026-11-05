@@ -9,6 +9,7 @@
 #include <set>
 #include <vector>
 
+#include "base/functional/function_ref.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/no_destructor.h"
@@ -18,13 +19,13 @@
 #include "components/on_device_translation/installer.h"
 #include "components/on_device_translation/public/mojom/on_device_translation_service.mojom.h"
 #include "components/on_device_translation/public/mojom/translator.mojom.h"
+#include "components/on_device_translation/service/service_launcher.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
 namespace on_device_translation {
 
-class OnDeviceTranslationServiceLauncher;
 enum class LanguagePackKey;
 
 class OnDeviceTranslationController {
@@ -41,6 +42,9 @@ class OnDeviceTranslationController {
     kNotSupportedLanguage,
     kExceedsServiceCountLimitation,
     kExceedsPendingTaskCountLimitation,
+    kLibraryInstallFailed,
+    kLanguagePackDownloadFailed,
+    kNotEnoughDiskSpace,
   };
 
   enum class CanTranslateResult {
@@ -114,6 +118,9 @@ class OnDeviceTranslationServiceController
   void OnLanguagePackInstallationChanged(
       const LanguagePackKey lang_pack) override;
   void OnInstallationChanged() override;
+  void OnLibraryInstallFailed(InstallError error) override;
+  void OnLanguagePackInstallFailed(LanguagePackKey language_pack,
+                                   InstallError error) override;
 
  private:
   friend base::RefCounted<OnDeviceTranslationServiceController>;
@@ -123,7 +130,8 @@ class OnDeviceTranslationServiceController
   class PendingTask {
    public:
     PendingTask(std::set<LanguagePackKey> required_packs,
-                base::OnceClosure once_closure);
+                base::OnceClosure once_closure,
+                base::OnceCallback<void(CreateTranslatorError)> on_failure);
     ~PendingTask();
     PendingTask(const PendingTask&) = delete;
     PendingTask& operator=(const PendingTask&) = delete;
@@ -133,6 +141,8 @@ class OnDeviceTranslationServiceController
 
     std::set<LanguagePackKey> required_packs;
     base::OnceClosure once_closure;
+    // Rejects the task with an error when it can't complete.
+    base::OnceCallback<void(CreateTranslatorError)> on_failure;
   };
 
   // Checks if the translate service can do translation from `source_lang` to
@@ -153,7 +163,14 @@ class OnDeviceTranslationServiceController
   // the service is running or is started successfully.
   bool MaybeStartService();
 
+  // Updates or resets the running service after a language pack changes.
+  void UpdateRunningServiceLanguagePack(LanguagePackKey lang_pack);
+
   void MaybeRunPendingTasks();
+
+  // Rejects and removes the pending tasks for which `predicate` returns true.
+  void RejectPendingTasks(base::FunctionRef<bool(const PendingTask&)> predicate,
+                          CreateTranslatorError error);
 
   // Called when the service is idle and the idle timeout is reached.
   void OnServiceIdle();
@@ -168,6 +185,11 @@ class OnDeviceTranslationServiceController
   // this amount of time, the service will be terminated.
   base::TimeDelta service_idle_timeout_;
   mojo::Remote<mojom::OnDeviceTranslationService> service_remote_;
+
+  // The language packs that the running service has, in the order it got
+  // them.
+  std::vector<LanguagePackPath> service_language_packs_;
+
   // The pending tasks that are waiting for the language packs to be installed.
   std::vector<PendingTask> pending_tasks_;
 

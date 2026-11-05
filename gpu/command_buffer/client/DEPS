@@ -2,6 +2,7 @@ include_rules = [
   "+ui/latency",
   "+cc/paint",
   "+mojo/public",
+  "+skia/ext/skia_utils_base.h",
   "+third_party/skia",
   "+components/viz/common/resources/shared_image_format.h",
   "+components/viz/common/resources/shared_image_format_utils.h",
@@ -17,6 +18,8 @@ specific_include_rules = {
   ],
   "client_shared_image_unittest.cc": [
     "+components/viz/test/test_context_support.h",
+    "+components/viz/test/test_gles2_interface.h",
+    "+components/viz/test/test_raster_interface.h",
   ],
   "fake_gpu_memory_buffer.cc": [
     "+media/base/format_utils.h",

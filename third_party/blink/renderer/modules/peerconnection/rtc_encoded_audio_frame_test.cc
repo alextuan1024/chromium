@@ -5,7 +5,6 @@
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_audio_frame.h"
 
 #include <array>
-#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <optional>
@@ -680,7 +679,7 @@ TEST_F(RTCEncodedAudioFrameTest, ReadingDataOnEmptyFrameGivesDetachedFrame) {
   encoded_frame->PassWebRtcFrame(v8_scope.GetIsolate(),
                                  /*detach_frame_data=*/false);
 
-  DOMArrayBuffer* data = encoded_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* data = encoded_frame->data();
   EXPECT_NE(data, nullptr);
   EXPECT_TRUE(data->IsDetached());
 }
@@ -696,7 +695,7 @@ TEST_F(RTCEncodedAudioFrameTest, PassWebRTCDetachesFrameData) {
 
   RTCEncodedAudioFrame* encoded_frame =
       MakeGarbageCollected<RTCEncodedAudioFrame>(std::move(frame));
-  DOMArrayBuffer* data = encoded_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* data = encoded_frame->data();
   encoded_frame->PassWebRtcFrame(v8_scope.GetIsolate(),
                                  /*detach_frame_data=*/true);
   EXPECT_NE(data, nullptr);

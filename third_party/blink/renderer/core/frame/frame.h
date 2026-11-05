@@ -39,7 +39,7 @@
 #include "third_party/blink/public/common/fenced_frame/redacted_fenced_frame_config.h"
 #include "third_party/blink/public/common/frame/frame_ad_evidence.h"
 #include "third_party/blink/public/common/frame/user_activation_state.h"
-#include "third_party/blink/public/common/frame/user_activation_update_source.h"
+#include "third_party/blink/public/common/frame/user_activation_update_scope.h"
 #include "third_party/blink/public/common/permissions_policy/document_policy_features.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/frame/frame_owner_properties.mojom-blink-forward.h"
@@ -194,8 +194,6 @@ class CORE_EXPORT Frame : public GarbageCollected<Frame> {
   ChromeClient& GetChromeClient() const;
 
   virtual const SecurityContext* GetSecurityContext() const = 0;
-
-  Frame* FindUnsafeParentScrollPropagationBoundary();
 
   // Similar to `Detach()`, except that it does not completely detach `this`:
   // instead, on successful completion (i.e. returns true), `this` will be ready

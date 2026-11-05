@@ -63,6 +63,7 @@ chromium-metrics-reviews@google.com.
 <!-- LINT.IfChange(SessionType) -->
 
 <variants name="SessionType">
+  <variant name="DecisionModel" summary="AI decision model session"/>
   <variant name="LanguageDetector" summary="AI language detector session"/>
   <variant name="LanguageModel" summary="AI language model session"/>
   <variant name="Proofreader" summary="AI proofreader session"/>
@@ -167,6 +168,21 @@ chromium-metrics-reviews@google.com.
     `temperature` option. It is only recorded when the option is set. The value
     is multiplied by 1000 to support floating point metrics. The value is in the
     range 0 to ~2000.
+  </summary>
+  <token key="LanguageModelFunctionName" variants="LanguageModelFunctionName"/>
+</histogram>
+
+<histogram
+    name="AI.LanguageModel.APIUsage.{LanguageModelFunctionName}.ThinkingEffort"
+    enum="AILanguageModelThinkingEffort" expires_after="2027-09-20">
+  <owner>iahouma@google.com</owner>
+  <owner>ohjerry@google.com</owner>
+  <owner>chrome-chia-dev@google.com</owner>
+  <owner>src/chrome/browser/ai/OWNERS</owner>
+  <summary>
+    Records the `thinkingEffort` option passed to `LanguageModel.create()` or
+    `LanguageModel.availability()`. Recorded only when `thinkingEffort` is
+    explicitly specified.
   </summary>
   <token key="LanguageModelFunctionName" variants="LanguageModelFunctionName"/>
 </histogram>
@@ -354,6 +370,19 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="AI.Session.LanguageModel.ThinkingEffort"
+    enum="AILanguageModelThinkingEffort" expires_after="2027-09-20">
+  <owner>iahouma@google.com</owner>
+  <owner>ohjerry@google.com</owner>
+  <owner>chrome-chia-dev@google.com</owner>
+  <owner>src/chrome/browser/ai/OWNERS</owner>
+  <summary>
+    Records the effective thinking effort tier (from per prompt options or the
+    session default) each time a `LanguageModel` session starts generating a
+    prompt response (not recorded for `append()` calls).
+  </summary>
+</histogram>
+
 <histogram name="AI.Session.{SessionType}.ContextTime" units="ms"
     expires_after="2027-03-16">
   <owner>iahouma@google.com</owner>
@@ -381,7 +410,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="AI.Session.{SessionType}.Crashed" enum="BooleanYesNo"
-    expires_after="2027-03-16">
+    expires_after="2027-05-16">
   <owner>iahouma@google.com</owner>
   <owner>ohjerry@google.com</owner>
   <owner>chrome-chia-dev@google.com</owner>
@@ -446,7 +475,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="AI.Session.{SessionType}.PromptResponseStatus"
-    enum="AIModelStreamingResponseStatus" expires_after="2027-03-16">
+    enum="AIModelStreamingResponseStatus" expires_after="2027-05-16">
   <owner>iahouma@google.com</owner>
   <owner>ohjerry@google.com</owner>
   <owner>chrome-chia-dev@google.com</owner>
@@ -530,7 +559,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="AI.Translation.LoadTranslateKitResult"
-    enum="LoadTranslateKitResult" expires_after="2027-03-16">
+    enum="LoadTranslateKitResult" expires_after="2027-05-16">
   <owner>iahouma@google.com</owner>
   <owner>ohjerry@google.com</owner>
   <owner>evliu@google.com</owner>
@@ -544,8 +573,48 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="AI.Translation.ModelReloadSuccess" enum="BooleanSuccess"
+    expires_after="2027-11-15">
+  <owner>jaeone@google.com</owner>
+  <owner>chrome-chia-dev@google.com</owner>
+  <owner>src/chrome/browser/ai/OWNERS</owner>
+  <summary>
+    Records whether the translation service could load the TranslateKit model of
+    a translator again after it unloaded it, for idle time or memory pressure.
+    Logged on the first translation after each unload. A failure makes that
+    translation fail. See on_device_translation::TranslateKitClient.
+  </summary>
+</histogram>
+
+<histogram name="AI.Translation.ModelReloadTime" units="ms"
+    expires_after="2027-11-15">
+  <owner>jaeone@google.com</owner>
+  <owner>chrome-chia-dev@google.com</owner>
+  <owner>src/chrome/browser/ai/OWNERS</owner>
+  <summary>
+    Records how long the translation service took to load the TranslateKit model
+    of a translator again after it unloaded it, for idle time or memory
+    pressure. Logged on the first translation after each unload, only when the
+    load works. The translation waits for the load. See
+    on_device_translation::TranslateKitClient.
+  </summary>
+</histogram>
+
+<histogram name="AI.Translation.ModelUnloadReason"
+    enum="TranslateKitModelUnloadReason" expires_after="2027-11-15">
+  <owner>jaeone@google.com</owner>
+  <owner>chrome-chia-dev@google.com</owner>
+  <owner>src/chrome/browser/ai/OWNERS</owner>
+  <summary>
+    Records why the translation service unloaded the TranslateKit model of a
+    translator. The service keeps the translator of a language pair after a page
+    destroys it, so this also counts translators that no page holds. Logged once
+    for each model that unloads. See on_device_translation::TranslateKitClient.
+  </summary>
+</histogram>
+
 <histogram name="AI.{SessionType}.AvailabilityV2" enum="Availability"
-    expires_after="2027-03-16">
+    expires_after="2027-05-16">
   <owner>iahouma@google.com</owner>
   <owner>ohjerry@google.com</owner>
   <owner>chrome-chia-dev@google.com</owner>

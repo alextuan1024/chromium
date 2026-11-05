@@ -5,11 +5,9 @@
 #include "components/autofill/core/browser/ui/autofill_resource_util.h"
 
 #include "base/containers/fixed_flat_map.h"
-#include "base/feature_list.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/grit/components_scaled_resources.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -33,7 +31,7 @@ bool ShouldUseNewFopDisplay() {
 
 constexpr auto kOldDataResources = base::MakeFixedFlatMap<Suggestion::Icon,
                                                           int>({
-    {Suggestion::Icon::kCardAmericanExpress, IDR_AUTOFILL_METADATA_CC_AMEX_OLD},
+    {Suggestion::Icon::kCardAmericanExpress, IDR_AUTOFILL_METADATA_CC_AMEX_NEW},
     {Suggestion::Icon::kCardDiners, IDR_AUTOFILL_METADATA_CC_DINERS_OLD},
     {Suggestion::Icon::kCardDiscover, IDR_AUTOFILL_METADATA_CC_DISCOVER_OLD},
     {Suggestion::Icon::kCardElo, IDR_AUTOFILL_METADATA_CC_ELO_OLD},
@@ -89,7 +87,7 @@ constexpr auto kOldDataResources = base::MakeFixedFlatMap<Suggestion::Icon,
 });
 
 constexpr auto kDataResources = base::MakeFixedFlatMap<Suggestion::Icon, int>({
-    {Suggestion::Icon::kCardAmericanExpress, IDR_AUTOFILL_METADATA_CC_AMEX},
+    {Suggestion::Icon::kCardAmericanExpress, IDR_AUTOFILL_METADATA_CC_AMEX_NEW},
     {Suggestion::Icon::kCardDiners, IDR_AUTOFILL_METADATA_CC_DINERS},
     {Suggestion::Icon::kCardDiscover, IDR_AUTOFILL_METADATA_CC_DISCOVER},
     {Suggestion::Icon::kCardElo, IDR_AUTOFILL_METADATA_CC_ELO},
@@ -146,12 +144,6 @@ constexpr auto kDataResources = base::MakeFixedFlatMap<Suggestion::Icon, int>({
 }  // namespace
 
 int GetIconResourceID(Suggestion::Icon resource_name) {
-  if ((resource_name == Suggestion::Icon::kCardAmericanExpress) &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillEnableNewAmexNetworkArt)) {
-    return IDR_AUTOFILL_METADATA_CC_AMEX_NEW;
-  }
-
   if (ShouldUseNewFopDisplay()) {
     auto it = kDataResources.find(resource_name);
     return it == kDataResources.end() ? kResourceNotFoundId : it->second;

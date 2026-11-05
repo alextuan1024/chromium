@@ -4,30 +4,20 @@
 
 #include "base/files/file_util.h"
 
-#include <algorithm>
-#include <array>
-#include <string_view>
-
-#include "base/containers/fixed_flat_set.h"
-#include "base/strings/strcat.h"
-#include "base/strings/string_split.h"
-#include "base/task/sequenced_task_runner.h"
-#include "build/build_config.h"
-
-#if BUILDFLAG(IS_WIN)
-#include <io.h>
-#endif
 #include <stdio.h>
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/bit_cast.h"
 #include "base/check_op.h"
+#include "base/containers/fixed_flat_set.h"
 #include "base/containers/span.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
@@ -37,13 +27,18 @@
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/bind_post_task.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "build/build_config.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
+
+#include <io.h>
 #endif
 
 namespace base {
@@ -346,6 +341,12 @@ bool ReadStreamToStringWithMaxSize(FILE* stream,
 }
 
 std::optional<std::vector<uint8_t>> ReadFileToBytes(const FilePath& path) {
+  return ReadFileToBytesWithMaxSize(path, std::numeric_limits<size_t>::max());
+}
+
+std::optional<std::vector<uint8_t>> ReadFileToBytesWithMaxSize(
+    const FilePath& path,
+    size_t max_size) {
   if (path.ReferencesParent()) {
     return std::nullopt;
   }
@@ -356,8 +357,7 @@ std::optional<std::vector<uint8_t>> ReadFileToBytes(const FilePath& path) {
   }
 
   std::vector<uint8_t> bytes;
-  if (!ReadStreamToSpanWithMaxSize(file_stream.get(),
-                                   std::numeric_limits<size_t>::max(),
+  if (!ReadStreamToSpanWithMaxSize(file_stream.get(), max_size,
                                    [&bytes](size_t size) {
                                      bytes.resize(size);
                                      return span(bytes);
@@ -536,13 +536,16 @@ FilePath GetUniquePathWithSuffixFormat(const FilePath& path,
 
 bool IsReservedNameOnWindows(const base::FilePath::StringType& filename) {
   // This list is taken from the MSDN article "Naming a file"
-  // http://msdn2.microsoft.com/en-us/library/aa365247(VS.85).aspx
+  // https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file?redirectedfrom=MSDN#naming-conventions
   // `clock$` is also included because GetSaveFileName seems to consider it as a
   // reserved name too.
   static constexpr auto kKnownDevices = std::to_array(
-      {"con",  "prn",  "aux",  "nul",  "com1", "com2", "com3",  "com4",
-       "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2",  "lpt3",
-       "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "clock$"});
+      {"con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5",
+       "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5",
+       "lpt6", "lpt7", "lpt8", "lpt9", "clock$",
+       // Windows also recognizes superscript 1, 2, and 3 as device digits.
+       "com\u00b9", "com\u00b2", "com\u00b3", "lpt\u00b9", "lpt\u00b2",
+       "lpt\u00b3"});
   static constexpr auto kMagicNames = base::MakeFixedFlatSet<std::string_view>({
       // These file names are used by the "Customize folder" feature of the
       // shell.
@@ -570,7 +573,8 @@ bool IsReservedNameOnWindows(const base::FilePath::StringType& filename) {
   // Doing this once here avoids redundant string splitting inside the loop.
   std::string_view prefix = trimmed_filename;
   if (auto parts = SplitStringOnce(trimmed_filename, '.')) {
-    prefix = parts->first;
+    // Legacy Win32 device parsing also ignores spaces before the extension.
+    prefix = base::TrimString(parts->first, " ", base::TRIM_TRAILING);
   }
 
   return std::ranges::any_of(

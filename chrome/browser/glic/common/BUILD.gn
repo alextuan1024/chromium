@@ -9,11 +9,13 @@ source_set("common") {
     "glic_navigation.h",
     "glic_tab_observer.cc",
     "glic_tab_observer.h",
+    "glic_tab_util.cc",
+    "glic_tab_util.h",
   ]
 
   deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
+    "//chrome/browser/tab_list",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/navigator",
     "//components/tabs:public",
@@ -37,6 +39,7 @@ source_set("common") {
       "glic_tab_observer_impl.h",
     ]
     deps += [
+      "//chrome/browser/ui:tab_ui_helper",
       "//chrome/browser/ui/tabs",
       "//chrome/browser/ui/tabs:tab_strip",
       "//content/public/browser",
@@ -65,7 +68,7 @@ source_set("browser_tests") {
   ]
   if (!is_android) {
     deps += [
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui/tabs:tab_strip",
     ]
   }

@@ -48,14 +48,14 @@ class TabStripInternalsObserver : public BrowserCollectionObserver,
       const TabStripSelectionChange& selection) override;
   void OnTabGroupChanged(const TabGroupChange& change) override;
   void OnSplitTabChanged(const SplitTabChange& change) override;
-  void OnTabChangedAt(tabs::TabInterface* tab,
-                      TabChangeType change_type) override;
-  void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
+  void OnTabChanged(tabs::TabHandle tab, TabChangeType change_type) override;
+  void OnTabPinnedStateChanged(tabs::TabHandle tab) override;
+  void OnTabBlockedStateChanged(tabs::TabHandle tab) override;
+  void OnTabAudioChanged(tabs::TabInterface* tab) override;
   void TabGroupedStateChanged(TabStripModel* tab_strip_model,
                               std::optional<tab_groups::TabGroupId> old_group,
                               std::optional<tab_groups::TabGroupId> new_group,
-                              tabs::TabInterface* tab,
-                              int index) override;
+                              tabs::TabHandle tab) override;
 
   // TabRestoreServiceObserver methods.
   void TabRestoreServiceChanged(sessions::TabRestoreService* service) override;

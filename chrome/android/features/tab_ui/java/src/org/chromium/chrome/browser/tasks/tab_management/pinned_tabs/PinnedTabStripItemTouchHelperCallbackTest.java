@@ -69,15 +69,15 @@ public class PinnedTabStripItemTouchHelperCallbackTest {
 
     @Mock private TabListModel mTabListModel;
     @Mock private Supplier<RecyclerView> mRecyclerViewSupplier;
-    @Mock private RecyclerView mRecyclerView;
     @Mock private OnLongPressTabItemEventListener mOnLongPressListener;
     @Mock private Canvas mCanvas;
     @Mock private TabModel mTabModel;
-    @Mock private View mItemView1;
-    @Mock private View mItemView2;
 
     private final SettableMonotonicObservableSupplier<TabModel> mTabModelSupplier =
             ObservableSuppliers.createMonotonic();
+    private RecyclerView mRecyclerView;
+    private View mItemView1;
+    private View mItemView2;
     private ViewHolder mMockViewHolder1;
     private ViewHolder mMockViewHolder2;
     private RecyclerView.ViewHolder mViewHolder;
@@ -87,6 +87,9 @@ public class PinnedTabStripItemTouchHelperCallbackTest {
     public void setUp() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         mTabModelSupplier.set(mTabModel);
+        mRecyclerView = new RecyclerView(context);
+        mItemView1 = new View(context);
+        mItemView2 = new View(context);
 
         mViewHolder = spy(new TestViewHolder(new View(context)));
 
@@ -116,8 +119,9 @@ public class PinnedTabStripItemTouchHelperCallbackTest {
     public void testOnMove() {
         assertTrue(mCallback.onMove(null, mMockViewHolder1, mMockViewHolder2));
 
-        verify(mTabModel).moveRelatedTabs(TAB_ID1, POSITION2);
-        verify(mTabListModel).move(POSITION1, POSITION2);
+        verify(mTabModel).moveTab(TAB_ID1, POSITION2);
+        verify(mTabListModel, never()).move(anyInt(), anyInt());
+        verify(mTabModel, never()).commitAllTabClosures();
     }
 
     @Test
@@ -131,11 +135,13 @@ public class PinnedTabStripItemTouchHelperCallbackTest {
 
         when(mMockViewHolder2.getBindingAdapterPosition()).thenReturn(POSITION1);
         assertFalse(mCallback.onMove(null, mMockViewHolder1, mMockViewHolder2));
+        verifyNoMove();
     }
 
     @Test
     public void testOnMove_InvalidViewHolder() {
         assertFalse(mCallback.onMove(null, mViewHolder, mMockViewHolder2));
+        verifyNoMove();
     }
 
     @Test
@@ -189,6 +195,7 @@ public class PinnedTabStripItemTouchHelperCallbackTest {
         when(mMockViewHolder1.getBindingAdapterPosition()).thenReturn(POSITION1);
         when(mMockViewHolder2.getBindingAdapterPosition()).thenReturn(10);
         assertFalse(mCallback.onMove(null, mMockViewHolder1, mMockViewHolder2));
+        verifyNoMove();
     }
 
     @Test
@@ -214,6 +221,11 @@ public class PinnedTabStripItemTouchHelperCallbackTest {
         mCallback.onChildDraw(mCanvas, mRecyclerView, mViewHolder, threshold, 1f, 0, true);
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         verify(mOnLongPressListener, never()).onLongPressEvent(anyInt(), any());
+    }
+
+    private void verifyNoMove() {
+        verify(mTabListModel, never()).move(anyInt(), anyInt());
+        verify(mTabModel, never()).moveTab(anyInt(), anyInt());
     }
 
     private ViewHolder prepareMockViewHolder(int tabId, View itemView, int position) {

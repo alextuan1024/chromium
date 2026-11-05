@@ -26,7 +26,7 @@
 #include "chromeos/ash/components/boca/on_task/on_task_notifications_manager.h"
 #include "chromeos/ash/components/boca/on_task/on_task_system_web_app_manager.h"
 #include "chromeos/ash/components/boca/proto/bundle.pb.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "components/sessions/core/session_id.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/message_center/public/cpp/notifier_id.h"
@@ -54,8 +54,8 @@ OnTaskSessionManager::OnTaskSessionManager(
       system_web_app_launch_helper_(
           std::make_unique<OnTaskSessionManager::SystemWebAppLaunchHelper>(
               system_web_app_manager_.get(),
-              std::vector<boca::BocaWindowObserver*>{active_tab_tracker_.get(),
-                                                     this})),
+              std::vector<raw_ptr<boca::BocaWindowObserver>>{
+                  active_tab_tracker_.get(), this})),
       notifications_manager_(OnTaskNotificationsManager::Create()),
       boca_session_manager_(boca_session_manager) {
   notification_countdown_duration_ =
@@ -506,7 +506,7 @@ void OnTaskSessionManager::OnTabRemoved(const SessionID tab_id) {
 
 OnTaskSessionManager::SystemWebAppLaunchHelper::SystemWebAppLaunchHelper(
     OnTaskSystemWebAppManager* system_web_app_manager,
-    std::vector<boca::BocaWindowObserver*> observers)
+    std::vector<raw_ptr<boca::BocaWindowObserver>> observers)
     : system_web_app_manager_(system_web_app_manager), observers_(observers) {}
 
 OnTaskSessionManager::SystemWebAppLaunchHelper::~SystemWebAppLaunchHelper() =

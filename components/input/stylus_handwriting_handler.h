@@ -36,7 +36,8 @@ class COMPONENT_EXPORT(INPUT) StylusHandwritingHandler {
 
   virtual ~StylusHandwritingHandler();
 
-  virtual void OnTouchEvent(const blink::WebTouchEvent& event);
+  virtual void OnTouchEvent(const blink::WebTouchEvent& event,
+                            float device_scale_factor);
   virtual void ApplyTouchAction(cc::TouchAction touch_action);
   virtual GestureHandlingResult HandleGesture(
       const blink::WebGestureEvent& event,
@@ -44,7 +45,11 @@ class COMPONENT_EXPORT(INPUT) StylusHandwritingHandler {
   virtual void EndStylusWriting();
 
   bool StylusWritingStarted() const { return stylus_writing_started_; }
-  bool StartStylusWriting();
+  virtual bool StartStylusWriting();
+
+ protected:
+  InputRouterClient* client() const { return client_; }
+  virtual void OnStartStylusWriting();
 
  private:
   raw_ptr<InputRouterClient> client_;

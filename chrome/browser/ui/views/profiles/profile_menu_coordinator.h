@@ -7,10 +7,9 @@
 
 #include <optional>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
-#include "base/observer_list.h"
-#include "base/observer_list_types.h"
 #include "chrome/browser/signin/signin_promo_util.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/views/bubble/bubble_anchor.h"
@@ -24,21 +23,11 @@ namespace signin_metrics {
 enum class AccessPoint;
 }  // namespace signin_metrics
 
-namespace views {
-class Widget;
-}  // namespace views
-
 // Handles the lifetime and showing/hidden state of the profile menu bubble.
 // Owned by the associated browser.
 class ProfileMenuCoordinator {
  public:
   DECLARE_USER_DATA(ProfileMenuCoordinator);
-
-  class Observer : public base::CheckedObserver {
-   public:
-    virtual void OnProfileMenuShown(views::Widget* widget) {}
-    virtual void OnProfileMenuCoordinatorDestroyed() {}
-  };
 
   ProfileMenuCoordinator(BrowserWindowInterface* browser, Profile* profile);
 
@@ -48,20 +37,17 @@ class ProfileMenuCoordinator {
   ProfileMenuCoordinator& operator=(const ProfileMenuCoordinator&) = delete;
   ~ProfileMenuCoordinator();
 
-  void AddObserver(Observer* observer);
-  void RemoveObserver(Observer* observer);
-
-  // Shows the the profile bubble for this browser.
+  // Shows the profile bubble for this browser.
   //
   // If `from_avatar_promo` is set, then trigger of the menu originated from a
   // promo that was shown on the AvatarButton.
+  //
+  // The avatar button is kept visible (e.g. popped out of toolbar overflow)
+  // while the menu is anchored to it.
   void Show(bool is_source_accelerator, bool from_avatar_promo = false);
 
   // Returns true if the bubble is currently showing for the owning browser.
   bool IsShowing() const;
-
-  // Returns the profile menu widget if showing, or nullptr.
-  views::Widget* GetProfileMenuWidget();
 
   ProfileMenuViewBase* GetProfileMenuViewBaseForTesting();
 
@@ -71,8 +57,6 @@ class ProfileMenuCoordinator {
   BrowserWindowInterface* GetBrowser();
   Profile* GetProfile();
 
-  views::BubbleAnchor GetAvatarToolbarButton();
-
   void ShowWithPromoResults(bool is_source_accelerator,
                             bool from_avatar_promo
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -81,13 +65,23 @@ class ProfileMenuCoordinator {
 #endif
   );
 
+  // `keep_anchor_visible` is the lock from `ShowWithPromoResults()`'s
+  // `RunWhenVisible()` call (empty for the `BrowserElements` fallback), and is
+  // held until the bubble closes.
+  void ShowBubble(bool is_source_accelerator,
+                  bool from_avatar_promo,
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+                  signin::ProfileMenuAvatarButtonPromoInfo promo_info,
+#endif
+                  views::BubbleAnchor anchor,
+                  base::ScopedClosureRunner keep_anchor_visible);
+
   // TODO(crbug.com/425953501): Replace with `ToolbarButtonProvider` once this
   // bug is fixed.
   const raw_ref<BrowserWindowInterface> browser_;
 
   const raw_ref<Profile> profile_;
   views::ViewTracker bubble_tracker_;
-  base::ObserverList<Observer> observers_;
 
   base::WeakPtrFactory<ProfileMenuCoordinator> weak_pointer_factory_{this};
 };

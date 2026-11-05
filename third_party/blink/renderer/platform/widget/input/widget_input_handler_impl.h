@@ -10,6 +10,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
+#include "cc/input/browser_controls_animation_params.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
 #include "cc/input/browser_controls_state.h"
 #include "mojo/public/cpp/bindings/direct_receiver.h"
@@ -31,12 +32,11 @@ class WidgetInputHandlerImpl : public mojom::blink::WidgetInputHandler {
  public:
   // The `widget` and `frame_widget_input_handler` should be invalidated
   // at the same time.
-  WidgetInputHandlerImpl(
-      scoped_refptr<WidgetInputHandlerManager> manager,
-      scoped_refptr<MainThreadEventQueue> input_event_queue,
-      base::WeakPtr<WidgetBase> widget,
-      base::WeakPtr<mojom::blink::FrameWidgetInputHandler>
-          frame_widget_input_handler);
+  WidgetInputHandlerImpl(scoped_refptr<WidgetInputHandlerManager> manager,
+                         scoped_refptr<MainThreadEventQueue> input_event_queue,
+                         base::WeakPtr<WidgetBase> widget,
+                         base::WeakPtr<mojom::blink::FrameWidgetInputHandler>
+                             frame_widget_input_handler);
   WidgetInputHandlerImpl(const WidgetInputHandlerImpl&) = delete;
   WidgetInputHandlerImpl& operator=(const WidgetInputHandlerImpl&) = delete;
   ~WidgetInputHandlerImpl() override;
@@ -96,11 +96,12 @@ class WidgetInputHandlerImpl : public mojom::blink::WidgetInputHandler {
       bool animate,
       const std::optional<cc::BrowserControlsOffsetTagModifications>&
           offset_tag_modifications) override;
+  void StartBrowserControlsAnimation(
+      const cc::BrowserControlsAnimationParams& params) override;
 
   void InputWasProcessed();
 
  private:
-  bool ShouldProxyToMainThread() const;
   void RunOnMainThread(base::OnceClosure closure);
   void Release();
 

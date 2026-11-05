@@ -17,13 +17,13 @@ import java.util.PriorityQueue;
 /**
  * On Android, notification updates will be dropped if there are too many updates within a second.
  * This class throttles all the notifications that will be sent to the NotificationManager. One
- * notification update will be sent on each |UPDATE_DELAY_MILLIS| interval. Notification tasks with
- * high priorities will be sent first, and arriving order matters too. To use this class, create a
- * {@link PendingNotificationTask} that handles notification creation and posting, and call the
- * addPendingNotificationTask() method. Before canceling a notification, call
- * cancelPendingNotificationTask() to ensure all the pending tasks are removed.
- * TODO(qinmin): convert all notification code to use this class instead of directly sending
- * notifications to the NotificationManager.
+ * notification update will be sent on each {@code UPDATE_DELAY_MILLIS} interval. Notification tasks
+ * with high priorities will be sent first, and arriving order matters too. To use this class,
+ * create a {@link PendingNotificationTask} that handles notification creation and posting, and call
+ * the addPendingNotificationTask() method. Before canceling a notification, call
+ * cancelPendingNotificationTask() to ensure all the pending tasks are removed. TODO(qinmin):
+ * convert all notification code to use this class instead of directly sending notifications to the
+ * NotificationManager.
  */
 @NullMarked
 public class ThrottlingNotificationScheduler {
@@ -74,12 +74,13 @@ public class ThrottlingNotificationScheduler {
     }
 
     /**
-     * Convenient method, use this if nothing else needs to be handled when notification
-     * is actually posted.
+     * Convenient method, use this if nothing else needs to be handled when notification is actually
+     * posted.
+     *
      * @param notificationWrapper Weapper containing the notification to be posted.
      */
     public void addPendingNotification(NotificationWrapper notificationWrapper) {
-        Pair<String, Integer> taskId =
+        Pair<@Nullable String, Integer> taskId =
                 Pair.create(
                         notificationWrapper.getMetadata().tag,
                         Integer.valueOf(notificationWrapper.getMetadata().id));
@@ -104,11 +105,12 @@ public class ThrottlingNotificationScheduler {
 
     /**
      * Convenient method, removes a pending task from the throttler and cancels the notification.
+     *
      * @param tag Tag of the notification.
      * @param id ID of the notification.
      */
     public void cancelPendingNotification(String tag, int id) {
-        Pair<String, Integer> taskId = Pair.create(tag, Integer.valueOf(id));
+        Pair<@Nullable String, Integer> taskId = Pair.create(tag, Integer.valueOf(id));
         removePendingNotificationTask(taskId);
         BaseNotificationManagerProxyFactory.create().cancel(tag, id);
     }
@@ -136,7 +138,10 @@ public class ThrottlingNotificationScheduler {
         return null;
     }
 
-    /** Get the next task from the queue, and schedule another task |UPDATE_DELAY_MILLIS| later. */
+    /**
+     * Get the next task from the queue, and schedule another task {@code UPDATE_DELAY_MILLIS}
+     * later.
+     */
     private void pumpQueue() {
         PendingNotificationTask task = mPendingNotificationTasks.poll();
         if (task != null) {

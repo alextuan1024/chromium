@@ -6,8 +6,10 @@
 
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/web/web_print_params.h"
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/layout/layout_image.h"
@@ -351,35 +353,6 @@ TEST_F(LayoutBoxTest, BackgroundRect) {
       layout_box->PhysicalBackgroundRect(kBackgroundPaintedExtent).IsEmpty());
 }
 
-TEST_F(LayoutBoxTest, LocationContainer) {
-  SetBodyInnerHTML(R"HTML(
-    <div id='div'>
-      <b>Inline content<img id='img'></b>
-    </div>
-    <table id='table'>
-      <tbody id='tbody'>
-        <tr id='row'>
-          <td id='cell' style='width: 100px; height: 80px'></td>
-        </tr>
-      </tbody>
-    </table>
-  )HTML");
-
-  const LayoutBox* body = GetDocument().body()->GetLayoutBox();
-  const LayoutBox* div = GetLayoutBoxByElementId("div");
-  const LayoutBox* img = GetLayoutBoxByElementId("img");
-  const LayoutBox* table = GetLayoutBoxByElementId("table");
-  const LayoutBox* tbody = GetLayoutBoxByElementId("tbody");
-  const LayoutBox* row = GetLayoutBoxByElementId("row");
-  const LayoutBox* cell = GetLayoutBoxByElementId("cell");
-
-  EXPECT_EQ(body, div->LocationContainer());
-  EXPECT_EQ(div, img->LocationContainer());
-  EXPECT_EQ(body, table->LocationContainer());
-  EXPECT_EQ(table, tbody->LocationContainer());
-  EXPECT_EQ(tbody, row->LocationContainer());
-  EXPECT_EQ(row, cell->LocationContainer());
-}
 
 TEST_F(LayoutBoxTest, TopLeftLocationFlipped) {
   SetBodyInnerHTML(R"HTML(
@@ -430,7 +403,7 @@ TEST_F(LayoutBoxTest, TableRowCellTopLeftLocationFlipped) {
   EXPECT_EQ(PhysicalOffset(0, 0), cell2->PhysicalLocation());
 }
 
-TEST_F(LayoutBoxTest, LocationContainerOfSVG) {
+TEST_F(LayoutBoxTest, LocationOfSVG) {
   SetBodyInnerHTML(R"HTML(
     <svg id='svg' style='writing-mode:vertical-rl' width='500' height='500'>
       <foreignObject x='44' y='77' width='100' height='80' id='foreign'>
@@ -439,22 +412,16 @@ TEST_F(LayoutBoxTest, LocationContainerOfSVG) {
       </foreignObject>
     </svg>
   )HTML");
-  const LayoutBox* svg_root = GetLayoutBoxByElementId("svg");
   const LayoutBox* foreign = GetLayoutBoxByElementId("foreign");
   const LayoutBox* child = GetLayoutBoxByElementId("child");
 
-  EXPECT_EQ(GetDocument().body()->GetLayoutObject(),
-            svg_root->LocationContainer());
-
   // The foreign object's location is not affected by SVGRoot's writing-mode.
-  EXPECT_FALSE(foreign->LocationContainer());
   EXPECT_EQ(PhysicalSize(100, 80), foreign->StitchedSize());
   EXPECT_EQ(PhysicalOffset(44, 77), foreign->PhysicalLocation());
   // The writing mode style should be still be inherited.
   EXPECT_TRUE(foreign->HasFlippedBlocksWritingMode());
 
   // The child of the foreign object is affected by writing-mode.
-  EXPECT_EQ(foreign, child->LocationContainer());
   EXPECT_EQ(PhysicalSize(33, 55), child->StitchedSize());
   EXPECT_EQ(PhysicalOffset(67, 0), child->PhysicalLocation());
   EXPECT_TRUE(child->HasFlippedBlocksWritingMode());
@@ -652,18 +619,9 @@ TEST_F(LayoutBoxTest, VisualOverflowRectWithOverflowClipMargin) {
   EXPECT_EQ(PhysicalRect(0, 0, 110, 55), clip3->VisualOverflowRect());
 }
 
-// |InkOverflow| stopped storing visual overflow contained by |BorderBoxRect|
-// because they are not useful, and they are inconsistent when fully contained
-// and partially contained.
-// TODO(crbug.com/1144203): Change this to "if (NG)" when NG always use
-// fragment-based ink overflow. Then, remove this when legacy is gone.
-#define EXPECT_CONTENTS_VISUAL_OVERFLOW(rect, layout_box)           \
-  if (layout_box->CanUseFragmentsForVisualOverflow()) {             \
-    EXPECT_EQ(UnionRect(rect, layout_box->PhysicalBorderBoxRect()), \
-              layout_box->ContentsVisualOverflowRect());            \
-  } else {                                                          \
-    EXPECT_EQ(rect, layout_box->ContentsVisualOverflowRect());      \
-  }
+#define EXPECT_CONTENTS_VISUAL_OVERFLOW(rect, layout_box)         \
+  EXPECT_EQ(UnionRect(rect, layout_box->PhysicalBorderBoxRect()), \
+            layout_box->ContentsVisualOverflowRect());
 
 TEST_F(LayoutBoxTest, ContentsVisualOverflowPropagation) {
   SetBodyInnerHTML(R"HTML(
@@ -861,8 +819,7 @@ TEST_F(LayoutBoxTest, DelayedInvalidationLayoutViewScrolled) {
 
   // The background-image will be painted by the LayoutView. Get a reference to
   // it from there.
-  auto* background_image =
-      layout_view->StyleRef().BackgroundLayers().GetImage();
+  auto* background_image = layout_view->Style().BackgroundLayers().GetImage();
   ASSERT_TRUE(background_image);
   auto* image_resource_content = background_image->CachedImage();
   ASSERT_TRUE(image_resource_content);
@@ -1953,55 +1910,6 @@ TEST_F(LayoutBoxTest, IsUserScrollableLayoutView) {
   EXPECT_FALSE(GetLayoutView().IsUserScrollable());
 }
 
-TEST_F(LayoutBoxTest, LogicalRectInContainer) {
-  SetBodyInnerHTML(R"HTML("
-    <style>
-    .c { contain: layout; }
-    .t { width: 1px; height:1px; margin: 3px 5px 7px 11px; }
-    .htb { writing-mode: horizontal-tb; }
-    .vlr { writing-mode: vertical-lr; }
-    .vrl { writing-mode: vertical-rl; }
-    </style>
-    <div class="c htb"><div id="htb-htb" class="t htb"></div></div>
-    <div class="c htb"><div id="htb-vrl" class="t vrl"></div></div>
-    <div class="c htb"><div id="htb-vlr" class="t vlr"></div></div>
-    <div class="c vlr"><div id="vlr-htb" class="t htb"></div></div>
-    <div class="c vlr"><div id="vlr-vrl" class="t vrl"></div></div>
-    <div class="c vlr"><div id="vlr-vlr" class="t vlr"></div></div>
-    <div class="c vrl"><div id="vrl-htb" class="t htb"></div></div>
-    <div class="c vrl"><div id="vrl-vrl" class="t vrl"></div></div>
-    <div class="c vrl"><div id="vrl-vlr" class="t vlr"></div></div>
-  )HTML");
-  constexpr LayoutUnit kTopMargin(3);
-  constexpr LayoutUnit kRightMargin(5);
-  constexpr LayoutUnit kLeftMargin(11);
-  constexpr LayoutUnit kSize(1);
-
-  // Target DIVs are placed at (3, 11) from its container top-left.
-  EXPECT_EQ(LogicalRect(kLeftMargin, kTopMargin, kSize, kSize),
-            GetLayoutBoxByElementId("htb-htb")->LogicalRectInContainer());
-  EXPECT_EQ(LogicalRect(kLeftMargin, kTopMargin, kSize, kSize),
-            GetLayoutBoxByElementId("htb-vrl")->LogicalRectInContainer());
-  EXPECT_EQ(LogicalRect(kLeftMargin, kTopMargin, kSize, kSize),
-            GetLayoutBoxByElementId("htb-vlr")->LogicalRectInContainer());
-
-  // Target DIVs are placed at (3, 11) in the vertical-lr container too.
-  EXPECT_EQ(LogicalRect(kTopMargin, kLeftMargin, kSize, kSize),
-            GetLayoutBoxByElementId("vlr-htb")->LogicalRectInContainer());
-  EXPECT_EQ(LogicalRect(kTopMargin, kLeftMargin, kSize, kSize),
-            GetLayoutBoxByElementId("vlr-vrl")->LogicalRectInContainer());
-  EXPECT_EQ(LogicalRect(kTopMargin, kLeftMargin, kSize, kSize),
-            GetLayoutBoxByElementId("vlr-vlr")->LogicalRectInContainer());
-
-  // In the vertical-rl container.
-  EXPECT_EQ(LogicalRect(kTopMargin, kRightMargin, kSize, kSize),
-            GetLayoutBoxByElementId("vrl-htb")->LogicalRectInContainer());
-  EXPECT_EQ(LogicalRect(kTopMargin, kRightMargin, kSize, kSize),
-            GetLayoutBoxByElementId("vrl-vrl")->LogicalRectInContainer());
-  EXPECT_EQ(LogicalRect(kTopMargin, kRightMargin, kSize, kSize),
-            GetLayoutBoxByElementId("vrl-vlr")->LogicalRectInContainer());
-}
-
 TEST_F(LayoutBoxTest,
        VisualOverflowRectWithEmptyInlineChildAndReflectAndOutline) {
   SetBodyInnerHTML(R"HTML(
@@ -2099,6 +2007,85 @@ TEST_F(LayoutBoxTest, StitchedBlockSizeVrl) {
   EXPECT_EQ(middle->StitchedBlockSize(), LayoutUnit(100));
   const LayoutBox* inner = GetLayoutBoxByElementId("inner");
   EXPECT_EQ(inner->StitchedBlockSize(), LayoutUnit(350));
+}
+
+TEST_F(LayoutBoxTest, StitchedSizeWithOverflow) {
+  SetBodyInnerHTML(R"HTML(
+    <div style="columns:3; column-gap:0; column-fill:auto;
+                inline-size:300px; block-size:100px;">
+      <div id="outer" style="block-size:90px;">
+        <div id="middle" style="block-size:100px;">
+          <div id="inner" style="block-size:350px;"></div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+  EXPECT_EQ(PhysicalSize(100, 90),
+            GetLayoutBoxByElementId("outer")->StitchedSize());
+  EXPECT_EQ(PhysicalSize(100, 100),
+            GetLayoutBoxByElementId("middle")->StitchedSize());
+  EXPECT_EQ(PhysicalSize(100, 350),
+            GetLayoutBoxByElementId("inner")->StitchedSize());
+}
+
+TEST_F(LayoutBoxTest, StitchedSizeWithOverflowVrl) {
+  SetBodyInnerHTML(R"HTML(
+    <div style="columns:3; column-gap:0; column-fill:auto;
+                inline-size:300px; block-size:100px; writing-mode:vertical-rl;">
+      <div id="outer" style="block-size:90px;">
+        <div id="middle" style="block-size:100px;">
+          <div id="inner" style="block-size:350px;"></div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+  EXPECT_EQ(PhysicalSize(90, 100),
+            GetLayoutBoxByElementId("outer")->StitchedSize());
+  EXPECT_EQ(PhysicalSize(100, 100),
+            GetLayoutBoxByElementId("middle")->StitchedSize());
+  EXPECT_EQ(PhysicalSize(350, 100),
+            GetLayoutBoxByElementId("inner")->StitchedSize());
+}
+
+TEST_F(LayoutBoxTest, StitchedSizeAfterRelayout) {
+  SetBodyInnerHTML(R"HTML(
+    <div style="columns:3; column-gap:0; column-fill:auto;
+                width:300px; height:100px;">
+      <div id="target" style="height:250px;"></div>
+    </div>
+  )HTML");
+  auto* target = GetElementById("target");
+  auto* box = target->GetLayoutBox();
+  ASSERT_EQ(3u, box->PhysicalFragmentCount());
+  EXPECT_EQ(PhysicalSize(100, 250), box->StitchedSize());
+
+  target->setAttribute(html_names::kStyleAttr, AtomicString("height:50px"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(1u, box->PhysicalFragmentCount());
+  EXPECT_EQ(PhysicalSize(100, 50), box->StitchedSize());
+
+  target->setAttribute(html_names::kStyleAttr, AtomicString("height:150px"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(2u, box->PhysicalFragmentCount());
+  EXPECT_EQ(PhysicalSize(100, 150), box->StitchedSize());
+}
+
+TEST_F(LayoutBoxTest, StitchedSizeRepeatedWhenPrinting) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @page { size:100px 100px; margin:0; }
+      body { margin:0; }
+    </style>
+    <div style="height:250px;"></div>
+    <div id="target"
+         style="position:fixed; top:0; left:0; width:20px; height:30px;"></div>
+  )HTML");
+  GetFrame().StartPrinting(WebPrintParams(gfx::SizeF(100, 100)));
+  GetDocument().View()->UpdateLifecyclePhasesForPrinting();
+  const auto* box = GetLayoutBoxByElementId("target");
+  EXPECT_EQ(3u, box->PhysicalFragmentCount());
+  EXPECT_EQ(PhysicalSize(20, 30), box->StitchedSize());
+  GetFrame().EndPrinting();
 }
 
 class ElasticOverscrollTestingPlatformSupport : public TestingPlatformSupport {

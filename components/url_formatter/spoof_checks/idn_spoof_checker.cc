@@ -242,9 +242,9 @@ IDNSpoofChecker::IDNSpoofChecker() {
        {"am"}},
       {// Cyrillic
        "[[:Cyrl:]]",
-       "[аысԁеԍһіюкјӏморԗԛѕтԝхуъьҽпгѵѡ]",
+       "[аысԁеԍһіюкјӏморԗԛѕтџԝхуъьҽпгѵѡ]",
        // TLDs containing most of the Cyrillic domains.
-       {"bg", "by", "kz", "pyc", "ru", "su", "ua", "uz"}},
+       {"bg", "by", "kz", "ru", "su", "ua", "uz"}},
       {// Ethiopic (Ge'ez). Variants of these characters such as ሁ and ሡ could
        // arguably be added to this list. However, we are only restricting
        // the more obvious characters to keep the list short and to reduce the
@@ -422,9 +422,7 @@ IDNSpoofCheckerResult IDNSpoofChecker::SafeToDisplayAsUnicode(
     return IDNSpoofCheckerResult::kSafe;
   }
 
-  if (result == USPOOF_SINGLE_SCRIPT_RESTRICTIVE &&
-      kana_letters_exceptions_.containsNone(label_string) &&
-      combining_diacritics_exceptions_.containsNone(label_string)) {
+  if (result == USPOOF_SINGLE_SCRIPT_RESTRICTIVE) {
     for (auto const& script : wholescriptconfusables_) {
       if (IsLabelWholeScriptConfusableForScript(*script, label_string) &&
           !IsWholeScriptConfusableAllowedForTLD(*script, top_level_domain,
@@ -433,13 +431,16 @@ IDNSpoofCheckerResult IDNSpoofChecker::SafeToDisplayAsUnicode(
         return IDNSpoofCheckerResult::kWholeScriptConfusable;
       }
     }
-    // Disallow domains that contain only numbers and number-spoofs.
-    // This check is reached if domain characters come from single script.
-    if (IsDigitLookalike(label_string)) {
-      return IDNSpoofCheckerResult::kDigitLookalikes;
-    }
+    if (kana_letters_exceptions_.containsNone(label_string) &&
+        combining_diacritics_exceptions_.containsNone(label_string)) {
+      // Disallow domains that contain only numbers and number-spoofs.
+      // This check is reached if domain characters come from single script.
+      if (IsDigitLookalike(label_string)) {
+        return IDNSpoofCheckerResult::kDigitLookalikes;
+      }
 
-    return IDNSpoofCheckerResult::kSafe;
+      return IDNSpoofCheckerResult::kSafe;
+    }
   }
 
   // Disallow domains that contain only numbers and number-spoofs.
@@ -616,8 +617,7 @@ bool IDNSpoofChecker::IsDomainAndRegistryATopDomain(
 
   // Convert the hostname to std::u16string_view as GetSkeletons expects it.
   std::u16string domain16;
-  if (!base::UTF8ToUTF16(domain_and_registry.data(),
-                         domain_and_registry.length(), &domain16)) {
+  if (!base::UTF8ToUTF16(domain_and_registry, &domain16)) {
     // Failed to convert, which is unlikely for a valid GURL host.
     // Treat as not a top domain.
     return false;

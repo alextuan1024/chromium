@@ -14,12 +14,12 @@ static_library("slow") {
 
   deps = [
     "//ash/constants",
+    "//ash/strings",
     "//base",
-    "//chrome/app:generated_resources",
-    "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/chromeos/slow:resources",
     "//components/feedback/content",
     "//components/prefs",
+    "//components/user_prefs",
     "//content/public/browser",
     "//content/public/common",
     "//ui/webui",

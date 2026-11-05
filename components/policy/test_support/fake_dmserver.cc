@@ -4,38 +4,58 @@
 
 #include "components/policy/test_support/fake_dmserver.h"
 
+#include <unistd.h>
+
+#include <iostream>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "base/atomic_sequence_num.h"
 #include "base/base64.h"
+#include "base/base_paths.h"
+#include "base/containers/fixed_flat_set.h"
+#include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
+#include "base/files/important_file_writer.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_file_value_serializer.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/logging/logging_settings.h"
 #include "base/notreached.h"
+#include "base/path_service.h"
+#include "base/process/launch.h"
 #include "base/scoped_observation.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/bind_post_task.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/types/optional_util.h"
+#include "build/build_config.h"
+#include "components/enterprise/common/proto/upload_request_response.pb.h"
+#include "components/enterprise/connectors/core/reporting_event_mappings.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/policy_constants_mutable.h"
 #include "components/policy/proto/cloud_policy.pb.h"
 #include "components/policy/test_support/client_storage.h"
 #include "components/policy/test_support/embedded_policy_test_server.h"
+#include "components/policy/test_support/fake_fcm_server.h"
 #include "components/policy/test_support/policy_storage.h"
+#include "components/policy/test_support/remote_commands_state.h"
+#include "components/policy/test_support/report_storage.h"
 #include "components/policy/test_support/request_handler_for_policy.h"
+#include "components/policy/test_support/request_handler_for_realtime_reporting.h"
 #include "components/policy/test_support/test_server_helpers.h"
+#include "net/http/http_status_code.h"
+#include "net/test/embedded_test_server/http_request.h"
+#include "net/test/embedded_test_server/http_response.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "third_party/re2/src/re2/re2.h"
-
-#define RETURN_IF_FALSE(expr) \
-  if (!expr) {                \
-    return false;             \
-  }
 
 namespace fakedms {
 
@@ -80,7 +100,12 @@ constexpr char kDefaultClientStateFilename[] = "state.json";
 constexpr int kDefaultMinLogLevel = logging::LOGGING_INFO;
 constexpr bool kDefaultLogToConsole = false;
 constexpr int kDefaultPort = 6112;
+// ChromeOS does not connect to the FCM server of fake_dmserver.
+constexpr std::optional<int> kDefaultFcmPort =
+    BUILDFLAG(IS_CHROMEOS) ? std::nullopt : std::optional<int>(6113);
 
+constexpr char kHelpSwitch[] = "help";
+constexpr char kHelpSwitchShort[] = "h";
 constexpr char kPolicyBlobPathSwitch[] = "policy-blob-path";
 constexpr char kPolicyPathSwitch[] = "policy-path";
 constexpr char kClientStatePathSwitch[] = "client-state-path";
@@ -90,6 +115,27 @@ constexpr char kStartupPipeSwitch[] = "startup-pipe";
 constexpr char kMinLogLevelSwitch[] = "min-log-level";
 constexpr char kLogToConsoleSwitch[] = "log-to-console";
 constexpr char kPortSwitch[] = "port";
+constexpr char kFcmPortSwitch[] = "fcm-port";
+constexpr char kNoFcmSwitch[] = "no-fcm";
+
+constexpr auto kKnownSwitches = base::MakeFixedFlatSet<std::string_view>({
+    kClientStatePathSwitch,
+    kFcmPortSwitch,
+    kGrpcUnixSocketUriSwitch,
+    kHelpSwitch,
+    kHelpSwitchShort,
+    kLogPathSwitch,
+    kLogToConsoleSwitch,
+    kMinLogLevelSwitch,
+    kNoFcmSwitch,
+    kPolicyBlobPathSwitch,
+    kPolicyPathSwitch,
+    kPortSwitch,
+    kStartupPipeSwitch,
+    "enable-logging",
+    "v",
+    "vmodule",
+});
 
 constexpr base::TimeDelta kRemoteCommandTimeoutSeconds = base::Seconds(10);
 constexpr int64_t kDefaultServerStopTimeoutMs = 100;
@@ -98,6 +144,7 @@ constexpr int64_t kDefaultServerStopTimeoutMs = 100;
 struct PolicyTypeEntry {
   const char* policy_type;
   const char* config_key;
+  const char* recommended_config_key;
 };
 
 const PolicyTypeEntry kPolicyTypeMapping[] = {
@@ -105,16 +152,25 @@ const PolicyTypeEntry kPolicyTypeMapping[] = {
     // interested. It uses ChromeDeviceSettingsProto, which is a completely
     // different schema. Use manual_device_policy_proto_map.yaml for this.
     //
-    // {policy::dm_protocol::kChromeDevicePolicyType, "device"},
-    {policy::dm_protocol::kChromeMachineLevelUserCloudPolicyType, "machine"},
-    {policy::dm_protocol::GetChromeUserPolicyType(), "user"},
+    // {policy::dm_protocol::kChromeDevicePolicyType, "device",
+    //  "recommended_device"},
+    {policy::dm_protocol::kChromeMachineLevelUserCloudPolicyType, "machine",
+     "recommended_machine"},
+    {policy::dm_protocol::GetChromeUserPolicyType(), "user",
+     "recommended_user"},
 };
 
 const PolicyTypeEntry kExtensionInstallPolicyTypeMapping[] = {
     {policy::dm_protocol::kChromeExtensionInstallUserCloudPolicyType,
-      "user-extension-install"},
+     "user-extension-install"},
     {policy::dm_protocol::kChromeExtensionInstallMachineLevelCloudPolicyType,
-      "machine-extension-install"},
+     "machine-extension-install"},
+};
+
+const PolicyTypeEntry kExtensionPolicyTypeMapping[] = {
+    {policy::dm_protocol::kChromeMachineLevelExtensionCloudPolicyType,
+     "machine-extensions"},
+    {policy::dm_protocol::kChromeExtensionPolicyType, "user-extensions"},
 };
 
 static remote_commands::WaitRemoteCommandResultResponse
@@ -127,6 +183,234 @@ BuildWaitRemoteCommandResultResponse(const em::RemoteCommandResult& result) {
   remote_command_result->set_payload(result.payload());
   return resp;
 }
+
+// Matches {desktop,profile}_report_YYYYMMDDHHMMSS_<n>[_<device_id>].pb.
+constexpr char kReportFileNameRegex[] =
+    R"((desktop|profile)_report_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2}))"
+    R"(_\d+(?:_(.+))?\.pb)";
+
+// Returns the local time as YYYYMMDDHHMMSS, for use in file names.
+std::string FileTimestamp() {
+  base::Time::Exploded exploded;
+  base::Time::Now().LocalExplode(&exploded);
+  return absl::StrFormat("%04d%02d%02d%02d%02d%02d", exploded.year,
+                         exploded.month, exploded.day_of_month, exploded.hour,
+                         exploded.minute, exploded.second);
+}
+
+// Writes a textproto file by running protoc with the --decode flag.
+// Uses protoc from the build directory, or falls back to protoc in PATH.
+static void WriteTextprotoWithProtoc(const base::FilePath& output_path,
+                                     std::string_view message_type,
+                                     std::string_view proto_file_relative_path,
+                                     std::string_view serialized_proto) {
+  base::File output_file(
+      output_path, base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+  if (!output_file.IsValid()) {
+    LOG(ERROR) << "Failed to create textproto file: " << output_path;
+    return;
+  }
+
+  base::ScopedFD read_fd;
+  base::ScopedFD write_fd;
+  if (!base::CreatePipe(&read_fd, &write_fd)) {
+    LOG(ERROR) << "Failed to create pipe for protoc";
+    base::DeleteFile(output_path);
+    return;
+  }
+
+  base::FilePath exe_dir;
+  CHECK(base::PathService::Get(base::DIR_EXE, &exe_dir));
+  base::FilePath protoc_path = exe_dir.AppendASCII("protoc");
+  if (!base::PathExists(protoc_path)) {
+    protoc_path = base::FilePath("protoc");
+  }
+
+  base::FilePath src_dir;
+  if (!base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &src_dir) ||
+      !base::PathExists(src_dir.AppendASCII("components/policy/proto"))) {
+    src_dir = exe_dir.AppendASCII("../../");
+  }
+
+  base::CommandLine cmd(protoc_path);
+  cmd.AppendArg("-I" + src_dir.value());
+  cmd.AppendArg("-I" + src_dir.AppendASCII("components/policy/proto").value());
+  cmd.AppendArg(
+      "-I" + src_dir.AppendASCII("third_party/private_membership/src").value());
+  cmd.AppendArg(
+      "-I" + src_dir.AppendASCII("third_party/shell-encryption/src").value());
+  cmd.AppendArg(base::StrCat({"--decode=", message_type}));
+  cmd.AppendArgPath(src_dir.AppendASCII(proto_file_relative_path));
+
+  base::LaunchOptions options;
+  options.fds_to_remap.emplace_back(read_fd.get(), STDIN_FILENO);
+  options.fds_to_remap.emplace_back(output_file.GetPlatformFile(),
+                                    STDOUT_FILENO);
+
+  base::Process process = base::LaunchProcess(cmd, options);
+  if (!process.IsValid()) {
+    LOG(ERROR) << "Failed to launch protoc";
+    base::DeleteFile(output_path);
+    return;
+  }
+
+  read_fd.reset();
+  if (!serialized_proto.empty() &&
+      !base::WriteFileDescriptor(write_fd.get(), serialized_proto)) {
+    LOG(ERROR) << "Failed to write serialized proto to protoc stdin";
+  }
+  write_fd.reset();
+
+  int exit_code = -1;
+  if (!process.WaitForExit(&exit_code) || exit_code != 0) {
+    LOG(ERROR) << "protoc failed with exit code " << exit_code;
+    base::DeleteFile(output_path);
+  }
+}
+
+// Writes the report to
+// {profile,desktop}_report_YYYYMMDDHHMMSS_<n>[_<device_id>].pb and
+// {profile,desktop}_report_YYYYMMDDHHMMSS_<n>.textproto in `data_dir`.
+//
+// Since we only have MessageLite protos in this binary, we can't easily
+// serialize to .textproto. As a workaround, use `protoc --decode=...` to write
+// the textproto file, while writing raw protobuf bytes directly to the .pb
+// file for fast deserialization on startup.
+static void WriteReportFile(const base::FilePath& data_dir,
+                            std::string_view report_prefix,
+                            std::string_view device_id,
+                            const em::DeviceManagementRequest& wrapper) {
+  static base::AtomicSequenceNumber file_count;
+  const int seq = file_count.GetNext();
+  const std::string time_str = FileTimestamp();
+  std::string safe_device_id;
+  base::ReplaceChars(device_id, "/\\:\0", "_", &safe_device_id);
+  std::string pb_filename =
+      safe_device_id.empty()
+          ? absl::StrFormat("%s%s_%d.pb", report_prefix, time_str, seq)
+          : absl::StrFormat("%s%s_%d_%s.pb", report_prefix, time_str, seq,
+                            safe_device_id);
+  std::string serialized = wrapper.SerializeAsString();
+  base::WriteFile(data_dir.AppendASCII(pb_filename), serialized);
+
+  std::string filename =
+      absl::StrFormat("%s%s_%d.textproto", report_prefix, time_str, seq);
+  WriteTextprotoWithProtoc(
+      data_dir.AppendASCII(filename),
+      "enterprise_management.DeviceManagementRequest",
+      "components/policy/proto/device_management_backend.proto", serialized);
+}
+
+// Writes each event of `request` to
+// realtime_<event_type>_YYYYMMDDHHMMSS_<n>.{pb,textproto} in `reports_dir`.
+static void WriteRealtimeReport(
+    const base::FilePath& reports_dir,
+    ::chrome::cros::reporting::proto::UploadEventsRequest request) {
+  static base::AtomicSequenceNumber file_count;
+  if (reports_dir.empty() || !base::CreateDirectory(reports_dir)) {
+    return;
+  }
+  const std::string timestamp = FileTimestamp();
+  const auto events = request.events();
+  request.clear_events();
+  for (const auto& event : events) {
+    ::chrome::cros::reporting::proto::UploadEventsRequest single = request;
+    *single.add_events() = event;
+    const std::string serialized = single.SerializeAsString();
+    const base::FilePath base_path = reports_dir.AppendASCII(
+        absl::StrFormat("realtime_%s_%s_%d",
+                        enterprise_connectors::GetEventName(event.event_case()),
+                        timestamp, file_count.GetNext()));
+    base::WriteFile(base_path.AddExtensionASCII("pb"), serialized);
+    WriteTextprotoWithProtoc(
+        base_path.AddExtensionASCII("textproto"),
+        "chrome.cros.reporting.proto.UploadEventsRequest",
+        "components/enterprise/common/proto/upload_request_response.proto",
+        serialized);
+  }
+}
+
+template <typename Entry, typename SetReport>
+void WriteNewReportFiles(const base::FilePath& reports_dir,
+                         const char* prefix,
+                         const std::vector<Entry>& reports,
+                         size_t start_count,
+                         SetReport set_report) {
+  for (size_t i = start_count; i < reports.size(); ++i) {
+    em::DeviceManagementRequest wrapper;
+    set_report(wrapper, reports[i].report);
+    WriteReportFile(reports_dir, prefix, reports[i].device_id,
+                    std::move(wrapper));
+  }
+}
+
+void SendInnerResponse(
+    base::WeakPtr<net::test_server::HttpResponseDelegate> delegate,
+    std::unique_ptr<net::test_server::HttpResponse> response) {
+  if (!delegate) {
+    return;
+  }
+  if (!response) {
+    auto not_found = std::make_unique<net::test_server::BasicHttpResponse>();
+    not_found->set_code(net::HTTP_NOT_FOUND);
+    response = std::move(not_found);
+  }
+  net::test_server::HttpResponse* const response_ptr = response.get();
+  delegate->AddResponse(std::move(response));
+  response_ptr->SendResponse(delegate);
+}
+
+}  // namespace
+
+FakeDMServer::MainThreadResponse::MainThreadResponse() = default;
+FakeDMServer::MainThreadResponse::MainThreadResponse(MainThreadResponse&&) =
+    default;
+FakeDMServer::MainThreadResponse& FakeDMServer::MainThreadResponse::operator=(
+    MainThreadResponse&&) = default;
+FakeDMServer::MainThreadResponse::~MainThreadResponse() = default;
+
+// Runs a request handler on `handler_task_runner` without blocking the
+// EmbeddedTestServer IO thread, then dispatches the response back on the IO
+// thread.
+class FakeDMServer::DeferredHttpResponse
+    : public net::test_server::HttpResponse {
+ public:
+  using HandlerCallback = base::OnceCallback<MainThreadResponse()>;
+
+  DeferredHttpResponse(
+      scoped_refptr<base::SequencedTaskRunner> handler_task_runner,
+      HandlerCallback handler_callback)
+      : handler_task_runner_(std::move(handler_task_runner)),
+        handler_callback_(std::move(handler_callback)) {}
+
+  void SendResponse(
+      base::WeakPtr<net::test_server::HttpResponseDelegate> delegate) override {
+    handler_task_runner_->PostTaskAndReplyWithResult(
+        FROM_HERE, std::move(handler_callback_),
+        base::BindOnce(&DeferredHttpResponse::OnResponseReady,
+                       weak_ptr_factory_.GetWeakPtr(), std::move(delegate)));
+  }
+
+ private:
+  void OnResponseReady(
+      base::WeakPtr<net::test_server::HttpResponseDelegate> delegate,
+      MainThreadResponse result) {
+    // Grab `handler_task_runner_` before `SendInnerResponse()`, which can
+    // close the connection and destroy `this`.
+    scoped_refptr<base::SequencedTaskRunner> handler_task_runner =
+        handler_task_runner_;
+    SendInnerResponse(std::move(delegate), std::move(result.response));
+    if (result.after_send) {
+      handler_task_runner->PostTask(FROM_HERE, std::move(result.after_send));
+    }
+  }
+
+  scoped_refptr<base::SequencedTaskRunner> handler_task_runner_;
+  HandlerCallback handler_callback_;
+  base::WeakPtrFactory<DeferredHttpResponse> weak_ptr_factory_{this};
+};
+
+namespace {
 
 void ParsePolicyUser(const base::DictValue* dict,
                      policy::PolicyStorage* policy_storage) {
@@ -318,7 +602,8 @@ bool ParseCurrentKeyIndex(const base::DictValue* dict,
   return true;
 }
 
-// Used to print a human-readable type name in warnings in TrySetCloudPolicySettings.
+// Used to print a human-readable type name in warnings in
+// TrySetCloudPolicySettings.
 template <typename T>
 const char* GetExpectedTypeName() {
   if constexpr (std::is_same_v<T, bool>) {
@@ -339,6 +624,7 @@ template <typename Access, typename T, typename UnwrapMethod>
 bool TrySetCloudPolicySettings(const Access& access,
                                const base::Value& value,
                                UnwrapMethod unwrap,
+                               em::PolicyOptions::PolicyMode mode,
                                em::CloudPolicySettings& policy_settings) {
   auto unwrapped = std::invoke(unwrap, value);
   if (!unwrapped) {
@@ -349,7 +635,7 @@ bool TrySetCloudPolicySettings(const Access& access,
   }
   auto* proto = access.get_proto_mutable(policy_settings);
   CHECK(proto);
-  proto->mutable_policy_options()->set_mode(em::PolicyOptions::MANDATORY);
+  proto->mutable_policy_options()->set_mode(mode);
   proto->set_value(*unwrapped);
   return true;
 }
@@ -358,18 +644,19 @@ bool TrySetCloudPolicySettings(const Access& access,
 // `policy_settings` if it is.
 bool ValidateAndSetPolicyValue(std::string_view policy_name,
                                const base::Value& value,
+                               em::PolicyOptions::PolicyMode mode,
                                em::CloudPolicySettings& policy_settings) {
   for (const auto& access : policy::test::kBooleanPolicyAccess) {
     if (policy_name == access.policy_key) {
       return TrySetCloudPolicySettings<decltype(access), bool>(
-          access, value, &base::Value::GetIfBool, policy_settings);
+          access, value, &base::Value::GetIfBool, mode, policy_settings);
     }
   }
 
   for (const auto& access : policy::test::kIntegerPolicyAccess) {
     if (policy_name == access.policy_key) {
       return TrySetCloudPolicySettings<decltype(access), int>(
-          access, value, &base::Value::GetIfInt, policy_settings);
+          access, value, &base::Value::GetIfInt, mode, policy_settings);
     }
   }
 
@@ -384,12 +671,12 @@ bool ValidateAndSetPolicyValue(std::string_view policy_name,
             access, value,
             static_cast<const std::string* (base::Value::*)() const>(
                 &base::Value::GetIfString),
-            policy_settings);
+            mode, policy_settings);
 
       case policy::test::StringPolicyType::JSON: {
         // JSON values are converted to JSON, then encoded the same as
         // strings.
-        if (!value.is_dict()) {
+        if (!value.is_dict() && !value.is_list()) {
           LOG(WARNING) << "Failed to set policy " << policy_name
                        << " with type " << value.type();
           return false;
@@ -398,6 +685,7 @@ bool ValidateAndSetPolicyValue(std::string_view policy_name,
         CHECK(base::JSONWriter::Write(value, &json));
         auto* proto = access.get_proto_mutable(policy_settings);
         CHECK(proto);
+        proto->mutable_policy_options()->set_mode(mode);
         proto->set_value(json);
         return true;
       }
@@ -409,6 +697,35 @@ bool ValidateAndSetPolicyValue(std::string_view policy_name,
                    << "'";
         return false;
     }
+  }
+
+  for (const auto& access : policy::test::kStringListPolicyAccess) {
+    if (policy_name != access.policy_key) {
+      continue;
+    }
+    if (!value.is_list()) {
+      LOG(WARNING) << "Wrong policy type for '" << access.policy_key
+                   << "'. Expected list, got " << value.type();
+      return false;
+    }
+    auto* proto = access.get_proto_mutable(policy_settings);
+    CHECK(proto);
+    proto->mutable_policy_options()->set_mode(mode);
+    std::vector<std::string> string_list;
+    for (const auto& entry : value.GetList()) {
+      if (!entry.is_string()) {
+        LOG(WARNING) << "Wrong list entry type for '" << access.policy_key
+                     << "'. Expected string, got " << entry.type();
+        return false;
+      }
+      string_list.push_back(entry.GetString());
+    }
+    auto* proto_string_list = proto->mutable_value();
+    proto_string_list->clear_entries();
+    for (const std::string& s : string_list) {
+      proto_string_list->add_entries(s);
+    }
+    return true;
   }
 
   LOG(WARNING) << "Unknown policy name: '" << policy_name << "', skipping.";
@@ -502,50 +819,81 @@ void InitLogging(const std::optional<std::string>& log_path,
   logging::SetMinLogLevel(min_log_level);
   logging::InitLogging(settings);
   logging::SetLogItems(/*enable_process_id=*/true, /*enable_thread_id=*/true,
-                       /*enable_timestamp=*/true, /*enable_timestamp=*/false);
+                       /*enable_timestamp=*/true, /*enable_tickcount=*/false);
 }
 
-void ParseFlags(const base::CommandLine& command_line,
-                std::string& policy_blob_path,
-                std::string& client_state_path,
-                std::string& grpc_unix_socket_uri,
-                std::optional<std::string>& log_path,
-                base::ScopedFD& startup_pipe,
-                bool& log_to_console,
-                int& min_log_level,
-                int& port) {
-  policy_blob_path = kDefaultPolicyBlobFilename;
-  client_state_path = kDefaultClientStateFilename;
-  log_to_console = kDefaultLogToConsole;
-  min_log_level = kDefaultMinLogLevel;
-  port = kDefaultPort;
+void PrintHelp() {
+  std::cout << R"(Usage: fake_dmserver --policy-path=<path> [options]
+
+Starts a fake version of the Device Management, for testing enterprise features.
+See components/policy/tools/fake_dmserver/README.md for detailed instructions.
+
+Options:
+  --help, -h                   Show this help message.
+  --policy-path=<path>         Path to policy JSON file.
+  --policy-blob-path=<path>    Alias for --policy-path.
+  --client-state-path=<path>   Path to client state JSON file (default: same dir
+                               as --policy-path).
+  --grpc-unix-socket-uri=<uri> Unix domain socket for gRPC.
+  --log-path=<path>            File path to write logs to.
+  --startup-pipe=<fd>          Pipe to write server URL to.
+  --min-log-level=<level>      Minimum log level (int).
+  --log-to-console             Enable logging to console.
+  --port=<port>                Port to listen on (default: 6112).
+  --fcm-port=<port>            Port to listen on for FCM (default: 6113,
+                               disabled on ChromeOS; 0 for random port).
+  --no-fcm                     Disable the mock FCM server.
+)";
+}
+
+ParseFlagsResult ParseFlags(const base::CommandLine& command_line,
+                            FakeServerConfig& config) {
+  if (command_line.HasSwitch(kHelpSwitch) ||
+      command_line.HasSwitch(kHelpSwitchShort)) {
+    return ParseFlagsResult::kHelp;
+  }
+  for (const auto& [switch_name, switch_value] : command_line.GetSwitches()) {
+    if (!kKnownSwitches.contains(switch_name)) {
+      LOG(ERROR) << "Unknown switch: --" << switch_name;
+      PrintHelp();
+      return ParseFlagsResult::kError;
+    }
+  }
+  config.policy_blob_path = kDefaultPolicyBlobFilename;
+  config.client_state_path = kDefaultClientStateFilename;
+  config.log_to_console = kDefaultLogToConsole;
+  config.min_log_level = kDefaultMinLogLevel;
+  config.port = kDefaultPort;
+  config.fcm_port = kDefaultFcmPort;
 
   // kPolicyPathSwitch is an alias for kPolicyBlobPathSwitch.
   if (command_line.HasSwitch(kPolicyBlobPathSwitch) ||
       command_line.HasSwitch(kPolicyPathSwitch)) {
-    policy_blob_path = command_line.GetSwitchValueASCII(kPolicyBlobPathSwitch);
-    if (policy_blob_path.empty()) {
-      policy_blob_path = command_line.GetSwitchValueASCII(kPolicyPathSwitch);
+    config.policy_blob_path =
+        command_line.GetSwitchValueASCII(kPolicyBlobPathSwitch);
+    if (config.policy_blob_path.empty()) {
+      config.policy_blob_path =
+          command_line.GetSwitchValueASCII(kPolicyPathSwitch);
     }
     // If not specified, set client_state_path to the same directory as the
     // policy blob.
-    client_state_path = base::FilePath(policy_blob_path)
-                            .DirName()
-                            .Append(kDefaultClientStateFilename)
-                            .AsUTF8Unsafe();
+    config.client_state_path = base::FilePath(config.policy_blob_path)
+                                   .DirName()
+                                   .Append(kDefaultClientStateFilename)
+                                   .AsUTF8Unsafe();
   }
 
   if (command_line.HasSwitch(kLogPathSwitch)) {
-    log_path = command_line.GetSwitchValueASCII(kLogPathSwitch);
+    config.log_path = command_line.GetSwitchValueASCII(kLogPathSwitch);
   }
 
   if (command_line.HasSwitch(kClientStatePathSwitch)) {
-    client_state_path =
+    config.client_state_path =
         command_line.GetSwitchValueASCII(kClientStatePathSwitch);
   }
 
   if (command_line.HasSwitch(kGrpcUnixSocketUriSwitch)) {
-    grpc_unix_socket_uri =
+    config.grpc_unix_socket_uri =
         command_line.GetSwitchValueASCII(kGrpcUnixSocketUriSwitch);
   }
 
@@ -555,25 +903,42 @@ void ParseFlags(const base::CommandLine& command_line,
     CHECK(base::StringToInt(pipe_str, &pipe_val))
         << "Expected an int value for --startup-pipe switch, but got: "
         << pipe_str;
-    startup_pipe = base::ScopedFD(pipe_val);
+    config.startup_pipe = base::ScopedFD(pipe_val);
   }
 
   if (command_line.HasSwitch(kMinLogLevelSwitch)) {
     std::string log_str = command_line.GetSwitchValueASCII(kMinLogLevelSwitch);
-    CHECK(base::StringToInt(log_str, &min_log_level))
+    CHECK(base::StringToInt(log_str, &config.min_log_level))
         << "Expected an int value for --min-log-level switch, but got: "
         << log_str;
   }
 
   if (command_line.HasSwitch(kLogToConsoleSwitch)) {
-    log_to_console = true;
+    config.log_to_console = true;
   }
 
   if (command_line.HasSwitch(kPortSwitch)) {
     std::string port_str = command_line.GetSwitchValueASCII(kPortSwitch);
-    CHECK(base::StringToInt(port_str, &port))
+    CHECK(base::StringToInt(port_str, &config.port))
         << "Expected an int value for --port switch, but got: " << port_str;
   }
+  if (command_line.HasSwitch(kNoFcmSwitch) &&
+      command_line.HasSwitch(kFcmPortSwitch)) {
+    LOG(ERROR) << "--no-fcm and --fcm-port cannot be used together.";
+    return ParseFlagsResult::kError;
+  }
+  if (command_line.HasSwitch(kNoFcmSwitch)) {
+    config.fcm_port = std::nullopt;
+  } else if (command_line.HasSwitch(kFcmPortSwitch)) {
+    std::string fcm_port_str = command_line.GetSwitchValueASCII(kFcmPortSwitch);
+    int fcm_port = 0;
+    CHECK(base::StringToInt(fcm_port_str, &fcm_port))
+        << "Expected an int value for --fcm-port switch, but got: "
+        << fcm_port_str;
+    config.fcm_port = fcm_port;
+  }
+
+  return ParseFlagsResult::kSuccess;
 }
 
 enum class RemoteCommandsWaitType { kAcknowledged, kResultAvailable };
@@ -661,24 +1026,34 @@ void RemoteCommandsWaitOperation::OnTimeout() {
   std::move(wait_callback_).Run(this, false);
 }
 
-FakeDMServer::FakeDMServer(const std::string& policy_blob_path,
-                           const std::string& client_state_path,
-                           const std::string& grpc_unix_socket_uri,
-                           base::OnceClosure shutdown_cb)
+FakeDMServer::FakeDMServer(
+    const std::string& policy_blob_path,
+    const std::string& client_state_path,
+    const std::string& grpc_unix_socket_uri,
+    scoped_refptr<base::SequencedTaskRunner> debounce_task_runner,
+    base::OnceClosure shutdown_cb)
     : policy_blob_path_(policy_blob_path),
       client_state_path_(client_state_path),
-      grpc_unix_socket_uri_(grpc_unix_socket_uri) {
-  shut_down_on_main_task_runner_ =
-      base::BindPostTaskToCurrentDefault(base::BindOnce(
-          &FakeDMServer::TriggerShutdown, weak_ptr_factory_.GetWeakPtr()));
+      grpc_unix_socket_uri_(grpc_unix_socket_uri),
+      main_task_runner_(base::SequencedTaskRunner::GetCurrentDefault()),
+      policy_invalidator_(
+          policy_blob_path_,
+          *remote_commands_state(),
+          base::BindRepeating(&FakeDMServer::ReloadPoliciesFromFile,
+                              base::Unretained(this)),
+          std::move(debounce_task_runner)) {
+  main_weak_ptr_ = weak_ptr_factory_.GetWeakPtr();
   shut_down_server_ = base::BindPostTaskToCurrentDefault(
-      base::BindOnce(&FakeDMServer::OnShutdownGrpcServerDone,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(shutdown_cb)));
-  DETACH_FROM_SEQUENCE(embedded_server_sequence_checker_);
+      base::BindOnce(&FakeDMServer::OnShutdownGrpcServerDone, main_weak_ptr_,
+                     std::move(shutdown_cb)));
+  RegisterHandler(
+      std::make_unique<policy::RequestHandlerForAdmin>(this, *this));
 }
 
 FakeDMServer::~FakeDMServer() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
+  // `HandleRequest()` uses the members of this class on the IO thread.
+  ShutdownAndWaitUntilComplete();
 }
 
 void FakeDMServer::EraseWaitOperation(RemoteCommandsWaitOperation* operation) {
@@ -715,6 +1090,52 @@ void FakeDMServer::StartGrpcServer() {
   // the process to dangle without any proper connection to the Cast Core.
   CHECK(status.ok()) << "Failed to start DM gRPC server: status="
                      << status.error_message();
+}
+
+std::optional<bool> FakeDMServer::TriggerPolicyInvalidation() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
+  if (!ReadPolicyBlobFile()) {
+    LOG(ERROR) << "Skipping policy invalidation due to invalid policy file.";
+    return std::nullopt;
+  }
+  policy_invalidator_.BroadcastPolicyInvalidation();
+  return policy_invalidator_.fcm_server()->HasLoggedInClients();
+}
+
+bool FakeDMServer::ReloadPoliciesFromFile() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
+  ResetServerState();
+  return ReadPolicyBlobFile();
+}
+
+std::string FakeDMServer::GetPoliciesJson() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
+  std::string contents;
+  return base::ReadFileToString(policy_blob_path_, &contents) ? contents
+                                                              : "{\n}\n";
+}
+
+bool FakeDMServer::UpdatePoliciesJson(const std::string& json_content) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
+  std::optional<base::DictValue> dict = base::JSONReader::ReadDict(
+      json_content, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  if (!dict.has_value()) {
+    return false;
+  }
+  // Every request resets the server state, so validation can use it.
+  ResetServerState();
+  if (!ParsePolicyBlob(*dict)) {
+    LOG(ERROR) << "Rejected invalid policies from the admin API.";
+    return false;
+  }
+  if (!base::ImportantFileWriter::WriteFileAtomically(policy_blob_path_,
+                                                      json_content)) {
+    LOG(ERROR) << "Failed to write policy blob file atomically: "
+               << policy_blob_path_;
+    return false;
+  }
+  policy_invalidator_.NotifyPoliciesUpdated(json_content);
+  return true;
 }
 
 void FakeDMServer::HandleSendRemoteCommand(
@@ -830,11 +1251,20 @@ void FakeDMServer::HandleWaitRemoteCommandAcked(
   reactor->Write(std::move(resp));
 }
 
-bool FakeDMServer::StartFakeServer(int port) {
+bool FakeDMServer::StartFakeServer(int port, std::optional<int> fcm_port) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
   LOG(INFO) << "Starting the FakeDMServer with args policy_blob_path="
             << policy_blob_path_ << " client_state_path=" << client_state_path_
             << " grpc_unix_socket_uri=" << grpc_unix_socket_uri_;
+
+  if (!policy_blob_path_.empty() && !base::PathExists(policy_blob_path_)) {
+    LOG(ERROR) << "Policy file " << policy_blob_path_
+               << " does not exist. The server will serve empty policies "
+                  "until it is created.";
+  }
+
+  LoadPersistedReports(client_state_path_.DirName());
+  LoadPersistedRealtimeReports(client_state_path_.DirName());
 
   if (!policy::EmbeddedPolicyTestServer::Start(port)) {
     LOG(ERROR) << "Failed to start the EmbeddedPolicyTestServer";
@@ -842,12 +1272,73 @@ bool FakeDMServer::StartFakeServer(int port) {
   }
   LOG(INFO) << "Server started running on URL: "
             << EmbeddedPolicyTestServer::GetServiceURL();
+  policy_invalidator_.Start(fcm_port);
   if (grpc_unix_socket_uri_.empty()) {
     LOG(INFO) << "grpc_unix_socket_uri is empty the grpc server won't start";
     return true;
   }
   StartGrpcServer();
   return true;
+}
+
+static std::vector<base::FilePath> EnumerateSortedReportFiles(
+    const base::FilePath& dir,
+    const base::FilePath::StringType& pattern) {
+  std::vector<base::FilePath> files;
+  if (!dir.empty() && base::DirectoryExists(dir)) {
+    base::FileEnumerator enumerator(dir, /*recursive=*/false,
+                                    base::FileEnumerator::FILES, pattern);
+    for (base::FilePath file = enumerator.Next(); !file.empty();
+         file = enumerator.Next()) {
+      files.push_back(file);
+    }
+    std::sort(files.begin(), files.end());
+  }
+  return files;
+}
+
+void FakeDMServer::LoadPersistedReports(const base::FilePath& data_dir) {
+  for (const auto& file : EnumerateSortedReportFiles(
+           data_dir, FILE_PATH_LITERAL("*_report_*.pb"))) {
+    std::string kind, device_id, content;
+    base::Time::Exploded exploded = {};
+    em::DeviceManagementRequest req;
+    if (!RE2::FullMatch(file.BaseName().MaybeAsASCII(), kReportFileNameRegex,
+                        &kind, &exploded.year, &exploded.month,
+                        &exploded.day_of_month, &exploded.hour,
+                        &exploded.minute, &exploded.second, &device_id) ||
+        !base::ReadFileToString(file, &content) ||
+        !req.ParseFromString(content)) {
+      continue;
+    }
+    base::Time timestamp;
+    if (!base::Time::FromLocalExploded(exploded, &timestamp)) {
+      timestamp = base::Time::Now();
+    }
+    if (kind == "desktop" && req.has_chrome_desktop_report_request()) {
+      report_storage()->AddBrowserReport(
+          std::move(device_id), req.chrome_desktop_report_request(), timestamp);
+    } else if (kind == "profile" && req.has_chrome_profile_report_request()) {
+      report_storage()->AddProfileReport(
+          std::move(device_id), req.chrome_profile_report_request(), timestamp);
+    }
+  }
+}
+
+void FakeDMServer::LoadPersistedRealtimeReports(
+    const base::FilePath& reports_dir) {
+  for (const auto& file : EnumerateSortedReportFiles(
+           reports_dir, FILE_PATH_LITERAL("realtime_*.pb"))) {
+    std::string content;
+    if (!base::ReadFileToString(file, &content)) {
+      continue;
+    }
+
+    ::chrome::cros::reporting::proto::UploadEventsRequest request;
+    if (request.ParseFromString(content)) {
+      report_storage()->AddRealtimeEvents(request);
+    }
+  }
 }
 
 void FakeDMServer::ShutdownGrpcServer(
@@ -867,6 +1358,9 @@ void FakeDMServer::OnShutdownGrpcServerDone(
 
 void FakeDMServer::TriggerShutdown() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
+  if (!shut_down_server_) {
+    return;
+  }
   if (!grpc_server_) {
     return std::move(shut_down_server_).Run();
   }
@@ -876,9 +1370,17 @@ void FakeDMServer::TriggerShutdown() {
 bool FakeDMServer::WriteURLToPipe(base::ScopedFD&& startup_pipe) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
   GURL server_url = EmbeddedPolicyTestServer::GetServiceURL();
+  GURL realtime_reporting_url =
+      EmbeddedPolicyTestServer::GetRealtimeReportingURL();
+  GURL gcm_checkin_url = EmbeddedPolicyTestServer::GetGcmCheckinURL();
+  GURL gcm_registration_url = EmbeddedPolicyTestServer::GetGcmRegistrationURL();
   std::string server_data = base::StringPrintf(
-      "{\"host\": \"%s\", \"port\": %s}", server_url.GetHost().c_str(),
-      server_url.GetPort().c_str());
+      "{\"host\": \"%s\", \"port\": %s, \"fcm_port\": %d, "
+      "\"realtime_reporting_url\": \"%s\", "
+      "\"gcm_checkin_url\": \"%s\", \"gcm_registration_url\": \"%s\"}",
+      server_url.GetHost().c_str(), server_url.GetPort().c_str(),
+      fcm_server()->port(), realtime_reporting_url.spec().c_str(),
+      gcm_checkin_url.spec().c_str(), gcm_registration_url.spec().c_str());
 
   base::File pipe_writer(startup_pipe.release());
   if (!pipe_writer.WriteAtCurrentPosAndCheck(base::as_byte_span(server_data))) {
@@ -889,18 +1391,50 @@ bool FakeDMServer::WriteURLToPipe(base::ScopedFD&& startup_pipe) {
   return true;
 }
 
+// static
+FakeDMServer::MainThreadResponse FakeDMServer::RunRequestOnMainThread(
+    base::WeakPtr<FakeDMServer> server,
+    net::test_server::HttpRequest request) {
+  if (!server) {
+    return {};
+  }
+  MainThreadResponse result;
+  result.response =
+      server->HandleRequestOnMainThread(request, result.after_send);
+  return result;
+}
+
 std::unique_ptr<net::test_server::HttpResponse> FakeDMServer::HandleRequest(
     const net::test_server::HttpRequest& request) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(embedded_server_sequence_checker_);
+  return std::make_unique<DeferredHttpResponse>(
+      main_task_runner_, base::BindOnce(&FakeDMServer::RunRequestOnMainThread,
+                                        main_weak_ptr_, request));
+}
+
+std::unique_ptr<net::test_server::HttpResponse>
+FakeDMServer::HandleRequestOnMainThread(
+    const net::test_server::HttpRequest& request,
+    base::OnceClosure& after_send) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
   GURL url = request.GetURL();
   if (url.GetPath() == "/test/exit") {
     LOG(INFO) << "Stopping the FakeDMServer";
-    std::move(shut_down_on_main_task_runner_).Run();
+    after_send = base::BindOnce(&FakeDMServer::TriggerShutdown, main_weak_ptr_);
     return policy::CreateHttpResponse(net::HTTP_OK, "Policy Server exited.");
   }
 
   if (url.GetPath() == "/test/ping") {
     return policy::CreateHttpResponse(net::HTTP_OK, "Pong.");
+  }
+
+  if (policy::IsAdminPath(url.GetPath())) {
+    // The dashboard must work when the policy file is invalid, so that the
+    // user can fix it. Admin requests do not change the client state.
+    EmbeddedPolicyTestServer::ResetServerState();
+    if (!ReadClientStateFile()) {
+      LOG(ERROR) << "Admin request uses an empty client list.";
+    }
+    return policy::EmbeddedPolicyTestServer::HandleRequest(request);
   }
 
   EmbeddedPolicyTestServer::ResetServerState();
@@ -914,7 +1448,29 @@ std::unique_ptr<net::test_server::HttpResponse> FakeDMServer::HandleRequest(
     return policy::CreateHttpResponse(net::HTTP_INTERNAL_SERVER_ERROR,
                                       "Failed to read client state file.");
   }
+
+  const size_t prev_browser_count = report_storage()->GetBrowserReportCount();
+  const size_t prev_profile_count = report_storage()->GetProfileReportCount();
+  const size_t prev_realtime_count = report_storage()->GetRealtimeReportCount();
   auto resp = policy::EmbeddedPolicyTestServer::HandleRequest(request);
+  const base::FilePath reports_dir = client_state_path_.DirName();
+  WriteNewReportFiles(
+      reports_dir, "desktop_report_", report_storage()->GetBrowserReports(),
+      prev_browser_count,
+      [](em::DeviceManagementRequest& wrapper, const auto& report) {
+        *wrapper.mutable_chrome_desktop_report_request() = report;
+      });
+  WriteNewReportFiles(
+      reports_dir, "profile_report_", report_storage()->GetProfileReports(),
+      prev_profile_count,
+      [](em::DeviceManagementRequest& wrapper, const auto& report) {
+        *wrapper.mutable_chrome_profile_report_request() = report;
+      });
+  const auto realtime_reports = report_storage()->GetRealtimeReports();
+  for (size_t i = prev_realtime_count; i < realtime_reports.size(); ++i) {
+    WriteRealtimeReport(reports_dir, realtime_reports[i]);
+  }
+
   if (!WriteClientStateFile()) {
     return policy::CreateHttpResponse(net::HTTP_INTERNAL_SERVER_ERROR,
                                       "Failed to write client state file.");
@@ -925,7 +1481,7 @@ std::unique_ptr<net::test_server::HttpResponse> FakeDMServer::HandleRequest(
 bool FakeDMServer::SetPolicyPayload(const std::string* policy_type,
                                     const std::string* entity_id,
                                     const std::string* serialized_proto) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(embedded_server_sequence_checker_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
   if (!policy_type || !serialized_proto) {
     LOG(ERROR) << "Couldn't find the policy type or value fields";
     return false;
@@ -948,7 +1504,7 @@ bool FakeDMServer::SetExternalPolicyPayload(
     const std::string* policy_type,
     const std::string* entity_id,
     const std::string* serialized_raw_policy) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(embedded_server_sequence_checker_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
   if (!policy_type || !entity_id || !serialized_raw_policy) {
     LOG(ERROR) << "Couldn't find the policy type or entity id or value fields";
     return false;
@@ -970,23 +1526,29 @@ bool FakeDMServer::ParsePoliciesJson(const base::DictValue* dict) {
   //   "AllowDinosaurEasterEgg": true,
   //   "HomepageLocation": "http://example.com/"
   // }
-  em::CloudPolicySettings cloud_policy_settings;
   for (const auto& entry : kPolicyTypeMapping) {
-    const base::Value* policies = dict->Find(entry.config_key);
-    if (!policies) {
-      continue;
-    }
-    if (!policies->is_dict()) {
-      LOG(WARNING) << "Policy for '" << entry.config_key << "' is not a dict.";
-      return false;
-    }
+    em::CloudPolicySettings cloud_policy_settings;
     bool any_policy_set_for_type = false;
-    for (const auto [policy_name, value] : policies->GetDict()) {
-      if (!ValidateAndSetPolicyValue(policy_name, value,
-                                     cloud_policy_settings)) {
+    const std::pair<const char*, em::PolicyOptions::PolicyMode> kModes[] = {
+        {entry.config_key, em::PolicyOptions::MANDATORY},
+        {entry.recommended_config_key, em::PolicyOptions::RECOMMENDED},
+    };
+    for (const auto& [config_key, mode] : kModes) {
+      const base::Value* policies = dict->Find(config_key);
+      if (!policies) {
         continue;
       }
-      any_policy_set_for_type = true;
+      if (!policies->is_dict()) {
+        LOG(ERROR) << "Policy for '" << config_key << "' is not a dict.";
+        return false;
+      }
+      for (const auto [policy_name, value] : policies->GetDict()) {
+        if (!ValidateAndSetPolicyValue(policy_name, value, mode,
+                                       cloud_policy_settings)) {
+          continue;
+        }
+        any_policy_set_for_type = true;
+      }
     }
     if (any_policy_set_for_type) {
       std::string serialized_proto;
@@ -1027,6 +1589,49 @@ bool FakeDMServer::ParsePoliciesJson(const base::DictValue* dict) {
       policy_storage()->SetPolicyPayload(entry.policy_type,
                                          extension_id_and_version,
                                          serialized_proto.value());
+    }
+  }
+
+  // Extension cloud policies (chrome.storage.managed) look like e.g.:
+  // "machine-extensions": {
+  //   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+  //     "PolicyName": "value"
+  //   }
+  // }
+  for (const auto& entry : kExtensionPolicyTypeMapping) {
+    const base::Value* value = dict->Find(entry.config_key);
+    if (!value) {
+      continue;
+    }
+    if (!value->is_dict()) {
+      LOG(ERROR) << "Value for " << entry.config_key << " is not a dict";
+      return false;
+    }
+    for (const auto [extension_id, ext_policies_val] : value->GetDict()) {
+      if (!RE2::FullMatch(extension_id, "[a-p]{32}")) {
+        LOG(ERROR) << "Extension id '" << extension_id
+                   << "' must match [a-p]{32}";
+        return false;
+      }
+      if (!ext_policies_val.is_dict()) {
+        LOG(ERROR) << "Policy for extension '" << extension_id
+                   << "' is not a dict";
+        return false;
+      }
+      base::DictValue component_policy;
+      for (const auto [policy_name, policy_val] : ext_policies_val.GetDict()) {
+        if (policy_val.is_dict() && policy_val.GetDict().contains("Value")) {
+          component_policy.Set(policy_name, policy_val.Clone());
+        } else {
+          base::DictValue policy_entry;
+          policy_entry.Set("Value", policy_val.Clone());
+          component_policy.Set(policy_name, std::move(policy_entry));
+        }
+      }
+      std::string serialized_json;
+      base::JSONWriter::Write(component_policy, &serialized_json);
+      EmbeddedPolicyTestServer::UpdateExternalPolicy(
+          entry.policy_type, extension_id, serialized_json);
     }
   }
 
@@ -1074,7 +1679,7 @@ bool FakeDMServer::ParsePolicyBlobs(const base::DictValue* dict) {
 }
 
 bool FakeDMServer::ReadPolicyBlobFile() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(embedded_server_sequence_checker_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
   if (!base::PathExists(policy_blob_path_)) {
     LOG(INFO) << "Policy blob file doesn't exist yet.";
     return true;
@@ -1095,24 +1700,43 @@ bool FakeDMServer::ReadPolicyBlobFile() {
     LOG(ERROR) << "Policy blob isn't a dict";
     return false;
   }
+  return ParsePolicyBlob(*dict);
+}
 
+bool FakeDMServer::ParsePolicyBlob(const base::DictValue& blob) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
+  const base::DictValue* dict = &blob;
   ParsePolicyUser(dict, policy_storage());
   ParseManagedUsers(dict, policy_storage());
   ParseDeviceAffiliationIds(dict, policy_storage());
   ParseUserAffiliationIds(dict, policy_storage());
   ParseDirectoryApiId(dict, policy_storage());
   ParseRobotApiAuthCode(dict, policy_storage());
-  RETURN_IF_FALSE(ParseAllowSetDeviceAttributes(dict, policy_storage()));
-  RETURN_IF_FALSE(ParseUseUniversalSigningKeys(dict, policy_storage()));
-  RETURN_IF_FALSE(ParseRequestErrors(dict, this));
-  RETURN_IF_FALSE(ParseInitialEnrollmentState(dict, policy_storage()));
-  RETURN_IF_FALSE(ParseCurrentKeyIndex(dict, policy_storage()));
+  if (!ParseAllowSetDeviceAttributes(dict, policy_storage())) {
+    return false;
+  }
+  if (!ParseUseUniversalSigningKeys(dict, policy_storage())) {
+    return false;
+  }
+  if (!ParseRequestErrors(dict, this)) {
+    return false;
+  }
+  if (!ParseInitialEnrollmentState(dict, policy_storage())) {
+    return false;
+  }
+  if (!ParseCurrentKeyIndex(dict, policy_storage())) {
+    return false;
+  }
   if (dict->contains(kPoliciesKey) || dict->contains(kExternalPoliciesKey)) {
     LOG(INFO) << "Parsing policies from base64 blobs.";
-    RETURN_IF_FALSE(ParsePolicyBlobs(dict));
+    if (!ParsePolicyBlobs(dict)) {
+      return false;
+    }
   } else {
     LOG(INFO) << "Parsing policies from JSON.";
-    RETURN_IF_FALSE(ParsePoliciesJson(dict));
+    if (!ParsePoliciesJson(dict)) {
+      return false;
+    }
   }
   return true;
 }
@@ -1139,7 +1763,7 @@ base::DictValue FakeDMServer::GetValueFromClient(
 }
 
 bool FakeDMServer::WriteClientStateFile() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(embedded_server_sequence_checker_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
   std::vector<policy::ClientStorage::ClientInfo> clients =
       client_storage()->GetAllClients();
   base::DictValue dict_clients;
@@ -1147,8 +1771,18 @@ bool FakeDMServer::WriteClientStateFile() {
     dict_clients.Set(c.device_id, GetValueFromClient(c));
   }
 
-  JSONFileValueSerializer serializer(client_state_path_);
-  return serializer.Serialize(base::ValueView(dict_clients));
+  std::optional<std::string> json_string = base::WriteJson(dict_clients);
+  if (!json_string) {
+    LOG(ERROR) << "Failed to serialize client state to JSON";
+    return false;
+  }
+  if (!base::ImportantFileWriter::WriteFileAtomically(client_state_path_,
+                                                      *json_string)) {
+    LOG(ERROR) << "Failed to write client state file atomically: "
+               << client_state_path_;
+    return false;
+  }
+  return true;
 }
 
 bool FakeDMServer::FindKey(const base::DictValue& dict,
@@ -1220,8 +1854,8 @@ FakeDMServer::GetClientFromValue(const base::Value& v) {
 }
 
 bool FakeDMServer::ReadClientStateFile() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(embedded_server_sequence_checker_);
-  if (!base::PathExists(client_state_path_)) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(fake_dmserver_main_sequence_checker_);
+  if (client_state_path_.empty() || !base::PathExists(client_state_path_)) {
     LOG(INFO) << "Client state file doesn't exist yet.";
     return true;
   }

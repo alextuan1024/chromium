@@ -7,9 +7,11 @@
 #include <array>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/check.h"
+#include "base/i18n/language_tag.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/autofill/ui/ui_util.h"
@@ -120,7 +122,8 @@ std::u16string SaveAddressBubbleController::GetAddressSummary() const {
       std::u16string value =
           address_profile_.GetInfo(field, g_browser_process->GetFeatures()
                                               ->application_locale_storage()
-                                              ->Get());
+                                              ->GetTag()
+                                              .tag_string());
       if (!value.empty()) {
         values.push_back(value);
       }
@@ -133,8 +136,9 @@ std::u16string SaveAddressBubbleController::GetAddressSummary() const {
 
   return GetEnvelopeStyleAddress(
       address_profile_,
-      g_browser_process->GetFeatures()->application_locale_storage()->Get(),
-      /*include_recipient=*/true, /*include_country=*/true);
+      g_browser_process->GetFeatures()->application_locale_storage()->GetTag(),
+      /*include_recipient=*/true,
+      /*include_country=*/true);
 }
 
 std::u16string SaveAddressBubbleController::GetProfileEmail() const {
@@ -144,9 +148,11 @@ std::u16string SaveAddressBubbleController::GetProfileEmail() const {
     return {};
   }
 
-  return address_profile_.GetInfo(
-      EMAIL_ADDRESS,
-      g_browser_process->GetFeatures()->application_locale_storage()->Get());
+  return address_profile_.GetInfo(EMAIL_ADDRESS,
+                                  g_browser_process->GetFeatures()
+                                      ->application_locale_storage()
+                                      ->GetTag()
+                                      .tag_string());
 }
 
 std::u16string SaveAddressBubbleController::GetProfilePhone() const {
@@ -157,8 +163,10 @@ std::u16string SaveAddressBubbleController::GetProfilePhone() const {
   }
 
   return i18n::GetFormattedPhoneNumberForDisplay(
-      address_profile_,
-      g_browser_process->GetFeatures()->application_locale_storage()->Get());
+      address_profile_, std::string(g_browser_process->GetFeatures()
+                                        ->application_locale_storage()
+                                        ->GetTag()
+                                        .tag_string()));
 }
 
 std::u16string SaveAddressBubbleController::GetOkButtonLabel() const {

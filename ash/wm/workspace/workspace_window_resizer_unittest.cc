@@ -154,19 +154,14 @@ class WorkspaceWindowResizerTest : public AshTestBase {
       aura::Window* window,
       const gfx::Point& point_in_parent = gfx::Point(),
       int window_component = HTCAPTION) {
-    auto resizer =
-        CreateWindowResizer(window, gfx::PointF(point_in_parent),
-                            window_component, wm::WINDOW_MOVE_SOURCE_MOUSE);
-    auto* workspace_resizer = WorkspaceWindowResizer::GetInstanceForTest();
-    workspace_resizer_ =
-        workspace_resizer ? workspace_resizer->GetWeakPtr() : nullptr;
-    return resizer;
+    return CreateWindowResizer(window, gfx::PointF(point_in_parent),
+                               window_component, wm::WINDOW_MOVE_SOURCE_MOUSE);
   }
 
   std::unique_ptr<WorkspaceWindowResizer> CreateWorkspaceResizerForTest(
       aura::Window* window,
       int window_component,
-      const std::vector<raw_ptr<aura::Window, VectorExperimental>>&
+      const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>&
           attached_windows) {
     return CreateWorkspaceResizerForTest(window, gfx::Point(), window_component,
                                          wm::WINDOW_MOVE_SOURCE_MOUSE,
@@ -178,7 +173,7 @@ class WorkspaceWindowResizerTest : public AshTestBase {
       const gfx::Point& point_in_parent,
       int window_component,
       wm::WindowMoveSource source,
-      const std::vector<raw_ptr<aura::Window, VectorExperimental>>&
+      const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>&
           attached_windows) {
     WindowState* window_state = WindowState::Get(window);
     window_state->CreateDragDetails(gfx::PointF(point_in_parent),
@@ -206,8 +201,17 @@ class WorkspaceWindowResizerTest : public AshTestBase {
     resizer.reset();
   }
 
+  // Returns the WorkspaceWindowResizer created by the last
+  // `CreateResizerForTest()` call. Must only be called while it is alive.
+  WorkspaceWindowResizer* workspace_resizer() const {
+    WorkspaceWindowResizer* resizer =
+        WorkspaceWindowResizer::GetInstanceForTest();
+    CHECK(resizer);
+    return resizer;
+  }
+
   PhantomWindowController* snap_phantom_window_controller() const {
-    return workspace_resizer_->snap_phantom_window_controller_.get();
+    return workspace_resizer()->snap_phantom_window_controller_.get();
   }
 
   void InitTouchResizeWindow(const gfx::Rect& bounds, int window_component) {
@@ -219,11 +223,11 @@ class WorkspaceWindowResizerTest : public AshTestBase {
   }
 
   bool IsDwellCountdownTimerRunning() {
-    return workspace_resizer_->dwell_countdown_timer_.IsRunning();
+    return workspace_resizer()->dwell_countdown_timer_.IsRunning();
   }
 
   void DwellCountdownTimerFireNow() {
-    workspace_resizer_->dwell_countdown_timer_.FireNow();
+    workspace_resizer()->dwell_countdown_timer_.FireNow();
   }
 
   void DragToMaximizeBehaviorCheckCountdownTimerFireNow(aura::Window* window) {
@@ -241,8 +245,6 @@ class WorkspaceWindowResizerTest : public AshTestBase {
 
   aura::test::TestWindowDelegate touch_resize_delegate_;
   std::unique_ptr<aura::Window> touch_resize_window_;
-
-  base::WeakPtr<WorkspaceWindowResizer> workspace_resizer_ = nullptr;
 };
 
 // Assertions around attached window resize dragging from the right with 2
@@ -534,7 +536,7 @@ TEST_F(WorkspaceWindowResizerTest, MouseMoveWithTouchDrag) {
   // The cursor should not be locked initially.
   EXPECT_FALSE(shell->cursor_manager()->IsCursorLocked());
 
-  std::vector<raw_ptr<aura::Window, VectorExperimental>> windows;
+  std::vector<raw_ptr<aura::Window, DanglingUntriaged>> windows;
   windows.push_back(window2_.get());
   std::unique_ptr<WorkspaceWindowResizer> resizer =
       CreateWorkspaceResizerForTest(window_.get(), gfx::Point(), HTRIGHT,
@@ -1543,7 +1545,7 @@ TEST_F(WorkspaceWindowResizerTest, DontRewardRightmostWindowForOverflows) {
   window4_->SetBounds(gfx::Rect(400, 100, 100, 100));
   delegate2_.set_maximum_size(gfx::Size(101, 0));
 
-  std::vector<raw_ptr<aura::Window, VectorExperimental>> windows;
+  std::vector<raw_ptr<aura::Window, DanglingUntriaged>> windows;
   windows.push_back(window2_.get());
   windows.push_back(window3_.get());
   windows.push_back(window4_.get());

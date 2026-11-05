@@ -10,12 +10,14 @@
 
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/types/expected.h"
 #include "components/actor/core/aggregated_journal.h"
 #include "components/autofill/core/browser/actor/actor_autofill_manager.h"
 #include "components/autofill/core/browser/actor/actor_form_filling_service_impl.h"
 #include "components/autofill/core/browser/actor/actor_key_metrics_recorder.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
@@ -72,9 +74,15 @@ class TestCreditCardAccessManager : public CreditCardAccessManager {
   void PrepareToFetchCreditCard() override {}
 
   void FetchCreditCard(const CreditCard*,
+                       bool require_user_confirmation,
                        OnCreditCardFetchedCallback callback) override;
 
   [[nodiscard]] bool RunCreditCardFetchedCallback(const CreditCard& card);
+
+  MOCK_METHOD(void,
+              RetrieveCreditCardForOpaqueToken,
+              (const std::string&, OnCreditCardRetrievedForOpaqueTokenCallback),
+              (override));
 
  private:
   OnCreditCardFetchedCallback callback_;
@@ -95,8 +103,10 @@ class TestBrowserAutofillManagerWithTestCCAM
       mojom::ActionPersistence action_persistence,
       const FormGlobalId& form_id,
       const FieldGlobalId& field_id,
+      FillingProduct filling_product,
       const FillingPayload& filling_payload,
       AutofillTriggerSource trigger_source,
+      bool require_user_confirmation,
       const base::flat_set<FieldGlobalId>& blocked_fields) override;
 
   FieldGlobalId last_trigger_field_id() const { return last_trigger_field_id_; }
@@ -105,14 +115,11 @@ class TestBrowserAutofillManagerWithTestCCAM
   FieldGlobalId last_trigger_field_id_;
 };
 
-// A test Autofill client subclass that manages the ActorKeyMetricsRecorder and
-// resolves the primary main frame's AutofillManager.
+// A test Autofill client subclass that manages the ActorKeyMetricsRecorder.
 class TestActorAutofillClient : public TestAutofillClient {
  public:
   TestActorAutofillClient();
   ~TestActorAutofillClient() override;
-
-  AutofillManager* GetAutofillManagerForPrimaryMainFrame() override;
 
   ActorAutofillManager* GetActorAutofillManager() override;
   int64_t GetNavigationId() const override;
@@ -129,7 +136,7 @@ class TestActorAutofillClient : public TestAutofillClient {
 class ActorTestBase : public testing::Test,
                       public WithTestAutofillClientDriverManager<
                           TestActorAutofillClient,
-                          TestActorAutofillDriver,
+                          testing::NiceMock<TestActorAutofillDriver>,
                           TestBrowserAutofillManagerWithTestCCAM> {
  public:
   ActorTestBase();
@@ -157,6 +164,21 @@ class ActorTestBase : public testing::Test,
   }
   ActorFormFillingServiceImpl& service() { return *service_; }
   ::actor::AggregatedJournal& journal() { return journal_; }
+
+  // Calls `service().FillForm()` and runs the post-fill bookkeeping of the
+  // resulting fills.
+  void FillForm(int form_index, ActorFormFillingSelection selection);
+
+  // Completes the pending credit card fetch with `card` (see
+  // `TestCreditCardAccessManager::RunCreditCardFetchedCallback()`) and runs the
+  // post-fill bookkeeping of the resulting fill. Returns false if no fetch is
+  // pending.
+  [[nodiscard]] bool CompleteCreditCardFetch(const CreditCard& card);
+
+  // This is intended to be initialized by derived classes. It needs to be
+  // defined before the `task_environment_` to ensure a correct destruction
+  // order.
+  base::test::ScopedFeatureList feature_list_;
 
  private:
   base::test::TaskEnvironment task_environment_{

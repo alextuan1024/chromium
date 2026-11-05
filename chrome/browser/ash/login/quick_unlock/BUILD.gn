@@ -34,7 +34,6 @@ static_library("quick_unlock") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//chromeos/ash/components/feature_usage",
     "//chromeos/ash/components/login/auth",
@@ -55,7 +54,7 @@ static_library("quick_unlock") {
     "//chrome/browser:resources",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile_manager",
-    "//chrome/common:constants",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/cryptohome",
     "//chromeos/ash/components/cryptohome:public",
     "//chromeos/ash/components/dbus",
@@ -64,6 +63,7 @@ static_library("quick_unlock") {
     "//chromeos/ash/components/osauth/impl",
     "//chromeos/ash/components/osauth/public",
     "//components/user_manager",
+    "//components/user_prefs",
     "//content/public/browser",
     "//crypto",
     "//services/network/public/mojom:url_loader_base",

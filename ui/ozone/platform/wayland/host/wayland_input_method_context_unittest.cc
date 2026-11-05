@@ -10,13 +10,17 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
 
 #include "base/environment.h"
 #include "base/i18n/break_iterator.h"
 #include "base/memory/raw_ptr.h"
 #include "base/nix/xdg_util.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/ime_text_span.h"
@@ -36,6 +40,22 @@
 #include "ui/ozone/platform/wayland/test/mock_zwp_text_input.h"
 #include "ui/ozone/platform/wayland/test/test_wayland_server_thread.h"
 #include "ui/ozone/platform/wayland/test/wayland_test.h"
+
+#if BUILDFLAG(USE_XKBCOMMON)
+#include <linux/input.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
+
+#include "base/memory/free_deleter.h"
+#include "base/memory/platform_shared_memory_region.h"
+#include "base/memory/shared_memory_mapping.h"
+#include "base/memory/unsafe_shared_memory_region.h"
+#include "base/test/scoped_feature_list.h"
+#include "ui/events/keycodes/scoped_xkb.h"
+#include "ui/events/ozone/layout/keyboard_layout_engine.h"
+#include "ui/events/ozone/layout/keyboard_layout_engine_manager.h"
+#include "ui/ozone/common/features.h"
+#include "ui/ozone/platform/wayland/test/test_keyboard.h"
+#endif
 
 using ::testing::_;
 using ::testing::DoAll;
@@ -170,6 +190,7 @@ class MockZwpTextInputV3 : public ZwpTextInputV3 {
               (override));
   MOCK_METHOD(void, Disable, (), (override));
   MOCK_METHOD(void, Reset, (), (override));
+  MOCK_METHOD(void, ClearCachedState, (), (override));
 
   MOCK_METHOD(void, SetCursorRect, (const gfx::Rect& rect), (override));
   MOCK_METHOD(void,
@@ -197,6 +218,7 @@ class TestInputMethodContextDelegate : public LinuxInputMethodContextDelegate {
 
   void OnCommit(const std::u16string& text) override {
     was_on_commit_called_ = true;
+    was_on_commit_called_before_preedit_ = !was_on_preedit_changed_called_;
     last_commit_text_ = text;
   }
   void OnConfirmCompositionText(bool keep_selection) override {
@@ -230,6 +252,9 @@ class TestInputMethodContextDelegate : public LinuxInputMethodContextDelegate {
   }
 
   bool was_on_commit_called() const { return was_on_commit_called_; }
+  bool was_on_commit_called_before_preedit() const {
+    return was_on_commit_called_before_preedit_;
+  }
 
   const std::optional<ui::CompositionText>& last_preedit() {
     return last_on_preedit_changed_args_;
@@ -264,9 +289,18 @@ class TestInputMethodContextDelegate : public LinuxInputMethodContextDelegate {
     return virtual_keyboard_bounds_;
   }
 
+  void ClearExpectations() {
+    was_on_commit_called_ = false;
+    was_on_commit_called_before_preedit_ = false;
+    last_commit_text_.reset();
+    was_on_preedit_changed_called_ = false;
+    last_on_preedit_changed_args_.reset();
+  }
+
  private:
   gfx::AcceleratedWidget client_window_key_;
   bool was_on_commit_called_ = false;
+  bool was_on_commit_called_before_preedit_ = false;
   std::optional<std::u16string> last_commit_text_;
   std::optional<bool> last_on_confirm_composition_arg_;
   bool was_on_preedit_changed_called_ = false;
@@ -289,6 +323,7 @@ class TestKeyboardDelegate : public WaylandKeyboard::Delegate {
   void OnKeyboardModifiersChanged(int modifiers) override {}
   uint32_t OnKeyboardKeyEvent(EventType type,
                               DomCode dom_code,
+                              std::optional<uint32_t> xkb_keycode,
                               bool repeat,
                               std::optional<uint32_t> serial,
                               base::TimeTicks timestamp,
@@ -408,6 +443,232 @@ class WaylandInputMethodContextV3Test : public WaylandTestSimple {
   raw_ptr<ZwpTextInputV3> text_input_v3_;
 };
 
+// text-input-v3 deletes around the current cursor, which may have moved since
+// the surrounding text was last sent, e.g. because of a commit.
+TEST_F(WaylandInputMethodContextV3Test, DeleteSurroundingTextAfterCommit) {
+  input_method_context_->SetSurroundingText(
+      u"Vi", gfx::Range(0, 2), gfx::Range::InvalidRange(), gfx::Range(2));
+  connection_->Flush();
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_commit_string(text_input->resource(), "e");
+    zwp_text_input_v3_send_done(text_input->resource(), 1);
+  });
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"Vie");
+
+  // The surrounding text has not been updated, so the deletion must be applied
+  // to the predicted state.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_delete_surrounding_text(text_input->resource(), 1,
+                                                   0);
+    zwp_text_input_v3_send_commit_string(text_input->resource(), "\u1eb9");
+    zwp_text_input_v3_send_done(text_input->resource(), 2);
+  });
+  EXPECT_EQ(
+      input_method_context_delegate_->last_on_delete_surrounding_text_args(),
+      (std::pair<size_t, size_t>(1, 0)));
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"Vi\u1eb9");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(3));
+}
+
+// The surrounding text sent in response to done must reflect the applied input
+// events, even if the text input client has not updated it yet.
+TEST_F(WaylandInputMethodContextV3Test, PredictedSurroundingTextSentOnDone) {
+  input_method_context_->SetSurroundingText(
+      u"Vi", gfx::Range(0, 2), gfx::Range::InvalidRange(), gfx::Range(2));
+  connection_->Flush();
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    Mock::VerifyAndClearExpectations(text_input);
+    InSequence s;
+    EXPECT_CALL(*text_input, SetSurroundingText("Vie", gfx::Range(3)));
+    EXPECT_CALL(*text_input, Commit());
+    zwp_text_input_v3_send_commit_string(text_input->resource(), "e");
+    zwp_text_input_v3_send_done(text_input->resource(), 1);
+  });
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    Mock::VerifyAndClearExpectations(text_input);
+    // The update from the text input client matches the predicted state, so
+    // it is not sent again.
+    EXPECT_CALL(*text_input, SetSurroundingText(_, _)).Times(0);
+  });
+  input_method_context_->SetSurroundingText(
+      u"Vie", gfx::Range(0, 3), gfx::Range::InvalidRange(), gfx::Range(3));
+  connection_->Flush();
+
+  // The input method replaces "e" with "\u00ea" based on the surrounding text.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    Mock::VerifyAndClearExpectations(text_input);
+    InSequence s;
+    EXPECT_CALL(*text_input, SetSurroundingText("Vi\u00ea", gfx::Range(4)));
+    EXPECT_CALL(*text_input, Commit());
+    zwp_text_input_v3_send_delete_surrounding_text(text_input->resource(), 1,
+                                                   0);
+    zwp_text_input_v3_send_commit_string(text_input->resource(), "\u00ea");
+    zwp_text_input_v3_send_done(text_input->resource(), 2);
+  });
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->text_input_manager_v3()->text_input());
+  });
+}
+
+// The lengths are relative to the selection, even if it is reversed.
+TEST_F(WaylandInputMethodContextV3Test,
+       DeleteSurroundingTextReversedSelection) {
+  // Inline autocompletion: "e" was typed and "xample.com" is selected with
+  // the anchor at the end.
+  input_method_context_->SetSurroundingText(u"example.com", gfx::Range(0, 11),
+                                            gfx::Range::InvalidRange(),
+                                            gfx::Range(11, 1));
+  connection_->Flush();
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_delete_surrounding_text(text_input->resource(), 1,
+                                                   0);
+    zwp_text_input_v3_send_commit_string(text_input->resource(), "\u00ea");
+    zwp_text_input_v3_send_done(text_input->resource(), 1);
+  });
+  EXPECT_EQ(
+      input_method_context_delegate_->last_on_delete_surrounding_text_args(),
+      (std::pair<size_t, size_t>(1, 0)));
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"\u00ea");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(1));
+}
+
+TEST_F(WaylandInputMethodContextV3Test,
+       ConsecutiveDeleteSurroundingTextWithoutSetSurroundingText) {
+  // Initially select 'ef'.
+  input_method_context_->SetSurroundingText(u"abcdefghi", gfx::Range(0, 9),
+                                            gfx::Range::InvalidRange(),
+                                            gfx::Range(4, 6));
+  connection_->Flush();
+
+  // Delete 'def'.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_delete_surrounding_text(text_input->resource(), 1,
+                                                   0);
+    zwp_text_input_v3_send_done(text_input->resource(), 1);
+  });
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"abcghi");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(3));
+
+  // Delete 'cgh'.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_delete_surrounding_text(text_input->resource(), 1,
+                                                   2);
+    zwp_text_input_v3_send_done(text_input->resource(), 2);
+  });
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"abi");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(2));
+
+  // Delete 'abi'.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_delete_surrounding_text(text_input->resource(), 2,
+                                                   1);
+    zwp_text_input_v3_send_done(text_input->resource(), 3);
+  });
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(0));
+}
+
+TEST_F(WaylandInputMethodContextV3Test, DeleteSurroundingTextClampedToText) {
+  input_method_context_->SetSurroundingText(
+      u"abcd", gfx::Range(0, 4), gfx::Range::InvalidRange(), gfx::Range(1));
+  connection_->Flush();
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_delete_surrounding_text(text_input->resource(), 100,
+                                                   1);
+    zwp_text_input_v3_send_done(text_input->resource(), 1);
+  });
+  EXPECT_EQ(
+      input_method_context_delegate_->last_on_delete_surrounding_text_args(),
+      (std::pair<size_t, size_t>(1, 1)));
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"cd");
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_delete_surrounding_text(text_input->resource(), 0,
+                                                   100);
+    zwp_text_input_v3_send_done(text_input->resource(), 2);
+  });
+  EXPECT_EQ(
+      input_method_context_delegate_->last_on_delete_surrounding_text_args(),
+      (std::pair<size_t, size_t>(0, 2)));
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"");
+}
+
+TEST_F(WaylandInputMethodContextV3Test, DeleteSurroundingTextAroundPreedit) {
+  // Cursor between 'c' and 'd'.
+  input_method_context_->SetSurroundingText(
+      u"abcdefgh", gfx::Range(0, 8), gfx::Range::InvalidRange(), gfx::Range(3));
+  connection_->Flush();
+
+  // This adds "P1" preedit between 'c' and 'd'.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_preedit_string(text_input->resource(), "P1", 2, 2);
+    zwp_text_input_v3_send_done(text_input->resource(), 1);
+  });
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"abcP1defgh");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().composition,
+            gfx::Range(3, 5));
+
+  // The preedit "P1" is removed first, then 'c' to its left is deleted, then
+  // "C1" is committed, and finally the new preedit "P2" is inserted.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v3()->text_input();
+    zwp_text_input_v3_send_preedit_string(text_input->resource(), "P2", 2, 2);
+    zwp_text_input_v3_send_delete_surrounding_text(text_input->resource(), 1,
+                                                   0);
+    zwp_text_input_v3_send_commit_string(text_input->resource(), "C1");
+    zwp_text_input_v3_send_done(text_input->resource(), 2);
+  });
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"abC1P2defgh");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(6));
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().composition,
+            gfx::Range(4, 6));
+}
+
 TEST_F(WaylandInputMethodContextV3Test,
        ActivatePasswordFieldSendsContentTypeBeforeCommit) {
   PostToServerAndWait([](wl::TestWaylandServerThread* server) {
@@ -432,6 +693,231 @@ TEST_F(WaylandInputMethodContextV3Test,
   connection_->window_manager()->SetTextInputFocusedWindow(window_.get());
   connection_->Flush();
 
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->text_input_manager_v3()->text_input());
+  });
+}
+
+// The cursor location may be set after the text input client is focused but
+// before zwp_text_input_v3.enter is received. It must be sent along with the
+// enable request since enable resets all state on the compositor side.
+TEST_F(WaylandInputMethodContextV3Test,
+       CursorLocationSetBeforeEnterSentOnEnable) {
+  constexpr gfx::Rect kCursorLocation(50, 20, 1, 1);
+  constexpr gfx::Rect kWindowBounds(20, 10, 100, 100);
+  constexpr gfx::Rect kExpectedRect(30, 10, 1, 1);
+  window_->SetBoundsInDIP(kWindowBounds);
+  connection_->window_manager()->SetTextInputFocusedWindow(nullptr);
+
+  LinuxInputMethodContext::TextInputClientAttributes attributes;
+  attributes.input_type = TEXT_INPUT_TYPE_TEXT;
+  input_method_context_->UpdateFocus(true, TEXT_INPUT_TYPE_NONE, attributes,
+                                     ui::TextInputClient::FOCUS_REASON_OTHER);
+  input_method_context_->SetCursorLocation(kCursorLocation);
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->text_input_manager_v3()->text_input());
+  });
+
+  PostToServerAndWait([kExpectedRect](wl::TestWaylandServerThread* server) {
+    auto* zwp_text_input = server->text_input_manager_v3()->text_input();
+    InSequence s;
+    EXPECT_CALL(*zwp_text_input, Enable()).Times(1);
+    EXPECT_CALL(*zwp_text_input, SetContentType(_, _)).Times(1);
+    EXPECT_CALL(*zwp_text_input,
+                SetCursorRect(kExpectedRect.x(), kExpectedRect.y(),
+                              kExpectedRect.width(), kExpectedRect.height()))
+        .Times(1);
+    EXPECT_CALL(*zwp_text_input, Commit()).Times(1);
+  });
+  connection_->window_manager()->SetTextInputFocusedWindow(window_.get());
+  connection_->Flush();
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->text_input_manager_v3()->text_input());
+  });
+}
+
+// The cursor rectangle sent to the compositor must be in surface-local
+// coordinates, i.e. window-local DIP scaled by the window's ui_scale.
+TEST_F(WaylandInputMethodContextV3Test, CursorLocationScaledByUiScale) {
+  ASSERT_TRUE(connection_->IsUiScaleEnabled());
+  connection_->window_manager()->SetFontScale(1.25f);
+  ASSERT_EQ(1.25f, window_->applied_state().ui_scale);
+
+  constexpr gfx::Rect kCursorLocation(40, 80, 4, 8);
+  constexpr gfx::Rect kExpectedRect(50, 100, 5, 10);
+  connection_->window_manager()->SetTextInputFocusedWindow(nullptr);
+
+  LinuxInputMethodContext::TextInputClientAttributes attributes;
+  attributes.input_type = TEXT_INPUT_TYPE_TEXT;
+  input_method_context_->UpdateFocus(true, TEXT_INPUT_TYPE_NONE, attributes,
+                                     ui::TextInputClient::FOCUS_REASON_OTHER);
+  input_method_context_->SetCursorLocation(kCursorLocation);
+  connection_->Flush();
+
+  PostToServerAndWait([kExpectedRect](wl::TestWaylandServerThread* server) {
+    auto* zwp_text_input = server->text_input_manager_v3()->text_input();
+    InSequence s;
+    EXPECT_CALL(*zwp_text_input, Enable()).Times(1);
+    EXPECT_CALL(*zwp_text_input, SetContentType(_, _)).Times(1);
+    EXPECT_CALL(*zwp_text_input,
+                SetCursorRect(kExpectedRect.x(), kExpectedRect.y(),
+                              kExpectedRect.width(), kExpectedRect.height()))
+        .Times(1);
+    EXPECT_CALL(*zwp_text_input, Commit()).Times(1);
+  });
+  connection_->window_manager()->SetTextInputFocusedWindow(window_.get());
+  connection_->Flush();
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->text_input_manager_v3()->text_input());
+  });
+}
+
+// Without a focused text input client, the cursor location must not be cached
+// for a window that doesn't have text input focus.
+TEST_F(WaylandInputMethodContextV3Test,
+       CursorLocationIgnoredWithoutFocusedClient) {
+  connection_->window_manager()->SetTextInputFocusedWindow(nullptr);
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    EXPECT_CALL(*server->text_input_manager_v3()->text_input(),
+                SetCursorRect(_, _, _, _))
+        .Times(0);
+  });
+  input_method_context_->SetCursorLocation(gfx::Rect(50, 20, 1, 1));
+  connection_->Flush();
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->text_input_manager_v3()->text_input());
+  });
+}
+
+// Bubbles are wl_subsurfaces, so zwp_text_input_v3.enter is only received for
+// their root window. Text input must still be enabled for a focused text input
+// client in a bubble when the root window has text input focus.
+TEST_F(WaylandInputMethodContextV3Test, ActivateDeactivateInBubble) {
+  MockWaylandPlatformWindowDelegate bubble_delegate(connection_.get());
+  auto bubble = CreateWaylandWindowWithParams(
+      PlatformWindowType::kBubble, gfx::Rect(10, 10, 50, 50), &bubble_delegate,
+      window_->GetWidget());
+  ASSERT_TRUE(bubble);
+  ASSERT_TRUE(bubble->AsWaylandBubble());
+
+  TestInputMethodContextDelegate bubble_ime_delegate(bubble->GetWidget());
+  TestKeyboardDelegate bubble_keyboard_delegate;
+  auto bubble_context = std::make_unique<WaylandInputMethodContext>(
+      connection_.get(), &bubble_keyboard_delegate, &bubble_ime_delegate);
+  bubble_context->SetTextInputV3ForTesting(text_input_v3_.get());
+  bubble_context->SetDesktopEnvironmentForTesting(
+      base::nix::DesktopEnvironment::DESKTOP_ENVIRONMENT_OTHER);
+
+  // Scenario 1: the root window already has text input focus when the text
+  // input client in the bubble is focused.
+  connection_->window_manager()->SetTextInputFocusedWindow(window_.get());
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* zwp_text_input = server->text_input_manager_v3()->text_input();
+    EXPECT_CALL(*zwp_text_input, Enable()).Times(1);
+    EXPECT_CALL(*zwp_text_input, Disable()).Times(0);
+  });
+  LinuxInputMethodContext::TextInputClientAttributes attributes;
+  attributes.input_type = TEXT_INPUT_TYPE_TEXT;
+  bubble_context->UpdateFocus(true, TEXT_INPUT_TYPE_NONE, attributes,
+                              ui::TextInputClient::FOCUS_REASON_OTHER);
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* zwp_text_input = server->text_input_manager_v3()->text_input();
+    Mock::VerifyAndClearExpectations(zwp_text_input);
+    EXPECT_CALL(*zwp_text_input, Enable()).Times(0);
+    EXPECT_CALL(*zwp_text_input, Disable()).Times(1);
+  });
+
+  // Losing text input focus on the root window disables text input.
+  connection_->window_manager()->SetTextInputFocusedWindow(nullptr);
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* zwp_text_input = server->text_input_manager_v3()->text_input();
+    Mock::VerifyAndClearExpectations(zwp_text_input);
+    // Scenario 2: the root window regains text input focus while the text
+    // input client in the bubble is focused.
+    EXPECT_CALL(*zwp_text_input, Enable()).Times(1);
+    EXPECT_CALL(*zwp_text_input, Disable()).Times(0);
+  });
+  connection_->window_manager()->SetTextInputFocusedWindow(window_.get());
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* zwp_text_input = server->text_input_manager_v3()->text_input();
+    Mock::VerifyAndClearExpectations(zwp_text_input);
+    EXPECT_CALL(*zwp_text_input, Enable()).Times(0);
+    EXPECT_CALL(*zwp_text_input, Disable()).Times(1);
+  });
+
+  // Blurring the text input client in the bubble disables text input.
+  attributes.input_type = TEXT_INPUT_TYPE_NONE;
+  bubble_context->UpdateFocus(true, TEXT_INPUT_TYPE_TEXT, attributes,
+                              ui::TextInputClient::FOCUS_REASON_NONE);
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->text_input_manager_v3()->text_input());
+  });
+}
+
+// zwp_text_input_v3.enter is received for an xdg_popup's own surface, so a
+// bubble parented to a popup must follow the popup's text input focus rather
+// than the root window's.
+TEST_F(WaylandInputMethodContextV3Test, ActivateDeactivateInBubbleOfPopup) {
+  MockWaylandPlatformWindowDelegate popup_delegate(connection_.get());
+  auto popup = CreateWaylandWindowWithParams(
+      PlatformWindowType::kMenu, gfx::Rect(10, 10, 100, 100), &popup_delegate,
+      window_->GetWidget());
+  ASSERT_TRUE(popup);
+  ASSERT_TRUE(popup->AsWaylandPopup());
+  MockWaylandPlatformWindowDelegate bubble_delegate(connection_.get());
+  auto bubble = CreateWaylandWindowWithParams(
+      PlatformWindowType::kBubble, gfx::Rect(10, 10, 50, 50), &bubble_delegate,
+      popup->GetWidget());
+  ASSERT_TRUE(bubble);
+  ASSERT_TRUE(bubble->AsWaylandBubble());
+
+  TestInputMethodContextDelegate bubble_ime_delegate(bubble->GetWidget());
+  TestKeyboardDelegate bubble_keyboard_delegate;
+  auto bubble_context = std::make_unique<WaylandInputMethodContext>(
+      connection_.get(), &bubble_keyboard_delegate, &bubble_ime_delegate);
+  bubble_context->SetTextInputV3ForTesting(text_input_v3_.get());
+  bubble_context->SetDesktopEnvironmentForTesting(
+      base::nix::DesktopEnvironment::DESKTOP_ENVIRONMENT_OTHER);
+
+  // The popup has text input focus: text input is enabled for the bubble.
+  connection_->window_manager()->SetTextInputFocusedWindow(popup.get());
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* zwp_text_input = server->text_input_manager_v3()->text_input();
+    EXPECT_CALL(*zwp_text_input, Enable()).Times(1);
+    EXPECT_CALL(*zwp_text_input, Disable()).Times(0);
+  });
+  LinuxInputMethodContext::TextInputClientAttributes attributes;
+  attributes.input_type = TEXT_INPUT_TYPE_TEXT;
+  bubble_context->UpdateFocus(true, TEXT_INPUT_TYPE_NONE, attributes,
+                              ui::TextInputClient::FOCUS_REASON_OTHER);
+  connection_->Flush();
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* zwp_text_input = server->text_input_manager_v3()->text_input();
+    Mock::VerifyAndClearExpectations(zwp_text_input);
+    EXPECT_CALL(*zwp_text_input, Enable()).Times(0);
+    EXPECT_CALL(*zwp_text_input, Disable()).Times(1);
+  });
+
+  // Text input focus moves to the root window: text input is disabled for the
+  // bubble.
+  connection_->window_manager()->SetTextInputFocusedWindow(window_.get());
+  connection_->Flush();
   PostToServerAndWait([](wl::TestWaylandServerThread* server) {
     Mock::VerifyAndClearExpectations(
         server->text_input_manager_v3()->text_input());
@@ -611,11 +1097,53 @@ TEST_P(WaylandInputMethodContextTest, SetSurroundingTextForShortText) {
         auto* text_input = server->text_input_manager_v1()->text_input();
         Mock::VerifyAndClearExpectations(text_input);
 
-        // Test OnDeleteSurroundingText with this input.
+        // Test OnDeleteSurroundingText with this input. Delete the
+        // selection. The index is relative to the cursor at its end.
         zwp_text_input_v1_send_delete_surrounding_text(
-            text_input->resource(), kExpectedSentRange.start(),
+            text_input->resource(),
+            -base::checked_cast<int32_t>(kExpectedSentRange.length()),
             kExpectedSentRange.length());
       });
+
+  EXPECT_EQ(
+      input_method_context_delegate_->last_on_delete_surrounding_text_args(),
+      (std::pair<size_t, size_t>(0, 0)));
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      std::u16string(40, u'あ'));
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(20));
+}
+
+TEST_P(WaylandInputMethodContextTest, SetSurroundingTextWithReversedSelection) {
+  const std::u16string text(50, u'あ');
+  // The cursor is at 20, and the anchor is at 30.
+  constexpr gfx::Range range(30, 20);
+
+  const std::string kExpectedSentText(base::UTF16ToUTF8(text));
+  // The mock server stores the range as (anchor, cursor).
+  constexpr gfx::Range kExpectedSentRange(90, 60);
+
+  PostToServerAndWait([kExpectedSentText, kExpectedSentRange](
+                          wl::TestWaylandServerThread* server) {
+    EXPECT_CALL(*server->text_input_manager_v1()->text_input(),
+                SetSurroundingText(kExpectedSentText, kExpectedSentRange))
+        .Times(1);
+  });
+
+  input_method_context_->SetSurroundingText(text, gfx::Range(0, 50),
+                                            gfx::Range::InvalidRange(), range);
+  connection_->Flush();
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v1()->text_input();
+    Mock::VerifyAndClearExpectations(text_input);
+
+    // Delete the selection. The index is relative to the cursor at 60 bytes,
+    // which is the start of the selection here.
+    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), 0,
+                                                   30);
+  });
 
   EXPECT_EQ(
       input_method_context_delegate_->last_on_delete_surrounding_text_args(),
@@ -660,9 +1188,11 @@ TEST_P(WaylandInputMethodContextTest, SetSurroundingTextForLongText) {
         auto* text_input = server->text_input_manager_v1()->text_input();
         Mock::VerifyAndClearExpectations(text_input);
 
-        // Test OnDeleteSurroundingText with this input.
+        // Test OnDeleteSurroundingText with this input. Delete the
+        // selection. The index is relative to the cursor at its end.
         zwp_text_input_v1_send_delete_surrounding_text(
-            text_input->resource(), expected_sent_range.start(),
+            text_input->resource(),
+            -base::checked_cast<int32_t>(expected_sent_range.length()),
             expected_sent_range.length());
       });
 
@@ -709,9 +1239,11 @@ TEST_P(WaylandInputMethodContextTest, SetSurroundingTextForLongTextInLeftEdge) {
         auto* text_input = server->text_input_manager_v1()->text_input();
         Mock::VerifyAndClearExpectations(text_input);
 
-        // Test OnDeleteSurroundingText with this input.
+        // Test OnDeleteSurroundingText with this input. Delete the
+        // selection. The index is relative to the cursor at its end.
         zwp_text_input_v1_send_delete_surrounding_text(
-            text_input->resource(), expected_sent_range.start(),
+            text_input->resource(),
+            -base::checked_cast<int32_t>(expected_sent_range.length()),
             expected_sent_range.length());
       });
 
@@ -759,9 +1291,11 @@ TEST_P(WaylandInputMethodContextTest,
         auto* text_input = server->text_input_manager_v1()->text_input();
         Mock::VerifyAndClearExpectations(text_input);
 
-        // Test OnDeleteSurroundingText with this input.
+        // Test OnDeleteSurroundingText with this input. Delete the
+        // selection. The index is relative to the cursor at its end.
         zwp_text_input_v1_send_delete_surrounding_text(
-            text_input->resource(), expected_sent_range.start(),
+            text_input->resource(),
+            -base::checked_cast<int32_t>(expected_sent_range.length()),
             expected_sent_range.length());
       });
 
@@ -806,8 +1340,9 @@ TEST_P(WaylandInputMethodContextTest, DeleteSurroundingTextWithExtendedRange) {
     Mock::VerifyAndClearExpectations(text_input);
 
     // Test OnDeleteSurroundingText with this input.
-    // One char more deletion for each before and after the selection.
-    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), 57,
+    // One char more deletion for each before and after the selection. The
+    // index is relative to the cursor at the end of the selection.
+    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), -33,
                                                    36);
   });
 
@@ -819,6 +1354,78 @@ TEST_P(WaylandInputMethodContextTest, DeleteSurroundingTextWithExtendedRange) {
       std::u16string(38, u'あ'));
   EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
             gfx::Range(19));
+}
+
+TEST_P(WaylandInputMethodContextTest, DeleteSurroundingTextBeforeCursor) {
+  // text-input-v1 specifies the index relative to the cursor.
+  input_method_context_->SetSurroundingText(
+      u"Vi\u00ea", gfx::Range(0, 3), gfx::Range::InvalidRange(), gfx::Range(3));
+  connection_->Flush();
+
+  // Delete U+00EA, which is 2 bytes in UTF-8, before the cursor.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v1()->text_input();
+    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), -2,
+                                                   2);
+  });
+
+  EXPECT_EQ(
+      input_method_context_delegate_->last_on_delete_surrounding_text_args(),
+      (std::pair<size_t, size_t>(1, 0)));
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"Vi");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(2));
+}
+
+TEST_P(WaylandInputMethodContextTest, DeleteSurroundingTextAfterCursor) {
+  input_method_context_->SetSurroundingText(
+      u"abc", gfx::Range(0, 3), gfx::Range::InvalidRange(), gfx::Range(1));
+  connection_->Flush();
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v1()->text_input();
+    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), 0,
+                                                   2);
+  });
+
+  EXPECT_EQ(
+      input_method_context_delegate_->last_on_delete_surrounding_text_args(),
+      (std::pair<size_t, size_t>(0, 2)));
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"a");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(1));
+}
+
+TEST_P(WaylandInputMethodContextTest, DeleteSurroundingTextOutOfRange) {
+  input_method_context_->SetSurroundingText(
+      u"abc", gfx::Range(0, 3), gfx::Range::InvalidRange(), gfx::Range(1));
+  connection_->Flush();
+
+  // The range starts before the beginning of the text.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v1()->text_input();
+    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), -2,
+                                                   2);
+  });
+  // The range ends after the end of the text.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* text_input = server->text_input_manager_v1()->text_input();
+    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), 0,
+                                                   3);
+  });
+
+  EXPECT_FALSE(
+      input_method_context_delegate_->last_on_delete_surrounding_text_args()
+          .has_value());
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"abc");
+  EXPECT_EQ(input_method_context_->predicted_state_for_testing().selection,
+            gfx::Range(1));
 }
 
 TEST_P(WaylandInputMethodContextTest, DeleteSurroundingTextInIncorrectOrder) {
@@ -837,7 +1444,7 @@ TEST_P(WaylandInputMethodContextTest, DeleteSurroundingTextInIncorrectOrder) {
     auto* text_input = server->text_input_manager_v1()->text_input();
     Mock::VerifyAndClearExpectations(text_input);
 
-    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), 4,
+    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), -1,
                                                    1);
   });
   EXPECT_EQ(
@@ -851,7 +1458,7 @@ TEST_P(WaylandInputMethodContextTest, DeleteSurroundingTextInIncorrectOrder) {
     auto* text_input = server->text_input_manager_v1()->text_input();
     Mock::VerifyAndClearExpectations(text_input);
 
-    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), 1,
+    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), -3,
                                                    3);
   });
 
@@ -913,7 +1520,7 @@ TEST_P(WaylandInputMethodContextTest,
     auto* text_input = server->text_input_manager_v1()->text_input();
     Mock::VerifyAndClearExpectations(text_input);
 
-    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), 0,
+    zwp_text_input_v1_send_delete_surrounding_text(text_input->resource(), -6,
                                                    6);
   });
 
@@ -1228,6 +1835,326 @@ TEST_P(WaylandInputMethodContextTest,
   // The composed text should be the same on all platforms.
   EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"á");
 }
+
+TEST_P(WaylandInputMethodContextTest, NonBmpCharacterIsCommitted) {
+  // E.g. an XKB layout with the U1F642 keysym.
+  auto event = CreateKeyEventForCharacterComposer(
+      VKEY_UNKNOWN, DomCode::DIGIT1, DomKey::FromCharacter(0x1F642));
+  EXPECT_TRUE(input_method_context_->DispatchKeyEvent(*event));
+  EXPECT_TRUE(input_method_context_delegate_->was_on_commit_called());
+  EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"\U0001F642");
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"\U0001F642");
+}
+
+TEST_P(WaylandInputMethodContextTest, NonBmpCharacterWithShiftIsCommitted) {
+  // Layouts often put such keysyms on a shifted or AltGr level.
+  for (int flags : {EF_SHIFT_DOWN, EF_ALTGR_DOWN}) {
+    SCOPED_TRACE(flags);
+    auto event = std::make_unique<KeyEvent>(
+        EventType::kKeyPressed, VKEY_UNKNOWN, DomCode::DIGIT1, flags,
+        DomKey::FromCharacter(0x1F642), EventTimeForNow());
+    ui::SetKeyboardImeFlags(event.get(), ui::kPropertyKeyboardImeIgnoredFlag);
+    EXPECT_TRUE(input_method_context_->DispatchKeyEvent(*event));
+    EXPECT_EQ(input_method_context_delegate_->last_commit_text(),
+              u"\U0001F642");
+  }
+}
+
+TEST_P(WaylandInputMethodContextTest, BmpCharacterIsNotCommitted) {
+  auto event = CreateKeyEventForCharacterComposer(VKEY_A, DomCode::US_A,
+                                                  DomKey::FromCharacter('a'));
+  EXPECT_FALSE(input_method_context_->DispatchKeyEvent(*event));
+  EXPECT_FALSE(input_method_context_delegate_->was_on_commit_called());
+}
+
+TEST_P(WaylandInputMethodContextTest,
+       NonBmpCharacterWithControlIsNotCommitted) {
+  auto event = std::make_unique<KeyEvent>(
+      EventType::kKeyPressed, VKEY_UNKNOWN, DomCode::DIGIT1, EF_CONTROL_DOWN,
+      DomKey::FromCharacter(0x1F642), EventTimeForNow());
+  ui::SetKeyboardImeFlags(event.get(), ui::kPropertyKeyboardImeIgnoredFlag);
+  EXPECT_FALSE(input_method_context_->DispatchKeyEvent(*event));
+  EXPECT_FALSE(input_method_context_delegate_->was_on_commit_called());
+}
+
+#if BUILDFLAG(USE_XKBCOMMON)
+namespace {
+
+std::string CreateXkbKeymapString(const char* variant) {
+  std::unique_ptr<xkb_context, XkbContextDeleter> xkb_context(
+      xkb_context_new(XKB_CONTEXT_NO_FLAGS));
+  xkb_rule_names names = {
+      .rules = nullptr,
+      .model = "pc105",
+      .layout = "us",
+      .variant = variant,
+      .options = "compose:ralt",
+  };
+  std::unique_ptr<xkb_keymap, XkbKeymapDeleter> xkb_keymap(
+      xkb_keymap_new_from_names(xkb_context.get(), &names,
+                                XKB_KEYMAP_COMPILE_NO_FLAGS));
+  if (!xkb_keymap) {
+    return std::string();
+  }
+  std::unique_ptr<char, base::FreeDeleter> keymap_str(
+      xkb_keymap_get_as_string(xkb_keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
+  return keymap_str ? std::string(keymap_str.get()) : std::string();
+}
+
+// Installs a US International keymap (dead_acute on the quote key) with Right
+// Alt mapped to Multi_key, so the layout engine resolves keysyms for the
+// synthetic key events below.
+void SetXkbComposeTestKeymap() {
+  const std::string keymap = CreateXkbKeymapString("intl");
+  ASSERT_FALSE(keymap.empty());
+  ASSERT_TRUE(KeyboardLayoutEngineManager::GetKeyboardLayoutEngine()
+                  ->SetCurrentLayoutFromBuffer(keymap));
+}
+
+std::unique_ptr<KeyEvent> CreateKeyEventForXkbComposer(
+    KeyboardCode keyboard_code,
+    DomCode dom_code,
+    DomKey dom_key,
+    int flags = EF_NONE) {
+  auto event =
+      std::make_unique<KeyEvent>(EventType::kKeyPressed, keyboard_code,
+                                 dom_code, flags, dom_key, EventTimeForNow());
+  SetKeyboardImeFlags(event.get(), kPropertyKeyboardImeIgnoredFlag);
+  return event;
+}
+
+}  // namespace
+
+TEST_P(WaylandInputMethodContextTest, XkbComposerCustomComposeAndCancel) {
+  SetXkbComposeTestKeymap();
+  ASSERT_TRUE(
+      input_method_context_->xkb_composer_for_testing()
+          .SetComposeTableFromBuffer("<a> : \"ä\" adiaeresis\n"
+                                     "<Multi_key> <o> : \"ö\" U00F6\n"
+                                     "<Multi_key> <t> <u> : \"👍\"\n"
+                                     "<dead_acute> <c> : \"ç\" ccedilla\n"));
+
+  // Single-key compose sequence (<a> -> "ä") commits directly without sending
+  // an empty preedit update.
+  auto event = CreateKeyEventForXkbComposer(VKEY_A, DomCode::US_A,
+                                            DomKey::FromCharacter('a'));
+  EXPECT_TRUE(input_method_context_->DispatchKeyEvent(*event));
+  EXPECT_FALSE(input_method_context_delegate_->was_on_preedit_changed_called());
+  EXPECT_TRUE(input_method_context_delegate_->was_on_commit_called());
+  EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"ä");
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"ä");
+  input_method_context_delegate_->ClearExpectations();
+
+  // Custom 2-key Multi_key sequence (<Multi_key> <o> -> "ö").
+  event = CreateKeyEventForXkbComposer(VKEY_COMPOSE, DomCode::ALT_RIGHT,
+                                       DomKey::COMPOSE);
+  EXPECT_TRUE(input_method_context_->DispatchKeyEvent(*event));
+  EXPECT_TRUE(input_method_context_delegate_->was_on_preedit_changed_called());
+  EXPECT_FALSE(input_method_context_delegate_->was_on_commit_called());
+  EXPECT_EQ(input_method_context_delegate_->last_preedit()->text, u"·");
+
+  input_method_context_delegate_->ClearExpectations();
+  event = CreateKeyEventForXkbComposer(VKEY_O, DomCode::US_O,
+                                       DomKey::FromCharacter('o'));
+  EXPECT_TRUE(input_method_context_->DispatchKeyEvent(*event));
+  EXPECT_TRUE(input_method_context_delegate_->was_on_commit_called());
+  EXPECT_TRUE(
+      input_method_context_delegate_->was_on_commit_called_before_preedit());
+  EXPECT_TRUE(input_method_context_delegate_->was_on_preedit_changed_called());
+  EXPECT_EQ(input_method_context_delegate_->last_preedit()->text, u"");
+  EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"ö");
+  EXPECT_EQ(
+      input_method_context_->predicted_state_for_testing().surrounding_text,
+      u"äö");
+  EXPECT_TRUE(input_method_context_->predicted_state_for_testing()
+                  .composition.is_empty());
+
+  // Non-BMP emoji sequence (<Multi_key> <t> <u> -> "👍").
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_COMPOSE, DomCode::ALT_RIGHT, DomKey::COMPOSE)));
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_T, DomCode::US_T, DomKey::FromCharacter('t'))));
+  EXPECT_EQ(input_method_context_delegate_->last_preedit()->text, u"t");
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_U, DomCode::US_U, DomKey::FromCharacter('u'))));
+  EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"👍");
+
+  // Locale-style dead-key override (<dead_acute> <c> -> "ç").
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_UNKNOWN, DomCode::QUOTE,
+          DomKey::DeadKeyFromCombiningCharacter(0x0301))));
+  EXPECT_EQ(input_method_context_delegate_->last_preedit()->text, u"´");
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_C, DomCode::US_C, DomKey::FromCharacter('c'))));
+  EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"ç");
+
+  // Unmatched sequence (<Multi_key> <x>) cancels: clears preedit, drops key.
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_COMPOSE, DomCode::ALT_RIGHT, DomKey::COMPOSE)));
+  EXPECT_EQ(input_method_context_delegate_->last_preedit()->text, u"·");
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_X, DomCode::US_X, DomKey::FromCharacter('x'))));
+  EXPECT_TRUE(input_method_context_delegate_->was_on_preedit_changed_called());
+  EXPECT_EQ(input_method_context_delegate_->last_preedit()->text, u"");
+  EXPECT_FALSE(input_method_context_delegate_->was_on_commit_called());
+
+  // Subsequent unmatched key is not consumed.
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_FALSE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_X, DomCode::US_X, DomKey::FromCharacter('x'))));
+}
+
+TEST_P(WaylandInputMethodContextTest, XkbComposerHexInputAndFallback) {
+  SetXkbComposeTestKeymap();
+  ASSERT_TRUE(input_method_context_->xkb_composer_for_testing()
+                  .SetComposeTableFromBuffer("<Multi_key> <o> : \"ö\"\n"));
+
+  // Ctrl+Shift+U hex input remains handled by CharacterComposer.
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_U, DomCode::US_U, DomKey::FromCharacter('U'),
+          EF_CONTROL_DOWN | EF_SHIFT_DOWN)));
+  EXPECT_EQ(input_method_context_delegate_->last_preedit()->text, u"u");
+
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_F, DomCode::US_F, DomKey::FromCharacter('f'))));
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_6, DomCode::DIGIT6, DomKey::FromCharacter('6'))));
+  EXPECT_EQ(input_method_context_delegate_->last_preedit()->text, u"uf6");
+
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_RETURN, DomCode::ENTER, DomKey::ENTER)));
+  EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"ö");
+
+  // Fallback to CharacterComposer when no compose table loads.
+  input_method_context_->xkb_composer_for_testing()
+      .DisableComposeTableForTesting();
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_UNKNOWN, DomCode::QUOTE,
+          DomKey::DeadKeyFromCombiningCharacter(0x0301))));
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_A, DomCode::US_A, DomKey::FromCharacter('a'))));
+  EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"á");
+}
+
+TEST_P(WaylandInputMethodContextTest, XkbComposerKillSwitchFallsBack) {
+  SetXkbComposeTestKeymap();
+  base::test::ScopedFeatureList disable_xkb_compose;
+  disable_xkb_compose.InitAndDisableFeature(kWaylandXkbCompose);
+
+  ASSERT_TRUE(input_method_context_->xkb_composer_for_testing()
+                  .SetComposeTableFromBuffer("<dead_acute> <c> : \"ç\"\n"));
+
+  // With kWaylandXkbCompose disabled, CharacterComposer's built-in en_US table
+  // composes <dead_acute> <c> -> "ć" rather than the XkbComposer override "ç".
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_UNKNOWN, DomCode::QUOTE,
+          DomKey::DeadKeyFromCombiningCharacter(0x0301))));
+  EXPECT_TRUE(
+      input_method_context_->DispatchKeyEvent(*CreateKeyEventForXkbComposer(
+          VKEY_C, DomCode::US_C, DomKey::FromCharacter('c'))));
+  EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"ć");
+}
+
+TEST_P(WaylandInputMethodContextTest, XkbComposerEndToEndWlKeyboardKeysyms) {
+  // Send a real XKB keymap with Right Alt mapped to Multi_key (compose:ralt).
+  const std::string keymap_str = CreateXkbKeymapString("");
+  ASSERT_FALSE(keymap_str.empty());
+  PostToServerAndWait([surface_id = surface_id_,
+                       keymap_str](wl::TestWaylandServerThread* server) {
+    const std::string_view keymap(keymap_str);
+    const size_t keymap_size = keymap.size() + 1;
+    base::UnsafeSharedMemoryRegion region =
+        base::UnsafeSharedMemoryRegion::Create(keymap_size);
+    base::WritableSharedMemoryMapping mapping = region.Map();
+    ASSERT_TRUE(mapping.IsValid());
+    auto span = mapping.GetMemoryAsSpan<char>();
+    span.copy_prefix_from(keymap);
+    span[keymap.size()] = '\0';
+    base::subtle::PlatformSharedMemoryRegion platform_region =
+        base::UnsafeSharedMemoryRegion::TakeHandleForSerialization(
+            std::move(region));
+
+    auto* keyboard = server->seat()->keyboard()->resource();
+    auto* surface = server->GetObject<wl::MockSurface>(surface_id)->resource();
+    wl_keyboard_send_keymap(keyboard, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
+                            platform_region.GetPlatformHandle().fd,
+                            keymap_size);
+    wl::ScopedWlArray empty({});
+    wl_keyboard_send_enter(keyboard, server->GetNextSerial(), surface,
+                           empty.get());
+    wl_keyboard_send_repeat_info(keyboard, 0, 0);
+  });
+
+  ASSERT_TRUE(input_method_context_->xkb_composer_for_testing()
+                  .SetComposeTableFromBuffer("<Multi_key> <u> : \"ü\"\n"));
+
+  std::vector<std::unique_ptr<Event>> dispatched_events;
+  EXPECT_CALL(delegate_, DispatchEvent(_)).WillRepeatedly([&](Event* event) {
+    dispatched_events.push_back(event->Clone());
+  });
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* keyboard = server->seat()->keyboard()->resource();
+    wl_keyboard_send_key(keyboard, server->GetNextSerial(),
+                         server->GetNextTime(), KEY_RIGHTALT,
+                         WL_KEYBOARD_KEY_STATE_PRESSED);
+    wl_keyboard_send_key(keyboard, server->GetNextSerial(),
+                         server->GetNextTime(), KEY_RIGHTALT,
+                         WL_KEYBOARD_KEY_STATE_RELEASED);
+    wl_keyboard_send_key(keyboard, server->GetNextSerial(),
+                         server->GetNextTime(), KEY_U,
+                         WL_KEYBOARD_KEY_STATE_PRESSED);
+    wl_keyboard_send_key(keyboard, server->GetNextSerial(),
+                         server->GetNextTime(), KEY_U,
+                         WL_KEYBOARD_KEY_STATE_RELEASED);
+  });
+
+  ASSERT_EQ(dispatched_events.size(), 4u);
+  const KeyEvent* ralt_press = dispatched_events[0]->AsKeyEvent();
+  const KeyEvent* ralt_release = dispatched_events[1]->AsKeyEvent();
+  const KeyEvent* u_press = dispatched_events[2]->AsKeyEvent();
+  const KeyEvent* u_release = dispatched_events[3]->AsKeyEvent();
+  ASSERT_EQ(ralt_press->type(), EventType::kKeyPressed);
+  ASSERT_EQ(u_press->type(), EventType::kKeyPressed);
+
+  // Key releases are not filtered and leave the sequence pending.
+  EXPECT_TRUE(input_method_context_->DispatchKeyEvent(*ralt_press));
+  EXPECT_FALSE(input_method_context_->DispatchKeyEvent(*ralt_release));
+  EXPECT_EQ(input_method_context_delegate_->last_preedit()->text, u"·");
+
+  input_method_context_delegate_->ClearExpectations();
+  EXPECT_TRUE(input_method_context_->DispatchKeyEvent(*u_press));
+  EXPECT_EQ(input_method_context_delegate_->last_commit_text(), u"ü");
+  EXPECT_FALSE(input_method_context_->DispatchKeyEvent(*u_release));
+}
+#endif  // BUILDFLAG(USE_XKBCOMMON)
 
 class WaylandInputMethodContextNoKeyboardTest
     : public WaylandInputMethodContextTest {
@@ -1554,6 +2481,66 @@ TEST_F(WaylandInputMethodContextWithMockV3Test,
       text);
   EXPECT_EQ(input_method_context->predicted_state_for_testing().selection,
             gfx::Range(20, 20));
+}
+
+namespace {
+
+class FakeEnvironment : public base::Environment {
+ public:
+  explicit FakeEnvironment(base::EnvironmentMap vars)
+      : vars_(std::move(vars)) {}
+  ~FakeEnvironment() override = default;
+
+  std::optional<std::string> GetVar(base::cstring_view variable_name) override {
+    auto it = vars_.find(variable_name);
+    if (it == vars_.end()) {
+      return std::nullopt;
+    }
+    return it->second;
+  }
+
+ private:
+  base::EnvironmentMap vars_;
+};
+
+bool ShouldComposeCedilla(base::EnvironmentMap vars) {
+  FakeEnvironment env(std::move(vars));
+  return ShouldComposeCedillaForDeadAcuteC(env);
+}
+
+}  // namespace
+
+TEST(WaylandInputMethodContextCedillaTest, ImModule) {
+  EXPECT_FALSE(ShouldComposeCedilla({}));
+  EXPECT_FALSE(ShouldComposeCedilla({{"LANG", "en_US.UTF-8"}}));
+  EXPECT_TRUE(ShouldComposeCedilla(
+      {{"LANG", "en_US.UTF-8"}, {"GTK_IM_MODULE", "cedilla"}}));
+  EXPECT_TRUE(ShouldComposeCedilla(
+      {{"LANG", "en_US.UTF-8"}, {"QT_IM_MODULE", "cedilla"}}));
+  EXPECT_TRUE(ShouldComposeCedilla({{"GTK_IM_MODULE", "cedilla:ibus"}}));
+  EXPECT_FALSE(ShouldComposeCedilla({{"GTK_IM_MODULE", "ibus"}}));
+  EXPECT_FALSE(ShouldComposeCedilla({{"GTK_IM_MODULE", "ibus:cedilla"}}));
+}
+
+TEST(WaylandInputMethodContextCedillaTest, Locale) {
+  EXPECT_TRUE(ShouldComposeCedilla({{"LANG", "pt_BR.UTF-8"}}));
+  EXPECT_TRUE(ShouldComposeCedilla({{"LANG", "pt_BR"}}));
+  EXPECT_FALSE(ShouldComposeCedilla({{"LANG", "pt_PT.UTF-8"}}));
+  EXPECT_TRUE(
+      ShouldComposeCedilla({{"LANG", "en_US.UTF-8"}, {"LC_CTYPE", "pt_BR"}}));
+  EXPECT_FALSE(
+      ShouldComposeCedilla({{"LANG", "pt_BR.UTF-8"}, {"LC_CTYPE", "en_US"}}));
+  EXPECT_TRUE(ShouldComposeCedilla(
+      {{"LC_ALL", "pt_BR.UTF-8"}, {"LC_CTYPE", "en_US.UTF-8"}}));
+  // An empty variable is ignored.
+  EXPECT_TRUE(ShouldComposeCedilla({{"LC_ALL", ""}, {"LANG", "pt_BR.UTF-8"}}));
+}
+
+TEST(WaylandInputMethodContextCedillaTest, KillSwitch) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kWaylandCedillaCompose);
+  EXPECT_FALSE(ShouldComposeCedilla({{"GTK_IM_MODULE", "cedilla"}}));
+  EXPECT_FALSE(ShouldComposeCedilla({{"LANG", "pt_BR.UTF-8"}}));
 }
 
 }  // namespace ui

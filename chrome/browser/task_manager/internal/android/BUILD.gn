@@ -58,6 +58,7 @@ android_resources("java_resources") {
   sources = [
     "java/res/drawable/task_card_background.xml",
     "java/res/drawable/task_header_divider.xml",
+    "java/res/layout/task_header.xml",
     "java/res/layout/task_item.xml",
     "java/res/layout/task_manager_activity.xml",
     "java/res/layout/task_manager_search_box.xml",
@@ -90,8 +91,10 @@ robolectric_library("junit") {
     "//chrome/browser/flags:java",
     "//components/browser_ui/styles/android:java",
     "//components/browser_ui/widget/android:java",
+    "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_appcompat_appcompat_java",
     "//third_party/androidx:androidx_recyclerview_recyclerview_java",
+    "//third_party/jni_zero:jni_zero_java",
     "//third_party/junit",
     "//third_party/mockito:mockito_java",
     "//ui/android:ui_no_recycler_view_java",

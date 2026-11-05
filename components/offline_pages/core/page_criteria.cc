@@ -77,9 +77,8 @@ bool MeetsCriteria(const PageCriteria& criteria, const OfflinePageItem& item) {
   }
 
   if (!criteria.url.is_empty() &&
-      !EqualsIgnoringFragment(criteria.url, item.url) &&
-      (item.original_url_if_different.is_empty() ||
-       !EqualsIgnoringFragment(criteria.url, item.original_url_if_different))) {
+      ClassifyOfflinePageUrlMatch(criteria.url, item) ==
+          OfflinePageUrlMatch::kNone) {
     return false;
   }
 
@@ -102,7 +101,6 @@ std::vector<std::string> PotentiallyMatchingNamespaces(
     std::vector<std::string> allowed_namespaces =
         criteria.client_namespaces ? criteria.client_namespaces.value()
                                    : GetAllPolicyNamespaces();
-    std::vector<std::string> filtered;
     for (const std::string& name_space : allowed_namespaces) {
       const OfflinePageClientPolicy& policy = GetPolicy(name_space);
       if (criteria.supported_by_downloads && !policy.is_supported_by_download) {

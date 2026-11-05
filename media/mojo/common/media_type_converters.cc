@@ -12,6 +12,7 @@
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "media/base/audio_buffer.h"
+#include "media/base/channel_layout.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/decrypt_config.h"
 #include "media/base/limits.h"
@@ -216,26 +217,36 @@ media::mojom::AudioBufferPtr
 TypeConverter<media::mojom::AudioBufferPtr, media::AudioBuffer>::Convert(
     const media::AudioBuffer& input) {
   media::mojom::AudioBufferPtr buffer(media::mojom::AudioBuffer::New());
-  buffer->sample_format = input.sample_format_;
-  buffer->channel_layout = input.channel_layout();
-  buffer->channel_count = input.channel_count();
+  if (input.end_of_stream()) {
+    buffer->end_of_stream = true;
+    return buffer;
+  }
+
+  buffer->sample_format = input.sample_format();
+  buffer->channel_layout_config =
+      media::ChannelLayoutConfig(input.channel_layout(), input.channel_count());
   buffer->sample_rate = input.sample_rate();
   buffer->frame_count = input.frame_count();
-  buffer->end_of_stream = input.end_of_stream();
   buffer->timestamp = input.timestamp();
 
-  if (input.data_) {
-    // `input.data_->span()` refers to the whole memory buffer given to the
-    // `media::AudioBuffer`.
-    // `data_size()` refers to the amount of memory really used by the audio
-    // data. The rest is padding, which we don't need to copy.
-    // Safe to CHECK here since this is into Mojo not From mojo (and thus not
-    // untrusted input).
-    CHECK_GT(input.data_size(), 0u);
-    CHECK_LE(input.data_size(), input.data_->span().size());
-    auto buffer_start = input.data_->span().begin();
-    auto buffer_end = buffer_start + input.data_size();
-    buffer->data.assign(buffer_start, buffer_end);
+  if (input.data_size() > 0) {
+    if (media::IsBitstream(input.sample_format())) {
+      const auto data = input.bitstream_data();
+      buffer->data.assign(data.begin(), data.end());
+    } else if (media::IsInterleaved(input.sample_format())) {
+      const auto data = input.interleaved_data();
+      buffer->data.assign(data.begin(), data.end());
+    } else {
+      const auto channels = input.planar_data();
+      size_t total_bytes = 0;
+      for (const auto& channel : channels) {
+        total_bytes += channel.size();
+      }
+      buffer->data.reserve(total_bytes);
+      for (const auto& channel : channels) {
+        buffer->data.insert(buffer->data.end(), channel.begin(), channel.end());
+      }
+    }
   }
 
   return buffer;
@@ -248,14 +259,14 @@ TypeConverter<scoped_refptr<media::AudioBuffer>, media::mojom::AudioBufferPtr>::
   if (input->end_of_stream)
     return media::AudioBuffer::CreateEOSBuffer();
 
+  const media::ChannelLayout channel_layout =
+      input->channel_layout_config.channel_layout();
+  const int channel_count = input->channel_layout_config.channels();
+
   if (input->frame_count <= 0 ||
       static_cast<size_t>(input->sample_format) >
           media::SampleFormat::kMaxValue ||
-      static_cast<size_t>(input->channel_layout) > media::CHANNEL_LAYOUT_MAX ||
-      input->channel_count > media::limits::kMaxChannels ||
-      (input->channel_layout != media::CHANNEL_LAYOUT_DISCRETE &&
-       ChannelLayoutToChannelCount(input->channel_layout) !=
-           input->channel_count)) {
+      channel_count > media::limits::kMaxChannels) {
     DLOG(ERROR) << "Receive an invalid audio buffer, replace it with EOS.";
     return media::AudioBuffer::CreateEOSBuffer();
   }
@@ -267,8 +278,8 @@ TypeConverter<scoped_refptr<media::AudioBuffer>, media::mojom::AudioBufferPtr>::
       return media::AudioBuffer::CreateEOSBuffer();
     }
     return media::AudioBuffer::CopyBitstreamFrom(
-        input->sample_format, input->channel_layout, input->channel_count,
-        input->sample_rate, input->frame_count, input->data, input->timestamp);
+        input->sample_format, channel_layout, channel_count, input->sample_rate,
+        input->frame_count, input->data, input->timestamp);
   }
 
   // Safe to cast, since we already checked `sample_format` doesn't exceed
@@ -276,20 +287,15 @@ TypeConverter<scoped_refptr<media::AudioBuffer>, media::mojom::AudioBufferPtr>::
   const size_t bytes_per_channel = SampleFormatToBytesPerChannel(
       static_cast<media::SampleFormat>(input->sample_format));
 
-  // `copy_size_per_channel` is the exact payload size expected by
-  // AudioBuffer::CopyFrom().
-  const size_t copy_size_per_channel =
+  // `bytes_per_channel` could be 0 if we received a `kUnknownSampleFormat`. In
+  // that case, and in the case of an overflow below, `expected_data_size` will
+  // be 0, and we will return an EOS below.
+  const size_t size_per_channel =
       base::CheckMul(input->frame_count, bytes_per_channel).ValueOrDefault(0u);
-
-  // `bytes_per_channel` could be 0 if we received a kUnknownFormat. In that
-  // case, and in the case of a overflow below, `min_data_size` will be 0,
-  // and we will return an EOS below.
-  const size_t min_data_size =
-      base::CheckMul(input->channel_count, copy_size_per_channel)
-          .ValueOrDefault(0u);
-  if (!copy_size_per_channel || !min_data_size ||
-      input->data.size() < min_data_size ||
-      input->data.size() % input->channel_count != 0) {
+  const size_t expected_data_size =
+      base::CheckMul(channel_count, size_per_channel).ValueOrDefault(0u);
+  if (!size_per_channel || !expected_data_size ||
+      input->data.size() != expected_data_size) {
     DLOG(ERROR) << "Received invalid AudioBuffer, replace it with EOS.";
     return media::AudioBuffer::CreateEOSBuffer();
   }
@@ -299,23 +305,18 @@ TypeConverter<scoped_refptr<media::AudioBuffer>, media::mojom::AudioBufferPtr>::
   const auto input_data = base::as_byte_span(input->data);
   std::vector<base::span<const uint8_t>> channel_spans;
   if (media::IsInterleaved(input->sample_format)) {
-    channel_spans.push_back(input_data.first(min_data_size));
+    channel_spans.push_back(input_data);
   } else {
-    // `source_size_per_channel` is the stride in the
-    // serialized buffer, which may include alignment padding.
-    const size_t source_size_per_channel =
-        input->data.size() / input->channel_count;
-    channel_spans.resize(input->channel_count);
+    channel_spans.resize(channel_count);
 
-    for (int i = 0; i < input->channel_count; ++i) {
+    for (int i = 0; i < channel_count; ++i) {
       channel_spans[i] =
-          base::as_byte_span(input->data)
-              .subspan(i * source_size_per_channel, copy_size_per_channel);
+          input_data.subspan(i * size_per_channel, size_per_channel);
     }
   }
   return media::AudioBuffer::CopyFrom(
-      input->sample_format, input->channel_layout, input->channel_count,
-      input->sample_rate, input->frame_count, channel_spans, input->timestamp);
+      input->sample_format, channel_layout, channel_count, input->sample_rate,
+      input->frame_count, channel_spans, input->timestamp);
 }
 
 }  // namespace mojo

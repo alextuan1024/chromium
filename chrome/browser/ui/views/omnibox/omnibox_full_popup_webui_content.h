@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_OMNIBOX_OMNIBOX_FULL_POPUP_WEBUI_CONTENT_H_
 
 #include <memory>
+#include <optional>
 #include <string_view>
 
 #include "base/memory/weak_ptr.h"
@@ -19,7 +20,8 @@
 #include "ui/views/metadata/view_factory.h"
 
 class LocationBar;
-class OmniboxPopupPresenterBase;
+class OmniboxPopupContentDelegate;
+class OmniboxPopupContentSizer;
 class OmniboxController;
 
 // The content WebView for the full popup (input row + suggestions dropdown) of
@@ -31,9 +33,19 @@ class OmniboxFullPopupWebUIContent
 
  public:
   OmniboxFullPopupWebUIContent() = delete;
-  OmniboxFullPopupWebUIContent(OmniboxPopupPresenterBase* presenter,
+  OmniboxFullPopupWebUIContent(OmniboxPopupContentDelegate* content_delegate,
+                               OmniboxPopupContentSizer* sizer,
+                               OmniboxPopupContentConfig config,
                                LocationBar* location_bar,
                                OmniboxController* controller);
+  // `contents` is a WebContents to adopt, or null; see
+  // `OmniboxPopupWebUIBaseContent`.
+  OmniboxFullPopupWebUIContent(OmniboxPopupContentDelegate* content_delegate,
+                               OmniboxPopupContentSizer* sizer,
+                               OmniboxPopupContentConfig config,
+                               LocationBar* location_bar,
+                               OmniboxController* controller,
+                               std::unique_ptr<ContentsWrapper> contents);
   OmniboxFullPopupWebUIContent(const OmniboxFullPopupWebUIContent&) = delete;
   OmniboxFullPopupWebUIContent& operator=(const OmniboxFullPopupWebUIContent&) =
       delete;
@@ -43,7 +55,31 @@ class OmniboxFullPopupWebUIContent
 
   void Clear() override;
 
+  // Requests the WebUI searchbox context menu at `screen_point`, shown once
+  // the popup widget is active and the `<input>` is focused.
+  bool RequestContextMenu(const gfx::Point& screen_point,
+                          ui::mojom::MenuSourceType source_type);
+
+  void OnPopupWidgetActivationChanged(bool active);
+
+  // Whether the popup has presented a frame since it was last shown.
+  void OnPopupWidgetPresentedChanged(bool presented);
+  bool popup_presented_for_testing() const { return popup_presented_; }
+
+  void CancelPendingContextMenuRequest();
+
+  // Shows or hides the WebUI's AI Mode button to match the location bar's AI
+  // Mode page action.
+  void UpdateAimButtonVisibility();
+
+  // content::WebContentsObserver:
+  void OnFocusChangedInPage(
+      const content::FocusedNodeDetails& details) override;
+  void DidFirstVisuallyNonEmptyPaint() override;
+
  private:
+  friend class OmniboxFullPopupWebUIContentBrowserTest;
+
   void OnClearCallback();
   // ui::SimpleMenuModel::Delegate:
   void ExecuteCommand(int command_id, int event_flags) override;
@@ -65,6 +101,7 @@ class OmniboxFullPopupWebUIContent
                          const content::ContextMenuParams& params) override;
 
   void ShowContextMenuComplete(const content::ContextMenuParams& params);
+  void ShowPendingContextMenuIfReady();
 
   OmniboxPopupHandler* GetPopupHandler() {
     return const_cast<OmniboxPopupHandler*>(
@@ -75,6 +112,15 @@ class OmniboxFullPopupWebUIContent
   content::ContextMenuParams params_;
   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
   std::unique_ptr<views::MenuRunner> menu_runner_;
+
+  struct ContextMenuRequest {
+    // In screen coordinates; converted when the menu is shown, since the popup
+    // may not be positioned yet when the request is made.
+    gfx::Point screen_point;
+    ui::mojom::MenuSourceType source_type;
+  };
+  std::optional<ContextMenuRequest> pending_context_menu_request_;
+  bool popup_presented_ = false;
 
   base::WeakPtrFactory<OmniboxFullPopupWebUIContent> weak_ptr_factory_{this};
 };

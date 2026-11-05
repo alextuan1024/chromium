@@ -30,9 +30,11 @@
 
 #include "third_party/blink/renderer/core/loader/resource/image_resource.h"
 
+#include <array>
 #include <memory>
 #include <string_view>
 
+#include "base/containers/span.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -51,6 +53,7 @@
 #include "third_party/blink/renderer/core/svg/graphics/svg_image.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
 #include "third_party/blink/renderer/core/testing/scoped_mock_overlay_scrollbars.h"
+#include "third_party/blink/renderer/platform/bindings/v8_external_memory_accounter.h"
 #include "third_party/blink/renderer/platform/exported/wrapped_resource_response.h"
 #include "third_party/blink/renderer/platform/graphics/bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
@@ -81,6 +84,7 @@
 #include "third_party/blink/renderer/platform/testing/url_loader_mock_factory.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
 
@@ -124,12 +128,23 @@ constexpr size_t kJpegImageSubrangeWithDimensionsLength =
     sizeof(kJpegImage) - 1;
 constexpr size_t kJpegImageSubrangeWithoutDimensionsLength = 3;
 
+ResourceFetcher* CreateFetcher(ContextLifecycleNotifier* notifier) {
+  auto* properties = MakeGarbageCollected<TestResourceFetcherProperties>();
+  return MakeGarbageCollected<ResourceFetcher>(ResourceFetcherInit(
+      properties->MakeDetachable(), MakeGarbageCollected<MockFetchContext>(),
+      base::MakeRefCounted<scheduler::FakeTaskRunner>(),
+      base::MakeRefCounted<scheduler::FakeTaskRunner>(),
+      MakeGarbageCollected<TestLoaderFactory>(), notifier,
+      nullptr /* back_forward_cache_loader_helper */));
+}
+
 class ImageResourceTest : public testing::Test,
                           private ScopedMockOverlayScrollbars {
  public:
   ImageResourceTest()
       : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
   void TearDown() override {
+    context_lifecycle_notifier_.Reset();
     // Trigger a GC so MockFinishObserver gets destroyed and EXPECT_CALL gets
     // checked before the test ends.
     ThreadState::Current()->CollectAllGarbageForTesting(
@@ -137,14 +152,19 @@ class ImageResourceTest : public testing::Test,
   }
 
  protected:
+  ResourceFetcher* CreateFetcher() {
+    return blink::CreateFetcher(context_lifecycle_notifier_.Notifier());
+  }
+
   test::TaskEnvironment task_environment_;
+  ScopedMockContextLifecycleNotifier context_lifecycle_notifier_;
 };
 
 // Ensure that the image decoder can determine the dimensions of kJpegImage from
 // just the first kJpegImageSubrangeWithDimensionsLength bytes. If this test
 // fails, then the test data here probably needs to be updated.
 TEST_F(ImageResourceTest, DimensionsDecodableFromPartialTestImage) {
-  scoped_refptr<Image> image = BitmapImage::Create();
+  scoped_refptr<Image> image = BitmapImage::CreateForTesting();
   EXPECT_EQ(
       Image::kSizeAvailable,
       image->SetData(SharedBuffer::Create(
@@ -226,19 +246,7 @@ void ReceiveResponse(ImageResource* image_resource,
 }
 
 AtomicString BuildContentRange(size_t range_length, size_t total_length) {
-  return AtomicString(String("bytes 0-" + String::Number(range_length - 1) +
-                             "/" + String::Number(total_length)));
-}
-
-ResourceFetcher* CreateFetcher() {
-  auto* properties = MakeGarbageCollected<TestResourceFetcherProperties>();
-  return MakeGarbageCollected<ResourceFetcher>(ResourceFetcherInit(
-      properties->MakeDetachable(), MakeGarbageCollected<MockFetchContext>(),
-      base::MakeRefCounted<scheduler::FakeTaskRunner>(),
-      base::MakeRefCounted<scheduler::FakeTaskRunner>(),
-      MakeGarbageCollected<TestLoaderFactory>(),
-      MakeGarbageCollected<MockContextLifecycleNotifier>(),
-      nullptr /* back_forward_cache_loader_helper */));
+  return AtomicString(Format("bytes 0-{}/{}", range_length - 1, total_length));
 }
 
 TEST_F(ImageResourceTest, MultipartImage) {
@@ -372,6 +380,162 @@ TEST_F(ImageResourceTest, BitmapMultipartImage) {
                   .is_multipart());
 }
 
+TEST_F(ImageResourceTest, MultipartImageMemoryAccounting) {
+  ResourceFetcher* fetcher = CreateFetcher();
+  KURL test_url(kTestURL);
+  ScopedMockedURLLoad scoped_mocked_url_load(test_url, GetTestFilePath());
+
+  auto* image_resource = ImageResource::CreateForTest(test_url);
+  fetcher->StartLoad(image_resource);
+
+  ResourceResponse multipart_response(NullUrl());
+  multipart_response.SetMimeType(AtomicString("multipart/x-mixed-replace"));
+  multipart_response.SetHttpHeaderField(
+      http_names::kContentType,
+      AtomicString("multipart/x-mixed-replace; boundary=boundary"));
+  image_resource->Loader()->DidReceiveResponse(
+      WrappedResourceResponse(multipart_response),
+      /*body=*/mojo::ScopedDataPipeConsumerHandle(),
+      /*cached_metadata=*/std::nullopt);
+  EXPECT_FALSE(image_resource->GetContent()->HasImage());
+
+  constexpr std::string_view kBoundary = "--boundary\n";
+  constexpr std::string_view kContentType = "Content-Type: image/jpeg\n\n";
+  constexpr size_t kMultipartSize =
+      kContentType.size() + sizeof(kJpegImage2) + kBoundary.size();
+  std::array<char, kMultipartSize> part;
+  base::span<char> part_span(part);
+  part_span.take_first(kContentType.size()).copy_from(kContentType);
+  part_span.take_first(sizeof(kJpegImage2))
+      .copy_from(base::as_chars(base::span(kJpegImage2)));
+  part_span.take_first(kBoundary.size()).copy_from(kBoundary);
+  ASSERT_TRUE(part_span.empty());
+
+  const int64_t initial = V8ExternalMemoryAccounterBase::
+      GetTotalAmountOfExternalAllocatedMemoryForTesting(
+          task_environment_.isolate());
+
+  // Feed the first part.
+  image_resource->AppendData(kBoundary);
+  image_resource->AppendData(part);
+  EXPECT_FALSE(image_resource->GetContent()->HasImage());
+  const int64_t size_after_first_part =
+      V8ExternalMemoryAccounterBase::
+          GetTotalAmountOfExternalAllocatedMemoryForTesting(
+              task_environment_.isolate()) -
+      initial;
+  // Expect a full image to be accounted for, plus any additional buffered data.
+  // Avoid being too precise, since that will just place restrictions on data
+  // management in the MultipartImageResourceParser. The important part is that
+  // it's bounded.
+  EXPECT_GE(size_after_first_part, sizeof(kJpegImage2));
+  EXPECT_LE(size_after_first_part, sizeof(kJpegImage2) + kMultipartSize);
+
+  for (size_t i = 0; i < 5; ++i) {
+    // Feed an additional piece of a part. Split randomly. Feed enough to
+    // include the header and part of the payload.
+    const size_t split_offset = kMultipartSize - (i + 1) * 8;
+    auto [first_piece, second_piece] = base::span(part).split_at(split_offset);
+    image_resource->AppendData(first_piece);
+    EXPECT_TRUE(image_resource->GetContent()->HasImage());
+
+    const int64_t size_before_second_piece =
+        V8ExternalMemoryAccounterBase::
+            GetTotalAmountOfExternalAllocatedMemoryForTesting(
+                task_environment_.isolate()) -
+        initial;
+    // Expect a full image to be accounted for, plus any additional buffered
+    // data.
+    EXPECT_GE(size_before_second_piece, sizeof(kJpegImage2));
+    EXPECT_LE(size_before_second_piece, sizeof(kJpegImage2) + kMultipartSize);
+    image_resource->AppendData(second_piece);
+  }
+
+  image_resource->Loader()->DidFinishLoading(base::TimeTicks(), 0, 0, 0);
+  const int64_t size_after_finish_loading =
+      V8ExternalMemoryAccounterBase::
+          GetTotalAmountOfExternalAllocatedMemoryForTesting(
+              task_environment_.isolate()) -
+      initial;
+  // Expect a full image to be accounted for, and no additional buffered data.
+  EXPECT_EQ(size_after_finish_loading, sizeof(kJpegImage2));
+}
+
+TEST_F(ImageResourceTest, MultipartImageDecodeErrorMemoryAccounting) {
+  ResourceFetcher* fetcher = CreateFetcher();
+  KURL test_url(kTestURL);
+  ScopedMockedURLLoad scoped_mocked_url_load(test_url, GetTestFilePath());
+
+  auto* image_resource = ImageResource::CreateForTest(test_url);
+  fetcher->StartLoad(image_resource);
+
+  ResourceResponse multipart_response(NullUrl());
+  multipart_response.SetMimeType(AtomicString("multipart/x-mixed-replace"));
+  multipart_response.SetHttpHeaderField(
+      http_names::kContentType,
+      AtomicString("multipart/x-mixed-replace; boundary=boundary"));
+  image_resource->Loader()->DidReceiveResponse(
+      WrappedResourceResponse(multipart_response),
+      /*body=*/mojo::ScopedDataPipeConsumerHandle(),
+      /*cached_metadata=*/std::nullopt);
+  EXPECT_FALSE(image_resource->GetContent()->HasImage());
+
+  constexpr std::string_view kBoundary = "--boundary\n";
+  constexpr std::string_view kContentType = "Content-Type: image/jpeg\n\n";
+  constexpr auto kPayload = base::span(kJpegImage2);
+
+  const int64_t initial = V8ExternalMemoryAccounterBase::
+      GetTotalAmountOfExternalAllocatedMemoryForTesting(
+          task_environment_.isolate());
+
+  // Feed the first part.
+  image_resource->AppendData(kBoundary);
+  image_resource->AppendData(kContentType);
+  image_resource->AppendData(base::as_chars(kPayload));
+  image_resource->AppendData(kBoundary);
+
+  // We haven't decoded any payload yet.
+  EXPECT_FALSE(image_resource->GetContent()->HasImage());
+  EXPECT_FALSE(image_resource->ErrorOccurred());
+
+  const int64_t size_after_first_part =
+      V8ExternalMemoryAccounterBase::
+          GetTotalAmountOfExternalAllocatedMemoryForTesting(
+              task_environment_.isolate()) -
+      initial;
+  // Expect a full image to be accounted for and a little additional buffered
+  // data.
+  EXPECT_GE(size_after_first_part, sizeof(kJpegImage2));
+
+  // Feed a second part - this time with an error.
+  image_resource->AppendData(kContentType);
+  std::array<uint8_t, 2> corrupt_header = {
+      static_cast<uint8_t>(kPayload[0] ^ 0x04),
+      static_cast<uint8_t>(kPayload[1] ^ 0x40)};
+  image_resource->AppendData(base::as_chars(base::span(corrupt_header)));
+  image_resource->AppendData(base::as_chars(kPayload.subspan(2u)));
+  image_resource->AppendData(kBoundary);
+
+  // We have decoded the first part now.
+  EXPECT_TRUE(image_resource->GetContent()->HasImage());
+  EXPECT_FALSE(image_resource->ErrorOccurred());
+
+  // Start feeding a third part. This will flush the second part and trigger
+  // the decode error.
+  image_resource->AppendData(kContentType);
+
+  EXPECT_FALSE(image_resource->GetContent()->HasImage());
+  EXPECT_TRUE(image_resource->ErrorOccurred());
+
+  const int64_t size_after_decode_error =
+      V8ExternalMemoryAccounterBase::
+          GetTotalAmountOfExternalAllocatedMemoryForTesting(
+              task_environment_.isolate()) -
+      initial;
+  // Expect accounting to return to zero.
+  EXPECT_EQ(size_after_decode_error, 0);
+}
+
 TEST_F(ImageResourceTest, CancelOnRemoveObserver) {
   KURL test_url(kTestURL);
   ScopedMockedURLLoad scoped_mocked_url_load(test_url, GetTestFilePath());
@@ -496,6 +660,46 @@ TEST_F(ImageResourceTest, DecodedDataRemainsWhileHasClients) {
   EXPECT_TRUE(image_resource->GetContent()->HasImage());
   // TODO(hajimehoshi): Should check imageResource doesn't have decoded image
   // data.
+}
+
+// ImageResource keeps its encoded data in ImageResourceContent after
+// ClearData(), so it still counts towards its memory usage.
+TEST_F(ImageResourceTest, EncodedMemoryUsageKeptAfterFinish) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kResourceEncodedMemoryAccounting);
+  ImageResource* image_resource = ImageResource::CreateForTest(NullUrl());
+  ReceiveResponse(image_resource, NullUrl(), "image/jpeg",
+                  base::as_chars(base::span(kJpegImage)));
+  ASSERT_TRUE(image_resource->HasResourceBuffer());
+
+  EXPECT_EQ(image_resource->EncodedSize(), sizeof(kJpegImage));
+  EXPECT_EQ(image_resource->size(), image_resource->EncodedSize() +
+                                        image_resource->DecodedSize() +
+                                        image_resource->OverheadSize());
+}
+
+// A failed revalidation drops the old image, so its encoded data stops counting
+// even though ImageResourceContent held it until then.
+TEST_F(ImageResourceTest, FailedRevalidationStopsCountingEncodedData) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kResourceEncodedMemoryAccounting);
+  KURL url("http://127.0.0.1:8000/foo");
+  ImageResource* image_resource = ImageResource::CreateForTest(url);
+  ReceiveResponse(image_resource, url, "image/jpeg",
+                  base::as_chars(base::span(kJpegImage)));
+  ASSERT_TRUE(image_resource->HasResourceBuffer());
+
+  image_resource->SetRevalidatingRequest(ResourceRequest(url));
+  ResourceResponse resource_response(url);
+  resource_response.SetMimeType(AtomicString("image/jpeg"));
+  resource_response.SetHttpStatusCode(200);
+  image_resource->NotifyStartLoad();
+  image_resource->ResponseReceived(resource_response);
+  ASSERT_FALSE(image_resource->HasResourceBuffer());
+
+  EXPECT_EQ(image_resource->EncodedSize(), sizeof(kJpegImage));
+  EXPECT_EQ(image_resource->size(),
+            image_resource->DecodedSize() + image_resource->OverheadSize());
 }
 
 TEST_F(ImageResourceTest, UpdateBitmapImages) {
@@ -1237,7 +1441,12 @@ class ImageResourceCounterTest : public testing::Test {
         InstanceCounters::kUACSSResourceCounter);
   }
 
+  ResourceFetcher* CreateFetcher() {
+    return blink::CreateFetcher(context_lifecycle_notifier_.Notifier());
+  }
+
   test::TaskEnvironment task_environment_;
+  ScopedMockContextLifecycleNotifier context_lifecycle_notifier_;
 };
 
 TEST_F(ImageResourceCounterTest, InstanceCounters) {

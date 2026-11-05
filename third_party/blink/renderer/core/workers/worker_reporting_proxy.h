@@ -32,6 +32,8 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_WORKER_REPORTING_PROXY_H_
 
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink-forward.h"
+#include "third_party/blink/public/mojom/navigation/renderer_eviction_reason.mojom-blink-forward.h"
+#include "third_party/blink/renderer/bindings/core/v8/sanitize_script_errors.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/frame/web_feature_forward.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
@@ -52,11 +54,14 @@ class CORE_EXPORT WorkerReportingProxy {
 
   virtual void CountFeature(WebFeature) {}
   virtual void CountWebDXFeature(mojom::blink::WebDXFeature) {}
+  virtual void EvictFromBackForwardCache(mojom::blink::RendererEvictionReason) {
+  }
   // TODO(crbug.com/462588571): Try converting these to pass SourceLocation
   // by const reference.
   virtual void ReportException(const String& error_message,
                                const SourceLocation*,
-                               int exception_id) {}
+                               int exception_id,
+                               SanitizeScriptErrors) {}
   virtual void ReportConsoleMessage(mojom::ConsoleMessageSource,
                                     mojom::ConsoleMessageLevel,
                                     const String& message,

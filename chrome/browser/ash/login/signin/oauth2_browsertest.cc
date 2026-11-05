@@ -51,6 +51,8 @@
 #include "components/account_id/account_id.h"
 #include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/sync/base/command_line_switches.h"
@@ -70,7 +72,7 @@
 #include "net/cookies/canonical_cookie.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace ash {
 
@@ -354,12 +356,9 @@ class OAuth2Test : public OobeBaseTest {
     if (!AddUserToSession(account_id, password))
       return false;
 
-    if (const user_manager::User* active_user =
-            user_manager::UserManager::Get()->GetActiveUser()) {
-      return active_user->GetAccountId() == account_id;
-    }
-
-    return false;
+    const session_manager::Session* active_session =
+        session_manager::SessionManager::Get()->GetActiveSession();
+    return active_session && active_session->account_id() == account_id;
   }
 
   user_manager::User::OAuthTokenStatus GetOAuthStatusFromLocalState(
@@ -384,9 +383,12 @@ class OAuth2Test : public OobeBaseTest {
 
  protected:
   // OobeBaseTest overrides.
+  // TODO(crbug.com/575229287): Callers should ask for the profile they expect
+  // (sign-in or the logged-in user's) instead of this primary/active mix.
   Profile* GetProfile() {
-    if (user_manager::UserManager::Get()->GetActiveUser())
+    if (session_manager::SessionManager::Get()->GetActiveSession()) {
       return ProfileManager::GetPrimaryUserProfile();
+    }
 
     return ProfileManager::GetActiveUserProfile();
   }
@@ -485,8 +487,7 @@ class OAuth2Test : public OobeBaseTest {
 
  private:
   base::FilePath test_data_dir_;
-  std::map<std::string, raw_ptr<RequestDeferrer, CtnExperimental>>
-      request_deferers_;
+  std::map<std::string, raw_ptr<RequestDeferrer>> request_deferers_;
 
   // TODO(https://crbug.com/40804030): Remove this when updated to use MV3.
   extensions::ScopedTestMV2Enabler mv2_enabler;
@@ -926,7 +927,8 @@ IN_PROC_BROWSER_TEST_P(MergeSessionTest, PageThrottle) {
   // Try to open a page from google.com.
   BrowserWindowInterface* browser = FindOrCreateVisibleBrowser(GetProfile());
   ui_test_utils::NavigateToURLWithDisposition(
-      browser, fake_google_page_url_, WindowOpenDisposition::CURRENT_TAB,
+      browser, fake_google_page_url_,
+      ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   // JavaScript dialog wait setup.

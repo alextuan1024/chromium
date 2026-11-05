@@ -13,6 +13,7 @@
 #include "base/apple/foundation_util.h"
 #include "base/callback_list.h"
 #include "base/component_export.h"
+#include "base/containers/span.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/clipboard_change_notifier.h"
 
@@ -48,6 +49,8 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardMac
                  GetSourceCallback callback) const override;
   const ClipboardSequenceNumberToken& GetSequenceNumber(
       ClipboardBuffer buffer) const override;
+  const ClipboardSequenceNumberToken& GetSequenceNumber(
+      NSPasteboard* pasteboard) const;
   void GetStandardFormats(ClipboardBuffer buffer,
                           const std::optional<DataTransferEndpoint>& data_dst,
                           GetStandardFormatsCallback callback) const override;
@@ -105,12 +108,14 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardMac
   void WriteSvg(std::string_view markup) override;
   void WriteRTF(std::string_view rtf) override;
   void WriteFilenames(std::vector<ui::FileInfo> filenames) override;
-  void WriteURL(const ClipboardUrlInfo& url_info) override;
+  void WriteURLs(base::span<const ClipboardUrlInfo> url_infos) override;
   void WriteWebSmartPaste() override;
   void WriteBitmap(const SkBitmap& bitmap) override;
   void WriteData(const ClipboardFormatType& format,
                  base::span<const uint8_t> data) override;
 
+  void WriteURLsInternal(base::span<const ClipboardUrlInfo> url_infos,
+                         NSPasteboard* pasteboard);
   void WriteBitmapInternal(const SkBitmap& bitmap, NSPasteboard* pasteboard);
   void ReadPngInternal(ClipboardBuffer buffer,
                        NSPasteboard* pasteboard,
@@ -127,7 +132,9 @@ class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardMac
       std::unique_ptr<DataTransferEndpoint> data_src,
       NSPasteboard* pasteboard,
       uint32_t privacy_types);
-  void ClipboardChanged();
+  // Invoked when the pasteboard changes.
+  void OnPasteboardChanged();
+  void ClipboardChanged(NSPasteboard* pasteboard);
 
   // Mapping of OS-provided sequence number to a unique token.
   mutable struct {

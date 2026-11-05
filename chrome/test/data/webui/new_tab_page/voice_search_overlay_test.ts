@@ -5,12 +5,11 @@
 import 'chrome://new-tab-page/lazy_load.js';
 
 import type {VoiceSearchOverlayElement} from 'chrome://new-tab-page/lazy_load.js';
-import {$$, NewTabPageProxy, PageCallbackRouter, PageHandlerRemote, VoiceAction as Action, VoiceError as Error, WindowProxy} from 'chrome://new-tab-page/new_tab_page.js';
+import {$$, newTabPageProxyFactory, PageHandlerRemote, VoiceAction as Action, VoiceError as Error, WindowProxy} from 'chrome://new-tab-page/new_tab_page.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import type {TestMock} from 'chrome://webui-test/test_mock.js';
 import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
@@ -84,14 +83,14 @@ suite('NewTabPageVoiceSearchOverlayTest', () => {
     windowProxy.setResultFor('setTimeout', 0);
     installMock(
         PageHandlerRemote,
-        (mock: PageHandlerRemote) =>
-            NewTabPageProxy.setInstance(mock, new PageCallbackRouter()));
+        (mock: PageHandlerRemote) => newTabPageProxyFactory.setInstance(
+            newTabPageProxyFactory.createForTest(mock).instance));
 
     metrics = fakeMetricsPrivate();
 
     voiceSearchOverlay = document.createElement('ntp-voice-search-overlay');
     document.body.appendChild(voiceSearchOverlay);
-    await flushTasks();
+    await microtasksFinished();
   });
 
   test('creating overlay opens native dialog', () => {
@@ -372,7 +371,7 @@ suite('NewTabPageVoiceSearchOverlayTest', () => {
     assertTrue(mockSpeechRecognition.abortCalled);
   });
 
-  test(`clicking '#retryLink' starts voice search if in retry state`, () => {
+  test('clicking \'#retryLink\' starts voice search if in retry state', () => {
     // Arrange.
     mockSpeechRecognition.onnomatch!();
     mockSpeechRecognition.startCalled = false;
@@ -508,7 +507,7 @@ suite('NewTabPageVoiceSearchOverlayTest', () => {
     document.body.removeChild(voiceSearchOverlay);
     voiceSearchOverlay = document.createElement('ntp-voice-search-overlay');
     document.body.appendChild(voiceSearchOverlay);
-    await flushTasks();
+    await microtasksFinished();
 
     // Verify fallback error when speech recognition ends unexpectedly without
     // final results (maps to AUDIO_CAPTURE / bucket 1).

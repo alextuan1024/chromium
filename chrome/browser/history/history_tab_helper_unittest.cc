@@ -19,6 +19,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/actor/actor_keyed_service_fake.h"
+#include "chrome/browser/actor/actor_surface_registry.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/common/chrome_features.h"
@@ -41,8 +42,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/feed/feed_service_factory.h"
@@ -157,7 +158,6 @@ class HistoryTabHelperTest : public ChromeRenderViewHostTestHarness {
 
   history::MostVisitedURLList QueryMostVisitedURLs() {
     history::MostVisitedURLList result;
-    std::string title;
     base::RunLoop loop;
     history_service_->QueryMostVisitedURLs(
         /*result_count=*/10,
@@ -489,7 +489,7 @@ TEST_F(HistoryTabHelperTest, CreateAddPageArgsHasOpenerWebContentsFirstPage) {
   HistoryTabHelper::FromWebContents(opener_web_contents.get())
       ->DidOpenRequestedURL(web_contents(), nullptr,
                             GURL("http://someurl.com/"), content::Referrer(),
-                            WindowOpenDisposition::NEW_WINDOW,
+                            ui::mojom::WindowOpenDisposition::kNewWindow,
                             ui::PAGE_TRANSITION_LINK, false, true);
 
   content::RenderFrameHostTester* main_rfh_tester =
@@ -534,7 +534,7 @@ TEST_F(HistoryTabHelperTest, CreateAddPageArgsHasLiveOriginalOpenerChain) {
   HistoryTabHelper::FromWebContents(web_contents())
       ->DidOpenRequestedURL(web_contents(), nullptr,
                             GURL("http://someurl.com/"), content::Referrer(),
-                            WindowOpenDisposition::NEW_WINDOW,
+                            ui::mojom::WindowOpenDisposition::kNewWindow,
                             ui::PAGE_TRANSITION_LINK, false, true);
 
   // Preparing the NavigationHandle that HistoryTabHelper will use to construct
@@ -591,7 +591,7 @@ TEST_F(HistoryTabHelperTest,
   HistoryTabHelper::FromWebContents(opener_web_contents.get())
       ->DidOpenRequestedURL(web_contents(), nullptr,
                             GURL("http://someurl.com/"), content::Referrer(),
-                            WindowOpenDisposition::NEW_WINDOW,
+                            ui::mojom::WindowOpenDisposition::kNewWindow,
                             ui::PAGE_TRANSITION_LINK, false, true);
 
   content::RenderFrameHostTester* main_rfh_tester =
@@ -670,6 +670,7 @@ TEST_F(HistoryTabHelperTest,
 
   auto* actor_service = static_cast<actor::ActorKeyedServiceFake*>(
       actor::ActorKeyedService::Get(profile()));
+  actor_service->GetSurfaceRegistry().OnTabCreated(mock_tab);
   actor::TaskId task_id = actor_service->CreateTaskForTesting();
   actor_service->GetTask(task_id)->AddTab(
       mock_tab.GetHandle(), /*stop_task_on_detach=*/true, base::DoNothing());

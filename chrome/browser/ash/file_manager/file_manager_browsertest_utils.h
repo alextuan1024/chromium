@@ -6,7 +6,6 @@
 #define CHROME_BROWSER_ASH_FILE_MANAGER_FILE_MANAGER_BROWSERTEST_UTILS_H_
 
 #include "chrome/browser/ash/file_manager/file_manager_browsertest_base.h"
-#include "pdf/buildflags.h"
 
 // INSTANTIATE_TEST_SUITE_P expands to code that stringizes the arguments. Thus
 // macro parameters such as |prefix| and |test_class| won't be expanded by the
@@ -79,11 +78,7 @@ struct TestCase {
 
   TestCase& EnableFilesPolicyNewUX();
 
-  TestCase& EnableDriveTrash();
-
   TestCase& EnableArcVm();
-
-  TestCase& EnableMirrorSync();
 
   TestCase& EnableFileTransferConnector();
 
@@ -93,11 +88,7 @@ struct TestCase {
 
   TestCase& BypassRequiresJustification();
 
-  TestCase& EnableSearchV2();
-
   TestCase& EnableLocalImageSearch();
-
-  TestCase& EnableOsFeedback();
 
   TestCase& DisableGoogleOneOfferFilesBanner();
 
@@ -116,10 +107,6 @@ struct TestCase {
   TestCase& EnableCrosComponents();
 
   TestCase& EnableSkyVault();
-
-#if BUILDFLAG(ENABLE_PDF)
-  TestCase& SetEnableOopifPdf(bool enable);
-#endif  // BUILDFLAG(ENABLE_PDF)
 
   std::string GetFullName() const;
 

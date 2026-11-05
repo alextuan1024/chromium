@@ -8,7 +8,6 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
-#include "base/files/file_path.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
@@ -35,12 +34,12 @@ CursorFactory::CursorFactory() {
 }
 
 CursorFactory::~CursorFactory() {
-  DCHECK_EQ(g_instance, this);
+  CHECK_EQ(g_instance, this, base::NotFatalUntil::M163);
   g_instance = nullptr;
 }
 
 CursorFactory* CursorFactory::GetInstance() {
-  DCHECK(g_instance);
+  CHECK(g_instance, base::NotFatalUntil::M163);
   return g_instance;
 }
 
@@ -99,19 +98,6 @@ void CursorFactory::ObserveThemeChanges() {
 }
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-
-bool IsValidCursorThemeName(std::string_view name) {
-  if (name.empty() || name == ".") {
-    return false;
-  }
-  base::FilePath theme_path(name);
-  return !theme_path.IsAbsolute() && !theme_path.ReferencesParent() &&
-         theme_path.BaseName() == theme_path;
-}
-
-bool IsValidCursorThemeSize(int size) {
-  return size >= 0 && size <= 512;
-}
 
 // Returns a cursor name compatible with either X11 or the FreeDesktop.org
 // cursor spec ([1] and [2]), followed by fallbacks that can work as

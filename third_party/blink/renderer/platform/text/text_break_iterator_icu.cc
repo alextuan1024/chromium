@@ -19,10 +19,9 @@
  *
  */
 
-#include "third_party/blink/renderer/platform/text/text_break_iterator.h"
-
 #include <unicode/rbbi.h>
 #include <unicode/ubrk.h>
+
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -30,8 +29,10 @@
 
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "third_party/blink/renderer/platform/text/icu_error.h"
+#include "third_party/blink/renderer/platform/text/text_break_iterator.h"
 #include "third_party/blink/renderer/platform/text/text_break_iterator_internal_icu.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
@@ -107,8 +108,8 @@ class LineBreakIteratorPool final {
  private:
   static const size_t kCapacity = 4;
 
-  typedef std::pair<AtomicString, icu::BreakIterator*> Entry;
-  typedef Vector<Entry, kCapacity> Pool;
+  using Entry = std::pair<AtomicString, icu::BreakIterator*>;
+  using Pool = Vector<Entry, kCapacity>;
   Pool pool_;
   HashMap<icu::BreakIterator*, AtomicString> vended_iterators_;
 
@@ -271,10 +272,10 @@ void TextLatin1MoveInPrimaryContext(UText* text,
   // points to the UText extra buffer with capacity `extraSize / sizeof(UChar)`.
   auto source = UNSAFE_BUFFERS(base::span(
       static_cast<const LChar*>(text->p) + (text->chunkNativeStart - text->b),
-      static_cast<unsigned>(text->chunkLength)));
+      static_cast<size_t>(text->chunkLength)));
   auto dest =
       UNSAFE_BUFFERS(base::span(const_cast<UChar*>(text->chunkContents),
-                                static_cast<unsigned>(text->chunkLength)));
+                                static_cast<size_t>(text->chunkLength)));
   StringImpl::CopyChars(dest, source);
 }
 
@@ -419,7 +420,7 @@ constexpr struct UTextFuncs kTextLatin1Funcs = {
 void TextInit(UText* text,
               const UTextFuncs* funcs,
               const void* string,
-              unsigned length,
+              size_t length,
               const UChar* prior_context,
               int prior_context_length) {
   text->pFuncs = funcs;
@@ -452,8 +453,7 @@ UText* TextOpenLatin1(UTextWithBuffer* ut_with_buffer,
     DCHECK(!text);
     return nullptr;
   }
-  TextInit(text, &kTextLatin1Funcs, string.data(),
-           base::checked_cast<unsigned>(string.size()), prior_context,
+  TextInit(text, &kTextLatin1Funcs, string.data(), string.size(), prior_context,
            prior_context_length);
   return text;
 }
@@ -604,8 +604,7 @@ UText* TextOpenUtf16(UText* text,
     DCHECK(!text);
     return nullptr;
   }
-  TextInit(text, &kTextUtf16Funcs, string.data(),
-           base::checked_cast<unsigned>(string.size()), prior_context,
+  TextInit(text, &kTextUtf16Funcs, string.data(), string.size(), prior_context,
            prior_context_length);
   return text;
 }
@@ -699,9 +698,8 @@ void SetText16(icu::BreakIterator* iter, base::span<const UChar> string) {
 }
 
 TextBreakIterator* WordBreakIterator(base::span<const UChar> string) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<WordBreakIteratorPool>, pool,
-                                  ());
-  return pool->Get(string);
+  static base::NoDestructor<ThreadSpecific<WordBreakIteratorPool>> pool;
+  return (*pool)->Get(string);
 }
 
 TextBreakIterator* WordBreakIterator(const StringView& string) {
@@ -709,9 +707,8 @@ TextBreakIterator* WordBreakIterator(const StringView& string) {
     return nullptr;
   }
   if (string.Is8Bit()) {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<WordBreakIteratorPool>, pool,
-                                    ());
-    return pool->Get(string.Span8());
+    static base::NoDestructor<ThreadSpecific<WordBreakIteratorPool>> pool;
+    return (*pool)->Get(string.Span8());
   }
   return WordBreakIterator(string.Span16());
 }
@@ -736,7 +733,7 @@ PooledBreakIterator AcquireLineBreakIterator(
     base::span<const LChar> string,
     const AtomicString& locale,
     const UChar* prior_context = nullptr,
-    unsigned prior_context_length = 0) {
+    wtf_size_t prior_context_length = 0) {
   PooledBreakIterator iterator{
       LineBreakIteratorPool::SharedPool().Take(locale)};
   if (!iterator) {
@@ -772,7 +769,7 @@ PooledBreakIterator AcquireLineBreakIterator(
     base::span<const UChar> string,
     const AtomicString& locale,
     const UChar* prior_context = nullptr,
-    unsigned prior_context_length = 0) {
+    wtf_size_t prior_context_length = 0) {
   PooledBreakIterator iterator{
       LineBreakIteratorPool::SharedPool().Take(locale)};
   if (!iterator) {
@@ -820,21 +817,21 @@ TextBreakIterator* SentenceBreakIterator(base::span<const UChar> string) {
   UErrorCode open_status = U_ZERO_ERROR;
   // We cannot use ThreadSpecific<TextBreakIterator> directly because
   // TextBreakIterator is an abstract class. So a pointer is required.
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      ThreadSpecific<std::unique_ptr<TextBreakIterator>>, iterator, ());
-  if (!iterator->get()) {
-    *iterator = base::WrapUnique(icu::BreakIterator::createSentenceInstance(
+  static base::NoDestructor<ThreadSpecific<std::unique_ptr<TextBreakIterator>>>
+      iterator;
+  if (!(*iterator)->get()) {
+    **iterator = base::WrapUnique(icu::BreakIterator::createSentenceInstance(
         CurrentTextBreakIcuLocale(), open_status));
     DCHECK(U_SUCCESS(open_status))
         << "ICU could not open a break iterator: " << u_errorName(open_status)
         << " (" << open_status << ")";
-    if (!iterator->get()) {
+    if (!(*iterator)->get()) {
       return nullptr;
     }
   }
 
-  SetText16(iterator->get(), string);
-  return iterator->get();
+  SetText16((*iterator)->get(), string);
+  return (*iterator)->get();
 }
 
 bool IsWordTextBreak(TextBreakIterator* iterator) {

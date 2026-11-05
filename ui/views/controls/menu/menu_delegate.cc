@@ -28,6 +28,10 @@ const gfx::FontList* MenuDelegate::GetLabelFontList(int id) const {
   return nullptr;
 }
 
+const gfx::FontList* MenuDelegate::GetSecondaryLabelFontList(int id) const {
+  return nullptr;
+}
+
 std::optional<SkColor> MenuDelegate::GetLabelColor(int id) const {
   return std::nullopt;
 }
@@ -75,6 +79,10 @@ void MenuDelegate::ExecuteCommand(int id, int mouse_event_flags) {
 
 bool MenuDelegate::ShouldExecuteCommandWithoutClosingMenu(int id,
                                                           const ui::Event& e) {
+  return false;
+}
+
+bool MenuDelegate::ShouldDragActivateChildButtons() const {
   return false;
 }
 

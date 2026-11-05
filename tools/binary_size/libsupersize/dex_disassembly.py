@@ -10,6 +10,7 @@ import functools
 import io
 import logging
 import os
+import platform
 import re
 import readline  # Makes code.InteractiveConsole works better.
 import subprocess
@@ -69,8 +70,30 @@ def NormalizeLines(lines):
   return ret
 
 
-_DISASSEMBLED_METHOD_QUOTA = 10
+_CHROME_R8_MAX_CPUS = 32
 _SYMBOL_FULL_NAME_RE = re.compile(r'(.*?)#(.*?)\((.*?)\):? ?(.*)')
+
+
+def BuildDisassembleCmd():
+  """Returns the command prefix to invoke R8's Disassemble."""
+  chrome_r8_path = path_util.GetChromeR8Path()
+  if (
+    sys.platform == 'linux'
+    and platform.machine() == 'x86_64'
+    and os.path.exists(chrome_r8_path)
+  ):
+    cmd = [chrome_r8_path]
+    # Limit G1 GC threads on many-core machines (reduces sys time).
+    if (os.cpu_count() or 0) > _CHROME_R8_MAX_CPUS:
+      cmd += [f'-XX:ActiveProcessorCount={_CHROME_R8_MAX_CPUS}']
+    cmd += ['--disassemble']
+    return cmd
+  return [
+    path_util.GetJavaExec(),
+    '-cp',
+    path_util.GetR8Path(),
+    'com.android.tools.r8.Disassemble',
+  ]
 
 
 class _CachedApkDisassembler:
@@ -85,7 +108,6 @@ class _CachedApkDisassembler:
     )
 
   def _DisassembleApk(self, mapping, apk_path):
-    r8_path = path_util.GetR8Path()
     r8_output = None
     # Temporary hack until next R8 roll:
     # Prevents R8 failing due to assets/webapk7.dex.
@@ -97,15 +119,7 @@ class _CachedApkDisassembler:
               dst_zip.writestr(info, src_zip.read(info))
       tmp_file.flush()
 
-      cmd = [
-        path_util.GetJavaExec(),
-        '-cp',
-        r8_path,
-        'com.android.tools.r8.Disassemble',
-        '--pg-map',
-        mapping,
-        tmp_file.name,
-      ]
+      cmd = BuildDisassembleCmd() + ['--pg-map', mapping, tmp_file.name]
       r8_output = subprocess.check_output(cmd, encoding='utf-8')
 
     return r8_output
@@ -180,37 +194,15 @@ def Disassemble(symbol, path_resolver, apk_disassembler_cache):
   return _ExtractDisassemblyForMethod(class_obj_map, symbol.full_name)
 
 
-def _AddUnifiedDiff(
-  top_changed_symbols,
-  before_path_resolver,
-  after_path_resolver,
-  normalize=False,
-):
-  after_apk_disassembler_cache = _CachedApkDisassembler()
-  before_apk_disassembler_cache = _CachedApkDisassembler()
-  for symbol in top_changed_symbols:
-    after = None
-    if symbol.after_symbol:
-      after = Disassemble(
-        symbol.after_symbol, after_path_resolver, after_apk_disassembler_cache
-      )
-    before = None
-    if symbol.before_symbol:
-      before = Disassemble(
-        symbol.before_symbol,
-        before_path_resolver,
-        before_apk_disassembler_cache,
-      )
-
-    logging.info('Adding disassembly for: %s', symbol.full_name)
-    if normalize:
-      after = after and NormalizeLines(after)
-      before = before and NormalizeLines(before)
-
-    target_symbol = symbol.after_symbol or symbol.before_symbol
-    target_symbol.disassembly = disassembly_util.CreateUnifiedDiff(
-      symbol.full_name, before or [], after or []
-    )
+def _DisassembleSymbol(symbol, path_resolver, cache, normalize=True):
+  """Disassembles |symbol| using |cache| and sets |symbol.disassembly|."""
+  if not symbol:
+    return
+  lines = Disassemble(symbol, path_resolver, cache)
+  if lines and normalize:
+    lines = NormalizeLines(lines)
+  if lines:
+    symbol.disassembly = ''.join(lines)
 
 
 def _GetTopChangedSymbols(delta_size_info, changed_files=None):
@@ -224,9 +216,10 @@ def _GetTopChangedSymbols(delta_size_info, changed_files=None):
     if abs(symbol.size_without_padding) < 10:
       return False
     # Giant symbols also rarely add value.
-    if symbol.after_symbol and symbol.after_symbol.size > 10000:
+    max_size = disassembly_util.MAX_DISASSEMBLED_SYMBOL_SIZE
+    if symbol.after_symbol and symbol.after_symbol.size > max_size:
       return False
-    if symbol.before_symbol and symbol.before_symbol.size > 10000:
+    if symbol.before_symbol and symbol.before_symbol.size > max_size:
       return False
     return True
 
@@ -238,13 +231,13 @@ def AddDisassembly(
   delta_size_info,
   before_path_resolver,
   after_path_resolver,
-  normalize=False,
+  normalize=True,
   changed_files=None,
 ):
-  """Adds disassembly diffs to top changed dex symbols.
+  """Adds disassembly to top changed dex symbols.
 
-  Adds the unified diff on the "before" and "after" disassembly to the
-  top |_DISASSEMBLED_METHOD_QUOTA| changed symbols.
+  Adds the normalized "before" and "after" disassembly to the
+  top changed symbols.
 
   Args:
     delta_size_info: DeltaSizeInfo Object we are adding disassembly to.
@@ -258,14 +251,38 @@ def AddDisassembly(
   )
   logging.info(
     'Adding disassembly to top %d changed dex symbols',
-    _DISASSEMBLED_METHOD_QUOTA,
+    disassembly_util.DISASSEMBLED_SYMBOL_QUOTA,
   )
-  _AddUnifiedDiff(
-    top_changed_symbols,
-    before_path_resolver,
-    after_path_resolver,
-    normalize=normalize,
+  after_apk_disassembler_cache = _CachedApkDisassembler()
+  before_apk_disassembler_cache = _CachedApkDisassembler()
+  for symbol in top_changed_symbols:
+    logging.info('Adding disassembly for: %s', symbol.full_name)
+    _DisassembleSymbol(
+      symbol.after_symbol,
+      after_path_resolver,
+      after_apk_disassembler_cache,
+      normalize=normalize,
+    )
+    _DisassembleSymbol(
+      symbol.before_symbol,
+      before_path_resolver,
+      before_apk_disassembler_cache,
+      normalize=normalize,
+    )
+
+
+def AddSizeInfoDisassembly(size_info, path_resolver):
+  """Adds disassembly to top 10 largest .dex.method symbols in |size_info|."""
+  top_symbols = disassembly_util.GetTopSizeInfoSymbols(
+    size_info,
+    lambda s: (
+      s.section_name.endswith('dex.method')
+      and 'proguard_mapping_file_name' in s.container.metadata
+    ),
   )
+  apk_disassembler_cache = _CachedApkDisassembler()
+  for symbol in top_symbols:
+    _DisassembleSymbol(symbol, path_resolver, apk_disassembler_cache)
 
 
 def main():

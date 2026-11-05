@@ -10,6 +10,7 @@ import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -23,6 +24,8 @@ import static org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDela
 
 import android.app.Activity;
 import android.util.TypedValue;
+import android.view.View;
+import android.view.accessibility.AccessibilityEvent;
 import android.widget.FrameLayout;
 
 import androidx.appcompat.widget.AppCompatTextView;
@@ -65,6 +68,7 @@ import org.chromium.chrome.browser.xsurface.SurfaceActionsHandler.OpenUrlOptions
 import org.chromium.chrome.browser.xsurface.feed.FeedActionsHandler;
 import org.chromium.chrome.browser.xsurface.feed.FeedSurfaceScope;
 import org.chromium.chrome.browser.xsurface.feed.FeedUserInteractionReliabilityLogger.ClosedReason;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.feed.proto.FeedUiProto;
 import org.chromium.ui.base.WindowAndroid;
@@ -109,11 +113,13 @@ public class FeedStreamTest {
     @Mock private SnackbarManager mSnackbarManager;
     @Captor private ArgumentCaptor<Snackbar> mSnackbarCaptor;
     @Mock private BottomSheetController mBottomSheetController;
+    @Captor private ArgumentCaptor<BottomSheetContent> mBottomSheetContentCaptor;
     @Mock private WindowAndroid mWindowAndroid;
     @Mock private ModalDialogManager mModalDialogManager;
     @Mock private Supplier<ShareDelegate> mShareDelegateSupplier;
     private final StubSnackbarController mSnackbarController = new StubSnackbarController();
     @Mock private Runnable mMockRunnable;
+    @Mock private Runnable mSecondMockRunnable;
     @Mock private Callback<Boolean> mMockRefreshCallback;
     @Mock private FeedStream.ShareHelperWrapper mShareHelper;
     @Mock private Profile mProfileMock;
@@ -628,6 +634,78 @@ public class FeedStreamTest {
     }
 
     @Test
+    public void testBottomSheetDestroyRestoresFocusWithoutObserver() {
+        bindToView();
+        FeedStream.FeedSurfaceActionsHandler handler =
+                (FeedStream.FeedSurfaceActionsHandler)
+                        mContentManager.getContextValues(0).get(SurfaceActionsHandler.KEY);
+        View actionSourceView = new View(mActivity);
+        actionSourceView.setFocusable(true);
+        actionSourceView.setFocusableInTouchMode(true);
+        RecordingAccessibilityDelegate accessibilityDelegate = new RecordingAccessibilityDelegate();
+        actionSourceView.setAccessibilityDelegate(accessibilityDelegate);
+
+        handler.showBottomSheet(new AppCompatTextView(mActivity), actionSourceView);
+        verify(mBottomSheetController)
+                .requestShowContent(mBottomSheetContentCaptor.capture(), eq(true));
+        mBottomSheetContentCaptor.getValue().destroy();
+
+        verify(mBottomSheetController, never()).addObserver(any());
+        assertTrue(actionSourceView.isFocused());
+        assertTrue(
+                accessibilityDelegate.mEventTypes.contains(AccessibilityEvent.TYPE_VIEW_FOCUSED));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.CLANK_STARTUP_TAB_OPTIMIZATIONS)
+    public void testInProgressWorkTrackerMultipleAndDuplicateFinish() {
+        testInProgressWorkTrackerMultipleAndDuplicateFinishImpl();
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.CLANK_STARTUP_TAB_OPTIMIZATIONS)
+    public void testInProgressWorkTrackerMultipleAndDuplicateFinish_legacy() {
+        testInProgressWorkTrackerMultipleAndDuplicateFinishImpl();
+    }
+
+    private void testInProgressWorkTrackerMultipleAndDuplicateFinishImpl() {
+        FeedStream.InProgressWorkTracker tracker = mFeedStream.getInProgressWorkTrackerForTesting();
+        Runnable finish1 = tracker.addWork();
+        Runnable finish2 = tracker.addWork();
+
+        tracker.postTaskAfterWorkComplete(mMockRunnable);
+        verify(mMockRunnable, never()).run();
+
+        finish1.run();
+        finish1.run();
+        RobolectricUtil.runAllBackgroundAndUi();
+        verify(mMockRunnable, never()).run();
+
+        finish2.run();
+        RobolectricUtil.runAllBackgroundAndUi();
+        verify(mMockRunnable).run();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.CLANK_STARTUP_TAB_OPTIMIZATIONS)
+    public void testInProgressWorkTrackerDestroyDropsCallbacksAndStaleWork() {
+        FeedStream.InProgressWorkTracker tracker = mFeedStream.getInProgressWorkTrackerForTesting();
+        Runnable finish1 = tracker.addWork();
+        tracker.postTaskAfterWorkComplete(mMockRunnable);
+
+        tracker.destroy();
+        finish1.run();
+        RobolectricUtil.runAllBackgroundAndUi();
+        verify(mMockRunnable, never()).run();
+
+        Runnable finishAfterDestroy = tracker.addWork();
+        tracker.postTaskAfterWorkComplete(mSecondMockRunnable);
+        finishAfterDestroy.run();
+        RobolectricUtil.runAllBackgroundAndUi();
+        verify(mSecondMockRunnable, never()).run();
+    }
+
+    @Test
     public void testAddToReadingList() {
         bindToView();
         String title = "title";
@@ -951,6 +1029,15 @@ public class FeedStreamTest {
         @Override
         public void onDismissNoAction(Runnable actionFinished) {
             mOnDismissNoActionFinished = actionFinished;
+        }
+    }
+
+    private static class RecordingAccessibilityDelegate extends View.AccessibilityDelegate {
+        final List<Integer> mEventTypes = new ArrayList<>();
+
+        @Override
+        public void sendAccessibilityEvent(View host, int eventType) {
+            mEventTypes.add(eventType);
         }
     }
 }

@@ -31,7 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EXPORTED_WEB_VIEW_IMPL_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EXPORTED_WEB_VIEW_IMPL_H_
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -76,7 +75,6 @@
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "ui/base/ime/mojom/virtual_keyboard_types.mojom-blink.h"
 #include "ui/gfx/geometry/point.h"
@@ -147,7 +145,6 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   void DidDetachRemoteMainFrame() override;
   void SetNoStatePrefetchClient(WebNoStatePrefetchClient*) override;
   WebSettings* GetSettings() override;
-  WebString PageEncoding() const override;
   void SetTabKeyCyclesThroughElements(bool value) override;
   bool IsActive() const override;
   void SetIsActive(bool value) override;
@@ -223,6 +220,8 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   const RendererPreferences& GetRendererPreferences() const override;
   void SetWebPreferences(const web_pref::WebPreferences& preferences) override;
   const web_pref::WebPreferences& GetWebPreferences() override;
+  void SetInitialAutoplayRestriction(const base::UnguessableToken& id,
+                                     bool restricted) override;
   void SetHistoryListFromNavigation(
       int32_t history_index,
       std::optional<int32_t> history_length) override;
@@ -516,8 +515,6 @@ class CORE_EXPORT WebViewImpl final : public WebView,
 
   void DidUpdateMaxSafeAreaInsets(const gfx::InsetsF& max_safe_area_insets);
 
-  void AddAutoplayFlags(int32_t) override;
-  void ClearAutoplayFlags() override;
   int32_t AutoplayFlagsForTest() const override;
   gfx::Size GetPreferredSizeForTest() override;
 
@@ -543,6 +540,11 @@ class CORE_EXPORT WebViewImpl final : public WebView,
 
   void DidEnterFullscreen();
   void DidExitFullscreen();
+
+  // Called when a pending fullscreen request was not granted by the browser
+  // (e.g. if an entry and exit coalesced while visual property updates were
+  // being throttled). Rejects any pending request and resets state to kInitial.
+  void DidFailToEnterFullscreen();
 
   // Called when some JS code has instructed the window associated to the main
   // frame to close, which will result in a request to the browser to close the
@@ -594,6 +596,7 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   void DidAccessInitialMainDocument();
   void DidChangeThemeColor(std::optional<SkColor> theme_color);
   void DidChangeBackgroundColor(SkColor4f background_color, bool color_adjust);
+  void UpdateEncoding(const String& encoding_name);
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   // Additional Windowing Controls API.
@@ -1023,6 +1026,9 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   // to skip Blink-side scroll restoration to avoid conflicts with the cache's
   // native restoration. Reset on each lifecycle update.
   bool last_page_lifecycle_state_update_restored_from_bfcache_ = false;
+
+  // Whether we're currently in Close().
+  bool is_closing_ = false;
 
   // All the registered observers.
   base::ObserverList<WebViewObserver> observers_;

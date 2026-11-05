@@ -298,7 +298,8 @@ bool FormFieldData::IsPasswordInputElement() const {
 }
 
 bool FormFieldData::IsSelectElement() const {
-  return form_control_type() == FormControlType::kSelectOne;
+  return form_control_type() == FormControlType::kSelectOne ||
+         form_control_type() == FormControlType::kSyntheticSelectOne;
 }
 
 // static
@@ -416,6 +417,8 @@ std::string_view FormControlTypeToString(FormControlType type) {
       return "url";
     case FormControlType::kSelectOne:
       return "select-one";
+    case FormControlType::kSyntheticSelectOne:
+      return "synthetic-select-one";
     case FormControlType::kTextArea:
       return "textarea";
   }
@@ -448,7 +451,7 @@ void SerializeFormFieldData(const FormFieldData& field_data,
   pickle->WriteBool(field_data.is_autofilled_according_to_renderer());
   pickle->WriteBool(field_data.is_focusable());
   pickle->WriteBool(field_data.should_autocomplete());
-  pickle->WriteInt(static_cast<int>(field_data.role()));
+  pickle->WriteInt(std::to_underlying(field_data.role()));
   pickle->WriteInt(field_data.text_direction());
   WriteSelectOptionVector(field_data.options(), pickle);
   pickle->WriteString16(field_data.placeholder());

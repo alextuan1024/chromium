@@ -65,9 +65,12 @@ source_set("browser_tests") {
   deps = [
     ":focus",
     "//chrome/browser",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/web_applications",
+    "//chrome/browser/ui/web_applications:test_support",
+    "//chrome/browser/ui/web_applications/test:test_support_ui",
     "//chrome/test:test_support",
     "//components/webapps/common",
     "//content/test:test_support",

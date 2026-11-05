@@ -27,12 +27,16 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted_memory.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
@@ -41,6 +45,7 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/values.h"
+#include "components/history/core/browser/download_row.h"
 #include "components/history/core/browser/features.h"
 #include "components/history/core/browser/history_backend.h"
 #include "components/history/core/browser/history_client.h"
@@ -60,6 +65,9 @@
 #include "components/visitedlink/core/visited_link.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/geometry/size.h"
+#include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace history {
 
@@ -117,7 +125,7 @@ void TestVisitDelegate::AddVisitedLink(const VisitedLink& link) {
 class TestDeviceInfoTracker : public syncer::DeviceInfoTracker {
  public:
   bool IsSyncing() const override { return true; }
-  const syncer::DeviceInfo* GetDeviceInfo(
+  const syncer::DeviceInfo* GetChromeDeviceInfo(
       const std::string& client_id) const override {
     return nullptr;
   }
@@ -256,6 +264,47 @@ class HistoryServiceTest : public testing::Test {
         }),
         &tracker_);
     run_loop.Run();  // Will be exited in callback on query complete.
+  }
+
+  void SetFaviconsOutOfDateForPage(const GURL& page_url) {
+    history_service_->SetFaviconsOutOfDateForPage(page_url);
+  }
+
+  void CloneFaviconMappingsForPages(
+      const GURL& page_url_to_read,
+      const favicon_base::IconTypeSet& icon_types,
+      const base::flat_set<GURL>& page_urls_to_write) {
+    history_service_->CloneFaviconMappingsForPages(page_url_to_read, icon_types,
+                                                   page_urls_to_write);
+  }
+
+  void MergeFavicon(const GURL& page_url,
+                    const GURL& icon_url,
+                    favicon_base::IconType icon_type,
+                    scoped_refptr<base::RefCountedMemory> bitmap_data,
+                    const gfx::Size& pixel_size) {
+    history_service_->MergeFavicon(page_url, icon_url, icon_type, bitmap_data,
+                                   pixel_size);
+  }
+
+  void GetFaviconsForURL(const GURL& page_url,
+                         const favicon_base::IconTypeSet& icon_types,
+                         const std::vector<int>& desired_sizes,
+                         bool fallback_to_host,
+                         favicon_base::FaviconResultsCallback callback) {
+    history_service_->GetFaviconsForURL(page_url, icon_types, desired_sizes,
+                                        fallback_to_host, std::move(callback),
+                                        &tracker_);
+  }
+
+  void GetLargestFaviconForURL(
+      const GURL& page_url,
+      base::span<const favicon_base::IconTypeSet> icon_types,
+      int minimum_size_in_pixels,
+      favicon_base::FaviconRawBitmapCallback callback) {
+    history_service_->GetLargestFaviconForURL(page_url, icon_types,
+                                              minimum_size_in_pixels,
+                                              std::move(callback), &tracker_);
   }
 
   base::ScopedTempDir temp_dir_;
@@ -750,8 +799,8 @@ TEST_F(HistoryServiceTest, QueryMostRepeatedQueriesForKeyword) {
        {history::kRepeatableQueriesMinVisitCount.name, "1"},
        {history::kRepeatableQueriesIgnoreDuplicateVisits.name, "true"}});
 
-  const KeywordID first_keyword_id = 1;
-  const KeywordID second_keyword_id = 2;
+  const KeywordID first_keyword_id(1);
+  const KeywordID second_keyword_id(2);
 
   struct PageData {
     const GURL url;
@@ -990,7 +1039,7 @@ base::Time GetTimeInThePast(base::Time base_time,
                             int hours_since_midnight,
                             int minutes = 0,
                             int seconds = 0) {
-  base::Time past_midnight = MidnightNDaysLater(base_time, -days_back);
+  base::Time past_midnight = base_time.LocalMidnightWithOffset(-days_back);
 
   return past_midnight + base::Hours(hours_since_midnight) +
          base::Minutes(minutes) + base::Seconds(seconds);
@@ -1585,8 +1634,249 @@ TEST_F(HistoryServiceTest, GetAllJourneys) {
       "test_journey", "Example Journey", creation_time,
       /*emoji=*/std::nullopt, /*overview=*/std::nullopt,
       /*short_overview=*/std::nullopt,
-      /*visits=*/{journeys::JourneyVisit(visited_url, page_title)});
+      /*visits=*/
+      {journeys::JourneyVisit(visited_url, page_title, visit_time,
+                              /*is_foreign=*/false)});
   EXPECT_THAT(future.Take(), testing::ElementsAre(expected_journey));
+}
+
+TEST_F(HistoryServiceTest, GetJourney) {
+  HistoryService* history = history_service_.get();
+  ASSERT_TRUE(history);
+
+  // When the journey doesn't exist, GetJourney returns nullopt.
+  {
+    base::test::TestFuture<std::optional<journeys::Journey>> future;
+    history->GetJourney("test_journey", future.GetCallback(), &tracker_);
+    EXPECT_EQ(future.Take(), std::nullopt);
+  }
+
+  const GURL visited_url("https://www.example.com/test");
+  const base::Time visit_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(1000));
+  const std::u16string page_title = u"Example Title";
+
+  history->AddPage(visited_url, visit_time, /*context_id=*/0,
+                   /*nav_entry_id=*/0, GURL(), history::RedirectList(),
+                   ui::PAGE_TRANSITION_LINK, history::SOURCE_BROWSED,
+                   VisitResponseCodeCategory::kNot404,
+                   /*did_replace_entry=*/false);
+  history->SetPageTitle(visited_url, page_title);
+
+  const base::Time creation_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(5000));
+  journeys::JourneyRow journey_row(
+      "test_journey", "Example Journey", creation_time,
+      /*emoji=*/std::nullopt, /*overview=*/std::nullopt,
+      /*short_overview=*/std::nullopt,
+      /*history_entries=*/{journeys::JourneyHistoryEntry(visit_time)});
+
+  const base::Time unvisited_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(9999));
+  journeys::JourneyRow unresolved_journey_row(
+      "unresolved_journey", "Unresolved Journey", creation_time,
+      /*emoji=*/std::nullopt, /*overview=*/std::nullopt,
+      /*short_overview=*/std::nullopt,
+      /*history_entries=*/{journeys::JourneyHistoryEntry(unvisited_time)});
+
+  history->ScheduleDBTask(
+      FROM_HERE,
+      std::make_unique<AddJourneysDBTask>(std::vector<journeys::JourneyRow>{
+          journey_row, unresolved_journey_row}),
+      &tracker_);
+
+  {
+    base::test::TestFuture<std::optional<journeys::Journey>> future;
+    history->GetJourney("test_journey", future.GetCallback(), &tracker_);
+    journeys::Journey expected_journey(
+        "test_journey", "Example Journey", creation_time,
+        /*emoji=*/std::nullopt, /*overview=*/std::nullopt,
+        /*short_overview=*/std::nullopt,
+        /*visits=*/
+        {journeys::JourneyVisit(visited_url, page_title, visit_time,
+                                /*is_foreign=*/false)});
+    EXPECT_THAT(future.Take(), testing::Optional(expected_journey));
+  }
+
+  // A journey with an unresolvable visit timestamp is not returned.
+  {
+    base::test::TestFuture<std::optional<journeys::Journey>> future;
+    history->GetJourney("unresolved_journey", future.GetCallback(), &tracker_);
+    EXPECT_EQ(future.Take(), std::nullopt);
+  }
+}
+
+TEST_F(HistoryServiceTest, GetUnresolvableJourneysCountForFishfood) {
+  HistoryService* history = history_service_.get();
+  ASSERT_TRUE(history);
+
+  const GURL visited_url("https://www.example.com/test");
+  const base::Time visit_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(1000));
+  history->AddPage(visited_url, visit_time, /*context_id=*/0,
+                   /*nav_entry_id=*/0, GURL(), history::RedirectList(),
+                   ui::PAGE_TRANSITION_LINK, history::SOURCE_BROWSED,
+                   VisitResponseCodeCategory::kNot404,
+                   /*did_replace_entry=*/false);
+
+  const base::Time creation_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(5000));
+  journeys::JourneyRow resolved_journey_row(
+      "resolved_journey", "Resolved Journey", creation_time,
+      /*emoji=*/std::nullopt, /*overview=*/std::nullopt,
+      /*short_overview=*/std::nullopt,
+      /*history_entries=*/{journeys::JourneyHistoryEntry(visit_time)});
+
+  // A journey whose visit timestamp has no matching local visit.
+  const base::Time unvisited_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(9999));
+  journeys::JourneyRow unresolved_journey_row(
+      "unresolved_journey", "Unresolved Journey", creation_time,
+      /*emoji=*/std::nullopt, /*overview=*/std::nullopt,
+      /*short_overview=*/std::nullopt,
+      /*history_entries=*/{journeys::JourneyHistoryEntry(unvisited_time)});
+
+  history->ScheduleDBTask(
+      FROM_HERE,
+      std::make_unique<AddJourneysDBTask>(std::vector<journeys::JourneyRow>{
+          resolved_journey_row, unresolved_journey_row}),
+      &tracker_);
+
+  base::test::TestFuture<size_t> future;
+  history->GetUnresolvableJourneysCountForFishfood(future.GetCallback(),
+                                                   &tracker_);
+  EXPECT_EQ(future.Take(), 1u);
+}
+
+namespace {
+
+class NonAddableChromeUrlHistoryClient : public HistoryClient {
+ public:
+  void OnHistoryServiceCreated(HistoryService* history_service) override {}
+  bool CanDeferBackendInit() const override {
+    return base::FeatureList::IsEnabled(kDeferHistoryBackendInit);
+  }
+  void Shutdown() override {}
+  CanAddURLCallback GetThreadSafeCanAddURLCallback() const override {
+    return base::BindRepeating([](const GURL& url) {
+      return url.is_valid() && !url.SchemeIs("chrome") &&
+             !url.SchemeIs(url::kAboutScheme);
+    });
+  }
+  void NotifyProfileError(sql::InitStatus init_status,
+                          const std::string& diagnostics) override {}
+  std::unique_ptr<HistoryBackendClient> CreateBackendClient() override {
+    return nullptr;
+  }
+  void UpdateBookmarkLastUsedTime(int64_t bookmark_node_id,
+                                  base::Time time) override {}
+};
+
+}  // namespace
+
+TEST_F(HistoryServiceTest, NonAddableUrlsShortCircuitedInVisitAndFaviconApis) {
+  CleanupHistoryService();
+
+  base::test::ScopedFeatureList feature_list(kDeferHistoryBackendInit);
+
+  history_service_ = std::make_unique<history::HistoryService>(
+      std::make_unique<NonAddableChromeUrlHistoryClient>(), nullptr, nullptr,
+      nullptr);
+  history_service_->Init(TestHistoryDatabaseParamsForPath(history_dir_));
+  ASSERT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
+
+  const GURL source_url("https://example.com/source");
+  const GURL addable_dest("https://example.com/dest");
+  const GURL non_addable_dest("chrome://newtab/");
+  const GURL icon_url("https://example.com/favicon.ico");
+  const std::array<GURL, 3> kNonAddableUrls = {GURL(), non_addable_dest,
+                                               GURL("about:blank")};
+
+  for (const GURL& url : kNonAddableUrls) {
+    history_service_->SetPageTitle(url, u"title");
+    history_service_->UpdateWithPageEndTime(0, 0, url, base::Time::Now());
+    history_service_->SetPageLanguageForVisit(0, 0, url, "en");
+    history_service_->SetPasswordStateForVisit(
+        0, 0, url, VisitContentAnnotations::PasswordState::kHasPasswordField);
+    SetFaviconsOutOfDateForPage(url);
+    CloneFaviconMappingsForPages(url, {favicon_base::IconType::kFavicon},
+                                 {addable_dest});
+    CloneFaviconMappingsForPages(source_url, {favicon_base::IconType::kFavicon},
+                                 {url});
+
+    base::test::TestFuture<QueryURLResult> query_url_future;
+    history_service_->QueryURL(url, query_url_future.GetCallback(), &tracker_);
+    base::test::TestFuture<QueryURLAndVisitsResult> query_visits_future;
+    history_service_->QueryURLAndVisits(url, VisitQuery404sPolicy::kInclude404s,
+                                        query_visits_future.GetCallback(),
+                                        &tracker_);
+    base::test::TestFuture<QueryURLAndVisitsResult> recent_visits_future;
+    history_service_->GetMostRecentVisitsForGurl(
+        url, 5, VisitQuery404sPolicy::kInclude404s,
+        recent_visits_future.GetCallback(), &tracker_);
+    base::test::TestFuture<std::vector<favicon_base::FaviconRawBitmapResult>>
+        favicons_future;
+    GetFaviconsForURL(
+        url, {favicon_base::IconType::kFavicon}, {16},
+        /*fallback_to_host=*/true,
+        favicons_future.GetCallback<
+            const std::vector<favicon_base::FaviconRawBitmapResult>&>());
+    base::test::TestFuture<favicon_base::FaviconRawBitmapResult>
+        largest_favicon_future;
+    const std::vector<favicon_base::IconTypeSet> icon_types = {
+        {favicon_base::IconType::kFavicon}};
+    GetLargestFaviconForURL(
+        url, icon_types, 16,
+        largest_favicon_future
+            .GetCallback<const favicon_base::FaviconRawBitmapResult&>());
+
+    // None of the calls for non-addable URLs should schedule backend tasks or
+    // trigger deferred `HistoryBackend` initialization.
+    EXPECT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
+
+    EXPECT_FALSE(query_url_future.Get().success);
+    EXPECT_EQ(0, query_url_future.Get().row.id());
+    EXPECT_FALSE(query_visits_future.Get().success);
+    EXPECT_EQ(0, query_visits_future.Get().row.id());
+    EXPECT_TRUE(query_visits_future.Get().visits.empty());
+    EXPECT_FALSE(recent_visits_future.Get().success);
+    EXPECT_EQ(0, recent_visits_future.Get().row.id());
+    EXPECT_TRUE(recent_visits_future.Get().visits.empty());
+    EXPECT_TRUE(favicons_future.Get().empty());
+    EXPECT_FALSE(largest_favicon_future.Get().is_valid());
+  }
+
+  // Verify `CloneFaviconMappingsForPages()` filters out non-addable destination
+  // URLs while preserving addable ones.
+  std::set<GURL> changed_page_urls;
+  base::CallbackListSubscription subscription =
+      history_service_->AddFaviconsChangedCallback(base::BindRepeating(
+          [](std::set<GURL>* out_urls, const std::set<GURL>& page_urls,
+             const GURL& icon_url) {
+            out_urls->insert(page_urls.begin(), page_urls.end());
+          },
+          &changed_page_urls));
+
+  auto bitmap_data =
+      base::MakeRefCounted<base::RefCountedBytes>(std::vector<uint8_t>{1, 2});
+  MergeFavicon(source_url, icon_url, favicon_base::IconType::kFavicon,
+               bitmap_data, gfx::Size(16, 16));
+  CloneFaviconMappingsForPages(source_url, {favicon_base::IconType::kFavicon},
+                               {addable_dest, non_addable_dest});
+  EXPECT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
+  history_service_->EnsureBackendInitScheduled();
+  EXPECT_TRUE(history_service_->is_backend_init_scheduled_for_testing());
+
+  base::test::TestFuture<std::vector<favicon_base::FaviconRawBitmapResult>>
+      addable_dest_future;
+  GetFaviconsForURL(
+      addable_dest, {favicon_base::IconType::kFavicon}, {16},
+      /*fallback_to_host=*/false,
+      addable_dest_future.GetCallback<
+          const std::vector<favicon_base::FaviconRawBitmapResult>&>());
+  EXPECT_FALSE(addable_dest_future.Get().empty());
+  EXPECT_THAT(changed_page_urls,
+              testing::UnorderedElementsAre(source_url, addable_dest));
 }
 
 // This class mocks the VisitDelegate in HistoryService to ensure that
@@ -1648,7 +1938,6 @@ TEST_F(OrderingHistoryServiceTest, EnsureCorrectOrder) {
   VisitRow deleted_visit_row = VisitRow();
   deleted_visit_row.visit_time = visit_time;
   DeletedVisit deleted_visit(deleted_visit_row, deleted_visited_link);
-  std::vector<DeletedVisit> deleted_visits = {deleted_visit};
 
   // Prepare a mock `AddPage` request for the VisitedLink.
   HistoryAddPageArgs request(
@@ -1708,6 +1997,29 @@ TEST_F(OrderingHistoryServiceTest, EnsureAddPageConstructsSelfLink) {
   EXPECT_EQ(weak_visit_delegate_->get_added_links(), expected_links);
 }
 
+namespace {
+
+class DeferredInitTestHistoryClient : public HistoryClient {
+ public:
+  void OnHistoryServiceCreated(HistoryService* history_service) override {}
+  bool CanDeferBackendInit() const override {
+    return base::FeatureList::IsEnabled(kDeferHistoryBackendInit);
+  }
+  void Shutdown() override {}
+  CanAddURLCallback GetThreadSafeCanAddURLCallback() const override {
+    return base::BindRepeating([](const GURL& url) { return url.is_valid(); });
+  }
+  void NotifyProfileError(sql::InitStatus init_status,
+                          const std::string& diagnostics) override {}
+  std::unique_ptr<HistoryBackendClient> CreateBackendClient() override {
+    return nullptr;
+  }
+  void UpdateBookmarkLastUsedTime(int64_t bookmark_node_id,
+                                  base::Time time) override {}
+};
+
+}  // namespace
+
 TEST_F(HistoryServiceTest, DeferredInitWithSyncControllerDelegate) {
   // Tear down the default HistoryService created by SetUp().
   CleanupHistoryService();
@@ -1715,26 +2027,30 @@ TEST_F(HistoryServiceTest, DeferredInitWithSyncControllerDelegate) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(kDeferHistoryBackendInit);
 
-  history_service_ = std::make_unique<history::HistoryService>();
+  history_service_ = std::make_unique<history::HistoryService>(
+      std::make_unique<DeferredInitTestHistoryClient>(), nullptr, nullptr,
+      nullptr);
   history_service_->Init(TestHistoryDatabaseParamsForPath(history_dir_));
 
   // The backend init should not be scheduled yet because init is deferred.
   EXPECT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
   EXPECT_FALSE(history_service_->backend_loaded());
 
-  // Getting the sync controller delegate should not cause backend init to be
-  // scheduled or run.
+  // Getting the sync controller delegate or invoking methods on it while
+  // deferred queues the tasks behind backend init rather than triggering init
+  // immediately.
   auto delegate = history_service_->GetHistorySyncControllerDelegate();
   ASSERT_TRUE(delegate);
-  EXPECT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
-  EXPECT_FALSE(history_service_->backend_loaded());
-
-  // Invoking a method on the delegate triggers the DelegateProvider on the
-  // backend sequence, which ensures the backend is initialized.
+  delegate->ClearMetadataIfStopped();
   base::test::TestFuture<base::ListValue> future;
   delegate->GetAllNodesForDebugging(future.GetCallback());
-  EXPECT_TRUE(future.Wait());
+  EXPECT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
+  EXPECT_FALSE(history_service_->backend_loaded());
+  EXPECT_FALSE(future.IsReady());
 
+  // Scheduling backend init runs Init followed by the queued delegate tasks.
+  history_service_->EnsureBackendInitScheduled();
+  EXPECT_TRUE(future.Wait());
   EXPECT_TRUE(history_service_->backend_loaded());
 }
 
@@ -1748,7 +2064,8 @@ TEST_F(HistoryServiceTest, DeferredInitNotTriggeredByEarlyCallsAndShutdown) {
   TestDeviceInfoTracker device_info_tracker;
   TestLocalDeviceInfoProvider local_device_info_provider;
   history_service_ = std::make_unique<history::HistoryService>(
-      nullptr, nullptr, &device_info_tracker, &local_device_info_provider);
+      std::make_unique<DeferredInitTestHistoryClient>(), nullptr,
+      &device_info_tracker, &local_device_info_provider);
   history_service_->Init(TestHistoryDatabaseParamsForPath(history_dir_));
 
   // Init() notifies device info and local device cache GUID, which should not
@@ -1776,6 +2093,98 @@ TEST_F(HistoryServiceTest, DeferredInitNotTriggeredByEarlyCallsAndShutdown) {
   history_service_->Shutdown();
   history_service_.reset();
   run_loop.Run();
+}
+
+TEST_F(HistoryServiceTest,
+       BackendTasksAndQueriesDeferredUntilEnsureBackendInitScheduled) {
+  CleanupHistoryService();
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kDeferHistoryBackendInit);
+
+  history_service_ = std::make_unique<history::HistoryService>(
+      std::make_unique<DeferredInitTestHistoryClient>(), nullptr, nullptr,
+      nullptr);
+  history_service_->Init(TestHistoryDatabaseParamsForPath(history_dir_));
+
+  EXPECT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
+  EXPECT_FALSE(history_service_->backend_loaded());
+
+  // Scheduling a DB task via `ScheduleDBTask()` or querying
+  // `GetNextDownloadId()` / `QueryDownloads()` should queue the work behind
+  // init without scheduling `HistoryBackend::Init()` immediately.
+  int invoke_count = 0;
+  bool done_invoked = false;
+  base::RunLoop db_task_loop;
+  history_service_->ScheduleDBTask(
+      FROM_HERE,
+      std::unique_ptr<HistoryDBTask>(new HistoryDBTaskImpl(
+          &invoke_count, &done_invoked, db_task_loop.QuitClosure())),
+      &tracker_);
+  EXPECT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
+
+  base::test::TestFuture<uint32_t> download_id_future;
+  history_service_->GetNextDownloadId(download_id_future.GetCallback());
+  base::test::TestFuture<std::vector<DownloadRow>> query_downloads_future;
+  history_service_->QueryDownloads(query_downloads_future.GetCallback());
+  EXPECT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
+  EXPECT_EQ(0, invoke_count);
+  EXPECT_FALSE(done_invoked);
+  EXPECT_FALSE(download_id_future.IsReady());
+  EXPECT_FALSE(query_downloads_future.IsReady());
+
+  // Once `EnsureBackendInitScheduled()` is invoked, both
+  // `HistoryBackend::Init()` and the queued tasks should execute in order.
+  history_service_->EnsureBackendInitScheduled();
+  EXPECT_TRUE(history_service_->is_backend_init_scheduled_for_testing());
+
+  EXPECT_TRUE(download_id_future.Wait());
+  EXPECT_TRUE(query_downloads_future.Wait());
+  EXPECT_TRUE(query_downloads_future.Get().empty());
+  db_task_loop.Run();
+  EXPECT_TRUE(history_service_->backend_loaded());
+  EXPECT_EQ(HistoryDBTaskImpl::kWantInvokeCount, invoke_count);
+  EXPECT_TRUE(done_invoked);
+}
+
+TEST_F(HistoryServiceTest, ShutdownWithQueuedPostInitTasksDropsTasks) {
+  CleanupHistoryService();
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kDeferHistoryBackendInit);
+
+  history_service_ = std::make_unique<history::HistoryService>(
+      std::make_unique<DeferredInitTestHistoryClient>(), nullptr, nullptr,
+      nullptr);
+  history_service_->Init(TestHistoryDatabaseParamsForPath(history_dir_));
+
+  // Queue tasks behind deferred init, then shut down before init is ever
+  // scheduled. `~HistoryBackendRunner()` should drop the queued tasks without
+  // running them and destroy `HistoryBackend` on the background task runner.
+  int invoke_count = 0;
+  bool done_invoked = false;
+  history_service_->ScheduleDBTask(
+      FROM_HERE,
+      std::unique_ptr<HistoryDBTask>(new HistoryDBTaskImpl(
+          &invoke_count, &done_invoked, base::DoNothing())),
+      &tracker_);
+  base::test::TestFuture<uint32_t> download_id_future;
+  history_service_->GetNextDownloadId(download_id_future.GetCallback());
+  base::test::TestFuture<std::vector<DownloadRow>> query_downloads_future;
+  history_service_->QueryDownloads(query_downloads_future.GetCallback());
+  auto sync_delegate = history_service_->GetHistorySyncControllerDelegate();
+  sync_delegate->ClearMetadataIfStopped();
+  EXPECT_FALSE(history_service_->is_backend_init_scheduled_for_testing());
+
+  base::RunLoop destroy_loop;
+  history_service_->SetOnBackendDestroyTask(destroy_loop.QuitClosure());
+  history_service_->Shutdown();
+  history_service_.reset();
+  destroy_loop.Run();
+  EXPECT_EQ(0, invoke_count);
+  EXPECT_FALSE(done_invoked);
+  EXPECT_FALSE(download_id_future.IsReady());
+  EXPECT_FALSE(query_downloads_future.IsReady());
 }
 
 }  // namespace history

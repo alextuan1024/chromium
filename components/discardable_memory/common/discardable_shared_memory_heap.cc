@@ -33,10 +33,8 @@ bool IsInFreeList(DiscardableSharedMemoryHeap::Span* span) {
 DiscardableSharedMemoryHeap::Span::Span(
     base::DiscardableSharedMemory* shared_memory,
     size_t first_block,
-    size_t num_blocks,
-    DiscardableSharedMemoryHeap::ScopedMemorySegment* memory_segment)
-    : memory_segment_(memory_segment),
-      shared_memory_(shared_memory),
+    size_t num_blocks)
+    : shared_memory_(shared_memory),
       first_block_(first_block),
       num_blocks_(num_blocks) {}
 
@@ -55,11 +53,6 @@ DiscardableSharedMemoryHeap::ScopedMemorySegment::ScopedMemorySegment(
 base::span<uint8_t> DiscardableSharedMemoryHeap::Span::memory() const {
   return shared_memory_->memory().subspan(first_block_ * base::GetPageSize(),
                                           num_blocks_ * base::GetPageSize());
-}
-
-DiscardableSharedMemoryHeap::ScopedMemorySegment*
-DiscardableSharedMemoryHeap::Span::GetScopedMemorySegmentForTesting() const {
-  return memory_segment_;
 }
 
 DiscardableSharedMemoryHeap::ScopedMemorySegment::~ScopedMemorySegment() {
@@ -114,7 +107,7 @@ DiscardableSharedMemoryHeap::~DiscardableSharedMemoryHeap() {
   DCHECK_EQ(num_blocks_, 0u);
   DCHECK_EQ(num_free_blocks_, 0u);
   DCHECK(!std::ranges::contains(free_spans_, false,
-                                &base::LinkedList<Span>::empty));
+                                &base::UnsafeLinkedList<Span>::empty));
 }
 
 std::unique_ptr<DiscardableSharedMemoryHeap::Span>
@@ -130,8 +123,8 @@ DiscardableSharedMemoryHeap::Grow(
   auto* raw_shared_memory = shared_memory.get();
   auto scoped_memory_segment = std::make_unique<ScopedMemorySegment>(
       this, std::move(shared_memory), size, id, std::move(deleted_callback));
-  std::unique_ptr<Span> span(new Span(raw_shared_memory, 0u, size / block_size_,
-                                      scoped_memory_segment.get()));
+  std::unique_ptr<Span> span(
+      new Span(raw_shared_memory, 0u, size / block_size_));
   CHECK(spans_.find(SpanBeginKey(*span)) == spans_.end());
   CHECK(spans_.find(SpanEndKey(*span)) == spans_.end());
   RegisterSpan(span.get());
@@ -145,11 +138,6 @@ DiscardableSharedMemoryHeap::Grow(
 }
 
 void DiscardableSharedMemoryHeap::MergeIntoFreeLists(
-    std::unique_ptr<Span> span) {
-  MergeIntoFreeListsClean(std::move(span));
-}
-
-void DiscardableSharedMemoryHeap::MergeIntoFreeListsClean(
     std::unique_ptr<Span> span) {
   DCHECK(span->shared_memory_);
 
@@ -195,9 +183,9 @@ DiscardableSharedMemoryHeap::Split(Span* span, size_t blocks) {
   DCHECK(blocks);
   CHECK_LT(blocks, span->num_blocks_);
 
-  std::unique_ptr<Span> leftover(
-      new Span(span->shared_memory_, span->first_block_ + blocks,
-               span->num_blocks_ - blocks, span->memory_segment_));
+  std::unique_ptr<Span> leftover(new Span(span->shared_memory_,
+                                          span->first_block_ + blocks,
+                                          span->num_blocks_ - blocks));
   CHECK(leftover->num_blocks_ == 1u ||
         spans_.find(SpanBeginKey(*leftover)) == spans_.end());
   RegisterSpan(leftover.get());
@@ -215,7 +203,7 @@ DiscardableSharedMemoryHeap::SearchFreeLists(size_t blocks, size_t slack) {
 
   // Search array of free lists for a suitable span.
   while (length < std::size(free_spans_)) {
-    const base::LinkedList<Span>& free_spans = free_spans_[length - 1u];
+    const base::UnsafeLinkedList<Span>& free_spans = free_spans_[length - 1u];
     if (!free_spans.empty()) {
       // Return the most recently used span located in tail.
       return Carve(free_spans.tail()->value(), blocks);
@@ -227,12 +215,12 @@ DiscardableSharedMemoryHeap::SearchFreeLists(size_t blocks, size_t slack) {
     }
   }
 
-  const base::LinkedList<Span>& overflow_free_spans =
+  const base::UnsafeLinkedList<Span>& overflow_free_spans =
       free_spans_[std::size(free_spans_) - 1u];
 
   // Search overflow free list for a suitable span. Starting with the most
   // recently used span located in tail and moving towards head.
-  for (base::LinkNode<Span>* node = overflow_free_spans.tail();
+  for (base::UnsafeLinkNode<Span>* node = overflow_free_spans.tail();
        node != overflow_free_spans.end(); node = node->previous()) {
     Span* span = node->value();
     if (span->num_blocks_ >= blocks && span->num_blocks_ <= max_length) {
@@ -277,9 +265,9 @@ std::optional<size_t> DiscardableSharedMemoryHeap::GetResidentSize() const {
   size_t resident_size = 0;
   // Each member of |free_spans_| is a LinkedList of Spans. We need to iterate
   // over each of these.
-  for (const base::LinkedList<Span>& span_list : free_spans_) {
-    for (base::LinkNode<Span>* curr = span_list.head(); curr != span_list.end();
-         curr = curr->next()) {
+  for (const base::UnsafeLinkedList<Span>& span_list : free_spans_) {
+    for (base::UnsafeLinkNode<Span>* curr = span_list.head();
+         curr != span_list.end(); curr = curr->next()) {
       Span* free_span = curr->value();
       base::span<uint8_t> mem = free_span->memory();
       std::optional<size_t> resident_in_span =
@@ -360,9 +348,8 @@ DiscardableSharedMemoryHeap::Carve(Span* span, size_t blocks) {
 
   const size_t extra = serving->num_blocks_ - blocks;
   if (extra) {
-    std::unique_ptr<Span> leftover(new Span(serving->shared_memory_.get(),
-                                            serving->first_block_ + blocks,
-                                            extra, serving->memory_segment_));
+    std::unique_ptr<Span> leftover(new Span(
+        serving->shared_memory_.get(), serving->first_block_ + blocks, extra));
     leftover->set_is_locked(false);
     CHECK(extra == 1u || spans_.find(SpanBeginKey(*leftover)) == spans_.end());
     RegisterSpan(leftover.get());

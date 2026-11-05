@@ -9,16 +9,12 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.os.Binder;
-import android.os.Build;
 import android.os.Debug;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Process;
 import android.os.RemoteException;
-import android.os.SystemClock;
-import android.text.TextUtils;
 import android.util.SparseArray;
 
 import org.jni_zero.JNINamespace;
@@ -82,15 +78,7 @@ public class ChildProcessService {
     private final Service mService;
     private final Context mApplicationContext;
 
-    private final Object mBinderLock = new Object();
     private final Object mLibraryInitializedLock = new Object();
-
-    // PID of the client of this service, set in bindToCaller(), if mBindToCallerCheck is true.
-    @GuardedBy("mBinderLock")
-    private int mBoundCallingPid;
-
-    @GuardedBy("mBinderLock")
-    private @Nullable String mBoundCallingClazz;
 
     // This is the native "Main" thread for the renderer / utility process.
     private Thread mMainThread;
@@ -120,33 +108,6 @@ public class ChildProcessService {
             new IChildProcessService.Stub() {
                 // NOTE: Implement any IChildProcessService methods here.
                 @Override
-                public boolean bindToCaller(String clazz) {
-                    assert mServiceBound;
-                    synchronized (mBinderLock) {
-                        int callingPid = Binder.getCallingPid();
-                        if (mBoundCallingPid == 0 && mBoundCallingClazz == null) {
-                            mBoundCallingPid = callingPid;
-                            mBoundCallingClazz = clazz;
-                        } else if (mBoundCallingPid != callingPid) {
-                            Log.e(
-                                    TAG,
-                                    "Service is already bound by pid %d, cannot bind for pid %d",
-                                    mBoundCallingPid,
-                                    callingPid);
-                            return false;
-                        } else if (!TextUtils.equals(mBoundCallingClazz, clazz)) {
-                            Log.w(
-                                    TAG,
-                                    "Service is already bound by %s, cannot bind for %s",
-                                    mBoundCallingClazz,
-                                    clazz);
-                            return false;
-                        }
-                    }
-                    return true;
-                }
-
-                @Override
                 public String getSourceDir() {
                     return mApplicationContext.getApplicationInfo().sourceDir;
                 }
@@ -158,15 +119,9 @@ public class ChildProcessService {
                         List<IBinder> callbacks)
                         throws RemoteException {
                     assert mServiceBound;
-                    synchronized (mBinderLock) {
-                        if (args.bindToCaller && mBoundCallingPid == 0) {
-                            Log.e(TAG, "Service has not been bound with bindToCaller()");
-                            parentProcess.finishSetupConnection(-1, 0, 0, null);
-                            return;
-                        }
-                    }
 
                     int pid = Process.myPid();
+                    int uid = Process.myUid();
                     int zygotePid = 0;
                     long startupTimeMillis = -1;
                     IRelroLibInfo relroInfo = null;
@@ -184,7 +139,7 @@ public class ChildProcessService {
                     // |relroInfo| from this process to ensure that another FD to shared memory
                     // is not sent later.
                     parentProcess.finishSetupConnection(
-                            pid, zygotePid, startupTimeMillis, relroInfo);
+                            pid, uid, zygotePid, startupTimeMillis, relroInfo);
                     mParentProcess = parentProcess;
                     processConnectionArgs(args, callbacks);
                 }
@@ -271,6 +226,9 @@ public class ChildProcessService {
             }
             assert mServiceBound;
             CommandLine.init(mChildProcessArgs.commandLine);
+            // Must happen before anything uses ApkInfo, since isolated child processes cannot
+            // compute it themselves.
+            ApkInfo.initFromParentProcess(mChildProcessArgs.apkInfo);
 
             if (CommandLine.getInstance()
                     .hasSwitch(BaseSwitches.ANDROID_SKIP_CHILD_SERVICE_INIT_FOR_TESTING)) {
@@ -322,17 +280,6 @@ public class ChildProcessService {
                 Log.e(TAG, "Failed to call reportExceptionInInit.", re);
             }
             JavaUtils.throwUnchecked(e);
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            // Record process startup time histograms.
-            long startTime = SystemClock.uptimeMillis() - Process.getStartUptimeMillis();
-            String baseHistogramName = "Android.ChildProcessStartTimeV2";
-            String suffix = ContextUtils.isIsolatedProcess() ? ".Isolated" : ".NotIsolated";
-            RecordHistogram.deprecatedRecordMediumTimesHistogram(
-                    baseHistogramName + ".All", startTime);
-            RecordHistogram.deprecatedRecordMediumTimesHistogram(
-                    baseHistogramName + suffix, startTime);
         }
 
         mDelegate.runMain();

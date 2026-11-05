@@ -28,6 +28,7 @@
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/policy_container_host.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/service_worker/service_worker_client.h"
 #include "content/browser/service_worker/service_worker_container_host.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
@@ -54,11 +55,13 @@
 #include "services/network/public/cpp/cross_origin_embedder_policy.h"
 #include "services/network/public/cpp/document_isolation_policy.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/sri_message_signatures.h"
 #include "services/network/public/cpp/timing_allow_origin_parser.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/service_worker_router_info.mojom.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/service_worker/service_worker_loader_helpers.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_database.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_fetch_handler_bypass_option.mojom-shared.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_fetch_response_callback.mojom.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
@@ -336,7 +339,7 @@ void ServiceWorkerMainResourceLoader::StartRequest(
 
     base::ElapsedTimer router_evaluation_timer;
     response_head_->load_timing.service_worker_router_evaluation_start =
-        base::TimeTicks::Now();
+        router_evaluation_timer.start_time();
     auto eval_result = active_worker->router_evaluator()->Evaluate(
         resource_request_, running_status);
     router_info->router_evaluation_time = router_evaluation_timer.Elapsed();
@@ -723,9 +726,17 @@ void ServiceWorkerMainResourceLoader::CommitResponseBody(
     }
   }
 
-  url_loader_client_->OnReceiveResponse(response_head.Clone(),
-                                        std::move(response_body),
-                                        std::move(cached_metadata));
+  auto head = response_head.Clone();
+  if (response_head_.get() == response_head.get() &&
+      cache_storage_side_data_writer_) {
+    auto side_data_writer = std::move(cache_storage_side_data_writer_);
+    if (CanForwardCacheStorageSideDataWriter()) {
+      head->cache_storage_side_data_writer = std::move(side_data_writer);
+    }
+  }
+
+  url_loader_client_->OnReceiveResponse(
+      std::move(head), std::move(response_body), std::move(cached_metadata));
 }
 
 void ServiceWorkerMainResourceLoader::CommitEmptyResponseAndComplete() {
@@ -743,8 +754,11 @@ void ServiceWorkerMainResourceLoader::CommitEmptyResponseAndComplete() {
   CommitCompleted(net::OK, "No body exists.");
 }
 
-void ServiceWorkerMainResourceLoader::CommitCompleted(int error_code,
-                                                      const char* reason) {
+void ServiceWorkerMainResourceLoader::CommitCompleted(
+    int error_code,
+    const char* reason,
+    std::optional<network::mojom::BlockedByResponseReason>
+        blocked_by_response_reason) {
   TRACE_EVENT("ServiceWorker",
               "ServiceWorkerMainResourceLoader::CommitCompleted",
               perfetto::Flow::FromPointer(this), "error_code",
@@ -773,8 +787,9 @@ void ServiceWorkerMainResourceLoader::CommitCompleted(int error_code,
   // |stream_waiter_| calls this when done.
   stream_waiter_.reset();
 
-  url_loader_client_->OnComplete(
-      network::URLLoaderCompletionStatus(error_code));
+  network::URLLoaderCompletionStatus status(error_code);
+  status.blocked_by_response_reason = blocked_by_response_reason;
+  url_loader_client_->OnComplete(status);
 }
 
 void ServiceWorkerMainResourceLoader::DidPrepareFetchEvent(
@@ -1133,7 +1148,16 @@ void ServiceWorkerMainResourceLoader::Fallback(
 bool ServiceWorkerMainResourceLoader::MaybeStartSyntheticNetworkRequest(
     scoped_refptr<ServiceWorkerContextWrapper> context_wrapper,
     scoped_refptr<ServiceWorkerVersion> version) {
+  // Synthetic responses apply only to synthetic registrations (`id <=
+  // kSyntheticResponseServiceWorkerRegistrationId`); real registrations use
+  // non-negative IDs. Bail out before embedder preload interception or
+  // eligibility histograms so real service workers never have prefetches
+  // hijacked, fetch handlers bypassed, or controlled responses marked with
+  // `from_synthetic_response` (crbug.com/582423396).
   if (!service_worker_client_ || !resource_request_.is_outermost_main_frame ||
+      !version ||
+      version->registration_id() >
+          blink::mojom::kSyntheticResponseServiceWorkerRegistrationId ||
       !service_worker_loader_helpers::IsEligibleForSyntheticResponse(
           context_wrapper->browser_context(),
           context_wrapper->storage_partition(), resource_request_.url)) {
@@ -1144,6 +1168,12 @@ bool ServiceWorkerMainResourceLoader::MaybeStartSyntheticNetworkRequest(
     // Synthetic response is not enabled in reloading the page.
     RecordSyntheticResponseEligibility(
         SyntheticResponseEligibility::kNotEligibleByReload);
+    return false;
+  }
+  if (resource_request_.load_flags & net::LOAD_SKIP_CACHE_VALIDATION) {
+    // Back/forward history navigations and tab restores set
+    // `net::LOAD_SKIP_CACHE_VALIDATION` to prefer cached content without
+    // revalidation. Synthetic response must not intercept these navigations.
     return false;
   }
 
@@ -1175,9 +1205,20 @@ bool ServiceWorkerMainResourceLoader::MaybeStartSyntheticNetworkRequest(
         service_worker_client_.get(),
         blink::mojom::ServiceWorkerFetchHandlerBypassOption::
             kSyntheticResponse);
+    mojo::PendingRemote<network::mojom::URLLoaderClient> client_to_pass =
+        url_loader_client_.Unbind();
+    if (blink::features::
+            kServiceWorkerSyntheticResponseCaptureInterceptedHeaders.Get() &&
+        !service_worker_loader_helpers::
+            IsSyntheticResponseDryRunModeEnabled()) {
+      // Observe `OnReceiveResponse` on the client pipe only; `receiver_` stays
+      // bound to the preload loader so the body is never buffered here.
+      client_to_pass = ServiceWorkerSyntheticResponseManager::
+          MaybeWrapClientToStoreResponseHeaders(version,
+                                                std::move(client_to_pass));
+    }
     std::move(handler.value())
-        .Run(resource_request_, receiver_.Unbind(),
-             url_loader_client_.Unbind());
+        .Run(resource_request_, receiver_.Unbind(), std::move(client_to_pass));
     return true;
   }
 
@@ -1342,6 +1383,8 @@ void ServiceWorkerMainResourceLoader::StartResponse(
 
   blink::ServiceWorkerLoaderHelpers::SaveResponseInfo(*response,
                                                       response_head_.get());
+  cache_storage_side_data_writer_ =
+      std::move(response->cache_storage_side_data_writer);
 
   response_head_->did_service_worker_navigation_preload =
       dispatched_preload_type() == DispatchedPreloadType::kNavigationPreload;
@@ -1368,10 +1411,8 @@ void ServiceWorkerMainResourceLoader::StartResponse(
              network::mojom::FetchResponseType::kBasic ||
          response_head_->response_type ==
              network::mojom::FetchResponseType::kDefault)) ||
-       (response_head_->parsed_headers &&
-        network::TimingAllowOriginCheck(
-            response_head_->parsed_headers->timing_allow_origin,
-            *resource_request_.request_initiator)))) {
+       PassesTimingAllowOriginCheck(*response,
+                                    *resource_request_.request_initiator))) {
     response_head_->timing_allow_passed = true;
   }
 
@@ -1406,6 +1447,16 @@ void ServiceWorkerMainResourceLoader::StartResponse(
                 perfetto::Flow::FromPointer(this), "result", "redirect",
                 "redirect url", redirect_info->new_url.spec());
     HandleRedirect(*redirect_info, response_head_);
+    return;
+  }
+
+  // SRI verification applies to the final response, not redirect hops.
+  if (std::optional<network::mojom::BlockedByResponseReason> blocked_reason =
+          network::MaybeBlockResponseForSRIMessageSignature(
+              resource_request_, *response_head_,
+              resource_request_.expected_public_keys)) {
+    CommitCompleted(net::ERR_BLOCKED_BY_RESPONSE,
+                    "SRI message signature mismatch", blocked_reason);
     return;
   }
 
@@ -2100,6 +2151,23 @@ void ServiceWorkerMainResourceLoader::TransitionToStatus(Status new_status) {
 
 bool ServiceWorkerMainResourceLoader::IsMainResourceLoader() {
   return true;
+}
+
+bool ServiceWorkerMainResourceLoader::CanForwardCacheStorageSideDataWriter()
+    const {
+  // CSP-sandboxed workers are handled by the worker hosts once the policy
+  // container is known, and navigations never receive the writer because
+  // `URLResponseHead::Clone()` drops it. Here, only refuse to hand the writer
+  // to a worker process that is not allowed to access the client's origin.
+  if (!service_worker_client_) {
+    return false;
+  }
+  if (!service_worker_client_->IsContainerForWorkerClient()) {
+    return true;
+  }
+  return ChildProcessSecurityPolicyImpl::GetInstance()->CanAccessDataForOrigin(
+      service_worker_client_->GetProcessId().GetUnsafeValue(),
+      service_worker_client_->key().origin());
 }
 
 void ServiceWorkerMainResourceLoader::CreateAndRunCacheMatcher(

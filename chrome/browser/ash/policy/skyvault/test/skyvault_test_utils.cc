@@ -15,12 +15,12 @@ MockMigrationObserver::MockMigrationObserver() = default;
 MockMigrationObserver::~MockMigrationObserver() = default;
 
 MockMigrationNotificationManager::MockMigrationNotificationManager(
-    content::BrowserContext* context)
-    : MigrationNotificationManager(context) {}
+    user_manager::User* user)
+    : MigrationNotificationManager(user) {}
 MockMigrationNotificationManager::~MockMigrationNotificationManager() = default;
 
-MockMigrationCoordinator::MockMigrationCoordinator(Profile* profile)
-    : MigrationCoordinator(profile) {
+MockMigrationCoordinator::MockMigrationCoordinator(user_manager::User* user)
+    : MigrationCoordinator(user) {
   ON_CALL(*this, Run)
       .WillByDefault([this](MigrationDestination destination,
                             std::vector<base::FilePath> file_paths,

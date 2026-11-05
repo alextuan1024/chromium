@@ -6,6 +6,7 @@
 #define CC_ANIMATION_ANIMATION_HOST_H_
 
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "cc/animation/animation_export.h"
 #include "cc/animation/keyframe_model.h"
 #include "cc/base/protected_sequence_synchronizer.h"
+#include "cc/paint/deferred_value_generators.h"
 #include "cc/trees/layer_tree_mutator.h"
 #include "cc/trees/mutator_host.h"
 #include "cc/trees/mutator_host_delegate.h"
@@ -79,10 +81,11 @@ class CC_ANIMATION_EXPORT AnimationHost : public MutatorHost,
   // we are not in a protected sequence.
   void RemoveTrigger(scoped_refptr<AnimationTrigger> trigger);
 
-  // Lazy removal of an unused timeline.
+  // Lazy removal of an unused timeline. Defers removal if we are in a
+  // protected sequence or WillCommit.
   void DetachAnimationTimeline(scoped_refptr<AnimationTimeline> timeline);
   // Removes an entry from |id_to_trigger_map_|. Defers removal if we are in a
-  // protected sequence.
+  // protected sequence or WillCommit.
   void DetachTrigger(scoped_refptr<AnimationTrigger> trigger);
 
   const AnimationTimeline* GetTimelineById(int timeline_id) const;
@@ -116,11 +119,31 @@ class CC_ANIMATION_EXPORT AnimationHost : public MutatorHost,
   bool InProtectedSequence() const override;
   void WaitForProtectedSequenceCompletion() const override;
 
+  bool InWillCommit() const;
+
   void SetNeedsCommit();
   void SetNeedsPushProperties();
   void ResetNeedsPushProperties();
   bool needs_push_properties() const {
     return needs_push_properties_.Read(*this);
+  }
+
+  // Keeps a copy of the generators in `source` that can run on the impl thread.
+  // If the copy changed, requests a commit to push it to the impl thread.
+  void SetDeferredValueGenerators(const DeferredValueGenerators& source);
+
+  // Updates or clears the progress of the compositor generator for `key`, if
+  // present. Returns true if the generator's progress changed.
+  bool SetDeferredValueGeneratorProgress(const DeferredPropertyKey& key,
+                                         std::optional<float> progress);
+
+  // Receives the progress ticked by a `DEFERRED_PROPERTY` animation. Ignored on
+  // the main thread, since only the compositor samples generators.
+  void OnDeferredPropertyAnimated(const DeferredPropertyKey& key,
+                                  float progress);
+
+  const DeferredValueGenerators& deferred_value_generators_for_testing() const {
+    return deferred_value_generators_.Read(*this);
   }
 
   // MutatorHost implementation.
@@ -249,6 +272,9 @@ class CC_ANIMATION_EXPORT AnimationHost : public MutatorHost,
   bool HasSmilAnimation() const override;
   bool HasViewTransition() const override;
   bool HasScrollLinkedAnimation(ElementId for_scroller) const override;
+  bool NeedsUpdateDeferredValues() const override;
+  base::flat_set<DeferredPropertyKey> UpdateDeferredValues(
+      DeferredValueMap& values) override;
 
   // Starts/stops metrics tracking represented by `sequence_id`.
   void StartCompositorMetricsTracking(TrackedAnimationSequenceId sequence_id);
@@ -308,6 +334,7 @@ class CC_ANIMATION_EXPORT AnimationHost : public MutatorHost,
 
   ProtectedSequenceReadable<ElementToAnimationsMap> element_to_animations_map_;
   ProtectedSequenceReadable<AnimationsList> ticking_animations_;
+  ProtectedSequenceReadable<DeferredValueGenerators> deferred_value_generators_;
 
   // A list of all timelines which this host owns.
   ProtectedSequenceReadable<IdToTimelineMap> id_to_timeline_map_;
@@ -315,13 +342,12 @@ class CC_ANIMATION_EXPORT AnimationHost : public MutatorHost,
   // A list of animation triggers which this host owns.
   ProtectedSequenceReadable<IdToTriggerMap> id_to_trigger_map_;
 
-  // A list of IDs for detached timelines. A timeline may be detached on the
-  // owner thread even during a protected sequence. These timelines are no
-  // longer used and should be cleaned up at the next opportune moment.
+  // Timelines detached during a protected sequence or WillCommit, deferred for
+  // later cleanup.
   ProtectedSequenceForbidden<IdToTimelineMap> detached_timeline_map_;
 
-  // Similar to |detached_timeline_map_|, if detached during a protected
-  // sequence, defer the deletion of a trigger to the next opportunity.
+  // Triggers detached during a protected sequence or WillCommit, deferred for
+  // later cleanup.
   ProtectedSequenceForbidden<IdToTriggerMap> detached_trigger_map_;
 
   // AnimationHosts's ProtectedSequenceSynchronizer implementation is

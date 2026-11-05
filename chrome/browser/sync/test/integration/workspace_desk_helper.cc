@@ -18,7 +18,7 @@ namespace workspace_desk_helper {
 DeskUuidChecker::DeskUuidChecker(desks_storage::DeskSyncService* service,
                                  const base::Uuid& uuid)
     : uuid_(uuid), service_(service) {
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M163);
   service->GetDeskModel()->AddObserver(this);
 }
 
@@ -44,7 +44,7 @@ void DeskUuidChecker::DeskModelLoaded() {
 }
 
 void DeskUuidChecker::EntriesAddedOrUpdatedRemotely(
-    const std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>>&
+    const std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>>&
         new_entries) {
   CheckExitCondition();
 }
@@ -59,7 +59,7 @@ DeskUuidDeletedChecker::DeskUuidDeletedChecker(
     desks_storage::DeskSyncService* service,
     const base::Uuid& uuid)
     : uuid_(uuid), service_(service) {
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M163);
   service->GetDeskModel()->AddObserver(this);
 }
 
@@ -85,7 +85,7 @@ void DeskUuidDeletedChecker::DeskModelLoaded() {
 }
 
 void DeskUuidDeletedChecker::EntriesAddedOrUpdatedRemotely(
-    const std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>>&
+    const std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>>&
         new_entries) {
   CheckExitCondition();
 }
@@ -99,7 +99,7 @@ void DeskUuidDeletedChecker::EntriesRemovedRemotely(
 DeskModelReadyChecker::DeskModelReadyChecker(
     desks_storage::DeskSyncService* service)
     : service_(service) {
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M163);
   service->GetDeskModel()->AddObserver(this);
 }
 
@@ -117,7 +117,7 @@ void DeskModelReadyChecker::DeskModelLoaded() {
 }
 
 void DeskModelReadyChecker::EntriesAddedOrUpdatedRemotely(
-    const std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>>&
+    const std::vector<raw_ptr<const ash::DeskTemplate, DanglingUntriaged>>&
         new_entries) {
   CheckExitCondition();
 }

@@ -5,12 +5,28 @@
 #ifndef IOS_CHROME_BROWSER_ENTERPRISE_PROXY_MODEL_PROXY_SERVICE_CONTROLLER_H_
 #define IOS_CHROME_BROWSER_ENTERPRISE_PROXY_MODEL_PROXY_SERVICE_CONTROLLER_H_
 
+#import <cstddef>
+#import <optional>
+#import <vector>
+
+#import "base/callback_list.h"
+#import "base/memory/raw_ptr.h"
+#import "base/scoped_observation.h"
+#import "base/sequence_checker.h"
+#import "base/time/time.h"
+#import "components/enterprise/net/core/enterprise_proxy_service.h"
 #import "components/keyed_service/core/keyed_service.h"
+#import "ios/web/public/proxy/proxy_config.h"
+#import "ios/web/public/proxy/proxy_configuration_provider.h"
 #import "ios/web/public/web_state_delegate.h"
 
 @class NSURLProtectionSpace;
 @class NSURLCredential;
 @class NSURLResponse;
+
+namespace enterprise_net {
+class EnterpriseProxyErrorService;
+}  // namespace enterprise_net
 
 namespace web {
 class WebState;
@@ -18,25 +34,103 @@ class WebState;
 
 // Profile-scoped `KeyedService` responsible for managing web-layer proxy
 // configuration and observing enterprise proxy route updates.
-class ProxyServiceController : public KeyedService {
+class ProxyServiceController
+    : public KeyedService,
+      public enterprise_net::EnterpriseProxyService::Observer {
  public:
+  // Initializes the controller with `enterprise_proxy_service`,
+  // `enterprise_proxy_error_service` and `proxy_configuration_provider`. All
+  // parameters must be non-null. Starts observing route updates and performs
+  // initial route configuration.
+  ProxyServiceController(
+      enterprise_net::EnterpriseProxyService* enterprise_proxy_service,
+      enterprise_net::EnterpriseProxyErrorService*
+          enterprise_proxy_error_service,
+      web::ProxyConfigurationProvider* proxy_configuration_provider);
+  ~ProxyServiceController() override;
+
   ProxyServiceController(const ProxyServiceController&) = delete;
   ProxyServiceController& operator=(const ProxyServiceController&) = delete;
   ProxyServiceController(ProxyServiceController&&) = delete;
   ProxyServiceController& operator=(ProxyServiceController&&) = delete;
 
-  ProxyServiceController();
-  ~ProxyServiceController() override;
-
   // Evaluates a 407 Proxy Authentication challenge against enterprise proxy
-  // policies. Returns true if the challenge is handled by enterprise proxy
-  // logic, or false if the caller should fall back to standard auth handling.
+  // policies. `source` must not be null.
+  //
+  // Returns true if the challenge is handled by enterprise proxy logic, in
+  // which case `callback` is guaranteed to run exactly once, possibly
+  // asynchronously. Returns false if the caller should fall back to standard
+  // auth handling, in which case `callback` is destroyed without running.
+  //
+  // A handled challenge is attributed to the pending main-frame navigation of
+  // `source` if `source` has an `EnterpriseProxyTabHelper` and the challenged
+  // URL is the navigation's URL. If the challenge gets no credentials while
+  // that navigation is still pending, its disguised error stays recorded for
+  // the navigation, and the navigation fails with the enterprise proxy error
+  // when enterprise proxy error handling is enabled. Otherwise, the request
+  // continues without authenticating, as the protection space is rejected.
+  //
+  // `proposed_credential` is ignored: a credential is only proposed after a
+  // previous attempt failed, and repeated failures are already bounded by the
+  // retry limit that `CRWWKNavigationHandler` enforces before delegating.
   virtual bool MaybeHandleProxyAuthChallenge(
       web::WebState* source,
       NSURLProtectionSpace* protection_space,
       NSURLCredential* proposed_credential,
       NSURLResponse* failure_response,
       web::WebStateDelegate::ProxyAuthCallback callback);
+
+  // KeyedService:
+  // Stops observing `enterprise_proxy_service_` and clears references.
+  void Shutdown() override;
+
+  // EnterpriseProxyService::Observer:
+  // Translates dynamic routing configs from `enterprise_proxy_service_` and
+  // forwards them to `proxy_configuration_provider_`. No-op prior to iOS 18.1
+  // because a WebKit bug prevents proxy authentication challenges from being
+  // delivered on older OS versions. Records the routing metrics when the rules
+  // given to `proxy_configuration_provider_` or the rules left out change.
+  void OnDynamicProxyConfigsStatusChanged() override;
+
+ private:
+  // Called once the `config_count` native configurations of the
+  // `UpdateProxyConfiguration()` call `request_id` are set on the data store.
+  // For the latest call by `this`, records the time until changed rules are
+  // set, and `config_count`.
+  void OnProxyConfigurationsApplied(
+      web::ProxyConfigurationProvider::RequestId request_id,
+      size_t config_count);
+
+  SEQUENCE_CHECKER(sequence_checker_);
+
+  // Observed and cleared on destruction or `Shutdown()`.
+  raw_ptr<enterprise_net::EnterpriseProxyService> enterprise_proxy_service_ =
+      nullptr;
+  // Resolves proxy auth challenges. Cleared on `Shutdown()`.
+  raw_ptr<enterprise_net::EnterpriseProxyErrorService>
+      enterprise_proxy_error_service_ = nullptr;
+  // Owned by `BrowserState`, which outlives `ProfileIOS` keyed services.
+  raw_ptr<web::ProxyConfigurationProvider> proxy_configuration_provider_ =
+      nullptr;
+
+  // Rules last given to `proxy_configuration_provider_`, and number of rules
+  // left out of them because WebKit supports none of their proxies. The service
+  // notifies when a route refresh starts and completes, usually with unchanged
+  // rules, so the routing metrics are only recorded when these change.
+  std::vector<web::ProxyRule> rules_;
+  size_t unsupported_rule_count_ = 0;
+  // When `rules_` last changed, until the resulting configurations are set on
+  // the data store.
+  std::optional<base::TimeTicks> rules_change_time_;
+  // ID of the latest `UpdateProxyConfiguration()` call by `this`, null before
+  // the first one.
+  web::ProxyConfigurationProvider::RequestId last_request_id_;
+
+  base::ScopedObservation<enterprise_net::EnterpriseProxyService,
+                          enterprise_net::EnterpriseProxyService::Observer>
+      scoped_observation_{this};
+  // Runs `OnProxyConfigurationsApplied()` until destruction or `Shutdown()`.
+  base::CallbackListSubscription proxy_configurations_applied_subscription_;
 };
 
 #endif  // IOS_CHROME_BROWSER_ENTERPRISE_PROXY_MODEL_PROXY_SERVICE_CONTROLLER_H_

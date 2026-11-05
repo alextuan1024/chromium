@@ -159,13 +159,18 @@ class ShelfItemFactoryFake : public ShelfModel::ShelfItemFactory {
 
 class AppListControllerImplTest : public AshTestBase {
  public:
-  AppListControllerImplTest() { set_add_default_shelf_icon(false); }
+  AppListControllerImplTest() = default;
 
   AppListControllerImplTest(const AppListControllerImplTest&) = delete;
   AppListControllerImplTest& operator=(const AppListControllerImplTest&) =
       delete;
 
   ~AppListControllerImplTest() override = default;
+
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
 
   void SetUp() override {
     AshTestBase::SetUp();
@@ -421,6 +426,32 @@ TEST_F(AppListControllerImplTest, VirtualKeyboardNotShownWhenUserStartsTyping) {
   DismissAppListNow();
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(nullptr, GetVirtualKeyboardWindow());
+}
+
+// Verifies that entering tablet mode with an active window and a visible
+// virtual keyboard keeps the keyboard visible while the home launcher is
+// occluded, and hides the keyboard once the launcher is shown.
+TEST_F(AppListControllerImplTest,
+       VirtualKeyboardStaysVisibleWhenLauncherOccludedInTabletMode) {
+  KeyboardController* const keyboard_controller =
+      Shell::Get()->keyboard_controller();
+  keyboard_controller->SetEnableFlag(
+      keyboard::KeyboardEnableFlag::kShelfEnabled);
+
+  std::unique_ptr<views::Widget> widget =
+      CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
+  keyboard_controller->ShowKeyboard();
+  ASSERT_TRUE(keyboard::test::WaitUntilShown());
+  EXPECT_TRUE(keyboard_controller->IsKeyboardVisible());
+
+  ash::TabletModeControllerTestApi().EnterTabletMode();
+  EXPECT_FALSE(Shell::Get()->app_list_controller()->IsVisible());
+  EXPECT_TRUE(keyboard_controller->IsKeyboardVisible());
+
+  widget->Minimize();
+  EXPECT_TRUE(Shell::Get()->app_list_controller()->IsVisible());
+  ASSERT_TRUE(keyboard::test::WaitUntilHidden());
+  EXPECT_FALSE(keyboard_controller->IsKeyboardVisible());
 }
 
 #if defined(ADDRESS_SANITIZER)

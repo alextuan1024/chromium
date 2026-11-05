@@ -37,6 +37,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabShareUtils;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
@@ -93,6 +94,7 @@ public class TabArchiverImpl implements TabArchiver {
     @Override
     public void destroy() {
         mCallbackController.destroy();
+        mObservers.clear();
     }
 
     @Override
@@ -280,7 +282,10 @@ public class TabArchiverImpl implements TabArchiver {
             if (tabState == null) continue;
             Tab archivedTab =
                     mArchivedTabCreator.createFrozenTab(
-                            tabState, tabId, TabModel.INVALID_TAB_INDEX);
+                            tabState,
+                            tabId,
+                            TabModel.INVALID_TAB_INDEX,
+                            TabLaunchType.FROM_RESTORE);
             archivedTabs.add(archivedTab);
             singleTabsToClose.add(tab);
         }
@@ -315,7 +320,8 @@ public class TabArchiverImpl implements TabArchiver {
                     .closeTabs(
                             assumeNonNull(
                                             TabClosureParams.forCloseTabGroup(
-                                                    regularTabModel, tabGroupId))
+                                                    regularTabModel,
+                                                    TabGroupId.fromRawToken(tabGroupId)))
                                     .hideTabGroups(true)
                                     .allowUndo(false)
                                     .build(),
@@ -349,7 +355,10 @@ public class TabArchiverImpl implements TabArchiver {
             // Restore tab at the "start" of the list.
             Tab newTab =
                     tabCreator.createFrozenTab(
-                            tabState, tab.getId(), areTabsBeingOpened ? INVALID_TAB_INDEX : 0);
+                            tabState,
+                            tab.getId(),
+                            areTabsBeingOpened ? INVALID_TAB_INDEX : 0,
+                            TabLaunchType.FROM_RESTORE);
             if (newTab != null) {
                 // Update the timestamp so that the tab isn't immediately re-archived on the next
                 // pass.
@@ -560,7 +569,8 @@ public class TabArchiverImpl implements TabArchiver {
             return false;
         }
 
-        List<Tab> relatedTabList = regularTabModel.getTabsInGroup(tab.getTabGroupId());
+        List<Tab> relatedTabList =
+                regularTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(tab.getTabGroupId()));
         for (Tab relatedTab : relatedTabList) {
             if (!isTabEligibleForArchive(tabUrlToLastActiveTimestampMap, relatedTab)) {
                 return false;
@@ -671,8 +681,6 @@ public class TabArchiverImpl implements TabArchiver {
             }
             // Strip the parent id to avoid ordering issues within the tab model.
             tabState.parentId = Tab.INVALID_TAB_ID;
-            // Strip the root id to avoid reusing the old rootId from the tab state file.
-            tabState.rootId = Tab.INVALID_TAB_ID;
             return tabState;
         }
     }
@@ -680,17 +688,15 @@ public class TabArchiverImpl implements TabArchiver {
     @VisibleForTesting
     void ensureArchivedTabsHaveCorrectFields() {
         for (Tab archivedTab : mArchivedTabModel) {
-            // Archived tabs shouldn't have a root id or parent id. It's possible that there's
-            // stale data around for clients that have archived tabs prior to crrev.com/c/5750590
-            // landing. Fix those fields so that they're corrected in the tab state file.
-            archivedTab.setRootId(archivedTab.getId());
+            // Archived tabs shouldn't have a parent id. It's possible that there's stale data
+            // around for clients that have archived tabs prior to crrev.com/c/5750590 landing. Fix
+            // that field so that it's corrected in the tab state file.
             archivedTab.setParentId(Tab.INVALID_TAB_ID);
         }
     }
 
     private void broadcastDeclutterComplete() {
-        PostTask.postTask(
-                TaskTraits.UI_DEFAULT,
+        postUiThreadCancellableTask(
                 () -> {
                     for (Observer obs : mObservers) {
                         obs.onDeclutterPassCompleted();
@@ -703,8 +709,7 @@ public class TabArchiverImpl implements TabArchiver {
     }
 
     private void broadcastPersistedTabDataCreated() {
-        PostTask.postTask(
-                TaskTraits.UI_DEFAULT,
+        postUiThreadCancellableTask(
                 () -> {
                     for (Observer obs : mObservers) {
                         obs.onArchivePersistedTabDataCreated();
@@ -713,8 +718,7 @@ public class TabArchiverImpl implements TabArchiver {
     }
 
     private void broadcastAutodeletePassComplete() {
-        PostTask.postTask(
-                TaskTraits.UI_DEFAULT,
+        postUiThreadCancellableTask(
                 () -> {
                     for (Observer obs : mObservers) {
                         obs.onAutodeletePassCompleted();

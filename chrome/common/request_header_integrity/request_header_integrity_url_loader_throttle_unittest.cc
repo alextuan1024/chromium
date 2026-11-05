@@ -7,15 +7,20 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "base/rand_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/common/request_header_integrity/chrome_companero_loader.h"
+#include "chrome/common/request_header_integrity/platform_runtime_headers.h"
 #include "net/http/http_request_headers.h"
 #include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -34,7 +39,7 @@ namespace request_header_integrity {
 class TestChromeCompaneroLoader : public ChromeCompaneroLoader {
  public:
   TestChromeCompaneroLoader() = default;
-  ~TestChromeCompaneroLoader() = default;
+  ~TestChromeCompaneroLoader() override = default;
 
   using ChromeCompaneroLoader::SetCacheForTesting;
 };
@@ -71,7 +76,15 @@ class RequestHeaderIntegrityURLLoaderThrottleTest : public testing::Test {
 
 namespace {
 
+constexpr char kMainResourceHistogram[] =
+    "Security.RequestHeaderIntegrity.DynamicHeaderPresent.MainResource";
+constexpr char kSubresourceHistogram[] =
+    "Security.RequestHeaderIntegrity.DynamicHeaderPresent.Subresource";
+constexpr char kPrefetchHistogram[] =
+    "Security.RequestHeaderIntegrity.DynamicHeaderPresent.Prefetch";
+
 TEST_F(RequestHeaderIntegrityURLLoaderThrottleTest, NonGoogleSite) {
+  base::HistogramTester histograms;
   network::ResourceRequest request;
   request.url = GURL("https://www.somesite.com/");
 
@@ -79,6 +92,40 @@ TEST_F(RequestHeaderIntegrityURLLoaderThrottleTest, NonGoogleSite) {
   bool ignored;
   throttle().WillStartRequest(&request, &ignored);
   EXPECT_TRUE(request.cors_exempt_headers.IsEmpty());
+  histograms.ExpectTotalCount(kMainResourceHistogram, 0);
+  histograms.ExpectTotalCount(kSubresourceHistogram, 0);
+}
+
+TEST_F(RequestHeaderIntegrityURLLoaderThrottleTest,
+       DynamicHeaderAbsentWithoutToken) {
+  base::HistogramTester histograms;
+  network::ResourceRequest request;
+  request.url = GURL("https://www.google.com/");
+  request.destination = network::mojom::RequestDestination::kDocument;
+
+  bool ignored = false;
+  throttle().WillStartRequest(&request, &ignored);
+  histograms.ExpectUniqueSample(kMainResourceHistogram, false, 1);
+  histograms.ExpectTotalCount(kSubresourceHistogram, 0);
+}
+
+TEST_F(RequestHeaderIntegrityURLLoaderThrottleTest,
+       PrefetchRecordsPrefetchHistogram) {
+  base::HistogramTester histograms;
+  std::vector<std::string> removed_headers;
+  net::HttpRequestHeaders cors_exempt_headers;
+
+  RequestHeaderIntegrityURLLoaderThrottle::
+      ModifyRequestIntegrityHeadersForPrefetch(GURL("https://www.google.com/"),
+                                               removed_headers,
+                                               cors_exempt_headers);
+
+  EXPECT_TRUE(removed_headers.empty());
+  // The prefetch path reads the process-wide ChromeCompaneroLoader, so only
+  // the number of samples is checked.
+  histograms.ExpectTotalCount(kPrefetchHistogram, 1);
+  histograms.ExpectTotalCount(kMainResourceHistogram, 0);
+  histograms.ExpectTotalCount(kSubresourceHistogram, 0);
 }
 
 #if !BUILDFLAG(GOOGLE_CHROME_BRANDING)
@@ -242,8 +289,10 @@ class RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest
 
 TEST_F(RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest,
        GoogleSiteWithChromeCompanero) {
+  base::HistogramTester histograms;
   network::ResourceRequest request;
   request.url = GURL("https://www.google.com/");
+  request.destination = network::mojom::RequestDestination::kDocument;
 
   ASSERT_TRUE(request.cors_exempt_headers.IsEmpty());
   bool ignored = false;
@@ -253,10 +302,28 @@ TEST_F(RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest,
   EXPECT_TRUE(request.cors_exempt_headers.HasHeader(kTestHeaderName));
   EXPECT_EQ(kTestHeaderValue,
             request.cors_exempt_headers.GetHeader(kTestHeaderName));
+  histograms.ExpectUniqueSample(kMainResourceHistogram, true, 1);
+  histograms.ExpectTotalCount(kSubresourceHistogram, 0);
+}
+
+TEST_F(RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest,
+       SubresourceWithChromeCompanero) {
+  base::HistogramTester histograms;
+  network::ResourceRequest request;
+  request.url = GURL("https://www.google.com/script.js");
+  request.destination = network::mojom::RequestDestination::kScript;
+
+  bool ignored = false;
+  throttle().WillStartRequest(&request, &ignored);
+
+  EXPECT_TRUE(request.cors_exempt_headers.HasHeader(kTestHeaderName));
+  histograms.ExpectUniqueSample(kSubresourceHistogram, true, 1);
+  histograms.ExpectTotalCount(kMainResourceHistogram, 0);
 }
 
 TEST_F(RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest,
        RedirectToNonGoogleWithChromeCompanero) {
+  base::HistogramTester histograms;
   net::RedirectInfo redirect_info;
   redirect_info.new_url = GURL("https://www.somesite.com/");
   network::mojom::URLResponseHead response_head;
@@ -267,25 +334,169 @@ TEST_F(RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest,
                                  &headers_update_params);
   EXPECT_THAT(headers_update_params.removed_headers,
               testing::Contains(kTestHeaderName));
+  histograms.ExpectTotalCount(kMainResourceHistogram, 0);
+  histograms.ExpectTotalCount(kSubresourceHistogram, 0);
 }
 
 TEST_F(RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest,
-       RedirectToGoogleWithChromeCompanero) {
+       MainResourceRedirectToGoogleWithChromeCompanero) {
+  base::HistogramTester histograms;
+  // Start off-Google so that only the redirect attaches the headers.
+  network::ResourceRequest request;
+  request.url = GURL("https://www.somesite.com/");
+  request.destination = network::mojom::RequestDestination::kDocument;
+  bool defer = false;
+  throttle().WillStartRequest(&request, &defer);
+  histograms.ExpectTotalCount(kMainResourceHistogram, 0);
+
   net::RedirectInfo redirect_info;
   redirect_info.new_url = GURL("https://www.google.com/");
   network::mojom::URLResponseHead response_head;
-  bool defer = false;
   network::HttpRequestHeadersUpdateParams headers_update_params;
-
   throttle().WillRedirectRequest(&redirect_info, response_head, &defer,
                                  &headers_update_params);
+
   EXPECT_EQ(0u, headers_update_params.removed_headers.size());
   EXPECT_TRUE(headers_update_params.modified_cors_exempt_headers.HasHeader(
       kTestHeaderName));
   EXPECT_EQ(kTestHeaderValue,
             headers_update_params.modified_cors_exempt_headers.GetHeader(
                 kTestHeaderName));
+  // The redirect is recorded against the resource type of the original
+  // request.
+  histograms.ExpectUniqueSample(kMainResourceHistogram, true, 1);
+  histograms.ExpectTotalCount(kSubresourceHistogram, 0);
 }
+
+TEST_F(RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest,
+       SubresourceRedirectWithinGoogleWithChromeCompanero) {
+  base::HistogramTester histograms;
+  network::ResourceRequest request;
+  request.url = GURL("https://www.google.com/script.js");
+  request.destination = network::mojom::RequestDestination::kScript;
+  bool defer = false;
+  throttle().WillStartRequest(&request, &defer);
+
+  net::RedirectInfo redirect_info;
+  redirect_info.new_url = GURL("https://www.google.com/other_script.js");
+  network::mojom::URLResponseHead response_head;
+  network::HttpRequestHeadersUpdateParams headers_update_params;
+  throttle().WillRedirectRequest(&redirect_info, response_head, &defer,
+                                 &headers_update_params);
+
+  EXPECT_TRUE(headers_update_params.modified_cors_exempt_headers.HasHeader(
+      kTestHeaderName));
+  // One sample for the initial request and one for the redirect.
+  histograms.ExpectUniqueSample(kSubresourceHistogram, true, 2);
+  histograms.ExpectTotalCount(kMainResourceHistogram, 0);
+}
+
+// Platform Runtime headers are not applied on Android.
+#if !BUILDFLAG(IS_ANDROID)
+constexpr char kPlatformRuntimeValue[] = "platform_runtime_value";
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+constexpr char kApplyResultHistogram[] =
+    "ComponentUpdater.PlatformRuntime.RequestHeaderApplyResult";
+#endif
+
+// Covers applying the Platform Runtime headers on the redirect and prefetch
+// paths.
+class RequestHeaderIntegrityURLLoaderThrottlePlatformRuntimeTest
+    : public RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest {
+ protected:
+  void SetUp() override {
+    RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest::SetUp();
+    PlatformRuntimeHeaders::GetInstance().ResetForTesting();
+  }
+
+  void TearDown() override {
+    PlatformRuntimeHeaders::GetInstance().ResetForTesting();
+    RequestHeaderIntegrityURLLoaderThrottleWithCompaneroTest::TearDown();
+  }
+
+  void SetPlatformRuntimeHeader(std::string_view name, std::string_view value) {
+    net::HttpRequestHeaders headers;
+    headers.SetHeader(name, value);
+    PlatformRuntimeHeaders::GetInstance().Set(headers);
+  }
+
+ private:
+  // The apply result histogram is subsampled; record every sample here.
+  base::MetricsSubSampler::ScopedAlwaysSampleForTesting always_sample_;
+};
+
+TEST_F(RequestHeaderIntegrityURLLoaderThrottlePlatformRuntimeTest,
+       RedirectToGoogleAppliesPlatformRuntimeHeaders) {
+  base::HistogramTester histograms;
+  SetPlatformRuntimeHeader(kTestHeaderName, kPlatformRuntimeValue);
+
+  net::RedirectInfo redirect_info;
+  redirect_info.new_url = GURL("https://www.google.com/");
+  network::mojom::URLResponseHead response_head;
+  bool defer = false;
+  network::HttpRequestHeadersUpdateParams headers_update_params;
+  throttle().WillRedirectRequest(&redirect_info, response_head, &defer,
+                                 &headers_update_params);
+
+  // The Platform Runtime value replaces the one the throttle attached.
+  EXPECT_EQ(kPlatformRuntimeValue,
+            headers_update_params.modified_cors_exempt_headers.GetHeader(
+                kTestHeaderName));
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  histograms.ExpectUniqueSample(kApplyResultHistogram,
+                                PlatformRuntimeApplyResult::kApplied, 1);
+#endif
+}
+
+TEST_F(RequestHeaderIntegrityURLLoaderThrottlePlatformRuntimeTest,
+       RedirectToNonGoogleStripsAndDoesNotReaddPlatformRuntimeHeaders) {
+  base::HistogramTester histograms;
+  SetPlatformRuntimeHeader(kTestHeaderName, kPlatformRuntimeValue);
+
+  net::RedirectInfo redirect_info;
+  redirect_info.new_url = GURL("https://www.somesite.com/");
+  network::mojom::URLResponseHead response_head;
+  bool defer = false;
+  network::HttpRequestHeadersUpdateParams headers_update_params;
+  throttle().WillRedirectRequest(&redirect_info, response_head, &defer,
+                                 &headers_update_params);
+
+  // The integrity headers are stripped and not added back.
+  EXPECT_THAT(headers_update_params.removed_headers,
+              testing::Contains(kTestHeaderName));
+  EXPECT_TRUE(headers_update_params.modified_cors_exempt_headers.IsEmpty());
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  histograms.ExpectUniqueSample(kApplyResultHistogram,
+                                PlatformRuntimeApplyResult::kNotApplicable, 1);
+#endif
+}
+
+TEST_F(RequestHeaderIntegrityURLLoaderThrottlePlatformRuntimeTest,
+       PrefetchAppliesPlatformRuntimeHeaders) {
+  constexpr char kPrefetchHeaderName[] = "X-Prefetch-Integrity-Header";
+  base::HistogramTester histograms;
+  SetPlatformRuntimeHeader(kPrefetchHeaderName, kPlatformRuntimeValue);
+
+  // The prefetch path reads the process-wide ChromeCompaneroLoader rather
+  // than the test one, so seed a header that an earlier hop attached.
+  std::vector<std::string> removed_headers;
+  net::HttpRequestHeaders cors_exempt_headers;
+  cors_exempt_headers.SetHeader(kPrefetchHeaderName, "original_value");
+
+  RequestHeaderIntegrityURLLoaderThrottle::
+      ModifyRequestIntegrityHeadersForPrefetch(GURL("https://www.google.com/"),
+                                               removed_headers,
+                                               cors_exempt_headers);
+
+  EXPECT_TRUE(removed_headers.empty());
+  EXPECT_EQ(kPlatformRuntimeValue,
+            cors_exempt_headers.GetHeader(kPrefetchHeaderName));
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  histograms.ExpectUniqueSample(kApplyResultHistogram,
+                                PlatformRuntimeApplyResult::kApplied, 1);
+#endif
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 }  // namespace request_header_integrity

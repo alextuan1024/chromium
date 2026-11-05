@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Camera</translation>
 <translation id="162175252992296058">Portugees met Amerikaans toetsenbord (internationaal)</translation>
 <translation id="1629521517399325891">Het gebruikerscertificaat is niet beschikbaar voor netwerkverificatie.</translation>
+<translation id="1639239467298939599">Laden</translation>
 <translation id="1641780993263690097">Chinees (Pinyin)</translation>
 <translation id="164969095109328410">Chrome-apparaat</translation>
 <translation id="1661207570040737402">Je hebt geen Google Workspace-opslag meer over in je gedeelde Drive.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Bestandssynchronisatie staat uit</translation>
 <translation id="2820957248982571256">Scannen…</translation>
 <translation id="2830077785865012357">Chinees (Zhuyin)</translation>
+<translation id="2838379631617906747">Installeren</translation>
 <translation id="2843806747483486897">Standaardactie wijzigen...</translation>
 <translation id="2873951654529031587">Prullenbak</translation>
 <translation id="2887314858867008269">Amerikaans Colemak</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Onjuist wachtwoord</translation>
 <translation id="5059127710849015030">Nepalees (transliteratie)</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> heeft regels voor proxyoverschrijving ingesteld</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> van alle bestanden wordt verwijderd</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> items verplaatsen naar <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Er is een fout opgetreden.</translation>
-<translation id="5102922915594634436">Gesynchroniseerde mappen beheren</translation>
 <translation id="5109254780565519649">Er is een fout opgetreden. Sommige items zijn misschien niet hersteld.</translation>
 <translation id="5110329002213341433">Engels (Canada)</translation>
 <translation id="5119780910075847424">Synchronisatie gepauzeerd</translation>
@@ -559,7 +561,6 @@
 <translation id="5305688511332277257">Geen certificaten geïnstalleerd</translation>
 <translation id="5317780077021120954">Opslaan</translation>
 <translation id="5318819489018851358">Delen met Linux</translation>
-<translation id="5330145655348521461">Deze bestanden zijn op een ander bureaublad geopend. Verplaats ze naar <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) om ze te bekijken.</translation>
 <translation id="5330512191124428349">Informatie ophalen</translation>
 <translation id="535792325654997756">Persoon met katten</translation>
 <translation id="5358764674931277">Framesnelheid</translation>
@@ -700,7 +701,6 @@
 <translation id="636254897931573416">Ongeldige invoer voor overeenkomst voor domeinextensie</translation>
 <translation id="6364301859968397756">Opslag van organisatie is vol</translation>
 <translation id="6367976544441405720">Busje</translation>
-<translation id="637062427944097960">Dit bestand is op een ander bureaublad geopend. Verplaats het naar <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) om het te bekijken.</translation>
 <translation id="6394388407447716302">Alleen lezen</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> items</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> kan niet worden verplaatst omdat het is versleuteld.</translation>
@@ -1022,6 +1022,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" />: poort</translation>
 <translation id="8656407365183407932">We hebben je offline bestanden moeten verwijderen</translation>
 <translation id="8656768832129462377">Niet controleren</translation>
+<translation id="8662978096466608964">Chrome kan de achtergrond niet instellen.</translation>
 <translation id="8688591111840995413">Ongeldig wachtwoord</translation>
 <translation id="8698464937041809063">Google-tekening</translation>
 <translation id="8698877009525468705">Dit bestand is vertrouwelijk en valt onder beperkingen van het beheerdersbeleid.</translation>

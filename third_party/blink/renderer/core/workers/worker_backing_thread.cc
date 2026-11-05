@@ -7,8 +7,8 @@
 #include <memory>
 
 #include "base/location.h"
+#include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/web/blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
@@ -18,7 +18,6 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_initializer.h"
 #include "third_party/blink/renderer/core/inspector/worker_thread_debugger.h"
 #include "third_party/blink/renderer/core/workers/worker_backing_thread_startup_data.h"
-#include "third_party/blink/renderer/platform/audio/denormal_disabler.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread.h"
@@ -31,37 +30,35 @@ namespace blink {
 namespace {
 
 base::Lock& IsolatesLock() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(base::Lock, lock, ());
-  return lock;
+  static base::NoDestructor<base::Lock> lock;
+  return *lock;
 }
 
 HashSet<v8::Isolate*>& Isolates() EXCLUSIVE_LOCKS_REQUIRED(IsolatesLock()) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(HashSet<v8::Isolate*>, isolates, ());
-  return isolates;
+  static base::NoDestructor<HashSet<v8::Isolate*>> isolates;
+  return *isolates;
 }
 
 HashSet<v8::Isolate*>& ForegroundedIsolates()
     EXCLUSIVE_LOCKS_REQUIRED(IsolatesLock()) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(HashSet<v8::Isolate*>, foregrounded_isolates,
-                                  ());
-  return foregrounded_isolates;
+  static base::NoDestructor<HashSet<v8::Isolate*>> foregrounded_isolates;
+  return *foregrounded_isolates;
 }
 
 v8::Isolate::Priority& IsolateCurrentPriority()
     EXCLUSIVE_LOCKS_REQUIRED(IsolatesLock()) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(v8::Isolate::Priority,
-                                  isolate_current_priority,
-                                  (v8::Isolate::Priority::kUserBlocking));
+  static v8::Isolate::Priority isolate_current_priority(
+      v8::Isolate::Priority::kUserBlocking);
   return isolate_current_priority;
 }
 
 bool& BatterySaverModeEnabled() EXCLUSIVE_LOCKS_REQUIRED(IsolatesLock()) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(bool, battery_saver_mode_enabled, ());
+  static bool battery_saver_mode_enabled;
   return battery_saver_mode_enabled;
 }
 
 bool& MemorySaverModeEnabled() EXCLUSIVE_LOCKS_REQUIRED(IsolatesLock()) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(bool, memory_saver_mode_enabled, ());
+  static bool memory_saver_mode_enabled;
   return memory_saver_mode_enabled;
 }
 
@@ -90,16 +87,6 @@ void AddForegroundedWorkerIsolate(v8::Isolate* isolate) {
 void RemoveForegroundedWorkerIsolate(v8::Isolate* isolate) {
   base::AutoLock locker(IsolatesLock());
   ForegroundedIsolates().erase(isolate);
-}
-
-bool IsDenormalDisabledThreadType(ThreadType type) {
-  if (type == ThreadType::kOfflineAudioWorkletThread ||
-      type == ThreadType::kRealtimeAudioWorkletThread ||
-      type == ThreadType::kSemiRealtimeAudioWorkletThread) {
-    return !base::FeatureList::IsEnabled(
-        blink::features::kAudioWorkletJSDenormalEnabler);
-  }
-  return false;
 }
 
 }  // namespace
@@ -133,21 +120,13 @@ void SetMemorySaverModeForWorkerThreadIsolates(bool memory_saver_mode_enabled);
 
 WorkerBackingThread::WorkerBackingThread(const ThreadCreationParams& params)
     : backing_thread_(blink::NonMainThread::CreateThread(
-          ThreadCreationParams(params).SetSupportsGC(true))),
-      is_denormal_disabled_thread_(
-          IsDenormalDisabledThreadType(params.thread_type)) {}
+          ThreadCreationParams(params).SetSupportsGC(true))) {}
 
 WorkerBackingThread::~WorkerBackingThread() = default;
 
 void WorkerBackingThread::InitializeOnBackingThread(
     const WorkerBackingThreadStartupData& startup_data) {
   DCHECK(backing_thread_->IsCurrentThread());
-
-  // Denormals must be disabled before the V8 isolate is initialized so that the
-  // isolate's internal state and generated code respect the flag.
-  if (is_denormal_disabled_thread_) {
-    DenormalModifier::DisableDenormals();
-  }
 
   DCHECK(!isolate_);
   ThreadScheduler* scheduler = BackingThread().Scheduler();

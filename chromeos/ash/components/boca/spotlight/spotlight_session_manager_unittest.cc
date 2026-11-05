@@ -19,6 +19,8 @@
 #include "chromeos/ash/components/boca/spotlight/spotlight_notification_constants.h"
 #include "chromeos/ash/components/boca/spotlight/spotlight_notification_handler.h"
 #include "chromeos/ash/components/boca/spotlight/spotlight_service.h"
+#include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "google_apis/common/api_error_codes.h"
 #include "google_apis/common/request_sender.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -60,13 +62,14 @@ class MockBocaAppClient : public BocaAppClient {
 
 class MockSessionManager : public BocaSessionManager {
  public:
-  explicit MockSessionManager(SessionClientImpl* session_client_impl)
+  explicit MockSessionManager(SessionClientImpl* session_client_impl,
+                              bool is_producer = false)
       : BocaSessionManager(
             session_client_impl,
             /*pref_service=*/nullptr,
             AccountId::FromUserEmailGaiaId(kUserEmail, GaiaId(kGaiaId)),
             /*identity_manager=*/nullptr,
-            /*=is_producer*/ false) {}
+            is_producer) {}
   MOCK_METHOD(void,
               UpdateCurrentSession,
               (std::unique_ptr<::boca::Session>, bool),
@@ -127,6 +130,10 @@ class SpotlightSessionManagerTest : public testing::Test {
         {ash::features::kBocaSpotlight,
          ash::features::kBocaSpotlightRobotRequester},
         /*disabled_features=*/{});
+    ash::test::UserSessionTestEnvironment::RegisterLocalStatePrefs(
+        local_state_.registry());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(&local_state_);
 
     // Set up global BocaAppClient's mock.
     boca_app_client_ = std::make_unique<NiceMock<MockBocaAppClient>>();
@@ -159,6 +166,7 @@ class SpotlightSessionManagerTest : public testing::Test {
     spotlight_session_manager_.reset();
     boca_session_manager_.reset();
     boca_app_client_.reset();
+    user_session_test_environment_.reset();
   }
 
  protected:
@@ -176,7 +184,9 @@ class SpotlightSessionManagerTest : public testing::Test {
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-
+  TestingPrefServiceSimple local_state_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<NiceMock<MockBocaAppClient>> boca_app_client_;
   std::unique_ptr<StrictMock<MockSessionManager>> boca_session_manager_;
   raw_ptr<NiceMock<MockSpotlightCrdManager>> spotlight_crd_manager_;
@@ -335,6 +345,38 @@ TEST_F(SpotlightSessionManagerTest, DoesNotStartSpotlightWithInactiveSession) {
   EXPECT_CALL(*spotlight_crd_manager(), InitiateSpotlightSession).Times(0);
 
   spotlight_session_manager_->OnConsumerActivityUpdated(activities);
+}
+
+TEST_F(SpotlightSessionManagerTest, DoesNotStartSpotlightForProducer) {
+  StrictMock<MockSessionManager> producer_session_manager(nullptr,
+                                                          /*is_producer=*/true);
+  auto crd_manager = std::make_unique<StrictMock<MockSpotlightCrdManager>>();
+  auto* crd_manager_ptr = crd_manager.get();
+  auto service = std::make_unique<StrictMock<MockSpotlightService>>(
+      &producer_session_manager, nullptr);
+  SpotlightSessionManager producer_spotlight_manager(
+      &producer_session_manager,
+      std::make_unique<SpotlightNotificationHandler>(
+          std::make_unique<FakeSpotlightNotificationHandlerDelegate>()),
+      std::move(crd_manager), std::move(service));
+
+  ::boca::StudentDevice device;
+  device.mutable_view_screen_config()->set_view_screen_state(
+      ::boca::ViewScreenConfig::REQUESTED);
+  ::boca::StudentStatus status;
+  status.mutable_devices()->emplace(kDeviceId, device);
+  std::map<std::string, ::boca::StudentStatus> activities;
+  activities.emplace(kGaiaId, status);
+
+  EXPECT_CALL(*crd_manager_ptr, InitiateSpotlightSession).Times(0);
+  EXPECT_CALL(*crd_manager_ptr, OnSessionEnded).Times(0);
+
+  ::boca::UserIdentity producer;
+  producer.set_email(kUserEmail);
+  producer.set_full_name(kUserFullName);
+  producer_spotlight_manager.OnSessionStarted(kSessionId, producer);
+  producer_spotlight_manager.OnConsumerActivityUpdated(activities);
+  producer_spotlight_manager.OnSessionEnded(kSessionId);
 }
 
 TEST_F(SpotlightSessionManagerTest, DoesNotStartSpotlightWithNoStudentStatus) {

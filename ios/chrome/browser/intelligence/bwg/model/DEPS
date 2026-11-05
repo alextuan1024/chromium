@@ -1,5 +1,6 @@
 include_rules = [
   # keep-sorted start
+  "+components/actor/core/task_source_info.h",
   "+components/actor/public/mojom",
   "+components/feature_engagement/public",
   "+ios/chrome/browser/app_bar/ui",
@@ -21,6 +22,7 @@ include_rules = [
   "+ios/chrome/browser/shared/model/web_state_list/tab_utils.h",
   "+ios/chrome/browser/shared/public/commands/tab_picker_commands.h",
   "+ios/chrome/browser/shared/public/snackbar/snackbar_message.h",
+  "+ios/chrome/browser/shared/public/snackbar/snackbar_message_action.h",
   "+ios/chrome/browser/signin/model/authentication_service.h",
   "+ios/chrome/browser/signin/model/authentication_service_factory.h",
   "+ios/chrome/browser/signin/model/identity_manager_factory.h",

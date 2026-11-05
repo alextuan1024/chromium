@@ -36,6 +36,16 @@
   margin-bottom: 16px;
 }
 
+.chat-header-title {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+#back-button {
+  margin-inline-start: -8px;
+}
+
 .chat-header h2 {
   font-size: 16px;
   font-weight: 500;
@@ -84,6 +94,92 @@
 
 .message-content {
   white-space: pre-wrap;
+}
+
+.references-section {
+  align-items: flex-start;
+  border-top: 1px solid var(--cr-separator-color);
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+  margin-top: 8px;
+  min-width: 0;
+  padding-top: 6px;
+}
+
+.references-label {
+  color: var(--cr-secondary-text-color);
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.references-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.reference-link {
+  color: var(--cr-link-color);
+  display: block;
+  overflow: hidden;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-link:hover {
+  text-decoration: underline;
+}
+
+.reference-image-row {
+  align-items: center;
+  background-color: var(--cr-card-background-color);
+  border: 1px solid var(--cr-separator-color);
+  border-radius: 8px;
+  color: var(--cr-link-color);
+  display: inline-flex;
+  gap: 10px;
+  max-width: 340px;
+  padding: 6px 12px 6px 6px;
+  text-decoration: none;
+}
+
+.reference-image-row:hover .reference-image-title {
+  text-decoration: underline;
+}
+
+.reference-image-thumb {
+  background-color: var(--cr-fallback-color-surface5);
+  border: 1px solid var(--cr-separator-color);
+  border-radius: 6px;
+  flex-shrink: 0;
+  height: 44px;
+  object-fit: cover;
+  width: 60px;
+}
+
+.reference-image-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.reference-image-title {
+  color: var(--cr-link-color);
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-image-subtitle {
+  color: var(--cr-secondary-text-color);
+  font-size: 11px;
 }
 
 .loading-bubble {

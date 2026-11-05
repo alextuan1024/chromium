@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBCODECS_IMAGE_DECODER_CORE_H_
 
 #include "base/sequence_checker.h"
+#include "base/synchronization/atomic_flag.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
 
@@ -25,7 +26,7 @@ class MODULES_EXPORT ImageDecoderCore {
                    scoped_refptr<SegmentReader> data,
                    bool data_complete,
                    ColorBehavior color_behavior,
-                   const SkISize& desired_size,
+                   const gfx::Size& desired_size,
                    ImageDecoder::AnimationOption animation_option);
   ~ImageDecoderCore();
 
@@ -108,7 +109,7 @@ class MODULES_EXPORT ImageDecoderCore {
 
   const String mime_type_;
   const ColorBehavior color_behavior_;
-  const SkISize desired_size_;
+  const gfx::Size desired_size_;
 
   ImageDecoder::AnimationOption animation_option_;
 
@@ -134,7 +135,7 @@ class MODULES_EXPORT ImageDecoderCore {
   // When decode() of incomplete frames has been requested, we need to track the
   // generation id for each SkBitmap that we've handed out. So that we can defer
   // resolution of promises until a new bitmap is generated.
-  HashMap<uint32_t, uint32_t, IntWithZeroKeyHashTraits<uint32_t>>
+  HashMap<uint32_t, uint64_t, IntWithZeroKeyHashTraits<uint32_t>>
       incomplete_frames_;
 
   // By default, assume in order decoding and purge all decoded frames except

@@ -151,7 +151,7 @@ EntityInstance GetMergedEntity(
                 &saved_entity.record_type_data());
         return EntityInstance::WalletRecordTypePayload{
             .management_url =
-                saved_payload ? saved_payload->management_url : ""};
+                saved_payload ? saved_payload->management_url : GURL()};
       }
       case EntityInstance::RecordType::kPersonalContext:
         // pContext entities are read-only.
@@ -257,8 +257,17 @@ void AutofillAiManager::OnAutofillAiSuggestionsShown(
     const FormStructure& form,
     const AutofillField& field,
     base::span<const Suggestion> shown_suggestions,
+    const AutofillSuggestionDelegate::SuggestionUiMetadata& metadata,
     ukm::SourceId ukm_source_id,
     UpdateSuggestionsCallback update_suggestions_callback) {
+  // For sub-popups, only process fillable `kFillAutofillAi` suggestions (such
+  // as domain-fallback order or shipment submenus), ignoring action or
+  // attribution submenus.
+  if (metadata.is_subpopup() &&
+      !std::ranges::contains(shown_suggestions, SuggestionType::kFillAutofillAi,
+                             &Suggestion::type)) {
+    return;
+  }
   if (update_suggestions_callback) {
     generate_suggestions_and_update_popup_callback_ =
         base::BindRepeating(&AutofillAiManager::GenerateAndUpdateSuggestions,
@@ -280,6 +289,9 @@ void AutofillAiManager::OnAutofillAiSuggestionsShown(
 
   std::vector<const EntityInstance*> entities_suggested;
   for (const Suggestion& suggestion : shown_suggestions) {
+    if (suggestion.type != SuggestionType::kFillAutofillAi) {
+      continue;
+    }
     if (const auto* payload =
             std::get_if<Suggestion::AutofillAiPayload>(&suggestion.payload)) {
       if (base::optional_ref<const EntityInstance> entity =
@@ -459,8 +471,6 @@ bool AutofillAiManager::OnFormSubmitted(const FormStructure& form,
   if (!prompt_or_notice_shown) {
     prompt_or_notice_shown = MaybeShowWalletReminderNotice(form);
   }
-  MaybeTriggerAutofillAiSubmissionHatsSurveys(
-      *client_, form, user_suggestion_interactions_per_form_);
   return prompt_or_notice_shown;
 }
 
@@ -495,6 +505,8 @@ bool AutofillAiManager::MaybeImportForm(const FormStructure& form,
         client_->GetWalletPassAccessManager();
     if (wallet_pass_access_manager &&
         IsEligibleForWalletPassDisclosure(is_save_prompt, candidate_entity)) {
+      LogWalletNoticeFunnelEvent(
+          AutofillAiWalletNoticeFunnelEvents::kFetchingUpsertDetails);
       const EntityType entity_type = candidate_entity.type();
       wallet_pass_access_manager->GetDetailsForUpsertPass(
           entity_type,
@@ -506,7 +518,7 @@ bool AutofillAiManager::MaybeImportForm(const FormStructure& form,
       ShowEntityImportBubble(form.ToFormData(), ukm_source_id, prompt_type,
                              std::move(candidate_entity), std::move(old_entity),
                              is_save_synchronous, /*public_passes_notice=*/{},
-                             /*context_token=*/std::nullopt);
+                             /*legal_message_token=*/std::nullopt);
     }
   }
   return prompt_shown;
@@ -545,22 +557,27 @@ void AutofillAiManager::OnGetDetailsForUpsertPassResponse(
     base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
                    wallet::WalletHttpClient::WalletRequestError> response) {
   LegalMessageLines public_passes_notice;
-  std::optional<std::string> context_token;
-  if (response.has_value()) {
-    public_passes_notice = std::move(response->legal_message_lines);
-    context_token = std::move(response->context_token);
-  } else {
-    // If fetching details for the upsert pass failed, fall back to saving
-    // locally.
+  std::optional<std::string> legal_message_token;
+  if (!response.has_value() || !IsValidUpsertPassDetailsResponse(*response)) {
+    LogWalletNoticeFunnelEvent(
+        AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchError);
+    // If fetching details for the upsert pass failed, or if the user should
+    // see the legal message notice (`kEligible`) but `legal_message_lines` or
+    // `legal_message_token` is empty, fall back to saving locally.
     new_entity =
         new_entity.CopyWithNewRecordType(EntityInstance::RecordType::kLocal);
     is_save_synchronous =
         !IsSaveAsynchronous(new_entity.type(), new_entity.record_type());
+  } else {
+    LogWalletNoticeFunnelEvent(
+        AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchSuccess);
+    public_passes_notice = std::move(response->legal_message_lines);
+    legal_message_token = std::move(response->legal_message_token);
   }
   ShowEntityImportBubble(form, ukm_source_id, prompt_type,
                          std::move(new_entity), std::move(old_entity),
                          is_save_synchronous, std::move(public_passes_notice),
-                         std::move(context_token));
+                         std::move(legal_message_token));
 }
 
 void AutofillAiManager::ShowEntityImportBubble(
@@ -571,13 +588,13 @@ void AutofillAiManager::ShowEntityImportBubble(
     std::optional<EntityInstance> old_entity,
     bool is_save_synchronous,
     LegalMessageLines public_passes_notice,
-    std::optional<std::string> context_token) {
+    std::optional<std::string> legal_message_token) {
   AutofillClient::EntityImportPromptResultCallback bubble_callback =
       base::BindOnce(
           [](base::WeakPtr<AutofillAiManager> manager, const FormData& form,
              EntityInstance entity, ukm::SourceId ukm_source_id,
              AutofillClient::AutofillAiImportPromptType prompt_type,
-             std::optional<std::string> context_token,
+             std::optional<std::string> legal_message_token,
              AutofillClient::AutofillAiBubbleResult result,
              std::optional<EntityInstance> edited_entity,
              const AutofillClient::EntityImportUIContext& ui_context) {
@@ -585,11 +602,11 @@ void AutofillAiManager::ShowEntityImportBubble(
               manager->HandlePromptResult(form, std::move(entity),
                                           ukm_source_id, prompt_type, result,
                                           std::move(edited_entity), ui_context,
-                                          std::move(context_token));
+                                          std::move(legal_message_token));
             }
           },
           GetWeakPtr(), form, new_entity, ukm_source_id, prompt_type,
-          std::move(context_token));
+          std::move(legal_message_token));
   client_->ShowEntityImportBubble(
       std::move(new_entity), std::move(old_entity), is_save_synchronous,
       std::move(public_passes_notice), std::move(bubble_callback));
@@ -603,7 +620,7 @@ void AutofillAiManager::HandlePromptResult(
     AutofillClient::AutofillAiBubbleResult result,
     std::optional<EntityInstance> edited_entity,
     const AutofillClient::EntityImportUIContext& ui_context,
-    std::optional<std::string> context_token) {
+    std::optional<std::string> legal_message_token) {
   if (edited_entity) {
     entity = std::exchange(edited_entity, std::nullopt).value();
   }
@@ -615,6 +632,10 @@ void AutofillAiManager::HandlePromptResult(
   AddOrClearImportPromptStrikes(prompt_type, result, form.url(), entity);
 
   if (!DidUserExplicitlyAcceptedImportPrompt(result)) {
+    if (legal_message_token && !legal_message_token->empty()) {
+      LogWalletNoticeFunnelEvent(
+          AutofillAiWalletNoticeFunnelEvents::kEntityNotSaved);
+    }
     return;
   }
 
@@ -625,13 +646,21 @@ void AutofillAiManager::HandlePromptResult(
   if (entity.record_type() == EntityInstance::RecordType::kServerWallet &&
       !MayPerformAutofillAiAction(*client_, AutofillAiAction::kImportToWallet,
                                   entity.type())) {
+    if (legal_message_token && !legal_message_token->empty()) {
+      LogWalletNoticeFunnelEvent(
+          AutofillAiWalletNoticeFunnelEvents::kEntityNotSaved);
+    }
     HandleIneligibleWalletFallback(prompt_type, std::move(entity));
     return;
   }
 
   if (!IsSaveAsynchronous(entity.type(), entity.record_type())) {
+    if (legal_message_token && !legal_message_token->empty()) {
+      LogWalletNoticeFunnelEvent(
+          AutofillAiWalletNoticeFunnelEvents::kEntitySaved);
+    }
     entity_manager.AddOrUpdateEntityInstance(std::move(entity),
-                                             std::move(context_token));
+                                             std::move(legal_message_token));
     return;
   }
 
@@ -654,10 +683,10 @@ void AutofillAiManager::HandlePromptResult(
         // doesn't require a valid `session_id`.
         if (base::FeatureList::IsEnabled(
                 wallet::features::kWalletApiPrivatePassesConsent)) {
-          CHECK(ui_context.accepted_consent_string_id.has_value());
+          CHECK(!ui_context.accepted_consent_string_ids.empty());
           CHECK(ui_context.accept_button_string_id.has_value());
           session_id = RecordWalletPrivatePassConsent(
-              ui_context.accepted_consent_string_id.value(),
+              ui_context.accepted_consent_string_ids,
               ui_context.accept_button_string_id.value(),
               *client_->GetConsentAuditor(), *client_->GetIdentityManager());
         }
@@ -694,7 +723,6 @@ void AutofillAiManager::HandleIneligibleWalletFallback(
               return;
             }
 
-            // This is a no-op for public passes.
             self->client_->CloseEntityImportBubble();
 
             switch (prompt_type) {
@@ -773,8 +801,8 @@ void AutofillAiManager::AddStrikeForSaveAttempt(const GURL& url,
             entity.type().name_as_string(), url.GetHost()));
   }
   if (save_strike_db_by_attribute_) {
-    for (const std::string& key :
-         GetAttributeStrikeKeys(entity, client_->GetAppLocale())) {
+    for (const std::string& key : GetAttributeStrikeKeys(
+             entity, std::string(client_->GetAppLocale().tag_string()))) {
       save_strike_db_by_attribute_->AddStrike(key);
     }
   }
@@ -795,8 +823,8 @@ void AutofillAiManager::ClearStrikesForSave(const GURL& url,
             entity.type().name_as_string(), url.GetHost()));
   }
   if (save_strike_db_by_attribute_) {
-    for (const std::string& key :
-         GetAttributeStrikeKeys(entity, client_->GetAppLocale())) {
+    for (const std::string& key : GetAttributeStrikeKeys(
+             entity, std::string(client_->GetAppLocale().tag_string()))) {
       save_strike_db_by_attribute_->ClearStrikes(key);
     }
   }
@@ -821,7 +849,8 @@ bool AutofillAiManager::IsSaveBlockedByStrikeDatabase(
 
   if (!save_strike_db_by_attribute_ ||
       std::ranges::any_of(
-          GetAttributeStrikeKeys(entity, client_->GetAppLocale()),
+          GetAttributeStrikeKeys(
+              entity, std::string(client_->GetAppLocale().tag_string())),
           [&](const std::string& key) {
             return save_strike_db_by_attribute_->ShouldBlockFeature(key);
           })) {

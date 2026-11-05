@@ -8,6 +8,7 @@
 
 #include "base/callback_list.h"
 #include "base/command_line.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory_coordinator/memory_coordinator_features.h"
 #include "base/memory_coordinator/utils.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -18,8 +19,11 @@
 #include "base/time/time.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/spare_render_process_host_manager_impl.h"
+#include "content/browser/site_instance_impl.h"
 #include "content/public/browser/process_allocation_context.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/security_principal.h"
+#include "content/public/browser/site_instance.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -36,6 +40,8 @@
 #include "content/test/content_browser_test_utils_internal.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/geometry/size.h"
+#include "url/gurl.h"
 
 namespace content {
 
@@ -575,7 +581,7 @@ class SpareRendererContentBrowserClient
 };
 
 // A mock ContentBrowserClient that only considers a non-spare renderer to be a
-// suitable host, but otherwise tries to reuse processes.
+// suitable host, and uses process-per-site to reuse existing processes.
 class NonSpareRendererContentBrowserClient
     : public ContentBrowserTestContentBrowserClient {
  public:
@@ -591,8 +597,9 @@ class NonSpareRendererContentBrowserClient
     return !process_host->IsSpare();
   }
 
-  bool ShouldTryToUseExistingProcessHost(BrowserContext* context,
-                                         const GURL& url) override {
+  bool ShouldUseProcessPerSite(
+      BrowserContext* browser_context,
+      const SecurityPrincipal& security_principal) override {
     return true;
   }
 
@@ -605,6 +612,109 @@ class NonSpareRendererContentBrowserClient
     return false;
   }
 };
+
+// A ContentBrowserClient that doesn't let navigations in one browser context
+// use a spare.
+class NoSpareForBrowserContextContentBrowserClient
+    : public ContentBrowserTestContentBrowserClient {
+ public:
+  explicit NoSpareForBrowserContextContentBrowserClient(
+      BrowserContext* browser_context)
+      : browser_context_(browser_context) {}
+
+  bool CanBrowserContextUseSpareRenderProcessHost(
+      BrowserContext* browser_context) override {
+    return browser_context != browser_context_;
+  }
+
+ private:
+  raw_ptr<BrowserContext> browser_context_;
+};
+
+// Tests that no spare is warmed up for a browser context whose navigations
+// can't use a spare, and that the current spare is kept.
+IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
+                       NoWarmupWhenSpareRefusedByEmbedder) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  auto other_browser_context = std::make_unique<ShellBrowserContext>(true);
+  NoSpareForBrowserContextContentBrowserClient browser_client(
+      other_browser_context.get());
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+  spare_manager.WarmupSpare(browser_context());
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+  RenderProcessHost* spare = spare_manager.GetSpares()[0];
+  // The launcher thread keeps using the ContentBrowserClient while the
+  // process launches, so let the launch finish before `browser_client` goes
+  // away.
+  RenderProcessHostWatcher(spare,
+                           RenderProcessHostWatcher::WATCH_FOR_PROCESS_READY)
+      .Wait();
+
+  EXPECT_FALSE(spare_manager.WarmupSpare(other_browser_context.get()));
+
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+  EXPECT_EQ(spare_manager.GetSpares()[0], spare);
+  EXPECT_EQ(spare->GetBrowserContext(), browser_context());
+
+  spare_manager.CleanupSparesForTesting();
+}
+
+// A ContentBrowserClient that treats a single URL as a Top Chrome WebUI.
+class TopChromeWebUIContentBrowserClient
+    : public ContentBrowserTestContentBrowserClient {
+ public:
+  explicit TopChromeWebUIContentBrowserClient(const GURL& top_chrome_url)
+      : top_chrome_url_(top_chrome_url) {}
+
+  bool IsTopChromeWebUIURL(const GURL& url) override {
+    return url == top_chrome_url_;
+  }
+
+ private:
+  const GURL top_chrome_url_;
+};
+
+// Tests that a Top Chrome WebUI never takes a spare, so that its process is
+// created with its SiteInstance and gets the kForTopChromeWebUI flag.
+IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
+                       SpareNotTakenForTopChromeWebUI) {
+  const GURL top_chrome_url("chrome://initial-webui-test-scheme");
+  const GURL other_webui_url("chrome://other-webui-test-scheme");
+  TopChromeWebUIContentBrowserClient browser_client(top_chrome_url);
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+  RenderProcessHost* spare = spare_manager.WarmupSpare(browser_context());
+  ASSERT_TRUE(spare);
+  // The launcher thread keeps using the ContentBrowserClient while the
+  // process launches, so let the launch finish before `browser_client` goes
+  // away.
+  RenderProcessHostWatcher(spare,
+                           RenderProcessHostWatcher::WATCH_FOR_PROCESS_READY)
+      .Wait();
+
+  base::HistogramTester histogram_tester;
+  scoped_refptr<SiteInstanceImpl> top_chrome_site_instance =
+      SiteInstanceImpl::CreateForTesting(browser_context(), top_chrome_url);
+  EXPECT_FALSE(spare_manager.MaybeTakeSpare(
+      browser_context(), top_chrome_site_instance.get(),
+      ProcessAllocationContext{ProcessAllocationSource::kTest}));
+  histogram_tester.ExpectUniqueSample(
+      "BrowserRenderProcessHost.SpareProcessMaybeTakeAction",
+      RenderProcessHostImpl::SpareProcessMaybeTakeAction::
+          kRefusedBySiteInstance,
+      1);
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+  EXPECT_EQ(spare_manager.GetSpares()[0], spare);
+
+  // Other WebUIs can still take the spare.
+  scoped_refptr<SiteInstanceImpl> other_webui_site_instance =
+      SiteInstanceImpl::CreateForTesting(browser_context(), other_webui_url);
+  EXPECT_EQ(spare_manager.MaybeTakeSpare(
+                browser_context(), other_webui_site_instance.get(),
+                ProcessAllocationContext{ProcessAllocationSource::kTest}),
+            spare);
+
+  spare_manager.CleanupSparesForTesting();
+}
 
 // Test that the spare renderer works correctly when the limit on the maximum
 // number of processes is small.
@@ -679,6 +789,8 @@ IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
   ASSERT_TRUE(embedded_test_server()->Start());
 
   NonSpareRendererContentBrowserClient browser_client;
+  GURL test_url = embedded_test_server()->GetURL("/simple_page.html");
+  EXPECT_TRUE(NavigateToURL(shell(), test_url));
 
   auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
   spare_manager.WarmupSpare(browser_context());
@@ -687,7 +799,10 @@ IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
   EXPECT_NE(nullptr, spare_renderer);
 
   // This should reuse the existing process.
-  Shell* new_browser = CreateBrowser();
+  Shell* new_browser = Shell::CreateNewWindow(
+      browser_context(), test_url,
+      SiteInstance::CreateForURL(browser_context(), test_url), gfx::Size());
+  EXPECT_TRUE(WaitForLoadStop(new_browser->web_contents()));
   EXPECT_EQ(shell()->web_contents()->GetPrimaryMainFrame()->GetProcess(),
             new_browser->web_contents()->GetPrimaryMainFrame()->GetProcess());
   EXPECT_NE(spare_renderer,
@@ -1386,7 +1501,7 @@ struct StatefulMemoryPressureTestParams {
   bool keep_one_alive;
   bool use_critical_memory_pressure_threshold;
   bool kill_spare_on_memory_pressure;
-  int memory_limit;
+  base::MemoryLimit memory_limit;
   size_t expected_spares_after_pressure;
 };
 
@@ -1496,7 +1611,7 @@ IN_PROC_BROWSER_TEST_P(
 
   // Step-up replenishment: Relieving memory pressure back to 100% allows the
   // pool to recover back to `initial_spares`.
-  memory_override.SetLimit(100);
+  memory_override.SetLimit(base::MemoryLimit::Default());
   if (spare_manager.GetSpares().empty()) {
     spare_manager.WarmupSpare(browser_context());
   }
@@ -1520,7 +1635,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/50,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(50),
             /*expected_spares_after_pressure=*/1u},
         // Standard multi-spare with keep_one_alive: 25% limit clamps to 1
         // spare.
@@ -1529,7 +1644,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/25,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(25),
             /*expected_spares_after_pressure=*/1u},
         // Standard multi-spare with keep_one_alive: 0% limit trims all to 0.
         StatefulMemoryPressureTestParams{
@@ -1537,7 +1652,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/0,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(0),
             /*expected_spares_after_pressure=*/0u},
         // Aggressive mode (keep_one_alive disabled): 25% limit scales to 0
         // spares.
@@ -1546,7 +1661,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/false,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/25,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(25),
             /*expected_spares_after_pressure=*/0u},
         // Main toggle disabled: killing disabled keeps all 2 spares at 0%
         // limit.
@@ -1555,7 +1670,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/false,
-            /*memory_limit=*/0,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(0),
             /*expected_spares_after_pressure=*/2u},
         // Critical-only mode: moderate pressure (50%) does not trim.
         StatefulMemoryPressureTestParams{
@@ -1563,7 +1678,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/true,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/50,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(50),
             /*expected_spares_after_pressure=*/2u},
         // Critical-only mode: critical pressure (0%) trims to 0.
         StatefulMemoryPressureTestParams{
@@ -1571,7 +1686,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/false,
             /*use_critical_memory_pressure_threshold=*/true,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/0,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(0),
             /*expected_spares_after_pressure=*/0u},
         // Single spare with keep_one_alive: 50% limit keeps 1 spare.
         StatefulMemoryPressureTestParams{
@@ -1579,7 +1694,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/50,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(50),
             /*expected_spares_after_pressure=*/1u},
         // Single spare without keep_one_alive: 50% limit trims to 0 spares.
         StatefulMemoryPressureTestParams{
@@ -1587,7 +1702,72 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/false,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/50,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(50),
             /*expected_spares_after_pressure=*/0u}));
+
+class SpareRenderProcessHostManagerStatefulKillDisabledTest
+    : public ExtraSpareRenderProcessHostManagerTest {
+ public:
+  SpareRenderProcessHostManagerStatefulKillDisabledTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{base::kStatefulMemoryPressure},
+        /*disabled_features=*/{kKillSpareRenderOnMemoryPressure,
+                               kSpareRPHKeepOneAliveOnMemoryPressure,
+                               kSpareRPHUseCriticalMemoryPressure});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Verifies that when kStatefulMemoryPressure is enabled and
+// kKillSpareRenderOnMemoryPressure is disabled, memory pressure still prevents
+// creating new spares.
+IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerStatefulKillDisabledTest,
+                       CreationGatedUnderMemoryPressure) {
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+  ASSERT_TRUE(spare_manager.GetSpares().empty());
+
+  scoped_refptr<SiteInstance> test_site_instance =
+      SiteInstance::CreateForURL(browser_context(), GURL("http://example.com"));
+  content::test::ScopedMemoryLimitOverride memory_override(
+      "SpareRenderProcessHostManagerImpl");
+
+  // At 50% (moderate) and 0% (critical), WarmupSpare() is blocked and records
+  // NoSpareRendererReason::kMemoryPressure when a spare is requested.
+  for (base::MemoryLimit limit :
+       {base::MemoryLimit::ModeratePressureThreshold(),
+        base::MemoryLimit::CriticalPressureThreshold()}) {
+    base::HistogramTester histogram_tester;
+    memory_override.SetLimit(limit);
+
+    EXPECT_EQ(spare_manager.WarmupSpare(browser_context()), nullptr);
+    EXPECT_TRUE(spare_manager.GetSpares().empty());
+
+    EXPECT_EQ(spare_manager.MaybeTakeSpare(
+                  browser_context(),
+                  static_cast<SiteInstanceImpl*>(test_site_instance.get()),
+                  ProcessAllocationContext{
+                      ProcessAllocationSource::kServiceWorkerProcessManager}),
+              nullptr);
+    histogram_tester.ExpectUniqueSample(
+        "BrowserRenderProcessHost.NoSparePresentReason2",
+        NoSpareRendererReason::kMemoryPressure, 1);
+  }
+
+  // At 75% (above moderate threshold, below no-pressure threshold), the first
+  // spare is created, but extra spares are not created.
+  memory_override.SetLimit(base::MemoryLimit::FromPercent(75));
+  EXPECT_NE(spare_manager.WarmupSpare(browser_context()), nullptr);
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+  WaitForNextSpareReady();
+  EXPECT_EQ(spare_manager.GetSpares().size(), 1u);
+
+  // Restoring the limit to 100% allows the extra spare to be created.
+  memory_override.SetLimit(base::MemoryLimit::Default());
+  ASSERT_EQ(spare_manager.GetSpares().size(), 2u);
+  WaitForNextSpareReady();
+  EXPECT_EQ(spare_manager.GetSpares().size(), 2u);
+}
 
 }  // namespace content

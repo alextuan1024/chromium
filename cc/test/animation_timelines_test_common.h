@@ -164,10 +164,17 @@ class TestHostDelegate : public MutatorHostDelegate {
       PaintWorkletInput::PropertyValue property_value) override {}
 
   bool RunsOnCurrentThread() const override;
+  bool InWillCommit() const override;
+  void set_in_will_commit(bool in_will_commit) {
+    in_will_commit_ = in_will_commit;
+  }
 
   bool IsOwnerThread() const override;
   bool InProtectedSequence() const override;
   void WaitForProtectedSequenceCompletion() const override;
+  void set_in_protected_sequence(bool in_protected_sequence) {
+    in_protected_sequence_ = in_protected_sequence;
+  }
 
   bool mutators_need_commit() const { return mutators_need_commit_; }
   void set_mutators_need_commit(bool need) { mutators_need_commit_ = need; }
@@ -236,6 +243,8 @@ class TestHostDelegate : public MutatorHostDelegate {
   ElementIdToTestLayer layers_in_pending_tree_;
 
   bool mutators_need_commit_;
+  mutable bool in_protected_sequence_ = false;
+  bool in_will_commit_ = false;
   PropertyTrees property_trees_;
 };
 

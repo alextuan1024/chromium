@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">कॅमेरा</translation>
 <translation id="162175252992296058">यूएस आंतरराष्ट्रीय कीबोर्डसह पोर्तुगीज</translation>
 <translation id="1629521517399325891">नेटवर्क ऑथेंटिकेशनसाठी वापरकर्ता सर्टिफिकेट उपलब्ध नाही.</translation>
+<translation id="1639239467298939599">लोड करत आहे</translation>
 <translation id="1641780993263690097">चीनी पिनयिन</translation>
 <translation id="164969095109328410">Chrome डिव्हाइस</translation>
 <translation id="1661207570040737402">तुम्ही तुमचे पूर्ण Shared Drive Google Workspace स्टोरेज वापरले आहे.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">फाइल सिंक करणे सुरू करा</translation>
 <translation id="2820957248982571256">स्कॅन होत आहे...</translation>
 <translation id="2830077785865012357">चीनी झुयिन</translation>
+<translation id="2838379631617906747">इंस्टॉल करीत आहे</translation>
 <translation id="2843806747483486897">डीफॉल्ट बदला...</translation>
 <translation id="2873951654529031587">ट्रॅश</translation>
 <translation id="2887314858867008269">यूएस Colemak</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">चुकीचा पासवर्ड</translation>
 <translation id="5059127710849015030">नेपाळी लिप्यंतरण</translation>
 <translation id="5068919226082848014">पिझ्झा</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> ने प्रॉक्सी ओव्हरराइड नियम सेट केले आहेत</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> फाइल हटवल्या जातील</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> आयटम <ph name="FOLDER_NAME" /> वर हलवत आहे</translation>
 <translation id="509429900233858213">एक एरर आली आहे.</translation>
-<translation id="5102922915594634436">सिंक केलेली फोल्डर व्यवस्थापित करा</translation>
 <translation id="5109254780565519649">एरर आली. काही आयटम रिस्टोअर झाले नसतील.</translation>
 <translation id="5110329002213341433">इंग्रजी (कॅनडा)</translation>
 <translation id="5119780910075847424">सिंक करणे थांबवले</translation>
@@ -558,7 +560,6 @@ Google ड्राइव्ह मधील फाइल अपडेट के
 <translation id="5305688511332277257">काहीही इंस्टॉल केले नाही</translation>
 <translation id="5317780077021120954">सेव्ह करा</translation>
 <translation id="5318819489018851358">Linux वापरून शेअर करा</translation>
-<translation id="5330145655348521461">या फाइल एका भिन्न डेस्कटॉपवर उघडलेल्या आहेत. या पाहण्यासाठी <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) वर हलवा.</translation>
 <translation id="5330512191124428349">माहिती मिळवा</translation>
 <translation id="535792325654997756">मांजरींसह व्यक्ती</translation>
 <translation id="5358764674931277">फ्रेम दर</translation>
@@ -699,7 +700,6 @@ Google ड्राइव्ह मधील फाइल अपडेट के
 <translation id="636254897931573416">डोमेन सफिक्स जुळणीचे मूल्य चुकीचे आहे</translation>
 <translation id="6364301859968397756">संस्थेचे स्टोरेज पूर्ण भरले आहे</translation>
 <translation id="6367976544441405720">व्हॅन</translation>
-<translation id="637062427944097960">ही फाइल एका भिन्न डेस्कटॉपवर उघडलेली आहे. ती पाहण्यासाठी <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) वर हलवा.</translation>
 <translation id="6394388407447716302">रीड-ओन्ली</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> आयटम</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> हलवता आली नाही, कारण ती एन्क्रिप्ट केलेली आहे.</translation>
@@ -1021,6 +1021,7 @@ Google ड्राइव्ह मधील फाइल अपडेट के
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> - पोर्ट</translation>
 <translation id="8656407365183407932">तुमच्या ऑफलाइन फाइल काढून टाकाव्या लागतील</translation>
 <translation id="8656768832129462377">तपासू नका</translation>
+<translation id="8662978096466608964">Chrome वॉलपेपर सेट करू शकत नाही.</translation>
 <translation id="8688591111840995413">चुकीचा पासवर्ड</translation>
 <translation id="8698464937041809063">Google ड्रॉइंग</translation>
 <translation id="8698877009525468705">ही फाइल गोपनीय आहे आणि अ‍ॅडमिनिस्ट्रेटर धोरणाच्या निर्बंधांच्या अधीन आहे.</translation>

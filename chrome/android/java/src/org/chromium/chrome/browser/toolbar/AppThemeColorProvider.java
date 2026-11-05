@@ -10,6 +10,7 @@ import android.content.res.ColorStateList;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
+import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserver;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.TopResumedActivityChangedObserver;
@@ -42,7 +43,7 @@ public class AppThemeColorProvider extends ThemeColorProvider
     private @Nullable LayoutStateProvider mLayoutStateProvider;
 
     /** Observer to know when Layout state is changed, e.g show/hide. */
-    private final LayoutStateProvider.LayoutStateObserver mLayoutStateObserver;
+    private final LayoutStateObserver mLayoutStateObserver;
 
     /** Whether app is in incognito mode. */
     private boolean mIsIncognito;
@@ -81,7 +82,7 @@ public class AppThemeColorProvider extends ThemeColorProvider
                 ChromeColors.getDefaultThemeColor(context, /* isIncognito= */ true);
 
         mLayoutStateObserver =
-                new LayoutStateProvider.LayoutStateObserver() {
+                new LayoutStateObserver() {
                     @Override
                     public void onStartedShowing(@LayoutType int layoutType) {
                         if (layoutType == LayoutType.HUB) {
@@ -142,13 +143,16 @@ public class AppThemeColorProvider extends ThemeColorProvider
         final boolean isInMultiWindowMode =
                 mMultiWindowModeStateDispatcher != null
                         && mMultiWindowModeStateDispatcher.isInMultiWindowMode();
+        final boolean isActivityFocused = !isInMultiWindowMode || mIsTopResumedActivity;
 
         final ColorStateList activityFocusTint =
-                !isInMultiWindowMode
+                isActivityFocused
                         ? iconTint
                         : ThemeColorProvider.calculateActivityFocusTint(
-                                mActivityContext, brandedColorScheme, mIsTopResumedActivity);
-        updateTint(iconTint, activityFocusTint, brandedColorScheme);
+                                mActivityContext, brandedColorScheme, isActivityFocused);
+        final float unfocusedAlpha =
+                ThemeUtils.calculateUnfocusedAlpha(mActivityContext, isActivityFocused);
+        updateTint(iconTint, activityFocusTint, unfocusedAlpha, brandedColorScheme);
     }
 
     @Override

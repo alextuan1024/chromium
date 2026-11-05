@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <utility>
 
-#include "base/barrier_callback.h"
+#include "base/check.h"
 #include "base/check_is_test.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
@@ -31,17 +31,20 @@
 #include "components/signin/public/base/gaia_id_hash.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/signin/public/identity_manager/account_capabilities.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/account_managed_status_finder_outcome.h"
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_utils.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
+#include "components/signin/public/identity_manager/tribool.h"
 #include "components/sync/base/command_line_switches.h"
 #include "components/sync/base/custom_passphrase_bootstrap_token.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/data_type_histogram.h"
 #include "components/sync/base/features.h"
+#include "components/sync/base/passphrase_enums.h"
 #include "components/sync/base/stop_source.h"
 #include "components/sync/base/sync_util.h"
 #include "components/sync/base/user_selectable_type.h"
@@ -88,9 +91,6 @@
 namespace syncer {
 
 namespace {
-
-BASE_FEATURE(kSyncUnsubscribeFromTypesWithPermanentErrors,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_ANDROID)
 constexpr int kMinGmsVersionCodeWithCustomPassphraseApi = 235204000;
@@ -343,7 +343,6 @@ void SyncServiceImpl::Initialize(DataTypeController::TypeVector controllers) {
   // the account state.
   sync_prefs_.MaybeMigratePrefsForSyncToSigninPart1(
       GetSyncAccountStateForPrefs(), GetAccountInfo().gaia);
-  sync_prefs_.MaybeMigrateCustomPassphrasePref(GetAccountInfo().gaia);
 
   // Update selected types prefs if a policy is applied.
   sync_prefs_policy_handler_ = std::make_unique<SyncPrefsPolicyHandler>(this);
@@ -355,7 +354,7 @@ void SyncServiceImpl::Initialize(DataTypeController::TypeVector controllers) {
 #if BUILDFLAG(IS_CHROMEOS)
     // Disable OS data types to avoid automatic local data upload upon policy
     // removal, as OS data types do not support dual storage with UNO.
-    if (!HasSyncConsent() && IsReplaceSyncPromosWithSignInPromosEnabled()) {
+    if (!HasSyncConsent()) {
       user_settings_->SetSelectedOsTypes(/*sync_all_os_types=*/false,
                                          UserSelectableOsTypeSet());
     } else {
@@ -383,8 +382,7 @@ void SyncServiceImpl::Initialize(DataTypeController::TypeVector controllers) {
       IsLocalSyncEnabled() ||
 #if BUILDFLAG(IS_CHROMEOS)
       (!user_settings_->IsSyncFeatureDisabledViaDashboard() &&
-       (!base::FeatureList::IsEnabled(kReplaceSyncPromosWithSignInPromos) ||
-        HasSyncConsent()));
+       HasSyncConsent());
 #else
       HasSyncConsent();
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -565,24 +563,12 @@ void SyncServiceImpl::TryStart() {
   // OSCryptAsync will just queue the callbacks and run them once the
   // encryptor is available. The first call to TryStartImpl() that succeeds
   // will create the engine, and subsequent ones will be no-ops.
-  // TODO(crbug.com/514283732): Now that Encryptor is a refcounted object, we
-  // can the barrier is probably not needed anymore. Investigate if it can be
-  // removed.
-  auto barrier =
-      base::BarrierCallback<scoped_refptr<os_crypt_async::Encryptor>>(
-          2,
-          base::BindOnce(&SyncServiceImpl::TryStartImpl,
-                         weak_factory_.GetWeakPtr(), base::TimeTicks::Now()));
-
-  // One instance of Encryptor is needed for SyncServiceImpl and one for
-  // SyncEngine.
-  os_crypt_async_->GetInstance(barrier);
-  os_crypt_async_->GetInstance(barrier);
+  os_crypt_async_->GetInstance(base::BindOnce(&SyncServiceImpl::TryStartImpl,
+                                              weak_factory_.GetWeakPtr()));
 }
 
 void SyncServiceImpl::TryStartImpl(
-    base::TimeTicks try_start_time,
-    std::vector<scoped_refptr<os_crypt_async::Encryptor>> encryptors) {
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   base::Time deferral_time;
   std::swap(deferring_first_start_since_, deferral_time);
 
@@ -590,14 +576,9 @@ void SyncServiceImpl::TryStartImpl(
     return;
   }
 
-  CHECK_EQ(encryptors.size(), 2u);
+  CHECK(encryptor);
 
-  base::UmaHistogramTimes("Sync.EncryptorReceivedTime",
-                          base::TimeTicks::Now() - try_start_time);
-
-  // One instance of Encryptor is needed for SyncServiceImpl and one for
-  // SyncEngine.
-  crypto_.SetEncryptor(std::move(encryptors[0]));
+  crypto_.SetEncryptor(encryptor);
 
   if (!deferral_time.is_null()) {
     base::UmaHistogramCustomTimes("Sync.Startup.TimeDeferred2",
@@ -636,25 +617,26 @@ void SyncServiceImpl::TryStartImpl(
   params.encryption_observer_proxy = crypto_.GetEncryptionObserverProxy();
 
   params.extensions_activity = sync_client_->GetExtensionsActivity();
-  params.service_url = sync_service_url_;
-  params.http_factory_getter = base::BindOnce(
-      create_http_post_provider_factory_override_for_test_.value_or(
-          create_http_post_provider_factory_),
-      MakeUserAgentForSync(channel_), url_loader_factory_->Clone());
   params.authenticated_account_info = authenticated_account_info;
 
   params.sync_manager_factory =
       std::make_unique<SyncManagerFactory>(network_connection_tracker_);
   if (sync_prefs_.IsLocalSyncEnabled()) {
-    params.enable_local_sync_backend = true;
-    params.local_sync_backend_folder =
-        sync_client_->GetLocalSyncBackendFolder();
+    params.engine_components_factory =
+        EngineComponentsFactoryImpl::CreateForLocalSync(
+            EngineSwitchesFromCommandLine(),
+            sync_client_->GetLocalSyncBackendFolder());
+  } else {
+    params.engine_components_factory =
+        EngineComponentsFactoryImpl::CreateForServerSync(
+            EngineSwitchesFromCommandLine(), sync_service_url_,
+            base::BindOnce(
+                create_http_post_provider_factory_override_for_test_.value_or(
+                    create_http_post_provider_factory_),
+                MakeUserAgentForSync(channel_), url_loader_factory_->Clone()));
   }
-  params.engine_components_factory =
-      std::make_unique<EngineComponentsFactoryImpl>(
-          EngineSwitchesFromCommandLine());
 
-  params.encryptor = std::move(encryptors[1]);
+  params.encryptor = std::move(encryptor);
 
   if (!IsLocalSyncEnabled()) {
     auth_manager_->ConnectionOpened();
@@ -928,7 +910,16 @@ SyncService::UserActionableError SyncServiceImpl::GetUserActionableError()
             switches::kHandleMdmErrorsForDasherAccounts)) {
       return UserActionableError::kDeviceManagementError;
     }
-#endif  // BUILDFLAG(IS_IOS)
+#elif BUILDFLAG(IS_ANDROID)
+    // TODO(crbug.com/530541220): Merge with the iOS section during the feature
+    // flag cleanup.
+    if (GetAuthError().state() ==
+            GoogleServiceAuthError::DEVICE_MANAGEMENT_ERROR &&
+        base::FeatureList::IsEnabled(
+            switches::kHandleMdmErrorsForDasherAccountsOnAndroid)) {
+      return UserActionableError::kDeviceManagementError;
+    }
+#endif
     return UserActionableError::kSignInNeedsUpdate;
   }
   if (last_actionable_error_.action == UPGRADE_CLIENT) {
@@ -942,6 +933,11 @@ SyncService::UserActionableError SyncServiceImpl::GetUserActionableError()
                ? UserActionableError::kNeedsTrustedVaultKeyForEverything
                : UserActionableError::kNeedsTrustedVaultKeyForPasswords;
   }
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
+  if (passkeys_locked_ && GetActiveDataTypes().Has(WEBAUTHN_CREDENTIAL)) {
+    return UserActionableError::kPasskeysLocked;
+  }
+#endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
   if (user_settings_->IsTrustedVaultRecoverabilityDegraded()) {
     return user_settings_->IsEncryptEverythingEnabled()
                ? UserActionableError::
@@ -1218,14 +1214,11 @@ void SyncServiceImpl::OnActionableProtocolError(
 #else
         // The Sync consent will be revoked, and Sync will enter
         // Sync-the-transport mode.
-        if (base::FeatureList::IsEnabled(
-                kSyncCopyPreferencesToTransportModeOnServerForcedDisable)) {
-          CHECK(!GetAccountInfo().gaia.empty());
-          // Migrating the user's selected types prefs to ensure that they will
-          // be available in Sync-the-transport mode.
-          SyncPrefs::MigrateGlobalDataTypePrefsToAccount(
-              sync_client_->GetPrefService(), GetAccountInfo().gaia);
-        }
+        CHECK(!GetAccountInfo().gaia.empty());
+        // Migrating the user's selected types prefs to ensure that they will
+        // be available in Sync-the-transport mode.
+        SyncPrefs::MigrateGlobalDataTypePrefsToAccount(
+            sync_client_->GetPrefService(), GetAccountInfo().gaia);
         // Note: On some platforms, revoking the sync consent will also clear
         // the primary account as transitioning from ConsentLevel::kSync to
         // ConsentLevel::kSignin is not supported.
@@ -1469,10 +1462,9 @@ void SyncServiceImpl::ReconfigureDataTypesDueToCrypto() {
 void SyncServiceImpl::PassphraseTypeChanged(PassphraseType passphrase_type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-  // If kReplaceSyncPromosWithSignInPromos is enabled, new users with custom
-  // passphrase should have kAutofill disabled upon the initial sign-in. This is
-  // done to prevent confusion, as addresses are NOT encrypted by the custom
-  // passphrase
+  // New users with custom passphrase should have kAutofill disabled upon the
+  // initial sign-in. This is done to prevent confusion, as addresses are NOT
+  // encrypted by the custom passphrase.
   //
   // This check is skipped on desktop (Windows, Mac, Linux) and ChromeOS because
   // the user interface on those platforms already clarifies this nuance about
@@ -1485,8 +1477,7 @@ void SyncServiceImpl::PassphraseTypeChanged(PassphraseType passphrase_type) {
       GetSyncAccountStateForPrefs() ==
           SyncPrefs::SyncAccountState::kSignedInWithoutSyncConsent &&
       sync_prefs_.DoesTypeHaveDefaultValueForAccount(
-          UserSelectableType::kAutofill, GetAccountInfo().gaia) &&
-      IsReplaceSyncPromosWithSignInPromosEnabled()) {
+          UserSelectableType::kAutofill, GetAccountInfo().gaia)) {
     GetUserSettings()->SetSelectedType(UserSelectableType::kAutofill, false);
   }
 #endif
@@ -1515,6 +1506,17 @@ CustomPassphraseBootstrapToken SyncServiceImpl::GetEncryptionBootstrapToken(
 bool SyncServiceImpl::IsCustomPassphraseAllowed() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return sync_client_->IsCustomPassphraseAllowed();
+}
+
+void SyncServiceImpl::IsTrustedVaultEnrollmentPossible(
+    base::OnceCallback<void(bool)> callback) const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!SatisfiesLocalTrustedVaultEnrollmentPrerequisites()) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), false));
+    return;
+  }
+  crypto_.IsTrustedVaultEnrollmentPossible(std::move(callback));
 }
 
 SyncPrefs::SyncAccountState SyncServiceImpl::GetSyncAccountStateForPrefs()
@@ -1889,14 +1891,10 @@ void SyncServiceImpl::UpdateDataTypesForInvalidations() {
   }
 #endif  // BUILDFLAG(IS_ANDROID)
 
-  if (!data_type_manager_->GetDataTypesWithPermanentErrors().empty() &&
-      base::FeatureList::IsEnabled(
-          kSyncUnsubscribeFromTypesWithPermanentErrors)) {
-    // Unsubscribe from data types with permanent errors. Types which are
-    // unready or have crypto errors are intentionally kept because they will
-    // may change their state.
-    types.RemoveAll(data_type_manager_->GetDataTypesWithPermanentErrors());
-  }
+  // Unsubscribe from data types with permanent errors. Types which are
+  // unready or have crypto errors are intentionally kept because they may
+  // change their state.
+  types.RemoveAll(data_type_manager_->GetDataTypesWithPermanentErrors());
 
 #if BUILDFLAG(IS_ANDROID)
   // On Android, don't subscribe to HISTORY invalidations, to save network
@@ -1954,7 +1952,7 @@ void SyncServiceImpl::OnSyncClientDisabledByPolicyChanged() {
 #if BUILDFLAG(IS_CHROMEOS)
     // Disable OS data types to avoid automatic local data upload upon policy
     // removal, as OS data types do not support dual storage with UNO.
-    if (!HasSyncConsent() && IsReplaceSyncPromosWithSignInPromosEnabled()) {
+    if (!HasSyncConsent()) {
       user_settings_->SetSelectedOsTypes(/*sync_all_os_types=*/false,
                                          UserSelectableOsTypeSet());
     } else {
@@ -2032,7 +2030,7 @@ void SyncServiceImpl::OnPrimaryAccountChanged(
 void SyncServiceImpl::OnIdentityManagerShutdown(
     signin::IdentityManager* identity_manager) {
   // Needs to be shutdown before IdentityManager.
-  NOTREACHED(base::NotFatalUntil::M142);
+  NOTREACHED();
 }
 
 bool SyncServiceImpl::IsDeviceStatisticsMetricReportingEnabled() {
@@ -2237,6 +2235,16 @@ void SyncServiceImpl::SetInvalidationsForSessionsEnabled(bool enabled) {
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
+void SyncServiceImpl::SetPasskeysLocked(bool passkeys_locked) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (passkeys_locked_ == passkeys_locked) {
+    return;
+  }
+  passkeys_locked_ = passkeys_locked;
+  DVLOG(2) << "Notify observers on SetPasskeysLocked";
+  NotifyObservers();
+}
+
 void SyncServiceImpl::SendExplicitPassphraseToPlatformClient() {
   RunOrQueueTaskOnEngineInitialized(base::BindOnce(
       &SyncServiceImpl::SendExplicitPassphraseToPlatformClientImpl,
@@ -2412,6 +2420,11 @@ const GURL& SyncServiceImpl::GetSyncServiceUrlForDebugging() const {
   return sync_service_url_;
 }
 
+base::FilePath SyncServiceImpl::GetLocalSyncBackendFolderForDebugging() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return sync_client_->GetLocalSyncBackendFolder();
+}
+
 std::string SyncServiceImpl::GetUnrecoverableErrorMessageForDebugging() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return unrecoverable_error_message_;
@@ -2490,6 +2503,27 @@ void SyncServiceImpl::GetLocalDataDescriptionsImpl(
   }
 
   data_type_manager_->GetLocalDataDescriptions(types, std::move(callback));
+}
+
+bool SyncServiceImpl::SatisfiesLocalTrustedVaultEnrollmentPrerequisites()
+    const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (IsLocalSyncEnabled() || GetTransportState() != TransportState::ACTIVE ||
+      crypto_.GetPassphraseType() != PassphraseType::kKeystorePassphrase) {
+    return false;
+  }
+  CHECK(identity_manager_);
+  CoreAccountInfo primary_account = GetAccountInfo();
+  if (primary_account.IsEmpty()) {
+    return false;
+  }
+  AccountInfo account_info =
+      identity_manager_->FindExtendedAccountInfo(primary_account);
+  if (account_info.IsEmpty()) {
+    return false;
+  }
+  return account_info.GetAccountCapabilities()
+             .is_trusted_vault_passphrase_eligible() == signin::Tribool::kTrue;
 }
 
 void SyncServiceImpl::TriggerLocalDataMigration(DataTypeSet types) {

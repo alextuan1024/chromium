@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/core/layout/inline/inline_item_segment.h"
 
+#include <utility>
+
 #include "third_party/blink/renderer/core/layout/inline/inline_item.h"
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
@@ -37,10 +39,9 @@ unsigned SetRenderOrientation(
     unsigned value,
     OrientationIterator::RenderOrientation render_orientation) {
   DCHECK_NE(render_orientation,
-            OrientationIterator::RenderOrientation::kOrientationInvalid);
+            OrientationIterator::RenderOrientation::kInvalid);
   return (value & ~kRenderOrientationMask) |
-         (render_orientation !=
-          OrientationIterator::RenderOrientation::kOrientationKeep);
+         (render_orientation != OrientationIterator::RenderOrientation::kKeep);
 }
 
 }  // namespace
@@ -53,33 +54,33 @@ InlineItemSegment::InlineItemSegment(unsigned end_offset,
                                      const InlineItem& item)
     : end_offset_(end_offset), segment_data_(item.SegmentData()) {}
 
-unsigned InlineItemSegment::PackSegmentData(
+uint32_t InlineItemSegment::PackSegmentData(
     const RunSegmenter::RunSegmenterRange& range) {
   DCHECK(range.script == USCRIPT_INVALID_CODE ||
          static_cast<unsigned>(range.script) <= kScriptMask);
-  DCHECK_LE(static_cast<unsigned>(range.font_fallback_priority),
+  DCHECK_LE(std::to_underlying(range.font_fallback_priority),
             kFontFallbackPriorityMask);
-  DCHECK_LE(static_cast<unsigned>(range.render_orientation),
+  DCHECK_LE(std::to_underlying(range.render_orientation),
             kRenderOrientationMask);
 
-  unsigned value =
+  uint32_t value =
       range.script != USCRIPT_INVALID_CODE ? range.script : kScriptMask;
   value <<= kFontFallbackPriorityBits;
-  value |= static_cast<unsigned>(range.font_fallback_priority);
+  value |= std::to_underlying(range.font_fallback_priority);
   value <<= kRenderOrientationBits;
-  value |= range.render_orientation;
+  value |= std::to_underlying(range.render_orientation);
   return value;
 }
 
 RunSegmenter::RunSegmenterRange InlineItemSegment::UnpackSegmentData(
     unsigned start_offset,
     unsigned end_offset,
-    unsigned value) {
-  unsigned render_orientation = value & kRenderOrientationMask;
+    uint32_t value) {
+  uint32_t render_orientation = value & kRenderOrientationMask;
   value >>= kRenderOrientationBits;
-  unsigned font_fallback_priority = value & kFontFallbackPriorityMask;
+  uint32_t font_fallback_priority = value & kFontFallbackPriorityMask;
   value >>= kFontFallbackPriorityBits;
-  unsigned script = value & kScriptMask;
+  uint32_t script = value & kScriptMask;
   return RunSegmenter::RunSegmenterRange{
       start_offset, end_offset,
       script != kScriptMask ? static_cast<UScriptCode>(script)
@@ -118,15 +119,6 @@ void InlineItemSegments::CheckOffset(unsigned offset,
   DCHECK_LT(offset, segment->EndOffset());
 }
 #endif
-
-void InlineItemSegments::ToRanges(RunSegmenterRanges& ranges) const {
-  ranges.ReserveInitialCapacity(segments_.size());
-  wtf_size_t start_offset = 0;
-  for (const InlineItemSegment& segment : segments_) {
-    ranges.push_back(segment.ToRunSegmenterRange(start_offset));
-    start_offset = segment.EndOffset();
-  }
-}
 
 InlineItemSegments::Iterator InlineItemSegments::Ranges(
     unsigned start_offset,

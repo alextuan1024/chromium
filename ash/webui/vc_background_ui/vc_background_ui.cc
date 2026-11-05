@@ -18,7 +18,7 @@
 #include "ash/webui/system_apps/public/system_web_app_ui_config.h"
 #include "ash/webui/vc_background_ui/url_constants.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
@@ -66,10 +66,12 @@ VcBackgroundUIConfig::VcBackgroundUIConfig(
 bool VcBackgroundUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
   return SystemWebAppUIConfig::IsWebUIEnabled(browser_context) &&
-         ::ash::features::IsVcBackgroundReplaceEnabled();
+         ::ash::features::IsVideoConferenceEnabled();
 }
 
 VcBackgroundUI::VcBackgroundUI(
+    const base::i18n::LanguageTag& app_locale,
+    const variations::VariationsService& variations_service,
     content::WebUI* web_ui,
     std::unique_ptr<::ash::common::SeaPenProvider> sea_pen_provider)
     : ui::MojoWebUIController(web_ui),
@@ -89,7 +91,7 @@ VcBackgroundUI::VcBackgroundUI(
 
   AddResources(source);
   AddStrings(source);
-  AddBooleans(source);
+  AddBooleans(app_locale, variations_service, source);
 }
 
 VcBackgroundUI::~VcBackgroundUI() = default;
@@ -100,16 +102,20 @@ void VcBackgroundUI::BindInterface(
   sea_pen_provider_->BindInterface(std::move(receiver));
 }
 
-void VcBackgroundUI::AddBooleans(content::WebUIDataSource* source) {
+void VcBackgroundUI::AddBooleans(
+    const base::i18n::LanguageTag& app_locale,
+    const variations::VariationsService& variations_service,
+    content::WebUIDataSource* source) {
   const bool common_sea_pen_requirements =
-      sea_pen_provider_->IsEligibleForSeaPen() &&
-      ::ash::features::IsVcBackgroundReplaceEnabled();
+      sea_pen_provider_->IsEligibleForSeaPen(variations_service) &&
+      ::ash::features::IsVideoConferenceEnabled();
   source->AddBoolean("isSeaPenEnabled",
                          common_sea_pen_requirements);
   source->AddBoolean("isSeaPenTextInputEnabled",
                      common_sea_pen_requirements &&
                          ::ash::features::IsSeaPenTextInputEnabled() &&
-                         sea_pen_provider_->IsEligibleForSeaPenTextInput());
+                         sea_pen_provider_->IsEligibleForSeaPenTextInput(
+                             app_locale, variations_service));
   source->AddBoolean("isSeaPenUseExptTemplateEnabled",
                      common_sea_pen_requirements &&
                          ::ash::features::IsSeaPenUseExptTemplateEnabled());

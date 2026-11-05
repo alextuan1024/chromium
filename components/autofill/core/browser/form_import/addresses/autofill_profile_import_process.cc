@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "base/containers/map_util.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
 #include "base/types/optional_ref.h"
@@ -28,7 +30,9 @@
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/metrics/profile_import_metrics.h"
+#include "components/autofill/core/browser/ui/addresses/autofill_address_util.h"
 #include "components/autofill/core/common/autofill_debug_features.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "url/gurl.h"
@@ -120,7 +124,7 @@ ProfileImportMetadata::~ProfileImportMetadata() = default;
 
 ProfileImportProcess::ProfileImportProcess(
     const AutofillProfile& observed_profile,
-    const std::string& app_locale,
+    const base::i18n::LanguageTag& app_locale,
     const GURL& form_source_url,
     ukm::SourceId ukm_source_id,
     AddressDataManager* address_data_manager,
@@ -171,7 +175,7 @@ void ProfileImportProcess::DetermineProfileImportType() {
           ProfileCountrySource::kExplicitlyObserved &&
       ShouldCountryApproximationBeRemoved(observed_profile_,
                                           address_data_manager_->GetProfiles(),
-                                          app_locale_)) {
+                                          app_locale_.tag_string())) {
     observed_profile_.ClearFields({ADDRESS_HOME_COUNTRY});
     import_metadata_.country_source = ProfileCountrySource::kNoCountry;
   }
@@ -354,19 +358,33 @@ ProfileImportProcess::GetImportCandidates(
   result.reserve(existing_profiles.size());
   for (const AutofillProfile* candidate : existing_profiles) {
     AutofillProfile merged_profile = *candidate;
-    const ProfileMergeResult merge_result =
-        merged_profile.MergeDataFrom(observed_profile, app_locale_);
+    const ProfileMergeResult merge_result = merged_profile.MergeDataFrom(
+        observed_profile, app_locale_.tag_string());
     switch (merge_result) {
-      case ProfileMergeResult::kMergeSucceededWithModification:
-        result.push_back(ImportCandidate{
-            .change = AutofillProfileComparator::
-                              ProfilesHaveDifferentSettingsVisibleValues(
-                                  *candidate, merged_profile, app_locale_)
-                          ? Change::kSettingVisibleChange
-                          : Change::kNonSettingVisibleChange,
-            .existing_profile = *candidate,
-            .merged_profile = std::move(merged_profile)});
+      case ProfileMergeResult::kMergeSucceededWithModification: {
+        // `ProfilesHaveDifferentSettingsVisibleValues()` compares raw field
+        // strings without collapsing whitespace, whereas the update prompt UI
+        // computes diffs using `GetProfileDifferenceForUi()` (which normalizes
+        // whitespace and formatting via `GetEnvelopeStyleAddress()`). Require
+        // both to detect a difference so that whitespace/formatting-only
+        // updates are applied silently.
+        const bool raw_values_differ = AutofillProfileComparator::
+            ProfilesHaveDifferentSettingsVisibleValues(
+                *candidate, merged_profile, app_locale_);
+        const bool has_setting_visible_change =
+            raw_values_differ &&
+            (!base::FeatureList::IsEnabled(
+                 features::kAutofillGuardEmptyUpdatePrompts) ||
+             !GetProfileDifferenceForUi(merged_profile, *candidate, app_locale_)
+                  .empty());
+        result.push_back(
+            ImportCandidate{.change = has_setting_visible_change
+                                          ? Change::kSettingVisibleChange
+                                          : Change::kNonSettingVisibleChange,
+                            .existing_profile = *candidate,
+                            .merged_profile = std::move(merged_profile)});
         break;
+      }
       case ProfileMergeResult::kMergeSucceededWithoutModification:
         result.push_back(
             ImportCandidate{.change = Change::kNoChange,

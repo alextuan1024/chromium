@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_WALLET_CONTENT_BROWSER_WALLETABLE_PASS_BARCODE_DETECTOR_IMPL_H_
 #define COMPONENTS_WALLET_CONTENT_BROWSER_WALLETABLE_PASS_BARCODE_DETECTOR_IMPL_H_
 
+#include <utility>
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
@@ -12,7 +13,7 @@
 #include "components/wallet/content/common/mojom/image_extractor.mojom.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/shape_detection/public/mojom/barcodedetection.mojom.h"
-#include "third_party/skia/include/core/SkBitmap.h"
+#include "services/shape_detection/public/mojom/barcodedetection_provider.mojom.h"
 
 namespace wallet {
 
@@ -22,35 +23,52 @@ class WalletablePassBarcodeDetectorImpl : public WalletablePassBarcodeDetector {
   ~WalletablePassBarcodeDetectorImpl() override;
 
   // WalletablePassBarcodeDetector:
-  void Detect(content::WebContents* web_contents,
-              WalletBarcodeDetectionDetectCallback callback) override;
+  void Detect(
+      content::WebContents* web_contents,
+      mojom::ImageExtractionOptionsPtr extraction_options,
+      std::vector<shape_detection::mojom::BarcodeFormat> barcode_formats,
+      WalletBarcodeDetectionDetectCallback callback) override;
 
  private:
+  // The barcodes decoded from one image, and the element it came from.
+  using ImageDetectionResults =
+      std::pair<WalletBarcodeSourceElement,
+                std::vector<shape_detection::mojom::BarcodeDetectionResultPtr>>;
+
   // Creates and binds a remote for the image extractor service for the given
   // `web_contents`.
   virtual mojo::Remote<mojom::ImageExtractor> CreateAndBindImageExtractorRemote(
       content::WebContents* web_contents);
 
-  // Creates and binds a remote for the barcode detection service.
+  // Creates and binds a remote for the barcode detection service with
+  // `options`.
   virtual mojo::Remote<shape_detection::mojom::BarcodeDetection>
-  CreateAndBindBarcodeDetectorRemote();
+  CreateAndBindBarcodeDetectorRemote(
+      shape_detection::mojom::BarcodeDetectorOptionsPtr options);
 
-  // Takes a remote `ImageExtractor` and extracts images from the web contents.
-  // `callback` is only triggered once all the images are extracted.
-  void ExtractImageWithRemote(mojo::Remote<mojom::ImageExtractor> remote,
-                              WalletBarcodeDetectionDetectCallback callback);
+  // Takes a remote `ImageExtractor` and extracts the images that pass
+  // `extraction_options` from the web contents, then decodes
+  // `barcode_formats` in them. `callback` is only triggered once all the
+  // images are extracted.
+  void ExtractImageWithRemote(
+      mojo::Remote<mojom::ImageExtractor> remote,
+      mojom::ImageExtractionOptionsPtr extraction_options,
+      std::vector<shape_detection::mojom::BarcodeFormat> barcode_formats,
+      WalletBarcodeDetectionDetectCallback callback);
 
   // Invoked when images have been extracted from the web contents. This method
-  // will detect barcodes in the extracted images.
-  void OnImagesExtracted(WalletBarcodeDetectionDetectCallback callback,
-                         const std::vector<SkBitmap>& images);
+  // will detect `barcode_formats` in the extracted images.
+  void OnImagesExtracted(
+      std::vector<shape_detection::mojom::BarcodeFormat> barcode_formats,
+      WalletBarcodeDetectionDetectCallback callback,
+      std::vector<mojom::ExtractedImagePtr> images);
 
-  // Invoked when all barcode detections are complete.
+  // Invoked when all barcode detections are complete. Each element of
+  // `all_detected_barcodes` holds the barcodes decoded from one image, together
+  // with the element that the image came from.
   void OnAllBarcodesDetected(
       WalletBarcodeDetectionDetectCallback callback,
-      std::vector<
-          std::vector<shape_detection::mojom::BarcodeDetectionResultPtr>>
-          all_results);
+      std::vector<ImageDetectionResults> all_detected_barcodes);
 
   // Invoked when the image extractor remote is disconnected.
   void OnRemoteDisconnected(WalletBarcodeDetectionDetectCallback callback);

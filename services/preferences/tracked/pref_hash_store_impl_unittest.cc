@@ -31,6 +31,15 @@ using ValueState =
 
 constexpr char kSuperAuthenticatorCalculatedHistogram[] =
     "Settings.TrackedPreferences.SuperAuthenticatorCalculated";
+constexpr char kSuperEncryptedHashResultHistogram[] =
+    "Settings.TrackedPreferenceSuperEncryptedHashResult3";
+constexpr char kKeyLossUndecryptableHistogram[] =
+    "Settings.TrackedPreferences.EncryptedHashKeyLoss.Undecryptable";
+
+// Values of the SuperEncryptedHashResult enum.
+constexpr int kSuperEncryptedHashMatch = 0;
+constexpr int kSuperEncryptedHashMismatch = 1;
+constexpr int kSuperEncryptedHashUndecryptable = 3;
 
 // Helper to get derived key for encrypted hashes; this is a replicate of the
 // function in the .cc file.
@@ -176,12 +185,15 @@ TEST_F(PrefHashStoreImplTest, AtomicHashStoreAndCheck) {
               transaction->CheckValue("path1", nullptr));
 
     transaction->StoreHmac("path1", &string_1);
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &string_1));
-    EXPECT_EQ(ValueState::CLEARED, transaction->CheckValue("path1", nullptr));
+    EXPECT_EQ(ValueState::CLEARED_HMAC,
+              transaction->CheckValue("path1", nullptr));
     transaction->StoreHmac("path1", nullptr);
-    EXPECT_EQ(ValueState::UNCHANGED, transaction->CheckValue("path1", nullptr));
-    EXPECT_EQ(ValueState::CHANGED, transaction->CheckValue("path1", &string_2));
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
+              transaction->CheckValue("path1", nullptr));
+    EXPECT_EQ(ValueState::CHANGED_HMAC,
+              transaction->CheckValue("path1", &string_2));
 
     base::Value dict_val(base::Value::Type::DICT);
     base::DictValue& dict = dict_val.GetDict();
@@ -191,7 +203,7 @@ TEST_F(PrefHashStoreImplTest, AtomicHashStoreAndCheck) {
     dict.Set("c", "baz");
 
     transaction->StoreHmac("path1", &dict_val);
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &dict_val));
   }
 
@@ -246,9 +258,10 @@ TEST_F(PrefHashStoreImplTest, ImportExportOperations) {
     transaction->StoreHmac("path1", &string_1);
 
     ASSERT_TRUE(transaction->HasAuthenticator("path1"));
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &string_1));
-    EXPECT_EQ(ValueState::CHANGED, transaction->CheckValue("path1", &string_2));
+    EXPECT_EQ(ValueState::CHANGED_HMAC,
+              transaction->CheckValue("path1", &string_2));
   }
 
   // Make a copy of the stored hash for future use.
@@ -302,7 +315,7 @@ TEST_F(PrefHashStoreImplTest, ImportExportOperations) {
     ASSERT_TRUE(transaction->HasAuthenticator("path1"));
 
     // The imported hash should be usable for validating the original value.
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &string_1));
   }
 
@@ -313,7 +326,7 @@ TEST_F(PrefHashStoreImplTest, ImportExportOperations) {
         pref_hash_store.BeginTransaction(GetHashStoreContents()));
     ASSERT_FALSE(transaction->IsSuperHmacValid());
     ASSERT_TRUE(transaction->HasAuthenticator("path1"));
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &string_1));
 
     // After clearing the hash, non-null values are UNTRUSTED_UNKNOWN.
@@ -344,8 +357,9 @@ TEST_F(PrefHashStoreImplTest, ImportExportOperations) {
 
     // Store the hash of a different value to test an "over-import".
     transaction->StoreHmac("path1", &string_2);
-    EXPECT_EQ(ValueState::CHANGED, transaction->CheckValue("path1", &string_1));
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::CHANGED_HMAC,
+              transaction->CheckValue("path1", &string_1));
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &string_2));
   }
 
@@ -357,9 +371,10 @@ TEST_F(PrefHashStoreImplTest, ImportExportOperations) {
 
     // "Over-import". An import should preserve validity.
     transaction->ImportAuthData("path1", &path_1_string_1_hash_copy);
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &string_1));
-    EXPECT_EQ(ValueState::CHANGED, transaction->CheckValue("path1", &string_2));
+    EXPECT_EQ(ValueState::CHANGED_HMAC,
+              transaction->CheckValue("path1", &string_2));
   }
 
   // Verify that validity was preserved and the "over-import" took effect.
@@ -368,9 +383,10 @@ TEST_F(PrefHashStoreImplTest, ImportExportOperations) {
     std::unique_ptr<PrefHashStoreTransaction> transaction(
         pref_hash_store.BeginTransaction(GetHashStoreContents()));
     ASSERT_TRUE(transaction->IsSuperHmacValid());
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &string_1));
-    EXPECT_EQ(ValueState::CHANGED, transaction->CheckValue("path1", &string_2));
+    EXPECT_EQ(ValueState::CHANGED_HMAC,
+              transaction->CheckValue("path1", &string_2));
   }
 }
 
@@ -385,7 +401,7 @@ TEST_F(PrefHashStoreImplTest, SuperHmacDisabled) {
         pref_hash_store.BeginTransaction(GetHashStoreContents()));
 
     transaction->StoreHmac("path1", &string_2);
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &string_2));
   }
 
@@ -411,7 +427,7 @@ TEST_F(PrefHashStoreImplTest, SuperEncryptedHashDisabled) {
         pref_hash_store.BeginTransaction(GetHashStoreContents()));
 
     transaction->StoreHmac("path1", &string_1);
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckValue("path1", &string_1));
   }
 
@@ -450,7 +466,7 @@ TEST_F(PrefHashStoreImplTest, SplitHashStoreAndCheck) {
     transaction->StoreSplitHmac("path1", &dict);
 
     // Verify match post storage.
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckSplitValue("path1", &dict, &invalid_keys));
     EXPECT_TRUE(invalid_keys.empty());
 
@@ -460,7 +476,7 @@ TEST_F(PrefHashStoreImplTest, SplitHashStoreAndCheck) {
     EXPECT_TRUE(invalid_keys.empty());
 
     // Verify NULL or empty dicts are declared as having been cleared.
-    EXPECT_EQ(ValueState::CLEARED,
+    EXPECT_EQ(ValueState::CLEARED_HMAC,
               transaction->CheckSplitValue("path1", nullptr, &invalid_keys));
 
     // invalid_keys should contain the keys that were removed.
@@ -475,16 +491,18 @@ TEST_F(PrefHashStoreImplTest, SplitHashStoreAndCheck) {
     EXPECT_EQ(expected_cleared_keys, invalid_keys);
     invalid_keys.clear();
 
-    EXPECT_EQ(ValueState::CLEARED, transaction->CheckSplitValue(
-                                       "path1", &empty_dict, &invalid_keys));
+    EXPECT_EQ(
+        ValueState::CLEARED_HMAC,
+        transaction->CheckSplitValue("path1", &empty_dict, &invalid_keys));
     // The same keys should be reported as invalid/cleared for an empty dict.
     std::sort(invalid_keys.begin(), invalid_keys.end());
     EXPECT_EQ(expected_cleared_keys, invalid_keys);
     invalid_keys.clear();
 
     // Verify changes are properly detected.
-    EXPECT_EQ(ValueState::CHANGED, transaction->CheckSplitValue(
-                                       "path1", &modified_dict, &invalid_keys));
+    EXPECT_EQ(
+        ValueState::CHANGED_HMAC,
+        transaction->CheckSplitValue("path1", &modified_dict, &invalid_keys));
     std::vector<std::string> expected_invalid_keys1;
     expected_invalid_keys1.push_back("a");
     expected_invalid_keys1.push_back("c");
@@ -493,7 +511,7 @@ TEST_F(PrefHashStoreImplTest, SplitHashStoreAndCheck) {
     invalid_keys.clear();
 
     // Verify |dict| still matches post check.
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckSplitValue("path1", &dict, &invalid_keys));
     EXPECT_TRUE(invalid_keys.empty());
 
@@ -502,12 +520,12 @@ TEST_F(PrefHashStoreImplTest, SplitHashStoreAndCheck) {
 
     // Verify |modified_dict| is now the one that verifies correctly.
     EXPECT_EQ(
-        ValueState::UNCHANGED,
+        ValueState::UNCHANGED_HMAC,
         transaction->CheckSplitValue("path1", &modified_dict, &invalid_keys));
     EXPECT_TRUE(invalid_keys.empty());
 
     // Verify old dict no longer matches.
-    EXPECT_EQ(ValueState::CHANGED,
+    EXPECT_EQ(ValueState::CHANGED_HMAC,
               transaction->CheckSplitValue("path1", &dict, &invalid_keys));
     std::vector<std::string> expected_invalid_keys2;
     expected_invalid_keys2.push_back("a");
@@ -580,20 +598,22 @@ TEST_F(PrefHashStoreImplTest, EmptyAndNULLSplitDict) {
 
     // Verify stored empty dictionary matches NULL and empty dictionary back.
     transaction->StoreSplitHmac("path1", &empty_dict);
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckSplitValue("path1", nullptr, &invalid_keys));
     EXPECT_TRUE(invalid_keys.empty());
-    EXPECT_EQ(ValueState::UNCHANGED, transaction->CheckSplitValue(
-                                         "path1", &empty_dict, &invalid_keys));
+    EXPECT_EQ(
+        ValueState::UNCHANGED_HMAC,
+        transaction->CheckSplitValue("path1", &empty_dict, &invalid_keys));
     EXPECT_TRUE(invalid_keys.empty());
 
     // Same when storing NULL directly.
     transaction->StoreSplitHmac("path1", nullptr);
-    EXPECT_EQ(ValueState::UNCHANGED,
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
               transaction->CheckSplitValue("path1", nullptr, &invalid_keys));
     EXPECT_TRUE(invalid_keys.empty());
-    EXPECT_EQ(ValueState::UNCHANGED, transaction->CheckSplitValue(
-                                         "path1", &empty_dict, &invalid_keys));
+    EXPECT_EQ(
+        ValueState::UNCHANGED_HMAC,
+        transaction->CheckSplitValue("path1", &empty_dict, &invalid_keys));
     EXPECT_TRUE(invalid_keys.empty());
   }
 
@@ -638,7 +658,8 @@ TEST_F(PrefHashStoreImplTest, TrustedUnknownSplitValueFromExistingAtomic) {
         pref_hash_store.BeginTransaction(GetHashStoreContents()));
 
     transaction->StoreHmac("path1", &string);
-    EXPECT_EQ(ValueState::UNCHANGED, transaction->CheckValue("path1", &string));
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC,
+              transaction->CheckValue("path1", &string));
   }
 
   {
@@ -868,15 +889,352 @@ class PrefHashStoreImplEncryptedTest : public testing::Test {
     }
   }
 
+  void StoreInitialHashes() {
+    base::Value value("existing value");
+    base::DictValue split_value;
+    split_value.Set("key", "existing split value");
+    auto transaction = BeginTransaction(/*with_encryptor=*/true);
+    transaction->StoreEncryptedHash("existing.pref", &value);
+    transaction->StoreSplitEncryptedHash("existing.split", &split_value);
+    transaction->StoreHmac("legacy.pref", &value);
+  }
+
+  void ExpectUnknownValuesState(
+      ValueState expected_state,
+      int expected_sample,
+      scoped_refptr<const os_crypt_async::Encryptor> encryptor) {
+    base::HistogramTester histogram_tester;
+    base::Value value("new value");
+    base::DictValue split_value;
+    split_value.Set("key", "new split value");
+    std::vector<std::string> invalid_keys;
+    auto transaction =
+        hash_store_.BeginTransaction(&dictionary_contents_, encryptor);
+    // Beginning a transaction alone must not emit the histogram.
+    histogram_tester.ExpectTotalCount(kSuperEncryptedHashResultHistogram, 0);
+    transaction->RecordSuperEncryptedHashResult();
+    EXPECT_TRUE(transaction->IsSuperHmacValid());
+    EXPECT_EQ(expected_state, transaction->CheckValue("new.pref", &value));
+    EXPECT_EQ(expected_state, transaction->CheckSplitValue(
+                                  "new.split", &split_value, &invalid_keys));
+    EXPECT_TRUE(invalid_keys.empty());
+    histogram_tester.ExpectUniqueSample(kSuperEncryptedHashResultHistogram,
+                                        expected_sample, 1);
+  }
+
   const base::DictValue* GetCurrentDictionaryContents() {
     return dictionary_contents_.GetContents();
   }
 
   PrefHashStoreImpl hash_store_;
   scoped_refptr<os_crypt_async::Encryptor> test_encryptor_;
+  // An encryptor with the same key name as `test_encryptor_` but a different
+  // key, simulating an OS key that was rotated or recreated.
+  scoped_refptr<os_crypt_async::Encryptor> rotated_encryptor_ =
+      os_crypt_async::GetTestEncryptorForTesting();
   base::DictValue pref_store_contents_;
   DictionaryHashStoreContents dictionary_contents_;
 };
+
+class PrefHashStoreImplSuperEncryptedHashTest
+    : public PrefHashStoreImplEncryptedTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  PrefHashStoreImplSuperEncryptedHashTest() {
+    feature_list_.InitWithFeatureState(tracked::kDisallowLegacyPrefMacFallback,
+                                       GetParam());
+  }
+
+ protected:
+  using PrefHashStoreImplEncryptedTest::ExpectUnknownValuesState;
+
+  void ExpectUnknownValuesState(ValueState expected_state) {
+    ExpectUnknownValuesState(expected_state,
+                             expected_state == ValueState::TRUSTED_UNKNOWN_VALUE
+                                 ? kSuperEncryptedHashMatch
+                                 : kSuperEncryptedHashMismatch,
+                             test_encryptor_);
+  }
+
+  bool IsLegacyFallbackDisallowed() const { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_P(PrefHashStoreImplSuperEncryptedHashTest, ValidatesPersistedHashes) {
+  StoreInitialHashes();
+  ASSERT_FALSE(dictionary_contents_.GetSuperEncryptedHash().empty());
+  ExpectUnknownValuesState(ValueState::TRUSTED_UNKNOWN_VALUE);
+}
+
+TEST_P(PrefHashStoreImplSuperEncryptedHashTest, IgnoresLegacyHmacChanges) {
+  StoreInitialHashes();
+  SeedAtomicHmac("legacy.pref", "changed legacy hmac");
+  MakeSuperHmacValid();
+  ExpectUnknownValuesState(ValueState::TRUSTED_UNKNOWN_VALUE);
+}
+
+TEST_P(PrefHashStoreImplSuperEncryptedHashTest, RejectsChangedEncryptedHashes) {
+  StoreInitialHashes();
+  SeedAtomicEncryptedHash("existing.pref", "changed encrypted hash");
+  MakeSuperHmacValid();
+  ExpectUnknownValuesState(ValueState::UNTRUSTED_UNKNOWN_VALUE);
+}
+
+// A super encrypted hash that fails authenticated decryption can not be
+// distinguished from one encrypted with a key that is no longer current, so it
+// is treated as missing rather than as a mismatch. This is no weaker than the
+// super encrypted hash being deleted: the legacy super HMAC is only trusted
+// when the legacy fallback is allowed (https://crbug.com/575543754).
+TEST_P(PrefHashStoreImplSuperEncryptedHashTest,
+       UndecryptableSuperEncryptedHashTreatedAsMissing) {
+  StoreInitialHashes();
+  auto encrypted_hash =
+      base::Base64Decode(dictionary_contents_.GetSuperEncryptedHash());
+  ASSERT_TRUE(encrypted_hash);
+  ASSERT_FALSE(encrypted_hash->empty());
+  encrypted_hash->back() ^= 1;
+  dictionary_contents_.SetSuperEncryptedHash(
+      base::Base64Encode(*encrypted_hash));
+  ExpectUnknownValuesState(IsLegacyFallbackDisallowed()
+                               ? ValueState::UNTRUSTED_UNKNOWN_VALUE
+                               : ValueState::TRUSTED_UNKNOWN_VALUE,
+                           kSuperEncryptedHashUndecryptable, test_encryptor_);
+}
+
+TEST_F(PrefHashStoreImplEncryptedTest,
+       UndecryptableSuperEncryptedHashRejectedWithKillSwitch) {
+  base::test::ScopedFeatureList kill_switch;
+  kill_switch.InitAndDisableFeature(
+      tracked::kTreatUndecryptableEncryptedHashAsMissing);
+  StoreInitialHashes();
+  auto encrypted_hash =
+      base::Base64Decode(dictionary_contents_.GetSuperEncryptedHash());
+  ASSERT_TRUE(encrypted_hash);
+  ASSERT_FALSE(encrypted_hash->empty());
+  encrypted_hash->back() ^= 1;
+  dictionary_contents_.SetSuperEncryptedHash(
+      base::Base64Encode(*encrypted_hash));
+  ExpectUnknownValuesState(ValueState::UNTRUSTED_UNKNOWN_VALUE,
+                           kSuperEncryptedHashUndecryptable, test_encryptor_);
+}
+
+// Simulates the OS encryption key being recreated, e.g. after the macOS login
+// keychain was reset (https://crbug.com/575543754).
+TEST_P(PrefHashStoreImplSuperEncryptedHashTest,
+       SuperEncryptedHashWithRotatedKey) {
+  StoreInitialHashes();
+  ExpectUnknownValuesState(
+      IsLegacyFallbackDisallowed() ? ValueState::UNTRUSTED_UNKNOWN_VALUE
+                                   : ValueState::TRUSTED_UNKNOWN_VALUE,
+      kSuperEncryptedHashUndecryptable, rotated_encryptor_);
+}
+
+TEST_P(PrefHashStoreImplSuperEncryptedHashTest, AtomicPrefWithRotatedKey) {
+  const std::string kPath = "atomic.pref";
+  base::Value value("value");
+  base::Value tampered_value("tampered value");
+  {
+    auto transaction = BeginTransaction(/*with_encryptor=*/true);
+    transaction->StoreHmac(kPath, &value);
+    transaction->StoreEncryptedHash(kPath, &value);
+  }
+
+  base::HistogramTester histogram_tester;
+  auto transaction =
+      hash_store_.BeginTransaction(&dictionary_contents_, rotated_encryptor_);
+  if (IsLegacyFallbackDisallowed()) {
+    // Without the legacy fallback there is nothing left to trust the value.
+    EXPECT_EQ(ValueState::UNTRUSTED_UNKNOWN_VALUE,
+              transaction->CheckValue(kPath, &value, /*reporting_id=*/3));
+    EXPECT_EQ(ValueState::UNTRUSTED_UNKNOWN_VALUE,
+              transaction->CheckValue(kPath, &tampered_value));
+  } else {
+    // The legacy HMAC is used, exactly as if the encrypted hash was missing.
+    EXPECT_EQ(ValueState::UNCHANGED_VIA_HMAC_FALLBACK,
+              transaction->CheckValue(kPath, &value, /*reporting_id=*/3));
+    EXPECT_EQ(ValueState::CHANGED_VIA_HMAC_FALLBACK,
+              transaction->CheckValue(kPath, &tampered_value));
+  }
+  histogram_tester.ExpectUniqueSample(kKeyLossUndecryptableHistogram, 3, 1);
+}
+
+TEST_F(PrefHashStoreImplEncryptedTest, AtomicPrefWithRotatedKeyAndKillSwitch) {
+  base::test::ScopedFeatureList kill_switch;
+  kill_switch.InitAndDisableFeature(
+      tracked::kTreatUndecryptableEncryptedHashAsMissing);
+  const std::string kPath = "atomic.pref";
+  base::Value value("value");
+  {
+    auto transaction = BeginTransaction(/*with_encryptor=*/true);
+    transaction->StoreHmac(kPath, &value);
+    transaction->StoreEncryptedHash(kPath, &value);
+  }
+
+  auto transaction =
+      hash_store_.BeginTransaction(&dictionary_contents_, rotated_encryptor_);
+  EXPECT_EQ(ValueState::CHANGED_ENCRYPTED,
+            transaction->CheckValue(kPath, &value));
+}
+
+// A value that does not match an encrypted hash that can be decrypted is still
+// reported as changed, regardless of the legacy HMAC.
+TEST_F(PrefHashStoreImplEncryptedTest, AtomicPrefDecryptableMismatchIsChanged) {
+  const std::string kPath = "atomic.pref";
+  base::Value value("value");
+  base::Value tampered_value("tampered value");
+  {
+    auto transaction = BeginTransaction(/*with_encryptor=*/true);
+    transaction->StoreEncryptedHash(kPath, &value);
+    transaction->StoreHmac(kPath, &tampered_value);
+  }
+
+  auto transaction = BeginTransaction(/*with_encryptor=*/true);
+  EXPECT_EQ(ValueState::CHANGED_ENCRYPTED,
+            transaction->CheckValue(kPath, &tampered_value));
+}
+
+TEST_P(PrefHashStoreImplSuperEncryptedHashTest, SplitPrefWithRotatedKey) {
+  const std::string kPath = "split.pref";
+  base::DictValue split_value;
+  split_value.Set("a", "value a");
+  split_value.Set("b", "value b");
+  {
+    auto transaction = BeginTransaction(/*with_encryptor=*/true);
+    transaction->StoreSplitHmac(kPath, &split_value);
+    transaction->StoreSplitEncryptedHash(kPath, &split_value);
+  }
+
+  base::HistogramTester histogram_tester;
+  auto transaction =
+      hash_store_.BeginTransaction(&dictionary_contents_, rotated_encryptor_);
+  std::vector<std::string> invalid_keys;
+  const ValueState state = transaction->CheckSplitValue(
+      kPath, &split_value, &invalid_keys, /*reporting_id=*/5);
+  EXPECT_EQ(IsLegacyFallbackDisallowed()
+                ? ValueState::UNTRUSTED_UNKNOWN_VALUE
+                : ValueState::UNCHANGED_VIA_HMAC_FALLBACK,
+            state);
+  EXPECT_TRUE(invalid_keys.empty());
+  histogram_tester.ExpectUniqueSample(kKeyLossUndecryptableHistogram, 5, 2);
+}
+
+TEST_P(PrefHashStoreImplSuperEncryptedHashTest,
+       SplitPrefWithRotatedKeyDetectsTamperedEntry) {
+  const std::string kPath = "split.pref";
+  base::DictValue split_value;
+  split_value.Set("a", "value a");
+  split_value.Set("b", "value b");
+  {
+    auto transaction = BeginTransaction(/*with_encryptor=*/true);
+    transaction->StoreSplitHmac(kPath, &split_value);
+    transaction->StoreSplitEncryptedHash(kPath, &split_value);
+  }
+
+  split_value.Set("b", "tampered value b");
+  auto transaction =
+      hash_store_.BeginTransaction(&dictionary_contents_, rotated_encryptor_);
+  std::vector<std::string> invalid_keys;
+  const ValueState state =
+      transaction->CheckSplitValue(kPath, &split_value, &invalid_keys);
+  if (IsLegacyFallbackDisallowed()) {
+    EXPECT_EQ(ValueState::UNTRUSTED_UNKNOWN_VALUE, state);
+    EXPECT_TRUE(invalid_keys.empty());
+  } else {
+    EXPECT_EQ(ValueState::CHANGED_VIA_HMAC_FALLBACK, state);
+    EXPECT_EQ(std::vector<std::string>({"b"}), invalid_keys);
+  }
+}
+
+// If any entry of a split preference can be decrypted, the key is not lost, so
+// entries that can not be decrypted are not downgraded to the legacy HMAC.
+TEST_F(PrefHashStoreImplEncryptedTest,
+       SplitPrefWithPartiallyUndecryptableEntries) {
+  const std::string kPath = "split.pref";
+  base::DictValue split_value;
+  split_value.Set("a", "value a");
+  split_value.Set("b", "value b");
+  {
+    auto transaction = BeginTransaction(/*with_encryptor=*/true);
+    transaction->StoreSplitHmac(kPath, &split_value);
+    transaction->StoreSplitEncryptedHash(kPath, &split_value);
+  }
+  // Re-encrypt the hash for "b" only with the rotated key.
+  const base::Value* value_b = split_value.Find("b");
+  ASSERT_TRUE(value_b);
+  dictionary_contents_.SetSplitPrefAuthenticator(
+      GetSplitEncKeyBase(kPath), "b",
+      hash_store_.ComputeEncryptedHash(kPath + ".b", value_b,
+                                       rotated_encryptor_.get()));
+
+  auto transaction =
+      hash_store_.BeginTransaction(&dictionary_contents_, rotated_encryptor_);
+  std::vector<std::string> invalid_keys;
+  EXPECT_EQ(ValueState::CHANGED_ENCRYPTED,
+            transaction->CheckSplitValue(kPath, &split_value, &invalid_keys));
+  EXPECT_EQ(std::vector<std::string>({"a"}), invalid_keys);
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PrefHashStoreImplSuperEncryptedHashTest,
+                         testing::Bool());
+
+TEST_F(PrefHashStoreImplEncryptedTest, SuperEncryptedHashResultMissing) {
+  constexpr int kMissing = 2;
+  base::HistogramTester histogram_tester;
+  auto transaction = BeginTransaction(/*with_encryptor=*/true);
+  transaction->RecordSuperEncryptedHashResult();
+  histogram_tester.ExpectUniqueSample(kSuperEncryptedHashResultHistogram,
+                                      kMissing, 1);
+}
+
+TEST_F(PrefHashStoreImplEncryptedTest,
+       SuperEncryptedHashResultNotRecordedWithoutEncryptor) {
+  base::HistogramTester histogram_tester;
+  auto transaction = BeginTransaction(/*with_encryptor=*/false);
+  transaction->RecordSuperEncryptedHashResult();
+  histogram_tester.ExpectTotalCount(kSuperEncryptedHashResultHistogram, 0);
+}
+
+// The unprotected store does not use a super encrypted hash, so it should
+// neither record the verification result nor write a super encrypted hash.
+TEST_F(PrefHashStoreImplEncryptedTest,
+       SuperEncryptedHashDisabledWithEncryptor) {
+  base::HistogramTester histogram_tester;
+  base::Value value("test_value");
+  PrefHashStoreImpl unprotected_store(kSeed, /*use_super_hmac=*/false,
+                                      /*use_super_encrypted_hash=*/false);
+  {
+    auto transaction = unprotected_store.BeginTransaction(&dictionary_contents_,
+                                                          test_encryptor_);
+    transaction->RecordSuperEncryptedHashResult();
+    transaction->StoreHmac("test.pref", &value);
+    transaction->StoreEncryptedHash("test.pref", &value);
+  }
+  {
+    // A subsequent transaction should not record anything either.
+    auto transaction = unprotected_store.BeginTransaction(&dictionary_contents_,
+                                                          test_encryptor_);
+    transaction->RecordSuperEncryptedHashResult();
+  }
+
+  histogram_tester.ExpectTotalCount(kSuperEncryptedHashResultHistogram, 0);
+  EXPECT_TRUE(dictionary_contents_.GetSuperHmac().empty());
+  EXPECT_TRUE(dictionary_contents_.GetSuperEncryptedHash().empty());
+}
+
+// Stores that do not support super authenticators (e.g. the Windows registry)
+// should never record the verification result.
+TEST_F(PrefHashStoreImplEncryptedTest,
+       SuperEncryptedHashResultNotRecordedWhenUnsupported) {
+  base::HistogramTester histogram_tester;
+  base::DictValue storage;
+  NonSuperMacDictionaryHashStoreContents contents(storage);
+  auto transaction = hash_store_.BeginTransaction(&contents, test_encryptor_);
+  transaction->RecordSuperEncryptedHashResult();
+  histogram_tester.ExpectTotalCount(kSuperEncryptedHashResultHistogram, 0);
+}
 
 TEST_F(PrefHashStoreImplEncryptedTest, SuperEncryptedHashOnly) {
   base::Value value("test_value");
@@ -1068,15 +1426,15 @@ TEST_F(PrefHashStoreImplEncryptedTest, CheckValueValidation) {
     // Scenario 1: Store only HMAC (cannot store encrypted), check valid, check
     // wrong, check null
     tx->StoreHmac(path, &value);
-    EXPECT_EQ(ValueState::UNCHANGED, tx->CheckValue(path, &value));
-    EXPECT_EQ(ValueState::CHANGED, tx->CheckValue(path, &wrong_value));
-    EXPECT_EQ(ValueState::CLEARED, tx->CheckValue(path, null_value_ptr));
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC, tx->CheckValue(path, &value));
+    EXPECT_EQ(ValueState::CHANGED_HMAC, tx->CheckValue(path, &wrong_value));
+    EXPECT_EQ(ValueState::CLEARED_HMAC, tx->CheckValue(path, null_value_ptr));
 
     // Scenario 2: Store HMAC for null, check null, check value
     tx->ClearAuthenticators(path);
     tx->StoreHmac(path, null_value_ptr);
-    EXPECT_EQ(ValueState::UNCHANGED, tx->CheckValue(path, null_value_ptr));
-    EXPECT_EQ(ValueState::CHANGED, tx->CheckValue(path, &value));
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC, tx->CheckValue(path, null_value_ptr));
+    EXPECT_EQ(ValueState::CHANGED_HMAC, tx->CheckValue(path, &value));
 
     // Scenario 3: Simulate Encrypted Hash only present (can't store this way
     // w/o encryptor).
@@ -1092,7 +1450,7 @@ TEST_F(PrefHashStoreImplEncryptedTest, CheckValueValidation) {
     tx->StoreHmac(path, &value);
     dictionary_contents_.SetAtomicPrefAuthenticator(GetEncKey(path),
                                                     "Invalid Base64");
-    EXPECT_EQ(ValueState::UNCHANGED, tx->CheckValue(path, &value));
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC, tx->CheckValue(path, &value));
   }
 }
 
@@ -1563,7 +1921,7 @@ TEST_F(PrefHashStoreImplEncryptedTest,
     std::vector<std::string> invalid_keys;
     ValueState state =
         tx->CheckSplitValue(kPath, &current_pref_dict1, &invalid_keys);
-    EXPECT_EQ(ValueState::UNCHANGED, state)
+    EXPECT_EQ(ValueState::UNCHANGED_HMAC, state)
         << "Should rely on HMACs when encryptor is off";
     EXPECT_TRUE(invalid_keys.empty());
   }
@@ -1575,7 +1933,7 @@ TEST_F(PrefHashStoreImplEncryptedTest,
     std::vector<std::string> invalid_keys;
     ValueState state =
         tx->CheckSplitValue(kPath, &current_pref_dict2, &invalid_keys);
-    EXPECT_EQ(ValueState::CHANGED, state);
+    EXPECT_EQ(ValueState::CHANGED_HMAC, state);
     ASSERT_EQ(1u, invalid_keys.size());
     EXPECT_EQ("key2", invalid_keys[0]);
   }
@@ -1922,7 +2280,7 @@ TEST_F(PrefHashStoreImplEncryptedTest,
 
   // On an enterprise device, the presence of an encrypted hash should cause
   // the transaction to defer validation.
-  EXPECT_EQ(ValueState::UNCHANGED, state);
+  EXPECT_EQ(ValueState::UNCHANGED_HMAC, state);
 
   is_enterprise_device_for_testing_.reset();
 }

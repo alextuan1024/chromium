@@ -2,12 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://new-tab-page/strings.m.js';
 import 'chrome://resources/cr_components/searchbox/searchbox_compose_button.js';
 import 'chrome://resources/cr_components/searchbox/searchbox_dropdown.js';
 import 'chrome://resources/cr_components/searchbox/searchbox_input.js';
+import 'chrome://webui-test/strings.m.js';
 
-import {createAutocompleteMatch, createAutocompleteResultForTesting, createMatchKeywordModelForTesting, createSearchMatchForTesting, SearchboxBrowserProxy} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import {createAutocompleteMatch} from 'chrome://resources/cr_components/search/autocomplete_match_utils.js';
+import {KeywordModeEntryMethod} from 'chrome://resources/cr_components/searchbox/keyword_mode_manager.js';
+import {SearchboxBrowserProxy} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
 import type {ComposeClickEventDetail} from 'chrome://resources/cr_components/searchbox/searchbox_compose_button.js';
 import type {SearchboxDropdownElement} from 'chrome://resources/cr_components/searchbox/searchbox_dropdown.js';
 import type {SearchboxInputElement} from 'chrome://resources/cr_components/searchbox/searchbox_input.js';
@@ -15,16 +17,18 @@ import {kDefaultSelection} from 'chrome://resources/cr_components/searchbox/sear
 import type {SearchboxMatchElement} from 'chrome://resources/cr_components/searchbox/searchbox_match.js';
 import {SearchboxMixin} from 'chrome://resources/cr_components/searchbox/searchbox_mixin.js';
 import type {AriaNotificationOptions} from 'chrome://resources/cr_components/searchbox/utils.js';
+import {afterNextPaint} from 'chrome://resources/cr_components/searchbox/utils.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {isMac} from 'chrome://resources/js/platform.js';
 import {CrLitElement, html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {NavigationPredictor} from 'chrome://resources/mojo/components/omnibox/browser/omnibox.mojom-webui.js';
 import type {AutocompleteMatch} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import {KeywordType, SelectionLineState} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {KeywordActivationMethod, KeywordType, SelectionLineState} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {SecondaryTextPlacement} from 'chrome://resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {$$, eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {assertIconMaskImageUrl, assertStyle, createClipboardEvent, createKeyboardEvent, createUrlMatch} from './searchbox_test_utils.js';
+import {assertIconMaskImageUrl, assertStyle, createAutocompleteResult, createClipboardEvent, createKeyboardEvent, createMatchKeywordModel, createSearchMatch, createSuggestTemplateInfo, createUrlMatch} from './searchbox_test_utils.js';
 import {TestSearchboxBrowserProxy} from './test_searchbox_browser_proxy.js';
 
 const TestElementBase = SearchboxMixin(CrLitElement);
@@ -50,6 +54,8 @@ class TestSearchboxMixinElement extends TestElementBase {
         <cr-searchbox-input id="input"
             searchbox-icon="search.svg"
             ?multi-line-enabled="${this.multiLineEnabled}"
+            .singleLineOnInlineAutocomplete="${
+        this.singleLineOnInlineAutocomplete}"
             .result="${this.result}"
             .selectedMatch="${this.selectedMatch}"
             .inputKeywordModel="${this.inputKeywordModel}"
@@ -116,6 +122,12 @@ class TestSearchboxMixinElement extends TestElementBase {
   override shouldAppendDotComOnCtrlEnter() {
     return this.shouldAppendDotCom;
   }
+
+  preserveSelectionOnMatchDeletion = false;
+
+  override shouldPreserveSelectionOnMatchDeletion() {
+    return this.preserveSelectionOnMatchDeletion;
+  }
 }
 
 customElements.define(TestSearchboxMixinElement.is, TestSearchboxMixinElement);
@@ -130,40 +142,94 @@ function simulateUserTextInput(
   return microtasksFinished();
 }
 
-function createCalculatorMatch(modifiers: Partial<AutocompleteMatch>):
+/**
+ * Types 'https://local' and responds with deletable matches, the first of which
+ * is the default match, like in the interactive
+ * `WebUILocationBarEagerPopupInteractiveUiTest.NavigateSuggestionsTab` test.
+ */
+async function showDeletableMatches(element: TestSearchboxMixinElement):
+    Promise<AutocompleteMatch[]> {
+  const matches = [
+    createUrlMatch({
+      allowedToBeDefaultMatch: true,
+      inlineAutocompletion: '.test',
+      fillIntoEdit: 'https://local.test',
+      destinationUrl: 'https://local.test/',
+      supportsDeletion: true,
+    }),
+    ...['https://local', 'https://local.test/1', 'https://local.test/2'].map(
+        url => createUrlMatch({
+          fillIntoEdit: url,
+          destinationUrl: url,
+          supportsDeletion: true,
+        })),
+  ];
+  await simulateUserTextInput(element.getInputElement(), 'https://local');
+  element.onAutocompleteResultChanged(createAutocompleteResult({
+    queryId: element.activeQueryId,
+    input: 'https://local',
+    matches,
+  }));
+  await microtasksFinished();
+  return matches;
+}
+
+/**
+ * Waits for the deletion of `matches[line]` to be requested, then responds
+ * with the post-deletion result. Returns the remaining matches.
+ */
+async function respondToMatchDeletion(
+    element: TestSearchboxMixinElement, testProxy: TestSearchboxBrowserProxy,
+    matches: AutocompleteMatch[], line: number): Promise<AutocompleteMatch[]> {
+  const args = await testProxy.handler.whenCalled('deleteAutocompleteMatch');
+  assertEquals(line, args.line);
+  assertEquals(matches[line]!.destinationUrl, args.url);
+  testProxy.handler.reset();
+
+  const remainingMatches = matches.filter((_, i) => i !== line);
+  element.onAutocompleteResultChanged(createAutocompleteResult({
+    queryId: element.activeQueryId,
+    input: element.result!.input,
+    matches: remainingMatches,
+  }));
+  await microtasksFinished();
+  return remainingMatches;
+}
+
+/**
+ * Resolves once callbacks scheduled with `afterNextPaint()` before this call
+ * have run, e.g. the input's deferred selection notification.
+ */
+function paintFinished(): Promise<void> {
+  return new Promise(resolve => afterNextPaint(resolve));
+}
+
+function createCalculatorMatch(modifiers: Partial<AutocompleteMatch> = {}):
     AutocompleteMatch {
   return createAutocompleteMatch({
     isSearchType: true,
-    contents: '2 + 3',
-    contentsClass: [{offset: 0, style: 0}],
-    description: '5',
-    descriptionClass: [{offset: 0, style: 0}],
     destinationUrl: 'https://www.google.com/search?q=2+%2B+3',
     fillIntoEdit: '5',
     type: 'search-calculator-answer',
     iconPath: 'calculator_cr23.svg',
+    suggestTemplate: createSuggestTemplateInfo({
+      primaryText: '2 + 3',
+      secondaryText: '5',
+      secondaryTextPlacement: SecondaryTextPlacement.kBelowPrimaryText,
+    }),
     ...modifiers,
   });
 }
 
 function verifyMatch(match: AutocompleteMatch, matchEl: SearchboxMatchElement) {
   assertEquals('option', matchEl.getAttribute('role'));
-  const matchContents = match.contents;
-  const matchDescription =
-      match.description;
+  const primaryText = match.suggestTemplate.primaryText.text;
+  const secondaryText = match.suggestTemplate.secondaryText?.text ?? '';
   const separatorText =
-      (match.swapContentsAndDescription ? match.contents : match.description) ?
-      loadTimeData.getString('searchboxSeparator') :
-      '';
-  const contents = matchEl.$.contents.textContent;
-  const separator = matchEl.$.separator.textContent;
-  const description = matchEl.$.description.textContent;
-  const text = contents + separator + description;
-  assertEquals(
-      match.swapContentsAndDescription ?
-          matchDescription + separatorText + matchContents :
-          matchContents + separatorText + matchDescription,
-      text);
+      secondaryText ? loadTimeData.getString('searchboxSeparator') : '';
+  const text = matchEl.$.primaryText.textContent +
+      matchEl.$.separator.textContent + matchEl.$.secondaryText.textContent;
+  assertEquals(primaryText + separatorText + secondaryText, text);
 }
 
 const FOCUS_EVENTS = ['blur', 'focus', 'focusin', 'focusout'] as const;
@@ -287,8 +353,8 @@ suite('SearchboxMixinTest', () => {
 
     // Show zero-prefix matches.
     element.dropdownIsVisible = true;
-    element.result = createAutocompleteResultForTesting({
-      matches: [createSearchMatchForTesting(), createUrlMatch()],
+    element.result = createAutocompleteResult({
+      matches: [createSearchMatch(), createUrlMatch()],
     });
     await microtasksFinished();
 
@@ -349,8 +415,8 @@ suite('SearchboxMixinTest', () => {
         'he', /*preventInlineAutocomplete=*/ false, /*isOnFocus=*/ false);
     assertEquals(1, testProxy.handler.getCallCount('queryAutocomplete'));
 
-    const matches = [createSearchMatchForTesting(), createUrlMatch()];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch(), createUrlMatch()];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId - 1,  // Simulate stale response.
       input: 'h',
       matches: matches,
@@ -380,8 +446,8 @@ suite('SearchboxMixinTest', () => {
 
         // Receive results for query 0. Even though `lastQueriedInput` matches,
         // it should be discarded as stale.
-        const matches = [createSearchMatchForTesting(), createUrlMatch()];
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        const matches = [createSearchMatch(), createUrlMatch()];
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: 0,
           input: 'a',
           matches: matches,
@@ -397,8 +463,8 @@ suite('SearchboxMixinTest', () => {
     const inputElement = element.getInputElement();
     await simulateUserTextInput(inputElement, 'he');
 
-    const matches = [createSearchMatchForTesting()];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch()];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'he',
       matches: matches,
@@ -443,10 +509,10 @@ suite('SearchboxMixinTest', () => {
     const mockInput = element.getInputElement();
     mockInput.inputElement.value = '';
     element.queryAutocomplete('', false, /*isOnFocus=*/ false);
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: '',
-      matches: [createSearchMatchForTesting()],
+      matches: [createSearchMatch()],
     }));
     await microtasksFinished();
 
@@ -460,10 +526,10 @@ suite('SearchboxMixinTest', () => {
   });
 
   test('onMatchFocusin selects match and updates input', async () => {
-    const matches = [createSearchMatchForTesting({
+    const matches = [createSearchMatch({
       fillIntoEdit: 'test fill',
     })];
-    element.result = createAutocompleteResultForTesting({
+    element.result = createAutocompleteResult({
       matches: matches,
     });
     element.selectedMatchIndex = 0;
@@ -521,18 +587,139 @@ suite('SearchboxMixinTest', () => {
         assertEquals(1, testProxy.handler.getCallCount('stopAutocomplete'));
       });
 
+  test(
+      'onInputWrapperFocusout resets virtual-focus button selection to kNormal',
+      async () => {
+        element.virtualFocusEnabledOverride = true;
+        element.isAimButtonVisibleOverride = true;
+        const mockInput = element.getInputElement();
+        await simulateUserTextInput(mockInput, 'hello');
+
+        const matches = [
+          createSearchMatch({
+            allowedToBeDefaultMatch: true,
+            fillIntoEdit: 'hello',
+          }),
+          createUrlMatch(),
+        ];
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'hello',
+          matches,
+        }));
+        await microtasksFinished();
+        assertTrue(element.dropdownIsVisible);
+
+        const composeButton =
+            element.shadowRoot.querySelector('cr-searchbox-compose-button')!;
+        let composeClicked = false;
+        composeButton.addEventListener('compose-click', () => {
+          composeClicked = true;
+        });
+
+        // Select a match-bound virtual-focus button (line 0, AI Mode) and blur.
+        element.setSelection({
+          line: 0,
+          state: SelectionLineState.kFocusedButtonAim,
+          actionIndex: 0,
+        });
+        await microtasksFinished();
+        assertTrue(composeButton.hasAttribute('has-virtual-focus'));
+
+        element.getWrapperElement().dispatchEvent(new FocusEvent('focusout', {
+          relatedTarget: document.body,
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertFalse(element.dropdownIsVisible);
+        assertDeepEquals(
+            {line: 0, state: SelectionLineState.kNormal, actionIndex: 0},
+            element.selection);
+        assertFalse(composeButton.hasAttribute('has-virtual-focus'));
+
+        // Pressing Enter afterwards navigates to the match instead of
+        // activating the previously focused button.
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('Enter'));
+        await microtasksFinished();
+        assertFalse(composeClicked);
+        const navArgs =
+            await testProxy.handler.whenCalled('openAutocompleteMatch');
+        assertEquals(0, navArgs.line);
+
+        // Select a line -1 virtual-focus button (e.g. profile / voice / Lens)
+        // and verify blur preserves line -1 while clearing the button state.
+        await simulateUserTextInput(mockInput, 'world');
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'world',
+          matches,
+        }));
+        await microtasksFinished();
+        element.setSelection({
+          line: -1,
+          state: SelectionLineState.kFocusedButtonProfile,
+          actionIndex: 0,
+        });
+        await microtasksFinished();
+
+        element.getWrapperElement().dispatchEvent(new FocusEvent('focusout', {
+          relatedTarget: document.body,
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertDeepEquals(kDefaultSelection, element.selection);
+
+        // Keyword mode selection is preserved on blur.
+        const keywordMatch = createSearchMatch({
+          allowedToBeDefaultMatch: true,
+          fillIntoEdit: 'youtube.com cats',
+          keywordModel: createMatchKeywordModel({
+            type: KeywordType.kChip,
+            keyword: 'youtube.com',
+            chipHint: 'Search YouTube',
+          }),
+        });
+        await simulateUserTextInput(mockInput, 'youtube.com cats');
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'youtube.com cats',
+          matches: [keywordMatch],
+        }));
+        await microtasksFinished();
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('Tab'));
+        await microtasksFinished();
+        assertDeepEquals(
+            {line: 0, state: SelectionLineState.kKeywordMode, actionIndex: 0},
+            element.selection);
+
+        element.getWrapperElement().dispatchEvent(new FocusEvent('focusout', {
+          relatedTarget: document.body,
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertDeepEquals(
+            {line: 0, state: SelectionLineState.kKeywordMode, actionIndex: 0},
+            element.selection);
+      });
+
   test('pressing Enter on input navigates to the selected match', async () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'hello ');
 
     const matches = [
-      createSearchMatchForTesting({
+      createSearchMatch({
         allowedToBeDefaultMatch: true,
         inlineAutocompletion: 'world',
       }),
       createUrlMatch(),
     ];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello ',
       matches: matches,
@@ -562,13 +749,13 @@ suite('SearchboxMixinTest', () => {
     await simulateUserTextInput(mockInput, 'hello');
 
     const matches = [
-      createSearchMatchForTesting({
+      createSearchMatch({
         allowedToBeDefaultMatch: true,
         fillIntoEdit: 'hello',
       }),
       createUrlMatch(),
     ];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello',
       matches: matches,
@@ -576,16 +763,222 @@ suite('SearchboxMixinTest', () => {
     await microtasksFinished();
     assertTrue(element.dropdownIsVisible);
 
-    // Pressing Ctrl+Enter.
+    // Pressing Ctrl, then Enter.
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Control', {ctrlKey: true}));
     const enterEvent = createKeyboardEvent('Enter', {ctrlKey: true});
     mockInput.inputElement.dispatchEvent(enterEvent);
     assertTrue(enterEvent.defaultPrevented);
     await microtasksFinished();
 
     const args = await testProxy.handler.whenCalled('openPopupSelection');
-    assertEquals(0, args.selection.line);
+    // The default match isn't previewed, so Ctrl+Enter uses the input.
+    assertEquals(-1, args.selection.line);
     assertEquals(SelectionLineState.kCtrlEnter, args.selection.state);
   });
+
+  test('pressing Ctrl+Enter with modifiers forwards them', async () => {
+    element.shouldAppendDotCom = true;
+    const mockInput = element.getInputElement();
+    const modifierCombos: Array<Partial<KeyboardEventInit>> = [
+      {shiftKey: true},
+      {altKey: true},
+      {altKey: true, shiftKey: true},
+      {metaKey: true},
+      {metaKey: true, shiftKey: true},
+    ];
+    for (const modifiers of modifierCombos) {
+      testProxy.handler.reset();
+      await simulateUserTextInput(mockInput, 'hello');
+      element.onAutocompleteResultChanged(createAutocompleteResult({
+        queryId: element.activeQueryId,
+        input: 'hello',
+        matches: [
+          createSearchMatch(
+              {allowedToBeDefaultMatch: true, fillIntoEdit: 'hello'}),
+          createUrlMatch(),
+        ],
+      }));
+      await microtasksFinished();
+      assertTrue(element.dropdownIsVisible);
+
+      mockInput.inputElement.dispatchEvent(
+          createKeyboardEvent('Control', {ctrlKey: true}));
+      const enterEvent =
+          createKeyboardEvent('Enter', {ctrlKey: true, ...modifiers});
+      mockInput.inputElement.dispatchEvent(enterEvent);
+      assertTrue(enterEvent.defaultPrevented);
+      await microtasksFinished();
+
+      // The other modifiers don't prevent adding 'www.' and '.com'; they're
+      // forwarded to compute the disposition.
+      assertEquals(0, testProxy.handler.getCallCount('openAutocompleteMatch'));
+      assertEquals(1, testProxy.handler.getCallCount('openPopupSelection'));
+      const args = testProxy.handler.getArgs('openPopupSelection')[0];
+      assertEquals(-1, args.selection.line);
+      assertEquals(SelectionLineState.kCtrlEnter, args.selection.state);
+      assertTrue(args.modifiers.ctrlKey);
+      assertEquals(!!modifiers.altKey, args.modifiers.altKey);
+      assertEquals(!!modifiers.metaKey, args.modifiers.metaKey);
+      assertEquals(!!modifiers.shiftKey, args.modifiers.shiftKey);
+    }
+  });
+
+  test('pressing modifier keys with Ctrl does not consume Ctrl', async () => {
+    element.shouldAppendDotCom = true;
+    const mockInput = element.getInputElement();
+    await simulateUserTextInput(mockInput, 'hello');
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello',
+      matches: [
+        createSearchMatch(
+            {allowedToBeDefaultMatch: true, fillIntoEdit: 'hello'}),
+        createUrlMatch(),
+      ],
+    }));
+    await microtasksFinished();
+    assertTrue(element.dropdownIsVisible);
+
+    // Press Ctrl, then Shift and Alt while holding Ctrl, then Enter, like a
+    // user pressing Ctrl+Alt+Shift+Enter.
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Control', {ctrlKey: true}));
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Shift', {ctrlKey: true, shiftKey: true}));
+    mockInput.inputElement.dispatchEvent(createKeyboardEvent(
+        'Alt', {ctrlKey: true, shiftKey: true, altKey: true}));
+    await microtasksFinished();
+    const enterEvent = createKeyboardEvent(
+        'Enter', {ctrlKey: true, shiftKey: true, altKey: true});
+    mockInput.inputElement.dispatchEvent(enterEvent);
+    assertTrue(enterEvent.defaultPrevented);
+    await microtasksFinished();
+
+    assertEquals(0, testProxy.handler.getCallCount('openAutocompleteMatch'));
+    const args = await testProxy.handler.whenCalled('openPopupSelection');
+    assertEquals(SelectionLineState.kCtrlEnter, args.selection.state);
+    assertTrue(args.modifiers.ctrlKey);
+    assertTrue(args.modifiers.shiftKey);
+    assertTrue(args.modifiers.altKey);
+  });
+
+  test('pressing Ctrl+Enter on input too quickly', async () => {
+    element.shouldAppendDotCom = true;
+    const mockInput = element.getInputElement();
+    await simulateUserTextInput(mockInput, 'hello');
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello',
+      matches: [
+        createSearchMatch({allowedToBeDefaultMatch: true}),
+        createUrlMatch(),
+      ],
+    }));
+    await microtasksFinished();
+    assertTrue(element.dropdownIsVisible);
+
+    // Preview the 2nd match. Then press Ctrl+Enter before the 'hello world'
+    // matches arrive.
+    mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+    await microtasksFinished();
+    assertEquals(1, element.selectedMatchIndex);
+    await simulateUserTextInput(mockInput, 'hello world');
+    const queryId = element.activeQueryId;
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Control', {ctrlKey: true}));
+    const ctrlEnter = createKeyboardEvent('Enter', {ctrlKey: true});
+    mockInput.inputElement.dispatchEvent(ctrlEnter);
+    assertTrue(ctrlEnter.defaultPrevented);
+    await microtasksFinished();
+
+    // Opens the input with '.com' appended right away, instead of the stale
+    // preview, or waiting for the matches to open the default match.
+    assertEquals(1, testProxy.handler.getCallCount('openPopupSelection'));
+    const args = testProxy.handler.getArgs('openPopupSelection')[0];
+    assertEquals(-1, args.selection.line);
+    assertEquals(SelectionLineState.kCtrlEnter, args.selection.state);
+
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId,
+      input: 'hello world',
+      matches: [createSearchMatch({allowedToBeDefaultMatch: true})],
+    }));
+    await microtasksFinished();
+    assertEquals(0, testProxy.handler.getCallCount('openAutocompleteMatch'));
+  });
+
+  test('pressing Ctrl+Enter in keyword mode acts as normal enter', async () => {
+    element.shouldAppendDotCom = true;
+    element.keywordModeManager.enter(
+        'youtube.com', 'YouTube', KeywordModeEntryMethod.TAB);
+    assertTrue(element.inKeywordMode);
+
+    const mockInput = element.getInputElement();
+    await simulateUserTextInput(mockInput, 'hello');
+
+    const matches = [
+      createSearchMatch({
+        allowedToBeDefaultMatch: true,
+        fillIntoEdit: 'youtube.com hello',
+        keywordModel: createMatchKeywordModel({
+          type: KeywordType.kInKeyword,
+          keyword: 'youtube.com',
+          chipHint: 'Search YouTube',
+        }),
+      }),
+    ];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello',
+      matches: matches,
+    }));
+    await microtasksFinished();
+    assertTrue(element.dropdownIsVisible);
+
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Control', {ctrlKey: true}));
+    const enterEvent = createKeyboardEvent('Enter', {ctrlKey: true});
+    mockInput.inputElement.dispatchEvent(enterEvent);
+    assertTrue(enterEvent.defaultPrevented);
+    await microtasksFinished();
+
+    assertEquals(0, testProxy.handler.getCallCount('openPopupSelection'));
+    const args = await testProxy.handler.whenCalled('openAutocompleteMatch');
+    assertEquals(0, args.line);
+    assertEquals(matches[0]!.destinationUrl, args.url);
+    assertTrue(args.viaKeyboard);
+  });
+
+  test(
+      'pressing Ctrl+Enter acts as normal enter if Ctrl was pressed elsewhere',
+      async () => {
+        element.shouldAppendDotCom = true;
+        const mockInput = element.getInputElement();
+        await simulateUserTextInput(mockInput, 'hello');
+
+        const matches = [createSearchMatch({allowedToBeDefaultMatch: true})];
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'hello',
+          matches: matches,
+        }));
+        await microtasksFinished();
+        assertTrue(element.dropdownIsVisible);
+
+        // Ctrl was pressed before the searchbox had focus, e.g. to focus it
+        // with Ctrl+L from the page, so only Enter is seen with Ctrl held.
+        const enterEvent = createKeyboardEvent('Enter', {ctrlKey: true});
+        mockInput.inputElement.dispatchEvent(enterEvent);
+        assertTrue(enterEvent.defaultPrevented);
+        await microtasksFinished();
+
+        assertEquals(0, testProxy.handler.getCallCount('openPopupSelection'));
+        const args =
+            await testProxy.handler.whenCalled('openAutocompleteMatch');
+        assertEquals(0, args.line);
+        assertEquals(matches[0]!.destinationUrl, args.url);
+      });
 
   test(
       'pressing Ctrl+Enter acts as normal enter on non-omnibox searchbox',
@@ -595,13 +988,13 @@ suite('SearchboxMixinTest', () => {
         await simulateUserTextInput(mockInput, 'hello');
 
         const matches = [
-          createSearchMatchForTesting({
+          createSearchMatch({
             allowedToBeDefaultMatch: true,
             fillIntoEdit: 'hello',
           }),
           createUrlMatch(),
         ];
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'hello',
           matches: matches,
@@ -609,7 +1002,9 @@ suite('SearchboxMixinTest', () => {
         await microtasksFinished();
         assertTrue(element.dropdownIsVisible);
 
-        // Pressing Ctrl+Enter.
+        // Pressing Ctrl, then Enter.
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Control', {ctrlKey: true}));
         const enterEvent = createKeyboardEvent('Enter', {ctrlKey: true});
         mockInput.inputElement.dispatchEvent(enterEvent);
         assertTrue(enterEvent.defaultPrevented);
@@ -627,10 +1022,10 @@ suite('SearchboxMixinTest', () => {
   test('pressing Escape closes dropdown or resets input', async () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'hello ');
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello ',
-      matches: [createSearchMatchForTesting()],
+      matches: [createSearchMatch()],
     }));
     await microtasksFinished();
     assertTrue(element.dropdownIsVisible);
@@ -647,10 +1042,10 @@ suite('SearchboxMixinTest', () => {
     await simulateUserTextInput(mockInput, 'hello');
 
     const matches = [
-      createSearchMatchForTesting(),
+      createSearchMatch(),
       createUrlMatch({supportsDeletion: true}),
     ];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello',
       matches: matches,
@@ -679,7 +1074,7 @@ suite('SearchboxMixinTest', () => {
     await simulateUserTextInput(mockInput, 'hello');
 
     const matches = [createUrlMatch({supportsDeletion: true})];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello',
       matches: matches,
@@ -708,7 +1103,7 @@ suite('SearchboxMixinTest', () => {
           createUrlMatch(
               {supportsDeletion: true, destinationUrl: 'https://second.com'}),
         ];
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: queryId,
           input: 'hello',
           matches: matches,
@@ -735,7 +1130,7 @@ suite('SearchboxMixinTest', () => {
         assertEquals(matches[0]!.destinationUrl, args.url);
 
         // Backend sends updated results without the deleted match.
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: queryId,
           input: 'hello',
           matches: [matches[1]!],
@@ -753,8 +1148,8 @@ suite('SearchboxMixinTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'hello');
 
-    const matches = [createSearchMatchForTesting(), createUrlMatch()];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch(), createUrlMatch()];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello',
       matches: matches,
@@ -798,10 +1193,10 @@ suite('SearchboxMixinTest', () => {
         await simulateUserTextInput(mockInput, 'hello');
 
         const matches = [
-          createSearchMatchForTesting({allowedToBeDefaultMatch: true}),
+          createSearchMatch({allowedToBeDefaultMatch: true}),
           createUrlMatch(),
         ];
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'hello',
           matches: matches,
@@ -826,8 +1221,8 @@ suite('SearchboxMixinTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'hello');
 
-    const matches = [createSearchMatchForTesting(), createUrlMatch()];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch(), createUrlMatch()];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello',
       matches: matches,
@@ -849,8 +1244,8 @@ suite('SearchboxMixinTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'hello');
 
-    const matches = [createSearchMatchForTesting(), createUrlMatch()];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch(), createUrlMatch()];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello',
       matches: matches,
@@ -877,7 +1272,7 @@ suite('SearchboxMixinTest', () => {
 
   test('clicking quick action pedal triggers executeAction', async () => {
     const matches = [
-      createSearchMatchForTesting({
+      createSearchMatch({
         actions: [{
           hint: 'Clear Browsing History',
           suggestionContents: '',
@@ -885,7 +1280,7 @@ suite('SearchboxMixinTest', () => {
           a11yLabel: '',
         }],
       }),
-      createSearchMatchForTesting({
+      createSearchMatch({
         actions: [{
           hint: 'Open Email',
           suggestionContents: '',
@@ -896,7 +1291,7 @@ suite('SearchboxMixinTest', () => {
     ];
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'clear');
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'clear',
       matches: matches,
@@ -938,7 +1333,7 @@ suite('SearchboxMixinTest', () => {
       allowedToBeDefaultMatch: true,
       supportsDeletion: true,
     })];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello',
       matches: matches,
@@ -968,7 +1363,7 @@ suite('SearchboxMixinTest', () => {
       createUrlMatch(
           {supportsDeletion: true, destinationUrl: 'https://url2.com'}),
     ];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello',
       matches: matches,
@@ -986,7 +1381,7 @@ suite('SearchboxMixinTest', () => {
     matchEls[0]!.$.remove.click();
     await testProxy.handler.whenCalled('deleteAutocompleteMatch');
 
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'hello',
       matches: [matches[1]!],
@@ -999,6 +1394,28 @@ suite('SearchboxMixinTest', () => {
     assertTrue(matchEls[0]!.hasAttribute('selected'));
   });
 
+  test(
+      'selection stays on the line of a removed match when opted in',
+      async () => {
+        element.preserveSelectionOnMatchDeletion = true;
+        const mockInput = element.getInputElement();
+        const matches = await showDeletableMatches(element);
+        assertEquals(0, element.selectedMatchIndex);
+
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        assertEquals(2, element.selectedMatchIndex);
+
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Delete', {shiftKey: true}));
+        await respondToMatchDeletion(element, testProxy, matches, 2);
+
+        assertEquals(2, element.selectedMatchIndex);
+        assertEquals('https://local.test/2', mockInput.inputElement.value);
+      });
+
   test('autocomplete response', async () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, '      hello world');
@@ -1008,12 +1425,12 @@ suite('SearchboxMixinTest', () => {
     assertEquals(1, testProxy.handler.getCallCount('queryAutocomplete'));
 
     const matches = [
-      createSearchMatchForTesting({
+      createSearchMatch({
         allowedToBeDefaultMatch: true,
       }),
       createUrlMatch(),
     ];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1046,11 +1463,11 @@ suite('SearchboxMixinTest', () => {
 
     testProxy.handler.reset();
 
-    const matches = [createSearchMatchForTesting({
+    const matches = [createSearchMatch({
       allowedToBeDefaultMatch: true,
       inlineAutocompletion: 'world',
     })];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1104,11 +1521,11 @@ suite('SearchboxMixinTest', () => {
     mockInput.inputElement.selectionEnd = 4;
     mockInput.inputElement.dispatchEvent(new InputEvent('input'));
 
-    const matches = [createSearchMatchForTesting({
+    const matches = [createSearchMatch({
       allowedToBeDefaultMatch: true,
-      contents: 'hello',
+      suggestTemplate: createSuggestTemplateInfo({primaryText: 'hello'}),
     })];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1126,8 +1543,8 @@ suite('SearchboxMixinTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'he');
 
-    const matches = [createSearchMatchForTesting(), createUrlMatch()];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch(), createUrlMatch()];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1140,7 +1557,7 @@ suite('SearchboxMixinTest', () => {
     assertEquals(2, matchEls.length);
 
     await simulateUserTextInput(mockInput, 'hell');
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
     }));
@@ -1152,7 +1569,7 @@ suite('SearchboxMixinTest', () => {
     assertEquals(0, matchEls.length);
 
     await simulateUserTextInput(mockInput, 'hello');
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1179,8 +1596,8 @@ suite('SearchboxMixinTest', () => {
 
     testProxy.handler.reset();
 
-    const matches = [createSearchMatchForTesting(), createUrlMatch()];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch(), createUrlMatch()];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: '',
       matches: matches,
@@ -1229,8 +1646,8 @@ suite('SearchboxMixinTest', () => {
 
     testProxy.handler.reset();
 
-    const matches = [createSearchMatchForTesting(), createUrlMatch()];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch(), createUrlMatch()];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       matches: matches,
     }));
@@ -1351,15 +1768,26 @@ suite('SearchboxMixinTest', () => {
     assertEquals(args.input, mockInput.inputElement.value);
     assertTrue(args.preventInlineAutocomplete);
     assertEquals(1, testProxy.handler.getCallCount('queryAutocomplete'));
+
+    testProxy.handler.reset();
+
+    // Committing the composition queries it again, like typed text.
+    mockInput.inputElement.dispatchEvent(
+        new CompositionEvent('compositionend', {data: '간'}));
+
+    args = await testProxy.handler.whenCalled('queryAutocomplete');
+    assertEquals(args.input, mockInput.inputElement.value);
+    assertFalse(args.preventInlineAutocomplete);
+    assertEquals(1, testProxy.handler.getCallCount('queryAutocomplete'));
   });
 
   test('match calculator answer type', async () => {
     const mockInput = element.getInputElement();
-    const matches = [createCalculatorMatch({isTwoRowSuggestion: true})];
+    const matches = [createCalculatorMatch()];
 
     await simulateUserTextInput(mockInput, '2 + 3');
 
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1394,7 +1822,7 @@ suite('SearchboxMixinTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'Open extension email');
     const matches = [
-      createSearchMatchForTesting({
+      createSearchMatch({
         actions: [{
           hint: 'Open Email',
           suggestionContents: '',
@@ -1402,7 +1830,7 @@ suite('SearchboxMixinTest', () => {
           a11yLabel: '',
         }],
       }),
-      createSearchMatchForTesting({
+      createSearchMatch({
         actions: [{
           hint: 'Open Email',
           suggestionContents: '',
@@ -1411,7 +1839,7 @@ suite('SearchboxMixinTest', () => {
         }],
       }),
     ];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1449,10 +1877,10 @@ suite('SearchboxMixinTest', () => {
         await simulateUserTextInput(mockInput, '  hello  ');
 
         const matches = [
-          createSearchMatchForTesting({iconPath: 'clock.svg'}),
+          createSearchMatch({iconPath: 'clock.svg'}),
           createUrlMatch(),
         ];
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: mockInput.inputElement.value.trimStart(),
           matches: matches,
@@ -1509,8 +1937,8 @@ suite('SearchboxMixinTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'hello');
 
-    const matches = [createSearchMatchForTesting(), createUrlMatch()];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch(), createUrlMatch()];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1539,10 +1967,10 @@ suite('SearchboxMixinTest', () => {
             'mousedown', {button: 0, bubbles: true, composed: true}));
 
         const matches = [
-          createSearchMatchForTesting({iconPath: 'clock.svg'}),
+          createSearchMatch({iconPath: 'clock.svg'}),
           createUrlMatch(),
         ];
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: '',
           matches: matches,
@@ -1588,15 +2016,123 @@ suite('SearchboxMixinTest', () => {
             0, testProxy.handler.getCallCount('openAutocompleteMatch'));
       });
 
+  test('pressing Enter on input too quickly then typing', async () => {
+    const mockInput = element.getInputElement();
+    await simulateUserTextInput(mockInput, 'hello');
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello',
+      matches: [createSearchMatch({allowedToBeDefaultMatch: true})],
+    }));
+    await microtasksFinished();
+    assertTrue(element.dropdownIsVisible);
+
+    // Press Enter before the 'hello world' matches arrive, then keep typing.
+    await simulateUserTextInput(mockInput, 'hello world');
+    const staleQueryId = element.activeQueryId;
+    const enter = createKeyboardEvent('Enter');
+    mockInput.inputElement.dispatchEvent(enter);
+    assertTrue(enter.defaultPrevented);
+    await simulateUserTextInput(mockInput, 'hello world!');
+
+    // Neither the discarded 'hello world' matches nor the 'hello world!'
+    // matches navigate, since Enter wasn't pressed for 'hello world!'.
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: staleQueryId,
+      input: 'hello world',
+      matches: [createSearchMatch({allowedToBeDefaultMatch: true})],
+    }));
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello world!',
+      matches: [createUrlMatch({allowedToBeDefaultMatch: true})],
+    }));
+    await microtasksFinished();
+    assertTrue(element.dropdownIsVisible);
+    assertEquals(0, testProxy.handler.getCallCount('openAutocompleteMatch'));
+  });
+
+  test(
+      'pressing Enter on input too quickly then deleting a match', async () => {
+        const mockInput = element.getInputElement();
+        const matches = await showDeletableMatches(element);
+        assertEquals(0, element.selectedMatchIndex);
+
+        // Press Enter before the 'https://local.' matches arrive, then delete
+        // the first match.
+        await simulateUserTextInput(mockInput, 'https://local.');
+        const enter = createKeyboardEvent('Enter');
+        mockInput.inputElement.dispatchEvent(enter);
+        assertTrue(enter.defaultPrevented);
+        const matchEls =
+            element.getDropdownElement().shadowRoot.querySelectorAll(
+                'cr-searchbox-match');
+        matchEls[0]!.$.remove.click();
+        const args =
+            await testProxy.handler.whenCalled('deleteAutocompleteMatch');
+        assertEquals(0, args.line);
+        assertEquals(matches[0]!.destinationUrl, args.url);
+
+        // Deleting a match after pressing Enter cancels the Enter, so the
+        // post-deletion matches don't navigate.
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'https://local.',
+          matches: [createUrlMatch({allowedToBeDefaultMatch: true})],
+        }));
+        await microtasksFinished();
+        assertTrue(element.dropdownIsVisible);
+        assertEquals(
+            0, testProxy.handler.getCallCount('openAutocompleteMatch'));
+      });
+
+  test(
+      'pressing Enter on input too quickly only waits for the first results',
+      async () => {
+        const mockInput = element.getInputElement();
+        await simulateUserTextInput(mockInput, 'hello');
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'hello',
+          matches: [createSearchMatch({allowedToBeDefaultMatch: true})],
+        }));
+        await microtasksFinished();
+        assertTrue(element.dropdownIsVisible);
+
+        // Press Enter before the 'hello world' matches arrive.
+        await simulateUserTextInput(mockInput, 'hello world');
+        const enter = createKeyboardEvent('Enter');
+        mockInput.inputElement.dispatchEvent(enter);
+        assertTrue(enter.defaultPrevented);
+
+        // The first 'hello world' matches have no default match, so Enter does
+        // nothing. A later update for the same query doesn't navigate either.
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'hello world',
+          matches: [createSearchMatch()],
+        }));
+        await microtasksFinished();
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'hello world',
+          matches: [createUrlMatch({allowedToBeDefaultMatch: true})],
+        }));
+        await microtasksFinished();
+        assertTrue(element.dropdownIsVisible);
+        assertEquals(
+            0, testProxy.handler.getCallCount('openAutocompleteMatch'));
+      });
+
   test('pressing Enter on input too quickly', async () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'hello');
 
     const matches = [
-      createSearchMatchForTesting({allowedToBeDefaultMatch: true}),
+      createSearchMatch({allowedToBeDefaultMatch: true}),
       createUrlMatch(),
     ];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1616,7 +2152,7 @@ suite('SearchboxMixinTest', () => {
 
     assertEquals(0, testProxy.handler.getCallCount('openAutocompleteMatch'));
 
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1634,14 +2170,87 @@ suite('SearchboxMixinTest', () => {
     assertEquals(1, testProxy.handler.getCallCount('openAutocompleteMatch'));
   });
 
+  test('pressing Shift+Enter on input too quickly', async () => {
+    const mockInput = element.getInputElement();
+    await simulateUserTextInput(mockInput, 'hello');
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello',
+      matches: [createSearchMatch({allowedToBeDefaultMatch: true})],
+    }));
+    await microtasksFinished();
+    assertTrue(element.dropdownIsVisible);
+
+    // Like a real Shift+Enter, press Shift by itself before pressing Enter.
+    await simulateUserTextInput(mockInput, 'hello world');
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Shift', {shiftKey: true}));
+    const shiftEnter = createKeyboardEvent('Enter', {shiftKey: true});
+    mockInput.inputElement.dispatchEvent(shiftEnter);
+    assertTrue(shiftEnter.defaultPrevented);
+
+    // Waits for the 'hello world' matches instead of opening the stale 'hello'
+    // match.
+    assertEquals(0, testProxy.handler.getCallCount('openAutocompleteMatch'));
+
+    const matches = [createUrlMatch({allowedToBeDefaultMatch: true})];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello world',
+      matches,
+    }));
+    await microtasksFinished();
+
+    const args = await testProxy.handler.whenCalled('openAutocompleteMatch');
+    assertEquals(0, args.line);
+    assertEquals(matches[0]!.destinationUrl, args.url);
+    assertTrue(args.modifiers.shiftKey);
+    assertEquals(1, testProxy.handler.getCallCount('openAutocompleteMatch'));
+  });
+
+  test('pressing Enter twice on input too quickly', async () => {
+    const mockInput = element.getInputElement();
+    await simulateUserTextInput(mockInput, 'hello');
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello',
+      matches: [createSearchMatch({allowedToBeDefaultMatch: true})],
+    }));
+    await microtasksFinished();
+    assertTrue(element.dropdownIsVisible);
+
+    // Press Enter, then Shift+Enter, before the 'hello world' matches arrive.
+    await simulateUserTextInput(mockInput, 'hello world');
+    mockInput.inputElement.dispatchEvent(createKeyboardEvent('Enter'));
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Shift', {shiftKey: true}));
+    const shiftEnter = createKeyboardEvent('Enter', {shiftKey: true});
+    mockInput.inputElement.dispatchEvent(shiftEnter);
+    assertTrue(shiftEnter.defaultPrevented);
+
+    const matches = [createUrlMatch({allowedToBeDefaultMatch: true})];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello world',
+      matches,
+    }));
+    await microtasksFinished();
+
+    // Only the 1st Enter navigates. The 2nd was ignored while the 1st waited.
+    const args = await testProxy.handler.whenCalled('openAutocompleteMatch');
+    assertEquals(matches[0]!.destinationUrl, args.url);
+    assertFalse(args.modifiers.shiftKey);
+    assertEquals(1, testProxy.handler.getCallCount('openAutocompleteMatch'));
+  });
+
   // TODO(crbug.com/453570027): Test is flaky.
   test.skip(
       'pressing Escape selects the first match / hides matches', async () => {
         const mockInput = element.getInputElement();
         await simulateUserTextInput(mockInput, 'hello');
 
-        const matches = [createSearchMatchForTesting(), createUrlMatch()];
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        const matches = [createSearchMatch(), createUrlMatch()];
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: mockInput.inputElement.value.trimStart(),
           matches: matches,
@@ -1688,7 +2297,7 @@ suite('SearchboxMixinTest', () => {
 
         mockInput.inputElement.dispatchEvent(new MouseEvent(
             'mousedown', {button: 0, bubbles: true, composed: true}));
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           matches: matches,
         }));
@@ -1716,7 +2325,7 @@ suite('SearchboxMixinTest', () => {
     mockInput.inputElement.focus();
     await simulateUserTextInput(mockInput, 'clear browsing history');
 
-    const matches = [createSearchMatchForTesting({
+    const matches = [createSearchMatch({
       actions: [{
         hint: 'Clear Browsing History',
         suggestionContents: '',
@@ -1726,7 +2335,7 @@ suite('SearchboxMixinTest', () => {
       fillIntoEdit: 'clear browsing history',
       supportsDeletion: true,
     })];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: mockInput.inputElement.value.trimStart(),
       matches: matches,
@@ -1766,15 +2375,15 @@ suite('SearchboxMixinTest', () => {
     const keyword = 'google.com';
     await simulateUserTextInput(mockInput, keyword);
 
-    const matches = [createSearchMatchForTesting({
+    const matches = [createSearchMatch({
       allowedToBeDefaultMatch: true,
-      keywordModel: createMatchKeywordModelForTesting({
+      keywordModel: createMatchKeywordModel({
         type: KeywordType.kChip,
         keyword,
         chipHint: 'Search Google',
       }),
     })];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: keyword,
       matches: matches,
@@ -1787,15 +2396,15 @@ suite('SearchboxMixinTest', () => {
     assertEquals(KeywordType.kInKeyword, element.inputKeywordModel.type);
     assertEquals('', mockInput.inputElement.value);
 
-    const keywordMatches = [createSearchMatchForTesting({
+    const keywordMatches = [createSearchMatch({
       allowedToBeDefaultMatch: true,
-      keywordModel: createMatchKeywordModelForTesting({
+      keywordModel: createMatchKeywordModel({
         type: KeywordType.kInKeyword,
         keyword,
         chipHint: 'Search Google',
       }),
     })];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: '',
       matches: keywordMatches,
@@ -1806,24 +2415,144 @@ suite('SearchboxMixinTest', () => {
     assertEquals(KeywordType.kInKeyword, element.inputKeywordModel.type);
   });
 
+  test(
+      'space composed by an IME enters keyword mode once committed',
+      async () => {
+        const mockInput = element.getInputElement();
+        const keyword = 'google.com';
+        await simulateUserTextInput(mockInput, keyword);
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: keyword,
+          matches: [createSearchMatch({
+            allowedToBeDefaultMatch: true,
+            keywordModel: createMatchKeywordModel({
+              type: KeywordType.kChip,
+              keyword,
+              chipHint: 'Search Google',
+            }),
+          })],
+        }));
+        await microtasksFinished();
+
+        // Composing a full-width space doesn't enter keyword mode, which would
+        // replace the text under the IME.
+        mockInput.inputElement.value = keyword + '\u3000';
+        mockInput.inputElement.dispatchEvent(new InputEvent('input', {
+          inputType: 'insertCompositionText',
+          data: '\u3000',
+          isComposing: true,
+        }));
+        await microtasksFinished();
+        assertFalse(element.keywordModeManager.isInKeywordMode);
+        assertEquals(keyword + '\u3000', mockInput.inputElement.value);
+
+        // Committing it does.
+        mockInput.inputElement.dispatchEvent(
+            new CompositionEvent('compositionend', {data: '\u3000'}));
+        await microtasksFinished();
+        assertTrue(element.keywordModeManager.isInKeywordMode);
+        assertEquals(keyword, element.keywordModeManager.activeKeyword);
+        assertEquals('', mockInput.inputElement.value);
+      });
+
+  test('input text appears on page call from browser', async () => {
+    const input = element.getInputElement();
+    assertEquals(input.inputElement.value, '');
+
+    let textUpdatedEventCount = 0;
+    input.addEventListener('searchbox-input-text-updated', () => {
+      textUpdatedEventCount++;
+    });
+
+    testProxy.callbackRouterRemote.setInputText('Hello');
+    await microtasksFinished();
+
+    assertEquals(input.inputElement.value, 'Hello');
+    assertEquals(0, textUpdatedEventCount);
+  });
+
+  test(
+      'first mouse press after committing a composition freezes its results',
+      async () => {
+        const mockInput = element.getInputElement();
+        function commit() {
+          mockInput.inputElement.dispatchEvent(
+              new CompositionEvent('compositionend', {data: 'にほん'}));
+        }
+        function pressMouse() {
+          element.getDropdownElement().dispatchEvent(
+              new MouseEvent('mousedown', {bubbles: true, composed: true}));
+        }
+        mockInput.inputElement.value = 'にほん';
+        mockInput.inputElement.dispatchEvent(new InputEvent('input', {
+          inputType: 'insertCompositionText',
+          data: 'にほん',
+          isComposing: true,
+        }));
+
+        // Like the browser, commit the composition before dispatching the
+        // mouse press that ended it, e.g. on a match.
+        commit();
+        const queryId = element.activeQueryId;
+        pressMouse();
+        assertEquals(-1, element.activeQueryId);
+
+        // The results for the committed text don't replace the matches under
+        // the pointer.
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId,
+          input: 'にほん',
+          matches: [createSearchMatch()],
+        }));
+        await microtasksFinished();
+        assertEquals(null, element.result);
+
+        // Later presses don't freeze them, e.g. once deleting a match
+        // unfroze them.
+        element.unfreezeActiveQueryId();
+        pressMouse();
+        assertEquals(queryId, element.activeQueryId);
+
+        // Neither do presses after a key press, e.g. Enter, which waits for
+        // the results.
+        commit();
+        const secondQueryId = element.activeQueryId;
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('Enter'));
+        pressMouse();
+        assertEquals(secondQueryId, element.activeQueryId);
+      });
+
   test('question mark keyword entry', async () => {
+    testProxy.callbackRouterRemote.setAvailableKeywordModels(
+        [{
+          type: KeywordType.kChip,
+          keyword: 'google.com',
+          displayText: 'Search Google',
+          iconPath: '',
+          placeholder: 'Search Google',
+        }],
+        'google.com');
+    await testProxy.callbackRouterRemote.$.flushForTesting();
+
     const mockInput = element.getInputElement();
 
     await simulateUserTextInput(mockInput, '?');
 
     assertTrue(element.inputKeywordModel !== null);
     assertEquals(KeywordType.kInKeyword, element.inputKeywordModel.type);
-    assertEquals('?', element.inputKeywordModel.keyword);
+    assertEquals('google.com', element.inputKeywordModel.keyword);
+    assertEquals('Search Google', element.inputKeywordModel.displayText);
     assertEquals('', mockInput.inputElement.value);
 
-    const keywordMatches = [createSearchMatchForTesting({
-      keywordModel: createMatchKeywordModelForTesting({
+    const keywordMatches = [createSearchMatch({
+      keywordModel: createMatchKeywordModel({
         type: KeywordType.kInKeyword,
-        keyword: '?',
-        chipHint: 'Search',
+        keyword: 'google.com',
+        chipHint: 'Search Google',
       }),
     })];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: '',
       matches: keywordMatches,
@@ -1838,14 +2567,15 @@ suite('SearchboxMixinTest', () => {
     const mockInput = element.getInputElement();
     const keyword = 'google.com';
 
-    const match = createSearchMatchForTesting({
-      keywordModel: createMatchKeywordModelForTesting({
+    const match = createSearchMatch({
+      keywordModel: createMatchKeywordModel({
         type: KeywordType.kChip,
         keyword,
         chipHint: 'Search Google',
+        placeholder: 'Search Google',
       }),
     });
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: keyword,
       matches: [match],
@@ -1853,11 +2583,7 @@ suite('SearchboxMixinTest', () => {
     await microtasksFinished();
 
     const dropdown = element.getDropdownElement();
-    dropdown.dispatchEvent(new CustomEvent('keyword-click', {
-      bubbles: true,
-      composed: true,
-      detail: {match, matchIndex: 0},
-    }));
+    dropdown.fire('keyword-click', {match, matchIndex: 0});
     await microtasksFinished();
 
     assertEquals(0, element.selection.line);
@@ -1866,19 +2592,58 @@ suite('SearchboxMixinTest', () => {
     assertEquals(KeywordType.kInKeyword, element.inputKeywordModel.type);
     assertEquals(keyword, element.inputKeywordModel.keyword);
     assertEquals('Search Google', element.inputKeywordModel.displayText);
+    assertEquals('Search Google', element.inputKeywordModel.placeholder);
+    assertEquals('Search Google', mockInput.inputElement.placeholder);
     assertEquals('', mockInput.inputElement.value);
+    assertEquals(0, testProxy.handler.getCallCount('queryAutocomplete'));
   });
 
-  // TODO(crbug.com/555945371): Fails on multiple OSes.
-  test.skip(
-      'navigating matches in keyword mode preserves keyword mode and icon',
+  test('chip click keyword entry with additional input text', async () => {
+    const mockInput = element.getInputElement();
+    const keyword = 'bing.com';
+
+    const match = createSearchMatch({
+      fillIntoEdit: 'bing.com bad',
+      keywordModel: createMatchKeywordModel({
+        type: KeywordType.kChip,
+        keyword,
+        chipHint: 'Search Bing',
+        placeholder: 'Search Bing',
+      }),
+    });
+    element.lastQueriedInput = 'bing.com bad';
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'bing.com bad',
+      matches: [match],
+    }));
+    await microtasksFinished();
+    testProxy.handler.resetResolver('queryAutocomplete');
+
+    const dropdown = element.getDropdownElement();
+    dropdown.fire('keyword-click', {match, matchIndex: 0});
+    await microtasksFinished();
+
+    assertTrue(element.inputKeywordModel !== null);
+    assertEquals(KeywordType.kInKeyword, element.inputKeywordModel.type);
+    assertEquals(keyword, element.inputKeywordModel.keyword);
+    assertEquals('bad', mockInput.inputElement.value);
+    assertEquals('bad', element.lastQueriedInput);
+    assertEquals(1, testProxy.handler.getCallCount('queryAutocomplete'));
+    const args = testProxy.handler.getArgs('queryAutocomplete')[0];
+    assertEquals('bad', args.input);
+    assertEquals(keyword, args.keyword);
+  });
+
+  test(
+      'navigating matches in keyword mode exits on non-keyword match',
       async () => {
         const mockInput = element.getInputElement();
         const keyword = 'google.com';
 
-        const match0 = createSearchMatchForTesting({
+        const match0 = createSearchMatch({
           allowedToBeDefaultMatch: true,
-          keywordModel: createMatchKeywordModelForTesting({
+          keywordModel: createMatchKeywordModel({
             type: KeywordType.kInKeyword,
             keyword,
             chipHint: 'Search Google',
@@ -1888,18 +2653,19 @@ suite('SearchboxMixinTest', () => {
           destinationUrl: 'https://youtube.com/',
         });
 
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: '',
           matches: [match0, match1],
         }));
         await microtasksFinished();
 
-        element.inputKeywordModel = {
+        element.keywordModeManager.inputKeywordModel = {
           type: KeywordType.kInKeyword,
           keyword,
           displayText: 'Search Google',
           iconPath: '',
+          placeholder: '',
         };
         await microtasksFinished();
         await mockInput.updateComplete;
@@ -1915,11 +2681,7 @@ suite('SearchboxMixinTest', () => {
         await mockInput.updateComplete;
         await mockInput.$.icon.updateComplete;
 
-        assertTrue(element.inputKeywordModel !== null);
-        assertEquals(KeywordType.kInKeyword, element.inputKeywordModel.type);
-        assertIconMaskImageUrl(
-            mockInput.$.icon,
-            '//resources/cr_components/searchbox/icons/search_cr23.svg');
+        assertEquals(null, element.inputKeywordModel);
       });
 
   test(
@@ -2004,15 +2766,16 @@ suite('SearchboxMixinTest', () => {
         const mockInput = element.getInputElement();
         const keyword = 'google.com';
 
-        const match = createSearchMatchForTesting({
+        const match = createSearchMatch({
           allowedToBeDefaultMatch: true,
-          keywordModel: createMatchKeywordModelForTesting({
+          keywordModel: createMatchKeywordModel({
             type: KeywordType.kChip,
             keyword,
             chipHint: 'Search Google',
+            placeholder: 'Search Google',
           }),
         });
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'google',
           matches: [match],
@@ -2030,25 +2793,29 @@ suite('SearchboxMixinTest', () => {
         assertTrue(element.inputKeywordModel !== null);
         assertEquals(KeywordType.kInKeyword, element.inputKeywordModel.type);
         assertEquals(keyword, element.inputKeywordModel.keyword);
+        assertEquals('Search Google', element.inputKeywordModel.placeholder);
+        assertEquals('Search Google', mockInput.inputElement.placeholder);
         assertEquals('', mockInput.inputElement.value);
         assertTrue(event.defaultPrevented);
       });
 
   test('Tab key on non-default match does not enter keyword mode', async () => {
-    const defaultMatch = createSearchMatchForTesting({
+    const defaultMatch = createSearchMatch({
       allowedToBeDefaultMatch: true,
-      contents: 'google search',
+      suggestTemplate:
+          createSuggestTemplateInfo({primaryText: 'google search'}),
     });
-    const secondaryMatchWithKeyword = createSearchMatchForTesting({
+    const secondaryMatchWithKeyword = createSearchMatch({
       allowedToBeDefaultMatch: false,
-      contents: 'google bookmarks',
-      keywordModel: createMatchKeywordModelForTesting({
+      suggestTemplate:
+          createSuggestTemplateInfo({primaryText: 'google bookmarks'}),
+      keywordModel: createMatchKeywordModel({
         type: KeywordType.kChip,
         keyword: 'google.com',
         chipHint: 'Search Google',
       }),
     });
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'google',
       matches: [defaultMatch, secondaryMatchWithKeyword],
@@ -2078,15 +2845,15 @@ suite('SearchboxMixinTest', () => {
       async () => {
         const keyword = 'google.com';
 
-        const match = createSearchMatchForTesting({
+        const match = createSearchMatch({
           allowedToBeDefaultMatch: true,
-          keywordModel: createMatchKeywordModelForTesting({
+          keywordModel: createMatchKeywordModel({
             type: KeywordType.kChip,
             keyword,
             chipHint: 'Search Google',
           }),
         });
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'google',
           matches: [match],
@@ -2110,17 +2877,17 @@ suite('SearchboxMixinTest', () => {
 
   test('backspace at start exits keyword mode and restores text', async () => {
     const mockInput = element.getInputElement();
-    const match = createSearchMatchForTesting({
+    const match = createSearchMatch({
       allowedToBeDefaultMatch: true,
-      contents: 'youtube',
+      suggestTemplate: createSuggestTemplateInfo({primaryText: 'youtube'}),
       fillIntoEdit: 'youtube.com',
-      keywordModel: createMatchKeywordModelForTesting({
+      keywordModel: createMatchKeywordModel({
         type: KeywordType.kChip,
         keyword: 'youtube.com',
         chipHint: 'Search YouTube',
       }),
     });
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'youtube',
       matches: [match],
@@ -2158,17 +2925,17 @@ suite('SearchboxMixinTest', () => {
           'remaining text',
       async () => {
         const mockInput = element.getInputElement();
-        const match = createSearchMatchForTesting({
+        const match = createSearchMatch({
           allowedToBeDefaultMatch: true,
-          contents: 'youtube',
+          suggestTemplate: createSuggestTemplateInfo({primaryText: 'youtube'}),
           fillIntoEdit: 'youtube.com',
-          keywordModel: createMatchKeywordModelForTesting({
+          keywordModel: createMatchKeywordModel({
             type: KeywordType.kChip,
             keyword: 'youtube.com',
             chipHint: 'Search YouTube',
           }),
         });
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'youtube',
           matches: [match],
@@ -2231,6 +2998,8 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     for (const eventName of FOCUS_EVENTS) {
       window.removeEventListener(eventName, stopTrustedFocusEvents, true);
     }
+    // Remove any stub of the native ariaNotify() installed by a test.
+    delete document.ariaNotify;
   });
 
   test('matchIndex returns selection line when virtual focus enabled', () => {
@@ -2244,13 +3013,13 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     // When selection line is -1 (input focused), falls back to default match.
     element.setSelection(
         {line: -1, state: SelectionLineState.kNormal, actionIndex: 0});
-    element.result = createAutocompleteResultForTesting({
-      matches: [createSearchMatchForTesting({allowedToBeDefaultMatch: true})],
+    element.result = createAutocompleteResult({
+      matches: [createSearchMatch({allowedToBeDefaultMatch: true})],
     });
     assertEquals(0, element.matchIndex);
 
-    element.result = createAutocompleteResultForTesting({
-      matches: [createSearchMatchForTesting({allowedToBeDefaultMatch: false})],
+    element.result = createAutocompleteResult({
+      matches: [createSearchMatch({allowedToBeDefaultMatch: false})],
     });
     assertEquals(-1, element.matchIndex);
 
@@ -2264,13 +3033,13 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     assertEquals(3, element.matchIndex);
 
     element.selectedMatchIndex = -1;
-    element.result = createAutocompleteResultForTesting({
-      matches: [createSearchMatchForTesting({allowedToBeDefaultMatch: true})],
+    element.result = createAutocompleteResult({
+      matches: [createSearchMatch({allowedToBeDefaultMatch: true})],
     });
     assertEquals(0, element.matchIndex);
 
-    element.result = createAutocompleteResultForTesting({
-      matches: [createSearchMatchForTesting({allowedToBeDefaultMatch: false})],
+    element.result = createAutocompleteResult({
+      matches: [createSearchMatch({allowedToBeDefaultMatch: false})],
     });
     assertEquals(-1, element.matchIndex);
   });
@@ -2283,18 +3052,18 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         await simulateUserTextInput(mockInput, 'hello');
 
         const matches = [
-          createSearchMatchForTesting({
+          createSearchMatch({
             allowedToBeDefaultMatch: false,
             fillIntoEdit: 'hello world',
             inlineAutocompletion: ' world',
           }),
-          createSearchMatchForTesting({
+          createSearchMatch({
             fillIntoEdit: 'hello there',
             destinationUrl: 'https://example.com/hello_there',
           }),
         ];
 
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'hello',
           matches: matches,
@@ -2338,17 +3107,285 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         assertEquals('hello there', mockInput.inputElement.value);
       });
 
+  test(
+      'Input narrates the selected match label instead of its preview',
+      async () => {
+        const mockInput = element.getInputElement();
+        const inputElement = mockInput.inputElement;
+        const distraction = mockInput.$.selectionAnnouncement;
+        inputElement.focus();
+        await simulateUserTextInput(mockInput, 'hello');
+        assertEquals(null, inputElement.ariaActiveDescendantElement);
+        // It is an option of a listbox the combobox controls: after a key
+        // press VoiceOver re-anchors keyboard focus according to the element
+        // it is told has focus, on the combobox (a no-op) for an option of
+        // its listbox, but on the web area for a plain group, which blurs the
+        // input and closes the popup. While there is no selection, listbox and
+        // option are hidden, hence out of the accessibility tree.
+        const listbox = mockInput.$.selectionListbox;
+        assertEquals('listbox', listbox.getAttribute('role'));
+        assertTrue(listbox.contains(distraction));
+        assertEquals(listbox.id, inputElement.getAttribute('aria-controls'));
+        assertEquals('option', distraction.getAttribute('role'));
+        assertEquals('true', distraction.getAttribute('aria-selected'));
+        assertEquals('', distraction.textContent);
+        assertTrue(listbox.hidden);
+
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'hello',
+          matches: [
+            createSearchMatch({
+              allowedToBeDefaultMatch: false,
+              fillIntoEdit: 'hello world',
+              a11yLabel: 'hello world, search suggestion, 1 of 2',
+            }),
+            createSearchMatch({
+              fillIntoEdit: 'hello there',
+              destinationUrl: 'https://example.com/hello_there',
+              a11yLabel: 'hello there, search suggestion, 2 of 2',
+            }),
+          ],
+        }));
+        await microtasksFinished();
+
+        // Notifications are posted on the document, so these are all the
+        // announcements made, i.e. matches do not announce themselves too.
+        // Each one records the input's value at the time, to check the label
+        // is notified only after the preview value is in place.
+        const notifications: Array<{
+          message: string,
+          options: AriaNotificationOptions,
+          inputValue: string,
+        }> = [];
+        document.ariaNotify =
+            (message: string, options: AriaNotificationOptions) => {
+              notifications.push(
+                  {message, options, inputValue: inputElement.value});
+            };
+
+        inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await element.updateComplete;
+        assertEquals('hello world', inputElement.value);
+        // The distraction keeps screen readers from narrating the input's new
+        // value. Listbox and option may enter the accessibility tree in the
+        // same update that makes the option the active descendant.
+        assertEquals(distraction, inputElement.ariaActiveDescendantElement);
+        assertEquals(
+            'hello world, search suggestion, 1 of 2', distraction.textContent);
+        assertFalse(listbox.hidden);
+        // The label is notified with the following accessibility tree update.
+        assertEquals(0, notifications.length);
+        await paintFinished();
+        assertEquals(1, notifications.length);
+        assertEquals(
+            'hello world, search suggestion, 1 of 2',
+            notifications[0]!.message);
+        assertEquals('high', notifications[0]!.options.priority);
+        assertEquals('hello world', notifications[0]!.inputValue);
+
+        // The second selection is narrated exactly the same way, even though
+        // screen readers are on the distraction already.
+        inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await element.updateComplete;
+        assertEquals('hello there', inputElement.value);
+        assertEquals(distraction, inputElement.ariaActiveDescendantElement);
+        assertEquals(
+            'hello there, search suggestion, 2 of 2', distraction.textContent);
+        assertEquals(1, notifications.length);
+        await paintFinished();
+        assertEquals(2, notifications.length);
+        assertEquals(
+            'hello there, search suggestion, 2 of 2',
+            notifications[1]!.message);
+        assertEquals('hello there', notifications[1]!.inputValue);
+
+        // Moving the caret narrates the input itself again, silently, and the
+        // next selection is narrated no differently for it.
+        inputElement.dispatchEvent(createKeyboardEvent('ArrowLeft'));
+        assertEquals(null, inputElement.ariaActiveDescendantElement);
+        inputElement.dispatchEvent(createKeyboardEvent('ArrowUp'));
+        await element.updateComplete;
+        assertEquals(distraction, inputElement.ariaActiveDescendantElement);
+        assertEquals(2, notifications.length);
+        await paintFinished();
+        assertEquals(3, notifications.length);
+        assertEquals(
+            'hello world, search suggestion, 1 of 2',
+            notifications[2]!.message);
+
+        // Editing the text narrates the input itself again, silently, and the
+        // listbox leaves the accessibility tree.
+        await simulateUserTextInput(mockInput, 'hello t');
+        assertEquals(null, inputElement.ariaActiveDescendantElement);
+        assertEquals('', distraction.textContent);
+        assertTrue(listbox.hidden);
+        await paintFinished();
+        assertEquals(3, notifications.length);
+
+        // Editing before a deferred notification goes out cancels it.
+        mockInput.setSelectionA11yLabel('hello t, search suggestion, 1 of 1');
+        assertEquals(distraction, inputElement.ariaActiveDescendantElement);
+        await simulateUserTextInput(mockInput, 'hello th');
+        assertEquals(null, inputElement.ariaActiveDescendantElement);
+        await paintFinished();
+        assertEquals(3, notifications.length);
+
+        // Rapid successive selections narrate only the last one.
+        mockInput.setSelectionA11yLabel('one');
+        mockInput.setSelectionA11yLabel('two');
+        await paintFinished();
+        assertEquals(4, notifications.length);
+        assertEquals('two', notifications[3]!.message);
+      });
+
+  test(
+      'Input narrates the AI Mode button label when it is selected',
+      async () => {
+        element.isAimButtonVisibleOverride = true;
+        const mockInput = element.getInputElement();
+        const inputElement = mockInput.inputElement;
+        inputElement.focus();
+        await simulateUserTextInput(mockInput, 'test');
+
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'test',
+          matches: [createSearchMatch({
+            fillIntoEdit: 'test',
+            a11yLabel: 'test, search suggestion, 1 of 1',
+          })],
+        }));
+        await microtasksFinished();
+
+        const composeButton =
+            element.shadowRoot.querySelector('cr-searchbox-compose-button');
+        assertTrue(!!composeButton);
+        composeButton.a11yLabel = 'AI Mode';
+        // Notifications are posted on the document, so these are all the
+        // announcements made, i.e. the button does not announce itself too.
+        const notifications: string[] = [];
+        document.ariaNotify = (message: string) => {
+          notifications.push(message);
+        };
+
+        inputElement.dispatchEvent(createKeyboardEvent('Tab'));
+        await element.updateComplete;
+        assertEquals(
+            SelectionLineState.kFocusedButtonAim, element.selection.state);
+        assertEquals(
+            mockInput.$.selectionAnnouncement,
+            inputElement.ariaActiveDescendantElement);
+        assertEquals('AI Mode', mockInput.$.selectionAnnouncement.textContent);
+        // The label is notified with the following accessibility tree update.
+        assertDeepEquals([], notifications);
+        await paintFinished();
+        assertDeepEquals(['AI Mode'], notifications);
+
+        // With no default match, Shift+Tab returns the selection to the input
+        // itself. That has no label: the distraction is dropped so screen
+        // readers are back on the input and echo its restored text.
+        inputElement.dispatchEvent(
+            createKeyboardEvent('Tab', {shiftKey: true}));
+        await element.updateComplete;
+        assertEquals(-1, element.selection.line);
+        assertEquals(SelectionLineState.kNormal, element.selection.state);
+        assertEquals('test', inputElement.value);
+        assertEquals(null, inputElement.ariaActiveDescendantElement);
+        await paintFinished();
+        assertDeepEquals(['AI Mode'], notifications);
+      });
+
+  test('Narration contract: every navigation key, one label each', async () => {
+    // Pins the complete mapping from keyboard navigation to what screen
+    // readers are told: each key that changes the selection produces exactly
+    // one notification, carrying the label of the new selection, and nothing
+    // else. Match labels come from C++ with their position; button labels,
+    // as in the native omnibox, do not include it.
+    const mockInput = element.getInputElement();
+    const inputElement = mockInput.inputElement;
+    inputElement.focus();
+    await simulateUserTextInput(mockInput, 'hello');
+
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'hello',
+      matches: [
+        createSearchMatch({
+          allowedToBeDefaultMatch: true,
+          fillIntoEdit: 'hello',
+          a11yLabel: 'hello, search suggestion, 1 of 3',
+          actions: [{
+            hint: 'Action',
+            suggestionContents: 'Action',
+            iconPath: '',
+            a11yLabel: 'Action one',
+          }],
+          supportsDeletion: true,
+          removeButtonA11yLabel: 'Remove hello',
+        }),
+        createSearchMatch({
+          fillIntoEdit: 'hello world',
+          destinationUrl: 'https://example.com/hello_world',
+          a11yLabel: 'hello world, search suggestion, 2 of 3',
+          supportsDeletion: true,
+          removeButtonA11yLabel: 'Remove hello world',
+        }),
+        createSearchMatch({
+          fillIntoEdit: 'hello there',
+          destinationUrl: 'https://example.com/hello_there',
+          a11yLabel: 'hello there, search suggestion, 3 of 3',
+        }),
+      ],
+    }));
+    await microtasksFinished();
+    assertEquals(0, element.selection.line);
+
+    const notifications: string[] = [];
+    document.ariaNotify = (message: string) => {
+      notifications.push(message);
+    };
+
+    const steps: Array<{key: string, shift?: boolean, expected: string}> = [
+      {key: 'ArrowDown', expected: 'hello world, search suggestion, 2 of 3'},
+      {key: 'Tab', expected: 'Remove hello world'},
+      {key: 'Tab', expected: 'hello there, search suggestion, 3 of 3'},
+      {key: 'Tab', shift: true, expected: 'Remove hello world'},
+      {
+        key: 'Tab',
+        shift: true,
+        expected: 'hello world, search suggestion, 2 of 3',
+      },
+      {key: 'PageUp', expected: 'hello, search suggestion, 1 of 3'},
+      {key: 'Tab', expected: 'Action one'},
+      {key: 'Tab', expected: 'Remove hello'},
+      {key: 'PageDown', expected: 'hello there, search suggestion, 3 of 3'},
+      {key: 'Escape', expected: 'hello, search suggestion, 1 of 3'},
+      {key: 'ArrowUp', expected: 'hello there, search suggestion, 3 of 3'},
+    ];
+    for (const [i, step] of steps.entries()) {
+      inputElement.dispatchEvent(
+          createKeyboardEvent(step.key, {shiftKey: !!step.shift}));
+      await element.updateComplete;
+      await paintFinished();
+      assertEquals(
+          i + 1, notifications.length,
+          `step ${i} (${step.shift ? 'Shift+' : ''}${step.key})`);
+      assertEquals(step.expected, notifications[i]);
+    }
+  });
+
   test('PageDown and PageUp jump through selections', async () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'test');
 
     const matches = [
-      createSearchMatchForTesting({fillIntoEdit: 'test 1'}),
-      createSearchMatchForTesting({fillIntoEdit: 'test 2'}),
-      createSearchMatchForTesting({fillIntoEdit: 'test 3'}),
+      createSearchMatch({fillIntoEdit: 'test 1'}),
+      createSearchMatch({fillIntoEdit: 'test 2'}),
+      createSearchMatch({fillIntoEdit: 'test 3'}),
     ];
 
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'test',
       matches: matches,
@@ -2370,8 +3407,8 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'test query');
 
-    const matches = [createSearchMatchForTesting({fillIntoEdit: 'test query'})];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch({fillIntoEdit: 'test query'})];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'test query',
       matches: matches,
@@ -2391,12 +3428,12 @@ suite('SearchboxMixinVirtualFocusTest', () => {
 
     // Re-query and select match 1 to test unwinding.
     await simulateUserTextInput(mockInput, 'test query 2');
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'test query 2',
       matches: [
-        createSearchMatchForTesting({fillIntoEdit: 'test query 2a'}),
-        createSearchMatchForTesting({fillIntoEdit: 'test query 2b'}),
+        createSearchMatch({fillIntoEdit: 'test query 2a'}),
+        createSearchMatch({fillIntoEdit: 'test query 2b'}),
       ],
     }));
     await microtasksFinished();
@@ -2426,11 +3463,11 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     await simulateUserTextInput(mockInput, 'tab test');
 
     const matches = [
-      createSearchMatchForTesting({fillIntoEdit: 'tab test 1'}),
-      createSearchMatchForTesting({fillIntoEdit: 'tab test 2'}),
+      createSearchMatch({fillIntoEdit: 'tab test 1'}),
+      createSearchMatch({fillIntoEdit: 'tab test 2'}),
     ];
 
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'tab test',
       matches: matches,
@@ -2467,8 +3504,8 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'test');
 
-    const matches = [createSearchMatchForTesting({fillIntoEdit: 'test match'})];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch({fillIntoEdit: 'test match'})];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'test',
       matches: matches,
@@ -2489,8 +3526,8 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'aim query');
 
-    const matches = [createSearchMatchForTesting({fillIntoEdit: 'aim query'})];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    const matches = [createSearchMatch({fillIntoEdit: 'aim query'})];
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'aim query',
       matches: matches,
@@ -2520,49 +3557,11 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     assertTrue(composeClicked);
   });
 
-  test('Virtual focus on AIM button announces its label', async () => {
-    element.virtualFocusEnabledOverride = true;
-    const mockInput = element.getInputElement();
-    await simulateUserTextInput(mockInput, 'aim query');
-
-    const matches = [createSearchMatchForTesting({fillIntoEdit: 'aim query'})];
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
-      queryId: element.activeQueryId,
-      input: 'aim query',
-      matches: matches,
-    }));
-    await microtasksFinished();
-
-    const composeButton =
-        element.shadowRoot.querySelector('cr-searchbox-compose-button');
-    assertTrue(!!composeButton);
-
-    const notifications:
-        Array<{message: string, options?: AriaNotificationOptions}> = [];
-    composeButton.ariaNotify =
-        (message: string, options: AriaNotificationOptions) => {
-          notifications.push({message, options});
-        };
-
-    element.setSelection({
-      line: -1,
-      state: SelectionLineState.kFocusedButtonAim,
-      actionIndex: 0,
-    });
-    await microtasksFinished();
-
-    assertEquals(1, notifications.length);
-    assertEquals(
-        composeButton.a11yLabel || composeButton.labelText,
-        notifications[0]!.message);
-    assertEquals('high', notifications[0]!.options?.priority);
-  });
-
   test('Enter on focused action executes action', async () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'action query');
 
-    const matches = [createSearchMatchForTesting({
+    const matches = [createSearchMatch({
       actions: [{
         hint: 'Test Action',
         suggestionContents: '',
@@ -2573,7 +3572,7 @@ suite('SearchboxMixinVirtualFocusTest', () => {
       destinationUrl: 'https://example.com/action',
     })];
 
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'action query',
       matches: matches,
@@ -2631,13 +3630,13 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         const mockInput = element.getInputElement();
         await simulateUserTextInput(mockInput, 'delete query');
 
-        const matches = [createSearchMatchForTesting({
+        const matches = [createSearchMatch({
           fillIntoEdit: 'delete query',
           supportsDeletion: true,
           destinationUrl: 'https://example.com/delete',
         })];
 
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'delete query',
           matches: matches,
@@ -2671,17 +3670,17 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         const mockInput = element.getInputElement();
         await simulateUserTextInput(mockInput, 'query');
 
-        const match0 = createSearchMatchForTesting({
+        const match0 = createSearchMatch({
           fillIntoEdit: 'match 0',
           supportsDeletion: true,
           destinationUrl: 'https://example.com/0',
         });
-        const match1 = createSearchMatchForTesting({
+        const match1 = createSearchMatch({
           fillIntoEdit: 'match 1',
           supportsDeletion: true,
           destinationUrl: 'https://example.com/1',
         });
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           matches: [match0, match1],
         }));
@@ -2696,7 +3695,7 @@ suite('SearchboxMixinVirtualFocusTest', () => {
 
         // Simulate new result arriving after deletion where match 1 slides to
         // index 0.
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           matches: [match1],
         }));
@@ -2713,6 +3712,63 @@ suite('SearchboxMixinVirtualFocusTest', () => {
       });
 
   test(
+      'Space activates focused buttons except AIM and keyword mode',
+      async () => {
+        element.virtualFocusEnabledOverride = true;
+        const mockInput = element.getInputElement();
+        await simulateUserTextInput(mockInput, 'query');
+
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'query',
+          matches: [createSearchMatch({
+            fillIntoEdit: 'query',
+            supportsDeletion: true,
+            destinationUrl: 'https://example.com/delete',
+          })],
+        }));
+        await microtasksFinished();
+
+        // 1. Space on kNormal or kKeywordMode does not prevent default.
+        for (const state
+                 of [SelectionLineState.kNormal,
+                     SelectionLineState.kKeywordMode]) {
+          element.setSelection({line: 0, state, actionIndex: 0});
+          const event = createKeyboardEvent(' ');
+          mockInput.inputElement.dispatchEvent(event);
+          await microtasksFinished();
+          assertFalse(event.defaultPrevented);
+        }
+
+        // 2. Space on kFocusedButtonAim resets selection to kNormal without
+        // preventing default.
+        element.setSelection({
+          line: 0,
+          state: SelectionLineState.kFocusedButtonAim,
+          actionIndex: 0,
+        });
+        const aimSpace = createKeyboardEvent(' ');
+        mockInput.inputElement.dispatchEvent(aimSpace);
+        await microtasksFinished();
+        assertFalse(aimSpace.defaultPrevented);
+        assertEquals(SelectionLineState.kNormal, element.selection.state);
+
+        // 3. Space on kFocusedButtonRemoveSuggestion prevents default and
+        // deletes the match via handleVirtualFocusEnter.
+        element.setSelection({
+          line: 0,
+          state: SelectionLineState.kFocusedButtonRemoveSuggestion,
+          actionIndex: 0,
+        });
+        const removeSpace = createKeyboardEvent(' ');
+        mockInput.inputElement.dispatchEvent(removeSpace);
+        await microtasksFinished();
+        assertTrue(removeSpace.defaultPrevented);
+        assertEquals(
+            1, testProxy.handler.getCallCount('deleteAutocompleteMatch'));
+      });
+
+  test(
       'Shift + Arrow keys do not trigger virtual focus navigation',
       async () => {
         element.virtualFocusEnabledOverride = true;
@@ -2720,10 +3776,10 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         await simulateUserTextInput(mockInput, 'query');
 
         const matches = [
-          createSearchMatchForTesting({fillIntoEdit: 'match 0'}),
-          createSearchMatchForTesting({fillIntoEdit: 'match 1'}),
+          createSearchMatch({fillIntoEdit: 'match 0'}),
+          createSearchMatch({fillIntoEdit: 'match 1'}),
         ];
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           matches: matches,
         }));
@@ -2755,14 +3811,15 @@ suite('SearchboxMixinVirtualFocusTest', () => {
   });
 
   test('computeMatchFillIntoEdit strips keyword when in keyword mode', () => {
-    element.inputKeywordModel = {
+    element.keywordModeManager.inputKeywordModel = {
       type: KeywordType.kInKeyword,
       keyword: '@tabs',
       displayText: 'Tabs',
       iconPath: '',
+      placeholder: '',
     };
 
-    const match = createSearchMatchForTesting({
+    const match = createSearchMatch({
       fillIntoEdit: '@tabs search text',
     });
 
@@ -2776,11 +3833,11 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         const mockInput = element.getInputElement();
         await simulateUserTextInput(mockInput, 'typed query');
 
-        const matches = [createSearchMatchForTesting({
+        const matches = [createSearchMatch({
           fillIntoEdit: 'suggested query',
         })];
 
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'typed query',
           matches: matches,
@@ -2793,18 +3850,15 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         assertEquals(0, element.selection.line);
         assertEquals('suggested query', mockInput.inputElement.value);
 
-        // Setting selection to line -1 and calling updateInputForSelection_
+        // Setting selection to line -1 and calling updateInputForSelection
         // restores typed input.
         element.setSelection(
             {line: -1, state: SelectionLineState.kNormal, actionIndex: 0});
         await microtasksFinished();
 
-        (element as unknown as {
-          updateInputForSelection_: (s: unknown, k: string) => void,
-        })
-            .updateInputForSelection_(
-                {line: -1, state: SelectionLineState.kNormal, actionIndex: 0},
-                'Tab');
+        element.updateInputForSelection(
+            {line: -1, state: SelectionLineState.kNormal, actionIndex: 0},
+            'Tab');
         await microtasksFinished();
         assertEquals('typed query', mockInput.inputElement.value);
       });
@@ -2814,12 +3868,12 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     const mockInput = element.getInputElement();
     await simulateUserTextInput(mockInput, 'ctrl enter query');
 
-    const matches = [createSearchMatchForTesting({
+    const matches = [createSearchMatch({
       fillIntoEdit: 'ctrl enter query',
       destinationUrl: 'https://example.com/ctrl_enter',
     })];
 
-    element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+    element.onAutocompleteResultChanged(createAutocompleteResult({
       queryId: element.activeQueryId,
       input: 'ctrl enter query',
       matches: matches,
@@ -2830,6 +3884,8 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         {line: 0, state: SelectionLineState.kNormal, actionIndex: 0});
     await microtasksFinished();
 
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Control', {ctrlKey: true}));
     const ctrlEnterEvent = createKeyboardEvent('Enter', {
       ctrlKey: true,
     });
@@ -2902,10 +3958,10 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         const mockInput = element.getInputElement();
         await simulateUserTextInput(mockInput, 'aim query');
 
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'aim query',
-          matches: [createSearchMatchForTesting({fillIntoEdit: 'aim query'})],
+          matches: [createSearchMatch({fillIntoEdit: 'aim query'})],
         }));
         await microtasksFinished();
 
@@ -2950,9 +4006,7 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         await microtasksFinished();
 
         const handled =
-            (element as unknown as {
-              handleVirtualFocusEnter_: (e: KeyboardEvent) => boolean,
-            }).handleVirtualFocusEnter_(createKeyboardEvent('Enter'));
+            element.handleVirtualFocusEnter(createKeyboardEvent('Enter'));
         assertFalse(handled);
       });
 
@@ -2977,16 +4031,18 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         inputElement.multiLineEnabled = true;
         await microtasksFinished();
 
-        element.result = createAutocompleteResultForTesting({
+        element.result = createAutocompleteResult({
           input: 'hello world',
-          matches: [createSearchMatchForTesting()],
+          matches: [createSearchMatch()],
         });
         element.dropdownIsVisible = true;
 
-        Object.defineProperty(inputElement.$.input, 'scrollHeight', {
-          value: 64,
-          configurable: true,
-        });
+        Object.defineProperty(
+            inputElement.shadowRoot.querySelector<HTMLElement>('#input')!,
+            'scrollHeight', {
+              value: 64,
+              configurable: true,
+            });
 
         element.updateDropdownVisibility();
         assertFalse(element.dropdownIsVisible);
@@ -3001,19 +4057,147 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         inputElement.multiLineEnabled = true;
         await microtasksFinished();
 
-        element.result = createAutocompleteResultForTesting({
+        element.result = createAutocompleteResult({
           input: '\n\n',
-          matches: [createSearchMatchForTesting()],
+          matches: [createSearchMatch()],
         });
         element.dropdownIsVisible = true;
 
-        Object.defineProperty(inputElement.$.input, 'scrollHeight', {
-          value: 64,
-          configurable: true,
-        });
+        Object.defineProperty(
+            inputElement.shadowRoot.querySelector<HTMLElement>('#input')!,
+            'scrollHeight', {
+              value: 64,
+              configurable: true,
+            });
 
         element.updateDropdownVisibility();
         assertFalse(element.dropdownIsVisible);
+      });
+
+  test(
+      'updateDropdownVisibility keeps dropdown when ' +
+          'singleLineOnInlineAutocomplete is true and ' +
+          'multiline is caused by inline autocompletion',
+      async () => {
+        element.multiLineEnabled = true;
+        element.singleLineOnInlineAutocomplete = true;
+        const inputElement = element.getInputElement();
+        inputElement.multiLineEnabled = true;
+        inputElement.singleLineOnInlineAutocomplete = true;
+        await microtasksFinished();
+
+        inputElement.setInput({text: 'm', inline: 'essages.google.com'});
+
+        element.result = createAutocompleteResult({
+          input: 'm',
+          matches: [createSearchMatch({
+            allowedToBeDefaultMatch: true,
+            inlineAutocompletion: 'essages.google.com',
+          })],
+        });
+        element.dropdownIsVisible = true;
+
+        // When single-line on inline autocomplete is active, isMultiline() is
+        // suppressed and the dropdown remains visible even if the input
+        // content would otherwise exceed the multiline height threshold.
+        Object.defineProperty(
+            inputElement.shadowRoot.querySelector<HTMLElement>('#input')!,
+            'scrollHeight', {
+              get: () => 64,
+              configurable: true,
+            });
+
+        element.updateDropdownVisibility();
+        assertTrue(element.dropdownIsVisible);
+      });
+
+  test(
+      'updateDropdownVisibility suppresses dropdown when ' +
+          'singleLineOnInlineAutocomplete is true and ' +
+          'raw input is multiline',
+      async () => {
+        element.multiLineEnabled = true;
+        element.singleLineOnInlineAutocomplete = true;
+        const inputElement = element.getInputElement();
+        inputElement.multiLineEnabled = true;
+        inputElement.singleLineOnInlineAutocomplete = true;
+        await microtasksFinished();
+
+        inputElement.setInput({text: 'first line\nsecond line', inline: ''});
+
+        element.result = createAutocompleteResult({
+          input: 'first line\nsecond line',
+          matches: [createSearchMatch()],
+        });
+        element.dropdownIsVisible = true;
+
+        Object.defineProperty(
+            inputElement.shadowRoot.querySelector<HTMLElement>('#input')!,
+            'scrollHeight', {
+              get: () => 64,
+              configurable: true,
+            });
+
+        element.updateDropdownVisibility();
+        assertFalse(element.dropdownIsVisible);
+      });
+
+  test(
+      'arrow down to match keeps single line mode when ' +
+          'singleLineOnInlineAutocomplete is true',
+      async () => {
+        element.multiLineEnabled = true;
+        element.singleLineOnInlineAutocomplete = true;
+        const inputElement = element.getInputElement();
+        inputElement.multiLineEnabled = true;
+        inputElement.singleLineOnInlineAutocomplete = true;
+        await microtasksFinished();
+
+        inputElement.inputElement.focus();
+        await simulateUserTextInput(inputElement, 'query');
+
+        await element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'query',
+          matches: [
+            createSearchMatch({
+              allowedToBeDefaultMatch: false,
+              fillIntoEdit: 'query',
+            }),
+            createSearchMatch({
+              allowedToBeDefaultMatch: false,
+              fillIntoEdit: 'query with a very long second suggestion text',
+            }),
+          ],
+        }));
+        element.dropdownIsVisible = true;
+        await microtasksFinished();
+
+        // Arrow down to match 0.
+        element.getWrapperElement().dispatchEvent(
+            createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+
+        // Arrow down to match 1 (match preview).
+        element.getWrapperElement().dispatchEvent(
+            createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        await inputElement.updateComplete;
+
+        // Even if the long preview text would exceed the multiline threshold,
+        // force-single-line ensures single-line mode is preserved and the
+        // dropdown stays visible.
+        Object.defineProperty(
+            inputElement.shadowRoot.querySelector<HTMLElement>('#input')!,
+            'scrollHeight', {
+              get: () => 64,
+              configurable: true,
+            });
+
+        assertEquals(1, element.selection.line);
+        assertTrue(inputElement.hasAttribute('force-single-line'));
+        assertFalse(inputElement.isMultiline());
+        assertTrue(element.dropdownIsVisible);
       });
 
   test(
@@ -3026,10 +4210,12 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         await microtasksFinished();
         element.dropdownIsVisible = false;
 
-        Object.defineProperty(inputElement.$.input, 'scrollHeight', {
-          value: 64,
-          configurable: true,
-        });
+        Object.defineProperty(
+            inputElement.shadowRoot.querySelector<HTMLElement>('#input')!,
+            'scrollHeight', {
+              value: 64,
+              configurable: true,
+            });
 
         const upEvent = createKeyboardEvent('ArrowUp');
         inputElement.inputElement.dispatchEvent(upEvent);
@@ -3050,19 +4236,19 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         await simulateUserTextInput(mockInput, 'test');
 
         const matches = [
-          createSearchMatchForTesting({
+          createSearchMatch({
             fillIntoEdit: 'test default',
             inlineAutocompletion: ' default',
             allowedToBeDefaultMatch: false,
           }),
-          createSearchMatchForTesting({
+          createSearchMatch({
             fillIntoEdit: 'test secondary',
             inlineAutocompletion: ' secondary',
             allowedToBeDefaultMatch: true,
           }),
         ];
 
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'test',
           matches: matches,
@@ -3073,12 +4259,9 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         element.setSelection(
             {line: 0, state: SelectionLineState.kNormal, actionIndex: 0});
         await element.updateComplete;
-        (element as unknown as {
-          updateInputForSelection_: (s: unknown, k: string) => void,
-        })
-            .updateInputForSelection_(
-                {line: 0, state: SelectionLineState.kNormal, actionIndex: 0},
-                'ArrowDown');
+        element.updateInputForSelection(
+            {line: 0, state: SelectionLineState.kNormal, actionIndex: 0},
+            'ArrowDown');
         await microtasksFinished();
         assertEquals('test default', mockInput.inputElement.value);
 
@@ -3087,14 +4270,105 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         element.setSelection(
             {line: 1, state: SelectionLineState.kNormal, actionIndex: 0});
         await element.updateComplete;
-        (element as unknown as {
-          updateInputForSelection_: (s: unknown, k: string) => void,
-        })
-            .updateInputForSelection_(
-                {line: 1, state: SelectionLineState.kNormal, actionIndex: 0},
-                'ArrowDown');
+        element.updateInputForSelection(
+            {line: 1, state: SelectionLineState.kNormal, actionIndex: 0},
+            'ArrowDown');
         await microtasksFinished();
         assertEquals('test secondary', mockInput.inputElement.value);
+      });
+
+  test(
+      'updateInputForSelection clears inline autocompletion when advancing ' +
+          'focus to AIM button',
+      async () => {
+        const mockInput = element.getInputElement();
+        await simulateUserTextInput(mockInput, 'test');
+
+        const matches = [
+          createSearchMatch({
+            fillIntoEdit: 'test default',
+            inlineAutocompletion: ' default',
+            allowedToBeDefaultMatch: true,
+          }),
+        ];
+
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'test',
+          matches: matches,
+        }));
+        await microtasksFinished();
+
+        // Default match has inline autocompletion.
+        element.setSelection(
+            {line: 0, state: SelectionLineState.kNormal, actionIndex: 0});
+        await element.updateComplete;
+        element.updateInputForSelection(
+            {line: 0, state: SelectionLineState.kNormal, actionIndex: 0},
+            'ArrowDown');
+        await microtasksFinished();
+        assertEquals('test default', mockInput.inputElement.value);
+        assertEquals(' default', mockInput.lastInput()?.inline);
+
+        // Advancing focus to AIM button clears inline autocompletion highlight
+        // while keeping the autocompleted text.
+        element.setSelection({
+          line: 0,
+          state: SelectionLineState.kFocusedButtonAim,
+          actionIndex: 0,
+        });
+        await element.updateComplete;
+        element.updateInputForSelection(
+            {
+              line: 0,
+              state: SelectionLineState.kFocusedButtonAim,
+              actionIndex: 0,
+            },
+            'Tab');
+        await microtasksFinished();
+        assertEquals('test default', mockInput.inputElement.value);
+        assertEquals('', mockInput.lastInput()?.inline);
+      });
+
+  test(
+      'Tab to context entrypoint button restores typed input text',
+      async () => {
+        element.showContextEntrypointOverride = true;
+        const mockInput = element.getInputElement();
+        await simulateUserTextInput(mockInput, 'test');
+
+        const matches = [
+          createSearchMatch({
+            fillIntoEdit: 'test default',
+            inlineAutocompletion: ' default',
+            allowedToBeDefaultMatch: true,
+          }),
+        ];
+
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'test',
+          matches: matches,
+        }));
+        await microtasksFinished();
+
+        assertEquals('test default', mockInput.inputElement.value);
+        assertEquals(' default', mockInput.lastInput()?.inline);
+
+        // Pressing Tab moves virtual focus to the context entrypoint (+)
+        // button (line -1) and restores the typed input text.
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('Tab'));
+        await microtasksFinished();
+
+        assertDeepEquals(
+            {
+              line: -1,
+              state: SelectionLineState.kFocusedButtonContextEntrypoint,
+              actionIndex: 0,
+            },
+            element.selection);
+        assertEquals('test', mockInput.inputElement.value);
+        assertEquals('', mockInput.lastInput()?.inline);
       });
 
   test(
@@ -3126,13 +4400,12 @@ suite('SearchboxMixinVirtualFocusTest', () => {
   test(
       'two tabs from contextual-entrypoint reach virtual AI mode focus',
       async () => {
-        loadTimeData.overrideValues({realboxVirtualFocusNavigation: true});
         element.virtualFocusEnabledOverride = true;
         element.isAimButtonVisibleOverride = true;
         element.dropdownIsVisible = true;
 
-        const matches = [createSearchMatchForTesting({fillIntoEdit: 'test'})];
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        const matches = [createSearchMatch({fillIntoEdit: 'test'})];
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'test',
           matches: matches,
@@ -3176,27 +4449,26 @@ suite('SearchboxMixinVirtualFocusTest', () => {
   test(
       'ArrowDown through instant keyword mode matches enters keyword mode',
       async () => {
-        loadTimeData.overrideValues({realboxVirtualFocusNavigation: true});
         element.virtualFocusEnabledOverride = true;
 
         const mockInput = element.getInputElement();
         await simulateUserTextInput(mockInput, '@');
 
-        const defaultMatch = createSearchMatchForTesting({
+        const defaultMatch = createSearchMatch({
           fillIntoEdit: '@',
           allowedToBeDefaultMatch: true,
         });
-        const instantMatch = createSearchMatchForTesting({
+        const instantMatch = createSearchMatch({
           fillIntoEdit: '@bookmarks',
           allowedToBeDefaultMatch: false,
-          keywordModel: createMatchKeywordModelForTesting({
+          keywordModel: createMatchKeywordModel({
             type: KeywordType.kInstant,
             keyword: '@bookmarks',
             chipHint: 'Bookmarks',
           }),
         });
 
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: '@',
           matches: [defaultMatch, instantMatch],
@@ -3213,6 +4485,17 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         assertEquals('@bookmarks', element.inputKeywordModel?.keyword);
         assertEquals('', mockInput.inputElement.value);
 
+        // The browser is told to enter keyword mode too, so its keyword state
+        // stays in sync with the WebUI.
+        assertEquals(1, testProxy.handler.getCallCount('activateKeyword'));
+        const activateKeywordArgs =
+            testProxy.handler.getArgs('activateKeyword')[0];
+        assertEquals(1, activateKeywordArgs.line);
+        assertDeepEquals(instantMatch.destinationUrl, activateKeywordArgs.url);
+        assertEquals(
+            KeywordActivationMethod.kKeyboard,
+            activateKeywordArgs.activationMethod);
+
         // ArrowUp back to default search match.
         mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowUp'));
         await microtasksFinished();
@@ -3222,28 +4505,29 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         assertFalse(element.keywordModeManager.isInKeywordMode);
         assertEquals(null, element.inputKeywordModel);
         assertEquals('@', mockInput.inputElement.value);
+        // Leaving keyword mode doesn't activate a keyword.
+        assertEquals(1, testProxy.handler.getCallCount('activateKeyword'));
       });
 
   test(
       'Tab key in Virtual Focus activates keyword mode on keyword chip',
       async () => {
-        loadTimeData.overrideValues({realboxVirtualFocusNavigation: true});
         element.virtualFocusEnabledOverride = true;
 
         const mockInput = element.getInputElement();
         await simulateUserTextInput(mockInput, 'youtube.com');
 
-        const defaultMatch = createSearchMatchForTesting({
+        const defaultMatch = createSearchMatch({
           fillIntoEdit: 'youtube.com',
           allowedToBeDefaultMatch: true,
-          keywordModel: createMatchKeywordModelForTesting({
+          keywordModel: createMatchKeywordModel({
             type: KeywordType.kChip,
             keyword: 'youtube.com',
             chipHint: 'Search YouTube',
           }),
         });
 
-        element.onAutocompleteResultChanged(createAutocompleteResultForTesting({
+        element.onAutocompleteResultChanged(createAutocompleteResult({
           queryId: element.activeQueryId,
           input: 'youtube.com',
           matches: [defaultMatch],
@@ -3259,6 +4543,93 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         assertTrue(element.keywordModeManager.isInKeywordMode);
         assertEquals('youtube.com', element.inputKeywordModel?.keyword);
         assertEquals('', mockInput.inputElement.value);
+
+        // The browser is told to enter keyword mode too, like the keyword chip
+        // click does, so its keyword state stays in sync with the WebUI.
+        assertEquals(1, testProxy.handler.getCallCount('activateKeyword'));
+        const activateKeywordArgs =
+            testProxy.handler.getArgs('activateKeyword')[0];
+        assertEquals(0, activateKeywordArgs.line);
+        assertDeepEquals(defaultMatch.destinationUrl, activateKeywordArgs.url);
+        assertEquals(
+            KeywordActivationMethod.kKeyboard,
+            activateKeywordArgs.activationMethod);
+
+        // Shift+Tab leaves keyword mode back to the keyword hint.
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Tab', {shiftKey: true}));
+        await microtasksFinished();
+
+        assertEquals(0, element.selection.line);
+        assertEquals(SelectionLineState.kNormal, element.selection.state);
+        assertFalse(element.keywordModeManager.isInKeywordMode);
+        assertEquals('youtube.com', mockInput.inputElement.value);
+        // Leaving keyword mode doesn't activate a keyword.
+        assertEquals(1, testProxy.handler.getCallCount('activateKeyword'));
+      });
+
+  test(
+      'Enter on keyword chip opens the selection only with text after keyword',
+      async () => {
+        element.virtualFocusEnabledOverride = true;
+
+        const mockInput = element.getInputElement();
+        await simulateUserTextInput(mockInput, 'youtube.com cats');
+
+        const defaultMatch = createSearchMatch({
+          fillIntoEdit: 'youtube.com cats',
+          allowedToBeDefaultMatch: true,
+          keywordModel: createMatchKeywordModel({
+            type: KeywordType.kChip,
+            keyword: 'youtube.com',
+            chipHint: 'Search YouTube',
+          }),
+        });
+
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'youtube.com cats',
+          matches: [defaultMatch],
+        }));
+        await microtasksFinished();
+
+        // Tab selects the keyword chip, leaving the text after the keyword.
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('Tab'));
+        await microtasksFinished();
+        assertEquals(SelectionLineState.kKeywordMode, element.selection.state);
+        assertEquals('cats', mockInput.inputElement.value);
+
+        // Enter asks the browser to open the keyword chip selection, which
+        // searches the keyword for the text, forwarding modifier keys.
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('Enter'));
+        await microtasksFinished();
+        assertEquals(1, testProxy.handler.getCallCount('openPopupSelection'));
+        let args = testProxy.handler.getArgs('openPopupSelection')[0];
+        assertDeepEquals(
+            {line: 0, state: SelectionLineState.kKeywordMode, actionIndex: 0},
+            args.selection);
+        assertDeepEquals(
+            {altKey: false, ctrlKey: false, metaKey: false, shiftKey: false},
+            args.modifiers);
+        assertEquals(
+            0, testProxy.handler.getCallCount('openAutocompleteMatch'));
+
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Enter', {altKey: true, shiftKey: true}));
+        await microtasksFinished();
+        assertEquals(2, testProxy.handler.getCallCount('openPopupSelection'));
+        args = testProxy.handler.getArgs('openPopupSelection')[1];
+        assertDeepEquals(
+            {altKey: true, ctrlKey: false, metaKey: false, shiftKey: true},
+            args.modifiers);
+
+        // Without text after the keyword, Enter does nothing.
+        mockInput.inputElement.value = '';
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('Enter'));
+        await microtasksFinished();
+        assertEquals(2, testProxy.handler.getCallCount('openPopupSelection'));
+        assertEquals(
+            0, testProxy.handler.getCallCount('openAutocompleteMatch'));
       });
 
   test('dynamic keyword space triggering pref change', async () => {
@@ -3276,20 +4647,24 @@ suite('SearchboxMixinVirtualFocusTest', () => {
   test('dynamic available keyword models update', async () => {
     assertEquals(0, element.keywordModeManager.availableKeywordModels.length);
 
-    testProxy.callbackRouterRemote.setAvailableKeywordModels([
-      {
-        type: KeywordType.kChip,
-        keyword: 'google.com',
-        displayText: 'Search Google',
-        iconPath: '',
-      },
-      {
-        type: KeywordType.kInstant,
-        keyword: '@history',
-        displayText: '@history',
-        iconPath: '',
-      },
-    ]);
+    testProxy.callbackRouterRemote.setAvailableKeywordModels(
+        [
+          {
+            type: KeywordType.kChip,
+            keyword: 'google.com',
+            displayText: 'Search Google',
+            iconPath: '',
+            placeholder: '',
+          },
+          {
+            type: KeywordType.kInstant,
+            keyword: '@history',
+            displayText: '@history',
+            iconPath: '',
+            placeholder: '',
+          },
+        ],
+        'google.com');
     await testProxy.callbackRouterRemote.$.flushForTesting();
     assertEquals(2, element.keywordModeManager.availableKeywordModels.length);
     assertEquals(
@@ -3299,19 +4674,22 @@ suite('SearchboxMixinVirtualFocusTest', () => {
         '@history',
         element.keywordModeManager.availableKeywordModels[1]?.keyword);
 
-    testProxy.callbackRouterRemote.setAvailableKeywordModels([]);
+    testProxy.callbackRouterRemote.setAvailableKeywordModels([], '');
     await testProxy.callbackRouterRemote.$.flushForTesting();
     assertEquals(0, element.keywordModeManager.availableKeywordModels.length);
   });
 
   test(
       'space in middle enters keyword mode and queries remainder', async () => {
-        testProxy.callbackRouterRemote.setAvailableKeywordModels([{
-          type: KeywordType.kChip,
-          keyword: 'youtube.com',
-          displayText: 'Search YouTube',
-          iconPath: '',
-        }]);
+        testProxy.callbackRouterRemote.setAvailableKeywordModels(
+            [{
+              type: KeywordType.kChip,
+              keyword: 'youtube.com',
+              displayText: 'Search YouTube',
+              iconPath: '',
+              placeholder: '',
+            }],
+            '');
         await testProxy.callbackRouterRemote.$.flushForTesting();
 
         const mockInput = element.getInputElement();
@@ -3348,12 +4726,15 @@ suite('SearchboxMixinVirtualFocusTest', () => {
   test(
       'space in middle with case-insensitive keyword enters keyword mode',
       async () => {
-        testProxy.callbackRouterRemote.setAvailableKeywordModels([{
-          type: KeywordType.kChip,
-          keyword: 'youtube.com',
-          displayText: 'Search YouTube',
-          iconPath: '',
-        }]);
+        testProxy.callbackRouterRemote.setAvailableKeywordModels(
+            [{
+              type: KeywordType.kChip,
+              keyword: 'youtube.com',
+              displayText: 'Search YouTube',
+              iconPath: '',
+              placeholder: '',
+            }],
+            '');
         await testProxy.callbackRouterRemote.$.flushForTesting();
 
         const mockInput = element.getInputElement();
@@ -3385,12 +4766,15 @@ suite('SearchboxMixinVirtualFocusTest', () => {
   test(
       'starter pack keyword followed by space enters keyword mode',
       async () => {
-        testProxy.callbackRouterRemote.setAvailableKeywordModels([{
-          type: KeywordType.kInstant,
-          keyword: '@history',
-          displayText: 'History',
-          iconPath: '',
-        }]);
+        testProxy.callbackRouterRemote.setAvailableKeywordModels(
+            [{
+              type: KeywordType.kInstant,
+              keyword: '@history',
+              displayText: 'History',
+              iconPath: '',
+              placeholder: '',
+            }],
+            '');
         await testProxy.callbackRouterRemote.$.flushForTesting();
 
         const mockInput = element.getInputElement();
@@ -3410,12 +4794,15 @@ suite('SearchboxMixinVirtualFocusTest', () => {
   test(
       'available keyword followed by space enters keyword mode without chip',
       async () => {
-        testProxy.callbackRouterRemote.setAvailableKeywordModels([{
-          type: KeywordType.kChip,
-          keyword: 'google.com',
-          displayText: 'Google',
-          iconPath: '',
-        }]);
+        testProxy.callbackRouterRemote.setAvailableKeywordModels(
+            [{
+              type: KeywordType.kChip,
+              keyword: 'google.com',
+              displayText: 'Google',
+              iconPath: '',
+              placeholder: '',
+            }],
+            '');
         await testProxy.callbackRouterRemote.$.flushForTesting();
 
         const mockInput = element.getInputElement();
@@ -3433,12 +4820,15 @@ suite('SearchboxMixinVirtualFocusTest', () => {
       });
 
   test('deleting trailing space does not enter keyword mode', async () => {
-    testProxy.callbackRouterRemote.setAvailableKeywordModels([{
-      type: KeywordType.kInstant,
-      keyword: '@history',
-      displayText: 'History',
-      iconPath: '',
-    }]);
+    testProxy.callbackRouterRemote.setAvailableKeywordModels(
+        [{
+          type: KeywordType.kInstant,
+          keyword: '@history',
+          displayText: 'History',
+          iconPath: '',
+          placeholder: '',
+        }],
+        '');
     await testProxy.callbackRouterRemote.$.flushForTesting();
 
     const mockInput = element.getInputElement();
@@ -3463,5 +4853,495 @@ suite('SearchboxMixinVirtualFocusTest', () => {
     const args = await testProxy.handler.whenCalled('queryAutocomplete');
     assertEquals('@history ', args.input);
     assertEquals('', args.keyword);
+  });
+
+  test('navigateToMatch exits keyword mode', async () => {
+    element.keywordModeManager.enter(
+        'google.com', 'Google', KeywordModeEntryMethod.TAB);
+    assertTrue(element.keywordModeManager.isInKeywordMode);
+
+    element.activeQueryId = 0;
+    await element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: 0,
+      matches: [
+        createSearchMatch({
+          allowedToBeDefaultMatch: true,
+          fillIntoEdit: 'google.com query',
+        }),
+      ],
+    }));
+
+    element.navigateToMatch(
+        0, new KeyboardEvent('keydown', {key: 'Enter', cancelable: true}));
+    assertFalse(element.keywordModeManager.isInKeywordMode);
+  });
+
+  test('openCtrlEnterMatch exits keyword mode', async () => {
+    element.keywordModeManager.enter(
+        'google.com', 'Google', KeywordModeEntryMethod.TAB);
+    assertTrue(element.keywordModeManager.isInKeywordMode);
+
+    element.activeQueryId = 0;
+    await element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: 0,
+      matches: [
+        createSearchMatch({
+          allowedToBeDefaultMatch: true,
+          fillIntoEdit: 'google.com query',
+        }),
+      ],
+    }));
+
+    element.openCtrlEnterMatch(
+        0, createKeyboardEvent('Enter', {ctrlKey: true}));
+    assertFalse(element.keywordModeManager.isInKeywordMode);
+  });
+
+  test('onMatchClick exits keyword mode', () => {
+    element.keywordModeManager.enter(
+        'google.com', 'Google', KeywordModeEntryMethod.TAB);
+    assertTrue(element.keywordModeManager.isInKeywordMode);
+
+    element.onMatchClick();
+    assertFalse(element.keywordModeManager.isInKeywordMode);
+  });
+
+  test('inKeywordMode getter reflects keywordModeManager', () => {
+    assertFalse(element.inKeywordMode);
+    element.keywordModeManager.enter(
+        'google.com', 'Google', KeywordModeEntryMethod.TAB);
+    assertTrue(element.inKeywordMode);
+    element.keywordModeManager.exit();
+    assertFalse(element.inKeywordMode);
+  });
+
+  test(
+      'mousedown on match prevents focus loss and does not prematurely fill ' +
+          'input in zero state under virtual focus',
+      async () => {
+        element.activeQueryId = 0;
+        await element.onAutocompleteResultChanged(createAutocompleteResult({
+          matches: [createSearchMatch()],
+        }));
+        await microtasksFinished();
+
+        const matchEl = element.getDropdownElement().shadowRoot.querySelector(
+            'cr-searchbox-match');
+        assertTrue(!!matchEl);
+
+        const mousedownEvent = new MouseEvent('mousedown', {
+          button: 0,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        matchEl.dispatchEvent(mousedownEvent);
+        assertTrue(mousedownEvent.defaultPrevented);
+
+        // Even if focusin fires on the match element, virtual focus should
+        // ignore it and keep the input empty until click/navigation.
+        matchEl.dispatchEvent(new FocusEvent('focusin', {
+          bubbles: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+
+        assertEquals('', element.getInputElement().inputElement.value);
+        assertDeepEquals(kDefaultSelection, element.selection);
+      });
+
+  test(
+      'Shift+Delete removes virtually focused match in ZPS and typed queries',
+      async () => {
+        element.virtualFocusEnabledOverride = true;
+        const mockInput = element.getInputElement();
+
+        // 1. Zero-prefix state (allowedToBeDefaultMatch: false):
+        const zpsMatches = [
+          createSearchMatch({
+            allowedToBeDefaultMatch: false,
+            supportsDeletion: true,
+            fillIntoEdit: 'zps 0',
+            destinationUrl: 'https://example.com/zps0',
+          }),
+          createSearchMatch({
+            allowedToBeDefaultMatch: false,
+            supportsDeletion: true,
+            fillIntoEdit: 'zps 1',
+            destinationUrl: 'https://example.com/zps1',
+          }),
+        ];
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: '',
+          matches: zpsMatches,
+        }));
+        await microtasksFinished();
+
+        // ArrowDown to select first ZPS match (selection.line = 0, while legacy
+        // selectedMatchIndex remains -1).
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        assertEquals(0, element.selection.line);
+
+        const zpsDeleteEvent = createKeyboardEvent('Delete', {shiftKey: true});
+        mockInput.inputElement.dispatchEvent(zpsDeleteEvent);
+        await microtasksFinished();
+
+        assertTrue(zpsDeleteEvent.defaultPrevented);
+        const zpsArgs =
+            await testProxy.handler.whenCalled('deleteAutocompleteMatch');
+        assertEquals(0, zpsArgs.line);
+        assertEquals('https://example.com/zps0', zpsArgs.url);
+
+        // 2. Typed query where match 0 has allowedToBeDefaultMatch: true, and
+        // user arrows down to match 1:
+        testProxy.handler.reset();
+        await simulateUserTextInput(mockInput, 'typed');
+        const typedMatch0 = createSearchMatch({
+          allowedToBeDefaultMatch: true,
+          supportsDeletion: true,
+          fillIntoEdit: 'typed 0',
+          destinationUrl: 'https://example.com/typed0',
+        });
+        const typedMatch1 = createSearchMatch({
+          allowedToBeDefaultMatch: false,
+          supportsDeletion: true,
+          fillIntoEdit: 'typed 1',
+          destinationUrl: 'https://example.com/typed1',
+        });
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: 'typed',
+          matches: [typedMatch0, typedMatch1],
+        }));
+        await microtasksFinished();
+        assertEquals(0, element.selection.line);
+
+        // ArrowDown to match 1.
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        assertEquals(1, element.selection.line);
+
+        const typedDeleteEvent =
+            createKeyboardEvent('Delete', {shiftKey: true});
+        mockInput.inputElement.dispatchEvent(typedDeleteEvent);
+        await microtasksFinished();
+
+        assertTrue(typedDeleteEvent.defaultPrevented);
+        const typedArgs =
+            await testProxy.handler.whenCalled('deleteAutocompleteMatch');
+        assertEquals(1, typedArgs.line);
+        assertEquals('https://example.com/typed1', typedArgs.url);
+      });
+
+  test(
+      'post-deletion clamps selection on last match and resets when all ' +
+          'matches are deleted',
+      async () => {
+        element.virtualFocusEnabledOverride = true;
+        const mockInput = element.getInputElement();
+
+        const match0 = createSearchMatch({
+          allowedToBeDefaultMatch: false,
+          supportsDeletion: true,
+          fillIntoEdit: 'history 0',
+          destinationUrl: 'https://example.com/0',
+        });
+        const match1 = createSearchMatch({
+          allowedToBeDefaultMatch: false,
+          supportsDeletion: true,
+          fillIntoEdit: 'history 1',
+          destinationUrl: 'https://example.com/1',
+        });
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: '',
+          matches: [match0, match1],
+        }));
+        await microtasksFinished();
+
+        // ArrowDown twice to select the last match (line 1) and delete it via
+        // Shift+Delete.
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        assertEquals(1, element.selection.line);
+        assertEquals('history 1', mockInput.inputElement.value);
+
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Delete', {shiftKey: true}));
+        await testProxy.handler.whenCalled('deleteAutocompleteMatch');
+
+        // Backend returns only match0; selection clamps to line 0.
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: '',
+          matches: [match0],
+        }));
+        await microtasksFinished();
+
+        assertDeepEquals(element.selection, {
+          line: 0,
+          state: SelectionLineState.kNormal,
+          actionIndex: 0,
+        });
+        assertEquals('history 0', mockInput.inputElement.value);
+
+        // Delete the last remaining match (line 0).
+        testProxy.handler.reset();
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Delete', {shiftKey: true}));
+        await testProxy.handler.whenCalled('deleteAutocompleteMatch');
+
+        // Backend returns empty matches; selection resets to kDefaultSelection.
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: '',
+          matches: [],
+        }));
+        await microtasksFinished();
+
+        assertDeepEquals(kDefaultSelection, element.selection);
+      });
+
+  test(
+      'post-deletion selects the default match when not opted in', async () => {
+        const mockInput = element.getInputElement();
+        const matches = await showDeletableMatches(element);
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        assertEquals(2, element.selection.line);
+
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Delete', {shiftKey: true}));
+        await respondToMatchDeletion(element, testProxy, matches, 2);
+
+        assertDeepEquals(
+            {line: 0, state: SelectionLineState.kNormal, actionIndex: 0},
+            element.selection);
+        assertEquals('https://local.test', mockInput.inputElement.value);
+      });
+
+  test(
+      'post-deletion keeps the selection on the deleted line when opted in',
+      async () => {
+        element.preserveSelectionOnMatchDeletion = true;
+        const mockInput = element.getInputElement();
+        let matches = await showDeletableMatches(element);
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+        await microtasksFinished();
+        assertEquals(2, element.selection.line);
+        assertEquals('https://local.test/1', mockInput.inputElement.value);
+
+        // The next match moves up into the deleted line and is selected.
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Delete', {shiftKey: true}));
+        matches = await respondToMatchDeletion(element, testProxy, matches, 2);
+        assertDeepEquals(
+            {line: 2, state: SelectionLineState.kNormal, actionIndex: 0},
+            element.selection);
+        assertEquals('https://local.test/2', mockInput.inputElement.value);
+        assertEquals('', mockInput.lastInput()?.inline);
+
+        // Deleting the last match selects the new last match.
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Delete', {shiftKey: true}));
+        matches = await respondToMatchDeletion(element, testProxy, matches, 2);
+        assertDeepEquals(
+            {line: 1, state: SelectionLineState.kNormal, actionIndex: 0},
+            element.selection);
+        assertEquals('https://local', mockInput.inputElement.value);
+
+        // Ending up on the default match restores its inline autocompletion.
+        mockInput.inputElement.dispatchEvent(
+            createKeyboardEvent('Delete', {shiftKey: true}));
+        await respondToMatchDeletion(element, testProxy, matches, 1);
+        assertDeepEquals(
+            {line: 0, state: SelectionLineState.kNormal, actionIndex: 0},
+            element.selection);
+        assertEquals('https://local.test', mockInput.inputElement.value);
+        assertEquals('.test', mockInput.lastInput()?.inline);
+      });
+
+  test(
+      'post-deletion keeps the selection on the line of the activated ' +
+          'remove button when opted in',
+      async () => {
+        element.preserveSelectionOnMatchDeletion = true;
+        const mockInput = element.getInputElement();
+        const matches = await showDeletableMatches(element);
+        element.setSelection({
+          line: 2,
+          state: SelectionLineState.kFocusedButtonRemoveSuggestion,
+          actionIndex: 0,
+        });
+        await microtasksFinished();
+
+        mockInput.inputElement.dispatchEvent(createKeyboardEvent('Enter'));
+        await respondToMatchDeletion(element, testProxy, matches, 2);
+
+        assertDeepEquals(
+            {line: 2, state: SelectionLineState.kNormal, actionIndex: 0},
+            element.selection);
+        assertEquals('https://local.test/2', mockInput.inputElement.value);
+      });
+
+  test(
+      'post-deletion selects the line of the clicked remove button when ' +
+          'opted in',
+      async () => {
+        element.preserveSelectionOnMatchDeletion = true;
+        const mockInput = element.getInputElement();
+        const matches = await showDeletableMatches(element);
+        assertEquals(0, element.selection.line);
+
+        // Like `OmniboxEditModel::TryDeletingPopupLine()`, the selection moves
+        // to the deleted line, clamped to the remaining matches.
+        const matchEls =
+            element.getDropdownElement().shadowRoot.querySelectorAll(
+                'cr-searchbox-match');
+        matchEls[3]!.$.remove.click();
+        await respondToMatchDeletion(element, testProxy, matches, 3);
+
+        assertDeepEquals(
+            {line: 2, state: SelectionLineState.kNormal, actionIndex: 0},
+            element.selection);
+        assertEquals('https://local.test/1', mockInput.inputElement.value);
+      });
+
+  test(
+      'post-deletion keeps nothing selected after clicking a remove button ' +
+          'with nothing selected when opted in',
+      async () => {
+        element.preserveSelectionOnMatchDeletion = true;
+        const mockInput = element.getInputElement();
+        const matches = [0, 1, 2].map(i => {
+          return createSearchMatch({
+            supportsDeletion: true,
+            fillIntoEdit: `zps ${i}`,
+            destinationUrl: `https://example.com/zps${i}`,
+          });
+        });
+        element.onAutocompleteResultChanged(createAutocompleteResult({
+          queryId: element.activeQueryId,
+          input: '',
+          matches,
+        }));
+        await microtasksFinished();
+        assertDeepEquals(kDefaultSelection, element.selection);
+
+        const matchEls =
+            element.getDropdownElement().shadowRoot.querySelectorAll(
+                'cr-searchbox-match');
+        matchEls[1]!.$.remove.click();
+        await respondToMatchDeletion(element, testProxy, matches, 1);
+
+        assertDeepEquals(kDefaultSelection, element.selection);
+        assertEquals('', mockInput.inputElement.value);
+      });
+
+  test('post-deletion results narrate the remaining selection', async () => {
+    element.virtualFocusEnabledOverride = true;
+    const mockInput = element.getInputElement();
+    mockInput.inputElement.focus();
+
+    const match0 = createSearchMatch({
+      allowedToBeDefaultMatch: false,
+      supportsDeletion: true,
+      fillIntoEdit: 'history 0',
+      destinationUrl: 'https://example.com/0',
+      a11yLabel: 'history 0, 1 of 2',
+    });
+    const match1 = createSearchMatch({
+      allowedToBeDefaultMatch: false,
+      supportsDeletion: true,
+      fillIntoEdit: 'history 1',
+      destinationUrl: 'https://example.com/1',
+      a11yLabel: 'history 1, 2 of 2',
+    });
+    element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: '',
+      matches: [match0, match1],
+    }));
+    await microtasksFinished();
+
+    const notifications: string[] = [];
+    document.ariaNotify = (message: string) => {
+      notifications.push(message);
+    };
+
+    // Select the last match and delete it.
+    mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+    await microtasksFinished();
+    await paintFinished();
+    mockInput.inputElement.dispatchEvent(createKeyboardEvent('ArrowDown'));
+    await microtasksFinished();
+    await paintFinished();
+    assertDeepEquals(['history 0, 1 of 2', 'history 1, 2 of 2'], notifications);
+
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Delete', {shiftKey: true}));
+    await testProxy.handler.whenCalled('deleteAutocompleteMatch');
+
+    // The results that replace the deleted match narrate what is selected now.
+    const remaining = createSearchMatch({
+      allowedToBeDefaultMatch: false,
+      supportsDeletion: true,
+      fillIntoEdit: 'history 0',
+      destinationUrl: 'https://example.com/0',
+      a11yLabel: 'history 0, 1 of 1',
+    });
+    await element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: '',
+      matches: [remaining],
+    }));
+    await microtasksFinished();
+    await paintFinished();
+    assertEquals(0, element.selection.line);
+    assertEquals('history 0', mockInput.inputElement.value);
+    assertDeepEquals(
+        ['history 0, 1 of 2', 'history 1, 2 of 2', 'history 0, 1 of 1'],
+        notifications);
+
+    // Deleting the last match clears the deleted match's label without
+    // narrating anything.
+    testProxy.handler.resetResolver('deleteAutocompleteMatch');
+    mockInput.inputElement.dispatchEvent(
+        createKeyboardEvent('Delete', {shiftKey: true}));
+    await testProxy.handler.whenCalled('deleteAutocompleteMatch');
+    await element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: '',
+      matches: [],
+    }));
+    await microtasksFinished();
+    await paintFinished();
+    assertEquals(null, mockInput.inputElement.ariaActiveDescendantElement);
+    assertTrue(mockInput.$.selectionListbox.hidden);
+    assertEquals(3, notifications.length);
+
+    // Results of a new query, e.g. from typing, are not narrated; screen
+    // readers echo the input instead.
+    await simulateUserTextInput(mockInput, 'h');
+    await element.onAutocompleteResultChanged(createAutocompleteResult({
+      queryId: element.activeQueryId,
+      input: 'h',
+      matches: [createSearchMatch({
+        fillIntoEdit: 'history',
+        inlineAutocompletion: 'istory',
+        a11yLabel: 'history, 1 of 1',
+      })],
+    }));
+    await microtasksFinished();
+    await paintFinished();
+    assertEquals(3, notifications.length);
   });
 });

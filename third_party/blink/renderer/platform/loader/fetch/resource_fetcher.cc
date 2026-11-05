@@ -38,7 +38,7 @@
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
@@ -63,6 +63,7 @@
 #include "third_party/blink/public/platform/scheduler/web_scoped_virtual_time_pauser.h"
 #include "third_party/blink/public/platform/web_url.h"
 #include "third_party/blink/public/platform/web_url_request.h"
+#include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
@@ -105,9 +106,11 @@
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 
@@ -131,6 +134,14 @@ String LinkAsAttributeToString(network::mojom::LinkAsAttribute as) {
     case network::mojom::LinkAsAttribute::kUnspecified:
       return "fetch";
   }
+}
+
+// Returns true if `initiator_world` (e.g. a request's `WorldForCsp()`) is an
+// isolated world, such as that of an extension content script. Loads and
+// network hints initiated by isolated worlds must not be exposed to the page,
+// e.g. through Resource Timing or the SpeculationMeasurement API.
+bool IsInitiatedByIsolatedWorld(const DOMWrapperWorld* initiator_world) {
+  return initiator_world && initiator_world->IsIsolatedWorld();
 }
 
 constexpr base::TimeDelta kKeepaliveLoadersTimeout = base::Seconds(30);
@@ -278,14 +289,13 @@ bool ShouldResourceBeKeptStrongReference(
 }
 
 static ResourceFetcher::ResourceFetcherSet& MainThreadFetchersSet() {
-  DEFINE_STATIC_LOCAL(
-      Persistent<ResourceFetcher::ResourceFetcherSet>, fetchers,
-      (MakeGarbageCollected<ResourceFetcher::ResourceFetcherSet>()));
-  return *fetchers;
+  static base::NoDestructor<Persistent<ResourceFetcher::ResourceFetcherSet>>
+      fetchers(MakeGarbageCollected<ResourceFetcher::ResourceFetcherSet>());
+  return **fetchers;
 }
 
 static bool& PriorityObserverMapCreated() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(bool, priority_observer_map_created, (false));
+  static bool priority_observer_map_created(false);
   return priority_observer_map_created;
 }
 
@@ -295,8 +305,8 @@ static bool& PriorityObserverMapCreated() {
 using PriorityObserverMap = HashMap<String, base::OnceCallback<void(int)>>;
 static ThreadSpecific<PriorityObserverMap>& PriorityObservers() {
   PriorityObserverMapCreated() = true;
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<PriorityObserverMap>, map, ());
-  return map;
+  static base::NoDestructor<ThreadSpecific<PriorityObserverMap>> map;
+  return *map;
 }
 
 std::unique_ptr<TracedValue> CreateTracedValueWithPriority(
@@ -363,48 +373,22 @@ void MaybeRecordBoostImagePriorityReason(const bool is_first_n,
   }
 }
 
-constexpr char kLCPPDeferUnusedPreloadHistogramPrefix[] =
-    "Blink.LCPP.DeferUnusedPreload.";
-
 std::string_view LinkPreloadStrForHistogram(bool link_preload) {
   return link_preload ? "LinkPreload" : "NoLinkPreload";
 }
 
-void RecordDeferUnusedPreloadHistograms(const Resource* resource) {
-  base::UmaHistogramEnumeration(
-      base::StrCat(
-          {kLCPPDeferUnusedPreloadHistogramPrefix, "DeferredResource"}),
-      resource->GetType());
-  base::UmaHistogramEnumeration(
-      base::StrCat({kLCPPDeferUnusedPreloadHistogramPrefix, "DeferredResource.",
-                    LinkPreloadStrForHistogram(resource->IsLinkPreload())}),
-      resource->GetType());
-
-  // When `resource` still not need load, that means the resource load is not
-  // started yet because there are no subsequent resource requests or vice
-  // versa.
-  base::UmaHistogramBoolean(
-      base::StrCat({kLCPPDeferUnusedPreloadHistogramPrefix,
-                    "UnusedAtDeferredLoadTiming"}),
-      resource->StillNeedsLoad());
-  base::UmaHistogramBoolean(
-      base::StrCat({kLCPPDeferUnusedPreloadHistogramPrefix,
-                    "UnusedAtDeferredLoadTiming.",
-                    LinkPreloadStrForHistogram(resource->IsLinkPreload())}),
-      resource->StillNeedsLoad());
-  if (!resource->StillNeedsLoad()) {
-    // If the resource load is not needed anymore, that's a false positive case
-    // of the LCPP based deferring unused preloads.
-    base::UmaHistogramEnumeration(
-        base::StrCat(
-            {kLCPPDeferUnusedPreloadHistogramPrefix, "PredictionFailed"}),
-        resource->GetType());
-    base::UmaHistogramEnumeration(
-        base::StrCat({kLCPPDeferUnusedPreloadHistogramPrefix,
-                      "PredictionFailed.",
-                      LinkPreloadStrForHistogram(resource->IsLinkPreload())}),
-        resource->GetType());
+// Returns whether a fetch made with `request` and `options` must not be
+// reported to Resource Timing, regardless of whether it was served from the
+// network or from the MemoryCache.
+bool IsExcludedFromResourceTiming(const ResourceRequestHead& request,
+                                  const ResourceLoaderOptions& options) {
+  // Resources fetched by origin-dirty style sheets are not exposed.
+  if (request.IsFromOriginDirtyStyleSheet()) {
+    return true;
   }
+  // Resource timing entries that correspond to resources fetched by extensions
+  // are precluded.
+  return IsInitiatedByIsolatedWorld(options.WorldForCsp());
 }
 
 }  // namespace
@@ -932,13 +916,15 @@ bool ResourceFetcher::ResourceNeedsLoad(Resource* resource,
 
 void ResourceFetcher::DidLoadResourceFromMemoryCache(
     Resource* resource,
-    const ResourceRequest& request,
-    bool is_static_data,
-    RenderBlockingBehavior render_blocking_behavior) {
+    const FetchParameters& params,
+    bool is_static_data) {
   if (IsDetached() || !resource_load_observer_) {
     return;
   }
   base::ElapsedTimer timer;
+  const ResourceRequest& request = params.GetResourceRequest();
+  const RenderBlockingBehavior render_blocking_behavior =
+      params.GetRenderBlockingBehavior();
 
   if (!is_static_data) {
     MarkEarlyHintConsumedIfNeeded(request.InspectorId(), resource,
@@ -963,25 +949,12 @@ void ResourceFetcher::DidLoadResourceFromMemoryCache(
     }
     resource_load_observer_->DidFinishLoading(
         request.InspectorId(), base::TimeTicks(), 0,
+        resource->GetResponse().EncodedBodyLength(),
         resource->GetResponse().DecodedBodyLength());
   }
 
   if (!is_static_data) {
     base::TimeTicks now = base::TimeTicks::Now();
-    ResourceResponse final_response = resource->GetResponse();
-    final_response.SetResourceLoadTiming(nullptr);
-    final_response.SetEncodedDataLength(0);
-    // Resources loaded from memory cache should be reported the first time
-    // they're used.
-    KURL initial_url =
-        resource->GetResourceRequest().GetRedirectInfo().has_value()
-            ? resource->GetResourceRequest().GetRedirectInfo()->original_url
-            : resource->GetResourceRequest().Url();
-    mojom::blink::ResourceTimingInfoPtr info =
-        CreateResourceTimingInfo(now, initial_url, &final_response);
-    info->response_end = now;
-    info->render_blocking_status =
-        render_blocking_behavior == RenderBlockingBehavior::kBlocking;
 
     // Create a ResourceLoadTiming object and store LCP breakdown timings for
     // images.
@@ -989,9 +962,9 @@ void ResourceFetcher::DidLoadResourceFromMemoryCache(
       // The resource_load_timing may be null in tests.
       if (ResourceLoadTiming* resource_load_timing =
               resource->GetResponse().GetResourceLoadTiming()) {
-        resource_load_timing->SetDiscoveryTime(info->start_time);
-        resource_load_timing->SetSendStart(info->start_time);
-        resource_load_timing->SetResponseEnd(info->start_time);
+        resource_load_timing->SetDiscoveryTime(now);
+        resource_load_timing->SetSendStart(now);
+        resource_load_timing->SetResponseEnd(now);
       }
     }
 
@@ -999,8 +972,29 @@ void ResourceFetcher::DidLoadResourceFromMemoryCache(
                                       ? AtomicString(kEarlyHintsInitiatorType)
                                       : resource->Options().initiator_info.name;
     // If the fetch originated from user agent CSS we do not emit a resource
-    // timing entry.
-    if (initiator_type != fetch_initiator_type_names::kUacss) {
+    // timing entry. Otherwise, apply the same restrictions as for network
+    // loads (see HandleLoaderFinish() and PopulateAndAddResourceTimingInfo()),
+    // so that the MemoryCache doesn't expose entries that a network load
+    // wouldn't, e.g. for chrome-extension:// URLs or for fetches initiated by
+    // isolated worlds. Check the current request rather than `resource`, as
+    // the latter may have been fetched by another ResourceFetcher.
+    if (initiator_type != fetch_initiator_type_names::kUacss &&
+        resource->GetResponse().ShouldPopulateResourceTiming() &&
+        !IsExcludedFromResourceTiming(request, params.Options())) {
+      ResourceResponse final_response = resource->GetResponse();
+      final_response.SetResourceLoadTiming(nullptr);
+      final_response.SetEncodedDataLength(0);
+      // Resources loaded from memory cache should be reported the first time
+      // they're used.
+      KURL initial_url =
+          resource->GetResourceRequest().GetRedirectInfo().has_value()
+              ? resource->GetResourceRequest().GetRedirectInfo()->original_url
+              : resource->GetResourceRequest().Url();
+      mojom::blink::ResourceTimingInfoPtr info =
+          CreateResourceTimingInfo(now, initial_url, &final_response);
+      info->response_end = now;
+      info->render_blocking_status =
+          render_blocking_behavior == RenderBlockingBehavior::kBlocking;
       scheduled_resource_timing_reports_.push_back(
           ScheduledResourceTimingInfo{std::move(info), initiator_type});
 
@@ -1223,7 +1217,6 @@ ResourceFetcher::MapToPolicyForMetrics(RevalidationPolicy policy,
 }
 
 void ResourceFetcher::UpdateMemoryCacheStats(
-    Resource* resource,
     RevalidationPolicyForMetrics policy,
     const FetchParameters& params,
     const ResourceFactory& factory,
@@ -1238,24 +1231,9 @@ void ResourceFetcher::UpdateMemoryCacheStats(
   } else {
     RecordResourceHistogram("", factory.GetType(), policy);
   }
-
-  // Aims to count Resource only referenced from MemoryCache (i.e. what would be
-  // dead if MemoryCache holds weak references to Resource). Currently we check
-  // references to Resource from ResourceClient and `preloads_` only, because
-  // they are major sources of references.
-  if (resource && !resource->IsAlive() && !ContainsAsPreload(resource)) {
-    RecordResourceHistogram("Dead.", factory.GetType(), policy);
-  }
-
-  // Async (and defer) scripts may have more cache misses, track them
-  // separately. See https://crbug.com/1043679 for context.
-  if (params.Defer() != FetchParameters::DeferOption::kNoDefer &&
-      factory.GetType() == ResourceType::kScript) {
-    UMA_HISTOGRAM_ENUMERATION(RESOURCE_HISTOGRAM_PREFIX "AsyncScript", policy);
-  }
 }
 
-bool ResourceFetcher::ContainsAsPreload(Resource* resource) const {
+bool ResourceFetcher::ContainsAsPreloadForTesting(Resource* resource) const {
   auto it = preloads_.find(PreloadKey(resource->Url(), resource->GetType()));
   return it != preloads_.end() && it->value == resource;
 }
@@ -1268,6 +1246,16 @@ void ResourceFetcher::RemovePreload(Resource* resource) {
   if (it->value == resource) {
     preloads_.erase(it);
   }
+}
+
+void ResourceFetcher::DidLoadResourceFromFontCache(
+    const AtomicString& font_name) {
+  if (font_name.empty() ||
+      !loaded_local_fonts_.insert(font_name).is_new_entry) {
+    return;
+  }
+  ++subresource_load_metrics_.number_of_subresource_loads_from_local_font_cache;
+  context_->UpdateSubresourceLoadMetrics(subresource_load_metrics_);
 }
 
 std::optional<ResourceRequestBlockedReason>
@@ -1375,6 +1363,10 @@ Resource* ResourceFetcher::RequestResource(FetchParameters& params,
   resource_request.SetInspectorId(identifier);
   resource_request.SetFromOriginDirtyStyleSheet(
       params.IsFromOriginDirtyStyleSheet());
+
+  // TODO(crbug.com/563000235): Centralize `SetSkipServiceWorker()` call here
+  // for Isolated World Resources.
+
   TRACE_EVENT_BEGIN(TRACE_DISABLED_BY_DEFAULT("network"), "ResourceLoad",
                     perfetto::NamedTrack("BlinkResourceID", identifier), "url",
                     resource_request.Url());
@@ -1507,8 +1499,7 @@ Resource* ResourceFetcher::RequestResource(FetchParameters& params,
     prepare_helper.UpgradeForLoaderIfNecessary(pauser);
   }
 
-  UpdateMemoryCacheStats(resource,
-                         MapToPolicyForMetrics(policy, resource, defer_policy),
+  UpdateMemoryCacheStats(MapToPolicyForMetrics(policy, resource, defer_policy),
                          params, factory, is_static_data);
 
   switch (policy) {
@@ -1569,8 +1560,7 @@ Resource* ResourceFetcher::RequestResource(FetchParameters& params,
       resource->GetStatus() == ResourceStatus::kCached &&
       !in_cached_resources_map) {
     // Loaded from MemoryCache.
-    DidLoadResourceFromMemoryCache(resource, resource_request, is_static_data,
-                                   params.GetRenderBlockingBehavior());
+    DidLoadResourceFromMemoryCache(resource, params, is_static_data);
   }
   if (!is_stale_revalidation) {
     String resource_url =
@@ -1889,6 +1879,18 @@ Resource* ResourceFetcher::MatchPreload(
     return nullptr;
   }
 
+  // As preloads aren't partitioned by world (see the TODO above), a main world
+  // <link rel=preload> request (`params`) may be merged below into an existing
+  // preload (`resource`) that was initiated by an isolated world, and hence
+  // wasn't recorded for the SpeculationMeasurement API. Record the main world's
+  // preload on its own behalf in that case, under its own URL, so as not to
+  // expose the isolated world's (e.g. if it has a different fragment).
+  if (params.IsLinkPreload() &&
+      !IsInitiatedByIsolatedWorld(params.Options().WorldForCsp()) &&
+      IsInitiatedByIsolatedWorld(resource->Options().WorldForCsp())) {
+    RecordLinkPreload(params.Url(), type, params);
+  }
+
   if (params.IsSpeculativePreload()) {
     return resource;
   }
@@ -1919,8 +1921,12 @@ Resource* ResourceFetcher::MatchPreload(
   resource->MatchPreload(params);
   preloads_.erase(it);
 
+  // Don't let isolated world consumers mark preloads as used. Note that
+  // `preload_records_` is keyed by URL alone, so the record may belong to a
+  // main world preload of the same URL with a different resource type.
   if (RuntimeEnabledFeatures::SpeculationMeasurementEnabled(
-          context_->GetFeatureContext())) {
+          context_->GetFeatureContext()) &&
+      !IsInitiatedByIsolatedWorld(params.Options().WorldForCsp())) {
     auto record_it = preload_records_.find(resource->Url());
     if (record_it != preload_records_.end()) {
       record_it->value.used_time = base::TimeTicks::Now();
@@ -1990,10 +1996,19 @@ void ResourceFetcher::PrintPreloadMismatch(Resource* resource,
       builder.Append(
           "because it is a cross-world service worker resource mismatch.");
       break;
+    case Resource::MatchStatus::kSkipServiceWorkerDoesNotMatch:
+      builder.Append("because the Service Worker skip policy does not match.");
+      break;
+    case Resource::MatchStatus::kPreventAllCrossWorldForCspReuse:
+      builder.Append("because it is a cross-world-for-csp resource mismatch.");
+      break;
+    case Resource::MatchStatus::kPreventAllCrossTargetWorldReuse:
+      builder.Append("because it is a cross-target-world resource mismatch.");
+      break;
   }
   console_logger_->AddConsoleMessage(mojom::ConsoleMessageSource::kOther,
                                      mojom::ConsoleMessageLevel::kWarning,
-                                     builder.ToString());
+                                     builder.ReleaseString());
 
   TRACE_EVENT1("blink,blink.resource", "ResourceFetcher::PrintPreloadMismatch",
                "data",
@@ -2031,14 +2046,24 @@ void ResourceFetcher::InsertAsPreloadIfNecessary(Resource* resource,
   // SpeculationMeasurement API. Speculative preloads from the HTML parser
   // are not developer-initiated and should not be reported.
   if (params.IsLinkPreload()) {
-    const KURL& url = resource->Url();
-    if (!preload_records_.Contains(url)) {
-      PreloadInfo info;
-      info.as = GetAsAttributeFromResourceType(resource->GetType());
-      info.crossorigin = params.GetCrossOriginAttributeValue();
-      preload_records_.insert(url, std::move(info));
-    }
+    RecordLinkPreload(resource->Url(), resource->GetType(), params);
   }
+}
+
+void ResourceFetcher::RecordLinkPreload(const KURL& url,
+                                        ResourceType type,
+                                        const FetchParameters& params) {
+  DCHECK(params.IsLinkPreload());
+  // Preloads initiated by isolated worlds (e.g. <link rel=preload> elements
+  // inserted by extension content scripts) must not be exposed to the page.
+  if (IsInitiatedByIsolatedWorld(params.Options().WorldForCsp()) ||
+      preload_records_.Contains(url)) {
+    return;
+  }
+  PreloadInfo info;
+  info.as = GetAsAttributeFromResourceType(type);
+  info.crossorigin = params.GetCrossOriginAttributeValue();
+  preload_records_.insert(url, std::move(info));
 }
 
 bool ResourceFetcher::IsImageResourceDisallowedToBeReused(
@@ -2317,12 +2342,16 @@ bool ResourceFetcher::ShouldDeferImageLoad(const KURL& url) const {
 }
 
 void ResourceFetcher::ReloadImagesIfNotDeferred() {
-  for (Resource* resource : not_loaded_image_resources_) {
+  // Copy to a vector so that the iteration stays valid even if `StartLoad()`
+  // re-entrantly modifies `not_loaded_image_resources_`.
+  HeapVector<Member<Resource>> not_loaded_snapshot(not_loaded_image_resources_);
+  for (Resource* resource : not_loaded_snapshot) {
     DCHECK_EQ(resource->GetType(), ResourceType::kImage);
     if (resource->StillNeedsLoad() && !ShouldDeferImageLoad(resource->Url())) {
       StartLoad(resource);
     }
   }
+  not_loaded_snapshot.clear();
 }
 
 void ResourceFetcher::PopulateResourceRequestPermissionsPolicy(
@@ -2458,9 +2487,13 @@ void ResourceFetcher::SetEarlyHintsPreloadedResources(
 
 void ResourceFetcher::RecordPreconnect(const KURL& url,
                                        CrossOriginAttributeValue crossorigin,
-                                       bool early_hints) {
+                                       bool early_hints,
+                                       const DOMWrapperWorld* initiator_world) {
   if (!RuntimeEnabledFeatures::SpeculationMeasurementEnabled(
           context_->GetFeatureContext())) {
+    return;
+  }
+  if (IsInitiatedByIsolatedWorld(initiator_world)) {
     return;
   }
   if (!url.IsValid()) {
@@ -2470,8 +2503,7 @@ void ResourceFetcher::RecordPreconnect(const KURL& url,
   const String origin = SecurityOrigin::Create(url)->ToString();
   // Preconnects with distinct crossorigin values to the same origin are
   // reported separately.
-  const String key =
-      StrCat({origin, "|", String::Number(static_cast<int>(crossorigin))});
+  const String key = Format("{}|{}", origin, static_cast<int>(crossorigin));
   auto it = preconnect_records_.find(key);
   if (it == preconnect_records_.end()) {
     PreconnectInfo info;
@@ -2539,11 +2571,6 @@ void ResourceFetcher::WarnUnusedPreloads(
   }
   base::UmaHistogramCounts100("Renderer.Preload.UnusedResourceCount",
                               unused_resource_count);
-  // Record the total count of deferred preloads based on the LCPP signal.
-  base::UmaHistogramCounts100(
-      base::StrCat(
-          {kLCPPDeferUnusedPreloadHistogramPrefix, "DeferredResourceCount"}),
-      deferred_preloads_.size());
 
   for (auto& pair : unused_early_hints_preloaded_resources_) {
     if (pair.value.state == EarlyHintsPreloadEntry::State::kWarnedUnused) {
@@ -2683,6 +2710,7 @@ void ResourceFetcher::HandleLoaderFinish(Resource* resource,
     DCHECK(!IsDetached());
     resource_load_observer_->DidFinishLoading(
         resource->InspectorId(), response_end, encoded_data_length,
+        resource->GetResponse().EncodedBodyLength(),
         resource->GetResponse().DecodedBodyLength());
   }
   MaybeSaveResourceToStrongReference(resource);
@@ -2893,10 +2921,6 @@ void ResourceFetcher::StartLoadAndFinishIfFailed(
     return;
   }
 
-  if (is_potentially_unused_preload) {
-    RecordDeferUnusedPreloadHistograms(resource);
-  }
-
   if (!resource->StillNeedsLoad()) {
     // When `resource` does not need load anymore, the resource load was already
     // started by a subsequent resource request.
@@ -2953,21 +2977,29 @@ void ResourceFetcher::UpdateImagePrioritiesAndSpeculativeDecodes() {
                "UpdateImagePrioritiesAndSpeculativeDecodes");
 
   // Update ResourcePriority for all resources.
-  for (Resource* resource : speculative_decode_candidate_images_) {
+  // Copy to a vector since UpdateResourceInfoFromObservers() may trigger
+  // additional resource loads and modify
+  // `speculative_decode_candidate_images_`.
+  HeapVector<Member<Resource>> candidate_snapshot(
+      speculative_decode_candidate_images_);
+  for (Resource* resource : candidate_snapshot) {
     resource->UpdateResourceInfoFromObservers();
   }
+  candidate_snapshot.clear();
   speculative_decode_candidate_images_.erase_if(
       [](const WeakMember<Resource>& resource) -> bool {
         return resource->PriorityFromObservers()
-                   .first.value_or(ResourcePriority())
+                   .value_or(ResourcePriority())
                    .visibility == ResourcePriority::kNotVisible;
       });
   StartSpeculativeImageDecodes();
 
-  HeapVector<Member<Resource>> to_be_removed;
-  for (Resource* resource : not_loaded_image_resources_) {
+  // Copy to a vector since UpdateResourceInfoFromObservers() may trigger
+  // additional resource loads and modify `not_loaded_image_resources_`.
+  HeapVector<Member<Resource>> not_loaded_snapshot(not_loaded_image_resources_);
+  for (Resource* resource : not_loaded_snapshot) {
     if (resource->IsLoaded()) {
-      to_be_removed.push_back(resource);
+      not_loaded_image_resources_.erase(resource);
       continue;
     }
 
@@ -2976,9 +3008,8 @@ void ResourceFetcher::UpdateImagePrioritiesAndSpeculativeDecodes() {
     }
 
     resource->UpdateResourceInfoFromObservers();
-    auto priorities = resource->PriorityFromObservers();
     ResourcePriority resource_priority =
-        priorities.first.value_or(ResourcePriority());
+        resource->PriorityFromObservers().value_or(ResourcePriority());
     ResourceLoadPriority computed_load_priority = ComputeLoadPriority(
         ResourceType::kImage, resource->GetResourceRequest(),
         resource_priority.visibility, FetchParameters::DeferOption::kNoDefer,
@@ -2986,45 +3017,6 @@ void ResourceFetcher::UpdateImagePrioritiesAndSpeculativeDecodes() {
         RenderBlockingBehavior::kNonBlocking,
         mojom::blink::ScriptType::kClassic, false, std::nullopt, std::nullopt,
         resource_priority.is_lcp_resource);
-
-    ResourcePriority resource_priority_excluding_image_loader =
-        priorities.second.value_or(ResourcePriority());
-    ResourceLoadPriority computed_load_priority_excluding_image_loader =
-        ComputeLoadPriority(
-            ResourceType::kImage, resource->GetResourceRequest(),
-            resource_priority_excluding_image_loader.visibility,
-            FetchParameters::DeferOption::kNoDefer,
-            FetchParameters::SpeculativePreloadType::kNotSpeculative,
-            RenderBlockingBehavior::kNonBlocking,
-            mojom::blink::ScriptType::kClassic, false, std::nullopt,
-            std::nullopt,
-            resource_priority_excluding_image_loader.is_lcp_resource);
-
-    // When enabled, `priority` is used, which considers the resource priority
-    // via ImageLoader, i.e. ImageResourceContent
-    // -> ImageLoader (as ImageResourceObserver)
-    // -> LayoutImageResource
-    // -> LayoutObject.
-    //
-    // The same priority is considered in `priority_excluding_image_loader` via
-    // ImageResourceContent
-    // -> LayoutObject (as ImageResourceObserver),
-    // but the LayoutObject might be not registered yet as an
-    // ImageResourceObserver while loading.
-    // See https://crbug.com/1369823 for details.
-    static const bool fix_enabled =
-        base::FeatureList::IsEnabled(features::kImageLoadingPrioritizationFix);
-
-    if (computed_load_priority !=
-        computed_load_priority_excluding_image_loader) {
-      // Mark pages affected by this fix for performance evaluation.
-      use_counter_->CountUse(
-          WebFeature::kEligibleForImageLoadingPrioritizationFix);
-    }
-    if (!fix_enabled) {
-      resource_priority = resource_priority_excluding_image_loader;
-      computed_load_priority = computed_load_priority_excluding_image_loader;
-    }
 
     // Only boost the priority of an image, never lower it. This ensures that
     // there isn't priority churn if images move in and out of the viewport, or
@@ -3047,10 +3039,9 @@ void ResourceFetcher::UpdateImagePrioritiesAndSpeculativeDecodes() {
         resource_priority.intra_priority_value);
   }
 
-  not_loaded_image_resources_.RemoveAll(to_be_removed);
   // Explicitly free the backing store to not regress memory.
   // TODO(bikineev): Revisit when young generation is done.
-  to_be_removed.clear();
+  not_loaded_snapshot.clear();
 }
 
 String ResourceFetcher::GetCacheIdentifier(const KURL& url,
@@ -3098,15 +3089,6 @@ ResourceFetcher::GetSubresourceBundleToken(const KURL& url) const {
     return std::nullopt;
   }
   return bundle->WebBundleToken();
-}
-
-std::optional<KURL> ResourceFetcher::GetSubresourceBundleSourceUrl(
-    const KURL& url) const {
-  SubresourceWebBundle* bundle = GetMatchingBundle(url);
-  if (!bundle) {
-    return std::nullopt;
-  }
-  return bundle->GetBundleUrl();
 }
 
 void ResourceFetcher::EmulateLoadStartedForInspector(
@@ -3169,9 +3151,7 @@ void ResourceFetcher::EmulateLoadStartedForInspector(
     return;
   }
   DCHECK_EQ(resource->GetStatus(), ResourceStatus::kCached);
-  DidLoadResourceFromMemoryCache(resource, params.GetResourceRequest(),
-                                 false /* is_static_data */,
-                                 params.GetRenderBlockingBehavior());
+  DidLoadResourceFromMemoryCache(resource, params, /*is_static_data=*/false);
 }
 
 void ResourceFetcher::PrepareForLeakDetection() {
@@ -3228,9 +3208,15 @@ void ResourceFetcher::RevalidateStaleResource(Resource* stale_resource) {
   // requests.
   ResourceRequest request;
   request.CopyHeadFrom(stale_resource->GetResourceRequest());
+  if (stale_resource->Options().TargetWorld()) {
+    // Do not revalidate Isolated World Resources, to limit the triggering
+    // points of Isolated World Resources to simplify security considerations.
+    // Perhaps such revalidation is safe, but prioritizing the safety for now.
+    return;
+  }
   FetchParameters params(
       std::move(request),
-      ResourceLoaderOptions(stale_resource->Options().world_for_csp.Get()));
+      ResourceLoaderOptions(stale_resource->Options().WorldForCsp()));
   params.SetStaleRevalidation(true);
   params.MutableResourceRequest().SetSkipServiceWorker(true);
   // Stale revalidation resource requests should be very low regardless of
@@ -3258,14 +3244,8 @@ void ResourceFetcher::PopulateAndAddResourceTimingInfo(
     Resource* resource,
     const PendingResourceTimingInfo& pending_info,
     base::TimeTicks response_end) {
-  if (resource->GetResourceRequest().IsFromOriginDirtyStyleSheet()) {
-    return;
-  }
-
-  // Resource timing entries that correspond to resources fetched by extensions
-  // are precluded.
-  if (resource->Options().world_for_csp &&
-      resource->Options().world_for_csp->IsIsolatedWorld()) {
+  if (IsExcludedFromResourceTiming(resource->GetResourceRequest(),
+                                   resource->Options())) {
     return;
   }
 
@@ -3363,7 +3343,7 @@ void ResourceFetcher::StartSpeculativeImageDecodes() {
     // HTMLImageElement::DidFinishLayout). In that case, postpone making a
     // decision about this candidate until the next layout runs.
     std::optional<ResourcePriority> priority =
-        resource->PriorityFromObservers().first;
+        resource->PriorityFromObservers();
     if (!priority.has_value()) {
       continue;
     }
@@ -3401,14 +3381,22 @@ void ResourceFetcher::MarkEarlyHintConsumedIfNeeded(
       resource->GetResourceRequest().GetRedirectInfo().has_value()
           ? resource->GetResourceRequest().GetRedirectInfo()->original_url
           : resource->GetResourceRequest().Url();
+  // Mark Early Hints preloads as used in `preload_records_` for the
+  // SpeculationMeasurement API, on their first use by the main world. Uses by
+  // isolated worlds (e.g. extension content scripts) must not be exposed to
+  // the page, so they're ignored. This is independent of the bookkeeping of
+  // `unused_early_hints_preloaded_resources_` below, so that the page's own
+  // use is still recorded if an isolated world used the resource first.
+  if (!IsInitiatedByIsolatedWorld(resource->Options().WorldForCsp())) {
+    auto record_it = preload_records_.find(initial_url);
+    if (record_it != preload_records_.end() && record_it->value.early_hints &&
+        !record_it->value.used_time.has_value()) {
+      record_it->value.used_time = base::TimeTicks::Now();
+    }
+  }
   auto iter = unused_early_hints_preloaded_resources_.find(initial_url);
   if (iter != unused_early_hints_preloaded_resources_.end()) {
     unused_early_hints_preloaded_resources_.erase(iter);
-    // Mark as used in preload_records_ for the SpeculationMeasurement API.
-    auto record_it = preload_records_.find(initial_url);
-    if (record_it != preload_records_.end()) {
-      record_it->value.used_time = base::TimeTicks::Now();
-    }
     // The network service may not reuse the response fetched by the early hints
     // due to cache control policies.
     if (!response.NetworkAccessed() &&

@@ -15,6 +15,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
@@ -36,6 +37,7 @@
 #include "net/disk_cache/simple/simple_entry_format.h"
 #include "net/disk_cache/simple/simple_entry_impl.h"
 #include "net/disk_cache/simple/simple_histogram_enums.h"
+#include "net/disk_cache/simple/simple_index.h"
 #include "net/disk_cache/simple/simple_synchronous_entry.h"
 #include "net/disk_cache/simple/simple_test_util.h"
 #include "net/disk_cache/simple/simple_util.h"
@@ -569,13 +571,7 @@ TEST_P(DiskCacheGenericEntryTest, ExternalAsyncIO) {
   ExternalAsyncIO();
 }
 
-// TODO(http://crbug.com/497101): This test is flaky.
-#if BUILDFLAG(IS_IOS)
-#define MAYBE_ExternalAsyncIONoBuffer DISABLED_ExternalAsyncIONoBuffer
-#else
-#define MAYBE_ExternalAsyncIONoBuffer ExternalAsyncIONoBuffer
-#endif
-TEST_F(DiskCacheEntryTest, MAYBE_ExternalAsyncIONoBuffer) {
+TEST_F(DiskCacheEntryTest, ExternalAsyncIONoBuffer) {
   InitCache();
   cache_impl_->SetFlags(disk_cache::kNoBuffering);
   ExternalAsyncIO();
@@ -3144,6 +3140,101 @@ TEST_F(DiskCacheEntryTest, SimpleCacheDoomErrorRace) {
   EXPECT_EQ(0, cb.WaitForResult());
 }
 
+TEST_F(DiskCacheEntryTest,
+       SimpleCacheDoomedEntryErrorPreservesReplacementInIndex) {
+  SetBackendToTest(BackendToTest::kSimple);
+  SetCacheType(net::APP_CACHE);
+  InitCache();
+
+  const char kKey[] = "shared_replacement_key";
+  const uint64_t entry_hash = disk_cache::simple_util::GetEntryHashKey(kKey);
+  const int kCorruptSize = 50000;
+  ASSERT_TRUE(SimpleCacheMakeBadChecksumEntry(kKey, kCorruptSize));
+
+  // Keep the initial corrupt entry open across dooming it.
+  disk_cache::Entry* entry1 = nullptr;
+  ASSERT_THAT(OpenEntry(kKey, &entry1), IsOk());
+  ScopedEntryPtr entry1_closer(entry1);
+
+  ASSERT_THAT(DoomEntry(kKey), IsOk());
+  EXPECT_FALSE(simple_cache_impl_->index()->Has(entry_hash));
+
+  // Create and close a replacement entry for the same key so its metadata,
+  // in-memory hint, and trailer prefetch size are committed to `SimpleIndex`.
+  const std::string updated_body = "updated_replacement_payload";
+  constexpr uint8_t kReplacementHint = 1u;
+  auto updated_buf = base::MakeRefCounted<net::StringIOBuffer>(updated_body);
+
+  disk_cache::Entry* entry2 = nullptr;
+  ASSERT_THAT(CreateEntry(kKey, &entry2), IsOk());
+  ScopedEntryPtr entry2_closer(entry2);
+  ASSERT_EQ(static_cast<int>(updated_body.size()),
+            WriteData(entry2, 0, 0, updated_buf.get(), updated_body.size(),
+                      /*truncate=*/true));
+  ASSERT_EQ(static_cast<int>(updated_body.size()),
+            WriteData(entry2, 1, 0, updated_buf.get(), updated_body.size(),
+                      /*truncate=*/true));
+  entry2->SetEntryInMemoryData(kReplacementHint);
+  entry2_closer.reset();
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return simple_cache_impl_->GetNumActiveEntriesForTesting() == 0;
+  }));
+
+  ASSERT_TRUE(simple_cache_impl_->index()->Has(entry_hash));
+  EXPECT_EQ(kReplacementHint,
+            simple_cache_impl_->index()->GetEntryInMemoryData(entry_hash));
+  const int32_t entry2_trailer_size =
+      simple_cache_impl_->index()->GetTrailerPrefetchSize(entry_hash);
+  EXPECT_GT(entry2_trailer_size, 0);
+
+  // In-memory metadata updates, read failures, and closing the already-doomed
+  // entry must not evict or overwrite the replacement entry in `SimpleIndex`.
+  entry1->SetEntryInMemoryData(2u);
+  auto corrupt_read_buf =
+      base::MakeRefCounted<net::IOBufferWithSize>(kCorruptSize);
+  EXPECT_EQ(net::ERR_CACHE_CHECKSUM_MISMATCH,
+            ReadData(entry1, 1, 0, corrupt_read_buf.get(), kCorruptSize));
+  entry1->SetEntryInMemoryData(3u);
+  scoped_refptr<disk_cache::SimpleEntryImpl> entry1_ref(
+      static_cast<disk_cache::SimpleEntryImpl*>(entry1));
+  entry1_closer.reset();
+  EXPECT_TRUE(base::test::RunUntil([&]() { return entry1_ref->HasOneRef(); }));
+  entry1_ref.reset();
+
+  EXPECT_TRUE(simple_cache_impl_->index()->Has(entry_hash));
+  EXPECT_EQ(kReplacementHint,
+            simple_cache_impl_->index()->GetEntryInMemoryData(entry_hash));
+  EXPECT_EQ(entry2_trailer_size,
+            simple_cache_impl_->index()->GetTrailerPrefetchSize(entry_hash));
+
+  disk_cache::Entry* reopened = nullptr;
+  ASSERT_THAT(OpenEntry(kKey, &reopened), IsOk());
+  ScopedEntryPtr reopened_closer(reopened);
+  ASSERT_EQ(static_cast<int64_t>(updated_body.size()),
+            reopened->GetDataSize(1));
+  auto read_buf =
+      base::MakeRefCounted<net::IOBufferWithSize>(updated_body.size());
+  ASSERT_EQ(static_cast<int>(updated_body.size()),
+            ReadData(reopened, 1, 0, read_buf.get(), updated_body.size()));
+  EXPECT_EQ(base::as_byte_span(updated_body), read_buf->span());
+  reopened_closer.reset();
+
+  // An error on an active (non-doomed) entry must still remove its hash from
+  // `SimpleIndex`.
+  const char kActiveKey[] = "active_corrupt_key";
+  const uint64_t active_hash =
+      disk_cache::simple_util::GetEntryHashKey(kActiveKey);
+  ASSERT_TRUE(SimpleCacheMakeBadChecksumEntry(kActiveKey, kCorruptSize));
+  ASSERT_TRUE(simple_cache_impl_->index()->Has(active_hash));
+
+  disk_cache::Entry* active_entry = nullptr;
+  ASSERT_THAT(OpenEntry(kActiveKey, &active_entry), IsOk());
+  ScopedEntryPtr active_entry_closer(active_entry);
+  EXPECT_EQ(net::ERR_CACHE_CHECKSUM_MISMATCH,
+            ReadData(active_entry, 1, 0, corrupt_read_buf.get(), kCorruptSize));
+  EXPECT_FALSE(simple_cache_impl_->index()->Has(active_hash));
+}
+
 bool TruncatePath(const base::FilePath& file_path, int64_t length) {
   base::File file(file_path, base::File::FLAG_WRITE | base::File::FLAG_OPEN);
   if (!file.IsValid())
@@ -5075,6 +5166,74 @@ TEST_F(DiskCacheEntryTest, SimpleCacheSparseErrorHandling) {
   EXPECT_FALSE(base::PathExists(path_s));
 }
 
+// Defense in depth for http://crbug.com/577260644
+TEST_F(DiskCacheEntryTest, SimpleCacheSparseKeyValidate) {
+  enum class Failure { kWrongKey, kHeaderSizeCorrupt, kFileToShort };
+
+  SetBackendToTest(BackendToTest::kSimple);
+  InitCache();
+
+  std::string key("a key");
+
+  disk_cache::SimpleFileTracker::EntryFileKey num_key(
+      disk_cache::simple_util::GetEntryHashKey(key));
+  base::FilePath path_0 = cache_path_.AppendASCII(
+      disk_cache::simple_util::GetFilenameFromEntryFileKeyAndFileIndex(num_key,
+                                                                       0));
+  base::FilePath path_s = cache_path_.AppendASCII(
+      disk_cache::simple_util::GetSparseFilenameFromEntryFileKey(num_key));
+
+  for (auto failure : {Failure::kWrongKey, Failure::kHeaderSizeCorrupt,
+                       Failure::kFileToShort}) {
+    disk_cache::Entry* entry = nullptr;
+    ASSERT_THAT(CreateEntry(key, &entry), IsOk());
+
+    const int kSize = 1024;
+    auto buffer = CacheTestCreateAndFillBuffer(kSize, false);
+
+    EXPECT_EQ(kSize, WriteSparseData(entry, 0, buffer.get(), kSize));
+    entry->Close();
+
+    disk_cache::FlushCacheThreadForTesting();
+    EXPECT_TRUE(base::PathExists(path_0));
+    EXPECT_TRUE(base::PathExists(path_s));
+
+    base::File file_s(path_s, base::File::FLAG_OPEN | base::File::FLAG_READ |
+                                  base::File::FLAG_WRITE);
+    switch (failure) {
+      case Failure::kWrongKey: {
+        // Corrupt the key in the sparse file, trying to simulate a scenario
+        // where a mismatched one somehow ended up there. The key starts just
+        // right after the SimpleFileHeader.
+        ASSERT_TRUE(file_s.WriteAndCheck(sizeof(disk_cache::SimpleFileHeader),
+                                         base::byte_span_from_cstring("b")));
+        break;
+      }
+
+      case Failure::kHeaderSizeCorrupt: {
+        uint32_t bad_len = 0xF0000000;
+        ASSERT_TRUE(file_s.WriteAndCheck(
+            offsetof(disk_cache::SimpleFileHeader, key_length),
+            base::byte_span_from_ref(bad_len)));
+        break;
+      }
+
+      case Failure::kFileToShort: {
+        file_s.SetLength(sizeof(disk_cache::SimpleFileHeader) + key.size() - 1);
+        break;
+      }
+    };
+
+    file_s.Close();
+
+    // Try to re-open, it should fail since the header is messed up.
+    ASSERT_EQ(OpenEntry(key, &entry), net::ERR_FAILED);
+    // ...and files should be deleted.
+    EXPECT_FALSE(base::PathExists(path_0));
+    EXPECT_FALSE(base::PathExists(path_s));
+  }
+}
+
 TEST_F(DiskCacheEntryTest, SimpleCacheCreateCollision) {
   // These two keys collide; this test is that we properly handled creation
   // of both.
@@ -5113,6 +5272,60 @@ TEST_F(DiskCacheEntryTest, SimpleCacheCreateCollision) {
 
   entry1->Close();
   entry2->Close();
+}
+
+// See crbug.com/577260644. Credit to that report for the colliding keys as
+// well.
+TEST_F(DiskCacheEntryTest, SimpleCacheCollisionSparse) {
+  SetBackendToTest(BackendToTest::kSimple);
+  InitCache();
+
+  const char kKey1[] =
+      "1/0/_dk_http://localhost http://b717344cdfbead8a.localhost "
+      "http://good.localhost:8000/account.json";
+
+  const char kKey2[] =
+      "1/0/_dk_http://localhost http://localhost "
+      "http://localhost:8000/range-of-own-file?f315f8f12d1cfb21";
+
+  const int kSize = 64;
+  const int kOffset = 256;
+
+  {
+    disk_cache::Entry* entry = nullptr;
+    ASSERT_THAT(CreateEntry(kKey1, &entry), IsOk());
+    auto buf = CacheTestCreateAndFillBuffer(kSize, false);
+    EXPECT_EQ(kSize, WriteSparseData(entry, kOffset, buf.get(), kSize));
+    entry->Close();
+
+    EXPECT_TRUE(base::test::RunUntil([&]() {
+      return simple_cache_impl_->GetNumActiveEntriesForTesting() == 0;
+    }));
+  }
+
+  {
+    disk_cache::EntryResult entry_result = OpenOrCreateEntry(kKey2);
+    ASSERT_THAT(entry_result.net_error(), IsOk());
+    ASSERT_FALSE(entry_result.opened());
+    disk_cache::Entry* entry = entry_result.ReleaseEntry();
+    ASSERT_TRUE(nullptr != entry);
+    entry->Close();
+    EXPECT_TRUE(base::test::RunUntil([&]() {
+      return simple_cache_impl_->GetNumActiveEntriesForTesting() == 0;
+    }));
+  }
+
+  {
+    disk_cache::Entry* entry = nullptr;
+    ASSERT_THAT(OpenEntry(kKey2, &entry), IsOk());
+
+    TestRangeResultCompletionCallback cb;
+    RangeResult result = cb.GetResult(
+        entry->GetAvailableRange(kOffset, kSize * 2, cb.callback()));
+    EXPECT_EQ(net::OK, result.net_error);
+    EXPECT_EQ(0, result.available_len);
+    entry->Close();
+  }
 }
 
 TEST_F(DiskCacheEntryTest, SimpleCacheConvertToSparseStream2LeftOver) {

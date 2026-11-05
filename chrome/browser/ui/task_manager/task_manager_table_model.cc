@@ -14,13 +14,13 @@
 #include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/i18n/icubridge/icu_bridge.h"
+#include "base/i18n/icubridge/list_formatter.h"
 #include "base/i18n/message_formatter.h"
 #include "base/i18n/number_formatting.h"
 #include "base/i18n/rtl.h"
 #include "base/i18n/string_search.h"
 #include "base/i18n/time_formatting.h"
-#include "base/i18n/unicodestring.h"
-#include "base/memory/ptr_util.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/process/process_handle.h"
 #include "base/strings/string_number_conversions.h"
@@ -42,8 +42,6 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "content/public/common/result_codes.h"
-#include "third_party/icu/source/common/unicode/utypes.h"
-#include "third_party/icu/source/i18n/unicode/listformatter.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/models/table_model_observer.h"
@@ -366,7 +364,7 @@ TaskManagerTableModel::TaskManagerTableModel(
       table_model_observer_(nullptr),
       stringifier_(new TaskManagerValuesStringifier),
       display_category_(initial_display_category) {
-  DCHECK(delegate);
+  CHECK(delegate, base::NotFatalUntil::M162);
   StartUpdating();
 }
 
@@ -770,8 +768,8 @@ std::u16string TaskManagerTableModel::GetAXNameForHeaderCell(
 std::u16string TaskManagerTableModel::GetAXNameForRow(
     size_t row,
     const std::vector<int>& visible_column_ids) const {
-  DCHECK_LT(row, RowCount());
-  DCHECK(!visible_column_ids.empty());
+  CHECK_LT(row, RowCount(), base::NotFatalUntil::M162);
+  CHECK(!visible_column_ids.empty(), base::NotFatalUntil::M162);
 
   // Holds all visible column values for the `row`.
   std::vector<std::u16string> column_names;
@@ -799,7 +797,7 @@ std::u16string TaskManagerTableModel::GetAXNameForRow(
     if (mismatch_task - current_task > 1) {
       const TaskIdList group_tasks =
           observed_task_manager()->GetIdsOfTasksSharingSameProcess(tasks_[row]);
-      DCHECK(!group_tasks.empty());
+      CHECK(!group_tasks.empty(), base::NotFatalUntil::M162);
       other_task_titles.reserve(group_tasks.size() - 1);
       // If there is at least one task other than the `row` in the same task
       // group existing in `tasks_`, insert the connect text and the title of
@@ -822,26 +820,9 @@ std::u16string TaskManagerTableModel::GetAXNameForRow(
 
 std::u16string TaskManagerTableModel::FormatListToString(
     base::span<const std::u16string> items) {
-  if (items.empty()) {
-    return std::u16string();
-  }
-
-  std::vector<icu::UnicodeString> strings;
-  strings.reserve(items.size());
-  for (const auto& item : items) {
-    strings.emplace_back(item.data(), item.size());
-  }
-
-  UErrorCode status = U_ZERO_ERROR;
-  const auto formatter =
-      base::WrapUnique(icu::ListFormatter::createInstance(status));
-  CHECK(U_SUCCESS(status));
-
-  icu::UnicodeString formatted;
-  formatter->format(strings.data(), strings.size(), formatted, status);
-  CHECK(U_SUCCESS(status));
-
-  return base::i18n::UnicodeStringToString16(formatted);
+  return base::i18n::IcuBridge::GetInstance()
+      .list_formatter()
+      ->FormatStandardList(items);
 }
 
 void TaskManagerTableModel::GetRowsGroupRange(size_t row_index,
@@ -909,21 +890,23 @@ void TaskManagerTableModel::OnTaskAdded(TaskId id) {
 
 void TaskManagerTableModel::OnTaskToBeRemoved(TaskId id) {
   themed_icons_.erase(id);
-  if (!search_terms_.empty() && !HasMatchInTasksSharingSameProcess(id)) {
-    // Update matched process set if task manager is in search mode.
-    matched_process_set_.erase(observed_task_manager()->GetProcessId(id));
-  }
 
-  if (!ShouldKeepTask(id)) {
-    return;
-  }
-
+  // Do not check ShouldKeepTask(id) here: it can return false for a task that
+  // is currently in `tasks_` (e.g. if its parent task was removed first), which
+  // would leave a destroyed TaskId in `tasks_`.
   auto index = std::ranges::find(tasks_, id);
   if (index == tasks_.end()) {
     return;
   }
   auto removed_index = static_cast<size_t>(index - tasks_.begin());
   tasks_.erase(index);
+
+  // Update `matched_process_set_` after erasing `id` from `tasks_` so
+  // HasMatchInTasksSharingSameProcess() only checks remaining tasks.
+  if (!search_terms_.empty() && !HasMatchInTasksSharingSameProcess(id)) {
+    matched_process_set_.erase(observed_task_manager()->GetProcessId(id));
+  }
+
   if (table_model_observer_) {
     table_model_observer_->OnItemsRemoved(removed_index, 1);
   }

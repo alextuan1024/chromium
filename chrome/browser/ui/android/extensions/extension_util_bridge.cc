@@ -16,7 +16,7 @@
 #include "content/public/browser/web_contents.h"
 #include "extensions/buildflags/buildflags.h"
 #include "net/base/url_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
@@ -83,11 +83,9 @@ JNI_ExtensionUtilBridge_GetExtensionOmniboxIcon(
 
 // static
 void JNI_ExtensionUtilBridge_OnOmniboxExtensionInputEntered(
-    JNIEnv* env,
     content::WebContents* web_contents,
     const std::string& url_str,
-    bool open_in_new_tab,
-    bool open_in_new_window) {
+    ui::mojom::WindowOpenDisposition disposition) {
   CHECK(web_contents);
 
   GURL url(url_str);
@@ -98,13 +96,6 @@ void JNI_ExtensionUtilBridge_OnOmniboxExtensionInputEntered(
   // "{searchTerms}" unreplaced. Clear it so empty input is passed.
   if (input_text == "{searchTerms}") {
     input_text.clear();
-  }
-
-  WindowOpenDisposition disposition = WindowOpenDisposition::CURRENT_TAB;
-  if (open_in_new_window) {
-    disposition = WindowOpenDisposition::NEW_WINDOW;
-  } else if (open_in_new_tab) {
-    disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
   }
 
   extensions::ExtensionOmniboxEventRouter::OnInputEntered(

@@ -119,7 +119,6 @@ class CORE_EXPORT LayoutTextFragment : public LayoutText {
   String PlainText() const override;
 
  protected:
-  friend class LayoutObjectFactory;
   void WillBeDestroyed(const ComputedStyle*) override;
 
  private:
@@ -128,7 +127,6 @@ class CORE_EXPORT LayoutTextFragment : public LayoutText {
     valid_ng_items_ = false;
     LayoutText::InsertedIntoTree();
   }
-  LayoutBlock* BlockForAccompanyingFirstLetter() const;
   UChar32 PreviousCharacter() const override;
   void TextDidChange() override;
 
@@ -139,10 +137,10 @@ class CORE_EXPORT LayoutTextFragment : public LayoutText {
 
   unsigned start_;
   unsigned fragment_length_;
-  bool is_remaining_text_layout_object_;
   String content_string_;
 
   Member<FirstLetterPseudoElement> first_letter_pseudo_element_;
+  bool is_remaining_text_layout_object_;
 };
 
 template <>

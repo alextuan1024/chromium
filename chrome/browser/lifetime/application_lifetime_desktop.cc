@@ -5,12 +5,15 @@
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 
 #include <optional>
+#include <vector>
 
 #include "base/auto_reset.h"
 #include "base/callback_list.h"
+#include "base/containers/adapters.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/process/process.h"
 #include "base/threading/hang_watcher.h"
@@ -53,12 +56,14 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/base/base_window.h"
+#include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/boot_times_recorder/boot_times_recorder.h"
 #include "chrome/browser/lifetime/application_lifetime_chromeos.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
 #else  // !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/sessions/profile_diff_after_restart_recorder.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -95,6 +100,19 @@ void SavePreRestartTabWindowCounts() {
     return;
   }
 
+#if !BUILDFLAG(IS_CHROMEOS)
+  // Number of profiles with at least one normal (`TYPE_NORMAL`) or app
+  // (`TYPE_APP`) window open before restart, saved to
+  // `kPreSmartRestartProfileCounts` and read by
+  // ProfileDiffAfterRestartRecorder::OnStartupLaunchesStarting() in
+  // chrome/browser/sessions/profile_diff_after_restart_recorder.cc. These
+  // counts are not collected on ChromeOS because restarts there end the user
+  // session rather than relaunching into it, and startup ignores
+  // `WasRestarted()` after the next login, so the recorder is never enabled.
+  size_t normal_profiles = 0;
+  size_t app_profiles = 0;
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
   for (Profile* profile :
        g_browser_process->profile_manager()->GetLoadedProfiles()) {
     // Skip incognito profiles since they won't be restored.
@@ -113,6 +131,14 @@ void SavePreRestartTabWindowCounts() {
             return true;
           }
 
+          // Record open normal (`TYPE_NORMAL`) and app (`TYPE_APP`) window and
+          // tab counts in `counts`. This window-type classification must match
+          // SessionRestoreImpl::ProcessSessionWindows() in
+          // chrome/browser/sessions/session_restore.cc, which counts the
+          // windows restored on the next startup. If the two diverge,
+          // SessionRestore.{Tab,Window,Profile}DiffAfterRestart.{Normal,App}
+          // will compare mismatched window sets and report false gains or
+          // losses.
           BrowserWindowInterface::Type type = browser->GetType();
           if (type == BrowserWindowInterface::Type::TYPE_NORMAL) {
             counts.normal_tabs += browser->GetTabStripModel()->count();
@@ -139,7 +165,21 @@ void SavePreRestartTabWindowCounts() {
       profile->GetPrefs()->SetDict(prefs::kPreSmartRestartSessionState,
                                    std::move(dict));
     }
+
+#if !BUILDFLAG(IS_CHROMEOS)
+    if (counts.normal_windows > 0) {
+      normal_profiles++;
+    }
+    if (counts.app_windows > 0) {
+      app_profiles++;
+    }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
   }
+
+#if !BUILDFLAG(IS_CHROMEOS)
+  ProfileDiffAfterRestartRecorder::GetInstance().SavePreRestartCounts(
+      g_browser_process->local_state(), normal_profiles, app_profiles);
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 }
 
 // Forward declaration.
@@ -175,7 +215,7 @@ void PostTryToCloseBrowsersForProfile(
                                    original_profile
                              : browser->GetProfile() == original_profile;
           if (matches) {
-            UnloadController::From(browser)->ResetTryToCloseWindow();
+            UnloadController::From(browser)->ResetBeforeUnloadForShutdown();
           }
           return true;
         });
@@ -206,7 +246,7 @@ void TryToCloseBrowsersForProfile(
         if (!matches_profile(browser)) {
           return true;
         }
-        if (UnloadController::From(browser)->TryToCloseWindow(
+        if (UnloadController::From(browser)->RunBeforeUnloadForShutdown(
                 skip_beforeunload,
                 base::BindRepeating(&PostTryToCloseBrowsersForProfile,
                                     original_profile, match_original_profile,
@@ -267,9 +307,11 @@ void AttemptRestartInternal(IgnoreUnloadHandlers ignore_unload_handlers,
   KeepAliveRegistry::GetInstance()->SetRestarting();
 
 #if BUILDFLAG(IS_CHROMEOS)
-  DCHECK(
-      !ash::SessionTerminationManager::IsSendingStopRequestToSessionManager());
+  CHECK(!ash::SessionTerminationManager::IsSendingStopRequestToSessionManager(),
+        base::NotFatalUntil::M161);
 
+  browser_shutdown::SetShutdownTrigger(
+      browser_shutdown::ShutdownTrigger::kRestartFlags);
   ash::BootTimesRecorder::Get()->set_restart_requested();
   ash::SessionTerminationManager::SetSendStopRequestToSessionManager(false);
 
@@ -372,6 +414,45 @@ void RelaunchIgnoreUnloadHandlers() {
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
+namespace {
+
+void SaveWindowPlacement(BrowserWindowInterface* browser) {
+  ui::BaseWindow* window = browser->GetWindow();
+  if (!window) {
+    return;
+  }
+  views::Widget* widget =
+      views::Widget::GetWidgetForNativeWindow(window->GetNativeWindow());
+  // A closed widget already saved its placement when it was closed.
+  if (widget && !widget->IsClosed()) {
+    widget->SaveWindowPlacementIfNeeded();
+  }
+}
+
+// Saves the placement of every browser window. Windows are saved from least to
+// most recently active, so that the most recently active window is the one
+// left in the per-profile placement pref used for new windows.
+void SaveAllWindowPlacements() {
+  std::vector<base::WeakPtr<BrowserWindowInterface>> browsers;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [&browsers](BrowserWindowInterface* browser) {
+        browsers.push_back(browser->GetWeakPtr());
+        return true;
+      });
+  for (const base::WeakPtr<BrowserWindowInterface>& browser :
+       base::Reversed(browsers)) {
+    if (browser) {
+      SaveWindowPlacement(browser.get());
+    }
+  }
+}
+
+}  // namespace
+
+void SaveAllWindowPlacementsForTesting() {
+  SaveAllWindowPlacements();
+}
+
 void SessionEnding() {
   // This is a time-limited shutdown where we need to write as much to
   // disk as we can as soon as we can, and where we must kill the
@@ -418,6 +499,10 @@ void SessionEnding() {
     shutdown_watcher.emplace();
     shutdown_watcher->Arm(kShutdownHangDelay);
   }
+
+  // Windows aren't closed on this path, so save their placement now. Moves
+  // aren't saved as they happen.
+  SaveAllWindowPlacements();
 
   browser_shutdown::OnShutdownStarting(
       browser_shutdown::ShutdownType::kEndSession);

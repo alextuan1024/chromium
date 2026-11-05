@@ -11,7 +11,6 @@
 #include "base/json/json_writer.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_view_util.h"
 #include "components/media_router/browser/route_message_util.h"
 #include "components/media_router/common/discovery/media_sink_internal.h"
 #include "crypto/hash.h"
@@ -121,7 +120,7 @@ std::string DialAppInfoErrorToString(DialAppInfoResultCode error) {
 std::unique_ptr<DialInternalMessage> DialInternalMessage::From(
     base::DictValue message,
     std::string* error) {
-  DCHECK(error);
+  CHECK(error, base::NotFatalUntil::M161);
 
   std::string* type_value = message.FindString("type");
   if (!type_value) {
@@ -167,7 +166,8 @@ DialInternalMessage::~DialInternalMessage() = default;
 // static
 CustomDialLaunchMessageBody CustomDialLaunchMessageBody::From(
     const DialInternalMessage& message) {
-  DCHECK(message.type == DialInternalMessageType::kCustomDialLaunch);
+  CHECK(message.type == DialInternalMessageType::kCustomDialLaunch,
+        base::NotFatalUntil::M161);
 
   const std::optional<base::Value>& body = message.body;
   if (!body || !body->is_dict()) {
@@ -282,7 +282,7 @@ mojom::RouteMessagePtr DialInternalMessageUtil::CreateDialAppInfoErrorMessage(
   body.Set("code", DialAppInfoErrorToString(result_code));
   body.Set("description", error_message);
   if (result_code == DialAppInfoResultCode::kHttpError) {
-    DCHECK(http_error_code);
+    CHECK(http_error_code, base::NotFatalUntil::M161);
     base::DictValue details;
     details.Set("http_error_code", *http_error_code);
     body.Set("details", std::move(details));
@@ -297,11 +297,10 @@ base::DictValue DialInternalMessageUtil::CreateReceiver(
     const MediaSinkInternal& sink) const {
   base::DictValue receiver;
 
-  std::string label(base::as_string_view(
-      crypto::hash::Sha256(sink.sink().id() + hash_token_)));
-  base::Base64UrlEncode(label, base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &label);
-  receiver.Set("label", base::Value(label));
+  receiver.Set("label",
+               base::Value(base::Base64UrlEncode(
+                   crypto::hash::Sha256(sink.sink().id() + hash_token_),
+                   base::Base64UrlEncodePolicy::OMIT_PADDING)));
 
   receiver.Set("friendlyName",
                base::Value(base::EscapeForHTML(sink.sink().name())));

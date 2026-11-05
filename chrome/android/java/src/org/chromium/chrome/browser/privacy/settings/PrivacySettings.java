@@ -49,10 +49,13 @@ import org.chromium.chrome.browser.safe_browsing.AdvancedProtectionStatusManager
 import org.chromium.chrome.browser.safe_browsing.metrics.SettingsAccessPoint;
 import org.chromium.chrome.browser.safe_browsing.settings.SafeBrowsingSettingsFragment;
 import org.chromium.chrome.browser.safety_hub.SafetyHubExpandablePreference;
+import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils;
 import org.chromium.chrome.browser.safety_hub.SafetyHubModuleProperties;
 import org.chromium.chrome.browser.safety_hub.SafetyHubModuleViewBinder;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.ChromeManagedPreferenceDelegate;
+import org.chromium.chrome.browser.settings.MainSettings;
+import org.chromium.chrome.browser.settings.SettingsIaArmHelper;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
@@ -154,10 +157,10 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
                             PrivacyGuideInteractions.MAX_VALUE + 1);
                     UserPrefs.get(getProfile()).setBoolean(Pref.PRIVACY_GUIDE_VIEWED, true);
 
-                    // Explicitly launch PrivacyGuideFragment from here. Because the fragment
-                    // does not implement EmbeddableSettingsPage, it will work as standalone mode.
-                    // In details it is still a part of SettingsActivity, it will let user find
-                    // it is an independent flow.
+                    // Explicitly launch PrivacyGuideFragment from here so that the click is
+                    // recorded above before navigating. The fragment implements
+                    // EmbeddableSettingsPage, so it is shown as a regular settings page rather
+                    // than in standalone mode.
                     SettingsNavigationFactory.createSettingsNavigation(requireContext())
                             .startSettings(
                                     getActivity(),
@@ -280,11 +283,49 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
             scrollToPreference(PREF_ADVANCED_PROTECTION_INFO);
         }
 
-        if (!shouldShowUniversalOptOutSettings(getProfile())) {
+        boolean universalOptOutSettingsVisible = shouldShowUniversalOptOutSettings(getProfile());
+        if (!universalOptOutSettingsVisible) {
             getPreferenceScreen().removePreference(findPreference(PREF_UNIVERSAL_OPT_OUT));
         }
+        recordUniversalOptOutSettingsVisibility(universalOptOutSettingsVisible);
 
+        setUpNestedRows();
         updatePreferences();
+    }
+
+    // TODO(crbug.com/581503633): Clean up after the SettingsIaReorganization experiment has run.
+    /**
+     * Shows the rows that SettingsIaReorganization moves here from the top level, and removes the
+     * others.
+     */
+    private void setUpNestedRows() {
+        if (!SettingsIaArmHelper.isNestedInPrivacy(MainSettings.PREF_CONTENT_SETTINGS)) {
+            getPreferenceScreen()
+                    .removePreference(findPreference(MainSettings.PREF_CONTENT_SETTINGS));
+        }
+
+        Preference safetyHub = findPreference(MainSettings.PREF_SAFETY_HUB);
+        if (!shouldShowNestedSafetyHub()) {
+            getPreferenceScreen().removePreference(safetyHub);
+            return;
+        }
+        // Same metric as the top-level row, so the arms stay comparable.
+        safetyHub.setOnPreferenceClickListener(
+                preference -> {
+                    SafetyHubMetricUtils.recordExternalInteractions(
+                            SafetyHubMetricUtils.ExternalInteractions.OPEN_FROM_SETTINGS_PAGE);
+                    return false;
+                });
+    }
+
+    private static boolean shouldShowNestedSafetyHub() {
+        return MainSettings.shouldShowSafetyHubPref()
+                && SettingsIaArmHelper.isNestedInPrivacy(MainSettings.PREF_SAFETY_HUB);
+    }
+
+    private void recordUniversalOptOutSettingsVisibility(boolean universalOptOutSettingsVisible) {
+        RecordHistogram.recordBooleanHistogram(
+                "Privacy.UniversalOptOut.SettingsVisibility", universalOptOutSettingsVisible);
     }
 
     private static boolean isAdvancedProtectionEnabled() {
@@ -635,6 +676,16 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
 
                     if (shouldHideAdvancedProtectionInfoPref()) {
                         indexData.removeEntry(getUniqueId(PREF_ADVANCED_PROTECTION_INFO));
+                    }
+
+                    // TODO(crbug.com/581503633): Clean up after the SettingsIaReorganization
+                    // experiment has run.
+                    if (!SettingsIaArmHelper.isNestedInPrivacy(
+                            MainSettings.PREF_CONTENT_SETTINGS)) {
+                        indexData.removeEntry(getUniqueId(MainSettings.PREF_CONTENT_SETTINGS));
+                    }
+                    if (!shouldShowNestedSafetyHub()) {
+                        indexData.removeEntry(getUniqueId(MainSettings.PREF_SAFETY_HUB));
                     }
 
                     // The summary in 'Safe Browsing' is a template string. Removes it.

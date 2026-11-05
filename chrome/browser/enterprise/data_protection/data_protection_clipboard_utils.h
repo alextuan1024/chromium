@@ -22,6 +22,7 @@ static_assert(BUILDFLAG(ENTERPRISE_DATA_CONTROLS));
 
 class GURL;
 class Profile;
+class SkBitmap;
 
 namespace content {
 class ClipboardEndpoint;
@@ -173,10 +174,13 @@ bool ReplaceCopyFromFindBar(std::u16string_view selected_text,
                             content::WebContents* web_contents,
                             std::u16string* replacement);
 
-// Checks if the given `web_contents` is allowed to receive replaced clipboard
-// data, and returns it if so. This is used so `FindBarView` code doesn't always
-// receive blocked pasted data in safe cases like searching a string in the same
-// page it was copied from.
+// Checks if the find bar of `web_contents` is allowed to receive the clipboard
+// data that was replaced in the OS clipboard when it was copied, and returns it
+// if so. This is used so `FindBarView` code doesn't always receive the
+// replacement message in safe cases like searching a string kept in managed
+// Chrome, while never receiving data that was blocked, that is still being
+// scanned, or that was kept in a different profile, since text in the find bar
+// can be copied back out.
 void ReplacePasteToFindBar(
     content::WebContents* web_contents,
     base::OnceCallback<void(std::optional<std::u16string>)> callback);
@@ -203,13 +207,28 @@ void ShouldAllowSearchWith(content::WebContents* web_contents,
 // long-running content analysis or asynchronous dialogs.
 bool IsClipboardCopyAllowedByPolicyForUI(content::WebContents* web_contents);
 
-// Copies `text` to the user's clipboard. This checks the Data Controls rules to
-// ensure the copy is allowed.
-void CopyTextToClipboard(content::RenderFrameHost* rfh,
-                         const std::u16string& text);
+// Copies `text` to the OS clipboard. This routes the data to
+// `IsClipboardCopyAllowedByPolicy` to check if the copy is allowed.
+// `callback` always runs once policies are evaluated, which can be after a
+// content analysis scan, with whether `text` itself ended up on the clipboard.
+void CopyTextToClipboard(content::RenderFrameHost& rfh,
+                         const std::u16string& text,
+                         base::OnceCallback<void(bool copied)> callback);
 
-// Returns the initiator main frame's last committed URL if the `original_url`
-// is a Print Preview URL. Returns std::nullopt otherwise.
+// Copies `bitmap` to the OS clipboard. This routes the data to
+// `IsClipboardCopyAllowedByPolicy` to check if the copy is allowed.
+void CopyImageToClipboard(content::RenderFrameHost& rfh,
+                          const SkBitmap& bitmap);
+
+// Returns the URL to use for data protection checks for `rfh`. If the main
+// frame's last committed URL is invalid, about:blank, or about:srcdoc, this
+// falls back to the main frame's precursor/tuple origin URL (or about:blank if
+// no valid origin tuple exists), and unwraps distilled page URLs.
+GURL GetUrlFromRenderFrameHost(content::RenderFrameHost* rfh);
+
+// Returns the desired URL for clipboard source/destination reporting for
+// `render_frame_host`, including resolving the initiator URL when
+// `original_url` is a Print Preview URL.
 std::optional<GURL> MaybeOverrideSourceURLForClipboardAccess(
     content::RenderFrameHost* render_frame_host,
     const GURL& original_url);

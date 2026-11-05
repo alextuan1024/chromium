@@ -5,7 +5,7 @@
 import 'chrome://settings/settings.js';
 
 import type {CrToastElement, SettingsGlicLoginPermissionsPageElement} from 'chrome://settings/lazy_load.js';
-import {GlicBrowserProxyImpl, loadTimeData, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
+import {AiSettingsSection, GlicBrowserProxyImpl, loadTimeData, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertNull, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
@@ -32,7 +32,7 @@ suite('GlicLoginPermissionsPage', function() {
 
     loadTimeData.overrideValues({
       showAiPage: true,
-      showGlicSettings: true,
+      aiSettingsSection: AiSettingsSection.GEMINI,
       actorLoginFederatedLoginSupportEnabled: true,
     });
     resetRouterForTesting();
@@ -43,6 +43,21 @@ suite('GlicLoginPermissionsPage', function() {
     document.body.appendChild(page);
     await browserProxy.whenCalled('getActorLoginPermissions');
     await microtasksFinished();
+  });
+
+  // Test that the tab title is updated when the subpage becomes active.
+  test('UpdatesTitle', async () => {
+    page.routePath = routes.GEMINI_LOGIN.path;
+    Router.getInstance().navigateTo(routes.GEMINI);
+    await microtasksFinished();
+    Router.getInstance().navigateTo(routes.GEMINI_LOGIN);
+    await microtasksFinished();
+
+    assertEquals(
+        loadTimeData.getStringF(
+            'settingsAltPageTitle',
+            loadTimeData.getString('glicActorLoginPermissionsSectionTitle')),
+        document.title);
   });
 
   test('login permissions list is visible', () => {
@@ -96,7 +111,7 @@ suite('GlicLoginPermissionsPage', function() {
 
     // Confirm dialog.
     const actionButton =
-        dialog.shadowRoot!.querySelector<HTMLElement>('.action-button');
+        dialog.shadowRoot.querySelector<HTMLElement>('.action-button');
     assertTrue(!!actionButton);
     const whenClose = eventToPromise('close', dialog);
     actionButton.click();
@@ -133,7 +148,7 @@ suite('GlicLoginPermissionsPage', function() {
     assertTrue(!!dialog);
     // Confirm dialog.
     const actionButton =
-        dialog.shadowRoot!.querySelector<HTMLElement>('.action-button');
+        dialog.shadowRoot.querySelector<HTMLElement>('.action-button');
     assertTrue(!!actionButton);
     const whenClose = eventToPromise('close', dialog);
     actionButton.click();

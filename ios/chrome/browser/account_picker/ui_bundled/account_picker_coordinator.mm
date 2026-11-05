@@ -222,8 +222,7 @@
 // Called on completion of the AddAccountSigninCoordinator view.
 - (void)addAccountCompletionWithCoordinator:(SigninCoordinator*)coordinator
                                    identity:(id<SystemIdentity>)identity {
-  CHECK_EQ(_addAccountSigninCoordinator, coordinator,
-           base::NotFatalUntil::M151);
+  CHECK_EQ(_addAccountSigninCoordinator, coordinator);
   self.openAddAccountOperationInProgress = NO;
   if (!identity) {
     return;
@@ -246,7 +245,6 @@
 }
 
 - (void)startReauthFlowWithIdentity:(id<SystemIdentity>)identity {
-  // TODO(crbug.com/391342053): Add logging.
   CoreAccountInfo account;
   account.gaia = identity.gaiaId;
   account.email = base::SysNSStringToUTF8(identity.userEmail);
@@ -366,8 +364,7 @@
 
 - (void)accountPickerSelectionScreenCoordinatorWantsToBeStopped:
     (AccountPickerSelectionScreenCoordinator*)coordinator {
-  CHECK_EQ(coordinator, _accountPickerSelectionScreenCoordinator,
-           base::NotFatalUntil::M151);
+  CHECK_EQ(coordinator, _accountPickerSelectionScreenCoordinator);
   [self.delegate accountPickerCoordinatorWantsToBeStopped:self];
 }
 
@@ -375,8 +372,7 @@
 
 - (void)accountPickerConfirmationScreenCoordinatorWantsToBeStopped:
     (AccountPickerConfirmationScreenCoordinator*)coordinator {
-  CHECK_EQ(coordinator, _accountPickerConfirmationScreenCoordinator,
-           base::NotFatalUntil::M151);
+  CHECK_EQ(coordinator, _accountPickerConfirmationScreenCoordinator);
   [self.delegate accountPickerCoordinatorWantsToBeStopped:self];
 }
 

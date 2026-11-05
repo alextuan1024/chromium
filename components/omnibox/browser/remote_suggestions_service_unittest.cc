@@ -65,7 +65,6 @@ std::unique_ptr<TemplateURL> CreateGoogleTemplateURL(
   TemplateURLData data;
   data.SetURL(url);
   data.suggestions_url = suggestions_url;
-  data.id = SEARCH_ENGINE_GOOGLE;
   return std::make_unique<TemplateURL>(data);
 }
 
@@ -197,7 +196,7 @@ TEST_F(RemoteSuggestionsServiceTest, AttachCookies_ZeroPrefixSuggest) {
   EXPECT_TRUE(resource_request.site_for_cookies.IsEquivalent(
       net::SiteForCookies::FromUrl(resource_request.url)))
       << resource_request.site_for_cookies.ToDebugString();
-  const std::string kRequestUrl = "https://www.google.com/complete/search";
+  const std::string kRequestUrl = "https://www.google.com/complete/s";
   EXPECT_EQ(kRequestUrl,
             resource_request.url.spec().substr(0, kRequestUrl.size()));
 }
@@ -226,7 +225,7 @@ TEST_F(RemoteSuggestionsServiceTest, AttachCookies_Suggest) {
   EXPECT_TRUE(resource_request.site_for_cookies.IsEquivalent(
       net::SiteForCookies::FromUrl(resource_request.url)))
       << resource_request.site_for_cookies.ToDebugString();
-  const std::string kRequestUrl = "https://www.google.com/complete/search";
+  const std::string kRequestUrl = "https://www.google.com/complete/s";
   EXPECT_EQ(kRequestUrl,
             resource_request.url.spec().substr(0, kRequestUrl.size()));
 }
@@ -280,7 +279,7 @@ TEST_F(RemoteSuggestionsServiceTest, BypassCache) {
   EXPECT_TRUE(resource_request.site_for_cookies.IsEquivalent(
       net::SiteForCookies::FromUrl(resource_request.url)))
       << resource_request.site_for_cookies.ToDebugString();
-  const std::string kRequestUrl = "https://www.google.com/complete/search";
+  const std::string kRequestUrl = "https://www.google.com/complete/s";
   EXPECT_EQ(kRequestUrl,
             resource_request.url.spec().substr(0, kRequestUrl.size()));
 }
@@ -576,6 +575,17 @@ TEST_F(RemoteSuggestionsServiceTest,
             {"client", "chrome-compose"},
             {"azm", "1"},
             {"sam", "1"}});
+
+  // When `will_fulfill_in_aim` is false, `shaq=1` should also be appended.
+  search_terms_args.input_state.will_fulfill_in_aim = false;
+  url = RemoteSuggestionsService::EndpointUrl(
+      *google_template_url, search_terms_args, SearchTermsData());
+  CheckUrl(url, "https://www.google.com/suggest",
+           {{"q", "query"},
+            {"client", "chrome-compose"},
+            {"azm", "1"},
+            {"sam", "1"},
+            {"shaq", "1"}});
 }
 
 TEST_F(RemoteSuggestionsServiceTest, PreviousQueryAppendedIfAvailable) {

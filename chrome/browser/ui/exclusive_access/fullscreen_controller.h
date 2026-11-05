@@ -174,6 +174,9 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   void ExitExclusiveAccessIfNecessary() override;
   // Callbacks /////////////////////////////////////////////////////////////////
 
+  // Invoked when the window starts transitioning between fullscreen states.
+  void WindowFullscreenStateChanging();
+
   // Invoked at the end of a fullscreen transition.
   void WindowFullscreenStateChanged();
 
@@ -292,6 +295,11 @@ class FullscreenController : public ExclusiveAccessControllerBase {
 
   // This is used for accessing HistoryService.
   base::CancelableTaskTracker task_tracker_;
+
+  // True while NotifyTabExclusiveAccessLost() is on the stack. Checked in
+  // ~FullscreenController() to ensure `this` is never destroyed reentrantly
+  // during tab fullscreen exit notifications.
+  bool in_notify_tab_exclusive_access_lost_ = false;
 
   const raw_ptr<chrome::BrowserCommandController> browser_command_controller_;
   const raw_ptr<BookmarkBarController> bookmark_bar_controller_;

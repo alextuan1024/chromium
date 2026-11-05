@@ -167,18 +167,6 @@ public class TabListViewHolderTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    private ViewGroup mTabGridView;
-    private PropertyModel mGridModel;
-    private PropertyModelChangeProcessor mGridMcp;
-
-    private ViewGroup mTabStripView;
-    private PropertyModel mStripModel;
-    private PropertyModelChangeProcessor mStripMcp;
-
-    private ViewGroup mSelectableTabGridView;
-    private PropertyModel mSelectableModel;
-    private PropertyModelChangeProcessor mSelectableMcp;
-
     @Mock private Profile mProfile;
 
     @Mock private LevelDBPersistedDataStorage.Natives mLevelDbPersistedTabDataStorage;
@@ -206,8 +194,7 @@ public class TabListViewHolderTest {
                             callback.onResult(new BitmapDrawable(bitmap));
                         }
                     },
-                    MultiThumbnailMetadata.createMetadataWithoutUrls(
-                            Tab.INVALID_TAB_ID, false, false, null));
+                    MultiThumbnailMetadata.createMetadataForSingleTab(Tab.INVALID_TAB_ID));
     private final AtomicInteger mThumbnailFetchedCount = new AtomicInteger();
 
     private final TabActionListener mMockCloseListener =
@@ -239,6 +226,18 @@ public class TabListViewHolderTest {
             };
     private final AtomicBoolean mSelectClicked = new AtomicBoolean();
     private final AtomicInteger mSelectTabId = new AtomicInteger();
+
+    private ViewGroup mTabGridView;
+    private PropertyModel mGridModel;
+    private PropertyModelChangeProcessor mGridMcp;
+
+    private ViewGroup mTabStripView;
+    private PropertyModel mStripModel;
+    private PropertyModelChangeProcessor mStripMcp;
+
+    private ViewGroup mSelectableTabGridView;
+    private PropertyModel mSelectableModel;
+    private PropertyModelChangeProcessor mSelectableMcp;
 
     private boolean mShouldReturnBitmap;
 
@@ -338,11 +337,9 @@ public class TabListViewHolderTest {
                                     TabGridViewBinder::bindTab);
                 });
         LevelDBPersistedDataStorageJni.setInstanceForTesting(mLevelDbPersistedTabDataStorage);
-        doNothing()
-                .when(mLevelDbPersistedTabDataStorage)
-                .init(any(LevelDBPersistedDataStorage.class), any(BrowserContextHandle.class));
+        doReturn(1L).when(mLevelDbPersistedTabDataStorage).init(any(BrowserContextHandle.class));
         doReturn(false).when(mProfile).isOffTheRecord();
-        LevelDBPersistedDataStorage.setSkipNativeAssertionsForTesting(true);
+        doReturn(mProfile).when(mProfile).getOriginalProfile();
 
         ProfileManager.setLastUsedProfileForTesting(mProfile);
         PriceTrackingFeatures.setPriceAnnotationsEnabledForTesting(false);

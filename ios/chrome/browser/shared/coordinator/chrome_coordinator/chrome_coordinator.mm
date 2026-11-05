@@ -4,9 +4,12 @@
 
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator.h"
 
+#import "base/check_op.h"
 #import "base/memory/weak_ptr.h"
+#import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator+subclassing.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/browser/browser_utils.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 
@@ -19,7 +22,27 @@
   CHECK(browser);
   if ((self = [super init])) {
     _baseViewController = viewController;
-    _childCoordinators = [MutableCoordinatorArray array];
+    _browser = browser->AsWeakPtr();
+  }
+  return self;
+}
+
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                     regularBrowserOfScene:(SceneState*)sceneState {
+  Browser* browser = GetRegularBrowserForScene(sceneState);
+  if ((self = [super init])) {
+    _baseViewController = viewController;
+    _browser = browser->AsWeakPtr();
+  }
+  return self;
+}
+
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                            regularBrowser:(Browser*)browser {
+  CHECK(browser);
+  CHECK_EQ(browser->type(), Browser::Type::kRegular);
+  if ((self = [super init])) {
+    _baseViewController = viewController;
     _browser = browser->AsWeakPtr();
   }
   return self;
@@ -27,25 +50,18 @@
 
 #pragma mark - Accessors
 
-- (ChromeCoordinator*)activeChildCoordinator {
-  // By default the active child is the one most recently added to the child
-  // array, but subclasses can override this.
-  return self.childCoordinators.lastObject;
-}
-
 - (Browser*)browser {
-  // Browser can only be nil after -stop. Coordinators should typically not
-  // execute any code after this point, and definitely should not refer to
-  // browser.
+  // `_browser` is only nullptr if the Browser was destroyed before this
+  // coordinator was stopped and deallocated. Coordinators should not execute
+  // code or access `browser` after `-stop`.
   CHECK(_browser.get(), base::NotFatalUntil::M155);
   return _browser.get();
 }
 
 - (ProfileIOS*)profile {
   ProfileIOS* profile = self.browser->GetProfile();
-  // Profile can only be nil after -stop. Coordinators should typically not
-  // execute any code after this point, and definitely should not refer to
-  // profile.
+  // `profile` should always be non-nil for a live Browser. Coordinators should
+  // not execute code or access `profile` after `-stop`.
   CHECK(profile, base::NotFatalUntil::M155);
   return profile;
 }

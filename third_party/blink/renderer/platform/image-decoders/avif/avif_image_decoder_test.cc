@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/platform/image-decoders/avif/avif_image_decoder.h"
 
+#include <array>
 #include <cmath>
 #include <memory>
 #include <ostream>
@@ -14,18 +15,16 @@
 #include "base/bit_cast.h"
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_helpers.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/thread_pool.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
-#include "skia/ext/rgba_to_yuva.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
-#include "third_party/skia/include/private/chromium/SkCodecsICCProfileChromium.h"
+#include "third_party/skia/include/effects/SkColorMatrix.h"
 #include "ui/gfx/color_space.h"
 
 #define FIXME_SUPPORT_ICC_PROFILE_NO_TRANSFORM 0
@@ -748,18 +747,21 @@ void ReadYUV(const char* file_name,
 
   // Convert our YUV pixel to RGB to avoid an excessive amounts of test
   // expectations. We otherwise need bit_depth * yuv_sampling * color_type.
-  SkPixmap pm(
-      SkImageInfo::Make(1, 1, kRGBA_F32_SkColorType, kUnpremul_SkAlphaType),
-      rgb_pixel, sizeof(SkColor4f));
   SkYUVColorSpace yuv_cs = kIdentity_SkYUVColorSpace;
   auto cs = reinterpret_cast<AVIFImageDecoder*>(decoder.get())
                 ->GetColorSpaceForTesting();
   cs.ToSkYUVColorSpace(bit_depth, &yuv_cs);
-
-  skia::ConvertYUVAToRGBA(
-      SkYUVAInfo(pm.dimensions(), SkYUVAInfo::PlaneConfig::kYUVA,
-                 SkYUVAInfo::Subsampling::k444, yuv_cs),
-      bit_depth, {pm}, pm);
+  if (yuv_cs != kIdentity_SkYUVColorSpace) {
+    std::array<float, 20> m;
+    SkColorMatrix::YUVtoRGB(yuv_cs).getRowMajor(m.data());
+    const SkColor4f yuv = *rgb_pixel;
+    *rgb_pixel = {
+        yuv.fR * m[0] + yuv.fG * m[1] + yuv.fB * m[2] + m[4],
+        yuv.fR * m[5] + yuv.fG * m[6] + yuv.fB * m[7] + m[9],
+        yuv.fR * m[10] + yuv.fG * m[11] + yuv.fB * m[12] + m[14],
+        yuv.fA,
+    };
+  }
 }
 
 void TestYUVRed(const char* file_name,
@@ -1310,7 +1312,7 @@ TEST(StaticAVIFTests, SizeAvailableBeforeAllDataReceived) {
       "image/avif", segment_reader, /*data_complete=*/false,
       ImageDecoder::kAlphaPremultiplied, ImageDecoder::kDefaultBitDepth,
       ColorBehavior::kTag, cc::AuxImage::kDefault,
-      Platform::GetMaxDecodedImageBytes(), SkISize::MakeEmpty(),
+      Platform::GetMaxDecodedImageBytes(), gfx::Size(),
       ImageDecoder::AnimationOption::kUnspecified);
   EXPECT_FALSE(decoder->IsSizeAvailable());
 
@@ -1336,7 +1338,7 @@ TEST(StaticAVIFTests, ProgressiveDecoding) {
       "image/avif", segment_reader, /*data_complete=*/false,
       ImageDecoder::kAlphaPremultiplied, ImageDecoder::kDefaultBitDepth,
       ColorBehavior::kTag, cc::AuxImage::kDefault,
-      Platform::GetMaxDecodedImageBytes(), SkISize::MakeEmpty(),
+      Platform::GetMaxDecodedImageBytes(), gfx::Size(),
       ImageDecoder::AnimationOption::kUnspecified);
 
   Vector<char> data = ReadFile("/images/resources/avif/tiger_3layer_1res.avif");
@@ -1403,7 +1405,7 @@ TEST(StaticAVIFTests, IncrementalDecoding) {
       "image/avif", segment_reader, /*data_complete=*/false,
       ImageDecoder::kAlphaPremultiplied, ImageDecoder::kDefaultBitDepth,
       ColorBehavior::kTag, cc::AuxImage::kDefault,
-      Platform::GetMaxDecodedImageBytes(), SkISize::MakeEmpty(),
+      Platform::GetMaxDecodedImageBytes(), gfx::Size(),
       ImageDecoder::AnimationOption::kUnspecified);
 
   Vector<char> data =
@@ -1527,19 +1529,6 @@ TEST(StaticAVIFTests, ZeroVersionIccProfileDecodesWithRustIcc) {
   // declares an invalid profile version of 0.0, as emitted by some image
   // export pipelines found in the wild. The Rust ICC parser (moxcms) used
   // to reject such files, but now accepts them and treats them as v2 profiles.
-  //
-  // Force the Rust parser to match the production configuration: in content
-  // processes, content/common/skia_utils.cc calls ForceSkcms() with the
-  // value of blink::features::kForceSkcmsICCParsing, which is disabled by
-  // default. That initialization does not run in blink_platform_unittests,
-  // so this process is still at Skia's compiled-in default of forcing skcms
-  // (which would accept the profile and hide the failure mode this test
-  // covers). Restore that default, true, on exit; ForceSkcms() has no
-  // corresponding getter with which to capture the prior value.
-  SkCodecs::ICCProfileChromium::ForceSkcms(false);
-  base::ScopedClosureRunner restore_skcms(
-      base::BindOnce([] { SkCodecs::ICCProfileChromium::ForceSkcms(true); }));
-
   std::unique_ptr<ImageDecoder> decoder = CreateAVIFDecoder();
   decoder->SetData(ReadFileToSharedBuffer(
                        "/images/resources/avif/red-icc-version-zero.avif"),

@@ -108,7 +108,7 @@ bool PropertyTreeManager::DirectlyUpdateCompositedOpacityValue(
   auto& cc_effect = property_trees->effect_tree_mutable().MutableNode(cc_id);
 
   cc_effect.opacity = effect.Opacity();
-  cc_effect.effect_changed = true;
+  cc_effect.SetEffectChanged(cc::DamageReason::kUntracked);
   property_trees->effect_tree_mutable().set_needs_update(true);
   host.SetNeedsCommit();
   return true;
@@ -210,7 +210,6 @@ namespace {
 void UpdateCcScrollingContentsCullRect(
     cc::ScrollTree& scroll_tree,
     const ScrollPaintPropertyNode& scroll_node) {
-  CHECK(RuntimeEnabledFeatures::ScrollingContentsCullRectOnScrollNodeEnabled());
   gfx::Rect cull_rect = scroll_node.ScrollingContentsCullRect();
   if (cull_rect.Contains(scroll_node.ContentsRect())) {
     scroll_tree.ClearScrollingContentsCullRect(
@@ -434,6 +433,8 @@ void PropertyTreeManager::SetCurrentEffectState(
     current_.may_be_2d_axis_misaligned_to_render_surface =
         EffectState::kAligned;
     current_.contained_by_non_render_surface_synthetic_rounded_clip = false;
+    current_.child_inherits_mask_filter_info =
+        !cc_effect_node.mask_filter_info.IsEmpty();
   } else {
     if (current_.may_be_2d_axis_misaligned_to_render_surface ==
             EffectState::kAligned &&
@@ -443,6 +444,8 @@ void PropertyTreeManager::SetCurrentEffectState(
     }
     current_.contained_by_non_render_surface_synthetic_rounded_clip |=
         (effect_type & CcEffectType::kSyntheticForNonTrivialClip);
+    current_.child_inherits_mask_filter_info |=
+        !cc_effect_node.mask_filter_info.IsEmpty();
   }
 }
 
@@ -460,7 +463,7 @@ int PropertyTreeManager::EnsureCompositorTransformNode(
 
   if (auto* scroll_parent_scroll_translation =
           transform_node.ScrollParentScrollTranslation()) {
-    // Fixed-position or overscroll-backdrop can cause different topologies of
+    // Fixed-position or overscroll ::backdrop can cause different topologies of
     // the transform tree and the scroll tree. This ensures the ancestor scroll
     // nodes of the scroll node for a descendant transform node below is
     // created.
@@ -592,10 +595,7 @@ int PropertyTreeManager::EnsureCompositorTransformNode(
       compositor_scroll_node.main_thread_repaint_reasons.PutAll(
           NonCompositedMainThreadRepaintReasons(transform_node));
     }
-    if (RuntimeEnabledFeatures::
-            ScrollingContentsCullRectOnScrollNodeEnabled()) {
-      UpdateCcScrollingContentsCullRect(scroll_tree_, *scroll_node);
-    }
+    UpdateCcScrollingContentsCullRect(scroll_tree_, *scroll_node);
   }
 
   compositor_node.visible_frame_element_id =
@@ -708,6 +708,9 @@ int PropertyTreeManager::EnsureCompositorScrollNodeInternal(
       scroll_node.GetMainThreadRepaintReasons();
 
   scroll_node.SetCcNodeId(new_sequence_number_, id);
+  if (scroll_node.NodeChanged() != PaintPropertyChangeType::kUnchanged) {
+    root_layer_.SetNeedsCommit();
+  }
   return id;
 }
 
@@ -734,9 +737,10 @@ int PropertyTreeManager::EnsureCompositorOuterScrollAndTransformNode(
 
 void PropertyTreeManager::EmitClipMaskLayer() {
   cc::EffectNode& mask_isolation = effect_tree_.MutableNode(current_.effect_id);
+  bool has_mask_filter = !mask_isolation.mask_filter_info.IsEmpty();
   bool needs_layer =
       !pending_synthetic_mask_layers_.Contains(mask_isolation.id) &&
-      mask_isolation.mask_filter_info.IsEmpty();
+      !has_mask_filter;
 
   CompositorElementId mask_isolation_id, mask_effect_id;
   SynthesizedClip& clip = client_.CreateOrReuseSynthesizedClipLayer(
@@ -748,9 +752,14 @@ void PropertyTreeManager::EmitClipMaskLayer() {
   // backdrop effect was moved up to |mask_isolation|.
   mask_isolation.element_id = mask_isolation_id;
 
-  if (!needs_layer)
+  if (has_mask_filter) {
     return;
+  }
 
+  // Emit the `kDstIn` mask effect even when `!needs_layer` (when nothing under
+  // the clip draws content) so `EffectNode::has_masking_child` marks
+  // `mask_isolation` as masked for compositor hit testing without allocating
+  // or rasterizing a mask `PictureLayer`.
   cc::EffectNode& mask_effect = effect_tree_.MutableNode(
       effect_tree_.Insert(cc::EffectNode(), current_.effect_id));
   // The address of mask_isolation may have changed when we insert
@@ -761,6 +770,10 @@ void PropertyTreeManager::EmitClipMaskLayer() {
   mask_effect.element_id = mask_effect_id;
   mask_effect.clip_id = mask_isolation_ref.clip_id;
   mask_effect.blend_mode = SkBlendMode::kDstIn;
+
+  if (!needs_layer) {
+    return;
+  }
 
   cc::PictureLayer* mask_layer = clip.Layer();
 
@@ -819,7 +832,9 @@ void PropertyTreeManager::CloseCcEffect() {
 int PropertyTreeManager::SwitchToEffectNodeWithSynthesizedClip(
     const EffectPaintPropertyNode& next_effect,
     const ClipPaintPropertyNode& next_clip,
-    bool layer_draws_content) {
+    bool layer_draws_content,
+    bool layer_applies_mask_filter_info,
+    CompositorElementId layer_element_id) {
   // This function is expected to be invoked right before emitting each layer.
   // It keeps track of the nesting of clip and effects, output a composited
   // effect node whenever an effect is entered, or a non-trivial clip is
@@ -877,6 +892,64 @@ int PropertyTreeManager::SwitchToEffectNodeWithSynthesizedClip(
 
   if (layer_draws_content)
     pending_synthetic_mask_layers_.clear();
+
+  // A viz::SharedQuadState can only carry a single gfx::MaskFilterInfo. If a
+  // layer applies its own MaskFilterInfo when appending quads (such as a
+  // scrollbar with a rounded solid-color thumb) while also inheriting an
+  // ancestor EffectNode's mask_filter_info (such as a fast rounded-corner clip
+  // on an ancestor), we must composite the layer into its own render surface.
+  //
+  // Specifically, cc::draw_property_utils::GetMaskFilterInfoPair() returns an
+  // empty MaskFilterInfo for a layer (`for_render_surface=false`) only if the
+  // layer's own EffectNode has a render surface; otherwise it walks up the
+  // effect tree to the enclosing render target (checking mask_filter_info on
+  // the render target itself as well, e.g. for backdrop-filter +
+  // border-radius). Isolating the layer into its own render surface with an
+  // empty mask_filter_info leaves the layer's
+  // draw_properties().mask_filter_info empty (so it can apply its thumb mask
+  // filter inside its render pass) while applying the ancestor's
+  // mask_filter_info to this render surface in the parent render pass.
+  if (layer_draws_content && layer_applies_mask_filter_info &&
+      current_.child_inherits_mask_filter_info) {
+    cc::EffectNode& current_effect =
+        effect_tree_.MutableNode(current_.effect_id);
+    if (!(current_effect.HasRenderSurface() &&
+          !IsConditionalRenderSurfaceReason(
+              current_effect.render_surface_reason))) {
+      // If `current_effect` is already a dedicated EffectNode for this layer
+      // (e.g. an overlay scrollbar's opacity-animation
+      // EffectPaintPropertyNode), promote it to an unconditional render surface
+      // so animations still target the layer's effect node.
+      if (current_effect.mask_filter_info.IsEmpty() && layer_element_id &&
+          current_effect.element_id == layer_element_id) {
+        current_effect.render_surface_reason =
+            cc::RenderSurfaceReason::kRoundedCorner;
+        current_.contained_by_non_render_surface_synthetic_rounded_clip = false;
+        current_.child_inherits_mask_filter_info = false;
+        return current_.effect_id;
+      }
+
+      // Otherwise (e.g. a non-overlay scrollbar with no dedicated Blink effect
+      // node, sitting under a synthetic rounded-corner clip or shared ancestor
+      // effect), insert a leaf cc::EffectNode with a render surface to isolate
+      // only this layer without forcing a render surface on sibling layers.
+      cc::EffectNode& mask_filter_isolation = effect_tree_.MutableNode(
+          effect_tree_.Insert(cc::EffectNode(), current_.effect_id));
+      mask_filter_isolation.element_id =
+          (layer_element_id &&
+           !effect_tree_.FindNodeFromElementId(layer_element_id))
+              ? layer_element_id
+              : CompositorElementIdFromUniqueObjectId(NewUniqueObjectId());
+      mask_filter_isolation.clip_id = EnsureCompositorClipNode(next_clip);
+      mask_filter_isolation.transform_id =
+          EnsureCompositorTransformNode(*current_.transform);
+      mask_filter_isolation.render_surface_reason =
+          cc::RenderSurfaceReason::kRoundedCorner;
+      mask_filter_isolation.double_sided =
+          !current_.transform->IsBackfaceHidden();
+      return mask_filter_isolation.id;
+    }
+  }
 
   return current_.effect_id;
 }
@@ -972,15 +1045,15 @@ std::optional<gfx::RRectF> PropertyTreeManager::ShaderBasedRRect(
     return std::nullopt;
   }
 
-  auto WidthAndHeightAreTheSame = [](const gfx::SizeF& size) {
+  auto width_and_height_are_the_same = [](const gfx::SizeF& size) {
     return size.width() == size.height();
   };
 
   const FloatRoundedRect::Radii& radii = clip.PaintClipRect().GetRadii();
-  if (!WidthAndHeightAreTheSame(radii.TopLeft()) ||
-      !WidthAndHeightAreTheSame(radii.TopRight()) ||
-      !WidthAndHeightAreTheSame(radii.BottomRight()) ||
-      !WidthAndHeightAreTheSame(radii.BottomLeft())) {
+  if (!width_and_height_are_the_same(radii.TopLeft()) ||
+      !width_and_height_are_the_same(radii.TopRight()) ||
+      !width_and_height_are_the_same(radii.BottomRight()) ||
+      !width_and_height_are_the_same(radii.BottomLeft())) {
     return std::nullopt;
   }
 
@@ -1029,8 +1102,10 @@ int PropertyTreeManager::SynthesizeCcEffectsForClipsIfNeeded(
 
     // An effect node can't omit render surface if it has child with backdrop
     // effect, in order to define the scope of the backdrop.
+    DCHECK(effect_tree_.Node(current_.effect_id).mask_filter_info.IsEmpty());
     effect_tree_.MutableNode(current_.effect_id).render_surface_reason =
         cc::RenderSurfaceReason::kBackdropScope;
+    current_.child_inherits_mask_filter_info = false;
     should_realize_backdrop_effect = true;
     backdrop_effect_clip_id = EnsureCompositorClipNode(target_clip);
   } else {
@@ -1369,8 +1444,11 @@ void PropertyTreeManager::PopulateCcEffectNode(
     effect_node.filters = filter->AsCcFilterOperations();
   }
   effect_node.double_sided = !transform.IsBackfaceHidden();
-  effect_node.effect_changed =
-      effect.NodeChanged() != PaintPropertyChangeType::kUnchanged;
+  if (effect.NodeChanged() != PaintPropertyChangeType::kUnchanged) {
+    effect_node.SetEffectChanged(cc::DamageReason::kUntracked);
+  } else {
+    effect_node.ClearEffectChanged();
+  }
 
   effect_node.view_transition_element_resource_id =
       effect.ViewTransitionElementResourceId();

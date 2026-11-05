@@ -8,6 +8,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -25,6 +26,7 @@
 #include "components/autofill/core/browser/metrics/autofill_settings_metrics.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/autofill_external_delegate.h"
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
@@ -133,12 +135,12 @@ class ChromeAutofillClientBrowserTest : public InProcessBrowserTest {
   }
 
   AutofillClient::SuggestionUiSessionId ShowSuggestions(
+      const FormGlobalId& form_id,
       const FieldGlobalId& field_id,
       const gfx::RectF& bounds) {
     return client()->ShowAutofillSuggestions(
         ChromeAutofillClient::PopupOpenArgs(
-            field_id.frame_token, bounds,
-            base::i18n::TextDirection::LEFT_TO_RIGHT,
+            form_id, field_id, bounds, base::i18n::TextDirection::LEFT_TO_RIGHT,
             {Suggestion(u"test", SuggestionType::kAutocompleteEntry)},
             AutofillSuggestionTriggerSource::kFormControlElementClicked,
             /*form_control_ax_id=*/0, PopupAnchorType::kField),
@@ -179,16 +181,19 @@ class ChromeAutofillClientBrowserTest : public InProcessBrowserTest {
 // that the IPH is hidden and the Autofill Popup is successfully shown.
 IN_PROC_BROWSER_TEST_F(ChromeAutofillClientBrowserTest,
                        AutofillPopupIsShownIfOverlappingWithIph) {
-  FormData form = test::CreateTestAddressFormData();
+  FormData form = test::GetFormData(test::FormDescription{
+      .fields = {{.label = u"First Name", .name = u"firstname"},
+                 {.label = u"Last Name", .name = u"lastname"},
+                 {.label = u"Address Line 1", .name = u"addr1"}},
+      .host_frame = driver()->GetFrameToken()});
   test_api(form).field(0).set_bounds(gfx::RectF(10, 10));
   client()->ShowAutofillFieldIphForFeature(
       form.fields()[0], AutofillClient::IphFeature::kAutofillAi);
 
   // Set the bounds such that the Autofill Popup would overlap with the IPH (the
   // IPH is displayed right below `form.fields[0]`, whose bounds are set above).
-  ShowSuggestions(
-      FieldGlobalId(driver()->GetFrameToken(), form.fields()[0].renderer_id()),
-      /*bounds=*/gfx::RectF(100, 100));
+  ShowSuggestions(form.global_id(), form.fields()[0].global_id(),
+                  /*bounds=*/gfx::RectF(100, 100));
   WaitUntilSuggestionsHaveBeenShown();
 
   EXPECT_FALSE(
@@ -204,12 +209,14 @@ IN_PROC_BROWSER_TEST_F(ChromeAutofillClientBrowserTest, SuggestionUiSessionId) {
   // Showing suggestions leads (asynchronously) to showing a popup with the
   // identifier returned by ShowAutofillSuggestions.
   const AutofillClient::SuggestionUiSessionId first_id = ShowSuggestions(
+      FormGlobalId(driver()->GetFrameToken(), test::MakeFormRendererId()),
       FieldGlobalId(driver()->GetFrameToken(), test::MakeFieldRendererId()),
       gfx::RectF(50, 50));
   WaitUntilSuggestionsHaveBeenShown();
   EXPECT_THAT(ui_session_id_at_last_show(), std::make_optional(first_id));
 
   const AutofillClient::SuggestionUiSessionId second_id = ShowSuggestions(
+      FormGlobalId(driver()->GetFrameToken(), test::MakeFormRendererId()),
       FieldGlobalId(driver()->GetFrameToken(), test::MakeFieldRendererId()),
       gfx::RectF(60, 60));
   EXPECT_NE(first_id, second_id);
@@ -331,6 +338,39 @@ IN_PROC_BROWSER_TEST_F(ChromeAutofillClientBrowserTest,
       browser()->tab_strip_model()->GetActiveWebContents();
   EXPECT_EQ(active_contents->GetVisibleURL(),
             GURL(std::string("chrome://settings/") + chrome::kShoppingSubPage));
+}
+
+class ChromeAutofillClientOffersAndLoyaltyCardsBrowserTest
+    : public ChromeAutofillClientBrowserTest {
+ public:
+  void SetUpInProcessBrowserTestFixture() override {
+    ChromeAutofillClientBrowserTest::SetUpInProcessBrowserTestFixture();
+    // Initialized after the base fixture's feature list, so that it is
+    // destroyed first.
+    feature_list_.InitAndEnableFeature(
+        features::kAutofillEnableOffersAndLoyaltyCardsSettings);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Tests that calling `ShowAutofillSettings()` with
+// `SuggestionType::kManageLoyaltyCard` navigates the active tab to the Offers
+// and loyalty cards settings subpage and records the visit referrer metric.
+IN_PROC_BROWSER_TEST_F(ChromeAutofillClientOffersAndLoyaltyCardsBrowserTest,
+                       ShowAutofillSettings_NavigatesToOffersAndLoyaltyCards) {
+  base::HistogramTester histogram_tester;
+  client()->ShowAutofillSettings(SuggestionType::kManageLoyaltyCard);
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.YourSavedInfoSettingsPage.VisitReferrer",
+      autofill_metrics::AutofillSettingsReferrer::kFillingFlowDropdown, 1);
+  content::WebContents* active_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  EXPECT_EQ(active_contents->GetVisibleURL(),
+            GURL(std::string("chrome://settings/") +
+                 chrome::kOffersAndLoyaltyCardsSubPage));
 }
 
 }  // namespace

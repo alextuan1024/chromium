@@ -4,12 +4,15 @@
 
 #include "ui/color/color_provider.h"
 
-#include <map>
+#include <iterator>
 #include <set>
 #include <utility>
 
+#include "base/atomic_sequence_num.h"
+#include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_mixer.h"
 #include "ui/color/color_provider_utils.h"
 #include "ui/color/color_recipe.h"
@@ -17,12 +20,26 @@
 
 namespace ui {
 
-ColorProvider::ColorProvider() = default;
+namespace {
+
+// Generates the ids returned by ColorProvider::unique_id(). This is thread-safe
+// since the ColorProviders of a process are not all constructed on the same
+// thread, e.g. in single-process mode both the browser's UI thread and the
+// renderer's main thread construct ColorProviders.
+base::AtomicSequenceNumberT<uint64_t> g_next_unique_id;
+
+}  // namespace
+
+ColorProvider::ColorProvider() : unique_id_(g_next_unique_id.GetNext()) {}
 
 ColorProvider::~ColorProvider() = default;
 
 ColorMixer& ColorProvider::AddMixer() {
   color_map_.clear();
+  unprocessed_color_map_.clear();
+  if (const ColorMixer* previous_head = GetLastNonPostprocessingMixer()) {
+    previous_head->SetResultColorCache(nullptr);
+  }
   mixers_.emplace_after(
       first_postprocessing_mixer_,
       base::BindRepeating([](const ColorMixer* mixer) { return mixer; },
@@ -30,12 +47,27 @@ ColorMixer& ColorProvider::AddMixer() {
       base::BindRepeating(&ColorProvider::GetLastNonPostprocessingMixer,
                           base::Unretained(this)));
 
-  return *std::next(first_postprocessing_mixer_, 1);
+  ColorMixer& mixer = *std::next(first_postprocessing_mixer_, 1);
+  if (features::IsThemeChangeOptimizationV2Enabled()) {
+    // Share `color_map_` directly when no postprocessing mixers exist;
+    // otherwise cache pre-postprocessing results in `unprocessed_color_map_`.
+    const bool has_postprocessing =
+        first_postprocessing_mixer_ != mixers_.before_begin();
+    mixer.SetResultColorCache(has_postprocessing ? &unprocessed_color_map_
+                                                 : &color_map_);
+  }
+  return mixer;
 }
 
 ColorMixer& ColorProvider::AddPostprocessingMixer() {
   color_map_.clear();
+  unprocessed_color_map_.clear();
   if (first_postprocessing_mixer_ == mixers_.before_begin()) {
+    if (features::IsThemeChangeOptimizationV2Enabled()) {
+      if (const ColorMixer* head_mixer = GetLastNonPostprocessingMixer()) {
+        head_mixer->SetResultColorCache(&unprocessed_color_map_);
+      }
+    }
     // The first postprocessing mixer points to the last regular mixer.
     auto previous_mixer_getter = base::BindRepeating(
         &ColorProvider::GetLastNonPostprocessingMixer, base::Unretained(this));
@@ -52,28 +84,35 @@ ColorMixer& ColorProvider::AddPostprocessingMixer() {
 }
 
 SkColor ColorProvider::GetColor(ColorId id) const {
-  auto i = color_map_.find(id);
-  if (i == color_map_.end()) {
-    if (mixers_.empty()) {
-      DVLOG(2) << "ColorProvider::GetColor: No mixers defined!";
-      return gfx::kPlaceholderColor;
-    }
-    DVLOG(2) << "ColorProvider::GetColor: Computing color for ColorId: "
-             << ColorIdName(id);
-    const SkColor color = mixers_.front().GetResultColor(id);
-    if (color == gfx::kPlaceholderColor) {
-      return gfx::kPlaceholderColor;
-    }
-    i = color_map_.insert({id, color}).first;
+  if (const auto i = color_map_.find(id); i != color_map_.end()) {
+    DVLOG(2) << "ColorProvider::GetColor: ColorId: " << ColorIdName(id)
+             << " Value: " << SkColorName(i->second);
+    return i->second;
   }
-
+  if (mixers_.empty()) {
+    DVLOG(2) << "ColorProvider::GetColor: No mixers defined!";
+    return gfx::kPlaceholderColor;
+  }
+  DVLOG(2) << "ColorProvider::GetColor: Computing color for ColorId: "
+           << ColorIdName(id);
+  const SkColor color = mixers_.front().GetResultColor(id);
+  if (color == gfx::kPlaceholderColor) {
+    return gfx::kPlaceholderColor;
+  }
+  // When `kThemeChangeOptimizationV2` is enabled and no postprocessing mixers
+  // are present, `mixers_.front()` already caches directly into `color_map_`.
+  if (!features::IsThemeChangeOptimizationV2Enabled() ||
+      first_postprocessing_mixer_ != mixers_.before_begin()) {
+    color_map_.emplace(id, color);
+  }
   DVLOG(2) << "ColorProvider::GetColor: ColorId: " << ColorIdName(id)
-           << " Value: " << SkColorName(i->second);
-  return i->second;
+           << " Value: " << SkColorName(color);
+  return color;
 }
 
 void ColorProvider::SetColorForTesting(ColorId id, SkColor color) {
   color_map_[id] = color;
+  unique_id_ = g_next_unique_id.GetNext();
 }
 
 void ColorProvider::GenerateColorMapForTesting() {

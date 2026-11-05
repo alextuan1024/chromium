@@ -19,8 +19,24 @@ const char kAccountIdMigrationState[] = "account_id_migration_state";
 // tracked by this signin.
 const char kAccountInfo[] = "account_info";
 
-// Dictionary pref that contains the AccountPreviewPreference result.
+// Dictionary pref that contains the `AccountPreviewPreference` result when
+// offering signed-out users to sign in.
+// It contains the account selected by `ComputePreferredAccountForSignin()`
+// (see its documentation for the selection rules).
+// A value being set does not mean that a sign-in promo should be shown. It
+// only means that, if a sign-in promo is shown, this is the account to promote.
 const char kAccountPreviewPreference[] = "signin.account_preview_preference";
+
+// Dictionary pref that contains the `AccountPreviewPreference` result when
+// offering signed-in users to switch accounts.
+// It contains the secondary account selected by
+// `ComputeAccountSwitchingSelection()` (see its documentation for the
+// selection rules).
+// A value being set does not mean that an account switching promo should be
+// shown. It only means that, if an account switching promo is shown, this is
+// the account to promote.
+const char kAccountPreviewSwitchingPreference[] =
+    "signin.account_preview_switching_preference";
 
 // Time pref that tracks the last time account preview data was refreshed.
 const char kAccountPreviewDataLastUpdatePref[] =
@@ -39,6 +55,11 @@ const char kAccountPreviewDataLastFetchAccounts[] =
 // scores metrics were recorded.
 const char kAccountPreviewSelectionHeuristicScoresLastRecordedPref[] =
     "signin.account_preview.selection_heuristic_scores_last_recorded";
+
+// Time pref that tracks the last time account preview switching heuristic
+// metrics were recorded.
+const char kAccountPreviewSwitchingHeuristicLastRecordedPref[] =
+    "signin.account_preview.switching_heuristic_last_recorded";
 
 #if BUILDFLAG(IS_ANDROID)
 // Dictionary pref that contains the external app account GaiaId and timestamp.
@@ -151,20 +172,6 @@ const char kHistorySyncLastDeclinedTimestamp[] =
 const char kHistorySyncSuccessiveDeclineCount[] =
     "signin.history_sync.successive_decline_count";
 
-// A timestamp of the last time the history sync promo was dismissed.
-const char kHistoryPageHistorySyncPromoLastDismissedTimestamp[] =
-    "history_page.history_sync_promo_last_dismissed_timestamp";
-
-// A boolean preference to store whether the history sync promo was shown one
-// more time after the user dismissed it.
-const char kHistoryPageHistorySyncPromoShownAfterDismissal[] =
-    "history_page.history_sync_promo_shown_after_dismissal";
-
-// An integer preference to store the number of times the history sync promo
-// has been shown on the history page.
-const char kHistoryPageHistorySyncPromoShownCount[] =
-    "history.sync_promo_shown_count";
-
 #if BUILDFLAG(IS_IOS)
 // List of patterns to determine the account visibility, according to the
 // "RestrictAccountsToPatterns" policy. Note that the policy also exists on
@@ -190,24 +197,20 @@ const char kBrowserSigninPolicy[] = "signin.browser_signin_policy";
 // next startup.
 const char kSigninAllowedOnNextStartup[] = "signin.allowed_on_next_startup";
 
-
 // Integer pref to store the number of times the address bubble signin promo
-// has been shown per profile while the user is signed out used for
-// SigninPromoLimitsExperiment.
-const char kAddressSignInPromoShownCountPerProfileForLimitsExperiment[] =
-    "signin.AddressSignInPromoShownCountForLimitsExperiment";
+// has been shown per profile while the user is signed out.
+const char kAddressSignInPromoShownCountPerProfile[] =
+    "signin.AddressSignInPromoShownCount";
 
 // Integer pref to store the number of times the bookmark bubble signin promo
-// has been shown per profile while the user is signed out used for
-// SigninPromoLimitsExperiment.
-const char kBookmarkSignInPromoShownCountPerProfileForLimitsExperiment[] =
-    "signin.BookmarkSignInPromoShownCountForLimitsExperiment";
+// has been shown per profile while the user is signed out.
+const char kBookmarkSignInPromoShownCountPerProfile[] =
+    "signin.BookmarkSignInPromoShownCount";
 
 // Integer pref to store the number of times the password bubble signin promo
-// has been shown per profile while the user is signed out used for
-// SigninPromoLimitsExperiment.
-const char kPasswordSignInPromoShownCountPerProfileForLimitsExperiment[] =
-    "signin.PasswordSignInPromoShownCountForLimitsExperiment";
+// has been shown per profile while the user is signed out.
+const char kPasswordSignInPromoShownCountPerProfile[] =
+    "signin.PasswordSignInPromoShownCount";
 
 // Integer which indicates whether enterprise profile separation is enforced or
 // disabled.
@@ -235,13 +238,6 @@ const char kUserCloudSigninPolicyResponseFromPolicyTestPage[] =
 // Note: this pref is only recorded when explicit signin is enabled.
 const char kExplicitBrowserSignin[] =
     "signin.signin_with_explicit_browser_signin_on";
-
-// Whether the account storage for preferences, themes and search engines is
-// enabled by default. Only set on new signins and for sync users.
-// Note: this pref is only recorded when the feature
-// `syncer::kEnablePreferencesAccountStorage` is enabled.
-const char kPrefsThemesSearchEnginesAccountStorageEnabled[] =
-    "signin.prefs_themes_search_engines_account_storage_enabled";
 
 // Boolean indicating whether the Device Bound Session Credentials should be
 // enabled. Takes precedence over the "EnableBoundSessionCredentials" feature

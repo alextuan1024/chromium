@@ -33,7 +33,6 @@
 #include "components/signin/public/identity_manager/account_capabilities.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/tribool.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/web_ui.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -61,7 +60,7 @@ SkColor GetProfileHighlightColor(Profile* profile) {
       g_browser_process->profile_manager()
           ->GetProfileAttributesStorage()
           .GetProfileAttributesWithPath(profile->GetPath());
-  DCHECK(entry);
+  CHECK(entry, base::NotFatalUntil::M162);
 
   return entry->GetProfileThemeColors().profile_highlight_color;
 }
@@ -93,7 +92,7 @@ DiceWebSigninInterceptHandler::DiceWebSigninInterceptHandler(
       show_widget_with_height_callback_(
           std::move(show_widget_with_height_callback)),
       completion_callback_(std::move(completion_callback)) {
-  DCHECK(completion_callback_);
+  CHECK(completion_callback_, base::NotFatalUntil::M162);
 }
 
 DiceWebSigninInterceptHandler::~DiceWebSigninInterceptHandler() = default;
@@ -149,8 +148,7 @@ void DiceWebSigninInterceptHandler::OnExtendedAccountInfoUpdated(
   }
 
   if (should_fire_event) {
-    if (bubble_parameters_.interception_type ==
-        WebSigninInterceptor::SigninInterceptionType::kChromeSignin) {
+    if (bubble_parameters_.IsChromeSignin()) {
       // Updates might be needed if the picture URL is not yet ready.
       FireWebUIListener("interception-chrome-signin-parameters-changed",
                         GetInterceptionChromeSigninParametersValue());
@@ -201,7 +199,7 @@ void DiceWebSigninInterceptHandler::HandlePageLoaded(
     bubble_parameters_.primary_account = builder.Build();
   }
 
-  DCHECK(!args.empty());
+  CHECK(!args.empty(), base::NotFatalUntil::M162);
   const base::Value& callback_id = args[0];
   ResolveJavascriptCallback(callback_id, GetInterceptionParametersValue());
 }
@@ -213,7 +211,7 @@ void DiceWebSigninInterceptHandler::HandleChromeSigninPageLoaded(
   // Image might not be loaded yet.
   UpdateExtendedAccountsInfo();
 
-  DCHECK(!args.empty());
+  CHECK(!args.empty(), base::NotFatalUntil::M162);
   const base::Value& callback_id = args[0];
   ResolveJavascriptCallback(callback_id,
                             GetInterceptionChromeSigninParametersValue());
@@ -371,9 +369,7 @@ std::string DiceWebSigninInterceptHandler::GetChromeSigninSubtitle() {
   }
 
   return l10n_util::GetStringUTF8(
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE_WITH_BOOKMARKS
-          : IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE);
+      IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE_WITH_BOOKMARKS);
 }
 
 std::string DiceWebSigninInterceptHandler::GetBodyTitle() {
@@ -406,8 +402,7 @@ std::string DiceWebSigninInterceptHandler::GetBodyText() {
             WebSigninInterceptor::SigninInterceptionType::kEnterprise ||
         bubble_parameters_.interception_type ==
             WebSigninInterceptor::SigninInterceptionType::kMultiUser)
-      << (bubble_parameters_.interception_type ==
-                  WebSigninInterceptor::SigninInterceptionType::kChromeSignin
+      << (bubble_parameters_.IsChromeSignin()
               ? "Chrome Signin interception strings are handled by "
                 "GetInterceptionChromeSigninParametersValue()"
               : "This interception type is not handled by a bubble");

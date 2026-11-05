@@ -7,7 +7,6 @@ The driver module provides the command line interface to the signing module.
 
 import argparse
 import asyncio
-import os
 import subprocess
 
 from signing import config_factory, commands, invoker, logger, model, pipeline
@@ -178,6 +177,12 @@ def main(args):
         'applicable if --development is specified.',
     )
 
+    parser.add_argument(
+        '--tag-tool',
+        default=None,
+        help='Path to the tag tool binary to inject tag space into PKGs.',
+    )
+
     invoker_cls = config_factory.get_invoker_class()
     invoker_cls.register_arguments(parser)
 
@@ -232,5 +237,6 @@ def main(args):
             disable_packaging=args.disable_packaging,
             skip_brands=args.skip_brands,
             channels=args.channels,
+            tag_tool=args.tag_tool,
         )
     )

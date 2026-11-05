@@ -75,7 +75,6 @@ DeviceInfo::DeviceInfo(
     const std::string& full_hardware_class,
     base::Time last_updated_timestamp,
     base::TimeDelta pulse_interval,
-    bool send_tab_to_self_receiving_enabled,
     SendTabReceivingType send_tab_to_self_receiving_type,
     const std::optional<SharingInfo>& sharing_info,
     const std::optional<PhoneAsASecurityKeyInfo>& paask_info,
@@ -89,7 +88,8 @@ DeviceInfo::DeviceInfo(
     std::optional<int> glic_experimental_triggering_version,
     base::flat_set<std::string> glic_experimental_triggering_capabilities,
     std::optional<std::string> android_os_build_fingerprint_prefix,
-    std::optional<PersonalContextInfo> personal_context_info)
+    std::optional<PersonalContextInfo> personal_context_info,
+    std::optional<BrowserActuatorInfo> browser_actuator_info)
     : guid_(guid),
       client_name_(client_name),
       chrome_version_(chrome_version),
@@ -106,7 +106,6 @@ DeviceInfo::DeviceInfo(
           std::move(android_os_build_fingerprint_prefix)),
       last_updated_timestamp_(last_updated_timestamp),
       pulse_interval_(pulse_interval),
-      send_tab_to_self_receiving_enabled_(send_tab_to_self_receiving_enabled),
       send_tab_to_self_receiving_type_(send_tab_to_self_receiving_type),
       sharing_info_(sharing_info),
       paask_info_(paask_info),
@@ -122,7 +121,8 @@ DeviceInfo::DeviceInfo(
           glic_experimental_triggering_version),
       glic_experimental_triggering_capabilities_(
           std::move(glic_experimental_triggering_capabilities)),
-      personal_context_info_(std::move(personal_context_info)) {}
+      personal_context_info_(std::move(personal_context_info)),
+      browser_actuator_info_(std::move(browser_actuator_info)) {}
 
 DeviceInfo::DeviceInfo(const DeviceInfo& other) = default;
 
@@ -193,10 +193,6 @@ base::TimeDelta DeviceInfo::pulse_interval() const {
   return pulse_interval_;
 }
 
-bool DeviceInfo::send_tab_to_self_receiving_enabled() const {
-  return send_tab_to_self_receiving_enabled_;
-}
-
 DeviceInfo::SendTabReceivingType DeviceInfo::send_tab_to_self_receiving_type()
     const {
   return send_tab_to_self_receiving_type_;
@@ -244,6 +240,11 @@ DeviceInfo::personal_context_info() const {
   return personal_context_info_;
 }
 
+const std::optional<DeviceInfo::BrowserActuatorInfo>&
+DeviceInfo::browser_actuator_info() const {
+  return browser_actuator_info_;
+}
+
 const std::string& DeviceInfo::fcm_registration_token() const {
   return fcm_registration_token_;
 }
@@ -264,10 +265,6 @@ void DeviceInfo::set_public_id(const std::string& id) {
 void DeviceInfo::set_full_hardware_class(
     const std::string& full_hardware_class) {
   full_hardware_class_ = full_hardware_class;
-}
-
-void DeviceInfo::set_send_tab_to_self_receiving_enabled(bool new_value) {
-  send_tab_to_self_receiving_enabled_ = new_value;
 }
 
 void DeviceInfo::set_send_tab_to_self_receiving_type(
@@ -312,6 +309,11 @@ void DeviceInfo::set_paask_info(
 void DeviceInfo::set_personal_context_info(
     std::optional<PersonalContextInfo> personal_context_info) {
   personal_context_info_ = std::move(personal_context_info);
+}
+
+void DeviceInfo::set_browser_actuator_info(
+    std::optional<BrowserActuatorInfo> browser_actuator_info) {
+  browser_actuator_info_ = std::move(browser_actuator_info);
 }
 
 void DeviceInfo::set_client_name(const std::string& client_name) {

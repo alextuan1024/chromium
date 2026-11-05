@@ -35,8 +35,8 @@ class TabStripModelEventBridge : public EventBridge,
       TabStripModel* tab_strip_model,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override;
-  void OnTabChangedAt(tabs::TabInterface* tab,
-                      TabChangeType change_type) override;
+  void OnTabChanged(tabs::TabHandle tab, TabChangeType change_type) override;
+  void OnTabBlockedStateChanged(tabs::TabHandle tab) override;
   void OnTabGroupChanged(const TabGroupChange& change) override;
   void OnSplitTabChanged(const SplitTabChange& change) override;
 
@@ -46,7 +46,8 @@ class TabStripModelEventBridge : public EventBridge,
                        bool insert_from_detached) override;
 
   void OnChildrenRemoved(const tabs::TabCollection::Position& position,
-                         const tabs::TabCollectionNodes& handles) override;
+                         const tabs::TabCollectionNodes& handles,
+                         bool remove_for_detach) override;
 
   void OnChildMoved(const tabs::TabCollection::Position& to_position,
                     const NodeData& node_data) override;

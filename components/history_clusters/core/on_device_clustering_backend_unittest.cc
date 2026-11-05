@@ -55,11 +55,10 @@ class TestOptimizationGuideDecider
   ~TestOptimizationGuideDecider() override = default;
 
   void RegisterOptimizationTypes(
-      const std::vector<optimization_guide::proto::OptimizationType>&
-          optimization_types) override {
-    ASSERT_EQ(optimization_types.size(), 1u);
-    ASSERT_EQ(optimization_guide::proto::HISTORY_CLUSTERS,
-              optimization_types[0]);
+      optimization_guide::OptimizationTypeSet optimization_types) override {
+    ASSERT_EQ(optimization_types,
+              optimization_guide::OptimizationTypeSet(
+                  {optimization_guide::proto::HISTORY_CLUSTERS}));
   }
 
   optimization_guide::OptimizationGuideDecision CanApplyOptimization(
@@ -79,7 +78,6 @@ class OnDeviceClusteringWithoutContentBackendTest : public ::testing::Test {
   OnDeviceClusteringWithoutContentBackendTest() {
     config_.keyword_filter_on_noisy_visits = true;
     config_.should_check_hosts_to_skip_clustering_for = true;
-    config_.use_host_for_visit_deduping = false;
     SetConfigForTesting(config_);
   }
 
@@ -224,7 +222,7 @@ TEST_F(OnDeviceClusteringWithoutContentBackendTest,
   visits.push_back(visit);
 
   history::AnnotatedVisit visit2 = testing::CreateDefaultAnnotatedVisit(
-      2, GURL("https://google.com/next"), base::Time::FromTimeT(2));
+      2, GURL("https://foo.com/"), base::Time::FromTimeT(2));
   visit2.content_annotations.model_annotations.entities = {
       {"google-entity", 100}, {"com", 100}};
   visit2.referring_visit_of_redirect_chain_start = 1;
@@ -249,7 +247,7 @@ TEST_F(OnDeviceClusteringWithoutContentBackendTest,
   visits.push_back(visit);
 
   history::AnnotatedVisit visit2 = testing::CreateDefaultAnnotatedVisit(
-      2, GURL("https://google.com/next"), base::Time::FromTimeT(2));
+      2, GURL("https://foo.com/"), base::Time::FromTimeT(2));
   visit2.opener_visit_of_redirect_chain_start = 1;
   visits.push_back(visit2);
 
@@ -372,7 +370,7 @@ TEST_F(OnDeviceClusteringWithoutContentBackendTest,
           3, GURL("https://google.com/2"), base::Time::FromTimeT(3))));
   cluster2.visits.emplace_back(
       testing::CreateClusterVisit(testing::CreateDefaultAnnotatedVisit(
-          4, GURL("https://google.com/3"), base::Time::FromTimeT(4))));
+          4, GURL("https://foo.com/3"), base::Time::FromTimeT(4))));
   clusters.push_back(cluster2);
 
   std::vector<history::Cluster> result_clusters =
@@ -554,13 +552,11 @@ TEST_F(OnDeviceClusteringWithoutContentBackendTest, EngagementScoreCache) {
       testing::CreateDefaultAnnotatedVisit(3, GURL("https://github2.com/"));
   visits.push_back(visit5);
 
-  std::vector<history::Cluster> result_clusters_1 =
-      ClusterVisits(ClusteringRequestSource::kJourneysPage, visits);
+  ClusterVisits(ClusteringRequestSource::kJourneysPage, visits);
   EXPECT_EQ(2u, GetSiteEngagementGetScoreInvocationCount());
 
   // No new queries should be issued when cache store is enabled.
-  std::vector<history::Cluster> result_clusters_2 =
-      ClusterVisits(ClusteringRequestSource::kJourneysPage, visits);
+  ClusterVisits(ClusteringRequestSource::kJourneysPage, visits);
   EXPECT_EQ(2u, GetSiteEngagementGetScoreInvocationCount());
 }
 

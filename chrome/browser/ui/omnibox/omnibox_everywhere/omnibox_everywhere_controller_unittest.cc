@@ -15,6 +15,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_path_override.h"
 #include "base/test/test_future.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile_attributes_init_params.h"
@@ -48,6 +49,8 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "base/base_paths_win.h"
+#include "base/strings/strcat.h"
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_shortcut_win.h"
 #endif
 
 namespace {
@@ -229,12 +232,44 @@ TEST_F(OmniboxEverywhereControllerTest, OnInvokeEphemeralModeToggling) {
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
                       profile_.get(), GetContext());
   EXPECT_TRUE(controller.IsVisible());
+  EXPECT_TRUE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
 
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
                       profile_.get(), GetContext());
   EXPECT_FALSE(controller.IsVisible());
 
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
+                      profile_.get(), GetContext());
+  EXPECT_TRUE(controller.IsVisible());
+}
+
+TEST_F(OmniboxEverywhereControllerTest,
+       OnInvokeNtpPromoShowsWidgetWithoutMarkingUsed) {
+  TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetBoolean(
+      omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, true);
+
+  FakeGlobalAcceleratorListener fake_listener;
+  omnibox_everywhere::OmniboxEverywhereController controller(
+      base::BindRepeating(
+          [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+            return std::make_unique<TestWebUIContentsWrapper>(profile);
+          }),
+      &fake_listener);
+
+  EXPECT_FALSE(controller.IsVisible());
+  EXPECT_FALSE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
+
+  controller.OnInvoke(omnibox_everywhere::InvocationSource::kNtpPromo,
+                      profile_.get(), GetContext());
+  EXPECT_TRUE(controller.IsVisible());
+  EXPECT_FALSE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
+
+  // Invoking again from the NTP promo keeps the widget visible instead of
+  // toggling it closed.
+  controller.OnInvoke(omnibox_everywhere::InvocationSource::kNtpPromo,
                       profile_.get(), GetContext());
   EXPECT_TRUE(controller.IsVisible());
 }
@@ -881,10 +916,15 @@ TEST_F(OmniboxEverywhereControllerTest, MAYBE_OnInvokeCommandLineShowsUI) {
             return std::make_unique<TestWebUIContentsWrapper>(profile);
           }));
 
+  EXPECT_FALSE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
+
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kCommandLine,
                       profile_.get(), GetContext());
   EXPECT_EQ(profile_.get(), controller.target_profile());
   EXPECT_TRUE(controller.IsVisible());
+  EXPECT_TRUE(profile_->GetPrefs()->GetBoolean(
+      omnibox_everywhere::prefs::kNtpPromoCompleted));
 
   // Repeated kCommandLine invocation should keep the widget open (not
   // toggle-closed).
@@ -986,10 +1026,22 @@ TEST_F(OmniboxEverywhereControllerTest,
 
 
 TEST_F(OmniboxEverywhereControllerTest, PinToTaskbar) {
+  base::HistogramTester histogram_tester;
   omnibox_everywhere::OmniboxEverywhereController controller;
   base::test::TestFuture<bool> future;
   controller.OfferPinToTaskbar(future.GetCallback());
+#if BUILDFLAG(IS_WIN)
+  // The pin result depends on the OS, so only the Start Menu shortcut that
+  // pinning requires and the attempt on the Omnibox Everywhere channel are
+  // verified.
+  EXPECT_TRUE(future.Wait());
+  EXPECT_TRUE(base::PathExists(temp_start_menu_dir_.GetPath().Append(
+      base::StrCat({omnibox_everywhere::GetDisplayName(), L".lnk"}))));
+  histogram_tester.ExpectTotalCount(
+      "Windows.TaskbarPinResult.OmniboxEverywhere", 1);
+#else
   EXPECT_FALSE(future.Get());
+#endif
 }
 
 TEST_F(OmniboxEverywhereControllerTest,
@@ -1032,6 +1084,11 @@ TEST_F(OmniboxEverywhereControllerTest,
             return std::make_unique<TestWebUIContentsWrapper>(profile);
           }));
 
+  EXPECT_FALSE(controller.InvokeForStartup(
+      omnibox_everywhere::InvocationSource::kCommandLine, profile_.get(),
+      GetContext()));
+  EXPECT_FALSE(controller.IsVisible());
+
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
                       profile_.get(), GetContext());
   EXPECT_FALSE(controller.IsVisible());
@@ -1043,6 +1100,186 @@ TEST_F(OmniboxEverywhereControllerTest,
   controller.OnInvoke(omnibox_everywhere::InvocationSource::kProfilePicker,
                       profile_.get());
   EXPECT_FALSE(controller.IsVisible());
+}
+
+TEST_F(OmniboxEverywhereControllerTest,
+       DisablingOmniboxEverywhereClosesOpenWidget) {
+  TestingPrefServiceSimple* local_state =
+      TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
+
+  for (bool ephemeral : {true, false}) {
+    SCOPED_TRACE(testing::Message() << "ephemeral=" << ephemeral);
+    local_state->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEphemeralModel, ephemeral);
+    local_state->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEnabled, true);
+
+    omnibox_everywhere::OmniboxEverywhereController controller(
+        base::BindRepeating(
+            [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+              return std::make_unique<TestWebUIContentsWrapper>(profile);
+            }));
+
+    controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
+                        profile_.get(), GetContext());
+    ASSERT_TRUE(controller.IsVisible());
+
+    // Disabling destroys the widget and its WebContents.
+    local_state->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEnabled, false);
+    EXPECT_FALSE(controller.IsEnabled());
+    EXPECT_FALSE(controller.IsVisible());
+    EXPECT_FALSE(controller.ui_manager()->widget());
+    EXPECT_FALSE(controller.ui_manager()->web_contents());
+    EXPECT_FALSE(controller.ui_manager()->profile());
+
+    // Re-enabling updates IsEnabled() without spontaneously reopening the UI.
+    local_state->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEnabled, true);
+    EXPECT_TRUE(controller.IsEnabled());
+    EXPECT_FALSE(controller.IsVisible());
+
+    // The next invocation creates a new widget.
+    controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
+                        profile_.get(), GetContext());
+    EXPECT_TRUE(controller.IsVisible());
+    EXPECT_EQ(profile_.get(), controller.ui_manager()->profile());
+  }
+}
+
+// Tests that a screen picker that closes after Omnibox Everywhere is disabled
+// does not reopen the widget.
+TEST_F(OmniboxEverywhereControllerTest,
+       ScreensharePickerClosedAfterDisablingDoesNotReopenWidget) {
+  TestingPrefServiceSimple* local_state =
+      TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
+  omnibox_everywhere::OmniboxEverywhereController controller(
+      base::BindRepeating(
+          [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+            return std::make_unique<TestWebUIContentsWrapper>(profile);
+          }));
+
+  controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
+                      profile_.get(), GetContext());
+  ASSERT_TRUE(controller.IsVisible());
+  controller.ui_manager()->OnScreensharePickerOpened();
+  ASSERT_TRUE(controller.ui_manager()->IsScreenshareCaptureInProgress());
+
+  local_state->SetBoolean(omnibox_everywhere::prefs::kOmniboxEverywhereEnabled,
+                          false);
+  EXPECT_FALSE(controller.ui_manager()->IsScreenshareCaptureInProgress());
+
+  controller.ui_manager()->OnScreensharePickerClosed();
+  EXPECT_FALSE(controller.IsVisible());
+  EXPECT_FALSE(controller.ui_manager()->widget());
+}
+
+// Tests that enforcing Omnibox Everywhere on by policy clears user-set `false`
+// background mode and launch on startup prefs, both when the controller is
+// created and when the policy changes, so the first invocation can turn them
+// on.
+TEST_F(OmniboxEverywhereControllerTest,
+       EnforcedByPolicyClearsUserDisabledBackgroundPrefs) {
+  TestingPrefServiceSimple* local_state =
+      TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
+  const PrefService::Preference* bg_mode_pref = local_state->FindPreference(
+      omnibox_everywhere::prefs::kOmniboxEverywhereBackgroundMode);
+  const PrefService::Preference* launch_pref = local_state->FindPreference(
+      omnibox_everywhere::prefs::kOmniboxEverywhereLaunchOnStartup);
+  ASSERT_TRUE(bg_mode_pref);
+  ASSERT_TRUE(launch_pref);
+
+  for (bool enforce_before_creation : {true, false}) {
+    SCOPED_TRACE(testing::Message()
+                 << "enforce_before_creation=" << enforce_before_creation);
+    // Turning Search from desktop off in chrome://settings writes `false` to
+    // all three prefs.
+    local_state->RemoveManagedPref(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEnabled);
+    local_state->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereEnabled, false);
+    local_state->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereBackgroundMode, false);
+    local_state->SetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereLaunchOnStartup, false);
+
+    if (enforce_before_creation) {
+      local_state->SetManagedPref(
+          omnibox_everywhere::prefs::kOmniboxEverywhereEnabled,
+          base::Value(true));
+    }
+    omnibox_everywhere::OmniboxEverywhereController controller(
+        base::BindRepeating(
+            [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+              return std::make_unique<TestWebUIContentsWrapper>(profile);
+            }));
+    if (!enforce_before_creation) {
+      EXPECT_FALSE(bg_mode_pref->IsDefaultValue());
+      EXPECT_FALSE(launch_pref->IsDefaultValue());
+      local_state->SetManagedPref(
+          omnibox_everywhere::prefs::kOmniboxEverywhereEnabled,
+          base::Value(true));
+    }
+
+    ASSERT_TRUE(controller.IsEnabled());
+    EXPECT_TRUE(bg_mode_pref->IsDefaultValue());
+    EXPECT_TRUE(launch_pref->IsDefaultValue());
+
+    controller.OnInvoke(omnibox_everywhere::InvocationSource::kGlobalHotkey,
+                        profile_.get(), GetContext());
+    EXPECT_TRUE(local_state->GetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereBackgroundMode));
+    EXPECT_TRUE(local_state->GetBoolean(
+        omnibox_everywhere::prefs::kOmniboxEverywhereLaunchOnStartup));
+    controller.Hide();
+  }
+  local_state->RemoveManagedPref(
+      omnibox_everywhere::prefs::kOmniboxEverywhereEnabled);
+}
+
+// Tests that user-set `false` background mode and launch on startup prefs are
+// kept when Omnibox Everywhere is enabled by the user or recommended by
+// policy, or when policy enforces it off.
+TEST_F(OmniboxEverywhereControllerTest,
+       KeepsUserDisabledBackgroundPrefsUnlessEnforcedOn) {
+  TestingPrefServiceSimple* local_state =
+      TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
+  local_state->SetBoolean(
+      omnibox_everywhere::prefs::kOmniboxEverywhereBackgroundMode, false);
+  local_state->SetBoolean(
+      omnibox_everywhere::prefs::kOmniboxEverywhereLaunchOnStartup, false);
+  const PrefService::Preference* bg_mode_pref = local_state->FindPreference(
+      omnibox_everywhere::prefs::kOmniboxEverywhereBackgroundMode);
+  const PrefService::Preference* launch_pref = local_state->FindPreference(
+      omnibox_everywhere::prefs::kOmniboxEverywhereLaunchOnStartup);
+  ASSERT_TRUE(bg_mode_pref);
+  ASSERT_TRUE(launch_pref);
+
+  omnibox_everywhere::OmniboxEverywhereController controller(
+      base::BindRepeating(
+          [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+            return std::make_unique<TestWebUIContentsWrapper>(profile);
+          }));
+  ASSERT_TRUE(controller.IsEnabled());
+  EXPECT_FALSE(bg_mode_pref->IsDefaultValue());
+  EXPECT_FALSE(launch_pref->IsDefaultValue());
+
+  local_state->SetRecommendedPref(
+      omnibox_everywhere::prefs::kOmniboxEverywhereEnabled, base::Value(true));
+  ASSERT_TRUE(controller.IsEnabled());
+  EXPECT_FALSE(bg_mode_pref->IsDefaultValue());
+  EXPECT_FALSE(launch_pref->IsDefaultValue());
+
+  local_state->SetManagedPref(
+      omnibox_everywhere::prefs::kOmniboxEverywhereEnabled, base::Value(false));
+  ASSERT_FALSE(controller.IsEnabled());
+  EXPECT_FALSE(bg_mode_pref->IsDefaultValue());
+  EXPECT_FALSE(launch_pref->IsDefaultValue());
+
+  local_state->RemoveManagedPref(
+      omnibox_everywhere::prefs::kOmniboxEverywhereEnabled);
+  local_state->RemoveRecommendedPref(
+      omnibox_everywhere::prefs::kOmniboxEverywhereEnabled);
 }
 
 TEST_F(OmniboxEverywhereControllerTest, DisabledHotkeyBlocksHotkeyInvocation) {
@@ -1162,6 +1399,47 @@ TEST_F(OmniboxEverywhereControllerTest,
 
   // Controller should not have loaded the profile because Omnibox Everywhere
   // is disabled.
+  EXPECT_EQ(nullptr, controller.target_profile());
+}
+
+TEST_F(OmniboxEverywhereControllerTest,
+       BackgroundModePolicyDisabledDoesNotLoadProfileOnBackgroundStartup) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  TestingProfileManager testing_profile_manager(
+      TestingBrowserProcess::GetGlobal());
+  ASSERT_TRUE(testing_profile_manager.SetUp(temp_dir.GetPath()));
+
+  base::FilePath test_profile_path =
+      temp_dir.GetPath().AppendASCII("AsyncTestProfile");
+  ASSERT_TRUE(base::CreateDirectory(test_profile_path));
+
+  ProfileAttributesInitParams init_params;
+  init_params.profile_path = test_profile_path;
+  init_params.profile_name = u"AsyncTestProfile";
+  testing_profile_manager.profile_attributes_storage()->AddProfile(
+      std::move(init_params));
+
+  TestingPrefServiceSimple* local_state =
+      TestingBrowserProcess::GetGlobal()->GetTestingLocalState();
+  local_state->SetFilePath(omnibox_everywhere::prefs::kLastTargetProfileDir,
+                           test_profile_path);
+  local_state->SetBoolean(
+      omnibox_everywhere::prefs::kOmniboxEverywhereBackgroundMode, true);
+  local_state->SetManagedPref(::prefs::kBackgroundModeEnabled,
+                              base::Value(false));
+
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      switches::kNoStartupWindow);
+
+  omnibox_everywhere::OmniboxEverywhereController controller(
+      base::BindRepeating(
+          [](Profile* profile) -> std::unique_ptr<WebUIContentsWrapper> {
+            return std::make_unique<TestWebUIContentsWrapper>(profile);
+          }));
+
+  task_environment()->RunUntilIdle();
   EXPECT_EQ(nullptr, controller.target_profile());
 }
 

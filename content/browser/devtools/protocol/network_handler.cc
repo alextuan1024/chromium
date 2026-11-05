@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -33,6 +34,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
+#include "components/url_pattern/simple_url_pattern_matcher.h"
 #include "content/browser/background_sync/background_sync_manager.h"
 #include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/devtools_io_context.h"
@@ -136,6 +138,78 @@ using ClearBrowserCookiesCallback =
 
 static constexpr char kInvalidCookieFields[] = "Invalid cookie fields";
 
+static constexpr char kInvalidSocketLayerThrottlingValues[] =
+    "Socket-layer network throttling requires a finite, non-negative latency "
+    "and finite throughputs.";
+
+// Returns increasing numbers, to order sessions' network conditions by when
+// the sessions set them, after having none.
+uint64_t NextNetworkConditionsOrder() {
+  CHECK_CURRENTLY_ON(BrowserThread::UI);
+  static uint64_t next_order = 0;
+  return next_order++;
+}
+
+// Returns a weak pointer to `storage_partition`, which is a
+// StoragePartitionImpl as all of the browser's partitions are.
+base::WeakPtr<StoragePartitionImpl> GetWeakStoragePartition(
+    StoragePartition* storage_partition) {
+  return storage_partition
+             ? static_cast<StoragePartitionImpl*>(storage_partition)
+                   ->GetWeakPtr()
+             : nullptr;
+}
+
+bool IsSocketLayerNetworkThrottlingEnabled() {
+  return base::FeatureList::IsEnabled(
+      network::features::kSocketLayerNetworkThrottling);
+}
+
+bool AreValidSocketLayerThrottlingValues(double latency_ms,
+                                         double download_throughput,
+                                         double upload_throughput) {
+  return std::isfinite(latency_ms) && latency_ms >= 0 &&
+         !base::Milliseconds(latency_ms).is_max() &&
+         std::isfinite(download_throughput) && std::isfinite(upload_throughput);
+}
+
+bool Throttles(const network::mojom::NetworkConditions& conditions) {
+  return conditions.latency.is_positive() ||
+         conditions.download_throughput > 0 || conditions.upload_throughput > 0;
+}
+
+// With socket-layer network throttling, the sockets of a session's requests
+// apply the conditions of its first rule without a URL pattern: that rule
+// applies to all requests that the rules before it don't match, and the rules
+// after it never apply. So rules with a URL pattern can't throttle, and those
+// before a rule without one that throttles must emulate offline, which
+// requests still do themselves.
+Response ValidateSocketLayerNetworkConditions(
+    const std::vector<network::mojom::MatchedNetworkConditionsPtr>& rules) {
+  auto global_rule = std::ranges::find_if(
+      rules, [](const auto& rule) { return rule->pattern.empty(); });
+  const bool global_rule_throttles = global_rule != rules.end() &&
+                                     !(*global_rule)->conditions->offline &&
+                                     Throttles(*(*global_rule)->conditions);
+  for (auto rule = rules.begin(); rule != rules.end(); ++rule) {
+    const network::mojom::NetworkConditions& conditions = *(*rule)->conditions;
+    if ((*rule)->pattern.empty() || conditions.offline) {
+      continue;
+    }
+    if (Throttles(conditions)) {
+      return Response::InvalidParams(
+          "Socket-layer network throttling doesn't support throttling rules "
+          "with a URL pattern yet.");
+    }
+    if (global_rule_throttles && rule < global_rule) {
+      return Response::InvalidParams(
+          "Socket-layer network throttling can't exempt requests that match a "
+          "URL pattern from a rule without one.");
+    }
+  }
+  return Response::Success();
+}
+
 void DispatchSearchResults(
     std::unique_ptr<Network::Backend::SearchInResponseBodyCallback> callback,
     std::optional<std::vector<network::mojom::MessageSearchMatchPtr>> matches) {
@@ -221,7 +295,9 @@ std::unique_ptr<Network::CookiePartitionKey> BuildCookiePartitionKey(
 
 std::unique_ptr<Network::Cookie> BuildCookie(
     const net::CanonicalCookie& cookie) {
-  DCHECK(cookie.ExpiryDate().is_null() || !cookie.ExpiryDate().is_inf());
+  // Max-Age <= 0 produces Time::Min(), including in blocked response cookies.
+  // CDP serializes this negative infinity as null, as documented for expires.
+  DCHECK(!cookie.ExpiryDate().is_max());
   std::unique_ptr<Network::Cookie> devtools_cookie =
       Network::Cookie::Create()
           .SetName(cookie.Name())
@@ -231,7 +307,7 @@ std::unique_ptr<Network::Cookie> BuildCookie(
           .SetExpires(cookie.ExpiryDate().is_null()
                           ? -1
                           : cookie.ExpiryDate().InSecondsFSinceUnixEpoch())
-          .SetSize(cookie.Name().length() + cookie.Value().length())
+          .SetSize(net::cookie_util::NameValueSizeBytes(cookie))
           .SetHttpOnly(cookie.IsHttpOnly())
           .SetSecure(cookie.SecureAttribute())
           .SetSession(!cookie.IsPersistent())
@@ -903,12 +979,6 @@ GetProtocolBlockedSetCookieReason(net::CookieInclusionStatus status) {
     blockedReasons->push_back(
         Network::SetCookieBlockedReasonEnum::UserPreferences);
   }
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::ExclusionReason::
-              EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET)) {
-    blockedReasons->push_back(
-        Network::SetCookieBlockedReasonEnum::ThirdPartyBlockedInFirstPartySet);
-  }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_THIRD_PARTY_PHASEOUT)) {
     blockedReasons->push_back(
@@ -1005,12 +1075,6 @@ GetProtocolBlockedCookieReason(net::CookieInclusionStatus status) {
     blockedReasons->push_back(
         Network::CookieBlockedReasonEnum::UserPreferences);
   }
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::ExclusionReason::
-              EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET)) {
-    blockedReasons->push_back(
-        Network::CookieBlockedReasonEnum::ThirdPartyBlockedInFirstPartySet);
-  }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_THIRD_PARTY_PHASEOUT)) {
     blockedReasons->push_back(
@@ -1077,8 +1141,6 @@ Network::CookieExemptionReason GetProtocolCookieExemptionReason(
       return Network::CookieExemptionReasonEnum::EnterprisePolicy;
     case net::CookieInclusionStatus::ExemptionReason::kStorageAccess:
       return Network::CookieExemptionReasonEnum::StorageAccess;
-    case net::CookieInclusionStatus::ExemptionReason::kTopLevelStorageAccess:
-      return Network::CookieExemptionReasonEnum::TopLevelStorageAccess;
     case net::CookieInclusionStatus::ExemptionReason::kScheme:
       return Network::CookieExemptionReasonEnum::Scheme;
     case net::CookieInclusionStatus::ExemptionReason::
@@ -1219,8 +1281,8 @@ BuildProtocolDeviceBoundSessionUsages(
 class BackgroundSyncRestorer {
  public:
   BackgroundSyncRestorer(const std::string& host_id,
-                         StoragePartition* storage_partition)
-      : host_id_(host_id), storage_partition_(storage_partition) {
+                         base::WeakPtr<StoragePartitionImpl> storage_partition)
+      : host_id_(host_id), storage_partition_(std::move(storage_partition)) {
     SetServiceWorkerOfflineStatus(true);
   }
 
@@ -1229,8 +1291,9 @@ class BackgroundSyncRestorer {
 
   ~BackgroundSyncRestorer() { SetServiceWorkerOfflineStatus(false); }
 
-  void SetStoragePartition(StoragePartition* storage_partition) {
-    storage_partition_ = storage_partition;
+  void SetStoragePartition(
+      base::WeakPtr<StoragePartitionImpl> storage_partition) {
+    storage_partition_ = std::move(storage_partition);
   }
 
  private:
@@ -1245,8 +1308,7 @@ class BackgroundSyncRestorer {
     scoped_refptr<ServiceWorkerDevToolsAgentHost> service_worker_host =
         static_cast<ServiceWorkerDevToolsAgentHost*>(host.get());
     scoped_refptr<BackgroundSyncContextImpl> sync_context =
-        static_cast<StoragePartitionImpl*>(storage_partition_)
-            ->GetBackgroundSyncContext();
+        storage_partition_->GetBackgroundSyncContext();
     if (offline) {
       auto* swcontext = static_cast<ServiceWorkerContextWrapper*>(
           storage_partition_->GetServiceWorkerContext());
@@ -1266,7 +1328,7 @@ class BackgroundSyncRestorer {
   }
 
   std::string host_id_;
-  raw_ptr<StoragePartition> storage_partition_;
+  base::WeakPtr<StoragePartitionImpl> storage_partition_;
   int64_t offline_sw_registration_id_ =
       blink::mojom::kInvalidServiceWorkerRegistrationId;
 };
@@ -1276,7 +1338,6 @@ NetworkHandler::NetworkHandler(
     const base::UnguessableToken& devtools_token,
     DevToolsIOContext* io_context,
     DevToolsSession* session,
-    StoragePartition* maybe_storage_partition,
     DevToolsAgentHostClient* client,
     base::OnceClosure cleanup_after_modifications_callback)
     : DevToolsDomainHandler(Network::Metainfo::domainName),
@@ -1285,7 +1346,7 @@ NetworkHandler::NetworkHandler(
       io_context_(io_context),
       client_(client),
       browser_context_(nullptr),
-      storage_partition_(maybe_storage_partition),
+      storage_partition_(nullptr),
       host_(nullptr),
       enabled_(false),
 #if BUILDFLAG(ENABLE_REPORTING)
@@ -1421,7 +1482,8 @@ void NetworkHandler::SetRenderer(int render_process_host_id,
   RenderProcessHost* process_host =
       RenderProcessHost::FromID(render_process_host_id);
   if (process_host) {
-    storage_partition_ = process_host->GetStoragePartition();
+    storage_partition_ =
+        GetWeakStoragePartition(process_host->GetStoragePartition());
     browser_context_ = process_host->GetBrowserContext();
   } else {
     storage_partition_ = nullptr;
@@ -1432,10 +1494,12 @@ void NetworkHandler::SetRenderer(int render_process_host_id,
   if (background_sync_restorer_) {
     background_sync_restorer_->SetStoragePartition(storage_partition_);
   }
+  UpdateSocketLayerNetworkConditions(/*conditions_changed=*/false);
 }
 
 void NetworkHandler::SetStoragePartition(StoragePartition* storage_partition) {
-  storage_partition_ = storage_partition;
+  storage_partition_ = GetWeakStoragePartition(storage_partition);
+  UpdateSocketLayerNetworkConditions(/*conditions_changed=*/false);
 }
 
 Response NetworkHandler::Enable(
@@ -1474,6 +1538,7 @@ DispatchResponse NetworkHandler::Disable() {
   if (network_conditions_configured_) {
     SetNetworkConditions({}, /*offline=*/false);
   }
+  ClearSocketLayerNetworkConditions();
   extra_headers_.clear();
   session()->browser_originating_session_state()->extra_request_headers.clear();
   enable_third_party_cookie_restriction_ = false;
@@ -2029,6 +2094,14 @@ String BuildProtocolDeviceBoundSessionFetchResult(
         kAttestationSigningError:
       return protocol::Network::DeviceBoundSessionFetchResultEnum::
           AttestationSigningError;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kFederatedRegistrationRedirected:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          FederatedRegistrationRedirected;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kCrossSiteRefreshSessionConfig:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          CrossSiteRefreshSessionConfig;
   }
 }
 // LINT.ThenChange(//third_party/blink/public/devtools_protocol/domains/Network.pdl:DeviceBoundSessionFetchResult)
@@ -2064,6 +2137,9 @@ String BuildProtocolDeviceBoundSessionRefreshResult(
     case net::device_bound_sessions::RefreshResult::kInScopeRefreshNotYetNeeded:
       return protocol::Network::RefreshEventDetails::RefreshResultEnum::
           InScopeRefreshNotYetNeeded;
+    case net::device_bound_sessions::RefreshResult::kCanceled:
+      return protocol::Network::RefreshEventDetails::RefreshResultEnum::
+          Canceled;
   }
 }
 // LINT.ThenChange(//third_party/blink/public/devtools_protocol/domains/Network.pdl:DeviceBoundSessionRefreshResult,//net/device_bound_sessions/refresh_result.h:DeviceBoundSessionRefreshResult)
@@ -2555,7 +2631,7 @@ void NetworkHandler::SetCookies(
   CHECK(host_);
 
   NetworkHandler::SetCookies(
-      storage_partition_, std::move(cookies), CHECK_DEREF(client_.get()),
+      storage_partition_.get(), std::move(cookies), CHECK_DEREF(client_.get()),
       host_->web_ui(),
       base::BindOnce(
           [](std::unique_ptr<SetCookiesCallback> callback, bool success) {
@@ -2655,6 +2731,14 @@ Response NetworkHandler::EmulateNetworkConditions(
   std::vector<network::mojom::MatchedNetworkConditionsPtr> network_conditions;
   bool throttling_enabled = offline || latency > 0 || download_throughput > 0 ||
                             upload_throughput > 0;
+  // Only values that the socket layer applies need to be valid there, and it
+  // applies none when nothing throttles, or when offline.
+  if (IsSocketLayerNetworkThrottlingEnabled() && throttling_enabled &&
+      !offline &&
+      !AreValidSocketLayerThrottlingValues(latency, download_throughput,
+                                           upload_throughput)) {
+    return Response::InvalidParams(kInvalidSocketLayerThrottlingValues);
+  }
   if (throttling_enabled) {
     network_conditions.push_back(
         network::mojom::MatchedNetworkConditions::New());
@@ -2684,13 +2768,38 @@ Response NetworkHandler::EmulateNetworkConditionsByRule(
     std::unique_ptr<protocol::Array<protocol::Network::NetworkConditions>>
         matched_network_conditions,
     std::unique_ptr<protocol::Array<String>>* rule_ids_result) {
+  const bool socket_layer = IsSocketLayerNetworkThrottlingEnabled();
+  if (socket_layer) {
+    // Only the values that the socket layer applies need to be valid there:
+    // those of the first rule without a URL pattern (see
+    // ValidateSocketLayerNetworkConditions()), unless it emulates offline.
+    auto global_rule = std::ranges::find_if(
+        *matched_network_conditions,
+        [](const auto& rule) { return rule->GetUrlPattern().empty(); });
+    if (global_rule != matched_network_conditions->end() &&
+        !offline.value_or((*global_rule)->GetOffline(false)) &&
+        !AreValidSocketLayerThrottlingValues(
+            (*global_rule)->GetLatency(),
+            (*global_rule)->GetDownloadThroughput(),
+            (*global_rule)->GetUploadThroughput())) {
+      return Response::InvalidParams(kInvalidSocketLayerThrottlingValues);
+    }
+  }
   std::vector<network::mojom::MatchedNetworkConditionsPtr> matched_conditions;
-  *rule_ids_result = std::make_unique<protocol::Array<String>>();
+  auto rule_ids = std::make_unique<protocol::Array<String>>();
   for (auto& matched_condition : *matched_network_conditions) {
+    const std::string& pattern = matched_condition->GetUrlPattern();
+    if (!pattern.empty() &&
+        !url_pattern::SimpleUrlPatternMatcher::Create(pattern,
+                                                      /*base_url=*/nullptr)
+             .has_value()) {
+      return Response::InvalidParams(base::StrCat(
+          {"Pattern \"", pattern, "\" failed to parse as a URLPattern."}));
+    }
     auto rule_id = base::UnguessableToken::Create();
     network::mojom::MatchedNetworkConditionsPtr conditions =
         network::mojom::MatchedNetworkConditions::New();
-    conditions->pattern = matched_condition->GetUrlPattern();
+    conditions->pattern = pattern;
     conditions->conditions = network::mojom::NetworkConditions::New();
     conditions->conditions->offline =
         offline.has_value() ? offline.value()
@@ -2707,9 +2816,17 @@ Response NetworkHandler::EmulateNetworkConditionsByRule(
     conditions->conditions->packet_reordering =
         matched_condition->GetPacketReordering(false);
     conditions->conditions->rule_id = rule_id;
-    rule_ids_result->get()->push_back(rule_id.ToString());
+    rule_ids->push_back(rule_id.ToString());
     matched_conditions.emplace_back(std::move(conditions));
   }
+  if (socket_layer) {
+    if (Response response =
+            ValidateSocketLayerNetworkConditions(matched_conditions);
+        !response.IsSuccess()) {
+      return response;
+    }
+  }
+  *rule_ids_result = std::move(rule_ids);
   SetNetworkConditions(
       std::move(matched_conditions),
       emulate_offline_service_worker.value_or(offline.value_or(false)));
@@ -3512,7 +3629,8 @@ void NetworkHandler::LoadingComplete(
       request_id,
       status.completion_time.ToInternalValue() /
           static_cast<double>(base::Time::kMicrosecondsPerSecond),
-      status.encoded_data_length.InBytesF());
+      status.encoded_data_length.InBytesF(),
+      status.encoded_body_length.InBytesF());
 }
 
 void NetworkHandler::FetchKeepAliveRequestWillBeSent(
@@ -3700,12 +3818,14 @@ void NetworkHandler::BodyDataReceived(const String& request_id,
   received_body_data_[request_id] = {body, is_base64_encoded};
 }
 
-void NetworkHandler::FedCmRequestWillBeSent(
+void NetworkHandler::WebIdRequestWillBeSent(
     const std::string& request_id,
     const std::string& loader_id,
     const network::ResourceRequest& request,
     const std::optional<std::string>& request_body,
     const GURL& initiator_url,
+    const char* initiator_type,
+    const char* resource_type,
     const std::optional<base::UnguessableToken>& frame_token,
     base::TimeTicks timestamp) {
   std::vector<base::expected<std::vector<uint8_t>, std::string>>
@@ -3717,11 +3837,11 @@ void NetworkHandler::FedCmRequestWillBeSent(
   std::optional<std::string> frame_token_str =
       frame_token.has_value() ? std::make_optional(frame_token->ToString())
                               : std::nullopt;
-  RequestWillBeSent(
-      request_id, loader_id, request, initiator_url,
-      Network::Initiator::TypeEnum::FedCM, Network::ResourceTypeEnum::FedCM,
-      std::move(frame_token_str), timestamp, /*redirect_info=*/std::nullopt,
-      /*initiator_devtools_request_id=*/"", std::move(request_body_bytes));
+  RequestWillBeSent(request_id, loader_id, request, initiator_url,
+                    initiator_type, resource_type, std::move(frame_token_str),
+                    timestamp, /*redirect_info=*/std::nullopt,
+                    /*initiator_devtools_request_id=*/"",
+                    std::move(request_body_bytes));
 }
 
 void NetworkHandler::ProcessDurableMessageOrGetLocalData(
@@ -3750,8 +3870,6 @@ void NetworkHandler::ProcessDurableMessageOrGetLocalData(
 void NetworkHandler::GetResponseBody(
     const String& request_id,
     std::unique_ptr<GetResponseBodyCallback> callback) {
-  CHECK(storage_partition_);
-  CHECK(devtools_token_);
   network::mojom::DurableMessageCollector* collector =
       root_session_->MaybeGetDurableMessageCollector();
   if (collector) {
@@ -3850,6 +3968,10 @@ NetworkHandler::CreateRequestFromResourceRequest(
   return request_object;
 }
 
+bool NetworkHandler::MayApplyOverridesTo(const GURL& url) const {
+  return client_ && client_->MayAttachToURL(url, host_ && host_->web_ui());
+}
+
 void NetworkHandler::ApplyOverrides(net::HttpRequestHeaders* headers,
                                     bool* skip_service_worker,
                                     bool* disable_cache,
@@ -3881,6 +4003,13 @@ void NetworkHandler::ApplyCookieControlsOverrides(
 void NetworkHandler::SetNetworkConditions(
     std::vector<network::mojom::MatchedNetworkConditionsPtr> matched_conditions,
     bool offline) {
+  // With socket-layer network throttling, the network context only applies
+  // the conditions' offline emulation to requests (and still applies all of
+  // them to P2P sockets), so their latency and throughputs are applied to the
+  // requests' sockets.
+  if (IsSocketLayerNetworkThrottlingEnabled()) {
+    SetSocketLayerNetworkConditions(matched_conditions);
+  }
   if (!storage_partition_) {
     return;
   }
@@ -3899,6 +4028,121 @@ void NetworkHandler::SetNetworkConditions(
   background_sync_restorer_.reset(
       offline ? new BackgroundSyncRestorer(host_id_, storage_partition_)
               : nullptr);
+}
+
+// The sockets of the session's requests apply the conditions of its first rule
+// without a URL pattern, as the rules before it can only emulate offline or
+// leave requests unthrottled (see ValidateSocketLayerNetworkConditions()), and
+// the rules after it never apply.
+//
+// Socket-layer conditions apply to requests whose throttling_profile_id is the
+// DevTools token of their frame's current host, which navigation and
+// subresource requests carry, and follow the session across frame hosts and
+// storage partitions. As with the conditions requests apply, they're set for
+// `throttling_client_id_`, so sessions attached to the same frame don't replace
+// or clear each other's conditions: requests use those of the first session
+// that set conditions, including after the conditions follow the sessions to
+// another frame token or storage partition.
+void NetworkHandler::SetSocketLayerNetworkConditions(
+    const std::vector<network::mojom::MatchedNetworkConditionsPtr>& rules) {
+  if (rules.empty()) {
+    ClearSocketLayerNetworkConditions();
+    return;
+  }
+  // Updated conditions keep their place among other sessions', like the
+  // conditions requests apply.
+  if (!network_conditions_order_) {
+    network_conditions_order_ = NextNetworkConditionsOrder();
+  }
+  auto global_rule = std::ranges::find_if(
+      rules, [](const auto& rule) { return rule->pattern.empty(); });
+  std::optional<SocketLayerNetworkConditions> conditions;
+  if (global_rule == rules.end()) {
+    // Requests that the rules don't match use other sessions' conditions, so
+    // this session has none at the socket layer. Unlike at the request level,
+    // other sessions' conditions then also throttle the requests that rules
+    // without throttling match.
+  } else if (std::all_of(
+                 rules.begin(), std::next(global_rule),
+                 [](const auto& rule) { return rule->conditions->offline; })) {
+    // Requests fail before reaching the network, so keep the current
+    // conditions, which requests will use once back online, rather than
+    // replace their isolated session, and its HTTP cache.
+    conditions =
+        socket_layer_conditions_.value_or(SocketLayerNetworkConditions());
+  } else if (!(*global_rule)->conditions->offline) {
+    const network::mojom::NetworkConditions& rule_conditions =
+        *(*global_rule)->conditions;
+    conditions = SocketLayerNetworkConditions{
+        .latency = rule_conditions.latency,
+        .download_throughput =
+            std::max(rule_conditions.download_throughput, 0.0),
+        .upload_throughput = std::max(rule_conditions.upload_throughput, 0.0),
+    };
+  } else {
+    // Only requests that rules before it match, which don't throttle, reach
+    // the network.
+    conditions = SocketLayerNetworkConditions();
+  }
+  const bool conditions_changed = conditions != socket_layer_conditions_;
+  socket_layer_conditions_ = conditions;
+  UpdateSocketLayerNetworkConditions(conditions_changed);
+}
+
+void NetworkHandler::ClearSocketLayerNetworkConditions() {
+  network_conditions_order_.reset();
+  socket_layer_conditions_.reset();
+  UpdateSocketLayerNetworkConditions(/*conditions_changed=*/false);
+}
+
+void NetworkHandler::UpdateSocketLayerNetworkConditions(
+    bool conditions_changed) {
+  // Requests carry the DevTools token of their frame's current host, which
+  // usually matches `devtools_token_`, but may change (e.g. across MPArch
+  // activations).
+  StoragePartitionImpl* storage_partition =
+      socket_layer_conditions_ ? storage_partition_.get() : nullptr;
+  base::UnguessableToken token;
+  if (storage_partition) {
+    token = host_ ? host_->devtools_frame_token() : devtools_token_;
+    if (token.is_empty()) {
+      storage_partition = nullptr;
+    }
+  }
+  // TODO(crbug.com/496616821): Request-level conditions, which emulate
+  // offline, stay keyed on `devtools_token_`, as they were before socket-layer
+  // conditions. So when the frame's token changes, they stop applying, while
+  // these follow the frame. Request-level conditions should follow it too.
+  //
+  // TODO(crbug.com/496616821): Re-apply the conditions when the network service
+  // restarts, and the partition gets a new network context without them.
+  // Request-level conditions have the same issue.
+  //
+  // TODO(crbug.com/496616821): Throttle navigational prefetches, such as
+  // speculation rules ones. Their requests carry no DevTools token, so neither
+  // request-level nor socket-layer conditions apply to them. Once they carry
+  // the token of the frame that triggered them, cross-site ones will also need
+  // these conditions on the isolated network context that they go through.
+  const bool target_changed =
+      storage_partition != socket_layer_storage_partition_.get() ||
+      token != socket_layer_throttling_token_;
+  // There's nothing to clear if the partition was destroyed.
+  if (target_changed && socket_layer_storage_partition_) {
+    socket_layer_storage_partition_->GetNetworkContext()
+        ->ClearSocketLayerNetworkConditions(socket_layer_throttling_token_,
+                                            throttling_client_id_);
+  }
+  socket_layer_storage_partition_ =
+      storage_partition ? storage_partition->GetWeakPtr() : nullptr;
+  socket_layer_throttling_token_ = token;
+  if (storage_partition && (target_changed || conditions_changed)) {
+    // Throughput values are in bytes/sec, as mojo expects.
+    storage_partition->GetNetworkContext()->SetSocketLayerNetworkConditions(
+        token, throttling_client_id_, *network_conditions_order_,
+        socket_layer_conditions_->latency,
+        socket_layer_conditions_->download_throughput,
+        socket_layer_conditions_->upload_throughput);
+  }
 }
 
 namespace {

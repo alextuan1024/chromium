@@ -6,7 +6,6 @@
 
 #include <bitset>
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <new>
 #include <optional>
@@ -20,6 +19,7 @@
 #include "base/numerics/safe_conversions.h"
 #include "media/base/decoder_buffer.h"
 #include "media/base/video_codecs.h"
+#include "media/parsers/av1_svc_utils.h"
 #include "media/parsers/vp8_parser.h"
 #include "media/parsers/vp9_parser.h"
 #include "third_party/libgav1/src/src/buffer_pool.h"
@@ -133,6 +133,11 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
 
   std::optional<gfx::Size> GetResolution(
       const media::DecoderBuffer& buffer) override {
+    if (buffer.side_data() && buffer.side_data()->spatial_layers.size() > 1) {
+      DVLOG(1) << "Spatial layer decoding is not supported";
+      return std::nullopt;
+    }
+
     auto buffer_span = base::span(buffer);
     auto parser = base::WrapUnique(new (std::nothrow) libgav1::ObuParser(
         buffer_span.data(), buffer_span.size(), kDefaultOperatingPoint,
@@ -144,7 +149,8 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
     std::optional<gfx::Size> max_resolution;
     while (parser->HasData()) {
       libgav1::RefCountedBufferPtr current_frame;
-      libgav1::StatusCode status_code = parser->ParseOneFrame(&current_frame);
+      libgav1::StatusCode status_code =
+          media::ParseOneAV1Frame(*parser, &current_frame);
       if (status_code != libgav1::kStatusOk) {
         DLOG(ERROR) << "Failed parsing av1 frame: "
                     << static_cast<int>(status_code);
@@ -160,8 +166,18 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
         return std::nullopt;
       }
 
+      if (media::HasAV1SpatialLayerObu(parser->obu_headers())) {
+        DVLOG(1) << "Spatial layer decoding is not supported";
+        return std::nullopt;
+      }
+
+      const libgav1::ObuFrameHeader& frame_header = parser->frame_header();
+      if (!frame_header.show_existing_frame && parser->tile_buffers().empty()) {
+        continue;
+      }
+
       std::optional<gfx::Size> frame_size =
-          GetFrameSizeFromHeader(parser->frame_header());
+          GetFrameSizeFromHeader(frame_header);
       if (!frame_size) {
         return std::nullopt;
       }
@@ -172,7 +188,7 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
 
       decoder_state_.UpdateReferenceFrames(
           current_frame,
-          base::strict_cast<int>(parser->frame_header().refresh_frame_flags));
+          base::strict_cast<int>(frame_header.refresh_frame_flags));
     }
 
     return max_resolution;
@@ -181,26 +197,15 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
   media::VideoCodec codec() const override { return media::VideoCodec::kAV1; }
 
  private:
-  // Returns true iff the current decode sequence has multiple spatial layers.
-  bool IsSpatialLayerDecoding(int operating_point_idc) const {
-    // Spec 6.4.1.
-    constexpr int kTemporalLayerBitMaskBits = 8;
-    const int kUsedSpatialLayerBitMask =
-        (operating_point_idc >> kTemporalLayerBitMaskBits) & 0b1111;
-    // In case of an only temporal layer encoding e.g. L1T3, spatial layer#0 bit
-    // is 1. We allow this case.
-    return kUsedSpatialLayerBitMask > 1;
-  }
-
   bool UpdateCurrentSequenceHeader(
       const libgav1::ObuSequenceHeader& sequence_header) {
-    int operating_point_idc =
-        sequence_header.operating_point_idc[kDefaultOperatingPoint];
-    if (IsSpatialLayerDecoding(operating_point_idc)) {
+    if (media::IsAV1SpatialLayerSequence(sequence_header)) {
       constexpr size_t kOperatingPointIdcBits = 12;
-      DVLOG(1) << "Spatial layer decoding is not supported: "
-               << "operating_point_idc="
-               << std::bitset<kOperatingPointIdcBits>(operating_point_idc);
+      DVLOG(1)
+          << "Spatial layer decoding is not supported: "
+          << "operating_point_idc="
+          << std::bitset<kOperatingPointIdcBits>(
+                 sequence_header.operating_point_idc[kDefaultOperatingPoint]);
       return false;
     }
 

@@ -12,16 +12,48 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
 
+import java.lang.ref.WeakReference;
+
 /** Class for handling tab reparenting operations across multiple activities. */
 @NullMarked
 public class TabReparentingParams implements AsyncTabParams {
     private final Tab mTabToReparent;
+    private final @Nullable WeakReference<TabModelSelector> mSourceSelector;
+    private final boolean mShouldReload;
     private final @Nullable Runnable mFinalizeCallback;
 
-    /** Basic constructor for {@link TabReparentingParams}. */
-    public TabReparentingParams(Tab tabToReparent, @Nullable Runnable finalizeCallback) {
+    /**
+     * Constructs parameters for reparenting a tab across activities.
+     *
+     * @param tabToReparent The tab being moved to another activity.
+     * @param sourceSelector The {@link TabModelSelector} the tab is still attached to. Non-null
+     *     only when that selector is in reparenting mode (activity recreation; see {@link
+     *     TabModelSelector#isReparentingInProgress()}), where removing the tab from its model is
+     *     deferred until reparenting finishes or these params are destroyed. Null in all other
+     *     cases, where the selector removes the tab from its model as soon as it is detached.
+     * @param shouldReload Whether the tab should be reloaded once attached during activity
+     *     recreation in {@code ChromeTabCreator#createFrozenTab()}. Typically {@code false} except
+     *     when an in-progress load was interrupted for activity recreation: cross-activity
+     *     reparenting keeps existing {@link WebContents} state, unloaded/discarded background tabs
+     *     stay deferred, and any active/foreground tab needing a reload restores naturally via
+     *     {@code Tab#show} when selected.
+     * @param finalizeCallback Run once reparenting has finished. Null if there is nothing to do.
+     */
+    public TabReparentingParams(
+            Tab tabToReparent,
+            @Nullable TabModelSelector sourceSelector,
+            boolean shouldReload,
+            @Nullable Runnable finalizeCallback) {
         mTabToReparent = tabToReparent;
-        mFinalizeCallback = finalizeCallback;
+        mSourceSelector = sourceSelector != null ? new WeakReference<>(sourceSelector) : null;
+        mShouldReload = shouldReload;
+        mFinalizeCallback =
+                sourceSelector == null
+                        ? finalizeCallback
+                        : () -> {
+                            if (finalizeCallback != null) finalizeCallback.run();
+                            detachFromOriginalModel();
+                        };
     }
 
     @Override
@@ -49,13 +81,29 @@ public class TabReparentingParams implements AsyncTabParams {
         return mTabToReparent;
     }
 
-    /** Returns the callback to be used once Tab reparenting has finished, if any. */
+    @Override
+    public boolean shouldReload() {
+        return mShouldReload;
+    }
+
+    @Override
     public @Nullable Runnable getFinalizeCallback() {
         return mFinalizeCallback;
     }
 
     @Override
+    public void detachFromOriginalModel() {
+        if (mSourceSelector == null) return;
+        TabModelSelector selector = mSourceSelector.get();
+        mSourceSelector.clear();
+        if (selector != null) {
+            selector.detachTabForReparenting(mTabToReparent);
+        }
+    }
+
+    @Override
     public void destroy() {
+        detachFromOriginalModel();
         if (mTabToReparent != null) mTabToReparent.destroy();
     }
 }

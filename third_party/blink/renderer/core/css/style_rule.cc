@@ -49,9 +49,9 @@
 #include "third_party/blink/renderer/core/css/css_nested_declarations_rule.h"
 #include "third_party/blink/renderer/core/css/css_page_rule.h"
 #include "third_party/blink/renderer/core/css/css_position_try_rule.h"
+#include "third_party/blink/renderer/core/css/css_private_bindings.h"
 #include "third_party/blink/renderer/core/css/css_private_rule.h"
 #include "third_party/blink/renderer/core/css/css_property_rule.h"
-#include "third_party/blink/renderer/core/css/css_result_rule.h"
 #include "third_party/blink/renderer/core/css/css_scope_rule.h"
 #include "third_party/blink/renderer/core/css/css_starting_style_rule.h"
 #include "third_party/blink/renderer/core/css/css_style_rule.h"
@@ -86,6 +86,7 @@
 #include "third_party/blink/renderer/core/url_pattern/url_pattern.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions.h"
 #include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
@@ -198,9 +199,6 @@ void StyleRuleBase::Trace(Visitor* visitor) const {
     case kMixin:
       To<StyleRuleMixin>(this)->TraceAfterDispatch(visitor);
       return;
-    case kResult:
-      To<StyleRuleResult>(this)->TraceAfterDispatch(visitor);
-      return;
     case kApplyMixin:
       To<StyleRuleApplyMixin>(this)->TraceAfterDispatch(visitor);
       return;
@@ -214,7 +212,7 @@ void StyleRuleBase::Trace(Visitor* visitor) const {
       To<StyleRuleCustomMedia>(this)->TraceAfterDispatch(visitor);
       return;
     case kPrivate:
-      To<StyleRulePrivate>(this)->TraceAfterDispatch(visitor);
+      To<StyleRule>(this)->TraceAfterDispatch(visitor);
       return;
   }
   DUMP_WILL_BE_NOTREACHED();
@@ -306,9 +304,6 @@ void StyleRuleBase::FinalizeGarbageCollectedObject() {
     case kMixin:
       To<StyleRuleMixin>(this)->~StyleRuleMixin();
       return;
-    case kResult:
-      To<StyleRuleResult>(this)->~StyleRuleResult();
-      return;
     case kApplyMixin:
       To<StyleRuleApplyMixin>(this)->~StyleRuleApplyMixin();
       return;
@@ -322,7 +317,7 @@ void StyleRuleBase::FinalizeGarbageCollectedObject() {
       To<StyleRuleCustomMedia>(this)->~StyleRuleCustomMedia();
       return;
     case kPrivate:
-      To<StyleRulePrivate>(this)->~StyleRulePrivate();
+      To<StyleRule>(this)->~StyleRule();
       return;
   }
   NOTREACHED();
@@ -447,14 +442,13 @@ CSSRule* StyleRuleBase::CreateCSSOMWrapper(wtf_size_t position_hint,
       rule = MakeGarbageCollected<CSSMixinRule>(To<StyleRuleMixin>(self),
                                                 parent_sheet);
       break;
-    case kResult:
-      rule = MakeGarbageCollected<CSSResultRule>(To<StyleRuleResult>(self),
-                                                 parent_sheet);
+    case kPrivate: {
+      DCHECK(parent_rule);
+      CSSStyleSheet* containing_sheet = parent_rule->parentStyleSheet();
+      rule = MakeGarbageCollected<CSSPrivateRule>(To<StyleRule>(self),
+                                                  containing_sheet);
       break;
-    case kPrivate:
-      rule = MakeGarbageCollected<CSSPrivateRule>(To<StyleRulePrivate>(self),
-                                                  parent_sheet);
-      break;
+    }
     case kApplyMixin:
       rule = MakeGarbageCollected<CSSApplyMixinRule>(
           To<StyleRuleApplyMixin>(self), parent_sheet);
@@ -517,6 +511,9 @@ StyleRule::StyleRule(base::PassKey<StyleRule>,
   CSSSelectorList::AdoptSelectorVector(selector_vector, SelectorArray());
 }
 
+StyleRule::StyleRule(base::PassKey<StyleRule>, CSSPropertyValueSet* properties)
+    : StyleRuleBase(kPrivate), properties_(properties) {}
+
 const CSSPropertyValueSet& StyleRule::Properties() const {
   if (!properties_) {
     properties_ = CSSParserImpl::ParseDeclarationListForLazyStyle(
@@ -527,6 +524,9 @@ const CSSPropertyValueSet& StyleRule::Properties() const {
 }
 
 StyleRule::~StyleRule() {
+  if (IsPrivateRule()) {
+    return;
+  }
   // Clean up any RareData that the selectors may be owning.
   CSSSelector* selector = SelectorArray();
   for (;;) {
@@ -574,8 +574,9 @@ void StyleRule::WrapperRemoveRule(CSSStyleSheet* parent_sheet, unsigned index) {
   child_rules_->erase(UNSAFE_BUFFERS(child_rules_->begin() + index));
 }
 
-bool StyleRule::PropertiesHaveFailedOrCanceledSubresources() const {
-  return properties_ && properties_->HasFailedOrCanceledSubresources();
+bool StyleRule::PropertiesHaveFailedOrCanceledSubresources(
+    ResourceFetcher* fetcher) const {
+  return properties_ && properties_->HasFailedOrCanceledSubresources(fetcher);
 }
 
 bool StyleRule::HasParsedProperties() const {
@@ -591,10 +592,12 @@ void StyleRule::TraceAfterDispatch(blink::Visitor* visitor) const {
   visitor->Trace(child_rules_);
   visitor->Trace(mixin_parameter_bindings_);
 
-  const CSSSelector* current = SelectorArray();
-  do {
-    visitor->Trace(*current);
-  } while (!(UNSAFE_BUFFERS(current++))->IsLastInSelectorListForOilpan());
+  if (!IsPrivateRule()) {
+    const CSSSelector* current = SelectorArray();
+    do {
+      visitor->Trace(*current);
+    } while (!(UNSAFE_BUFFERS(current++))->IsLastInSelectorListForOilpan());
+  }
 
   StyleRuleBase::TraceAfterDispatch(visitor);
 }
@@ -704,9 +707,6 @@ StyleRuleBase* StyleRuleBase::Clone(
     case kMixin:
       return CloneGroupRule(To<StyleRuleMixin>(this), new_parent,
                             mixin_parameter_bindings);
-    case kResult:
-      return CloneGroupRule(To<StyleRuleResult>(this), new_parent,
-                            mixin_parameter_bindings);
     case kApplyMixin:
       return CloneGroupRule(To<StyleRuleApplyMixin>(this), new_parent,
                             mixin_parameter_bindings);
@@ -814,9 +814,19 @@ StyleRuleBase* StyleRuleBase::Clone(
     case kCustomMedia:
       return MakeGarbageCollected<StyleRuleCustomMedia>(
           To<StyleRuleCustomMedia>(*this));
-    case kPrivate:
-      return MakeGarbageCollected<StyleRulePrivate>(
-          To<StyleRulePrivate>(*this));
+    case kPrivate: {
+      auto* private_rule = To<StyleRule>(this);
+      auto* new_rule = StyleRule::CreatePrivateRule(
+          private_rule->Properties().ImmutableCopyIfNeeded());
+      if (GCedHeapVector<Member<StyleRuleBase>>* child_rules =
+              private_rule->ChildRules()) {
+        for (StyleRuleBase* child_rule : *child_rules) {
+          new_rule->AddChildRule(
+              child_rule->Clone(new_parent, mixin_parameter_bindings));
+        }
+      }
+      return new_rule;
+    }
   }
 }
 
@@ -1185,51 +1195,23 @@ void StyleRuleFunction::TraceAfterDispatch(blink::Visitor* visitor) const {
 StyleRuleMixin::StyleRuleMixin(
     AtomicString name,
     HeapVector<StyleRuleFunction::Parameter> parameters,
+    PrivateNameMap authored_private_names,
     HeapVector<Member<StyleRuleBase>> child_rules)
     : StyleRuleGroup(kMixin, child_rules),
       name_(std::move(name)),
-      parameters_(std::move(parameters)) {}
+      parameters_(std::move(parameters)),
+      authored_private_names_(std::move(authored_private_names)) {}
 
 StyleRuleMixin::StyleRuleMixin(const StyleRuleMixin& other,
                                HeapVector<Member<StyleRuleBase>> child_rules)
     : StyleRuleGroup(kMixin, child_rules),
       name_(other.name_),
-      parameters_(other.parameters_) {}
+      parameters_(other.parameters_),
+      authored_private_names_(other.authored_private_names_) {}
 
 void StyleRuleMixin::TraceAfterDispatch(blink::Visitor* visitor) const {
   StyleRuleGroup::TraceAfterDispatch(visitor);
   visitor->Trace(parameters_);
-}
-
-StyleRuleResult::StyleRuleResult(HeapVector<Member<StyleRuleBase>> child_rules)
-    : StyleRuleGroup(kResult, child_rules) {}
-
-StyleRuleResult::StyleRuleResult(const StyleRuleResult& other,
-                                 HeapVector<Member<StyleRuleBase>> child_rules)
-    : StyleRuleGroup(kResult, child_rules) {}
-
-void StyleRuleResult::TraceAfterDispatch(blink::Visitor* visitor) const {
-  StyleRuleGroup::TraceAfterDispatch(visitor);
-}
-
-StyleRulePrivate::StyleRulePrivate(
-    HeapVector<Member<const CSSPrivateVariable>> private_variables)
-    : StyleRuleBase(kPrivate),
-      private_variables_(std::move(private_variables)) {}
-
-StyleRulePrivate::StyleRulePrivate(const StyleRulePrivate& other)
-    : StyleRuleBase(other) {
-  private_variables_.ReserveInitialCapacity(other.private_variables_.size());
-  // Deep copy each private variable.
-  for (const CSSPrivateVariable* variable : other.private_variables_) {
-    private_variables_.push_back(
-        MakeGarbageCollected<CSSPrivateVariable>(*variable));
-  }
-}
-
-void StyleRulePrivate::TraceAfterDispatch(blink::Visitor* visitor) const {
-  visitor->Trace(private_variables_);
-  StyleRuleBase::TraceAfterDispatch(visitor);
 }
 
 StyleRuleApplyMixin::StyleRuleApplyMixin(
@@ -1273,33 +1255,31 @@ void StyleRuleCustomMedia::TraceAfterDispatch(blink::Visitor* visitor) const {
   visitor->Trace(media_query_value_);
 }
 
+void MixinParameterBindings::Trace(Visitor* visitor) const {
+  visitor->Trace(parent_mixin_);
+  visitor->Trace(bindings_);
+  visitor->Trace(argument_private_scope_);
+}
+
 uint32_t MixinParameterBindings::ComputeHash() const {
   uint32_t hash = parent_mixin_ ? parent_mixin_->GetHash() : 1234;
+  hash = HashInts(hash, argument_private_scope_
+                            ? HashPointer(argument_private_scope_.Get())
+                            : 0);
   for (const auto& [key, value] : bindings_) {
     hash = HashInts(hash, HashInts(key.Impl()->GetHash(),
                                    value.value ? value.value->Hash() : 5678));
-  }
-  for (const auto& [key, value] : base_locals_) {
-    hash =
-        HashInts(hash, HashInts(key.Impl()->GetHash() ^ 4321, value->Hash()));
   }
   return hash;
 }
 
 bool MixinParameterBindings::operator==(
     const MixinParameterBindings& other) const {
-  if (bindings_ != other.bindings_) {
-    return false;
-  }
-  if (base_locals_ != other.base_locals_) {
+  if (bindings_ != other.bindings_ ||
+      argument_private_scope_ != other.argument_private_scope_) {
     return false;
   }
   return base::ValuesEquivalent(parent_mixin_, other.parent_mixin_);
-}
-
-void MixinParameterBindings::CQDependentValue::Trace(Visitor* visitor) const {
-  visitor->Trace(data);
-  visitor->Trace(container_queries);
 }
 
 }  // namespace blink

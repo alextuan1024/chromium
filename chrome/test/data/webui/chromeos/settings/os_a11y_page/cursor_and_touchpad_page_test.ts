@@ -134,11 +134,7 @@ suite('<settings-cursor-and-touchpad-page>', () => {
     assertFalse(cursorColorEnabledPref.value);
   });
 
-  test('cursor color inverted option visible only with flag', async () => {
-    // Enable the flag.
-    loadTimeData.overrideValues({
-      isAccessibilityInvertedMouseCursorEnabled: true,
-    });
+  test('cursor color inverted option is present', async () => {
     await initPage();
 
     const cursorColorDropdown =
@@ -160,34 +156,6 @@ suite('<settings-cursor-and-touchpad-page>', () => {
       }
     }
     assertTrue(foundInverted);
-
-    // Disable the flag and re-init page.
-    page.remove();
-    prefElement.remove();
-    loadTimeData.overrideValues({
-      isAccessibilityInvertedMouseCursorEnabled: false,
-    });
-    await initPage();
-
-    const cursorColorDropdown2 =
-        page.shadowRoot!.querySelector<SettingsDropdownMenuElement>(
-            '#cursorColorDropdown');
-    assert(cursorColorDropdown2);
-    await waitAfterNextRender(cursorColorDropdown2);
-    const cursorColorSelectElement2 =
-        cursorColorDropdown2.shadowRoot!.querySelector('select');
-    assert(cursorColorSelectElement2);
-
-    // Check if inverted option is NOT present.
-    let foundInverted2 = false;
-    for (let i = 0; i < cursorColorSelectElement2.options.length; i++) {
-      if (cursorColorSelectElement2.options[i]!.value ===
-          String(INVERTED_CURSOR_COLOR)) {
-        foundInverted2 = true;
-        break;
-      }
-    }
-    assertFalse(foundInverted2);
   });
 
   test(
@@ -777,5 +745,25 @@ suite('<settings-cursor-and-touchpad-page>', () => {
         dropdown, page.shadowRoot!.activeElement,
         `Disable touchpad dropdown should be focused for settingId=${
             settingId}.`);
+  });
+
+  test('Shake to locate toggle is deep-linkable', async () => {
+    loadTimeData.overrideValues({isAccessibilityShakeToLocateEnabled: true});
+    await initPage();
+
+    const setting = settingMojom.Setting.kShakeToLocateCursor;
+    const params = new URLSearchParams();
+    params.append('settingId', setting.toString());
+    Router.getInstance().navigateTo(routes.A11Y_CURSOR_AND_TOUCHPAD, params);
+
+    const deepLinkElement =
+        page.shadowRoot!.querySelector<SettingsToggleButtonElement>(
+            '#shakeToLocateToggle');
+    assert(deepLinkElement);
+
+    await waitAfterNextRender(deepLinkElement);
+    assertEquals(
+        deepLinkElement, page.shadowRoot!.activeElement,
+        `Shake to locate toggle should be focused for settingId=${setting}.`);
   });
 });

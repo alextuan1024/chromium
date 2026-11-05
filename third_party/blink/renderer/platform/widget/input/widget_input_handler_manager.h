@@ -31,6 +31,7 @@
 
 namespace cc {
 class EventMetrics;
+struct BrowserControlsAnimationParams;
 }
 
 namespace gfx {
@@ -194,11 +195,10 @@ class PLATFORM_EXPORT WidgetInputHandlerManager final
       base::optional_ref<const cc::BrowserControlsOffsetTagModifications>
           offset_tag_modifications);
 
-  MainThreadEventQueue* input_event_queue() { return input_event_queue_.get(); }
+  void StartBrowserControlsAnimation(
+      const cc::BrowserControlsAnimationParams& params);
 
-  base::SingleThreadTaskRunner* main_task_runner_for_testing() const {
-    return main_thread_task_runner_.get();
-  }
+  MainThreadEventQueue* input_event_queue() { return input_event_queue_.get(); }
 
   // Immediately dispatches all queued events in both the main and compositor
   // queues such that the queues are emptied. Invokes the passed closure when

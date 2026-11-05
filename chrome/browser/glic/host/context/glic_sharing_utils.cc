@@ -7,22 +7,62 @@
 #include <algorithm>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "chrome/browser/glic/common/future_browser_features.h"
+#include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
+#include "components/enterprise/buildflags/buildflags.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/url_constants.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
+
+#if BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
+#include "chrome/browser/enterprise/data_controls/chrome_rules_service.h"
+#endif
+
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+#include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
+#endif
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/android/tab_android.h"
+#endif
+
+#if BUILDFLAG(ENTERPRISE_DATA_CONTROLS) && BUILDFLAG(IS_ANDROID)
+#include "base/files/file_path.h"
+#include "net/base/filename_util.h"
+#endif
 
 namespace glic {
 
 namespace {
+
+// Returns true if `web_contents` belongs to an Android tab displaying a PDF.
+// On Android, PDFs are displayed by a native `PdfPage` whose URL is a
+// `chrome-native://pdf` URL, which is not an allowed URL.
+bool IsAndroidPdfTab(content::WebContents* web_contents) {
+#if BUILDFLAG(IS_ANDROID)
+  // Note: Look up `TabAndroid` from the `WebContents` rather than from the
+  // `TabInterface`, since `TabAndroid::FromTabInterface()` is an unchecked
+  // cast which is invalid for e.g. `tabs::MockTabInterface`.
+  if (web_contents) {
+    if (TabAndroid* tab_android = TabAndroid::FromWebContents(web_contents)) {
+      return tab_android->IsPdf();
+    }
+  }
+#endif
+  return false;
+}
 
 const std::vector<GURL>& GetUrlAllowList() {
   static const base::NoDestructor<std::vector<GURL>> kUrlAllowList{
@@ -41,7 +81,44 @@ const std::vector<GURL>& GetUrlAllowList() {
   return *kUrlAllowList;
 }
 
+#if BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
+// Returns the URL that enterprise Data Controls rules are matched against for
+// `web_contents`. On Android, a tab showing a local PDF commits an opaque
+// `chrome-native://pdf` URL, so match the backing file's `file://` URL
+// instead; inline web PDFs keep their `https://` download URL as the committed
+// (virtual) URL and are matched as-is.
+GURL GetUrlForDataControls(content::WebContents* web_contents) {
+  GURL url = web_contents->GetLastCommittedURL();
+#if BUILDFLAG(IS_ANDROID)
+  if (!url.SchemeIsHTTPOrHTTPS() && !url.SchemeIsFile()) {
+    if (TabAndroid* tab_android = TabAndroid::FromWebContents(web_contents);
+        tab_android && tab_android->IsPdf()) {
+      std::string filepath = tab_android->GetCanonicalFilepath();
+      if (!filepath.empty()) {
+        return net::FilePathToFileURL(base::FilePath(filepath));
+      }
+    }
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+  return url;
+}
+#endif  // BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
+
 }  // namespace
+
+// Note: Keep in sync with Context Hub topic URLs. Tested in
+// context_hub_tab_provider_desktop_unittest.cc.
+// Keep in sync with `isContextHubTopicUrl` in the web client
+// (//depot/google3/java/com/google/assistant/boq/bard/web/chatui/embedded/glic/api/internal/context_availability_checker_impl.ts).
+bool IsContextHubTopicUrl(const GURL& url) {
+  if (!url.SchemeIs(content::kChromeUIScheme) ||
+      url.host() != chrome::kChromeUIContextHubHost) {
+    return false;
+  }
+  const std::string_view path = url.path();
+  return path == "/topic_details" || path == "/topics" ||
+         path == "/topic_details.html";
+}
 
 bool IsBrowserValidForSharingInProfile(
     BrowserWindowInterface* browser_interface,
@@ -56,12 +133,32 @@ bool IsTabValidForPinningInProfile(tabs::TabInterface* tab, Profile* profile) {
          !profile->IsOffTheRecord();
 }
 
+bool ShouldPinOnBind(Profile* profile) {
+  PrefService* user_prefs = profile ? profile->GetPrefs() : nullptr;
+  // Check both the setting exists, the pin-on-bind kill switch (*PinOnBind
+  // feature flag) is enabled, and then that actual value of the settings prefs
+  // to determine whether to pin on bind.
+  if (base::FeatureList::IsEnabled(features::kGlicDefaultTabContextSetting)) {
+    return base::FeatureList::IsEnabled(
+               features::kGlicDefaultContextPinOnBind) &&
+           user_prefs &&
+           user_prefs->GetBoolean(prefs::kGlicDefaultTabContextEnabled);
+  }
+  // If kGlicDefaultTabContextSetting is not enabled (old settings page) keep
+  // the old behavior.
+  return true;
+}
+
 bool IsTabValidForSharing(content::WebContents* web_contents) {
   if (!web_contents) {
     return false;
   }
+  if (IsAndroidPdfTab(web_contents)) {
+    return true;
+  }
   const GURL& url = web_contents->GetLastCommittedURL();
   return url.SchemeIsHTTPOrHTTPS() || url.SchemeIsFile() ||
+         IsContextHubTopicUrl(url) ||
          std::ranges::contains(GetUrlAllowList(), url);
 }
 
@@ -69,13 +166,44 @@ bool IsTabValidForSharing(tabs::TabInterface* tab) {
   if (!tab) {
     return false;
   }
+  if (IsAndroidPdfTab(tab->GetContents())) {
+    return true;
+  }
   const GURL url = tab->GetURL();
   return url.SchemeIsHTTPOrHTTPS() || url.SchemeIsFile() ||
+         IsContextHubTopicUrl(url) ||
          std::ranges::contains(GetUrlAllowList(), url);
 }
 
+bool IsScreenshotBlockedByEnterprisePolicy(content::WebContents* web_contents) {
+  if (!web_contents) {
+    return false;
+  }
+  // Check both `DataProtectionNavigationController` (which caches navigation-
+  // time RTLookupResponse + DataControls state on the page) and live
+  // `ChromeRulesService::BlockScreenshots()` (which immediately reflects
+  // dynamic `DataControlsRules` pref updates without requiring a new
+  // navigation). The controller only exists on Windows, Mac and Android
+  // (`ENTERPRISE_SCREENSHOT_PROTECTION`), and on Android only for managed
+  // profiles with `kEnableAndroidEnterpriseScreenshotProtection` enabled, so
+  // Linux and ChromeOS rely on the live check alone.
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (enterprise_data_protection::IsScreenShareBlocked(web_contents)) {
+    return true;
+  }
+#endif  // BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+#if BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
+  if (auto* rules_service =
+          data_controls::ChromeRulesServiceFactory::GetInstance()
+              ->GetForBrowserContext(web_contents->GetBrowserContext())) {
+    return rules_service->BlockScreenshots(GetUrlForDataControls(web_contents));
+  }
+#endif  // BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
+  return false;
+}
+
 tabs::TabInterface* GetMostRecentlyActiveTab(
-    const std::vector<tabs::TabInterface*>& tabs) {
+    const std::vector<raw_ptr<tabs::TabInterface>>& tabs) {
   CHECK(!tabs.empty());
   auto it = std::max_element(
       tabs.begin(), tabs.end(),

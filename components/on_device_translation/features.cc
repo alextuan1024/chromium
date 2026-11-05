@@ -11,6 +11,7 @@
 #include "base/feature_list.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/version.h"
+#include "build/build_config.h"
 #include "third_party/blink/public/common/features_generated.h"
 
 namespace on_device_translation {
@@ -37,6 +38,30 @@ const base::FeatureParam<base::TimeDelta> kTranslationAPIServiceIdleTimeout{
 
 const base::FeatureParam<size_t> kTranslationAPIMaxServiceCount{
     &blink::features::kTranslationAPI, "TranslationAPIMaxServiceCount", 10};
+
+const base::FeatureParam<base::TimeDelta> kTranslationAPIModelIdleUnloadTimeout{
+    &blink::features::kTranslationAPI, "TranslationAPIModelIdleUnloadTimeout",
+#if BUILDFLAG(IS_ANDROID)
+    // A page can keep a translator for its whole lifetime, holding about 79 to
+    // 84 MiB per loaded language pair in the service process. Unload idle
+    // models after 1 minute to avoid holding that memory indefinitely.
+    base::Minutes(1)
+#else
+    base::TimeDelta()
+#endif  // BUILDFLAG(IS_ANDROID)
+};
+
+const base::FeatureParam<int> kTranslationAPIMaxInputSizeBytes{
+    &blink::features::kTranslationAPI, "TranslationAPIMaxInputSizeBytes",
+#if BUILDFLAG(IS_ANDROID)
+    // The engine translates the whole input of one call at once, in a process
+    // that phones may run short of memory for. 256 KiB is about 40,000
+    // English words.
+    256 * 1024
+#else
+    0
+#endif  // BUILDFLAG(IS_ANDROID)
+};
 
 BASE_FEATURE(kAutoDownloadTranslateLanguagePacks,
              base::FEATURE_DISABLED_BY_DEFAULT);

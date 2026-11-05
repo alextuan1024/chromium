@@ -20,6 +20,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "build/build_config.h"
+#include "components/update_client/cancellation.h"
 #include "components/update_client/network.h"
 #include "components/update_client/task_traits.h"
 #include "components/update_client/update_client_errors.h"
@@ -38,7 +39,7 @@ UrlFetcherDownloader::UrlFetcherDownloader(
 
 UrlFetcherDownloader::~UrlFetcherDownloader() = default;
 
-base::OnceClosure UrlFetcherDownloader::DoStartDownload(const GURL& url) {
+CancelCallback UrlFetcherDownloader::DoStartDownload(const GURL& url) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   base::ThreadPool::PostTaskAndReply(
       FROM_HERE, kTaskTraits,
@@ -73,8 +74,10 @@ void UrlFetcherDownloader::StartURLFetch(const GURL& url) {
       base::BindOnce(&UrlFetcherDownloader::OnNetworkFetcherComplete, this));
 }
 
-void UrlFetcherDownloader::Cancel() {
+void UrlFetcherDownloader::Cancel(CancelMode /*mode*/) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // TODO(crbug.com/584520346): Keep the partial download for
+  // kKeepPartialDownload.
   if (cancelled_) {
     return;
   }
@@ -139,9 +142,8 @@ void UrlFetcherDownloader::OnNetworkFetcherComplete(int net_error,
   download_metrics.total_bytes = total_bytes_;
   download_metrics.download_time_ms = download_time.InMilliseconds();
 
-  VLOG(1) << "Downloaded " << content_size << " bytes in "
-          << download_time.InMilliseconds() << "ms from " << url().spec()
-          << " to " << result.response.value();
+  VLOG(1) << (error ? "Download failed: " : "Download succeeded: ")
+          << download_metrics << ", file: " << result.response;
 
   // Delete the download directory in the error cases.
   if (error && !download_dir_.empty()) {

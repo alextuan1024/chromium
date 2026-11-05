@@ -45,6 +45,7 @@
 #include "components/autofill/core/browser/form_structure_test_api.h"
 #include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
+#include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
@@ -120,6 +121,7 @@ using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::Matcher;
 using ::testing::NiceMock;
+using ::testing::Return;
 using ::testing::UnorderedPointwise;
 
 using PaymentsRpcResult = payments::PaymentsAutofillClient::PaymentsRpcResult;
@@ -632,6 +634,7 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
                                        u"Test",
                                        Suggestion::Guid(kTestLocalCardId)),
         AutofillSuggestionDelegate::SuggestionMetadata{.multi_index = {0}});
+    test_api(autofill_manager()).RunPendingPostFillTasks();
 
     EXPECT_EQ(user_action_tester.GetActionCount("Autofill_SelectedSuggestion"),
               1);
@@ -690,6 +693,7 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
                                        u"Test",
                                        Suggestion::Guid(kTestLocalCardId)),
         AutofillSuggestionDelegate::SuggestionMetadata{.multi_index = {0}});
+    test_api(autofill_manager()).RunPendingPostFillTasks();
 
     EXPECT_EQ(user_action_tester.GetActionCount("Autofill_SelectedSuggestion"),
               1);
@@ -698,11 +702,9 @@ TEST_F(AutofillMetricsTest, CreditCardCheckoutFlowUserActions) {
   // Simulate filling a credit card suggestion.
   {
     base::UserActionTester user_action_tester;
-    autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form.global_id(),
-        form.fields().front().global_id(),
-        paydm().GetCreditCardByGUID(kTestLocalCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+    FillOrPreviewCreditCard(form, form.fields().front(),
+                            paydm().GetCreditCardByGUID(kTestLocalCardId),
+                            mojom::ActionPersistence::kFill);
     EXPECT_EQ(user_action_tester.GetActionCount(
                   "Autofill_FilledCreditCardSuggestion"),
               1);
@@ -825,6 +827,7 @@ TEST_F(AutofillMetricsTest, ProfileCheckoutFlowUserActions) {
                                        u"Test",
                                        Suggestion::Guid(kTestProfileId)),
         AutofillSuggestionDelegate::SuggestionMetadata{.multi_index = {0}});
+    test_api(autofill_manager()).RunPendingPostFillTasks();
 
     EXPECT_EQ(user_action_tester.GetActionCount("Autofill_SelectedSuggestion"),
               1);
@@ -1006,11 +1009,9 @@ TEST_F(AutofillMetricsTest, CreditCardGetRealPanDuration_ServerCard) {
   {
     // Simulating filling a masked card server suggestion.
     base::HistogramTester histogram_tester;
-    autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form.global_id(),
-        form.fields().back().global_id(),
-        paydm().GetCreditCardByGUID(kTestMaskedCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+    FillOrPreviewCreditCard(form, form.fields().back(),
+                            paydm().GetCreditCardByGUID(kTestMaskedCardId),
+                            mojom::ActionPersistence::kFill);
     OnDidGetRealPan(PaymentsRpcResult::kSuccess, "6011000990139424");
     histogram_tester.ExpectTotalCount(
         "Autofill.UnmaskPrompt.GetRealPanDuration", 1);
@@ -1029,11 +1030,9 @@ TEST_F(AutofillMetricsTest, CreditCardGetRealPanDuration_ServerCard) {
   {
     // Simulating filling a masked card server suggestion.
     base::HistogramTester histogram_tester;
-    autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form.global_id(),
-        form.fields().back().global_id(),
-        paydm().GetCreditCardByGUID(kTestMaskedCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+    FillOrPreviewCreditCard(form, form.fields().back(),
+                            paydm().GetCreditCardByGUID(kTestMaskedCardId),
+                            mojom::ActionPersistence::kFill);
     OnDidGetRealPan(PaymentsRpcResult::kPermanentFailure, std::string());
     histogram_tester.ExpectTotalCount(
         "Autofill.UnmaskPrompt.GetRealPanDuration", 1);
@@ -1052,11 +1051,9 @@ TEST_F(AutofillMetricsTest, CreditCardGetRealPanDuration_ServerCard) {
   {
     // Simulating filling a masked card server suggestion.
     base::HistogramTester histogram_tester;
-    autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form.global_id(),
-        form.fields().back().global_id(),
-        paydm().GetCreditCardByGUID(kTestMaskedCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+    FillOrPreviewCreditCard(form, form.fields().back(),
+                            paydm().GetCreditCardByGUID(kTestMaskedCardId),
+                            mojom::ActionPersistence::kFill);
     OnDidGetRealPan(PaymentsRpcResult::kClientSideTimeout, std::string());
     histogram_tester.ExpectTotalCount(
         "Autofill.UnmaskPrompt.GetRealPanDuration", 1);
@@ -1088,11 +1085,9 @@ TEST_F(AutofillMetricsTest, CreditCardGetRealPanDuration_BadServerResponse) {
   {
     // Simulating filling a masked card server suggestion.
     base::HistogramTester histogram_tester;
-    autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form.global_id(),
-        form.fields().back().global_id(),
-        paydm().GetCreditCardByGUID(kTestMaskedCardId),
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+    FillOrPreviewCreditCard(form, form.fields().back(),
+                            paydm().GetCreditCardByGUID(kTestMaskedCardId),
+                            mojom::ActionPersistence::kFill);
     OnDidGetRealPanWithNonHttpOkResponse();
     histogram_tester.ExpectTotalCount(
         "Autofill.UnmaskPrompt.GetRealPanDuration", 1);
@@ -1248,9 +1243,6 @@ TEST_F(AutofillMetricsTest, AddressParsedFormEvents) {
        CreateTestFormField("City", "city", "", FormControlType::kInputText),
        CreateTestFormField("Street", "street", "",
                            FormControlType::kInputText)});
-
-  const std::vector<FieldType> field_types = {
-      ADDRESS_HOME_STATE, ADDRESS_HOME_CITY, ADDRESS_HOME_STREET_ADDRESS};
 
   base::HistogramTester histogram_tester;
   SeeForm(form);
@@ -1910,13 +1902,7 @@ TEST_F(AutofillMetricsTest, LogVerificationStatusesOfAddressTokens) {
 }
 
 // Verify that we correctly log metrics tracking the duration of form fill.
-// TODO(crbug.com/442816527): Reenable test on ios.
-#if BUILDFLAG(IS_IOS)
-#define MAYBE_FormFillDuration DISABLED_FormFillDuration
-#else
-#define MAYBE_FormFillDuration FormFillDuration
-#endif
-TEST_F(AutofillMetricsTest, MAYBE_FormFillDuration) {
+TEST_F(AutofillMetricsTest, FormFillDuration) {
   base::TimeTicks beginning = base::TimeTicks::Now();
   FormData empty_form = CreateForm(
       {CreateTestFormField("Name", "name", "", FormControlType::kInputText),
@@ -2496,6 +2482,7 @@ TEST_F(AutofillMetricsTest, DynamicFormMetrics) {
   // Trigger a refill, the refill metric should be updated.
   autofill_manager().OnFormsSeen({form}, /*removed_forms=*/{},
                                  AutofillManagerTestApi::pass_key());
+  test_api(autofill_manager()).RunPendingPostFillTasks();
   EXPECT_THAT(histogram_tester.GetAllSamples("Autofill.FormEvents.Address"),
               BucketsInclude(Bucket(FORM_EVENT_DID_DYNAMIC_REFILL, 1)));
 }
@@ -2629,6 +2616,8 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(WebOTPPhoneCollectionMetricsTest,
        TestWebOTPPhoneCollectionMetricsState) {
   auto test_case = GetParam();
+  ON_CALL(autofill_driver(), DocumentUsedWebOtp)
+      .WillByDefault(Return(test_case.report_autofill_web_otp_metrics));
 
   if (!test_case.autocomplete_field.empty()) {
     FormData form;
@@ -2642,8 +2631,7 @@ TEST_P(WebOTPPhoneCollectionMetricsTest,
   }
 
   base::HistogramTester histogram_tester;
-  autofill_manager().ReportAutofillWebOTPMetrics(
-      test_case.report_autofill_web_otp_metrics);
+  autofill_client().GetAutofillDriverFactory().Delete(autofill_driver());
 
   EXPECT_THAT(
       histogram_tester.GetAllSamples("Autofill.WebOTP.PhonePlusWebOTPPlusOTC"),
@@ -2652,6 +2640,8 @@ TEST_P(WebOTPPhoneCollectionMetricsTest,
 
 // Verify that proper PhoneCollectionMetricsState is logged to UKM.
 TEST_F(AutofillMetricsTest, WebOTPPhoneCollectionMetricsStateLoggedToUKM) {
+  ON_CALL(autofill_driver(), DocumentUsedWebOtp).WillByDefault(Return(true));
+
   EXPECT_THAT(GetUkmEvents(test_ukm_recorder(),
                            ukm::builders::WebOTPImpact::kEntryName),
               UkmEventsAre({}));
@@ -2667,7 +2657,7 @@ TEST_F(AutofillMetricsTest, WebOTPPhoneCollectionMetricsStateLoggedToUKM) {
 
   base::HistogramTester histogram_tester;
   SeeForm(form);
-  autofill_manager().ReportAutofillWebOTPMetrics(true);
+  autofill_client().GetAutofillDriverFactory().Delete(autofill_driver());
 
   EXPECT_THAT(
       GetUkmEvents(test_ukm_recorder(),
@@ -2881,6 +2871,71 @@ TEST_F(AutofillMetricsTest, LogAutocompleteEvent_WithSuggestion) {
       "Autocomplete.BothNameAndLabelBasedSuggestions", 0);
 }
 
+// Tests that LogAutocompleteTableStats records the expected table-level
+// diagnostics and saturation metrics.
+TEST_F(AutofillMetricsTest, LogAutocompleteTableStats) {
+  {
+    base::HistogramTester histogram_tester;
+    AutocompleteTableStats stats{
+        .total_entries = 200,
+        .entries_with_label = 50,
+        .entries_reused = 80,
+    };
+    AutofillMetrics::LogAutocompleteTableStats(stats);
+
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.EntriesCount", 200, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.EntriesCount.NameOnly", 150, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.EntriesCount.NameAndLabel", 50, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.LabelSaturation", 25, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.ReusedEntriesPercentage", 40, 1);
+  }
+  {
+    base::HistogramTester histogram_tester;
+    AutocompleteTableStats stats{
+        .total_entries = 50,
+        .entries_with_label = 0,
+        .entries_reused = 15,
+    };
+    AutofillMetrics::LogAutocompleteTableStats(stats);
+
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.EntriesCount", 50, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.EntriesCount.NameOnly", 50, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.EntriesCount.NameAndLabel", 0, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.LabelSaturation", 0, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.ReusedEntriesPercentage", 30, 1);
+  }
+  {
+    base::HistogramTester histogram_tester;
+    AutocompleteTableStats stats{
+        .total_entries = 0,
+        .entries_with_label = 0,
+        .entries_reused = 0,
+    };
+    AutofillMetrics::LogAutocompleteTableStats(stats);
+
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.EntriesCount", 0, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.EntriesCount.NameOnly", 0, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.Autocomplete.Table.EntriesCount.NameAndLabel", 0, 1);
+    histogram_tester.ExpectTotalCount(
+        "Autofill.Autocomplete.Table.LabelSaturation", 0);
+    histogram_tester.ExpectTotalCount(
+        "Autofill.Autocomplete.Table.ReusedEntriesPercentage", 0);
+  }
+}
+
 TEST_F(AutofillMetricsTest, LogServerCardLinkClicked) {
   {
     base::HistogramTester histogram_tester;
@@ -2977,11 +3032,9 @@ class AutofillMetricsCrossFrameFormTest : public AutofillMetricsTest {
   // mimic its effect on |form_|.
   void FillForm(const FormFieldData& triggering_field) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-        .WillOnce(base::test::RunOnceCallback<1>(credit_card()));
-    autofill_manager().FillOrPreviewForm(
-        mojom::ActionPersistence::kFill, form_.global_id(),
-        triggering_field.global_id(), &credit_card_,
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        .WillOnce(base::test::RunOnceCallback<2>(credit_card()));
+    FillOrPreviewCreditCard(form_, triggering_field, &credit_card_,
+                            mojom::ActionPersistence::kFill);
   }
 
   // Sets the field values of |form_| according to the parameters.

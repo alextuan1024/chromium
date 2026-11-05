@@ -15,6 +15,16 @@
 
 namespace blink {
 
+namespace {
+
+// Pushes `value` into `queue` under the queue's lock.
+std::optional<int> LockAndPush(FrameQueue<int>& queue, int value) {
+  base::AutoLock locker(queue.GetLock());
+  return queue.PushLocked(value);
+}
+
+}  // namespace
+
 class FrameQueueTest : public testing::Test {
  public:
   FrameQueueTest() : io_task_runner_(Platform::Current()->GetIOTaskRunner()) {}
@@ -30,7 +40,7 @@ TEST_F(FrameQueueTest, PushPopMatches) {
   scoped_refptr<FrameQueue<int>> queue =
       base::MakeRefCounted<FrameQueue<int>>(kMaxSize);
   for (int i = 0; i < kMaxSize; ++i)
-    queue->Push(i);
+    LockAndPush(*queue, i);
   for (int i = 0; i < kMaxSize; ++i) {
     std::optional<int> element = queue->Pop();
     EXPECT_TRUE(element.has_value());
@@ -42,17 +52,17 @@ TEST_F(FrameQueueTest, PushReturnsReplacedElement) {
   const int kMaxSize = 2;
   scoped_refptr<FrameQueue<int>> queue =
       base::MakeRefCounted<FrameQueue<int>>(kMaxSize);
-  std::optional<int> replaced = queue->Push(1);
+  std::optional<int> replaced = LockAndPush(*queue, 1);
   EXPECT_FALSE(replaced.has_value());
 
-  replaced = queue->Push(2);
+  replaced = LockAndPush(*queue, 2);
   EXPECT_FALSE(replaced.has_value());
 
-  replaced = queue->Push(3);
+  replaced = LockAndPush(*queue, 3);
   EXPECT_TRUE(replaced.has_value());
   EXPECT_EQ(replaced.value(), 1);
 
-  replaced = queue->Push(4);
+  replaced = LockAndPush(*queue, 4);
   EXPECT_TRUE(replaced.has_value());
   EXPECT_EQ(replaced.value(), 2);
 }
@@ -70,7 +80,7 @@ TEST_F(FrameQueueTest, QueueDropsOldElements) {
   scoped_refptr<FrameQueue<int>> queue =
       base::MakeRefCounted<FrameQueue<int>>(kMaxSize);
   for (int i = 0; i < kNumInsertions; ++i)
-    queue->Push(i);
+    LockAndPush(*queue, i);
   for (int i = 0; i < kMaxSize; ++i) {
     std::optional<int> element = queue->Pop();
     EXPECT_TRUE(element.has_value());
@@ -80,66 +90,59 @@ TEST_F(FrameQueueTest, QueueDropsOldElements) {
   EXPECT_FALSE(queue->Pop().has_value());
 }
 
-TEST_F(FrameQueueTest, FrameQueueHandle) {
-  const int kMaxSize = 5;
-  scoped_refptr<FrameQueue<int>> original_queue =
-      base::MakeRefCounted<FrameQueue<int>>(kMaxSize);
-  FrameQueueHandle<int> handle1(original_queue);
-  FrameQueueHandle<int> handle2(std::move(original_queue));
+TEST_F(FrameQueueTest, PendingPulls) {
+  scoped_refptr<FrameQueue<int>> queue =
+      base::MakeRefCounted<FrameQueue<int>>(5);
+  EXPECT_FALSE(queue->HasPendingPulls());
+  EXPECT_EQ(queue->NumPendingPulls(), 0);
 
-  for (int i = 0; i < kMaxSize; ++i) {
-    auto queue = handle1.Queue();
-    EXPECT_TRUE(queue);
-    queue->Push(i);
-  }
-  for (int i = 0; i < kMaxSize; ++i) {
-    auto queue = handle2.Queue();
-    EXPECT_TRUE(queue);
-    std::optional<int> element = queue->Pop();
-    EXPECT_TRUE(element.has_value());
-    EXPECT_EQ(*element, i);
-  }
+  queue->IncrementPendingPulls();
+  queue->IncrementPendingPulls();
+  EXPECT_TRUE(queue->HasPendingPulls());
+  EXPECT_EQ(queue->NumPendingPulls(), 2);
 
-  EXPECT_TRUE(handle1.Queue());
-  handle1.Invalidate();
-  EXPECT_FALSE(handle1.Queue());
+  EXPECT_TRUE(queue->DecrementPendingPulls());
+  EXPECT_EQ(queue->NumPendingPulls(), 1);
+  EXPECT_FALSE(queue->DecrementPendingPulls());
+  EXPECT_EQ(queue->NumPendingPulls(), 0);
+  EXPECT_FALSE(queue->HasPendingPulls());
 
-  EXPECT_TRUE(handle2.Queue());
-  handle2.Invalidate();
-  EXPECT_FALSE(handle2.Queue());
+  // Decrementing at zero does not underflow.
+  EXPECT_FALSE(queue->DecrementPendingPulls());
+  EXPECT_EQ(queue->NumPendingPulls(), 0);
+
+  queue->IncrementPendingPulls();
+  queue->ResetPendingPulls();
+  EXPECT_EQ(queue->NumPendingPulls(), 0);
 }
 
 TEST_F(FrameQueueTest, PushValuesInOrderOnSeparateThread) {
   const int kMaxSize = 3;
   const int kNumElements = 100;
-  scoped_refptr<FrameQueue<int>> original_queue =
+  scoped_refptr<FrameQueue<int>> queue1 =
       base::MakeRefCounted<FrameQueue<int>>(kMaxSize);
-  FrameQueueHandle<int> handle1(std::move(original_queue));
-  FrameQueueHandle<int> handle2(handle1.Queue());
+  scoped_refptr<FrameQueue<int>> queue2 = queue1;
 
   base::WaitableEvent start_event;
   base::WaitableEvent end_event;
   PostCrossThreadTask(
       *io_task_runner_, FROM_HERE,
       CrossThreadBindOnce(
-          [](FrameQueueHandle<int>* handle, base::WaitableEvent* start_event,
-             base::WaitableEvent* end_event) {
-            auto queue = handle->Queue();
+          [](scoped_refptr<FrameQueue<int>> queue,
+             base::WaitableEvent* start_event, base::WaitableEvent* end_event) {
             EXPECT_TRUE(queue);
             start_event->Signal();
             for (int i = 0; i < kNumElements; ++i)
-              queue->Push(i);
-            handle->Invalidate();
+              LockAndPush(*queue, i);
             end_event->Signal();
           },
-          CrossThreadUnretained(&handle1), CrossThreadUnretained(&start_event),
+          std::move(queue1), CrossThreadUnretained(&start_event),
           CrossThreadUnretained(&end_event)));
 
-  auto queue = handle2.Queue();
   int last_value_read = -1;
   start_event.Wait();
   for (int i = 0; i < kNumElements; ++i) {
-    std::optional<int> element = queue->Pop();
+    std::optional<int> element = queue2->Pop();
     if (element) {
       EXPECT_GE(*element, 0);
       EXPECT_LT(*element, kNumElements);
@@ -148,12 +151,12 @@ TEST_F(FrameQueueTest, PushValuesInOrderOnSeparateThread) {
     }
   }
   end_event.Wait();
-  EXPECT_FALSE(handle1.Queue());
-  EXPECT_TRUE(handle2.Queue());
+  EXPECT_FALSE(queue1);
+  EXPECT_TRUE(queue2);
 
   int num_read = 0;
-  while (!queue->IsEmpty()) {
-    std::optional<int> element = queue->Pop();
+  while (!queue2->IsEmpty()) {
+    std::optional<int> element = queue2->Pop();
     EXPECT_TRUE(element.has_value());
     EXPECT_GE(*element, 0);
     EXPECT_LT(*element, kNumElements);
@@ -199,6 +202,35 @@ TEST_F(FrameQueueTest, LockedOperations) {
 
   peeked = queue->PeekLocked();
   EXPECT_FALSE(peeked.has_value());
+}
+
+TEST_F(FrameQueueTest, CloseLocked) {
+  const int kMaxSize = 2;
+  scoped_refptr<FrameQueue<int>> queue =
+      base::MakeRefCounted<FrameQueue<int>>(kMaxSize);
+  base::AutoLock locker(queue->GetLock());
+  EXPECT_FALSE(queue->IsClosedLocked());
+
+  queue->PushLocked(1);
+  queue->CloseLocked();
+  EXPECT_TRUE(queue->IsClosedLocked());
+
+  // Closing doesn't drain the queue; the consumer pops what's left.
+  EXPECT_EQ(queue->SizeLocked(), 1u);
+
+  // PushLocked() still accepts frames after CloseLocked(). Checking
+  // IsClosedLocked() and dropping frames is up to the producer.
+  std::optional<int> replaced = queue->PushLocked(2);
+  EXPECT_FALSE(replaced.has_value());
+  EXPECT_EQ(queue->SizeLocked(), 2u);
+
+  std::optional<int> popped = queue->PopLocked();
+  ASSERT_TRUE(popped.has_value());
+  EXPECT_EQ(popped.value(), 1);
+  popped = queue->PopLocked();
+  ASSERT_TRUE(popped.has_value());
+  EXPECT_EQ(popped.value(), 2);
+  EXPECT_TRUE(queue->IsEmptyLocked());
 }
 
 }  // namespace blink

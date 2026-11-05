@@ -63,15 +63,8 @@ void CoalesceRelatedSearches(std::vector<history::Cluster>& clusters);
 // by-score sorting of visits within clusters. Exposed for testing.
 void SortClusters(std::vector<history::Cluster>* clusters);
 
-// Whether to use navigation context clusters from persistence.
-bool ShouldUseNavigationContextClustersFromPersistence();
-
 // Whether the transition is user-visible.
 bool IsTransitionUserVisible(int32_t transition);
-
-// Returns the histogram name slice for the clustering request source.
-std::string GetHistogramNameSliceForRequestSource(
-    ClusteringRequestSource source);
 
 // Returns whether `source` is a UI source.
 bool IsUIRequestSource(ClusteringRequestSource source);

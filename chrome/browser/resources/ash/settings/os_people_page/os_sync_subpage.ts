@@ -37,7 +37,7 @@ import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 
 import {RouteOriginMixin} from '../common/route_origin_mixin.js';
 import type {PrefsState} from '../common/types.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
 import {Router, routes} from '../router.js';
 
 import type {OsSettingsPersonalizationOptionsElement} from './os_personalization_options.js';
@@ -301,8 +301,7 @@ export class OsSettingsSyncSubpageElement extends
   private computeSyncSectionDisabled_(): boolean {
     return this.syncStatus !== undefined &&
         (this.syncStatus.signedInState !== SignedInState.SYNCING &&
-             (this.syncStatus.signedInState !== SignedInState.SIGNED_IN ||
-              !loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos')) ||
+             this.syncStatus.signedInState !== SignedInState.SIGNED_IN ||
          !!this.syncStatus.disabled ||
          (!!this.syncStatus.hasError &&
           this.syncStatus.statusAction !== StatusAction.ENTER_PASSPHRASE &&
@@ -539,8 +538,7 @@ export class OsSettingsSyncSubpageElement extends
     return this.syncStatus !== undefined && this.syncPrefs !== undefined &&
         this.syncPrefs.passphraseRequired &&
         (this.syncStatus.signedInState === SignedInState.SYNCING ||
-         (this.syncStatus.signedInState === SignedInState.SIGNED_IN &&
-          loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos')));
+         this.syncStatus.signedInState === SignedInState.SIGNED_IN);
   }
 
   private onSyncAdvancedClick_(): void {

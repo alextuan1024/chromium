@@ -73,13 +73,17 @@ const std::vector<ModuleIdDetail> MakeModuleIdDetails(bool is_managed_profile,
                          IDS_NTP_MODULES_TAB_GROUPS_TITLE);
   }
 
+  if (IsLaunchpadWidgetEnabled(profile)) {
+    details.emplace_back(ntp_modules::kLaunchpadModuleId,
+                         IDS_NTP_MODULES_LAUNCHPAD_TITLE);
+  }
+
   return details;
 }
 
 bool HasModulesEnabled(const std::vector<ModuleIdDetail> module_id_details,
                        signin::IdentityManager* identity_manager) {
   return !module_id_details.empty() &&
-         !base::FeatureList::IsEnabled(ntp_features::kNtpModulesLoad) &&
          (base::CommandLine::ForCurrentProcess()->HasSwitch(
               switches::kSignedOutNtpModulesSwitch) ||
           base::FeatureList::IsEnabled(

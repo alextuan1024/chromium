@@ -489,19 +489,19 @@ TEST_F(DocumentProviderTest,
   EXPECT_EQ(matches.size(), 3u);
 
   // match.destination_url is used as the match's temporary text in the Omnibox.
-  EXPECT_EQ(AutocompleteMatchType::ToAccessibilityLabel(
+  EXPECT_EQ(omnibox::AutocompleteMatchToAccessibilityLabel(
                 matches[0], u"",
                 base::ASCIIToUTF16(matches[0].destination_url.spec()), 1, 4),
             u"My Google Doc, 10/15/07 - Google Docs, "
             u"https://documentprovider.tld/doc?id=1, 2 of 4");
   // Unhandled MIME Type falls back to "Google Drive" where the file was stored.
-  EXPECT_EQ(AutocompleteMatchType::ToAccessibilityLabel(
+  EXPECT_EQ(omnibox::AutocompleteMatchToAccessibilityLabel(
                 matches[1], u"",
                 base::ASCIIToUTF16(matches[1].destination_url.spec()), 2, 4),
             u"My File in Drive, 10/10/10 - Google Drive, "
             "https://documentprovider.tld/doc?id=2, 3 of 4");
   // No modified time was specified for the last file.
-  EXPECT_EQ(AutocompleteMatchType::ToAccessibilityLabel(
+  EXPECT_EQ(omnibox::AutocompleteMatchToAccessibilityLabel(
                 matches[2], u"",
                 base::ASCIIToUTF16(matches[2].destination_url.spec()), 3, 4),
             u"Shared Spreadsheet, Google Sheets, "
@@ -1109,8 +1109,6 @@ TEST_F(DocumentProviderTest, Logging) {
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.TotalTime", 0);
     histogram_tester.ExpectTotalCount(
         "Omnibox.DocumentSuggest.TotalTime.Interrupted", 0);
-    histogram_tester.ExpectTotalCount(
-        "Omnibox.DocumentSuggest.TotalTime.NotInterrupted", 0);
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.RequestTime", 0);
     histogram_tester.ExpectTotalCount(
         "Omnibox.DocumentSuggest.RequestTime.Interrupted", 0);
@@ -1127,8 +1125,6 @@ TEST_F(DocumentProviderTest, Logging) {
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.TotalTime", 1);
     histogram_tester.ExpectTotalCount(
         "Omnibox.DocumentSuggest.TotalTime.Interrupted", 1);
-    histogram_tester.ExpectTotalCount(
-        "Omnibox.DocumentSuggest.TotalTime.NotInterrupted", 0);
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.RequestTime", 0);
     histogram_tester.ExpectTotalCount(
         "Omnibox.DocumentSuggest.RequestTime.Interrupted", 0);
@@ -1153,8 +1149,6 @@ TEST_F(DocumentProviderTest, Logging) {
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.TotalTime", 1);
     histogram_tester.ExpectTotalCount(
         "Omnibox.DocumentSuggest.TotalTime.Interrupted", 1);
-    histogram_tester.ExpectTotalCount(
-        "Omnibox.DocumentSuggest.TotalTime.NotInterrupted", 0);
     histogram_tester.ExpectTotalCount("Omnibox.DocumentSuggest.RequestTime", 1);
     histogram_tester.ExpectTotalCount(
         "Omnibox.DocumentSuggest.RequestTime.Interrupted", 1);

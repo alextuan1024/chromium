@@ -4,7 +4,11 @@
 
 #include "chrome/services/sharing/nearby/platform/webrtc.h"
 
+#include <utility>
+
 #include "ash/constants/ash_features.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
@@ -23,10 +27,10 @@
 #include "third_party/nearby/src/internal/platform/logging.h"
 #include "third_party/webrtc/api/async_dns_resolver.h"
 #include "third_party/webrtc/api/create_modular_peer_connection_factory.h"
+#include "third_party/webrtc/api/data_channel_interface.h"
 #include "third_party/webrtc/api/jsep.h"
 #include "third_party/webrtc/api/peer_connection_interface.h"
 #include "third_party/webrtc_overrides/environment.h"
-#include "unicode/locid.h"
 
 namespace nearby::chrome {
 
@@ -94,7 +98,7 @@ net::NetworkTrafficAnnotationTag kTrafficAnnotation =
 // Returns the ISO country code for the locale currently set as the
 // user's device language.
 const std::string GetCurrentCountryCode() {
-  return std::string(icu::Locale::getDefault().getCountry());
+  return std::string(base::i18n::GetDefaultIcuLocale().region_subtag());
 }
 
 class ProxyAsyncDnsResolverFactory final
@@ -308,6 +312,81 @@ class WebRtcSignalingMessengerImpl : public api::WebRtcSignalingMessenger {
   base::WeakPtrFactory<WebRtcSignalingMessengerImpl> weak_ptr_factory_{this};
 };
 
+// TODO(crbug.com/506378027): Remove once //third_party/nearby is rolled past
+// the upstream fix for ConnectionFlow / WebRtcSocket.
+// Wraps `ConnectionFlow`'s `PeerConnectionObserver` to enforce at most one data
+// channel per `PeerConnection`, preventing a remote peer from overwriting
+// `ConnectionFlow::socket_wrapper_` and destroying the previous `WebRtcSocket`
+// while the `PeerConnection` is still open.
+class PeerConnectionObserverWrapper : public webrtc::PeerConnectionObserver {
+ public:
+  explicit PeerConnectionObserverWrapper(webrtc::PeerConnectionObserver* impl)
+      : impl_(impl) {}
+
+  void OnSignalingChange(
+      webrtc::PeerConnectionInterface::SignalingState new_state) override {
+    if (!impl_) {
+      return;
+    }
+    if (new_state ==
+        webrtc::PeerConnectionInterface::SignalingState::kHaveLocalOffer) {
+      has_data_channel_ = true;
+    }
+    impl_->OnSignalingChange(new_state);
+    if (new_state == webrtc::PeerConnectionInterface::SignalingState::kClosed) {
+      impl_ = nullptr;
+    }
+  }
+
+  void OnDataChannel(
+      webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override {
+    if (!impl_ || std::exchange(has_data_channel_, true)) {
+      if (channel) {
+        channel->Close();
+      }
+      return;
+    }
+    impl_->OnDataChannel(std::move(channel));
+  }
+
+  void OnIceCandidate(const webrtc::IceCandidate* candidate) override {
+    if (impl_) {
+      impl_->OnIceCandidate(candidate);
+    }
+  }
+
+  void OnIceGatheringChange(
+      webrtc::PeerConnectionInterface::IceGatheringState new_state) override {
+    if (impl_) {
+      impl_->OnIceGatheringChange(new_state);
+    }
+  }
+
+  void OnConnectionChange(
+      webrtc::PeerConnectionInterface::PeerConnectionState new_state) override {
+    if (impl_) {
+      impl_->OnConnectionChange(new_state);
+    }
+  }
+
+  void OnRenegotiationNeeded() override {
+    if (impl_) {
+      impl_->OnRenegotiationNeeded();
+    }
+  }
+
+  void OnIceSelectedCandidatePairChanged(
+      const webrtc::CandidatePairChangeEvent& event) override {
+    if (impl_) {
+      impl_->OnIceSelectedCandidatePairChanged(event);
+    }
+  }
+
+ private:
+  raw_ptr<webrtc::PeerConnectionObserver, DisableDanglingPtrDetection> impl_;
+  bool has_data_channel_ = false;
+};
+
 }  // namespace
 
 WebRtcMedium::WebRtcMedium(
@@ -321,7 +400,6 @@ WebRtcMedium::WebRtcMedium(
     scoped_refptr<base::SingleThreadTaskRunner> task_runner)
     : chrome_network_thread_(/*name=*/"WebRtc Network Thread"),
       chrome_signaling_thread_(/*name=*/"WebRtc Signaling Thread"),
-      chrome_worker_thread_(/*name=*/"WebRtc Worker Thread"),
       p2p_socket_manager_(socket_manager),
       mdns_responder_factory_(mdns_responder_factory),
       ice_config_fetcher_(ice_config_fetcher),
@@ -361,7 +439,7 @@ WebRtcMedium::~WebRtcMedium() {
   // Stop is called in thread destructor, but we want to ensure all threads are
   // down before the destructor is complete and we release the lock.
   chrome_signaling_thread_.Stop();
-  chrome_worker_thread_.Stop();
+  observer_wrappers_.clear();
   VLOG(1) << "WebRtcMedium destructor is done shutting down threads.";
 }
 
@@ -401,31 +479,24 @@ void WebRtcMedium::InitWebRTCThread(webrtc::Thread** thread_to_set) {
 void WebRtcMedium::InitPeerConnectionFactory() {
   DCHECK(!chrome_network_thread_.IsRunning());
   DCHECK(!chrome_signaling_thread_.IsRunning());
-  DCHECK(!chrome_worker_thread_.IsRunning());
   DCHECK(!rtc_network_thread_);
   DCHECK(!rtc_signaling_thread_);
-  DCHECK(!rtc_worker_thread_);
 
   webrtc::ThreadWrapper::EnsureForCurrentMessageLoop();
   webrtc::ThreadWrapper::current()->set_send_allowed(true);
 
-  // We need to create three dedicated threads for WebRTC. We post tasks to the
-  // threads and to ensure the message loop and jingle wrapper is setup for each
-  // thread. Unretained(this) is used because we will wait on this thread for
-  // the tasks to complete before exiting.
+  // We need to create dedicated network and signaling threads for WebRTC. We
+  // post tasks to the threads to ensure the message loop and jingle wrapper
+  // are setup for each thread. Unretained(this) is used because we will wait
+  // on this thread for the tasks to complete before exiting.
 
-  CountDownLatch latch(3);
+  CountDownLatch latch(2);
   auto decrement_latch = base::BindRepeating(
       [](CountDownLatch* latch) { latch->CountDown(); }, &latch);
 
   chrome_network_thread_.Start();
   chrome_network_thread_.task_runner()->PostTask(
       FROM_HERE, base::BindOnce(&WebRtcMedium::InitNetworkThread,
-                                base::Unretained(this), decrement_latch));
-
-  chrome_worker_thread_.Start();
-  chrome_worker_thread_.task_runner()->PostTask(
-      FROM_HERE, base::BindOnce(&WebRtcMedium::InitWorkerThread,
                                 base::Unretained(this), decrement_latch));
 
   chrome_signaling_thread_.Start();
@@ -438,12 +509,10 @@ void WebRtcMedium::InitPeerConnectionFactory() {
 
   DCHECK(rtc_network_thread_);
   DCHECK(rtc_signaling_thread_);
-  DCHECK(rtc_worker_thread_);
 
   webrtc::PeerConnectionFactoryDependencies factory_dependencies;
   factory_dependencies.env = WebRtcEnvironment();
   factory_dependencies.network_thread = rtc_network_thread_;
-  factory_dependencies.worker_thread = rtc_worker_thread_;
   factory_dependencies.signaling_thread = rtc_signaling_thread_;
 
   peer_connection_factory_ = webrtc::CreateModularPeerConnectionFactory(
@@ -502,14 +571,6 @@ void WebRtcMedium::InitSignalingThread(base::OnceClosure complete_callback) {
   std::move(complete_callback).Run();
 }
 
-void WebRtcMedium::InitWorkerThread(base::OnceClosure complete_callback) {
-  DCHECK(chrome_worker_thread_.task_runner()->BelongsToCurrentThread());
-  DCHECK(!rtc_worker_thread_);
-
-  InitWebRTCThread(&rtc_worker_thread_);
-
-  std::move(complete_callback).Run();
-}
 
 void WebRtcMedium::OnIceServersFetched(
     webrtc::PeerConnectionObserver* observer,
@@ -547,7 +608,9 @@ void WebRtcMedium::OnIceServersFetched(
   rtc_config.stable_writable_connection_ping_interval_ms =
       kStableWritableConnectionPingInterval.InMilliseconds();
 
-  webrtc::PeerConnectionDependencies dependencies(observer);
+  auto observer_wrapper =
+      std::make_unique<PeerConnectionObserverWrapper>(observer);
+  webrtc::PeerConnectionDependencies dependencies(observer_wrapper.get());
   sharing::P2PPortAllocator::Config port_config;
   port_config.enable_multiple_routes = true;
   port_config.enable_nonproxied_udp = true;
@@ -560,6 +623,7 @@ void WebRtcMedium::OnIceServersFetched(
       peer_connection = peer_connection_factory_->CreatePeerConnectionOrError(
           rtc_config, std::move(dependencies));
   if (peer_connection.ok()) {
+    observer_wrappers_.push_back(std::move(observer_wrapper));
     callback(peer_connection.MoveValue());
   } else {
     callback(/*peer_connection=*/nullptr);
@@ -572,6 +636,12 @@ WebRtcMedium::GetSignalingMessenger(
     const location::nearby::connections::LocationHint& location_hint) {
   return std::make_unique<WebRtcSignalingMessengerImpl>(
       std::string(self_id), location_hint, webrtc_signaling_messenger_);
+}
+
+std::unique_ptr<webrtc::PeerConnectionObserver>
+WebRtcMedium::CreatePeerConnectionObserverWrapperForTesting(
+    webrtc::PeerConnectionObserver* observer) {
+  return std::make_unique<PeerConnectionObserverWrapper>(observer);
 }
 
 }  // namespace nearby::chrome

@@ -7,12 +7,16 @@
 
 #include <string_view>
 
+#include "base/time/time.h"
+
 namespace dictation {
 
 inline constexpr std::string_view kFirstRunExitStatusHistogramName =
     "VoiceTyping.FirstRunExitStatus";
 inline constexpr std::string_view kIsEnabledOnProfileInitHistogramName =
     "VoiceTyping.IsEnabledOnProfileInit";
+inline constexpr std::string_view kPageContextEligibilityHistogramName =
+    "VoiceTyping.PageContextEligibility";
 inline constexpr std::string_view kSessionStartSourceHistogramName =
     "VoiceTyping.SessionStartSource";
 inline constexpr std::string_view kSessionUrlCategoryHistogramName =
@@ -21,6 +25,28 @@ inline constexpr std::string_view kStreamStartTriggerHistogramName =
     "VoiceTyping.StreamStartTrigger";
 inline constexpr std::string_view kStreamExitReasonHistogramName =
     "VoiceTyping.StreamExitReason";
+inline constexpr std::string_view kStreamStartLatencyHistogramName =
+    "VoiceTyping.StreamStartLatency";
+inline constexpr std::string_view kStreamAbandonedBeforeListeningHistogramName =
+    "VoiceTyping.StreamAbandonedBeforeListening";
+
+// User action names exposed for testing; base::UserMetricsAction requires
+// string literals.
+inline constexpr std::string_view kContextMenuInvocationActionName =
+    "VoiceTyping.ContextMenuInvocation";
+inline constexpr std::string_view kHotkeyInvocationActionName =
+    "VoiceTyping.HotkeyInvocation";
+inline constexpr std::string_view kFirstRunExperienceAcceptedActionName =
+    "VoiceTyping.FirstRunExperience.Accepted";
+inline constexpr std::string_view kFirstRunExperienceDismissedActionName =
+    "VoiceTyping.FirstRunExperience.Dismissed";
+inline constexpr std::string_view kStreamListeningActionName =
+    "VoiceTyping.Stream.Listening";
+inline constexpr std::string_view kStreamCancelledActionName =
+    "VoiceTyping.Stream.Cancelled";
+inline constexpr std::string_view kTextCommittedActionName =
+    "VoiceTyping.TextCommitted";
+inline constexpr std::string_view kTextNoneActionName = "VoiceTyping.TextNone";
 
 // Exit status of the Dictation First Run Experience (FRE) dialog.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -50,9 +76,10 @@ enum class DictationSessionEntryPoint {
 // numeric values should never be reused.
 // LINT.IfChange(DictationUrlCategory)
 enum class DictationUrlCategory {
-  kWeb = 0,   // Standard Web page loaded in a browser tab.
-  kGlic = 1,  // Gemini in Chrome UI surface.
-  kMaxValue = kGlic,
+  kWeb = 0,    // Standard Web page loaded in a browser tab.
+  kGlic = 1,   // Gemini in Chrome UI surface.
+  kWebUI = 2,  // Chrome WebUI surface.
+  kMaxValue = kWebUI,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/voice_typing/enums.xml:DictationUrlCategory)
 
@@ -89,7 +116,7 @@ enum class DictationStreamStartTrigger {
 // LINT.IfChange(DictationStreamExitStatus)
 enum class DictationStreamExitStatus {
   // Explicit user completion (clicked 'Done', toggled hotkey off, or
-  // pressed Esc during listening state).
+  // pressed Esc or Enter during listening state).
   kUserDone = 0,
 
   // Explicit user cancellation (clicked 'X' / 'Cancel').
@@ -109,12 +136,34 @@ enum class DictationStreamExitStatus {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/voice_typing/enums.xml:DictationStreamExitStatus)
 
+// Outcome of page context eligibility checks when fetching context for a
+// Dictation stream on a web page.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(DictationPageContextEligibility)
+enum class DictationPageContextEligibility {
+  // Page passed all checks and page context was allowed.
+  kEligible = 0,
+  // Page context was blocked by the Optimization Guide DICTATION_ELIGIBLE hint
+  // check (ineligible verdict, missing hint/metadata, or Optimization Guide
+  // unavailable).
+  kHintIneligible = 1,
+  // Page context was blocked by the CSE/IRM PageContextEligibility check.
+  kCseIrmIneligible = 2,
+  kMaxValue = kCseIrmIneligible,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/voice_typing/enums.xml:DictationPageContextEligibility)
+
 // Records how the Dictation FRE dialog was exited.
 void RecordDictationFirstRunExitStatus(DictationFirstRunExitStatus status);
 
 // Records whether Dictation is overall enabled (feature and policies enabled)
 // when DictationKeyedService is initialized for a profile.
 void RecordDictationIsEnabledOnProfileInit(bool is_enabled);
+
+// Records the outcome of page context eligibility checks for a web page.
+void RecordDictationPageContextEligibility(
+    DictationPageContextEligibility status);
 
 // Records the entry point for starting a Dictation session.
 void RecordDictationSessionStartSource(DictationSessionEntryPoint entry_point);
@@ -127,6 +176,24 @@ void RecordDictationStreamStartTrigger(DictationStreamStartTrigger trigger);
 
 // Records how a Voice Typing stream concluded.
 void RecordDictationStreamExitStatus(DictationStreamExitStatus status);
+
+// Records the time from the user triggering a Dictation stream until the
+// stream starts transcribing.
+void RecordDictationStreamStartLatency(base::TimeDelta latency);
+
+// Records the time from the user triggering a Dictation stream until the
+// stream ended without ever starting to transcribe.
+void RecordDictationStreamAbandonedBeforeListening(base::TimeDelta elapsed);
+
+// Records that a Voice Typing stream which started transcribing committed
+// non-empty text into its target.
+void RecordDictationTextCommitted();
+
+// Records that a Voice Typing stream which started transcribing ended without
+// committing any text. Not necessarily a failure: this includes the user not
+// saying anything, as well as speech errors or the stream being torn down
+// before the commit completed.
+void RecordDictationTextNone();
 
 }  // namespace dictation
 

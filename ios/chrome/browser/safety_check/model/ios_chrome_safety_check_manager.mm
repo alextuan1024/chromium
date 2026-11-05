@@ -12,6 +12,7 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/time/time.h"
 #import "base/values.h"
+#import "base/version.h"
 #import "components/password_manager/core/browser/leak_detection/leak_detection_request_utils.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/prefs/pref_service.h"
@@ -553,9 +554,10 @@ void IOSChromeSafetyCheckManager::StartOmahaCheckInternal() {
     case version_info::Channel::BETA:
     case version_info::Channel::DEV:
     case version_info::Channel::CANARY: {
-      OmahaService::CheckNow(
-          base::BindOnce(&IOSChromeSafetyCheckManager::HandleOmahaResponse,
-                         weak_ptr_factory_.GetWeakPtr()));
+      omaha_ping_subscription_ =
+          GetApplicationContext()->GetOmahaService().CheckNow(
+              base::BindOnce(&IOSChromeSafetyCheckManager::HandleOmahaResponse,
+                             weak_ptr_factory_.GetWeakPtr()));
       break;
     }
     default:
@@ -610,6 +612,7 @@ void IOSChromeSafetyCheckManager::HandleOmahaResponse(
 void IOSChromeSafetyCheckManager::HandleOmahaError() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  omaha_ping_subscription_ = {};
   if (update_chrome_check_state_ == UpdateChromeSafetyCheckState::kRunning) {
     SetUpdateChromeCheckState(UpdateChromeSafetyCheckState::kOmahaError);
   }

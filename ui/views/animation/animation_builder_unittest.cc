@@ -10,9 +10,12 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/test/bind.h"
 #include "base/test/gtest_util.h"
 #include "base/time/time.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/compositor/layer_animation_element.h"
+#include "ui/compositor/layer_animation_sequence.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/compositor/layer_owner.h"
 #include "ui/compositor/layer_textured.h"
@@ -104,6 +107,9 @@ class AnimationBuilderTest : public testing::Test {
   void set_expected_observers_deleted(int expected_observers_deleted) {
     expected_observers_deleted_ = expected_observers_deleted;
   }
+
+  // Returns the number of observers that have been deleted so far.
+  int deleted_observers() const { return deleted_observers_; }
 
  private:
   std::vector<std::unique_ptr<TestAnimatibleLayerOwner>> layer_owners_;
@@ -1275,6 +1281,157 @@ TEST_F(AnimationBuilderTest, SetInterpolatedTransform) {
   EXPECT_FALSE(target->layer()->GetAnimator()->is_animating());
   EXPECT_EQ(target->delegate()->GetTransformForAnimation(),
             expected_end_transform);
+}
+
+// Regression test for the ~AnimationBuilder destructor loop dereferencing
+// stale ui::Layer* multimap keys after a re-entrant client callback deletes a
+// later animation target.
+//
+// The destructor iterates `layer_animation_sequences_` (keyed by bare
+// ui::Layer*, in pointer order) and calls target->GetAnimator() /
+// StartTogether() per target. StartTogether() synchronously dispatches
+// LayerAnimationObserver callbacks (e.g. via preemption of a conflicting
+// animation, Step() of an expired sequence, or
+// FinishAnyAnimationWithZeroDuration()). Production callbacks delete Views
+// and their Layers from these callbacks (e.g. ash
+// AshNotificationView::AnimateResizeAfterRemoval -> RemoveChildViewT()). If
+// such a callback deletes a *later* target of the builder, the loop resumes
+// with a dangling Layer* and dereferences freed memory.
+//
+// Under ASan this test reports heap-use-after-free in ui::Layer::GetAnimator
+// called from views::AnimationBuilder::~AnimationBuilder.
+TEST_F(AnimationBuilderTest, DestructorLoopUsesLayerDeletedByCallback) {
+  auto owner_a = std::make_unique<TestAnimatibleLayerOwner>();
+  auto owner_b = std::make_unique<TestAnimatibleLayerOwner>();
+
+  // The multimap is ordered by Layer* value; make `first` the target that the
+  // destructor loop visits first and `victim` the one visited afterwards.
+  const bool a_first = owner_a->layer() < owner_b->layer();
+  std::unique_ptr<TestAnimatibleLayerOwner>& first =
+      a_first ? owner_a : owner_b;
+  std::unique_ptr<TestAnimatibleLayerOwner>& victim =
+      a_first ? owner_b : owner_a;
+
+  ui::Layer* first_layer = first->layer();
+  ui::Layer* victim_layer = victim->layer();
+
+  // Builder 1: leave a pending bounds animation on `first` whose
+  // ended/aborted callback destroys `victim` and its Layer. This models the
+  // shipping ash grouped-notification callbacks
+  // (on_notification_slid_out / on_animation_aborted), which synchronously
+  // delete sibling child Views (and thus their Layers) via RemoveChildViewT.
+  {
+    AnimationBuilder builder;
+    builder.OnEnded(base::BindLambdaForTesting([&]() { victim.reset(); }));
+    builder.OnAborted(base::BindLambdaForTesting([&]() { victim.reset(); }));
+    builder.Once()
+        .SetDuration(base::Seconds(1))
+        .SetBounds(first_layer, gfx::Rect(10, 10, 100, 100));
+  }
+  ASSERT_TRUE(victim);
+  ASSERT_TRUE(first_layer->GetAnimator()->is_animating());
+
+  // Builder 2: one builder with sequences for both layers, mirroring
+  // AshNotificationView::AnimateResizeAfterRemoval() which adds a bounds
+  // sequence for every remaining grouped child to a single builder. Its
+  // destructor starts the `first` sequence; the animator's default
+  // IMMEDIATELY_SET_NEW_TARGET preemption synchronously finishes builder 1's
+  // conflicting animation, running the callback above which frees
+  // `victim_layer` while it is still a not-yet-visited key of the destructor
+  // loop. The loop then resumes and dereferences the freed Layer.
+  {
+    AnimationBuilder builder;
+    builder.Once()
+        .SetDuration(base::Seconds(1))
+        .SetBounds(first_layer, gfx::Rect(0, 0, 50, 50))
+        .SetBounds(victim_layer, gfx::Rect(0, 0, 60, 60));
+  }  // Heap-use-after-free: ~AnimationBuilder -> victim_layer->GetAnimator().
+
+  // Not reached under ASan.
+  EXPECT_FALSE(victim);
+}
+
+// Regression test for crbug.com/561996469. The OnEnded callback may destroy
+// the sequence that is notifying the builder's observer. If that is the last
+// sequence the observer is attached to, the observer deletes itself while its
+// OnLayerAnimationEnded() is still on the stack, so it must not use its
+// members after the callback returns.
+//
+// ui::LayerAnimator::FinishAnyAnimationWithZeroDuration() notifies the
+// observers of a zero-duration sequence while the animator still owns the
+// sequence, which is what lets the callback destroy it.
+TEST_F(AnimationBuilderTest, OnEndedCallbackDestroysNotifyingSequence) {
+  TestAnimatibleLayerOwner* target = CreateTestLayerOwner();
+  ui::LayerAnimator* animator = target->layer()->GetAnimator();
+
+  bool ended = false;
+  {
+    AnimationBuilder builder;
+    // With a preemption strategy other than IMMEDIATELY_SET_NEW_TARGET, the
+    // sequences of a target are started as a group. The zero-duration
+    // brightness sequence is then held back until the threaded opacity
+    // sequence starts, so both are still in the animator after the builder is
+    // destroyed.
+    builder
+        .SetPreemptionStrategy(
+            ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET)
+        .OnEnded(base::BindLambdaForTesting([&]() {
+          ended = true;
+          EXPECT_EQ(0, deleted_observers());
+          // Destroys the zero-duration sequence, which is the one notifying
+          // the observer and the last one it is attached to.
+          animator->StopAnimating();
+          EXPECT_EQ(1, deleted_observers());
+        }));
+    builder.Once().SetDuration(base::Seconds(1)).SetOpacity(target, 0.5f);
+    builder.Once().SetDuration(base::TimeDelta()).SetBrightness(target, 0.5f);
+  }
+  EXPECT_FALSE(ended);
+  EXPECT_TRUE(animator->is_animating());
+
+  // Preempt the opacity sequence. This releases and starts the zero-duration
+  // sequence, which the animator then finishes from
+  // FinishAnyAnimationWithZeroDuration() before returning.
+  AnimationBuilder()
+      .Once()
+      .SetDuration(base::Seconds(1))
+      .SetOpacity(target, 1.0f);
+
+  EXPECT_TRUE(ended);
+  EXPECT_FALSE(animator->is_animating());
+  set_expected_observers_deleted(1);
+}
+
+// Same as above, but for the OnAborted callback. ui::LayerAnimator keeps a
+// sequence alive while notifying its observers that it has been aborted, so
+// this test aborts a sequence that the animator still owns.
+TEST_F(AnimationBuilderTest, OnAbortedCallbackDestroysNotifyingSequence) {
+  TestAnimatibleLayerOwner* target = CreateTestLayerOwner();
+  ui::LayerAnimator* animator = target->layer()->GetAnimator();
+
+  bool aborted = false;
+  AnimationBuilder()
+      .OnAborted(base::BindLambdaForTesting([&]() {
+        aborted = true;
+        EXPECT_EQ(0, deleted_observers());
+        // Destroys the sequence that is notifying the observer, which is the
+        // only one it is attached to.
+        animator->StopAnimating();
+        EXPECT_EQ(1, deleted_observers());
+      }))
+      .Once()
+      .SetDuration(base::Seconds(1))
+      .SetBrightness(target, 0.5f);
+
+  ui::LayerAnimationSequence* sequence =
+      ui::LayerAnimatorTestController(animator).GetRunningSequence(
+          ui::LayerAnimationElement::BRIGHTNESS);
+  ASSERT_TRUE(sequence);
+  sequence->Abort(target->delegate());
+
+  EXPECT_TRUE(aborted);
+  EXPECT_FALSE(animator->is_animating());
+  set_expected_observers_deleted(1);
 }
 
 }  // namespace views

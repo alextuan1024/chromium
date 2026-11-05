@@ -58,9 +58,9 @@ class ExtensionsClient {
   const Feature::FeatureDelegatedAvailabilityCheckMap&
   GetFeatureDelegatedAvailabilityCheckMap() const;
 
-  // Create a FeatureProvider for a specific feature type, e.g. "permission".
-  std::unique_ptr<FeatureProvider> CreateFeatureProvider(
-      const std::string& name) const;
+  // Create a FeatureProvider for a specific feature type, e.g. "permission",
+  // by merging the static tables from every ExtensionsAPIProvider.
+  FeatureProvider CreateFeatureProvider(const std::string& name) const;
 
   // Returns the dictionary of the API features json file.
   // TODO(devlin): We should find a way to remove this.
@@ -120,6 +120,10 @@ class ExtensionsClient {
 
   // Returns false if content scripts are forbidden from running on `url`.
   virtual bool IsScriptableURL(const GURL& url, std::string* error) const = 0;
+
+  // Returns false if extensions are forbidden from capturing the given `url`
+  // (e.g. via tabs.captureVisibleTab or pageCapture.saveAsMHTML).
+  virtual bool IsCapturableURL(const GURL& url, std::string* error) const;
 
   // Returns the base webstore URL prefix.
   virtual const GURL& GetWebstoreBaseURL() const = 0;

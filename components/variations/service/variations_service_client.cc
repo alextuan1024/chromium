@@ -89,10 +89,16 @@ base::FilePath VariationsServiceClient::GetVariationsSeedFileDir() {
   return base::FilePath();
 }
 
+bool VariationsServiceClient::HasPendingNativeVariationsSeed() {
+  return false;
+}
+
 std::unique_ptr<SeedResponse>
 VariationsServiceClient::TakeSeedFromNativeVariationsSeedStore() {
   return nullptr;
 }
+
+void VariationsServiceClient::ClearNativeVariationsSeed() {}
 
 void VariationsServiceClient::ExitWithMessage(const std::string& message) {
   UNSAFE_TODO(puts(message.c_str()));
@@ -120,6 +126,17 @@ bool VariationsServiceClient::EnableSignatureVerificationOnLoad() {
 #else
   return true;
 #endif
+}
+
+metrics::MetricsService::RotateUmaLogResult
+VariationsServiceClient::RotateUmaLogForRuntimeMutability(
+    metrics::MetricsService::RuntimeMutabilityPassKey) {
+  return metrics::MetricsService::RotateUmaLogResult::kNotSupported;
+}
+
+bool VariationsServiceClient::ShouldDelayRuntimeMutability(
+    metrics::MetricsService::RuntimeMutabilityPassKey) {
+  return false;
 }
 
 }  // namespace variations

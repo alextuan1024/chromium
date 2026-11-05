@@ -7,6 +7,7 @@
 #include <xdg-shell-client-protocol.h>
 
 #include <memory>
+#include <utility>
 
 #include "base/command_line.h"
 #include "base/environment.h"
@@ -22,6 +23,7 @@
 #include "ui/ozone/platform/wayland/host/wayland_serial_tracker.h"
 #include "ui/ozone/platform/wayland/host/wayland_toplevel_window.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
+#include "ui/ozone/platform/wayland/host/wayland_window_manager.h"
 #include "ui/ozone/platform/wayland/host/xdg_toplevel.h"
 #include "ui/ozone/public/ozone_switches.h"
 
@@ -168,11 +170,26 @@ bool XdgPopup::Initialize(const InitParams& params) {
   }
   connection()->window_manager()->NotifyWindowRoleAssigned(window());
 
-  std::optional<bool> parent_xdg_popup_has_grab;
+  // The parent of a grabbing popup must either be an xdg_toplevel surface or
+  // another xdg_popup with an explicit grab. It must also be the topmost
+  // grabbing popup, which it is not if it already has another grabbing child
+  // popup, e.g. when a context menu is opened from a menu row while the row's
+  // submenu is open. Compositors raise a protocol error otherwise.
+  bool parent_allows_grab = true;
   if (auto* parent_popup = xdg_parent->AsWaylandPopup()) {
-    parent_xdg_popup_has_grab.emplace(parent_popup->xdg_popup()->has_grab());
+    parent_allows_grab = parent_popup->xdg_popup()->has_grab();
   }
-  GrabIfPossible(connection(), parent_xdg_popup_has_grab);
+  for (WaylandWindow* sibling :
+       connection()->window_manager()->GetAllWindows()) {
+    auto* sibling_popup = sibling->AsWaylandPopup();
+    if (sibling != window() && sibling_popup && sibling_popup->xdg_popup() &&
+        sibling_popup->xdg_popup()->has_grab() &&
+        sibling->GetXdgParentWindow() == xdg_parent) {
+      parent_allows_grab = false;
+      break;
+    }
+  }
+  GrabIfPossible(connection(), parent_allows_grab);
 
   static constexpr xdg_popup_listener kXdgPopupListener = {
       .configure = &OnConfigure,
@@ -186,22 +203,24 @@ bool XdgPopup::Initialize(const InitParams& params) {
 }
 
 void XdgPopup::AckConfigure(uint32_t serial) {
-  DCHECK(xdg_surface_);
+  CHECK(xdg_surface_, base::NotFatalUntil::M163);
   xdg_surface_->AckConfigure(serial);
 }
 
 bool XdgPopup::IsConfigured() {
-  DCHECK(xdg_surface_);
+  CHECK(xdg_surface_, base::NotFatalUntil::M163);
   return xdg_surface_->IsConfigured();
 }
 
-bool XdgPopup::SetBounds(const gfx::Rect& new_bounds) {
+bool XdgPopup::SetBounds(const gfx::Rect& new_bounds,
+                         std::optional<OwnedWindowAnchor> anchor) {
   if (xdg_popup_get_version(xdg_popup_.get()) <
       XDG_POPUP_REPOSITIONED_SINCE_VERSION) {
     return false;
   }
 
   params_.bounds = new_bounds;
+  params_.anchor = std::move(anchor);
 
   // Create a new positioner with new bounds.
   auto positioner = CreatePositioner();
@@ -234,7 +253,8 @@ void XdgPopup::FillAnchorData(
     OwnedWindowAnchorPosition* anchor_position,
     OwnedWindowAnchorGravity* anchor_gravity,
     OwnedWindowConstraintAdjustment* constraints) const {
-  DCHECK(anchor_rect && anchor_position && anchor_gravity && constraints);
+  CHECK(anchor_rect && anchor_position && anchor_gravity && constraints,
+        base::NotFatalUntil::M163);
   if (params.anchor.has_value()) {
     *anchor_rect = params.anchor->anchor_rect;
     *anchor_position = params.anchor->anchor_position;
@@ -289,7 +309,7 @@ wl::Object<xdg_positioner> XdgPopup::CreatePositioner() {
 }
 
 void XdgPopup::GrabIfPossible(WaylandConnection* connection,
-                              std::optional<bool> parent_shell_popup_has_grab) {
+                              bool parent_allows_grab) {
   base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
   if (!cmd_line->HasSwitch(switches::kUseWaylandExplicitGrab)) {
     return;
@@ -313,10 +333,7 @@ void XdgPopup::GrabIfPossible(WaylandConnection* connection,
     return;
   }
 
-  // The parent of a grabbing popup must either be an xdg_toplevel surface or
-  // another xdg_popup with an explicit grab. If it is a popup that did not take
-  // an explicit grab, an error will be raised, so early out if that's the case.
-  if (!parent_shell_popup_has_grab.value_or(true)) {
+  if (!parent_allows_grab) {
     return;
   }
 
@@ -343,7 +360,7 @@ void XdgPopup::OnConfigure(void* data,
   // Wayland compositor needs during WaylandWindow::CreateXdgPopup call.
   auto* self = static_cast<XdgPopup*>(data);
   WaylandWindow* window = self->window();
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
   window->HandlePopupConfigure({x, y, width, height});
 }
 
@@ -351,7 +368,7 @@ void XdgPopup::OnConfigure(void* data,
 void XdgPopup::OnPopupDone(void* data, xdg_popup* popup) {
   auto* self = static_cast<XdgPopup*>(data);
   WaylandWindow* window = self->window();
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
   window->Hide();
   window->OnCloseRequest();
 }

@@ -8,19 +8,22 @@
 
 #include <algorithm>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/containers/flat_set.h"
 #include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/types/expected.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/address.h"
@@ -61,14 +64,15 @@ AutofillProfileComparator::GetProfileDifference(
     const AutofillProfile& first_profile,
     const AutofillProfile& second_profile,
     FieldTypeSet types,
-    const std::string& app_locale) {
+    const base::i18n::LanguageTag& app_locale) {
   std::vector<ProfileValueDifference> difference;
   difference.reserve(types.size());
 
   for (auto type : types) {
-    const std::u16string& first_value = first_profile.GetInfo(type, app_locale);
+    const std::u16string& first_value =
+        first_profile.GetInfo(type, app_locale.tag_string());
     const std::u16string& second_value =
-        second_profile.GetInfo(type, app_locale);
+        second_profile.GetInfo(type, app_locale.tag_string());
     if (first_value != second_value) {
       difference.emplace_back(
           ProfileValueDifference{type, first_value, second_value});
@@ -81,7 +85,7 @@ std::vector<ProfileValueDifference>
 AutofillProfileComparator::GetSettingsVisibleProfileDifference(
     const AutofillProfile& first_profile,
     const AutofillProfile& second_profile,
-    const std::string& app_locale) {
+    const base::i18n::LanguageTag& app_locale) {
   FieldTypeSet types = first_profile.GetUserVisibleTypes();
   types.insert_all(second_profile.GetUserVisibleTypes());
   return GetProfileDifference(first_profile, second_profile, types, app_locale);
@@ -362,6 +366,7 @@ std::optional<FieldTypeSet>
 AutofillProfileComparator::NonMergeableSettingVisibleTypes(
     const AutofillProfile& a,
     const AutofillProfile& b) const {
+  using enum NameInfo::MergeFailureReason;
   if (a.GetAddressCountryCode() != b.GetAddressCountryCode()) {
     return std::nullopt;
   }
@@ -374,17 +379,47 @@ AutofillProfileComparator::NonMergeableSettingVisibleTypes(
       non_mergeable_types.insert(type);
     }
   };
-  // For most setting-visible types, a HaveMergeable* function exists. If these
+  // For most setting-visible types, a `Merge*()` function exists. If these
   // types ever become non-settings visible, the check in `maybe_add_type` will
   // fail in the unittest.
-  maybe_add_type(NAME_FULL, NameInfo::AreNamesMergeable(
-                                a.GetNameInfo(), a.GetAddressCountryCode(),
-                                b.GetNameInfo(), b.GetAddressCountryCode()));
+  const base::expected<NameInfo, NameInfo::MergeFailureReason> merged_name =
+      NameInfo::MergeNames(
+          a.GetNameInfo(), a.GetAddressCountryCode(), b.GetNameInfo(),
+          b.GetAddressCountryCode(),
+          b.usage_history().use_date() < a.usage_history().use_date());
+
+  auto is_name_component_mergeable = [&](FieldType component_type) {
+    CHECK(component_type == NAME_FULL ||
+          component_type == ALTERNATIVE_FULL_NAME);
+    if (merged_name.has_value()) {
+      return true;
+    }
+    // `NameInfo::MergeNames()` merges both `NAME_FULL` and
+    // `ALTERNATIVE_FULL_NAME` at once, so an error in `merged_name` only means
+    // that *at least one* of the two components could not be merged.
+    // A single-component failure (`kNameFullFailed` or
+    // `kAlternativeNameFailed`) implies that only that specific component
+    // failed to merge, while the other component *is* still mergeable.
+    switch (merged_name.error()) {
+      case kNameFullFailed:
+        // `NAME_FULL` failed to merge, but `ALTERNATIVE_FULL_NAME` is
+        // mergeable.
+        return component_type != NAME_FULL;
+      case kAlternativeNameFailed:
+        // `ALTERNATIVE_FULL_NAME` failed to merge, but `NAME_FULL` is
+        // mergeable.
+        return component_type != ALTERNATIVE_FULL_NAME;
+      case kBothFailed:
+        // Both failed to merge.
+        return false;
+    }
+    NOTREACHED();
+  };
+
+  maybe_add_type(NAME_FULL, is_name_component_mergeable(NAME_FULL));
   if (setting_visible_types.contains(ALTERNATIVE_FULL_NAME)) {
     maybe_add_type(ALTERNATIVE_FULL_NAME,
-                   NameInfo::AreAlternativeNamesMergeable(
-                       a.GetNameInfo(), a.GetAddressCountryCode(),
-                       b.GetNameInfo(), b.GetAddressCountryCode()));
+                   is_name_component_mergeable(ALTERNATIVE_FULL_NAME));
   }
   maybe_add_type(COMPANY_NAME, MergeCompanyNames(a, b).has_value());
   maybe_add_type(PHONE_HOME_WHOLE_NUMBER, MergePhoneNumbers(a, b).has_value());
@@ -411,13 +446,13 @@ AutofillProfileComparator::NonMergeableSettingVisibleTypes(
 bool AutofillProfileComparator::ProfilesHaveDifferentSettingsVisibleValues(
     const AutofillProfile& p1,
     const AutofillProfile& p2,
-    const std::string& app_locale) {
-  if (p1.GetUserVisibleTypes() != p2.GetUserVisibleTypes()) {
-    return false;
-  }
+    const base::i18n::LanguageTag& app_locale) {
+  FieldTypeSet visible_types = p1.GetUserVisibleTypes();
+  visible_types.insert_all(p2.GetUserVisibleTypes());
   // Return true if at least one value corresponding to the settings visible
-  // types is different between the two profiles.
-  return std::ranges::any_of(p1.GetUserVisibleTypes(), [&](FieldType type) {
+  // types is different between the two profiles. Since `ADDRESS_HOME_COUNTRY`
+  // is included in `visible_types`, differing countries are also handled here.
+  return std::ranges::any_of(visible_types, [&](FieldType type) {
     if (IsAlternativeNameType(type)) {
       // Consider two alternative names that differ only in the character set
       // equal.
@@ -429,26 +464,27 @@ bool AutofillProfileComparator::ProfilesHaveDifferentSettingsVisibleValues(
              p2.GetNameInfo().GetValueForComparisonForType(type,
                                                            common_country_code);
     }
-    return p1.GetInfo(type, app_locale) != p2.GetInfo(type, app_locale);
+    return p1.GetInfo(type, app_locale.tag_string()) !=
+           p2.GetInfo(type, app_locale.tag_string());
   });
 }
 
 // static
-std::set<std::u16string_view> AutofillProfileComparator::UniqueTokens(
+base::flat_set<std::u16string_view> AutofillProfileComparator::UniqueTokens(
     std::u16string_view s) {
   std::vector<std::u16string_view> tokens = base::SplitStringPiece(
       s, kSpace, base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-  return std::set<std::u16string_view>(tokens.begin(), tokens.end());
+  return base::flat_set<std::u16string_view>(std::move(tokens));
 }
 
 // static
 AutofillProfileComparator::CompareTokensResult
 AutofillProfileComparator::CompareTokens(std::u16string_view s1,
                                          std::u16string_view s2) {
-  // Note: std::include() expects the items in each range to be in sorted order,
-  // hence the use of std::set<>.
-  std::set<std::u16string_view> t1 = UniqueTokens(s1);
-  std::set<std::u16string_view> t2 = UniqueTokens(s2);
+  // Note: std::includes() expects the items in each range to be in sorted
+  // order, hence the use of base::flat_set<>.
+  base::flat_set<std::u16string_view> t1 = UniqueTokens(s1);
+  base::flat_set<std::u16string_view> t2 = UniqueTokens(s2);
 
   // Does `s1` contain all of the tokens in `s2`? As a special case, return 0 if
   // the two sets are exactly the same.

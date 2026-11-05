@@ -100,9 +100,10 @@ const CGFloat kOmniboxPopupCellMinimumHeight = 58;
 
   // Secondary Text.
   _secondaryText = _suggestion.detailText;
+  const BOOL allowsMultilineSecondary = _suggestion.wrapSecondaryText;
   _secondaryTextNumberOfLines =
-      _suggestion.hasAnswer ? _suggestion.numberOfLines : 1;
-  _secondaryTextFading = !_suggestion.hasAnswer;
+      allowsMultilineSecondary ? _suggestion.numberOfLines : 1;
+  _secondaryTextFading = !allowsMultilineSecondary;
   _secondaryTextDisplayAsURL = _suggestion.isURL;
 
   // Trailing Button.
@@ -112,10 +113,20 @@ const CGFloat kOmniboxPopupCellMinimumHeight = 58;
     self.trailingIconType = TrailingIconType::kOpenExistingTab;
     trailingButtonActionName =
         l10n_util::GetNSString(IDS_IOS_OMNIBOX_POPUP_SWITCH_TO_OPEN_TAB);
-  } else if (_suggestion.isAppendable) {
-    self.trailingIconType = TrailingIconType::kRefineQuery;
-    trailingButtonActionName =
-        l10n_util::GetNSString(IDS_IOS_OMNIBOX_POPUP_APPEND);
+  } else {
+    switch (_suggestion.actionIcon) {
+      case omnibox::SuggestTemplateInfo::BLUE_DOT:
+        // The dot is only an indicator and has no action of its own.
+        self.trailingIconType = TrailingIconType::kBlueDot;
+        break;
+      default:
+        if (_suggestion.isAppendable) {
+          self.trailingIconType = TrailingIconType::kRefineQuery;
+          trailingButtonActionName =
+              l10n_util::GetNSString(IDS_IOS_OMNIBOX_POPUP_APPEND);
+        }
+        break;
+    }
   }
 
   // Accessibility actions.

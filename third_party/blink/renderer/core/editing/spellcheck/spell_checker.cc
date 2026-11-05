@@ -81,7 +81,7 @@ bool IsWhiteSpaceOrPunctuation(UChar c) {
 }  // namespace
 
 static WebSpellCheckPanelHostClient& GetEmptySpellCheckPanelHostClient() {
-  DEFINE_STATIC_LOCAL(EmptySpellCheckPanelHostClient, client, ());
+  static EmptySpellCheckPanelHostClient client;
   return client;
 }
 
@@ -408,8 +408,10 @@ void SpellChecker::DidEndEditingOnTextField(Element* e) {
 
 void SpellChecker::RemoveSpellingAndGrammarMarkers(const HTMLElement& element,
                                                    ElementsType elements_type) {
-  // TODO(editing-dev): The use of updateStyleAndLayoutIgnorePendingStylesheets
-  // needs to be audited.  See http://crbug.com/590369 for more details.
+  if (!GetFrame().GetDocument()->Markers().PossiblyHasMarkers(
+          DocumentMarker::MarkerTypes::Misspelling())) {
+    return;
+  }
   if (elements_type == ElementsType::kOnlyNonEditable) {
     GetFrame().GetDocument()->UpdateStyleAndLayoutTreeForElement(
         &element, DocumentUpdateReason::kSpellCheck);

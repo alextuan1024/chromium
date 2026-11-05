@@ -45,12 +45,8 @@ using feed::FeedEngagementType;
 using feed::FeedUserActionType;
 const int kMaxSuggestionsTotal = 50;
 // Maximum time to wait before declaring a load operation failed.
-// For both ContentSuggestions.Feed.UserJourney.OpenFeed
-// and ContentSuggestions.Feed.UserJourney.GetMore.
+// For ContentSuggestions.Feed.UserJourney.OpenFeed.
 constexpr base::TimeDelta kLoadTimeout = base::Seconds(15);
-// Maximum time to wait before declaring opening a card a failure.
-// For ContentSuggestions.Feed.UserJourney.OpenCard.
-constexpr base::TimeDelta kOpenTimeout = base::Seconds(20);
 // For ContentSuggestions.Feed.TimeSpentInFeed, we want to get a measure
 // of how much time the user is spending with the Feed. If the user stops
 // interacting with the Feed, we stop counting it as time spent after this
@@ -128,15 +124,6 @@ std::string LoadLatencyStepName(LoadLatencyTimes::StepKind kind) {
       return "QueryRequest";
     case LoadLatencyTimes::kStreamViewed:
       return "StreamView";
-  }
-}
-
-void ReportLoadLatencies(std::unique_ptr<LoadLatencyTimes> latencies) {
-  for (const LoadLatencyTimes::Step& step : latencies->steps()) {
-    base::UmaHistogramCustomTimes("ContentSuggestions.Feed.LoadStepLatency." +
-                                      LoadLatencyStepName(step.kind),
-                                  step.latency, base::Milliseconds(50),
-                                  kLoadTimeout, 50);
   }
 }
 
@@ -320,11 +307,6 @@ void MetricsReporter::LogContentStats(const StreamType& stream_type,
       base::StrCat({"ContentSuggestions.", HistogramReplacement(stream_type),
                     "StreamContentSizeKB"}),
       content_stats.total_content_frame_size_bytes / 1024);
-
-  base::UmaHistogramCounts10000(
-      base::StrCat({"ContentSuggestions.", HistogramReplacement(stream_type),
-                    "SharedStateSizeKB"}),
-      content_stats.shared_state_size / 1024);
 }
 
 void MetricsReporter::TrackTimeSpentInFeed(bool interacted_or_scrolled) {
@@ -462,15 +444,6 @@ void MetricsReporter::FeedViewed(SurfaceId surface_id) {
               << step.latency;
       }
     }
-
-    if (!load_latencies_recorded_) {
-      // Use |load_latencies_recorded_| to only report load latencies once.
-      // This generally will be the worst-case, since caches are likely to be
-      // cold, a network request is more likely to be required, and Chrome
-      // may be working on initializing other systems.
-      load_latencies_recorded_ = true;
-      ReportLoadLatencies(std::move(load_latencies_));
-    }
     load_latencies_ = nullptr;
   }
   ReportOpenFeedIfNeeded(surface_id, true);
@@ -480,7 +453,6 @@ void MetricsReporter::FeedViewed(SurfaceId surface_id) {
 void MetricsReporter::OpenAction(const StreamType& stream_type,
                                  int index_in_stream,
                                  OpenActionType action_type) {
-  CardOpenBegin(stream_type);
   switch (action_type) {
     case OpenActionType::kDefault:
       ReportUserActionHistogram(FeedUserActionType::kTappedOnCard);
@@ -508,10 +480,6 @@ void MetricsReporter::OpenVisitComplete(base::TimeDelta visit_time) {
                               visit_time);
 
   good_visit_state_.OnOpenComplete(visit_time);
-}
-
-void MetricsReporter::PageLoaded() {
-  ReportCardOpenEndIfNeeded(true);
 }
 
 void MetricsReporter::OtherUserAction(const StreamType& stream_type,
@@ -705,19 +673,13 @@ void MetricsReporter::SurfaceOpened(const StreamType& stream_type,
 void MetricsReporter::SurfaceClosed(SurfaceId surface_id) {
   VVLOG << "Feed SurfaceClosed " << surface_id;
   ReportOpenFeedIfNeeded(surface_id, false);
-  ReportGetMoreIfNeeded(surface_id, false);
 }
 
 void MetricsReporter::FinalizeMetrics() {
   FinalizeVisit();
-  ReportCardOpenEndIfNeeded(false);
   for (auto iter = surfaces_waiting_for_content_.begin();
        iter != surfaces_waiting_for_content_.end();) {
     ReportOpenFeedIfNeeded((iter++)->first, false);
-  }
-  for (auto iter = surfaces_waiting_for_more_content_.begin();
-       iter != surfaces_waiting_for_more_content_.end();) {
-    ReportGetMoreIfNeeded((iter++)->first, false);
   }
   prefs::SetPersistentMetricsData(persistent_data_, *profile_prefs_);
 }
@@ -736,55 +698,6 @@ void MetricsReporter::ReportOpenFeedIfNeeded(SurfaceId surface_id,
                     success ? "SuccessDuration" : "FailureDuration"}),
       base::TimeTicks::Now() - surface_waiting.wait_start,
       base::Milliseconds(50), kLoadTimeout, 50);
-}
-
-void MetricsReporter::ReportGetMoreIfNeeded(SurfaceId surface_id,
-                                            bool success) {
-  auto iter = surfaces_waiting_for_more_content_.find(surface_id);
-  if (iter == surfaces_waiting_for_more_content_.end())
-    return;
-  SurfaceWaiting surface_waiting = std::move(iter->second);
-  surfaces_waiting_for_more_content_.erase(iter);
-
-  base::UmaHistogramCustomTimes(
-      base::StrCat({"ContentSuggestions.Feed.UserJourney.GetMore.",
-                    success ? "SuccessDuration" : "FailureDuration"}),
-      base::TimeTicks::Now() - surface_waiting.wait_start,
-      base::Milliseconds(50), kLoadTimeout, 50);
-}
-
-void MetricsReporter::CardOpenBegin(const StreamType& stream_type) {
-  ReportCardOpenEndIfNeeded(false);
-  pending_open_ = {stream_type, base::TimeTicks::Now()};
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&MetricsReporter::CardOpenTimeout, GetWeakPtr(),
-                     pending_open_.wait_start),
-      kOpenTimeout);
-}
-
-void MetricsReporter::CardOpenTimeout(base::TimeTicks start_ticks) {
-  if (pending_open_ && start_ticks == pending_open_.wait_start)
-    ReportCardOpenEndIfNeeded(false);
-}
-
-void MetricsReporter::ReportCardOpenEndIfNeeded(bool success) {
-  if (!pending_open_)
-    return;
-  base::TimeDelta latency = base::TimeTicks::Now() - pending_open_.wait_start;
-
-  std::string histogram_name =
-      base::StrCat({"ContentSuggestions.Feed.UserJourney.OpenCard",
-                    success ? ".SuccessDuration" : ".Failure"});
-
-  if (success) {
-    base::UmaHistogramCustomTimes(histogram_name, latency,
-                                  base::Milliseconds(100), kOpenTimeout, 50);
-  } else {
-    base::UmaHistogramBoolean(histogram_name, true);
-  }
-
-  pending_open_ = {};
 }
 
 void MetricsReporter::NetworkRequestComplete(
@@ -820,9 +733,6 @@ void MetricsReporter::OnLoadStream(
       result_summary.load_from_store_status;
   LoadStreamStatus final_status = result_summary.final_status;
   bool is_initial_load = result_summary.is_initial_load;
-  bool loaded_new_content_from_network =
-      result_summary.loaded_new_content_from_network;
-  base::TimeDelta stored_content_age = result_summary.stored_content_age;
   std::optional<feedstore::Metadata::StreamMetadata> stream_metadata =
       result_summary.stream_metadata;
   VVLOG << "OnLoadStream load_from_store_status=" << load_from_store_status
@@ -857,30 +767,6 @@ void MetricsReporter::OnLoadStream(
         load_from_store_status);
   }
 
-  // For stored_content_age, the zero-value means there was no content loaded
-  // from the store. A negative value means there was content loaded, but it had
-  // a timestamp from the future. In either case, we'll avoid recording the
-  // content age.
-  if (stored_content_age.is_positive()) {
-    if (loaded_new_content_from_network) {
-      base::UmaHistogramCustomTimes(
-          "ContentSuggestions.Feed.ContentAgeOnLoad.BlockingRefresh",
-          stored_content_age, base::Minutes(5), base::Days(7),
-          /*buckets=*/50);
-    } else {
-      base::UmaHistogramCustomTimes(
-          "ContentSuggestions.Feed.ContentAgeOnLoad.NotRefreshed",
-          stored_content_age, base::Seconds(5), base::Days(7),
-          /*buckets=*/50);
-    }
-  }
-
-  if (IsLoadingSuccessfulAndFresh(final_status)) {
-    base::UmaHistogramSparse(
-        base::StrCat({"ContentSuggestions.", HistogramReplacement(stream_type),
-                      "LoadedCardCount"}),
-        content_stats.card_count);
-  }
   LogContentStats(stream_type, content_stats);
 }
 
@@ -925,17 +811,7 @@ void MetricsReporter::OnManualRefresh(const StreamType& stream_type,
 }
 
 void MetricsReporter::OnLoadMoreBegin(const StreamType& stream_type,
-                                      SurfaceId surface_id) {
-  ReportGetMoreIfNeeded(surface_id, false);
-  surfaces_waiting_for_more_content_.emplace(
-      surface_id, SurfaceWaiting{stream_type, base::TimeTicks::Now()});
-
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&MetricsReporter::ReportGetMoreIfNeeded, GetWeakPtr(),
-                     surface_id, false),
-      kLoadTimeout);
-}
+                                      SurfaceId surface_id) {}
 
 void MetricsReporter::OnLoadMore(const StreamType& stream_type,
                                  LoadStreamStatus status,
@@ -944,13 +820,6 @@ void MetricsReporter::OnLoadMore(const StreamType& stream_type,
   base::UmaHistogramEnumeration(
       "ContentSuggestions.Feed.LoadStreamStatus.LoadMore", status);
   LogContentStats(stream_type, content_stats);
-}
-
-void MetricsReporter::OnImageFetched(const GURL& url,
-                                     int net_error_or_http_status) {
-  VVLOG << "OnImageFetched status=" << net_error_or_http_status << " " << url;
-  base::UmaHistogramSparse("ContentSuggestions.Feed.ImageFetchStatus",
-                           net_error_or_http_status);
 }
 
 void MetricsReporter::OnResourceFetched(int net_error_or_http_status) {
@@ -979,16 +848,6 @@ void MetricsReporter::ActivityLoggingEnabled(
 void MetricsReporter::NoticeCardFulfilled(bool response_has_notice_card) {
   base::UmaHistogramBoolean("ContentSuggestions.Feed.NoticeCardFulfilled2",
                             response_has_notice_card);
-}
-
-void MetricsReporter::NoticeCardFulfilledObsolete(
-    bool response_has_notice_card) {
-  base::UmaHistogramBoolean("ContentSuggestions.Feed.NoticeCardFulfilled",
-                            response_has_notice_card);
-}
-
-void MetricsReporter::SurfaceReceivedContent(SurfaceId surface_id) {
-  ReportGetMoreIfNeeded(surface_id, true);
 }
 
 void MetricsReporter::ReportPersistentDataIfDayIsDone() {

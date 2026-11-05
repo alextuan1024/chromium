@@ -24,9 +24,7 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.TimeUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.policy.NtpCustomizationPolicyManager;
@@ -94,7 +92,6 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2})
     public void testCreateInputContext_DefaultBrowserPromoCard() {
         InputContext inputContext =
                 EducationalTipCardProviderSignalHandler.createInputContext(
@@ -302,7 +299,6 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2})
     public void testCreateInputContext_NtpThemePromoCard() {
         when(mActionDelegate.supportCustomizedNtpTheme()).thenReturn(true);
         ChromeSharedPreferences.getInstance()
@@ -310,8 +306,7 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
                         ChromePreferenceKeys.NTP_CUSTOMIZATION_BACKGROUND_TYPE,
                         NtpCustomizationUtils.NtpBackgroundType.CHROME_COLOR);
 
-        // Case 1: Bottom sheet is ENABLED, and has been shown.
-        ChromeFeatureList.sNewTabPageCustomizationV2ShowTipBottomSheet.setForTesting(true);
+        // Case 1: The theme tip bottom sheet has been shown.
         NtpCustomizationUtils.setThemeTipBottomSheetShownTimestampToSharedPreference(100L);
 
         InputContext inputContext =
@@ -324,7 +319,7 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
         assertTrue(
                 inputContext.getEntryValue("has_theme_tip_bottom_sheet_been_shown").booleanValue);
 
-        // Case 2: Bottom sheet is ENABLED, but hasn't been shown yet.
+        // Case 2: The theme tip bottom sheet hasn't been shown yet.
         NtpCustomizationUtils.resetSharedPreferenceForTesting();
         when(mActionDelegate.supportCustomizedNtpTheme()).thenReturn(false);
         ChromeSharedPreferences.getInstance()
@@ -340,14 +335,25 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
         assertFalse(inputContext.getEntryValue("has_customized_ntp_background").booleanValue);
         assertFalse(
                 inputContext.getEntryValue("has_theme_tip_bottom_sheet_been_shown").booleanValue);
+    }
 
-        // Case 3: Bottom sheet is DISABLED, and hasn't been shown.
-        // (It should still evaluate to true for has_theme_tip_bottom_sheet_been_shown).
-        ChromeFeatureList.sNewTabPageCustomizationV2ShowTipBottomSheet.setForTesting(false);
+    @Test
+    public void testCreateInputContext_TipsNotificationsPromoCard() {
+        ChromeSharedPreferences.getInstance()
+                .removeKey(ChromePreferenceKeys.TIPS_NOTIFICATIONS_OPT_IN_ELIGIBLE);
+        InputContext inputContext =
+                EducationalTipCardProviderSignalHandler.createInputContext(
+                        ModuleType.TIPS_NOTIFICATIONS_PROMO, mActionDelegate, mProfile, mTracker);
+        assertEquals(2, inputContext.getSizeForTesting());
+        assertEquals(
+                0.0f, inputContext.getEntryValue("is_eligible_to_tips_opt_in").floatValue, 0.01);
+
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.TIPS_NOTIFICATIONS_OPT_IN_ELIGIBLE, true);
         inputContext =
                 EducationalTipCardProviderSignalHandler.createInputContext(
-                        ModuleType.NTP_THEME_PROMO, mActionDelegate, mProfile, mTracker);
-        assertTrue(
-                inputContext.getEntryValue("has_theme_tip_bottom_sheet_been_shown").booleanValue);
+                        ModuleType.TIPS_NOTIFICATIONS_PROMO, mActionDelegate, mProfile, mTracker);
+        assertEquals(
+                1.0f, inputContext.getEntryValue("is_eligible_to_tips_opt_in").floatValue, 0.01);
     }
 }

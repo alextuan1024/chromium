@@ -39,25 +39,21 @@ BASE_DECLARE_FEATURE(kAutofillExtractFullUrlOnIOs);
 // propagated.
 BASE_DECLARE_FEATURE(kAutofillFormSubmissionEventsInCaptureMode);
 
+// Ignores the `tabindex` attribute when determining whether a form field is
+// focusable, aligning iOS with Blink's Element::IsFocusable(). A negative
+// `tabindex` only removes an element from the sequential focus order; it stays
+// programmatically focusable and fillable.
+BASE_DECLARE_FEATURE(kAutofillIgnoreTabIndexForFocusabilityIos);
+
 // Detaches the listeners for the payments suggestion bottom sheet when the
 // listeners are invalidated (i.e. the field type is no longer a credit card
-// field). This can be used in combination with kAutofillPaymentsSheetV3Ios.
+// field).
 BASE_DECLARE_FEATURE(kAutofillPaymentsSheetDetachInvalidatedListenersIos);
 
 // Enables the stateless version of the payments suggestion bottom sheet that
 // can directly pick the Autofill suggestions provider instead of intermediating
 // via the FormSuggestionController.
 BASE_DECLARE_FEATURE(kAutofillPaymentsSheetStateless);
-
-// Enables the second version of the payments suggestion bottom sheet to prevent
-// bugs that we've seen in production on other transaction sheets (e.g. some
-// fields becoming unresponsive).
-BASE_DECLARE_FEATURE(kAutofillPaymentsSheetV2Ios);
-
-// Enables the 3rd version of the payments suggestion bottom sheet that can
-// directly pick the Autofill suggestions provider instead of intermediating via
-// the FormSuggestionController.
-BASE_DECLARE_FEATURE(kAutofillPaymentsSheetV3Ios);
 
 // Rejects form submission events if they lack user gesture.
 BASE_DECLARE_FEATURE(kAutofillRejectFormSubmissionsWithoutUserGesture);
@@ -71,6 +67,29 @@ BASE_DECLARE_FEATURE(kAutofillReportFormSubmissionErrors);
 // badge. The badge may remain there after the infobar UI is dismissed from
 // timeout but will be dismissed once navigating from an explicit user gesture.
 BASE_DECLARE_FEATURE(kAutofillStickyInfobarIos);
+
+// Controls the progressive migration of Autofill and Password suggestion
+// pipelines to BrowserAutofillManager and PasswordAutofillManager on iOS.
+BASE_DECLARE_FEATURE(kAutofillSuggestionPipelineIOS);
+
+inline constexpr char kAutofillSuggestionPipelineStageParamName[] = "stage";
+
+enum class AutofillSuggestionPipelineStage {
+  kLegacy = 0,
+  kBAMAutofill = 1,
+};
+
+BASE_DECLARE_FEATURE_PARAM(AutofillSuggestionPipelineStage,
+                           kAutofillSuggestionPipelineStageParam);
+
+// Returns the active `AutofillSuggestionPipelineStage` configured by
+// `kAutofillSuggestionPipelineIOS`.
+inline AutofillSuggestionPipelineStage GetAutofillSuggestionPipelineStage() {
+  if (!base::FeatureList::IsEnabled(kAutofillSuggestionPipelineIOS)) {
+    return AutofillSuggestionPipelineStage::kLegacy;
+  }
+  return kAutofillSuggestionPipelineStageParam.Get();
+}
 
 // Enables support for contenteditable elements in Autofill on iOS.
 BASE_DECLARE_FEATURE(kAutofillSupportContentEditableIos);
@@ -100,5 +119,12 @@ BASE_DECLARE_FEATURE(kAutofillTrackPasswordFieldsIos);
 // specific forms on the spot. Throttles with scheduled batches.
 BASE_DECLARE_FEATURE(kAutofillThrottleFilteredDocumentFormScanIos);
 extern const base::FeatureParam<int> kAutofillFilteredDocumentFormScanPeriodMs;
+
+// Returns true if Autofill suggestions are routed through
+// `BrowserAutofillManager` and `AutofillSuggestionControllerIOS`.
+inline bool IsAutofillBAMSuggestionFlowEnabled() {
+  return GetAutofillSuggestionPipelineStage() >=
+         AutofillSuggestionPipelineStage::kBAMAutofill;
+}
 
 #endif  // COMPONENTS_AUTOFILL_IOS_COMMON_FEATURES_H_

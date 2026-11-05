@@ -16,8 +16,6 @@ generate_jni("jni_headers") {
 source_set("android") {
   sources = [ "safe_browsing_bridge.cc" ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     ":jni_headers",
     "//chrome/browser:browser_process",
@@ -41,7 +39,7 @@ source_set("android") {
   ]
 
   if (safe_browsing_mode != 0) {
-    deps += [ "//components/safe_browsing/content/common:file_type_policies" ]
+    deps += [ "//components/safe_browsing/content/common/file_type_policies" ]
   }
 }
 
@@ -109,6 +107,7 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/safe_browsing/settings/SafeBrowsingSettingsFragment.java",
     "java/src/org/chromium/chrome/browser/safe_browsing/settings/SafeBrowsingSettingsFragmentBase.java",
     "java/src/org/chromium/chrome/browser/safe_browsing/settings/StandardProtectionSettingsFragment.java",
+    "java/src/org/chromium/chrome/browser/safe_browsing/tips/EnhancedSafeBrowsingTipsPromoHandler.java",
   ]
   deps = [
     ":java_resources",
@@ -120,7 +119,10 @@ android_library("java") {
     "//chrome/browser/preferences:java",
     "//chrome/browser/privacy:privacy_settings_java",
     "//chrome/browser/profiles/android:java",
+    "//chrome/browser/settings:factory_java",
     "//chrome/browser/settings:java",
+    "//chrome/browser/tips/android:java_resources",
+    "//chrome/browser/tips/android:public_java",
     "//components/browser_ui/modaldialog/android:java",
     "//components/browser_ui/settings/android:java",
     "//components/browser_ui/styles/android:java",
@@ -203,6 +205,7 @@ robolectric_library("junit") {
     "java/src/org/chromium/chrome/browser/safe_browsing/AdvancedProtectionMediatorTest.java",
     "java/src/org/chromium/chrome/browser/safe_browsing/AdvancedProtectionStatusManagerAndroidBridgeTest.java",
     "java/src/org/chromium/chrome/browser/safe_browsing/settings/SafeBrowsingSettingsFragmentUnitTest.java",
+    "junit/src/org/chromium/chrome/browser/safe_browsing/tips/EnhancedSafeBrowsingTipsPromoHandlerUnitTest.java",
   ]
   deps = [
     ":java",
@@ -212,6 +215,9 @@ robolectric_library("junit") {
     "//base:unowned_user_data_java",
     "//chrome/browser/preferences:java",
     "//chrome/browser/profiles/android:java",
+    "//chrome/browser/settings:factory_java",
+    "//chrome/browser/tips/android:public_java",
+    "//components/browser_ui/settings/android:java",
     "//components/browser_ui/styles/android:java",
     "//components/browser_ui/widget/android:java",
     "//components/messages/android:factory_java",

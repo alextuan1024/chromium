@@ -66,9 +66,7 @@ class MockMessagePopupCollection : public DesktopMessagePopupCollection {
     new_popup_height_ = new_popup_height;
   }
 
-  std::vector<raw_ptr<MockMessagePopupView, VectorExperimental>>& popups() {
-    return popups_;
-  }
+  std::vector<raw_ptr<MockMessagePopupView>>& popups() { return popups_; }
 
   bool popup_timer_started() const { return popup_timer_started_; }
 
@@ -120,7 +118,7 @@ class MockMessagePopupCollection : public DesktopMessagePopupCollection {
  private:
   gfx::NativeWindow context_;
 
-  std::vector<raw_ptr<MockMessagePopupView, VectorExperimental>> popups_;
+  std::vector<raw_ptr<MockMessagePopupView>> popups_;
 
   bool popup_timer_started_ = false;
   bool is_primary_display_ = true;
@@ -694,7 +692,7 @@ TEST_F(MessagePopupCollectionTest, HoverClose) {
   std::string id1 = AddNotification();
   AnimateToEnd();
   popup_collection()->set_new_popup_height(84);
-  std::string id2 = AddNotification();
+  AddNotification();
   AnimateToEnd();
   EXPECT_FALSE(IsAnimating());
 
@@ -730,7 +728,7 @@ TEST_F(MessagePopupCollectionTest, FocusedClose) {
   std::string id1 = AddNotification();
   AnimateToEnd();
   popup_collection()->set_new_popup_height(84);
-  std::string id2 = AddNotification();
+  AddNotification();
   AnimateToEnd();
   EXPECT_FALSE(IsAnimating());
 
@@ -961,12 +959,12 @@ TEST_F(MessagePopupCollectionTest, PopupCollectionHeightChanged) {
 
   EXPECT_EQ(1, popup_collection()->popup_collection_height_changed());
 
-  std::string id1 = AddNotification();
+  AddNotification();
   AnimateUntilIdle();
 
   EXPECT_EQ(2, popup_collection()->popup_collection_height_changed());
 
-  std::string id2 = AddNotification();
+  AddNotification();
   AnimateUntilIdle();
 
   EXPECT_EQ(3, popup_collection()->popup_collection_height_changed());
@@ -1149,7 +1147,7 @@ TEST_F(MessagePopupCollectionTest, PopupWidgetClosedOutsideDuringFadeOut) {
 
 TEST_F(MessagePopupCollectionTest, NotifyPopupClosedThenCloseAllPopups) {
   std::string id1 = AddNotification();
-  std::string id2 = AddNotification();
+  AddNotification();
   AnimateUntilIdle();
 
   // This test make sure that when `NotifyPopupClosed()` is called and then

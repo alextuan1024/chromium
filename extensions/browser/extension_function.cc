@@ -9,6 +9,7 @@
 #include <tuple>
 #include <utility>
 
+#include "base/check.h"
 #include "base/dcheck_is_on.h"
 #include "base/debug/crash_logging.h"
 #include "base/feature_list.h"
@@ -47,7 +48,9 @@
 #include "extensions/browser/service_worker/service_worker_keepalive.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_api.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/mojom/renderer.mojom.h"
+#include "extensions/common/mojom/response_wrapper.mojom.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_object.mojom-forward.h"
 
@@ -422,8 +425,9 @@ ExtensionFunction::~ExtensionFunction() {
   if (!response_callback_.is_null()) {
     constexpr char kShouldCallMojoCallback[] = "Ignored did_respond()";
     std::move(response_callback_)
-        .Run(ResponseType::kFailed, base::ListValue(), kShouldCallMojoCallback,
-             nullptr);
+        .Run(ResponseType::kFailed,
+             extensions::mojom::ResponseWrapper::NewList(base::ListValue()),
+             kShouldCallMojoCallback, nullptr);
   }
 #endif  // DCHECK_IS_ON()
 }
@@ -504,6 +508,7 @@ void ExtensionFunction::OnQuotaExceeded(std::string violation_error) {
 void ExtensionFunction::SetArgs(base::ListValue args) {
   DCHECK(!args_.has_value());
   args_ = std::move(args);
+  args_modified_ = false;
 }
 
 const base::ListValue* ExtensionFunction::GetResultListForTest() const {
@@ -627,9 +632,8 @@ const base::ListValue& ExtensionFunction::GetOriginalArgs() const {
     return *original_args_;
   }
 
-  // Return `args_`, which haven't been modified since they were set by
-  // SetArgs(), since GetMutableArgs() was never called.
-  DCHECK(args_.has_value());
+  CHECK(!args_modified_);
+  CHECK(args_.has_value());
   return *args_;
 }
 
@@ -718,6 +722,20 @@ void ExtensionFunction::ReportInspectorIssue(
   render_frame_host_->ReportInspectorIssue(std::move(info));
 }
 
+void ExtensionFunction::SetBlobArgs(
+    std::vector<mojo::PendingRemote<blink::mojom::Blob>> blob_args) {
+  DCHECK(blob_args_.empty());
+  blob_args_ = std::move(blob_args);
+}
+
+mojo::PendingRemote<blink::mojom::Blob> ExtensionFunction::TakeBlobArg(
+    int index) {
+  if (index < 0 || static_cast<size_t>(index) >= blob_args_.size()) {
+    return {};
+  }
+  return std::move(blob_args_[index]);
+}
+
 void ExtensionFunction::SetTransferredBlobs(
     std::vector<blink::mojom::SerializedBlobPtr> blobs) {
   DCHECK(transferred_blobs_.empty());  // Should only be called once.
@@ -726,10 +744,13 @@ void ExtensionFunction::SetTransferredBlobs(
 
 base::ListValue& ExtensionFunction::GetMutableArgs() {
   DCHECK(args_);
-  if (!original_args_.has_value()) {
+  if (!original_args_.has_value() &&
+      !base::FeatureList::IsEnabled(
+          extensions_features::kAvoidCloneMutableExtensionFunctionArgs)) {
     // Preserve original args before allowing modification of `args_`.
     original_args_ = args_->Clone();
   }
+  args_modified_ = true;
   return *args_;
 }
 
@@ -743,7 +764,7 @@ void ExtensionFunction::SendResponseImpl(bool success) {
     response = ResponseType::kBadMessage;
     LOG(ERROR) << "Bad extension message " << name_;
   }
-  response_type_ = std::make_unique<ResponseType>(response);
+  response_type_ = response;
 
   // If results were never set, we send an empty argument list.
   if (!results_) {
@@ -764,7 +785,9 @@ void ExtensionFunction::SendResponseImpl(bool success) {
         std::move(transferred_blobs_));
   }
   std::move(response_callback_)
-      .Run(response, std::move(results), GetError(), std::move(extra_data));
+      .Run(response,
+           extensions::mojom::ResponseWrapper::NewList(std::move(results)),
+           GetError(), std::move(extra_data));
   LogUma(success, timer_.Elapsed(), histogram_value_);
 
   OnResponded();

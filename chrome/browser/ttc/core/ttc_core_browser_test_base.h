@@ -12,6 +12,10 @@
 
 class Profile;
 
+namespace base {
+class CommandLine;
+}
+
 namespace content {
 class BrowserContext;
 class WebContents;
@@ -19,8 +23,10 @@ class WebContents;
 
 namespace ttc {
 
+class AudioController;
 class Conversation;
 class MockConversation;
+class SessionController;
 class TtcKeyedService;
 
 // Base class for Ttc core browser tests with common settings and setup.
@@ -32,6 +38,7 @@ class TtcCoreBrowserTestBase : public PlatformBrowserTest {
   ~TtcCoreBrowserTestBase() override;
 
   // PlatformBrowserTest:
+  void SetUpCommandLine(base::CommandLine* command_line) override;
   void SetUpBrowserContextKeyedServices(
       content::BrowserContext* context) override;
   void SetUpOnMainThread() override;
@@ -45,7 +52,9 @@ class TtcCoreBrowserTestBase : public PlatformBrowserTest {
   MockConversation* conversation();
 
  private:
-  static std::unique_ptr<Conversation> MakeMockConversation(Profile* profile);
+  static std::unique_ptr<Conversation> MakeMockConversation(
+      SessionController& session_controller,
+      std::unique_ptr<AudioController> audio_controller);
 
   base::test::ScopedFeatureList scoped_feature_list_;
 };

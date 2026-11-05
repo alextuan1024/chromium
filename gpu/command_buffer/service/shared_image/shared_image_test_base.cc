@@ -80,6 +80,13 @@ void InsertRecordingAndSubmit(gpu::SharedContextState* context,
 namespace gpu {
 
 // static
+SkAlphaType SharedImageTestBase::GetAlphaType(viz::SharedImageFormat format) {
+  return (format.is_multi_plane() && !format.PrefersExternalSampler())
+             ? kUnpremul_SkAlphaType
+             : kPremul_SkAlphaType;
+}
+
+// static
 SkBitmap SharedImageTestBase::MakeRedBitmap(SkColorType color_type,
                                             const gfx::Size& size,
                                             size_t added_stride) {
@@ -334,6 +341,9 @@ void SharedImageTestBase::VerifyPixelsWithReadbackGraphite(
         sk_image.get(), dst_info, src_rect, SkImage::RescaleGamma::kSrc,
         SkImage::RescaleMode::kRepeatedLinear,
         base::BindOnce(&OnReadPixelsDone), &context);
+    if (plane == num_planes - 1) {
+      scoped_read_access->ApplyBackendSurfaceEndState();
+    }
     InsertRecordingAndSubmit(context_state_.get(), /*sync_cpu=*/true);
     ASSERT_TRUE(context.finished) << "plane_index=" << plane;
     if (context.async_result) {

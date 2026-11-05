@@ -511,6 +511,24 @@ class WebViewHolder : public web::WebStateUserData<WebViewHolder> {
   _webState->GetWebViewProxy().allowsLinkPreview = allowsLinkPreview;
 }
 
+- (UIEdgeInsets)obscuredContentInsets {
+  if (@available(iOS 26.0, *)) {
+    if ([self isWebStateSafeToUse]) {
+      return _webState->GetWebViewProxy().obscuredContentInsets;
+    }
+  }
+  return UIEdgeInsetsZero;
+}
+
+- (void)setObscuredContentInsets:(UIEdgeInsets)insets {
+  if (@available(iOS 26.0, *)) {
+    if (![self isWebStateSafeToUse]) {
+      return;
+    }
+    _webState->GetWebViewProxy().obscuredContentInsets = insets;
+  }
+}
+
 - (void)goBack {
   if (![self isWebStateSafeToUse]) {
     return;
@@ -582,6 +600,13 @@ class WebViewHolder : public web::WebStateUserData<WebViewHolder> {
   params.post_data = [request.HTTPBody copy];
   _webState->GetNavigationManager()->LoadURLWithParams(params);
   [self updateCurrentURLs];
+}
+
+- (void)prewarm {
+  if (![self isWebStateSafeToUse]) {
+    return;
+  }
+  web::PrewarmWebView(_webState.get());
 }
 
 - (void)evaluateJavaScript:(NSString*)javaScriptString

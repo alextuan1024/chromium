@@ -529,10 +529,6 @@ void LocalFrameClientImpl::DidFailAsyncSameDocumentCommit() {
   web_frame_->Client()->DidFailAsyncSameDocumentCommit();
 }
 
-void LocalFrameClientImpl::DispatchDidOpenDocumentInputStream(const KURL& url) {
-  web_frame_->Client()->DidOpenDocumentInputStream(url);
-}
-
 void LocalFrameClientImpl::DispatchDidReceiveTitle(const String& title) {
   if (web_frame_->Client()) {
     web_frame_->Client()->DidReceiveTitle(title);
@@ -638,7 +634,7 @@ void LocalFrameClientImpl::BeginNavigation(
     bool has_rel_opener,
     mojo::PendingReceiver<mojom::blink::NavigationResumeDeferredCommitListener>
         resume_defer_commit_listener,
-    std::optional<base::UnguessableToken> script_tool_invocation_id,
+    std::optional<ToolInvocationToken> script_tool_invocation_id,
     const String& script_injector_host) {
   if (!web_frame_->Client()) {
     return;
@@ -661,11 +657,7 @@ void LocalFrameClientImpl::BeginNavigation(
   navigation_info->frame_load_type = frame_load_type;
   navigation_info->is_client_redirect = is_client_redirect;
   navigation_info->script_injector_host = script_injector_host;
-
-  if (script_tool_invocation_id.has_value()) {
-    navigation_info->script_tool_invocation_id =
-        script_tool_invocation_id.value();
-  }
+  navigation_info->script_tool_invocation_id = script_tool_invocation_id;
 
   navigation_info->triggering_event_info = triggering_event_info;
   navigation_info->should_check_main_world_content_security_policy =
@@ -854,9 +846,7 @@ void LocalFrameClientImpl::DidDispatchPingLoader(const KURL& url) {
 }
 
 void LocalFrameClientImpl::DidChangePerformanceTiming() {
-  if (web_frame_->Client()) {
-    web_frame_->Client()->DidChangePerformanceTiming();
-  }
+  web_frame_->DidChangePerformanceTiming();
 }
 
 void LocalFrameClientImpl::DidObserveUserInteraction(
@@ -867,76 +857,61 @@ void LocalFrameClientImpl::DidObserveUserInteraction(
     base::TimeTicks max_event_end,
     PerformanceTimelineEntryIdInfo interaction_id,
     PerformanceTimelineEntryIdInfo navigation_id) {
-  if (web_frame_->Client()) {
-    web_frame_->Client()->DidObserveUserInteraction(
-        max_event_start, max_event_queued_main_thread,
-        max_event_processing_start, max_event_commit_finish, max_event_end,
-        interaction_id.non_web_exposed_id, navigation_id.non_web_exposed_id);
-  }
+  web_frame_->DidObserveUserInteraction(
+      max_event_start, max_event_queued_main_thread, max_event_processing_start,
+      max_event_commit_finish, max_event_end, interaction_id.non_web_exposed_id,
+      navigation_id.non_web_exposed_id);
 }
 
-void LocalFrameClientImpl::DidChangeCpuTiming(base::TimeDelta time) {
-  if (web_frame_->Client()) {
-    web_frame_->Client()->DidChangeCpuTiming(time);
-  }
+void LocalFrameClientImpl::DidChangeCpuTiming(base::TimeDelta time,
+                                              base::TimeDelta ad_time) {
+  web_frame_->DidChangeCpuTiming(time, ad_time);
 }
 
 void LocalFrameClientImpl::DidObserveLoadingBehavior(
     LoadingBehaviorFlag behavior) {
-  if (web_frame_->Client()) {
-    web_frame_->Client()->DidObserveLoadingBehavior(behavior);
-  }
+  web_frame_->DidObserveLoadingBehavior(behavior);
 }
 
 void LocalFrameClientImpl::DidObserveJavaScriptFrameworks(
     const JavaScriptFrameworkDetectionResult& result) {
-  web_frame_->Client()->DidObserveJavaScriptFrameworks(result);
+  web_frame_->DidObserveJavaScriptFrameworks(result);
 }
 
 void LocalFrameClientImpl::DidObserveSubresourceLoad(
     const SubresourceLoadMetrics& subresource_load_metrics) {
-  if (web_frame_->Client()) {
-    web_frame_->Client()->DidObserveSubresourceLoad(subresource_load_metrics);
-  }
+  web_frame_->DidObserveSubresourceLoad(subresource_load_metrics);
 }
 
 void LocalFrameClientImpl::DidObserveNewFeatureUsage(
     const UseCounterFeature& feature) {
-  if (web_frame_->Client()) {
-    web_frame_->Client()->DidObserveNewFeatureUsage(feature);
-  }
+  web_frame_->DidObserveNewFeatureUsage(feature);
 }
 
 // A new soft navigation was observed.
 void LocalFrameClientImpl::DidObserveSoftNavigation(
     SoftNavigationMetricsForReporting metrics) {
-  if (WebLocalFrameClient* client = web_frame_->Client()) {
-    client->DidObserveSoftNavigation(metrics);
-  }
+  web_frame_->DidObserveSoftNavigation(metrics);
 }
 
 void LocalFrameClientImpl::DidObserveSoftNavigationFirstContentfulPaint(
     uint64_t performance_timeline_navigation_id,
     base::TimeDelta first_contentful_paint) {
-  if (WebLocalFrameClient* client = web_frame_->Client()) {
-    client->DidObserveSoftNavigationFirstContentfulPaint(
-        performance_timeline_navigation_id, first_contentful_paint);
-  }
+  web_frame_->DidObserveSoftNavigationFirstContentfulPaint(
+      performance_timeline_navigation_id, first_contentful_paint);
 }
 
 void LocalFrameClientImpl::DidObserveSoftLargestContentfulPaint(
     const LargestContentfulPaintDetailsForReporting& lcp) {
-  web_frame_->Client()->DidObserveSoftLargestContentfulPaint(lcp);
+  web_frame_->DidObserveSoftLargestContentfulPaint(lcp);
 }
 
 void LocalFrameClientImpl::DidObserveLayoutShift(
     double score,
     bool after_input_or_scroll,
     PerformanceTimelineEntryIdInfo navigation_id) {
-  if (WebLocalFrameClient* client = web_frame_->Client()) {
-    client->DidObserveLayoutShift(score, after_input_or_scroll,
-                                  navigation_id.non_web_exposed_id);
-  }
+  web_frame_->DidObserveLayoutShift(score, after_input_or_scroll,
+                                    navigation_id.non_web_exposed_id);
 }
 
 void LocalFrameClientImpl::SelectorMatchChanged(
@@ -1002,13 +977,6 @@ LocalFrame* LocalFrameClientImpl::CreateFrame(
     const AtomicString& name,
     HTMLFrameOwnerElement* owner_element) {
   return web_frame_->CreateChildFrame(name, owner_element);
-}
-
-RemoteFrame* LocalFrameClientImpl::CreateFencedFrame(
-    HTMLFencedFrameElement* fenced_frame,
-    mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>
-        receiver) {
-  return web_frame_->CreateFencedFrame(fenced_frame, std::move(receiver));
 }
 
 WebPluginContainerImpl* LocalFrameClientImpl::CreatePlugin(
@@ -1214,9 +1182,8 @@ void LocalFrameClientImpl::OnMainFrameViewportRectangleChanged(
 void LocalFrameClientImpl::OnMainFrameAdRectangleChanged(
     DOMNodeId element_id,
     const gfx::Rect& ad_rect) {
-  DCHECK(web_frame_->Client());
   DCHECK(web_frame_->GetFrame()->IsOutermostMainFrame());
-  web_frame_->Client()->OnMainFrameAdRectangleChanged(element_id, ad_rect);
+  web_frame_->OnMainFrameAdRectangleChanged(element_id, ad_rect);
 }
 
 void LocalFrameClientImpl::OnOverlayPopupAdDetected() {

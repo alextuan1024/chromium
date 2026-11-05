@@ -5,12 +5,13 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_AI_LANGUAGE_MODEL_CREATE_CLIENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_AI_LANGUAGE_MODEL_CREATE_CLIENT_H_
 
+#include <optional>
+
 #include "base/task/sequenced_task_runner.h"
 #include "third_party/blink/public/mojom/ai/ai_common.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_create_options.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/modules/ai/ai_context_observer.h"
-#include "third_party/blink/renderer/modules/ai/create_monitor.h"
 #include "third_party/blink/renderer/modules/ai/language_model.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_receiver.h"
 
@@ -63,9 +64,9 @@ class LanguageModelCreateClient
                    LanguageModelCreateClient>
       receiver_;
   Member<LanguageModelCreateOptions> options_;
-  Member<CreateMonitor> monitor_;
   mojom::blink::AILanguageModelSamplingParamsPtr resolved_sampling_params_;
   std::optional<mojom::blink::AILanguageModelSamplingMode> sampling_mode_;
+  std::optional<mojom::blink::AILanguageModelThinkingEffort> thinking_effort_;
   Vector<mojom::blink::AILanguageModelToolDeclarationPtr> converted_tools_;
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
 };

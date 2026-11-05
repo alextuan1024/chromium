@@ -81,7 +81,11 @@ void EmailVerificationHandler::GetNonceForEmailVerification(
   blink::WebFormControlElement token_element =
       FindTokenFieldForEmailField(email_field_id);
   if (token_element) {
-    std::move(callback).Run(token_element.GetAttribute("nonce").Utf8());
+    // Read the element's internal cryptographic nonce rather than the `nonce`
+    // content attribute, which is cleared upon insertion into a document with
+    // a header-delivered Content-Security-Policy. See
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes
+    std::move(callback).Run(token_element.Nonce().Utf8());
   } else {
     std::move(callback).Run(std::nullopt);
   }
@@ -137,12 +141,10 @@ void EmailVerificationHandler::WillSendSubmitEvent(
       element.SetValue(blink::WebString::FromUtf8(info.token));
 
       if (auto* driver = agent_->unsafe_autofill_driver()) {
-        if (std::optional<FormData> form_data = form_util::ExtractFormData(
-                form.GetDocument(), form, agent_->field_data_manager(),
-                agent_->GetCallTimerState(
-                    CallTimerState::CallSite::
-                        kFormWithEmailVerificationTokenSubmitted),
-                agent_->button_titles_cache())) {
+        if (std::optional<FormData> form_data = agent_->ExtractFormData(
+                form.GetDocument(), form_util::GetFormRendererId(form),
+                CallTimerState::CallSite::
+                    kFormWithEmailVerificationTokenSubmitted)) {
           driver->FormWithEmailVerificationTokenSubmitted(*form_data,
                                                           email_field_id);
         }

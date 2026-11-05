@@ -3,11 +3,14 @@
 // found in the LICENSE file.
 
 import {html} from '//resources/lit/v3_0/lit.rollup.js';
-
 // <if expr="not is_chromeos">
-import {HistorySignInState} from './constants.js';
+import {HistorySignInState} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+
 // </if>
 
+// <if expr="is_android">
+import {getHtml as getIllustrationHtml} from './empty_state_illustration.html.js';
+// </if>
 import type {HistorySyncedDeviceManagerElement} from './synced_device_manager.js';
 
 export function getHtml(this: HistorySyncedDeviceManagerElement) {
@@ -18,48 +21,45 @@ export function getHtml(this: HistorySyncedDeviceManagerElement) {
   ${this.syncedDevices_.map((syncedDevice, index) => html`
     <history-synced-device-card .device="${syncedDevice.device}"
         .lastUpdateTime="${syncedDevice.lastUpdateTime}"
-        .tabs="${syncedDevice.tabs}"
-        .separatorIndexes="${syncedDevice.separatorIndexes}"
-        .searchTerm="${this.searchTerm}" .sessionTag="${syncedDevice.tag}"
-        ?opened="${syncedDevice.opened}"
+        .windows="${syncedDevice.windows}" .searchTerm="${this.searchTerm}"
+        .sessionTag="${syncedDevice.tag}" ?opened="${syncedDevice.opened}"
         @opened-changed="${this.onCardOpenedChanged_}" data-index="${index}">
     </history-synced-device-card>
   `)}
 </div>
 <div id="noSyncedTabs" class="centered-message"
     ?hidden="${!this.showNoSyncedMessage_()}">
+<if expr="is_android">
+  ${this.fetchingSyncedTabs_ ? '' : getIllustrationHtml()}
+</if>
   ${this.noSyncedTabsMessage_()}
-</div>
-
-<div id="signInGuide"
-    ?hidden="${
-        !this.showSignInGuide_() || this.replaceSyncPromosWithSignInPromos_}">
-  <div id="sync-promo-illustration"></div>
-  <div id="turn-on-sync-promo">$i18n{turnOnSyncPromo}</div>
-  <div id="turn-on-sync-promo-desc">$i18n{turnOnSyncPromoDesc}</div>
-  <cr-button id="turn-on-sync-button" class="action-button"
-      @click="${this.onTurnOnSyncClick_}">
-    $i18n{turnOnSyncButton}
-  </cr-button>
 </div>
 
 <if expr="not is_chromeos">
 ${this.shouldShowHistorySyncOptIn_() ? html`
   <div id="history-sync-optin" class="history-sync-optin">
-    ${this.isSignInState_(HistorySignInState.SIGNED_OUT) ||
-            this.isSignInState_(HistorySignInState.WEB_ONLY_SIGNED_IN) ?
+    ${this.isSignInState_(HistorySignInState.kSignedOut) ||
+            this.isSignInState_(HistorySignInState.kWebOnlySignedIn) ?
         html`
       <div class="image-container">
         <img class="sync-history-illustration" alt="">
       </div>
       <h1 class="sync-history-promo">$i18n{turnOnSyncHistoryPromo}</h1>
-      <div id="signed-out-sync-history-promo-desc"
-          class="sync-history-promo-desc">
-        $i18n{syncHistoryPromoBodySignedOut}
-      </div>
+      ${this.isSignInState_(HistorySignInState.kSignedOut) ? html`
+        <div id="signed-out-sync-history-promo-desc"
+            class="sync-history-promo-desc">
+          $i18n{syncHistoryPromoBodySignedOut}
+        </div>
+      ` : ''}
+      ${this.isSignInState_(HistorySignInState.kWebOnlySignedIn) ? html`
+        <div id="web-only-signed-in-sync-history-promo-desc"
+            class="sync-history-promo-desc">
+          $i18n{syncHistoryPromoBodyWebOnlySignedIn}
+        </div>
+      ` : ''}
     ` : ''}
 
-    ${this.isSignInState_(HistorySignInState.WEB_ONLY_SIGNED_IN) &&
+    ${this.isSignInState_(HistorySignInState.kWebOnlySignedIn) &&
             this.accountInfo_ ?
         html`
       <div class="profile-row">
@@ -67,14 +67,16 @@ ${this.shouldShowHistorySyncOptIn_() ? html`
             src="${this.accountInfo_.accountImageSrc}">
         <div class="account-info-container">
           <div id="account-name" class="account-name">
-            ${this.accountInfo_.name}</div>
+            ${this.accountInfo_.name}
+          </div>
           <div id="account-email" class="account-email">
-            ${this.accountInfo_.email}</div>
+            ${this.accountInfo_.email}
+          </div>
         </div>
       </div>
     ` : ''}
 
-    ${this.isSignInState_(HistorySignInState.SIGN_IN_PENDING) &&
+    ${this.isSignInState_(HistorySignInState.kSignInPending) &&
             this.accountInfo_ ?
         html`
       <div class="image-container">
@@ -99,7 +101,7 @@ ${this.shouldShowHistorySyncOptIn_() ? html`
       ` : ''}
     ` : ''}
 
-    ${this.isSignInState_(HistorySignInState.SIGNED_IN) &&
+    ${this.isSignInState_(HistorySignInState.kSignedIn) &&
             !this.isTabsSyncTurnedOn_() && this.accountInfo_ ?
         html`
       <div class="image-container">
@@ -115,11 +117,12 @@ ${this.shouldShowHistorySyncOptIn_() ? html`
     ` : ''}
 
     <!-- Button -->
-    ${this.isSignInState_(HistorySignInState.SIGN_IN_PENDING) &&
+    ${this.isSignInState_(HistorySignInState.kSignInPending) &&
             this.isTabsSyncTurnedOn_() ?
         html`
       <cr-button id="verify-its-you-button" class="action-button"
-          @click="${this.onTurnOnHistorySyncClick_}">$i18n{verifyItsYou}
+          @click="${this.onTurnOnHistorySyncClick_}">
+        $i18n{verifyItsYou}
       </cr-button>
     ` : html`
       <cr-button id="sync-history-button" class="action-button"
@@ -138,10 +141,17 @@ ${this.shouldShowHistorySyncOptIn_() ? html`
             @click="${this.onOpenAllClick_}">
           $i18n{openAll}
         </button>
-        <button id="menuDeleteButton" class="dropdown-item"
-            @click="${this.onDeleteSessionClick_}">
-          $i18n{deleteSession}
-        </button>
+        ${this.enableDeviceTabVisibilitySettings_ ? html`
+          <button id="menuManageVisibilityButton" class="dropdown-item"
+              @click="${this.onManageVisibilityClick_}">
+            $i18n{manageDeviceTabVisibility}
+          </button>
+        ` : html`
+          <button id="menuDeleteButton" class="dropdown-item"
+              @click="${this.onDeleteSessionClick_}">
+            $i18n{deleteSession}
+          </button>
+        `}
       </cr-action-menu>
     `}">
 </cr-lazy-render-lit>

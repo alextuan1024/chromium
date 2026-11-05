@@ -34,6 +34,7 @@
 #include "services/network/public/cpp/constants.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
 #include "services/network/public/mojom/network_context.mojom-forward.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_database.mojom-forward.h"
 
 namespace content {
 
@@ -239,7 +240,16 @@ void ServiceWorkerDevToolsAgentHost::WorkerVersionDoomed() {
   version_doomed_time_ = base::Time::Now();
 }
 
-void ServiceWorkerDevToolsAgentHost::WorkerMainScriptFetchingFailed() {
+void ServiceWorkerDevToolsAgentHost::StorageWiped() {
+  WorkerVersionDoomed();
+  DiscardPendingMessages();
+  // Version IDs restart from 0 in the wiped storage. Make sure this host is
+  // never matched against, and never acts on, a new version that happens to
+  // get the same version ID.
+  version_id_ = blink::mojom::kInvalidServiceWorkerVersionId;
+}
+
+void ServiceWorkerDevToolsAgentHost::DiscardPendingMessages() {
   for (DevToolsSession* session : sessions()) {
     session->ClearPendingMessages(/*did_crash=*/false);
   }
@@ -254,7 +264,7 @@ bool ServiceWorkerDevToolsAgentHost::AttachSession(DevToolsSession* session) {
   session->CreateAndAddHandler<protocol::InspectorHandler>();
   session->CreateAndAddHandler<protocol::NetworkHandler>(
       GetId(), devtools_worker_token_, GetIOContext(), session,
-      context_wrapper()->storage_partition(), session->GetClient());
+      session->GetClient());
 
   session->CreateAndAddHandler<protocol::FetchHandler>(
       GetIOContext(), session->GetRootSession()->GetClient(),
@@ -386,6 +396,11 @@ void ServiceWorkerDevToolsAgentHost::UpdateProcessHost() {
   process_observation_.Reset();
   if (auto* rph = RenderProcessHost::FromID(worker_process_id_)) {
     process_observation_.Observe(rph);
+    // The process is known before the renderer is bound in
+    // WorkerReadyForInspection(); expose it to the handlers right away.
+    // Installing workers have no process yet, so this is skipped for them.
+    GetRendererChannel()->SetRenderer(mojo::NullRemote(), mojo::NullReceiver(),
+                                      worker_process_id_.GetUnsafeValue());
   }
 }
 
@@ -462,8 +477,13 @@ void ServiceWorkerDevToolsAgentHost::UpdateLoaderFactories(
 DevToolsAgentHostImpl::NetworkLoaderFactoryParamsAndInfo
 ServiceWorkerDevToolsAgentHost::CreateNetworkFactoryParamsForDevTools() {
   RenderProcessHost* rph = RenderProcessHost::FromID(worker_process_id_);
-  const url::Origin origin = url::Origin::Create(url_);
   const auto* version = context_wrapper_->GetLiveVersion(version_id_);
+  if (!rph || !version) {
+    // The worker is not running, or its version is gone (e.g. because the
+    // storage was wiped, see StorageWiped()).
+    return {};
+  }
+  const url::Origin origin = url::Origin::Create(url_);
   // TODO(crbug.com/40190528): make sure client_security_state is no longer
   // nullptr anywhere.
   auto factory = URLLoaderFactoryParamsHelper::CreateForWorker(
@@ -494,6 +514,10 @@ ServiceWorkerDevToolsAgentHost::cross_origin_embedder_policy(
     return std::nullopt;
   }
   return client_security_state_->cross_origin_embedder_policy;
+}
+
+bool ServiceWorkerDevToolsAgentHost::should_pause_on_start() {
+  return should_pause_on_start_ && IsAttached();
 }
 
 void ServiceWorkerDevToolsAgentHost::set_should_pause_on_start(

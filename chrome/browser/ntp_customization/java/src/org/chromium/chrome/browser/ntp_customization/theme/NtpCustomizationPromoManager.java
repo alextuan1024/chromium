@@ -73,8 +73,9 @@ public class NtpCustomizationPromoManager {
      */
     public static boolean canTriggerCustomizationBottomSheet(
             WindowAndroid windowAndroid, boolean isLff, int ntpOpenedCount) {
-        if (CommandLine.getInstance()
-                .hasSwitch(ChromeSwitches.DISABLE_NTP_THEME_PROMO_BOTTOM_SHEET_FOR_TESTING)) {
+        CommandLine commandLine = CommandLine.getInstance();
+        if (commandLine.hasSwitch(ChromeSwitches.DISABLE_NTP_THEME_PROMO_BOTTOM_SHEET_FOR_TESTING)
+                || commandLine.hasSwitch(ChromeSwitches.NO_FIRST_RUN)) {
             return false;
         }
 
@@ -86,13 +87,13 @@ public class NtpCustomizationPromoManager {
             return false;
         }
 
-        if (!ChromeFeatureList.sNewTabPageCustomizationV2ShowTipBottomSheet.getValue()
-                || (NtpCustomizationConfigManager.getInstance().getBackgroundType()
-                        != NtpBackgroundType.DEFAULT)) {
+        if (NtpCustomizationConfigManager.getInstance().getBackgroundType()
+                != NtpBackgroundType.DEFAULT) {
             return false;
         }
 
-        if (ChromeFeatureList.sNewTabPageCustomizationV2ForceShowTipBottomSheet.getValue()) {
+        if (ChromeFeatureList.sNewTabPageCustomizationThemeDebugForceShowTipBottomSheet
+                .getValue()) {
             return true;
         }
 
@@ -131,16 +132,15 @@ public class NtpCustomizationPromoManager {
             return false;
         }
 
-        if (ChromeFeatureList.sNewTabPageCustomizationV2ShowTipBottomSheet.getValue()) {
-            if (!NtpCustomizationUtils.isThemeTipBottomSheetShownFromSharedPreference()) {
-                return false;
-            }
-            long timestamp =
-                    NtpCustomizationUtils
-                            .getThemeTipBottomSheetShownTimestampFromSharedPreference();
-            if (timestamp > 0 && TimeUtils.currentTimeMillis() - timestamp < COOL_DOWN_PERIOD_MS) {
-                return false;
-            }
+        // The IPH follows up on the theme tip bottom sheet and shares its cool down period.
+        if (!NtpCustomizationUtils.isThemeTipBottomSheetShownFromSharedPreference()) {
+            return false;
+        }
+
+        long timestamp =
+                NtpCustomizationUtils.getThemeTipBottomSheetShownTimestampFromSharedPreference();
+        if (timestamp > 0 && TimeUtils.currentTimeMillis() - timestamp < COOL_DOWN_PERIOD_MS) {
+            return false;
         }
 
         return true;
@@ -212,7 +212,8 @@ public class NtpCustomizationPromoManager {
     public static void maybeUpdateShowThemeTipSnackbarState(
             @SnackBarState int newState, int taskId) {
         boolean forceBottomSheetShow =
-                ChromeFeatureList.sNewTabPageCustomizationV2ForceShowTipBottomSheet.getValue();
+                ChromeFeatureList.sNewTabPageCustomizationThemeDebugForceShowTipBottomSheet
+                        .getValue();
         if ((sState == SnackBarState.SHOWN
                         || NtpCustomizationUtils.isThemeSnackbarShownFromSharedPreference())
                 && !forceBottomSheetShow) {

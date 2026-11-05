@@ -275,6 +275,26 @@ const CSSValue* StyleValueToCSSValue(
       }
       break;
     }
+    case CSSPropertyID::kViewTransitionGroup: {
+      if (const auto* ident =
+              DynamicTo<CSSIdentifierValue>(style_value.ToCSSValue());
+          ident && (ident->GetValueID() == CSSValueID::kNearest ||
+                    ident->GetValueID() == CSSValueID::kContain)) {
+        return MakeGarbageCollected<cssvalue::CSSScopedKeywordValue>(
+            ident->GetValueID());
+      }
+      break;
+    }
+    case CSSPropertyID::kViewTransitionName: {
+      if (const auto* ident =
+              DynamicTo<CSSIdentifierValue>(style_value.ToCSSValue());
+          ident && (ident->GetValueID() == CSSValueID::kAuto ||
+                    ident->GetValueID() == CSSValueID::kMatchElement)) {
+        return MakeGarbageCollected<cssvalue::CSSScopedKeywordValue>(
+            ident->GetValueID());
+      }
+      break;
+    }
     default:
       break;
   }
@@ -384,6 +404,12 @@ void StylePropertyMap::set(
     return;
   }
 
+  if (!IsPropertyValid(property_id)) {
+    exception_state.ThrowTypeError(
+        StrCat({"Invalid propertyName: ", property_name}));
+    return;
+  }
+
   if (property.IsShorthand()) {
     if (values.size() != 1) {
       exception_state.ThrowTypeError("Invalid type for property");
@@ -444,10 +470,6 @@ void StylePropertyMap::append(
     const String& property_name,
     const HeapVector<Member<V8UnionCSSStyleValueOrString>>& values,
     ExceptionState& exception_state) {
-  if (values.empty()) {
-    return;
-  }
-
   const CSSPropertyID property_id =
       CssPropertyID(execution_context, property_name);
 
@@ -459,6 +481,12 @@ void StylePropertyMap::append(
 
   const CSSProperty& property = CSSProperty::Get(property_id);
 
+  if (!IsPropertyValid(property_id)) {
+    exception_state.ThrowTypeError(
+        StrCat({"Invalid propertyName: ", property_name}));
+    return;
+  }
+
   if (property_id == CSSPropertyID::kVariable) {
     exception_state.ThrowTypeError(
         "Appending to custom properties is not supported");
@@ -467,6 +495,10 @@ void StylePropertyMap::append(
 
   if (!property.IsRepeated()) {
     exception_state.ThrowTypeError("Property does not support multiple values");
+    return;
+  }
+
+  if (values.empty()) {
     return;
   }
 

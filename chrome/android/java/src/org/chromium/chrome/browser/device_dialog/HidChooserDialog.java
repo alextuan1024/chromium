@@ -5,17 +5,25 @@
 package org.chromium.chrome.browser.device_dialog;
 
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.net.Uri;
 import android.text.SpannableString;
 import android.text.TextUtils;
 
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ApkInfo;
+import org.chromium.base.Log;
+import org.chromium.base.PackageManagerUtils;
 import org.chromium.base.hid.HidManager;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
@@ -43,18 +51,30 @@ import org.chromium.ui.util.ColorUtils;
  */
 @NullMarked
 public class HidChooserDialog implements ItemChooserDialog.ItemSelectedCallback {
+    @JniType("::HidChooserDialogAndroid")
+    interface NativeHidChooserDialogAndroid extends JniTypeToken {}
+
+    private static final String TAG = "HidChooserDialog";
+
+    // Intent action for Android Special App Access to HID devices.
+    // Defined as a string literal because the platform constant is unreleased in the public
+    // Android SDK.
+    private static final String ACTION_MANAGE_APP_ACCESS_HID =
+            "android.settings.MANAGE_APP_ACCESS_HID";
+
     /** The dialog to show to let the user pick a device. */
     private @Nullable ItemChooserDialog mItemChooserDialog;
 
     /** A pointer back to the native part of the implementation for this dialog. */
-    private long mNativeHidChooserDialogPtr;
+    private @Nullable JniRawPtr<NativeHidChooserDialogAndroid> mNativeHidChooserDialogPtr;
 
     /** The current profile when the dialog is created. */
     private final Profile mProfile;
 
     /** Creates the HidChooserDialog. */
     @VisibleForTesting
-    HidChooserDialog(long nativeHidChooserDialogPtr, Profile profile) {
+    HidChooserDialog(
+            JniRawPtr<NativeHidChooserDialogAndroid> nativeHidChooserDialogPtr, Profile profile) {
         mNativeHidChooserDialogPtr = nativeHidChooserDialogPtr;
         mProfile = profile;
     }
@@ -110,10 +130,14 @@ public class HidChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
                                 new ChromeClickableSpan(
                                         activity,
                                         (view) -> {
-                                            if (mNativeHidChooserDialogPtr == 0) return;
+                                            if (mNativeHidChooserDialogPtr == null) return;
 
                                             Natives jni = HidChooserDialogJni.get();
                                             jni.loadHidHelpPage(mNativeHidChooserDialogPtr);
+                                            if (mNativeHidChooserDialogPtr != null) {
+                                                mNativeHidChooserDialogPtr.release();
+                                                mNativeHidChooserDialogPtr = null;
+                                            }
 
                                             // Get rid of the highlight background on selection.
                                             view.invalidate();
@@ -136,14 +160,16 @@ public class HidChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
 
     @Override
     public void onItemSelected(String id) {
-        if (mNativeHidChooserDialogPtr != 0) {
-            long nativePtr = mNativeHidChooserDialogPtr;
-            mNativeHidChooserDialogPtr = 0;
+        if (mNativeHidChooserDialogPtr != null) {
             Natives jni = HidChooserDialogJni.get();
             if (id.isEmpty()) {
-                jni.onDialogCancelled(nativePtr);
+                jni.onDialogCancelled(mNativeHidChooserDialogPtr);
             } else {
-                jni.onItemSelected(nativePtr, id);
+                jni.onItemSelected(mNativeHidChooserDialogPtr, id);
+            }
+            if (mNativeHidChooserDialogPtr != null) {
+                mNativeHidChooserDialogPtr.release();
+                mNativeHidChooserDialogPtr = null;
             }
         }
     }
@@ -155,9 +181,12 @@ public class HidChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
             @JniType("std::u16string") String origin,
             int securityLevel,
             Profile profile,
-            long nativeHidChooserDialogPtr) {
+            JniRawPtr<NativeHidChooserDialogAndroid> nativeHidChooserDialogPtr) {
         Activity activity = windowAndroid.getActivity().get();
-        if (activity == null) return null;
+        if (activity == null) {
+            nativeHidChooserDialogPtr.release();
+            return null;
+        }
 
         // Avoid showing the chooser when ModalDialogManager indicates that
         // tab-modal or app-modal dialogs are suspended.
@@ -166,13 +195,19 @@ public class HidChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
                 && (modalDialogManager.isSuspended(ModalDialogManager.ModalDialogType.TAB)
                         || modalDialogManager.isSuspended(
                                 ModalDialogManager.ModalDialogType.APP))) {
+            nativeHidChooserDialogPtr.release();
             return null;
         }
 
         AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
         HidManager hidManager = delegate != null ? delegate.getHidManager() : null;
-        if (hidManager != null && !hidManager.canEnumerateDevices()) {
+        if (hidManager == null) {
+            nativeHidChooserDialogPtr.release();
+            return null;
+        }
+        if (!hidManager.canEnumerateDevices()) {
             showSystemPermissionExplanationDialog(windowAndroid);
+            nativeHidChooserDialogPtr.release();
             return null;
         }
 
@@ -189,37 +224,87 @@ public class HidChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
         String titleText =
                 activity.getString(R.string.hid_system_permission_explanation_dialog_title);
         String productName = ApkInfo.getHostPackageLabel();
-        String bodyText =
-                activity.getString(
-                        R.string.hid_system_permission_explanation_dialog_body, productName);
-        String positiveButtonText = activity.getString(R.string.ok);
 
-        PropertyModel dialogModel =
+        Intent settingsIntent =
+                new Intent(ACTION_MANAGE_APP_ACCESS_HID)
+                        .setData(Uri.parse("package:" + activity.getPackageName()));
+
+        boolean canDirectLink = PackageManagerUtils.canResolveActivity(settingsIntent);
+
+        PropertyModel.Builder dialogModelBuilder =
                 new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
-                        .with(
-                                ModalDialogProperties.CONTROLLER,
-                                new ModalDialogProperties.Controller() {
-                                    @Override
-                                    public void onClick(
-                                            PropertyModel model, @ButtonType int buttonType) {
+                        .with(ModalDialogProperties.TITLE, titleText);
+
+        if (canDirectLink) {
+            String bodyText =
+                    activity.getString(
+                            R.string.hid_system_permission_explanation_dialog_body_direct,
+                            productName);
+            dialogModelBuilder
+                    .with(ModalDialogProperties.MESSAGE_PARAGRAPH_1, bodyText)
+                    .with(
+                            ModalDialogProperties.BUTTON_STYLES,
+                            ButtonStyles.PRIMARY_FILLED_NEGATIVE_OUTLINE)
+                    .with(
+                            ModalDialogProperties.POSITIVE_BUTTON_TEXT,
+                            activity.getString(R.string.settings))
+                    .with(
+                            ModalDialogProperties.NEGATIVE_BUTTON_TEXT,
+                            activity.getString(R.string.cancel))
+                    .with(
+                            ModalDialogProperties.CONTROLLER,
+                            new ModalDialogProperties.Controller() {
+                                @Override
+                                public void onClick(
+                                        PropertyModel model, @ButtonType int buttonType) {
+                                    if (buttonType == ButtonType.POSITIVE) {
+                                        try {
+                                            activity.startActivity(settingsIntent);
+                                        } catch (ActivityNotFoundException | SecurityException e) {
+                                            Log.w(TAG, "Failed to launch HID settings intent", e);
+                                        }
                                         modalDialogManager.dismissDialog(
                                                 model,
                                                 DialogDismissalCause.POSITIVE_BUTTON_CLICKED);
+                                    } else {
+                                        modalDialogManager.dismissDialog(
+                                                model,
+                                                DialogDismissalCause.NEGATIVE_BUTTON_CLICKED);
                                     }
+                                }
 
-                                    @Override
-                                    public void onDismiss(
-                                            PropertyModel model, int dismissalCause) {}
-                                })
-                        .with(ModalDialogProperties.TITLE, titleText)
-                        .with(ModalDialogProperties.MESSAGE_PARAGRAPH_1, bodyText)
-                        .with(
-                                ModalDialogProperties.BUTTON_STYLES,
-                                ButtonStyles.PRIMARY_FILLED_NO_NEGATIVE)
-                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, positiveButtonText)
-                        .build();
+                                @Override
+                                public void onDismiss(PropertyModel model, int dismissalCause) {}
+                            });
+        } else {
+            String bodyText =
+                    activity.getString(
+                            R.string.hid_system_permission_explanation_dialog_body, productName);
+            dialogModelBuilder
+                    .with(ModalDialogProperties.MESSAGE_PARAGRAPH_1, bodyText)
+                    .with(
+                            ModalDialogProperties.BUTTON_STYLES,
+                            ButtonStyles.PRIMARY_FILLED_NO_NEGATIVE)
+                    .with(
+                            ModalDialogProperties.POSITIVE_BUTTON_TEXT,
+                            activity.getString(R.string.ok))
+                    .with(
+                            ModalDialogProperties.CONTROLLER,
+                            new ModalDialogProperties.Controller() {
+                                @Override
+                                public void onClick(
+                                        PropertyModel model, @ButtonType int buttonType) {
+                                    modalDialogManager.dismissDialog(
+                                            model, DialogDismissalCause.POSITIVE_BUTTON_CLICKED);
+                                }
 
-        modalDialogManager.showDialog(dialogModel, ModalDialogManager.ModalDialogType.APP);
+                                @Override
+                                public void onDismiss(PropertyModel model, int dismissalCause) {}
+                            });
+        }
+
+        modalDialogManager.showDialog(
+                dialogModelBuilder.build(), ModalDialogManager.ModalDialogType.APP);
     }
 
     @CalledByNative
@@ -247,7 +332,10 @@ public class HidChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
 
     @CalledByNative
     private void closeDialog() {
-        mNativeHidChooserDialogPtr = 0;
+        if (mNativeHidChooserDialogPtr != null) {
+            mNativeHidChooserDialogPtr.release();
+            mNativeHidChooserDialogPtr = null;
+        }
         if (mItemChooserDialog != null) {
             mItemChooserDialog.dismiss();
         }
@@ -256,10 +344,11 @@ public class HidChooserDialog implements ItemChooserDialog.ItemSelectedCallback 
     @NativeMethods
     interface Natives {
         void onItemSelected(
-                long nativeHidChooserDialogAndroid, @JniType("std::string") String deviceId);
+                JniPtr<NativeHidChooserDialogAndroid> self,
+                @JniType("std::string") String deviceId);
 
-        void onDialogCancelled(long nativeHidChooserDialogAndroid);
+        void onDialogCancelled(JniPtr<NativeHidChooserDialogAndroid> self);
 
-        void loadHidHelpPage(long nativeHidChooserDialogAndroid);
+        void loadHidHelpPage(JniPtr<NativeHidChooserDialogAndroid> self);
     }
 }

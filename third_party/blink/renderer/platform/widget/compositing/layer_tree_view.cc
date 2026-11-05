@@ -377,6 +377,12 @@ void LayerTreeView::DidFailToInitializeLayerTreeFrameSink() {
   }
 }
 
+void LayerTreeView::WillSnapshotCommitState() {
+  if (delegate_) {
+    delegate_->WillSnapshotCommitState();
+  }
+}
+
 void LayerTreeView::WillCommit(const cc::CommitState&) {
   if (!delegate_)
     return;
@@ -423,7 +429,7 @@ void LayerTreeView::DidPresentCompositorFrame(
     return;
   }
   while (!presentation_callbacks_.empty()) {
-    const auto& front = presentation_callbacks_.begin();
+    auto front = presentation_callbacks_.begin();
     if (front->first > frame_token) {
       break;
     }
@@ -434,7 +440,7 @@ void LayerTreeView::DidPresentCompositorFrame(
 
 #if BUILDFLAG(IS_APPLE)
   while (!core_animation_error_code_callbacks_.empty()) {
-    const auto& front = core_animation_error_code_callbacks_.begin();
+    auto front = core_animation_error_code_callbacks_.begin();
     if (front->first > frame_token) {
       break;
     }
@@ -534,8 +540,7 @@ template <typename Callback>
 void LayerTreeView::AddCallback(
     uint32_t frame_token,
     Callback callback,
-    base::circular_deque<std::pair<uint32_t, std::vector<Callback>>>&
-        callbacks) {
+    Deque<std::pair<uint32_t, Vector<Callback>>>& callbacks) {
   DCHECK(delegate_);
   if (!callbacks.empty()) {
     auto& previous = callbacks.back();
@@ -547,7 +552,7 @@ void LayerTreeView::AddCallback(
     }
     DCHECK_GT(frame_token, previous_frame_token);
   }
-  std::vector<Callback> new_callbacks;
+  Vector<Callback> new_callbacks;
   new_callbacks.push_back(std::move(callback));
   callbacks.emplace_back(frame_token, std::move(new_callbacks));
   DCHECK_LE(callbacks.size(),

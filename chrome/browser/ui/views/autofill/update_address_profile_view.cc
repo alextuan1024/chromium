@@ -6,10 +6,14 @@
 
 #include <algorithm>
 
+#include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/ui/views/autofill/autofill_bubble_utils.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/ui/addresses/autofill_address_util.h"
 #include "components/strings/grit/components_strings.h"
@@ -180,33 +184,31 @@ UpdateAddressProfileView::UpdateAddressProfileView(
       controller_(std::move(controller)) {
   auto* layout_provider = views::LayoutProvider::Get();
 
-  std::vector<ProfileValueDifference> profile_diff = GetProfileDifferenceForUi(
-      controller_->GetProfileToSave(), controller_->GetOriginalProfile(),
-      g_browser_process->GetApplicationLocale());
+  const base::i18n::LanguageTag& app_locale =
+      g_browser_process->GetFeatures()->application_locale_storage()->GetTag();
+  std::vector<ProfileValueDifference> profile_diff =
+      GetProfileDifferenceForUi(controller_->GetProfileToSave(),
+                                controller_->GetOriginalProfile(), app_locale);
   // TODO(crbug.com/481234059): Convert this to CHECK after investigation.
   // Based of hypothesis in crbug.com/477044258, `GetProfileDifferenceForUi` is
   // returning empty.
   DUMP_WILL_BE_CHECK(!profile_diff.empty());
-  has_empty_original_values_ = !HasNonEmptySecondValues(profile_diff);
+  const bool has_empty_original_values = !HasNonEmptySecondValues(profile_diff);
 
-  SetAcceptCallback(
-      base::BindOnce(&UpdateAddressBubbleController::OnUserDecision,
-                     base::Unretained(controller_.get()),
-                     AutofillClient::AddressPromptUserDecision::kAccepted,
-                     controller_->GetProfileToSave()));
+  SetAcceptCallback(base::BindOnce(
+      &UpdateAddressBubbleController::OnUserDecision, controller_->GetWeakPtr(),
+      AutofillClient::AddressPromptUserDecision::kAccepted,
+      controller_->GetProfileToSave()));
   SetCancelCallback(base::BindOnce(
-      &UpdateAddressBubbleController::OnUserDecision,
-      base::Unretained(controller_.get()),
+      &UpdateAddressBubbleController::OnUserDecision, controller_->GetWeakPtr(),
       AutofillClient::AddressPromptUserDecision::kDeclined, std::nullopt));
 
   SetProperty(views::kElementIdentifierKey, kTopViewId);
-  SetTitle(controller_->GetWindowTitle(has_empty_original_values_));
-  SetButtonLabel(
-      ui::mojom::DialogButton::kOk,
-      controller_->GetPositiveButtonText(has_empty_original_values_));
-  SetButtonLabel(
-      ui::mojom::DialogButton::kCancel,
-      controller_->GetNegativeButtonText(has_empty_original_values_));
+  SetTitle(controller_->GetWindowTitle(has_empty_original_values));
+  SetButtonLabel(ui::mojom::DialogButton::kOk,
+                 controller_->GetPositiveButtonText(has_empty_original_values));
+  SetButtonLabel(ui::mojom::DialogButton::kCancel,
+                 controller_->GetNegativeButtonText(has_empty_original_values));
 
   SetLayoutManager(std::make_unique<views::FlexLayout>())
       ->SetOrientation(views::LayoutOrientation::kVertical)
@@ -219,8 +221,7 @@ UpdateAddressProfileView::UpdateAddressProfileView(
                                   0));
 
   std::u16string subtitle = GetProfileDescription(
-      controller_->GetOriginalProfile(),
-      g_browser_process->GetApplicationLocale(),
+      controller_->GetOriginalProfile(), app_locale,
       /*include_address_and_contacts=*/!HasAddressEntry(profile_diff));
   if (!subtitle.empty()) {
     views::Label* subtitle_label = AddChildView(std::make_unique<views::Label>(
@@ -235,7 +236,7 @@ UpdateAddressProfileView::UpdateAddressProfileView(
   // Build the TableLayoutView columns.
   const int column_divider = layout_provider->GetDistanceMetric(
       views::DISTANCE_RELATED_CONTROL_HORIZONTAL);
-  if (!has_empty_original_values_) {
+  if (!has_empty_original_values) {
     // Label column exists only if there is a section for original values.
     main_content_view
         ->AddColumn(
@@ -262,12 +263,12 @@ UpdateAddressProfileView::UpdateAddressProfileView(
 
   AddValuesRow(
       main_content_view, profile_diff,
-      /*show_row_label=*/!has_empty_original_values_,
+      /*show_row_label=*/!has_empty_original_values,
       /*edit_button_callback=*/
       base::BindRepeating(&UpdateAddressBubbleController::OnEditButtonClicked,
-                          base::Unretained(controller_.get())));
+                          controller_->GetWeakPtr()));
 
-  if (!has_empty_original_values_) {
+  if (!has_empty_original_values) {
     main_content_view->AddPaddingRow(
         views::TableLayout::kFixedSize,
         layout_provider->GetDistanceMetric(
@@ -298,10 +299,6 @@ UpdateAddressProfileView::~UpdateAddressProfileView() = default;
 
 bool UpdateAddressProfileView::ShouldShowCloseButton() const {
   return true;
-}
-
-std::u16string UpdateAddressProfileView::GetWindowTitle() const {
-  return controller_->GetWindowTitle(has_empty_original_values_);
 }
 
 void UpdateAddressProfileView::WindowClosing() {

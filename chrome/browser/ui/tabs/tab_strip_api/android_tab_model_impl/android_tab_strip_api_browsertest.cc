@@ -4,6 +4,7 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "base/test/gtest_util.h"
+#include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/android_tab_model_impl/android_tab_strip_api_injector.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/android_tab_model_impl/android_tab_strip_model_adapter.h"
@@ -32,7 +33,8 @@ class AndroidTabStripApiBrowserTest : public AndroidBrowserTest {
 
     model_ = &testing::GetTabModel(GetProfile());
     auto android_injector =
-        std::make_unique<tabs_api::AndroidTabStripApiInjector>(model_);
+        std::make_unique<tabs_api::AndroidTabStripApiInjector>(
+            model_, TabModel::TabLaunchType::FROM_CHROME_UI);
     service_ = std::make_unique<tabs_api::TabStripServiceImpl>(
         std::move(android_injector));
   }
@@ -111,7 +113,8 @@ IN_PROC_BROWSER_TEST_F(AndroidTabStripApiBrowserTest, Get) {
     ASSERT_EQ(1u, tab_strip_container->children.size());
     ASSERT_EQ(base::NumberToString(
                   model_->GetAllTabs().at(0)->GetHandle().raw_value()),
-              tab_strip_container->children.at(0)->data->get_tab()->id.Id());
+              tab_strip_container->children.at(0)->data->get_tab().id.Id());
+    EXPECT_TRUE(tab_strip_container->children.at(0)->data->get_tab().is_active);
   }
 
   // Now create a new tab and check that it is indeed reflected.
@@ -136,9 +139,9 @@ IN_PROC_BROWSER_TEST_F(AndroidTabStripApiBrowserTest, Get) {
     // Ordering is actually material, we need to ensure that the tab
     // order returned by the API matches the underlying model.
     ASSERT_EQ(base::NumberToString(model_->GetTab(0)->GetHandle().raw_value()),
-              tab_strip_container->children.at(0)->data->get_tab()->id.Id());
+              tab_strip_container->children.at(0)->data->get_tab().id.Id());
     ASSERT_EQ(base::NumberToString(model_->GetTab(1)->GetHandle().raw_value()),
-              tab_strip_container->children.at(1)->data->get_tab()->id.Id());
+              tab_strip_container->children.at(1)->data->get_tab().id.Id());
   }
 }
 
@@ -149,6 +152,8 @@ IN_PROC_BROWSER_TEST_F(AndroidTabStripApiBrowserTest, Create) {
 
   ASSERT_TRUE(result.has_value());
   ASSERT_EQ(2, model_->GetTabCount());
+  EXPECT_EQ(static_cast<int>(TabModel::TabLaunchType::FROM_CHROME_UI),
+            model_->GetTabAt(1)->GetLaunchType());
 }
 
 IN_PROC_BROWSER_TEST_F(AndroidTabStripApiBrowserTest, Activate) {

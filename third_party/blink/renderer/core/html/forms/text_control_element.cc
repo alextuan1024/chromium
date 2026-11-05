@@ -24,6 +24,7 @@
 
 #include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_selection_mode.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
@@ -72,7 +73,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
-#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
@@ -145,9 +146,9 @@ void AppendText(const String& value,
 TextControlElement::TextControlElement(const QualifiedName& tag_name,
                                        Document& doc)
     : HTMLFormControlElementWithState(tag_name, doc),
-      last_change_was_user_edit_(false),
       cached_selection_start_(0),
-      cached_selection_end_(0) {
+      cached_selection_end_(0),
+      last_change_was_user_edit_(false) {
   cached_selection_direction_ =
       doc.GetFrame() && doc.GetFrame()
                             ->GetEditor()
@@ -165,7 +166,6 @@ bool TextControlElement::DispatchFocusEvent(
     InputDeviceCapabilities* source_capabilities) {
   if (SupportsPlaceholder())
     UpdatePlaceholderVisibility();
-  HandleFocusEvent(old_focused_element, type);
   return HTMLFormControlElementWithState::DispatchFocusEvent(
       old_focused_element, type, source_capabilities);
 }
@@ -209,8 +209,7 @@ void TextControlElement::DefaultEventHandler(Event& event) {
         ComputeSelection(kStart | kEnd | kDirection, computed_selection);
         CacheSelection(computed_selection.start, computed_selection.end,
                        computed_selection.direction);
-      } else if (RuntimeEnabledFeatures::
-                     ClampUnfocusedSelectionCacheEnabled()) {
+      } else {
         // If the element is not focused, the selection cache is not updated
         // during text mutations because the global Selection doesn't point to
         // this element. This can cause the cache to exceed the new text length.
@@ -253,7 +252,7 @@ void TextControlElement::NotifyEditableContentChanged() {
       ComputeSelection(kStart | kEnd | kDirection, computed_selection);
       CacheSelection(computed_selection.start, computed_selection.end,
                      computed_selection.direction);
-    } else if (RuntimeEnabledFeatures::ClampUnfocusedSelectionCacheEnabled()) {
+    } else {
       // If the element is not focused, the selection cache is not updated
       // during text mutations because the global Selection doesn't point to
       // this element. This can cause the cache to exceed the new text length.
@@ -471,9 +470,9 @@ void TextControlElement::setRangeText(const String& replacement,
   if (start > end) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The provided start value (", String::Number(start),
-                ") is larger than the provided end value (",
-                String::Number(end), ")."}));
+        Format("The provided start value ({}) is larger than the provided end "
+               "value ({}).",
+               start, end));
     return;
   }
   if (OpenShadowRoot())
@@ -780,16 +779,18 @@ unsigned TextControlElement::selectionEnd() const {
 
 static const AtomicString& DirectionString(
     TextFieldSelectionDirection direction) {
-  DEFINE_STATIC_LOCAL(const AtomicString, forward, ("forward"));
-  DEFINE_STATIC_LOCAL(const AtomicString, backward, ("backward"));
+  static const base::NoDestructor<AtomicString> forward(
+      AtomicString::FromLiteral<"forward">());
+  static const base::NoDestructor<AtomicString> backward(
+      AtomicString::FromLiteral<"backward">());
 
   switch (direction) {
     case kSelectionHasNoDirection:
       return keywords::kNone;
     case kSelectionHasForwardDirection:
-      return forward;
+      return *forward;
     case kSelectionHasBackwardDirection:
-      return backward;
+      return *backward;
   }
 
   NOTREACHED();
@@ -891,8 +892,7 @@ void TextControlElement::setMaxLength(int new_value,
   if (new_value < 0) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The value provided (", String::Number(new_value),
-                ") is not positive or 0."}));
+        Format("The value provided ({}) is not positive or 0.", new_value));
   } else if (min >= 0 && new_value < min) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
@@ -909,8 +909,7 @@ void TextControlElement::setMinLength(int new_value,
   if (new_value < 0) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The value provided (", String::Number(new_value),
-                ") is not positive or 0."}));
+        Format("The value provided ({}) is not positive or 0.", new_value));
   } else if (max >= 0 && new_value > max) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
@@ -1056,10 +1055,40 @@ bool TextControlElement::IsPlaceholderBreakElement(const Node* node) {
              shadow_element_names::kIdPlaceholderBreak;
 }
 
+void TextControlElement::UpdatePlaceholderBreakAriaHidden(const String& value) {
+  if (!RuntimeEnabledFeatures::
+          TextAreaPlaceholderBreakAriaHiddenUpdateEnabled() ||
+      !IsA<HTMLTextAreaElement>(this)) {
+    return;
+  }
+  Node* last_child = InnerEditorElement()->lastChild();
+  if (!IsPlaceholderBreakElement(last_child)) {
+    return;
+  }
+  // The same placeholder break can be kept while the value changes, e.g. when
+  // text is pasted into an empty <textarea>. So the attribute is updated here
+  // rather than when the element is created.
+  // If the value ends with a newline, the placeholder break represents the
+  // blank last line, and should be exposed to accessibility. Otherwise, e.g.
+  // for an empty value, it only provides one line-height and should be hidden.
+  auto& placeholder_break = To<Element>(*last_child);
+  const bool should_hide = !value.ends_with('\n');
+  if (should_hide ==
+      placeholder_break.FastHasAttribute(html_names::kAriaHiddenAttr)) {
+    return;
+  }
+  if (should_hide) {
+    placeholder_break.setAttribute(html_names::kAriaHiddenAttr,
+                                   keywords::kTrue);
+  } else {
+    placeholder_break.removeAttribute(html_names::kAriaHiddenAttr);
+  }
+}
+
 void TextControlElement::AdjustPlaceholderBreakElement() {
   HTMLElement* inner_editor = InnerEditorElement();
   if (inner_editor->GetLayoutObject() &&
-      inner_editor->GetLayoutObject()->StyleRef().ShouldCollapseBreaks()) {
+      inner_editor->GetLayoutObject()->Style().ShouldCollapseBreaks()) {
     return;
   }
   Node* last_child = inner_editor->lastChild();
@@ -1135,6 +1164,7 @@ void TextControlElement::SetInnerEditorValue(const String& value) {
   // Add a placeholder <br> so that we can put the caret at the next line of
   // the last newline.
   AdjustPlaceholderBreakElement();
+  UpdatePlaceholderBreakAriaHidden(value);
 
   if (text_is_changed) {
     MaybeSetHasBeenHeuristicCustomPasswordJS();
@@ -1367,6 +1397,14 @@ void TextControlElement::SetAutofillValue(const String& value,
            value.empty() ? WebAutofillState::kNotFilled : autofill_state);
 }
 
+void TextControlElement::SetAutofillState(WebAutofillState autofill_state) {
+  if (autofill_state == WebAutofillState::kNotFilled &&
+      !SuggestedValue().empty()) {
+    SetSuggestedValue(String());
+  }
+  HTMLFormControlElementWithState::SetAutofillState(autofill_state);
+}
+
 void TextControlElement::SetSuggestedValue(const String& value) {
   // Avoid calling maxLength() if possible as it's non-trivial.
   const String new_suggested_value =
@@ -1419,9 +1457,13 @@ void TextControlElement::ScheduleSelectionchangeEvent() {
   }
 }
 
+void TextControlElement::OpaqueRangeData::Trace(Visitor* visitor) const {
+  visitor->Trace(ranges);
+}
+
 void TextControlElement::Trace(Visitor* visitor) const {
   visitor->Trace(inner_editor_);
-  visitor->Trace(opaque_ranges_);
+  visitor->Trace(opaque_range_data_);
   HTMLFormControlElementWithState::Trace(visitor);
 }
 
@@ -1443,8 +1485,8 @@ TextOverflowData TextControlElement::ValueForTextOverflow() const {
 }
 
 void TextControlElement::DisconnectAllOpaqueRanges() {
-  while (!opaque_ranges_.empty()) {
-    opaque_ranges_.back()->disconnect();
+  while (HasOpaqueRanges()) {
+    opaque_range_data_->ranges.back()->disconnect();
   }
 }
 
@@ -1457,13 +1499,20 @@ void TextControlElement::RemovedFrom(ContainerNode& insertion_point) {
 }
 
 void TextControlElement::RegisterOpaqueRange(OpaqueRange* range) {
-  opaque_ranges_.push_back(range);
+  if (!opaque_range_data_) {
+    opaque_range_data_ = MakeGarbageCollected<OpaqueRangeData>();
+  }
+  opaque_range_data_->ranges.push_back(range);
 }
 
 void TextControlElement::UnregisterOpaqueRange(OpaqueRange* range) {
-  auto iter = std::ranges::find(opaque_ranges_, range);
-  if (iter != opaque_ranges_.end()) {
-    opaque_ranges_.erase(iter);
+  if (!opaque_range_data_) {
+    return;
+  }
+  auto& ranges = opaque_range_data_->ranges;
+  auto iter = std::ranges::find(ranges, range);
+  if (iter != ranges.end()) {
+    ranges.erase(iter);
   }
 }
 
@@ -1494,10 +1543,10 @@ void TextControlElement::NotifyOpaqueRangesOfTextChange(
     unsigned deleted_count,
     unsigned inserted_count) const {
   DCHECK(RuntimeEnabledFeatures::OpaqueRangeEnabled(GetExecutionContext()));
-  if (opaque_ranges_.empty()) {
+  if (!HasOpaqueRanges()) {
     return;
   }
-  for (const auto& range : opaque_ranges_) {
+  for (const auto& range : opaque_range_data_->ranges) {
     range->UpdateOffsetsForTextChange(change_offset, deleted_count,
                                       inserted_count);
   }
@@ -1505,29 +1554,34 @@ void TextControlElement::NotifyOpaqueRangesOfTextChange(
 
 void TextControlElement::CaptureOpaqueRangePreEdit() {
   DCHECK(RuntimeEnabledFeatures::OpaqueRangeEnabled(GetExecutionContext()));
-  if (opaque_ranges_.empty()) {
+  if (!HasOpaqueRanges()) {
     return;
   }
   const String old_value = InnerEditorValue();
   const unsigned old_length = old_value.length();
-  pending_user_edit_.emplace(
+  opaque_range_data_->pending_user_edit.emplace(
       PendingUserEditSnapshot{old_value, std::min(selectionStart(), old_length),
                               std::min(selectionEnd(), old_length)});
 }
 
 void TextControlElement::CommitOpaqueRangeEdit() {
   DCHECK(RuntimeEnabledFeatures::OpaqueRangeEnabled(GetExecutionContext()));
-  if (opaque_ranges_.empty() || !pending_user_edit_) {
-    pending_user_edit_.reset();
+  if (!opaque_range_data_) {
+    // No range was ever registered, so there is no pending edit to reset.
+    return;
+  }
+  auto& pending_user_edit = opaque_range_data_->pending_user_edit;
+  if (opaque_range_data_->ranges.empty() || !pending_user_edit) {
+    pending_user_edit.reset();
     return;
   }
 
   // After observable value mutation and before 'input' listeners, compute and
   // apply a selection-bounded single replace using the pre-edit baseline.
-  ApplyOpaqueRangeUpdate(pending_user_edit_->old_value,
-                         pending_user_edit_->selection_start,
-                         pending_user_edit_->selection_end);
-  pending_user_edit_.reset();
+  ApplyOpaqueRangeUpdate(pending_user_edit->old_value,
+                         pending_user_edit->selection_start,
+                         pending_user_edit->selection_end);
+  pending_user_edit.reset();
 }
 
 void TextControlElement::ApplyOpaqueRangeUpdate(const String& old_value,
@@ -1584,12 +1638,12 @@ void TextControlElement::CommitProgrammaticOpaqueRangeEdit(
     unsigned old_sel_start,
     unsigned old_sel_end) {
   if (!RuntimeEnabledFeatures::OpaqueRangeEnabled(GetExecutionContext()) ||
-      opaque_ranges_.empty()) {
+      !HasOpaqueRanges()) {
     return;
   }
   // Clear any pending user pre-edit snapshot to avoid applying a user-driven
   // diff after a programmatic value change.
-  pending_user_edit_.reset();
+  opaque_range_data_->pending_user_edit.reset();
 
   ApplyOpaqueRangeUpdate(old_value, old_sel_start, old_sel_end);
 }

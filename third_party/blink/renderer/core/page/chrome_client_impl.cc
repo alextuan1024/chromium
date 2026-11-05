@@ -70,6 +70,7 @@
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/events/web_input_event_conversion.h"
 #include "third_party/blink/renderer/core/exported/web_dev_tools_agent_impl.h"
+#include "third_party/blink/renderer/core/exported/web_page_popup_impl.h"
 #include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
 #include "third_party/blink/renderer/core/exported/web_settings_impl.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
@@ -92,6 +93,7 @@
 #include "third_party/blink/renderer/core/html/forms/external_date_time_chooser.h"
 #include "third_party/blink/renderer/core/html/forms/external_popup_menu.h"
 #include "third_party/blink/renderer/core/html/forms/file_chooser.h"
+#include "third_party/blink/renderer/core/html/forms/html_form_control_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/forms/internal_popup_menu.h"
@@ -324,6 +326,11 @@ void ChromeClientImpl::DidChangeBackgroundColor(SkColor4f background_color,
   web_view_->DidChangeBackgroundColor(background_color, color_adjust);
 }
 
+void ChromeClientImpl::UpdateEncoding(const String& encoding_name) {
+  DCHECK(web_view_);
+  web_view_->UpdateEncoding(encoding_name);
+}
+
 void ChromeClientImpl::RequestFrameWithoutVSyncFromRoot(LocalFrame& frame) {
   if (auto* widget = frame.GetWidgetForLocalRoot()) {
     widget->SendEarlyFinalBeginMainFrame();
@@ -467,17 +474,6 @@ void ChromeClientImpl::SetOverscrollBehavior(
       overscroll_behavior);
 }
 
-bool ChromeClientImpl::ShouldReportDetailedMessageForSourceAndSeverity(
-    LocalFrame& local_frame,
-    mojom::blink::ConsoleMessageLevel log_level,
-    const String& url) {
-  WebLocalFrameImpl* webframe =
-      WebLocalFrameImpl::FromFrame(local_frame.LocalFrameRoot());
-  return webframe && webframe->Client() &&
-         webframe->Client()->ShouldReportDetailedMessageForSourceAndSeverity(
-             log_level, url);
-}
-
 void ChromeClientImpl::AddMessageToConsole(LocalFrame* local_frame,
                                            mojom::ConsoleMessageSource source,
                                            mojom::ConsoleMessageLevel level,
@@ -491,12 +487,9 @@ void ChromeClientImpl::AddMessageToConsole(LocalFrame* local_frame,
         stack_trace);
   }
 
-  WebLocalFrameImpl* frame = WebLocalFrameImpl::FromFrame(local_frame);
-  if (frame && frame->Client()) {
-    frame->Client()->DidAddMessageToConsole(
-        WebConsoleMessage(static_cast<mojom::ConsoleMessageLevel>(level),
-                          message),
-        source_id, line_number, stack_trace);
+  if (WebLocalFrameImpl* frame = WebLocalFrameImpl::FromFrame(local_frame)) {
+    frame->DidAddMessageToConsole(WebConsoleMessage(level, message), source_id,
+                                  line_number, stack_trace);
   }
 }
 
@@ -661,9 +654,8 @@ const display::ScreenInfos& ChromeClientImpl::GetScreenInfos(
   return frame.GetWidgetForLocalRoot()->GetScreenInfos();
 }
 
-const display::ScreenInfo& ChromeClientImpl::GetOriginalScreenInfo(
-    LocalFrame& frame) const {
-  return frame.GetWidgetForLocalRoot()->GetOriginalScreenInfo();
+float ChromeClientImpl::GetOriginalDeviceScaleFactor(LocalFrame& frame) const {
+  return frame.GetWidgetForLocalRoot()->GetOriginalDeviceScaleFactor();
 }
 
 float ChromeClientImpl::InputEventsScaleForEmulation() const {
@@ -818,6 +810,13 @@ ColorChooser* ChromeClientImpl::OpenColorChooser(
 #endif
   }
   controller->OpenUI();
+  if (RuntimeEnabledFeatures::PagePopupEnabled() &&
+      !controller->IsPickerVisible()) {
+    // This can happen if the web view is closing (for example, showPicker()
+    // called during pagehide) or if synchronous script moved the owner
+    // element into another Page or an inactive document during popup opening.
+    return nullptr;
+  }
   return controller;
 }
 
@@ -830,8 +829,16 @@ DateTimeChooser* ChromeClientImpl::OpenDateTimeChooser(
   // picker.
 #if !BUILDFLAG(IS_ANDROID)
   if (RuntimeEnabledFeatures::InputMultipleFieldsUIEnabled()) {
-    return MakeGarbageCollected<DateTimeChooserImpl>(frame, picker_client,
-                                                     parameters);
+    auto* chooser = MakeGarbageCollected<DateTimeChooserImpl>(
+        frame, picker_client, parameters);
+    if (!chooser->IsPickerVisible()) {
+      // This can happen if the web view is closing (for example, showPicker()
+      // called during pagehide) or if synchronous script moved the owner
+      // element into another Page or an inactive document during popup
+      // opening.
+      return nullptr;
+    }
+    return chooser;
   }
 #endif
 
@@ -1164,11 +1171,11 @@ void ChromeClientImpl::UnregisterFromCommitObservation(
   commit_observers_.erase(observer);
 }
 
-void ChromeClientImpl::WillCommitCompositorFrame() {
+void ChromeClientImpl::WillSnapshotCommitState() {
   // Make a copy since callbacks may modify the set as we're iterating it.
   auto observers = commit_observers_;
   for (auto& observer : observers)
-    observer->WillCommitCompositorFrame();
+    observer->WillSnapshotCommitState();
 }
 
 std::unique_ptr<cc::ScopedPauseRendering> ChromeClientImpl::PauseRendering(
@@ -1287,10 +1294,20 @@ void ChromeClientImpl::DidChangeFormRelatedElementDynamically(
     LocalFrame* frame,
     HTMLElement* element,
     WebFormRelatedChangeType form_related_change) {
-  if (auto* fill_client = AutofillClientFromFrame(frame)) {
-    fill_client->DidChangeFormRelatedElementDynamically(element,
-                                                        form_related_change);
+  auto* fill_client = AutofillClientFromFrame(frame);
+  if (!fill_client) {
+    return;
   }
+  std::optional<mojom::blink::FormControlType> form_control_type;
+  if (auto* form_control = DynamicTo<HTMLFormControlElement>(element)) {
+    form_control_type = form_control->FormControlTypeForAutofill();
+  }
+  // This is called for every form-related element that is inserted into or
+  // removed from the document, so the WebElement (a Persistent) is only made
+  // if the client asks for it.
+  fill_client->DidChangeFormRelatedElementDynamically(
+      form_related_change, form_control_type,
+      [element] { return WebElement(element); });
 }
 
 void ChromeClientImpl::ShowVirtualKeyboardOnElementFocus(LocalFrame& frame) {
@@ -1318,33 +1335,35 @@ void ChromeClientImpl::WillDispatchPointerDown(Node& node) {
   }
 }
 
-bool ChromeClientImpl::HandleKeyboardEventOnEditableElement(
-    HTMLElement& element,
+void ChromeClientImpl::HandleKeyboardEventOnTextField(
+    HTMLInputElement& input_element,
     KeyboardEvent& event) {
   if (auto* fill_client =
-          AutofillClientFromFrame(element.GetDocument().GetFrame())) {
-    return fill_client->DidReceiveKeyDown(WebElement(&element),
-                                          WebKeyboardEventBuilder(event));
+          AutofillClientFromFrame(input_element.GetDocument().GetFrame())) {
+    fill_client->TextFieldDidReceiveKeyDown(WebInputElement(&input_element),
+                                            WebKeyboardEventBuilder(event));
   }
-  return false;
 }
 
 void ChromeClientImpl::DidChangeValueInTextField(
     HTMLFormControlElement& element) {
   Document& doc = element.GetDocument();
+  // Value changes caused by |document.execCommand| calls should not be
+  // interpreted as a user action. See https://crbug.com/764760.
+  if (doc.IsRunningExecCommand()) {
+    return;
+  }
+
   if (auto* fill_client = AutofillClientFromFrame(doc.GetFrame())) {
     fill_client->TextFieldValueChanged(WebFormControlElement(&element));
   }
 
-  // Value changes caused by |document.execCommand| calls should not be
-  // interpreted as a user action. See https://crbug.com/764760.
-  if (!doc.IsRunningExecCommand()) {
-    UseCounter::Count(doc, doc.GetExecutionContext()->IsSecureContext()
-                               ? WebFeature::kFieldEditInSecureContext
-                               : WebFeature::kFieldEditInNonSecureContext);
-    // The resource coordinator is not available in some tests.
-    if (auto* rc = doc.GetResourceCoordinator())
-      rc->SetHadFormInteraction();
+  UseCounter::Count(doc, doc.GetExecutionContext()->IsSecureContext()
+                             ? WebFeature::kFieldEditInSecureContext
+                             : WebFeature::kFieldEditInNonSecureContext);
+  // The resource coordinator is not available in some tests.
+  if (auto* rc = doc.GetResourceCoordinator()) {
+    rc->SetHadFormInteraction();
   }
 }
 
@@ -1512,6 +1531,13 @@ void ChromeClientImpl::DocumentDetached(Document& document) {
   for (auto& it : file_chooser_queue_) {
     if (it->FrameOrNull() == document.GetFrame())
       it->DisconnectClient();
+  }
+  // Close any open popup owned by `document`, including popups opened via
+  // HTMLInputElement::showPicker() on disconnected elements that are not
+  // visited by Document::DetachLayoutTree().
+  if (web_view_ && web_view_->GetPagePopup() &&
+      web_view_->GetPagePopup()->OwnerElement().GetDocument() == document) {
+    web_view_->ClosePagePopup(web_view_->GetPagePopup());
   }
 }
 

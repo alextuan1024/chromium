@@ -36,14 +36,18 @@
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "ui/events/test/test_event.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/toggle_button.h"
 #include "ui/views/controls/styled_label.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
+#include "ui/views/test/widget_activation_waiter.h"
 #include "url/origin.h"
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 #include "chrome/browser/smart_card/smart_card_permission_context.h"
 #include "chrome/browser/smart_card/smart_card_permission_context_factory.h"
 #endif
@@ -52,7 +56,7 @@ namespace {
 
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
 const char kFirstPermissionRow[] = "FirstPermissionRow";
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 const char kSecondPermissionRow[] = "SecondPermissionRow";
 #endif
 
@@ -60,7 +64,8 @@ const char kSecondPermissionRow[] = "SecondPermissionRow";
 void OpenPageInfoBubble(BrowserWindowInterface* browser) {
   LocationIconTestAccessor(browser).ShowBubble();
   views::BubbleDialogDelegateView* page_info =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(
+          browser->GetTabStripModel()->GetActiveWebContents());
   EXPECT_NE(nullptr, page_info);
   page_info->set_close_on_deactivate(false);
 }
@@ -142,7 +147,7 @@ class WebContentsFocusTracker : public FocusTracker,
       return false;
     }
     return BrowserView::GetBrowserViewForBrowser(browser)
-        ->contents_web_view()
+        ->GetContentsView()
         ->HasFocus();
   }
 };
@@ -192,9 +197,11 @@ class PageInfoBubbleViewFocusInteractiveUiTest : public InProcessBrowserTest {
     permission.default_setting = ContentSetting::CONTENT_SETTING_ASK;
     permission.source = content_settings::SettingSource::kUser;
 
-    PageInfo* presenter = static_cast<PageInfoBubbleView*>(
-                              PageInfoBubbleView::GetPageInfoBubbleForTesting())
-                              ->presenter_for_testing();
+    PageInfo* presenter =
+        static_cast<PageInfoBubbleView*>(
+            PageInfoBubbleView::GetPageInfoBubbleForTesting(
+                browser()->GetTabStripModel()->GetActiveWebContents()))
+            ->presenter_for_testing();
     presenter->OnSitePermissionChanged(permission.type, permission.setting,
                                        permission.requesting_origin,
                                        permission.is_one_time);
@@ -220,7 +227,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewFocusInteractiveUiTest,
   base::RunLoop().RunUntilIdle();
 
   auto* page_info_bubble_view =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
   EXPECT_FALSE(web_contents_focus_tracker.focused());
 
   page_info_bubble_view->GetWidget()->CloseWithReason(
@@ -254,7 +261,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewFocusInteractiveUiTest,
   base::RunLoop().RunUntilIdle();
 
   auto* page_info_bubble_view =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
   EXPECT_FALSE(web_contents_focus_tracker.focused());
 
   TriggerReloadPromptOnClose();
@@ -264,6 +271,46 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewFocusInteractiveUiTest,
   web_contents_focus_tracker.WaitForFocus(false);
   EXPECT_TRUE(location_bar_focus_tracker.focused());
   EXPECT_FALSE(web_contents_focus_tracker.focused());
+}
+
+// Regression test for crbug.com/515294767: selecting "Site settings" from the
+// PageInfo bubble opens a new foreground Settings tab and closes the bubble,
+// which should focus the newly opened tab's web contents rather than advancing
+// focus to the first focusable view in Top Chrome (e.g. Tab Search).
+IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewFocusInteractiveUiTest,
+                       FocusMovesToNewTabOnSiteSettingsClick) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  WebContentsFocusTracker initial_focus_tracker(web_contents());
+  web_contents()->Focus();
+  initial_focus_tracker.WaitForFocus(true);
+
+  LocationIconTestAccessor(browser()).ShowBubble();
+  auto* page_info_bubble_view =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
+  ASSERT_NE(nullptr, page_info_bubble_view);
+  views::test::WaitForWidgetActive(page_info_bubble_view->GetWidget(), true);
+
+  auto* site_settings_button = views::Button::AsButton(
+      page_info_bubble_view->GetWidget()->GetRootView()->GetViewByID(
+          PageInfoViewFactory::VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SITE_SETTINGS));
+  ASSERT_NE(nullptr, site_settings_button);
+
+  content::WebContentsAddedObserver new_tab_observer;
+  views::test::InteractionTestUtilSimulatorViews::PressButton(
+      site_settings_button);
+  content::WebContents* settings_contents = new_tab_observer.GetWebContents();
+  ASSERT_NE(nullptr, settings_contents);
+  WebContentsFocusTracker settings_focus_tracker(settings_contents);
+  EXPECT_TRUE(content::WaitForLoadStop(settings_contents));
+
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  views::test::WaitForWidgetActive(browser_view->GetWidget(), true);
+  settings_focus_tracker.WaitForFocus(true);
+  EXPECT_EQ(settings_contents,
+            browser()->GetTabStripModel()->GetActiveWebContents());
+  EXPECT_EQ(browser_view->GetActiveContentsWebView(),
+            browser_view->GetFocusManager()->GetFocusedView());
+  EXPECT_TRUE(settings_focus_tracker.focused());
 }
 
 class PageInfoBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
@@ -309,24 +356,22 @@ class PageInfoBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
   }
 
   auto TogglePermission(ElementSpecifier row) {
-    return WithElement(
-        row, base::BindOnce([](ui::TrackedElement* el) {
-          views::test::InteractionTestUtilSimulatorViews::PressButton(
-              static_cast<views::Button*>(AsView<PermissionToggleRowView>(el)
-                                              ->toggle_button_for_testing()));
-        }));
+    return WithElement(row, [this](ui::TrackedElement* el) {
+      views::test::InteractionTestUtilSimulatorViews::PressButton(
+          static_cast<views::Button*>(AsView<PermissionToggleRowView>(el)
+                                          ->toggle_button_for_testing()));
+    });
   }
 
   auto DeleteGrant(ElementSpecifier row) {
-    return WithElement(
-        row, base::BindOnce([](ui::TrackedElement* el) {
-          views::test::InteractionTestUtilSimulatorViews::PressButton(
-              static_cast<views::Button*>(
-                  AsView<ChosenObjectView>(el)->GetDeleteButtonForTesting()));
-        }));
+    return WithElement(row, [this](ui::TrackedElement* el) {
+      views::test::InteractionTestUtilSimulatorViews::PressButton(
+          static_cast<views::Button*>(
+              AsView<ChosenObjectView>(el)->GetDeleteButtonForTesting()));
+    });
   }
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   auto EnsureSmartCardReaderGrantStatus(const std::string& reader_name,
                                         bool is_granted) {
     return CheckResult(
@@ -385,7 +430,7 @@ class PageInfoBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
         ContentSettingsPattern::Wildcard(), type, setting);
   }
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   void GrantSmartCardReaderPermission(const std::string& reader_name) {
     SmartCardPermissionContextFactory::GetForProfile(*browser()->GetProfile())
         .GrantPersistentReaderPermission(url::Origin::Create(GetURL()),
@@ -399,7 +444,7 @@ class PageInfoBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
 #endif
 
   std::unique_ptr<net::EmbeddedTestServer> https_server_;
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   base::test::ScopedFeatureList feature_list_{blink::features::kSmartCard};
 #endif
 };
@@ -615,7 +660,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
                         u""));
 }
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
                        SmartCardGrantsShowCorrectly) {
   GrantSmartCardReaderPermission("Reader 1");
@@ -759,4 +804,60 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
           kFirstPermissionRow,
           &PermissionToggleRowView::GetRowSubTitleForTesting,
           l10n_util::GetStringUTF16(IDS_PAGE_INFO_STATE_TEXT_ALLOWED_ONCE)));
+}
+
+IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
+                       ResetPermissionsHidesSystemDisabledSubtitle) {
+  system_permission_settings::ScopedSettingsForTesting mic_denied(
+      ContentSettingsType::MEDIASTREAM_MIC, /*blocked=*/true);
+
+  SetPermission(ContentSettingsType::MEDIASTREAM_MIC, CONTENT_SETTING_ALLOW);
+
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
+      WaitForShow(PageInfoMainView::kPermissionsElementId),
+      NameChildView(PageInfoMainView::kPermissionsElementId,
+                    kFirstPermissionRow, 0u),
+      CheckViewProperty(kFirstPermissionRow,
+                        &PermissionToggleRowView::GetRowTitleForTesting,
+                        l10n_util::GetStringUTF16(IDS_SITE_SETTINGS_TYPE_MIC)),
+      CheckViewProperty(
+          kFirstPermissionRow,
+          &PermissionToggleRowView::GetToggleButtonStateForTesting, true),
+      CheckContentSettings(ContentSettingsType::MEDIASTREAM_MIC,
+                           CONTENT_SETTING_ALLOW),
+      WaitForShow(
+          PermissionToggleRowView::kPermissionDisabledAtSystemLevelElementId),
+      PressButton(PageInfoMainView::kResetPermissionsButtonElementId),
+      WaitForHide(
+          PermissionToggleRowView::kPermissionDisabledAtSystemLevelElementId),
+      CheckViewProperty(
+          kFirstPermissionRow,
+          &PermissionToggleRowView::GetToggleButtonStateForTesting, false),
+      CheckContentSettings(ContentSettingsType::MEDIASTREAM_MIC,
+                           CONTENT_SETTING_ASK));
+}
+
+IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewInteractiveUiTest,
+                       ResetMultiplePermissionsHidesSystemDisabledSubtitles) {
+  system_permission_settings::ScopedSettingsForTesting mic_denied(
+      ContentSettingsType::MEDIASTREAM_MIC, /*blocked=*/true);
+  system_permission_settings::ScopedSettingsForTesting camera_denied(
+      ContentSettingsType::MEDIASTREAM_CAMERA, /*blocked=*/true);
+
+  SetPermission(ContentSettingsType::MEDIASTREAM_MIC, CONTENT_SETTING_ALLOW);
+  SetPermission(ContentSettingsType::MEDIASTREAM_CAMERA, CONTENT_SETTING_ALLOW);
+
+  RunTestSequence(
+      NavigateAndOpenPageInfo(),
+      WaitForShow(PageInfoMainView::kPermissionsElementId),
+      WaitForShow(
+          PermissionToggleRowView::kPermissionDisabledAtSystemLevelElementId),
+      PressButton(PageInfoMainView::kResetPermissionsButtonElementId),
+      WaitForHide(
+          PermissionToggleRowView::kPermissionDisabledAtSystemLevelElementId),
+      CheckContentSettings(ContentSettingsType::MEDIASTREAM_MIC,
+                           CONTENT_SETTING_ASK),
+      CheckContentSettings(ContentSettingsType::MEDIASTREAM_CAMERA,
+                           CONTENT_SETTING_ASK));
 }

@@ -5,7 +5,10 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_PAGE_ACTION_PAGE_ACTION_VIEW_PARAMS_H_
 #define CHROME_BROWSER_UI_VIEWS_PAGE_ACTION_PAGE_ACTION_VIEW_PARAMS_H_
 
+#include <optional>
+
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "ui/gfx/font_list.h"
 
 namespace page_actions {
 
@@ -16,14 +19,7 @@ struct PageActionViewParams {
   gfx::Insets icon_insets;
   int between_icon_spacing = 0;
   raw_ptr<IconLabelBubbleView::Delegate> icon_label_bubble_delegate = nullptr;
-  raw_ptr<const gfx::FontList> font_list = nullptr;
-  // This is a temporary flag required while transitioning from the legacy
-  // page actions framework to the new one.
-  // If set to true, `PageActionContainer` will insert spacing on the right to
-  // ensure consistent spacing between migrated and legacy page action icons.
-  // TODO(crbug.com/384969003): After the page actions migration, this right
-  // spacing will no longer be needed.
-  bool should_bridge_containers = true;
+  std::optional<gfx::FontList> font_list;
   // Depending on the surface that use the `PageActionContainer`, the
   // expectation may be different during space constraint. In some cases, the
   // icon should stay to it minimum size. In some others, the icon size should

@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <string>
 
+#include "base/feature_list.h"
+#include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #include "chrome/browser/media/webrtc/desktop_media_list.h"
 #include "chrome/browser/media/webrtc/window_icon_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -57,8 +59,16 @@ gfx::ImageSkia LoadDefaultIcon(aura::Window* window) {
 #endif
 
 DesktopMediaSourceView* AsDesktopMediaSourceView(views::View* view) {
-  DCHECK(views::IsViewClass<DesktopMediaSourceView>(view));
+  CHECK(views::IsViewClass<DesktopMediaSourceView>(view),
+        base::NotFatalUntil::M162);
   return static_cast<DesktopMediaSourceView*>(view);
+}
+
+// Returns true if sharing `source` is blocked by screenshot protection.
+bool IsSharingBlocked(const DesktopMediaList::Source& source) {
+  return base::FeatureList::IsEnabled(
+             enterprise_data_protection::kEnableTabSharingProtection) &&
+         source.is_sharing_blocked;
 }
 
 // Returns the number of rows, each of size `num_columns`, required to display
@@ -184,6 +194,7 @@ void DesktopMediaListView::OnSourceAdded(size_t index) {
 #endif
     source_view->SetIcon(icon_image);
   }
+  source_view->SetSharingBlocked(IsSharingBlocked(source));
   AddChildViewAt(source_view, index);
 
   if (children().size() == 2) {
@@ -209,7 +220,7 @@ void DesktopMediaListView::OnSourceRemoved(size_t index) {
   }
 
   DesktopMediaSourceView* view = AsDesktopMediaSourceView(children()[index]);
-  DCHECK(view);
+  CHECK(view, base::NotFatalUntil::M162);
 
   bool was_selected = view->GetSelected();
   RemoveChildView(view);
@@ -255,6 +266,7 @@ void DesktopMediaListView::OnSourceThumbnailChanged(size_t index) {
   DesktopMediaSourceView* source_view =
       AsDesktopMediaSourceView(children()[index]);
   source_view->SetThumbnail(source.thumbnail);
+  source_view->SetSharingBlocked(IsSharingBlocked(source));
 }
 
 void DesktopMediaListView::OnSourcePreviewChanged(size_t index) {}

@@ -52,7 +52,20 @@ public class AutocompleteEditText extends EditTextWithLeading
     private boolean mDisableTextScrollingFromAutocomplete;
 
     private @Nullable OnKeyListener mOnKeyListener;
-    private boolean mModelShouldIgnoreFocusChanges;
+
+    /**
+     * Whether Omnibox-specific focus handling is skipped. Set while the view is being reparented,
+     * so the transient focus loss/gain does not reach the model or trigger UrlBar's focus
+     * presentation changes (cursor, scroll, ellipsis). IME session preservation is handled
+     * separately by the temporarily-detached state, see {@link #beginReparenting()}.
+     */
+    private boolean mIgnoreFocusChangesWhileReparenting;
+
+    /** Whether {@link #beginReparenting()} put the view into the temporarily-detached state. */
+    private boolean mTemporarilyDetachedForReparenting;
+
+    private boolean mIncognitoColorsEnabled;
+    private @Nullable SiteSearchChipDrawable mSiteSearchChipDrawable;
 
     public AutocompleteEditText(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -124,9 +137,7 @@ public class AutocompleteEditText extends EditTextWithLeading
         if (mModel != null) mModel.setIgnoreTextChangeFromAutocomplete(ignoreAutocomplete);
     }
 
-    /**
-     * @return The user text without the autocomplete text.
-     */
+    /** Returns the user text without the autocomplete text. */
     public String getTextWithoutAutocomplete() {
         // Return the current Text value when the content is requested before the InputConnection is
         // created. This may happen when the user triggers ACTION_WEB_SEARCH, calling up the Omnibox
@@ -141,9 +152,7 @@ public class AutocompleteEditText extends EditTextWithLeading
         return mModel.getTextWithoutAutocomplete();
     }
 
-    /**
-     * @return Text that includes autocomplete.
-     */
+    /** Returns text that includes autocomplete. */
     public String getTextWithAutocomplete() {
         // Return the current Text value when the content is requested before the InputConnection is
         // created. This may happen when the user triggers ACTION_WEB_SEARCH, calling up the Omnibox
@@ -159,8 +168,8 @@ public class AutocompleteEditText extends EditTextWithLeading
     }
 
     /**
-     * @return Additional text presented in the omnibox, indicating the destination of the default
-     *     match.
+     * Returns additional text presented in the omnibox, indicating the destination of the default
+     * match.
      */
     @VisibleForTesting
     public @Nullable String getAdditionalText() {
@@ -168,9 +177,7 @@ public class AutocompleteEditText extends EditTextWithLeading
         return mModel.getAdditionalText();
     }
 
-    /**
-     * @return Whether any autocomplete information is specified on the current text.
-     */
+    /** Returns whether any autocomplete information is specified on the current text. */
     public boolean hasAutocomplete() {
         if (mModel == null) return false;
         return mModel.hasAutocomplete();
@@ -195,14 +202,77 @@ public class AutocompleteEditText extends EditTextWithLeading
     }
 
     @Override
-    protected void onFocusChanged(boolean focused, int direction, Rect previouslyFocusedRect) {
-        if (mModel != null && !mModelShouldIgnoreFocusChanges) mModel.onFocusChanged(focused);
+    protected void onFocusChanged(
+            boolean focused, int direction, @Nullable Rect previouslyFocusedRect) {
+        if (mIgnoreFocusChangesWhileReparenting) {
+            super.onFocusChanged(focused, direction, previouslyFocusedRect);
+            return;
+        }
+        if (mModel != null) mModel.onFocusChanged(focused);
         super.onFocusChanged(focused, direction, previouslyFocusedRect);
         if (!focused) setCursorVisible(false);
     }
 
-    void setModelShouldIgnoreFocusChanges(boolean ignoreFocusChanges) {
-        mModelShouldIgnoreFocusChanges = ignoreFocusChanges;
+    /** Returns whether the view is being reparented and Omnibox focus handling is suspended. */
+    boolean isReparenting() {
+        return mIgnoreFocusChangesWhileReparenting;
+    }
+
+    /**
+     * Prepares the view to be moved to a new parent without disturbing the IME session.
+     *
+     * <p>ViewGroup#removeView() unfocuses the removed subtree. For a focused editor that means
+     * TextView/Editor strip the IME ComposingSpan and InputMethodManager finishes and later
+     * restarts the input session, which makes CJK IMEs commit the in-progress composition. While
+     * the view is marked temporarily detached, TextView, Editor and InputMethodManager ignore these
+     * focus transitions, and Omnibox-specific focus handling is suspended as well.
+     *
+     * <p>Must be paired with {@link #endReparenting(boolean)}.
+     */
+    void beginReparenting() {
+        mIgnoreFocusChangesWhileReparenting = true;
+        // An unfocused view has no IME session to protect.
+        if (isFocused()) {
+            mTemporarilyDetachedForReparenting = true;
+            dispatchStartTemporaryDetach();
+        }
+    }
+
+    /**
+     * Completes a move started with {@link #beginReparenting()} and applies the target focus state.
+     *
+     * @param focused Whether the view should be focused once reparenting has completed.
+     */
+    void endReparenting(boolean focused) {
+        if (focused) {
+            // Normally a no-op: LocationBarMediator keeps the focus chain intact through the
+            // reparenting. If the framework did move focus, this restores it while the view is
+            // still temporarily detached, so TextView/IMM do not restart the input session.
+            // Restoring focus the move dropped is not a real transition, so keep Omnibox focus
+            // handling suspended for it; a genuine focus gain (view was not focused at
+            // beginReparenting()) must run the regular handling.
+            mIgnoreFocusChangesWhileReparenting = mTemporarilyDetachedForReparenting;
+            requestFocus();
+            mIgnoreFocusChangesWhileReparenting = false;
+            // Ending the temporary detach re-registers the focused view as the one served by
+            // InputMethodManager, an association dropped when the view left the window. Without
+            // it, the pending IMM focus check would see no served view, finish the current input
+            // (committing the composition) and restart it.
+            finishTemporaryDetachForReparenting();
+        } else {
+            mIgnoreFocusChangesWhileReparenting = false;
+            finishTemporaryDetachForReparenting();
+            // With focus handling re-enabled, this performs the regular unfocus cleanup.
+            clearFocus();
+        }
+    }
+
+    private void finishTemporaryDetachForReparenting() {
+        // The temporarily-detached state is sticky; only undo what beginReparenting() started, and
+        // never leave it set, or TextView and IMM would ignore every future focus change.
+        if (!mTemporarilyDetachedForReparenting) return;
+        mTemporarilyDetachedForReparenting = false;
+        dispatchFinishTemporaryDetach();
     }
 
     @Override
@@ -400,9 +470,7 @@ public class AutocompleteEditText extends EditTextWithLeading
         return super.dispatchKeyEvent(event);
     }
 
-    /**
-     * @return Whether the current UrlBar input has been pasted from the clipboard.
-     */
+    /** Returns whether the current UrlBar input has been pasted from the clipboard. */
     public boolean wasLastEditPaste() {
         return mLastEditWasPaste;
     }
@@ -429,15 +497,54 @@ public class AutocompleteEditText extends EditTextWithLeading
     public void setInputIsMultilineEligible(boolean isMultilineEligible) {}
 
     @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        if (w == oldw || mSiteSearchChipDrawable == null) return;
+
+        int targetWidth = computeSiteSearchChipWidth(mSiteSearchChipDrawable, w);
+        if (targetWidth == mSiteSearchChipDrawable.getBounds().width()) return;
+
+        mSiteSearchChipDrawable.setBounds(
+                0, 0, targetWidth, mSiteSearchChipDrawable.getIntrinsicHeight());
+        Drawable[] drawables = getCompoundDrawablesRelative();
+        setCompoundDrawablesRelative(
+                mSiteSearchChipDrawable, drawables[1], drawables[2], drawables[3]);
+    }
+
+    /** Sets whether to use incognito colors. */
+    public void setIncognitoColorsEnabled(boolean incognitoColorsEnabled) {
+        if (mIncognitoColorsEnabled == incognitoColorsEnabled) return;
+        mIncognitoColorsEnabled = incognitoColorsEnabled;
+        if (mSiteSearchChipDrawable != null) {
+            mSiteSearchChipDrawable.setIncognitoColorsEnabled(
+                    getContext(), mIncognitoColorsEnabled);
+        }
+    }
+
+    private static int computeSiteSearchChipWidth(Drawable drawable, int viewWidth) {
+        int width = drawable.getIntrinsicWidth();
+        if (viewWidth > 0) {
+            width = Math.min(width, viewWidth / 2);
+        }
+        return width;
+    }
+
+    @Override
     public void setSiteSearchChip(@Nullable String keyword) {
-        SiteSearchChipDrawable drawable = null;
         if (keyword != null) {
             // TODO(crbug.com/459590224): convert keyword to templateUrl.FullName() or equivalent.
-            drawable = new SiteSearchChipDrawable(getContext(), keyword);
-            drawable.setBounds(0, 0, drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight());
+            mSiteSearchChipDrawable =
+                    new SiteSearchChipDrawable(getContext(), keyword, mIncognitoColorsEnabled);
+            mSiteSearchChipDrawable.setLayoutDirection(getLayoutDirection());
+            int width = computeSiteSearchChipWidth(mSiteSearchChipDrawable, getWidth());
+            mSiteSearchChipDrawable.setBounds(
+                    0, 0, width, mSiteSearchChipDrawable.getIntrinsicHeight());
+        } else {
+            mSiteSearchChipDrawable = null;
         }
         Drawable[] drawables = getCompoundDrawablesRelative();
-        setCompoundDrawablesRelative(drawable, drawables[1], drawables[2], drawables[3]);
+        setCompoundDrawablesRelative(
+                mSiteSearchChipDrawable, drawables[1], drawables[2], drawables[3]);
     }
 
     public void maybeAcceptInlineSuggestion(KeyEvent event) {

@@ -8,8 +8,11 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <string>
+#include <utility>
 
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/debug/alias.h"
@@ -37,6 +40,7 @@
 #include "cc/raster/tile_task.h"
 #include "cc/tiles/mipmap_util.h"
 #include "cc/tiles/raster_dark_mode_filter.h"
+#include "components/viz/common/gpu/context_cache_controller.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
 #include "gpu/command_buffer/client/context_support.h"
 #include "gpu/command_buffer/client/raster_interface.h"
@@ -1362,6 +1366,16 @@ bool GpuImageDecodeCache::TryFlushPendingWork() {
     return false;
   }
 
+  // Only notify `ContextCacheController` when there is pending unlock or
+  // deletion work to flush. The flush itself always runs below so that the
+  // GPU channel's deferred messages keep being sent every frame, but no-op
+  // calls must not count as busy periods: that would keep invalidating the
+  // controller's pending idle cleanup on every frame.
+  std::unique_ptr<viz::ContextCacheController::ScopedBusy> busy;
+  if (!ids_pending_unlock_.empty() || !ids_pending_deletion_.empty()) {
+    busy = context_->CacheController()->ClientBecameBusy();
+  }
+
   // The calls below will empty the cache on the GPU side. These calls will
   // also happen on the next frame, but we want to call them ourselves here to
   // avoid having to wait for the next frame (which might be a long wait/never
@@ -1377,6 +1391,9 @@ bool GpuImageDecodeCache::TryFlushPendingWork() {
   // deleted. We only need a shallow flush because no glFlush() is required, we
   // merely need the deletion commands to be processed service-side.
   context_->RasterInterface()->ShallowFlushCHROMIUM();
+  if (busy) {
+    context_->CacheController()->ClientBecameNotBusy(std::move(busy));
+  }
   if (context_->GetLock()) {
     CheckContextLockAcquiredIfNecessary();
     context_->GetLock()->Release();
@@ -1985,8 +2002,9 @@ void GpuImageDecodeCache::DecodeImageIfNecessary(
       auto* allocator = base::DiscardableMemoryAllocator::GetInstance();
       std::unique_ptr<base::DiscardableMemory> backing_memory =
           allocator->AllocateLockedDiscardableMemoryWithRetryOrDie(
-              info.size, base::BindOnce(&GpuImageDecodeCache::ClearCache,
-                                        base::Unretained(this)));
+              base::ByteSize(info.size),
+              base::BindOnce(&GpuImageDecodeCache::ClearCache,
+                             base::Unretained(this)));
 
       // Do the decode.
       if (info.yuva.has_value()) {
@@ -2009,8 +2027,12 @@ void GpuImageDecodeCache::DecodeImageIfNecessary(
       } else {
         // Decode as RGB.
         DCHECK(info.rgba.has_value());
-        SkImageInfo image_info =
-            info.rgba->makeColorSpace(ColorSpaceForImageDecode(draw_image));
+        // Gainmap channels are numeric gain values, not color-managed RGB.
+        sk_sp<SkColorSpace> decode_color_space;
+        if (aux_image != AuxImage::kGainmap) {
+          decode_color_space = ColorSpaceForImageDecode(draw_image);
+        }
+        SkImageInfo image_info = info.rgba->makeColorSpace(decode_color_space);
         SkPixmap pixmap(image_info, backing_memory->data(),
                         image_info.minRowBytes());
         if (DrawAndScaleImageRGB(draw_image, aux_image, pixmap,
@@ -2149,12 +2171,10 @@ void GpuImageDecodeCache::UploadImageIfNecessary(const DrawImage& draw_image,
                            decoded_color_space.get())) {
     target_color_space = nullptr;
   }
-  // Do not color convert images that are YUV or might be tone mapped.
+  // Do not color convert images that are YUV, or for which color conversion
+  // would be destructive.
   if (image_data->info.yuva.has_value() ||
-      draw_image.paint_image().HasGainmapInfo() ||
-      ToneMapUtil::UseGlobalToneMapFilter(
-          decoded_color_space.get(),
-          draw_image.paint_image().GetHDRMetadata())) {
+      draw_image.paint_image().DecodeCacheColorConversionIsDestructive()) {
     target_color_space = nullptr;
   }
 

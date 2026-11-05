@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -56,6 +57,13 @@ class IconTable {
   IconTable& operator=(const IconTable&) = delete;
   IconTable& operator=(IconTable&&) = delete;
 
+  // Returns the iconset name (e.g. "webui-toolbar-shared:videocam") that
+  // KnownIcons() in .cc maps `icon` to, or nullopt if `icon` isn't mapped to
+  // an iconset. For callers that send iconset names directly instead of
+  // IconHandles.
+  static std::optional<std::string_view> GetKnownIconsetName(
+      const gfx::VectorIcon& icon);
+
   // Tries to returns an IconHandle to a VectorIcon this class knows about
   // (see KnownIcons() in .cc). Returns nullopt if it doesn't recognize it.
   //
@@ -94,6 +102,10 @@ class IconTable {
   // TakePendingUpdates(). This may be an over approximation, which is safe
   // since icon IDs are never reused.
   std::vector<toolbar_ui_api::mojom::IconUpdatePtr> TakePendingUpdates();
+
+  // Returns true if there are unconsumed icon updates waiting for
+  // TakePendingUpdates().
+  bool HasPendingUpdates() const;
 
   // Inform IconTable that the theme has changed. This may necessitate
   // icon updates to update icon colors.

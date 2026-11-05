@@ -4,20 +4,27 @@
 
 #import "ios/chrome/browser/web/model/blocked_popup_tab_helper.h"
 
+#import <string>
+
+#import "base/i18n/language_tag.h"
 #import "base/memory/ptr_util.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
 #import "components/infobars/core/confirm_infobar_delegate.h"
 #import "components/infobars/core/infobar.h"
+#import "components/infobars/core/infobar_delegate.h"
 #import "components/infobars/core/infobar_manager.h"
 #import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
 #import "ios/chrome/browser/infobars/model/confirm_infobar_metrics_recorder.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/web/public/navigation/referrer.h"
 #import "ios/web/public/test/fakes/fake_web_state_delegate.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
+#import "ui/base/l10n/test/scoped_application_locale.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "url/gurl.h"
 
 using web::WebState;
@@ -119,7 +126,7 @@ TEST_F(BlockedPopupTabHelperTest, AllowBlockedPopup) {
   EXPECT_EQ(target_url, params.url);
   EXPECT_EQ(source_url, params.referrer.url);
   EXPECT_EQ(web::ReferrerPolicyDefault, params.referrer.policy);
-  EXPECT_EQ(WindowOpenDisposition::NEW_POPUP, params.disposition);
+  EXPECT_EQ(ui::mojom::WindowOpenDisposition::kNewPopup, params.disposition);
   EXPECT_TRUE(
       PageTransitionCoreTypeIs(params.transition, ui::PAGE_TRANSITION_LINK));
   EXPECT_TRUE(params.is_renderer_initiated);
@@ -157,6 +164,23 @@ TEST_F(BlockedPopupTabHelperTest, ShowAndDismissInfoBar) {
   GetInfobarManager()->infobars()[0]->RemoveSelf();
   EXPECT_EQ(0U, GetInfobarManager()->infobars().size());
   EXPECT_FALSE(IsObservingSources());
+}
+
+// Tests that a second blocked popup replaces the existing infobar instead of
+// adding a new one, and that both popups are kept.
+TEST_F(BlockedPopupTabHelperTest, ReplaceInfoBarOnSecondPopup) {
+  // Call `HandlePopup` to show an infobar.
+  const GURL test_url1("https://popups1.example.com");
+  GetBlockedPopupTabHelper()->HandlePopup(test_url1, web::Referrer());
+  ASSERT_EQ(1U, GetInfobarManager()->infobars().size());
+
+  // Call `HandlePopup` again while the infobar is showing, which replaces the
+  // existing infobar.
+  const GURL test_url2("https://popups2.example.com");
+  GetBlockedPopupTabHelper()->HandlePopup(test_url2, web::Referrer());
+  EXPECT_EQ(1U, GetInfobarManager()->infobars().size());
+  EXPECT_EQ(2U, GetBlockedPopupTabHelper()->GetBlockedPopups().size());
+  EXPECT_TRUE(IsObservingSources());
 }
 
 // Tests that the Infobar presentation and dismissal histograms are recorded
@@ -209,4 +233,49 @@ TEST_F(BlockedPopupTabHelperTest, RecordAcceptMetrics) {
       static_cast<base::HistogramBase::Sample32>(
           MobileMessagesConfirmInfobarEvents::Accepted),
       1);
+}
+
+// Tests that the blocked popup infobar message is translated, and that numbers
+// greater than 1000 use the grouping separators and digits of the locale.
+TEST_F(BlockedPopupTabHelperTest, MessageTextFormattedAcrossLocales) {
+  const GURL target_url("https://target-url");
+  for (int i = 0; i < 1234; ++i) {
+    GetBlockedPopupTabHelper()->HandlePopup(target_url, web::Referrer());
+  }
+
+  ASSERT_EQ(1U, GetInfobarManager()->infobars().size());
+  auto* delegate = GetInfobarManager()
+                       ->infobars()[0]
+                       ->delegate()
+                       ->AsConfirmInfoBarDelegate();
+  ASSERT_TRUE(delegate);
+
+  {
+    ui::test::ScopedApplicationLocale locale(
+        base::i18n::GetKnownLanguageTag("en-US"));
+    EXPECT_EQ(u"Pop-ups blocked (1,234)", delegate->GetMessageText());
+  }
+  {
+    ui::test::ScopedApplicationLocale locale(
+        base::i18n::GetKnownLanguageTag("fr"));
+    EXPECT_EQ(u"Pop-up bloqués (1\u202f234)", delegate->GetMessageText());
+  }
+  {
+    ui::test::ScopedApplicationLocale locale(
+        base::i18n::GetKnownLanguageTag("de"));
+    EXPECT_EQ(u"Pop-ups blockiert (1.234)", delegate->GetMessageText());
+  }
+  {
+    ui::test::ScopedApplicationLocale locale(
+        base::i18n::GetKnownLanguageTag("ja"));
+    EXPECT_EQ(u"ブロックしたポップアップ: 1,234", delegate->GetMessageText());
+  }
+  {
+    // Note: Arabic in Egypt (`ar-EG`) uses Arabic-Indic digits (U+066x),
+    // whereas generic Arabic (`ar`) uses European digits in Chromium's ICU
+    // data.
+    ui::test::ScopedApplicationLocale locale(
+        base::i18n::GetKnownLanguageTag("ar-EG"));
+    EXPECT_EQ(u"تم حظر النوافذ المنبثقة (١٬٢٣٤)", delegate->GetMessageText());
+  }
 }

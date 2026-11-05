@@ -9,6 +9,7 @@
 #import <string_view>
 #import <vector>
 
+#import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "components/actor/core/aggregated_journal.h"
 #import "components/actor/core/page_stability_monitor_delegate.h"
@@ -16,6 +17,8 @@
 #import "components/actor/public/mojom/actor_types.mojom.h"
 
 namespace actor {
+
+class IOSPageStabilityMetrics;
 
 // The iOS implementation of `PageStabilityMonitorDelegate`.
 class IOSPageStabilityMonitorDelegate : public PageStabilityMonitorDelegate {
@@ -30,6 +33,10 @@ class IOSPageStabilityMonitorDelegate : public PageStabilityMonitorDelegate {
   IOSPageStabilityMonitorDelegate& operator=(
       const IOSPageStabilityMonitorDelegate&) = delete;
 
+  // Notifies the active metrics instance that monitoring failed due to a
+  // JavaScript dispatch or execution error.
+  void OnMonitoringError();
+
  protected:
   // PageStabilityMonitorDelegate:
   void LogEvent(mojom::JournalEntryType type,
@@ -40,6 +47,12 @@ class IOSPageStabilityMonitorDelegate : public PageStabilityMonitorDelegate {
  private:
   base::WeakPtr<AggregatedJournal> journal_;
   std::unique_ptr<AggregatedJournal::PendingAsyncEntry> async_journal_entry_;
+  // The dynamic track UUID allocated for `async_journal_entry_`. Instant
+  // events logged while the async entry is pending are emitted on this track
+  // so they are nested inside the async entry.
+  uint64_t async_journal_track_uuid_ = 0;
+  // Non-owning pointer to the metrics object owned by the base class.
+  raw_ptr<IOSPageStabilityMetrics> ios_metrics_ = nullptr;
 };
 
 }  // namespace actor

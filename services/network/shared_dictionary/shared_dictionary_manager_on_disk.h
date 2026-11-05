@@ -6,7 +6,6 @@
 #define SERVICES_NETWORK_SHARED_DICTIONARY_SHARED_DICTIONARY_MANAGER_ON_DISK_H_
 
 #include <optional>
-#include <set>
 #include <string>
 
 #include "base/byte_size.h"
@@ -18,9 +17,11 @@
 #include "net/disk_cache/disk_cache.h"
 #include "net/extras/shared_dictionary/shared_dictionary_info.h"
 #include "net/extras/sqlite/sqlite_persistent_shared_dictionary_store.h"
+#include "services/network/public/cpp/request_destination.h"
 #include "services/network/shared_dictionary/shared_dictionary_disk_cache.h"
 #include "services/network/shared_dictionary/shared_dictionary_manager.h"
 #include "services/network/shared_dictionary/shared_dictionary_writer_on_disk.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 class GURL;
 
@@ -33,10 +34,6 @@ class BackendFileOperationsFactory;
 }  // namespace disk_cache
 
 namespace network {
-namespace mojom {
-enum class RequestDestination : int32_t;
-}  // namespace mojom
-
 class SharedDictionaryCache;
 class SharedDictionaryStorage;
 
@@ -98,7 +95,7 @@ class SharedDictionaryManagerOnDisk : public SharedDictionaryManager {
       base::Time response_time,
       base::TimeDelta expiration,
       const std::string& match,
-      const std::set<mojom::RequestDestination>& match_dest,
+      RequestDestinationSet match_dest,
       const std::string& id,
       base::OnceCallback<void(net::SharedDictionaryInfo)> callback);
 
@@ -150,7 +147,7 @@ class SharedDictionaryManagerOnDisk : public SharedDictionaryManager {
       base::Time response_time,
       base::TimeDelta expiration,
       const std::string& match,
-      const std::set<mojom::RequestDestination>& match_dest,
+      RequestDestinationSet match_dest,
       const std::string& id,
       const base::UnguessableToken& disk_cache_key_token,
       base::OnceCallback<void(net::SharedDictionaryInfo)> callback,
@@ -171,11 +168,11 @@ class SharedDictionaryManagerOnDisk : public SharedDictionaryManager {
   void MaybePostCacheEvictionTask();
 
   void OnDictionaryDeleted(
-      const std::set<base::UnguessableToken>& disk_cache_key_tokens,
+      const absl::flat_hash_set<base::UnguessableToken>& disk_cache_key_tokens,
       bool need_to_doom_disk_cache_entries);
 
-  const std::set<base::UnguessableToken>& writing_disk_cache_key_tokens()
-      const {
+  const absl::flat_hash_set<base::UnguessableToken>&
+  writing_disk_cache_key_tokens() const {
     return writing_disk_cache_key_tokens_;
   }
 
@@ -199,7 +196,7 @@ class SharedDictionaryManagerOnDisk : public SharedDictionaryManager {
   std::unique_ptr<SerializedTask> running_serialized_task_;
   std::deque<std::unique_ptr<SerializedTaskInfo>> pending_serialized_task_info_;
 
-  std::set<base::UnguessableToken> writing_disk_cache_key_tokens_;
+  absl::flat_hash_set<base::UnguessableToken> writing_disk_cache_key_tokens_;
 
   bool mismatching_entry_deletion_task_posted_ = false;
   bool cache_eviction_task_queued_ = false;

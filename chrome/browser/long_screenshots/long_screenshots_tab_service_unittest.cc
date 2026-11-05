@@ -11,8 +11,11 @@
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/memory_coordinator/memory_limit.h"
 #include "base/memory_coordinator/test_memory_consumer_registry.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/paint_preview/common/mock_paint_preview_recorder.h"
 #include "components/paint_preview/common/mojom/paint_preview_recorder.mojom.h"
@@ -40,9 +43,18 @@ class LaxMockPaintPreviewRecorder
   LaxMockPaintPreviewRecorder() = default;
   ~LaxMockPaintPreviewRecorder() override = default;
 
+  std::optional<paint_preview::RecordingPersistence> last_persistence() const {
+    return last_persistence_;
+  }
+
  protected:
   void CheckParams(const paint_preview::mojom::PaintPreviewCaptureParamsPtr&
-                       params) override {}
+                       params) override {
+    last_persistence_ = params->persistence;
+  }
+
+ private:
+  std::optional<paint_preview::RecordingPersistence> last_persistence_;
 };
 
 std::vector<base::FilePath> ListDir(const base::FilePath& path) {
@@ -108,6 +120,10 @@ class LongScreenshotsTabServiceTest : public ChromeRenderViewHostTestHarness {
   }
 
   const base::FilePath& GetPath() const { return temp_dir_.GetPath(); }
+
+  base::TestMemoryConsumerRegistry* memory_consumer_registry() {
+    return &test_memory_consumer_registry_;
+  }
 
  private:
   base::TestMemoryConsumerRegistry test_memory_consumer_registry_;
@@ -177,6 +193,32 @@ TEST_F(LongScreenshotsTabServiceTest, CaptureTabInMemory) {
                      key),
       base::BindOnce([](bool exists) { EXPECT_FALSE(exists); }));
   task_environment()->RunUntilIdle();
+}
+
+// Test that an off-the-record service (constructed without a FileMixin) forces
+// in-memory capture even when in_memory=false is passed.
+TEST_F(LongScreenshotsTabServiceTest, CaptureTabOffTheRecordForcesInMemory) {
+  const int kTabId = 1U;
+
+  LaxMockPaintPreviewRecorder recorder;
+  paint_preview::mojom::PaintPreviewCaptureResponsePtr response =
+      paint_preview::mojom::PaintPreviewCaptureResponse::New();
+  response->geometry_metadata =
+      paint_preview::mojom::GeometryMetadataResponse::New();
+  response->skp.emplace(mojo_base::BigBuffer());
+  recorder.SetResponse(std::move(response));
+  OverrideInterface(&recorder);
+
+  auto otr_service = std::make_unique<LongScreenshotsTabService>(
+      /*file_mixin=*/nullptr, /*policy=*/nullptr, /*is_off_the_record=*/true);
+  otr_service->CaptureTab(kTabId, GURL::EmptyGURL(), web_contents(), 0, 0, 1000,
+                          1000, /*in_memory=*/false,
+                          paint_preview::mojom::ClipCoordOverride::kNone,
+                          paint_preview::mojom::ClipCoordOverride::kNone);
+  task_environment()->RunUntilIdle();
+  EXPECT_EQ(recorder.last_persistence(),
+            paint_preview::RecordingPersistence::kMemoryBuffer);
+  otr_service->DeleteAllLongScreenshotFiles();
 }
 
 // Test a successful capturing a tab multiple times.
@@ -312,6 +354,73 @@ TEST_F(LongScreenshotsTabServiceTest, AmpPageDetection) {
   // main frame has more than one child frame. Main frame should be returned.
   rfh_tester->AppendChild("child 2");
   ASSERT_EQ(rfh, TabService_GetRootRenderFrameHost(rfh, amp_url));
+}
+
+// Test that under critical memory pressure, CaptureTab aborts when
+// kLongScreenshotsNoMemoryCheck is disabled.
+TEST_F(LongScreenshotsTabServiceTest,
+       CaptureTab_LowMemory_AbortsWhenCheckEnabled) {
+  memory_consumer_registry()->NotifyUpdateMemoryLimit(
+      base::MemoryLimit::CriticalPressureThreshold());
+
+  const int kTabId = 1;
+  LaxMockPaintPreviewRecorder recorder;
+  OverrideInterface(&recorder);
+
+  auto* service = GetService();
+  service->CaptureTab(kTabId, GURL::EmptyGURL(), web_contents(), 0, 0, 1000,
+                      1000, false,
+                      paint_preview::mojom::ClipCoordOverride::kNone,
+                      paint_preview::mojom::ClipCoordOverride::kNone);
+  task_environment()->RunUntilIdle();
+
+  // Directory should not exist because capture aborted due to low memory.
+  auto file_manager = service->GetFileMixin()->GetFileManager();
+  auto key = file_manager->CreateKey(kTabId);
+  service->GetFileMixin()->GetTaskRunner()->PostTaskAndReplyWithResult(
+      FROM_HERE,
+      base::BindOnce(&paint_preview::FileManager::DirectoryExists, file_manager,
+                     key),
+      base::BindOnce([](bool exists) { EXPECT_FALSE(exists); }));
+  task_environment()->RunUntilIdle();
+}
+
+// Test that when kLongScreenshotsNoMemoryCheck is enabled, CaptureTab skips
+// memory checks and proceeds with capture even under critical memory pressure.
+TEST_F(LongScreenshotsTabServiceTest,
+       CaptureTab_NoMemoryCheck_SkipsMemoryCheck) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      chrome::android::kLongScreenshotsNoMemoryCheck);
+
+  memory_consumer_registry()->NotifyUpdateMemoryLimit(
+      base::MemoryLimit::CriticalPressureThreshold());
+
+  const int kTabId = 1;
+  LaxMockPaintPreviewRecorder recorder;
+  recorder.SetResponse();
+  OverrideInterface(&recorder);
+
+  auto* service = GetService();
+  service->CaptureTab(kTabId, GURL::EmptyGURL(), web_contents(), 0, 0, 1000,
+                      1000, false,
+                      paint_preview::mojom::ClipCoordOverride::kNone,
+                      paint_preview::mojom::ClipCoordOverride::kNone);
+  task_environment()->RunUntilIdle();
+
+  // With kLongScreenshotsNoMemoryCheck enabled, capture should proceed even
+  // under critical memory pressure, creating the directory.
+  auto file_manager = service->GetFileMixin()->GetFileManager();
+  auto key = file_manager->CreateKey(kTabId);
+  service->GetFileMixin()->GetTaskRunner()->PostTaskAndReplyWithResult(
+      FROM_HERE,
+      base::BindOnce(&paint_preview::FileManager::DirectoryExists, file_manager,
+                     key),
+      base::BindOnce([](bool exists) { EXPECT_TRUE(exists); }));
+  task_environment()->RunUntilIdle();
+
+  service->DeleteAllLongScreenshotFiles();
+  task_environment()->RunUntilIdle();
 }
 
 }  // namespace long_screenshots

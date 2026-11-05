@@ -12,7 +12,6 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/local_data_description.h"
 #include "extensions/browser/icon_util.h"
 #include "extensions/browser/image_loader.h"
@@ -72,8 +71,7 @@ ExtensionLocalDataBatchUploader::~ExtensionLocalDataBatchUploader() = default;
 
 void ExtensionLocalDataBatchUploader::GetLocalDataDescription(
     base::OnceCallback<void(syncer::LocalDataDescription)> callback) {
-  if (!sync_util::IsSyncingExtensionsInTransportMode(profile_) ||
-      !syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
+  if (!sync_util::IsSyncingExtensionsInTransportMode(profile_)) {
     std::move(callback).Run(syncer::LocalDataDescription());
     return;
   }
@@ -118,7 +116,7 @@ void ExtensionLocalDataBatchUploader::TriggerLocalDataMigrationForItems(
   ExtensionIdSet ids_to_upload;
   for (const auto& item_id : items) {
     const std::string* item_id_str = std::get_if<std::string>(&item_id);
-    DCHECK(item_id_str);
+    CHECK(item_id_str, base::NotFatalUntil::M161);
     ids_to_upload.insert(*item_id_str);
   }
 
@@ -133,8 +131,7 @@ void ExtensionLocalDataBatchUploader::TriggerLocalDataMigrationForItemsInternal(
       identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin));
   CHECK(!account_info.IsEmpty());
 
-  if (!sync_util::IsSyncingExtensionsInTransportMode(profile_) ||
-      !syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
+  if (!sync_util::IsSyncingExtensionsInTransportMode(profile_)) {
     return;
   }
 

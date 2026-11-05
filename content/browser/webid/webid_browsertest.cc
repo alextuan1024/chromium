@@ -2,19 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <atomic>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/strings/pattern.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -22,15 +28,17 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/test/values_test_util.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "content/browser/in_memory_federated_permission_context.h"
 #include "content/browser/webid/delegation/jwt_signer.h"
 #include "content/browser/webid/delegation/sd_jwt.h"
 #include "content/browser/webid/fake_identity_request_dialog_controller.h"
 #include "content/browser/webid/identity_registry.h"
-#include "content/browser/webid/request.h"
+#include "content/browser/webid/in_memory_federated_permission_context.h"
+#include "content/browser/webid/request_handler.h"
 #include "content/browser/webid/request_service.h"
 #include "content/browser/webid/test/mock_digital_identity_provider.h"
 #include "content/browser/webid/test/mock_identity_request_dialog_controller.h"
@@ -40,7 +48,9 @@
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/webid/autofill_source.h"
+#include "content/public/browser/webid/email_verifier.h"
 #include "content/public/browser/webid/federated_embedder_login_request.h"
 #include "content/public/browser/webid/identity_credential_source.h"
 #include "content/public/browser/webid/identity_request_account.h"
@@ -52,9 +62,11 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
+#include "content/public/test/test_devtools_protocol_client.h"
 #include "content/shell/browser/shell.h"
 #include "crypto/sha2.h"
 #include "net/base/features.h"
+#include "net/base/net_errors.h"
 #include "net/base/url_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_status_code.h"
@@ -62,10 +74,13 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/network/public/cpp/cors/cors.h"
+#include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/webid/login_status_account.h"
+#include "third_party/blink/public/mojom/webid/email_verification_request.mojom-shared.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -438,9 +453,9 @@ class WebIdBrowserTest : public ContentBrowserTest {
 
 class WebIdIdpSigninStatusBrowserTest : public WebIdBrowserTest {
  public:
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 };
@@ -453,9 +468,9 @@ class WebIdLightweightFedcmBrowserTest : public WebIdBrowserTest {
     scoped_feature_list_.InitWithFeatures(features, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 };
@@ -468,9 +483,9 @@ class WebIdIdpSigninStatusForFetchKeepAliveBrowserTest
         {blink::features::kKeepAliveInBrowserMigration}, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 };
@@ -487,9 +502,9 @@ class WebIdIdPRegistryBrowserTest : public WebIdBrowserTest {
     scoped_feature_list_.InitWithFeatures(features, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 
@@ -1174,9 +1189,9 @@ class WebIdDigitalCredentialsBrowserTest : public WebIdBrowserTest {
     scoped_feature_list_.InitWithFeatures(features, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 
@@ -1184,19 +1199,6 @@ class WebIdDigitalCredentialsBrowserTest : public WebIdBrowserTest {
     WebIdBrowserTest::SetUpOnMainThread();
 
     SetTestDigitalIdentityProvider();
-
-    MockDigitalIdentityProvider* digital_identity_provider =
-        static_cast<MockDigitalIdentityProvider*>(
-            test_browser_client_->GetDigitalIdentityProviderForTests());
-    ON_CALL(*digital_identity_provider,
-            ShowDigitalIdentityInterstitial(_, _, _, _))
-        .WillByDefault(WithArg<3>(
-            [](DigitalIdentityProvider::DigitalIdentityInterstitialCallback
-                   callback) {
-              std::move(callback).Run(
-                  DigitalIdentityProvider::RequestStatusForMetrics::kSuccess);
-              return base::OnceClosure();
-            }));
   }
 };
 
@@ -1286,8 +1288,10 @@ IN_PROC_BROWSER_TEST_F(WebIdDigitalCredentialsBrowserTest,
   // JSON comparison in IsJson below.
   base::RemoveChars(request, "\n ", &json);
 
-  EXPECT_CALL(*digital_identity_provider, Get(_, _, JsonMatches(json), _))
-      .WillOnce(WithArg<3>(
+  EXPECT_CALL(*digital_identity_provider,
+              Get(_, _, JsonMatches(json),
+                  DigitalIdentityProvider::UiWarningLevel::kHintCaution, _))
+      .WillOnce(WithArg<4>(
           [&kIdentityProviderResponse](
               DigitalIdentityProvider::DigitalIdentityCallback callback) {
             std::move(callback).Run(DigitalCredential(
@@ -1312,7 +1316,7 @@ IN_PROC_BROWSER_TEST_F(WebIdDigitalCredentialsBrowserTest,
           .value();
 
   EXPECT_CALL(*digital_identity_provider, Get)
-      .WillOnce(WithArg<3>(
+      .WillOnce(WithArg<4>(
           [&](DigitalIdentityProvider::DigitalIdentityCallback callback) {
             EXPECT_EQ(
                 "NotAllowedError: Only one navigator.credentials.get/create "
@@ -1336,7 +1340,7 @@ IN_PROC_BROWSER_TEST_F(WebIdDigitalCredentialsBrowserTest,
           test_browser_client_->GetDigitalIdentityProviderForTests());
 
   EXPECT_CALL(*digital_identity_provider, Get)
-      .WillOnce(WithArg<3>(
+      .WillOnce(WithArg<4>(
           [&](DigitalIdentityProvider::DigitalIdentityCallback callback) {
             std::move(callback).Run(base::unexpected(
                 DigitalIdentityProvider::RequestStatusForMetrics::
@@ -1359,7 +1363,7 @@ IN_PROC_BROWSER_TEST_F(WebIdDigitalCredentialsBrowserTest,
           test_browser_client_->GetDigitalIdentityProviderForTests());
 
   EXPECT_CALL(*digital_identity_provider, Get)
-      .WillOnce(WithArg<3>(
+      .WillOnce(WithArg<4>(
           [](DigitalIdentityProvider::DigitalIdentityCallback callback) {
             std::move(callback).Run(DigitalCredential(
                 "openid4vp",
@@ -1746,7 +1750,7 @@ IN_PROC_BROWSER_TEST_F(WebIdBrowserTest,
   // The client id `client_id_1` is on the `approved_clients` list defined in
   // content/test/data/fedcm/accounts_endpoint.json so by exempting the IdP from
   // the check, auto re-authn can be triggered and a token can be returned.
-  static_cast<InMemoryFederatedPermissionContext*>(
+  static_cast<webid::InMemoryFederatedPermissionContext*>(
       shell()
           ->web_contents()
           ->GetBrowserContext()
@@ -2058,16 +2062,8 @@ IN_PROC_BROWSER_TEST_F(WebIdDelegationBrowserTest, ConditionalMediation) {
       testing::UnorderedElementsAre("Sam"));
 }
 
-// Flaky on mac, https://crbug.com/415953689
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_ConditionalMediationForMediatedRequest \
-  DISABLED_ConditionalMediationForMediatedRequest
-#else
-#define MAYBE_ConditionalMediationForMediatedRequest \
-  ConditionalMediationForMediatedRequest
-#endif
 IN_PROC_BROWSER_TEST_F(WebIdDelegationBrowserTest,
-                       MAYBE_ConditionalMediationForMediatedRequest) {
+                       ConditionalMediationForMediatedRequest) {
   idp_server()->SetConfigResponseDetails(BuildValidConfigDetails());
 
   auto mock = std::make_unique<
@@ -2733,9 +2729,11 @@ IN_PROC_BROWSER_TEST_F(WebIdEmbedderInitiatedLoginTest,
       shell()->web_contents(), url::Origin::Create(config_url),
       "not_real_account", base::DoNothing());
 
-  // Kick off the identity credential request via a navigation.
+  // Kick off the identity credential request via a navigation that the RP page
+  // initiates. Navigations without an initiator are not intercepted.
   LoadStopObserver stop_observer(shell()->web_contents());
-  shell()->LoadURL(config_url.Resolve("/intercept"));
+  EXPECT_TRUE(BeginNavigateToURLFromRenderer(shell(),
+                                             config_url.Resolve("/intercept")));
 
   // Wait for the redirect to load.
   stop_observer.Wait();
@@ -2822,6 +2820,329 @@ IN_PROC_BROWSER_TEST_F(WebIdEmbedderInitiatedLoginTest,
   EXPECT_EQ(webid::FederatedLoginResult::kSuccess, *received_result);
   EXPECT_EQ(nullptr,
             webid::FederatedEmbedderLoginRequest::Get(shell()->web_contents()));
+}
+
+// End-to-end tests verifying DevTools `Network` protocol events emitted for
+// Email Verification Protocol fetches.
+class WebIdEmailVerificationDevToolsBrowserTest
+    : public ContentBrowserTest,
+      public TestDevToolsProtocolClient {
+ public:
+  WebIdEmailVerificationDevToolsBrowserTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kEmailVerificationProtocol,
+                              network::features::kConnectionAllowlists},
+        /*disabled_features=*/{});
+  }
+  ~WebIdEmailVerificationDevToolsBrowserTest() override = default;
+
+  // ContentBrowserTest:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    ContentBrowserTest::SetUpCommandLine(command_line);
+
+    // Email verification identifies the issuer by a bare host name, so its
+    // endpoints are fetched on the default HTTPS port (`:443`). Start listening
+    // before the browser launches so `kHostResolverRules` can map `:443` for
+    // the issuer host onto `issuer_server_`'s ephemeral port.
+    issuer_server_.SetSSLConfig(EmbeddedTestServer::CERT_TEST_NAMES);
+    issuer_server_.RegisterRequestHandler(base::BindRepeating(
+        &WebIdEmailVerificationDevToolsBrowserTest::HandleIssuerRequest,
+        base::Unretained(this)));
+    CHECK(issuer_server_.InitializeAndListen());
+
+    command_line->AppendSwitchASCII(
+        network::switches::kHostResolverRules,
+        base::StringPrintf("MAP %s:443 127.0.0.1:%d", kIssuerHost,
+                           issuer_server_.port()));
+    command_line->AppendSwitchASCII("dns-txt-resolver-url-prefix",
+                                    DnsUrlPrefix().spec());
+  }
+
+  void SetUpOnMainThread() override {
+    ContentBrowserTest::SetUpOnMainThread();
+
+    host_resolver()->AddRule("*", "127.0.0.1");
+    rp_server_.SetSSLConfig(EmbeddedTestServer::CERT_TEST_NAMES);
+    rp_server_.RegisterRequestHandler(base::BindRepeating(
+        &WebIdEmailVerificationDevToolsBrowserTest::HandleRpRequest,
+        base::Unretained(this)));
+    ASSERT_TRUE(rp_server_.Start());
+    issuer_server_.StartAcceptingConnections();
+  }
+
+  void TearDownOnMainThread() override {
+    DetachProtocolClient();
+    ContentBrowserTest::TearDownOnMainThread();
+  }
+
+ protected:
+  static constexpr char kEmail[] = "jane@example.com";
+  static constexpr char kEmailVerificationWellKnownPath[] =
+      "/.well-known/email-verification";
+  static constexpr char kAccountsPath[] = "/accounts";
+  static constexpr char kTokenPath[] = "/token";
+  static constexpr char kJwksPath[] = "/jwks";
+  static constexpr char kEmailVerificationType[] = "EmailVerification";
+  static constexpr char kFedCmType[] = "FedCM";
+  static constexpr char kRequestIdKey[] = "requestId";
+  static constexpr char kTypeKey[] = "type";
+  static constexpr char kErrorTextKey[] = "errorText";
+  static constexpr char kRequestWillBeSentEvent[] = "Network.requestWillBeSent";
+  static constexpr char kResponseReceivedEvent[] = "Network.responseReceived";
+  static constexpr char kLoadingFinishedEvent[] = "Network.loadingFinished";
+  static constexpr char kLoadingFailedEvent[] = "Network.loadingFailed";
+
+  // Resolves `relative_url` against the default-port HTTPS origin of
+  // `kIssuerHost`.
+  GURL IssuerUrl(std::string_view relative_url) const {
+    return GURL(base::StrCat({"https://", kIssuerHost})).Resolve(relative_url);
+  }
+
+  // Returns the full DNS TXT query URL issued for `kEmailDomain`.
+  GURL DnsUrl() const {
+    return GURL(base::StrCat(
+        {DnsUrlPrefix().spec(), "_email-verification.", kEmailDomain}));
+  }
+
+  GURL RpUrl() const { return rp_server_.GetURL(kRpHost, kRpPath); }
+
+  GURL BlockedRpUrl() const {
+    return rp_server_.GetURL(kRpHost, kBlockedRpPath);
+  }
+
+  int issuer_request_count() const { return issuer_request_count_.load(); }
+
+  // Navigates the main frame to `url`, attaches the DevTools protocol client,
+  // and enables the `Network` domain after navigation completes so page-load
+  // requests do not mix with WebID requests.
+  void NavigateAndEnableNetwork(const GURL& url) {
+    ASSERT_TRUE(NavigateToURL(shell(), url));
+    AttachToWebContents(shell()->web_contents());
+    SendCommandSync("Network.enable");
+  }
+
+  // Waits for a `Network.requestWillBeSent` event for `url`, verifies its
+  // resource and initiator types, and writes its `requestId` to
+  // `out_request_id`.
+  void ExpectRequestWillBeSentHasType(const GURL& url,
+                                      std::string_view expected_type,
+                                      std::string* out_request_id) {
+    SCOPED_TRACE(url.spec());
+    const base::DictValue will_be_sent = WaitForMatchingNotification(
+        kRequestWillBeSentEvent,
+        base::BindLambdaForTesting([&](const base::DictValue& params) {
+          const std::string* request_url =
+              params.FindStringByDottedPath(kRequestUrlPath);
+          return request_url && *request_url == url.spec();
+        }));
+    const std::string* request_id = will_be_sent.FindString(kRequestIdKey);
+    ASSERT_TRUE(request_id);
+    *out_request_id = *request_id;
+    const std::string* request_type = will_be_sent.FindString(kTypeKey);
+    ASSERT_TRUE(request_type);
+    EXPECT_EQ(expected_type, *request_type);
+    const std::string* initiator_type =
+        will_be_sent.FindStringByDottedPath(kInitiatorTypePath);
+    ASSERT_TRUE(initiator_type);
+    EXPECT_EQ(expected_type, *initiator_type);
+  }
+
+  // Verifies that `url` emits `Network.requestWillBeSent`,
+  // `Network.responseReceived` (HTTP 200), and `Network.loadingFinished` with
+  // `expected_type`.
+  void ExpectCompletedRequestHasType(const GURL& url,
+                                     std::string_view expected_type) {
+    SCOPED_TRACE(url.spec());
+    std::string request_id;
+    ASSERT_NO_FATAL_FAILURE(
+        ExpectRequestWillBeSentHasType(url, expected_type, &request_id));
+
+    const base::DictValue response_received = WaitForMatchingNotification(
+        kResponseReceivedEvent,
+        base::BindLambdaForTesting([&](const base::DictValue& params) {
+          const std::string* id = params.FindString(kRequestIdKey);
+          return id && *id == request_id;
+        }));
+    const std::string* response_type = response_received.FindString(kTypeKey);
+    ASSERT_TRUE(response_type);
+    EXPECT_EQ(expected_type, *response_type);
+    EXPECT_EQ(net::HTTP_OK,
+              response_received.FindIntByDottedPath(kResponseStatusPath));
+
+    WaitForMatchingNotification(
+        kLoadingFinishedEvent,
+        base::BindLambdaForTesting([&](const base::DictValue& params) {
+          const std::string* id = params.FindString(kRequestIdKey);
+          return id && *id == request_id;
+        }));
+  }
+
+ private:
+  static constexpr char kEmailDomain[] = "example.com";
+  static constexpr char kRpHost[] = "a.test";
+  static constexpr char kIssuerHost[] = "b.test";
+  static constexpr char kRpPath[] = "/rp.html";
+  static constexpr char kBlockedRpPath[] = "/blocked.html";
+  static constexpr char kDnsPath[] = "/dns";
+  static constexpr char kRequestUrlPath[] = "request.url";
+  static constexpr char kInitiatorTypePath[] = "initiator.type";
+  static constexpr char kResponseStatusPath[] = "response.status";
+
+  // Returns the DNS-over-HTTPS query URL prefix used in tests.
+  GURL DnsUrlPrefix() const {
+    return IssuerUrl(base::StrCat({kDnsPath, "?name="}));
+  }
+
+  std::unique_ptr<HttpResponse> HandleRpRequest(const HttpRequest& request) {
+    auto response = std::make_unique<BasicHttpResponse>();
+    response->set_code(net::HTTP_OK);
+    response->set_content_type("text/html");
+    response->set_content("<!DOCTYPE html><title>RP</title>");
+    if (request.GetURL().GetPath() == kBlockedRpPath) {
+      response->AddCustomHeader("Connection-Allowlist", "(response-origin)");
+    }
+    return response;
+  }
+
+  std::unique_ptr<HttpResponse> HandleIssuerRequest(
+      const HttpRequest& request) {
+    issuer_request_count_.fetch_add(1);
+    auto json_response = [](std::string_view content) {
+      auto response = std::make_unique<BasicHttpResponse>();
+      response->set_code(net::HTTP_OK);
+      response->set_content_type(kTestContentType);
+      response->set_content(content);
+      return response;
+    };
+
+    const std::string path = request.GetURL().GetPath();
+    if (path == kDnsPath) {
+      return json_response(base::StringPrintf(
+          R"({"Status":0,"Answer":[{"type":16,"data":"iss=%s"}]})",
+          kIssuerHost));
+    }
+    if (path == kEmailVerificationWellKnownPath) {
+      return json_response(base::StringPrintf(
+          R"({"issuer":"https://%s","issuance_endpoint":"%s","jwks_uri":"%s",)"
+          R"("signing_alg_values_supported":["RS256"]})",
+          kIssuerHost, IssuerUrl(kTokenPath).spec().c_str(),
+          IssuerUrl(kJwksPath).spec().c_str()));
+    }
+    if (path == kExpectedWellKnownPath) {
+      return json_response(base::StringPrintf(
+          R"({"accounts_endpoint":"%s","login_url":"/login"})", kAccountsPath));
+    }
+    if (path == kAccountsPath) {
+      return json_response(base::StringPrintf(
+          R"({"accounts":[{"id":"1234","email":"%s"}]})", kEmail));
+    }
+    // Minimal JSON stubs suffice because these tests verify the DevTools
+    // network events emitted through fetch completion rather than SD-JWT
+    // cryptographic verification.
+    if (path == kTokenPath) {
+      return json_response(R"({"issuance_token":"e30.e30.sig~"})");
+    }
+    if (path == kJwksPath) {
+      return json_response(R"({"keys":[]})");
+    }
+    return nullptr;
+  }
+
+  base::test::ScopedFeatureList feature_list_;
+  std::atomic<int> issuer_request_count_{0};
+  EmbeddedTestServer rp_server_{EmbeddedTestServer::TYPE_HTTPS};
+  EmbeddedTestServer issuer_server_{EmbeddedTestServer::TYPE_HTTPS};
+};
+
+// Verifies that Email Verification Protocol network requests are reported to
+// DevTools with the `EmailVerification` resource and initiator types, while the
+// FedCM well-known and accounts sub-requests keep the `FedCM` type.
+IN_PROC_BROWSER_TEST_F(WebIdEmailVerificationDevToolsBrowserTest,
+                       ReportsNetworkRequestTypes) {
+  ASSERT_NO_FATAL_FAILURE(NavigateAndEnableNetwork(RpUrl()));
+
+  webid::EmailVerifier* verifier = webid::EmailVerifier::GetOrCreateForFrame(
+      shell()->web_contents()->GetPrimaryMainFrame());
+
+  base::test::TestFuture<std::optional<webid::EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      check_future;
+  verifier->CheckIfVerifiable(kEmail,
+                              /*on_dns_resolved_callback=*/base::DoNothing(),
+                              check_future.GetCallback());
+  EXPECT_EQ(blink::mojom::EmailVerificationRequestResult::kSuccess,
+            check_future.Get<1>());
+  const std::optional<webid::EmailVerifier::Result>& check_result =
+      check_future.Get<0>();
+  ASSERT_TRUE(check_result.has_value());
+  EXPECT_EQ(kEmail, check_result->email);
+  EXPECT_EQ(url::Origin::Create(IssuerUrl("/")), check_result->issuer_origin);
+
+  base::test::TestFuture<std::optional<std::string>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      verify_future;
+  verifier->Verify(*check_result, "test_nonce", verify_future.GetCallback());
+  EXPECT_FALSE(verify_future.Get<0>().has_value());
+  EXPECT_EQ(blink::mojom::EmailVerificationRequestResult::kTokenMalformedSdJwt,
+            verify_future.Get<1>());
+
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectCompletedRequestHasType(DnsUrl(), kEmailVerificationType));
+  ASSERT_NO_FATAL_FAILURE(ExpectCompletedRequestHasType(
+      IssuerUrl(kEmailVerificationWellKnownPath), kEmailVerificationType));
+  ASSERT_NO_FATAL_FAILURE(ExpectCompletedRequestHasType(
+      IssuerUrl(kTokenPath), kEmailVerificationType));
+  ASSERT_NO_FATAL_FAILURE(ExpectCompletedRequestHasType(
+      IssuerUrl(kJwksPath), kEmailVerificationType));
+  ASSERT_NO_FATAL_FAILURE(ExpectCompletedRequestHasType(
+      IssuerUrl(kExpectedWellKnownPath), kFedCmType));
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectCompletedRequestHasType(IssuerUrl(kAccountsPath), kFedCmType));
+}
+
+// Verifies that an Email Verification Protocol request blocked by the
+// initiator frame's `Connection-Allowlist` reports `EmailVerification` on both
+// `Network.requestWillBeSent` and `Network.loadingFailed` without sending any
+// network request or follow-up issuer fetches.
+IN_PROC_BROWSER_TEST_F(WebIdEmailVerificationDevToolsBrowserTest,
+                       BlockedRequestReportsEmailVerificationType) {
+  ASSERT_NO_FATAL_FAILURE(NavigateAndEnableNetwork(BlockedRpUrl()));
+
+  base::test::TestFuture<std::optional<webid::EmailVerifier::Result>,
+                         blink::mojom::EmailVerificationRequestResult,
+                         base::TimeDelta>
+      check_future;
+  webid::EmailVerifier::GetOrCreateForFrame(
+      shell()->web_contents()->GetPrimaryMainFrame())
+      ->CheckIfVerifiable(kEmail,
+                          /*on_dns_resolved_callback=*/base::DoNothing(),
+                          check_future.GetCallback());
+  EXPECT_FALSE(check_future.Get<0>().has_value());
+  EXPECT_EQ(blink::mojom::EmailVerificationRequestResult::kDnsFetchFailed,
+            check_future.Get<1>());
+  EXPECT_EQ(0, issuer_request_count());
+
+  std::string request_id;
+  ASSERT_NO_FATAL_FAILURE(ExpectRequestWillBeSentHasType(
+      DnsUrl(), kEmailVerificationType, &request_id));
+
+  const base::DictValue loading_failed = WaitForMatchingNotification(
+      kLoadingFailedEvent,
+      base::BindLambdaForTesting([&](const base::DictValue& params) {
+        const std::string* id = params.FindString(kRequestIdKey);
+        return id && *id == request_id;
+      }));
+  const std::string* failed_type = loading_failed.FindString(kTypeKey);
+  ASSERT_TRUE(failed_type);
+  EXPECT_EQ(kEmailVerificationType, *failed_type);
+  const std::string* error_text = loading_failed.FindString(kErrorTextKey);
+  ASSERT_TRUE(error_text);
+  EXPECT_EQ(net::ErrorToString(net::ERR_NETWORK_ACCESS_REVOKED), *error_text);
+  EXPECT_FALSE(HasExistingNotification(kRequestWillBeSentEvent));
+  EXPECT_FALSE(HasExistingNotification(kResponseReceivedEvent));
+  EXPECT_FALSE(HasExistingNotification(kLoadingFinishedEvent));
 }
 
 }  // namespace content

@@ -34,12 +34,17 @@ import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRule;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.browser_ui.widget.textbubble.TextBubble;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
 import org.chromium.components.feature_engagement.SnoozeAction;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.feature_engagement.UiFormat;
 import org.chromium.components.user_education.FeaturePromoClosedReason;
 import org.chromium.ui.base.TestActivity;
 
@@ -260,5 +265,59 @@ public class UserEducationHelperUnitTest {
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         watcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.USER_EDUCATION_FRAMEWORK,
+        ChromeFeatureList.USER_EDUCATION_BLUE_BUBBLE_COOLDOWN_GROUP
+    })
+    public void testFeatureProperties_CooldownEnabled() {
+        TrackerFactory.setTrackerForTests(mTracker);
+        UserEducationHelper educationHelper =
+                new UserEducationHelper(mActivity, mProfile, new Handler());
+        IphCommand testIphCommand =
+                new IphCommandBuilder(
+                                ContextUtils.getApplicationContext().getResources(),
+                                FeatureConstants.TAB_SWITCHER_BUTTON_FEATURE,
+                                "test",
+                                "test")
+                        .setShowTextBubble(false)
+                        .setAnchorView(new FrameLayout(mActivity))
+                        .build();
+
+        educationHelper.requestShowIph(testIphCommand);
+        Mockito.verify(mTracker).addOnInitializedCallback(mInitCallbackCaptor.capture());
+        mInitCallbackCaptor.getValue().onResult(true);
+
+        FeatureProperties expectedProps = new FeatureProperties(UiFormat.BLUE_BUBBLE);
+        Mockito.verify(mTracker)
+                .shouldTriggerHelpUi(FeatureConstants.TAB_SWITCHER_BUTTON_FEATURE, expectedProps);
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.USER_EDUCATION_FRAMEWORK,
+        ChromeFeatureList.USER_EDUCATION_BLUE_BUBBLE_COOLDOWN_GROUP
+    })
+    public void testNonOnboardedFeature_UsesLegacyShouldTriggerHelpUi() {
+        TrackerFactory.setTrackerForTests(mTracker);
+        UserEducationHelper educationHelper =
+                new UserEducationHelper(mActivity, mProfile, new Handler());
+        IphCommand testIphCommand =
+                new IphCommandBuilder(
+                                ContextUtils.getApplicationContext().getResources(),
+                                "TEST",
+                                "test",
+                                "test")
+                        .setShowTextBubble(false)
+                        .setAnchorView(new FrameLayout(mActivity))
+                        .build();
+
+        educationHelper.requestShowIph(testIphCommand);
+        Mockito.verify(mTracker).addOnInitializedCallback(mInitCallbackCaptor.capture());
+        mInitCallbackCaptor.getValue().onResult(true);
+
+        Mockito.verify(mTracker).shouldTriggerHelpUi("TEST");
     }
 }

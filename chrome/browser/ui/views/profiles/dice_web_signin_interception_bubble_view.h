@@ -17,6 +17,7 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
 namespace views {
@@ -43,21 +44,32 @@ class DiceWebSigninInterceptionBubbleView
       const DiceWebSigninInterceptionBubbleView& other) = delete;
   ~DiceWebSigninInterceptionBubbleView() override;
 
-  // Warning: the bubble is closed when the handle is destroyed ; it is the
-  // responsibility of the caller to keep the handle alive until the bubble
-  // should be closed.
-  [[nodiscard]] static std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle>
-  CreateBubble(
+  // Creates and shows the bubble. If `anchor` is null, the bubble floats
+  // centered on `browser`'s window. `keep_visible` is held until the bubble is
+  // destroyed. The returned weak pointer can be used to close the bubble via
+  // `Close()`.
+  static base::WeakPtr<DiceWebSigninInterceptionBubbleView> CreateBubble(
       BrowserWindowInterface* browser,
       views::BubbleAnchor anchor,
       const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters,
-      base::OnceCallback<void(SigninInterceptionResult)> callback);
+      base::OnceCallback<void(SigninInterceptionResult)> callback,
+      base::ScopedClosureRunner keep_visible);
+
+  // Closes the bubble.
+  void Close();
 
   // Record metrics about the result of the signin interception.
   static void RecordInterceptionResult(
       const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters,
       Profile* profile,
       SigninInterceptionResult result);
+
+  // Records metrics for dismissing the signin interception before the bubble is
+  // shown.
+  static void RecordInterceptionDismissed(
+      const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters,
+      Profile* profile,
+      SigninInterceptionDismissReason reason);
 
   // Returns true if the user has accepted the interception.
   bool GetAccepted() const;
@@ -103,35 +115,12 @@ class DiceWebSigninInterceptionBubbleView
   FRIEND_TEST_ALL_PREFIXES(ProfileBubbleInteractiveUiTest,
                            InterceptionBubbleFocus);
 
-  // Closes the bubble when `ScopedHandle` is destroyed. Does nothing if the
-  // bubble has been already closed.
-  class ScopedHandle : public ScopedWebSigninInterceptionBubbleHandle {
-   public:
-    explicit ScopedHandle(
-        base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble);
-    ~ScopedHandle() override;
-
-    ScopedHandle& operator=(const ScopedHandle&) = delete;
-    ScopedHandle(const ScopedHandle&) = delete;
-
-    DiceWebSigninInterceptionBubbleView* GetBubbleViewForTesting() {
-      return bubble_.get();
-    }
-
-   private:
-    base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble_;
-  };
-
   DiceWebSigninInterceptionBubbleView(
       BrowserWindowInterface* browser,
       views::BubbleAnchor anchor,
       const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters,
-      base::OnceCallback<void(SigninInterceptionResult)> callback);
-
-  // Gets a handle on the bubble. Warning: the bubble is closed when the handle
-  // is destroyed ; it is the responsibility of the caller to keep the handle
-  // alive until the bubble should be closed.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> GetHandle();
+      base::OnceCallback<void(SigninInterceptionResult)> callback,
+      base::ScopedClosureRunner keep_visible);
 
   // This bubble has no native buttons. The user accepts or cancels, which is
   // called by the inner web UI.
@@ -151,7 +140,7 @@ class DiceWebSigninInterceptionBubbleView
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -184,7 +173,12 @@ class DiceWebSigninInterceptionBubbleView
 
   base::TimeTicks chrome_signin_bubble_shown_time_;
 
-  // Callback to clear the avatar button affects applied by
+  // Keeps the avatar button visible in the toolbar while the bubble is open.
+  // Declared before `clear_avatar_button_effects_callback_` so reverse member
+  // destruction clears explicit button effects before releasing overflow lock.
+  base::ScopedClosureRunner keep_visible_;
+
+  // Callback to clear the avatar button effects applied by
   // `ApplyAvatarButtonEffects`.
   base::ScopedClosureRunner clear_avatar_button_effects_callback_;
 

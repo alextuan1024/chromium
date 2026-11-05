@@ -16,6 +16,7 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/features.h"
+#include "base/i18n/language_tag.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -466,13 +467,6 @@ bool CampaignsMatcher::IsCampaignMatched(const Campaign* campaign,
 
 bool CampaignsMatcher::MatchDemoModeTier(
     const DemoModeTargeting& targeting) const {
-  const auto is_cloud_gaming = targeting.TargetCloudGamingDevice();
-  if (is_cloud_gaming.has_value()) {
-    if (is_cloud_gaming != client_->IsCloudGamingDevice()) {
-      return false;
-    }
-  }
-
   const auto is_feature_aware_device = targeting.TargetFeatureAwareDevice();
   if (is_feature_aware_device.has_value()) {
     if (is_feature_aware_device != client_->IsFeatureAwareDevice()) {
@@ -597,8 +591,8 @@ bool CampaignsMatcher::MatchDeviceTargeting(
   }
 
   const auto* targeting_locales = targeting.GetLocales();
-  if (targeting_locales &&
-      !targeting_locales->contains(client_->GetApplicationLocale())) {
+  if (targeting_locales && !targeting_locales->contains(
+                               client_->GetApplicationLocale().tag_string())) {
     return false;
   }
 

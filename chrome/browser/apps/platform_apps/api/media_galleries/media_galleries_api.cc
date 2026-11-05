@@ -14,11 +14,13 @@
 #include <utility>
 #include <vector>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/lazy_instance.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
@@ -38,7 +40,6 @@
 #include "chrome/common/apps/platform_apps/api/media_galleries.h"
 #include "chrome/common/apps/platform_apps/media_galleries_permission.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/media_gallery_util/safe_media_metadata_parser.h"
 #include "components/storage_monitor/storage_info.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
@@ -56,11 +57,15 @@
 #include "extensions/browser/blob_reader.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_system.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/permissions/api_permission.h"
 #include "extensions/common/permissions/permissions_data.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/mime_sniffer.h"
 #include "storage/browser/blob/blob_data_handle.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/selected_file_info.h"
@@ -281,8 +286,8 @@ content::WebContents* GetWebContentsForPrompt(
 MediaGalleriesEventRouter::MediaGalleriesEventRouter(
     content::BrowserContext* context)
     : profile_(Profile::FromBrowserContext(context)) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(profile_);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(profile_, base::NotFatalUntil::M161);
 
   extensions::EventRouter::Get(profile_)->RegisterObserver(
       this, MediaGalleries::OnGalleryChanged::kEventName);
@@ -293,7 +298,7 @@ MediaGalleriesEventRouter::MediaGalleriesEventRouter(
 MediaGalleriesEventRouter::~MediaGalleriesEventRouter() = default;
 
 void MediaGalleriesEventRouter::Shutdown() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   weak_ptr_factory_.InvalidateWeakPtrs();
 
   extensions::EventRouter::Get(profile_)->UnregisterObserver(this);
@@ -314,9 +319,10 @@ MediaGalleriesEventRouter::GetFactoryInstance() {
 // static
 MediaGalleriesEventRouter* MediaGalleriesEventRouter::Get(
     content::BrowserContext* context) {
-  DCHECK(media_file_system_registry()
-             ->GetPreferences(Profile::FromBrowserContext(context))
-             ->IsInitialized());
+  CHECK(media_file_system_registry()
+            ->GetPreferences(Profile::FromBrowserContext(context))
+            ->IsInitialized(),
+        base::NotFatalUntil::M161);
   return extensions::BrowserContextKeyedAPIFactory<
       MediaGalleriesEventRouter>::Get(context);
 }
@@ -331,15 +337,15 @@ void MediaGalleriesEventRouter::DispatchEventToExtension(
     const std::string& extension_id,
     extensions::events::HistogramValue histogram_value,
     const std::string& event_name,
-    base::ListValue event_args) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    scoped_refptr<const extensions::EventArgs> event_args) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   extensions::EventRouter* router = extensions::EventRouter::Get(profile_);
   if (!router->ExtensionHasEventListener(extension_id, event_name))
     return;
 
-  std::unique_ptr<extensions::Event> event(new extensions::Event(
-      histogram_value, event_name, std::move(event_args)));
+  auto event = std::make_unique<extensions::Event>(histogram_value, event_name,
+                                                   std::move(event_args));
   router->DispatchEventToExtension(extension_id, std::move(event));
 }
 
@@ -349,10 +355,11 @@ void MediaGalleriesEventRouter::OnGalleryChanged(
   MediaGalleries::GalleryChangeDetails details;
   details.type = MediaGalleries::GalleryChangeType::kContentsChanged;
   details.gallery_id = base::NumberToString(gallery_id);
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      MediaGalleries::OnGalleryChanged::Create(details));
   DispatchEventToExtension(
       extension_id, extensions::events::MEDIA_GALLERIES_ON_GALLERY_CHANGED,
-      MediaGalleries::OnGalleryChanged::kEventName,
-      MediaGalleries::OnGalleryChanged::Create(details));
+      MediaGalleries::OnGalleryChanged::kEventName, std::move(event_args));
 }
 
 void MediaGalleriesEventRouter::OnGalleryWatchDropped(
@@ -361,10 +368,11 @@ void MediaGalleriesEventRouter::OnGalleryWatchDropped(
   MediaGalleries::GalleryChangeDetails details;
   details.type = MediaGalleries::GalleryChangeType::kWatchDropped;
   details.gallery_id = base::NumberToString(gallery_id);
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      MediaGalleries::OnGalleryChanged::Create(details));
   DispatchEventToExtension(
       extension_id, extensions::events::MEDIA_GALLERIES_ON_GALLERY_CHANGED,
-      MediaGalleries::OnGalleryChanged::kEventName,
-      MediaGalleries::OnGalleryChanged::Create(details));
+      MediaGalleries::OnGalleryChanged::kEventName, std::move(event_args));
 }
 
 void MediaGalleriesEventRouter::OnListenerRemoved(
@@ -487,7 +495,8 @@ void MediaGalleriesGetMediaFileSystemsFunction::GetMediaFileSystemsForExtension(
   }
   MediaFileSystemRegistry* registry = media_file_system_registry();
   Profile* profile = Profile::FromBrowserContext(browser_context());
-  DCHECK(registry->GetPreferences(profile)->IsInitialized());
+  CHECK(registry->GetPreferences(profile)->IsInitialized(),
+        base::NotFatalUntil::M161);
   registry->GetMediaFileSystemsForExtension(GetSenderWebContents(), extension(),
                                             std::move(cb));
 }
@@ -594,9 +603,9 @@ void MediaGalleriesAddUserSelectedFolderFunction::
     return;
   }
   MediaFileSystemRegistry* registry = media_file_system_registry();
-  DCHECK(
-      registry->GetPreferences(Profile::FromBrowserContext(browser_context()))
-          ->IsInitialized());
+  CHECK(registry->GetPreferences(Profile::FromBrowserContext(browser_context()))
+            ->IsInitialized(),
+        base::NotFatalUntil::M161);
   registry->GetMediaFileSystemsForExtension(GetSenderWebContents(), extension(),
                                             std::move(cb));
 }
@@ -604,13 +613,18 @@ void MediaGalleriesAddUserSelectedFolderFunction::
 ///////////////////////////////////////////////////////////////////////////////
 //                 MediaGalleriesGetMetadataFunction                         //
 ///////////////////////////////////////////////////////////////////////////////
+MediaGalleriesGetMetadataFunction::MediaGalleriesGetMetadataFunction() =
+    default;
+
 MediaGalleriesGetMetadataFunction::~MediaGalleriesGetMetadataFunction() =
     default;
 
 ExtensionFunction::ResponseAction MediaGalleriesGetMetadataFunction::Run() {
   EXTENSION_FUNCTION_VALIDATE(args().size() >= 1);
-  EXTENSION_FUNCTION_VALIDATE(args()[0].is_string());
-  const std::string& blob_uuid = args()[0].GetString();
+  EXTENSION_FUNCTION_VALIDATE(args()[0].is_dict());
+  mojo::PendingRemote<blink::mojom::Blob> blob_arg = TakeBlobArg(0);
+  EXTENSION_FUNCTION_VALIDATE(blob_arg);
+  mojo::Remote<blink::mojom::Blob> blob(std::move(blob_arg));
 
   if (args().size() < 2)
     return RespondNow(Error("options parameter not specified."));
@@ -624,7 +638,7 @@ ExtensionFunction::ResponseAction MediaGalleriesGetMetadataFunction::Run() {
   const bool result = Setup(
       Profile::FromBrowserContext(browser_context()), &error,
       base::BindOnce(&MediaGalleriesGetMetadataFunction::OnPreferencesInit,
-                     this, options->metadata_type, blob_uuid));
+                     this, options->metadata_type, std::move(blob)));
   if (!result)
     return RespondNow(Error(error));
   // Note: OnPreferencesInit might have been called already.
@@ -633,22 +647,24 @@ ExtensionFunction::ResponseAction MediaGalleriesGetMetadataFunction::Run() {
 
 void MediaGalleriesGetMetadataFunction::OnPreferencesInit(
     MediaGalleries::GetMetadataType metadata_type,
-    const std::string& blob_uuid) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    mojo::Remote<blink::mojom::Blob> blob) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
+  mojo::PendingRemote<blink::mojom::Blob> blob_for_sniffing;
+  blob->Clone(blob_for_sniffing.InitWithNewPipeAndPassReceiver());
   BlobReader::Read(
-      browser_context()->GetBlobRemote(blob_uuid),
+      std::move(blob_for_sniffing),
       base::BindOnce(&MediaGalleriesGetMetadataFunction::GetMetadata, this,
-                     metadata_type, blob_uuid),
+                     metadata_type, std::move(blob)),
       0, net::kMaxBytesToSniff);
 }
 
 void MediaGalleriesGetMetadataFunction::GetMetadata(
     MediaGalleries::GetMetadataType metadata_type,
-    const std::string& blob_uuid,
+    mojo::Remote<blink::mojom::Blob> blob,
     std::string blob_header,
     int64_t total_blob_length) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   std::string mime_type;
   bool mime_type_sniffed =
@@ -676,7 +692,7 @@ void MediaGalleriesGetMetadataFunction::GetMetadata(
       metadata_type == MediaGalleries::GetMetadataType::kNone;
 
   auto media_data_source_factory =
-      std::make_unique<BlobDataSourceFactory>(browser_context(), blob_uuid);
+      std::make_unique<BlobDataSourceFactory>(std::move(blob));
   auto parser = std::make_unique<SafeMediaMetadataParser>(
       total_blob_length, mime_type, get_attached_images,
       std::move(media_data_source_factory));
@@ -692,15 +708,15 @@ void MediaGalleriesGetMetadataFunction::OnSafeMediaMetadataParserDone(
     bool parse_success,
     chrome::mojom::MediaMetadataPtr metadata,
     std::unique_ptr<std::vector<metadata::AttachedImage>> attached_images) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!parse_success) {
     Respond(Error("Could not parse media metadata."));
     return;
   }
 
-  DCHECK(metadata);
-  DCHECK(attached_images);
+  CHECK(metadata, base::NotFatalUntil::M161);
+  CHECK(attached_images, base::NotFatalUntil::M161);
 
   base::DictValue result_dictionary;
   result_dictionary.Set(kMetadataKey,
@@ -725,13 +741,13 @@ void MediaGalleriesGetMetadataFunction::ConstructNextBlob(
     std::unique_ptr<std::vector<metadata::AttachedImage>> attached_images,
     std::vector<blink::mojom::SerializedBlobPtr> blobs,
     std::unique_ptr<content::BlobHandle> current_blob) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
-  DCHECK(attached_images.get());
-  DCHECK(current_blob.get());
+  CHECK(attached_images.get(), base::NotFatalUntil::M161);
+  CHECK(current_blob.get(), base::NotFatalUntil::M161);
 
-  DCHECK(!attached_images->empty());
-  DCHECK_LT(blobs.size(), attached_images->size());
+  CHECK(!attached_images->empty(), base::NotFatalUntil::M161);
+  CHECK_LT(blobs.size(), attached_images->size(), base::NotFatalUntil::M161);
 
   blobs.push_back(current_blob->Serialize());
 
@@ -763,10 +779,10 @@ MediaGalleriesAddGalleryWatchFunction::
     ~MediaGalleriesAddGalleryWatchFunction() = default;
 
 ExtensionFunction::ResponseAction MediaGalleriesAddGalleryWatchFunction::Run() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   Profile* profile = Profile::FromBrowserContext(browser_context());
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   if (!render_frame_host() || !render_frame_host()->GetProcess())
     return RespondNow(Error(kNoRenderFrameOrRenderProcessError));
@@ -808,7 +824,7 @@ void MediaGalleriesAddGalleryWatchFunction::OnPreferencesInit(
 void MediaGalleriesAddGalleryWatchFunction::HandleResponse(
     MediaGalleryPrefId gallery_id,
     const std::string& error) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // If an app added a file watch without any event listeners on the
   // onGalleryChanged event, that's an error.
@@ -839,7 +855,7 @@ MediaGalleriesRemoveGalleryWatchFunction::
 
 ExtensionFunction::ResponseAction
 MediaGalleriesRemoveGalleryWatchFunction::Run() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!render_frame_host() || !render_frame_host()->GetProcess())
     return RespondNow(Error(kNoRenderFrameOrRenderProcessError));

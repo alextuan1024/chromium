@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import unittest
 
 import mojom.generate.check as check
 from mojom_bindings_generator import LoadChecks, _Generate
@@ -23,6 +22,7 @@ class FakeArgs:
     self.generators_string = ''
     self.import_directories = []
     self.output_dir = tester.GetPath('out')
+    self.scrambled_message_id_salts = None
     self.scrambled_message_id_salt_paths = None
     self.typemaps = []
     self.variant = 'none'
@@ -186,7 +186,7 @@ class MojoBindingsCheckTest(MojomParserTestCase):
       'b.mojom', contents, 'RequireContext not allowed on method'
     )
 
-  def testWrongMethodRequireContext(self):
+  def testWrongMethodRequireContext(self):  # noqa: F811
     # crbug.com/1230122
     contents = """
       module a;
@@ -212,4 +212,173 @@ class MojoBindingsCheckTest(MojomParserTestCase):
     """
     self._testThrows(
       'a.mojom', contents, 'Extensible.*?required.*?Stable.*?enum'
+    )
+
+  def testUnverifiedValidOnRequestParameter(self):
+    self._testValid(
+      'a.mojom',
+      """
+      module a;
+      interface Helper {};
+      struct S {
+        handle<platform> h;
+        pending_remote<Helper> r;
+      };
+      union U {
+        handle<shared_buffer> buf;
+        pending_receiver<Helper> rcv;
+      };
+      interface Foo {
+        Bar([Unverified] int32 a,
+            [Unverified] S s,
+            [Unverified] U u,
+            [Unverified] array<handle<platform>> arr,
+            [Unverified] map<int32, pending_remote<Helper>> m) => (int32 b);
+      };
+    """,
+    )
+
+  def testUnverifiedDisallowedOnHandles(self):
+    for handle_type in ('handle<platform>', 'handle<platform>?'):
+      with self.subTest(handle_type=handle_type):
+        contents = f"""
+          module a;
+          interface Foo {{
+            Bar([Unverified] {handle_type} h);
+          }};
+        """
+        self._testThrows(
+          'a.mojom',
+          contents,
+          r'attribute Unverified not allowed on handle parameter Foo\.Bar\.h',
+        )
+
+    for handle_type in ('handle', 'handle?'):
+      with self.subTest(handle_type=handle_type):
+        contents = f"""
+          module test.mojom;
+          interface UntypedHandleInterfaceForUnitTests {{
+            Bar([Unverified] {handle_type} h);
+          }};
+        """
+        self._testThrows(
+          'untyped.mojom',
+          contents,
+          r'attribute Unverified not allowed on handle parameter '
+          r'UntypedHandleInterfaceForUnitTests\.Bar\.h',
+        )
+
+  def testUnverifiedDisallowedOnInterfaceEndpoints(self):
+    for endpoint_kind in (
+      'pending_remote',
+      'pending_receiver',
+      'pending_associated_remote',
+      'pending_associated_receiver',
+    ):
+      for suffix in ('', '?'):
+        param_type = f'{endpoint_kind}<Helper>{suffix}'
+        with self.subTest(param_type=param_type):
+          contents = f"""
+            module a;
+            interface Helper {{}};
+            interface Foo {{
+              Bar([Unverified] {param_type} p);
+            }};
+          """
+          self._testThrows(
+            'a.mojom',
+            contents,
+            rf'attribute Unverified not allowed on {endpoint_kind} parameter '
+            rf'Foo\.Bar\.p',
+          )
+
+  def testUnverifiedDisallowedOnResponseParameter(self):
+    contents = """
+      module a;
+      interface Foo {
+        Bar(int32 a) => ([Unverified] int32 b);
+      };
+    """
+    self._testThrows(
+      'a.mojom',
+      contents,
+      'attribute Unverified not allowed on response parameter',
+    )
+
+  def testUnverifiedDisallowedOnStructField(self):
+    contents = """
+      module a;
+      struct S {
+        [Unverified] int32 a;
+      };
+    """
+    self._testThrows(
+      'a.mojom', contents, 'attribute Unverified not allowed on struct field'
+    )
+
+  def testUnverifiedDisallowedOnUnionField(self):
+    contents = """
+      module a;
+      union U {
+        [Unverified] int32 a;
+      };
+    """
+    self._testThrows(
+      'a.mojom', contents, 'attribute Unverified not allowed on union field'
+    )
+
+  def testUnverifiedDisallowedOnMethod(self):
+    contents = """
+      module a;
+      interface Foo {
+        [Unverified]
+        Bar(int32 a);
+      };
+    """
+    self._testThrows(
+      'a.mojom', contents, 'attribute Unverified not allowed on method'
+    )
+
+  def testUnverifiedDisallowedOnInterface(self):
+    contents = """
+      module a;
+      [Unverified]
+      interface Foo {
+        Bar(int32 a);
+      };
+    """
+    self._testThrows(
+      'a.mojom', contents, 'attribute Unverified not allowed on interface'
+    )
+
+  def testUnverifiedDisallowsExplicitValue(self):
+    self._testThrows(
+      'a.mojom',
+      """
+      module a;
+      interface Foo {
+        Bar([Unverified=False] int32 a);
+      };
+      """,
+      'attribute Unverified on parameter Foo.Bar.a must not specify a value',
+    )
+    self._testThrows(
+      'b.mojom',
+      """
+      module a;
+      interface Foo {
+        Bar([Unverified="x"] int32 a);
+      };
+      """,
+      'attribute Unverified on parameter Foo.Bar.a must not specify a value',
+    )
+    self._testThrows(
+      'c.mojom',
+      """
+      module a;
+      interface Foo {
+        Bar([Unverified=1] int32 a);
+      };
+      """,
+      'attribute Unverified on parameter Foo.Bar.a must not specify a value',
     )

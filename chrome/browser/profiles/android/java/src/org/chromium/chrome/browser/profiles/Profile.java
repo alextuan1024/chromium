@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.profiles;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ResettersForTesting;
@@ -24,6 +25,10 @@ public class Profile implements BrowserContextHandle {
 
     private final @Nullable OtrProfileId mOtrProfileId;
 
+    private final boolean mIsIncognitoBranded;
+
+    private final String mBaseName;
+
     /** Pointer to the Native-side Profile. */
     private long mNativeProfile;
 
@@ -31,9 +36,16 @@ public class Profile implements BrowserContextHandle {
 
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
     @CalledByNative
-    Profile(long nativeProfile, @Nullable OtrProfileId otrProfileId) {
+    Profile(
+            long nativeProfile,
+            @Nullable OtrProfileId otrProfileId,
+            boolean isIncognitoBranded,
+            @JniType("std::string") String baseName) {
         mNativeProfile = nativeProfile;
         mOtrProfileId = otrProfileId;
+        mIsIncognitoBranded = isIncognitoBranded;
+        mBaseName = baseName;
+        assert !mIsIncognitoBranded || mOtrProfileId != null;
     }
 
     /**
@@ -93,6 +105,18 @@ public class Profile implements BrowserContextHandle {
     /** Return whether this Profile represents the initially created "Default" Profile. */
     public boolean isInitialProfile() {
         return ProfileJni.get().isInitialProfile(mNativeProfile);
+    }
+
+    /**
+     * Returns the base name of the profile directory within the user data directory (e.g.
+     * "Default", "Profile 1"), i.e. native {@code Profile::GetBaseName()}. For an off-the-record
+     * profile, returns the base name of its original profile.
+     *
+     * <p>The value is passed in by native when this object is created and never changes, so it can
+     * be read from any thread without crossing JNI, including after native destruction.
+     */
+    public String getBaseName() {
+        return mBaseName;
     }
 
     /**
@@ -163,17 +187,19 @@ public class Profile implements BrowserContextHandle {
     }
 
     /**
-     * Returns if the profile is a primary OTR Profile or an Incognito CCT. The primary OTR profile
-     * is the OffTheRecord profile for incognito tabs in the main Chrome App. All Incognito branded
-     * profiles return true for {@link #isOffTheRecord()} but not all OffTheRecord profiles are
-     * Incognito themed. Use this to evaluate features that should appear exclusively for Incognito
-     * themed profiles (Incognito lock, Incognito snapshot controller..) or for usages that force
-     * the Incognito theme (Dark colors, Incognito logo..). If you are unsure whether this fits your
+     * Returns if the profile is the primary Incognito profile or an Incognito CCT. The primary
+     * Incognito profile is the OffTheRecord profile for incognito tabs in the main Chrome App. All
+     * Incognito branded profiles return true for {@link #isOffTheRecord()} but not all OffTheRecord
+     * profiles are Incognito themed (e.g. Ephemeral CCTs and Enterprise Isolated Mode profiles are
+     * not). Use this to evaluate features that should appear exclusively for Incognito themed
+     * profiles (Incognito lock, Incognito snapshot controller, etc.) or for usages that force the
+     * Incognito theme (Dark colors, Incognito logo, etc.). If you are unsure whether this fits your
      * usage, reach out to incognito/OWNERS.
+     *
+     * <p>Returns the value of native Profile::IsIncognitoBranded().
      */
     public boolean isIncognitoBranded() {
-        boolean isIncognitoCct = mOtrProfileId != null && mOtrProfileId.isIncognitoCCId();
-        return isPrimaryOtrProfile() || isIncognitoCct;
+        return mIsIncognitoBranded;
     }
 
     /**

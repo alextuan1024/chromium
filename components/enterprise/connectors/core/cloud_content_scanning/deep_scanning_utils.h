@@ -27,7 +27,7 @@ void MaybeReportDeepScanningVerdict(
     const std::string& file_name,
     const HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& content_transfer_method,
     const std::string& source_email,
     const int64_t content_size,
@@ -47,7 +47,7 @@ void ReportAnalysisConnectorWarningBypass(
     const std::string& file_name,
     const HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& content_transfer_method,
     const int64_t content_size,
     const ContentAnalysisResponse& response,
@@ -141,11 +141,9 @@ enum class ScanningCrashKey {
 void IncrementCrashKey(ScanningCrashKey key, int delta = 1);
 void DecrementCrashKey(ScanningCrashKey key, int delta = 1);
 
-// Maps the request's connector and reason to the corresponding
-// DeepScanAccessPoint.
+// Maps `request` to the corresponding DeepScanAccessPoint.
 DeepScanAccessPoint AccessPointFromRequest(
-    AnalysisConnector connector,
-    ContentAnalysisRequest::Reason reason);
+    const ContentAnalysisRequest& request);
 
 }  // namespace enterprise_connectors
 

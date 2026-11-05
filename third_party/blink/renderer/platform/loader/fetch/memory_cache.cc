@@ -56,8 +56,8 @@ namespace {
 constexpr base::MemoryConsumerTraits kMemoryCacheTraits(
     // Strong reference budget is platform-specific; frees tens of MBs.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
-    // Pruning requires sorting or traversing HeapLinkedHashSet of resources.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // Pruning walks the HeapLinkedHashSet, reading the resources being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     // Cached resources reload from network/disk cache.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Synchronously prunes the references inline.
@@ -131,6 +131,8 @@ int GetResourceTypePriority(ResourceType type) {
   }
 }
 
+constexpr char kMemoryConsumerName[] = "MemoryCache";
+
 }  // namespace
 
 static Persistent<MemoryCache>* g_memory_cache;
@@ -188,7 +190,7 @@ MemoryCache* MemoryCache::Get() {
 MemoryCache::MemoryCache(
     scoped_refptr<base::SingleThreadTaskRunner> task_runner)
     : memory_consumer_registration_(
-          "MemoryCache",
+          kMemoryConsumerName,
           kMemoryCacheTraits,
           this,
           MemoryConsumerRegistration::CheckUnregister::kDisabled),
@@ -562,7 +564,7 @@ bool MemoryCache::OnMemoryDump(WebMemoryDumpLevelOfDetail level_of_detail,
 size_t MemoryCache::GetTargetStrongReferencesMaxSize() const {
   const size_t baseline = static_cast<size_t>(
       features::kMemoryCacheStrongReferenceTotalSizeThresholdParam.Get());
-  return base::ScaleByMemoryLimit(baseline, memory_limit());
+  return memory_limit().Scale(baseline);
 }
 
 void MemoryCache::OnReleaseMemory() {
@@ -573,7 +575,7 @@ void MemoryCache::OnReleaseMemory() {
   strong_references_max_size_ = GetTargetStrongReferencesMaxSize();
   PruneStrongReferences();
 
-  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (!base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     const size_t baseline = static_cast<size_t>(
         features::kMemoryCacheStrongReferenceTotalSizeThresholdParam.Get());
     strong_references_max_size_ = baseline;
@@ -582,7 +584,7 @@ void MemoryCache::OnReleaseMemory() {
 
 void MemoryCache::OnUpdateMemoryLimit() {
   if (!base::FeatureList::IsEnabled(features::kMemoryCacheStrongReference) ||
-      !base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+      !base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     return;
   }
 
@@ -657,7 +659,7 @@ void MemoryCache::PruneTieredStrongReferences() {
 
   size_t current_total_size = 0;
   for (Resource* resource : tiered_strong_references_) {
-    CHECK(resource, base::NotFatalUntil::M145);
+    CHECK(resource);
     current_total_size += resource->size();
   }
 
@@ -672,8 +674,8 @@ void MemoryCache::PruneTieredStrongReferences() {
   // The sorting is "Just-In-Time" for the eviction decisions.
   std::sort(tiered_strong_references_.begin(), tiered_strong_references_.end(),
             [this](const Member<Resource>& a, const Member<Resource>& b) {
-              CHECK(a, base::NotFatalUntil::M145);
-              CHECK(b, base::NotFatalUntil::M145);
+              CHECK(a);
+              CHECK(b);
               // Note: `>` sorts in descending order (highest value first).
               return CalculateResourceValue(a.Get()) >
                      CalculateResourceValue(b.Get());

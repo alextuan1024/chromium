@@ -37,13 +37,16 @@
 #include "third_party/skia/include/gpu/ganesh/vk/GrVkBackendSurface.h"
 #include "third_party/skia/include/private/chromium/GrPromiseImageTexture.h"
 #include "ui/gl/android/egl_fence_utils.h"
-#include "ui/gl/gl_fence_egl.h"
 #include "ui/gl/gl_utils.h"
 #include "ui/gl/scoped_binders.h"
 #include "ui/gl/scoped_restore_texture.h"
 
 #if BUILDFLAG(SKIA_USE_DAWN)
 #include "third_party/skia/include/gpu/graphite/dawn/DawnTypes.h"
+#endif
+
+#if BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
+#include "gpu/command_buffer/service/shared_image/skia_graphite_vk_android_image_representation.h"
 #endif
 
 namespace gpu {
@@ -334,20 +337,22 @@ class VideoImageReaderImageBacking::SkiaGraphiteDawnImageRepresentation
 
   std::vector<sk_sp<SkSurface>> BeginWriteAccess(
       const SkSurfaceProps& surface_props,
-      const gfx::Rect& update_rect) override {
+      const gfx::Rect& update_rect,
+      EndAccessState& end_access_state) override {
     // Writes are not intended to be used with video backed representations.
     NOTIMPLEMENTED();
     return {};
   }
-  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginWriteAccess()
-      override {
+  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginWriteAccess(
+      EndAccessState& end_access_state) override {
     // Writes are not intended to be used with video backed representations.
     NOTIMPLEMENTED();
     return {};
   }
   void EndWriteAccess() override { NOTIMPLEMENTED(); }
 
-  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginReadAccess() override {
+  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginReadAccess(
+      EndAccessState& end_access_state) override {
     DCHECK(!scoped_hardware_buffer_);
 
     // Obtain the AHB for the current video frame.
@@ -621,6 +626,92 @@ class VideoImageReaderImageBacking::SkiaVkVideoImageRepresentation
       scoped_hardware_buffer_;
 };
 
+#if BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
+class VideoImageReaderImageBacking::SkiaGraphiteVkVideoImageRepresentation
+    : public SkiaGraphiteVkAndroidImageRepresentation,
+      public RefCountedLockHelperDrDc {
+ public:
+  SkiaGraphiteVkVideoImageRepresentation(
+      SharedImageManager* manager,
+      AndroidImageBacking* backing,
+      scoped_refptr<SharedContextState> context_state,
+      MemoryTypeTracker* tracker,
+      scoped_refptr<RefCountedLock> drdc_lock)
+      : SkiaGraphiteVkAndroidImageRepresentation(manager,
+                                                 backing,
+                                                 std::move(context_state),
+                                                 tracker),
+        RefCountedLockHelperDrDc(std::move(drdc_lock)) {}
+
+  std::vector<sk_sp<SkSurface>> BeginWriteAccess(
+      const SkSurfaceProps& surface_props,
+      const gfx::Rect& update_rect,
+      EndAccessState& end_access_state) override {
+    NOTIMPLEMENTED();
+    return {};
+  }
+
+  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginWriteAccess(
+      EndAccessState& end_access_state) override {
+    NOTIMPLEMENTED();
+    return {};
+  }
+
+  void EndWriteAccess() override { NOTIMPLEMENTED(); }
+
+  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginReadAccess(
+      EndAccessState& end_access_state) override {
+    base::AutoLockMaybe auto_lock(GetDrDcLockPtr());
+
+    DCHECK(!scoped_hardware_buffer_);
+    auto* video_backing = static_cast<VideoImageReaderImageBacking*>(backing());
+    DCHECK(video_backing);
+    auto* stream_texture_sii = video_backing->stream_texture_sii_.get();
+
+    // GetAHardwareBuffer() renders the latest image and gets AHardwareBuffer
+    // from it.
+    scoped_hardware_buffer_ = stream_texture_sii->GetAHardwareBuffer();
+    if (!scoped_hardware_buffer_) {
+      LOG(ERROR) << "Failed to get the hardware buffer.";
+      return {};
+    }
+    DCHECK(scoped_hardware_buffer_->buffer());
+
+    SetInitialFence(scoped_hardware_buffer_->TakeFence());
+
+    if (!vulkan_image()) {
+      auto vulkan_image = CreateVkImageFromAhbHandle(
+          scoped_hardware_buffer_->TakeBuffer(), context_state(), size(),
+          format(), VK_QUEUE_FAMILY_FOREIGN_EXT);
+      if (!vulkan_image) {
+        return {};
+      }
+      SetVulkanImage(std::move(vulkan_image));
+    }
+
+    return SkiaGraphiteVkAndroidImageRepresentation::BeginReadAccess(
+        end_access_state);
+  }
+
+  void EndReadAccess() override {
+    base::AutoLockMaybe auto_lock(GetDrDcLockPtr());
+    DCHECK(scoped_hardware_buffer_);
+
+    SkiaGraphiteVkAndroidImageRepresentation::EndReadAccess();
+
+    // Pass the end read access sync fd to the scoped hardware buffer. This
+    // will make sure that the AImage associated with the hardware buffer will
+    // be deleted only when the read access is ending.
+    scoped_hardware_buffer_->SetReadFence(android_backing()->TakeReadFence());
+    scoped_hardware_buffer_ = nullptr;
+  }
+
+ private:
+  std::unique_ptr<base::android::ScopedHardwareBufferFenceSync>
+      scoped_hardware_buffer_;
+};
+#endif
+
 template <typename T>
 std::unique_ptr<T> VideoImageReaderImageBacking::ProduceGLTextureInternal(
     SharedImageManager* manager,
@@ -693,7 +784,7 @@ VideoImageReaderImageBacking::ProduceSkiaGanesh(
                                            this, tracker);
 }
 
-#if BUILDFLAG(SKIA_USE_DAWN)
+#if BUILDFLAG(SKIA_USE_DAWN) || BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
 std::unique_ptr<SkiaGraphiteImageRepresentation>
 VideoImageReaderImageBacking::ProduceSkiaGraphite(
     SharedImageManager* manager,
@@ -708,10 +799,21 @@ VideoImageReaderImageBacking::ProduceSkiaGraphite(
     return nullptr;
   }
 
-  return std::make_unique<SkiaGraphiteDawnImageRepresentation>(
-      manager, this, tracker, context_state, GetDrDcLock());
-}
+  if (context_state->IsGraphiteDawn()) {
+#if BUILDFLAG(SKIA_USE_DAWN)
+    return std::make_unique<SkiaGraphiteDawnImageRepresentation>(
+        manager, this, tracker, context_state, GetDrDcLock());
 #endif
+  } else if (context_state->IsGraphiteVulkan()) {
+#if BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
+    return std::make_unique<SkiaGraphiteVkVideoImageRepresentation>(
+        manager, this, std::move(context_state), tracker, GetDrDcLock());
+#endif
+  }
+
+  NOTREACHED();
+}
+#endif  // BUILDFLAG(SKIA_USE_DAWN) || BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
 
 // Representation of VideoImageReaderImageBacking as an overlay plane.
 class VideoImageReaderImageBacking::OverlayVideoImageRepresentation
@@ -853,91 +955,6 @@ VideoImageReaderImageBacking::ProduceLegacyOverlay(
     gpu::MemoryTypeTracker* tracker) {
   return std::make_unique<LegacyOverlayVideoImageRepresentation>(
       manager, this, tracker, GetDrDcLock());
-}
-
-class VideoImageReaderImageBacking::VideoRepresentation
-    : public gpu::VideoImageRepresentation,
-      public RefCountedLockHelperDrDc {
- public:
-  VideoRepresentation(gpu::SharedImageManager* manager,
-                      VideoImageReaderImageBacking* backing,
-                      gpu::MemoryTypeTracker* tracker,
-                      scoped_refptr<RefCountedLock> drdc_lock)
-      : gpu::VideoImageRepresentation(manager, backing, tracker),
-        RefCountedLockHelperDrDc(std::move(drdc_lock)) {}
-
-  ~VideoRepresentation() override {
-    if (scoped_hardware_buffer_) {
-      EndReadAccess();
-    }
-  }
-
-  VideoRepresentation(const VideoRepresentation&) = delete;
-  VideoRepresentation& operator=(const VideoRepresentation&) = delete;
-
- protected:
-  AHardwareBuffer* GetAHardwareBuffer() const override {
-    if (!scoped_hardware_buffer_) {
-      return nullptr;
-    }
-    return scoped_hardware_buffer_->buffer();
-  }
-
-  bool BeginWriteAccess() override {
-    NOTIMPLEMENTED();
-    return false;
-  }
-
-  void EndWriteAccess() override { NOTIMPLEMENTED(); }
-
-  bool BeginReadAccess() override {
-    base::AutoLockMaybe auto_lock(GetDrDcLockPtr());
-    auto* video_backing = static_cast<VideoImageReaderImageBacking*>(backing());
-    scoped_hardware_buffer_ =
-        video_backing->stream_texture_sii_->GetAHardwareBuffer();
-
-    if (!scoped_hardware_buffer_) {
-      return false;
-    }
-
-    auto fence_fd = scoped_hardware_buffer_->TakeFence();
-    if (fence_fd.is_valid()) {
-      // This code assumes existence of an active GL context, which is true
-      // for cases when NDK VEA calls here. `GLFence::ServerWait` instructs
-      // the GL context to wait for `fence_fd` before executing any further
-      // GL commands that potentially use the `AHadwareBuffer`.
-      // No sync wait is happening here.
-      gfx::GpuFenceHandle handle;
-      handle.Adopt(std::move(fence_fd));
-      gfx::GpuFence gpu_fence(std::move(handle));
-      std::unique_ptr<gl::GLFence> gl_fence =
-          gl::GLFence::CreateFromGpuFence(gpu_fence);
-      gl_fence->ServerWait();
-    }
-    return true;
-  }
-
-  void EndReadAccess() override {
-    DCHECK(scoped_hardware_buffer_);
-
-    base::ScopedFD sync_fd = gl::CreateEglFenceAndExportFd();
-    scoped_hardware_buffer_->SetReadFence(std::move(sync_fd));
-    base::AutoLockMaybe auto_lock(GetDrDcLockPtr());
-    scoped_hardware_buffer_ = nullptr;
-  }
-
- private:
-  std::unique_ptr<base::android::ScopedHardwareBufferFenceSync>
-      scoped_hardware_buffer_;
-};
-
-std::unique_ptr<VideoImageRepresentation>
-VideoImageReaderImageBacking::ProduceVideo(SharedImageManager* manager,
-                                           MemoryTypeTracker* tracker,
-                                           VideoDevice device) {
-  DCHECK(!device);
-  return std::make_unique<VideoRepresentation>(manager, this, tracker,
-                                               GetDrDcLock());
 }
 
 VideoImageReaderImageBacking::ContextLostObserverHelper::

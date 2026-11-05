@@ -10,9 +10,11 @@ import androidx.annotation.AnyThread;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.CalledByNativeForTesting;
 import org.jni_zero.JniType;
 
 import org.chromium.base.FeatureMap;
+import org.chromium.base.FeatureOverrides;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.firstrun.FirstRunUtils;
@@ -32,7 +34,6 @@ import org.chromium.components.omnibox.OmniboxFeatureMap;
 import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.permissions.PermissionsAndroidFeatureList;
 import org.chromium.components.permissions.PermissionsAndroidFeatureMap;
-import org.chromium.components.policy.PolicyFeatureMap;
 import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.ContentFeatureMap;
@@ -58,7 +59,6 @@ public class ChromeCachedFlags {
                     ModalDialogFeatureMap.getInstance(),
                     UiAndroidFeatureMap.getInstance(),
                     SigninFeatureMap.getInstance(),
-                    PolicyFeatureMap.getInstance(),
                     MediaFeatureMap.getInstance(),
                     PermissionsAndroidFeatureMap.getInstance(),
                     NotificationFeatureMap.getInstance());
@@ -73,7 +73,6 @@ public class ChromeCachedFlags {
                     ModalDialogFeatureMap.sCachedFlags,
                     UiAndroidFeatureList.sFlagsCachedUiAndroid,
                     SigninFeatureMap.sCachedFlags,
-                    PolicyFeatureMap.sCachedFlags,
                     MediaFeatureList.getAllCachedFlags(),
                     NotificationFeatureMap.sCachedFlags);
     static final List<List<CachedFlag>> LISTS_OF_CACHED_FLAGS_MINIMAL_BROWSER =
@@ -88,7 +87,6 @@ public class ChromeCachedFlags {
                     ModalDialogFeatureMap.sCachedFlags,
                     ChromeFeatureList.sFlagsCachedInMinimalBrowser,
                     UiAndroidFeatureList.sFlagsCachedUiAndroid,
-                    PolicyFeatureMap.sCachedFlags,
                     MediaFeatureList.getAllCachedFlags(),
                     NotificationFeatureMap.sCachedFlags);
 
@@ -215,5 +213,27 @@ public class ChromeCachedFlags {
         assert cachedFlag != null;
 
         return cachedFlag.isEnabled();
+    }
+
+    @CalledByNativeForTesting
+    static boolean hasOverrideForTesting(@JniType("std::string") String featureName) {
+        return FeatureOverrides.hasTestFeature(featureName);
+    }
+
+    @CalledByNativeForTesting
+    static boolean getOverrideForTesting(@JniType("std::string") String featureName) {
+        Boolean value = FeatureOverrides.getTestValueForFeature(featureName);
+        assert value != null;
+        return value;
+    }
+
+    @CalledByNativeForTesting
+    static void setOverrideForTesting(@JniType("std::string") String featureName, boolean enabled) {
+        FeatureOverrides.overrideFlag(featureName, enabled);
+    }
+
+    @CalledByNativeForTesting
+    static void removeOverrideForTesting(@JniType("std::string") String featureName) {
+        FeatureOverrides.removeFlagOverride(featureName);
     }
 }

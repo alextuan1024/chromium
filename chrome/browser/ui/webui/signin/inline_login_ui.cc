@@ -16,6 +16,7 @@
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_tab_helper_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/ui/webui/metrics_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
@@ -40,6 +41,7 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
 #include "ash/webui/settings/public/constants/routes_util.h"
 #include "chrome/browser/ash/account_manager/account_apps_availability.h"
@@ -58,7 +60,6 @@
 #include "chrome/grit/gaia_action_buttons_resources_map.h"
 #include "chrome/grit/supervision_resources.h"
 #include "chrome/grit/supervision_resources_map.h"
-#include "components/account_manager_core/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
@@ -196,7 +197,7 @@ void CreateAndAddWebUIDataSource(Profile* profile) {
   source->AddBoolean(
       "secondaryGoogleAccountSigninAllowed",
       profile->GetPrefs()->GetBoolean(
-          ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed));
+          policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed));
   source->AddBoolean("shouldSkipWelcomePage",
                      profile->GetPrefs()->GetBoolean(
                          ash::prefs::kShouldSkipInlineLoginWelcomePage));
@@ -221,7 +222,7 @@ void CreateAndAddWebUIDataSource(Profile* profile) {
 
   user_manager::User* user =
       ash::ProfileHelper::Get()->GetUserByProfile(profile);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
   source->AddString("userName", user->GetGivenName());
   source->AddString("accountManagerOsSettingsUrl",
                     chromeos::settings::GetOSSettingsUrl(
@@ -289,6 +290,7 @@ InlineLoginUI::InlineLoginUI(content::WebUI* web_ui) : WebDialogUI(web_ui) {
   if (profile->IsChild()) {
     web_ui->AddMessageHandler(std::make_unique<ash::EduCoexistenceLoginHandler>(
         g_browser_process->GetFeatures()->application_locale_storage(),
+        IdentityManagerFactory::GetForProfile(profile),
         base::BindRepeating(&WebDialogUI::CloseDialog,
                             weak_factory_.GetWeakPtr(),
                             base::ListValue() /* args */)));

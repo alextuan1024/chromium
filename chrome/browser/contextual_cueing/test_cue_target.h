@@ -15,6 +15,7 @@ class TestCueTarget : public CueTarget {
   bool overrides_ucb_scoring = false;
   bool requires_model_execution = false;
   bool downgrades_to_quiet_on_dismiss = false;
+  bool is_persistent = false;
   std::optional<CueIntrusiveness> eligible_intrusiveness;
   std::set<CueIntrusiveness> supported_intrusiveness = {
       CueIntrusiveness::kLoud, CueIntrusiveness::kQuiet};
@@ -24,6 +25,8 @@ class TestCueTarget : public CueTarget {
   CueActionData edit_prompt_data = std::monostate();
   bool chip_shown = false;
   bool chip_clicked = false;
+  bool dismissed = false;
+  bool suggestions_settings_opened = false;
   std::optional<page_actions::PageActionPriorityCategory>
       anchored_message_shown_priority;
 
@@ -37,6 +40,7 @@ class TestCueTarget : public CueTarget {
   bool RequiresModelExecution() const override;
   bool OverridesUcbScoring() const override;
   bool DowngradesToQuietOnDismiss() const override;
+  bool IsPersistent() const override;
   bool IsEligible() const override;
   void CheckEligibility(base::WeakPtr<content::WebContents> web_contents,
                         CueIntrusiveness intrusiveness,
@@ -50,6 +54,8 @@ class TestCueTarget : public CueTarget {
       page_actions::PageActionPriorityCategory priority) override;
   void OnAnchoredMessageClicked(CueActionData data) override;
   void OnEditPrompt(CueActionData data) override;
+  void OnDismissed() override;
+  void OnSuggestionsSettingsOpened() override;
   ui::ImageModel GetAnchoredMessageIcon() const override;
   ui::ImageModel GetOmniboxChipIcon() const override;
   CueActionData CueActionDataFromResponse(

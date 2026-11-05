@@ -35,15 +35,13 @@
 #include "build/build_config.h"
 #include "components/file_access/scoped_file_access.h"
 #include "components/file_access/test/mock_scoped_file_access_delegate.h"
-#include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
-#include "content/browser/site_instance_impl.h"
-#include "content/browser/url_info.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
@@ -93,9 +91,6 @@ namespace {
 
 enum class TestMode { kRegular, kIncognito };
 
-// We always use the TEMPORARY FileSystem in these tests.
-constexpr char kFileSystemURLPrefix[] = "filesystem:http://remote/temporary/";
-
 constexpr char kValidExternalMountPoint[] = "mnt_name";
 
 constexpr char kTestFileData[] = "0123456789";
@@ -107,6 +102,7 @@ void FillBuffer(base::span<uint8_t> buffer) {
 // An auto mounter that will try to mount anything for `storage_domain` =
 // "automount", but will only succeed for the mount point "mnt_name".
 bool TestAutoMountForURLRequest(
+    const base::FilePath& mnt_point,
     const storage::FileSystemRequestInfo& request_info,
     const storage::FileSystemURL& filesystem_url,
     base::OnceCallback<void(base::File::Error result)> callback) {
@@ -120,7 +116,7 @@ bool TestAutoMountForURLRequest(
   if (mount_point == kValidExternalMountPoint) {
     storage::ExternalMountPoints::GetSystemInstance()->RegisterFileSystem(
         kValidExternalMountPoint, storage::kFileSystemTypeTest,
-        storage::FileSystemMountOption(), base::FilePath());
+        storage::FileSystemMountOption(), mnt_point);
     std::move(callback).Run(base::File::FILE_OK);
   } else {
     std::move(callback).Run(base::File::FILE_ERROR_NOT_FOUND);
@@ -235,6 +231,10 @@ class FileSystemURLLoaderFactoryTest
 
     ContentBrowserTest::SetUpOnMainThread();
 
+    ASSERT_TRUE(embedded_test_server()->Start());
+    ASSERT_TRUE(NavigateToURL(
+        shell(), embedded_test_server()->GetURL("remote", "/title1.html")));
+
     // We use a test FileSystemContext which runs on the main thread, so we
     // can work with it synchronously.
     file_system_context_ = CreateFileSystemContext(temp_dir_.GetPath());
@@ -246,26 +246,12 @@ class FileSystemURLLoaderFactoryTest
         FROM_HERE,
         base::BindOnce(
             &FileSystemContext::OpenFileSystem, file_system_context_,
-            blink::StorageKey::CreateFromStringForTesting("http://remote/"),
+            blink::StorageKey::CreateFirstParty(test_origin()),
             /*bucket=*/std::nullopt, storage::kFileSystemTypeTemporary,
             storage::OPEN_FILE_SYSTEM_CREATE_IF_NONEXISTENT,
             base::BindOnce(&FileSystemURLLoaderFactoryTest::OnOpenFileSystem,
                            loop.QuitClosure())));
     loop.Run();
-
-    ChildProcessSecurityPolicyImpl::GetInstance()->AddCommittedOrigin(
-        render_frame_host()->GetProcess()->GetID().GetUnsafeValue(),
-        url::Origin::Create(GURL("http://remote/")));
-    ChildProcessSecurityPolicyImpl::GetInstance()->AddCommittedOrigin(
-        render_frame_host()->GetProcess()->GetID().GetUnsafeValue(),
-        url::Origin::Create(GURL("http://automount/")));
-    ChildProcessSecurityPolicyImpl::GetInstance()->AddCommittedOrigin(
-        render_frame_host()->GetProcess()->GetID().GetUnsafeValue(),
-        url::Origin::Create(GURL("http://noauto/")));
-    // Mark the process as used so that subsequent cross-origin navigations
-    // (e.g., in CrossOriginFileBlocked) do not reuse this process while
-    // retaining the committed origins added above.
-    render_frame_host()->GetProcess()->SetIsUsed();
   }
 
   void TearDownOnMainThread() override {
@@ -286,6 +272,11 @@ class FileSystemURLLoaderFactoryTest
   }
 
   base::FilePath SetUpAutoMountContext() {
+    ChildProcessSecurityPolicyImpl::GetInstance()
+        ->RegisterFileSystemPermissionPolicy(
+            storage::kFileSystemTypeTest,
+            storage::FILE_PERMISSION_USE_FILE_PERMISSION);
+
     base::FilePath mnt_point =
         temp_dir_.GetPath().AppendASCII("auto_mount_dir");
     EXPECT_TRUE(base::CreateDirectory(mnt_point));
@@ -298,7 +289,7 @@ class FileSystemURLLoaderFactoryTest
             mnt_point));
 
     std::vector<storage::URLRequestAutoMountHandler> handlers = {
-        base::BindRepeating(&TestAutoMountForURLRequest)};
+        base::BindRepeating(&TestAutoMountForURLRequest, mnt_point)};
 
     file_system_context_ = CreateFileSystemContextWithAutoMountersForTesting(
         io_task_runner_, blocking_task_runner_, nullptr,
@@ -306,15 +297,16 @@ class FileSystemURLLoaderFactoryTest
     return mnt_point;
   }
 
-  void SetUpFileAutoMountContext() {
+  base::FilePath SetUpFileAutoMountContext() {
     const base::FilePath mnt_point = SetUpAutoMountContext();
 
-    ASSERT_TRUE(base::WriteFile(mnt_point.AppendASCII("foo"), kTestFileData));
+    EXPECT_TRUE(base::WriteFile(mnt_point.AppendASCII("foo"), kTestFileData));
+    return mnt_point;
   }
 
   FileSystemURL CreateURL(const base::FilePath& file_path) {
     return file_system_context_->CreateCrackedFileSystemURL(
-        blink::StorageKey::CreateFromStringForTesting("http://remote"),
+        blink::StorageKey::CreateFirstParty(test_origin()),
         storage::kFileSystemTypeTemporary, file_path);
   }
 
@@ -337,7 +329,7 @@ class FileSystemURLLoaderFactoryTest
                  base::span<const uint8_t> buf) {
     FileSystemURL url;
     url = file_system_context_->CreateCrackedFileSystemURL(
-        blink::StorageKey::CreateFromStringForTesting("http://remote"),
+        blink::StorageKey::CreateFirstParty(test_origin()),
         storage::kFileSystemTypeTemporary,
         base::FilePath().AppendASCII(file_name));
 
@@ -438,13 +430,26 @@ class FileSystemURLLoaderFactoryTest
   }
 
   GURL CreateFileSystemURL(const std::string& path) {
-    return GURL(kFileSystemURLPrefix + path);
+    return GURL("filesystem:" + test_origin().Serialize() + "/temporary/" +
+                path);
   }
 
-  std::unique_ptr<network::TestURLLoaderClient> TestLoad(const GURL& url) {
+  GURL CreatePersistentFileSystemURL(const std::string& path) {
+    return GURL("filesystem:" + test_origin().Serialize() + "/persistent/" +
+                path);
+  }
+
+  GURL CreateExternalFileSystemURL(const std::string& path) {
+    return GURL("filesystem:" + test_origin().Serialize() + "/external/" +
+                path);
+  }
+
+  std::unique_ptr<network::TestURLLoaderClient> TestLoad(
+      const GURL& url,
+      const std::string& storage_domain = std::string()) {
     auto client =
         TestLoadHelper(url, /*origin=*/std::nullopt, /*extra_headers=*/nullptr,
-                       file_system_context_);
+                       file_system_context_, storage_domain);
     client->RunUntilComplete();
     return client;
   }
@@ -539,12 +544,17 @@ class FileSystemURLLoaderFactoryTest
     return shell()->web_contents()->GetPrimaryMainFrame();
   }
 
+  url::Origin test_origin() const {
+    return url::Origin::Create(embedded_test_server()->GetURL("remote", "/"));
+  }
+
  private:
   std::unique_ptr<network::TestURLLoaderClient> TestLoadHelper(
       const GURL& url,
       const std::optional<url::Origin>& origin,
       const net::HttpRequestHeaders* extra_headers,
-      scoped_refptr<storage::FileSystemContext> file_system_context) {
+      scoped_refptr<storage::FileSystemContext> file_system_context,
+      const std::string& storage_domain = std::string()) {
     network::ResourceRequest request;
     request.url = url;
     if (origin) {
@@ -552,10 +562,9 @@ class FileSystemURLLoaderFactoryTest
     }
     if (extra_headers)
       request.headers.MergeFrom(*extra_headers);
-    const std::string storage_domain = url.DeprecatedGetOriginAsURL().GetHost();
     mojo::Remote<network::mojom::URLLoaderFactory> factory(
         CreateFileSystemURLLoaderFactory(
-            render_frame_host()->GetProcess()->GetDeprecatedID(),
+            render_frame_host()->GetProcess()->GetID().GetUnsafeValue(),
             render_frame_host()->GetFrameTreeNodeId(), file_system_context,
             storage_domain,
             blink::StorageKey::CreateFirstParty(url::Origin::Create(url))));
@@ -639,7 +648,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, InvalidURL) {
 
 IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, NoSuchRoot) {
   base::ScopedAllowBlockingForTesting allow_blocking;
-  auto client = TestLoad(GURL("filesystem:http://remote/persistent/somedir/"));
+  auto client = TestLoad(CreatePersistentFileSystemURL("somedir/"));
   ASSERT_FALSE(client->has_received_response());
   ASSERT_TRUE(client->has_received_completion());
   EXPECT_EQ(net::ERR_FILE_NOT_FOUND, client->completion_status().error_code);
@@ -698,8 +707,10 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest,
   EXPECT_TRUE(base::CreateDirectory(mnt_point.AppendASCII("foo")));
   EXPECT_TRUE(base::WriteFile(mnt_point.AppendASCII("bar"), "1234567890"));
 
-  auto client =
-      TestLoad(GURL("filesystem:http://automount/external/mnt_name/"));
+  ChildProcessSecurityPolicyImpl::GetInstance()->GrantReadFile(
+      render_frame_host()->GetProcess()->GetID(), mnt_point);
+
+  auto client = TestLoad(CreateExternalFileSystemURL("mnt_name/"), "automount");
 
   ASSERT_TRUE(client->has_received_response());
   EXPECT_TRUE(client->has_received_completion());
@@ -731,7 +742,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest,
 IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, AutoMountInvalidRoot) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   base::FilePath mnt_point = SetUpAutoMountContext();
-  auto client = TestLoad(GURL("filesystem:http://automount/external/invalid"));
+  auto client = TestLoad(CreateExternalFileSystemURL("invalid"), "automount");
 
   EXPECT_FALSE(client->has_received_response());
   EXPECT_TRUE(client->has_received_completion());
@@ -745,7 +756,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, AutoMountInvalidRoot) {
 IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, AutoMountNoHandler) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   base::FilePath mnt_point = SetUpAutoMountContext();
-  auto client = TestLoad(GURL("filesystem:http://noauto/external/mnt_name"));
+  auto client = TestLoad(CreateExternalFileSystemURL("mnt_name"));
 
   EXPECT_FALSE(client->has_received_response());
   EXPECT_TRUE(client->has_received_completion());
@@ -814,8 +825,8 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, CrossOriginFileBlocked) {
       "file1.dat",
       base::as_byte_span(kTestFileData).first(std::size(kTestFileData) - 1));
 
-  // Navigate main frame to foo.com.
-  ASSERT_TRUE(embedded_test_server()->Start());
+  // Navigate main frame to foo.com. The initial process is already used by
+  // the navigation in SetUpOnMainThread(), so it will not be reused here.
   EXPECT_TRUE(
       NavigateToURL(shell()->web_contents(),
                     embedded_test_server()->GetURL("foo.com", "/title1.html")));
@@ -839,28 +850,19 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, PdfProcessFileBlocked) {
 
   ChildProcessSecurityPolicyImpl* policy =
       ChildProcessSecurityPolicyImpl::GetInstance();
-  ChildProcessId process_id = render_frame_host()->GetProcess()->GetID();
 
-  UrlInfo pdf_url_info(
-      UrlInfoInit(GURL("http://remote/"))
-          .WithEmbedderIsolationInfo(EmbedderIsolationInfo::CreateForPdf()));
-  scoped_refptr<SiteInstanceImpl> pdf_instance =
-      SiteInstanceImpl::CreateForUrlInfo(
-          shell()->web_contents()->GetBrowserContext(), pdf_url_info,
-          /*is_guest=*/false,
-          /*is_fenced=*/false,
-          /*is_fixed_storage_partition=*/false);
-  policy->LockProcess(pdf_instance->GetIsolationContext(), process_id,
-                      /*is_process_used=*/false,
-                      ProcessLock::FromSiteInfo(pdf_instance->GetSiteInfo()));
+  RenderFrameHostImpl* pdf_frame = NavigateToURLAsPdf(
+      shell()->web_contents(),
+      embedded_test_server()->GetURL("remote", "/title2.html"));
+  ASSERT_TRUE(pdf_frame->GetSiteInstance()->GetSiteInfo().is_pdf());
+  ChildProcessId process_id = pdf_frame->GetProcess()->GetID();
 
   // Although the PDF process can commit the http://remote/ origin, it must not
   // be allowed to access its filesystem data.
   EXPECT_TRUE(policy->CanCommitURL(process_id.GetUnsafeValue(),
                                    CreateFileSystemURL("file1.dat")));
-  EXPECT_FALSE(policy->CanAccessDataForOrigin(
-      process_id.GetUnsafeValue(),
-      url::Origin::Create(GURL("http://remote/"))));
+  EXPECT_FALSE(policy->CanAccessDataForOrigin(process_id.GetUnsafeValue(),
+                                              test_origin()));
 
   auto client = TestLoad(CreateFileSystemURL("file1.dat"));
   EXPECT_FALSE(client->has_received_response());
@@ -990,7 +992,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest,
 
 IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, FileNoSuchRoot) {
   base::ScopedAllowBlockingForTesting allow_blocking;
-  auto client = TestLoad(GURL("filesystem:http://remote/persistent/somefile"));
+  auto client = TestLoad(CreatePersistentFileSystemURL("somefile"));
   EXPECT_FALSE(client->has_received_response());
   EXPECT_TRUE(client->has_received_completion());
   EXPECT_EQ(net::ERR_FILE_NOT_FOUND, client->completion_status().error_code);
@@ -1066,9 +1068,11 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, FileIncognito) {
 
 IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, FileAutoMountFileTest) {
   base::ScopedAllowBlockingForTesting allow_blocking;
-  SetUpFileAutoMountContext();
+  base::FilePath mnt_point = SetUpFileAutoMountContext();
+  ChildProcessSecurityPolicyImpl::GetInstance()->GrantReadFile(
+      render_frame_host()->GetProcess()->GetID(), mnt_point);
   auto client =
-      TestLoad(GURL("filesystem:http://automount/external/mnt_name/foo"));
+      TestLoad(CreateExternalFileSystemURL("mnt_name/foo"), "automount");
 
   ASSERT_TRUE(client->has_received_response());
   EXPECT_TRUE(client->has_received_completion());
@@ -1085,12 +1089,129 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, FileAutoMountFileTest) {
           kValidExternalMountPoint));
 }
 
+// Security test: the filesystem: URLLoaderFactory denies serving an external
+// mount to a real, renderer-identified process without the per-process
+// ChildProcessSecurityPolicy::CanReadFileSystemFile authorization.
+// The factory here is built with the live renderer's real process id
+// (TestLoadHelper passes
+// render_frame_host()->GetProcess()->GetID().GetUnsafeValue()), so the
+// factory's own CanCommitURL gate is exercised and passes; it is the read
+// authorization that is never performed.
+IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest,
+                       FactoryDeniesExternalMountWithoutPerProcessReadGrant) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  if (IsIncognito()) {
+    GTEST_SKIP()
+        << "Regular profile is sufficient for this authorization test.";
+  }
+  SetUpFileAutoMountContext();
+
+  // SetUpOnMainThread() commits the test renderer to `test_origin()`, which the
+  // filesystem: URL below carries. This makes the CanReadFileSystemFile origin
+  // gate (CanAccessDataForOrigin) pass, so the denial asserted below is a
+  // *filesystem authorization* denial, not an origin-access artifact.
+  const GURL url = CreateExternalFileSystemURL("mnt_name/foo");
+
+  // (1) The factory denies the request to this committed, renderer-
+  // identified process because it lacks the read grant.
+  auto client = TestLoad(url, "automount");
+  EXPECT_TRUE(client->has_received_completion());
+  EXPECT_EQ(net::ERR_ACCESS_DENIED, client->completion_status().error_code);
+
+  const blink::StorageKey storage_key =
+      blink::StorageKey::CreateFirstParty(test_origin());
+  const storage::FileSystemURL cracked =
+      storage::ExternalMountPoints::GetSystemInstance()->CrackURL(url,
+                                                                  storage_key);
+  ASSERT_TRUE(cracked.is_valid());
+  auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
+  const ChildProcessId process_id =
+      shell()->web_contents()->GetPrimaryMainFrame()->GetProcess()->GetID();
+
+  // (2) The origin gate passes: the process legitimately holds this origin.
+  ASSERT_TRUE(policy->CanAccessDataForOrigin(process_id.GetUnsafeValue(),
+                                             cracked.origin()));
+
+  // (3) CanReadFileSystemFile correctly denies this process for the cracked
+  // URL, matching the factory's denial above.
+  EXPECT_FALSE(policy->CanReadFileSystemFile(process_id, cracked));
+
+  ASSERT_TRUE(
+      storage::ExternalMountPoints::GetSystemInstance()->RevokeFileSystem(
+          kValidExternalMountPoint));
+}
+
+// Companion: proves CanReadFileSystemFile IS the grant-based per-process check
+// that distinguishes the owning app from an unrelated renderer for the media
+// type this bug exposes. kFileSystemTypeLocalMedia maps to
+// FILE_PERMISSION_USE_FILE_PERMISSION -> HasPermissionsForFile(process, path).
+// GrantReadFile is exactly what the owning media-gallery extension's process
+// receives; it flips the check from deny to allow.
+IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest,
+                       CanReadFileSystemFileIsThePerProcessGrantForMediaType) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  if (IsIncognito()) {
+    GTEST_SKIP() << "Regular profile is sufficient.";
+  }
+
+  // HasPermissionsForFileSystemFile gates on CanAccessDataForOrigin(process,
+  // url.origin()) before the file-grant check. The real attacker builds the
+  // URL with its OWN committed web origin (which passes that gate), and is then
+  // stopped only by the missing file grant. Mirror that: navigate so the test
+  // process holds a real origin, and key the URL to it.
+  if (!embedded_test_server()->Started()) {
+    ASSERT_TRUE(embedded_test_server()->Start());
+  }
+  const GURL page = embedded_test_server()->GetURL("/title1.html");
+  ASSERT_TRUE(NavigateToURL(shell()->web_contents(), page));
+  const url::Origin origin = url::Origin::Create(page);
+
+  const base::FilePath secret =
+      temp_dir_.GetPath().AppendASCII("gallery_secret.jpg");
+  ASSERT_TRUE(base::WriteFile(secret, kTestFileData));
+
+  const storage::FileSystemURL media_url =
+      storage::FileSystemURL::CreateForTest(
+          blink::StorageKey::CreateFirstParty(origin),
+          storage::kFileSystemTypeLocalMedia, secret);
+  ASSERT_TRUE(media_url.is_valid());
+  ASSERT_EQ(storage::kFileSystemTypeLocalMedia, media_url.type());
+
+  auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
+  const ChildProcessId pid =
+      shell()->web_contents()->GetPrimaryMainFrame()->GetProcess()->GetID();
+
+  // The renderer can access its own origin's data (origin gate passes), but it
+  // holds NO per-process read grant for the victim's media file. For the media
+  // type (kFileSystemTypeLocalMedia -> FILE_PERMISSION_USE_FILE_PERMISSION)
+  // that makes CanReadFileSystemFile -- the check the factory omits -- DENY it.
+  // This is exactly the unrelated-renderer (attacker) situation.
+  ASSERT_TRUE(
+      policy->CanAccessDataForOrigin(pid.GetUnsafeValue(), media_url.origin()));
+  EXPECT_FALSE(policy->CanReadFileSystemFile(pid, media_url))
+      << "a media-gallery-type file must be denied to a renderer that holds no "
+         "per-process file grant";
+
+  // Contrast: the SAME process IS authorized for its own sandboxed filesystem
+  // (kFileSystemTypeTemporary -> FILE_PERMISSION_SANDBOX). This proves
+  // CanReadFileSystemFile is a real, policy-sensitive authorization -- not a
+  // blanket denial -- so the denial above is because the process lacks the
+  // per-process grant that the mojo path checks and the factory does not.
+  const storage::FileSystemURL sandbox_url =
+      storage::FileSystemURL::CreateForTest(
+          blink::StorageKey::CreateFirstParty(origin),
+          storage::kFileSystemTypeTemporary,
+          base::FilePath(FILE_PATH_LITERAL("sandboxed.txt")));
+  EXPECT_TRUE(policy->CanReadFileSystemFile(pid, sandbox_url))
+      << "the sandboxed filesystem is authorized for its own origin";
+}
+
 IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest,
                        FileAutoMountInvalidRoot) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   SetUpFileAutoMountContext();
   auto client =
-      TestLoad(GURL("filesystem:http://automount/external/invalid/foo"));
+      TestLoad(CreateExternalFileSystemURL("invalid/foo"), "automount");
 
   EXPECT_FALSE(client->has_received_response());
   EXPECT_TRUE(client->has_received_completion());
@@ -1104,8 +1225,7 @@ IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest,
 IN_PROC_BROWSER_TEST_P(FileSystemURLLoaderFactoryTest, FileAutoMountNoHandler) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   SetUpFileAutoMountContext();
-  auto client =
-      TestLoad(GURL("filesystem:http://noauto/external/mnt_name/foo"));
+  auto client = TestLoad(CreateExternalFileSystemURL("mnt_name/foo"));
 
   EXPECT_FALSE(client->has_received_response());
   EXPECT_TRUE(client->has_received_completion());

@@ -4,7 +4,6 @@
 
 static_library("common") {
   sources = [
-    "google_switches.cc",
     "google_switches.h",
     "google_tld_list.h",
     "google_util.cc",
@@ -17,6 +16,7 @@ static_library("common") {
   ]
 
   deps = [
+    "//base/i18n:language_tag",
     "//build:branding_buildflags",
     "//components/url_formatter",
   ]
@@ -30,6 +30,7 @@ source_set("unit_tests") {
   deps = [
     ":common",
     "//base",
+    "//base/i18n:language_tag",
     "//base/test:test_support",
     "//testing/gtest",
   ]

@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.omnibox.status;
 
-import static org.mockito.Mockito.doReturn;
-
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
 
 import android.app.Activity;
@@ -18,45 +16,34 @@ import android.widget.LinearLayout;
 import androidx.core.content.res.ResourcesCompat;
 import androidx.test.filters.MediumTest;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.junit.MockitoJUnit;
-import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.test.BaseActivityTestRule;
-import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterAnnotations.UseMethodParameter;
+import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterProvider;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
-import org.chromium.chrome.browser.omnibox.ChromeAutocompleteSchemeClassifier;
-import org.chromium.chrome.browser.omnibox.ChromeAutocompleteSchemeClassifierJni;
-import org.chromium.chrome.browser.omnibox.NewTabPageDelegate;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties.PermissionIconResource;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties.StatusIconResource;
-import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.toolbar.LocationBarModel;
+import org.chromium.chrome.browser.omnibox.status.StatusView.IconTransitionType;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.chrome.test.util.ToolbarUnitTestUtils;
 import org.chromium.components.browser_ui.site_settings.ContentSettingsResources;
 import org.chromium.components.browser_ui.util.DrawableUtils;
 import org.chromium.components.browser_ui.widget.CompositeTouchDelegate;
 import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
@@ -67,7 +54,7 @@ import java.util.List;
 
 /** Render tests for {@link StatusView}. */
 @RunWith(ParameterizedRunner.class)
-@ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
+@UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @Batch(Batch.PER_CLASS)
 public class StatusViewRenderTest {
     @ClassRule
@@ -87,29 +74,18 @@ public class StatusViewRenderTest {
                     .setRevision(RENDER_TEST_REVISION)
                     .build();
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
-
-    @Mock private ChromeAutocompleteSchemeClassifier.Natives mChromeAutocompleteSchemeClassifierJni;
-    @Mock private Profile mProfile;
-    @Mock private Profile mIncognitoProfile;
-
     private StatusView mStatusView;
     private PropertyModel mStatusModel;
-    private LocationBarModel mLocationBarModel;
     private Drawable mBackground;
 
     @BeforeClass
     public static void setupSuite() {
         sActivity = sActivityTestRule.launchActivity(null);
+        ResettersForTesting.register(() -> sActivity = null);
     }
 
     @Before
     public void setUp() {
-        ChromeAutocompleteSchemeClassifierJni.setInstanceForTesting(
-                mChromeAutocompleteSchemeClassifierJni);
-
-        doReturn(true).when(mIncognitoProfile).isOffTheRecord();
-
         runOnUiThreadBlocking(
                 () -> {
                     ViewGroup view = new LinearLayout(sActivity);
@@ -127,14 +103,7 @@ public class StatusViewRenderTest {
                                     .inflate(R.layout.location_status, view, true)
                                     .findViewById(R.id.location_bar_status);
                     mStatusView.setCompositeTouchDelegate(new CompositeTouchDelegate(view));
-                    mLocationBarModel =
-                            new LocationBarModel(
-                                    mStatusView.getContext(),
-                                    NewTabPageDelegate.EMPTY,
-                                    url -> url.getSpec(),
-                                    ToolbarUnitTestUtils.OFFLINE_STATUS,
-                                    ObservableSuppliers.createNonNull(ControlsPosition.TOP));
-                    mLocationBarModel.setTab(null, mProfile);
+                    mStatusView.setIconAnimationDurationForTesting(0);
                     mStatusModel = new PropertyModel.Builder(StatusProperties.ALL_KEYS).build();
                     PropertyModelChangeProcessor.create(
                             mStatusModel, mStatusView, new StatusViewBinder());
@@ -154,37 +123,9 @@ public class StatusViewRenderTest {
                 });
     }
 
-    @After
-    public void tearDown() throws Exception {
-        runOnUiThreadBlocking(() -> mLocationBarModel.destroy());
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"RenderTest"})
-    public void testStatusViewIncognitoWithIcon() throws IOException {
-        runOnUiThreadBlocking(
-                () -> {
-                    mLocationBarModel.setTab(null, mIncognitoProfile);
-                    mStatusView.setIncognitoBadgeVisibility(true);
-                    mStatusModel.set(
-                            StatusProperties.STATUS_ICON_RESOURCE,
-                            new StatusIconResource(R.drawable.ic_search_24dp, 0));
-                });
-        mRenderTestRule.render(mStatusView, "status_view_incognito_with_icon");
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"RenderTest"})
-    public void testStatusViewIncognitoNoIcon() throws IOException {
-        runOnUiThreadBlocking(
-                () -> {
-                    mLocationBarModel.setTab(null, mIncognitoProfile);
-                    mStatusView.setIncognitoBadgeVisibility(true);
-                    mStatusModel.set(StatusProperties.STATUS_ICON_RESOURCE, null);
-                });
-        mRenderTestRule.render(mStatusView, "status_view_incognito_no_icon");
+    private void renderStatusView(String id) throws IOException {
+        CriteriaHelper.pollUiThread(() -> !mStatusView.isStatusIconAnimating());
+        mRenderTestRule.render(mStatusView, id);
     }
 
     @Test
@@ -201,7 +142,7 @@ public class StatusViewRenderTest {
                             StatusProperties.STATUS_ICON_RESOURCE,
                             new StatusIconResource(R.drawable.ic_search_24dp, 0));
                 });
-        mRenderTestRule.render(mStatusView, "status_view_with_icon");
+        renderStatusView("status_view_with_icon");
     }
 
     public static class GeolocationContentSettingsParams implements ParameterProvider {
@@ -224,7 +165,6 @@ public class StatusViewRenderTest {
     @Test
     @MediumTest
     @Feature({"RenderTest"})
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // crbug.com/545205792
     public void testStatusViewWithLocationPermissionIcon(
             @ContentSettingsType.EnumType int geolocation) throws IOException {
         runOnUiThreadBlocking(
@@ -237,37 +177,36 @@ public class StatusViewRenderTest {
                                     false);
                     PermissionIconResource statusIcon =
                             new PermissionIconResource(locationIcon, false);
-                    statusIcon.setTransitionType(StatusView.IconTransitionType.ROTATE);
+                    statusIcon.setTransitionType(IconTransitionType.ROTATE);
                     mStatusModel.set(StatusProperties.STATUS_VIEW_BACKGROUND, mBackground);
                     mStatusModel.set(
                             StatusProperties.STATUS_VIEW_TOOLTIP_TEXT,
                             R.string.accessibility_menu_info);
                     mStatusModel.set(StatusProperties.STATUS_ICON_RESOURCE, statusIcon);
                 });
-        mRenderTestRule.render(mStatusView, "status_view_with_location_permission_icon");
+        renderStatusView("status_view_with_location_permission_icon");
     }
 
     @Test
     @MediumTest
     @Feature({"RenderTest"})
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // crbug.com/545205792
     public void testStatusViewWithStoreIcon() throws IOException {
         runOnUiThreadBlocking(
                 () -> {
                     Drawable storeIconDrawable =
                             ResourcesCompat.getDrawable(
                                     sActivity.getResources(),
-                                    R.drawable.ic_storefront_blue,
+                                    R.drawable.ic_storefront_accent1,
                                     sActivity.getTheme());
                     StatusIconResource statusIcon =
                             new PermissionIconResource(storeIconDrawable, false);
-                    statusIcon.setTransitionType(StatusView.IconTransitionType.ROTATE);
+                    statusIcon.setTransitionType(IconTransitionType.ROTATE);
                     mStatusModel.set(StatusProperties.STATUS_VIEW_BACKGROUND, mBackground);
                     mStatusModel.set(
                             StatusProperties.STATUS_VIEW_TOOLTIP_TEXT,
                             R.string.accessibility_menu_info);
                     mStatusModel.set(StatusProperties.STATUS_ICON_RESOURCE, statusIcon);
                 });
-        mRenderTestRule.render(mStatusView, "status_view_with_store_icon");
+        renderStatusView("status_view_with_store_icon");
     }
 }

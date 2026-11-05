@@ -59,7 +59,6 @@ class HistoryClustersService : public base::SupportsUserData,
 
   // `url_loader_factory` is allowed to be nullptr, like in unit tests.
   HistoryClustersService(
-      const std::string& application_locale,
       history::HistoryService* history_service,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       site_engagement::SiteEngagementScoreProvider* engagement_score_provider,
@@ -142,8 +141,8 @@ class HistoryClustersService : public base::SupportsUserData,
       bool recluster,
       QueryClustersCallback callback);
 
-  // Entrypoint to the `HistoryClustersServiceTaskUpdateClusters`. Updates the
-  // persisted clusters in the history DB and invokes `callback` when done.
+  // Entrypoint to the `HistoryClustersServiceTaskUpdateClusterTriggerability`.
+  // Updates the triggerability of persisted clusters in the history DB.
   void UpdateClusters();
 
   // Returns matched keyword data from cache synchronously if `query` matches a
@@ -184,7 +183,7 @@ class HistoryClustersService : public base::SupportsUserData,
   //  `PopulateClusterKeywordCache()` should be encapsulated into their own task
   //  to avoid cluttering `HistoryClusterService` with their callbacks. Similar
   //  to the `HistoryClustersServiceTaskGetMostRecentClusters` and
-  //  `HistoryClustersServiceTaskUpdateClusters` tasks.
+  //  `HistoryClustersServiceTaskUpdateClusterTriggerability` tasks.
   void StartKeywordCacheRefresh();
 
   // This is a callback used for the `QueryClusters()` call from
@@ -210,7 +209,7 @@ class HistoryClustersService : public base::SupportsUserData,
   // Serializes and writes the "all keywords" cache to prefs.
   void WriteAllCacheToPrefs();
 
-  // True if Journeys is enabled based on feature flag and locale checks.
+  // True if Journeys is enabled for this platform.
   // But critically, this does NOT check the pref or policy value to see if
   // either the user or Enterprise has disabled Journeys.
   const bool is_journeys_feature_flag_enabled_;
@@ -259,8 +258,8 @@ class HistoryClustersService : public base::SupportsUserData,
   // `update_clusters_task_.Done()` will be true if there is no ongoing task.
   std::unique_ptr<HistoryClustersServiceTask> update_clusters_task_;
 
-  // The time of the last `UpdateClusters()` call. Used for logging and to limit
-  // requests when `persist_on_query` is enabled.
+  // The time of the last `UpdateClusters()` call. Used to limit requests when
+  // `persist_on_query` is enabled.
   base::ElapsedTimer update_clusters_timer_;
 
   // Whether a synced visit was received since the last `UpdateClusters()` call.

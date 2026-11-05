@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 
+#include "ash/strings/grit/ash_strings.h"
+#include "base/callback_list.h"
 #include "base/command_line.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
@@ -16,15 +18,15 @@
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
 #include "chrome/browser/ash/arc/test/arc_data_removed_waiter.h"
 #include "chrome/browser/ash/arc/test/test_arc_session_manager.h"
-#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
+#include "chrome/browser/ash/login/test/chrome_user_session_test_environment_delegate.h"
 #include "chrome/browser/consent_auditor/consent_auditor_factory.h"
 #include "chrome/browser/consent_auditor/consent_auditor_test_utils.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/ui/ash/login/fake_login_display_host.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
-#include "chrome/test/base/testing_profile_manager.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 #include "chromeos/ash/components/dbus/dlcservice/dlcservice_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
@@ -38,16 +40,10 @@
 #include "components/account_id/account_id.h"
 #include "components/account_id/account_id_literal.h"
 #include "components/consent_auditor/fake_consent_auditor.h"
-#include "components/session_manager/core/fake_session_manager_delegate.h"
-#include "components/session_manager/core/session_manager.h"
+#include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/user_manager/fake_user_manager_delegate.h"
-#include "components/user_manager/known_user.h"
-#include "components/user_manager/scoped_user_manager.h"
-#include "components/user_manager/test_helper.h"
-#include "components/user_manager/user_manager.h"
-#include "components/user_manager/user_manager_impl.h"
 #include "content/public/test/browser_task_environment.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -84,23 +80,32 @@ class ArcPlayStoreEnabledPreferenceHandlerTest : public testing::Test {
         base::CommandLine::ForCurrentProcess());
     ArcSessionManager::SetUiEnabledForTesting(false);
 
-    ASSERT_TRUE(testing_profile_manager_.SetUp());
+    // The env creates the profile on LogIn(), so install the testing
+    // factories when its keyed services are created.
+    create_services_subscription_ =
+        BrowserContextDependencyManager::GetInstance()
+            ->RegisterCreateServicesCallbackForTesting(
+                base::BindRepeating([](content::BrowserContext* context) {
+                  IdentityTestEnvironmentProfileAdaptor::
+                      SetIdentityTestEnvironmentFactoriesOnBrowserContext(
+                          context);
+                  ConsentAuditorFactory::GetInstance()->SetTestingFactory(
+                      context, base::BindRepeating(&BuildFakeConsentAuditor));
+                }));
 
-    ASSERT_TRUE(user_manager::TestHelper(user_manager_.Get())
-                    .AddRegularUser(kTestAccountId));
-    user_manager_->UserLoggedIn(
-        kTestAccountId,
-        user_manager::TestHelper::GetFakeUsernameHash(kTestAccountId));
+    auto* browser_process = TestingBrowserProcess::GetGlobal();
+    user_session_test_environment_ = std::make_unique<
+        ash::test::UserSessionTestEnvironment>(
+        browser_process->GetTestingLocalState(),
+        std::make_unique<ash::test::ChromeUserSessionTestEnvironmentDelegate>(
+            browser_process));
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(kTestAccountId));
+    user_session_test_environment_->LogIn(kTestAccountId);
+    profile_ = static_cast<TestingProfile*>(Profile::FromBrowserContext(
+        ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+            kTestAccountId)));
+    ASSERT_TRUE(profile_);
 
-    ash::ScopedAccountIdAnnotator annotator(
-        testing_profile_manager_.profile_manager(), kTestAccountId);
-    profile_ = testing_profile_manager_.CreateTestingProfile(
-        std::string(kTestAccountId.GetUserEmail()),
-        IdentityTestEnvironmentProfileAdaptor ::
-            GetIdentityTestEnvironmentFactoriesWithAppendedFactories(
-                {TestingProfile::TestingFactory(
-                    ConsentAuditorFactory::GetInstance(),
-                    base::BindRepeating(&BuildFakeConsentAuditor))}));
     identity_test_env_profile_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_.get());
     // Nothing else in this test registers an ash::IdentityManagerProvider.
@@ -110,9 +115,6 @@ class ArcPlayStoreEnabledPreferenceHandlerTest : public testing::Test {
         kTestAccountId, identity_test_env_profile_adaptor_->identity_test_env()
                             ->identity_manager());
 
-    // TODO(crbug.com/40225390): Use ProfileUserManagerController.
-    user_manager_->OnUserProfileCreated(kTestAccountId, profile_->GetPrefs());
-
     arc_dlc_installer_ = std::make_unique<ArcDlcInstaller>();
     arc_session_manager_ = CreateTestArcSessionManager(
         std::make_unique<ArcSessionRunner>(
@@ -120,7 +122,8 @@ class ArcPlayStoreEnabledPreferenceHandlerTest : public testing::Test {
         arc_dlc_installer_.get());
     preference_handler_ =
         std::make_unique<ArcPlayStoreEnabledPreferenceHandler>(
-            profile_.get(), arc_session_manager_.get());
+            profile_.get(), arc_session_manager_.get(),
+            ConsentAuditorFactory::GetForProfile(profile_.get()));
 
     identity_test_env_profile_adaptor_->identity_test_env()
         ->MakePrimaryAccountAvailable(
@@ -135,9 +138,9 @@ class ArcPlayStoreEnabledPreferenceHandlerTest : public testing::Test {
     identity_manager_provider_.reset();
     identity_test_env_profile_adaptor_.reset();
 
-    user_manager_->OnUserProfileWillBeDestroyed(kTestAccountId);
     profile_ = nullptr;
-    testing_profile_manager_.DeleteAllTestingProfiles();
+    user_session_test_environment_.reset();
+    create_services_subscription_ = {};
     ash::UpstartClient::Shutdown();
     ash::SessionManagerClient::Shutdown();
     ash::DlcserviceClient::Shutdown();
@@ -168,19 +171,16 @@ class ArcPlayStoreEnabledPreferenceHandlerTest : public testing::Test {
 
  protected:
   void CreateLoginDisplayHost() {
-    fake_login_display_host_ = std::make_unique<ash::FakeLoginDisplayHost>();
+    fake_login_display_host_ = std::make_unique<ash::FakeLoginDisplayHost>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
+        /*multi_user_sign_in_policy_controller=*/nullptr);
   }
 
  private:
   content::BrowserTaskEnvironment task_environment_;
-  user_manager::ScopedUserManager user_manager_{
-      std::make_unique<user_manager::UserManagerImpl>(
-          std::make_unique<user_manager::FakeUserManagerDelegate>(),
-          TestingBrowserProcess::GetGlobal()->GetTestingLocalState())};
-  session_manager::SessionManager session_manager_{
-      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
-  TestingProfileManager testing_profile_manager_{
-      TestingBrowserProcess::GetGlobal()};
+  base::CallbackListSubscription create_services_subscription_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   raw_ptr<TestingProfile> profile_ = nullptr;
 
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
@@ -195,7 +195,8 @@ class ArcPlayStoreEnabledPreferenceHandlerTest : public testing::Test {
 TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest, PrefChangeTriggersService) {
   ASSERT_FALSE(IsArcPlayStoreEnabledForProfile(profile()));
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
 
   EXPECT_FALSE(
@@ -219,7 +220,8 @@ TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest,
   SetArcPlayStoreEnabledForProfile(profile(), true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
 
   // Setting profile initiates a code fetching process.
@@ -235,7 +237,8 @@ TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest, RemoveDataDir_Managed) {
   // Starting session manager with prefs::kArcEnabled off in a managed profile
   // does automatically remove Android's data folder.
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
   EXPECT_TRUE(
       profile()->GetPrefs()->GetBoolean(prefs::kArcDataRemoveRequested));
@@ -257,7 +260,8 @@ TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest, PrefChangeRevokesConsent) {
 
   ASSERT_FALSE(IsArcPlayStoreEnabledForProfile(profile()));
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
 
   SetArcPlayStoreEnabledForProfile(profile(), true);
@@ -278,7 +282,8 @@ TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest, ManualStart) {
                                                           "manual");
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
 
   // ARC is neither enabled by preference nor by manual start.
@@ -306,7 +311,8 @@ TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest, ManualStartIgnorePreference) {
                                                           "manual");
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
 
   // ARC is neither enabled by preference nor by manual start.
@@ -336,7 +342,8 @@ TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest,
   SetArcPlayStoreEnabledForProfile(profile(), true);
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
 
   // ARC is enable and already provisoned by manual mode blocks the start.
@@ -365,7 +372,8 @@ TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest, MiniStateUnmanaged) {
   ASSERT_TRUE(IsArcOobeOptInActive());
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
 
   // Ensure that we are still in mini instance.
@@ -394,7 +402,8 @@ TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest, MiniStateManagedDisabled) {
       prefs::kArcEnabled, std::make_unique<base::Value>(false));
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
 
   // Ensure that we stop the mini instance.
@@ -422,7 +431,8 @@ TEST_F(ArcPlayStoreEnabledPreferenceHandlerTest, MiniStateManagedEnabled) {
       prefs::kArcEnabled, std::make_unique<base::Value>(true));
 
   arc_session_manager()->SetProfile(profile());
-  arc_session_manager()->Initialize();
+  arc_session_manager()->Initialize(
+      ConsentAuditorFactory::GetForProfile(profile()));
   preference_handler()->Start();
 
   // Ensure do do not stop the mini instance.

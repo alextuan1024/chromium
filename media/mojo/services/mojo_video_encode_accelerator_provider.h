@@ -6,6 +6,7 @@
 #define MEDIA_MOJO_SERVICES_MOJO_VIDEO_ENCODE_ACCELERATOR_PROVIDER_H_
 
 #include "base/compiler_specific.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "gpu/config/gpu_info.h"
@@ -32,16 +33,18 @@ class MEDIA_MOJO_EXPORT MojoVideoEncodeAcceleratorProvider
   using GetCommandBufferHelperCB =
       base::RepeatingCallback<scoped_refptr<CommandBufferHelper>()>;
   using CreateAndInitializeVideoEncodeAcceleratorCallback =
-      base::RepeatingCallback<::media::EncoderStatus::Or<
-          std::unique_ptr<::media::VideoEncodeAccelerator>>(
-          const ::media::VideoEncodeAccelerator::Config& config,
-          VideoEncodeAccelerator::Client* client,
-          const gpu::GpuPreferences& gpu_preferences,
-          const gpu::GpuDriverBugWorkarounds& gpu_workarounds,
-          const gpu::GPUInfo::GPUDevice& gpu_device,
-          std::unique_ptr<MediaLog> media_log,
-          GetCommandBufferHelperCB get_command_buffer_helper_cb,
-          scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner)>;
+      base::RepeatingCallback<
+          base::expected<std::unique_ptr<::media::VideoEncodeAccelerator>,
+                         ::media::EncoderStatus>(
+              const ::media::VideoEncodeAccelerator::Config& config,
+              VideoEncodeAccelerator::Client* client,
+              const gpu::GpuPreferences& gpu_preferences,
+              const gpu::GpuDriverBugWorkarounds& gpu_workarounds,
+              const gpu::GPUInfo::GPUDevice& gpu_device,
+              std::unique_ptr<MediaLog> media_log,
+              GetCommandBufferHelperCB get_command_buffer_helper_cb,
+              scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
+              gpu::Scheduler* gpu_scheduler)>;
 
   static void Create(
       mojo::PendingReceiver<mojom::VideoEncodeAcceleratorProvider> receiver,
@@ -51,7 +54,8 @@ class MEDIA_MOJO_EXPORT MojoVideoEncodeAcceleratorProvider
       const gpu::GPUInfo::GPUDevice& gpu_device,
       scoped_refptr<base::SequencedTaskRunner> runner,
       base::WeakPtr<MediaGpuChannelManager> media_gpu_channel_manager,
-      scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner);
+      scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
+      gpu::Scheduler* gpu_scheduler = nullptr);
 
   MojoVideoEncodeAcceleratorProvider(
       CreateAndInitializeVideoEncodeAcceleratorCallback create_vea_callback,
@@ -59,7 +63,8 @@ class MEDIA_MOJO_EXPORT MojoVideoEncodeAcceleratorProvider
       const gpu::GpuDriverBugWorkarounds& gpu_workarounds,
       const gpu::GPUInfo::GPUDevice& gpu_device,
       base::WeakPtr<MediaGpuChannelManager> media_gpu_channel_manager,
-      scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner);
+      scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
+      gpu::Scheduler* gpu_scheduler = nullptr);
 
   MojoVideoEncodeAcceleratorProvider(
       const MojoVideoEncodeAcceleratorProvider&) = delete;
@@ -82,6 +87,7 @@ class MEDIA_MOJO_EXPORT MojoVideoEncodeAcceleratorProvider
   const gpu::GPUInfo::GPUDevice gpu_device_;
   const base::WeakPtr<MediaGpuChannelManager> media_gpu_channel_manager_;
   const scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner_;
+  const raw_ptr<gpu::Scheduler> gpu_scheduler_;
 };
 
 }  // namespace media

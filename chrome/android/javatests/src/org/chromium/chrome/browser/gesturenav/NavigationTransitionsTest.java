@@ -50,17 +50,17 @@ import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.back_press.BackPressMetrics;
 import org.chromium.chrome.browser.bookmarks.BookmarkPage;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.native_page.BasicSmoothTransitionDelegate;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
-import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.back_forward_transition.AnimationStage;
+import org.chromium.content_public.browser.test.util.BackForwardTransitionAnimationManagerTestUtils;
 import org.chromium.content_public.browser.test.util.Coordinates;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.content_public.browser.test.util.TouchCommon;
@@ -89,7 +89,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     "force-prefers-no-reduced-motion",
     // Resampling can make scroll offsets non-deterministic so turn it off.
     "disable-features=ResamplingScrollEvents",
@@ -132,7 +131,7 @@ public class NavigationTransitionsTest {
                             .name("Gestural"));
 
     private final int mTestNavigationMode;
-    private WebPageStation mPage;
+    private CtaPageStation mPage;
 
     private static class ScreenshotCallback
             implements ScreenshotCaptureTestHelper.NavScreenshotCallback {
@@ -201,7 +200,7 @@ public class NavigationTransitionsTest {
         mScreenshotCaptureTestHelper.setNavScreenshotCallbackForTesting(mScreenshotCallback);
         mViewportTestUtils = new ViewportTestUtils(mActivityTestRule);
         mViewportTestUtils.setUpForBrowserControls();
-        GestureNavigationUtils.setMinRequiredPhysicalRamMbForTesting(0);
+        BackForwardTransitionAnimationManagerTestUtils.setMinRequiredPhysicalRamMbForTesting(0);
     }
 
     @After
@@ -332,20 +331,21 @@ public class NavigationTransitionsTest {
 
     private void performNavigationTransition(
             String expectedUrl, @BackGestureEventSwipeEdge int edge) {
-        Tab tab = mActivityTestRule.getActivityTab();
-        ChromeTabUtils.waitForTabPageLoaded(
-                tab,
-                expectedUrl,
-                () -> {
-                    invokeNavigateGesture(edge);
-                });
+        mPage = mPage.runTo(() -> invokeNavigateGesture(edge)).arriveAt(pageAt(expectedUrl));
+    }
+
+    // |url| may be the NTP, so use a generic page Station.
+    private CtaPageStation pageAt(String url) {
+        return CtaPageStation.newGenericBuilder().initForLoadingUrlOnSameTab(url, mPage).build();
     }
 
     private void waitForTransitionFinished() {
         CriteriaHelper.pollUiThread(
                 () -> {
                     boolean hasTransition =
-                            getWebContents().getCurrentBackForwardTransitionStage()
+                            getWebContents()
+                                            .getBackForwardTransitionAnimationManager()
+                                            .getCurrentAnimationStage()
                                     != AnimationStage.NONE;
                     Criteria.checkThat(hasTransition, Matchers.is(false));
                 },
@@ -399,7 +399,7 @@ public class NavigationTransitionsTest {
 
     private void loadUrlAndWaitForScreenshotCallback(String url, CallbackHelper helper)
             throws TimeoutException {
-        mActivityTestRule.loadUrl(url);
+        mPage = mPage.loadWebPageProgrammatically(url);
         WebContentsUtils.waitForCopyableViewInWebContents(getWebContents());
         helper.waitForNext();
     }
@@ -615,7 +615,9 @@ public class NavigationTransitionsTest {
                                     // Since in 3-button mode the gesture sequence is two seconds,
                                     // the top control must have started to show during the two
                                     // seconds.
-                                    if (getWebContents().getCurrentBackForwardTransitionStage()
+                                    if (getWebContents()
+                                                    .getBackForwardTransitionAnimationManager()
+                                                    .getCurrentAnimationStage()
                                             == AnimationStage.OTHER) {
                                         topControlOffsetDuringGesture.set(topOffset);
                                     }
@@ -802,18 +804,22 @@ public class NavigationTransitionsTest {
 
         Assert.assertEquals(url2, getCurrentUrl());
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    BackPressManager manager =
-                            mActivityTestRule.getActivity().getBackPressManagerForTesting();
-                    var backEvent = new BackEventCompat(1, 0, .8f, BackEventCompat.EDGE_LEFT);
-                    // BackPressManager will prevent this from triggering because of no active
-                    // handler.
-                    manager.getCallback().handleOnBackProgressed(backEvent);
-                    manager.getCallback().handleOnBackPressed();
-                });
-
-        ChromeTabUtils.waitForTabPageLoaded(mActivityTestRule.getActivityTab(), url1);
+        mPage =
+                mPage.runOnUiThreadTo(
+                                () -> {
+                                    BackPressManager manager =
+                                            mActivityTestRule
+                                                    .getActivity()
+                                                    .getBackPressManagerForTesting();
+                                    var backEvent =
+                                            new BackEventCompat(
+                                                    1, 0, .8f, BackEventCompat.EDGE_LEFT);
+                                    // BackPressManager will prevent this from triggering because
+                                    // of no active handler.
+                                    manager.getCallback().handleOnBackProgressed(backEvent);
+                                    manager.getCallback().handleOnBackPressed();
+                                })
+                        .arriveAt(pageAt(url1));
 
         helper.waitForNext();
     }
@@ -830,9 +836,9 @@ public class NavigationTransitionsTest {
         String url1 = mTestServer.getURL("/chrome/test/data/android/blue.html");
         String url2 = mTestServer.getURL("/chrome/test/data/android/green.html");
         String url3 = mTestServer.getURL("/chrome/test/data/android/simple.html");
-        mActivityTestRule.loadUrl(url1);
-        mActivityTestRule.loadUrl(url2);
-        mActivityTestRule.loadUrl(url3);
+        mPage = mPage.loadWebPageProgrammatically(url1);
+        mPage = mPage.loadWebPageProgrammatically(url2);
+        mPage = mPage.loadWebPageProgrammatically(url3);
         WebContentsUtils.waitForCopyableViewInWebContents(getWebContents());
 
         // Perform a back gesture transition from the left edge.
@@ -906,18 +912,24 @@ public class NavigationTransitionsTest {
         Assert.assertEquals(
                 "Back forward transition not invoked yet",
                 AnimationStage.OTHER,
-                tab.getWebContents().getCurrentBackForwardTransitionStage());
+                tab.getWebContents()
+                        .getBackForwardTransitionAnimationManager()
+                        .getCurrentAnimationStage());
 
         release.run();
         CriteriaHelper.pollInstrumentationThread(
                 () ->
                         AnimationStage.INVOKE_ANIMATION
-                                == tab.getWebContents().getCurrentBackForwardTransitionStage(),
+                                == tab.getWebContents()
+                                        .getBackForwardTransitionAnimationManager()
+                                        .getCurrentAnimationStage(),
                 "invoking animation should be started");
         CriteriaHelper.pollInstrumentationThread(
                 () ->
                         AnimationStage.NONE
-                                == tab.getWebContents().getCurrentBackForwardTransitionStage(),
+                                == tab.getWebContents()
+                                        .getBackForwardTransitionAnimationManager()
+                                        .getCurrentAnimationStage(),
                 "should wait for animation to be finished");
         CriteriaHelper.pollInstrumentationThread(
                 () ->
@@ -943,11 +955,11 @@ public class NavigationTransitionsTest {
         if (mTestNavigationMode == NAVIGATION_MODE_GESTURAL
                 && VERSION.SDK_INT < VERSION_CODES.UPSIDE_DOWN_CAKE) return;
         // 1. Load NTP.
-        mActivityTestRule.loadUrl(getOriginalNativeNtpUrl());
+        mPage = mPage.loadNtp();
         WebContentsUtils.waitForCopyableViewInWebContents(getWebContents());
         // 2. Load url1.
         String url1 = mTestServer.getURL("/chrome/test/data/android/blue.html");
-        mActivityTestRule.loadUrl(url1);
+        mPage = mPage.loadWebPageProgrammatically(url1);
         WebContentsUtils.waitForCopyableViewInWebContents(getWebContents());
 
         CallbackHelper callbackHelper = new CallbackHelper();
@@ -987,8 +999,8 @@ public class NavigationTransitionsTest {
         Assume.assumeTrue(mTestNavigationMode == NAVIGATION_MODE_THREE_BUTTON);
         String url = mTestServer.getURL("/chrome/test/data/android/blue.html");
         mActivityTestRule.loadUrl(url);
-        // OnBackStarted() CHECKs that the window has a live compositor, which is only guaranteed once
-        // the web contents view is ready to be copied.
+        // Starting a gesture requires a live compositor. Wait until the
+        // WebContents view is ready to be copied.
         WebContentsUtils.waitForCopyableViewInWebContents(getWebContents());
         NavigationHandler handler = navigationHandler();
 
@@ -1045,8 +1057,8 @@ public class NavigationTransitionsTest {
         String second = mTestServer.getURL("/chrome/test/data/android/green.html");
         mActivityTestRule.loadUrl(first);
         mActivityTestRule.loadUrl(second);
-        // OnBackStarted() CHECKs that the window has a live compositor, which is only guaranteed once
-        // the web contents view is ready to be copied.
+        // Starting a gesture requires a live compositor. Wait until the
+        // WebContents view is ready to be copied.
         WebContentsUtils.waitForCopyableViewInWebContents(getWebContents());
         NavigationHandler handler = navigationHandler();
 
@@ -1099,8 +1111,8 @@ public class NavigationTransitionsTest {
         String second = mTestServer.getURL("/chrome/test/data/android/green.html");
         mActivityTestRule.loadUrl(first);
         mActivityTestRule.loadUrl(second);
-        // OnBackStarted() CHECKs that the window has a live compositor, which is only guaranteed once
-        // the web contents view is ready to be copied.
+        // Starting a gesture requires a live compositor. Wait until the
+        // WebContents view is ready to be copied.
         WebContentsUtils.waitForCopyableViewInWebContents(getWebContents());
         NavigationHandler handler = navigationHandler();
 
@@ -1119,7 +1131,7 @@ public class NavigationTransitionsTest {
                     // End the native gesture behind the driver's back. The native handler
                     // is a per-tab singleton shared with ToolbarManager.OnBackPressHandler,
                     // so the driver cannot assume it still owns the native state.
-                    nativeHandler.onBackCancelled(false);
+                    nativeHandler.onBackCancelled();
 
                     // The next progress event has to hand the gesture back.
                     handler.pull(10.f, 0.f);
@@ -1153,8 +1165,8 @@ public class NavigationTransitionsTest {
         String second = mTestServer.getURL("/chrome/test/data/android/green.html");
         mActivityTestRule.loadUrl(first);
         mActivityTestRule.loadUrl(second);
-        // OnBackStarted() CHECKs that the window has a live compositor, which is only guaranteed once
-        // the web contents view is ready to be copied.
+        // Starting a gesture requires a live compositor. Wait until the
+        // WebContents view is ready to be copied.
         WebContentsUtils.waitForCopyableViewInWebContents(getWebContents());
         NavigationHandler handler = navigationHandler();
 
@@ -1175,7 +1187,7 @@ public class NavigationTransitionsTest {
                     // entry: starting a gesture without one is the very contract violation
                     // this CL stops committing, and the animation manager CHECKs it once
                     // crrev.com/c/8166180 restores the CHECKs.
-                    nativeHandler.onBackStarted(0.f, BackGestureEventSwipeEdge.RIGHT, false, false);
+                    nativeHandler.onBackStarted(0.f, BackGestureEventSwipeEdge.RIGHT, false);
 
                     // The next progress event from the original LEFT edge has an edge mismatch and
                     // must be handed back to the driver.
@@ -1187,7 +1199,7 @@ public class NavigationTransitionsTest {
 
                     // End the other owner's live gesture so that the release below navigates
                     // on a clean animation-manager state.
-                    nativeHandler.onBackCancelled(false);
+                    nativeHandler.onBackCancelled();
 
                     handler.release(OverscrollActivationStatus.FORCE_ACTIVATION);
                 });

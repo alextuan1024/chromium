@@ -154,6 +154,13 @@ BASE_DECLARE_FEATURE(kWebFrameTree);
 // Enables the new geolocation permission delegate feature.
 BASE_DECLARE_FEATURE(kNewGeolocationPermissionDelegate);
 
+// Used to enable a different method of zooming web pages.
+BASE_DECLARE_FEATURE(kWebPageAlternativeTextZoom);
+
+// When enabled on iOS 27+, disables DOM clobbering of built-in properties in
+// `ContentWorld::kIsolatedWorld`.
+BASE_DECLARE_FEATURE(kIsolatedWorldDisableLegacyBuiltinOverrides);
+
 }  // namespace web::features
 
 #endif  // IOS_WEB_COMMON_FEATURES_H_

@@ -6,7 +6,6 @@
 
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/strcat.h"
 #include "base/time/time.h"
@@ -45,16 +44,12 @@ const char kComposeFirstRunSessionCloseReason[] =
     "Compose.Session.FRE.Disclaimer.CloseReason";
 const char kComposeFirstRunSessionDialogShownCount[] =
     "Compose.Session.FRE.Disclaimer.DialogShownCount";
-const char kInnerTextNodeOffsetFound[] =
-    "Compose.Dialog.InnerTextNodeOffsetFound";
 const char kComposeContextMenuCtr[] = "Compose.ContextMenu.CTR";
 const char kComposeProactiveNudgeCtr[] = "Compose.ProactiveNudge.CTR";
-const char kComposeSelectionNudgeCtr[] = "Compose.SelectionNudge.CTR";
 const char kComposeProactiveNudgeShowStatus[] =
     "Compose.ProactiveNudge.ShowStatus";
 const char kOpenComposeDialogResult[] =
     "Compose.ContextMenu.OpenComposeDialogResult";
-const char kComposeSelectAll[] = "Compose.ContextMenu.SelectedAll";
 const char kComposeStartSessionEntryPoint[] = "Compose.EntryPoint.SessionStart";
 const char kComposeResumeSessionEntryPoint[] =
     "Compose.EntryPoint.SessionResume";
@@ -68,11 +63,6 @@ std::string_view EvalLocationString(EvalLocation location) {
     case EvalLocation::kOnDevice:
       return "OnDevice";
   }
-}
-
-std::string_view LanguageSupportedString(bool page_language_supported) {
-  return page_language_supported ? "PageLanguageSupported"
-                                 : "PageLanguageUnsupported";
 }
 
 bool HasAckedFreOrAcceptedMsbb(ComposeFreOrMsbbSessionCloseReason reason) {
@@ -188,10 +178,6 @@ void LogComposeProactiveNudgeCtr(ComposeNudgeCtrEvent event) {
   base::UmaHistogramEnumeration(kComposeProactiveNudgeCtr, event);
 }
 
-void LogComposeSelectionNudgeCtr(ComposeNudgeCtrEvent event) {
-  base::UmaHistogramEnumeration(kComposeSelectionNudgeCtr, event);
-}
-
 void LogComposeProactiveNudgeShowStatus(ComposeShowStatus status) {
   base::UmaHistogramEnumeration(kComposeProactiveNudgeShowStatus, status);
 }
@@ -211,10 +197,6 @@ void LogStartSessionEntryPoint(ComposeEntryPoint entry_point) {
     case ComposeEntryPoint::kProactiveNudge:
       base::RecordAction(
           base::UserMetricsAction("Compose.StartedSession.ProactiveNudge"));
-      break;
-    case ComposeEntryPoint::kSelectionNudge:
-      base::RecordAction(
-          base::UserMetricsAction("Compose.StartedSession.SelectionNudge"));
       break;
     case ComposeEntryPoint::kSavedStateNudge:
     case ComposeEntryPoint::kSavedStateNotification:
@@ -238,27 +220,15 @@ void LogComposeRequestReason(EvalLocation eval_location,
       reason);
 }
 
-void LogComposeRequestStatus(bool page_language_supported,
-                             compose::mojom::ComposeStatus status) {
+void LogComposeRequestStatus(compose::mojom::ComposeStatus status) {
   base::UmaHistogramEnumeration(kComposeRequestStatus, status);
-  base::UmaHistogramEnumeration(
-      base::StrCat({"Compose.Request.",
-                    LanguageSupportedString(page_language_supported),
-                    ".Status"}),
-      status);
 }
 
 void LogComposeRequestStatus(EvalLocation eval_location,
-                             bool page_language_supported,
                              compose::mojom::ComposeStatus status) {
   base::UmaHistogramEnumeration(
       base::StrCat(
           {"Compose.", EvalLocationString(eval_location), ".Request.Status"}),
-      status);
-  base::UmaHistogramEnumeration(
-      base::StrCat({"Compose.", EvalLocationString(eval_location), ".Request.",
-                    LanguageSupportedString(page_language_supported),
-                    ".Status"}),
       status);
 }
 
@@ -432,13 +402,6 @@ void LogComposeDialogInnerTextSize(int size) {
   base::UmaHistogramCounts10M(kComposeDialogInnerTextSize, size);
 }
 
-void LogComposeDialogInnerTextOffsetFound(bool inner_offset_found) {
-  UMA_HISTOGRAM_ENUMERATION(kInnerTextNodeOffsetFound,
-                            inner_offset_found
-                                ? ComposeInnerTextNodeOffset::kOffsetFound
-                                : ComposeInnerTextNodeOffset::kNoOffsetFound);
-}
-
 void LogComposeDialogOpenLatency(base::TimeDelta duration) {
   base::UmaHistogramMediumTimes(kComposeDialogOpenLatency, duration);
 }
@@ -476,10 +439,6 @@ void LogComposeRequestFeedback(EvalLocation eval_location,
       base::StrCat(
           {"Compose.", EvalLocationString(eval_location), ".Request.Feedback"}),
       feedback);
-}
-
-void LogComposeSelectAllStatus(ComposeSelectAllStatus select_all_status) {
-  base::UmaHistogramEnumeration(kComposeSelectAll, select_all_status);
 }
 
 void LogComposeSessionEventCounts(std::optional<EvalLocation> eval_location,

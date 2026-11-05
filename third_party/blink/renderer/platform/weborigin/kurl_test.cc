@@ -28,9 +28,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
-#include <array>
-
 // Basic tests that verify our KURL's interface behaves the same as the
 // original KURL's.
 
@@ -38,13 +35,14 @@
 
 #include <stdint.h>
 
+#include <array>
 #include <string_view>
 
 #include "base/test/scoped_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/scheduler/public/non_main_thread.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "url/gurl.h"
 #include "url/gurl_abstract_tests.h"
@@ -900,9 +898,6 @@ TEST(KURLTest, urlStrippedForUseAsReferrerRespectsReferrerScheme) {
   const String foobar_scheme = "foobar";
 
   EXPECT_EQ("", foobar_url.StrippedForUseAsReferrer().Utf8());
-#if DCHECK_IS_ON()
-  SetIsBeforeThreadCreatedForTest();  // Required for next operation:
-#endif
   SchemeRegistry::RegisterURLSchemeAsAllowedForReferrer(foobar_scheme);
   EXPECT_EQ("foobar://somepage/", foobar_url.StrippedForUseAsReferrer());
   SchemeRegistry::RemoveURLSchemeAsAllowedForReferrerForTest(foobar_scheme);
@@ -933,12 +928,6 @@ TEST(KURLTest, strippedForUseAsReferrer) {
 }
 
 TEST(KURLTest, ThreadSafesStaticKurlGetters) {
-#if DCHECK_IS_ON()
-  // Simulate the static getters being called during/after threads have been
-  // started, so that StaticSingleton's thread checks will be applied.
-  WillCreateThread();
-#endif
-
   // Take references to the static KURLs, so that each has two references to
   // its internal StringImpl, rather than one.
   KURL blank_url = BlankUrl();
@@ -962,11 +951,6 @@ TEST(KURLTest, ThreadSafesStaticKurlGetters) {
                                       KURL null_url = NullUrl();
                                       EXPECT_TRUE(null_url.IsNull());
                                     }));
-
-#if DCHECK_IS_ON()
-  // Restore the IsBeforeThreadCreated() flag.
-  SetIsBeforeThreadCreatedForTest();
-#endif
 }
 
 // Setting protocol to "file" should not work if the URL has credentials or a
@@ -1225,7 +1209,7 @@ TEST_P(KURLPortTest, ConstructRelative) {
 
 TEST_P(KURLPortTest, SetPort) {
   const auto& param = GetParam();
-  KURL url(StrCat({"http://a:", String::Number(kNoopPort), "/"}));
+  KURL url(Format("http://a:{}/", kNoopPort));
   const bool set_port_result_actual = url.SetPort(param.input);
   EXPECT_EQ(set_port_result_actual, param.set_port_success);
   EXPECT_EQ(url.Port(), param.set_port_output);
@@ -1234,7 +1218,7 @@ TEST_P(KURLPortTest, SetPort) {
 
 TEST_P(KURLPortTest, SetHostAndPort) {
   const auto& param = GetParam();
-  KURL url(StrCat({"http://a:", String::Number(kNoopPort), "/"}));
+  KURL url(Format("http://a:{}/", kNoopPort));
   url.SetHostAndPort(String("a:") + param.input);
   switch (param.is_valid) {
     case PortIsValid::kAlways:

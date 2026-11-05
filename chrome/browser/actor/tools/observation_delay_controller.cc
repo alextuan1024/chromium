@@ -18,6 +18,7 @@
 #include "base/state_transitions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
+#include "chrome/browser/actor/actor_surface.h"
 #include "chrome/browser/actor/aggregated_journal_render_frame_binder.h"
 #include "chrome/browser/actor/execution_engine.h"
 #include "chrome/browser/actor/tools/observation_delay_metrics.h"
@@ -35,8 +36,6 @@
 #include "components/page_load_metrics/browser/metrics_web_contents_observer.h"
 #include "components/page_load_metrics/browser/observers/core/largest_contentful_paint_handler.h"
 #include "components/page_load_metrics/browser/page_load_metrics_observer_delegate.h"
-#include "components/tabs/public/tab_handle_factory.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -139,6 +138,14 @@ class PageSettledMonitorDelegate
     return kActorObservationDelayTimeout.Get();
   }
 
+  base::TimeDelta GetStartDelay() const override {
+    if (controller_->start_delay_override_.has_value()) {
+      return *controller_->start_delay_override_;
+    }
+    return page_content_annotations::PageSettledMonitor::Delegate::
+        GetStartDelay();
+  }
+
  private:
   base::raw_ref<ObservationDelayController> controller_;
   TaskId task_id_;
@@ -152,7 +159,8 @@ ObservationDelayController::ObservationDelayController(
     : content::WebContentsObserver(
           WebContents::FromRenderFrameHost(&target_frame)),
       journal_(journal),
-      task_id_(task_id) {
+      task_id_(task_id),
+      target_document_(target_frame.GetWeakDocumentPtr()) {
   CHECK(web_contents());
   journal.Log(
       GURL::EmptyGURL(), task_id, "ObservationDelay: Created",
@@ -187,8 +195,13 @@ ObservationDelayController::ObservationDelayController(
 
 ObservationDelayController::~ObservationDelayController() = default;
 
-void ObservationDelayController::Wait(tabs::TabInterface& target_tab,
+void ObservationDelayController::Wait(ActorSurface& target_actor_surface,
                                       ReadyCallback callback) {
+  WaitOnWebContents(target_actor_surface.GetWebContents(), std::move(callback));
+}
+
+void ObservationDelayController::WaitOnWebContents(WebContents* web_contents,
+                                                   ReadyCallback callback) {
   CHECK_EQ(state_, State::kInitial);
   CHECK(callback);
 
@@ -198,7 +211,6 @@ void ObservationDelayController::Wait(tabs::TabInterface& target_tab,
   metrics_ = std::make_unique<ObservationDelayMetrics>();
   metrics_->Start();
 
-  WebContents* web_contents = target_tab.GetContents();
   WebContentsObserver::Observe(web_contents);
 
   wait_journal_entry_ = journal_->CreatePendingAsyncEntry(
@@ -293,6 +305,12 @@ void ObservationDelayController::MoveToState(State new_state) {
       inner_journal_entry_ = journal_->CreatePendingAsyncEntry(
           GURL::EmptyGURL(), task_id_, MakeBrowserTrackUUID(task_id_),
           "WaitForLoadCompletion", {});
+      break;
+    }
+    case State::kWaitForScriptTools: {
+      inner_journal_entry_ = journal_->CreatePendingAsyncEntry(
+          GURL::EmptyGURL(), task_id_, MakeBrowserTrackUUID(task_id_),
+          "WaitForScriptTools", {});
       break;
     }
     case State::kWaitForPdfLoadCompletion: {
@@ -400,6 +418,9 @@ void ObservationDelayController::WillMoveToState(
     case PageSettledMonitorState::kWaitForLoadCompletion:
       actor_state = State::kWaitForLoadCompletion;
       break;
+    case PageSettledMonitorState::kWaitForScriptTools:
+      actor_state = State::kWaitForScriptTools;
+      break;
     case PageSettledMonitorState::kWaitForPdfLoadCompletion:
       actor_state = State::kWaitForPdfLoadCompletion;
       break;
@@ -447,6 +468,11 @@ void ObservationDelayController::OnMilestoneReached(
       std::move(resume_callback_).Run();
       break;
     case page_content_annotations::PageSettledMonitor::Milestone::
+        kScriptToolsReady:
+      // Just resume the monitor.
+      std::move(resume_callback_).Run();
+      break;
+    case page_content_annotations::PageSettledMonitor::Milestone::
         kPdfLoadCompletion:
       // Just resume the monitor.
       std::move(resume_callback_).Run();
@@ -480,6 +506,11 @@ void ObservationDelayController::OnEvent(
     case page_content_annotations::PageSettledMonitor::Event::kLoadCompleted:
       if (metrics_) {
         metrics_->OnLoadCompleted();
+      }
+      break;
+    case page_content_annotations::PageSettledMonitor::Event::kScriptToolsReady:
+      if (metrics_) {
+        metrics_->OnScriptToolsReady();
       }
       break;
     case page_content_annotations::PageSettledMonitor::Event::kPdfLoadCompleted:
@@ -542,6 +573,11 @@ void ObservationDelayController::DCheckStateTransition(State old_state,
               {State::kDidTimeout,
                State::kDone,
                State::kPageNavigated,
+               State::kWaitForScriptTools}},
+          {State::kWaitForScriptTools,
+              {State::kDidTimeout,
+               State::kDone,
+               State::kPageNavigated,
                State::kWaitForPdfLoadCompletion,
                State::kWaitForVisualStateUpdate}},
           {State::kWaitForPdfLoadCompletion,
@@ -581,8 +617,19 @@ void ObservationDelayController::DCheckStateTransition(State old_state,
 
 void ObservationDelayController::DidStartNavigation(
     content::NavigationHandle* navigation_handle) {
-  if (navigation_handle->IsSameDocument() ||
-      !navigation_handle->IsInPrimaryMainFrame() || state_ == State::kInitial) {
+  if (!navigation_handle->IsInPrimaryMainFrame()) {
+    return;
+  }
+  if (state_ == State::kInitial) {
+    if (!navigation_handle->IsSameDocument()) {
+      pre_wait_navigation_type_ = PreWaitNavigationType::kCrossDocument;
+    } else if (kActorBundleSameDocumentNavigationIsBoundary.Get() &&
+               pre_wait_navigation_type_ == PreWaitNavigationType::kNone) {
+      pre_wait_navigation_type_ = PreWaitNavigationType::kSameDocument;
+    }
+    return;
+  }
+  if (navigation_handle->IsSameDocument()) {
     return;
   }
   if (!base::FeatureList::IsEnabled(
@@ -612,6 +659,8 @@ std::string_view ObservationDelayController::StateToString(State state) {
       return "WaitForFederatedLogin";
     case State::kWaitForLoadCompletion:
       return "WaitForLoadCompletion";
+    case State::kWaitForScriptTools:
+      return "WaitForScriptTools";
     case State::kWaitForPdfLoadCompletion:
       return "WaitForPdfLoadCompletion";
     case State::kWaitForVisualStateUpdate:
@@ -656,6 +705,25 @@ size_t ObservationDelayController::NavigationCount() const {
 
 void ObservationDelayController::SetNavigationCount(size_t count) {
   navigation_count_ = count;
+}
+
+ObservationDelayController::PreWaitNavigationType
+ObservationDelayController::GetPreWaitNavigationType() const {
+  return pre_wait_navigation_type_;
+}
+
+bool ObservationDelayController::DidPrimaryMainFrameNavigateBeforeWait() const {
+  return pre_wait_navigation_type_ != PreWaitNavigationType::kNone;
+}
+
+void ObservationDelayController::SetStartDelay(base::TimeDelta start_delay) {
+  CHECK_EQ(state_, State::kInitial);
+  start_delay_override_ = start_delay;
+}
+
+bool ObservationDelayController::IsMonitoringDocumentOf(
+    const content::RenderFrameHost& frame) const {
+  return target_document_.AsRenderFrameHostIfValid() == &frame;
 }
 
 }  // namespace actor

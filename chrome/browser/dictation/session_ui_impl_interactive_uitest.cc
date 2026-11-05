@@ -69,15 +69,7 @@ IN_PROC_BROWSER_TEST_F(DictationSessionUiImplInteractiveUiTest,
     // Explicitly use Window 2 context.
     InContext(BrowserElements::From(second_browser)->GetContext(),
               Do([this, window2_contents] {
-                ASSERT_TRUE(content::ExecJs(
-                    window2_contents,
-                    "document.getElementById('text_id').focus();"));
-                // Wait for focus to propagate to the editable element.
-                EXPECT_TRUE(base::test::RunUntil([&]() {
-                  auto* frame = window2_contents->GetFocusedFrame();
-                  return frame && !frame->GetFocusedDOMNodeId().is_null();
-                }));
-
+                FocusTextarea(window2_contents);
                 dictation_service().ToggleHotkeyHandler();
               })),
 
@@ -87,86 +79,6 @@ IN_PROC_BROWSER_TEST_F(DictationSessionUiImplInteractiveUiTest,
     InContext(BrowserElements::From(browser())->GetContext(),
               EnsureNotPresent(DictationBubbleUi::kViewElementIdForTesting)),
     CheckHasSession(true)
-  );
-  // clang-format on
-}
-
-IN_PROC_BROWSER_TEST_F(DictationSessionUiImplInteractiveUiTest,
-                       HotkeyStartEndSession) {
-  // Ensure onboarding is completed and hotkey is configured.
-  profile()->GetPrefs()->SetBoolean(prefs::kPrefDictationOnboardingCompleted,
-                                    true);
-  profile()->GetPrefs()->SetString(prefs::kVoiceTypingHotkey, "Alt+D");
-  DictationKeyedService::Get(profile())->DidInstallConnector();
-  ui::Accelerator hotkey(ui::VKEY_D, ui::EF_ALT_DOWN);
-
-  const GURL url =
-      embedded_test_server()->GetURL("/textinput/simple_textarea.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(web_contents());
-  content::MainThreadFrameObserver frame_observer(
-      web_contents()->GetPrimaryMainFrame()->GetRenderWidgetHost());
-  frame_observer.Wait();
-
-  // clang-format off
-  RunTestSequence(
-    ActivateSurface(kBrowserViewElementId),
-    Do([this] {
-      ASSERT_TRUE(content::ExecJs(
-          web_contents(),
-          "document.getElementById('text_id').focus();"));
-      EXPECT_TRUE(base::test::RunUntil([&]() {
-        auto* frame = web_contents()->GetFocusedFrame();
-        return frame && !frame->GetFocusedDOMNodeId().is_null();
-      }));
-
-      auto* focused_frame = web_contents()->GetFocusedFrame();
-      ASSERT_NE(focused_frame, nullptr);
-      EXPECT_EQ(focused_frame->GetFocusedEditableLevel(),
-                content::EditableLevel::kPlaintextEditable);
-
-      auto* service = DictationKeyedService::Get(profile());
-      ASSERT_NE(service, nullptr);
-      ASSERT_TRUE(service->IsEnabledAndReady());
-      ASSERT_EQ(service->session_controller(), nullptr);
-
-      // Verify the browser under test. GetLastActiveBrowser is preferred over
-      // GetActiveBrowser here to avoid test flakiness due to async focus
-      // propagation.
-      auto* active_browser =
-          GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
-      ASSERT_NE(active_browser, nullptr);
-      EXPECT_EQ(active_browser, browser());
-    }),
-
-    // Send actual hotkey press to start session
-    SendAccelerator(kBrowserViewElementId, hotkey),
-
-    Do([this] {
-      auto* service = DictationKeyedService::Get(profile());
-      ASSERT_NE(service->session_controller(), nullptr);
-      auto* stream_provider =
-          service->session_controller()->attached_stream_provider();
-      ASSERT_NE(stream_provider, nullptr);
-      auto* target = stream_provider->GetTarget();
-      ASSERT_NE(target, nullptr);
-
-      std::optional<int> expected_node_id = content::GetDOMNodeId(
-          *web_contents()->GetPrimaryMainFrame(), "#text_id");
-      ASSERT_TRUE(expected_node_id.has_value());
-      EXPECT_EQ(target->global_dom_node_id().target_element_dom_id,
-                blink::DOMNodeIdType(*expected_node_id));
-    }),
-
-    // Send actual hotkey press to end session
-    SendAccelerator(kBrowserViewElementId, hotkey),
-
-    Do([this] {
-      auto* service = DictationKeyedService::Get(profile());
-      EXPECT_NE(service->session_controller(), nullptr);
-      EXPECT_EQ(service->session_controller()->attached_stream_provider(),
-                nullptr);
-    })
   );
   // clang-format on
 }
@@ -192,11 +104,11 @@ IN_PROC_BROWSER_TEST_F(DictationSessionUiImplInteractiveUiTest,
     WithView(
         DictationBubbleUi::kViewElementIdForTesting,
         [&](views::View* view) { bubble_widget = view->GetWidget(); }),
-    CheckViewProperty(DictationBubbleUi::kToggleButtonElementIdForTesting,
+    CheckViewProperty(DictationBubbleUi::kDoneButtonElementIdForTesting,
                       &views::View::HasFocus, false),
     SendAccelerator(kBrowserViewElementId, next_pane),
     WaitForState(views::test::kCurrentWidgetFocus, std::ref(bubble_widget)),
-    CheckViewProperty(DictationBubbleUi::kToggleButtonElementIdForTesting,
+    CheckViewProperty(DictationBubbleUi::kDoneButtonElementIdForTesting,
                       &views::View::HasFocus, true),
     SendKeyPress(kBrowserViewElementId, ui::VKEY_TAB),
     CheckViewProperty(DictationBubbleUi::kCloseButtonElementIdForTesting,
@@ -226,13 +138,105 @@ IN_PROC_BROWSER_TEST_F(DictationSessionUiImplInteractiveUiTest,
     WithView(
         DictationBubbleUi::kViewElementIdForTesting,
         [&](views::View* view) { bubble_widget = view->GetWidget(); }),
-    CheckViewProperty(DictationBubbleUi::kToggleButtonElementIdForTesting,
+    CheckViewProperty(DictationBubbleUi::kDoneButtonElementIdForTesting,
                       &views::View::HasFocus, false),
     SendAccelerator(kBrowserViewElementId, focus_inactive_popup),
     WaitForState(views::test::kCurrentWidgetFocus, std::ref(bubble_widget)),
-    CheckViewProperty(DictationBubbleUi::kToggleButtonElementIdForTesting,
+    CheckViewProperty(DictationBubbleUi::kDoneButtonElementIdForTesting,
                       &views::View::HasFocus, true),
     SendKeyPress(kBrowserViewElementId, ui::VKEY_TAB),
+    CheckViewProperty(DictationBubbleUi::kCloseButtonElementIdForTesting,
+                      &views::View::HasFocus, true)
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_F(DictationSessionUiImplInteractiveUiTest,
+                       ReviewingPageStatusShownOnFirstSessionStart) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/textinput/simple_textarea.html");
+  const GURL other_url =
+      embedded_test_server()->GetURL("/textinput/simple_textinput.html");
+
+  dictation_service().SetReviewingPageStatusEnabledForTesting(true);
+
+  // clang-format off
+  RunTestSequence(
+    InstrumentTab(kWebContentsElementId),
+    NavigateWebContents(kWebContentsElementId, url),
+    // First session shows "Reviewing page" and hides "Done".
+    StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+    WaitForShow(DictationBubbleUi::kViewElementIdForTesting),
+    WaitForShow(
+        DictationBubbleUi::kReviewingPageStatusLabelElementIdForTesting),
+    WaitForShow(DictationBubbleUi::kSeparatorElementIdForTesting),
+    EnsureNotPresent(DictationBubbleUi::kDoneButtonElementIdForTesting),
+
+    // End first session.
+    Do([this] {
+      dictation_service().session_controller()->EndSessionSynchronously();
+    }),
+    WaitForHide(DictationBubbleUi::kViewElementIdForTesting),
+
+    // Second session on the same document within the cooldown period shows
+    // "Done" immediately and does NOT show "Reviewing page". Check "Done"
+    // without waiting so this can't pass by the status timing out.
+    StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+    WaitForShow(DictationBubbleUi::kViewElementIdForTesting),
+    EnsurePresent(DictationBubbleUi::kDoneButtonElementIdForTesting),
+    EnsureNotPresent(
+        DictationBubbleUi::kReviewingPageStatusLabelElementIdForTesting),
+    EnsureNotPresent(DictationBubbleUi::kSeparatorElementIdForTesting),
+
+    // End second session.
+    Do([this] {
+      dictation_service().session_controller()->EndSessionSynchronously();
+    }),
+    WaitForHide(DictationBubbleUi::kViewElementIdForTesting),
+
+    // Third session on a different document shows "Reviewing page" again.
+    NavigateWebContents(kWebContentsElementId, other_url),
+    StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+    WaitForShow(DictationBubbleUi::kViewElementIdForTesting),
+    EnsurePresent(
+        DictationBubbleUi::kReviewingPageStatusLabelElementIdForTesting),
+    EnsurePresent(DictationBubbleUi::kSeparatorElementIdForTesting),
+    EnsureNotPresent(DictationBubbleUi::kDoneButtonElementIdForTesting)
+  );
+  // clang-format on
+}
+
+// While the reviewing page status is shown the done button is hidden. The
+// bubble must still be reachable by keyboard (b/559265158), with focus going to
+// the close button instead.
+IN_PROC_BROWSER_TEST_F(DictationSessionUiImplInteractiveUiTest,
+                       FocusUiByCyclingPaneFocusWhileReviewingPageStatusShown) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/textinput/simple_textarea.html");
+  dictation_service().SetReviewingPageStatusEnabledForTesting(true);
+
+  ui::Accelerator next_pane;
+  ASSERT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())->GetAccelerator(
+      IDC_FOCUS_NEXT_PANE, &next_pane));
+  views::Widget* bubble_widget = nullptr;
+
+  // clang-format off
+  RunTestSequence(
+    InstrumentTab(kWebContentsElementId),
+    NavigateWebContents(kWebContentsElementId, url),
+    ObserveState(views::test::kCurrentWidgetFocus),
+    StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+    WaitForShow(DictationBubbleUi::kViewElementIdForTesting),
+    WaitForShow(
+        DictationBubbleUi::kReviewingPageStatusLabelElementIdForTesting),
+    WithView(
+        DictationBubbleUi::kViewElementIdForTesting,
+        [&](views::View* view) { bubble_widget = view->GetWidget(); }),
+    SendAccelerator(kBrowserViewElementId, next_pane),
+    WaitForState(views::test::kCurrentWidgetFocus, std::ref(bubble_widget)),
+    EnsureNotPresent(DictationBubbleUi::kDoneButtonElementIdForTesting),
     CheckViewProperty(DictationBubbleUi::kCloseButtonElementIdForTesting,
                       &views::View::HasFocus, true)
   );

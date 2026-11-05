@@ -21,6 +21,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "chrome/browser/media/webrtc/desktop_capture_devices_util.h"
 #include "chrome/browser/media/webrtc/desktop_media_list.h"
 #include "chrome/grit/generated_resources.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -174,7 +175,7 @@ content::DesktopMediaID::Type ConvertToDesktopMediaIDType(
 content::DesktopMediaID::Id GetUpdatedWindowId(
     const content::DesktopMediaID& desktop_media_id,
     bool is_source_list_delegated) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Use current value by default.
   content::DesktopMediaID::Id window_id = desktop_media_id.window_id;
@@ -236,6 +237,10 @@ void AssignWindowIdAndUpdateThumbnail(
     ThumbnailCallback update_thumbnail_callback) {
   desktop_media_id.window_id =
       GetUpdatedWindowId(desktop_media_id, is_source_list_delegated);
+  // Never show a preview of a window that is protected from capture.
+  if (IsWindowSharingBlockedByDataProtection(desktop_media_id)) {
+    return;
+  }
   std::move(update_thumbnail_callback).Run(desktop_media_id, thumbnail);
 }
 
@@ -354,6 +359,12 @@ class NativeDesktopMediaList::Worker
   // on `task_runner_` thread.
   std::unique_ptr<RefreshThumbnailsState> refresh_thumbnails_state_;
 
+  // Used to hop OnSelection() to `task_runner_` when the delegated source list
+  // controller notifies on another thread (the PipeWire capturer dispatches
+  // portal results on the UI thread). WeakPtrs from it are created on that
+  // other thread, so they are kept apart from `weak_factory_`'s.
+  base::WeakPtrFactory<Worker> selection_weak_factory_{this};
+
   base::WeakPtrFactory<Worker> weak_factory_{this};
 };
 
@@ -373,18 +384,19 @@ NativeDesktopMediaList::Worker::Worker(
       auto_show_delegated_source_list_(auto_show_delegated_source_list),
       is_source_list_delegated_(capturer_->GetDelegatedSourceListController() !=
                                 nullptr) {
-  DCHECK(capturer_);
+  CHECK(capturer_, base::NotFatalUntil::M161);
 
-  DCHECK(source_type_ == DesktopMediaID::Type::TYPE_WINDOW ||
-         !add_current_process_windows_);
+  CHECK(source_type_ == DesktopMediaID::Type::TYPE_WINDOW ||
+            !add_current_process_windows_,
+        base::NotFatalUntil::M161);
 }
 
 NativeDesktopMediaList::Worker::~Worker() {
-  DCHECK(task_runner_->BelongsToCurrentThread());
+  CHECK(task_runner_->BelongsToCurrentThread(), base::NotFatalUntil::M161);
 }
 
 void NativeDesktopMediaList::Worker::Start() {
-  DCHECK(task_runner_->BelongsToCurrentThread());
+  CHECK(task_runner_->BelongsToCurrentThread(), base::NotFatalUntil::M161);
   capturer_->Start(this);
 
   if (is_source_list_delegated_) {
@@ -393,11 +405,20 @@ void NativeDesktopMediaList::Worker::Start() {
 }
 
 void NativeDesktopMediaList::Worker::Refresh(bool update_thumbnails) {
-  DCHECK(task_runner_->BelongsToCurrentThread());
+  CHECK(task_runner_->BelongsToCurrentThread(), base::NotFatalUntil::M161);
 
   webrtc::DesktopCapturer::SourceList sources;
   if (!capturer_->GetSourceList(&sources)) {
     // Will pass empty results list to RefreshForVizFrameSinkWindows().
+    sources.clear();
+  }
+
+  // A delegated source list that is only shown on request has no meaningful
+  // sources until the user has made a selection in it (the PipeWire capturer
+  // always reports a placeholder), so don't report any before that. This
+  // keeps a placeholder from being auto-accepted.
+  if (is_source_list_delegated_ && !auto_show_delegated_source_list_ &&
+      !delegated_source_list_has_selection_) {
     sources.clear();
   }
 
@@ -425,7 +446,8 @@ void NativeDesktopMediaList::Worker::Refresh(bool update_thumbnails) {
   // do this. Pass |excluded_window_id_| so that the picker dialog window is
   // not added back into the window list on Windows.
   if (add_current_process_windows_) {
-    DCHECK_EQ(source_type_, DesktopMediaID::Type::TYPE_WINDOW);
+    CHECK_EQ(source_type_, DesktopMediaID::Type::TYPE_WINDOW,
+             base::NotFatalUntil::M161);
     // WebRTC returns the windows in order of highest z-order to lowest, but
     // these additional windows will be out of order if we just append them. So
     // we sort the list according to the z-order of the windows.
@@ -444,7 +466,7 @@ void NativeDesktopMediaList::Worker::Refresh(bool update_thumbnails) {
 void NativeDesktopMediaList::Worker::RefreshThumbnails(
     std::vector<DesktopMediaID> native_ids,
     const gfx::Size& thumbnail_size) {
-  DCHECK(task_runner_->BelongsToCurrentThread());
+  CHECK(task_runner_->BelongsToCurrentThread(), base::NotFatalUntil::M161);
 
   // The refresh of thumbnails follows different steps depending on if the frame
   // deliver method is kOnRequest or kMultipleSourcesRecurrent.
@@ -600,8 +622,8 @@ NativeDesktopMediaList::Worker::MergeAndSortWindowSources(
 #endif  // BUILDFLAG(IS_WIN)
 
 void NativeDesktopMediaList::Worker::RefreshNextThumbnail() {
-  DCHECK(task_runner_->BelongsToCurrentThread());
-  DCHECK(refresh_thumbnails_state_);
+  CHECK(task_runner_->BelongsToCurrentThread(), base::NotFatalUntil::M161);
+  CHECK(refresh_thumbnails_state_, base::NotFatalUntil::M161);
 
   for (size_t index = refresh_thumbnails_state_->next_source_index;
        index < refresh_thumbnails_state_->source_ids.size(); ++index) {
@@ -626,10 +648,11 @@ void NativeDesktopMediaList::Worker::RefreshNextThumbnail() {
 void NativeDesktopMediaList::Worker::OnCaptureResult(
     webrtc::DesktopCapturer::Result result,
     std::unique_ptr<webrtc::DesktopFrame> frame) {
-  DCHECK(task_runner_->BelongsToCurrentThread());
+  CHECK(task_runner_->BelongsToCurrentThread(), base::NotFatalUntil::M161);
 
   const size_t index = refresh_thumbnails_state_->next_source_index - 1;
-  DCHECK(index < refresh_thumbnails_state_->source_ids.size());
+  CHECK(index < refresh_thumbnails_state_->source_ids.size(),
+        base::NotFatalUntil::M161);
   DesktopMediaID id = refresh_thumbnails_state_->source_ids[index];
 
   // |frame| may be null if capture failed (e.g. because window has been
@@ -661,7 +684,7 @@ void NativeDesktopMediaList::Worker::OnRecurrentCaptureResult(
     ThumbnailCapturer::Result result,
     std::unique_ptr<webrtc::DesktopFrame> frame,
     ThumbnailCapturer::SourceId source_id) {
-  DCHECK(task_runner_->BelongsToCurrentThread());
+  CHECK(task_runner_->BelongsToCurrentThread(), base::NotFatalUntil::M161);
 
   // |frame| may be null if capture failed (e.g. because window has been
   // closed).
@@ -691,7 +714,7 @@ void NativeDesktopMediaList::Worker::OnSourceListUpdated() {
 }
 
 void NativeDesktopMediaList::Worker::ClearDelegatedSourceListSelection() {
-  DCHECK(is_source_list_delegated_);
+  CHECK(is_source_list_delegated_, base::NotFatalUntil::M161);
   if (!delegated_source_list_has_selection_)
     return;
 
@@ -744,6 +767,14 @@ void NativeDesktopMediaList::Worker::ShowDelegatedList() {
 }
 
 void NativeDesktopMediaList::Worker::OnSelection() {
+  // Keep `delegated_source_list_has_selection_` on `task_runner_`, where
+  // Refresh() reads it.
+  if (!task_runner_->BelongsToCurrentThread()) {
+    task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&Worker::OnSelection,
+                                  selection_weak_factory_.GetWeakPtr()));
+    return;
+  }
   VLOG(1) << "NDMLW::OnSelection";
   delegated_source_list_has_selection_ = true;
   content::GetUIThreadTaskRunner({})->PostTask(
@@ -789,8 +820,9 @@ NativeDesktopMediaList::NativeDesktopMediaList(
                                 nullptr) {
   type_ = type;
 
-  DCHECK(type_ == DesktopMediaList::Type::kWindow ||
-         !add_current_process_windows_);
+  CHECK(
+      type_ == DesktopMediaList::Type::kWindow || !add_current_process_windows_,
+      base::NotFatalUntil::M161);
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
   // webrtc::DesktopCapturer implementations on Windows and MacOS expect to
@@ -811,7 +843,7 @@ NativeDesktopMediaList::NativeDesktopMediaList(
 }
 
 NativeDesktopMediaList::~NativeDesktopMediaList() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // This thread should mostly be an idle observer. Stopping it should be fast.
   base::ScopedAllowBaseSyncPrimitivesOutsideBlockingScope allow_thread_join;
@@ -825,7 +857,7 @@ NativeDesktopMediaList::~NativeDesktopMediaList() {
 }
 
 void NativeDesktopMediaList::SetViewDialogWindowId(DesktopMediaID dialog_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   DesktopMediaListBase::SetViewDialogWindowId(dialog_id);
 
@@ -838,7 +870,7 @@ void NativeDesktopMediaList::SetViewDialogWindowId(DesktopMediaID dialog_id) {
 }
 
 void NativeDesktopMediaList::SetThumbnailSize(const gfx::Size& thumbnail_size) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   DesktopMediaListBase::SetThumbnailSize(thumbnail_size);
 
@@ -852,19 +884,19 @@ void NativeDesktopMediaList::SetThumbnailSize(const gfx::Size& thumbnail_size) {
 }
 
 bool NativeDesktopMediaList::IsSourceListDelegated() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   return is_source_list_delegated_;
 }
 
 void NativeDesktopMediaList::StartDelegatedCapturer() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(IsSourceListDelegated());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(IsSourceListDelegated(), base::NotFatalUntil::M161);
   StartCapturer();
 }
 
 void NativeDesktopMediaList::StartCapturer() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!is_capturer_started_);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(!is_capturer_started_, base::NotFatalUntil::M161);
   // base::Unretained is safe here because we own the lifetime of both the
   // worker and the thread and ensure that destroying the worker is the last
   // thing the thread does before stopping.
@@ -875,7 +907,7 @@ void NativeDesktopMediaList::StartCapturer() {
 }
 
 void NativeDesktopMediaList::ClearDelegatedSourceListSelection() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   // base::Unretained is safe here because we own the lifetime of both the
   // worker and the thread and ensure that destroying the worker is the last
   // thing the thread does before stopping.
@@ -885,7 +917,7 @@ void NativeDesktopMediaList::ClearDelegatedSourceListSelection() {
 }
 
 void NativeDesktopMediaList::FocusList() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   // base::Unretained is safe here because we own the lifetime of both the
   // worker and the thread and ensure that destroying the worker is the last
   // thing the thread does before stopping.
@@ -895,7 +927,7 @@ void NativeDesktopMediaList::FocusList() {
 }
 
 void NativeDesktopMediaList::HideList() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   // base::Unretained is safe here because we own the lifetime of both the
   // worker and the thread and ensure that destroying the worker is the last
   // thing the thread does before stopping.
@@ -905,7 +937,7 @@ void NativeDesktopMediaList::HideList() {
 }
 
 void NativeDesktopMediaList::ShowDelegatedList() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   // base::Unretained is safe here because we own the lifetime of both the
   // worker and the thread and ensure that destroying the worker is the last
   // thing the thread does before stopping.
@@ -915,7 +947,7 @@ void NativeDesktopMediaList::ShowDelegatedList() {
 }
 
 void NativeDesktopMediaList::Refresh(bool update_thumbnails) {
-  DCHECK(can_refresh());
+  CHECK(can_refresh(), base::NotFatalUntil::M161);
 
 #if defined(USE_AURA)
   if (pending_aura_capture_requests_ > 0 || pending_native_thumbnail_capture_) {
@@ -941,8 +973,8 @@ void NativeDesktopMediaList::Refresh(bool update_thumbnails) {
 void NativeDesktopMediaList::RefreshForVizFrameSinkWindows(
     std::vector<SourceDescription> sources,
     bool update_thumbnails) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(can_refresh());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(can_refresh(), base::NotFatalUntil::M161);
 
   auto source_it = sources.begin();
   while (source_it != sources.end()) {
@@ -986,6 +1018,8 @@ void NativeDesktopMediaList::RefreshForVizFrameSinkWindows(
 
     source_it->id.window_id =
         GetUpdatedWindowId(source_it->id, is_source_list_delegated_);
+    source_it->is_sharing_blocked =
+        IsWindowSharingBlockedByDataProtection(source_it->id);
 
     ++source_it;
   }
@@ -1017,6 +1051,11 @@ void NativeDesktopMediaList::RefreshForVizFrameSinkWindows(
   // or UpdateNativeThumbnailsFinished() are called.
   std::vector<DesktopMediaID> native_ids;
   for (const auto& source : sources) {
+    // Never capture a preview of a window that is protected from capture.
+    if (source.is_sharing_blocked) {
+      UpdateSourceThumbnail(source.id, gfx::ImageSkia());
+      continue;
+    }
 #if defined(USE_AURA)
     if (source.id.window_id > DesktopMediaID::kNullId) {
       CaptureAuraWindowThumbnail(source.id);
@@ -1026,22 +1065,24 @@ void NativeDesktopMediaList::RefreshForVizFrameSinkWindows(
     native_ids.push_back(source.id);
   }
 
-  if (!native_ids.empty()) {
+  // Post even if `native_ids` is empty, e.g. when all windows are blocked, so
+  // that UpdateNativeThumbnailsFinished() completes the refresh.
 #if defined(USE_AURA)
-    pending_native_thumbnail_capture_ = true;
+  pending_native_thumbnail_capture_ = true;
 #endif
-    // base::Unretained is safe here because we own the lifetime of both the
-    // worker and the thread and ensure that destroying the worker is the last
-    // thing the thread does before stopping.
-    thread_.task_runner()->PostTask(
-        FROM_HERE, base::BindOnce(&Worker::RefreshThumbnails,
-                                  base::Unretained(worker_.get()),
-                                  std::move(native_ids), thumbnail_size_));
-  }
+  // base::Unretained is safe here because we own the lifetime of both the
+  // worker and the thread and ensure that destroying the worker is the last
+  // thing the thread does before stopping.
+  thread_.task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&Worker::RefreshThumbnails,
+                                base::Unretained(worker_.get()),
+                                std::move(native_ids), thumbnail_size_));
 }
 
 void NativeDesktopMediaList::UpdateNativeThumbnailsFinished() {
 #if defined(USE_AURA)
+  // TODO(crbug.com/578776477): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(pending_native_thumbnail_capture_);
   pending_native_thumbnail_capture_ = false;
   // If native thumbnail captures finished after aura thumbnail captures,
@@ -1058,7 +1099,7 @@ void NativeDesktopMediaList::UpdateNativeThumbnailsFinished() {
 
 void NativeDesktopMediaList::CaptureAuraWindowThumbnail(
     const DesktopMediaID& id) {
-  DCHECK(can_refresh());
+  CHECK(can_refresh(), base::NotFatalUntil::M161);
 
   gfx::NativeWindow window = DesktopMediaID::GetNativeWindowById(id);
   if (!window)
@@ -1079,7 +1120,7 @@ void NativeDesktopMediaList::CaptureAuraWindowThumbnail(
 
 void NativeDesktopMediaList::OnAuraThumbnailCaptured(const DesktopMediaID& id,
                                                      gfx::Image image) {
-  DCHECK(can_refresh());
+  CHECK(can_refresh(), base::NotFatalUntil::M161);
 
   if (!image.IsEmpty()) {
     // Only new or changed thumbnail need update.
@@ -1092,7 +1133,7 @@ void NativeDesktopMediaList::OnAuraThumbnailCaptured(const DesktopMediaID& id,
 
   // After all aura windows are processed, schedule next refresh;
   pending_aura_capture_requests_--;
-  DCHECK_GE(pending_aura_capture_requests_, 0);
+  CHECK_GE(pending_aura_capture_requests_, 0, base::NotFatalUntil::M161);
   if (pending_aura_capture_requests_ == 0) {
     previous_aura_thumbnail_hashes_ = std::move(new_aura_thumbnail_hashes_);
     previous_capture_locks_ = std::move(capture_locks_);

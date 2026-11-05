@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_WEBUI_CONTEXT_HUB_CONTEXT_HUB_MOJOM_TRAITS_H_
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -13,8 +14,12 @@
 
 #include "base/time/time.h"
 #include "chrome/browser/context_hub/auto_todos/auto_todo_entry.h"
+#include "chrome/browser/context_hub/memory_bank/memory_bank_chat_types.h"
+#include "chrome/browser/context_hub/memory_bank/memory_bank_entry.h"
+#include "chrome/browser/launchpad/launchpad_task.h"
 #include "chrome/browser/ui/webui/context_hub/context_hub.mojom-forward.h"
 #include "chrome/browser/ui/webui/context_hub/context_hub.mojom-shared.h"
+#include "components/optimization_guide/proto/features/context_hub.pb.h"
 #include "components/personal_context/proto/features/common_data.pb.h"
 #include "components/personal_context/proto/features/smart_search.pb.h"
 #include "mojo/public/cpp/bindings/array_traits_protobuf.h"
@@ -46,30 +51,68 @@ struct EnumTraits<browser::context_hub::mojom::AutoTodoGroup,
 
 template <>
 struct StructTraits<browser::context_hub::mojom::GmailReferenceDataView,
-                    context_hub::SourceReference> {
-  static const GURL& message_url(const context_hub::SourceReference& ref) {
+                    context_hub::GmailReference> {
+  static const GURL& message_url(const context_hub::GmailReference& ref) {
     return ref.url;
   }
 
-  static const std::string& subject(const context_hub::SourceReference& ref) {
+  static const std::string& subject(const context_hub::GmailReference& ref) {
     return ref.subject;
   }
 
   static bool Read(browser::context_hub::mojom::GmailReferenceDataView data,
-                   context_hub::SourceReference* out);
+                   context_hub::GmailReference* out);
+};
+
+template <>
+struct StructTraits<browser::context_hub::mojom::ChromeHistoryEntryDataView,
+                    context_hub::ChromeHistoryEntry> {
+  static const GURL& url(const context_hub::ChromeHistoryEntry& entry) {
+    return entry.url;
+  }
+
+  static const std::string& title(
+      const context_hub::ChromeHistoryEntry& entry) {
+    return entry.title;
+  }
+
+  static base::Time visit_timestamp(
+      const context_hub::ChromeHistoryEntry& entry) {
+    return entry.visit_timestamp;
+  }
+
+  static bool Read(browser::context_hub::mojom::ChromeHistoryEntryDataView data,
+                   context_hub::ChromeHistoryEntry* out);
+};
+
+template <>
+struct StructTraits<browser::context_hub::mojom::SearchQueryDataView,
+                    context_hub::SearchQuery> {
+  static const std::string& query(const context_hub::SearchQuery& search) {
+    return search.query;
+  }
+
+  static const GURL& search_url(const context_hub::SearchQuery& search) {
+    return search.search_url;
+  }
+
+  static base::Time timestamp(const context_hub::SearchQuery& search) {
+    return search.timestamp;
+  }
+
+  static bool Read(browser::context_hub::mojom::SearchQueryDataView data,
+                   context_hub::SearchQuery* out);
 };
 
 template <>
 struct UnionTraits<browser::context_hub::mojom::SourceReferenceDataView,
                    context_hub::SourceReference> {
   static browser::context_hub::mojom::SourceReferenceDataView::Tag GetTag(
-      const context_hub::SourceReference& ref) {
-    return browser::context_hub::mojom::SourceReferenceDataView::Tag::kGmail;
-  }
+      const context_hub::SourceReference& ref);
 
-  static const context_hub::SourceReference& gmail(
+  static const context_hub::GmailReference& gmail(
       const context_hub::SourceReference& ref) {
-    return ref;
+    return std::get<context_hub::GmailReference>(ref);
   }
 
   static browser::context_hub::mojom::PhotosReferencePtr photos(
@@ -77,6 +120,16 @@ struct UnionTraits<browser::context_hub::mojom::SourceReferenceDataView,
 
   static browser::context_hub::mojom::DriveFilePtr drive(
       const context_hub::SourceReference& ref);
+
+  static const context_hub::ChromeHistoryEntry& chrome_history_entry(
+      const context_hub::SourceReference& ref) {
+    return std::get<context_hub::ChromeHistoryEntry>(ref);
+  }
+
+  static const context_hub::SearchQuery& search_query(
+      const context_hub::SourceReference& ref) {
+    return std::get<context_hub::SearchQuery>(ref);
+  }
 
   static bool Read(browser::context_hub::mojom::SourceReferenceDataView data,
                    context_hub::SourceReference* out);
@@ -90,7 +143,7 @@ struct StructTraits<browser::context_hub::mojom::FirstPartyDataDataView,
     return first_party.source_references;
   }
 
-  static const GURL& actionable_url(
+  static const std::optional<GURL>& actionable_url(
       const context_hub::FirstPartyData& first_party) {
     return first_party.actionable_url;
   }
@@ -202,6 +255,167 @@ struct StructTraits<
       context_hub::AutoTodosGenerationMetadata* out);
 };
 
+// TODO(b/586296808): Remove duplicate `AutoTodoEntry` traits once
+// `AutoTodoItem` is phased out.
+template <>
+struct EnumTraits<browser::context_hub::mojom::AutoTodoStatus,
+                  launchpad::LaunchpadTask::Status> {
+  static browser::context_hub::mojom::AutoTodoStatus ToMojom(
+      launchpad::LaunchpadTask::Status input);
+  static launchpad::LaunchpadTask::Status FromMojom(
+      browser::context_hub::mojom::AutoTodoStatus input);
+};
+
+template <>
+struct StructTraits<browser::context_hub::mojom::GmailReferenceDataView,
+                    launchpad::GmailReference> {
+  static const GURL& message_url(const launchpad::GmailReference& ref) {
+    return ref.url;
+  }
+
+  static const std::string& subject(const launchpad::GmailReference& ref) {
+    return ref.subject;
+  }
+
+  static bool Read(browser::context_hub::mojom::GmailReferenceDataView data,
+                   launchpad::GmailReference* out);
+};
+
+template <>
+struct StructTraits<browser::context_hub::mojom::ChromeHistoryEntryDataView,
+                    launchpad::ChromeHistoryEntry> {
+  static const GURL& url(const launchpad::ChromeHistoryEntry& entry) {
+    return entry.url;
+  }
+
+  static const std::string& title(const launchpad::ChromeHistoryEntry& entry) {
+    return entry.title;
+  }
+
+  static base::Time visit_timestamp(
+      const launchpad::ChromeHistoryEntry& entry) {
+    return entry.visit_timestamp;
+  }
+
+  static bool Read(browser::context_hub::mojom::ChromeHistoryEntryDataView data,
+                   launchpad::ChromeHistoryEntry* out);
+};
+
+template <>
+struct UnionTraits<browser::context_hub::mojom::SourceReferenceDataView,
+                   launchpad::SourceReference> {
+  static browser::context_hub::mojom::SourceReferenceDataView::Tag GetTag(
+      const launchpad::SourceReference& ref);
+
+  static const launchpad::GmailReference& gmail(
+      const launchpad::SourceReference& ref) {
+    return std::get<launchpad::GmailReference>(ref);
+  }
+
+  static browser::context_hub::mojom::PhotosReferencePtr photos(
+      const launchpad::SourceReference& ref);
+
+  static browser::context_hub::mojom::DriveFilePtr drive(
+      const launchpad::SourceReference& ref);
+
+  static const launchpad::ChromeHistoryEntry& chrome_history_entry(
+      const launchpad::SourceReference& ref) {
+    return std::get<launchpad::ChromeHistoryEntry>(ref);
+  }
+
+  static context_hub::SearchQuery search_query(
+      const launchpad::SourceReference& ref);
+
+  static bool Read(browser::context_hub::mojom::SourceReferenceDataView data,
+                   launchpad::SourceReference* out);
+};
+
+template <>
+struct StructTraits<browser::context_hub::mojom::LaunchpadTaskDataView,
+                    launchpad::LaunchpadTask> {
+  static const std::string& id(const launchpad::LaunchpadTask& task) {
+    return task.id;
+  }
+  static const std::string& title(const launchpad::LaunchpadTask& task) {
+    return task.title;
+  }
+  static const std::string& description(const launchpad::LaunchpadTask& task) {
+    return task.description;
+  }
+  static launchpad::LaunchpadTask::Status status(
+      const launchpad::LaunchpadTask& task) {
+    return task.status;
+  }
+  static float score(const launchpad::LaunchpadTask& task) {
+    return task.importance_score;
+  }
+  static const std::vector<launchpad::SourceReference>& source_references(
+      const launchpad::LaunchpadTask& task) {
+    return task.source_references;
+  }
+  static const std::optional<GURL>& actionable_url(
+      const launchpad::LaunchpadTask& task) {
+    return task.actionable_url;
+  }
+
+  static bool Read(browser::context_hub::mojom::LaunchpadTaskDataView data,
+                   launchpad::LaunchpadTask* out);
+};
+
+template <>
+struct EnumTraits<browser::context_hub::mojom::EntryType,
+                  context_hub::MemoryBankType> {
+  static browser::context_hub::mojom::EntryType ToMojom(
+      context_hub::MemoryBankType input);
+  static context_hub::MemoryBankType FromMojom(
+      browser::context_hub::mojom::EntryType input);
+};
+
+template <>
+struct StructTraits<browser::context_hub::mojom::MemoryBankEntryDataView,
+                    context_hub::MemoryBankEntry> {
+  static int64_t id(const context_hub::MemoryBankEntry& entry) {
+    return entry.id;
+  }
+  static context_hub::MemoryBankType type(
+      const context_hub::MemoryBankEntry& entry) {
+    return entry.type;
+  }
+  static base::Time timestamp(const context_hub::MemoryBankEntry& entry) {
+    return entry.timestamp;
+  }
+  static const GURL& url(const context_hub::MemoryBankEntry& entry) {
+    return entry.url;
+  }
+  static const std::string& tab_title(
+      const context_hub::MemoryBankEntry& entry) {
+    return entry.tab_title;
+  }
+  static const std::optional<std::string>& selected_text(
+      const context_hub::MemoryBankEntry& entry) {
+    return entry.selected_text;
+  }
+  static const std::optional<GURL>& image_url(
+      const context_hub::MemoryBankEntry& entry) {
+    return entry.image_url;
+  }
+  static const std::vector<std::string>& tags(
+      const context_hub::MemoryBankEntry& entry) {
+    return entry.tags;
+  }
+  static const std::optional<std::string>& note(
+      const context_hub::MemoryBankEntry& entry) {
+    return entry.note;
+  }
+  static const std::optional<std::string>& collection(
+      const context_hub::MemoryBankEntry& entry) {
+    return entry.collection;
+  }
+
+  static bool Read(browser::context_hub::mojom::MemoryBankEntryDataView data,
+                   context_hub::MemoryBankEntry* out);
+};
+
 template <>
 struct StructTraits<browser::context_hub::mojom::DriveFileDataView,
                     personal_context::proto::DriveFile> {
@@ -224,7 +438,7 @@ struct UnionTraits<browser::context_hub::mojom::SourceReferenceDataView,
   static browser::context_hub::mojom::SourceReferenceDataView::Tag GetTag(
       const personal_context::proto::SourceReference& ref);
 
-  static context_hub::SourceReference gmail(
+  static context_hub::GmailReference gmail(
       const personal_context::proto::SourceReference& ref);
 
   static browser::context_hub::mojom::PhotosReferencePtr photos(
@@ -234,6 +448,12 @@ struct UnionTraits<browser::context_hub::mojom::SourceReferenceDataView,
       const personal_context::proto::SourceReference& ref) {
     return ref.drive();
   }
+
+  static context_hub::ChromeHistoryEntry chrome_history_entry(
+      const personal_context::proto::SourceReference& ref);
+
+  static context_hub::SearchQuery search_query(
+      const personal_context::proto::SourceReference& ref);
 
   static bool Read(browser::context_hub::mojom::SourceReferenceDataView data,
                    personal_context::proto::SourceReference* out);
@@ -253,9 +473,50 @@ struct StructTraits<browser::context_hub::mojom::SmartSearchResultDataView,
     return item.source_references();
   }
 
+  static bool Read(browser::context_hub::mojom::SmartSearchResultDataView data,
+                   personal_context::proto::SmartSearchItem* out);
+};
+
+template <>
+struct StructTraits<browser::context_hub::mojom::ChatReferenceDataView,
+                    context_hub::MemoryBankChatCitation> {
+  static const std::string& title(
+      const context_hub::MemoryBankChatCitation& citation) {
+    return citation.title;
+  }
+
+  static const GURL& url(const context_hub::MemoryBankChatCitation& citation) {
+    return citation.url;
+  }
+
+  static const std::optional<GURL>& image_url(
+      const context_hub::MemoryBankChatCitation& citation) {
+    return citation.image_url;
+  }
+
+  static bool Read(browser::context_hub::mojom::ChatReferenceDataView data,
+                   context_hub::MemoryBankChatCitation* out);
+};
+
+template <>
+struct StructTraits<browser::context_hub::mojom::MemoryBankChatMessageDataView,
+                    context_hub::MemoryBankChatHistoryTurn> {
+  static browser::context_hub::mojom::ChatRole role(
+      const context_hub::MemoryBankChatHistoryTurn& entry);
+
+  static std::string_view content(
+      const context_hub::MemoryBankChatHistoryTurn& entry) {
+    return entry.turn.message_content();
+  }
+
+  static const std::vector<context_hub::MemoryBankChatCitation>& references(
+      const context_hub::MemoryBankChatHistoryTurn& entry) {
+    return entry.citations;
+  }
+
   static bool Read(
-      browser::context_hub::mojom::SmartSearchResultDataView data,
-      personal_context::proto::SmartSearchItem* out);
+      browser::context_hub::mojom::MemoryBankChatMessageDataView data,
+      context_hub::MemoryBankChatHistoryTurn* out);
 };
 
 }  // namespace mojo

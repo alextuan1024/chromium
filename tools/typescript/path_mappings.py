@@ -8,6 +8,7 @@ import sys
 import json
 import io
 import os
+import re
 from path_utils import isInAshFolder, getTargetPath
 
 
@@ -29,7 +30,6 @@ def _add_ui_webui_resources_mappings(path_mappings, root_gen_dir):
     "cr_components/customize_themes",
     "cr_components/help_bubble",
     "cr_components/history",
-    "cr_components/history_embeddings",
     "cr_components/history_clusters",
     "cr_components/localized_link",
     "cr_components/managed_dialog",
@@ -52,13 +52,33 @@ def _add_ui_webui_resources_mappings(path_mappings, root_gen_dir):
     ]
 
 
+# Reads a manifest file (from `generate_mojo_manifest()` or `ts_library()`) and
+# returns `(import_path, dts_path)` pairs mapping each listed `.js` file to its
+# corresponding `.d.ts` declaration file relative to `gen_dir`.
+def _get_path_mappings_from_manifest(manifest_path, gen_dir):
+  mappings = []
+  with open(manifest_path, 'r', encoding='utf-8') as f:
+    manifest_data = json.load(f)
+  for entry in manifest_data.get('entries', [manifest_data]):
+    dts_dir = entry.get('dts_dir', entry['base_dir'])
+    url_prefix = entry.get('url_prefix', '')
+    for file_name in entry['files']:
+      import_path = f'{url_prefix}/{file_name}' if url_prefix else file_name
+      dts_file = re.sub(r'\.js$', '.d.ts', file_name)
+      rel_dts_path = os.path.relpath(
+        os.path.join(dts_dir, dts_file), gen_dir
+      ).replace('\\', '/')
+      mappings.append((import_path, rel_dts_path))
+  return mappings
+
+
 def _add_third_party_polymer_mappings(path_mappings, root_src_dir):
-  path_mappings[f'//third_party/polymer/v3_0:library'] = [
+  path_mappings['//third_party/polymer/v3_0:library'] = [
     (
       '//resources/polymer/v3_0/polymer/polymer_bundled.min.js',
       (
-          f'{root_src_dir}/third_party/polymer/v3_0/components-chromium/'
-          'polymer/polymer.d.ts'
+        f'{root_src_dir}/third_party/polymer/v3_0/components-chromium/'
+        'polymer/polymer.d.ts'
       ),
     ),
     (
@@ -69,13 +89,13 @@ def _add_third_party_polymer_mappings(path_mappings, root_src_dir):
 
 
 def _add_third_party_d3_mappings(path_mappings, root_src_dir):
-  path_mappings[f'//third_party/d3:library'] = [
+  path_mappings['//third_party/d3:library'] = [
     ('//resources/d3/d3.min.js', f'{root_src_dir}/third_party/d3/src/d3.d.ts'),
   ]
 
 
 def _add_third_party_lit_mappings(path_mappings, root_gen_dir):
-  path_mappings[f'//third_party/lit/v3_0:build_ts'] = [
+  path_mappings['//third_party/lit/v3_0:build_ts'] = [
     (
       '//resources/lit/v3_0/lit.rollup.js',
       f'{root_gen_dir}/third_party/lit/v3_0/lit.d.ts',
@@ -162,13 +182,8 @@ def _is_browser_only_dep(dep):
 
 
 def _is_dependency_allowed(is_ash_target, raw_dep, target_path):
-  # TODO: Update Ash Print Preview to use ash cr_elements.
-  exceptions = [
-    'chrome/browser/resources/ash/print_preview',
-    'chrome/test/data/webui/chromeos/print_preview',
-  ]
   if is_ash_target and _is_browser_only_dep(raw_dep):
-    return target_path in exceptions
+    return False
 
   is_ash_dep = isInAshFolder(raw_dep[2:])
   if not is_ash_dep or is_ash_target:
@@ -192,7 +207,8 @@ def _write_path_mappings_file(
 
 def main(argv):
   parser = argparse.ArgumentParser()
-  parser.add_argument('--raw_deps', nargs='*')
+  parser.add_argument('--raw_deps', nargs='*', default=[])
+  parser.add_argument('--manifest_files', nargs='*', default=[])
   parser.add_argument('--root_gen_dir', required=True)
   parser.add_argument('--root_src_dir', required=True)
   parser.add_argument('--gen_dir', required=True)
@@ -257,6 +273,19 @@ def main(argv):
         path_mappings[scheme + url].append(
           os.path.join('./', dir).replace('\\', '/')
         )
+
+  for manifest_path in args.manifest_files:
+    for import_path, rel_dts_path in _get_path_mappings_from_manifest(
+      manifest_path, args.gen_dir
+    ):
+      mapped_path = os.path.join('./', rel_dts_path).replace('\\', '/')
+      if import_path in path_mappings:
+        assert path_mappings[import_path] == [mapped_path], (
+          f'Conflicting path mappings for {import_path}: '
+          f'{path_mappings[import_path]} vs {[mapped_path]}'
+        )
+      else:
+        path_mappings[import_path].append(mapped_path)
 
   _write_path_mappings_file(
     path_mappings, args.output_suffix, args.gen_dir, args.pretty_print

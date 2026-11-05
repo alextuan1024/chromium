@@ -13,7 +13,7 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "builder_group": "chromium.fyi",
+              "builder_group": "chromium.linux",
               "execution_mode": "COMPILE_AND_TEST",
               "legacy_chromium_config": {
                 "apply_configs": [
@@ -27,7 +27,8 @@
               "legacy_gclient_config": {
                 "apply_configs": [
                   "use_clang_coverage",
-                  "chromium_with_telemetry_dependencies"
+                  "chromium_with_telemetry_dependencies",
+                  "checkout_snap_runtime"
                 ],
                 "config": "chromium"
               }
@@ -46,8 +47,7 @@
     }
   },
   "$build/flakiness": {
-    "check_for_flakiness": true,
-    "check_for_flakiness_with_resultdb": true
+    "check_for_flakiness": true
   },
   "$build/siso": {
     "configs": [
@@ -70,6 +70,6 @@
     ]
   },
   "builder_group": "tryserver.chromium.linux",
-  "cq": "required",
+  "cq": "path-based",
   "recipe": "chromium_trybot"
 }

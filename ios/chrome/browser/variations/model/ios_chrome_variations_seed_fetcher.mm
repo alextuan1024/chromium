@@ -6,18 +6,23 @@
 
 #import <string>
 #import <string_view>
+#import <vector>
 
+#import "base/apple/foundation_util.h"
 #import "base/containers/fixed_flat_set.h"
-#import "base/feature_list.h"
 #import "base/logging.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/notreached.h"
+#import "base/numerics/safe_conversions.h"
 #import "base/strings/escape.h"
 #import "base/strings/strcat.h"
+#import "base/strings/string_split.h"
 #import "base/strings/string_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
 #import "build/branding_buildflags.h"
+#import "components/policy/core/common/policy_loader_ios_constants.h"
+#import "components/policy/policy_constants.h"
 #import "components/variations/seed_response.h"
 #import "components/variations/variations_switches.h"
 #import "components/variations/variations_url_constants.h"
@@ -52,8 +57,8 @@ static BOOL g_seed_fetching_in_progress = NO;
 std::string GetOsName(const std::string& forced_platform) {
   if (!forced_platform.empty()) {
     static constexpr auto kPlatforms = base::MakeFixedFlatSet<std::string_view>(
-        {"android", "android_webview", "chromeos", "fuchsia", "ios", "linux",
-         "mac", "win"});
+        {"android", "android_desktop", "android_webview", "chromeos", "fuchsia",
+         "ios", "linux", "mac", "win"});
     if (kPlatforms.contains(forced_platform)) {
       return forced_platform;
     } else {
@@ -63,17 +68,36 @@ std::string GetOsName(const std::string& forced_platform) {
   return "ios";
 }
 
-// Returns the trimmed and URL-escaped value of the given string.
-std::string GetEscapedValue(std::string_view value) {
-  return base::EscapeQueryParamValue(
-      base::TrimWhitespaceASCII(value, base::TrimPositions::TRIM_ALL),
-      /*use_plus=*/false);
+// Returns a copy of `value` with leading and trailing ASCII whitespace
+// removed.
+std::string TrimWhitespace(std::string_view value) {
+  return std::string(
+      base::TrimWhitespaceASCII(value, base::TrimPositions::TRIM_ALL));
+}
+
+// Returns `query` with the first `name` parameter replaced by `value`, or with
+// it appended if absent, mirroring `net::AppendOrReplaceQueryParameter()`.
+std::string AppendOrReplaceQueryParameter(std::string_view query,
+                                          std::string_view name,
+                                          std::string_view value) {
+  const std::string parameter = base::StrCat(
+      {name, "=", base::EscapeQueryParamValue(value, /*use_plus=*/true)});
+  std::vector<std::string_view> pairs = base::SplitStringPiece(
+      query, "&", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+  bool replaced = false;
+  for (std::string_view& pair : pairs) {
+    if (!replaced && pair.substr(0, pair.find('=')) == name) {
+      pair = parameter;
+      replaced = true;
+    }
+  }
+  if (!replaced) {
+    pairs.push_back(parameter);
+  }
+  return base::JoinString(pairs, "&");
 }
 
 }  // namespace
-
-BASE_FEATURE(kVariationsExperimentalCorpus, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
 
 @implementation IOSChromeVariationsSeedFetcher {
   // Whether the current binary should fetch Finch seed for experiment purpose.
@@ -87,6 +111,11 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
   // Accessed on the main thread.
   std::string _forcedChannel;
   std::string _forcedPlatform;
+
+  // The `VariationsRestrictParameter` MDM policy value. Initialized on the
+  // main thread and read on the static serial queue
+  // `*.first_run_variations_seed_manager`.
+  std::string _restrictParameter;
 
   // The timestamp when the current seed request starts. This is used for metric
   // reporting, and will be reset to null value when the request finishes.
@@ -107,6 +136,19 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
     _variationsDomain = variations::kDefaultServerUrl;
     _forcedChannel = std::string();
     _forcedPlatform = std::string();
+    _restrictParameter = std::string();
+
+    NSDictionary* managedConfig = [[NSUserDefaults standardUserDefaults]
+        dictionaryForKey:kPolicyLoaderIOSConfigurationKey];
+    if (managedConfig) {
+      NSString* restrictParam =
+          base::apple::ObjCCast<NSString>(managedConfig[base::SysUTF8ToNSString(
+              policy::key::kVariationsRestrictParameter)]);
+      if (restrictParam) {
+        _restrictParameter =
+            TrimWhitespace(base::SysNSStringToUTF8(restrictParam));
+      }
+    }
 
     std::string url_switch =
         base::StrCat({"--", variations::switches::kVariationsServerURL, "="});
@@ -126,9 +168,9 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
           _fetchingEnabled = YES;
         }
       } else if (base::StartsWith(arg, channel_switch)) {
-        _forcedChannel = GetEscapedValue(arg.substr(channel_switch.size()));
+        _forcedChannel = TrimWhitespace(arg.substr(channel_switch.size()));
       } else if (base::StartsWith(arg, platform_switch)) {
-        _forcedPlatform = GetEscapedValue(arg.substr(platform_switch.size()));
+        _forcedPlatform = TrimWhitespace(arg.substr(platform_switch.size()));
       }
     }
   }
@@ -174,29 +216,42 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
 // the request initiator. Accessed in the static serial queue
 // "*.first_run_variations_seed_manager".
 - (NSURL*)variationsURL {
-  // Construct the variations seed request URL. The URL contains the "osname",
-  // "milestone", "channel" and "corpus" as parameters. Dogfood experimenting
-  // is not supported on Chrome iOS, therefore we do not need the "restrict"
-  // parameter.
+  // Uses Foundation URL types because this runs before web schemes are
+  // registered, when the `url` library's scheme registry must not be read.
+  NSURLComponents* components = [NSURLComponents
+      componentsWithString:base::SysUTF8ToNSString(_variationsDomain)];
+  // Malformed `--variations-server-url` values yield no request URL.
+  if (!components.scheme.length || !components.host.length) {
+    return nil;
+  }
+  // Gives hierarchical URLs a root path, matching Chrome's URL
+  // canonicalization.
+  if (!components.percentEncodedPath.length) {
+    components.percentEncodedPath = @"/";
+  }
+  std::string query =
+      base::SysNSStringToUTF8(components.percentEncodedQuery ?: @"");
+  // Construct the variations seed request URL with `osname` and `milestone`,
+  // plus optional `channel` and `restrict` (from the
+  // `VariationsRestrictParameter` MDM policy) parameters.
+  query = AppendOrReplaceQueryParameter(query, "osname",
+                                        GetOsName(_forcedPlatform));
+  query = AppendOrReplaceQueryParameter(query, "milestone",
+                                        version_info::GetMajorVersionNumber());
   const std::string channel =
       _forcedChannel.empty()
           ? (GetChannel() != version_info::Channel::UNKNOWN ? GetChannelString()
                                                             : "")
           : _forcedChannel;
-  std::string url =
-      base::StrCat({_variationsDomain, "?osname=", GetOsName(_forcedPlatform),
-                    "&milestone=", version_info::GetMajorVersionNumber()});
   if (!channel.empty()) {
-    base::StrAppend(&url, {"&channel=", channel});
+    query = AppendOrReplaceQueryParameter(query, "channel", channel);
   }
-  if (base::FeatureList::IsEnabled(kVariationsExperimentalCorpus)) {
-    base::StrAppend(&url, {"&corpus=experimental"});
+  if (!_restrictParameter.empty()) {
+    query =
+        AppendOrReplaceQueryParameter(query, "restrict", _restrictParameter);
   }
-  if (base::FeatureList::IsEnabled(kVariationsRestrictDogfood)) {
-    base::StrAppend(&url, {"&restrict=dogfood"});
-  }
-
-  return [NSURL URLWithString:base::SysUTF8ToNSString(url)];
+  components.percentEncodedQuery = base::SysUTF8ToNSString(query);
+  return components.URL;
 }
 
 // Helper method for `startSeedFetch` that initiates an HTTPS request to the
@@ -215,6 +270,13 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
   // ("x-bm"), as it is not applicable on first run (since there is no
   // existing seed).
   [request setValue:@"gzip" forHTTPHeaderField:@"A-IM"];
+  // Advertise the pinned verification key IDs supported by this client
+  // (1, 2, 3 = hybrid ECDSA P-256 + ML-DSA-44 PQ keys; 0 = legacy ECDSA P-256
+  // fallback) so the server can return a post-quantum seed signature.
+  [request setValue:base::SysUTF8ToNSString(
+                        variations::kSupportedSeedKeyIdsWithLegacy)
+      forHTTPHeaderField:base::SysUTF8ToNSString(
+                             variations::kSeedKeyIdsHeaderName)];
   NSURLSessionDataTask* task = [[NSURLSession sharedSession]
       dataTaskWithRequest:request
         completionHandler:^(NSData* data, NSURLResponse* response,
@@ -280,10 +342,19 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
   NSString* signature =
       [httpResponse valueForHTTPHeaderField:@"X-Seed-Signature"];
   NSString* country = [httpResponse valueForHTTPHeaderField:@"X-Country"];
+  NSString* geoLevel1 = [httpResponse valueForHTTPHeaderField:@"X-Geo-Level-1"];
   NSString* dateString = [httpResponse valueForHTTPHeaderField:@"Date"];
   base::Time date;
   BOOL dateParsed = base::Time::FromUTCString(
       base::SysNSStringToUTF8(dateString).c_str(), &date);
+  base::UmaHistogramBoolean("Variations.SeedDateMissing", !dateParsed);
+  if (dateParsed) {
+    base::UmaHistogramCustomCounts(
+        "Variations.SeedDateClockSkew",
+        base::saturated_cast<int>(
+            (base::Time::Now() - date).magnitude().InSeconds()),
+        1, base::checked_cast<int>(base::Days(30).InSeconds()), 50);
+  }
 
   // Returned seed should have been gzip compressed.
   NSCharacterSet* whitespace = [NSCharacterSet whitespaceCharacterSet];
@@ -310,6 +381,7 @@ BASE_FEATURE(kVariationsRestrictDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
     }
     seed->signature = base::SysNSStringToUTF8(signature);
     seed->country = base::SysNSStringToUTF8(country);
+    seed->geo_level1 = base::SysNSStringToUTF8(geoLevel1);
     seed->is_gzip_compressed = YES;
     return seed;
   }

@@ -18,7 +18,6 @@
 #include "ash/shell_delegate.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
-#include "ash/style/style_util.h"
 #include "ash/style/typography.h"
 #include "ash/system/channel_indicator/channel_indicator_quick_settings_view.h"
 #include "ash/system/channel_indicator/channel_indicator_utils.h"
@@ -36,7 +35,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "components/session_manager/session_manager_types.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -110,12 +109,15 @@ class QuickSettingsHeader::ManagedStateView : public views::Button {
     label_->SetText(l10n_util::GetStringUTF16(label_id));
 
     image_->SetPreferredSize(kManagedStateImageSize);
+    image_->SetImage(ui::ImageModel::FromVectorIcon(
+        *icon_, cros_tokens::kCrosSysOnSurfaceVariant));
     label_->SetEnabledColor(cros_tokens::kCrosSysOnSurfaceVariant);
     TypographyProvider::Get()->StyleLabel(ash::TypographyToken::kCrosBody2,
                                           *label_);
     SetInstallFocusRingOnFocus(true);
     views::FocusRing::Get(this)->SetColorId(cros_tokens::kCrosSysFocusRing);
     views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::ON);
+    views::InkDrop::Get(this)->SetBaseColor(kColorAshInkDropOpaqueColor);
     views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(),
                                                   kManagedStateCornerRadius);
   }
@@ -133,18 +135,6 @@ class QuickSettingsHeader::ManagedStateView : public views::Button {
   views::View* GetTooltipHandlerForPoint(const gfx::Point& point) override {
     // Tooltip events should be handled by this top-level view.
     return HitTestPoint(point) ? this : nullptr;
-  }
-
-  // views::Button:
-  // TODO(b/311234537): consider to remove this override and set color ids.
-  void OnThemeChanged() override {
-    views::Button::OnThemeChanged();
-    const std::pair<SkColor, float> base_color_and_opacity =
-        StyleUtil::GetInkDropBaseColorAndOpacity();
-    views::InkDrop::Get(this)->SetBaseColor(base_color_and_opacity.first);
-    image_->SetImage(ui::ImageModel::FromVectorIcon(
-        *icon_,
-        GetColorProvider()->GetColor(cros_tokens::kCrosSysOnSurfaceVariant)));
   }
 
   // views::Button:

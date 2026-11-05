@@ -16,6 +16,7 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_delegate.h"
+#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/skills/public/skill.h"
 #include "components/skills/public/skill.mojom.h"
@@ -119,8 +120,8 @@ void SkillsDialogHandler::SubmitSkill(
   // Triggers toast
   delegate_->OnSkillSaved(response->id);
   RecordSkillsSaveResult(SkillsSaveResult::kSuccess);
-  delegate_->CloseDialog();
   std::move(wrapped_callback).Run(true);
+  delegate_->CloseDialog();
 }
 
 void SkillsDialogHandler::DeleteSkill(const std::string& skill_id) {

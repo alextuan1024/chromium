@@ -9,13 +9,13 @@
 #include <vector>
 
 #include "ash/system/mahi/test/mock_mahi_media_app_events_proxy.h"
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/strings/strcat.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/magic_boost/magic_boost_controller.h"
 #include "chrome/browser/ash/magic_boost/magic_boost_state.h"
 #include "chrome/browser/global_features.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/editor_menu/editor_menu_card_context.h"
 #include "chrome/browser/ui/ash/editor_menu/editor_menu_controller_impl.h"
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_card_controller.h"
@@ -33,6 +33,10 @@
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_state.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/chromeos_switches.h"
+#include "components/metrics/metrics_state_manager.h"
+#include "components/metrics/startup_visibility.h"
+#include "components/metrics/test/test_enabled_state_provider.h"
+#include "components/variations/service/test_variations_service.h"
 #include "content/public/browser/context_menu_params.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -70,6 +74,20 @@ class ReadWriteCardsManagerImplTest : public ChromeAshTestBase {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         chromeos::switches::kMahiRestrictionsOverride);
 
+    // Needed for `MagicBoostState`.
+    PrefService* local_state =
+        TestingBrowserProcess::GetGlobal()->local_state();
+    metrics_state_manager_ = metrics::MetricsStateManager::Create(
+        local_state, &metrics_enabled_state_provider_,
+        /*backup_registry_key=*/std::wstring(),
+        /*user_data_dir=*/base::FilePath(),
+        metrics::StartupVisibility::kUnknown);
+    test_variations_service_ =
+        std::make_unique<variations::TestVariationsService>(
+            local_state, metrics_state_manager_.get());
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(
+        test_variations_service_.get());
+
     ChromeAshTestBase::SetUp();
 
     CHECK(profile_manager_.SetUp());
@@ -83,6 +101,7 @@ class ReadWriteCardsManagerImplTest : public ChromeAshTestBase {
     // `ReadWriteCardsManagerImpl` will initialize `QuickAnswersState`
     // indirectly. `QuickAnswersState` depends on `MagicBoostState`.
     magic_boost_state_ = std::make_unique<ash::MagicBoostState>(
+        TestingBrowserProcess::GetGlobal()->variations_service(),
         base::BindRepeating([]() { return static_cast<Profile*>(nullptr); }));
     manager_ = std::make_unique<ReadWriteCardsManagerImpl>(
         TestingBrowserProcess::GetGlobal()
@@ -98,6 +117,10 @@ class ReadWriteCardsManagerImplTest : public ChromeAshTestBase {
     testing_profile_ = nullptr;
     profile_manager_.DeleteTestingProfile(chrome::kInitialProfile);
     ChromeAshTestBase::TearDown();
+
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(nullptr);
+    test_variations_service_.reset();
+    metrics_state_manager_.reset();
   }
 
   void OnGetEditorMenuCardContext(
@@ -142,6 +165,10 @@ class ReadWriteCardsManagerImplTest : public ChromeAshTestBase {
   }
 
  protected:
+  metrics::TestEnabledStateProvider metrics_enabled_state_provider_{
+      /*consent=*/false, /*enabled=*/false};
+  std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;
+  std::unique_ptr<variations::TestVariationsService> test_variations_service_;
   std::unique_ptr<ash::MagicBoostState> magic_boost_state_;
   std::unique_ptr<ReadWriteCardsManagerImpl> manager_;
   base::test::ScopedFeatureList scoped_feature_list_;

@@ -18,6 +18,8 @@ DataTransferEndpoint::DataTransferEndpoint(const GURL& url,
       url_(url),
       off_the_record_(options.off_the_record),
       notify_if_restricted_(options.notify_if_restricted) {
+  // TODO(crbug.com/586502723): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(url.is_valid());
 }
 
@@ -27,7 +29,7 @@ DataTransferEndpoint::DataTransferEndpoint(EndpointType type,
       url_(std::nullopt),
       off_the_record_(options.off_the_record),
       notify_if_restricted_(options.notify_if_restricted) {
-  DCHECK_NE(type, EndpointType::kUrl);
+  CHECK_NE(type, EndpointType::kUrl, base::NotFatalUntil::M163);
 }
 
 DataTransferEndpoint::DataTransferEndpoint(const DataTransferEndpoint& other) =

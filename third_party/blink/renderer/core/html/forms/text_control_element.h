@@ -34,6 +34,7 @@
 #include "third_party/blink/renderer/core/html/forms/html_form_control_element_with_state.h"
 #include "third_party/blink/renderer/core/html/forms/text_control_inner_elements.h"
 #include "third_party/blink/renderer/core/style/text_overflow_data.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
 
@@ -195,6 +196,9 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
   void SetAutofillValue(const String& value,
                         WebAutofillState = WebAutofillState::kAutofilled);
 
+  void SetAutofillState(
+      WebAutofillState = WebAutofillState::kAutofilled) override;
+
   // A null value indicates that the suggested value should be hidden.
   virtual void SetSuggestedValue(const String& value);
   const String& SuggestedValue() const;
@@ -272,6 +276,8 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
 
   void SetLastChangeWasNotUserEdit() { last_change_was_user_edit_ = false; }
   void AdjustPlaceholderBreakElement();
+  // Updates aria-hidden of the placeholder break element for `value`.
+  void UpdatePlaceholderBreakAriaHidden(const String& value);
   String ValueWithHardLineBreaks() const;
 
   void CloneNonAttributePropertiesFrom(const Element&,
@@ -343,10 +349,6 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
   void ScheduleSelectionchangeEventOnThisOrDocument();
   void DisabledOrReadonlyAttributeChanged(const QualifiedName&);
 
-  // Called in dispatchFocusEvent(), after placeholder process, before calling
-  // parent's dispatchFocusEvent().
-  virtual void HandleFocusEvent(Element* /* oldFocusedNode */,
-                                mojom::blink::FocusType) {}
   // Called in dispatchBlurEvent(), after placeholder process, before calling
   // parent's dispatchBlurEvent().
   virtual void HandleBlurEvent() {}
@@ -355,6 +357,10 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
   // necessarily match the placeholder_element visibility because it can be used
   // for suggested values too.
   bool PlaceholderShouldBeVisible() const;
+
+  bool HasOpaqueRanges() const {
+    return opaque_range_data_ && !opaque_range_data_->ranges.empty();
+  }
 
   // Notify observers of a single replace in this element’s value at
   // `change_offset`: removed `deleted_count` and added `inserted_count`
@@ -372,23 +378,6 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
   // creating a number of TreeScope data structures to track elements by ID.
   Member<TextControlInnerEditorElement> inner_editor_;
 
-  // In value_before_first_user_edit_, we distinguish a null String and
-  // zero-length String. Null String means the field doesn't have any data yet,
-  // and zero-length String is a valid data.
-  String value_before_first_user_edit_;
-  bool last_change_was_user_edit_;
-
-  unsigned cached_selection_start_;
-  unsigned cached_selection_end_;
-  TextFieldSelectionDirection cached_selection_direction_;
-
-  // Value to display in the text element without actually changing its
-  // `Value()`. This is introduced to be able to display information on an
-  // element without leaking it to JavaScript. Reasons for that could be
-  // previewing a value to be filled before getting explicit user consent for
-  // filling.
-  String suggested_value_;
-
   // Snapshot taken at 'beforeinput' retained until the first observable change.
   // Selection defines the edit region; that change is treated as one replace
   // of the region (e.g. replacing "abc" with "xyz") rather than multiple
@@ -399,16 +388,42 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
     unsigned selection_end = 0;
   };
 
-  // Holds a pending user edit captured at 'beforeinput' until the first
-  // observable value mutation occurs.
-  std::optional<PendingUserEditSnapshot> pending_user_edit_;
+  struct OpaqueRangeData final : GarbageCollected<OpaqueRangeData> {
+    void Trace(Visitor* visitor) const;
 
-  // Holds OpaqueRange instances that observe this text control.
-  HeapVector<Member<OpaqueRange>> opaque_ranges_;
+    // Holds OpaqueRange instances that observe this text control.
+    HeapVector<Member<OpaqueRange>> ranges;
+    // Holds a pending user edit captured at 'beforeinput' until the first
+    // observable value mutation occurs.
+    std::optional<PendingUserEditSnapshot> pending_user_edit;
+  };
+
+  // OpaqueRange state. Null until the first OpaqueRange is registered, since
+  // most text controls never have one.
+  Member<OpaqueRangeData> opaque_range_data_;
+
+  // In value_before_first_user_edit_, we distinguish a null String and
+  // zero-length String. Null String means the field doesn't have any data yet,
+  // and zero-length String is a valid data.
+  String value_before_first_user_edit_;
+
+  // Value to display in the text element without actually changing its
+  // `Value()`. This is introduced to be able to display information on an
+  // element without leaking it to JavaScript. Reasons for that could be
+  // previewing a value to be filled before getting explicit user consent for
+  // filling.
+  String suggested_value_;
+
+  unsigned cached_selection_start_;
+  unsigned cached_selection_end_;
+  TextFieldSelectionDirection cached_selection_direction_;
+  bool last_change_was_user_edit_;
 
   // RAII helper that temporarily skips SetValue()'s automatic OpaqueRange
   // full-value diff for this scope. The flag is restored on destruction.
-  class ScopedSkipValueAutoDiff final {
+  class [[nodiscard]] ScopedSkipValueAutoDiff final {
+    STACK_ALLOCATED();
+
    public:
     explicit ScopedSkipValueAutoDiff(TextControlElement& element)
         : auto_reset_(&element.skip_next_set_value_auto_diff_, true) {}
@@ -471,8 +486,9 @@ DEFINE_TEXT_CONTROL_CASTS(const TextControlElement, const Node);
 template <>
 struct DowncastTraits<TextControlElement> {
   static bool AllowFrom(const Node& node) {
-    return node.HasTagName(html_names::kInputTag) ||
-           node.HasTagName(html_names::kTextareaTag);
+    const ElementType type = node.GetElementType();
+    return type == ElementType::kHTMLInputElement ||
+           type == ElementType::kHTMLTextAreaElement;
   }
 };
 

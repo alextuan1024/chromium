@@ -13,7 +13,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chromeos/ash/components/carrier_lock/carrier_lock_manager.h"
 #include "chromeos/ash/components/carrier_lock/common.h"
@@ -338,9 +337,7 @@ TEST_F(NetworkStateNotifierTest, CellularEsimConnectionFailure) {
   EXPECT_FALSE(notification);
 }
 
-TEST_F(NetworkStateNotifierTest,
-       CellularInvalidApnConnectionFailureApnRevampEnabled) {
-  scoped_feature_list_.InitAndEnableFeature(ash::features::kApnRevamp);
+TEST_F(NetworkStateNotifierTest, CellularInvalidApnConnectionFailure) {
   Init();
   network_handler_test_helper_->service_test()
       ->SetErrorForNextConnectionAttempt(shill::kErrorInvalidAPN);
@@ -363,34 +360,6 @@ TEST_F(NetworkStateNotifierTest,
   EXPECT_EQ(1, test_system_tray_client_.show_apn_subpage_count());
   EXPECT_EQ(kCellular1Guid,
             test_system_tray_client_.last_apn_subpage_network_id());
-}
-
-TEST_F(NetworkStateNotifierTest,
-       CellularInvalidApnConnectionFailureApnRevampDisabled) {
-  scoped_feature_list_.InitAndDisableFeature(features::kApnRevamp);
-  Init();
-  network_handler_test_helper_->service_test()
-      ->SetErrorForNextConnectionAttempt(shill::kErrorInvalidAPN);
-  network_handler_test_helper_->service_test()->SetServiceProperty(
-      kCellular1ServicePath, shill::kConnectableProperty, base::Value(true));
-  network_handler_test_helper_->service_test()->SetServiceProperty(
-      kCellular1ServicePath, shill::kErrorProperty,
-      base::Value(shill::kErrorInvalidAPN));
-  NetworkConnect::Get()->ConnectToNetworkId(kCellular1Guid);
-  base::RunLoop().RunUntilIdle();
-
-  // Failure should spawn a notification.
-  const message_center::Notification* notification =
-      GetNotification(NetworkStateNotifier::kNetworkConnectNotificationId);
-  ASSERT_TRUE(notification);
-
-  // Clicking the notification should open the network settings page.
-  notification->delegate()->Click(/*button_index=*/std::nullopt,
-                                  /*reply=*/std::nullopt);
-  EXPECT_EQ(0, test_system_tray_client_.show_apn_subpage_count());
-  EXPECT_EQ(1, test_system_tray_client_.show_network_settings_count());
-  EXPECT_EQ(kCellular1Guid,
-            test_system_tray_client_.last_network_settings_network_id());
 }
 
 TEST_F(NetworkStateNotifierTest, CellularCarrierLockedSimConnectionFailure) {

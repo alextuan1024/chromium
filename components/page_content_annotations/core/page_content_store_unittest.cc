@@ -7,23 +7,35 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/test/protobuf_matchers.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/time/time.h"
+#include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
 #include "components/os_crypt/async/browser/test_utils.h"
 #include "components/os_crypt/async/common/encryptor.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
+#include "sql/test/drive_error_test_vfs.h"
+#include "sql/test/test_helpers.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace optimization_guide {
 
 namespace {
+
+using ::base::test::EqualsProto;
+using ::testing::Optional;
 
 constexpr int64_t kTabId = 1;
 constexpr char kUrl[] = "https://example.com/";
 
 proto::PageContext TestContent(const std::string& title) {
   proto::PageContext page_context;
+  page_context.mutable_annotated_page_content()->set_version(
+      kAnnotatedPageContentVersion);
   page_context.mutable_annotated_page_content()
       ->mutable_main_frame_data()
       ->set_title(title);
@@ -36,20 +48,26 @@ class PageContentStoreTest : public testing::Test {
  public:
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
-    store_ = std::make_unique<PageContentStore>(db_path());
     auto os_crypt_async = os_crypt_async::GetTestOSCryptAsyncForTesting();
     base::RunLoop run_loop;
     os_crypt_async->GetInstance(base::BindOnce(
-        [](PageContentStore* store, base::RunLoop* run_loop,
+        [](PageContentStoreTest* test, base::RunLoop* run_loop,
            scoped_refptr<os_crypt_async::Encryptor> encryptor) {
-          store->InitWithEncryptor(std::move(encryptor));
+          test->encryptor_ = std::move(encryptor);
           run_loop->Quit();
         },
-        store_.get(), &run_loop));
+        this, &run_loop));
     run_loop.Run();
+    OpenStore();
   }
 
   void TearDown() override { store_.reset(); }
+
+  void OpenStore() {
+    store_.reset();
+    store_ = std::make_unique<PageContentStore>(db_path());
+    store_->InitWithEncryptor(encryptor_);
+  }
 
   base::FilePath db_path() const {
     return temp_dir_.GetPath().AppendASCII("PageContentStoreTest.db");
@@ -58,6 +76,8 @@ class PageContentStoreTest : public testing::Test {
  protected:
   base::test::TaskEnvironment task_environment_;
   base::ScopedTempDir temp_dir_;
+  scoped_refptr<os_crypt_async::Encryptor> encryptor_;
+  sql::test::DriveErrorTestVfs vfs_;
   std::unique_ptr<PageContentStore> store_;
 };
 
@@ -294,6 +314,44 @@ TEST_F(PageContentStoreTest, GetPageContentForTab) {
             got_apc->annotated_page_content().main_frame_data().title());
 }
 
+TEST_F(PageContentStoreTest, GetPageContent_IncompatibleVersion) {
+  const GURL url1("https://example.com/1");
+  proto::PageContext unknown_version_context;
+  unknown_version_context.mutable_annotated_page_content()
+      ->mutable_main_frame_data()
+      ->set_title("unknown version");
+  const base::Time visit_timestamp = base::Time::Now();
+  const base::Time extraction_timestamp = base::Time::Now();
+
+  EXPECT_TRUE(store_->AddPageContent(url1, unknown_version_context,
+                                     visit_timestamp, extraction_timestamp, 1));
+  EXPECT_FALSE(store_->GetPageContent(url1).has_value());
+  EXPECT_FALSE(store_->GetPageContentForTab(1).has_value());
+
+  const GURL url2("https://example.com/2");
+  proto::PageContext actionable_version_context =
+      TestContent("actionable version");
+  actionable_version_context.mutable_annotated_page_content()->set_version(
+      proto::ANNOTATED_PAGE_CONTENT_VERSION_ONLY_ACTIONABLE_ELEMENTS_1_0);
+
+  EXPECT_TRUE(store_->AddPageContent(url2, actionable_version_context,
+                                     visit_timestamp, extraction_timestamp, 2));
+  EXPECT_FALSE(store_->GetPageContent(url2).has_value());
+  EXPECT_FALSE(store_->GetPageContentForTab(2).has_value());
+
+  const GURL url3("https://example.com/3");
+  proto::PageContext no_apc_context;
+  no_apc_context.set_title("no apc");
+  no_apc_context.set_inner_text("inner text");
+
+  EXPECT_TRUE(store_->AddPageContent(url3, no_apc_context, visit_timestamp,
+                                     extraction_timestamp, 3));
+  EXPECT_THAT(store_->GetPageContent(url3),
+              Optional(EqualsProto(no_apc_context)));
+  EXPECT_THAT(store_->GetPageContentForTab(3),
+              Optional(EqualsProto(no_apc_context)));
+}
+
 TEST_F(PageContentStoreTest, DeleteAllEntries) {
   const GURL url(kUrl);
   const base::Time visit_timestamp = base::Time::Now();
@@ -327,6 +385,92 @@ TEST_F(PageContentStoreTest, GetAllTabIds) {
   EXPECT_EQ(tab_ids.size(), 2u);
   EXPECT_EQ(tab_ids[0], 1);
   EXPECT_EQ(tab_ids[1], 2);
+}
+
+TEST_F(PageContentStoreTest, UpdateTabId) {
+  const base::Time visit_timestamp = base::Time::Now();
+  const base::Time extraction_timestamp = base::Time::Now();
+  const GURL url1("https://example.com/1");
+  const proto::PageContext page_context1 = TestContent("test title 1");
+
+  EXPECT_TRUE(store_->AddPageContent(url1, page_context1, visit_timestamp,
+                                     extraction_timestamp, 1));
+
+  // Migrate tab 1 -> tab 2.
+  EXPECT_TRUE(store_->UpdateTabId(1, 2));
+  EXPECT_FALSE(store_->GetPageContentForTab(1).has_value());
+  EXPECT_THAT(store_->GetPageContentForTab(2),
+              Optional(EqualsProto(page_context1)));
+  EXPECT_THAT(store_->GetAllTabIds(), testing::ElementsAre(2));
+
+  // A `new_tab_id` collision shouldn't happen in normal operation, but we
+  // guard against it to avoid UNIQUE constraint errors. Verify that migrating
+  // tab 2 -> tab 3 replaces tab 3's previous entry and underlying
+  // page_content row.
+  const GURL url3("https://example.com/3");
+  const proto::PageContext page_context3 = TestContent("test title 3");
+  EXPECT_TRUE(store_->AddPageContent(url3, page_context3, visit_timestamp,
+                                     extraction_timestamp, 3));
+  EXPECT_TRUE(store_->UpdateTabId(2, 3));
+  EXPECT_FALSE(store_->GetPageContentForTab(2).has_value());
+  EXPECT_FALSE(store_->GetPageContent(url3).has_value());
+  EXPECT_THAT(store_->GetPageContentForTab(3),
+              Optional(EqualsProto(page_context1)));
+  EXPECT_THAT(store_->GetAllTabIds(), testing::ElementsAre(3));
+
+  // Updating a non-existent old_tab_id succeeds as a no-op.
+  EXPECT_TRUE(store_->UpdateTabId(999, 4));
+  EXPECT_FALSE(store_->GetPageContentForTab(4).has_value());
+  EXPECT_THAT(store_->GetAllTabIds(), testing::ElementsAre(3));
+}
+
+TEST_F(PageContentStoreTest, DatabaseErrorRecovery) {
+  EXPECT_TRUE(store_->AddPageContent(GURL(kUrl), TestContent("test title"),
+                                     /*visit_timestamp=*/base::Time::Now(),
+                                     /*extraction_timestamp=*/base::Time::Now(),
+                                     kTabId));
+
+  // Corrupt the database; the next operation will fail, trigger recovery, and
+  // poison the current database handle.
+  ASSERT_TRUE(sql::test::CorruptSizeInHeader(db_path()));
+  EXPECT_FALSE(store_->GetPageContent(GURL(kUrl)).has_value());
+  // Deleting an empty list of tabs would unconditionally return `true` if the
+  // database was healthy, but since the recovery closed the database, `false`
+  // should be returned instead.
+  EXPECT_FALSE(store_->DeletePageContentForTabs(/*tab_ids=*/{}));
+
+  // Re-opening the database should succeed and the previously stored content
+  // should be recovered.
+  OpenStore();
+  EXPECT_THAT(store_->GetPageContent(GURL(kUrl)),
+              Optional(EqualsProto(TestContent("test title"))));
+  EXPECT_TRUE(store_->DeletePageContentForTabs(/*tab_ids=*/{}));
+}
+
+TEST_F(PageContentStoreTest, DatabaseNonCatastrophicError) {
+  EXPECT_TRUE(store_->AddPageContent(GURL(kUrl), TestContent("test title 1"),
+                                     /*visit_timestamp=*/base::Time::Now(),
+                                     /*extraction_timestamp=*/base::Time::Now(),
+                                     kTabId));
+
+  // Simulate a non-catastrophic error (full disk); the next write operation
+  // will fail and poison the current database handle.
+  vfs_.set_drive_full(true);
+  EXPECT_FALSE(
+      store_->AddPageContent(GURL(kUrl), TestContent("test title 2"),
+                             /*visit_timestamp=*/base::Time::Now(),
+                             /*extraction_timestamp=*/base::Time::Now(), 2));
+  vfs_.set_drive_full(false);
+
+  // The database handle was poisoned, so operations should fail until
+  // re-opened.
+  EXPECT_FALSE(store_->GetPageContent(GURL(kUrl)).has_value());
+
+  // Re-opening the database should succeed and the previously stored content
+  // should still be intact.
+  OpenStore();
+  EXPECT_THAT(store_->GetPageContent(GURL(kUrl)),
+              Optional(EqualsProto(TestContent("test title 1"))));
 }
 
 class PageContentStoreNoEncryptorTest : public testing::Test {
@@ -378,6 +522,10 @@ TEST_F(PageContentStoreNoEncryptorTest,
 
 TEST_F(PageContentStoreNoEncryptorTest, DeletePageContentForNonExistentTab) {
   EXPECT_TRUE(store_->DeletePageContentForTab(kTabId));
+}
+
+TEST_F(PageContentStoreNoEncryptorTest, UpdateTabIdForNonExistentTab) {
+  EXPECT_TRUE(store_->UpdateTabId(1, 2));
 }
 
 }  // namespace optimization_guide

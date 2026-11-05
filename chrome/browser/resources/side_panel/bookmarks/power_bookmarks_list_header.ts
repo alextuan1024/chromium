@@ -80,13 +80,13 @@ export class PowerBookmarksListHeaderElement extends CrLitElement {
   accessor editing: boolean = false;
   protected accessor titleA_: string = '';
   protected accessor titleB_: string = '';
-  protected accessor activeTitle_: 'a'|'b' = 'a';
-  protected accessor transitioningTitle_: 'a'|'b'|'' = '';
-  protected accessor transitionDirection_: 'forward'|'backward'|'' = '';
-  protected rootTransitioning_: boolean = false;
+  private accessor activeTitle_: 'a'|'b' = 'a';
+  private accessor transitioningTitle_: 'a'|'b'|'' = '';
+  private accessor transitionDirection_: 'forward'|'backward'|'' = '';
+  private rootTransitioning_: boolean = false;
   private titleTransitionTimer_: number|null = null;
   protected accessor activeSortType_: SortOption;
-  protected accessor activeSortIndex_: number =
+  private accessor activeSortIndex_: number =
       loadTimeData.getInteger('sortOrder');
   protected accessor sortTypes_: SortOption[] = [
     {
@@ -172,10 +172,6 @@ export class PowerBookmarksListHeaderElement extends CrLitElement {
 
   protected disableBackButton_(): boolean {
     return !this.activeFolder || this.editing;
-  }
-
-  protected getActiveFolderLabel_(): string {
-    return getFolderLabel(this.activeFolder);
   }
 
   protected getViewButtonIcon_() {

@@ -529,6 +529,25 @@ bool VisitAnnotationsDatabase::GetContentAnnotationsForVisits(
   annotations.reserve(visit_ids.size());
 
   constexpr size_t kBatchSize = 250;
+  // At or below 12 IDs, per-row lookups through
+  // GetContentAnnotationsForVisit()'s cached statement beat preparing an
+  // uncached IN statement in local microbenchmarks.
+  constexpr size_t kMaxPerRowLookups = 12;
+
+  if (visit_ids.size() <= kMaxPerRowLookups) {
+    for (VisitID visit_id : visit_ids) {
+      VisitContentAnnotations row_content_annotations;
+      if (GetContentAnnotationsForVisit(visit_id, &row_content_annotations)) {
+        annotations.emplace_back(visit_id, std::move(row_content_annotations));
+      }
+    }
+    *content_annotations = base::flat_map<VisitID, VisitContentAnnotations>(
+        std::move(annotations));
+    // Unlike the batched path below, SQL errors still return true here since
+    // the single-row helper returns false for both missing rows and SQL
+    // errors.
+    return true;
+  }
 
   for (size_t chunk_start = 0; chunk_start < visit_ids.size();
        chunk_start += kBatchSize) {
@@ -782,7 +801,7 @@ void VisitAnnotationsDatabase::AddVisitsToCluster(
 }
 
 void VisitAnnotationsDatabase::UpdateClusterTriggerability(
-    const std::vector<history::Cluster>& clusters) {
+    const std::vector<Cluster>& clusters) {
   sql::Statement clusters_statement(GetDB().GetCachedStatement(
       SQL_FROM_HERE,
       "UPDATE clusters "
@@ -891,7 +910,7 @@ void VisitAnnotationsDatabase::UpdateClusterTriggerability(
 
 void VisitAnnotationsDatabase::UpdateClusterVisit(
     ClusterId cluster_id,
-    const history::ClusterVisit& cluster_visit) {
+    const ClusterVisit& cluster_visit) {
   sql::Statement statement(
       GetDB().GetCachedStatement(SQL_FROM_HERE,
                                  "UPDATE clusters_and_visits "
@@ -953,28 +972,42 @@ Cluster VisitAnnotationsDatabase::GetCluster(ClusterId cluster_id) {
   return cluster;
 }
 
-std::vector<ClusterId> VisitAnnotationsDatabase::GetMostRecentClusterIds(
+void VisitAnnotationsDatabase::ForEachRecentCluster(
     base::Time inclusive_min_time,
     base::Time exclusive_max_time,
-    int max_clusters) {
-  DCHECK_GT(max_clusters, 0);
-  sql::Statement statement(GetDB().GetCachedStatement(
-      SQL_FROM_HERE,
-      "SELECT cluster_id "
-      "FROM clusters_and_visits "
-      "JOIN visits ON visit_id=id "
-      "GROUP BY cluster_id "
-      "HAVING MAX(visit_time)>=? AND MAX(visit_time)<? "
-      "ORDER BY MAX(visit_time) DESC "
-      "LIMIT ?"));
-  statement.BindTime(0, inclusive_min_time);
-  statement.BindTime(1, exclusive_max_time);
-  statement.BindInt(2, max_clusters);
-
-  std::vector<ClusterId> cluster_ids;
-  while (statement.Step())
-    cluster_ids.emplace_back(statement.ColumnInt64(0));
-  return cluster_ids;
+    base::FunctionRef<bool(ClusterId)> callback) {
+  constexpr int kBatchSize = 1000;
+  base::Time cursor_time = exclusive_max_time;
+  ClusterId cursor_id(0);
+  while (true) {
+    sql::Statement statement(GetDB().GetCachedStatement(
+        SQL_FROM_HERE,
+        "SELECT cluster_id, MAX(visit_time) "
+        "FROM clusters_and_visits "
+        "JOIN visits ON visit_id=id "
+        "GROUP BY cluster_id "
+        "HAVING MAX(visit_time)>=? AND MAX(visit_time)<? AND "
+        "(MAX(visit_time)<? OR (MAX(visit_time)=? AND cluster_id>?)) "
+        "ORDER BY MAX(visit_time) DESC, cluster_id ASC LIMIT ?"));
+    statement.BindTime(0, inclusive_min_time);
+    statement.BindTime(1, exclusive_max_time);
+    statement.BindTime(2, cursor_time);
+    statement.BindTime(3, cursor_time);
+    statement.BindInt64(4, cursor_id.value());
+    statement.BindInt(5, kBatchSize);
+    int candidates = 0;
+    while (statement.Step()) {
+      cursor_id = ClusterId(statement.ColumnInt64(0));
+      cursor_time = statement.ColumnTime(1);
+      ++candidates;
+      if (!callback(cursor_id)) {
+        return;
+      }
+    }
+    if (!statement.Succeeded() || candidates < kBatchSize) {
+      return;
+    }
+  }
 }
 
 std::vector<VisitID> VisitAnnotationsDatabase::GetVisitIdsInCluster(

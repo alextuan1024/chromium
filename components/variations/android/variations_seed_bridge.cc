@@ -29,6 +29,8 @@ std::unique_ptr<variations::SeedResponse> GetVariationsFirstRunSeed() {
       Java_VariationsSeedBridge_getVariationsFirstRunSeedSignature(env);
   ScopedJavaLocalRef<jstring> j_seed_country =
       Java_VariationsSeedBridge_getVariationsFirstRunSeedCountry(env);
+  ScopedJavaLocalRef<jstring> j_seed_geo_level1 =
+      Java_VariationsSeedBridge_getVariationsFirstRunSeedGeoLevel1(env);
   int64_t j_response_date =
       Java_VariationsSeedBridge_getVariationsFirstRunSeedDate(env);
   bool j_is_gzip_compressed =
@@ -40,10 +42,16 @@ std::unique_ptr<variations::SeedResponse> GetVariationsFirstRunSeed() {
   }
   seed->signature = ConvertJavaStringToUTF8(j_seed_signature);
   seed->country = ConvertJavaStringToUTF8(j_seed_country);
+  seed->geo_level1 = ConvertJavaStringToUTF8(j_seed_geo_level1);
   seed->date = base::Time::FromMillisecondsSinceUnixEpoch(
       static_cast<int64_t>(j_response_date));
   seed->is_gzip_compressed = static_cast<bool>(j_is_gzip_compressed);
   return seed;
+}
+
+bool HasFirstRunSeed() {
+  JNIEnv* env = AttachCurrentThread();
+  return Java_VariationsSeedBridge_hasJavaPref(env);
 }
 
 void ClearJavaFirstRunPrefs() {
@@ -59,6 +67,7 @@ void MarkVariationsSeedAsStored() {
 void SetJavaFirstRunPrefsForTesting(const std::string& seed_data,
                                     const std::string& seed_signature,
                                     const std::string& seed_country,
+                                    const std::string& seed_geo_level1,
                                     int64_t response_date,
                                     bool is_gzip_compressed) {
   JNIEnv* env = AttachCurrentThread();
@@ -66,6 +75,7 @@ void SetJavaFirstRunPrefsForTesting(const std::string& seed_data,
       env, base::android::ToJavaByteArray(env, seed_data),
       ConvertUTF8ToJavaString(env, seed_signature),
       ConvertUTF8ToJavaString(env, seed_country),
+      ConvertUTF8ToJavaString(env, seed_geo_level1),
       static_cast<int64_t>(response_date),
       static_cast<bool>(is_gzip_compressed));
 }

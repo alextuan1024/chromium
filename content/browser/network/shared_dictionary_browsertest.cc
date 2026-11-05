@@ -7,7 +7,8 @@
 
 #include "base/base_paths.h"
 #include "base/files/file_util.h"
-#include "base/memory/memory_pressure_listener_registry.h"
+#include "base/memory/memory_pressure_level.h"
+#include "base/memory_coordinator/scoped_memory_pressure_level_override.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
@@ -30,6 +31,7 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
@@ -430,6 +432,7 @@ class DummyAuthContentBrowserClient
       const GURL& url,
       scoped_refptr<net::HttpResponseHeaders> response_headers,
       bool first_auth_attempt,
+      bool do_not_prompt_for_login,
       GuestPageHolder* guest,
       LoginDelegate::LoginAuthRequiredCallback auth_required_callback)
       override {
@@ -510,7 +513,7 @@ class DummyClientCertStoreContentBrowserClient
   }
   base::OnceClosure SelectClientCertificate(
       BrowserContext* browser_context,
-      int process_id,
+      ChildProcessId process_id,
       WebContents* web_contents,
       net::SSLCertRequestInfo* cert_request_info,
       net::ClientCertIdentityList client_certs,
@@ -928,7 +931,7 @@ class SharedDictionaryBrowserTest
   }
 
   void SendMemoryPressureToNetworkService() {
-    base::MemoryPressureListenerRegistry::NotifyMemoryPressure(
+    memory_pressure_level_override_.SetLevel(
         base::MEMORY_PRESSURE_LEVEL_CRITICAL);
     // To make sure that OnMemoryPressure has been received by the network
     // service, send a GetNetworkList IPC and wait for the result.
@@ -1034,6 +1037,8 @@ class SharedDictionaryBrowserTest
 
   raw_ptr<Shell> off_the_record_shell_ = nullptr;
   std::unique_ptr<net::EmbeddedTestServer> cross_origin_server_;
+
+  base::ScopedMemoryPressureLevelOverride memory_pressure_level_override_;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,
@@ -2057,18 +2062,9 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
   EXPECT_FALSE(HasPreloadedSharedDictionaryInfo());
 }
 
-IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
-                       DoNotPreloadDictionayUnderMemoryPressure) {
-  SendMemoryPressureToNetworkService();
-  mojo::PendingRemote<network::mojom::PreloadedSharedDictionaryInfoHandle>
-      preloaded_shared_dictionaries_handle;
-  GetTargetNetworkContext()->PreloadSharedDictionaryInfoForDocument(
-      {GetURL("/")},
-      preloaded_shared_dictionaries_handle.InitWithNewPipeAndPassReceiver());
-  FlushNetworkServiceInstanceForTesting();
-  EXPECT_FALSE(HasPreloadedSharedDictionaryInfo());
-}
-
+// Verifies that memory pressure is delivered end to end to the
+// SharedDictionaryManager in the network service. The manager's behavior under
+// memory pressure is covered by shared_dictionary_manager_unittest.cc.
 IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
                        PreloadedDictionayDiscardedByMemoryPressure) {
   mojo::PendingRemote<network::mojom::PreloadedSharedDictionaryInfoHandle>

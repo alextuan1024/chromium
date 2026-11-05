@@ -193,9 +193,6 @@ TEST_F(LanguageDetectionValidTest, DetectLanguageMetrics) {
   EXPECT_EQ("en", prediction.language);
   histogram_tester_.ExpectUniqueSample(
       "LanguageDetection.TFLiteModel.ClassifyText.Size", contents.length(), 1);
-  histogram_tester_.ExpectUniqueSample(
-      "LanguageDetection.TFLiteModel.ClassifyText.Size.PreTruncation",
-      contents.length(), 1);
   histogram_tester_.ExpectTotalCount(
       "LanguageDetection.TFLiteModel.ClassifyText.Duration", 1);
   histogram_tester_.ExpectUniqueSample(
@@ -211,7 +208,6 @@ TEST_F(LanguageDetectionValidTest, DetectLanguageMetrics) {
 TEST_F(LanguageDetectionValidTest, DetectWithSampling) {
   // If this changes, this test needs to be rewritten.
   ASSERT_EQ(LanguageDetectionModel::kNumTextSamples, 3);
-  std::string predicted_language;
   std::u16string en_sample = u"This is a page apparently written in English.";
   pad(en_sample, LanguageDetectionModel::kTextSampleLength);
   std::u16string ar_zh_sample =
@@ -250,7 +246,6 @@ TEST_F(LanguageDetectionValidTest, PredictWithScanEmptyInput) {
 }
 
 TEST_F(LanguageDetectionValidTest, PredictWithScan) {
-  std::string predicted_language;
   std::u16string en_sample = u"This is a page apparently written in English.";
   pad(en_sample, LanguageDetectionModel::kScanWindowSize);
   std::u16string ar_sample =

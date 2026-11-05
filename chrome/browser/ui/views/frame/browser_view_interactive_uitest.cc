@@ -4,9 +4,13 @@
 
 #include "chrome/browser/ui/views/frame/browser_view.h"
 
+#include "base/functional/callback_helpers.h"
 #include "base/strings/string_util.h"
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/history/history_service_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -15,47 +19,75 @@
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/focus/browser_focus_controller.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/tab_modal_confirm_dialog.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "chrome/browser/ui/views/tab_modal_confirm_dialog_views.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
+#include "chrome/browser/ui/views/tabs/common/tab_view.h"
+#include "chrome/browser/ui/views/tabs/tab.h"
+#include "chrome/browser/ui/views/tabs/tab/tab_close_button.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/history/core/test/history_service_test_util.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "components/keyed_service/core/service_access_type.h"
 #include "components/split_tabs/split_tab_visual_data.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/clipboard_buffer.h"
+#include "ui/base/clipboard/test/clipboard_test_util.h"
+#include "ui/base/clipboard/test/test_clipboard.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/buildflags.h"
+#include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/test/ax_event_counter.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_activation_waiter.h"
+#include "ui/views/widget/widget_delegate.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(IS_MAC)
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands_mac.h"
-#include "chrome/test/base/interactive_test_utils.h"
+#include "chrome/browser/ui/view_ids.h"
+#include "ui/base/clipboard/scoped_clipboard_writer.h"
+#include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_features.h"
 #include "ash/wm/window_pin_util.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
+#include "chrome/common/chrome_features.h"
 #endif
 
 using views::FocusManager;
@@ -119,6 +151,9 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, FullscreenClearsFocus) {
 // MacOS at this point in time.
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, ImmersiveFullscreenViewTreeOrder) {
+#if BUILDFLAG(IS_MAC)
+  ui::test::ScopedFakeNSWindowFullscreen fake_fullscreen;
+#endif
   auto* const immersive_mode_controller =
       ImmersiveModeController::From(browser());
   ASSERT_TRUE(immersive_mode_controller);
@@ -146,6 +181,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, ImmersiveFullscreenViewTreeOrder) {
 }
 #endif
 
+#if BUILDFLAG(IS_MAC)
 // Test that holding Esc correctly exits fullscreen when focus is on the native
 // browser UI.
 IN_PROC_BROWSER_TEST_F(BrowserViewTest,
@@ -209,6 +245,47 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest,
 
   EXPECT_TRUE(browser_view()->IsFullscreen());
 }
+
+// Test that a paste command executed for a browser window that is not active is
+// not delivered to another, active browser window.
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, PasteInInactiveWindowIsDropped) {
+  if (features::IsWebUILocationBarEnabled()) {
+    GTEST_SKIP() << "Not applicable when WebUILocationBar is enabled.";
+  }
+  BrowserWindowInterface* inactive_browser = browser();
+  BrowserWindowInterface* active_browser =
+      CreateBrowser(browser()->GetProfile());
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(active_browser));
+  ASSERT_FALSE(
+      BrowserView::GetBrowserViewForBrowser(inactive_browser)->IsActive());
+
+  chrome::FocusLocationBar(active_browser);
+  ASSERT_TRUE(ui_test_utils::IsViewFocused(active_browser, VIEW_ID_OMNIBOX));
+  OmniboxView* omnibox = BrowserView::GetBrowserViewForBrowser(active_browser)
+                             ->GetLocationBar()
+                             ->GetOmniboxView();
+  const std::u16string original_text = omnibox->GetText();
+
+  constexpr char16_t kClipboardText[] = u"pasted";
+  {
+    ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kCopyPaste);
+    writer.WriteText(kClipboardText);
+  }
+
+  // Paste for the inactive window first. This must be dropped rather than
+  // forwarded to the omnibox of the active window.
+  chrome::ExecuteCommand(inactive_browser, IDC_PASTE);
+  // Paste for the active window, which should be delivered to its omnibox.
+  EXPECT_TRUE(chrome::ExecuteCommand(active_browser, IDC_PASTE));
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return omnibox->GetText() != original_text; }));
+
+  // If the first paste had been forwarded, the text would have been pasted
+  // twice.
+  EXPECT_EQ(kClipboardText, omnibox->GetText());
+}
+#endif  // BUILDFLAG(IS_MAC)
 
 // Test whether the top view including toolbar and tab strip shows up or hides
 // correctly in browser fullscreen mode.
@@ -306,7 +383,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, MAYBE_BrowserFullscreenShowTopView) {
   EXPECT_EQ(top_view_in_browser_fullscreen, browser_view->GetTabStripVisible());
   // This makes sure that the layout was updated accordingly.
   EXPECT_EQ(top_view_in_browser_fullscreen,
-            browser_view->horizontal_tab_strip_for_testing()->GetVisible());
+            browser_view->tab_strip_view()->GetVisible());
   EXPECT_EQ(top_view_in_browser_fullscreen,
             chrome::IsCommandEnabled(browser(), IDC_SHOW_BOOKMARK_BAR));
 
@@ -461,7 +538,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, WindowActivatedAccessibleEvent) {
 
   // Create a new browser window and wait for event again.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_WINDOW,
+      browser(), GURL(url::kAboutBlankURL),
+      ui::mojom::WindowOpenDisposition::kNewWindow,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   if (ax_observer_.GetCount(ax::mojom::Event::kWindowActivated) == 1) {
     ax_observer_.WaitForEvent(ax::mojom::Event::kWindowActivated);
@@ -569,26 +647,6 @@ IN_PROC_BROWSER_TEST_F(BrowserViewFullscreenTest, MAYBE_Fullscreen) {
   }
 }
 
-class BrowserViewLoadingAnimationTest
-    : public BrowserViewTest,
-      public testing::WithParamInterface<bool> {
- public:
-  BrowserViewLoadingAnimationTest() {
-    if (GetParam()) {
-      feature_list_.InitAndEnableFeature(features::kCompositorLoadingThrobber);
-    } else {
-      feature_list_.InitAndDisableFeature(features::kCompositorLoadingThrobber);
-    }
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(CompositorDrivenThrobber,
-                         BrowserViewLoadingAnimationTest,
-                         testing::Bool());
-
 // TODO(b/342017720): Re-enable on Mac
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_LoadingAnimationChangeOnMinimizeAndRestore \
@@ -597,7 +655,7 @@ INSTANTIATE_TEST_SUITE_P(CompositorDrivenThrobber,
 #define MAYBE_LoadingAnimationChangeOnMinimizeAndRestore \
   LoadingAnimationChangeOnMinimizeAndRestore
 #endif  // BUILDFLAG(IS_MAC)
-IN_PROC_BROWSER_TEST_P(BrowserViewLoadingAnimationTest,
+IN_PROC_BROWSER_TEST_F(BrowserViewTest,
                        MAYBE_LoadingAnimationChangeOnMinimizeAndRestore) {
   auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
   content::TestNavigationObserver navigation_watcher(
@@ -659,12 +717,33 @@ class TestTabModalConfirmDialogDelegate : public TabModalConfirmDialogDelegate {
   std::u16string GetDialogMessage() override { return std::u16string(); }
 };
 
+class BrowserViewDesktopWidgetDisabledTest : public BrowserViewTest {
+ public:
+  BrowserViewDesktopWidgetDisabledTest() {
+    feature_list_.InitAndDisableFeature(features::kTabModalUsesDesktopWidget);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+class BrowserViewDesktopWidgetEnabledTest : public BrowserViewTest {
+ public:
+  BrowserViewDesktopWidgetEnabledTest() {
+    feature_list_.InitAndEnableFeature(features::kTabModalUsesDesktopWidget);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
 }  // namespace
 
 // Open a tab-modal dialog and check that the accessible window title is the
 // title of the dialog. The accessible window title is based on the focused
 // dialog and this dependency on focus is why this is an interactive ui test.
-IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTitle) {
+IN_PROC_BROWSER_TEST_F(BrowserViewDesktopWidgetDisabledTest,
+                       GetAccessibleTabModalDialogTitle) {
   std::u16string window_title =
       u"about:blank - " + l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
   EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
@@ -682,14 +761,288 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTitle) {
   EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
                                window_title, base::CompareCase::SENSITIVE));
 }
+
+IN_PROC_BROWSER_TEST_F(BrowserViewDesktopWidgetEnabledTest,
+                       GetAccessibleTabModalDialogTitle) {
+  std::u16string window_title =
+      u"about:blank - " + l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
+  EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
+                               window_title, base::CompareCase::SENSITIVE));
+
+  content::WebContents* contents = browser_view()->GetActiveWebContents();
+  auto delegate = std::make_unique<TestTabModalConfirmDialogDelegate>(contents);
+  TestTabModalConfirmDialogDelegate* delegate_observer = delegate.get();
+
+// When using desktop widgets, the dialog has its own window title. The
+// browser accessible window title should not be updated with the dialog
+// title.
+#if !BUILDFLAG(IS_CHROMEOS)
+  auto* dialog = static_cast<TabModalConfirmDialogViews*>(
+      TabModalConfirmDialog::Create(std::move(delegate), contents));
+  EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
+                               window_title, base::CompareCase::SENSITIVE));
+  EXPECT_EQ(dialog->GetWidget()->widget_delegate()->GetAccessibleWindowTitle(),
+            delegate_observer->GetTitle());
+#else
+  TabModalConfirmDialog::Create(std::move(delegate), contents);
+  // The desktop widget override is a no-op on ChromeOS. The browser
+  // accessibility title should be updated to the dialog title.
+  EXPECT_EQ(browser_view()->GetAccessibleWindowTitle(),
+            delegate_observer->GetTitle());
+#endif
+
+  delegate_observer->Close();
+
+  EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
+                               window_title, base::CompareCase::SENSITIVE));
+}
+#endif  // !BUILDFLAG(IS_MAC)
+
+// These tests depend on the browser window keeping activation, and with it
+// focus, which is why they are interactive ui tests.
+#if !BUILDFLAG(IS_MAC)
+namespace {
+
+// Returns the text currently on the copy/paste clipboard.
+std::u16string ReadClipboardText() {
+  return ui::clipboard_test_util::ReadText(ui::Clipboard::GetForCurrentThread(),
+                                           ui::ClipboardBuffer::kCopyPaste,
+                                           /*data_dst=*/nullptr);
+}
+
+class TestAcceleratorWebView : public views::WebView {
+  METADATA_HEADER(TestAcceleratorWebView, views::WebView)
+
+ public:
+  explicit TestAcceleratorWebView(content::BrowserContext* browser_context)
+      : views::WebView(browser_context) {
+    SetFocusBehavior(FocusBehavior::ALWAYS);
+  }
+  bool AcceleratorPressed(const ui::Accelerator& accelerator) override {
+    accelerator_pressed_ = true;
+    return true;
+  }
+  bool accelerator_pressed() const { return accelerator_pressed_; }
+
+ private:
+  bool accelerator_pressed_ = false;
+};
+
+BEGIN_METADATA(TestAcceleratorWebView)
+END_METADATA
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, CutCopyPasteFocusedNativeViews) {
+  ui::TestClipboard::CreateForCurrentThread();
+  base::ScopedClosureRunner destroy_clipboard(
+      base::BindOnce(&ui::Clipboard::DestroyClipboardForCurrentThread));
+
+  // 1. Focusing a tab's close button and invoking Cut/Copy/Paste must not click
+  // the button or close the tab (regression test for crbug.com/582411426).
+  chrome::AddTabAt(browser(), GURL(url::kAboutBlankURL), -1, true);
+  ASSERT_EQ(2, browser()->GetTabStripModel()->count());
+  if (auto* const tabstrip =
+          browser_view()->horizontal_tab_strip_for_testing()) {
+    tabstrip->StopAnimating();
+  } else if (auto* const base_region =
+                 views::AsViewClass<BaseTabStripRegionView>(
+                     browser_view()->tab_strip_view())) {
+    if (auto* controller = base_region->GetTabStripCollectionController()) {
+      controller->animation_coordinator().StopAllAnimationsForTesting();
+    }
+  }
+  views::test::RunScheduledLayout(browser_view());
+
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  views::FocusManager* focus_manager = browser_view()->GetFocusManager();
+
+  views::View* active_tab_view =
+      browser_view()->tab_strip_view()->GetTabAnchorView(
+          browser()
+              ->GetTabStripModel()
+              ->GetTabAtIndex(browser()->GetTabStripModel()->active_index())
+              ->GetHandle());
+  views::Button* close_button = nullptr;
+  if (auto* const tab = views::AsViewClass<Tab>(active_tab_view)) {
+    close_button = tab->close_button();
+  } else if (auto* const tab_view =
+                 views::AsViewClass<TabView>(active_tab_view)) {
+    close_button = tab_view->close_button_for_testing();
+  }
+  ASSERT_TRUE(close_button);
+  focus_manager->SetFocusedView(close_button);
+  ASSERT_EQ(close_button, focus_manager->GetFocusedView());
+  ASSERT_TRUE(close_button->CanHandleAccelerators());
+
+  browser_view()->Cut();
+  browser_view()->Copy();
+  browser_view()->Paste();
+  EXPECT_EQ(2, browser()->GetTabStripModel()->count());
+
+  // 2. Focusing a Button (even a default button that registers VKEY_RETURN) and
+  // invoking Cut/Copy/Paste must not trigger its click callback.
+  int button_clicks = 0;
+  auto* test_button =
+      browser_view()->AddChildView(std::make_unique<views::MdTextButton>(
+          base::BindRepeating([](int* clicks) { ++(*clicks); }, &button_clicks),
+          u"Test Button"));
+  test_button->SetIsDefault(true);
+  test_button->SizeToPreferredSize();
+  test_button->RequestFocus();
+  ASSERT_EQ(test_button, focus_manager->GetFocusedView());
+  ASSERT_TRUE(test_button->CanHandleAccelerators());
+
+  browser_view()->Cut();
+  browser_view()->Copy();
+  browser_view()->Paste();
+  EXPECT_EQ(0, button_clicks);
+
+  // 3. Focusing a selectable Label and invoking Copy must still copy its
+  // selected text even though Labels do not register Ctrl+C with FocusManager.
+  auto* selectable_label = browser_view()->AddChildView(
+      std::make_unique<views::Label>(u"selectable_label_text"));
+  ASSERT_TRUE(selectable_label->SetSelectable(true));
+  selectable_label->SizeToPreferredSize();
+  selectable_label->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+  selectable_label->RequestFocus();
+  selectable_label->SelectAll();
+  ASSERT_EQ(selectable_label, focus_manager->GetFocusedView());
+  ASSERT_TRUE(focus_manager->GetFocusedView()->CanHandleAccelerators());
+
+  browser_view()->Copy();
+  EXPECT_EQ(u"selectable_label_text", ReadClipboardText());
+
+  // 4. Focusing the Omnibox must still execute Cut/Copy/Paste, whether it is a
+  // native Textfield or hosted in the WebUI toolbar's WebView.
+  ASSERT_TRUE(FocusOmniboxAndSelectText(browser(), u"omnibox_edit_text"));
+  OmniboxView* omnibox_view =
+      browser_view()->GetLocationBar()->GetOmniboxView();
+
+  browser_view()->Copy();
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return ReadClipboardText() == u"omnibox_edit_text"; }));
+
+  browser_view()->Cut();
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return omnibox_view->GetText().empty(); }));
+
+  browser_view()->Paste();
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return omnibox_view->GetText() == u"omnibox_edit_text"; }));
+
+  // Pasting into the Omnibox starts autocomplete, including an asynchronous
+  // HistoryURLProvider query on the history backend. Flush the backend so the
+  // query's reply (HistoryURLProvider::QueryComplete) runs before the test
+  // ends; otherwise it can be dropped at shutdown, leaking its params with a
+  // dangling pointer to the provider (crbug.com/586636894).
+  history::BlockUntilHistoryProcessesPendingRequests(
+      HistoryServiceFactory::GetForProfile(browser()->GetProfile(),
+                                           ServiceAccessType::EXPLICIT_ACCESS));
+
+  browser_view()->RemoveChildViewT(selectable_label);
+  browser_view()->RemoveChildViewT(test_button);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, CutCopyPasteFocusedViewRouting) {
+  ui::TestClipboard::CreateForCurrentThread();
+  base::ScopedClosureRunner destroy_clipboard(
+      base::BindOnce(&ui::Clipboard::DestroyClipboardForCurrentThread));
+
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+
+  // 1. When a views::WebView is focused, CutCopyPaste should not forward
+  // raw accelerators to the WebView's AcceleratorPressed().
+  auto* test_web_view = browser_view()->AddChildView(
+      std::make_unique<TestAcceleratorWebView>(browser()->GetProfile()));
+  test_web_view->RequestFocus();
+  ASSERT_EQ(test_web_view, browser_view()->GetFocusManager()->GetFocusedView());
+
+  browser_view()->Copy();
+  EXPECT_FALSE(test_web_view->accelerator_pressed());
+
+  // 2. When the Omnibox is focused, CutCopyPaste should execute the edit
+  // command on it, whether it is a native Textfield or hosted in the WebUI
+  // toolbar's WebView.
+  ASSERT_TRUE(FocusOmniboxAndSelectText(browser(), u"copy_test_text"));
+
+  browser_view()->Copy();
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return ReadClipboardText() == u"copy_test_text"; }));
+
+  // 3. When an active child widget has focus, CutCopyPaste should use the
+  // child widget's FocusManager and execute the command on its focused view.
+  auto child_widget_delegate = std::make_unique<views::WidgetDelegate>();
+  auto* child_textfield = child_widget_delegate->SetContentsView(
+      std::make_unique<views::Textfield>());
+  child_textfield->SetAccessibleName(u"Child Textfield");
+  auto child_widget = std::make_unique<views::Widget>();
+  views::Widget::InitParams params(
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_WINDOW);
+  params.delegate = child_widget_delegate.get();
+  params.parent = browser_view()->GetWidget()->GetNativeView();
+  child_widget->Init(std::move(params));
+
+  child_widget->Show();
+  child_widget->Activate();
+  views::test::WaitForWidgetActive(child_widget.get(), true);
+
+  child_textfield->RequestFocus();
+  ASSERT_EQ(child_textfield, child_widget->GetFocusManager()->GetFocusedView());
+  child_textfield->SetText(u"child_widget_text");
+  child_textfield->SelectAll(false);
+
+  browser_view()->Copy();
+
+  EXPECT_EQ(u"child_widget_text", ReadClipboardText());
+
+  child_widget.reset();
+  browser_view()->RemoveChildViewT(test_web_view);
+}
 #endif  // !BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_CHROMEOS)
-using BrowserViewLockedFullscreenTestChromeOS = BrowserViewTest;
+// TODO(crbug.com/438540029): Rename this test suite to "TrustedPinned" to
+// disambiguate between LockedFullscreen (which is for extension API) and OnTask
+// locked (which is for class tools).
+class BrowserViewLockedFullscreenTestChromeOS
+    : public BrowserViewTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  BrowserViewLockedFullscreenTestChromeOS() {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kUseUnifiedLockedStateController,
+        is_unified_locked_state_controller_enabled_);
+  }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+ protected:
+  void PinWindow(bool trusted, bool locked_for_on_task = false) {
+    if (trusted && is_unified_locked_state_controller_enabled_) {
+      auto* controller = chromeos::LockedStateController::From(browser());
+      ASSERT_TRUE(controller);
+      if (locked_for_on_task) {
+        controller->Lock(chromeos::LockedState::kOnTaskLocked);
+      } else {
+        controller->Lock(chromeos::LockedState::kExtensionLocked);
+      }
+    } else {
+      if (!is_unified_locked_state_controller_enabled_) {
+        ash::boca::OnTaskLockedController::From(browser())
+            ->set_locked_for_on_task(locked_for_on_task);
+      }
+      ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), trusted);
+    }
+  }
+
+ private:
+  const bool is_unified_locked_state_controller_enabled_ = GetParam();
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        ShowExclusiveAccessBubbleWhenNotLocked) {
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/false);
+  PinWindow(/*trusted=*/false);
   ExclusiveAccessManager::From(browser())
       ->context()
       ->UpdateExclusiveAccessBubble(
@@ -702,14 +1055,14 @@ IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
               .force_update = true,
           },
           base::NullCallback());
-  EXPECT_TRUE(browser_view()
-                  ->GetExclusiveAccessContext()
+  EXPECT_TRUE(ExclusiveAccessManager::From(browser())
+                  ->context()
                   ->IsExclusiveAccessBubbleDisplayed());
 }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        HideExclusiveAccessBubbleWhenLocked) {
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
+  PinWindow(/*trusted=*/true);
   ExclusiveAccessManager::From(browser())
       ->context()
       ->UpdateExclusiveAccessBubble(
@@ -720,30 +1073,30 @@ IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
                EXCLUSIVE_ACCESS_BUBBLE_TYPE_FULLSCREEN_EXIT_INSTRUCTION,
            .force_update = true},
           base::NullCallback());
-  EXPECT_FALSE(browser_view()
-                   ->GetExclusiveAccessContext()
+  EXPECT_FALSE(ExclusiveAccessManager::From(browser())
+                   ->context()
                    ->IsExclusiveAccessBubbleDisplayed());
 }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        EnableImmersiveModeWhenNotTrustedPinned) {
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/false);
+  PinWindow(/*trusted=*/false);
   EXPECT_TRUE(ImmersiveModeController::From(browser())->IsEnabled());
 }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        DisableImmersiveModeWhenNotLockedForOnTask) {
-  ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
-      false);
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
+  PinWindow(/*trusted=*/true, /*locked_for_on_task=*/false);
   EXPECT_FALSE(ImmersiveModeController::From(browser())->IsEnabled());
 }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        EnableImmersiveModeWhenLockedForOnTask) {
-  ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
-      true);
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
+  PinWindow(/*trusted=*/true, /*locked_for_on_task=*/true);
   EXPECT_TRUE(ImmersiveModeController::From(browser())->IsEnabled());
 }
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         BrowserViewLockedFullscreenTestChromeOS,
+                         testing::Bool());
 #endif  // BUILDFLAG(IS_CHROMEOS)

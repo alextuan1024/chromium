@@ -4,9 +4,11 @@
 
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/bindings/core/v8/js_event_handler.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_ctype_traits.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/string_resource.h"
 #include "third_party/blink/renderer/platform/bindings/to_blink_string.h"
@@ -15,6 +17,20 @@
 namespace blink {
 
 namespace bindings {
+
+bool DoesExceedSizeLimitSlow(v8::Isolate* isolate,
+                             ExceptionState& exception_state) {
+  if (base::FeatureList::IsEnabled(
+          features::kDisableArrayBufferSizeLimitsForTesting)) {
+    return false;
+  }
+
+  UseCounter::Count(ExecutionContext::From(isolate->GetCurrentContext()),
+                    WebFeature::kArrayBufferTooBigForWebAPI);
+  exception_state.ThrowRangeError(
+      "The ArrayBuffer/ArrayBufferView size exceeds the supported range.");
+  return true;
+}
 
 StringView NativeValueTraitsStringAdapter::ToStringView() const& {
   if (v8_string_.IsEmpty()) [[unlikely]] {
@@ -152,21 +168,13 @@ void NativeValueTraitsInterfaceNotOfType(
       argument_index, wrapper_type_info->interface_name));
 }
 
-bool ThrowIfResizable(v8::Local<v8::ArrayBuffer> array_buffer,
+bool ThrowIfResizable(v8::Local<v8::ArrayBufferBase> array_buffer,
                       ExceptionState& exception_state) {
   if (array_buffer->IsResizableByUserJavaScript()) {
     exception_state.ThrowTypeError(
-        "The provided ArrayBuffer value must not be resizable");
-    return false;
-  }
-  return true;
-}
-
-bool ThrowIfResizable(v8::Local<v8::SharedArrayBuffer> shared_array_buffer,
-                      ExceptionState& exception_state) {
-  if (shared_array_buffer->GetBackingStore()->IsResizableByUserJavaScript()) {
-    exception_state.ThrowTypeError(
-        "The provided SharedArrayBuffer value must not be resizable");
+        array_buffer->IsShared()
+            ? "The provided SharedArrayBuffer value must not be resizable"
+            : "The provided ArrayBuffer value must not be resizable");
     return false;
   }
   return true;
@@ -190,8 +198,8 @@ CreateIDLSequenceFromV8Array<IDLLong>(v8::Isolate* isolate,
   result.ReserveInitialCapacity(length);
   result.resize(length);
   if (v8::TryToCopyAndConvertArrayToCppBuffer<
-          V8CTypeTraits<IDLLong>::kCTypeInfo.GetId()>(v8_array, result.data(),
-                                                      length)) {
+          v8::CTypeInfoBuilder<int32_t>::Build().GetId()>(
+          v8_array, result.data(), length)) {
     return result;
   }
 

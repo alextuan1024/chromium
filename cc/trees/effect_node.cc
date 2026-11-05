@@ -16,6 +16,21 @@ EffectNode::EffectNode() = default;
 EffectNode::EffectNode(const EffectNode& other) = default;
 EffectNode::~EffectNode() = default;
 
+void EffectNode::SetEffectChanged(DamageReason damage_reason) {
+  effect_changed_ = true;
+  damage_reasons_.Put(damage_reason);
+}
+
+void EffectNode::ClearEffectChanged() {
+  effect_changed_ = false;
+  damage_reasons_.Clear();
+}
+
+void EffectNode::CopyEffectChangedFrom(const EffectNode& other) {
+  effect_changed_ = other.effect_changed_;
+  damage_reasons_.PutAll(other.damage_reasons_);
+}
+
 #if DCHECK_IS_ON()
 bool EffectNode::operator==(const EffectNode& other) const = default;
 #endif  // DCHECK_IS_ON()
@@ -56,8 +71,6 @@ const char* RenderSurfaceReasonToString(RenderSurfaceReason reason) {
       return "clip axis alignment";
     case RenderSurfaceReason::kMask:
       return "mask";
-    case RenderSurfaceReason::kTrilinearFiltering:
-      return "trilinear filtering";
     case RenderSurfaceReason::kCache:
       return "cache";
     case RenderSurfaceReason::kCopyRequest:
@@ -121,7 +134,6 @@ void EffectNode::AsValueInto(base::trace_event::TracedValue* value) const {
   value->SetBoolean("hidden_by_backface_visibility",
                     hidden_by_backface_visibility);
   value->SetBoolean("double_sided", double_sided);
-  value->SetBoolean("trilinear_filtering", trilinear_filtering);
   value->SetBoolean("is_drawn", is_drawn);
   value->SetBoolean("only_draws_visible_content", only_draws_visible_content);
   value->SetBoolean("subtree_hidden", subtree_hidden);
@@ -132,7 +144,8 @@ void EffectNode::AsValueInto(base::trace_event::TracedValue* value) const {
   value->SetBoolean("has_potential_opacity_animation",
                     has_potential_opacity_animation);
   value->SetBoolean("has_masking_child", has_masking_child);
-  value->SetBoolean("effect_changed", effect_changed);
+  value->SetBoolean("effect_changed", effect_changed_);
+  value->SetInteger("damage_reasons", damage_reasons_.ToEnumBitmask());
   value->SetBoolean("subtree_has_copy_request", subtree_has_copy_request);
   value->SetString("render_surface_reason",
                    RenderSurfaceReasonToString(render_surface_reason));

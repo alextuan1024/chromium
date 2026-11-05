@@ -8,10 +8,23 @@
 #include <utility>
 
 #include "base/check.h"
-#include "chrome/browser/ttc/app/public/conversation.h"
+#include "base/check_deref.h"
+#include "build/build_config.h"
+#include "chrome/browser/actor/actor_enterprise_policy_checker.h"
+#include "chrome/browser/actor/enterprise_policy_checker.h"
+#include "chrome/browser/ttc/app/public/audio_controller.h"
 #include "chrome/browser/ttc/app/public/make_conversation.h"
 #include "chrome/browser/ttc/core/session_controller_impl.h"
+#include "chrome/browser/ttc/core/session_view.h"
+#include "chrome/browser/ttc/core/ttc_actor_ui_state_manager.h"
 #include "chrome/browser/ttc/core/ttc_keyed_service_factory.h"
+#include "components/ttc/app/public/conversation.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ttc/android/session_view_android.h"
+#else
+#include "chrome/browser/ttc/core/session_view_impl.h"
+#endif
 
 namespace ttc {
 
@@ -23,12 +36,54 @@ TtcKeyedService* TtcKeyedService::Get(content::BrowserContext* context) {
 TtcKeyedService::TtcKeyedService(Profile* profile,
                                  ConversationFactory conversation_factory)
     : profile_(profile),
-      conversation_factory_(std::move(conversation_factory)) {}
+      conversation_factory_(std::move(conversation_factory)),
+      enterprise_policy_checker_(
+          profile_
+              ? std::make_unique<actor::ActorEnterprisePolicyChecker>(profile_)
+              : nullptr),
+      actor_ui_state_manager_(std::make_unique<TtcActorUiStateManager>()) {}
 
 TtcKeyedService::~TtcKeyedService() = default;
 
+SessionController* TtcKeyedService::session_controller() {
+  return session_controller_.get();
+}
+
+PointerTracker* TtcKeyedService::GetPointerTracker(
+    base::PassKey<TtcEvalHarness>) {
+  return session_controller_ ? session_controller_->pointer_tracker() : nullptr;
+}
+
+bool TtcKeyedService::SetMicMuted(bool muted) {
+  return session_controller_ && session_controller_->SetMicMuted(muted);
+}
+
+bool TtcKeyedService::IsMicMuted() const {
+  return session_controller_ && session_controller_->IsMicMuted();
+}
+
+Speaker TtcKeyedService::GetSpeaker() const {
+  return session_controller_ ? session_controller_->GetSpeaker()
+                             : Speaker::kIdle;
+}
+
+const actor::EnterprisePolicyChecker*
+TtcKeyedService::enterprise_policy_checker() const {
+  return enterprise_policy_checker_.get();
+}
+
+void TtcKeyedService::SetEnterprisePolicyCheckerForTesting(
+    std::unique_ptr<actor::EnterprisePolicyChecker> checker) {
+  CHECK(!is_session_active());
+  enterprise_policy_checker_ = std::move(checker);
+}
+
 void TtcKeyedService::Shutdown() {
   EndSession();
+  // Drop platform bridges (e.g. the Android JNI counterpart) now, during
+  // KeyedService shutdown, rather than in the destructor, so nothing can reach
+  // this service through them once it has shut down.
+  ClearAllUserData();
 }
 
 bool TtcKeyedService::IsEnabled() const {
@@ -37,17 +92,20 @@ bool TtcKeyedService::IsEnabled() const {
   return true;
 }
 
-TtcState TtcKeyedService::GetState() const {
+ServiceState TtcKeyedService::GetState() const {
   if (!IsEnabled()) {
-    return TtcState::kDisabled;
+    return ServiceState::kProfileIneligible;
   }
-  return is_session_active() ? TtcState::kSessionActive
-                             : TtcState::kSessionInactive;
+  return is_session_active() ? ServiceState::kSessionActive
+                             : ServiceState::kSessionInactive;
 }
 
-void TtcKeyedService::StartSession() {
+void TtcKeyedService::StartSession(
+    std::unique_ptr<AudioController> audio_controller) {
+  CHECK(IsEnabled());
   CHECK(!session_controller_);
-  session_controller_ = std::make_unique<SessionControllerImpl>(*this);
+  session_controller_ = std::make_unique<SessionControllerImpl>(
+      *this, std::move(audio_controller));
   state_changed_callbacks_.Notify(GetState());
 }
 
@@ -60,18 +118,36 @@ void TtcKeyedService::EndSession() {
 }
 
 base::CallbackListSubscription TtcKeyedService::RegisterStateChangedCallback(
-    base::RepeatingCallback<void(TtcState)> callback) {
+    base::RepeatingCallback<void(ServiceState)> callback) {
   return state_changed_callbacks_.Add(std::move(callback));
+}
+
+std::unique_ptr<SessionView> TtcKeyedService::MakeSessionView(
+    base::PassKey<SessionControllerImpl>,
+    SessionViewDelegate& delegate) {
+#if BUILDFLAG(IS_ANDROID)
+  return std::make_unique<SessionViewAndroid>(delegate);
+#else
+  return std::make_unique<SessionViewImpl>(delegate);
+#endif
 }
 
 std::unique_ptr<Conversation> TtcKeyedService::MakeConversation(
     base::PassKey<SessionControllerImpl>,
-    SessionController& session_controller) {
+    SessionController& session_controller,
+    std::unique_ptr<AudioController> audio_controller) {
   std::unique_ptr<Conversation> conversation =
-      conversation_factory_ ? conversation_factory_.Run(profile_)
-                            : MakeConversationImpl(session_controller);
+      conversation_factory_
+          ? conversation_factory_.Run(session_controller,
+                                      std::move(audio_controller))
+          : MakeConversationImpl(session_controller,
+                                 std::move(audio_controller));
   CHECK(conversation);
   return conversation;
+}
+
+TtcActorUiStateManager& TtcKeyedService::actor_ui_state_manager() {
+  return CHECK_DEREF(actor_ui_state_manager_.get());
 }
 
 base::WeakPtr<TtcKeyedService> TtcKeyedService::GetWeakPtr() {

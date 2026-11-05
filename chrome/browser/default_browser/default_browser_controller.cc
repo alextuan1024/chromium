@@ -7,11 +7,13 @@
 #include <string>
 #include <utility>
 
+#include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/default_browser/default_browser_features.h"
 #include "chrome/browser/default_browser/default_browser_manager.h"
 #include "chrome/browser/default_browser/default_browser_setter.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -52,6 +54,8 @@ std::string SetterTypeToString(DefaultBrowserSetterType setter_type) {
       return "ShellIntegration";
     case DefaultBrowserSetterType::kVisualGuide:
       return "VisualGuide";
+    case DefaultBrowserSetterType::kAnnotatedShellIntegration:
+      return "AnnotatedShellIntegration";
   }
   NOTREACHED();
 }
@@ -71,6 +75,12 @@ std::string UiEntrypointTypeToString(
       return "ModalDialogWithSettingsIllustration";
     case DefaultBrowserEntrypointType::kModalDialogWithoutSettingsIllustration:
       return "ModalDialogWithoutSettingsIllustration";
+    case DefaultBrowserEntrypointType::
+        kStickyModalDialogWithSettingsIllustration:
+      return "StickyModalDialogWithSettingsIllustration";
+    case DefaultBrowserEntrypointType::
+        kStickyModalDialogWithoutSettingsIllustration:
+      return "StickyModalDialogWithoutSettingsIllustration";
   }
   NOTREACHED();
 }
@@ -110,6 +120,18 @@ void DefaultBrowserController::OnDismissed() {
   RecordInteractionMetric(DefaultBrowserInteractionType::kDismissed);
 }
 
+// static
+void DefaultBrowserController::RecordRetryCount(
+    DefaultBrowserEntrypointType ui_entrypoint,
+    int retry_count) {
+  CHECK_GE(retry_count, 0);
+  CHECK_LE(retry_count, kMaxRecordedRetryCount);
+  base::UmaHistogramExactLinear(
+      GetEntrypointHistogramName(ui_entrypoint, GetDefaultBrowserSetterType(),
+                                 "RetryCount"),
+      retry_count, /*exclusive_max=*/kMaxRecordedRetryCount + 1);
+}
+
 void DefaultBrowserController::OnSetterExecutionComplete(
     DefaultBrowserControllerCompletionCallback completion_callback,
     base::TimeTicks setter_execution_start_time,
@@ -136,6 +158,7 @@ void DefaultBrowserController::OnSetterExecutionComplete(
 
   } else if (auto* manager = DefaultBrowserManager::From(g_browser_process)) {
     manager->TrackTimeAfterSetterFailure(ui_entrypoint_, GetSetterType());
+    manager->MaybeLaunchHatsSurvey(ui_entrypoint_, GetSetterType());
   }
 
   std::move(completion_callback).Run(default_browser_state);
@@ -157,6 +180,9 @@ void DefaultBrowserController::RecordInteractionMetric(
 void DefaultBrowserController::RecordResultMetric(bool success) {
   base::UmaHistogramBoolean(GetSetterHistogramName(GetSetterType(), "Result"),
                             success);
+  base::UmaHistogramBoolean(
+      GetEntrypointHistogramName(ui_entrypoint_, GetSetterType(), "OutcomeV2"),
+      success);
 }
 
 }  // namespace default_browser

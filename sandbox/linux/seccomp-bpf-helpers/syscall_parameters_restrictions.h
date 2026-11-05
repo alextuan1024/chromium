@@ -31,6 +31,12 @@ SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictCloneToThreadsAndEPERMFork();
 // Crash if anything else is attempted.
 SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictPrctl();
 
+#if defined(__x86_64__)
+// Allow ARCH_GET_UNTAG_MASK.
+// Crash if anything else is attempted.
+SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictArchPrctl();
+#endif
+
 // Allow TCGETS and FIONREAD.
 // Crash if anything else is attempted.
 SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictIoctl();
@@ -40,6 +46,7 @@ SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictIoctl();
 // MAP_STACK | MAP_NORESERVE | MAP_FIXED | MAP_DENYWRITE.
 // Crash if any other flag is used.
 SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictMmapFlags(
+    int sysno,
     uint64_t extra_allowed_mask = 0);
 
 // Restrict the flags argument in mremap(2).
@@ -53,7 +60,7 @@ SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictMprotectFlags();
 
 // Restrict fcntl(2) cmd argument to:
 // We allow F_GETFL, F_SETFL, F_GETFD, F_SETFD, F_DUPFD, F_DUPFD_CLOEXEC,
-// F_SETLK, F_SETLKW and F_GETLK.
+// F_DUPFD_QUERY, F_SETLK, F_SETLKW, F_GETLK, F_GET_SEALS and F_ADD_SEALS.
 // Also, in F_SETFL, restrict the allowed flags to: O_ACCMODE | O_APPEND |
 // O_NONBLOCK | O_SYNC | O_LARGEFILE | O_CLOEXEC | O_NOATIME.
 SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictFcntlCommands();

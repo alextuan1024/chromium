@@ -12,8 +12,6 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.text.TextUtils;
 
-import androidx.annotation.VisibleForTesting;
-
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -283,21 +281,18 @@ public class SettingsIndexData {
                 String key = keys.next();
                 try {
                     Object value = json.get(key);
-                    if (value instanceof Integer) {
-                        bundle.putInt(key, (Integer) value);
-                    } else if (value instanceof Long) {
-                        bundle.putLong(key, (Long) value);
-                    } else if (value instanceof Double) {
-                        bundle.putDouble(key, (Double) value);
-                    } else if (value instanceof Boolean) {
-                        bundle.putBoolean(key, (Boolean) value);
-                    } else if (value instanceof String) {
-                        bundle.putString(key, (String) value);
-                    } else {
-                        // Complex types are not expected in the Bundle object used for extras.
-                        // Report the exception if it actually occurs.
-                        throw new IllegalArgumentException(
-                                "Unsupported complex type in extras: " + key);
+                    switch (value) {
+                        case Integer intVal -> bundle.putInt(key, intVal);
+                        case Long longVal -> bundle.putLong(key, longVal);
+                        case Double doubleVal -> bundle.putDouble(key, doubleVal);
+                        case Boolean boolVal -> bundle.putBoolean(key, boolVal);
+                        case String strVal -> bundle.putString(key, strVal);
+                        default -> {
+                            // Complex types are not expected in the Bundle object used for extras.
+                            // Report the exception if it actually occurs.
+                            throw new IllegalArgumentException(
+                                    "Unsupported complex type in extras: " + key);
+                        }
                     }
                 } catch (JSONException e) {
                     // Skip restoring the element that causes an exception.
@@ -585,7 +580,6 @@ public class SettingsIndexData {
      * @param title Title text.
      * @param summary Summary text.
      * @param extras Extra bundle to pass to the Fragment.
-     * @param targetFragment Full class name of the child Fragment this entry opens.
      */
     public void addEntryForKey(
             String prefFragment,
@@ -764,7 +758,7 @@ public class SettingsIndexData {
         mShouldRefreshResult = refresh;
     }
 
-    /** Returns whether whether the search results fragment needs refreshing. */
+    /** Returns whether the search results fragment needs refreshing. */
     public boolean shouldRefreshResult() {
         return mShouldRefreshResult;
     }
@@ -889,6 +883,8 @@ public class SettingsIndexData {
      * @param arguments The runtime arguments (Bundle) of the target fragment. Used to identify the
      *     correct parent when a fragment class is reused across multiple preferences. Can be {@code
      *     null}.
+     * @param rootFragmentName The class name of the root fragment (e.g., MainSettings) that the
+     *     path should lead to.
      * @return A list of {@link Entry} objects representing the path, ordered from the top-level
      *     entry down to the immediate parent of the target. Returns {@code null} if no valid path
      *     to the root exists (i.e., the fragment is an orphan or its parent is disabled). Returns
@@ -1133,12 +1129,10 @@ public class SettingsIndexData {
         return results;
     }
 
-    @VisibleForTesting
     public Map<String, Entry> getEntriesForTesting() {
         return mEntries;
     }
 
-    @VisibleForTesting
     public Map<String, List<String>> getChildFragmentToParentKeysForTesting() {
         return mChildFragmentToParentKeys;
     }

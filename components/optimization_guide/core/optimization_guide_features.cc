@@ -5,33 +5,21 @@
 #include "components/optimization_guide/core/optimization_guide_features.h"
 
 #include <algorithm>
-#include <cstring>
 #include <optional>
 
-#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
-#include "base/logging.h"
-#include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/numerics/safe_conversions.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
-#include "base/strings/string_util.h"
-#include "base/strings/to_string.h"
 #include "base/system/sys_info.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "components/optimization_guide/core/feature_registry/mqls_feature_registry.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
-#include "components/optimization_guide/core/model_execution/on_device_features.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/proto/common_types.pb.h"
-#include "components/variations/hashing.h"
-#include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/google_api_keys.h"
-#include "net/base/url_util.h"
-#include "ui/base/l10n/l10n_util.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "components/version_info/android/channel_getter.h"
@@ -68,14 +56,16 @@ BASE_FEATURE(kPageTextExtraction,
              "OptimizationGuidePageContentExtraction",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables the validation of optimization guide metadata.
-BASE_FEATURE(kOptimizationGuideMetadataValidation,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kPreventLongRunningPredictionModels,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kOverrideNumThreadsForModelExecution,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables building the TFLite model execution task (memory mapping, FlatBuffer
+// verification, interpreter initialization) on the background loading thread
+// instead of the execution thread.
+BASE_FEATURE(kBuildTFLiteModelExecutionTaskOnLoadingThread,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Killswitch for fetching on search results from a remote Optimization Guide
@@ -98,67 +88,16 @@ BASE_FEATURE(kOptimizationGuidePredictionModelKillswitch,
 BASE_FEATURE(kOptimizationGuideModelExecution,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Whether the on device service is launched after a delay on startup to log
-// metrics.
-BASE_FEATURE(kLogOnDeviceMetricsOnStartup, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Whether to scan the full text when running the language detection in the text
-// safety classifier.
-BASE_FEATURE(kTextSafetyScanLanguageDetection,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Whether performance class should be fetched each startup or just after a
-// version update.
-BASE_FEATURE(kOnDeviceModelFetchPerformanceClassEveryStartup,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Force show the AI page and all AI feature sub-pages in settings, even if they
 // would be unavailable otherwise. This is meant for development and test
 // purposes only.
 BASE_FEATURE(kAiSettingsPageForceAvailable, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kOnDeviceModelPerformanceParams, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAnnotatedPageContentWithActionableElements,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAnnotatedPageContentWithMediaData,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-const base::FeatureParam<std::string> kPerformanceClassListForOnDeviceModel{
-    &kOnDeviceModelPerformanceParams,
-    "compatible_on_device_performance_classes", "3,4,5,6"};
-
-const base::FeatureParam<std::string>
-    kLowTierPerformanceClassListForOnDeviceModel{
-        &kOnDeviceModelPerformanceParams,
-        "compatible_low_tier_on_device_performance_classes", "3,4"};
-
-const base::FeatureParam<std::string> kPerformanceClassListForImageInput{
-    &kOnDeviceModelPerformanceParams,
-    "compatible_on_device_performance_classes_image_input", "3,4,5,6"};
-
-BASE_FEATURE(kOnDeviceModelBackgroundDownload,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-const base::FeatureParam<std::string>
-    kOnDeviceModelBackgroundDownloadAllowedFeatures{
-        &kOnDeviceModelBackgroundDownload, "allowed_features",
-        "PromptApi,WritingAssistanceApi,Summarize"};
-
-bool IsOnDeviceModelBackgroundDownloadEnabledForFeature(
-    mojom::OnDeviceFeature feature) {
-  if (!base::FeatureList::IsEnabled(kOnDeviceModelBackgroundDownload)) {
-    return false;
-  }
-  std::string allowed_features_string =
-      kOnDeviceModelBackgroundDownloadAllowedFeatures.Get();
-  std::vector<std::string_view> allowed_features =
-      base::SplitStringPiece(allowed_features_string, ",",
-                             base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-  return std::ranges::contains(allowed_features, GetVariantName(feature));
-}
-
 
 BASE_FEATURE(kBrokerModelSessionsForUntrustedProcesses,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -366,12 +305,6 @@ base::TimeDelta ModelExecutionWatchdogDefaultTimeout() {
       ));
 }
 
-bool ShouldMetadataValidationFetchHostKeyed() {
-  DCHECK(base::FeatureList::IsEnabled(kOptimizationGuideMetadataValidation));
-  return GetFieldTrialParamByFeatureAsBool(kOptimizationGuideMetadataValidation,
-                                           "is_host_keyed", true);
-}
-
 bool ShouldDeferStartupActiveTabsHintsFetch() {
   return GetFieldTrialParamByFeatureAsBool(
       kOptimizationHints, "defer_startup_active_tabs_hints_fetch",
@@ -434,46 +367,9 @@ GetPredictionModelVersionsInKillSwitch() {
   return killswitch_model_versions;
 }
 
-base::TimeDelta GetOnDeviceStartupMetricDelay() {
-  static const base::FeatureParam<base::TimeDelta> kOnDeviceStartupMetricDelay{
-      &kLogOnDeviceMetricsOnStartup, "on_device_startup_metric_delay",
-      base::Minutes(3)};
-  return kOnDeviceStartupMetricDelay.Get();
-}
-
 bool IsOnDeviceExecutionEnabled() {
   return base::FeatureList::IsEnabled(
       features::kOptimizationGuideModelExecution);
-}
-
-BASE_FEATURE(kOnDeviceModelCachesDiskSpaceCheck,
-             "OnDeviceModelCachesDiskSpaceCheck",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-bool IsFreeDiskSpaceTooLowForOnDeviceModelCachesBuild(
-    base::ByteSize free_disk_space_bytes) {
-  if (!base::FeatureList::IsEnabled(kOnDeviceModelCachesDiskSpaceCheck)) {
-    return false;
-  }
-  return base::MiB(base::saturated_cast<uint64_t>(
-             base::GetFieldTrialParamByFeatureAsInt(
-                 kOnDeviceModelCachesDiskSpaceCheck,
-                 "free_space_mb_required_to_build_caches",
-                 base::GiB(10).InMiB()))) >= free_disk_space_bytes;
-}
-
-base::ByteSize GetDiskSpaceRequiredForBackgroundOnDeviceModelInstall() {
-  return base::MiB(
-      base::saturated_cast<uint64_t>(base::GetFieldTrialParamByFeatureAsInt(
-          features::kOnDeviceModelBackgroundDownload,
-          "on_device_model_free_space_mb_required_to_background_install",
-          base::GiB(50).InMiB())));
-}
-
-bool IsFreeDiskSpaceSufficientForBackgroundOnDeviceModelInstall(
-    base::ByteSize free_disk_space_bytes) {
-  return GetDiskSpaceRequiredForBackgroundOnDeviceModelInstall() <=
-         free_disk_space_bytes;
 }
 
 std::optional<base::TimeDelta> GetSubframeGetAIPageContentTimeout() {

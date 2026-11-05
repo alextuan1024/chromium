@@ -9,6 +9,7 @@
 
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/test/allow_check_is_test_for_testing.h"
 #include "base/test/metrics/user_action_tester.h"
@@ -62,7 +63,9 @@ class FakeExtensionActionDelegate : public ExtensionActionDelegate {
   void UnregisterCommand() override {}
   bool IsShowingPopup() const override { return false; }
   void HidePopup() override {}
-  gfx::NativeView GetPopupNativeView() override { return gfx::NativeView(); }
+  gfx::NativeView GetPopupNativeViewForTesting() override {
+    return gfx::NativeView();
+  }
   void TriggerPopup(std::unique_ptr<extensions::ExtensionViewHost> host,
                     PopupShowAction show_action,
                     bool by_user,
@@ -512,7 +515,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
   extensions::ExtensionActionRunner* action_runner =
       extensions::ExtensionActionRunner::GetForWebContents(web_contents);
   ASSERT_TRUE(action_runner);
-  action_runner->GrantTabPermissions({extension.get()});
+  action_runner->GrantTabPermissions({extension.get()}, base::DoNothing());
   EXPECT_EQ(permissions_helper()->GetSiteInteraction(*extension, web_contents),
             SitePermissionsHelper::SiteInteraction::kGranted);
   EXPECT_EQ(permissions_manager()->GetUserSiteAccess(
@@ -1832,4 +1835,115 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
           ->GetExtensionSitePermissionsState(extension->id(), gfx::Size(20, 20))
           .origin,
       custom_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin());
+}
+
+// Tests that calling GrantSiteAccess when site access is already granted (e.g.
+// due to UI/model desynchronization while async permission updates are in
+// flight) is a safe no-op rather than crashing.
+IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
+                       GrantSiteAccess_AlreadyGrantedDoesNotCrash) {
+  auto all_sites_ext =
+      AddExtensionWithHostPermission("All Sites Extension", "<all_urls>");
+  auto on_site_ext =
+      AddExtensionWithHostPermission("On Site Extension", "*://example.com/*");
+  auto active_tab_ext = AddActiveTabExtension("ActiveTab Extension");
+
+  NavigateTo("example.com");
+  content::WebContents* web_contents = GetActiveWebContents();
+  const GURL& url = web_contents->GetLastCommittedURL();
+  const url::Origin origin =
+      web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+
+  // Grant one-time tab permissions to `active_tab_ext`.
+  auto* action_runner =
+      extensions::ExtensionActionRunner::GetForWebContents(web_contents);
+  ASSERT_TRUE(action_runner);
+  action_runner->GrantTabPermissions({active_tab_ext.get()}, base::DoNothing());
+
+  ASSERT_EQ(permissions_manager()->GetUserSiteAccess(*all_sites_ext, url),
+            PermissionsManager::UserSiteAccess::kOnAllSites);
+  ASSERT_EQ(permissions_manager()->GetUserSiteAccess(*on_site_ext, url),
+            PermissionsManager::UserSiteAccess::kOnSite);
+  ASSERT_EQ(
+      permissions_helper()->GetSiteInteraction(*active_tab_ext, web_contents),
+      SitePermissionsHelper::SiteInteraction::kGranted);
+
+  // Calling GrantSiteAccess when access is already granted must not crash or
+  // downgrade existing permissions.
+  menu_model()->GrantSiteAccess(all_sites_ext->id(), origin);
+  menu_model()->GrantSiteAccess(on_site_ext->id(), origin);
+  menu_model()->GrantSiteAccess(active_tab_ext->id(), origin);
+
+  EXPECT_EQ(permissions_manager()->GetUserSiteAccess(*all_sites_ext, url),
+            PermissionsManager::UserSiteAccess::kOnAllSites);
+  EXPECT_EQ(permissions_manager()->GetUserSiteAccess(*on_site_ext, url),
+            PermissionsManager::UserSiteAccess::kOnSite);
+  EXPECT_EQ(
+      permissions_helper()->GetSiteInteraction(*active_tab_ext, web_contents),
+      SitePermissionsHelper::SiteInteraction::kGranted);
+}
+
+// Tests that calling RevokeSiteAccess when site access is already revoked (e.g.
+// due to UI/model desynchronization) is a safe no-op rather than crashing.
+IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
+                       RevokeSiteAccess_AlreadyRevokedDoesNotCrash) {
+  auto withheld_ext =
+      AddExtensionWithHostPermission("Withheld Extension", "<all_urls>");
+  extensions::ScriptingPermissionsModifier(profile(), withheld_ext)
+      .SetWithholdHostPermissions(true);
+  auto active_tab_ext = AddActiveTabExtension("ActiveTab Extension");
+
+  NavigateTo("example.com");
+  content::WebContents* web_contents = GetActiveWebContents();
+  const GURL& url = web_contents->GetLastCommittedURL();
+  const url::Origin origin =
+      web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+
+  ASSERT_EQ(permissions_manager()->GetUserSiteAccess(*withheld_ext, url),
+            PermissionsManager::UserSiteAccess::kOnClick);
+  ASSERT_EQ(
+      permissions_helper()->GetSiteInteraction(*active_tab_ext, web_contents),
+      SitePermissionsHelper::SiteInteraction::kActiveTab);
+
+  menu_model()->RevokeSiteAccess(withheld_ext->id(), origin);
+  menu_model()->RevokeSiteAccess(active_tab_ext->id(), origin);
+
+  EXPECT_EQ(permissions_manager()->GetUserSiteAccess(*withheld_ext, url),
+            PermissionsManager::UserSiteAccess::kOnClick);
+  EXPECT_EQ(
+      permissions_helper()->GetSiteInteraction(*active_tab_ext, web_contents),
+      SitePermissionsHelper::SiteInteraction::kActiveTab);
+}
+
+// Tests that an extension with `activeTab` and a withheld broad eTLD host
+// permission (where `HasPreviousBroadSiteAccess` is false) grants one-time tab
+// access on an unrelated site without crashing.
+IN_PROC_BROWSER_TEST_F(
+    ExtensionsMenuViewModelBrowserTest,
+    GrantSiteAccess_WithheldBroadEtldWithActiveTabOnUnrelatedSite) {
+  auto extension = AddExtension("eTLD ActiveTab Extension",
+                                /*permissions=*/{"activeTab"},
+                                /*host_permissions=*/{"*://*.co.uk/*"});
+  extensions::ScriptingPermissionsModifier(profile(), extension)
+      .SetWithholdHostPermissions(true);
+
+  NavigateTo("example.com");
+  content::WebContents* web_contents = GetActiveWebContents();
+  const GURL& url = web_contents->GetLastCommittedURL();
+  const url::Origin origin =
+      web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+
+  ASSERT_FALSE(
+      permissions_manager()->HasPreviousBroadSiteAccess(extension->id()));
+  ASSERT_EQ(permissions_manager()->GetUserSiteAccess(*extension, url),
+            PermissionsManager::UserSiteAccess::kOnClick);
+  ASSERT_EQ(permissions_helper()->GetSiteInteraction(*extension, web_contents),
+            SitePermissionsHelper::SiteInteraction::kActiveTab);
+
+  menu_model()->GrantSiteAccess(extension->id(), origin);
+
+  EXPECT_EQ(permissions_helper()->GetSiteInteraction(*extension, web_contents),
+            SitePermissionsHelper::SiteInteraction::kGranted);
+  EXPECT_EQ(permissions_manager()->GetUserSiteAccess(*extension, url),
+            PermissionsManager::UserSiteAccess::kOnClick);
 }

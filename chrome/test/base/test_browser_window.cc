@@ -278,6 +278,10 @@ ui::AcceleratorProvider* TestBrowserWindow::GetAcceleratorProvider() {
   return nullptr;
 }
 
+PinnedToolbarActions* TestBrowserWindow::GetPinnedToolbarActions() {
+  return nullptr;
+}
+
 autofill::AutofillBubbleHandler* TestBrowserWindow::GetAutofillBubbleHandler() {
   return &autofill_bubble_handler_;
 }
@@ -357,10 +361,6 @@ TestBrowserWindow::GetWebContentsModalDialogHost() {
 web_modal::WebContentsModalDialogHost*
 TestBrowserWindow::GetWebContentsModalDialogHostFor(
     content::WebContents* web_contents) {
-  return nullptr;
-}
-
-ExclusiveAccessContext* TestBrowserWindow::GetExclusiveAccessContext() {
   return nullptr;
 }
 

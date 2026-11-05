@@ -23,6 +23,7 @@
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/i18n/bcp47_extensions.h"
+#include "base/i18n/language_tag.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted_memory.h"
@@ -39,11 +40,12 @@
 #include "build/build_config.h"
 #include "net/filter/gzip_header.h"
 #include "skia/ext/image_operations.h"
-#include "third_party/brotli/include/brotli/decode.h"
+#include "third_party/brotli/src/c/include/brotli/decode.h"
 #include "third_party/skia/include/codec/SkPngRustDecoder.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/zlib/google/compression_utils.h"
+#include "third_party/zstd/src/lib/zstd.h"
 #include "ui/base/buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/data_pack.h"
@@ -173,6 +175,34 @@ bool BrotliDecompress(std::string_view input, OutputBufferType output) {
          BROTLI_DECODER_RESULT_SUCCESS;
 }
 
+// Helper function for determining whether a resource is zstd compressed.
+bool HasZstdHeader(std::string_view data) {
+  // Every zstd frame starts with this magic number (little-endian).
+  return data.starts_with(std::string_view("\x28\xb5\x2f\xfd", 4));
+}
+
+bool IsCompressedData(std::string_view data) {
+  return net::GZipHeader::HasGZipHeader(base::as_byte_span(data)) ||
+         HasBrotliHeader(data) || HasZstdHeader(data);
+}
+
+// Decompresses data in |input| using zstd, storing the result in |output|,
+// which is resized as necessary. Returns true for success. Requires that the
+// frame header contains the decompressed size, which grit always includes.
+bool ZstdDecompress(std::string_view input, OutputBufferType output) {
+  uint64_t decompress_size =
+      ZSTD_getFrameContentSize(input.data(), input.size());
+  if (decompress_size == ZSTD_CONTENTSIZE_UNKNOWN ||
+      decompress_size == ZSTD_CONTENTSIZE_ERROR) {
+    return false;
+  }
+  base::span<uint8_t> dest =
+      GetBufferForWriting(output, base::checked_cast<size_t>(decompress_size));
+  size_t result =
+      ZSTD_decompress(dest.data(), dest.size(), input.data(), input.size());
+  return !ZSTD_isError(result) && result == dest.size();
+}
+
 // Helper function for decompressing resource.
 void DecompressIfNeeded(std::string_view data, OutputBufferType output) {
   if (!data.empty() &&
@@ -182,11 +212,17 @@ void DecompressIfNeeded(std::string_view data, OutputBufferType output) {
     bool success = compression::GzipUncompress(
         base::as_byte_span(data),
         GetBufferForWriting(output, uncompressed_size));
-    DCHECK(success);
+    CHECK(success, base::NotFatalUntil::M163);
   } else if (!data.empty() && HasBrotliHeader(data)) {
     TRACE_EVENT0("ui", "DecompressIfNeeded::BrotliDecompress");
     bool success = BrotliDecompress(data, output);
-    DCHECK(success);
+    CHECK(success, base::NotFatalUntil::M163);
+  } else if (HasZstdHeader(data)) {
+    // Assumes that resources starting with the zstd magic number were
+    // compressed by grit (which always stores the decompressed size).
+    TRACE_EVENT0("ui", "DecompressIfNeeded::ZstdDecompress");
+    bool success = ZstdDecompress(data, output);
+    CHECK(success);
   } else {
     base::span<uint8_t> dest = GetBufferForWriting(output, data.size());
     std::ranges::copy(data, dest.data());
@@ -683,7 +719,7 @@ gfx::Image& ResourceBundle::GetImageNamed(int resource_id) {
 
   // The load was successful, so cache the image.
   auto inserted = images_.emplace(resource_id, image);
-  DCHECK(inserted.second);
+  CHECK(inserted.second, base::NotFatalUntil::M163);
   return inserted.first->second;
 }
 
@@ -720,7 +756,7 @@ const ui::ImageModel& ResourceBundle::GetThemedLottieImageNamed(
   // resulting image.
   auto inserted = image_models_.emplace(
       resource_id, ParseLottieAsThemedStillImage(std::move(*data)));
-  DCHECK(inserted.second);
+  CHECK(inserted.second, base::NotFatalUntil::M163);
   return inserted.first->second;
 }
 
@@ -767,8 +803,7 @@ ResourceBundle::LoadDataResourceBytesForScale(
   if (data.empty())
     return nullptr;
 
-  if (net::GZipHeader::HasGZipHeader(base::as_byte_span(data)) ||
-      HasBrotliHeader(data)) {
+  if (IsCompressedData(data)) {
     auto bytes_string = base::MakeRefCounted<base::RefCountedString>();
     DecompressIfNeeded(data, &bytes_string->as_string());
     return bytes_string;
@@ -871,32 +906,18 @@ std::string ResourceBundle::LoadLocalizedResourceString(int resource_id) const {
   return output;
 }
 
-bool ResourceBundle::IsGzipped(int resource_id) const {
-  std::string_view raw_data = GetRawDataResource(resource_id);
-  if (!raw_data.data())
-    return false;
-
-  return net::GZipHeader::HasGZipHeader(base::as_byte_span(raw_data));
-}
-
-bool ResourceBundle::IsBrotli(int resource_id) const {
-  std::string_view raw_data = GetRawDataResource(resource_id);
-  if (!raw_data.data())
-    return false;
-
-  return HasBrotliHeader(raw_data);
+bool ResourceBundle::IsCompressed(int resource_id) const {
+  return IsCompressedData(GetRawDataResource(resource_id));
 }
 
 std::u16string ResourceBundle::GetLocalizedString(int resource_id) {
-#if DCHECK_IS_ON()
   {
     base::AutoLock lock_scope(*locale_resources_data_lock_);
     // Overriding locale strings isn't supported if the first string resource
     // has already been queried.
     can_override_locale_string_resources_ = false;
   }
-#endif
-  DCHECK(!IsGzipped(resource_id) && !IsBrotli(resource_id))
+  DCHECK(!IsCompressed(resource_id))
       << "Compressed string encountered, perhaps use "
          "ResourceBundle::LoadLocalizedResourceString instead";
   return GetLocalizedStringImpl(resource_id);
@@ -958,7 +979,9 @@ const gfx::FontList& ResourceBundle::GetFontListForDetails(
   }
 
   auto styled = font_cache_.emplace(details, base_font_list);
-  DCHECK(styled.second);  // Otherwise font_cache_.find(..) would have found it.
+  CHECK(styled.second,
+        base::NotFatalUntil::M163);  // Otherwise font_cache_.find(..) would
+                                     // have found it.
   styled.first->second = sized.first->second.Derive(
       0, sized.first->second.GetFontStyle(), details.weight);
 
@@ -1011,10 +1034,8 @@ ResourceScaleFactor ResourceBundle::GetMaxResourceScaleFactor() const {
 }
 
 void ResourceBundle::CheckCanOverrideStringResources() {
-#if DCHECK_IS_ON()
   base::AutoLock lock_scope(*locale_resources_data_lock_);
-  DCHECK(can_override_locale_string_resources_);
-#endif
+  CHECK(can_override_locale_string_resources_, base::NotFatalUntil::M163);
 }
 
 ResourceBundle::ResourceBundle(Delegate* delegate)
@@ -1091,7 +1112,7 @@ void ResourceBundle::AddDataPackFromPathInternal(
     bool optional) {
   // Do not pass an empty |path| value to this method. If the absolute path is
   // unknown pass just the pack file name.
-  DCHECK(!path.empty());
+  CHECK(!path.empty(), base::NotFatalUntil::M163);
 
   base::FilePath pack_path = path;
   if (delegate_)
@@ -1182,7 +1203,7 @@ bool ResourceBundle::LoadBitmap(const ResourceHandle& data_handle,
                                 int resource_id,
                                 SkBitmap* bitmap,
                                 bool* fell_back_to_1x) const {
-  DCHECK(fell_back_to_1x);
+  CHECK(fell_back_to_1x, base::NotFatalUntil::M163);
   scoped_refptr<base::RefCountedMemory> memory(
       data_handle.GetStaticMemory(static_cast<uint16_t>(resource_id)));
   if (!memory.get())
@@ -1210,12 +1231,12 @@ bool ResourceBundle::LoadBitmap(int resource_id,
                                 ResourceScaleFactor* scale_factor,
                                 SkBitmap* bitmap,
                                 bool* fell_back_to_1x) const {
-  DCHECK(fell_back_to_1x);
+  CHECK(fell_back_to_1x, base::NotFatalUntil::M163);
   base::AutoLock lock_scope(*resource_handles_lock_);
   for (const auto& pack : resource_handles_) {
     if (pack->GetResourceScaleFactor() == ui::kScaleFactorNone &&
         LoadBitmap(*pack, resource_id, bitmap, fell_back_to_1x)) {
-      DCHECK(!*fell_back_to_1x);
+      CHECK(!*fell_back_to_1x, base::NotFatalUntil::M163);
       *scale_factor = ui::kScaleFactorNone;
       return true;
     }
@@ -1318,7 +1339,7 @@ std::u16string ResourceBundle::GetLocalizedStringImpl(int resource_id) const {
     msg.assign(utf16_span.begin(), utf16_span.end());
   } else if (encoding == ResourceHandle::UTF8) {
     // Best-effort conversion.
-    base::UTF8ToUTF16(data->data(), data->size(), &msg);
+    std::ignore = base::UTF8ToUTF16(*data, &msg);
   }
   return MaybeMangleLocalizedString(msg);
 }

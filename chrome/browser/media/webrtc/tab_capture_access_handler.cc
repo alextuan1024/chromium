@@ -22,6 +22,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/desktop_media_id.h"
 #include "content/public/browser/page.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_media_capture_id.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -124,7 +125,8 @@ class TabCaptureExtensionPolicyUI : public MediaStreamUI,
     std::string error;
     content::WebContents* contents = web_contents();
     if (!extensions::TabCaptureRegistry::CanCaptureWebContents(
-            *extension, *contents->GetBrowserContext(), *contents, error)) {
+            *extension, *contents->GetBrowserContext(), *contents, error,
+            /*is_navigation=*/true)) {
       StopCapture();
       capture_policy::ShowCaptureTerminatedDialog(contents);
     }
@@ -198,7 +200,7 @@ void TabCaptureAccessHandler::HandleRequest(
     const content::MediaStreamRequest& request,
     content::MediaResponseCallback callback,
     const extensions::Extension* extension) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
@@ -215,11 +217,26 @@ void TabCaptureAccessHandler::HandleRequest(
       capture_policy::GetIncludableWebContentsFilter(request.security_origin,
                                                      capture_level);
 
-  content::WebContents* target_web_contents =
-      content::WebContents::FromRenderFrameHost(
-          content::RenderFrameHost::FromID(request.render_process_id,
-                                           request.render_frame_id));
-  if (!can_show_web_contents.Run(target_web_contents)) {
+  // For tab capture, `request.render_process_id` and `request.render_frame_id`
+  // identify the target tab's primary main frame recorded at stream ID
+  // creation time rather than the requesting frame.
+  content::RenderFrameHost* const target_rfh = content::RenderFrameHost::FromID(
+      request.render_process_id, request.render_frame_id);
+  if (!target_rfh || !target_rfh->IsActive()) {
+    tab_capture_registry->KillUnverifiedRequest(request.render_process_id,
+                                                request.render_frame_id);
+    std::move(callback).Run(blink::mojom::StreamDevicesSet(),
+                            blink::mojom::MediaStreamRequestResult::
+                                FAILED_DUE_TO_SHUTDOWN_NO_RFH_IN_HANDLER,
+                            /*ui=*/nullptr);
+    return;
+  }
+
+  content::WebContents* const target_web_contents =
+      content::WebContents::FromRenderFrameHost(target_rfh);
+  if (!target_web_contents || !can_show_web_contents.Run(target_web_contents)) {
+    tab_capture_registry->KillUnverifiedRequest(request.render_process_id,
+                                                request.render_frame_id);
     std::move(callback).Run(
         blink::mojom::StreamDevicesSet(),
         blink::mojom::MediaStreamRequestResult::CAPTURE_NOT_ALLOWED_BY_POLICY,
@@ -231,8 +248,8 @@ void TabCaptureAccessHandler::HandleRequest(
   // tabCapture.getMediaStreamId().
   // TODO(crbug.com/40571241): Deprecate tabCaptureRegistry soon.
   const std::string extension_id = extension ? extension->id() : "";
-  if (!tab_capture_registry->VerifyRequest(
-          request.render_process_id, request.render_frame_id, extension_id)) {
+  if (!tab_capture_registry->VerifyRequest(request.render_process_id,
+                                           request.render_frame_id)) {
     std::move(callback).Run(
         blink::mojom::StreamDevicesSet(),
         blink::mojom::MediaStreamRequestResult::REGISTRY_REQUEST_UNVERIFIED,
@@ -264,9 +281,8 @@ void TabCaptureAccessHandler::HandleRequest(
   if (!capturing_extension_id.empty()) {
     std::string error;
     if (!capturing_extension ||
-        (target_web_contents &&
-         !extensions::TabCaptureRegistry::CanCaptureWebContents(
-             *capturing_extension, *profile, *target_web_contents, error))) {
+        !extensions::TabCaptureRegistry::CanCaptureWebContents(
+            *capturing_extension, *profile, *target_web_contents, error)) {
       std::move(callback).Run(
           blink::mojom::StreamDevicesSet(),
           blink::mojom::MediaStreamRequestResult::CAPTURE_NOT_ALLOWED_BY_POLICY,
@@ -281,7 +297,7 @@ void TabCaptureAccessHandler::HandleRequest(
         target_web_contents, url::Origin::Create(request.security_origin));
   }
 
-  if (!capturing_extension_id.empty() && target_web_contents) {
+  if (!capturing_extension_id.empty()) {
     media_ui = std::make_unique<TabCaptureExtensionPolicyUI>(
         target_web_contents, capturing_extension_id, std::move(media_ui));
   }
@@ -330,8 +346,8 @@ void TabCaptureAccessHandler::AcceptRequest(
     content::MediaResponseCallback callback,
     bool is_allowlisted_extension,
     std::unique_ptr<MediaStreamUI> media_ui) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(web_contents);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   // TOOD(crbug.com/40216442): Generalize to multiple streams.
   blink::mojom::StreamDevicesSet stream_devices_set;
@@ -341,8 +357,9 @@ void TabCaptureAccessHandler::AcceptRequest(
       *stream_devices_set.stream_devices[0];
   std::unique_ptr<content::MediaStreamUI> ui = GetMediaStreamUI(
       request, web_contents, std::move(media_ui), stream_devices);
-  DCHECK(stream_devices.audio_device.has_value() ||
-         stream_devices.video_device.has_value());
+  CHECK(stream_devices.audio_device.has_value() ||
+            stream_devices.video_device.has_value(),
+        base::NotFatalUntil::M161);
 
   UpdateExtensionTrusted(request, is_allowlisted_extension);
   std::move(callback).Run(stream_devices_set,
@@ -356,7 +373,7 @@ void TabCaptureAccessHandler::OnDlpRestrictionChecked(
     std::unique_ptr<PendingAccessRequest> pending_request,
     std::unique_ptr<MediaStreamUI> media_ui,
     bool is_dlp_allowed) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!web_contents) {
     return;

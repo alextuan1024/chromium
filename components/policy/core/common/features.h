@@ -29,13 +29,20 @@ POLICY_EXPORT BASE_DECLARE_FEATURE(kEnhancedSecurityEventFields);
 // Controls if we can use the cec flag in PolicyData.
 POLICY_EXPORT BASE_DECLARE_FEATURE(kUseCECFlagInPolicyData);
 
+// When enabled, increases the maximum cloud policy cache size limit read from
+// disk (for both user and machine level caches) from 1 MB to 2 MB to
+// accommodate large enterprise policy sets.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kUserPolicyCacheSizeLimit2MB);
+
 #if BUILDFLAG(IS_ANDROID)
 // Enables policy initialization for signed-in users in new entry points.
 POLICY_EXPORT BASE_DECLARE_FEATURE(
     kInitializePoliciesForSignedInUserInNewEntryPoints);
 
-// Controls whether to use active admins to calculate the enterprise info.
-POLICY_EXPORT BASE_DECLARE_FEATURE(kAndroidUseAdminsForEnterpriseInfo);
+// When enabled, the CBCM enrollment token is read again right before the
+// deferred initialization enrolls the browser.
+POLICY_EXPORT BASE_DECLARE_FEATURE(
+    kCbcmRefreshEnrollmentTokenBeforeDeferredInit);
 #endif
 
 // Enables a configurable delay for policy registration.
@@ -60,14 +67,6 @@ POLICY_EXPORT BASE_DECLARE_FEATURE(kEnableExtensionInstallPolicyFetching);
 // Note: Only has an effect on Mac and Windows where ShouldHonorPolicies()
 // performs platform-specific checks.
 POLICY_EXPORT BASE_DECLARE_FEATURE(kUseManagementServiceForSensitivePolicies);
-
-// When enabled, AzureActiveDirectoryDeviceStatusProvider only returns
-// CLOUD_DOMAIN for device-joined Azure AD accounts. When disabled (kill
-// switch), it falls back to the behavior of AzureActiveDirectoryStatusProvider,
-// returning CLOUD_DOMAIN for all Azure AD joined accounts (including
-// workplace-joined).
-POLICY_EXPORT BASE_DECLARE_FEATURE(
-    kFilterSensitivePoliciesOnWorkplaceJoinedDevices);
 
 // Modifies behavior of policies utilizing URLBlocklistManager.
 // When enabled, bypasses the wildcard "*" in the blocklist for internal
@@ -104,6 +103,18 @@ POLICY_EXPORT BASE_DECLARE_FEATURE(kExportPlatformPoliciesJson);
 POLICY_EXPORT BASE_DECLARE_FEATURE(kMigrateSecureConnectApiToDmServer);
 POLICY_EXPORT extern const base::FeatureParam<base::TimeDelta>
     kMigrateSecureConnectApiToDmServerFetchTimeout;
+
+// Returns true if `kMigrateSecureConnectApiToDmServer` is enabled.
+POLICY_EXPORT bool IsMigrateSecureConnectApiToDmServerEnabled();
+
+// When enabled, UserInfoFetcher will use
+// CredentialsMode::kOmitBug_775438_Workaround instead of CredentialsMode::kOmit
+// for user info requests.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kPolicyUserInfoFetcherUseOmitBugWorkaround);
+
+// When enabled, CBCM unenrollment on HTTP 410 requires an explicit
+// `DeviceManagementErrorDetail` in the response body.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kCbcmRequireErrorDetailForUnenrollment);
 
 }  // namespace policy::features
 

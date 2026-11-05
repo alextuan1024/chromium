@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
@@ -19,17 +20,18 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/ui/browser_command_controller.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
-#include "chrome/browser/ui/tabs/split_view_layout_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
+#include "chrome/browser/ui/views/test/tab_strip_interactive_test_mixin.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_interactive_test_mixin.h"
 #include "chrome/browser/ui/views/toolbar/reload_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_accessibility_test.h"
@@ -88,7 +90,8 @@ function getDeepActiveElement() {
 getDeepActiveElement().ariaLabel || getDeepActiveElement().tagName
   )JS";
 
-int GetIDForFocusedViewElement(const views::View* view) {
+base::expected<int, std::string> MaybeGetIDForFocusedViewElement(
+    const views::View* view) {
   const std::string kReloadControlName =
       base::UTF16ToUTF8(l10n_util::GetStringUTF16(IDS_ACCNAME_RELOAD));
   const std::string kBackControlName =
@@ -108,17 +111,27 @@ int GetIDForFocusedViewElement(const views::View* view) {
     } else if (element_name == kForwardControlName) {
       return VIEW_ID_FORWARD_BUTTON;
     } else {
-      ADD_FAILURE() << "Unexpected focused element: " << element_name;
-      return VIEW_ID_NONE;
+      return base::unexpected("Unexpected focused element: " + element_name);
     }
   } else {
     return view->GetID();
   }
 }
 
+int GetIDForFocusedViewElement(const views::View* view) {
+  auto maybe_id = MaybeGetIDForFocusedViewElement(view);
+  if (maybe_id.has_value()) {
+    return *maybe_id;
+  } else {
+    ADD_FAILURE() << maybe_id.error();
+    return VIEW_ID_NONE;
+  }
+}
+
 }  // namespace
 
-class ToolbarViewTest : public ToolbarAccessibilityTest {
+class ToolbarViewTest
+    : public TabStripInteractiveTestMixin<ToolbarAccessibilityTest> {
  public:
   ToolbarViewTest() {
     if (GetParam()) {
@@ -133,27 +146,12 @@ class ToolbarViewTest : public ToolbarAccessibilityTest {
                features::kWebUIBackForwardButton,
                features::kWebUISplitTabsButton, features::kWebUIHomeButton});
     }
-    webui_omnibox_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
-
-    // TODO(crbug.com/557287887): Make SplitViewLayoutMenuModel work with
-    // OpenSideBySideTab.
-    spit_view_horizontal_feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{{tabs::kSplitViewHorizontal,
-                               {{"split_view_horizontal_direct_tab_access",
-                                 "false"}}}},
-        /*disabled_features=*/{});
   }
   ToolbarViewTest(const ToolbarViewTest&) = delete;
   ToolbarViewTest& operator=(const ToolbarViewTest&) = delete;
 
   void SetUpOnMainThread() override {
-    ToolbarAccessibilityTest::SetUpOnMainThread();
+    TabStripInteractiveTestMixin<ToolbarAccessibilityTest>::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
 
     WaitForInitialWebUI();
@@ -189,16 +187,27 @@ class ToolbarViewTest : public ToolbarAccessibilityTest {
   auto OpenSideBySideTab(int tab_index) {
     const char kTabToHover[] = "Tab to hover";
 
-    return Steps(NameDescendantViewByType<Tab>(kTabStripElementId, kTabToHover,
-                                               tab_index),
-                 MoveMouseTo(kTabToHover), ClickMouse(ui_controls::RIGHT),
-                 SelectMenuItem(TabMenuModel::kSplitTabsMenuItem));
+    return Steps(
+        FinishTabstripAnimations(),
+        NameViewRelative(
+            kBrowserViewElementId, kTabToHover,
+            base::BindOnce(
+                [](int index, BrowserView* browser_view) -> views::View* {
+                  auto* const model =
+                      browser_view->browser()->GetTabStripModel();
+                  if (index < 0 || index >= model->count()) {
+                    return nullptr;
+                  }
+                  return browser_view->tab_strip_view()->GetTabAnchorView(
+                      model->GetTabAtIndex(index)->GetHandle());
+                },
+                tab_index)),
+        MoveMouseTo(kTabToHover), ClickMouse(ui_controls::RIGHT),
+        SelectMenuItem(TabMenuModel::kSplitTabsMenuItem));
   }
 
  private:
   base::test::ScopedFeatureList feature_list_;
-  base::test::ScopedFeatureList webui_omnibox_feature_list_;
-  base::test::ScopedFeatureList spit_view_horizontal_feature_list_;
 };
 
 void ToolbarViewTest::RunToolbarCycleFocusTest(
@@ -249,7 +258,15 @@ void ToolbarViewTest::RunToolbarCycleFocusTest(
 
   views::FocusManager* focus_manager = widget->GetFocusManager();
   views::View* first_view = focus_manager->GetFocusedView();
-  int first_id = GetIDForFocusedViewElement(first_view);
+  int first_id = VIEW_ID_NONE;
+  // In case of WebView, the focus takes place asynchronously.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    auto maybe_id = MaybeGetIDForFocusedViewElement(first_view);
+    if (maybe_id.has_value()) {
+      first_id = *maybe_id;
+    }
+    return maybe_id.has_value();
+  }));
 
   std::vector<int> ids;
 
@@ -367,9 +384,10 @@ IN_PROC_BROWSER_TEST_P(ToolbarViewTest, BackForwardButtonUpdate) {
       ExpectBackForwardButtonEnabled(kToolbarForwardButtonElementId, false));
 }
 
-// TODO(crbug.com/548345902): Re-enable once fixed. Failing at step 9:
+// TODO(crbug.com/548345902, crbug.com/574662700): Re-enable once fixed. Failing
+// at step 9:
 // WaitForWebContentsNavigation(kWebContentsId, GURL(url::kAboutBlankURL))
-#if BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)
+#if defined(MEMORY_SANITIZER)
 #define MAYBE_BackButtonHoverThenClick DISABLED_BackButtonHoverThenClick
 #else
 #define MAYBE_BackButtonHoverThenClick BackButtonHoverThenClick
@@ -523,7 +541,7 @@ IN_PROC_BROWSER_TEST_P(ToolbarViewTest,
   ExtensionsToolbarDesktop* extensions_container =
       BrowserView::GetBrowserViewForBrowser(browser())
           ->toolbar()
-          ->extensions_container();
+          ->extensions_container_for_testing();
   EXPECT_NE(nullptr, extensions_container);
 }
 
@@ -547,7 +565,7 @@ IN_PROC_BROWSER_TEST_P(ToolbarViewTest,
   ExtensionsToolbarDesktop* extensions_container =
       BrowserView::GetBrowserViewForBrowser(target_browser)
           ->toolbar()
-          ->extensions_container();
+          ->extensions_container_for_testing();
   EXPECT_EQ(nullptr, extensions_container);
 }
 

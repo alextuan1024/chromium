@@ -157,11 +157,10 @@ std::string V4UpdateProtocolManager::GetBase64SerializedUpdateRequestProto() {
                                                  config_);
 
   // Serialize and Base64 encode.
-  std::string req_data, req_base64;
+  std::string req_data;
   request.SerializeToString(&req_data);
-  base::Base64UrlEncode(req_data, base::Base64UrlEncodePolicy::INCLUDE_PADDING,
-                        &req_base64);
-  return req_base64;
+  return base::Base64UrlEncode(req_data,
+                               base::Base64UrlEncodePolicy::INCLUDE_PADDING);
 }
 
 bool V4UpdateProtocolManager::ParseUpdateResponse(
@@ -227,6 +226,7 @@ void V4UpdateProtocolManager::IssueUpdateRequest() {
              "The state of the local DB is sent so the server can send just "
              "the changes. This doesn't include any user data."
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "safebrowsing.googleapis.com"
         }
         policy {
           cookies_allowed: YES
@@ -355,6 +355,16 @@ void V4UpdateProtocolManager::GetUpdateUrlAndHeaders(
     net::HttpRequestHeaders* headers) const {
   SBProtocolManagerUtil::GetRequestUrlAndHeaders(
       req_base64, "threatListUpdates:fetch", config_, gurl, headers);
+}
+
+void V4UpdateProtocolManager::ResetUpdateErrors() {
+  update_error_count_ = 0;
+  update_back_off_mult_ = 1;
+}
+
+base::TimeDelta V4UpdateProtocolManager::GetNextBackOffInterval() {
+  return SBProtocolManagerUtil::GetNextBackOffInterval(&update_error_count_,
+                                                       &update_back_off_mult_);
 }
 
 void V4UpdateProtocolManager::RecordProtocolSpecificNextUpdateInterval(

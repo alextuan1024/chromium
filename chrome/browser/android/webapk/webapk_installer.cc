@@ -53,6 +53,7 @@
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/color_utils_android.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/codec/png_codec.h"
@@ -265,8 +266,7 @@ WebApkInstaller::WebApkInstaller(content::BrowserContext* browser_context)
 
 void WebApkInstaller::CreateJavaRef() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  java_ref_.Reset(
-      Java_WebApkInstaller_create(env, reinterpret_cast<intptr_t>(this)));
+  java_ref_.Reset(Java_WebApkInstaller_create(env, jni_zero::MakeRaw(this)));
 }
 
 void WebApkInstaller::InstallAsync(content::WebContents* web_contents,
@@ -468,7 +468,7 @@ void WebApkInstaller::OnGotIconMurmur2Hashes(
     return;
   }
 
-  DCHECK(install_shortcut_info_);
+  CHECK(install_shortcut_info_, base::NotFatalUntil::M161);
 
   // New WebAPK installs uses icon data from |icons|. |primary_icon| and
   // |splash_icon| are for updates only.
@@ -534,7 +534,7 @@ void WebApkInstaller::OnInstallProtoBuilt(
 void WebApkInstaller::SendRequest(
     const net::NetworkTrafficAnnotationTag& traffic_annotation,
     const std::string& serialized_proto) {
-  DCHECK(server_url_.is_valid());
+  CHECK(server_url_.is_valid(), base::NotFatalUntil::M161);
 
   timer_.Start(
       FROM_HERE, base::Milliseconds(webapk_server_timeout_ms_),

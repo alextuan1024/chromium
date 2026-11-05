@@ -13,6 +13,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory_coordinator/async_memory_consumer_registration.h"
 #include "base/memory_coordinator/memory_consumer.h"
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/memory_dump_provider.h"
@@ -46,6 +47,8 @@ class PLATFORM_EXPORT ParkableStringManagerDumpProvider
                     base::trace_event::ProcessMemoryDump*) override;
 
  private:
+  friend class base::NoDestructor<ParkableStringManagerDumpProvider>;
+
   ParkableStringManagerDumpProvider();
 };
 
@@ -127,6 +130,7 @@ class PLATFORM_EXPORT ParkableStringManager : public RAILModeObserver,
  private:
   friend class ParkableString;
   friend class ParkableStringImpl;
+  friend class base::NoDestructor<ParkableStringManager>;
 
   scoped_refptr<ParkableStringImpl> Add(
       scoped_refptr<StringImpl>&&,
@@ -158,9 +162,6 @@ class PLATFORM_EXPORT ParkableStringManager : public RAILModeObserver,
 
   void RecordUnparkingTime(base::TimeDelta unparking_time) {
     total_unparking_time_ += unparking_time;
-  }
-  void RecordParkingThreadTime(base::TimeDelta parking_thread_time) {
-    total_parking_thread_time_ += parking_thread_time;
   }
   void RecordDiskWriteTime(base::TimeDelta write_time) {
     total_disk_write_time_ += write_time;
@@ -213,7 +214,6 @@ class PLATFORM_EXPORT ParkableStringManager : public RAILModeObserver,
   bool has_pending_aging_task_ = false;
   bool has_posted_unparking_time_accounting_task_ = false;
   base::TimeDelta total_unparking_time_;
-  base::TimeDelta total_parking_thread_time_;
   base::TimeDelta total_disk_read_time_;
   base::TimeDelta total_disk_write_time_;
 

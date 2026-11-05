@@ -1076,9 +1076,15 @@ void BluetoothAdapterBlueZ::DisplayPasskey(const dbus::ObjectPath& device_path,
   if (!pairing)
     return;
 
-  if (entered == 0)
+  if (entered == 0) {
+    // DisplayPasskey() notifies the pairing delegate, which may cancel pairing
+    // and destroy `pairing` before returning.
+    base::WeakPtr<BluetoothPairingBlueZ> weak_pairing = pairing->GetWeakPtr();
     pairing->DisplayPasskey(passkey);
-
+    if (!weak_pairing) {
+      return;
+    }
+  }
   pairing->KeysEntered(entered);
 }
 
@@ -1370,14 +1376,6 @@ void BluetoothAdapterBlueZ::NotifyDeviceAddressChanged(
 
   for (auto& observer : observers_)
     observer.DeviceAddressChanged(this, device, old_address);
-}
-
-void BluetoothAdapterBlueZ::NotifyDeviceMTUChanged(BluetoothDeviceBlueZ* device,
-                                                   uint16_t mtu) {
-  DCHECK(device->adapter_ == this);
-
-  for (auto& observer : observers_)
-    observer.DeviceMTUChanged(this, device, mtu);
 }
 
 void BluetoothAdapterBlueZ::NotifyDeviceAdvertisementReceived(

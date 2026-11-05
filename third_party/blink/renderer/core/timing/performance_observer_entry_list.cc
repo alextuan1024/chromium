@@ -5,8 +5,8 @@
 #include "third_party/blink/renderer/core/timing/performance_observer_entry_list.h"
 
 #include <algorithm>
+
 #include "third_party/blink/renderer/core/timing/performance_entry.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
 namespace blink {
 
@@ -32,8 +32,9 @@ PerformanceEntryVector PerformanceObserverEntryList::getEntriesByType(
   PerformanceEntry::EntryType type =
       PerformanceEntry::ToEntryTypeEnum(entry_type);
 
-  if (type == PerformanceEntry::kInvalid)
+  if (type == PerformanceEntry::kInvalid) {
     return entries;
+  }
 
   for (const auto& entry : performance_entries_) {
     if (entry->EntryTypeEnum() == type) {
@@ -53,8 +54,9 @@ PerformanceEntryVector PerformanceObserverEntryList::getEntriesByName(
   PerformanceEntry::EntryType type =
       PerformanceEntry::ToEntryTypeEnum(entry_type);
 
-  if (!entry_type.IsNull() && type == PerformanceEntry::kInvalid)
+  if (!entry_type.IsNull() && type == PerformanceEntry::kInvalid) {
     return entries;
+  }
 
   for (const auto& entry : performance_entries_) {
     if (entry->name() == name &&

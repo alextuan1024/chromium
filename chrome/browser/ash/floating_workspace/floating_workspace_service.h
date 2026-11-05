@@ -10,6 +10,7 @@
 
 #include "ash/public/cpp/desk_template.h"
 #include "ash/public/cpp/session/session_observer.h"
+#include "ash/shell_observer.h"
 #include "ash/system/session/logout_confirmation_controller.h"
 #include "ash/system/tray/system_tray_notifier.h"
 #include "ash/system/tray/system_tray_observer.h"
@@ -38,6 +39,7 @@ class Profile;
 namespace ash {
 
 class SessionController;
+class Shell;
 
 // How long do we wait before showing the network screen in case there is no
 // connection.
@@ -59,11 +61,15 @@ class FloatingWorkspaceService
       public ash::LogoutConfirmationController::Observer,
       public NetworkStateHandlerObserver,
       public ash::SystemTrayObserver,
-      public chromeos::PowerManagerClient::Observer {
+      public chromeos::PowerManagerClient::Observer,
+      public ash::ShellObserver {
  public:
   explicit FloatingWorkspaceService(Profile* profile);
 
   ~FloatingWorkspaceService() override;
+
+  // KeyedService:
+  void Shutdown() override;
 
   // Used in constructor for initializations
   void Init(syncer::SyncService* sync_service,
@@ -92,6 +98,9 @@ class FloatingWorkspaceService
   // ash::SystemTrayObserver overrides:
   void OnFocusLeavingSystemTray(bool reverse) override;
   void OnSystemTrayBubbleShown() override;
+
+  // ash::ShellObserver overrides:
+  void OnShellDestroying() override;
 
   // chromeos::PowerManagerClient::Observer overrides.
   void SuspendImminent(power_manager::SuspendImminent::Reason reason) override;
@@ -124,6 +133,9 @@ class FloatingWorkspaceService
   // tests. It will also CHECK that the state of all scoped observations is
   // consistent witch each other.
   bool IsObservingForTesting() const;
+
+  // Whether the service is currently observing SessionController.
+  bool IsObservingSessionForTesting() const;
 
  protected:
   std::unique_ptr<DeskTemplate> previously_captured_desk_template_;
@@ -250,6 +262,9 @@ class FloatingWorkspaceService
 
   void MaybeStartOrStopCaptureBasedOnTabSyncSetting();
 
+  // Returns true if `profile_` matches the currently active user profile.
+  bool IsActiveUserProfile() const;
+
   const raw_ptr<Profile> profile_;
 
   base::CallbackListSubscription foreign_session_updated_subscription_;
@@ -304,6 +319,7 @@ class FloatingWorkspaceService
   std::optional<base::Uuid> floating_workspace_uuid_;
 
   // scoped Observations
+  base::ScopedObservation<Shell, ShellObserver> shell_observation_{this};
   base::ScopedObservation<SessionController, SessionObserver>
       session_observation_{this};
   base::ScopedObservation<NetworkStateHandler, NetworkStateHandlerObserver>

@@ -33,7 +33,6 @@ import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.collaboration.messaging.MessagingBackendServiceFactory;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.TabListNotificationHandler;
 import org.chromium.components.collaboration.messaging.MessageAttribution;
@@ -43,6 +42,7 @@ import org.chromium.components.collaboration.messaging.PersistentMessage;
 import org.chromium.components.collaboration.messaging.PersistentNotificationType;
 import org.chromium.components.collaboration.messaging.TabGroupMessageMetadata;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.List;
 import java.util.Map;
@@ -50,10 +50,9 @@ import java.util.Map;
 /** Unit tests for {@link TabGroupLabeller}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class TabGroupLabellerUnitTest {
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
-
     private static final Token GROUP_ID1 = new Token(1L, 11L);
-    private static final int TAB_ID1 = 1;
+
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private Profile mProfile;
     @Mock private TabListNotificationHandler mTabListNotificationHandler;
@@ -61,7 +60,7 @@ public class TabGroupLabellerUnitTest {
     @Mock private TabModel mTabModel;
 
     @Captor private ArgumentCaptor<PersistentMessageObserver> mPersistentMessageObserverCaptor;
-    @Captor private ArgumentCaptor<Map<Integer, TabCardLabelData>> mLabelDataCaptor;
+    @Captor private ArgumentCaptor<Map<Token, TabCardLabelData>> mLabelDataCaptor;
 
     private final SettableNullableObservableSupplier<TabModel> mTabModelSupplier =
             ObservableSuppliers.createNullable();
@@ -74,7 +73,7 @@ public class TabGroupLabellerUnitTest {
         MessagingBackendServiceFactory.setForTesting(mMessagingBackendService);
         mContext = ApplicationProvider.getApplicationContext();
         mTabModelSupplier.set(mTabModel);
-        when(mTabModel.getGroupLastShownTabId(GROUP_ID1)).thenReturn(TAB_ID1);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(GROUP_ID1))).thenReturn(true);
         mTabGroupLabeller =
                 new TabGroupLabeller(mProfile, mTabListNotificationHandler, mTabModelSupplier);
     }
@@ -88,17 +87,17 @@ public class TabGroupLabellerUnitTest {
         return message;
     }
 
-    private void assertContainsLabel(Map<Integer, TabCardLabelData> labelDataMap) {
-        assertTrue(labelDataMap.containsKey(TAB_ID1));
-        TabCardLabelData labelData = labelDataMap.get(TAB_ID1);
+    private void assertContainsLabel(Map<Token, TabCardLabelData> labelDataMap) {
+        assertTrue(labelDataMap.containsKey(GROUP_ID1));
+        TabCardLabelData labelData = labelDataMap.get(GROUP_ID1);
         assertEquals(TabCardLabelType.ACTIVITY_UPDATE, labelData.labelType);
         labelData.contentDescriptionResolver.resolve(mContext);
         assertEquals("New activity", labelData.textResolver.resolve(mContext));
     }
 
-    private void assertContainsNullLabel(Map<Integer, TabCardLabelData> labelDataMap) {
-        assertTrue(labelDataMap.containsKey(TAB_ID1));
-        TabCardLabelData labelData = labelDataMap.get(TAB_ID1);
+    private void assertContainsNullLabel(Map<Token, TabCardLabelData> labelDataMap) {
+        assertTrue(labelDataMap.containsKey(GROUP_ID1));
+        TabCardLabelData labelData = labelDataMap.get(GROUP_ID1);
         assertNull(labelData);
     }
 
@@ -118,18 +117,18 @@ public class TabGroupLabellerUnitTest {
 
         mTabGroupLabeller.showAll();
 
-        verify(mTabListNotificationHandler).updateTabCardLabels(mLabelDataCaptor.capture());
+        verify(mTabListNotificationHandler).updateTabGroupCardLabels(mLabelDataCaptor.capture());
         assertContainsLabel(mLabelDataCaptor.getValue());
     }
 
     @Test
     public void testShowAll_WrongTabModel() {
-        when(mTabModel.getGroupLastShownTabId(any())).thenReturn(Tab.INVALID_TAB_ID);
+        when(mTabModel.containsTabGroup(any())).thenReturn(false);
         List<PersistentMessage> messageList = List.of(makeStandardMessage());
         when(mMessagingBackendService.getMessages(anyInt())).thenReturn(messageList);
 
         mTabGroupLabeller.showAll();
-        verify(mTabListNotificationHandler, never()).updateTabCardLabels(any());
+        verify(mTabListNotificationHandler, never()).updateTabGroupCardLabels(any());
     }
 
     @Test
@@ -140,7 +139,7 @@ public class TabGroupLabellerUnitTest {
         when(mMessagingBackendService.getMessages(anyInt())).thenReturn(messageList);
 
         mTabGroupLabeller.showAll();
-        verify(mTabListNotificationHandler, never()).updateTabCardLabels(any());
+        verify(mTabListNotificationHandler, never()).updateTabGroupCardLabels(any());
     }
 
     @Test
@@ -151,7 +150,7 @@ public class TabGroupLabellerUnitTest {
         when(mMessagingBackendService.getMessages(anyInt())).thenReturn(messageList);
 
         mTabGroupLabeller.showAll();
-        verify(mTabListNotificationHandler, never()).updateTabCardLabels(any());
+        verify(mTabListNotificationHandler, never()).updateTabGroupCardLabels(any());
     }
 
     @Test
@@ -161,7 +160,7 @@ public class TabGroupLabellerUnitTest {
         when(mMessagingBackendService.getMessages(anyInt())).thenReturn(messageList);
 
         mTabGroupLabeller.showAll();
-        verify(mTabListNotificationHandler, never()).updateTabCardLabels(any());
+        verify(mTabListNotificationHandler, never()).updateTabGroupCardLabels(any());
     }
 
     @Test
@@ -171,7 +170,7 @@ public class TabGroupLabellerUnitTest {
         when(mMessagingBackendService.getMessages(anyInt())).thenReturn(messageList);
 
         mTabGroupLabeller.showAll();
-        verify(mTabListNotificationHandler, never()).updateTabCardLabels(any());
+        verify(mTabListNotificationHandler, never()).updateTabGroupCardLabels(any());
     }
 
     @Test
@@ -180,7 +179,7 @@ public class TabGroupLabellerUnitTest {
                 .addPersistentMessageObserver(mPersistentMessageObserverCaptor.capture());
         mPersistentMessageObserverCaptor.getValue().displayPersistentMessage(makeStandardMessage());
 
-        verify(mTabListNotificationHandler).updateTabCardLabels(mLabelDataCaptor.capture());
+        verify(mTabListNotificationHandler).updateTabGroupCardLabels(mLabelDataCaptor.capture());
         assertContainsLabel(mLabelDataCaptor.getValue());
     }
 
@@ -190,7 +189,7 @@ public class TabGroupLabellerUnitTest {
                 .addPersistentMessageObserver(mPersistentMessageObserverCaptor.capture());
         mPersistentMessageObserverCaptor.getValue().hidePersistentMessage(makeStandardMessage());
 
-        verify(mTabListNotificationHandler).updateTabCardLabels(mLabelDataCaptor.capture());
+        verify(mTabListNotificationHandler).updateTabGroupCardLabels(mLabelDataCaptor.capture());
         assertContainsNullLabel(mLabelDataCaptor.getValue());
     }
 
@@ -203,7 +202,7 @@ public class TabGroupLabellerUnitTest {
                 .addPersistentMessageObserver(mPersistentMessageObserverCaptor.capture());
         mPersistentMessageObserverCaptor.getValue().onMessagingBackendServiceInitialized();
 
-        verify(mTabListNotificationHandler).updateTabCardLabels(mLabelDataCaptor.capture());
+        verify(mTabListNotificationHandler).updateTabGroupCardLabels(mLabelDataCaptor.capture());
         assertContainsLabel(mLabelDataCaptor.getValue());
     }
 }

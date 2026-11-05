@@ -302,7 +302,6 @@ const kSections = {
   problems: ['Problems Detected', 'ul'],
   angleFeatures: ['ANGLE Features', 'ul'],
   dawnInfo: ['Dawn Info', 'ul'],
-  compositorInfo: ['Compositor Information', 'div'],
   displayInfo: ['Display(s) Information', 'div'],
   videoAccelerationInfo: ['Video Acceleration Information', 'div'],
   vulkanInfo: ['Vulkan Information', 'div'],
@@ -451,7 +450,7 @@ export class InfoViewElement extends CustomElement {
     assert(downloadButton);
     downloadButton.onclick = (() => {
       const text = this.getSelectionText(true);
-      const blob = new Blob([text], {type: 'text/text'});
+      const blob = new Blob([text], {type: 'text/plain'});
       const filename = `about-gpu-${
           new Date().toISOString().replace(/[^a-z0-9-]/ig, '-')}.txt`;
       saveData(blob, filename);
@@ -558,7 +557,6 @@ export class InfoViewElement extends CustomElement {
       }
 
       this.setTable_(sections.basicInfo, gpuInfo.basicInfo);
-      this.setTable_(sections.compositorInfo, gpuInfo.compositorInfo);
       this.setTable_(sections.displayInfo, gpuInfo.displayInfo);
       this.setTable_(
           sections.videoAccelerationInfo, gpuInfo.videoAcceleratorsInfo);
@@ -660,7 +658,6 @@ export class InfoViewElement extends CustomElement {
       'surface_control': 'Surface Control',
       'vpx_decode': 'VPx Video Decode',
       'canvas_oop_rasterization': 'Canvas out-of-process rasterization',
-      'raw_draw': 'Raw Draw',
       'video_encode': 'Video Encode',
       'direct_rendering_display_compositor':
           'Direct Rendering Display Compositor',

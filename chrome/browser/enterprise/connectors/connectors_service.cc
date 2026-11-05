@@ -29,6 +29,7 @@
 #include "components/enterprise/connectors/core/service_provider_config.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/policy/core/common/cloud/cloud_policy_store.h"
+#include "components/policy/core/common/cloud/device_management_service.h"
 #include "components/policy/core/common/cloud/dm_token.h"
 #include "components/policy/core/common/cloud/machine_level_user_cloud_policy_manager.h"
 #include "components/policy/core/common/cloud/machine_level_user_cloud_policy_store.h"
@@ -132,7 +133,7 @@ ConnectorsService::ConnectorsService(
     content::BrowserContext* context,
     std::unique_ptr<ConnectorsManagerBase> manager)
     : ConnectorsServiceBase(std::move(manager)), context_(context) {
-  DCHECK(context_);
+  CHECK(context_, base::NotFatalUntil::M161);
 }
 
 ConnectorsService::~ConnectorsService() = default;
@@ -196,7 +197,8 @@ std::optional<AnalysisSettings> ConnectorsService::GetAnalysisSettings(
     const storage::FileSystemURL& source_url,
     const storage::FileSystemURL& destination_url,
     AnalysisConnector connector) {
-  DCHECK_EQ(connector, AnalysisConnector::FILE_TRANSFER);
+  CHECK_EQ(connector, AnalysisConnector::FILE_TRANSFER,
+           base::NotFatalUntil::M161);
   if (!ConnectorsEnabled()) {
     return std::nullopt;
   }
@@ -219,12 +221,11 @@ std::string ConnectorsService::GetManagementDomain() {
   std::optional<policy::PolicyScope> scope;
   for (const char* scope_pref :
        {enterprise_connectors::kEnterpriseRealTimeUrlCheckScope,
-#if !BUILDFLAG(IS_ANDROID)
         AnalysisConnectorScopePref(AnalysisConnector::FILE_ATTACHED),
-#endif
         AnalysisConnectorScopePref(AnalysisConnector::FILE_DOWNLOADED),
 #if !BUILDFLAG(IS_ANDROID)
         AnalysisConnectorScopePref(AnalysisConnector::BULK_DATA_ENTRY),
+        AnalysisConnectorScopePref(AnalysisConnector::DATA_COPIED),
         AnalysisConnectorScopePref(AnalysisConnector::PRINT),
 #endif
         kOnSecurityEventScopePref}) {
@@ -358,6 +359,18 @@ const PrefService* ConnectorsService::GetPrefs() const {
 policy::CloudPolicyManager*
 ConnectorsService::GetManagedUserCloudPolicyManager() const {
   return Profile::FromBrowserContext(context_)->GetCloudPolicyManager();
+}
+
+policy::NetworkNameCache* ConnectorsService::GetNetworkNameCache() {
+  if (!g_browser_process || !g_browser_process->browser_policy_connector()) {
+    return nullptr;
+  }
+  policy::DeviceManagementService* device_management_service =
+      g_browser_process->browser_policy_connector()
+          ->device_management_service();
+  return device_management_service
+             ? device_management_service->network_name_cache()
+             : nullptr;
 }
 
 std::unique_ptr<ClientMetadata> ConnectorsService::BuildClientMetadata(

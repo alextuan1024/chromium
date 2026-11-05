@@ -24,15 +24,13 @@ per-file BUILD.gn=*
 per-file ..._android*=file://base/android/OWNERS
 
 # For Fuchsia-specific changes:
-per-file ..._fuchsia*=file://build/fuchsia/OWNERS
+per-file ...fuchsia...=file://build/fuchsia/OWNERS
 
 # For Windows-specific changes:
 per-file ..._win*=file://base/win/OWNERS
 
 # For base::Feature and base::FeatureList changes:
-per-file feature*=asvitkine@chromium.org
-per-file feature*=rogerm@chromium.org
-per-file feature*=lucnguyen@google.com
+per-file feature*=file://base/feature/OWNERS
 
 # Logging-related changes:
 per-file check*=olivierli@chromium.org

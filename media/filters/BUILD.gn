@@ -15,7 +15,13 @@ if (media_use_symphonia_decoder) {
     sources = [ "symphonia_decoder_bridge.rs" ]
     cxx_bindings = [ "symphonia_decoder_bridge.rs" ]
     visibility = [ ":*" ]
-    deps = [ "//third_party/rust/symphonia/v0_6:lib" ]
+    deps = [
+      "//third_party/rust/symphonia_bundle_flac/v0_6:lib",
+      "//third_party/rust/symphonia_bundle_mp3/v0_6:lib",
+      "//third_party/rust/symphonia_codec_pcm/v0_6:lib",
+      "//third_party/rust/symphonia_codec_vorbis/v0_6:lib",
+      "//third_party/rust/symphonia_core/v0_6:lib",
+    ]
   }
 }
 
@@ -163,8 +169,6 @@ source_set("filters") {
       "ffmpeg_glue.h",
       "in_memory_url_protocol.cc",
       "in_memory_url_protocol.h",
-      "media_file_checker.cc",
-      "media_file_checker.h",
     ]
   }
 
@@ -185,6 +189,16 @@ source_set("filters") {
   }
 
   if (media_use_symphonia_demuxer) {
+    sources += [
+      "symphonia_data_source_bridge.cc",
+      "symphonia_data_source_bridge.h",
+      "symphonia_demuxer.cc",
+      "symphonia_demuxer.h",
+      "symphonia_demuxer_stream.cc",
+      "symphonia_demuxer_stream.h",
+      "symphonia_demuxer_util.cc",
+      "symphonia_demuxer_util.h",
+    ]
     deps += [ ":symphonia_demuxer_bridge" ]
   }
 
@@ -196,12 +210,27 @@ source_set("filters") {
     deps += [ "//third_party/libvpx" ]
   }
 
+  if (enable_dav1d_decoder || enable_dav2d_decoder) {
+    sources += [
+      "davxd_video_decoder_base.cc",
+      "davxd_video_decoder_base.h",
+    ]
+  }
+
   if (enable_dav1d_decoder) {
     sources += [
       "dav1d_video_decoder.cc",
       "dav1d_video_decoder.h",
     ]
     deps += [ "//third_party/dav1d" ]
+  }
+
+  if (enable_dav2d_decoder) {
+    sources += [
+      "dav2d_video_decoder.cc",
+      "dav2d_video_decoder.h",
+    ]
+    deps += [ "//third_party/dav2d" ]
   }
 
   if (media_use_ffmpeg) {
@@ -334,11 +363,16 @@ static_library("test_support") {
   sources = [
     "fake_video_decoder.cc",
     "fake_video_decoder.h",
+    "mock_demuxer_manager_client.cc",
+    "mock_demuxer_manager_client.h",
   ]
 
   deps = [
     "//base/test:test_support",
+    "//media",
     "//media/base:test_support",
+    "//testing/gmock",
+    "//url",
   ]
 }
 
@@ -388,12 +422,6 @@ source_set("unit_tests") {
     }
   }
 
-  # libvpx for running vpx test on chromecast doesn't support high bit depth.
-  # This may cause some unit tests failure. See b/65382374 for further context.
-  if (is_castos) {
-    defines = [ "LIBVPX_NO_HIGH_BIT_DEPTH" ]
-  }
-
   if (media_use_ffmpeg) {
     sources += [
       "audio_decoder_unittest.cc",
@@ -412,10 +440,7 @@ source_set("unit_tests") {
     # Even if FFmpeg is enabled on Android we don't want these.
     # TODO(watk): Refactor tests that could be made to run on Android.
     if (!is_android) {
-      sources += [
-        "audio_video_metadata_extractor_unittest.cc",
-        "media_file_checker_unittest.cc",
-      ]
+      sources += [ "audio_video_metadata_extractor_unittest.cc" ]
     }
 
     if (enable_ffmpeg_video_decoders && proprietary_codecs) {
@@ -425,10 +450,15 @@ source_set("unit_tests") {
 
   if (media_use_libvpx) {
     sources += [ "vpx_video_decoder_unittest.cc" ]
+    deps += [ "//third_party/libvpx:libvpx_buildflags" ]
   }
 
   if (enable_dav1d_decoder) {
     sources += [ "dav1d_video_decoder_unittest.cc" ]
+  }
+
+  if (enable_dav2d_decoder) {
+    sources += [ "dav2d_video_decoder_unittest.cc" ]
   }
 
   if (is_win || use_vaapi) {
@@ -471,10 +501,20 @@ source_set("unit_tests") {
   # NOTE: if more rust tests that are not gated on Symphonia being enabled are
   # added to filters, this conditional can be dropped.
   if (media_use_symphonia_decoder) {
+    sources += [ "symphonia_audio_decoder_unittest.cc" ]
     deps += [ ":rust_unittests" ]
   }
   if (media_use_symphonia_demuxer) {
-    deps += [ ":symphonia_demuxer_bridge_unittests" ]
+    sources += [
+      "symphonia_data_source_bridge_unittest.cc",
+      "symphonia_demuxer_stream_unittest.cc",
+      "symphonia_demuxer_unittest.cc",
+      "symphonia_demuxer_util_unittest.cc",
+    ]
+    deps += [
+      ":symphonia_demuxer_bridge",
+      ":symphonia_demuxer_bridge_unittests",
+    ]
   }
 
   if (media_use_ffmpeg) {

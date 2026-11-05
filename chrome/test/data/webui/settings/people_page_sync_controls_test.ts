@@ -8,7 +8,10 @@ import 'chrome://settings/lazy_load.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import type {SettingsSyncControlsElement} from 'chrome://settings/lazy_load.js';
 import type {CrRadioButtonElement, CrToggleElement, SyncPrefs} from 'chrome://settings/settings.js';
-import {loadTimeData, Router, resetRouterForTesting, SignedInState, StatusAction, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
+// <if expr="not is_chromeos">
+import {loadTimeData} from 'chrome://settings/settings.js';
+// </if>
+import {Router, resetRouterForTesting, SignedInState, StatusAction, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
 import {assertEquals, assertDeepEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, isChildVisible, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
@@ -16,10 +19,11 @@ import {getSyncAllPrefs, getSyncAllPrefsManaged} from './sync_test_util.js';
 import {TestSyncBrowserProxy} from './test_sync_browser_proxy.js';
 
 import {PageStatus, routes, UserSelectableType, PluralStringProxyImpl} from 'chrome://settings/settings.js';
-import {BatchUploadPromoProxyImpl} from 'chrome://settings/lazy_load.js';
+import type {PageRemote} from 'chrome://settings/lazy_load.js';
+import {batchUploadPromoProxyFactory} from 'chrome://settings/lazy_load.js';
 import {TestPluralStringProxy} from 'chrome://webui-test/test_plural_string_proxy.js';
 
-import {TestBatchUploadPromoProxy} from './test_batch_upload_promo_browser_proxy.js';
+import {TestBatchUploadPromoHandler} from './test_batch_upload_promo_browser_proxy.js';
 
 // clang-format on
 
@@ -248,7 +252,6 @@ suite('SyncControlsTest', function() {
   // </if>
 });
 
-// <if expr="is_chromeos">
 suite('SyncControlsSubpageTest', function() {
   let syncControls: SettingsSyncControlsElement;
   let browserProxy: TestSyncBrowserProxy;
@@ -257,7 +260,6 @@ suite('SyncControlsSubpageTest', function() {
     browserProxy = new TestSyncBrowserProxy();
     SyncBrowserProxyImpl.setInstance(browserProxy);
 
-    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: false});
     resetRouterForTesting();
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -278,6 +280,10 @@ suite('SyncControlsSubpageTest', function() {
     assertEquals(router.getRoutes().SYNC_ADVANCED, router.getCurrentRoute());
   });
 
+  teardown(function() {
+    resetRouterForTesting();
+  });
+
   test('SignedOut', async function() {
     syncControls.syncStatus = {
       disabled: false,
@@ -287,7 +293,7 @@ suite('SyncControlsSubpageTest', function() {
     };
     await microtasksFinished();
     const router = Router.getInstance();
-    assertEquals(router.getRoutes().SYNC.path, router.getCurrentRoute().path);
+    assertEquals(routes.ACCOUNT, router.getCurrentRoute());
   });
 
   test('PassphraseError', async function() {
@@ -299,8 +305,7 @@ suite('SyncControlsSubpageTest', function() {
     };
     await microtasksFinished();
     const router = Router.getInstance();
-    assertEquals(
-        router.getRoutes().SYNC_ADVANCED.path, router.getCurrentRoute().path);
+    assertEquals(router.getRoutes().SYNC_ADVANCED, router.getCurrentRoute());
   });
 
   test('SyncPaused', async function() {
@@ -312,49 +317,44 @@ suite('SyncControlsSubpageTest', function() {
     };
     await microtasksFinished();
     const router = Router.getInstance();
-    assertEquals(router.getRoutes().SYNC.path, router.getCurrentRoute().path);
+    assertEquals(routes.ACCOUNT, router.getCurrentRoute());
   });
 
-  test(
-      'NavigateToAccountSettingsWhenReplacingWithSigninPromoAndNotSyncing',
-      async function() {
-        loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: true});
-        resetRouterForTesting();
-        const router = Router.getInstance();
-        router.navigateTo(routes.SYNC_ADVANCED);
+  test('NavigateToAccountSettingsWhenNotSyncing', async function() {
+    const router = Router.getInstance();
 
-        syncControls.syncStatus = {
-          disabled: false,
-          hasError: false,
-          signedInState: SignedInState.SIGNED_IN,
-          statusAction: StatusAction.NO_ACTION,
-        };
-        await microtasksFinished();
+    syncControls.syncStatus = {
+      disabled: false,
+      hasError: false,
+      signedInState: SignedInState.SIGNED_IN,
+      statusAction: StatusAction.NO_ACTION,
+    };
+    await microtasksFinished();
 
-        assertEquals(routes.ACCOUNT, router.getCurrentRoute());
-      });
+    assertEquals(routes.ACCOUNT, router.getCurrentRoute());
+  });
 });
-// </if>
 
 suite('SyncControlsAccountSettingsTest', function() {
   let syncControls: SettingsSyncControlsElement;
   let browserProxy: TestSyncBrowserProxy;
-  let batchUploadPromoProxy: TestBatchUploadPromoProxy;
+  let batchUploadPromoHandler: TestBatchUploadPromoHandler;
+  let batchUploadPromoPageRemote: PageRemote;
   let pluralStringProxy: TestPluralStringProxy;
 
   setup(async function() {
     browserProxy = new TestSyncBrowserProxy();
     SyncBrowserProxyImpl.setInstance(browserProxy);
 
-    batchUploadPromoProxy = new TestBatchUploadPromoProxy();
-    BatchUploadPromoProxyImpl.setInstance(batchUploadPromoProxy);
+    batchUploadPromoHandler = new TestBatchUploadPromoHandler();
+    const {instance, remote} =
+        batchUploadPromoProxyFactory.createForTest(batchUploadPromoHandler);
+    batchUploadPromoProxyFactory.setInstance(instance);
+    batchUploadPromoPageRemote = remote;
 
     pluralStringProxy = new TestPluralStringProxy();
     PluralStringProxyImpl.setInstance(pluralStringProxy);
 
-    // <if expr="is_chromeos">
-    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: true});
-    // </if>
     // <if expr="not is_chromeos">
     loadTimeData.overrideValues({unoPhase2FollowUp: true});
     // </if>
@@ -764,8 +764,7 @@ suite('SyncControlsAccountSettingsTest', function() {
 
   test('BatchUploadPromoWithLocalDataItemUponInitialization', async () => {
     const localDataCount = 5;
-    batchUploadPromoProxy.handler.setBatchUploadPromoLocalDataCount(
-        localDataCount);
+    batchUploadPromoHandler.setBatchUploadPromoLocalDataCount(localDataCount);
 
     // Create the sync controls again with the initial local data count.
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -790,13 +789,13 @@ suite('SyncControlsAccountSettingsTest', function() {
 
     // Notify the UI that there is one item to be uploaded and wait for the
     // batch upload promo to show.
-    batchUploadPromoProxy.page.onLocalDataCountChanged(localDataCount);
+    batchUploadPromoPageRemote.onLocalDataCountChanged(localDataCount);
     const pluralStringArgs =
         await pluralStringProxy.whenCalled('getPluralString');
     await microtasksFinished();
 
     const batchUploadElement =
-        syncControls.shadowRoot.querySelector(`#batchUploadPromo`);
+        syncControls.shadowRoot.querySelector('#batchUploadPromo');
     assertTrue(!!batchUploadElement);
     assertTrue(isVisible(batchUploadElement));
 
@@ -810,13 +809,13 @@ suite('SyncControlsAccountSettingsTest', function() {
 
     // Notify the UI that there are multiple items to be uploaded and wait for
     // the batch upload promo to show.
-    batchUploadPromoProxy.page.onLocalDataCountChanged(localDataCount);
+    batchUploadPromoPageRemote.onLocalDataCountChanged(localDataCount);
     const pluralStringArgs =
         await pluralStringProxy.whenCalled('getPluralString');
     await microtasksFinished();
 
     const batchUploadElement =
-        syncControls.shadowRoot.querySelector(`#batchUploadPromo`);
+        syncControls.shadowRoot.querySelector('#batchUploadPromo');
     assertTrue(!!batchUploadElement);
     assertTrue(isVisible(batchUploadElement));
 
@@ -832,7 +831,7 @@ suite('SyncControlsAccountSettingsTest', function() {
 
     // Notify the UI that there are multiple items to be uploaded and wait for
     // the batch upload promo to show.
-    batchUploadPromoProxy.page.onLocalDataCountChanged(localDataCount);
+    batchUploadPromoPageRemote.onLocalDataCountChanged(localDataCount);
     const pluralStringArgs =
         await pluralStringProxy.whenCalled('getPluralString');
     await microtasksFinished();
@@ -857,9 +856,7 @@ suite('SyncControlsAccountSettingsTest', function() {
 
     // Make sure the call to open the batch upload dialog is executed.
     assertEquals(
-        1,
-        batchUploadPromoProxy.handler.getCallCount(
-            'onBatchUploadPromoClicked'));
+        1, batchUploadPromoHandler.getCallCount('onBatchUploadPromoClicked'));
   });
 });
 

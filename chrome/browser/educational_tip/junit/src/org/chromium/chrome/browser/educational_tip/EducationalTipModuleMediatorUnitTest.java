@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.educational_tip;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -21,6 +22,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -34,7 +36,6 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.educational_tip.cards.HistorySyncPromoCoordinator;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -59,10 +60,7 @@ import java.util.Set;
 /** Unit tests for {@link EducationalTipModuleMediator} */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(shadows = {ShadowAppCompatResources.class})
-@EnableFeatures({
-    SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-    SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-})
+@EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
 public class EducationalTipModuleMediatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public FakeTimeTestRule mFakeTime = new FakeTimeTestRule();
@@ -162,10 +160,16 @@ public class EducationalTipModuleMediatorUnitTest {
                 R.string.educational_tip_ntp_theme_title,
                 R.string.educational_tip_ntp_theme_description,
                 R.drawable.ntp_theme_promo_logo);
+
+        // Test showing tips notifications promo card.
+        testShowModuleImpl(
+                ModuleType.TIPS_NOTIFICATIONS_PROMO,
+                R.string.educational_tip_tips_notifications_title,
+                R.string.educational_tip_tips_notifications_description,
+                R.drawable.tips_notifications_promo_logo);
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.ANDROID_SETUP_LIST})
     public void testShowSetupList_EnhancedSafeBrowsingPromo() {
         // Test showing enhance safe browsing promo card.
         testShowModuleImpl(
@@ -176,7 +180,6 @@ public class EducationalTipModuleMediatorUnitTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.ANDROID_SETUP_LIST})
     public void testShowSetupList_AddressBarPlacementPromo() {
         // Test showing address bar placement promo card.
         testShowModuleImpl(
@@ -184,39 +187,6 @@ public class EducationalTipModuleMediatorUnitTest {
                 R.string.educational_tip_address_bar_placement_title,
                 R.string.educational_tip_address_bar_placement_description,
                 R.drawable.address_bar_placement_promo_logo);
-    }
-
-    @Test
-    @EnableFeatures({ChromeFeatureList.ANDROID_SETUP_LIST})
-    public void testShowSetupList_SignInPromo() {
-        // Test showing sign in promo card.
-        testShowModuleImpl(
-                ModuleType.SIGN_IN_PROMO,
-                R.string.educational_tip_sign_in_promo_title,
-                R.string.educational_tip_sign_in_promo_description,
-                R.drawable.sign_in_promo_logo);
-    }
-
-    @Test
-    @EnableFeatures({ChromeFeatureList.ANDROID_SETUP_LIST})
-    public void testShowSetupList_SavePasswordsPromo() {
-        // Test showing save passwords promo card.
-        testShowModuleImpl(
-                ModuleType.SAVE_PASSWORDS_PROMO,
-                R.string.educational_tip_save_passwords_title,
-                R.string.educational_tip_save_passwords_description,
-                R.drawable.save_passwords_promo_logo);
-    }
-
-    @Test
-    @EnableFeatures({ChromeFeatureList.ANDROID_SETUP_LIST})
-    public void testShowSetupList_PasswordCheckupPromo() {
-        // Test showing password checkup promo card.
-        testShowModuleImpl(
-                ModuleType.PASSWORD_CHECKUP_PROMO,
-                R.string.educational_tip_password_checkup_title,
-                R.string.educational_tip_password_checkup_description,
-                R.drawable.password_checkup_promo_logo);
     }
 
     @Test
@@ -304,9 +274,12 @@ public class EducationalTipModuleMediatorUnitTest {
 
     @Test
     public void testUpdateModule_TriggersAnimation() {
-        mEducationalTipModuleMediator.setModuleTypeForTesting(ModuleType.SIGN_IN_PROMO);
-        when(mSetupListManager.isSetupListModule(ModuleType.SIGN_IN_PROMO)).thenReturn(true);
-        when(mSetupListManager.isModuleAwaitingCompletionAnimation(ModuleType.SIGN_IN_PROMO))
+        mEducationalTipModuleMediator.setModuleTypeForTesting(
+                ModuleType.ENHANCED_SAFE_BROWSING_PROMO);
+        when(mSetupListManager.isSetupListModule(ModuleType.ENHANCED_SAFE_BROWSING_PROMO))
+                .thenReturn(true);
+        when(mSetupListManager.isModuleAwaitingCompletionAnimation(
+                        ModuleType.ENHANCED_SAFE_BROWSING_PROMO))
                 .thenReturn(true);
         when(mProfile.getOriginalProfile()).thenReturn(mProfile);
 
@@ -333,7 +306,8 @@ public class EducationalTipModuleMediatorUnitTest {
         ShadowLooper.runMainLooperOneTask();
 
         // Final verification of completion signal and reordering trigger.
-        verify(mSetupListManager).onCompletionAnimationFinished(ModuleType.SIGN_IN_PROMO);
+        verify(mSetupListManager)
+                .onCompletionAnimationFinished(ModuleType.ENHANCED_SAFE_BROWSING_PROMO);
         verify(mModuleDelegate).refreshModules();
     }
 
@@ -389,6 +363,19 @@ public class EducationalTipModuleMediatorUnitTest {
     }
 
     @Test
+    public void testClickTipsNotificationsPromo_RemovesModule() {
+        mEducationalTipModuleMediator.setModuleTypeForTesting(ModuleType.TIPS_NOTIFICATIONS_PROMO);
+        mEducationalTipModuleMediator.showModule();
+
+        mEducationalTipModuleMediator.getCardProviderForTesting().onCardClicked();
+
+        InOrder inOrder = inOrder(mActionDelegate, mModuleDelegate);
+        inOrder.verify(mActionDelegate).optInToTipsNotifications();
+        inOrder.verify(mModuleDelegate).onModuleClicked(ModuleType.TIPS_NOTIFICATIONS_PROMO);
+        inOrder.verify(mModuleDelegate).removeModule(ModuleType.TIPS_NOTIFICATIONS_PROMO);
+    }
+
+    @Test
     public void testRemoveModule() {
         mEducationalTipModuleMediator.setModuleTypeForTesting(ModuleType.DEFAULT_BROWSER_PROMO);
         mEducationalTipModuleMediator.showModule();
@@ -410,7 +397,8 @@ public class EducationalTipModuleMediatorUnitTest {
 
     @Test
     public void testBottomSheetObserver_TriggersUpdate() {
-        mEducationalTipModuleMediator.setModuleTypeForTesting(ModuleType.SAVE_PASSWORDS_PROMO);
+        mEducationalTipModuleMediator.setModuleTypeForTesting(
+                ModuleType.ENHANCED_SAFE_BROWSING_PROMO);
         verify(mBottomSheetController).addObserver(mBottomSheetObserverCaptor.capture());
 
         // Simulate sheet dismissal.
@@ -420,22 +408,6 @@ public class EducationalTipModuleMediatorUnitTest {
 
         // verify it triggers a profile check as part of updateModule().
         verify(mActionDelegate).getProfileSupplier();
-    }
-
-    @Test
-    public void testBottomSheetObserver_DefaultBrowser_SkipsOnInteractionComplete() {
-        mEducationalTipModuleMediator.setModuleTypeForTesting(ModuleType.DEFAULT_BROWSER_PROMO);
-        verify(mBottomSheetController).addObserver(mBottomSheetObserverCaptor.capture());
-
-        // Simulate sheet dismissal with interaction complete (clicked button).
-        mBottomSheetObserverCaptor
-                .getValue()
-                .onSheetStateChanged(
-                        BottomSheetController.SheetState.HIDDEN,
-                        BottomSheetController.StateChangeReason.INTERACTION_COMPLETE);
-
-        // verify updateModule was NOT called (profile supplier never accessed).
-        verify(mActionDelegate, never()).getProfileSupplier();
     }
 
     private void testShowModuleImpl(

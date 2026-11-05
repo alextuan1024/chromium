@@ -14,10 +14,12 @@
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/metrics/persistent_histogram_allocator.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/string_split.h"
@@ -38,7 +40,6 @@
 #include "chromecast/browser/cast_browser_process.h"
 #include "chromecast/browser/cast_content_browser_client.h"
 #include "chromecast/browser/cast_feature_list_creator.h"
-#include "chromecast/browser/cast_feature_update_observer.h"
 #include "chromecast/browser/cast_system_memory_pressure_evaluator.h"
 #include "chromecast/browser/cast_system_memory_pressure_evaluator_adjuster.h"
 #include "chromecast/browser/cast_web_service.h"
@@ -52,11 +53,6 @@
 #include "chromecast/browser/service_manager_connection.h"
 #include "chromecast/browser/service_manager_context.h"
 #include "chromecast/chromecast_buildflags.h"
-#include "chromecast/common/mojom/constants.mojom.h"
-#include "chromecast/external_mojo/broker_service/broker_service.h"
-#include "chromecast/external_mojo/external_service_support/external_connector.h"
-#include "chromecast/external_mojo/external_service_support/external_service.h"
-#include "chromecast/external_mojo/public/cpp/common.h"
 #include "chromecast/graphics/cast_window_manager.h"
 #include "chromecast/media/base/key_systems_common.h"
 #include "chromecast/media/common/media_pipeline_backend_manager.h"
@@ -68,6 +64,8 @@
 #include "chromecast/ui/display_settings_manager_impl.h"
 #include "components/input/switches.h"
 #include "components/memory_pressure/multi_source_memory_pressure_monitor.h"
+#include "components/metrics/content/subprocess_metrics_provider.h"
+#include "components/metrics/persistent_histograms.h"
 #include "components/prefs/pref_service.h"
 #include "components/viz/common/switches.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -131,7 +129,6 @@
 #else
 #include "chromecast/graphics/cast_window_manager_default.h"  // nogncheck
 #endif
-
 
 #if !BUILDFLAG(IS_FUCHSIA)
 #include "chromecast/base/cast_sys_info_util.h"
@@ -421,22 +418,6 @@ content::BrowserContext* CastBrowserMainParts::browser_context() {
   return cast_browser_process_->browser_context();
 }
 
-external_mojo::BrokerService* CastBrowserMainParts::broker_service() {
-  CHECK(broker_service_);
-  return broker_service_.get();
-}
-
-external_service_support::ExternalConnector* CastBrowserMainParts::connector() {
-  CHECK(connector_);
-  return connector_.get();
-}
-
-external_service_support::ExternalConnector*
-CastBrowserMainParts::media_connector() {
-  CHECK(media_connector_);
-  return media_connector_.get();
-}
-
 CastWebService* CastBrowserMainParts::web_service() {
   return web_service_.get();
 }
@@ -502,6 +483,25 @@ int CastBrowserMainParts::PreCreateThreads() {
 
   service_connector_ = cast_content_browser_client_->CreateServiceConnector();
 
+  // Initialize a local-memory GlobalHistogramAllocator (if not already set up)
+  // before child processes launch. Both
+  // BrowserChildProcessHostImpl::CreateMetricsAllocator() and
+  // RenderProcessHostImpl::CreateMetricsAllocator() require
+  // base::GlobalHistogramAllocator::Get() to be non-null before allocating
+  // shared-memory PersistentHistogramAllocator segments for GPU and renderer
+  // child processes.
+  if (!base::GlobalHistogramAllocator::Get()) {
+    InstantiatePersistentHistograms(
+        /*metrics_dir=*/base::FilePath(),
+        /*persistent_histograms_enabled=*/true,
+        kPersistentHistogramStorageLocalMemory);
+  }
+
+  // Initialize SubprocessMetricsProvider so that PersistentHistogramAllocator
+  // segments from GPU and renderer child processes are registered with
+  // base::StatisticsRecorder and merged when harvesting UMA histogram deltas.
+  ::metrics::SubprocessMetricsProvider::CreateInstance();
+
   cast_browser_process_->SetPrefService(
       cast_content_browser_client_->GetCastFeatureListCreator()
           ->TakePrefService());
@@ -521,20 +521,6 @@ int CastBrowserMainParts::PreCreateThreads() {
 }
 
 int CastBrowserMainParts::PostCreateThreads() {
-  if (GetSwitchValueBoolean(switches::kInProcessBroker, true)) {
-    auto* service_manager_connector =
-        ServiceManagerConnection::GetForProcess()->GetConnector();
-    broker_service_ = std::make_unique<external_mojo::BrokerService>(
-        service_manager_connector);
-    connector_ = external_service_support::ExternalConnector::Create(
-        broker_service_->CreateConnector());
-  } else {
-    connector_ = external_service_support::ExternalConnector::Create(
-        external_mojo::GetBrokerPath());
-  }
-  media_connector_ = connector_->Clone();
-  browser_service_ =
-      std::make_unique<external_service_support::ExternalService>();
   return content::RESULT_CODE_NORMAL_EXIT;
 }
 
@@ -625,10 +611,6 @@ int CastBrowserMainParts::PreMainMessageLoopRun() {
 
   web_service_ = std::make_unique<CastWebService>(
       cast_browser_process_->browser_context(), window_manager_.get());
-  browser_service_->AddInterface<::chromecast::mojom::CastWebService>(
-      web_service_.get());
-  connector()->RegisterService(::chromecast::mojom::kCastBrowserServiceName,
-                               browser_service_.get());
 
   cast_browser_process_->SetCastService(
       cast_browser_process_->browser_client()->CreateCastService(
@@ -649,12 +631,6 @@ int CastBrowserMainParts::PreMainMessageLoopRun() {
   content::RenderFrameHost::AllowInjectingJavaScript();
 
   cast_browser_process_->cast_service()->Start();
-
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kUseCastBrowserPrefConfig)) {
-    feature_update_observer_ = std::make_unique<CastFeatureUpdateObserver>(
-        connector(), cast_browser_process_->pref_service());
-  }
 
   return content::RESULT_CODE_NORMAL_EXIT;
 }

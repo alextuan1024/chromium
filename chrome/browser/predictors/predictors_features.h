@@ -19,11 +19,7 @@ BASE_DECLARE_FEATURE(kLoadingPredictorUseLocalPredictions);
 
 BASE_DECLARE_FEATURE(kLoadingOnlyLearnHighPriorityResources);
 
-BASE_DECLARE_FEATURE(kLoadingPredictorTableConfig);
-
 BASE_DECLARE_FEATURE(kLoadingPreconnectToRedirectTarget);
-
-BASE_DECLARE_FEATURE(kLoadingPredictorDisregardAlwaysAccessesNetwork);
 
 BASE_DECLARE_FEATURE(kLoadingPredictorUseOptimizationGuide);
 

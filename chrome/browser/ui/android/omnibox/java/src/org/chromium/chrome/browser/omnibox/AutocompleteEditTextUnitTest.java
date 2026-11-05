@@ -7,6 +7,9 @@ package org.chromium.chrome.browser.omnibox;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.spy;
@@ -14,13 +17,19 @@ import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.Shader;
 import android.text.Editable;
 import android.text.SpannableString;
 import android.text.TextUtils;
+import android.text.TextWatcher;
 import android.text.style.ForegroundColorSpan;
 import android.util.AttributeSet;
 import android.view.ContextThemeWrapper;
 import android.view.KeyEvent;
+import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.BaseInputConnection;
@@ -1579,5 +1588,140 @@ public class AutocompleteEditTextUnitTest {
         mAutocomplete.setText("");
         assertTrue(mInputConnection.commitText("hello\nworld", 1));
         assertTrue(mIsMultilineEligible);
+    }
+
+    @Test
+    public void testDispatchKeyEvent_duringImeBatchEdit_notifiesTextStateChanged() {
+        mAutocomplete.setIgnoreTextChangesForAutocomplete(true);
+        mAutocomplete.setText("about:blank");
+        mAutocomplete.setSelection(0, 11);
+        mAutocomplete.setIgnoreTextChangesForAutocomplete(false);
+        clearInvocations(mVerifier);
+
+        // Simulate an asynchronous IME (e.g. Gboard's multi-IPC IC_GET_SURROUNDING_TEXT) holding
+        // beginBatchEdit() open across UI thread tasks while a key event is dispatched.
+        assertTrue(mInputConnection.beginBatchEdit());
+
+        mAutocomplete.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_F));
+        mAutocomplete.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_F));
+
+        assertTexts("f", "", "");
+        verify(mVerifier).onAutocompleteTextStateChanged(/* updateDisplay= */ false);
+
+        // Ending the outer IME batch edit balances the count cleanly and preserves the state.
+        assertLastBatchEdit(mInputConnection.endBatchEdit());
+        assertTexts("f", "", "");
+        assertTrue(mAutocomplete.shouldAutocomplete());
+    }
+
+    /** Counts Editable text mutations. */
+    private static class MutationCounter implements TextWatcher {
+        int mCount;
+
+        @Override
+        public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+        @Override
+        public void onTextChanged(CharSequence s, int start, int before, int count) {}
+
+        @Override
+        public void afterTextChanged(Editable s) {
+            mCount++;
+        }
+    }
+
+    @Test
+    public void testSetAutocompleteText_alreadyApplied_doesNotMutateEditable() {
+        assertTrue(mInputConnection.commitText("hel", /* newCursorPosition= */ 1));
+        mAutocomplete.setAutocompleteText("hel", "lo world", null, null);
+        var counter = new MutationCounter();
+        mAutocomplete.addTextChangedListener(counter);
+
+        mAutocomplete.setAutocompleteText("hel", "lo world", null, null);
+
+        assertEquals(0, counter.mCount);
+        assertFalse(mAutocomplete.isCursorVisible());
+        assertTexts("hel", "lo world", "");
+    }
+
+    @Test
+    public void testSetAutocompleteText_additionalTextChanged_updatesEditable() {
+        assertTrue(mInputConnection.commitText("hel", /* newCursorPosition= */ 1));
+        mAutocomplete.setAutocompleteText("hel", "lo world", "www.foo.com", null);
+
+        mAutocomplete.setAutocompleteText("hel", "lo world", "www.bar.com", null);
+
+        assertTexts("hel", "lo world", "www.bar.com");
+        assertEquals("hello world - www.bar.com", mAutocomplete.getText().toString());
+    }
+
+    @Test
+    public void testSetAutocompleteText_withAdditionalText_appendsOnce() {
+        assertTrue(mInputConnection.commitText("hel", /* newCursorPosition= */ 1));
+        var counter = new MutationCounter();
+        mAutocomplete.addTextChangedListener(counter);
+
+        mAutocomplete.setAutocompleteText("hel", "lo world", "www.foo.com", null);
+
+        assertEquals(1, counter.mCount);
+        assertTexts("hel", "lo world", "www.foo.com");
+        assertEquals("hello world - www.foo.com", mAutocomplete.getText().toString());
+    }
+
+    @Test
+    public void testFinishComposingText_noComposingRegion_doesNotMutateEditable() {
+        assertTrue(mInputConnection.commitText("hel", /* newCursorPosition= */ 1));
+        mAutocomplete.setAutocompleteText("hel", "lo world", null, null);
+        var counter = new MutationCounter();
+        mAutocomplete.addTextChangedListener(counter);
+
+        assertTrue(mInputConnection.finishComposingText());
+
+        assertEquals(0, counter.mCount);
+        assertTexts("hel", "lo world", "");
+    }
+
+    @Test
+    public void testSiteSearchChip_longNameFadesOut() {
+        mAutocomplete.layout(0, 0, 100, 50);
+        mAutocomplete.setSiteSearchChip("VeryLongSiteSearchEngineName");
+
+        SiteSearchChipDrawable drawable =
+                (SiteSearchChipDrawable) mAutocomplete.getCompoundDrawablesRelative()[0];
+        assertNotNull(drawable);
+        assertEquals(50, drawable.getBounds().width());
+        Shader initialShader = drawable.getTextPaintForTesting().getShader();
+        assertTrue(initialShader instanceof LinearGradient);
+
+        // Redrawing should reuse the cached shader without reallocating.
+        drawable.draw(new Canvas());
+        assertSame(initialShader, drawable.getTextPaintForTesting().getShader());
+
+        // Layout direction change should update the shader.
+        drawable.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        Shader rtlShader = drawable.getTextPaintForTesting().getShader();
+        assertTrue(rtlShader instanceof LinearGradient);
+        assertNotSame(initialShader, rtlShader);
+
+        // Expanding bounds to fit the full intrinsic width should clear the shader.
+        drawable.setBounds(0, 0, drawable.getIntrinsicWidth(), drawable.getIntrinsicHeight());
+        assertNull(drawable.getTextPaintForTesting().getShader());
+    }
+
+    @Test
+    public void testSiteSearchChip_rtlTextAlignsRightAndFadesOut() {
+        mAutocomplete.layout(0, 0, 100, 50);
+        mAutocomplete.setSiteSearchChip("البحث في ويكيبيديا العربية الطويل جدا");
+
+        SiteSearchChipDrawable drawable =
+                (SiteSearchChipDrawable) mAutocomplete.getCompoundDrawablesRelative()[0];
+        assertNotNull(drawable);
+        assertEquals(50, drawable.getBounds().width());
+        assertEquals(Paint.Align.RIGHT, drawable.getTextPaintForTesting().getTextAlign());
+        Shader shader = drawable.getTextPaintForTesting().getShader();
+        assertTrue(shader instanceof LinearGradient);
+
+        drawable.draw(new Canvas());
+        assertSame(shader, drawable.getTextPaintForTesting().getShader());
     }
 }

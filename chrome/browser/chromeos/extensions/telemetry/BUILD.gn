@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//chrome/common/features.gni")
+import("//extensions/buildflags/buildflags.gni")
 
 assert(enable_extensions)
 
@@ -26,10 +26,13 @@ source_set("unit_tests") {
   deps = [
     "api:unit_tests",
     "//base",
+    "//base/test:test_support",
     "//chrome/browser/extensions",
+    "//chrome/browser/extensions:test_support",
     "//chrome/common",
-    "//chrome/test:test_support",
+    "//chrome/test/base:testing_profile",
     "//extensions:test_support",
+    "//extensions/browser:test_support",
     "//extensions/common",
     "//testing/gtest",
   ]

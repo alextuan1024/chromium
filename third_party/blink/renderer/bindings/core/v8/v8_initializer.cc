@@ -30,9 +30,8 @@
 #include <memory>
 #include <utility>
 
-#include "base/debug/crash_logging.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/time/time.h"
@@ -66,6 +65,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_string_trustedscript.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_wasm_response_extensions.h"
 #include "third_party/blink/renderer/bindings/core/v8/worker_or_worklet_script_controller.h"
+#include "third_party/blink/renderer/core/ad_tracker/script_initiation_monitor.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_forbidden_scope.h"
 #include "third_party/blink/renderer/core/events/error_event.h"
@@ -81,6 +81,7 @@
 #include "third_party/blink/renderer/core/shadow_realm/shadow_realm_global_scope.h"
 #include "third_party/blink/renderer/core/timing/time_clamper.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_types_util.h"
+#include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 #include "third_party/blink/renderer/core/workers/worklet_global_scope.h"
 #include "third_party/blink/renderer/platform/bindings/active_script_wrappable_manager.h"
@@ -178,69 +179,6 @@ String ToBlinkString(v8::Local<v8::Context> context,
 // "8MB" text.
 const size_t kWasmWireBytesLimit = 1 << 23;
 
-void AddCrashKey(v8::CrashKeyId id, const std::string& value) {
-  using base::debug::AllocateCrashKeyString;
-  using base::debug::CrashKeySize;
-  using base::debug::SetCrashKeyString;
-
-  switch (id) {
-    case v8::CrashKeyId::kIsolateAddress:
-      static auto* const isolate_address =
-          AllocateCrashKeyString("v8_isolate_address", CrashKeySize::Size32);
-      SetCrashKeyString(isolate_address, value);
-      break;
-    case v8::CrashKeyId::kReadonlySpaceFirstPageAddress:
-      static auto* const ro_space_firstpage_address = AllocateCrashKeyString(
-          "v8_ro_space_firstpage_address", CrashKeySize::Size32);
-      SetCrashKeyString(ro_space_firstpage_address, value);
-      break;
-    case v8::CrashKeyId::kMapSpaceFirstPageAddress:
-      static auto* const map_space_firstpage_address = AllocateCrashKeyString(
-          "v8_map_space_firstpage_address", CrashKeySize::Size32);
-      SetCrashKeyString(map_space_firstpage_address, value);
-      break;
-    case v8::CrashKeyId::kCodeSpaceFirstPageAddress:
-      static auto* const code_space_firstpage_address = AllocateCrashKeyString(
-          "v8_code_space_firstpage_address", CrashKeySize::Size32);
-      SetCrashKeyString(code_space_firstpage_address, value);
-      break;
-    case v8::CrashKeyId::kDumpType:
-      static auto* const dump_type =
-          AllocateCrashKeyString("dump-type", CrashKeySize::Size32);
-      SetCrashKeyString(dump_type, value);
-      break;
-    default:
-      // Doing nothing for new keys is a valid option. Having this case allows
-      // to introduce new CrashKeyId's without triggering a build break.
-      break;
-  }
-}
-
-base::debug::CrashKeySize ToCrashKeySize(v8::CrashKeySize size) {
-  using base::debug::CrashKeySize;
-
-  switch (size) {
-    case v8::CrashKeySize::Size32:
-      return CrashKeySize::Size32;
-    case v8::CrashKeySize::Size64:
-      return CrashKeySize::Size64;
-    case v8::CrashKeySize::Size256:
-      return CrashKeySize::Size256;
-    case v8::CrashKeySize::Size1024:
-      return CrashKeySize::Size1024;
-    default:
-      NOTREACHED();
-  }
-}
-
-v8::CrashKey AllocateCrashKeyString(const char key[], v8::CrashKeySize size) {
-  return AllocateCrashKeyString(key, ToCrashKeySize(size));
-}
-
-void SetCrashKeyString(v8::CrashKey key, std::string_view value) {
-  SetCrashKeyString(reinterpret_cast<base::debug::CrashKeyString*>(key), value);
-}
-
 }  // namespace
 
 void V8Initializer::MessageHandlerInMainThread(v8::Local<v8::Message> message,
@@ -257,10 +195,6 @@ void V8Initializer::MessageHandlerInMainThread(v8::Local<v8::Message> message,
     return;
 
   ExecutionContext* context = ExecutionContext::From(script_state);
-
-  UseCounter::Count(context, WebFeature::kUnhandledExceptionCountInMainThread);
-  base::UmaHistogramBoolean("V8.UnhandledExceptionCountInMainThread", true);
-
   SourceLocation* location = CaptureSourceLocation(isolate, message, context);
 
   if (message->ErrorLevel() != v8::Isolate::kMessageError) {
@@ -296,10 +230,6 @@ void V8Initializer::MessageHandlerInWorker(v8::Local<v8::Message> message,
 
   ExecutionContext* context = ExecutionContext::From(script_state);
   CHECK(context);
-
-  UseCounter::Count(context, WebFeature::kUnhandledExceptionCountInWorker);
-  base::UmaHistogramBoolean("V8.UnhandledExceptionCountInWorker", true);
-
   SourceLocation* location = CaptureSourceLocation(isolate, message, context);
 
   if (message->ErrorLevel() != v8::Isolate::kMessageError) {
@@ -474,35 +404,17 @@ void V8Initializer::FailedAccessCheckCallbackInMainThread(
 static bool ContentSecurityPolicyCodeGenerationCheck(
     v8::Local<v8::Context> context,
     v8::Local<v8::String> source) {
-  if (ExecutionContext* execution_context = ToExecutionContext(context)) {
-    // Note this callback is only triggered for contexts which have eval
-    // disabled. Hence we don't need to handle the case of isolated world
-    // contexts with no CSP specified. (They should be exempt from the page CSP.
-    // See crbug.com/982388.)
-
-    if (ContentSecurityPolicy* policy =
-            execution_context->GetContentSecurityPolicyForCurrentWorld()) {
-      v8::Context::Scope scope(context);
-      return policy->AllowEval(ReportingDisposition::kReport,
-                               ContentSecurityPolicy::kWillThrowException,
-                               ToBlinkString(context, source, 0));
-    }
-  }
-  return false;
-}
-
-// Check whether Content Security Policy allows 'eval' in a Trusted Types
-// context, via the "script-src 'trusted-types-eval'" directive + keyword.
-static bool ContentSecurityPolicyTrustedTypesCodeGenerationCheck(
-    v8::Local<v8::Context> context) {
-  if (ExecutionContext* execution_context = ToExecutionContext(context)) {
-    if (ContentSecurityPolicy* policy =
-            execution_context->GetContentSecurityPolicyForCurrentWorld()) {
-      v8::Context::Scope scope(context);
-      return policy->AllowTrustedTypesEval(
-          ReportingDisposition::kReport,
-          ContentSecurityPolicy::kWillThrowException);
-    }
+  // Note this callback is only triggered for contexts which have eval
+  // disabled. Hence we don't need to handle the case of isolated world
+  // contexts with no CSP specified. (They should be exempt from the page CSP.
+  // See crbug.com/982388.)
+  if (ContentSecurityPolicy* policy =
+          ToExecutionContext(context)
+              ->GetContentSecurityPolicyForCurrentWorld()) {
+    v8::Context::Scope scope(context);
+    return policy->AllowEval(ReportingDisposition::kReport,
+                             ContentSecurityPolicy::kWillThrowException,
+                             ToBlinkString(context, source, 0));
   }
   return false;
 }
@@ -516,14 +428,6 @@ std::pair<bool, v8::MaybeLocal<v8::String>> TrustedTypesCodeGenerationCheck(
   if (!source->IsString() && !is_code_like &&
       !V8TrustedScript::HasInstance(isolate, source)) {
     return {true, v8::MaybeLocal<v8::String>()};
-  }
-
-  // If CSP allows eval in a Trusted Types environment ('trusted-types-eval'),
-  // then pass it through.
-  if (RuntimeEnabledFeatures::TrustedTypesHTMLEnabled()) {
-    if (ContentSecurityPolicyTrustedTypesCodeGenerationCheck(context)) {
-      return {true, v8::MaybeLocal<v8::String>()};
-    }
   }
 
   v8::TryCatch try_catch(isolate);
@@ -548,17 +452,15 @@ std::pair<bool, v8::MaybeLocal<v8::String>> TrustedTypesCodeGenerationCheck(
     return {false, v8::MaybeLocal<v8::String>()};
   }
 
-  if (RuntimeEnabledFeatures::TrustedTypesHTMLEnabled()) {
-    // This check implements steps 1.2.8 of
-    // https://w3c.github.io/webappsec-csp/#can-compile-strings
-    bool has_changed =
-        stringified_source !=
-        (string_or_trusted_script->IsString()
-             ? string_or_trusted_script->GetAsString()
-             : string_or_trusted_script->GetAsTrustedScript()->toString());
-    if (has_changed) {
-      return {false, v8::MaybeLocal<v8::String>()};
-    }
+  // This check implements steps 1.2.8 of
+  // https://w3c.github.io/webappsec-csp/#can-compile-strings
+  bool has_changed =
+      stringified_source !=
+      (string_or_trusted_script->IsString()
+           ? string_or_trusted_script->GetAsString()
+           : string_or_trusted_script->GetAsTrustedScript()->toString());
+  if (has_changed) {
+    return {false, v8::MaybeLocal<v8::String>()};
   }
 
   return {true, V8String(isolate, stringified_source)};
@@ -572,10 +474,8 @@ V8Initializer::CodeGenerationCheckCallbackInMainThread(
     bool is_code_like) {
   // The code generation callback should only be installed on "normal" JS
   // contexts, which in turn should always have an associated ExecutionContext.
-  // If this invariant holds, we can simplify this code a little bit.
-  // We're probing this invariant to ensure it won't cause issues in practice.
   // See also: Discussion on crrev.com/c/7207201.
-  CHECK(ToExecutionContext(context), base::NotFatalUntil::M150);
+  CHECK(ToExecutionContext(context));
 
   // The TC39 "Dynamic Code Brand Check" feature is currently behind a flag.
   if (!RuntimeEnabledFeatures::TrustedTypesUseCodeLikeEnabled())
@@ -613,7 +513,9 @@ bool V8Initializer::WasmCodeGenerationCheckCallback(
   if (!execution_context) {
     return false;
   }
-  ContentSecurityPolicy* policy = execution_context->GetContentSecurityPolicy();
+  ContentSecurityPolicy* policy =
+      execution_context->GetContentSecurityPolicyForWorld(
+          &DOMWrapperWorld::World(execution_context->GetIsolate(), context));
   if (!policy || !policy->AllowWasmCodeGeneration(
                      ReportingDisposition::kReport,
                      ContentSecurityPolicy::kWillThrowException,
@@ -679,13 +581,12 @@ void ThrowRangeException(v8::Isolate* isolate, const char* message) {
 BASE_FEATURE(kWebAssemblyUnlimitedSyncCompilation,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-bool WasmModuleOverride(const v8::FunctionCallbackInfo<v8::Value>& args) {
+bool WasmModuleOverride(v8::Isolate* isolate, v8::Local<v8::Value> source) {
   // Return false if we want the base behavior to proceed.
-  if (!IsMainThread() || args.Length() < 1 ||
+  if (!IsMainThread() ||
       base::FeatureList::IsEnabled(kWebAssemblyUnlimitedSyncCompilation)) {
     return false;
   }
-  v8::Local<v8::Value> source = args[0];
   if ((source->IsArrayBuffer() &&
        v8::Local<v8::ArrayBuffer>::Cast(source)->ByteLength() >
            kWasmWireBytesLimit) ||
@@ -693,7 +594,7 @@ bool WasmModuleOverride(const v8::FunctionCallbackInfo<v8::Value>& args) {
        v8::Local<v8::ArrayBufferView>::Cast(source)->ByteLength() >
            kWasmWireBytesLimit)) {
     ThrowRangeException(
-        args.GetIsolate(),
+        isolate,
         "WebAssembly.Compile is disallowed on the main thread, "
         "if the buffer size is larger than 8MB. Use "
         "WebAssembly.compile, compile on a worker thread, or use the flag "
@@ -705,13 +606,12 @@ bool WasmModuleOverride(const v8::FunctionCallbackInfo<v8::Value>& args) {
   return false;
 }
 
-bool WasmInstanceOverride(const v8::FunctionCallbackInfo<v8::Value>& args) {
+bool WasmInstanceOverride(v8::Isolate* isolate, v8::Local<v8::Value> source) {
   // Return false if we want the base behavior to proceed.
-  if (!IsMainThread() || args.Length() < 1 ||
+  if (!IsMainThread() ||
       base::FeatureList::IsEnabled(kWebAssemblyUnlimitedSyncCompilation)) {
     return false;
   }
-  v8::Local<v8::Value> source = args[0];
   if (!source->IsWasmModuleObject())
     return false;
 
@@ -719,7 +619,7 @@ bool WasmInstanceOverride(const v8::FunctionCallbackInfo<v8::Value>& args) {
       v8::Local<v8::WasmModuleObject>::Cast(source)->GetCompiledModule();
   if (compiled_module.GetWireBytesRef().size() > kWasmWireBytesLimit) {
     ThrowRangeException(
-        args.GetIsolate(),
+        isolate,
         "WebAssembly.Instance is disallowed on the main thread, "
         "if the buffer size is larger than 8MB. Use "
         "WebAssembly.instantiate, or use the flag "
@@ -860,6 +760,14 @@ bool IsDOMExceptionWrapper(v8::Isolate* isolate, v8::Local<v8::Object> object) {
   return V8DOMException::HasInstance(isolate, object);
 }
 
+void DynamicScriptCompiledFromEmbedderCallback(v8::Local<v8::Context> context,
+                                               int script_id) {
+  if (auto* monitor = ScriptInitiationMonitor::FromExecutionContext(
+          ToExecutionContext(context))) {
+    monitor->DidRegisterDynamicScript(V8ScriptId(script_id));
+  }
+}
+
 void EmitDevToolsEvent(v8::Isolate* isolate) {
   TRACE_EVENT_INSTANT(
       TRACE_DISABLED_BY_DEFAULT("devtools.timeline"), "UpdateCounters", "data",
@@ -904,6 +812,9 @@ void V8Initializer::InitializeV8Common(v8::Isolate* isolate) {
   isolate->SetHostInitializeImportMetaObjectCallback(
       HostGetImportMetaProperties);
   isolate->SetIsJSApiWrapperNativeErrorCallback(IsDOMExceptionWrapper);
+  isolate->SetDynamicScriptCompiledFromEmbedderCallback(
+      DynamicScriptCompiledFromEmbedderCallback);
+  DOMArrayBuffer::SetArrayBufferDetachCallback(isolate);
   isolate->SetMetricsRecorder(std::make_shared<V8MetricsRecorder>(isolate));
 
 #if BUILDFLAG(IS_WIN)
@@ -962,10 +873,13 @@ class ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
   // http://www.ecma-international.org/ecma-262/6.0/#sec-createbytedatablock.
   void* Allocate(size_t size) override {
     if (max_allocation_ != 0 &&
-        std::atomic_load(&total_allocation_) > max_allocation_ - size)
+        (size > max_allocation_ ||
+         std::atomic_load(&total_allocation_) > max_allocation_ - size)) {
       return nullptr;
+    }
     void* result = ArrayBufferContents::AllocateMemoryOrNull(
-        size, ArrayBufferContents::kZeroInitialize);
+        size, ArrayBufferContents::kZeroInitialize,
+        ArrayBufferContents::MaxAllocationSizePolicy::kAllowGigaAllocations);
     if (max_allocation_ != 0 && result)
       total_allocation_.fetch_add(size, std::memory_order_relaxed);
     return result;
@@ -973,10 +887,13 @@ class ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
 
   void* AllocateUninitialized(size_t size) override {
     if (max_allocation_ != 0 &&
-        std::atomic_load(&total_allocation_) > max_allocation_ - size)
+        (size > max_allocation_ ||
+         std::atomic_load(&total_allocation_) > max_allocation_ - size)) {
       return nullptr;
+    }
     void* result = ArrayBufferContents::AllocateMemoryOrNull(
-        size, ArrayBufferContents::kDontInitialize);
+        size, ArrayBufferContents::kDontInitialize,
+        ArrayBufferContents::MaxAllocationSizePolicy::kAllowGigaAllocations);
     if (max_allocation_ != 0 && result)
       total_allocation_.fetch_add(size, std::memory_order_relaxed);
     return result;
@@ -1006,15 +923,18 @@ class InSandboxAllocator final : public v8::Allocator {
   InSandboxAllocator() = default;
   void* Allocate(size_t size) override {
     return ArrayBufferContents::AllocateMemoryOrNull(
-        size, ArrayBufferContents::kZeroInitialize);
+        size, ArrayBufferContents::kZeroInitialize,
+        ArrayBufferContents::MaxAllocationSizePolicy::kNormal);
   }
   void* AllocateUninitialized(size_t size) override {
     return ArrayBufferContents::AllocateMemoryOrNull(
-        size, ArrayBufferContents::kDontInitialize);
+        size, ArrayBufferContents::kDontInitialize,
+        ArrayBufferContents::MaxAllocationSizePolicy::kNormal);
   }
   void* AllocateUninitializedOrCrash(size_t size) override {
     void* result = ArrayBufferContents::AllocateMemoryOrNull(
-        size, ArrayBufferContents::kDontInitialize);
+        size, ArrayBufferContents::kDontInitialize,
+        ArrayBufferContents::MaxAllocationSizePolicy::kNormal);
     if (!result) {
       OOM_CRASH(size);
     }
@@ -1042,9 +962,9 @@ V8PerIsolateData::V8ContextSnapshotMode GetV8ContextSnapshotMode() {
 void V8Initializer::InitializeIsolateHolder(
     const intptr_t* reference_table,
     const std::string& js_command_line_flags) {
-  DEFINE_STATIC_LOCAL(ArrayBufferAllocator, array_buffer_allocator, ());
+  static base::NoDestructor<ArrayBufferAllocator> array_buffer_allocator;
   gin::IsolateHolder::Initialize(
-      gin::IsolateHolder::kNonStrictMode, &array_buffer_allocator,
+      gin::IsolateHolder::kNonStrictMode, array_buffer_allocator.get(),
       reference_table, js_command_line_flags,
       Platform::Current()->DisallowV8FeatureFlagOverrides(), ReportV8FatalError,
       ReportV8OOMError);
@@ -1113,11 +1033,6 @@ v8::Isolate* V8Initializer::InitializeMainThread() {
     // the isolate is in background. This reduces memory usage.
     isolate->SetPriority(v8::Isolate::Priority::kBestEffort);
   }
-
-  // Crash key API is not thread-safe, so we only set it up on the main thread.
-  isolate->SetAddCrashKeyCallback(AddCrashKey);
-  isolate->SetCrashKeyStringCallbacks(AllocateCrashKeyString,
-                                      SetCrashKeyString);
 
   return isolate;
 }

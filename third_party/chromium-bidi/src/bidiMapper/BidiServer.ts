@@ -35,6 +35,7 @@ import {BrowsingContextStorage} from './modules/context/BrowsingContextStorage.j
 import {NetworkStorage} from './modules/network/NetworkStorage.js';
 import {PreloadScriptStorage} from './modules/script/PreloadScriptStorage.js';
 import {RealmStorage} from './modules/script/RealmStorage.js';
+import {AclManager} from './modules/session/AclManager.js';
 import {
   EventManager,
   EventManagerEvents,
@@ -44,6 +45,7 @@ import {DigitalCredentialsProcessor} from './modules/digitalCredentials/DigitalC
 import type {OutgoingMessage} from './OutgoingMessage.js';
 
 interface BidiServerEvent extends Record<string | symbol, unknown> {
+  close: void;
   message: ChromiumBidi.Command;
 }
 
@@ -61,14 +63,21 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
   #digitalCredentialsProcessor: DigitalCredentialsProcessor;
 
   #logger?: LoggerFn;
+  #isClosed = false;
 
   #handleIncomingMessage = (message: ChromiumBidi.Command) => {
+    if (this.#isClosed) {
+      return;
+    }
     void this.#commandProcessor.processCommand(message).catch((error) => {
       this.#logger?.(LogType.debugError)?.(error);
     });
   };
 
   #processOutgoingMessage = async (messageEntry: OutgoingMessage) => {
+    if (this.#isClosed) {
+      return;
+    }
     const message = messageEntry.message;
 
     if (messageEntry.googChannel !== null) {
@@ -87,6 +96,7 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
     defaultUserAgent: string,
     parser?: BidiCommandParameterParser,
     logger?: LoggerFn,
+    restrictedMode = false,
   ) {
     super();
     this.#logger = logger;
@@ -96,11 +106,23 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
     );
     this.#transport = bidiTransport;
     this.#transport.setOnMessage(this.#handleIncomingMessage);
-    const contextConfigStorage = new ContextConfigStorage();
     const userContextStorage = new UserContextStorage(browserCdpClient);
+    const contextConfigStorage = new ContextConfigStorage(
+      this.#browsingContextStorage,
+      userContextStorage,
+    );
+    // Shared by `EventManager` (filters events) and `CommandProcessor`
+    // (checks commands and configures the ACL), so both see the same session
+    // ACL.
+    const aclManager = new AclManager(this.#browsingContextStorage);
+    if (restrictedMode) {
+      // Restricted mode requires enabling ACL.
+      aclManager.enable();
+    }
     this.#eventManager = new EventManager(
       this.#browsingContextStorage,
       userContextStorage,
+      aclManager,
     );
     const networkStorage = new NetworkStorage(
       this.#eventManager,
@@ -132,6 +154,7 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
       this.#bluetoothProcessor,
       this.#digitalCredentialsProcessor,
       userContextStorage,
+      aclManager,
       parser,
       async (options: MapperOptions) => {
         // This is required to ignore certificate errors when service worker is fetched.
@@ -141,7 +164,7 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
             ignore: options.acceptInsecureCerts ?? false,
           },
         );
-        contextConfigStorage.updateGlobalConfig({
+        await contextConfigStorage.updateConfig({
           acceptInsecureCerts: options.acceptInsecureCerts ?? false,
           userPromptHandler: options.unhandledPromptBehavior,
           prerenderingDisabled: options?.['goog:prerenderingDisabled'] ?? false,
@@ -175,11 +198,19 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
           autoAttach: true,
           waitForDebuggerOnStart: true,
           flatten: true,
-          // Browser session should attach to tab instead of the page, so that
-          // prerendering is not blocked.
           filter: [
+            // Browser session should attach to `tab` targets instead of `page`
+            // targets, so that prerendering is not blocked. `page` targets will
+            // be auto-attached via their `tab` target.
             {
               type: 'page',
+              exclude: true,
+            },
+            // `other` targets (such as DevTools windows) also have a `tab`
+            // target and will be auto-attached via their `tab` target once
+            // their initial `devtools://` URL is loaded.
+            {
+              type: 'other',
               exclude: true,
             },
             {},
@@ -188,6 +219,7 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
 
         await this.#topLevelContextsLoaded();
       },
+      restrictedMode,
       this.#logger,
     );
     this.#eventManager.on(EventManagerEvents.Event, ({message, event}) => {
@@ -211,6 +243,7 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
     selfTargetId: string,
     parser?: BidiCommandParameterParser,
     logger?: LoggerFn,
+    restrictedMode = false,
   ): Promise<BidiServer> {
     const [defaultUserContextId, version] = await Promise.all([
       this.#getDefaultUserContextId(browserCdpClient),
@@ -233,6 +266,7 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
       version.userAgent,
       parser,
       logger,
+      restrictedMode,
     );
 
     return server;
@@ -279,11 +313,22 @@ export class BidiServer extends EventEmitter<BidiServerEvent> {
     messageEntry: Promise<Result<OutgoingMessage>>,
     event: string,
   ): void {
+    if (this.#isClosed) {
+      return;
+    }
     this.#messageQueue.add(messageEntry, event);
   }
 
-  close() {
-    this.#transport.close();
+  close(): void {
+    if (this.#isClosed) {
+      return;
+    }
+    this.#isClosed = true;
+    try {
+      this.#transport.close();
+    } finally {
+      this.emit('close', undefined);
+    }
   }
 
   async #topLevelContextsLoaded() {

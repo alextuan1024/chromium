@@ -29,7 +29,6 @@
 
 #include "base/features.h"
 #include "base/location.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -148,43 +147,6 @@ class ImageFrameGeneratorTest : public testing::Test,
   wtf_size_t requested_clear_except_frame_;
 };
 
-// Test the UMA(ImageHasMultipleGeneratorClientIds) is recorded correctly.
-TEST_F(ImageFrameGeneratorTest, DecodeByMultipleClients) {
-  SetFrameStatus(ImageFrame::kFrameComplete);
-  base::HistogramTester histogram_tester;
-  histogram_tester.ExpectTotalCount(
-      "Blink.ImageDecoders.ImageHasMultipleGeneratorClientIds", 0);
-
-  char buffer[100 * 100 * 4];
-  SkPixmap pixmap(ImageInfo(), buffer, 100 * 4);
-  cc::PaintImage::GeneratorClientId client_id_0 =
-      cc::PaintImage::GetNextGeneratorClientId();
-  generator_->DecodeAndScale(segment_reader_.get(), true, 0, pixmap,
-                             client_id_0);
-  histogram_tester.ExpectUniqueSample(
-      "Blink.ImageDecoders.ImageHasMultipleGeneratorClientIds",
-      0 /* kRequestByAtLeastOneClient */, 1);
-
-  generator_->DecodeAndScale(segment_reader_.get(), true, 0, pixmap,
-                             cc::PaintImage::kDefaultGeneratorClientId);
-  histogram_tester.ExpectUniqueSample(
-      "Blink.ImageDecoders.ImageHasMultipleGeneratorClientIds",
-      0 /* kRequestByAtLeastOneClient */, 1);
-
-  cc::PaintImage::GeneratorClientId client_id_1 =
-      cc::PaintImage::GetNextGeneratorClientId();
-  generator_->DecodeAndScale(segment_reader_.get(), true, 0, pixmap,
-                             client_id_1);
-  histogram_tester.ExpectTotalCount(
-      "Blink.ImageDecoders.ImageHasMultipleGeneratorClientIds", 2);
-  histogram_tester.ExpectBucketCount(
-      "Blink.ImageDecoders.ImageHasMultipleGeneratorClientIds",
-      0 /* kRequestByAtLeastOneClient */, 1);
-  histogram_tester.ExpectBucketCount(
-      "Blink.ImageDecoders.ImageHasMultipleGeneratorClientIds",
-      1 /* kRequestByMoreThanOneClient */, 1);
-}
-
 TEST_F(ImageFrameGeneratorTest, GetSupportedSizes) {
   ASSERT_TRUE(FullSize() == SkISize::Make(100, 100));
 
@@ -258,6 +220,21 @@ TEST_F(ImageFrameGeneratorTest, LowEndDeviceDestroysDecoderOnPartialDecode) {
   EXPECT_EQ(2, decoders_destroyed_);
   // The memory allocator is set to the external one, then cleared after decode.
   EXPECT_EQ(4, memory_allocator_set_count_);
+}
+
+TEST_F(ImageFrameGeneratorTest,
+       LowEndDeviceDoesNotUseExternalMemoryForNonzeroFrame) {
+  ScopedTestingPlatformSupport<ImageFrameGeneratorTestPlatform> platform;
+  frame_count_ = 2;
+  SetFrameStatus(ImageFrame::kFrameComplete);
+
+  char buffer[100 * 100 * 4];
+  SkPixmap pixmap(ImageInfo(), buffer, 100 * 4);
+  EXPECT_TRUE(
+      generator_->DecodeAndScale(segment_reader_.get(), false, 1, pixmap,
+                                 cc::PaintImage::kDefaultGeneratorClientId));
+  EXPECT_EQ(1, decode_request_count_);
+  EXPECT_EQ(0, memory_allocator_set_count_);
 }
 
 TEST_F(ImageFrameGeneratorTest, incompleteDecodeBecomesComplete) {
@@ -425,8 +402,7 @@ TEST_F(ImageFrameGeneratorTest, ClearingPartiallyDecodedFrame) {
   file_path.Append(test::BlinkWebTestsDir());
   file_path.Append(
       "/images/resources/png-animated-three-independent-frames.png");
-  std::optional<Vector<char>> full_data_vec =
-      test::ReadFromFile(file_path.ToString());
+  std::optional<Vector<char>> full_data_vec = test::ReadFromFile(file_path);
   ASSERT_TRUE(full_data_vec);
   base::span<const uint8_t> full_data = base::as_byte_span(*full_data_vec);
   SkISize size(50, 50);

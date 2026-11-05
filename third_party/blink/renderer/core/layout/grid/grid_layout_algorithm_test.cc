@@ -7,10 +7,12 @@
 #include "build/build_config.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/layout/base_layout_algorithm_test.h"
+#include "third_party/blink/renderer/core/layout/gap/grid_gap_geometry.h"
 #include "third_party/blink/renderer/core/layout/grid/grid_layout_utils.h"
 #include "third_party/blink/renderer/core/layout/grid/grid_track_sizing_algorithm.h"
 #include "third_party/blink/renderer/core/layout/length_utils.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
+#include "third_party/blink/renderer/core/layout/tree_traversal_utils.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
@@ -284,6 +286,40 @@ TEST_F(GridLayoutAlgorithmTest, GridLayoutAlgorithmGapGeometry) {
   EXPECT_EQ(gap_geometry->GetContentBlockStart(), LayoutUnit());
   EXPECT_EQ(gap_geometry->GetContentInlineEnd(), LayoutUnit(318));
   EXPECT_EQ(gap_geometry->GetContentBlockEnd(), LayoutUnit(506));
+}
+
+TEST_F(GridLayoutAlgorithmTest,
+       GapDecorationsInkOverflowWithFragmentGapOffsets) {
+  auto* geometry = MakeGarbageCollected<GridGapGeometry>();
+  geometry->SetContentInlineOffsets(LayoutUnit(20), LayoutUnit(100));
+  geometry->SetContentBlockOffsets(LayoutUnit(), LayoutUnit(500));
+  geometry->AddMainGap(LayoutUnit(450));
+  geometry->AddCrossGap(LogicalOffset(LayoutUnit(60), LayoutUnit()));
+
+  MainGaps fragment_gaps = {MainGap(LayoutUnit(-30)), MainGap(LayoutUnit(140))};
+  auto* fragment_geometry = MakeGarbageCollected<GridGapGeometry>(
+      *geometry, std::move(fragment_gaps), LayoutUnit(), LayoutUnit(100));
+  EXPECT_EQ(fragment_geometry->ComputeInkOverflowForGaps(
+                {WritingMode::kHorizontalTb, TextDirection::kLtr},
+                PhysicalSize(100, 100), LayoutUnit(10), LayoutUnit(10), {}),
+            PhysicalRect(15, -35, 90, 180));
+}
+
+TEST_F(GridLayoutAlgorithmTest, GapDecorationsInkOverflowSaturatedRtl) {
+  auto* geometry = MakeGarbageCollected<GridGapGeometry>();
+  geometry->SetContentInlineOffsets(LayoutUnit(-20000000),
+                                    LayoutUnit(20000000));
+  geometry->SetContentBlockOffsets(LayoutUnit(), LayoutUnit(100));
+  geometry->AddCrossGap(LogicalOffset(LayoutUnit(-20000000), LayoutUnit()));
+
+  const PhysicalRect overflow = geometry->ComputeInkOverflowForGaps(
+      {WritingMode::kHorizontalTb, TextDirection::kRtl}, PhysicalSize(100, 100),
+      LayoutUnit(4), LayoutUnit(), {});
+
+  // In RTL, the column rule's physical center is 100 - (-20000000).
+  const PhysicalRect painted_rule(LayoutUnit(20000098), LayoutUnit(),
+                                  LayoutUnit(4), LayoutUnit(100));
+  EXPECT_TRUE(overflow.Contains(painted_rule));
 }
 
 TEST_F(GridLayoutAlgorithmTest, GapGeomoetryWithSpanningItems) {
@@ -2127,6 +2163,49 @@ TEST_F(GridLayoutAlgorithmTest, SingleAxisScrollerAutoMinSizeUseCount) {
   )HTML");
   EXPECT_FALSE(
       GetDocument().IsUseCounted(WebFeature::kSingleAxisScrollerAutoMinSize));
+}
+
+// Check that placing items (`PlaceItems()` in
+// `GridLayoutAlgorithm::PlaceGridItemsForFragmentation()`) twice doesn't
+// duplicate OOF fragments.
+TEST_F(GridLayoutAlgorithmTest, FragmentedOofInGridPlaceItemsTwice) {
+  ScopedFragmentedOofInCbForTest enable_flag(true);
+  SetBodyInnerHTML(R"HTML(
+    <div id="multicol" style="columns:4; column-fill:auto; height:100px;">
+      <div style="display:grid; position:relative;">
+        <div id="elm" style="position:absolute; width:100%; height:500px;"></div>
+        <div style="height:100px;"></div>
+        <div style="height:50px;"></div>
+        <div style="break-before:column;"></div>
+      </div>
+    </div>
+  )HTML");
+  const auto* elm = GetLayoutBoxByElementId("elm");
+  EXPECT_EQ(elm->PhysicalFragmentCount(), 5u);
+
+  const auto* multicol = GetLayoutBoxByElementId("multicol");
+  ASSERT_EQ(multicol->PhysicalFragmentCount(), 1u);
+
+  // Count the number of fragment representation for #elm in the tree.
+  class FragmentCounter : public PhysicalFragmentTraversalListener {
+   public:
+    unsigned count = 0;
+
+    NextStep HandleEntry(const PhysicalBoxFragment& fragment,
+                         PhysicalOffset,
+                         bool) override {
+      if (const Element* element = DynamicTo<Element>(fragment.GetNode())) {
+        if (element->GetIdAttribute() == "elm") {
+          count++;
+        }
+      }
+      return kContinue;
+    }
+  };
+  FragmentCounter counter;
+  ForAllBoxFragmentDescendants(*multicol->GetPhysicalFragment(0),
+                               kFragmentTraversalOptionNone, counter);
+  EXPECT_EQ(counter.count, 5u);
 }
 
 }  // namespace blink

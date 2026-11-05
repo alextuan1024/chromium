@@ -194,7 +194,6 @@ void HoldingSpaceTrayIcon::InitLayout() {
   SetPreferredSize(gfx::Size(preview_size, preview_size));
 
   SetPaintToLayer(ui::LAYER_NOT_DRAWN);
-  layer()->SetFillsBoundsOpaquely(false);
   const int radius = ShelfConfig::Get()->control_border_radius();
   gfx::RoundedCornersF rounded_corners(radius);
   layer()->SetRoundedCornerRadius(rounded_corners);
@@ -252,7 +251,7 @@ void HoldingSpaceTrayIcon::UpdateDropTargetState(bool is_drop_target,
 }
 
 void HoldingSpaceTrayIcon::UpdatePreviews(
-    const std::vector<const HoldingSpaceItem*> items) {
+    base::span<const HoldingSpaceItem* const> items) {
   // Cancel any in progress updates.
   previews_update_weak_factory_.InvalidateWeakPtrs();
 

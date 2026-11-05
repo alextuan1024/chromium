@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import {loadTimeData} from './i18n_setup.js';
 import type {ProcessedFile} from './image_processor.js';
 import {processFile, SUPPORTED_FILE_TYPES} from './image_processor.js';
 import {getCss} from './lens_form.css.js';
@@ -18,7 +18,7 @@ const DIRECT_UPLOAD_FILE_ACTION: string = 'https://lens.google.com/v3/upload';
 const UPLOAD_FILE_ENTRYPOINT: string = 'cntpubb';
 
 /** Lens service endpoint for the Upload by URL action. */
-const UPLOAD_BY_URL_ACTION: string = 'https://lens.google.com/uploadbyurl';
+const UPLOAD_BY_URL_ACTION: string = 'https://lens.google.com/v3/upload';
 
 /** Entrypoint for the upload by url action. */
 const UPLOAD_URL_ENTRYPOINT: string = 'cntpubu';

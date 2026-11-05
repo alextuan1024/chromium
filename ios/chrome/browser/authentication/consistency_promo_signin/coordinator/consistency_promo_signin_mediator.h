@@ -13,7 +13,7 @@
 #import "base/functional/callback_forward.h"
 #import "base/ios/block_types.h"
 #import "components/signin/public/browser/web_signin_tracker.h"
-#import "ios/chrome/app/change_profile_continuation.h"
+#import "ios/chrome/browser/authentication/ui_bundled/change_profile_continuation_provider.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 
 class AccountReconcilor;
@@ -96,12 +96,9 @@ typedef NS_ENUM(NSInteger, ConsistencyPromoSigninMediatorError) {
                         signinAccount:(const CoreAccountId&)signin_account
                          withCallback:
                              (const base::RepeatingCallback<void(
-                                  signin::WebSigninTracker::Result)>*)callback
+                                  signin::WebSigninTracker::Result)>&)callback
                           withTimeout:
                               (const std::optional<base::TimeDelta>&)timeout;
-
-// Returns a ChangeProfileContinuation.
-- (ChangeProfileContinuation)changeProfileContinuation;
 
 @end
 
@@ -112,6 +109,11 @@ typedef NS_ENUM(NSInteger, ConsistencyPromoSigninMediatorError) {
 
 - (instancetype)init NS_UNAVAILABLE;
 
+// Initializes the mediator.
+// `prepareChangeProfile` is a block to execute before a profile switch (can be
+// nil).
+// `continuationProvider` provides the continuation to execute after a profile
+// switch.
 - (instancetype)
     initWithAccountManagerService:
         (ChromeAccountManagerService*)accountManagerService
@@ -120,10 +122,16 @@ typedef NS_ENUM(NSInteger, ConsistencyPromoSigninMediatorError) {
                 accountReconcilor:(AccountReconcilor*)accountReconcilor
                   userPrefService:(PrefService*)userPrefService
                       accessPoint:(signin_metrics::AccessPoint)accessPoint
+             prepareChangeProfile:(ProceduralBlock)prepareChangeProfile
+             continuationProvider:
+                 (const ChangeProfileContinuationProvider&)continuationProvider
     NS_DESIGNATED_INITIALIZER;
 
-// Disconnects the mediator.
-- (void)disconnectWithResult:(SigninCoordinatorResult)signinResult;
+// Disconnects the mediator. Passed by const ref because OCMock calls
+// `NSGetSizeAndAlignment()` on mocked Objective-C arguments, which throws on
+// by-value `base::expected` Objective-C type encodings.
+- (void)disconnectWithResult:
+    (const SigninCoordinatorResultOrIdentity&)signinResult;
 
 // Records when an identity is added by a subscreen of the web sign-in dialogs.
 - (void)systemIdentityAdded:(id<SystemIdentity>)identity;

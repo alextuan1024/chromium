@@ -22,9 +22,12 @@ class EchoAILanguageModel : public blink::mojom::AILanguageModel {
   explicit EchoAILanguageModel(
       blink::mojom::AILanguageModelSamplingParamsPtr sampling_params,
       base::flat_set<blink::mojom::AILanguageModelPromptType> input_types,
+      base::flat_set<blink::mojom::AILanguageModelPromptType> output_types,
       std::vector<blink::mojom::AILanguageModelPromptPtr> initial_prompts,
       uint32_t initial_tokens_size,
-      std::vector<blink::mojom::AILanguageModelToolDeclarationPtr> tools = {});
+      std::vector<blink::mojom::AILanguageModelToolDeclarationPtr> tools = {},
+      blink::mojom::AILanguageModelThinkingEffort thinking_effort =
+          blink::mojom::AILanguageModelThinkingEffort::kNone);
   EchoAILanguageModel(const EchoAILanguageModel&) = delete;
   EchoAILanguageModel& operator=(const EchoAILanguageModel&) = delete;
 
@@ -33,6 +36,8 @@ class EchoAILanguageModel : public blink::mojom::AILanguageModel {
   // `blink::mojom::AILanguageModel` implementation.
   void Prompt(std::vector<blink::mojom::AILanguageModelPromptPtr> prompts,
               on_device_model::mojom::ResponseConstraintPtr constraint,
+              std::optional<blink::mojom::AILanguageModelThinkingEffort>
+                  thinking_effort,
               mojo::PendingRemote<blink::mojom::ModelStreamingResponder>
                   pending_responder) override;
   void Append(std::vector<blink::mojom::AILanguageModelPromptPtr> prompts,
@@ -92,6 +97,7 @@ class EchoAILanguageModel : public blink::mojom::AILanguageModel {
   blink::mojom::AILanguageModelSamplingParamsPtr sampling_params_;
   // Prompt types supported by the language model in this session.
   base::flat_set<blink::mojom::AILanguageModelPromptType> input_types_;
+  base::flat_set<blink::mojom::AILanguageModelPromptType> output_types_;
 
   mojo::RemoteSet<blink::mojom::ModelStreamingResponder> responder_set_;
 
@@ -101,6 +107,9 @@ class EchoAILanguageModel : public blink::mojom::AILanguageModel {
 
   // Tools available for this language model session.
   std::vector<blink::mojom::AILanguageModelToolDeclarationPtr> tools_;
+
+  blink::mojom::AILanguageModelThinkingEffort thinking_effort_ =
+      blink::mojom::AILanguageModelThinkingEffort::kNone;
 
   // Response content from append input that has not yet been emitted.
   std::string pending_response_;

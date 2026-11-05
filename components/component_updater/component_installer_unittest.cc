@@ -38,8 +38,10 @@
 #include "components/component_updater/component_updater_paths.h"
 #include "components/component_updater/component_updater_service.h"
 #include "components/component_updater/component_updater_service_internal.h"
+#include "components/component_updater/update_scheduler.h"
 #include "components/crx_file/crx_verifier.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/update_client/cancellation.h"
 #include "components/update_client/crx_update_item.h"
 #include "components/update_client/patcher.h"
 #include "components/update_client/test_configurator.h"
@@ -55,6 +57,7 @@
 namespace component_updater {
 namespace {
 
+using CancelMode = ::update_client::CancelMode;
 using Configurator = ::update_client::Configurator;
 using CrxUpdateItem = ::update_client::CrxUpdateItem;
 using TestConfigurator = ::update_client::TestConfigurator;
@@ -124,7 +127,10 @@ class MockUpdateClient : public UpdateClient {
               (const, override));
   MOCK_METHOD(bool, IsUpdating, (const std::string& id), (const, override));
   MOCK_METHOD(void, Stop, (), (override));
-  MOCK_METHOD(bool, Cancel, (const std::string& id), (override));
+  MOCK_METHOD(bool,
+              Cancel,
+              (const std::string& id, CancelMode mode),
+              (override));
   MOCK_METHOD(void,
               CleanupStaleDownloads,
               (base::Time older_than, base::OnceClosure callback),
@@ -205,8 +211,7 @@ class MockUpdateScheduler : public UpdateScheduler {
               Schedule,
               (base::TimeDelta initial_delay,
                base::TimeDelta delay,
-               const UserTask& user_task,
-               const OnStopTaskCallback& on_stop),
+               const UserTask& user_task),
               (override));
   MOCK_METHOD(void, Stop, (), (override));
 };
@@ -235,8 +240,7 @@ class ComponentInstallerTest : public testing::Test {
   void UnpackComplete(const update_client::Unpacker::Result& result);
   void Schedule(base::TimeDelta initial_delay,
                 base::TimeDelta delay,
-                const UpdateScheduler::UserTask& user_task,
-                const UpdateScheduler::OnStopTaskCallback& on_stop);
+                const UpdateScheduler::UserTask& user_task);
 
   const scoped_refptr<base::SequencedTaskRunner> main_thread_task_runner_ =
       base::SequencedTaskRunner::GetCurrentDefault();
@@ -257,13 +261,14 @@ ComponentInstallerTest::ComponentInstallerTest() {
   EXPECT_CALL(update_client(), AddObserver(_));
   auto scheduler = std::make_unique<MockUpdateScheduler>();
   scheduler_ = scheduler.get();
-  ON_CALL(*scheduler_, Schedule(_, _, _, _))
+  ON_CALL(*scheduler_, Schedule(_, _, _))
       .WillByDefault(Invoke(this, &ComponentInstallerTest::Schedule));
   update_client::RegisterPrefs(pref_->registry());
   RegisterComponentUpdateServicePrefs(pref_->registry());
   config_ = base::MakeRefCounted<TestConfigurator>(pref_.get());
   component_updater_ = std::make_unique<CrxUpdateService>(
-      config_, std::move(scheduler), update_client_, "");
+      config_, std::move(scheduler), update_client_, "",
+      /*update_checks_disabled=*/false);
 }
 
 ComponentInstallerTest::~ComponentInstallerTest() {
@@ -298,9 +303,8 @@ void ComponentInstallerTest::UnpackComplete(
 void ComponentInstallerTest::Schedule(
     base::TimeDelta initial_delay,
     base::TimeDelta delay,
-    const UpdateScheduler::UserTask& user_task,
-    const UpdateScheduler::OnStopTaskCallback& on_stop) {
-  user_task.Run(base::DoNothing());
+    const UpdateScheduler::UserTask& user_task) {
+  user_task.Run();
 }
 
 }  // namespace
@@ -348,7 +352,7 @@ TEST_F(ComponentInstallerTest, RegisterComponent) {
 
   EXPECT_CALL(update_client(), GetCrxUpdateState(id, _));
   EXPECT_CALL(update_client(), Stop());
-  EXPECT_CALL(scheduler(), Schedule(_, _, _, _));
+  EXPECT_CALL(scheduler(), Schedule(_, _, _));
   EXPECT_CALL(scheduler(), Stop());
 
   auto installer = base::MakeRefCounted<ComponentInstaller>(
@@ -445,7 +449,7 @@ TEST_F(ComponentInstallerTest, InstallerRegister_CheckSequence) {
 
   // Set up expectations for uninteresting calls on the mocks due to component
   // updater waking up after the component is registered.
-  EXPECT_CALL(scheduler(), Schedule(_, _, _, _));
+  EXPECT_CALL(scheduler(), Schedule(_, _, _));
   EXPECT_CALL(scheduler(), Stop());
   EXPECT_CALL(update_client(), Stop());
 

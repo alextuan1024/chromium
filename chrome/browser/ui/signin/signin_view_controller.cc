@@ -9,11 +9,13 @@
 #include <utility>
 
 #include "base/check_deref.h"
+#include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/scoped_observation.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -32,7 +34,6 @@
 #include "chrome/browser/ui/signin/signin_view_controller_delegate.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
-#include "chrome/browser/ui/webui/signin/signin_url_utils.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -48,15 +49,14 @@
 #include "components/signin/public/identity_manager/tribool.h"
 #include "components/supervised_user/core/common/features.h"
 #include "components/sync/base/data_type_histogram.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/core_account_id.h"
 #include "google_apis/gaia/gaia_id.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
@@ -70,18 +70,21 @@
 #include "chrome/browser/signin/logout_tab_helper.h"
 #include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/sync/sync_service_factory.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/signin/chrome_signout_confirmation_prompt.h"
-#include "chrome/browser/ui/signin/signin_qrcode_infobar.h"  // nogncheck
-#include "chrome/browser/ui/signin/signin_qrcode_infobar_delegate.h"  // nogncheck
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+#include "chrome/browser/ui/views/profiles/dice_web_signin_interception_bubble_view.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/infobars/content/content_infobar_manager.h"  // nogncheck
+#include "components/signin/core/browser/account_preview_data_service.h"
 #include "components/signin/public/base/account_consistency_method.h"
 #include "components/signin/public/identity_manager/accounts_mutator.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
@@ -102,6 +105,10 @@
 #include "chrome/browser/extensions/sync/extension_sync_util.h"
 #include "extensions/common/extension.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
+#if !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ui/webui/signin/signin_ui_error.h"
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 namespace {
 
@@ -139,79 +146,12 @@ class NewTabWebContentsObserver : public content::WebContentsObserver {
   base::OnceCallback<void(content::WebContents*)> callback_;
 };
 
-class SigninQRCodeInfoBarLoader
-    : public content::WebContentsObserver,
-      public content::WebContentsUserData<SigninQRCodeInfoBarLoader> {
- public:
-  ~SigninQRCodeInfoBarLoader() override = default;
-
-  // content::WebContentsObserver:
-  void ReadyToCommitNavigation(
-      content::NavigationHandle* navigation_handle) override {
-    if (!navigation_handle->IsInPrimaryMainFrame()) {
-      return;
-    }
-    ready_to_commit_ = true;
-    MaybeShowInfoBar();
-  }
-
-  void OnHybridTransportSupported(bool can_show) {
-    hybrid_supported_check_done_ = true;
-    can_show_infobar_ = can_show;
-    MaybeShowInfoBar();
-  }
-
- private:
-  explicit SigninQRCodeInfoBarLoader(content::WebContents* web_contents)
-      : content::WebContentsObserver(web_contents),
-        content::WebContentsUserData<SigninQRCodeInfoBarLoader>(*web_contents) {
-  }
-
-  void MaybeShowInfoBar() {
-    if (hybrid_supported_check_done_ && !can_show_infobar_) {
-      // We already know hybrid transport is not supported; no need to wait for
-      // navigation to commit.
-      web_contents()->RemoveUserData(UserDataKey());
-      return;
-    }
-    if (!ready_to_commit_ || !hybrid_supported_check_done_) {
-      // Wait for both events to complete.
-      return;
-    }
-    // Verify we are still on the sign-in page (e.g. the navigation wasn't
-    // redirected or cancelled).
-    DiceTabHelper* tab_helper = DiceTabHelper::FromWebContents(web_contents());
-    if (tab_helper && tab_helper->IsChromeSigninPage()) {
-      infobars::InfoBarManager* infobar_manager =
-          infobars::ContentInfoBarManager::FromWebContents(web_contents());
-      if (infobar_manager) {
-        auto delegate =
-            std::make_unique<SigninQRCodeInfoBarDelegate>(web_contents());
-        auto* model =
-            SigninQRCodeModel::GetOrCreateForWebContents(web_contents());
-        infobar_manager->AddInfoBar(
-            std::make_unique<SigninQRCodeInfoBar>(std::move(delegate), model));
-      }
-    }
-    web_contents()->RemoveUserData(UserDataKey());
-  }
-
-  bool ready_to_commit_ = false;
-  bool hybrid_supported_check_done_ = false;
-  bool can_show_infobar_ = false;
-
-  friend class content::WebContentsUserData<SigninQRCodeInfoBarLoader>;
-  WEB_CONTENTS_USER_DATA_KEY_DECL();
-};
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(SigninQRCodeInfoBarLoader);
-
 // Opens a new tab on |url| or reuses the current tab if it is the NTP.
 void ShowTabOverwritingNTP(BrowserWindowInterface* browser,
                            TabStripModel* tab_strip_model,
                            const GURL& url) {
   NavigateParams params(browser, url, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.window_action = NavigateParams::WindowAction::kShowWindow;
   params.user_gesture = false;
   params.tabstrip_add_types |= AddTabTypes::ADD_INHERIT_OPENER;
@@ -221,7 +161,7 @@ void ShowTabOverwritingNTP(BrowserWindowInterface* browser,
     const GURL& contents_url = contents->GetVisibleURL();
     if (contents_url == chrome::ChromeUINewTabURLAsGURL() ||
         search::IsInstantNTP(contents) || contents_url == url::kAboutBlankURL) {
-      params.disposition = WindowOpenDisposition::CURRENT_TAB;
+      params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
     }
   }
 
@@ -240,16 +180,6 @@ int FindDiceSigninTab(TabStripModel* tab_strip, const GURL& signin_url) {
     }
   }
   return -1;
-}
-
-// Returns the promo action to be used when signing with a new account.
-signin_metrics::PromoAction GetPromoActionForNewAccount(
-    signin::IdentityManager* identity_manager) {
-  return !identity_manager->GetAccountsWithRefreshTokens().empty()
-             ? signin_metrics::PromoAction::
-                   PROMO_ACTION_NEW_ACCOUNT_EXISTING_ACCOUNT
-             : signin_metrics::PromoAction::
-                   PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT;
 }
 
 // Returns if account extensions should be shown in the signout confirmation
@@ -318,32 +248,130 @@ void HandleSignoutConfirmationChoice(
   }
 }
 
-GURL GetSigninUrlForDiceSigninTab(
+// Parameters of the Dice signin tab opened by
+// `SigninViewController::ShowEnableHistorySyncTab()` and
+// `SigninViewController::ShowDiceAddAccountTab()`.
+struct DiceSigninTabParams {
+  signin_metrics::Reason reason = signin_metrics::Reason::kUnknownReason;
+  std::string email_hint;
+  GURL redirect_url;
+  signin::Flow flow = signin::Flow::NONE;
+};
+
+// URL of the Gaia page loaded in the Dice signin tab, with the information
+// needed to record metrics if it is loaded.
+struct DiceSigninUrlInfo {
+  GURL url;
+  // Set if the cookie jar was checked to select the reauth URL.
+  std::optional<signin::ReauthProceedToChallengeResult>
+      reauth_proceed_to_challenge_result;
+};
+
+// Returns the URL of the Gaia page loaded in the Dice signin tab. Does not
+// record metrics: the caller records them if it loads the URL.
+DiceSigninUrlInfo GetSigninUrlForDiceSigninTab(
     const signin::IdentityManager& identity_manager,
-    signin_metrics::AccessPoint access_point,
-    signin_metrics::Reason signin_reason,
-    const std::string& email_hint,
-    const GURL& continue_url) {
+    const DiceSigninTabParams& params) {
+  // We would like to redirect to the NTP, but it's not possible through the
+  // `continue_url`, because Gaia cannot redirect to chrome:// URLs. Use the
+  // google base URL instead here, and the `DiceTabHelper` redirect to the NTP
+  // later.
+  // Note: Gaia rejects some continue URLs as invalid and responds with HTTP
+  // error 400. This seems to happen in particular if the continue URL is not a
+  // Google-owned domain. Chrome cannot enforce that only valid URLs are used,
+  // because the set of valid URLs is not specified.
+  const GURL continue_url =
+      (params.redirect_url.is_empty() ||
+       !params.redirect_url.SchemeIsHTTPOrHTTPS())
+          ? GURL(UIThreadSearchTermsData().GoogleBaseURLValue())
+          : params.redirect_url;
+
   // Use the add account URL if it's a reauthentication, or if we are adding a
   // secondary account and already have a primary account.
   // TODO(crbug.com/425645725): Investigates simplifying the params such as the
   // signin_reason and its available values.
+  const bool is_reauth =
+      params.reason == signin_metrics::Reason::kReauthentication;
+
+  // For reauth, use `/AccountChooser` with the "Proceed To Challenge"
+  // capability so Gaia skips the identifier page and directly shows the
+  // challenge (e.g. password) page, unless the cookie jar shows that Gaia
+  // would complete the flow without a new sign-in.
+  std::optional<signin::ReauthProceedToChallengeResult> reauth_result;
+  if (is_reauth && !params.email_hint.empty() &&
+      base::FeatureList::IsEnabled(switches::kReauthSkipIdentifierPage)) {
+    reauth_result = signin::GetReauthProceedToChallengeResult(
+        params.email_hint, identity_manager.GetAccountsInCookieJar());
+    if (reauth_result ==
+            signin::ReauthProceedToChallengeResult::kProceedToChallenge ||
+        reauth_result ==
+            signin::ReauthProceedToChallengeResult::kAccountNotInCookies) {
+      return {.url = signin::GetChromeReauthURL({.email = params.email_hint,
+                                                 .continue_url = continue_url,
+                                                 .proceed_to_challenge = true}),
+              .reauth_proceed_to_challenge_result = reauth_result};
+    }
+  }
+
   bool use_add_account_url =
-      signin_reason == signin_metrics::Reason::kReauthentication ||
-      (signin_reason == signin_metrics::Reason::kAddSecondaryAccount &&
+      is_reauth ||
+      (params.reason == signin_metrics::Reason::kAddSecondaryAccount &&
        identity_manager.HasPrimaryAccount(signin::ConsentLevel::kSignin));
 
   if (use_add_account_url) {
-    return signin::GetAddAccountURLForDice(email_hint, continue_url);
+    return {
+        .url = signin::GetAddAccountURLForDice(params.email_hint, continue_url),
+        .reauth_proceed_to_challenge_result = reauth_result};
   }
 
-  signin::ChromeSyncUrlArgs sync_url_args{.email = email_hint,
-                                          .continue_url = continue_url};
-  if (access_point == signin_metrics::AccessPoint::kExtensions &&
-      signin_reason == signin_metrics::Reason::kAddSecondaryAccount) {
-    sync_url_args.flow = signin::Flow::PROMO;
+  signin::ChromeSyncUrlArgs sync_url_args{.email = params.email_hint,
+                                          .continue_url = continue_url,
+                                          .flow = params.flow};
+  return {.url = signin::GetChromeSyncURLForDice(sync_url_args)};
+}
+
+DiceSigninTabParams GetEnableHistorySyncTabParams(
+    const signin::IdentityManager& identity_manager,
+    const std::string& email_hint) {
+  DiceSigninTabParams params{
+      .reason = signin_metrics::Reason::kSigninPrimaryAccount,
+      .email_hint = email_hint,
+      .redirect_url = chrome::ChromeUINewTabURLAsGURL()};
+  if (identity_manager.HasPrimaryAccount(signin::ConsentLevel::kSync)) {
+    // Avoids asking for the Sync consent as it has been already given.
+    params.reason = signin_metrics::Reason::kReauthentication;
+    params.email_hint =
+        identity_manager.GetPrimaryAccountInfo(signin::ConsentLevel::kSync)
+            .email;
+    CHECK(email_hint.empty() ||
+              gaia::AreEmailsSame(email_hint, params.email_hint),
+          base::NotFatalUntil::M162);
   }
-  return signin::GetChromeSyncURLForDice(sync_url_args);
+  return params;
+}
+
+DiceSigninTabParams GetDiceAddAccountTabParams(
+    const signin::IdentityManager& identity_manager,
+    signin_metrics::AccessPoint access_point,
+    const std::string& email_hint) {
+  DiceSigninTabParams params{
+      .reason =
+          identity_manager.HasPrimaryAccount(signin::ConsentLevel::kSignin)
+              ? signin_metrics::Reason::kAddSecondaryAccount
+              : signin_metrics::Reason::kSigninPrimaryAccount,
+      .email_hint = email_hint,
+      .flow = (access_point == signin_metrics::AccessPoint::kExtensions)
+                  ? signin::Flow::PROMO
+                  : signin::Flow::NONE};
+  if (!email_hint.empty() &&
+      !identity_manager.FindExtendedAccountInfoByEmailAddress(email_hint)
+           .IsEmpty()) {
+    // If the account is already known, this is a reauth. Besides metrics, this
+    // selects the reauth/add-account Gaia URL, and (when signed out) means the
+    // tab does not track a Chrome sign-in flow in `DiceTabHelper`.
+    params.reason = signin_metrics::Reason::kReauthentication;
+  }
+  return params;
 }
 
 ChromeSignoutConfirmationPromptVariant GetSignoutConfirmationPromptVariant(
@@ -370,6 +398,93 @@ ChromeSignoutConfirmationPromptVariant GetSignoutConfirmationPromptVariant(
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 }  // namespace
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+
+class SigninViewController::ScopedInterceptBubbleHandle
+    : public ScopedWebSigninInterceptionBubbleHandle {
+ public:
+  explicit ScopedInterceptBubbleHandle(base::OnceClosure on_destroy)
+      : on_destroy_(std::move(on_destroy)) {}
+
+  ~ScopedInterceptBubbleHandle() override {
+    if (on_destroy_) {
+      std::move(on_destroy_).Run();
+    }
+  }
+
+ private:
+  base::OnceClosure on_destroy_;
+};
+
+class SigninViewController::PendingInterceptBubble
+    : public signin::IdentityManager::Observer {
+ public:
+  PendingInterceptBubble(
+      signin::IdentityManager* identity_manager,
+      const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters,
+      base::OnceCallback<void(SigninInterceptionResult)> callback,
+      base::OnceClosure on_user_not_eligible)
+      : bubble_parameters_(bubble_parameters),
+        callback_(std::move(callback)),
+        on_user_not_eligible_(std::move(on_user_not_eligible)) {
+    if (identity_manager) {
+      identity_manager_observation_.Observe(identity_manager);
+    }
+  }
+
+  ~PendingInterceptBubble() override = default;
+
+  const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters()
+      const {
+    return bubble_parameters_;
+  }
+
+  base::OnceCallback<void(SigninInterceptionResult)> TakeCallback() {
+    return std::move(callback_);
+  }
+
+  // signin::IdentityManager::Observer:
+  void OnPrimaryAccountChanged(
+      const signin::PrimaryAccountChangeEvent& event_details) override {
+    if (bubble_parameters_.IsChromeSignin() &&
+        event_details.GetEventTypeFor(signin::ConsentLevel::kSignin) ==
+            signin::PrimaryAccountChangeEvent::Type::kSet &&
+        on_user_not_eligible_) {
+      NotifyUserNotEligible();
+    }
+  }
+
+  void OnExtendedAccountInfoRemoved(const AccountInfo& info) override {
+    if (info.GetAccountId() ==
+            bubble_parameters_.intercepted_account.GetAccountId() &&
+        on_user_not_eligible_) {
+      NotifyUserNotEligible();
+    }
+  }
+
+  void OnIdentityManagerShutdown(
+      signin::IdentityManager* identity_manager) override {
+    identity_manager_observation_.Reset();
+  }
+
+ private:
+  void NotifyUserNotEligible() {
+    identity_manager_observation_.Reset();
+    base::OnceClosure callback = std::move(on_user_not_eligible_);
+    // `callback` destroys `this`; do not access members afterward.
+    std::move(callback).Run();
+  }
+
+  WebSigninInterceptor::Delegate::BubbleParameters bubble_parameters_;
+  base::OnceCallback<void(SigninInterceptionResult)> callback_;
+  base::OnceClosure on_user_not_eligible_;
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
+};
+
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(SigninViewController,
                                       kSignoutConfirmationDialogViewElementId);
@@ -399,6 +514,10 @@ SigninViewController::~SigninViewController() = default;
 
 void SigninViewController::TearDownPreBrowserWindowDestruction() {
   CloseModalSignin();
+  CloseBubbleSignin();
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  CloseInterceptBubble();
+#endif
 }
 
 void SigninViewController::AddObserver(
@@ -412,6 +531,7 @@ void SigninViewController::RemoveObserver(
 }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
+
 // static
 bool SigninViewController::IsNTPTab(content::WebContents* contents) {
   if (!contents) {
@@ -422,14 +542,51 @@ bool SigninViewController::IsNTPTab(content::WebContents* contents) {
          search::IsInstantNTP(contents) || contents_url == url::kAboutBlankURL;
 }
 
-void SigninViewController::ShowSignin(signin_metrics::AccessPoint access_point,
-                                      const GURL& redirect_url) {
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(GetProfile());
-  signin_metrics::PromoAction promo_action =
-      GetPromoActionForNewAccount(identity_manager);
-  ShowDiceSigninTab(signin_metrics::Reason::kSigninPrimaryAccount, access_point,
-                    promo_action, /*email_hint=*/std::string(), redirect_url);
+// static
+bool SigninViewController::HasDiceSigninTabForExtensions(
+    Profile* profile,
+    bool enable_history_sync,
+    const std::string& email_hint) {
+  CHECK(profile);
+  std::optional<GURL> signin_url;
+  bool found = false;
+  ProfileBrowserCollection::GetForProfile(profile)->ForEach(
+      [&](BrowserWindowInterface* browser) {
+        // Only check open tabbed browsers.
+        if (browser->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
+            browser->IsDeleteScheduled()) {
+          return true;  // Continue iterating.
+        }
+        TabStripModel* tab_strip = browser->GetTabStripModel();
+        for (int tab_index = 0; tab_index < tab_strip->count(); ++tab_index) {
+          DiceTabHelper* tab_helper = DiceTabHelper::FromWebContents(
+              tab_strip->GetWebContentsAt(tab_index));
+          // Ignore tabs that are not currently on a Chrome signin page.
+          if (!tab_helper || !tab_helper->IsChromeSigninPage()) {
+            continue;
+          }
+          // Lazily compute the signin URL, as it may query the Gaia cookies.
+          if (!signin_url) {
+            const signin::IdentityManager& identity_manager =
+                CHECK_DEREF(IdentityManagerFactory::GetForProfile(profile));
+            const DiceSigninTabParams params =
+                enable_history_sync
+                    ? GetEnableHistorySyncTabParams(identity_manager,
+                                                    email_hint)
+                    : GetDiceAddAccountTabParams(
+                          identity_manager,
+                          signin_metrics::AccessPoint::kExtensions, email_hint);
+            signin_url =
+                GetSigninUrlForDiceSigninTab(identity_manager, params).url;
+          }
+          if (tab_helper->signin_url() == *signin_url) {
+            found = true;
+            return false;  // Stop iterating.
+          }
+        }
+        return true;  // Continue iterating.
+      });
+  return found;
 }
 
 void SigninViewController::ShowModalInterceptFirstRunExperienceDialog(
@@ -522,7 +679,7 @@ void SigninViewController::MaybeShowChromeSigninDialogForExtensions(
   // Create a new tab page and wait for the navigation to complete.
   NavigateParams params(&browser_.get(), chrome::ChromeUINewTabURLAsGURL(),
                         ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.window_action = NavigateParams::WindowAction::kShowWindow;
   params.user_gesture = false;
   params.tabstrip_add_types |= AddTabTypes::ADD_INHERIT_OPENER;
@@ -562,19 +719,202 @@ void SigninViewController::ShowModalSigninEmailConfirmationDialog(
           std::move(callback)),
       GetOnModalDialogClosedCallback());
 }
-#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
 void SigninViewController::ShowCrossDeviceSigninQrBubble(
     GURL qr_code_url,
-    base::OnceClosure closing_callback) {
+    base::OnceClosure closing_callback,
+    CrossDeviceSigninPromoEntryPoint entry_point) {
   CloseBubbleSignin();
+  pending_qr_bubble_closing_callback_ = std::move(closing_callback);
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(GetProfile());
+  const CoreAccountId expected_account_id =
+      identity_manager
+          ? identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin)
+          : CoreAccountId();
+  BrowserView* browser_view =
+      BrowserView::GetBrowserViewForBrowser(&browser_.get());
+  AvatarToolbarButtonInterface* avatar_button =
+      browser_view ? browser_view->toolbar_button_provider()
+                         ->GetAvatarToolbarButtonInterface()
+                   : nullptr;
+  if (avatar_button) {
+    qr_bubble_anchor_callback_.Reset(base::BindOnce(
+        &SigninViewController::OnCrossDeviceSigninQrBubbleAnchorResolved,
+        weak_ptr_factory_.GetWeakPtr(), std::move(qr_code_url), entry_point,
+        expected_account_id));
+    avatar_button->RunWhenVisible(qr_bubble_anchor_callback_.callback());
+    return;
+  }
+  OnCrossDeviceSigninQrBubbleAnchorResolved(
+      std::move(qr_code_url), entry_point, expected_account_id,
+      views::BubbleAnchor(), base::ScopedClosureRunner());
+}
+
+void SigninViewController::OnCrossDeviceSigninQrBubbleAnchorResolved(
+    GURL qr_code_url,
+    CrossDeviceSigninPromoEntryPoint entry_point,
+    const CoreAccountId& expected_account_id,
+    views::BubbleAnchor anchor,
+    base::ScopedClosureRunner keep_visible) {
+  // `RunWhenVisible()` can resolve asynchronously while an overflowed avatar
+  // button pops out. Re-verify that the same primary account is still signed in
+  // with a valid refresh token (matching `CrossDeviceSigninQrWebView`'s
+  // `IdentityManager::Observer` checks) before creating the bubble.
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(GetProfile());
+  const CoreAccountId primary_account_id =
+      identity_manager
+          ? identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin)
+          : CoreAccountId();
+  if (expected_account_id.empty() ||
+      primary_account_id != expected_account_id ||
+      !identity_manager->HasAccountWithRefreshToken(primary_account_id) ||
+      identity_manager->HasAccountWithRefreshTokenInPersistentErrorState(
+          primary_account_id)) {
+    keep_visible.RunAndReset();
+    base::OnceClosure closing_callback =
+        std::move(pending_qr_bubble_closing_callback_);
+    if (closing_callback) {
+      std::move(closing_callback).Run();
+    }
+    return;
+  }
   auto delegate = ::CreateCrossDeviceSigninQrBubble(
-      &*browser_, std::move(qr_code_url), std::move(closing_callback));
+      &*browser_, anchor, std::move(keep_visible), std::move(qr_code_url),
+      std::move(pending_qr_bubble_closing_callback_), entry_point);
   bubble_widget_ = views::BubbleDialogDelegate::CreateBubble(
       delegate.release(),
       base::BindOnce(&SigninViewController::OnBubbleClosed, AsWeakPtr()));
 }
+
+std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle>
+SigninViewController::ShowSigninInterceptionBubble(
+    const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters,
+    base::OnceCallback<void(SigninInterceptionResult)> callback) {
+  CloseInterceptBubble();
+  RequestInterceptionBubble(bubble_parameters, std::move(callback));
+  return std::make_unique<ScopedInterceptBubbleHandle>(
+      base::BindOnce(&SigninViewController::CloseInterceptBubble,
+                     intercept_bubble_weak_factory_.GetWeakPtr()));
+}
+
+void SigninViewController::ShowChromeSigninBubble(
+    const AccountInfo& account,
+    signin_metrics::AccessPoint access_point) {
+  CloseInterceptBubble();
+
+  std::optional<signin::AccountPreviewDataService::AccountPreviewPreference>
+      account_preview_preference;
+  if (signin::AccountPreviewDataService* account_preview_data_service =
+          AccountPreviewDataServiceFactory::GetForProfile(GetProfile())) {
+    if (std::optional<
+            signin::AccountPreviewDataService::AccountPreviewPreference>
+            preferred_account =
+                account_preview_data_service->GetPreferredAccountForSignin();
+        preferred_account.has_value() &&
+        preferred_account->gaia_id == account.GetGaiaId()) {
+      account_preview_preference = std::move(preferred_account);
+    }
+  }
+
+  WebSigninInterceptor::Delegate::BubbleParameters bubble_parameters(
+      WebSigninInterceptor::SigninInterceptionType::kChromeSigninNonIntercept,
+      /*intercepted_account=*/account,
+      /*primary_account=*/AccountInfo());
+  bubble_parameters.account_preview_preference =
+      std::move(account_preview_preference);
+  RequestInterceptionBubble(
+      bubble_parameters,
+      base::BindOnce(&SigninViewController::OnChromeSigninBubbleResult,
+                     intercept_bubble_weak_factory_.GetWeakPtr(),
+                     account.GetCoreAccountInfo(), access_point));
+}
+
+void SigninViewController::RequestInterceptionBubble(
+    const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters,
+    base::OnceCallback<void(SigninInterceptionResult)> callback) {
+  CHECK(!intercept_bubble_);
+  CHECK(!pending_intercept_bubble_);
+  pending_intercept_bubble_ = std::make_unique<PendingInterceptBubble>(
+      IdentityManagerFactory::GetForProfile(GetProfile()), bubble_parameters,
+      std::move(callback),
+      base::BindOnce(
+          &SigninViewController::DismissPendingInterceptBubbleForIneligibleUser,
+          intercept_bubble_weak_factory_.GetWeakPtr()));
+  BrowserView* browser_view =
+      BrowserView::GetBrowserViewForBrowser(&browser_.get());
+  AvatarToolbarButtonInterface* avatar_button =
+      browser_view ? browser_view->toolbar_button_provider()
+                         ->GetAvatarToolbarButtonInterface()
+                   : nullptr;
+  if (!avatar_button) {
+    OnInterceptionBubbleAnchorResolved(views::BubbleAnchor(),
+                                       base::ScopedClosureRunner());
+    return;
+  }
+  avatar_button->RunWhenVisible(
+      base::BindOnce(&SigninViewController::OnInterceptionBubbleAnchorResolved,
+                     intercept_bubble_weak_factory_.GetWeakPtr()));
+}
+
+void SigninViewController::OnInterceptionBubbleAnchorResolved(
+    views::BubbleAnchor anchor,
+    base::ScopedClosureRunner keep_visible) {
+  CHECK(!intercept_bubble_);
+  CHECK(pending_intercept_bubble_);
+  std::unique_ptr<PendingInterceptBubble> pending =
+      std::move(pending_intercept_bubble_);
+  intercept_bubble_ = DiceWebSigninInterceptionBubbleView::CreateBubble(
+      &browser_.get(), anchor, pending->bubble_parameters(),
+      pending->TakeCallback(), std::move(keep_visible));
+}
+
+void SigninViewController::DismissPendingInterceptBubbleForIneligibleUser() {
+  CHECK(!intercept_bubble_);
+  CHECK(pending_intercept_bubble_);
+  intercept_bubble_weak_factory_.InvalidateWeakPtrs();
+  std::unique_ptr<PendingInterceptBubble> pending =
+      std::move(pending_intercept_bubble_);
+  DiceWebSigninInterceptionBubbleView::RecordInterceptionDismissed(
+      pending->bubble_parameters(), GetProfile(),
+      SigninInterceptionDismissReason::kUserNotEligible);
+  pending->TakeCallback().Run(SigninInterceptionResult::kDismissed);
+}
+
+void SigninViewController::OnChromeSigninBubbleResult(
+    const CoreAccountInfo& account,
+    signin_metrics::AccessPoint access_point,
+    SigninInterceptionResult result) {
+  CloseInterceptBubble();
+  if (result == SigninInterceptionResult::kAccepted) {
+    signin_ui_util::SignInFromSingleAccountPromo(GetProfile(), account,
+                                                 access_point);
+  }
+}
+
+void SigninViewController::CloseInterceptBubble() {
+  // Invalidate callbacks for the current interception bubble session (pending
+  // anchor resolution, `OnChromeSigninBubbleResult()`, and handle destruction).
+  // Closing a bubble widget is asynchronous: if a Chrome Signin bubble is
+  // preempted by a second bubble, `intercept_bubble_` points to the second
+  // bubble before the first widget is destroyed, so the first widget's late
+  // `kIgnored` callback must not close the second bubble.
+  intercept_bubble_weak_factory_.InvalidateWeakPtrs();
+  std::unique_ptr<PendingInterceptBubble> pending =
+      std::move(pending_intercept_bubble_);
+  if (intercept_bubble_) {
+    intercept_bubble_->Close();
+    intercept_bubble_.reset();
+  }
+  if (pending) {
+    DiceWebSigninInterceptionBubbleView::RecordInterceptionResult(
+        pending->bubble_parameters(), GetProfile(),
+        SigninInterceptionResult::kIgnored);
+    pending->TakeCallback().Run(SigninInterceptionResult::kIgnored);
+  }
+}
+
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 void SigninViewController::OnBubbleClosed(views::Widget::ClosedReason reason) {
@@ -584,24 +924,10 @@ void SigninViewController::OnBubbleClosed(views::Widget::ClosedReason reason) {
   }
 }
 
-void SigninViewController::ShowModalSyncConfirmationDialog(
-    bool is_signin_intercept,
-    bool is_sync_promo) {
-  CloseModalSignin();
-  dialog_ = std::make_unique<SigninModalDialogImpl>(
-      SigninViewControllerDelegate::CreateSyncConfirmationDelegate(
-          &browser_.get(),
-          is_signin_intercept ? SyncConfirmationStyle::kSigninInterceptModal
-                              : SyncConfirmationStyle::kDefaultModal,
-          is_sync_promo),
-      GetOnModalDialogClosedCallback());
-}
-
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 void SigninViewController::ShowModalHistorySyncOptInDialog(
     bool should_close_modal_dialog,
     HistorySyncOptinHelper::FlowCompletedCallback callback) {
-  CHECK(syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
   CloseModalSignin();
   dialog_ = std::make_unique<SigninModalDialogImpl>(
       SigninViewControllerDelegate::CreateSyncHistoryOptInDelegate(
@@ -625,12 +951,20 @@ void SigninViewController::ShowModalManagedUserNoticeDialog(
 #endif
 }
 
-void SigninViewController::ShowModalSigninErrorDialog() {
+#if !BUILDFLAG(IS_CHROMEOS)
+void SigninViewController::ShowModalSigninErrorDialog(
+    const SigninUIError& error) {
+  // TODO(crbug.com/40225985): Check if the condition should be `!error.IsOk()`.
+  if (error.message().empty()) {
+    return;
+  }
   CloseModalSignin();
   dialog_ = std::make_unique<SigninModalDialogImpl>(
-      SigninViewControllerDelegate::CreateSigninErrorDelegate(&browser_.get()),
+      SigninViewControllerDelegate::CreateSigninErrorDelegate(&browser_.get(),
+                                                              error),
       GetOnModalDialogClosedCallback());
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 bool SigninViewController::ShowsModalDialog() {
   return dialog_ != nullptr;
@@ -644,10 +978,15 @@ void SigninViewController::CloseModalSignin() {
     }
   }
 
-  DCHECK(!dialog_);
+  CHECK(!dialog_, base::NotFatalUntil::M162);
 }
 
 void SigninViewController::CloseBubbleSignin() {
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  qr_bubble_anchor_callback_.Cancel();
+  base::OnceClosure closing_callback =
+      std::move(pending_qr_bubble_closing_callback_);
+#endif
   if (bubble_widget_) {
     // Extract the pointer so bubble_widget_ is nullified immediately.
     auto widget = std::move(bubble_widget_);
@@ -655,6 +994,11 @@ void SigninViewController::CloseBubbleSignin() {
     base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
         FROM_HERE, std::move(widget));
   }
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  if (closing_callback) {
+    std::move(closing_callback).Run();
+  }
+#endif
 }
 
 void SigninViewController::SetModalSigninHeight(int height) {
@@ -677,7 +1021,8 @@ void SigninViewController::ShowDiceSigninTab(
     signin_metrics::AccessPoint access_point,
     signin_metrics::PromoAction promo_action,
     const std::string& email_hint,
-    const GURL& redirect_url) {
+    const GURL& redirect_url,
+    signin::Flow signin_flow) {
 #if DCHECK_IS_ON()
   if (!AccountConsistencyModeManager::IsDiceEnabledForProfile(GetProfile())) {
     // Developers often fall into the trap of not configuring the OAuth client
@@ -699,41 +1044,37 @@ void SigninViewController::ShowDiceSigninTab(
   }
 #endif
 
-  // We would like to redirect to the NTP, but it's not possible through the
-  // `continue_url`, because Gaia cannot redirect to chrome:// URLs. Use the
-  // google base URL instead here, and the `DiceTabHelper` redirect to the NTP
-  // later.
-  // Note: Gaia rejects some continue URLs as invalid and responds with HTTP
-  // error 400. This seems to happen in particular if the continue URL is not a
-  // Google-owned domain. Chrome cannot enforce that only valid URLs are used,
-  // because the set of valid URLs is not specified.
-  const GURL continue_url =
-      (redirect_url.is_empty() || !redirect_url.SchemeIsHTTPOrHTTPS())
-          ? GURL(UIThreadSearchTermsData().GoogleBaseURLValue())
-          : redirect_url;
-
-  const GURL signin_url = GetSigninUrlForDiceSigninTab(
-      *IdentityManagerFactory::GetForProfile(GetProfile()), access_point,
-      signin_reason, email_hint, continue_url);
+  const DiceSigninUrlInfo signin_url_info = GetSigninUrlForDiceSigninTab(
+      *IdentityManagerFactory::GetForProfile(GetProfile()),
+      {.reason = signin_reason,
+       .email_hint = email_hint,
+       .redirect_url = redirect_url,
+       .flow = signin_flow});
+  const GURL& signin_url = signin_url_info.url;
 
   // Check if there is already a signin-tab open.
   const int dice_tab_index = FindDiceSigninTab(GetTabStripModel(), signin_url);
   if (dice_tab_index != -1) {
-    if (access_point != signin_metrics::AccessPoint::kExtensions) {
-      // Extensions do not activate the tab to prevent misbehaving extensions
-      // from keeping the signin tab focused.
-      tab_strip_model_->ActivateTabAt(
-          dice_tab_index, TabStripUserGestureDetails(
-                              TabStripUserGestureDetails::GestureType::kOther));
+    // Extensions are handled earlier: `SigninUiDelegateImplDice` returns early
+    // when `HasDiceSigninTabForExtensions()` finds the tab.
+    CHECK_NE(access_point, signin_metrics::AccessPoint::kExtensions);
+    tab_strip_model_->ActivateTabAt(
+        dice_tab_index, TabStripUserGestureDetails(
+                            TabStripUserGestureDetails::GestureType::kOther));
 
-      // Update the access point of the signin tab, so that the next signin is
-      // recorded from the latest access point.
-      DiceTabHelper::FromWebContents(
-          tab_strip_model_->GetActiveTab()->GetContents())
-          ->SetAccessPoint(access_point);
-    }
+    // Update the access point of the signin tab, so that the next signin is
+    // recorded from the latest access point.
+    DiceTabHelper::FromWebContents(
+        tab_strip_model_->GetActiveTab()->GetContents())
+        ->SetAccessPoint(access_point);
     // Do not create a new signin tab, because there is already one.
     return;
+  }
+
+  // Record metrics only when opening a new signin tab, not when reusing one.
+  if (signin_url_info.reauth_proceed_to_challenge_result) {
+    signin::RecordReauthProceedToChallengeResult(
+        *signin_url_info.reauth_proceed_to_challenge_result);
   }
 
   ShowTabOverwritingNTP(&browser_.get(), GetTabStripModel(), signin_url);
@@ -743,10 +1084,11 @@ void SigninViewController::ShowDiceSigninTab(
   // Checks that we have right contents, in which the signin page is being
   // loaded. Note that we need to check the original URL, being mindful of
   // possible redirects, but also the navigation hasn't happened yet.
-  DCHECK(active_contents);
-  DCHECK_EQ(
+  CHECK(active_contents, base::NotFatalUntil::M162);
+  CHECK_EQ(
       signin_url,
-      active_contents->GetController().GetVisibleEntry()->GetUserTypedURL());
+      active_contents->GetController().GetVisibleEntry()->GetUserTypedURL(),
+      base::NotFatalUntil::M162);
   DiceTabHelper::CreateForWebContents(active_contents);
   DiceTabHelper* tab_helper = DiceTabHelper::FromWebContents(active_contents);
 
@@ -755,64 +1097,30 @@ void SigninViewController::ShowDiceSigninTab(
   tab_helper->InitializeSigninFlow(
       signin_url, access_point, signin_reason, promo_action, redirect_url,
       /*record_signin_started_metrics=*/true,
-      DiceTabHelper::GetEnableSyncCallbackForBrowser(),
       DiceTabHelper::GetHistorySyncOptinCallbackForBrowser(),
       DiceTabHelper::OnSigninHeaderReceived(),
       DiceTabHelper::GetShowSigninErrorCallbackForBrowser());
-
-  if (switches::IsMagiChromePasskeyBannerEnabled()) {
-    SigninQRCodeInfoBarLoader::CreateForWebContents(active_contents);
-    signin::IsHybridTransportSupportedForQrCodeSignin(base::BindOnce(
-        [](base::WeakPtr<content::WebContents> web_contents, bool can_start) {
-          if (!web_contents) {
-            return;
-          }
-          if (auto* loader = SigninQRCodeInfoBarLoader::FromWebContents(
-                  web_contents.get())) {
-            loader->OnHybridTransportSupported(can_start);
-          }
-        },
-        active_contents->GetWeakPtr()));
-  }
 }
 
-void SigninViewController::ShowDiceEnableSyncTab(
+void SigninViewController::ShowEnableHistorySyncTab(
     signin_metrics::AccessPoint access_point,
     signin_metrics::PromoAction promo_action,
     const std::string& email_hint) {
-  signin_metrics::Reason reason = signin_metrics::Reason::kSigninPrimaryAccount;
-  std::string email_to_use = email_hint;
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(GetProfile());
-  if (identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync)) {
-    // Avoids asking for the Sync consent as it has been already given.
-    reason = signin_metrics::Reason::kReauthentication;
-    email_to_use =
-        identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSync)
-            .email;
-    DCHECK(email_hint.empty() || gaia::AreEmailsSame(email_hint, email_to_use));
-  }
-  ShowDiceSigninTab(reason, access_point, promo_action, email_to_use,
-                    chrome::ChromeUINewTabURLAsGURL());
+  const DiceSigninTabParams params = GetEnableHistorySyncTabParams(
+      *IdentityManagerFactory::GetForProfile(GetProfile()), email_hint);
+  ShowDiceSigninTab(params.reason, access_point, promo_action,
+                    params.email_hint, params.redirect_url, params.flow);
 }
 
 void SigninViewController::ShowDiceAddAccountTab(
     signin_metrics::AccessPoint access_point,
     const std::string& email_hint) {
-  signin_metrics::Reason reason = signin_metrics::Reason::kAddSecondaryAccount;
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(GetProfile());
-  if (!email_hint.empty() &&
-      !identity_manager->FindExtendedAccountInfoByEmailAddress(email_hint)
-           .IsEmpty()) {
-    // Use more precise `signin_metrics::Reason` if we know that it's a reauth.
-    // This only has an impact on metrics.
-    reason = signin_metrics::Reason::kReauthentication;
-  }
-
-  ShowDiceSigninTab(reason, access_point,
+  const DiceSigninTabParams params = GetDiceAddAccountTabParams(
+      *IdentityManagerFactory::GetForProfile(GetProfile()), access_point,
+      email_hint);
+  ShowDiceSigninTab(params.reason, access_point,
                     signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO,
-                    email_hint, /*redirect_url=*/GURL());
+                    params.email_hint, params.redirect_url, params.flow);
 }
 
 void SigninViewController::ShowGaiaLogoutTab(
@@ -839,7 +1147,7 @@ void SigninViewController::ShowGaiaLogoutTab(
   // LogoutTabHelper deletes itself.
   content::WebContents* logout_tab_contents =
       tab_strip_model_->GetActiveWebContents();
-  DCHECK(logout_tab_contents);
+  CHECK(logout_tab_contents, base::NotFatalUntil::M162);
   LogoutTabHelper::CreateForWebContents(logout_tab_contents);
 }
 
@@ -1004,7 +1312,7 @@ void SigninViewController::ShowSignoutConfirmationPrompt(
 
 content::WebContents*
 SigninViewController::GetModalDialogWebContentsForTesting() {
-  DCHECK(dialog_);
+  CHECK(dialog_, base::NotFatalUntil::M162);
   return dialog_->GetModalDialogWebContentsForTesting();  // IN-TEST
 }
 

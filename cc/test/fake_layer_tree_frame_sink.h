@@ -15,6 +15,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/memory/weak_ptr.h"
+#include "cc/test/fake_layer_context.h"
 #include "cc/trees/layer_tree_frame_sink.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/frame_timing_details.h"
@@ -112,6 +113,11 @@ class FakeLayerTreeFrameSink : public LayerTreeFrameSink {
   viz::CompositorFrame* last_sent_frame() { return last_sent_frame_.get(); }
   size_t num_sent_frames() { return num_sent_frames_; }
 
+  // What the LayerContexts created by this sink (in TreesInViz mode) received.
+  const FakeLayerContext::Updates& layer_context_updates() const {
+    return layer_context_updates_;
+  }
+
   LayerTreeFrameSinkClient* client() { return client_; }
 
   const std::vector<viz::TransferableResource>& resources_held_by_parent() {
@@ -122,6 +128,12 @@ class FakeLayerTreeFrameSink : public LayerTreeFrameSink {
 
   void ReturnResourcesHeldByParent();
 
+  // When false, resources held by the parent are only returned through an
+  // explicit ReturnResourcesHeldByParent() call, not on the next submit or on
+  // DetachFromClient(), like a sink whose Viz side never returns them.
+  void set_auto_return_resources(bool auto_return) {
+    auto_return_resources_ = auto_return;
+  }
   // A BeginFrame request usually comes with the frames that have been
   // presented. This allows a test to inform the compositor when a frame should
   // be considered as presented to the user.
@@ -137,11 +149,13 @@ class FakeLayerTreeFrameSink : public LayerTreeFrameSink {
   size_t num_sent_frames_ = 0;
   std::vector<viz::TransferableResource> resources_held_by_parent_;
   gfx::Rect last_swap_rect_;
+  bool auto_return_resources_ = true;
 
  private:
   void DidReceiveCompositorFrameAck();
 
   std::unique_ptr<viz::BeginFrameSource> begin_frame_source_;
+  FakeLayerContext::Updates layer_context_updates_;
   base::WeakPtrFactory<FakeLayerTreeFrameSink> weak_ptr_factory_{this};
 };
 

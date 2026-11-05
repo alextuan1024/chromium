@@ -6,7 +6,6 @@
 
 #include <sys/types.h>
 
-#include <cstdint>
 #include <utility>
 
 #include "base/check_op.h"
@@ -214,7 +213,7 @@ class SynchronousCompositorProxyRegistry
       proxy_->SetLayerTreeFrameSink(sink_);
   }
 
-  SynchronousCompositorProxy* proxy() { return proxy_.get(); }
+  SynchronousCompositorProxy* Proxy() { return proxy_.get(); }
 
   void RegisterLayerTreeFrameSink(
       SynchronousLayerTreeFrameSink* layer_tree_frame_sink) override {
@@ -576,8 +575,8 @@ void WidgetInputHandlerManager::AttachSynchronousCompositor(
     mojo::PendingAssociatedReceiver<mojom::blink::SynchronousCompositor>
         compositor_request) {
   DCHECK(synchronous_compositor_registry_);
-  if (synchronous_compositor_registry_->proxy()) {
-    synchronous_compositor_registry_->proxy()->BindChannel(
+  if (synchronous_compositor_registry_->Proxy()) {
+    synchronous_compositor_registry_->Proxy()->BindChannel(
         std::move(control_host), std::move(host),
         std::move(compositor_request));
   }
@@ -1298,6 +1297,16 @@ void WidgetInputHandlerManager::UpdateBrowserControlsState(
   DCHECK(InputThreadTaskRunner()->BelongsToCurrentThread());
   input_handler_proxy_->UpdateBrowserControlsState(
       constraints, current, animate, offset_tag_modifications);
+}
+
+void WidgetInputHandlerManager::StartBrowserControlsAnimation(
+    const cc::BrowserControlsAnimationParams& params) {
+  if (!input_handler_proxy_) {
+    return;
+  }
+
+  DCHECK(InputThreadTaskRunner()->BelongsToCurrentThread());
+  input_handler_proxy_->StartBrowserControlsAnimation(params);
 }
 
 void WidgetInputHandlerManager::FlushCompositorQueueForTesting() {

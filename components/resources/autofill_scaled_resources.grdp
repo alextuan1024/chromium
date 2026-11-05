@@ -1,26 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <grit-part>
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_AMEX_NEW" file="autofill/amex_new.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_AMEX_NEW" file="autofill/metadata/amex_new.png" />
 
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_AMEX" file="autofill/amex.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_DINERS" file="autofill/diners.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_DISCOVER" file="autofill/discover.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_ELO" file="autofill/elo.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_GENERIC" file="autofill/cc-generic.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_GENERIC_PRIMARY" file="autofill/cc-generic.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_JCB" file="autofill/jcb.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_MASTERCARD" file="autofill/mastercard.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_MIR" file="autofill/mir.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_UNIONPAY" file="autofill/unionpay.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_VERVE" file="autofill/verve.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_VISA" file="autofill/visa.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_TROY" file="autofill/troy.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_IBAN" file="autofill/iban.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_BNPL_GENERIC" file="autofill/pay_over_time.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_VIRTUAL_CARD_ENROLL_DIALOG" file="autofill/virtual_card_enroll.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_VIRTUAL_CARD_ENROLL_DIALOG_DARK" file="autofill/virtual_card_enroll_dark.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_AMEX" file="autofill/metadata/amex.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_DINERS" file="autofill/metadata/diners.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_DISCOVER" file="autofill/metadata/discover.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_ELO" file="autofill/metadata/elo.png" />
@@ -34,22 +17,9 @@
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_TROY" file="autofill/metadata/troy.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_BNPL_GENERIC" file="autofill/metadata/pay_over_time.png" />
 
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_AMEX_OLD" file="autofill/amex_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_DINERS_OLD" file="autofill/diners_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_DISCOVER_OLD" file="autofill/discover_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_ELO_OLD" file="autofill/elo_old.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_GENERIC_OLD" file="autofill/cc-generic_old.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_GENERIC_PRIMARY_OLD" file="autofill/cc-generic_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_JCB_OLD" file="autofill/jcb_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_MASTERCARD_OLD" file="autofill/mastercard_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_MIR_OLD" file="autofill/mir_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_UNIONPAY_OLD" file="autofill/unionpay_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_VERVE_OLD" file="autofill/verve_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_VISA_OLD" file="autofill/visa_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_CC_TROY_OLD" file="autofill/troy_old.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_IBAN_OLD" file="autofill/iban_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_BNPL_GENERIC_OLD" file="autofill/pay_over_time_old.png" />
-  <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_AMEX_OLD" file="autofill/metadata/amex_old.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_DINERS_OLD" file="autofill/metadata/diners_old.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_DISCOVER_OLD" file="autofill/metadata/discover_old.png" />
   <structure type="chrome_scaled_image" name="IDR_AUTOFILL_METADATA_CC_ELO_OLD" file="autofill/metadata/elo_old.png" />
@@ -86,6 +56,8 @@
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_DARK" file="google_chrome/autofill/googlewallet_dark.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_ICON" file="google_chrome/autofill/googlewallet_icon.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_ICON_WITH_GRADIENT" file="google_chrome/autofill/googlewallet_icon_with_gradient.png" />
+      <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_WITH_GRADIENT" file="google_chrome/autofill/googlewallet_with_gradient.png" />
+      <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_WITH_GRADIENT_DARK" file="google_chrome/autofill/googlewallet_with_gradient_dark.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM" file="google_chrome/autofill/affirm.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM_DARK" file="google_chrome/autofill/affirm_dark.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM_LINKED" file="google_chrome/autofill/affirm_linked.png" />
@@ -140,6 +112,8 @@
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_DARK" file="autofill/cc-generic.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_ICON" file="autofill/cc-generic.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_ICON_WITH_GRADIENT" file="autofill/cc-generic.png" />
+      <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_WITH_GRADIENT" file="autofill/cc-generic.png" />
+      <structure type="chrome_scaled_image" name="IDR_AUTOFILL_GOOGLE_WALLET_WITH_GRADIENT_DARK" file="autofill/cc-generic.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM" file="autofill/metadata/pay_over_time.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM_DARK" file="autofill/metadata/pay_over_time.png" />
       <structure type="chrome_scaled_image" name="IDR_AUTOFILL_AFFIRM_LINKED" file="autofill/metadata/pay_over_time.png" />

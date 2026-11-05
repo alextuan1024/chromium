@@ -6,6 +6,8 @@ package org.chromium.chrome.browser.tabmodel;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import org.chromium.base.TimeUtils;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -16,11 +18,11 @@ import org.chromium.chrome.browser.tab.TabBuilder;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabState;
+import org.chromium.chrome.browser.tab.state.ArchivePersistedTabData;
 import org.chromium.chrome.browser.tabmodel.TabCreator.NeedsTabModel;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
-import org.chromium.url.GURL;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -82,20 +84,32 @@ public class ArchivedTabCreator implements TabCreator, NeedsTabModel {
     }
 
     @Override
-    public @Nullable Tab createFrozenTab(TabState state, int id, int index) {
+    public @Nullable Tab createFrozenTab(
+            TabState state, int id, int index, @TabLaunchType int type) {
         assert mTabModel != null : "Creating frozen tab before native library initialized.";
         Tab tab =
                 TabBuilder.createFromFrozenState(assumeNonNull(mTabModel.getProfile()))
                         .setWindow(mWindow)
                         .setId(id)
-                        .setLaunchType(TabLaunchType.FROM_RESTORE)
+                        .setLaunchType(type)
                         .setTabResolver(mTabModel::getTabById)
                         .setInitiallyHidden(true)
                         .setTabState(state)
                         .setDelegateFactory(new HeadlessTabDelegateFactory(TabModelType.ARCHIVED))
                         .build();
-        mTabModel.addTab(
-                tab, index, TabLaunchType.FROM_RESTORE, TabCreationState.FROZEN_FOR_LAZY_LOAD);
+        mTabModel.addTab(tab, index, type, TabCreationState.FROZEN_FOR_LAZY_LOAD);
+        if (type == TabLaunchType.FROM_UNDO_CLOSURE) {
+            ArchivePersistedTabData.from(
+                    tab,
+                    archivePersistedTabData -> {
+                        if (archivePersistedTabData != null && !tab.isDestroyed()) {
+                            archivePersistedTabData.setArchivedTimeMs(
+                                    TimeUtils.currentTimeMillis());
+                            archivePersistedTabData.registerIsTabSaveEnabledSupplier(
+                                    ObservableSuppliers.alwaysTrue());
+                        }
+                    });
+        }
         return tab;
     }
 
@@ -111,7 +125,6 @@ public class ArchivedTabCreator implements TabCreator, NeedsTabModel {
             boolean shouldPin,
             WebContents webContents,
             @TabLaunchType int type,
-            GURL url,
             int index,
             CompletableFuture<Boolean> addTabToModel) {
         assert false : "Not reached.";

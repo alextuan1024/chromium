@@ -18,7 +18,8 @@ namespace content {
 namespace {
 
 using EstimatedMemoryUsage = base::MemoryConsumerTraits::EstimatedMemoryUsage;
-using ReleaseMemoryCost = base::MemoryConsumerTraits::ReleaseMemoryCost;
+using ReleaseMemoryDataAccess =
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess;
 using InformationRetention = base::MemoryConsumerTraits::InformationRetention;
 using ExecutionType = base::MemoryConsumerTraits::ExecutionType;
 using SupportsMemoryLimit = base::MemoryConsumerTraits::SupportsMemoryLimit;
@@ -27,6 +28,12 @@ using RecreateMemoryCost = base::MemoryConsumerTraits::RecreateMemoryCost;
 using ReleaseGCReferences = base::MemoryConsumerTraits::ReleaseGCReferences;
 using GarbageCollectsV8Heap = base::MemoryConsumerTraits::GarbageCollectsV8Heap;
 using IsStateful = base::MemoryConsumerTraits::IsStateful;
+using RecoveryBehavior = base::MemoryConsumerTraits::RecoveryBehavior;
+using ReleaseMemoryCpuCost = base::MemoryConsumerTraits::ReleaseMemoryCpuCost;
+using AffectedByBackgrounding =
+    base::MemoryConsumerTraits::AffectedByBackgrounding;
+using AffectedByMemoryPressure =
+    base::MemoryConsumerTraits::AffectedByMemoryPressure;
 
 // Helper to determine the maximum value among all trait enums in a
 // ParameterPack.
@@ -94,12 +101,16 @@ TEST_F(MemoryConsumerTraitsTest, EchoAllTraits) {
   for (int i = 0; i <= kMaxValue; ++i) {
     base::MemoryConsumerTraits test_case(
         GenerateValue<EstimatedMemoryUsage>(i),
-        GenerateValue<ReleaseMemoryCost>(i),
+        GenerateValue<ReleaseMemoryDataAccess>(i),
         GenerateValue<InformationRetention>(i), GenerateValue<ExecutionType>(i),
         GenerateValue<SupportsMemoryLimit>(i), GenerateValue<InProcess>(i),
         GenerateValue<RecreateMemoryCost>(i),
         GenerateValue<ReleaseGCReferences>(i),
-        GenerateValue<GarbageCollectsV8Heap>(i), GenerateValue<IsStateful>(i));
+        GenerateValue<GarbageCollectsV8Heap>(i), GenerateValue<IsStateful>(i),
+        GenerateValue<RecoveryBehavior>(i),
+        GenerateValue<ReleaseMemoryCpuCost>(i),
+        GenerateValue<AffectedByBackgrounding>(i),
+        GenerateValue<AffectedByMemoryPressure>(i));
 
     base::test::TestFuture<base::MemoryConsumerTraits> future;
     remote()->EchoMemoryConsumerTraits(test_case, future.GetCallback());
@@ -109,13 +120,30 @@ TEST_F(MemoryConsumerTraitsTest, EchoAllTraits) {
 
 TEST_F(MemoryConsumerTraitsTest, OutOfRange) {
   static constexpr base::MemoryConsumerTraits kTestCase(
-      EstimatedMemoryUsage::kSmall, ReleaseMemoryCost::kRequiresTraversal,
+      EstimatedMemoryUsage::kSmall, ReleaseMemoryDataAccess::kReads,
       InformationRetention::kLossless, ExecutionType::kSynchronous,
       static_cast<SupportsMemoryLimit>(22));
 
   base::RunLoop run_loop;
   SetDisconnectHandler(run_loop.QuitClosure());
   remote()->EchoMemoryConsumerTraits(kTestCase, base::DoNothing());
+  run_loop.Run();
+}
+
+// Tests that a consumer affected by neither memory pressure nor backgrounding
+// is rejected.
+TEST_F(MemoryConsumerTraitsTest, NeverReleased) {
+  // The constructor CHECKs against this combination, so set the fields after
+  // the fact.
+  base::MemoryConsumerTraits test_case(
+      EstimatedMemoryUsage::kSmall, ReleaseMemoryDataAccess::kReads,
+      InformationRetention::kLossless, ExecutionType::kSynchronous);
+  test_case.affected_by_backgrounding = AffectedByBackgrounding::kNo;
+  test_case.affected_by_memory_pressure = AffectedByMemoryPressure::kNo;
+
+  base::RunLoop run_loop;
+  SetDisconnectHandler(run_loop.QuitClosure());
+  remote()->EchoMemoryConsumerTraits(test_case, base::DoNothing());
   run_loop.Run();
 }
 

@@ -440,11 +440,14 @@ void ListItemOrdinal::ItemUpdated(const LayoutObject* layout_list_item,
   const Node* item_node = layout_list_item->GetNode();
   if (item_node->GetDocument().IsSlotAssignmentDirty())
     return;
-  if (item_node->GetDocument().IsFlatTreeTraversalForbidden())
-    return;
 
   Node* list_node = EnclosingList(item_node);
-  CHECK(list_node);
+  if (!list_node) {
+    // The item has no flat tree parent. This happens when slot assignment
+    // recalc removes it from the flat tree and detaches its layout tree (pass 2
+    // of the recalc, see SlotAssignment). There is no list to update.
+    return;
+  }
 
   bool is_list_reversed = false;
   if (auto* o_list_element = DynamicTo<HTMLOListElement>(list_node)) {
@@ -472,11 +475,6 @@ void ListItemOrdinal::ItemUpdated(const LayoutObject* layout_list_item,
 void ListItemOrdinal::ItemInsertedOrRemoved(
     const LayoutObject* layout_list_item) {
   ItemUpdated(layout_list_item, kInsertedOrRemoved);
-}
-
-void ListItemOrdinal::ItemCounterStyleUpdated(
-    const LayoutObject& layout_list_item) {
-  ItemUpdated(&layout_list_item, kCounterStyle);
 }
 
 }  // namespace blink

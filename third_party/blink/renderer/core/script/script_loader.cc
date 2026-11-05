@@ -49,7 +49,6 @@
 #include "third_party/blink/renderer/core/loader/modulescript/module_script_creation_params.h"
 #include "third_party/blink/renderer/core/loader/modulescript/module_script_fetch_request.h"
 #include "third_party/blink/renderer/core/loader/render_blocking_resource_manager.h"
-#include "third_party/blink/renderer/core/loader/url_matcher.h"
 #include "third_party/blink/renderer/core/loader/web_bundle/script_web_bundle.h"
 #include "third_party/blink/renderer/core/scheduler/task_attribution_util.h"
 #include "third_party/blink/renderer/core/script/cache_hint_attribute_value.h"
@@ -82,7 +81,6 @@
 #include "third_party/blink/renderer/platform/scheduler/public/task_attribution_tracker.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
@@ -234,6 +232,17 @@ void ScriptLoader::DocumentBaseURLChanged() {
   if (GetScriptType() != ScriptTypeAtPrepare::kSpeculationRules) {
     return;
   }
+  // If the entire rule set failed to parse (which ShouldReportUMAForError()
+  // checks: kSourceIsNotJsonObject or kInvalidRulesetLevelTag), do not reparse
+  // it. Top-level parse errors only depend on the original source text and not
+  // the base URL, so reparsing would always fail with the same error and
+  // synchronously re-dispatch error events in AddSpeculationRuleSet() while
+  // EventDispatchForbiddenScope may be active (e.g. during <base> insertion or
+  // removal).
+  if (!speculation_rule_set_ ||
+      speculation_rule_set_->ShouldReportUMAForError()) {
+    return;
+  }
   // We reparse the original source text and generate a new SpeculationRuleSet
   // with the new base URL. Note that any text changes since the first parse
   // will be ignored.
@@ -243,6 +252,9 @@ void ScriptLoader::DocumentBaseURLChanged() {
 }
 
 namespace {
+
+BASE_FEATURE(kPreserveParserInsertedForCSPOnDisconnectedScript,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // <specdef href="https://html.spec.whatwg.org/C/#prepare-the-script-element">
 bool IsValidClassicScriptTypeAndLanguage(const String& type,
@@ -551,6 +563,15 @@ PendingScript* ScriptLoader::PrepareScript(
 
   // <spec step="7">If el is not connected, then return.</spec>
   if (!element_->IsConnected()) {
+    // Keep `parser_inserted_` false so `ScriptRunner` handles scheduling if the
+    // element is later connected, while preserving parser-inserted provenance
+    // for CSP checks when the script was parsed in its current document (as
+    // opposed to an inert `<template>` contents document).
+    if (was_parser_inserted && parser_document_ == &element_->GetDocument() &&
+        base::FeatureList::IsEnabled(
+            kPreserveParserInsertedForCSPOnDisconnectedScript)) {
+      was_parser_inserted_for_csp_ = true;
+    }
     return nullptr;
   }
 
@@ -630,7 +651,7 @@ PendingScript* ScriptLoader::PrepareScript(
       !element_->IntegrityAttributeValue().empty()) {
     IntegrityMetadataSet metadata;
     SubresourceIntegrity::ParseIntegrityAttribute(
-        element_->IntegrityAttributeValue(), metadata, context_window);
+        element_->IntegrityAttributeValue(), metadata);
     if (!metadata.empty()) {
       UseCounter::Count(*context_window,
                         WebFeature::kSRIIntegrityAttributeOnInlineScript);
@@ -646,8 +667,7 @@ PendingScript* ScriptLoader::PrepareScript(
                                           position, source_text) ||
        !SubresourceIntegrity::VerifyInlineIntegrity(
            element_->IntegrityAttributeValue(),
-           element_->SignatureAttributeValue(), source_text,
-           element_->GetExecutionContext()))) {
+           element_->SignatureAttributeValue(), source_text))) {
     return nullptr;
   }
 
@@ -680,8 +700,7 @@ PendingScript* ScriptLoader::PrepareScript(
   if (!integrity_attr.empty()) {
     IntegrityReport integrity_report;
     SubresourceIntegrity::ParseIntegrityAttribute(
-        integrity_attr, integrity_metadata, element_->GetExecutionContext(),
-        &integrity_report);
+        integrity_attr, integrity_metadata, &integrity_report);
     integrity_report.SendReports(element_->GetExecutionContext());
   }
 
@@ -706,7 +725,7 @@ PendingScript* ScriptLoader::PrepareScript(
   // <spec step="28">Let parser metadata be "parser-inserted" if el is
   // ...</spec>
   ParserDisposition parser_state =
-      IsParserInserted() ? kParserInserted : kNotParserInserted;
+      IsParserInsertedForCSP() ? kParserInserted : kNotParserInserted;
 
   if (GetScriptType() == ScriptLoader::ScriptTypeAtPrepare::kModule) {
     UseCounter::Count(*context_window, WebFeature::kPrepareModuleScript);
@@ -1071,7 +1090,6 @@ PendingScript* ScriptLoader::PrepareScript(
     }
   }
 
-  prepared_pending_script_->SetParserInserted(parser_inserted_);
   prepared_pending_script_->SetIsInDocumentWrite(is_in_document_write);
 
   ScriptSchedulingType script_scheduling_type = GetScriptSchedulingTypePerSpec(

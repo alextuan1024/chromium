@@ -20,6 +20,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
@@ -49,6 +50,7 @@
 #include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/touchui/touch_selection_controller_impl.h"
+#include "ui/views/views_features.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_utils.h"
@@ -84,7 +86,7 @@ class ExitLoopOnRelease : public View {
  public:
   explicit ExitLoopOnRelease(base::OnceClosure quit_closure)
       : quit_closure_(std::move(quit_closure)) {
-    DCHECK(quit_closure_);
+    CHECK(quit_closure_, base::NotFatalUntil::M163);
   }
 
   ExitLoopOnRelease(const ExitLoopOnRelease&) = delete;
@@ -711,6 +713,83 @@ TEST_F(WidgetTestInteractive, ViewFocusOnWidgetActivationChanges) {
   EXPECT_EQ(nullptr, widget1->GetFocusManager()->GetFocusedView());
 }
 
+#if BUILDFLAG(IS_MAC)
+// Tests that requesting focus on a View in an inactive widget activates the
+// widget, like on Aura (see
+// NativeWidgetAuraTest.NonActiveWindowRequestImeFocus).
+TEST_F(WidgetTestInteractive, RequestFocusActivatesInactiveWidget) {
+  base::test::ScopedFeatureList feature_list(
+      features::kMacActivateWidgetOnFocusRequest);
+
+  std::unique_ptr<Widget> widget1 = base::WrapUnique(
+      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
+  View* view1 =
+      widget1->GetContentsView()->AddChildView(std::make_unique<View>());
+  view1->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+
+  std::unique_ptr<Widget> widget2 = base::WrapUnique(
+      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
+
+  ShowSync(widget1.get());
+  ShowSync(widget2.get());
+  ASSERT_FALSE(widget1->IsActive());
+  ASSERT_TRUE(widget2->IsActive());
+
+  view1->RequestFocus();
+  views::test::WaitForWidgetActive(widget1.get(), true);
+  EXPECT_FALSE(widget2->IsActive());
+  EXPECT_EQ(view1, widget1->GetFocusManager()->GetFocusedView());
+}
+
+// Tests the legacy Mac behavior when the kill switch is disabled: the View is
+// focused without activating the widget.
+TEST_F(WidgetTestInteractive, RequestFocusDoesNotActivateWithKillSwitch) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kMacActivateWidgetOnFocusRequest);
+
+  std::unique_ptr<Widget> widget1 = base::WrapUnique(
+      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
+  View* view1 =
+      widget1->GetContentsView()->AddChildView(std::make_unique<View>());
+  view1->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+
+  std::unique_ptr<Widget> widget2 = base::WrapUnique(
+      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
+
+  ShowSync(widget1.get());
+  ShowSync(widget2.get());
+  ASSERT_FALSE(widget1->IsActive());
+  ASSERT_TRUE(widget2->IsActive());
+
+  view1->RequestFocus();
+  EXPECT_EQ(view1, widget1->GetFocusManager()->GetFocusedView());
+  EXPECT_FALSE(widget1->IsActive());
+  EXPECT_TRUE(widget2->IsActive());
+}
+
+// Tests that requesting focus in a hidden widget does not show it.
+TEST_F(WidgetTestInteractive, RequestFocusDoesNotShowHiddenWidget) {
+  base::test::ScopedFeatureList feature_list(
+      features::kMacActivateWidgetOnFocusRequest);
+
+  std::unique_ptr<Widget> widget1 = base::WrapUnique(
+      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
+  View* view1 =
+      widget1->GetContentsView()->AddChildView(std::make_unique<View>());
+  view1->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+
+  std::unique_ptr<Widget> widget2 = base::WrapUnique(
+      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
+  ShowSync(widget2.get());
+
+  view1->RequestFocus();
+  EXPECT_FALSE(widget1->IsVisible());
+  EXPECT_FALSE(widget1->IsActive());
+  EXPECT_TRUE(widget2->IsActive());
+}
+#endif  // BUILDFLAG(IS_MAC)
+
 TEST_F(WidgetTestInteractive, ZOrderCheckBetweenTopWindows) {
   std::unique_ptr<Widget> w1 = base::WrapUnique(
       CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
@@ -1093,8 +1172,7 @@ TEST_F(WidgetTestInteractive, FullscreenMaximizedWindowBounds) {
 TEST_F(DesktopWidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
   TestNativeViewFocusChangeListener focus_listener;
   NativeViewFocusManager::GetInstance()->AddFocusChangeListener(&focus_listener);
-  const std::vector<gfx::NativeView>& focus_changes =
-      focus_listener.focus_changes();
+  const auto& focus_changes = focus_listener.focus_changes();
 
   // Create a top level widget.
   auto top_level_widget = std::make_unique<Widget>();
@@ -1128,6 +1206,8 @@ TEST_F(DesktopWidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
   EXPECT_EQ(gfx::NativeView(), focus_changes[1]);
   EXPECT_EQ(modal_native_view, focus_changes[2]);
 
+  focus_listener.ClearFocusChanges();
+
 #if BUILDFLAG(IS_MAC)
   // Window modal dialogs on Mac are "sheets", which animate to close before
   // activating their parent widget.
@@ -1139,14 +1219,93 @@ TEST_F(DesktopWidgetTestInteractive, WindowModalWindowDestroyedActivationTest) {
   waiter.Wait();
 #endif
 
-  ASSERT_EQ(5u, focus_changes.size());
-  EXPECT_EQ(gfx::NativeView(), focus_changes[3]);
-  EXPECT_EQ(top_level_native_view, focus_changes[4]);
+  ASSERT_EQ(2u, focus_changes.size());
+  EXPECT_EQ(gfx::NativeView(), focus_changes[0]);
+  EXPECT_EQ(top_level_native_view, focus_changes[1]);
+
+  NativeViewFocusManager::GetInstance()->RemoveFocusChangeListener(
+      &focus_listener);
+  focus_listener.ClearFocusChanges();
 
   top_level_widget->Close();
-  NativeViewFocusManager::GetInstance()->RemoveFocusChangeListener(&focus_listener);
 }
 #endif
+
+#if BUILDFLAG(ENABLE_DESKTOP_AURA)
+namespace {
+
+// Focuses `view` when its widget is first notified that it's active, like a
+// browser window restoring its initial focus (see
+// `BrowserView::OnWidgetActivationChanged()`).
+class FocusOnFirstActivationObserver : public WidgetObserver {
+ public:
+  explicit FocusOnFirstActivationObserver(View* view) : view_(view) {
+    widget_observation_.Observe(view->GetWidget());
+  }
+
+  // WidgetObserver:
+  void OnWidgetActivationChanged(Widget* widget, bool active) override {
+    if (active && !activation_observed_) {
+      activation_observed_ = true;
+      widget->GetFocusManager()->SetFocusedView(view_);
+    }
+  }
+  void OnWidgetDestroying(Widget* widget) override {
+    widget_observation_.Reset();
+  }
+
+  bool activation_observed() const { return activation_observed_; }
+
+ private:
+  raw_ptr<View> view_;
+  bool activation_observed_ = false;
+  base::ScopedObservation<Widget, WidgetObserver> widget_observation_{this};
+};
+
+}  // namespace
+
+// Tests that if a window-modal dialog is shown before its owner is first
+// activated, so that the dialog takes activation from the owner, a view that
+// the owner focuses when it's first activated gets focus once the dialog
+// closes.
+TEST_F(DesktopWidgetTestInteractive,
+       FocusRestoredWhenModalShownBeforeFirstActivationCloses) {
+  auto top_level_widget = std::make_unique<Widget>();
+  Widget::InitParams init_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  init_params.bounds = gfx::Rect(0, 0, 500, 500);
+  top_level_widget->Init(std::move(init_params));
+  View* const focusable_view =
+      top_level_widget->GetContentsView()->AddChildView(
+          std::make_unique<View>());
+  focusable_view->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+  FocusOnFirstActivationObserver observer(focusable_view);
+
+  // Show the owner and, in the same task, before the platform activates it,
+  // a window-modal dialog.
+  top_level_widget->Show();
+  // Declared here so that it outlives the dialog widget, which doesn't own it.
+  auto dialog_delegate = std::make_unique<DialogDelegate>();
+  dialog_delegate->SetModalType(ui::mojom::ModalType::kWindow);
+  Widget* const modal_dialog_widget = views::DialogDelegate::CreateDialogWidget(
+      dialog_delegate.get(), gfx::NativeWindow(),
+      top_level_widget->GetNativeView());
+  modal_dialog_widget->SetBounds(gfx::Rect(100, 100, 200, 200));
+  modal_dialog_widget->Show();
+  views::test::WaitForWidgetActive(modal_dialog_widget, true);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&observer]() { return observer.activation_observed(); }));
+  EXPECT_FALSE(focusable_view->HasFocus());
+
+  views::test::WidgetDestroyedWaiter waiter(modal_dialog_widget);
+  modal_dialog_widget->Close();
+  waiter.Wait();
+  views::test::WaitForWidgetActive(top_level_widget.get(), true);
+  EXPECT_TRUE(focusable_view->HasFocus());
+
+  top_level_widget->CloseNow();
+}
+#endif  // BUILDFLAG(ENABLE_DESKTOP_AURA)
 
 TEST_F(DesktopWidgetTestInteractive, CanActivateFlagIsHonored) {
   auto widget = std::make_unique<Widget>();
@@ -2587,13 +2746,12 @@ TEST_F(WidgetInputMethodInteractiveTest, AcceleratorInTextfield) {
   ui::KeyEvent key_event(ui::EventType::kKeyPressed, ui::VKEY_F,
                          ui::EF_ALT_DOWN);
   ui::Accelerator accelerator(key_event);
-  widget->GetFocusManager()->RegisterAccelerator(
-      accelerator, ui::AcceleratorManager::kNormalPriority, textfield);
+  textfield->AddAccelerator(accelerator);
 
   widget->OnKeyEvent(&key_event);
   EXPECT_TRUE(key_event.stopped_propagation());
 
-  widget->GetFocusManager()->UnregisterAccelerators(textfield);
+  textfield->RemoveAccelerator(accelerator);
 
   ui::KeyEvent key_event2(key_event);
   widget->OnKeyEvent(&key_event2);

@@ -8,20 +8,29 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/dictation/dictation_multiplexer.h"
 #include "chrome/browser/dictation/features.h"
+#include "chrome/browser/dictation/hotkey_manager.h"
 #include "chrome/browser/dictation/listener_stream_provider.h"
+#include "chrome/browser/dictation/session_controller.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_paths.h"
+#include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/browsertest_util.h"
 #include "extensions/browser/extension_registry_test_helper.h"
-#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/input/web_input_event.h"
+#include "ui/events/keycodes/dom/dom_code.h"
+#include "ui/events/keycodes/dom/dom_key.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 
 namespace dictation {
 
@@ -41,22 +50,7 @@ base::test::ScopedFeatureList CreateEnablingFeatureList() {
   feature_list.InitWithFeaturesAndParameters(
       {{kDictation,
         {{"use_component_extension", "false"},
-         {"auto_session_end_delay", "0ms"}}},
-       {blink::features::kPopulateDOMNodeIdInFocusedNodeDetails, {}}},
-      {});
-  return feature_list;
-}
-
-base::test::ScopedFeatureList CreateEnablingFeatureList(
-    bool session_ends_on_stream_end) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeaturesAndParameters(
-      {{kDictation,
-        {{"use_component_extension", "false"},
-         {"session_ends_on_stream_end",
-          session_ends_on_stream_end ? "true" : "false"},
-         {"auto_session_end_delay", "0ms"}}},
-       {blink::features::kPopulateDOMNodeIdInFocusedNodeDetails, {}}},
+         {"auto_session_end_delay", "0ms"}}}},
       {});
   return feature_list;
 }
@@ -321,6 +315,24 @@ DictationContext ExtensionGetUpdatedContext(
   return std::move(*context);
 }
 
+std::string GetEditableExpectedText(content::RenderFrameHost* render_frame_host,
+                                    std::string_view selector,
+                                    std::string_view expected) {
+  std::string last_seen_string;
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    last_seen_string =
+        content::EvalJs(render_frame_host,
+                        content::JsReplace(
+                            "const el = document.querySelector($1);"
+                            "el.isContentEditable ? el.innerText : el.value;",
+                            selector))
+            .ExtractString();
+    return last_seen_string == expected;
+  }));
+
+  return last_seen_string;
+}
+
 using ::testing::_;
 
 MockStreamProvider::MockStreamProvider() = default;
@@ -336,6 +348,12 @@ MockSessionControllerDelegate::MockSessionControllerDelegate() {
   ON_CALL(*this, CreateStreamProvider(_)).WillByDefault([]() {
     return std::make_unique<testing::NiceMock<MockStreamProvider>>();
   });
+  ON_CALL(*this, BindWakeLockProvider(_))
+      .WillByDefault(
+          [this](
+              mojo::PendingReceiver<device::mojom::WakeLockProvider> receiver) {
+            wake_lock_provider_.BindReceiver(std::move(receiver));
+          });
 }
 MockSessionControllerDelegate::~MockSessionControllerDelegate() = default;
 
@@ -349,7 +367,97 @@ std::unique_ptr<StreamProvider> MockDictationKeyedService::CreateStreamProvider(
 }
 std::unique_ptr<SessionUi> MockDictationKeyedService::CreateUi(
     SessionController& controller) const {
-  return std::make_unique<testing::NiceMock<MockSessionUi>>();
+  auto mock_ui = std::make_unique<testing::NiceMock<MockSessionUi>>();
+  mock_ui->set_show_reviewing_page_status(ConsumeShowReviewingPageStatus());
+  return mock_ui;
+}
+void MockDictationKeyedService::BindWakeLockProvider(
+    mojo::PendingReceiver<device::mojom::WakeLockProvider> receiver) {
+  wake_lock_provider_.BindReceiver(std::move(receiver));
+}
+
+FakeGlobalAcceleratorListener::FakeGlobalAcceleratorListener() = default;
+FakeGlobalAcceleratorListener::~FakeGlobalAcceleratorListener() = default;
+
+void FakeGlobalAcceleratorListener::Press(const ui::Accelerator& accelerator) {
+  NotifyKeyPressed(accelerator);
+}
+
+bool FakeGlobalAcceleratorListener::IsListeningFor(
+    const ui::Accelerator& accelerator) const {
+  return listening_.contains(accelerator);
+}
+
+bool FakeGlobalAcceleratorListener::IsRegistrationHandledExternally() const {
+  return handled_externally_;
+}
+
+void FakeGlobalAcceleratorListener::StartListening() {}
+
+void FakeGlobalAcceleratorListener::StopListening() {}
+
+bool FakeGlobalAcceleratorListener::StartListeningForAccelerator(
+    const ui::Accelerator& accelerator) {
+  if (fail_registration_) {
+    return false;
+  }
+  listening_.insert(accelerator);
+  return true;
+}
+
+void FakeGlobalAcceleratorListener::StopListeningForAccelerator(
+    const ui::Accelerator& accelerator) {
+  listening_.erase(accelerator);
+}
+
+ScopedFakeGlobalAcceleratorListener::ScopedFakeGlobalAcceleratorListener(
+    DictationKeyedService& service)
+    : service_(service),
+      listener_override_(
+          HotkeyManager::SetGlobalAcceleratorListenerForTesting(&listener_)) {}
+
+ScopedFakeGlobalAcceleratorListener::~ScopedFakeGlobalAcceleratorListener() {
+  // End the session first so that nothing remains registered with
+  // `listener_` once the default listener is restored.
+  if (SessionController* const controller = service_->session_controller()) {
+    controller->EndSessionSynchronously();
+  }
+}
+
+void ForwardEnterKeyPress(content::RenderWidgetHost* widget_host,
+                          int modifiers) {
+  const ui::DomCode dom_code = (modifiers & blink::WebInputEvent::kIsKeyPad)
+                                   ? ui::DomCode::NUMPAD_ENTER
+                                   : ui::DomCode::ENTER;
+  const base::TimeTicks now = base::TimeTicks::Now();
+
+  input::NativeWebKeyboardEvent key_down(
+      blink::WebInputEvent::Type::kRawKeyDown, modifiers, now);
+  key_down.windows_key_code = ui::VKEY_RETURN;
+  key_down.dom_code = static_cast<int>(dom_code);
+  key_down.dom_key = ui::DomKey::ENTER;
+  key_down.text[0] = ui::VKEY_RETURN;
+  key_down.unmodified_text[0] = ui::VKEY_RETURN;
+  key_down.skip_if_unhandled = false;
+  widget_host->ForwardKeyboardEvent(key_down);
+
+  input::NativeWebKeyboardEvent char_event(blink::WebInputEvent::Type::kChar,
+                                           modifiers, now);
+  char_event.windows_key_code = ui::VKEY_RETURN;
+  char_event.dom_code = static_cast<int>(dom_code);
+  char_event.dom_key = ui::DomKey::ENTER;
+  char_event.text[0] = ui::VKEY_RETURN;
+  char_event.unmodified_text[0] = ui::VKEY_RETURN;
+  char_event.skip_if_unhandled = false;
+  widget_host->ForwardKeyboardEvent(char_event);
+
+  input::NativeWebKeyboardEvent key_up(blink::WebInputEvent::Type::kKeyUp,
+                                       modifiers, now);
+  key_up.windows_key_code = ui::VKEY_RETURN;
+  key_up.dom_code = static_cast<int>(dom_code);
+  key_up.dom_key = ui::DomKey::ENTER;
+  key_up.skip_if_unhandled = false;
+  widget_host->ForwardKeyboardEvent(key_up);
 }
 
 }  // namespace dictation

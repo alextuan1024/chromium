@@ -22,6 +22,14 @@ namespace omnibox {
 
 inline constexpr int kDefaultMaxTotalInputs = 10;
 
+// TODO(crbug.com/584321720): Make these int32_t once no code treats them as
+// enums.
+using ToolKey = ToolMode;
+using ModelKey = ModelMode;
+inline constexpr ToolKey kUnspecifiedToolKey = ToolMode::TOOL_MODE_UNSPECIFIED;
+inline constexpr ModelKey kUnspecifiedModelKey =
+    ModelMode::MODEL_MODE_UNSPECIFIED;
+
 // Represents a valid searchbox inputs state.
 // LINT.IfChange(InputState)
 struct InputState {
@@ -33,18 +41,18 @@ struct InputState {
   size_t EstimateMemoryUsage() const;
 
   // Helper method to derive the default model from the allowed list.
-  ModelMode GetDefaultModel() const;
+  ModelKey GetDefaultModel() const;
 
   // The set of allowed tools, models, and input types.
-  std::vector<ToolMode> allowed_tools;
-  std::vector<ModelMode> allowed_models;
+  std::vector<ToolKey> allowed_tools;
+  std::vector<ModelKey> allowed_models;
   std::vector<InputType> allowed_input_types;
   // The currently active tool and model.
-  ToolMode active_tool = ToolMode::TOOL_MODE_UNSPECIFIED;
-  ModelMode active_model = ModelMode::MODEL_MODE_UNSPECIFIED;
+  ToolKey active_tool = kUnspecifiedToolKey;
+  ModelKey active_model = kUnspecifiedModelKey;
   // The set of currently disabled tools, models, and input types.
-  std::vector<ToolMode> disabled_tools;
-  std::vector<ModelMode> disabled_models;
+  std::vector<ToolKey> disabled_tools;
+  std::vector<ModelKey> disabled_models;
   std::vector<InputType> disabled_input_types;
   // Configs containing the header, chip label, and hint text.
   std::vector<ToolConfig> tool_configs;
@@ -61,6 +69,9 @@ struct InputState {
   // active. Needed for suggest requests with `TOOL_MODE_IMAGE_GEN_UPLOAD`.
   bool image_gen_upload_active = false;
   bool is_canvas_query_submitted = false;
+  // Whether a query submitted in the current state will fulfill in AI Mode
+  // (true) or standard Search Results Page (false).
+  bool will_fulfill_in_aim = true;
 };
 // LINT.ThenChange(//components/omnibox/composebox/composebox_query.mojom:InputState)
 

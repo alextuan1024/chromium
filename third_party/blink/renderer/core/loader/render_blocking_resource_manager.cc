@@ -4,27 +4,25 @@
 
 #include "third_party/blink/renderer/core/loader/render_blocking_resource_manager.h"
 
-#include "base/feature_list.h"
-#include "base/metrics/histogram_functions.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/css/font_face.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/html_document.h"
+#include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
 #include "third_party/blink/renderer/core/html/html_link_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/loader/pending_link_preload.h"
 #include "third_party/blink/renderer/core/script/script_element_base.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
 namespace {
-
-// 50ms is the overall best performing value in our experiments.
-const base::TimeDelta kMaxRenderingDelayForFontPreloads =
-    base::Milliseconds(50);
 
 class ImperativeFontLoadFinishedCallback final
     : public GarbageCollected<ImperativeFontLoadFinishedCallback>,
@@ -58,11 +56,7 @@ class ImperativeFontLoadFinishedCallback final
 }  // namespace
 
 RenderBlockingResourceManager::RenderBlockingResourceManager(Document& document)
-    : element_render_blocking_links_(
-          MakeGarbageCollected<RenderBlockingElementLinkMap>(BindRepeating(
-              &RenderBlockingResourceManager::OnRenderBlockingElementLinkEmpty,
-              WrapWeakPersistent(this)))),
-      document_(document),
+    : document_(document),
       font_preload_max_blocking_timer_(
           document.GetTaskRunner(TaskType::kInternalFrameLifecycleControl),
           this,
@@ -70,8 +64,7 @@ RenderBlockingResourceManager::RenderBlockingResourceManager(Document& document)
       font_preload_max_fcp_delay_timer_(
           document.GetTaskRunner(TaskType::kInternalFrameLifecycleControl),
           this,
-          &RenderBlockingResourceManager::FontPreloadingTimerFired),
-      font_preload_timeout_(kMaxRenderingDelayForFontPreloads) {}
+          &RenderBlockingResourceManager::FontPreloadingTimerFired) {}
 
 void RenderBlockingResourceManager::AddPendingFontPreload(
     const PendingLinkPreload& link) {
@@ -122,10 +115,7 @@ void RenderBlockingResourceManager::EnsureStartFontPreloadMaxBlockingTimer() {
     return;
   }
   base::TimeDelta timeout =
-      base::FeatureList::IsEnabled(features::kRenderBlockingFonts)
-          ? document_->Loader()
-                ->RemainingTimeToRenderBlockingFontMaxBlockingTime()
-          : font_preload_timeout_;
+      document_->Loader()->RemainingTimeToRenderBlockingFontMaxBlockingTime();
   font_preload_max_blocking_timer_.StartOneShot(timeout, FROM_HERE);
 }
 
@@ -133,9 +123,6 @@ void RenderBlockingResourceManager::FontPreloadingTimerFired(TimerBase*) {
   if (font_preload_timer_has_fired_) {
     return;
   }
-  base::UmaHistogramBoolean(
-      "WebFont.Clients.RenderBlockingFonts.ExpiredFonts",
-      pending_font_preloads_.size() + imperative_font_loading_count_);
   font_preload_timer_has_fired_ = true;
   pending_font_preloads_.clear();
   imperative_font_loading_count_ = 0;
@@ -144,8 +131,7 @@ void RenderBlockingResourceManager::FontPreloadingTimerFired(TimerBase*) {
 
 void RenderBlockingResourceManager::AddPendingParsingElementLink(
     const AtomicString& id,
-    const HTMLLinkElement* link,
-    RenderBlockingLevel blocking_level) {
+    const HTMLLinkElement* link) {
   CHECK(link);
 
   // We can only add resources until the body element is parsed.
@@ -154,11 +140,8 @@ void RenderBlockingResourceManager::AddPendingParsingElementLink(
     return;
   }
 
-  element_render_blocking_links_->AddLinkWithTargetElement(id, link,
-                                                           blocking_level);
-  if (blocking_level == RenderBlockingLevel::kBlock) {
-    document_->SetHasRenderBlockingExpectLinkElements(true);
-  }
+  pending_expect_links_.Set(link, id);
+  document_->SetHasRenderBlockingExpectLinkElements(true);
 }
 
 void RenderBlockingResourceManager::RemovePendingParsingElement(
@@ -168,42 +151,65 @@ void RenderBlockingResourceManager::RemovePendingParsingElement(
   // https://html.spec.whatwg.org/multipage/browsing-the-web.html#select-the-indicated-part
   // which only matches elements in the document tree (as in, not in a shadow
   // tree)
-  if (element->IsInShadowTree() || !element->isConnected()) {
+  if (id.empty() || element->IsInShadowTree() || !element->isConnected()) {
     return;
   }
-  element_render_blocking_links_->RemoveTargetElement(id);
+  const AtomicString escaped_id(EncodeWithUrlEscapeSequences(id));
+  HeapVector<Member<const HTMLLinkElement>, 4> matched_links;
+  for (const auto& [link, target_id] : pending_expect_links_) {
+    if (target_id == id || target_id == escaped_id) {
+      matched_links.push_back(link.Get());
+    }
+  }
+  if (matched_links.empty()) {
+    return;
+  }
+  for (const auto& link : matched_links) {
+    pending_expect_links_.erase(link);
+  }
+  if (IsA<HTMLFrameOwnerElement>(element)) {
+    document_->CountUse(
+        WebFeature::kRenderBlockingAttributeTargetingFrameOwner);
+  }
+  if (pending_expect_links_.empty()) {
+    OnPendingExpectLinksEmpty();
+  }
 }
 
 void RenderBlockingResourceManager::RemovePendingParsingElementLink(
-    const AtomicString& id,
     const HTMLLinkElement* link) {
-  element_render_blocking_links_->RemoveLinkWithTargetElement(id, link);
+  auto it = pending_expect_links_.find(link);
+  if (it == pending_expect_links_.end()) {
+    return;
+  }
+  pending_expect_links_.erase(it);
+  if (pending_expect_links_.empty()) {
+    OnPendingExpectLinksEmpty();
+  }
 }
 
 void RenderBlockingResourceManager::ClearPendingParsingElements() {
-  if (!element_render_blocking_links_->HasElement(
-          RenderBlockingLevel::kBlock)) {
+  if (pending_expect_links_.empty()) {
     return;
   }
-  element_render_blocking_links_->ForEach(BindRepeating(
-      [](Document* document, RenderBlockingLevel, const HTMLLinkElement& link) {
-        document->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
-            mojom::blink::ConsoleMessageSource::kOther,
-            mojom::blink::ConsoleMessageLevel::kWarning,
-            StrCat({"Did not find element expected to be parsed from: <link "
-                    "rel=expect href=\"",
-                    link.FastGetAttribute(html_names::kHrefAttr), "\">"})));
-      },
-      WrapPersistent(document_.Get())));
-  element_render_blocking_links_->Clear();
+  for (const auto& [link, target_id] : pending_expect_links_) {
+    if (!link) {
+      continue;
+    }
+    document_->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+        mojom::blink::ConsoleMessageSource::kOther,
+        mojom::blink::ConsoleMessageLevel::kWarning,
+        StrCat({"Did not find element expected to be parsed from: <link "
+                "rel=expect href=\"",
+                link->FastGetAttribute(html_names::kHrefAttr), "\">"})));
+  }
+  pending_expect_links_.clear();
+  OnPendingExpectLinksEmpty();
 }
 
-void RenderBlockingResourceManager::OnRenderBlockingElementLinkEmpty(
-    RenderBlockingLevel level) {
-  if (level == RenderBlockingLevel::kBlock) {
-    document_->SetHasRenderBlockingExpectLinkElements(false);
-    RenderBlockingResourceUnblocked();
-  }
+void RenderBlockingResourceManager::OnPendingExpectLinksEmpty() {
+  document_->SetHasRenderBlockingExpectLinkElements(false);
+  RenderBlockingResourceUnblocked();
 }
 
 void RenderBlockingResourceManager::SetFontPreloadTimeoutForTest(
@@ -212,7 +218,6 @@ void RenderBlockingResourceManager::SetFontPreloadTimeoutForTest(
     font_preload_max_blocking_timer_.Stop();
     font_preload_max_blocking_timer_.StartOneShot(timeout, FROM_HERE);
   }
-  font_preload_timeout_ = timeout;
 }
 
 void RenderBlockingResourceManager::DisableFontPreloadTimeoutForTest() {
@@ -261,16 +266,14 @@ void RenderBlockingResourceManager::RemovePendingScript(
 }
 
 void RenderBlockingResourceManager::WillInsertDocumentBody() {
-  if (base::FeatureList::IsEnabled(features::kRenderBlockingFonts) &&
-      !HasNonFontRenderBlockingResources() && HasRenderBlockingFonts()) {
+  if (!HasNonFontRenderBlockingResources() && HasRenderBlockingFonts()) {
     EnsureStartFontPreloadMaxFCPDelayTimer();
   }
 }
 
 void RenderBlockingResourceManager::RenderBlockingResourceUnblocked() {
   document_->RenderBlockingResourceUnblocked();
-  if (base::FeatureList::IsEnabled(features::kRenderBlockingFonts) &&
-      !HasNonFontRenderBlockingResources() && HasRenderBlockingFonts() &&
+  if (!HasNonFontRenderBlockingResources() && HasRenderBlockingFonts() &&
       document_->body()) {
     EnsureStartFontPreloadMaxFCPDelayTimer();
   }
@@ -281,13 +284,12 @@ void RenderBlockingResourceManager::EnsureStartFontPreloadMaxFCPDelayTimer() {
       font_preload_max_fcp_delay_timer_.IsActive()) {
     return;
   }
-  base::TimeDelta max_fcp_delay =
-      base::Milliseconds(features::kMaxFCPDelayMsForRenderBlockingFonts.Get());
-  font_preload_max_fcp_delay_timer_.StartOneShot(max_fcp_delay, FROM_HERE);
+  static constexpr base::TimeDelta kMaxFCPDelay = base::Milliseconds(100);
+  font_preload_max_fcp_delay_timer_.StartOneShot(kMaxFCPDelay, FROM_HERE);
 }
 
 void RenderBlockingResourceManager::Trace(Visitor* visitor) const {
-  visitor->Trace(element_render_blocking_links_);
+  visitor->Trace(pending_expect_links_);
   visitor->Trace(document_);
   visitor->Trace(pending_stylesheet_owner_nodes_);
   visitor->Trace(pending_scripts_);

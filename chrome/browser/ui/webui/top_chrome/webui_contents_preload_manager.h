@@ -70,9 +70,10 @@ class WebUIContentsPreloadManager : public ProfileObserver,
   // make a preloaded contents.
   void WarmupForBrowser(BrowserWindowInterface* browser);
 
-  // Make a WebContents that shows `webui_url` under `browser_context`. If a
-  // preloaded WebContents exists for the same `browser_context`, it will be
-  // reused.
+  // Make a WebContents that shows `webui_url` for a window of
+  // `browser_context`, in the profile that
+  // webui::GetProfileForTopChromeWebUIContents() returns. If a preloaded
+  // WebContents exists in that profile, it will be reused.
   // This method handles navigation to `webui_url` internally.
   // A new preloaded contents will be created, unless the system is under heavy
   // memory pressure.
@@ -165,6 +166,8 @@ class WebUIContentsPreloadManager : public ProfileObserver,
   // and handling the "ready-to-show" event emitted by the WebContents.
   void SetPreloadedContents(std::unique_ptr<content::WebContents> web_contents);
 
+  // Creates the WebContents for a window of `browser_context` in the profile
+  // that webui::GetProfileForTopChromeWebUIContents() returns.
   std::unique_ptr<content::WebContents> CreateNewContents(
       content::BrowserContext* browser_context,
       GURL url);

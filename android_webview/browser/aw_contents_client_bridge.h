@@ -24,12 +24,12 @@ class GURL;
 namespace content {
 class ClientCertificateDelegate;
 class WebContents;
-}
+}  // namespace content
 
 namespace net {
 class SSLCertRequestInfo;
 class X509Certificate;
-}
+}  // namespace net
 
 namespace android_webview {
 
@@ -144,6 +144,7 @@ class AwContentsClientBridge {
       const base::android::JavaRef<jobject>& private_key_ref);
   void ConfirmJsResult(int id, std::optional<std::u16string> prompt);
   void CancelJsResult(int id);
+  void CancelPendingJsDialogs();
 
   void TakeSafeBrowsingAction(int action, bool reporting, int request_id);
 

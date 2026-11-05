@@ -7,7 +7,6 @@
 
 #include <string>
 
-#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/values.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
@@ -16,6 +15,8 @@
 #include "components/reporting/proto/synced/record_constants.pb.h"
 
 namespace policy {
+
+class NetworkNameCache;
 
 // {{{Note}}} ERP Request Payload Overview
 //
@@ -86,12 +87,15 @@ class POLICY_EXPORT EncryptedReportingJobConfiguration
   using UploadResponseCallback =
       base::OnceCallback<void(int /*net_error*/, int /*response_code*/)>;
 
+  // `network_name_cache` is used to report the network name in the device
+  // dictionary. It may be null.
   EncryptedReportingJobConfiguration(
       scoped_refptr<network::SharedURLLoaderFactory> factory,
       const std::string& server_url,
       base::DictValue merging_payload,
       const std::string& dm_token,
       const std::string& client_id,
+      NetworkNameCache* network_name_cache,
       UploadResponseCallback response_cb,
       UploadCompleteCallbackDeprecated complete_cb);
   ~EncryptedReportingJobConfiguration() override;
@@ -120,7 +124,6 @@ class POLICY_EXPORT EncryptedReportingJobConfiguration
   std::string GetUmaString() const override;
 
  private:
-  static const base::flat_set<std::string>& GetTopLevelKeyAllowList();
   const bool is_device_managed_;
 
   UploadResponseCallback response_cb_;

@@ -24,7 +24,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -187,13 +186,12 @@
                                    prefilledEmail:nil
                              continuationProvider:
                                  DoNothingContinuationProvider()];
-  _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> signinIdentity) {
-        [weakSelf signinCoordinatorCompletionWithCoordinator:coordinator
-                                                      result:result
-                                              signinIdentity:signinIdentity];
-      };
+  _signinCoordinator.signinCompletion = ^(
+      SigninCoordinator* coordinator,
+      SigninCoordinatorResultOrIdentity result) {
+    [weakSelf signinCoordinatorCompletionWithCoordinator:coordinator
+                                          signinIdentity:result.value_or(nil)];
+  };
   [_signinCoordinator start];
 }
 
@@ -206,14 +204,13 @@
 
 - (void)
     signinCoordinatorCompletionWithCoordinator:(SigninCoordinator*)coordinator
-                                        result:(SigninCoordinatorResult)result
                                 signinIdentity:
                                     (id<SystemIdentity>)signinIdentity {
-  CHECK_EQ(_signinCoordinator, coordinator, base::NotFatalUntil::M151);
+  CHECK_EQ(_signinCoordinator, coordinator);
   [self stopSigninCoordinator];
-  if (result == SigninCoordinatorResultSuccess && signinIdentity) {
-    GaiaId gaiaID = signinIdentity.gaiaId;
-    [_saveToPhotosSettingsMediator setSelectedIdentityGaiaID:&gaiaID];
+  if (signinIdentity) {
+    [_saveToPhotosSettingsMediator
+        setSelectedIdentityGaiaID:signinIdentity.gaiaId];
   }
 }
 

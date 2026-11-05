@@ -16,9 +16,11 @@
 #include "base/task/single_thread_task_runner.h"
 #include "components/apdu/apdu_command.h"
 #include "components/apdu/apdu_response.h"
+#include "crypto/hash.h"
 #include "crypto/keypair.h"
 #include "crypto/sign.h"
 #include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_transport_protocol.h"
 
 namespace device {
 
@@ -41,13 +43,14 @@ std::optional<std::vector<uint8_t>> ErrorStatus(
 
 // static
 bool VirtualU2fDevice::IsTransportSupported(FidoTransportProtocol transport) {
-  return (base::flat_set<FidoTransportProtocol>(
-              {FidoTransportProtocol::kUsbHumanInterfaceDevice,
-               FidoTransportProtocol::kBluetoothLowEnergy,
-               FidoTransportProtocol::kNearFieldCommunication,
-               FidoTransportProtocol::kInternal,
-               FidoTransportProtocol::kSmartCard}))
-      .contains(transport);
+  static constexpr FidoTransportProtocolSet kSupportedTransports = {
+      FidoTransportProtocol::kUsbHumanInterfaceDevice,
+      FidoTransportProtocol::kBluetoothLowEnergy,
+      FidoTransportProtocol::kNearFieldCommunication,
+      FidoTransportProtocol::kInternal,
+      FidoTransportProtocol::kSmartCard,
+  };
+  return kSupportedTransports.Has(transport);
 }
 
 VirtualU2fDevice::VirtualU2fDevice() = default;
@@ -149,7 +152,7 @@ std::optional<std::vector<uint8_t>> VirtualU2fDevice::DoRegister(
   }
 
   // Our key handles are simple hashes of the public key.
-  const auto key_handle = crypto::SHA256Hash(x962);
+  const auto key_handle = crypto::hash::Sha256(x962);
 
   // Data to be signed.
   std::vector<uint8_t> sign_buffer;

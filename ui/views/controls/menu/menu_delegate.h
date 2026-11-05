@@ -71,6 +71,7 @@ class VIEWS_EXPORT MenuDelegate {
 
   // The font and color for the menu item label.
   virtual const gfx::FontList* GetLabelFontList(int id) const;
+  virtual const gfx::FontList* GetSecondaryLabelFontList(int id) const;
   virtual std::optional<SkColor> GetLabelColor(int id) const;
 
   // The tooltip shown for the menu item. This is invoked when the user
@@ -119,6 +120,11 @@ class VIEWS_EXPORT MenuDelegate {
   // menu open. Default implementation returns false.
   virtual bool ShouldExecuteCommandWithoutClosingMenu(int id,
                                                       const ui::Event& e);
+
+  // Returns true if child buttons embedded in menu items should support
+  // mouse click-and-drag highlighting and release activation across buttons and
+  // menu items. Defaults to false.
+  virtual bool ShouldDragActivateChildButtons() const;
 
   // Returns true if the specified event is one the user can use to trigger, or
   // accept, the item. Defaults to left or right mouse buttons or tap.

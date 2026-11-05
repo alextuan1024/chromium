@@ -8,7 +8,6 @@
 
 #include <stddef.h>
 
-#include <cstdlib>
 #include <memory>
 #include <set>
 #include <utility>
@@ -16,6 +15,7 @@
 #include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/run_loop.h"
+#include "base/test/insecure_random_generator.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
@@ -147,13 +147,9 @@ void RemoveBackgroundPermission(extensions::ExtensionService* service,
 }
 }  // namespace
 
-// Crashes on Mac trybots.
-// http://crbug.com/40957323
-// Also crashes on Windows under Dr. Memory (https://crbug.com/40466773),
-// presumably broken on all platforms.
 // With minimal test logic, verifies behavior over an explicit set of
 // extensions, of which some are Background Apps and others are not.
-TEST_F(BackgroundApplicationListModelTest, DISABLED_ExplicitTest) {
+TEST_F(BackgroundApplicationListModelTest, ExplicitTest) {
   // ExtensionSystem::ready() is dispatched using PostTask to UI Thread. Wait
   // until idle so that BackgroundApplicationListModel::OnExtensionSystemReady
   // called.
@@ -332,6 +328,7 @@ typedef std::set<scoped_refptr<Extension>> ExtensionCollection;
 
 namespace {
 void AddExtension(Profile* profile,
+                  const base::test::InsecureRandomGenerator& rng,
                   ExtensionCollection* extensions,
                   BackgroundApplicationListModel* model,
                   size_t* expected,
@@ -339,7 +336,7 @@ void AddExtension(Profile* profile,
   ExtensionRegistrar* registrar = ExtensionRegistrar::Get(profile);
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile);
   bool create_background = false;
-  if (rand() % 2) {
+  if (rng.RandUint32() % 2) {
     create_background = true;
     ++*expected;
   }
@@ -358,6 +355,7 @@ void AddExtension(Profile* profile,
 
 void RemoveExtension(extensions::ExtensionService* service,
                      extensions::ExtensionRegistrar* registrar,
+                     const base::test::InsecureRandomGenerator& rng,
                      ExtensionCollection* extensions,
                      BackgroundApplicationListModel* model,
                      size_t* expected,
@@ -373,13 +371,12 @@ void RemoveExtension(extensions::ExtensionService* service,
   } else {
     // Randomly select which extension to remove
     if (extensions->size() > 1) {
-      int offset = rand() % (extensions->size() - 1);
+      int offset = rng.RandUint32() % (extensions->size() - 1);
       for (int index = 0; index < offset; ++index) {
         ++cursor;
       }
     }
     scoped_refptr<Extension> extension = cursor->get();
-    std::string id = extension->id();
     if (BackgroundApplicationListModel::IsBackgroundApp(*extension.get(),
                                                         service->profile())) {
       --*expected;
@@ -395,6 +392,7 @@ void RemoveExtension(extensions::ExtensionService* service,
 }
 
 void TogglePermission(extensions::ExtensionService* service,
+                      const base::test::InsecureRandomGenerator& rng,
                       ExtensionCollection* extensions,
                       BackgroundApplicationListModel* model,
                       size_t* expected,
@@ -410,13 +408,12 @@ void TogglePermission(extensions::ExtensionService* service,
   } else {
     // Randomly select which extension to toggle.
     if (extensions->size() > 1) {
-      int offset = rand() % (extensions->size() - 1);
+      int offset = rng.RandUint32() % (extensions->size() - 1);
       for (int index = 0; index < offset; ++index) {
         ++cursor;
       }
     }
     scoped_refptr<Extension> extension = cursor->get();
-    std::string id = extension->id();
     if (BackgroundApplicationListModel::IsBackgroundApp(*extension.get(),
                                                         service->profile())) {
       --*expected;
@@ -448,18 +445,20 @@ TEST_F(BackgroundApplicationListModelTest, RandomTest) {
   ExtensionCollection extensions;
   size_t count = 0;
   size_t expected = 0;
-  srand(RANDOM_SEED);
+  base::test::InsecureRandomGenerator rng;
+  rng.ReseedForTesting(RANDOM_SEED);
   for (int index = 0; index < kIterations; ++index) {
-    switch (rand() % 3) {
+    switch (rng.RandUint32() % 3) {
       case 0:
-        AddExtension(profile(), &extensions, model(), &expected, &count);
+        AddExtension(profile(), rng, &extensions, model(), &expected, &count);
         break;
       case 1:
-        RemoveExtension(service(), registrar(), &extensions, model(), &expected,
-                        &count);
+        RemoveExtension(service(), registrar(), rng, &extensions, model(),
+                        &expected, &count);
         break;
       case 2:
-        TogglePermission(service(), &extensions, model(), &expected, &count);
+        TogglePermission(service(), rng, &extensions, model(), &expected,
+                         &count);
         break;
       default:
         NOTREACHED();

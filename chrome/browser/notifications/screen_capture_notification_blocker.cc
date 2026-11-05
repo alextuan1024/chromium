@@ -6,10 +6,8 @@
 
 #include <algorithm>
 
-#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/grit/generated_resources.h"
@@ -33,7 +31,7 @@ const char kMuteNotificationId[] = "notifications_muted";
 ScreenCaptureNotificationBlocker::ScreenCaptureNotificationBlocker(
     NotificationDisplayService* notification_display_service)
     : notification_display_service_(notification_display_service) {
-  DCHECK(notification_display_service_);
+  CHECK(notification_display_service_, base::NotFatalUntil::M161);
   observation_.Observe(MediaCaptureDevicesDispatcher::GetInstance()
                            ->GetMediaStreamCaptureIndicator()
                            .get());
@@ -68,9 +66,6 @@ void ScreenCaptureNotificationBlocker::OnBlockedNotification(
   else
     ++muted_notification_count_;
 
-  if (state_ == NotifyState::kSnooze)
-    ++snoozed_notification_count_;
-
   if (state_ == NotifyState::kNotifyMuted)
     DisplayMuteNotification();
 }
@@ -82,6 +77,8 @@ void ScreenCaptureNotificationBlocker::OnClosedNotification(
 
 void ScreenCaptureNotificationBlocker::OnAction(
     MutedNotificationHandler::Action action) {
+  // TODO(crbug.com/584661832): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(state_ == NotifyState::kNotifyMuted);
   CloseMuteNotification();
 
@@ -94,9 +91,6 @@ void ScreenCaptureNotificationBlocker::OnAction(
       state_ = NotifyState::kShowAll;
       NotifyBlockingStateChanged();
       ReportSessionMetrics(/*revealed=*/true);
-      break;
-    case MutedNotificationHandler::Action::kSnoozeClick:
-      state_ = NotifyState::kSnooze;
       break;
   }
 }
@@ -114,7 +108,6 @@ void ScreenCaptureNotificationBlocker::OnIsCapturingDisplayChanged(
     muted_notification_count_ = 0;
     replaced_notification_count_ = 0;
     closed_notification_count_ = 0;
-    snoozed_notification_count_ = 0;
     reported_session_metrics_ = false;
     state_ = NotifyState::kNotifyMuted;
     last_screen_capture_session_start_time_ = base::TimeTicks();
@@ -140,7 +133,6 @@ void ScreenCaptureNotificationBlocker::ReportSessionMetrics(bool revealed) {
   RecordScreenCaptureCount("MutedCount", muted_notification_count_);
   RecordScreenCaptureCount("ReplacedCount", replaced_notification_count_);
   RecordScreenCaptureCount("ClosedCount", closed_notification_count_);
-  RecordScreenCaptureCount("SnoozedCount", snoozed_notification_count_);
 
   reported_session_metrics_ = true;
 }
@@ -152,10 +144,6 @@ void ScreenCaptureNotificationBlocker::DisplayMuteNotification() {
   message_center::RichNotificationData rich_notification_data;
   rich_notification_data.renotify = true;
 
-  if (base::FeatureList::IsEnabled(features::kMuteNotificationSnoozeAction)) {
-    rich_notification_data.buttons.emplace_back(
-        l10n_util::GetStringUTF16(IDS_NOTIFICATION_MUTED_ACTION_SNOOZE));
-  }
   rich_notification_data.buttons.emplace_back(l10n_util::GetPluralStringFUTF16(
       IDS_NOTIFICATION_MUTED_ACTION_SHOW, total_notification_count));
 

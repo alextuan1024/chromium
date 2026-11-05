@@ -4,9 +4,9 @@
 
 #include "components/sync/engine/syncer_proto_util.h"
 
-#include <map>
 #include <optional>
 
+#include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "base/format_macros.h"
 #include "base/logging.h"
@@ -194,6 +194,12 @@ void ProcessClientCommand(const sync_pb::ClientCommand& command,
         command.max_commit_batch_size());
   }
 
+  if (command.has_max_target_commit_batch_specifics_bytes() &&
+      command.max_target_commit_batch_specifics_bytes() > 0) {
+    cycle->context()->set_max_target_commit_batch_specifics_bytes(
+        command.max_target_commit_batch_specifics_bytes());
+  }
+
   if (command.has_set_sync_poll_interval()) {
     base::TimeDelta interval = base::Seconds(command.set_sync_poll_interval());
     if (interval.is_zero()) {
@@ -205,7 +211,7 @@ void ProcessClientCommand(const sync_pb::ClientCommand& command,
   }
 
   if (command.custom_nudge_delays_size() > 0) {
-    std::map<DataType, base::TimeDelta> delay_map;
+    base::flat_map<DataType, base::TimeDelta> delay_map;
     for (int i = 0; i < command.custom_nudge_delays_size(); ++i) {
       DataType type = GetDataTypeFromSpecificsFieldNumber(
           command.custom_nudge_delays(i).datatype_id());
@@ -536,24 +542,6 @@ SyncerError SyncerProtoUtil::PostClientToServerMessage(
 
   return HandleClientToServerMessageResponse(*response, cycle,
                                              partial_failure_data_types);
-}
-
-// static
-bool SyncerProtoUtil::ShouldMaintainPosition(
-    const sync_pb::SyncEntity& sync_entity) {
-  // Maintain positions for bookmarks that are not server-defined top-level
-  // folders.
-  return GetDataTypeFromSpecifics(sync_entity.specifics()) == BOOKMARKS &&
-         !(sync_entity.folder() &&
-           !sync_entity.server_defined_unique_tag().empty());
-}
-
-// static
-bool SyncerProtoUtil::ShouldMaintainHierarchy(
-    const sync_pb::SyncEntity& sync_entity) {
-  // Maintain hierarchy for bookmarks or top-level items.
-  return GetDataTypeFromSpecifics(sync_entity.specifics()) == BOOKMARKS ||
-         sync_entity.parent_id_string() == "0";
 }
 
 std::string SyncerProtoUtil::SyncEntityDebugString(

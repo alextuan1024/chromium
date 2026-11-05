@@ -77,7 +77,7 @@ class NavigateEvent final : public Event,
   String downloadRequest() const { return download_request_; }
   ScriptValue info() const { return info_; }
   bool hasUAVisualTransition() const { return has_ua_visual_transition_; }
-  Element* sourceElement() const { return source_element_.Get(); }
+  Element* sourceElement() const;
   void intercept(NavigationInterceptOptions*, ExceptionState&);
   void deferPageSwap(NavigationDeferPageSwapOptions*, ExceptionState&);
 
@@ -93,6 +93,9 @@ class NavigateEvent final : public Event,
       ExceptionState&);
 
   void React(ScriptState* script_state);
+  // Whether React() has been called, i.e. whether ReactDone() is pending or
+  // has already run.
+  bool HasReacted() const { return has_reacted_; }
 
   void ResumeDeferredCommit();
 
@@ -164,6 +167,7 @@ class NavigateEvent final : public Event,
       deferred_commit_handler_list_;
 
   bool did_change_focus_during_intercept_ = false;
+  bool has_reacted_ = false;
 
   // Used to delay the start of the loading UI when the navigation is
   // intercepted, in order to minimize jittering if any handlers are short.

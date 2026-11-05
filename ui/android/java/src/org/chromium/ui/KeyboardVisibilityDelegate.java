@@ -26,9 +26,19 @@ public class KeyboardVisibilityDelegate {
     public interface KeyboardVisibilityListener {
         /**
          * Called whenever the keyboard might have changed.
-         * @param isShowing A boolean that's true if the keyboard is now visible.
+         *
+         * @param isObscuring A boolean that's true if the keyboard is now visible and obscuring the
+         *     window layout.
          */
-        void keyboardVisibilityChanged(boolean isShowing);
+        default void keyboardObscuringChanged(boolean isObscuring) {}
+
+        /**
+         * Called when the soft keyboard's on-screen visibility changes, regardless of whether it
+         * obscures the window layout.
+         *
+         * @param isVisible Whether the soft keyboard is visible on screen.
+         */
+        default void keyboardVisibilityChanged(boolean isVisible) {}
     }
 
     private final ObserverList<KeyboardVisibilityListener> mKeyboardVisibilityListeners =
@@ -115,31 +125,59 @@ public class KeyboardVisibilityDelegate {
     }
 
     /**
-     * Returns whether the keyboard is showing.
+     * Returns whether the keyboard (or an associated filling UI overlay) is currently obscuring or
+     * shrinking the window layout.
+     *
+     * <p>Unlike {@link #isKeyboardVisible(View)}, this may return false for floating or
+     * split-screen soft keyboards that do not obscure the window, and may return true when a
+     * non-IME filling view is shown.
+     *
+     * @param view A {@link View}.
+     * @return Whether the keyboard or overlay is obscuring the window layout.
+     */
+    public boolean isKeyboardObscuring(View view) {
+        return KeyboardUtils.isAndroidSoftKeyboardObscuring(view);
+    }
+
+    /**
+     * Returns whether the soft keyboard is visible on screen, regardless of whether it is obscuring
+     * or shrinking the window layout (e.g. including floating or split-screen non-obscuring
+     * keyboards).
      *
      * @param view A {@link View}.
      * @return Whether or not the software keyboard is visible.
      */
-    public boolean isKeyboardShowing(View view) {
-        return KeyboardUtils.isAndroidSoftKeyboardShowing(view);
+    public boolean isKeyboardVisible(View view) {
+        return KeyboardUtils.isAndroidSoftKeyboardVisible(view);
     }
 
     /**
      * To be called when the keyboard visibility state might have changed. Informs listeners of the
      * state change IFF there actually was a change.
      *
-     * @param isShowing The current (guesstimated) state of the keyboard.
+     * @param isObscuring The current (guesstimated) obscuring state of the keyboard.
      */
-    protected void notifyListeners(boolean isShowing) {
+    protected void notifyListeners(boolean isObscuring) {
         for (KeyboardVisibilityListener listener : mKeyboardVisibilityListeners) {
-            listener.keyboardVisibilityChanged(isShowing);
+            listener.keyboardObscuringChanged(isObscuring);
+        }
+    }
+
+    /**
+     * Notifies listeners when the soft keyboard's on-screen visibility state might have changed.
+     *
+     * @param isVisible Whether the soft keyboard is visible on screen.
+     */
+    protected void notifyVisibilityListeners(boolean isVisible) {
+        for (KeyboardVisibilityListener listener : mKeyboardVisibilityListeners) {
+            listener.keyboardVisibilityChanged(isVisible);
         }
     }
 
     /**
      * Adds a listener that is updated of keyboard visibility changes. This works as a best guess.
      *
-     * @see org.chromium.ui.KeyboardVisibilityDelegate#isKeyboardShowing(Context, View)
+     * @see #isKeyboardObscuring(View)
      */
     public void addKeyboardVisibilityListener(KeyboardVisibilityListener listener) {
         if (mKeyboardVisibilityListeners.isEmpty()) {

@@ -129,24 +129,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoaderFactory final
   mojom::SharedDictionaryAccessObserver* GetSharedDictionaryAccessObserver()
       const;
 
-  // Returns the network that URLLoaders, created out of this factory, will
-  // target. If == net::handles::kInvalidNetworkHandle, then no network is being
-  // targeted and the system default network will be used (see
-  // network.mojom.NetworkContextParams::bound_network for more info).
-  // Note: this is not supported for factories that received a
-  // `factory_override_` (via
-  // network.mojo.URLLoaderFactoryParams::factory_override). In this case, the
-  // factory will use the remote specified within that construct, instead of
-  // `network_loader_factory_`. Supporting this would mean exposing this API via
-  // network.mojom.URLLoaderFactory, instead of CorsURLLoaderFactory, which is a
-  // lot more work for very little benefit (network::URLLoaderFactory's tests
-  // guarantee that the overriding factory behaves correctly).
-  net::handles::NetworkHandle GetBoundNetworkForTesting() const;
-
-  // Returns whether CORS preflight request flowing through this
-  // URLLoaderFactory should represent an error or not.
-  bool IsCorsPreflighLoadOptionAllowed() const;
-
  private:
   class FactoryOverride;
 
@@ -159,9 +141,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoaderFactory final
 
   mojo::PendingRemote<mojom::DevToolsObserver> GetDevToolsObserver(
       ResourceRequest& resource_request) const;
-
-  // Returns whether this factory is used in the multi-network CCT workflow.
-  bool IsMultiNetworkCCTWorkFlow() const;
 
   template <class T>
   void OnLoaderCreated(
@@ -215,6 +194,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoaderFactory final
   const bool is_main_frame_origin_recently_accessed_;
   const bool is_outermost_main_frame_;
   const bool renderer_accessible_http_cache_write_enabled_;
+  // Whether the factory params potentially allow storage
+  // access via the Storage Access API (or Storage Access Headers).
+  const bool factory_is_storage_access_potentially_allowed_;
 
   // Relative order of `network_loader_factory_` and `loaders_` matters -
   // URLLoaderFactory needs to live longer than URLLoaders created using the

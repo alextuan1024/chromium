@@ -113,7 +113,7 @@ namespace translate {
 ////////////////////////////////////////////////////////////////////////////////
 // TranslateAgent, public:
 TranslateAgent::TranslateAgent(content::RenderFrame* render_frame, int world_id)
-    : content::RenderFrameObserver(render_frame),
+    : blink::WebLocalFrameObserver(render_frame->GetWebFrame()),
       world_id_(world_id),
       translate_language_detection_model_(GetLanguageDetectionModel()),
       language_detection_agent_(
@@ -122,8 +122,8 @@ TranslateAgent::TranslateAgent(content::RenderFrame* render_frame, int world_id)
                     render_frame,
                     translate_language_detection_model_->tflite_model())
               : nullptr) {
-  translate_task_runner_ = this->render_frame()->GetTaskRunner(
-      blink::TaskType::kInternalTranslation);
+  translate_task_runner_ =
+      GetWebLocalFrame()->GetTaskRunner(blink::TaskType::kInternalTranslation);
 }
 
 TranslateAgent::~TranslateAgent() = default;
@@ -154,7 +154,7 @@ void TranslateAgent::PageCaptured(
   if (!contents) {
     return;
   }
-  WebLocalFrame* main_frame = render_frame()->GetWebFrame();
+  WebLocalFrame* main_frame = GetWebLocalFrame();
   if (!main_frame)
     return;
 
@@ -187,8 +187,6 @@ void TranslateAgent::PageCaptured(
 
   WebLanguageDetectionDetails web_detection_details =
       WebLanguageDetectionDetails::CollectLanguageDetectionDetails(document);
-  WebLanguageDetectionDetails::RecordAcceptLanguageAndXmlHtmlLangMetric(
-      document);
 
   std::string content_language = web_detection_details.content_language.Utf8();
   std::string html_lang = web_detection_details.html_language.Utf8();
@@ -237,6 +235,10 @@ void TranslateAgent::RunLanguageDetectionAndRegisterPage(
   if (ShouldOverrideLanguageDetectionForTesting()) {
     std::string language = "fr";
     LanguageDetectionDetails details;
+    details.time = base::Time::Now();
+    // The browser uses the URL to tell the Reading Mode side panel apart from
+    // the page itself, so it must be set here too.
+    details.url = url;
     details.adopted_language = language;
     details.contents = contents;
     details.has_run_lang_detection = true;
@@ -315,7 +317,7 @@ void TranslateAgent::RunLanguageDetectionAndRegisterPage(
 void TranslateAgent::RegisterPageInternal(
     LanguageDetectionDetails details,
     bool page_level_translation_criteria_met) {
-  WebLocalFrame* main_frame = render_frame()->GetWebFrame();
+  WebLocalFrame* main_frame = GetWebLocalFrame();
   if (!main_frame) {
     return;
   }
@@ -385,7 +387,7 @@ base::TimeDelta TranslateAgent::AdjustDelay(int delay_in_milliseconds) {
 }
 
 void TranslateAgent::ExecuteScript(const std::string& script) {
-  WebLocalFrame* main_frame = render_frame()->GetWebFrame();
+  WebLocalFrame* main_frame = GetWebLocalFrame();
   if (!main_frame)
     return;
 
@@ -396,7 +398,7 @@ void TranslateAgent::ExecuteScript(const std::string& script) {
 
 bool TranslateAgent::ExecuteScriptAndGetBoolResult(const std::string& script,
                                                    bool fallback) {
-  WebLocalFrame* main_frame = render_frame()->GetWebFrame();
+  WebLocalFrame* main_frame = GetWebLocalFrame();
   if (!main_frame)
     return fallback;
 
@@ -414,7 +416,7 @@ bool TranslateAgent::ExecuteScriptAndGetBoolResult(const std::string& script,
 
 std::string TranslateAgent::ExecuteScriptAndGetStringResult(
     const std::string& script) {
-  WebLocalFrame* main_frame = render_frame()->GetWebFrame();
+  WebLocalFrame* main_frame = GetWebLocalFrame();
   if (!main_frame)
     return std::string();
 
@@ -441,7 +443,7 @@ std::string TranslateAgent::ExecuteScriptAndGetStringResult(
 
 double TranslateAgent::ExecuteScriptAndGetDoubleResult(
     const std::string& script) {
-  WebLocalFrame* main_frame = render_frame()->GetWebFrame();
+  WebLocalFrame* main_frame = GetWebLocalFrame();
   if (!main_frame)
     return 0.0;
 
@@ -459,7 +461,7 @@ double TranslateAgent::ExecuteScriptAndGetDoubleResult(
 
 int64_t TranslateAgent::ExecuteScriptAndGetIntegerResult(
     const std::string& script) {
-  WebLocalFrame* main_frame = render_frame()->GetWebFrame();
+  WebLocalFrame* main_frame = GetWebLocalFrame();
   if (!main_frame)
     return 0;
 
@@ -480,7 +482,7 @@ void TranslateAgent::TranslateFrame(const std::string& translate_script,
                                     const std::string& source_lang,
                                     const std::string& target_lang,
                                     TranslateFrameCallback callback) {
-  WebLocalFrame* main_frame = render_frame()->GetWebFrame();
+  WebLocalFrame* main_frame = GetWebLocalFrame();
   if (!main_frame) {
     // Cancelled.
     std::move(callback).Run(true, source_lang, target_lang,
@@ -713,7 +715,7 @@ TranslateAgent::GetTranslateHandler() {
     translate_handler_.reset();
   }
 
-  render_frame()->GetBrowserInterfaceBroker().GetInterface(
+  GetWebLocalFrame()->GetBrowserInterfaceBroker().GetInterface(
       translate_handler_.BindNewPipeAndPassReceiver());
   return translate_handler_;
 }
@@ -725,7 +727,7 @@ void TranslateAgent::ResetPage() {
   CancelPendingTranslation();
 }
 
-void TranslateAgent::OnDestruct() {
+void TranslateAgent::OnFrameDetached() {
   delete this;
 }
 

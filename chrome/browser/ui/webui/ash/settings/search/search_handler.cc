@@ -6,12 +6,12 @@
 
 #include <algorithm>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/os_settings_sections.h"
 #include "chrome/browser/ui/webui/ash/settings/search/hierarchy.h"
 #include "chrome/browser/ui/webui/ash/settings/search/mojom/search_result_icon.mojom.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_concept.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -55,7 +55,7 @@ SearchHandler::SearchHandler(
       local_search_service::IndexId::kCrosSettings,
       local_search_service::Backend::kLinearMap,
       index_remote_.BindNewPipeAndPassReceiver());
-  DCHECK(index_remote_.is_bound());
+  CHECK(index_remote_.is_bound(), base::NotFatalUntil::M162);
 
   search_tag_registry_->AddObserver(this);
 }
@@ -263,7 +263,7 @@ mojom::SearchResultPtr SearchHandler::ResultToSearchResult(
   }
 
   // |result| is expected to have one position, whose ID is a stringified int.
-  DCHECK_EQ(1u, result.positions.size());
+  CHECK_EQ(1u, result.positions.size(), base::NotFatalUntil::M162);
   int content_id;
   if (!base::StringToInt(result.positions[0].content_id, &content_id)) {
     return nullptr;

@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.autofill.settings;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.autofill.AutofillClientProviderUtils.isPlatformAutofillEnabledForProfile;
 
 import android.app.Activity;
@@ -11,6 +12,7 @@ import android.content.Context;
 import android.graphics.PorterDuff;
 import android.graphics.drawable.Drawable;
 import android.text.TextUtils;
+import android.widget.ImageView;
 import android.widget.TextView;
 
 import androidx.preference.Preference;
@@ -25,6 +27,7 @@ import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.autofill.GoogleWalletLauncher;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManager;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManagerFactory;
@@ -33,6 +36,7 @@ import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFrag
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
 import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
 import org.chromium.chrome.browser.device_reauth.BiometricStatus;
+import org.chromium.chrome.browser.device_reauth.DeviceAuthAvailabilityCheckerBridge;
 import org.chromium.chrome.browser.device_reauth.DeviceAuthSource;
 import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -44,6 +48,7 @@ import org.chromium.chrome.browser.settings.ChromeManagedPreferenceDelegate;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.components.autofill.autofill_ai.DetailsForUpsertPass;
 import org.chromium.components.autofill.autofill_ai.EntityInstance;
 import org.chromium.components.autofill.autofill_ai.EntityInstanceWithLabels;
 import org.chromium.components.autofill.autofill_ai.EntityType;
@@ -135,7 +140,7 @@ public class AutofillAiDelegate {
                         /* controlledByEnterprisePolicy= */ false);
     }
 
-    private final ChromeBaseSettingsFragment mFragment;
+    private final AutofillAiBaseFragment mFragment;
     private final EntityDataManager.EntityDataManagerObserver mEntityObserver;
     private @Nullable final ToggleConfig mToggleConfig;
     private @Nullable PrefChangeRegistrar mPrefChangeRegistrar;
@@ -156,8 +161,9 @@ public class AutofillAiDelegate {
                 @Override
                 public void onDone(
                         EntityInstance entityInstance,
-                        int descriptionStringId,
-                        int acceptButtonStringId) {
+                        int[] descriptionStringIds,
+                        int acceptButtonStringId,
+                        byte @Nullable [] legalMessageToken) {
                     EntityDataManager entityDataManager =
                             EntityDataManagerFactory.getForProfile(mFragment.getProfile());
                     if (entityDataManager == null) {
@@ -165,8 +171,9 @@ public class AutofillAiDelegate {
                     }
                     entityDataManager.addOrUpdateEntityInstance(
                             entityInstance,
-                            descriptionStringId,
+                            descriptionStringIds,
                             acceptButtonStringId,
+                            legalMessageToken,
                             () -> onLocalSaveFallback());
                 }
 
@@ -191,7 +198,7 @@ public class AutofillAiDelegate {
      * @param toggleConfig Information to display optIn toggle for screen, if present.
      */
     AutofillAiDelegate(
-            ChromeBaseSettingsFragment fragment,
+            AutofillAiBaseFragment fragment,
             EntityDataManager.EntityDataManagerObserver entityObserver,
             @Nullable ToggleConfig toggleConfig) {
         mFragment = fragment;
@@ -199,18 +206,32 @@ public class AutofillAiDelegate {
         mToggleConfig = toggleConfig;
     }
 
-    EntityEditorCoordinator.Delegate getEntityEditorDelegate() {
-        return mEntityEditorDelegate;
-    }
-
     void onActivityCreated() {
         EntityDataManager entityDataManager =
                 EntityDataManagerFactory.getForProfile(mFragment.getProfile());
         if (entityDataManager != null) {
             entityDataManager.registerDataObserver(mEntityObserver);
+            if (ChromeFeatureList.isEnabled(
+                    ChromeFeatureList.AUTOFILL_ENABLE_WALLET_DISCLOSURE_NOTICE_PUBLIC_PASS)) {
+                // Opening the entity editor is a synchronous UI action when the user clicks "Add".
+                // To avoid UI latency or showing a spinner, prefetch the legal message disclosure
+                // and legal message token for all eligible entity types asynchronously ahead of
+                // time. If the prefetch fails or is still in flight when the user opens the editor,
+                // the editor gracefully falls back to saving the entity locally.
+                for (@EntityTypeName int type : getEntityTypesToPrefetch()) {
+                    if (entityDataManager.isEligibleForWalletNotice(
+                            type, RecordType.SERVER_WALLET)) {
+                        entityDataManager.preloadDetailsForUpsertPass(type);
+                    }
+                }
+            }
         }
 
         setupPreferenceObservers();
+    }
+
+    private Set<Integer> getEntityTypesToPrefetch() {
+        return mFragment.getEntityTypes();
     }
 
     void onDestroyView() {
@@ -258,9 +279,7 @@ public class AutofillAiDelegate {
     }
 
     private static boolean shouldShowOptInToggle() {
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
-                && ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID);
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA);
     }
 
     private void maybeAddOptInToggle(PreferenceScreen screen, @Nullable Set<Integer> types) {
@@ -321,8 +340,7 @@ public class AutofillAiDelegate {
                         }
 
                         SettingsNavigationHelper.showAutofillPersonalContextSettings(
-                                mFragment.requireActivity(),
-                                AutofillOptionsReferrer.AUTOFILL_AND_PASSWORDS_FRAGMENT);
+                                mFragment.requireActivity());
                         return true;
                     });
 
@@ -352,10 +370,6 @@ public class AutofillAiDelegate {
     }
 
     private static boolean canShowWalletDataSharingPromotion(EntityDataManager entityDataManager) {
-        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)) {
-            return true;
-        }
-
         return entityDataManager.canShowWalletDataSharingPromotion();
     }
 
@@ -394,31 +408,40 @@ public class AutofillAiDelegate {
     /** Adds an information card if Chrome settings are disabled in third-party mode. */
     void maybeAddDisabledSettingsInfoCard(
             PreferenceScreen screen, @AutofillOptionsReferrer int referrer) {
-        if (isPlatformAutofillEnabledForProfile(mFragment.getProfile())) {
-            addDisabledSettingsInfoCard(screen, referrer);
+        maybeAddDisabledSettingsInfoCard(mFragment, screen, referrer);
+    }
+
+    /** Adds an information card if Chrome settings are disabled in third-party mode. */
+    static void maybeAddDisabledSettingsInfoCard(
+            ChromeBaseSettingsFragment fragment,
+            PreferenceScreen screen,
+            @AutofillOptionsReferrer int referrer) {
+        if (isPlatformAutofillEnabledForProfile(fragment.getProfile())) {
+            addDisabledSettingsInfoCard(fragment, screen, referrer);
         }
     }
 
-    private void addDisabledSettingsInfoCard(
-            PreferenceScreen screen, @AutofillOptionsReferrer int referrer) {
+    private static void addDisabledSettingsInfoCard(
+            ChromeBaseSettingsFragment fragment,
+            PreferenceScreen screen,
+            @AutofillOptionsReferrer int referrer) {
+        Context styledContext = fragment.getPreferenceManager().getContext();
         // LINT.IfChange(AddDisabledSettingsInfoCard)
         CardWithButtonPreference disabledSettingsInfoPref =
-                new CardWithButtonPreference(getStyledContext(), null);
+                new CardWithButtonPreference(styledContext, null);
         disabledSettingsInfoPref.setKey(DISABLED_SETTINGS_INFO);
         disabledSettingsInfoPref.setTitle(R.string.autofill_disable_settings_explanation_title);
         disabledSettingsInfoPref.setSummary(getDisabledSettingsSummaryResId());
         // LINT.ThenChange(:DynamicDisabledSettingsInfoCard)
         disabledSettingsInfoPref.setButtonText(
-                mFragment
-                        .getResources()
-                        .getString(R.string.autofill_disable_settings_button_label));
+                fragment.getResources().getString(R.string.autofill_disable_settings_button_label));
         disabledSettingsInfoPref.setIconResource(R.drawable.ic_google_services_24dp);
         disabledSettingsInfoPref.setOnButtonClick(
                 () -> {
                     SettingsNavigation settingsNavigation =
-                            SettingsNavigationFactory.createSettingsNavigation(getStyledContext());
+                            SettingsNavigationFactory.createSettingsNavigation(styledContext);
                     settingsNavigation.startSettings(
-                            getStyledContext(),
+                            styledContext,
                             AutofillOptionsFragment.class,
                             AutofillOptionsFragment.createRequiredArgs(referrer),
                             /* addToBackStack= */ true);
@@ -485,14 +508,6 @@ public class AutofillAiDelegate {
         if (entityDataManager == null) {
             return;
         }
-        if (!entityDataManager.canListEntityInstancesInSettings()
-                // Autofill AI leaf pages show the UI with everything disabled in case the user
-                // cannot list entities. One of Autofill and passwords goals is visibility of what
-                // user can autofill.
-                && !ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)) {
-            return;
-        }
 
         maybeAddOptInToggle(screen, typeFilter);
 
@@ -530,6 +545,15 @@ public class AutofillAiDelegate {
                                         (TextView) holder.findViewById(android.R.id.summary);
                                 summaryView.setSingleLine(true);
                                 summaryView.setEllipsize(TextUtils.TruncateAt.END);
+                                if (entity.isStoredInWallet()) {
+                                    ImageView walletIcon =
+                                            (ImageView)
+                                                    holder.findViewById(R.id.google_wallet_icon);
+                                    if (walletIcon != null) {
+                                        walletIcon.setImageResource(
+                                                AutofillUiUtils.getGoogleWalletIconDrawableId());
+                                    }
+                                }
                             }
                         };
                 pref.setTitle(entity.getEntityInstanceLabel());
@@ -546,10 +570,7 @@ public class AutofillAiDelegate {
                             }
                             if (entity.isStoredInWallet()) {
                                 String walletEntityUrl = entity.getWalletEntityUrl();
-                                if (ChromeFeatureList.isEnabled(
-                                                ChromeFeatureList
-                                                        .AUTOFILL_AI_WALLET_PRIVATE_PASSES_DEEP_LINK)
-                                        && walletEntityUrl != null) {
+                                if (!TextUtils.isEmpty(walletEntityUrl)) {
                                     GoogleWalletLauncher.openGoogleWalletWithFallbackUrl(
                                             context, context.getPackageManager(), walletEntityUrl);
                                 } else {
@@ -570,14 +591,13 @@ public class AutofillAiDelegate {
             }
 
             if (shouldHaveAddButton) {
-                category.addPreference(createAddEntityButton(entityDataManager, type));
+                category.addPreference(createAddEntityButton(type));
             }
         }
     }
 
-    private Preference createAddEntityButton(
-            EntityDataManager entityDataManager, EntityType entityType) {
-        boolean buttonEnabled = isAddButtonEnabled(entityDataManager, entityType);
+    private Preference createAddEntityButton(EntityType entityType) {
+        boolean buttonEnabled = getToggleState(entityType.getTypeName()).checked;
 
         Preference pref = new ChromeBasePreference(getStyledContext());
         Drawable plusIcon =
@@ -609,23 +629,6 @@ public class AutofillAiDelegate {
                     return true;
                 });
         return pref;
-    }
-
-    private boolean isAddButtonEnabled(EntityDataManager entityDataManager, EntityType entityType) {
-        return isEligibleToAddEntities(entityDataManager, entityType.getTypeName())
-                && !isPlatformAutofillEnabledForProfile(mFragment.getProfile());
-    }
-
-    private boolean isEligibleToAddEntities(
-            EntityDataManager entityDataManager, @EntityTypeName int entityTypeName) {
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)) {
-            return getToggleState(entityTypeName).checked;
-        }
-
-        return (ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_AI_AVAILABLE_BY_DEFAULT)
-                ? entityDataManager.canEnableOrDisableAutofillAi()
-                : entityDataManager.isEligibleToAutofillAi()
-                        && entityDataManager.getAutofillAiOptInStatus());
     }
 
     private static boolean entityTypeToggleEnabled(
@@ -670,38 +673,81 @@ public class AutofillAiDelegate {
         return UserPrefs.get(mFragment.getProfile()).getBoolean(mToggleConfig.prefName);
     }
 
-    private void editEntity(EntityInstance entityInstance) {
-        if (entityInstance.requiresReauthToSee()) {
-            if (mReauthenticatorBridge == null) {
-                mReauthenticatorBridge =
-                        ReauthenticatorBridge.create(
-                                mFragment.getActivity(),
-                                mFragment.getProfile(),
-                                DeviceAuthSource.AUTOFILL);
-            }
-            if (mReauthenticatorBridge.getBiometricAvailabilityStatus()
-                    != BiometricStatus.UNAVAILABLE) {
-                mReauthenticatorBridge.reauthenticate(
-                        success -> {
-                            if (success) {
-                                showEntityEditor(entityInstance);
-                            }
-                        });
-            } else {
-                showEntityEditor(entityInstance);
-            }
-        } else {
-            showEntityEditor(entityInstance);
+    private void createReauthenticatorBridge() {
+        if (mReauthenticatorBridge == null) {
+            mReauthenticatorBridge =
+                    ReauthenticatorBridge.create(
+                            mFragment.getActivity(),
+                            mFragment.getProfile(),
+                            DeviceAuthSource.AUTOFILL);
         }
     }
 
+    private void editEntity(EntityInstance entityInstance) {
+        final boolean isDeviceReauthRefactorEnabled =
+                ChromeFeatureList.isEnabled(ChromeFeatureList.DEVICE_REAUTH_REFACTOR);
+        if (!entityInstance.requiresReauthToSee()) {
+            showEntityEditor(entityInstance);
+            return;
+        }
+
+        if (!isDeviceReauthRefactorEnabled) {
+            createReauthenticatorBridge();
+        }
+
+        int biometricStatus =
+                isDeviceReauthRefactorEnabled
+                        ? DeviceAuthAvailabilityCheckerBridge.getBiometricAvailabilityStatus()
+                        : assumeNonNull(mReauthenticatorBridge).getBiometricAvailabilityStatus();
+        if (biometricStatus == BiometricStatus.UNAVAILABLE) {
+            showEntityEditor(entityInstance);
+            return;
+        }
+
+        if (isDeviceReauthRefactorEnabled) {
+            createReauthenticatorBridge();
+        }
+        assumeNonNull(mReauthenticatorBridge).reauthenticate(
+                success -> {
+                    if (success) {
+                        showEntityEditor(entityInstance);
+                    }
+                });
+    }
+
     void showEntityEditor(EntityInstance entityInstance) {
+        EntityDataManager entityDataManager =
+                EntityDataManagerFactory.getForProfile(mFragment.getProfile());
+        final boolean isSavePrompt = TextUtils.isEmpty(entityInstance.getGuid());
+        final boolean isEligibleForWalletNotice =
+                entityDataManager != null
+                        && isSavePrompt
+                        && ChromeFeatureList.isEnabled(
+                                ChromeFeatureList
+                                        .AUTOFILL_ENABLE_WALLET_DISCLOSURE_NOTICE_PUBLIC_PASS)
+                        && entityDataManager.isEligibleForWalletNotice(
+                                entityInstance.getEntityType().getTypeName(),
+                                entityInstance.getRecordType());
+        DetailsForUpsertPass detailsForUpsertPass = null;
+        if (isEligibleForWalletNotice) {
+            @EntityTypeName int entityType = entityInstance.getEntityType().getTypeName();
+            detailsForUpsertPass =
+                    entityDataManager.extractPreloadedDetailsForUpsertPass(entityType);
+            if (detailsForUpsertPass == null) {
+                // If preloading failed, returned invalid details for an eligible user, or did not
+                // complete in time, the required legal disclosures and legal message token cannot
+                // be presented to the user. Rather than blocking the user from saving, fall back to
+                // storing the entity locally on device as `RecordType.LOCAL`.
+                entityInstance.setRecordType(RecordType.LOCAL);
+            }
+        }
         mEntityEditor =
                 new EntityEditorCoordinator(
                         mFragment.getActivity(),
                         mEntityEditorDelegate,
                         mFragment.getProfile(),
-                        entityInstance);
+                        entityInstance,
+                        detailsForUpsertPass);
         mEntityEditor.showEditorDialog();
     }
 
@@ -738,9 +784,7 @@ public class AutofillAiDelegate {
                                         .autofill_ai_save_or_update_entity_failed_wallet_save_dialog_description)
                         .replace("$1", googleWallet);
         final String buttonText =
-                activity.getString(
-                        R.string
-                                .autofill_ai_snack_bar_confirmation_button_label);
+                activity.getString(R.string.autofill_ai_snack_bar_confirmation_button_label);
 
         dialog.show(
                 new ConfirmationDialogParams.Builder(activity)
@@ -777,9 +821,7 @@ public class AutofillAiDelegate {
         final String snackbarButton =
                 mFragment
                         .getActivity()
-                        .getString(
-                                R.string
-                                        .autofill_ai_snack_bar_confirmation_button_label);
+                        .getString(R.string.autofill_ai_snack_bar_confirmation_button_label);
         snackBar.setAction(snackbarButton, /* actionData= */ null);
         // Wrap the message text if it doesn't fit on a single line. The action text will not wrap
         // though.

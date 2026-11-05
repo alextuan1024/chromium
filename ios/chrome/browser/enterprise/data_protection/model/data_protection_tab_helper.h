@@ -11,6 +11,7 @@
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/observer_list.h"
+#import "components/prefs/pref_change_registrar.h"
 #import "ios/web/public/web_state_observer.h"
 #import "ios/web/public/web_state_user_data.h"
 #import "url/gurl.h"
@@ -37,8 +38,8 @@ class RTLookupResponse;
 }  // namespace safe_browsing
 
 // Tab helper that manages data protection enterprise policies for a WebState.
-// It checks both Data Controls and WebProtect real-time URL lookups
-// to determine if screenshot protection should be enabled.
+// It checks DisableScreenshots, Data Controls, and WebProtect real-time URL
+// lookups to determine if screenshot protection should be enabled.
 //
 // The helper monitors navigations and redirects. It performs local policy
 // checks via Data Controls and, for non-incognito profiles, remote real-time
@@ -74,30 +75,29 @@ class DataProtectionTabHelper
 
   static constexpr char kScreenshotBlockSourceHistogram[] =
       "IOS.Enterprise.DataProtection.ScreenshotBlock.Source";
-  static constexpr char kScreenshotBlockLookupSuccessHistogram[] =
-      "IOS.Enterprise.DataProtection.ScreenshotBlock.Lookup.Success";
+  static constexpr char kRealTimeURLLookupSuccessHistogram[] =
+      "IOS.Enterprise.DataProtection.RealTimeURL.Lookup.Success";
+  static constexpr char kWatermarkTriggeredHistogram[] =
+      "IOS.Enterprise.DataProtection.Watermark.Triggered";
 
   // Adds/removes observers to listen for data protection state changes.
   void AddObserver(DataProtectionTabHelperObserver* observer);
   void RemoveObserver(DataProtectionTabHelperObserver* observer);
 
   // Returns the current screenshot protection state for the tab.
-  // This state is based on the currently committed navigation.
-  // Returns true if the state is Enabled or LookupPending (fail-closed).
-  bool IsScreenshotProtectionEnabled() const {
-    return !std::holds_alternative<Disabled>(
-        committed_navigation_.protection_state);
-  }
+  // Returns true if screenshots are disabled by policy, or if the committed
+  // navigation's protection state is Enabled or LookupPending (fail-closed).
+  bool IsScreenshotProtectionEnabled() const;
 
   // Returns the current watermark text for the tab.
   const std::string& GetWatermarkText() const {
     return committed_navigation_.watermark_text;
   }
 
-  // Sets the watermark text for the tab for testing.
-  void SetWatermarkTextForTesting(const std::string& watermark_text) {
-    committed_navigation_.watermark_text = watermark_text;
-  }
+  // Applies `watermark_text` to the committed page for testing, as if it came
+  // from an enterprise policy verdict: the watermark is shown, updated or
+  // removed (if empty) and observers are notified.
+  void SetWatermarkTextForTesting(const std::string& watermark_text);
 
   // web::WebStateObserver:
   void WasShown(web::WebState* web_state) override;
@@ -114,6 +114,8 @@ class DataProtectionTabHelper
 
  private:
   friend class web::WebStateUserData<DataProtectionTabHelper>;
+  friend class DataProtectionTabHelperTest;
+  friend class DataProtectionBrowserAgentTest;
 
   explicit DataProtectionTabHelper(web::WebState* web_state);
 
@@ -159,6 +161,10 @@ class DataProtectionTabHelper
   void SetCommittedProtectionState(ProtectionState new_state,
                                    const std::string& watermark_text);
 
+  // Notifies observers if `IsScreenshotProtectionEnabled()` changed since the
+  // last check.
+  void NotifyScreenshotProtectionIfChanged();
+
   // Helper methods to access services from the Profile.
   ProfileIOS* GetProfile() const;
   data_controls::IOSRulesService* GetRulesService() const;
@@ -175,6 +181,12 @@ class DataProtectionTabHelper
 
   // State for the navigation that is currently committed and displayed.
   NavigationState committed_navigation_;
+
+  // Tracks the last screenshot protection state observed for this tab.
+  bool is_screenshot_protection_enabled_ = false;
+
+  // Observes profile preferences that affect screenshot protection.
+  PrefChangeRegistrar pref_change_registrar_;
 
   // List of observers.
   base::ObserverList<DataProtectionTabHelperObserver, /*check_empty=*/true>

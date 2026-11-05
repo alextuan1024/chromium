@@ -37,8 +37,8 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
@@ -50,7 +50,7 @@ namespace {
 using SuggestionViewState = FilterUiController::SuggestionViewState;
 
 constexpr page_actions::PageActionPriorityCategory kMultistepFilterPriority =
-    page_actions::PageActionPriorityCategory::kContextualCue;
+    page_actions::PageActionPriorityCategory::kProactiveSuggestion;
 
 constexpr std::string_view ViewStateToString(SuggestionViewState state) {
   switch (state) {
@@ -149,11 +149,9 @@ FilterUiController::FilterUiController(tabs::TabInterface& tab)
     favicon_service_ = FaviconServiceFactory::GetForProfile(
         profile, ServiceAccessType::EXPLICIT_ACCESS);
   }
-  if (tab.GetTabFeatures()) {
-    page_action_controller_ = tab.GetTabFeatures()->page_action_controller();
-    if (page_action_controller_) {
-      RegisterAsPageActionObserver(*page_action_controller_);
-    }
+  page_action_controller_ = page_actions::PageActionController::From(&tab);
+  if (page_action_controller_) {
+    RegisterAsPageActionObserver(*page_action_controller_);
   }
 }
 
@@ -236,7 +234,8 @@ void FilterUiController::NavigateTo(const UrlFilterSuggestion& suggestion) {
   }
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
-          suggestion.navigation_url, WindowOpenDisposition::CURRENT_TAB,
+          suggestion.navigation_url,
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PAGE_TRANSITION_GENERATED);
   web_contents->OpenURL(
       params, base::BindOnce(
@@ -283,7 +282,7 @@ void FilterUiController::OpenSettings() {
     content::OpenURLParams params =
         content::OpenURLParams::CreateBrowserInitiated(
             settings_url.Resolve(chrome::kSuggestionsSubPage),
-            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
             ui::PAGE_TRANSITION_GENERATED);
     web_contents->OpenURL(params,
                           base::BindOnce([](content::NavigationHandle&) {}));
@@ -298,7 +297,7 @@ void FilterUiController::OpenFeedback() {
   if (content::WebContents* web_contents = tab().GetContents()) {
     content::OpenURLParams params =
         content::OpenURLParams::CreateBrowserInitiated(
-            feedback_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            feedback_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
             ui::PAGE_TRANSITION_LINK);
     web_contents->OpenURL(params,
                           base::BindOnce([](content::NavigationHandle&) {}));
@@ -411,7 +410,8 @@ void FilterUiController::ShowSuggestionChip() {
 
 void FilterUiController::OnPageActionAnchoredMessageShown(
     const page_actions::PageActionState& page_action) {
-  DCHECK_EQ(page_action.action_id, kActionMultistepFilter);
+  CHECK_EQ(page_action.action_id, kActionMultistepFilter,
+           base::NotFatalUntil::M162);
   if (!suggestion_state_) {
     return;
   }
@@ -460,7 +460,8 @@ void FilterUiController::OnPageActionAnchoredMessageShown(
 
 void FilterUiController::OnPageActionAnchoredMessageHidden(
     const page_actions::PageActionState& page_action) {
-  DCHECK_EQ(page_action.action_id, kActionMultistepFilter);
+  CHECK_EQ(page_action.action_id, kActionMultistepFilter,
+           base::NotFatalUntil::M162);
   if (!suggestion_state_) {
     return;
   }

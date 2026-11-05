@@ -8,7 +8,6 @@
 #include <stdint.h>
 
 #include "base/check.h"
-#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "third_party/blink/public/common/features.h"
@@ -65,7 +64,7 @@ void VisitedLinkReader::UpdateVisitedLinks(
   // Since this function may be called again to change the table, we may need
   // to free old objects.
   FreeTable();
-  DCHECK(hash_table_ == nullptr);
+  DCHECK(hash_table_.empty());
   if (UsePartitionedDatabase()) {
     return UpdatePartitionedVisitedLinks(std::move(table_region));
   }
@@ -83,8 +82,7 @@ void VisitedLinkReader::UpdateUnpartitionedVisitedLinks(
     if (!header_mapping.IsValid())
       return;
 
-    const SharedHeader* header =
-        static_cast<const SharedHeader*>(header_mapping.memory());
+    const SharedHeader* header = header_mapping.GetMemoryAs<SharedHeader>();
     table_len = header->length;
     salt_ = header->salt;
   }
@@ -95,12 +93,13 @@ void VisitedLinkReader::UpdateUnpartitionedVisitedLinks(
     return;
 
   // Commit the data.
-  hash_table_ =
-      const_cast<Fingerprint*>(reinterpret_cast<const Fingerprint*>(UNSAFE_TODO(
-          static_cast<const SharedHeader*>(table_mapping_.memory()) + 1)));
-  table_length_ = table_len;
+  static_assert(sizeof(SharedHeader) % sizeof(Fingerprint) == 0,
+                "Header size must be a multiple of Fingerprint size");
+  hash_table_ = table_mapping_.GetMemoryAsSpan<Fingerprint>()
+                    .subspan<sizeof(SharedHeader) / sizeof(Fingerprint)>()
+                    .first(static_cast<size_t>(table_len));
   base::UmaHistogramCounts10M(
-      "History.VisitedLinks.HashTableLengthOnReaderInit", table_length_);
+      "History.VisitedLinks.HashTableLengthOnReaderInit", table_length());
 }
 
 void VisitedLinkReader::UpdatePartitionedVisitedLinks(
@@ -116,7 +115,7 @@ void VisitedLinkReader::UpdatePartitionedVisitedLinks(
     }
 
     const PartitionedSharedHeader* header =
-        static_cast<const PartitionedSharedHeader*>(header_mapping.memory());
+        header_mapping.GetMemoryAs<PartitionedSharedHeader>();
     table_len = header->length;
   }
 
@@ -127,13 +126,14 @@ void VisitedLinkReader::UpdatePartitionedVisitedLinks(
   }
 
   // Commit the data.
+  static_assert(sizeof(PartitionedSharedHeader) % sizeof(Fingerprint) == 0,
+                "Header size must be a multiple of Fingerprint size");
   hash_table_ =
-      const_cast<Fingerprint*>(reinterpret_cast<const Fingerprint*>(UNSAFE_TODO(
-          static_cast<const PartitionedSharedHeader*>(table_mapping_.memory()) +
-          1)));
-  table_length_ = table_len;
+      table_mapping_.GetMemoryAsSpan<Fingerprint>()
+          .subspan<sizeof(PartitionedSharedHeader) / sizeof(Fingerprint)>()
+          .first(static_cast<size_t>(table_len));
   base::UmaHistogramCounts10M(
-      "History.VisitedLinks.HashTableLengthOnReaderInit", table_length_);
+      "History.VisitedLinks.HashTableLengthOnReaderInit", table_length());
 }
 
 void VisitedLinkReader::AddVisitedLinks(
@@ -156,12 +156,8 @@ void VisitedLinkReader::UpdateOriginSalts(
 }
 
 void VisitedLinkReader::FreeTable() {
-  if (!hash_table_)
-    return;
-
   table_mapping_ = base::ReadOnlySharedMemoryMapping();
-  hash_table_ = nullptr;
-  table_length_ = 0;
+  hash_table_ = {};
 }
 
 void VisitedLinkReader::Bind(

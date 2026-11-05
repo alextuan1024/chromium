@@ -46,6 +46,8 @@
 
 bool ExclusiveAccessBubbleViews::skip_presentation_delay_for_testing_ = false;
 bool ExclusiveAccessBubbleViews::simulate_gpu_hang_for_testing_ = false;
+bool ExclusiveAccessBubbleViews::
+    simulate_unpresented_browser_window_for_testing_ = false;
 
 namespace {
 
@@ -127,7 +129,7 @@ ExclusiveAccessBubbleViews::ExclusiveAccessBubbleViews(
   bool got_accelerator =
       bubble_view_context_->GetAcceleratorProvider()
           ->GetAcceleratorForCommandId(IDC_FULLSCREEN, &accelerator);
-  DCHECK(got_accelerator);
+  CHECK(got_accelerator, base::NotFatalUntil::M162);
   browser_fullscreen_exit_accelerator_ = accelerator.GetShortcutText();
 #endif
 
@@ -195,11 +197,12 @@ ExclusiveAccessBubbleViews::~ExclusiveAccessBubbleViews() {
 void ExclusiveAccessBubbleViews::Update(
     const ExclusiveAccessBubbleParams& params,
     ExclusiveAccessBubbleHideCallback first_hide_callback) {
-  DCHECK(EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE != params.type ||
-         params.has_download);
+  CHECK(EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE != params.type || params.has_download,
+        base::NotFatalUntil::M162);
   bool already_shown = IsShowing() || IsVisible();
   if (params_.type == params.type && params_.origin == params.origin &&
-      !params.force_update && already_shown) {
+      params_.has_download == params.has_download && !params.force_update &&
+      already_shown) {
     return;
   }
 
@@ -209,9 +212,13 @@ void ExclusiveAccessBubbleViews::Update(
   //    or the previous notification was about an override itself.
   // If both the previous and current notifications have a download, but
   // neither is an override, then we don't need to show an override.
-  notify_overridden_ =
-      already_shown &&
-      (notify_overridden_ || (params.has_download ^ params_.has_download));
+  if (!params.has_download && !params.origin.opaque()) {
+    notify_overridden_ = false;
+  } else {
+    notify_overridden_ =
+        already_shown &&
+        (notify_overridden_ || (params.has_download ^ params_.has_download));
+  }
   params_.has_download = params.has_download || notify_overridden_;
 
   // Bubble maybe be re-used after timeout.
@@ -222,10 +229,10 @@ void ExclusiveAccessBubbleViews::Update(
   const bool entering_tab_fullscreen =
       !IsTabFullscreenType(params_.type) && IsTabFullscreenType(params.type);
 
-  params_.origin = params.origin;
-  // When a request to notify about a download is made, the bubble type
-  // should be preserved from the old value, and not be updated.
+  // When a request to notify about a download is made, the bubble type and
+  // origin should be preserved from the old value, and not be updated.
   if (!params.has_download) {
+    params_.origin = params.origin;
     params_.type = params.type;
   }
   UpdateViewContent(params_.type);
@@ -300,8 +307,9 @@ std::optional<std::u16string> OriginDisplayName(Profile* profile,
 
 void ExclusiveAccessBubbleViews::UpdateViewContent(
     ExclusiveAccessBubbleType bubble_type) {
-  DCHECK(params_.has_download ||
-         EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE != bubble_type);
+  CHECK(
+      params_.has_download || EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE != bubble_type,
+      base::NotFatalUntil::M162);
 
   std::u16string accelerator;
   bool should_show_browser_acc =
@@ -434,11 +442,24 @@ void ExclusiveAccessBubbleViews::Hide() {
   // otherwise suppress the exit instruction for the next 15 minutes, don't let
   // a show that may have gone unseen count. Re-show on the next user
   // interaction instead.
-  if (views::MenuController::GetActiveInstance()) {
+  //
+  // This only applies to tab-initiated modes, for the same reason that
+  // `DismissMenusObscuringBubble()` does: browser- and extension-initiated
+  // fullscreen are user-initiated, and the user commonly opens the app menu
+  // shortly after entering them. Re-showing the instruction then is unexpected
+  // noise rather than a security benefit. See crbug.com/574452272.
+  const bool obscured_by_menu =
+      views::MenuController::GetActiveInstance() != nullptr;
+  if (IsTabFullscreenType(params_.type) && obscured_by_menu) {
     SetMustShowOnNextInteraction();
   }
 
-  RunHideCallbackIfNeeded(ExclusiveAccessBubbleHideReason::kTimeout);
+  // Similarly, do not report `kTimeout` if a menu may have covered the bubble,
+  // as `PointerLockController` treats `kTimeout` as proof that the exit
+  // instruction was seen and grants silent pointer lock permission.
+  RunHideCallbackIfNeeded(obscured_by_menu
+                              ? ExclusiveAccessBubbleHideReason::kInterrupted
+                              : ExclusiveAccessBubbleHideReason::kTimeout);
   presentation_cb_.Reset();
 
   animation_->SetSlideDuration(base::Milliseconds(700));
@@ -466,12 +487,62 @@ void ExclusiveAccessBubbleViews::Show() {
   // always fire and spuriously exit fullscreen (e.g. reverting the
   // --start-fullscreen switch shortly after startup).
   if (!headless::IsHeadlessMode()) {
-    presentation_watchdog_timer_.Start(
-        FROM_HERE, base::Milliseconds(1500),
-        base::BindOnce(&ExclusiveAccessBubbleViews::OnPresentationTimeout,
-                       weak_ptr_factory_.GetWeakPtr()));
+    ArmPresentationWatchdog();
   }
 #endif
+}
+
+void ExclusiveAccessBubbleViews::ArmPresentationWatchdog() {
+  waiting_for_bubble_presentation_ = true;
+
+  // The watchdog protects against the browser window's (fullscreen) contents
+  // being on screen while the bubble is not. However, a compositor may
+  // legitimately withhold presentation from a window that isn't visible to the
+  // user, e.g. a window in an inactive tab of a tiling Wayland compositor such
+  // as niri. In that case neither the bubble nor the contents are on screen,
+  // so there is nothing to protect against, and exiting fullscreen would be
+  // wrong. Only start the watchdog once the browser window has actually
+  // presented a frame. See crbug.com/541504510.
+  //
+  // The popup is not parented on Windows, so look up the browser widget via
+  // the bubble's parent view instead of `popup_->parent()`.
+  views::Widget* browser_widget = views::Widget::GetTopLevelWidgetForNativeView(
+      bubble_view_context_->GetBubbleParentView());
+  ui::Compositor* compositor =
+      browser_widget ? browser_widget->GetCompositor() : nullptr;
+  if (!compositor) {
+    StartPresentationWatchdogTimer();
+    return;
+  }
+  if (simulate_unpresented_browser_window_for_testing_) {
+    return;
+  }
+  compositor->RequestSuccessfulPresentationTimeForNextFrame(
+      base::BindOnce(&ExclusiveAccessBubbleViews::OnBrowserWindowPresented,
+                     weak_ptr_factory_.GetWeakPtr()));
+  // Make sure the browser window produces a frame to receive presentation
+  // feedback for, even if it otherwise has nothing new to draw.
+  compositor->ScheduleDraw();
+}
+
+void ExclusiveAccessBubbleViews::OnBrowserWindowPresented(
+    const viz::FrameTimingDetails& details) {
+  if (!waiting_for_bubble_presentation_ ||
+      presentation_watchdog_timer_.IsRunning()) {
+    return;
+  }
+  StartPresentationWatchdogTimer();
+}
+
+void ExclusiveAccessBubbleViews::StartPresentationWatchdogTimer() {
+  presentation_watchdog_timer_.Start(
+      FROM_HERE, base::Milliseconds(1500),
+      base::BindOnce(&ExclusiveAccessBubbleViews::OnPresentationTimeout,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void ExclusiveAccessBubbleViews::SimulateBrowserWindowPresentedForTesting() {
+  OnBrowserWindowPresented(viz::FrameTimingDetails());
 }
 
 void ExclusiveAccessBubbleViews::ShowAndStartTimers() {
@@ -487,7 +558,7 @@ void ExclusiveAccessBubbleViews::OnWidgetDestroyed(views::Widget* widget) {
   // originate from the OS or some Chrome shutdown codepaths that bypass the
   // destructor.
   views::Widget* popup_on_stack = popup_;
-  DCHECK(popup_on_stack->HasObserver(this));
+  CHECK(popup_on_stack->HasObserver(this), base::NotFatalUntil::M162);
 
   // Get ourselves destroyed. Calling ExitExclusiveAccess() won't work because
   // the parent window might be destroyed as well, so asking it to exit
@@ -496,11 +567,12 @@ void ExclusiveAccessBubbleViews::OnWidgetDestroyed(views::Widget* widget) {
 
   // Note: |this| is destroyed on the line above. Check that the destructor was
   // invoked. This is safe to do since |popup_| is deleted via a posted task.
-  DCHECK(!popup_on_stack->HasObserver(this));
+  CHECK(!popup_on_stack->HasObserver(this), base::NotFatalUntil::M162);
 }
 
 void ExclusiveAccessBubbleViews::OnFirstPresentation(
     const viz::FrameTimingDetails& details) {
+  waiting_for_bubble_presentation_ = false;
   presentation_watchdog_timer_.Stop();
   StartHideTimer();
 }

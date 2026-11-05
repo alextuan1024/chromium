@@ -33,6 +33,28 @@ class SharedImageFormatTest : public testing::Test {
   }
 };
 
+TEST_F(SharedImageFormatTest, SinglePlaneY410) {
+  // Packed 10-bit 4:4:4 YUV, 32bpp.
+  SharedImageFormat format = SinglePlaneFormat::kY410;
+  EXPECT_TRUE(format.is_single_plane());
+  EXPECT_EQ(format.NumberOfPlanes(), 1);
+  EXPECT_EQ(format.BytesPerPixel(), 4);
+  EXPECT_EQ(format.EstimatedSizeInBytes(kDefaultSize), 100u * 100u * 4u);
+  EXPECT_EQ(format.ToString(), "Y410");
+  EXPECT_EQ(SinglePlaneFormat::kAll[15], format);
+  EXPECT_EQ(SinglePlaneFormat::kAll[16], SinglePlaneFormat::kY210);
+}
+
+TEST_F(SharedImageFormatTest, SinglePlaneY210) {
+  // Packed 10-bit 4:2:2 YUV, 32bpp (two pixels in four 16-bit words).
+  SharedImageFormat format = SinglePlaneFormat::kY210;
+  EXPECT_TRUE(format.is_single_plane());
+  EXPECT_EQ(format.NumberOfPlanes(), 1);
+  EXPECT_EQ(format.BytesPerPixel(), 4);
+  EXPECT_EQ(format.EstimatedSizeInBytes(kDefaultSize), 100u * 100u * 4u);
+  EXPECT_EQ(format.ToString(), "Y210");
+}
+
 TEST_F(SharedImageFormatTest, MultiPlaneNV12) {
   // 8-bit 4:2:0 Y_UV biplanar format (YUV_420_BIPLANAR)
   SharedImageFormat format = MultiPlaneFormat::kNV12;

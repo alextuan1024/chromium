@@ -32,7 +32,7 @@ def get_chromium_root() -> pathlib.Path:
 @functools.cache
 def get_strings_dir() -> pathlib.Path:
     """Gets the folder of chromeos strings where recorder_strings.grd is at."""
-    return get_chromium_root() / "chromeos"
+    return get_chromium_root() / "chromeos/resources"
 
 
 @functools.cache
@@ -46,7 +46,8 @@ def _resolve_build_dir(build_dir: str) -> pathlib.Path:
 
     assert resolved_build_dir.is_dir(), (
         f"Failed to find the build output dir {build_dir}."
-        " Please check and build Chrome at least once.")
+        " Please check and build Chrome at least once."
+    )
 
     return resolved_build_dir
 

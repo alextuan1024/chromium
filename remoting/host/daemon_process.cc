@@ -100,7 +100,7 @@ void DaemonProcess::OnWorkerProcessStopped() {
   peer_session_manager_.reset();
   host_status_observer_.reset();
 #if BUILDFLAG(IS_WIN)
-  certificate_broker_->reset();
+  certificate_brokers_.Clear();
 #endif
   // Reset our IPC remote so it's ready to re-init if the network process is
   // re-launched.
@@ -116,8 +116,8 @@ void DaemonProcess::OnAssociatedInterfaceRequest(
   // Typically we'd want to ensure that an associated receiver was not requested
   // multiple times as that would indicate a logic error (or that the calling
   // process had possibly been compromised). In the case of the network process,
-  // which handles network traffic and encoding, it's possible that there is a
-  // protocol error or OS driver fault which causes the process to crash. When
+  // which handles signaling and session control, it's possible that there is a
+  // protocol error or OS fault which causes the process to crash. When
   // that occurs, the daemon process will launch a new instance of the network
   // process (which is handled outside of this class) and that new instance will
   // attempt to retrieve the set of associated interfaces it needs to do its
@@ -143,6 +143,7 @@ void DaemonProcess::OnAssociatedInterfaceRequest(
     mojo::PendingAssociatedReceiver<mojom::PeerSessionManager> pending_receiver(
         std::move(handle));
     peer_session_manager_.Bind(std::move(pending_receiver));
+    OnPeerSessionManagerBound();
   } else if (interface_name == mojom::HostStatusObserver::Name_) {
     LOG_IF(WARNING, host_status_observer_)
         << "Associated interface requested "
@@ -154,14 +155,10 @@ void DaemonProcess::OnAssociatedInterfaceRequest(
     host_status_observer_.Bind(std::move(pending_receiver));
 #if BUILDFLAG(IS_WIN)
   } else if (interface_name == mojom::CertificateBroker::Name_) {
-    LOG_IF(WARNING, certificate_broker_->is_bound())
-        << "Associated interface requested "
-        << "while |certificate_broker_| was still bound.";
-
-    certificate_broker_->reset();
     mojo::PendingAssociatedReceiver<mojom::CertificateBroker> pending_receiver(
         std::move(handle));
-    certificate_broker_->Bind(std::move(pending_receiver));
+    certificate_brokers_.Add(certificate_broker_impl_.get(),
+                             std::move(pending_receiver));
 #endif
   } else {
     LOG(ERROR) << "Received unexpected associated interface request: "
@@ -282,9 +279,6 @@ DaemonProcess::DaemonProcess(
 
 #if BUILDFLAG(IS_WIN)
   certificate_broker_impl_ = std::make_unique<CertificateBrokerImpl>();
-  certificate_broker_ =
-      std::make_unique<mojo::AssociatedReceiver<mojom::CertificateBroker>>(
-          certificate_broker_impl_.get());
 #endif
 }
 
@@ -581,6 +575,8 @@ void DaemonProcess::OnHostShutdown() {
 }
 
 void DaemonProcess::OnSessionCountChanged(size_t session_count) {}
+
+void DaemonProcess::OnPeerSessionManagerBound() {}
 
 void DaemonProcess::DeleteAllDesktopSessions() {
   for (auto& [id, session] : desktop_sessions_) {

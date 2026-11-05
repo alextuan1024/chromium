@@ -224,13 +224,11 @@ MEDIA_EXPORT Microsoft::WRL::ComPtr<IMFSample> CreateSampleFromTexture(
     Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture,
     bool need_perform_copy);
 
-// Converts `frame` into an IMFSample, using an underlying D3D texture,
-// reading back from the GPU, or copying the frame contents as necessary.
+// Converts `frame` into an IMFSample, using an underlying D3D texture
+// or copying the frame contents as necessary.
 MEDIA_EXPORT HRESULT GenerateSampleFromVideoFrame(
     const media::VideoFrame* frame,
     DXGIDeviceManager* dxgi_device_manager,
-    bool use_dxgi_buffer,
-    Microsoft::WRL::ComPtr<ID3D11Texture2D>* staging_texture,
     DWORD buffer_alignment,
     IMFSample** sample_out);
 
@@ -294,14 +292,13 @@ class MEDIA_EXPORT SharedImageReadLock
 //                            has already been copied and the texture can be fed
 //                            to the encoder directly.
 //   hr: Indicating success or failure of the resource generation.
-typedef base::OnceCallback<void(
+using ResourceAvailableCB = base::OnceCallback<void(
     scoped_refptr<VideoFrame> frame,
     Microsoft::WRL::ComPtr<IMFSample> sample,
     std::optional<base::win::ScopedHandle> texture_handle,
     Microsoft::WRL::ComPtr<SharedImageReadLock> scoped_read_access,
     std::optional<bool> texture_has_been_copied,
-    HRESULT hr)>
-    ResourceAvailableCB;
+    HRESULT hr)>;
 
 // Generates a resource (IMFSample or shared texture handle) from a shared
 // image backed video frame.

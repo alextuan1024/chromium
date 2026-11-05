@@ -85,6 +85,7 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
   void DidChangeThemeColor(std::optional<SkColor> theme_color) override;
   void DidChangeBackgroundColor(SkColor4f background_color,
                                 bool color_adjust) override;
+  void UpdateEncoding(const String& encoding_name) override;
   void FocusPage() override;
   void DidFocusPage() override;
   bool CanTakeFocus(mojom::blink::FocusType) override;
@@ -95,7 +96,7 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
   void BeginLifecycleUpdates(LocalFrame& main_frame) override;
   void RegisterForCommitObservation(CommitObserver*) override;
   void UnregisterFromCommitObservation(CommitObserver*) override;
-  void WillCommitCompositorFrame() override;
+  void WillSnapshotCommitState() override;
   void RequestFrameWithoutVSyncFromRoot(LocalFrame& frame) override;
   bool StartDeferringCommits(LocalFrame& main_frame,
                              base::TimeDelta timeout,
@@ -134,10 +135,6 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
   void FinishScrollFocusedEditableIntoView(
       const gfx::RectF& caret_rect_in_root_frame,
       mojom::blink::ScrollIntoViewParamsPtr params) override;
-  bool ShouldReportDetailedMessageForSourceAndSeverity(
-      LocalFrame&,
-      mojom::blink::ConsoleMessageLevel log_level,
-      const String&) override;
   void AddMessageToConsole(LocalFrame*,
                            mojom::ConsoleMessageSource,
                            mojom::ConsoleMessageLevel,
@@ -170,7 +167,7 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
   float WindowToViewportScalar(LocalFrame*, const float) const override;
   const display::ScreenInfo& GetScreenInfo(LocalFrame&) const override;
   const display::ScreenInfos& GetScreenInfos(LocalFrame&) const override;
-  const display::ScreenInfo& GetOriginalScreenInfo(LocalFrame&) const override;
+  float GetOriginalDeviceScaleFactor(LocalFrame&) const override;
   float InputEventsScaleForEmulation() const override;
   void ContentsSizeChanged(LocalFrame*, const gfx::Size&) const override;
   bool DoubleTapToZoomEnabled() const override;
@@ -280,8 +277,8 @@ class CORE_EXPORT ChromeClientImpl final : public ChromeClient {
       LocalFrame*,
       HTMLElement*,
       WebFormRelatedChangeType) override;
-  bool HandleKeyboardEventOnEditableElement(HTMLElement&,
-                                            KeyboardEvent&) override;
+  void HandleKeyboardEventOnTextField(HTMLInputElement&,
+                                      KeyboardEvent&) override;
   void DidChangeValueInTextField(HTMLFormControlElement&) override;
   void DidClearValueInTextField(HTMLFormControlElement&) override;
   void DidUserChangeContentEditableContent(Element&) override;

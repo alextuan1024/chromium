@@ -4,16 +4,29 @@
 
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/travel_info_coordinator.h"
 
+#import "base/memory/raw_ptr.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
+#import "components/account_settings/account_settings.h"
+#import "components/account_settings/mock_account_setting_service.h"
 #import "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#import "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
+#import "components/autofill/core/browser/network/autofill_ai/mock_wallet_pass_access_manager.h"
 #import "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #import "components/autofill/core/common/autofill_features.h"
+#import "components/autofill/core/common/autofill_prefs.h"
+#import "components/prefs/pref_service.h"
+#import "components/signin/public/base/consent_level.h"
+#import "components/signin/public/identity_manager/identity_test_utils.h"
+#import "components/sync/base/user_selectable_type.h"
 #import "components/sync/test/test_sync_service.h"
 #import "components/test/ios/test_utils.h"
+#import "ios/chrome/browser/account_settings/model/ios_account_setting_service_factory.h"
 #import "ios/chrome/browser/autofill/model/ios_autofill_entity_data_manager_factory.h"
+#import "ios/chrome/browser/autofill/model/ios_wallet_pass_access_manager_factory.h"
+#import "ios/chrome/browser/settings/autofill/autofill_ai/coordinator/autofill_ai_entity_edit_coordinator_delegate.h"
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/autofill_ai_base_mediator.h"
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/ui/travel_info_table_view_controller.h"
 #import "ios/chrome/browser/settings/autofill/suggestions_from_gemini/coordinator/suggestions_from_gemini_coordinator.h"
@@ -21,16 +34,27 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/webdata_services/model/web_data_service_factory.h"
 #import "ios/web/public/test/web_task_environment.h"
+#import "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 
 class TravelInfoCoordinatorTest : public PlatformTest {
  protected:
+  TravelInfoCoordinatorTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {autofill::features::kAutofillAiWithDataSchema,
+         autofill::features::kAutofillAiAvailableByDefault,
+         autofill::features::kAutofillAiWalletVehicleRegistration},
+        {});
+  }
+
   void SetUp() override {
     PlatformTest::SetUp();
 
@@ -38,10 +62,30 @@ class TravelInfoCoordinatorTest : public PlatformTest {
     builder.AddTestingFactory(ios::WebDataServiceFactory::GetInstance(),
                               ios::WebDataServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
+    builder.AddTestingFactory(
+        IdentityManagerFactory::GetInstance(),
+        base::BindOnce(IdentityTestEnvironmentBrowserStateAdaptor::
+                           BuildIdentityManagerForTests));
+    builder.AddTestingFactory(
+        IOSWalletPassAccessManagerFactory::GetInstance(),
+        base::BindOnce(
+            &std::make_unique<
+                testing::NiceMock<autofill::MockWalletPassAccessManager>>));
+    builder.AddTestingFactory(
+        IOSAccountSettingServiceFactory::GetInstance(),
+        base::BindOnce(&std::make_unique<testing::NiceMock<
+                           account_settings::MockAccountSettingService>>));
 
     profile_ = std::move(builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
+
+    mock_wallet_pass_access_manager_ =
+        static_cast<autofill::MockWalletPassAccessManager*>(
+            IOSWalletPassAccessManagerFactory::GetForProfile(profile_.get()));
+    mock_account_setting_service_ =
+        static_cast<account_settings::MockAccountSettingService*>(
+            IOSAccountSettingServiceFactory::GetForProfile(profile_.get()));
 
     mock_scene_commands_ = OCMStrictProtocolMock(@protocol(SceneCommands));
     [browser_->GetCommandDispatcher()
@@ -59,14 +103,29 @@ class TravelInfoCoordinatorTest : public PlatformTest {
     [coordinator_ stop];
     coordinator_ = nil;
     navigation_controller_ = nil;
+    mock_wallet_pass_access_manager_ = nullptr;
+    mock_account_setting_service_ = nullptr;
     PlatformTest::TearDown();
   }
 
+  void SetUpWalletVehiclePreloadEligibility() {
+    signin::MakePrimaryAccountAvailable(
+        IdentityManagerFactory::GetForProfile(profile_.get()),
+        "test@example.com", signin::ConsentLevel::kSignin);
+    ON_CALL(*mock_account_setting_service_,
+            GetBoolean(testing::Ref(
+                account_settings::kWalletPrivacyContextualSurfacing)))
+        .WillByDefault(testing::Return(true));
+  }
+
   web::WebTaskEnvironment task_environment_;
-  base::test::ScopedFeatureList scoped_feature_list_{
-      autofill::features::kAutofillAiWithDataSchema};
+  base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestBrowser> browser_;
+  raw_ptr<autofill::MockWalletPassAccessManager>
+      mock_wallet_pass_access_manager_ = nullptr;
+  raw_ptr<account_settings::MockAccountSettingService>
+      mock_account_setting_service_ = nullptr;
   id<SceneCommands> mock_scene_commands_;
   UINavigationController* navigation_controller_;
   TravelInfoCoordinator* coordinator_;
@@ -123,4 +182,77 @@ TEST_F(TravelInfoCoordinatorTest, SuggestionsFromGeminiActionRecorded) {
 
   EXPECT_EQ(1, user_action_tester.GetActionCount(
                    "PersonalContext.Settings.EntryPoint.TravelSettings"));
+}
+
+// Tests that vehicle disclosure details are preloaded on start when the user is
+// eligible for Wallet vehicle import and the feature flag is enabled.
+TEST_F(TravelInfoCoordinatorTest,
+       TestPreloadVehicleDisclosureCalledWhenEligibleOnStart) {
+  base::test::ScopedFeatureList feature_list{
+      autofill::features::kAutofillEnableWalletDisclosureNoticePublicPass};
+  SetUpWalletVehiclePreloadEligibility();
+
+  EXPECT_CALL(*mock_wallet_pass_access_manager_,
+              PreloadDetailsForUpsertPass(
+                  autofill::EntityType(autofill::EntityTypeName::kVehicle)))
+      .Times(1);
+
+  [coordinator_ start];
+}
+
+// Tests that vehicle disclosure details are preloaded again when the entity
+// edit coordinator finishes.
+TEST_F(TravelInfoCoordinatorTest,
+       TestPreloadVehicleDisclosureCalledOnEntityEditCoordinatorDidFinish) {
+  base::test::ScopedFeatureList feature_list{
+      autofill::features::kAutofillEnableWalletDisclosureNoticePublicPass};
+  SetUpWalletVehiclePreloadEligibility();
+
+  EXPECT_CALL(*mock_wallet_pass_access_manager_,
+              PreloadDetailsForUpsertPass(
+                  autofill::EntityType(autofill::EntityTypeName::kVehicle)))
+      .Times(2);
+
+  [coordinator_ start];
+
+  id<AutofillAIEntityEditCoordinatorDelegate> delegate =
+      static_cast<id<AutofillAIEntityEditCoordinatorDelegate>>(coordinator_);
+  [delegate autofillAIEntityEditCoordinatorDidFinish:nil];
+}
+
+// Tests that vehicle disclosure details are not preloaded when
+// `kWalletPrivacyContextualSurfacing` is enabled but the user does not satisfy
+// `AutofillAiAction::kImportToWallet` requirements.
+TEST_F(TravelInfoCoordinatorTest,
+       TestPreloadVehicleDisclosureNotCalledWhenIneligibleForWalletImport) {
+  base::test::ScopedFeatureList feature_list{
+      autofill::features::kAutofillEnableWalletDisclosureNoticePublicPass};
+  ON_CALL(*mock_account_setting_service_,
+          GetBoolean(testing::Ref(
+              account_settings::kWalletPrivacyContextualSurfacing)))
+      .WillByDefault(testing::Return(true));
+
+  EXPECT_CALL(*mock_wallet_pass_access_manager_, PreloadDetailsForUpsertPass)
+      .Times(0);
+
+  // 1. Signed-out user.
+  [coordinator_ start];
+  [coordinator_ stop];
+
+  // 2. Signed-in user, but `kAutofillAiTravelEntitiesEnabled` is disabled.
+  SetUpWalletVehiclePreloadEligibility();
+  profile_->GetPrefs()->SetBoolean(
+      autofill::prefs::kAutofillAiTravelEntitiesEnabled, false);
+  [coordinator_ start];
+  [coordinator_ stop];
+
+  // 3. Travel pref re-enabled, but `UserSelectableType::kPayments` sync is
+  // disabled.
+  profile_->GetPrefs()->SetBoolean(
+      autofill::prefs::kAutofillAiTravelEntitiesEnabled, true);
+  syncer::TestSyncService* sync_service = static_cast<syncer::TestSyncService*>(
+      SyncServiceFactory::GetForProfile(profile_.get()));
+  sync_service->GetUserSettings()->SetSelectedType(
+      syncer::UserSelectableType::kPayments, false);
+  [coordinator_ start];
 }

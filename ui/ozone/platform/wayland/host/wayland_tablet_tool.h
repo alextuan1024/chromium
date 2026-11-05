@@ -6,6 +6,8 @@
 #define UI_OZONE_PLATFORM_WAYLAND_HOST_WAYLAND_TABLET_TOOL_H_
 
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
@@ -13,15 +15,17 @@
 #include "ui/events/pointer_details.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/ozone/platform/wayland/common/wayland_object.h"
+#include "ui/ozone/platform/wayland/host/wayland_cursor.h"
 
 namespace ui {
 
+class BitmapCursor;
 class WaylandConnection;
 class WaylandTabletSeat;
 class WaylandWindow;
 
 // Wraps the zwp_tablet_tool_v2 object.
-class WaylandTabletTool {
+class WaylandTabletTool : public WaylandCursor::Device {
  public:
   class Delegate;
 
@@ -31,9 +35,24 @@ class WaylandTabletTool {
                     Delegate* delegate);
   WaylandTabletTool(const WaylandTabletTool&) = delete;
   WaylandTabletTool& operator=(const WaylandTabletTool&) = delete;
-  ~WaylandTabletTool();
+  ~WaylandTabletTool() override;
 
   uint32_t id() const { return tool_.id(); }
+
+  // Returns the window the tool is in proximity of, if any.
+  WaylandWindow* focused_window() const { return focused_window_.get(); }
+
+  // Sets the tool's cursor while it is in proximity of a surface. A null
+  // `cursor` means the default cursor, which is set only if the compositor
+  // supports wp_cursor_shape_manager_v1.
+  void SetCursor(BitmapCursor* cursor);
+
+  // WaylandCursor::Device:
+  std::optional<uint32_t> GetCursorSerial() const override;
+  void SetCursorSurface(uint32_t serial,
+                        wl_surface* surface,
+                        int32_t hotspot_x_dip,
+                        int32_t hotspot_y_dip) override;
 
  private:
   // zwp_tablet_tool_v2_listener callbacks:
@@ -95,6 +114,15 @@ class WaylandTabletTool {
 
   wl::Object<wp_cursor_shape_device_v1> cursor_shape_device_;
 
+  // Draws cursors that the compositor has no shape for. Created on first use.
+  std::unique_ptr<WaylandCursor> cursor_;
+
+  // The serial of the last proximity_in event and the window it targeted,
+  // kept until the tool leaves proximity. The serial is needed to set the
+  // tool's cursor.
+  std::optional<uint32_t> proximity_serial_;
+  base::WeakPtr<WaylandWindow> focused_window_;
+
   // Stores the state of the current event frame.
   struct FrameData {
     FrameData();
@@ -104,7 +132,6 @@ class WaylandTabletTool {
     bool up = false;
     bool proximity_in = false;
     bool proximity_out = false;
-    uint32_t proximity_serial = 0;
     base::WeakPtr<WaylandWindow> proximity_target;
     std::vector<std::pair<uint32_t, bool>> button_states;
     PointerDetails pointer_details;

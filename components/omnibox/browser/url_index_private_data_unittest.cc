@@ -4,8 +4,10 @@
 
 #include "components/omnibox/browser/url_index_private_data.h"
 
+#include <cstdint>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -305,31 +307,32 @@ TEST_F(URLIndexPrivateDataTest, IndexingParityBetweenBothPaths) {
   ExpectIndexDataEqual(*data_a, *data_b);
 }
 
-// --- DeleteURL ---
+// --- RemoveRowFromIndex ---
 
-TEST_F(URLIndexPrivateDataTest, DeleteURLRemovesEntry) {
+TEST_F(URLIndexPrivateDataTest, RemoveRowFromIndexRemovesEntry) {
   history::URLRow row = MakeRow("http://example.com/todelete", 1);
   ASSERT_TRUE(IndexRow(row));
   EXPECT_FALSE(data_->Empty());
+  InsertCacheEntry(u"test");
 
-  EXPECT_TRUE(data_->DeleteURL(GURL("http://example.com/todelete")));
+  EXPECT_TRUE(data_->RemoveRowFromIndex(1));
   EXPECT_TRUE(data_->Empty());
+  EXPECT_TRUE(search_term_cache().empty());
 }
 
-TEST_F(URLIndexPrivateDataTest, DeleteURLReturnsFalseForMissing) {
-  EXPECT_FALSE(data_->DeleteURL(GURL("http://nonexistent.com/")));
+TEST_F(URLIndexPrivateDataTest, RemoveRowFromIndexReturnsFalseForMissing) {
+  InsertCacheEntry(u"test");
+  EXPECT_FALSE(data_->RemoveRowFromIndex(999));
+  EXPECT_FALSE(search_term_cache().empty());
 }
 
-TEST_F(URLIndexPrivateDataTest, DeleteURLWithCredentialsMustUseSanitizedURL) {
-  // IndexRow strips credentials, so deletion must use the sanitized URL.
+TEST_F(URLIndexPrivateDataTest, RemoveRowFromIndexWithCredentials) {
+  // IndexRow strips credentials while preserving the row's URLID, so removal
+  // by URLID still finds and removes the entry.
   history::URLRow row = MakeRow("http://user:pass@example.com/auth", 1);
   ASSERT_TRUE(IndexRow(row));
 
-  // Deleting with the original credentialed URL won't find the entry.
-  EXPECT_FALSE(data_->DeleteURL(GURL("http://user:pass@example.com/auth")));
-
-  // Deleting with the sanitized URL works.
-  EXPECT_TRUE(data_->DeleteURL(GURL("http://example.com/auth")));
+  EXPECT_TRUE(data_->RemoveRowFromIndex(1));
   EXPECT_TRUE(data_->Empty());
 }
 
@@ -529,7 +532,7 @@ TEST_F(URLIndexPrivateDataTest, IndexMultipleRows) {
   EXPECT_EQ(3u, history_info_map().size());
 
   // Delete one and verify the rest remain.
-  EXPECT_TRUE(data_->DeleteURL(GURL("http://beta.com/")));
+  EXPECT_TRUE(data_->RemoveRowFromIndex(2));
   EXPECT_EQ(2u, history_info_map().size());
   EXPECT_NE(history_info_map().end(), history_info_map().find(1));
   EXPECT_EQ(history_info_map().end(), history_info_map().find(2));
@@ -547,4 +550,61 @@ TEST_F(URLIndexPrivateDataTest, WordStartsArePopulated) {
   ASSERT_NE(it, word_starts_map().end());
   EXPECT_FALSE(it->second.url_word_starts_.empty());
   EXPECT_FALSE(it->second.title_word_starts_.empty());
+}
+
+TEST_F(URLIndexPrivateDataTest, RowWordStartsHaveNoSpareCapacity) {
+  // Word start vectors are reserved for the whole URL although only starts
+  // within the first 200 characters are kept, and the title's starts outgrow
+  // their reservation. Neither kind of slack should be retained.
+  std::string path;
+  for (int i = 0; i < 100; ++i) {
+    path += "segment/";
+  }
+  history::URLRow row = MakeRow("http://example.com/" + path, 1);
+  row.set_title(u"a b c d e f g h");
+  ASSERT_TRUE(IndexRow(row));
+
+  history::URLRow batch_row = MakeRow("http://example.org/" + path, 2);
+  batch_row.set_title(u"a b c d e f g h");
+  history::HistoryDatabase::RecentVisitsMap batch_visits;
+  ASSERT_TRUE(IndexRowWithPreFetchedVisits(batch_row, batch_visits));
+
+  for (HistoryID history_id : {1, 2}) {
+    SCOPED_TRACE(history_id);
+    auto it = word_starts_map().find(history_id);
+    ASSERT_NE(it, word_starts_map().end());
+    const WordStarts& url_starts = it->second.url_word_starts_;
+    const WordStarts& title_starts = it->second.title_word_starts_;
+    EXPECT_FALSE(url_starts.empty());
+    EXPECT_EQ(url_starts.size(), url_starts.capacity());
+    EXPECT_FALSE(title_starts.empty());
+    EXPECT_EQ(title_starts.size(), title_starts.capacity());
+  }
+}
+
+// --- Word IDs ---
+
+// WordID is 32 bits to halve the storage of every WordIDSet.
+static_assert(std::is_same_v<WordID, uint32_t>);
+
+TEST_F(URLIndexPrivateDataTest, WordIDsReuseFreedSlots) {
+  ASSERT_TRUE(IndexRow(MakeRow("http://alpha.com/", 1)));
+  ASSERT_TRUE(IndexRow(MakeRow("http://beta.com/", 2)));
+  const size_t word_list_size = word_list().size();
+  auto beta_it = word_map().find(u"beta");
+  ASSERT_NE(beta_it, word_map().end());
+  const WordID beta_id = beta_it->second;
+
+  // Only "beta" is unique to the deleted row, so only its slot is freed.
+  ASSERT_TRUE(data_->RemoveRowFromIndex(2));
+  EXPECT_EQ(0u, word_map().count(u"beta"));
+  EXPECT_EQ(word_list_size, word_list().size());
+
+  // The next new word takes the freed slot instead of growing the list.
+  ASSERT_TRUE(IndexRow(MakeRow("http://gamma.com/", 3)));
+  auto gamma_it = word_map().find(u"gamma");
+  ASSERT_NE(gamma_it, word_map().end());
+  EXPECT_EQ(beta_id, gamma_it->second);
+  EXPECT_EQ(word_list_size, word_list().size());
+  EXPECT_EQ(u"gamma", word_list()[gamma_it->second]);
 }

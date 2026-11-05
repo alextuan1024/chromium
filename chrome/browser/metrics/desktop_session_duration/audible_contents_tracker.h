@@ -62,8 +62,7 @@ class AudibleContentsTracker : public BrowserCollectionObserver,
       TabStripModel* tab_strip_model,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override;
-  void OnTabChangedAt(tabs::TabInterface* tab,
-                      TabChangeType change_type) override;
+  void OnTabAudioChanged(tabs::TabInterface* tab) override;
 
   // Used for managing audible_contents_, and invoking OnAudioStart and
   // OnAudioEnd callbacks.
@@ -73,7 +72,7 @@ class AudibleContentsTracker : public BrowserCollectionObserver,
   raw_ptr<Observer> observer_;
 
   // The set of WebContents that are currently playing audio.
-  std::set<raw_ptr<content::WebContents, SetExperimental>> audible_contents_;
+  std::set<raw_ptr<content::WebContents, DanglingUntriaged>> audible_contents_;
 
   // TODO(crbug.com/495682308): remove when the AudibleContentsTracker is no
   // longer outliving the GlobalBrowserCollection it observes.

@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/core/layout/block_node.h"
 #include "third_party/blink/renderer/core/layout/flex/devtools_flex_info.h"
 #include "third_party/blink/renderer/core/layout/flex/layout_flexible_box.h"
+#include "third_party/blink/renderer/core/layout/gap/flex_gap_geometry.h"
 #include "third_party/blink/renderer/core/layout/length_utils.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
@@ -32,7 +33,7 @@ class FlexLayoutAlgorithmTest : public BaseLayoutAlgorithmTest {
     if (!flex) {
       return nullptr;
     }
-    flex->SetNeedsLayoutForDevtools();
+    flex->SetNeedsDevtoolsInfo();
     UpdateAllLifecyclePhasesForTest();
     return flex->FlexLayoutData();
   }
@@ -867,8 +868,9 @@ TEST_F(FlexLayoutAlgorithmTest, GapDecorationsContentDistributionGaps) {
   // Validate per-line effective gap sizes (column-gap + content distribution
   // space). Line 1: 5 items, free = 50px, space-between = 12.5px.
   // Line 2: 4 items, free = 120px, space-between = 40px.
-  EXPECT_EQ(gap_geometry->GetFlexCrossGapSize(0), LayoutUnit(12.5));
-  EXPECT_EQ(gap_geometry->GetFlexCrossGapSize(1), LayoutUnit(40));
+  const auto& flex_gap_geometry = To<FlexGapGeometry>(*gap_geometry);
+  EXPECT_EQ(flex_gap_geometry.GetCrossGapSizeForLine(0), LayoutUnit(12.5));
+  EXPECT_EQ(flex_gap_geometry.GetCrossGapSizeForLine(1), LayoutUnit(40));
 
   VerifyCrossGaps(expected_column_gaps, column_gaps);
 }
@@ -932,6 +934,67 @@ TEST_F(FlexLayoutAlgorithmTest,
   EXPECT_EQ(gap_geometry->GetBlockGapSize(), LayoutUnit(0));
 
   VerifyMainGaps(expected_row_gaps, gap_geometry->GetMainGaps());
+}
+
+TEST_F(FlexLayoutAlgorithmTest,
+       GapDecorationsInkOverflowWithOverflowingCrossGaps) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body { margin: 0; }
+      #single-line, #multi-line {
+        display: flex;
+        flex-direction: column;
+        width: 400px;
+        height: 10px;
+        row-gap: 20px;
+        row-rule: 120px solid red;
+      }
+      #multi-line {
+        flex-wrap: wrap;
+        column-gap: 10px;
+        column-rule: 4px solid blue;
+      }
+      .tall, .short {
+        width: 0;
+        flex-shrink: 0;
+      }
+      .tall { height: 150px; }
+      .short { height: 2px; }
+    </style>
+    <div id="single-line">
+      <div class="tall"></div>
+      <div class="tall"></div>
+    </div>
+    <div id="multi-line">
+      <div class="tall"></div>
+      <div class="tall" style="margin-bottom: -310px"></div>
+      <div class="short"></div>
+      <div class="short" style="margin-bottom: -16px"></div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  const PhysicalBoxFragment* single_fragment =
+      GetLayoutBoxByElementId("single-line")->GetPhysicalFragment(0);
+  ASSERT_NE(single_fragment, nullptr);
+  const GapGeometry* single_gaps = single_fragment->GetGapGeometry();
+  ASSERT_NE(single_gaps, nullptr);
+  EXPECT_EQ(single_gaps->GetContentBlockEnd(), LayoutUnit(10));
+  EXPECT_GE(single_fragment->SelfInkOverflowRect().Bottom(), LayoutUnit(220));
+
+  const PhysicalBoxFragment* multi_fragment =
+      GetLayoutBoxByElementId("multi-line")->GetPhysicalFragment(0);
+  ASSERT_NE(multi_fragment, nullptr);
+  const GapGeometry* multi_gaps = multi_fragment->GetGapGeometry();
+  ASSERT_NE(multi_gaps, nullptr);
+  ASSERT_EQ(multi_gaps->MainGapCount(), 1u);
+  ASSERT_EQ(multi_gaps->CrossGapCount(), 2u);
+  EXPECT_EQ(multi_gaps->GetCrossGaps()[0].GetGapOffset().block_offset,
+            LayoutUnit(160));
+  EXPECT_EQ(multi_gaps->GetCrossGaps()[1].GetGapOffset().block_offset,
+            LayoutUnit(12));
+  EXPECT_EQ(multi_gaps->GetContentBlockEnd(), LayoutUnit(10));
+  EXPECT_GE(multi_fragment->SelfInkOverflowRect().Bottom(), LayoutUnit(220));
 }
 
 TEST_F(FlexLayoutAlgorithmTest, DevtoolsBasic) {

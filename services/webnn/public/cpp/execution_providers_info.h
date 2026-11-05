@@ -5,13 +5,13 @@
 #ifndef SERVICES_WEBNN_PUBLIC_CPP_EXECUTION_PROVIDERS_INFO_H_
 #define SERVICES_WEBNN_PUBLIC_CPP_EXECUTION_PROVIDERS_INFO_H_
 
-#include <appmodel.h>
-
+#include <algorithm>
 #include <string_view>
 
 #include "base/containers/fixed_flat_map.h"
 #include "base/memory/raw_span.h"
 #include "base/strings/cstring_view.h"
+#include "services/webnn/public/cpp/package_version.h"
 #include "services/webnn/public/mojom/webnn_device.mojom.h"
 
 namespace webnn {
@@ -24,12 +24,6 @@ struct OfflineCompilationSupport {
   // Supported device IDs corresponding to the device type. An empty span means
   // all device IDs of `device_type` are supported.
   base::raw_span<const uint32_t> device_ids;
-  // Libraries that must be preloaded before sandbox lockdown. This list should
-  // only contain workarounds when compiling a graph has issues to load a
-  // particular library.
-  // TODO(crbug.com/529544314): Remove once EPs load all required libraries
-  // internally by compiling a trivial graph.
-  base::raw_span<const std::string_view> preload_libraries_workaround;
 };
 
 namespace internal {
@@ -42,15 +36,6 @@ inline constexpr OfflineCompilationSupport kOpenVINOOfflineCompilation[] = {
                 0x643E,  // Lunarlake
                 0xB03E,  // Pantherlake
                 0xFD3E,  // Wildcatlake
-            },
-        .preload_libraries_workaround =
-            (const std::string_view[]){
-                // This library is loaded on a worker thread internally in the
-                // NPU compiler, which triggers an ERROR_ACCESS_DENIED error
-                // since the worker thread runs on a lockdown token. Preloading
-                // this library before sandbox lockdown is a workaround for this
-                // issue.
-                "openvino_intel_npu_compiler.dll",
             },
     },
 };
@@ -110,14 +95,43 @@ struct EpWorkarounds {
   // respect this limit.
   bool resample2d_limit_to_nchw = false;
 
+  // By default ONNX Gather/GatherElements/GatherND/ScatterElements/ScatterND
+  // ops support negative indices (indexing from the end of an axis), but some
+  // EPs do not support them. When set, the graph builder shifts negative
+  // indices to their equivalent non-negative value.
+  bool gather_scatter_indices_require_nonnegative = false;
+
   // Whether the EP may report the NPU driver version in legacy concatenated
-  // format (e.g., "1004404") instead of 4-part dot-separated format.
+  // format (e.g., "1004404") instead of 4-part dot-separated format. This is
+  // a per-EP reporting format statement queried directly by
+  // IsNpuDriverVersionBlocked(), so it is intentionally not merged in
+  // operator|=.
   bool npu_concatenated_driver_version = false;
 
   EpWorkarounds& operator|=(const EpWorkarounds& other) {
     resample2d_limit_to_nchw |= other.resample2d_limit_to_nchw;
+    gather_scatter_indices_require_nonnegative |=
+        other.gather_scatter_indices_require_nonnegative;
     return *this;
   }
+};
+
+// The shape of the model produced by compiling a graph for an execution
+// provider.
+enum class CompiledModelFormat {
+  // Not declared. A static_assert below requires every enabled EP to declare
+  // one of the others, so that enabling an EP cannot silently skip validation
+  // of its compiled model.
+  kNone,
+  // The compiled result is wrapped in a single EPContext node (the ORT
+  // EPContext contract). The GPU process validates the structure of the
+  // compiled model from the (sandboxed, possibly compromised) Compiler process
+  // before handing it to ORT: it must be just a wrapper carrying at most one
+  // node, which must be an EPContext node.
+  kEpContext,
+  // The compiled result is an ordinary ONNX model, which has no such invariant
+  // to check and is loaded as produced.
+  kFullGraph,
 };
 
 // A key-value pair for session configuration needed by some execution
@@ -128,7 +142,7 @@ struct SessionConfigEntry {
 };
 
 struct EpInfo {
-  PACKAGE_VERSION min_package_version;
+  PackageVersion min_package_version;
   // Represents the vendor id of the hardware device used by the execution
   // provider.
   uint32_t vendor_id;
@@ -161,6 +175,9 @@ struct EpInfo {
   // Key whose value is the PCI device id from
   // `OrtApi::HardwareDevice_DeviceId()`, written as a hexadecimal string.
   base::cstring_view hardware_device_id_env_config_key;
+  // The format of the model produced by compiling a graph for this EP. This is
+  // an EP-level trait: it is uniform across the EP's devices.
+  CompiledModelFormat compiled_model_format = CompiledModelFormat::kNone;
   // The information of offline compilation support.
   base::raw_span<const OfflineCompilationSupport> offline_compilation_support;
 };
@@ -176,10 +193,10 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
         {
             .min_package_version =
                 {
-                    .Major = 1,
-                    .Minor = 8,
-                    .Build = 53,
-                    .Revision = 0,
+                    .major = 1,
+                    .minor = 8,
+                    .build = 53,
+                    .revision = 0,
                 },
             .vendor_id = 0x1002,
             .enabled = false,
@@ -191,10 +208,10 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
         {
             .min_package_version =
                 {
-                    .Major = 0,
-                    .Minor = 0,
-                    .Build = 26,
-                    .Revision = 0,
+                    .major = 0,
+                    .minor = 0,
+                    .build = 26,
+                    .revision = 0,
                 },
             .vendor_id = 0x10de,
             // Kept disabled until the EP can compile inside the
@@ -211,20 +228,19 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
     {
         kOpenVINOExecutionProvider,
         {
-            // The package version 1.8.69.0 maps to the EP
-            // version 1.3.0+b130ce1.
             .min_package_version =
                 {
-                    .Major = 1,
-                    .Minor = 8,
-                    .Build = 69,
-                    .Revision = 0,
+                    .major = 1,
+                    .minor = 8,
+                    .build = 95,
+                    .revision = 0,
                 },
             .vendor_id = 0x8086,
             .enabled = true,
             .workarounds =
                 {
                     .resample2d_limit_to_nchw = true,
+                    .gather_scatter_indices_require_nonnegative = true,
                     // The OpenVINO EP currently reports NPU driver versions in
                     // legacy concatenated format (e.g., "1004404").
                     .npu_concatenated_driver_version = true,
@@ -266,6 +282,7 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
             // Dump models via its own session config entry.
             .model_dump_config_key =
                 "ep.openvinoexecutionprovider.dump_subgraphs",
+            .compiled_model_format = CompiledModelFormat::kEpContext,
             .offline_compilation_support =
                 internal::kOpenVINOOfflineCompilation,
         },
@@ -276,10 +293,10 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
         {
             .min_package_version =
                 {
-                    .Major = 2,
-                    .Minor = 2420,
-                    .Build = 40,
-                    .Revision = 0,
+                    .major = 2,
+                    .minor = 2420,
+                    .build = 40,
+                    .revision = 0,
                 },
             .vendor_id = 0x4d4f4351,
             .enabled = false,
@@ -291,10 +308,10 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
         {
             .min_package_version =
                 {
-                    .Major = 1,
-                    .Minor = 8,
-                    .Build = 57,
-                    .Revision = 0,
+                    .major = 1,
+                    .minor = 8,
+                    .build = 57,
+                    .revision = 0,
                 },
             .vendor_id = 0x1022,
             .enabled = false,
@@ -305,16 +322,16 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
         {
             .min_package_version =
                 {
-                    .Major = 0,
-                    .Minor = 2,
-                    .Build = 0,
-                    .Revision = 26194,
+                    .major = 0,
+                    .minor = 6,
+                    .build = 0,
+                    .revision = 0,
                 },
             // The WebGPU EP is vendor-agnostic, so the vendor ID is set to 0
             // to match ORT's convention.
             // https://github.com/microsoft/onnxruntime/blob/a91b0b4/onnxruntime/core/providers/webgpu/ep/factory.cc#L66
             .vendor_id = 0,
-            .enabled = false,
+            .enabled = true,
             // The WebGPU EP does not enable int64 ops by default. WebNN
             // requires int64 support, so enable it explicitly. Key and value
             // must align with the ORT WebGPU EP implementation. See:
@@ -335,10 +352,35 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
                     {.key = "ep.webgpuexecutionprovider.enableRobustness",
                      .value = "1"},
                 },
+            .compiled_model_format = CompiledModelFormat::kFullGraph,
             .offline_compilation_support = internal::kWebGpuOfflineCompilation,
         },
     },
 });
+
+static_assert(
+    std::ranges::none_of(kKnownEPs,
+                         [](const auto& entry) {
+                           return entry.second.enabled &&
+                                  entry.second.compiled_model_format ==
+                                      CompiledModelFormat::kNone;
+                         }),
+    "Every enabled EP must declare its compiled model format.");
+
+// Returns the format of the model produced by compiling a graph for `ep_name`,
+// or `CompiledModelFormat::kNone` for an unknown EP.
+inline CompiledModelFormat EpCompiledModelFormat(std::string_view ep_name) {
+  auto it = kKnownEPs.find(ep_name);
+  return it != kKnownEPs.end() ? it->second.compiled_model_format
+                               : CompiledModelFormat::kNone;
+}
+
+// Returns the workarounds of the execution provider named `ep_name`, or the
+// default (none) for an unknown execution provider.
+inline EpWorkarounds GetEpWorkaroundsForEp(std::string_view ep_name) {
+  const auto iter = kKnownEPs.find(ep_name);
+  return iter != kKnownEPs.end() ? iter->second.workarounds : EpWorkarounds();
+}
 
 }  // namespace webnn
 

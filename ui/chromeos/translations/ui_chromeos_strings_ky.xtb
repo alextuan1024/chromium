@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Камера</translation>
 <translation id="162175252992296058">Португалча жана эл аралык АКШ баскычтобу</translation>
 <translation id="1629521517399325891">Колдонуучунун тастыктамасын тармак аутентификациясы үчүн пайдаланууга болбойт.</translation>
+<translation id="1639239467298939599">Жүктөлүүдө</translation>
 <translation id="1641780993263690097">Кытайча (пиньинь)</translation>
 <translation id="164969095109328410">Chrome түзмөгү</translation>
 <translation id="1661207570040737402">Жалпы дисктеги Google Workspace сактагычынын баарын колдонуп койдуңуз.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Файлды шайкештирүү өчүрүлдү</translation>
 <translation id="2820957248982571256">Скандалууда…</translation>
 <translation id="2830077785865012357">Кытайча (чжуинь)</translation>
+<translation id="2838379631617906747">Орнотулууда</translation>
 <translation id="2843806747483486897">Демейкини өзгөртүү…</translation>
 <translation id="2873951654529031587">Таштанды</translation>
 <translation id="2887314858867008269">US Colemak</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Сырсөз туура эмес</translation>
 <translation id="5059127710849015030">Непалча (транслитерация)</translation>
 <translation id="5068919226082848014">Пицца</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> проксини өзгөртүү эрежелерин көрсөттү</translation>
 <translation id="5081517858322016911">Файлдардын <ph name="TOTAL_FILE_SIZE" /> өчүрүлөт</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> нерсе <ph name="FOLDER_NAME" /> папкасына жылдырылууда</translation>
 <translation id="509429900233858213">Ката кетти.</translation>
-<translation id="5102922915594634436">Шайкештирилген папкаларды тескөө</translation>
 <translation id="5109254780565519649">Ката кетти. Айрым нерселер калыбына келтирилбеши мүмкүн.</translation>
 <translation id="5110329002213341433">Англисче (Канада)</translation>
 <translation id="5119780910075847424">Шайкештирүү тындырылды</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Эч бири орнотулган жок</translation>
 <translation id="5317780077021120954">Сактоо</translation>
 <translation id="5318819489018851358">Linux аркылуу бөлүшүү</translation>
-<translation id="5330145655348521461">Бул файлдар башка иш тактада ачылды. Аларды карап көрүү үчүн бул жерге жылдырыңыз <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="5330512191124428349">Маалымат алуу</translation>
 <translation id="535792325654997756">Мышыктар менен адам</translation>
 <translation id="5358764674931277">Кадрлардын жыштыгы</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Домен суффиксине окшош жараксыз маани</translation>
 <translation id="6364301859968397756">Уюмдун сактагычы толуп калды</translation>
 <translation id="6367976544441405720">Фургон</translation>
-<translation id="637062427944097960">Бул файл башка иштактада ачылган. Аны көрүү үчүн <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) карай жылыңыз.</translation>
 <translation id="6394388407447716302">Окуу үчүн гана</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> элемент</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> файлы шифрленгендиктен, ал жылдырылган жок.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – Оюкча</translation>
 <translation id="8656407365183407932">Офлайн файлдарды өчүрүүгө туура келди</translation>
 <translation id="8656768832129462377">Текшерилбесин</translation>
+<translation id="8662978096466608964">Chrome тушкагазды коё албайт.</translation>
 <translation id="8688591111840995413">Начар сырсөз</translation>
 <translation id="8698464937041809063">Google чийүү</translation>
 <translation id="8698877009525468705">Бул файл купуя жана ага администратордун чектөөлөрү коюлган.</translation>

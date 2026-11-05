@@ -17,9 +17,8 @@
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/apps/app_service/publishers/arc_apps_factory.h"
+#include "chrome/browser/ash/app_list/arc/arc_app_list_prefs_factory.h"
 #include "chrome/browser/ash/app_list/arc/arc_package_syncable_service_factory.h"
-#include "chrome/browser/ash/app_list/arc/arc_usb_host_permission_manager.h"
-#include "chrome/browser/ash/app_list/arc/arc_usb_host_permission_manager_factory.h"
 #include "chrome/browser/ash/app_restore/app_restore_arc_task_handler.h"
 #include "chrome/browser/ash/app_restore/app_restore_arc_task_handler_factory.h"
 #include "chrome/browser/ash/apps/apk_web_app_service.h"
@@ -39,6 +38,7 @@
 #include "chrome/browser/ash/arc/fileapi/arc_file_system_mounter.h"
 #include "chrome/browser/ash/arc/fileapi/arc_file_system_operation_runner.h"
 #include "chrome/browser/ash/arc/idle_manager/arc_idle_manager.h"
+#include "chrome/browser/ash/arc/idle_manager/arc_system_state_bridge.h"
 #include "chrome/browser/ash/arc/input_method_manager/arc_input_method_manager_service.h"
 #include "chrome/browser/ash/arc/input_overlay/arc_input_overlay_manager.h"
 #include "chrome/browser/ash/arc/instance_throttle/arc_instance_throttle.h"
@@ -52,6 +52,7 @@
 #include "chrome/browser/ash/arc/notification/arc_boot_error_notification.h"
 #include "chrome/browser/ash/arc/notification/arc_provision_notification_service.h"
 #include "chrome/browser/ash/arc/pip/arc_pip_bridge.h"
+#include "chrome/browser/ash/arc/policy/arc_auto_launch_service.h"
 #include "chrome/browser/ash/arc/policy/arc_policy_bridge.h"
 #include "chrome/browser/ash/arc/print_spooler/arc_print_spooler_bridge.h"
 #include "chrome/browser/ash/arc/screen_capture/arc_screen_capture_bridge.h"
@@ -63,15 +64,13 @@
 #include "chrome/browser/ash/arc/tracing/arc_app_performance_tracing.h"
 #include "chrome/browser/ash/arc/tracing/arc_tracing_bridge.h"
 #include "chrome/browser/ash/arc/tts/arc_tts_service.h"
-#include "chrome/browser/ash/arc/vmm/arc_system_state_bridge.h"
-#include "chrome/browser/ash/arc/vmm/arc_vmm_manager.h"
 #include "chrome/browser/ash/arc/wallpaper/arc_wallpaper_service.h"
 #include "chrome/browser/ash/login/startup_utils.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/net/nss_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
-#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/channel/channel_info.h"
 #include "chromeos/ash/components/memory/swap_configuration.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_launch_notifier.h"
@@ -109,7 +108,6 @@
 #include "chromeos/ash/experiences/arc/session/arc_session.h"
 #include "chromeos/ash/experiences/arc/session/arc_session_runner.h"
 #include "chromeos/ash/experiences/arc/system_ui/arc_system_ui_bridge.h"
-#include "chromeos/ash/experiences/arc/usb/usb_host_bridge.h"
 #include "chromeos/ash/experiences/arc/user_session/arc_user_session_service.h"
 #include "chromeos/ash/experiences/arc/video/gpu_arc_video_service_host.h"
 #include "chromeos/ash/experiences/arc/volume_mounter/arc_volume_mounter_bridge.h"
@@ -254,8 +252,12 @@ void ArcServiceLauncher::MaybeSetProfile(Profile* profile) {
   // allowed for ARC.
   // TODO(hidehiko): DCHECK(!arc_session_manager_->IsAllowed()) here, and
   // get rid of Shutdown().
-  if (arc_session_manager_->profile())
+  if (arc_session_manager_->profile()) {
+    // The handler is bound to the previous profile and must be destroyed before
+    // shutting down the session manager (matching the order in Shutdown()).
+    arc_play_store_enabled_preference_handler_.reset();
     arc_session_manager_->Shutdown();
+  }
 
   arc_session_manager_->SetProfile(profile);
   arc_service_manager_->set_browser_context(profile);
@@ -263,7 +265,9 @@ void ArcServiceLauncher::MaybeSetProfile(Profile* profile) {
       multi_user_util::GetAccountIdFromProfile(profile));
 }
 
-void ArcServiceLauncher::OnPrimaryUserProfilePrepared(Profile* profile) {
+void ArcServiceLauncher::OnPrimaryUserProfilePrepared(
+    Profile* profile,
+    consent_auditor::ConsentAuditor* consent_auditor) {
   CHECK(arc_service_manager_, base::NotFatalUntil::M160);
   CHECK(arc_session_manager_, base::NotFatalUntil::M160);
 
@@ -291,7 +295,7 @@ void ArcServiceLauncher::OnPrimaryUserProfilePrepared(Profile* profile) {
   }
 
   std::string user_id_hash =
-      ash::ProfileHelper::GetUserIdHashFromProfile(profile);
+      ash::BrowserContextHelper::GetUserIdHashFromBrowserContext(profile);
 
   // Instantiate ARC related BrowserContextKeyedService classes which need
   // to be running at the beginning of the container run.
@@ -305,6 +309,7 @@ void ArcServiceLauncher::OnPrimaryUserProfilePrepared(Profile* profile) {
   ArcAppPerformanceTracing::GetForBrowserContext(profile);
   ArcAudioBridge::GetForBrowserContext(profile);
   ArcAuthService::GetForBrowserContext(profile);
+  ArcAutoLaunchService::GetForBrowserContext(profile);
   ArcBluetoothBridge::GetForBrowserContext(profile);
   ArcBootErrorNotification::GetForBrowserContext(profile);
   ArcBootPhaseMonitorBridge::GetForBrowserContext(profile);
@@ -349,8 +354,8 @@ void ArcServiceLauncher::OnPrimaryUserProfilePrepared(Profile* profile) {
   {
     auto* arc_net_host_impl = ArcNetHostImpl::GetForBrowserContext(profile);
     arc_net_host_impl->SetPrefService(profile->GetPrefs());
-    arc_net_host_impl->SetCertManager(
-        std::make_unique<CertManagerImpl>(profile));
+    arc_net_host_impl->SetCertManager(std::make_unique<CertManagerImpl>(
+        NssServiceFactory::GetForContext(profile)));
     arc_net_url_opener_ = std::make_unique<BrowserUrlOpenerImpl>();
   }
   ArcOemCryptoBridge::GetForBrowserContext(profile);
@@ -371,8 +376,6 @@ void ArcServiceLauncher::OnPrimaryUserProfilePrepared(Profile* profile) {
     ArcTracingBridge::GetForBrowserContext(profile);
   }
   ArcTtsService::GetForBrowserContext(profile);
-  ArcUsbHostBridge::GetForBrowserContext(profile);
-  ArcUsbHostPermissionManager::GetForBrowserContext(profile);
   ArcUserSessionService::GetForBrowserContext(profile);
   ArcVolumeMounterBridge::GetForBrowserContext(profile);
   ArcWakeLockBridge::GetForBrowserContext(profile);
@@ -388,8 +391,6 @@ void ArcServiceLauncher::OnPrimaryUserProfilePrepared(Profile* profile) {
 
   if (arc::IsArcVmEnabled()) {
     // ARCVM-only services.
-    ArcVmmManager::GetForBrowserContext(profile)->set_user_id_hash(
-        user_id_hash);
     ArcSafetyBridge::GetForBrowserContext(profile);
     ArcSystemStateBridge::GetForBrowserContext(profile);
 
@@ -409,11 +410,19 @@ void ArcServiceLauncher::OnPrimaryUserProfilePrepared(Profile* profile) {
     web_apk_manager_ = std::make_unique<apps::WebApkManager>(profile);
   }
 
-  arc_session_manager_->Initialize();
-  arc_play_store_enabled_preference_handler_ =
-      std::make_unique<ArcPlayStoreEnabledPreferenceHandler>(
-          profile, arc_session_manager_.get());
-  arc_play_store_enabled_preference_handler_->Start();
+  arc_session_manager_->Initialize(consent_auditor);
+  // In SyncTest, SyncArcPackageHelper drives `prefs::kArcEnabled` and calls
+  // `NotifyArcPlayStoreEnabledChanged()` directly, so the handler must not
+  // call `RequestEnable()` or `RequestDisable()`.
+  if (!ArcAppListPrefsFactory::IsFactorySetForSyncTest()) {
+    // Shutdown() and MaybeSetProfile() reset this before the profiles -- and so
+    // their keyed services -- are destroyed, so holding the ConsentAuditor is
+    // safe.
+    arc_play_store_enabled_preference_handler_ =
+        std::make_unique<ArcPlayStoreEnabledPreferenceHandler>(
+            profile, arc_session_manager_.get(), consent_auditor);
+    arc_play_store_enabled_preference_handler_->Start();
+  }
 }
 
 void ArcServiceLauncher::Shutdown() {
@@ -508,6 +517,7 @@ void ArcServiceLauncher::EnsureFactoriesBuilt() {
   ArcAppfuseBridge::EnsureFactoryBuilt();
   ArcAudioBridge::EnsureFactoryBuilt();
   ArcAuthService::EnsureFactoryBuilt();
+  ArcAutoLaunchService::EnsureFactoryBuilt();
   ArcBluetoothBridge::EnsureFactoryBuilt();
   ArcBootErrorNotification::EnsureFactoryBuilt();
   ArcBootPhaseMonitorBridgeFactory::GetInstance();
@@ -558,10 +568,7 @@ void ArcServiceLauncher::EnsureFactoriesBuilt() {
   ArcSystemStateBridge::EnsureFactoryBuilt();
   ArcTracingBridge::EnsureFactoryBuilt();
   ArcTtsService::EnsureFactoryBuilt();
-  ArcUsbHostBridge::EnsureFactoryBuilt();
-  ArcUsbHostPermissionManagerFactory::GetInstance();
   ArcUserSessionService::EnsureFactoryBuilt();
-  ArcVmmManager::EnsureFactoryBuilt();
   ArcVolumeMounterBridge::EnsureFactoryBuilt();
   ArcWakeLockBridge::EnsureFactoryBuilt();
   ArcWallpaperService::EnsureFactoryBuilt();

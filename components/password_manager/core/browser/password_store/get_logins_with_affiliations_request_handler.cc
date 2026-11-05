@@ -69,10 +69,6 @@ ProcessExactAndPSLForms(
         form.match_type = affiliations::MatchType::kExact;
         break;
       case MatchResult::PSL_MATCH:
-        if (IsExtendedPSLMatch(form, digest, psl_extensions)) {
-          form.match_type = affiliations::MatchType::kPSL;
-        }
-        break;
       case MatchResult::FEDERATED_PSL_MATCH:
         if (IsExtendedPSLMatch(form, digest, psl_extensions)) {
           form.match_type = affiliations::MatchType::kPSL;
@@ -142,7 +138,8 @@ class GetLoginsHelper : public base::RefCounted<GetLoginsHelper> {
                                                   PasswordStoreBackendError>)>
           forms_received_callback,
       std::vector<affiliations::Facet> affiliated_facets,
-      std::vector<affiliations::Facet> grouped_facets);
+      std::vector<affiliations::Facet> grouped_facets,
+      GURL change_password_url);
 
   // Method which is called after exact, PSL, affiliated and grouped matches
   // are received.
@@ -217,16 +214,13 @@ void GetLoginsHelper::HandleAffiliationsAndGroupsReceived(
                                                 PasswordStoreBackendError>)>
         forms_received_callback,
     std::vector<affiliations::Facet> affiliated_facets,
-    std::vector<affiliations::Facet> grouped_facets) {
+    std::vector<affiliations::Facet> grouped_facets,
+    GURL change_password_url) {
   if (!backend_) {
     return;
   }
 
-  for (const auto& facet : grouped_facets) {
-    if (facet.change_password_url.is_valid()) {
-      change_password_url_ = facet.change_password_url;
-    }
-  }
+  change_password_url_ = std::move(change_password_url);
 
   auto facet_to_string = [](const affiliations::Facet& facet) {
     // Facet URIs have no trailing slash, whereas realms do.

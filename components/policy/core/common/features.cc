@@ -28,11 +28,13 @@ BASE_FEATURE(kEnhancedSecurityEventFields,
 
 BASE_FEATURE(kUseCECFlagInPolicyData, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kUserPolicyCacheSizeLimit2MB, base::FEATURE_ENABLED_BY_DEFAULT);
+
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kInitializePoliciesForSignedInUserInNewEntryPoints,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kAndroidUseAdminsForEnterpriseInfo,
+BASE_FEATURE(kCbcmRefreshEnrollmentTokenBeforeDeferredInit,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
@@ -53,7 +55,7 @@ const base::FeatureParam<std::string> kDesktopAndroidPolicyBlocklist{
 
 // Used to enable extension install policy support.
 BASE_FEATURE(kEnableExtensionInstallPolicyFetching,
-#if BUILDFLAG(ENABLE_EXTENSIONS_CORE) && !BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
              base::FEATURE_ENABLED_BY_DEFAULT);
 #else
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -63,9 +65,6 @@ BASE_FEATURE(kEnableExtensionInstallPolicyFetching,
 // policies. When disabled, falls back to the original ShouldHonorPolicies()
 // behavior.
 BASE_FEATURE(kUseManagementServiceForSensitivePolicies,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kFilterSensitivePoliciesOnWorkplaceJoinedDevices,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Modifies behavior of policies utilizing URLBlocklistManager.
@@ -91,18 +90,26 @@ const base::FeatureParam<bool> kClearDeviceSignalsPermissionOnStartup{
 BASE_FEATURE(kURLBlocklistOverridesIncognitoAllowlist,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kExportPlatformPoliciesJson,
-             "ExportPlatformPoliciesJson",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kExportPlatformPoliciesJson, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, migrates user cloud management status and sign-in interception
 // policy fetching from the legacy SecureConnect endpoint to Device Management
 // Server.
 BASE_FEATURE(kMigrateSecureConnectApiToDmServer,
-             "MigrateSecureConnectApiToDmServer",
              base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<base::TimeDelta>
     kMigrateSecureConnectApiToDmServerFetchTimeout{
-        &kMigrateSecureConnectApiToDmServer, "fetch_timeout", base::Seconds(10)};
+        &kMigrateSecureConnectApiToDmServer, "fetch_timeout",
+        base::Seconds(10)};
+
+bool IsMigrateSecureConnectApiToDmServerEnabled() {
+  return base::FeatureList::IsEnabled(kMigrateSecureConnectApiToDmServer);
+}
+
+BASE_FEATURE(kPolicyUserInfoFetcherUseOmitBugWorkaround,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kCbcmRequireErrorDetailForUnenrollment,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace policy::features

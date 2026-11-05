@@ -10,7 +10,6 @@ source_set("coordinator") {
   deps = [
     "//base",
     "//components/autofill/core/common",
-    "//components/password_manager/core/browser/features:password_features",
     "//components/password_manager/ios",
     "//components/password_manager/ios:password_manager_feature_header",
     "//components/prefs",
@@ -26,6 +25,7 @@ source_set("coordinator") {
     "//ios/chrome/browser/signin/model:authentication_service",
     "//ios/chrome/browser/signin/model:authentication_service_factory",
     "//ios/chrome/common/ui/confirmation_alert",
+    "//ios/chrome/common/ui/util",
     "//ios/web/public",
     "//ios/web/public/js_messaging",
     "//ui/base",

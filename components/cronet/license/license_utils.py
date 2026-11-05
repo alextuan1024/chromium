@@ -3,7 +3,7 @@
 # found in the LICENSE file.
 
 import os.path
-from typing import List, Callable
+from typing import List, Callable  # noqa: F401
 import re
 
 import constants
@@ -35,6 +35,10 @@ PATTERN_DEPENDENCY_DIVIDER = re.compile(r"^-{20} DEPENDENCY DIVIDER -{20}$")
 # The delimiter used to separate multiple values for one metadata field.
 VALUE_DELIMITER = ","
 
+# The directory that contains the sources of the third-party Rust crates, one
+# subdirectory per crate.
+_RUST_CRATES_VENDOR_DIRECTORY = "third_party/rust/chromium_crates_io/vendor/"
+
 
 def get_license_type(license_name: str) -> LicenseType:
     """Return the equivalent license type for the provided string license."""
@@ -51,7 +55,7 @@ def is_ignored_readme_chromium(path: str) -> bool:
 
 def get_license_file_format(license_name: str):
     """Return a different representation of the license that is better suited
-  for file names."""
+    for file names."""
     return constants.RAW_LICENSE_TO_FORMATTED_DETAILS[license_name][0]
 
 
@@ -59,23 +63,23 @@ class InvalidMetadata(Exception):
     """This exception is raised when metadata is invalid."""
 
 
-def parse_chromium_readme_file(readme_path: str,
-                               post_process_operation: Callable = None
-                               ) -> Metadata:
+def parse_chromium_readme_file(
+    readme_path: str, post_process_operation: Callable = None
+) -> Metadata:
     """Parses the metadata from the file.
 
-  Args:
-    readme_path: the path to a file from which to parse metadata.
-    post_process_operation: Operation done on the dictionary after parsing
-    metadata, this callable must return a dictionary.
+    Args:
+      readme_path: the path to a file from which to parse metadata.
+      post_process_operation: Operation done on the dictionary after parsing
+      metadata, this callable must return a dictionary.
 
-  Returns: the metadata for all dependencies described in the file.
+    Returns: the metadata for all dependencies described in the file.
 
-  Raises:
-    InvalidMetadata - Raised when the metadata can't be parsed correctly. This
-    could happen due to plenty of reasons (eg: unidentifiable license, license
-    file path does not exist or duplicate fields).
-  """
+    Raises:
+      InvalidMetadata - Raised when the metadata can't be parsed correctly. This
+      could happen due to plenty of reasons (eg: unidentifiable license, license
+      file path does not exist or duplicate fields).
+    """
     field_lookup = {name.lower(): name for name in KNOWN_FIELDS}
 
     dependencies = []
@@ -103,7 +107,8 @@ def parse_chromium_readme_file(readme_path: str,
                 if field in metadata:
                     # Duplicate field for this dependency.
                     raise InvalidMetadata(
-                        f"duplicate '{field}' in {readme_path}")
+                        f"duplicate '{field}' in {readme_path}"
+                    )
                 if field in MULTIVALUE_FIELDS:
                     metadata[field] = [
                         entry.strip() for entry in value.split(VALUE_DELIMITER)
@@ -118,18 +123,20 @@ def parse_chromium_readme_file(readme_path: str,
 
     if len(dependencies) == 0:
         raise Exception(
-            f"Failed to parse any valid metadata from \"{readme_path}\"")
+            f"Failed to parse any valid metadata from \"{readme_path}\""
+        )
 
     try:
         if post_process_operation is None:
             post_process_operation = constants.POST_PROCESS_OPERATION.get(
-                readme_path, lambda _metadata: _metadata)
+                readme_path, lambda _metadata: _metadata
+            )
         metadata = Metadata(post_process_operation(dependencies[0]))
     except MapperException as e:
         raise Exception(f"Failed to post-process {readme_path}") from e
 
     for license_name in metadata.get_licenses():
-        if not license_name in constants.RAW_LICENSE_TO_FORMATTED_DETAILS:
+        if license_name not in constants.RAW_LICENSE_TO_FORMATTED_DETAILS:
             raise InvalidMetadata(
                 f"\"{readme_path}\" contains unidentified license \"{license_name}\""
             )
@@ -138,17 +145,17 @@ def parse_chromium_readme_file(readme_path: str,
 
 def resolve_license_path(readme_chromium_path: str, license_path: str) -> str:
     """
-  Resolves the relative path from the repository root to the license file.
+    Resolves the relative path from the repository root to the license file.
 
-  :param readme_chromium_path: Relative path to the README.chromium starting
-  from the root of the repository.
-  :param license_path: The field value of `License File` in the README.chromium.
-  If the value of the license_path starts with `//` then that means that the
-  license file path is already relative from the repo path. Otherwise, it is
-  assumed that the provided path is relative from the README.chromium path.
-  :return: The relative path from the repository root to the declared license
-  file.
-  """
+    :param readme_chromium_path: Relative path to the README.chromium starting
+    from the root of the repository.
+    :param license_path: The field value of `License File` in the README.chromium.
+    If the value of the license_path starts with `//` then that means that the
+    license file path is already relative from the repo path. Otherwise, it is
+    assumed that the provided path is relative from the README.chromium path.
+    :return: The relative path from the repository root to the declared license
+    file.
+    """
     if license_path.startswith("//"):
         # This is an relative path that starts from the root of external/cronet
         # repository, we should not use the directory path for resolution here.
@@ -159,3 +166,35 @@ def resolve_license_path(readme_chromium_path: str, license_path: str) -> str:
     # until the README.chromium so it becomes a relative path from the root of
     # repo.
     return os.path.join(readme_chromium_path, license_path)
+
+
+def get_rust_crate_license_directory(license_file_path: str) -> str:
+    """
+    Returns the directory of the LICENSE, METADATA and MODULE_LICENSE_XYZ files
+    of a third-party Rust crate, relative to the root of the repository.
+
+    Chromium stores the README.chromium of a crate in a different directory than
+    its sources, so the directory comes from the `License File` of the
+    README.chromium instead. For a crate in `_RUST_CRATES_VENDOR_DIRECTORY`, it
+    is the directory of the crate, where gn2bp puts the Android.bp of the crate
+    (see `_locate_android_bp_destination()` in gen_android_bp.py), whose license
+    module refers to the LICENSE next to it. This holds even if the license file
+    is elsewhere, e.g. in another crate:
+    "//third_party/rust/chromium_crates_io/vendor/foo-v1/../bar-v1/LICENSE" ->
+    "third_party/rust/chromium_crates_io/vendor/foo-v1".
+
+    :param license_file_path: The field value of `License File` in the
+    README.chromium of the crate, which must start with `//`.
+    :return: The relative path from the repository root to the directory.
+    """
+    if not license_file_path.startswith("//"):
+        raise ValueError(
+            "Rust third-party crate's `License File` is expected to be "
+            "absolute path (Absolute GN labels are expected to start with //), "
+            f"but found {license_file_path}"
+        )
+    path = license_file_path[2:]
+    if path.startswith(_RUST_CRATES_VENDOR_DIRECTORY):
+        crate = path.removeprefix(_RUST_CRATES_VENDOR_DIRECTORY).split("/")[0]
+        return _RUST_CRATES_VENDOR_DIRECTORY + crate
+    return path[: path.rfind("/")]

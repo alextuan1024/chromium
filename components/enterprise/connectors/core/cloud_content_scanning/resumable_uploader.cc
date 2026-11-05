@@ -67,24 +67,6 @@ bool IsSuccess(int net_error, int response_code) {
   return net_error == net::OK && response_code == net::HTTP_OK;
 }
 
-std::unique_ptr<ConnectorDataPipeGetter> CreateFileDataPipeGetterBlocking(
-    const base::FilePath& path,
-    bool is_obfuscated) {
-  // FLAG_WIN_SHARE_DELETE is necessary to allow the file to be renamed by the
-  // user clicking "Open Now" without causing download errors.
-  base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ |
-                            base::File::FLAG_WIN_SHARE_DELETE);
-#if BUILDFLAG(IS_CHROMEOS)
-  if (base::FilePath("/media/fuse/fusebox").IsParent(path)) {
-    return ConnectorDataPipeGetter::CreateFuseboxResumablePipeGetter(
-        std::move(file), is_obfuscated);
-  }
-#endif
-
-  return ConnectorDataPipeGetter::CreateResumablePipeGetter(std::move(file),
-                                                            is_obfuscated);
-}
-
 }  // namespace
 
 ResumableUploadRequest::ResumableUploadRequest(
@@ -180,6 +162,7 @@ ResumableUploadRequest::ResumableUploadRequest(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     const GURL& base_url,
     const std::string& metadata,
+    ScanRequestUploadResult get_data_result,
     scoped_refptr<network::ResourceRequestBody> request_body,
     const std::string& histogram_suffix,
     const net::NetworkTrafficAnnotationTag& traffic_annotation,
@@ -197,7 +180,7 @@ ResumableUploadRequest::ResumableUploadRequest(
                              ui_task_runner),
       verdict_received_callback_(std::move(verdict_received_callback)),
       content_uploaded_callback_(std::move(content_uploaded_callback)),
-      get_data_result_(ScanRequestUploadResult::kSuccess),
+      get_data_result_(get_data_result),
       force_sync_upload_(force_sync_upload) {
   AssertCalledOnUIThread();
 }
@@ -299,6 +282,35 @@ ResumableUploadRequest::CreatePageRequest(
   return std::make_unique<ResumableUploadRequest>(
       url_loader_factory, base_url, metadata, get_data_result,
       std::move(page_region), histogram_suffix, traffic_annotation,
+      std::move(verdict_received_callback),
+      std::move(content_uploaded_callback), force_sync_upload,
+      std::move(ui_task_runner));
+}
+
+// static
+std::unique_ptr<ConnectorUploadRequest>
+ResumableUploadRequest::CreateNetworkRequest(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    const GURL& base_url,
+    const std::string& metadata,
+    ScanRequestUploadResult get_data_result,
+    scoped_refptr<network::ResourceRequestBody> request_body,
+    const std::string& histogram_suffix,
+    const net::NetworkTrafficAnnotationTag& traffic_annotation,
+    VerdictReceivedCallback verdict_received_callback,
+    ContentUploadedCallback content_uploaded_callback,
+    bool force_sync_upload,
+    scoped_refptr<base::SequencedTaskRunner> ui_task_runner) {
+  if (factory_) {
+    return factory_->CreateNetworkRequest(
+        url_loader_factory, base_url, metadata, get_data_result,
+        std::move(request_body), histogram_suffix, traffic_annotation,
+        std::move(verdict_received_callback)
+            .Then(std::move(content_uploaded_callback)));
+  }
+  return std::make_unique<ResumableUploadRequest>(
+      std::move(url_loader_factory), base_url, metadata, get_data_result,
+      std::move(request_body), histogram_suffix, traffic_annotation,
       std::move(verdict_received_callback),
       std::move(content_uploaded_callback), force_sync_upload,
       std::move(ui_task_runner));
@@ -549,8 +561,6 @@ void ResumableUploadRequest::SendContentSoon() {
   }
 }
 
-// TODO(crbug.com/328415950): Move the data pipe creation logics to
-// connector_upload_request.
 void ResumableUploadRequest::CreateDatapipe(
     std::unique_ptr<network::ResourceRequest> request,
     file_access::ScopedFileAccess file_access) {
@@ -558,7 +568,8 @@ void ResumableUploadRequest::CreateDatapipe(
       std::make_unique<file_access::ScopedFileAccess>(std::move(file_access));
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::TaskPriority::USER_VISIBLE, base::MayBlock()},
-      base::BindOnce(&CreateFileDataPipeGetterBlocking, path_, is_obfuscated_),
+      base::BindOnce(&ConnectorDataPipeGetter::CreateResumablePipeGetterForPath,
+                     path_, is_obfuscated_),
       base::BindOnce(&ResumableUploadRequest::OnDataPipeCreated,
                      weak_factory_.GetWeakPtr(), std::move(request)));
 }

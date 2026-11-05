@@ -106,6 +106,9 @@ TEST_F(IndigoCueTargetTest, BasicProperties) {
       nullptr));
   EXPECT_EQ(cue_target_->GetSurface(),
             optimization_guide::proto::CONTEXTUAL_CUEING_SURFACE_UNSPECIFIED);
+  EXPECT_TRUE(cue_target_->OverridesUcbScoring());
+  EXPECT_TRUE(cue_target_->DowngradesToQuietOnDismiss());
+  EXPECT_TRUE(cue_target_->IsPersistent());
 }
 
 TEST_F(IndigoCueTargetTest, OnAnchoredMessageClickedInvokesAnchoredMessage) {
@@ -138,7 +141,7 @@ TEST_F(IndigoCueTargetTest, OnAnchoredMessageShownProactiveRecordsMetrics) {
   base::UserActionTester user_action_tester;
   base::HistogramTester histogram_tester;
   cue_target_->OnAnchoredMessageShown(
-      page_actions::PageActionPriorityCategory::kContextualCue);
+      page_actions::PageActionPriorityCategory::kProactiveSuggestion);
   EXPECT_EQ(1, user_action_tester.GetActionCount(
                    kProactiveAnchoredMessageShowAction));
   histogram_tester.ExpectUniqueSample(

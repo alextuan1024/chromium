@@ -7,22 +7,32 @@
 #include <vector>
 
 #include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
+#include "base/time/time.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/dictation/features.h"
+#include "chrome/browser/dictation/metrics.h"
 #include "chrome/browser/dictation/target.h"
 #include "chrome/browser/dictation/test_util.h"
 #include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/editable_level.h"
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/global_dom_node_id.h"
+#include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
+#include "services/device/public/mojom/wake_lock.mojom.h"
+#include "services/device/public/mojom/wake_lock_provider.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/dom/dom_node_id.h"
@@ -41,6 +51,28 @@ using ::testing::Return;
 namespace dictation {
 
 namespace {
+
+class ScopedMockInputEventObserver
+    : public content::RenderWidgetHost::InputEventObserver {
+ public:
+  explicit ScopedMockInputEventObserver(content::RenderWidgetHost* host)
+      : host_(host) {
+    host_->AddInputEventObserver(this);
+  }
+  ~ScopedMockInputEventObserver() override {
+    host_->RemoveInputEventObserver(this);
+  }
+
+  MOCK_METHOD(void,
+              OnInputEvent,
+              (const content::RenderWidgetHost& host,
+               const blink::WebInputEvent& event,
+               InputEventSource source),
+              (override));
+
+ private:
+  raw_ptr<content::RenderWidgetHost> host_;
+};
 
 class DictationSessionControllerTest : public ChromeRenderViewHostTestHarness {
  public:
@@ -87,6 +119,24 @@ class DictationSessionControllerTest : public ChromeRenderViewHostTestHarness {
                                       base::Milliseconds(1));
   }
 
+  // Makes `stream_provider` report kTranscribing and notifies the controller.
+  void SimulateStreamTranscribing(MockStreamProvider& stream_provider) {
+    EXPECT_CALL(stream_provider, GetState())
+        .WillRepeatedly(Return(StreamProvider::StreamState::kTranscribing));
+    controller_->DidUpdateStreamProviderState(
+        stream_provider, StreamProvider::StreamState::kInitializing);
+  }
+
+  int32_t GetActiveWakeLocks(device::mojom::WakeLockType type) {
+    if (controller_) {
+      controller_->FlushWakeLockForTesting();
+    }
+    base::test::TestFuture<int32_t> future;
+    mock_delegate_.wake_lock_provider().GetActiveWakeLocksForTests(
+        type, future.GetCallback());
+    return future.Get();
+  }
+
  protected:
   base::test::ScopedFeatureList scoped_feature_list_;
   testing::NiceMock<MockSessionControllerDelegate> mock_delegate_;
@@ -101,7 +151,8 @@ TEST_F(DictationSessionControllerTest, StartsInactive) {
 // appropriate state.
 TEST_F(DictationSessionControllerTest, StreamAffectsState) {
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
   EXPECT_NE(controller_->attached_stream_provider(), nullptr);
 
@@ -123,7 +174,8 @@ TEST_F(DictationSessionControllerTest, StartStreamInitializesStreamProvider) {
       .WillOnce(Return(std::move(mock_stream_provider)));
   EXPECT_CALL(*stream_provider_ptr, BindToTargetAndConnect(_)).Times(1);
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
 }
 
 // Test that ending a stream notifies the stream provider to stop.
@@ -135,7 +187,8 @@ TEST_F(DictationSessionControllerTest, EndStream) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
 
   EXPECT_CALL(*stream_provider_ptr, Stop(_));
   controller_->EndDictationStream(DictationStreamEndTrigger::kTest);
@@ -151,7 +204,8 @@ TEST_F(DictationSessionControllerTest, EndStreamDuringInitialization) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   ASSERT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
 
   EXPECT_CALL(*stream_provider_ptr, Stop(_));
@@ -169,7 +223,8 @@ TEST_F(DictationSessionControllerTest, StateChangedCallback) {
           [&](SessionState state) { states.push_back(state); }));
 
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   controller_->EndDictationStream(DictationStreamEndTrigger::kTest);
 
   EXPECT_THAT(states, testing::ElementsAre(SessionState::kStreamInitializing,
@@ -186,7 +241,8 @@ TEST_F(DictationSessionControllerTest, StreamProviderStatePropagates) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
 
   // Transition to transcribing.
@@ -225,7 +281,8 @@ TEST_F(DictationSessionControllerTest, StreamProviderStatePropagatesFailure) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
 
   // Transition to transcribing.
@@ -265,7 +322,8 @@ TEST_F(DictationSessionControllerTest, FinalizeStreamToComplete) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
 
   // Transition to transcribing.
@@ -299,7 +357,8 @@ TEST_F(DictationSessionControllerTest, FinalizeStreamToFailed) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
 
   // Transition to transcribing.
@@ -332,7 +391,8 @@ TEST_F(DictationSessionControllerTest, StartNewStreamWhileFinalizing) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider_1)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
 
   // Transition to transcribing.
@@ -356,7 +416,8 @@ TEST_F(DictationSessionControllerTest, StartNewStreamWhileFinalizing) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider_2)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
   EXPECT_EQ(controller_->attached_stream_provider(), stream_provider_2_ptr);
 
@@ -388,7 +449,8 @@ TEST_F(DictationSessionControllerTest, MultipleFinalizingStreams) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider_1)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_CALL(*stream_provider_1_ptr, Stop(_));
   controller_->EndDictationStream(DictationStreamEndTrigger::kTest);
   EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
@@ -401,7 +463,8 @@ TEST_F(DictationSessionControllerTest, MultipleFinalizingStreams) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider_2)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_CALL(*stream_provider_2_ptr, Stop(_));
   controller_->EndDictationStream(DictationStreamEndTrigger::kTest);
   EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
@@ -434,7 +497,8 @@ TEST_F(DictationSessionControllerTest, FinalizingStreamStateChangesIgnored) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
 
   // End the stream. It should transition to kFinalizing.
@@ -495,7 +559,8 @@ TEST_F(DictationSessionControllerTest, UntrackedStreamStateChangesIgnored) {
 
 TEST_F(DictationSessionControllerTest, DoNotEndStreamOnNonUserFocusChange) {
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
 
   for (auto focus_type :
@@ -520,7 +585,8 @@ TEST_F(DictationSessionControllerTest, EndStreamOnFocusNonEditableNode) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
 
   EXPECT_CALL(*stream_provider_ptr, Stop(_));
   content::FocusedNodeDetails details;
@@ -533,12 +599,7 @@ TEST_F(DictationSessionControllerTest, EndStreamOnFocusNonEditableNode) {
   EXPECT_EQ(controller_->attached_stream_provider(), nullptr);
 }
 
-TEST_F(DictationSessionControllerTest, StartNewStreamOnFocusOtherEditableNode) {
-  if (kSessionEndsOnStreamEnd.Get()) {
-    GTEST_SKIP()
-        << "Multiple streams per session are not possible in this config.";
-  }
-
+TEST_F(DictationSessionControllerTest, EndStreamOnFocusOtherEditableNode) {
   Target target_1(EmptyTarget());
   auto mock_stream_provider_1 =
       std::make_unique<testing::NiceMock<MockStreamProvider>>();
@@ -547,97 +608,19 @@ TEST_F(DictationSessionControllerTest, StartNewStreamOnFocusOtherEditableNode) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider_1)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
 
   EXPECT_CALL(*stream_provider_1_ptr, Stop(_));
-
   EXPECT_CALL(*stream_provider_1_ptr, GetTarget())
       .WillRepeatedly(Return(&target_1));
-
-  auto mock_stream_provider_2 =
-      std::make_unique<testing::NiceMock<MockStreamProvider>>();
-  MockStreamProvider* stream_provider_2_ptr = mock_stream_provider_2.get();
-
-  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
-      .WillOnce(Return(std::move(mock_stream_provider_2)));
-
-  EXPECT_CALL(*stream_provider_2_ptr, BindToTargetAndConnect(Pointee(Property(
-                                          &Target::richly_editable, true))));
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_)).Times(0);
 
   content::FocusedNodeDetails details;
   details.focus_type = blink::mojom::FocusType::kMouse;
   details.editable_level = content::EditableLevel::kRichlyEditable;
   details.global_dom_node_id = MockTargetInMainFrame(1);
 
-  controller_->OnFocusChangedInPage(details);
-  EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
-  EXPECT_EQ(controller_->attached_stream_provider(), stream_provider_2_ptr);
-}
-
-TEST_F(DictationSessionControllerTest,
-       DoNotStartNewStreamOnFocusElementWithExistingStream) {
-  content::GlobalDOMNodeId target_id_1 = MockTargetInMainFrame(1);
-  Target target_1(TargetDetails{target_id_1});
-
-  auto mock_stream_provider_1 =
-      std::make_unique<testing::NiceMock<MockStreamProvider>>();
-  MockStreamProvider* stream_provider_1_ptr = mock_stream_provider_1.get();
-
-  EXPECT_CALL(*stream_provider_1_ptr, GetTarget())
-      .WillRepeatedly(Return(&target_1));
-
-  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
-      .WillOnce(Return(std::move(mock_stream_provider_1)));
-  controller_->StartDictationStream(TargetDetails{target_id_1},
-                                    DictationStreamStartTrigger::kSessionStart);
-
-  EXPECT_CALL(*stream_provider_1_ptr, Stop(_));
-  controller_->EndDictationStream(DictationStreamEndTrigger::kTest);
-  EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
-
-  // While a stream is finalizing for an element, change focus to the same
-  // element. This should not start a new stream.
-  content::FocusedNodeDetails details;
-  details.focus_type = blink::mojom::FocusType::kMouse;
-  details.editable_level = content::EditableLevel::kPlaintextEditable;
-  details.global_dom_node_id = MockTargetInMainFrame(1);
-
-  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_)).Times(0);
-  controller_->OnFocusChangedInPage(details);
-  EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
-  EXPECT_EQ(controller_->attached_stream_provider(), nullptr);
-}
-
-TEST_F(DictationSessionControllerTest,
-       DoNotStartNewStreamOnFocusElementDuringShutdown) {
-  content::GlobalDOMNodeId target_id_1 = MockTargetInMainFrame(1);
-  Target target_1(TargetDetails{target_id_1});
-
-  auto mock_stream_provider_1 =
-      std::make_unique<testing::NiceMock<MockStreamProvider>>();
-  MockStreamProvider* stream_provider_1_ptr = mock_stream_provider_1.get();
-
-  EXPECT_CALL(*stream_provider_1_ptr, GetTarget())
-      .WillRepeatedly(Return(&target_1));
-
-  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
-      .WillOnce(Return(std::move(mock_stream_provider_1)));
-  controller_->StartDictationStream(TargetDetails{target_id_1},
-                                    DictationStreamStartTrigger::kSessionStart);
-
-  EXPECT_CALL(*stream_provider_1_ptr, Stop(_));
-  controller_->FinalizeAndShutdown();
-  EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
-
-  // The session is pending shutdown with a finalizing stream. We cannot create
-  // additional streams in this state. Simulate a focus change, which should not
-  // start a new stream.
-  content::FocusedNodeDetails details;
-  details.focus_type = blink::mojom::FocusType::kMouse;
-  details.editable_level = content::EditableLevel::kPlaintextEditable;
-  details.global_dom_node_id = MockTargetInMainFrame(2);
-
-  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_)).Times(0);
   controller_->OnFocusChangedInPage(details);
   EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
   EXPECT_EQ(controller_->attached_stream_provider(), nullptr);
@@ -657,7 +640,8 @@ TEST_F(DictationSessionControllerTest, ActiveStreamFailureOnErrorCalled) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
 
   EXPECT_CALL(*stream_provider_ptr, GetState())
       .WillRepeatedly(Return(StreamProvider::StreamState::kFailed));
@@ -681,7 +665,8 @@ TEST_F(DictationSessionControllerTest, CompletedStreamFailureOnErrorNotCalled) {
   EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
       .WillOnce(Return(std::move(mock_stream_provider)));
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
 
   // First transition to complete.
   EXPECT_CALL(*stream_provider_ptr, GetState())
@@ -714,7 +699,8 @@ TEST_F(DictationSessionControllerTest,
   controller_->ResetUi();
 
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   auto* stream_provider = controller_->attached_stream_provider();
   ASSERT_NE(stream_provider, nullptr);
 
@@ -725,7 +711,7 @@ TEST_F(DictationSessionControllerTest,
       *stream_provider, StreamProvider::StreamState::kInitializing);
   EXPECT_EQ(controller_->GetState(), SessionState::kTranscribing);
 
-  controller_->FinalizeAndShutdown();
+  controller_->FinalizeAndShutdown(DictationStreamEndTrigger::kTest);
   EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
 
   // Complete stream finalization and verify EndSession is called on delegate.
@@ -748,7 +734,8 @@ TEST_F(DictationSessionControllerTest,
   controller_->ResetUi();
 
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   auto* stream_provider1 = controller_->attached_stream_provider();
   ASSERT_NE(stream_provider1, nullptr);
 
@@ -760,12 +747,13 @@ TEST_F(DictationSessionControllerTest,
   EXPECT_EQ(controller_->GetState(), SessionState::kTranscribing);
 
   // Call FinalizeAndShutdown, placing stream 1 in finalization.
-  controller_->FinalizeAndShutdown();
+  controller_->FinalizeAndShutdown(DictationStreamEndTrigger::kTest);
   EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
 
   // While stream 1 is finalizing, start a new stream (stream 2).
   controller_->StartDictationStream(
-      EmptyTarget(), DictationStreamStartTrigger::kContextMenuExistingSession);
+      EmptyTarget(), DictationStreamStartTrigger::kContextMenuExistingSession,
+      base::TimeTicks::Now());
   auto* stream_provider2 = controller_->attached_stream_provider();
   ASSERT_NE(stream_provider2, nullptr);
   EXPECT_NE(stream_provider1, stream_provider2);
@@ -788,7 +776,8 @@ TEST_F(DictationSessionControllerTest, EndStreamOnTextInputInEditable) {
   SimulateElementInFrameFocused(main_rfh());
 
   controller_->StartDictationStream(TargetDetails(MockTargetInMainFrame(1)),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
   EXPECT_NE(controller_->attached_stream_provider(), nullptr);
 
@@ -807,7 +796,8 @@ TEST_F(DictationSessionControllerTest, DoNotEndStreamOnModifiersOrNonText) {
   SimulateElementInFrameFocused(main_rfh());
 
   controller_->StartDictationStream(TargetDetails(MockTargetInMainFrame(1)),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
   EXPECT_NE(controller_->attached_stream_provider(), nullptr);
 
@@ -860,9 +850,152 @@ TEST_F(DictationSessionControllerTest, DoNotEndStreamOnModifiersOrNonText) {
   EXPECT_NE(controller_->attached_stream_provider(), nullptr);
 }
 
+TEST_F(DictationSessionControllerTest, EndStreamOnEnterInEditable) {
+  SimulateElementInFrameFocused(main_rfh());
+
+  auto mock_stream_provider =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_ptr = mock_stream_provider.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider)));
+
+  content::RenderWidgetHost* rwh = main_rfh()->GetRenderWidgetHost();
+  ScopedMockInputEventObserver input_observer(rwh);
+
+  controller_->StartDictationStream(TargetDetails(MockTargetInMainFrame(1)),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
+  EXPECT_NE(controller_->attached_stream_provider(), nullptr);
+
+  // Pressing Enter while dictating in an editable element should end the stream
+  // with kEnterKey and suppress the RawKeyDown, Char, and KeyUp events.
+  EXPECT_CALL(*stream_provider_ptr, Stop(DictationStreamEndTrigger::kEnterKey));
+  EXPECT_CALL(input_observer, OnInputEvent(_, _, _)).Times(0);
+  ForwardEnterKeyPress(rwh, blink::WebInputEvent::kNoModifiers);
+
+  EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
+  EXPECT_EQ(controller_->attached_stream_provider(), nullptr);
+  testing::Mock::VerifyAndClearExpectations(&input_observer);
+
+  // Once the stream has ended, subsequent Enter presses should be forwarded.
+  EXPECT_CALL(input_observer, OnInputEvent(_, _, _)).Times(3);
+  ForwardEnterKeyPress(rwh, blink::WebInputEvent::kNoModifiers);
+}
+
+TEST_F(DictationSessionControllerTest, EndStreamOnNumpadEnterInEditable) {
+  SimulateElementInFrameFocused(main_rfh());
+
+  auto mock_stream_provider =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_ptr = mock_stream_provider.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider)));
+
+  content::RenderWidgetHost* rwh = main_rfh()->GetRenderWidgetHost();
+  ScopedMockInputEventObserver input_observer(rwh);
+
+  controller_->StartDictationStream(TargetDetails(MockTargetInMainFrame(1)),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+
+  // Non-key modifier flags like kIsKeyPad and lock states should still end the
+  // stream and suppress the Enter press.
+  EXPECT_CALL(*stream_provider_ptr, Stop(DictationStreamEndTrigger::kEnterKey));
+  EXPECT_CALL(input_observer, OnInputEvent(_, _, _)).Times(0);
+  ForwardEnterKeyPress(rwh, blink::WebInputEvent::kIsKeyPad |
+                                blink::WebInputEvent::kCapsLockOn |
+                                blink::WebInputEvent::kNumLockOn);
+
+  EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
+  EXPECT_EQ(controller_->attached_stream_provider(), nullptr);
+}
+
+TEST_F(DictationSessionControllerTest,
+       DoNotEndStreamOrSuppressModifiedOrNonEnterKey) {
+  SimulateElementInFrameFocused(main_rfh());
+
+  content::RenderWidgetHost* rwh = main_rfh()->GetRenderWidgetHost();
+  ScopedMockInputEventObserver input_observer(rwh);
+
+  controller_->StartDictationStream(TargetDetails(MockTargetInMainFrame(1)),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+
+  for (int modifier :
+       {blink::WebInputEvent::kShiftKey, blink::WebInputEvent::kControlKey,
+        blink::WebInputEvent::kAltKey, blink::WebInputEvent::kMetaKey}) {
+    EXPECT_CALL(input_observer, OnInputEvent(_, _, _)).Times(3);
+    ForwardEnterKeyPress(rwh, modifier);
+    EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
+    EXPECT_NE(controller_->attached_stream_provider(), nullptr);
+    testing::Mock::VerifyAndClearExpectations(&input_observer);
+  }
+
+  // Non-Enter keys should not be consumed by the key press callback.
+  input::NativeWebKeyboardEvent arrow_event(
+      blink::WebInputEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kNoModifiers, base::TimeTicks::Now());
+  arrow_event.windows_key_code = ui::VKEY_RIGHT;
+  arrow_event.skip_if_unhandled = false;
+  EXPECT_CALL(input_observer, OnInputEvent(_, _, _)).Times(1);
+  rwh->ForwardKeyboardEvent(arrow_event);
+  EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
+  EXPECT_NE(controller_->attached_stream_provider(), nullptr);
+}
+
+TEST_F(DictationSessionControllerTest,
+       KeyPressCallbackUnregisteredWhenStreamCompletes) {
+  SimulateElementInFrameFocused(main_rfh());
+
+  content::RenderWidgetHost* rwh = main_rfh()->GetRenderWidgetHost();
+  ScopedMockInputEventObserver input_observer(rwh);
+
+  // Start stream 1 and complete it directly via stream state update.
+  auto mock_stream_provider_1 =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_1_ptr = mock_stream_provider_1.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider_1)));
+  controller_->StartDictationStream(TargetDetails(MockTargetInMainFrame(1)),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+
+  EXPECT_CALL(*stream_provider_1_ptr, GetState())
+      .WillRepeatedly(Return(StreamProvider::StreamState::kComplete));
+  controller_->DidUpdateStreamProviderState(
+      *stream_provider_1_ptr, StreamProvider::StreamState::kTranscribing);
+  EXPECT_EQ(controller_->GetState(), SessionState::kInactive);
+
+  // Enter should be forwarded when no stream is active.
+  EXPECT_CALL(input_observer, OnInputEvent(_, _, _)).Times(3);
+  ForwardEnterKeyPress(rwh, blink::WebInputEvent::kNoModifiers);
+  testing::Mock::VerifyAndClearExpectations(&input_observer);
+
+  // Starting a second stream on the same frame should cleanly re-register the
+  // callback and suppress Enter.
+  auto mock_stream_provider_2 =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_2_ptr = mock_stream_provider_2.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider_2)));
+  controller_->StartDictationStream(
+      TargetDetails(MockTargetInMainFrame(1)),
+      DictationStreamStartTrigger::kContextMenuExistingSession,
+      base::TimeTicks::Now());
+
+  EXPECT_CALL(*stream_provider_2_ptr,
+              Stop(DictationStreamEndTrigger::kEnterKey));
+  EXPECT_CALL(input_observer, OnInputEvent(_, _, _)).Times(0);
+  ForwardEnterKeyPress(rwh, blink::WebInputEvent::kNoModifiers);
+  EXPECT_EQ(controller_->GetState(), SessionState::kFinalizing);
+  EXPECT_EQ(controller_->attached_stream_provider(), nullptr);
+}
+
 TEST_F(DictationSessionControllerTest, EscapeEndsActiveStreamElseEndsSession) {
   controller_->StartDictationStream(TargetDetails(MockTargetInMainFrame(1)),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
   auto* stream_provider = controller_->attached_stream_provider();
   ASSERT_NE(stream_provider, nullptr);
@@ -899,19 +1032,93 @@ TEST_F(DictationSessionControllerTest, EscapeEndsActiveStreamElseEndsSession) {
   EXPECT_EQ(controller_, nullptr);
 }
 
+TEST_F(DictationSessionControllerTest, WebContentsDestroyedEndsSession) {
+  auto mock_ui = std::make_unique<testing::NiceMock<MockSessionUi>>();
+  MockSessionUi* ui_ptr = mock_ui.get();
+  EXPECT_CALL(mock_delegate_, CreateUi(_)).WillOnce(Return(std::move(mock_ui)));
+  controller_->ResetUi();
+
+  std::unique_ptr<content::WebContents> overlay_contents =
+      CreateTestWebContents();
+  content::GlobalDOMNodeId target_id{
+      overlay_contents->GetPrimaryMainFrame()->GetWeakDocumentPtr(),
+      blink::DOMNodeIdType(1)};
+  controller_->StartDictationStream(TargetDetails(target_id),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  EXPECT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
+
+  EXPECT_CALL(*ui_ptr, OnStopped());
+  EXPECT_CALL(mock_delegate_, EndSession()).WillOnce([this]() {
+    controller_.reset();
+  });
+
+  overlay_contents.reset();
+  WaitForPostedTasks();
+
+  EXPECT_EQ(controller_, nullptr);
+}
+
+// Test that ending the session mid-stream stops the stream, then enters kEnded
+// before the delegate destroys the session.
+TEST_F(DictationSessionControllerTest, EndSessionMidStreamEntersEndedState) {
+  base::HistogramTester histogram_tester;
+  controller_->StartDictationStream(EmptyTarget(),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  auto* stream_provider =
+      static_cast<MockStreamProvider*>(controller_->attached_stream_provider());
+  ASSERT_NE(stream_provider, nullptr);
+  ASSERT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
+
+  std::vector<SessionState> states;
+  base::CallbackListSubscription subscription =
+      controller_->AddSessionStateChangedCallback(base::BindLambdaForTesting(
+          [&states](SessionState state) { states.push_back(state); }));
+  EXPECT_CALL(*stream_provider, Stop(DictationStreamEndTrigger::kDestructor));
+  EXPECT_CALL(mock_delegate_, EndSession()).WillOnce([this]() {
+    EXPECT_EQ(controller_->GetState(), SessionState::kEnded);
+    controller_.reset();
+  });
+
+  controller_->HostTabDidClose();
+
+  EXPECT_EQ(controller_, nullptr);
+  EXPECT_THAT(states, testing::ElementsAre(SessionState::kFinalizing,
+                                           SessionState::kEnded));
+  // As before kEnded existed, ending before listening counts as abandoning.
+  histogram_tester.ExpectTotalCount(
+      kStreamAbandonedBeforeListeningHistogramName, 1);
+}
+
+// Test that ending an idle session goes straight to kEnded.
+TEST_F(DictationSessionControllerTest, EndIdleSessionEntersEndedState) {
+  ASSERT_EQ(controller_->GetState(), SessionState::kInactive);
+  std::vector<SessionState> states;
+  base::CallbackListSubscription subscription =
+      controller_->AddSessionStateChangedCallback(base::BindLambdaForTesting(
+          [&states](SessionState state) { states.push_back(state); }));
+  EXPECT_CALL(mock_delegate_, EndSession()).WillOnce([this]() {
+    controller_.reset();
+  });
+
+  controller_->HostTabDidClose();
+
+  EXPECT_EQ(controller_, nullptr);
+  EXPECT_THAT(states, testing::ElementsAre(SessionState::kEnded));
+}
+
 TEST_F(DictationSessionControllerTest,
        AutoSessionEndDelayedShutdownFiresAfterDelay) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeaturesAndParameters(
-      {{kDictation,
-        {{"session_ends_on_stream_end", "true"},
-         {"auto_session_end_delay", "750ms"}}}},
-      {});
+      {{kDictation, {{"auto_session_end_delay", "750ms"}}}}, {});
 
   controller_->ResetUi();
 
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   auto* stream_provider = controller_->attached_stream_provider();
   ASSERT_NE(stream_provider, nullptr);
 
@@ -948,15 +1155,13 @@ TEST_F(DictationSessionControllerTest,
        AutoSessionEndDelayedShutdownCancelledByNewStream) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeaturesAndParameters(
-      {{kDictation,
-        {{"session_ends_on_stream_end", "true"},
-         {"auto_session_end_delay", "750ms"}}}},
-      {});
+      {{kDictation, {{"auto_session_end_delay", "750ms"}}}}, {});
 
   controller_->ResetUi();
 
   controller_->StartDictationStream(EmptyTarget(),
-                                    DictationStreamStartTrigger::kSessionStart);
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
   auto* stream_provider1 = controller_->attached_stream_provider();
   ASSERT_NE(stream_provider1, nullptr);
 
@@ -989,7 +1194,8 @@ TEST_F(DictationSessionControllerTest,
 
   // Within the delay window, the user starts a new stream.
   controller_->StartDictationStream(
-      EmptyTarget(), DictationStreamStartTrigger::kHotkeyToggleExistingSession);
+      EmptyTarget(), DictationStreamStartTrigger::kHotkeyToggleExistingSession,
+      base::TimeTicks::Now());
   auto* stream_provider2 = controller_->attached_stream_provider();
   ASSERT_NE(stream_provider2, nullptr);
   EXPECT_NE(stream_provider1, stream_provider2);
@@ -1000,6 +1206,257 @@ TEST_F(DictationSessionControllerTest,
   FastForwardPastAutoSessionEnd();
   EXPECT_NE(controller_, nullptr);
   EXPECT_EQ(controller_->attached_stream_provider(), stream_provider2);
+}
+
+// Test that the time from starting a stream until it starts transcribing is
+// recorded.
+TEST_F(DictationSessionControllerTest, RecordsStreamStartLatency) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+  auto mock_stream_provider =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_ptr = mock_stream_provider.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider)));
+
+  controller_->StartDictationStream(EmptyTarget(),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  task_environment()->FastForwardBy(base::Milliseconds(350));
+  histogram_tester.ExpectTotalCount(kStreamStartLatencyHistogramName, 0);
+  EXPECT_EQ(user_action_tester.GetActionCount(kStreamListeningActionName), 0);
+
+  SimulateStreamTranscribing(*stream_provider_ptr);
+  ASSERT_EQ(controller_->GetState(), SessionState::kTranscribing);
+
+  histogram_tester.ExpectUniqueTimeSample(kStreamStartLatencyHistogramName,
+                                          base::Milliseconds(350), 1);
+  EXPECT_EQ(user_action_tester.GetActionCount(kStreamListeningActionName), 1);
+  EXPECT_EQ(user_action_tester.GetActionCount(kStreamCancelledActionName), 0);
+}
+
+// Test that the latency is measured from the provided trigger time rather than
+// when the stream is created.
+TEST_F(DictationSessionControllerTest, StreamStartLatencyUsesTriggerTime) {
+  base::HistogramTester histogram_tester;
+  auto mock_stream_provider =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_ptr = mock_stream_provider.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider)));
+
+  const base::TimeTicks trigger_time = base::TimeTicks::Now();
+  task_environment()->FastForwardBy(base::Milliseconds(100));
+  controller_->StartDictationStream(
+      EmptyTarget(), DictationStreamStartTrigger::kSessionStart, trigger_time);
+  task_environment()->FastForwardBy(base::Milliseconds(200));
+
+  SimulateStreamTranscribing(*stream_provider_ptr);
+
+  histogram_tester.ExpectUniqueTimeSample(kStreamStartLatencyHistogramName,
+                                          base::Milliseconds(300), 1);
+}
+
+// Test that a stream that ends before it starts transcribing records the time
+// until it was abandoned, and no start latency.
+TEST_F(DictationSessionControllerTest,
+       RecordsStreamAbandonedBeforeListeningIfEndedBeforeTranscribing) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+  auto mock_stream_provider =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_ptr = mock_stream_provider.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider)));
+
+  controller_->StartDictationStream(EmptyTarget(),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  task_environment()->FastForwardBy(base::Seconds(2));
+  controller_->EndDictationStream(DictationStreamEndTrigger::kTest);
+  ASSERT_EQ(controller_->GetState(), SessionState::kFinalizing);
+
+  histogram_tester.ExpectUniqueTimeSample(
+      kStreamAbandonedBeforeListeningHistogramName, base::Seconds(2), 1);
+  EXPECT_EQ(user_action_tester.GetActionCount(kStreamCancelledActionName), 1);
+  EXPECT_EQ(user_action_tester.GetActionCount(kStreamListeningActionName), 0);
+
+  // A late transcribing update from the now-finalizing provider must not
+  // record anything further.
+  SimulateStreamTranscribing(*stream_provider_ptr);
+
+  histogram_tester.ExpectTotalCount(kStreamStartLatencyHistogramName, 0);
+  histogram_tester.ExpectTotalCount(
+      kStreamAbandonedBeforeListeningHistogramName, 1);
+  EXPECT_EQ(user_action_tester.GetActionCount(kStreamListeningActionName), 0);
+  EXPECT_EQ(user_action_tester.GetActionCount(kStreamCancelledActionName), 1);
+}
+
+// Test that a stream that fails before it starts transcribing is recorded as
+// abandoned.
+TEST_F(DictationSessionControllerTest,
+       RecordsStreamAbandonedBeforeListeningOnFailure) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+  auto mock_stream_provider =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_ptr = mock_stream_provider.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider)));
+
+  controller_->StartDictationStream(EmptyTarget(),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  task_environment()->FastForwardBy(base::Milliseconds(500));
+
+  EXPECT_CALL(*stream_provider_ptr, GetState())
+      .WillRepeatedly(Return(StreamProvider::StreamState::kFailed));
+  controller_->DidUpdateStreamProviderState(
+      *stream_provider_ptr, StreamProvider::StreamState::kInitializing);
+  ASSERT_EQ(controller_->GetState(), SessionState::kInactive);
+
+  histogram_tester.ExpectUniqueTimeSample(
+      kStreamAbandonedBeforeListeningHistogramName, base::Milliseconds(500), 1);
+  histogram_tester.ExpectTotalCount(kStreamStartLatencyHistogramName, 0);
+  EXPECT_EQ(user_action_tester.GetActionCount(kStreamCancelledActionName), 1);
+  EXPECT_EQ(user_action_tester.GetActionCount(kStreamListeningActionName), 0);
+}
+
+// Test that latency is recorded once per stream, using each stream's own start
+// time.
+TEST_F(DictationSessionControllerTest, StreamStartLatencyRecordedPerStream) {
+  base::HistogramTester histogram_tester;
+  auto mock_stream_provider_1 =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_1_ptr = mock_stream_provider_1.get();
+  auto mock_stream_provider_2 =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_2_ptr = mock_stream_provider_2.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider_1)))
+      .WillOnce(Return(std::move(mock_stream_provider_2)));
+
+  // First stream: 400ms to start transcribing.
+  controller_->StartDictationStream(EmptyTarget(),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  task_environment()->FastForwardBy(base::Milliseconds(400));
+  SimulateStreamTranscribing(*stream_provider_1_ptr);
+  controller_->EndDictationStream(DictationStreamEndTrigger::kTest);
+  ASSERT_EQ(controller_->GetState(), SessionState::kFinalizing);
+
+  // Second stream: 50ms to start transcribing.
+  controller_->StartDictationStream(EmptyTarget(),
+                                    DictationStreamStartTrigger::kFocusChange,
+                                    base::TimeTicks::Now());
+  task_environment()->FastForwardBy(base::Milliseconds(50));
+  SimulateStreamTranscribing(*stream_provider_2_ptr);
+  ASSERT_EQ(controller_->GetState(), SessionState::kTranscribing);
+
+  histogram_tester.ExpectTotalCount(kStreamStartLatencyHistogramName, 2);
+  histogram_tester.ExpectTimeBucketCount(kStreamStartLatencyHistogramName,
+                                         base::Milliseconds(400), 1);
+  histogram_tester.ExpectTimeBucketCount(kStreamStartLatencyHistogramName,
+                                         base::Milliseconds(50), 1);
+  // Ending the first stream after it started transcribing is not an abandon.
+  histogram_tester.ExpectTotalCount(
+      kStreamAbandonedBeforeListeningHistogramName, 0);
+}
+
+// Test that a display wake lock is held whenever the session is not kInactive
+// (including kStreamInitializing, kTranscribing, and kFinalizing), and released
+// once the session returns to kInactive.
+TEST_F(DictationSessionControllerTest, WakeLockHeldWhileSessionActive) {
+  auto mock_stream_provider =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_ptr = mock_stream_provider.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider)));
+
+  ASSERT_EQ(controller_->GetState(), SessionState::kInactive);
+  EXPECT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventDisplaySleep), 0);
+  EXPECT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventAppSuspension),
+      0);
+
+  // Starting a stream enters kStreamInitializing and acquires the wake lock.
+  controller_->StartDictationStream(EmptyTarget(),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  ASSERT_EQ(controller_->GetState(), SessionState::kStreamInitializing);
+  EXPECT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventDisplaySleep), 1);
+  EXPECT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventAppSuspension),
+      0);
+
+  // Entering kTranscribing keeps the wake lock active.
+  SimulateStreamTranscribing(*stream_provider_ptr);
+  ASSERT_EQ(controller_->GetState(), SessionState::kTranscribing);
+  EXPECT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventDisplaySleep), 1);
+
+  // Ending the stream enters kFinalizing and keeps the wake lock active.
+  controller_->EndDictationStream(DictationStreamEndTrigger::kTest);
+  ASSERT_EQ(controller_->GetState(), SessionState::kFinalizing);
+  EXPECT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventDisplaySleep), 1);
+
+  // Completing finalization enters kInactive and releases the wake lock.
+  EXPECT_CALL(*stream_provider_ptr, GetState())
+      .WillRepeatedly(Return(StreamProvider::StreamState::kComplete));
+  controller_->DidUpdateStreamProviderState(
+      *stream_provider_ptr, StreamProvider::StreamState::kTranscribing);
+  ASSERT_EQ(controller_->GetState(), SessionState::kInactive);
+  EXPECT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventDisplaySleep), 0);
+}
+
+// Test that the wake lock is released if the stream fails directly into
+// kInactive.
+TEST_F(DictationSessionControllerTest, WakeLockReleasedOnStreamFailure) {
+  auto mock_stream_provider =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_ptr = mock_stream_provider.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider)));
+
+  controller_->StartDictationStream(EmptyTarget(),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  ASSERT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventDisplaySleep), 1);
+
+  EXPECT_CALL(*stream_provider_ptr, GetState())
+      .WillRepeatedly(Return(StreamProvider::StreamState::kFailed));
+  controller_->DidUpdateStreamProviderState(
+      *stream_provider_ptr, StreamProvider::StreamState::kInitializing);
+  ASSERT_EQ(controller_->GetState(), SessionState::kInactive);
+  EXPECT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventDisplaySleep), 0);
+}
+
+// Test that destroying the SessionController while active releases the wake
+// lock.
+TEST_F(DictationSessionControllerTest, WakeLockReleasedOnDestruction) {
+  auto mock_stream_provider =
+      std::make_unique<testing::NiceMock<MockStreamProvider>>();
+  MockStreamProvider* stream_provider_ptr = mock_stream_provider.get();
+  EXPECT_CALL(mock_delegate_, CreateStreamProvider(_))
+      .WillOnce(Return(std::move(mock_stream_provider)));
+
+  controller_->StartDictationStream(EmptyTarget(),
+                                    DictationStreamStartTrigger::kSessionStart,
+                                    base::TimeTicks::Now());
+  SimulateStreamTranscribing(*stream_provider_ptr);
+  ASSERT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventDisplaySleep), 1);
+
+  controller_.reset();
+  WaitForPostedTasks();
+  EXPECT_EQ(
+      GetActiveWakeLocks(device::mojom::WakeLockType::kPreventDisplaySleep), 0);
 }
 
 }  // namespace

@@ -5,8 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_SOFT_NAVIGATION_PAINT_ATTRIBUTION_TRACKER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_SOFT_NAVIGATION_PAINT_ATTRIBUTION_TRACKER_H_
 
-#include <cstdint>
-
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -110,6 +108,8 @@ class CORE_EXPORT SoftNavigationPaintAttributionTracker
     }
     return false;
   }
+
+  void SetContextForTest(SoftNavigationContext* context, Node* node);
 
   // Called during the pre-paint phase to propagate the `SoftNavigationContext`
   // associated with task attributable modified DOM nodes to descendant nodes.

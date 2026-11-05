@@ -7,12 +7,17 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ui/webui/ash/add_supervision/add_supervision.mojom.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+
+namespace apps {
+class AppService;
+}  // namespace apps
 
 namespace content {
 class WebUI;
@@ -22,6 +27,10 @@ namespace signin {
 class AccessTokenFetcher;
 struct AccessTokenInfo;
 }  // namespace signin
+
+namespace supervised_user {
+class SupervisedUserService;
+}  // namespace supervised_user
 
 class GoogleServiceAuthError;
 
@@ -47,11 +56,16 @@ class AddSupervisionHandler
   };
 
   // |delegate| is owned by the caller and its lifetime must outlive |this|.
+  // |app_service| must not be null, and must outlive |this|. It is the
+  // AppService for the user of |web_ui|'s Profile, which is destroyed on the
+  // Profile shutdown, i.e. after |web_ui| and |this| are destroyed.
   AddSupervisionHandler(
       mojo::PendingReceiver<add_supervision::mojom::AddSupervisionHandler>
           receiver,
       content::WebUI* web_ui,
       signin::IdentityManager* identity_manager,
+      supervised_user::SupervisedUserService* supervised_user_service,
+      apps::AppService* app_service,
       Delegate* delegate);
 
   AddSupervisionHandler(const AddSupervisionHandler&) = delete;
@@ -84,6 +98,14 @@ class AddSupervisionHandler
   // shutdown is detected.
   raw_ptr<signin::IdentityManager> identity_manager_;
   std::unique_ptr<signin::AccessTokenFetcher> oauth2_access_token_fetcher_;
+
+  // The supervised user service for the account being supervised. Injected by
+  // AddSupervisionUI, which resolves it for the account's profile.
+  raw_ref<supervised_user::SupervisedUserService> supervised_user_service_;
+
+  // The AppService for the user of the account being supervised. Injected by
+  // AddSupervisionUI. Outlives |this|.
+  const raw_ref<apps::AppService> app_service_;
 
   base::ScopedObservation<signin::IdentityManager,
                           signin::IdentityManager::Observer>

@@ -32,7 +32,6 @@
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
 #include "components/autofill/core/browser/payments/test_credit_card_fido_authenticator.h"
-#include "components/autofill/core/browser/payments/test_internal_authenticator.h"
 #include "components/autofill/core/browser/strike_databases/payments/fido_authentication_strike_database.h"
 #endif
 
@@ -106,7 +105,6 @@ void CreditCardAccessManagerTestBase::SetUp() {
   CreateAutofillDriver();
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
-  autofill_driver().SetAuthenticator(new TestInternalAuthenticator());
   test_api(credit_card_access_manager())
       .set_fido_authenticator(std::make_unique<TestCreditCardFidoAuthenticator>(
           &autofill_driver(), &autofill_client()));
@@ -157,7 +155,8 @@ const CreditCard* CreditCardAccessManagerTestBase::CreateServerCard(
     std::string server_id,
     const char16_t* cvc,
     CreditCard::RecordType record_type,
-    bool is_card_info_retrieval_enrolled) {
+    bool is_card_info_retrieval_enrolled,
+    int64_t instrument_id) {
   CreditCard server_card = CreditCard();
   test::SetCreditCardInfo(&server_card, "Elvis Presley", number.c_str(),
                           test::NextMonth().c_str(), test::NextYear().c_str(),
@@ -165,6 +164,7 @@ const CreditCard* CreditCardAccessManagerTestBase::CreateServerCard(
   server_card.set_guid(guid);
   server_card.set_record_type(record_type);
   server_card.set_server_id(server_id);
+  server_card.set_instrument_id(instrument_id);
   if (is_card_info_retrieval_enrolled) {
     server_card.set_card_info_retrieval_enrollment_state(
         CreditCard::CardInfoRetrievalEnrollmentState::kRetrievalEnrolled);
@@ -379,8 +379,9 @@ void CreditCardAccessManagerTestBase::
   test_api(credit_card_access_manager())
       .set_is_user_verifiable(is_user_verifiable);
   credit_card_access_manager().FetchCreditCard(
-      card, base::BindOnce(&TestAccessor::OnCreditCardFetched,
-                           accessor().GetWeakPtr()));
+      card, /*require_user_confirmation=*/false,
+      base::BindOnce(&TestAccessor::OnCreditCardFetched,
+                     accessor().GetWeakPtr()));
 
   // This checks risk-based authentication flow is successfully invoked,
   // because it is always the very first authentication flow in a VCN
@@ -451,7 +452,7 @@ void CreditCardAccessManagerTestBase::
       CreditCardCvcAuthenticator& cvc_authenticator =
           payments_autofill_client().GetCvcAuthenticator();
       payments::UnmaskRequestDetails* request_details =
-          cvc_authenticator.GetFullCardRequest()->request_.get();
+          cvc_authenticator.full_card_request_for_testing().request_.get();
       EXPECT_EQ(request_details->card.record_type(),
                 CreditCard::RecordType::kVirtualCard);
       EXPECT_EQ(request_details->card.number(),
@@ -537,8 +538,9 @@ void CreditCardAccessManagerTestBase::
 
 void CreditCardAccessManagerTestBase::FetchCreditCard(const CreditCard* card) {
   credit_card_access_manager().FetchCreditCard(
-      card, base::BindOnce(&TestAccessor::OnCreditCardFetched,
-                           accessor().GetWeakPtr()));
+      card, /*require_user_confirmation=*/false,
+      base::BindOnce(&TestAccessor::OnCreditCardFetched,
+                     accessor().GetWeakPtr()));
 }
 
 void CreditCardAccessManagerTestBase::ExpectCardRetrievalFailure(

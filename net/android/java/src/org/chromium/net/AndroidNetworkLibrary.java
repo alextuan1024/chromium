@@ -412,9 +412,11 @@ class AndroidNetworkLibrary {
     static int getEchMode(@JniType("std::string") String host) {
         int encryptionMode;
         try {
-            encryptionMode =
-                    NetworkSecurityPolicyProxy.getInstance().getDomainEncryptionMode(host);
+            encryptionMode = NetworkSecurityPolicyProxy.getInstance().getDomainEncryptionMode(host);
         } catch (IllegalArgumentException e) {
+            // This can be thrown for certain hostnames considered invalid, e.g. those starting
+            // with a dot. See ApplicationConfig#getConfigForHostname:
+            // https://cs.android.com/android/platform/superproject/+/android-latest-release:frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/ApplicationConfig.java;l=125-127;drc=01b1617d9dbcf8b15eb0500211d6c28aa43f20aa
             encryptionMode = NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_UNKNOWN;
         }
         switch (encryptionMode) {
@@ -423,6 +425,8 @@ class AndroidNetworkLibrary {
             case NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_OPPORTUNISTIC:
             case NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_ENABLED:
                 return EchMode.OPPORTUNISTIC;
+            case NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_REQUIRED:
+                return EchMode.STRICT;
             default:
                 // Default to OPPORTUNISTIC to maintain Chromium's preference for ECH.
                 return EchMode.OPPORTUNISTIC;
@@ -436,6 +440,9 @@ class AndroidNetworkLibrary {
         try {
             return NetworkSecurityPolicyProxy.getInstance().isCleartextTrafficPermitted(host);
         } catch (IllegalArgumentException e) {
+            // This can be thrown for certain hostnames considered invalid, e.g. those starting
+            // with a dot. See ApplicationConfig#getConfigForHostname:
+            // https://cs.android.com/android/platform/superproject/+/android-latest-release:frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/ApplicationConfig.java;l=125-127;drc=01b1617d9dbcf8b15eb0500211d6c28aa43f20aa
             return NetworkSecurityPolicyProxy.getInstance().isCleartextTrafficPermitted();
         }
     }

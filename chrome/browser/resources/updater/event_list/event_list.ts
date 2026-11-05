@@ -100,12 +100,12 @@ export class EventListElement extends CrLitElement {
   accessor filterSettings: FilterSettings = createDefaultFilterSettings();
   protected accessor eventsWithoutDatesLabel: string = '';
   protected accessor eventsWithParseErrorsLabel: string = '';
-  protected accessor expandAllButtonLabel: string =
+  private accessor expandAllButtonLabel: string =
       loadTimeData.getString('expandAll');
   protected accessor events: EventEntry[] = [];
   protected accessor scrollTarget: HTMLElement = document.documentElement;
   protected accessor processMap: UpdaterProcessMap|undefined = undefined;
-  protected sortedEventsWithDates: Array<HistoryEvent|MergedHistoryEvent> = [];
+  private sortedEventsWithDates: Array<HistoryEvent|MergedHistoryEvent> = [];
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -160,7 +160,7 @@ export class EventListElement extends CrLitElement {
     return this.eventListItems.some(item => item.expanded);
   }
 
-  protected get eventListItems(): EventListItemElement[] {
+  private get eventListItems(): EventListItemElement[] {
     return Array.from(this.shadowRoot.querySelectorAll('event-list-item'));
   }
 

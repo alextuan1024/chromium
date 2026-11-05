@@ -38,7 +38,6 @@
 #include "third_party/blink/public/common/fingerprinting_protection/noise_token.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-shared.h"
 #include "third_party/blink/public/mojom/page/page.mojom-shared.h"
 #include "third_party/blink/public/mojom/page/page_visibility_state.mojom-shared.h"
@@ -76,7 +75,6 @@ class WebNoStatePrefetchClient;
 class WebPagePopup;
 class WebRemoteFrame;
 class WebSettings;
-class WebString;
 class WebViewClient;
 class WebWidget;
 struct DeviceEmulationParams;
@@ -186,10 +184,6 @@ class BLINK_EXPORT WebView {
 
   // The returned pointer is valid for the lifetime of the WebView.
   virtual WebSettings* GetSettings() = 0;
-
-  // Corresponds to the encoding of the main frame.  Setting the page
-  // encoding may cause the main frame to reload.
-  virtual WebString PageEncoding() const = 0;
 
   // Method that controls whether pressing Tab key cycles through page
   // elements or inserts a '\t' char in the focused text area.
@@ -397,11 +391,9 @@ class BLINK_EXPORT WebView {
 
   // Autoplay configuration -----------------------------------------------
 
-  // Sets the autoplay flags for this webview's page.
+  // Returns the autoplay flags set for this webview's page.
   // The valid flags are defined in
-  // third_party/blink/public/platform/autoplay.mojom
-  virtual void AddAutoplayFlags(int32_t flags) = 0;
-  virtual void ClearAutoplayFlags() = 0;
+  // third_party/blink/public/mojom/autoplay/autoplay.mojom
   virtual int32_t AutoplayFlagsForTest() const = 0;
   virtual gfx::Size GetPreferredSizeForTest() = 0;
 
@@ -447,6 +439,12 @@ class BLINK_EXPORT WebView {
   virtual void SetWebPreferences(
       const web_pref::WebPreferences& preferences) = 0;
   virtual const web_pref::WebPreferences& GetWebPreferences() = 0;
+
+  // Shares the restriction with other views of the same tab in this renderer.
+  // `id` must be non-empty and shared by all views of one WebContents.
+  // Keep the id after release; older updates must not restrict it again.
+  virtual void SetInitialAutoplayRestriction(const base::UnguessableToken& id,
+                                             bool restricted) = 0;
 
   // TODO(lfg): Remove this once the refactor of WebView/WebWidget is
   // completed.

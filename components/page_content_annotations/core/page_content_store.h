@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_PAGE_CONTENT_ANNOTATIONS_CORE_PAGE_CONTENT_STORE_H_
 #define COMPONENTS_PAGE_CONTENT_ANNOTATIONS_CORE_PAGE_CONTENT_STORE_H_
 
+#include <stdint.h>
+
 #include <optional>
 
 #include "base/memory/scoped_refptr.h"
@@ -49,10 +51,13 @@ class PageContentStore {
                       std::optional<int64_t> tab_id);
 
   // Retrieves the page content for a given URL. If multiple, the most recent
-  // based on visit timestamp.
+  // based on visit timestamp. Returns `std::nullopt` if not found or if its
+  // `AnnotatedPageContent` version is not `kAnnotatedPageContentVersion`.
   std::optional<proto::PageContext> GetPageContent(const GURL& url);
 
-  // Retrieves the page content for a given tab ID.
+  // Retrieves the page content for a given tab ID. Returns `std::nullopt` if
+  // not found or if its `AnnotatedPageContent` version is not
+  // `kAnnotatedPageContentVersion`.
   std::optional<proto::PageContext> GetPageContentForTab(int64_t tab_id);
 
   // Deletes page content, where visit timestamp older than a given `timestamp`.
@@ -61,17 +66,27 @@ class PageContentStore {
   // Deletes the page content entry for `tab_id`.
   bool DeletePageContentForTab(int64_t tab_id);
 
+  // Migrates any cached page content from `old_tab_id` to `new_tab_id`. The
+  // two tab IDs must be positive and not equal.
+  bool UpdateTabId(int64_t old_tab_id, int64_t new_tab_id);
+
   // Deletes the page content entries for `tab_ids`.
   bool DeletePageContentForTabs(const std::set<int64_t>& tab_ids);
 
   // Deletes all entries.
   bool DeleteAllEntries();
 
-  // Retrieves all tab IDs from the database.
+  // Retrieves all tab IDs from the database. Queries metadata only without
+  // validating the stored `PageContext` (e.g. its `AnnotatedPageContent`
+  // version), so `GetPageContentForTab()` may still return `std::nullopt`.
   std::vector<int64_t> GetAllTabIds();
 
  private:
   bool InitializeDb();
+
+  // Deletes the page content entry for `tab_id` without recording latency
+  // metrics. Must be called within an active transaction.
+  bool DeletePageContentForTabInternal(int64_t tab_id);
 
   // The error callback for the database.
   void OnDatabaseError(int extended_error, sql::Statement* stmt);

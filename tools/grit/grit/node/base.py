@@ -15,7 +15,26 @@ from grit import clique
 from grit import exception
 from grit import util
 from grit.node import brotli_util
+from grit.node import compress_util
+from grit.node import zstd_util
 import grit.format.gzip_string
+
+
+def _BrotliCompressWithHeader(data):
+  # The length of the uncompressed data as 8 bytes little-endian.
+  size_bytes = struct.pack("<q", len(data))
+  data = brotli_util.BrotliCompress(data)
+  # BROTLI_CONST is prepended to brotli decompressed data in order to
+  # easily check if a resource has been brotli compressed.
+  # The length of the uncompressed data is also appended to the start,
+  # truncated to 6 bytes, little-endian. size_bytes is 8 bytes,
+  # need to truncate further to 6.
+  formatter = b'%ds %dx %ds' % (6, 2, len(size_bytes) - 8)
+  return (
+    constants.BROTLI_CONST
+    + b''.join(struct.unpack(formatter, size_bytes))
+    + data
+  )
 
 
 class Node:
@@ -26,8 +45,14 @@ class Node:
   _CONTENT_TYPE_CDATA = 1  # Only CDATA, no children.
   _CONTENT_TYPE_MIXED = 2  # CDATA and children, possibly intermingled
 
-  # Types of files to be compressed by default.
-  _COMPRESS_BY_DEFAULT_EXTENSIONS = ('.js', '.html', '.css', '.svg', '.json')
+  _DEFAULT_COMPRESSION_BY_EXTENSION = {
+    '.code_cache': 'zstd',
+    '.css': 'zstd',
+    '.html': 'zstd',
+    '.js': 'zstd',
+    '.json': 'zstd',
+    '.svg': 'zstd',
+  }
 
   # Types of files to disallow compressing, as it provides no benefit, and can
   # potentially even make the file larger.
@@ -243,7 +268,7 @@ class Node:
 
     # Add default attributes if not specified in input file.
     for defattr in self.DefaultAttributes():
-      if not defattr in self.attrs:
+      if defattr not in self.attrs:
         self.attrs[defattr] = self.DefaultAttributes()[defattr]
 
     # Check that |file| does not point to a TypeScript (.ts) file, as those
@@ -444,7 +469,7 @@ class Node:
     '''Returns false if the node has contents that should not be translated,
     otherwise returns false (even if the node has no contents).
     '''
-    if not 'translateable' in self.attrs:
+    if 'translateable' not in self.attrs:
       return True
     else:
       return self.attrs['translateable'] == 'true'
@@ -453,7 +478,7 @@ class Node:
     '''Returns true if the node is marked as an accessibility label and the
     message isn't shown in the UI. Otherwise returns false. This label is
     used to determine if the text requires screenshots.'''
-    if not 'is_accessibility_with_no_ui' in self.attrs:
+    if 'is_accessibility_with_no_ui' not in self.attrs:
       return False
     else:
       return self.attrs['is_accessibility_with_no_ui'] == 'true'
@@ -655,14 +680,16 @@ class Node:
     '''Whether this node is a resource map source.'''
     return False
 
-  def CompressDataIfNeeded(self, data):
+  def CompressDataIfNeeded(self, data, prefix=b''):
     '''Compress data using the format specified in the compress attribute.
 
     Args:
       data: The data to compressed.
+      prefix: Bytes to prepend to the result.
     Returns:
-      The data in gzipped or brotli compressed format. If the format is
-      unspecified then this returns the data uncompressed.
+      The compressed (or uncompressed) bytes, or a concurrent.futures.Future
+      resolving to bytes when called within
+      compress_util.ParallelCompression().
     '''
 
     compress = self.attrs.get('compress')
@@ -672,33 +699,34 @@ class Node:
       and self.attrs.get('file').endswith(self._COMPRESS_DISALLOWED_EXTENSIONS)
     ), 'Disallowed |compress| attribute found for %s' % self.attrs.get('name')
 
-    # Compress JS, HTML, CSS and SVG files by default (gzip), unless |compress|
-    # is explicitly specified.
-    compress_by_default = compress == 'default' and self.attrs.get(
-      'file'
-    ).endswith(self._COMPRESS_BY_DEFAULT_EXTENSIONS)
+    if compress == 'default':
+      _, dot, extension = self.attrs.get('file').rpartition('.')
+      compress = self._DEFAULT_COMPRESSION_BY_EXTENSION.get(
+        dot + extension, 'default'
+      )
 
-    if compress == 'gzip' or compress_by_default:
-      return grit.format.gzip_string.GzipString(data)
+    # Compression may happen asynchronously (see compress_util).
+    if compress == 'gzip':
+      return compress_util.CompressMaybeAsync(
+        grit.format.gzip_string.GzipString, data, prefix=prefix
+      )
 
     if compress == 'brotli':
-      # The length of the uncompressed data as 8 bytes little-endian.
-      size_bytes = struct.pack("<q", len(data))
-      data = brotli_util.BrotliCompress(data)
-      # BROTLI_CONST is prepended to brotli decompressed data in order to
-      # easily check if a resource has been brotli compressed.
-      # The length of the uncompressed data is also appended to the start,
-      # truncated to 6 bytes, little-endian. size_bytes is 8 bytes,
-      # need to truncate further to 6.
-      formatter = b'%ds %dx %ds' % (6, 2, len(size_bytes) - 8)
-      return (
-        constants.BROTLI_CONST
-        + b''.join(struct.unpack(formatter, size_bytes))
-        + data
+      return compress_util.CompressMaybeAsync(
+        _BrotliCompressWithHeader, data, prefix=prefix
+      )
+
+    zstd_level = zstd_util.ParseCompressLevel(compress)
+    if zstd_level is not None:
+      # zstd frames start with a magic number and contain the uncompressed
+      # size, so no extra header is required.
+      return compress_util.CompressMaybeAsync(
+        zstd_util.ZstdCompress, data, zstd_level, prefix=prefix
       )
 
     if compress == 'false' or compress == 'default':
-      return data
+      # |data| may be None (e.g. for missing scaled images).
+      return prefix + data if prefix else data
 
     raise Exception('Invalid value for compression')
 

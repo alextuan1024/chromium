@@ -53,7 +53,8 @@ void LookalikeUrlTabHelper::ShouldAllowResponse(
   // with ReloadType::ORIGINAL_REQUEST_URL), this will correctly not show an
   // interstitial.
 
-  GURL response_url = net::GURLWithNSURL(response.URL);
+  GURL response_url =
+      lookalikes::GetUrlForLookalikeChecks(net::GURLWithNSURL(response.URL));
 
   // If the URL is not an HTTP or HTTPS page, don't show any warning.
   if (!response_url.SchemeIsHTTPOrHTTPS()) {
@@ -118,7 +119,8 @@ void LookalikeUrlTabHelper::ShouldAllowResponse(
             response_url.GetWithEmptyPath())) {
       match_type = lookalikes::LookalikeUrlMatchType::kFailedSpoofChecks;
       RecordUMAFromMatchType(match_type,
-                             web_state()->GetBrowserState()->IsOffTheRecord());
+                             web_state()->GetBrowserState()->IsOffTheRecord(),
+                             /*is_isolated=*/false);
       LookalikeUrlContainer* lookalike_container =
           LookalikeUrlContainer::FromWebState(web_state());
       lookalike_container->SetLookalikeUrlInfo(/*suggested_url=*/GURL(),
@@ -131,9 +133,9 @@ void LookalikeUrlTabHelper::ShouldAllowResponse(
     return;
   }
   DCHECK(!matched_domain.empty());
-
   RecordUMAFromMatchType(match_type,
-                         web_state()->GetBrowserState()->IsOffTheRecord());
+                         web_state()->GetBrowserState()->IsOffTheRecord(),
+                         /*is_isolated=*/false);
 
   const std::string suggested_domain =
       lookalikes::GetETLDPlusOne(matched_domain);

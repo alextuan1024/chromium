@@ -5,13 +5,18 @@
 #include "chrome/browser/glic/browser_ui/tab_underline_view.h"
 
 #include "base/strings/strcat.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/glic/browser_ui/tab_underline_controller.h"
 #include "chrome/browser/glic/host/glic_features.mojom.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
@@ -22,9 +27,13 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
 #include "gpu/config/gpu_switches.h"
+#include "ui/compositor/compositor.h"
+#include "ui/compositor/layer.h"
+#include "ui/gfx/animation/animation.h"
 #include "ui/gfx/switches.h"
 #include "ui/views/view.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/widget/widget.h"
 
 namespace glic {
 
@@ -44,6 +53,7 @@ class TesterImpl : public TabUnderlineView::Tester {
   base::TimeTicks GetTestCreationTime() override { return creation_time_; }
   void AnimationStarted() override {
     animation_started_ = true;
+    ++animation_started_count_;
     wait_for_animation_started_.Quit();
   }
   void AnimationReset() override {
@@ -58,6 +68,7 @@ class TesterImpl : public TabUnderlineView::Tester {
   void set_underline(TabUnderlineView* underline) { underline_ = underline; }
 
   void ResetWaitForAnimationStart() { animation_started_ = false; }
+  int animation_started_count() const { return animation_started_count_; }
   void WaitForAnimationStart() {
     if (animation_started_) {
       return;
@@ -102,6 +113,7 @@ class TesterImpl : public TabUnderlineView::Tester {
   base::TimeTicks next_time_tick_ = creation_time_;
 
   bool animation_started_ = false;
+  int animation_started_count_ = 0;
   base::RunLoop wait_for_animation_started_;
 
   bool animation_reset_ = false;
@@ -122,6 +134,8 @@ class TestUnderlineView : public TabUnderlineView {
                          handle,
                          std::move(tester)) {}
   ~TestUnderlineView() override = default;
+
+  const std::vector<SkColor>& colors() const { return colors_; }
 };
 
 class TestFactory : public TabUnderlineView::Factory {
@@ -143,27 +157,30 @@ class TestFactory : public TabUnderlineView::Factory {
   }
 };
 
-class TabUnderlineViewBrowserTest : public GlicBrowserTest {
+class TabUnderlineViewBrowserTestBase : public GlicBrowserTest {
  public:
   using PlatformBrowserTest::browser;
   using PlatformBrowserTest::CreateBrowser;
   using PlatformBrowserTest::CreateIncognitoBrowser;
 
-  TabUnderlineViewBrowserTest() {
+  explicit TabUnderlineViewBrowserTestBase(bool enable_gpu_rasterization) {
     const std::string multitab_feature_name =
         mojom::features::kGlicMultiTab.name;
     const std::string underline_feature_name =
         features::kGlicMultitabUnderlines.name;
     // Toggling `UiGpuRasterization` is only possible via command line.
-    const std::string enabled_features =
-        base::StrCat({multitab_feature_name, ",", underline_feature_name, ",",
-                      "UiGpuRasterization"});
-    features_.InitFromCommandLine(enabled_features,
-                                  /*disabled_features=*/
-                                  "ContextualTasks,GlicForceSimplifiedBorder,"
-                                  "GlicForceNonSkSLBorder");
+    std::string enabled_features =
+        base::StrCat({multitab_feature_name, ",", underline_feature_name});
+    std::string disabled_features =
+        "ContextualTasks,GlicForceSimplifiedBorder,GlicForceNonSkSLBorder";
+    if (enable_gpu_rasterization) {
+      base::StrAppend(&enabled_features, {",UiGpuRasterization"});
+    } else {
+      base::StrAppend(&disabled_features, {",UiGpuRasterization"});
+    }
+    features_.InitFromCommandLine(enabled_features, disabled_features);
   }
-  ~TabUnderlineViewBrowserTest() override = default;
+  ~TabUnderlineViewBrowserTestBase() override = default;
 
   void SetUpOnMainThread() override {
     GlicBrowserTest::SetUpOnMainThread();
@@ -219,10 +236,61 @@ class TabUnderlineViewBrowserTest : public GlicBrowserTest {
     return views::AsViewClass<AlertIndicatorButton>(button);
   }
 
+  void VerifyRampUpWithSkippedAnimation() {
+    auto* underline = GetUnderlineOfActiveTab();
+    ASSERT_TRUE(underline);
+    TesterImpl* tester = static_cast<TesterImpl*>(underline->tester());
+
+    ASSERT_OK_AND_ASSIGN(auto* instance, OpenGlicForActiveTab());
+    ASSERT_OK(WaitForGlicClient(instance));
+    instance->host().SetContextAccessIndicator(true);
+    tester->WaitForAnimationStart();
+    EXPECT_TRUE(underline->IsShowing());
+    ASSERT_TRUE(underline->layer());
+    ASSERT_TRUE(underline->layer()->GetCompositor());
+    EXPECT_TRUE(
+        underline->layer()->GetCompositor()->HasAnimationObserver(underline));
+
+    // T=0s.
+    tester->AdvanceTimeAndTickAnimation(base::TimeDelta());
+    EXPECT_NEAR(underline->opacity_for_testing(), 0.f,
+                kFloatComparisonTolerance);
+    EXPECT_NEAR(underline->progress_for_testing(), 0.f,
+                kFloatComparisonTolerance);
+
+    // T=0.123s.
+    tester->AdvanceTimeAndTickAnimation(base::Seconds(0.123));
+    // Fast opacity ramp up is 0.2s; 0.123/0.2=0.615.
+    EXPECT_NEAR(underline->opacity_for_testing(), 0.615f,
+                kFloatComparisonTolerance);
+    EXPECT_NEAR(underline->progress_for_testing(), 0.f,
+                kFloatComparisonTolerance);
+    EXPECT_TRUE(
+        underline->layer()->GetCompositor()->HasAnimationObserver(underline));
+
+    // T=1s (steady state reached after 0.2s ramp up).
+    tester->AdvanceTimeAndTickAnimation(base::Seconds(0.877));
+    EXPECT_NEAR(underline->opacity_for_testing(), 1.f,
+                kFloatComparisonTolerance);
+    EXPECT_NEAR(underline->progress_for_testing(), 0.f,
+                kFloatComparisonTolerance);
+    EXPECT_TRUE(underline->IsShowing());
+    EXPECT_FALSE(
+        underline->layer()->GetCompositor()->HasAnimationObserver(underline));
+  }
+
  private:
   base::test::ScopedFeatureList features_;
   TestFactory test_factory_;
 };
+
+class TabUnderlineViewBrowserTest : public TabUnderlineViewBrowserTestBase {
+ public:
+  TabUnderlineViewBrowserTest()
+      : TabUnderlineViewBrowserTestBase(/*enable_gpu_rasterization=*/true) {}
+  ~TabUnderlineViewBrowserTest() override = default;
+};
+
 }  // namespace
 
 // Exercise the default user journey: toggles the underline animation and waits
@@ -440,24 +508,22 @@ IN_PROC_BROWSER_TEST_F(TabUnderlineViewBrowserTest, IncognitoModeCrash) {
       ui_test_utils::NavigateToURL(incognito_browser, GURL("about:blank")));
 }
 
-// TODO(crbug.com/513374065): Re-enable this test once the flakiness is fixed on
-// Mac.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_AttachPinnedTabToNewWindow DISABLED_AttachPinnedTabToNewWindow
-#else
-#define MAYBE_AttachPinnedTabToNewWindow AttachPinnedTabToNewWindow
-#endif
 IN_PROC_BROWSER_TEST_F(TabUnderlineViewBrowserTest,
-                       MAYBE_AttachPinnedTabToNewWindow) {
+                       AttachPinnedTabToNewWindow) {
+  BrowserWindowInterface* browser1 = GetBrowser();
   // Set up two windows, each with one tab
   ASSERT_EQ(GetTabListInterface()->GetTabCount(), 1);
-  // Second browser window
-  BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
-  browser2->GetWindow()->Activate();
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, Title2()));
-  ASSERT_EQ(GetTabListInterface()->GetTabCount(), 1);
+  // Second browser window, and activate it.
+  BrowserWindowInterface* browser2 = CreateAdditionalBrowserWindow();
   auto* tab_list2 = TabListInterface::From(browser2);
   ASSERT_EQ(tab_list2->GetTabCount(), 1);
+
+  // Navigate browser2's tab
+  NavigateTab(*tab_list2->GetTab(0), Title2());
+
+  // We want to open Glic on browser1, so we must ensure it is the active
+  // window. Otherwise, browser2 is currently the active window.
+  ASSERT_OK(ActivateWindow(browser1));
 
   tabs::TabHandle handle1 = GetTabListInterface()->GetTab(0)->GetHandle();
   tabs::TabHandle handle2 = tab_list2->GetTab(0)->GetHandle();
@@ -466,8 +532,9 @@ IN_PROC_BROWSER_TEST_F(TabUnderlineViewBrowserTest,
 
   auto& global_sharing_manager = service()->active_instance_sharing_manager();
   EXPECT_TRUE(global_sharing_manager.GetPinnedTabs().empty());
-  // Toggle Glic on second browser window to create an instance. Because the
-  // second browser is active, the main sharing manager will delegate to this
+
+  // Toggle Glic on the first browser window to create an instance. Because this
+  // browser is active, the main sharing manager will delegate to this
   // instance's sharing manager.
   ASSERT_OK_AND_ASSIGN(auto* instance, OpenGlicForActiveTab());
   ASSERT_OK(WaitForGlicClient(instance));
@@ -484,7 +551,7 @@ IN_PROC_BROWSER_TEST_F(TabUnderlineViewBrowserTest,
   EXPECT_TRUE(global_sharing_manager.IsTabPinned(handle2));
 
   // Verify both tabs have underlines showing.
-  auto* underline1 = GetUnderlineOfActiveTab(browser());
+  auto* underline1 = GetUnderlineOfActiveTab(browser1);
   auto* underline2 = GetUnderlineOfActiveTab(browser2);
   ASSERT_TRUE(underline1);
   ASSERT_TRUE(underline2);
@@ -494,15 +561,282 @@ IN_PROC_BROWSER_TEST_F(TabUnderlineViewBrowserTest,
   EXPECT_TRUE(underline2->IsShowing());
 
   // Simulate attachment of browser2's tab to browser1.
-  tab_list2->MoveTabToWindow(handle2, GetBrowser()->GetSessionID(), 1);
+  tab_list2->MoveTabToWindow(handle2, browser1->GetSessionID(), 1);
   EXPECT_EQ(GetTabListInterface()->GetTabCount(), 2);
 
   // Check that the newly attached tab has its underline showing.
-  auto* underline_attached = GetUnderlineOfTab(browser(), 1);
+  auto* underline_attached = GetUnderlineOfTab(browser1, 1);
   ASSERT_TRUE(underline_attached);
   static_cast<TesterImpl*>(underline_attached->tester())
       ->WaitForAnimationStart();
   EXPECT_TRUE(underline_attached->IsShowing());
+}
+
+IN_PROC_BROWSER_TEST_F(TabUnderlineViewBrowserTest,
+                       UnderlineDoesNotUpdateColorsWhenHidden) {
+  CreateUserInitiatedTab(GURL("about:blank"));
+  ASSERT_EQ(GetTabListInterface()->GetTabCount(), 2);
+
+  auto* underline0 =
+      static_cast<TestUnderlineView*>(GetUnderlineOfTab(browser(), 0));
+  auto* underline1 =
+      static_cast<TestUnderlineView*>(GetUnderlineOfTab(browser(), 1));
+  ASSERT_TRUE(underline0);
+  ASSERT_TRUE(underline1);
+
+  EXPECT_FALSE(underline0->IsShowing());
+  EXPECT_FALSE(underline1->IsShowing());
+  const std::vector<SkColor> initial_colors = underline1->colors();
+  EXPECT_FALSE(initial_colors.empty());
+
+  // Changing theme and switching active tab while hidden should both
+  // short-circuit without recomputing colors.
+  ThemeServiceFactory::GetForProfile(browser()->GetProfile())
+      ->BuildAutogeneratedThemeFromColor(SK_ColorRED);
+  GetTabListInterface()->ActivateTab(
+      GetTabListInterface()->GetTab(1)->GetHandle());
+  EXPECT_EQ(GetTabListInterface()->GetActiveIndex(), 1);
+  EXPECT_EQ(underline0->colors(), initial_colors);
+  EXPECT_EQ(underline1->colors(), initial_colors);
+
+  // Showing underline1 while tab 1 is active updates its colors to the
+  // active-tab custom theme palette.
+  underline1->Show();
+  EXPECT_TRUE(underline1->IsShowing());
+  const std::vector<SkColor> active_colors = underline1->colors();
+  EXPECT_NE(active_colors, initial_colors);
+
+  // Hide underline1, then switch active tab back to tab 0 so tab 1 becomes
+  // inactive while underline1 is hidden.
+  underline1->StopShowing();
+  EXPECT_FALSE(underline1->IsShowing());
+  GetTabListInterface()->ActivateTab(
+      GetTabListInterface()->GetTab(0)->GetHandle());
+  EXPECT_EQ(GetTabListInterface()->GetActiveIndex(), 0);
+
+  // Because underline1 is hidden, OnActiveTabChanged should not have recomputed
+  // its colors to the inactive-tab palette.
+  EXPECT_EQ(underline1->colors(), active_colors);
+
+  // Showing underline1 while tab 1 is inactive refreshes its colors to the
+  // inactive-tab palette.
+  underline1->Show();
+  EXPECT_TRUE(underline1->IsShowing());
+  EXPECT_NE(underline1->colors(), active_colors);
+}
+
+namespace {
+class TabUnderlineViewWithoutHardwareAccelerationBrowserTest
+    : public TabUnderlineViewBrowserTestBase {
+ public:
+  TabUnderlineViewWithoutHardwareAccelerationBrowserTest()
+      : TabUnderlineViewBrowserTestBase(/*enable_gpu_rasterization=*/false) {}
+  ~TabUnderlineViewWithoutHardwareAccelerationBrowserTest() override = default;
+};
+}  // namespace
+
+// Ensures that when there is no hardware acceleration, the effect animation
+// cycle is skipped, the view detaches as a CompositorAnimationObserver once
+// the 200ms opacity ramp up completes, and ramp down still animates cleanly.
+IN_PROC_BROWSER_TEST_F(TabUnderlineViewWithoutHardwareAccelerationBrowserTest,
+                       BasicRampingUpAndDown) {
+  ASSERT_NO_FATAL_FAILURE(VerifyRampUpWithSkippedAnimation());
+
+  auto* underline = GetUnderlineOfActiveTab();
+  ASSERT_TRUE(underline);
+  TesterImpl* tester = static_cast<TesterImpl*>(underline->tester());
+
+  ASSERT_OK(CloseGlicForTabAndWait(GetTabListInterface()->GetActiveTab()));
+  tester->WaitForRampDownStarted();
+  EXPECT_TRUE(
+      underline->layer()->GetCompositor()->HasAnimationObserver(underline));
+
+  // Set T0 for ramping down.
+  tester->AdvanceTimeAndTickAnimation(base::TimeDelta());
+  EXPECT_NEAR(underline->opacity_for_testing(), 1.f, kFloatComparisonTolerance);
+
+  // For opacity, T=0.123s; 1-(0.123/0.2)=0.385.
+  tester->AdvanceTimeAndTickAnimation(base::Seconds(0.123));
+  EXPECT_NEAR(underline->opacity_for_testing(), 0.385f,
+              kFloatComparisonTolerance);
+
+  // Finish ramp down.
+  tester->AdvanceTimeAndTickAnimation(base::Seconds(0.877));
+  EXPECT_NEAR(underline->opacity_for_testing(), 0.f, kFloatComparisonTolerance);
+  EXPECT_FALSE(underline->IsShowing());
+}
+
+namespace {
+class TabUnderlineViewPrefersReducedMotionBrowserTest
+    : public TabUnderlineViewBrowserTestBase {
+ public:
+  TabUnderlineViewPrefersReducedMotionBrowserTest()
+      : TabUnderlineViewBrowserTestBase(/*enable_gpu_rasterization=*/true) {}
+  ~TabUnderlineViewPrefersReducedMotionBrowserTest() override = default;
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    TabUnderlineViewBrowserTestBase::SetUpCommandLine(command_line);
+    command_line->RemoveSwitch(switches::kForcePrefersNoReducedMotion);
+    command_line->AppendSwitch(switches::kForcePrefersReducedMotion);
+  }
+};
+}  // namespace
+
+// Ensures that when PrefersReducedMotion is true, the effect animation cycle
+// is skipped and the view detaches as a CompositorAnimationObserver once the
+// 200ms opacity ramp up completes.
+IN_PROC_BROWSER_TEST_F(TabUnderlineViewPrefersReducedMotionBrowserTest,
+                       BasicRampingUpAndDown) {
+  ASSERT_TRUE(gfx::Animation::PrefersReducedMotion());
+  ASSERT_NO_FATAL_FAILURE(VerifyRampUpWithSkippedAnimation());
+
+  auto* underline = GetUnderlineOfActiveTab();
+  ASSERT_TRUE(underline);
+  TesterImpl* tester = static_cast<TesterImpl*>(underline->tester());
+
+  ASSERT_OK(CloseGlicForTabAndWait(GetTabListInterface()->GetActiveTab()));
+  tester->WaitForRampDownStarted();
+  tester->FinishRampDown();
+  EXPECT_FALSE(underline->IsShowing());
+}
+
+// Regression test for crbug.com/577211885: when a tab's underline view is
+// (re)constructed while context sharing is already active, it must not attempt
+// to show before it is attached to a widget, but should still end up showing.
+IN_PROC_BROWSER_TEST_F(TabUnderlineViewBrowserTest,
+                       AttachPinnedTabToWindowWhileSharing) {
+  BrowserWindowInterface* browser1 = GetBrowser();
+  BrowserWindowInterface* browser2 = CreateAdditionalBrowserWindow();
+  auto* tab_list2 = TabListInterface::From(browser2);
+  NavigateTab(*tab_list2->GetTab(0), Title2());
+  ASSERT_OK(ActivateWindow(browser1));
+
+  tabs::TabHandle handle1 = GetTabListInterface()->GetTab(0)->GetHandle();
+  tabs::TabHandle handle2 = tab_list2->GetTab(0)->GetHandle();
+
+  ASSERT_OK_AND_ASSIGN(auto* instance, OpenGlicForActiveTab());
+  ASSERT_OK(WaitForGlicClient(instance));
+  instance->GetSharingManagerInternal().PinTabs({handle1, handle2});
+  // Turn on context sharing before the tab is moved, so the new underline view
+  // observes an already-enabled indicator during construction. The service
+  // only reports the indicator as enabled in live mode, so set it directly.
+  instance->host().SetContextAccessIndicator(true);
+  service()->SetContextAccessIndicator(true);
+  ASSERT_TRUE(service()->is_context_access_indicator_enabled());
+
+  auto* underline2 = GetUnderlineOfActiveTab(browser2);
+  static_cast<TesterImpl*>(underline2->tester())->WaitForAnimationStart();
+  ASSERT_TRUE(underline2->IsShowing());
+
+  // Moving the tab reconstructs its underline view. Before the fix, the view
+  // attempted to show during construction (before having a parent), which hit
+  // `DumpWithoutCrashing()` in `AnimatedEffectView::Show()`. Every
+  // `DumpWithoutCrashing()` call (including throttled ones) records this
+  // histogram.
+  base::HistogramTester histogram_tester;
+  tab_list2->MoveTabToWindow(handle2, browser1->GetSessionID(), 1);
+  ASSERT_EQ(GetTabListInterface()->GetTabCount(), 2);
+
+  auto* underline_attached = GetUnderlineOfTab(browser1, 1);
+  auto* tester_attached =
+      static_cast<TesterImpl*>(underline_attached->tester());
+  tester_attached->WaitForAnimationStart();
+  EXPECT_TRUE(underline_attached->IsShowing());
+  histogram_tester.ExpectTotalCount("Stability.DumpWithoutCrashingStatus", 0);
+  // The initial state sync in `OnUiReady()` runs both the indicator and the
+  // pinned-tab syncs, each of which requests the underline to show. Those
+  // requests are batched, so the underline should be shown exactly once. A
+  // count of 2 would mean a redundant show, teardown and re-show.
+  EXPECT_EQ(tester_attached->animation_started_count(), 1);
+}
+
+// A show request that arrives while a tab is detached from a window widget
+// must be deferred (not call `Show()`, which would hit
+// `DumpWithoutCrashing()`), and the underline should show once the tab is
+// attached to a window again.
+IN_PROC_BROWSER_TEST_F(TabUnderlineViewBrowserTest,
+                       ShowRequestWhileDetachedIsDeferred) {
+  // Create a second tab so the browser remains open when detaching a tab.
+  CreateUserInitiatedTab(Title2());
+  ASSERT_EQ(GetTabListInterface()->GetTabCount(), 2);
+
+  // Detach the second tab from the browser window's tab strip.
+  std::unique_ptr<tabs::TabModel> detached_tab =
+      browser()->tab_strip_model()->DetachTabAtForInsertion(1);
+  ASSERT_TRUE(detached_tab);
+  tabs::TabHandle handle = detached_tab->GetHandle();
+  ASSERT_EQ(GetTabListInterface()->GetTabCount(), 1);
+
+  // Open Glic and pin the detached tab. The show request must be deferred
+  // because the tab is not attached to any window/widget.
+  base::HistogramTester histogram_tester;
+  ASSERT_OK_AND_ASSIGN(auto* instance, OpenGlicForActiveTab());
+  ASSERT_OK(WaitForGlicClient(instance));
+  instance->GetSharingManagerInternal().PinTabs({handle});
+  EXPECT_TRUE(instance->GetSharingManagerInternal().IsTabPinned(handle));
+  histogram_tester.ExpectTotalCount("Stability.DumpWithoutCrashingStatus", 0);
+
+  // Re-attaching the detached tab into the browser window shows the underline
+  // exactly once.
+  browser()->tab_strip_model()->InsertDetachedTabAt(1, std::move(detached_tab),
+                                                    AddTabTypes::ADD_NONE);
+  ASSERT_EQ(GetTabListInterface()->GetTabCount(), 2);
+
+  auto* underline = GetUnderlineOfTab(browser(), 1);
+  ASSERT_TRUE(underline);
+  auto* tester = static_cast<TesterImpl*>(underline->tester());
+  tester->WaitForAnimationStart();
+  EXPECT_TRUE(underline->IsShowing());
+  EXPECT_EQ(tester->animation_started_count(), 1);
+  histogram_tester.ExpectTotalCount("Stability.DumpWithoutCrashingStatus", 0);
+}
+
+// When a showing underline's tab is moved from its window to another window,
+// it stops drawing on that window widget's compositor, and restarts on the
+// new window's compositor.
+IN_PROC_BROWSER_TEST_F(TabUnderlineViewBrowserTest,
+                       ReattachWhileShowingRestartsUnderline) {
+  BrowserWindowInterface* browser1 = GetBrowser();
+  // Add a second tab to `browser1` so moving a tab doesn't close `browser1`.
+  CreateUserInitiatedTab(Title1());
+  ASSERT_EQ(GetTabListInterface()->GetTabCount(), 2);
+
+  BrowserWindowInterface* browser2 = CreateAdditionalBrowserWindow();
+  auto* tab_list2 = TabListInterface::From(browser2);
+  NavigateTab(*tab_list2->GetTab(0), Title2());
+  ASSERT_OK(ActivateWindow(browser1));
+
+  tabs::TabHandle handle = GetTabListInterface()->GetTab(0)->GetHandle();
+
+  ASSERT_OK_AND_ASSIGN(auto* instance, OpenGlicForActiveTab());
+  ASSERT_OK(WaitForGlicClient(instance));
+  instance->GetSharingManagerInternal().PinTabs({handle});
+
+  auto* underline1 = GetUnderlineOfTab(browser1, 0);
+  ASSERT_TRUE(underline1);
+  auto* tester1 = static_cast<TesterImpl*>(underline1->tester());
+  tester1->WaitForAnimationStart();
+  ASSERT_TRUE(underline1->IsShowing());
+
+  auto* compositor1 = BrowserView::GetBrowserViewForBrowser(browser1)
+                          ->GetWidget()
+                          ->GetCompositor();
+  auto* compositor2 = BrowserView::GetBrowserViewForBrowser(browser2)
+                          ->GetWidget()
+                          ->GetCompositor();
+  EXPECT_EQ(underline1->layer()->GetCompositor(), compositor1);
+
+  // Move the showing tab from `browser1` to `browser2`.
+  GetTabListInterface()->MoveTabToWindow(handle, browser2->GetSessionID(), 1);
+  ASSERT_EQ(tab_list2->GetTabCount(), 2);
+
+  // The tab's underline restarts drawing on `browser2`'s compositor.
+  auto* underline2 = GetUnderlineOfTab(browser2, 1);
+  ASSERT_TRUE(underline2);
+  auto* tester2 = static_cast<TesterImpl*>(underline2->tester());
+  tester2->WaitForAnimationStart();
+  EXPECT_TRUE(underline2->IsShowing());
+  EXPECT_EQ(underline2->layer()->GetCompositor(), compositor2);
 }
 
 }  // namespace glic

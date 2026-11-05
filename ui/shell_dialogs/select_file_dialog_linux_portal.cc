@@ -102,6 +102,8 @@ SelectFileDialogLinuxPortal::~SelectFileDialogLinuxPortal() {
 
 void SelectFileDialogLinuxPortal::ListenerDestroyed() {
   weak_factory_.InvalidateWeakPtrs();
+  file_chooser_request_.reset();
+  UnparentOnInvoker();
   if (fallback_dialog_) {
     fallback_dialog_->ListenerDestroyed();
     fallback_dialog_.reset();
@@ -151,6 +153,7 @@ void SelectFileDialogLinuxPortal::SelectFileImpl(
 
   dbus_xdg::RequestXdgDesktopPortal(
       dbus_thread_linux::GetSharedSessionBus().get(),
+      dbus_xdg::kFileChooserInterfaceName,
       base::BindOnce(&SelectFileDialogLinuxPortal::OnPortalAvailable,
                      weak_factory_.GetWeakPtr(), title, default_path,
                      default_extension, std::move(caller_copy)));
@@ -191,8 +194,9 @@ void SelectFileDialogLinuxPortal::OnPortalAvailable(
     delegate->ExportWindowHandle(
         host_->GetAcceleratedWidget(),
         base::BindOnce(
-            &SelectFileDialogLinuxPortal::SelectFileImplWithParentHandle, this,
-            title, default_path, filter_set, default_extension));
+            &SelectFileDialogLinuxPortal::SelectFileImplWithParentHandle,
+            weak_factory_.GetWeakPtr(), title, default_path, filter_set,
+            default_extension));
   } else {
     // No parent or no delegate, so just use a blank parent handle.
     SelectFileImplWithParentHandle(title, default_path, filter_set,
@@ -221,24 +225,10 @@ SelectFileDialogLinuxPortal::BuildFilterSet() {
         continue;
       }
 
-      // We want to allow ASCII case-insensitive matches for the extension on
-      // a per-character basis, since that's what
-      // https://html.spec.whatwg.org/multipage/input.html#attr-input-accept
-      // suggests.  For example, we should accept file.txt, file.TXT, or
-      // file.tXt.  To do this, we expand characters with ASCII case
-      // equivalents to be represented by [aA], as documented in
+      // Allow ASCII case-insensitive matches for the extension on a
+      // per-character basis, using the [aA] glob syntax documented in
       // https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.FileChooser.html
-      std::string pattern("*.");
-      for (char c : extension) {
-        char lower = base::ToLowerASCII(c);
-        char upper = base::ToUpperASCII(c);
-        if (upper != lower) {
-          pattern.append({'[', lower, upper, ']'});
-        } else {
-          pattern.append({c});
-        }
-      }
-      filter.patterns.push_back(pattern);
+      filter.patterns.push_back(GetCaseInsensitiveExtensionPattern(extension));
 
       // Save the original form for use as a fallback description.
       original_patterns.push_back("*." + extension);
@@ -290,9 +280,10 @@ void SelectFileDialogLinuxPortal::SelectFileImplWithParentHandle(
   invoker_task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&SelectFileDialogLinuxPortal::SelectFileImplOnMainThread,
-                     this, std::move(title), std::move(default_path),
-                     default_path_exists, std::move(filter_set),
-                     std::move(default_extension), std::move(parent_handle)));
+                     weak_factory_.GetWeakPtr(), std::move(title),
+                     std::move(default_path), default_path_exists,
+                     std::move(filter_set), std::move(default_extension),
+                     std::move(parent_handle)));
 }
 
 void SelectFileDialogLinuxPortal::SelectFileImplOnMainThread(
@@ -502,7 +493,11 @@ void SelectFileDialogLinuxPortal::DialogCreatedOnInvoker() {
   if (!host_) {
     return;
   }
+  scoped_refptr<SelectFileDialogLinuxPortal> hold_this(this);
   host_->ReleaseCapture();
+  if (!host_) {
+    return;
+  }
   reenable_window_event_handling_ =
       static_cast<views::DesktopWindowTreeHostLinux*>(host_.get())
           ->DisableEventListening();

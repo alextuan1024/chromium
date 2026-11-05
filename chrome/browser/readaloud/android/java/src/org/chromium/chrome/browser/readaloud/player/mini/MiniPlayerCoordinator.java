@@ -35,6 +35,7 @@ public class MiniPlayerCoordinator {
     private static @Nullable ViewStub sViewStubForTesting;
     private final MiniPlayerMediator mMediator;
     private final MiniPlayerLayout mLayout;
+    private final ReadAloudMiniPlayerSceneLayer mSceneLayer;
     private final PlayerCoordinator mPlayerCoordinator;
     private final UserEducationHelper mUserEducationHelper;
     /*  View-inflation-capable Context for read_aloud_playback isolated split */
@@ -101,6 +102,7 @@ public class MiniPlayerCoordinator {
         mMediator = mediator;
         mMediator.setCoordinator(this);
         mLayout = layout;
+        mSceneLayer = sceneLayer;
         mSideUiStateProviderSupplier = sideUiStateProviderSupplier;
         assert layout != null;
         sceneLayer.setIsVisible(true);
@@ -115,7 +117,7 @@ public class MiniPlayerCoordinator {
                     provider -> {
                         mMarginAdjuster = new ViewMarginAdjusterForSideUi(mLayout);
                         provider.addObserver(mMarginAdjuster);
-                        mMarginAdjuster.onSideUiSpecsChanged(provider.getCurrentSideUiSpecs());
+                        mMarginAdjuster.updateMarginsForSideUi(provider.getCurrentSideUiSpecs());
                     });
         }
 
@@ -132,6 +134,7 @@ public class MiniPlayerCoordinator {
 
     public void destroy() {
         mLayout.destroy();
+        mSceneLayer.destroy();
         if (mMarginAdjuster != null
                 && mSideUiStateProviderSupplier != null
                 && mSideUiStateProviderSupplier.get() != null) {
@@ -141,8 +144,9 @@ public class MiniPlayerCoordinator {
 
     /**
      * Show the mini player if it isn't already showing.
+     *
      * @param animate True if the transition should be animated. If false, the mini player will
-     *         instantly appear.
+     *     instantly appear.
      */
     public void show(boolean animate) {
         mMediator.show(animate);
@@ -156,10 +160,8 @@ public class MiniPlayerCoordinator {
     /**
      * Dismiss the mini player.
      *
-     * @param animate True if the transition should be animated. If false, the mini
-     *                player will
-     *                instantly disappear (though web contents resizing may lag
-     *                behind).
+     * @param animate True if the transition should be animated. If false, the mini player will
+     *     instantly disappear (though web contents resizing may lag behind).
      */
     public void dismiss(boolean animate) {
         mMediator.dismiss(animate);

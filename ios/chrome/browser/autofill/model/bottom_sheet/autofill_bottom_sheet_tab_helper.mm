@@ -7,8 +7,11 @@
 #import <algorithm>
 #import <map>
 #import <ranges>
+#import <set>
+#import <string>
 #import <variant>
 
+#import "base/check.h"
 #import "base/feature_list.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
@@ -33,13 +36,14 @@
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/autofill/ios/form_util/form_activity_params.h"
-#import "components/password_manager/core/browser/features/password_features.h"
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/password_manager/ios/password_manager_java_script_feature.h"
 #import "components/personal_context/first_run/personal_context_first_run_service.h"
 #import "components/prefs/pref_service.h"
+#import "ios/chrome/browser/autofill/model/autofill_ai_save_entity_prompt_model.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_java_script_feature.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_observer.h"
+#import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_pending_prompt_manager.h"
 #import "ios/chrome/browser/autofill/model/features.h"
 #import "ios/chrome/browser/autofill/model/form_input_suggestions_provider.h"
 #import "ios/chrome/browser/autofill/model/form_suggestion_tab_helper.h"
@@ -118,11 +122,6 @@ void RecordPaymentsOrScanCardBottomSheetTriggerOutcome(
                             /*sample=*/did_trigger);
 }
 
-bool UseV3() {
-  return base::FeatureList::IsEnabled(kStatelessFormSuggestionController) &&
-         base::FeatureList::IsEnabled(kAutofillPaymentsSheetV3Ios);
-}
-
 bool UseListenersInvalidation() {
   return base::FeatureList::IsEnabled(kStatelessFormSuggestionController) &&
          base::FeatureList::IsEnabled(
@@ -167,6 +166,27 @@ bool FieldHasPersonalContextSuggestions(
   return std::ranges::any_of(suggestions, is_personal_context_suggestion);
 }
 
+void RecordPaymentsBottomSheetUserGestureStatus(
+    PaymentsBottomSheetUserGestureStatus status) {
+  base::UmaHistogramEnumeration(kPaymentsBottomSheetUserGestureStatusHistogram,
+                                status);
+}
+
+PaymentsBottomSheetUserGestureStatus EvaluateUserGestureSufficiency(
+    const autofill::FormActivityParams& params,
+    const web::ScriptMessage& message) {
+  // `is_user_interacting` is necessary because `has_user_gesture` (derived
+  // from `event.isTrusted` in JS-land) is true for certain programmatic focus
+  // events.
+  if (!params.has_user_gesture) {
+    return PaymentsBottomSheetUserGestureStatus::kNoUserGesture;
+  }
+  if (!message.is_user_interacting()) {
+    return PaymentsBottomSheetUserGestureStatus::kUserNotInteracting;
+  }
+  return PaymentsBottomSheetUserGestureStatus::kValidGesture;
+}
+
 }  // namespace
 
 AutofillBottomSheetTabHelper::~AutofillBottomSheetTabHelper() = default;
@@ -178,10 +198,31 @@ AutofillBottomSheetTabHelper::AutofillBottomSheetTabHelper(
       AutofillBottomSheetJavaScriptFeature::GetInstance()->GetWebFramesManager(
           web_state));
   web_state->AddObserver(this);
+  pending_prompt_manager_ = std::make_unique<AutofillPendingPromptManager>(
+      web_state, commands_handler_);
 }
 
 // Public methods
 
+void AutofillBottomSheetTabHelper::ShowAutofillAiSaveEntityBottomSheet(
+    std::unique_ptr<AutofillAiSaveEntityPromptModel> model) {
+  pending_prompt_manager_->ShowSaveEntityPrompt(std::move(model));
+}
+
+const AutofillAiSaveEntityPromptModel*
+AutofillBottomSheetTabHelper::GetAutofillAiSaveEntityPromptModel() const {
+  return pending_prompt_manager_->GetSaveEntityPromptModel();
+}
+
+AutofillAiSaveEntityPromptModel*
+AutofillBottomSheetTabHelper::GetAutofillAiSaveEntityPromptModel() {
+  return pending_prompt_manager_->GetSaveEntityPromptModel();
+}
+
+std::unique_ptr<AutofillAiSaveEntityPromptModel>
+AutofillBottomSheetTabHelper::TakeAutofillAiSaveEntityPromptModel() {
+  return pending_prompt_manager_->TakeSaveEntityPromptModel();
+}
 void AutofillBottomSheetTabHelper::ShowCardUnmaskAuthenticationSelection(
     std::unique_ptr<
         autofill::CardUnmaskAuthenticationSelectionDialogControllerImpl>
@@ -193,8 +234,7 @@ void AutofillBottomSheetTabHelper::ShowCardUnmaskAuthenticationSelection(
 
 void AutofillBottomSheetTabHelper::ShowSaveCardBottomSheet(
     std::unique_ptr<autofill::SaveCardBottomSheetModel> model) {
-  save_card_bottom_sheet_model_ = std::move(model);
-  [commands_handler_ showSaveCardBottomSheetOnOriginWebState:web_state_];
+  pending_prompt_manager_->ShowSaveCardPrompt(std::move(model));
 }
 
 void AutofillBottomSheetTabHelper::ShowVirtualCardEnrollmentBottomSheet(
@@ -211,12 +251,13 @@ void AutofillBottomSheetTabHelper::ShowEditAddressBottomSheet() {
 
 void AutofillBottomSheetTabHelper::SetAutofillBottomSheetHandler(
     id<AutofillCommands> commands_handler) {
-  if (!commands_handler) {
-    // Means that the web state has been destroyed therefore dismiss the edit
-    // address bottom sheet if it's shown.
+  if (!commands_handler && commands_handler_) {
+    // If the handler is being cleared, dismiss the edit address bottom sheet
+    // if it is currently shown.
     [commands_handler_ dismissEditAddressBottomSheet];
   }
   commands_handler_ = commands_handler;
+  pending_prompt_manager_->SetAutofillBottomSheetHandler(commands_handler_);
 }
 
 void AutofillBottomSheetTabHelper::SetPasswordGenerationProvider(
@@ -256,6 +297,25 @@ void AutofillBottomSheetTabHelper::OnFormMessageReceived(
   if (is_password_related) {
     ShowCredentialBottomSheet(params);
   } else if (is_payments_related) {
+    // Enforce user gesture requirement to prevent focus-jacking by embedded
+    // cross-origin frames. Only enforce this for payments because password
+    // suggestions are origin-scoped, and opening the sheet on page load is
+    // intentionally supported in that flow.
+    PaymentsBottomSheetUserGestureStatus user_gesture_status =
+        EvaluateUserGestureSufficiency(params, message);
+    RecordPaymentsBottomSheetUserGestureStatus(user_gesture_status);
+    if (user_gesture_status !=
+        PaymentsBottomSheetUserGestureStatus::kValidGesture) {
+      // In its current state, the renderer will keep blurring the keyboard on
+      // subsequent focus events, so we need to detach listeners. Detaching on
+      // only this frame ensures a frame can't use this to block the bottom
+      // sheet on other frames.
+      auto it = registered_payments_renderer_ids_.find(frame_id);
+      if (it != registered_payments_renderer_ids_.end()) {
+        DetachListenersForFrame(frame_id, it->second, /*refocus=*/false);
+      }
+      return;
+    }
     MaybeShowPaymentsBottomSheet(params);
   } else if (is_password_generation_related) {
     ShowProactivePasswordGenerationBottomSheet(params);
@@ -298,19 +358,20 @@ void AutofillBottomSheetTabHelper::ShowAmbientAutofillNotice(
 }
 
 void AutofillBottomSheetTabHelper::MaybeShowPaymentsBottomSheet(
-    autofill::FormActivityParams params) {
-  if (!UseV3()) {
-    // Use the status quo logic for triggering the payments bottom sheet if
-    // V3 isn't enabled.
-    ShowPaymentsBottomSheet(std::move(params), /*detach=*/true);
+    const autofill::FormActivityParams& params) {
+  if (!base::FeatureList::IsEnabled(kStatelessFormSuggestionController)) {
+    // Fall back to showing the payments bottom sheet directly when the
+    // stateless FormSuggestionController is disabled, as querying suggestions
+    // asynchronously via its completion block requires stateless mode.
+    ShowPaymentsBottomSheet(params, /*detach=*/true);
     return;
   }
 
-  // In V3, first try to retrieve credit card suggestions before
-  // considering triggering the payments bottom sheet. Credit card suggestions
-  // are a good proxy for knowing that the type of the field is "settled" since
-  // we known that the PWM was tested for suggestions (including the server
-  // predictions) before getting the credit card suggestions.
+  // First try to retrieve credit card suggestions before considering triggering
+  // the payments bottom sheet. Credit card suggestions are a good proxy for
+  // knowing that the type of the field is "settled" since we know that PWM was
+  // tested for suggestions (including the server predictions) before getting
+  // the credit card suggestions.
 
   if (!web_state_) {
     return;
@@ -323,22 +384,22 @@ void AutofillBottomSheetTabHelper::MaybeShowPaymentsBottomSheet(
   id<FormInputSuggestionsProvider> provider =
       tabHelper->GetAccessoryViewProvider();
 
-  // Force this bit to true as retrieving Autofill suggestions for a form
-  // requires a user manual gesture and we consider the signal to trigger
-  // the bottom sheet as a valid signal as a manual gesture.
-  params.has_user_gesture = true;
+  // This is enforced upstream. Verify the invariant here because otherwise
+  // we will get unexpected behavior, including silent failures, later on.
+  CHECK(params.has_user_gesture);
 
-  auto completion = base::CallbackToBlock(base::BindOnce(
-      &AutofillBottomSheetTabHelper::
-          OnSuggestionsRetrievedForPaymentsBottomSheet,
-      weak_factory_.GetWeakPtr(), params, base::TimeTicks::Now()));
+  auto completion = base::CallbackToBlock(
+      base::BindOnce(&AutofillBottomSheetTabHelper::
+                         OnSuggestionsRetrievedForPaymentsBottomSheet,
+                     suggestion_request_weak_factory_.GetWeakPtr(), params,
+                     base::TimeTicks::Now()));
   [provider retrieveSuggestionsForForm:params
                               webState:web_state_
               accessoryViewUpdateBlock:completion];
 
   // Detach the listeners immediately since there is no guarantee that
   // ShowPaymentsBottomSheet() will be called to trigger the sheet.
-  DetachPaymentsListenersForAllFrames(/*refocus=*/false);
+  DetachPaymentsListenersForAllFrames();
 }
 
 void AutofillBottomSheetTabHelper::OnSuggestionsRetrievedForPaymentsBottomSheet(
@@ -373,12 +434,12 @@ void AutofillBottomSheetTabHelper::ShowPaymentsBottomSheet(
     observer.WillShowPaymentsBottomSheet(params);
   }
   [commands_handler_ showPaymentsBottomSheet:params];
-  if (base::FeatureList::IsEnabled(kAutofillPaymentsSheetV2Ios) && detach) {
-    // In V2, detach the listeners right away to make sure they're always
-    // cleaned up to avoid issues with rogue listeners, see the
-    // documentation in ShowCredentialBottomSheet() for more details. Postpone
-    // refocus for later once the bottom sheet is dismissed.
-    DetachPaymentsListenersForAllFrames(/*refocus=*/false);
+  if (detach) {
+    // Detach the listeners right away to make sure they're always cleaned up to
+    // avoid issues with rogue listeners, see the documentation in
+    // `ShowCredentialBottomSheet()` for more details. Postpone refocus for
+    // later once the bottom sheet is dismissed.
+    DetachPaymentsListenersForAllFrames();
   }
 }
 
@@ -412,7 +473,7 @@ void AutofillBottomSheetTabHelper::ShowProactivePasswordGenerationBottomSheet(
   [generation_provider_
       triggerPasswordGenerationForFormId:params.form_renderer_id
                          fieldIdentifier:params.field_renderer_id
-                                 inFrame:frame
+                                 inFrame:frame->AsWeakPtr()
                                proactive:YES];
 }
 
@@ -424,34 +485,33 @@ void AutofillBottomSheetTabHelper::AttachPasswordListeners(
     return;
   }
 
-  AttachListeners(renderer_ids, registered_password_renderer_ids_[frame_id],
-                  frame_id, /*allow_autofocus=*/true, /*only_new=*/true);
+  AttachListeners(renderer_ids, registered_password_renderer_ids_, frame_id,
+                  /*allow_autofocus=*/true, /*only_new=*/true);
 }
 
 void AutofillBottomSheetTabHelper::AttachPasswordGenerationListeners(
     const std::vector<autofill::FieldRendererId>& renderer_ids,
     const std::string& frame_id) {
-  // Verify that the proactive password generation bottom sheet feature is
-  // enabled and that it hasn't been dismissed too many times.
-  if (!base::FeatureList::IsEnabled(
-          password_manager::features::
-              kIOSProactivePasswordGenerationBottomSheet) ||
-      HasReachedPasswordGenerationDismissLimit()) {
+  // Verify that the proactive password generation bottom sheet hasn't been
+  // dismissed too many times.
+  if (HasReachedPasswordGenerationDismissLimit()) {
     return;
   }
 
-  AttachListeners(renderer_ids,
-                  registered_password_generation_renderer_ids_[frame_id],
+  AttachListeners(renderer_ids, registered_password_generation_renderer_ids_,
                   frame_id, /*allow_autofocus=*/true, /*only_new=*/true);
 }
 
 void AutofillBottomSheetTabHelper::AttachListeners(
     const std::vector<autofill::FieldRendererId>& renderer_ids,
-    std::set<autofill::FieldRendererId>& registered_renderer_ids,
+    std::map<std::string, std::set<autofill::FieldRendererId>>&
+        registered_renderer_ids_by_frame,
     const std::string& frame_id,
     bool allow_autofocus,
     bool only_new) {
-  if (!web_state_) {
+  // Skip frame lookup and avoid inserting empty map entries when `web_state_`
+  // was destroyed or there are no fields to observe.
+  if (!web_state_ || renderer_ids.empty()) {
     return;
   }
 
@@ -461,8 +521,13 @@ void AutofillBottomSheetTabHelper::AttachListeners(
 
   web::WebFrame* frame = webFramesManager->GetFrameWithId(frame_id);
   if (!frame) {
+    // Frame may have detached before async form or credential predictions
+    // completed; avoid inserting an empty map entry for a gone frame.
     return;
   }
+
+  std::set<autofill::FieldRendererId>& registered_renderer_ids =
+      registered_renderer_ids_by_frame[frame_id];
 
   // Transfer the renderer IDs to a set so that they are sorted and unique.
   std::set<autofill::FieldRendererId> sorted_renderer_ids(renderer_ids.begin(),
@@ -497,17 +562,16 @@ void AutofillBottomSheetTabHelper::AttachListeners(
 void AutofillBottomSheetTabHelper::DetachPasswordListeners(
     const std::string& frame_id,
     bool refocus) {
-  if (!web_state_) {
+  auto it = registered_password_renderer_ids_.find(frame_id);
+  if (it == registered_password_renderer_ids_.end()) {
+    // Password queries invoke this even on frames that never attached password
+    // listeners. Avoid inserting an empty map entry; `DetachListenersForFrame`
+    // will only run JS if `refocus` is true.
+    DetachListenersForFrame(frame_id, /*renderer_ids=*/{}, refocus);
     return;
   }
 
-  web::WebFramesManager* webFramesManager =
-      AutofillBottomSheetJavaScriptFeature::GetInstance()->GetWebFramesManager(
-          web_state_);
-  web::WebFrame* frame = webFramesManager->GetFrameWithId(frame_id);
-
-  AutofillBottomSheetJavaScriptFeature::GetInstance()->DetachListeners(
-      registered_password_renderer_ids_[frame_id], frame, refocus);
+  DetachListenersForFrame(frame_id, it->second, refocus);
 }
 
 void AutofillBottomSheetTabHelper::DetachPasswordListenersForAllFrames(
@@ -520,13 +584,6 @@ void AutofillBottomSheetTabHelper::DetachPasswordListenersForAllFrames(
 
 void AutofillBottomSheetTabHelper::
     DetachPasswordGenerationListenersForAllFrames() {
-  // Verify that the password generation bottom sheet feature is enabled.
-  if (!base::FeatureList::IsEnabled(
-          password_manager::features::
-              kIOSProactivePasswordGenerationBottomSheet)) {
-    return;
-  }
-
   for (auto& registered_renderer_ids :
        registered_password_generation_renderer_ids_) {
     DetachListenersForFrame(registered_renderer_ids.first,
@@ -534,27 +591,10 @@ void AutofillBottomSheetTabHelper::
   }
 }
 
-void AutofillBottomSheetTabHelper::DetachPaymentsListeners(
-    const std::string& frame_id,
-    bool refocus) {
-  if (!web_state_) {
-    return;
-  }
-
-  web::WebFramesManager* webFramesManager =
-      AutofillBottomSheetJavaScriptFeature::GetInstance()->GetWebFramesManager(
-          web_state_);
-  web::WebFrame* frame = webFramesManager->GetFrameWithId(frame_id);
-
-  AutofillBottomSheetJavaScriptFeature::GetInstance()->DetachListeners(
-      registered_payments_renderer_ids_[frame_id], frame, refocus);
-}
-
-void AutofillBottomSheetTabHelper::DetachPaymentsListenersForAllFrames(
-    bool refocus) {
+void AutofillBottomSheetTabHelper::DetachPaymentsListenersForAllFrames() {
   for (auto& registered_renderer_ids : registered_payments_renderer_ids_) {
     DetachListenersForFrame(registered_renderer_ids.first,
-                            registered_renderer_ids.second, refocus);
+                            registered_renderer_ids.second, /*refocus=*/false);
   }
 }
 
@@ -570,7 +610,9 @@ void AutofillBottomSheetTabHelper::DetachListenersForFrame(
     const std::string& frame_id,
     const std::set<autofill::FieldRendererId>& renderer_ids,
     bool refocus) {
-  if (!web_state_) {
+  // Skip frame lookup and JS evaluation when `web_state_` was destroyed, or
+  // when there are no listeners to detach and refocusing is not requested.
+  if (!web_state_ || (renderer_ids.empty() && !refocus)) {
     return;
   }
 
@@ -578,6 +620,12 @@ void AutofillBottomSheetTabHelper::DetachListenersForFrame(
       AutofillBottomSheetJavaScriptFeature::GetInstance()->GetWebFramesManager(
           web_state_);
   web::WebFrame* frame = webFramesManager->GetFrameWithId(frame_id);
+  if (!frame) {
+    // External or async callers may pass a stale `frame_id` whose frame has
+    // already detached, leaving no DOM listeners to detach and no per-frame
+    // `lastBlurredElement_` to refocus.
+    return;
+  }
   AutofillBottomSheetJavaScriptFeature::GetInstance()->DetachListeners(
       renderer_ids, frame, refocus);
 }
@@ -617,16 +665,50 @@ void AutofillBottomSheetTabHelper::RefocusElementIfNeeded(
                  web_state_->GetWeakPtr()));
 }
 
-// WebStateObserver
+void AutofillBottomSheetTabHelper::CancelPendingSuggestionRequests() {
+  suggestion_request_weak_factory_.InvalidateWeakPtrs();
+}
 
-void AutofillBottomSheetTabHelper::DidFinishNavigation(
+// WebStateObserver:
+
+void AutofillBottomSheetTabHelper::WasShown(web::WebState* web_state) {
+  pending_prompt_manager_->WasShown(web_state);
+}
+
+void AutofillBottomSheetTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
+  CHECK(navigation_context);
   if (navigation_context->IsSameDocument()) {
     return;
   }
 
-  // Clear all registered renderer ids
+  CancelPendingSuggestionRequests();
+}
+
+void AutofillBottomSheetTabHelper::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  CHECK(navigation_context);
+  pending_prompt_manager_->DidFinishNavigation(web_state, navigation_context);
+  if (navigation_context->IsSameDocument() ||
+      !navigation_context->HasCommitted()) {
+    return;
+  }
+
+  CancelPendingSuggestionRequests();
+
+  // Clear all registered renderer IDs.
+  registered_password_renderer_ids_.clear();
+  registered_payments_renderer_ids_.clear();
+  registered_password_generation_renderer_ids_.clear();
+  registered_ambient_renderer_ids_.clear();
+}
+
+void AutofillBottomSheetTabHelper::RenderProcessGone(web::WebState* web_state) {
+  CancelPendingSuggestionRequests();
+
+  // Clear all registered renderer IDs.
   registered_password_renderer_ids_.clear();
   registered_payments_renderer_ids_.clear();
   registered_password_generation_renderer_ids_.clear();
@@ -634,6 +716,8 @@ void AutofillBottomSheetTabHelper::DidFinishNavigation(
 }
 
 void AutofillBottomSheetTabHelper::WebStateDestroyed(web::WebState* web_state) {
+  pending_prompt_manager_->WebStateDestroyed(web_state);
+  CancelPendingSuggestionRequests();
   web_state->RemoveObserver(this);
   frames_manager_observation_.Reset();
   web_state_ = nullptr;
@@ -649,6 +733,17 @@ void AutofillBottomSheetTabHelper::WebFrameBecameAvailable(
     return;
   }
   autofill_manager_observations_.AddObservation(&driver->GetAutofillManager());
+}
+
+void AutofillBottomSheetTabHelper::WebFrameBecameUnavailable(
+    web::WebFramesManager* web_frames_manager,
+    const std::string& frame_id) {
+  // Drop tracked renderer IDs for detached or navigated frames; the frame's DOM
+  // is already being torn down, so no JavaScript detach call is needed.
+  registered_password_renderer_ids_.erase(frame_id);
+  registered_payments_renderer_ids_.erase(frame_id);
+  registered_ambient_renderer_ids_.erase(frame_id);
+  registered_password_generation_renderer_ids_.erase(frame_id);
 }
 
 // autofill::AutofillManager::Observer
@@ -719,14 +814,22 @@ void AutofillBottomSheetTabHelper::UpdateListenersForPaymentsForm(
   if (UseListenersInvalidation()) {
     for (const auto& [frame, renderer_ids] : fields_to_detach_by_frame) {
       std::string renderer_form_frame_id = base::ToLowerASCII(frame.ToString());
-      auto& registered_ids =
-          registered_payments_renderer_ids_[renderer_form_frame_id];
+      auto it = registered_payments_renderer_ids_.find(renderer_form_frame_id);
+      if (it == registered_payments_renderer_ids_.end()) {
+        // Skip frames that never registered payments listeners to avoid
+        // inserting empty map entries.
+        continue;
+      }
+      auto& registered_ids = it->second;
       std::set<autofill::FieldRendererId> ids_to_detach;
       for (auto id : renderer_ids) {
         if (registered_ids.contains(id)) {
           ids_to_detach.insert(id);
           registered_ids.erase(id);
         }
+      }
+      if (registered_ids.empty()) {
+        registered_payments_renderer_ids_.erase(it);
       }
       if (!ids_to_detach.empty()) {
         DetachListenersForFrame(renderer_form_frame_id, ids_to_detach,
@@ -737,8 +840,7 @@ void AutofillBottomSheetTabHelper::UpdateListenersForPaymentsForm(
 
   for (const auto& [frame, renderer_ids] : fields_to_attach_by_frame) {
     std::string renderer_form_frame_id = base::ToLowerASCII(frame.ToString());
-    AttachListeners(renderer_ids,
-                    registered_payments_renderer_ids_[renderer_form_frame_id],
+    AttachListeners(renderer_ids, registered_payments_renderer_ids_,
                     renderer_form_frame_id,
                     /*allow_autofocus=*/false, only_new);
   }
@@ -786,9 +888,9 @@ void AutofillBottomSheetTabHelper::UpdateListenersForAmbientAutofillForm(
 
   for (const auto& [frame, renderer_ids] : fields_to_attach_by_frame) {
     std::string renderer_form_frame_id = base::ToLowerASCII(frame.ToString());
-    AttachListeners(
-        renderer_ids, registered_ambient_renderer_ids_[renderer_form_frame_id],
-        renderer_form_frame_id, /*allow_autofocus=*/false, only_new);
+    AttachListeners(renderer_ids, registered_ambient_renderer_ids_,
+                    renderer_form_frame_id, /*allow_autofocus=*/false,
+                    only_new);
   }
 }
 
@@ -807,9 +909,19 @@ AutofillBottomSheetTabHelper::
   return std::move(card_unmask_authentication_selection_controller_);
 }
 
-std::unique_ptr<autofill::SaveCardBottomSheetModel>
+const autofill::SaveCardBottomSheetModel*
+AutofillBottomSheetTabHelper::GetSaveCardBottomSheetModel() const {
+  return pending_prompt_manager_->GetSaveCardPromptModel();
+}
+
+autofill::SaveCardBottomSheetModel*
 AutofillBottomSheetTabHelper::GetSaveCardBottomSheetModel() {
-  return std::move(save_card_bottom_sheet_model_);
+  return pending_prompt_manager_->GetSaveCardPromptModel();
+}
+
+std::unique_ptr<autofill::SaveCardBottomSheetModel>
+AutofillBottomSheetTabHelper::TakeSaveCardBottomSheetModel() {
+  return pending_prompt_manager_->TakeSaveCardPromptModel();
 }
 
 autofill::VirtualCardEnrollmentCallbacks

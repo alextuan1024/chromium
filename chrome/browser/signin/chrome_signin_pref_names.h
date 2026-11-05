@@ -12,21 +12,6 @@ namespace prefs {
 inline constexpr char kProfileCreationInterceptionDeclined[] =
     "signin.ProfileCreationInterceptionDeclinedPref";
 
-// Integer pref to store the number of times the password bubble signin promo
-// has been shown per profile while the user is signed out.
-inline constexpr char kPasswordSignInPromoShownCountPerProfile[] =
-    "signin.PasswordSignInPromoShownCount";
-
-// Integer pref to store the number of times the address bubble signin promo
-// has been shown per profile while the user is signed out.
-inline constexpr char kAddressSignInPromoShownCountPerProfile[] =
-    "signin.AddressSignInPromoShownCount";
-
-// Integer pref to store the number of times the bookmark bubble signin promo
-// has been shown per profile while the user is signed out.
-inline constexpr char kBookmarkSignInPromoShownCountPerProfile[] =
-    "signin.BookmarkSignInPromoShownCount";
-
 // A timestamp of the last time the history sync promo was dismissed.
 inline constexpr char
     kHistoryPageHistorySyncPromoLastDismissedTimestampPerProfile[] =
@@ -49,24 +34,6 @@ inline constexpr char kHistoryPageHistorySyncPromoShownCountPerProfile[] =
 inline constexpr char kAutofillSignInPromoDismissCountPerProfile[] =
     "signin.AutofillSignInPromoDismissCount";
 
-// Integer pref to store the number of times any address bubble signin promo
-// has been dismissed per profile while the user is signed out.
-inline constexpr char
-    kAddressSignInPromoDismissCountPerProfileForLimitsExperiment[] =
-        "signin.AddressSignInPromoDismissCountForLimitsExperiment";
-
-// Integer pref to store the number of times the password bubble signin promo
-// has been dismissed per profile while the user is signed out.
-inline constexpr char
-    kPasswordSignInPromoDismissCountPerProfileForLimitsExperiment[] =
-        "signin.PasswordSignInPromoDismissCountForLimitsExperiment";
-
-// Integer pref to store the number of times the bookmark bubble signin promo
-// has been dismissed per profile while the user is signed out.
-inline constexpr char
-    kBookmarkSignInPromoDismissCountPerProfileForLimitsExperiment[] =
-        "signin.BookmarkSignInPromoDismissCountForLimitsExperiment";
-
 // Integer pref to store the number of times the Search AI Mode bubble signin
 // promo has been shown per profile while the user is signed out.
 inline constexpr char kSearchAIModeSignInPromoShownCountPerProfile[] =
@@ -82,6 +49,11 @@ inline constexpr char kSearchAIModeSignInPromoDismissCountPerProfile[] =
 inline constexpr char
     kSearchAIModeSignInPromoLastImpressionTimestampPerProfile[] =
         "signin.SearchAIModeSignInPromoLastImpressionTimestamp";
+
+// Dictionary pref to store Desktop Smart Account Switching promo global
+// throttling state (ignore/dismissal cooldowns and caps).
+inline constexpr char kAccountSwitchingPromoState[] =
+    "signin.account_switching_promo_state";
 
 }  // namespace prefs
 

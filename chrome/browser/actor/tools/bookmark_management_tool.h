@@ -9,7 +9,6 @@
 #include <string>
 
 #include "chrome/browser/actor/tools/tool.h"
-#include "components/tabs/public/tab_interface.h"
 #include "url/gurl.h"
 
 namespace actor {
@@ -34,14 +33,14 @@ class BookmarkManagementTool : public Tool {
   ~BookmarkManagementTool() override;
 
   // Tool:
-  void Validate(ToolCallback callback) override;
-  void Invoke(ToolCallback callback) override;
+  void Validate(DeprecatedToolCallback callback) override;
+  void Invoke(DeprecatedToolCallback callback) override;
   std::string DebugString() const override;
   std::string JournalEvent() const override;
+  ActorSurfaceHandle GetTargetActorSurface() const override;
   std::unique_ptr<ObservationDelayController> GetObservationDelayer(
       ObservationDelayController::PageStabilityConfig page_stability_config)
       override;
-  tabs::TabHandle GetTargetTab() const override;
 
  private:
   const Action action_;

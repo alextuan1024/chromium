@@ -7,6 +7,7 @@
 
 #import <Foundation/Foundation.h>
 
+@class CrURL;
 @class TableViewItem;
 
 // Defines the presentation and behavioral mode of the view controller.
@@ -20,8 +21,8 @@ enum class AutofillAIEntityEditMode {
 // The consumer of the Autofill AI entity view and edit mediator.
 @protocol AutofillAIEntityEditConsumer <NSObject>
 
-// The mode in which this consumer operates.
-@property(nonatomic, assign) AutofillAIEntityEditMode mode;
+// Sets the mode in which this consumer operates.
+- (void)setMode:(AutofillAIEntityEditMode)mode;
 
 // Sets the title of the view.
 - (void)setTitle:(NSString*)title;
@@ -35,8 +36,9 @@ enum class AutofillAIEntityEditMode {
 // Sets whether the entity being viewed is a server wallet item.
 - (void)setIsServerWalletItem:(BOOL)isServerWalletItem;
 
-// Sets the user email.
-- (void)setUserEmail:(NSString*)userEmail;
+// Sets the footer text (with "BEGIN_LINK"/"END_LINK" delimiters) and the
+// corresponding tappable link URLs.
+- (void)setFooterText:(NSString*)footerText urls:(NSArray<CrURL*>*)urls;
 
 // Updates the given item.
 - (void)updateItem:(TableViewItem*)item;

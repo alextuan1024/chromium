@@ -24,8 +24,8 @@
 
 class AccountStateFetcher;
 class Profile;
-class TurnSyncOnHelperPolicyFetchTracker;
 class ProfileManagementDisclaimerService;
+class SigninPolicyFetchTracker;
 
 namespace signin {
 class IdentityManager;
@@ -41,8 +41,7 @@ BASE_DECLARE_FEATURE(kEnableAwaitSyncServiceStartupOnHistorySync);
 // Helper class to track the state of the SyncService.
 // Executes a callback when the SyncService's state is no longer pending. The
 // right implementation of the class is chosen based on the state of the
-// `syncer::kEnableAwaitSyncServiceStartup` and
-// `syncer::kReplaceSyncPromosWithSignInPromos` feature flags.
+// `syncer::kEnableAwaitSyncServiceStartup` feature flag.
 // TODO(crbug.com/483991595): When the history sync helper becomes the only
 // consumer of this class make it private and simplify the histogram
 // recording logic.
@@ -102,7 +101,7 @@ class HistorySyncOptinPolicyHelper {
   // Callback executed when the policies are fetched.
   base::OnceCallback<void(bool)> on_register_for_policies_callback_;
   base::OnceClosure on_policies_fetched_callback_;
-  std::unique_ptr<TurnSyncOnHelperPolicyFetchTracker> policy_fetch_tracker_;
+  std::unique_ptr<SigninPolicyFetchTracker> policy_fetch_tracker_;
   base::WeakPtrFactory<HistorySyncOptinPolicyHelper> weak_ptr_factory_{this};
 };
 
@@ -159,6 +158,7 @@ class HistorySyncOptinHelper {
    public:
     // Called when the HistorySyncOptinHelper completes its flow.
     virtual void OnHistorySyncOptinHelperFlowFinished() {}
+
    protected:
     ~Observer() override = default;
   };
@@ -188,6 +188,14 @@ class HistorySyncOptinHelper {
       const AccountInfo& account_info,
       Delegate* delegate,
       LaunchContext launch_context,
+      signin_metrics::AccessPoint access_point);
+
+  static void RecordMetricsForHistorySyncStarted(
+      signin_metrics::AccessPoint access_point);
+
+  static void RecordMetricsForHistorySyncUserChoice(
+      ScreenChoiceResult user_choice,
+      Profile* profile,
       signin_metrics::AccessPoint access_point);
 
   virtual ~HistorySyncOptinHelper();
@@ -231,6 +239,11 @@ class HistorySyncOptinHelper {
   // Virtual methods for context-specific logic.
   virtual void DetermineManagementStatusAndShowManagementScreens() = 0;
   virtual base::TimeDelta GetSyncStartupDelay() = 0;
+  // Shows the sign-in celebration if the context has one for this flow. In all
+  // cases, the flow then continues with
+  // `AwaitSyncStartupAndShowHistorySyncScreen()`.
+  virtual void MaybeShowSignInCelebration(
+      signin::Tribool maybe_managed_account) = 0;
 
   void ShowHistorySyncOptinScreen();
 
@@ -242,8 +255,6 @@ class HistorySyncOptinHelper {
       HistorySyncSkipReason skip_reason);
 
   void AwaitSyncStartupAndShowHistorySyncScreen();
-
-  void MaybeShowSignInCelebration(signin::Tribool maybe_managed_account);
 
   // Accessors.
   Profile* profile() { return profile_.get(); }
@@ -259,7 +270,6 @@ class HistorySyncOptinHelper {
       ManagementStatusState::kManagementDisclaimerNotStarted;
 
  private:
-
   base::ObserverList<Observer> observers_;
   const raw_ptr<Profile> profile_;
   const CoreAccountInfo account_info_;
@@ -295,6 +305,8 @@ class HistorySyncOptinHelperInBrowser : public HistorySyncOptinHelper {
   // HistorySyncOptinHelper implementation:
   void DetermineManagementStatusAndShowManagementScreens() override;
   base::TimeDelta GetSyncStartupDelay() override;
+  void MaybeShowSignInCelebration(
+      signin::Tribool maybe_managed_account) override;
 
   void OnManagementAccepted(Profile* chosen_profile,
                             bool management_required_by_policy);
@@ -324,6 +336,8 @@ class HistorySyncOptinHelperInProfilePicker : public HistorySyncOptinHelper {
   // HistorySyncOptinHelper implementation:
   void DetermineManagementStatusAndShowManagementScreens() override;
   base::TimeDelta GetSyncStartupDelay() override;
+  void MaybeShowSignInCelebration(
+      signin::Tribool maybe_managed_account) override;
 
   void MaybeShowAccountManagementScreen(bool is_managed_account);
   void ShowAccountManagementScreen();

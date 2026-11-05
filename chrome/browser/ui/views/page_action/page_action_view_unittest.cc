@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
@@ -25,6 +27,7 @@
 #include "chrome/browser/ui/page_action/test_support/mock_page_action_model.h"
 #include "chrome/browser/ui/page_action/test_support/test_page_action_properties_provider.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view_params.h"
 #include "chrome/grit/generated_resources.h"
@@ -45,13 +48,21 @@
 #include "ui/events/test/test_event.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/gfx/image/image_unittest_util.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/actions/action_view_controller.h"
 #include "ui/views/animation/ink_drop.h"
+#include "ui/views/animation/widget_fade_animator.h"
 #include "ui/views/background.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
+#include "ui/views/layout/flex_layout.h"
 #include "ui/views/test/ax_event_counter.h"
+#include "ui/views/test/widget_test.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
 
 namespace page_actions {
@@ -113,19 +124,26 @@ class PageActionViewWithControllerTest : public ChromeViewsTestBase {
             .SetActionId(kTestPageActionId)
             .SetImage(image)
             .Build());
-    test_page_action_view_ = std::make_unique<PageActionView>(
-        action_item_,
-        PageActionViewParams{
-            .icon_size = kDefaultIconSize,
-            .icon_label_bubble_delegate = &icon_label_view_delegate_,
-        },
-        PageActionIconType::kLensOverlay, ui::ElementIdentifier());
+    widget_ = CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+    widget_->SetBounds(gfx::Rect(0, 0, 800, 600));
+    widget_->Show();
+
+    test_page_action_view_ =
+        widget_->SetContentsView(std::make_unique<PageActionView>(
+            action_item_,
+            PageActionViewParams{
+                .icon_size = kDefaultIconSize,
+                .icon_label_bubble_delegate = &icon_label_view_delegate_,
+            },
+            PageActionIconType::kLensOverlay, ui::ElementIdentifier()));
 
     pinned_actions_model_ =
         std::make_unique<PinnedToolbarActionsModel>(&profile_);
   }
 
   void TearDown() override {
+    test_page_action_view_ = nullptr;
+    widget_.reset();
     ChromeViewsTestBase::TearDown();
     action_item_ = nullptr;
     actions::ActionManager::Get().ResetActions();
@@ -148,7 +166,8 @@ class PageActionViewWithControllerTest : public ChromeViewsTestBase {
   TestingProfile profile_;
 
  private:
-  std::unique_ptr<PageActionView> test_page_action_view_;
+  std::unique_ptr<views::Widget> widget_;
+  raw_ptr<PageActionView> test_page_action_view_;
   raw_ptr<actions::ActionItem> action_item_;
 
   testing::NiceMock<MockIconLabelViewDelegate> icon_label_view_delegate_;
@@ -214,6 +233,22 @@ class PageActionViewTest : public ChromeViewsTestBase {
   int view_icon_size() const { return view_icon_size_; }
   views::Widget* widget() { return widget_.get(); }
 
+  AnchoredMessageBubbleView* ShowTestAnchoredMessage() {
+    EXPECT_CALL(mock_model_, GetVisible()).WillRepeatedly(Return(true));
+    EXPECT_CALL(mock_model_, ShouldShowAnchoredMessage())
+        .WillRepeatedly(Return(true));
+    EXPECT_CALL(mock_model_, GetAnchoredMessageText())
+        .WillRepeatedly(ReturnRef(mock_string_));
+    EXPECT_CALL(mock_model_, GetAnchoredMessageIcon())
+        .WillRepeatedly(ReturnRef(no_anchored_message_icon_));
+    EXPECT_CALL(mock_model_, GetAnchoredMessageExpandableContent())
+        .WillRepeatedly(ReturnRef(no_expandable_content_));
+    EXPECT_CALL(mock_model_, GetAnchoredMessageActionIconType())
+        .WillRepeatedly(Return(AnchoredMessageActionIconType::kNone));
+    page_action_view_->OnPageActionModelChanged(mock_model_);
+    return page_action_view_->GetAnchoredMessageForTesting();
+  }
+
  protected:
   testing::NiceMock<MockIconLabelViewDelegate> icon_label_view_delegate_;
 
@@ -236,6 +271,8 @@ class PageActionViewTest : public ChromeViewsTestBase {
       ui::kColorSysPrimary,
       kDefaultIconSize);
   std::u16string mock_string_ = kTestText;
+  std::optional<ui::ImageModel> no_anchored_message_icon_;
+  std::optional<AnchoredMessageExpandableContent> no_expandable_content_;
 
   const int view_icon_size_ = kDefaultIconSize;
 };
@@ -306,27 +343,101 @@ TEST_F(PageActionViewWithControllerTest, NoActiveController) {
   EXPECT_FALSE(view->GetVisible());
 }
 
+TEST_F(PageActionViewWithControllerTest,
+       AnchoredMessagePersistsOnSameActiveController) {
+  AlwaysActiveTabInterface tab_a;
+  AlwaysActiveTabInterface tab_b;
+  auto controller_a = NewPageActionController(tab_a);
+  auto controller_b = NewPageActionController(tab_b);
+
+  actions::ActionItem* item = action_item();
+  item->SetEnabled(true);
+  item->SetVisible(true);
+  item->SetText(kTestText);
+
+  PageActionView* view = page_action_view();
+  view->OnNewActiveController(controller_a.get());
+  controller_a->Show(kTestPageActionId);
+  controller_a->SetAnchoredMessageText(kTestPageActionId, kTestText);
+  controller_a->ShowAnchoredMessage(kTestPageActionId, {});
+
+  AnchoredMessageBubbleView* bubble = view->GetAnchoredMessageForTesting();
+  ASSERT_TRUE(bubble);
+  EXPECT_TRUE(view->IsAnchoredMessageVisible());
+
+  view->OnNewActiveController(controller_a.get());
+  EXPECT_TRUE(view->IsAnchoredMessageVisible());
+  ASSERT_EQ(view->GetAnchoredMessageForTesting(), bubble);
+
+  views::test::WidgetDestroyedWaiter destroyed_waiter(bubble->GetWidget());
+  view->OnNewActiveController(controller_b.get());
+  EXPECT_FALSE(view->GetAnchoredMessageForTesting());
+  destroyed_waiter.Wait();
+}
+
 // Verifies that if an animation ends after the active controller has
 // been reset to nullptr, the deferred task does not crash.
-TEST_F(PageActionViewTest, AnimationEndedAfterControllerResetDoesNotCrash) {
-  EXPECT_CALL(*model(), GetVisible()).WillRepeatedly(Return(true));
-  EXPECT_CALL(*model(), ShouldShowSuggestionChip())
-      .WillRepeatedly(Return(true));
-  EXPECT_CALL(*model(), GetText()).WillRepeatedly(ReturnRef(kTestText));
-  page_action_view()->OnPageActionModelChanged(*model());
-  EXPECT_TRUE(page_action_view()->GetVisible());
-  EXPECT_TRUE(page_action_view()->IsChipVisible());
+TEST_F(PageActionViewWithControllerTest,
+       AnimationEndedAfterControllerResetDoesNotCrash) {
+  AlwaysActiveTabInterface tab(&profile_);
+  auto controller = NewPageActionController(tab);
 
-  page_action_view()->OnNewActiveController(nullptr);
-  EXPECT_FALSE(page_action_view()->GetVisible());
+  actions::ActionItem* item = action_item();
+  item->SetEnabled(true);
+  item->SetVisible(true);
+  item->SetText(kTestText);
 
-  page_action_view()->AnimationEnded(nullptr);
+  PageActionView* view = page_action_view();
+  view->OnNewActiveController(controller.get());
+  controller->Show(kTestPageActionId);
+  controller->ShowSuggestionChip(kTestPageActionId, {.should_animate = false});
+  EXPECT_TRUE(view->GetVisible());
+  EXPECT_TRUE(view->IsChipVisible());
+
+  view->OnNewActiveController(nullptr);
+  EXPECT_FALSE(view->GetVisible());
+
+  view->AnimationEnded(nullptr);
 
   // Post a callback to the same sequence.
   base::test::TestFuture<void> future;
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, future.GetCallback());
   EXPECT_TRUE(future.Wait());
+}
+
+TEST_F(PageActionViewWithControllerTest,
+       HiddenAnchoredMessageClosesOnControllerChange) {
+  gfx::ScopedAnimationDurationScaleMode non_zero(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+
+  FakeTabInterface tab(&profile_);
+  tab.Activate();
+  auto controller = NewPageActionController(tab);
+
+  actions::ActionItem* item = action_item();
+  item->SetEnabled(true);
+  item->SetVisible(true);
+  item->SetText(kTestText);
+
+  PageActionView* view = page_action_view();
+  view->OnNewActiveController(controller.get());
+  controller->Show(kTestPageActionId);
+  controller->SetAnchoredMessageText(kTestPageActionId, kTestText);
+  controller->ShowAnchoredMessage(kTestPageActionId, {});
+
+  AnchoredMessageBubbleView* bubble = view->GetAnchoredMessageForTesting();
+  ASSERT_TRUE(bubble);
+  views::test::WidgetDestroyedWaiter destroyed_waiter(bubble->GetWidget());
+
+  // Simulates the tab being deactivated while the message should still show.
+  tab.Deactivate();
+  EXPECT_FALSE(view->IsAnchoredMessageVisible());
+  EXPECT_EQ(view->GetAnchoredMessageForTesting(), bubble);
+
+  view->OnNewActiveController(nullptr);
+  EXPECT_FALSE(view->GetAnchoredMessageForTesting());
+  destroyed_waiter.Wait();
 }
 
 TEST_F(PageActionViewTest, Visibility) {
@@ -394,6 +505,63 @@ TEST_F(PageActionViewTest, ChipStateUpdatesForegroundColor) {
       page_action_view()->GetColorProvider()->GetColor(
           kColorOmniboxIconForegroundTonal);
   EXPECT_EQ(page_action_view()->GetCurrentTextColor(), expected_color);
+}
+
+// `SetEnabled(false)` paints the same visual state as an inactive Mac window.
+TEST_F(PageActionViewTest, ChipProvidesInactiveColors) {
+  const auto icon_image = ui::ImageModel::FromVectorIcon(
+      vector_icons::kBackArrowOldIcon, ui::kColorSysPrimary, view_icon_size());
+  EXPECT_CALL(*model(), GetImage()).WillRepeatedly(ReturnRef(icon_image));
+  EXPECT_CALL(*model(), GetVisible()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*model(), ShouldShowSuggestionChip())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*model(), GetText()).WillRepeatedly(ReturnRef(kTestText));
+  page_action_view()->OnPageActionModelChanged(*model());
+  ASSERT_TRUE(page_action_view()->IsChipVisible());
+
+  EXPECT_EQ(page_action_view()->GetImageModel(views::Button::STATE_DISABLED),
+            ui::ImageModel::FromVectorIcon(
+                vector_icons::kBackArrowOldIcon,
+                kColorOmniboxIconForegroundTonalInactive, view_icon_size()));
+  page_action_view()->SetEnabled(false);
+  EXPECT_EQ(page_action_view()->GetCurrentTextColor(),
+            page_action_view()->GetColorProvider()->GetColor(
+                kColorOmniboxIconForegroundTonalInactive));
+}
+
+// `SetEnabled(false)` paints the same visual state as an inactive Mac window.
+TEST_F(PageActionViewTest, IconProvidesInactiveColors) {
+  const auto icon_image = ui::ImageModel::FromVectorIcon(
+      vector_icons::kBackArrowOldIcon, ui::kColorSysPrimary, view_icon_size());
+  EXPECT_CALL(*model(), GetImage()).WillRepeatedly(ReturnRef(icon_image));
+  EXPECT_CALL(*model(), GetVisible()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*model(), ShouldShowSuggestionChip())
+      .WillRepeatedly(Return(false));
+  page_action_view()->OnPageActionModelChanged(*model());
+  ASSERT_FALSE(page_action_view()->IsChipVisible());
+
+  EXPECT_EQ(page_action_view()->GetImageModel(views::Button::STATE_DISABLED),
+            ui::ImageModel::FromVectorIcon(vector_icons::kBackArrowOldIcon,
+                                           kColorOmniboxActionIconInactive,
+                                           view_icon_size()));
+  page_action_view()->SetEnabled(false);
+  EXPECT_EQ(page_action_view()->GetCurrentTextColor(),
+            page_action_view()->GetColorProvider()->GetColor(
+                kColorOmniboxActionIconInactive));
+}
+
+TEST_F(PageActionViewTest, NonVectorIconProvidesDisabledImage) {
+  const auto icon_image =
+      ui::ImageModel::FromImageSkia(gfx::test::CreateImageSkia(16));
+  EXPECT_CALL(*model(), GetImage()).WillRepeatedly(ReturnRef(icon_image));
+  EXPECT_CALL(*model(), GetVisible()).WillRepeatedly(Return(true));
+  page_action_view()->OnPageActionModelChanged(*model());
+
+  const std::optional<ui::ImageModel> disabled_image =
+      page_action_view()->GetImageModel(views::Button::STATE_DISABLED);
+  ASSERT_TRUE(disabled_image.has_value() && disabled_image->IsImage());
+  EXPECT_LT(SkColorGetA(disabled_image->GetImage().AsBitmap().getColor(0, 0)),
+            SK_AlphaOPAQUE);
 }
 
 TEST_F(PageActionViewTest, SuggestionText) {
@@ -801,6 +969,59 @@ TEST_F(PageActionViewTest, AnchoredMessageCreateBeforeAsyncDestroy) {
             page_action_view()->GetAnchoredMessageForTesting()->GetWidget());
 }
 
+TEST_F(PageActionViewTest, AnchoredMessageAnimation) {
+  gfx::ScopedAnimationDurationScaleMode non_zero(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+
+  AnchoredMessageBubbleView* bubble = ShowTestAnchoredMessage();
+  ASSERT_TRUE(bubble);
+  EXPECT_FALSE(bubble->GetBubbleFrameView()->layer());
+  views::WidgetFadeAnimator* fade_animator =
+      bubble->fade_animator_for_testing();
+  ASSERT_TRUE(fade_animator);
+  EXPECT_TRUE(fade_animator->IsFadingIn());
+  views::test::WidgetDestroyedWaiter destroyed_waiter(bubble->GetWidget());
+
+  EXPECT_CALL(*model(), ShouldShowAnchoredMessage())
+      .WillRepeatedly(Return(false));
+  page_action_view()->OnPageActionModelChanged(*model());
+
+  EXPECT_TRUE(fade_animator->IsFadingOut());
+  EXPECT_FALSE(page_action_view()->IsAnchoredMessageVisible());
+  EXPECT_EQ(page_action_view()->GetAnchoredMessageForTesting(), bubble);
+
+  gfx::AnimationContainerTestApi(fade_animator->container())
+      .IncrementTime(base::Milliseconds(150));
+  destroyed_waiter.Wait();
+  EXPECT_FALSE(page_action_view()->GetAnchoredMessageForTesting());
+}
+
+TEST_F(PageActionViewTest, AnchoredMessageAnimatesOutWhenPageActionHidden) {
+  gfx::ScopedAnimationDurationScaleMode non_zero(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+
+  AnchoredMessageBubbleView* bubble = ShowTestAnchoredMessage();
+  ASSERT_TRUE(bubble);
+  views::WidgetFadeAnimator* fade_animator =
+      bubble->fade_animator_for_testing();
+  ASSERT_TRUE(fade_animator);
+  views::Widget* bubble_widget = bubble->GetWidget();
+  views::test::WidgetDestroyedWaiter destroyed_waiter(bubble_widget);
+
+  EXPECT_CALL(*model(), GetVisible()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*model(), ShouldShowAnchoredMessage())
+      .WillRepeatedly(Return(false));
+  page_action_view()->OnPageActionModelChanged(*model());
+
+  EXPECT_FALSE(page_action_view()->IsAnchoredMessageVisible());
+  EXPECT_TRUE(bubble_widget->IsVisible());
+  EXPECT_TRUE(fade_animator->IsFadingOut());
+
+  gfx::AnimationContainerTestApi(fade_animator->container())
+      .IncrementTime(base::Milliseconds(150));
+  destroyed_waiter.Wait();
+}
+
 class PageActionViewTriggerTest : public PageActionViewTest {
  public:
   PageActionViewTriggerTest() = default;
@@ -862,8 +1083,15 @@ TEST_F(PageActionViewTriggerTest, PageActionGestureTriggerPropagation) {
   EXPECT_EQ(1, TotalTriggerCount());
 }
 
-TEST_F(PageActionViewTriggerTest, NoClickWhenAnchoredMessageVisible) {
+TEST_F(PageActionViewTriggerTest,
+       ClickWhenAnchoredMessageVisibleDowngradesWithoutTriggeringAction) {
+  base::MockCallback<base::RepeatingClosure> downgrade_callback;
+  page_action_view()->SetAnchoredMessageDowngradeCallback(
+      downgrade_callback.Get());
+
   EXPECT_CALL(*model(), GetVisible()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*model(), GetActionItemIsShowingBubble())
+      .WillRepeatedly(Return(false));
   EXPECT_CALL(*model(), ShouldShowAnchoredMessage())
       .WillRepeatedly(Return(true));
 
@@ -883,12 +1111,10 @@ TEST_F(PageActionViewTriggerTest, NoClickWhenAnchoredMessageVisible) {
   page_action_view()->OnPageActionModelChanged(*model());
   ASSERT_TRUE(page_action_view()->IsAnchoredMessageVisible());
 
-  page_action_view()->NotifyClick(
-      ui::test::TestEvent(EventType::kMousePressed));
+  EXPECT_CALL(downgrade_callback, Run()).Times(1);
+  views::test::InteractionTestUtilSimulatorViews::PressButton(
+      page_action_view(), ui::test::InteractionTestUtil::InputType::kMouse);
   EXPECT_EQ(0, TotalTriggerCount());
-
-  EXPECT_FALSE(page_action_view()->IsTriggerableEvent(
-      ui::test::TestEvent(EventType::kMousePressed)));
 }
 
 TEST_F(PageActionViewTriggerTest, PageActionTriggersOnKeyboardClick) {
@@ -1262,6 +1488,488 @@ TEST_F(PageActionViewTest, SlideAndCrossfadeAnimationPropagated) {
 
   EXPECT_EQ(page_action_view()->animation_style(),
             IconLabelBubbleView::AnimationStyle::kSlideAndCrossfade);
+}
+
+TEST_F(PageActionViewTest, DoesNotFlipNonVectorIconInRtl) {
+  EXPECT_CALL(*model(), GetVisible()).WillRepeatedly(Return(true));
+
+  // Vector icons should flip in RTL.
+  page_action_view()->OnPageActionModelChanged(*model());
+  EXPECT_TRUE(page_action_view()
+                  ->GetImageContainerView()
+                  ->GetFlipCanvasOnPaintForRTLUI());
+
+  // Non-vector (bitmap/favicon) icons should not flip in RTL.
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(kDefaultIconSize, kDefaultIconSize);
+  const ui::ImageModel bitmap_image =
+      ui::ImageModel::FromImage(gfx::Image::CreateFrom1xBitmap(bitmap));
+  EXPECT_CALL(*model(), GetImage()).WillRepeatedly(ReturnRef(bitmap_image));
+  page_action_view()->OnPageActionModelChanged(*model());
+  EXPECT_FALSE(page_action_view()
+                   ->GetImageContainerView()
+                   ->GetFlipCanvasOnPaintForRTLUI());
+
+  // Switching back to a vector icon should re-enable RTL flipping.
+  const ui::ImageModel vector_image = ui::ImageModel::FromVectorIcon(
+      vector_icons::kArrowBackIcon, ui::kColorSysPrimary, kDefaultIconSize);
+  EXPECT_CALL(*model(), GetImage()).WillRepeatedly(ReturnRef(vector_image));
+  page_action_view()->OnPageActionModelChanged(*model());
+  EXPECT_TRUE(page_action_view()
+                  ->GetImageContainerView()
+                  ->GetFlipCanvasOnPaintForRTLUI());
+}
+
+class PageActionViewVisibilityAnimationTest : public PageActionViewTest {
+ public:
+  void SetUp() override {
+    PageActionViewTest::SetUp();
+    normal_duration_.emplace(
+        gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+    reduced_motion_resetter_ =
+        gfx::AnimationTestApi::SetPrefersReducedMotionForTesting(false);
+    page_action_view()->GetVisibilityAnimationForTesting().SetSlideDuration(
+        kExtendedDuration);
+  }
+
+  void TearDown() override {
+    reduced_motion_resetter_.reset();
+    normal_duration_.reset();
+    PageActionViewTest::TearDown();
+  }
+
+  void UpdateModelVisibility(bool visible,
+                             bool should_animate = true,
+                             PageActionView* target = nullptr) {
+    ON_CALL(*model(), GetVisible()).WillByDefault(Return(visible));
+    ON_CALL(*model(), GetShouldAnimateVisibilityIn())
+        .WillByDefault(Return(should_animate));
+    ON_CALL(*model(), GetShouldAnimateVisibilityOut())
+        .WillByDefault(Return(should_animate));
+    (target ? target : page_action_view())->OnPageActionModelChanged(*model());
+  }
+
+  void StepVisibilityAnimation(double fraction,
+                               PageActionView* target = nullptr) {
+    gfx::AnimationTestApi anim_api(&(target ? target : page_action_view())
+                                        ->GetVisibilityAnimationForTesting());
+    const base::TimeTicks now = base::TimeTicks::Now();
+    anim_api.SetStartTime(now);
+    anim_api.Step(now + fraction * kExtendedDuration);
+  }
+
+ protected:
+  static constexpr base::TimeDelta kExtendedDuration = base::Hours(1);
+
+ private:
+  base::test::ScopedFeatureList feature_list_{
+      features::kPageActionsElevatedToolbar};
+  std::optional<gfx::ScopedAnimationDurationScaleMode> normal_duration_;
+  gfx::AnimationTestApi::PrefersReducedMotionResetter reduced_motion_resetter_;
+};
+
+TEST_F(PageActionViewVisibilityAnimationTest, VisibilityAnimateIn) {
+  auto container_widget =
+      CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  container_widget->SetBounds(gfx::Rect(0, 0, 800, 600));
+  container_widget->Show();
+  auto* container =
+      container_widget->SetContentsView(std::make_unique<views::View>())
+          ->AddChildView(std::make_unique<views::View>());
+  container->SetBounds(0, 0, 800, 600);
+  container->SetLayoutManager(std::make_unique<views::FlexLayout>())
+      ->SetMainAxisAlignment(views::LayoutAlignment::kEnd);
+  auto* view = container->AddChildView(std::make_unique<PageActionView>(
+      action_item(),
+      PageActionViewParams{
+          .icon_size = view_icon_size(),
+          .icon_insets = gfx::Insets(3),
+          .icon_label_bubble_delegate = &icon_label_view_delegate_},
+      PageActionIconType::kLensOverlay, ui::ElementIdentifier()));
+  view->SetModel(model());
+  view->GetVisibilityAnimationForTesting().SetSlideDuration(kExtendedDuration);
+
+  UpdateModelVisibility(/*visible=*/true, /*should_animate=*/false, view);
+  const int full_width = view->GetPreferredSize().width();
+  ASSERT_GT(full_width, 0);
+  UpdateModelVisibility(/*visible=*/false, /*should_animate=*/false, view);
+  ASSERT_FALSE(view->GetVisible());
+
+  base::MockCallback<PageActionView::VisibilityAnimationStartedCallback>
+      started_callback;
+  view->SetVisibilityAnimationStartedCallback(started_callback.Get());
+  EXPECT_CALL(started_callback, Run()).Times(1);
+
+  auto icon_x = [&]() {
+    return view->bounds().x() + view->GetImageContainerView()->bounds().x();
+  };
+
+  UpdateModelVisibility(/*visible=*/true, /*should_animate=*/true, view);
+  container_widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(view->GetVisible());
+  EXPECT_TRUE(view->GetDeclaredVisible());
+  EXPECT_TRUE(view->GetEnabled());
+  EXPECT_FALSE(view->GetViewAccessibility().GetIsIgnored());
+  EXPECT_TRUE(view->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_EQ(view->GetPreferredSize().width(), 1);
+  EXPECT_EQ(view->GetMinimumSize().width(), 1);
+  ASSERT_NE(view->layer(), nullptr);
+  EXPECT_FLOAT_EQ(view->layer()->opacity(), 0.0f);
+  const int start_icon_x = icon_x();
+
+  StepVisibilityAnimation(0.5, view);
+  container_widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(view->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_GT(view->GetPreferredSize().width(), 1);
+  EXPECT_LT(view->GetPreferredSize().width(), full_width);
+  EXPECT_EQ(view->GetMinimumSize().width(), view->GetPreferredSize().width());
+  EXPECT_GT(view->layer()->opacity(), 0.0f);
+  EXPECT_LT(view->layer()->opacity(), 1.0f);
+  const int mid_icon_x = icon_x();
+  EXPECT_LT(mid_icon_x, start_icon_x);
+
+  // A concurrent model update must not snap a running entrance to full width.
+  UpdateModelVisibility(/*visible=*/true, /*should_animate=*/false, view);
+  container_widget->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(view->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_LT(view->bounds().width(), full_width);
+
+  StepVisibilityAnimation(1.0, view);
+  container_widget->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(view->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_TRUE(view->GetVisible());
+  EXPECT_EQ(view->GetPreferredSize().width(), full_width);
+  EXPECT_EQ(view->GetMinimumSize().width(), full_width);
+  EXPECT_EQ(view->layer(), nullptr);
+  EXPECT_LT(icon_x(), mid_icon_x);
+}
+
+TEST_F(PageActionViewVisibilityAnimationTest,
+       AnimateOutCompletesWhenSnappedToZeroByFlexLayout) {
+  auto container_widget =
+      CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  container_widget->SetBounds(gfx::Rect(0, 0, 800, 600));
+  container_widget->Show();
+  auto* container =
+      container_widget->SetContentsView(std::make_unique<views::View>())
+          ->AddChildView(std::make_unique<views::View>());
+  container->SetBounds(0, 0, 800, 600);
+  container->SetLayoutManager(std::make_unique<views::FlexLayout>());
+  auto* view = container->AddChildView(std::make_unique<PageActionView>(
+      action_item(),
+      PageActionViewParams{
+          .icon_size = view_icon_size(),
+          .icon_insets = gfx::Insets(3),
+          .icon_label_bubble_delegate = &icon_label_view_delegate_},
+      PageActionIconType::kLensOverlay, ui::ElementIdentifier()));
+  view->SetModel(model());
+  view->GetVisibilityAnimationForTesting().SetSlideDuration(kExtendedDuration);
+  view->SetProperty(views::kFlexBehaviorKey,
+                    views::FlexSpecification(
+                        views::MinimumFlexSizeRule::kScaleToMinimumSnapToZero,
+                        views::MaximumFlexSizeRule::kPreferred));
+
+  UpdateModelVisibility(/*visible=*/true, /*should_animate=*/false, view);
+  container_widget->LayoutRootViewIfNecessary();
+  ASSERT_TRUE(view->GetVisible());
+
+  UpdateModelVisibility(/*visible=*/false, /*should_animate=*/true, view);
+  container->SetBounds(0, 0, 0, 600);
+  container_widget->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(view->GetVisible());
+  EXPECT_TRUE(view->GetVisibilityAnimationForTesting().is_animating());
+
+  StepVisibilityAnimation(1.0, view);
+  container->SetBounds(0, 0, 800, 600);
+  container_widget->LayoutRootViewIfNecessary();
+  EXPECT_FALSE(view->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_FALSE(view->GetVisible());
+}
+
+TEST_F(PageActionViewVisibilityAnimationTest, VisibilityAnimateOut) {
+  UpdateModelVisibility(/*visible=*/true, /*should_animate=*/false);
+  const int full_width = page_action_view()->GetPreferredSize().width();
+  ASSERT_GT(full_width, 0);
+  page_action_view()->SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+  page_action_view()->RequestFocus();
+  ASSERT_TRUE(page_action_view()->HasFocus());
+
+  UpdateModelVisibility(/*visible=*/false);
+  EXPECT_FALSE(page_action_view()->GetDeclaredVisible());
+  EXPECT_TRUE(page_action_view()->GetVisible());
+  EXPECT_TRUE(page_action_view()->GetEnabled());
+  EXPECT_FALSE(page_action_view()->GetCanProcessEventsWithinSubtree());
+  EXPECT_FALSE(page_action_view()->HasFocus());
+  EXPECT_EQ(page_action_view()->GetFocusBehavior(),
+            views::View::FocusBehavior::NEVER);
+  EXPECT_TRUE(page_action_view()->GetViewAccessibility().GetIsIgnored());
+  EXPECT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+
+  StepVisibilityAnimation(0.5);
+  EXPECT_GT(page_action_view()->GetPreferredSize().width(), 0);
+  EXPECT_LT(page_action_view()->GetPreferredSize().width(), full_width);
+  ASSERT_NE(page_action_view()->layer(), nullptr);
+  EXPECT_GT(page_action_view()->layer()->opacity(), 0.0f);
+  EXPECT_LT(page_action_view()->layer()->opacity(), 1.0f);
+
+  StepVisibilityAnimation(1.0);
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_FALSE(page_action_view()->GetVisible());
+  EXPECT_FALSE(page_action_view()->GetEnabled());
+  EXPECT_TRUE(page_action_view()->GetCanProcessEventsWithinSubtree());
+  EXPECT_FALSE(page_action_view()->GetViewAccessibility().GetIsIgnored());
+  EXPECT_EQ(page_action_view()->layer(), nullptr);
+}
+
+TEST_F(PageActionViewVisibilityAnimationTest, ExpandedChipHidesImmediately) {
+  ON_CALL(*model(), ShouldShowSuggestionChip()).WillByDefault(Return(true));
+  UpdateModelVisibility(/*visible=*/true, /*should_animate=*/false);
+  ASSERT_TRUE(page_action_view()->IsChipVisible());
+
+  ON_CALL(*model(), ShouldShowSuggestionChip()).WillByDefault(Return(false));
+  UpdateModelVisibility(/*visible=*/false);
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_FALSE(page_action_view()->GetVisible());
+  EXPECT_FALSE(page_action_view()->IsChipVisible());
+}
+
+TEST_F(PageActionViewVisibilityAnimationTest, InterruptedShowReversesToHide) {
+  UpdateModelVisibility(/*visible=*/true, /*should_animate=*/false);
+  const int full_width = page_action_view()->GetPreferredSize().width();
+  UpdateModelVisibility(/*visible=*/false, /*should_animate=*/false);
+
+  UpdateModelVisibility(/*visible=*/true);
+  StepVisibilityAnimation(0.5);
+  const int mid_width = page_action_view()->GetPreferredSize().width();
+  ASSERT_GT(mid_width, 0);
+  ASSERT_LT(mid_width, full_width);
+
+  UpdateModelVisibility(/*visible=*/false);
+  EXPECT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_TRUE(page_action_view()->GetVisible());
+  EXPECT_TRUE(page_action_view()->GetEnabled());
+  EXPECT_FALSE(page_action_view()->GetCanProcessEventsWithinSubtree());
+  EXPECT_TRUE(page_action_view()->GetViewAccessibility().GetIsIgnored());
+  EXPECT_EQ(page_action_view()->GetPreferredSize().width(), mid_width);
+
+  StepVisibilityAnimation(0.25);
+  EXPECT_GT(page_action_view()->GetPreferredSize().width(), 0);
+  EXPECT_LT(page_action_view()->GetPreferredSize().width(), mid_width);
+
+  StepVisibilityAnimation(1.0);
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_FALSE(page_action_view()->GetVisible());
+  EXPECT_FALSE(page_action_view()->GetEnabled());
+}
+
+TEST_F(PageActionViewVisibilityAnimationTest, InterruptedHideReversesToShow) {
+  UpdateModelVisibility(/*visible=*/true, /*should_animate=*/false);
+  const int full_width = page_action_view()->GetPreferredSize().width();
+
+  UpdateModelVisibility(/*visible=*/false);
+  StepVisibilityAnimation(0.5);
+  const int mid_width = page_action_view()->GetPreferredSize().width();
+  ASSERT_GT(mid_width, 0);
+  ASSERT_LT(mid_width, full_width);
+
+  UpdateModelVisibility(/*visible=*/true);
+  EXPECT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_TRUE(page_action_view()->GetVisible());
+  EXPECT_TRUE(page_action_view()->GetEnabled());
+  EXPECT_TRUE(page_action_view()->GetCanProcessEventsWithinSubtree());
+  EXPECT_FALSE(page_action_view()->GetViewAccessibility().GetIsIgnored());
+  EXPECT_EQ(page_action_view()->GetPreferredSize().width(), mid_width);
+
+  StepVisibilityAnimation(0.25);
+  EXPECT_GT(page_action_view()->GetPreferredSize().width(), mid_width);
+  EXPECT_LT(page_action_view()->GetPreferredSize().width(), full_width);
+
+  StepVisibilityAnimation(1.0);
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_TRUE(page_action_view()->GetVisible());
+  EXPECT_EQ(page_action_view()->GetPreferredSize().width(), full_width);
+}
+
+TEST_F(PageActionViewVisibilityAnimationTest,
+       SkipsAnimationOnOptOutReducedMotionAndFlagOff) {
+  auto expect_instant_show_and_hide = [&](bool should_animate) {
+    UpdateModelVisibility(/*visible=*/true, should_animate);
+    EXPECT_FALSE(
+        page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+    EXPECT_TRUE(page_action_view()->GetVisible());
+
+    UpdateModelVisibility(/*visible=*/false, should_animate);
+    EXPECT_FALSE(
+        page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+    EXPECT_FALSE(page_action_view()->GetVisible());
+  };
+
+  expect_instant_show_and_hide(/*should_animate=*/false);
+
+  {
+    auto reduced_motion =
+        gfx::AnimationTestApi::SetPrefersReducedMotionForTesting(true);
+    expect_instant_show_and_hide(/*should_animate=*/true);
+  }
+
+  {
+    base::test::ScopedFeatureList disabled_feature;
+    disabled_feature.InitAndDisableFeature(
+        features::kPageActionsElevatedToolbar);
+    expect_instant_show_and_hide(/*should_animate=*/true);
+  }
+}
+
+TEST_F(PageActionViewVisibilityAnimationTest,
+       CleanupOnModelDeletionAndDestruction) {
+  UpdateModelVisibility(/*visible=*/true);
+  StepVisibilityAnimation(0.5);
+  ASSERT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+
+  UpdateModelVisibility(/*visible=*/false);
+  ASSERT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  ASSERT_TRUE(page_action_view()->GetViewAccessibility().GetIsIgnored());
+
+  page_action_view()->OnPageActionModelWillBeDeleted(*model());
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_FALSE(page_action_view()->GetVisible());
+  EXPECT_FALSE(page_action_view()->GetViewAccessibility().GetIsIgnored());
+
+  // Leave an animation running so TearDown() verifies mid-flight destruction.
+  page_action_view()->SetModel(model());
+  UpdateModelVisibility(/*visible=*/true);
+  ASSERT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+}
+
+TEST_F(PageActionViewVisibilityAnimationTest,
+       ShowThenSuggestionChipCancelsVisibilityAnimation) {
+  UpdateModelVisibility(/*visible=*/true);
+  StepVisibilityAnimation(0.5);
+  ASSERT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+
+  ON_CALL(*model(), ShouldShowSuggestionChip()).WillByDefault(Return(true));
+  page_action_view()->OnPageActionModelChanged(*model());
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_EQ(
+      1.0,
+      page_action_view()->GetVisibilityAnimationForTesting().GetCurrentValue());
+}
+
+TEST_F(PageActionViewVisibilityAnimationTest,
+       SlideAndCrossfadeScalesPreferredSize) {
+  const std::u16string text = u"Test";
+  ON_CALL(*model(), GetText()).WillByDefault(ReturnRef(text));
+  ON_CALL(*model(), GetAnimationStyle())
+      .WillByDefault(Return(PageActionAnimationStyle::kSlideAndCrossfade));
+
+  UpdateModelVisibility(/*visible=*/true);
+  ASSERT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_EQ(1, page_action_view()->CalculatePreferredSize({}).width());
+
+  StepVisibilityAnimation(0.5);
+  const int mid_width = page_action_view()->CalculatePreferredSize({}).width();
+
+  StepVisibilityAnimation(1.0);
+  const int full_width = page_action_view()->CalculatePreferredSize({}).width();
+  EXPECT_GT(mid_width, 1);
+  EXPECT_LT(mid_width, full_width);
+}
+
+TEST_F(PageActionViewWithControllerTest, VisibilityAnimatesOncePerShow) {
+  base::test::ScopedFeatureList feature_list{
+      features::kPageActionsElevatedToolbar};
+  gfx::ScopedAnimationDurationScaleMode normal_duration(
+      gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+  auto reduced_motion =
+      gfx::AnimationTestApi::SetPrefersReducedMotionForTesting(false);
+
+  AlwaysActiveTabInterface tab;
+  auto controller = NewPageActionController(tab);
+  action_item()->SetEnabled(true);
+  action_item()->SetVisible(true);
+  page_action_view()->OnNewActiveController(controller.get());
+
+  const base::TimeDelta duration = base::Hours(1);
+  page_action_view()->GetVisibilityAnimationForTesting().SetSlideDuration(
+      duration);
+  gfx::AnimationTestApi anim_api(
+      &page_action_view()->GetVisibilityAnimationForTesting());
+  auto finish_animation = [&]() {
+    const base::TimeTicks now = base::TimeTicks::Now();
+    anim_api.SetStartTime(now);
+    anim_api.Step(now + duration);
+  };
+
+  controller->Show(kTestPageActionId);
+  EXPECT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  controller->OverrideText(kTestPageActionId, u"Updated");
+  EXPECT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  finish_animation();
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_TRUE(page_action_view()->GetVisible());
+
+  controller->OverrideText(kTestPageActionId, u"Updated again");
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  controller->Show(kTestPageActionId);
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+
+  AlwaysActiveTabInterface tab2;
+  auto controller2 = NewPageActionController(tab2);
+  controller2->Show(kTestPageActionId);
+  page_action_view()->OnNewActiveController(controller2.get());
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_TRUE(page_action_view()->GetVisible());
+  controller2->OverrideText(kTestPageActionId, u"Controller 2 updated");
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+
+  AlwaysActiveTabInterface tab3;
+  auto controller3 = NewPageActionController(tab3);
+  page_action_view()->OnNewActiveController(controller3.get());
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_FALSE(page_action_view()->GetVisible());
+  page_action_view()->OnNewActiveController(controller.get());
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_TRUE(page_action_view()->GetVisible());
+
+  controller->Hide(kTestPageActionId);
+  EXPECT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  finish_animation();
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_FALSE(page_action_view()->GetVisible());
+
+  controller->Show(kTestPageActionId);
+  EXPECT_TRUE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+
+  page_action_view()->OnNewActiveController(nullptr);
+  EXPECT_FALSE(
+      page_action_view()->GetVisibilityAnimationForTesting().is_animating());
+  EXPECT_FALSE(page_action_view()->GetVisible());
 }
 
 }  // namespace

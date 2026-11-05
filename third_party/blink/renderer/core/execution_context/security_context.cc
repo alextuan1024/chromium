@@ -107,8 +107,11 @@ void SecurityContext::SetSecurityOrigin(
       execution_context_ &&
       execution_context_->IsWorkerOrWorkletGlobalScope() &&
       IsSandboxed(network::mojom::blink::WebSandboxFlags::kOrigin) &&
-      security_origin->IsOpaque() &&
-      security_origin->GetOriginOrPrecursorOriginIfOpaque() == security_origin_;
+      security_origin->IsOpaque() && security_origin_ &&
+      (security_origin->GetOriginOrPrecursorOriginIfOpaque() ==
+           security_origin_ ||
+       security_origin->ToUrlOrigin().GetTupleOrPrecursorTupleIfOpaque() ==
+           security_origin_->ToUrlOrigin().GetTupleOrPrecursorTupleIfOpaque());
   CHECK(!execution_context_ || !security_origin_ ||
         security_origin_->CanAccess(security_origin.get()) ||
         is_worker_transition_to_opaque);
@@ -208,7 +211,6 @@ SecurityContext::FeatureStatus SecurityContext::IsFeatureEnabled(
 
         if (ad_tracker &&
             ad_tracker->IsAdScriptInStack(
-                AdTracker::StackType::kTopOnly,
                 /*ignore_monkey_patch=*/AdTracker::MonkeyPatchableApi::kNone,
                 &ad_ancestry)) {
           window->CountPermissionsPolicyUsage(

@@ -12,6 +12,7 @@
 #include "base/run_loop.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/mock_callback.h"
+#include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "components/feedback/feedback_data.h"
 #include "components/feedback/feedback_report.h"
@@ -23,15 +24,15 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
+#include "storage/browser/test/fake_blob.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "base/base64.h"
 #include "chromeos/ash/components/dbus/debug_daemon/debug_daemon_client.h"
-#include "components/user_manager/fake_user_manager.h"
-#include "components/user_manager/scoped_user_manager.h"
-#include "components/user_manager/user_manager.h"
+#include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "crypto/hpke.h"
 #include "crypto/keypair.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -45,24 +46,24 @@ using testing::StrictMock;
 
 namespace {
 
-const std::string kFakeKey = "fake key";
-const std::string kFakeValue = "fake value";
-const std::string kTabTitleValue = "some sensitive info";
+constexpr char kFakeKey[] = "fake key";
+constexpr char kFakeValue[] = "fake value";
+constexpr char kTabTitleValue[] = "some sensitive info";
 #if BUILDFLAG(IS_CHROMEOS)
 constexpr char kVariationsFetchHpkeKey[] =
     "https://www.gstatic.com/chromeos-feedback-variations-encryption-key/"
     "public_keyset.json";
-const std::string kTestPublicKeyResponseBody =
+constexpr char kTestPublicKeyResponseBody[] =
     "{\"primaryKeyId\":123,\"key\":[{\"keyData\":{\"typeUrl\":\"type."
     "googleapis.com/"
     "google.crypto.tink.HpkePublicKey\",\"value\":"
     "\"EgYIARABGAIaIKeVK4N3icUhM5YF+Pp5S6PWAg9OlY8zP9oLL9qv4IYS\","
     "\"keyMaterialType\":\"ASYMMETRIC_PUBLIC\"},\"status\":\"ENABLED\","
     "\"keyId\":456,\"outputPrefixType\":\"RAW\"}]}";
-const std::string kTestBase64HpkePrivateKey =
+constexpr char kTestBase64HpkePrivateKey[] =
     "IHbZB+CCrEXra2WGQx/jFQ+a0NSpVCauqy2uC9NH8Hs=";
 // Command line variation string returned during testing.
-const std::string kTestCommandLineVariations =
+constexpr char kTestCommandLineVariations[] =
     " --enable-features=\"*TestBlinkFeatureDefault,"
     "TestFeatureForBrowserTest1\" "
     "--disable-features=\"TestFeatureForBrowserTest2\" "
@@ -183,7 +184,18 @@ void VerifyAttachment(std::string_view name,
 
 class FeedbackServiceTest : public ApiUnitTest {
  protected:
-  FeedbackServiceTest() {
+  FeedbackServiceTest() = default;
+  ~FeedbackServiceTest() override = default;
+
+  void SetUp() override {
+#if BUILDFLAG(IS_CHROMEOS)
+    ash::test::UserSessionTestEnvironment::RegisterLocalStatePrefs(
+        local_state_.registry());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(&local_state_);
+#endif  // BUILDFLAG(IS_CHROMEOS)
+    ApiUnitTest::SetUp();
+
 #if BUILDFLAG(IS_CHROMEOS)
     test_url_loader_factory_.AddResponse(
         kVariationsFetchHpkeKey, kTestPublicKeyResponseBody, net::HTTP_OK);
@@ -191,20 +203,20 @@ class FeedbackServiceTest : public ApiUnitTest {
     test_shared_loader_factory_ =
         base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
             &test_url_loader_factory_);
-    CHECK(scoped_temp_dir_.CreateUniqueTempDir());
+    ASSERT_TRUE(scoped_temp_dir_.CreateUniqueTempDir());
     mock_uploader_ = std::make_unique<StrictMock<MockFeedbackUploader>>(
         /*is_off_the_record=*/false, scoped_temp_dir_.GetPath(),
         test_shared_loader_factory_);
     feedback_data_ = base::MakeRefCounted<FeedbackData>(
         mock_uploader_->AsWeakPtr(), nullptr);
-#if BUILDFLAG(IS_CHROMEOS)
-    auto fake_user_manager = std::make_unique<user_manager::FakeUserManager>();
-    scoped_user_manager_ = std::make_unique<user_manager::ScopedUserManager>(
-        std::move(fake_user_manager));
-#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
-  ~FeedbackServiceTest() override = default;
+  void TearDown() override {
+    ApiUnitTest::TearDown();
+#if BUILDFLAG(IS_CHROMEOS)
+    user_session_test_environment_.reset();
+#endif  // BUILDFLAG(IS_CHROMEOS)
+  }
 
   void TestSendFeedbackConcerningTabTitles(bool send_tab_titles) {
     feedback_data_->AddLog(kFakeKey, kFakeValue);
@@ -328,13 +340,16 @@ class FeedbackServiceTest : public ApiUnitTest {
                               const FeedbackParams& params,
                               SendFeedbackCallback mock_callback) {
     feedback_service->RedactThenSendFeedback(params, feedback_data_,
+                                             FeedbackAttachments(),
                                              std::move(mock_callback));
     base::ThreadPoolInstance::Get()->FlushForTesting();
     task_environment()->RunUntilIdle();
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
-  std::unique_ptr<user_manager::ScopedUserManager> scoped_user_manager_;
+  TestingPrefServiceSimple local_state_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   base::ScopedTempDir scoped_temp_dir_;
@@ -362,6 +377,35 @@ TEST_F(FeedbackServiceTest, SendFeedbackWithoutSysInfo) {
       browser_context(), feedback_delegate.get());
 
   RunUntilFeedbackIsSent(feedback_service, params, mock_callback.Get());
+}
+
+TEST_F(FeedbackServiceTest, SendFeedbackWithAttachments) {
+  storage::FakeBlob attached_file("attachment");
+  attached_file.set_body("attached file contents");
+  storage::FakeBlob screenshot("screenshot");
+  screenshot.set_body("screenshot contents");
+  feedback_data_->set_attached_filename("attachment.txt");
+  FeedbackAttachments attachments{attached_file.Clone(), screenshot.Clone()};
+
+  base::test::TestFuture<void> report_sent;
+  EXPECT_CALL(*mock_uploader_, QueueReport)
+      .WillOnce([&report_sent](std::unique_ptr<std::string>, bool, int) {
+        report_sent.SetValue();
+      });
+  base::test::TestFuture<bool> callback;
+  MockFeedbackPrivateDelegate delegate;
+  scoped_refptr<FeedbackService> service =
+      base::MakeRefCounted<FeedbackService>(browser_context(), &delegate);
+  service->RedactThenSendFeedback(FeedbackParams(), feedback_data_,
+                                  std::move(attachments),
+                                  callback.GetCallback());
+
+  EXPECT_TRUE(callback.Get());
+  ASSERT_TRUE(report_sent.Wait());
+  EXPECT_EQ("screenshot contents", feedback_data_->image());
+  ASSERT_EQ(1u, feedback_data_->attachments());
+  EXPECT_EQ("attachment.txt.zip", feedback_data_->attachment(0)->name);
+  EXPECT_FALSE(feedback_data_->attachment(0)->data.empty());
 }
 
 TEST_F(FeedbackServiceTest, SendFeedbackLoadSysInfo) {

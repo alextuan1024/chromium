@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,7 +14,9 @@
 #include "base/containers/to_vector.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
@@ -31,12 +34,14 @@
 #include "components/autofill/core/browser/ui/payments/card_unmask_prompt_options.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/password_generation_util.h"
+#include "components/device_reauth/mock_device_auth_availability_checker.h"
 #include "components/device_reauth/mock_device_authenticator.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/mock_password_feature_manager.h"
 #include "components/password_manager/core/browser/mock_password_form_manager_for_ui.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
+#include "components/password_manager/core/browser/password_store/actionable_error.h"
 #include "components/password_manager/core/browser/password_store/mock_password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_string.h"
@@ -49,6 +54,12 @@
 #include "components/sync/test/test_sync_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
+#include "base/strings/string_number_conversions.h"
+#endif
 
 namespace password_manager_util {
 namespace {
@@ -64,6 +75,7 @@ using ::password_manager::PasswordString;
 using ::password_manager::StoredCredential;
 using ::password_manager::UnorderedPasswordFormElementsAre;
 using ::testing::_;
+using ::testing::ByMove;
 using ::testing::DoAll;
 using ::testing::Not;
 using ::testing::Return;
@@ -89,6 +101,10 @@ class MockPasswordManagerClient
               GetDeviceAuthenticator,
               (),
               (override));
+  MOCK_METHOD(std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>,
+              GetDeviceAuthAvailabilityChecker,
+              (),
+              (override));
   MOCK_METHOD(password_manager::PasswordStoreInterface*,
               GetProfilePasswordStore,
               (),
@@ -98,6 +114,8 @@ class MockPasswordManagerClient
               (),
               (const, override));
   MOCK_METHOD(syncer::SyncService*, GetSyncService, (), (const, override));
+  MOCK_METHOD(const GURL&, GetLastCommittedURL, (), (const, override));
+  MOCK_METHOD(bool, IsOffTheRecord, (), (const, override));
 };
 
 PasswordForm GetTestAndroidCredential() {
@@ -843,30 +861,41 @@ TEST_F(PasswordManagerUtilTest, IsAbleToSavePasswords_NotSyncing) {
 }
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-struct TrustedVaultErrorPreventsFromSavingTestCase {
+struct RecoverableErrorPreventsFromSavingTestCase {
   std::string name;
   // It might be that the credential is updated in both stores. In this case
   // `password_store_for_saving` will be the enum value with both bits set (the
   // account and the profile store bits). This approach replicates the
-  // behavior of `GetPasswordStoreForSaving`.
+  // behavior of `GetPasswordStoreForSaving()`.
   PasswordForm::Store password_store_for_saving;
   password_manager::ActionableError profile_store_error;
   password_manager::ActionableError account_store_error;
-  bool expected_result;
+  std::optional<password_manager::ActionableError> expected_error;
 };
 
-class PasswordManagerUtilTrustedVaultErrorPreventsFromSavingTest
-    : public testing::TestWithParam<
-          TrustedVaultErrorPreventsFromSavingTestCase> {
+class PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase
+    : public testing::Test {
  protected:
-  PasswordManagerUtilTrustedVaultErrorPreventsFromSavingTest() {
-    feature_list_.InitAndEnableFeature(
-        password_manager::features::kPasswordSaveInContextErrorResolution);
+  PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/
+        {password_manager::features::kPasswordSaveInContextErrorResolution,
+         password_manager::features::
+             kPasswordSaveInContextPassphraseErrorResolution},
+        /*disabled_features=*/{});
     ON_CALL(client_, GetSyncService())
         .WillByDefault(testing::Return(&sync_service_));
+    mock_profile_store_ =
+        base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
+    mock_account_store_ =
+        base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
+    EXPECT_CALL(client_, GetProfilePasswordStore())
+        .WillRepeatedly(Return(mock_profile_store_.get()));
+    EXPECT_CALL(client_, GetAccountPasswordStore())
+        .WillRepeatedly(Return(mock_account_store_.get()));
     EnableSyncForTestAccount();
   }
-  ~PasswordManagerUtilTrustedVaultErrorPreventsFromSavingTest() override =
+  ~PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase() override =
       default;
 
   void EnableSyncForTestAccount() {
@@ -875,104 +904,141 @@ class PasswordManagerUtilTrustedVaultErrorPreventsFromSavingTest
         /*types=*/{syncer::UserSelectableType::kPasswords});
   }
 
+  std::unique_ptr<
+      testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>
+  CreateFormManagerForStore(PasswordForm::Store store_for_saving) {
+    auto form_manager = std::make_unique<
+        testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>();
+    EXPECT_CALL(*form_manager, GetPasswordStoreForSaving)
+        .WillRepeatedly(Return(store_for_saving));
+    EXPECT_CALL(*form_manager, GetPendingCredentials())
+        .WillRepeatedly(testing::ReturnRef(dummy_form_));
+    return form_manager;
+  }
+
   base::test::ScopedFeatureList feature_list_;
   syncer::TestSyncService sync_service_;
   MockPasswordManagerClient client_;
+  scoped_refptr<password_manager::MockPasswordStoreInterface>
+      mock_profile_store_;
+  scoped_refptr<password_manager::MockPasswordStoreInterface>
+      mock_account_store_;
+  PasswordForm dummy_form_;
 };
 
-TEST_P(PasswordManagerUtilTrustedVaultErrorPreventsFromSavingTest,
-       IsSavingBlockedByTrustedVaultError) {
-  const auto& test_case = GetParam();
+class PasswordManagerUtilRecoverableErrorPreventsFromSavingTest
+    : public PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase,
+      public testing::WithParamInterface<
+          RecoverableErrorPreventsFromSavingTestCase> {};
 
-  auto mock_profile_store =
-      base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
-  auto mock_account_store =
-      base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
+TEST_P(PasswordManagerUtilRecoverableErrorPreventsFromSavingTest,
+       GetRecoverableErrorBlockingPasswordSaving) {
+  const RecoverableErrorPreventsFromSavingTestCase& test_case = GetParam();
+  std::unique_ptr<
+      testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>
+      form_manager =
+          CreateFormManagerForStore(test_case.password_store_for_saving);
 
-  EXPECT_CALL(client_, GetProfilePasswordStore())
-      .WillRepeatedly(Return(mock_profile_store.get()));
-  EXPECT_CALL(client_, GetAccountPasswordStore())
-      .WillRepeatedly(Return(mock_account_store.get()));
-
-  testing::NiceMock<password_manager::MockPasswordFormManagerForUI>
-      form_manager;
-  EXPECT_CALL(form_manager, GetPasswordStoreForSaving)
-      .WillRepeatedly(Return(test_case.password_store_for_saving));
-
-  PasswordForm dummy_form;
-  EXPECT_CALL(form_manager, GetPendingCredentials())
-      .WillRepeatedly(testing::ReturnRef(dummy_form));
-
-  EXPECT_CALL(*mock_profile_store, GetError())
+  EXPECT_CALL(*mock_profile_store_, GetError())
       .WillRepeatedly(Return(test_case.profile_store_error));
-  EXPECT_CALL(*mock_account_store, GetError())
+  EXPECT_CALL(*mock_account_store_, GetError())
       .WillRepeatedly(Return(test_case.account_store_error));
 
-  EXPECT_EQ(IsSavingBlockedByTrustedVaultError(&client_, &form_manager),
-            test_case.expected_result);
+  EXPECT_EQ(
+      GetRecoverableErrorBlockingPasswordSaving(&client_, form_manager.get()),
+      test_case.expected_error);
+  EXPECT_EQ(IsSavingBlockedByTrustedVaultError(&client_, form_manager.get()),
+            test_case.expected_error ==
+                password_manager::ActionableError::kTrustedVaultKeyNeeded);
 }
 
-const TrustedVaultErrorPreventsFromSavingTestCase
-    kTrustedVaultErrorPreventsFromSavingTestCases[] = {
+const RecoverableErrorPreventsFromSavingTestCase
+    kRecoverableErrorPreventsFromSavingTestCases[] = {
         {"NoError", PasswordForm::Store::kProfileStore,
          password_manager::ActionableError::kNoError,
-         password_manager::ActionableError::kNoError, false},
-        {"ProfileStoreBlocked", PasswordForm::Store::kProfileStore,
+         password_manager::ActionableError::kNoError, std::nullopt},
+        {"InactionableError", PasswordForm::Store::kProfileStore,
+         password_manager::ActionableError::kInactionable,
+         password_manager::ActionableError::kNoError, std::nullopt},
+        {"ProfileStoreBlockedByTrustedVault",
+         PasswordForm::Store::kProfileStore,
          password_manager::ActionableError::kTrustedVaultKeyNeeded,
-         password_manager::ActionableError::kNoError, true},
-        {"AccountStoreBlocked", PasswordForm::Store::kAccountStore,
          password_manager::ActionableError::kNoError,
-         password_manager::ActionableError::kTrustedVaultKeyNeeded, true},
-        {"BothStoresBlocked",
+         password_manager::ActionableError::kTrustedVaultKeyNeeded},
+        {"AccountStoreBlockedByTrustedVault",
+         PasswordForm::Store::kAccountStore,
+         password_manager::ActionableError::kNoError,
+         password_manager::ActionableError::kTrustedVaultKeyNeeded,
+         password_manager::ActionableError::kTrustedVaultKeyNeeded},
+        {"BothStoresBlockedByTrustedVault",
          PasswordForm::Store::kProfileStore |
              PasswordForm::Store::kAccountStore,
          password_manager::ActionableError::kTrustedVaultKeyNeeded,
-         password_manager::ActionableError::kTrustedVaultKeyNeeded, true},
-        {"OneStoreBlockedOtherStoreHasInactionableError",
+         password_manager::ActionableError::kTrustedVaultKeyNeeded,
+         password_manager::ActionableError::kTrustedVaultKeyNeeded},
+        {"TrustedVaultAndInactionableError",
          PasswordForm::Store::kProfileStore |
              PasswordForm::Store::kAccountStore,
          password_manager::ActionableError::kTrustedVaultKeyNeeded,
-         password_manager::ActionableError::kInactionable, false},
-    };
+         password_manager::ActionableError::kInactionable, std::nullopt},
+        {"ProfileStoreBlockedByPassphrase", PasswordForm::Store::kProfileStore,
+         password_manager::ActionableError::kNeedsPassphrase,
+         password_manager::ActionableError::kNoError,
+         password_manager::ActionableError::kNeedsPassphrase},
+        {"AccountStoreBlockedByPassphrase", PasswordForm::Store::kAccountStore,
+         password_manager::ActionableError::kNoError,
+         password_manager::ActionableError::kNeedsPassphrase,
+         password_manager::ActionableError::kNeedsPassphrase},
+        {"BothStoresBlockedByPassphrase",
+         PasswordForm::Store::kProfileStore |
+             PasswordForm::Store::kAccountStore,
+         password_manager::ActionableError::kNeedsPassphrase,
+         password_manager::ActionableError::kNeedsPassphrase,
+         password_manager::ActionableError::kNeedsPassphrase},
+        {"PassphraseAndInactionableError",
+         PasswordForm::Store::kProfileStore |
+             PasswordForm::Store::kAccountStore,
+         password_manager::ActionableError::kNeedsPassphrase,
+         password_manager::ActionableError::kInactionable, std::nullopt},
+};
 
 INSTANTIATE_TEST_SUITE_P(
     All,
-    PasswordManagerUtilTrustedVaultErrorPreventsFromSavingTest,
-    testing::ValuesIn(kTrustedVaultErrorPreventsFromSavingTestCases),
-    [](const testing::TestParamInfo<
-        TrustedVaultErrorPreventsFromSavingTestCase>& info) {
-      return info.param.name;
-    });
+    PasswordManagerUtilRecoverableErrorPreventsFromSavingTest,
+    testing::ValuesIn(kRecoverableErrorPreventsFromSavingTestCases),
+    [](const testing::TestParamInfo<RecoverableErrorPreventsFromSavingTestCase>&
+           info) { return info.param.name; });
 
-TEST_F(PasswordManagerUtilTrustedVaultErrorPreventsFromSavingTest,
-       IsSavingBlockedByTrustedVaultError_PasswordSyncDisabled) {
-  // Disable password sync.
+TEST_F(PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase,
+       PasswordSyncDisabled) {
   sync_service_.GetUserSettings()->SetSelectedTypes(
       /*sync_everything=*/false, /*types=*/{});
+  std::unique_ptr<
+      testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>
+      form_manager =
+          CreateFormManagerForStore(PasswordForm::Store::kProfileStore);
 
-  auto mock_profile_store =
-      base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
-  EXPECT_CALL(client_, GetProfilePasswordStore())
-      .WillRepeatedly(Return(mock_profile_store.get()));
-
-  testing::NiceMock<password_manager::MockPasswordFormManagerForUI>
-      form_manager;
-  EXPECT_CALL(form_manager, GetPasswordStoreForSaving)
-      .WillRepeatedly(Return(PasswordForm::Store::kProfileStore));
-
-  PasswordForm dummy_form;
-  EXPECT_CALL(form_manager, GetPendingCredentials())
-      .WillRepeatedly(testing::ReturnRef(dummy_form));
-
-  EXPECT_CALL(*mock_profile_store, GetError())
+  EXPECT_CALL(*mock_profile_store_, GetError())
       .WillRepeatedly(
           Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_FALSE(
+      IsSavingBlockedByTrustedVaultError(&client_, form_manager.get()));
+  EXPECT_EQ(
+      GetRecoverableErrorBlockingPasswordSaving(&client_, form_manager.get()),
+      std::nullopt);
 
-  EXPECT_FALSE(IsSavingBlockedByTrustedVaultError(&client_, &form_manager));
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kNeedsPassphrase));
+  EXPECT_FALSE(
+      IsSavingBlockedByTrustedVaultError(&client_, form_manager.get()));
+  EXPECT_EQ(
+      GetRecoverableErrorBlockingPasswordSaving(&client_, form_manager.get()),
+      std::nullopt);
 }
 
-TEST_F(PasswordManagerUtilTrustedVaultErrorPreventsFromSavingTest,
-       IsSavingBlockedByTrustedVaultError_LocalPasswordUpdate) {
+TEST_F(PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase,
+       LocalPasswordUpdate) {
   testing::NiceMock<password_manager::MockPasswordFormManagerForUI>
       form_manager;
   EXPECT_CALL(form_manager, IsPasswordUpdate()).WillRepeatedly(Return(true));
@@ -981,8 +1047,250 @@ TEST_F(PasswordManagerUtilTrustedVaultErrorPreventsFromSavingTest,
       .WillRepeatedly(Return(false));
 
   EXPECT_FALSE(IsSavingBlockedByTrustedVaultError(&client_, &form_manager));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(&client_, &form_manager),
+            std::nullopt);
+}
+
+TEST_F(PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase,
+       NullFormManager) {
+  EXPECT_FALSE(
+      IsSavingBlockedByTrustedVaultError(&client_, /*form_manager=*/nullptr));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(&client_,
+                                                      /*form_manager=*/nullptr),
+            std::nullopt);
+}
+
+TEST_F(PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase,
+       TrustedVaultFeatureDisabled) {
+  base::test::ScopedFeatureList disabled_feature_list;
+  disabled_feature_list.InitAndDisableFeature(
+      password_manager::features::kPasswordSaveInContextErrorResolution);
+
+  std::unique_ptr<
+      testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>
+      single_store_form_manager =
+          CreateFormManagerForStore(PasswordForm::Store::kProfileStore);
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_FALSE(IsSavingBlockedByTrustedVaultError(
+      &client_, single_store_form_manager.get()));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(
+                &client_, single_store_form_manager.get()),
+            std::nullopt);
+
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kNeedsPassphrase));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(
+                &client_, single_store_form_manager.get()),
+            password_manager::ActionableError::kNeedsPassphrase);
+
+  std::unique_ptr<
+      testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>
+      both_stores_form_manager =
+          CreateFormManagerForStore(PasswordForm::Store::kProfileStore |
+                                    PasswordForm::Store::kAccountStore);
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kNeedsPassphrase));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(
+                &client_, both_stores_form_manager.get()),
+            std::nullopt);
+}
+
+TEST_F(PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase,
+       PassphraseFeatureDisabled) {
+  base::test::ScopedFeatureList disabled_feature_list;
+  disabled_feature_list.InitAndDisableFeature(
+      password_manager::features::
+          kPasswordSaveInContextPassphraseErrorResolution);
+
+  std::unique_ptr<
+      testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>
+      single_store_form_manager =
+          CreateFormManagerForStore(PasswordForm::Store::kProfileStore);
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kNeedsPassphrase));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(
+                &client_, single_store_form_manager.get()),
+            std::nullopt);
+
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_TRUE(IsSavingBlockedByTrustedVaultError(
+      &client_, single_store_form_manager.get()));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(
+                &client_, single_store_form_manager.get()),
+            password_manager::ActionableError::kTrustedVaultKeyNeeded);
+
+  std::unique_ptr<
+      testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>
+      both_stores_form_manager =
+          CreateFormManagerForStore(PasswordForm::Store::kProfileStore |
+                                    PasswordForm::Store::kAccountStore);
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kNeedsPassphrase));
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_FALSE(IsSavingBlockedByTrustedVaultError(
+      &client_, both_stores_form_manager.get()));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(
+                &client_, both_stores_form_manager.get()),
+            std::nullopt);
+}
+
+TEST_F(PasswordManagerUtilRecoverableErrorPreventsFromSavingTestBase,
+       MixedTrustedVaultAndPassphraseErrorsTriggersDcheck) {
+  std::unique_ptr<
+      testing::NiceMock<password_manager::MockPasswordFormManagerForUI>>
+      form_manager =
+          CreateFormManagerForStore(PasswordForm::Store::kProfileStore |
+                                    PasswordForm::Store::kAccountStore);
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kNeedsPassphrase));
+
+  EXPECT_DCHECK_DEATH(
+      GetRecoverableErrorBlockingPasswordSaving(&client_, form_manager.get()));
 }
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
+class ShouldShowTrustedVaultErrorInAutofillTest : public testing::Test {
+ protected:
+  ShouldShowTrustedVaultErrorInAutofillTest() {
+    feature_list_.InitAndEnableFeature(
+        password_manager::features::kPasswordSignInInContextErrorResolution);
+    ON_CALL(client_, GetLastCommittedURL)
+        .WillByDefault(testing::ReturnRef(test_url_));
+    ON_CALL(client_, IsOffTheRecord).WillByDefault(Return(false));
+    ON_CALL(client_, GetSyncService())
+        .WillByDefault(testing::Return(&sync_service_));
+    mock_profile_store_ =
+        base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
+    mock_account_store_ =
+        base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
+    ON_CALL(client_, GetProfilePasswordStore())
+        .WillByDefault(Return(mock_profile_store_.get()));
+    ON_CALL(client_, GetAccountPasswordStore())
+        .WillByDefault(Return(mock_account_store_.get()));
+  }
+
+  base::test::ScopedFeatureList feature_list_;
+  GURL test_url_{"https://example.com/login"};
+  syncer::TestSyncService sync_service_;
+  MockPasswordManagerClient client_;
+  scoped_refptr<password_manager::MockPasswordStoreInterface>
+      mock_profile_store_;
+  scoped_refptr<password_manager::MockPasswordStoreInterface>
+      mock_account_store_;
+};
+
+TEST_F(ShouldShowTrustedVaultErrorInAutofillTest, FeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      password_manager::features::kPasswordSignInInContextErrorResolution);
+
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_FALSE(ShouldShowTrustedVaultErrorInAutofill(&client_));
+}
+
+TEST_F(ShouldShowTrustedVaultErrorInAutofillTest, NullClient) {
+  EXPECT_FALSE(ShouldShowTrustedVaultErrorInAutofill(nullptr));
+}
+
+TEST_F(ShouldShowTrustedVaultErrorInAutofillTest, OffTheRecord) {
+  EXPECT_CALL(client_, IsOffTheRecord).WillRepeatedly(Return(true));
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_FALSE(ShouldShowTrustedVaultErrorInAutofill(&client_));
+}
+
+TEST_F(ShouldShowTrustedVaultErrorInAutofillTest, ExcludedUrls) {
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+
+  for (const char* url_str :
+       {"https://accounts.google.com/signin", "https://passwords.google.com/",
+        "https://www.google.com/", "chrome://password-manager"}) {
+    test_url_ = GURL(url_str);
+    EXPECT_FALSE(ShouldShowTrustedVaultErrorInAutofill(&client_))
+        << "Failed for URL: " << url_str;
+  }
+}
+
+TEST_F(ShouldShowTrustedVaultErrorInAutofillTest, AccountStoreError) {
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
+  EXPECT_TRUE(ShouldShowTrustedVaultErrorInAutofill(&client_));
+}
+
+TEST_F(ShouldShowTrustedVaultErrorInAutofillTest, ProfileStoreError) {
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_TRUE(ShouldShowTrustedVaultErrorInAutofill(&client_));
+}
+
+TEST_F(ShouldShowTrustedVaultErrorInAutofillTest, SyncServiceError) {
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
+  sync_service_.GetUserSettings()->SetTrustedVaultKeyRequired(true);
+  EXPECT_TRUE(ShouldShowTrustedVaultErrorInAutofill(&client_));
+}
+
+TEST_F(ShouldShowTrustedVaultErrorInAutofillTest, NoError) {
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
+  EXPECT_CALL(*mock_profile_store_, GetError())
+      .WillRepeatedly(Return(password_manager::ActionableError::kNoError));
+  EXPECT_FALSE(ShouldShowTrustedVaultErrorInAutofill(&client_));
+}
+
+TEST_F(ShouldShowTrustedVaultErrorInAutofillTest, PasswordSyncDisabled) {
+  // Disable password sync.
+  sync_service_.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false, /*types=*/{});
+
+  EXPECT_CALL(*mock_account_store_, GetError())
+      .WillRepeatedly(
+          Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_FALSE(ShouldShowTrustedVaultErrorInAutofill(&client_));
+}
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_CHROMEOS)
+
+#if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_LINUX) && \
+    !BUILDFLAG(IS_CHROMEOS)
+TEST(ShouldShowTrustedVaultErrorInAutofillTest,
+     DisabledOnNonDesktopPlatforms) {
+  MockPasswordManagerClient client;
+  EXPECT_FALSE(ShouldShowTrustedVaultErrorInAutofill(&client));
+}
+#endif
 
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 class PasswordManagerUtilTrustedVaultErrorTest
@@ -991,10 +1299,73 @@ class PasswordManagerUtilTrustedVaultErrorTest
   PasswordManagerUtilTrustedVaultErrorTest() {
     feature_list_.InitAndEnableFeature(
         password_manager::features::kPasswordSaveInContextErrorResolution);
+#if BUILDFLAG(IS_ANDROID)
+    base::android::device_info::set_gms_version_code_for_test(
+        base::NumberToString(
+            password_manager::features::
+                kPasswordSaveInContextErrorResolutionMinGmsVersion.Get()));
+#endif
+  }
+
+  ~PasswordManagerUtilTrustedVaultErrorTest() override {
+#if BUILDFLAG(IS_ANDROID)
+    base::android::device_info::set_gms_version_code_for_test(
+        base::NumberToString(
+            password_manager::features::kMinGmsVersionForInFlowZuulRecovery));
+#endif
   }
 
   base::test::ScopedFeatureList feature_list_;
 };
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(PasswordManagerUtilTrustedVaultErrorTest,
+       IsSavingBlockedByTrustedVaultError_GmsCoreVersionCheck) {
+  EnableSyncForTestAccount();
+
+  auto account_store =
+      base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
+  EXPECT_CALL(mock_client_, GetAccountPasswordStore)
+      .WillRepeatedly(Return(account_store.get()));
+  EXPECT_CALL(*account_store, GetError)
+      .WillRepeatedly(Return(ActionableError::kTrustedVaultKeyNeeded));
+
+  // Minimum supported version should succeed.
+  base::android::device_info::set_gms_version_code_for_test(
+      base::NumberToString(
+          password_manager::features::
+              kPasswordSaveInContextErrorResolutionMinGmsVersion.Get()));
+  EXPECT_TRUE(IsSavingBlockedByTrustedVaultError(&mock_client_, nullptr));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(&mock_client_, nullptr),
+            ActionableError::kTrustedVaultKeyNeeded);
+
+  // Higher version should succeed.
+  base::android::device_info::set_gms_version_code_for_test(
+      base::NumberToString(
+          password_manager::features::
+              kPasswordSaveInContextErrorResolutionMinGmsVersion.Get() +
+          1000));
+  EXPECT_TRUE(IsSavingBlockedByTrustedVaultError(&mock_client_, nullptr));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(&mock_client_, nullptr),
+            ActionableError::kTrustedVaultKeyNeeded);
+
+  // Lower version should fail.
+  base::android::device_info::set_gms_version_code_for_test(
+      base::NumberToString(
+          password_manager::features::
+              kPasswordSaveInContextErrorResolutionMinGmsVersion.Get() -
+          1));
+  EXPECT_FALSE(IsSavingBlockedByTrustedVaultError(&mock_client_, nullptr));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(&mock_client_, nullptr),
+            std::nullopt);
+
+  // Invalid / non-integer version should fail.
+  base::android::device_info::set_gms_version_code_for_test("invalid");
+  EXPECT_FALSE(IsSavingBlockedByTrustedVaultError(&mock_client_, nullptr));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(&mock_client_, nullptr),
+            std::nullopt);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 TEST_F(PasswordManagerUtilTrustedVaultErrorTest,
        IsSavingBlockedByTrustedVaultError) {
@@ -1015,15 +1386,43 @@ TEST_F(PasswordManagerUtilTrustedVaultErrorTest,
 }
 
 TEST_F(PasswordManagerUtilTrustedVaultErrorTest,
+       GetRecoverableErrorBlockingPasswordSaving) {
+  EnableSyncForTestAccount();
+
+  auto account_store =
+      base::MakeRefCounted<password_manager::MockPasswordStoreInterface>();
+  EXPECT_CALL(mock_client_, GetAccountPasswordStore)
+      .WillRepeatedly(Return(account_store.get()));
+
+  EXPECT_CALL(*account_store, GetError)
+      .WillOnce(Return(ActionableError::kTrustedVaultKeyNeeded));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(&mock_client_, nullptr),
+            ActionableError::kTrustedVaultKeyNeeded);
+
+  EXPECT_CALL(*account_store, GetError)
+      .WillOnce(Return(ActionableError::kSignInNeeded));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(&mock_client_, nullptr),
+            std::nullopt);
+
+  EXPECT_CALL(*account_store, GetError)
+      .WillOnce(Return(ActionableError::kInactionable));
+  EXPECT_EQ(GetRecoverableErrorBlockingPasswordSaving(&mock_client_, nullptr),
+            std::nullopt);
+}
+
+TEST_F(PasswordManagerUtilTrustedVaultErrorTest,
        IsSavingBlockedByTrustedVaultErrorForLocalPasswordUpdate) {
   password_manager::MockPasswordFormManagerForUI form_manager;
-  EXPECT_CALL(form_manager, IsPasswordUpdate()).WillOnce(Return(true));
+  EXPECT_CALL(form_manager, IsPasswordUpdate()).WillRepeatedly(Return(true));
   EXPECT_CALL(form_manager,
               IsUpdateAffectingPasswordsStoredInTheGoogleAccount())
-      .WillOnce(Return(false));
+      .WillRepeatedly(Return(false));
 
   EXPECT_FALSE(
       IsSavingBlockedByTrustedVaultError(&mock_client_, &form_manager));
+  EXPECT_EQ(
+      GetRecoverableErrorBlockingPasswordSaving(&mock_client_, &form_manager),
+      std::nullopt);
 }
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
@@ -1071,5 +1470,52 @@ TEST_F(PasswordManagerUtilRecoverableErrorTest,
   EXPECT_FALSE(IsSavingBlockedByRecoverableError(&mock_client_, &form_manager));
 }
 #endif  // BUILDFLAG(IS_IOS)
+
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
+TEST(PasswordManagerUtilBiometricPromoTest,
+     ShouldShowPromoWithKillswitchEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      password_manager::features::kDeviceReauthRefactor);
+
+  TestingPrefServiceSimple prefs;
+  prefs.registry()->RegisterBooleanPref(
+      password_manager::prefs::kBiometricAuthenticationBeforeFilling, false);
+
+  MockPasswordManagerClient client;
+  EXPECT_CALL(client, GetPrefs).WillOnce(Return(&prefs));
+
+  auto checker =
+      std::make_unique<device_reauth::MockDeviceAuthAvailabilityChecker>();
+  EXPECT_CALL(*checker, CanAuthenticateWithBiometrics).WillOnce(Return(true));
+  EXPECT_CALL(client, GetDeviceAuthAvailabilityChecker)
+      .WillOnce(Return(ByMove(std::move(checker))));
+
+  EXPECT_TRUE(ShouldShowBiometricAuthenticationBeforeFillingPromo(&client));
+}
+
+TEST(PasswordManagerUtilBiometricPromoTest,
+     ShouldShowPromoWithKillswitchDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      password_manager::features::kDeviceReauthRefactor);
+
+  TestingPrefServiceSimple prefs;
+  prefs.registry()->RegisterBooleanPref(
+      password_manager::prefs::kBiometricAuthenticationBeforeFilling, false);
+
+  MockPasswordManagerClient client;
+  EXPECT_CALL(client, GetPrefs).WillOnce(Return(&prefs));
+
+  auto authenticator =
+      std::make_unique<device_reauth::MockDeviceAuthenticator>();
+  EXPECT_CALL(*authenticator, CanAuthenticateWithBiometrics)
+      .WillOnce(Return(true));
+  EXPECT_CALL(client, GetDeviceAuthenticator)
+      .WillOnce(Return(ByMove(std::move(authenticator))));
+
+  EXPECT_TRUE(ShouldShowBiometricAuthenticationBeforeFillingPromo(&client));
+}
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace password_manager_util

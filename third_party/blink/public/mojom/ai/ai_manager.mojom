@@ -6,6 +6,7 @@ module blink.mojom;
 
 import "services/on_device_model/public/mojom/download_observer.mojom";
 import "third_party/blink/public/mojom/ai/ai_common.mojom";
+import "third_party/blink/public/mojom/ai/ai_decision_model.mojom";
 import "third_party/blink/public/mojom/ai/ai_semantic_embedder.mojom";
 import "third_party/blink/public/mojom/ai/ai_language_model.mojom";
 import "third_party/blink/public/mojom/ai/ai_proofreader.mojom";
@@ -77,6 +78,8 @@ enum ModelAvailabilityCheckResult {
   // The device does not have sufficient disk space to build caches for the
   // on-device model.
   kUnavailableInsufficientDiskSpaceForCaches = 22,
+  // The requested embedding space is not served by this browser.
+  kUnavailableUnsupportedEmbeddingSpace = 23,
 
   // Append new line here
 };
@@ -134,10 +137,22 @@ interface AIManagerCreateProofreaderClient {
 interface AIManagerCreateSemanticEmbedderClient {
   // Called with a created embedder's mojo interface as a result for the
   // CreateSemanticEmbedder() method of the AIManager.
-  OnResult(pending_remote<blink.mojom.AISemanticEmbedder> embedder);
+  OnResult(pending_remote<blink.mojom.AISemanticEmbedder> embedder,
+           AISemanticEmbedderInfo info);
 
   // Called when the manager cannot create an AISemanticEmbedder.
   OnError(AIManagerCreateClientError error);
+};
+
+// The client interface that receives an AIDecisionModel from an AIManager.
+interface AIManagerCreateDecisionModelClient {
+  // Called with a created decision model's mojo interface as a result for the
+  // CreateDecisionModel() method of the AIManager.
+  OnSessionCreated(pending_remote<blink.mojom.AIDecisionModel> decision_model);
+
+  // Called when the manager cannot create an AIDecisionModel.
+  // `quota_error_info` may provide additional info for kInitialInputTooLarge.
+  OnError(AIManagerCreateClientError error, QuotaErrorInfo? quota_error_info);
 };
 
 // The manager that could create a new session for the model.
@@ -200,16 +215,34 @@ interface AIManager {
                     AIProofreaderCreateOptions options,
                     pending_remote<on_device_model.mojom.DownloadObserver>? monitor);
   // Returns embedder model availability info from the underlying service.
-  CanCreateSemanticEmbedder() => (ModelAvailabilityCheckResult result);
+  // Unknown spaces return kUnavailableUnsupportedEmbeddingSpace.
+  CanCreateSemanticEmbedder(AISemanticEmbedderCreateOptions options) =>
+      (ModelAvailabilityCheckResult result);
 
   // Creates an embedder, passing the result or error to the client.
   // Creation will be aborted if the client is disconnected.
+  // An unknown embedding space is a bad message.
   CreateSemanticEmbedder(
     pending_remote<AIManagerCreateSemanticEmbedderClient> client,
+    AISemanticEmbedderCreateOptions options,
     // If `monitor` is provided, the client will receive download progress
     // updates if the model needs to be downloaded. If it is not provided, the
     // download will still proceed if necessary, but the client will only be
     // notified upon completion or failure via the `client` interface.
     pending_remote<on_device_model.mojom.DownloadObserver>? monitor
   );
+
+  // Returns the supported embedding spaces, or none if the API is turned off.
+  GetSupportedEmbeddingSpaces() =>
+      (array<AISemanticEmbedderSpaceInfo> supported_spaces);
+
+  // Returns decision model availability info from the underlying service.
+  CanCreateDecisionModel(AIDecisionModelCreateOptions options) =>
+      (ModelAvailabilityCheckResult result);
+  // Creates a decision model session, passing the result or error to the
+  // client. Creation will be aborted if the client is disconnected.
+  CreateDecisionModel(
+      pending_remote<AIManagerCreateDecisionModelClient> client,
+      AIDecisionModelCreateOptions options,
+      pending_remote<on_device_model.mojom.DownloadObserver>? monitor);
 };

@@ -4,6 +4,7 @@
 
 package org.chromium.components.browser_ui.site_settings;
 
+import androidx.lifecycle.Lifecycle;
 import androidx.preference.PreferenceFragmentCompat;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -14,6 +15,7 @@ import org.chromium.components.browser_ui.settings.PreferenceUpdateObserver;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.widget.containment.ContainmentItemDecoration;
+import org.chromium.components.browsing_data.content.BrowsingDataModel;
 
 /** Preference fragment for showing the Site Settings UI. */
 @NullMarked
@@ -22,6 +24,8 @@ public abstract class BaseSiteSettingsFragment extends PreferenceFragmentCompat
     private @Nullable SiteSettingsDelegate mSiteSettingsDelegate;
     private @Nullable SettingsNavigation mSettingsNavigation;
     private @Nullable PreferenceUpdateObserver mPreferenceUpdateObserver;
+    private @Nullable BrowsingDataModel mBrowsingDataModel;
+    private boolean mIsFetchingBrowsingDataModel;
 
     /**
      * Sets the SiteSettingsDelegate instance this Fragment should use.
@@ -34,13 +38,13 @@ public abstract class BaseSiteSettingsFragment extends PreferenceFragmentCompat
         mSiteSettingsDelegate = client;
     }
 
-    /** @return the SiteSettingsDelegate instance to use when rendering the Site Settings UI. */
+    /** Returns the SiteSettingsDelegate instance to use when rendering the Site Settings UI. */
     public SiteSettingsDelegate getSiteSettingsDelegate() {
         assert mSiteSettingsDelegate != null : "SiteSettingsDelegate not set";
         return mSiteSettingsDelegate;
     }
 
-    /** @return Whether a SiteSettingsDelegate instance has been assigned to this Fragment. */
+    /** Returns whether a SiteSettingsDelegate instance has been assigned to this Fragment. */
     public boolean hasSiteSettingsDelegate() {
         return mSiteSettingsDelegate != null;
     }
@@ -73,6 +77,38 @@ public abstract class BaseSiteSettingsFragment extends PreferenceFragmentCompat
         mPreferenceUpdateObserver = null;
     }
 
+    /**
+     * Grabs a reference to the BrowsingDataModel on fragment creation for fragments that require
+     * the BrowsingDataModel to ensure the following: 1) The BrowsingDataModel is initialized before
+     * the first site permissions fetch. 2) The BrowsingDataModel is released properly after the
+     * fragment is destroyed.
+     *
+     * <p>This should only be called if the BrowsingDataModel feature is enabled.
+     */
+    public void getBrowsingDataModelRef() {
+        if (mBrowsingDataModel != null || mIsFetchingBrowsingDataModel) return;
+        mIsFetchingBrowsingDataModel = true;
+        getSiteSettingsDelegate()
+                .getBrowsingDataModel(
+                        model -> {
+                            mIsFetchingBrowsingDataModel = false;
+                            if (getLifecycle().getCurrentState() == Lifecycle.State.DESTROYED) {
+                                model.releaseModel();
+                            } else {
+                                mBrowsingDataModel = model;
+                            }
+                        });
+    }
+
+    @Override
+    public void onDestroy() {
+        if (mBrowsingDataModel != null) {
+            mBrowsingDataModel.releaseModel();
+            mBrowsingDataModel = null;
+        }
+        super.onDestroy();
+    }
+
     /** Notifies the observer that the preferences have been updated. */
     protected void notifyPreferencesUpdated() {
         if (mPreferenceUpdateObserver != null) {
@@ -96,10 +132,6 @@ public abstract class BaseSiteSettingsFragment extends PreferenceFragmentCompat
      * are laid out.
      */
     protected void updateContainment() {
-        if (!getSiteSettingsDelegate().isSettingsContainmentEnabled()) {
-            return;
-        }
-
         if (mPreferenceUpdateObserver != null) {
             notifyPreferencesUpdated();
             return;

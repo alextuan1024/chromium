@@ -33,12 +33,16 @@ import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider
 import org.chromium.chrome.browser.media.MediaCaptureDevicesDispatcherAndroid;
 import org.chromium.chrome.browser.tab_ui.TabCardThemeUtil;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiThemeProvider;
+import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+import org.chromium.components.content_settings.ContentSetting;
+import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.tabs.TabAlert;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroidManager;
 import org.chromium.ui.display.DisplayUtil;
+import org.chromium.url.GURL;
 
 /** Collection of utility methods that operates on Tab. */
 @NullMarked
@@ -46,17 +50,13 @@ public class TabUtils {
     // Do not instantiate this class.
     private TabUtils() {}
 
-    /**
-     * @return Whether the given tab is initialized and not destroyed.
-     */
+    /** Returns whether the given tab is initialized and not destroyed. */
     @Contract("null -> false")
     public static boolean isValid(@Nullable Tab tab) {
         return tab != null && tab.isInitialized() && !tab.isDestroyed();
     }
 
-    /**
-     * @return {@link Activity} associated with the given tab.
-     */
+    /** Returns the {@link Activity} associated with the given tab. */
     public static @Nullable Activity getActivity(@Nullable Tab tab) {
         WebContents webContents = tab != null ? tab.getWebContents() : null;
         if (webContents == null || webContents.isDestroyed()) return null;
@@ -108,7 +108,6 @@ public class TabUtils {
      *
      * @param tab The tab to be switched the user agent.
      * @param switchToDesktop Whether switching the user agent to desktop.
-     * @param caller The caller of this method.
      */
     public static void switchUserAgent(Tab tab, boolean switchToDesktop) {
         final boolean reloadOnChange = !tab.isNativePage();
@@ -248,6 +247,20 @@ public class TabUtils {
         }
     }
 
+    /** Unmutes media for a tab unless sound is blocked by site settings. */
+    public static void unmuteMedia(Tab tab) {
+        WebContents webContents = tab.getWebContents();
+        if (webContents == null) return;
+
+        GURL url = webContents.getLastCommittedUrl();
+        if (WebsitePreferenceBridge.getContentSetting(
+                        tab.getProfile(), ContentSettingsType.SOUND, url, url)
+                == ContentSetting.BLOCK) {
+            return;
+        }
+        webContents.setAudioMuted(false);
+    }
+
     /**
      * Returns the {@link MediaState} corresponding to the given {@link TabAlert}.
      *
@@ -285,7 +298,7 @@ public class TabUtils {
             case TabAlert.BLUETOOTH_CONNECTED -> R.drawable.ic_bluetooth_connected;
             case TabAlert.BLUETOOTH_SCAN_ACTIVE -> R.drawable.gm_filled_bluetooth_searching_24;
             case TabAlert.DESKTOP_CAPTURING, TabAlert.TAB_CAPTURING -> R.drawable.capture_24dp;
-            case TabAlert.GLIC_ACCESSING, TabAlert.GLIC_SHARING ->
+            case TabAlert.AI_MODE_SHARING, TabAlert.GLIC_ACCESSING, TabAlert.GLIC_SHARING ->
                     R.drawable.ic_screensaver_auto_24dp;
             // WebHID is unsupported on Android (services/device/hid lacks an Android driver).
             case TabAlert.HID_CONNECTED -> Resources.ID_NULL;
@@ -309,6 +322,7 @@ public class TabUtils {
         return switch (alertState) {
             case TabAlert.ACTOR_ACCESSING,
                     TabAlert.ACTOR_WAITING_ON_USER,
+                    TabAlert.AI_MODE_SHARING,
                     TabAlert.GLIC_ACCESSING,
                     TabAlert.GLIC_SHARING ->
                     SemanticColorUtils.getColorPrimary(context);
@@ -330,6 +344,7 @@ public class TabUtils {
         return switch (alertState) {
             case TabAlert.ACTOR_ACCESSING, TabAlert.ACTOR_WAITING_ON_USER ->
                     R.string.tooltip_tab_alert_state_actor_accessing;
+            case TabAlert.AI_MODE_SHARING -> R.string.tooltip_tab_alert_state_ai_mode_sharing;
             case TabAlert.AUDIO_MUTING -> R.string.tooltip_tab_alert_state_audio_muting;
             case TabAlert.AUDIO_PLAYING -> R.string.tooltip_tab_alert_state_audio_playing;
             case TabAlert.AUDIO_RECORDING -> R.string.tooltip_tab_alert_state_audio_recording;
@@ -358,7 +373,7 @@ public class TabUtils {
 
     // LINT.IfChange(TabAlertPriority)
     /** The maximum alert priority value returned by {@link #getTabAlertPriority(int)}. */
-    public static final int MAX_TAB_ALERT_PRIORITY = 17;
+    public static final int MAX_TAB_ALERT_PRIORITY = 18;
 
     /**
      * Returns the priority of a given tab alert (higher number = higher priority to show).
@@ -370,19 +385,20 @@ public class TabUtils {
     public static int getTabAlertPriority(@TabAlert int alertState) {
         return switch (alertState) {
             case TabAlert.DESKTOP_CAPTURING -> MAX_TAB_ALERT_PRIORITY;
-            case TabAlert.TAB_CAPTURING -> 16;
-            case TabAlert.MEDIA_RECORDING -> 15;
-            case TabAlert.AUDIO_RECORDING -> 14;
-            case TabAlert.VIDEO_RECORDING -> 13;
-            case TabAlert.BLUETOOTH_CONNECTED -> 12;
-            case TabAlert.BLUETOOTH_SCAN_ACTIVE -> 11;
-            case TabAlert.USB_CONNECTED -> 10;
-            case TabAlert.HID_CONNECTED -> 9;
-            case TabAlert.SERIAL_CONNECTED -> 8;
-            case TabAlert.ACTOR_WAITING_ON_USER -> 7;
-            case TabAlert.ACTOR_ACCESSING -> 6;
-            case TabAlert.GLIC_ACCESSING -> 5;
-            case TabAlert.GLIC_SHARING -> 4;
+            case TabAlert.TAB_CAPTURING -> 17;
+            case TabAlert.MEDIA_RECORDING -> 16;
+            case TabAlert.AUDIO_RECORDING -> 15;
+            case TabAlert.VIDEO_RECORDING -> 14;
+            case TabAlert.BLUETOOTH_CONNECTED -> 13;
+            case TabAlert.BLUETOOTH_SCAN_ACTIVE -> 12;
+            case TabAlert.USB_CONNECTED -> 11;
+            case TabAlert.HID_CONNECTED -> 10;
+            case TabAlert.SERIAL_CONNECTED -> 9;
+            case TabAlert.ACTOR_WAITING_ON_USER -> 8;
+            case TabAlert.ACTOR_ACCESSING -> 7;
+            case TabAlert.GLIC_ACCESSING -> 6;
+            case TabAlert.GLIC_SHARING -> 5;
+            case TabAlert.AI_MODE_SHARING -> 4;
             case TabAlert.VR_PRESENTING_IN_HEADSET -> 3;
             case TabAlert.PIP_PLAYING -> 2;
             case TabAlert.AUDIO_MUTING -> 1;

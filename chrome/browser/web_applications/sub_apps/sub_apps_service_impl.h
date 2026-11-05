@@ -13,16 +13,19 @@
 #include <vector>
 
 #include "base/feature_list.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/types/expected.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_metrics_helper.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/document_service.h"
 #include "third_party/blink/public/mojom/subapps/sub_apps_service.mojom.h"
+#include "url/gurl.h"
 #include "url/origin.h"
+
+class Profile;
 
 namespace content {
 class RenderFrameHost;
@@ -41,8 +44,6 @@ extern const base::FeatureParam<int> kSubAppsInstallLimitParam;
 BASE_DECLARE_FEATURE(kSubAppsPerPromptLimit);
 extern const base::FeatureParam<int> kSubAppsPerPromptLimitParam;
 
-namespace {
-
 struct SubAppInstallResult {
   SubAppInstallResult(GURL install_url,
                       webapps::ManifestId manifest_id,
@@ -57,8 +58,6 @@ struct SubAppInstallResult {
   webapps::ManifestId manifest_id;
   webapps::InstallResultCode install_result_code;
 };
-
-}  // namespace
 
 // Internal enum to represent error codes of add function.
 // It is remapped to ukm and mojo corresponding enums.
@@ -78,9 +77,13 @@ class SubAppsServiceImpl
   static constexpr char kSubAppsUninstallNotificationId[] =
       "sub_apps_uninstall_notification";
 
+  SubAppsServiceImpl(
+      content::RenderFrameHost& render_frame_host,
+      mojo::PendingReceiver<blink::mojom::SubAppsService> receiver,
+      webapps::AppId parent_app_id,
+      base::SelfDeletingPassKey key);
   SubAppsServiceImpl(const SubAppsServiceImpl&) = delete;
   SubAppsServiceImpl& operator=(const SubAppsServiceImpl&) = delete;
-  ~SubAppsServiceImpl() override;
 
   // We only want to create this object when the Browser* associated with the
   // WebContents is an Isolated Web App and when the RFH is the main frame.
@@ -136,17 +139,24 @@ class SubAppsServiceImpl
   void RemoveSubApp(
       const std::string& manifest_id,
       base::OnceCallback<void(blink::mojom::SubAppsServiceRemoveResultPtr)>
-          remove_barrier_callback,
-      const webapps::AppId* calling_app_id);
-  void NotifyUninstall(
+          remove_barrier_callback);
+  static void NotifyUninstall(
+      base::WeakPtr<SubAppsServiceImpl> service,
+      base::WeakPtr<Profile> profile,
+      const std::u16string& parent_app_name,
+      const GURL& start_url,
       RemoveCallback result_callback,
       std::vector<blink::mojom::SubAppsServiceRemoveResultPtr> remove_results);
 
+  // False if the frame is inactive or the parent app was uninstalled.
+  bool IsContextValid() const;
+
   WebAppProvider& provider() const;
 
-  SubAppsServiceImpl(
-      content::RenderFrameHost& render_frame_host,
-      mojo::PendingReceiver<blink::mojom::SubAppsService> receiver);
+  ~SubAppsServiceImpl() override;
+
+  // The frame's app, or its parent app if the frame is a sub-app.
+  const webapps::AppId parent_app_id_;
 
   int next_add_call_id_ = 0;
   std::map<int, AddCallInfo> add_call_info_;

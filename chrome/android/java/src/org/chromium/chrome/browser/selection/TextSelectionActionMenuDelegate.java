@@ -10,35 +10,33 @@ import android.content.res.Resources;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.view.ContextThemeWrapper;
+import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.TextView;
 
-import androidx.annotation.VisibleForTesting;
 import androidx.core.widget.TextViewCompat;
 
-import org.chromium.base.DeviceInfo;
+import org.chromium.base.SelectionActionMenuClientWrapper.DefaultItem;
 import org.chromium.base.SelectionActionMenuClientWrapper.MenuType;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicContextMenuUtils;
 import org.chromium.chrome.browser.glic.GlicKeyedService.GlicInvocationSource;
 import org.chromium.chrome.browser.glic.GlicKeyedServiceHandler;
 import org.chromium.chrome.browser.glic.GlicMetrics;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.reader_mode.ReaderModeManager;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.share.link_to_text.LinkToTextCoordinator;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils;
-import org.chromium.chrome.browser.ui.side_panel.AndroidSidePanelEnabledFn;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.SelectionMenuItem;
 import org.chromium.content_public.browser.SelectionMenuItem.ItemGroupOffset;
@@ -49,6 +47,7 @@ import org.chromium.url.GURL;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Implementation of {@link SelectionActionMenuDelegate} that provides custom menu item behavior for
@@ -56,44 +55,37 @@ import java.util.List;
  */
 @NullMarked
 public class TextSelectionActionMenuDelegate implements SelectionActionMenuDelegate {
-    @VisibleForTesting static final String PARAM_SHOW_ASK_GEMINI_ON_SELECTION = "show_on_selection";
-
-    @VisibleForTesting
-    static final String PARAM_ASK_GEMINI_SELECTION_MENU_POSITION = "selection_menu_position";
-
-    @VisibleForTesting
-    static final String PARAM_ASK_GEMINI_SEND_SELECTED_TEXT = "send_selected_text";
-
-    @VisibleForTesting static final String ASK_GEMINI_POSITION_SECONDARY = "secondary";
-
-    @VisibleForTesting static final String ASK_GEMINI_POSITION_ASSIST = "assist";
-
-    @VisibleForTesting
-    static final String PARAM_SUPPRESS_DUPLICATE_PROCESS_TEXT = "suppress_duplicate_process_text";
-
-    @VisibleForTesting
-    static final String PARAM_SUPPRESSED_PROCESS_TEXT_ACTIVITY_PREFIXES =
-            "suppressed_process_text_activity_prefixes";
-
-    /**
-     * Default namespace prefix for activity aliases in the Google app (GSA) registering an
-     * ACTION_PROCESS_TEXT handler whose intent filter is labelled "Ask Gemini". This is an exported
-     * activity alias in the Google app; it is observable via PackageManager#queryIntentActivities
-     * for ACTION_PROCESS_TEXT. Chrome contributes its own "Ask Gemini" item to the selection menu,
-     * so when that entry point is enabled the Google app's item is a duplicate and is filtered out.
-     * Matched on the activity namespace prefix rather than the menu title or exact class name so
-     * that the check stays correct in every locale, survives activity renames within the Robin
-     * namespace, and avoids colliding with non-Gemini features.
-     */
-    @VisibleForTesting
-    static final String DEFAULT_SUPPRESSED_PROCESS_TEXT_ACTIVITY_PREFIXES =
-            "com.google.android.apps.search.assistant.surfaces.voice.robin.";
-
     private final Tab mTab;
     private @Nullable String mSelectedText;
 
+    // These are relative orders within the DEFAULT_ITEMS section. With these and the secondary
+    // assist below, an order value identical to an existing item in the menu means the new item
+    // will appear immediately after it.
+    static final int COPY_LINK_TO_HIGHLIGHT = 4;
+    static final int ASK_GEMINI = 4;
+    static final int OPEN_IN_READING_MODE = 5;
+    static final int READ_ALOUD_READ_ONLY = 6;
+
+    // Within SECONDARY_ASSIST_ITEMS:
+    static final int WEB_SEARCH_EDITABLE = 1;
+    static final int SHARE_EDITABLE = 3;
+    static final int READ_ALOUD_EDITABLE = 4;
+
     public TextSelectionActionMenuDelegate(Tab tab) {
         mTab = tab;
+    }
+
+    @Override
+    public @DefaultItem int[] getDefaultMenuItemOrder(@MenuType int menuType) {
+        return new @DefaultItem int[] {
+            DefaultItem.CUT,
+            DefaultItem.COPY,
+            DefaultItem.PASTE,
+            DefaultItem.PASTE_AS_PLAIN_TEXT,
+            DefaultItem.SELECT_ALL,
+            DefaultItem.WEB_SEARCH,
+            DefaultItem.SHARE
+        };
     }
 
     @Override
@@ -110,12 +102,27 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
                             .setId(R.id.contextmenu_open_in_reading_mode)
                             .setGroupId(R.id.select_action_menu_delegate_items)
                             .setOrderAndCategory(
-                                    SelectionMenuItem.ItemOrder.OPEN_IN_READING_MODE,
+                                    OPEN_IN_READING_MODE,
                                     SelectionMenuItem.ItemGroupOffset.DEFAULT_ITEMS)
                             .setShowAsActionFlags(
                                     MenuItem.SHOW_AS_ACTION_NEVER
                                             | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
                             .build());
+        }
+        if (menuType == MenuType.DROPDOWN
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.COPY_LINK_TO_HIGHLIGHT)
+                && isSelectionReadOnly) {
+            boolean isCopyLinkEnabled = !selectedText.isEmpty() && !isSelectionPassword;
+            SelectionMenuItem copyLinkItem =
+                    new SelectionMenuItem.Builder(R.string.contextmenu_copy_link_to_highlight)
+                            .setId(R.id.contextmenu_copy_link_to_highlight)
+                            .setGroupId(org.chromium.content.R.id.select_action_menu_delegate_items)
+                            .setOrderAndCategory(
+                                    COPY_LINK_TO_HIGHLIGHT, ItemGroupOffset.DEFAULT_ITEMS)
+                            .setIsEnabled(isCopyLinkEnabled)
+                            .build();
+
+            items.add(copyLinkItem);
         }
         if (shouldShowAskGeminiForSelection(isSelectionPassword, selectedText)) {
             SelectionMenuItem.Builder builder =
@@ -132,45 +139,84 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
             setAskGeminiOrderAndCategory(builder);
             items.add(builder.build());
         }
-        if (menuType == MenuType.DROPDOWN
-                && ChromeFeatureList.isEnabled(ChromeFeatureList.COPY_LINK_TO_HIGHLIGHT)
-                && isSelectionReadOnly) {
-            boolean isCopyLinkEnabled = !selectedText.isEmpty() && !isSelectionPassword;
-            SelectionMenuItem copyLinkItem =
-                    new SelectionMenuItem.Builder(R.string.contextmenu_copy_link_to_highlight)
-                            .setId(R.id.contextmenu_copy_link_to_highlight)
-                            .setGroupId(org.chromium.content.R.id.select_action_menu_delegate_items)
-                            .setOrderAndCategory(
-                                    SelectionMenuItem.ItemOrder.COPY_LINK_TO_HIGHLIGHT,
-                                    ItemGroupOffset.DEFAULT_ITEMS)
-                            .setIsEnabled(isCopyLinkEnabled)
-                            .build();
-
-            items.add(copyLinkItem);
-        }
         return items;
+    }
+
+    @Override
+    public @Nullable SelectionMenuItem buildItem(
+            @MenuType int menuType,
+            boolean isSelectionReadOnly,
+            String selectedText,
+            SelectionMenuItem.Builder builder) {
+        Context context = mTab.getContext();
+        if (menuType == MenuType.FLOATING && !builder.isEnabled()) {
+            return null;
+        }
+        if (!builder.isEnabled() && isSelectionReadOnly) {
+            if (builder.getId() == R.id.select_action_menu_cut
+                    || builder.getId() == android.R.id.paste
+                    || builder.getId() == android.R.id.pasteAsPlainText
+                    || builder.getId() == R.id.select_action_menu_select_all) {
+                return null;
+            }
+        }
+        if (builder.getId() == R.id.select_action_menu_share) {
+            if (!isSelectionReadOnly && menuType == MenuType.DROPDOWN) {
+                builder.setOrderAndCategory(SHARE_EDITABLE, ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
+            }
+        } else if (builder.getId() == R.id.select_action_menu_web_search) {
+            // Limited the title, "Search <default search engine> for <selected text>", to context
+            // menu triggered by cursor right click (or touchpad double tap) only. Otherwise, using
+            // default title "Web Search".
+            if (menuType == MenuType.DROPDOWN) {
+                String customTitle = getWebSearchMenuItemTitle(context, selectedText);
+                if (customTitle != null) {
+                    builder.setTitle(customTitle);
+                }
+                if (!isSelectionReadOnly) {
+                    builder.setOrderAndCategory(
+                            WEB_SEARCH_EDITABLE, ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
+                }
+            }
+        } else if (builder.getId() == Menu.NONE && isReadAloud(builder.getTitle(context))) {
+            if (isSelectionReadOnly || menuType != MenuType.DROPDOWN) {
+                builder.setOrderAndCategory(READ_ALOUD_READ_ONLY, ItemGroupOffset.DEFAULT_ITEMS);
+            } else {
+                builder.setOrderAndCategory(
+                        READ_ALOUD_EDITABLE, ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
+            }
+        }
+        return builder.build();
+    }
+
+    private static boolean isReadAloud(@Nullable CharSequence title) {
+        if (title != null) {
+            String lowerTitle = title.toString().toLowerCase(Locale.US);
+            if (lowerTitle.contains("read aloud")
+                    || lowerTitle.contains("listen")
+                    || lowerTitle.contains("reading mode")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
     public List<ResolveInfo> filterTextProcessingActivities(
             @MenuType int menuType, List<ResolveInfo> activities) {
-        // Only drop the Google app's entry when Chrome contributes its own "Ask Gemini" item,
-        // otherwise the user would be left without any Gemini entry point in the menu.
-        // SelectionActionMenuDelegate#filterTextProcessingActivities does not receive the selection
-        // text or password state (and runs before getAdditionalMenuItems sets mSelectedText), but
-        // SelectActionMenuHelper#getTextProcessingItems only invokes this filter for non-empty,
-        // non-password selections.
+        // The Google app contributes its own "Ask Gemini" ACTION_PROCESS_TEXT item. Drop it only
+        // when Chrome would contribute its own item. The selection text and password state are not
+        // passed to this method, so assume a non-empty, non-password selection; hiding the Google
+        // app item for empty or password fields is acceptable.
         if (!shouldShowAskGeminiForSelection(
                 /* isSelectionPassword= */ false, /* selectedText= */ "non-empty")) {
             return activities;
         }
-        if (!ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
-                PARAM_SUPPRESS_DUPLICATE_PROCESS_TEXT,
-                true)) {
+        if (!GlicContextMenuUtils.shouldSuppressDuplicateProcessText()) {
             return activities;
         }
-        String[] suppressedPrefixes = getGeminiRelatedPrefixFilter();
+        String[] suppressedPrefixes =
+                GlicContextMenuUtils.getSuppressedProcessTextActivityPrefixes();
         List<ResolveInfo> filteredActivities = null;
         for (int i = 0; i < activities.size(); i++) {
             ResolveInfo activity = activities.get(i);
@@ -185,17 +231,7 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
         return filteredActivities != null ? filteredActivities : activities;
     }
 
-    private static String[] getGeminiRelatedPrefixFilter() {
-        String prefixesParam =
-                ChromeFeatureList.getFieldTrialParamByFeature(
-                        ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
-                        PARAM_SUPPRESSED_PROCESS_TEXT_ACTIVITY_PREFIXES);
-        if (TextUtils.isEmpty(prefixesParam)) {
-            prefixesParam = DEFAULT_SUPPRESSED_PROCESS_TEXT_ACTIVITY_PREFIXES;
-        }
-        return prefixesParam.split(",");
-    }
-
+    /** Whether {@code activity}'s class name starts with one of {@code suppressedPrefixes}. */
     private static boolean isSuppressedTextProcessingActivity(
             ResolveInfo activity, String[] suppressedPrefixes) {
         if (activity.activityInfo == null || activity.activityInfo.name == null) {
@@ -203,8 +239,7 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
         }
         String activityName = activity.activityInfo.name;
         for (String prefix : suppressedPrefixes) {
-            String trimmed = prefix.trim();
-            if (!trimmed.isEmpty() && activityName.startsWith(trimmed)) {
+            if (!prefix.isEmpty() && activityName.startsWith(prefix)) {
                 return true;
             }
         }
@@ -240,23 +275,25 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
             GURL url = mTab.getUrl();
             boolean isNtp = url != null && UrlUtilities.isNtpUrl(url);
             GlicMetrics.recordEntryPointClick(
-                    GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU, isNtp);
-            if (ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                    ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
-                    PARAM_ASK_GEMINI_SEND_SELECTED_TEXT,
-                    true)) {
-                String text = mSelectedText != null ? mSelectedText : "";
-                boolean sent =
-                        GlicKeyedServiceHandler.invokeWithPrompt(
-                                profile,
-                                mTab,
-                                text,
-                                GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU);
-                GlicMetrics.recordSendSelectedTextSucceeded(sent);
-                return sent;
+                    profile, GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION, isNtp);
+            if (GlicContextMenuUtils.shouldSendSelectedText()) {
+                String text = GlicContextMenuUtils.sanitizeSelectedText(mSelectedText);
+                if (!text.isEmpty()) {
+                    boolean sent =
+                            GlicKeyedServiceHandler.invokeWithPrompt(
+                                    profile,
+                                    mTab,
+                                    webContents.isDestroyed()
+                                            ? null
+                                            : webContents.getFocusedFrame(),
+                                    text,
+                                    GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION);
+                    GlicMetrics.recordSendSelectedTextSucceeded(profile, sent);
+                    return sent;
+                }
             }
             return GlicKeyedServiceHandler.invoke(
-                    profile, mTab, GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU);
+                    profile, mTab, GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION);
         }
         return false;
     }
@@ -328,8 +365,6 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
         return maxMenuWidthPx - itemPadding - safetyBufferPx;
     }
 
-    // TODO(b/543135302): Move Ask Gemini menu enabling checks and feature params into GlicEnabling
-    // as helper methods.
     /**
      * Whether to show the "Ask Gemini" item in the text selection menu for the given selection.
      * Supports both mobile (floating action mode with bottom sheet) and desktop Android
@@ -337,39 +372,24 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
      */
     private boolean shouldShowAskGeminiForSelection(
             boolean isSelectionPassword, String selectedText) {
-        boolean isContainerAvailable =
-                AndroidSidePanelEnabledFn.isEnabled()
-                        || TabBottomSheetUtils.isTabBottomSheetEnabled();
-        if (!isContainerAvailable) return false;
         if (TextUtils.isEmpty(selectedText) || isSelectionPassword) return false;
-        if (mTab.isDestroyed() || mTab.isIncognito()) return false;
-        Profile profile = mTab.getProfile();
-        if (profile == null) return false;
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
-                && ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                        ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
-                        PARAM_SHOW_ASK_GEMINI_ON_SELECTION,
-                        true)
-                && !DeviceInfo.isAutomotive()
-                && GlicEnabling.isEnabledForProfile(profile);
+        if (mTab.isDestroyed()) return false;
+        return GlicContextMenuUtils.shouldShowAskGeminiForSelection(
+                mTab.getProfile(), mTab.getContext());
     }
 
     private void setAskGeminiOrderAndCategory(SelectionMenuItem.Builder builder) {
-        String position =
-                ChromeFeatureList.getFieldTrialParamByFeature(
-                        ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
-                        PARAM_ASK_GEMINI_SELECTION_MENU_POSITION);
+        String position = GlicContextMenuUtils.getAskGeminiSelectionMenuPosition();
         // By default "Ask Gemini" is interposed among the default items, in the gap just before
-        // Web Search (see SelectionMenuItem.ItemOrder.ASK_GEMINI). The field trial can opt into
+        // Web Search (see ASK_GEMINI). The field trial can opt into
         // the primary assist slot ("assist", shown first) or the secondary assist section
         // ("secondary", shown after Web Search) instead.
-        if (ASK_GEMINI_POSITION_ASSIST.equals(position)) {
+        if (GlicContextMenuUtils.ASK_GEMINI_POSITION_ASSIST.equals(position)) {
             builder.setOrderAndCategory(0, ItemGroupOffset.ASSIST_ITEMS);
-        } else if (ASK_GEMINI_POSITION_SECONDARY.equals(position)) {
+        } else if (GlicContextMenuUtils.ASK_GEMINI_POSITION_SECONDARY.equals(position)) {
             builder.setOrderAndCategory(0, ItemGroupOffset.SECONDARY_ASSIST_ITEMS);
         } else {
-            builder.setOrderAndCategory(
-                    SelectionMenuItem.ItemOrder.ASK_GEMINI, ItemGroupOffset.DEFAULT_ITEMS);
+            builder.setOrderAndCategory(ASK_GEMINI, ItemGroupOffset.DEFAULT_ITEMS);
         }
     }
 
@@ -381,7 +401,7 @@ public class TextSelectionActionMenuDelegate implements SelectionActionMenuDeleg
 
         boolean isChromeOrNativePage = UrlUtilities.isChromeScheme(pageUrl) || mTab.isNativePage();
         return !isChromeOrNativePage
-                && !DomDistillerUrlUtils.isDistilledPage(pageUrl)
+                && !WebDistillerUrlUtils.isDistilledPage(pageUrl)
                 && menuType == MenuType.DROPDOWN;
     }
 }

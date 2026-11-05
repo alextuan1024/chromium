@@ -13,6 +13,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.external_intents.ExternalNavigationHandler;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.AbstractMap;
 import java.util.ArrayList;
@@ -24,22 +25,17 @@ import java.util.Map;
 public class TabGroupMetadataExtractor {
     /**
      * Extracts the metadata of a given tab group, including tab IDs, URLs, group ID, color, title,
-     * collapsed state and shared state.
+     * and collapsed state.
      *
      * @param tabModel The tab model to fetch group-level properties.
      * @param groupedTabs The list of tabs that form the group.
      * @param sourceWindowIndex The index of the window that holds the tab group.
      * @param selectedTabId The selected tab ID of the group.
-     * @param isGroupShared Whether the tab group is shared with other collaborators.
      * @return A {@link TabGroupMetadata} object containing the metadata of the tab group, or {@code
      *     null} if the provided tab group list is empty.
      */
     public static @Nullable TabGroupMetadata extractTabGroupMetadata(
-            TabModel tabModel,
-            List<Tab> groupedTabs,
-            int sourceWindowIndex,
-            int selectedTabId,
-            boolean isGroupShared) {
+            TabModel tabModel, List<Tab> groupedTabs, int sourceWindowIndex, int selectedTabId) {
         if (groupedTabs.isEmpty()) return null;
 
         // 1. Collect IDs and URLs for each tab in the group. Check if the selected tab is in the
@@ -62,15 +58,17 @@ public class TabGroupMetadataExtractor {
         }
         if (!selectedTabIsInGroup) selectedTabId = groupedTabs.get(0).getId();
 
-        // 2. Get the first tab as a representative to retrieve the tab group ID.
+        // 2. Read the tab group ID from a member tab.
         Tab firstTab = groupedTabs.get(0);
         @Nullable Token tabGroupId = firstTab.getTabGroupId();
         if (tabGroupId == null) return null;
 
         // 3. Fetch group-level properties using the tab group ID.
-        int tabGroupColor = tabModel.getTabGroupColor(tabGroupId);
-        @Nullable String tabGroupTitle = tabModel.getTabGroupTitle(tabGroupId);
-        boolean tabGroupCollapsed = tabModel.getTabGroupCollapsed(tabGroupId);
+        int tabGroupColor = tabModel.getTabGroupColor(TabGroupId.fromRawToken(tabGroupId));
+        @Nullable String tabGroupTitle =
+                tabModel.getTabGroupTitle(TabGroupId.fromRawToken(tabGroupId));
+        boolean tabGroupCollapsed =
+                tabModel.getTabGroupCollapsed(TabGroupId.fromRawToken(tabGroupId));
 
         // If the tab group is collapsed, do not select any tab within the group.
         if (tabGroupCollapsed) selectedTabId = Tab.INVALID_TAB_ID;
@@ -85,7 +83,6 @@ public class TabGroupMetadataExtractor {
                 tabGroupTitle,
                 mhtmlTabTitle,
                 tabGroupCollapsed,
-                isGroupShared,
                 firstTab.isIncognitoBranded());
     }
 

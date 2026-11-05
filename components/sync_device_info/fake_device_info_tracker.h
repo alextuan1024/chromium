@@ -30,7 +30,8 @@ class FakeDeviceInfoTracker : public DeviceInfoTracker {
 
   // DeviceInfoTracker
   bool IsSyncing() const override;
-  const DeviceInfo* GetDeviceInfo(const std::string& client_id) const override;
+  const DeviceInfo* GetChromeDeviceInfo(
+      const std::string& client_id) const override;
   std::vector<const DeviceInfo*> GetAllDeviceInfo() const override;
   std::vector<const DeviceInfo*> GetAllChromeDeviceInfo() const override;
   void AddObserver(Observer* observer) override;
@@ -75,7 +76,7 @@ class FakeDeviceInfoTracker : public DeviceInfoTracker {
   // Owned DeviceInfo instances (subset of all devices).
   std::vector<std::unique_ptr<DeviceInfo>> owned_devices_;
   // DeviceInfo stored here are not necessarily owned.
-  std::vector<raw_ptr<const DeviceInfo, VectorExperimental>> devices_;
+  std::vector<raw_ptr<const DeviceInfo, DanglingUntriaged>> devices_;
   std::string local_device_cache_guid_;
   std::optional<absl::flat_hash_map<DeviceInfo::FormFactor, int>>
       device_count_per_type_override_;

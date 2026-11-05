@@ -29,3 +29,9 @@ NSString* const kLocationBarBadgeImageViewIdentifier =
     @"LocationBarBadgeImageViewAXID";
 
 NSString* const kLocationBarBadgeLabelIdentifier = @"LocationBarBadgeLabelAXID";
+
+NSString* const kLocationBarBadgeSeparatorAccessibilityIdentifier =
+    @"LocationBarBadgeSeparatorAccessibilityIdentifier";
+
+NSString* const kLocationBarBadgeStackViewAccessibilityIdentifier =
+    @"LocationBarBadgeStackViewAccessibilityIdentifier";

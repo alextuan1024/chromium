@@ -36,7 +36,6 @@
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_branded_strings.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
@@ -46,10 +45,6 @@
 
 namespace {
 int GetBackupCardDescriptionId(bool is_first_run_desktop_refresh_enabled) {
-  if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    return IDS_UNO_FRE_BACKUP_CARD_DESCRIPTION;
-  }
-
   return is_first_run_desktop_refresh_enabled
              ? IDS_UNO_FRE_REFRESH_BACKUP_CARD_DESCRIPTION_WITH_PASSWORDS
              : IDS_UNO_FRE_BACKUP_CARD_DESCRIPTION_WITH_PASSWORDS;
@@ -105,22 +100,14 @@ IntroUI::IntroUI(content::WebUI* web_ui)
                                   ? IDR_INTRO_INTRO_REFRESH_HTML
                                   : IDR_INTRO_INTRO_HTML);
 
-  const bool is_dont_sign_in_on_gaia_page_variation =
-      is_first_run_desktop_refresh_enabled &&
-      switches::kFirstRunDesktopSignInPromoVariation.Get() ==
-          switches::FirstRunDesktopSignInPromoVariation::kDontSignInOnGaiaPage;
-
-  const int title_id = is_dont_sign_in_on_gaia_page_variation
-                           ? IDS_FRE_GET_YOUR_BROWSER_READY_TITLE
-                           : IDS_FRE_SIGN_IN_TITLE_0;
-
   // Setting the title here instead of relying on the one provided from the
   // page itself makes it available much earlier, and avoids having to fallback
   // to the one obtained from `NavigationEntry::GetTitleForDisplay()` (which
   // ends up being the URL) when we try to get it on startup for a11y purposes.
-  web_ui->OverrideTitle(l10n_util::GetStringUTF16(title_id));
+  web_ui->OverrideTitle(l10n_util::GetStringUTF16(IDS_FRE_SIGN_IN_TITLE_0));
 
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
+      {"pageTitle", IDS_FRE_SIGN_IN_TITLE_0},
       {"pageSubtitle", IDS_FRE_SIGN_IN_SUBTITLE_0},
       {"devicesCardTitle", IDS_FRE_DEVICES_CARD_TITLE},
       {"devicesCardDescription", IDS_FRE_DEVICES_CARD_DESCRIPTION},
@@ -128,7 +115,6 @@ IntroUI::IntroUI(content::WebUI* web_ui)
       {"securityCardDescription", IDS_FRE_SECURITY_CARD_DESCRIPTION},
       {"backupCardTitle", IDS_FRE_BACKUP_CARD_TITLE},
       {"acceptSignInButtonTitle", IDS_FRE_ACCEPT_SIGN_IN_BUTTON_TITLE},
-      {"createAccountDisclaimer", IDS_FRE_CREATE_ACCOUNT_DESCRIPTION},
       {"productLogoAltText", IDS_SHORT_PRODUCT_LOGO_ALT_TEXT},
       // Strings for welcome subpage.
       {"welcomeTitle", IDS_FRE_WELCOME_TITLE},
@@ -182,7 +168,6 @@ IntroUI::IntroUI(content::WebUI* web_ui)
   source->AddString("welcomeMetricsPopupCloseButtonLabel", "");
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
-  source->AddLocalizedString("pageTitle", title_id);
   source->AddLocalizedString(
       "backupCardDescription",
       GetBackupCardDescriptionId(is_first_run_desktop_refresh_enabled));
@@ -192,11 +177,6 @@ IntroUI::IntroUI(content::WebUI* web_ui)
           switches::kProfileCreationDeclineSigninCTAExperiment)
           ? IDS_FRE_STAY_SIGNED_OUT_BUTTON_TITLE
           : IDS_FRE_DECLINE_SIGN_IN_BUTTON_TITLE);
-
-  source->AddLocalizedString("acceptSignInButtonTitle",
-                             is_dont_sign_in_on_gaia_page_variation
-                                 ? IDS_FRE_NEXT_BUTTON_TITLE
-                                 : IDS_FRE_ACCEPT_SIGN_IN_BUTTON_TITLE);
 
   const bool is_device_managed =
       policy::ManagementServiceFactory::GetForPlatform()->IsManaged();
@@ -241,12 +221,6 @@ IntroUI::IntroUI(content::WebUI* web_ui)
     source->AddBoolean("disableAnimations", true);
   } else {
     source->AddBoolean("disableAnimations", false);
-  }
-
-  if (is_first_run_desktop_refresh_enabled) {
-    source->AddInteger(
-        "signInPromoVariation",
-        static_cast<int>(switches::kFirstRunDesktopSignInPromoVariation.Get()));
   }
 
   if (switches::IsPreFirstRunDesktopRefreshEnabled()) {
@@ -318,7 +292,7 @@ IntroUI::~IntroUI() {
 }
 
 void IntroUI::SetSigninChoiceCallback(IntroSigninChoiceCallback callback) {
-  DCHECK(!callback->is_null());
+  CHECK(!callback->is_null(), base::NotFatalUntil::M162);
   signin_choice_callback_ = std::move(callback);
 
   intro_handler_->ResetIntroButtons();
@@ -328,7 +302,7 @@ void IntroUI::SetSigninChoiceCallback(IntroSigninChoiceCallback callback) {
 }
 
 void IntroUI::SetDefaultBrowserCallback(DefaultBrowserCallback callback) {
-  DCHECK(!callback->is_null());
+  CHECK(!callback->is_null(), base::NotFatalUntil::M162);
   default_browser_callback_ = std::move(callback);
   intro_handler_->ResetDefaultBrowserButtons();
 }

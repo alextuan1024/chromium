@@ -30,12 +30,16 @@
 
 #include "third_party/blink/public/web/web_element.h"
 
+#include <algorithm>
+#include <memory>
 #include <optional>
 
 #include "base/functional/callback_helpers.h"
+#include "base/notreached.h"
 #include "cc/base/region.h"
 #include "third_party/blink/public/common/metrics/document_update_reason.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
+#include "third_party/blink/public/mojom/input/scroll_direction.mojom-blink.h"
 #include "third_party/blink/public/mojom/scroll/scroll_into_view_params.mojom-blink.h"
 #include "third_party/blink/public/web/web_label_element.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_element.h"
@@ -51,16 +55,17 @@
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/events/simulated_click_options.h"
 #include "third_party/blink/renderer/core/dom/focus_params.h"
+#include "third_party/blink/renderer/core/editing/commands/clipboard_commands.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/editing/ime/input_method_controller.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/visible_selection.h"
-#include "third_party/blink/renderer/core/events/clipboard_event.h"
 #include "third_party/blink/renderer/core/events/text_event.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_metrics_aggregator.h"
+#include "third_party/blink/renderer/core/frame/root_frame_viewport.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect_list.h"
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
@@ -77,8 +82,12 @@
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
+#include "third_party/blink/renderer/core/page/drag_image.h"
 #include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/core/paint/occlusion_utils.h"
 #include "third_party/blink/renderer/core/scroll/scroll_into_view_util.h"
+#include "third_party/blink/renderer/core/scroll/scroll_types.h"
+#include "third_party/blink/renderer/core/scroll/scrollable_area.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/svg/graphics/svg_image.h"
 #include "third_party/blink/renderer/core/svg/graphics/svg_image_for_container.h"
@@ -89,12 +98,11 @@
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
-#include "third_party/skia/include/core/SkRegion.h"
+#include "ui/events/types/scroll_types.h"
 #include "ui/gfx/geometry/quad_f.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace blink {
@@ -435,23 +443,31 @@ void WebElement::PasteText(const WebString& text,
   // Simulates a paste command, except that it does not access the system
   // clipboard but instead pastes `text`. This block is a stripped-down version
   // of ClipboardCommands::Paste() that's limited to pasting plain text.
+  // Because the page may cancel the paste event and perform its own read of
+  // the clipboard, clipboard reads initiated during the paste event are also
+  // configured to return the synthetic content.
   Element* target = FindEventTargetFrom(
       *frame, frame->Selection().ComputeVisibleSelectionInDomTree());
-  auto create_data_transfer = [](const WebString& text) {
-    return DataTransfer::Create(DataTransfer::kCopyAndPaste,
-                                DataTransferAccessPolicy::kReadable,
-                                DataObject::CreateFromString(text));
-  };
+  if (!target) {
+    return;
+  }
   // Fires "paste" event.
-  if (target->DispatchEvent(*ClipboardEvent::Create(
-          event_type_names::kPaste, create_data_transfer(text))) !=
-      DispatchEventResult::kNotCanceled) {
+  if (!ClipboardCommands::DispatchSyntheticPasteEvent(*target, text)) {
+    return;
+  }
+  if (is_destroyed(*frame)) {
     return;
   }
   // Fires "beforeinput" event.
+  DataTransfer* data_transfer = DataTransfer::Create(
+      DataTransfer::kCopyAndPaste, DataTransferAccessPolicy::kReadable,
+      DataObject::CreateFromString(text));
   if (DispatchBeforeInputDataTransfer(
-          target, InputEvent::InputType::kInsertFromPaste,
-          create_data_transfer(text)) != DispatchEventResult::kNotCanceled) {
+          target, InputEvent::InputType::kInsertFromPaste, data_transfer) !=
+      DispatchEventResult::kNotCanceled) {
+    return;
+  }
+  if (is_destroyed(*frame)) {
     return;
   }
   // No DOM mutation if EditContext is active.
@@ -562,7 +578,25 @@ SkBitmap WebElement::ImageContents() {
     return {};
   }
 
+  if (RuntimeEnabledFeatures::StandaloneSVGImageActionsEnabled() &&
+      element->GetDocument().IsSVGDocument() &&
+      element == element->GetDocument().documentElement()) {
+    LocalFrame* frame = element->GetDocument().GetFrame();
+    if (frame) {
+      if (std::unique_ptr<DragImage> image =
+              DataTransfer::NodeImageForClipboard(*frame, *element)) {
+        return image->Bitmap();
+      }
+    }
+    return {};
+  }
+
   if (auto* canvas = blink::DynamicTo<HTMLCanvasElement>(element)) {
+    // Do not expose pixels from canvases tainted by cross-origin content or
+    // blocked from readback by document settings (crbug.com/581379623).
+    if (!canvas->OriginClean()) {
+      return {};
+    }
     scoped_refptr<StaticBitmapImage> image = canvas->Snapshot(kBackBuffer);
     if (!image) {
       return {};
@@ -570,7 +604,7 @@ SkBitmap WebElement::ImageContents() {
     return image->AsSkBitmapForCurrentFrame(kRespectImageOrientation);
   }
 
-  Image* image = GetImage();
+  scoped_refptr<Image> image = GetImage();
   if (!image)
     return {};
   scoped_refptr<SVGImageForContainer> svg_image_for_container;
@@ -595,6 +629,15 @@ SkBitmap WebElement::ImageContents() {
     image = svg_image_for_container.get();
   }
   return image->AsSkBitmapForCurrentFrame(kRespectImageOrientation);
+}
+
+bool WebElement::IsCanvasOriginClean() const {
+  if (IsNull()) {
+    return false;
+  }
+  const auto* canvas =
+      blink::DynamicTo<HTMLCanvasElement>(ConstUnwrap<Element>());
+  return canvas && canvas->OriginClean();
 }
 
 std::vector<uint8_t> WebElement::CopyOfImageData() {
@@ -676,7 +719,7 @@ void WebElement::ScrollIntoViewIfNeeded() {
 }
 
 bool WebElement::HasScrollBehaviorSmooth() const {
-  return GetScrollingBox()->StyleRef().GetScrollBehavior() ==
+  return GetScrollingBox()->Style().GetScrollBehavior() ==
          mojom::blink::ScrollBehavior::kSmooth;
 }
 
@@ -698,10 +741,87 @@ bool WebElement::IsUserScrollableY() const {
   return box->HasScrollableOverflowY();
 }
 
+namespace {
+
+// Completion callback for WebElement::UserScrollByGranularity(). Mirrors the
+// scrollend handling of ScrollManager::LogicalScroll() for non-key scrolls.
+void OnUserScrollByGranularityFinished(
+    WeakPersistent<ScrollableArea> area,
+    WebElement::ScrollByGranularityCallback on_finish,
+    ScrollableArea::ScrollCompletionMode completion_mode) {
+  if (area) {
+    bool enqueue_scrollend =
+        completion_mode == ScrollableArea::ScrollCompletionMode::kFinished;
+    // Viewport scrolls should only fire scrollend if the layout viewport was
+    // scrolled.
+    if (enqueue_scrollend) {
+      if (auto* root_frame_viewport =
+              DynamicTo<RootFrameViewport>(area.Get())) {
+        enqueue_scrollend = root_frame_viewport->ScrollAffectsLayoutViewport();
+      }
+    }
+    area->OnScrollFinished(enqueue_scrollend);
+  }
+  std::move(on_finish).Run(
+      completion_mode == ScrollableArea::ScrollCompletionMode::kZeroDelta
+          ? WebElement::ScrollByGranularityResult::kNoRoomToScroll
+          : WebElement::ScrollByGranularityResult::kScrolled);
+}
+
+}  // namespace
+
+void WebElement::UserScrollByGranularity(
+    mojom::blink::ScrollDirectionPhysical direction,
+    ui::ScrollGranularity granularity,
+    ScrollByGranularityCallback on_finish) {
+  Element* element = Unwrap<Element>();
+  element->GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kScroll);
+
+  // For the document's scrolling element this is the layout view's scrollable
+  // area (or the RootFrameViewport for the global root scroller), the same one
+  // a key scroll of the viewport uses.
+  ScrollableArea* scrollable_area =
+      ScrollableArea::GetForScrolling(GetScrollingBox());
+  if (!scrollable_area) {
+    std::move(on_finish).Run(ScrollByGranularityResult::kNotScrollable);
+    return;
+  }
+
+  // This mirrors the per-scroller logic of ScrollManager::LogicalScroll() for
+  // PageUp/PageDown (page) and Home/End (document) key presses, minus chaining
+  // to ancestor scrollers. Snap points are handled first; snapping has no
+  // completion callback, so report success as soon as the snap scroll starts.
+  cc::ScrollSourceType source_type;
+  bool snapped;
+  switch (granularity) {
+    case ui::ScrollGranularity::kScrollByPage:
+      source_type = cc::ScrollSourceType::kRelativeScroll;
+      snapped = scrollable_area->SnapForPageScroll(direction);
+      break;
+    case ui::ScrollGranularity::kScrollByDocument:
+      source_type = cc::ScrollSourceType::kAbsoluteScroll;
+      snapped = scrollable_area->SnapForDocumentScroll(direction);
+      break;
+    default:
+      NOTREACHED() << "Unsupported granularity "
+                   << static_cast<int>(granularity);
+  }
+  if (snapped) {
+    std::move(on_finish).Run(ScrollByGranularityResult::kScrolled);
+    return;
+  }
+
+  ScrollableArea::ScrollCallback callback(blink::BindOnce(
+      &OnUserScrollByGranularityFinished, WrapWeakPersistent(scrollable_area),
+      std::move(on_finish)));
+  scrollable_area->UserScroll(granularity, ToScrollDelta(direction, 1),
+                              source_type, std::move(callback));
+}
+
 float WebElement::GetEffectiveZoom() const {
   const Element* element = ConstUnwrap<Element>();
   if (const auto* layout_object = element->GetLayoutObject()) {
-    return layout_object->StyleRef().EffectiveZoom();
+    return layout_object->Style().EffectiveZoom();
   }
   return 1.0f;
 }
@@ -761,7 +881,8 @@ class PartialOcclusionHitTestHelper
     : public GarbageCollected<PartialOcclusionHitTestHelper> {
  public:
   PartialOcclusionHitTestHelper(Element* target, float visibility_threshold)
-      : target_(target), visibility_threshold_(visibility_threshold) {
+      : occlusion_tracker_(*target),
+        visibility_threshold_(visibility_threshold) {
     DCHECK_GT(visibility_threshold_, 0.0f);
     DCHECK_LE(visibility_threshold_, 1.0f);
   }
@@ -771,19 +892,22 @@ class PartialOcclusionHitTestHelper
                                         const PhysicalRect* physical_rect,
                                         const gfx::QuadF* quad,
                                         const cc::Region* region) {
-    // Hit testing proceeds front-to-back. When `target_` is hit, all potential
-    // occluders in front of it have already been evaluated. Stop hit testing to
-    // avoid penetrating behind `target_`.
-    if (&node == target_) {
-      occluded_region_.setEmpty();
-      return kStopHitTesting;
-    }
-    // Ignore nodes that are not opaque or have no layout object. We are only
-    // interested in evaluating nodes that visually occlude the target, as seen
-    // by the user.
-    if (!node.GetLayoutObject() ||
-        !node.GetLayoutObject()->HasNonZeroEffectiveOpacity()) {
-      return kContinueHitTesting;
+    switch (occlusion_tracker_.GetHitNodeOcclusion(node)) {
+      // Hit testing proceeds front-to-back. When the target is hit, all
+      // potential occluders in front of it have already been evaluated. Stop
+      // hit testing to avoid penetrating behind the target.
+      case HitNodeOcclusion::kTarget:
+        occlusion_tracker_.Reset();
+        return kStopHitTesting;
+      // Ignore nodes that are not opaque or have no layout object. We are only
+      // interested in evaluating nodes that visually occlude the target, as
+      // seen by the user.
+      case HitNodeOcclusion::kZeroOpacity:
+      case HitNodeOcclusion::kNotPainted:
+        return kContinueHitTesting;
+      case HitNodeOcclusion::kOccluding:
+      case HitNodeOcclusion::kInUserAgentShadowTree:
+        break;
     }
 
     // Determine the occluding node's geometry using the most specific bounds
@@ -811,58 +935,39 @@ class PartialOcclusionHitTestHelper
     }
     node_rect.Intersect(hit_rect);
     if (!node_rect.IsEmpty()) {
-      // Accumulate the occluding rect into `occluded_region_`.
-      occluded_region_.op(
-          gfx::RectToSkIRect(gfx::ToEnclosingRect(gfx::RectF(node_rect))),
-          SkRegion::kUnion_Op);
+      // Accumulate the occluding rect.
+      occlusion_tracker_.AddOccludedRect(
+          gfx::ToEnclosingRect(gfx::RectF(node_rect)));
       float target_area = gfx::RectF(hit_rect).size().GetArea();
-      float occluded_area = ComputeOccludedArea(target_area);
 
       // If the remaining visible area is less than `visibility_threshold_`,
-      // stop hit testing early. Since `target_` has not been reached yet, it
+      // stop hit testing early. Since the target has not been reached yet, it
       // will not be present in `result.ListBasedTestResult()`, which tells
       // `ComputeVisibilityInfo` that the element is occluded.
-      if (!HasEnoughVisibleAreaRemaining(occluded_area, target_area)) {
-        occluded_region_.setEmpty();
+      if (!HasEnoughVisibleAreaRemaining(target_area)) {
+        occlusion_tracker_.Reset();
         return kStopHitTesting;
       }
     }
     return kContinueHitTesting;
   }
 
-  void Trace(Visitor* visitor) const { visitor->Trace(target_); }
+  void Trace(Visitor* visitor) const { visitor->Trace(occlusion_tracker_); }
 
  private:
-  static float ComputeArea(const SkIRect& rect) {
-    return static_cast<float>(rect.width()) * static_cast<float>(rect.height());
-  }
-
-  float ComputeOccludedArea(float target_area) const {
-    if (target_area <= 0.0f || occluded_region_.isEmpty()) {
-      return 0.0f;
-    }
-    float occluded_area = 0.0f;
-    for (SkRegion::Iterator it(occluded_region_); !it.done(); it.next()) {
-      occluded_area += ComputeArea(it.rect());
-      if (occluded_area >= target_area) {
-        return target_area;
-      }
-    }
-    return occluded_area;
-  }
-
-  bool HasEnoughVisibleAreaRemaining(float occluded_area,
-                                     float target_area) const {
+  bool HasEnoughVisibleAreaRemaining(float target_area) const {
     if (target_area <= 0.0f) {
       return false;
     }
+    float occluded_area =
+        std::min(occlusion_tracker_.OccludedArea(), target_area);
     float visible_ratio = (target_area - occluded_area) / target_area;
     return visible_ratio >= visibility_threshold_;
   }
 
-  Member<Element> target_;
+  // Tracks the area of the target occluded by the nodes hit so far.
+  HitTestOcclusionTracker occlusion_tracker_;
   const float visibility_threshold_;
-  SkRegion occluded_region_;
 };
 
 class VisibilityObserver final : public GarbageCollected<VisibilityObserver> {

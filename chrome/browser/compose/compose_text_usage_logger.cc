@@ -8,7 +8,6 @@
 #include <bit>
 #include <cstdint>
 
-#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
@@ -17,7 +16,6 @@
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/signatures.h"
-#include "components/compose/core/browser/compose_features.h"
 #include "services/metrics/public/cpp/metrics_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 
@@ -44,7 +42,7 @@ int64_t CountWords(const std::u16string& value) {
   return words;
 }
 
-size_t RoundDownToPowerOfTwo(int64_t n) {
+int64_t RoundDownToPowerOfTwo(int64_t n) {
   // We use -1 as a special value indicating unknown.
   if (n < 0) {
     return -1;
@@ -199,20 +197,16 @@ void ComposeTextUsageLogger::Reset() {
     builder.SetAutofillFormControlType(metrics.form_control_type)
         .SetTypedCharacterCount(RoundDownToPowerOfTwo(typed_chars))
         .SetTypedWordCount(RoundDownToPowerOfTwo(typed_words))
-        .SetIsAutofillFieldType(metrics.is_autofill_field_type);
-
-    if (base::FeatureList::IsEnabled(features::kEnableAdditionalTextMetrics)) {
-      builder
-          .SetFieldSignature(
-              autofill::HashFieldSignature(metrics.field_signature))
-          .SetFormSignature(autofill::HashFormSignature(metrics.form_signature))
-          .SetEditingTime(ukm::GetExponentialBucketMinForUserTiming(
-              metrics.editing_time.InSeconds()));
-      if (metrics.is_long_field) {
-        base::UmaHistogramCustomTimes(
-            "Compose.TextElementUsage.LongField.EditingTime",
-            metrics.editing_time, base::Seconds(2), base::Minutes(20), 50);
-      }
+        .SetIsAutofillFieldType(metrics.is_autofill_field_type)
+        .SetFieldSignature(
+            autofill::HashFieldSignature(metrics.field_signature))
+        .SetFormSignature(autofill::HashFormSignature(metrics.form_signature))
+        .SetEditingTime(ukm::GetExponentialBucketMinForUserTiming(
+            metrics.editing_time.InSeconds()));
+    if (metrics.is_long_field) {
+      base::UmaHistogramCustomTimes(
+          "Compose.TextElementUsage.LongField.EditingTime",
+          metrics.editing_time, base::Seconds(2), base::Minutes(20), 50);
     }
 
     builder.Record(ukm::UkmRecorder::Get());

@@ -42,8 +42,11 @@ the code that should be served at runtime.
 
 These rules are used to inline HTML or CSS into a TypeScript file which can be
 compiled by TS compiler and then imported with JS imports at runtime. This is
-necessary when writing Web Components, which need to return their HTML in the
-`template()` getter method.
+necessary when writing Web Components that use `.html` or `.css` files, which
+need to return their HTML and styles in TypeScript (e.g. via `render()` and
+`styles()` in Lit, or `template()` in Polymer/native Web Components). Note that
+for Lit Web Components, checking in `.html.ts` files directly instead of using
+`html_to_wrapper` is preferred.
 
 By default, these rules accept input files from within the current directory.
 
@@ -55,10 +58,13 @@ generated directory (|target_gen_dir|).
 in_files: specifies the list of files to process with respect to the
           |in_folder|.
 template: html_to_wrapper only. Valid values are:
-          - "polymer" (default)
-          - "native" (use when wrapping the HTML template of a non-Polymer web
+          - "lit" (default)
+          - "polymer" (Polymer is deprecated and unsupported for new non-CrOS
+             code)
+          - "native" (use when wrapping the HTML template of a native web
              component)
-          - "detect" (use when there are both Polymer and native web components)
+          - "detect" (use when there are multiple types of web components, e.g.
+             Lit, Polymer, and/or native)
 in_folder: Specifies the input folder where files are located. If not specified,
            the current directory (of the BUILD.gn file) is used.
 out_folder: Specifies the location to write the wrapped files. If not specified,
@@ -239,7 +245,7 @@ ts_library("build_ts") {
   ]
   # List other ts_library targets for libraries the UI needs here
   deps = [
-    "//third_party/polymer/v3_0:library",
+    "//third_party/lit/v3_0:build_ts",
     "//ui/webui/resources/js:build_ts",
   ]
   definitions = [
@@ -266,6 +272,14 @@ in path_mappings.py (e.g. //ui/webui/resources/ deps).
 #### **Arguments**
 ```
 ts_deps: List of ts_library() dependencies to generate path mappings for.
+manifest_files: Optional parameter. List of manifest files (e.g. from
+                generate_mojo_manifest() or ts_library() targets) whose listed
+                .js files should be mapped to their corresponding .d.ts files
+                using the `dts_dir` (or `base_dir`) and optional `url_prefix`
+                recorded in each manifest. Must be specified together with
+                `manifest_deps`.
+manifest_deps: Optional parameter. Targets generating |manifest_files|. Must be
+               specified together with `manifest_files`.
 webui_context_type: What import scheme(s) should be mapped for the UI. Options:
                     'trusted': Maps chrome:// and scheme-relative imports.
                                Default value.
@@ -288,6 +302,8 @@ webui_ts_library uses all the same arguments as ts_library, in addition to
 the following:
 ```
 webui_context_type: See |webui_context_type| in webui_path_mappings().
+manifest_files: See |manifest_files| in webui_path_mappings(). Optional.
+manifest_deps: See |manifest_deps| in webui_path_mappings(). Optional.
 ```
 
 ### **eslint_ts**
@@ -579,6 +595,126 @@ grit("resources") {
 }
 ```
 
+### **generate_zip**
+
+This rule packages all files referenced by a `.grd` file (including any nested
+`.grdp` files) into a deterministic `.zip` archive while preserving their
+relative resource paths. This is typically used via `generate_zip = true` in
+`build_webui()`.
+
+#### **Arguments**
+```
+in_grd: The input .grd file listing the resources to package.
+out_zip: The destination .zip file to write.
+deps: Targets generating |in_grd| and all files referenced by it.
+inputs: Input files referenced by |in_grd| (and any .grdp files) so they are
+        staged for remote execution.
+grd_resource_path_prefix: Optional resource path prefix to strip from destination
+                          paths in the zip archive.
+```
+
+#### **Example**
+```python
+import("//ui/webui/resources/tools/generate_zip.gni")
+
+generate_zip("build_zip") {
+  in_grd = "$target_gen_dir/resources.grd"
+  out_zip = "$target_gen_dir/resources.zip"
+  deps = [
+    ":build_grd",
+    ":build_ts",
+  ]
+  inputs = [ "$target_gen_dir/tsc/my_webui.js" ]
+}
+```
+
+### **webui_mojo_library**
+
+This rule compiles and (when `optimize_webui = true`) minifies the
+`.mojom-webui.ts` bindings produced by a sibling `mojom()` target configured
+with `webui_module_path = "REPO_PATHS"`, and outputs a manifest
+(`$target_gen_dir/${target_name}_manifest.json`) aggregating its own
+`.mojom-webui.js` files and those of any transitive `webui_mojo_library()`
+dependencies. The target must be named `<mojo_target_name>_webui` matching
+`mojo_target_name` (e.g. `mojo_bindings_webui` for `mojom("mojo_bindings")`).
+
+#### **Arguments**
+```
+mojo_target_name: Required parameter. The name of the sibling `mojom()` target
+                  in the same `BUILD.gn` file (e.g. `"mojo_bindings"`). The
+                  `webui_mojo_library()` target itself must be named
+                  `"<mojo_target_name>_webui"`.
+mojo_target_deps: Optional parameter. List of `mojom()` target labels that the
+                  sibling `mojom()` target depends on (typically shared via a
+                  `mojo_deps` variable with the `mojom()` target's
+                  `public_deps`). Shared Mojo targets listed in
+                  `//ui/webui/resources/mojo/shared_mojo_targets.gni` are
+                  automatically filtered out, while other Mojo dependencies are
+                  mapped to their corresponding `<name>_webui`
+                  `webui_mojo_library()` targets.
+```
+
+#### **Example**
+```python
+import("//mojo/public/tools/bindings/mojom.gni")
+import("//ui/webui/resources/tools/webui_mojo_library.gni")
+
+mojo_deps = [ "//mojo/public/mojom/base" ]
+
+mojom("mojo_bindings") {
+  sources = [ "my_webui.mojom" ]
+  public_deps = mojo_deps
+  webui_module_path = "REPO_PATHS"
+}
+
+webui_mojo_library("mojo_bindings_webui") {
+  mojo_target_name = "mojo_bindings"
+  mojo_target_deps = mojo_deps
+}
+```
+
+### **generate_mojo_manifest**
+
+This rule writes a JSON manifest file (`entries` containing `base_dir`,
+`dts_dir`, optional `url_prefix`, and `files`) combining a target's own Mojo JS
+files with the entries from any dependent Mojo manifests (`dep_manifests`).
+Used internally by `webui_mojo_library()` and
+`//ui/webui/resources/mojo:mojo_manifest`.
+
+#### **Arguments**
+```
+out_manifest: Output path for the generated `.json` manifest file.
+base_dir: Optional parameter (required when `in_files` is specified). Base
+          directory containing files listed in `in_files`.
+dts_dir: Optional parameter. Directory containing the `.d.ts` files emitted by
+         `ts_library()` for `in_files`. Defaults to `base_dir`.
+url_prefix: Optional parameter. Import/resource URL prefix prepended to each
+            entry in `in_files` (e.g. the target's repository-relative
+            directory).
+in_files: Optional parameter. List of `.js` file paths relative to `base_dir`
+          and `dts_dir` produced by the current target.
+dep_manifests: Optional parameter. List of manifest files from dependent
+               targets (accepting both `generate_mojo_manifest()` `entries`
+               manifests and `base_dir` + `files` manifests) whose entries
+               should be merged into the output manifest.
+deps: Optional parameter. Targets generating `in_files` or `dep_manifests`.
+public_deps: Optional parameter. Targets generating `in_files` or
+             `dep_manifests` that should be re-exported to dependents.
+```
+
+#### **Example**
+```python
+import("//ui/webui/resources/tools/generate_mojo_manifest.gni")
+
+generate_mojo_manifest("my_mojo_manifest") {
+  out_manifest = "$target_gen_dir/my_mojo_manifest.json"
+  base_dir = "$target_gen_dir/tsc"
+  url_prefix = rebase_path(target_gen_dir, root_gen_dir)
+  in_files = [ "my_webui.mojom-webui.js" ]
+  public_deps = [ ":build_ts" ]
+}
+```
+
 ### **build_webui**
 
 <!-- TODO(crbug.com/40230335): Elevate build_webui() to the top of this document
@@ -620,12 +756,13 @@ Under the cover, build_webui() defines the following targets
 16. `generate_grd("build_grd")`
 17. `generate_grd("build_grdp")`
 18. `grit("resources")`
+19. `generate_zip("build_zip")`
 
 Some targets are only conditionally defined based on `build_webui()` input
 parameters.
 
-Only `:build_ts`, `:resources` and `:build_grdp` targets are public and can be
-referred to from other parts of the build.
+Only `:build_ts`, `:resources`, `:build_grdp` and `:build_zip` targets are
+public and can be referred to from other parts of the build.
 
 #### **Arguments**
 ```
@@ -643,19 +780,24 @@ static_files: Optional parameter. List of
               tools/typescript/validate_tsconfig.py validateJavaScriptAllowed().
 
 web_component_files:  List of TS files that hold Web Component definitions with
-                      equivalent .html template files. These can be either
-                      native or Polymer Web Components. Optional parameter.
+                      equivalent .html template files. These can be native, Lit,
+                      or Polymer Web Components (note that Polymer is
+                      deprecated for non-CrOS WebUIs, and for Lit Web
+                      Components, checking in .html.ts files directly and
+                      passing them in |ts_files| is preferred). Optional
+                      parameter.
 
 ts_files:  List of TS files that are not Web Components, or Web Component files
            that don't have a corresponding HTML template or Web Component files
            that have their corresponding .html.ts template file checked-in.
            Optional parameter.
 
-icons_html_files: List of HTML files that hold Polymer iron-iconset-svg
-                  instances. Optional parameter.
+icons_html_files: List of HTML files that hold cr-iconset or Polymer
+                  iron-iconset-svg instances. Optional parameter.
 
-css_files: List of CSS files that hold Polymer style modules, or CSS variable
-           definitions. These are passed css_to_wrapper(). Optional parameter.
+css_files: List of CSS files that hold Lit style files, Polymer style modules,
+           or CSS variable definitions. These are passed to css_to_wrapper().
+           Optional parameter.
 
 mojo_files: List of Mojo JS generated files. These will be copied to a temporary
             location so that they can be passed to ts_library() along with
@@ -682,12 +824,14 @@ ts_deps: See |deps| in ts_library(). Also used for webui_path_mappings().
 ts_extra_deps: See |extra_deps| in ts_library(). Optional parameter.
 ts_path_mappings: See |path_mappings| in ts_library(). Optional parameter.
 ts_tsconfig_base: The tsconfig file to use for ts_library(). Optional. Defaults
-                  to "//tools/typescript/tsconfig_base_polymer.json" for UIs
-                  that depend on Polymer (i.e. have
-                  "//third_party/polymer/v3_0:library" in their |ts_deps|).
-                  Defaults to "//tools/typescript/tsconfig_base_lit.json" for
-                  UIs that do not depend on Polymer and depend on Lit (i.e. have
-                  "//third_party/lit/v3_0:build_ts" in |ts_deps|). Defaults to
+                  to "//tools/typescript/tsconfig_base_lit.json" for UIs that
+                  depend on Lit (i.e. have "//third_party/lit/v3_0:build_ts" in
+                  |ts_deps|) and do not depend on Polymer. For UIs that depend
+                  on Polymer (i.e. have "//third_party/polymer/v3_0:library" in
+                  their |ts_deps|), defaults to
+                  "//tools/typescript/tsconfig_base_polymer.json" (or
+                  "//tools/typescript/tsconfig_base_mixed.json" if they depend
+                  on both Lit and Polymer). Defaults to
                   "//tools/typescript/tsconfig_base.json" for all other UIs.
 
 HTML/CSS/JS optimization related params:
@@ -719,8 +863,14 @@ in_folder: Optional parameter. Specifies the input folder where TS, HTML, CSS,
            allowlist of targets inside `build_webui.gni` to prevent misuse.
 generate_grdp: Whether to generate grdp file instead of a grd file. Defaults to
                false.
+generate_zip: Whether to define a `:build_zip` target that packages the files
+              referenced by the generated .grd file into
+              `$target_gen_dir/resources.zip` while preserving their relative
+              resource paths. Defaults to false. Incompatible with
+              |generate_grdp=true|.
 grd_prefix: See |grd_prefix| in generate_grd(). Required parameter.
-grd_resource_path_prefix: See |resource_path_prefix| in generate_grd(). Optional
+grd_resource_path_prefix: See |resource_path_prefix| in generate_grd() and
+                          |grd_resource_path_prefix| in generate_zip(). Optional
                           parameter.
 html_to_wrapper_template: See |template| in html_to_wrapper().
 html_to_wrapper_scheme: See |scheme| in html_to_wrapper().
@@ -758,28 +908,28 @@ build_webui("build") {
     "index.css",
   ]
 
-  # Files holding a CustomElement element definition AND have an equivalent
-  # .html template file. An .html.ts wrapper file will be auto-generated during
-  # the build.
-  web_component_files = [
-    "app.ts",
-    "bar_view.ts",
-    "foo_view.ts",
-  ]
-
   # Files that
   #  1) are not holding a CustomElement element definition, or
   #  2) the CustomElement does not have a corresponding HTML template, or
   #  3) the HTML template is checked in as an .html.ts file and not
   #     auto-generated.
   ts_files = [
+    "app.html.ts",
+    "app.ts",
     "app_util.ts",
     "bar_model.ts",
+    "bar_view.html.ts",
+    "bar_view.ts",
     "foo_types.ts",
+    "foo_view.html.ts",
+    "foo_view.ts",
   ]
 
   # Files that are passed as input to css_to_wrapper().
   css_files = [
+    "app.css",
+    "bar_view.css",
+    "foo_view.css",
     "shared_style.css",
     "shared_vars.css",
   ]
@@ -790,7 +940,7 @@ build_webui("build") {
   ]
 
   ts_deps = [
-    "//third_party/polymer/v3_0:library",
+    "//third_party/lit/v3_0:build_ts",
     "//ui/webui/resources/cr_elements:build_ts",
     "//ui/webui/resources/js:build_ts",
   ]
@@ -949,11 +1099,11 @@ grit("resources") {
 }
 ```
 
-### **Non-Polymer UI with Web Components**
+### **UI with Native Web Components**
 ```
-This UI has a top level TypeScript file that imports a single Web Component,
-my_debug_app.ts. It has a corresponding HTML file for the app and a HTML file
-for the top level index. None of these files use any `<if expr>`.
+This UI has a top level TypeScript file that imports a single native Web
+Component, my_debug_app.ts. It has a corresponding HTML file for the app and a
+HTML file for the top level index. None of these files use any `<if expr>`.
 ```
 
 #### **BUILD.gn file**
@@ -964,8 +1114,8 @@ import("//tools/typescript/ts_library.gni")
 import("//ui/webui/resources/tools/generate_grd.gni")
 import("//tools/polymer/html_to_wrapper.gni")
 
-# Generate the wrapper file. This UI isn't using Polymer, so it needs to set
-# the |template| argument.
+# Generate the wrapper file. This UI is using native Web Components (not Lit),
+# so it needs to set the |template| argument.
 html_to_wrapper("html_wrapper_files") {
   in_files = [ "my_debug_app.html" ]
   template = "native"

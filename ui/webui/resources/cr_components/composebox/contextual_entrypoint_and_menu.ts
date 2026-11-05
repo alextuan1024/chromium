@@ -6,7 +6,6 @@ import './contextual_action_menu.js';
 import './contextual_entrypoint_button.js';
 
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
-import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
@@ -69,7 +68,6 @@ export class ContextualEntrypointAndMenuElement extends
       tabSuggestionsState: {type: Number},
       glifAnimationState: {type: String},
       searchboxLayoutMode: {type: String},
-      uploadButtonDisabled: {type: Boolean},
       disableAutoReposition: {type: Boolean},
       isSidePanel: {type: Boolean},
       usePecApi: {type: Boolean},
@@ -81,14 +79,6 @@ export class ContextualEntrypointAndMenuElement extends
         reflect: true,
         type: Boolean,
         attribute: 'unbounded-menu-enabled',
-      },
-
-      // =========================================================================
-      // Protected properties
-      // =========================================================================
-      enableMultiTabSelection_: {
-        reflect: true,
-        type: Boolean,
       },
       sharedTabs: {type: Array},
     };
@@ -108,7 +98,6 @@ export class ContextualEntrypointAndMenuElement extends
   accessor inputState: InputState|null = null;
   accessor glifAnimationState: GlifAnimationState =
       GlifAnimationState.INELIGIBLE;
-  accessor uploadButtonDisabled: boolean = false;
   accessor sharedTabs: TabInfo[] = [];
   accessor recentTabId: number|null = null;
   accessor shareTabsFlyoutOpen: boolean = false;
@@ -127,17 +116,12 @@ export class ContextualEntrypointAndMenuElement extends
   accessor isSidePanel: boolean = false;
   accessor disableFallbackGlifAnimation: boolean = false;
 
-  protected accessor enableMultiTabSelection_: boolean =
-      loadTimeData.getBoolean('composeboxContextMenuEnableMultiTabSelection');
-
   // TODO(crbug.com/499310611): Explore avoiding/removing this local property.
   private shouldOpenMenuForMultiSelection_: boolean = false;
 
   openMenuForMultiSelection() {
-    if (this.enableMultiTabSelection_) {
-      this.shouldOpenMenuForMultiSelection_ = true;
-      this.requestUpdate();
-    }
+    this.shouldOpenMenuForMultiSelection_ = true;
+    this.requestUpdate();
   }
 
   private getEntrypointElements_(): EntrypointElements {
@@ -194,11 +178,7 @@ export class ContextualEntrypointAndMenuElement extends
   }
 
   closeMenu() {
-    const menu =
-        this.shadowRoot.querySelector<ContextualActionMenuElement>('#menu');
-    if (menu) {
-      menu.close();
-    }
+    this.$.menu.close();
   }
 
   protected onMenuClose_() {

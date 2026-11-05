@@ -4,20 +4,17 @@
             "media.mobile": {
                 "abridged": false
             },
-            "speedometer2": {
-                "abridged": false
-            },
             "v8.browsing_mobile": {
                 "abridged": false
             }
         }
     },
     "extra_infos": {
-        "num_stories": 48,
-        "predicted_min_shard_time": 908.0,
+        "num_stories": 47,
+        "predicted_min_shard_time": 699.0,
         "predicted_min_shard_index": 0,
-        "predicted_max_shard_time": 908.0,
+        "predicted_max_shard_time": 699.0,
         "predicted_max_shard_index": 0,
-        "shard #0": 908.0
+        "shard #0": 699.0
     }
 }

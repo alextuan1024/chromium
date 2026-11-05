@@ -4,19 +4,17 @@
 
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 
+#include <string_view>
+
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/no_destructor.h"
-#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
-#include "components/optimization_guide/core/model_execution/on_device_features.h"
-#include "components/optimization_guide/core/model_execution/on_device_model_feature_adapter.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
-#include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/proto/on_device_model_execution_config.pb.h"
-#include "components/version_info/version_info.h"
+#include "services/on_device_model/public/cpp/model_assets.h"
 #include "services/on_device_model/public/cpp/test_support/fake_service.h"
 #include "third_party/dawn/include/dawn/dawn_proc.h"
 
@@ -67,32 +65,49 @@ FakeBaseModelAsset::~FakeBaseModelAsset() = default;
 void FakeBaseModelAsset::Write(Content&& content) {
   CHECK(base::WriteFile(temp_dir_.GetPath().Append(kWeightsFile),
                         base::NumberToString(content.weight)));
+
+  // Writes a cache along with its fingerprint so it isn't invalidated when the
+  // model assets are loaded.
+  auto write_cache = [this](const base::FilePath::CharType* file_name,
+                            std::string_view data,
+                            std::string_view fingerprint) {
+    base::FilePath path = temp_dir_.GetPath().Append(file_name);
+    CHECK(base::WriteFile(path, data));
+    CHECK(base::WriteFile(on_device_model::GetCacheFingerprintPath(path),
+                          fingerprint));
+  };
+
+  const std::string_view weight_fingerprint =
+      content.weight_cache_fingerprint ? content.weight_cache_fingerprint : "";
   if (content.cache_weight) {
-    CHECK(base::WriteFile(temp_dir_.GetPath().Append(kWeightCacheFile),
-                          base::NumberToString(content.cache_weight)));
+    write_cache(kWeightCacheFile, base::NumberToString(content.cache_weight),
+                weight_fingerprint);
   }
   if (content.encoder_cache_weight) {
-    CHECK(base::WriteFile(temp_dir_.GetPath().Append(kEncoderCacheFile),
-                          base::NumberToString(content.encoder_cache_weight)));
+    write_cache(kEncoderCacheFile,
+                base::NumberToString(content.encoder_cache_weight),
+                weight_fingerprint);
   }
   if (content.adapter_cache_weight) {
-    CHECK(base::WriteFile(temp_dir_.GetPath().Append(kAdapterCacheFile),
-                          base::NumberToString(content.adapter_cache_weight)));
+    write_cache(kAdapterCacheFile,
+                base::NumberToString(content.adapter_cache_weight),
+                weight_fingerprint);
   }
-  if (content.shader_cache_data) {
-    base::FilePath program_cache_path =
-        temp_dir_.GetPath().Append(kProgramCacheFile);
-    CHECK(base::WriteFile(program_cache_path,
-                          std::string(content.shader_cache_data)));
-    std::string_view dawn_rev(
-        reinterpret_cast<const char*>(dawnProcGetVersion()), 20);
-    // TODO(crbug.com/538727789): Remove Chrome version check once ML Drift
-    // incorporates kernel revision versioning into fingerprint keys.
-    std::string current_version =
-        base::StrCat({version_info::GetVersionNumber(), "_", dawn_rev});
-    CHECK(base::WriteFile(
-        program_cache_path.AddExtension(FILE_PATH_LITERAL(".dawn_version")),
-        current_version));
+  if (content.mtp_drafter_cache_weight) {
+    write_cache(kMtpDrafterCacheFile,
+                base::NumberToString(content.mtp_drafter_cache_weight),
+                weight_fingerprint);
+  }
+
+  const std::string_view dawn_version(
+      reinterpret_cast<const char*>(dawnProcGetVersion()), 20);
+  if (content.shader_cache_data && content.shader_cache_data[0] != '\0') {
+    write_cache(kProgramCacheFile, content.shader_cache_data, dawn_version);
+  }
+  if (content.mtp_drafter_shader_cache_data &&
+      content.mtp_drafter_shader_cache_data[0] != '\0') {
+    write_cache(kMtpDrafterProgramCacheFile,
+                content.mtp_drafter_shader_cache_data, dawn_version);
   }
   CHECK(base::WriteFile(
       temp_dir_.GetPath().Append(kOnDeviceModelExecutionConfigFile),
@@ -108,21 +123,8 @@ base::DictValue FakeBaseModelAsset::Manifest() const {
                                         supported_performance_hints_.Clone()));
 }
 
-proto::OnDeviceBaseModelMetadata FakeBaseModelAsset::DefaultSpec() {
-  proto::OnDeviceBaseModelMetadata result;
-  result.set_base_model_version("0.0.1");
-  result.set_base_model_name("Test");
-  result.add_supported_performance_hints(
-      proto::ON_DEVICE_MODEL_PERFORMANCE_HINT_HIGHEST_QUALITY);
-  result.add_supported_performance_hints(
-      proto::ON_DEVICE_MODEL_PERFORMANCE_HINT_FASTEST_INFERENCE);
-  result.add_supported_performance_hints(
-      proto::ON_DEVICE_MODEL_PERFORMANCE_HINT_CPU);
-  return result;
-}
-
-FakeAdaptationAsset::FakeAdaptationAsset(FakeAdaptationAsset::Content&& content)
-    : feature_(*ToOnDeviceFeature(content.config.feature())) {
+FakeAdaptationAsset::FakeAdaptationAsset(
+    FakeAdaptationAsset::Content&& content) {
   CHECK(temp_dir_.CreateUniqueTempDir());
   base::FilePath config_path =
       temp_dir_.GetPath().Append(kOnDeviceModelExecutionConfigFile);
@@ -131,56 +133,13 @@ FakeAdaptationAsset::FakeAdaptationAsset(FakeAdaptationAsset::Content&& content)
     *config.add_feature_configs() = content.config;
     CHECK(base::WriteFile(config_path, config.SerializeAsString()));
   }
-  std::vector<base::FilePath> additional_files = {config_path};
   if (content.weight) {
     base::FilePath weights_path =
         temp_dir_.GetPath().Append(kOnDeviceModelAdaptationWeightsFile);
     CHECK(base::WriteFile(weights_path,
                           base::NumberToString(content.weight.value())));
-    additional_files.push_back(weights_path);
   }
-  model_info_ = {
-      .model_file_path = base::FilePath::FromUTF8Unsafe(kTestAbsoluteFilePath),
-      .additional_files = std::move(additional_files),
-      .version = version(),
-      .model_metadata = AnyWrapProto(content.metadata),
-  };
 }
 FakeAdaptationAsset::~FakeAdaptationAsset() = default;
-
-FakeLanguageModelAsset::FakeLanguageModelAsset() {
-  CHECK(temp_dir_.CreateUniqueTempDir());
-  auto model_path = this->model_path();
-  CHECK(base::WriteFile(model_path, on_device_model::FakeLanguageModel()));
-  model_info_ = {
-      .model_file_path = model_path,
-      .version = 123,
-  };
-}
-FakeLanguageModelAsset::~FakeLanguageModelAsset() = default;
-
-base::FilePath FakeLanguageModelAsset::model_path() const {
-  return temp_dir_.GetPath().Append(kWeightsFile);
-}
-
-FakeSafetyModelAsset::FakeSafetyModelAsset(
-    proto::FeatureTextSafetyConfiguration&& config)
-    : FakeSafetyModelAsset(FakeSafetyModelAsset::Content{
-          .metadata = SafetyMetadata({std::move(config)})}) {}
-
-FakeSafetyModelAsset::FakeSafetyModelAsset(
-    FakeSafetyModelAsset::Content&& content) {
-  CHECK(temp_dir_.CreateUniqueTempDir());
-  auto data_path =
-      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("model.tflite"));
-  CHECK(base::WriteFile(data_path, on_device_model::FakeTsData()));
-  model_info_ = {
-      .model_file_path = data_path,
-      .version = content.model_info_version,
-      .model_metadata = AnyWrapProto(content.metadata),
-  };
-}
-
-FakeSafetyModelAsset::~FakeSafetyModelAsset() = default;
 
 }  // namespace optimization_guide

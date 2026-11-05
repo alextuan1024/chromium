@@ -122,15 +122,28 @@ Here is an example of how to structure a suppressions XML file:
     <!-- TODO(crbug.com/###): Remove the following line.  -->
     <ignore regexp="The resource `R.string.soon_to_be_used` appears to be unused"/>
   </issue>
+  <!-- Ignore all warnings from //third_party. -->
+  <issue id="all">
+    <ignore regexp="^$SRC/third_party/"/>
+  </issue>
 </lint>
 ```
+
+Each `regexp` is matched against both the warning message and the absolute path
+of the file it is in. Use `$SRC` to refer to the source root in a path: lint
+spells it differently for source files and for resource files, and
+[build/android/gyp/lint.py](https://source.chromium.org/chromium/chromium/src/+/main:build/android/gyp/lint.py)
+expands `$SRC` to match either form.
 
 
 ### Per-target cache
 
 To avoid race conditions and IO-related flakes when running Lint in parallel,
 Chromium uses a per-target cache directory located in the target's generated
-directory (e.g., `gen/.../android_lint_cache`).
+directory (e.g., `gen/.../android_lint_cache`). Lint writes its API database
+there; AARs are read from the directories that the build unpacks them into. The
+directory is cleared before each run. Library analyses remove it afterward
+(unless `LINT_DEBUG=1` is set); an apk's analysis keeps it for its report step.
 
 ## What are `lint-baseline.xml` files for?
 

@@ -8,7 +8,6 @@
 #include <optional>
 
 #include "base/containers/enum_set.h"
-#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -150,14 +149,14 @@ class CONTENT_EXPORT DevToolsURLLoaderInterceptor {
     ~Pattern();
     Pattern(const Pattern& other);
     Pattern(const std::string& url_pattern,
-            base::flat_set<blink::mojom::ResourceType> resource_types,
+            base::EnumSet<blink::mojom::ResourceType> resource_types,
             InterceptionStage interception_stage);
 
     bool Matches(const std::string& url,
                  blink::mojom::ResourceType resource_type) const;
 
     const std::string url_pattern;
-    const base::flat_set<blink::mojom::ResourceType> resource_types;
+    const base::EnumSet<blink::mojom::ResourceType> resource_types;
     const InterceptionStage interception_stage;
   };
 
@@ -266,14 +265,22 @@ class CONTENT_EXPORT DevToolsURLLoaderInterceptor {
     return it == jobs_by_global_req_id_.end() ? nullptr : it->second;
   }
 
-  void RemoveJob(const GlobalRequestID& global_req_id, const std::string& id) {
-    jobs_by_global_req_id_.erase(global_req_id);
+  // Erases the GlobalRequestID entry only if `job` owns it, so a shutting-down
+  // CORS preflight cannot remove the entry of the request it precedes.
+  void RemoveJob(const GlobalRequestID& global_req_id,
+                 const std::string& id,
+                 InterceptionJob* job) {
+    auto it = jobs_by_global_req_id_.find(global_req_id);
+    if (it != jobs_by_global_req_id_.end() && it->second == job) {
+      jobs_by_global_req_id_.erase(it);
+    }
     jobs_.erase(id);
   }
-  void AddJob(const GlobalRequestID& global_req_id,
-              const std::string& id,
-              InterceptionJob* job) {
+  void AddJob(const std::string& id, InterceptionJob* job) {
     jobs_.emplace(id, job);
+  }
+  void IndexJobByGlobalId(const GlobalRequestID& global_req_id,
+                          InterceptionJob* job) {
     jobs_by_global_req_id_.emplace(global_req_id, job);
   }
 

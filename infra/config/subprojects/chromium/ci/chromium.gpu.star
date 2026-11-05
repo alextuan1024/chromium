@@ -95,7 +95,8 @@ shared_gpu.ci.linux_builder(
             "gpu_tests",
             "android_builder",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "arm64",
             "static_angle",
@@ -132,10 +133,11 @@ shared_gpu.ci.linux_builder(
             config = "chromium",
             apply_configs = [
                 "use_clang_coverage",
-                # This is not necessary for this builder itself, but is
+                # These are not necessary for this builder itself, but are
                 # necessary in order to keep configs in sync with
                 # "ci/Linux Builder" in order for mirroring to work correctly.
                 "chromium_with_telemetry_dependencies",
+                "checkout_snap_runtime",
             ],
         ),
         chromium_config = builder_config.chromium_config(
@@ -152,7 +154,8 @@ shared_gpu.ci.linux_builder(
         configs = [
             "gpu_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "linux",
             "x64",
@@ -231,7 +234,8 @@ shared_gpu.ci.mac_builder(
         configs = [
             "gpu_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "x64",
             "mac",
@@ -309,7 +313,8 @@ shared_gpu.ci.mac_builder(
         configs = [
             "gpu_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "arm64",
             "mac",
@@ -351,7 +356,8 @@ shared_gpu.ci.windows_builder(
         configs = [
             "gpu_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "resource_allowlisting",
             "win",
@@ -661,6 +667,26 @@ ci.thin_tester(
             "mac_retina_amd_gpu_stable",
             "puppet_production",
         ],
+        # Temporarily move low-AMD-specificity suites to ci_only to reduce
+        # pending time on AMD 0x7340 bots while offline machines are recovered
+        # (crbug.com/587053573).
+        per_test_modifications = {
+            "gpu_process_launch_tests": targets.per_test_modification(
+                mixins = "ci_only",
+            ),
+            "hardware_accelerated_feature_tests": targets.per_test_modification(
+                mixins = "ci_only",
+            ),
+            "info_collection_tests": targets.per_test_modification(
+                mixins = "ci_only",
+            ),
+            "screenshot_sync_metal_passthrough_graphite_tests": targets.per_test_modification(
+                mixins = "ci_only",
+            ),
+            "trace_test": targets.per_test_modification(
+                mixins = "ci_only",
+            ),
+        },
     ),
     targets_settings = targets.settings(
         browser_config = targets.browser_config.RELEASE,

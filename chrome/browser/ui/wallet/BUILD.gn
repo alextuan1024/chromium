@@ -39,10 +39,9 @@ source_set("wallet") {
     deps += [
       "//chrome/browser/ui:chrome_pages",
       "//chrome/browser/ui:singleton_tabs",
+      "//chrome/browser/ui/views/frame:browser_view_header",
     ]
   }
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 if (toolkit_views) {
@@ -58,7 +57,7 @@ if (toolkit_views) {
       "//base",
       "//base/test:test_support",
       "//chrome/browser/signin",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_tabstrip",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/test:test_support",
       "//chrome/test:test_support",
@@ -92,5 +91,6 @@ source_set("unit_tests") {
     "//components/wallet/core/browser",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/base/unowned_user_data",
   ]
 }

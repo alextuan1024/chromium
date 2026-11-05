@@ -5,7 +5,9 @@
 #ifndef IOS_CHROME_BROWSER_AUTOFILL_MANUAL_FILL_PUBLIC_MANUAL_FILL_CONSTANTS_H_
 #define IOS_CHROME_BROWSER_AUTOFILL_MANUAL_FILL_PUBLIC_MANUAL_FILL_CONSTANTS_H_
 
-#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+
+#import <string_view>
 
 #import "components/autofill/core/browser/filling/filling_product.h"
 
@@ -45,6 +47,11 @@ extern NSString* const kMaskedPasswordButtonText;
 extern NSString* const kSubtitleFormat;
 
 // Payments
+
+// Histogram recording the index of an accepted payment method suggestion in
+// manual fallback.
+inline constexpr std::string_view kAcceptedCardSuggestionHistogram =
+    "Autofill.UserAcceptedSuggestionAtIndex.CreditCard.ManualFallback";
 
 // Accessibility identifier for the GPay logo shown in the payment manual fill
 // cells when the corresponding card is a server card.
@@ -91,6 +98,9 @@ extern NSString* const kExpandedManualFillAutofillFormButtonID;
 // Accessibility identifier of the keyboard button.
 extern NSString* const kAccessoryKeyboardAccessibilityIdentifier;
 
+// Accessibility identifier for a summary cell of the expanded manual fill view.
+extern NSString* const kExpandedManualFillSummaryCellID;
+
 // Possible data types when manually filling a form.
 enum class ManualFillDataType {
   kCredential = 0,
@@ -112,8 +122,9 @@ enum class PaymentFieldType {
 
 @interface ManualFillUtil : NSObject
 
-// Returns whether to use the popover view for manual fill.
-+ (BOOL)shouldUsePopover;
+// Returns whether to use the popover view for manual fill in
+// `traitEnvironment`.
++ (BOOL)shouldUsePopover:(id<UITraitEnvironment>)traitEnvironment;
 
 // Returns a ManualFillDataType based on the provided FillingProduct.
 + (manual_fill::ManualFillDataType)manualFillDataTypeFromFillingProduct:

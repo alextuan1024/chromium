@@ -14,17 +14,23 @@ import org.chromium.build.annotations.EnsuresNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSession;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSessionWindow;
 import org.chromium.chrome.browser.recent_tabs.RestoreTabsMetricsHelper.RestoreTabsOnFREPromoShowResult;
+import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeatures;
+import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.feature_engagement.UiFormat;
+import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.util.List;
@@ -74,7 +80,9 @@ public class RestoreTabsFeatureHelper {
         }
         Tracker tracker = TrackerFactory.getTrackerForProfile(profile);
         updateTrackerIfFirstStartIsRecent(profile, tracker);
-        if (!tracker.wouldTriggerHelpUi(FeatureConstants.RESTORE_TABS_ON_FRE_FEATURE)) {
+        FeatureProperties featureProperties = new FeatureProperties(UiFormat.BOTTOM_SHEET);
+        if (!tracker.wouldTriggerHelpUi(
+                FeatureConstants.RESTORE_TABS_ON_FRE_FEATURE, featureProperties)) {
             RestoreTabsMetricsHelper.recordPromoShowResultHistogram(
                     RestoreTabsOnFREPromoShowResult.NOT_ELIGIBLE);
             return;
@@ -93,6 +101,16 @@ public class RestoreTabsFeatureHelper {
         // this does mean next time the GTS becomes visible we are more likely to have tabs
         // available.
         mForeignSessionHelper.triggerSessionSync();
+
+        // Skip this attempt until synced tab groups load. The check runs before the IPH trigger
+        // below, so a skipped attempt does not count toward the show limit.
+        if (!isTabGroupSyncReady(profile)) {
+            destroy();
+
+            RestoreTabsMetricsHelper.recordPromoShowResultHistogram(
+                    RestoreTabsOnFREPromoShowResult.TAB_GROUPS_NOT_READY);
+            return;
+        }
 
         // Determines whether the promo is to be shown for the first or second time.
         // To determine if it is the first time that the promo is being triggered, the logic checks
@@ -115,7 +133,8 @@ public class RestoreTabsFeatureHelper {
         // second time.
         List<ForeignSession> sessions = mForeignSessionHelper.getMobileAndTabletForeignSessions();
         if (hasValidSyncedDevices(sessions)
-                && tracker.shouldTriggerHelpUi(FeatureConstants.RESTORE_TABS_ON_FRE_FEATURE)) {
+                && tracker.shouldTriggerHelpUi(
+                        FeatureConstants.RESTORE_TABS_ON_FRE_FEATURE, featureProperties)) {
             createDelegate(
                     activity,
                     profile,
@@ -190,6 +209,15 @@ public class RestoreTabsFeatureHelper {
                                 scrollGTSToRestoredTabsCallback.onResult(tabListModelSize);
                             }
                         };
+    }
+
+    /** Returns whether the promo can show without waiting for synced tab groups to load. */
+    private boolean isTabGroupSyncReady(Profile profile) {
+        if (!ChromeFeatureList.sRestoreTabGroupsOnFre.isEnabled()) return true;
+        if (!TabGroupSyncFeatures.isTabGroupSyncEnabled(profile)) return true;
+
+        TabGroupSyncService tabGroupSyncService = TabGroupSyncServiceFactory.getForProfile(profile);
+        return tabGroupSyncService == null || tabGroupSyncService.isInitialized();
     }
 
     private boolean hasValidSyncedDevices(List<ForeignSession> sessions) {

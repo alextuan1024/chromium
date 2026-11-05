@@ -11,6 +11,7 @@
 
 @protocol BadgeViewVisibilityDelegate;
 @protocol IncognitoBadgeViewVisibilityDelegate;
+@protocol LocationBarContentSizeDelegate;
 @protocol PageActionMenuCommands;
 @protocol ReaderModeChipVisibilityDelegate;
 @protocol ContextualPanelEntrypointVisibilityDelegate;
@@ -90,6 +91,9 @@
 // Sets the view displaying the Contextual Panel's entrypoint.
 - (void)setContextualPanelEntrypointView:(UIView*)contextualPanelEntrypointView;
 
+// Sets the view displaying the Location Bar Badge (`locationBarBadgeView`).
+- (void)setLocationBarBadgeView:(UIView*)locationBarBadgeView;
+
 // Sets the view displaying the Reader Mode chip.
 - (void)setReaderModeChipView:(UIView*)readerModeChipView;
 
@@ -128,6 +132,11 @@
 @property(nonatomic, weak) id<PageActionMenuCommands> pageActionMenuHandler;
 // Whether the browser is in incognito mode.
 @property(nonatomic, assign, getter=isIncognito) BOOL incognito;
+// Delegate notified when the content of this view changed, as this changes the
+// width the location bar needs. This view also re-publishes the changes coming
+// from its badges container.
+@property(nonatomic, weak) id<LocationBarContentSizeDelegate>
+    contentSizeDelegate;
 
 @end
 

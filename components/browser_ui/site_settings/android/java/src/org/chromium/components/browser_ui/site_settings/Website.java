@@ -11,11 +11,11 @@ import static org.chromium.components.browser_ui.site_settings.WebsitePreference
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.metrics.RecordUserAction;
-import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge.StorageInfoClearedCallback;
 import org.chromium.components.content_settings.ContentSetting;
+import org.chromium.components.content_settings.ContentSettingSource;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.content_settings.ProviderType;
 import org.chromium.components.embedder_support.util.ExtensionUrlUtil;
@@ -49,7 +49,6 @@ public final class Website implements WebsiteEntry {
             new HashMap<>();
 
     private @Nullable LocalStorageInfo mLocalStorageInfo;
-    private @Nullable RwsCookieInfo mRwsCookieInfo;
     private @Nullable CookiesInfo mCookiesInfo;
     private @Nullable FileEditingInfo mFileEditingInfo;
     private double mZoomFactor;
@@ -274,15 +273,22 @@ public final class Website implements WebsiteEntry {
             // If multiple embedded permissions have been merged into one website like for
             // SingleWebsiteSettings, this function may only be used if all permission exceptions
             // have been grouped by content setting.
-            return new PermissionSetting(null, getContentSetting(exceptions), /* isOneTime= */ false);
+            @ContentSettingSource
+            int source =
+                    WebsitePreferenceBridge.getSettingSourceFromProviderType(
+                            exceptions.get(0).getSource());
+            return new PermissionSetting(
+                    null, getContentSetting(exceptions), /* isOneTime= */ false, source);
         } else if (getPermissionInfo(type) != null) {
             return assumeNonNull(getPermissionInfo(type))
                     .getPermissionSetting(browserContextHandle);
         } else if (getContentSettingException(type) != null) {
+            ContentSettingException exception = assumeNonNull(getContentSettingException(type));
+            @ContentSettingSource
+            int source =
+                    WebsitePreferenceBridge.getSettingSourceFromProviderType(exception.getSource());
             return new PermissionSetting(
-                    null,
-                    assumeNonNull(getContentSettingException(type)).getContentSetting(),
-                    false);
+                    null, exception.getContentSetting(), /* isOneTime= */ false, source);
         }
 
         return null;
@@ -444,14 +450,6 @@ public final class Website implements WebsiteEntry {
         return mLocalStorageInfo;
     }
 
-    public @Nullable RwsCookieInfo getRwsCookieInfo() {
-        return mRwsCookieInfo;
-    }
-
-    public void setRwsCookieInfo(RwsCookieInfo rwsCookieInfo) {
-        mRwsCookieInfo = rwsCookieInfo;
-    }
-
     public void addStorageInfo(StorageInfo info) {
         mStorageInfo.add(info);
     }
@@ -507,6 +505,7 @@ public final class Website implements WebsiteEntry {
                                 () -> {
                                     callback.onStoredDataCleared();
                                     mStorageInfo.clear();
+                                    model.releaseModel();
                                 });
                     });
         } else {
@@ -597,25 +596,6 @@ public final class Website implements WebsiteEntry {
     @Override
     public boolean matches(String search) {
         return getTitle().contains(search);
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    @EnsuresNonNullIf({"mRwsCookieInfo"})
-    public boolean isPartOfRws() {
-        return mRwsCookieInfo != null;
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public @Nullable String getRwsOwner() {
-        return isPartOfRws() ? mRwsCookieInfo.getOwner() : null;
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public int getRwsSize() {
-        return isPartOfRws() ? mRwsCookieInfo.getMembersCount() : 0;
     }
 
     @Override

@@ -316,9 +316,10 @@ mojom::GraphicsTabletPtr BuildMojomGraphicsTablet(
     mojom::GraphicsTabletButtonConfig graphics_tablet_button_config) {
   mojom::GraphicsTabletPtr mojom_graphics_tablet = mojom::GraphicsTablet::New();
   auto* metadata = GetGraphicsTabletMetadata(graphics_tablet);
-  std::string name = metadata && metadata->name.has_value()
-                         ? metadata->name.value()
-                         : graphics_tablet.name;
+  std::string_view name;
+  if (metadata) {
+    name = metadata->name.value_or(graphics_tablet.name);
+  }
   mojom_graphics_tablet->name = name;
   mojom_graphics_tablet->id = graphics_tablet.id;
   mojom_graphics_tablet->customization_restriction = customization_restriction;
@@ -977,51 +978,6 @@ void InputDeviceSettingsControllerImpl::OnActiveUserPrefServiceChanged(
     pref_service->ClearPref(prefs::kMouseDeviceImpostersListPref);
   }
 
-
-  if (!features::IsPeripheralNotificationEnabled()) {
-    pref_service->ClearPref(prefs::kPeripheralNotificationMiceSeen);
-    pref_service->ClearPref(prefs::kPeripheralNotificationGraphicsTabletsSeen);
-  }
-
-  // If the flag is disabled, clear the new touchpad and keyboard settings from
-  // all settings dictionaries and reset the notification prefs.
-  if (!features::IsAltClickAndSixPackCustomizationEnabled() && pref_service) {
-    base::DictValue updated_touchpad_dict =
-        pref_service->GetDict(prefs::kTouchpadDeviceSettingsDictPref).Clone();
-    for (auto [key, dict] : updated_touchpad_dict) {
-      CHECK(dict.is_dict());
-      dict.GetDict().Remove(prefs::kTouchpadSettingSimulateRightClick);
-    }
-
-    base::DictValue updated_keyboard_dict =
-        pref_service->GetDict(prefs::kKeyboardDeviceSettingsDictPref).Clone();
-
-    for (auto [key, dict] : updated_keyboard_dict) {
-      CHECK(dict.is_dict());
-      dict.GetDict().Remove(prefs::kKeyboardSettingSixPackKeyRemappings);
-    }
-    pref_service->SetDict(prefs::kTouchpadDeviceSettingsDictPref,
-                          std::move(updated_touchpad_dict));
-    pref_service->SetDict(prefs::kKeyboardDeviceSettingsDictPref,
-                          std::move(updated_keyboard_dict));
-
-    // Remove six pack remappings from internal keyboard as well.
-    base::DictValue updated_internal_keyboard_dict =
-        pref_service->GetDict(prefs::kKeyboardInternalSettings).Clone();
-    updated_internal_keyboard_dict.Remove(
-        prefs::kKeyboardSettingSixPackKeyRemappings);
-    pref_service->SetDict(prefs::kKeyboardInternalSettings,
-                          std::move(updated_internal_keyboard_dict));
-
-    pref_service->ClearPref(prefs::kRemapToRightClickNotificationsRemaining);
-    pref_service->ClearPref(prefs::kSixPackKeyDeleteNotificationsRemaining);
-    pref_service->ClearPref(prefs::kSixPackKeyHomeNotificationsRemaining);
-    pref_service->ClearPref(prefs::kSixPackKeyEndNotificationsRemaining);
-    pref_service->ClearPref(prefs::kSixPackKeyPageUpNotificationsRemaining);
-    pref_service->ClearPref(prefs::kSixPackKeyPageDownNotificationsRemaining);
-    pref_service->ClearPref(prefs::kSixPackKeyInsertNotificationsRemaining);
-  }
-
   active_pref_service_ = pref_service;
   active_account_id_ = Shell::Get()->session_controller()->GetActiveAccountId();
   auto* cache = apps::AppRegistryCacheWrapper::Get().GetAppRegistryCache(
@@ -1088,17 +1044,15 @@ void InputDeviceSettingsControllerImpl::OnActiveUserPrefServiceChanged(
   // a task so other dependencies are updated first.
   ScheduleDeviceSettingsRefresh();
 
-  if (features::IsPeripheralNotificationEnabled()) {
-    // Delay showing the notification for already connected devices by 30
-    // seconds so on first login the user does not get bombarded by a bunch of
-    // notifications until after some delay.
-    sequenced_task_runner_->PostDelayedTask(
-        FROM_HERE,
-        base::BindOnce(&InputDeviceSettingsControllerImpl::
-                           ShowFirstTimeConnectedNotifications,
-                       weak_ptr_factory_.GetWeakPtr()),
-        base::Seconds(30));
-  }
+  // Delay showing the notification for already connected devices by 30
+  // seconds so on first login the user does not get bombarded by a bunch of
+  // notifications until after some delay.
+  sequenced_task_runner_->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&InputDeviceSettingsControllerImpl::
+                         ShowFirstTimeConnectedNotifications,
+                     weak_ptr_factory_.GetWeakPtr()),
+      base::Seconds(30));
 }
 
 void InputDeviceSettingsControllerImpl::ShowFirstTimeConnectedNotifications() {
@@ -1856,7 +1810,7 @@ std::string GetMouseName(const ui::InputDevice& mouse) {
   if (!mouse_metadata || !mouse_metadata->name.has_value()) {
     return mouse.name;
   }
-  return mouse_metadata->name.value();
+  return std::string(mouse_metadata->name.value());
 }
 
 mojom::CustomizationRestriction
@@ -1964,7 +1918,7 @@ void InputDeviceSettingsControllerImpl::OnMouseListUpdated(
     InitializeMouseSettings(mojom_mouse.get());
     if (ShouldFetchDeviceImage()) {
       GetDeviceImage(mojom_mouse->device_key, mojom_mouse->id);
-    } else if (features::IsPeripheralNotificationEnabled()) {
+    } else {
       notification_controller_->NotifyMouseFirstTimeConnected(*mojom_mouse);
     }
 
@@ -2011,7 +1965,7 @@ void InputDeviceSettingsControllerImpl::OnGraphicsTabletListUpdated(
     if (ShouldFetchDeviceImage()) {
       GetDeviceImage(mojom_graphics_tablet->device_key,
                      mojom_graphics_tablet->id);
-    } else if (features::IsPeripheralNotificationEnabled()) {
+    } else {
       notification_controller_->NotifyGraphicsTabletFirstTimeConnected(
           *mojom_graphics_tablet);
     }
@@ -2870,7 +2824,7 @@ void InputDeviceSettingsControllerImpl::DispatchTouchpadCompanionAppInfoChanged(
 
 void InputDeviceSettingsControllerImpl::
     RefreshCompanionAppInfoForConnectedDevices() {
-  if (!delegate_ || !active_pref_service_) {
+  if (!delegate_ || !active_pref_service_ || !active_account_id_.has_value()) {
     return;
   }
   for (const auto& [id, mouse] : mice_) {
@@ -2878,7 +2832,7 @@ void InputDeviceSettingsControllerImpl::
       continue;
     }
     delegate_->GetCompanionAppInfo(
-        mouse->device_key,
+        active_account_id_.value(), mouse->device_key,
         base::BindOnce(
             &InputDeviceSettingsControllerImpl::OnCompanionAppInfoReceived,
             weak_ptr_factory_.GetWeakPtr(), id, mouse->device_key));

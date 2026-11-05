@@ -10,13 +10,10 @@
 #include <memory>
 #include <optional>
 #include <string_view>
-#include <vector>
 
 #include "base/containers/span.h"
-#include "base/feature.h"
-#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_span.h"
 #include "components/autofill/core/browser/autofill_field.h"
-#include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/field_types.h"
 
 namespace autofill {
@@ -29,39 +26,19 @@ namespace autofill::rationalization {
 // Container to hold requirements that need to be all fulfilled for a
 // rationalization rule to be applied.
 struct EnvironmentCondition {
-  EnvironmentCondition();
-  ~EnvironmentCondition();
-  EnvironmentCondition(EnvironmentCondition&&);
-  EnvironmentCondition& operator=(EnvironmentCondition&&);
-
   // If non-empty, the user needs to be located in a country of the passed
-  // list for a rule to apply.
-  std::vector<GeoIpCountryCode> country_list;
+  // list for a rule to apply. Elements are two-letter ISO country codes (e.g.
+  // "MX", "DE") compared against `GeoIpCountryCode::value()`.
+  base::raw_span<const std::string_view> country_list;
 
-  // If non-null, the rule is only applied if the feature is enabled.
-  raw_ptr<const base::Feature> feature = nullptr;
-};
+  // If non-null, the rule is only applied if `is_feature_enabled()` returns
+  // true. Uses a function pointer instead of `const base::Feature*` because
+  // `COMPONENT_EXPORT` features are `dllimport` on Windows component builds and
+  // their addresses are not constant expressions.
+  bool (*is_feature_enabled)() = nullptr;
 
-// Builder class to work around Chromium's "Complex class/struct needs an
-// explicit out-of-line constructor." code style requirement which prevents the
-// use of designated initializer lists.
-class EnvironmentConditionBuilder {
- public:
-  EnvironmentConditionBuilder();
-  ~EnvironmentConditionBuilder();
-
-  EnvironmentConditionBuilder& SetCountryList(
-      std::vector<GeoIpCountryCode> country_list) &;
-  EnvironmentConditionBuilder&& SetCountryList(
-      std::vector<GeoIpCountryCode> country_list) &&;
-
-  EnvironmentConditionBuilder& SetFeature(const base::Feature* feature) &;
-  EnvironmentConditionBuilder&& SetFeature(const base::Feature* feature) &&;
-
-  EnvironmentCondition Build() &&;
-
- private:
-  EnvironmentCondition env_;
+  friend constexpr bool operator==(const EnvironmentCondition&,
+                                   const EnvironmentCondition&) = default;
 };
 
 enum class FieldLocation {
@@ -102,6 +79,9 @@ struct FieldCondition {
   // of the references regular expression. See
   // autofill/core/browser/form_parsing/resources/legacy_regex_patterns.json.
   std::optional<std::string_view> regex_reference_match;
+
+  friend constexpr bool operator==(const FieldCondition&,
+                                   const FieldCondition&) = default;
 };
 
 // Container that defines what should happen to fields matched for a
@@ -113,22 +93,20 @@ struct SetTypeAction {
 
   // The new field type to assign to the target.
   FieldType set_overall_type;
+
+  friend constexpr bool operator==(const SetTypeAction&,
+                                   const SetTypeAction&) = default;
 };
 
 // A declarative rule with conditions and actions. The actions are executed by
 // the rationalization engine if all conditions are fulfilled.
 struct RationalizationRule {
-  RationalizationRule();
-  ~RationalizationRule();
-  RationalizationRule(RationalizationRule&&);
-  RationalizationRule& operator=(RationalizationRule&&);
-
   // A name for the rule (for logging purposes).
   std::string_view rule_name;
 
-  // Only if all requirements specified in the environment_condition are
+  // Only if all requirements specified in `environment_condition` are
   // fulfilled, the RationalizationRule can be executed.
-  std::optional<EnvironmentCondition> environment_condition;
+  EnvironmentCondition environment_condition;
 
   // Conditions of a rule are anchored on the trigger_field and can be extended
   // by conditions on neighboring fields. This variable specifies the conditions
@@ -137,53 +115,17 @@ struct RationalizationRule {
 
   // This specifies conditions on the fields following or preceding the
   // the trigger field.
-  std::vector<FieldCondition> other_field_conditions;
+  base::raw_span<const FieldCondition> other_field_conditions;
 
   // This specifies conditions on the fields following or preceding the
   // the trigger field that should not be met.
-  std::vector<FieldCondition> fields_with_conditions_do_not_exist;
+  base::raw_span<const FieldCondition> fields_with_conditions_do_not_exist;
 
   // What rationaliation to apply.
-  std::vector<SetTypeAction> actions;
-};
+  base::raw_span<const SetTypeAction> actions;
 
-// Builder class to work around Chromium's "Complex class/struct needs an
-// explicit out-of-line constructor." code style requirement which prevents the
-// use of designated initializer lists.
-class RationalizationRuleBuilder {
- public:
-  RationalizationRuleBuilder();
-  ~RationalizationRuleBuilder();
-
-  RationalizationRuleBuilder& SetRuleName(std::string_view rule_name) &;
-  RationalizationRuleBuilder&& SetRuleName(std::string_view rule_name) &&;
-
-  RationalizationRuleBuilder& SetEnvironmentCondition(
-      EnvironmentCondition environment_condition) &;
-  RationalizationRuleBuilder&& SetEnvironmentCondition(
-      EnvironmentCondition environment_condition) &&;
-
-  RationalizationRuleBuilder& SetTriggerField(FieldCondition trigger_field) &;
-  RationalizationRuleBuilder&& SetTriggerField(FieldCondition trigger_field) &&;
-
-  RationalizationRuleBuilder& SetOtherFieldConditions(
-      std::vector<FieldCondition> other_field_conditions) &;
-  RationalizationRuleBuilder&& SetOtherFieldConditions(
-      std::vector<FieldCondition> other_field_conditions) &&;
-
-  RationalizationRuleBuilder& SetFieldsWithConditionsDoNotExist(
-      std::vector<FieldCondition> fields_with_conditions_do_not_exist) &;
-  RationalizationRuleBuilder&& SetFieldsWithConditionsDoNotExist(
-      std::vector<FieldCondition> fields_with_conditions_do_not_exist) &&;
-
-  RationalizationRuleBuilder& SetActions(std::vector<SetTypeAction> actions) &;
-  RationalizationRuleBuilder&& SetActions(
-      std::vector<SetTypeAction> actions) &&;
-
-  RationalizationRule Build() &&;
-
- private:
-  RationalizationRule rule;
+  friend constexpr bool operator==(const RationalizationRule&,
+                                   const RationalizationRule&) = default;
 };
 
 // This is only exposed for testing purposes.

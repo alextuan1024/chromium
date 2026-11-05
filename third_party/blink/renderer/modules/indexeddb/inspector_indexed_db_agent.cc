@@ -73,6 +73,7 @@
 #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 using blink::protocol::Array;
@@ -592,27 +593,22 @@ static std::unique_ptr<IDBKey> IdbKeyFromInspectorObject(
   }
   String type = key->getType();
 
-  DEFINE_STATIC_LOCAL(String, number_type, ("number"));
-  DEFINE_STATIC_LOCAL(String, string_type, ("string"));
-  DEFINE_STATIC_LOCAL(String, date_type, ("date"));
-  DEFINE_STATIC_LOCAL(String, array_type, ("array"));
-
-  if (type == number_type) {
+  if (type == String::FromLiteral<"number">()) {
     if (!key->hasNumber()) {
       return nullptr;
     }
     idb_key = IDBKey::CreateNumber(key->getNumber(0));
-  } else if (type == string_type) {
+  } else if (type == String::FromLiteral<"string">()) {
     if (!key->hasString()) {
       return nullptr;
     }
     idb_key = IDBKey::CreateString(key->getString(String()));
-  } else if (type == date_type) {
+  } else if (type == String::FromLiteral<"date">()) {
     if (!key->hasDate()) {
       return nullptr;
     }
     idb_key = IDBKey::CreateDate(key->getDate(0));
-  } else if (type == array_type) {
+  } else if (type == String::FromLiteral<"array">()) {
     IDBKey::KeyArray key_array;
     auto* array = key->getArray(nullptr);
     if (array) {
@@ -1102,8 +1098,8 @@ class GetMetadata final : public ExecutableWithDatabase<GetMetadataCallback> {
     if (exception_state.HadException()) {
       ExceptionCode ec = exception_state.Code();
       request_callback_->sendFailure(protocol::Response::ServerError(
-          StrCat({"Could not count entries in object store '",
-                  object_store_name_, "': ", String::Number(ec)})
+          Format("Could not count entries in object store '{}': {}",
+                 object_store_name_, ec)
               .Utf8()));
       return;
     }
@@ -1328,8 +1324,8 @@ class ClearObjectStore final
     if (exception_state.HadException()) {
       ExceptionCode ec = exception_state.Code();
       request_callback_->sendFailure(protocol::Response::ServerError(
-          StrCat({"Could not clear object store '", object_store_name_,
-                  "': ", String::Number(ec)})
+          Format("Could not clear object store '{}': {}", object_store_name_,
+                 ec)
               .Utf8()));
       return;
     }

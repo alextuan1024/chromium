@@ -10,18 +10,34 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/containers/fixed_flat_map.h"
+#include "base/hash/hash.h"
 #include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_tokenizer.h"
 #include "base/strings/string_util.h"
+#include "build/build_config.h"
 #include "components/enterprise/net/core/auth_scope_metadata.h"
-#include "components/policy/core/common/values_util.h"
+#include "components/enterprise/net/core/features.h"
+#include "components/enterprise/net/core/prefs.h"
+#include "components/prefs/pref_service.h"
+#include "net/base/auth.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_server.h"
 #include "net/base/proxy_string_util.h"
+#include "net/http/http_auth_scheme.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_IOS)
+#include "base/logging.h"
+#include "net/base/ip_address.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#endif  // BUILDFLAG(IS_IOS)
 
 namespace enterprise_net {
 
@@ -41,6 +57,9 @@ constexpr char kProxyMatchKey[] = "proxy-match";
 constexpr char kDomainsKey[] = "domains";
 constexpr char kSubnetsKey[] = "subnets";
 constexpr char kPortsKey[] = "ports";
+
+// Prefix of a PvD domain pattern matching all subdomains of a domain.
+constexpr std::string_view kWildcardSubdomainPrefix = "*.";
 
 // JSON keys shared between policy entries, PvD server responses, and headers.
 constexpr char kAuthConfigKey[] = "auth_config";
@@ -62,29 +81,45 @@ constexpr char kAcceptLanguageCamelPlaceholder[] = "${acceptLanguage}";
 constexpr char kAuthNone[] = "none";
 constexpr char kAuthTypeProfileBearerToken[] = "profile_bearer_token";
 
+// HTTP proxy authentication challenge constants.
+constexpr std::string_view kProxyAuthenticateHeader = "Proxy-Authenticate";
+constexpr std::string_view kRealmAuthParam = "realm";
+
+bool HasBasicAuthScheme(std::string_view challenge) {
+  base::StringViewTokenizer scheme_tok(challenge, HTTP_LWS);
+  return scheme_tok.GetNext() &&
+         base::EqualsCaseInsensitiveASCII(scheme_tok.token_piece(),
+                                          net::kBasicAuthScheme);
+}
+
+std::optional<std::string_view> ExtractBasicAuthParamList(
+    std::string_view challenge) {
+  base::StringViewTokenizer scheme_tok(challenge, HTTP_LWS);
+  if (!scheme_tok.GetNext() ||
+      !base::EqualsCaseInsensitiveASCII(scheme_tok.token_piece(),
+                                        net::kBasicAuthScheme)) {
+    return std::nullopt;
+  }
+  std::string_view param_list = net::HttpUtil::TrimLWS(
+      std::string_view(scheme_tok.token_end(), challenge.end()));
+  if (param_list.empty()) {
+    return std::nullopt;
+  }
+  return param_list;
+}
+
+bool HasMatchingRealm(const BasicAuthChallengeParams& params,
+                      std::string_view expected_realm) {
+  auto it = params.find(kRealmAuthParam);
+  return it != params.end() && it->second == expected_realm;
+}
+
 std::string AuthTypeToString(AuthType type) {
   switch (type) {
     case AuthType::kNone:
       return kAuthNone;
     case AuthType::kProfileBearerToken:
       return kAuthTypeProfileBearerToken;
-  }
-}
-
-std::string StateToString(ProvisioningDomainProxyConfig::State state) {
-  switch (state) {
-    case ProvisioningDomainProxyConfig::State::kRefreshNeeded:
-      return "RefreshNeeded";
-    case ProvisioningDomainProxyConfig::State::kFetching:
-      return "Fetching";
-    case ProvisioningDomainProxyConfig::State::kValid:
-      return "Valid";
-    case ProvisioningDomainProxyConfig::State::kFailedTransient:
-      return "FailedTransient";
-    case ProvisioningDomainProxyConfig::State::kFailedBlocked:
-      return "FailedBlocked";
-    case ProvisioningDomainProxyConfig::State::kFailedPermanent:
-      return "FailedPermanent";
   }
 }
 
@@ -168,9 +203,15 @@ std::vector<ProxyExtraHeader> ParseExtraHeadersList(
                                  ProxyExtraHeader::HeaderType::kVariable);
     } else if (const std::string* value = header_dict.FindString(kValueKey)) {
       const std::string* type = header_dict.FindString(kTypeKey);
-      auto header_type = (type && *type == "variable")
-                             ? ProxyExtraHeader::HeaderType::kVariable
-                             : ProxyExtraHeader::HeaderType::kConstant;
+      ProxyExtraHeader::HeaderType header_type =
+          ProxyExtraHeader::HeaderType::kConstant;
+      if (type) {
+        if (base::EqualsCaseInsensitiveASCII(*type, "variable")) {
+          header_type = ProxyExtraHeader::HeaderType::kVariable;
+        }
+      } else if (value->find("${") != std::string::npos) {
+        header_type = ProxyExtraHeader::HeaderType::kVariable;
+      }
       extra_headers.emplace_back(*key, *value, header_type);
     }
   }
@@ -242,7 +283,83 @@ ParseProxy(const base::DictValue& proxy_dict) {
           std::move(proxy_chain), std::move(auth), std::move(extra_headers)));
 }
 
+#if BUILDFLAG(IS_IOS)
+// Clears `ports` so that the rule matches every port of its destinations.
+// WebKit's proxy configuration API cannot match on port, so the only way to
+// honor a rule that declares ports is to proxy the whole host/address.
+void StripPortMatchers(std::vector<uint16_t>& ports, bool is_wildcard_rule) {
+  if (ports.empty()) {
+    return;
+  }
+
+  const char* affected_destinations =
+      is_wildcard_rule ? "all destinations" : "the matched destinations";
+  DVLOG(1) << "PvD routing rule declares " << ports.size()
+           << " port matcher(s), but WebKit's proxy configuration API cannot "
+              "match on port. Proxying all ports for "
+           << affected_destinations << ".";
+
+  ports.clear();
+}
+
+// Returns whether `domain` names a single host. Wildcard patterns (including
+// the leading-dot form `net` treats as a wildcard), subnets and IP literals are
+// excluded. Subnets and IPs show up in `domains` when a cached config is parsed
+// because its serialized rules keep every matcher under `domains`.
+bool IsPlainHostname(std::string_view domain) {
+  if (domain.empty() || domain.starts_with('.') ||
+      domain.find('*') != std::string_view::npos) {
+    return false;
+  }
+  net::IPAddress address;
+  size_t prefix_length_in_bits = 0;
+  return !net::ParseCIDRBlock(domain, &address, &prefix_length_in_bits) &&
+         !net::ParseURLHostnameToAddress(domain, &address);
+}
+
+// Rewrites plain hostnames in `domains` to `*.<hostname>`. WebKit's proxy
+// configuration API matches domains as suffixes, so it routes every subdomain
+// of `example.com` through the proxy. The rewrite gives the parsed rule the
+// same reach so auth challenges for those subdomains resolve to this rule. The
+// host itself keeps matching because `*.` entries also add the bare domain.
+// `example.com` and `*.example.com` collapse into the same entry, so duplicates
+// are dropped to keep re-parsing a serialized config stable. Duplicates are
+// compared case-insensitively because `net` lowercases every pattern.
+void WidenDomainsToSubdomains(std::vector<std::string>& domains) {
+  absl::flat_hash_set<std::string> seen_domains;
+  std::vector<std::string> widened_domains;
+  widened_domains.reserve(domains.size());
+  for (std::string& domain : domains) {
+    if (IsPlainHostname(domain)) {
+      domain = base::StrCat({kWildcardSubdomainPrefix, domain});
+    }
+    if (seen_domains.insert(base::ToLowerASCII(domain)).second) {
+      widened_domains.push_back(std::move(domain));
+    }
+  }
+  domains = std::move(widened_domains);
+}
+#endif  // BUILDFLAG(IS_IOS)
+
 }  // namespace
+
+std::string_view ProvisioningDomainStateToString(
+    ProvisioningDomainProxyConfig::State state) {
+  switch (state) {
+    case ProvisioningDomainProxyConfig::State::kRefreshNeeded:
+      return "RefreshNeeded";
+    case ProvisioningDomainProxyConfig::State::kFetching:
+      return "Fetching";
+    case ProvisioningDomainProxyConfig::State::kValid:
+      return "Valid";
+    case ProvisioningDomainProxyConfig::State::kFailedTransient:
+      return "FailedTransient";
+    case ProvisioningDomainProxyConfig::State::kFailedBlocked:
+      return "FailedBlocked";
+    case ProvisioningDomainProxyConfig::State::kFailedPermanent:
+      return "FailedPermanent";
+  }
+}
 
 std::optional<ProvisioningDomainProxyConfig::RoutingRule> ParseRoutingRule(
     const base::DictValue& match_dict) {
@@ -301,9 +418,18 @@ std::optional<ProvisioningDomainProxyConfig::RoutingRule> ParseRoutingRule(
     }
   }
 
+  // A rule without domains and subnets is scoped only by its ports, so dropping
+  // them widens it to every destination.
+  const bool is_wildcard_rule = domains.empty() && subnets.empty();
+
+#if BUILDFLAG(IS_IOS)
+  StripPortMatchers(ports, is_wildcard_rule);
+  WidenDomainsToSubdomains(domains);
+#endif  // BUILDFLAG(IS_IOS)
+
   net::ProxyHostMatchingRules destination_matchers;
 
-  if (domains.empty() && subnets.empty()) {
+  if (is_wildcard_rule) {
     // If no domain or subnet patterns are specified, match all traffic ("*").
     if (!ports.empty()) {
       for (uint16_t port : ports) {
@@ -317,10 +443,11 @@ std::optional<ProvisioningDomainProxyConfig::RoutingRule> ParseRoutingRule(
     // Combine domains and ports.
     for (const auto& domain : domains) {
       std::vector<std::string> patterns_to_add = {domain};
-      if (domain.starts_with("*.")) {
+      if (domain.starts_with(kWildcardSubdomainPrefix)) {
         // By PvD proxy routing standard, entries that include a wildcard prefix
         // (*.domain.com) also match the FQDN with no subdomain (domain.com)
-        patterns_to_add.push_back(domain.substr(2));
+        patterns_to_add.push_back(
+            domain.substr(kWildcardSubdomainPrefix.size()));
       }
 
       for (const auto& pattern : patterns_to_add) {
@@ -522,8 +649,14 @@ const ProvisioningDomainProxyConfig::ProxyEndpoint* FindMatchingProxyEndpoint(
 }
 
 std::string ComputePolicyHash(const ProvisioningDomainConfig& policy_config) {
-  return base::NumberToString(policy::PolicyValueHash(
-      base::Value(ProvisioningDomainConfigToDict(policy_config))));
+  // `policy::PolicyValueHash()` can't be used: it builds on `base::FastHash()`
+  // and `base::HashInts()`, which are seeded per process when DCHECKs are on
+  // and aren't guaranteed stable across releases. `base::DictValue` keys are
+  // sorted, so the JSON form is canonical.
+  std::optional<std::string> json =
+      base::WriteJson(ProvisioningDomainConfigToDict(policy_config));
+  CHECK(json.has_value());
+  return base::NumberToString(base::PersistentHash(*json));
 }
 
 base::DictValue ProvisioningDomainConfigToDict(
@@ -543,7 +676,7 @@ base::DictValue ProvisioningDomainProxyConfigToDict(
     const ProvisioningDomainProxyConfig& proxy_config) {
   base::DictValue dict;
   dict.Set(kIdentifierKey, proxy_config.pvd_id);
-  dict.Set("state", StateToString(proxy_config.state));
+  dict.Set("state", ProvisioningDomainStateToString(proxy_config.state));
   if (!proxy_config.expires.is_null()) {
     dict.Set(kExpiresKey, net::HttpUtil::TimeFormatHTTP(proxy_config.expires));
   }
@@ -591,6 +724,92 @@ base::DictValue ProvisioningDomainProxyConfigToDict(
   dict.Set(kProxyMatchKey, std::move(rules_list));
 
   return dict;
+}
+
+bool IsSecureGatewayEnabled(PrefService* prefs) {
+  CHECK(prefs);
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+  return IsDynamicRouteFetchingEnabled() &&
+         !prefs->GetList(kProxyProvisioningDomains).empty();
+#else
+  return false;
+#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+}
+
+std::optional<BasicAuthChallengeParams> ParseBasicAuthChallengeParams(
+    std::string_view challenge) {
+  std::optional<std::string_view> param_list =
+      ExtractBasicAuthParamList(challenge);
+  if (!param_list.has_value()) {
+    return std::nullopt;
+  }
+
+  BasicAuthChallengeParams params;
+  net::HttpUtil::NameValuePairsIterator iter(
+      *param_list, /*delimiter=*/',',
+      net::HttpUtil::NameValuePairsIterator::Values::REQUIRED,
+      net::HttpUtil::NameValuePairsIterator::Quotes::STRICT_QUOTES);
+  while (iter.GetNext()) {
+    if (!net::HttpUtil::IsToken(iter.name()) ||
+        (!iter.value_is_quoted() && !net::HttpUtil::IsToken(iter.value()))) {
+      return std::nullopt;
+    }
+    auto [_, inserted] =
+        params.try_emplace(base::ToLowerASCII(iter.name()), iter.value());
+    if (!inserted) {
+      return std::nullopt;
+    }
+  }
+  if (!iter.valid() || params.empty()) {
+    return std::nullopt;
+  }
+  return params;
+}
+
+std::optional<BasicAuthChallengeParams> ExtractMatchingBasicAuthChallengeParams(
+    const net::AuthChallengeInfo& auth_info,
+    const net::HttpResponseHeaders* response_headers) {
+  if (!base::EqualsCaseInsensitiveASCII(auth_info.scheme,
+                                        net::kBasicAuthScheme)) {
+    return std::nullopt;
+  }
+
+  if (response_headers) {
+    std::optional<BasicAuthChallengeParams> matched_params;
+    size_t iter = 0;
+    std::optional<std::string_view> header_value;
+    while ((header_value = response_headers->EnumerateHeader(
+                &iter, kProxyAuthenticateHeader))) {
+      if (!HasBasicAuthScheme(*header_value)) {
+        continue;
+      }
+      // Fail closed if any `Basic` challenge header is malformed under strict
+      // parsing so we cannot skip past a header that `//net`'s non-strict
+      // parser selected and inadvertently read `url=` from a later header.
+      std::optional<BasicAuthChallengeParams> params =
+          ParseBasicAuthChallengeParams(*header_value);
+      if (!params.has_value()) {
+        return std::nullopt;
+      }
+      if (!HasMatchingRealm(*params, auth_info.realm)) {
+        continue;
+      }
+      if (matched_params.has_value()) {
+        return std::nullopt;
+      }
+      matched_params = std::move(params);
+    }
+    return matched_params;
+  }
+
+  if (!auth_info.challenge.empty()) {
+    std::optional<BasicAuthChallengeParams> params =
+        ParseBasicAuthChallengeParams(auth_info.challenge);
+    if (params.has_value() && HasMatchingRealm(*params, auth_info.realm)) {
+      return params;
+    }
+  }
+  return std::nullopt;
 }
 
 }  // namespace enterprise_net

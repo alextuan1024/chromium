@@ -7,10 +7,20 @@
 #import <algorithm>
 
 #import "base/metrics/histogram_functions.h"
+#import "ios/chrome/browser/web/model/web_performance_metrics/web_performance_metrics_java_script_feature.h"
+#import "ios/web/public/js_messaging/web_frame.h"
+#import "ios/web/public/navigation/navigation_context.h"
 
 WebPerformanceMetricsTabHelper::WebPerformanceMetricsTabHelper(
     web::WebState* web_state) {
   web_state_observation_.Observe(web_state);
+  web::WebFramesManager* web_frames_manager =
+      WebPerformanceMetricsJavaScriptFeature::GetInstance()
+          ->GetWebFramesManager(web_state);
+  web_frames_manager_observation_.Observe(web_frames_manager);
+  for (web::WebFrame* web_frame : web_frames_manager->GetAllWebFrames()) {
+    AddFrameToCurrentPage(web_frame->GetFrameId());
+  }
 }
 
 WebPerformanceMetricsTabHelper::~WebPerformanceMetricsTabHelper() = default;
@@ -18,10 +28,42 @@ WebPerformanceMetricsTabHelper::~WebPerformanceMetricsTabHelper() = default;
 void WebPerformanceMetricsTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
-  FlushInteractionToNextPaintMetrics();
+  // Same-document navigations (fragment changes, `history.pushState()`) keep
+  // the current document alive, so its metrics must keep accumulating and must
+  // not be reset.
+  if (navigation_context->IsSameDocument()) {
+    return;
+  }
+
+  // TODO(crbug.com/573269319): Move these state resets to
+  // `DidFinishNavigation` alongside INP.
   SetAggregateAbsoluteFirstContentfulPaint(std::numeric_limits<double>::max());
   SetFirstInputDelayLoggingStatus(false);
   has_been_hidden_since_navigation_started_ = !web_state->IsVisible();
+}
+
+void WebPerformanceMetricsTabHelper::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  // Only committed cross-document navigations change the active page.
+  if (!navigation_context->HasCommitted() ||
+      navigation_context->IsSameDocument()) {
+    return;
+  }
+  LogPageInteractionToNextPaint(previous_page_interactions_);
+
+  // Shift tracking states.
+  previous_page_interactions_ = std::move(current_page_interactions_);
+  current_page_interactions_.clear();
+  previous_frame_ids_ = std::move(current_frame_ids_);
+  current_frame_ids_.clear();
+
+  // Frames are usually registered after this point, but error pages register
+  // their frame before it.
+  for (web::WebFrame* web_frame :
+       web_frames_manager_observation_.GetSource()->GetAllWebFrames()) {
+    AddFrameToCurrentPage(web_frame->GetFrameId());
+  }
 }
 
 void WebPerformanceMetricsTabHelper::WasHidden(web::WebState* web_state) {
@@ -31,6 +73,7 @@ void WebPerformanceMetricsTabHelper::WasHidden(web::WebState* web_state) {
 void WebPerformanceMetricsTabHelper::WebStateDestroyed(
     web::WebState* web_state) {
   FlushInteractionToNextPaintMetrics();
+  web_frames_manager_observation_.Reset();
   web_state_observation_.Reset();
 }
 
@@ -79,22 +122,51 @@ void WebPerformanceMetricsTabHelper::SetFrameInteractionData(
     const std::vector<base::TimeDelta>& longest_durations,
     int interaction_count,
     bool is_main_frame) {
-  frame_interactions_[frame_id] = {
+  web_performance_metrics::FrameInteractionData data = {
       .longest_durations = longest_durations,
       .interaction_count = interaction_count,
       .is_main_frame = is_main_frame,
   };
+
+  // On cross-site navigations, WebKit can deliver the previous page's last
+  // message after the new page has committed.
+  if (current_frame_ids_.contains(frame_id)) {
+    current_page_interactions_[frame_id] = std::move(data);
+  } else if (previous_frame_ids_.contains(frame_id)) {
+    previous_page_interactions_[frame_id] = std::move(data);
+  }
 }
 
 void WebPerformanceMetricsTabHelper::FlushInteractionToNextPaintMetrics() {
-  if (frame_interactions_.empty()) {
+  LogPageInteractionToNextPaint(previous_page_interactions_);
+  LogPageInteractionToNextPaint(current_page_interactions_);
+  previous_page_interactions_.clear();
+  current_page_interactions_.clear();
+}
+
+void WebPerformanceMetricsTabHelper::WebFrameBecameAvailable(
+    web::WebFramesManager* web_frames_manager,
+    web::WebFrame* web_frame) {
+  AddFrameToCurrentPage(web_frame->GetFrameId());
+}
+
+void WebPerformanceMetricsTabHelper::AddFrameToCurrentPage(
+    std::string frame_id) {
+  // Clear any prior tracking (e.g. if restored from the back/forward cache).
+  previous_frame_ids_.erase(frame_id);
+  current_frame_ids_.insert(std::move(frame_id));
+}
+
+void WebPerformanceMetricsTabHelper::LogPageInteractionToNextPaint(
+    const PageInteractions& page_interactions) {
+  if (page_interactions.empty()) {
     return;
   }
 
   // Page-wide INP metric.
   std::optional<base::TimeDelta> aggregate_inp =
       web_performance_metrics::CalculateAggregateInteractionToNextPaint(
-          frame_interactions_);
+          page_interactions);
   if (aggregate_inp.has_value()) {
     UmaHistogramCustomTimes(
         web_performance_metrics::kAggregateInteractionToNextPaintHistogram,
@@ -106,7 +178,7 @@ void WebPerformanceMetricsTabHelper::FlushInteractionToNextPaintMetrics() {
   }
 
   // Per-frame INP metric.
-  for (const auto& [id, data] : frame_interactions_) {
+  for (const auto& [id, data] : page_interactions) {
     std::optional<base::TimeDelta> frame_inp =
         web_performance_metrics::CalculateInteractionToNextPaint(
             data.longest_durations, data.interaction_count);
@@ -132,6 +204,4 @@ void WebPerformanceMetricsTabHelper::FlushInteractionToNextPaintMetrics() {
               kTimeRangeInteractionTimingHistogramBucketCount);
     }
   }
-
-  frame_interactions_.clear();
 }

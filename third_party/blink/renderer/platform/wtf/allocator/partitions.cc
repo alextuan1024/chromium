@@ -47,6 +47,7 @@
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/partition_alloc.h"
 #include "partition_alloc/partition_alloc_constants.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/partition_root.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 
@@ -85,7 +86,8 @@ partition_alloc::PartitionOptions PartitionOptionsFromFeatures() {
   using base::features::BackupRefPtrMode;
   using partition_alloc::PartitionOptions;
 
-#if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+#if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) || \
+    PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
   const auto brp_mode = base::features::kBackupRefPtrModeParam.Get();
   const bool process_affected_by_brp_flag =
       base::features::kBackupRefPtrEnabledProcessesParam.Get() ==
@@ -96,9 +98,11 @@ partition_alloc::PartitionOptions PartitionOptionsFromFeatures() {
                               base::features::kPartitionAllocBackupRefPtr) &&
                           (brp_mode == BackupRefPtrMode::kEnabled) &&
                           process_affected_by_brp_flag;
-#else  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
-  const bool enable_brp = false;
-#endif
+#else   // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) ||
+        // PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
+  constexpr bool enable_brp = false;
+#endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) ||
+        // PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
 
   const auto brp_setting =
       enable_brp ? PartitionOptions::kEnabled : PartitionOptions::kDisabled;
@@ -183,6 +187,8 @@ void Partitions::InitializeArrayBufferPartition() {
             partition_alloc::PartitionOptions::kAllowed;
         opts.memory_tagging = {
             .enabled = partition_alloc::PartitionOptions::kDisabled};
+        opts.allow_giga_allocations =
+            partition_alloc::PartitionOptions::kAllowed;
         return opts;
       }());
 
@@ -370,8 +376,7 @@ void Partitions::BufferAlignedFree(void* p) {
 
 // static
 void Partitions::BufferFreeWithSize(void* p, size_t size) {
-  BufferPartition()->Free<partition_alloc::FreeFlags::kWithSizeHint>(
-      p, {.size = size});
+  BufferPartition()->Free(p, partition_alloc::FreeSizeHint{size});
 }
 
 // static

@@ -12,18 +12,23 @@
 #include "base/json/values_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/buildflag.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
+#include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/profile_waiter.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
@@ -32,6 +37,7 @@
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_web_contents_factory.h"
 #include "content/public/test/test_web_ui.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -153,6 +159,12 @@ class ProfilePickerHandlerTest : public testing::Test {
   TestingProfileManager* profile_manager() { return &profile_manager_; }
   content::TestWebUI* web_ui() { return &web_ui_; }
   ProfilePickerHandler* handler() { return handler_.get(); }
+  std::vector<ProfileAttributesEntry*> GetProfilesAttributesForDisplay() {
+    return handler()->GetProfilesAttributesForDisplay();
+  }
+  void CallOnProfileLoadedForSwitchToReauth(Profile* profile) {
+    handler()->OnProfileLoadedForSwitchToReauth(profile);
+  }
 
  private:
   const bool is_glic_version_;
@@ -266,6 +278,21 @@ TEST_F(ProfilePickerHandlerTest, RemoveProfile) {
   VerifyProfileListWasPushed({profile_a, profile_c, profile_d, profile_e});
   VerifyIfGuestModeUpdateWasCalled(/*expected_guest_mode=*/true);
   web_ui()->ClearTrackedCalls();
+}
+
+TEST_F(ProfilePickerHandlerTest, CloseProfileStatisticsBeforeLoadCompletes) {
+  ProfileAttributesEntry* profile_a = CreateTestingProfile("A");
+  InitializeMainViewAndVerifyProfileList({profile_a});
+  web_ui()->ClearTrackedCalls();
+
+  // Closing statistics when statistics have not finished loading (e.g. for an
+  // unloaded profile path) should not crash.
+  base::ListValue args;
+  args.Append(base::FilePathToValue(
+      profile_manager()->profiles_dir().AppendASCII("UnloadedProfile")));
+  web_ui()->HandleReceivedMessage("getProfileStatistics", args);
+  base::ListValue empty_args;
+  web_ui()->HandleReceivedMessage("closeProfileStatistics", empty_args);
 }
 
 TEST_F(ProfilePickerHandlerTest, RemoveOmittedProfile) {
@@ -416,51 +443,135 @@ TEST_F(SupervisedProfilePickerHandlerTest,
 }
 
 TEST_F(ProfilePickerHandlerTest, UpdateProfileOrder) {
-  auto entries_to_names =
-      [](const std::vector<ProfileAttributesEntry*> entries) {
-        std::vector<std::string> names;
-        for (auto* entry : entries) {
-          names.emplace_back(base::UTF16ToUTF8(entry->GetLocalProfileName()));
-        }
-        return names;
-      };
+  base::test::ScopedFeatureList scoped_feature_list{
+      switches::kProfilesReordering};
+  ProfileAttributesEntry* profile_a = CreateTestingProfile("A");
+  ProfileAttributesEntry* profile_b = CreateTestingProfile("B");
+  ProfileAttributesEntry* profile_c = CreateTestingProfile("C");
+  ProfileAttributesEntry* profile_d = CreateTestingProfile("D");
 
-  std::vector<std::string> profile_names = {"A", "B", "C", "D"};
-  for (auto name : profile_names) {
-    CreateTestingProfile(name);
-  }
+  InitializeMainViewAndVerifyProfileList(
+      {profile_a, profile_b, profile_c, profile_d});
+  web_ui()->ClearTrackedCalls();
 
   ProfileAttributesStorage* storage =
       profile_manager()->profile_attributes_storage();
-  std::vector<ProfileAttributesEntry*> display_entries =
-      storage->GetAllProfilesAttributesSortedForDisplay();
-  ASSERT_EQ(entries_to_names(display_entries), profile_names);
+  ASSERT_EQ(storage->GetAllProfilesAttributesSortedForDisplay(),
+            std::vector<ProfileAttributesEntry*>(
+                {profile_a, profile_b, profile_c, profile_d}));
 
-  // Perform first changes.
+  base::HistogramTester histogram_tester;
+
+  // Perform first changes via drag and drop.
   {
     base::ListValue args;
     args.Append(0);  // `from_index`
     args.Append(2);  // `to_index`
+    args.Append(static_cast<int>(ProfilePickerOrderUpdateType::kDragAndDrop));
     web_ui()->HandleReceivedMessage("updateProfileOrder", args);
 
-    std::vector<std::string> expected_profile_order_names{"B", "C", "A", "D"};
-    EXPECT_EQ(
-        entries_to_names(storage->GetAllProfilesAttributesSortedForDisplay()),
-        expected_profile_order_names);
+    std::vector<ProfileAttributesEntry*> expected_profile_order{
+        profile_b, profile_c, profile_a, profile_d};
+    EXPECT_EQ(storage->GetAllProfilesAttributesSortedForDisplay(),
+              expected_profile_order);
+    EXPECT_EQ(GetProfilesAttributesForDisplay(), expected_profile_order);
+    VerifyProfileListWasPushed(expected_profile_order);
+    web_ui()->ClearTrackedCalls();
+    histogram_tester.ExpectBucketCount("Profile.ProfilesOrderChanged",
+                                       ProfileOrderUpdateType::kDragAndDrop,
+                                       1u);
   }
 
-  // Perform second changes.
+  // Perform second changes via context menu button.
   {
     base::ListValue args;
     args.Append(1);  // `from_index`
     args.Append(3);  // `to_index`
+    args.Append(
+        static_cast<int>(ProfilePickerOrderUpdateType::kContextMenuButton));
     web_ui()->HandleReceivedMessage("updateProfileOrder", args);
 
-    std::vector<std::string> expected_profile_order_names{"B", "A", "D", "C"};
-    EXPECT_EQ(
-        entries_to_names(storage->GetAllProfilesAttributesSortedForDisplay()),
-        expected_profile_order_names);
+    std::vector<ProfileAttributesEntry*> expected_profile_order{
+        profile_b, profile_a, profile_d, profile_c};
+    EXPECT_EQ(storage->GetAllProfilesAttributesSortedForDisplay(),
+              expected_profile_order);
+    EXPECT_EQ(GetProfilesAttributesForDisplay(), expected_profile_order);
+    VerifyProfileListWasPushed(expected_profile_order);
+    web_ui()->ClearTrackedCalls();
+    histogram_tester.ExpectBucketCount(
+        "Profile.ProfilesOrderChanged",
+        ProfileOrderUpdateType::kContextMenuButton, 1u);
+    histogram_tester.ExpectTotalCount("Profile.ProfilesOrderChanged", 2u);
   }
+}
+
+TEST_F(ProfilePickerHandlerTest, UpdateProfileOrderAndRename) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      switches::kProfilesReordering};
+  ProfileAttributesEntry* profile_a = CreateTestingProfile("A");
+  ProfileAttributesEntry* profile_b = CreateTestingProfile("B");
+  ProfileAttributesEntry* profile_c = CreateTestingProfile("C");
+  ProfileAttributesEntry* profile_d = CreateTestingProfile("D");
+
+  InitializeMainViewAndVerifyProfileList(
+      {profile_a, profile_b, profile_c, profile_d});
+  web_ui()->ClearTrackedCalls();
+
+  // Move `profile_a` from index 0 to index 2.
+  {
+    base::ListValue args;
+    args.Append(0);  // `from_index`
+    args.Append(2);  // `to_index`
+    args.Append(static_cast<int>(ProfilePickerOrderUpdateType::kDragAndDrop));
+    web_ui()->HandleReceivedMessage("updateProfileOrder", args);
+    VerifyProfileListWasPushed({profile_b, profile_c, profile_a, profile_d});
+    web_ui()->ClearTrackedCalls();
+  }
+
+  // Rename `profile_a` and verify that the updated profile order is preserved
+  // when the new profile list is pushed.
+  profile_a->SetLocalProfileName(u"X", false);
+  VerifyProfileListWasPushed({profile_b, profile_c, profile_a, profile_d});
+  web_ui()->ClearTrackedCalls();
+
+  // Move `profile_a` (now at index 2) to index 1.
+  {
+    base::ListValue args;
+    args.Append(2);  // `from_index`
+    args.Append(1);  // `to_index`
+    args.Append(
+        static_cast<int>(ProfilePickerOrderUpdateType::kContextMenuButton));
+    web_ui()->HandleReceivedMessage("updateProfileOrder", args);
+    VerifyProfileListWasPushed({profile_b, profile_a, profile_c, profile_d});
+    web_ui()->ClearTrackedCalls();
+  }
+
+  // Rename `profile_a` again and verify the new order is preserved.
+  profile_a->SetLocalProfileName(u"Y", false);
+  VerifyProfileListWasPushed({profile_b, profile_a, profile_c, profile_d});
+  web_ui()->ClearTrackedCalls();
+}
+
+TEST_F(ProfilePickerHandlerTest, ProfilesOrderChangedExternally) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      switches::kProfilesReordering};
+  ProfileAttributesEntry* profile_a = CreateTestingProfile("A");
+  ProfileAttributesEntry* profile_b = CreateTestingProfile("B");
+  ProfileAttributesEntry* profile_c = CreateTestingProfile("C");
+  ProfileAttributesEntry* profile_d = CreateTestingProfile("D");
+
+  InitializeMainViewAndVerifyProfileList(
+      {profile_a, profile_b, profile_c, profile_d});
+  web_ui()->ClearTrackedCalls();
+
+  ProfileAttributesStorage* storage =
+      profile_manager()->profile_attributes_storage();
+
+  // Updating the profile order directly in storage should notify the handler
+  // and push the updated profile list to the WebUI.
+  storage->UpdateProfilesOrderPref(0, 2, ProfileOrderUpdateType::kDragAndDrop);
+  VerifyProfileListWasPushed({profile_b, profile_c, profile_a, profile_d});
+  web_ui()->ClearTrackedCalls();
 }
 
 class ProfilePickerHandlerGlicVersionTest : public ProfilePickerHandlerTest {
@@ -546,4 +657,86 @@ TEST_F(ProfilePickerHandlerGlicVersionTest, ChangeAiSubscriptionTier) {
   ineligible_1->SetAiSubscriptionTier(1);
   VerifyProfileListWasPushed({eligible_1});
   web_ui()->ClearTrackedCalls();
+}
+
+// Regression test for crbug.com/580195900: if a locked profile's primary
+// account is cleared while loading for reauth (or has an empty GAIA ID),
+// `OnProfileLoadedForSwitchToReauth` should not proceed to
+// `ProfilePickerReauthProvider` and should show `ReauthNotAllowed` for an
+// active profile.
+TEST_F(ProfilePickerHandlerTest,
+       LockedProfileMissingGaiaIdOnLoadShowsReauthNotAllowed) {
+  signin_util::ScopedForceSigninSetterForTesting force_signin_setter{true};
+  ProfileAttributesEntry* entry = CreateTestingProfile("LockedProfile");
+  InitializeMainViewAndVerifyProfileList({entry});
+
+  entry->SetActiveTimeToNow();
+  entry->LockForceSigninProfile(true);
+  // Simulate `ProfileAttributesEntry` having a username without a GAIA ID so
+  // `GetSigninState() != SigninState::kNotSignedIn` triggers the reauth load
+  // path, while reauth itself cannot proceed without a GAIA ID.
+  entry->SetAuthInfo(GaiaId(), u"user@gmail.com",
+                     /*is_consented_primary_account=*/false);
+  web_ui()->ClearTrackedCalls();
+
+  base::ListValue args;
+  args.Append(base::FilePathToValue(entry->GetPath()));
+  web_ui()->HandleReceivedMessage("launchSelectedProfile", args);
+
+  ForceSigninUIError::UiTexts expected_error =
+      ForceSigninUIError::ReauthNotAllowed().GetErrorTexts();
+
+  ASSERT_GE(web_ui()->call_data().size(), 2u);
+  const content::TestWebUI::CallData& dialog_call =
+      *web_ui()->call_data()[web_ui()->call_data().size() - 2];
+  EXPECT_EQ("cr.webUIListenerCallback", dialog_call.function_name());
+  EXPECT_EQ("display-signin-error-dialog", dialog_call.arg1()->GetString());
+  EXPECT_EQ(base::UTF16ToUTF8(expected_error.first),
+            dialog_call.arg2()->GetString());
+  EXPECT_EQ(base::UTF16ToUTF8(expected_error.second),
+            dialog_call.arg3()->GetString());
+  EXPECT_TRUE(dialog_call.arg4()->GetString().empty());
+
+  const content::TestWebUI::CallData& reset_call =
+      *web_ui()->call_data().back();
+  EXPECT_EQ("cr.webUIListenerCallback", reset_call.function_name());
+  EXPECT_EQ("reset-picker-buttons", reset_call.arg1()->GetString());
+  EXPECT_FALSE(reset_call.arg2()->GetBool());
+}
+
+TEST_F(ProfilePickerHandlerTest,
+       OnProfileLoadedForSwitchToReauthHandlesSignedOutAndNullProfile) {
+  signin_util::ScopedForceSigninSetterForTesting force_signin_setter{true};
+  ProfileAttributesEntry* entry = CreateTestingProfile("SignedOutLocked");
+  InitializeMainViewAndVerifyProfileList({entry});
+  web_ui()->ClearTrackedCalls();
+
+  // Null profile (failed load) resets picker buttons cleanly.
+  CallOnProfileLoadedForSwitchToReauth(nullptr);
+  ASSERT_EQ(web_ui()->call_data().size(), 1u);
+  EXPECT_EQ("reset-picker-buttons",
+            web_ui()->call_data().back()->arg1()->GetString());
+  EXPECT_FALSE(web_ui()->call_data().back()->arg2()->GetBool());
+  web_ui()->ClearTrackedCalls();
+
+  // Active locked profile whose primary account was cleared during load shows
+  // `ReauthNotAllowed` and resets picker buttons.
+  Profile* profile =
+      profile_manager()->profile_manager()->GetProfileByPath(entry->GetPath());
+  ASSERT_TRUE(profile);
+  entry->SetActiveTimeToNow();
+  entry->LockForceSigninProfile(true);
+  ASSERT_TRUE(entry->GetGAIAId().empty());
+
+  CallOnProfileLoadedForSwitchToReauth(profile);
+  ForceSigninUIError::UiTexts expected_error =
+      ForceSigninUIError::ReauthNotAllowed().GetErrorTexts();
+  ASSERT_EQ(web_ui()->call_data().size(), 2u);
+  EXPECT_EQ("display-signin-error-dialog",
+            web_ui()->call_data()[0]->arg1()->GetString());
+  EXPECT_EQ(base::UTF16ToUTF8(expected_error.first),
+            web_ui()->call_data()[0]->arg2()->GetString());
+  EXPECT_EQ("reset-picker-buttons",
+            web_ui()->call_data()[1]->arg1()->GetString());
+  EXPECT_FALSE(web_ui()->call_data()[1]->arg2()->GetBool());
 }

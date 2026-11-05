@@ -26,7 +26,7 @@ class BoxModelObjectPainter : public BoxPainterBase {
 
  protected:
   BoxPainterBase::FillLayerInfo GetFillLayerInfo(
-      const Color&,
+      const AnimatedColor&,
       const FillLayer&,
       BackgroundBleedAvoidance,
       bool is_painting_background_in_contents_space,
@@ -39,7 +39,7 @@ class BoxModelObjectPainter : public BoxPainterBase {
   PhysicalRect AdjustRectForScrolledContent(GraphicsContext&,
                                             const PhysicalBoxStrut& borders,
                                             const PhysicalRect&) const override;
-  Node* ImageGeneratingNode() const override;
+  const LayoutObject* PaintTimingLayoutObject() const override;
 
  private:
   const LayoutBoxModelObject& box_model_;

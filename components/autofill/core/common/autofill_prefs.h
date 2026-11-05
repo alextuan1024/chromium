@@ -82,15 +82,6 @@ inline constexpr char kAutofillHasSeenBnpl[] = "autofill.has_seen_bnpl";
 // terms.
 inline constexpr char kAutofillAmountExtractionAiTermsSeen[] =
     "autofill.amount_extraction_ai_terms_seen";
-// Dictionary that contains information about the AtMemory search popup trigger.
-// The dictionary has the following keys:
-// "is_shortcut": bool - `true`  if `trigger` is a keyboard shortcut,
-//                       `false` if `trigger` is a text trigger.
-//                        Default: `false`.
-// "trigger": string - either a keyboard shortcut, or text that the user types
-//                     to trigger the popup. Default: `@@`.
-inline constexpr char kAutofillAtMemoryTriggerInfo[] =
-    "autofill.at_memory.trigger_info";
 // Boolean that is true if the Double Ctrl / Double Command trigger for
 // AtMemory is enabled.
 inline constexpr char kAutofillAtMemoryDoubleCtrlTriggerEnabled[] =
@@ -98,10 +89,23 @@ inline constexpr char kAutofillAtMemoryDoubleCtrlTriggerEnabled[] =
 // String representing the keyboard shortcut configured for AtMemory.
 inline constexpr char kAutofillAtMemoryShortcut[] =
     "autofill.at_memory.shortcut";
+// Integer tracking the number of times the AtMemory keyboard shortcut
+// educational promo has been shown.
+inline constexpr char kAutofillAtMemoryShortcutPromoImpressionCount[] =
+    "autofill.at_memory.shortcut_promo_impression_count";
 // Boolean that is true if Autofill is enabled and allowed to save credit card
 // data.
 inline constexpr char kAutofillCreditCardEnabled[] =
     "autofill.credit_card_enabled";
+// Boolean that is true if Google Wallet offers and loyalty cards are enabled
+// for autofill. Otherwise, filling of offers and loyalty cards is disabled.
+inline constexpr char kAutofillOffersAndLoyaltyCardsEnabled[] =
+    "autofill.offers_and_loyalty_cards_enabled";
+// Boolean that is true once `kAutofillOffersAndLoyaltyCardsEnabled` has been
+// initialized from `kAutofillCreditCardEnabled`, so that this only happens once
+// per profile.
+inline constexpr char kAutofillOffersAndLoyaltyCardsMigrated[] =
+    "autofill.offers_and_loyalty_cards_migrated";
 // Boolean that is true if FIDO Authentication is enabled for card unmasking.
 inline constexpr char kAutofillCreditCardFidoAuthEnabled[] =
     "autofill.credit_card_fido_auth_enabled";

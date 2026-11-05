@@ -6,6 +6,7 @@ package org.chromium.android_webview.test;
 
 import static org.chromium.android_webview.test.AwActivityTestRule.SCALED_WAIT_TIMEOUT_MS;
 
+import android.os.Build;
 import android.util.Pair;
 import android.webkit.JavascriptInterface;
 
@@ -36,11 +37,10 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
-import android.os.Build;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.MaxAndroidSdkLevel;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
-import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.TestFileUtil;
 import org.chromium.components.embedder_support.util.WebResourceResponseInfo;
 import org.chromium.content_public.browser.test.util.WebContentsUtils;
@@ -1029,6 +1029,8 @@ public class AwContentsClientShouldInterceptRequestTest extends AwParameterizedT
         final String contentResourceName = "target";
         final String existingContentUrl = TestContentProvider.createContentUrl(contentResourceName);
 
+        mAwContents.getSettings().setAllowContentAccess(true);
+
         notCalledForUrlTemplate(existingContentUrl);
 
         int contentRequestCount =
@@ -1043,6 +1045,8 @@ public class AwContentsClientShouldInterceptRequestTest extends AwParameterizedT
     @Feature({"AndroidWebView"})
     @SkipMutations(reason = "This test depends on AwSettings.setAllowContentAccess(true)")
     public void testCalledForNonexistentContentUrl() throws Throwable {
+        mAwContents.getSettings().setAllowContentAccess(true);
+
         calledForUrlTemplate("content://org.chromium.webview.NoSuchProvider/foo");
     }
 
@@ -1666,6 +1670,61 @@ public class AwContentsClientShouldInterceptRequestTest extends AwParameterizedT
 
         // Also check that we didn't break anything in sending the cookies to the server.
         var serverRequest = mWebServer.getLastRequest(pagePath);
+        Assert.assertEquals(
+                "The server SHOULD receive the same-site=Strict cookie",
+                "session=SECRET",
+                serverRequest.headerValue("Cookie"));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Network"})
+    public void testInterceptedCookieHeaders_sameSiteStrictAllowedDirectDownload()
+            throws Throwable {
+        // A same-origin download must start with Cookie interception enabled and
+        // retain its SameSite=Strict cookie.
+        mActivityTestRule.getAwSettingsOnUiThread(mAwContents).setIncludeCookiesOnIntercept(true);
+        AwActivityTestRule.enableJavaScriptOnUiThread(mAwContents);
+
+        var cookieManager = mAwContents.getBrowserContextForPublicApi().getCookieManager();
+        cookieManager.removeAllCookies();
+
+        final String pagePath = "/download_page.html";
+        final String downloadPath = "/download.bin";
+        final String pageUrl =
+                addPageToTestServer(
+                        mWebServer,
+                        pagePath,
+                        CommonResources.makeHtmlPageFrom(
+                                "",
+                                "<a id=\"link\" href=\""
+                                        + downloadPath
+                                        + "\" download=\"download.bin\">download</a>"));
+
+        final String downloadUrl = mWebServer.setResponse(downloadPath, "download data", null);
+
+        cookieManager.setCookie(downloadUrl, "session=SECRET; SameSite=Strict");
+
+        mActivityTestRule.loadUrlSync(
+                mAwContents, mContentsClient.getOnPageFinishedHelper(), pageUrl);
+
+        var downloadStartHelper = mContentsClient.getOnDownloadStartHelper();
+        final int downloadStartCallCount = downloadStartHelper.getCallCount();
+
+        JSUtils.clickNodeWithUserGesture(mAwContents.getWebContents(), "link");
+
+        // Wait for the response before checking the intercepted and server requests.
+        downloadStartHelper.waitForCallback(downloadStartCallCount);
+        Assert.assertEquals(downloadUrl, downloadStartHelper.getUrl());
+
+        var resourceRequest = mShouldInterceptRequestHelper.getRequestsForUrl(downloadUrl);
+        Assert.assertNotNull(resourceRequest);
+        Assert.assertEquals(
+                "The same-site=Strict cookie SHOULD be attached to a same-origin download",
+                "session=SECRET",
+                resourceRequest.getRequestHeaders().get("Cookie"));
+
+        var serverRequest = mWebServer.getLastRequest(downloadPath);
         Assert.assertEquals(
                 "The server SHOULD receive the same-site=Strict cookie",
                 "session=SECRET",

@@ -15,7 +15,6 @@
 #include "ash/shell.h"
 #include "ash/wm/desks/desks_controller.h"
 #include "ash/wm/desks/overview_desk_bar_view.h"
-#include "ash/wm/gestures/wm_gesture_handler.h"
 #include "ash/wm/mru_window_tracker.h"
 #include "ash/wm/overview/delayed_animation_observer_impl.h"
 #include "ash/wm/overview/overview_constants.h"
@@ -70,7 +69,7 @@ constexpr base::TimeDelta kOcclusionPauseDurationForEnd =
 OverviewEnterExitType MaybeOverrideEnterExitType(
     OverviewEnterExitType original_type,
     bool enter,
-    const std::vector<raw_ptr<aura::Window, VectorExperimental>>& windows) {
+    const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>& windows) {
   if (original_type != OverviewEnterExitType::kNormal) {
     return original_type;
   }
@@ -218,30 +217,6 @@ bool OverviewController::InOverviewSession() const {
   return overview_session_ && !overview_session_->is_shutting_down();
 }
 
-bool OverviewController::HandleContinuousScroll(float y_offset,
-                                                OverviewEnterExitType type) {
-  // We enter with type `kNormal` if a fast scroll happened and we want to enter
-  // overview mode immediately, using ToggleOverview().
-  CHECK((type ==
-         OverviewEnterExitType::kContinuousAnimationEnterOnScrollUpdate) ||
-        (type == OverviewEnterExitType::kNormal));
-
-  // Determine if this is the last scroll update in this continuous scroll.
-  is_continuous_scroll_in_progress_ =
-      y_offset != WmGestureHandler::kVerticalThresholdDp &&
-      type != OverviewEnterExitType::kNormal;
-
-  if (!overview_session_) {
-    session_metrics_recorder_.emplace(
-        OverviewStartAction::k3FingerVerticalScroll, this);
-    ToggleOverview(type);
-    return true;
-  }
-
-  overview_session_->set_enter_exit_overview_type(type);
-  return overview_session_->HandleContinuousScrollIntoOverview(y_offset);
-}
-
 void OverviewController::IncrementSelection(bool forward) {
   DCHECK(InOverviewSession());
   overview_session_->IncrementSelection(forward);
@@ -273,6 +248,19 @@ void OverviewController::DelayedUpdateRoundedCornersAndShadow() {
       FROM_HERE,
       base::BindOnce(&OverviewController::UpdateRoundedCornersAndShadow,
                      weak_ptr_factory_.GetWeakPtr()));
+}
+
+void OverviewController::AddDecorationHider(aura::Window* window) {
+  decoration_hiders_.emplace_back(window);
+}
+
+void OverviewController::RemoveDecorationHider(const aura::Window* window) {
+  CHECK(window);
+  auto it = std::ranges::find(decoration_hiders_, window,
+                              &ScopedDecorationHider::window);
+  if (it != decoration_hiders_.end()) {
+    decoration_hiders_.erase(it);
+  }
 }
 
 void OverviewController::AddExitAnimationObserver(
@@ -349,7 +337,7 @@ void OverviewController::ToggleOverview(OverviewEnterExitType type) {
     return w == wm::GetTransientRoot(w) &&
            !WindowState::Get(w)->IsUserPositionable();
   };
-  std::vector<raw_ptr<aura::Window, VectorExperimental>> hide_windows(
+  std::vector<raw_ptr<aura::Window, DanglingUntriaged>> hide_windows(
       windows.size());
   auto end = std::ranges::copy_if(windows, hide_windows.begin(),
                                   should_hide_for_overview)
@@ -396,8 +384,8 @@ void OverviewController::ToggleOverview(OverviewEnterExitType type) {
       // windows without animations to prevent them from getting maximized
       // during overview exit. Minimized widgets will get created in their
       // place, and those widgets will fade out of overview.
-      std::vector<raw_ptr<aura::Window, VectorExperimental>>
-          windows_to_minimize(windows.size());
+      std::vector<raw_ptr<aura::Window, DanglingUntriaged>> windows_to_minimize(
+          windows.size());
       auto it = std::ranges::copy_if(
                     windows, windows_to_minimize.begin(),
                     [](aura::Window* window) {
@@ -493,6 +481,12 @@ void OverviewController::ToggleOverview(OverviewEnterExitType type) {
     // animation is complete.
     enter_pauser_ = PauseOcclusionTracker(kOcclusionPauseDurationForStart);
 
+    // Keep any hiders from a canceled exit alive until `Init()` creates the new
+    // session's hiders, so windows re-entering overview keep their decorations
+    // hidden without interruption while `decoration_hiders_` only holds the new
+    // session's hiders.
+    auto previous_decoration_hiders = std::move(decoration_hiders_);
+
     overview_session_ = std::make_unique<OverviewSession>(this);
     // We may want to slide in the overview grid in some cases, even if not
     // explicitly stated.
@@ -505,6 +499,7 @@ void OverviewController::ToggleOverview(OverviewEnterExitType type) {
     overview_session_->Init(
         windows, hide_windows,
         overview_window_occlusion_calculator_.GetCalculator());
+    previous_decoration_hiders.clear();
 
     overview_session_->UpdateFrameThrottling();
 
@@ -566,6 +561,11 @@ void OverviewController::OnStartingAnimationComplete(bool canceled) {
 }
 
 void OverviewController::OnEndingAnimationComplete(bool canceled) {
+  if (!canceled) {
+    // Show the decorations of the windows that were in overview.
+    decoration_hiders_.clear();
+  }
+
   for (auto& observer : observers_)
     observer.OnOverviewModeEndingAnimationComplete(canceled);
 

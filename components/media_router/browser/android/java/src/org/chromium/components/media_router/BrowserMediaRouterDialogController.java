@@ -6,12 +6,18 @@ package org.chromium.components.media_router;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import android.content.pm.PackageManager;
+
 import androidx.mediarouter.app.MediaRouteChooserDialogFragment;
 import androidx.mediarouter.app.MediaRouteControllerDialogFragment;
 import androidx.mediarouter.media.MediaRouteSelector;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
@@ -19,6 +25,8 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.components.media_router.caf.CastMediaSource;
 import org.chromium.components.media_router.caf.remoting.RemotingMediaSource;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.permissions.PermissionCallback;
 
 /**
  * Implements the JNI interface called from the C++ Media Router dialog controller implementation on
@@ -27,25 +35,31 @@ import org.chromium.content_public.browser.WebContents;
 @JNINamespace("media_router")
 @NullMarked
 public class BrowserMediaRouterDialogController implements MediaRouteDialogDelegate {
+    @JniType("::media_router::MediaRouterDialogControllerAndroid")
+    interface NativeMediaRouterDialogControllerAndroid extends JniTypeToken {}
 
-    private final long mNativeDialogController;
+    private @Nullable JniRawPtr<NativeMediaRouterDialogControllerAndroid> mNativeDialogController;
     private @Nullable BaseMediaRouteDialogManager mDialogManager;
     private final WebContents mWebContents;
+    private @Nullable PermissionCallback mPendingPermissionCallback;
 
     /**
      * Returns a new initialized {@link BrowserMediaRouterDialogController}.
+     *
      * @param nativeDialogController the handle of the native object.
      * @param webContents the initiator of the dialog.
      * @return a new dialog controller to use from the native side.
      */
     @CalledByNative
     public static BrowserMediaRouterDialogController create(
-            long nativeDialogController, WebContents webContents) {
+            JniRawPtr<NativeMediaRouterDialogControllerAndroid> nativeDialogController,
+            WebContents webContents) {
         return new BrowserMediaRouterDialogController(nativeDialogController, webContents);
     }
 
     /**
      * Shows the {@link MediaRouteChooserDialogFragment} if it's not shown yet.
+     *
      * @param sourceUrns the URNs identifying the media sources to filter the devices with.
      */
     @CalledByNative
@@ -63,12 +77,63 @@ public class BrowserMediaRouterDialogController implements MediaRouteDialogDeleg
         MediaRouteSelector routeSelector = source == null ? null : source.buildRouteSelector();
 
         if (routeSelector == null) {
-            BrowserMediaRouterDialogControllerJni.get()
-                    .onMediaSourceNotSupported(mNativeDialogController);
+            if (mNativeDialogController != null) {
+                BrowserMediaRouterDialogControllerJni.get()
+                        .onMediaSourceNotSupported(mNativeDialogController);
+            }
             return;
         }
 
         assumeNonNull(source);
+        if (BrowserMediaRouter.needsLocalNetworkPermission()) {
+            WindowAndroid window = mWebContents.getTopLevelNativeWindow();
+            if (window != null
+                    && window.canRequestPermission(
+                            BrowserMediaRouter.ANDROID_PERMISSION_ACCESS_LOCAL_NETWORK)) {
+                final MediaSource finalSource = source;
+                PermissionCallback callback =
+                        new PermissionCallback() {
+                            @Override
+                            public void onRequestPermissionsResult(
+                                    String[] permissions, int[] grantResults) {
+                                if (mPendingPermissionCallback != this) {
+                                    return;
+                                }
+                                mPendingPermissionCallback = null;
+                                boolean granted =
+                                        grantResults.length > 0
+                                                && grantResults[0]
+                                                        == PackageManager.PERMISSION_GRANTED;
+                                BrowserMediaRouter.onLocalNetworkPermissionResult(granted);
+                                if (granted) {
+                                    showRouteChooserDialog(finalSource, routeSelector);
+                                } else {
+                                    if (mNativeDialogController != null) {
+                                        BrowserMediaRouterDialogControllerJni.get()
+                                                .onDialogCancelled(mNativeDialogController);
+                                    }
+                                }
+                            }
+                        };
+                mPendingPermissionCallback = callback;
+                window.requestPermissions(
+                        new String[] {BrowserMediaRouter.ANDROID_PERMISSION_ACCESS_LOCAL_NETWORK},
+                        callback);
+            } else {
+                BrowserMediaRouter.onLocalNetworkPermissionResult(false);
+                if (mNativeDialogController != null) {
+                    BrowserMediaRouterDialogControllerJni.get()
+                            .onDialogCancelled(mNativeDialogController);
+                }
+            }
+            return;
+        }
+
+        showRouteChooserDialog(source, routeSelector);
+    }
+
+    private void showRouteChooserDialog(MediaSource source, MediaRouteSelector routeSelector) {
+        if (isShowingDialog()) return;
         mDialogManager =
                 new MediaRouteChooserDialogManager(source.getSourceId(), routeSelector, this);
         mDialogManager.openDialog(mWebContents);
@@ -76,6 +141,7 @@ public class BrowserMediaRouterDialogController implements MediaRouteDialogDeleg
 
     /**
      * Shows the {@link MediaRouteControllerDialogFragment} if it's not shown yet.
+     *
      * @param sourceUrn the URN identifying the media source of the current media route.
      * @param mediaRouteId the identifier of the route to be controlled.
      */
@@ -89,8 +155,10 @@ public class BrowserMediaRouterDialogController implements MediaRouteDialogDeleg
         MediaRouteSelector routeSelector = source == null ? null : source.buildRouteSelector();
 
         if (routeSelector == null) {
-            BrowserMediaRouterDialogControllerJni.get()
-                    .onMediaSourceNotSupported(mNativeDialogController);
+            if (mNativeDialogController != null) {
+                BrowserMediaRouterDialogControllerJni.get()
+                        .onMediaSourceNotSupported(mNativeDialogController);
+            }
             return;
         }
 
@@ -104,16 +172,27 @@ public class BrowserMediaRouterDialogController implements MediaRouteDialogDeleg
     /** Closes the currently open dialog if it's open. */
     @CalledByNative
     public void closeDialog() {
+        mPendingPermissionCallback = null;
         if (mDialogManager == null) return;
 
         mDialogManager.closeDialog();
         mDialogManager = null;
     }
 
-    /** @return if any media route dialog is currently open. */
+    @CalledByNative
+    void onNativeDestroyed() {
+        if (mNativeDialogController != null) {
+            mNativeDialogController.release();
+            mNativeDialogController = null;
+        }
+        closeDialog();
+    }
+
+    /** Returns true if any media route dialog is currently open, false otherwise. */
     @CalledByNative
     public boolean isShowingDialog() {
-        return mDialogManager != null && mDialogManager.isShowingDialog();
+        return mPendingPermissionCallback != null
+                || (mDialogManager != null && mDialogManager.isShowingDialog());
     }
 
     @Override
@@ -121,8 +200,10 @@ public class BrowserMediaRouterDialogController implements MediaRouteDialogDeleg
         if (mDialogManager == null) return;
 
         mDialogManager = null;
-        BrowserMediaRouterDialogControllerJni.get()
-                .onSinkSelected(mNativeDialogController, sourceUrn, sink.getId());
+        if (mNativeDialogController != null) {
+            BrowserMediaRouterDialogControllerJni.get()
+                    .onSinkSelected(mNativeDialogController, sourceUrn, sink.getId());
+        }
     }
 
     @Override
@@ -130,8 +211,10 @@ public class BrowserMediaRouterDialogController implements MediaRouteDialogDeleg
         if (mDialogManager == null) return;
 
         mDialogManager = null;
-        BrowserMediaRouterDialogControllerJni.get()
-                .onRouteClosed(mNativeDialogController, mediaRouteId);
+        if (mNativeDialogController != null) {
+            BrowserMediaRouterDialogControllerJni.get()
+                    .onRouteClosed(mNativeDialogController, mediaRouteId);
+        }
     }
 
     @Override
@@ -143,24 +226,29 @@ public class BrowserMediaRouterDialogController implements MediaRouteDialogDeleg
         if (mDialogManager == null) return;
 
         mDialogManager = null;
-        BrowserMediaRouterDialogControllerJni.get().onDialogCancelled(mNativeDialogController);
+        if (mNativeDialogController != null) {
+            BrowserMediaRouterDialogControllerJni.get().onDialogCancelled(mNativeDialogController);
+        }
     }
 
     private BrowserMediaRouterDialogController(
-            long nativeDialogController, WebContents webContents) {
+            @Nullable JniRawPtr<NativeMediaRouterDialogControllerAndroid> nativeDialogController,
+            WebContents webContents) {
         mNativeDialogController = nativeDialogController;
         mWebContents = webContents;
     }
 
     @NativeMethods
     interface Natives {
-        void onDialogCancelled(long nativeMediaRouterDialogControllerAndroid);
+        void onDialogCancelled(JniPtr<NativeMediaRouterDialogControllerAndroid> self);
 
         void onSinkSelected(
-                long nativeMediaRouterDialogControllerAndroid, String sourceUrn, String sinkId);
+                JniPtr<NativeMediaRouterDialogControllerAndroid> self,
+                String sourceUrn,
+                String sinkId);
 
-        void onRouteClosed(long nativeMediaRouterDialogControllerAndroid, String routeId);
+        void onRouteClosed(JniPtr<NativeMediaRouterDialogControllerAndroid> self, String routeId);
 
-        void onMediaSourceNotSupported(long nativeMediaRouterDialogControllerAndroid);
+        void onMediaSourceNotSupported(JniPtr<NativeMediaRouterDialogControllerAndroid> self);
     }
 }

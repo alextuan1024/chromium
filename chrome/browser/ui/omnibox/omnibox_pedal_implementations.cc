@@ -6,6 +6,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
@@ -14,7 +15,6 @@
 #include "components/omnibox/browser/actions/omnibox_pedal.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_provider_client.h"
-#include "components/omnibox/browser/buildflags.h"
 #include "components/omnibox/browser/omnibox_client.h"
 #include "components/omnibox/browser/vector_icons.h"
 #include "components/omnibox/common/omnibox_features.h"
@@ -206,7 +206,8 @@ class OmniboxPedalUpdateCreditCard : public OmniboxPedal {
 
 class OmniboxPedalLaunchIncognito : public OmniboxPedal {
  public:
-  OmniboxPedalLaunchIncognito()
+  explicit OmniboxPedalLaunchIncognito(
+      OmniboxPedalOtrType otr_type = OmniboxPedalOtrType::kIncognito)
       : OmniboxPedal(
             OmniboxPedalId::LAUNCH_INCOGNITO,
 #if BUILDFLAG(IS_ANDROID)
@@ -216,10 +217,17 @@ class OmniboxPedalLaunchIncognito : public OmniboxPedal {
                 IDS_ANDROID_ACC_OMNIBOX_PEDAL_LAUNCH_INCOGNITO_SUFFIX,
                 IDS_ANDROID_ACC_OMNIBOX_PEDAL_LAUNCH_INCOGNITO),
 #else
-            LabelStrings(IDS_OMNIBOX_PEDAL_LAUNCH_INCOGNITO_HINT,
-                         IDS_OMNIBOX_PEDAL_LAUNCH_INCOGNITO_SUGGESTION_CONTENTS,
-                         IDS_ACC_OMNIBOX_PEDAL_LAUNCH_INCOGNITO_SUFFIX,
-                         IDS_ACC_OMNIBOX_PEDAL_LAUNCH_INCOGNITO),
+            otr_type == OmniboxPedalOtrType::kIsolated
+                ? LabelStrings(
+                      IDS_OMNIBOX_PEDAL_LAUNCH_ISOLATED_HINT,
+                      IDS_OMNIBOX_PEDAL_LAUNCH_ISOLATED_SUGGESTION_CONTENTS,
+                      IDS_ACC_OMNIBOX_PEDAL_LAUNCH_ISOLATED_SUFFIX,
+                      IDS_ACC_OMNIBOX_PEDAL_LAUNCH_ISOLATED)
+                : LabelStrings(
+                      IDS_OMNIBOX_PEDAL_LAUNCH_INCOGNITO_HINT,
+                      IDS_OMNIBOX_PEDAL_LAUNCH_INCOGNITO_SUGGESTION_CONTENTS,
+                      IDS_ACC_OMNIBOX_PEDAL_LAUNCH_INCOGNITO_SUFFIX,
+                      IDS_ACC_OMNIBOX_PEDAL_LAUNCH_INCOGNITO),
 #endif  // BUILDFLAG(IS_ANDROID)
         // Fake URL to distinguish matches.
             GURL("chrome://newtab?incognito=true")) {
@@ -348,7 +356,8 @@ class OmniboxPedalUpdateChrome : public OmniboxPedal {
                          IDS_OMNIBOX_PEDAL_UPDATE_CHROME_SUGGESTION_CONTENTS,
                          IDS_ACC_OMNIBOX_PEDAL_UPDATE_CHROME_SUFFIX,
                          IDS_ACC_OMNIBOX_PEDAL_UPDATE_CHROME),
-            GURL("chrome://settings/help")) {}
+            GURL(base::StrCat(
+                {chrome::kChromeUISettingsURL, chrome::kHelpSubPage}))) {}
 
   std::vector<SynonymGroupSpec> SpecifySynonymGroups(
       bool locale_is_english) const override {
@@ -1307,14 +1316,21 @@ class OmniboxPedalChangeGooglePassword : public OmniboxPedalAuthRequired {
 #if !BUILDFLAG(IS_ANDROID)
 class OmniboxPedalCloseIncognitoWindows : public OmniboxPedal {
  public:
-  OmniboxPedalCloseIncognitoWindows()
+  explicit OmniboxPedalCloseIncognitoWindows(
+      OmniboxPedalOtrType otr_type = OmniboxPedalOtrType::kIncognito)
       : OmniboxPedal(
             OmniboxPedalId::CLOSE_INCOGNITO_WINDOWS,
-            LabelStrings(
-                IDS_OMNIBOX_PEDAL_CLOSE_INCOGNITO_WINDOWS_HINT,
-                IDS_OMNIBOX_PEDAL_CLOSE_INCOGNITO_WINDOWS_SUGGESTION_CONTENTS,
-                IDS_ACC_OMNIBOX_PEDAL_CLOSE_INCOGNITO_WINDOWS_SUFFIX,
-                IDS_ACC_OMNIBOX_PEDAL_CLOSE_INCOGNITO_WINDOWS),
+            otr_type == OmniboxPedalOtrType::kIsolated
+                ? LabelStrings(
+                      IDS_OMNIBOX_PEDAL_CLOSE_ISOLATED_WINDOWS_HINT,
+                      IDS_OMNIBOX_PEDAL_CLOSE_ISOLATED_WINDOWS_SUGGESTION_CONTENTS,
+                      IDS_ACC_OMNIBOX_PEDAL_CLOSE_ISOLATED_WINDOWS_SUFFIX,
+                      IDS_ACC_OMNIBOX_PEDAL_CLOSE_ISOLATED_WINDOWS)
+                : LabelStrings(
+                      IDS_OMNIBOX_PEDAL_CLOSE_INCOGNITO_WINDOWS_HINT,
+                      IDS_OMNIBOX_PEDAL_CLOSE_INCOGNITO_WINDOWS_SUGGESTION_CONTENTS,
+                      IDS_ACC_OMNIBOX_PEDAL_CLOSE_INCOGNITO_WINDOWS_SUFFIX,
+                      IDS_ACC_OMNIBOX_PEDAL_CLOSE_INCOGNITO_WINDOWS),
             GURL()) {}
 
   const gfx::VectorIcon& GetVectorIcon() const override {
@@ -1708,7 +1724,8 @@ class OmniboxPedalManageChromeAccessibility : public OmniboxPedal {
                 IDS_OMNIBOX_PEDAL_MANAGE_CHROME_ACCESSIBILITY_SUGGESTION_CONTENTS,
                 IDS_ACC_OMNIBOX_PEDAL_MANAGE_CHROME_ACCESSIBILITY_SUFFIX,
                 IDS_ACC_OMNIBOX_PEDAL_MANAGE_CHROME_ACCESSIBILITY),
-            GURL("chrome://settings/accessibility")) {}
+            GURL(base::StrCat({chrome::kChromeUISettingsURL,
+                               chrome::kAccessibilitySubPage}))) {}
 
   std::vector<SynonymGroupSpec> SpecifySynonymGroups(
       bool locale_is_english) const override {
@@ -1803,7 +1820,8 @@ class OmniboxPedalCustomizeChromeFonts : public OmniboxPedal {
                 IDS_OMNIBOX_PEDAL_CUSTOMIZE_CHROME_FONTS_SUGGESTION_CONTENTS,
                 IDS_ACC_OMNIBOX_PEDAL_CUSTOMIZE_CHROME_FONTS_SUFFIX,
                 IDS_ACC_OMNIBOX_PEDAL_CUSTOMIZE_CHROME_FONTS),
-            GURL("chrome://settings/fonts")) {}
+            GURL(base::StrCat(
+                {chrome::kChromeUISettingsURL, chrome::kFontsSubPage}))) {}
 
   std::vector<SynonymGroupSpec> SpecifySynonymGroups(
       bool locale_is_english) const override {
@@ -2024,7 +2042,9 @@ const gfx::VectorIcon& GetSharingHubVectorIcon() {
 // instantiated so that realbox icon checks can detect missing icons for
 // pedals that may or may not be instantiated according to flag states.
 std::unordered_map<OmniboxPedalId, scoped_refptr<OmniboxPedal>>
-GetPedalImplementations(bool incognito, bool guest, bool testing) {
+GetPedalImplementations(OmniboxPedalProfileType profile_type,
+                        OmniboxPedalOtrType otr_type,
+                        bool testing) {
   std::unordered_map<OmniboxPedalId, scoped_refptr<OmniboxPedal>> pedals;
   const auto add = [&](OmniboxPedal* pedal) {
     const bool inserted =
@@ -2032,16 +2052,20 @@ GetPedalImplementations(bool incognito, bool guest, bool testing) {
             .insert(
                 std::make_pair(pedal->PedalId(), base::WrapRefCounted(pedal)))
             .second;
-    DCHECK(inserted);
+    CHECK(inserted, base::NotFatalUntil::M162);
   };
 
+  const bool otr =
+      profile_type == OmniboxPedalProfileType::kOtrWithRegularParent;
+  const bool guest = profile_type == OmniboxPedalProfileType::kGuest;
+
 #if BUILDFLAG(IS_ANDROID)
-  if (!incognito && !guest) {
+  if (!otr && !guest) {
     add(new OmniboxPedalClearBrowsingData(/*incognito=*/false));
   }
   add(new OmniboxPedalManagePasswords());
   add(new OmniboxPedalUpdateCreditCard());
-  add(new OmniboxPedalLaunchIncognito());
+  add(new OmniboxPedalLaunchIncognito(otr_type));
   if (!base::android::device_info::is_automotive()) {
     add(new OmniboxPedalRunChromeSafetyCheck());
   }
@@ -2054,11 +2078,11 @@ GetPedalImplementations(bool incognito, bool guest, bool testing) {
   // Clear Browsing Data functionality is disabled in guest mode, so
   // the pedal for accessing it should not be included.
   if (!guest) {
-    add(new OmniboxPedalClearBrowsingData(incognito));
+    add(new OmniboxPedalClearBrowsingData(otr));
   }
   add(new OmniboxPedalManagePasswords());
   add(new OmniboxPedalUpdateCreditCard());
-  add(new OmniboxPedalLaunchIncognito());
+  add(new OmniboxPedalLaunchIncognito(otr_type));
   add(new OmniboxPedalTranslate());
   add(new OmniboxPedalUpdateChrome());
   add(new OmniboxPedalRunChromeSafetyCheck());
@@ -2081,8 +2105,8 @@ GetPedalImplementations(bool incognito, bool guest, bool testing) {
     add(new OmniboxPedalChangeGooglePassword());
   }
 
-  if (incognito) {
-    add(new OmniboxPedalCloseIncognitoWindows());
+  if (otr) {
+    add(new OmniboxPedalCloseIncognitoWindows(otr_type));
   }
   add(new OmniboxPedalPlayChromeDinoGame());
   add(new OmniboxPedalFindMyPhone());

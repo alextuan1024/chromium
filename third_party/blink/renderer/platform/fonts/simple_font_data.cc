@@ -173,7 +173,6 @@ void SimpleFontData::PlatformInit(bool subpixel_ascent_descent,
   } else {
     line_gap = metrics.fLeading;
   }
-  font_metrics_.SetLineGap(line_gap);
   font_metrics_.SetLineSpacing(lroundf(ascent) + lroundf(descent) +
                                lroundf(line_gap));
 
@@ -267,11 +266,10 @@ Glyph SimpleFontData::GlyphForMathCharacter(UChar32 codepoint,
                                             TextDirection direction) const {
   // If the text is RTL, try to get a suitable mirrored glyph. This is handled
   // automatically by harfbuzz when setting HB_DIRECTION_RTL in the buffer.
-  if (RuntimeEnabledFeatures::MathMLOperatorRTLMirroringEnabled() &&
-      direction == TextDirection::kRtl) {
+  if (IsRtl(direction)) {
     StringBuilder builder;
     builder.Append(codepoint);
-    HarfBuzzShaper shaper(builder.ToString());
+    HarfBuzzShaper shaper(builder.ReleaseString());
     HarfBuzzShaper::GlyphDataList glyph_data_list;
     shaper.GetGlyphData(*this, LayoutLocale::GetDefault(),
                         UScriptCode::USCRIPT_MATHEMATICAL_NOTATION,
@@ -340,7 +338,7 @@ SimpleFontData* SimpleFontData::MetricsOverriddenFontData(
 // -------------------------------------------
 FontHeight SimpleFontData::NormalizedTypoAscentAndDescent(
     FontBaseline baseline_type) const {
-  if (baseline_type == kAlphabeticBaseline) {
+  if (baseline_type == FontBaseline::kAlphabetic) {
     if (!normalized_typo_ascent_descent_.ascent)
       ComputeNormalizedTypoAscentAndDescent();
     return normalized_typo_ascent_descent_;
@@ -582,18 +580,8 @@ inline float SimpleFontData::ZeroInlineSize() const {
   // 1em when it would be typeset upright (i.e. writing-mode is vertical-rl or
   // vertical-lr and text-orientation is upright).
   SkScalar size = font_.getSize();
-  if (!platform_data_->IsVerticalNonCJKUpright()) {
-    if (RuntimeEnabledFeatures::CSSChUnitSpecCompliantFallbackEnabled()) {
-      return size * 0.5f;
-    }
-
-    // This is a bug that was unfortunately introduced in
-    // crrev.com/c/6333369, and has shipped in m136.
-    // TODO(crbug.com/416145497): Remove this old behaviour
-    // when feature flag
-    // `RuntimeEnabledFeatures::CSSChUnitSpecCompliantFallbackEnabled` is tested
-    // out and is enabled by default.
-    return size / 0.5f;
+  if (!platform_data_->IsVerticalNonCjkUpright()) {
+    return size * 0.5f;
   }
   return size;
 }

@@ -4,12 +4,12 @@
 
 #include "extensions/browser/renderer_startup_helper.h"
 
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/check_is_test.h"
-#include "base/containers/adapters.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
@@ -39,6 +39,7 @@
 #include "extensions/browser/service_worker/service_worker_task_queue.h"
 #include "extensions/browser/user_script_manager.h"
 #include "extensions/browser/user_script_world_configuration_manager.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/extension_l10n_util.h"
 #include "extensions/common/extension_set.h"
@@ -54,7 +55,6 @@
 #include "extensions/common/mojom/renderer.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "ipc/ipc_channel_proxy.h"
-#include "third_party/blink/public/common/features.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "url/origin.h"
 
@@ -240,15 +240,13 @@ RendererStartupHelper::~RendererStartupHelper() {
 
 void RendererStartupHelper::OnRenderProcessHostCreated(
     content::RenderProcessHost* host) {
-#if !BUILDFLAG(IS_ANDROID)
   if (host->IsForTopChromeWebUI() &&
       base::FeatureList::IsEnabled(
-          blink::features::kInitialWebUIWithoutExtensions)) {
+          extensions_features::kInitialWebUIWithoutExtensions)) {
     // We initialize extension for topchrome processes on DidStartNavigation or
     // ReadyToCommitNavigation.
     return;
   }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
   if (host->IsForGuestsOnly()) {
     // GuestView initialization is done in OnRenderProcessLaunched()
@@ -261,15 +259,13 @@ void RendererStartupHelper::OnRenderProcessHostCreated(
 
 void RendererStartupHelper::OnRenderProcessLaunched(
     content::RenderProcessHost* host) {
-#if !BUILDFLAG(IS_ANDROID)
   if (host->IsForTopChromeWebUI() &&
       base::FeatureList::IsEnabled(
-          blink::features::kInitialWebUIWithoutExtensions)) {
+          extensions_features::kInitialWebUIWithoutExtensions)) {
     // We initialize extension for topchrome processes on DidStartNavigation or
     // ReadyToCommitNavigation.
     return;
   }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
   if (!host->IsForGuestsOnly()) {
     // Any process that *isn't* for guests or an initial WebUI with disabled
@@ -744,7 +740,8 @@ void RendererStartupHelper::GetMessageBundle(
   // Iterate through the imports in reverse.  This will allow later imported
   // modules to override earlier imported modules, as the list order is
   // maintained from the definition in manifest.json of the imports.
-  for (const SharedModuleInfo::ImportInfo& import : base::Reversed(imports)) {
+  for (const SharedModuleInfo::ImportInfo& import :
+       std::views::reverse(imports)) {
     const Extension* imported_extension =
         extension_set.GetByID(import.extension_id);
     if (!imported_extension) {

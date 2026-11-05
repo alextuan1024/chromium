@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ash/public/cpp/shelf_types.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
@@ -31,7 +32,6 @@
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/extensions/extension_enable_flow.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/arc/metrics/arc_metrics_constants.h"
@@ -45,7 +45,7 @@
 #include "extensions/browser/extension_util.h"
 #include "net/base/url_util.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/display/types/display_constants.h"
 
 namespace {
@@ -124,7 +124,7 @@ std::u16string ShelfControllerHelper::GetAppTitle(Profile* profile,
     std::unique_ptr<ArcAppListPrefs::AppInfo> app_info =
         ArcAppListPrefs::Get(profile)->GetApp(
             arc::ArcAppShelfId::FromString(app_id).app_id());
-    DCHECK(app_info.get());
+    CHECK(app_info.get(), base::NotFatalUntil::M162);
     return base::UTF8ToUTF16(app_info->name);
   }
 
@@ -254,7 +254,7 @@ bool ShelfControllerHelper::IsAppDefaultInstalled(Profile* profile,
 }
 
 std::string ShelfControllerHelper::GetAppID(content::WebContents* tab) {
-  DCHECK(tab);
+  CHECK(tab, base::NotFatalUntil::M162);
   return apps::GetInstanceAppIdForWebContents(tab).value_or(std::string());
 }
 
@@ -358,7 +358,7 @@ void ShelfControllerHelper::LaunchApp(const ash::ShelfID& id,
           // event_flags are ignored here because they control the disposition
           // which in this case has been overridden to always open a new window.
           proxy->LaunchAppWithParams(apps::AppLaunchParams(
-              app_id, container, WindowOpenDisposition::NEW_WINDOW,
+              app_id, container, ui::mojom::WindowOpenDisposition::kNewWindow,
               ShelfLaunchSourceToAppsLaunchSource(source), display_id));
           return;
         case apps::LaunchContainer::kLaunchContainerPanelDeprecated:
@@ -449,7 +449,7 @@ bool ShelfControllerHelper::IsValidIDForArcApp(
     }
     const arc::ArcSessionManager* arc_session_manager =
         arc::ArcSessionManager::Get();
-    DCHECK(arc_session_manager);
+    CHECK(arc_session_manager, base::NotFatalUntil::M162);
     if (!arc_session_manager->IsAllowed()) {
       return false;
     }

@@ -76,6 +76,14 @@ bool TranslateKitLanguagePackComponentInstallerPolicy::
   return false;
 }
 
+bool TranslateKitLanguagePackComponentInstallerPolicy::AllowCachedCopies()
+    const {
+  // Language packs update rarely and quantized model weights diff poorly, so
+  // keeping ~58 MB cached CRX copies for differential updates costs disk space
+  // per installed pair for little download savings.
+  return false;
+}
+
 update_client::CrxInstaller::Result
 TranslateKitLanguagePackComponentInstallerPolicy::OnCustomInstall(
     const base::DictValue& manifest,
@@ -138,20 +146,26 @@ TranslateKitLanguagePackComponentInstallerPolicy::GetConfig() const {
 // static
 void TranslateKitLanguagePackComponentInstallerPolicy::UpdateComponentOnDemand(
     component_updater::ComponentUpdateService* cus,
-    LanguagePackKey language_pack_key) {
+    LanguagePackKey language_pack_key,
+    base::OnceCallback<void(update_client::Error)> callback) {
   auto language_pack_crx_id = crx_file::id_util::GenerateIdFromHash(
       on_device_translation::GetLanguagePackComponentConfig(language_pack_key)
           .public_key_sha);
   cus->GetOnDemandUpdater().OnDemandUpdate(
       language_pack_crx_id,
       component_updater::OnDemandUpdater::Priority::FOREGROUND,
-      base::BindOnce([](update_client::Error error) {
-        if (error != update_client::Error::NONE &&
-            error != update_client::Error::UPDATE_IN_PROGRESS) {
-          base::UmaHistogramEnumeration(
-              "ComponentUpdater.TranslateKit.LanguagePack.UpdateError", error);
-        }
-      }));
+      base::BindOnce(
+          [](base::OnceCallback<void(update_client::Error)> callback,
+             update_client::Error error) {
+            if (error != update_client::Error::NONE &&
+                error != update_client::Error::UPDATE_IN_PROGRESS) {
+              base::UmaHistogramEnumeration(
+                  "ComponentUpdater.TranslateKit.LanguagePack.UpdateError",
+                  error);
+            }
+            std::move(callback).Run(error);
+          },
+          std::move(callback)));
 }
 
 void RegisterTranslateKitLanguagePackComponent(
@@ -184,15 +198,38 @@ void RegisterTranslateKitLanguagePackComponent(
 
 void RegisterTranslateKitLanguagePackComponentsForUpdate(
     ComponentUpdateService* cus,
-    PrefService* pref_service) {
+    PrefService* pref_service,
+    bool resume_unfinished_downloads) {
+  int installed_pack_count = 0;
   for (const auto& [language_pack_key, config] :
        on_device_translation::kLanguagePackComponentConfigMap) {
-    if (pref_service->GetBoolean(
-            on_device_translation::GetRegisteredFlagPrefName(*config))) {
-      RegisterTranslateKitLanguagePackComponent(
-          cus, pref_service, language_pack_key, base::OnceClosure(),
-          base::RepeatingClosure());
+    const bool installed =
+        !pref_service
+             ->GetFilePath(
+                 on_device_translation::GetComponentPathPrefName(*config))
+             .empty();
+    if (installed) {
+      ++installed_pack_count;
     }
+    if (!pref_service->GetBoolean(
+            on_device_translation::GetRegisteredFlagPrefName(*config))) {
+      continue;
+    }
+    if (!installed && !resume_unfinished_downloads) {
+      // No request waits for this pack and no download check runs here. The
+      // next `create()` registers it again.
+      pref_service->SetBoolean(
+          on_device_translation::GetRegisteredFlagPrefName(*config), false);
+      continue;
+    }
+    RegisterTranslateKitLanguagePackComponent(
+        cus, pref_service, language_pack_key, base::OnceClosure(),
+        base::RepeatingClosure());
+  }
+  if (installed_pack_count > 0) {
+    base::UmaHistogramExactLinear(
+        "Translate.OnDeviceTranslation.InstalledLanguagePackCount",
+        installed_pack_count, 50);
   }
 }
 

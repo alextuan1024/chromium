@@ -17,9 +17,11 @@ DropTargetWin::DropTargetWin() : hwnd_(nullptr), ref_count_(0) {}
 DropTargetWin::~DropTargetWin() = default;
 
 void DropTargetWin::Init(HWND hwnd) {
-  DCHECK(!hwnd_);
-  DCHECK(hwnd);
+  CHECK(!hwnd_, base::NotFatalUntil::M163);
+  CHECK(hwnd, base::NotFatalUntil::M163);
   HRESULT result = RegisterDragDrop(hwnd, this);
+  // TODO(crbug.com/585893735): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(SUCCEEDED(result));
 }
 

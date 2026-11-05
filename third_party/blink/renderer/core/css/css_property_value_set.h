@@ -32,15 +32,23 @@
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/bit_field.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
+#include "third_party/blink/renderer/platform/wtf/hash_map.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
+// TODO(crbug.com/578573238): Consolidate these aliases. Keep in sync with
+// property_registry.h for now.
+using PrivateNameMap = HashMap<AtomicString, AtomicString>;
+
 class CSSStyleDeclaration;
 class ExecutionContext;
 class ImmutableCSSPropertyValueSet;
 class MutableCSSPropertyValueSet;
+class PropertyRegistry;
+class ResourceFetcher;
 class StyleSheetContents;
 enum class CSSValueID;
 enum class SecureContextMode;
@@ -167,7 +175,8 @@ class CORE_EXPORT CSSPropertyValueSet
   MutableCSSPropertyValueSet* CopyPropertiesInSet(
       const Vector<const CSSProperty*>&) const;
 
-  String AsText() const;
+  String AsText(
+      const PropertyRegistry* private_property_registry = nullptr) const;
 
   bool IsMutable() const { return bits_.get<IsMutableField>(); }
   bool ContainsCursorHand() const {
@@ -216,7 +225,7 @@ class CORE_EXPORT CSSPropertyValueSet
     return Properties() == other.Properties();
   }
 
-  bool HasFailedOrCanceledSubresources() const;
+  bool HasFailedOrCanceledSubresources(ResourceFetcher*) const;
 
   static unsigned AverageSizeInBytes();
 
@@ -234,6 +243,10 @@ class CORE_EXPORT CSSPropertyValueSet
                                 const CSSPropertyValueSet& style) const;
   bool ShorthandPropertyMatches(CSSPropertyID shorthand_id,
                                 const CSSStyleDeclaration& style) const;
+
+  // Returns true if all property values can be pre-computed hover effects on
+  // the compositor.
+  bool ContainsPrecomputableHoverStyleOnly() const;
 
   void Trace(Visitor*) const;
   void TraceAfterDispatch(blink::Visitor* visitor) const {}
@@ -450,6 +463,11 @@ class CORE_EXPORT MutableCSSPropertyValueSet : public CSSPropertyValueSet {
   void ParseDeclarationList(const String& style_declaration,
                             SecureContextMode,
                             StyleSheetContents* context_style_sheet);
+  void ParseDeclarationListForPrivate(const String&,
+                                      SecureContextMode,
+                                      StyleSheetContents*,
+                                      PropertyRegistry&,
+                                      PrivateNameMap&);
 
   CSSStyleDeclaration* EnsureCSSStyleDeclaration(
       ExecutionContext* execution_context);
@@ -477,7 +495,6 @@ class CORE_EXPORT MutableCSSPropertyValueSet : public CSSPropertyValueSet {
   bool RemoveShorthandProperty(const AtomicString& custom_property_name) {
     return false;
   }
-  CSSPropertyValue* FindCSSPropertyWithName(const CSSPropertyName&);
 
   void InvalidateHashIfComputed() {
     if (hash_ != HashTraits<unsigned>::EmptyValue()) {

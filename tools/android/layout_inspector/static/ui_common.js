@@ -6,14 +6,35 @@
 
 /******** InfoBarVis ********/
 /**
- * Manages the status bar shown at the bottom, displaying contextual hints.
+ * Manages the status bar shown at the bottom, displaying View Info and
+ * contextual hints.
  */
 class InfoBarVis {
+  /** @param {!Element} divInfoBar */
   constructor(divInfoBar) {
     this.el = {
       root: divInfoBar,
+      viewInfo: divInfoBar.querySelector('.view-info'),
+      viewClass: divInfoBar.querySelector('.view-class'),
+      sizePx: divInfoBar.querySelector('.size-px'),
+      sizeDp: divInfoBar.querySelector('.size-dp'),
       infoHint: divInfoBar.querySelector('.hint-text'),
     };
+  }
+
+  renderAndShowViewInfo(view, visOpts) {
+    this.el.viewClass.textContent = view.className;
+    const wPx = view.rect.width;
+    const hPx = view.rect.height;
+    this.el.sizePx.textContent = `${wPx}x${hPx}px`;
+    const wDp = capFixed(visOpts.pxToDp(wPx), 2);
+    const hDp = capFixed(visOpts.pxToDp(hPx), 2);
+    this.el.sizeDp.textContent = `${wDp}x${hDp}dp`;
+    this.el.viewInfo.classList.remove('hidden');
+  }
+
+  hideViewInfo() {
+    this.el.viewInfo.classList.add('hidden');
   }
 
   setHintText(hintText) {
@@ -23,31 +44,44 @@ class InfoBarVis {
 
 /******** Hint Constants ********/
 
+/**
+ * Constant to specify hint, and key for {@link HINT_STRINGS}`.
+ * @enum {number}
+ */
 const HINT = checkEnum({
   UNINITIALIZED: -1,
   IDLE: 0,
   CTRL_LOAD: 1,
-  LAYOUT_SPLITTER: 2,
+  CTRL_ZOOM: 2,
+  LAYOUT_SPLITTER: 3,
 });
 
+/**
+ * List of hint strings, keyed by {@link HINT}.
+ * @type {Record<HINT, string>}
+ */
 const HINT_STRINGS = {
-  [HINT.IDLE]: '',
+  [HINT.IDLE]: 'Hover over a View or control to see info.',
   [HINT.CTRL_LOAD]: 'Fetch UI hierarchy and screenshot from device.',
-  [HINT.LAYOUT_SPLITTER]: 'Drag: Resize',
+  [HINT.CTRL_ZOOM]: 'Change display scale of the screenshot.',
+  [HINT.LAYOUT_SPLITTER]: 'Drag: Resize | Double-Click: Auto-Resize',
 };
 
 /******** HintController ********/
 class HintController {
+  /** @param {!InfoBarVis} infoBarVis */
   constructor(infoBarVis) {
     this.infoBarVis = infoBarVis;
+    /** @type {HINT} */
     this.currentHint = HINT.UNINITIALIZED;
     this.clear();  // Initialize default text.
   }
 
-  setHint(hintEnum) {
-    if (this.currentHint === hintEnum) return;
-    this.currentHint = hintEnum;
-    this.infoBarVis.setHintText(HINT_STRINGS[hintEnum]);
+  /** @param {HINT} hint */
+  setHint(hint) {
+    if (this.currentHint === hint) return;
+    this.currentHint = hint;
+    this.infoBarVis.setHintText(HINT_STRINGS[hint]);
   }
 
   clear() {
@@ -62,11 +96,22 @@ class HintController {
  * itself.
  */
 class DragHandler {
+  /**
+   * @param {!Element} dragEl
+   * @param {!Object} callbacks
+   * @param {function(!PointerEvent)=} callbacks.onDragStart
+   * @param {function(!PointerEvent, number, number)=} callbacks.onDrag
+   * @param {function(!PointerEvent)=} callbacks.onDragEnd
+   * @param {function(!(PointerEvent|KeyboardEvent))=} callbacks.onDragCancel
+   * @param {function(!MouseEvent)=} callbacks.onDoubleClick
+   * @param {string=} callbacks.pointerStyle
+   */
   constructor(dragEl, {
     onDragStart,
     onDrag,
     onDragEnd,
     onDragCancel,
+    onDoubleClick,
     pointerStyle = 'default',
   }) {
     this.dragEl = dragEl;
@@ -74,6 +119,7 @@ class DragHandler {
     this.onDrag = onDrag;
     this.onDragEnd = onDragEnd;
     this.onDragCancel = onDragCancel ?? onDragEnd;  // Fallback to onDragEnd.
+    this.onDoubleClick = onDoubleClick;
     this.pointerStyle = pointerStyle;
     this.isDragging = false;
     this.bindAll();
@@ -154,6 +200,9 @@ class DragHandler {
 
   bindAll() {
     this.dragEl.addEventListener('pointerdown', (e) => this.handleDragStart(e));
+    if (this.onDoubleClick) {
+      this.dragEl.addEventListener('dblclick', (e) => this.onDoubleClick(e));
+    }
   }
 }
 
@@ -163,6 +212,7 @@ class DragHandler {
  * Changes, Errors).
  */
 class OverlayVis {
+  /** @param {!Element} divOverlay */
   constructor(divOverlay) {
     this.el = {
       root: divOverlay,

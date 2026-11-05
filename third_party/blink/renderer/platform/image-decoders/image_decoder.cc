@@ -98,25 +98,6 @@ cc::ImageType FileExtensionToImageType(String image_extension) {
   return cc::ImageType::kInvalid;
 }
 
-wtf_size_t CalculateMaxDecodedBytes(
-    ImageDecoder::HighBitDepthDecodingOption high_bit_depth_decoding_option,
-    const SkISize& desired_size,
-    size_t platform_max_decoded_bytes) {
-  const wtf_size_t max_decoded_bytes =
-      base::saturated_cast<wtf_size_t>(platform_max_decoded_bytes);
-  if (desired_size.isEmpty()) {
-    return max_decoded_bytes;
-  }
-
-  const wtf_size_t num_pixels = desired_size.width() * desired_size.height();
-  if (high_bit_depth_decoding_option == ImageDecoder::kDefaultBitDepth) {
-    return std::min(4 * num_pixels, max_decoded_bytes);
-  }
-
-  // ImageDecoder::kHighBitDepthToHalfFloat
-  return std::min(8 * num_pixels, max_decoded_bytes);
-}
-
 // Compute the density corrected size based on |metadata| and the physical size
 // of the associated image.
 gfx::Size ExtractDensityCorrectedSize(const SkExif::Metadata& metadata,
@@ -277,17 +258,29 @@ ImageDecoder::ImageDecoder(
     HighBitDepthDecodingOption high_bit_depth_decoding_option,
     ColorBehavior color_behavior,
     cc::AuxImage aux_image,
-    wtf_size_t max_decoded_bytes)
+    wtf_size_t max_decoded_bytes,
+    const gfx::Size& desired_size)
     : premultiply_alpha_(alpha_option == kAlphaPremultiplied),
       high_bit_depth_decoding_option_(high_bit_depth_decoding_option),
       color_behavior_(color_behavior),
       aux_image_(aux_image),
       max_decoded_bytes_(max_decoded_bytes),
+      desired_size_(desired_size),
       allow_decode_to_yuv_(false),
       purge_aggressively_(false),
       sk_image_color_space_(color_behavior == ColorBehavior::kIgnore
                                 ? nullptr
-                                : SkColorSpace::MakeSRGB()) {}
+                                : SkColorSpace::MakeSRGB()) {
+  if (!desired_size_.IsEmpty()) {
+    const unsigned decoded_bytes_per_pixel =
+        high_bit_depth_decoding_option_ == kHighBitDepthToHalfFloat ? 8 : 4;
+    if (SizeCalculationMayOverflow(desired_size_.width(),
+                                   desired_size_.height(),
+                                   decoded_bytes_per_pixel)) {
+      SetFailed();
+    }
+  }
+}
 
 ImageDecoder::~ImageDecoder() = default;
 
@@ -299,7 +292,7 @@ std::unique_ptr<ImageDecoder> ImageDecoder::Create(
     ColorBehavior color_behavior,
     cc::AuxImage aux_image,
     size_t platform_max_decoded_bytes,
-    const SkISize& desired_size,
+    const gfx::Size& desired_size,
     AnimationOption animation_option) {
   auto type = SniffMimeTypeInternal(data, data_complete);
   if (type.empty()) {
@@ -321,10 +314,10 @@ std::unique_ptr<ImageDecoder> ImageDecoder::CreateByMimeType(
     ColorBehavior color_behavior,
     cc::AuxImage aux_image,
     size_t platform_max_decoded_bytes,
-    const SkISize& desired_size,
+    const gfx::Size& desired_size,
     AnimationOption animation_option) {
-  const wtf_size_t max_decoded_bytes = CalculateMaxDecodedBytes(
-      high_bit_depth_decoding_option, desired_size, platform_max_decoded_bytes);
+  const wtf_size_t max_decoded_bytes =
+      base::saturated_cast<wtf_size_t>(platform_max_decoded_bytes);
 
   // Note: The mime types below should match those supported by
   // MimeUtil::IsSupportedImageMimeType() (which forces lowercase).
@@ -333,7 +326,7 @@ std::unique_ptr<ImageDecoder> ImageDecoder::CreateByMimeType(
   if (mime_type == "image/jpeg" || mime_type == "image/pjpeg" ||
       mime_type == "image/jpg") {
     decoder = CreateJpegImageDecoder(alpha_option, color_behavior, aux_image,
-                                     max_decoded_bytes);
+                                     max_decoded_bytes, desired_size);
   } else if (mime_type == "image/png" || mime_type == "image/x-png" ||
              mime_type == "image/apng") {
     decoder = std::make_unique<PngImageDecoder>(
@@ -582,8 +575,8 @@ uint8_t ImageDecoder::GetYUVBitDepth() const {
   return 8;
 }
 
-bool ImageDecoder::HasC2PAManifest() const {
-  return false;
+C2PAManifestStatus ImageDecoder::GetC2PAManifestStatus() const {
+  return C2PAManifestStatus::kUnknown;
 }
 
 gfx::Size ImageDecoder::FrameSizeAtIndex(wtf_size_t) const {
@@ -648,11 +641,6 @@ ImageFrame* ImageDecoder::DecodeFrameBufferAtIndex(wtf_size_t index) {
 
   frame->NotifyBitmapIfPixelsChanged();
   return frame;
-}
-
-bool ImageDecoder::FrameHasAlphaAtIndex(wtf_size_t index) const {
-  return !FrameIsReceivedAtIndex(index) ||
-         frame_buffer_cache_[index].HasAlpha();
 }
 
 bool ImageDecoder::FrameIsReceivedAtIndex(wtf_size_t index) const {
@@ -820,58 +808,6 @@ bool ImageDecoder::PostDecodeProcessing(wtf_size_t index) {
   }
 
   return true;
-}
-
-void ImageDecoder::CorrectAlphaWhenFrameBufferSawNoAlpha(wtf_size_t index) {
-  DCHECK(index < frame_buffer_cache_.size());
-  ImageFrame& buffer = frame_buffer_cache_[index];
-
-  // When this frame spans the entire image rect we can SetHasAlpha to false,
-  // since there are logically no transparent pixels outside of the frame rect.
-  if (buffer.OriginalFrameRect().Contains(gfx::Rect(Size()))) {
-    buffer.SetHasAlpha(false);
-    buffer.SetRequiredPreviousFrameIndex(kNotFound);
-  } else if (buffer.RequiredPreviousFrameIndex() != kNotFound) {
-    // When the frame rect does not span the entire image rect, and it does
-    // *not* have a required previous frame, the pixels outside of the frame
-    // rect will be fully transparent, so we shoudn't SetHasAlpha to false.
-    //
-    // It is a tricky case when the frame does have a required previous frame.
-    // The frame does not have alpha only if everywhere outside its rect
-    // doesn't have alpha.  To know whether this is true, we check the start
-    // state of the frame -- if it doesn't have alpha, we're safe.
-    //
-    // We first check that the required previous frame does not have
-    // DisposeOverWritePrevious as its disposal method - this should never
-    // happen, since the required frame should in that case be the required
-    // frame of this frame's required frame.
-    //
-    // If |prev_buffer| is DisposeNotSpecified or DisposeKeep, |buffer| has no
-    // alpha if |prev_buffer| had no alpha. Since InitFrameBuffer() already
-    // copied the alpha state, there's nothing to do here.
-    //
-    // The only remaining case is a DisposeOverwriteBgcolor frame.  If
-    // it had no alpha, and its rect is contained in the current frame's
-    // rect, we know the current frame has no alpha.
-    //
-    // For DisposeNotSpecified, DisposeKeep and DisposeOverwriteBgcolor there
-    // is one situation that is not taken into account - when |prev_buffer|
-    // *does* have alpha, but only in the frame rect of |buffer|, we can still
-    // say that this frame has no alpha. However, to determine this, we
-    // potentially need to analyze all image pixels of |prev_buffer|, which is
-    // too computationally expensive.
-    const ImageFrame* prev_buffer =
-        &frame_buffer_cache_[buffer.RequiredPreviousFrameIndex()];
-    DCHECK(prev_buffer->GetDisposalMethod() !=
-           ImageFrame::kDisposeOverwritePrevious);
-
-    if ((prev_buffer->GetDisposalMethod() ==
-         ImageFrame::kDisposeOverwriteBgcolor) &&
-        !prev_buffer->HasAlpha() &&
-        buffer.OriginalFrameRect().Contains(prev_buffer->OriginalFrameRect())) {
-      buffer.SetHasAlpha(false);
-    }
-  }
 }
 
 bool ImageDecoder::InitFrameBuffer(wtf_size_t frame_index) {
@@ -1076,6 +1012,8 @@ void ImageDecoder::SetEmbeddedColorProfile(sk_sp<skia::ColorProfile> profile) {
 
   if (color_behavior_ == ColorBehavior::kTag && embedded_color_profile_) {
     sk_image_color_space_ = embedded_color_profile_->GetSkColorSpace();
+    hdr_metadata_.MergeMetadataFrom(
+        gfx::HDRMetadata(embedded_color_profile_->GetSkHdrMetadata()));
   } else {
     sk_image_color_space_ = SkColorSpace::MakeSRGB();
   }

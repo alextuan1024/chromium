@@ -5,12 +5,21 @@
 #import "ios/chrome/browser/intelligence/actor/coordinator/actor_overlay_coordinator.h"
 
 #import "base/check.h"
+#import "base/check_op.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actor_overlay_view_controller.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/grit/ios_strings.h"
+#import "ui/base/l10n/l10n_util_mac.h"
+
+@interface ActorOverlayCoordinator () <ActorOverlayViewControllerDelegate>
+@end
 
 @implementation ActorOverlayCoordinator {
   // The view controller managing the overlay UI.
@@ -19,6 +28,11 @@
   UIColor* _scrimColor;
   // The base color of the glow.
   UIColor* _glowColor;
+  // Handler used to present and dismiss snackbars.
+  id<SnackbarCommands> _snackbarCommandsHandler;
+  // Currently presented snackbar informing the user that page interaction is
+  // limited while the actor controls the tab, or `nil` if none is visible.
+  SnackbarMessage* _interactionLimitedSnackbar;
 }
 
 #pragma mark - ActorOverlayCoordinator
@@ -34,6 +48,7 @@
     CHECK(glowColor);
     _scrimColor = scrimColor;
     _glowColor = glowColor;
+    _scrimVisible = YES;
   }
   return self;
 }
@@ -49,6 +64,19 @@
                              glowColor:[UIColor colorNamed:kStaticBlueColor]];
 }
 
+#pragma mark - Properties
+
+- (void)setScrimVisible:(BOOL)scrimVisible {
+  if (_scrimVisible == scrimVisible) {
+    return;
+  }
+  _scrimVisible = scrimVisible;
+  _viewController.scrimVisible = _scrimVisible;
+  if (!_scrimVisible) {
+    [self dismissInteractionLimitedSnackbar];
+  }
+}
+
 #pragma mark - ChromeCoordinator
 
 - (void)start {
@@ -58,13 +86,16 @@
 
   Browser* browser = self.browser;
   LayoutGuideCenter* browserCenter = LayoutGuideCenterForBrowser(browser);
-  SceneLayoutState* layoutState =
-      browser ? browser->GetSceneState().layoutState : nil;
+  SceneLayoutState* layoutState = browser->GetSceneState().layoutState;
+  _snackbarCommandsHandler =
+      HandlerForProtocol(browser->GetCommandDispatcher(), SnackbarCommands);
 
   _viewController = [[ActorOverlayViewController alloc]
       initWithBrowserLayoutGuideCenter:browserCenter
                             scrimColor:_scrimColor
                              glowColor:_glowColor];
+  _viewController.delegate = self;
+  _viewController.scrimVisible = self.scrimVisible;
   _viewController.layoutState = layoutState;
 
   UIViewController* baseViewController = self.baseViewController;
@@ -74,11 +105,57 @@
 }
 
 - (void)stop {
+  [self dismissInteractionLimitedSnackbar];
+  _snackbarCommandsHandler = nil;
+  _viewController.delegate = nil;
   _viewController.layoutState = nil;
   [_viewController willMoveToParentViewController:nil];
   [_viewController.view removeFromSuperview];
   [_viewController removeFromParentViewController];
   _viewController = nil;
+}
+
+#pragma mark - ActorOverlayViewControllerDelegate
+
+- (void)actorOverlayViewControllerDidTapScrim:
+    (ActorOverlayViewController*)viewController {
+  CHECK_EQ(_viewController, viewController);
+  if (!self.scrimVisible || _interactionLimitedSnackbar) {
+    return;
+  }
+
+  SnackbarMessage* message = [[SnackbarMessage alloc]
+      initWithTitle:l10n_util::GetNSString(
+                        IDS_IOS_ACTOR_OVERLAY_INTERACTION_LIMITED_SNACKBAR)];
+  _interactionLimitedSnackbar = message;
+  __weak __typeof(self) weakSelf = self;
+  __weak SnackbarMessage* weakMessage = message;
+  message.completionHandler = ^(BOOL) {
+    [weakSelf clearInteractionLimitedSnackbarForMessage:weakMessage];
+  };
+
+  [_snackbarCommandsHandler showSnackbarMessage:message];
+}
+
+#pragma mark - Private
+
+// Dismisses `_interactionLimitedSnackbar` if one is currently presented.
+- (void)dismissInteractionLimitedSnackbar {
+  if (!_interactionLimitedSnackbar) {
+    return;
+  }
+  [_snackbarCommandsHandler
+      dismissSnackbarWithMessage:_interactionLimitedSnackbar.title
+                        animated:YES];
+  _interactionLimitedSnackbar = nil;
+}
+
+// Clears `_interactionLimitedSnackbar` when `message` finishes dismissing, if
+// it is still the active snackbar.
+- (void)clearInteractionLimitedSnackbarForMessage:(SnackbarMessage*)message {
+  if (_interactionLimitedSnackbar == message) {
+    _interactionLimitedSnackbar = nil;
+  }
 }
 
 @end

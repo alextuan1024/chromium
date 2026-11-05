@@ -31,10 +31,12 @@
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
+#include "ash/style/system_decoration.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller_test_api.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -1451,7 +1453,7 @@ TEST_P(ContinueSectionViewTest, InitialShowDoesNotAnimate) {
       InitializeForAnimationTest(/*result_count=*/5);
   ASSERT_EQ(4u, initial_bounds.size());
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       GetContinueSectionView()->suggestions_container()->children();
   ASSERT_EQ(4u, container_children.size());
   for (int i = 0; i < 4; ++i) {
@@ -1468,7 +1470,7 @@ TEST_P(ContinueSectionViewTest, UpdateWithNoChangesDoesNotAnimate) {
   GetContinueSectionView()->suggestions_container()->Update();
   base::RunLoop().RunUntilIdle();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       GetContinueSectionView()->suggestions_container()->children();
   ASSERT_EQ(4u, container_children.size());
   for (int i = 0; i < 4; ++i) {
@@ -1488,7 +1490,7 @@ TEST_P(ContinueSectionViewTest, AnimatesWhenLastItemReplaced) {
       GetContinueSectionView()->suggestions_container();
   container_view->Update();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       container_view->children();
   const size_t new_views_start = 4;
   ASSERT_EQ(new_views_start + 4, container_children.size());
@@ -1546,7 +1548,7 @@ TEST_P(ContinueSectionViewTest, AnimatesWhenFirstItemRemoved) {
       GetContinueSectionView()->suggestions_container();
   container_view->Update();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       container_view->children();
   const size_t new_views_start = 4;
   ASSERT_EQ(new_views_start + 4, container_children.size());
@@ -1610,7 +1612,7 @@ TEST_P(ContinueSectionViewTest, AnimatesWhenSecondItemRemoved) {
       GetContinueSectionView()->suggestions_container();
   container_view->Update();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       container_view->children();
   const size_t new_views_start = 4;
   ASSERT_EQ(new_views_start + 4, container_children.size());
@@ -1681,7 +1683,7 @@ TEST_P(ContinueSectionViewTest, AnimatesWhenThirdItemRemoved) {
       GetContinueSectionView()->suggestions_container();
   container_view->Update();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       container_view->children();
   const size_t new_views_start = 4;
   ASSERT_EQ(new_views_start + 4, container_children.size());
@@ -1757,7 +1759,7 @@ TEST_P(ContinueSectionViewTest, AnimatesWhenItemInserted) {
       GetContinueSectionView()->suggestions_container();
   container_view->Update();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       container_view->children();
   const size_t new_views_start = 4;
   ASSERT_EQ(new_views_start + 4, container_children.size());
@@ -1836,7 +1838,7 @@ TEST_P(ContinueSectionViewTest, AnimatesWhenTwoItemsRemoved) {
       GetContinueSectionView()->suggestions_container();
   container_view->Update();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       container_view->children();
 
   const size_t new_views_start = 4;
@@ -1917,7 +1919,7 @@ TEST_P(ContinueSectionViewTest, ResultRemovedMidAnimation) {
   GetResults()->DeleteAt(1);
   container_view->Update();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       container_view->children();
   const size_t new_views_start = 4;
   ASSERT_EQ(new_views_start + 4, container_children.size());
@@ -1997,7 +1999,7 @@ TEST_P(ContinueSectionViewTest, ContinueSectionHiddenMidAnimation) {
   container_view->Update();
 
   EXPECT_FALSE(GetContinueSectionView()->GetVisible());
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       container_view->children();
   ASSERT_EQ(1u, container_children.size());
   EXPECT_FALSE(container_children[0]->layer()->GetAnimator()->is_animating());
@@ -2014,7 +2016,7 @@ TEST_P(ContinueSectionViewTest, AnimatesWhenNumberOfChipsChanges) {
       GetContinueSectionView()->suggestions_container();
   container_view->Update();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> container_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> container_children =
       container_view->children();
   const size_t new_views_start = 4;
   ASSERT_EQ(new_views_start + 3, container_children.size());
@@ -2149,6 +2151,15 @@ TEST_P(ContinueSectionViewTest, AnimatesPrivacyNoticeAccept) {
 
   AppListToastView* privacy_notice =
       GetContinueSectionView()->GetPrivacyNoticeForTest();
+  if (tablet_mode_param()) {
+    SystemDecoration* border = privacy_notice->highlight_border_for_testing();
+    ASSERT_TRUE(border);
+    EXPECT_EQ(privacy_notice->layer(), border->GetLayer()->parent());
+    EXPECT_EQ(privacy_notice->GetLocalBounds(), border->GetContentBounds());
+    EXPECT_TRUE(border->GetHighlightBorderValueForTesting().has_value());
+  } else {
+    EXPECT_FALSE(privacy_notice->highlight_border_for_testing());
+  }
 
   GestureTapOn(privacy_notice->toast_button());
 

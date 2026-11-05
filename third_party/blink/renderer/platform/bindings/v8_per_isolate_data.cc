@@ -193,6 +193,8 @@ void V8PerIsolateData::Destroy(v8::Isolate* isolate) {
 
   // FIXME: Remove once all v8::Isolate::GetCurrent() calls are gone.
   isolate->Exit();
+  // Disposing the isolate terminates the CppHeap.
+  ThreadState::IsolateDisposalScope disposal_scope(*ThreadState::Current());
   delete data;
 }
 
@@ -332,14 +334,6 @@ void V8PerIsolateData::SetThreadDebugger(
     std::unique_ptr<ThreadDebugger> thread_debugger) {
   DCHECK(!thread_debugger_);
   thread_debugger_ = std::move(thread_debugger);
-}
-
-void V8PerIsolateData::SetPasswordRegexp(ScriptRegexp* password_regexp) {
-  password_regexp_ = password_regexp;
-}
-
-ScriptRegexp* V8PerIsolateData::GetPasswordRegexp() {
-  return password_regexp_;
 }
 
 void V8PerIsolateData::SetTaskAttributionTrackerFactory(

@@ -29,7 +29,7 @@ class PageAnchorsMetricsObserverBrowserTest
   PageAnchorsMetricsObserverBrowserTest() {
     // Report all anchors to avoid non-deterministic behavior.
     std::map<std::string, std::string> params;
-    params["random_anchor_sampling_period"] = "1";
+    params["RandomAnchorSamplingPeriod"] = "1";
 
     feature_list_.InitAndEnableFeatureWithParameters(
         blink::features::kNavigationPredictor, params);
@@ -84,7 +84,7 @@ class PageAnchorsMetricsObserverBrowserTest
     return ukm_recorder_->GetEntriesByName(entry_name).size();
   }
 
-  std::vector<raw_ptr<const ukm::mojom::UkmEntry, VectorExperimental>>
+  std::vector<raw_ptr<const ukm::mojom::UkmEntry, DanglingUntriaged>>
   GetEntriesByName(std::string_view entry_name) const {
     return ukm_recorder_->GetEntriesByName(entry_name);
   }

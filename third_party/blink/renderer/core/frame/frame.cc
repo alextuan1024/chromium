@@ -33,9 +33,9 @@
 #include <memory>
 
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame_owner_properties.mojom-blink.h"
 #include "third_party/blink/public/web/web_local_frame.h"
@@ -263,29 +263,15 @@ HTMLFrameOwnerElement* Frame::DeprecatedLocalOwner() const {
 }
 
 static ChromeClient& GetEmptyChromeClient() {
-  DEFINE_STATIC_LOCAL(Persistent<EmptyChromeClient>, client,
-                      (MakeGarbageCollected<EmptyChromeClient>()));
-  return *client;
+  static base::NoDestructor<Persistent<EmptyChromeClient>> client(
+      MakeGarbageCollected<EmptyChromeClient>());
+  return **client;
 }
 
 ChromeClient& Frame::GetChromeClient() const {
   if (Page* page = GetPage())
     return page->GetChromeClient();
   return GetEmptyChromeClient();
-}
-
-Frame* Frame::FindUnsafeParentScrollPropagationBoundary() {
-  Frame* current_frame = this;
-  Frame* ancestor_frame = Tree().Parent();
-
-  while (ancestor_frame) {
-    if (!ancestor_frame->GetSecurityContext()->GetSecurityOrigin()->CanAccess(
-            GetSecurityContext()->GetSecurityOrigin()))
-      return current_frame;
-    current_frame = ancestor_frame;
-    ancestor_frame = ancestor_frame->Tree().Parent();
-  }
-  return nullptr;
 }
 
 LayoutEmbeddedContent* Frame::OwnerLayoutObject() const {
@@ -452,32 +438,16 @@ void Frame::RenderFallbackContent() {
 }
 
 bool Frame::IsInFencedFrameTree() const {
-  DCHECK(!IsDetached());
-  if (!features::IsFencedFramesEnabled())
-    return false;
-
-  return GetPage() && GetPage()->IsMainFrameFencedFrameRoot();
+  return false;
 }
 
 bool Frame::IsFencedFrameRoot() const {
-  DCHECK(!IsDetached());
-  if (!features::IsFencedFramesEnabled())
-    return false;
-
-  return IsInFencedFrameTree() && IsMainFrame();
+  return false;
 }
 
 std::optional<blink::FencedFrame::DeprecatedFencedFrameMode>
 Frame::GetDeprecatedFencedFrameMode() const {
-  DCHECK(!IsDetached());
-
-  if (!features::IsFencedFramesEnabled())
-    return std::nullopt;
-
-  if (!IsInFencedFrameTree())
-    return std::nullopt;
-
-  return GetPage()->DeprecatedFencedFrameMode();
+  return std::nullopt;
 }
 
 void Frame::SetOwner(FrameOwner* owner) {
@@ -514,7 +484,7 @@ void Frame::UpdateVisibleToHitTesting() {
   if (auto* local_owner = DynamicTo<HTMLFrameOwnerElement>(owner_.Get())) {
     self_visible_to_hit_testing =
         !local_owner->GetLayoutObject() ||
-        local_owner->GetLayoutObject()->StyleRef().VisibleToHitTesting();
+        local_owner->GetLayoutObject()->Style().VisibleToHitTesting();
   }
 
   bool visible_to_hit_testing =
@@ -854,7 +824,12 @@ bool Frame::SwapImpl(
   // `Detach()` to mutate the frame tree and cause cached values to become
   // invalid.
   FrameOwner* owner = owner_;
-  FrameSwapScope frame_swap_scope(owner);
+  if (auto* owner_element = DynamicTo<HTMLFrameOwnerElement>(owner)) {
+    // The caller is responsible for opening a FrameSwapScope that covers the
+    // whole swap, including SetEmbeddedContentView attachment, so that we don't
+    // broadcast changes to FrameOwnerProperties::is_display_none too eagerly.
+    DCHECK(owner_element->IsSwappingFrames());
+  }
   Page* page = page_;
   AtomicString name = Tree().GetName();
 
@@ -969,10 +944,9 @@ bool Frame::SwapImpl(
     DCHECK_EQ(owner, new_local_frame->Owner());
     if (owner) {
       owner->SetContentFrame(*new_local_frame);
-
-      if (auto* frame_owner_element = DynamicTo<HTMLFrameOwnerElement>(owner)) {
-        frame_owner_element->SetEmbeddedContentView(new_local_frame->View());
-      }
+      // Note: we do not call SetEmbeddedContentView on the owner here, because
+      // the new view is normally not ready yet. Once the document commits,
+      // LocalFrame::CreateView() -> AttachViewToOwner() will do that.
     } else {
       Page* new_page = new_local_frame->GetPage();
       if (page != new_page) {
@@ -1059,6 +1033,10 @@ void Frame::NotifyUserActivationInFrame(
     node->user_activation_state_.SetHasBeenActive();
   } else {
     node->user_activation_state_.Activate(notification_type);
+    Page& page = *node->GetPage();
+    if (page.HasInitialAutoplayRestriction()) {
+      page.ReleaseInitialAutoplayRestriction();
+    }
   }
   auto* local_node = DynamicTo<LocalFrame>(node);
   if (local_node) {

@@ -14,6 +14,7 @@
 #include "chrome/browser/task_manager/providers/task.h"
 #include "chrome/browser/task_manager/task_manager_observer.h"
 #include "components/sessions/core/session_id.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/process_type.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_utils.h"
@@ -35,7 +36,9 @@ class FakeTask : public Task {
 
   Type GetType() const override { return type_; }
 
-  int GetChildProcessUniqueID() const override { return 0; }
+  content::ChildProcessId GetChildProcessUniqueID() const override {
+    return content::ChildProcessId(1);
+  }
 
   base::WeakPtr<Task> GetParentTask() const override { return nullptr; }
 
@@ -75,7 +78,7 @@ class FakeTaskProvider : public TaskProvider {
 
   void StopUpdating() override {}
 
-  std::vector<raw_ptr<Task, VectorExperimental>> task_provider_tasks_;
+  std::vector<raw_ptr<Task, DanglingUntriaged>> task_provider_tasks_;
 };
 
 // Defines a test for the child process task provider and the child process
@@ -174,7 +177,7 @@ class FallbackTaskProviderTest : public testing::Test,
   }
 
   // This is the vector of tasks the FallbackTaskProvider has told us about.
-  std::vector<raw_ptr<Task, VectorExperimental>> seen_tasks() {
+  std::vector<raw_ptr<Task, DanglingUntriaged>> seen_tasks() {
     return seen_tasks_;
   }
 
@@ -186,7 +189,7 @@ class FallbackTaskProviderTest : public testing::Test,
   content::BrowserTaskEnvironment task_environment_{
       content::BrowserTaskEnvironment::TimeSource::MOCK_TIME};
   std::unique_ptr<FallbackTaskProvider> task_provider_;
-  std::vector<raw_ptr<Task, VectorExperimental>> seen_tasks_;
+  std::vector<raw_ptr<Task, DanglingUntriaged>> seen_tasks_;
 };
 
 TEST_F(FallbackTaskProviderTest, BasicTest) {

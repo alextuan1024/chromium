@@ -32,9 +32,16 @@ void ContextualTasksUiServiceDelegateAndroid::OpenFeedbackUi(
   bridge->NotifyOpenFeedbackUi(page_url);
 }
 
+void ContextualTasksUiServiceDelegateAndroid::OpenDogfoodFeedbackUi(
+    BrowserWindowInterface* browser_window_interface,
+    const GURL& page_url) {
+  // The dogfood feedback form is only available on desktop.
+}
+
 void ContextualTasksUiServiceDelegateAndroid::ShowUndoSnackbar(
     BrowserWindowInterface* browser_window_interface) {
-  if (ShouldShowSidePanel()) {
+  // The undo snackbar is only shown for the phone/tablet bottom sheet.
+  if (IsAndroidDesktopFormFactor()) {
     return;
   }
 

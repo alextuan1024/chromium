@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/webui/ash/mako/mako_rewrite_view.h"
 
 #include "ash/constants/ash_features.h"
-#include "chrome/common/chrome_render_frame.mojom.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
@@ -169,10 +168,7 @@ void MakoRewriteView::SetContentsBounds(content::WebContents* source,
 
 void MakoRewriteView::ShowUI() {
   WebUIBubbleDialogView::ShowUI();
-  // TODO(b/321585877): Remove feature flag for dragging support.
-  if (base::FeatureList::IsEnabled(ash::features::kOrcaDraggingSupport)) {
-    SetupDraggingSupport();
-  }
+  SetupDraggingSupport();
   if (base::FeatureList::IsEnabled(ash::features::kOrcaResizingSupport)) {
     SetupResizingSupport();
   }
@@ -182,10 +178,7 @@ void MakoRewriteView::ShowUI() {
 bool MakoRewriteView::IsDraggingEnabled() {
   // Once the content bounds is updated by Web UI, we should stop resizing
   // support. This is currently used by Feedback UI.
-  if (content_bounds_updated_by_webui_) {
-    return false;
-  }
-  return base::FeatureList::IsEnabled(ash::features::kOrcaDraggingSupport);
+  return !content_bounds_updated_by_webui_;
 }
 
 bool MakoRewriteView::IsResizingEnabled() {

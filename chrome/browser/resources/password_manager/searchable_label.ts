@@ -2,72 +2,66 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {assert} from 'chrome://resources/js/assert.js';
 import {quoteString} from 'chrome://resources/js/util.js';
-import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-export class SearchableLabelElement extends PolymerElement {
+import {getHtml} from './searchable_label.html.js';
+
+export interface TextSegment {
+  text: string;
+  bold: boolean;
+}
+
+export class SearchableLabelElement extends CrLitElement {
   static get is() {
     return 'searchable-label';
   }
 
-  static get template() {
-    return null;
+  override render() {
+    return getHtml.bind(this)();
   }
 
-  static get properties() {
+  static override get properties() {
     return {
       // The text to show in this label.
-      title: String,
+      title: {type: String},
 
       // The search term to bold within the title.
-      searchTerm: String,
+      searchTerm: {type: String},
     };
   }
 
-  declare title: string;
-  declare searchTerm: string;
+  override accessor title: string = '';
+  accessor searchTerm: string = '';
 
-  static get observers() {
-    return ['setSearchedTextToBold_(title, searchTerm)'];
+  // Do not attach a shadowRoot so that rendered nodes are in the light DOM.
+  override createRenderRoot() {
+    return this;
   }
 
   /**
-   * Updates the page title. If a search term is specified, highlights any
-   * occurrences of the search term in bold.
+   * Splits `title` into segments, marking occurrences of `searchTerm` as bold.
    */
-  private setSearchedTextToBold_() {
-    if (this.title === undefined) {
-      return;
-    }
-
+  protected getSegments_(): TextSegment[] {
+    assert(this.searchTerm);
+    const segments: TextSegment[] = [];
     const titleText = this.title;
-
-    if (!this.searchTerm) {
-      this.textContent = ` ${titleText} `;
-      return;
-    }
-
     const re = new RegExp(quoteString(this.searchTerm), 'gim');
     let i = 0;
     let match;
-    this.textContent = '';
     while (match = re.exec(titleText)) {
       if (match.index > i) {
-        this.appendTextElement('span', titleText.slice(i, match.index));
+        segments.push({text: titleText.slice(i, match.index), bold: false});
       }
       i = re.lastIndex;
       // Mark the highlighted text in bold.
-      this.appendTextElement('b', titleText.substring(match.index, i));
+      segments.push({text: titleText.substring(match.index, i), bold: true});
     }
     if (i < titleText.length) {
-      this.appendTextElement('span', titleText.slice(i));
+      segments.push({text: titleText.slice(i), bold: false});
     }
-  }
-
-  private appendTextElement(type: string, text: string) {
-    const element = document.createElement(type);
-    element.textContent = text;
-    this.appendChild(element);
+    return segments;
   }
 }
 

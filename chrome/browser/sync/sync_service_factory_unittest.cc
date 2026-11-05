@@ -13,6 +13,7 @@
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/sync/cross_device_theme_tracker_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/trusted_vault/trusted_vault_service_factory.h"
@@ -140,9 +141,17 @@ class SyncServiceFactoryTest : public testing::Test {
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
+    datatypes.Put(syncer::WEB_APPS);
+#if BUILDFLAG(IS_CHROMEOS)
     datatypes.Put(syncer::APPS);
     datatypes.Put(syncer::APP_SETTINGS);
-    datatypes.Put(syncer::WEB_APPS);
+#else
+    if (!base::FeatureList::IsEnabled(
+            syncer::kSyncDoNotSyncAppsAndAppSettings)) {
+      datatypes.Put(syncer::APPS);
+      datatypes.Put(syncer::APP_SETTINGS);
+    }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 #if BUILDFLAG(IS_ANDROID)
@@ -215,10 +224,7 @@ class SyncServiceFactoryTest : public testing::Test {
             data_sharing::features::kDataSharingFeature)) {
       datatypes.Put(syncer::COLLABORATION_GROUP);
       datatypes.Put(syncer::SHARED_TAB_GROUP_DATA);
-      if (base::FeatureList::IsEnabled(
-              syncer::kSyncSharedTabGroupAccountData)) {
-        datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
-      }
+      datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
       if (base::FeatureList::IsEnabled(syncer::kSyncSharedComment)) {
         datatypes.Put(syncer::SHARED_COMMENT);
       }
@@ -242,7 +248,7 @@ class SyncServiceFactoryTest : public testing::Test {
       datatypes.Put(syncer::CONTEXTUAL_TASK);
     }
 
-    if (base::FeatureList::IsEnabled(features::kSkillsEnabled)) {
+    if (skills::SkillsServiceFactory::GetForProfile(profile())) {
       datatypes.Put(syncer::SKILL);
     }
 
@@ -250,8 +256,7 @@ class SyncServiceFactoryTest : public testing::Test {
       datatypes.Put(syncer::GEMINI_THREAD);
     }
 
-    if (base::FeatureList::IsEnabled(
-            syncer::kSyncEncryptedTabContextContainer)) {
+    if (base::FeatureList::IsEnabled(syncer::kSyncEncryptedTabContext)) {
       datatypes.Put(syncer::ENCRYPTED_TAB_CONTEXT_CONTAINER);
       datatypes.Put(syncer::ENCRYPTED_TAB_CONTEXT_ITEM);
     }
@@ -450,4 +455,81 @@ TEST_F(SyncServiceFactoryWithBothThemeFeaturesTest,
   auto* tracker = CrossDeviceThemeTrackerFactory::GetForProfile(profile());
   ASSERT_NE(nullptr, tracker);
   EXPECT_EQ(themes::ServiceStatus::kInitializing, tracker->GetServiceStatus());
+}
+
+#if BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_CHROMEOS)
+class SyncServiceFactoryTestWithoutAppsAndAppSettings
+    : public SyncServiceFactoryTest {
+ public:
+  SyncServiceFactoryTestWithoutAppsAndAppSettings() {
+    feature_list_.InitAndEnableFeature(
+        syncer::kSyncDoNotSyncAppsAndAppSettings);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(SyncServiceFactoryTestWithoutAppsAndAppSettings,
+       AppsAndAppSettingsNotRegistered) {
+  syncer::SyncServiceImpl* sync_service =
+      SyncServiceFactory::GetAsSyncServiceImplForProfileForTesting(profile());
+  syncer::DataTypeSet types = sync_service->GetRegisteredDataTypesForTest();
+
+  EXPECT_FALSE(types.Has(syncer::APPS));
+  EXPECT_FALSE(types.Has(syncer::APP_SETTINGS));
+
+  // WEB_APPS should still be registered.
+  EXPECT_TRUE(types.Has(syncer::WEB_APPS));
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_CHROMEOS)
+
+class SyncServiceFactoryWithSkillsOnlyTest : public SyncServiceFactoryTest {
+ public:
+  SyncServiceFactoryWithSkillsOnlyTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kSkillsEnabled},
+        /*disabled_features=*/{features::kSkillsWebViewV2Enabled});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(SyncServiceFactoryWithSkillsOnlyTest,
+       SkillDataTypeRequiresWebViewV2OnAndroid) {
+  syncer::SyncServiceImpl* sync_service =
+      SyncServiceFactory::GetAsSyncServiceImplForProfileForTesting(profile());
+  syncer::DataTypeSet types = sync_service->GetRegisteredDataTypesForTest();
+
+#if BUILDFLAG(IS_ANDROID)
+  EXPECT_FALSE(skills::SkillsServiceFactory::GetForProfile(profile()));
+  EXPECT_FALSE(types.Has(syncer::SKILL));
+#else
+  EXPECT_TRUE(skills::SkillsServiceFactory::GetForProfile(profile()));
+  EXPECT_TRUE(types.Has(syncer::SKILL));
+#endif
+}
+
+class SyncServiceFactoryWithSkillsAndWebViewV2Test
+    : public SyncServiceFactoryTest {
+ public:
+  SyncServiceFactoryWithSkillsAndWebViewV2Test() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kSkillsEnabled,
+                              features::kSkillsWebViewV2Enabled},
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(SyncServiceFactoryWithSkillsAndWebViewV2Test, RegistersSkillDataType) {
+  syncer::SyncServiceImpl* sync_service =
+      SyncServiceFactory::GetAsSyncServiceImplForProfileForTesting(profile());
+  syncer::DataTypeSet types = sync_service->GetRegisteredDataTypesForTest();
+
+  EXPECT_TRUE(skills::SkillsServiceFactory::GetForProfile(profile()));
+  EXPECT_TRUE(types.Has(syncer::SKILL));
 }

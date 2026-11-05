@@ -83,20 +83,9 @@ class COMPONENT_EXPORT(UI_BASE) ResourceBundle {
   };
 
 #if BUILDFLAG(IS_ANDROID)
-  // The purpose for a pak file represented by an FdAndRegion. These correspond
-  // to entries in the android_webview/common/aw_descriptors.h and
-  // chrome/common/chrome_descriptors.h enums.
-  enum class LocalePakPurpose {
-    kWebViewMain = 0,
-    kNonWebViewMain,
-    kWebViewFallback,
-    kNonWebViewFallback,
-  };
-
   struct FdAndRegion {
     int fd;
     base::MemoryMappedFile::Region region;
-    LocalePakPurpose purpose;
   };
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -347,13 +336,9 @@ class COMPONENT_EXPORT(UI_BASE) ResourceBundle {
   scoped_refptr<base::RefCountedMemory> LoadDataResourceBytes(
       int resource_id) const;
 
-  // Whether the |resource_id| is gzipped in this bundle. False is also returned
-  // if the resource is not found.
-  bool IsGzipped(int resource_id) const;
-
-  // Whether the |resource_id| is brotli compressed in this bundle. False is
-  // also returned if the resource is not found.
-  bool IsBrotli(int resource_id) const;
+  // Returns whether `resource_id` is compressed (gzip, brotli, or zstd) in
+  // this bundle. Returns false if the resource is not found.
+  bool IsCompressed(int resource_id) const;
 
   // Loads the raw bytes of a data resource nearest the scale factor
   // |scale_factor| into |bytes|. If the resource is compressed, decompress
@@ -454,12 +439,11 @@ class COMPONENT_EXPORT(UI_BASE) ResourceBundle {
   }
 
   const std::string& GetLoadedLocale() const { return loaded_locale_; }
-#if DCHECK_IS_ON()
+
   // Gets whether overriding locale strings is supported.
   bool get_can_override_locale_string_resources_for_test() {
     return can_override_locale_string_resources_;
   }
-#endif
 
   const base::FilePath& GetOverriddenPakPath() const;
 
@@ -605,9 +589,7 @@ class COMPONENT_EXPORT(UI_BASE) ResourceBundle {
 
   IdToStringMap overridden_locale_strings_;
 
-#if DCHECK_IS_ON()
   bool can_override_locale_string_resources_ = true;
-#endif
 
   bool is_test_resources_ = false;
   bool mangle_localized_strings_ = false;

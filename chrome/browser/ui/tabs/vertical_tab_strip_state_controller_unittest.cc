@@ -5,15 +5,14 @@
 #include <optional>
 
 #include "base/test/metrics/user_action_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 #include "chrome/browser/ui/tabs/test_vertical_tab_strip_state_controller_delegate.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller_impl.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
+#include "chrome/browser/ui/toasts/test/mock_toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/common/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -28,20 +27,6 @@ namespace tabs {
 namespace {
 constexpr int kUncollapsedWidth1 = 100;
 constexpr int kSessionIDValue = 123;
-
-class MockToastController : public ToastController {
- public:
-  explicit MockToastController(
-      BrowserWindowInterface* browser_window_interface = nullptr,
-      const ToastRegistry* toast_registry = nullptr)
-      : ToastController(browser_window_interface, toast_registry) {}
-  ~MockToastController() override = default;
-
-  bool MaybeShowToast(ToastParams params) override {
-    return MaybeShowToastMock(params.toast_id);
-  }
-  MOCK_METHOD(bool, MaybeShowToastMock, (ToastId toast_id));
-};
 }  // namespace
 
 class VerticalTabStripStateControllerTest : public testing::Test {
@@ -51,7 +36,6 @@ class VerticalTabStripStateControllerTest : public testing::Test {
 
   void SetUp() override {
     testing::Test::SetUp();
-    feature_list_.InitAndEnableFeature(tabs::kVerticalTabsExpandOnHover);
     tabs::RegisterProfilePrefs(pref_service_.registry());
     SessionID test_session_id = SessionID::FromSerializedValue(kSessionIDValue);
 
@@ -83,7 +67,6 @@ class VerticalTabStripStateControllerTest : public testing::Test {
   }
 
  protected:
-  base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<TestVerticalTabStripStateControllerDelegate> delegate_;
   std::unique_ptr<VerticalTabStripStateController> controller_;
   sync_preferences::TestingPrefServiceSyncable pref_service_;
@@ -334,8 +317,10 @@ TEST_F(VerticalTabStripStateControllerTest,
 
   // Expect that enabling vertical tabs will try to show the delayed vertical
   // toast.
-  EXPECT_CALL(mock_toast_controller,
-              MaybeShowToastMock(ToastId::kTabStripSwitchDelayedVertical))
+  EXPECT_CALL(
+      mock_toast_controller,
+      MaybeShowToast(testing::Field(&ToastParams::toast_id,
+                                    ToastId::kTabStripSwitchDelayedVertical)))
       .Times(1)
       .WillOnce(testing::Return(true));
 
@@ -360,8 +345,10 @@ TEST_F(VerticalTabStripStateControllerTest,
 
   // Expect that disabling vertical tabs will try to show the delayed horizontal
   // toast.
-  EXPECT_CALL(mock_toast_controller,
-              MaybeShowToastMock(ToastId::kTabStripSwitchDelayedHorizontal))
+  EXPECT_CALL(
+      mock_toast_controller,
+      MaybeShowToast(testing::Field(&ToastParams::toast_id,
+                                    ToastId::kTabStripSwitchDelayedHorizontal)))
       .Times(1)
       .WillOnce(testing::Return(true));
 
@@ -386,8 +373,10 @@ TEST_F(VerticalTabStripStateControllerTest,
 
   // Expect that disabling vertical tabs will show the toast twice when called
   // twice via SetVerticalTabsEnabled.
-  EXPECT_CALL(mock_toast_controller,
-              MaybeShowToastMock(ToastId::kTabStripSwitchDelayedHorizontal))
+  EXPECT_CALL(
+      mock_toast_controller,
+      MaybeShowToast(testing::Field(&ToastParams::toast_id,
+                                    ToastId::kTabStripSwitchDelayedHorizontal)))
       .Times(2)
       .WillRepeatedly(testing::Return(true));
 
@@ -417,8 +406,10 @@ TEST_F(VerticalTabStripStateControllerTest,
 
   // Expect that enabling vertical tabs will show the toast twice when called
   // twice via SetVerticalTabsEnabled.
-  EXPECT_CALL(mock_toast_controller,
-              MaybeShowToastMock(ToastId::kTabStripSwitchDelayedVertical))
+  EXPECT_CALL(
+      mock_toast_controller,
+      MaybeShowToast(testing::Field(&ToastParams::toast_id,
+                                    ToastId::kTabStripSwitchDelayedVertical)))
       .Times(2)
       .WillRepeatedly(testing::Return(true));
 

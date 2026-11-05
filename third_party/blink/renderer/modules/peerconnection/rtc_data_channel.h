@@ -25,8 +25,9 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_DATA_CHANNEL_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_DATA_CHANNEL_H_
 
+#include <stdint.h>
+
 #include <cstddef>
-#include <cstdint>
 #include <optional>
 
 #include "base/containers/span.h"
@@ -53,7 +54,6 @@
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
-#include "third_party/blink/renderer/platform/heap/self_keep_alive.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_scheduler.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -187,12 +187,16 @@ class MODULES_EXPORT RTCDataChannel final
     void OnMessage(const webrtc::DataBuffer& buffer) override;
     bool IsOkToCallOnTheNetworkThread() override;
 
+    // Called from the network thread when SendAsync() fails.
+    void OnSendFailed(webrtc::RTCErrorType type);
+
    private:
     // webrtc::DataChannelObserver implementation on the main thread.
     void OnStateChangeImpl(webrtc::DataChannelInterface::DataState state);
     void OnBufferedAmountChangeImpl(unsigned sent_data_size);
     void OnMaxMessageSizeImpl(int max_message_size);
     void OnMessageImpl(webrtc::DataBuffer buffer);
+    void OnSendFailedImpl(webrtc::RTCErrorType type);
 
     const scoped_refptr<base::SingleThreadTaskRunner> main_thread_;
     WeakPersistent<RTCDataChannel> blink_channel_;
@@ -205,8 +209,10 @@ class MODULES_EXPORT RTCDataChannel final
   void OnBufferedAmountChange(unsigned previous_amount);
   void OnMaxMessageSizeChange(int max_message_size);
   void OnMessage(webrtc::DataBuffer buffer);
+  void OnSendFailed(webrtc::RTCErrorType type);
 
   void Dispose();
+  void CancelPendingMessages();
 
   const webrtc::scoped_refptr<webrtc::DataChannelInterface>& channel() const;
   bool ValidateSendLength(uint64_t length, ExceptionState& exception_state);
@@ -226,6 +232,8 @@ class MODULES_EXPORT RTCDataChannel final
   FRIEND_TEST_ALL_PREFIXES(RTCDataChannelTest, Close);
   FRIEND_TEST_ALL_PREFIXES(RTCDataChannelTest, Message);
   FRIEND_TEST_ALL_PREFIXES(RTCDataChannelTest, BufferedAmountLow);
+  FRIEND_TEST_ALL_PREFIXES(RTCDataChannelTest,
+                           SendFailureAfterCloseDoesNotFireError);
 
   // This handle notifies the scheduler about a connected data channel
   // associated with a frame. The handle should be destroyed when the channel
@@ -261,6 +269,7 @@ class MODULES_EXPORT RTCDataChannel final
     ~BlobReader() override;
 
     void Start(Blob* blob);
+    void Cancel();
     bool HasFinishedLoading() const;
 
     // FileReaderAccumulator
@@ -274,13 +283,10 @@ class MODULES_EXPORT RTCDataChannel final
     void Trace(Visitor*) const override;
 
    private:
-    void Dispose();
-
     Member<FileReaderLoader> loader_;
     Member<RTCDataChannel> data_channel_;
     Member<PendingMessage> message_;
 
-    SelfKeepAlive<BlobReader> keep_alive_;
     SEQUENCE_CHECKER(sequence_checker_);
   };
 

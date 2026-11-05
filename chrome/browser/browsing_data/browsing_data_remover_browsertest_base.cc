@@ -50,7 +50,6 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/leveldatabase/env_chromium.h"
 #include "third_party/re2/src/re2/re2.h"
-#include "ui/base/models/tree_model.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/download/download_browsertest_utils.h"
@@ -177,7 +176,7 @@ void BrowsingDataRemoverBrowserTestBase::VerifyDownloadCount(size_t expected,
   content::DownloadManager* download_manager = profile->GetDownloadManager();
   DownloadManagerWaiter download_manager_waiter(download_manager);
   download_manager_waiter.WaitForInitialized();
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   download_manager->GetAllDownloads(&downloads);
   EXPECT_EQ(expected, downloads.size());
 }

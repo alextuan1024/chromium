@@ -19,6 +19,7 @@ import type {CdpClient} from '../cdp/CdpClient.js';
 import type {CdpConnection} from '../cdp/CdpConnection.js';
 import {
   Exception,
+  InvalidSessionIdException,
   UnknownCommandException,
   UnknownErrorException,
   type ChromiumBidi,
@@ -33,6 +34,7 @@ import type {Result} from '../utils/result.js';
 import {BidiNoOpParser} from './BidiNoOpParser.js';
 import type {BidiCommandParameterParser} from './BidiParser.js';
 import type {MapperOptions} from './MapperOptions.js';
+import {AutofillProcessor} from './modules/autofill/AutofillProcessor.js';
 import type {BluetoothProcessor} from './modules/bluetooth/BluetoothProcessor.js';
 import {BrowserProcessor} from './modules/browser/BrowserProcessor.js';
 import type {ContextConfigStorage} from './modules/browser/ContextConfigStorage.js';
@@ -48,6 +50,7 @@ import {PermissionsProcessor} from './modules/permissions/PermissionsProcessor.j
 import type {PreloadScriptStorage} from './modules/script/PreloadScriptStorage.js';
 import type {RealmStorage} from './modules/script/RealmStorage.js';
 import {ScriptProcessor} from './modules/script/ScriptProcessor.js';
+import type {AclManager} from './modules/session/AclManager.js';
 import type {EventManager} from './modules/session/EventManager.js';
 import {SessionProcessor} from './modules/session/SessionProcessor.js';
 import {StorageProcessor} from './modules/storage/StorageProcessor.js';
@@ -59,6 +62,12 @@ export const enum CommandProcessorEvents {
   Response = 'response',
 }
 
+/** Commands that WebDriver BiDi accepts before the session is created. */
+const STATIC_COMMANDS: ReadonlySet<string> = new Set([
+  'session.new',
+  'session.status',
+] satisfies ChromiumBidi.Command['method'][]);
+
 interface CommandProcessorEventsMap extends Record<string | symbol, unknown> {
   [CommandProcessorEvents.Response]: {
     message: Promise<Result<OutgoingMessage>>;
@@ -68,6 +77,8 @@ interface CommandProcessorEventsMap extends Record<string | symbol, unknown> {
 
 export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
   // keep-sorted start
+  #aclManager: AclManager;
+  #autofillProcessor: AutofillProcessor;
   #bluetoothProcessor: BluetoothProcessor;
   #browserCdpClient: CdpClient;
   #browserProcessor: BrowserProcessor;
@@ -99,12 +110,15 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
     bluetoothProcessor: BluetoothProcessor,
     digitalCredentialsProcessor: DigitalCredentialsProcessor,
     userContextStorage: UserContextStorage,
+    aclManager: AclManager,
     parser: BidiCommandParameterParser = new BidiNoOpParser(),
     initConnection: (options: MapperOptions) => Promise<void>,
+    restrictedMode: boolean,
     logger?: LoggerFn,
   ) {
     super();
     this.#browserCdpClient = browserCdpClient;
+    this.#aclManager = aclManager;
     this.#parser = parser;
     this.#logger = logger;
 
@@ -112,6 +126,7 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
     this.#digitalCredentialsProcessor = digitalCredentialsProcessor;
 
     // keep-sorted start block=yes
+    this.#autofillProcessor = new AutofillProcessor(browsingContextStorage);
     this.#browserProcessor = new BrowserProcessor(
       browserCdpClient,
       browsingContextStorage,
@@ -121,7 +136,6 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
     this.#browsingContextProcessor = new BrowsingContextProcessor(
       browserCdpClient,
       browsingContextStorage,
-      userContextStorage,
       contextConfigStorage,
       eventManager,
     );
@@ -131,11 +145,7 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
       cdpConnection,
       browserCdpClient,
     );
-    this.#emulationProcessor = new EmulationProcessor(
-      browsingContextStorage,
-      userContextStorage,
-      contextConfigStorage,
-    );
+    this.#emulationProcessor = new EmulationProcessor(contextConfigStorage);
     this.#inputProcessor = new InputProcessor(browsingContextStorage);
     this.#networkProcessor = new NetworkProcessor(
       browsingContextStorage,
@@ -156,6 +166,8 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
       eventManager,
       browserCdpClient,
       initConnection,
+      this.#aclManager,
+      restrictedMode,
     );
     this.#storageProcessor = new StorageProcessor(
       browserCdpClient,
@@ -169,7 +181,31 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
   async #processCommand(
     command: ChromiumBidi.Command,
   ): Promise<ChromiumBidi.ResultData> {
+    // WebDriver BiDi accepts only static commands before the session is
+    // created.
+    if (
+      !STATIC_COMMANDS.has(command.method) &&
+      !this.#sessionProcessor.isCreated()
+    ) {
+      throw new InvalidSessionIdException(
+        `Command '${command.method}' requires a session. Call 'session.new' first.`,
+      );
+    }
+
+    // Restricted sessions can run only the commands that their ACL grants.
+    // Check before parsing, so that a disallowed command fails with an ACL
+    // error rather than a parameter validation error.
+    this.#aclManager.assertCommandAllowed(command.method, command.params);
+
     switch (command.method) {
+      // Autofill module
+      // keep-sorted start block=yes
+      case 'autofill.trigger':
+        return await this.#autofillProcessor.trigger(
+          this.#parser.parseAutofillTriggerParams(command.params),
+        );
+      // keep-sorted end
+
       // Bluetooth module
       // keep-sorted start block=yes
       case 'bluetooth.disableSimulation':
@@ -217,6 +253,10 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
       case 'bluetooth.simulateGattDisconnection':
         return await this.#bluetoothProcessor.simulateGattDisconnection(
           this.#parser.parseSimulateGattDisconnectionParameters(command.params),
+        );
+      case 'bluetooth.simulateGattMtuChange':
+        return await this.#bluetoothProcessor.simulateGattMtuChange(
+          this.#parser.parseSimulateGattMtuChangeParameters(command.params),
         );
       case 'bluetooth.simulatePreconnectedPeripheral':
         return await this.#bluetoothProcessor.simulatePreconnectedPeripheral(
@@ -299,9 +339,8 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
           this.#parser.parseReloadParams(command.params),
         );
       case 'browsingContext.setBypassCSP':
-        this.#parser.parseSetBypassCspParams(command.params);
-        throw new UnsupportedOperationException(
-          `Method ${command.method} is not implemented.`,
+        return await this.#browsingContextProcessor.setBypassCSP(
+          this.#parser.parseSetBypassCspParams(command.params),
         );
       case 'browsingContext.setViewport':
         return await this.#browsingContextProcessor.setViewport(
@@ -339,6 +378,14 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
         );
       // keep-sorted end
 
+      // Goog BrowsingContext module
+      // keep-sorted start block=yes
+      case 'goog:browsingContext.getAccessibilityTree':
+        return await this.#browsingContextProcessor.getAccessibilityTree(
+          this.#parser.parseGetAccessibilityTreeParams(command.params),
+        );
+      // keep-sorted end
+
       // DigitalCredentials module
       // keep-sorted start block=yes
       case 'digitalCredentials.setVirtualWalletBehavior':
@@ -350,11 +397,10 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
       // Emulation module
       // keep-sorted start block=yes
       case 'emulation.setForcedColorsModeThemeOverride':
-        this.#parser.parseSetForcedColorsModeThemeOverrideParams(
-          command.params,
-        );
-        throw new UnsupportedOperationException(
-          `Method ${command.method} is not implemented.`,
+        return await this.#emulationProcessor.setForcedColorsModeThemeOverride(
+          this.#parser.parseSetForcedColorsModeThemeOverrideParams(
+            command.params,
+          ),
         );
       case 'emulation.setGeolocationOverride':
         return await this.#emulationProcessor.setGeolocationOverride(
@@ -389,9 +435,8 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
           this.#parser.parseSetScrollbarTypeOverrideParams(command.params),
         );
       case 'emulation.setTextLayoutModeOverride':
-        this.#parser.parseSetTextLayoutModeOverrideParams(command.params);
-        throw new UnsupportedOperationException(
-          `Method ${command.method} is not implemented.`,
+        return await this.#emulationProcessor.setTextLayoutModeOverride(
+          this.#parser.parseSetTextLayoutModeOverrideParams(command.params),
         );
       case 'emulation.setTimezoneOverride':
         return await this.#emulationProcessor.setTimezoneOverride(
@@ -531,6 +576,10 @@ export class CommandProcessor extends EventEmitter<CommandProcessorEventsMap> {
 
       // Session module
       // keep-sorted start block=yes
+      case 'goog:session.setAcl':
+        return await this.#sessionProcessor.setAcl(
+          this.#parser.parseSetAclParams(command.params),
+        );
       case 'session.end':
         throw new UnsupportedOperationException(
           `Method ${command.method} is not implemented.`,

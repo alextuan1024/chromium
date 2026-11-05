@@ -6,6 +6,7 @@
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "chrome/browser/actor/actor_test_util.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/actor/tools/tools_test_util.h"
 #include "components/actor/core/actor_features.h"
 #include "content/public/browser/devtools_agent_host.h"
@@ -125,11 +126,12 @@ class DevToolsScriptToolTest : public actor::ActorToolsTest,
 
     const auto& action_results = result.Get();
     EXPECT_EQ(action_results.size(), 1u);
-    EXPECT_TRUE(action_results.at(0).result);
-    actor::mojom::ActionResultPtr action_result =
-        action_results.at(0).result->Clone();
+    const auto& act_result =
+        action_results.at(0).tool_result.deprecated_action_result();
+    EXPECT_TRUE(act_result);
+    actor::mojom::ActionResultPtr action_result = act_result->Clone();
     actor::mojom::ScriptToolResponsePtr response =
-        std::move(action_results.at(0).result->script_tool_response);
+        std::move(action_result->script_tool_response);
     EXPECT_TRUE(response);
     return {std::move(action_result), std::move(response)};
   }
@@ -163,6 +165,9 @@ IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest, EmitsCdpEvents) {
   const std::string* tool_name = invoked_params->FindString("toolName");
   ASSERT_TRUE(tool_name);
   EXPECT_EQ(*tool_name, "echo");
+  const std::string* tool_id = invoked_params->FindString("toolId");
+  ASSERT_TRUE(tool_id);
+  EXPECT_FALSE(tool_id->empty());
   const std::string* input = invoked_params->FindString("input");
   ASSERT_TRUE(input);
   EXPECT_EQ(*input, input_arguments);
@@ -212,6 +217,8 @@ IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest, EmitsCdpEventsOnFailure) {
   const std::string* tool_name = invoked_params->FindString("toolName");
   ASSERT_TRUE(tool_name);
   EXPECT_EQ(*tool_name, "invalid");
+  // No registered tool has this name, so there's no ID to report.
+  EXPECT_FALSE(invoked_params->Find("toolId"));
   const std::string* input = invoked_params->FindString("input");
   ASSERT_TRUE(input);
   EXPECT_EQ(*input, input_arguments);
@@ -234,6 +241,69 @@ IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest, EmitsCdpEventsOnFailure) {
   const std::string* error_text = responded_params->FindString("errorText");
   ASSERT_TRUE(error_text);
   EXPECT_EQ(*error_text, "Tool not found: invalid");
+
+  client.Detach();
+}
+
+// When the actor executes a tool by an ID that is no longer registered, there's
+// no name to report, so `toolInvoked` reports only the tool's ID, and omits
+// `toolName`.
+IN_PROC_BROWSER_TEST_P(DevToolsScriptToolTest,
+                       EmitsCdpEventsForUnregisteredObservedTool) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  ASSERT_TRUE(content::ExecJs(web_contents(), R"(
+    window.controller = new AbortController();
+    document.modelContext.registerTool({
+      execute: async () => 'original',
+      name: 'swapped_tool',
+      description: 'the original tool',
+    }, {signal: window.controller.signal});
+  )"));
+
+  // Pin the action to the original tool's ID by observing the page, then
+  // replace the tool before the action runs.
+  GetPageApc();
+  auto action =
+      actor::MakeScriptToolRequest(*main_frame(), "swapped_tool", "{}");
+  ASSERT_TRUE(content::ExecJs(web_contents(), R"(
+    window.controller.abort();
+    document.modelContext.registerTool({
+      execute: async () => 'replacement',
+      name: 'swapped_tool',
+      description: 'a different tool that reused the name',
+    });
+  )"));
+
+  TestDevToolsClient client;
+  client.AttachToAndEnableWebMCP(
+      content::DevToolsAgentHost::GetOrCreateFor(web_contents()));
+
+  actor::ActResultFuture result;
+  actor_task().Act(actor::ToRequestList(std::move(action)),
+                   result.GetCallback());
+  ExpectErrorResult(result,
+                    actor::mojom::ActionResultCode::kScriptToolInvalidName);
+
+  client.WaitForInvokedEvent();
+  ASSERT_EQ(client.invoked_events().size(), 1u);
+  const base::DictValue* invoked_params =
+      client.invoked_events()[0].GetDict().FindDict("params");
+  ASSERT_TRUE(invoked_params);
+  EXPECT_FALSE(invoked_params->Find("toolName"));
+  const std::string* tool_id = invoked_params->FindString("toolId");
+  ASSERT_TRUE(tool_id);
+  EXPECT_FALSE(tool_id->empty());
+
+  client.WaitForRespondedEvent();
+  ASSERT_EQ(client.responded_events().size(), 1u);
+  const base::DictValue* responded_params =
+      client.responded_events()[0].GetDict().FindDict("params");
+  ASSERT_TRUE(responded_params);
+  const std::string* error_text = responded_params->FindString("errorText");
+  ASSERT_TRUE(error_text);
+  EXPECT_EQ(*error_text, "The tool is no longer registered.");
 
   client.Detach();
 }

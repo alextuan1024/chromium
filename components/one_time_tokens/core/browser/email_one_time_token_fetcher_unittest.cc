@@ -105,12 +105,10 @@ class EmailOneTimeTokenFetcherTest : public testing::Test {
   }
 
   std::string GetExpectedUrl() {
-    std::string encoded_reference;
-    base::Base64UrlEncode(kEncryptedMessageReference,
-                          base::Base64UrlEncodePolicy::INCLUDE_PADDING,
-                          &encoded_reference);
     GURL url = net::AppendQueryParameter(
-        GURL(kServiceUrl), "encryptedMessageReference", encoded_reference);
+        GURL(kServiceUrl), "encryptedMessageReference",
+        base::Base64UrlEncode(kEncryptedMessageReference,
+                              base::Base64UrlEncodePolicy::INCLUDE_PADDING));
     return net::AppendQueryParameter(url, "alt", "proto").spec();
   }
 
@@ -165,8 +163,7 @@ TEST_F(EmailOneTimeTokenFetcherTest, Success) {
   EXPECT_EQ(result->type(), OneTimeTokenType::kGmail);
   EXPECT_EQ(result->sender_address(), kSenderAddress);
   histogram_tester_.ExpectUniqueTimeSample(
-      "Autofill.OneTimeTokens.Backend.Gmail.AuthLatency",
-      base::Milliseconds(123), 1);
+      "OneTimeTokens.Backend.Gmail.AuthLatency", base::Milliseconds(123), 1);
 }
 
 TEST_F(EmailOneTimeTokenFetcherTest, SuccessPreservesTimestamps) {
@@ -213,8 +210,7 @@ TEST_F(EmailOneTimeTokenFetcherTest, AccessTokenError) {
   EXPECT_EQ(result.error(),
             OneTimeTokenRetrievalError::kGmailOtpBackendAuthError);
   histogram_tester_.ExpectUniqueTimeSample(
-      "Autofill.OneTimeTokens.Backend.Gmail.AuthLatency",
-      base::Milliseconds(456), 1);
+      "OneTimeTokens.Backend.Gmail.AuthLatency", base::Milliseconds(456), 1);
 }
 
 // Tests that an error is returned when the network request to the Gmail OTP
@@ -238,7 +234,7 @@ TEST_F(EmailOneTimeTokenFetcherTest, NetworkError) {
   EXPECT_EQ(result.error(),
             OneTimeTokenRetrievalError::kGmailOtpBackendInvalidResponse);
   histogram_tester_.ExpectTotalCount(
-      "Autofill.OneTimeTokens.Backend.Gmail.NetworkLatency", 1);
+      "OneTimeTokens.Backend.Gmail.NetworkLatency", 1);
 }
 
 // Tests that an error is returned when the network request fails entirely
@@ -263,7 +259,7 @@ TEST_F(EmailOneTimeTokenFetcherTest, NetworkDisconnected) {
   EXPECT_EQ(result.error(),
             OneTimeTokenRetrievalError::kGmailOtpBackendNetworkError);
   histogram_tester_.ExpectTotalCount(
-      "Autofill.OneTimeTokens.Backend.Gmail.NetworkLatency", 1);
+      "OneTimeTokens.Backend.Gmail.NetworkLatency", 1);
 }
 
 // Tests that an error is returned when the response proto is invalid.
@@ -542,13 +538,11 @@ TEST_F(EmailOneTimeTokenFetcherTest, FetchEmailOneTimeToken_CustomEndpointUrl) {
 
   // Helper to construct expected custom URL.
   auto get_expected_custom_url = []() {
-    std::string encoded_reference;
-    base::Base64UrlEncode(kEncryptedMessageReference,
-                          base::Base64UrlEncodePolicy::INCLUDE_PADDING,
-                          &encoded_reference);
     GURL url = GetOneTimeTokenServiceUrl("v1/onetimetokens:fetchEmail");
-    url = net::AppendQueryParameter(url, "encryptedMessageReference",
-                                    encoded_reference);
+    url = net::AppendQueryParameter(
+        url, "encryptedMessageReference",
+        base::Base64UrlEncode(kEncryptedMessageReference,
+                              base::Base64UrlEncodePolicy::INCLUDE_PADDING));
     return net::AppendQueryParameter(url, "alt", "proto").spec();
   };
 

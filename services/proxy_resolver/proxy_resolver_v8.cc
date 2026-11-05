@@ -5,13 +5,16 @@
 #include "services/proxy_resolver/proxy_resolver_v8.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <utility>
 
-#include "base/auto_reset.h"
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/map_util.h"
 #include "base/debug/leak_annotations.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
@@ -22,9 +25,9 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/threading/platform_thread.h"
 #include "gin/array_buffer.h"
 #include "gin/converter.h"
-#include "gin/public/gin_embedders.h"
 #include "gin/public/isolate_holder.h"
 #include "gin/v8_initializer.h"
 #include "net/base/ip_address.h"
@@ -94,10 +97,41 @@ const char kPacResourceName[] = "proxy-pac-script.js";
 // Pseudo-name for the PAC utility script.
 const char kPacUtilityResourceName[] = "proxy-pac-utility-script.js";
 
+// Base class for external string resources that tracks V8's Lock() / Unlock()
+// calls, and crashes if the resource is destroyed while V8 still holds a lock.
+// V8 locks a resource while it holds raw pointers to it (e.g., while parsing
+// it). This catches cases where V8 incorrectly destroys a resource it
+// considers locked, to harden against V8 resource tracking issues.
+//
+// TODO(crbug.com/562847435): This mirrors temporary hardening in
+// blink::StringResourceBase, and should be removed once V8 has an
+// architectural fix for resource lifetimes.
+template <typename ResourceBase>
+class DisposalLockedExternalStringResource : public ResourceBase {
+ public:
+  DisposalLockedExternalStringResource() = default;
+  DisposalLockedExternalStringResource(
+      const DisposalLockedExternalStringResource&) = delete;
+  DisposalLockedExternalStringResource& operator=(
+      const DisposalLockedExternalStringResource&) = delete;
+
+  ~DisposalLockedExternalStringResource() override {
+    CHECK_EQ(disposal_lock_count_.load(), 0);
+  }
+
+  // v8::String::ExternalStringResourceBase:
+  void Lock() const override { disposal_lock_count_.fetch_add(1); }
+  void Unlock() const override { disposal_lock_count_.fetch_sub(1); }
+
+ private:
+  mutable std::atomic_int disposal_lock_count_{0};
+};
+
 // External string wrapper so V8 can access the UTF16 string wrapped by
 // net::PacFileData.
 class V8ExternalStringFromScriptData
-    : public v8::String::ExternalStringResource {
+    : public DisposalLockedExternalStringResource<
+          v8::String::ExternalStringResource> {
  public:
   explicit V8ExternalStringFromScriptData(
       const scoped_refptr<net::PacFileData>& script_data)
@@ -119,8 +153,8 @@ class V8ExternalStringFromScriptData
 };
 
 // External string wrapper so V8 can access a string literal.
-class V8ExternalASCIILiteral
-    : public v8::String::ExternalOneByteStringResource {
+class V8ExternalASCIILiteral : public DisposalLockedExternalStringResource<
+                                   v8::String::ExternalOneByteStringResource> {
  public:
   // |ascii| must be a NULL-terminated C string, and must remain valid
   // throughout this object's lifetime.
@@ -443,6 +477,12 @@ class ProxyResolverV8::Context {
 
   ~Context() {
     v8::Locker locked(isolate_);
+
+    // `js_bindings_` being non-null means there's an InitV8() / ResolveProxy()
+    // call in progress (possibly on another thread), which could use the
+    // Context after it's freed.
+    CHECK(!js_bindings_);
+
     v8::Isolate::Scope isolate_scope(isolate_);
     if (!v8_context_.IsEmpty()) {
       v8::HandleScope scope(isolate_);
@@ -457,32 +497,62 @@ class ProxyResolverV8::Context {
     // does not cancel queued ResolveAsyncWaiterPromisesTask foreground tasks
     // or flush the isolate's shared default MicrotaskQueue, both of which can
     // still strongly root this v8::Context (and the v8::Functions whose
-    // v8::External data points at the holder). Neutralize the indirection while
-    // holding the v8::Locker so any later callback observes a null Context*
-    // instead of a dangling one.
-    if (holder_) {
-      holder_->context = nullptr;
-      if (!holder_->v8_this.IsEmpty()) {
-        // The v8::External is still alive, so release it. The V8 weak callback
-        // will delete it when the v8::External is garbage collected. If
-        // `v8_this` is empty, the v8::External was already garbage collected,
-        // so we can delete the holder.
-        holder_.release();
-      }
+    // callback data is this Context's ID). Unregister the ID while holding the
+    // v8::Locker so any later callback observes a null Context* instead of a
+    // dangling one.
+    if (id_ != kInvalidId) {
+      CHECK_EQ(LiveContexts().erase(id_), 1u);
     }
 
     v8_context_.Reset();
   }
 
-  JSBindings* js_bindings() { return js_bindings_; }
+  // See ProxyResolverV8::InstallAliasedDnsResolveForTesting().
+  void InstallAliasedDnsResolveForTesting(const Context& source,
+                                          std::string_view name) {
+    v8::Locker locked(isolate_);
+    v8::Isolate::Scope isolate_scope(isolate_);
+    v8::HandleScope scope(isolate_);
+    v8::Local<v8::Context> context =
+        v8::Local<v8::Context>::New(isolate_, v8_context_);
+    v8::Context::Scope ctx(context);
+    context->Global()
+        ->Set(context, ASCIIStringToV8String(isolate_, std::string(name)),
+              v8::Function::New(context, &DnsResolveCallback,
+                                source.NewCallbackData(), 0,
+                                v8::ConstructorBehavior::kThrow)
+                  .ToLocalChecked())
+        .Check();
+  }
+
+  // Returns the bindings of the InitV8() / ResolveProxy() call in progress, if
+  // there is one, and it's on the current thread.
+  //
+  // Must be called with the v8::Locker held.
+  //
+  // v8 may run one Context's microtasks (or other tasks) on another Context's
+  // thread, since this class uses a single v8 Isolate across threads (albeit
+  // with v8::Locker preventing JavaScript from running on multiple threads at
+  // once). Microtasks don't make any sense in the context of PAC scripts, but
+  // v8 does not expose any way to completely disable them.
+  //
+  // So if this is called on the wrong thread, presumably due to the owning
+  // thread temporarily unlocking the isolate while blocked in a binding (e.g.
+  // waiting on a DNS lookup), return nullptr, so the caller can safely return
+  // an error, instead of using the bindings on the wrong thread.
+  JSBindings* js_bindings() {
+    CHECK(v8::Locker::IsLocked(isolate_));
+    if (js_bindings_thread_ != base::PlatformThread::CurrentRef()) {
+      return nullptr;
+    }
+    return js_bindings_;
+  }
 
   int ResolveProxy(const GURL& query_url,
                    net::ProxyInfo* results,
                    JSBindings* bindings) {
-    DCHECK(bindings);
-    base::AutoReset<raw_ptr<JSBindings>> bindings_reset(&js_bindings_,
-                                                        bindings);
     v8::Locker locked(isolate_);
+    ScopedJSBindings scoped_bindings(this, bindings);
     v8::Isolate::Scope isolate_scope(isolate_);
     v8::HandleScope scope(isolate_);
 
@@ -534,19 +604,19 @@ class ProxyResolverV8::Context {
 
   int InitV8(const scoped_refptr<net::PacFileData>& pac_script,
              JSBindings* bindings) {
-    base::AutoReset<raw_ptr<JSBindings>> bindings_reset(&js_bindings_,
-                                                        bindings);
+    DCHECK(bindings);
     v8::Locker locked(isolate_);
+    ScopedJSBindings scoped_bindings(this, bindings);
     v8::Isolate::Scope isolate_scope(isolate_);
     v8::HandleScope scope(isolate_);
 
-    holder_ = std::make_unique<ContextHolder>();
-    holder_->context = this;
-    v8::Local<v8::External> v8_holder = v8::External::New(
-        isolate_, holder_.get(), gin::kProxyResolverV8ContextTag);
-    holder_->v8_this.Reset(isolate_, v8_holder);
-    holder_->v8_this.SetWeak(holder_.get(), OnExternalGC,
-                             v8::WeakCallbackType::kParameter);
+    // Register this Context under a new ID, and hand the binding functions
+    // the ID rather than a pointer. See LiveContexts().
+    CHECK_EQ(id_, kInvalidId);
+    CHECK_NE(next_id_, kInvalidId);  // Fail rather than reuse IDs.
+    id_ = next_id_++;
+    CHECK(LiveContexts().emplace(id_, this).second);
+    v8::Local<v8::Data> v8_id = NewCallbackData();
 
     v8_context_.Reset(isolate_, v8::Context::New(isolate_));
 
@@ -558,25 +628,25 @@ class ProxyResolverV8::Context {
     // Attach the javascript bindings.
     global
         ->Set(context, ASCIILiteralToV8String(isolate_, "alert"),
-              v8::Function::New(context, &AlertCallback, v8_holder, 0,
+              v8::Function::New(context, &AlertCallback, v8_id, 0,
                                 v8::ConstructorBehavior::kThrow)
                   .ToLocalChecked())
         .Check();
     global
         ->Set(context, ASCIILiteralToV8String(isolate_, "myIpAddress"),
-              v8::Function::New(context, &MyIpAddressCallback, v8_holder, 0,
+              v8::Function::New(context, &MyIpAddressCallback, v8_id, 0,
                                 v8::ConstructorBehavior::kThrow)
                   .ToLocalChecked())
         .Check();
     global
         ->Set(context, ASCIILiteralToV8String(isolate_, "dnsResolve"),
-              v8::Function::New(context, &DnsResolveCallback, v8_holder, 0,
+              v8::Function::New(context, &DnsResolveCallback, v8_id, 0,
                                 v8::ConstructorBehavior::kThrow)
                   .ToLocalChecked())
         .Check();
     global
         ->Set(context, ASCIILiteralToV8String(isolate_, "isPlainHostName"),
-              v8::Function::New(context, &IsPlainHostNameCallback, v8_holder, 0,
+              v8::Function::New(context, &IsPlainHostNameCallback, v8_id, 0,
                                 v8::ConstructorBehavior::kThrow)
                   .ToLocalChecked())
         .Check();
@@ -584,26 +654,26 @@ class ProxyResolverV8::Context {
     // Microsoft's PAC extensions:
     global
         ->Set(context, ASCIILiteralToV8String(isolate_, "dnsResolveEx"),
-              v8::Function::New(context, &DnsResolveExCallback, v8_holder, 0,
+              v8::Function::New(context, &DnsResolveExCallback, v8_id, 0,
                                 v8::ConstructorBehavior::kThrow)
                   .ToLocalChecked())
         .Check();
     global
         ->Set(context, ASCIILiteralToV8String(isolate_, "myIpAddressEx"),
-              v8::Function::New(context, &MyIpAddressExCallback, v8_holder, 0,
+              v8::Function::New(context, &MyIpAddressExCallback, v8_id, 0,
                                 v8::ConstructorBehavior::kThrow)
                   .ToLocalChecked())
         .Check();
 
     global
         ->Set(context, ASCIILiteralToV8String(isolate_, "sortIpAddressList"),
-              v8::Function::New(context, &SortIpAddressListCallback, v8_holder,
-                                0, v8::ConstructorBehavior::kThrow)
+              v8::Function::New(context, &SortIpAddressListCallback, v8_id, 0,
+                                v8::ConstructorBehavior::kThrow)
                   .ToLocalChecked())
         .Check();
     global
         ->Set(context, ASCIILiteralToV8String(isolate_, "isInNetEx"),
-              v8::Function::New(context, &IsInNetExCallback, v8_holder, 0,
+              v8::Function::New(context, &IsInNetExCallback, v8_id, 0,
                                 v8::ConstructorBehavior::kThrow)
                   .ToLocalChecked())
         .Check();
@@ -631,6 +701,35 @@ class ProxyResolverV8::Context {
   }
 
  private:
+  // Sets `js_bindings_` and `js_bindings_thread_` for the duration of an
+  // InitV8() / ResolveProxy() call. Must be scoped within the lifetime of a
+  // v8::Locker, as other threads holding a lock may read them (e.g. when
+  // running this Context's microtasks), though the lock may be temporarily
+  // released during the call (see DnsResolveCallbackHelper()).
+  class ScopedJSBindings {
+   public:
+    ScopedJSBindings(Context* context, JSBindings* bindings)
+        : context_(context) {
+      // Calls into a context may not overlap.
+      CHECK(!context_->js_bindings_);
+      context_->js_bindings_ = bindings;
+      context_->js_bindings_thread_ = base::PlatformThread::CurrentRef();
+    }
+
+    ScopedJSBindings(const ScopedJSBindings&) = delete;
+    ScopedJSBindings& operator=(const ScopedJSBindings&) = delete;
+
+    ~ScopedJSBindings() {
+      context_->js_bindings_ = nullptr;
+      context_->js_bindings_thread_ = base::PlatformThreadRef();
+    }
+
+   private:
+    const raw_ptr<Context> context_;
+  };
+
+  static constexpr uint32_t kInvalidId = 0;
+
   int GetFindProxyForURL(v8::Local<v8::Value>* function) {
     v8::Local<v8::Context> context =
         v8::Local<v8::Context>::New(isolate_, v8_context_);
@@ -713,7 +812,8 @@ class ProxyResolverV8::Context {
   // V8 callback for when "alert()" is invoked by the PAC script.
   static void AlertCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     Context* context = ContextFromArgs(args);
-    if (!context || !context->js_bindings()) {
+    JSBindings* bindings = context ? context->js_bindings() : nullptr;
+    if (!bindings) {
       return;
     }
 
@@ -727,7 +827,7 @@ class ProxyResolverV8::Context {
         return;  // toString() threw an exception.
     }
 
-    context->js_bindings()->Alert(message);
+    bindings->Alert(message);
   }
 
   // V8 callback for when "myIpAddress()" is invoked by the PAC script.
@@ -763,7 +863,8 @@ class ProxyResolverV8::Context {
       const v8::FunctionCallbackInfo<v8::Value>& args,
       net::ProxyResolveDnsOperation op) {
     Context* context = ContextFromArgs(args);
-    if (!context || !context->js_bindings()) {
+    JSBindings* bindings = context ? context->js_bindings() : nullptr;
+    if (!bindings) {
       // Each function handles resolution errors differently.
       switch (op) {
         case net::ProxyResolveDnsOperation::DNS_RESOLVE:
@@ -802,8 +903,9 @@ class ProxyResolverV8::Context {
     {
       args.GetIsolate()->Exit();
       v8::Unlocker unlocker(args.GetIsolate());
-      success =
-          context->js_bindings()->ResolveDns(hostname, op, &result, &terminate);
+      // `bindings` remains valid, as the ScopedJSBindings object that set it
+      // should be further up this thread's stack.
+      success = bindings->ResolveDns(hostname, op, &result, &terminate);
     }
     args.GetIsolate()->Enter();
 
@@ -897,40 +999,56 @@ class ProxyResolverV8::Context {
     args.GetReturnValue().Set(IsPlainHostName(hostname_utf8));
   }
 
-  // Indirection for the v8::External bound to the JS callback v8::Functions.
-  // The v8::External's value is immutable and the v8::Functions can outlive
-  // |this| (e.g. via Atomics.waitAsync reactions queued in the shared isolate
-  // MicrotaskQueue), so callbacks must go through a holder that ~Context()
-  // nulls under the v8::Locker. The holder is managed via a V8 weak persistent
-  // handle and is deleted in OnExternalGC once V8 has garbage-collected it.
-  struct ContextHolder {
-    // Nulled in ~Context(), so the raw_ptr never dangles.
-    raw_ptr<Context> context = nullptr;
+  // Maps the IDs bound as callback data to the JS callback v8::Functions to
+  // live Contexts. The v8::Functions can outlive `this` (e.g. via
+  // Atomics.waitAsync reactions queued in the shared isolate MicrotaskQueue),
+  // so ~Context() unregisters its ID under the v8::Locker, after which
+  // callbacks observe a null Context*.
+  //
+  // The callback data lives inside the V8 sandbox, so it must not be trusted
+  // to hold a pointer, or to stay tied to one specific V8 object: an attacker
+  // with an in-sandbox memory corruption primitive can alter it. A corrupted
+  // ID can at most make a callback use another live Context (whose
+  // js_bindings() is null unless it is running on the current thread), which
+  // is memory safe.
+  //
+  // May only be accessed with the shared isolate's v8::Locker held.
+  static base::flat_map<uint32_t, raw_ptr<Context>>& LiveContexts() {
+    static base::NoDestructor<base::flat_map<uint32_t, raw_ptr<Context>>>
+        live_contexts;
+    return *live_contexts;
+  }
 
-    // This is actually a weak persistent.
-    v8::Persistent<v8::External> v8_this;
-  };
+  // Returns a new value to bind as callback data to the JS callback
+  // v8::Functions. Must be called with the v8::Locker and a v8::HandleScope.
+  v8::Local<v8::Data> NewCallbackData() const {
+    CHECK_NE(id_, kInvalidId);
+    return v8::Integer::NewFromUnsigned(isolate_, id_);
+  }
 
   static Context* ContextFromArgs(
       const v8::FunctionCallbackInfo<v8::Value>& args) {
-    auto* holder = static_cast<ContextHolder*>(
-        v8::External::Cast(*args.Data())
-            ->Value(gin::kProxyResolverV8ContextTag));
-    return holder ? holder->context : nullptr;
-  }
-
-  static void OnExternalGC(const v8::WeakCallbackInfo<ContextHolder>& data) {
-    ContextHolder* holder = data.GetParameter();
-    holder->v8_this.Reset();
-    if (!holder->context) {
-      delete holder;
+    CHECK(v8::Locker::IsLocked(args.GetIsolate()));
+    v8::Local<v8::Data> data = args.Data();
+    if (data.IsEmpty() || !data->IsValue() ||
+        !data.As<v8::Value>()->IsUint32()) {
+      return nullptr;
     }
+    return base::FindPtrOrNull(LiveContexts(), data.As<v8::Uint32>()->Value());
   }
 
-  mutable base::Lock lock_;
+  // Next ID to hand out in InitV8(). May only be accessed with the shared
+  // isolate's v8::Locker held.
+  static inline uint32_t next_id_ = kInvalidId + 1;
+
+  // Set by ScopedJSBindings. May only be accessed or modified when the
+  // v8::Locker is held.
   raw_ptr<ProxyResolverV8::JSBindings> js_bindings_ = nullptr;
+  base::PlatformThreadRef js_bindings_thread_;
+
   raw_ptr<v8::Isolate> isolate_;
-  std::unique_ptr<ContextHolder> holder_;
+  // This Context's key in LiveContexts(), set by InitV8().
+  uint32_t id_ = kInvalidId;
   v8::Persistent<v8::Context> v8_context_;
 };
 
@@ -994,6 +1112,23 @@ size_t ProxyResolverV8::GetUsedHeapSize() {
   v8::HeapStatistics heap_statistics;
   isolate->GetHeapStatistics(&heap_statistics);
   return heap_statistics.used_heap_size();
+}
+
+void ProxyResolverV8::InstallAliasedDnsResolveForTesting(
+    const ProxyResolverV8& source,
+    std::string_view name) {
+  context_->InstallAliasedDnsResolveForTesting(  // IN-TEST
+      *source.context_, name);
+}
+
+// static
+void ProxyResolverV8::CollectGarbageForTesting() {
+  v8::Isolate* isolate =
+      GetSharedIsolateFactory().GetSharedIsolateWithoutCreating();
+  CHECK(isolate);
+  v8::Locker locked(isolate);
+  v8::Isolate::Scope isolate_scope(isolate);
+  isolate->LowMemoryNotification();
 }
 
 }  // namespace proxy_resolver

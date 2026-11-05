@@ -22,6 +22,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -153,7 +154,7 @@ public class CastWebContentsActivity extends ComponentActivity {
                             // process before the teardown timer in CastWebContentsSurfaceHelper
                             // fires.
                             if (!CastBrowserHelper.isBrowserInitialized()) {
-                                finishAndRemoveTask();
+                                mIsFinishingState.set("Browser process not initialized");
                                 return;
                             }
 
@@ -207,26 +208,53 @@ public class CastWebContentsActivity extends ComponentActivity {
                     return new BroadcastReceiverScope(
                             filter,
                             (Intent intent) -> {
+                                boolean canUsePip = canUsePictureInPicture();
                                 Log.d(
                                         TAG,
-                                        "ACTION_USER_PRESENT received. canUsePictureInPicture: "
-                                                + canUsePictureInPicture()
-                                                + " mVideoIsPlaying: "
-                                                + mVideoIsPlaying);
-                                if (canUsePictureInPicture() && mVideoIsPlaying) {
+                                        "ACTION_USER_PRESENT: canUsePip=%b, isPlaying=%b",
+                                        canUsePip,
+                                        mVideoIsPlaying);
+                                if (canUsePip && mVideoIsPlaying) {
                                     enterPictureInPictureMode(
                                             new PictureInPictureParams.Builder().build());
                                 }
                             });
                 });
 
+        mCreatedState.subscribe(
+                x -> {
+                    IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+                    return new BroadcastReceiverScope(
+                            filter,
+                            (Intent intent) -> {
+                                Log.i(
+                                        TAG,
+                                        "ACTION_SCREEN_OFF received. Removing turn screen on"
+                                                + " flags.");
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                                    setTurnScreenOn(false);
+                                    setShowWhenLocked(false);
+                                } else {
+                                    getWindow()
+                                            .clearFlags(
+                                                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+                                }
+                            });
+                });
+
+        Controller<Boolean> keepScreenOnIntentState = new Controller<>();
+        mGotIntentState
+                .filter(intent -> !CastWebContentsIntentUtils.isIntentFromCastCore(intent))
+                .map(CastWebContentsIntentUtils::shouldKeepScreenOn)
+                .subscribe(Observer.onOpen(keepScreenOnIntentState::set));
         Observable<Unit> shouldKeepScreenOn =
-                mGotIntentState
-                        .filter(
-                                intent ->
-                                        CastWebContentsIntentUtils.shouldKeepScreenOn(intent)
-                                                || isInLockTaskMode(this))
-                        .opaque();
+                any(
+                        mGotIntentState
+                                .filter(
+                                        intent ->
+                                                isInLockTaskMode(this) && !canPlayBackgroundAudio())
+                                .opaque()
+                                .or(keepScreenOnIntentState.filter(x -> x).opaque()));
 
         isDocked.subscribe(
                 (x) -> {
@@ -240,6 +268,7 @@ public class CastWebContentsActivity extends ComponentActivity {
                 });
 
         mGotIntentState
+                .filter(intent -> !CastWebContentsIntentUtils.isIntentFromCastCore(intent))
                 .map(Intent::getExtras)
                 .map(CastWebContentsIntentUtils::getSessionId)
                 .subscribe(Observer.onOpen(mSessionIdState::set));
@@ -286,7 +315,6 @@ public class CastWebContentsActivity extends ComponentActivity {
                 webContentsState.flatMap(MediaPlaying::observeFromWebContents).share();
         final var audioPlaying = any(mediaPlaying.filter(x -> x.hasAudio));
         final var videoPlaying = any(mediaPlaying.filter(x -> x.hasVideo));
-        final var anyMediaPlaying = any(audioPlaying.or(videoPlaying));
 
         videoPlaying.subscribe(
                 x -> {
@@ -308,7 +336,7 @@ public class CastWebContentsActivity extends ComponentActivity {
                 });
 
         any(shouldKeepScreenOn
-                        .or(anyMediaPlaying.and(isDocked).opaque())
+                        .or(videoPlaying.and(isDocked).opaque())
                         .or(audioPlaying.filter(x -> !canPlayBackgroundAudio()).opaque()))
                 .subscribe(
                         (x) -> {
@@ -319,9 +347,8 @@ public class CastWebContentsActivity extends ComponentActivity {
                                                     WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                         });
 
-        mGotIntentState
+        mSessionIdState
                 .andIgnore(not(mIsFinishingState))
-                .map(CastWebContentsIntentUtils::getSessionId)
                 .subscribe(
                         sessionId -> {
                             TaskRemovedMonitorService.start(mRootSessionId, sessionId);
@@ -329,12 +356,13 @@ public class CastWebContentsActivity extends ComponentActivity {
                         });
 
         mIsFinishingState.subscribe(
-                Observer.onOpen(
-                        (String reason) -> {
-                            Log.d(TAG, "Finishing activity: %s", reason);
-                            mSurfaceHelperState.reset();
-                            finishAndRemoveTask();
-                        }));
+                Observer.once(
+                        Observer.onOpen(
+                                (String reason) -> {
+                                    Log.d(TAG, "Finishing activity: %s", reason);
+                                    mSurfaceHelperState.reset();
+                                    finishAndRemoveTask();
+                                })));
 
         // If a new Intent arrives after finishing, start a new Activity instead of recycling this.
         gotIntentAfterFinishingState.subscribe(
@@ -399,7 +427,9 @@ public class CastWebContentsActivity extends ComponentActivity {
     protected void onNewIntent(Intent intent) {
         Log.d(TAG, "onNewIntent");
         super.onNewIntent(intent);
-        setIntent(intent);
+        if (!CastWebContentsIntentUtils.isIntentFromCastCore(intent)) {
+            setIntent(intent);
+        }
         mGotIntentState.set(intent);
         notifyIfActivityStartedByCastCore(intent);
 
@@ -431,6 +461,9 @@ public class CastWebContentsActivity extends ComponentActivity {
         Log.d(TAG, "onStop");
         mStartedState.reset();
 
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        boolean isScreenOn = powerManager != null && powerManager.isInteractive();
+
         // If this device is in "lock task mode," then leaving the Activity will not return to the
         // Home screen and there will be no affordance for the user to return to this Activity.
         // When in this mode, leaving the Activity should tear down the Cast app.
@@ -438,6 +471,14 @@ public class CastWebContentsActivity extends ComponentActivity {
             CastWebContentsComponent.onComponentClosed(
                     CastWebContentsIntentUtils.getSessionId(getIntent()));
             mIsFinishingState.set("User exit while in lock task mode");
+        } else if (isFinishing()) {
+            CastWebContentsComponent.onComponentClosed(
+                    CastWebContentsIntentUtils.getSessionId(getIntent()));
+            mIsFinishingState.set("User exit");
+        } else if (mIsInPictureInPictureMode && isScreenOn) {
+            CastWebContentsComponent.onComponentClosed(
+                    CastWebContentsIntentUtils.getSessionId(getIntent()));
+            mIsFinishingState.set("User exit from picture-in-picture mode");
         }
         super.onStop();
     }
@@ -494,8 +535,8 @@ public class CastWebContentsActivity extends ComponentActivity {
         if (canUsePictureInPicture() && mVideoIsPlaying) {
             Log.i(TAG, "entering picture-in-picture mode");
             enterPictureInPictureMode(new PictureInPictureParams.Builder().build());
-        } else if (canPlayBackgroundAudio() && mAudioIsPlaying) {
-            Log.i(TAG, "entering background audio mode");
+        } else if (canPlayBackgroundAudio()) {
+            Log.i(TAG, "entering background mode");
         } else {
             mSurfaceAvailable.reset();
             CastWebContentsComponent.onComponentClosed(

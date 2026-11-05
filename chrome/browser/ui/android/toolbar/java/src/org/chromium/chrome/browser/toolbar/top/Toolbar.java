@@ -26,9 +26,7 @@ public interface Toolbar {
      */
     void getLocationBarContentRect(Rect outRect);
 
-    /**
-     * @return Whether any swipe gestures should be ignored for the current Toolbar state.
-     */
+    /** Returns whether any swipe gestures should be ignored for the current Toolbar state. */
     boolean shouldIgnoreSwipeGesture();
 
     /**
@@ -40,21 +38,29 @@ public interface Toolbar {
 
     /**
      * Get the height of the toolbar in px.
+     *
      * @return The height of the toolbar.
      */
     int getHeight();
 
     /**
-     * Sets whether or not the toolbar should draw as if it's being captured for a snapshot
-     * texture.  In this mode it will only draw the toolbar in it's normal state (no TabSwitcher
-     * or animations).
+     * Returns the top padding, in px, added inside the toolbar so it can draw behind the status bar
+     * when the page (e.g. a themed NTP) is drawn edge-to-edge at the top. This is included in
+     * {@link #getHeight()} but is not part of the toolbar height reserved by the browser controls.
+     * Returns 0 when not drawing edge-to-edge.
+     */
+    int getEdgeToEdgeTopPadding();
+
+    /**
+     * Sets whether or not the toolbar should draw as if it's being captured for a snapshot texture.
+     * In this mode it will only draw the toolbar in it's normal state (no TabSwitcher or
+     * animations).
+     *
      * @param textureMode Whether or not to be in texture capture mode.
      */
     void setTextureCaptureMode(boolean textureMode);
 
-    /**
-     * @return Whether a dirty check for invalidation makes sense at this time.
-     */
+    /** Returns whether a dirty check for invalidation makes sense at this time. */
     CaptureReadinessResult isReadyForTextureCapture();
 
     /**
@@ -71,14 +77,10 @@ public interface Toolbar {
      */
     void disableMenuButton();
 
-    /**
-     * @return The {@link ProgressBar} this layout uses.
-     */
+    /** Returns the {@link ProgressBar} this layout uses. */
     ToolbarProgressBar getProgressBar();
 
-    /**
-     * @return The primary color to use for the background drawable.
-     */
+    /** Returns the primary color to use for the background drawable. */
     int getPrimaryColor();
 
     /**

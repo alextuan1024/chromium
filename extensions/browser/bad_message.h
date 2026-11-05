@@ -55,7 +55,7 @@ enum BadMessageReason {
   EMF_INVALID_EXTENSION_ID_FOR_EXTENSION_SOURCE = 15,
   EMF_INVALID_EXTENSION_ID_FOR_CONTENT_SCRIPT = 16,
   EMF_INVALID_EXTENSION_ID_FOR_WORKER_CONTEXT = 17,
-  EMF_INVALID_PORT_CONTEXT = 18,
+  // DEPRECATED_EMF_INVALID_PORT_CONTEXT = 18,
   AWCI_INVALID_CALL_FROM_NOT_PRIMARY_MAIN_FRAME = 19,
   EFD_INVALID_EXTENSION_ID_FOR_PROCESS = 20,
   // DEPRECATED_EMF_INVALID_EXTENSION_ID_FOR_TAB_MSG = 21,
@@ -82,6 +82,7 @@ enum BadMessageReason {
   WER_INVALID_EXTENSION_ID = 42,
   AER_INVALID_PROCESS_FOR_AUTOMATION_BINDING = 43,
   MS_EMPTY_ANDROID_CERTIFICATES_FOR_PACKED_EXTENSION = 44,
+  EMF_INVALID_CHANNEL_TYPE = 45,
   // Please add new elements here. The naming convention is abbreviated class
   // name (e.g. ExtensionHost becomes EH) plus a unique description of the
   // reason. After making changes, you MUST update histograms.xml by running:

@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.facilitated_payments;
 
 import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
 
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasToString;
 import static org.hamcrest.Matchers.is;
@@ -29,6 +30,7 @@ import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymen
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.DECLINE_BUTTON_TEXT_ID;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.SETTINGS_LINK_CALLBACK;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.VIDEO_LINK_CALLBACK;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ProgressScreenProperties.SHOW_GPAY_ICON;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN_VIEW_MODEL;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SURVIVES_NAVIGATION;
@@ -68,15 +70,11 @@ import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.EwalletAccountLinkingPromptProperties;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
@@ -86,9 +84,12 @@ import org.chromium.components.autofill.payments.BankAccount;
 import org.chromium.components.autofill.payments.Ewallet;
 import org.chromium.components.autofill.payments.PaymentInstrument;
 import org.chromium.components.autofill.payments.PaymentRail;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
+import org.chromium.components.browser_ui.bottomsheet.TestBottomSheetContent;
+import org.chromium.components.facilitated_payments.core.ui_utils.UiEvent;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
@@ -97,12 +98,11 @@ import org.chromium.ui.test.util.RenderTestRule.Component;
 import org.chromium.ui.test.util.ViewUtils;
 import org.chromium.ui.widget.ButtonCompat;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** Instrumentation tests for {@link FacilitatedPaymentsPaymentMethodsView}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
 public final class FacilitatedPaymentsPaymentMethodsViewTest {
     private static final BankAccount BANK_ACCOUNT_1 =
             new BankAccount.Builder()
@@ -296,6 +296,113 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
     @Test
     @MediumTest
+    public void testVerticalScrollOffsetIsZeroWhenNoScreenIsShown() {
+        // Before any screen is shown, there is no current screen.
+        runOnUiThreadBlocking(() -> assertThat(mView.getVerticalScrollOffset(), is(0)));
+
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(SCREEN, FOP_SELECTOR);
+                    mModel.get(SCREEN_VIEW_MODEL)
+                            .get(SCREEN_ITEMS)
+                            .add(
+                                    new ListItem(
+                                            BANK_ACCOUNT, createBankAccountModel(BANK_ACCOUNT_1)));
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+
+        // Hiding the sheet clears the current screen while the sheet is still animating closed.
+        // The bottom sheet may still query the scroll offset during that animation, which must
+        // not throw.
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(VISIBLE_STATE, HIDDEN);
+                    assertThat(mBottomSheetController.getSheetState(), is(not(SheetState.HIDDEN)));
+                    assertThat(mView.getVerticalScrollOffset(), is(0));
+                });
+        BottomSheetTestSupport.waitForState(mBottomSheetController, SheetState.HIDDEN);
+    }
+
+    @Test
+    @MediumTest
+    public void testViewCannotBeReshownWhileAnimatingClosed() {
+        List<Integer> uiEvents = new ArrayList<>();
+        runOnUiThreadBlocking(
+                () -> {
+                    mView.setUiEventListener(uiEvents::add);
+                    mModel.set(SCREEN, FOP_SELECTOR);
+                    mModel.get(SCREEN_VIEW_MODEL)
+                            .get(SCREEN_ITEMS)
+                            .add(
+                                    new ListItem(
+                                            BANK_ACCOUNT, createBankAccountModel(BANK_ACCOUNT_1)));
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+
+        // Hide the sheet, then immediately try to re-show while the close animation is running.
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(VISIBLE_STATE, HIDDEN);
+                    assertThat(mBottomSheetController.isSheetHiding(), is(true));
+                    mModel.set(SCREEN, PROGRESS_SCREEN);
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+
+        BottomSheetTestSupport.waitForState(mBottomSheetController, SheetState.HIDDEN);
+
+        assertThat(mBottomSheetController.isSheetOpen(), is(false));
+        assertThat(
+                uiEvents,
+                contains(
+                        UiEvent.NEW_SCREEN_SHOWN,
+                        UiEvent.SCREEN_COULD_NOT_BE_SHOWN,
+                        UiEvent.SCREEN_CLOSED_NOT_BY_USER));
+    }
+
+    @Test
+    @MediumTest
+    public void testViewCanBeShownWhileAnotherSheetContentIsOpen() {
+        // Occupy the bottom sheet with another feature's content, so that the sheet is open while
+        // this view has no current screen.
+        TestBottomSheetContent otherContent =
+                runOnUiThreadBlocking(
+                        () -> {
+                            TestBottomSheetContent content =
+                                    new TestBottomSheetContent(mActivityTestRule.getActivity());
+                            content.setPeekHeight(BottomSheetContent.HeightMode.DISABLED);
+                            mBottomSheetController.requestShowContent(
+                                    content, /* animate= */ false);
+                            return content;
+                        });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+        assertThat(mBottomSheetController.getCurrentSheetContent(), is(otherContent));
+
+        List<Integer> uiEvents = new ArrayList<>();
+        runOnUiThreadBlocking(
+                () -> {
+                    mView.setUiEventListener(uiEvents::add);
+                    mModel.set(SCREEN, FOP_SELECTOR);
+                    mModel.get(SCREEN_VIEW_MODEL)
+                            .get(SCREEN_ITEMS)
+                            .add(
+                                    new ListItem(
+                                            BANK_ACCOUNT, createBankAccountModel(BANK_ACCOUNT_1)));
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+
+        // The view's higher priority content replaces the other content.
+        pollUiThread(
+                () ->
+                        Criteria.checkThat(
+                                mBottomSheetController.getCurrentSheetContent(), is(mView)));
+        assertThat(mView.getContentView().isShown(), is(true));
+        assertThat(uiEvents, contains(UiEvent.NEW_SCREEN_SHOWN));
+    }
+
+    @Test
+    @MediumTest
     public void testBankAccountShown() {
         runOnUiThreadBlocking(
                 () -> {
@@ -381,7 +488,6 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void testEwalletAndPaymentAppShown() {
         runOnUiThreadBlocking(
                 () -> {
@@ -407,7 +513,6 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
     // header product icon is present to user when eWallet and payment app both are available.
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void testPaymentAppHeaderWhenBothEwalletAndPaymentAppAvailable() {
         runOnUiThreadBlocking(
                 () -> {
@@ -438,7 +543,6 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
     // are not shown to user when only payment app is available.
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void
             testPaymentAppProductionIconSecurtityCheckAndDescriptionNotVisibleWhenOnlyPaymentAppAvailable() {
         runOnUiThreadBlocking(
@@ -468,7 +572,6 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void
             testPaymentAppHeaderProductIconContentDescriptionWhenEwalletAndPaymentAppAvailable() {
         runOnUiThreadBlocking(
@@ -638,7 +741,6 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void testPaymentAppHeaderProductIconAndTitleMargin() {
         runOnUiThreadBlocking(
                 () -> {
@@ -711,7 +813,6 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void testEwalletAndPaymentAppDescriptionLine() {
         runOnUiThreadBlocking(
                 () -> {
@@ -738,7 +839,6 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT})
     public void testPaymentAppDescriptionLineShown() {
         runOnUiThreadBlocking(
                 () -> {
@@ -791,6 +891,7 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
         runOnUiThreadBlocking(
                 () -> {
                     mModel.set(SCREEN, PROGRESS_SCREEN);
+                    mModel.get(SCREEN_VIEW_MODEL).set(SHOW_GPAY_ICON, true);
                     mModel.set(VISIBLE_STATE, SHOWN);
                 });
         BottomSheetTestSupport.waitForOpen(mBottomSheetController);
@@ -799,6 +900,27 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
         assertThat(
                 containsViewOfClass((ViewGroup) mView.getContentView(), ProgressBar.class),
                 is(true));
+        assertThat(
+                mView.getContentView().findViewById(R.id.gpay_icon).getVisibility(),
+                is(View.VISIBLE));
+    }
+
+    @Test
+    @MediumTest
+    public void testProgressScreenShown_GpayIconHidden() {
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(SCREEN, PROGRESS_SCREEN);
+                    mModel.get(SCREEN_VIEW_MODEL).set(SHOW_GPAY_ICON, false);
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+
+        assertThat(
+                containsViewOfClass((ViewGroup) mView.getContentView(), ProgressBar.class),
+                is(true));
+        assertThat(
+                mView.getContentView().findViewById(R.id.gpay_icon).getVisibility(), is(View.GONE));
     }
 
     @Test
@@ -941,10 +1063,17 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
         assertThat(primaryButton.getText(), is("Got it"));
 
         TextView valueProp1 = mView.getContentView().findViewById(R.id.value_prop_message_1);
+        assertThat(
+                valueProp1.getText(), is("Pay with Pix without switching apps in Google Chrome"));
         assertNotNull(valueProp1.getCompoundDrawablesRelative()[0]);
         TextView valueProp2 = mView.getContentView().findViewById(R.id.value_prop_message_2);
+        assertThat(
+                valueProp2.getText(), is("Send Pix to friends and businesses using Google Wallet"));
         assertNotNull(valueProp2.getCompoundDrawablesRelative()[0]);
         TextView valueProp3 = mView.getContentView().findViewById(R.id.value_prop_message_3);
+        assertThat(
+                valueProp3.getText(),
+                is("Enjoy all the convenience and security that you count on from Pix"));
         assertNotNull(valueProp3.getCompoundDrawablesRelative()[0]);
     }
 
@@ -973,6 +1102,7 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                     mModel.set(SCREEN, PIX_ACCOUNT_LINKING_PROMPT);
                     mModel.get(SCREEN_VIEW_MODEL).set(ACCOUNT_EMAIL, "test@gmail.com");
                     mModel.get(SCREEN_VIEW_MODEL).set(SETTINGS_LINK_CALLBACK, emptyClickListener());
+                    mModel.get(SCREEN_VIEW_MODEL).set(VIDEO_LINK_CALLBACK, emptyClickListener());
                     mModel.get(SCREEN_VIEW_MODEL)
                             .set(
                                     DECLINE_BUTTON_TEXT_ID,
@@ -1003,10 +1133,10 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 settingsLink.getText().toString(),
                 is(
                         "Pix account will be linked to test@gmail.com. To turn off Pix code"
-                                + " detection, go to Chrome settings"));
+                                + " detection, go to Chrome settings."));
 
         ButtonCompat acceptButton = mView.getContentView().findViewById(R.id.accept_button);
-        assertThat(acceptButton.getText(), is("Enable Pix in Wallet"));
+        assertThat(acceptButton.getText(), is("Link your account"));
         ButtonCompat declineButton = mView.getContentView().findViewById(R.id.decline_button);
         assertThat(declineButton.getText(), is("Not now"));
 
@@ -1022,6 +1152,8 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 spannedText.getSpans(
                         0, spannedText.length(), android.text.style.ClickableSpan.class);
         assertThat(spans.length, is(1));
+        assertThat(
+                spans[0].getClass(), is((Object) org.chromium.ui.text.ChromeClickableSpan.class));
 
         runOnUiThreadBlocking(() -> spans[0].onClick(settingsLink));
         assertThat(settingsLinkClicked[0], is(true));
@@ -1051,9 +1183,10 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
         assertNotNull(productIcon);
 
         TextView title = mView.getContentView().findViewById(R.id.title);
-        assertThat(title.getText(), is("Pay with Pix without switching apps"));
+        assertThat(title.getText(), is("Pay with Pix without switching apps next time"));
 
-        TextView valuePropMessage1 = mView.getContentView().findViewById(R.id.value_prop_message_1);
+        TextView valuePropMessage1 =
+                mView.getContentView().findViewById(R.id.prompt_b_value_prop_message_1);
         assertThat(
                 valuePropMessage1.getText().toString(),
                 is("Pay without copying and pasting Pix code. See how it works"));
@@ -1068,7 +1201,7 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 settingsLink.getText().toString(),
                 is(
                         "Pix account will be linked to test_b@gmail.com. To turn off Pix code"
-                                + " detection, go to Chrome settings"));
+                                + " detection, go to Chrome settings."));
 
         ButtonCompat acceptButton = mView.getContentView().findViewById(R.id.accept_button);
         assertThat(acceptButton.getText(), is("Link your account"));
@@ -1080,6 +1213,8 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 spannedText.getSpans(
                         0, spannedText.length(), android.text.style.ClickableSpan.class);
         assertThat(spans.length, is(1));
+        assertThat(
+                spans[0].getClass(), is((Object) org.chromium.ui.text.ChromeClickableSpan.class));
 
         runOnUiThreadBlocking(() -> spans[0].onClick(valuePropMessage1));
         assertThat(videoLinkClicked[0], is(true));
@@ -1121,7 +1256,14 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 settingsLink.getText().toString(),
                 is(
                         "Pix account will be linked to user_c@gmail.com. To turn off Pix code"
-                                + " detection, go to Chrome settings"));
+                                + " detection, go to Chrome settings."));
+        android.text.Spanned spannedText = (android.text.Spanned) settingsLink.getText();
+        android.text.style.ClickableSpan[] spans =
+                spannedText.getSpans(
+                        0, spannedText.length(), android.text.style.ClickableSpan.class);
+        assertThat(spans.length, is(1));
+        assertThat(
+                spans[0].getClass(), is((Object) org.chromium.ui.text.ChromeClickableSpan.class));
 
         ButtonCompat acceptButton = mView.getContentView().findViewById(R.id.accept_button);
         assertThat(acceptButton.getText(), is("Link your account"));

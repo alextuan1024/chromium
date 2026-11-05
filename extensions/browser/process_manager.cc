@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -57,6 +58,7 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
+#include "extensions/common/manifest_handlers/back_forward_cache_info.h"
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 #include "extensions/common/mojom/renderer.mojom.h"
@@ -208,7 +210,7 @@ ProcessManager::ProcessManager(BrowserContext* context,
       browser_context_(context),
       startup_background_hosts_created_(false),
       last_background_close_sequence_id_(0) {
-  extension_registry_->AddObserver(this);
+  extension_registry_observation_.Observe(extension_registry_);
 
   // Only the original profile needs to listen for ready to create background
   // pages for all spanning extensions.
@@ -226,7 +228,7 @@ ProcessManager::~ProcessManager() {
 }
 
 void ProcessManager::Shutdown() {
-  extension_registry_->RemoveObserver(this);
+  extension_registry_observation_.Reset();
   CloseBackgroundHosts();
   DCHECK(background_hosts_.empty());
   content::DevToolsAgentHost::RemoveObserver(this);
@@ -239,6 +241,7 @@ void ProcessManager::RegisterRenderFrameHost(
     content::RenderFrameHost* render_frame_host,
     const Extension* extension) {
   DCHECK(render_frame_host->IsRenderFrameLive());
+  CHECK(extension);
   ExtensionRenderFrameData* data = &all_extension_frames_[render_frame_host];
   data->view_type = GetViewType(render_frame_host);
 
@@ -247,10 +250,12 @@ void ProcessManager::RegisterRenderFrameHost(
   // UnregisterRenderFrame.
   AcquireLazyKeepaliveCountForFrame(render_frame_host);
 
-  content::BackForwardCache::DisableForRenderFrameHost(
-      render_frame_host->GetGlobalId(),
-      back_forward_cache::DisabledReason(
-          back_forward_cache::DisabledReasonId::kExtensionFrame));
+  if (!BackForwardCacheInfo::IsSupported(*extension)) {
+    content::BackForwardCache::DisableForRenderFrameHost(
+        render_frame_host->GetGlobalId(),
+        back_forward_cache::DisabledReason(
+            back_forward_cache::DisabledReasonId::kExtensionFrame));
+  }
 
   for (auto& observer : observer_list_)
     observer.OnExtensionFrameRegistered(extension->id(), render_frame_host);
@@ -411,7 +416,7 @@ bool ProcessManager::WakeEventPage(const ExtensionId& extension_id,
   const Extension* extension =
       extension_registry_->enabled_extensions().GetByID(extension_id);
   if ((extension && BackgroundInfo::IsServiceWorkerBased(extension) &&
-       !GetServiceWorkersForExtension(extension_id).empty()) ||
+       HasServiceWorkerForExtension(extension_id)) ||
       GetBackgroundHostForExtension(extension_id)) {
     // The extension is already awake.
     return false;
@@ -984,8 +989,7 @@ void ProcessManager::UnregisterExtension(const ExtensionId& extension_id) {
   }
 #if DCHECK_IS_ON()
   // Sanity check: No worker entry should exist for |extension_id|.
-  DCHECK(
-      all_running_extension_workers_.GetAllForExtension(extension_id).empty());
+  DCHECK(!HasServiceWorkerForExtension(extension_id));
 #endif
 }
 
@@ -1003,7 +1007,7 @@ void ProcessManager::StartTrackingServiceWorkerRunningInstance(
         content::RenderProcessHost::FromID(worker_id.render_process_id);
     DCHECK(render_process_host);
     if (!process_observations_.IsObservingSource(render_process_host)) {
-      // These will be cleaned up in RenderProcessExited().
+      // Cleaned up in RenderProcessExited() or RenderProcessHostDestroyed().
       process_observations_.AddObservation(render_process_host);
     }
     for (auto& observer : observer_list_)
@@ -1014,6 +1018,16 @@ void ProcessManager::StartTrackingServiceWorkerRunningInstance(
 void ProcessManager::RenderProcessExited(
     content::RenderProcessHost* host,
     const content::ChildProcessTerminationInfo& info) {
+  UntrackRenderProcessForWorkers(host);
+}
+
+void ProcessManager::RenderProcessHostDestroyed(
+    content::RenderProcessHost* host) {
+  UntrackRenderProcessForWorkers(host);
+}
+
+void ProcessManager::UntrackRenderProcessForWorkers(
+    content::RenderProcessHost* host) {
   DCHECK(process_observations_.IsObservingSource(host));
   process_observations_.RemoveObservation(host);
   const content::ChildProcessId render_process_id = host->GetID();
@@ -1037,16 +1051,17 @@ void ProcessManager::RenderProcessExited(
          all_running_extension_workers_.GetAllForExtension(extension_id,
                                                            render_process_id)) {
       StopTrackingServiceWorkerRunningInstance(worker_id);
-      ServiceWorkerTaskQueue::Get(browser_context_)
-          ->RenderProcessForWorkerExited(worker_id);
+      if (auto* task_queue = ServiceWorkerTaskQueue::Get(browser_context_)) {
+        task_queue->RenderProcessForWorkerExited(worker_id);
+      }
     }
   }
 #if DCHECK_IS_ON()
   // Sanity check: No worker entry should exist for any |extension_id| running
   // inside the RenderProcessHost that died.
-  for (const ExtensionId& extension_id : iter->second)
-    DCHECK(all_running_extension_workers_.GetAllForExtension(extension_id)
-               .empty());
+  for (const ExtensionId& extension_id : iter->second) {
+    DCHECK(!HasServiceWorkerForExtension(extension_id));
+  }
 #endif
   worker_process_to_extension_ids_.erase(iter);
 }
@@ -1102,21 +1117,30 @@ void ProcessManager::StopTrackingServiceWorkerRunningInstance(
   // re-activated before StopTrackingServiceWorkerRunningInstance() is called.
   // In that case we might try to stop tracking the new version instance of the
   // running worker if we don't check the version id.
-  std::vector<WorkerId> worker_ids_for_extension =
-      all_running_extension_workers_.GetAllForExtension(extension_id,
-                                                        worker_version_id);
-
   // TODO(crbug.com/40936639): After the fix releases there should only be one
   // worker instance tracked for each extension at any time.
-  for (const WorkerId& worker_id : worker_ids_for_extension) {
-    if (worker_id.start_token == service_worker_token) {
-      StopTrackingServiceWorkerRunningInstance(worker_id);
-    }
+  if (std::optional<WorkerId> worker_id =
+          all_running_extension_workers_.FindForExtension(
+              extension_id, worker_version_id, service_worker_token)) {
+    StopTrackingServiceWorkerRunningInstance(*worker_id);
   }
 }
 
 bool ProcessManager::HasServiceWorker(const WorkerId& worker_id) const {
   return all_running_extension_workers_.Contains(worker_id);
+}
+
+bool ProcessManager::HasServiceWorkerForExtension(
+    const ExtensionId& extension_id) const {
+  return all_running_extension_workers_.ContainsForExtension(extension_id);
+}
+
+bool ProcessManager::HasServiceWorkerForExtension(
+    const ExtensionId& extension_id,
+    int64_t worker_version_id,
+    int worker_thread_id) const {
+  return all_running_extension_workers_.ContainsForExtension(
+      extension_id, worker_version_id, worker_thread_id);
 }
 
 std::vector<WorkerId> ProcessManager::GetServiceWorkersForExtension(

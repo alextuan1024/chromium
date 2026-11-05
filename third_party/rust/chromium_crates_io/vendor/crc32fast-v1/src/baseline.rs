@@ -1,32 +1,5 @@
 use crate::table::CRC32_TABLE;
 
-#[derive(Clone)]
-pub struct State {
-    state: u32,
-}
-
-impl State {
-    pub fn new(state: u32) -> Self {
-        State { state }
-    }
-
-    pub fn update(&mut self, buf: &[u8]) {
-        self.state = update_fast_16(self.state, buf);
-    }
-
-    pub fn finalize(self) -> u32 {
-        self.state
-    }
-
-    pub fn reset(&mut self) {
-        self.state = 0;
-    }
-
-    pub fn combine(&mut self, other: u32, amount: u64) {
-        self.state = crate::combine::combine(self.state, other, amount);
-    }
-}
-
 /// Folds the first 16 bytes of `block` into `crc`.
 ///
 /// `block` must be at least 16 bytes long. The decode is explicitly
@@ -52,6 +25,30 @@ fn fold_16(crc: u32, block: &[u8]) -> u32 {
         ^ CRC32_TABLE[0xf][(w0 & 0xFF) as usize]
 }
 
+/// Folds the first 8 bytes of `block` into `crc` (slicing-by-8).
+#[inline(always)]
+fn fold_8(crc: u32, block: &[u8]) -> u32 {
+    let w0 = u32::from_le_bytes([block[0], block[1], block[2], block[3]]) ^ crc;
+    CRC32_TABLE[0x0][block[7] as usize]
+        ^ CRC32_TABLE[0x1][block[6] as usize]
+        ^ CRC32_TABLE[0x2][block[5] as usize]
+        ^ CRC32_TABLE[0x3][block[4] as usize]
+        ^ CRC32_TABLE[0x4][(w0 >> 24) as usize]
+        ^ CRC32_TABLE[0x5][((w0 >> 16) & 0xFF) as usize]
+        ^ CRC32_TABLE[0x6][((w0 >> 8) & 0xFF) as usize]
+        ^ CRC32_TABLE[0x7][(w0 & 0xFF) as usize]
+}
+
+/// Folds the first 4 bytes of `block` into `crc` (slicing-by-4).
+#[inline(always)]
+fn fold_4(crc: u32, block: &[u8]) -> u32 {
+    let w0 = u32::from_le_bytes([block[0], block[1], block[2], block[3]]) ^ crc;
+    CRC32_TABLE[0x0][(w0 >> 24) as usize]
+        ^ CRC32_TABLE[0x1][((w0 >> 16) & 0xFF) as usize]
+        ^ CRC32_TABLE[0x2][((w0 >> 8) & 0xFF) as usize]
+        ^ CRC32_TABLE[0x3][(w0 & 0xFF) as usize]
+}
+
 pub(crate) fn update_fast_16(prev: u32, mut buf: &[u8]) -> u32 {
     const UNROLL: usize = 4;
     const BYTES_AT_ONCE: usize = 16 * UNROLL;
@@ -70,6 +67,35 @@ pub(crate) fn update_fast_16(prev: u32, mut buf: &[u8]) -> u32 {
     while buf.len() >= 16 {
         crc = fold_16(crc, buf);
         buf = &buf[16..];
+    }
+
+    update_short(!crc, buf)
+}
+
+/// Like `update_fast_16`, but without the 16-byte loops, for buffers shorter than 16 bytes.
+///
+/// Up to 3 bytes go straight to the byte loop. Longer buffers are folded out of line, so a caller
+/// that inlines this doesn't need the extra registers the slicing code uses.
+#[inline]
+pub(crate) fn update_short(prev: u32, buf: &[u8]) -> u32 {
+    if buf.len() < 4 {
+        update_slow(prev, buf)
+    } else {
+        update_4_to_15(prev, buf)
+    }
+}
+
+#[inline(never)]
+fn update_4_to_15(prev: u32, mut buf: &[u8]) -> u32 {
+    let mut crc = !prev;
+
+    if buf.len() >= 8 {
+        crc = fold_8(crc, buf);
+        buf = &buf[8..];
+    }
+    if buf.len() >= 4 {
+        crc = fold_4(crc, buf);
+        buf = &buf[4..];
     }
 
     update_slow(!crc, buf)

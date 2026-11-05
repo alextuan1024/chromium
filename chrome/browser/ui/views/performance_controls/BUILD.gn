@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/chrome_build.gni")
 import("//build/config/ozone.gni")
 import("//build/config/ui.gni")
 
@@ -92,13 +93,17 @@ source_set("browser_tests") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resource_coordinator",
     "//chrome/browser/resource_coordinator:utils",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui/actions:actions_headers",
     "//chrome/browser/ui/performance_controls/test_support",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/frame:toolbar_button_provider",
     "//chrome/browser/ui/views/location_bar",
     "//chrome/browser/ui/views/page_action",
     "//chrome/browser/ui/views/page_action:page_action_test_support",
-    "//chrome/test:test_support_ui",
+    "//chrome/browser/ui/views/toolbar:test_support",
+    "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_scoped_utils",
     "//components/performance_manager/test_support:test_support_common",
     "//content/test:test_support",
     "//net:test_support",
@@ -137,8 +142,8 @@ source_set("interactive_ui_tests") {
     "//chrome/browser:browser_process",
     "//chrome/browser/performance_manager/public/user_tuning",
     "//chrome/browser/resource_coordinator:utils",
-    "//chrome/browser/ui",
     "//chrome/browser/ui:browser_element_identifiers",
+    "//chrome/browser/ui:browser_tabstrip",
     "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui:chrome_pages",
     "//chrome/browser/ui:recently_audible_helper",
@@ -146,10 +151,12 @@ source_set("interactive_ui_tests") {
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/performance_controls/test_support",
     "//chrome/browser/ui/toolbar",
+    "//chrome/browser/ui/views/frame:browser_view_header",
+    "//chrome/browser/ui/views/page_action:interactive_test_support",
     "//chrome/browser/ui/views/tabs:tab_strip",
     "//chrome/browser/ui/views/tabs/tab",
+    "//chrome/browser/ui/views/toolbar:test_support",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
     "//chrome/test/user_education:impl",
     "//components/feature_engagement/test:test_support",
     "//components/user_education/views",

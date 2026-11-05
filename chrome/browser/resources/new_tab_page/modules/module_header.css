@@ -5,7 +5,6 @@
 /* #css_wrapper_metadata_start
  * #type=style-lit
  * #import=chrome://resources/cr_elements/cr_icons_lit.css.js
- * #scheme=relative
  * #include=cr-icons-lit
  * #css_wrapper_metadata_end */
 
@@ -28,6 +27,13 @@
   display: flex;
   height: 20px;
   padding: 12px 12px 8px 12px;
+}
+
+::slotted([slot='title-icon']) {
+  --iron-icon-height: 20px;
+  --iron-icon-width: 20px;
+  flex-shrink: 0;
+  margin-inline-end: 8px;
 }
 
 #title {

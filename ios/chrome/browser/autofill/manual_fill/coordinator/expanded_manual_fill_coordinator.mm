@@ -8,6 +8,7 @@
 #import "base/metrics/user_metrics.h"
 #import "ios/chrome/browser/autofill/manual_fill/coordinator/address_coordinator.h"
 #import "ios/chrome/browser/autofill/manual_fill/coordinator/card_coordinator.h"
+#import "ios/chrome/browser/autofill/manual_fill/coordinator/fallback_coordinator.h"
 #import "ios/chrome/browser/autofill/manual_fill/coordinator/manual_fill_password_coordinator.h"
 #import "ios/chrome/browser/autofill/manual_fill/public/manual_fill_constants.h"
 #import "ios/chrome/browser/autofill/manual_fill/ui/expanded_manual_fill_view_controller.h"
@@ -17,7 +18,6 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
 #import "ios/public/provider/chrome/browser/keyboard/keyboard_api.h"
 #import "ios/web/public/web_state.h"
 #import "url/gurl.h"
@@ -41,24 +41,26 @@ using manual_fill::ManualFillDataType;
   // Stores the selected segment's data type.
   ManualFillDataType _selectedSegmentDataType;
 
-  // Reauthentication Module used for re-authentication.
-  ReauthenticationModule* _reauthenticationModule;
-
   // Used to show the manual fill passwords menu.
   ManualFillPasswordCoordinator* _manualFillPasswordCoordinator;
+
+  // The coordinator whose view is currently shown as the expanded view
+  // controller's child, if any.
+  FallbackCoordinator* _displayedCoordinator;
+
+  // Button used to anchor the popover presentation.
+  __weak UIButton* _sourceButton;
 }
 
-- (instancetype)
-    initWithBaseViewController:(UIViewController*)viewController
-                       browser:(Browser*)browser
-                   forDataType:(ManualFillDataType)dataType
-          focusedFieldDataType:(ManualFillDataType)focusedFieldDataType
-        reauthenticationModule:(ReauthenticationModule*)reauthenticationModule {
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                                   browser:(Browser*)browser
+                               forDataType:(ManualFillDataType)dataType
+                      focusedFieldDataType:
+                          (ManualFillDataType)focusedFieldDataType {
   self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
     _selectedSegmentDataType = dataType;
     _focusedFieldDataType = focusedFieldDataType;
-    _reauthenticationModule = reauthenticationModule;
   }
   return self;
 }
@@ -75,10 +77,9 @@ using manual_fill::ManualFillDataType;
 - (void)stop {
   [super stop];
 
-  // Dismiss the popover.
-  if ([ManualFillUtil shouldUsePopover] &&
-      self.viewController.presentingViewController) {
-    [self.viewController dismissViewControllerAnimated:true completion:nil];
+  // Dismiss the popover if it was presented.
+  if (self.viewController.presentingViewController) {
+    [self.viewController dismissViewControllerAnimated:YES completion:nil];
   }
 
   [self stopChildCoordinators];
@@ -97,10 +98,23 @@ using manual_fill::ManualFillDataType;
                                                   animated:YES
                                                 completion:nil];
 
+  _sourceButton = button;
   UIPopoverPresentationController* popoverPresentationController =
       self.viewController.popoverPresentationController;
-  popoverPresentationController.sourceView = button;
-  popoverPresentationController.sourceRect = button.bounds;
+  if (topFrontWindow && button.window &&
+      CGRectIsNull([button convertRect:button.bounds
+                     toCoordinateSpace:topFrontWindow])) {
+    // When `topFrontWindow` belongs to a separate screen coordinate space from
+    // `button.window` (e.g., `_UIKeyboardInputScene` vs the application's
+    // `UIWindowScene`), UIKit cannot convert `button.bounds` across windows.
+    // Anchor in `topFrontWindow` using `button`'s window coordinates instead.
+    popoverPresentationController.sourceView = topFrontWindow;
+    popoverPresentationController.sourceRect = [button convertRect:button.bounds
+                                                            toView:nil];
+  } else {
+    popoverPresentationController.sourceView = button;
+    popoverPresentationController.sourceRect = button.bounds;
+  }
   popoverPresentationController.permittedArrowDirections =
       UIPopoverArrowDirectionUp | UIPopoverArrowDirectionDown;
   popoverPresentationController.delegate = self;
@@ -160,20 +174,28 @@ using manual_fill::ManualFillDataType;
 
 - (void)passwordsFetched {
   // If a user has already switched to another menu while the passwords were
-  // being fetched, resulting in a different child coordinator being added here,
-  // no need to add the manual fill password coordinator as a child here
-  // anymore.
-  if ([self.childCoordinators count] != 0) {
+  // being fetched, resulting in a different coordinator being displayed here,
+  // no need to display the manual fill password coordinator anymore.
+  if (_displayedCoordinator) {
     return;
   }
 
   self.expandedManualFillViewController.childViewController =
       _manualFillPasswordCoordinator.viewController;
 
-  [self.childCoordinators addObject:_manualFillPasswordCoordinator];
+  _displayedCoordinator = _manualFillPasswordCoordinator;
 }
 
 #pragma mark - UIPopoverPresentationControllerDelegate
+
+- (void)popoverPresentationController:
+            (UIPopoverPresentationController*)popoverPresentationController
+          willRepositionPopoverToRect:(inout CGRect*)rect
+                               inView:(inout UIView**)view {
+  if (_sourceButton.window && *view != _sourceButton) {
+    *rect = [_sourceButton convertRect:_sourceButton.bounds toView:nil];
+  }
+}
 
 - (void)popoverPresentationControllerDidDismissPopover:
     (UIPopoverPresentationController*)popoverPresentationController {
@@ -183,12 +205,17 @@ using manual_fill::ManualFillDataType;
 
 #pragma mark - Private
 
-// Stops and deletes all active child coordinators.
+// Stops and deletes the displayed coordinator and the password coordinator.
 - (void)stopChildCoordinators {
-  for (ChromeCoordinator* coordinator in self.childCoordinators) {
-    [coordinator stop];
-  }
-  [self.childCoordinators removeAllObjects];
+  // Explicitly stop and nil out _manualFillPasswordCoordinator so it is cleaned
+  // up even if passwordsFetched has not completed yet.
+  [_manualFillPasswordCoordinator stop];
+  _manualFillPasswordCoordinator = nil;
+
+  // `_displayedCoordinator` may be the password coordinator stopped above;
+  // stopping it twice is harmless.
+  [_displayedCoordinator stop];
+  _displayedCoordinator = nil;
 }
 
 // Shows the right manual filling options depending on `dataType`.
@@ -228,8 +255,8 @@ using manual_fill::ManualFillDataType;
   _manualFillPasswordCoordinator.delegate = self.delegate;
   _manualFillPasswordCoordinator.consumer = self;
 
-  // Note: The ManualFillPasswordCoordinator object will be added as a child
-  // coordinator to this coordinator in the `passwordsFetched` function,
+  // Note: The ManualFillPasswordCoordinator object will become the displayed
+  // coordinator in the `passwordsFetched` function,
   // which will be called only once passwords are fetched, to avoid showing a
   // visible flicker where an empty passwords list appears briefly between the
   // previous menu and the final passwords menu, where all available passwords
@@ -244,7 +271,6 @@ using manual_fill::ManualFillDataType;
       initWithBaseViewController:self.baseViewController
                          browser:self.browser
                 injectionHandler:self.injectionHandler
-          reauthenticationModule:_reauthenticationModule
           showAutofillFormButton:(_focusedFieldDataType ==
                                   ManualFillDataType::kPaymentMethod)];
   cardCoordinator.delegate = self.delegate;
@@ -252,7 +278,7 @@ using manual_fill::ManualFillDataType;
   self.expandedManualFillViewController.childViewController =
       cardCoordinator.viewController;
 
-  [self.childCoordinators addObject:cardCoordinator];
+  _displayedCoordinator = cardCoordinator;
 }
 
 // Shows the address manual filling options.
@@ -270,7 +296,7 @@ using manual_fill::ManualFillDataType;
   self.expandedManualFillViewController.childViewController =
       addressCoordinator.viewController;
 
-  [self.childCoordinators addObject:addressCoordinator];
+  _displayedCoordinator = addressCoordinator;
 }
 
 @end

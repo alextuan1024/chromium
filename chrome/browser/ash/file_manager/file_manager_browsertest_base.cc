@@ -101,7 +101,6 @@
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/file_manager/volume.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
-#include "chrome/browser/ash/file_system_provider/cloud_file_info.h"
 #include "chrome/browser/ash/file_system_provider/fake_extension_provider.h"
 #include "chrome/browser/ash/file_system_provider/fake_provided_file_system.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
@@ -139,6 +138,7 @@
 #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -206,7 +206,6 @@
 #include "mojo/public/cpp/bindings/struct_ptr.h"
 #include "net/base/network_change_notifier.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "pdf/buildflags.h"
 #include "services/network/public/mojom/network_change_manager.mojom-shared.h"
 #include "storage/browser/file_system/copy_or_move_operation_delegate.h"
 #include "storage/browser/file_system/external_mount_points.h"
@@ -239,10 +238,6 @@
 #include "url/url_canon.h"
 #include "url/url_util.h"
 
-#if BUILDFLAG(ENABLE_PDF)
-#include "pdf/pdf_features.h"
-#endif  // BUILDFLAG(ENABLE_PDF)
-
 namespace ash {
 namespace smb_client {
 class SmbUrl;
@@ -260,11 +255,6 @@ class Extension;
 namespace guest_os {
 class GuestOsFileWatcher;
 }  // namespace guest_os
-
-#if BUILDFLAG(ENABLE_PDF)
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "pdf/pdf_features.h"
-#endif  // BUILDFLAG(ENABLE_PDF)
 
 using ::testing::_;
 
@@ -2021,7 +2011,7 @@ class FileSystemProviderTestVolume : public TestVolume {
     fake_file_system->AddEntry(base::FilePath(entry.target_path), folder,
                                entry.name_text, file_contents.length(),
                                entry.last_modified_time, entry.mime_type,
-                               /*cloud_file_info=*/nullptr, file_contents);
+                               file_contents);
   }
 
  private:
@@ -2364,12 +2354,6 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
     arc::SetArcAvailableCommandLineForTesting(command_line);
   }
 
-  if (options.enable_drive_trash) {
-    enabled_features.push_back(ash::features::kFilesTrashDrive);
-  } else {
-    disabled_features.push_back(ash::features::kFilesTrashDrive);
-  }
-
   if (options.enable_dlp_files_restriction) {
     enabled_features.push_back(
         ash::features::kDataLeakPreventionFilesRestriction);
@@ -2382,12 +2366,6 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
     enabled_features.push_back(ash::features::kNewFilesPolicyUX);
   } else {
     disabled_features.push_back(ash::features::kNewFilesPolicyUX);
-  }
-
-  if (options.enable_mirrorsync) {
-    enabled_features.push_back(ash::features::kDriveFsMirroring);
-  } else {
-    disabled_features.push_back(ash::features::kDriveFsMirroring);
   }
 
   if (command_line->HasSwitch(switches::kDevtoolsCodeCoverage) &&
@@ -2476,14 +2454,6 @@ void FileManagerBrowserTestBase::SetUpCommandLine(
     disabled_features.push_back(ash::features::kSkyVaultV2);
     disabled_features.push_back(ash::features::kSkyVaultV3);
   }
-
-#if BUILDFLAG(ENABLE_PDF)
-  if (options.enable_oopif_pdf) {
-    enabled_features.push_back(chrome_pdf::features::kPdfOopif);
-  } else {
-    disabled_features.push_back(chrome_pdf::features::kPdfOopif);
-  }
-#endif  // BUILDFLAG(ENABLE_PDF)
 
   // This is destroyed in |TearDown()|. We cannot initialize this in the
   // constructor due to this feature values' above dependence on virtual
@@ -2732,12 +2702,18 @@ void FileManagerBrowserTestBase::TearDown() {
 }
 
 void FileManagerBrowserTestBase::StartTest() {
-  ash::SystemWebAppManager::GetForTest(profile())
-      ->InstallSystemAppsForTesting();
+  // Only install the System Web Apps used by FilesAppBrowserTest to avoid the
+  // overhead of installing all ~24 default SWAs in every test.
+  ash::SystemWebAppManager::GetForTest(profile())->InstallSystemAppsForTesting({
+      ash::SystemWebAppType::FILE_MANAGER,
+      ash::SystemWebAppType::MEDIA,
+      ash::SystemWebAppType::SETTINGS,
+      ash::SystemWebAppType::OS_FEEDBACK,
+  });
   const std::string full_test_name = GetFullTestCaseName();
   LOG(INFO) << "FileManagerBrowserTest::StartTest " << full_test_name;
 
-  static const base::FilePath test_extension_dir = base::FilePath(
+  const base::FilePath test_extension_dir(
       FILE_PATH_LITERAL("ui/file_manager/integration_tests/tsc"));
   LaunchExtension(base::DIR_GEN_TEST_DATA_ROOT, test_extension_dir,
                   GetTestExtensionManifestName());
@@ -3781,11 +3757,6 @@ void FileManagerBrowserTestBase::OnCommand(const std::string& name,
 
   if (name == "isBannersFrameworkEnabled") {
     *output = base::ToString(options.enable_banners_framework);
-    return;
-  }
-
-  if (name == "isMirrorSyncEnabled") {
-    *output = base::ToString(options.enable_mirrorsync);
     return;
   }
 

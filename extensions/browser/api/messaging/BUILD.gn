@@ -24,12 +24,11 @@ source_set("messaging") {
     "native_message_port.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     ":native_messaging",
     "//base",
     "//content/public/browser",
+    "//content/public/common",
     "//extensions/browser:browser_sources",
     "//extensions/common",
     "//extensions/common:mojom",
@@ -39,7 +38,6 @@ source_set("messaging") {
 
   deps = [
     "//components/back_forward_cache",
-    "//content/public/common",
     "//extensions/browser/api:extensions_api_client",
     "//extensions/common:common_constants",
     "//extensions/common:mojom_shared",
@@ -55,8 +53,6 @@ source_set("native_messaging") {
     "native_message_port_dispatcher.h",
     "native_messaging_channel.h",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   public_deps = [
     "//base",

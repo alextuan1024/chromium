@@ -66,8 +66,6 @@ target("component", "cpp") {
   defines = [ "IS_TRACING_CPP_IMPL" ]
   output_name = "tracing_cpp"
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     ":perfetto_interning_index",
     "//base",
@@ -142,7 +140,6 @@ target("component", "cpp") {
         deps += [
           "//third_party/fuchsia-sdk/sdk/pkg/component_incoming_cpp",
           "//third_party/fuchsia-sdk/sdk/pkg/fidl_cpp_base",
-          "//third_party/fuchsia-sdk/sdk/pkg/sys_cpp",
         ]
         public_deps += [ "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.tracing.perfetto:fuchsia.tracing.perfetto_cpp" ]
       } else if (!is_android) {

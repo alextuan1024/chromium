@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Камера</translation>
 <translation id="162175252992296058">Португальська, міжнародна розкладка США</translation>
 <translation id="1629521517399325891">Сертифікат користувача недоступний для автентифікації в мережі.</translation>
+<translation id="1639239467298939599">Завантаження</translation>
 <translation id="1641780993263690097">Китайська, піньїнь</translation>
 <translation id="164969095109328410">Пристрій Chrome</translation>
 <translation id="1661207570040737402">Спільний диск Google Workspace заповнено.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Синхронізацію файлів вимкнено</translation>
 <translation id="2820957248982571256">Сканування…</translation>
 <translation id="2830077785865012357">Китайська, чжуїнь</translation>
+<translation id="2838379631617906747">Встановлення</translation>
 <translation id="2843806747483486897">Змінити дію за умовчанням...</translation>
 <translation id="2873951654529031587">Кошик</translation>
 <translation id="2887314858867008269">Colemak (США)</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Неправильний пароль</translation>
 <translation id="5059127710849015030">Непальська, транслітерація</translation>
 <translation id="5068919226082848014">Піца</translation>
+<translation id="5075336522277785691">Розширення <ph name="EXTENSION_NAME" /> налаштувало правила перевизначення проксі-сервера</translation>
 <translation id="5081517858322016911">Буде видалено файли загальним обсягом <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Переміщення елементів (<ph name="NUMBER_OF_ITEMS" />) у папку "<ph name="FOLDER_NAME" />"</translation>
 <translation id="509429900233858213">Сталася помилка.</translation>
-<translation id="5102922915594634436">Керувати синхронізованими папками</translation>
 <translation id="5109254780565519649">Сталася помилка. Можливо, відновлено не всі елементи.</translation>
 <translation id="5110329002213341433">Англійська (Канада)</translation>
 <translation id="5119780910075847424">Cинхронізацію призупинено</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Не встановлено жодного</translation>
 <translation id="5317780077021120954">Зберегти</translation>
 <translation id="5318819489018851358">Надати доступ додаткам Linux</translation>
-<translation id="5330145655348521461">Ці файли відкрито на іншому комп’ютері. Перейдіть до <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />), щоб переглянути їх.</translation>
 <translation id="5330512191124428349">Отримати інформацію</translation>
 <translation id="535792325654997756">Людина з котами</translation>
 <translation id="5358764674931277">Частота кадрів</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Недійсне значення збігу із суфіксом домену</translation>
 <translation id="6364301859968397756">Сховище організації заповнено</translation>
 <translation id="6367976544441405720">Фургон</translation>
-<translation id="637062427944097960">Цей файл відкрито на іншому робочому столі. Перейдіть до <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />), щоб переглянути його.</translation>
 <translation id="6394388407447716302">Лише перегляд</translation>
 <translation id="6395575651121294044">Елементів: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Не вдалося перемістити файл <ph name="FILE_NAME" />, оскільки він зашифрований.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – Порт</translation>
 <translation id="8656407365183407932">Файли, доступні офлайн, було вилучено</translation>
 <translation id="8656768832129462377">Не перевіряти</translation>
+<translation id="8662978096466608964">Chrome не може встановити цей фоновий малюнок.</translation>
 <translation id="8688591111840995413">Неправильний пароль</translation>
 <translation id="8698464937041809063">Малюнок Google</translation>
 <translation id="8698877009525468705">Цей файл конфіденційний і регулюється правилами адміністратора.</translation>

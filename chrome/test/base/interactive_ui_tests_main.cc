@@ -25,6 +25,7 @@
 #include "ui/compositor/compositor_switches.h"
 
 #if BUILDFLAG(IS_LINUX)
+#include "ui/base/ui_base_switches.h"
 #include "ui/linux/display_server_utils.h"
 #endif
 
@@ -40,9 +41,42 @@
 #endif  // defined(USE_AURA) && BUILDFLAG(IS_OZONE)
 
 #if BUILDFLAG(IS_WIN)
+#include <windows.h>
+
+#include <vector>
+
+#include "base/functional/bind.h"
 #include "base/win/scoped_com_initializer.h"
 #include "base/win/win_util.h"
 #include "chrome/test/base/always_on_top_window_killer_win.h"
+#include "ui/base/test/ui_controls_internal_win.h"
+#include "ui/views/widget/desktop_aura/desktop_drag_drop_client_win.h"
+
+namespace {
+
+// Releases any mouse buttons left pressed in the global Windows input state by
+// a test (for example, a drag test that cancelled via Escape or timed out
+// without sending MOUSEEVENTF_*UP). Left-over pressed buttons cause subsequent
+// tests' mouse events to include unintended modifier flags such as MK_LBUTTON.
+void ReleasePressedMouseButtons() {
+  std::vector<INPUT> inputs;
+  auto maybe_add_button_up = [&inputs](int vkey, DWORD flag) {
+    if (::GetAsyncKeyState(vkey) & 0x8000) {
+      INPUT input = {};
+      input.type = INPUT_MOUSE;
+      input.mi.dwFlags = flag;
+      inputs.push_back(input);
+    }
+  };
+  maybe_add_button_up(VK_LBUTTON, MOUSEEVENTF_LEFTUP);
+  maybe_add_button_up(VK_RBUTTON, MOUSEEVENTF_RIGHTUP);
+  maybe_add_button_up(VK_MBUTTON, MOUSEEVENTF_MIDDLEUP);
+  if (!inputs.empty()) {
+    ::SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+  }
+}
+
+}  // namespace
 #endif
 
 class InteractiveUITestSuite : public ChromeTestSuite {
@@ -58,8 +92,11 @@ class InteractiveUITestSuite : public ChromeTestSuite {
 #if BUILDFLAG(IS_CHROMEOS)
     ash::test::EnableUIControlsAsh();
 #elif BUILDFLAG(IS_WIN)
+    ReleasePressedMouseButtons();
     com_initializer_ = std::make_unique<base::win::ScopedCOMInitializer>();
     aura::test::EnableUIControlsAuraWin();
+    views::DesktopDragDropClientWin::SetOnDragStartedCallbackForTesting(
+        base::BindRepeating(&ui_controls::internal::QueueDragUnblockNudge));
 #elif BUILDFLAG(IS_OZONE)
     // Notifies the platform that test config is needed. For Wayland, for
     // example, makes it possible to use emulated input.
@@ -100,6 +137,9 @@ class InteractiveUITestSuite : public ChromeTestSuite {
 
   void Shutdown() override {
 #if BUILDFLAG(IS_WIN)
+    ReleasePressedMouseButtons();
+    views::DesktopDragDropClientWin::SetOnDragStartedCallbackForTesting(
+        base::NullCallback());
     com_initializer_.reset();
 #endif
   }
@@ -135,6 +175,7 @@ class InteractiveUITestLauncherDelegate : public ChromeTestLauncherDelegate {
 
   void OnTestTimedOut(const base::CommandLine& command_line) override {
 #if BUILDFLAG(IS_WIN)
+    ReleasePressedMouseButtons();
     // Take a snapshot of the screen and check for any always-on-top windows
     // present before terminating the test. Attempt to close any that are system
     // dialogs.
@@ -143,7 +184,17 @@ class InteractiveUITestLauncherDelegate : public ChromeTestLauncherDelegate {
     ChromeTestLauncherDelegate::OnTestTimedOut(command_line);
   }
 
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_WIN)
+  void PreRunTest() override {
+    ReleasePressedMouseButtons();
+    ChromeTestLauncherDelegate::PreRunTest();
+  }
+
+  void PostRunTest(base::TestResult* test_result) override {
+    ReleasePressedMouseButtons();
+    ChromeTestLauncherDelegate::PostRunTest(test_result);
+  }
+#elif BUILDFLAG(IS_MAC)
   void PreRunTest() override {
     // Clear currently pressed modifier keys (if any) before the test starts.
     ui_test_utils::ClearKeyEventModifiers();
@@ -173,6 +224,13 @@ class InteractiveUITestSuiteRunner : public ChromeTestSuiteRunner {
 int main(int argc, char** argv) {
   base::CommandLine::Init(argc, argv);
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+
+#if BUILDFLAG(IS_LINUX)
+  // Disable GTK's async IM module so synthetic X11 key events dispatch
+  // synchronously through InputMethodAuraLinux instead of racing with
+  // XEventWaiter's marker event or targeting GTK4's dummy surface.
+  command_line->AppendSwitch(switches::kDisableGtkIme);
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)
   // Force software-gl. This is necessary for mus tests to avoid an msan warning

@@ -15,6 +15,7 @@
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
+#include "chrome/browser/ui/autofill/chrome_autofill_client_test_api.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
@@ -53,7 +54,7 @@ std::ostream& operator<<(std::ostream& os, ObservedUiEvents event) {
 void TryToCloseAllPrompts(content::WebContents* web_contents) {
   gfx::NativeView top_level_view =
       platform_util::GetViewForWindow(web_contents->GetTopLevelNativeWindow());
-  DCHECK(top_level_view);
+  CHECK(top_level_view, base::NotFatalUntil::M161);
 
   // On Aura-based systems, prompts are siblings to the top level native window,
   // and hence we need to go one level up to start searching from the root
@@ -133,11 +134,10 @@ AutofillUiTest::AutofillUiTest(
 AutofillUiTest::~AutofillUiTest() = default;
 
 void AutofillUiTest::SetUpOnMainThread() {
-  auto* client =
-      ChromeAutofillClient::FromWebContentsForTesting(GetWebContents());
+  auto* client = ChromeAutofillClientTestApi::FromWebContents(GetWebContents());
 
   // Make autofill popup stay open by ignoring external changes when possible.
-  client->SetKeepPopupOpenForTesting(true);
+  test_api(*client).SetKeepPopupOpen(true);
 
   // Inject the test delegate into the BrowserAutofillManager of the main frame.
   RenderFrameHostChanged(

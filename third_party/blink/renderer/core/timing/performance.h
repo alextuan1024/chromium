@@ -46,6 +46,7 @@
 #include "third_party/blink/renderer/core/dom/dom_high_res_time_stamp.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
 #include "third_party/blink/renderer/core/loader/frame_loader_types.h"
+#include "third_party/blink/renderer/core/performance_entry_names.h"
 #include "third_party/blink/renderer/core/timing/performance_entry.h"
 #include "third_party/blink/renderer/core/timing/performance_paint_timing.h"
 #include "third_party/blink/renderer/core/timing/performance_timeline_entry_id_generator.h"
@@ -100,10 +101,14 @@ using PerformanceEntryDeque = HeapDeque<Member<PerformanceEntry>>;
 // is provided, then items in second_entry_vector will be included in the result
 // only if their names match the given name. It is expected (and DCHECKed) that
 // first_entry_vector has already been filtered by name.
+// If `context` is provided and at least one entry from `second_entry_vector` is
+// merged, records the *PotentiallyObserved UseCounter for that entry's type
+// (`second_entry_vector` is expected to contain entries of a single type).
 CORE_EXPORT PerformanceEntryVector
 MergePerformanceEntryVectors(const PerformanceEntryVector& first_entry_vector,
                              const PerformanceEntryVector& second_entry_vector,
-                             const AtomicString& maybe_name);
+                             const AtomicString& maybe_name,
+                             ExecutionContext* context = nullptr);
 
 class CORE_EXPORT Performance : public EventTarget {
   DEFINE_WRAPPERTYPEINFO();
@@ -127,7 +132,7 @@ class CORE_EXPORT Performance : public EventTarget {
   virtual EventCounts* eventCounts();
   virtual SpeculationData* getSpeculations();
   virtual std::uint64_t interactionCount() const = 0;
-  virtual void PopulateContainerTimingEntries() {}
+  virtual void ClearForWindowReuse();
 
   // Reduce the resolution to prevent timing attacks. See:
   // http://www.w3.org/TR/hr-time-2/#privacy-security
@@ -158,6 +163,14 @@ class CORE_EXPORT Performance : public EventTarget {
 
   // Internal getter method for the time origin value.
   base::TimeTicks GetTimeOriginInternal() const { return time_origin_; }
+
+  PerformanceNavigationTiming* NavigationTiming() const {
+    return navigation_timing_.Get();
+  }
+
+  PerformanceEntry* FirstPaintTiming() const {
+    return first_paint_timing_.Get();
+  }
 
   // Get all performance entries of the main frame. This is kept until the one
   // with optional filtering options is enabled by default.
@@ -219,7 +232,6 @@ class CORE_EXPORT Performance : public EventTarget {
 
   bool IsContainerTimingBufferFull() const;
   void AddToContainerTimingBuffer(PerformanceContainerTiming&);
-  void NotifyObserversOfContainerTiming();
 
   bool IsElementTimingBufferFull() const;
   void AddToElementTimingBuffer(PerformanceElementTiming&);
@@ -332,7 +344,7 @@ class CORE_EXPORT Performance : public EventTarget {
 
   bool HasObserverFor(PerformanceEntry::EntryType) const;
   // Determine whether a given Node can be exposed via a Web Perf API.
-  static bool CanExposeNode(Node*);
+  static bool CanExposeNode(Node*, const DOMWindow* source);
 
   ScriptObject toJSONForBinding(ScriptState*) const;
 
@@ -343,6 +355,10 @@ class CORE_EXPORT Performance : public EventTarget {
   void Trace(Visitor*) const override;
 
   void ResetTimeOriginForTesting(base::TimeTicks time_origin);
+
+  int GetDroppedEntriesForTypesForTesting(PerformanceEntryTypeMask types) {
+    return GetDroppedEntriesForTypes(types);
+  }
 
   void SetCrossOriginIsolatedCapabilityForTesting(bool is_isolated) {
     cross_origin_isolated_capability_ = is_isolated;
@@ -364,7 +380,7 @@ class CORE_EXPORT Performance : public EventTarget {
       ScriptState* script_state,
       const AtomicString& measure_name,
       const V8UnionPerformanceMeasureOptionsOrString* start_or_options,
-      std::optional<String> end_mark,
+      const String& end_mark,
       ExceptionState& exception_state);
 
   PerformanceMeasure* MeasureWithDetail(ScriptState* script_state,
@@ -410,7 +426,6 @@ class CORE_EXPORT Performance : public EventTarget {
   void FireResourceTimingBufferFull(TimerBase*);
 
   void NotifyObserversOfEntry(PerformanceEntry&) const;
-  void NotifyObserversOfContainerEntry(PerformanceEntry&) const;
 
   void DeliverObservationsTimerFired(TimerBase*);
 
@@ -450,7 +465,8 @@ class CORE_EXPORT Performance : public EventTarget {
   PerformanceEntryVector long_animation_frame_buffer_;
   Member<PerformanceNavigationTiming> navigation_timing_;
   Member<UserTiming> user_timing_;
-  PerformanceEntryVector paint_entries_timing_;
+  Member<PerformancePaintTiming> first_paint_timing_;
+  Member<PerformancePaintTiming> first_contentful_paint_timing_;
   Member<PerformanceEventTiming> first_input_timing_;
 
   base::TimeTicks time_origin_;

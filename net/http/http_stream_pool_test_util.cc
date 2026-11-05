@@ -4,9 +4,11 @@
 
 #include "net/http/http_stream_pool_test_util.h"
 
+#include "base/containers/flat_set.h"
 #include "base/location.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
+#include "base/types/optional_util.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/connection_endpoint_metadata.h"
 #include "net/base/features.h"
@@ -66,7 +68,7 @@ FakeServiceEndpointResolution& FakeServiceEndpointResolution::add_endpoint(
 }
 
 FakeServiceEndpointResolution& FakeServiceEndpointResolution::set_aliases(
-    std::set<std::string> aliases) {
+    base::flat_set<std::string> aliases) {
   aliases_ = std::move(aliases);
   return *this;
 }
@@ -107,7 +109,7 @@ FakeServiceEndpointRequest& FakeServiceEndpointRequest::add_endpoint(
 }
 
 FakeServiceEndpointRequest& FakeServiceEndpointRequest::set_aliases(
-    std::set<std::string> aliases) {
+    base::flat_set<std::string> aliases) {
   resolution_.set_aliases(std::move(aliases));
   return *this;
 }
@@ -181,7 +183,8 @@ FakeServiceEndpointRequest::GetEndpointResults() {
   return resolution_.endpoints();
 }
 
-const std::set<std::string>& FakeServiceEndpointRequest::GetDnsAliasResults() {
+const base::flat_set<std::string>&
+FakeServiceEndpointRequest::GetDnsAliasResults() {
   return resolution_.aliases();
 }
 
@@ -195,7 +198,7 @@ ResolveErrorInfo FakeServiceEndpointRequest::GetResolveErrorInfo() {
 
 const HostCache::EntryStaleness* FakeServiceEndpointRequest::GetStaleInfo()
     const {
-  return nullptr;
+  return base::OptionalToPtr(stale_info_);
 }
 
 bool FakeServiceEndpointRequest::IsStaleWhileRefreshing() const {
@@ -209,7 +212,7 @@ void FakeServiceEndpointRequest::ChangeRequestPriority(
 
 std::optional<ResolutionDetails>
 FakeServiceEndpointRequest::GetResolutionDetails() const {
-  return std::nullopt;
+  return resolution_details_;
 }
 
 void FakeServiceEndpointRequest::CompleteAsync(int rv) {
@@ -333,12 +336,6 @@ ServiceEndpointBuilder& ServiceEndpointBuilder::set_alpn(
 ServiceEndpointBuilder& ServiceEndpointBuilder::set_ech_config_list(
     std::vector<uint8_t> ech_config_list) {
   endpoint_.metadata.ech_config_list = std::move(ech_config_list);
-  return *this;
-}
-
-ServiceEndpointBuilder& ServiceEndpointBuilder::set_trust_anchor_ids(
-    std::vector<std::vector<uint8_t>> trust_anchor_ids) {
-  endpoint_.metadata.trust_anchor_ids = std::move(trust_anchor_ids);
   return *this;
 }
 

@@ -18,6 +18,7 @@
 #include "components/enterprise/connectors/core/cloud_content_scanning/deep_scanning_utils.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/mock_content_analysis_info.h"
 #include "components/enterprise/connectors/core/common.h"
+#include "components/enterprise/connectors/core/features.h"
 #include "components/enterprise/connectors/core/test_connectors_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_service.h"
@@ -353,6 +354,59 @@ TEST(DeepScanningUtilsTest, BinaryUploadServiceResultToString) {
                 false));
 }
 
+TEST(DeepScanningUtilsTest, AccessPointFromRequest) {
+  auto make_request =
+      [](AnalysisConnector connector,
+         ContentAnalysisRequest::Reason reason =
+             ContentAnalysisRequest::UNKNOWN,
+         ContentMetaData::CopiedTextSource::CopiedTextSourceType
+             source_context = ContentMetaData::CopiedTextSource::UNSPECIFIED) {
+        ContentAnalysisRequest request;
+        request.set_analysis_connector(connector);
+        request.set_reason(reason);
+        if (source_context != ContentMetaData::CopiedTextSource::UNSPECIFIED) {
+          request.mutable_request_data()
+              ->mutable_copied_text_source()
+              ->set_context(source_context);
+        }
+        return request;
+      };
+
+  EXPECT_EQ(DeepScanAccessPoint::DOWNLOAD,
+            AccessPointFromRequest(make_request(FILE_DOWNLOADED)));
+  EXPECT_EQ(DeepScanAccessPoint::DRAG_AND_DROP,
+            AccessPointFromRequest(make_request(
+                FILE_ATTACHED, ContentAnalysisRequest::DRAG_AND_DROP)));
+  EXPECT_EQ(DeepScanAccessPoint::PASTE,
+            AccessPointFromRequest(make_request(
+                FILE_ATTACHED, ContentAnalysisRequest::CLIPBOARD_PASTE)));
+  EXPECT_EQ(DeepScanAccessPoint::UPLOAD,
+            AccessPointFromRequest(make_request(FILE_ATTACHED)));
+  EXPECT_EQ(DeepScanAccessPoint::COPY,
+            AccessPointFromRequest(make_request(DATA_COPIED)));
+  EXPECT_EQ(DeepScanAccessPoint::PASTE,
+            AccessPointFromRequest(make_request(BULK_DATA_ENTRY)));
+  EXPECT_EQ(DeepScanAccessPoint::PASTE,
+            AccessPointFromRequest(make_request(
+                BULK_DATA_ENTRY, ContentAnalysisRequest::CLIPBOARD_PASTE)));
+  EXPECT_EQ(DeepScanAccessPoint::DRAG_AND_DROP,
+            AccessPointFromRequest(make_request(
+                BULK_DATA_ENTRY, ContentAnalysisRequest::DRAG_AND_DROP)));
+  EXPECT_EQ(DeepScanAccessPoint::ACTOR,
+            AccessPointFromRequest(make_request(
+                BULK_DATA_ENTRY, ContentAnalysisRequest::CLIPBOARD_PASTE,
+                ContentMetaData::CopiedTextSource::GEMINI_IN_CHROME)));
+  EXPECT_EQ(DeepScanAccessPoint::PRINT,
+            AccessPointFromRequest(make_request(PRINT)));
+  EXPECT_EQ(DeepScanAccessPoint::FILE_TRANSFER,
+            AccessPointFromRequest(make_request(FILE_TRANSFER)));
+  EXPECT_EQ(DeepScanAccessPoint::NETWORK_REQUEST,
+            AccessPointFromRequest(make_request(NETWORK_REQUEST)));
+  EXPECT_EQ(
+      DeepScanAccessPoint::UPLOAD,
+      AccessPointFromRequest(make_request(ANALYSIS_CONNECTOR_UNSPECIFIED)));
+}
+
 class FakeBinaryUploadRequest : public BinaryUploadRequest {
  public:
   FakeBinaryUploadRequest()
@@ -382,6 +436,99 @@ TEST(DeepScanningUtilsTest, InitializeBinaryUploadRequest_IsMobile) {
 #else
   EXPECT_FALSE(request.content_analysis_request().is_mobile());
 #endif
+}
+
+class InitializeBinaryUploadRequestInitiatorTest
+    : public testing::TestWithParam<bool> {
+ public:
+  InitializeBinaryUploadRequestInitiatorTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        kEnterpriseExtensionActorAttribution, feature_enabled());
+  }
+
+  bool feature_enabled() const { return GetParam(); }
+
+ protected:
+  static safe_browsing::ExtensionTelemetryReportRequest::ExtensionInfo
+  TestExtensionInfo() {
+    safe_browsing::ExtensionTelemetryReportRequest::ExtensionInfo info;
+    info.set_id("abcdefghijklmnopabcdefghijklmnop");
+    info.set_name("Test Extension");
+    info.set_version("1.2.3");
+    return info;
+  }
+
+  void SetUpInfo(testing::NiceMock<MockContentAnalysisInfoBase>& info) {
+    ON_CALL(info, settings()).WillByDefault(testing::ReturnRef(settings_));
+    ON_CALL(info, url()).WillByDefault(testing::ReturnRef(url_));
+    ON_CALL(info, tab_url()).WillByDefault(testing::ReturnRef(url_));
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+  AnalysisSettings settings_;
+  GURL url_;
+};
+
+INSTANTIATE_TEST_SUITE_P(,
+                         InitializeBinaryUploadRequestInitiatorTest,
+                         testing::Bool());
+
+// Tests that a known extension initiator is copied onto the request only when
+// the feature is enabled.
+TEST_P(InitializeBinaryUploadRequestInitiatorTest, SetsInitiatorWhenKnown) {
+  FakeBinaryUploadRequest request;
+  testing::NiceMock<MockContentAnalysisInfoBase> info;
+  SetUpInfo(info);
+  const auto extension_info = TestExtensionInfo();
+  ON_CALL(info, extension_initiator())
+      .WillByDefault(testing::Return(extension_info));
+
+  InitializeBinaryUploadRequest(&request, info,
+                                /*include_enterprise_only_fields=*/true);
+
+  const auto& request_data = request.content_analysis_request().request_data();
+  if (feature_enabled()) {
+    ASSERT_TRUE(request_data.has_initiator());
+    ASSERT_TRUE(request_data.initiator().has_chrome_extension());
+    const auto& chrome_extension = request_data.initiator().chrome_extension();
+    EXPECT_EQ(chrome_extension.id(), extension_info.id());
+    EXPECT_EQ(chrome_extension.name(), extension_info.name());
+    EXPECT_EQ(chrome_extension.version(), extension_info.version());
+  } else {
+    EXPECT_FALSE(request_data.has_initiator());
+  }
+}
+
+// Tests that the initiator is left unset when it is unknown.
+TEST_P(InitializeBinaryUploadRequestInitiatorTest, NoInitiatorWhenUnknown) {
+  FakeBinaryUploadRequest request;
+  testing::NiceMock<MockContentAnalysisInfoBase> info;
+  SetUpInfo(info);
+  ON_CALL(info, extension_initiator())
+      .WillByDefault(testing::Return(std::nullopt));
+
+  InitializeBinaryUploadRequest(&request, info,
+                                /*include_enterprise_only_fields=*/true);
+
+  EXPECT_FALSE(
+      request.content_analysis_request().request_data().has_initiator());
+}
+
+// Tests that the initiator is never set outside of enterprise requests.
+TEST_P(InitializeBinaryUploadRequestInitiatorTest,
+       NoInitiatorWithoutEnterpriseOnlyFields) {
+  FakeBinaryUploadRequest request;
+  testing::NiceMock<MockContentAnalysisInfoBase> info;
+  SetUpInfo(info);
+  ON_CALL(info, extension_initiator())
+      .WillByDefault(testing::Return(TestExtensionInfo()));
+
+  InitializeBinaryUploadRequest(&request, info,
+                                /*include_enterprise_only_fields=*/false);
+
+  EXPECT_FALSE(
+      request.content_analysis_request().request_data().has_initiator());
 }
 
 class CalculateRequestHandlerResultTest : public BaseTest {};

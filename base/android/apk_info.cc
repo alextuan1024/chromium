@@ -40,8 +40,8 @@ struct IApkInfo {
   const std::string packageName;
   const std::string packageVersionCode;
   const std::string packageVersionName;
-  const std::string resourcesVersion;
   int targetSdkVersion;
+  const std::string primaryCpuAbi;
 };
 #endif
 
@@ -78,11 +78,11 @@ static void JNI_ApkInfo_FillFields(JNIEnv* env,
                                    const std::string& packageVersionCode,
                                    const std::string& packageVersionName,
                                    const std::string& packageName,
-                                   const std::string& resourcesVersion,
                                    const std::string& installerPackageName,
                                    bool isDebugApp,
                                    bool isSystemApp,
-                                   int32_t targetSdkVersion) {
+                                   int32_t targetSdkVersion,
+                                   const std::string& primaryCpuAbi) {
   Set(IApkInfo{.hostPackageLabel = hostPackageLabel,
                .hostPackageName = hostPackageName,
                .hostVersionCode = hostVersionCode,
@@ -92,8 +92,8 @@ static void JNI_ApkInfo_FillFields(JNIEnv* env,
                .packageName = packageName,
                .packageVersionCode = packageVersionCode,
                .packageVersionName = packageVersionName,
-               .resourcesVersion = resourcesVersion,
-               .targetSdkVersion = targetSdkVersion});
+               .targetSdkVersion = targetSdkVersion,
+               .primaryCpuAbi = primaryCpuAbi});
 }
 
 const std::string& host_package_name() {
@@ -120,10 +120,6 @@ const std::string& package_name() {
   return get_apk_info().packageName;
 }
 
-const std::string& resources_version() {
-  return get_apk_info().resourcesVersion;
-}
-
 const std::string& installer_package_name() {
   return get_apk_info().installerPackageName;
 }
@@ -138,6 +134,10 @@ bool is_system_app() {
 
 int target_sdk_version() {
   return get_apk_info().targetSdkVersion;
+}
+
+const std::string& primary_cpu_abi() {
+  return get_apk_info().primaryCpuAbi;
 }
 
 std::string host_signing_cert_sha256() {

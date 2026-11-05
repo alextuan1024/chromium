@@ -11,12 +11,14 @@
 #include "base/strings/utf_string_conversions.h"
 #include "components/origin_matcher/origin_matcher.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/isolated_world_ids.h"
 #include "content/public/renderer/render_frame.h"
 #include "content/renderer/java/gin_java_bridge_object.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_view.h"
 #include "url/origin.h"
+#include "v8/include/v8-context.h"
 
 namespace content {
 
@@ -36,6 +38,15 @@ void GinJavaBridgeDispatcher::DidClearWindowObject() {
     // Ensure we have a `remote_` if we have named objects.
     CHECK(remote_);
   }
+
+  // Clear the template cache of any existing objects to break reference
+  // cycles holding the old V8 context and window alive.
+  for (const auto& [id, object] : objects_) {
+    if (object) {
+      object->ClearTemplateCache();
+    }
+  }
+
   for (NamedObjectMap::const_iterator iter = named_objects_.begin();
        iter != named_objects_.end(); ++iter) {
     // Always create a new GinJavaBridgeObject, so we don't pull any of the V8
@@ -62,6 +73,29 @@ void GinJavaBridgeDispatcher::DidClearWindowObject() {
         GetRemoteObjectHost()->ObjectWrapperDeleted(iter->second.object_id);
       }
     }
+  }
+}
+
+void GinJavaBridgeDispatcher::WillReleaseScriptContext(
+    v8::Local<v8::Context> context,
+    int32_t world_id) {
+  if (world_id == ISOLATED_WORLD_ID_GLOBAL) {
+    // Objects are only exposed to the main world, so its context going away
+    // means that their document has too. Detach them so that wrappers kept by
+    // another frame stop working. This is not done in DidClearWindowObject()
+    // as Blink can keep the window, and so its objects, across a navigation.
+    //
+    // TODO(crbug.com/575988978): Objects and method callbacks hold a WeakPtr
+    // to the dispatcher but belong to this script context, so they go null
+    // here while the dispatcher lives on. Move `objects_` and the factory into
+    // a per-context object and destroy that instead.
+    weak_ptr_factory_.InvalidateWeakPtrs();
+    for (const auto& [id, object] : objects_) {
+      if (object) {
+        object->Detach();
+      }
+    }
+    objects_.clear();
   }
 }
 

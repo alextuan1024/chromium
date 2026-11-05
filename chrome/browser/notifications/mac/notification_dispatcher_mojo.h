@@ -6,13 +6,16 @@
 #define CHROME_BROWSER_NOTIFICATIONS_MAC_NOTIFICATION_DISPATCHER_MOJO_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 
 #include "base/cancelable_callback.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "chrome/browser/notifications/displayed_notifications_dispatch_callback.h"
 #include "chrome/browser/notifications/mac/notification_dispatcher_mac.h"
 #include "chrome/services/mac_notifications/public/mojom/mac_notifications.mojom.h"
@@ -34,10 +37,10 @@ class NotificationDispatcherMojo
   ~NotificationDispatcherMojo() override;
 
   // NotificationDispatcherMac:
-  void DisplayNotification(
-      NotificationHandler::Type notification_type,
-      Profile* profile,
-      const message_center::Notification& notification) override;
+  void DisplayNotification(NotificationHandler::Type notification_type,
+                           Profile* profile,
+                           const message_center::Notification& notification,
+                           DisplayNotificationCallback callback) override;
   void CloseNotificationWithId(
       const MacNotificationIdentifier& identifier) override;
   void CloseNotificationsWithProfileId(const std::string& profile_id,
@@ -72,12 +75,38 @@ class NotificationDispatcherMojo
     kUnexpected
   };
 
+  enum class DisplayedNotificationsState {
+    // No connection has confirmed zero displayed notifications, and we should
+    // not speculatively relaunch (either startup failed before first response,
+    // or consecutive reconnect attempts failed). `GetDisplayed*` reports
+    // `supports_synchronization = false` so persisted notifications are not
+    // purged.
+    kUnknown,
+    // Chrome confirmed (via `OkayToTerminateService` or
+    // `CloseAllNotifications`) that no notifications are displayed.
+    kConfirmedEmpty,
+    // A service that had responded went away without confirming zero
+    // notifications left (e.g. crash, timeout, or user quit). Relaunch on
+    // demand for Close/GetDisplayed.
+    kMayHaveNotifications,
+    // Same as `kMayHaveNotifications`, after one unanswered unexpected
+    // disconnect (absorbs races with a dying app shim host). A second
+    // consecutive unanswered disconnect transitions to `kUnknown`.
+    kMayHaveNotificationsAfterFailedReconnect,
+  };
+
   void CheckIfServiceCanBeTerminated();
+  void OnServiceCanBeTerminated(base::OnceClosure disconnect_closure,
+                                bool can_terminate);
+  void OnServiceResponded();
   void OnServiceDisconnectedGracefully(ShutdownType shutdown_type);
   bool HasNoDisplayedNotifications() const;
 
   mac_notifications::mojom::MacNotificationService* GetOrCreateService();
 
+  void OnDisplayedNotification(
+      DisplayNotificationCallback callback,
+      mac_notifications::mojom::DisplayNotificationResult result);
   void DispatchGetNotificationsReply(
       GetDisplayedNotificationsCallback callback,
       std::vector<mac_notifications::mojom::NotificationIdentifierPtr>
@@ -94,8 +123,12 @@ class NotificationDispatcherMojo
       handler_{this};
   base::CancelableOnceClosure no_notifications_checker_;
   base::TimeTicks service_start_time_;
+  std::optional<base::TimeTicks> service_first_response_time_;
   base::OneShotTimer service_restart_timer_;
   base::TimeDelta next_service_restart_timer_delay_;
+  DisplayedNotificationsState displayed_notifications_state_ =
+      DisplayedNotificationsState::kUnknown;
+  base::WeakPtrFactory<NotificationDispatcherMojo> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_NOTIFICATIONS_MAC_NOTIFICATION_DISPATCHER_MOJO_H_

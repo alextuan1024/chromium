@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 
 #include "base/cancelable_callback.h"
 #include "base/compiler_specific.h"
@@ -85,6 +86,7 @@ class AUHALStream : public AudioOutputStream {
   AUHALStream(AudioManagerApple* manager,
               const AudioParameters& params,
               AudioDeviceID device,
+              const std::string& device_unique_id,
               const AudioManager::LogCallback& log_callback);
 
   AUHALStream(const AUHALStream&) = delete;
@@ -105,9 +107,6 @@ class AUHALStream : public AudioOutputStream {
 
   AudioDeviceID device_id() const { return device_; }
   size_t requested_buffer_size() const { return params_.frames_per_buffer(); }
-  AudioUnit audio_unit() const {
-    return audio_unit_ ? audio_unit_->audio_unit() : nullptr;
-  }
 
  private:
   // AUHAL callback.
@@ -129,9 +128,6 @@ class AUHALStream : public AudioOutputStream {
 
   // Creates the AUHAL, sets its stream format, buffer-size, etc.
   bool ConfigureAUHAL();
-
-  // Creates the input and output buses.
-  void CreateIOBusses();
 
   // Returns the playout time for a given AudioTimeStamp.
   base::TimeTicks GetPlayoutTime(const AudioTimeStamp* output_time_stamp);
@@ -162,6 +158,9 @@ class AUHALStream : public AudioOutputStream {
   // The audio device to use with the AUHAL.
   // We can potentially handle both input and output with this device.
   const AudioDeviceID device_;
+
+  // Unique ID string of the audio output device (e.g. GUID or "default").
+  const std::string device_unique_id_;
 
   // The AUHAL Audio Unit which talks to |device_|.
   std::unique_ptr<ScopedAudioUnit> audio_unit_;

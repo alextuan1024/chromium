@@ -8,14 +8,17 @@ import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.content.Context;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
+import android.view.ContextThemeWrapper;
 import android.view.View;
 
 import org.junit.Before;
@@ -35,15 +38,16 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.PopupState;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.PopupState;
 import org.chromium.chrome.browser.toolbar.optional_button.ButtonData;
 import org.chromium.chrome.browser.toolbar.optional_button.ButtonData.ButtonSpec;
 import org.chromium.chrome.browser.toolbar.optional_button.ButtonDataImpl;
 import org.chromium.chrome.browser.toolbar.optional_button.OptionalButtonCoordinator;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
+import org.chromium.url.JUnitTestGURLs;
 
 /** Unit tests for {@link LocationBarCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -54,16 +58,16 @@ public class LocationBarCoordinatorUnitTest {
 
     @Mock private UrlBarCoordinator mUrlCoordinator;
     @Mock private FuseboxCoordinator mFuseboxCoordinator;
-    @Mock private View mUrlBar;
-    @Mock private LocationBarLayout mLocationBarLayout;
     @Mock private LocationBarEmbedder mLocationBarEmbedder;
-    @Mock private View mPlusButton;
     @Mock private LocationBarDataProvider mLocationBarDataProvider;
     @Mock private OptionalButtonCoordinator mOptionalButtonCoordinator;
     @Mock private LocationBarMediator mLocationBarMediator;
     @Mock private NewTabPageDelegate mNewTabPageDelegate;
-    @Mock private LocationBarPhone mLocationBarPhone;
-    @Mock private View mOptionalButtonView;
+
+    private Context mContext;
+    private View mUrlBar;
+    private LocationBarLayout mLocationBarLayout;
+    private LocationBarPhone mLocationBarPhone;
 
     // LocationBarCoordinator takes a lot of dependencies and a very busy constructor.
     // This allows us to set up tests to verify logic we need to protect without overwhelming test
@@ -76,6 +80,12 @@ public class LocationBarCoordinatorUnitTest {
 
     @Before
     public void setUp() {
+        mContext =
+                new ContextThemeWrapper(
+                        RuntimeEnvironment.getApplication(), R.style.Theme_BrowserUI_DayNight);
+        mUrlBar = new View(mContext);
+        mLocationBarLayout = new LocationBarLayout(mContext, null);
+
         mCoordinator.setUrlCoordinatorForTesting(mUrlCoordinator);
         mCoordinator.setFuseboxCoordinatorForTesting(mFuseboxCoordinator);
         mCoordinator.setUrlBarForTesting(mUrlBar);
@@ -91,12 +101,6 @@ public class LocationBarCoordinatorUnitTest {
         lenient()
                 .when(mLocationBarDataProvider.getNewTabPageDelegate())
                 .thenReturn(mNewTabPageDelegate);
-        lenient()
-                .when(mLocationBarLayout.findViewById(R.id.fusebox_plus_button))
-                .thenReturn(mPlusButton);
-        lenient()
-                .when(mLocationBarLayout.getContext())
-                .thenReturn(RuntimeEnvironment.getApplication());
         lenient()
                 .when(mFuseboxCoordinator.getFuseboxLayoutModeSupplier())
                 .thenReturn(mFuseboxLayoutModeSupplier);
@@ -204,14 +208,6 @@ public class LocationBarCoordinatorUnitTest {
     }
 
     @Test
-    public void testOnTextWrappingChanged() {
-        mCoordinator.onTextWrappingChanged(/* isWrapping= */ true);
-        verify(mFuseboxCoordinator).onFuseboxTextWrappingChanged(/* isTextWrapping= */ true);
-        verify(mLocationBarMediator).setIsTextWrapping(true);
-        verify(mLocationBarMediator).updateButtonVisibility();
-    }
-
-    @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testOptionalButton_shownThenHidden() {
         ButtonData buttonData = setUpPhoneLayoutWithOptionalButton();
@@ -239,7 +235,8 @@ public class LocationBarCoordinatorUnitTest {
     @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testOptionalButton_hiddenOnNtp() {
         ButtonData buttonData = setUpPhoneLayoutWithOptionalButton();
-        when(mNewTabPageDelegate.isCurrentlyVisible()).thenReturn(true);
+        doReturn(JUnitTestGURLs.NTP_URL).when(mLocationBarDataProvider).getCurrentGurl();
+        lenient().doReturn(true).when(mNewTabPageDelegate).isCurrentlyVisible();
 
         mCoordinator.updateOptionalButton(buttonData);
 
@@ -247,14 +244,27 @@ public class LocationBarCoordinatorUnitTest {
         verify(mOptionalButtonCoordinator, never()).updateButton(any(), anyBoolean());
     }
 
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testOptionalButton_shownWhenNtpNativePageNotYetHidden() {
+        ButtonData buttonData = setUpPhoneLayoutWithOptionalButton();
+        doReturn(JUnitTestGURLs.EXAMPLE_URL).when(mLocationBarDataProvider).getCurrentGurl();
+        // The NTP native page is still attached when the URL first commits to a non-NTP URL.
+        lenient().doReturn(true).when(mNewTabPageDelegate).isCurrentlyVisible();
+
+        mCoordinator.updateOptionalButton(buttonData);
+
+        verify(mOptionalButtonCoordinator).updateButton(buttonData, /* isIncognito= */ false);
+        verify(mOptionalButtonCoordinator, never()).hideButton();
+    }
+
     /**
      * Switches the coordinator to a phone layout hosting an optional button, as the optional button
      * is phone-only, and returns button data eligible to be shown.
      */
     private ButtonData setUpPhoneLayoutWithOptionalButton() {
+        mLocationBarPhone = new LocationBarPhone(mContext, null);
         mCoordinator.setLocationBarLayoutForTesting(mLocationBarPhone);
-        when(mLocationBarPhone.getContext()).thenReturn(RuntimeEnvironment.getApplication());
-        when(mLocationBarPhone.findViewById(R.id.optional_button)).thenReturn(mOptionalButtonView);
         return new ButtonDataImpl(
                 /* canShow= */ true,
                 /* isEnabled= */ true,

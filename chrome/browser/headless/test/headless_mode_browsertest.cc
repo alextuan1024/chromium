@@ -11,6 +11,7 @@
 // providing a compile time condition over the entire file.
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #include <string>
+#include <string_view>
 
 #include "base/check_deref.h"
 #include "base/command_line.h"
@@ -19,6 +20,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
@@ -34,6 +36,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/exclusive_access/browser_view_exclusive_access_context.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
@@ -68,6 +71,7 @@
 #include "ui/display/display_switches.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/switches.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
@@ -175,8 +179,8 @@ IN_PROC_BROWSER_TEST_F(HeadlessModeBrowserTest,
   // exit bubble, and wait for the fullscreen transition to complete.
   ui_test_utils::ToggleFullscreenModeAndWait(browser());
   ASSERT_TRUE(browser()->GetWindow()->IsFullscreen());
-  ASSERT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
-                  ->GetExclusiveAccessBubble());
+  ASSERT_TRUE(BrowserViewExclusiveAccessContext::From(browser())
+                  ->exclusive_access_bubble());
 
   // Wait well past the 1.5s watchdog interval.
   base::RunLoop run_loop;
@@ -198,8 +202,9 @@ class TestInfoBarDelegate : public ConfirmInfoBarDelegate {
 
   static void Create(infobars::ContentInfoBarManager* infobar_manager,
                      int buttons) {
-    infobar_manager->AddInfoBar(
-        CreateConfirmInfoBar(std::unique_ptr<ConfirmInfoBarDelegate>(
+    infobar_manager->AddInfoBar(CreateConfirmInfoBar(
+        ConfirmInfoBarCreationAllowlist::GetPassKeyForTesting(),
+        base::WrapUnique<ConfirmInfoBarDelegate>(
             new TestInfoBarDelegate(buttons))));
   }
 
@@ -394,9 +399,9 @@ IN_PROC_BROWSER_TEST_F(HeadlessModeBrowserTest, HeadlessClipboardCopyPaste) {
   ui::Clipboard* clipboard = ui::Clipboard::GetForCurrentThread();
   ASSERT_TRUE(clipboard);
 
-  static const struct ClipboardBufferInfo {
+  static constexpr struct ClipboardBufferInfo {
     ui::ClipboardBuffer buffer;
-    std::u16string paste_text;
+    std::u16string_view paste_text;
   } clipboard_buffers[] = {
       {ui::ClipboardBuffer::kCopyPaste, u"kCopyPaste"},
       {ui::ClipboardBuffer::kSelection, u"kSelection"},

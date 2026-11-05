@@ -32,8 +32,41 @@ export function getHtml(this: BindingsViolationsElement) {
 <hello-world-child .fooString="${this.value ? 'value' : nothing}">
 </hello-world-child>
 <div .innerHTML="${this.trustedHtml}" .style="${this.errorMessage}"></div>
+<div .innerHTML="${this.trustedHtmlOrString}"></div>
 <div @click="${this.onClick}"></div>
 <div @click="${this.onClick_}"></div>
+<!-- ?disabled disabled="true" .fooString="bar" -->
+<hello-world-child ?fooBoolean="${this.disabled}" ?is-collapsible
+    ?foo-boolean="false" foo-boolean="true" foo-string="true"
+    fooNumber="3" fooString="${this.label}"
+    .fooString="bar" .fooBoolean=" ${this.disabled}"
+    .fooNumber="${this.limits.min}px"
+    foo-number="${this.disabled}" foo-boolean="${this.disabled}"
+    foo-array="${this.label}" foo-object="${this.label}">
+</hello-world-child>
+<hello-world-child .fooString="prefix > ${this.limits.min}"
+    foo-number="${this.limits.min}" foo-string="${this.limits.min}"
+    .afterStaticGt="${this.label}">
+</hello-world-child>
+<hello-world-child .fooString="${this.label} > ${this.limits.min}"
+    .afterDynamicGt="${this.label}">
+</hello-world-child>
+<input readonly="${this.disabled}" tabindex="${this.label}">
+<button disabled="true"></button>
+<div aria-hidden="true" draggable="true" .style="height: ${this.limits.min}px"
+    style="${this.errorMessage}" part="${this.errorMessage}">
+</div>
+<iframe sandbox="${this.errorMessage}"></iframe>
+<div title="a > ${this.label}">Example: foo="${this.limits}"</div>
+<div title="a <b">Example: bar="${this.limits}"</div>
+<svg viewBox="0 0 24 24"></svg>
+<hello-world-child .protectedProp="${this.label}"
+    protected-attr="a > ${this.label}"
+    ?protected-bool="${this.disabled}"
+    .privateProp_="${this.label}"
+    private-attr_="${this.getLabels()}"
+    ?private-bool_="${false}">
+</hello-world-child>
 `;
   // clang-format on
 }

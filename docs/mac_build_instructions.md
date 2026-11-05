@@ -179,16 +179,16 @@ improves link speed. See
 [Linkers for macOS and iOS builds](apple_platform_linkers.md)
 for more information.
 
-#### Use Reclient
+#### Use Remote Execution
 
-In addition, Google employees should use Reclient, a distributed compilation system.
+In addition, Google employees should use RBE, a remote execution system.
 Detailed information is available internally but the relevant gn arg is:
 * `use_remoteexec = true`
 
 Google employees can visit
 [go/building-chrome-mac#using-remote-execution](https://goto.google.com/building-chrome-mac#using-remote-execution)
-for more information. For external contributors, Reclient does not support Mac
-builds.
+for more information. For external contributors, Siso's remote execution with
+rbe-chromium-untrusted does not support Mac builds.
 
 #### CCache
 
@@ -418,6 +418,7 @@ Chromium's checkout contains a lot of files, and building generates many more.
 Spotlight will try to index all of those files, and uses a lot of CPU time
 doing so, especially during a build, which can slow things down.
 
-To prevent the Chromium checkout from being indexed by Spotlight, open System
-Preferences, go to "Spotlight" -> "Privacy" and add your Chromium checkout
-directory to the list of excluded locations.
+To prevent the Chromium checkout from being indexed by Spotlight, open **System
+Settings** -> **Siri & Spotlight** (or **Spotlight**), click **Spotlight
+Privacy...** (or **Search Privacy...**) at the bottom, and add your Chromium
+checkout directory to the list of excluded locations.

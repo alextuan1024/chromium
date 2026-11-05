@@ -170,7 +170,7 @@ TEST_F(WindowUtilTest, EnsureTransientRoots) {
   // neither of them get removed when running EnsureTransientRoots.
   auto window1 = CreateWindowWithAppType();
   auto window2 = CreateWindowWithAppType();
-  std::vector<raw_ptr<aura::Window, VectorExperimental>> window_list = {
+  std::vector<raw_ptr<aura::Window, DanglingUntriaged>> window_list = {
       window1.get(), window2.get()};
   EnsureTransientRoots(&window_list);
   ASSERT_EQ(2u, window_list.size());
@@ -226,7 +226,7 @@ TEST_F(WindowUtilTest,
   WindowState::Get(window.get())
       ->SetStateObject(std::unique_ptr<WindowState::State>(state));
 
-  std::vector<raw_ptr<aura::Window, VectorExperimental>> windows = {
+  std::vector<raw_ptr<aura::Window, DanglingUntriaged>> windows = {
       window.get()};
   MinimizeAndHideWithoutAnimation(windows);
 
@@ -356,26 +356,26 @@ TEST_F(WindowUtilTest, InteriorTargeterWithCustomInsets) {
 TEST_F(WindowUtilTest, PinWindow) {
   auto window_state_delegate = std::make_unique<FakeWindowStateDelegate>();
   auto* window_state_delegate_ptr = window_state_delegate.get();
-  EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 0);
+  EXPECT_EQ(window_state_delegate_ptr->toggle_trusted_pinned_count(), 0);
 
   auto window = CreateWindowWithAppType();
   WindowState* window_state = WindowState::Get(window.get());
   window_state->SetDelegate(std::move(window_state_delegate));
   window_util::PinWindow(window.get(), /* trusted */ false);
   EXPECT_TRUE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_FALSE(WindowState::Get(window.get())->IsLockedFullscreen());
-  EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 1);
+  EXPECT_FALSE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_EQ(window_state_delegate_ptr->toggle_trusted_pinned_count(), 1);
 
   WindowState::Get(window.get())->Restore();
 
   EXPECT_FALSE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_FALSE(WindowState::Get(window.get())->IsLockedFullscreen());
-  EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 2);
+  EXPECT_FALSE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_EQ(window_state_delegate_ptr->toggle_trusted_pinned_count(), 2);
 
   window_util::PinWindow(window.get(), /* trusted */ true);
   EXPECT_TRUE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_TRUE(WindowState::Get(window.get())->IsLockedFullscreen());
-  EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 3);
+  EXPECT_TRUE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_EQ(window_state_delegate_ptr->toggle_trusted_pinned_count(), 3);
 }
 
 TEST_F(WindowUtilTest, PinWindow_TabletMode) {
@@ -383,26 +383,26 @@ TEST_F(WindowUtilTest, PinWindow_TabletMode) {
   Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
   auto window_state_delegate = std::make_unique<FakeWindowStateDelegate>();
   auto* window_state_delegate_ptr = window_state_delegate.get();
-  EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 0);
+  EXPECT_EQ(window_state_delegate_ptr->toggle_trusted_pinned_count(), 0);
 
   auto window = CreateWindowWithAppType();
   WindowState* window_state = WindowState::Get(window.get());
   window_state->SetDelegate(std::move(window_state_delegate));
   window_util::PinWindow(window.get(), /* trusted */ false);
   EXPECT_TRUE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_FALSE(WindowState::Get(window.get())->IsLockedFullscreen());
-  EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 1);
+  EXPECT_FALSE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_EQ(window_state_delegate_ptr->toggle_trusted_pinned_count(), 1);
 
   WindowState::Get(window.get())->Restore();
 
   EXPECT_FALSE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_FALSE(WindowState::Get(window.get())->IsLockedFullscreen());
-  EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 2);
+  EXPECT_FALSE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_EQ(window_state_delegate_ptr->toggle_trusted_pinned_count(), 2);
 
   window_util::PinWindow(window.get(), /* trusted */ true);
   EXPECT_TRUE(WindowState::Get(window.get())->IsPinned());
-  EXPECT_TRUE(WindowState::Get(window.get())->IsLockedFullscreen());
-  EXPECT_EQ(window_state_delegate_ptr->toggle_locked_fullscreen_count(), 3);
+  EXPECT_TRUE(WindowState::Get(window.get())->IsTrustedPinned());
+  EXPECT_EQ(window_state_delegate_ptr->toggle_trusted_pinned_count(), 3);
 }
 
 TEST_F(WindowUtilTest, ShouldRoundThumbnailWindow) {

@@ -20,14 +20,10 @@ class StubDigitalIdentityProvider : public DigitalIdentityProvider {
 
   bool IsLastCommittedOriginLowRisk(
       RenderFrameHost& render_frame_host) const override;
-  DigitalIdentityInterstitialAbortCallback ShowDigitalIdentityInterstitial(
-      WebContents& web_contents,
-      const url::Origin& origin,
-      DigitalIdentityInterstitialType interstitial_type,
-      DigitalIdentityInterstitialCallback callback) override;
   void Get(WebContents*,
            const url::Origin& origin,
            base::ValueView request,
+           UiWarningLevel warning_level,
            DigitalIdentityCallback) override;
   void Create(WebContents*,
               const url::Origin& origin,

@@ -22,8 +22,7 @@
 #include "chrome/browser/task_manager/task_manager_observer.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/global_routing_id.h"
-
-class PrefRegistrySimple;
+#include "content/public/common/child_process_id.h"
 
 namespace content {
 class WebContents;
@@ -38,12 +37,6 @@ class TaskManagerInterface {
  public:
   TaskManagerInterface(const TaskManagerInterface&) = delete;
   TaskManagerInterface& operator=(const TaskManagerInterface&) = delete;
-
-  // Registers the task manager related prefs.
-  static void RegisterPrefs(PrefRegistrySimple* registry);
-
-  // Returns true if the user is allowed to end processes.
-  static bool IsEndProcessEnabled();
 
   // Gets the existing instance of the task manager if any, otherwise it will
   // create it first. Must be called on the UI thread.
@@ -169,7 +162,8 @@ class TaskManagerInterface {
   // value is also 0. For other tasks that represent renderers and other child
   // processes, the return value is whatever unique IDs of their hosts in the
   // browser process.
-  virtual int GetChildProcessUniqueId(TaskId task_id) const = 0;
+  virtual content::ChildProcessId GetChildProcessUniqueId(
+      TaskId task_id) const = 0;
 
   // If the process, in which the task with |task_id| is running, is terminated
   // this gets the termination status. Currently implemented only for Renderer

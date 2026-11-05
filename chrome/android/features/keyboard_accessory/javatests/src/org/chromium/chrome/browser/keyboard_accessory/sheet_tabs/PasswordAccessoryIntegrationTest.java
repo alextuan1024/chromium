@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.keyboard_accessory.sheet_tabs;
 
 import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.isChecked;
@@ -16,10 +15,10 @@ import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.Matchers.containsString;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.isTransformed;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.scrollToLastElement;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.selectTabWithDescription;
-import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.whenDisplayed;
 
 import android.os.Looper;
 
@@ -38,7 +37,6 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Restriction;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper;
 import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.chrome.browser.keyboard_accessory.button_group_component.KeyboardAccessoryButtonGroupView;
@@ -57,7 +55,7 @@ import java.util.concurrent.TimeoutException;
 
 /** Integration tests for password accessory views. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, "show-autofill-signatures"})
+@CommandLineFlags.Add("show-autofill-signatures")
 @DisableIf.Device(DeviceFormFactor.TABLET_OR_DESKTOP) // crbug.com/463649037
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO) // crbug.com/463649037
 @Batch(Batch.PER_CLASS)
@@ -109,12 +107,13 @@ public class PasswordAccessoryIntegrationTest {
         mHelper.focusPasswordField(false);
         mHelper.waitForKeyboardAccessoryToBeShown();
         mHelper.waitForKeyboardToShow();
-        whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
+        waitForView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
+                .performViewAction(
+                        selectTabWithDescription(R.string.password_accessory_sheet_toggle));
 
         // Check that the provided elements are there.
-        whenDisplayed(withText("mayapark@gmail.com"));
-        whenDisplayed(withText("SomeHiddenPassword")).check(matches(isTransformed()));
+        waitForView(withText("mayapark@gmail.com"));
+        waitForView(withText("SomeHiddenPassword")).check(matches(isTransformed()));
     }
 
     private void preparePasswordBridge() {
@@ -140,12 +139,12 @@ public class PasswordAccessoryIntegrationTest {
         // Focus the field to bring up the accessory.
         mHelper.focusPasswordField();
         mHelper.waitForKeyboardAccessoryToBeShown();
-        whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
+        waitForView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
+                .performViewAction(
+                        selectTabWithDescription(R.string.password_accessory_sheet_toggle));
 
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withId(R.id.passwords_sheet), /* atLeast= */ 51)
-                .perform(scrollToLastElement());
+        waitForView(withId(R.id.passwords_sheet)).performViewAction(scrollToLastElement());
         onView(withText(containsString("Manage password"))).check(matches(isDisplayed()));
     }
 
@@ -165,11 +164,12 @@ public class PasswordAccessoryIntegrationTest {
         mHelper.focusPasswordField(false);
         mHelper.waitForKeyboardAccessoryToBeShown();
         mHelper.waitForKeyboardToShow();
-        whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
+        waitForView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
+                .performViewAction(
+                        selectTabWithDescription(R.string.password_accessory_sheet_toggle));
 
         // Click the suggestion.
-        whenDisplayed(withText("ShorterPassword")).perform(click());
+        waitForView(withText("ShorterPassword")).click();
         // The callback should have triggered and set the reference to the selected Item.
         CriteriaHelper.pollInstrumentationThread(
                 () -> mHelper.getPasswordText().equals("ShorterPassword"));
@@ -187,10 +187,11 @@ public class PasswordAccessoryIntegrationTest {
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Click the tab to show the sheet and hide the keyboard.
-        whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
+        waitForView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
+                .performViewAction(
+                        selectTabWithDescription(R.string.password_accessory_sheet_toggle));
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withId(R.id.passwords_sheet), /* atLeast= */ 51);
+        waitForView(withId(R.id.passwords_sheet));
         onView(withText(containsString("No saved passwords"))).check(matches(isDisplayed()));
     }
 
@@ -205,13 +206,14 @@ public class PasswordAccessoryIntegrationTest {
         mHelper.focusPasswordField(false);
         mHelper.waitForKeyboardAccessoryToBeShown();
         mHelper.waitForKeyboardToShow();
-        whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
+        waitForView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
+                .performViewAction(
+                        selectTabWithDescription(R.string.password_accessory_sheet_toggle));
 
-        whenDisplayed(withId(R.id.option_toggle_switch)).check(matches(isNotChecked()));
+        waitForView(withId(R.id.option_toggle_switch)).check(matches(isNotChecked()));
         onView(withId(R.id.option_toggle_subtitle)).check(matches(withText(R.string.text_off)));
 
-        whenDisplayed(withId(R.id.option_toggle_switch)).perform(click());
+        waitForView(withId(R.id.option_toggle_switch)).click();
         onView(withId(R.id.option_toggle_switch)).check(matches(isChecked()));
         onView(withId(R.id.option_toggle_subtitle)).check(matches(withText(R.string.text_on)));
     }

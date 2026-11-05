@@ -16,14 +16,13 @@
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "components/sessions/core/session_types.h"
 #include "components/sync_sessions/synced_session.h"
-#include "ui/base/window_open_disposition.h"
 
 class GURL;
 
 namespace sessions_helper {
 
-using SyncedSessionVector = std::vector<
-    raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>;
+using SyncedSessionVector =
+    std::vector<raw_ptr<const sync_sessions::SyncedSession, DanglingUntriaged>>;
 using ScopedWindowMap =
     std::map<SessionID, std::unique_ptr<sync_sessions::SyncedSessionWindow>>;
 

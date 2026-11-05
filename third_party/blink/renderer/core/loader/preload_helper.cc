@@ -173,11 +173,12 @@ KURL GetBestFitImageURL(const Document& document,
                         const KURL& href,
                         const String& image_srcset,
                         const String& image_sizes) {
-  float source_size = SizesAttributeParser(media_values, image_sizes,
-                                           document.GetExecutionContext())
-                          .Size();
+  SizesAttributeParser sizes_parser(media_values, image_sizes,
+                                    document.GetExecutionContext());
+  // A link element has no dimension attribute aspect ratio.
   ImageCandidate candidate = BestFitSourceForImageAttributes(
-      media_values->DevicePixelRatio(), source_size, href, image_srcset);
+      media_values->DevicePixelRatio(), sizes_parser.Size(),
+      /*default_aspect_ratio=*/std::nullopt, href, image_srcset);
   return base_url.IsNull() ? document.CompleteURL(candidate.ToString())
                            : KURL(base_url, candidate.ToString());
 }
@@ -345,11 +346,11 @@ void PreloadHelper::DnsPrefetchIfNeeded(
   }
 }
 
-void PreloadHelper::PreconnectIfNeeded(
-    const LinkLoadParameters& params,
-    Document* document,
-    LocalFrame* frame,
-    LinkCaller caller) {
+void PreloadHelper::PreconnectIfNeeded(const LinkLoadParameters& params,
+                                       Document* document,
+                                       LocalFrame* frame,
+                                       LinkCaller caller,
+                                       const DOMWrapperWorld* initiator_world) {
   if (document && document->Loader() && document->Loader()->Archive()) {
     return;
   }
@@ -386,7 +387,8 @@ void PreloadHelper::PreconnectIfNeeded(
     }
     if (document && document->Fetcher()) {
       document->Fetcher()->RecordPreconnect(params.href, params.cross_origin,
-                                            /*early_hints=*/false);
+                                            /*early_hints=*/false,
+                                            initiator_world);
     }
   }
 }
@@ -536,11 +538,11 @@ void PreloadHelper::PreloadIfNeeded(
       resource_type == ResourceType::kFont) {
     if (!integrity_attr.empty()) {
       IntegrityMetadataSet metadata_set;
-      SubresourceIntegrity::ParseIntegrityAttribute(
-          integrity_attr, metadata_set, document.GetExecutionContext());
+      SubresourceIntegrity::ParseIntegrityAttribute(integrity_attr,
+                                                    metadata_set);
       link_fetch_params.SetIntegrityMetadata(metadata_set);
       link_fetch_params.MutableResourceRequest().SetFetchIntegrity(
-          integrity_attr, document.GetExecutionContext());
+          integrity_attr);
     }
   } else {
     if (!integrity_attr.empty()) {
@@ -732,8 +734,7 @@ void PreloadHelper::ModulePreloadIfNeeded(
   if (!integrity_value.empty()) {
     IntegrityReport integrity_report;
     SubresourceIntegrity::ParseIntegrityAttribute(
-        params.integrity, integrity_metadata, document.GetExecutionContext(),
-        &integrity_report);
+        params.integrity, integrity_metadata, &integrity_report);
     integrity_report.SendReports(document.GetExecutionContext());
   } else if (integrity_value.IsNull()) {
     // Step 10. "If el does not have an integrity attribute, then set integrity
@@ -872,7 +873,8 @@ void PreloadHelper::LoadLinksFromHeader(
     const ViewportDescription* viewport_description,
     std::unique_ptr<AlternateSignedExchangeResourceInfo>
         alternate_resource_info,
-    const base::UnguessableToken* recursive_prefetch_token) {
+    const base::UnguessableToken* recursive_prefetch_token,
+    const DOMWrapperWorld* initiator_world) {
   if (header_value.empty())
     return;
 
@@ -1001,7 +1003,8 @@ void PreloadHelper::LoadLinksFromHeader(
     if (is_network_hint_allowed) {
       DnsPrefetchIfNeeded(params, document, &frame, kLinkCalledFromHeader);
 
-      PreconnectIfNeeded(params, document, &frame, kLinkCalledFromHeader);
+      PreconnectIfNeeded(params, document, &frame, kLinkCalledFromHeader,
+                         initiator_world);
     }
     if (is_resource_load_allowed || is_compression_dictionary_load_allowed) {
       DCHECK(document);

@@ -17,12 +17,15 @@
 #include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/location.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_util.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/version_info/version_info.h"
 #include "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
+#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/browser/data_quality/validation.h"
 #include "components/autofill/core/browser/field_types.h"
@@ -45,18 +48,22 @@
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/autofill_regexes.h"
 #include "components/autofill/core/common/credit_card_number_validation.h"
+#include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_field_data.h"
+#include "components/autofill/core/common/html_field_types.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/prefs/pref_service.h"
 #include "components/webdata/common/web_data_results.h"
 #include "components/webdata/common/web_data_service_base.h"
+#include "url/gurl.h"
 
 namespace autofill {
 
 namespace {
 // Returns true if the field type is eligible to be saved in the autocomplete
-// history. Some types (promo codes, IBANs, CCs, CVCs) are excluded.
+// history. Some types (promo codes, IBANs, CCs, CVCs, passwords, one-time
+// codes) are excluded.
 bool IsPredictedFieldTypeSaveable(const AutofillField* field) {
   if (!field) {
     return true;
@@ -68,6 +75,12 @@ bool IsPredictedFieldTypeSaveable(const AutofillField* field) {
       case CREDIT_CARD_VERIFICATION_CODE:
       case CREDIT_CARD_STANDALONE_VERIFICATION_CODE:
       case CREDIT_CARD_NUMBER:
+      case PASSWORD:
+      case ACCOUNT_CREATION_PASSWORD:
+      case NEW_PASSWORD:
+      case PROBABLY_NEW_PASSWORD:
+      case CONFIRMATION_PASSWORD:
+      case ONE_TIME_CODE:
         return false;
       case NO_SERVER_DATA:
       case UNKNOWN_TYPE:
@@ -100,8 +113,6 @@ bool IsPredictedFieldTypeSaveable(const AutofillField* field) {
       case CREDIT_CARD_TYPE:
       case COMPANY_NAME:
       case MERCHANT_EMAIL_SIGNUP:
-      case PASSWORD:
-      case ACCOUNT_CREATION_PASSWORD:
       case ADDRESS_HOME_STREET_ADDRESS:
       case ADDRESS_HOME_SORTING_CODE:
       case ADDRESS_HOME_DEPENDENT_LOCALITY:
@@ -109,13 +120,10 @@ bool IsPredictedFieldTypeSaveable(const AutofillField* field) {
       case NOT_ACCOUNT_CREATION_PASSWORD:
       case USERNAME:
       case USERNAME_AND_EMAIL_ADDRESS:
-      case NEW_PASSWORD:
-      case PROBABLY_NEW_PASSWORD:
       case NOT_NEW_PASSWORD:
       case CREDIT_CARD_NAME_FIRST:
       case CREDIT_CARD_NAME_LAST:
       case PHONE_HOME_EXTENSION:
-      case CONFIRMATION_PASSWORD:
       case AMBIGUOUS_TYPE:
       case SEARCH_TERM:
       case PRICE:
@@ -138,7 +146,6 @@ bool IsPredictedFieldTypeSaveable(const AutofillField* field) {
       case PHONE_HOME_NUMBER_PREFIX:
       case PHONE_HOME_NUMBER_SUFFIX:
       case NUMERIC_QUANTITY:
-      case ONE_TIME_CODE:
       case DELIVERY_INSTRUCTIONS:
       case ADDRESS_HOME_OVERFLOW:
       case ADDRESS_HOME_LANDMARK:
@@ -207,16 +214,15 @@ bool IsPredictedFieldTypeSaveable(const AutofillField* field) {
 
 // An equivalent of `IsPredictedFieldTypeSaveable` that operates on the values
 // of the HTML autocomplete attribute. It serves as an additional validation
-// e.g. for cases when predicted type is `UNKNOWN_TYPE`.
-bool IsHtmlFieldTypeSaveable(const AutofillField* field) {
-  if (!field) {
-    return true;
-  }
-  switch (field->html_type()) {
+// e.g. for cases when predicted type is `UNKNOWN_TYPE` or when the submitted
+// form is not cached.
+bool IsHtmlFieldTypeSaveable(HtmlFieldType field_type) {
+  switch (field_type) {
     case HtmlFieldType::kCreditCardVerificationCode:
     case HtmlFieldType::kCreditCardNumber:
     case HtmlFieldType::kIban:
     case HtmlFieldType::kMerchantPromoCode:
+    case HtmlFieldType::kOneTimeCode:
       return false;
     case HtmlFieldType::kUnspecified:
     case HtmlFieldType::kName:
@@ -261,11 +267,60 @@ bool IsHtmlFieldTypeSaveable(const AutofillField* field) {
     case HtmlFieldType::kCreditCardExpDate4DigitYear:
     case HtmlFieldType::kCreditCardExp2DigitYear:
     case HtmlFieldType::kCreditCardExp4DigitYear:
-    case HtmlFieldType::kOneTimeCode:
     case HtmlFieldType::kUnrecognized:
       return true;
   }
   NOTREACHED();
+}
+
+// Checks both the live `field.parsed_autocomplete()` and the cached
+// `autofill_field->html_type()`:
+// - `field.parsed_autocomplete()` covers uncached form submissions (`form` is
+//   null) and dynamically injected fields (`autofill_field` is null).
+// - `autofill_field->html_type()` covers cached fields whose `autocomplete`
+//   attribute was dynamically removed by JavaScript before submission
+//   (`FormStructure::UpdateFormData()` preserves the previously seen
+//   `html_type()` when the new attribute is empty).
+bool IsHtmlFieldTypeSaveable(const FormFieldData& field,
+                             const AutofillField* autofill_field) {
+  // Autofill does not parse password-related autocomplete attributes into
+  // `HtmlFieldType` (they map to `HtmlFieldType::kUnrecognized`), so check for
+  // them directly on the attribute string.
+  if (field.autocomplete_attribute().contains("current-password") ||
+      field.autocomplete_attribute().contains("new-password")) {
+    return false;
+  }
+  return (!field.parsed_autocomplete() ||
+          IsHtmlFieldTypeSaveable(field.parsed_autocomplete()->field_type)) &&
+         (!autofill_field ||
+          IsHtmlFieldTypeSaveable(autofill_field->html_type()));
+}
+
+// Collects all policy data categories associated with `field` and
+// `autofill_field`. Including HTML autocomplete types ensures that category
+// toggles (e.g., `kAutofillCreditCardEnabled`) and `AutofillTypesBlocked`
+// enterprise policies are enforced even when `form` or `autofill_field` is
+// null, or when `autofill_field->Type()` was rationalized to `UNKNOWN_TYPE`.
+DenseSet<AutofillClient::AutofillPolicyDataCategory>
+GetPolicyDataCategoriesForField(const FormFieldData& field,
+                                const AutofillField* autofill_field) {
+  DenseSet<AutofillClient::AutofillPolicyDataCategory> categories;
+  auto add_type = [&](const AutofillType& type) {
+    categories.insert_all(
+        AutofillPolicyService::GetAutofillPolicyDataCategoriesForType(type));
+  };
+  auto add_html_type = [&](HtmlFieldType html_type) {
+    add_type(
+        AutofillType(HtmlFieldTypeToBestCorrespondingFieldType(html_type)));
+  };
+  if (autofill_field) {
+    add_type(autofill_field->Type());
+    add_html_type(autofill_field->html_type());
+  }
+  if (field.parsed_autocomplete()) {
+    add_html_type(field.parsed_autocomplete()->field_type);
+  }
+  return categories;
 }
 
 // Returns true if the given `field` in `form` and its value are valid to be
@@ -275,7 +330,7 @@ bool IsHtmlFieldTypeSaveable(const AutofillField* field) {
 //  - neither empty nor whitespace-only value
 //  - text field
 //  - autocomplete is not disabled
-//  - field data category is not blocked by policy for the form's URL
+//  - field data category is not blocked by policy for the form's or field's URL
 //  - field type is eligible (e.g. not a CVC or promo code)
 //  - field was not autofilled by a structured product (e.g., Address,
 //    Payments)
@@ -316,15 +371,22 @@ bool IsFieldValueSaveable(const FormFieldData& field,
   const AutofillField* autofill_field =
       form ? form->GetFieldById(field.global_id()) : nullptr;
 
-  if (pref_service && form && autofill_field) {
-    const GURL& url = form->main_frame_origin().GetURL();
+  if (pref_service) {
+    const auto is_category_blocked_for_url =
+        [&](const GURL& url,
+            AutofillClient::AutofillPolicyDataCategory category) {
+          return AutofillPolicyService::IsAutofillTypeBlockedByPolicyFromPref(
+              *pref_service, url, category);
+        };
+    const GURL field_url = field.origin().GetURL();
+    const GURL main_frame_url =
+        form ? form->main_frame_origin().GetURL() : GURL();
     if (std::ranges::any_of(
-            AutofillPolicyService::GetAutofillPolicyDataCategoriesForType(
-                autofill_field->Type()),
+            GetPolicyDataCategoriesForField(field, autofill_field),
             [&](AutofillClient::AutofillPolicyDataCategory category) {
-              return AutofillPolicyService::
-                  IsAutofillTypeBlockedByPolicyFromPref(*pref_service, url,
-                                                        category);
+              return is_category_blocked_for_url(field_url, category) ||
+                     (form && main_frame_url != field_url &&
+                      is_category_blocked_for_url(main_frame_url, category));
             })) {
       return false;
     }
@@ -337,21 +399,27 @@ bool IsFieldValueSaveable(const FormFieldData& field,
   }
 
   // Reject fields with HTML types that are ineligible for autocomplete.
-  if (!IsHtmlFieldTypeSaveable(autofill_field)) {
+  if (!IsHtmlFieldTypeSaveable(field, autofill_field)) {
     return false;
   }
 
-  if (autofill_field &&
-      autofill_field->all_modifiers().contains(FieldModifier::kAutofill) &&
-      (autofill_field->last_modifier() != FieldModifier::kUser ||
-       autofill_field->filling_product() != FillingProduct::kAutocomplete)) {
-    // If a field has been autofilled by a structured product (e.g. Address,
-    // Payments, Autofill AI), we avoid saving the submitted value to
-    // Autocomplete, even if the user edited it.
-    //
-    // However, if the field was filled by Autocomplete and then edited by
-    // the user, we should save the edited value as it represents a new
-    // user-edited autocomplete value.
+  // Fall back to `field.is_autofilled_according_to_renderer()` when
+  // `autofill_field` is unavailable or lost its modifier history (e.g. uncached
+  // form submission, dynamically injected field, or cache eviction). Blink and
+  // iOS set this flag on autofill and clear it if the user edits the field.
+  const bool was_autofilled =
+      (autofill_field &&
+       autofill_field->all_modifiers().contains(FieldModifier::kAutofill)) ||
+      field.is_autofilled_according_to_renderer();
+  const bool was_autocompleted_and_later_modified =
+      autofill_field &&
+      autofill_field->filling_product() == FillingProduct::kAutocomplete &&
+      autofill_field->last_modifier() == FieldModifier::kUser;
+
+  // Reject a field if it was autofilled by a structured product (e.g. Address,
+  // Payments, Autofill AI). The exception is when the user used Autocomplete
+  // and modified the value afterwards.
+  if (was_autofilled && !was_autocompleted_and_later_modified) {
     return false;
   }
 
@@ -413,6 +481,16 @@ AutocompleteHistoryManager::AutocompleteHistoryManager(
           weak_ptr_factory_.GetWeakPtr(),
           /*new_migration_generation=*/expected_migration_generation));
     }
+  }
+
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillRecordAutocompleteTableStats)) {
+    // Delay the query to avoid impact on startup.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&AutocompleteHistoryManager::QueryAutocompleteTableStats,
+                       weak_ptr_factory_.GetWeakPtr()),
+        kTableStatsRecordingDelay);
   }
 }
 
@@ -544,7 +622,9 @@ bool AutocompleteHistoryManager::IsFieldNameMeaningfulForAutocomplete(
 void AutocompleteHistoryManager::OnAutofillCleanupReturned(
     WebDataServiceBase::Handle current_handle,
     std::unique_ptr<WDTypedResult> result) {
-  DCHECK(result);
+  if (!result) {
+    return;
+  }
   DCHECK_EQ(AUTOFILL_CLEANUP_RESULT, result->GetType());
   if (!static_cast<const WDResult<bool>*>(result.get())->GetValue()) {
     DLOG(WARNING) << "Autofill cleanup returned false. This should not happen.";
@@ -559,7 +639,9 @@ void AutocompleteHistoryManager::OnLegacyTableDataMigrationReturned(
     int new_migration_generation,
     WebDataServiceBase::Handle current_handle,
     std::unique_ptr<WDTypedResult> migration_result) {
-  DCHECK(migration_result);
+  if (!migration_result) {
+    return;
+  }
   DCHECK_EQ(BOOL_RESULT, migration_result->GetType());
   const WDResult<bool>* bool_result =
       static_cast<const WDResult<bool>*>(migration_result.get());
@@ -568,6 +650,24 @@ void AutocompleteHistoryManager::OnLegacyTableDataMigrationReturned(
         prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration,
         new_migration_generation);
   }
+}
+
+void AutocompleteHistoryManager::QueryAutocompleteTableStats() {
+  profile_database_->GetAutocompleteTableStats(base::BindOnce(
+      &AutocompleteHistoryManager::OnAutocompleteTableStatsReturned,
+      weak_ptr_factory_.GetWeakPtr()));
+}
+
+void AutocompleteHistoryManager::OnAutocompleteTableStatsReturned(
+    WebDataServiceBase::Handle current_handle,
+    std::unique_ptr<WDTypedResult> result) {
+  if (!result) {
+    return;
+  }
+  DCHECK_EQ(AUTOCOMPLETE_TABLE_STATS, result->GetType());
+  const auto* stats_result =
+      static_cast<const WDResult<AutocompleteTableStats>*>(result.get());
+  AutofillMetrics::LogAutocompleteTableStats(stats_result->GetValue());
 }
 
 }  // namespace autofill

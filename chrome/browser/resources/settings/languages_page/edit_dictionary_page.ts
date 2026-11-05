@@ -11,6 +11,7 @@ import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import 'chrome://resources/cr_elements/cr_input/cr_input.js';
 import 'chrome://resources/cr_elements/icons.html.js';
+import '../focus_list_container.js';
 import '../settings_page/settings_subpage.js';
 
 import {PrefServiceObserverMixinLit} from '/shared/settings/prefs2/pref_service_observer_mixin_lit.js';
@@ -26,8 +27,8 @@ import {getCss} from './edit_dictionary_page.css.js';
 import {getHtml} from './edit_dictionary_page.html.js';
 import {LanguagesBrowserProxyImpl} from './languages_browser_proxy.js';
 
-// Max valid word size defined in
-// https://cs.chromium.org/chromium/src/components/spellcheck/common/spellcheck_common.h?l=28
+// Max valid word size in UTF-8 bytes, see kMaxCustomDictionaryWordBytes in
+// https://cs.chromium.org/chromium/src/components/spellcheck/common/spellcheck_common.h
 const MAX_CUSTOM_DICTIONARY_WORD_BYTES = 99;
 
 export interface SettingsEditDictionaryPageElement {
@@ -141,7 +142,11 @@ export class SettingsEditDictionaryPageElement extends
   }
 
   private newWordIsTooLong_(): boolean {
-    return this.getTrimmedNewWord_().length > MAX_CUSTOM_DICTIONARY_WORD_BYTES;
+    // The limit applies to the UTF-8 encoded word, so count bytes rather than
+    // UTF-16 code units, otherwise words with non-ASCII characters can pass
+    // this check and then be silently dropped by the backend.
+    return new TextEncoder().encode(this.getTrimmedNewWord_()).length >
+        MAX_CUSTOM_DICTIONARY_WORD_BYTES;
   }
 
   /**
@@ -160,7 +165,7 @@ export class SettingsEditDictionaryPageElement extends
    * Handles updates to the word list. Additions are unshifted to the top
    * of the list so that users can see them easily.
    */
-  private async onCustomDictionaryChanged_(added: string[], removed: string[]) {
+  private onCustomDictionaryChanged_(added: string[], removed: string[]) {
     const wasEmpty = this.words_.length === 0;
 
     for (const word of removed) {
@@ -185,16 +190,6 @@ export class SettingsEditDictionaryPageElement extends
     }
 
     this.requestUpdate();
-
-    if (removed.length > 0) {
-      await this.updateComplete;
-      const focused = this.shadowRoot.querySelector('.list-item:focus-within');
-      if (!focused) {
-        const toFocus = this.shadowRoot.querySelector<HTMLElement>(
-            '.list-item:last-of-type cr-icon-button');
-        toFocus?.focus();
-      }
-    }
   }
 
   /**

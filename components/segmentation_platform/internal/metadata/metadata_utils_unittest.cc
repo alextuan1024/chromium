@@ -11,7 +11,6 @@
 #include "base/containers/span.h"
 #include "base/metrics/metrics_hashes.h"
 #include "components/segmentation_platform/internal/database/ukm_types.h"
-#include "components/segmentation_platform/internal/execution/processing/query_processor.h"
 #include "components/segmentation_platform/internal/metadata/metadata_writer.h"
 #include "components/segmentation_platform/internal/post_processor/post_processing_test_utils.h"
 #include "components/segmentation_platform/public/proto/aggregation.pb.h"
@@ -404,6 +403,18 @@ TEST_F(MetadataUtilsTest, ValidateMetadataAndInputFeatures) {
   EXPECT_EQ(metadata_utils::ValidationResult::kValidationSuccess,
             metadata_utils::ValidateMetadataAndFeatures(metadata));
 
+  // Verify that sql_feature is validated with ValidateMetadataSqlFeature.
+  auto* input3 = metadata.add_input_features();
+  proto::SqlFeature* sql_feature = input3->mutable_sql_feature();
+  EXPECT_EQ(metadata_utils::ValidationResult::kFeatureSqlQueryEmpty,
+            metadata_utils::ValidateMetadataAndFeatures(metadata));
+  sql_feature->set_sql("SELECT COUNT(*) FROM metrics WHERE param = ?");
+  EXPECT_EQ(metadata_utils::ValidationResult::kFeatureBindValuesInvalid,
+            metadata_utils::ValidateMetadataAndFeatures(metadata));
+  sql_feature->set_sql("SELECT COUNT(*) FROM metrics");
+  EXPECT_EQ(metadata_utils::ValidationResult::kValidationSuccess,
+            metadata_utils::ValidateMetadataAndFeatures(metadata));
+
   // Verify that setting both features and input_features list is invalid.
   auto* feature3 = metadata.add_features();
   feature3->set_type(proto::SignalType::HISTOGRAM_VALUE);
@@ -418,7 +429,7 @@ TEST_F(MetadataUtilsTest, ValidateMetadataAndInputFeatures) {
 
 TEST_F(MetadataUtilsTest, MetadataIndexedTensorsValidation) {
   // Empty indexed tensors are valid.
-  processing::QueryProcessor::IndexedTensors tensor;
+  processing::IndexedTensors tensor;
   EXPECT_EQ(
       metadata_utils::ValidationResult::kValidationSuccess,
       metadata_utils::ValidateIndexedTensors(tensor, /* expected_size */ 0));

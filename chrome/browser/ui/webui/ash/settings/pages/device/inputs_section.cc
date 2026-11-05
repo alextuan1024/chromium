@@ -16,7 +16,7 @@
 #include "chrome/browser/ash/input_method/input_method_settings.h"
 #include "chrome/browser/ui/webui/ash/settings/os_settings_features_util.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
-#include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/prefs/pref_service.h"
@@ -285,13 +285,8 @@ void AddInputMethodOptionsLoadTimeData(
   html_source->AddLocalizedStrings(kLocalizedStrings);
   html_source->AddBoolean("isPhysicalKeyboardAutocorrectAllowed",
                           is_physical_keyboard_autocorrect_allowed);
-  html_source->AddBoolean(
-      "isPhysicalKeyboardPredictiveWritingAllowed",
-      base::FeatureList::IsEnabled(features::kAssistMultiWord) &&
-          is_physical_keyboard_predictive_writing_allowed);
-  html_source->AddBoolean(
-      "autocorrectEnableByDefault",
-      base::FeatureList::IsEnabled(features::kAutocorrectByDefault));
+  html_source->AddBoolean("isPhysicalKeyboardPredictiveWritingAllowed",
+                          is_physical_keyboard_predictive_writing_allowed);
 }
 
 }  // namespace
@@ -347,10 +342,6 @@ void InputsSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
        IDS_OS_SETTINGS_LANGUAGES_SEARCH_INPUT_METHODS_LABEL},
       {"inputMethodNotAllowed",
        IDS_OS_SETTINGS_LANGUAGES_INPUT_METHOD_NOT_ALLOWED},
-      {"inputMethodLanguagePacksGeneralError",
-       IDS_OS_SETTINGS_INPUT_METHOD_LANGUAGE_PACKS_GENERAL_ERROR},
-      {"inputMethodLanguagePacksNeedsRebootError",
-       IDS_OS_SETTINGS_INPUT_METHOD_LANGUAGE_PACKS_NEEDS_REBOOT_ERROR},
       {"spellCheckTitle", IDS_OS_SETTINGS_LANGUAGES_SPELL_CHECK_TITLE},
       {"spellAndGrammarCheckTitle",
        IDS_OS_SETTINGS_LANGUAGES_SPELL_AND_GRAMMAR_CHECK_TITLE},
@@ -461,9 +452,6 @@ void InputsSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
       "onDeviceGrammarCheckEnabled",
       base::FeatureList::IsEnabled(features::kOnDeviceGrammarCheck));
 
-  html_source->AddBoolean(
-      "languagePacksInSettingsEnabled",
-      base::FeatureList::IsEnabled(features::kLanguagePacksInSettings));
   // TODO(b/290861003): Update the settings code and remove this.
   html_source->AddBoolean("isShortcutCustomizationEnabled", true);
 
@@ -566,7 +554,7 @@ void InputsSection::UpdateSpellCheckSearchTags() {
 
 void InputsSection::UpdateAutocorrectTags(
     input_method::InputMethodManager* manager) {
-  DCHECK(manager);
+  CHECK(manager, base::NotFatalUntil::M162);
   const std::string engine_id =
       extension_ime_util::GetComponentIDByInputMethodID(
           manager->GetActiveIMEState()->GetCurrentInputMethod().id());

@@ -24,7 +24,6 @@
 #include "base/values.h"
 #include "components/url_formatter/url_fixer.h"
 #include "components/url_matcher/url_matcher.h"
-#include "crypto/sha2.h"
 #include "net/base/hash_value.h"
 #include "net/base/host_port_pair.h"
 #include "net/cert/asn1_util.h"
@@ -285,7 +284,7 @@ void ChromeRequireCTDelegate::AddFilters(
     // Parse the pattern just to the hostname, ignoring all other portions of
     // the URL.
     url::Parsed parsed;
-    std::string ignored_scheme = url_formatter::SegmentURL(pattern, &parsed);
+    url_formatter::SegmentURL(pattern, &parsed);
     if (parsed.host.is_empty())
       continue;  // If there is no host to match, can't apply the filter.
 

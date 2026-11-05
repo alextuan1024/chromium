@@ -528,7 +528,9 @@ public class BookmarksTest {
                                 id,
                                 specifics.getGuid(),
                                 specifics.getLegacyCanonicalizedTitle(),
-                                entity.getFolder() ? null : specifics.getUrl(),
+                                specifics.getType() == BookmarkSpecifics.Type.FOLDER
+                                        ? null
+                                        : specifics.getUrl(),
                                 parentId,
                                 specifics.getParentGuid()));
             }

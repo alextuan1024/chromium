@@ -31,6 +31,7 @@ const CGFloat kInputPlateIpadWindowControlsOffset = 70.0f;
 /// The trailing and top padding for the input plate container.
 const CGFloat kInputPlateTrailingPadding = 8.0f;
 const CGFloat kInputPlateTopPadding = 4.0f;
+const CGFloat kMinInputPlateTopPadding = 8.0f;
 /// The size for the close button.
 const CGFloat kCloseButtonSize = 30.0f;
 /// The ammount of padding to add vertically to the incognito view content.
@@ -438,12 +439,26 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
       AddSameConstraintsToSides(_progressiveBlurEffect, safeAreaGuide,
                                 LayoutSides::kTop | LayoutSides::kHorizontal);
 
+      CGFloat leadingMargin = kInputPlateMargin;
+      if (self.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPad &&
+          !ShouldApplyOmniboxPopoutLayout(self)) {
+        BOOL isRTL = [self.view effectiveUserInterfaceLayoutDirection] ==
+                     UIUserInterfaceLayoutDirectionRightToLeft;
+        if (isRTL) {
+          // Close button is on the trailing end in RTL, so update trailing end.
+          closeButtonTrailingConstraint.constant =
+              -kInputPlateIpadWindowControlsOffset;
+        } else {
+          leadingMargin = kInputPlateIpadWindowControlsOffset;
+        }
+      }
+
       _constraintToCloseButton = [_inputViewController.view.trailingAnchor
           constraintEqualToAnchor:_closeButton.leadingAnchor
                          constant:-kInputPlateTrailingPadding];
       _constraintToLeadingEdge = [_inputViewController.view.leadingAnchor
           constraintEqualToAnchor:safeAreaGuide.leadingAnchor
-                         constant:kInputPlateMargin];
+                         constant:leadingMargin];
 
       auto constraintToMargin = [_inputViewController.view.trailingAnchor
           constraintEqualToAnchor:_closeButton.trailingAnchor
@@ -453,6 +468,15 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
       CGFloat closeButtonTopMargin = AlignComposeboxCloseButtonToInputPlateTop()
                                          ? 0
                                          : kCloseButtonTopMargin;
+
+      NSLayoutConstraint* inputPlateTopConstraint =
+          [_inputViewController.view.topAnchor
+              constraintEqualToAnchor:safeAreaGuide.topAnchor
+                             constant:kInputPlateTopPadding];
+      // Lower priority by 1 so the required minimum top padding constraint
+      // against `self.view.topAnchor` can take precedence when the top safe
+      // area inset is zero or smaller than `kMinInputPlateTopPadding`.
+      inputPlateTopConstraint.priority = UILayoutPriorityRequired - 1;
 
       [_constraintsForCurrentPosition addObjectsFromArray:@[
         _constraintToCloseButton,
@@ -465,9 +489,13 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
             constraintEqualToAnchor:safeAreaGuide.leadingAnchor],
         [_omniboxPopupContainer.trailingAnchor
             constraintEqualToAnchor:safeAreaGuide.trailingAnchor],
+        inputPlateTopConstraint,
         [_inputViewController.view.topAnchor
-            constraintEqualToAnchor:safeAreaGuide.topAnchor
-                           constant:kInputPlateTopPadding],
+            constraintGreaterThanOrEqualToAnchor:safeAreaGuide.topAnchor
+                                        constant:kInputPlateTopPadding],
+        [_inputViewController.view.topAnchor
+            constraintGreaterThanOrEqualToAnchor:self.view.topAnchor
+                                        constant:kMinInputPlateTopPadding],
         [_inputViewController.view.bottomAnchor
             constraintLessThanOrEqualToAnchor:self.view.keyboardLayoutGuide
                                                   .topAnchor
@@ -497,54 +525,26 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
       AddSameConstraintsToSides(_progressiveBlurEffect, safeAreaGuide,
                                 LayoutSides::kHorizontal);
 
-      CGFloat leadingMargin = kInputPlateIpadMargin;
-      if (!ShouldApplyOmniboxPopoutLayout(self)) {
-        BOOL isRTL = [self.view effectiveUserInterfaceLayoutDirection] ==
-                     UIUserInterfaceLayoutDirectionRightToLeft;
-        if (isRTL) {
-          // Close button is on the trailing end in RTL, so update trailing end.
-          closeButtonTrailingConstraint.constant =
-              -kInputPlateIpadWindowControlsOffset;
-        } else {
-          leadingMargin = kInputPlateIpadWindowControlsOffset;
-        }
-      }
-
       [_constraintsForCurrentPosition addObjectsFromArray:@[
         [_inputViewController.view.leadingAnchor
             constraintEqualToAnchor:safeAreaGuide.leadingAnchor
-                           constant:leadingMargin],
+                           constant:kInputPlateIpadMargin],
         [_inputViewController.view.topAnchor
             constraintEqualToAnchor:safeAreaGuide.topAnchor
                            constant:kInputPlateIpadMargin],
+        [_inputViewController.view.trailingAnchor
+            constraintEqualToAnchor:safeAreaGuide.trailingAnchor
+                           constant:-kInputPlateIpadMargin],
       ]];
-      if (ShouldApplyOmniboxPopoutLayout(self)) {
-        // Constraints for when the close button is hidden.
-        [closeButtonConstraints addObjectsFromArray:@[
-          [_inputViewController.view.trailingAnchor
-              constraintEqualToAnchor:safeAreaGuide.trailingAnchor
-                             constant:-kInputPlateIpadMargin]
-        ]];
-        _closeButton.hidden = YES;
-      } else {
-        // Constraints for when the close button is shown.
-        [closeButtonConstraints addObjectsFromArray:@[
-          [_inputViewController.view.trailingAnchor
-              constraintEqualToAnchor:_closeButton.leadingAnchor
-                             constant:-kInputPlateTrailingPadding],
-          [_closeButton.centerYAnchor
-              constraintEqualToAnchor:_inputViewController.omniboxContainer
-                                          .centerYAnchor]
-        ]];
-
-        _closeButton.hidden = NO;
-      }
+      _closeButton.hidden = YES;
       [_constraintsForCurrentPosition
           addObjectsFromArray:closeButtonConstraints];
       break;
     }
     case ComposeboxInputPlatePosition::kMissing:
       break;
+    case ComposeboxInputPlatePosition::kBottomSheet:
+      NOTREACHED() << "Bottom sheet position incompatible with composebox";
   }
 
   [NSLayoutConstraint activateConstraints:_constraintsForCurrentPosition];
@@ -572,6 +572,7 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
   ];
   switch (positon) {
     case ComposeboxInputPlatePosition::kiPad:  // Fall through
+    case ComposeboxInputPlatePosition::kBottomSheet:  // Fall through
     case ComposeboxInputPlatePosition::kTop:
       gradientLayer.startPoint = CGPointMake(0.5, 1.0);
       gradientLayer.endPoint = CGPointMake(0.5, 0.4);
@@ -793,11 +794,15 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
 }
 
 - (NSArray*)keyCommands {
-  return @[ UIKeyCommand.cr_close ];
+  return @[ UIKeyCommand.cr_close, UIKeyCommand.cr_closeTab ];
 }
 
 - (void)keyCommand_close {
   [self.delegate composeboxViewControllerDidTapCloseButton:self];
+}
+
+- (void)keyCommand_closeTab {
+  [self.delegate composeboxViewControllerDidCloseTab:self];
 }
 
 @end

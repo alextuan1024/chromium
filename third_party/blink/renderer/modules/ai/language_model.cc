@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/modules/ai/language_model.h"
 
+#include <optional>
+
 #include "base/check.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/containers/span.h"
@@ -20,6 +22,7 @@
 #include "third_party/blink/public/mojom/ai/ai_common.mojom-blink.h"
 #include "third_party/blink/public/mojom/ai/ai_language_model.mojom-blink.h"
 #include "third_party/blink/public/mojom/ai/model_streaming_responder.mojom-blink.h"
+#include "third_party/blink/public/mojom/devtools/console_message.mojom-blink.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
@@ -36,7 +39,6 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/fileapi/blob.h"
 #include "third_party/blink/renderer/core/fileapi/file_reader_client.h"
-#include "third_party/blink/renderer/core/frame/deprecation/deprecation.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/streams/readable_stream_default_controller.h"
 #include "third_party/blink/renderer/core/streams/readable_stream_default_controller_with_script_scope.h"
@@ -176,6 +178,11 @@ void LogCreateOptionMetrics(
         base::StrCat({prefix, ".SamplingMode"}),
         ConvertSamplingModeToMojo(create_options.samplingMode()));
   }
+  if (create_options.hasThinkingEffort()) {
+    base::UmaHistogramEnumeration(
+        base::StrCat({prefix, ".ThinkingEffort"}),
+        ConvertThinkingEffortToMojo(create_options.thinkingEffort()));
+  }
   // Logs metrics for a list of expected inputs or outputs.
   auto log_expected_metrics =
       [&](const std::string& expected_type,
@@ -251,10 +258,15 @@ class CloneLanguageModelClient
       info->sampling_mode =
           ConvertSamplingModeToMojo(*language_model_->samplingMode());
     }
+    if (!info->thinking_effort) {
+      info->thinking_effort =
+          ConvertThinkingEffortToMojo(language_model_->thinkingEffort());
+    }
     LanguageModel* cloned_language_model = MakeGarbageCollected<LanguageModel>(
         language_model_->GetExecutionContext(),
         std::move(language_model_remote), language_model_->GetTaskRunner(),
-        std::move(info), language_model_->has_context());
+        std::move(info), language_model_->has_context(),
+        language_model_->has_warned_non_balanced_thinking());
     GetResolver()->Resolve(cloned_language_model);
     Cleanup();
   }
@@ -372,6 +384,10 @@ class AppendClient : public GarbageCollected<AppendClient>,
     NOTREACHED() << "Append() should not invoke `OnStreaming()`";
   }
 
+  void OnStreamingThought(const String& text) override {
+    NOTREACHED() << "Append() should not invoke `OnStreamingThought()`";
+  }
+
   void OnToolCalls(Vector<mojom::blink::ToolCallPtr> tool_calls) override {
     NOTREACHED() << "Append() should not invoke `OnToolCalls()`";
   }
@@ -469,14 +485,45 @@ LanguageModel::LanguageModel(
     mojo::PendingRemote<mojom::blink::AILanguageModel> pending_remote,
     scoped_refptr<base::SequencedTaskRunner> task_runner,
     blink::mojom::blink::AILanguageModelInstanceInfoPtr info,
-    bool has_context)
+    bool has_context,
+    bool has_warned_non_balanced_thinking)
     : ExecutionContextClient(execution_context),
       task_runner_(task_runner),
       language_model_remote_(execution_context),
       info_(std::move(info)),
-      has_context_(has_context) {
+      has_context_(has_context),
+      has_warned_non_balanced_thinking_(has_warned_non_balanced_thinking) {
   CHECK(info_);
   language_model_remote_.Bind(std::move(pending_remote), task_runner);
+}
+
+void LanguageModel::MaybeWarnNonBalancedSamplingForThinking(
+    std::optional<mojom::blink::AILanguageModelThinkingEffort>
+        prompt_thinking_effort) {
+  if (has_warned_non_balanced_thinking_) {
+    return;
+  }
+  const mojom::blink::AILanguageModelThinkingEffort effective_effort =
+      prompt_thinking_effort.value_or(
+          info_ ? info_->thinking_effort.value_or(
+                      mojom::blink::AILanguageModelThinkingEffort::kNone)
+                : mojom::blink::AILanguageModelThinkingEffort::kNone);
+  if (effective_effort == mojom::blink::AILanguageModelThinkingEffort::kNone) {
+    return;
+  }
+  if (info_ && info_->sampling_mode ==
+                   mojom::blink::AILanguageModelSamplingMode::kBalanced) {
+    return;
+  }
+  has_warned_non_balanced_thinking_ = true;
+  if (ExecutionContext* execution_context = GetExecutionContext()) {
+    execution_context->AddConsoleMessage(
+        mojom::blink::ConsoleMessageSource::kJavaScript,
+        mojom::blink::ConsoleMessageLevel::kWarning,
+        "Thinking mode works best with the default (\"balanced\") sampling "
+        "configuration. Using custom sampling options may degrade reasoning "
+        "quality.");
+  }
 }
 
 void LanguageModel::Trace(Visitor* visitor) const {
@@ -531,6 +578,10 @@ ScriptPromise<LanguageModel> LanguageModel::create(
     UseCounter::Count(execution_context,
                       WebFeature::kLanguageModel_Create_TopK);
   }
+  if (options->hasThinkingEffort()) {
+    UseCounter::Count(execution_context,
+                      WebFeature::kLanguageModel_Create_ThinkingEffort);
+  }
   HeapMojoRemote<mojom::blink::AIManager>& ai_manager_remote =
       AIInterfaceProxy::GetAIManagerRemote(execution_context);
   if (!ai_manager_remote.is_connected()) {
@@ -544,17 +595,6 @@ ScriptPromise<LanguageModel> LanguageModel::create(
   if (signal && signal->aborted()) {
     resolver->Reject(signal->reason(script_state));
     return promise;
-  }
-
-  if (options && options->hasSamplingMode() &&
-      (options->hasTemperature() || options->hasTopK()) &&
-      RuntimeEnabledFeatures::AIPromptAPILegacyParamsEnabled(
-          execution_context)) {
-    // TODO(crbug.com/502214118): Merge this check into
-    // ResolveSamplingParamsOption.
-    exception_state.ThrowTypeError(
-        kExceptionMessageSamplingModeAndParamsConflict);
-    return EmptyPromise();
   }
 
   std::optional<mojom::blink::AILanguageModelSamplingMode> sampling_mode;
@@ -581,9 +621,19 @@ ScriptPromise<LanguageModel> LanguageModel::create(
     return promise;
   }
 
+  auto sampling_params = std::move(sampling_params_or_exception.value());
+  // Also default to `"balanced"` when Thinking Mode is enabled alone so
+  // sessions created with default sampling use the calibrated preset and do
+  // not trigger `MaybeWarnNonBalancedSamplingForThinking()`.
+  if (!sampling_mode.has_value() && !sampling_params &&
+      (RuntimeEnabledFeatures::AIPromptAPIParamsEnabled(execution_context) ||
+       RuntimeEnabledFeatures::AIPromptAPIThinkingModeEnabled(
+           execution_context))) {
+    sampling_mode = mojom::blink::AILanguageModelSamplingMode::kBalanced;
+  }
+
   MakeGarbageCollected<LanguageModelCreateClient>(
-      resolver, options, std::move(sampling_params_or_exception.value()),
-      sampling_mode);
+      resolver, options, std::move(sampling_params), sampling_mode);
   return promise;
 }
 
@@ -615,17 +665,6 @@ ScriptPromise<V8Availability> LanguageModel::availability(
   }
 
   LogCreateOptionMetrics(*options, "availability");
-
-  if (options && options->hasSamplingMode() &&
-      (options->hasTemperature() || options->hasTopK()) &&
-      RuntimeEnabledFeatures::AIPromptAPILegacyParamsEnabled(
-          execution_context)) {
-    // TODO(crbug.com/502214118): Merge this check into
-    // ResolveSamplingParamsOption.
-    exception_state.ThrowTypeError(
-        kExceptionMessageSamplingModeAndParamsConflict);
-    return EmptyPromise();
-  }
 
   auto sampling_params_or_exception =
       ResolveSamplingParamsOption(options, execution_context);
@@ -671,12 +710,16 @@ void LanguageModel::ExecuteAvailability(
   if (options && options->hasSamplingMode()) {
     sampling_mode = ConvertSamplingModeToMojo(options->samplingMode());
   }
+  std::optional<mojom::blink::AILanguageModelThinkingEffort> thinking_effort;
+  if (options && options->hasThinkingEffort()) {
+    thinking_effort = ConvertThinkingEffortToMojo(options->thinkingEffort());
+  }
 
   ai_manager_remote->CanCreateLanguageModel(
       mojom::blink::AILanguageModelCreateOptions::New(
           std::move(resolved_sampling_params), std::move(initial_prompts),
           std::move(expected_in), std::move(expected_out), std::move(tools),
-          sampling_mode),
+          sampling_mode, thinking_effort),
       std::move(callback));
 }
 
@@ -688,12 +731,6 @@ ScriptPromise<IDLNullable<LanguageModelParams>> LanguageModel::params(
     ThrowInvalidContextException(exception_state);
     return EmptyPromise();
   }
-
-  // Count deprecation unconditionally (since this method is gated by
-  // [RuntimeEnabled=AIPromptAPILegacyParams] in IDL).
-  ExecutionContext* execution_context = ExecutionContext::From(script_state);
-  Deprecation::CountDeprecation(
-      execution_context, mojom::blink::WebFeature::kLanguageModel_Params);
 
   auto* resolver = MakeGarbageCollected<
       ScriptPromiseResolver<IDLNullable<LanguageModelParams>>>(script_state);
@@ -737,6 +774,11 @@ ScriptPromise<V8LanguageModelPromptResult> LanguageModel::prompt(
           script_state);
   auto promise = resolver->Promise();
 
+  std::optional<mojom::blink::AILanguageModelThinkingEffort> thinking_effort;
+  if (options->hasThinkingEffort()) {
+    thinking_effort = ConvertThinkingEffortToMojo(options->thinkingEffort());
+  }
+
   // Use WrapPersistent() to make sure LanguageModel is not garbage collected
   // during the response.
   auto pending_remote = CreateModelExecutionResponder(
@@ -758,7 +800,8 @@ ScriptPromise<V8LanguageModelPromptResult> LanguageModel::prompt(
       script_state, options->getSignalOr(nullptr), input, info_, json_schema,
       BindOnce(&LanguageModel::ExecutePrompt, WrapPersistent(this),
                WrapPersistent(script_state), WrapPersistent(resolver),
-               std::move(*processed_constraint), std::move(pending_remote)),
+               std::move(*processed_constraint), std::move(pending_remote),
+               thinking_effort),
       BindOnce(&RejectResolver, WrapPersistent(resolver)));
   return promise;
 }
@@ -775,6 +818,11 @@ ReadableStream* LanguageModel::promptStreaming(
     return nullptr;
   }
 
+  std::optional<mojom::blink::AILanguageModelThinkingEffort> thinking_effort;
+  if (options->hasThinkingEffort()) {
+    thinking_effort = ConvertThinkingEffortToMojo(options->thinkingEffort());
+  }
+
   // Use WrapPersistent() to make sure LanguageModel is not garbage collected
   // during the response.
   auto [stream, remote] = CreateModelExecutionStreamingResponder(
@@ -788,7 +836,8 @@ ReadableStream* LanguageModel::promptStreaming(
       script_state, options->getSignalOr(nullptr), input, info_, json_schema,
       BindOnce(&LanguageModel::ExecutePrompt, WrapPersistent(this),
                WrapPersistent(script_state), WrapPersistent(stream),
-               std::move(*processed_constraint), std::move(remote)),
+               std::move(*processed_constraint), std::move(remote),
+               thinking_effort),
       BindOnce(
           [](ReadableStream* readable_stream, ScriptState* script_state,
              const ScriptValue& error) {
@@ -813,12 +862,17 @@ void LanguageModel::ExecutePrompt(
     on_device_model::mojom::blink::ResponseConstraintPtr constraint,
     mojo::PendingRemote<mojom::blink::ModelStreamingResponder>
         pending_responder,
+    std::optional<mojom::blink::AILanguageModelThinkingEffort> thinking_effort,
     Vector<mojom::blink::AILanguageModelPromptPtr> prompts) {
   ExecutionContext* execution_context = ExecutionContext::From(script_state);
   LogPromptMessageMetrics(execution_context, prompts);
   if (constraint) {
     UseCounter::Count(execution_context,
                       WebFeature::kLanguageModel_Prompt_ResponseConstraint);
+  }
+  if (thinking_effort.has_value()) {
+    UseCounter::Count(execution_context,
+                      WebFeature::kLanguageModel_Prompt_ThinkingEffort);
   }
   if (!language_model_remote_) {
     if (std::holds_alternative<ScriptPromiseResolverBase*>(
@@ -839,28 +893,23 @@ void LanguageModel::ExecutePrompt(
         ->Error(CreateSessionDestroyedException()->Wrap(script_state));
     return;
   }
+  MaybeWarnNonBalancedSamplingForThinking(thinking_effort);
   language_model_remote_->Prompt(std::move(prompts), std::move(constraint),
-                                 std::move(pending_responder));
+                                 thinking_effort, std::move(pending_responder));
 }
 
 void LanguageModel::ExecuteMeasureInputUsage(
-    ScriptPromiseResolver<IDLDouble>* resolver,
-    AbortSignal* signal,
+    ResolverWithAbortSignal<IDLDouble>* resolver,
     Vector<mojom::blink::AILanguageModelPromptPtr> prompts) {
-  auto reject_fn = RejectOnDestruction(resolver, signal);
+  if (!language_model_remote_) {
+    resolver->Reject(CreateSessionDestroyedException());
+    return;
+  }
   language_model_remote_->MeasureInputUsage(
       std::move(prompts),
       BindOnce(
-          [](ScriptPromiseResolver<IDLDouble>* resolver, AbortSignal* signal,
+          [](ResolverWithAbortSignal<IDLDouble>* resolver,
              std::optional<uint32_t> usage) {
-            ExecutionContext* context = resolver->GetExecutionContext();
-            if (!context) {
-              return;
-            }
-            if (signal && signal->aborted()) {
-              resolver->Reject(signal->reason(resolver->GetScriptState()));
-              return;
-            }
             if (!usage.has_value()) {
               resolver->Reject(
                   DOMException::Create(kExceptionMessageUnableToCalculateUsage,
@@ -870,8 +919,8 @@ void LanguageModel::ExecuteMeasureInputUsage(
             }
             resolver->Resolve(static_cast<double>(usage.value()));
           },
-          WrapPersistent(resolver), WrapPersistent(signal))
-          .Then(std::move(reject_fn)));
+          WrapPersistent(resolver))
+          .Then(RejectOnDestruction(resolver)));
 }
 
 bool LanguageModel::ValidateInput(ScriptState* script_state,
@@ -1016,22 +1065,27 @@ ScriptPromise<IDLDouble> LanguageModel::measureContextUsage(
     return EmptyPromise();
   }
 
-  ScriptPromiseResolver<IDLDouble>* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLDouble>>(script_state);
-  auto promise = resolver->Promise();
-
   AbortSignal* signal = options->getSignalOr(nullptr);
-  if (signal && signal->aborted()) {
-    resolver->Reject(signal->reason(script_state));
-    return promise;
+  if (HandleAbortSignal(signal, script_state, exception_state)) {
+    return EmptyPromise();
   }
 
+  on_device_model::mojom::blink::ResponseConstraintPtr constraint;
+  if (!ParseConstraint(script_state, options, exception_state, constraint)) {
+    return EmptyPromise();
+  }
+
+  auto* resolver = MakeGarbageCollected<ResolverWithAbortSignal<IDLDouble>>(
+      script_state, signal);
+  auto promise = resolver->Promise();
+
+  String json_schema = GetSchemaForInput(constraint, options);
   ConvertPromptInputsToMojo(
-      script_state, options->getSignalOr(nullptr), input, info_,
-      /*json_schema=*/"",
+      script_state, signal, input, info_, json_schema,
       BindOnce(&LanguageModel::ExecuteMeasureInputUsage, WrapPersistent(this),
-               WrapPersistent(resolver), WrapPersistent(signal)),
-      BindOnce(&RejectResolver, WrapPersistent(resolver)));
+               WrapPersistent(resolver)),
+      BindOnce(&ResolverWithAbortSignal<IDLDouble>::Reject<const ScriptValue&>,
+               WrapPersistent(resolver)));
 
   return promise;
 }
@@ -1054,15 +1108,18 @@ void LanguageModel::ResolvePromiseOnComplete(
     ScriptPromiseResolver<V8LanguageModelPromptResult>* resolver,
     const String& response,
     mojom::blink::ModelExecutionContextInfoPtr context_info) {
-  // Return type is dynamic based on actual response content.
-  // Return sequence format when tool calls are present, string otherwise.
-  if (!pending_tool_calls_.empty()) {
-    // Tool calls present - return structured message format.
-    // If the model output both text and tool calls, include text first.
+  bool has_non_text_output =
+      info_ && info_->output_types &&
+      std::ranges::any_of(*info_->output_types, [](const auto& type) {
+        return type != mojom::blink::AILanguageModelPromptType::kText;
+      });
+  // Return sequence format when the session is configured with non-text
+  // expected outputs (e.g., tool calls).
+  if (has_non_text_output) {
+    // Return structured message format: text first, then tool call.
     ScriptState* script_state = resolver->GetScriptState();
     HeapVector<Member<LanguageModelMessageContent>> messages;
 
-    // Add text content first if present.
     if (!response.empty()) {
       auto* text_content = LanguageModelMessageContent::Create();
       text_content->setType(
@@ -1071,19 +1128,19 @@ void LanguageModel::ResolvePromiseOnComplete(
           MakeGarbageCollected<V8LanguageModelMessageValue>(response));
       messages.push_back(text_content);
     }
-
-    // Then add tool call contents.
-    ExceptionState exception_state(script_state->GetIsolate());
-    messages.append_range(ConvertMojoToolCallsToMessages(
-        script_state, pending_tool_calls_, exception_state));
-    pending_tool_calls_.clear();
-    if (exception_state.HadException()) {
-      resolver->Reject();
-      return;
+    if (!pending_tool_calls_.empty()) {
+      ExceptionState exception_state(script_state->GetIsolate());
+      messages.append_range(ConvertMojoToolCallsToMessages(
+          script_state, pending_tool_calls_, exception_state));
+      pending_tool_calls_.clear();
+      if (exception_state.HadException()) {
+        resolver->Reject();
+        return;
+      }
     }
     resolver->Resolve(messages);
   } else {
-    // No tool calls - return simple string format.
+    // Text-only output: return DOMString format.
     resolver->Resolve(response);
   }
   OnResponseComplete(std::move(context_info));

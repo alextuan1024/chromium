@@ -15,6 +15,7 @@
 
 #include "base/containers/span.h"
 #include "base/functional/function_ref.h"
+#include "base/i18n/language_tag.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -99,7 +100,7 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
       syncer::SyncService* sync_service,
       signin::IdentityManager* identity_manager,
       GeoIpCountryCode variations_country_code,
-      std::string app_locale,
+      const base::i18n::LanguageTag& app_locale,
       AutofillOptimizationGuideDecider* autofill_optimization_guide_decider);
 
   PaymentsDataManager(const PaymentsDataManager&) = delete;
@@ -144,7 +145,7 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   // Returns the `AutofillOfferData` with the specified `offer_id`, or nullptr
   // if there is no promo code with the specified `offer_id`.
   const AutofillOfferData* GetMerchantPromoCodeByOfferId(
-      const int64_t offer_id) const;
+      std::string_view offer_id) const;
 
   // Returns the IBAN if any cached IBAN in `server_ibans_` has the same
   // `instrument_id` as the given `instrument_id`, otherwise returns nullptr.
@@ -242,11 +243,20 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   virtual std::vector<CreditCardCloudTokenData*> GetCreditCardCloudTokenData()
       const;
 
-  // Returns autofill offer data.
+  // Returns autofill offer data, with the most recently issued offers first, in
+  // the order returned by `PaymentsAutofillTable::GetAutofillOffers()`.
   std::vector<const AutofillOfferData*> GetAutofillOffers() const;
 
-  // Returns autofill offer data, but only promo code offers that are not
-  // expired and that are for the given `origin`.
+  // Returns the promo code offers from `GetAutofillOffers()` that are not
+  // expired, with the most recently issued offers first, in the order returned
+  // by `PaymentsAutofillTable::GetAutofillOffers()`. Returns an empty list if
+  // promo code offers are not available, e.g. because the feature is disabled
+  // or the locale or country is not supported.
+  std::vector<const AutofillOfferData*> GetActiveAutofillPromoCodeOffers()
+      const;
+
+  // Returns the offers from `GetActiveAutofillPromoCodeOffers()` that are for
+  // the given `origin`, in the same order.
   std::vector<const AutofillOfferData*>
   GetActiveAutofillPromoCodeOffersForOrigin(GURL origin) const;
 
@@ -476,7 +486,7 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   void SetPaymentsCvcStorageEnabled(bool enabled);
 
   // TODO(crbug.com/322170538): Remove.
-  scoped_refptr<AutofillWebDataService> GetLocalDatabase();
+  scoped_refptr<AutofillWebDataService> GetProfileDatabase();
   scoped_refptr<AutofillWebDataService> GetServerDatabase();
   bool IsUsingAccountStorageForServerDataForTest();
 
@@ -496,7 +506,7 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   // when Chrome is restarted.
   const std::string& GetCountryCodeForExperimentGroup() const;
 
-  const std::string& app_locale() const { return app_locale_; }
+  const base::i18n::LanguageTag& app_locale() const { return app_locale_; }
 
   // Returns if there are any pending queries to the web database.
   bool HasPendingPaymentQueries() const;
@@ -588,7 +598,8 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   // Loads the payments customer data from the web database.
   void LoadPaymentsCustomerData();
 
-  // Loads the autofill offer data from the web database.
+  // Loads the autofill offer data from the profile web database, which is where
+  // the `ValuableSyncBridge` persists Wallet direct offers.
   void LoadAutofillOffers();
 
   // Loads the virtual card usage data from the web database.
@@ -719,6 +730,9 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
         return true;
       }) const;
 
+  // Whether IBANs are supported for the platform OS.
+  bool AreIbansSupported() const;
+
   // Whether MaskedBankAccounts are supported for the platform OS.
   bool AreBankAccountsSupported() const;
 
@@ -828,7 +842,7 @@ class PaymentsDataManager : public AutofillWebDataServiceObserverOnUISequence,
   const GeoIpCountryCode variations_country_code_;
 
   // Stores the |app_locale| supplied on construction.
-  const std::string app_locale_;
+  const base::i18n::LanguageTag app_locale_;
 
   base::ObserverList<Observer> observers_;
 

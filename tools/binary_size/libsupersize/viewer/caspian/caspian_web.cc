@@ -7,17 +7,21 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <iostream>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
 
-#include "third_party/jsoncpp/source/include/json/json.h"
+#include "third_party/jsoncpp/src/include/json/json.h"
 #include "third_party/re2/src/re2/re2.h"
 #include "tools/binary_size/libsupersize/viewer/caspian/diff.h"
 #include "tools/binary_size/libsupersize/viewer/caspian/file_format.h"
+#include "tools/binary_size/libsupersize/viewer/caspian/file_format_v2.h"
 #include "tools/binary_size/libsupersize/viewer/caspian/lens.h"
 #include "tools/binary_size/libsupersize/viewer/caspian/model.h"
 #include "tools/binary_size/libsupersize/viewer/caspian/tree_builder.h"
@@ -62,6 +66,16 @@ std::vector<std::string> removed_sources;
 std::vector<std::string> added_sources;
 std::unique_ptr<DeltaSizeInfo> diff_info;
 std::unique_ptr<TreeBuilder> builder;
+
+// Parses |info| in the background so that it overlaps with parsing
+// |before_info|. Caspian does not depend on //base, so std::thread is used.
+std::thread after_parse_thread;
+
+void EnsureAfterLoaded() {
+  if (after_parse_thread.joinable()) {
+    after_parse_thread.join();
+  }
+}
 
 std::unique_ptr<Json::StreamWriter> writer;
 
@@ -115,6 +129,7 @@ bool IsMultiContainer() {
 }
 
 void ClearInfoAndBuilderObjects() {
+  EnsureAfterLoaded();
   builder.reset(nullptr);
   diff_info.reset(nullptr);
   before_info.reset(nullptr);
@@ -128,17 +143,26 @@ void ClearInfoAndBuilderObjects() {
 extern "C" {
 void LoadSizeFile(char* compressed, size_t size) {
   ClearInfoAndBuilderObjects();
+  info = std::make_unique<SizeInfo>();
   if (IsDiffSizeInfo(compressed, size)) {
-    info = std::make_unique<SizeInfo>();
     before_info = std::make_unique<SizeInfo>();
     ParseDiffSizeInfo(compressed, size, before_info.get(), info.get(),
                       &removed_sources, &added_sources);
     // DeltaSizeInfo instantiation for sparse diff.
     diff_info.reset(new DeltaSizeInfo(
         Diff(before_info.get(), info.get(), &removed_sources, &added_sources)));
-  } else {
-    info = std::make_unique<SizeInfo>();
+  } else if (IsSizeV2(compressed, size)) {
+    // ParseSizeInfoV2() already parallelizes internally across worker threads,
+    // which must run on the main runtime thread so Emscripten returns workers
+    // to the pool synchronously instead of stranding nested pthreads.
     ParseSizeInfo(compressed, size, info.get());
+  } else {
+    // Copy |compressed|, since the caller frees it once LoadSizeFile() returns.
+    after_parse_thread =
+        std::thread([buf = std::vector<char>(compressed, compressed + size),
+                     target = info.get()]() {
+          ParseSizeInfo(buf.data(), buf.size(), target);
+        });
   }
 }
 
@@ -147,6 +171,7 @@ void LoadBeforeSizeFile(const char* compressed, size_t size) {
   // was called immediately before.
   before_info = std::make_unique<SizeInfo>();
   ParseSizeInfo(compressed, size, before_info.get());
+  EnsureAfterLoaded();
 }
 
 // Updates |builder| with provided filters and constructs the new tree.
@@ -157,10 +182,12 @@ bool BuildTree(bool method_count_mode,
                const char* include_regex_str,
                const char* exclude_regex_str,
                const char* include_sections,
-               int minimum_size_bytes,
+               int minimum_size,
                int match_flag,
                bool non_overhead,
-               bool disassembly_mode) {
+               bool disassembly_mode,
+               bool relocations_mode) {
+  EnsureAfterLoaded();
   std::vector<TreeBuilder::FilterFunc> filters;
 
   const bool diff_mode = info && before_info;
@@ -173,20 +200,6 @@ bool BuildTree(bool method_count_mode,
       return diff_status == DiffStatus::kAdded ||
              diff_status == DiffStatus::kRemoved;
     });
-  }
-
-  if (minimum_size_bytes > 0) {
-    if (!diff_mode) {
-      filters.push_back([minimum_size_bytes](const GroupedPath&,
-                                             const BaseSymbol& sym) -> bool {
-        return sym.Pss() >= minimum_size_bytes;
-      });
-    } else {
-      filters.push_back([minimum_size_bytes](const GroupedPath&,
-                                             const BaseSymbol& sym) -> bool {
-        return abs(sym.Pss()) >= minimum_size_bytes;
-      });
-    }
   }
 
   // It's currently not useful to filter on more than one flag, so
@@ -282,7 +295,8 @@ bool BuildTree(bool method_count_mode,
     std::cerr << "Unsupported group_by=" << group_by << std::endl;
     exit(1);
   }
-  builder->Build(std::move(lens), sep, method_count_mode, filters);
+  builder->Build(std::move(lens), sep, method_count_mode, filters,
+                 relocations_mode, minimum_size);
 
   return bool(diff_info);
 }
@@ -297,6 +311,7 @@ const char* Open(const char* path) {
 
 // Returns a JSON string representing the metadata.
 const char* GetMetadata() {
+  EnsureAfterLoaded();
   static std::string cached_result;
   Json::Value v;
   v["size_file"] = info->fields;
@@ -309,6 +324,7 @@ const char* GetMetadata() {
 
 // Returns global properties.
 const char* QueryProperty(const char* key) {
+  EnsureAfterLoaded();
   if (!strcmp(key, "isMultiContainer")) {
     return IsMultiContainer() ? "true" : "false";
   }
@@ -322,6 +338,21 @@ const char* QueryAncestryById(uint32_t id) {
   v["ancestorIds"] = builder->GetAncestryById(id);
   cached_result = JsonSerialize(v);
   return cached_result.c_str();
+}
+
+// Returns a malloc-allocated NUL-terminated CSV string that the caller must
+// pass to free(), or nullptr if no tree has been built or allocation fails.
+char* DumpCsv() {
+  if (!builder) {
+    return nullptr;
+  }
+  std::string csv = builder->DumpCsv();
+  char* out = static_cast<char*>(malloc(csv.size() + 1));
+  if (!out) {
+    return nullptr;
+  }
+  memcpy(out, csv.c_str(), csv.size() + 1);
+  return out;
 }
 
 }  // extern "C"

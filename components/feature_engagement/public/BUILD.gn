@@ -68,11 +68,9 @@ static_library("public") {
     "//build:branding_buildflags",
     "//components/feed:feature_list",
     "//components/keyed_service/core",
-    "//components/segmentation_platform/public",
     "//components/webui/flags",
     "//extensions/buildflags",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   if (is_android) {
     sources += [
@@ -115,9 +113,11 @@ if (is_android) {
       "android/java/src/org/chromium/components/feature_engagement/CppWrappedTestTracker.java",
       "android/java/src/org/chromium/components/feature_engagement/EventConstants.java",
       "android/java/src/org/chromium/components/feature_engagement/FeatureConstants.java",
+      "android/java/src/org/chromium/components/feature_engagement/FeatureProperties.java",
       "android/java/src/org/chromium/components/feature_engagement/TestTracker.java",
       "android/java/src/org/chromium/components/feature_engagement/Tracker.java",
       "android/java/src/org/chromium/components/feature_engagement/TriggerDetails.java",
+      "android/java/src/org/chromium/components/feature_engagement/UiFormat.java",
     ]
 
     deps = [
@@ -136,7 +136,10 @@ if (is_android) {
   java_cpp_enum("public_java_enums_srcjar") {
     visibility = [ ":*" ]
 
-    sources = [ "tracker.h" ]
+    sources = [
+      "../internal/stats.h",
+      "tracker.h",
+    ]
   }
 
   generate_jni("jni_headers") {

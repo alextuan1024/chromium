@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "base/callback_list.h"
 #include "base/component_export.h"
 #include "base/i18n/base_i18n_export.h"
 #include "base/i18n/language_tag.h"
@@ -16,9 +17,18 @@ namespace base::i18n {
 
 class BASE_I18N_EXPORT DefaultIcuLocaleSetterKey;
 
+using OnDefaultLocaleUpdatedCallbackList =
+    base::RepeatingCallbackList<void(const LanguageTag&)>;
+
 // Returns the current system/library-wide default ICU locale as a
 // `LanguageTag`. Safe to call concurrently from any thread.
 BASE_I18N_EXPORT LanguageTag GetDefaultIcuLocale();
+
+// Registers a callback to be notified whenever `SetDefaultIcuLocale` updates
+// the global default ICU locale. Safe to call concurrently from any thread.
+BASE_I18N_EXPORT base::CallbackListSubscription
+RegisterOnDefaultLocaleUpdatedCallback(
+    OnDefaultLocaleUpdatedCallbackList::CallbackType callback);
 
 // Updates the global default ICU locale.
 //
@@ -32,6 +42,7 @@ BASE_I18N_EXPORT void SetDefaultIcuLocale(DefaultIcuLocaleSetterKey key,
 }  // namespace base::i18n
 
 // Forward declarations for DefaultIcuLocaleSetterKey.
+class ChromeMainDelegate;
 class WebEngineMainDelegate;
 class WebEngineBrowserMainParts;
 
@@ -44,6 +55,11 @@ namespace blink {
 class LocaleController;
 }
 
+namespace content {
+struct MainFunctionParams;
+int RendererMain(MainFunctionParams);
+}  // namespace content
+
 namespace l10n_util {
 COMPONENT_EXPORT(UI_BASE)
 std::string GetApplicationLocale(std::string_view, bool);
@@ -52,7 +68,6 @@ std::string GetApplicationLocale(std::string_view, bool);
 namespace base::i18n {
 
 class ScopedDefaultIcuLocale;
-void BASE_I18N_EXPORT SetICUDefaultLocale(std::string_view);
 
 // A capability token enforcing the C++ pass-key pattern for setting the
 // mutable default ICU locale.
@@ -60,8 +75,7 @@ void BASE_I18N_EXPORT SetICUDefaultLocale(std::string_view);
 // Calling `SetDefaultIcuLocale` requires an instance of this key. Since the
 // constructor of `DefaultIcuLocaleSetterKey` is private, only explicitly
 // friended classes can instantiate it. This prevents arbitrary production
-// code from modifying the global default ICU locale, while allowing
-// authorized test utilities to temporarily override it.
+// code from modifying the global default ICU locale.
 class BASE_I18N_EXPORT DefaultIcuLocaleSetterKey {
  public:
   ~DefaultIcuLocaleSetterKey() = default;
@@ -73,8 +87,9 @@ class BASE_I18N_EXPORT DefaultIcuLocaleSetterKey {
   friend void ::android_webview::InitIcuAndResourceBundleBrowserSide();
   friend class ::WebEngineMainDelegate;
   friend class ::WebEngineBrowserMainParts;
+  friend class ::ChromeMainDelegate;
+  friend int(::content::RendererMain)(::content::MainFunctionParams);
   friend std::string(::l10n_util::GetApplicationLocale)(std::string_view, bool);
-  friend BASE_I18N_EXPORT void SetICUDefaultLocale(std::string_view);
 
   DefaultIcuLocaleSetterKey() = default;
 };

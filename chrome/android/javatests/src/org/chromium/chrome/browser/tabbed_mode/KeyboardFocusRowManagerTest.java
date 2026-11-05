@@ -30,11 +30,9 @@ import org.chromium.base.CallbackUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisabledTest;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
@@ -42,15 +40,13 @@ import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarSettingChangeOrigin;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.OverrideContextWrapperTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.transit.ReusedCtaTransitTestRule;
-import org.chromium.chrome.test.transit.page.WebPageStation;
-import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
 import org.chromium.components.bookmarks.BookmarkBarVisibilityState;
 import org.chromium.components.messages.DismissReason;
 import org.chromium.components.messages.MessageBannerProperties;
@@ -68,17 +64,14 @@ import java.util.concurrent.TimeoutException;
 /** Tests for {@link KeyboardFocusRowManager}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures(
         ChromeFeatureList.HOME_BUTTON_REMOVAL
                 + ":set_default_to_false_on_homepage_on_desktop/false")
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class KeyboardFocusRowManagerTest {
 
     @Rule
-    public ReusedCtaTransitTestRule<WebPageStation> mActivityTestRule =
-            ChromeTransitTestRules.blankPageStartReusedActivityRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     @Rule
     public OverrideContextWrapperTestRule mOverrideContextRule =
@@ -86,7 +79,7 @@ public class KeyboardFocusRowManagerTest {
 
     @Rule public MockitoRule mockito = MockitoJUnit.rule(); // todo delete if not needed
 
-    private WebPageStation mPage;
+    private CtaPageStation mPage;
     private ChromeTabbedActivity mActivity;
     private KeyboardFocusRowManager mKeyboardFocusRowManager;
     private TabbedRootUiCoordinator mTabbedRootUiCoordinator;
@@ -98,7 +91,7 @@ public class KeyboardFocusRowManagerTest {
 
     @Before
     public void setUp() {
-        mPage = mActivityTestRule.start();
+        mPage = mActivityTestRule.startOnBlankPage();
         mActivity = mPage.getActivity();
         mTabbedRootUiCoordinator =
                 (TabbedRootUiCoordinator) mActivity.getRootUiCoordinatorForTesting();
@@ -144,7 +137,7 @@ public class KeyboardFocusRowManagerTest {
 
         // Switch a 3rd time.
         switchRow();
-        assertOnNone();
+        assertOnContentPane();
     }
 
     @Test
@@ -161,7 +154,7 @@ public class KeyboardFocusRowManagerTest {
 
         // Switch a 2nd time.
         switchRow();
-        assertOnNone();
+        assertOnContentPane();
     }
 
     @Test
@@ -188,7 +181,7 @@ public class KeyboardFocusRowManagerTest {
 
         // Switch a 4th time.
         switchRow();
-        assertOnNone();
+        assertOnContentPane();
     }
 
     @Test
@@ -221,7 +214,7 @@ public class KeyboardFocusRowManagerTest {
 
         // Switch a 4th time.
         switchRow();
-        assertOnNone();
+        assertOnContentPane();
 
         // Clean up and close the side panel.
         ThreadUtils.runOnUiThreadBlocking(
@@ -230,13 +223,13 @@ public class KeyboardFocusRowManagerTest {
 
     @Test
     @SmallTest
-    @DisabledTest(message = "crbug.com/543500090")
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     @Feature("KeyboardShortcuts")
     @EnableFeatures({
         ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
         ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE
     })
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/543500090
     public void testSwitchKeyboardFocusRow_withBookmarksBarAndSidePanel() {
         setShowBookmarksBar(true);
 
@@ -264,7 +257,7 @@ public class KeyboardFocusRowManagerTest {
 
         // Switch a 5th time.
         switchRow();
-        assertOnNone();
+        assertOnContentPane();
 
         // Clean up and close the side panel.
         ThreadUtils.runOnUiThreadBlocking(
@@ -300,7 +293,7 @@ public class KeyboardFocusRowManagerTest {
 
         // Switch a 4th time.
         switchRow();
-        assertOnNone();
+        assertOnContentPane();
     }
 
     @Test
@@ -327,7 +320,7 @@ public class KeyboardFocusRowManagerTest {
 
         // Now switch and make sure we appropriately switch given our new cycle position.
         switchRow();
-        assertOnNone();
+        assertOnContentPane();
     }
 
     @Test
@@ -352,9 +345,9 @@ public class KeyboardFocusRowManagerTest {
         switchRow();
         assertOnTabStrip();
 
-        // Switch a 4th time -> NONE.
+        // Switch a 4th time -> CONTENT_PANE.
         switchRow();
-        assertOnNone();
+        assertOnContentPane();
 
         // Clean up message.
         dismissMessage(model);
@@ -374,9 +367,9 @@ public class KeyboardFocusRowManagerTest {
         switchRow();
         assertOnMessage();
 
-        // Switch in reverse back to NONE.
+        // Switch in reverse back to CONTENT_PANE.
         switchRowBackward();
-        assertOnNone();
+        assertOnContentPane();
 
         // Clean up message.
         dismissMessage(model);
@@ -403,7 +396,7 @@ public class KeyboardFocusRowManagerTest {
 
         // Switch a 2nd time.
         switchRow();
-        assertOnNone();
+        assertOnContentPane();
 
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
@@ -427,7 +420,7 @@ public class KeyboardFocusRowManagerTest {
                     // Assert we haven't moved focus.
                     assertEquals(
                             "Expected no keyboard focus row switch if top controls are hidden",
-                            KeyboardFocusRow.NONE,
+                            KeyboardFocusRow.CONTENT_PANE,
                             mKeyboardFocusRowManager.getKeyboardFocusRowForTesting());
 
                     // Clean up.
@@ -478,7 +471,7 @@ public class KeyboardFocusRowManagerTest {
         // Try to switch focus rows.
         switchRow();
         // Assert we haven't moved focus.
-        assertOnNone();
+        assertOnContentPane();
 
         // Clean up.
         ThreadUtils.runOnUiThreadBlocking(() -> modalDialogManager.dismissAllDialogs(UNKNOWN));
@@ -487,8 +480,7 @@ public class KeyboardFocusRowManagerTest {
     // Helper methods for readability
 
     private void openNewTabAndFocusContent() {
-        ChromeTabUtils.newTabFromMenu(
-                InstrumentationRegistry.getInstrumentation(), mActivity, false, true);
+        mPage = mPage.openNewTabFast();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mActivity
@@ -562,13 +554,13 @@ public class KeyboardFocusRowManagerTest {
                                 mKeyboardFocusRowManager.getKeyboardFocusRowForTesting()));
     }
 
-    private void assertOnNone() {
+    private void assertOnContentPane() {
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
                         assertEquals(
-                                "Expected focus to be on none after invocation of keyboard focus"
-                                        + " row switch",
-                                KeyboardFocusRow.NONE,
+                                "Expected focus to be on content pane after invocation of keyboard"
+                                        + " focus row switch",
+                                KeyboardFocusRow.CONTENT_PANE,
                                 mKeyboardFocusRowManager.getKeyboardFocusRowForTesting()));
     }
 

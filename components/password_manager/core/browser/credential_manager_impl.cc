@@ -8,12 +8,14 @@
 #include <optional>
 #include <string>
 
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
 #include "components/device_reauth/device_authenticator.h"
 #include "components/password_manager/core/browser/credential_manager_logger.h"
 #include "components/password_manager/core/browser/credential_manager_pending_request_task.h"
@@ -93,10 +95,7 @@ void CredentialManagerImpl::Store(const CredentialInfo& credential,
   // only available on HTTPS origins.
   auto form_fetcher = std::make_unique<FormFetcherImpl>(
       observed_digest, client_, /*should_migrate_http_passwords=*/false);
-  if (base::FeatureList::IsEnabled(
-          password_manager::features::kPasswordFormGroupedAffiliations)) {
-    form_fetcher->set_filter_grouped_credentials(false);
-  }
+  form_fetcher->set_filter_grouped_credentials(false);
   form_manager_ = std::make_unique<CredentialManagerPasswordFormManager>(
       client_, std::move(form), this, nullptr, std::move(form_fetcher));
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
@@ -199,7 +198,8 @@ void CredentialManagerImpl::Get(CredentialMediationRequirement mediation,
   }
   pending_request_ = std::make_unique<CredentialManagerPendingRequestTask>(
       this, base::BindOnce(&RunGetCallback, std::move(callback)), mediation,
-      include_passwords, federations, GetSynthesizedFormForOrigin());
+      include_passwords, base::ToVector(federations, &url::Origin::Create),
+      GetSynthesizedFormForOrigin());
 }
 
 void CredentialManagerImpl::ResetAfterDisconnecting() {
@@ -238,12 +238,21 @@ void CredentialManagerImpl::SendPasswordForm(
     const PasswordForm* form) {
   CredentialInfo info;
   if (form) {
-    info = PasswordFormToCredentialInfo(*form);
     PasswordStoreInterface* store = form->IsUsingAccountStore()
                                         ? GetAccountPasswordStore()
                                         : GetProfilePasswordStore();
     if (store) {
-      if (form->skip_zero_click && IsZeroClickAllowed()) {
+      // Selecting a credential in `AccountChooser` normally opts it into future
+      // zero-click auto-sign-in (`skip_zero_click = false`). However,
+      // `AccountChooser` does not display password-sharing sender attribution
+      // or mark `sharing_notification_displayed`, so keep `skip_zero_click`
+      // enabled across all store backends until the user has been notified of
+      // the shared credential.
+      const bool is_unnotified_shared_credential =
+          form->type == PasswordForm::Type::kReceivedViaSharing &&
+          !form->sharing_notification_displayed;
+      if (form->skip_zero_click && !is_unnotified_shared_credential &&
+          IsZeroClickAllowed()) {
         PasswordForm update_form = *form;
         update_form.skip_zero_click = false;
         store->UpdateLogin(
@@ -255,11 +264,27 @@ void CredentialManagerImpl::SendPasswordForm(
     metrics_util::LogCredentialManagerGetResult(
         metrics_util::CredentialManagerGetResult::kAccountChooser, mediation);
 
-    std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
-        client_->GetDeviceAuthenticator();
-    if (authenticator &&
-        client_->IsReauthBeforeFillingRequired(authenticator.get())) {
-      authenticator_ = std::move(authenticator);
+    bool reauth_required = false;
+    if (!base::FeatureList::IsEnabled(
+            password_manager::features::kDeviceReauthRefactor)) {
+      std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
+          client_->GetDeviceAuthenticator();
+      if (authenticator &&
+          client_->IsReauthBeforeFillingRequiredLegacy(authenticator.get())) {
+        authenticator_ = std::move(authenticator);
+        reauth_required = true;
+      }
+    } else {
+      std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+          client_->GetDeviceAuthAvailabilityChecker();
+      if (client_->IsReauthBeforeFillingRequired(checker.get())) {
+        authenticator_ = client_->GetDeviceAuthenticator();
+        reauth_required = true;
+      }
+    }
+
+    if (reauth_required) {
+      CHECK(authenticator_);
       std::u16string message;
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
       const std::u16string origin = base::UTF8ToUTF16(
@@ -269,7 +294,7 @@ void CredentialManagerImpl::SendPasswordForm(
 #endif
       auto on_reauth_completed = base::BindOnce(
           &CredentialManagerImpl::OnReauthCompleted,
-          weak_ptr_factory_.GetWeakPtr(), std::move(send_callback), info);
+          weak_ptr_factory_.GetWeakPtr(), std::move(send_callback), *form);
 
       authenticator_->AuthenticateWithMessage(
           message, metrics_util::TimeCallbackMediumTimes(
@@ -277,6 +302,8 @@ void CredentialManagerImpl::SendPasswordForm(
                        "PasswordManager.PasswordFilling.AuthenticationTime2"));
       return;
     }
+
+    info = PasswordFormToCredentialInfo(*form);
   } else {
     base::RecordAction(
         base::UserMetricsAction("CredentialManager_AccountChooser_Dismissed"));
@@ -308,14 +335,14 @@ void CredentialManagerImpl::CancelBiometricReauthIfOngoing() {
 
 void CredentialManagerImpl::OnReauthCompleted(
     SendCredentialCallback send_callback,
-    CredentialInfo info,
+    PasswordForm form,
     bool auth_succeeded) {
   authenticator_.reset();
   if (!auth_succeeded) {
     SendCredential(std::move(send_callback), CredentialInfo());
     return;
   }
-  SendCredential(std::move(send_callback), info);
+  SendCredential(std::move(send_callback), PasswordFormToCredentialInfo(form));
 }
 
 void CredentialManagerImpl::DoneRequiringUserMediation() {

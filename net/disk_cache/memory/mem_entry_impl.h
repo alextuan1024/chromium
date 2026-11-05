@@ -60,7 +60,7 @@ class MemBackendImpl;
 
 class NET_EXPORT_PRIVATE MemEntryImpl final
     : public Entry,
-      public base::LinkNode<MemEntryImpl> {
+      public base::UnsafeLinkNode<MemEntryImpl> {
  public:
   enum class EntryType {
     kParent,
@@ -138,7 +138,7 @@ class NET_EXPORT_PRIVATE MemEntryImpl final
                MemEntryImpl* parent,
                net::NetLog* net_log);
 
-  using EntryMap = std::map<int64_t, raw_ptr<MemEntryImpl, CtnExperimental>>;
+  using EntryMap = std::map<int64_t, raw_ptr<MemEntryImpl, DanglingUntriaged>>;
 
   static const int kNumStreams = 3;
 

@@ -46,7 +46,8 @@ struct StoppedTaskInfo {
   glic::mojom::FeatureMode feature_mode;
 };
 
-class ActorUiStateManager : public ActorUiStateManagerInterface {
+class ActorUiStateManager : public ActorUiStateManagerInterface,
+                            public ActorNavigationThrottle::Delegate {
  public:
   // Register for this callback to be notified whenever the actor task state
   // changes. This callback may be debounced by a delay.
@@ -74,6 +75,14 @@ class ActorUiStateManager : public ActorUiStateManagerInterface {
 #if !BUILDFLAG(IS_ANDROID)
   void LazyInitTabTracker() override;
 #endif
+  base::WeakPtr<ActorNavigationThrottle::Delegate> GetNavigationDelegate()
+      override;
+
+  // ActorNavigationThrottle::Delegate:
+  bool MaybeDeferNavigation(tabs::TabInterface* tab,
+                            const GURL& url,
+                            NavigationConfirmedCallback callback) override;
+  void CancelNavigationConfirmation(tabs::TabInterface* tab) override;
 
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
   // Shows toast that notifies user the Actor is working in the background.
@@ -156,6 +165,17 @@ class ActorUiStateManager : public ActorUiStateManagerInterface {
   // Called whenever an actor task state changes.
   void OnActorTaskStateChange(TaskId task_id, ActorTask::State new_task_state);
 
+#if !BUILDFLAG(IS_ANDROID)
+  // Applies the cursor chip display rules to `event`.
+  void UpdateCursorChip(const SyncUiEvent& event);
+
+  // Shows `text` on the task's last actuated tab and clears the chip on the
+  // task's other tabs.
+  // Known limit: a tab change alone does not move the chip. It moves on the
+  // next step text or state change.
+  void SetCursorChipForTask(TaskId task_id, const std::string& text);
+#endif
+
   // Notify profile scoped ui components about actor task stop.
   void NotifyActorTaskStopped(TaskId task_id);
 
@@ -183,7 +203,18 @@ class ActorUiStateManager : public ActorUiStateManagerInterface {
   const raw_ref<ActorKeyedService> actor_service_;
 
 #if !BUILDFLAG(IS_ANDROID)
+  struct StepProgressEntry {
+    std::string text;
+    // True after a TaskActRequested event has used `text`. UpdateCursorChip()
+    // drops the entry on the next TaskActRequested if no new text arrived,
+    // except while an act is in progress (kActing or kWaitingOnUser).
+    bool consumed = false;
+  };
+
   std::unique_ptr<actor::ActorTabStripTrackerDesktop> tab_strip_tracker_;
+
+  // Latest step progress per task. Shown in the cursor chip while acting.
+  absl::flat_hash_map<TaskId, StepProgressEntry> step_progress_;
 #endif
 
   base::RepeatingCallbackList<void(TaskId)>

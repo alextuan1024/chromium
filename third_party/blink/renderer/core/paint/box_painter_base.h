@@ -9,10 +9,10 @@
 #include "third_party/blink/renderer/core/layout/geometry/box_sides.h"
 #include "third_party/blink/renderer/core/layout/geometry/box_strut.h"
 #include "third_party/blink/renderer/core/paint/paint_flags.h"
+#include "third_party/blink/renderer/core/style/animated_color.h"
 #include "third_party/blink/renderer/core/style/style_image.h"
 #include "third_party/blink/renderer/platform/geometry/physical_offset.h"
 #include "third_party/blink/renderer/platform/geometry/physical_size.h"
-#include "third_party/blink/renderer/platform/graphics/color.h"
 #include "third_party/blink/renderer/platform/graphics/image_orientation.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/skia/include/core/SkBlendMode.h"
@@ -33,6 +33,7 @@ class FillLayer;
 class GraphicsContext;
 class ImageResourceObserver;
 class LayoutBox;
+class LayoutObject;
 class Node;
 struct BorderShapeReferenceRects;
 struct PaintInfo;
@@ -51,14 +52,14 @@ class BoxPainterBase {
       : document_(document), style_(style), node_(node) {}
 
   void PaintFillLayers(const PaintInfo&,
-                       const Color&,
+                       const AnimatedColor&,
                        const FillLayer&,
                        const PhysicalRect&,
                        const BoxBackgroundPaintContext&,
                        BackgroundBleedAvoidance = kBackgroundBleedNone);
 
   void PaintFillLayer(const PaintInfo&,
-                      const Color&,
+                      const AnimatedColor&,
                       const FillLayer&,
                       const PhysicalRect&,
                       BackgroundBleedAvoidance,
@@ -124,7 +125,7 @@ class BoxPainterBase {
     FillLayerInfo(const Document&,
                   const ComputedStyle&,
                   bool is_scroll_container,
-                  Color bg_color,
+                  const AnimatedColor& bg_color,
                   const FillLayer&,
                   BackgroundBleedAvoidance,
                   PhysicalBoxSides sides_to_include,
@@ -136,7 +137,7 @@ class BoxPainterBase {
     // outlive the StyleImage.  This would normally be a raw pointer, if not for
     // the Oilpan tooling complaints.
     StyleImage* image;
-    Color color;
+    AnimatedColor color;
 
     RespectImageOrientationEnum respect_image_orientation;
     PhysicalBoxSides sides_to_include;
@@ -182,18 +183,17 @@ class BoxPainterBase {
       const PhysicalBoxStrut& borders,
       const PhysicalRect&) const = 0;
   virtual FillLayerInfo GetFillLayerInfo(
-      const Color&,
+      const AnimatedColor&,
       const FillLayer&,
       BackgroundBleedAvoidance,
       bool is_painting_background_in_contents_space,
       PaintFlags paint_flags) const = 0;
-  // The node that the paint-timing path attributes a fill-layer image to,
-  // resolved by the subclass with LayoutObject::GeneratingNode(). Kept separate
-  // from `node_` so DevTools and image-animation paths continue to see the raw
-  // box node. Only called when a layer actually draws an image: resolving it
-  // walks the layout tree and dereferences the Node, and box painters are
-  // constructed for every box in every paint phase.
-  virtual Node* ImageGeneratingNode() const = 0;
+  // Returns the `LayoutObject` that generated the background image. Should only
+  // be used for paint timing, which currently uses a LayoutObject-based
+  // architecture. This should not be used in general (see `BoxPainterBase`
+  // class comment).
+  virtual const LayoutObject* PaintTimingLayoutObject() const = 0;
+
   static void PaintInsetBoxShadow(
       const PaintInfo&,
       const ContouredRect&,

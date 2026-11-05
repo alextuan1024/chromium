@@ -212,8 +212,13 @@ bool ActivateFinder() {
   if (finder_apps.count == 0) {
     return false;
   }
-  return [finder_apps.firstObject
-      activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+  NSApplicationActivationOptions options = 0;
+  // NSApplicationActivateIgnoringOtherApps is deprecated and has no effect on
+  // macOS 14+.
+  if (!@available(macOS 14, *)) {
+    options = NSApplicationActivateIgnoringOtherApps;
+  }
+  return [finder_apps.firstObject activateWithOptions:options];
 }
 
 class ShowWidgetOnMousePressedView : public View {
@@ -253,8 +258,7 @@ class WidgetActivationRecorder : public WidgetObserver {
 
   ~WidgetActivationRecorder() override = default;
 
-  const std::vector<raw_ptr<Widget, VectorExperimental>>& activated_widgets()
-      const {
+  const std::vector<raw_ptr<Widget>>& activated_widgets() const {
     return activated_widgets_;
   }
 
@@ -265,7 +269,7 @@ class WidgetActivationRecorder : public WidgetObserver {
     }
   }
 
-  std::vector<raw_ptr<Widget, VectorExperimental>> activated_widgets_;
+  std::vector<raw_ptr<Widget>> activated_widgets_;
   base::ScopedMultiSourceObservation<Widget, WidgetObserver>
       widget_observations_{this};
 };

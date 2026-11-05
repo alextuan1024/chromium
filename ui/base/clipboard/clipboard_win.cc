@@ -21,16 +21,19 @@
 #include <vector>
 
 #include "base/byte_size.h"
+#include "base/check.h"
 #include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/i18n/encoding_detection.h"
 #include "base/i18n/icu_string_conversions.h"
+#include "base/json/json_writer.h"
 #include "base/lazy_instance.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/numerics/safe_math.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -41,6 +44,7 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/types/optional_util.h"
+#include "base/values.h"
 #include "base/win/message_window.h"
 #include "base/win/scoped_gdi_object.h"
 #include "base/win/scoped_hdc.h"
@@ -290,7 +294,7 @@ void ClipboardWin::OnPreShutdown() {}
 
 void ClipboardWin::GetSource(ClipboardBuffer buffer,
                              GetSourceCallback callback) const {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
 
   ScopedClipboard clipboard;
   if (!clipboard.Acquire(GetClipboardWindow())) {
@@ -322,7 +326,7 @@ void ClipboardWin::GetSource(ClipboardBuffer buffer,
 
 const ClipboardSequenceNumberToken& ClipboardWin::GetSequenceNumber(
     ClipboardBuffer buffer) const {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
 
   DWORD sequence_number = ::GetClipboardSequenceNumber();
   if (sequence_number != clipboard_sequence_.sequence_number) {
@@ -348,7 +352,7 @@ ClipboardWin::GetAllAvailableFormatsInternal(
     ClipboardBuffer buffer,
     const std::optional<DataTransferEndpoint>& data_dst,
     HWND owner_window) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   base::flat_set<ClipboardFormatType> types;
 
   // Acquire the clipboard to safely enumerate formats.
@@ -442,7 +446,7 @@ ClipboardWin::GetAllAvailableFormatsInternal(
 }
 
 void ClipboardWin::Clear(ClipboardBuffer buffer) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   {
     ScopedClipboard clipboard;
     if (!clipboard.Acquire(GetClipboardWindow())) {
@@ -653,7 +657,7 @@ std::u16string ClipboardWin::ReadTextInternal(
     ClipboardBuffer buffer,
     const std::optional<DataTransferEndpoint>& data_dst,
     HWND owner_window) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kText);
 
   std::u16string result;
@@ -682,7 +686,7 @@ std::string ClipboardWin::ReadAsciiTextInternal(
     ClipboardBuffer buffer,
     const std::optional<DataTransferEndpoint>& data_dst,
     HWND owner_window) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kText);
   std::string result;
 
@@ -713,12 +717,12 @@ void ClipboardWin::ReadHTMLInternal(
     std::string* src_url,
     uint32_t* fragment_start,
     uint32_t* fragment_end) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kHtml);
 
   markup->clear();
   // TODO(dcheng): Remove these checks, I don't think they should be optional.
-  DCHECK(src_url);
+  CHECK(src_url, base::NotFatalUntil::M163);
   if (src_url)
     src_url->clear();
   *fragment_start = 0;
@@ -772,7 +776,7 @@ std::u16string ClipboardWin::ReadSvgInternal(
     ClipboardBuffer buffer,
     const std::optional<DataTransferEndpoint>& data_dst,
     HWND owner_window) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kSvg);
 
   std::string data =
@@ -794,7 +798,7 @@ std::string ClipboardWin::ReadRTFInternal(
     ClipboardBuffer buffer,
     const std::optional<DataTransferEndpoint>& data_dst,
     HWND owner_window) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kRtf);
 
   std::string result =
@@ -844,7 +848,7 @@ std::u16string ClipboardWin::ReadDataTransferCustomDataInternal(
     const std::u16string& type,
     const std::optional<DataTransferEndpoint>& data_dst,
     HWND owner_window) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kCustomData);
 
   std::u16string result;
@@ -875,7 +879,7 @@ std::vector<ui::FileInfo> ClipboardWin::ReadFilenamesInternal(
     ClipboardBuffer buffer,
     const std::optional<DataTransferEndpoint>& data_dst,
     HWND owner_window) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kFilenames);
 
   std::vector<ui::FileInfo> result;
@@ -943,31 +947,61 @@ std::vector<ui::FileInfo> ClipboardWin::ReadFilenamesInternal(
 // platforms.
 void ClipboardWin::ReadURL(const std::optional<DataTransferEndpoint>& data_dst,
                            ReadUrlCallback callback) const {
+  ReadURLs(data_dst,
+           base::BindOnce(
+               [](ReadUrlCallback callback,
+                  std::vector<ClipboardUrlInfo> url_infos) {
+                 std::move(callback).Run(url_infos.empty()
+                                             ? ClipboardUrlInfo()
+                                             : std::move(url_infos.front()));
+               },
+               std::move(callback)));
+}
+
+// |data_dst| is not used. It's only passed to be consistent with other
+// platforms.
+void ClipboardWin::ReadURLs(const std::optional<DataTransferEndpoint>& data_dst,
+                            ReadUrlsCallback callback) const {
   RecordRead(ClipboardFormatMetric::kUrl);
 
-  ClipboardUrlInfo url_info;
+  std::vector<ClipboardUrlInfo> url_infos;
 
   // Acquire the clipboard.
   ScopedClipboard clipboard;
   if (!clipboard.Acquire(GetClipboardWindow())) {
-    std::move(callback).Run(std::move(url_info));
+    std::move(callback).Run(std::move(url_infos));
     return;
   }
 
-  HANDLE data = GetClipboardDataWithLimit(
-      ClipboardFormatType::UrlType().ToFormatEtc().cfFormat);
-  if (!data) {
-    std::move(callback).Run(std::move(url_info));
-    return;
+  // BookmarkListType holds every link of a multi-URL write.
+  if (HANDLE data = GetClipboardDataWithLimit(
+          ClipboardFormatType::BookmarkListType().ToFormatEtc().cfFormat)) {
+    if (const void* locked_data = ::GlobalLock(data)) {
+      std::u16string bookmark_list(static_cast<const char16_t*>(locked_data),
+                                   ::GlobalSize(data) / sizeof(char16_t));
+      ::GlobalUnlock(data);
+      TrimAfterNull(&bookmark_list);
+      clipboard_util::ParseBookmarkListData(bookmark_list, url_infos);
+    }
   }
 
-  std::u16string bookmark(static_cast<const char16_t*>(::GlobalLock(data)),
-                          ::GlobalSize(data) / sizeof(char16_t));
-  ::GlobalUnlock(data);
-  TrimAfterNull(&bookmark);
+  // Otherwise fall back to CFSTR_INETURLW, which holds a single URL.
+  if (url_infos.empty()) {
+    if (HANDLE data = GetClipboardDataWithLimit(
+            ClipboardFormatType::UrlType().ToFormatEtc().cfFormat)) {
+      if (const void* locked_data = ::GlobalLock(data)) {
+        std::u16string bookmark(static_cast<const char16_t*>(locked_data),
+                                ::GlobalSize(data) / sizeof(char16_t));
+        ::GlobalUnlock(data);
+        TrimAfterNull(&bookmark);
+        if (GURL url(base::UTF16ToUTF8(bookmark)); url.is_valid()) {
+          url_infos.emplace_back(std::move(url), std::u16string());
+        }
+      }
+    }
+  }
 
-  url_info.url = GURL(base::UTF16ToUTF8(bookmark));
-  std::move(callback).Run(std::move(url_info));
+  std::move(callback).Run(std::move(url_infos));
 }
 
 // static
@@ -1085,17 +1119,59 @@ void ClipboardWin::WriteFilenames(std::vector<ui::FileInfo> filenames) {
   WriteToClipboard(ClipboardFormatType::CFHDropType(), storage.hGlobal);
 }
 
-void ClipboardWin::WriteURL(const ClipboardUrlInfo& url_info) {
-  // On Windows, CFSTR_INETURLW is expected to only contain the URL & not the
-  // title separated by a newline.
-  // https://docs.microsoft.com/en-us/windows/win32/shell/clipboard#cfstr_ineturl.
-  HGLOBAL glob = CreateGlobalData(base::UTF8ToUTF16(url_info.url.spec()));
+void ClipboardWin::WriteURLs(base::span<const ClipboardUrlInfo> url_infos) {
+  CHECK(!url_infos.empty());
+  if (url_infos.size() == 1) {
+    // On Windows, CFSTR_INETURLW is expected to only contain the URL & not the
+    // title separated by a newline.
+    // https://docs.microsoft.com/en-us/windows/win32/shell/clipboard#cfstr_ineturl.
+    HGLOBAL glob =
+        CreateGlobalData(base::UTF8ToUTF16(url_infos.front().url.spec()));
+    WriteToClipboard(ClipboardFormatType::UrlType(), glob);
+    return;
+  }
 
-  WriteToClipboard(ClipboardFormatType::UrlType(), glob);
+  // CFSTR_INETURLW holds a single URL, so it is not written for several links.
+  // An application that prefers it would paste only the first one. The full
+  // list is written to MozUrlType and BookmarkListType instead.
+  std::u16string bookmarks;
+  base::ListValue bookmark_entries;
+  bookmark_entries.reserve(url_infos.size());
+  std::string text_urls;
+  for (const auto& url_info : url_infos) {
+    if (!bookmarks.empty()) {
+      bookmarks += u"\n";
+      text_urls += "\r\n";
+    }
+    base::StrAppend(
+        &bookmarks,
+        {base::UTF8ToUTF16(url_info.url.spec()), u"\n",
+         base::CollapseWhitespace(url_info.title,
+                                  /*trim_sequences_with_line_breaks=*/false)});
+
+    base::DictValue entry;
+    entry.Set("url", url_info.url.spec());
+    entry.Set("title", base::UTF16ToUTF8(url_info.title));
+    bookmark_entries.Append(std::move(entry));
+
+    text_urls += url_info.url.spec();
+  }
+
+  WriteToClipboard(ClipboardFormatType::MozUrlType(),
+                   CreateGlobalData(bookmarks));
+
+  base::Value bookmark_entries_value(std::move(bookmark_entries));
+  std::string bookmark_list_json;
+  if (base::JSONWriter::Write(bookmark_entries_value, &bookmark_list_json)) {
+    WriteToClipboard(ClipboardFormatType::BookmarkListType(),
+                     CreateGlobalData(base::UTF8ToUTF16(bookmark_list_json)));
+  }
+
+  WriteText(text_urls);
 }
 
 void ClipboardWin::WriteWebSmartPaste() {
-  DCHECK_NE(clipboard_owner_->hwnd(), nullptr);
+  CHECK_NE(clipboard_owner_->hwnd(), nullptr, base::NotFatalUntil::M163);
   ::SetClipboardData(
       ClipboardFormatType::WebKitSmartPasteType().ToFormatEtc().cfFormat,
       nullptr);
@@ -1205,7 +1281,7 @@ ClipboardWin::ReadPngResult ClipboardWin::ReadPngInternal(
 std::vector<uint8_t> ClipboardWin::ReadPngTypeDataInternal(
     ClipboardBuffer buffer,
     HWND owner_window) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
 
   // Acquire the clipboard.
   ScopedClipboard clipboard;
@@ -1228,7 +1304,7 @@ std::vector<uint8_t> ClipboardWin::ReadPngTypeDataInternal(
 // static
 SkBitmap ClipboardWin::ReadBitmapInternal(ClipboardBuffer buffer,
                                           HWND owner_window) {
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
 
   // Acquire the clipboard.
   ScopedClipboard clipboard;
@@ -1401,8 +1477,10 @@ SkBitmap ClipboardWin::ReadBitmapInternal(ClipboardBuffer buffer,
 
 void ClipboardWin::WriteToClipboard(ClipboardFormatType format, HANDLE handle) {
   UINT cf_format = format.ToFormatEtc().cfFormat;
-  DCHECK_NE(clipboard_owner_->hwnd(), nullptr);
+  CHECK_NE(clipboard_owner_->hwnd(), nullptr, base::NotFatalUntil::M163);
   if (handle && !::SetClipboardData(cf_format, handle)) {
+    // TODO(crbug.com/583027040): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK_NE(GetLastError(),
               static_cast<unsigned long>(ERROR_CLIPBOARD_NOT_OPEN));
     ::GlobalFree(handle);

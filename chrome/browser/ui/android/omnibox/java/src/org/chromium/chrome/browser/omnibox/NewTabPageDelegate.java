@@ -7,9 +7,11 @@ package org.chromium.chrome.browser.omnibox;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.view.MotionEvent;
+import android.view.View;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 /**
  * Delegate that provides the toolbar with the info of the NTP for the current tab.
@@ -18,16 +20,12 @@ import org.chromium.build.annotations.NullMarked;
  */
 @NullMarked
 public interface NewTabPageDelegate {
-    /**
-     * @return {@code true} if the current tab was showing NewTabPage.
-     */
+    /** Returns {@code true} if the current tab was showing NewTabPage. */
     default boolean wasShowingNtp() {
         return false;
     }
 
-    /**
-     * @return {@code true} if the NewTabPage is currently visible.
-     */
+    /** Returns {@code true} if the NewTabPage is currently visible. */
     default boolean isCurrentlyVisible() {
         return false;
     }
@@ -40,16 +38,12 @@ public interface NewTabPageDelegate {
         return false;
     }
 
-    /**
-     * @return Whether the location bar is shown in the NTP.
-     */
+    /** Returns whether the location bar is shown in the NTP. */
     default boolean isLocationBarShown() {
         return false;
     }
 
-    /**
-     * @return {@code true} if we're transitioning away from showing the location bar.
-     */
+    /** Returns {@code true} if we're transitioning away from showing the location bar. */
     default boolean transitioningAwayFromLocationBar() {
         return false;
     }
@@ -78,6 +72,11 @@ public interface NewTabPageDelegate {
      *     to the NewTabPage view.
      */
     default void getSearchBoxBounds(Rect bounds, Point translation) {}
+
+    /** Returns the fake search box view on the NewTabPage, or null if not available. */
+    default @Nullable View getSearchBoxView() {
+        return null;
+    }
 
     /**
      * Get the vertical inset applied to the search box bounds. This is used to adjust the search

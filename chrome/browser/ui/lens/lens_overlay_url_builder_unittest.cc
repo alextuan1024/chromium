@@ -65,19 +65,15 @@ class LensOverlayUrlBuilderTest : public testing::Test {
               {"use-video-context-for-text-only-requests", "true"},
               {"use-video-context-for-multimodal-requests", "true"},
           }},
-         {lens::features::kLensOverlayTranslateLanguages, {}},
-         {lens::features::kLensOverlayUpdatedClientContext, {}}},
+         {lens::features::kLensOverlayTranslateLanguages, {}}},
         /*disabled_features=*/{});
   }
 
   std::string EncodeRequestId(lens::LensOverlayRequestId* request_id) {
     std::string serialized_request_id;
     EXPECT_TRUE(request_id->SerializeToString(&serialized_request_id));
-    std::string encoded_request_id;
-    base::Base64UrlEncode(serialized_request_id,
-                          base::Base64UrlEncodePolicy::OMIT_PADDING,
-                          &encoded_request_id);
-    return encoded_request_id;
+    return base::Base64UrlEncode(serialized_request_id,
+                                 base::Base64UrlEncodePolicy::OMIT_PADDING);
   }
 
   // Checks that the query submission time and client upload duration params are
@@ -176,7 +172,6 @@ TEST_F(LensOverlayUrlBuilderTest, AppendTranslateParamsToMap) {
 }
 
 TEST_F(LensOverlayUrlBuilderTest, AppendStickinessSignalForFormula) {
-  std::string query = "(x + 2) / 4 = 4";
   std::string formula = "\\frac{x + 2}{4} = 4";
   std::map<std::string, std::string> params;
 
@@ -446,10 +441,8 @@ TEST_F(LensOverlayUrlBuilderTest, BuildLensSearchURLWithNoTextQuery) {
 
   std::string serialized_request_id;
   CHECK(request_id.get()->SerializeToString(&serialized_request_id));
-  std::string encoded_request_id;
-  base::Base64UrlEncode(serialized_request_id,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &encoded_request_id);
+  std::string encoded_request_id = base::Base64UrlEncode(
+      serialized_request_id, base::Base64UrlEncodePolicy::OMIT_PADDING);
 
   std::string expected_url = base::StringPrintf(
       "%s?source=chrome.cr.menu&cs=0&gsc=2&hl=%s&q=&lns_mode=un&"
@@ -485,10 +478,8 @@ TEST_F(LensOverlayUrlBuilderTest, BuildLensSearchURLWithAdditionalParams) {
 
   std::string serialized_request_id;
   CHECK(request_id.get()->SerializeToString(&serialized_request_id));
-  std::string encoded_request_id;
-  base::Base64UrlEncode(serialized_request_id,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &encoded_request_id);
+  std::string encoded_request_id = base::Base64UrlEncode(
+      serialized_request_id, base::Base64UrlEncodePolicy::OMIT_PADDING);
 
   std::string expected_url = base::StringPrintf(
       "%s?source=chrome.cr.menu&param=value&cs=0&gsc=2&hl=%s&q=&lns_"
@@ -528,10 +519,8 @@ TEST_F(LensOverlayUrlBuilderTest, BuildMultimodalSearchURLWithVideoContext) {
 
   std::string serialized_request_id;
   CHECK(request_id.get()->SerializeToString(&serialized_request_id));
-  std::string encoded_request_id;
-  base::Base64UrlEncode(serialized_request_id,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &encoded_request_id);
+  std::string encoded_request_id = base::Base64UrlEncode(
+      serialized_request_id, base::Base64UrlEncodePolicy::OMIT_PADDING);
 
   std::string expected_url = base::StringPrintf(
       "%s?source=chrome.cr.menu&cs=0&gsc=2&hl=%s&q=%s&lns_"
@@ -567,10 +556,8 @@ TEST_F(LensOverlayUrlBuilderTest,
 
   std::string serialized_request_id;
   CHECK(request_id.get()->SerializeToString(&serialized_request_id));
-  std::string encoded_request_id;
-  base::Base64UrlEncode(serialized_request_id,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &encoded_request_id);
+  std::string encoded_request_id = base::Base64UrlEncode(
+      serialized_request_id, base::Base64UrlEncodePolicy::OMIT_PADDING);
 
   std::string expected_url = base::StringPrintf(
       "%s?source=chrome.cr.menu&cs=0&gsc=2&hl=%s&q=&lns_"
@@ -602,8 +589,7 @@ TEST_F(LensOverlayUrlBuilderTest,
        {lens::features::kLensOverlayContextualSearchbox,
         {
             {"use-video-context-for-multimodal-requests", "false"},
-        }},
-       {lens::features::kLensOverlayUpdatedClientContext, {}}},
+        }}},
       /*disabled_features=*/{});
 
   std::string text_query = "Green Apples";
@@ -625,10 +611,8 @@ TEST_F(LensOverlayUrlBuilderTest,
 
   std::string serialized_request_id;
   CHECK(request_id.get()->SerializeToString(&serialized_request_id));
-  std::string encoded_request_id;
-  base::Base64UrlEncode(serialized_request_id,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &encoded_request_id);
+  std::string encoded_request_id = base::Base64UrlEncode(
+      serialized_request_id, base::Base64UrlEncodePolicy::OMIT_PADDING);
 
   std::string expected_url = base::StringPrintf(
       "%s?source=chrome.cr.menu&cs=0&gsc=2&hl=%s&q=%s&lns_"
@@ -717,20 +701,26 @@ TEST_F(LensOverlayUrlBuilderTest, IsValidSearchURLInvalidURL) {
   EXPECT_FALSE(lens::IsValidSearchResultsUrl(GURL()));
 }
 
-TEST_F(LensOverlayUrlBuilderTest, RemoveIgnoredSearchURLParameters) {
+TEST_F(LensOverlayUrlBuilderTest, AreSearchUrlsEquivalent) {
   std::string text_query = "Apples";
   std::string viewport_width = "400";
   std::string viewport_height = "500";
-  std::string initial_url = base::StringPrintf(
-      "%s?q=%s&gsc=2&hl=%s&biw=%s&bih=%s&sec_act=1&sxsrf=token",
+  const GURL initial_url(base::StringPrintf(
+      "%s?q=%s&gsc=2&hl=%s&biw=%s&bih=%s&sec_act=1&sxsrf=token&udm=24&tbm=isch",
       kResultsSearchBaseUrl, text_query.c_str(), kLanguage,
-      viewport_width.c_str(), viewport_height.c_str());
-  std::string expected_url =
-      base::StringPrintf("%s?q=%s&gsc=2&hl=%s", kResultsSearchBaseUrl,
-                         text_query.c_str(), kLanguage);
+      viewport_width.c_str(), viewport_height.c_str()));
+  const GURL expected_url(base::StringPrintf("%s?hl=%s&q=%s&gsc=2",
+                                             kResultsSearchBaseUrl, kLanguage,
+                                             text_query.c_str()));
+  const GURL different_query_url(base::StringPrintf(
+      "%s?q=Oranges&gsc=2&hl=%s", kResultsSearchBaseUrl, kLanguage));
+  const GURL different_base_url(
+      base::StringPrintf("https://www.example.com/search?q=%s&gsc=2&hl=%s",
+                         text_query.c_str(), kLanguage));
 
-  EXPECT_EQ(lens::RemoveIgnoredSearchURLParameters(GURL(initial_url)),
-            GURL(expected_url));
+  EXPECT_TRUE(lens::AreSearchUrlsEquivalent(initial_url, expected_url));
+  EXPECT_FALSE(lens::AreSearchUrlsEquivalent(initial_url, different_query_url));
+  EXPECT_FALSE(lens::AreSearchUrlsEquivalent(initial_url, different_base_url));
 }
 
 TEST_F(LensOverlayUrlBuilderTest, RemoveSidePanelURLParameters) {

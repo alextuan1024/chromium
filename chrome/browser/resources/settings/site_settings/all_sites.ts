@@ -4,46 +4,40 @@
 
 /**
  * @fileoverview
- * 'all-sites' is the polymer element for showing the list of all sites under
+ * 'all-sites' is the Lit element for showing the list of all sites under
  * Site Settings.
  */
-import 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
-import 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
-import 'chrome://resources/cr_elements/cr_search_field/cr_search_field.js';
-import 'chrome://resources/cr_elements/cr_shared_vars.css.js';
-import 'chrome://resources/cr_elements/md_select.css.js';
-import 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
-import '../settings_shared.css.js';
+import 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
+import 'chrome://resources/cr_elements/cr_infinite_list/cr_infinite_list.js';
 import '../settings_page/settings_subpage.js';
 import './all_sites_icons.html.js';
-import './clear_storage_dialog_shared.css.js';
 import './site_entry.js';
 
-import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import type {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
-import type {CrLazyRenderElement} from 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
-import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
+import type {CrLazyRenderLitElement} from 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
+import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
+import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {assert} from 'chrome://resources/js/assert.js';
-import type {IronListElement} from 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
-import {afterNextRender, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import {GlobalScrollTargetMixin} from '../global_scroll_target_mixin.js';
+import {GlobalScrollTargetMixinLit} from '../global_scroll_target_mixin.js';
 import {loadTimeData} from '../i18n_setup.js';
 import type {MetricsBrowserProxy} from '../metrics_browser_proxy.js';
 import {DeleteBrowsingDataAction, MetricsBrowserProxyImpl} from '../metrics_browser_proxy.js';
 import {routes} from '../route.js';
 import type {Route} from '../router.js';
 import {Router} from '../router.js';
-import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
+import {SettingsViewMixinLit} from '../settings_page/settings_view_mixin_lit.js';
 
-import {getTemplate} from './all_sites.html.js';
+import {getCss} from './all_sites.css.js';
+import {getHtml} from './all_sites.html.js';
 import {AllSitesAction2, AllSitesDialog, ContentSetting, SortMethod} from './constants.js';
 import type {OriginInfo, SiteGroup} from './site_settings_browser_proxy.js';
-import {SiteSettingsMixin} from './site_settings_mixin.js';
+import {SiteSettingsMixinLit} from './site_settings_mixin_lit.js';
 
 interface ActionMenuModel {
   actionScope: string;
@@ -55,7 +49,6 @@ interface ActionMenuModel {
   target: HTMLElement;
 }
 
-type OpenMenuEvent = CustomEvent<ActionMenuModel>;
 type RemoveSiteEvent = CustomEvent<ActionMenuModel>;
 
 interface SelectedItem {
@@ -65,7 +58,6 @@ interface SelectedItem {
 
 declare global {
   interface HTMLElementEventMap {
-    'open-menu': OpenMenuEvent;
     'remove-site': RemoveSiteEvent;
     'site-entry-selected': CustomEvent<SelectedItem>;
   }
@@ -73,173 +65,139 @@ declare global {
 
 export interface AllSitesElement {
   $: {
-    allSitesList: IronListElement,
     clearAllButton: HTMLElement,
     clearLabel: HTMLElement,
-    confirmClearAllData: CrLazyRenderElement<CrDialogElement>,
-    confirmRemoveSite: CrLazyRenderElement<CrDialogElement>,
+    confirmClearAllData: CrLazyRenderLitElement<CrDialogElement>,
+    confirmRemoveSite: CrLazyRenderLitElement<CrDialogElement>,
     listContainer: HTMLElement,
-    menu: CrLazyRenderElement<CrActionMenuElement>,
     sortMethod: HTMLSelectElement,
   };
 }
 
-const AllSitesElementBase = SettingsViewMixin(GlobalScrollTargetMixin(
-    WebUiListenerMixin(I18nMixin(SiteSettingsMixin(PolymerElement)))));
-
-const RWS_RELATED_SEARCH_PREFIX: string = 'related:';
+const AllSitesElementBase = GlobalScrollTargetMixinLit(SettingsViewMixinLit(
+    WebUiListenerMixinLit(I18nMixinLit(SiteSettingsMixinLit(CrLitElement)))));
 
 export class AllSitesElement extends AllSitesElementBase {
   static get is() {
     return 'all-sites';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
-  static get properties() {
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
     return {
-      // TODO(crbug.com/40112954): Refactor siteGroupMap to use an Object
-      // instead of a Map so that it's observable by Polymer more naturally. As
-      // it stands, one cannot use computed properties based off the value of
-      // siteGroupMap nor can one use observable functions to listen to changes
-      // to siteGroupMap.
       /**
        * Map containing sites to display in the widget, grouped into their
        * group names.
        */
-      siteGroupMap: {
-        type: Object,
-        value() {
-          return new Map();
-        },
-      },
+      siteGroupMap: {type: Object},
 
       /**
        * Filtered site group list.
        */
-      filteredList_: {
-        type: Array,
-      },
-
-      /**
-       * Needed by GlobalScrollTargetMixin.
-       */
-      subpageRoute: {
-        type: Object,
-        value: routes.SITE_SETTINGS_ALL,
-        readOnly: true,
-      },
+      filteredList_: {type: Array},
 
       /**
        * The search query entered into the All Sites search textbox. Used to
        * filter the All Sites list.
        */
-      filter: {
-        type: String,
-        value: '',
-        observer: 'forceListUpdate_',
-      },
-
-      /**
-       * All possible sort methods.
-       */
-      sortMethodEnum_: {
-        type: Object,
-        value: SortMethod,
-        readOnly: true,
-      },
-
-      /**
-       * Stores the last selected item in the All Sites list.
-       */
-      selectedItem_: Object,
+      filter: {type: String},
 
       /**
        * Used to track the last-focused element across rows for the
-       * FocusRowMixin.
+       * FocusRowMixinLit.
        */
-      lastFocused_: Object,
+      lastFocused_: {type: Object},
 
       /**
        * Used to track whether the list of row items has been blurred for the
-       * FocusRowMixin.
+       * FocusRowMixinLit.
        */
-      listBlurred_: Boolean,
+      listBlurred_: {type: Boolean},
 
-      actionMenuModel_: Object,
-
-      /**
-       * Used to determine if user is attempting to clear all site data
-       * rather than a single site or origin's data.
-       */
-      clearAllData_: Boolean,
+      actionMenuModel_: {type: Object},
 
       /**
        * The selected sort method.
        */
-      sortMethod_: String,
+      sortMethod_: {type: String},
 
       /**
        * The total usage of all sites for this profile.
        */
-      totalUsage_: {
-        type: String,
-        value: '0 B',
-      },
+      totalUsage_: {type: String},
     };
   }
 
-  declare siteGroupMap: Map<string, SiteGroup>;
-  declare private filteredList_: SiteGroup[];
-  declare subpageRoute: Route;
-  declare filter: string;
-  declare private selectedItem_: SelectedItem|null;
-  declare private lastFocused_: HTMLElement|null;
-  declare private listBlurred_: boolean;
-  declare private actionMenuModel_: ActionMenuModel|null;
-  declare private clearAllData_: boolean;
-  declare private sortMethod_?: SortMethod;
-  declare private totalUsage_: string;
+  accessor siteGroupMap: Map<string, SiteGroup> = new Map();
+  protected accessor filteredList_: SiteGroup[] = [];
+  accessor filter: string = '';
+  protected accessor lastFocused_: HTMLElement|null = null;
+  protected accessor listBlurred_: boolean = false;
+  private accessor actionMenuModel_: ActionMenuModel|null = null;
+  protected accessor sortMethod_: SortMethod = SortMethod.MOST_VISITED;
+  private accessor totalUsage_: string = '0 B';
+
+  override subpageRoute: Route = routes.SITE_SETTINGS_ALL;
   private metricsBrowserProxy: MetricsBrowserProxy =
       MetricsBrowserProxyImpl.getInstance();
+  /** The last selected item in the All Sites list. */
+  private selectedItem_: SelectedItem|null = null;
 
-  override ready() {
-    super.ready();
+  override connectedCallback() {
+    super.connectedCallback();
 
     this.addWebUiListener(
         'onStorageListFetched', this.onStorageListFetched.bind(this));
+  }
+
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+
+    if (changedProperties.has('filter')) {
+      this.forceListUpdate_();
+    }
+  }
+
+  override firstUpdated(changedProperties: PropertyValues<this>) {
+    super.firstUpdated(changedProperties);
+
     this.addEventListener(
         'site-entry-selected', (e: CustomEvent<SelectedItem>) => {
           this.selectedItem_ = e.detail;
         });
-
-    this.addEventListener('open-menu', this.onOpenMenu_.bind(this));
     this.addEventListener('remove-site', this.onRemoveSite_.bind(this));
 
     const sortParam = Router.getInstance().getQueryParameters().get('sort');
     if (sortParam !== null &&
         Object.values(SortMethod).includes(sortParam as SortMethod)) {
-      this.$.sortMethod.value = sortParam;
+      this.sortMethod_ = sortParam as SortMethod;
     }
-    this.sortMethod_ = this.$.sortMethod.value as (SortMethod | undefined);
   }
 
-  override connectedCallback() {
-    super.connectedCallback();
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
 
-    // Set scrollOffset so the iron-list scrolling accounts for the space the
-    // title takes.
-    afterNextRender(this, () => {
-      this.$.allSitesList.scrollOffset = this.$.allSitesList.offsetTop;
-    });
+    if (changedProperties.has('subpageScrollTarget') &&
+        this.subpageScrollTarget) {
+      // Set scrollOffset so the cr-infinite-list scrolling accounts for the
+      // space the title takes.
+      const allSitesList = this.shadowRoot.querySelector('cr-infinite-list');
+      assert(allSitesList);
+      allSitesList.scrollOffset = allSitesList.offsetTop;
+    }
   }
 
   /**
    * Reload the site list when the all sites page is visited.
    *
-   * RouteObserverBehavior
+   * RouteObserverMixin
    */
   override currentRouteChanged(currentRoute: Route, oldRoute?: Route) {
     super.currentRouteChanged(currentRoute, oldRoute);
@@ -304,21 +262,11 @@ export class AllSitesElement extends AllSitesElementBase {
    */
   private filterPopulatedList_(
       siteGroupMap: Map<string, SiteGroup>, searchQuery: string): SiteGroup[] {
-    const result = [];
+    const result: SiteGroup[] = [];
     for (const [_groupingKey, siteGroup] of siteGroupMap) {
-      if (this.isRwsFiltered_()) {
-        const rwsOwnerFilter =
-            this.filter.substring(this.filter.indexOf(':') + 1);
-        // Checking `siteGroup.rwsOwner` to ensure that we're not matching with
-        // site entries that are not a member of a related website set.
-        if (siteGroup.rwsOwner && siteGroup.rwsOwner === rwsOwnerFilter) {
-          result.push(siteGroup);
-        }
-      } else {
-        if (siteGroup.origins.find(
-                originInfo => originInfo.origin.includes(searchQuery))) {
-          result.push(siteGroup);
-        }
+      if (siteGroup.origins.find(
+              originInfo => originInfo.origin.includes(searchQuery))) {
+        result.push(siteGroup);
       }
     }
     return this.sortSiteGroupList_(result);
@@ -329,7 +277,7 @@ export class AllSitesElement extends AllSitesElementBase {
    * @param siteGroupList The list of sites to sort.
    */
   private sortSiteGroupList_(siteGroupList: SiteGroup[]): SiteGroup[] {
-    const sortMethod = this.$.sortMethod.value;
+    const sortMethod = this.sortMethod_;
     if (!sortMethod) {
       return siteGroupList;
     }
@@ -389,14 +337,16 @@ export class AllSitesElement extends AllSitesElementBase {
     return siteGroup1.displayName.localeCompare(siteGroup2.displayName);
   }
 
+  protected isSortMethodSelected_(sortMethod: SortMethod): boolean {
+    return sortMethod === this.sortMethod_;
+  }
+
   /**
    * Called when the user chooses a different sort method to the default.
    */
-  private onSortMethodChanged_() {
+  protected onSortMethodChange_() {
     this.sortMethod_ = this.$.sortMethod.value as SortMethod;
-    this.filteredList_ = this.sortSiteGroupList_(this.filteredList_);
-    // Force the iron-list to rerender its items, as the order has changed.
-    this.$.allSitesList.fire('iron-resize');
+    this.filteredList_ = this.sortSiteGroupList_([...this.filteredList_]);
   }
 
   /**
@@ -407,7 +357,6 @@ export class AllSitesElement extends AllSitesElementBase {
     this.filteredList_ =
         this.filterPopulatedList_(this.siteGroupMap, this.filter);
     this.updateTotalUsage_();
-    this.$.allSitesList.fire('iron-resize');
   }
 
   forceListUpdateForTesting() {
@@ -417,75 +366,47 @@ export class AllSitesElement extends AllSitesElementBase {
   /**
    * @return Whether the |siteGroupMap| is empty.
    */
-  private siteGroupMapEmpty_(): boolean {
+  protected siteGroupMapEmpty_(): boolean {
     return !this.siteGroupMap.size;
   }
 
   /**
    * @return Whether the |filteredList_| is empty due to searching.
    */
-  private noSearchResultFound_(): boolean {
+  protected noSearchResultFound_(): boolean {
     return !this.filteredList_.length && !this.siteGroupMapEmpty_();
   }
 
   /**
    * Focus on previously selected entry.
    */
-  private focusOnLastSelectedEntry_() {
-    if (!this.selectedItem_ || this.siteGroupMap.size === 0) {
+  private async focusOnLastSelectedEntry_() {
+    if (!this.selectedItem_ || this.filteredList_.length === 0) {
       return;
     }
-    // Focus the site-entry to ensure the iron-list renders it, otherwise
-    // the query selector will not be able to find it. Note the index is
-    // used here instead of the item, in case the item was already removed.
-    const index =
-        Math.max(0, Math.min(this.selectedItem_.index, this.siteGroupMap.size));
-    this.$.allSitesList.focusItem(index);
+    // The index is used instead of the item, in case the item was already
+    // removed.
+    const index = Math.max(
+        0, Math.min(this.selectedItem_.index, this.filteredList_.length - 1));
     this.selectedItem_ = null;
-  }
-
-  /**
-   * Open the overflow menu and ensure that the item is visible in the scroll
-   * pane when its menu is opened (it is possible to open off-screen items using
-   * keyboard shortcuts).
-   */
-  private onOpenMenu_(e: OpenMenuEvent) {
-    const index = e.detail.index;
-    const list = this.$.allSitesList;
-    if (index < list.firstVisibleIndex || index > list.lastVisibleIndex) {
-      list.scrollToIndex(index);
+    // Wait for the list to receive the updated items before asking it to
+    // render the entry.
+    await this.updateComplete;
+    const allSitesList = this.shadowRoot.querySelector('cr-infinite-list');
+    if (!allSitesList) {
+      return;
     }
-    const target = e.detail.target;
-    this.actionMenuModel_ = e.detail;
-    this.$.menu.get().showAt(target);
+    await allSitesList.updateComplete;
+    const element = await allSitesList.ensureItemRendered(index);
+    element.focus();
   }
 
-  private shouldShowClearAllButton_(): boolean {
+  protected shouldShowClearAllButton_(): boolean {
     return this.filteredList_.length > 0;
-  }
-
-  private hasFilteredRwsSites_(): boolean {
-    return this.isRwsFiltered_() && this.filteredList_ &&
-        this.filteredList_.length > 0;
-  }
-
-  private onShowRelatedSites_() {
-    this.browserProxy.recordAction(AllSitesAction2.FILTER_BY_FPS_OWNER);
-    this.$.menu.get().close();
-    const siteGroup = this.filteredList_[this.actionMenuModel_!.index];
-    const searchParams = new URLSearchParams(
-        'searchSubpage=' +
-        encodeURIComponent(RWS_RELATED_SEARCH_PREFIX + siteGroup.rwsOwner!));
-    const currentRoute = Router.getInstance().getCurrentRoute();
-    Router.getInstance().navigateTo(currentRoute, searchParams);
   }
 
   private onRemoveSite_(e: RemoveSiteEvent) {
     this.actionMenuModel_ = e.detail;
-    this.$.confirmRemoveSite.get().showModal();
-  }
-
-  private onRemove_() {
     this.$.confirmRemoveSite.get().showModal();
   }
 
@@ -504,17 +425,12 @@ export class AllSitesElement extends AllSitesElementBase {
     };
   }
 
-  private onConfirmRemoveSite_(e: Event) {
+  protected onConfirmRemoveSiteClick_(e: Event) {
     const {index, actionScope, origin, isPartitioned} = this.actionMenuModel_!;
     const siteGroupToUpdate = this.filteredList_[index];
 
     const updatedSiteGroup: SiteGroup = {
-      groupingKey: siteGroupToUpdate.groupingKey,
-      displayName: siteGroupToUpdate.displayName,
-      hasInstalledPWA: siteGroupToUpdate.hasInstalledPWA,
-      numCookies: siteGroupToUpdate.numCookies,
-      rwsOwner: siteGroupToUpdate.rwsOwner,
-      rwsNumMembers: siteGroupToUpdate.rwsNumMembers,
+      ...siteGroupToUpdate,
       origins: [],
     };
 
@@ -557,16 +473,12 @@ export class AllSitesElement extends AllSitesElementBase {
       siteGroupToUpdate.origins.forEach(originEntry => {
         this.resetPermissionsForOrigin_(originEntry.origin);
       });
-      if (updatedSiteGroup.rwsOwner) {
-        this.decrementRwsNumMembers_(updatedSiteGroup.rwsOwner);
-      }
     }
 
     this.updateSiteGroup_(index, updatedSiteGroup);
 
-    this.$.allSitesList.fire('iron-resize');
     this.updateTotalUsage_();
-    this.onCloseDialog_(e);
+    this.closeDialog_(e);
   }
 
   /**
@@ -578,26 +490,12 @@ export class AllSitesElement extends AllSitesElementBase {
   }
 
   /**
-   * Checks if a related website set search filter is applied.
-   * @return True if filter starts with `RWS_RELATED_SEARCH_PREFIX`.
-   */
-  private isRwsFiltered_(): boolean {
-    return this.filter.startsWith(RWS_RELATED_SEARCH_PREFIX);
-  }
-
-  private getRwsLearnMoreLabel_() {
-    const rwsOwner = this.filter.substring(this.filter.indexOf(':') + 1);
-    return loadTimeData.getStringF(
-        'siteSettingsRelatedWebsiteSetsLearnMore', rwsOwner);
-  }
-
-  /**
    * Selects the appropriate string to display for clear button based on whether
    * a filter is applied.
    * @return The appropriate |clearAllButton| string based on whether a filter
    *     is applied.
    */
-  private getClearDataButtonString_(): string {
+  protected getClearDataButtonString_(): string {
     return this.i18n(
         this.isFiltered_() ? 'siteSettingsDeleteDisplayedStorageLabel' :
                              'siteSettingsDeleteAllStorageLabel');
@@ -609,7 +507,7 @@ export class AllSitesElement extends AllSitesElementBase {
    * @return The appropriate |clearLabel| string based on whether a filter
    *     is applied.
    */
-  private getClearStorageDescription_(): string {
+  protected getClearStorageDescription_(): string {
     const descriptionId = this.isFiltered_() ?
         'siteSettingsClearDisplayedStorageDescription' :
         'siteSettingsClearAllStorageDescription';
@@ -620,9 +518,8 @@ export class AllSitesElement extends AllSitesElementBase {
   /**
    * Confirms the clearing of all storage data for all sites.
    */
-  private onConfirmClearAllData_(e: Event) {
+  protected onConfirmClearAllDataClick_(e: Event) {
     e.preventDefault();
-    this.clearAllData_ = true;
     const anyAppsInstalled = this.filteredList_.some(g => g.hasInstalledPWA);
     const scopes = [AllSitesDialog.CLEAR_DATA, 'All'];
     const installed = anyAppsInstalled ? 'Installed' : '';
@@ -630,14 +527,17 @@ export class AllSitesElement extends AllSitesElementBase {
     this.$.confirmClearAllData.get().showModal();
   }
 
-  private onCloseDialog_(e: Event) {
+  private closeDialog_(e: Event) {
     chrome.metricsPrivate.recordUserAction('AllSites_DialogClosed');
     (e.target as HTMLElement).closest('cr-dialog')!.close();
     this.actionMenuModel_ = null;
-    this.$.menu.get().close();
   }
 
-  private getRemoveSiteTitle_(): string {
+  protected onCloseDialogClick_(e: Event) {
+    this.closeDialog_(e);
+  }
+
+  protected getRemoveSiteTitle_(): string {
     if (this.actionMenuModel_ === null) {
       return '';
     }
@@ -693,7 +593,7 @@ export class AllSitesElement extends AllSitesElementBase {
         this.i18n(messageId), this.originRepresentation(displayOrigin));
   }
 
-  private getRemoveSiteLogoutBulletPoint_() {
+  protected getRemoveSiteLogoutBulletPoint_(): string {
     if (this.actionMenuModel_ === null) {
       return '';
     }
@@ -707,7 +607,7 @@ export class AllSitesElement extends AllSitesElementBase {
         this.i18n('siteSettingsRemoveSiteGroupLogout');
   }
 
-  private showPermissionsBulletPoint_(): boolean {
+  protected shouldShowPermissionsBulletPoint_(): boolean {
     if (this.actionMenuModel_ === null) {
       return false;
     }
@@ -721,13 +621,12 @@ export class AllSitesElement extends AllSitesElementBase {
         .some(o => o.hasPermissionSettings);
   }
 
-
   /**
    * Selects the appropriate title to display for clear storage confirmation
    * dialog based on whether a filter is applied.
    * @return The appropriate title for clear storage confirmation dialog.
    */
-  private getClearAllStorageDialogTitle_(): string {
+  protected getClearAllStorageDialogTitle_(): string {
     return this.i18n(
         this.isFiltered_() ? 'siteSettingsDeleteDisplayedStorageDialogTitle' :
                              'siteSettingsDeleteAllStorageDialogTitle');
@@ -735,11 +634,10 @@ export class AllSitesElement extends AllSitesElementBase {
 
   /**
    * Get the appropriate label for the clear data confirmation dialog, depending
-   * on whether any apps are installed, a filter is applied, and/or the RWS V2
-   * view is shown.
+   * on whether any apps are installed and/or a filter is applied.
    * @return The appropriate description for clear data confirmation dialog.
    */
-  private getClearAllStorageDialogDescription_(): string {
+  protected getClearAllStorageDialogDescription_(): string {
     const anyAppsInstalled = this.filteredList_.some(g => g.hasInstalledPWA);
 
     let messageId;
@@ -761,9 +659,9 @@ export class AllSitesElement extends AllSitesElementBase {
    * Selects the appropriate string to display for the sign-out string in
    * confirmation popup based on whether a filter is applied.
    * @return The appropriate sign out confirmation string based on whether a
-   *     filter is applied and/or the RWS V2 view is shown.
+   *     filter is applied.
    */
-  private getClearAllStorageDialogSignOutLabel_(): string {
+  protected getClearAllStorageDialogSignOutLabel_(): string {
     return this.i18n(
         this.isFiltered_() ? 'siteSettingsClearDisplayedStorageSignOut' :
                              'siteSettingsClearAllStorageSignOut');
@@ -772,20 +670,6 @@ export class AllSitesElement extends AllSitesElementBase {
   private recordUserAction_(scopes: string[]) {
     chrome.metricsPrivate.recordUserAction(
         ['AllSites', ...scopes].filter(Boolean).join('_'));
-  }
-
-  /**
-   * Decrements the number of rws members for a given owner eTLD+1 by 1.
-   * @param rwsOwner The related website set owner.
-   */
-  private decrementRwsNumMembers_(rwsOwner: string) {
-    this.filteredList_.forEach((siteGroup, index) => {
-      if (siteGroup.rwsOwner === rwsOwner) {
-        this.set(
-            'filteredList_.' + index + '.rwsNumMembers',
-            siteGroup.rwsNumMembers! - 1);
-      }
-    });
   }
 
   /**
@@ -804,12 +688,8 @@ export class AllSitesElement extends AllSitesElementBase {
   private clearDataForSiteGroupIndex_(index: number) {
     const siteGroupToUpdate = this.filteredList_[index];
     const updatedSiteGroup: SiteGroup = {
-      groupingKey: siteGroupToUpdate.groupingKey,
-      displayName: siteGroupToUpdate.displayName,
-      hasInstalledPWA: siteGroupToUpdate.hasInstalledPWA,
+      ...siteGroupToUpdate,
       numCookies: 0,
-      rwsOwner: siteGroupToUpdate.rwsOwner,
-      rwsNumMembers: siteGroupToUpdate.rwsNumMembers,
       origins: [],
     };
 
@@ -817,7 +697,7 @@ export class AllSitesElement extends AllSitesElementBase {
         siteGroupToUpdate.groupingKey);
 
     for (let i = 0; i < siteGroupToUpdate.origins.length; ++i) {
-      const updatedOrigin = Object.assign({}, siteGroupToUpdate.origins[i]);
+      const updatedOrigin = {...siteGroupToUpdate.origins[i]};
       if (updatedOrigin.hasPermissionSettings) {
         updatedOrigin.numCookies = 0;
         updatedOrigin.usage = 0;
@@ -826,7 +706,6 @@ export class AllSitesElement extends AllSitesElementBase {
     }
     this.updateSiteGroup_(index, updatedSiteGroup);
   }
-
 
   /**
    * Updates the UI after permissions have been reset or data/cookies
@@ -837,18 +716,20 @@ export class AllSitesElement extends AllSitesElementBase {
    */
   private updateSiteGroup_(index: number, updatedSiteGroup: SiteGroup) {
     if (updatedSiteGroup.origins.length > 0) {
-      this.set('filteredList_.' + index, updatedSiteGroup);
+      this.filteredList_[index] = updatedSiteGroup;
       this.siteGroupMap.set(updatedSiteGroup.groupingKey, updatedSiteGroup);
+      this.filteredList_ = [...this.filteredList_];
     } else {
-      this.splice('filteredList_', index, 1);
+      this.filteredList_.splice(index, 1);
       this.siteGroupMap.delete(updatedSiteGroup.groupingKey);
+      this.filteredList_ = [...this.filteredList_];
     }
   }
 
   /**
    * Clear data and cookies for all sites.
    */
-  private onClearAllData_(e: Event) {
+  protected onClearAllDataClick_(e: Event) {
     this.browserProxy.recordAction(AllSitesAction2.CLEAR_ALL_DATA);
     const scopes = [AllSitesDialog.CLEAR_DATA, 'All'];
     const anyAppsInstalled = this.filteredList_.some(g => g.hasInstalledPWA);
@@ -856,9 +737,6 @@ export class AllSitesElement extends AllSitesElementBase {
     this.recordUserAction_([...scopes, installed, 'Confirm']);
     this.metricsBrowserProxy.recordDeleteBrowsingDataAction(
         DeleteBrowsingDataAction.SITES_SETTINGS_PAGE);
-    if (this.isRwsFiltered_()) {
-      this.browserProxy.recordAction(AllSitesAction2.DELETE_FOR_ENTIRE_FPS);
-    }
     for (let index = this.filteredList_.length - 1; index >= 0; index--) {
       this.clearDataForSiteGroupIndex_(index);
     }
@@ -866,12 +744,28 @@ export class AllSitesElement extends AllSitesElementBase {
     // appear.
     this.forceListUpdate_();
     this.totalUsage_ = '0 B';
-    this.onCloseDialog_(e);
+    this.closeDialog_(e);
   }
 
-  // SettingsViewMixin implementation.
+  protected onRestoreListFocus_() {
+    this.listBlurred_ = false;
+  }
+
+  protected onLastFocusedChanged_(e: CustomEvent<{value: HTMLElement | null}>) {
+    this.lastFocused_ = e.detail.value;
+  }
+
+  protected onListBlurredChanged_(e: CustomEvent<{value: boolean}>) {
+    this.listBlurred_ = e.detail.value;
+  }
+
+  protected onSearchTermChanged_(e: CustomEvent<{value: string}>) {
+    this.filter = e.detail.value;
+  }
+
+  // SettingsViewMixinLit implementation.
   override focusBackButton() {
-    this.shadowRoot!.querySelector('settings-subpage')!.focusBackButton();
+    this.shadowRoot.querySelector('settings-subpage')!.focusBackButton();
   }
 }
 

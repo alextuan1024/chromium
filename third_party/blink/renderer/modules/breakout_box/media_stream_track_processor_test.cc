@@ -4,10 +4,13 @@
 
 #include "third_party/blink/renderer/modules/breakout_box/media_stream_track_processor.h"
 
+#include <utility>
+
 #include "base/run_loop.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "build/build_config.h"
+#include "base/test/run_until.h"
+#include "base/test/test_future.h"
 #include "media/base/video_frame.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
@@ -22,6 +25,7 @@
 #include "third_party/blink/renderer/core/streams/readable_stream_default_reader.h"
 #include "third_party/blink/renderer/core/streams/writable_stream.h"
 #include "third_party/blink/renderer/core/streams/writable_stream_default_writer.h"
+#include "third_party/blink/renderer/modules/breakout_box/frame_queue_transferring_optimizer.h"
 #include "third_party/blink/renderer/modules/breakout_box/frame_queue_underlying_source.h"
 #include "third_party/blink/renderer/modules/breakout_box/media_stream_track_generator.h"
 #include "third_party/blink/renderer/modules/breakout_box/metrics.h"
@@ -33,7 +37,10 @@
 #include "third_party/blink/renderer/modules/mediastream/mock_media_stream_audio_sink.h"
 #include "third_party/blink/renderer/modules/mediastream/mock_media_stream_video_sink.h"
 #include "third_party/blink/renderer/modules/mediastream/mock_media_stream_video_source.h"
+#include "third_party/blink/renderer/modules/webcodecs/video_frame.h"
+#include "third_party/blink/renderer/modules/webcodecs/video_frame_monitor.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_source.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_track.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component_impl.h"
@@ -42,6 +49,7 @@
 #include "third_party/blink/renderer/platform/testing/io_task_runner_testing_platform_support.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 using testing::_;
 
@@ -101,6 +109,17 @@ class TestVideoFrameQueueUnderlyingSource
   using VideoFrameQueueUnderlyingSource::ClearTransferredSource;
   using VideoFrameQueueUnderlyingSource::TransferSource;
   using VideoFrameQueueUnderlyingSource::VideoFrameQueueUnderlyingSource;
+
+  TestVideoFrameQueueUnderlyingSource(
+      ScriptState* script_state,
+      VideoFrameQueueUnderlyingSource* other_source)
+      : VideoFrameQueueUnderlyingSource(script_state, other_source) {}
+
+  void TransferSource(TestVideoFrameQueueUnderlyingSource* transferred_source) {
+    TransferSource(transferred_source->GetRealmRunner(),
+                   MakeCrossThreadHandle<VideoFrameQueueUnderlyingSource>(
+                       transferred_source));
+  }
 
   bool StartFrameDelivery() override { return true; }
   void StopFrameDelivery() override {}
@@ -377,15 +396,7 @@ TEST_F(MediaStreamTrackProcessorTest, VideoCloseOnTrackEnd) {
   EXPECT_TRUE(readable->IsClosed());
 }
 
-#if BUILDFLAG(IS_FUCHSIA)
-// TODO(https://crbug.com/1234343): Test seems flaky on Fuchsia, enable once
-// flakiness has been investigated.
-#define MAYBE_VideoNoCloseOnTrackDisable DISABLED_VideoNoCloseOnTrackDisable
-#else
-#define MAYBE_VideoNoCloseOnTrackDisable VideoNoCloseOnTrackDisable
-#endif
-
-TEST_F(MediaStreamTrackProcessorTest, MAYBE_VideoNoCloseOnTrackDisable) {
+TEST_F(MediaStreamTrackProcessorTest, VideoNoCloseOnTrackDisable) {
   V8TestingScope v8_scope;
   ScriptState* script_state = v8_scope.GetScriptState();
   ExceptionState& exception_state = v8_scope.GetExceptionState();
@@ -481,10 +492,8 @@ TEST_F(MediaStreamTrackProcessorTest, StatsForDirectPushesToTransferredSource) {
   V8TestingScope v8_scope;
   ScriptState* script_state = v8_scope.GetScriptState();
 
-  // Create source A and source B.
+  // Create source A.
   auto* source_a = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
-      script_state, 10u, "device_id", 10u, std::nullopt);
-  auto* source_b = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
       script_state, 10u, "device_id", 10u, std::nullopt);
 
   scoped_refptr<media::VideoFrame> frame =
@@ -492,7 +501,9 @@ TEST_F(MediaStreamTrackProcessorTest, StatsForDirectPushesToTransferredSource) {
   source_a->QueueFrame(frame);
   source_a->QueueFrame(frame);
 
-  // Transfer A to B.
+  // Create source B sharing source A's queue and transfer A to B.
+  auto* source_b = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
+      script_state, source_a);
   source_a->TransferSource(source_b);
 
   EXPECT_EQ(source_a->TotalFrames(), 2u);
@@ -519,7 +530,7 @@ TEST_F(MediaStreamTrackProcessorTest, ClearTransferredSourceStopsTransfer) {
   auto* source_a = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
       script_state, 10u, "device_id", 10u, std::nullopt);
   auto* source_b = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
-      script_state, 10u, "device_id", 10u, std::nullopt);
+      script_state, source_a);
 
   scoped_refptr<media::VideoFrame> frame =
       media::VideoFrame::CreateBlackFrame(gfx::Size(10, 5));
@@ -532,6 +543,7 @@ TEST_F(MediaStreamTrackProcessorTest, ClearTransferredSourceStopsTransfer) {
   source_a->ClearTransferredSource();
   source_a->QueueFrame(frame);
   EXPECT_EQ(source_b->TotalFrames(), 1u);
+  EXPECT_EQ(source_a->DiscardedFrames(), 2u);
 }
 
 TEST_F(MediaStreamTrackProcessorTest, TransferAfterClearDoesNotTransfer) {
@@ -541,13 +553,14 @@ TEST_F(MediaStreamTrackProcessorTest, TransferAfterClearDoesNotTransfer) {
   auto* source_a = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
       script_state, 10u, "device_id", 10u, std::nullopt);
   auto* source_b = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
-      script_state, 10u, "device_id", 10u, std::nullopt);
+      script_state, source_a);
 
   // ClearTransferredSource called before TransferSource (simulates Worker
   // ContextDestroyed running before Main processes TransferSource).
   source_a->ClearTransferredSource();
 
   source_a->TransferSource(source_b);
+  EXPECT_FALSE(source_a->HasTransferredSourceForTesting());
 
   scoped_refptr<media::VideoFrame> frame =
       media::VideoFrame::CreateBlackFrame(gfx::Size(10, 5));
@@ -557,6 +570,339 @@ TEST_F(MediaStreamTrackProcessorTest, TransferAfterClearDoesNotTransfer) {
   // already cleared.
   EXPECT_EQ(source_b->TotalFrames(), 0u);
   EXPECT_EQ(source_a->DiscardedFrames(), 1u);
+}
+
+namespace {
+
+// Returns {host, transferred}: a host source whose stream was transferred to a
+// source sharing its queue, as when a MediaStreamTrackProcessor's readable is
+// transferred to a worker.
+std::pair<TestVideoFrameQueueUnderlyingSource*,
+          TestVideoFrameQueueUnderlyingSource*>
+CreateTransferredSources(ScriptState* script_state,
+                         const std::string& device_id) {
+  auto* host = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
+      script_state, /*queue_size=*/1u, device_id, /*frame_pool_size=*/2u,
+      std::nullopt);
+  auto* transferred = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
+      script_state, host);
+  host->TransferSource(transferred);
+  return {host, transferred};
+}
+
+}  // namespace
+
+// Checks that a frame that reaches the host after the transferred source has
+// closed does not leak a VideoFrameMonitor entry when the host closes.
+TEST_F(MediaStreamTrackProcessorTest,
+       TransferredSourceClosedFirstDoesNotLeakMonitoredFrames) {
+  V8TestingScope v8_scope;
+  const std::string kDeviceId = "monitor_leak_transferred_closed_first";
+  auto [host, transferred] =
+      CreateTransferredSources(v8_scope.GetScriptState(), kDeviceId);
+
+  // The transferred source closes first, as when a worker cancels the
+  // transferred stream. A frame then reaches the host before the host closes.
+  transferred->Close();
+  host->QueueFrame(media::VideoFrame::CreateBlackFrame(gfx::Size(10, 5)));
+
+  // The frame was dropped without being monitored.
+  EXPECT_EQ(VideoFrameMonitor::Instance().NumFrames(kDeviceId), 0u);
+  EXPECT_EQ(host->TotalFrames(), 1u);
+  EXPECT_EQ(host->DiscardedFrames(), 1u);
+
+  host->Close();
+
+  EXPECT_EQ(VideoFrameMonitor::Instance().NumFrames(kDeviceId), 0u);
+}
+
+// Same as above, but the host releases the queue in ClearTransferredSource()
+// rather than Close(). A closing transferred source posts the host's Close()
+// before ClearTransferredSource(), so this order is only a defensive check.
+TEST_F(MediaStreamTrackProcessorTest,
+       TransferredSourceClosedThenClearedDoesNotLeakMonitoredFrames) {
+  V8TestingScope v8_scope;
+  const std::string kDeviceId = "monitor_leak_transferred_closed_then_cleared";
+  auto [host, transferred] =
+      CreateTransferredSources(v8_scope.GetScriptState(), kDeviceId);
+
+  transferred->Close();
+  host->QueueFrame(media::VideoFrame::CreateBlackFrame(gfx::Size(10, 5)));
+
+  // The frame was dropped without being monitored.
+  EXPECT_EQ(VideoFrameMonitor::Instance().NumFrames(kDeviceId), 0u);
+  EXPECT_EQ(host->TotalFrames(), 1u);
+  EXPECT_EQ(host->DiscardedFrames(), 1u);
+
+  host->ClearTransferredSource();
+
+  EXPECT_EQ(VideoFrameMonitor::Instance().NumFrames(kDeviceId), 0u);
+}
+
+// Checks that a frame that reaches an unmonitored host after the transferred
+// source has closed is dropped right away, instead of staying in the queue
+// until the host releases it.
+TEST_F(MediaStreamTrackProcessorTest,
+       TransferredSourceClosedFirstDropsUnmonitoredFrames) {
+  V8TestingScope v8_scope;
+  // An empty device ID means the host doesn't use the VideoFrameMonitor.
+  auto [host, transferred] =
+      CreateTransferredSources(v8_scope.GetScriptState(), /*device_id=*/"");
+
+  transferred->Close();
+  scoped_refptr<media::VideoFrame> frame =
+      media::VideoFrame::CreateBlackFrame(gfx::Size(10, 5));
+  host->QueueFrame(frame);
+
+  // Only `frame` holds a reference, so the closed queue didn't keep it.
+  EXPECT_TRUE(frame->HasOneRef());
+  EXPECT_EQ(host->TotalFrames(), 1u);
+  EXPECT_EQ(host->DiscardedFrames(), 1u);
+}
+
+// Checks that no VideoFrameMonitor entry leaks when the host closes before the
+// transferred source, as when the host's track ends.
+TEST_F(MediaStreamTrackProcessorTest,
+       HostClosedFirstDoesNotLeakMonitoredFrames) {
+  V8TestingScope v8_scope;
+  const std::string kDeviceId = "monitor_leak_host_closed_first";
+  auto [host, transferred] =
+      CreateTransferredSources(v8_scope.GetScriptState(), kDeviceId);
+
+  host->QueueFrame(media::VideoFrame::CreateBlackFrame(gfx::Size(10, 5)));
+  host->Close();
+  transferred->Close();
+
+  EXPECT_EQ(VideoFrameMonitor::Instance().NumFrames(kDeviceId), 0u);
+}
+
+// Checks that a frame left in the shared queue when its read is rejected
+// survives a transfer and is delivered to a read on the transferred stream.
+TEST_F(MediaStreamTrackProcessorTest,
+       QueuedFrameAfterReleaseLockSurvivesTransfer) {
+  V8TestingScope v8_scope;
+  ScriptState* script_state = v8_scope.GetScriptState();
+  ExceptionState& exception_state = v8_scope.GetExceptionState();
+  const std::string kDeviceId = "release_lock_transfer";
+  auto* host = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
+      script_state, /*queue_size=*/1u, kDeviceId, /*frame_pool_size=*/2u,
+      std::nullopt);
+  VideoFrameMonitor& monitor = VideoFrameMonitor::Instance();
+
+  auto* host_stream =
+      ReadableStream::CreateWithCountQueueingStrategy(script_state, host, 0);
+  auto* reader =
+      host_stream->GetDefaultReaderForTesting(script_state, exception_state);
+
+  // Read once to register a pending pull, and enqueue a frame for it.
+  ScriptPromiseTester read_tester(script_state,
+                                  reader->read(script_state, exception_state));
+  v8_scope.PerformMicrotaskCheckpoint();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return host->NumPendingPullsForTesting() == 1; }));
+
+  auto frame = media::VideoFrame::CreateBlackFrame(gfx::Size(10, 10));
+  const media::VideoFrame::ID frame_id = frame->unique_id();
+  host->QueueFrame(std::move(frame));
+  EXPECT_EQ(monitor.NumFrames(kDeviceId), 1u);
+
+  // Release the lock before the delivery task runs: the read is rejected and
+  // the frame stays in the shared queue.
+  auto realm_task_runner = v8_scope.GetExecutionContext()->GetTaskRunner(
+      TaskType::kInternalMediaRealTime);
+  realm_task_runner->PostTask(
+      FROM_HERE,
+      BindOnce(
+          [](ReadableStreamDefaultReader* reader, ScriptState* script_state) {
+            NonThrowableExceptionState exception_state;
+            reader->releaseLock(script_state, exception_state);
+          },
+          WrapPersistent(reader), WrapPersistent(script_state)));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return read_tester.IsFulfilled() || read_tester.IsRejected(); }));
+  EXPECT_TRUE(read_tester.IsRejected());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return host->NumPendingPullsForTesting() == 0; }));
+  EXPECT_EQ(monitor.NumFrames(kDeviceId), 1u);
+  EXPECT_EQ(host->DiscardedFrames(), 0u);
+
+  // The transferred source shares the queue with the host, so the frame
+  // queued above is delivered to its first read.
+  auto* transferred = MakeGarbageCollected<TestVideoFrameQueueUnderlyingSource>(
+      script_state, host);
+  host->TransferSource(transferred);
+  auto* transferred_stream = ReadableStream::CreateWithCountQueueingStrategy(
+      script_state, transferred, 0);
+  auto* transferred_reader = transferred_stream->GetDefaultReaderForTesting(
+      script_state, exception_state);
+  VideoFrame* video_frame =
+      ReadObjectFromStream<VideoFrame>(v8_scope, transferred_reader);
+  EXPECT_EQ(video_frame->frame()->unique_id(), frame_id);
+  EXPECT_EQ(monitor.NumFrames(kDeviceId), 1u);
+
+  video_frame->close();
+  EXPECT_EQ(monitor.NumFrames(kDeviceId), 0u);
+}
+
+TEST_F(MediaStreamTrackProcessorTest,
+       OptimizationAfterContextDestroyedDoesNotTransfer) {
+  V8TestingScope host_scope;
+  ScriptState* host_script_state = host_scope.GetScriptState();
+  ExceptionState& exception_state = host_scope.GetExceptionState();
+  PushableMediaStreamVideoSource* pushable_video_source =
+      CreatePushableVideoSource();
+  MediaStreamTrackProcessor* track_processor =
+      MediaStreamTrackProcessor::Create(
+          host_script_state,
+          CreateVideoMediaStreamTrack(host_scope.GetExecutionContext(),
+                                      pushable_video_source),
+          exception_state);
+
+  MediaStreamVideoTrack* video_track =
+      MediaStreamVideoTrack::From(track_processor->InputTrack()->Component());
+  ReadableStream* readable = track_processor->readable(host_script_state);
+  EXPECT_EQ(video_track->CountSinks(), 1u);
+  auto optimizer = readable->TakeTransferringOptimizer();
+
+  V8TestingScope dest_scope;
+  dest_scope.GetExecutionContext()->NotifyContextDestroyed();
+
+  EXPECT_EQ(
+      optimizer->PerformInProcessOptimization(dest_scope.GetScriptState()),
+      nullptr);
+
+  base::test::TestFuture<void> flush_host_runner;
+  host_scope.GetExecutionContext()
+      ->GetTaskRunner(TaskType::kInternalMediaRealTime)
+      ->PostTask(FROM_HERE, flush_host_runner.GetCallback());
+  EXPECT_TRUE(flush_host_runner.Wait());
+  EXPECT_TRUE(readable->IsClosed());
+  EXPECT_EQ(video_track->CountSinks(), 0u);
+}
+
+// Checks that a transferred source can still reach its host after a garbage
+// collection, even though it refers to the host only through a weak handle.
+// The host has to be kept alive by its own connection to the track.
+TEST_F(MediaStreamTrackProcessorTest,
+       TransferredSourceReachesHostAfterGarbageCollection) {
+  V8TestingScope host_scope;
+  ScriptState* host_script_state = host_scope.GetScriptState();
+  PushableMediaStreamVideoSource* pushable_video_source =
+      CreatePushableVideoSource();
+  // Keep the track alive across the GC below.
+  Persistent<MediaStreamTrack> track = CreateVideoMediaStreamTrack(
+      host_scope.GetExecutionContext(), pushable_video_source);
+  MediaStreamVideoTrack* video_track =
+      MediaStreamVideoTrack::From(track->Component());
+
+  // Create a processor and take the transferring optimizer of its readable, as
+  // transferring the readable would. After this scope, the test keeps no
+  // reference to the processor, its readable or the host source.
+  std::unique_ptr<ReadableStreamTransferringOptimizer> optimizer;
+  {
+    MediaStreamTrackProcessor* track_processor =
+        MediaStreamTrackProcessor::Create(host_script_state, track.Get(),
+                                          host_scope.GetExceptionState());
+    optimizer = track_processor->readable(host_script_state)
+                    ->TakeTransferringOptimizer();
+  }
+  ASSERT_TRUE(optimizer);
+  // Creating the readable connected the host to the track.
+  EXPECT_EQ(video_track->CountSinks(), 1u);
+
+  // Create the transferred source in the destination realm, with a stream to
+  // read from it.
+  V8TestingScope dest_scope;
+  ScriptState* dest_script_state = dest_scope.GetScriptState();
+  ExceptionState& dest_exception_state = dest_scope.GetExceptionState();
+  UnderlyingSourceBase* transferred_source =
+      optimizer->PerformInProcessOptimization(dest_script_state);
+  ASSERT_TRUE(transferred_source);
+  Persistent<ReadableStream> transferred_stream =
+      ReadableStream::CreateWithCountQueueingStrategy(
+          dest_script_state, transferred_source, /*high_water_mark=*/0);
+  // Run the host's TransferSource(), posted by PerformInProcessOptimization().
+  base::RunLoop().RunUntilIdle();
+
+  // The host survives a GC because it is still connected to the track.
+  WebHeap::CollectAllGarbageForTesting();
+  EXPECT_EQ(video_track->CountSinks(), 1u);
+
+  // A frame pushed to the track after the GC reaches a read on the transferred
+  // stream, so the host still delivers frames to the transferred source.
+  Persistent<ReadableStreamDefaultReader> reader =
+      transferred_stream->GetDefaultReaderForTesting(dest_script_state,
+                                                     dest_exception_state);
+  ScriptPromiseTester read_tester(
+      dest_script_state, reader->read(dest_script_state, dest_exception_state));
+  pushable_video_source->PushFrame(
+      media::VideoFrame::CreateBlackFrame(gfx::Size(10, 5)), base::TimeTicks());
+  read_tester.WaitUntilSettled();
+  EXPECT_TRUE(read_tester.IsFulfilled());
+
+  // Cancelling the transferred stream makes the transferred source ask the host
+  // to close, through its weak handle. The host disconnecting from the track
+  // shows that the request reached it.
+  ScriptPromiseTester cancel_tester(
+      dest_script_state,
+      reader->cancel(dest_script_state, dest_exception_state));
+  cancel_tester.WaitUntilSettled();
+  RunIOUntilIdle();
+  EXPECT_EQ(video_track->CountSinks(), 0u);
+}
+
+// Checks that a transferred source that starts after its host is gone closes
+// itself. Nothing else would close it, and reads on the transferred stream
+// would never complete.
+TEST_F(MediaStreamTrackProcessorTest, TransferredSourceClosesIfHostIsGone) {
+  V8TestingScope host_scope;
+  ScriptState* host_script_state = host_scope.GetScriptState();
+  PushableMediaStreamVideoSource* pushable_video_source =
+      CreatePushableVideoSource();
+  Persistent<MediaStreamTrack> track = CreateVideoMediaStreamTrack(
+      host_scope.GetExecutionContext(), pushable_video_source);
+  MediaStreamVideoTrack* video_track =
+      MediaStreamVideoTrack::From(track->Component());
+
+  // Take the transferring optimizer of the processor's readable, as
+  // transferring the readable would, then stop the track, which closes the
+  // host and disconnects it from the track. After this scope, the test keeps
+  // only a weak reference to the processor.
+  std::unique_ptr<ReadableStreamTransferringOptimizer> optimizer;
+  WeakPersistent<MediaStreamTrackProcessor> weak_track_processor;
+  {
+    v8::HandleScope handle_scope(host_scope.GetIsolate());
+    MediaStreamTrackProcessor* track_processor =
+        MediaStreamTrackProcessor::Create(host_script_state, track.Get(),
+                                          host_scope.GetExceptionState());
+    optimizer = track_processor->readable(host_script_state)
+                    ->TakeTransferringOptimizer();
+    weak_track_processor = track_processor;
+    track->stopTrack(host_scope.GetExecutionContext());
+  }
+  ASSERT_TRUE(optimizer);
+  RunIOUntilIdle();
+  EXPECT_EQ(video_track->CountSinks(), 0u);
+
+  // Nothing keeps the closed host alive, so a GC collects it, as well as the
+  // processor it references.
+  host_scope.PerformMicrotaskCheckpoint();
+  WebHeap::CollectAllGarbageForTesting();
+  ASSERT_FALSE(weak_track_processor);
+
+  // Create the transferred source in the destination realm. Creating a stream
+  // for it starts it, which asks the host to start frame delivery.
+  V8TestingScope dest_scope;
+  ScriptState* dest_script_state = dest_scope.GetScriptState();
+  UnderlyingSourceBase* transferred_source =
+      optimizer->PerformInProcessOptimization(dest_script_state);
+  ASSERT_TRUE(transferred_source);
+  Persistent<ReadableStream> transferred_stream =
+      ReadableStream::CreateWithCountQueueingStrategy(
+          dest_script_state, transferred_source, /*high_water_mark=*/0);
+
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return transferred_stream->IsClosed(); }));
 }
 
 TEST_F(MediaStreamTrackProcessorTest, AudioStats) {

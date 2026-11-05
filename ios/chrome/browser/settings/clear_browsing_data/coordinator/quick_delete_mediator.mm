@@ -12,6 +12,7 @@
 #import "components/browsing_data/core/pref_names.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
+#import "components/history/core/common/pref_names.h"
 #import "components/prefs/ios/pref_observer_bridge.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
@@ -294,9 +295,8 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
   [_consumer setManageOtherDataTitle:[self manageOtherDataTitle]];
   [_consumer setManageOtherDataSubtitle:[self manageOtherDataSubtitle]];
   [_consumer setShouldShowFooter:_isSignedIn];
-  [_consumer
-      setHistorySelection:_prefs->GetBoolean(
-                              browsing_data::prefs::kDeleteBrowsingHistory)];
+  [_consumer setHistoryDeletionEnabled:[self isHistoryDeletionAllowed]];
+  [_consumer setHistorySelection:[self shouldDeleteBrowsingHistory]];
   [_consumer
       setTabsSelection:_prefs->GetBoolean(browsing_data::prefs::kCloseTabs)];
   [_consumer setSiteDataSelection:_prefs->GetBoolean(
@@ -305,6 +305,7 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
       setCacheSelection:_prefs->GetBoolean(browsing_data::prefs::kDeleteCache)];
   [_consumer setAutofillSelection:_prefs->GetBoolean(
                                       browsing_data::prefs::kDeleteFormData)];
+  [_consumer setSiteSettingsSelection:[self isSiteSettingsSelected]];
 
   [self createCounters];
   [self restartCounters];
@@ -365,7 +366,7 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
 
   BrowsingDataRemoveMask removeMask = BrowsingDataRemoveMask::REMOVE_NOTHING;
 
-  if (_prefs->GetBoolean(browsing_data::prefs::kDeleteBrowsingHistory)) {
+  if ([self shouldDeleteBrowsingHistory]) {
     removeMask |= BrowsingDataRemoveMask::REMOVE_HISTORY;
 
     // If browsing History will be cleared set the kLastClearBrowsingDataTime.
@@ -388,6 +389,10 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
 
   if (_prefs->GetBoolean(browsing_data::prefs::kDeleteFormData)) {
     removeMask |= BrowsingDataRemoveMask::REMOVE_FORM_DATA;
+  }
+
+  if ([self isSiteSettingsSelected]) {
+    removeMask |= BrowsingDataRemoveMask::REMOVE_SITE_SETTINGS;
   }
 
   bool shouldCloseTabs = _prefs->GetBoolean(browsing_data::prefs::kCloseTabs);
@@ -469,6 +474,12 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
 }
 
 - (void)updateHistorySelection:(BOOL)selected {
+  if (![self isHistoryDeletionAllowed] ||
+      _prefs->IsManagedPreference(
+          browsing_data::prefs::kDeleteBrowsingHistory)) {
+    return;
+  }
+
   BOOL current_state =
       _prefs->GetBoolean(browsing_data::prefs::kDeleteBrowsingHistory);
   if (current_state == selected) {
@@ -535,6 +546,16 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
   _prefs->SetBoolean(browsing_data::prefs::kDeleteFormData, selected);
 }
 
+- (void)updateSiteSettingsSelection:(BOOL)selected {
+  if (!IsDomainLevelSitePermissionsEnabled() ||
+      _prefs->GetBoolean(browsing_data::prefs::kDeleteSiteSettings) ==
+          selected) {
+    return;
+  }
+
+  _prefs->SetBoolean(browsing_data::prefs::kDeleteSiteSettings, selected);
+}
+
 #pragma mark - IdentityManagerObserving
 
 - (void)primaryAccountDidChange:
@@ -561,6 +582,14 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
     return;
   }
 
+  if (preferenceName == prefs::kAllowDeletingBrowserHistory) {
+    [_consumer setHistoryDeletionEnabled:[self isHistoryDeletionAllowed]];
+    [self restartCounters];
+    [self updateConsumerSelectionForPref:browsing_data::prefs::
+                                             kDeleteBrowsingHistory];
+    return;
+  }
+
   if (preferenceName == browsing_data::prefs::kDeleteTimePeriod) {
     _selectedTimeRange = static_cast<browsing_data::TimePeriod>(
         _prefs->GetInteger(browsing_data::prefs::kDeleteTimePeriod));
@@ -571,7 +600,8 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
       preferenceName == browsing_data::prefs::kCloseTabs ||
       preferenceName == browsing_data::prefs::kDeleteCookies ||
       preferenceName == browsing_data::prefs::kDeleteCache ||
-      preferenceName == browsing_data::prefs::kDeleteFormData) {
+      preferenceName == browsing_data::prefs::kDeleteFormData ||
+      preferenceName == browsing_data::prefs::kDeleteSiteSettings) {
     [self restartCounters];
     [self updateConsumerSelectionForPref:preferenceName];
     return;
@@ -613,6 +643,9 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
   [self createCounter:browsing_data::prefs::kCloseTabs];
   [self createCounter:browsing_data::prefs::kDeleteCache];
   [self createCounter:browsing_data::prefs::kDeleteFormData];
+  if (IsDomainLevelSitePermissionsEnabled()) {
+    [self createCounter:browsing_data::prefs::kDeleteSiteSettings];
+  }
 }
 
 // Creates a counter for the browsing data type defined by the `prefName`.
@@ -705,9 +738,10 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
     _addressesSummary = [self addressesSummary:autofillResult];
     _paymentMethodsSummary = [self paymentMethodsSummary:autofillResult];
     _suggestionsSummary = [self suggestionsSummary:autofillResult];
-  } else if (prefName == browsing_data::prefs::kDeleteCache) {
-    // Do nothing as we don't display the calculated cache result in the summary
-    // on the bottom sheet.
+  } else if (prefName == browsing_data::prefs::kDeleteCache ||
+             prefName == browsing_data::prefs::kDeleteSiteSettings) {
+    // Do nothing as we don't display the calculated cache or site settings
+    // results in the summary on the bottom sheet.
   } else {
     NOTREACHED();
   }
@@ -726,7 +760,7 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
 - (void)dispatchBrowsingDataSummary {
   NSMutableArray<NSString*>* summaryItems = [[NSMutableArray alloc] init];
 
-  if (_prefs->GetBoolean(browsing_data::prefs::kDeleteBrowsingHistory)) {
+  if ([self shouldDeleteBrowsingHistory]) {
     if (_browsingHistorySummary && _browsingHistorySummary.length > 0) {
       [summaryItems addObject:_browsingHistorySummary];
     }
@@ -762,6 +796,12 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
     if (_suggestionsSummary && _suggestionsSummary.length > 0) {
       [summaryItems addObject:_suggestionsSummary];
     }
+  }
+
+  if ([self isSiteSettingsSelected]) {
+    [summaryItems
+        addObject:l10n_util::GetNSString(
+                      IDS_IOS_DELETE_BROWSING_DATA_SUMMARY_SITE_SETTINGS)];
   }
 
   if (!summaryItems.count) {
@@ -900,6 +940,8 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
 
 - (void)observePreferences {
   _prefObserverBridge->ObserveChangesForPreference(
+      prefs::kAllowDeletingBrowserHistory, &_prefChangeRegistrar);
+  _prefObserverBridge->ObserveChangesForPreference(
       browsing_data::prefs::kDeleteTimePeriod, &_prefChangeRegistrar);
   _prefObserverBridge->ObserveChangesForPreference(
       browsing_data::prefs::kDeleteBrowsingHistory, &_prefChangeRegistrar);
@@ -911,6 +953,8 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
       browsing_data::prefs::kDeleteCache, &_prefChangeRegistrar);
   _prefObserverBridge->ObserveChangesForPreference(
       browsing_data::prefs::kDeleteFormData, &_prefChangeRegistrar);
+  _prefObserverBridge->ObserveChangesForPreference(
+      browsing_data::prefs::kDeleteSiteSettings, &_prefChangeRegistrar);
 }
 
 - (void)updateResultOnConsumer:
@@ -938,6 +982,11 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
     [_consumer setAutofillSummary:summary];
     return;
   }
+
+  if (prefName == browsing_data::prefs::kDeleteSiteSettings) {
+    [_consumer setSiteSettingsSummary:summary];
+    return;
+  }
 }
 
 - (void)updateConsumerSelectionForPref:(const std::string&)preferenceName {
@@ -948,7 +997,7 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
   }
 
   if (preferenceName == browsing_data::prefs::kDeleteBrowsingHistory) {
-    [_consumer setHistorySelection:_prefs->GetBoolean(preferenceName)];
+    [_consumer setHistorySelection:[self shouldDeleteBrowsingHistory]];
     return;
   }
 
@@ -971,6 +1020,31 @@ void RecordCookieOrCacheDeletedFromDialogHistogram(
     [_consumer setAutofillSelection:_prefs->GetBoolean(preferenceName)];
     return;
   }
+
+  if (preferenceName == browsing_data::prefs::kDeleteSiteSettings) {
+    [_consumer setSiteSettingsSelection:[self isSiteSettingsSelected]];
+    return;
+  }
+}
+
+// Returns whether deleting browser history is allowed by enterprise policy.
+- (BOOL)isHistoryDeletionAllowed {
+  return _prefs->GetBoolean(prefs::kAllowDeletingBrowserHistory);
+}
+
+// Returns whether browsing history should be deleted. History deletion is
+// skipped when disallowed by policy even if `kDeleteBrowsingHistory` is set.
+- (BOOL)shouldDeleteBrowsingHistory {
+  return [self isHistoryDeletionAllowed] &&
+         _prefs->GetBoolean(browsing_data::prefs::kDeleteBrowsingHistory);
+}
+
+// Returns whether site settings should be deleted. Site settings can only be
+// selected while the domain-level site permissions feature is enabled, so a
+// stale pref value is ignored otherwise.
+- (BOOL)isSiteSettingsSelected {
+  return IsDomainLevelSitePermissionsEnabled() &&
+         _prefs->GetBoolean(browsing_data::prefs::kDeleteSiteSettings);
 }
 
 @end

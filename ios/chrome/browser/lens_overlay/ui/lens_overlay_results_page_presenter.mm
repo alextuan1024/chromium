@@ -125,8 +125,6 @@ const CGFloat kSidePanelHorizontalOcclusionInset = 24.0f;
     _presentationNavigationController.toolbarHidden = YES;
     _presentationNavigationController.navigationBarHidden = YES;
     _presentationNavigationController.delegate = self;
-
-    _visibleAreaLayoutGuide = [[UILayoutGuide alloc] init];
   }
 
   return self;
@@ -134,12 +132,6 @@ const CGFloat kSidePanelHorizontalOcclusionInset = 24.0f;
 
 // Whether the presenter should use the custom bottom sheet presentation.
 - (BOOL)useCustomBottomSheet {
-  if (_isLVF && ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET &&
-      base::FeatureList::IsEnabled(kEnableLensOnIPad)) {
-    std::string style = base::GetFieldTrialParamValueByFeature(
-        kEnableLensOnIPad, kEnableLensOnIPadPresentationStyleParam);
-    return style == kEnableLensOnIPadPresentationStyleWideBottomSheet;
-  }
   return UseCustomLensOverlayBottomSheet();
 }
 
@@ -184,12 +176,10 @@ const CGFloat kSidePanelHorizontalOcclusionInset = 24.0f;
   }
 }
 
-- (void)setUpVisibleAreaLayoutGuideIfNeeded {
-  // If it's a reveal the layout guide it's already set up.
-  if ([_baseViewController.view.layoutGuides
-          containsObject:_visibleAreaLayoutGuide]) {
-    return;
-  }
+- (void)setUpVisibleAreaLayoutGuide {
+  [_visibleAreaLayoutGuide.owningView
+      removeLayoutGuide:_visibleAreaLayoutGuide];
+  _visibleAreaLayoutGuide = [[UILayoutGuide alloc] init];
 
   [_baseViewController.view addLayoutGuide:_visibleAreaLayoutGuide];
 
@@ -232,7 +222,7 @@ const CGFloat kSidePanelHorizontalOcclusionInset = 24.0f;
   };
 
   BOOL presentInSidePanel =
-      lens::ResultPagePresentationFor(_baseViewController, _isLVF) ==
+      lens::ResultPagePresentationFor(_baseViewController) ==
       lens::ResultPagePresentationType::kSidePanel;
   if (presentInSidePanel) {
     [self presentSidePanelAnimated:animated completion:presentationComplete];
@@ -290,7 +280,7 @@ const CGFloat kSidePanelHorizontalOcclusionInset = 24.0f;
                                 }];
   } else {
     [self setupGestureTrackers];
-    [self setUpVisibleAreaLayoutGuideIfNeeded];
+    [self setUpVisibleAreaLayoutGuide];
     [self monitorResultsBottomSheetPosition];
 
     // Presenting the bottom sheet adds a gesture recognizer on the main window
@@ -321,7 +311,7 @@ const CGFloat kSidePanelHorizontalOcclusionInset = 24.0f;
 
   BOOL isAlreadySidePanel = _baseViewController.sidePanelPresented;
   BOOL presentInSidePanel =
-      lens::ResultPagePresentationFor(_baseViewController, _isLVF) ==
+      lens::ResultPagePresentationFor(_baseViewController) ==
       lens::ResultPagePresentationType::kSidePanel;
   // Refrain from rebuilding the presentation there was no change in the
   // presentation type.
@@ -512,7 +502,7 @@ const CGFloat kSidePanelHorizontalOcclusionInset = 24.0f;
   _presentationNavigationController.view.backgroundColor =
       [UIColor colorNamed:kPrimaryBackgroundColor];
   BOOL presentedInBottomSheet =
-      lens::ResultPagePresentationFor(_baseViewController, _isLVF) ==
+      lens::ResultPagePresentationFor(_baseViewController) ==
       lens::ResultPagePresentationType::kEdgeAttachedBottomSheet;
   [_resultViewController setOmniboxEnabled:YES];
   [_resultViewController setBottomSheetGrabberVisible:presentedInBottomSheet];
@@ -663,11 +653,9 @@ const CGFloat kSidePanelHorizontalOcclusionInset = 24.0f;
 
 - (void)lensOverlayBottomSheetWillPresent:
     (id<LensOverlayBottomSheet>)bottomSheet {
-  if ([_baseViewController.view.layoutGuides
-          containsObject:_visibleAreaLayoutGuide]) {
-    return;
-  }
-
+  [_visibleAreaLayoutGuide.owningView
+      removeLayoutGuide:_visibleAreaLayoutGuide];
+  _visibleAreaLayoutGuide = [[UILayoutGuide alloc] init];
   [_baseViewController.view addLayoutGuide:_visibleAreaLayoutGuide];
 
   AddSameConstraintsToSides(

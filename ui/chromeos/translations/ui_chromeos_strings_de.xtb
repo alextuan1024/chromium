@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Kamera</translation>
 <translation id="162175252992296058">Portugiesisch mit internationaler US-amerikanischer Tastatur</translation>
 <translation id="1629521517399325891">Das Nutzerzertifikat ist nicht für die Netzwerkauthentifizierung verfügbar.</translation>
+<translation id="1639239467298939599">Wird geladen</translation>
 <translation id="1641780993263690097">Chinesisch (Pinyin)</translation>
 <translation id="164969095109328410">Chrome-Gerät</translation>
 <translation id="1661207570040737402">Dein gesamter Google Workspace-Speicherplatz in der geteilten Ablage ist belegt.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Dateisynchronisierung deaktiviert</translation>
 <translation id="2820957248982571256">Wird gescannt...</translation>
 <translation id="2830077785865012357">Chinesisch (Zhuyin)</translation>
+<translation id="2838379631617906747">Installation läuft...</translation>
 <translation id="2843806747483486897">Standardeinstellungen ändern...</translation>
 <translation id="2873951654529031587">Papierkorb</translation>
 <translation id="2887314858867008269">USA – Colemak</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Falsches Passwort</translation>
 <translation id="5059127710849015030">Nepalesisch (Transliteration)</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> hat Proxy-Überschreibungsregeln festgelegt</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> an Dateien werden gelöscht</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> Elemente werden in den Ordner "<ph name="FOLDER_NAME" />" verschoben</translation>
 <translation id="509429900233858213">Ein Fehler ist aufgetreten.</translation>
-<translation id="5102922915594634436">Synchronisierte Ordner verwalten</translation>
 <translation id="5109254780565519649">Ein Fehler ist aufgetreten. Einige Elemente wurden möglicherweise nicht wiederhergestellt.</translation>
 <translation id="5110329002213341433">Englisch (Kanada)</translation>
 <translation id="5119780910075847424">Synchronisierung pausiert</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Keine installiert</translation>
 <translation id="5317780077021120954">Speichern</translation>
 <translation id="5318819489018851358">Mit Linux teilen</translation>
-<translation id="5330145655348521461">Diese Dateien wurden auf einem anderen Desktop geöffnet. Wechsle zu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />), um sie anzusehen.</translation>
 <translation id="5330512191124428349">Informationen ansehen</translation>
 <translation id="535792325654997756">Person mit Katzen</translation>
 <translation id="5358764674931277">Framerate</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Ungültige Übereinstimmung für das Domain-Suffix</translation>
 <translation id="6364301859968397756">Speicher der Organisation voll</translation>
 <translation id="6367976544441405720">Transporter</translation>
-<translation id="637062427944097960">Diese Datei wurde auf einem anderen Desktop geöffnet. Wechsle zu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />), um die Datei anzusehen.</translation>
 <translation id="6394388407447716302">Schreibgeschützt</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> Elemente</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> konnte nicht verschoben werden, weil die Datei verschlüsselt ist.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – Port</translation>
 <translation id="8656407365183407932">Deine Offlinedateien mussten entfernt werden</translation>
 <translation id="8656768832129462377">Nicht überprüfen</translation>
+<translation id="8662978096466608964">Chrome kann dieses Hintergrundbild nicht festlegen.</translation>
 <translation id="8688591111840995413">Passwort ungültig</translation>
 <translation id="8698464937041809063">Google-Zeichnung</translation>
 <translation id="8698877009525468705">Diese Datei ist vertraulich und unterliegt den Einschränkungen durch die Administratorrichtlinie.</translation>

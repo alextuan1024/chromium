@@ -10,7 +10,9 @@
 #include <variant>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -102,9 +104,10 @@ class PageEmbeddingsServiceTest : public content::RenderViewHostTestHarness {
   void SetUp() override {
     RenderViewHostTestHarness::SetUp();
 
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        features::kPageContentCache,
-        {{"page_content_cache_use_user_engagement", "false"}});
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        {{features::kPageContentCache,
+          {{"page_content_cache_use_user_engagement", "false"}}}},
+        {features::kAnnotatedPageContentExtraction});
 
     os_crypt_async_ = os_crypt_async::GetTestOSCryptAsyncForTesting();
     page_content_extraction_service_.emplace(os_crypt_async_.get(),
@@ -156,7 +159,18 @@ class PageEmbeddingsServiceTest : public content::RenderViewHostTestHarness {
     return web_contents;
   }
 
-  PageEmbeddingsService& page_embeddings_service() {
+  class TestPageEmbeddingsService : public PageEmbeddingsService {
+   public:
+    using PageEmbeddingsService::OnPageContentExtracted;
+    using PageEmbeddingsService::PageEmbeddingsService;
+  };
+
+  PageContentExtractionService& page_content_extraction_service() {
+    CHECK(page_content_extraction_service_.has_value());
+    return *page_content_extraction_service_;
+  }
+
+  TestPageEmbeddingsService& page_embeddings_service() {
     CHECK(page_embeddings_service_.has_value());
     return *page_embeddings_service_;
   }
@@ -179,7 +193,7 @@ class PageEmbeddingsServiceTest : public content::RenderViewHostTestHarness {
   base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_async_;
   std::optional<PageContentExtractionService> page_content_extraction_service_;
-  std::optional<PageEmbeddingsService> page_embeddings_service_;
+  std::optional<TestPageEmbeddingsService> page_embeddings_service_;
 };
 
 // Validates that candidate passages are generated from AnnotatedPageContent.
@@ -1431,6 +1445,107 @@ TEST_F(PageEmbeddingsServiceTest,
                     .size());
 
   page_embeddings_service().RemoveObserver(&observer);
+}
+
+TEST_F(PageEmbeddingsServiceTest,
+       SubscriberReceivesEmbeddingsInContinuousMode) {
+  std::unique_ptr<content::WebContents> web_contents =
+      CreateTestWebContentsWithVisibility(content::Visibility::VISIBLE);
+
+  passage_embeddings::Embedder::ComputePassagesEmbeddingsCallback
+      compute_passages_embeddings_callback;
+  ON_CALL(embedder_mock(), ComputePassagesEmbeddings)
+      .WillByDefault(
+          [&](passage_embeddings::PassagePriority priority,
+              std::vector<std::string> passages,
+              passage_embeddings::Embedder::ComputePassagesEmbeddingsCallback
+                  callback) {
+            compute_passages_embeddings_callback = std::move(callback);
+            return passage_embeddings::Embedder::Job(
+                embedder_mock_.GetWeakPtr(), 1);
+          });
+  EXPECT_CALL(embedder_mock(), ComputePassagesEmbeddings).Times(1);
+
+  content::Page* notified_page = nullptr;
+  std::vector<PassageEmbedding> notified_embeddings;
+  base::CallbackListSubscription subscription =
+      page_embeddings_service().Subscribe(base::BindRepeating(
+          [](content::Page** out_page,
+             std::vector<PassageEmbedding>* out_embeddings, content::Page& page,
+             const std::vector<PassageEmbedding>& embeddings) {
+            *out_page = &page;
+            *out_embeddings = embeddings;
+          },
+          &notified_page, &notified_embeddings));
+
+  // Because a subscriber is active, visible tabs compute eagerly (kContinuous).
+  page_embeddings_service().OnPageContentExtracted(
+      web_contents->GetPrimaryPage(),
+      base::MakeRefCounted<RefCountedAnnotatedPageContent>());
+
+  ASSERT_FALSE(compute_passages_embeddings_callback.is_null());
+  std::move(compute_passages_embeddings_callback)
+      .Run({"passage text"}, {passage_embeddings::Embedding({1.0f})}, 1,
+           passage_embeddings::ComputeEmbeddingsStatus::kSuccess);
+
+  EXPECT_EQ(&web_contents->GetPrimaryPage(), notified_page);
+  ASSERT_EQ(1u, notified_embeddings.size());
+  EXPECT_EQ("passage text", notified_embeddings[0].passage.first);
+}
+
+TEST_F(
+    PageEmbeddingsServiceTest,
+    SubscribingTransitionsPendingVisibleTabToContinuousAndMaintainsSingleRegistration) {
+  std::unique_ptr<content::WebContents> web_contents =
+      CreateTestWebContentsWithVisibility(content::Visibility::VISIBLE);
+
+  EXPECT_FALSE(
+      page_content_extraction_service().ShouldEnablePageContentExtraction(
+          false));
+
+  ObserverMock on_demand_observer;
+  EXPECT_CALL(on_demand_observer, GetDefaultPriority)
+      .WillRepeatedly(Return(PageEmbeddingsService::kDefault));
+  EXPECT_CALL(on_demand_observer, GetUsageMode)
+      .WillRepeatedly(Return(PageEmbeddingsService::kOnDemand));
+  page_embeddings_service().AddObserver(&on_demand_observer);
+  EXPECT_TRUE(
+      page_content_extraction_service().ShouldEnablePageContentExtraction(
+          false));
+
+  // Extract content while only an on-demand observer is present; visible tab
+  // remains Pending.
+  EXPECT_CALL(embedder_mock(), ComputePassagesEmbeddings).Times(0);
+  page_embeddings_service().OnPageContentExtracted(
+      web_contents->GetPrimaryPage(),
+      base::MakeRefCounted<RefCountedAnnotatedPageContent>());
+
+  // Adding a subscriber transitions to kContinuous and triggers eager
+  // computation for the Pending visible tab.
+  EXPECT_CALL(embedder_mock(), ComputePassagesEmbeddings).Times(1);
+  std::optional<base::CallbackListSubscription> subscription =
+      page_embeddings_service().Subscribe(base::BindRepeating(
+          [](content::Page&, const std::vector<PassageEmbedding>&) {}));
+  EXPECT_TRUE(
+      page_content_extraction_service().ShouldEnablePageContentExtraction(
+          false));
+
+  // Unsubscribing keeps upstream extraction enabled while the observer remains,
+  // and downgrades usage mode back to kOnDemand so new extractions on the
+  // visible tab are not computed eagerly.
+  subscription.reset();
+  EXPECT_TRUE(
+      page_content_extraction_service().ShouldEnablePageContentExtraction(
+          false));
+  EXPECT_CALL(embedder_mock(), ComputePassagesEmbeddings).Times(0);
+  page_embeddings_service().OnPageContentExtracted(
+      web_contents->GetPrimaryPage(),
+      base::MakeRefCounted<RefCountedAnnotatedPageContent>());
+
+  page_embeddings_service().RemoveObserver(&on_demand_observer);
+  EXPECT_FALSE(
+      page_content_extraction_service().ShouldEnablePageContentExtraction(
+          false));
 }
 
 }  // namespace page_content_annotations

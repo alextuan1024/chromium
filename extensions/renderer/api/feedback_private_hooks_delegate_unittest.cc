@@ -8,6 +8,7 @@
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/mojom/frame.mojom.h"
+#include "extensions/common/mojom/response_wrapper.mojom.h"
 #include "extensions/renderer/bindings/api_binding_test_util.h"
 #include "extensions/renderer/native_extension_bindings_system.h"
 #include "extensions/renderer/native_extension_bindings_system_test_base.h"
@@ -15,25 +16,27 @@
 
 namespace extensions {
 
-using FeedbackPrivateHooksDelegateTest = NativeExtensionBindingsSystemUnittest;
+class FeedbackPrivateHooksDelegateTest
+    : public NativeExtensionBindingsSystemUnittest {
+ protected:
+  void SetUp() override {
+    NativeExtensionBindingsSystemUnittest::SetUp();
+    bindings_system()->api_system()->RegisterHooksDelegate(
+        "feedbackPrivate", std::make_unique<FeedbackPrivateHooksDelegate>());
 
-// Tests that the result modifier used in the sendFeedback handle request hook
-// results in callback-based calls getting a response with multiple arguments
-// and promise-based calls getting a response with a single object.
+    // The API is restricted to allowlisted extensions and WebUI.
+    v8::HandleScope handle_scope(isolate());
+    ScriptContext* script_context =
+        CreateScriptContext(MainContext(), nullptr, mojom::ContextType::kWebUi);
+    script_context->set_url(GURL("chrome://feedback"));
+    bindings_system()->UpdateBindingsForContext(script_context);
+  }
+};
+
+// Callback-based calls receive multiple arguments; promises receive one object.
 TEST_F(FeedbackPrivateHooksDelegateTest, SendFeedback) {
-  // Initialize bindings system.
-  bindings_system()->api_system()->RegisterHooksDelegate(
-      "feedbackPrivate", std::make_unique<FeedbackPrivateHooksDelegate>());
-
-  // The feedbackPrivate API is restricted to allowlisted extensions and WebUI,
-  // so create a WebUI context to test on.
   v8::HandleScope handle_scope(isolate());
   v8::Local<v8::Context> context = MainContext();
-  ScriptContext* script_context =
-      CreateScriptContext(context, nullptr, mojom::ContextType::kWebUi);
-  script_context->set_url(GURL("chrome://feedback"));
-  bindings_system()->UpdateBindingsForContext(script_context);
-
   constexpr char kFakeAPIResponse[] =
       R"([{"status": "success", "landingPageType": "normal"}])";
 
@@ -48,11 +51,13 @@ TEST_F(FeedbackPrivateHooksDelegateTest, SendFeedback) {
     v8::Local<v8::Promise> promise;
     ASSERT_TRUE(GetValueAs(result, &promise));
     EXPECT_EQ(v8::Promise::kPending, promise->State());
+    EXPECT_TRUE(last_params().blobs.empty());
 
-    bindings_system()->HandleResponse(last_params().request_id,
-                                      /*success=*/true,
-                                      ListValueFromString(kFakeAPIResponse),
-                                      /*error=*/std::string());
+    bindings_system()->HandleResponse(
+        last_params().request_id,
+        /*success=*/true,
+        mojom::ResponseWrapper::NewList(ListValueFromString(kFakeAPIResponse)),
+        /*error=*/std::string());
 
     EXPECT_EQ(v8::Promise::kFulfilled, promise->State());
     // Note: properties end up alphabetized here.
@@ -73,10 +78,11 @@ TEST_F(FeedbackPrivateHooksDelegateTest, SendFeedback) {
     v8::Local<v8::Function> func = FunctionFromString(context, kFunctionCall);
     RunFunctionOnGlobal(func, context, 0, nullptr);
 
-    bindings_system()->HandleResponse(last_params().request_id,
-                                      /*success=*/true,
-                                      ListValueFromString(kFakeAPIResponse),
-                                      /*error=*/std::string());
+    bindings_system()->HandleResponse(
+        last_params().request_id,
+        /*success=*/true,
+        mojom::ResponseWrapper::NewList(ListValueFromString(kFakeAPIResponse)),
+        /*error=*/std::string());
 
     EXPECT_EQ(R"(["success","normal"])",
               GetStringPropertyFromObject(context->Global(), context,

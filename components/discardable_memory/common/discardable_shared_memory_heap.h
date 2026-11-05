@@ -16,7 +16,6 @@
 
 #include "base/containers/linked_list.h"
 #include "base/containers/span.h"
-#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/trace_event/process_memory_dump.h"
@@ -28,17 +27,11 @@ class DiscardableSharedMemory;
 
 namespace discardable_memory {
 
-DISCARDABLE_MEMORY_EXPORT extern const base::Feature
-    kReleaseDiscardableFreeListPages;
-
 // Implements a heap of discardable shared memory. An array of free lists
 // is used to keep track of free blocks.
 class DISCARDABLE_MEMORY_EXPORT DiscardableSharedMemoryHeap {
- private:
-  class ScopedMemorySegment;
-
  public:
-  class DISCARDABLE_MEMORY_EXPORT Span : public base::LinkNode<Span> {
+  class DISCARDABLE_MEMORY_EXPORT Span : public base::UnsafeLinkNode<Span> {
    public:
     Span(const Span&) = delete;
     Span& operator=(const Span&) = delete;
@@ -54,19 +47,13 @@ class DISCARDABLE_MEMORY_EXPORT DiscardableSharedMemoryHeap {
     // The bytes of memory in `shared_memory()` that are covered by this Span.
     base::span<uint8_t> memory() const;
 
-    ScopedMemorySegment* GetScopedMemorySegmentForTesting() const;
-
    private:
     friend class DiscardableSharedMemoryHeap;
 
     Span(base::DiscardableSharedMemory* shared_memory,
          size_t first_block,
-         size_t length,
-         DiscardableSharedMemoryHeap::ScopedMemorySegment* memory_segment);
+         size_t num_blocks);
 
-    const raw_ptr<DiscardableSharedMemoryHeap::ScopedMemorySegment,
-                  DanglingUntriaged>
-        memory_segment_;
     raw_ptr<base::DiscardableSharedMemory> shared_memory_;
     size_t first_block_;
     size_t num_blocks_;
@@ -94,11 +81,6 @@ class DISCARDABLE_MEMORY_EXPORT DiscardableSharedMemoryHeap {
   // Merge |span| into the free lists. This will coalesce |span| with
   // neighboring free spans when possible.
   void MergeIntoFreeLists(std::unique_ptr<Span> span);
-
-  // Same as |MergeIntoFreeLists|, but doesn't mark the memory in the span as
-  // dirtied (this is used for keeping track of how much memory is dirtied in
-  // the freelist at any given time.
-  void MergeIntoFreeListsClean(std::unique_ptr<Span> span);
 
   // Split an allocated span into two spans, one of length |blocks| followed
   // by another span of length "span->length - blocks" blocks. Modifies |span|
@@ -136,7 +118,7 @@ class DISCARDABLE_MEMORY_EXPORT DiscardableSharedMemoryHeap {
       base::trace_event::ProcessMemoryDump* pmd) const;
 
  private:
-  class DISCARDABLE_MEMORY_EXPORT ScopedMemorySegment {
+  class ScopedMemorySegment {
    public:
     ScopedMemorySegment(
         DiscardableSharedMemoryHeap* heap,
@@ -214,7 +196,7 @@ class DISCARDABLE_MEMORY_EXPORT DiscardableSharedMemoryHeap {
   // where the 1st entry is located at index 0 of the array, the kth entry
   // is a free list of runs that consist of k blocks. The 256th entry is a
   // free list of runs that have length >= 256 blocks.
-  std::array<base::LinkedList<Span>, 256> free_spans_;
+  std::array<base::UnsafeLinkedList<Span>, 256> free_spans_;
 };
 
 }  // namespace discardable_memory

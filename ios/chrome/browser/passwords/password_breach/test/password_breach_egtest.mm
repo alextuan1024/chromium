@@ -12,8 +12,8 @@
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/passwords/password_breach/public/password_breach_constants.h"
 #import "ios/chrome/browser/passwords/password_breach/test/password_breach_app_interface.h"
+#import "ios/chrome/browser/settings/password/public/passwords_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_checkup/password_checkup_constants.h"
-#import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
@@ -75,8 +75,8 @@ id<GREYMatcher> CheckPasswordButton() {
 
 - (void)testPasswordBreachIsPresented {
   [PasswordBreachAppInterface showPasswordBreachWithCheckButton:NO];
-  [[EarlGrey selectElementWithMatcher:PasswordBreachMatcher()]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:PasswordBreachMatcher()];
 }
 
 // Tests that the "Check passwords" button redirects to the Password Checkup
@@ -87,18 +87,17 @@ id<GREYMatcher> CheckPasswordButton() {
   [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
 
   [PasswordBreachAppInterface showPasswordBreachWithCheckButton:YES];
-  [[EarlGrey selectElementWithMatcher:PasswordBreachMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:PasswordBreachMatcher()];
 
   // Mock successful auth for opening the Password Checkup homepage.
   [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
                                     ReauthenticationResult::kSuccess];
 
-  [[EarlGrey selectElementWithMatcher:CheckPasswordButton()]
-      performAction:grey_tap()];
+  [ChromeEarlGrey waitForAndTapButton:CheckPasswordButton()];
 
-  [[EarlGrey selectElementWithMatcher:PasswordCheckupHomepageMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      PasswordCheckupHomepageMatcher()];
 
   GREYAssertNil(
       [MetricsAppInterface
@@ -116,18 +115,17 @@ id<GREYMatcher> CheckPasswordButton() {
 // when the user is signed out.
 - (void)testPasswordBreachRedirectsToPasswordManager {
   [PasswordBreachAppInterface showPasswordBreachWithCheckButton:YES];
-  [[EarlGrey selectElementWithMatcher:PasswordBreachMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:PasswordBreachMatcher()];
 
   // Mock successful auth for opening the Password Manager.
   [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
                                     ReauthenticationResult::kSuccess];
 
-  [[EarlGrey selectElementWithMatcher:CheckPasswordButton()]
-      performAction:grey_tap()];
+  [ChromeEarlGrey waitForAndTapButton:CheckPasswordButton()];
 
-  [[EarlGrey selectElementWithMatcher:PasswordManagerMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:PasswordManagerMatcher()];
 
   GREYAssertNil(
       [MetricsAppInterface

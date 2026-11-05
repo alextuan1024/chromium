@@ -10,10 +10,10 @@ your editor.
 
 * [Get clangd](#getting-clangd)
 * Make sure generated ninja files are up-to-date
-* Optional: build chrome normally to get generated headers
-* Generate compilation database (note: it's not regenerated automatically):
+* Generate compilation database and build generated headers (note: the
+  compilation database is not regenerated automatically):
 ```
-tools/clang/scripts/generate_compdb.py -p out/Default > compile_commands.json
+tools/clang/scripts/generate_compdb.py -p out/Default --build-headers > compile_commands.json
 ```
 
 *** note
@@ -22,10 +22,7 @@ in this and other commands with your build directory.
 ***
 
 * Indexing is enabled by default (since clangd 9), note that this might consume
-  lots of CPU and RAM. There's also a
-  [remote-index service](https://github.com/clangd/chrome-remote-index/blob/main/docs/index.md)
-  to have an instant project-wide index without consuming local resources
-  (requires clangd 12+ built with remote index support).
+  lots of CPU and RAM.
 * Use clangd in your favourite editor
 
 ## Getting clangd
@@ -68,17 +65,6 @@ Once you have an appropriate clangd binary, you must configure your editor to
 use it, either by placing it first on your `PATH`, or through editor-specific
 configuration.
 
-*** note
-Note: The clangd provided by Chromium does not support optional features like
-remote indexing (see https://crbug.com/1358258), such that `clangd --version`
-will not mention `grpc`, and you will see “Unknown Index key External” warnings
-in the clangd log.
-
-If you want those features, you'll need to use a different build of clangd,
-such as the [clangd/clangd releases on
-GitHub](https://github.com/clangd/clangd/releases).
-***
-
 ## Setting Up
 
 1. Make sure generated ninja files are up-to-date.
@@ -88,10 +74,12 @@ gn gen out/Default
 ```
 
 2. Generate the compilation database, clangd needs it to know how to build a
-source file.
+source file. The `--build-headers` flag will also build any
+generated header files (e.g. from Mojo or JNI) without having
+to build all of `chrome`.
 
 ```
-tools/clang/scripts/generate_compdb.py -p out/Default > compile_commands.json
+tools/clang/scripts/generate_compdb.py -p out/Default --build-headers > compile_commands.json
 ```
 
 Note: the compilation database is not regenerated automatically. You need to
@@ -103,22 +91,27 @@ output's encoding to UTF-8 (otherwise Clangd will hit "YAML:1:4: error: Got
 empty plain scalar" while parsing it).
 
 ```
-tools/clang/scripts/generate_compdb.py -p out/Default | out-file -encoding utf8 compile_commands.json
+tools/clang/scripts/generate_compdb.py -p out/Default --build-headers | out-file -encoding utf8 compile_commands.json
 ```
 
-3. Optional: build chrome normally. This ensures generated headers exist and are
-up-to-date. clangd will still work without this step, but it may give errors or
-inaccurate results for files which depend on generated headers.
+3. Optional: You can also pass specific targets to `--build-headers`, which will
+only build the headers required (transitively) by that target:
+
+```
+tools/clang/scripts/generate_compdb.py -p out/Default --build-headers chrome > compile_commands.json
+```
+
+If you are already building `chrome` as a separate step, you can omit
+`--build-headers`:
 
 ```
 ninja -C out/Default chrome
 ```
 
-4. Optional: configure clangd to use remote-index service for an instant
-   project-wide index and reduced local CPU and RAM usage. See
-   [instructions](https://github.com/clangd/chrome-remote-index/blob/main/docs/index.md).
+clangd will still work without building generated headers, but it may give
+errors or inaccurate results for files which depend on them.
 
-5. Use clangd in your favourite editor, see detailed [instructions](
+4. Use clangd in your favourite editor, see detailed [instructions](
 https://clangd.llvm.org/installation.html#editor-plugins).
 
     * Optional: You may want to add `--header-insertion=never` to the clangd
@@ -144,12 +137,6 @@ compilation database). The index improves code navigation features
 Note: the first index time may take hours (for reference, it took 2~3 hours on
 a 48-core, 64GB machine). A full index of Chromium (including v8, blink) takes
 ~550 MB disk space and ~2.7 GB memory in clangd.
-
-Note: [Remote-index service](https://github.com/clangd/chrome-remote-index/blob/main/docs/index.md)
-replaces background-index with some downsides like being ~a day old (Clangd will
-still know about your changes in the current editing session) and not covering
-all configurations (not available for mac&windows specific code or non-main
-branches).
 
 ## Questions
 

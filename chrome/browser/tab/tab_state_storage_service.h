@@ -45,8 +45,7 @@ class TabStateStorageService : public KeyedService,
                                public base::SupportsUserData,
                                public StorageIdMapping {
  public:
-  using LoadDataCallback =
-      base::OnceCallback<void(std::unique_ptr<StorageLoadedData>)>;
+  using LoadDataCallback = TabStateStorageBackend::OnStorageLoadedData;
   using CountTabsForWindowCallback = base::OnceCallback<void(int)>;
 
   // A scoped helper to batch storage operations. All operations performed on
@@ -125,6 +124,9 @@ class TabStateStorageService : public KeyedService,
   void Remove(const TabCollection* collection);
   void Remove(StorageId id);
 
+  // Loads all nodes for `window_tag` and `is_off_the_record`. `callback` runs
+  // on the background DB sequence to package the loaded data and returns a
+  // closure that runs on the UI sequence once loading completes.
   void LoadAllNodes(std::string_view window_tag,
                     bool is_off_the_record,
                     LoadDataCallback callback);
@@ -148,6 +150,10 @@ class TabStateStorageService : public KeyedService,
   void ClearNodesForWindowExcept(std::string_view window_tag,
                                  bool is_off_the_record,
                                  std::vector<StorageId> ids);
+
+  // Helper methods to query window tag and OTR status from packager.
+  std::string GetWindowTag(const TabCollection* collection) const;
+  bool IsOffTheRecord(const TabCollection* collection) const;
 
   // Sets the key for encryption.
   void SetKey(std::string_view window_tag, std::vector<uint8_t> key);
@@ -179,6 +185,7 @@ class TabStateStorageService : public KeyedService,
 
     TabStateStorageUpdaterBuilder builder;
     int batch_cnt = 0;
+    std::vector<base::OnceClosure> pending_idle_callbacks;
   };
 
   void OnTabCreated(StorageId storage_id, const TabInterface* tab);

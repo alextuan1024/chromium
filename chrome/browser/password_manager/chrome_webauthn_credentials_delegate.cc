@@ -16,6 +16,7 @@
 #include "chrome/browser/webauthn/authenticator_request_dialog_model.h"
 #include "components/password_manager/core/browser/passkey_credential.h"
 #include "components/password_manager/core/browser/password_ui_utils.h"
+#include "components/signin/public/base/signin_buildflags.h"
 #include "content/public/browser/web_contents.h"
 #include "device/fido/public/fido_types.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -82,7 +83,7 @@ void ChromeWebAuthnCredentialsDelegate::SelectPasskey(
   // for where these are encoded.
   std::optional<std::vector<uint8_t>> selected_credential_id =
       base::Base64Decode(backend_id);
-  DCHECK(selected_credential_id);
+  CHECK(selected_credential_id, base::NotFatalUntil::M163);
 
 #if BUILDFLAG(IS_ANDROID)
   std::move(callback).Run();
@@ -133,6 +134,17 @@ std::optional<std::string> ChromeWebAuthnCredentialsDelegate::GetCableQrString()
 #else
   return std::nullopt;
 #endif
+}
+
+void ChromeWebAuthnCredentialsDelegate::OnPasskeyQrCodeSuggestionShown() {
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  ChromeAuthenticatorRequestDelegate* authenticator_delegate =
+      AuthenticatorRequestScheduler::GetRequestDelegate(web_contents_);
+  if (!authenticator_delegate) {
+    return;
+  }
+  authenticator_delegate->OnHybridPasskeyQrCodeShownInAutofill();
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 }
 
 base::expected<const std::vector<PasskeyCredential>*,

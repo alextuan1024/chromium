@@ -51,14 +51,11 @@ namespace content {
 class ServiceWorkerContainerHostForClient;
 class ServiceWorkerContextCoreObserver;
 class ServiceWorkerContextWrapper;
+class ServiceWorkerHidDelegateObserver;
 class ServiceWorkerJobCoordinator;
 class ServiceWorkerQuotaClient;
 class ServiceWorkerRegistration;
 struct ServiceWorkerContextSynchronousObserverList;
-
-#if !BUILDFLAG(IS_ANDROID)
-class ServiceWorkerHidDelegateObserver;
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
 class ServiceWorkerUsbDelegateObserver;
@@ -481,14 +478,15 @@ class CONTENT_EXPORT ServiceWorkerContextCore
   void AddLiveRegistration(ServiceWorkerRegistration* registration);
   // Erases the live registration for `registration_id`, if found.
   void RemoveLiveRegistration(int64_t registration_id);
-  const std::map<int64_t, raw_ptr<ServiceWorkerRegistration, CtnExperimental>>&
+  const std::map<int64_t,
+                 raw_ptr<ServiceWorkerRegistration, DanglingUntriaged>>&
   GetLiveRegistrations() const {
     return live_registrations_;
   }
   ServiceWorkerVersion* GetLiveVersion(int64_t version_id);
   void AddLiveVersion(ServiceWorkerVersion* version);
   void RemoveLiveVersion(int64_t registration_id);
-  const std::map<int64_t, raw_ptr<ServiceWorkerVersion, CtnExperimental>>&
+  const std::map<int64_t, raw_ptr<ServiceWorkerVersion, DanglingUntriaged>>&
   GetLiveVersions() const {
     return live_versions_;
   }
@@ -575,12 +573,10 @@ class CONTENT_EXPORT ServiceWorkerContextCore
     test_version_observers_.RemoveObserver(observer);
   }
 
-#if !BUILDFLAG(IS_ANDROID)
   ServiceWorkerHidDelegateObserver* hid_delegate_observer();
 
   void SetServiceWorkerHidDelegateObserverForTesting(
       std::unique_ptr<ServiceWorkerHidDelegateObserver> hid_delegate_observer);
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
   // In the service worker case, WebUSB is only available in extension service
@@ -659,9 +655,9 @@ class CONTENT_EXPORT ServiceWorkerContextCore
   // TODO(bashi): Move |live_registrations_| to ServiceWorkerRegistry as
   // ServiceWorkerRegistry is a better place to manage in-memory representation
   // of registrations.
-  std::map<int64_t, raw_ptr<ServiceWorkerRegistration, CtnExperimental>>
+  std::map<int64_t, raw_ptr<ServiceWorkerRegistration, DanglingUntriaged>>
       live_registrations_;
-  std::map<int64_t, raw_ptr<ServiceWorkerVersion, CtnExperimental>>
+  std::map<int64_t, raw_ptr<ServiceWorkerVersion, DanglingUntriaged>>
       live_versions_;
   std::map<int64_t, scoped_refptr<ServiceWorkerVersion>> protected_versions_;
 
@@ -707,9 +703,7 @@ class CONTENT_EXPORT ServiceWorkerContextCore
 
   bool is_processing_warming_up_ = false;
 
-#if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<ServiceWorkerHidDelegateObserver> hid_delegate_observer_;
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
   std::unique_ptr<ServiceWorkerUsbDelegateObserver> usb_delegate_observer_;

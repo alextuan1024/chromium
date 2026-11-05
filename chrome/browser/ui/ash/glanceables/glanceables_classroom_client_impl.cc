@@ -20,6 +20,7 @@
 #include "ash/glanceables/glanceables_metrics.h"
 #include "base/barrier_closure.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
@@ -29,12 +30,13 @@
 #include "base/time/clock.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/ui/ash/glanceables/glanceables_classroom_course_work_item.h"
 #include "components/policy/core/browser/url_list/policy_blocklist_service.h"
 #include "components/policy/core/browser/url_list/url_blocklist_manager.h"
 #include "components/prefs/pref_service.h"
+#include "components/services/app_service/public/cpp/app_registry_cache.h"
 #include "components/services/app_service/public/cpp/app_types.h"
+#include "components/services/app_service/public/cpp/app_update.h"
 #include "google_apis/classroom/classroom_api_course_work_response_types.h"
 #include "google_apis/classroom/classroom_api_courses_response_types.h"
 #include "google_apis/classroom/classroom_api_list_course_work_request.h"
@@ -202,13 +204,13 @@ bool GlanceablesClassroomClientImpl::CourseWorkRequest::RespondIfComplete() {
 
 GlanceablesClassroomClientImpl::GlanceablesClassroomClientImpl(
     PrefService* pref_service,
-    apps::AppServiceProxy* app_service_proxy,
+    apps::AppRegistryCache* app_registry_cache,
     PolicyBlocklistService* policy_blocklist_service,
     base::Clock* clock,
     const GlanceablesClassroomClientImpl::CreateRequestSenderCallback&
         create_request_sender_callback)
     : pref_service_(pref_service),
-      app_service_proxy_(app_service_proxy),
+      app_registry_cache_(CHECK_DEREF(app_registry_cache)),
       policy_blocklist_service_(policy_blocklist_service),
       clock_(clock),
       create_request_sender_callback_(create_request_sender_callback),
@@ -228,11 +230,8 @@ bool GlanceablesClassroomClientImpl::IsDisabledByAdmin() const {
   }
 
   // 2) Check if the Classroom app is disabled by policy.
-  if (!app_service_proxy_) {
-    return true;
-  }
   auto classroom_app_readiness = apps::Readiness::kUnknown;
-  app_service_proxy_->AppRegistryCache().ForOneApp(
+  app_registry_cache_->ForOneApp(
       ash::kGoogleClassroomAppId,
       [&classroom_app_readiness](const apps::AppUpdate& update) {
         classroom_app_readiness = update.Readiness();

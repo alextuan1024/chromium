@@ -4,7 +4,7 @@
 
 #include "chrome/browser/glic/browser_ui/tab_underline_controller.h"
 
-#include "base/debug/crash_logging.h"
+#include "base/auto_reset.h"
 #include "build/build_config.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
@@ -63,26 +63,41 @@ void TabUnderlineController::Initialize(UiDelegate* ui_delegate) {
   MaybeObserveContextualTasks();
   MaybeObserveDictation();
 
-  if (glic_service_) {
-    // Fetch the latest context access indicator status from service. We can't
-    // assume the WebApp always updates the status on the service (thus the new
-    // subscribers not getting the latest value).
-    OnIndicatorStatusChanged(
-        glic_service_->is_context_access_indicator_enabled());
-  }
+  // Initial state is synced in `OnUiReady()`, once the view is in a widget.
 }
 
 void TabUnderlineController::OnUiReady() {
-  if (!glic_service_ || !ShouldUseSignalsForGlicUnderlines()) {
-    return;
+  {
+    // Several state syncs below can each request the underline to show. Defer
+    // those requests (they are still tracked in `active_sources_`) so that the
+    // underline is shown at most once below, rather than being shown, torn
+    // down and re-shown within the same task.
+    base::AutoReset<bool> defer_show(&is_syncing_ui_state_, true);
+
+    if (glic_service_ && ShouldUseSignalsForGlicUnderlines()) {
+      // Fetch the latest context access indicator status from service. We
+      // can't assume the WebApp always updates the status on the service (thus
+      // the new subscribers not getting the latest value).
+      OnIndicatorStatusChanged(
+          glic_service_->is_context_access_indicator_enabled());
+
+      // During cases such as tabstrip attachment, the underline controller
+      // consumes changes in pinned state before the underline view is
+      // reconstructed. Check consistency with pinned state post-construction
+      // to ensure the UI state of the underline is correct.
+      OnPinnedTabsChanged(
+          glic_service_->active_instance_sharing_manager().GetPinnedTabs());
+    }
   }
 
-  // During cases such as tabstrip attachment, the underline controller consumes
-  // changes in pinned state before the underline view is reconstructed. Check
-  // consistency with pinned state post-construction to ensure the UI state of
-  // the underline is correct.
-  OnPinnedTabsChanged(
-      glic_service_->active_instance_sharing_manager().GetPinnedTabs());
+  // Show the underline if any source requested it, either during the sync
+  // above, or earlier while the view was not attached to a widget (e.g.
+  // before its first `AddedToWidget()`, or after `RemovedFromWidget()` when it
+  // is moved to another widget).
+  if (active_sources_ != UnderlineSource::kNone && ui_delegate_->CanShow() &&
+      !ui_delegate_->IsShowing()) {
+    ui_delegate_->Show();
+  }
 }
 
 void TabUnderlineController::OnFocusedTabChanged(
@@ -150,7 +165,7 @@ void TabUnderlineController::OnIndicatorStatusChanged(bool enabled) {
 }
 
 void TabUnderlineController::OnPinnedTabsChanged(
-    const std::vector<tabs::TabInterface*>& pinned_tabs) {
+    const std::vector<raw_ptr<tabs::TabInterface>>& pinned_tabs) {
   if (!GetTabInterface()) {
     // If the TabInterface is invalid at this point, there is no relevant UI
     // to handle.
@@ -177,6 +192,10 @@ void TabUnderlineController::OnContextTabsChanged(
   }
 
   bool should_underline = context_tabs.contains(tab_interface->GetHandle());
+  if (!should_underline &&
+      !(active_sources_ & UnderlineSource::kContextualTasks)) {
+    return;
+  }
   UpdateUnderlineView(
       should_underline
           ? UpdateUnderlineReason::kContextualTask_TabInContext
@@ -194,7 +213,11 @@ void TabUnderlineController::OnDictationTabChanged(
     return;
   }
 
-  UpdateUnderlineView(active_dictation_tab == this_tab
+  bool is_active = active_dictation_tab == this_tab;
+  if (!is_active && !(active_sources_ & UnderlineSource::kDictation)) {
+    return;
+  }
+  UpdateUnderlineView(is_active
                           ? UpdateUnderlineReason::kDictation_TabActive
                           : UpdateUnderlineReason::kDictation_TabInactive);
 }
@@ -239,17 +262,6 @@ bool TabUnderlineController::IsUnderlineTabSharedThroughActiveFollow() {
 }
 
 void TabUnderlineController::UpdateUnderlineView(UpdateUnderlineReason reason) {
-  AddReasonForDebugging(reason);
-  auto reasons_string = UpdateReasonsToString();
-  SCOPED_CRASH_KEY_STRING1024("crbug-398319435", "update_reasons",
-                              reasons_string);
-  SCOPED_CRASH_KEY_BOOL("crbug-398319435", "access_indicator",
-                        context_access_indicator_enabled_);
-  SCOPED_CRASH_KEY_BOOL("crbug-398319435", "glic_focused_contents",
-                        !!glic_current_focused_contents_);
-  SCOPED_CRASH_KEY_BOOL("crbug-398319435", "is_glic_window_showing",
-                        glic_service_ && IsAnyGlicPanelShowing());
-
   switch (reason) {
     case UpdateUnderlineReason::kContextAccessIndicatorOn: {
       // Active follow tab underline should be newly shown, pinned tabs should
@@ -359,11 +371,20 @@ void TabUnderlineController::UpdateUnderlineView(UpdateUnderlineReason reason) {
 
 void TabUnderlineController::ShowAndAnimateUnderline(UnderlineSource source) {
   AddSource(source);
+  if (is_syncing_ui_state_ || !ui_delegate_->CanShow()) {
+    // Either the UI isn't attached to a widget yet, or `OnUiReady()` is
+    // batching show requests. The request is recorded in `active_sources_`
+    // and will be applied in `OnUiReady()`.
+    return;
+  }
   ui_delegate_->StopShowing();
   ui_delegate_->Show();
 }
 
 void TabUnderlineController::HideUnderline(UnderlineSource source) {
+  if (!(active_sources_ & source)) {
+    return;
+  }
   RemoveSource(source);
   if (active_sources_ != UnderlineSource::kNone) {
     return;
@@ -403,6 +424,7 @@ void TabUnderlineController::ShowOrAnimatePinnedUnderline() {
     return;
   }
   if (ui_delegate_->IsShowing()) {
+    AddSource(UnderlineSource::kGlic);
     AnimateUnderline();
   } else {
     ShowAndAnimateUnderline(UnderlineSource::kGlic);
@@ -412,60 +434,6 @@ void TabUnderlineController::ShowOrAnimatePinnedUnderline() {
 bool TabUnderlineController::IsAnyGlicPanelShowing() const {
   return glic_service_ &&
          glic_service_->instance_coordinator().IsAnyPanelShowing();
-}
-
-std::string TabUnderlineController::UpdateReasonToString(
-    UpdateUnderlineReason reason) {
-  switch (reason) {
-    case UpdateUnderlineReason::kContextAccessIndicatorOn:
-      return "IndicatorOn";
-    case UpdateUnderlineReason::kContextAccessIndicatorOff:
-      return "IndicatorOff";
-    case UpdateUnderlineReason::kFocusedTabChanged_NoFocusChange:
-      return "TabFocusChange";
-    case UpdateUnderlineReason::kFocusedTabChanged_TabGainedFocus:
-      return "TabGainedFocus";
-    case UpdateUnderlineReason::kFocusedTabChanged_TabLostFocus:
-      return "TabLostFocus";
-    case UpdateUnderlineReason::kFocusedTabChanged_ChromeGainedFocus:
-      return "ChromeGainedFocus";
-    case UpdateUnderlineReason::kFocusedTabChanged_ChromeLostFocus:
-      return "ChromeLostFocus";
-    case UpdateUnderlineReason::kPinnedTabsChanged_TabInPinnedSet:
-      return "TabInPinnedSet";
-    case UpdateUnderlineReason::kPinnedTabsChanged_TabNotInPinnedSet:
-      return "TabNotInPinnedSet";
-    case UpdateUnderlineReason::kContextualTask_TabInContext:
-      return "TabInContext";
-    case UpdateUnderlineReason::kContextualTask_TabNotInContext:
-      return "TabNotInContext";
-    case UpdateUnderlineReason::kDictation_TabActive:
-      return "DictationTabActive";
-    case UpdateUnderlineReason::kDictation_TabInactive:
-      return "DictationTabInactive";
-    case UpdateUnderlineReason::kPanelStateChanged_PanelShowing:
-      return "PanelShowing";
-    case UpdateUnderlineReason::kPanelStateChanged_PanelHidden:
-      return "PanelHidden";
-    case UpdateUnderlineReason::kUserInputSubmitted:
-      return "UserInputSubmitted";
-  }
-}
-
-void TabUnderlineController::AddReasonForDebugging(
-    UpdateUnderlineReason reason) {
-  underline_update_reasons_.push_back(UpdateReasonToString(reason));
-  if (underline_update_reasons_.size() > kNumReasonsToKeep) {
-    underline_update_reasons_.pop_front();
-  }
-}
-
-std::string TabUnderlineController::UpdateReasonsToString() const {
-  std::ostringstream oss;
-  for (const auto& r : underline_update_reasons_) {
-    oss << r << ",";
-  }
-  return oss.str();
 }
 
 bool TabUnderlineController::ShouldUseSignalsForGlicUnderlines() {

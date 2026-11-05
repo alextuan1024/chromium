@@ -14,7 +14,7 @@
 #include "base/bit_cast.h"
 #include "base/logging.h"
 #include "base/notimplemented.h"
-#include "base/notreached.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/hit_test.h"
@@ -41,25 +41,12 @@ namespace {
 static_assert(sizeof(uint32_t) == sizeof(float),
               "Sizes much match for reinterpret cast to be meaningful");
 
-XdgToplevel::DecorationMode ToDecorationMode(uint32_t mode) {
-  switch (mode) {
-    case ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE:
-      return XdgToplevel::DecorationMode::kClientSide;
-    case ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE:
-      return XdgToplevel::DecorationMode::kServerSide;
-    default:
-      NOTREACHED();
-  }
-}
-
 uint32_t ToInt32(XdgToplevel::DecorationMode mode) {
   switch (mode) {
     case XdgToplevel::DecorationMode::kClientSide:
       return ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
     case XdgToplevel::DecorationMode::kServerSide:
       return ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
-    default:
-      NOTREACHED();
   }
 }
 
@@ -124,34 +111,34 @@ bool XdgToplevel::Initialize() {
 }
 
 void XdgToplevel::SetMaximized() {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   xdg_toplevel_set_maximized(xdg_toplevel_.get());
 }
 
 void XdgToplevel::UnSetMaximized() {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   xdg_toplevel_unset_maximized(xdg_toplevel_.get());
 }
 
 void XdgToplevel::SetFullscreen(WaylandOutput* wayland_output) {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   xdg_toplevel_set_fullscreen(
       xdg_toplevel_.get(),
       wayland_output ? wayland_output->get_output() : nullptr);
 }
 
 void XdgToplevel::UnSetFullscreen() {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   xdg_toplevel_unset_fullscreen(xdg_toplevel_.get());
 }
 
 void XdgToplevel::SetMinimized() {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   xdg_toplevel_set_minimized(xdg_toplevel_.get());
 }
 
 void XdgToplevel::SurfaceMove(WaylandConnection* connection) {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   if (auto serial = GetSerialForMoveResize(connection)) {
     xdg_toplevel_move(xdg_toplevel_.get(), connection->seat()->wl_object(),
                       serial->value);
@@ -160,7 +147,7 @@ void XdgToplevel::SurfaceMove(WaylandConnection* connection) {
 
 void XdgToplevel::SurfaceResize(WaylandConnection* connection,
                                 uint32_t hittest) {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   if (auto serial = GetSerialForMoveResize(connection)) {
     xdg_toplevel_resize(xdg_toplevel_.get(), connection->seat()->wl_object(),
                         serial->value, wl::IdentifyDirection(hittest));
@@ -168,7 +155,7 @@ void XdgToplevel::SurfaceResize(WaylandConnection* connection,
 }
 
 void XdgToplevel::SetTitle(const std::u16string& title) {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
 
   // TODO(crbug.com/40785817): find a better way to handle long titles, or
   // change this logic completely (and at the platform-agnostic level) because a
@@ -178,13 +165,16 @@ void XdgToplevel::SetTitle(const std::u16string& title) {
   // upon calling xdg_toplevel_set_title(), which results in a fatal Wayland
   // communication error and termination of the process.  4096 bytes is the
   // limit for the size of the entire message; here we set 4000 as the maximum
-  // length of the string so it would fit the message with some margin.
-  const size_t kMaxLengh = 4000;
-  auto short_title = base::UTF16ToUTF8(title);
-  if (short_title.size() > kMaxLengh) {
-    short_title.resize(kMaxLengh);
+  // length of the string so it would fit the message with some margin.  The
+  // string is truncated at a character boundary because compositors may reject
+  // titles that are not valid UTF-8.
+  constexpr size_t kMaxLength = 4000;
+  std::string utf8_title = base::UTF16ToUTF8(title);
+  if (utf8_title.size() > kMaxLength) {
+    utf8_title.resize(
+        base::TruncateUTF8ToByteSize(utf8_title, kMaxLength).size());
   }
-  xdg_toplevel_set_title(xdg_toplevel_.get(), short_title.c_str());
+  xdg_toplevel_set_title(xdg_toplevel_.get(), utf8_title.c_str());
 }
 
 void XdgToplevel::SetWindowGeometry(const gfx::Rect& bounds) {
@@ -192,23 +182,23 @@ void XdgToplevel::SetWindowGeometry(const gfx::Rect& bounds) {
 }
 
 void XdgToplevel::SetMinSize(int32_t width, int32_t height) {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   xdg_toplevel_set_min_size(xdg_toplevel_.get(), width, height);
 }
 
 void XdgToplevel::SetMaxSize(int32_t width, int32_t height) {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   xdg_toplevel_set_max_size(xdg_toplevel_.get(), width, height);
 }
 
 void XdgToplevel::SetAppId(const std::string& app_id) {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   xdg_toplevel_set_app_id(xdg_toplevel_.get(), app_id.c_str());
 }
 
 void XdgToplevel::ShowWindowMenu(WaylandConnection* connection,
                                  const gfx::Point& point) {
-  DCHECK(xdg_toplevel_);
+  CHECK(xdg_toplevel_, base::NotFatalUntil::M163);
   if (auto serial = GetSerialForMoveResize(connection)) {
     xdg_toplevel_show_window_menu(xdg_toplevel_.get(),
                                   connection->seat()->wl_object(),
@@ -221,12 +211,12 @@ void XdgToplevel::SetDecoration(DecorationMode decoration) {
 }
 
 void XdgToplevel::AckConfigure(uint32_t serial) {
-  DCHECK(xdg_surface_);
+  CHECK(xdg_surface_, base::NotFatalUntil::M163);
   xdg_surface_->AckConfigure(serial);
 }
 
 bool XdgToplevel::IsConfigured() {
-  DCHECK(xdg_surface_);
+  CHECK(xdg_surface_, base::NotFatalUntil::M163);
   return xdg_surface_->IsConfigured();
 }
 
@@ -237,7 +227,7 @@ void XdgToplevel::OnToplevelConfigure(void* data,
                                       int32_t height,
                                       wl_array* states) {
   auto* self = static_cast<XdgToplevel*>(data);
-  DCHECK(self);
+  CHECK(self, base::NotFatalUntil::M163);
 
   WaylandWindow::WindowStates window_states;
   window_states.is_maximized =
@@ -246,6 +236,8 @@ void XdgToplevel::OnToplevelConfigure(void* data,
       CheckIfWlArrayHasValue(states, XDG_TOPLEVEL_STATE_FULLSCREEN);
   window_states.is_activated =
       CheckIfWlArrayHasValue(states, XDG_TOPLEVEL_STATE_ACTIVATED);
+  window_states.is_resizing =
+      CheckIfWlArrayHasValue(states, XDG_TOPLEVEL_STATE_RESIZING);
 
   if (xdg_toplevel_get_version(toplevel) >=
       XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION) {
@@ -270,7 +262,7 @@ void XdgToplevel::OnToplevelConfigure(void* data,
 // static
 void XdgToplevel::OnToplevelClose(void* data, xdg_toplevel* toplevel) {
   auto* self = static_cast<XdgToplevel*>(data);
-  DCHECK(self);
+  CHECK(self, base::NotFatalUntil::M163);
   self->window()->OnCloseRequest();
 }
 
@@ -293,13 +285,18 @@ void XdgToplevel::OnWmCapabilities(void* data,
 void XdgToplevel::OnDecorationConfigure(void* data,
                                         zxdg_toplevel_decoration_v1* decoration,
                                         uint32_t mode) {
-  auto* self = static_cast<XdgToplevel*>(data);
-  DCHECK(self);
-  self->decoration_mode_ = ToDecorationMode(mode);
+  // The mode chosen by the compositor is ignored. The frame is drawn based
+  // only on the client's frame type (see
+  // WaylandToplevelWindow::ShouldUseNativeFrame()).
 }
 
 void XdgToplevel::SetTopLevelDecorationMode(DecorationMode requested_mode) {
-  if (!zxdg_toplevel_decoration_ || requested_mode == decoration_mode_) {
+  // Always send the request, even if the compositor already uses the
+  // requested mode. The compositor responds with an xdg_surface.configure,
+  // which is needed to update the window bounds and geometry for the new
+  // frame insets.
+  // Callers only request a mode when the frame type changes.
+  if (!zxdg_toplevel_decoration_) {
     return;
   }
 
@@ -309,7 +306,7 @@ void XdgToplevel::SetTopLevelDecorationMode(DecorationMode requested_mode) {
 
 void XdgToplevel::InitializeXdgDecoration() {
   if (connection()->xdg_decoration_manager_v1()) {
-    DCHECK(!zxdg_toplevel_decoration_);
+    CHECK(!zxdg_toplevel_decoration_, base::NotFatalUntil::M163);
     zxdg_toplevel_decoration_.reset(
         zxdg_decoration_manager_v1_get_toplevel_decoration(
             connection()->xdg_decoration_manager_v1(), xdg_toplevel_.get()));

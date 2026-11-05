@@ -6,6 +6,10 @@
 
 #include <stddef.h>
 
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/functional/bind.h"
@@ -15,16 +19,30 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
 #include "chrome/browser/ui/webui/util/webui_util_desktop.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/theme_resources.h"
 #include "chrome/test/base/test_theme_provider.h"
 #include "chrome/test/base/testing_profile.h"
+#include "content/public/common/url_constants.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/color/color_id.h"
+#include "ui/color/color_mixer.h"
+#include "ui/color/color_provider.h"
+#include "ui/color/color_recipe.h"
+#include "ui/color/color_transform.h"
+#include "ui/gfx/color_palette.h"
+#include "url/gurl.h"
 
 class WebUISourcesTest : public testing::Test {
  public:
@@ -32,6 +50,9 @@ class WebUISourcesTest : public testing::Test {
 
   TestingProfile* profile() const { return profile_.get(); }
   ThemeSource* theme_source() const { return theme_source_.get(); }
+  const content::WebContents::Getter& web_contents_getter() const {
+    return test_web_contents_getter_;
+  }
   size_t result_data_size() const { return result_data_size_; }
 
   void StartDataRequest(const std::string& source) {
@@ -160,6 +181,27 @@ TEST_F(WebUISourcesTest, ThemeAllowedOrigin) {
   EXPECT_EQ(
       theme_source()->GetAccessControlAllowOriginForOrigin("http://google.com"),
       "");
+  // Only the source serving chrome-untrusted://theme allows
+  // chrome-untrusted:// origins.
+  EXPECT_EQ(theme_source()->GetAccessControlAllowOriginForOrigin(
+                "chrome-untrusted://new-tab-page"),
+            "");
+}
+
+TEST_F(WebUISourcesTest, ThemeAllowedOriginUntrusted) {
+  ThemeSource untrusted_theme_source(profile(), /*serve_untrusted=*/true);
+  EXPECT_EQ(untrusted_theme_source.GetAccessControlAllowOriginForOrigin(
+                "chrome-untrusted://new-tab-page"),
+            "chrome-untrusted://new-tab-page");
+  EXPECT_EQ(untrusted_theme_source.GetAccessControlAllowOriginForOrigin(
+                "chrome://settings"),
+            "chrome://settings");
+  EXPECT_EQ(untrusted_theme_source.GetAccessControlAllowOriginForOrigin(
+                "chrome-extensions://some-id"),
+            "");
+  EXPECT_EQ(untrusted_theme_source.GetAccessControlAllowOriginForOrigin(
+                "http://google.com"),
+            "");
 }
 
 TEST_F(WebUISourcesTest, ThemeSourceShouldServiceRequest) {
@@ -179,11 +221,481 @@ TEST_F(WebUISourcesTest, ThemeSourceShouldServiceRequest) {
       GURL("devtools://theme/css/new_tab_theme.css"), nullptr, -1));
   EXPECT_FALSE(theme_source()->ShouldServiceRequest(GURL("devtools://theme/"),
                                                     nullptr, -1));
-  // TODO(https://crbug.com/562108905): URLDataSource currently allows both
-  // chrome: and chrome-untrusted: requests by default. We should tighten this
-  // so that chrome: sources only service chrome: requests.
-  EXPECT_TRUE(theme_source()->ShouldServiceRequest(
+  EXPECT_FALSE(theme_source()->ShouldServiceRequest(
       GURL("chrome-untrusted://theme/colors.css"), nullptr, -1));
   EXPECT_FALSE(theme_source()->ShouldServiceRequest(
       GURL("https://theme/colors.css"), nullptr, -1));
+
+  ThemeSource untrusted_theme_source(profile(), /*serve_untrusted=*/true);
+  EXPECT_TRUE(untrusted_theme_source.ShouldServiceRequest(
+      GURL("chrome-untrusted://theme/colors.css"), nullptr, -1));
+  EXPECT_FALSE(untrusted_theme_source.ShouldServiceRequest(
+      GURL("chrome://theme/colors.css"), nullptr, -1));
+}
+
+namespace {
+
+using ::testing::AllOf;
+using ::testing::EndsWith;
+using ::testing::HasSubstr;
+using ::testing::IsEmpty;
+using ::testing::Not;
+using ::testing::StartsWith;
+
+// Returns the data that `source` serves for `url`, or an empty string if it
+// serves nothing.
+std::string GetDataForUrl(ThemeSource& source,
+                          const GURL& url,
+                          content::WebContents::Getter wc_getter) {
+  std::string result;
+  base::RunLoop run_loop;
+  source.StartDataRequest(url, std::move(wc_getter),
+                          base::BindLambdaForTesting(
+                              [&](scoped_refptr<base::RefCountedMemory> data) {
+                                if (data) {
+                                  result.assign(data->begin(), data->end());
+                                }
+                                run_loop.Quit();
+                              }));
+  run_loop.Run();
+  return result;
+}
+
+// Returns the data that `source` serves for `path` on `chrome://theme/`, or an
+// empty string if it serves nothing.
+std::string GetData(ThemeSource& source,
+                    std::string_view path,
+                    content::WebContents::Getter wc_getter) {
+  return GetDataForUrl(
+      source,
+      GURL(base::StrCat({content::kChromeUIScheme, "://",
+                         chrome::kChromeUIThemeHost, "/", path})),
+      std::move(wc_getter));
+}
+
+// Defines `id` on a new mixer of `color_provider` such that `evaluation_count`
+// is incremented every time the color is requested from the provider.
+// ColorProvider does not memoize gfx::kPlaceholderColor results, so returning
+// it from the recipe results in one evaluation per generated stylesheet that
+// includes `id`.
+void AddEvaluationCountingColor(ui::ColorProvider& color_provider,
+                                ui::ColorId id,
+                                int* evaluation_count) {
+  color_provider.AddMixer()[id] = ui::ColorTransform(base::BindRepeating(
+      [](int* count, SkColor, const ui::ColorMixer&) {
+        ++(*count);
+        return gfx::kPlaceholderColor;
+      },
+      evaluation_count));
+}
+
+std::optional<std::string> GenerateColorsCss(
+    const ui::ColorProvider& color_provider,
+    std::string_view url) {
+  return ThemeSource::GenerateColorsCss(color_provider, GURL(url));
+}
+
+}  // namespace
+
+TEST_F(WebUISourcesTest, GenerateColorsCssInvalidOrMissingSets) {
+  ui::ColorProvider color_provider;
+  for (bool feature_enabled : {false, true}) {
+    SCOPED_TRACE(feature_enabled);
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatureState(
+        features::kColorIdCssStyleSheetOptimization, feature_enabled);
+
+    EXPECT_EQ(ThemeSource::GenerateColorsCss(color_provider,
+                                             GURL("chrome://theme/colors.css")),
+              std::nullopt);
+    EXPECT_EQ(
+        ThemeSource::GenerateColorsCss(
+            color_provider, GURL("chrome://theme/colors.css?shadow_host=true")),
+        std::nullopt);
+    EXPECT_EQ(
+        ThemeSource::GenerateColorsCss(
+            color_provider, GURL("chrome://theme/colors.css?sets=invalid")),
+        std::nullopt);
+    EXPECT_EQ(
+        ThemeSource::GenerateColorsCss(
+            color_provider, GURL("chrome://theme/colors.css?sets=ui,invalid")),
+        std::nullopt);
+    EXPECT_EQ(
+        ThemeSource::GenerateColorsCss(
+            color_provider, GURL("devtools://theme/colors.css?sets=invalid")),
+        std::nullopt);
+  }
+}
+
+TEST_F(WebUISourcesTest, GenerateColorsCssSelectorsRgbVarsAndTokens) {
+  ui::ColorProvider color_provider;
+  color_provider.SetColorForTesting(ui::kColorAccent,
+                                    SkColorSetARGB(0x80, 0x12, 0x34, 0x56));
+
+  for (bool feature_enabled : {false, true}) {
+    SCOPED_TRACE(feature_enabled);
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatureState(
+        features::kColorIdCssStyleSheetOptimization, feature_enabled);
+
+    std::optional<std::string> ui_css = ThemeSource::GenerateColorsCss(
+        color_provider, GURL("chrome://theme/colors.css?sets=ui"));
+    ASSERT_TRUE(ui_css.has_value());
+    EXPECT_THAT(
+        *ui_css,
+        AllOf(StartsWith("html:not(#z){"), EndsWith("}"),
+              HasSubstr("--color-accent:#12345680;"),
+              Not(HasSubstr("--color-app-menu-highlight-severity-low")),
+              Not(HasSubstr("-rgb:")), Not(HasSubstr("--user-color-source")),
+              Not(HasSubstr("baseline-grayscale")),
+              Not(HasSubstr("baseline-default"))));
+
+    std::optional<std::string> shadow_css = ThemeSource::GenerateColorsCss(
+        color_provider,
+        GURL("chrome://theme/colors.css?sets=ui,chrome&shadow_host=true"));
+    ASSERT_TRUE(shadow_css.has_value());
+    EXPECT_THAT(
+        *shadow_css,
+        AllOf(StartsWith(":host{"), EndsWith("}"),
+              Not(HasSubstr("html:not(#z)")),
+              HasSubstr("--color-accent:#12345680;"),
+              HasSubstr("--color-app-menu-highlight-severity-low:"),
+              Not(HasSubstr("-rgb:")), Not(HasSubstr("--user-color-source")),
+              Not(HasSubstr("baseline-grayscale")),
+              Not(HasSubstr("baseline-default"))));
+
+    std::optional<std::string> non_shadow_css = ThemeSource::GenerateColorsCss(
+        color_provider,
+        GURL("chrome://theme/colors.css?sets=ui&shadow_host=false"));
+    ASSERT_TRUE(non_shadow_css.has_value());
+    EXPECT_THAT(*non_shadow_css,
+                AllOf(StartsWith("html:not(#z){"), EndsWith("}")));
+
+    std::optional<std::string> rgb_css = ThemeSource::GenerateColorsCss(
+        color_provider,
+        GURL("chrome://theme/colors.css?sets=ui&generate_rgb_vars=true"));
+    ASSERT_TRUE(rgb_css.has_value());
+    EXPECT_THAT(*rgb_css, AllOf(StartsWith("html:not(#z){"), EndsWith("}"),
+                                HasSubstr("--color-accent:#12345680;"),
+                                HasSubstr("--color-accent-rgb:18,52,86;"),
+                                Not(HasSubstr("--user-color-source")),
+                                Not(HasSubstr("baseline-grayscale")),
+                                Not(HasSubstr("baseline-default"))));
+
+    std::optional<std::string> no_rgb_css = ThemeSource::GenerateColorsCss(
+        color_provider,
+        GURL("chrome://theme/colors.css?sets=ui&generate_rgb_vars=false"));
+    ASSERT_TRUE(no_rgb_css.has_value());
+    EXPECT_THAT(*no_rgb_css, Not(HasSubstr("-rgb:")));
+  }
+}
+
+// Tests that without the cache every request generates the stylesheet.
+TEST_F(WebUISourcesTest, GenerateColorsCssCacheDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kColorIdCssStyleSheetCache);
+
+  int generation_count = 0;
+  ui::ColorProvider color_provider;
+  AddEvaluationCountingColor(color_provider, ui::kColorAccent,
+                             &generation_count);
+
+  const std::optional<std::string> css =
+      GenerateColorsCss(color_provider, "chrome://theme/colors.css?sets=ui");
+  ASSERT_TRUE(css.has_value());
+  EXPECT_EQ(1, generation_count);
+  EXPECT_EQ(css, GenerateColorsCss(color_provider,
+                                   "chrome://theme/colors.css?sets=ui"));
+  EXPECT_EQ(2, generation_count);
+}
+
+// Tests that with the cache a stylesheet is only generated once for equivalent
+// requests on an unmodified ColorProvider.
+TEST_F(WebUISourcesTest, GenerateColorsCssCacheReusesStylesheets) {
+  base::test::ScopedFeatureList feature_list(
+      features::kColorIdCssStyleSheetCache);
+
+  int generation_count = 0;
+  ui::ColorProvider color_provider;
+  AddEvaluationCountingColor(color_provider, ui::kColorAccent,
+                             &generation_count);
+
+  const std::optional<std::string> css =
+      GenerateColorsCss(color_provider, "chrome://theme/colors.css?sets=ui");
+  ASSERT_TRUE(css.has_value());
+  EXPECT_EQ(1, generation_count);
+
+  // The same request, a request as issued by ColorChangeUpdater to refresh the
+  // stylesheet (escaped and with a `version` parameter) and requests that only
+  // differ in ways that do not affect the stylesheet are served from the
+  // cache.
+  EXPECT_EQ(css, GenerateColorsCss(color_provider,
+                                   "chrome://theme/colors.css?sets=ui"));
+  EXPECT_EQ(
+      css, GenerateColorsCss(color_provider,
+                             "chrome://theme/colors.css?sets=ui&version=1234"));
+  EXPECT_EQ(css,
+            GenerateColorsCss(color_provider,
+                              "chrome-untrusted://theme/colors.css?version=5&"
+                              "shadow_host=false&sets=ui"));
+  EXPECT_EQ(1, generation_count);
+
+  // Requests with different parameters result in different stylesheets.
+  const std::optional<std::string> shadow_host_css = GenerateColorsCss(
+      color_provider, "chrome://theme/colors.css?sets=ui&shadow_host=true");
+  ASSERT_TRUE(shadow_host_css.has_value());
+  EXPECT_NE(css, shadow_host_css);
+  EXPECT_EQ(2, generation_count);
+
+  const std::optional<std::string> rgb_vars_css = GenerateColorsCss(
+      color_provider,
+      "chrome://theme/colors.css?sets=ui&generate_rgb_vars=true");
+  ASSERT_TRUE(rgb_vars_css.has_value());
+  EXPECT_NE(css, rgb_vars_css);
+  EXPECT_EQ(3, generation_count);
+
+  const std::optional<std::string> ui_chrome_css = GenerateColorsCss(
+      color_provider, "chrome://theme/colors.css?sets=ui,chrome");
+  ASSERT_TRUE(ui_chrome_css.has_value());
+  EXPECT_NE(css, ui_chrome_css);
+  EXPECT_EQ(4, generation_count);
+
+  // As issued by ColorChangeUpdater for a "ui,chrome" stylesheet.
+  EXPECT_EQ(ui_chrome_css,
+            GenerateColorsCss(
+                color_provider,
+                "chrome://theme/colors.css?sets=ui%2Cchrome&version=1234"));
+
+  // All of the above remain cached.
+  EXPECT_EQ(css, GenerateColorsCss(color_provider,
+                                   "chrome://theme/colors.css?sets=ui"));
+  EXPECT_EQ(
+      shadow_host_css,
+      GenerateColorsCss(color_provider,
+                        "chrome://theme/colors.css?sets=ui&shadow_host=true"));
+  EXPECT_EQ(rgb_vars_css,
+            GenerateColorsCss(
+                color_provider,
+                "chrome://theme/colors.css?sets=ui&generate_rgb_vars=true"));
+  EXPECT_EQ(4, generation_count);
+
+  // Invalid requests fail regardless of the cache.
+  EXPECT_EQ(std::nullopt,
+            GenerateColorsCss(color_provider, "chrome://theme/colors.css"));
+  EXPECT_EQ(std::nullopt,
+            GenerateColorsCss(color_provider,
+                              "chrome://theme/colors.css?sets=ui,invalid"));
+  EXPECT_EQ(4, generation_count);
+}
+
+// Tests that cached stylesheets are only reused for the ColorProvider they were
+// generated for.
+TEST_F(WebUISourcesTest, GenerateColorsCssCacheIsPerColorProvider) {
+  base::test::ScopedFeatureList feature_list(
+      features::kColorIdCssStyleSheetCache);
+  constexpr char kUrl[] = "chrome://theme/colors.css?sets=ui";
+
+  ui::ColorProvider color_provider;
+  color_provider.AddMixer()[ui::kColorAccent] = {SK_ColorGREEN};
+  std::optional<std::string> css = GenerateColorsCss(color_provider, kUrl);
+  ASSERT_TRUE(css.has_value());
+  EXPECT_THAT(*css, HasSubstr("--color-accent:#00ff00ff;"));
+
+  ui::ColorProvider other_color_provider;
+  other_color_provider.AddMixer()[ui::kColorAccent] = {SK_ColorBLACK};
+  const std::optional<std::string> other_css =
+      GenerateColorsCss(other_color_provider, kUrl);
+  ASSERT_TRUE(other_css.has_value());
+  EXPECT_THAT(*other_css, HasSubstr("--color-accent:#000000ff;"));
+
+  // Both providers keep being served their own stylesheet.
+  EXPECT_EQ(css, GenerateColorsCss(color_provider, kUrl));
+  EXPECT_EQ(other_css, GenerateColorsCss(other_color_provider, kUrl));
+
+  // SetColorForTesting() changes the colors of a provider that is already in
+  // use, after which the stylesheet cached for it is no longer used.
+  color_provider.SetColorForTesting(ui::kColorAccent, SK_ColorWHITE);
+  css = GenerateColorsCss(color_provider, kUrl);
+  ASSERT_TRUE(css.has_value());
+  EXPECT_THAT(*css, HasSubstr("--color-accent:#ffffffff;"));
+  EXPECT_EQ(other_css, GenerateColorsCss(other_color_provider, kUrl));
+}
+
+// Tests that the stylesheet cached for a ColorProvider that has since been
+// destroyed is not reused for a new ColorProvider at the same address.
+TEST_F(WebUISourcesTest, GenerateColorsCssCacheNotReusedForNewColorProvider) {
+  base::test::ScopedFeatureList feature_list(
+      features::kColorIdCssStyleSheetCache);
+  constexpr char kUrl[] = "chrome://theme/colors.css?sets=ui";
+
+  std::optional<ui::ColorProvider> color_provider;
+  color_provider.emplace();
+  const ui::ColorProvider* const address = &color_provider.value();
+  color_provider->AddMixer()[ui::kColorAccent] = {SK_ColorGREEN};
+  std::optional<std::string> css = GenerateColorsCss(*color_provider, kUrl);
+  ASSERT_TRUE(css.has_value());
+  EXPECT_THAT(*css, HasSubstr("--color-accent:#00ff00ff;"));
+
+  // Destroys the provider and constructs a new one in its place.
+  color_provider.emplace();
+  ASSERT_EQ(address, &color_provider.value());
+  color_provider->AddMixer()[ui::kColorAccent] = {SK_ColorBLUE};
+  css = GenerateColorsCss(*color_provider, kUrl);
+  ASSERT_TRUE(css.has_value());
+  EXPECT_THAT(*css, HasSubstr("--color-accent:#0000ffff;"));
+}
+
+// Tests that the cache is bounded: stylesheets are evicted once many others
+// have been cached and are generated again when requested.
+TEST_F(WebUISourcesTest, GenerateColorsCssCacheIsBounded) {
+  base::test::ScopedFeatureList feature_list(
+      features::kColorIdCssStyleSheetCache);
+  constexpr char kUrl[] = "chrome://theme/colors.css?sets=ui";
+
+  int generation_count = 0;
+  ui::ColorProvider color_provider;
+  AddEvaluationCountingColor(color_provider, ui::kColorAccent,
+                             &generation_count);
+  ASSERT_TRUE(GenerateColorsCss(color_provider, kUrl).has_value());
+  ASSERT_TRUE(GenerateColorsCss(color_provider, kUrl).has_value());
+  EXPECT_EQ(1, generation_count);
+
+  // Cache stylesheets for many other providers.
+  for (int i = 0; i < 32; ++i) {
+    ui::ColorProvider other_color_provider;
+    ASSERT_TRUE(GenerateColorsCss(other_color_provider, kUrl).has_value());
+  }
+
+  ASSERT_TRUE(GenerateColorsCss(color_provider, kUrl).has_value());
+  EXPECT_EQ(2, generation_count);
+}
+
+TEST_F(WebUISourcesTest, ThemeSourceServesColorsCssAcrossSchemesAndThemes) {
+  auto expect_valid_colors_css = [&]() {
+    for (bool feature_enabled : {false, true}) {
+      SCOPED_TRACE(feature_enabled);
+      base::test::ScopedFeatureList feature_list;
+      feature_list.InitWithFeatureState(
+          features::kColorIdCssStyleSheetOptimization, feature_enabled);
+
+      for (const char* url_str :
+           {"chrome://theme/colors.css?sets=ui,chrome",
+            "devtools://theme/colors.css?sets=ui,chrome"}) {
+        SCOPED_TRACE(url_str);
+        EXPECT_THAT(GetDataForUrl(*theme_source(), GURL(url_str),
+                                  web_contents_getter()),
+                    AllOf(StartsWith("html:not(#z){"), EndsWith("}"),
+                          HasSubstr("--color-accent:"),
+                          HasSubstr("--color-app-menu-highlight-severity-low:"),
+                          Not(HasSubstr("--user-color-source")),
+                          Not(HasSubstr("baseline-grayscale")),
+                          Not(HasSubstr("baseline-default"))));
+      }
+    }
+  };
+
+  // Default baseline theme.
+  ThemeService* theme_service = ThemeServiceFactory::GetForProfile(profile());
+  ASSERT_TRUE(theme_service);
+  ASSERT_TRUE(theme_service->GetIsBaseline());
+  ASSERT_FALSE(theme_service->GetIsGrayscale());
+  expect_valid_colors_css();
+
+  // Grayscale theme.
+  theme_service->SetIsGrayscale(true);
+  ASSERT_TRUE(theme_service->GetIsGrayscale());
+  expect_valid_colors_css();
+
+  // Custom user color theme (neither baseline nor grayscale).
+  theme_service->SetUserColor(SK_ColorBLUE);
+  ASSERT_FALSE(theme_service->GetIsBaseline());
+  ASSERT_FALSE(theme_service->GetIsGrayscale());
+  expect_valid_colors_css();
+
+  // Requests with no WebContents or unrecognized sets return empty data.
+  auto no_contents_getter =
+      base::BindRepeating([]() -> content::WebContents* { return nullptr; });
+  EXPECT_THAT(GetDataForUrl(*theme_source(),
+                            GURL("chrome://theme/colors.css?sets=ui,chrome"),
+                            no_contents_getter),
+              IsEmpty());
+  EXPECT_THAT(GetDataForUrl(*theme_source(),
+                            GURL("chrome://theme/colors.css?sets=invalid"),
+                            web_contents_getter()),
+              IsEmpty());
+}
+
+// A source created for TopChromeWebUIProfile serves colors.css using the
+// requesting WebContents's ColorProvider even without a user profile set on the
+// WebContents (as well as when a user profile is set), and never emits
+// --user-color-source.
+TEST_F(WebUISourcesTest,
+       ThemeSourceInTopChromeWebUIProfileServesColorsCssWithoutUserProfile) {
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_top_chrome_webui_profile;
+  std::unique_ptr<content::WebContents> web_contents =
+      content::WebContentsTester::CreateTestWebContents(
+          webui::GetTopChromeWebUIProfile(), /*instance=*/nullptr);
+  ASSERT_EQ(webui::GetUserProfile(web_contents.get()), nullptr);
+
+  ThemeSource source(webui::GetTopChromeWebUIProfile());
+  auto contents_getter =
+      base::BindLambdaForTesting([&] { return web_contents.get(); });
+
+  auto expect_valid_top_chrome_colors_css = [&]() {
+    for (bool feature_enabled : {false, true}) {
+      SCOPED_TRACE(feature_enabled);
+      base::test::ScopedFeatureList feature_list;
+      feature_list.InitWithFeatureState(
+          features::kColorIdCssStyleSheetOptimization, feature_enabled);
+
+      for (const char* url_str :
+           {"chrome://theme/colors.css?sets=ui,chrome",
+            "devtools://theme/colors.css?sets=ui,chrome"}) {
+        SCOPED_TRACE(url_str);
+        EXPECT_THAT(GetDataForUrl(source, GURL(url_str), contents_getter),
+                    AllOf(StartsWith("html:not(#z){"), EndsWith("}"),
+                          HasSubstr("--color-accent:"),
+                          HasSubstr("--color-app-menu-highlight-severity-low:"),
+                          Not(HasSubstr("--user-color-source")),
+                          Not(HasSubstr("baseline-grayscale")),
+                          Not(HasSubstr("baseline-default"))));
+      }
+    }
+  };
+
+  // Serves colors.css even before webui::SetUserProfile() is called.
+  expect_valid_top_chrome_colors_css();
+
+  // Also serves colors.css without --user-color-source when a grayscale user
+  // profile is associated with the WebContents.
+  webui::SetUserProfile(web_contents.get(), profile());
+  ThemeServiceFactory::GetForProfile(profile())->SetIsGrayscale(true);
+  expect_valid_top_chrome_colors_css();
+}
+
+// A source created for TopChromeWebUIProfile serves the theme images and the
+// NTP CSS with the user profile of the requesting contents. Without contents,
+// it serves the default theme images, and no NTP CSS.
+TEST_F(WebUISourcesTest, ThemeSourceInTopChromeWebUIProfileImagesAndNewTabCSS) {
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_top_chrome_webui_profile;
+  std::unique_ptr<content::WebContents> web_contents =
+      content::WebContentsTester::CreateTestWebContents(
+          webui::GetTopChromeWebUIProfile(), /*instance=*/nullptr);
+  webui::SetUserProfile(web_contents.get(), profile());
+  ThemeSource source(webui::GetTopChromeWebUIProfile());
+  auto contents_getter =
+      base::BindLambdaForTesting([&] { return web_contents.get(); });
+  auto no_contents_getter =
+      base::BindRepeating([]() -> content::WebContents* { return nullptr; });
+
+  ThemeServiceFactory::GetForProfile(profile())
+      ->BuildAutogeneratedThemeFromColor(SK_ColorRED);
+  EXPECT_FALSE(GetData(source, "IDR_THEME_TOOLBAR", contents_getter).empty());
+  EXPECT_THAT(GetData(source, "css/new_tab_theme.css", contents_getter),
+              testing::HasSubstr(ThemeService::kAutogeneratedThemeID));
+
+  EXPECT_FALSE(
+      GetData(source, "IDR_THEME_TOOLBAR", no_contents_getter).empty());
+  EXPECT_TRUE(
+      GetData(source, "css/new_tab_theme.css", no_contents_getter).empty());
 }

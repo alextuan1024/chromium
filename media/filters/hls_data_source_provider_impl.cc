@@ -12,11 +12,21 @@
 #include "base/types/pass_key.h"
 #include "media/base/cross_origin_data_source.h"
 #include "media/formats/hls/types.h"
+#include "net/base/data_url.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
+#include "url/url_constants.h"
+#include "url/url_util.h"
 
 namespace media {
 
 namespace {
+
+bool HasDisallowedLocalScheme(const GURL& uri, const url::Origin& origin) {
+  const auto& local_schemes = url::GetLocalSchemes();
+  return std::ranges::contains(local_schemes, uri.scheme()) ||
+         (!origin.opaque() &&
+          std::ranges::contains(local_schemes, origin.scheme()));
+}
 
 perfetto::NamedTrack GetTracingTrack(
     const HlsDataSourceProviderImpl* provider) {
@@ -39,12 +49,12 @@ void OnMultiBufferReadComplete(
     case DataSource::kReadError: {
       stream->UnlockStreamPostWrite(0, true);
       return std::move(callback).Run(
-          HlsDemuxerStatus::Codes::kNetworkReadError);
+          base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadError));
     }
     case DataSource::kAborted: {
       stream->UnlockStreamPostWrite(0, true);
       return std::move(callback).Run(
-          HlsDemuxerStatus::Codes::kNetworkReadAborted);
+          base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadAborted));
     }
     default: {
       CHECK_GE(read_size, 0);
@@ -95,6 +105,34 @@ void HlsDataSourceProviderImpl::ReadFromExistingStream(
   if (stream->RequiresInit()) {
     auto [new_uri, cache_mode, range_mode, encoding_mode] =
         stream->GetSegmentInfo();
+    if (new_uri.SchemeIs(url::kDataScheme)) {
+      // If the stream points to a data-schemed URL load it directly.
+      std::string mime_type, charset, data;
+      if (!net::DataURL::Parse(new_uri, &mime_type, &charset, &data) ||
+          data.empty()) {
+        std::move(callback).Run(
+            base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadError));
+        return;
+      }
+      base::span<const uint8_t> bytes = base::as_byte_span(data);
+      if (range_mode == DataSource::RangeMode::kRangeRequest) {
+        stream->set_requires_range_request();
+        const size_t start = stream->read_position();
+        const size_t end = stream->max_read_position().value();
+        if (start >= end || end > bytes.size()) {
+          std::move(callback).Run(
+              base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadError));
+          return;
+        }
+        bytes = bytes.subspan(start, end - start);
+      }
+      stream->LockStreamForWriting(bytes.size()).copy_from(bytes);
+      stream->UnlockStreamPostWrite(bytes.size(), true);
+      stream->SetPostRedirectUri(std::move(new_uri));
+      std::move(callback).Run(std::move(stream));
+      return;
+    }
+
     TRACE_EVENT_BEGIN("media", "HLS::CreateDataSource", GetTracingTrack(this),
                       "uri", new_uri);
     data_source_factory_->Create(
@@ -118,7 +156,8 @@ void HlsDataSourceProviderImpl::ReadFromExistingStream(
   auto it = data_source_map_.find(stream->stream_id());
   if (it == data_source_map_.end()) {
     TRACE_EVENT_END("media", GetTracingTrack(this));
-    std::move(callback).Run(HlsDemuxerStatus::Codes::kNetworkReadError);
+    std::move(callback).Run(
+        base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadError));
     return;
   }
 
@@ -160,9 +199,10 @@ void HlsDataSourceProviderImpl::OnDataSourceCreated(
   }
 
   if (stream->SecurityInfo().HasIncompatibleRangeAndOrigin()) {
-    std::move(callback).Run(
-        {HlsDemuxerStatus::Codes::kNetworkReadError,
-         "Range requests are not allowed for cross-origin content"});
+    HlsDemuxerStatus error = {
+        HlsDemuxerStatus::Codes::kNetworkReadError,
+        "Range requests are not allowed for cross-origin content"};
+    std::move(callback).Run(base::unexpected(std::move(error)));
     TRACE_EVENT_END("media", perfetto::Track::FromPointer(this));
     return;
   }
@@ -182,7 +222,8 @@ void HlsDataSourceProviderImpl::DataSourceInitialized(
     auto it = data_source_map_.find(stream->stream_id());
     CHECK(it != data_source_map_.end());
     data_source_map_.erase(it);
-    std::move(callback).Run(HlsDemuxerStatus::Codes::kNetworkReadStopped);
+    std::move(callback).Run(
+        base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadStopped));
     TRACE_EVENT_END("media", GetTracingTrack(this));
     return;
   }
@@ -196,23 +237,49 @@ void HlsDataSourceProviderImpl::DataSourceInitialized(
       stream->set_did_redirect();
     }
     const auto& response_uri = it->second->GetUrlDataOrigin();
-    if (!response_uri.is_empty()) {
-      if (!response_uri.SchemeIs("data")) {
-        stream->TrackOrigin(url::Origin::Create(response_uri));
-      }
-      stream->SetPostRedirectUri(response_uri);
-    } else {
-      std::move(callback).Run({HlsDemuxerStatus::Codes::kNetworkReadError,
-                               "Invalid security origin for non-existent URL"});
+    if (response_uri.is_empty()) {
+      HlsDemuxerStatus error = {HlsDemuxerStatus::Codes::kNetworkReadError,
+                                "Invalid security origin for non-existent URL"};
+      std::move(callback).Run(base::unexpected(std::move(error)));
       TRACE_EVENT_END("media", GetTracingTrack(this));
       return;
     }
+
+    if (response_uri.SchemeIs(url::kDataScheme)) {
+      // An HlsDataSourceStream created directly from a data url does not use
+      // this asynchronous initialization process, which means that this data
+      // url response was provided by an http redirect, which is not allowed.
+      std::move(callback).Run(base::unexpected(
+          HlsDemuxerStatus{HlsDemuxerStatus::Codes::kNetworkReadError}));
+      TRACE_EVENT_END("media", GetTracingTrack(this));
+      return;
+    }
+
+    auto response_origin = url::Origin::Create(response_uri);
+    if (HasDisallowedLocalScheme(response_uri, response_origin)) {
+      // For a base page loaded via a local scheme (such as file:// or
+      // content://), the chrome network stack allows media content loaded
+      // directly via src=, but for security reasons does not allow arbitrary
+      // reads from other local URLs (e.g. via JS using `fetch()`). Because
+      // `url::Origin` collapses local URLs of the same scheme/authority into a
+      // single tuple origin, a locally hosted HLS playlist could otherwise
+      // reference arbitrary sibling local files as segments and leak their
+      // contents via buffered ranges. Block all local schemes in HLS.
+      std::move(callback).Run(base::unexpected(
+          HlsDemuxerStatus{HlsDemuxerStatus::Codes::kInvalidContentScheme}));
+      TRACE_EVENT_END("media", GetTracingTrack(this));
+      return;
+    }
+
+    stream->TrackOrigin(std::move(response_origin));
+    stream->SetPostRedirectUri(response_uri);
   }
 
   if (stream->SecurityInfo().HasIncompatibleRangeAndOrigin()) {
-    std::move(callback).Run(
-        {HlsDemuxerStatus::Codes::kNetworkReadError,
-         "Range requests are not allowed for cross-origin content"});
+    HlsDemuxerStatus error = {
+        HlsDemuxerStatus::Codes::kNetworkReadError,
+        "Range requests are not allowed for cross-origin content"};
+    std::move(callback).Run(base::unexpected(std::move(error)));
     TRACE_EVENT_END("media", GetTracingTrack(this));
     return;
   }

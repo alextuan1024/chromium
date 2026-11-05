@@ -26,12 +26,6 @@ chromium-metrics-reviews@google.com.
 
 <enums>
 
-<enum name="BlockZeroSerialNumberType">
-  <int value="0" label="Normal serial number"/>
-  <int value="1" label="Repeating pattern in serial number"/>
-  <int value="2" label="Missing serial number"/>
-</enum>
-
 <enum name="BooleanANGLECanEmulateGLES3">
   <summary>Whether ANGLE can emulate GLES3.</summary>
   <int value="0" label="false"/>
@@ -56,11 +50,6 @@ chromium-metrics-reviews@google.com.
 <enum name="BooleanSoftwareRendering">
   <int value="0" label="Hardware GPU"/>
   <int value="1" label="Software Rendering"/>
-</enum>
-
-<enum name="BooleanUnderlay">
-  <int value="0" label="Overlay Mode"/>
-  <int value="1" label="Underlay Mode"/>
 </enum>
 
 <enum name="CanvasOopRasterAndGpuAcceleration">
@@ -386,6 +375,18 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="Composition Failure"/>
 </enum>
 
+<!-- LINT.IfChange(EdidSerialNumberType) -->
+
+<enum name="EdidSerialNumberType">
+  <int value="0" label="Normal serial number"/>
+  <int value="1" label="Repeating pattern in serial number"/>
+  <int value="2" label="Missing serial number"/>
+  <int value="3" label="Sequential pattern in serial number"/>
+  <int value="4" label="Serial number too short"/>
+</enum>
+
+<!-- LINT.ThenChange(//ui/display/util/edid_parser.cc:EdidSerialNumberType) -->
+
 <enum name="EGLDisplayType">
   <int value="0" label="Default"/>
   <int value="1" label="SwiftShader"/>
@@ -430,6 +431,7 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="kOnlyScrollBarFadeOut"/>
   <int value="6" label="kUserInputBoost"/>
   <int value="7" label="kSlowScrollThrottle"/>
+  <int value="8" label="kMixedFixedInterval"/>
 </enum>
 
 <enum name="GLImplementation">
@@ -529,14 +531,30 @@ chromium-metrics-reviews@google.com.
   <int value="75" label="Win/AMD_switchable/Texture_sharing"/>
 </enum>
 
+<!-- LINT.IfChange(GPUBlocklistFeatureTestResults) -->
+
 <enum name="GPUBlocklistFeatureTestResults">
   <summary>
     Results of testing against a GPU feature being allowed/blocklisted/disabled.
+    Values of gpu::GpuFeatureStatus.
   </summary>
-  <int value="0" label="Allowed"/>
-  <int value="1" label="Blocklisted"/>
-  <int value="2" label="User-disabled"/>
+  <int value="0" label="Allowed">The feature is enabled.</int>
+  <int value="1" label="Blocklisted">
+    The feature is disabled by the GPU blocklist.
+  </int>
+  <int value="2" label="Disabled">
+    The feature is disabled, e.g. via a command line flag or a disabled
+    base::Feature.
+  </int>
+  <int value="3" label="Software">
+    The feature is only available with software rendering.
+  </int>
+  <int value="4" label="Undefined">
+    The feature status is not determined yet.
+  </int>
 </enum>
+
+<!-- LINT.ThenChange(//gpu/config/gpu_feature_info.h:GpuFeatureStatus) -->
 
 <enum name="GpuDriverBugWorkaroundEntry">
 <!-- Generated from gpu/config/gpu_driver_bug_list.json.
@@ -1131,12 +1149,6 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
 
 <!-- LINT.ThenChange(//gpu/command_buffer/service/graphite_shared_context.cc:InsertRecordingStatusUma) -->
 
-<enum name="HasDiscreteGpu">
-  <int value="0" label="No"/>
-  <int value="1" label="Yes"/>
-  <int value="2" label="Unknown"/>
-</enum>
-
 <enum name="IntelGpuGeneration">
   <int value="0" label="Not Intel"/>
   <int value="1" label="Unknown Intel"/>
@@ -1204,14 +1216,6 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="64830" label="0xfd3e, Intel Wildcatlake"/>
 </enum>
 
-<enum name="MaximumGLESVersion">
-  <summary>The maximum GLES version supported.</summary>
-  <int value="0" label="GLES2.0"/>
-  <int value="1" label="GLES3.0"/>
-  <int value="2" label="GLES3.1"/>
-  <int value="3" label="GLES3.2"/>
-</enum>
-
 <enum name="MetalFamilyMac">
   <int value="0" label="Mac1"/>
   <int value="1" label="Mac2"/>
@@ -1222,44 +1226,6 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="1" label="Tier0_NoSupport"/>
   <int value="2" label="Tier1_R32Formats"/>
   <int value="3" label="Tier2_AdditionalFormats"/>
-</enum>
-
-<enum name="NvidiaDeviceId">
-  <int value="1600" label="0x0640, GeForce 9500 GT"/>
-  <int value="2601" label="0x0A29, GeForce GT 330M"/>
-  <int value="4053" label="0x0FD5, GeForce GT 650M Mac Edition"/>
-  <int value="4056" label="0x0FD8, GeForce GT 640M Mac Edition"/>
-  <int value="4073" label="0x0FE9, GeForce GT 750M Mac Edition"/>
-  <int value="4074" label="0x0FEA, GeForce GT 755M Mac Edition"/>
-  <int value="4416"
-      label="0x1140, GeForce 610M/710M/810M/820M / GT 620M/625M/630M/720M"/>
-  <int value="4509" label="0x119D, GeForce GTX 775M Mac Edition"/>
-  <int value="4510" label="0x119E, GeForce GTX 780M Mac Edition"/>
-  <int value="4514" label="0x11A2, GeForce GTX 675MX Mac Edition"/>
-  <int value="4515" label="0x11A3, GeForce GTX 680MX"/>
-  <int value="4761" label="0x1299, GeForce 920M"/>
-  <int value="4929" label="0x1341, GeForce 840M"/>
-  <int value="4935" label="0x1347, GeForce 940M"/>
-  <int value="4941" label="0x134D, GeForce 940MX"/>
-  <int value="4943" label="0x134F, GeForce 920MX"/>
-  <int value="5018" label="0x139A, GeForce GTX 950M"/>
-  <int value="5019" label="0x139B, GeForce GTX 960M"/>
-  <int value="5965" label="0x174D, GeForce MX130"/>
-  <int value="5966" label="0x174E, GeForce MX110"/>
-  <int value="7171" label="0x1C03, GeForce GTX 1060 6GB"/>
-  <int value="7200" label="0x1C20, GeForce GTX 1060 Mobile"/>
-  <int value="7298" label="0x1C82, GeForce GTX 1050 Ti"/>
-  <int value="7308" label="0x1C8C, GeForce GTX 1050 Ti Mobile"/>
-  <int value="7309" label="0x1C8D, GeForce GTX 1050 Mobile"/>
-  <int value="7440" label="0x1D10, GeForce MX150"/>
-  <int value="7441" label="0x1D11, GeForce MX230"/>
-  <int value="7443" label="0x1D13, GeForce MX250"/>
-  <int value="7825" label="0x1E91, GeForce RTX 2070 SUPER Mobile / Max-Q"/>
-  <int value="7957" label="0x1F15, GeForce RTX 2060 Mobile"/>
-  <int value="8081" label="0x1F91, GeForce GTX 1650 Mobile / Max-Q"/>
-  <int value="8085" label="0x1F95, GeForce GTX 1650 Ti Mobile"/>
-  <int value="8089" label="0x1F99, GeForce ?"/>
-  <int value="8593" label="0x2191, GeForce GTX 1660 Ti Mobile"/>
 </enum>
 
 <enum name="OverlayStrategies">
@@ -1391,6 +1357,7 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="6" label="Vaapi"/>
   <int value="7" label="WebNNTensor"/>
   <int value="8" label="Vulkan"/>
+  <int value="9" label="External"/>
 </enum>
 
 <!-- LINT.ThenChange(//gpu/command_buffer/service/shared_image/compound_image_backing.h:SharedImageAccessStream) -->
@@ -1403,10 +1370,10 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="3" label="EGLImageBacking"/>
   <int value="4" label="AHardwareBufferImageBacking"/>
   <int value="5" label="AngleVulkanImageBacking"/>
-  <int value="6" label="GLImageBacking"/>
+  <int value="6" label="(Obsolete) GLImageBacking. Removed in 2023/07."/>
   <int value="7" label="GLTextureImageBacking"/>
   <int value="8" label="OzoneImageBacking"/>
-  <int value="9" label="RawDrawImageBacking"/>
+  <int value="9" label="(Obsolete) RawDrawImageBacking. Removed in 2026/10."/>
   <int value="10" label="SharedMemoryImageBacking"/>
   <int value="11" label="VideoImageBacking"/>
   <int value="12" label="WrappedSkImageBacking"/>
@@ -1416,6 +1383,7 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="16" label="DCompSurfaceImageBacking"/>
   <int value="17" label="DXGISwapChainImageBacking"/>
   <int value="18" label="WrappedGraphiteTextureBacking"/>
+  <int value="19" label="DawnImageBacking"/>
 </enum>
 
 <enum name="SharedImageFormatUMA">
@@ -1460,6 +1428,8 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="35" label="YUV422P16"/>
   <int value="36" label="YUV444P16"/>
   <int value="37" label="Other"/>
+  <int value="38" label="Y410"/>
+  <int value="39" label="Y210"/>
 </enum>
 
 <!-- LINT.IfChange(SkiaBackendType) -->
@@ -1497,12 +1467,32 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="3" label="Occluding and Non-Occluding Damages"/>
 </enum>
 
+<!-- LINT.IfChange(WebGPUReachTier) -->
+
+<enum name="WebGPUReachTier">
+  <int value="0" label="Core Hardware Supported"/>
+  <int value="1" label="Core Disabled By Policy"/>
+  <int value="2" label="Linux Vulkan Interop Available"/>
+  <int value="3" label="Compat Hardware Supported"/>
+  <int value="4" label="Compat Disabled By Policy"/>
+  <int value="5" label="OpenGLES Compat Available"/>
+  <int value="6" label="D3D11 Hardware Available"/>
+  <int value="7" label="Hardware Missing External Texture Support"/>
+  <int value="8" label="Hardware Blocklisted"/>
+  <int value="9" label="Software WARP Available"/>
+  <int value="10" label="None"/>
+</enum>
+
+<!-- LINT.ThenChange(//gpu/config/gpu_info_collector.cc:WebGPUReachTier) -->
+
 <enum name="WebGPURequestAdapterStatus">
   <int value="1" label="Success"/>
   <int value="2" label="CallbackCancelled"/>
   <int value="3" label="Unavailable"/>
   <int value="4" label="Error"/>
 </enum>
+
+<!-- LINT.IfChange(WebGPUSupport) -->
 
 <enum name="WebGPUSupport">
   <int value="0" label="None"/>
@@ -1513,6 +1503,23 @@ Called by update_gpu_driver_bug_workaround_entries.py.-->
   <int value="5" label="Core Blocklisted, Compat Supported"/>
   <int value="6" label="Core Supported"/>
 </enum>
+
+<!-- LINT.ThenChange(//gpu/config/gpu_info_collector.cc:WebGPUSupport) -->
+
+<!-- LINT.IfChange(WindowServerEventPumpResult) -->
+
+<enum name="WindowServerEventPumpResult">
+  <summary>
+    The result of pumping WindowServer events for CADisplayLink on the
+    WindowServerEventPumpThread in the GPU process.
+  </summary>
+  <int value="0" label="Success"/>
+  <int value="1" label="Failed - Invalid connection"/>
+  <int value="2" label="Failed - Event port"/>
+  <int value="3" label="Failed - mach_msg"/>
+</enum>
+
+<!-- LINT.ThenChange(//ui/display/mac/ca_display_link_mac.h:WindowServerEventPumpResult) -->
 
 </enums>
 

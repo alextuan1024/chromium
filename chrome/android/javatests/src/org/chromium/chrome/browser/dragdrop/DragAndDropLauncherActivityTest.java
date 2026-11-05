@@ -43,11 +43,12 @@ import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedIns
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadataExtractor;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -82,6 +83,7 @@ public class DragAndDropLauncherActivityTest {
     private final CallbackHelper mTabAddedCallback = new CallbackHelper();
     private UserActionTester mActionTester;
     private WebPageStation mPage;
+    private TabModelSelectorTabModelObserver mTabModelObserver;
 
     @Before
     public void setUp() {
@@ -94,6 +96,12 @@ public class DragAndDropLauncherActivityTest {
     @After
     public void tearDown() {
         mActionTester.tearDown();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (mTabModelObserver != null) {
+                        mTabModelObserver.destroy();
+                    }
+                });
     }
 
     /**
@@ -425,15 +433,17 @@ public class DragAndDropLauncherActivityTest {
         TabModelSelector tabModelSelector = activity.getTabModelSelector();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    TabModelSelectorObserver tabModelSelectorObserver =
-                            new TabModelSelectorObserver() {
+                    mTabModelObserver =
+                            new TabModelSelectorTabModelObserver(tabModelSelector) {
                                 @Override
-                                public void onNewTabCreated(
-                                        Tab tab, @TabCreationState int creationState) {
+                                public void didAddTab(
+                                        Tab tab,
+                                        @TabLaunchType int type,
+                                        @TabCreationState int creationState,
+                                        boolean markedForSelection) {
                                     mTabAddedCallback.notifyCalled();
                                 }
                             };
-                    tabModelSelector.addObserver(tabModelSelectorObserver);
                 });
     }
 
@@ -489,8 +499,7 @@ public class DragAndDropLauncherActivityTest {
                                             .getModel(false),
                                     draggedTabGroup,
                                     sourceWindowId,
-                                    draggedTabGroup.get(0).getId(),
-                                    /* isGroupShared= */ false);
+                                    draggedTabGroup.get(0).getId());
                     return DragAndDropLauncherActivity.buildTabOrGroupIntent(
                             createTabGroupDropData(
                                     tabGroupMetadata, /* allowDragToCreateNewInstance= */ true),

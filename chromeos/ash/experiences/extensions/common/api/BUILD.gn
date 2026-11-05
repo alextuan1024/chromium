@@ -38,6 +38,8 @@ generated_json_strings("generated_api_json_strings") {
   bundle_name = "ChromeOS"
   schema_include_rules = chromeos_extensions_api_schema_include_rules
 
+  sources += [ "file_browser_handler.json" ]
+
   root_namespace = chromeos_extensions_api_root_namespace
   deps = [ "//extensions/common/api" ]
   inputs = extensions_api_schema_files + extensions_types_only_schema_files
@@ -60,7 +62,7 @@ generated_types("generated_api_types") {
 
 json_features("api_features") {
   feature_type = "APIFeature"
-  method_name = "AddChromeOSAPIFeatures"
+  method_name = "GetChromeOSAPIFeatures"
   sources = [ "_api_features.json" ]
   inputs = [ "_api_features.override.json" ]
   visibility = [ ":extensions_features" ]
@@ -68,7 +70,7 @@ json_features("api_features") {
 
 json_features("permission_features") {
   feature_type = "PermissionFeature"
-  method_name = "AddChromeOSPermissionFeatures"
+  method_name = "GetChromeOSPermissionFeatures"
   sources = [ "_permission_features.json" ]
   inputs = [ "_permission_features.override.json" ]
   visibility = [ ":extensions_features" ]
@@ -76,7 +78,7 @@ json_features("permission_features") {
 
 json_features("manifest_features") {
   feature_type = "ManifestFeature"
-  method_name = "AddChromeOSManifestFeatures"
+  method_name = "GetChromeOSManifestFeatures"
   sources = [ "_manifest_features.json" ]
   inputs = [ "_manifest_features.override.json" ]
   visibility = [ ":extensions_features" ]

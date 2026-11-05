@@ -5,11 +5,13 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_SHAPING_TEXT_SPACING_TRIM_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_SHAPING_TEXT_SPACING_TRIM_H_
 
+#include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
+
 namespace blink {
 
 // Values for the `text-spacing-trim` property.
 // https://drafts.csswg.org/css-text-4/#text-spacing-trim-property
-enum class TextSpacingTrim {
+enum class TextSpacingTrim : uint32_t {
   kNormal,
   kSpaceAll,
   kSpaceFirst,
@@ -18,7 +20,7 @@ enum class TextSpacingTrim {
   kInitial = kNormal,
 };
 
-inline constexpr unsigned kTextSpacingTrimBitCount = 2;
+inline constexpr wtf_size_t kTextSpacingTrimBitCount = 2;
 
 inline bool ShouldTrimAdjacent(TextSpacingTrim value) {
   return value != TextSpacingTrim::kSpaceAll;

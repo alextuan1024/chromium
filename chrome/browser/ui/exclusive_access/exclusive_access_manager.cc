@@ -108,15 +108,12 @@ ExclusiveAccessManager::GetExclusiveAccessExitBubbleType() const {
       return EXCLUSIVE_ACCESS_BUBBLE_TYPE_FULLSCREEN_EXIT_INSTRUCTION;
     }
 
-    if (pointer_lock_controller_.IsPointerLockedSilently()) {
-      return EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE;
-    }
-
     if (keyboard_lock_controller_.RequiresPressAndHoldEscToExit()) {
       return EXCLUSIVE_ACCESS_BUBBLE_TYPE_KEYBOARD_LOCK_EXIT_INSTRUCTION;
     }
 
-    if (pointer_lock_controller_.IsPointerLocked()) {
+    if (pointer_lock_controller_.IsPointerLocked() &&
+        !pointer_lock_controller_.IsPointerLockedSilently()) {
       return EXCLUSIVE_ACCESS_BUBBLE_TYPE_FULLSCREEN_POINTERLOCK_EXIT_INSTRUCTION;
     }
 
@@ -251,6 +248,9 @@ bool ExclusiveAccessManager::HandleUserKeyEvent(
     }
   }
 
+  // Leaving fullscreen also drops the pointer lock, so check the pointer lock
+  // before any controller sees the Esc.
+  const bool was_pointer_locked = pointer_lock_controller_.IsPointerLocked();
   bool handled = false;
   for (auto controller : exclusive_access_controllers_) {
     if (controller->HandleUserPressedEscape()) {
@@ -259,6 +259,9 @@ bool ExclusiveAccessManager::HandleUserKeyEvent(
     if (!weak_ptr) {
       return handled;
     }
+  }
+  if (was_pointer_locked) {
+    pointer_lock_controller_.StartUserEscapeCooldown();
   }
   return handled;
 }
@@ -279,10 +282,14 @@ void ExclusiveAccessManager::ExitExclusiveAccess() {
 
 void ExclusiveAccessManager::HandleUserHeldEscape() {
   auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
+  const bool was_pointer_locked = pointer_lock_controller_.IsPointerLocked();
   for (auto controller : exclusive_access_controllers_) {
     controller->HandleUserHeldEscape();
     if (!weak_ptr) {
       return;
     }
+  }
+  if (was_pointer_locked) {
+    pointer_lock_controller_.StartUserEscapeCooldown();
   }
 }

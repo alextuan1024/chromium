@@ -77,6 +77,7 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
 
   static override get properties() {
     return {
+      // <if expr="not is_chromeos">
       /**
        * This flag is used to conditionally show a set of new sign-in UIs to the
        * profiles that have been migrated to be consistent with the web
@@ -95,7 +96,6 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
        */
       isDasherlessProfile_: {type: Boolean},
 
-      // <if expr="not is_chromeos">
       /**
        * Stored accounts to the system, supplied by SyncBrowserProxy.
        */
@@ -132,8 +132,6 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
       primaryAccountEmail_: {type: String},
       primaryAccountIconUrl_: {type: String},
 
-      replaceSyncPromosWithSignInPromos_: {type: Boolean},
-
       // <if expr="not is_chromeos">
       shouldShowGoogleAccount_: {type: Boolean},
       showImportDataDialog_: {type: Boolean},
@@ -142,20 +140,20 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
     };
   }
 
+  // <if expr="not is_chromeos">
   protected accessor signinAllowed_: boolean =
       loadTimeData.getBoolean('signinAllowed');
   protected accessor isDasherlessProfile_: boolean =
       loadTimeData.getBoolean('isDasherlessProfile');
+  // </if>
   accessor syncStatus: SyncStatus|null = null;
-  protected accessor authToken_: string = '';
+  private accessor authToken_: string = '';
   protected accessor profileIconUrl_: string = '';
   protected accessor isProfileActionable_: boolean =
       !isChromeOS || loadTimeData.getBoolean('isAccountManagerEnabled');
   protected accessor profileName_: string = '';
-  protected accessor replaceSyncPromosWithSignInPromos_: boolean =
-      loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos');
   protected accessor primaryAccountName_: string = '';
-  protected accessor primaryAccountEmail_: string = '';
+  private accessor primaryAccountEmail_: string = '';
   protected accessor primaryAccountIconUrl_: string = '';
 
   // <if expr="not is_chromeos">
@@ -336,7 +334,7 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
   }
 
   protected shouldLinkToAccountSettingsPage_(): boolean {
-    return this.replaceSyncPromosWithSignInPromos_ && !!this.syncStatus &&
+    return !!this.syncStatus &&
         this.syncStatus.signedInState === SignedInState.SIGNED_IN;
   }
 
@@ -376,7 +374,6 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
     this.primaryAccountEmail_ = accounts[0].email;
     this.primaryAccountIconUrl_ = accounts[0].avatarImage!;
   }
-  // </if>
 
   /**
    * Open URL for managing your Google Account.
@@ -386,6 +383,7 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
         loadTimeData.getString('googleAccountUrl'));
     chrome.metricsPrivate.recordUserAction('ManageGoogleAccount_Clicked');
   }
+  // </if>
 
   /**
    * @return A CSS image-set for multiple scale factors.
@@ -410,12 +408,6 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
     }
     // </if>
     return '';
-  }
-
-  protected shouldHideSyncSetupLinkRow_() {
-    return this.replaceSyncPromosWithSignInPromos_ &&
-        (!this.syncStatus ||
-         this.syncStatus.signedInState !== SignedInState.SYNCING);
   }
 
   protected getAccountRowSubtitle_(): string {
@@ -466,6 +458,9 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
       'manageProfile',
       // </if>
     ];
+    if (loadTimeData.getBoolean('enableDeviceTabVisibilitySettings')) {
+      ids.push('deviceTabVisibility');
+    }
     assert(ids.includes(childViewId));
 
     let triggerId: string|null = null;
@@ -475,11 +470,13 @@ export class SettingsPeoplePageElement extends SettingsPeoplePageElementBase {
         triggerId = 'sync-setup';
         break;
       case 'account':
-        assert(loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos'));
+        triggerId = 'account-subpage-row';
+        break;
+      case 'deviceTabVisibility':
+        assert(loadTimeData.getBoolean('enableDeviceTabVisibilitySettings'));
         triggerId = 'account-subpage-row';
         break;
       case 'googleServices':
-        assert(loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos'));
         triggerId = 'google-services';
         break;
       // <if expr="not is_chromeos">

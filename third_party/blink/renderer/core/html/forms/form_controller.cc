@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
@@ -312,9 +313,9 @@ String FormSignature(const HTMLFormElement& form) {
 const AtomicString& FormKeyGenerator::FormKey(const ListedElement& control) {
   HTMLFormElement* form = OwnerFormForState(control);
   if (!form) {
-    DEFINE_STATIC_LOCAL(const AtomicString, form_key_for_no_owner,
-                        ("No owner"));
-    return form_key_for_no_owner;
+    static const base::NoDestructor<AtomicString> form_key_for_no_owner(
+        AtomicString::FromLiteral<"No owner">());
+    return *form_key_for_no_owner;
   }
   FormToKeyMap::const_iterator it = form_to_key_map_.find(form);
   if (it != form_to_key_map_.end())
@@ -373,9 +374,8 @@ static String FormStateSignature() {
   // In the legacy version of serialized state, the first item was a name
   // attribute value of a form control. The following string literal should
   // contain some characters which are rarely used for name attribute values.
-  DEFINE_STATIC_LOCAL(String, signature,
-                      ("\n\r?% Blink serialized form state version 10 \n\r=&"));
-  return signature;
+  return String::FromLiteral<
+      "\n\r?% Blink serialized form state version 10 \n\r=&">();
 }
 
 Vector<String> DocumentState::ToStateVector() {

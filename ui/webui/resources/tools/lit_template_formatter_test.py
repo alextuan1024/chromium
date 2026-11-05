@@ -14,7 +14,7 @@ _SRC_PATH = os.path.normpath(os.path.join(_HERE_DIR, '..', '..', '..', '..'))
 _NODE_PATH = os.path.join(_SRC_PATH, 'third_party', 'node')
 sys.path.append(_NODE_PATH)
 
-import node
+import node  # noqa: E402
 
 
 def _check_clang_format_works():
@@ -169,6 +169,17 @@ class LitTemplateFormatterTest(unittest.TestCase):
       "test_line_length_wrapping.html.ts",
     )
 
+  def testEscapedCharacters(self):
+    self._run_test("test_escaped_characters.html.ts")
+
+  def testHtmlEntities(self):
+    self._run_test("test_html_entities.html.ts")
+
+  def testRcdataElements(self):
+    self._run_test(
+      "test_rcdata_elements.html.ts", "test_rcdata_elements.html.ts"
+    )
+
   def testDryRunModeFormatted(self):
     filename = "test_basic_expressions.html.ts"
     expected_path = os.path.join(
@@ -269,6 +280,48 @@ class LitTemplateFormatterTest(unittest.TestCase):
     for dest_path, expected in zip(dest_paths, expected_contents):
       actual = self._read_file(dest_path)
       self.assertMultiLineEqual(expected, actual)
+
+  def testConcurrentDryRun(self):
+    from concurrent import futures
+
+    filename = "test_basic_expressions.html.ts"
+    expected_path = os.path.join(
+      _HERE_DIR, "tests", "lit_template_formatter", "expected", filename
+    )
+    dest_path = os.path.join(self._out_dir, filename)
+    shutil.copy(expected_path, dest_path)
+
+    with futures.ThreadPoolExecutor(max_workers=4) as executor:
+      runs = [
+        executor.submit(self._run_formatter, ["--dry-run", dest_path])
+        for _ in range(4)
+      ]
+      for run in runs:
+        run.result()
+    self.assertEqual([filename], os.listdir(self._out_dir))
+
+  def testConcurrentDiff(self):
+    from concurrent import futures
+
+    filename = "test_basic_expressions.html.ts"
+    src_path = os.path.join(
+      _HERE_DIR, "tests", "lit_template_formatter", filename
+    )
+    dest_path = os.path.join(self._out_dir, filename)
+    shutil.copy(src_path, dest_path)
+
+    with futures.ThreadPoolExecutor(max_workers=4) as executor:
+      runs = [
+        executor.submit(self._run_formatter, ["--diff", dest_path])
+        for _ in range(4)
+      ]
+      for run in runs:
+        stdout = run.result()
+        self.assertIn("--- ", stdout)
+        self.assertIn("+++ ", stdout)
+        self.assertIn("-    <h1>${this.title}</h1>", stdout)
+        self.assertIn("+  <h1>${this.title}</h1>", stdout)
+    self.assertEqual([filename], os.listdir(self._out_dir))
 
 
 if __name__ == "__main__":

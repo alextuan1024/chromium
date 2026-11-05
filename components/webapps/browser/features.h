@@ -26,7 +26,10 @@ inline constexpr int kMinimumFaviconSize = 48;
 BASE_DECLARE_FEATURE(kWebApkInstallFailureNotification);
 BASE_DECLARE_FEATURE(kAndroidAutoMintedTWA);
 BASE_DECLARE_FEATURE(kAlwaysShowInstallDisambiguationDialog);
+BASE_DECLARE_FEATURE(kAndroidInstallAnyPageAsDiyAppStopgap);
 #endif  // BUILDFLAG(IS_ANDROID)
+
+BASE_DECLARE_FEATURE(kInstallableRootFaviconFallback);
 
 // ML Installability promotion flags and all the feature params.
 BASE_DECLARE_FEATURE(kWebAppsEnableMLModelForPromotion);
@@ -35,6 +38,8 @@ extern const base::FeatureParam<double> kWebAppsMLModelUserDeclineReportProb;
 extern const base::FeatureParam<int> kMaxDaysForMLPromotionGuardrailStorage;
 
 BASE_DECLARE_FEATURE(kCheckWebAppExistenceAsync);
+
+BASE_DECLARE_FEATURE(kWebAppLaunchHandlerUserActivation);
 
 }  // namespace features
 }  // namespace webapps

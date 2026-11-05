@@ -109,8 +109,6 @@ constexpr PrefsForManagedContentSettingsMapEntry
          ContentSettingsType::FILE_SYSTEM_WRITE_GUARD, CONTENT_SETTING_BLOCK},
         {prefs::kManagedLegacyCookieAccessAllowedForDomains,
          ContentSettingsType::LEGACY_COOKIE_ACCESS, CONTENT_SETTING_ALLOW},
-        {prefs::kManagedDefaultLegacyCookieScope,
-         ContentSettingsType::LEGACY_COOKIE_SCOPE, CONTENT_SETTING_ALLOW},
         {prefs::kManagedLegacyCookieScopeForDomains,
          ContentSettingsType::LEGACY_COOKIE_SCOPE, CONTENT_SETTING_ALLOW},
         {prefs::kManagedSerialAskForUrls, ContentSettingsType::SERIAL_GUARD,
@@ -149,12 +147,6 @@ constexpr PrefsForManagedContentSettingsMapEntry
          ContentSettingsType::DIRECT_SOCKETS, CONTENT_SETTING_ALLOW},
         {prefs::kManagedDirectSocketsBlockedForUrls,
          ContentSettingsType::DIRECT_SOCKETS, CONTENT_SETTING_BLOCK},
-        {prefs::kManagedDirectSocketsPrivateNetworkAccessAllowedForUrls,
-         ContentSettingsType::DIRECT_SOCKETS_PRIVATE_NETWORK_ACCESS,
-         CONTENT_SETTING_ALLOW},
-        {prefs::kManagedDirectSocketsPrivateNetworkAccessBlockedForUrls,
-         ContentSettingsType::DIRECT_SOCKETS_PRIVATE_NETWORK_ACCESS,
-         CONTENT_SETTING_BLOCK},
         {prefs::kManagedSubAppsWithoutPromptsAllowedForOrigins,
          ContentSettingsType::SUB_APPS_WITHOUT_PROMPTS, CONTENT_SETTING_ALLOW},
         {prefs::kManagedSubAppsWithoutPromptsBlockedForOrigins,
@@ -261,8 +253,6 @@ constexpr const char* kManagedPrefs[] = {
     prefs::kManagedWebPrintingBlockedForUrls,
     prefs::kManagedDirectSocketsAllowedForUrls,
     prefs::kManagedDirectSocketsBlockedForUrls,
-    prefs::kManagedDirectSocketsPrivateNetworkAccessAllowedForUrls,
-    prefs::kManagedDirectSocketsPrivateNetworkAccessBlockedForUrls,
     prefs::kManagedSubAppsWithoutPromptsAllowedForOrigins,
     prefs::kManagedSubAppsWithoutPromptsBlockedForOrigins,
 #if BUILDFLAG(IS_CHROMEOS)
@@ -309,7 +299,6 @@ constexpr const char* kManagedDefaultPrefs[] = {
     prefs::kManagedDefaultWebPrintingSetting,
     prefs::kManagedDefaultDirectSocketsSetting,
     prefs::kManagedDefaultSubAppsWithoutPromptsSetting,
-    prefs::kManagedDefaultDirectSocketsPrivateNetworkAccessSetting,
     prefs::kManagedDefaultControlledFrameSetting,
 #if BUILDFLAG(IS_CHROMEOS)
     prefs::kManagedDefaultSmartCardConnectSetting,
@@ -428,8 +417,6 @@ const PolicyProvider::PrefsForManagedDefaultMapEntry
          prefs::kManagedDefaultWebPrintingSetting},
         {ContentSettingsType::DIRECT_SOCKETS,
          prefs::kManagedDefaultDirectSocketsSetting},
-        {ContentSettingsType::DIRECT_SOCKETS_PRIVATE_NETWORK_ACCESS,
-         prefs::kManagedDefaultDirectSocketsPrivateNetworkAccessSetting},
         {ContentSettingsType::CONTROLLED_FRAME,
          prefs::kManagedDefaultControlledFrameSetting},
         {ContentSettingsType::SUB_APPS_WITHOUT_PROMPTS,
@@ -583,22 +570,10 @@ void PolicyProvider::GetContentSettingsFromPreferences() {
   }
 }
 
-void PolicyProvider::GetAutoSelectCertificateSettingsFromPreferences() {
-  constexpr const char* pref_name = prefs::kManagedAutoSelectCertificateForUrls;
-  if (!prefs_->HasPrefPath(pref_name)) {
-    VLOG(2) << "Skipping unset preference: " << pref_name;
-    return;
-  }
-
-  const PrefService::Preference* pref = prefs_->FindPreference(pref_name);
-  DCHECK(pref);
-  DCHECK(!pref->HasUserSetting());
-  DCHECK(!pref->HasExtensionSetting());
-
-  if (!pref->GetValue()->is_list()) {
-    NOTREACHED();
-  }
-
+// static
+void PolicyProvider::PopulateAutoSelectCertificateSettings(
+    const base::ListValue& pref_list,
+    OriginValueMap& value_map) {
   // Parse the list of pattern filter strings. A pattern filter string has
   // the following JSON format:
   //
@@ -617,9 +592,9 @@ void PolicyProvider::GetAutoSelectCertificateSettingsFromPreferences() {
   //   }
   // }
   std::unordered_map<std::string, base::DictValue> filters_map;
-  for (const auto& pattern_filter_str : pref->GetValue()->GetList()) {
+  for (const auto& pattern_filter_str : pref_list) {
     if (!pattern_filter_str.is_string()) {
-      NOTREACHED();
+      continue;
     }
 
     std::optional<base::DictValue> pattern_filter = base::JSONReader::ReadDict(
@@ -650,10 +625,7 @@ void PolicyProvider::GetAutoSelectCertificateSettingsFromPreferences() {
     filter_list->Append(filter->Clone());
   }
 
-  for (const auto& it : filters_map) {
-    const std::string& pattern_str = it.first;
-    const base::DictValue& setting = it.second;
-
+  for (auto& [pattern_str, setting] : filters_map) {
     ContentSettingsPattern pattern =
         ContentSettingsPattern::FromString(pattern_str);
     // Ignore invalid patterns.
@@ -663,10 +635,30 @@ void PolicyProvider::GetAutoSelectCertificateSettingsFromPreferences() {
       continue;
     }
 
-    value_map_.SetValue(pattern, ContentSettingsPattern::Wildcard(),
-                        ContentSettingsType::AUTO_SELECT_CERTIFICATE,
-                        base::Value(setting.Clone()), {});
+    value_map.SetValue(pattern, ContentSettingsPattern::Wildcard(),
+                       ContentSettingsType::AUTO_SELECT_CERTIFICATE,
+                       base::Value(std::move(setting)), {});
   }
+}
+
+void PolicyProvider::GetAutoSelectCertificateSettingsFromPreferences() {
+  constexpr const char* pref_name = prefs::kManagedAutoSelectCertificateForUrls;
+  if (!prefs_->HasPrefPath(pref_name)) {
+    VLOG(2) << "Skipping unset preference: " << pref_name;
+    return;
+  }
+
+  const PrefService::Preference* pref = prefs_->FindPreference(pref_name);
+  DCHECK(pref);
+  DCHECK(!pref->HasUserSetting());
+  DCHECK(!pref->HasExtensionSetting());
+
+  if (!pref->GetValue()->is_list()) {
+    NOTREACHED();
+  }
+
+  PopulateAutoSelectCertificateSettings(pref->GetValue()->GetList(),
+                                        value_map_);
 }
 
 void PolicyProvider::ReadManagedDefaultSettings() {

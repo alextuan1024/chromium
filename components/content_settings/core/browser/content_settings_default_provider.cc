@@ -77,6 +77,10 @@ constexpr char kObsoleteFederatedIdentityDefaultPref[] =
 constexpr char kObsoletePrivateNetworkGuardDefaultPref[] =
     "profile.default_content_setting_values.private_network_guard";
 
+// Deprecated 10/2026. Remove after 10/2027.
+constexpr char kObsoleteTopLevelStorageAccessDefaultPref[] =
+    "profile.default_content_setting_values.top_level_storage_access";
+
 constexpr char kGeolocationMigrateDefaultValue[] =
     "profile.default_content_setting_values.migrate_geolocation";
 
@@ -98,6 +102,9 @@ constexpr char kLocalNetworkAccessMigrateDefaultValuePref[] =
     "profile.default_content_setting_values.has_migrated_local_network_access";
 constexpr char kObsoleteTrackingProtectionDefaultPref[] =
     "profile.default_content_setting_values.tracking_protection";
+// Deprecated 11/2026. Remove after 11/2027.
+constexpr char kObsoleteReducedAcceptLanguageDefaultPref[] =
+    "profile.default_content_setting_values.reduced_accept_language";
 #endif  // !BUILDFLAG(IS_IOS)
 
 base::Value GetDefaultValue(const WebsiteSettingsInfo* info) {
@@ -154,6 +161,7 @@ void DefaultProvider::RegisterProfilePrefs(
   registry->RegisterIntegerPref(kObsoleteTopLevelTpcdTrialDefaultPref, 0);
   registry->RegisterIntegerPref(kObsoleteTopLevelTpcdOriginTrialDefaultPref, 0);
   registry->RegisterIntegerPref(kObsoleteTrackingProtectionDefaultPref, 0);
+  registry->RegisterIntegerPref(kObsoleteReducedAcceptLanguageDefaultPref, 0);
 #if !BUILDFLAG(IS_ANDROID)
   registry->RegisterIntegerPref(
       kObsoleteMouseLockDefaultPref, 0,
@@ -168,6 +176,7 @@ void DefaultProvider::RegisterProfilePrefs(
 #endif  // !BUILDFLAG(IS_IOS)
   registry->RegisterIntegerPref(kObsoleteFederatedIdentityDefaultPref, 0);
   registry->RegisterIntegerPref(kObsoletePrivateNetworkGuardDefaultPref, 0);
+  registry->RegisterIntegerPref(kObsoleteTopLevelStorageAccessDefaultPref, 0);
 
 #if !BUILDFLAG(IS_IOS)
   // TODO(https://crbug.com/367181093): clean this up.
@@ -412,6 +421,7 @@ void DefaultProvider::DiscardOrMigrateObsoletePreferences() {
   prefs_->ClearPref(kObsoleteTopLevelTpcdTrialDefaultPref);
   prefs_->ClearPref(kObsoleteTopLevelTpcdOriginTrialDefaultPref);
   prefs_->ClearPref(kObsoleteTrackingProtectionDefaultPref);
+  prefs_->ClearPref(kObsoleteReducedAcceptLanguageDefaultPref);
 #if !BUILDFLAG(IS_ANDROID)
   prefs_->ClearPref(kObsoleteMouseLockDefaultPref);
   prefs_->ClearPref(kObsoletePluginsDefaultPref);
@@ -424,6 +434,7 @@ void DefaultProvider::DiscardOrMigrateObsoletePreferences() {
 #endif  // !BUILDFLAG(IS_IOS)
   prefs_->ClearPref(kObsoleteFederatedIdentityDefaultPref);
   prefs_->ClearPref(kObsoletePrivateNetworkGuardDefaultPref);
+  prefs_->ClearPref(kObsoleteTopLevelStorageAccessDefaultPref);
 
 #if !BUILDFLAG(IS_IOS)
   // TODO(https://crbug.com/367181093): clean this up.
@@ -607,11 +618,6 @@ void DefaultProvider::RecordHistogramMetrics() {
           prefs_->GetInteger(GetPrefName(ContentSettingsType::IDLE_DETECTION))),
       CONTENT_SETTING_NUM_SETTINGS);
   base::UmaHistogramEnumeration(
-      "ContentSettings.RegularProfile.DefaultStorageAccessSetting",
-      IntToContentSetting(
-          prefs_->GetInteger(GetPrefName(ContentSettingsType::STORAGE_ACCESS))),
-      CONTENT_SETTING_NUM_SETTINGS);
-  base::UmaHistogramEnumeration(
       "ContentSettings.RegularProfile.DefaultAutoVerifySetting",
       IntToContentSetting(
           prefs_->GetInteger(GetPrefName(ContentSettingsType::ANTI_ABUSE))),
@@ -626,15 +632,6 @@ void DefaultProvider::RecordHistogramMetrics() {
       IntToContentSetting(
           prefs_->GetInteger(GetPrefName(ContentSettingsType::SENSORS))),
       CONTENT_SETTING_NUM_SETTINGS);
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-  base::UmaHistogramEnumeration(
-      "ContentSettings.RegularProfile.DefaultAutoDarkWebContentSetting",
-      IntToContentSetting(prefs_->GetInteger(
-          GetPrefName(ContentSettingsType::AUTO_DARK_WEB_CONTENT))),
-      CONTENT_SETTING_NUM_SETTINGS);
-
 #endif
 
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)

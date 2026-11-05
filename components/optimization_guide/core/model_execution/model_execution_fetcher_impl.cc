@@ -9,9 +9,11 @@
 
 #include "base/command_line.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
+#include "base/time/time.h"
 #include "base/types/expected.h"
 #include "components/optimization_guide/core/access_token_helper.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
 #include "components/optimization_guide/core/model_execution/remote_model_execution_common.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
@@ -20,6 +22,7 @@
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/variations/net/variations_http_headers.h"
 #include "google_apis/gaia/gaia_constants.h"
+#include "net/base/load_timing_info.h"
 #include "net/base/url_util.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
@@ -58,8 +61,9 @@ ModelExecutionFetcherImpl::ModelExecutionFetcherImpl(
 ModelExecutionFetcherImpl::~ModelExecutionFetcherImpl() {
   if (model_execution_callback_) {
     DCHECK(model_execution_feature_);
-    RecordRequestStatusHistogram(*model_execution_feature_,
-                                 FetcherRequestStatus::kRequestCanceled);
+    RecordRequestStatusHistogram(
+        *model_execution_feature_,
+        ModelExecutionFetcherRequestStatus::kRequestCanceled);
     std::move(model_execution_callback_)
         .Run(base::unexpected(
             OptimizationGuideModelExecutionError::FromModelExecutionError(
@@ -76,14 +80,14 @@ void ModelExecutionFetcherImpl::ExecuteModel(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (model_execution_callback_) {
-    RecordRequestStatusHistogram(feature, FetcherRequestStatus::kFetcherBusy);
+    RecordRequestStatusHistogram(
+        feature, ModelExecutionFetcherRequestStatus::kFetcherBusy);
     std::move(callback).Run(base::unexpected(
         OptimizationGuideModelExecutionError::FromModelExecutionError(
             ModelExecutionError::kGenericFailure)));
     return;
   }
 
-  fetch_start_time_ = base::TimeTicks::Now();
   model_execution_feature_ = feature;
   model_execution_callback_ = std::move(callback);
 
@@ -97,22 +101,30 @@ void ModelExecutionFetcherImpl::ExecuteModel(
       signin::OAuthConsumerId::kOptimizationGuideModelExecution,
       base::BindOnce(&ModelExecutionFetcherImpl::OnAccessTokenReceived,
                      weak_ptr_factory_.GetWeakPtr(), feature,
-                     serialized_request, timeout));
+                     serialized_request, timeout, base::TimeTicks::Now()));
 }
 
 void ModelExecutionFetcherImpl::OnAccessTokenReceived(
     ModelBasedCapabilityKey feature,
     const std::string& serialized_request,
     std::optional<base::TimeDelta> timeout,
+    base::TimeTicks access_token_request_start_time,
     const std::string& access_token) {
-  if (IsAccessTokenRequiredForFeature(feature) && access_token.empty()) {
-    RecordRequestStatusHistogram(*model_execution_feature_,
-                                 FetcherRequestStatus::kUserNotSignedIn);
-    std::move(model_execution_callback_)
-        .Run(base::unexpected(
-            OptimizationGuideModelExecutionError::FromModelExecutionError(
-                ModelExecutionError::kPermissionDenied)));
-    return;
+  if (IsAccessTokenRequiredForFeature(feature)) {
+    if (access_token.empty()) {
+      RecordRequestStatusHistogram(
+          *model_execution_feature_,
+          ModelExecutionFetcherRequestStatus::kUserNotSignedIn);
+      std::move(model_execution_callback_)
+          .Run(base::unexpected(
+              OptimizationGuideModelExecutionError::FromModelExecutionError(
+                  ModelExecutionError::kPermissionDenied)));
+      return;
+    }
+    base::UmaHistogramTimes(
+        base::StrCat({"OptimizationGuide.ModelExecution.AccessTokenLatency.",
+                      GetStringNameForModelExecutionFeature(feature)}),
+        base::TimeTicks::Now() - access_token_request_start_time);
   }
 
   auto resource_request = std::make_unique<network::ResourceRequest>();
@@ -130,6 +142,7 @@ void ModelExecutionFetcherImpl::OnAccessTokenReceived(
   }
 
   resource_request->method = "POST";
+  resource_request->enable_load_timing = true;
   resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   AppendHeadersIfNeeded(*resource_request);
 
@@ -160,6 +173,25 @@ void ModelExecutionFetcherImpl::OnURLLoadComplete(
         active_url_loader_->ResponseInfo()->headers->response_code();
   }
 
+  if (const network::mojom::URLResponseHead* const response_info =
+          active_url_loader_->ResponseInfo()) {
+    const net::LoadTimingInfo::ConnectTiming& connect_timing =
+        response_info->load_timing.connect_timing;
+    const base::TimeTicks start = !connect_timing.domain_lookup_start.is_null()
+                                      ? connect_timing.domain_lookup_start
+                                      : connect_timing.connect_start;
+    const base::TimeDelta connect_latency =
+        (!start.is_null() && !connect_timing.connect_end.is_null() &&
+         connect_timing.connect_end >= start)
+            ? (connect_timing.connect_end - start)
+            : base::TimeDelta();
+    base::UmaHistogramMediumTimes(
+        base::StrCat(
+            {"OptimizationGuide.ModelExecution.ConnectLatency.",
+             GetStringNameForModelExecutionFeature(*model_execution_feature_)}),
+        connect_latency);
+  }
+
   // Reset the active URL loader here since actions happening during response
   // handling may start a new fetch.
   active_url_loader_.reset();
@@ -175,8 +207,9 @@ void ModelExecutionFetcherImpl::OnURLLoadComplete(
   proto::ExecuteResponse execute_response;
 
   if (net_error != net::OK || response_code != net::HTTP_OK) {
-    RecordRequestStatusHistogram(*model_execution_feature_,
-                                 FetcherRequestStatus::kResponseError);
+    RecordRequestStatusHistogram(
+        *model_execution_feature_,
+        ModelExecutionFetcherRequestStatus::kResponseError);
     std::move(model_execution_callback_)
         .Run(base::unexpected(
             OptimizationGuideModelExecutionError::FromHttpStatusCode(
@@ -184,8 +217,9 @@ void ModelExecutionFetcherImpl::OnURLLoadComplete(
     return;
   }
   if (!response_body || !execute_response.ParseFromString(*response_body)) {
-    RecordRequestStatusHistogram(*model_execution_feature_,
-                                 FetcherRequestStatus::kResponseError);
+    RecordRequestStatusHistogram(
+        *model_execution_feature_,
+        ModelExecutionFetcherRequestStatus::kResponseError);
     std::move(model_execution_callback_)
         .Run(base::unexpected(
             OptimizationGuideModelExecutionError::FromModelExecutionError(
@@ -194,7 +228,7 @@ void ModelExecutionFetcherImpl::OnURLLoadComplete(
   }
 
   RecordRequestStatusHistogram(*model_execution_feature_,
-                               FetcherRequestStatus::kSuccess);
+                               ModelExecutionFetcherRequestStatus::kSuccess);
   // This should be the last call, since the callback could be deleting `this`.
   std::move(model_execution_callback_).Run(base::ok(execute_response));
 }

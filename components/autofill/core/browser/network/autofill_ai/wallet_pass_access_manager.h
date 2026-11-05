@@ -24,10 +24,13 @@ namespace autofill {
 // to issue UpsertPass and GetUnmaskedPass requests.
 class WalletPassAccessManager : public KeyedService {
  public:
+  using UserEligibility = wallet::WalletHttpClient::UserEligibility;
+
   // Information retrieved from a `GetDetailsForUpsertPass` request.
   struct GetDetailsForUpsertPassResponse {
     LegalMessageLines legal_message_lines;
-    std::string context_token;
+    std::string legal_message_token;
+    UserEligibility user_eligibility = UserEligibility::kUnspecified;
 
     friend bool operator==(const GetDetailsForUpsertPassResponse&,
                            const GetDetailsForUpsertPassResponse&) = default;
@@ -46,8 +49,8 @@ class WalletPassAccessManager : public KeyedService {
       base::OnceCallback<void(std::optional<EntityInstance>)>;
 
   // Callback for `GetDetailsForUpsertPass` requests. On success, it returns
-  // the response containing the legal disclosure message lines and context
-  // token. On failure, it returns a
+  // the response containing the legal disclosure message lines and legal
+  // message token. On failure, it returns a
   // `wallet::WalletHttpClient::WalletRequestError`.
   using GetDetailsForUpsertPassCallback = base::OnceCallback<void(
       base::expected<GetDetailsForUpsertPassResponse,
@@ -74,9 +77,39 @@ class WalletPassAccessManager : public KeyedService {
       const EntityInstance::EntityId& entity_id,
       GetUnmaskedEntityInstanceCallback callback) = 0;
 
+  // Pre-fetches the legal disclosure messages and legal message token for
+  // `entity_type` in the background (typically called when entering an
+  // add settings flow) and populates an internal cache so that a subsequent
+  // call to `GetDetailsForUpsertPass` resolves immediately. If a request is
+  // already in flight or cached, this is a no-op.
+  virtual void PreloadDetailsForUpsertPass(EntityType entity_type) = 0;
+
+  // Synchronously returns the details cached by a previous
+  // `PreloadDetailsForUpsertPass` call for `entity_type`, or `std::nullopt` if
+  // nothing is cached, e.g. because the preload is still in flight or failed.
+  // The returned value never depends on a network request, so it suits UI
+  // entry points that must not wait on the Wallet backend.
+  //
+  // Side effects on a cache hit:
+  // - The entry is removed from the cache, since the legal message token is
+  //   single-use.
+  // - A new `PreloadDetailsForUpsertPass` is started to refill the cache, so
+  //   a later flow also finds cached details.
+  virtual std::optional<GetDetailsForUpsertPassResponse>
+  ExtractPreloadedDetailsForUpsertPass(EntityType entity_type) = 0;
+
   // Issues a `GetDetailsForUpsertPass` request to the Wallet backend to fetch
-  // legal disclosure messages and a context token for audit logging prior to
-  // upserting a public non-readonly pass of type `entity_type`.
+  // legal disclosure messages and a legal message token for audit logging
+  // prior to upserting a public non-readonly pass of type `entity_type`.
+  //
+  // If cached details are available from a previous
+  // `PreloadDetailsForUpsertPass` call, the cached entry is consumed,
+  // `callback` is invoked immediately, and a new preload refills the cache.
+  //
+  // If no cached details are present, a network request is dispatched to the
+  // Wallet backend, and the resulting token is handed directly to `callback`
+  // without being retained in the cache. If a background preload is already in
+  // flight, this request runs concurrently to obtain its own dedicated token.
   virtual void GetDetailsForUpsertPass(
       EntityType entity_type,
       GetDetailsForUpsertPassCallback callback) = 0;

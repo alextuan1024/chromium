@@ -4,12 +4,17 @@
 
 import {sendWithPromise} from 'chrome://resources/js/cr.js';
 
+import {BookmarkPromoType} from './constants.js';
 import type {IncognitoAvailability} from './constants.js';
 
 // This is the data structure that is received from the browser.
-export interface BatchUploadPromoData {
+export interface PromoCardData {
+  promoType: BookmarkPromoType;
   canShow: boolean;
+  promoTitle: string;
   promoSubtitle: string;
+  actionButtonText: string;
+  promoAvatarUrl?: string;
 }
 
 export interface BrowserProxy {
@@ -19,12 +24,11 @@ export interface BrowserProxy {
   recordInHistogram(histogram: string, bucket: number, maxBucket: number): void;
   onSingleBookmarkUploadClicked(bookmarkId: string): void;
 
-  // Promo/BatchUpload functions
-  // TODO(crbug.com/411439975): Consider using it's own handler, with a mojo
-  // implementation.
-  getBatchUploadPromoInfo(): Promise<BatchUploadPromoData>;
-  onBatchUploadPromoClicked(): void;
-  onBatchUploadPromoDismissed(): void;
+  // Promo card functions
+  getPromoData(): Promise<PromoCardData>;
+  onPromoShown(): void;
+  onPromoClicked(): void;
+  onPromoDismissed(): void;
 }
 
 export class BrowserProxyImpl implements BrowserProxy {
@@ -37,7 +41,14 @@ export class BrowserProxyImpl implements BrowserProxy {
   }
 
   getCanUploadBookmarkToAccountStorage(id: string) {
+    // <if expr="enable_bookmarks_single_upload">
     return sendWithPromise<boolean>('getCanUploadBookmarkToAccountStorage', id);
+    // </if>
+    // <if expr="not enable_bookmarks_single_upload">
+    // Per-item account upload is only supported on non-Android platforms.
+    void id;
+    return Promise.resolve(false);
+    // </if>
   }
 
   recordInHistogram(histogram: string, bucket: number, maxBucket: number) {
@@ -49,16 +60,32 @@ export class BrowserProxyImpl implements BrowserProxy {
     chrome.send('onSingleBookmarkUploadClicked', [bookmarkId]);
   }
 
-  getBatchUploadPromoInfo() {
-    return sendWithPromise<BatchUploadPromoData>('getBatchUploadPromoInfo');
+  getPromoData(): Promise<PromoCardData> {
+    // <if expr="enable_bookmarks_promo">
+    return sendWithPromise<PromoCardData>('getPromoData');
+    // </if>
+    // <if expr="not enable_bookmarks_promo">
+    // TODO(b/587475184): Support <promo-card> promos on Android.
+    return Promise.resolve({
+      promoType: BookmarkPromoType.NONE,
+      canShow: false,
+      promoTitle: '',
+      promoSubtitle: '',
+      actionButtonText: '',
+    });
+    // </if>
   }
 
-  onBatchUploadPromoClicked(): void {
-    chrome.send('onBatchUploadPromoClicked');
+  onPromoShown(): void {
+    chrome.send('onPromoShown');
   }
 
-  onBatchUploadPromoDismissed(): void {
-    chrome.send('onBatchUploadPromoDismissed');
+  onPromoClicked(): void {
+    chrome.send('onPromoClicked');
+  }
+
+  onPromoDismissed(): void {
+    chrome.send('onPromoDismissed');
   }
 
   static getInstance(): BrowserProxy {

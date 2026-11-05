@@ -51,6 +51,7 @@
 #include "third_party/blink/renderer/core/workers/custom_event_message.h"
 #include "third_party/blink/renderer/core/workers/dedicated_worker_messaging_proxy.h"
 #include "third_party/blink/renderer/core/workers/global_scope_creation_params.h"
+#include "third_party/blink/renderer/core/workers/outside_settings_csp_violation_reporter.h"
 #include "third_party/blink/renderer/core/workers/worker_classic_script_loader.h"
 #include "third_party/blink/renderer/core/workers/worker_clients.h"
 #include "third_party/blink/renderer/core/workers/worker_global_scope.h"
@@ -283,11 +284,16 @@ void DedicatedWorker::Start() {
   TRACE_EVENT("blink.worker", "DedicatedWorker::Start");
   DCHECK(GetExecutionContext()->IsContextThread());
 
-  if (!CheckAllowedByCSPForNoThrow(script_request_url_)) {
-    // The same as in OnScriptLoadStartFailed, reset factory_client_ and return.
-    // This leaves the worker in a state the same as if script loading failed.
-    factory_client_.reset();
-    context_proxy_->DidFailToFetchScript();
+  if (!CheckCanReadScriptURLForNoThrow(script_request_url_) ||
+      !CheckAllowedByCSPForNoThrow(script_request_url_)) {
+    // Abort startup and asynchronously invoke OnScriptLoadStartFailed() so the
+    // caller has a chance to register an error event handler before the error
+    // event is dispatched and the proxy is terminated.
+    GetExecutionContext()
+        ->GetTaskRunner(TaskType::kInternalLoading)
+        ->PostTask(FROM_HERE,
+                   BindOnce(&DedicatedWorker::OnScriptLoadStartFailed,
+                            WrapPersistent(this)));
     return;
   }
 
@@ -338,6 +344,10 @@ void DedicatedWorker::Start() {
   // Continue in OnScriptLoadStarted() or OnScriptLoadStartFailed().
 }
 
+void DedicatedWorker::EmulateStartForTesting() {
+  start_time_ = base::TimeTicks::Now();
+}
+
 void DedicatedWorker::terminate() {
   DCHECK(!GetExecutionContext() || GetExecutionContext()->IsContextThread());
   context_proxy_->TerminateGlobalScope();
@@ -371,34 +381,11 @@ void DedicatedWorker::OnWorkerHostCreated(
   origin_ = blink::SecurityOrigin::CreateFromUrlOrigin(url::Origin(origin));
 }
 
-void DedicatedWorker::OnScriptLoadStarted(
-    std::unique_ptr<WorkerMainScriptLoadParameters>
-        worker_main_script_load_params,
-    CrossVariantMojoRemote<
-        mojom::blink::BackForwardCacheControllerHostInterfaceBase>
-        back_forward_cache_controller_host,
-    std::unique_ptr<WebPolicyContainer> policy_container,
-    CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
-        coep_reporting_observer,
-    CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
-        dip_reporting_observer) {
-  TRACE_EVENT("blink.worker", "DedicatedWorker::OnScriptLoadStarted");
-  // Specify empty source code here because scripts will be fetched on the
-  // worker thread.
-  ContinueStart(script_request_url_, std::move(worker_main_script_load_params),
-                network::mojom::ReferrerPolicy::kDefault,
-                Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-                DocumentPolicy::DocumentPolicyBundle{},
-                std::move(back_forward_cache_controller_host),
-                std::move(policy_container), std::move(coep_reporting_observer),
-                std::move(dip_reporting_observer));
-}
-
 void DedicatedWorker::OnScriptLoadStartFailed() {
   TRACE_EVENT("blink.worker", "DedicatedWorker::OnScriptLoadStartFailed");
-  // Specify empty source code here because scripts will be fetched on the
-  context_proxy_->DidFailToFetchScript();
   factory_client_.reset();
+  context_proxy_->DidFailToFetchScript();
+  context_proxy_->TerminateGlobalScope();
 }
 
 void DedicatedWorker::DispatchErrorEventForScriptFetchFailure() {
@@ -422,24 +409,25 @@ DedicatedWorker::CreateWebContentSettingsClient() {
   return nullptr;
 }
 
-void DedicatedWorker::ContinueStart(
-    const KURL& script_url,
+void DedicatedWorker::OnScriptLoadStarted(
     std::unique_ptr<WorkerMainScriptLoadParameters>
         worker_main_script_load_params,
-    network::mojom::ReferrerPolicy referrer_policy,
-    Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-        response_content_security_policies,
-    DocumentPolicy::DocumentPolicyBundle response_document_policy,
-    mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
+    CrossVariantMojoRemote<
+        mojom::blink::BackForwardCacheControllerHostInterfaceBase>
         back_forward_cache_controller_host,
     std::unique_ptr<WebPolicyContainer> policy_container,
-    mojo::PendingReceiver<mojom::blink::ReportingObserver>
+    CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
         coep_reporting_observer,
-    mojo::PendingReceiver<mojom::blink::ReportingObserver>
-        dip_reporting_observer) {
+    CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
+        dip_reporting_observer,
+    const std::optional<WebSecurityOrigin>& updated_origin) {
   UMA_HISTOGRAM_TIMES("Worker.TopLevelScript.LoadStartedTime",
                       base::TimeTicks::Now() - start_time_);
-  TRACE_EVENT("blink.worker", "DedicatedWorker::ContinueStart");
+  TRACE_EVENT("blink.worker", "DedicatedWorker::OnScriptLoadStarted");
+  if (updated_origin) {
+    origin_ = blink::SecurityOrigin::CreateFromUrlOrigin(
+        url::Origin(*updated_origin));
+  }
   if (base::FeatureList::IsEnabled(
           features::kDedicatedWorkerAblationStudyEnabled)) {
     CHECK(GetExecutionContext());
@@ -451,11 +439,8 @@ void DedicatedWorker::ContinueStart(
         ->PostDelayedTask(
             FROM_HERE,
             BindOnce(&DedicatedWorker::ContinueStartInternal,
-                     WrapWeakPersistent(this), script_url,
+                     WrapWeakPersistent(this), script_request_url_,
                      std::move(worker_main_script_load_params),
-                     std::move(referrer_policy),
-                     std::move(response_content_security_policies),
-                     std::move(response_document_policy),
                      std::move(back_forward_cache_controller_host),
                      std::move(policy_container),
                      std::move(coep_reporting_observer),
@@ -464,9 +449,7 @@ void DedicatedWorker::ContinueStart(
     return;
   }
   ContinueStartInternal(
-      script_url, std::move(worker_main_script_load_params),
-      std::move(referrer_policy), std::move(response_content_security_policies),
-      std::move(response_document_policy),
+      script_request_url_, std::move(worker_main_script_load_params),
       std::move(back_forward_cache_controller_host),
       std::move(policy_container), std::move(coep_reporting_observer),
       std::move(dip_reporting_observer));
@@ -476,10 +459,6 @@ void DedicatedWorker::ContinueStartInternal(
     const KURL& script_url,
     std::unique_ptr<WorkerMainScriptLoadParameters>
         worker_main_script_load_params,
-    network::mojom::ReferrerPolicy referrer_policy,
-    Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-        response_content_security_policies,
-    DocumentPolicy::DocumentPolicyBundle document_policy,
     mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
         back_forward_cache_controller_host,
     std::unique_ptr<WebPolicyContainer> policy_container,
@@ -492,11 +471,9 @@ void DedicatedWorker::ContinueStartInternal(
     return;
   }
   context_proxy_->StartWorkerGlobalScope(
-      CreateGlobalScopeCreationParams(
-          script_url, referrer_policy,
-          std::move(response_content_security_policies),
-          std::move(document_policy), std::move(coep_reporting_observer),
-          std::move(dip_reporting_observer)),
+      CreateGlobalScopeCreationParams(script_url,
+                                      std::move(coep_reporting_observer),
+                                      std::move(dip_reporting_observer)),
       std::move(worker_main_script_load_params), options_, script_url,
       *outside_fetch_client_settings_object_, v8_stack_trace_id_, token_,
       std::move(pending_dedicated_worker_host_),
@@ -531,10 +508,6 @@ BeginFrameProviderParams CreateBeginFrameProviderParams(
 std::unique_ptr<GlobalScopeCreationParams>
 DedicatedWorker::CreateGlobalScopeCreationParams(
     const KURL& script_url,
-    network::mojom::ReferrerPolicy referrer_policy,
-    Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-        response_content_security_policies,
-    DocumentPolicy::DocumentPolicyBundle document_policy,
     mojo::PendingReceiver<mojom::blink::ReportingObserver>
         coep_reporting_observer,
     mojo::PendingReceiver<mojom::blink::ReportingObserver>
@@ -583,8 +556,9 @@ DedicatedWorker::CreateGlobalScopeCreationParams(
       execution_context->GetUserAgentMetadata(), CreateWebWorkerFetchContext(),
       mojo::Clone(
           execution_context->GetContentSecurityPolicy()->GetParsedPolicies()),
-      std::move(response_content_security_policies), referrer_policy,
-      std::move(document_policy), execution_context->GetSecurityOrigin(),
+      OutsideSettingsCSPViolationReporter::BindNewRemote(*execution_context),
+      network::mojom::ReferrerPolicy::kDefault,
+      execution_context->GetSecurityOrigin(),
       execution_context->IsSecureContext(), execution_context->GetHttpsState(),
       MakeGarbageCollected<WorkerClients>(), CreateWebContentSettingsClient(),
       OriginTrialContext::GetInheritedTrialFeatures(execution_context).get(),
@@ -600,13 +574,17 @@ DedicatedWorker::CreateGlobalScopeCreationParams(
       execution_context->GetExecutionContextToken(),
       execution_context->CrossOriginIsolatedCapability(),
       execution_context->IsIsolatedContext(),
+      /*time_origin=*/base::TimeTicks(),
       /*direct_sockets_force_enabled_in_parent=*/
       execution_context->GetRuntimeFeatureStateOverrideContext()
           ->IsDirectSocketsForceEnabled(),
       /*interface_registry=*/nullptr,
       std::move(agent_group_scheduler_compositor_task_runner),
       top_level_frame_security_origin,
-      execution_context->GetStorageAccessApiStatus(),
+      (origin_ && origin_->IsOpaque() &&
+       base::FeatureList::IsEnabled(features::kCSPSandboxedWorkerOpaqueOrigin))
+          ? net::StorageAccessApiStatus::kNone
+          : execution_context->GetStorageAccessApiStatus(),
       /*require_cross_site_request_for_cookies=*/false,
       origin_ ? origin_->IsolatedCopy() : nullptr,
       std::move(coep_reporting_observer), std::move(dip_reporting_observer));

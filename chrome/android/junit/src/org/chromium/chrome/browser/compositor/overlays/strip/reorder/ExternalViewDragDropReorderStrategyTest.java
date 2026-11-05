@@ -37,6 +37,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
 import org.chromium.chrome.browser.tasks.tab_management.TabDragHandlerBase;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.ui.dragdrop.DragDropGlobalState;
 
 import java.util.ArrayList;
@@ -385,12 +386,11 @@ public class ExternalViewDragDropReorderStrategyTest extends ReorderStrategyTest
         mStrategy.handleDrop(mGroupTitles, list, dropIndex);
 
         // Verify
-        Tab expectedPrimaryTab = mModel.getTabByIdChecked(INTERACTING_VIEW_ID);
         int expectedMergeIndex = 0;
         verify(mModel)
-                .mergeListOfTabsToGroup(
+                .mergeListOfTabsToExistingGroup(
                         mTabListCaptor.capture(),
-                        eq(expectedPrimaryTab),
+                        eq(TabGroupId.fromRawToken(GROUP_ID1)),
                         eq(expectedMergeIndex),
                         eq(TabGroupMergeNotificationType.DONT_NOTIFY));
         List<Tab> mergedTabs = mTabListCaptor.getValue();
@@ -416,7 +416,7 @@ public class ExternalViewDragDropReorderStrategyTest extends ReorderStrategyTest
         mStrategy.handleDrop(mGroupTitles, Collections.singletonList(draggedTabId), dropIndex);
 
         // Verify
-        verify(mModel, never()).mergeListOfTabsToGroup(anyList(), any(), anyInt(), anyInt());
+        verify(mModel, never()).mergeListOfTabsToExistingGroup(anyList(), any(), any(), anyInt());
         assertNull(
                 "mInteractingViewDuringStop should be null",
                 mStrategy.getInteractingViewDuringStopForTesting());
@@ -503,7 +503,6 @@ public class ExternalViewDragDropReorderStrategyTest extends ReorderStrategyTest
                             /* tabGroupTitle= */ "Collaboration Group",
                             /* mhtmlTabTitle= */ null,
                             /* tabGroupCollapsed= */ false,
-                            /* isGroupShared= */ false,
                             /* isIncognito= */ false);
             dropData =
                     new ChromeTabGroupDropDataAndroid.Builder()

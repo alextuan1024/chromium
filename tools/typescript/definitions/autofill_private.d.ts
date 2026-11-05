@@ -287,6 +287,22 @@ declare global {
         value: string|DateValue;
       }
 
+      export interface LegalMessageLink {
+        start: number;
+        end: number;
+        url: string;
+      }
+
+      export interface LegalMessageLine {
+        text: string;
+        links: LegalMessageLink[];
+      }
+
+      export interface UpsertPassDetails {
+        legalMessageLines: LegalMessageLine[];
+        contextToken: string;
+      }
+
       export interface EntityInstance {
         type: EntityType;
         attributeInstances: AttributeInstance[];
@@ -295,6 +311,8 @@ declare global {
         shouldAuthenticateToView?: boolean;
         storedInWallet?: boolean;
         isReadOnly?: boolean;
+        contextToken?: string;
+        consentStringNames?: string[];
       }
 
       export interface EntityInstanceWithLabels {
@@ -313,6 +331,22 @@ declare global {
         displayName?: string;
         imageSrc?: string;
         imageSrcDark?: string;
+      }
+
+      export interface LoyaltyCardEntry {
+        id: string;
+        merchantName: string;
+        loyaltyCardNumber: string;
+        walletUrl: string;
+      }
+
+      export interface WalletDirectOfferEntry {
+        offerId: string;
+        issuerName?: string;
+        shortTitle?: string;
+        promoCode?: string;
+        expirationDate?: string;
+        offerDetailsUrl?: string;
       }
 
       export function getAccountInfo(): Promise<AccountInfo|undefined>;
@@ -335,6 +369,9 @@ declare global {
       export function removeVirtualCard(cardId: string): void;
       export function getPayOverTimeIssuerList():
           Promise<PayOverTimeIssuerEntry[]>;
+      export function getLoyaltyCardList(): Promise<LoyaltyCardEntry[]>;
+      export function getWalletDirectOfferList():
+          Promise<WalletDirectOfferEntry[]>;
       export function authenticateUserAndFlipMandatoryAuthToggle(): void;
       export function authenticateUserBeforeViewingEntityData():
           Promise<boolean>;
@@ -362,12 +399,17 @@ declare global {
           Promise<boolean>;
       export function fetchUserDataProcessingConsent():
           Promise<UserDataProcessingConsentStates>;
+      export function getDetailsForUpsertPass(entityTypeName: number):
+          Promise<UpsertPassDetails|null>;
+      export function preloadDetailsForUpsertPass(entityTypeName: number): void;
       export const onPersonalDataChanged: ChromeEvent<
           (addresses: AddressEntry[], creditCards: CreditCardEntry[],
            ibans: IbanEntry[], payOverTimeIssuers: PayOverTimeIssuerEntry[],
            accountInfo?: AccountInfo) => void>;
       export const onEntityInstancesChanged: ChromeEvent<
           (entityInstancesWithLabels: EntityInstanceWithLabels[]) => void>;
+      export const onLoyaltyCardsChanged:
+          ChromeEvent<(loyaltyCards: LoyaltyCardEntry[]) => void>;
     }
   }
 }

@@ -6,7 +6,6 @@ package org.chromium.chrome.browser.tab;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
@@ -28,6 +27,7 @@ import org.chromium.content_public.common.Referrer;
 import org.chromium.url.Origin;
 
 import java.nio.ByteBuffer;
+import java.util.Map;
 
 /** Tests for {@link TabStateExtractor}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -104,11 +104,7 @@ public class TabStateExtractorTest {
 
         WebContentsState result = TabStateExtractor.getWebContentsState(mTabMock);
 
-        assertNotNull(result);
-        assertNotSame(webContentsState, result);
-        assertEquals(webContentsState.buffer(), result.buffer());
-        assertEquals(webContentsState.version(), result.version());
-        assertEquals(2, result.getRefCountForTesting());
+        assertEquals(webContentsState, result);
     }
 
     @Test
@@ -156,5 +152,77 @@ public class TabStateExtractorTest {
         assertNotNull(result);
         assertEquals(WebContentsState.CONTENTS_STATE_CURRENT_VERSION, result.version());
         assertEquals(newByteBuffer, result.buffer());
+    }
+
+    @Test
+    public void testFrom_themeColorUsesWebContentsOverCachedTabColor() {
+        doReturn(true).when(mTabMock).isInitialized();
+        doReturn(true).when(mTabMock).isThemingAllowed();
+        doReturn(false).when(mTabMock).isNativePage();
+        doReturn(mWebContentsMock).when(mTabMock).getWebContents();
+        doReturn(0xFFFF0000).when(mTabMock).getThemeColor();
+        doReturn(TabState.UNSPECIFIED_THEME_COLOR).when(mWebContentsMock).getThemeColor();
+
+        TabState state = TabStateExtractor.from(mTabMock);
+        assertNotNull(state);
+        assertEquals(TabState.UNSPECIFIED_THEME_COLOR, state.themeColor);
+
+        doReturn(0xFF00FF00).when(mWebContentsMock).getThemeColor();
+        state = TabStateExtractor.from(mTabMock);
+        assertNotNull(state);
+        assertEquals(0xFF00FF00, state.themeColor);
+
+        doReturn(null).when(mTabMock).getWebContents();
+        state = TabStateExtractor.from(mTabMock);
+        assertNotNull(state);
+        assertEquals(0xFFFF0000, state.themeColor);
+    }
+
+    @Test
+    public void testFrom_themeColorUnspecifiedOnNativePageOrDisallowed() {
+        doReturn(true).when(mTabMock).isInitialized();
+        doReturn(mWebContentsMock).when(mTabMock).getWebContents();
+        doReturn(0xFFFF0000).when(mTabMock).getThemeColor();
+        doReturn(0xFFFF0000).when(mWebContentsMock).getThemeColor();
+
+        doReturn(true).when(mTabMock).isThemingAllowed();
+        doReturn(true).when(mTabMock).isNativePage();
+        TabState state = TabStateExtractor.from(mTabMock);
+        assertNotNull(state);
+        assertEquals(TabState.UNSPECIFIED_THEME_COLOR, state.themeColor);
+
+        doReturn(false).when(mTabMock).isThemingAllowed();
+        doReturn(false).when(mTabMock).isNativePage();
+        state = TabStateExtractor.from(mTabMock);
+        assertNotNull(state);
+        assertEquals(TabState.UNSPECIFIED_THEME_COLOR, state.themeColor);
+    }
+
+    @Test
+    public void testFrom_extraData() {
+        doReturn(true).when(mTabMock).isInitialized();
+        Map<String, String> extraData = Map.of("key", "val");
+        doReturn(extraData).when(mTabMock).getExtraData();
+        TabState state = TabStateExtractor.from(mTabMock);
+        assertNotNull(state);
+        assertEquals(extraData, state.extraData);
+    }
+
+    @Test
+    public void testGetWebContentsState_tabStateForTesting() {
+        TabState tabState = new TabState();
+        ByteBuffer byteBuffer = ByteBuffer.allocateDirect(10);
+        WebContentsState webContentsState =
+                new WebContentsState(byteBuffer, WebContentsState.CONTENTS_STATE_CURRENT_VERSION);
+        tabState.contentsState = webContentsState;
+        doReturn(123).when(mTabMock).getId();
+        TabStateExtractor.setTabStateForTesting(123, tabState);
+
+        try {
+            WebContentsState result = TabStateExtractor.getWebContentsState(mTabMock);
+            assertEquals(webContentsState, result);
+        } finally {
+            TabStateExtractor.resetTabStatesForTesting();
+        }
     }
 }

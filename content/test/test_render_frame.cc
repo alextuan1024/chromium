@@ -180,8 +180,6 @@ class MockFrameHost : public mojom::FrameHost {
     last_commit_params_ = std::move(params);
   }
 
-  void DidOpenDocumentInputStream(const GURL& url) override {}
-
   void BeginNavigation(
       blink::mojom::CommonNavigationParamsPtr common_params,
       blink::mojom::BeginNavigationParamsPtr begin_params,
@@ -202,10 +200,6 @@ class MockFrameHost : public mojom::FrameHost {
 
   void DidChangeName(const std::string& name,
                      const std::string& unique_name) override {}
-
-  void CancelInitialHistoryLoad() override {}
-
-  void UpdateEncoding(const std::string& encoding_name) override {}
 
   void UpdateState(const blink::PageState& state) override {
     is_page_state_updated_ = true;

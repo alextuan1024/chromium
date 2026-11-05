@@ -4,13 +4,17 @@
 
 #include "components/on_device_translation/translator.h"
 
-#include <algorithm>
+#include <string_view>
+#include <utility>
 
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversion_utils.h"
+#include "base/third_party/icu/icu_utf.h"
 #include "components/on_device_translation/features.h"
 #include "components/on_device_translation/metrics.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
@@ -24,13 +28,21 @@ namespace on_device_translation {
 
 namespace {
 
-bool IsTranslatableCharacter(char character) {
-  return !base::IsAsciiWhitespace(character) &&
-         !base::IsAsciiControl(character);
-}
-
-bool ContainsTranslatableContent(const std::string& input) {
-  return std::any_of(input.begin(), input.end(), IsTranslatableCharacter);
+// Returns whether `input` contains any character beyond Unicode whitespace and
+// control characters, including non-ASCII spaces such as U+00A0 and U+3000.
+bool ContainsTranslatableContent(std::string_view input) {
+  for (size_t index = 0; index < input.size(); ++index) {
+    base_icu::UChar32 code_point;
+    if (!base::ReadUnicodeCharacter(input, &index, &code_point)) {
+      // Leave invalid UTF-8 to the translation service.
+      return true;
+    }
+    if (!base::IsUnicodeWhitespace(code_point) &&
+        !base::IsUnicodeControl(code_point)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -62,6 +74,19 @@ bool Translator::VerifyPrerequisites(
                                          target_lang_);
   RecordTranslatorApiTranslationLength(source_lang_, target_lang_,
                                        input.size());
+
+  // The renderer is not trusted, so check the size here, before the input
+  // reaches the translation service.
+  const int max_input_size = kTranslationAPIMaxInputSizeBytes.Get();
+  if (max_input_size > 0 &&
+      input.size() > static_cast<size_t>(max_input_size)) {
+    responder->OnError(
+        blink::mojom::ModelStreamingResponseStatus::kErrorInputTooLarge,
+        blink::mojom::QuotaErrorInfo::New(
+            base::saturated_cast<uint32_t>(input.size()),
+            static_cast<uint32_t>(max_input_size)));
+    return false;
+  }
 
   // https://github.com/webmachinelearning/translation-api/pull/38: "If |input|
   // is the empty string, or otherwise consists of no translatable content
@@ -128,10 +153,14 @@ void Translator::SplitSentencesCallback(
   pending_translations_[responder_id] = sentences.size();
   const int total_translations = sentences.size();
   for (const auto& sentence : sentences) {
+    // Run the reply callback with nullopt if the service disconnects before
+    // answering, so the stream rejects right away.
     translator_remote_->Translate(
-        sentence, base::BindOnce(&Translator::TranslateStreamingCallback,
-                                 weak_ptr_factory_.GetWeakPtr(), responder_id,
-                                 total_translations));
+        sentence, mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+                      base::BindOnce(&Translator::TranslateStreamingCallback,
+                                     weak_ptr_factory_.GetWeakPtr(),
+                                     responder_id, total_translations),
+                      std::nullopt));
   }
 }
 void Translator::TranslateStreamingCallback(

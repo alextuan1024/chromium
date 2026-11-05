@@ -33,28 +33,32 @@
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
+
+#include "base/win/security_descriptor.h"
+#endif  // BUILDFLAG(IS_WIN)
+
 namespace content {
 namespace {
 
 class SandboxedNetworkListBrowserTest : public ContentBrowserTest {
  public:
   SandboxedNetworkListBrowserTest() {
-    [[maybe_unused]] bool sandbox_enabled = false;
-    [[maybe_unused]] bool lpac_enabled = false;
     switch (GetTestPreCount()) {
       case 0:
         break;
       case 1:
-        sandbox_enabled = false;
-        lpac_enabled = false;
+        is_sandbox_enabled_ = false;
+        is_lpac_enabled_ = false;
         break;
       case 2:
-        sandbox_enabled = true;
-        lpac_enabled = false;
+        is_sandbox_enabled_ = true;
+        is_lpac_enabled_ = false;
         break;
       case 3:
-        sandbox_enabled = true;
-        lpac_enabled = true;
+        is_sandbox_enabled_ = true;
+        is_lpac_enabled_ = true;
         break;
       default:
         NOTREACHED();
@@ -66,7 +70,7 @@ class SandboxedNetworkListBrowserTest : public ContentBrowserTest {
     disabled_features.push_back(features::kNetworkServiceInProcess);
 
 #if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_FUCHSIA)
-    if (sandbox_enabled) {
+    if (is_sandbox_enabled_) {
       enabled_features.push_back(
           sandbox::policy::features::kNetworkServiceSandbox);
     } else {
@@ -76,7 +80,7 @@ class SandboxedNetworkListBrowserTest : public ContentBrowserTest {
 #endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_FUCHSIA)
 
 #if BUILDFLAG(IS_WIN)
-    if (lpac_enabled) {
+    if (is_lpac_enabled_) {
       enabled_features.push_back(
           sandbox::policy::features::kWinSboxNetworkServiceSandboxIsLPAC);
     } else {
@@ -93,6 +97,46 @@ class SandboxedNetworkListBrowserTest : public ContentBrowserTest {
   void SetUp() override {
     GTEST_SKIP() << "GetNetworkList not yet supported in Android network "
                     "sandbox. See https://crbug.com/1381381.";
+  }
+#elif BUILDFLAG(IS_WIN)
+  void SetUp() override {
+    if (is_sandbox_enabled_) {
+      // On Windows, Sandbox::kNetwork always uses an AppContainer (an LPAC when
+      // `is_lpac_enabled_` is true, or a standard AppContainer otherwise).
+      // Ensure the current window station and thread desktop grant access to
+      // the container SID so user32.dll can initialize when
+      // CommonSubprocessInit delay-loads it to post WM_NULL in the network
+      // service child process.
+      const auto sid =
+          is_lpac_enabled_
+              ? base::win::WellKnownSid::kAllRestrictedApplicationPackages
+              : base::win::WellKnownSid::kAllApplicationPackages;
+      original_winsta_sd_ = GrantAppContainerAccess(
+          ::GetProcessWindowStation(),
+          base::win::SecurityObjectType::kWindowStation, sid);
+      original_desktop_sd_ =
+          GrantAppContainerAccess(::GetThreadDesktop(::GetCurrentThreadId()),
+                                  base::win::SecurityObjectType::kDesktop, sid);
+    }
+    ContentBrowserTest::SetUp();
+  }
+
+  void TearDown() override {
+    ContentBrowserTest::TearDown();
+    if (original_desktop_sd_) {
+      if (HDESK desktop = ::GetThreadDesktop(::GetCurrentThreadId())) {
+        EXPECT_TRUE(original_desktop_sd_->WriteToHandle(
+            desktop, base::win::SecurityObjectType::kDesktop,
+            DACL_SECURITY_INFORMATION));
+      }
+    }
+    if (original_winsta_sd_) {
+      if (HWINSTA winsta = ::GetProcessWindowStation()) {
+        EXPECT_TRUE(original_winsta_sd_->WriteToHandle(
+            winsta, base::win::SecurityObjectType::kWindowStation,
+            DACL_SECURITY_INFORMATION));
+      }
+    }
   }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -148,6 +192,35 @@ class SandboxedNetworkListBrowserTest : public ContentBrowserTest {
     }
     return count;
   }
+
+#if BUILDFLAG(IS_WIN)
+  std::optional<base::win::SecurityDescriptor> GrantAppContainerAccess(
+      HANDLE handle,
+      base::win::SecurityObjectType type,
+      base::win::WellKnownSid sid) {
+    if (!handle) {
+      ADD_FAILURE() << "Missing window station or desktop handle";
+      return std::nullopt;
+    }
+    auto sd = base::win::SecurityDescriptor::FromHandle(
+        handle, type, DACL_SECURITY_INFORMATION);
+    if (!sd) {
+      ADD_FAILURE() << "Failed to read DACL from handle";
+      return std::nullopt;
+    }
+    base::win::SecurityDescriptor original_sd = sd->Clone();
+    EXPECT_TRUE(sd->SetDaclEntry(sid, base::win::SecurityAccessMode::kGrant,
+                                 GENERIC_ALL, 0));
+    EXPECT_TRUE(sd->WriteToHandle(handle, type, DACL_SECURITY_INFORMATION));
+    return original_sd;
+  }
+
+  std::optional<base::win::SecurityDescriptor> original_winsta_sd_;
+  std::optional<base::win::SecurityDescriptor> original_desktop_sd_;
+#endif  // BUILDFLAG(IS_WIN)
+
+  [[maybe_unused]] bool is_sandbox_enabled_ = false;
+  [[maybe_unused]] bool is_lpac_enabled_ = false;
   base::test::ScopedFeatureList scoped_features_;
 };
 

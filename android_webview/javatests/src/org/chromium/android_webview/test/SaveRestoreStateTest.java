@@ -24,6 +24,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Feature;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationHistory;
+import org.chromium.content_public.browser.test.util.HistoryUtils;
 import org.chromium.net.test.util.TestWebServer;
 
 /**
@@ -155,6 +156,67 @@ public class SaveRestoreStateTest extends AwParameterizedTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView"})
+    public void testSaveRestoreStateWithScrollPosition() throws Throwable {
+        AwActivityTestRule.enableJavaScriptOnUiThread(mVars.awContents);
+        String headers =
+                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />"
+                        + "<style>body { height: 10000px; margin: 0; }</style>";
+        String html1 = CommonResources.makeHtmlPageFrom(headers, "<h1>Page 1</h1>");
+        String html2 = CommonResources.makeHtmlPageFrom(headers, "<h1>Page 2</h1>");
+        String url1 = mWebServer.setResponse(PATHS[0], html1, null);
+        String url2 = mWebServer.setResponse(PATHS[1], html2, null);
+
+        mActivityTestRule.loadUrlSync(
+                mVars.awContents, mVars.contentsClient.getOnPageFinishedHelper(), url1);
+
+        final double targetScrollY = 500.0;
+        mActivityTestRule.executeJavaScriptAndWaitForResult(
+                mVars.awContents,
+                mVars.contentsClient,
+                "window.scrollTo(0, " + targetScrollY + ");");
+        AwActivityTestRule.pollInstrumentationThread(
+                () -> {
+                    double scrollY =
+                            Double.parseDouble(
+                                    mActivityTestRule.executeJavaScriptAndWaitForResult(
+                                            mVars.awContents,
+                                            mVars.contentsClient,
+                                            "window.scrollY"));
+                    return Math.abs(targetScrollY - scrollY) < 1.0;
+                });
+
+        // Navigate to another page so that the first page's scroll position is saved to its
+        // navigation entry.
+        mActivityTestRule.loadUrlSync(
+                mVars.awContents, mVars.contentsClient.getOnPageFinishedHelper(), url2);
+
+        // Save and restore state into a new view, waiting for the restored current entry to load.
+        TestVars restoredVars = saveAndRestoreStateOnUiThread(mVars);
+        AwActivityTestRule.enableJavaScriptOnUiThread(restoredVars.awContents);
+        restoredVars.contentsClient.getOnPageFinishedHelper().waitForCallback(0);
+
+        // Navigate back to the first page.
+        HistoryUtils.goBackSync(
+                InstrumentationRegistry.getInstrumentation(),
+                restoredVars.awContents.getWebContents(),
+                restoredVars.contentsClient.getOnPageFinishedHelper());
+
+        // Verify that the scroll position is preserved.
+        AwActivityTestRule.pollInstrumentationThread(
+                () -> {
+                    double restoredScroll =
+                            Double.parseDouble(
+                                    mActivityTestRule.executeJavaScriptAndWaitForResult(
+                                            restoredVars.awContents,
+                                            restoredVars.contentsClient,
+                                            "window.scrollY"));
+                    return Math.abs(targetScrollY - restoredScroll) < 1.0;
+                });
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
     public void testRestoreFromInvalidStateFails() throws Throwable {
         final Bundle invalidState = new Bundle();
         invalidState.putByteArray(AwContents.SAVE_RESTORE_STATE_KEY, "invalid state".getBytes());
@@ -172,5 +234,104 @@ public class SaveRestoreStateTest extends AwParameterizedTest {
         boolean result =
                 ThreadUtils.runOnUiThreadBlocking(() -> mVars.awContents.restoreState(state));
         Assert.assertFalse(result);
+    }
+
+    private TestVars serializeAndRestoreStateOnUiThread(final TestVars vars) {
+        final TestVars restoredVars = createNewView();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    byte[] state = vars.awContents.serializeState(Integer.MAX_VALUE, true);
+                    Assert.assertNotNull(state);
+                    Assert.assertTrue(restoredVars.awContents.restoreState(state));
+                });
+        return restoredVars;
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testSerializeRestoreStateWithHistoryItemList() throws Throwable {
+        setServerResponseAndLoad(mVars, NUM_NAVIGATIONS);
+        TestVars restoredVars = serializeAndRestoreStateOnUiThread(mVars);
+        checkHistoryItemList(restoredVars);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testSerializeRestoreStateWithTitle() throws Throwable {
+        setServerResponseAndLoad(mVars, 1);
+        final TestVars restoredVars = serializeAndRestoreStateOnUiThread(mVars);
+        mActivityTestRule.pollUiThread(
+                () ->
+                        TITLES[0].equals(restoredVars.awContents.getTitle())
+                                && TITLES[0].equals(restoredVars.contentsClient.getUpdatedTitle()));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testSerializedStateMatchesSavedState() throws Throwable {
+        // serializeState must return exactly the bytes that saveState puts into the Bundle, so that
+        // states from either API can be restored by both.
+        setServerResponseAndLoad(mVars, NUM_NAVIGATIONS);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Bundle bundle = new Bundle();
+                    Assert.assertTrue(mVars.awContents.saveState(bundle, Integer.MAX_VALUE, true));
+                    byte[] serialized = mVars.awContents.serializeState(Integer.MAX_VALUE, true);
+                    Assert.assertArrayEquals(
+                            bundle.getByteArray(AwContents.SAVE_RESTORE_STATE_KEY), serialized);
+                });
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testRestoreSavedStateBytes() throws Throwable {
+        // The byte array saved into a Bundle by saveState can be restored with
+        // restoreState(byte[]).
+        setServerResponseAndLoad(mVars, NUM_NAVIGATIONS);
+        final TestVars restoredVars = createNewView();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Bundle bundle = new Bundle();
+                    Assert.assertTrue(mVars.awContents.saveState(bundle));
+                    byte[] state = bundle.getByteArray(AwContents.SAVE_RESTORE_STATE_KEY);
+                    Assert.assertTrue(restoredVars.awContents.restoreState(state));
+                });
+        checkHistoryItemList(restoredVars);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testSerializeStateForNoNavigationReturnsNull() throws Throwable {
+        byte[] state =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> mVars.awContents.serializeState(Integer.MAX_VALUE, true));
+        Assert.assertNull(state);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testSerializeStateTooSmallMaxSizeReturnsNull() throws Throwable {
+        setServerResponseAndLoad(mVars, 1);
+        byte[] state =
+                ThreadUtils.runOnUiThreadBlocking(() -> mVars.awContents.serializeState(1, true));
+        Assert.assertNull(state);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testRestoreFromInvalidSerializedStateLeavesHistoryUnchanged() throws Throwable {
+        setServerResponseAndLoad(mVars, NUM_NAVIGATIONS);
+        boolean result =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> mVars.awContents.restoreState("invalid state".getBytes()));
+        Assert.assertFalse(result);
+        checkHistoryItemList(mVars);
     }
 }

@@ -22,9 +22,14 @@
 
 class AccountInfo;
 struct CoreAccountId;
+class GaiaId;
 class GURL;
 class PrefRegistrySimple;
 class Profile;
+
+namespace base {
+class ListValue;
+}  // namespace base
 
 namespace enterprise_util {
 
@@ -47,10 +52,7 @@ enum class BrowserManagementNoticeState {
 };
 
 // Represents the management scope for which the enterprise logo applies.
-enum class EnterpriseLogoUrlScope {
-  kBrowser,
-  kProfile
-};
+enum class EnterpriseLogoUrlScope { kBrowser, kProfile };
 
 // Determines whether the browser with `profile` as its primary profile is
 // managed. This is determined by looking it there are any policies applied or
@@ -66,12 +68,25 @@ std::string GetDomainFromEmail(std::string_view email);
 // `AutoSelectCertificates`.
 GURL GetRequestingUrl(const net::HostPortPair host_port_pair);
 
+// Partitions `client_certs` according to `auto_selection_filters` (where each
+// item corresponds to the "filter" dictionary of an
+// AutoSelectCertificateForUrls rule). All certificates that match any filter
+// are returned in `matching_client_certs`, and all certificates that don't in
+// `nonmatching_client_certs`. Both `matching_client_certs` and
+// `nonmatching_client_certs` must be non-null.
+void AutoSelectCertificates(
+    const base::ListValue& auto_selection_filters,
+    net::ClientCertIdentityList client_certs,
+    net::ClientCertIdentityList* matching_client_certs,
+    net::ClientCertIdentityList* nonmatching_client_certs);
+
 // Partitions |client_certs| according to the value of the
 // |ContentSettingsType::AUTO_SELECT_CERTIFICATE| content setting for the
 // |requesting_url|. If a filter is set, all certs that match the
 // filter will be returned in |matching_client_certs|, and all certificates
 // that don't in |nonmatching_client_certs|. If no filter is set, then
-// all certificates will be returned in |nonmatching_client_certs|.
+// all certificates will be returned in |nonmatching_client_certs|. Both
+// |matching_client_certs| and |nonmatching_client_certs| must be non-null.
 void AutoSelectCertificates(
     Profile* profile,
     const GURL& requesting_url,
@@ -84,12 +99,35 @@ bool IsMachinePolicyPref(const std::string& pref_name);
 
 void RegisterLocalStatePrefs(PrefRegistrySimple* registry);
 
+#if BUILDFLAG(IS_ANDROID)
+// On Android the management acceptance is stored per account (keyed by
+// `gaia_id`) in `SigninPrefs` under
+// `device_signals::prefs::kDeviceSignalsPermanentConsentReceived`, which also
+// records the user's consent to share device signals. Unlike the profile
+// attribute used on other platforms, the value survives sign-out and is only
+// pruned once the account is removed from the device.
+void SetUserAcceptedAccountManagementAndroid(Profile* profile,
+                                             const GaiaId& gaia_id,
+                                             bool accepted);
+
+// Returns true if the user has accepted account management for the account
+// identified by `gaia_id`.
+bool UserAcceptedAccountManagementAndroid(Profile* profile,
+                                          const GaiaId& gaia_id);
+#endif  // BUILDFLAG(IS_ANDROID)
+
 // Sets attribute entry 'user_accepted_account_management' of `profile` to
 // `accepted`.
+//
+// TODO(crbug.com/578892816): Don't compile on Android once the migration is
+// complete.
 void SetUserAcceptedAccountManagement(Profile* profile, bool accepted);
 
 // Returns true is the user has accepted account management through the
 // enterprise account confirmation dialog.
+//
+// TODO(crbug.com/578892816): Don't compile on Android once
+// the migration is complete.
 bool UserAcceptedAccountManagement(Profile* profile);
 
 // Returns true if the user has consented to sync or has accepted account

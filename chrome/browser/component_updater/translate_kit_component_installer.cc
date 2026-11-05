@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -30,7 +31,6 @@
 #include "components/on_device_translation/public/paths.h"
 #include "components/on_device_translation/public/pref_names.h"
 #include "components/update_client/update_client_errors.h"
-#include "crypto/sha2.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/ash/components/dbus/image_loader/image_loader_client.h"
@@ -79,8 +79,9 @@ base::FilePath GetSquashFsImagePath(const base::FilePath& base) {
 
 void SetBinaryPathInPrefs(PrefService* pref_service,
                           const base::FilePath& install_dir) {
-  auto installed_path = GetInstalledPath(install_dir);
-  pref_service->SetFilePath(prefs::kTranslateKitBinaryPath, installed_path);
+  CHECK(install_dir.IsAbsolute());
+  pref_service->SetFilePath(prefs::kTranslateKitBinaryPath,
+                            GetInstalledPath(install_dir));
 }
 
 }  // namespace
@@ -187,17 +188,22 @@ TranslateKitComponentInstallerPolicy::GetInstallerAttributes() const {
 
 // static
 void TranslateKitComponentInstallerPolicy::UpdateComponentOnDemand(
-    ComponentUpdateService* cus) {
+    ComponentUpdateService* cus,
+    base::OnceCallback<void(update_client::Error)> callback) {
   auto crx_id = GetExtensionId();
   cus->GetOnDemandUpdater().OnDemandUpdate(
       crx_id, component_updater::OnDemandUpdater::Priority::FOREGROUND,
-      base::BindOnce([](update_client::Error error) {
-        if (error != update_client::Error::NONE &&
-            error != update_client::Error::UPDATE_IN_PROGRESS) {
-          base::UmaHistogramEnumeration(
-              "ComponentUpdater.TranslateKit.UpdateError", error);
-        }
-      }));
+      base::BindOnce(
+          [](base::OnceCallback<void(update_client::Error)> callback,
+             update_client::Error error) {
+            if (error != update_client::Error::NONE &&
+                error != update_client::Error::UPDATE_IN_PROGRESS) {
+              base::UmaHistogramEnumeration(
+                  "ComponentUpdater.TranslateKit.UpdateError", error);
+            }
+            std::move(callback).Run(error);
+          },
+          std::move(callback)));
 }
 // static
 const std::string TranslateKitComponentInstallerPolicy::GetExtensionId() {
@@ -224,8 +230,10 @@ void RegisterTranslateKitComponent(ComponentUpdateService* cus,
   }
 
   pref_service->SetBoolean(prefs::kTranslateKitPreviouslyRegistered, true);
-  // Clear any previously set path in the preferences
-  SetBinaryPathInPrefs(pref_service, base::FilePath());
+  // Clear any previously set path in the preferences to restore the default
+  // state rather than persisting an empty user value. `ComponentReady()` sets
+  // it again once the component is installed.
+  pref_service->ClearPref(prefs::kTranslateKitBinaryPath);
 
   auto installer = base::MakeRefCounted<ComponentInstaller>(
       std::make_unique<TranslateKitComponentInstallerPolicy>(

@@ -25,14 +25,21 @@ namespace golden {
 class StructInUnionDataView;
 
 class BasicUnionDataView;
+class TrivialUnionDataView;
 
 enum class EnumInUnion : int32_t;
+
+enum class ExtensibleEnumInUnion : int32_t;
 class StructInUnion;
 using StructInUnionPtr = mojo::InlinedStructPtr<StructInUnion>;
 
 class BasicUnion;
 
 using BasicUnionPtr = mojo::StructPtr<BasicUnion>;
+
+class TrivialUnion;
+
+using TrivialUnionPtr = mojo::InlinedStructPtr<TrivialUnion>;
 
 
 

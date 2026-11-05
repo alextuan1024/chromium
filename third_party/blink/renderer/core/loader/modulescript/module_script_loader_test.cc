@@ -156,14 +156,11 @@ class ModuleScriptLoaderTest : public PageTestBase {
         ->RunUntilIdle();
   }
 
-  const base::TickClock* GetTickClock() override {
-    return PageTestBase::GetTickClock();
-  }
-
  protected:
   const KURL url_;
   const scoped_refptr<const SecurityOrigin> security_origin_;
 
+  ScopedMockContextLifecycleNotifier context_lifecycle_notifier_;
   Persistent<ResourceFetcher> fetcher_;
 
   ScopedTestingPlatformSupport<FetchTestingPlatformSupport> platform_;
@@ -199,7 +196,7 @@ void ModuleScriptLoaderTest::InitializeForDocument() {
                           base::MakeRefCounted<scheduler::FakeTaskRunner>(),
                           MakeGarbageCollected<TestLoaderFactory>(
                               platform_->GetURLLoaderMockFactory()),
-                          MakeGarbageCollected<MockContextLifecycleNotifier>(),
+                          context_lifecycle_notifier_.Notifier(),
                           nullptr /* back_forward_cache_loader_helper */));
   modulator_ = MakeGarbageCollected<ModuleScriptLoaderTestModulator>(
       ToScriptStateForMainWorld(&GetFrame()));
@@ -215,16 +212,15 @@ void ModuleScriptLoaderTest::InitializeForWorklet() {
                           base::MakeRefCounted<scheduler::FakeTaskRunner>(),
                           MakeGarbageCollected<TestLoaderFactory>(
                               platform_->GetURLLoaderMockFactory()),
-                          MakeGarbageCollected<MockContextLifecycleNotifier>(),
+                          context_lifecycle_notifier_.Notifier(),
                           nullptr /* back_forward_cache_loader_helper */));
   reporting_proxy_ = std::make_unique<MockWorkerReportingProxy>();
   auto creation_params = std::make_unique<GlobalScopeCreationParams>(
       url_, mojom::blink::ScriptType::kModule, "GlobalScopeName", "UserAgent",
       UserAgentMetadata(), nullptr /* web_worker_fetch_context */,
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      network::mojom::ReferrerPolicy::kDefault,
-      DocumentPolicy::DocumentPolicyBundle{}, security_origin_.get(),
+      /*outside_settings_reporter=*/mojo::NullRemote(),
+      network::mojom::ReferrerPolicy::kDefault, security_origin_.get(),
       true /* is_secure_context */, HttpsState::kModern,
       nullptr /* worker_clients */, nullptr /* content_settings_client */,
       nullptr /* inherited_trial_features */, base::UnguessableToken::Create(),

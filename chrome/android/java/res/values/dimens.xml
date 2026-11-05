@@ -89,8 +89,6 @@ found in the LICENSE file.
     <dimen name="password_manager_dialog_details_padding_bottom">8dp</dimen>
     <dimen name="password_manager_dialog_details_padding_top">12dp</dimen>
 
-    <!-- The size of the text for tab titles. -->
-    <dimen name="compositor_tab_title_text_size">13sp</dimen>
     <!-- The size of the bounding box for favicons. -->
     <dimen name="compositor_tab_title_favicon_size">16dp</dimen>
     <!-- The maximum width for tab titles. This must match the maximum tab strip
@@ -138,7 +136,6 @@ found in the LICENSE file.
     <dimen name="fre_loading_spinner_size">48dp</dimen>
     <dimen name="fre_policy_privacy_disclaimer_icon_size">18dp</dimen>
     <dimen name="fre_policy_privacy_disclaimer_icon_padding">8dp</dimen>
-    <dimen name="fre_illustration_size">120dp</dimen>
     <dimen name="fre_spacing">24dp</dimen>
     <dimen name="fre_illustration_to_content_margin">48dp</dimen>
     <dimen name="fre_subtitle_top_padding">8dp</dimen>
@@ -171,6 +168,15 @@ found in the LICENSE file.
     <dimen name="mvt_container_bottom_padding_small">16dp</dimen>
     <dimen name="mvt_container_top_margin_medium">24dp</dimen>
     <dimen name="mvt_container_top_margin_large">32dp</dimen>
+    <!-- TODO(crbug.com/549681251): Once NTP Aurora V2 is launched, move these spacings into the
+         layout XML and remove the code that adds them. -->
+    <dimen name="ntp_aurora_v2_logo_top_margin_delta_small">44dp</dimen>
+    <dimen name="ntp_aurora_v2_logo_top_margin_delta_large">28dp</dimen>
+    <dimen name="ntp_aurora_v2_logo_bottom_margin_delta_small">0dp</dimen>
+    <dimen name="ntp_aurora_v2_logo_bottom_margin_delta_large">8dp</dimen>
+    <dimen name="ntp_aurora_v2_mvt_top_margin_delta_small">4dp</dimen>
+    <dimen name="ntp_aurora_v2_mvt_top_margin_delta_large">12dp</dimen>
+    <dimen name="ntp_aurora_v2_section_padding_delta">4dp</dimen>
     <dimen name="tile_layout_no_logo_top_margin">16dp</dimen>
 
     <dimen name="content_suggestions_card_bottom_margin">12dp</dimen>
@@ -237,7 +243,7 @@ found in the LICENSE file.
     <dimen name="desktop_bookmark_dialog_text_input_margin_top">24dp</dimen>
     <dimen name="improved_bookmark_row_horizontal_margin">10dp</dimen>
     <dimen name="improved_bookmark_row_horizontal_padding">6dp</dimen>
-    <dimen name="improved_bookmark_row_horizontal_negative_margin">-10dp</dimen>
+    <dimen name="improved_bookmark_row_padding_desktop">12dp</dimen>
     <dimen name="improved_bookmark_row_vertical_margin">1dp</dimen>
     <dimen name="shopping_chip_padding">8dp</dimen>
 
@@ -321,11 +327,6 @@ found in the LICENSE file.
 
     <!-- Minimum height of the title bar to fit the tab title text. -->
     <dimen name="custom_tabs_popup_title_bar_text_height">24sp</dimen>
-
-    <!-- Search in CCT specific dimensions for presenting interactable Omnibox -->
-    <dimen name="custom_tabs_location_bar_active_height">40dp</dimen>
-    <dimen name="custom_tabs_url_bar_active_height">48dp</dimen>
-    <dimen name="custom_tabs_url_bar_bg_horizontal_padding">4dp</dimen>
 
     <!-- Account chooser dialog dimensions -->
     <dimen name="account_chooser_dialog_margin">24dp</dimen>
@@ -425,6 +426,8 @@ found in the LICENSE file.
     <dimen name="settings_search_ui_bottom_margin">12dp</dimen>
     <dimen name="settings_search_icon_padding">8dp</dimen>
     <dimen name="settings_search_icon_margin">8dp</dimen>
+    <dimen name="settings_row_icon_size">40dp</dimen>
+    <dimen name="settings_row_icon_glyph_size">24dp</dimen>
     <dimen name="settings_detailed_title_padding">10dp</dimen>
     <dimen name="settings_detailed_title_height">48dp</dimen>
     <dimen name="settings_detailed_title_start_margin">16dp</dimen>
@@ -483,7 +486,6 @@ found in the LICENSE file.
 
     <!-- Autofill "virtual card number enrollment" bottom sheet dimensions. -->
     <dimen name="autofill_bottom_sheet_illustration_min_height">93dp</dimen>
-    <dimen name="autofill_bottom_sheet_logo_min_height">32dp</dimen>
     <dimen name="autofill_bottom_sheet_spacing_large">22dp</dimen>
     <dimen name="autofill_bottom_sheet_spacing_small">12dp</dimen>
 
@@ -491,6 +493,7 @@ found in the LICENSE file.
     <dimen name="autofill_bottom_sheet_iban_text_input_top_margin">20dp</dimen>
 
     <!-- Common autofill bottom sheet dimensions. -->
+    <dimen name="autofill_bottom_sheet_button_spinner_size">24dp</dimen>
     <dimen name="autofill_bottom_sheet_chip_top_margin">22dp</dimen>
     <dimen name="autofill_bottom_sheet_confirm_button_top_margin">22dp</dimen>
     <dimen name="autofill_bottom_sheet_drag_handlebar_spacing_top">8dp</dimen>
@@ -527,18 +530,6 @@ found in the LICENSE file.
 
     <!-- Tab Strip Reorder dimensions -->
     <dimen name="tab_strip_dragged_tab_shadow_thickness">8dp</dimen>
-
-    <!-- Tips Notifications dimensions -->
-    <dimen name="tips_notifications_bottom_sheet_button_padding">4dp</dimen>
-    <dimen name="tips_notifications_bottom_sheet_horizontal_margin">24dp</dimen>
-    <dimen name="tips_notifications_bottom_sheet_step_content_margin_start">16dp</dimen>
-    <dimen name="tips_notifications_bottom_sheet_step_number_width">25dp</dimen>
-    <dimen name="tips_notifications_bottom_sheet_title_padding">24dp</dimen>
-    <dimen name="tips_notifications_bottom_sheet_vertical_margin">20dp</dimen>
-
-    <!-- View list background dimensions -->
-    <dimen name="view_list_item_large_radius">24dp</dimen>
-    <dimen name="view_list_item_small_radius">3dp</dimen>
 
     <!-- Auto PiP permission dialog dimensions -->
     <dimen name="auto_pip_permission_dialog_width">320dp</dimen>
@@ -577,4 +568,24 @@ found in the LICENSE file.
 
     <!-- Immersive Playback Confirmation Dialog dimens -->
     <dimen name="immersive_playback_confirmation_dialog_width">256dp</dimen>
+
+    <!-- Tab position settings. -->
+    <dimen name="tab_position_card_container_width_breakpoint">562dp</dimen>
+    <dimen name="tab_position_card_padding">16dp</dimen>
+    <dimen name="tab_position_card_title_margin_bottom">12dp</dimen>
+    <dimen name="tab_position_card_preview_corner_radius">8dp</dimen>
+    <dimen name="tab_position_card_active_stroke_width">2dp</dimen>
+    <dimen name="tab_position_card_inactive_stroke_width">1dp</dimen>
+    <!-- GradientDrawable insets its stroke path by half the stroke width, so the stroke radius is
+         tab_position_card_preview_corner_radius minus half the stroke width. This keeps the
+         stroke's corner arc concentric with the frame's outer corner. -->
+    <dimen name="tab_position_card_active_stroke_radius">7dp</dimen>
+    <dimen name="tab_position_card_inactive_stroke_radius">7.5dp</dimen>
+    <dimen name="tab_position_card_gap">2dp</dimen>
+
+    <!-- On startup settings. -->
+    <dimen name="on_startup_page_item_vertical_padding">8dp</dimen>
+    <dimen name="on_startup_action_buttons_vertical_padding">8dp</dimen>
+    <dimen name="on_startup_action_buttons_spacing">24dp</dimen>
+    <dimen name="on_startup_url_dialog_padding_bottom">8dp</dimen>
 </resources>

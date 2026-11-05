@@ -20,6 +20,10 @@
 #include "third_party/blink/renderer/platform/scheduler/public/non_main_thread.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
+namespace cppgc {
+class StackStartMarker;
+}  // namespace cppgc
+
 namespace blink {
 class BlinkGCMemoryDumpProvider;
 class ThreadScheduler;
@@ -77,10 +81,6 @@ class PLATFORM_EXPORT NonMainThreadImpl : public NonMainThread {
   class GCSupport;
   class SimpleThreadImpl final : public base::SimpleThread {
    public:
-    using NonMainThreadSchedulerFactory = base::OnceCallback<
-        std::unique_ptr<scheduler::NonMainThreadSchedulerBase>(
-            base::sequence_manager::SequenceManager*)>;
-
     explicit SimpleThreadImpl(const String& name_prefix,
                               const base::SimpleThread::Options& options,
                               base::TimeDelta realtime_period,
@@ -146,7 +146,8 @@ class PLATFORM_EXPORT NonMainThreadImpl : public NonMainThread {
 
   class GCSupport final {
    public:
-    explicit GCSupport(NonMainThreadImpl* thread);
+    GCSupport(NonMainThreadImpl* thread,
+              cppgc::StackStartMarker stack_start_marker);
     ~GCSupport();
 
    private:

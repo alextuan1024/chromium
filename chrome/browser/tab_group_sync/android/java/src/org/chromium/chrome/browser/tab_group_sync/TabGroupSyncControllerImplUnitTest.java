@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.tab_group_sync;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
@@ -30,7 +31,10 @@ import org.chromium.base.Token;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tab.ScopedStorageBatch;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabStateStorageService;
+import org.chromium.chrome.browser.tab.TabStateStorageServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
@@ -39,6 +43,7 @@ import org.chromium.components.prefs.PrefService;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncController;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.ArrayList;
 import java.util.function.Supplier;
@@ -54,6 +59,8 @@ public class TabGroupSyncControllerImplUnitTest {
     private @Mock TabModelSelector mTabModelSelector;
     private @Mock TabCreator mTabCreator;
     private @Mock TabGroupSyncService mTabGroupSyncService;
+    private @Mock TabStateStorageService mStorageService;
+    private @Mock ScopedStorageBatch mStorageBatch;
     private @Mock Profile mProfile;
     private MockTabModel mTabModel;
     private @Mock PrefService mPrefService;
@@ -66,6 +73,8 @@ public class TabGroupSyncControllerImplUnitTest {
 
     @Before
     public void setUp() {
+        when(mStorageService.createBatch()).thenReturn(mStorageBatch);
+        TabStateStorageServiceFactory.setForTesting(mStorageService);
         mTabModel = spy(new MockTabModel(mProfile, null));
         when(mTabModelSelector.getModel(false)).thenReturn(mTabModel);
         doReturn(ObservableSuppliers.createMonotonic(mTabModel))
@@ -80,7 +89,7 @@ public class TabGroupSyncControllerImplUnitTest {
         // Prepare mock tab.
         when(mTab1.getTabGroupId()).thenReturn(TOKEN_1);
         when(mTab1.getId()).thenReturn(TAB_ID_1);
-        when(mTabModel.tabGroupExists(TOKEN_1)).thenReturn(true);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TOKEN_1))).thenReturn(true);
         when(mTabCreator.createNewTab(any(), anyString(), anyInt(), any(), anyInt()))
                 .thenReturn(mTab1);
     }
@@ -88,6 +97,10 @@ public class TabGroupSyncControllerImplUnitTest {
     @After
     public void tearDown() {
         mController.destroy();
+        for (TabGroupSyncService.Observer observer :
+                mTabGroupSyncServiceObserverCaptor.getAllValues()) {
+            verify(mTabGroupSyncService, atLeastOnce()).removeObserver(observer);
+        }
     }
 
     private void createController() {

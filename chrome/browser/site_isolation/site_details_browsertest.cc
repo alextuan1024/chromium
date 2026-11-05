@@ -21,6 +21,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
+#include "chrome/browser/memory_details.h"
 #include "chrome/browser/metrics/metrics_memory_details.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/url_constants.h"
@@ -35,7 +36,6 @@
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/common/switches.h"
@@ -90,7 +90,11 @@ class TestMemoryDetails : public MetricsMemoryDetails {
   size_t CountPageTitles() {
     size_t count = 0;
     for (const ProcessMemoryInformation& process : ChromeBrowser()->processes) {
-      if (process.process_type == content::PROCESS_TYPE_RENDERER) {
+      // Exclude `chrome://` WebUI renderer processes (such as the WebUI
+      // toolbar and its asynchronously prewarmed spare WebContents), as these
+      // tests only verify title collection for web pages.
+      if (process.process_type == content::PROCESS_TYPE_RENDERER &&
+          process.renderer_type != ProcessMemoryInformation::RENDERER_CHROME) {
         count += process.titles.size();
       }
     }
@@ -607,14 +611,13 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, DISABLED_IsolateExtensions) {
 
 // Exercises accounting in the case where an extension has two different-site
 // web iframes.
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_ExtensionWithTwoWebIframes DISABLED_ExtensionWithTwoWebIframes
-#else
-#define MAYBE_ExtensionWithTwoWebIframes ExtensionWithTwoWebIframes
-#endif
-IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest,
-                       MAYBE_ExtensionWithTwoWebIframes) {
-  size_t baseline_count = GetRenderProcessCount() - 1;
+IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, ExtensionWithTwoWebIframes) {
+  using RenderProcessCountMode =
+      content::RenderProcessHost::RenderProcessCountMode;
+  int baseline_count =
+      content::RenderProcessHost::GetCurrentRenderProcessCountForTesting(
+          RenderProcessCountMode::kExcludePrerenderOnlyOrEmptyProcess) -
+      1;
   scoped_refptr<TestMemoryDetails> details =
       base::MakeRefCounted<TestMemoryDetails>();
   details->StartFetchAndWait();
@@ -629,8 +632,12 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest,
   details = base::MakeRefCounted<TestMemoryDetails>();
   details->StartFetchAndWait();
   EXPECT_EQ(GetRenderProcessCountFromUma(details->uma()),
-            GetRenderProcessCount());
-  int active_processes = GetRenderProcessCount() - baseline_count;
+            content::RenderProcessHost::GetCurrentRenderProcessCountForTesting(
+                RenderProcessCountMode::kIncludePrerenderOnlyOrEmptyProcess));
+  int active_processes =
+      content::RenderProcessHost::GetCurrentRenderProcessCountForTesting(
+          RenderProcessCountMode::kExcludePrerenderOnlyOrEmptyProcess) -
+      baseline_count;
   if (content::AreAllSitesIsolatedForTesting()) {
     EXPECT_THAT(active_processes, DependingOnPolicy(1, 3, 3));
   } else {

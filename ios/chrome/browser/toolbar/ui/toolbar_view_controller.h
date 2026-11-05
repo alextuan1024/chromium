@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_ui_element.h"
+#import "ios/chrome/browser/location_bar/ui_bundled/location_bar_content_size_delegate.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_ui_updating.h"
 #import "ios/chrome/browser/toolbar/ui/toolbar_consumer.h"
 
@@ -24,9 +25,11 @@
 @protocol ToolbarMutator;
 
 // View controller for the toolbar.
-@interface ToolbarViewController : UIViewController <FullscreenUIElement,
-                                                     PopupMenuUIUpdating,
-                                                     ToolbarConsumer>
+@interface ToolbarViewController
+    : UIViewController <FullscreenUIElement,
+                        LocationBarContentSizeDelegate,
+                        PopupMenuUIUpdating,
+                        ToolbarConsumer>
 
 // Handler for the browser coordinator commands.
 @property(nonatomic, weak) id<BrowserCoordinatorCommands>
@@ -73,6 +76,9 @@
 - (instancetype)initWithCoder:(NSCoder*)coder NS_UNAVAILABLE;
 - (instancetype)initWithNibName:(NSString*)nibNameOrNil
                          bundle:(NSBundle*)nibBundleOrNil NS_UNAVAILABLE;
+
+// Triggers the animation for the slide in of the toolbar.
+- (void)triggerToolbarSlideInAnimation;
 
 // Shows/Hides the location bar.
 - (void)setLocationBarHidden:(BOOL)hidden;

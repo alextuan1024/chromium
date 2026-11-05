@@ -13,15 +13,15 @@
 #include "chrome/browser/ash/login/users/profile_user_manager_controller.h"
 #include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
-#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "components/account_id/account_id.h"
 #include "components/account_manager_core/chromeos/account_manager.h"
-#include "components/account_manager_core/pref_names.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/user.h"
@@ -100,7 +100,7 @@ class PeopleSectionTest : public testing::Test {
     ASSERT_TRUE(base::test::RunUntil(
         [&]() { return account_manager_->IsInitialized(); }));
     profile_->GetPrefs()->SetBoolean(
-        ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed, true);
+        policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed, true);
 
     AddAccount(kPrimaryGaiaId, kPrimaryEmail);
   }

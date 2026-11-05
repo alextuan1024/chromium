@@ -22,6 +22,7 @@
 #include "third_party/blink/public/web/web_console_message.h"
 #include "third_party/blink/public/web/web_frame_widget.h"
 #include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_local_frame_observer.h"
 #include "third_party/blink/public/web/web_navigation_type.h"
 #include "third_party/blink/public/web/web_plugin_params.h"
 #include "third_party/blink/public/web/web_print_params.h"
@@ -210,6 +211,10 @@ class TestRenderFrameObserver : public RenderFrameObserver {
     }
   }
 
+  void DidFinishLoadForPrinting() override {
+    test_runner_->DidFinishLoadForPrinting(*frame_proxy());
+  }
+
   void DidHandleOnloadEvents() override {
     if (test_runner_->ShouldDumpFrameLoadCallbacks()) {
       std::string description = frame_proxy()->GetFrameDescriptionForWebTests();
@@ -230,6 +235,78 @@ class TestRenderFrameObserver : public RenderFrameObserver {
     render_frame()->GetWebFrame()->PrintEnd();
   }
 
+  const raw_ptr<TestRunner> test_runner_;
+};
+
+class TestWebLocalFrameObserver : public blink::WebLocalFrameObserver {
+ public:
+  TestWebLocalFrameObserver(WebFrameTestProxy* frame_proxy,
+                            TestRunner* test_runner)
+      : blink::WebLocalFrameObserver(frame_proxy->GetWebFrame()),
+        frame_proxy_(frame_proxy),
+        test_runner_(test_runner) {}
+
+  TestWebLocalFrameObserver(const TestWebLocalFrameObserver&) = delete;
+  TestWebLocalFrameObserver& operator=(const TestWebLocalFrameObserver&) =
+      delete;
+
+  ~TestWebLocalFrameObserver() override = default;
+
+ private:
+  // blink::WebLocalFrameObserver overrides:
+  void OnFrameDetached() override { delete this; }
+
+  void DidAddMessageToConsole(const blink::WebConsoleMessage& message,
+                              const blink::WebString& source_name,
+                              unsigned source_line,
+                              const blink::WebString& stack_trace) override {
+    if (!test_runner_->ShouldDumpConsoleMessages()) {
+      return;
+    }
+
+    std::string level;
+    switch (message.level) {
+      case blink::mojom::ConsoleMessageLevel::kVerbose:
+        level = "DEBUG";
+        break;
+      case blink::mojom::ConsoleMessageLevel::kInfo:
+        level = "MESSAGE";
+        break;
+      case blink::mojom::ConsoleMessageLevel::kWarning:
+        level = "WARNING";
+        break;
+      case blink::mojom::ConsoleMessageLevel::kError:
+        level = "ERROR";
+        break;
+      default:
+        level = "MESSAGE";
+    }
+    std::string console_message(std::string("CONSOLE ") + level + ": ");
+    if (!message.text.IsEmpty()) {
+      std::string new_message = message.text.Utf8();
+      size_t file_protocol = new_message.find("file://");
+      if (file_protocol != std::string::npos) {
+        new_message =
+            new_message.substr(0, file_protocol) +
+            URLSuitableForTestResult(new_message.substr(file_protocol));
+      }
+      console_message += new_message;
+    }
+    console_message += "\n";
+
+    // Console messages shouldn't be included in the expected output for
+    // web-platform-tests because they may create non-determinism not
+    // intended by the test author. They are still included in the stderr
+    // output for debugging purposes.
+    frame_proxy_->GetWebTestControlHostRemote()->PrintMessageToStderr(
+        console_message);
+    if (!test_runner_->IsWebPlatformTestsMode()) {
+      frame_proxy_->GetWebTestControlHostRemote()->PrintMessage(
+          console_message);
+    }
+  }
+
+  const raw_ptr<WebFrameTestProxy> frame_proxy_;
   const raw_ptr<TestRunner> test_runner_;
 };
 
@@ -265,7 +342,8 @@ void WebFrameTestProxy::Initialize(blink::WebFrame* parent) {
                           // is destroyed.
                           base::Unretained(this)));
 
-  new TestRenderFrameObserver(this, test_runner_);  // deletes itself.
+  new TestRenderFrameObserver(this, test_runner_);    // deletes itself.
+  new TestWebLocalFrameObserver(this, test_runner_);  // deletes itself.
 
   // Bind the channel to the host right away.
   GetWebTestControlHostRemote();
@@ -280,14 +358,18 @@ void WebFrameTestProxy::ResetRendererAfterWebTest() {
   // So the steps in this method need to be audited piecemeal for redundancy.
   CHECK(IsMainFrame());
 
+  accessibility_controller_.Reset();
+  spell_check_->Reset();
+  test_runner_->Reset();
+
   if (IsMainFrame()) {
     GetWebFrame()->ClearActiveFindMatchForTesting();
     GetWebFrame()->SetName(blink::WebString());
     GetWebFrame()->ClearOpener();
 
     blink::WebTestingSupport::ResetMainFrame(GetWebFrame());
-    // Resetting the internals object also overrides the WebPreferences, so we
-    // have to sync them to WebKit again.
+    // Resetting the internals object and runtime features also overrides the
+    // WebPreferences, so we have to sync them to WebKit again.
     blink::WebView* web_view = GetWebFrame()->View();
     web_view->SetWebPreferences(web_view->GetWebPreferences());
 
@@ -298,10 +380,23 @@ void WebFrameTestProxy::ResetRendererAfterWebTest() {
     test_runner()->ResetWebFrameWidget(GetLocalRootWebFrameWidget());
     GetLocalRootFrameWidgetTestHelper()->Reset();
   }
+}
 
-  accessibility_controller_.Reset();
-  spell_check_->Reset();
+void WebFrameTestProxy::ResetTestRunnerForNewWebTest() {
+  // This process may have been reused from a previous test without receiving
+  // ResetRendererAfterWebTest(), which is only sent to the process hosting the
+  // main window's main frame. Frames it hosts for the new test are freshly
+  // created, so only the process-global TestRunner state (such as
+  // |did_notify_done_|, runtime flags and the set of loading frames) can be
+  // stale. Resetting it again in a process that did receive
+  // ResetRendererAfterWebTest() is harmless.
   test_runner_->Reset();
+  // Resetting runtime features in TestRunner::Reset() also overrides
+  // RuntimeEnabledFeatures controlled by WebPreferences (such as
+  // Accelerated2dCanvas), so sync WebPreferences to the WebView again.
+  if (blink::WebView* web_view = GetWebFrame()->View()) {
+    web_view->SetWebPreferences(web_view->GetWebPreferences());
+  }
 }
 
 std::string WebFrameTestProxy::GetFrameNameForWebTests() {
@@ -332,56 +427,6 @@ blink::WebPlugin* WebFrameTestProxy::CreatePlugin(
   }
 
   return RenderFrameImpl::CreatePlugin(params);
-}
-
-void WebFrameTestProxy::DidAddMessageToConsole(
-    const blink::WebConsoleMessage& message,
-    const blink::WebString& source_name,
-    unsigned source_line,
-    const blink::WebString& stack_trace) {
-  RenderFrameImpl::DidAddMessageToConsole(message, source_name, source_line,
-                                          stack_trace);
-
-  if (!test_runner()->ShouldDumpConsoleMessages())
-    return;
-
-  std::string level;
-  switch (message.level) {
-    case blink::mojom::ConsoleMessageLevel::kVerbose:
-      level = "DEBUG";
-      break;
-    case blink::mojom::ConsoleMessageLevel::kInfo:
-      level = "MESSAGE";
-      break;
-    case blink::mojom::ConsoleMessageLevel::kWarning:
-      level = "WARNING";
-      break;
-    case blink::mojom::ConsoleMessageLevel::kError:
-      level = "ERROR";
-      break;
-    default:
-      level = "MESSAGE";
-  }
-  std::string console_message(std::string("CONSOLE ") + level + ": ");
-  if (!message.text.IsEmpty()) {
-    std::string new_message;
-    new_message = message.text.Utf8();
-    size_t file_protocol = new_message.find("file://");
-    if (file_protocol != std::string::npos) {
-      new_message = new_message.substr(0, file_protocol) +
-                    URLSuitableForTestResult(new_message.substr(file_protocol));
-    }
-    console_message += new_message;
-  }
-  console_message += "\n";
-
-  // Console messages shouldn't be included in the expected output for
-  // web-platform-tests because they may create non-determinism not
-  // intended by the test author. They are still included in the stderr
-  // output for debugging purposes.
-  GetWebTestControlHostRemote()->PrintMessageToStderr(console_message);
-  if (!test_runner()->IsWebPlatformTestsMode())
-    GetWebTestControlHostRemote()->PrintMessage(console_message);
 }
 
 void WebFrameTestProxy::DidStartLoading() {
@@ -461,8 +506,7 @@ std::optional<blink::WebURL> WebFrameTestProxy::WillSendRequest(
         !HostIsUsedBySomeTestsToGenerateError(host) &&
         ((site_for_cookies.scheme() != url::kHttpScheme &&
           site_for_cookies.scheme() != url::kHttpsScheme) ||
-         IsLocalHost(site_for_cookies.registrable_domain())) &&
-        !test_runner_->TestConfig().allow_external_pages) {
+         IsLocalHost(site_for_cookies.registrable_domain()))) {
       GetWebTestControlHostRemote()->PrintMessage(
           std::string("Blocked access to external URL ") +
           url.possibly_invalid_spec() + "\n");
@@ -773,6 +817,9 @@ void WebFrameTestProxy::DidCommitNavigation(
     should_block_parsing_in_next_commit_ = false;
     GetWebFrame()->BlockParserForTesting();
   }
+  // Words added through the SpellCheckCustomDictionary web API belong to the
+  // outgoing document.
+  spell_check_->ClearDocumentCustomWords();
   RenderFrameImpl::DidCommitNavigation(
       commit_type, should_reset_browser_interface_broker,
       permissions_policy_header, document_policy_header);
@@ -806,6 +853,10 @@ void WebFrameTestProxy::StartTest() {
 
         web_frame->ResumeParserForTesting();
 
+        // Start loading nested documents that are only displayed when
+        // printing early enough for their normal frame load to be tracked.
+        // TestRunner performs a second call before capture to discover any
+        // print resources that were not available until parsing completed.
         if (test_runner->IsPrinting()) {
           web_frame->WillPrintSoon();
         }

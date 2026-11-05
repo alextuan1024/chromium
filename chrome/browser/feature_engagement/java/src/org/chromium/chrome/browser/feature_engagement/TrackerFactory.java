@@ -10,6 +10,9 @@ import org.jni_zero.NativeMethods;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.prefs.LocalStatePrefs;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.feature_engagement.Tracker;
 
@@ -33,13 +36,66 @@ public final class TrackerFactory {
     public static Tracker getTrackerForProfile(Profile profile) {
         if (sTrackerForTesting != null) return sTrackerForTesting;
         profile.ensureNativeInitialized();
-        return TrackerFactoryJni.get().getTrackerForProfile(profile);
+        Tracker tracker = TrackerFactoryJni.get().getTrackerForProfile(profile);
+        // TODO(crbug.com/571067805): Move `android` from `future_on` to `supported_on` in
+        // PromotionsEnabled.yaml when ready to launch.
+        tracker.setEnterprisePolicyBlocksPromotionsSupplier(
+                TrackerFactory::doesEnterprisePolicyBlockPromotions);
+        tracker.setAggressivelyCooldownIphsSupplier(
+                TrackerFactory::isAggressivelyCooldownIphsEnabled);
+        tracker.setInterruptiveCooldownGroupEnabledSupplier(
+                TrackerFactory::isInterruptiveCooldownGroupEnabled);
+        tracker.setBlueBubbleCooldownGroupEnabledSupplier(
+                TrackerFactory::isBlueBubbleCooldownGroupEnabled);
+        return tracker;
     }
 
     public static @Nullable Tracker getTrackerForProfile(
             Supplier<@Nullable Profile> profileSupplier) {
         Profile p = profileSupplier.get();
         return p == null ? null : getTrackerForProfile(p);
+    }
+
+    /**
+     * Returns whether the PromotionsEnabled enterprise policy currently blocks promotions, i.e.
+     * both the UserEducationFramework flag and the UserEducationEnterprisePolicy sub-flag are
+     * enabled and local state has PromotionsEnabled set to false.
+     */
+    private static boolean doesEnterprisePolicyBlockPromotions() {
+        if (!ChromeFeatureList.sUserEducationFramework.isEnabled()
+                || !ChromeFeatureList.sUserEducationEnterprisePolicy.isEnabled()) {
+            return false;
+        }
+        return !LocalStatePrefs.get().getBoolean(Pref.PROMOTIONS_ENABLED);
+    }
+
+    /**
+     * Returns whether IPHs should be aggressively cooled down, i.e. both the UserEducationFramework
+     * flag and the UserEducationAggressivelyCooldownIphs sub-flag are enabled.
+     */
+    private static boolean isAggressivelyCooldownIphsEnabled() {
+        return ChromeFeatureList.sUserEducationFramework.isEnabled()
+                && ChromeFeatureList.sUserEducationAggressivelyCooldownIphs.isEnabled();
+    }
+
+    /**
+     * Returns whether the interruptive IPH cooldown group applies, i.e. both the
+     * UserEducationFramework flag and the UserEducationInterruptiveCooldownGroup sub-flag are
+     * enabled.
+     */
+    public static boolean isInterruptiveCooldownGroupEnabled() {
+        return ChromeFeatureList.sUserEducationFramework.isEnabled()
+                && ChromeFeatureList.sUserEducationInterruptiveCooldownGroup.isEnabled();
+    }
+
+    /**
+     * Returns whether the blue bubble IPH cooldown group applies, i.e. both the
+     * UserEducationFramework flag and the UserEducationBlueBubbleCooldownGroup sub-flag are
+     * enabled.
+     */
+    private static boolean isBlueBubbleCooldownGroupEnabled() {
+        return ChromeFeatureList.sUserEducationFramework.isEnabled()
+                && ChromeFeatureList.sUserEducationBlueBubbleCooldownGroup.isEnabled();
     }
 
     /**

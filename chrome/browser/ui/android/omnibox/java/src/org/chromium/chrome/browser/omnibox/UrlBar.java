@@ -18,6 +18,7 @@ import android.text.Layout;
 import android.text.Selection;
 import android.text.SpannableStringBuilder;
 import android.text.TextUtils;
+import android.text.method.MetaKeyKeyListener;
 import android.text.style.ReplacementSpan;
 import android.util.AttributeSet;
 import android.util.TypedValue;
@@ -33,6 +34,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.autofill.AutofillManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import android.view.textclassifier.TextClassifier;
 import android.widget.TextView;
 
@@ -54,10 +56,10 @@ import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.CheckDiscard;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.omnibox.UrlBarFocusChangeInfo.FocusDirection;
 import org.chromium.chrome.browser.toolbar.ToolbarVariationUtils;
 import org.chromium.components.browser_ui.share.ShareHelper;
+import org.chromium.components.browser_ui.share.ShareHelper.ShareSourceAndroid;
 import org.chromium.components.browser_ui.util.FirstDrawDetector;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatures;
@@ -97,15 +99,15 @@ public class UrlBar extends AutocompleteEditText {
     // check for text equality, instead of worrying about partial equality with truncated text.
     private static final int MIN_LENGTH_FOR_TRUNCATION = 100;
 
-    // Longest prefix handed to the text shaper by getTextWidth(). Shaping arbitrarily long URLs on
-    // the UI thread stalls layout and triggers HarfBuzz sanitization ANRs, so longer text is
-    // measured by sampling this prefix and scaling the result up to the full length.
+    // Longest text handed to the text shaper by getTextWidth(). Shaping arbitrarily long URLs on
+    // the UI thread stalls layout and triggers HarfBuzz sanitization ANRs, so longer text is not
+    // measured at all and is reported as MAX_REPORTED_TEXT_WIDTH_PX wide.
     @VisibleForTesting /* package */ static final int MAX_URL_LENGTH_FOR_MEASUREMENT = 150;
 
-    // Ceiling for the width getTextWidth() reports. Extrapolating a sampled prefix over a
-    // multi-megabyte data: URI can approach Integer.MAX_VALUE, and callers add padding to the
-    // result, which would wrap to a negative width. Any value far beyond the widest conceivable
-    // display signals overflow just as well, so the exact ceiling is unimportant.
+    // Ceiling for the width getTextWidth() reports, and the width it reports for text it does not
+    // measure. Callers add padding to the result, so it must stay well clear of Integer.MAX_VALUE.
+    // Any value far beyond the widest conceivable display signals overflow just as well, so the
+    // exact ceiling is unimportant.
     @VisibleForTesting /* package */ static final int MAX_REPORTED_TEXT_WIDTH_PX = 1_000_000;
 
     @VisibleForTesting static final int MULTILINE_EDIT_MAX_LINES = 5;
@@ -131,10 +133,17 @@ public class UrlBar extends AutocompleteEditText {
     private boolean mWrapDetectionScheduled;
     private @Nullable Runnable mManageSearchEnginesCallback;
     private boolean mShowAiMode;
+    private @Nullable String mShowAiModeLabel;
     private @Nullable Callback<Boolean> mShowAiModeCallback;
     private @Nullable UrlBarContextMenuHelper mContextMenuHelper;
 
     private final Rect mClipBounds = new Rect();
+
+    /**
+     * The platform default vertical handwriting bounds offset (as applied by {@link TextView}),
+     * captured before it is overridden. Used to restore the bottom offset on demand.
+     */
+    private float mDefaultHandwritingBoundsOffsetVertical;
 
     private boolean mFocused;
     private boolean mDesiredCursorVisible = true;
@@ -142,6 +151,7 @@ public class UrlBar extends AutocompleteEditText {
     private boolean mAllowFocus = true;
     private boolean mAllowMultilineInput;
     private boolean mCurrentInputCanBeWrapped;
+    private boolean mUseNaturalTextIme;
 
     /** Tracks whether a long-press was performed during the current touch gesture. */
     private boolean mLongPressPerformed;
@@ -150,6 +160,11 @@ public class UrlBar extends AutocompleteEditText {
     private boolean mPointerDragActive;
 
     private boolean mPendingScroll;
+
+    // Whether an origin change was reported for a scroll request that had to be deferred until
+    // the next layout pass. The deferred scroll performed from layout() has no origin change
+    // information of its own, so the signal is latched here and consumed when the scroll runs.
+    private boolean mPendingScrollOriginChanged;
 
     // Captures the current intended text scroll type.
     // This may not be effective if mPendingScroll is true.
@@ -229,6 +244,9 @@ public class UrlBar extends AutocompleteEditText {
         /** Called to notify that UrlBar has been touched after focus. */
         void onTouchAfterFocus();
 
+        /** Called to notify that a touch down event occurred on the UrlBar. */
+        default void onUrlBarTouchDown() {}
+
         /** Returns whether showing the keyboard should be suppressed. */
         default boolean isKeyboardSuppressed() {
             return false;
@@ -247,19 +265,6 @@ public class UrlBar extends AutocompleteEditText {
          * @param text The text to be shared.
          */
         default void shareText(String text) {}
-
-        /**
-         * Gets potential replacement text to be used instead of the current selected text for
-         * cut/copy actions. If null is returned, the existing text will be cut or copied.
-         *
-         * @param currentText The current displayed text.
-         * @param selection The current text selection range in the URL bar.
-         * @return The text to be cut/copied instead of the currently selected text.
-         */
-        default @Nullable String getReplacementCutCopyText(
-                String currentText, TextSelection selection) {
-            return null;
-        }
 
         /** Returns the UrlBarData representing the current input session. */
         default UrlBarData getUrlBarDataForCurrentInput() {
@@ -342,7 +347,38 @@ public class UrlBar extends AutocompleteEditText {
         setTextClassifier(TextClassifier.NO_OP);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             setIsHandwritingDelegate(true);
+            mDefaultHandwritingBoundsOffsetVertical = getHandwritingBoundsOffsetBottom();
+            if (OmniboxFeatures.sUrlBarNoHandwritingBoundsAbove.isEnabled()) {
+                // The platform extends the handwriting initiation area 40dp above an editable
+                // TextView. On tablets this overlaps the tab strip, so a stylus drag on a tab
+                // sitting above the omnibox starts handwriting instead of reaching the strip
+                // (b/514550853). Nothing editable or handwriting-worthy lives above the URL
+                // bar, so drop the top offset entirely.
+                setHandwritingBoundsOffsets(
+                        getHandwritingBoundsOffsetLeft(),
+                        0,
+                        getHandwritingBoundsOffsetRight(),
+                        getHandwritingBoundsOffsetBottom());
+            }
         }
+    }
+
+    /**
+     * Controls whether the stylus handwriting bounds extend below the URL bar.
+     *
+     * <p>While the URL bar is unfocused, the area directly below it is web content and should not
+     * initiate omnibox handwriting. Once suggestions are showing the user is actively writing, so
+     * the platform default offset is restored to tolerate slightly imprecise strokes.
+     *
+     * @param extend Whether the handwriting bounds should extend below the URL bar.
+     */
+    public void setHandwritingBoundsExtendBelow(boolean extend) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return;
+        setHandwritingBoundsOffsets(
+                getHandwritingBoundsOffsetLeft(),
+                getHandwritingBoundsOffsetTop(),
+                getHandwritingBoundsOffsetRight(),
+                extend ? mDefaultHandwritingBoundsOffsetVertical : 0);
     }
 
     @Override
@@ -382,6 +418,7 @@ public class UrlBar extends AutocompleteEditText {
         mTextContextMenuDelegate = null;
         mTextChangeListener = null;
         mManageSearchEnginesCallback = null;
+        mShowAiModeLabel = null;
         mShowAiModeCallback = null;
         mLastMeasuredText = null;
         mLastMeasuredTextWidth = -1;
@@ -415,6 +452,11 @@ public class UrlBar extends AutocompleteEditText {
         mShowAiMode = showAiMode;
     }
 
+    /** Set the label of the "Always Show AI Mode" context menu option. */
+    public void setShowAiModeLabel(@Nullable String label) {
+        mShowAiModeLabel = label;
+    }
+
     /** Set the callback when "Always Show AI Mode" is toggled. */
     public void setShowAiModeCallback(@Nullable Callback<Boolean> callback) {
         mShowAiModeCallback = callback;
@@ -422,17 +464,23 @@ public class UrlBar extends AutocompleteEditText {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        // Cursor movement across wrapped lines takes precedence over key listeners (which use the
-        // vertical DPAD keys to navigate the suggestions list).
+        // Vertical text selection (Shift + DPAD_UP/DOWN) stays in the UrlBar; otherwise, key
+        // listeners (which navigate the visible suggestions list) take precedence over cursor
+        // movement across wrapped lines.
+        boolean isShiftVerticalMove =
+                KeyNavigationUtil.isGoUpOrDown(event) && event.hasModifiers(KeyEvent.META_SHIFT_ON);
+        if (!isShiftVerticalMove
+                && (KeyNavigationUtil.isEnter(event)
+                        || KeyNavigationUtil.isGoAnyDirection(event)
+                        || KeyNavigationUtil.isTabNavigation(event)
+                        || event.getKeyCode() == KeyEvent.KEYCODE_DEL)
+                && (mKeyDownListener != null && mKeyDownListener.onKey(this, keyCode, event))) {
+            return true;
+        }
+
         if (moveCursorVerticallyInWrappedText(keyCode, event)) return true;
 
-        return ((KeyNavigationUtil.isEnter(event)
-                                || KeyNavigationUtil.isGoAnyDirection(event)
-                                || KeyNavigationUtil.isTabNavigation(event)
-                                || event.getKeyCode() == KeyEvent.KEYCODE_DEL)
-                        && (mKeyDownListener != null
-                                && mKeyDownListener.onKey(this, keyCode, event)))
-                || super_onKeyDown(keyCode, event);
+        return super_onKeyDown(keyCode, event);
     }
 
     @CheckDiscard("exposed for testing; should be inlined")
@@ -455,7 +503,12 @@ public class UrlBar extends AutocompleteEditText {
     @Override
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
     public void onFocusChanged(
-            boolean focused, @FocusDirection int direction, Rect previouslyFocusedRect) {
+            boolean focused, @FocusDirection int direction, @Nullable Rect previouslyFocusedRect) {
+        if (isReparenting()) {
+            super.onFocusChanged(focused, direction, previouslyFocusedRect);
+            return;
+        }
+        boolean wasFocused = mFocused;
         mFocused = focused;
 
         if (!mFocused) {
@@ -474,6 +527,7 @@ public class UrlBar extends AutocompleteEditText {
 
         if (focused) {
             mPendingScroll = false;
+            mPendingScrollOriginChanged = false;
         }
         fixupTextDirection();
 
@@ -485,9 +539,19 @@ public class UrlBar extends AutocompleteEditText {
             if (focused) clearBoundsEllipsisSpans(getText());
         }
 
+        if (wasFocused && !focused) {
+            scrollDisplayText(mCurrentScrollType, /* originChanged= */ false);
+        }
+
         if (mFocusChangeCallback != null) {
             mFocusChangeCallback.onResult(new UrlBarFocusChangeInfo(focused, direction));
         }
+    }
+
+    @Override
+    public void setSelected(boolean selected) {
+        super.setSelected(selected);
+        updateCursorVisibility();
     }
 
     @Override
@@ -497,7 +561,8 @@ public class UrlBar extends AutocompleteEditText {
     }
 
     private void updateCursorVisibility() {
-        super.setCursorVisible(mDesiredCursorVisible && hasWindowFocus() && isFocused());
+        super.setCursorVisible(
+                mDesiredCursorVisible && hasWindowFocus() && isFocused() && isSelected());
     }
 
     @Override
@@ -543,10 +608,48 @@ public class UrlBar extends AutocompleteEditText {
         updateUrlBarForMultilineInput();
     }
 
+    /**
+     * Sets whether this {@link UrlBar} should configure the IME for natural text composition (e.g.
+     * for AI Mode) rather than URL entry, restarting input if the view is active with the IME.
+     */
+    void setUseNaturalTextIme(boolean useNaturalTextIme) {
+        if (mUseNaturalTextIme == useNaturalTextIme) return;
+        mUseNaturalTextIme = useNaturalTextIme;
+        if (useNaturalTextIme) {
+            if (hasAutocomplete()) {
+                setAutocompleteText(
+                        getTextWithoutAutocomplete(),
+                        /* inlineAutocompleteText= */ null,
+                        /* additionalText= */ null,
+                        /* siteSearchLabel= */ null);
+            }
+        } else {
+            clearComposingText();
+        }
+        if (!mFocused) return;
+        InputMethodManager imm =
+                (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null && imm.isActive(this)) {
+            imm.restartInput(this);
+        }
+    }
+
+    @Override
+    public boolean shouldAutocomplete() {
+        return !mUseNaturalTextIme && super.shouldAutocomplete();
+    }
+
+    boolean getUseNaturalTextImeForTesting() {
+        return mUseNaturalTextIme;
+    }
+
     private void updateUrlBarForMultilineInput() {
         boolean wantWrap = isMultilineInputActive();
         if (wantWrap == !isHorizontallyScrollable()) return;
         setHorizontallyScrolling(!wantWrap);
+        if (!wantWrap) {
+            setScrollY(0);
+        }
     }
 
     /** Returns whether the {@link UrlBar} is presently configured to wrap long user input. */
@@ -561,15 +664,15 @@ public class UrlBar extends AutocompleteEditText {
     }
 
     /**
-     * Gives the underlying {@link android.widget.EditText} a chance to move the text cursor
-     * vertically across the lines of wrapped, multiline user input before the vertical DPAD keys
-     * are offered to the key listeners (which use them to navigate the suggestions list).
+     * Gives the underlying {@link android.widget.EditText} a chance to move the text cursor or
+     * extend the selection vertically across the lines of wrapped, multiline user input when the
+     * vertical DPAD keys are not consumed by the key listeners (e.g. when the suggestions list is
+     * hidden or when selecting text with Shift).
      *
      * <p>Mimics the behavior of a conventional multiline text editor: the cursor first travels
      * between the wrapped lines (entirely handled by the EditText's movement method), and once the
      * top or the bottom line is reached, it snaps to the very beginning or the very end of the
-     * text. When the cursor already rests at that edge, the key event is not consumed here,
-     * allowing it to reach the key listeners.
+     * text.
      *
      * @param keyCode the code of the pressed key
      * @param event the key event to evaluate
@@ -699,7 +802,7 @@ public class UrlBar extends AutocompleteEditText {
             afm.notifyValueChanged(this);
         }
 
-        limitDisplayableLength();
+        limitDisplayableLength(/* updateExistingSpan= */ false);
         // Notifies observers about text changes with rich context (e.g., whether it was an
         // insertion or deletion).
         if (mRichTextChangeListener != null) {
@@ -755,6 +858,9 @@ public class UrlBar extends AutocompleteEditText {
     public boolean onTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
+            if (mUrlBarDelegate != null) {
+                mUrlBarDelegate.onUrlBarTouchDown();
+            }
             if ((event.getButtonState() & MotionEvent.BUTTON_SECONDARY) != 0) {
                 if (isFocused()) {
                     selectWordAt(event.getX(), event.getY());
@@ -770,9 +876,8 @@ public class UrlBar extends AutocompleteEditText {
             if (mPointerDragActive) {
                 Editable text = getText();
                 if (text != null) {
-                    text.removeSpan(BoundsEllipsisSpan.INSTANCE);
                     // Re-hide very long URLs to prevent crashes.
-                    limitDisplayableLength();
+                    clearBoundsEllipsisSpans(text);
                 }
             }
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
@@ -791,6 +896,14 @@ public class UrlBar extends AutocompleteEditText {
             event.setAction(MotionEvent.ACTION_CANCEL);
         }
 
+        // Works around an Android bug (b/190156873): ArrowKeyMovementMethod extends a Shift+touch
+        // selection from a tap-down anchor that it never recorded (e.g. Shift was pressed
+        // mid-gesture, or TextView skipped ACTION_DOWN because it had no layout), which throws
+        // from Selection.setSelection(buffer, -1, ...). Dropping the Shift/selecting meta state
+        // before the event reaches TextView keeps the movement method off that path. The bug is
+        // present on every API level Chrome supports, from 29 through 37 (the newest release), so
+        // this cannot be gated on SDK_INT until an Android release has the fix.
+        MetaKeyKeyListener.resetMetaState(getText());
         return super.onTouchEvent(event);
     }
 
@@ -1084,7 +1197,7 @@ public class UrlBar extends AutocompleteEditText {
 
             case android.R.id.shareText:
                 RecordUserAction.record("Omnibox.LongPress.Share");
-                ShareHelper.recordShareSource(ShareHelper.ShareSourceAndroid.ANDROID_SHARE_SHEET);
+                ShareHelper.recordShareSource(ShareSourceAndroid.ANDROID_SHARE_SHEET);
                 if (mUrlBarDelegate != null) {
                     String replacementShareText =
                             mTextContextMenuDelegate != null
@@ -1117,14 +1230,14 @@ public class UrlBar extends AutocompleteEditText {
         // Restore backwards selection if necessary.
         if (start > end) setSelection(start, end);
 
-        if (mShowAiModeCallback != null) {
+        if (mShowAiModeCallback != null && !TextUtils.isEmpty(mShowAiModeLabel)) {
             if (menu.findItem(R.id.url_bar_always_show_ai_mode) == null) {
                 MenuItem alwaysShowItem =
                         menu.add(
                                 Menu.NONE,
                                 R.id.url_bar_always_show_ai_mode,
                                 Menu.CATEGORY_SECONDARY,
-                                getContext().getString(R.string.always_show_ai_mode));
+                                mShowAiModeLabel);
                 alwaysShowItem.setCheckable(true);
                 alwaysShowItem.setChecked(mShowAiMode);
                 alwaysShowItem.setOnMenuItemClickListener(
@@ -1308,7 +1421,12 @@ public class UrlBar extends AutocompleteEditText {
         // Request scroll update in case scroll type or view dimensions have changed.
         mCurrentScrollType = scrollType;
         mPendingScroll = isLayoutRequested() || (getLayout() == null);
-        if (mPendingScroll) return;
+        if (mPendingScroll) {
+            mPendingScrollOriginChanged |= originChanged;
+            return;
+        }
+        originChanged |= mPendingScrollOriginChanged;
+        mPendingScrollOriginChanged = false;
 
         if (mFocused) return;
 
@@ -1337,6 +1455,9 @@ public class UrlBar extends AutocompleteEditText {
                 // therefore false negative using regular equality is unlikely.
                 && currentTextSize == mPreviousScrollFontSize
                 && currentIsRtl == mPreviousScrollWasRtl
+                // A previously computed scroll position is only valid for text whose origin ends
+                // at the same index the position was computed for.
+                && mOriginEndIndex == mPreviousScrollOriginEndIndex
                 && isVisibleTextTheSame(text)) {
             scrollTo(mPreviousScrollResultXPosition, 0);
 
@@ -1368,80 +1489,80 @@ public class UrlBar extends AutocompleteEditText {
     }
 
     private void clearBoundsEllipsisSpans(Editable text) {
-        int textLength = text.length();
-        BoundsEllipsisSpan[] spans = text.getSpans(0, textLength, BoundsEllipsisSpan.class);
-        if (spans != null && spans.length > 0) {
-            for (BoundsEllipsisSpan span : spans) {
-                text.removeSpan(span);
-            }
-        }
+        text.removeSpan(BoundsEllipsisSpan.INSTANCE);
+        // Recompute the length limit across the full text now that the bounds span is gone.
+        limitDisplayableLength(/* updateExistingSpan= */ true);
     }
 
     /**
-     * Evaluates visible constraints dynamically for long URLs. If character width exceeds available
-     * viewport limits, a BoundsEllipsisSpan overrides trailing overflowing text.
+     * Elides text that overflows the viewport with a trailing {@link BoundsEllipsisSpan}. The span
+     * never starts before the end of the origin. When the origin covers the whole text, no trailing
+     * span is applied and scrollToTLD() brings the end of the origin into view instead.
      */
     private void applyBoundsEllipsis(Editable text, int measuredWidth) {
         if (!shouldApplyBoundsEllipsis()) return;
 
         int textLength = text.length();
-        if (textLength == 0) return;
+        if (textLength == 0 || getLayout() == null) return;
 
-        Layout textLayout = getLayout();
-        if (textLayout != null) {
-            int ellipsisWidth = (int) textLayout.getPaint().measureText(EllipsisSpan.ELLIPSIS);
-            int cutoffWidth = Math.max(0, measuredWidth - ellipsisWidth);
-            int finalVisibleCharIndex =
-                    textLayout
-                            .getPaint()
-                            .getOffsetForAdvance(
-                                    text, 0, textLength, 0, textLength, false, cutoffWidth);
-
-            BoundsEllipsisSpan[] spans = text.getSpans(0, textLength, BoundsEllipsisSpan.class);
-            if (finalVisibleCharIndex < textLength) {
-                if (spans != null
-                        && spans.length == 1
-                        && text.getSpanStart(spans[0]) == finalVisibleCharIndex
-                        && text.getSpanEnd(spans[0]) == textLength) {
-                    return;
-                }
-                clearBoundsEllipsisSpans(text);
-                text.setSpan(
-                        BoundsEllipsisSpan.INSTANCE,
-                        finalVisibleCharIndex,
-                        textLength,
-                        Editable.SPAN_INCLUSIVE_EXCLUSIVE);
-            } else {
-                if (spans != null && spans.length > 0) {
-                    clearBoundsEllipsisSpans(text);
-                }
-            }
+        if (mOriginEndIndex >= textLength || getTextWidth() <= measuredWidth) {
+            clearBoundsEllipsisSpans(text);
+            return;
         }
+
+        String measuredText = assumeNonNull(mLastMeasuredText);
+        int offset;
+        if (mOriginEndIndex >= measuredText.length()) {
+            // The sampled prefix lies within the origin, so the viewport ellipsis cannot start
+            // before mOriginEndIndex. Skip ellipsizing the sample so a narrow prefix fitting a
+            // wide viewport cannot clear the bounds span on an overflowing URL.
+            offset = mOriginEndIndex;
+        } else {
+            CharSequence ellipsizedText =
+                    TextUtils.ellipsize(
+                            measuredText, getPaint(), measuredWidth, TextUtils.TruncateAt.END);
+            if (TextUtils.equals(measuredText, ellipsizedText)) {
+                clearBoundsEllipsisSpans(text);
+                return;
+            }
+            // Never hide any part of the origin.
+            offset = Math.max(ellipsizedText.length() - 1, mOriginEndIndex);
+        }
+
+        if (text.getSpanStart(BoundsEllipsisSpan.INSTANCE) != offset
+                || text.getSpanEnd(BoundsEllipsisSpan.INSTANCE) != textLength) {
+            text.setSpan(
+                    BoundsEllipsisSpan.INSTANCE,
+                    offset,
+                    textLength,
+                    Editable.SPAN_INCLUSIVE_EXCLUSIVE);
+        }
+        // Reconcile the length limit with the bounds span: drop it when the bounds span hides
+        // everything past maxLength, or bound it inside an origin longer than maxLength.
+        limitDisplayableLength(/* updateExistingSpan= */ true);
     }
 
     /** Scrolls the omnibox text to show the very beginning of the text entered. */
     @VisibleForTesting
-    /* package */ void scrollToBeginning() {
+    void scrollToBeginning() {
         // Clear the visible text hint as this path is not used for normal browser navigation.
         // If that changes in the future, update this to actually calculate the visible text hints.
         mVisibleTextPrefixHint = null;
 
         Editable text = getText();
+        int measuredWidth = getVisibleMeasuredViewportWidth();
         float scrollPos = 0f;
         Layout layout = assumeNonNull(getLayout());
         if (TextUtils.isEmpty(text)) {
-            if (getLayoutDirection() == LAYOUT_DIRECTION_RTL
-                    && getHint() != null
-                    && BidiFormatter.getInstance().isRtl(getHint())) {
+            if (getLayoutDirection() == LAYOUT_DIRECTION_RTL && getHint() != null) {
                 // Compared to below that uses getPrimaryHorizontal(1) due to 0 returning an
                 // invalid value, if the text is empty, getPrimaryHorizontal(0) returns the actual
                 // max scroll amount.
-                scrollPos = (int) layout.getPrimaryHorizontal(0) - getMeasuredWidth();
+                scrollPos = (int) layout.getPrimaryHorizontal(0) - measuredWidth;
             }
         } else if (BidiFormatter.getInstance().isRtl(text)) {
             // RTL.
             float endPointX = layout.getPrimaryHorizontal(text.length());
-            int measuredWidth = getMeasuredWidth();
             float width = layout.getPaint().measureText(text.toString());
             scrollPos = Math.max(0, endPointX - measuredWidth + width);
         }
@@ -1466,18 +1587,25 @@ public class UrlBar extends AutocompleteEditText {
 
             Layout textLayout = assumeNonNull(getLayout());
 
-            boolean hasEllipsis = false;
-            EllipsisSpan[] spans = null;
+            int trailingSpanStart = -1;
             if (shouldApplyBoundsEllipsis()) {
-                spans = url.getSpans(0, urlTextLength, EllipsisSpan.class);
-                hasEllipsis = spans != null && spans.length > 0;
+                int boundsStart = url.getSpanStart(BoundsEllipsisSpan.INSTANCE);
+                int lengthLimitStart = url.getSpanStart(EllipsisSpan.INSTANCE);
+                assert boundsStart < 0
+                                || lengthLimitStart < 0
+                                || url.getSpanEnd(EllipsisSpan.INSTANCE) <= boundsStart
+                        : "EllipsisSpan and BoundsEllipsisSpan must not overlap";
+                if (boundsStart >= 0) {
+                    trailingSpanStart = boundsStart;
+                } else if (url.getSpanEnd(EllipsisSpan.INSTANCE) == urlTextLength) {
+                    trailingSpanStart = lengthLimitStart;
+                }
             }
 
+            boolean hasEllipsis = trailingSpanStart >= 0;
             int finalVisibleCharIndex;
             if (hasEllipsis) {
-                assert spans != null && spans.length == 1
-                        : "Should never apply more than a single EllipsisSpan";
-                finalVisibleCharIndex = url.getSpanStart(spans[0]);
+                finalVisibleCharIndex = trailingSpanStart;
             } else {
                 finalVisibleCharIndex =
                         textLayout
@@ -1582,37 +1710,29 @@ public class UrlBar extends AutocompleteEditText {
                 // reliable.
                 mVisibleTextPrefixHint =
                         url.subSequence(0, Math.min(originEndIndex + 1, urlTextLength));
+            } else if (textLayout.getPrimaryHorizontal(urlTextLength) <= measuredWidth) {
+                // Only store the visibility hint if the text is wider than the viewport. Text
+                // narrower than the viewport is not a useful hint because a consumer would not
+                // understand if a subsequent character would be visible on screen or not.
+                //
+                // If issues arise where text that is very close to the visible viewport is
+                // causing issues with the reliability of visible hint, consider checking that
+                // the measured text is greater than the measured width plus a small additional
+                // padding.
+                mVisibleTextPrefixHint = null;
             } else {
-                if (textLayout.getPrimaryHorizontal(urlTextLength) <= measuredWidth) {
-                    // Only store the visibility hint if the text is wider than the viewport. Text
-                    // narrower than the viewport is not a useful hint because a consumer would not
-                    // understand if a subsequent character would be visible on screen or not.
-                    //
-                    // If issues arise where text that is very close to the visible viewport is
-                    // causing issues with the reliability of visible hint, consider checking that
-                    // the measured text is greater than the measured width plus a small additional
-                    // padding.
-                    mVisibleTextPrefixHint = null;
+                // TODO(b/357649034): revisit and simplify the logic, seek to obsolete
+                // mPreviousScrollOriginEndIndex if possible.
+                String previousTLD =
+                        mPreviousScrollText == null
+                                        || (mPreviousScrollText.length()
+                                                < mPreviousScrollOriginEndIndex)
+                                ? null
+                                : mPreviousScrollText.substring(0, mPreviousScrollOriginEndIndex);
+                if (!TextUtils.isEmpty(previousTLD) && TextUtils.indexOf(url, previousTLD) == 0) {
+                    mVisibleTextPrefixHint = calculateVisibleHint();
                 } else {
-                    if (ChromeFeatureList.sNoVisibleHintForDifferentTLD.isEnabled()) {
-                        // TODO(b/357649034): revisit and simplify the logic, seek to obsolete
-                        // mPreviousScrollOriginEndIndex if possible.
-                        String previousTLD =
-                                mPreviousScrollText == null
-                                                || (mPreviousScrollText.length()
-                                                        < mPreviousScrollOriginEndIndex)
-                                        ? null
-                                        : mPreviousScrollText.substring(
-                                                0, mPreviousScrollOriginEndIndex);
-                        if (!TextUtils.isEmpty(previousTLD)
-                                && TextUtils.indexOf(url, previousTLD) == 0) {
-                            mVisibleTextPrefixHint = calculateVisibleHint();
-                        } else {
-                            mVisibleTextPrefixHint = null;
-                        }
-                    } else {
-                        mVisibleTextPrefixHint = calculateVisibleHint();
-                    }
+                    mVisibleTextPrefixHint = null;
                 }
             }
         } else {
@@ -1709,14 +1829,30 @@ public class UrlBar extends AutocompleteEditText {
         if (mUrlBarDelegate == null || !mUrlBarDelegate.allowKeyboardLearning()) {
             outAttrs.imeOptions |= EditorInfoCompat.IME_FLAG_NO_PERSONALIZED_LEARNING;
         }
-        // Note: we apply this text variation here (as opposed to Constructor), because we want the
-        // Editor to behave slightly differently than Keyboards:
-        // - we want Editor to permit word selection on long-press, and
-        // - we want Soft keyboards to stop auto-correcting user input.
-        // This happens with certain modern soft keyboards, such as SwiftKey, that corrects spelling
-        // of some urls (e.g. "flipkart.com" -> "flip cart. com" or "flipkart. com") despite
-        // TYPE_TEXT_FLAG_NO_SUGGESTIONS and lack of TYPE_TEXT_FLAG_AUTO_CORRECT.
-        outAttrs.inputType |= EditorInfo.TYPE_TEXT_VARIATION_URI;
+        if (mUseNaturalTextIme) {
+            // Configure IME for natural text composition (e.g. AI Mode): allow auto-correct,
+            // sentence capitalization, and dictionary suggestions (which also switches ',' in place
+            // of '/' on soft keyboards).
+            outAttrs.inputType &= ~EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+            outAttrs.inputType |=
+                    EditorInfo.TYPE_TEXT_FLAG_AUTO_CORRECT
+                            | EditorInfo.TYPE_TEXT_FLAG_CAP_SENTENCES;
+            Editable text = getText();
+            int selectionStart = getSelectionStart();
+            if (text != null && selectionStart >= 0) {
+                outAttrs.initialCapsMode =
+                        TextUtils.getCapsMode(text, selectionStart, outAttrs.inputType);
+            }
+        } else {
+            // Note: we apply this text variation here (as opposed to Constructor), because we want
+            // the Editor to behave slightly differently than Keyboards:
+            // - we want Editor to permit word selection on long-press, and
+            // - we want Soft keyboards to stop auto-correcting user input.
+            // This happens with certain modern soft keyboards, such as SwiftKey, that corrects
+            // spelling of some urls (e.g. "flipkart.com" -> "flip cart. com" or "flipkart. com")
+            // despite TYPE_TEXT_FLAG_NO_SUGGESTIONS and lack of TYPE_TEXT_FLAG_AUTO_CORRECT.
+            outAttrs.inputType |= EditorInfo.TYPE_TEXT_VARIATION_URI;
+        }
         outAttrs.inputType &= ~EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE;
         outAttrs.imeOptions &= ~EditorInfo.IME_FLAG_NO_ENTER_ACTION;
         return connection;
@@ -1735,7 +1871,7 @@ public class UrlBar extends AutocompleteEditText {
         }
     }
 
-    private void limitDisplayableLength() {
+    private void limitDisplayableLength(boolean updateExistingSpan) {
         // To limit displayable length we replace the middle portion of the string with an ellipsis
         // (or the end of the string when the toolbar variation is enabled). That affects only
         // presentation of the text, and doesn't affect other aspects like copying to the clipboard,
@@ -1745,40 +1881,50 @@ public class UrlBar extends AutocompleteEditText {
 
         Editable text = getText();
         int textLength = text.length();
-        if (textLength <= maxLength) {
-            if (mDidEllipsizeTextHint) {
-                EllipsisSpan[] spans = text.getSpans(0, textLength, EllipsisSpan.class);
-                if (spans != null && spans.length > 0) {
-                    assert spans.length == 1 : "Should never apply more than a single EllipsisSpan";
-                    for (int i = 0; i < spans.length; i++) {
-                        text.removeSpan(spans[i]);
-                    }
-                }
-            }
+        int boundsStart =
+                textLength > maxLength && text.getSpanEnd(BoundsEllipsisSpan.INSTANCE) == textLength
+                        ? text.getSpanStart(BoundsEllipsisSpan.INSTANCE)
+                        : -1;
+        int visibleLength = boundsStart >= 0 ? boundsStart : textLength;
+        if (visibleLength <= maxLength) {
+            // Only drop the length-limit span; setTextWithTruncation() or applyBoundsEllipsis()
+            // may have attached a BoundsEllipsisSpan.
+            if (mDidEllipsizeTextHint) text.removeSpan(EllipsisSpan.INSTANCE);
             mDidEllipsizeTextHint = false;
             return;
         }
 
         mDidEllipsizeTextHint = true;
 
-        int spanLeft = text.nextSpanTransition(0, textLength, EllipsisSpan.class);
-        if (spanLeft != textLength) return;
+        // Avoid shifting an existing span during focused edits so typing adjacent to the ellipsis
+        // does not get swallowed or trigger extra relayouts on every keystroke.
+        if (!updateExistingSpan && mFocused && text.getSpanStart(EllipsisSpan.INSTANCE) >= 0) {
+            return;
+        }
 
-        if (shouldApplyBoundsEllipsis() && !mFocused) {
-            // If the toolbar variation is active, append trailing ellipsis at the very end for
-            // unfocused
-            // sessions. Preserves middle-chunk masking for standard focused editing behavior.
-            text.setSpan(
-                    EllipsisSpan.INSTANCE,
-                    maxLength,
-                    textLength,
-                    Editable.SPAN_INCLUSIVE_EXCLUSIVE);
+        int targetStart;
+        int targetEnd;
+        // A trailing ellipsis must never hide the end of the origin. When a bounds span already
+        // covers the path or the origin exceeds the limit, collapse the middle of the visible
+        // prefix so the end of the origin stays visible and layout stays capped at maxLength.
+        if (shouldApplyBoundsEllipsis()
+                && !mFocused
+                && boundsStart < 0
+                && mOriginEndIndex <= maxLength) {
+            targetStart = maxLength;
+            targetEnd = textLength;
         } else {
-            spanLeft = maxLength / 2;
+            int spanLeft = maxLength / 2;
+            targetStart = spanLeft;
+            targetEnd = visibleLength - spanLeft;
+        }
+
+        if (text.getSpanStart(EllipsisSpan.INSTANCE) != targetStart
+                || text.getSpanEnd(EllipsisSpan.INSTANCE) != targetEnd) {
             text.setSpan(
                     EllipsisSpan.INSTANCE,
-                    spanLeft,
-                    textLength - spanLeft,
+                    targetStart,
+                    targetEnd,
                     Editable.SPAN_INCLUSIVE_EXCLUSIVE);
         }
     }
@@ -1865,11 +2011,13 @@ public class UrlBar extends AutocompleteEditText {
      * Returns the measured width of the displayed text in pixels, caching the result across
      * repeated measurement passes to avoid UI thread layout stalls.
      *
-     * <p>At most {@link #MAX_URL_LENGTH_FOR_MEASUREMENT} characters are handed to the text shaper;
-     * longer text is measured by sampling that prefix and scaling the result up to the full length,
-     * clamped to {@link #MAX_REPORTED_TEXT_WIDTH_PX}. The approximation is safe because callers
-     * only use the value to decide whether the text overflows the available width, and then clamp
-     * it to that width.
+     * <p>Text of up to {@link #MAX_URL_LENGTH_FOR_MEASUREMENT} characters is measured exactly.
+     * Longer text is not handed to the text shaper and is reported as {@link
+     * #MAX_REPORTED_TEXT_WIDTH_PX} wide. Callers only use the value to decide whether the text
+     * overflows the available width, and then clamp it to that width, so the only requirement is
+     * that the width is never under-reported: text reported as fitting is laid out without
+     * scrolling. A width estimated from part of the text cannot meet that requirement, because the
+     * advance of a character says nothing about the advance of the characters after it.
      */
     /* package */ @Px
     int getTextWidth() {
@@ -1901,10 +2049,13 @@ public class UrlBar extends AutocompleteEditText {
             return mLastMeasuredTextWidth;
         }
 
+        // The prefix of unmeasured text is still recorded: it keys the cache and is the sample
+        // applyBoundsEllipsis() works with.
         String measuredSubstr = textToMeasure.subSequence(0, lengthToMeasure).toString();
-        double sampledWidth = getPaint().measureText(measuredSubstr);
-        double extrapolatedWidth = sampledWidth * totalLength / lengthToMeasure;
-        int width = (int) Math.min(MAX_REPORTED_TEXT_WIDTH_PX, Math.ceil(extrapolatedWidth));
+        int width = MAX_REPORTED_TEXT_WIDTH_PX;
+        if (lengthToMeasure == totalLength) {
+            width = (int) Math.min(width, Math.ceil(getPaint().measureText(measuredSubstr)));
+        }
         mLastMeasuredText = measuredSubstr;
         mLastMeasuredTextSize = textSize;
         mLastMeasuredTextLength = totalLength;
@@ -1922,7 +2073,7 @@ public class UrlBar extends AutocompleteEditText {
      * get decent performance from TextView.
      */
     /* package */ static class EllipsisSpan extends ReplacementSpan {
-        static final String ELLIPSIS = "...";
+        static final String ELLIPSIS = "\u2026";
 
         public static final EllipsisSpan INSTANCE = new EllipsisSpan();
 
@@ -1933,7 +2084,7 @@ public class UrlBar extends AutocompleteEditText {
                 int start,
                 int end,
                 Paint.@Nullable FontMetricsInt fm) {
-            return (int) paint.measureText(ELLIPSIS);
+            return (int) Math.ceil(paint.measureText(ELLIPSIS));
         }
 
         @Override

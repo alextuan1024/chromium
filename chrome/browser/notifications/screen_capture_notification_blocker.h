@@ -70,8 +70,6 @@ class ScreenCaptureNotificationBlocker
     kNotifyMuted,
     // The user clicked on "Show" and we show all notifications as usual.
     kShowAll,
-    // The user clicked on "Snooze" to snooze all notifications in this session.
-    kSnooze,
   };
 
   NotifyState state_ = NotifyState::kNotifyMuted;
@@ -82,8 +80,6 @@ class ScreenCaptureNotificationBlocker
   int replaced_notification_count_ = 0;
   // Number of notifications closed during the current screen capture session.
   int closed_notification_count_ = 0;
-  // Number of notifications prevented from showing while we're snoozing.
-  int snoozed_notification_count_ = 0;
   // Flag if metrics have been reported for the current screen capture session.
   bool reported_session_metrics_ = false;
   // Timestamp of when the last "muted" notification got shown.
@@ -101,8 +97,7 @@ class ScreenCaptureNotificationBlocker
 
   // Storing raw pointers here is fine because MediaStreamCaptureIndicator
   // notifies us before the WebContents is destroyed.
-  base::flat_set<raw_ptr<content::WebContents, CtnExperimental>>
-      capturing_web_contents_;
+  base::flat_set<raw_ptr<content::WebContents>> capturing_web_contents_;
 };
 
 #endif  // CHROME_BROWSER_NOTIFICATIONS_SCREEN_CAPTURE_NOTIFICATION_BLOCKER_H_

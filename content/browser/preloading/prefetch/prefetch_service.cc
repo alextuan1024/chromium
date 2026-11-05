@@ -45,7 +45,6 @@
 #include "content/browser/preloading/prefetch/prefetch_type.h"
 #include "content/browser/preloading/prefetch/prefetch_url_loader_factory_utils.h"
 #include "content/browser/preloading/preloading_attempt_impl.h"
-#include "content/browser/preloading/prerender/prerender_features.h"
 #include "content/browser/preloading/proxy_lookup_client_impl.h"
 #include "content/browser/renderer_host/policy_container_host.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
@@ -373,7 +372,10 @@ PrefetchService::PrefetchService(BrowserContext* browser_context)
           PrefetchTLSCanaryCheckURL(
               delegate_ ? delegate_->GetDefaultTLSCanaryCheckURL()
                         : GURL("")))),
-      scheduler_(std::make_unique<PrefetchScheduler>(this)) {}
+      scheduler_(std::make_unique<PrefetchScheduler>(this)) {
+  BrowserContextImpl::From(browser_context_)
+      ->SetIsPrefetchServiceCreated(base::PassKey<PrefetchService>());
+}
 
 PrefetchService::~PrefetchService() {  // NOLINT(modernize-use-equals-default)
   // This is to avoid notifying `PrefetchService::OnWillBeDestroyed()` in the
@@ -439,10 +441,6 @@ base::WeakPtr<PrefetchContainer> PrefetchService::AddPrefetchRequestInternal(
       return Action::kTakeNew;
     }
     PrefetchContainer& prefetch_container_old = *prefetch_iter->second;
-
-    if (!features::UsePrefetchPrerenderIntegration()) {
-      return Action::kReplaceOldWithNew;
-    }
 
     switch (prefetch_container_old.GetMatchResolverAction().ToServableState()) {
       case PrefetchServableState::kNotServable:
@@ -552,10 +550,10 @@ PrefetchService::CreatePrefetchContainerFromPrePrefetchForTesting(  // IN-TEST
 
   std::unique_ptr<PrePrefetchContainer> pre_prefetch_container =
       static_cast<PrePrefetchHandleImpl&>(*pre_prefetch_handle)
-          .TakePrePrefetchContainerOnUI();
+          .TakePrePrefetchContainerOnUIThread();
   CHECK(pre_prefetch_container);
   std::unique_ptr<const PrefetchRequest> prefetch_request_of_pre_prefetch =
-      pre_prefetch_container->TakePrefetchRequestOnUI();
+      pre_prefetch_container->TakePrefetchRequestOnUIThread();
   return CreatePrefetchContainer(std::move(prefetch_request_of_pre_prefetch),
                                  std::move(pre_prefetch_container));
 }
@@ -785,12 +783,12 @@ PrefetchService::AddPrefetchRequestFromPrePrefetch(
   auto* handle_impl =
       static_cast<PrePrefetchHandleImpl*>(pre_prefetch_handle.get());
   std::unique_ptr<PrePrefetchContainer> pre_prefetch_container =
-      handle_impl->TakePrePrefetchContainerOnUI();
+      handle_impl->TakePrePrefetchContainerOnUIThread();
 
   CHECK(pre_prefetch_container);
 
   std::unique_ptr<const PrefetchRequest> prefetch_request =
-      pre_prefetch_container->TakePrefetchRequestOnUI();
+      pre_prefetch_container->TakePrefetchRequestOnUIThread();
 
   base::WeakPtr<PrefetchContainer> prefetch_container =
       AddPrefetchRequestInternal(std::move(prefetch_request),
@@ -1379,8 +1377,12 @@ void PrefetchService::OnGotEligibilityForRedirect(
     return;
   }
 
+  bool should_remove_embedder_additional_headers =
+      prefetch_container->ShouldRemoveEmbedderAdditionalHeaders(
+          redirect_info.new_url);
   auto headers_update_params = PrepareRedirectHeadersForPrefetch(
-      redirect_info.new_url, prefetch_container->request());
+      redirect_info.new_url, prefetch_container->request(),
+      should_remove_embedder_additional_headers);
 
   prefetch_container->UpdateResourceRequest(redirect_info,
                                             headers_update_params);
@@ -1624,7 +1626,8 @@ void PrefetchService::SendPrefetchRequest(
   auto streaming_loader = PrefetchStreamingURLLoader::CreateAndStart(
       GetURLLoaderFactoryForCurrentPrefetch(prefetch_container),
       *prefetch_container.GetResourceRequest(),
-      kNavigationalPrefetchTrafficAnnotation, PrefetchTimeoutDuration(),
+      kNavigationalPrefetchTrafficAnnotation,
+      PrefetchTimeoutDuration(prefetch_container.request()),
       base::BindOnce(&PrefetchContainer::OnPrefetchResponseStarted,
                      weak_prefetch_container),
       base::BindRepeating(&PrefetchService::OnPrefetchRedirect,

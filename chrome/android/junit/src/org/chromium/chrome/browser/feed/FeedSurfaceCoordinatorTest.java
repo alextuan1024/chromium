@@ -28,6 +28,7 @@ import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtil
 import android.app.Activity;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Point;
 import android.os.SystemClock;
@@ -38,6 +39,7 @@ import android.widget.FrameLayout;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -51,6 +53,7 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
@@ -92,6 +95,7 @@ import org.chromium.chrome.browser.xsurface.feed.FeedLaunchReliabilityLogger;
 import org.chromium.chrome.browser.xsurface.feed.FeedLaunchReliabilityLogger.SurfaceType;
 import org.chromium.chrome.browser.xsurface.feed.FeedSurfaceScope;
 import org.chromium.chrome.browser.xsurface.feed.FeedSurfaceScopeDependencyProvider;
+import org.chromium.chrome.browser.xsurface.feed.ResourceFetcher;
 import org.chromium.chrome.browser.xsurface_provider.XSurfaceProcessScopeProvider;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.feature_engagement.Tracker;
@@ -105,7 +109,9 @@ import org.chromium.components.user_prefs.UserPrefsJni;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.url.GURL;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.function.Supplier;
 
@@ -168,8 +174,10 @@ public class FeedSurfaceCoordinatorTest {
 
     // Mocked JNI.
     @Mock private FeedSurfaceRendererBridge.Natives mFeedSurfaceRendererBridgeJniMock;
+
     @Mock private FeedServiceBridge.Natives mFeedServiceBridgeJniMock;
     @Mock private FeedProcessScopeDependencyProvider.Natives mProcessScopeJniMock;
+    @Mock private FeedSurfaceScopeDependencyProviderImpl.Natives mSurfaceScopeJniMock;
     @Mock private FeedReliabilityLoggingBridge.Natives mFeedReliabilityLoggingBridgeJniMock;
     @Mock private UserPrefs.Natives mUserPrefsJniMock;
 
@@ -216,9 +224,14 @@ public class FeedSurfaceCoordinatorTest {
         mLayoutManager = new LinearLayoutManager(mActivity);
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
         FeedSurfaceRendererBridgeJni.setInstanceForTesting(mFeedSurfaceRendererBridgeJniMock);
+        when(mFeedSurfaceRendererBridgeJniMock.init(any(), any(), anyInt(), any()))
+                .thenAnswer(inv -> JniUniquePtr.createForTesting(1L));
         FeedServiceBridgeJni.setInstanceForTesting(mFeedServiceBridgeJniMock);
         FeedProcessScopeDependencyProviderJni.setInstanceForTesting(mProcessScopeJniMock);
+        FeedSurfaceScopeDependencyProviderImplJni.setInstanceForTesting(mSurfaceScopeJniMock);
         FeedReliabilityLoggingBridgeJni.setInstanceForTesting(mFeedReliabilityLoggingBridgeJniMock);
+        when(mFeedReliabilityLoggingBridgeJniMock.init(any()))
+                .thenAnswer(inv -> JniUniquePtr.createForTesting(1L));
         UserPrefsJni.setInstanceForTesting(mUserPrefsJniMock);
 
         when(mFeedServiceBridgeJniMock.getLoadMoreTriggerLookahead()).thenReturn(5);
@@ -451,7 +464,6 @@ public class FeedSurfaceCoordinatorTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2)
     public void testSetBackground_withImageFromDisk_delegatesToView() {
         mCoordinator.setBackgroundImageCoordinatorForTesting(mBackgroundImageCoordinator);
         NtpCustomizationConfigManager configManager = NtpCustomizationConfigManager.getInstance();
@@ -473,7 +485,6 @@ public class FeedSurfaceCoordinatorTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2)
     public void testSetBackground_disabledByPolicy() {
         assertNotNull(mCoordinator.getNtpBackgroundImageCoordinatorForTesting());
         mCoordinator.destroy();
@@ -487,7 +498,6 @@ public class FeedSurfaceCoordinatorTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2)
     @Config(qualifiers = "sw600dp")
     public void testNtpCustomizationButtonCreated() {
         assertNotNull(
@@ -569,8 +579,8 @@ public class FeedSurfaceCoordinatorTest {
     public void testDestroy_WithSwipeRefreshLayout() {
         mCoordinator.destroy();
 
-        FeedSwipeRefreshLayout swipeRefreshLayout = mock(FeedSwipeRefreshLayout.class);
-        when(swipeRefreshLayout.isRefreshing()).thenReturn(true);
+        FeedSwipeRefreshLayout swipeRefreshLayout =
+                FeedSwipeRefreshLayout.create(mActivity, View.NO_ID);
         mCoordinator =
                 new FeedSurfaceCoordinator(
                         mActivity,
@@ -595,11 +605,17 @@ public class FeedSurfaceCoordinatorTest {
                         mEdgeToEdgeSupplier,
                         mModuleRegistry);
 
+        swipeRefreshLayout.enableSwipe(/* scrollableContainerDelegate= */ null);
+        swipeRefreshLayout.setRefreshing(true);
+        assertTrue(swipeRefreshLayout.isEnabled());
+        assertTrue(swipeRefreshLayout.isRefreshing());
+        assertTrue(swipeRefreshLayout.getRefreshListenersForTesting().hasObserver(mCoordinator));
+
         mCoordinator.destroy();
 
-        verify(swipeRefreshLayout).setRefreshing(false);
-        verify(swipeRefreshLayout).removeOnRefreshListener(mCoordinator);
-        verify(swipeRefreshLayout).disableSwipe();
+        assertFalse(swipeRefreshLayout.getRefreshListenersForTesting().hasObserver(mCoordinator));
+        assertFalse(swipeRefreshLayout.isRefreshing());
+        assertFalse(swipeRefreshLayout.isEnabled());
 
         mCoordinator = null;
     }
@@ -630,6 +646,61 @@ public class FeedSurfaceCoordinatorTest {
         assertTrue(rootView.isFocused());
         assertFalse(otherView.isFocused());
         downEvent.recycle();
+    }
+
+    @Test
+    public void testHasDrawnFrame() {
+        assertFalse(mCoordinator.hasDrawnFrame());
+        mCoordinator.getView().draw(new Canvas());
+        assertTrue(mCoordinator.hasDrawnFrame());
+    }
+
+    @Test
+    public void testProcessViewActionUsesCoordinatorProfile() {
+        ProfileManager.setLastUsedProfileForTesting(mock(Profile.class));
+        ArgumentCaptor<FeedSurfaceScopeDependencyProvider> dependencyProviderCaptor =
+                ArgumentCaptor.forClass(FeedSurfaceScopeDependencyProvider.class);
+        verify(mProcessScope, Mockito.atLeastOnce())
+                .obtainFeedSurfaceScope(dependencyProviderCaptor.capture());
+        byte[] actionData = new byte[] {1, 2, 3};
+
+        dependencyProviderCaptor
+                .getValue()
+                .processViewAction(
+                        actionData,
+                        new FeedLoggingParameters(
+                                /* clientInstanceId= */ "instance-id",
+                                /* accountName= */ "account",
+                                /* loggingEnabled= */ true,
+                                /* viewActionsEnabled= */ true,
+                                /* rootEventId= */ new byte[] {5}));
+
+        verify(mProcessScopeJniMock).processViewAction(eq(mProfileMock), eq(actionData), any());
+    }
+
+    @Test
+    public void testAsyncDataFetcherUsesCoordinatorProfile() {
+        ProfileManager.setLastUsedProfileForTesting(mock(Profile.class));
+        ArgumentCaptor<FeedSurfaceScopeDependencyProvider> dependencyProviderCaptor =
+                ArgumentCaptor.forClass(FeedSurfaceScopeDependencyProvider.class);
+        verify(mProcessScope, Mockito.atLeastOnce())
+                .obtainFeedSurfaceScope(dependencyProviderCaptor.capture());
+        ResourceFetcher.Request request = new ResourceFetcher.Request();
+        request.uri = "https://example.com/feed";
+        request.method = "GET";
+        request.headers = List.of();
+
+        dependencyProviderCaptor.getValue().getAsyncDataFetcher().fetch(request, response -> {});
+        ShadowLooper.runUiThreadTasks();
+
+        verify(mSurfaceScopeJniMock)
+                .fetchResource(
+                        eq(mProfileMock),
+                        eq(new GURL("https://example.com/feed")),
+                        eq("GET"),
+                        any(),
+                        isNull(),
+                        any());
     }
 
     private boolean hasStreamBound() {

@@ -26,6 +26,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 #include <limits>
+#include <numbers>
 
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
@@ -124,8 +125,8 @@ TEST(StringTest, NumberToStringEcmaScriptBoundaries) {
 
 TEST(StringTest, NumberToStringEcmaScriptRegularNumbers) {
   // Pi.
-  TestNumberToStringEcmaScript(kPiDouble, "3.141592653589793");
-  TestNumberToStringEcmaScript(kPiFloat, "3.1415927410125732");
+  TestNumberToStringEcmaScript(std::numbers::pi, "3.141592653589793");
+  TestNumberToStringEcmaScript(std::numbers::pi_v<float>, "3.1415927410125732");
   TestNumberToStringEcmaScript(kPiOverTwoDouble, "1.5707963267948966");
   TestNumberToStringEcmaScript(kPiOverTwoFloat, "1.5707963705062866");
   TestNumberToStringEcmaScript(kPiOverFourDouble, "0.7853981633974483");
@@ -877,6 +878,27 @@ TEST(StringTest, CodePointAtAndNext) {
   i = 5;
   EXPECT_EQ(0xDE01, string_surrogates.CodePointAtAndNext(i));
   EXPECT_EQ(6u, i);
+}
+
+TEST(StringTest, Bytes) {
+  [[clang::no_destroy]] static constinit const String kNull;
+  [[clang::no_destroy]] static constinit const String kLiteral =
+      String::FromLiteral<"abc">();
+  EXPECT_EQ(nullptr, kNull.Bytes());
+  EXPECT_EQ(kLiteral.Impl()->Bytes(), kLiteral.Bytes());
+
+  String null_string;
+  EXPECT_EQ(nullptr, null_string.Bytes());
+
+  String empty_string("");
+  EXPECT_NE(nullptr, empty_string.Bytes());
+  EXPECT_EQ(empty_string.Impl()->Bytes(), empty_string.Bytes());
+
+  String string8("abc");
+  EXPECT_EQ(string8.Span8().data(), string8.Bytes());
+
+  String string16(u"\u3042\u3044");
+  EXPECT_EQ(string16.Span16().data(), string16.Bytes());
 }
 
 }  // namespace blink

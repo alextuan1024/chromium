@@ -20,15 +20,18 @@ import android.view.ViewTreeObserver;
 import androidx.annotation.ColorInt;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ActivityState;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.version_info.VersionInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.intents.BrowserIntentUtils;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
 import org.chromium.components.embedder_support.view.ContentView;
 import org.chromium.components.thinwebview.ThinWebView;
@@ -36,14 +39,17 @@ import org.chromium.components.thinwebview.ThinWebViewAttachParams;
 import org.chromium.components.thinwebview.ThinWebViewConstraints;
 import org.chromium.components.thinwebview.ThinWebViewFactory;
 import org.chromium.components.thinwebview.internal.ThinWebViewContextMenuItemDelegate;
+import org.chromium.components.thinwebview.internal.ThinWebViewContextMenuItemDelegate.EphemeralTabOpener;
 import org.chromium.content_public.browser.ActionModeCallbackHelper;
 import org.chromium.content_public.browser.ImeAdapter;
 import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.ViewEventSink;
+import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate;
 import org.chromium.ui.base.ViewAndroidDelegate;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.base.WindowAndroid.ActivityStateObserver;
 import org.chromium.ui.base.WindowAndroid.KeyboardShortcutsDelegate;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
@@ -64,7 +70,7 @@ public class TabBottomSheetWebUi {
     private final @ColorInt int mBackgroundColor;
     private final @TabBottomSheetClientType int mClientType;
     private final @CoBrowseContainerType int mContainerType;
-    private final @Nullable BiConsumer<GURL, String> mEphemeralTabOpener;
+    private final @Nullable EphemeralTabOpener mEphemeralTabOpener;
     private final @Nullable BiConsumer<GURL, String> mReadLaterOpener;
 
     private @Nullable ThinWebView mThinWebView;
@@ -77,16 +83,37 @@ public class TabBottomSheetWebUi {
     // dropdown is dismissed if the window has not regained focus.
     private boolean mIgnoreClearFocusForDropdown;
 
+    // ThinWebView marks the WebContents visible once on attach and never hides it, so the page
+    // would otherwise not get a visibilitychange event when Chrome goes to the background. Mirror
+    // the host activity state the same way TabImpl does for tabs, so the page can release the
+    // microphone and other foreground-only resources. Only used for the Glic client while the
+    // GlicVoice feature is enabled.
+    private final ActivityStateObserver mActivityStateObserver =
+            new ActivityStateObserver() {
+                @Override
+                public void onActivityStopped() {
+                    updateWebContentsVisibility(Visibility.HIDDEN);
+                }
+
+                @Override
+                public void onActivityResumed() {
+                    updateWebContentsVisibility(Visibility.VISIBLE);
+                }
+            };
+    private boolean mIsObservingActivityState;
+
     TabBottomSheetWebUi(
             Context context,
             View containerView,
             WindowAndroid windowAndroid,
+            @Nullable BottomSheetController bottomSheetController,
             ContextMenuPopulatorFactory contextMenuPopulatorFactory,
             SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
             @ColorInt int backgroundColor,
+            @ColorInt int placeholderElemColor,
             @TabBottomSheetClientType int clientType,
             @CoBrowseContainerType int containerType,
-            @Nullable BiConsumer<GURL, String> ephemeralTabOpener,
+            @Nullable EphemeralTabOpener ephemeralTabOpener,
             @Nullable BiConsumer<GURL, String> readLaterOpener,
             @Nullable CoBrowseComponentProvider componentProvider) {
         mContext = context;
@@ -103,7 +130,9 @@ public class TabBottomSheetWebUi {
                 new WebViewResizingHelper(
                         containerView,
                         windowAndroid,
+                        bottomSheetController,
                         backgroundColor,
+                        placeholderElemColor,
                         containerType == CoBrowseContainerType.SIDE_PANEL,
                         componentProvider);
     }
@@ -114,17 +143,21 @@ public class TabBottomSheetWebUi {
             return;
         }
 
-        // Reset references and top-level window for the old WebContents and ContentView.
-        mContentView = null;
-
-        if (mWebContents != null && !mWebContents.isDestroyed()) {
-            mWebContents.setTopLevelNativeWindow(null);
-        }
-
+        releaseCurrentWebContents();
         mWebContents = webContents;
         if (mWebContents == null) {
+            if (mIsObservingActivityState) {
+                mWindowAndroid.removeActivityStateObserver(mActivityStateObserver);
+                mIsObservingActivityState = false;
+            }
             destroyThinWebView();
             return;
+        }
+        if (!mIsObservingActivityState
+                && mClientType == TabBottomSheetClientType.GLIC
+                && ChromeFeatureList.isEnabled(ChromeFeatureList.GLIC_VOICE)) {
+            mWindowAndroid.addActivityStateObserver(mActivityStateObserver);
+            mIsObservingActivityState = true;
         }
 
         mWebContents.getEventForwarder().setCurrentTouchOffsetX(0.0f);
@@ -134,9 +167,17 @@ public class TabBottomSheetWebUi {
         mContentView = contentView;
 
         setupContentViewAttachListener(contentView);
+        contentView.setOnFocusChangeListener(
+                (v, hasFocus) -> mWebViewResizingHelper.onFocusChanged());
         setupViewAndroidDelegate(contentView);
         setupContextMenuPopulator();
         attachToThinWebView(contentView);
+        // Attaching to ThinWebView marks the WebContents visible. Undo that if the host activity
+        // is already in the background.
+        if (mIsObservingActivityState
+                && mWindowAndroid.getActivityState() == ActivityState.STOPPED) {
+            updateWebContentsVisibility(Visibility.HIDDEN);
+        }
 
         // ThinWebView creates an orphaned WindowAndroid. We explicitly map the host
         // activity's KeyboardShortcutsDelegate to this orphaned window so that
@@ -299,6 +340,22 @@ public class TabBottomSheetWebUi {
         return mWebContents;
     }
 
+    private void releaseCurrentWebContents() {
+        if (mWebContents != null && !mWebContents.isDestroyed()) {
+            ViewAndroidDelegate viewDelegate = mWebContents.getViewAndroidDelegate();
+            if (viewDelegate == null || viewDelegate.getContainerView() == mContentView) {
+                mWebContents.setTopLevelNativeWindow(null);
+            }
+        }
+        mWebContents = null;
+        mContentView = null;
+    }
+
+    private void updateWebContentsVisibility(@Visibility int visibility) {
+        if (mWebContents == null || mWebContents.isDestroyed()) return;
+        mWebContents.updateWebContentsVisibility(visibility);
+    }
+
     void setIgnoreClearFocus(boolean ignoreClearFocus) {
         if (mContentView != null) {
             mContentView.setIgnoreClearFocus(ignoreClearFocus);
@@ -311,6 +368,7 @@ public class TabBottomSheetWebUi {
 
     void destroy() {
         setWebContents(null, false);
+        mWebViewResizingHelper.destroy();
     }
 
     View getWebUiView() {

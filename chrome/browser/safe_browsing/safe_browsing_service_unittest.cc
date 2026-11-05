@@ -11,28 +11,21 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/generated_javascript_optimizer_pref.h"
-#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/download/download_item_warning_data.h"
 #include "chrome/browser/prefs/browser_prefs.h"
-#include "chrome/browser/safe_browsing/chrome_ping_manager_factory.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
-#include "chrome/browser/safe_browsing/safe_browsing_pref_change_handler.h"
+#include "chrome/browser/safe_browsing/ping_manager/chrome_ping_manager_factory.h"
 #include "chrome/browser/safe_browsing/security_settings_bundle_pref_change_handler.h"
-#include "chrome/browser/site_protection/site_familiarity_utils.h"
+#include "chrome/browser/safe_browsing/settings/safe_browsing_pref_change_handler.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
-#include "components/content_settings/core/browser/host_content_settings_map.h"
-#include "components/content_settings/core/common/content_settings.h"
-#include "components/content_settings/core/common/content_settings_types.h"
-#include "components/content_settings/core/common/features.h"
-#include "components/content_settings/core/common/pref_names.h"
 #include "components/download/public/common/download_danger_type.h"
 #include "components/download/public/common/mock_download_item.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/safe_browsing/content/browser/safe_browsing_service_interface.h"
-#include "components/safe_browsing/core/browser/ping_manager.h"
+#include "components/safe_browsing/core/browser/ping_manager/ping_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/safe_browsing_policy_handler.h"
@@ -88,11 +81,6 @@ class MockSecuritySettingsBundlePrefChangeHandler
 
 class SafeBrowsingServiceTest : public testing::Test {
  public:
-  SafeBrowsingServiceTest() {
-    feature_list_.InitAndDisableFeature(
-        safe_browsing::kExtendedReportingRemovePrefDependency);
-  }
-
   void SetUp() override {
     browser_process_ = TestingBrowserProcess::GetGlobal();
 
@@ -123,13 +111,6 @@ class SafeBrowsingServiceTest : public testing::Test {
   }
 
   Profile* profile() { return profile_.get(); }
-
-  void ResetAndReinitFeatures(
-      const std::vector<base::test::FeatureRef>& enabled_features,
-      const std::vector<base::test::FeatureRef>& disabled_features) {
-    feature_list_.Reset();
-    feature_list_.InitWithFeatures(enabled_features, disabled_features);
-  }
 
  protected:
   void SetUpDownload() {
@@ -247,13 +228,13 @@ class SafeBrowsingServiceTest : public testing::Test {
 
  private:
   network::TestURLLoaderFactory test_url_loader_factory_;
-  base::test::ScopedFeatureList feature_list_;
   ChromePingManagerAllowerForTesting allow_ping_manager_;
 };
 
 TEST_F(SafeBrowsingServiceTest, SendDownloadReport_Success) {
   SetUpDownload();
-  SetExtendedReportingPrefForTests(profile_->GetPrefs(), true);
+  SetSafeBrowsingState(profile_->GetPrefs(),
+                       SafeBrowsingState::ENHANCED_PROTECTION);
 
   auto* ping_manager =
       ChromePingManagerFactory::GetForBrowserContext(profile());
@@ -288,9 +269,10 @@ TEST_F(SafeBrowsingServiceTest, SendDownloadReport_Success) {
 
 TEST_F(
     SafeBrowsingServiceTest,
-    SendDownloadReport_NoDownloadWarningActionWhenExtendedReportingDisabled) {
+    SendDownloadReport_NoDownloadWarningActionWhenEnhancedProtectionDisabled) {
   SetUpDownload();
-  SetExtendedReportingPrefForTests(profile_->GetPrefs(), false);
+  SetSafeBrowsingState(profile_->GetPrefs(),
+                       SafeBrowsingState::STANDARD_PROTECTION);
 
   auto* ping_manager =
       ChromePingManagerFactory::GetForBrowserContext(profile());
@@ -387,42 +369,13 @@ TEST_F(SafeBrowsingServiceTest, WhenUserIsInNoProtectionNormallyoReturnsFalse) {
   EXPECT_FALSE(SafeBrowsingService::IsUserEligibleForESBPromo(profile()));
 }
 
-TEST_F(SafeBrowsingServiceTest,
-       SaveExtendedReportingPrefValueOnProfileAddedFeatureFlagEnabled) {
-  ResetAndReinitFeatures(
-      {safe_browsing::kExtendedReportingRemovePrefDependency}, {});
+TEST_F(SafeBrowsingServiceTest, SaveExtendedReportingPrefValueOnProfileAdded) {
   SetExtendedReportingPrefForTests(profile_->GetPrefs(), true);
   sb_service_->OnProfileAdded(profile());
   // Since the user enabled Extended Reporting, the preference value used to
   // record the state of Extended Reporting before its deprecation should be set
   // to true.
   EXPECT_TRUE(profile_->GetPrefs()->GetBoolean(
-      prefs::kSafeBrowsingScoutReportingEnabledWhenDeprecated));
-}
-
-TEST_F(SafeBrowsingServiceTest,
-       SaveExtendedReportingPrefValueOnProfileAddedFeatureFlagDisabled) {
-  // SetUp:
-  //   * disable kExtendedReportingRemovePrefDependency
-  //   * Setup SBER enabled and
-  //   kSafeBrowsingScoutReportingEnabledWhenDeprecated true
-  ResetAndReinitFeatures(
-      {}, {safe_browsing::kExtendedReportingRemovePrefDependency});
-  SetExtendedReportingPrefForTests(profile_->GetPrefs(), true);
-
-  // Simulate that kSafeBrowsingScoutReportingEnabledWhenDeprecated was set to
-  // true previously.
-  profile_->GetPrefs()->SetBoolean(
-      prefs::kSafeBrowsingScoutReportingEnabledWhenDeprecated, true);
-  EXPECT_TRUE(profile_->GetPrefs()->GetBoolean(
-      prefs::kSafeBrowsingScoutReportingEnabledWhenDeprecated));
-
-  // Add the profile to trigger the function.
-  sb_service_->OnProfileAdded(profile());
-
-  // The value of the pref should be reverted to false because the feature is
-  // disabled now.
-  EXPECT_FALSE(profile_->GetPrefs()->GetBoolean(
       prefs::kSafeBrowsingScoutReportingEnabledWhenDeprecated));
 }
 
@@ -571,7 +524,8 @@ TEST_F(SafeBrowsingServiceTest, EnhancedProtectionPrefChange_SingleProfile) {
               MaybeShowEnhancedProtectionSettingChangeNotification(testing::_));
 
   // 4. Add the mock handler to the map.
-  sb_service_->pref_change_handlers_map_[profile1] = std::move(mock_handler1);
+  sb_service_->profile_states_[profile1].pref_change_handler =
+      std::move(mock_handler1);
 
   // 5. Call the method under test.
   sb_service_->EnhancedProtectionPrefChange(profile1);
@@ -588,7 +542,7 @@ TEST_F(
   EXPECT_CALL(*mock_handler1,
               MaybeShowEnhancedBundleSettingChangeNotification());
 
-  sb_service_->bundled_settings_pref_change_handlers_map_[profile1] =
+  sb_service_->profile_states_[profile1].bundled_settings_pref_change_handler =
       std::move(mock_handler1);
   sb_service_->SecuritySettingsBundlePrefChange(profile1);
 }
@@ -614,8 +568,9 @@ TEST_F(SafeBrowsingServiceTest,
               MaybeShowEnhancedProtectionSettingChangeNotification(testing::_));
 
   // 4. Add the mock handlers to the map, associating them with their profiles.
-  sb_service_->pref_change_handlers_map_[profile1] = std::move(mock_handler1);
-  sb_service_->pref_change_handlers_map_[profile2_ptr] =
+  sb_service_->profile_states_[profile1].pref_change_handler =
+      std::move(mock_handler1);
+  sb_service_->profile_states_[profile2_ptr].pref_change_handler =
       std::move(mock_handler2);
 
   // 5. Call the method under test for each profile.
@@ -640,10 +595,10 @@ TEST_F(
   EXPECT_CALL(*mock_handler2.get(),
               MaybeShowEnhancedBundleSettingChangeNotification());
 
-  sb_service_->bundled_settings_pref_change_handlers_map_[profile1] =
+  sb_service_->profile_states_[profile1].bundled_settings_pref_change_handler =
       std::move(mock_handler1);
-  sb_service_->bundled_settings_pref_change_handlers_map_[profile2_ptr] =
-      std::move(mock_handler2);
+  sb_service_->profile_states_[profile2_ptr]
+      .bundled_settings_pref_change_handler = std::move(mock_handler2);
   sb_service_->SecuritySettingsBundlePrefChange(profile1);
   sb_service_->SecuritySettingsBundlePrefChange(profile2_ptr);
 }
@@ -692,7 +647,8 @@ TEST_F(SafeBrowsingServiceAntiPhishingTelemetryTest,
   const int kExpectedClickEventCount = 5;
   const int kExpectedKeyEventCount = 2;
   const int kExpectedPasteEventCount = 0;
-  SetExtendedReportingPrefForTests(profile_->GetPrefs(), true);
+  SetSafeBrowsingState(profile_->GetPrefs(),
+                       SafeBrowsingState::ENHANCED_PROTECTION);
   GURL test_url("http://phishing.com");
   GURL test_page_url("http://page_url.com");
   PhishySiteInteractionMap test_map = SetUpPhishyInteractionMap(
@@ -726,7 +682,8 @@ TEST_F(SafeBrowsingServiceAntiPhishingTelemetryTest,
   const int kExpectedClickEventCount = 5;
   const int kExpectedKeyEventCount = 2;
   const int kExpectedPasteEventCount = 0;
-  SetExtendedReportingPrefForTests(otr_profile_->GetPrefs(), true);
+  SetSafeBrowsingState(otr_profile_->GetPrefs(),
+                       SafeBrowsingState::ENHANCED_PROTECTION);
   GURL test_url("http://phishing.com");
   GURL test_page_url("http://page_url.com");
   PhishySiteInteractionMap test_map = SetUpPhishyInteractionMap(
@@ -785,7 +742,8 @@ class SendNotificationsAcceptedTest : public SafeBrowsingServiceTest {
 TEST_F(SendNotificationsAcceptedTest, SendReportForAllowlistedURL) {
   EnableNotificationsAcceptedFeature();
   SetUrlIsAllowlistedForTesting();
-  SetExtendedReportingPrefForTests(profile_->GetPrefs(), true);
+  SetSafeBrowsingState(profile_->GetPrefs(),
+                       SafeBrowsingState::ENHANCED_PROTECTION);
   GURL notification_url1("http://www.notification1.com/");
   GURL notification_url2("http://www.notification2.com/");
   GURL notification_url3("http://www.notification3.com/");
@@ -814,7 +772,7 @@ TEST_F(SendNotificationsAcceptedTest, SendReportForAllowlistedURL) {
 }
 
 TEST_F(SendNotificationsAcceptedTest,
-       DontSendReportForNonExtendedReportingUser) {
+       DontSendReportForNonEnhancedProtectionUser) {
   EnableNotificationsAcceptedFeature();
   SetUrlIsAllowlistedForTesting();
   GURL notification_url1("http://www.notification1.com/");
@@ -829,7 +787,8 @@ TEST_F(SendNotificationsAcceptedTest,
 TEST_F(SendNotificationsAcceptedTest, DontSendReportWhenFeatureIsNotEnabled) {
   DisableNotificationsAcceptedFeature();
   SetUrlIsAllowlistedForTesting();
-  SetExtendedReportingPrefForTests(profile_->GetPrefs(), true);
+  SetSafeBrowsingState(profile_->GetPrefs(),
+                       SafeBrowsingState::ENHANCED_PROTECTION);
   GURL notification_url1("http://www.notification1.com/");
   GURL notification_url2("http://www.notification2.com/");
   GURL notification_url3("http://www.notification3.com/");
@@ -857,7 +816,8 @@ TEST_F(SendNotificationsAcceptedTest, DontSendReportWhenFeatureIsNotEnabled) {
 TEST_F(SendNotificationsAcceptedTest, DontSendReportWhenUserIsIncognito) {
   // Set profile to incognito
   otr_profile_ = std::move(profile_builder_.BuildIncognito(profile_.get()));
-  SetExtendedReportingPrefForTests(otr_profile_->GetPrefs(), true);
+  SetSafeBrowsingState(otr_profile_->GetPrefs(),
+                       SafeBrowsingState::ENHANCED_PROTECTION);
   EnableNotificationsAcceptedFeature();
   SetUrlIsAllowlistedForTesting();
 
@@ -898,11 +858,6 @@ class SafeBrowsingServiceMigrationTest : public testing::Test {
     base::RunLoop().RunUntilIdle();
   }
 
-  void MigrateUserToEnhancedBundleIfNeeded(Profile* profile) {
-    // MigrateUserToEnhancedBundle will be queued by OnProfileAdded.
-    RunOnProfileAddedAndWaitForTasks(profile);
-  }
-
   void MigrateUserToAutomaticJavaScriptBlockingIfNeeded(Profile* profile) {
     // MigrateUserToAutomaticJavaScriptBlocking will be queued by
     // OnProfileAdded.
@@ -929,322 +884,6 @@ class SafeBrowsingServiceMigrationTest : public testing::Test {
  private:
   network::TestURLLoaderFactory test_url_loader_factory_;
 };
-
-class SafeBrowsingServiceEnhancedSecurityBundleMigrationTest
-    : public SafeBrowsingServiceMigrationTest {
- public:
-  SafeBrowsingServiceEnhancedSecurityBundleMigrationTest() {
-    feature_list_.InitAndEnableFeature(kMigrateEnhancedSbUserToEnhancedBundle);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-       MigrationOccursOnce) {
-  auto profile = std::make_unique<TestingProfile>();
-  PrefService* prefs = profile->GetPrefs();
-
-  {
-    SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-    SetSafeBrowsingState(prefs, SafeBrowsingState::ENHANCED_PROTECTION);
-    MigrateUserToEnhancedBundleIfNeeded(profile.get());
-    EXPECT_EQ(SecuritySettingsBundleSetting::ENHANCED,
-              GetSecurityBundleSetting(*prefs));
-  }
-
-  {
-    SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-    SetSafeBrowsingState(prefs, SafeBrowsingState::ENHANCED_PROTECTION);
-    MigrateUserToEnhancedBundleIfNeeded(profile.get());
-    EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-              GetSecurityBundleSetting(*prefs));
-  }
-}
-
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-       SetsMigrationToastStateToPending) {
-  auto profile = std::make_unique<TestingProfile>();
-  PrefService* prefs = profile->GetPrefs();
-
-  SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-  SetSafeBrowsingState(prefs, SafeBrowsingState::ENHANCED_PROTECTION);
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-  EXPECT_EQ(
-      static_cast<int>(SecuritySettingsBundleToastState::kPending),
-      prefs->GetInteger(prefs::kSecuritySettingsBundleMigrationToastState));
-}
-
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-       MigrateOnlyOnLaunchAfterFeatureEnabled) {
-  auto profile = std::make_unique<TestingProfile>();
-  PrefService* prefs = profile->GetPrefs();
-  {
-    // Migration should not occur because the user has standard safe-browsing.
-    SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-    SetSafeBrowsingState(prefs, SafeBrowsingState::STANDARD_PROTECTION);
-    MigrateUserToEnhancedBundleIfNeeded(profile.get());
-    EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-              GetSecurityBundleSetting(*prefs));
-  }
-
-  {
-    // Migration should not occur because this is not the first browser-launch
-    // after the migration-feature was enabled.
-    SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-    SetSafeBrowsingState(prefs, SafeBrowsingState::ENHANCED_PROTECTION);
-    MigrateUserToEnhancedBundleIfNeeded(profile.get());
-    EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-              GetSecurityBundleSetting(*prefs));
-  }
-}
-
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-       DontMigrateIfUsingStandardSafeBrowsing) {
-  auto profile = std::make_unique<TestingProfile>();
-  PrefService* prefs = profile->GetPrefs();
-  SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-  SetSafeBrowsingState(prefs, SafeBrowsingState::STANDARD_PROTECTION);
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*prefs));
-}
-
-// TODO(crbug.com/483770964): Create a parameterized test suite for the
-// migration tests.
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-       EsbBundleMigrationJavaScriptOptimizerAllowedToBlockForUnfamiliarSites) {
-  // Set the initial pre-migration preference state.
-  auto profile = std::make_unique<TestingProfile>();
-  PrefService* prefs = profile->GetPrefs();
-  SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-  SetSafeBrowsingState(prefs, SafeBrowsingState::ENHANCED_PROTECTION);
-  HostContentSettingsMapFactory::GetForProfile(profile.get())
-      ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
-                                 CONTENT_SETTING_ALLOW);
-  prefs->SetBoolean(prefs::kJavascriptOptimizerBlockedForUnfamiliarSites,
-                    false);
-
-  // Verify the pre-migration preference state.
-  EXPECT_EQ(
-      site_protection::ComputeDefaultJavascriptOptimizerSetting(profile.get()),
-      content_settings::JavascriptOptimizerSetting::kAllowed);
-
-  // Migration ESB users to the enhanced bundle.
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-
-  // Verify the post-migration preference state.
-  EXPECT_EQ(SecuritySettingsBundleSetting::ENHANCED,
-            GetSecurityBundleSetting(*prefs));
-  EXPECT_EQ(
-      site_protection::ComputeDefaultJavascriptOptimizerSetting(profile.get()),
-      content_settings::JavascriptOptimizerSetting::kBlockedForUnfamiliarSites);
-}
-
-TEST_F(
-    SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-    EsbBundleMigrationJavaScriptOptimizerBlockForUnfamiliarSitesRemainsUnchanged) {
-  // Set the initial pre-migration preference state.
-  auto profile = std::make_unique<TestingProfile>();
-  PrefService* prefs = profile->GetPrefs();
-  SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-  SetSafeBrowsingState(prefs, SafeBrowsingState::ENHANCED_PROTECTION);
-  HostContentSettingsMapFactory::GetForProfile(profile.get())
-      ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
-                                 CONTENT_SETTING_ALLOW);
-  prefs->SetBoolean(prefs::kJavascriptOptimizerBlockedForUnfamiliarSites, true);
-
-  // Verify the pre-migration preference state.
-  EXPECT_EQ(
-      site_protection::ComputeDefaultJavascriptOptimizerSetting(profile.get()),
-      content_settings::JavascriptOptimizerSetting::kBlockedForUnfamiliarSites);
-
-  // Migration ESB users to the enhanced bundle.
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-
-  // Verify the post-migration preference state.
-  EXPECT_EQ(SecuritySettingsBundleSetting::ENHANCED,
-            GetSecurityBundleSetting(*prefs));
-  EXPECT_EQ(
-      site_protection::ComputeDefaultJavascriptOptimizerSetting(profile.get()),
-      content_settings::JavascriptOptimizerSetting::kBlockedForUnfamiliarSites);
-}
-
-TEST_F(
-    SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-    EsbBundleMigrationJavaScriptOptimizerBlockedForAllSitesRemainsUnchanged) {
-  // Set the initial pre-migration preference state.
-  auto profile = std::make_unique<TestingProfile>();
-  PrefService* prefs = profile->GetPrefs();
-  SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-  SetSafeBrowsingState(prefs, SafeBrowsingState::ENHANCED_PROTECTION);
-  HostContentSettingsMapFactory::GetForProfile(profile.get())
-      ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
-                                 CONTENT_SETTING_BLOCK);
-  prefs->SetBoolean(prefs::kJavascriptOptimizerBlockedForUnfamiliarSites,
-                    false);
-
-  // Verify the pre-migration preference state.
-  EXPECT_EQ(
-      site_protection::ComputeDefaultJavascriptOptimizerSetting(profile.get()),
-      content_settings::JavascriptOptimizerSetting::kBlocked);
-
-  // Migration ESB users to the enhanced bundle.
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-
-  // Verify the post-migration preference state.
-  EXPECT_EQ(SecuritySettingsBundleSetting::ENHANCED,
-            GetSecurityBundleSetting(*prefs));
-  EXPECT_EQ(
-      site_protection::ComputeDefaultJavascriptOptimizerSetting(profile.get()),
-      content_settings::JavascriptOptimizerSetting::kBlocked);
-}
-
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-       EsbBundleMigrationDisabledWhenEsbIsEnabledViaPolicy) {
-  // Set the initial pre-migration preference state.
-  auto profile = std::make_unique<TestingProfile>();
-  SetSafeBrowsingState(profile->GetPrefs(),
-                       SafeBrowsingState::ENHANCED_PROTECTION);
-  SetSecurityBundleSetting(*profile->GetPrefs(),
-                           SecuritySettingsBundleSetting::STANDARD);
-
-  // Set ESB preference via policy.
-  profile->GetTestingPrefService()->SetManagedPref(prefs::kSafeBrowsingEnhanced,
-                                                   base::Value(true));
-
-  // Verify the pre-migration preference state.
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*profile->GetPrefs()));
-
-  // Attempt migration ESB users to the enhanced bundle.
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-
-  // Verify that migration did not run.
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*profile->GetPrefs()));
-}
-
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-       EsbBundleMigrationDisabledWhenDefaultJSOptIsEnabledViaPolicy) {
-  // Set the initial pre-migration preference state.
-  auto profile = std::make_unique<TestingProfile>();
-  SetSafeBrowsingState(profile->GetPrefs(),
-                       SafeBrowsingState::ENHANCED_PROTECTION);
-  SetSecurityBundleSetting(*profile->GetPrefs(),
-                           SecuritySettingsBundleSetting::STANDARD);
-  profile->GetPrefs()->SetBoolean(
-      prefs::kJavascriptOptimizerBlockedForUnfamiliarSites, false);
-
-  // Set Javascript Optimizer preference via policy.
-  profile->GetTestingPrefService()->SetManagedPref(
-      prefs::kManagedDefaultJavaScriptOptimizerSetting,
-      base::Value(ContentSetting::CONTENT_SETTING_ALLOW));
-
-  // Verify the pre-migration preference state.
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*profile->GetPrefs()));
-
-  // Attempt migration ESB users to the enhanced bundle.
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-
-  // Verify that migration did not run.
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*profile->GetPrefs()));
-}
-
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-       EsbBundleMigrationDisabledWhenJSOptAllowedIsEnabledViaPolicy) {
-  // Set the initial pre-migration preference state.
-  auto profile = std::make_unique<TestingProfile>();
-  SetSafeBrowsingState(profile->GetPrefs(),
-                       SafeBrowsingState::ENHANCED_PROTECTION);
-  SetSecurityBundleSetting(*profile->GetPrefs(),
-                           SecuritySettingsBundleSetting::STANDARD);
-  profile->GetPrefs()->SetBoolean(
-      prefs::kJavascriptOptimizerBlockedForUnfamiliarSites, true);
-  HostContentSettingsMapFactory::GetForProfile(profile.get())
-      ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
-                                 CONTENT_SETTING_ALLOW);
-
-  // Set Javascript Optimizer preference via policy.
-  base::ListValue allowlist;
-  allowlist.Append("mydomain.com");
-  profile->GetTestingPrefService()->SetManagedPref(
-      prefs::kManagedJavaScriptOptimizerAllowedForSites, std::move(allowlist));
-
-  // Verify the pre-migration preference state.
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*profile->GetPrefs()));
-
-  // Attempt migration ESB users to the enhanced bundle.
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-
-  // Verify that migration did not run.
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*profile->GetPrefs()));
-}
-
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationTest,
-       EsbBundleMigrationDisabledWhenJSOptBlockedIsEnabledViaPolicy) {
-  // Set the initial pre-migration preference state.
-  auto profile = std::make_unique<TestingProfile>();
-  SetSafeBrowsingState(profile->GetPrefs(),
-                       SafeBrowsingState::ENHANCED_PROTECTION);
-  SetSecurityBundleSetting(*profile->GetPrefs(),
-                           SecuritySettingsBundleSetting::STANDARD);
-  profile->GetPrefs()->SetBoolean(
-      prefs::kJavascriptOptimizerBlockedForUnfamiliarSites, false);
-  HostContentSettingsMapFactory::GetForProfile(profile.get())
-      ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
-                                 CONTENT_SETTING_ALLOW);
-
-  // Set Javascript Optimizer preference via policy.
-  base::ListValue blocklist;
-  blocklist.Append("mydomain.com");
-  profile->GetTestingPrefService()->SetManagedPref(
-      prefs::kManagedJavaScriptOptimizerBlockedForSites, std::move(blocklist));
-
-  // Verify the pre-migration preference state.
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*profile->GetPrefs()));
-
-  // Attempt migration ESB users to the enhanced bundle.
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-
-  // Verify that migration did not run.
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*profile->GetPrefs()));
-}
-
-class SafeBrowsingServiceEnhancedSecurityBundleMigrationDisabledTest
-    : public SafeBrowsingServiceEnhancedSecurityBundleMigrationTest {
- public:
-  SafeBrowsingServiceEnhancedSecurityBundleMigrationDisabledTest() = default;
-  ~SafeBrowsingServiceEnhancedSecurityBundleMigrationDisabledTest() override =
-      default;
-
-  void SetUp() override {
-    SafeBrowsingServiceEnhancedSecurityBundleMigrationTest::SetUp();
-    scoped_feature_list_.InitAndDisableFeature(
-        kMigrateEnhancedSbUserToEnhancedBundle);
-  }
-
- protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(SafeBrowsingServiceEnhancedSecurityBundleMigrationDisabledTest,
-       DontMigrateIfFeatureIsDisabled) {
-  auto profile = std::make_unique<TestingProfile>();
-  PrefService* prefs = profile->GetPrefs();
-  SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::STANDARD);
-  SetSafeBrowsingState(prefs, SafeBrowsingState::ENHANCED_PROTECTION);
-  MigrateUserToEnhancedBundleIfNeeded(profile.get());
-  EXPECT_EQ(SecuritySettingsBundleSetting::STANDARD,
-            GetSecurityBundleSetting(*prefs));
-}
 
 // Test fixture for JsOptimizerSettingMigration tests. Provides
 // convenience functions for setting the state of the JavaScript

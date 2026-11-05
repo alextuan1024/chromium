@@ -10,14 +10,8 @@
 #import "ios/chrome/app/change_profile_continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_delegate.h"
-#import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/shared/ui/util/top_view_controller.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
+#import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator+subclassing.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 
 @interface UndoSignoutCoordinator () <AuthenticationFlowDelegate>
@@ -28,11 +22,13 @@
   AuthenticationFlow* _authenticationFlow;
 }
 
-- (instancetype)initWithBrowser:(Browser*)browser
-                       identity:(id<SystemIdentity>)identity
-       presentingViewController:(UIViewController*)presentingViewController {
-  if ((self = [super initWithBaseViewController:presentingViewController
-                                        browser:browser])) {
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                     regularBrowserOfScene:(SceneState*)sceneState
+                                  identity:(id<SystemIdentity>)identity {
+  CHECK(viewController);
+  CHECK(identity);
+  if ((self = [super initWithBaseViewController:viewController
+                          regularBrowserOfScene:sceneState])) {
     _identity = identity;
   }
   return self;

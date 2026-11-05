@@ -74,7 +74,8 @@ void CallInstanceMethodCallback(
   v8::MicrotasksScope microtasks(context,
                                  v8::MicrotasksScope::kDoNotRunMicrotasks);
 
-  v8::Local<v8::Function> target_fn = info.Data().As<v8::Function>();
+  v8::Local<v8::Function> target_fn =
+      info.Data().As<v8::Value>().As<v8::Function>();
 
   if (info.Length() == 0) {
     isolate->ThrowException(v8::Exception::TypeError(

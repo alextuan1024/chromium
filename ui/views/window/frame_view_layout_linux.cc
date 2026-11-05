@@ -5,10 +5,10 @@
 #include "ui/views/window/frame_view_layout_linux.h"
 
 #include <algorithm>
+#include <ranges>
 #include <utility>
 #include <vector>
 
-#include "base/containers/adapters.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/shadow_value.h"
 #include "ui/views/controls/button/button.h"
@@ -120,8 +120,9 @@ gfx::Insets FrameViewLayoutLinux::GetFrameBorderInsets() const {
 gfx::Insets FrameViewLayoutLinux::GetRestoredFrameBorderInsets() const {
   auto shadow_values = GetShadowValues(/*active=*/true);
   return GetRestoredFrameBorderInsetsLinux(
-      supports_client_frame_shadow_, gfx::Insets(kDefaultFrameBorderThickness),
-      shadow_values, gfx::Insets(kResizeBorder));
+      supports_client_frame_shadow_, tiled_,
+      gfx::Insets(kDefaultFrameBorderThickness), shadow_values,
+      gfx::Insets(kResizeBorder));
 }
 
 gfx::Rect FrameViewLayoutLinux::GetBoundsForClientView() const {
@@ -140,7 +141,7 @@ gfx::Rect FrameViewLayoutLinux::GetWindowBoundsForClientBounds(
 
 gfx::Insets FrameViewLayoutLinux::GetInputInsets() const {
   Widget* widget = view_->GetWidget();
-  if (widget->IsMaximized() || widget->IsFullscreen()) {
+  if (widget->IsMaximized() || widget->IsFullscreen() || tiled_) {
     return gfx::Insets();
   }
   // When showing shadows, the shadow border extends well beyond the resize
@@ -330,7 +331,7 @@ void FrameViewLayoutLinux::LayoutWindowControls() {
   // Layout trailing buttons right-to-left.
   next_button_x = view_->width() - insets.right() - top_spacing.right();
   is_first = true;
-  for (auto frame_button : base::Reversed(trailing_buttons)) {
+  for (auto frame_button : std::views::reverse(trailing_buttons)) {
     if (ConfigureButton(frame_button, /*is_leading=*/false, is_first,
                         next_button_x)) {
       is_first = false;

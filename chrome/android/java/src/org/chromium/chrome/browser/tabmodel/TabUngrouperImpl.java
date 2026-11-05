@@ -21,6 +21,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelActionListener.DialogType;
 import org.chromium.chrome.browser.tabmodel.TabModelRemover.TabModelRemoverFlowHandler;
 import org.chromium.components.browser_ui.widget.ActionConfirmationResult;
 import org.chromium.components.data_sharing.member_role.MemberRole;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.util.Collections;
@@ -61,7 +62,7 @@ public class TabUngrouperImpl implements TabUngrouper {
 
     @Override
     public void ungroupTabGroup(
-            Token tabGroupId,
+            TabGroupId tabGroupId,
             boolean trailing,
             boolean allowDialog,
             @Nullable TabModelActionListener listener) {
@@ -192,6 +193,14 @@ public class TabUngrouperImpl implements TabUngrouper {
             @Nullable TabModelActionListener listener = takeListener();
             if (listener != null) {
                 listener.willPerformActionOrShowDialog(DialogType.NONE, /* willSkipDialog= */ true);
+            }
+            if (mIsTabGroup && !newTabsToUngroup.isEmpty()) {
+                Token tabGroupId = newTabsToUngroup.get(0).getTabGroupId();
+                if (tabGroupId != null
+                        && tabModel.getTabCountForGroup(TabGroupId.fromRawToken(tabGroupId))
+                                == newTabsToUngroup.size()) {
+                    tabModel.notifyWillRemoveTabGroup(TabGroupId.fromRawToken(tabGroupId));
+                }
             }
             PassthroughTabUngrouper.doUngroupTabs(tabModel, newTabsToUngroup, mTrailing);
             if (listener != null) {

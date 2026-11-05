@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 
 #import <Accelerate/Accelerate.h>
+#import <CoreImage/CoreImage.h>
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
@@ -17,8 +18,10 @@
 #import "base/check.h"
 #import "base/check_op.h"
 #import "base/ios/ios_util.h"
+#import "base/metrics/histogram_functions.h"
 #import "base/notreached.h"
 #import "base/numerics/math_constants.h"
+#import "base/trace_event/trace_event.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -38,19 +41,6 @@ void SetA11yLabelAndUiAutomationName(
     NSString* englishUiAutomationName) {
   [element setAccessibilityLabel:l10n_util::GetNSString(idsAccessibilityLabel)];
   [element setAccessibilityIdentifier:englishUiAutomationName];
-}
-
-void SetUILabelScaledFont(UILabel* label, UIFont* font) {
-  label.font = [[UIFontMetrics defaultMetrics] scaledFontForFont:font];
-  label.adjustsFontForContentSizeCategory = YES;
-}
-
-void MaybeSetUILabelScaledFont(BOOL maybe, UILabel* label, UIFont* font) {
-  if (maybe) {
-    SetUILabelScaledFont(label, font);
-  } else {
-    label.font = font;
-  }
 }
 
 UIFont* PreferredFontForTextStyle(UIFontTextStyle style,
@@ -87,36 +77,6 @@ UIFont* PreferredFontForTextStyle(UIFontTextStyle style,
   return [metrics scaledFontForFont:base_font];
 }
 
-void SetUITextFieldScaledFont(UITextField* textField, UIFont* font) {
-  textField.font = [[UIFontMetrics defaultMetrics] scaledFontForFont:font];
-  textField.adjustsFontForContentSizeCategory = YES;
-}
-
-void MaybeSetUITextFieldScaledFont(BOOL maybe,
-                                   UITextField* textField,
-                                   UIFont* font) {
-  if (maybe) {
-    SetUITextFieldScaledFont(textField, font);
-  } else {
-    textField.font = font;
-  }
-}
-
-UIFont* CreateDynamicFont(UIFontTextStyle style, UIFontWeight weight) {
-  UIFontDescriptor* fontDescriptor =
-      [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
-  return [UIFont systemFontOfSize:fontDescriptor.pointSize weight:weight];
-}
-
-UIFont* CreateDynamicFont(UIFontTextStyle style,
-                          UIFontWeight weight,
-                          id<UITraitEnvironment> environment) {
-  UIFontDescriptor* fontDescriptor = [UIFontDescriptor
-      preferredFontDescriptorWithTextStyle:style
-             compatibleWithTraitCollection:environment.traitCollection];
-  return [UIFont systemFontOfSize:fontDescriptor.pointSize weight:weight];
-}
-
 UIImage* CaptureViewWithOption(UIView* view,
                                CGFloat scale,
                                CaptureViewOption option) {
@@ -139,10 +99,37 @@ UIImage* CaptureView(UIView* view, CGFloat scale) {
 }
 
 UIImage* GreyImage(UIImage* image) {
+  TRACE_EVENT("ui", "GreyImage");
   DCHECK(image);
+
+  if (IsGreyImageCIFilterEnabled()) {
+    static constexpr char kGreyImageCIFilterSuccessHistogram[] =
+        "IOS.Snapshots.GreyImageCIFilterSuccess";
+    CIImage* input_image = image.CIImage;
+    if (!input_image && image.CGImage) {
+      input_image = [CIImage imageWithCGImage:image.CGImage];
+    }
+    if (input_image) {
+      CIFilter* filter = [CIFilter filterWithName:@"CIColorControls"];
+      [filter setValue:input_image forKey:kCIInputImageKey];
+      [filter setValue:@0.0 forKey:kCIInputSaturationKey];
+      CIImage* output_image = filter.outputImage;
+      if (output_image) {
+        base::UmaHistogramBoolean(kGreyImageCIFilterSuccessHistogram, true);
+        return [UIImage imageWithCIImage:output_image
+                                   scale:image.scale
+                             orientation:image.imageOrientation];
+      }
+    }
+    // Falls back to the software implementation if the hardware filter approach
+    // fails for any reason.
+    base::UmaHistogramBoolean(kGreyImageCIFilterSuccessHistogram, false);
+  }
+
   UIGraphicsImageRendererFormat* format =
       [UIGraphicsImageRendererFormat preferredFormat];
-  // Grey images are always non-retina to improve memory performance.
+  // Grey images, when rendered on the CPU, are non-retina to improve memory
+  // usage.
   format.scale = 1;
   format.opaque = YES;
   CGRect greyImageRect = CGRectMake(0, 0, image.size.width, image.size.height);
@@ -191,22 +178,41 @@ CGFloat CurrentKeyboardHeight(NSValue* keyboardFrameValue) {
 
 CGFloat VisibleKeyboardHeightFromNotification(NSNotification* notification,
                                               UIWindow* window) {
-  if (!window) {
+  UIScreen* screen = window.windowScene.screen;
+  if (!screen) {
     return 0;
   }
-  NSDictionary* user_info = notification.userInfo;
-  CGRect keyboard_frame =
-      [user_info[UIKeyboardFrameEndUserInfoKey] CGRectValue];
 
-  id<UICoordinateSpace> from_coordinate_space =
-      ((UIScreen*)notification.object).coordinateSpace;
+  UIScreen* notification_screen =
+      base::apple::ObjCCast<UIScreen>(notification.object);
+  if (notification_screen && notification_screen != screen) {
+    return 0;
+  }
+
+  CGRect keyboard_frame = [base::apple::ObjCCast<NSValue>(
+      notification.userInfo[UIKeyboardFrameEndUserInfoKey]) CGRectValue];
+  if (CGRectIsEmpty(keyboard_frame)) {
+    return 0;
+  }
+
+  // Ignore floating or undocked keyboards (e.g., on iPad), which do not occupy
+  // the bottom edge of the screen. Allow a 1pt tolerance for fractional scale
+  // rounding.
+  constexpr CGFloat kKeyboardFrameTolerance = 1.0;
+  CGRect screen_bounds = screen.coordinateSpace.bounds;
+  if (CGRectGetWidth(keyboard_frame) <
+          CGRectGetWidth(screen_bounds) - kKeyboardFrameTolerance ||
+      CGRectGetMaxY(keyboard_frame) <
+          CGRectGetMaxY(screen_bounds) - kKeyboardFrameTolerance) {
+    return 0;
+  }
 
   CGRect keyboard_frame_in_window =
-      [from_coordinate_space convertRect:keyboard_frame
-                       toCoordinateSpace:window.coordinateSpace];
+      [screen.coordinateSpace convertRect:keyboard_frame
+                        toCoordinateSpace:window.coordinateSpace];
 
-  return CGRectIntersection(keyboard_frame_in_window, window.bounds)
-      .size.height;
+  return CGRectGetHeight(
+      CGRectIntersection(keyboard_frame_in_window, window.bounds));
 }
 
 UIImage* ImageWithColor(UIColor* color) {
@@ -286,14 +292,7 @@ bool IsWindowedMode(UIWindow* window) {
 }
 
 bool CanShowTabStrip(UITraitCollection* traitCollection) {
-  if (IsRegularXRegularSizeClass(traitCollection)) {
-    return true;
-  }
-  if (@available(iOS 26, *)) {
-    return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
-  }
-
-  return false;
+  return IsRegularXRegularSizeClass(traitCollection);
 }
 
 bool CanShowTabStrip(id<UITraitEnvironment> environment) {
@@ -444,8 +443,14 @@ NSAttributedString* TextForTabCount(int count, CGFloat font_size) {
     string = [NSString stringWithFormat:@"%d", count];
   }
 
-  UIFontWeight weight =
-      UIAccessibilityIsBoldTextEnabled() ? UIFontWeightHeavy : UIFontWeightBold;
+  UIFontWeight weight;
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    weight = UIAccessibilityIsBoldTextEnabled() ? UIFontWeightBlack
+                                                : UIFontWeightHeavy;
+  } else {
+    weight = UIAccessibilityIsBoldTextEnabled() ? UIFontWeightHeavy
+                                                : UIFontWeightBold;
+  }
   UIFont* font = [UIFont systemFontOfSize:font_size weight:weight];
   UIFontDescriptor* descriptor = [font.fontDescriptor
       fontDescriptorWithDesign:UIFontDescriptorSystemDesignRounded];

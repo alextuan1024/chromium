@@ -14,6 +14,13 @@
 #include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
+#include "build/build_config.h"
+
+#if BUILDFLAG(IS_WIN)
+#include <atomic>
+
+#include "base/win/windows_types.h"
+#endif
 
 namespace base {
 namespace debug {
@@ -39,6 +46,13 @@ class BASE_EXPORT AsanService {
   // access due to additional quarantining logic. If your hook will rely on
   // setting `should_abort`, then it is necessary to ensure that
   // halt_on_error() == false before registering the hook.
+  //
+  // When halt_on_error() == true, AddressSanitizer terminates the process
+  // itself after the callbacks have run, and AsanService leaves that to it.
+  // This keeps callbacks registered with `__sanitizer_set_death_callback()`
+  // working, which libFuzzer uses to save the input that caused the crash.
+  // AsanService only terminates the process directly when halt_on_error() ==
+  // false, or when a callback sets `should_exit_cleanly`.
   using ErrorCallback = void (*)(const char* reason,
                                  bool* should_exit_cleanly,
                                  bool* should_abort);
@@ -94,6 +108,12 @@ class BASE_EXPORT AsanService {
   // Ensure that we don't try and register callbacks before calling
   // Initialize.
   bool is_initialized_ GUARDED_BY(lock_) = false;
+
+#if BUILDFLAG(IS_WIN)
+  // Custom report HANDLE configured via `__sanitizer_set_report_fd`. This is
+  // atomic because `Log()` is called both with and without `lock_` held.
+  std::atomic<HANDLE> report_fd_{nullptr};
+#endif
 
   // The list of currently registered error callbacks.
   std::vector<ErrorCallback> error_callbacks_ GUARDED_BY(lock_);

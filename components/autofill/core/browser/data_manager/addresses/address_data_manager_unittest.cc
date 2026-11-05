@@ -8,11 +8,13 @@
 #include <string>
 #include <vector>
 
+#include "base/i18n/language_tag.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
@@ -24,6 +26,7 @@
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_test_api.h"
 #include "components/autofill/core/browser/data_quality/addresses/profile_token_quality_test_api.h"
+#include "components/autofill/core/browser/metrics/stored_profile_metrics.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/test_utils/autofill_testing_pref_service.h"
 #include "components/autofill/core/browser/test_utils/test_profiles.h"
@@ -120,9 +123,9 @@ class AddressDataManagerTest : public testing::Test {
   void RecreateAddressDataManager(
       bool wait_for_on_address_data_changed = true) {
     address_data_manager_ = std::make_unique<AddressDataManager>(
-        profile_database_service_, prefs_.get(), prefs_.get(), &sync_service_,
+        profile_database_service_, prefs_.get(), &sync_service_,
         identity_test_env_.identity_manager(), &strike_database_,
-        GeoIpCountryCode("US"), "en-US");
+        GeoIpCountryCode("US"), base::i18n::GetKnownLanguageTag("en-US"));
     address_data_manager_->LoadProfiles();
     if (wait_for_on_address_data_changed) {
       WaitForOnAddressDataChanged();
@@ -1334,6 +1337,29 @@ TEST_F(AddressDataManagerTest, IsAutofillProfileEnabled_EnterprisePolicy) {
   prefs_->SetManagedPref(prefs::kAutofillTypesBlocked, std::move(blocked_list));
 
   EXPECT_FALSE(address_data_manager().IsAutofillProfileEnabled());
+}
+
+TEST_F(AddressDataManagerTest, LogStoredProfileScriptTypeMetrics) {
+  {
+    base::HistogramTester histogram_tester;
+    RecreateAddressDataManager();
+    task_environment_.RunUntilIdle();
+    histogram_tester.ExpectTotalCount(
+        "Autofill.StoredProfile.CharacterScriptType", 0);
+  }
+
+  AddProfileToAddressDataManager(test::GetFullProfile());
+
+  {
+    base::HistogramTester histogram_tester;
+    RecreateAddressDataManager();
+    task_environment_.RunUntilIdle();
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.StoredProfile.CharacterScriptType",
+        autofill_metrics::AutofillProfileCharacterScriptType::kAsciiOnly, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Autofill.StoredProfileCountByScriptType.AsciiOnly", 1, 1);
+  }
 }
 
 }  // namespace

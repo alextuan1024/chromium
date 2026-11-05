@@ -20,27 +20,28 @@ changed, a window will be prompted asking for user's consent. The old version
 will also be saved in a backup file.
 """
 
-from __future__ import print_function
-
 __author__ = 'evanm (Evan Martin)'
 
 import ast
 from html import parser
 import logging
+import multiprocessing
 import os
 import re
+import runpy
 import sys
 from typing import Callable, Dict, List, Optional
 from xml.dom import minidom
 
 import setup_modules  # pylint: disable=unused-import
 
+
 import chromium_src.tools.metrics.actions.action_utils as action_utils
 import chromium_src.tools.metrics.actions.actions_model as actions_model
 import chromium_src.tools.metrics.common.presubmit_util as presubmit_util
-from chromium_src.tools.metrics.common.path_util import CHROMIUM_SRC_PATH
+import chromium_src.tools.metrics.common.path_util as path_util
 
-_CHROMIUM_SRC_PATH_STR = str(CHROMIUM_SRC_PATH)
+_CHROMIUM_SRC_PATH_STR = str(path_util.CHROMIUM_SRC_PATH)
 
 
 USER_METRICS_ACTION_RE = re.compile(
@@ -267,8 +268,6 @@ def AddExtensionActions(actions):
   actions.add('FileBrowser.PhotoEditor.View')
   actions.add('FileBrowser.SuggestApps.ShowDialog')
 
-
-
   # Actions sent by Chrome Connectivity Diagnostics.
   actions.add('ConnectivityDiagnostics.LaunchSource.OfflineChromeOS')
   actions.add('ConnectivityDiagnostics.LaunchSource.WebStore')
@@ -316,15 +315,18 @@ class ActionNameFinder:
       return None
 
 
-def GrepForActions(path, actions):
+def GrepForActions(path: str) -> set[str]:
   """Grep a source file for calls to UserMetrics functions.
 
   Arguments:
     path: path to the file
-    actions: set of actions to add to
+
+  Returns:
+    set of actions found in the file
   """
   global number_of_files_total
   number_of_files_total = number_of_files_total + 1
+  actions: set[str] = set()
 
   # Check the extension, using the regular expression for C++ syntax by default.
   ext = os.path.splitext(path)[1].lower()
@@ -346,7 +348,7 @@ def GrepForActions(path, actions):
       content = file.read()
     except UnicodeDecodeError:
       # If the file is not UTF-8, it's not a Chrome source file, ignore it.
-      return
+      return actions
 
   finder = ActionNameFinder(path, content, action_re)
   while True:
@@ -359,7 +361,7 @@ def GrepForActions(path, actions):
       logging.warning(str(e))
 
   if action_re != USER_METRICS_ACTION_RE:
-    return
+    return actions
 
   line_number = 0
   for line in content.splitlines():
@@ -371,6 +373,7 @@ def GrepForActions(path, actions):
           '%s has RecordComputedAction statement on line %d'
           % (path, line_number)
         )
+  return actions
 
 
 class WebUIActionsParser(parser.HTMLParser):
@@ -388,7 +391,7 @@ class WebUIActionsParser(parser.HTMLParser):
   def handle_starttag(self, tag, attrs):
     # We only care to examine tags that have a 'metric' attribute.
     attrs = dict(attrs)
-    if not 'metric' in attrs:
+    if 'metric' not in attrs:
       return
 
     # Boolean metrics have two corresponding actions.  All other metrics have
@@ -412,13 +415,16 @@ class WebUIActionsParser(parser.HTMLParser):
       self.actions.add(attrs['metric'])
 
 
-def GrepForWebUIActions(path: str, actions: set[str]) -> None:
+def GrepForWebUIActions(path: str) -> set[str]:
   """Grep a WebUI source file for elements with associated metrics.
 
   Arguments:
     path: path to the file
-    actions: set of actions to add to
+
+  Returns:
+    set of actions found in the file
   """
+  actions: set[str] = set()
   close_called = False
   action_parser = None
   try:
@@ -435,21 +441,25 @@ def GrepForWebUIActions(path: str, actions: set[str]) -> None:
   finally:
     if action_parser and not close_called:
       action_parser.close()
+  return actions
 
 
-def GrepForDevToolsActions(path: str, actions: set[str]) -> None:
+def GrepForDevToolsActions(path: str) -> set[str]:
   """Grep a DevTools source file for calls to UserMetrics functions.
 
   Arguments:
     path: path to the file
-    actions: set of actions to add to
+
+  Returns:
+    set of actions found in the file
   """
   global number_of_files_total
   number_of_files_total = number_of_files_total + 1
+  actions: set[str] = set()
 
   ext = os.path.splitext(path)[1].lower()
   if ext != '.js':
-    return
+    return actions
 
   with open(path, encoding='utf-8') as file:
     finder = ActionNameFinder(
@@ -463,13 +473,18 @@ def GrepForDevToolsActions(path: str, actions: set[str]) -> None:
       actions.add(action_name)
     except InvalidStatementException as e:
       logging.warning(str(e))
+  return actions
+
+
+_PARALLEL_SCAN_THRESHOLD = 500
+_MAX_SCAN_WORKERS = 32
 
 
 def WalkDirectory(
   root_path: str,
   actions: set[str],
   extensions: tuple[str, ...] | str,
-  callback: Callable[[str, set[str]], None],
+  callback: Callable[[str], set[str]],
 ):
   """Walk directory chooses which files to process based on a set
   of extensions, and runs the callback function on them.
@@ -483,6 +498,8 @@ def WalkDirectory(
   """
   if isinstance(extensions, str):
     extensions = (extensions,)
+
+  matching_paths = []
   for path, dirs, files in os.walk(root_path):
     dirs[:] = [d for d in dirs if not d.startswith('.') and d != 'third_party']
     for file in files:
@@ -495,7 +512,22 @@ def WalkDirectory(
       # wasting time.
       filename, ext = os.path.splitext(file)
       if ext in extensions and not filename.endswith('test'):
-        callback(os.path.join(path, file), actions)
+        matching_paths.append(os.path.join(path, file))
+
+  if len(matching_paths) >= _PARALLEL_SCAN_THRESHOLD:
+    # On macOS and Windows, workers start as fresh Python processes (not
+    # forked) and must run setup_modules.py to register `chromium_src`, so
+    # that the worker can import `chromium_src.*` when unpickling |callback|.
+    with multiprocessing.Pool(
+      processes=min(_MAX_SCAN_WORKERS, os.cpu_count() or 4),
+      initializer=runpy.run_path,
+      initargs=(setup_modules.__file__,),
+    ) as pool:
+      for found in pool.map(callback, matching_paths):
+        actions.update(found)
+  else:
+    for file_path in matching_paths:
+      actions.update(callback(file_path))
 
 
 def AddLiteralActions(actions):
@@ -650,7 +682,6 @@ def _CreateActionTag(
   # Add not_user_triggered attribute.
   if action.not_user_triggered:
     action_dom.setAttribute('not_user_triggered', 'true')
-
 
   # Create owner tag.
   if action.owners:

@@ -4,6 +4,9 @@
 
 package org.chromium.chrome.browser.ntp_customization;
 
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.PRICE_CHANGE;
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType.MAIN;
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType.NTP_CARDS;
@@ -34,21 +37,22 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
+import org.chromium.chrome.browser.ntp_customization.policy.NtpCustomizationPolicyManager;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo.NtpThemeColorId;
 import org.chromium.chrome.browser.ntp_customization.theme.upload_image.UploadImagePreviewCoordinator.PreviewInteractionType;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.PlatformType;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 
 /** Unit tests for {@link NtpCustomizationMetricsUtils} */
 @RunWith(BaseRobolectricTestRunner.class)
 public class NtpCustomizationMetricsUtilsUnitTest {
+    private static final String THEME_TYPE_HISTOGRAM = "NewTabPage.Customization.Theme.Type";
+
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Test
@@ -137,9 +141,7 @@ public class NtpCustomizationMetricsUtilsUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2)
     public void testRecordNtpThemeType() {
-        String histogramName = "NewTabPage.Customization.Theme.Type";
         @NtpBackgroundType
         int[] backgroundTypes =
                 new int[] {
@@ -149,7 +151,7 @@ public class NtpCustomizationMetricsUtilsUnitTest {
         for (@NtpBackgroundType int type : backgroundTypes) {
             NtpCustomizationUtils.setNtpBackgroundTypeToSharedPreference(type);
             HistogramWatcher histogramWatcher =
-                    HistogramWatcher.newSingleRecordWatcher(histogramName, type);
+                    HistogramWatcher.newSingleRecordWatcher(THEME_TYPE_HISTOGRAM, type);
             NtpCustomizationMetricsUtils.recordNtpThemeType();
             histogramWatcher.assertExpected();
         }
@@ -158,16 +160,18 @@ public class NtpCustomizationMetricsUtilsUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2)
-    public void testRecordNtpThemeType_flagDisabled() {
-        String histogramName = "NewTabPage.Customization.Theme.Type";
-        @NtpBackgroundType int backgroundTypes = IMAGE_FROM_DISK;
+    public void testRecordNtpThemeType_disabledByPolicy() {
+        NtpCustomizationPolicyManager policyManager = mock(NtpCustomizationPolicyManager.class);
+        NtpCustomizationPolicyManager.setInstanceForTesting(policyManager);
+        when(policyManager.isNtpCustomBackgroundEnabled()).thenReturn(false);
 
-        NtpCustomizationUtils.setNtpBackgroundTypeToSharedPreference(backgroundTypes);
+        NtpCustomizationUtils.setNtpBackgroundTypeToSharedPreference(IMAGE_FROM_DISK);
         HistogramWatcher histogramWatcher =
-                HistogramWatcher.newSingleRecordWatcher(histogramName, DEFAULT);
+                HistogramWatcher.newSingleRecordWatcher(THEME_TYPE_HISTOGRAM, DEFAULT);
         NtpCustomizationMetricsUtils.recordNtpThemeType();
         histogramWatcher.assertExpected();
+
+        NtpCustomizationUtils.resetSharedPreferenceForTesting();
     }
 
     @Test
@@ -280,5 +284,42 @@ public class NtpCustomizationMetricsUtilsUnitTest {
                 HistogramWatcher.newSingleRecordWatcher(histogramNameOff, themeCollectionHash);
         NtpCustomizationMetricsUtils.recordThemeCollectionDailyRefresh(themeCollectionHash, false);
         histogramWatcherOff.assertExpected();
+    }
+
+    @Test
+    public void testRecordThemeHistoryClick_Android() {
+        testRecordThemeHistoryClickImpl(PlatformType.ANDROID, "Android", CHROME_COLOR);
+    }
+
+    @Test
+    public void testRecordThemeHistoryClick_IOS() {
+        testRecordThemeHistoryClickImpl(PlatformType.IOS, "IOS", THEME_COLLECTION);
+    }
+
+    @Test
+    public void testRecordThemeHistoryClick_Desktop() {
+        testRecordThemeHistoryClickImpl(PlatformType.DESKTOP, "Desktop", COLOR_FROM_HEX);
+    }
+
+    @Test
+    public void testRecordThemeHistoryClickIndex() {
+        int index = 2;
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "NewTabPage.Customization.ThemeHistory.Click.Index", index);
+        NtpCustomizationMetricsUtils.recordThemeHistoryClickIndex(index);
+        histogramWatcher.assertExpected();
+    }
+
+    private void testRecordThemeHistoryClickImpl(
+            @PlatformType int platformType,
+            String platformSuffix,
+            @NtpBackgroundType int backgroundType) {
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "NewTabPage.Customization.ThemeHistory.Click." + platformSuffix,
+                        backgroundType);
+        NtpCustomizationMetricsUtils.recordThemeHistoryClick(backgroundType, platformType);
+        histogramWatcher.assertExpected();
     }
 }

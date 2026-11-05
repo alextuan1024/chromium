@@ -14,7 +14,6 @@
 #include "components/sync/protocol/session_specifics.pb.h"
 #include "components/sync/protocol/sync_enums.pb.h"
 #include "components/sync_device_info/device_info_proto_enum_util.h"
-#include "components/sync_sessions/features.h"
 #include "components/sync_sessions/sync_sessions_client.h"
 
 namespace sync_sessions {
@@ -55,6 +54,19 @@ bool IsPresentable(SyncSessionsClient* sessions_client,
     }
   }
   return false;
+}
+
+bool ShouldIncludeSession(SyncSessionsClient* sessions_client,
+                          const SyncedSession& session,
+                          SyncedSessionTracker::SessionLookup lookup) {
+  switch (lookup) {
+    case SyncedSessionTracker::RAW:
+      return true;
+    case SyncedSessionTracker::NAMED:
+      return !session.GetSessionName().empty();
+    case SyncedSessionTracker::PRESENTABLE:
+      return IsPresentable(sessions_client, session);
+  }
 }
 
 // Verify that tab and window IDs appear only once within a session. Intended to
@@ -209,12 +221,12 @@ const std::string& SyncedSessionTracker::GetLocalSessionTag() const {
   return local_session_tag_;
 }
 
-std::vector<raw_ptr<const SyncedSession, VectorExperimental>>
+std::vector<raw_ptr<const SyncedSession, DanglingUntriaged>>
 SyncedSessionTracker::LookupAllSessions(SessionLookup lookup) const {
   return LookupSessions(lookup, /*exclude_local_session=*/false);
 }
 
-std::vector<raw_ptr<const SyncedSession, VectorExperimental>>
+std::vector<raw_ptr<const SyncedSession, DanglingUntriaged>>
 SyncedSessionTracker::LookupAllForeignSessions(SessionLookup lookup) const {
   return LookupSessions(lookup, /*exclude_local_session=*/true);
 }
@@ -365,13 +377,13 @@ SyncedSessionTracker::TrackedSession* SyncedSessionTracker::GetTrackedSession(
   return session;
 }
 
-std::vector<raw_ptr<const SyncedSession, VectorExperimental>>
+std::vector<raw_ptr<const SyncedSession, DanglingUntriaged>>
 SyncedSessionTracker::LookupSessions(SessionLookup lookup,
                                      bool exclude_local_session) const {
-  std::vector<raw_ptr<const SyncedSession, VectorExperimental>> sessions;
+  std::vector<raw_ptr<const SyncedSession, DanglingUntriaged>> sessions;
   for (const auto& [session_tag, tracked_session] : session_map_) {
     const SyncedSession& session = tracked_session.synced_session;
-    if (lookup == PRESENTABLE && !IsPresentable(sessions_client_, session)) {
+    if (!ShouldIncludeSession(sessions_client_, session, lookup)) {
       continue;
     }
     // The comparison against |local_session_tag_| deals with the currently
@@ -766,9 +778,7 @@ void UpdateTrackerWithSpecifics(const sync_pb::SessionSpecifics& specifics,
 
     PopulateSyncedSessionFromSpecifics(session_tag, header, modification_time,
                                        session, tracker);
-    if (base::FeatureList::IsEnabled(kSyncSessionsUsePreferredDisplayName)) {
-      tracker->TryUpdateSessionNameFromDeviceInfo(session_tag);
-    }
+    tracker->TryUpdateSessionNameFromDeviceInfo(session_tag);
 
     // Delete any closed windows and unused tabs as necessary. We exclude the
     // local session here because it should be cleaned up explicitly with

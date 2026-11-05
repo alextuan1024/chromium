@@ -4,6 +4,7 @@
 
 #include "services/audio/input_stream.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <utility>
@@ -29,7 +30,7 @@
 
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 #include "media/webrtc/ml_model_handle.h"  // nogncheck
-#include "services/audio/ml_model_manager.h"
+#include "services/audio/test/mock_ml_model_manager.h"
 #endif
 
 using testing::_;
@@ -42,31 +43,14 @@ namespace audio {
 
 namespace {
 
-const uint32_t kDefaultSharedMemoryCount = 10;
-const bool kDoEnableAGC = true;
-const bool kDoNotEnableAGC = false;
-const bool kValidStream = true;
-const bool kInvalidStream = false;
-const bool kMuted = true;
-const bool kNotMuted = false;
-const char* kDefaultDeviceId = "default";
-
-#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
-class MockMlModelManager : public MlModelManager {
- public:
-  scoped_refptr<media::MlModelHandle> GetModel(
-      mojom::MlModelType model_type) override {
-    if (model_type == mojom::MlModelType::kResidualEchoEstimation) {
-      model_requested_ = true;
-    }
-    return nullptr;
-  }
-  bool model_requested() { return model_requested_; }
-
- private:
-  bool model_requested_ = false;
-};
-#endif  // BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+constexpr uint32_t kDefaultSharedMemoryCount = 10;
+constexpr bool kDoEnableAGC = true;
+constexpr bool kDoNotEnableAGC = false;
+constexpr bool kValidStream = true;
+constexpr bool kInvalidStream = false;
+constexpr bool kMuted = true;
+constexpr bool kNotMuted = false;
+constexpr char kDefaultDeviceId[] = "default";
 
 class MockStreamClient : public media::mojom::AudioInputStreamClient {
  public:
@@ -156,7 +140,18 @@ class AudioServiceInputStreamTest : public testing::Test {
 #endif
         stream_factory_receiver_(
             &stream_factory_,
-            remote_stream_factory_.BindNewPipeAndPassReceiver()) {
+            remote_stream_factory_.BindNewPipeAndPassReceiver()),
+        error_handler_(base::BindRepeating(
+            &AudioServiceInputStreamTest::BadMessageCallback,
+            base::Unretained(this))) {
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+    ON_CALL(mock_ml_model_manager_,
+            GetModel(mojom::MlModelType::kResidualEchoEstimation))
+        .WillByDefault([this]() {
+          residual_echo_model_requested_ = true;
+          return nullptr;
+        });
+#endif
   }
 
   AudioServiceInputStreamTest(const AudioServiceInputStreamTest&) = delete;
@@ -164,16 +159,6 @@ class AudioServiceInputStreamTest : public testing::Test {
       delete;
 
   ~AudioServiceInputStreamTest() override { audio_manager_.Shutdown(); }
-
-  void SetUp() override {
-    mojo::SetDefaultProcessErrorHandler(
-        base::BindRepeating(&AudioServiceInputStreamTest::BadMessageCallback,
-                            base::Unretained(this)));
-  }
-
-  void TearDown() override {
-    mojo::SetDefaultProcessErrorHandler(base::NullCallback());
-  }
 
   mojo::PendingRemote<media::mojom::AudioInputStream> CreateStream(
       bool enable_agc) {
@@ -239,7 +224,8 @@ class AudioServiceInputStreamTest : public testing::Test {
   base::test::TaskEnvironment scoped_task_env_;
   media::MockAudioManager audio_manager_;
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
-  MockMlModelManager mock_ml_model_manager_;
+  std::atomic<bool> residual_echo_model_requested_{false};
+  NiceMock<MockMlModelManager> mock_ml_model_manager_;
 #endif
   media::mojom::AudioProcessingConfigPtr processing_config_ = nullptr;
   StreamFactory stream_factory_;
@@ -248,6 +234,7 @@ class AudioServiceInputStreamTest : public testing::Test {
   StrictMock<MockStreamClient> client_;
   StrictMock<MockStreamObserver> observer_;
   NiceMock<MockLog> log_;
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler_;
 };
 
 TEST_F(AudioServiceInputStreamTest, ConstructDestruct) {
@@ -616,7 +603,7 @@ TEST_F(AudioServiceInputStreamTest, ResidualEchoEstimationModelRequested) {
   EXPECT_CALL(observer(), BindingConnectionError());
   remote_stream.reset();
   EXPECT_TRUE(base::test::RunUntil(
-      [&]() { return mock_ml_model_manager_.model_requested(); }));
+      [&]() { return residual_echo_model_requested_.load(); }));
 }
 #endif
 

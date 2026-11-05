@@ -30,6 +30,7 @@
 #include "cc/animation/scroll_timeline.h"
 #include "cc/animation/timeline_trigger.h"
 #include "cc/animation/worklet_animation.h"
+#include "cc/paint/deferred_values.h"
 #include "ui/gfx/animation/keyframe/timing_function.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
@@ -156,6 +157,7 @@ void AnimationHost::ClearMutators() {
     EraseTrigger(it.second);
   }
   id_to_trigger_map_.Write(*this).clear();
+  deferred_value_generators_.Write(*this).Clear();
 }
 
 base::TimeDelta AnimationHost::MinimumTickInterval() const {
@@ -257,7 +259,7 @@ void AnimationHost::RemoveTrigger(scoped_refptr<AnimationTrigger> trigger) {
 
 void AnimationHost::DetachAnimationTimeline(
     scoped_refptr<AnimationTimeline> timeline) {
-  if (InProtectedSequence()) {
+  if (InProtectedSequence() || InWillCommit()) {
     // Defer cleanup until post-commit.
     detached_timeline_map_.Write(*this).insert(
         std::make_pair(timeline->id(), timeline));
@@ -267,7 +269,7 @@ void AnimationHost::DetachAnimationTimeline(
 }
 
 void AnimationHost::DetachTrigger(scoped_refptr<AnimationTrigger> trigger) {
-  if (InProtectedSequence()) {
+  if (InProtectedSequence() || InWillCommit()) {
     // Defer cleanup until post-commit.
     detached_trigger_map_.Write(*this).insert(
         std::make_pair(trigger->id(), trigger));
@@ -325,6 +327,8 @@ bool AnimationHost::NextFrameHasPendingRAF() const {
 }
 
 void AnimationHost::InitClientAnimationState() {
+  WaitForProtectedSequenceCompletion();
+  RemoveStaleTimelines();
   for (auto map_entry : element_to_animations_map_.Write(*this))
     map_entry.second->InitClientAnimationState();
 }
@@ -458,6 +462,10 @@ void AnimationHost::WaitForProtectedSequenceCompletion() const {
   }
 }
 
+bool AnimationHost::InWillCommit() const {
+  return mutator_host_delegate_ && mutator_host_delegate_->InWillCommit();
+}
+
 void AnimationHost::SetNeedsCommit() {
   DCHECK(mutator_host_delegate());
   DCHECK(IsOwnerThread());
@@ -478,6 +486,30 @@ void AnimationHost::SetNeedsPushProperties() {
 
 void AnimationHost::ResetNeedsPushProperties() {
   needs_push_properties_.Write(*this) = false;
+}
+
+void AnimationHost::SetDeferredValueGenerators(
+    const DeferredValueGenerators& source) {
+  DCHECK_EQ(thread_instance_, ThreadInstance::kMain);
+  if (!deferred_value_generators_.Write(*this).SyncFrom(source)) {
+    return;
+  }
+  SetNeedsPushProperties();
+}
+
+bool AnimationHost::SetDeferredValueGeneratorProgress(
+    const DeferredPropertyKey& key,
+    std::optional<float> progress) {
+  DCHECK_EQ(thread_instance_, ThreadInstance::kImpl);
+  return deferred_value_generators_.Write(*this).SetProgress(key, progress);
+}
+
+void AnimationHost::OnDeferredPropertyAnimated(const DeferredPropertyKey& key,
+                                               float progress) {
+  // LayerTreeHost::AnimateLayers() ticks the main-thread AnimationHost too.
+  if (thread_instance_ == ThreadInstance::kImpl) {
+    SetDeferredValueGeneratorProgress(key, progress);
+  }
 }
 
 void AnimationHost::PushPropertiesTo(MutatorHost* mutator_host_impl,
@@ -517,6 +549,7 @@ void AnimationHost::PushPropertiesTo(MutatorHost* mutator_host_impl,
 
 void AnimationHost::RemoveStaleTimelines() {
   DCHECK(!InProtectedSequence());
+  DCHECK(!InWillCommit());
   if (detached_timeline_map_.Read(*this).empty()) {
     return;
   }
@@ -529,6 +562,7 @@ void AnimationHost::RemoveStaleTimelines() {
 
 void AnimationHost::RemoveStaleTriggers() {
   DCHECK(!InProtectedSequence());
+  DCHECK(!InWillCommit());
   if (detached_trigger_map_.Read(*this).empty()) {
     return;
   }
@@ -631,6 +665,11 @@ void AnimationHost::PushPropertiesToImplThread(AnimationHost* host_impl) {
   // Update the impl-only scroll offset animations.
   scroll_offset_animations_.Write(*this)->PushPropertiesTo(
       host_impl->scroll_offset_animations_impl_.Write(*host_impl).get());
+
+  // Keeps `host_impl`'s generators whose source matches so their progress and
+  // cached samples carry over across the commit.
+  host_impl->deferred_value_generators_.Write(*host_impl)
+      .SyncFrom(deferred_value_generators_.Read(*this));
 
   // The pending info list is cleared in LayerTreeHostImpl::CommitComplete
   // and should be empty when pushing properties.
@@ -1167,6 +1206,17 @@ bool AnimationHost::HasScrollLinkedAnimation(ElementId for_scroller) const {
     }
   }
   return false;
+}
+
+bool AnimationHost::NeedsUpdateDeferredValues() const {
+  DCHECK_EQ(thread_instance_, ThreadInstance::kImpl);
+  return deferred_value_generators_.Read(*this).NeedsUpdate();
+}
+
+base::flat_set<DeferredPropertyKey> AnimationHost::UpdateDeferredValues(
+    DeferredValueMap& values) {
+  DCHECK_EQ(thread_instance_, ThreadInstance::kImpl);
+  return deferred_value_generators_.Write(*this).UpdateValues(values);
 }
 
 void AnimationHost::UpdateTriggers(const ScrollTree& scroll_tree,

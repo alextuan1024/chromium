@@ -14,6 +14,7 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
+#include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "third_party/blink/public/common/page/content_to_visible_time_reporter.h"
 #include "ui/android/progress_bar_config.h"
@@ -24,6 +25,7 @@
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 #include "ui/gfx/overlay_transform.h"
+#include "ui/native_theme/native_theme_observer.h"
 
 namespace display {
 class Display;
@@ -35,13 +37,15 @@ namespace ui {
 extern UI_ANDROID_EXPORT const float kDefaultMouseWheelTickMultiplier;
 
 class ModalDialogManagerBridge;
+class NativeTheme;
 class WindowAndroidCompositor;
 class WindowAndroidObserver;
 
 // Android implementation of the activity window.
 // WindowAndroid is also the root of a ViewAndroid tree.
 class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid,
-                                        public ColorProviderSource {
+                                        public ColorProviderSource,
+                                        public NativeThemeObserver {
  public:
   // ui::ColorProviderSource:
   const ColorProvider* GetColorProvider() const override;
@@ -49,6 +53,9 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid,
       ColorProviderKey::ColorMode color_mode,
       ColorProviderKey::ForcedColors forced_colors) const override;
   ColorProviderKey GetColorProviderKey() const override;
+
+  // ui::NativeThemeObserver:
+  void OnNativeThemeUpdated(NativeTheme* observed_theme) override;
 
   base::android::ScopedJavaLocalRef<jobject> GetContext() const;
   int64_t GetContextHash() const;
@@ -121,6 +128,7 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid,
   void Animate(base::TimeTicks begin_frame_time);
   void OnVisibilityChanged(JNIEnv* env,
                            bool visible);
+  void OnOcclusionChanged(JNIEnv* env, bool occluded);
   void OnActivityStopped(JNIEnv* env);
   void OnActivityStarted(JNIEnv* env);
   void OnUpdateRefreshRate(JNIEnv* env,
@@ -251,6 +259,9 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid,
   raw_ptr<ViewAndroid> pointer_locking_view_ = nullptr;
 
   AdaptiveRefreshRateInfo adaptive_refresh_rate_info_;
+
+  base::ScopedObservation<NativeTheme, NativeThemeObserver>
+      native_theme_observation_{this};
 };
 
 }  // namespace ui
@@ -266,7 +277,7 @@ inline ui::WindowAndroid* FromJniType<ui::WindowAndroid*>(
 template <>
 inline ScopedJavaLocalRef<jobject> ToJniType(JNIEnv* env,
                                              ui::WindowAndroid* obj) {
-  return obj->GetJavaObject();
+  return obj ? obj->GetJavaObject() : nullptr;
 }
 }  // namespace jni_zero
 

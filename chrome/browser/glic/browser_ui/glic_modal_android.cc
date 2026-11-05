@@ -1,0 +1,331 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/glic/browser_ui/glic_modal_android.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <utility>
+
+#include "base/android/jni_android.h"
+#include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/location.h"
+#include "base/memory/raw_ptr.h"
+#include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/profiles/profile.h"
+#include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/web_contents.h"
+#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "third_party/jni_zero/default_conversions.h"
+#include "third_party/jni_zero/jni_zero.h"
+#include "ui/android/window_android.h"
+#include "ui/color/color_provider.h"
+
+// JNI headers must be included after standard headers.
+#include "chrome/browser/glic/android/jni_headers/GlicModalCoordinator_jni.h"
+
+namespace glic {
+
+class GlicModalAndroid::HostTabNavigationObserver
+    : public content::WebContentsObserver {
+ public:
+  HostTabNavigationObserver(content::WebContents* tab_contents,
+                            GlicModalAndroid* modal)
+      : content::WebContentsObserver(tab_contents), modal_(modal) {
+    CHECK(modal_);
+  }
+  HostTabNavigationObserver(const HostTabNavigationObserver&) = delete;
+  HostTabNavigationObserver& operator=(const HostTabNavigationObserver&) =
+      delete;
+  ~HostTabNavigationObserver() override = default;
+
+  // content::WebContentsObserver:
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (!navigation_handle->IsInPrimaryMainFrame() ||
+        !navigation_handle->HasCommitted()) {
+      return;
+    }
+    const bool different_site_navigation =
+        !net::registry_controlled_domains::SameDomainOrHost(
+            navigation_handle->GetPreviousPrimaryMainFrameURL(),
+            navigation_handle->GetURL(),
+            net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
+    if (different_site_navigation) {
+      Observe(nullptr);
+      modal_->Close();
+    }
+  }
+
+ private:
+  const raw_ptr<GlicModalAndroid> modal_;
+};
+
+GlicModalAndroid::GlicModalAndroid() = default;
+
+GlicModalAndroid::~GlicModalAndroid() {
+  host_tab_navigation_observer_.reset();
+  Observe(nullptr);
+  tab_will_detach_subscription_ = {};
+  tab_will_become_hidden_subscription_ = {};
+  on_closed_.Reset();
+  if (java_coordinator_) {
+    JNIEnv* env = base::android::AttachCurrentThread();
+    Java_GlicModalCoordinator_onNativeDestroyed(env, java_coordinator_);
+    java_coordinator_.Reset();
+  }
+  if (modal_web_contents_) {
+    modal_web_contents_->SetDelegate(nullptr);
+    base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
+        FROM_HERE, std::move(modal_web_contents_));
+  }
+}
+
+bool GlicModalAndroid::ShowInternal(tabs::TabInterface& tab,
+                                    Profile* profile,
+                                    ui::WindowAndroid* window_android,
+                                    Params params) {
+  CHECK(!java_coordinator_);
+  tab_handle_ = tab.GetHandle();
+  min_size_dip_ = params.min_size;
+  max_size_dip_ = params.portrait_max_size_dp;
+  size_to_content_ = params.size_to_content;
+  on_available_size_changed_ = std::move(params.on_available_size_changed);
+
+  modal_web_contents_ =
+      content::WebContents::Create(content::WebContents::CreateParams(profile));
+  modal_web_contents_->SetDelegate(this);
+  // Observe before the navigation starts, for ReadyToCommitNavigation(). The
+  // callback is optional; MaybeRunOnWebUICreated() does nothing without one.
+  on_webui_created_ = std::move(params.on_webui_created);
+  Observe(modal_web_contents_.get());
+
+  std::optional<int32_t> background_color;
+  if (params.background_color_id.has_value()) {
+    if (const ui::ColorProvider* color_provider =
+            window_android->GetColorProvider()) {
+      background_color = static_cast<int32_t>(
+          color_provider->GetColor(*params.background_color_id));
+    }
+  }
+
+  JNIEnv* env = base::android::AttachCurrentThread();
+  base::android::ScopedJavaLocalRef<jobject> java_obj =
+      Java_GlicModalCoordinator_show(
+          env, jni_zero::MakeRaw(this), window_android,
+          modal_web_contents_.get(), params.portrait_max_size_dp.width(),
+          params.portrait_max_size_dp.height(),
+          params.landscape_max_size_dp.width(),
+          params.landscape_max_size_dp.height(),
+          params.show_android_close_button, params.loading_view,
+          params.size_to_content, background_color,
+          params.deprecated_always_use_modal_dialog);
+  if (!java_obj) {
+    Observe(nullptr);
+    on_webui_created_.Reset();
+    modal_web_contents_->SetDelegate(nullptr);
+    modal_web_contents_.reset();
+    return false;
+  }
+
+  modal_web_contents_->GetController().LoadURLWithParams(
+      content::NavigationController::LoadURLParams(params.content_url));
+
+  on_closed_ = std::move(params.on_closed);
+  java_coordinator_.Reset(java_obj);
+  tab_will_detach_subscription_ = tab.RegisterWillDetach(base::BindRepeating(
+      &GlicModalAndroid::OnTabWillDetach, base::Unretained(this)));
+  if (params.close_on_android_tab_hidden) {
+    tab_will_become_hidden_subscription_ =
+        tab.RegisterWillBecomeHidden(base::BindRepeating(
+            &GlicModalAndroid::OnTabWillBecomeHidden, base::Unretained(this)));
+  }
+  if (params.close_on_navigate) {
+    host_tab_navigation_observer_ =
+        std::make_unique<HostTabNavigationObserver>(tab.GetContents(), this);
+  }
+  return true;
+}
+
+void GlicModalAndroid::Close() {
+  if (!java_coordinator_) {
+    return;
+  }
+
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_GlicModalCoordinator_dismiss(env, java_coordinator_);
+}
+
+void GlicModalAndroid::Activate() {}
+
+void GlicModalAndroid::ShowContent() {
+  if (!java_coordinator_) {
+    return;
+  }
+
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_GlicModalCoordinator_showContent(env, java_coordinator_);
+}
+
+content::WebContents* GlicModalAndroid::GetWebContents() const {
+  return modal_web_contents_.get();
+}
+
+void GlicModalAndroid::SimulateDismissingForTesting() {
+  if (!java_coordinator_) {
+    return;
+  }
+
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_GlicModalCoordinator_simulateDismissingForTesting(  // IN-TEST
+      env, java_coordinator_);
+}
+
+void GlicModalAndroid::ResizeDueToAutoResize(content::WebContents* source,
+                                             const gfx::Size& new_size) {
+  if (!size_to_content_ || !java_coordinator_) {
+    return;
+  }
+
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_GlicModalCoordinator_onContentSizeChanged(env, java_coordinator_,
+                                                 new_size.height());
+}
+
+void GlicModalAndroid::CloseContents(content::WebContents* source) {
+  Close();
+}
+
+content::WebContents* GlicModalAndroid::OpenURLFromTab(
+    content::WebContents* source,
+    const content::OpenURLParams& params,
+    base::OnceCallback<void(content::NavigationHandle&)>
+        navigation_handle_callback) {
+  tabs::TabInterface* host_tab = tab_handle_.Get();
+  if (!host_tab || !host_tab->GetContents()) {
+    return nullptr;
+  }
+  return host_tab->GetContents()->OpenURL(
+      params, std::move(navigation_handle_callback));
+}
+
+void GlicModalAndroid::RenderFrameCreated(
+    content::RenderFrameHost* render_frame_host) {
+  UpdateAutoResize(modal_web_contents_
+                       ? modal_web_contents_->GetRenderWidgetHostView()
+                       : nullptr);
+}
+
+void GlicModalAndroid::RenderFrameHostChanged(
+    content::RenderFrameHost* old_host,
+    content::RenderFrameHost* new_host) {
+  UpdateAutoResize(modal_web_contents_
+                       ? modal_web_contents_->GetRenderWidgetHostView()
+                       : nullptr);
+}
+
+void GlicModalAndroid::ReadyToCommitNavigation(
+    content::NavigationHandle* navigation_handle) {
+  MaybeRunOnWebUICreated(navigation_handle, on_webui_created_);
+}
+
+void GlicModalAndroid::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  UpdateAutoResize(modal_web_contents_
+                       ? modal_web_contents_->GetRenderWidgetHostView()
+                       : nullptr);
+}
+
+void GlicModalAndroid::OnDismissed() {
+  Observe(nullptr);
+  on_webui_created_.Reset();
+  tab_will_detach_subscription_ = {};
+  tab_will_become_hidden_subscription_ = {};
+  java_coordinator_.Reset();
+  if (modal_web_contents_) {
+    modal_web_contents_->SetDelegate(nullptr);
+    base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
+        FROM_HERE, std::move(modal_web_contents_));
+  }
+  host_tab_navigation_observer_.reset();
+
+  if (on_closed_) {
+    std::move(on_closed_).Run();
+  }
+}
+
+void GlicModalAndroid::OnAvailableSizeChanged(JNIEnv* env,
+                                              int width_dip,
+                                              int height_dip) {
+  available_size_dip_ = gfx::Size(width_dip, height_dip);
+  UpdateAutoResize(modal_web_contents_
+                       ? modal_web_contents_->GetRenderWidgetHostView()
+                       : nullptr);
+  if (on_available_size_changed_) {
+    on_available_size_changed_.Run(available_size_dip_);
+  }
+}
+
+void GlicModalAndroid::UpdateAutoResize(content::RenderWidgetHostView* rwhv) {
+  if (!size_to_content_ || !rwhv) {
+    return;
+  }
+  const gfx::Size max_size =
+      available_size_dip_.IsEmpty() ? max_size_dip_ : available_size_dip_;
+  if (max_size.IsEmpty()) {
+    return;
+  }
+  const int min_height = std::min(min_size_dip_.height(), max_size.height());
+  rwhv->EnableAutoResize(gfx::Size(max_size.width(), std::max(1, min_height)),
+                         max_size);
+}
+
+void GlicModalAndroid::OnTabWillDetach(
+    tabs::TabInterface* tab,
+    tabs::TabInterface::DetachReason reason) {
+  if (reason == tabs::TabInterface::DetachReason::kDelete) {
+    Close();
+  }
+}
+
+void GlicModalAndroid::OnTabWillBecomeHidden(tabs::TabInterface* tab) {
+  Close();
+}
+
+// static
+std::unique_ptr<GlicModal> GlicModal::Show(tabs::TabInterface& tab,
+                                           Params params) {
+  content::WebContents* source_contents = tab.GetContents();
+  if (!source_contents) {
+    return nullptr;
+  }
+
+  ui::WindowAndroid* window_android =
+      source_contents->GetTopLevelNativeWindow();
+  if (!window_android) {
+    return nullptr;
+  }
+
+  Profile* profile =
+      Profile::FromBrowserContext(source_contents->GetBrowserContext());
+  if (!profile) {
+    return nullptr;
+  }
+
+  auto modal = std::make_unique<GlicModalAndroid>();
+  if (!modal->ShowInternal(tab, profile, window_android, std::move(params))) {
+    return nullptr;
+  }
+  return modal;
+}
+
+}  // namespace glic
+
+DEFINE_JNI(GlicModalCoordinator)

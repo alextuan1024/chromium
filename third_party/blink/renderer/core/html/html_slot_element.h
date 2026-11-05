@@ -42,6 +42,25 @@ namespace blink {
 
 class AssignedNodesOptions;
 
+// The side effects of recomputing one slot's assigned nodes, recorded during
+// pass 1 of slot assignment recalc and applied during pass 2. See
+// SlotAssignment.
+class SlotRecalcSideEffects final
+    : public GarbageCollected<SlotRecalcSideEffects> {
+ public:
+  void Trace(Visitor* visitor) const {
+    visitor->Trace(old_flat_tree_children);
+    visitor->Trace(nodes_needing_parent_slot_changed);
+  }
+
+  HeapVector<Member<Node>> old_flat_tree_children;
+  // Assigned nodes that need ParentSlotChanged() even if the flat tree
+  // children diff does not detect them (see
+  // UpdateFlatTreeNodeDataForAssignedNodes()).
+  HeapVector<Member<Node>> nodes_needing_parent_slot_changed;
+  bool switched_between_assignment_and_fallback = false;
+};
+
 class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
   DEFINE_WRAPPERTYPEINFO();
 
@@ -61,10 +80,15 @@ class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
   // Element::SetIsCanvasOrInCanvasSubtree where eventual consistency is
   // guaranteed by subsequent FlatTreeParentChanged/RemovedFromFlatTree
   // hooks).
+  //
+  // May return stale data if the containing shadow root's assignment is
+  // dirty (see "Stale accessors" in slot_assignment.h). It is accurate during
+  // pass 2 of slot assignment recalc, because every shadow root in the recalc
+  // list is clean then. Approved callers: mutation-time style dirty-marking
+  // and canvas subtree propagation.
   const HeapVector<Member<Node>>& AssignedNodesNoRecalc() const {
     return assigned_nodes_;
   }
-  const HeapVector<Member<Element>> AssignedElements();
   const HeapVector<Member<Element>> AssignedElementsForBinding(
       const AssignedNodesOptions*);
 
@@ -77,24 +101,28 @@ class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
     return nodes.empty() ? nullptr : nodes.back().Get();
   }
 
-  Node* AssignedNodeNextTo(const Node&) const;
-  Node* AssignedNodePreviousTo(const Node&) const;
-
   void AppendAssignedNode(Node&);
   void ClearAssignedNodes();
 
   const HeapVector<Member<Node>> FlattenedAssignedNodes();
 
+  // Slot assignment recalc runs in two passes; see SlotAssignment.
+  //
+  // Pass 1 (no side effects): WillRecalcAssignedNodes(), AppendAssignedNode(),
+  // then DidRecalcAssignedNodes(), which updates the flat tree node data of the
+  // assigned nodes and the flat tree children, and returns the side effects
+  // to apply in pass 2.
   void WillRecalcAssignedNodes() { ClearAssignedNodes(); }
-  void DidRecalcAssignedNodes(bool display_locked_subtree) {
-    UpdateFlatTreeNodeDataForAssignedNodes();
-    RecalcFlatTreeChildren();
-    if (display_locked_subtree)
-      DetachDisplayLockedAssignedNodesLayoutTreeIfNeeded();
-  }
+  SlotRecalcSideEffects* DidRecalcAssignedNodes();
+  // Pass 2: applies the side effects recorded in pass 1. Every shadow root in
+  // the recalc list has clean assignment data at this point. Side effects
+  // must follow "Recalc hooks" in slot_assignment.h.
+  void ApplyRecalcSideEffects(const SlotRecalcSideEffects&,
+                              bool display_locked_subtree);
 
   void AttachLayoutTreeForSlotChildren(AttachContext&);
   void DetachLayoutTree(bool performing_reattach) final;
+  void DetachAssignedNodesLayoutTree(bool performing_reattach = false);
   void RebuildDistributedChildrenLayoutTrees(WhitespaceAttacher&);
 
   void AttributeChanged(const AttributeModificationParams&) final;
@@ -108,12 +136,13 @@ class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
 
   // Returns true if the slot has assigned nodes, without doing assignment
   // recalc. Used by FlatTreeParentForChildDirty() which needs to avoid doing
-  // slot assignments while marking the tree style-dirty.
+  // slot assignments while marking the tree style-dirty. May be stale; see
+  // AssignedNodesNoRecalc().
   bool HasAssignedNodesNoRecalc() const { return !assigned_nodes_.empty(); }
 
   // Returns true if FlattenedAssignedNodes() would be non-empty, without
   // doing assignment recalc. Used for :has-slotted matching during style
-  // resolution.
+  // resolution. May be stale; see AssignedNodesNoRecalc().
   bool HasFlattenedAssignedNodesNoRecalc() const;
 
   bool SupportsAssignment() const { return IsInShadowTree(); }
@@ -132,10 +161,6 @@ class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
   void RecalcStyleForSlotChildren(const StyleRecalcChange,
                                   const StyleRecalcContext&);
 
-  // For User-Agent Shadow DOM
-  static const AtomicString& UserAgentCustomAssignSlotName();
-  static const AtomicString& UserAgentDefaultSlotName();
-
   // For imperative Shadow DOM distribution APIs
   // IDL assign() implementation.
   void assign(HeapVector<Member<V8UnionElementOrText>>& nodes, ExceptionState&);
@@ -143,10 +168,18 @@ class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
   void Assign(const HeapVector<Member<Node>>& nodes);
   void Assign(Node* node);
 
+  // For user-agent manual slotting only, from the host's
+  // ManuallyAssignSlots() during pass 1 of slot assignment recalc. Unlike
+  // Assign(), this only updates the manually assigned nodes: it does not
+  // dirty slot assignment (see rule R4 in slot_assignment.h) or signal a slot
+  // change. The :has-slotted invalidation is applied in pass 2, by
+  // ApplyRecalcSideEffects().
+  void SetManuallyAssignedNodesForRecalc(const HeapVector<Member<Node>>& nodes);
+  void SetManuallyAssignedNodesForRecalc(Node* node);
+
   const HeapLinkedHashSet<WeakMember<Node>>& ManuallyAssignedNodes() const {
     return manually_assigned_nodes_;
   }
-  void RemoveManuallyAssignedNode(Node&);
 
   // Override in order to defer this work when needed.
   bool CalculateAndAdjustAutoDirectionality() final;
@@ -165,7 +198,8 @@ class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
 
   void NotifySlottedNodesOfFlatTreeChange(
       const HeapVector<Member<Node>>& old_slotted,
-      const HeapVector<Member<Node>>& new_slotted);
+      const HeapVector<Member<Node>>& new_slotted,
+      bool switched_between_assignment_and_fallback);
   static void NotifySlottedNodesOfFlatTreeChangeNaive(
       const HeapVector<Member<Node>>& old_assigned_nodes,
       const HeapVector<Member<Node>>& new_assigned_nodes);
@@ -174,19 +208,26 @@ class CORE_EXPORT HTMLSlotElement final : public HTMLElement {
       const HeapVector<Member<Node>>& new_slotted);
 
   void SetShadowRootNeedsAssignmentRecalc();
-  bool CheckNodesValidity(HeapVector<Member<Node>> nodes, ExceptionState&);
 
-  void RecalcFlatTreeChildren();
-  void UpdateFlatTreeNodeDataForAssignedNodes();
+  void RecalcFlatTreeChildren(SlotRecalcSideEffects&);
+  void UpdateFlatTreeNodeDataForAssignedNodes(SlotRecalcSideEffects&);
   void ClearAssignedNodesAndFlatTreeChildren();
-  void DetachDisplayLockedAssignedNodesLayoutTreeIfNeeded();
+  void MarkAssignedNodesForDisplayLockDetachCheck();
 
   void UpdateDirAutoAncestorsForSupportsAssignmentChange();
 
   HeapVector<Member<Node>> assigned_nodes_;
   HeapVector<Member<Node>> flat_tree_children_;
+  // Tracks whether the most recent slot assignment was empty, hence the
+  // light-DOM children of the slot element (if any) were active fallback.
+  bool flat_tree_children_are_fallback_ = true;
 
   bool slotchange_event_enqueued_ = false;
+
+  // Set by SetManuallyAssignedNodesForRecalc() when the manually assigned
+  // nodes change, and cleared by ApplyRecalcSideEffects() after it
+  // invalidates :has-slotted.
+  bool has_slotted_invalidation_pending_ = false;
 
   // Imperative Shadow DOM distribution API.
   HeapLinkedHashSet<WeakMember<Node>> manually_assigned_nodes_;

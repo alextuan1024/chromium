@@ -11,10 +11,8 @@
 
 #import "base/apple/bundle_locations.h"
 #import "base/apple/foundation_util.h"
-#import "base/format_macros.h"
+#import "base/i18n/number_formatting.h"
 #import "base/memory/raw_ptr.h"
-#import "base/strings/stringprintf.h"
-#import "base/strings/utf_string_conversions.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
 #import "components/infobars/core/confirm_infobar_delegate.h"
 #import "components/infobars/core/infobar.h"
@@ -28,6 +26,7 @@
 #import "net/base/apple/url_conversions.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/models/image_model.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "ui/gfx/image/image.h"
 
 namespace {
@@ -73,9 +72,8 @@ class BlockPopupInfoBarDelegate : public ConfirmInfoBarDelegate {
   }
 
   std::u16string GetMessageText() const override {
-    return l10n_util::GetStringFUTF16(
-        IDS_IOS_POPUPS_BLOCKED_MOBILE,
-        base::UTF8ToUTF16(base::StringPrintf("%" PRIuS, popups_.size())));
+    return l10n_util::GetStringFUTF16(IDS_IOS_POPUPS_BLOCKED_MOBILE,
+                                      base::FormatNumber(popups_.size()));
   }
 
   std::u16string GetButtonLabel(InfoBarButton button) const override {
@@ -98,8 +96,9 @@ class BlockPopupInfoBarDelegate : public ConfirmInfoBarDelegate {
         ios::HostContentSettingsMapFactory::GetForProfile(profile_));
     for (auto& popup : popups_) {
       web::WebState::OpenURLParams params(
-          popup.popup_url, popup.referrer, WindowOpenDisposition::NEW_POPUP,
-          ui::PAGE_TRANSITION_LINK, true /* is_renderer_initiated */);
+          popup.popup_url, popup.referrer,
+          ui::mojom::WindowOpenDisposition::kNewPopup, ui::PAGE_TRANSITION_LINK,
+          true /* is_renderer_initiated */);
       web_state_->OpenURL(params);
       host_content_map_settings->SetContentSettingCustomScope(
           ContentSettingsPattern::FromURL(popup.referrer.url),
@@ -136,7 +135,7 @@ BlockedPopupTabHelper::BlockedPopupTabHelper(web::WebState* web_state)
 BlockedPopupTabHelper::~BlockedPopupTabHelper() = default;
 
 bool BlockedPopupTabHelper::ShouldBlockPopup(const GURL& source_url) {
-  HostContentSettingsMap* settings_map =
+  scoped_refptr<HostContentSettingsMap> settings_map =
       ios::HostContentSettingsMapFactory::GetForProfile(GetProfile());
   ContentSetting setting = settings_map->GetContentSetting(
       source_url, source_url, ContentSettingsType::POPUPS);
@@ -162,6 +161,7 @@ void BlockedPopupTabHelper::OnInfoBarRemoved(infobars::InfoBar* infobar,
 void BlockedPopupTabHelper::OnManagerWillBeDestroyed(
     infobars::InfoBarManager* infobar_manager) {
   DCHECK(scoped_observation_.IsObservingSource(infobar_manager));
+  infobar_ = nullptr;
   scoped_observation_.Reset();
 }
 
@@ -182,7 +182,9 @@ void BlockedPopupTabHelper::ShowInfoBar() {
       InfobarType::kInfobarTypeConfirm, std::move(delegate));
 
   if (infobar_) {
-    infobar_ = infobar_manager->ReplaceInfoBar(infobar_, std::move(infobar));
+    // Clear `infobar_` before the manager destroys the old infobar.
+    infobars::InfoBar* old_infobar = infobar_.ExtractAsDangling();
+    infobar_ = infobar_manager->ReplaceInfoBar(old_infobar, std::move(infobar));
   } else {
     infobar_ = infobar_manager->AddInfoBar(std::move(infobar));
   }

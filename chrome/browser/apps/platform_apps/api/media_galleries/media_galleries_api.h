@@ -16,6 +16,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/media_galleries/gallery_watch_manager_observer.h"
 #include "chrome/browser/media_galleries/media_file_system_registry.h"
@@ -27,6 +28,9 @@
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_event_histogram_value.h"
 #include "extensions/browser/extension_function.h"
+#include "extensions/common/event_args.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom-forward.h"
 
 namespace content {
 class BlobHandle;
@@ -68,7 +72,7 @@ class MediaGalleriesEventRouter : public extensions::BrowserContextKeyedAPI,
       const std::string& extension_id,
       extensions::events::HistogramValue histogram_value,
       const std::string& event_name,
-      base::ListValue event_args);
+      scoped_refptr<const extensions::EventArgs> event_args);
 
   // BrowserContextKeyedAPI implementation.
   static const char* service_name() { return "MediaGalleriesAPI"; }
@@ -159,6 +163,8 @@ class MediaGalleriesAddUserSelectedFolderFunction : public ExtensionFunction {
 
 class MediaGalleriesGetMetadataFunction : public ExtensionFunction {
  public:
+  MediaGalleriesGetMetadataFunction();
+
   DECLARE_EXTENSION_FUNCTION("mediaGalleries.getMetadata",
                              MEDIAGALLERIES_GETMETADATA)
 
@@ -169,10 +175,10 @@ class MediaGalleriesGetMetadataFunction : public ExtensionFunction {
  private:
   // Bottom half for RunAsync, invoked after the preferences is initialized.
   void OnPreferencesInit(media_galleries::GetMetadataType metadata_type,
-                         const std::string& blob_uuid);
+                         mojo::Remote<blink::mojom::Blob> blob);
 
   void GetMetadata(media_galleries::GetMetadataType metadata_type,
-                   const std::string& blob_uuid,
+                   mojo::Remote<blink::mojom::Blob> blob,
                    std::string blob_header,
                    int64_t total_blob_length);
 

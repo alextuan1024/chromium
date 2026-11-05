@@ -6,13 +6,22 @@
 #define CHROME_BROWSER_REQUEST_HEADER_INTEGRITY_CHROME_COMPANERO_HOST_H_
 
 #include "base/feature_list.h"
+#include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/power_monitor/power_observer.h"
+#include "base/sequence_checker.h"
 #include "base/task/task_traits.h"
 #include "base/threading/sequence_bound.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "chrome/common/request_header_integrity/chrome_companero.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "services/network/public/mojom/http_request_headers.mojom-forward.h"
 
 namespace request_header_integrity {
+
+class ChromeCompaneroLoader;
 
 // Carrier for the "TokenTaskPriority" param below. Enabled by default;
 // disabling it simply pins the priority to the compiled-in default.
@@ -31,17 +40,19 @@ BASE_DECLARE_FEATURE_PARAM(base::TaskPriority, kTokenTaskPriority);
 // Browser-process host for Request Header Integrity.
 //
 // Owned by GlobalFeatures on the browser UI thread. Serves header integrity
-// tokens to child processes (such as Renderers) over Mojo.
+// tokens to child processes (such as Renderers) over Mojo, and primes the
+// in-process ChromeCompaneroLoader cache for browser-process navigation
+// throttles.
 //
 // Native dynamic library loading (libchromecompaneros) and C function execution
 // are offloaded to base::ThreadPool via a SequenceBound Backend object to avoid
 // blocking the browser UI thread and to guarantee shutdown safety.
-class ChromeCompaneroHost {
+class ChromeCompaneroHost : public base::PowerSuspendObserver {
  public:
   ChromeCompaneroHost();
   ChromeCompaneroHost(const ChromeCompaneroHost&) = delete;
   ChromeCompaneroHost& operator=(const ChromeCompaneroHost&) = delete;
-  ~ChromeCompaneroHost();
+  ~ChromeCompaneroHost() override;
 
   // Binds an incoming Mojo receiver from a child process (typically via
   // BrowserInterfaceBroker).
@@ -53,13 +64,38 @@ class ChromeCompaneroHost {
       mojom::ChromeCompanero::GetHeaderNameAndValueCallback;
   void GetHeaderNameAndValue(GetHeaderNameAndValueCallback callback);
 
- private:
-  friend class ChromeCompaneroHostTest;
+ protected:
+  // Production code uses the default constructor, which feeds the process-wide
+  // ChromeCompaneroLoader::GetInstance(). Tests that need an isolated cache
+  // derive from this class and inject their own loader.
+  explicit ChromeCompaneroHost(ChromeCompaneroLoader& loader);
 
+ private:
   class Backend;
 
+  // base::PowerSuspendObserver:
+  void OnResume() override;
+
+  void RefreshBrowserToken();
+  void OnBrowserTokenReceived(
+      network::mojom::HttpRequestHeaderKeyValuePairPtr result);
+
   // Backend worker living on a sequenced ThreadPool runner.
-  base::SequenceBound<Backend> backend_;
+  base::SequenceBound<Backend> backend_ GUARDED_BY_CONTEXT(sequence_checker_);
+
+  const base::TimeTicks creation_time_ = base::TimeTicks::Now();
+  const raw_ref<ChromeCompaneroLoader> loader_;
+  base::TimeTicks first_token_time_ GUARDED_BY_CONTEXT(sequence_checker_);
+
+  // TODO(deepakr): Refreshing on a fixed interval wakes the browser even when
+  // no request needs a token. Consider refreshing lazily as the cached token
+  // nears expiry. ChromeCompaneroLoader's child-process timer has the same
+  // TODO.
+  base::RepeatingTimer browser_token_refresh_timer_
+      GUARDED_BY_CONTEXT(sequence_checker_);
+
+  SEQUENCE_CHECKER(sequence_checker_);
+  base::WeakPtrFactory<ChromeCompaneroHost> weak_ptr_factory_{this};
 };
 
 }  // namespace request_header_integrity

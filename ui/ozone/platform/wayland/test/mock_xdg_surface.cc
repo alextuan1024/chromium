@@ -115,6 +115,7 @@ void GetTopLevel(wl_client* client, wl_resource* resource, uint32_t id) {
   surface->set_xdg_toplevel(
       std::make_unique<testing::NiceMock<MockXdgTopLevel>>(
           xdg_toplevel_resource, &kMockXdgToplevelImpl));
+  surface->xdg_toplevel()->set_xdg_surface(surface);
 }
 
 void GetXdgPopup(struct wl_client* client,
@@ -148,10 +149,10 @@ void GetXdgPopup(struct wl_client* client,
   }
 
   auto* test_xdg_popup = GetUserDataAs<TestXdgPopup>(xdg_popup_resource);
-  DCHECK(test_xdg_popup);
+  CHECK(test_xdg_popup, base::NotFatalUntil::M163);
 
   auto* positioner = GetUserDataAs<TestPositioner>(positioner_resource);
-  DCHECK(positioner);
+  CHECK(positioner, base::NotFatalUntil::M163);
 
   test_xdg_popup->set_position(positioner->position());
   if (test_xdg_popup->size().IsEmpty() ||

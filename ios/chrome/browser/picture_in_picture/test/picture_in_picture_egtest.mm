@@ -4,7 +4,6 @@
 
 #import <XCTest/XCTest.h>
 
-#import "ios/chrome/browser/default_browser/promo/public/features.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -81,12 +80,6 @@ void EnsurePipControlsAreVisibleForWindow(XCUIElement* pipWindow,
 
 @implementation PictureInPictureTestCase
 
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(kDefaultBrowserPictureInPicture);
-  return config;
-}
-
 #pragma mark - Tests
 
 // Tests that the PiP window for the Default Browser promo can be
@@ -132,10 +125,6 @@ void EnsurePipControlsAreVisibleForWindow(XCUIElement* pipWindow,
 #if TARGET_OS_SIMULATOR
   EARL_GREY_TEST_DISABLED(@"This test is not supported on simulator.");
 #endif
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    // TODO(crbug.com/497637049): Test is flaky on iPad.
-    EARL_GREY_TEST_DISABLED(@"Test is flaky on iPad.");
-  }
   OpenDefaultBrowserPictureInPicturePromo();
 
   XCUIApplication* springboard = SpringBoardApplication();

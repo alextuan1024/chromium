@@ -45,7 +45,8 @@ class XdgPopup {
   bool Initialize(const InitParams& params);
   void AckConfigure(uint32_t serial);
   bool IsConfigured();
-  bool SetBounds(const gfx::Rect& new_bounds);
+  bool SetBounds(const gfx::Rect& new_bounds,
+                 std::optional<OwnedWindowAnchor> anchor);
   void SetWindowGeometry(const gfx::Rect& bounds);
   void Grab(uint32_t serial);
   bool has_grab() const { return has_grab_; }
@@ -63,11 +64,10 @@ class XdgPopup {
  private:
   wl::Object<xdg_positioner> CreatePositioner();
 
-  // Returns the serial value for a popup grab, if there is one available.
-  // `parent_shell_popup_has_grab` has value if this popup is dangling off
-  // another shell_popup, true if that popup has grab.
-  void GrabIfPossible(WaylandConnection* connection,
-                      std::optional<bool> parent_shell_popup_has_grab);
+  // Takes an explicit grab if it is enabled and a serial is available.
+  // `parent_allows_grab` is false if the parent cannot have a grabbing child
+  // popup.
+  void GrabIfPossible(WaylandConnection* connection, bool parent_allows_grab);
 
   // xdg_popup_listener callbacks:
   static void OnConfigure(void* data,

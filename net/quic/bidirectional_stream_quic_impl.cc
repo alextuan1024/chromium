@@ -12,10 +12,12 @@
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/timer/timer.h"
+#include "net/base/net_errors.h"
 #include "net/http/bidirectional_stream_request_info.h"
 #include "net/http/http_util.h"
 #include "net/socket/next_proto.h"
 #include "net/spdy/spdy_http_utils.h"
+#include "net/ssl/ssl_info.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_connection.h"
 #include "quic_http_stream.h"
 
@@ -35,6 +37,13 @@ class ScopedBoolSaver {
   raw_ptr<bool> var_;
   bool old_val_;
 };
+
+// `BidirectionalStream` has no retry logic, so report a stream request that
+// failed because the session received an HTTP/3 GOAWAY as a closed connection.
+int MapStreamRequestError(int rv) {
+  return rv == ERR_QUIC_GOAWAY_REQUEST_CAN_BE_RETRIED ? ERR_CONNECTION_CLOSED
+                                                      : rv;
+}
 }  // namespace
 
 BidirectionalStreamQuicImpl::BidirectionalStreamQuicImpl(
@@ -83,11 +92,11 @@ void BidirectionalStreamQuicImpl::Start(
 
   if (rv != OK) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(
-            &BidirectionalStreamQuicImpl::NotifyError,
-            weak_factory_.GetWeakPtr(),
-            session_->OneRttKeysAvailable() ? rv : ERR_QUIC_HANDSHAKE_FAILED));
+        FROM_HERE, base::BindOnce(&BidirectionalStreamQuicImpl::NotifyError,
+                                  weak_factory_.GetWeakPtr(),
+                                  session_->OneRttKeysAvailable()
+                                      ? MapStreamRequestError(rv)
+                                      : ERR_QUIC_HANDSHAKE_FAILED));
     return;
   }
 
@@ -227,6 +236,17 @@ bool BidirectionalStreamQuicImpl::GetLoadTimingInfo(
   return true;
 }
 
+std::optional<SSLInfo> BidirectionalStreamQuicImpl::GetSSLInfo() {
+  // The handle caches SSLInfo when it's created, which may be before the
+  // handshake completes, so refresh it from the live session, if possible.
+  session_->SaveSSLInfo();
+  SSLInfo ssl_info;
+  if (!session_->GetSSLInfo(&ssl_info)) {
+    return std::nullopt;
+  }
+  return ssl_info;
+}
+
 void BidirectionalStreamQuicImpl::PopulateNetErrorDetails(
     NetErrorDetails* details) {
   DCHECK(details);
@@ -241,7 +261,7 @@ void BidirectionalStreamQuicImpl::OnStreamReady(int rv) {
   DCHECK_NE(ERR_IO_PENDING, rv);
   DCHECK(!stream_);
   if (rv != OK) {
-    NotifyError(rv);
+    NotifyError(MapStreamRequestError(rv));
     return;
   }
 

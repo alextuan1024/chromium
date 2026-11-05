@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/i18n/tag_converters.h"
 #include "base/logging.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -615,7 +616,7 @@ std::u16string InputMethodUtil::GetInputMethodLongNameInternal(
     text = base::UTF8ToUTF16(localized_display_name);
   }
 
-  DCHECK(!text.empty());
+  CHECK(!text.empty(), base::NotFatalUntil::M163);
   return text;
 }
 
@@ -652,7 +653,7 @@ bool InputMethodUtil::GetInputMethodIdsFromLanguageCodeInternal(
     std::string_view normalized_language_code,
     InputMethodType type,
     std::vector<std::string>* out_input_method_ids) {
-  DCHECK(out_input_method_ids);
+  CHECK(out_input_method_ids, base::NotFatalUntil::M163);
   out_input_method_ids->clear();
 
   bool result = false;
@@ -717,10 +718,10 @@ void InputMethodUtil::GetFirstLoginInputMethodIds(
   }
 }
 
-void InputMethodUtil::GetLanguageCodesFromInputMethodIds(
-    const std::vector<std::string>& input_method_ids,
-    std::vector<std::string>* out_language_codes) const {
-  out_language_codes->clear();
+std::vector<base::i18n::LanguageTag>
+InputMethodUtil::GetLanguageCodesFromInputMethodIds(
+    const std::vector<std::string>& input_method_ids) const {
+  std::vector<base::i18n::LanguageTag> language_tags;
 
   for (const auto& i : input_method_ids) {
     const std::string& input_method_id = i;
@@ -730,13 +731,20 @@ void InputMethodUtil::GetLanguageCodesFromInputMethodIds(
       DVLOG(1) << "Unknown input method ID: " << i;
       continue;
     }
-    DCHECK(!input_method->language_codes().empty());
-    const std::string language_code = input_method->language_codes().at(0);
+    CHECK(!input_method->language_codes().empty(), base::NotFatalUntil::M163);
+    const std::string& language_code = input_method->language_codes().at(0);
+    std::optional<base::i18n::LanguageTag> language_tag =
+        base::i18n::GetLanguageTagFromString(language_code);
+    if (!language_tag) {
+      DVLOG(1) << "Invalid language code: " << language_code;
+      continue;
+    }
     // Add it if it's not already present.
-    if (!std::ranges::contains(*out_language_codes, language_code)) {
-      out_language_codes->push_back(language_code);
+    if (!std::ranges::contains(language_tags, *language_tag)) {
+      language_tags.push_back(*std::move(language_tag));
     }
   }
+  return language_tags;
 }
 
 std::string InputMethodUtil::GetLanguageDefaultInputMethodId(
@@ -800,6 +808,8 @@ bool InputMethodUtil::GetMigratedInputMethodIDs(
 }
 
 void InputMethodUtil::UpdateHardwareLayoutCache() {
+  // CHECK-exclusion: `ThreadChecker` is `ThreadCheckerDoNothing` if
+  // DCHECK_IS_ON() is false.
   DCHECK(thread_checker_.CalledOnValidThread());
   hardware_layouts_.clear();
   hardware_login_layouts_.clear();
@@ -854,14 +864,14 @@ void InputMethodUtil::SetHardwareKeyboardLayoutForTesting(
 }
 
 const std::vector<std::string>& InputMethodUtil::GetHardwareInputMethodIds() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M163);
   UpdateHardwareLayoutCache();
   return hardware_layouts_;
 }
 
 const std::vector<std::string>&
 InputMethodUtil::GetHardwareLoginInputMethodIds() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M163);
   UpdateHardwareLayoutCache();
   return hardware_login_layouts_;
 }
@@ -881,7 +891,7 @@ bool InputMethodUtil::IsOobeAllowlisted(
 
 void InputMethodUtil::AppendInputMethods(const InputMethodDescriptors& imes) {
   for (const auto& input_method : imes) {
-    DCHECK(!input_method.language_codes().empty());
+    CHECK(!input_method.language_codes().empty(), base::NotFatalUntil::M163);
     const std::vector<std::string>& language_codes =
         input_method.language_codes();
     id_to_descriptor_[input_method.id()] = input_method;

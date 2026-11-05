@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <memory>
+
 #include "base/check.h"
+#include "base/command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -12,6 +15,9 @@
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/scoped_page_focus_override.h"
+#include "ui/gfx/switches.h"
+#include "ui/native_theme/mock_os_settings_provider.h"
 
 class WebUiToolbarJsTest : public WebUIMochaBrowserTest {
  public:
@@ -25,15 +31,83 @@ class WebUiToolbarJsTest : public WebUIMochaBrowserTest {
     CHECK(features::IsWebUIToolbarEnabled());
   }
 
+ protected:
+  // Emulates page focus so that focus-dependent checks (e.g. `:focus-visible`)
+  // don't flake when another test window steals activation.
+  void OnWebContentsAvailable(content::WebContents* web_contents) override {
+    focus_override_ =
+        std::make_unique<content::ScopedPageFocusOverride>(web_contents);
+  }
+
+  void TearDownOnMainThread() override {
+    focus_override_.reset();
+    WebUIMochaBrowserTest::TearDownOnMainThread();
+  }
+
  private:
+  std::unique_ptr<content::ScopedPageFocusOverride> focus_override_;
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, AppMenuButton) {
+class WebUiToolbarNoReducedMotionJsTest : public WebUiToolbarJsTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    WebUiToolbarJsTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(switches::kForcePrefersNoReducedMotion);
+  }
+};
+
+class WebUiToolbarReducedMotionJsTest : public WebUiToolbarJsTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    WebUiToolbarJsTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(switches::kForcePrefersReducedMotion);
+  }
+};
+
+class WebUiToolbarNoForcedColorsJsTest : public WebUiToolbarJsTest {
+ public:
+  void SetUpOnMainThread() override {
+    WebUiToolbarJsTest::SetUpOnMainThread();
+    os_settings_provider_.SetForcedColorsActive(false);
+  }
+
+ private:
+  ui::MockOsSettingsProvider os_settings_provider_;
+};
+
+class WebUiToolbarForcedColorsJsTest : public WebUiToolbarJsTest {
+ public:
+  void SetUpOnMainThread() override {
+    WebUiToolbarJsTest::SetUpOnMainThread();
+    os_settings_provider_.SetForcedColorsActive(true);
+  }
+
+ private:
+  ui::MockOsSettingsProvider os_settings_provider_;
+};
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarNoReducedMotionJsTest, AppMenuButton) {
   RunTest("webui_toolbar/app_menu_button_test.js", "mocha.run();");
 }
 
-IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, BackForwardButton) {
+IN_PROC_BROWSER_TEST_F(WebUiToolbarReducedMotionJsTest, AppMenuButton) {
+  RunTest("webui_toolbar/app_menu_button_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarNoReducedMotionJsTest, AvatarButton) {
+  RunTest("webui_toolbar/avatar_button_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarReducedMotionJsTest, AvatarButton) {
+  RunTest("webui_toolbar/avatar_button_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarNoReducedMotionJsTest, BackForwardButton) {
+  RunTest("webui_toolbar/back_forward_button_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarReducedMotionJsTest, BackForwardButton) {
   RunTest("webui_toolbar/back_forward_button_test.js", "mocha.run();");
 }
 
@@ -41,7 +115,11 @@ IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ReadOnlyOmnibox) {
   RunTest("webui_toolbar/readonly_omnibox_test.js", "mocha.run();");
 }
 
-IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ContentSettingIcon) {
+IN_PROC_BROWSER_TEST_F(WebUiToolbarNoReducedMotionJsTest, ContentSettingIcon) {
+  RunTest("webui_toolbar/content_setting_icon_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarReducedMotionJsTest, ContentSettingIcon) {
   RunTest("webui_toolbar/content_setting_icon_test.js", "mocha.run();");
 }
 
@@ -87,7 +165,11 @@ IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, PermissionDashboard) {
   RunTest("webui_toolbar/permission_dashboard_test.js", "mocha.run();");
 }
 
-IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ReloadButton) {
+IN_PROC_BROWSER_TEST_F(WebUiToolbarNoReducedMotionJsTest, ReloadButton) {
+  RunTest("webui_toolbar/reload_button_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarReducedMotionJsTest, ReloadButton) {
   RunTest("webui_toolbar/reload_button_test.js", "mocha.run();");
 }
 
@@ -101,24 +183,49 @@ IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ToolbarActionMixin) {
   RunTest("webui_toolbar/toolbar_action_mixin_test.js", "mocha.run();");
 }
 
-IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ToolbarActionContainerMixin) {
+IN_PROC_BROWSER_TEST_F(WebUiToolbarNoReducedMotionJsTest,
+                       ToolbarActionContainerMixin) {
   RunTest("webui_toolbar/toolbar_action_container_mixin_test.js",
           "mocha.run();");
 }
 
-IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ToolbarButton) {
+IN_PROC_BROWSER_TEST_F(WebUiToolbarReducedMotionJsTest,
+                       ToolbarActionContainerMixin) {
+  RunTest("webui_toolbar/toolbar_action_container_mixin_test.js",
+          "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarNoReducedMotionJsTest, ToolbarButton) {
   RunTest("webui_toolbar/toolbar_button_test.js", "mocha.run();");
 }
 
-IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ToolbarChipButton) {
-  RunTest("webui_toolbar/toolbar_chip_button_test.js", "mocha.run();");
+IN_PROC_BROWSER_TEST_F(WebUiToolbarReducedMotionJsTest, ToolbarButton) {
+  RunTest("webui_toolbar/toolbar_button_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarNoForcedColorsJsTest, ToolbarChipButton) {
+  RunTest("webui_toolbar/toolbar_chip_button_test.js",
+          "window.expectedForcedColors = false; mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarForcedColorsJsTest, ToolbarChipButton) {
+  RunTest("webui_toolbar/toolbar_chip_button_test.js",
+          "window.expectedForcedColors = true; mocha.run();");
 }
 
 IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ToolbarApp) {
   RunTest("webui_toolbar/toolbar_app_test.js", "mocha.run();");
 }
 
-IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, IPH) {
+IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ToolbarAppLazyLoad) {
+  RunTest("webui_toolbar/toolbar_app_lazy_load_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarNoReducedMotionJsTest, IPH) {
+  RunTest("webui_toolbar/iph_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarReducedMotionJsTest, IPH) {
   RunTest("webui_toolbar/iph_test.js", "mocha.run();");
 }
 
@@ -133,4 +240,12 @@ IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, CrLazyIconset) {
 IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, PerformanceInterventionButton) {
   RunTest("webui_toolbar/performance_intervention_button_test.js",
           "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, GlicButton) {
+  RunTest("webui_toolbar/glic_button_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, GlicActorTaskIcon) {
+  RunTest("webui_toolbar/glic_actor_task_icon_test.js", "mocha.run();");
 }

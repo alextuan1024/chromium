@@ -13,10 +13,10 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.ObserverList;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.build.annotations.MonotonicNonNull;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.back_press.BackPressManager;
-import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
-import org.chromium.chrome.browser.fullscreen.BrowserControlsManagerSupplier;
 import org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryCoordinator;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData;
 import org.chromium.chrome.browser.keyboard_accessory.data.Provider;
@@ -25,6 +25,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.components.autofill.AutofillDelegate;
 import org.chromium.components.autofill.AutofillSuggestion;
+import org.chromium.components.autofill.autofill_ai.AutofillAiSourceAttributionInfo;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.AsyncViewStub;
@@ -43,10 +44,11 @@ import java.util.function.Supplier;
  * KeyboardAccessoryCoordinator} and {@link AccessorySheetCoordinator} to add and trigger surfaces
  * that may assist users while filling fields.
  */
+@NullMarked
 class ManualFillingCoordinator implements ManualFillingComponent {
     private final ManualFillingMediator mMediator = new ManualFillingMediator();
     private final ObserverList<Observer> mObserverList = new ObserverList<>();
-    private KeyboardAccessoryCoordinator mKeyboardAccessoryCoordinator;
+    private @MonotonicNonNull KeyboardAccessoryCoordinator mKeyboardAccessoryCoordinator;
 
     ManualFillingCoordinator() {}
 
@@ -81,8 +83,6 @@ class ManualFillingCoordinator implements ManualFillingComponent {
                         insetObserver,
                         barStub,
                         this::dismiss);
-        BrowserControlsManager browserControlsManager =
-                BrowserControlsManagerSupplier.getValueOrNullFrom(windowAndroid);
 
         initialize(
                 windowAndroid,
@@ -92,8 +92,7 @@ class ManualFillingCoordinator implements ManualFillingComponent {
                 isContextualSearchOpened,
                 backPressManager,
                 edgeToEdgeControllerSupplier,
-                keyboardDelegate,
-                browserControlsManager);
+                keyboardDelegate);
     }
 
     @VisibleForTesting
@@ -104,9 +103,8 @@ class ManualFillingCoordinator implements ManualFillingComponent {
             BottomSheetController sheetController,
             BooleanSupplier isContextualSearchOpened,
             BackPressManager backPressManager,
-            Supplier<EdgeToEdgeController> edgeToEdgeControllerSupplier,
-            SoftKeyboardDelegate keyboardDelegate,
-            @Nullable BrowserControlsManager controlsManager) {
+            Supplier<@Nullable EdgeToEdgeController> edgeToEdgeControllerSupplier,
+            SoftKeyboardDelegate keyboardDelegate) {
         mMediator.initialize(
                 accessoryBar,
                 accessorySheet,
@@ -115,8 +113,7 @@ class ManualFillingCoordinator implements ManualFillingComponent {
                 isContextualSearchOpened,
                 backPressManager,
                 edgeToEdgeControllerSupplier,
-                keyboardDelegate,
-                controlsManager);
+                keyboardDelegate);
     }
 
     @Override
@@ -168,7 +165,7 @@ class ManualFillingCoordinator implements ManualFillingComponent {
     public void registerSheetDataProvider(
             WebContents webContents,
             @AccessoryTabType int sheetType,
-            Provider<KeyboardAccessoryData.AccessorySheetData> sheetDataProvider) {
+            Provider<KeyboardAccessoryData.@Nullable AccessorySheetData> sheetDataProvider) {
         mMediator.registerSheetDataProvider(webContents, sheetType, sheetDataProvider);
     }
 
@@ -194,16 +191,21 @@ class ManualFillingCoordinator implements ManualFillingComponent {
     }
 
     @Override
-    public boolean navigateSuggestions(@NavigationDirection int direction) {
-        return mMediator.navigateSuggestions(direction);
+    public boolean navigate(@NavigationAction int action) {
+        return mMediator.navigate(action);
+    }
+
+    @Override
+    public boolean acceptFallback() {
+        return mMediator.acceptFallback();
     }
 
     @Override
     public void show(
             boolean waitForKeyboard,
             boolean shouldShowOnLargeFormFactor,
-            boolean isContentEditable) {
-        mMediator.show(waitForKeyboard, shouldShowOnLargeFormFactor, isContentEditable);
+            boolean isUnstructuredField) {
+        mMediator.show(waitForKeyboard, shouldShowOnLargeFormFactor, isUnstructuredField);
     }
 
     @Override
@@ -243,7 +245,7 @@ class ManualFillingCoordinator implements ManualFillingComponent {
 
     @Override
     public boolean removeObserver(Observer observer) {
-        return mObserverList.addObserver(observer);
+        return mObserverList.removeObserver(observer);
     }
 
     @Override
@@ -264,6 +266,7 @@ class ManualFillingCoordinator implements ManualFillingComponent {
             String body,
             String confirmButtonText,
             String primaryButtonText,
+            List<AutofillAiSourceAttributionInfo> sources,
             Runnable confirmedCallback,
             Runnable declinedCallback) {
         mMediator.showAutofillAiSuggestionDetails(
@@ -271,6 +274,7 @@ class ManualFillingCoordinator implements ManualFillingComponent {
                 body,
                 confirmButtonText,
                 primaryButtonText,
+                sources,
                 confirmedCallback,
                 declinedCallback);
     }
@@ -306,7 +310,7 @@ class ManualFillingCoordinator implements ManualFillingComponent {
         mMediator.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
     }
 
     @Override

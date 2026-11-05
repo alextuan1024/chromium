@@ -7,6 +7,7 @@
 
 #include "base/files/scoped_file.h"
 #include "base/gtest_prod_util.h"
+#include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
 #include "build/build_config.h"
@@ -36,6 +37,10 @@ class CONTROLLER_EXPORT CrashMemoryMetricsReporterImpl
   void SetSharedMemory(
       base::UnsafeSharedMemoryRegion shared_metrics_buffer) override;
 
+#if BUILDFLAG(IS_ANDROID)
+  void SetRendererVisible(bool visible);
+#endif
+
   // This method tracks when an allocation failure occurs. It should be hooked
   // into all platform allocation failure handlers in a process such as
   // base::TerminateBecauseOutOfMemory() and OOM_CRASH() in PartitionAlloc.
@@ -46,6 +51,8 @@ class CONTROLLER_EXPORT CrashMemoryMetricsReporterImpl
   void ResetForTesting();
 
  protected:
+  friend class base::NoDestructor<CrashMemoryMetricsReporterImpl>;
+
   CrashMemoryMetricsReporterImpl();
 
  private:
@@ -54,6 +61,7 @@ class CONTROLLER_EXPORT CrashMemoryMetricsReporterImpl
   void WriteIntoSharedMemory() EXCLUSIVE_LOCKS_REQUIRED(lock_);
 #if BUILDFLAG(IS_ANDROID)
   void SampleMemoryState(TimerBase*);
+  void UpdateTimer();
 #endif
 
   base::Lock lock_;
@@ -61,7 +69,15 @@ class CONTROLLER_EXPORT CrashMemoryMetricsReporterImpl
   base::WritableSharedMemoryMapping shared_metrics_mapping_ GUARDED_BY(lock_);
   mojo::Receiver<mojom::blink::CrashMemoryMetricsReporter> receiver_{this};
 #if BUILDFLAG(IS_ANDROID)
+  // Accessed only on the main thread (unlike `last_reported_metrics_` and
+  // `shared_metrics_mapping_`, which are guarded by `lock_` because
+  // `OnOOMCallback` can run on any thread).
   TaskRunnerTimer<CrashMemoryMetricsReporterImpl> timer_;
+  // RenderProcessHostImpl initializes applied_priority_.visible to false
+  // (!kLaunchingProcessIsBackgrounded) on Android and only sends
+  // SetProcessState when visibility or priority changes from that initial
+  // state.
+  bool is_visible_ = false;
 #endif
 };
 }  // namespace blink

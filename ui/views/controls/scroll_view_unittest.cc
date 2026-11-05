@@ -647,6 +647,9 @@ TEST_F(ScrollViewTest, AccessibleProperties) {
 }
 
 TEST_F(ScrollViewTest, ContentOverflowing) {
+  EXPECT_FALSE(scroll_view_->IsHorizontalContentOverflowing());
+  EXPECT_FALSE(scroll_view_->IsVerticalContentOverflowing());
+
   View* contents = InstallContents();
   const gfx::Size viewport_size =
       ScrollViewTestApi(scroll_view_.get()).contents_viewport()->size();
@@ -679,6 +682,39 @@ TEST_F(ScrollViewTest, ContentOverflowing) {
   InvalidateAndRunScheduledLayoutOnScrollView();
   EXPECT_TRUE(scroll_view_->IsHorizontalContentOverflowing());
   EXPECT_TRUE(scroll_view_->IsVerticalContentOverflowing());
+
+  scroll_view_->SetContents(nullptr);
+  EXPECT_FALSE(scroll_view_->IsHorizontalContentOverflowing());
+  EXPECT_FALSE(scroll_view_->IsVerticalContentOverflowing());
+}
+
+TEST_F(ScrollViewTest, GetScrollViewForContentsDuringRemoval) {
+  class RemovalCheckingView : public View {
+   public:
+    explicit RemovalCheckingView(bool* checked) : checked_(checked) {}
+
+    void ViewHierarchyChanged(
+        const ViewHierarchyChangedDetails& details) override {
+      if (!details.is_add && details.child == this) {
+        EXPECT_EQ(nullptr, ScrollView::GetScrollViewForContents(this));
+        *checked_ = true;
+      }
+    }
+
+   private:
+    raw_ptr<bool> checked_;
+  };
+
+  bool checked = false;
+  auto* contents = scroll_view_->SetContents(
+      std::make_unique<RemovalCheckingView>(&checked));
+  EXPECT_EQ(scroll_view_.get(), ScrollView::GetScrollViewForContents(contents));
+
+  auto* header = scroll_view_->SetHeader(std::make_unique<View>());
+  EXPECT_EQ(nullptr, ScrollView::GetScrollViewForContents(header));
+
+  scroll_view_->SetContents(nullptr);
+  EXPECT_TRUE(checked);
 }
 
 // Verifies the scrollbars are added as necessary.
@@ -1486,6 +1522,7 @@ TEST_F(WidgetScrollViewTest, ChildWithLayerTest) {
   ScrollView* scroll_view = AddScrollViewWithContents(std::move(contents_ptr));
   ScrollViewTestApi test_api(scroll_view);
 
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
   if (test_api.contents_viewport()->layer()) {
     return;
   }
@@ -1494,6 +1531,7 @@ TEST_F(WidgetScrollViewTest, ChildWithLayerTest) {
   child->SetPaintToLayer(ui::LAYER_TEXTURED);
 
   ASSERT_TRUE(test_api.contents_viewport()->layer());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
   // The default ScrollView color is opaque, so that fills bounds opaquely
   // should be true.
   EXPECT_TRUE(test_api.contents_viewport()->layer()->fills_bounds_opaquely());
@@ -1501,6 +1539,7 @@ TEST_F(WidgetScrollViewTest, ChildWithLayerTest) {
   // Setting a std::nullopt color should make fills opaquely false.
   scroll_view->SetBackgroundColor(std::nullopt);
   EXPECT_FALSE(test_api.contents_viewport()->layer()->fills_bounds_opaquely());
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
 
   child->DestroyLayer();
   EXPECT_FALSE(test_api.contents_viewport()->layer());
@@ -1539,18 +1578,22 @@ TEST_F(ScrollViewTest, ContentsViewportLayerUsed_ScrollWithLayersDisabled) {
   View* contents = scroll_view.SetContents(std::make_unique<View>());
 
   ASSERT_FALSE(test_api.contents_viewport()->layer());
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
 
   View* child = contents->AddChildView(std::make_unique<View>());
   child->SetPaintToLayer();
 
   // When contents does not have a layer, contents_viewport is TEXTURED layer.
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsTextured());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
   contents->SetPaintToLayer();
   // When contents is a TEXTURED layer.
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsNotDrawn());
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
   contents->SetPaintToLayer(ui::LAYER_NOT_DRAWN);
   // When contents is a NOT_DRAWN layer.
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsTextured());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
 }
 
 // Validates the layer of contents_viewport_, when contents_ does not have a
@@ -1655,17 +1698,20 @@ TEST_F(
   // layer.
   ASSERT_TRUE(test_api.contents_viewport()->layer());
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsNotDrawn());
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
 
   // changing the layer type that the scrollview enables on contents.
   scroll_view.SetContentsLayerType(ui::LAYER_NOT_DRAWN);
 
   View* contents = scroll_view.SetContents(std::make_unique<View>());
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsTextured());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
 
   View* child = contents->AddChildView(std::make_unique<View>());
   child->SetPaintToLayer();
 
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsTextured());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
 }
 
 TEST_F(ScrollViewTest,
@@ -2267,77 +2313,6 @@ TEST_F(ScrollViewTest, ScrollDuringVisibilityChangedDoesNotCrash) {
   // tree. When `child` receives `VisibilityChanged(true)`, it scrolls itself
   // into view, updating overflow indicators. This must not crash.
   scroll_view_->SetVisible(true);
-}
-
-// Verifies that the next successful frame post-layout callback is called.
-TEST_F(WidgetScrollViewTest, NextSuccessfulFramePostLayoutCallback) {
-  auto contents = std::make_unique<View>();
-  contents->SetPreferredSize(gfx::Size(100, 100));
-  ScrollView* scroll_view = AddScrollViewWithContents(std::move(contents));
-
-  base::RunLoop run_loop;
-  bool callback_called = false;
-  scroll_view->RegisterNextSuccessfulFramePostLayoutCallback(base::BindOnce(
-      [](bool* callback_called, base::OnceClosure quit_closure) {
-        *callback_called = true;
-        std::move(quit_closure).Run();
-      },
-      &callback_called, run_loop.QuitClosure()));
-
-  // Trigger layout.
-  scroll_view->InvalidateLayout();
-  views::test::RunScheduledLayout(scroll_view);
-
-  // The callback should not be called yet (it waits for a frame).
-  EXPECT_FALSE(callback_called);
-
-  run_loop.Run();
-
-  EXPECT_TRUE(callback_called);
-}
-
-// Verifies that the next successful frame post-layout callback is called only
-// once even if multiple layouts occur.
-TEST_F(WidgetScrollViewTest, NextSuccessfulFramePostLayoutCallbackOnce) {
-  auto contents = std::make_unique<View>();
-  contents->SetPreferredSize(gfx::Size(100, 100));
-  ScrollView* scroll_view = AddScrollViewWithContents(std::move(contents));
-
-  int callback_called_count = 0;
-  base::RunLoop run_loop;
-  scroll_view->RegisterNextSuccessfulFramePostLayoutCallback(base::BindOnce(
-      [](int* callback_called_count, base::OnceClosure quit_closure) {
-        (*callback_called_count)++;
-        std::move(quit_closure).Run();
-      },
-      &callback_called_count, run_loop.QuitClosure()));
-
-  // Trigger layout multiple times.
-  scroll_view->InvalidateLayout();
-  views::test::RunScheduledLayout(scroll_view);
-  scroll_view->InvalidateLayout();
-  views::test::RunScheduledLayout(scroll_view);
-
-  run_loop.Run();
-
-  EXPECT_EQ(1, callback_called_count);
-
-  // Trigger another layout and wait again to be sure it doesn't fire again.
-  // We need to wait for another frame to be sure.
-  base::RunLoop run_loop2;
-  widget()->GetCompositor()->RequestSuccessfulPresentationTimeForNextFrame(
-      base::BindOnce(
-          [](base::OnceClosure quit_closure,
-             const viz::FrameTimingDetails& frame_timing_details) {
-            std::move(quit_closure).Run();
-          },
-          run_loop2.QuitClosure()));
-
-  scroll_view->InvalidateLayout();
-  views::test::RunScheduledLayout(scroll_view);
-  run_loop2.Run();
-
-  EXPECT_EQ(1, callback_called_count);
 }
 
 TEST_F(ScrollViewTest, VerticalWithHeaderOverflowIndicators) {
@@ -3282,6 +3257,7 @@ static void ApplyScrollEvent(const ScrollViewTestApi& test_api,
                              ui::ScrollEvent& scroll_event) {
   EXPECT_FALSE(scroll_event.handled());
   EXPECT_FALSE(scroll_event.stopped_propagation());
+  const gfx::PointF initial_offset = test_api.CurrentOffset();
   scroll_view->OnScrollEvent(&scroll_event);
 
   // Check to see if the scroll event is handled by the scroll view.
@@ -3296,7 +3272,7 @@ static void ApplyScrollEvent(const ScrollViewTestApi& test_api,
     // and dispatch again. Simulate that.
     EXPECT_FALSE(scroll_event.handled());
     EXPECT_FALSE(scroll_event.stopped_propagation());
-    EXPECT_EQ(gfx::PointF(), test_api.CurrentOffset());
+    EXPECT_EQ(initial_offset, test_api.CurrentOffset());
 
     ui::MouseWheelEvent wheel(scroll_event);
     scroll_view->OnMouseEvent(&wheel);
@@ -3347,7 +3323,7 @@ TEST_F(WidgetScrollViewTest, CompositedTransposedScrollEvents) {
 // is somewhat ambiguous. This is the case where the horizontal component is
 // larger than the vertical.
 TEST_F(WidgetScrollViewTest,
-       DISABLED_CompositedTransposedScrollEventsHorizontalComponentIsLarger) {
+       CompositedTransposedScrollEventsHorizontalComponentIsLarger) {
   // Set up with a vertical scroll bar.
   ScrollView* scroll_view =
       AddScrollViewWithContentSize(gfx::Size(kDefaultHeight * 5, 10));
@@ -3388,6 +3364,163 @@ TEST_F(WidgetScrollViewTest,
 
   // Check if the scroll view has been offset.
   EXPECT_EQ(gfx::PointF(10, 0), test_api.CurrentOffset());
+}
+
+TEST_F(WidgetScrollViewTest, TransposedScrollAxisLockDiagonalAndBoundary) {
+  ScrollView* scroll_view =
+      AddScrollViewWithContentSize(gfx::Size(kDefaultWidth * 5, 10));
+  scroll_view->SetTreatAllScrollEventsAsHorizontal(true);
+  views::test::RunScheduledLayout(scroll_view);
+  const bool composited =
+      base::FeatureList::IsEnabled(::features::kUiCompositorScrollWithLayers);
+  if (composited) {
+    WaitForCommit();
+  }
+
+  ScrollViewTestApi test_api(scroll_view);
+  base::TimeTicks t = base::TimeTicks::Now();
+
+  // Equal accelerated magnitudes (-10 vs 10) and larger |y_ordinal| (10 vs -7)
+  // must both select horizontal.
+  ui::ScrollEvent ordinal_check(ui::EventType::kScroll, gfx::Point(), t, 0,
+                                -10.0f, 10.0f, -7.0f, 10.0f, 2);
+  ApplyScrollEvent(test_api, scroll_view, ordinal_check);
+  EXPECT_EQ(gfx::PointF(composited ? 7.0f : 10.0f, 0),
+            test_api.CurrentOffset());
+
+  // At max_x, diagonal up-and-right frames (even when |y| > |x|) stay locked
+  // horizontal without pulling backward or flickering more_content_right().
+  const int max_x = test_api.GetScrollBar(HORIZONTAL)->GetMaxPosition();
+  ASSERT_GT(max_x, 0);
+  scroll_view->ScrollToOffset(gfx::PointF(max_x, 0));
+  if (composited) {
+    WaitForCommit();
+  }
+  t += base::Milliseconds(200);
+  for (const auto& [dx, dy] :
+       {std::pair{-10.0f, 9.0f}, {-8.0f, 12.0f}, {-7.0f, 11.0f}}) {
+    t += base::Milliseconds(16);
+    ui::ScrollEvent diagonal(ui::EventType::kScroll, gfx::Point(), t, 0, dx, dy,
+                             dx, dy, 2);
+    ApplyScrollEvent(test_api, scroll_view, diagonal);
+    EXPECT_EQ(gfx::PointF(max_x, 0), test_api.CurrentOffset());
+    EXPECT_FALSE(test_api.more_content_right()->GetVisible());
+  }
+}
+
+TEST_F(WidgetScrollViewTest, TransposedScrollAxisLockMomentumAndReset) {
+  ScrollView* scroll_view =
+      AddScrollViewWithContentSize(gfx::Size(kDefaultWidth * 5, 10));
+  scroll_view->SetTreatAllScrollEventsAsHorizontal(true);
+  ScrollViewTestApi test_api(scroll_view);
+
+  base::TimeTicks t = base::TimeTicks::Now();
+  auto send_scroll =
+      [&](float dx, float dy,
+          ui::EventMomentumPhase momentum = ui::EventMomentumPhase::NONE,
+          ui::ScrollEventPhase phase = ui::ScrollEventPhase::kNone) {
+        t += base::Milliseconds(16);
+        ui::ScrollEvent e(ui::EventType::kScroll, gfx::Point(), t, 0, dx, dy,
+                          dx, dy, 2, momentum, phase);
+        ApplyScrollEvent(test_api, scroll_view, e);
+      };
+
+  // Keep the horizontal lock across kEnd and BEGAN before INERTIAL_UPDATE.
+  send_scroll(-10.0f, 8.0f, ui::EventMomentumPhase::NONE,
+              ui::ScrollEventPhase::kBegan);
+  send_scroll(0.0f, 0.0f, ui::EventMomentumPhase::NONE,
+              ui::ScrollEventPhase::kEnd);
+  send_scroll(0.0f, 0.0f, ui::EventMomentumPhase::BEGAN);
+  send_scroll(-4.0f, 15.0f, ui::EventMomentumPhase::INERTIAL_UPDATE);
+  EXPECT_EQ(gfx::PointF(14, 0), test_api.CurrentOffset());
+
+  // Reset the prior lock on MAY_BEGIN, then keep the vertical lock across END
+  // before INERTIAL_UPDATE.
+  send_scroll(0.0f, 0.0f, ui::EventMomentumPhase::MAY_BEGIN);
+  send_scroll(6.0f, -10.0f);
+  send_scroll(0.0f, 0.0f, ui::EventMomentumPhase::END);
+  send_scroll(-15.0f, -4.0f, ui::EventMomentumPhase::INERTIAL_UPDATE);
+  EXPECT_EQ(gfx::PointF(28, 0), test_api.CurrentOffset());
+
+  // Inactivity timeout (> 150ms) resets the lock even on INERTIAL_UPDATE.
+  t += base::Milliseconds(200);
+  send_scroll(-10.0f, 0.0f, ui::EventMomentumPhase::INERTIAL_UPDATE);
+  EXPECT_EQ(gfx::PointF(38, 0), test_api.CurrentOffset());
+
+  // Reset on BLOCKED, kScrollFlingStart, and when toggling the mode off.
+  send_scroll(0.0f, 0.0f, ui::EventMomentumPhase::BLOCKED,
+              ui::ScrollEventPhase::kEnd);
+  send_scroll(0.0f, -10.0f);
+  ui::ScrollEvent fling(ui::EventType::kScrollFlingStart, gfx::Point(),
+                        t += base::Milliseconds(16), 0, 0.0f, 0.0f, 0.0f, 0.0f,
+                        2);
+  scroll_view->OnScrollEvent(&fling);
+  send_scroll(-10.0f, 0.0f);
+  scroll_view->SetTreatAllScrollEventsAsHorizontal(false);
+  scroll_view->SetTreatAllScrollEventsAsHorizontal(true);
+  send_scroll(0.0f, -10.0f);
+  send_scroll(-5.0f, 0.0f);
+  EXPECT_EQ(gfx::PointF(68, 0), test_api.CurrentOffset());
+
+  // When EnableScrollSynchronization() is active, ScrollEvents fall back to
+  // OnMouseWheel and keep the lock across EventMomentumPhase::END.
+  // Sync scrollbar state with the compositor-scrolled offset before fallback.
+  scroll_view->ScrollToOffset(test_api.CurrentOffset());
+  auto sync = scroll_view->EnableScrollSynchronization();
+  auto send_widget_scroll = [&](float dx, float dy,
+                                ui::EventMomentumPhase momentum) {
+    t += base::Milliseconds(16);
+    ui::ScrollEvent e(ui::EventType::kScroll, gfx::Point(), t, 0, dx, dy, dx,
+                      dy, 2, momentum);
+    widget()->OnScrollEvent(&e);
+  };
+  send_widget_scroll(0.0f, 0.0f, ui::EventMomentumPhase::MAY_BEGIN);
+  send_widget_scroll(-10.0f, 8.0f, ui::EventMomentumPhase::END);
+  send_widget_scroll(-4.0f, 15.0f, ui::EventMomentumPhase::END);
+  EXPECT_EQ(gfx::PointF(82, 0), test_api.CurrentOffset());
+}
+
+// TODO(crbug.com/587715029): Data race under TSan.
+#if defined(THREAD_SANITIZER)
+#define MAYBE_TransposedMouseWheelAxisLock DISABLED_TransposedMouseWheelAxisLock
+#else
+#define MAYBE_TransposedMouseWheelAxisLock TransposedMouseWheelAxisLock
+#endif
+TEST_F(WidgetScrollViewTest, MAYBE_TransposedMouseWheelAxisLock) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(::features::kUiCompositorScrollWithLayers);
+
+  ScrollView* scroll_view =
+      AddScrollViewWithContentSize(gfx::Size(kDefaultWidth * 5, 10));
+  scroll_view->SetTreatAllScrollEventsAsHorizontal(true);
+  views::test::RunScheduledLayout(scroll_view);
+
+  ScrollViewTestApi test_api(scroll_view);
+  const int max_x = test_api.GetScrollBar(HORIZONTAL)->GetMaxPosition();
+  ASSERT_GT(max_x, 0);
+  scroll_view->ScrollToOffset(gfx::PointF(max_x, 0));
+
+  base::TimeTicks t = base::TimeTicks::Now();
+  auto send_wheel = [&](int dx, int dy, int dt_ms = 8) {
+    t += base::Milliseconds(dt_ms);
+    ui::MouseWheelEvent wheel(gfx::Vector2d(dx, dy), gfx::Point(), gfx::Point(),
+                              t, 0, 0);
+    scroll_view->OnMouseEvent(&wheel);
+  };
+
+  // Interleaved single-axis wheel events lock horizontal after the first pair,
+  // ignoring subsequent vertical events at max_x.
+  send_wheel(0, 30);
+  send_wheel(-30, 0);
+  send_wheel(0, 30);
+  EXPECT_EQ(gfx::PointF(max_x, 0), test_api.CurrentOffset());
+
+  // After timeout, pure vertical wheel events lock vertical and ignore
+  // smaller horizontal offsets.
+  send_wheel(0, 20, /*dt_ms=*/200);
+  send_wheel(0, 20);
+  send_wheel(-5, 0);
+  EXPECT_EQ(gfx::PointF(max_x - 40, 0), test_api.CurrentOffset());
 }
 
 TEST_F(WidgetScrollViewTest, UnboundedScrollViewUsesContentPreferredSize) {

@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
+import '../../focus_list_container.js';
 import '../../site_favicon.js';
 
 import {PrefService} from '/shared/settings/prefs2/pref_service.js';
@@ -110,7 +111,8 @@ export class ExceptionCurrentSitesListElement extends CrLitElement {
 
   private startUpdatingCurrentSites_() {
     this.updateCurrentSites_().then(() => {
-      if (this.updateIntervalID_ === undefined) {
+      if (this.visible && document.visibilityState === 'visible' &&
+          this.isConnected && this.updateIntervalID_ === undefined) {
         this.updateIntervalID_ = setInterval(
             this.updateCurrentSites_.bind(this), this.updateIntervalMS_);
       }

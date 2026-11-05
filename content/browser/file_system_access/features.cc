@@ -11,12 +11,25 @@
 
 namespace content::features {
 
+// When enabled, `FileSystemAccessFileHandleImpl::AsBlob()` performs a sensitive
+// entry access check unless the handle is exempt (e.g., OS-initiated
+// single-file handles). When disabled, `AsBlob()` does not perform the
+// blocklist check.
+BASE_FEATURE(kFileSystemAccessAsBlobBlocklistCheck,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, `DeserializeHandle()` runs the sensitive-entry blocklist check
+// on the stored permission root and target path before minting a transfer
+// token. Kill switch for crbug.com/584014474.
+BASE_FEATURE(kFileSystemAccessDeserializeBlocklistCheck,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // TODO(crbug.com/40896420): Remove this flag eventually.
 // TODO(b/354661640): Temporarily disable this flag while investigating CrOS
 // file saving issue.
 //
-// When enabled, GetFile() and GetEntries() on a directory handle performs
-// the blocklist check on child file handles.
+// When enabled, GetFile() and GetEntries() on a directory handle perform the
+// blocklist check.
 BASE_FEATURE(kFileSystemAccessDirectoryIterationBlocklistCheck,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -82,4 +95,9 @@ BASE_FEATURE_PARAM(bool,
                    kOnlyInHomedir,
                    &kFileSystemAccessRenameRequiresParentWritePermission,
                    false);
+
+// When enabled, CreateFileWriter() and GetFile()/GetDirectory() with
+// create=true perform sensitive entry access checks for write operations.
+BASE_FEATURE(kFileSystemAccessWriteBlocklistCheck,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 }  // namespace content::features

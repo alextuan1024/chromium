@@ -35,6 +35,7 @@
 #include "chrome/common/chrome_content_client.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
+#include "components/account_id/account_id.h"
 #include "components/policy/core/browser/cloud/user_policy_signin_service_util.h"
 #include "components/policy/core/common/cloud/cloud_policy_client_registration_helper.h"
 #include "components/policy/core/common/cloud/profile_cloud_policy_manager.h"
@@ -77,16 +78,39 @@ bool IsDasherlessProfile(Profile* profile) {
   return IsOidcManagedProfile(profile) && entry->IsDasherlessManagement();
 }
 
+AccountId ResolveOidcAccountId(Profile* profile,
+                               const AccountId& account_id,
+                               const std::string& user_email) {
+  if (IsDasherlessProfile(profile)) {
+    return AccountId();
+  }
+  if (account_id.is_valid()) {
+    return account_id;
+  }
+  if (auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
+      identity_manager &&
+      identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
+    return AccountIdFromAccountInfo(
+        identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin));
+  }
+  const std::string resolved_email =
+      !user_email.empty() ? user_email
+                          : profile->GetPrefs()->GetString(
+                                enterprise_signin::prefs::kProfileUserEmail);
+  return resolved_email.empty() ? AccountId()
+                                : AccountId::FromUserEmail(resolved_email);
+}
+
 }  // namespace
 
 namespace policy {
 
 // Take over policy management from UserPolicySigninService to avoid conflicts
 void ShutdownUserPolicySigninService(Profile* profile) {
-  // Shutdown `UserPolicySigninService` if needed for Dasher-based profiles, so
-  // this class can be the only sign in service controlling
+  // Shutdown `UserPolicySigninService` if needed for Dasher-based OIDC
+  // profiles, so this class can be the only sign in service controlling
   // UserCloudPolicyManager.
-  if (!IsDasherlessProfile(profile)) {
+  if (IsOidcManagedProfile(profile) && !IsDasherlessProfile(profile)) {
     auto* user_policy_signin_service =
         UserPolicySigninServiceFactory::GetForProfile(profile);
     // Only one sign in service should be managing policies, so we need to
@@ -171,6 +195,11 @@ void UserPolicyOidcSigninService::
 void UserPolicyOidcSigninService::OnPolicyFetched(CloudPolicyClient* client) {}
 
 void UserPolicyOidcSigninService::ResetGaiaPolicyManagement() {
+  if (!IsOidcManagedProfile(profile_)) {
+    LOG_POLICY(ERROR, OIDC_ENROLLMENT)
+        << "Refusing to reset GAIA policy management for non-OIDC profile.";
+    return;
+  }
   // GAIA-related services are already unavailable for Dasherless profiles, no
   // op.
   if (!IsDasherlessProfile(profile_)) {
@@ -189,8 +218,35 @@ void UserPolicyOidcSigninService::FetchPolicyForOidcUser(
     bool switch_to_entry,
     scoped_refptr<network::SharedURLLoaderFactory> profile_url_loader_factory,
     PolicyFetchCallback callback) {
+  if (!IsOidcManagedProfile(profile_) || dm_token.empty()) {
+    LOG_POLICY(ERROR, OIDC_ENROLLMENT)
+        << "Aborting OIDC policy fetch for non-OIDC profile or empty DM token.";
+    std::move(callback).Run(false);
+    return;
+  }
+
+  const bool dasher_based = !IsDasherlessProfile(profile_);
+  if (switch_to_entry && dasher_based) {
+    ShutdownUserPolicySigninService(profile_);
+    CloudPolicyStore* store = policy_manager()->core()->store();
+    CloudPolicyClient* client = policy_manager()->core()->client();
+    if (!store->has_policy() ||
+        store->status() != CloudPolicyStore::STATUS_OK ||
+        (client && (!policy_manager()->IsClientRegistered() ||
+                    client->dm_token() != dm_token))) {
+      ShutdownCloudPolicyManager();
+    }
+  }
+
+  AccountId resolved_account_id =
+      ResolveOidcAccountId(profile_, account_id, user_email);
+  if (dasher_based) {
+    static_cast<UserCloudPolicyManager*>(policy_manager())
+        ->SetSigninAccountId(resolved_account_id);
+  }
+
   FetchPolicyForSignedInUser(
-      account_id, dm_token, client_id, user_affiliation_ids,
+      resolved_account_id, dm_token, client_id, user_affiliation_ids,
       std::move(profile_url_loader_factory),
       base::BindOnce(&policy::UserPolicyOidcSigninService::
                          OnPolicyFetchCompleteInNewProfile,
@@ -334,12 +390,19 @@ void UserPolicyOidcSigninService::OnPolicyFetchCompleteInNewProfile(
           << " received the following result: "
           << static_cast<int>(set_primary_account_result);
 
-      RecordOidcProfileCreationResult(
-          (set_primary_account_result ==
-           signin::PrimaryAccountMutator::PrimaryAccountError::kNoError)
-              ? OidcProfileCreationResult::kEnrollmentSucceeded
-              : OidcProfileCreationResult::kFailedToAddPrimaryAccount,
-          dasher_based);
+      if (set_primary_account_result ==
+          signin::PrimaryAccountMutator::PrimaryAccountError::kNoError) {
+        static_cast<UserCloudPolicyManager*>(user_policy_manager)
+            ->SetSigninAccountId(AccountIdFromAccountInfo(
+                identity_manager->GetPrimaryAccountInfo(
+                    signin::ConsentLevel::kSignin)));
+        RecordOidcProfileCreationResult(
+            OidcProfileCreationResult::kEnrollmentSucceeded, dasher_based);
+      } else {
+        RecordOidcProfileCreationResult(
+            OidcProfileCreationResult::kFailedToAddPrimaryAccount,
+            dasher_based);
+      }
     }
   } else {
     RecordOidcProfileCreationResult(
@@ -388,7 +451,7 @@ bool UserPolicyOidcSigninService::CanApplyPolicies(
 }
 
 void UserPolicyOidcSigninService::InitializeOnProfileReady(Profile* profile) {
-  DCHECK_EQ(profile, profile_);
+  CHECK_EQ(profile, profile_, base::NotFatalUntil::M161);
   VLOG_POLICY(2, OIDC_ENROLLMENT)
       << "Initializing OIDC Signin Service for profile " << GetProfileId();
   // If using a TestingProfile with no IdentityManager or

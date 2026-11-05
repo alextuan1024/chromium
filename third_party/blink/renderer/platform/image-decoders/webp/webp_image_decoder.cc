@@ -4,15 +4,16 @@
 
 #include "third_party/blink/renderer/platform/image-decoders/webp/webp_image_decoder.h"
 
-#include <string.h>
-
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "build/build_config.h"
+#include "skia/ext/skia_utils_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
@@ -27,23 +28,23 @@
 
 namespace {
 
-// Returns two point ranges (<left, width> pairs) at row |canvasY| which belong
+// Returns two point ranges (<left, width> pairs) at row |canvas_y| which belong
 // to |src| but not |dst|. A range is empty if its width is 0.
 inline void findBlendRangeAtRow(const gfx::Rect& src,
                                 const gfx::Rect& dst,
-                                int canvasY,
+                                int canvas_y,
                                 int& left1,
                                 int& width1,
                                 int& left2,
                                 int& width2) {
-  SECURITY_CHECK(canvasY >= src.y() && canvasY < src.bottom());
+  SECURITY_CHECK(canvas_y >= src.y() && canvas_y < src.bottom());
   left1 = -1;
   width1 = 0;
   left2 = -1;
   width2 = 0;
 
-  if (canvasY < dst.y() || canvasY >= dst.bottom() || src.x() >= dst.right() ||
-      src.right() <= dst.x()) {
+  if (canvas_y < dst.y() || canvas_y >= dst.bottom() ||
+      src.x() >= dst.right() || src.right() <= dst.x()) {
     left1 = src.x();
     width1 = src.width();
     return;
@@ -67,30 +68,32 @@ inline void findBlendRangeAtRow(const gfx::Rect& src,
 // images.
 void alphaBlendPremultiplied(blink::ImageFrame& src,
                              blink::ImageFrame& dst,
-                             int canvasY,
+                             int canvas_y,
                              int left,
                              int width) {
   for (int x = 0; x < width; ++x) {
-    int canvasX = left + x;
-    blink::ImageFrame::PixelData* pixel = src.GetAddr(canvasX, canvasY);
+    int canvas_x = left + x;
+    blink::ImageFrame::PixelData* pixel = src.GetAddr(canvas_x, canvas_y);
     if (SkPMColorGetA(*pixel) != 0xff) {
-      blink::ImageFrame::PixelData prevPixel = *dst.GetAddr(canvasX, canvasY);
-      blink::ImageFrame::BlendSrcOverDstPremultiplied(pixel, prevPixel);
+      blink::ImageFrame::PixelData prev_pixel =
+          *dst.GetAddr(canvas_x, canvas_y);
+      blink::ImageFrame::BlendSrcOverDstPremultiplied(pixel, prev_pixel);
     }
   }
 }
 
 void alphaBlendNonPremultiplied(blink::ImageFrame& src,
                                 blink::ImageFrame& dst,
-                                int canvasY,
+                                int canvas_y,
                                 int left,
                                 int width) {
   for (int x = 0; x < width; ++x) {
-    int canvasX = left + x;
-    blink::ImageFrame::PixelData* pixel = src.GetAddr(canvasX, canvasY);
+    int canvas_x = left + x;
+    blink::ImageFrame::PixelData* pixel = src.GetAddr(canvas_x, canvas_y);
     if (SkPMColorGetA(*pixel) != 0xff) {
-      blink::ImageFrame::PixelData prevPixel = *dst.GetAddr(canvasX, canvasY);
-      blink::ImageFrame::BlendSrcOverDstRaw(pixel, prevPixel);
+      blink::ImageFrame::PixelData prev_pixel =
+          *dst.GetAddr(canvas_x, canvas_y);
+      blink::ImageFrame::BlendSrcOverDstRaw(pixel, prev_pixel);
     }
   }
 }
@@ -118,8 +121,9 @@ bool IsSimpleLossyWebPImage(const sk_sp<const SkData>& blob) {
     return false;
   }
   DCHECK(blob->bytes());
-  return !UNSAFE_TODO(memcmp(blob->bytes(), "RIFF", 4)) &&
-         !UNSAFE_TODO(memcmp(blob->bytes() + 8UL, "WEBPVP8 ", 8));
+  const auto bytes = skia::as_byte_span(*blob);
+  return bytes.first<4>() == base::byte_span_from_cstring("RIFF") &&
+         bytes.subspan<8, 8>() == base::byte_span_from_cstring("WEBPVP8 ");
 }
 
 // This method parses |blob|'s header and emits a UMA with the file format, as
@@ -182,8 +186,9 @@ String WEBPImageDecoder::FilenameExtension() const {
 }
 
 const AtomicString& WEBPImageDecoder::MimeType() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, webp_mime_type, ("image/webp"));
-  return webp_mime_type;
+  static const base::NoDestructor<AtomicString> webp_mime_type(
+      AtomicString::FromLiteral<"image/webp">());
+  return *webp_mime_type;
 }
 void WEBPImageDecoder::Clear() {
   WebPDemuxDelete(demux_);

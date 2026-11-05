@@ -673,6 +673,7 @@ FT_BEGIN_HEADER
 #define TT_CONFIG_CMAP_FORMAT_12
 #define TT_CONFIG_CMAP_FORMAT_13
 #define TT_CONFIG_CMAP_FORMAT_14
+#define TT_CONFIG_CMAP_FORMAT_15
 
 
   /*************************************************************************/
@@ -758,24 +759,6 @@ FT_BEGIN_HEADER
    * also.  This has many similarities to Type~1 Multiple Masters support.
    */
 #define TT_CONFIG_OPTION_GX_VAR_SUPPORT
-
-
-  /**************************************************************************
-   *
-   * Define `TT_CONFIG_OPTION_NO_BORING_EXPANSION` if you want to exclude
-   * support for 'boring' OpenType specification expansions.
-   *
-   *   https://github.com/harfbuzz/boring-expansion-spec
-   *
-   * Right now, the following features are covered:
-   *
-   *   - 'avar' version 2.0
-   *
-   * Most likely, this is a temporary configuration option to be removed in
-   * the near future, since it is assumed that eventually those features are
-   * added to the OpenType standard.
-   */
-#define TT_CONFIG_OPTION_NO_BORING_EXPANSION
 
 
   /**************************************************************************

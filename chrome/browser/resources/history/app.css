@@ -14,14 +14,12 @@
   color: var(--cr-primary-text-color);
   display: flex;
   flex-direction: column;
+<if expr="is_android">
+  font-family: 'Google Sans Text', Arial, sans-serif;
+</if>
   height: 100%;
   line-height: 1.54;  /* 20px. */
   overflow: hidden;
-}
-
-:host([enable-history-embeddings_]) {
-  --first-card-padding-top: 0;
-  --first-cluster-padding-top: 0;
 }
 
 :host-context([webui-refresh-2026]) {
@@ -48,37 +46,6 @@
   height: 100%;
 }
 
-#historyEmbeddingsDisclaimer {
-  box-sizing: border-box;
-  width: 100%;
-  margin: 0 auto;
-  padding: 6px 10px 8px;
-  color: var(--cr-secondary-text-color);
-  font-size: 11px;
-  font-weight: 400;
-  text-wrap: pretty;
-}
-
-#historyEmbeddingsDisclaimer[narrow] {
-  padding-inline: 24px;
-  max-width: none;
-}
-
-#historyEmbeddingsDisclaimer:not([narrow])
-    #historyEmbeddingsDisclaimerContent {
-  max-width: 680px;
-}
-
-cr-history-embeddings-filter-chips {
-  margin: 0 auto;
-  padding: 16px 8px;
-}
-
-cr-history-embeddings-filter-chips ~ #tabsContent {
-  --first-card-padding-top: 8px;
-  --first-cluster-padding-top: 8px;
-}
-
 #tabsContainer {
   display: flex;
   flex-direction: column;
@@ -98,6 +65,21 @@ cr-history-embeddings-filter-chips ~ #tabsContent {
   width: 100%;
 }
 
+#historyControls {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  gap: 8px;
+  margin: 16px auto 8px;
+  max-width: var(--cluster-max-width);
+  padding: 0 16px;
+  width: 100%;
+}
+
+#groupViewButton {
+  margin-inline-start: auto;
+}
+
 #tabsScrollContainer {
   overflow: auto;
   height: 100%;
@@ -111,15 +93,10 @@ cr-history-embeddings-filter-chips ~ #tabsContent {
   position-anchor: --main-container;
 }
 
-/* Both history-list and history-clusters have their own empty states
-  * that show a text message indicating there are no results. Hide the
-  * entire components to hide these messages if there are history
-  * embeddings results. */
-:host([has-history-embeddings-results_]) history-list[is-empty],
-:host([has-history-embeddings-results_]) history-clusters[is-empty] {
-  display: none;
+<if expr="is_android">
+cr-drawer {
+  --cr-drawer-background-color: var(--color-sys-surface-container,
+      var(--md-background-color));
+  --cr-drawer-width: var(--side-bar-width);
 }
-
-cr-history-embeddings {
-  margin-block-end: var(--card-padding-between);
-}
+</if>

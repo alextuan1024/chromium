@@ -19,10 +19,6 @@
 #include "ui/display/screen_infos.h"
 #include "ui/gfx/geometry/rect.h"
 
-namespace cc {
-class RenderFrameMetadata;
-}
-
 namespace blink {
 struct FrameVisualProperties;
 }  // namespace blink
@@ -89,6 +85,10 @@ class FrameConnector : public input::ChildFrameInputHelper::Delegate {
 
   // Returns the view for the top-level frame under the same WebContents.
   virtual RenderWidgetHostViewBase* GetRootRenderWidgetHostView() = 0;
+
+  // Returns the view whose page scale should be changed by pinch zoom
+  // originating in this connector's view.
+  virtual input::RenderWidgetHostViewInput* GetPinchZoomTarget() = 0;
 
   // Notify the frame connector that the renderer process has terminated.
   virtual void RenderProcessGone() = 0;
@@ -193,8 +193,8 @@ class FrameConnector : public input::ChildFrameInputHelper::Delegate {
 
   // Called by RenderWidgetHostViewChildFrame when the child frame has updated
   // its visual properties and its viz::LocalSurfaceId has changed.
-  virtual void DidUpdateVisualProperties(
-      const cc::RenderFrameMetadata& metadata) = 0;
+  virtual void DidUpdateChildLocalSurfaceId(
+      const viz::LocalSurfaceId& local_surface_id) = 0;
 
   // Called by RenderWidgetHostViewChildFrame to update the visibility of any
   // nested child RWHVCFs inside it.
@@ -230,15 +230,6 @@ class FrameConnector : public input::ChildFrameInputHelper::Delegate {
 
   // Returns the embedder's visibility.
   virtual Visibility EmbedderVisibility() = 0;
-
-  // Instructs the frame connector to keep its surface alive (or release it).
-  // This is typically used to ensure the surface is not discarded when the
-  // frame is hidden, for example, to allow it to be captured during tab
-  // capture.
-  virtual void SetKeepSurfaceAlive(bool keep_alive) = 0;
-
-  // Returns true if the frame connector is currently keeping the surface alive.
-  virtual bool IsKeepingAlive() const = 0;
 };
 
 }  // namespace content

@@ -41,6 +41,15 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//chrome/browser/indigo/indigo_metrics.h:IndigoApiStatus) -->
 
+<!-- LINT.IfChange(IndigoContextMenuTargetType) -->
+
+<enum name="IndigoContextMenuTargetType">
+  <int value="0" label="Page"/>
+  <int value="1" label="Image"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/indigo/indigo_metrics.h:IndigoContextMenuTargetType) -->
+
 <!-- LINT.IfChange(IndigoMaybeInvokeGlicResult) -->
 
 <enum name="IndigoMaybeInvokeGlicResult">
@@ -63,9 +72,30 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Proactive Anchored Message"/>
   <int value="2" label="Reactive Anchored Message"/>
   <int value="3" label="Error Toast"/>
+  <int value="4" label="Context Menu"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/indigo/indigo_metrics.h:IndigoPageActionEntryPoint) -->
+
+<!-- LINT.IfChange(IndigoRegionFilterResult) -->
+
+<enum name="IndigoRegionFilterResult">
+  <int value="0" label="Allowed"/>
+  <int value="1" label="Country not allowed"/>
+  <int value="2" label="Locale not allowed"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/indigo/indigo_metrics.h:IndigoRegionFilterResult) -->
+
+<!-- LINT.IfChange(IndigoSnoozeIphStateOnFirstUse) -->
+
+<enum name="IndigoSnoozeIphStateOnFirstUse">
+  <int value="0" label="Not eligible"/>
+  <int value="1" label="Eligible, never shown"/>
+  <int value="2" label="Shown"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/indigo/indigo_metrics.h:IndigoSnoozeIphStateOnFirstUse) -->
 
 <!-- LINT.IfChange(IndigoTransformationResult) -->
 
@@ -90,6 +120,8 @@ chromium-metrics-reviews@google.com.
   <int value="17" label="Primary image too small"/>
   <int value="18" label="No primary image found"/>
   <int value="19" label="Primary image replacement creation failed"/>
+  <int value="20" label="Country not allowed"/>
+  <int value="21" label="Locale not allowed"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/indigo/indigo_metrics.h:IndigoTransformationResult) -->
@@ -101,6 +133,7 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Error Toast Retry"/>
   <int value="2" label="Regenerate"/>
   <int value="3" label="Replace Photo"/>
+  <int value="4" label="Context Menu"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/indigo/indigo_metrics.h:IndigoTransformationTriggerSource) -->

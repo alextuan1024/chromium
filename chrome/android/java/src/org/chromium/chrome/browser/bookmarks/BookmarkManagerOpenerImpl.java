@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.bookmarks;
 import static org.chromium.chrome.browser.url_constants.ExtensionsUrlOverrideRegistry.isBookmarksPageOverridden;
 
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
@@ -24,9 +25,11 @@ import org.chromium.chrome.browser.app.bookmarks.BookmarkFolderPickerActivity;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.profiles.ProfileIntentUtils;
+import org.chromium.chrome.browser.profiles.ProfileTokenUtils;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tabmodel.AsyncTabCreationParams;
 import org.chromium.chrome.browser.tabmodel.document.ChromeAsyncTabLauncher;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
@@ -51,11 +54,39 @@ public class BookmarkManagerOpenerImpl implements BookmarkManagerOpener {
             RecordUserAction.record("MobileBookmarkManagerReopenBookmarksInSameSession");
         }
 
+        int parentTabId = tab == null ? Tab.INVALID_TAB_ID : tab.getId();
         if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(activity)) {
-            showBookmarkManagerOnTablet(tab, url, profile);
+            showBookmarkManagerOnTablet(
+                    activity,
+                    parentTabId,
+                    /* parentComponent= */ activity == null ? null : activity.getComponentName(),
+                    url,
+                    profile.isOffTheRecord());
         } else {
-            showBookmarkManagerOnPhone(activity, url, profile);
+            showBookmarkManagerOnPhone(activity, url, profile, parentTabId);
         }
+    }
+
+    /**
+     * Opens the last used bookmark folder in a new tab. Used to move the bookmark manager out of
+     * {@link BookmarkActivity} when the display grows to tablet width.
+     *
+     * @param activity The activity initiating the tab launch.
+     * @param profile The profile associated with the bookmarks.
+     * @param parentTabId The originating tab ID, or {@link Tab#INVALID_TAB_ID}.
+     * @param parentComponent The browsing activity component that opened the manager, if known.
+     */
+    public void showBookmarkManagerInTab(
+            Activity activity,
+            Profile profile,
+            @TabId int parentTabId,
+            @Nullable ComponentName parentComponent) {
+        showBookmarkManagerOnTablet(
+                activity,
+                parentTabId,
+                parentComponent,
+                getFirstUrlToLoad(/* folderId= */ null, profile),
+                profile.isOffTheRecord());
     }
 
     @Override
@@ -77,7 +108,7 @@ public class BookmarkManagerOpenerImpl implements BookmarkManagerOpener {
         intent.putStringArrayListExtra(
                 BookmarkFolderPickerActivity.INTENT_BOOKMARK_IDS,
                 BookmarkUtils.bookmarkIdsToStringList(bookmarkIds));
-        ProfileIntentUtils.addProfileToIntent(profile, intent);
+        ProfileTokenUtils.addProfileToIntent(profile, intent);
         // When launched from BookmarkEditActivity, the folder picker is opened as a child dialog.
         // It needs to know it was opened from another bookmark dialog (to show the back arrow at
         // the root folder on desktop) and needs to report results so dismissals chain properly.
@@ -106,13 +137,17 @@ public class BookmarkManagerOpenerImpl implements BookmarkManagerOpener {
                         resolver.getBookmarksPageUrl());
     }
 
-    private void showBookmarkManagerOnPhone(Activity activity, String url, Profile profile) {
+    private void showBookmarkManagerOnPhone(
+            Activity activity, String url, Profile profile, int parentTabId) {
         Intent intent =
                 new Intent(
                         activity == null ? ContextUtils.getApplicationContext() : activity,
                         BookmarkActivity.class);
-        ProfileIntentUtils.addProfileToIntent(profile, intent);
+        ProfileTokenUtils.addProfileToIntent(profile, intent);
         intent.setData(Uri.parse(url));
+        // Lets BookmarkActivity reopen the manager as a child tab if the display becomes tablet
+        // width.
+        intent.putExtra(IntentHandler.EXTRA_PARENT_TAB_ID, parentTabId);
         if (activity != null) {
             // Start from an existing activity.
             intent.putExtra(IntentHandler.EXTRA_PARENT_COMPONENT, activity.getComponentName());
@@ -124,12 +159,20 @@ public class BookmarkManagerOpenerImpl implements BookmarkManagerOpener {
         }
     }
 
-    private void showBookmarkManagerOnTablet(@Nullable Tab tab, String url, Profile profile) {
+    private void showBookmarkManagerOnTablet(
+            Activity activity,
+            @TabId int parentTabId,
+            @Nullable ComponentName parentComponent,
+            String url,
+            boolean incognito) {
         // History shows up as a tab on tablets.
-        LoadUrlParams params = new LoadUrlParams(url);
-        ChromeAsyncTabLauncher delegate =
-                new ChromeAsyncTabLauncher(/* incognito= */ profile.isOffTheRecord());
-        delegate.launchNewTab(params, TabLaunchType.FROM_CHROME_UI, /* parent= */ tab);
+        LoadUrlParams loadUrlParams = new LoadUrlParams(url);
+        AsyncTabCreationParams params =
+                parentComponent != null
+                        ? new AsyncTabCreationParams(loadUrlParams, parentComponent)
+                        : new AsyncTabCreationParams(loadUrlParams);
+        ChromeAsyncTabLauncher delegate = new ChromeAsyncTabLauncher(incognito, activity);
+        delegate.launchNewTab(params, TabLaunchType.FROM_CHROME_UI, parentTabId);
     }
 
     // Returns the first URL to load.
@@ -152,7 +195,7 @@ public class BookmarkManagerOpenerImpl implements BookmarkManagerOpener {
     private Intent getEditActivityIntent(Context context, Profile profile, BookmarkId bookmarkId) {
         Intent intent = new Intent(context, BookmarkEditActivity.class);
         intent.putExtra(BookmarkEditActivity.INTENT_BOOKMARK_ID, bookmarkId.toString());
-        ProfileIntentUtils.addProfileToIntent(profile, intent);
+        ProfileTokenUtils.addProfileToIntent(profile, intent);
         return intent;
     }
 }

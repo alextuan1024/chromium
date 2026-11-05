@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/modules/csspaint/css_paint_image_generator_impl.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/modules/csspaint/css_paint_definition.h"
@@ -37,23 +38,19 @@ CSSPaintImageGenerator* CSSPaintImageGeneratorImpl::Create(
   PaintWorklet* paint_worklet = PaintWorklet::From(*document.domWindow());
 
   DCHECK(paint_worklet);
-  CSSPaintImageGeneratorImpl* generator;
-  if (paint_worklet->GetDocumentDefinitionMap().Contains(name)) {
-    generator =
-        MakeGarbageCollected<CSSPaintImageGeneratorImpl>(paint_worklet, name);
-  } else {
-    generator = MakeGarbageCollected<CSSPaintImageGeneratorImpl>(
-        observer, paint_worklet, name);
-    paint_worklet->AddPendingGenerator(name, generator);
+  CSSPaintImageGeneratorImpl* generator =
+      MakeGarbageCollected<CSSPaintImageGeneratorImpl>(observer, paint_worklet,
+                                                       name);
+  if (!generator->IsImageGeneratorReady()) {
+    const auto& definition_map = paint_worklet->GetDocumentDefinitionMap();
+    auto it = definition_map.find(name);
+    if (it == definition_map.end() || it->value) {
+      paint_worklet->AddPendingGenerator(name, generator);
+    }
   }
 
   return generator;
 }
-
-CSSPaintImageGeneratorImpl::CSSPaintImageGeneratorImpl(
-    PaintWorklet* paint_worklet,
-    const String& name)
-    : CSSPaintImageGeneratorImpl(nullptr, paint_worklet, name) {}
 
 CSSPaintImageGeneratorImpl::CSSPaintImageGeneratorImpl(
     Observer* observer,
@@ -115,19 +112,19 @@ unsigned CSSPaintImageGeneratorImpl::GetRegisteredDefinitionCountForTesting()
 
 const Vector<CSSPropertyID>&
 CSSPaintImageGeneratorImpl::NativeInvalidationProperties() const {
-  DEFINE_STATIC_LOCAL(Vector<CSSPropertyID>, empty_vector, ());
+  static base::NoDestructor<Vector<CSSPropertyID>> empty_vector;
   DocumentPaintDefinition* definition;
   if (!GetValidDocumentDefinition(definition))
-    return empty_vector;
+    return *empty_vector;
   return definition->NativeInvalidationProperties();
 }
 
 const Vector<AtomicString>&
 CSSPaintImageGeneratorImpl::CustomInvalidationProperties() const {
-  DEFINE_STATIC_LOCAL(Vector<AtomicString>, empty_vector, ());
+  static base::NoDestructor<Vector<AtomicString>> empty_vector;
   DocumentPaintDefinition* definition;
   if (!GetValidDocumentDefinition(definition))
-    return empty_vector;
+    return *empty_vector;
   return definition->CustomInvalidationProperties();
 }
 
@@ -140,10 +137,10 @@ bool CSSPaintImageGeneratorImpl::HasAlpha() const {
 
 const Vector<CSSSyntaxDefinition>&
 CSSPaintImageGeneratorImpl::InputArgumentTypes() const {
-  DEFINE_STATIC_LOCAL(Vector<CSSSyntaxDefinition>, empty_vector, ());
+  static base::NoDestructor<Vector<CSSSyntaxDefinition>> empty_vector;
   DocumentPaintDefinition* definition;
   if (!GetValidDocumentDefinition(definition))
-    return empty_vector;
+    return *empty_vector;
   return definition->InputArgumentTypes();
 }
 

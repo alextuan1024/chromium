@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 #include "ash/strings/grit/ash_strings.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "chrome/browser/ash/app_list/app_service/app_service_app_icon_loader.h"
 #include "chrome/browser/ash/app_list/arc/arc_data_removal_dialog.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
@@ -32,6 +34,16 @@ namespace arc {
 namespace {
 
 constexpr int kArcAppIconSize = 48;
+
+// The widget of the confirmation dialog currently showing, if any.
+std::unique_ptr<views::Widget>& CurrentWidget() {
+  static base::NoDestructor<std::unique_ptr<views::Widget>> widget;
+  return *widget;
+}
+
+void OnWidgetCloseRequested(views::Widget::ClosedReason) {
+  CurrentWidget().reset();
+}
 
 }  // namespace
 
@@ -75,12 +87,11 @@ class DataRemovalConfirmationDialog : public views::DialogDelegateView,
   DataRemovalConfirmationCallback confirm_callback_;
 };
 
-DataRemovalConfirmationDialog* g_current_data_removal_confirmation = nullptr;
-
 DataRemovalConfirmationDialog::DataRemovalConfirmationDialog(
     Profile* profile,
     DataRemovalConfirmationCallback confirm_callback)
     : profile_(profile), confirm_callback_(std::move(confirm_callback)) {
+  SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
   SetTitle(l10n_util::GetStringUTF16(IDS_ARC_DATA_REMOVAL_CONFIRMATION_TITLE));
   SetButtonLabel(
       ui::mojom::DialogButton::kOk,
@@ -125,15 +136,10 @@ DataRemovalConfirmationDialog::DataRemovalConfirmationDialog(
   icon_loader_->FetchImage(kPlayStoreAppId);
 
   ArcSessionManager::Get()->AddObserver(this);
-
-  constrained_window::CreateBrowserModalDialogViews(this, nullptr)->Show();
 }
 
 DataRemovalConfirmationDialog::~DataRemovalConfirmationDialog() {
   ArcSessionManager::Get()->RemoveObserver(this);
-
-  DCHECK_EQ(g_current_data_removal_confirmation, this);
-  g_current_data_removal_confirmation = nullptr;
 }
 
 void DataRemovalConfirmationDialog::OnAppImageUpdated(
@@ -141,9 +147,9 @@ void DataRemovalConfirmationDialog::OnAppImageUpdated(
     const gfx::ImageSkia& image,
     bool is_placeholder_icon,
     const std::optional<gfx::ImageSkia>& badge_image) {
-  DCHECK(!image.isNull());
-  DCHECK_EQ(image.width(), kArcAppIconSize);
-  DCHECK_EQ(image.height(), kArcAppIconSize);
+  CHECK(!image.isNull(), base::NotFatalUntil::M162);
+  CHECK_EQ(image.width(), kArcAppIconSize, base::NotFatalUntil::M162);
+  CHECK_EQ(image.height(), kArcAppIconSize, base::NotFatalUntil::M162);
   icon_view_->SetImageSize(image.size());
   icon_view_->SetImage(ui::ImageModel::FromImageSkia(image));
 }
@@ -163,22 +169,28 @@ END_METADATA
 void ShowDataRemovalConfirmationDialog(
     Profile* profile,
     DataRemovalConfirmationCallback callback) {
-  if (!g_current_data_removal_confirmation) {
-    g_current_data_removal_confirmation =
-        new DataRemovalConfirmationDialog(profile, std::move(callback));
+  std::unique_ptr<views::Widget>& widget = CurrentWidget();
+  if (!widget) {
+    widget = base::WrapUnique(constrained_window::CreateBrowserModalDialogViews(
+        new DataRemovalConfirmationDialog(profile, std::move(callback)),
+        nullptr));
+    widget->MakeCloseSynchronous(base::BindOnce(&OnWidgetCloseRequested));
+    widget->Show();
   }
 }
 
 bool IsDataRemovalConfirmationDialogOpenForTesting() {
-  return g_current_data_removal_confirmation != nullptr;
+  return CurrentWidget() != nullptr;
 }
 
 void CloseDataRemovalConfirmationDialogForTesting(bool confirm) {
-  DCHECK(g_current_data_removal_confirmation);
+  CHECK(CurrentWidget(), base::NotFatalUntil::M162);
+  views::DialogDelegate* dialog =
+      CurrentWidget()->widget_delegate()->AsDialogDelegate();
   if (confirm) {
-    g_current_data_removal_confirmation->AcceptDialog();
+    dialog->AcceptDialog();
   } else {
-    g_current_data_removal_confirmation->CancelDialog();
+    dialog->CancelDialog();
   }
 }
 

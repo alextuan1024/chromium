@@ -21,6 +21,7 @@ import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
+import java.util.Objects;
 import java.util.function.Supplier;
 
 /**
@@ -59,9 +60,11 @@ import java.util.function.Supplier;
         int getMaliciousContentStatus();
 
         /**
-         * Get the security icon resource for a given security level.
+         * Get the security icon resource for a given security level and malicious content status.
          *
          * @param securityLevel The security level.
+         * @param maliciousContentStatus Supplier of the malicious content status of the {@link
+         *     WebContents}.
          */
         @DrawableRes
         int getSecurityIconResource(
@@ -78,8 +81,9 @@ import java.util.function.Supplier;
 
     /**
      * Build a new mediator that handle events from outside the payment handler toolbar component.
+     *
      * @param model The {@link PaymentHandlerToolbarProperties} that holds all the view state for
-     *         the payment handler toolbar component.
+     *     the payment handler toolbar component.
      * @param webContents The web-contents that loads the payment app.
      * @param delegate The delegate of this class.
      */
@@ -126,7 +130,9 @@ import java.util.function.Supplier;
     @Override
     public void didFinishNavigationInPrimaryMainFrame(NavigationHandle navigation) {
         if (!navigation.hasCommitted()) return;
-        mModel.set(PaymentHandlerToolbarProperties.URL, mWebContentsRef.getVisibleUrl());
+        mModel.set(
+                PaymentHandlerToolbarProperties.ORIGIN,
+                Objects.requireNonNull(mWebContentsRef.getMainFrame().getLastCommittedOrigin()));
         mModel.set(PaymentHandlerToolbarProperties.PROGRESS_VISIBLE, false);
     }
 

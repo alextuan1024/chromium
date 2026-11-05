@@ -57,6 +57,7 @@
 #include "services/device/public/cpp/test/fake_usb_device_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/webui/webui_allowlist.h"
 #include "url/gurl.h"
@@ -73,10 +74,10 @@
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 #include "chrome/browser/smart_card/smart_card_permission_context.h"
 #include "chrome/browser/smart_card/smart_card_permission_context_factory.h"
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 
 namespace site_settings {
 
@@ -131,6 +132,21 @@ class SiteSettingsHelperTest : public testing::Test {
     map->SetContentSettingCustomScope(
         ContentSettingsPattern::FromString(pattern),
         ContentSettingsPattern::Wildcard(), kContentType, setting);
+  }
+
+  // Dismisses `type` prompts for `origin` in `profile` until the origin is
+  // placed under embargo.
+  void EmbargoOrigin(Profile* profile,
+                     const GURL& origin,
+                     ContentSettingsType type) {
+    auto* auto_blocker =
+        permissions::PermissionsClient::Get()->GetPermissionDecisionAutoBlocker(
+            profile);
+    for (int i = 0; i < 3; ++i) {
+      auto_blocker->RecordDismissAndEmbargo(
+          origin, type, /*dismissed_prompt_was_quiet=*/false);
+    }
+    ASSERT_TRUE(auto_blocker->IsEmbargoed(origin, type));
   }
 
   static base::Time GetReferenceTime() {
@@ -448,6 +464,47 @@ TEST_F(SiteSettingsHelperTest, ExceptionListFedCmEmbargo) {
   EXPECT_EQ(kOriginToEmbargo, *primary_pattern);
 }
 
+TEST_F(SiteSettingsHelperTest, ExceptionListFedCmEmbargoWithExplicitSetting) {
+  TestingProfile profile;
+  HostContentSettingsMap* map =
+      HostContentSettingsMapFactory::GetForProfile(&profile);
+  constexpr ContentSettingsType kFedCmType =
+      ContentSettingsType::FEDERATED_IDENTITY_API;
+
+  constexpr char kOriginToEmbargo[] = "https://www.embargoed.co.uk:443";
+  EmbargoOrigin(&profile, GURL(kOriginToEmbargo), kFedCmType);
+
+  // FedCM checks the embargo even when the content setting is ALLOW, so an
+  // explicit ALLOW rule must not hide the embargo.
+  map->SetContentSettingCustomScope(
+      ContentSettingsPattern::FromString("https://[*.]embargoed.co.uk"),
+      ContentSettingsPattern::Wildcard(), kFedCmType, CONTENT_SETTING_ALLOW);
+  {
+    base::ListValue exceptions;
+    GetExceptionsForContentType(kFedCmType, &profile, /*web_ui=*/nullptr,
+                                /*incognito=*/false, &exceptions);
+    ASSERT_EQ(2U, exceptions.size());
+    EXPECT_TRUE(std::ranges::any_of(exceptions, [&](const base::Value& value) {
+      const base::DictValue& dict = value.GetDict();
+      return dict.FindBool(kIsEmbargoed).value_or(false) &&
+             *dict.FindString(kOrigin) == kOriginToEmbargo;
+    }));
+  }
+
+  // An explicit BLOCK rule does take precedence over the embargo.
+  map->SetContentSettingCustomScope(
+      ContentSettingsPattern::FromString("https://[*.]embargoed.co.uk"),
+      ContentSettingsPattern::Wildcard(), kFedCmType, CONTENT_SETTING_BLOCK);
+  {
+    base::ListValue exceptions;
+    GetExceptionsForContentType(kFedCmType, &profile, /*web_ui=*/nullptr,
+                                /*incognito=*/false, &exceptions);
+    ASSERT_EQ(1U, exceptions.size());
+    EXPECT_FALSE(
+        exceptions[0].GetDict().FindBool(kIsEmbargoed).value_or(false));
+  }
+}
+
 TEST_F(SiteSettingsHelperTest, ExceptionListIgnoresWebUIAllowlist) {
   TestingProfile profile;
   auto* allowlist = WebUIAllowlist::GetOrCreate(&profile);
@@ -553,6 +610,191 @@ TEST_F(SiteSettingsHelperTest, CheckExceptionOrder) {
   VerifySetting(exceptions, i++, star_google_com, star_google_com,
                 CONTENT_SETTING_ALLOW);
   VerifySetting(exceptions, i++, http_star, "http://*", CONTENT_SETTING_BLOCK);
+}
+
+TEST_F(SiteSettingsHelperTest, ExceptionWithExplicitSettingAndEmbargo) {
+  TestingProfile profile;
+  HostContentSettingsMap* map =
+      HostContentSettingsMapFactory::GetForProfile(&profile);
+
+  constexpr char kOriginPattern[] = "https://www.example.com:443";
+  const GURL origin(kOriginPattern);
+  EmbargoOrigin(&profile, origin, kContentType);
+
+  // Granting an explicit permission for the same origin should take precedence
+  // over the embargo entry in GetExceptionsForContentType.
+  map->SetContentSettingDefaultScope(origin, origin, kContentType,
+                                     CONTENT_SETTING_ALLOW);
+
+  base::ListValue exceptions;
+  GetExceptionsForContentType(kContentType, &profile,
+                              /*web_ui=*/nullptr,
+                              /*incognito=*/false, &exceptions);
+
+  ASSERT_EQ(1u, exceptions.size());
+  VerifySetting(exceptions, 0, kOriginPattern, kOriginPattern,
+                CONTENT_SETTING_ALLOW);
+  EXPECT_FALSE(exceptions[0].GetDict().FindBool(kIsEmbargoed).value_or(true));
+}
+
+TEST_F(SiteSettingsHelperTest, ExceptionWithWildcardSettingAndEmbargo) {
+  TestingProfile profile;
+  HostContentSettingsMap* map =
+      HostContentSettingsMapFactory::GetForProfile(&profile);
+
+  const GURL origin("https://www.example.com");
+  EmbargoOrigin(&profile, origin, kContentType);
+
+  // A wildcard exception matching the embargoed origin takes precedence over
+  // the embargo, so no separate embargo entry should be listed.
+  constexpr char kWildcardPattern[] = "https://[*.]example.com";
+  AddSetting(map, kWildcardPattern, CONTENT_SETTING_ALLOW);
+
+  base::ListValue exceptions;
+  GetExceptionsForContentType(kContentType, &profile,
+                              /*web_ui=*/nullptr,
+                              /*incognito=*/false, &exceptions);
+
+  ASSERT_EQ(1u, exceptions.size());
+  const base::DictValue& dict = exceptions[0].GetDict();
+  EXPECT_EQ(kWildcardPattern, *dict.FindString("origin"));
+  EXPECT_EQ(content_settings::ContentSettingToString(CONTENT_SETTING_ALLOW),
+            *dict.FindString(kSetting));
+  EXPECT_FALSE(dict.FindBool(kIsEmbargoed).value_or(true));
+}
+
+TEST_F(SiteSettingsHelperTest, ExceptionWithPolicySettingAndEmbargo) {
+  TestingProfile profile;
+  HostContentSettingsMap* map =
+      HostContentSettingsMapFactory::GetForProfile(&profile);
+
+  constexpr char kOriginPattern[] = "https://www.example.com:443";
+  const GURL origin(kOriginPattern);
+  EmbargoOrigin(&profile, origin, kContentType);
+
+  // A policy exception (a different provider than the embargo data) also
+  // takes precedence over the embargo.
+  auto policy_provider = std::make_unique<content_settings::MockProvider>();
+  policy_provider->SetWebsiteSetting(
+      ContentSettingsPattern::FromString(kOriginPattern),
+      ContentSettingsPattern::Wildcard(), kContentType,
+      base::Value(CONTENT_SETTING_ALLOW), /*constraints=*/{});
+  policy_provider->set_read_only(true);
+  content_settings::TestUtils::OverrideProvider(map, std::move(policy_provider),
+                                                ProviderType::kPolicyProvider);
+
+  base::ListValue exceptions;
+  GetExceptionsForContentType(kContentType, &profile,
+                              /*web_ui=*/nullptr,
+                              /*incognito=*/false, &exceptions);
+
+  ASSERT_EQ(1u, exceptions.size());
+  const base::DictValue& dict = exceptions[0].GetDict();
+  EXPECT_EQ(kOriginPattern, *dict.FindString("origin"));
+  EXPECT_EQ(content_settings::ContentSettingToString(CONTENT_SETTING_ALLOW),
+            *dict.FindString(kSetting));
+  EXPECT_FALSE(dict.FindBool(kIsEmbargoed).value_or(true));
+}
+
+TEST_F(SiteSettingsHelperTest, IncognitoEmbargoWithInheritedAllowSetting) {
+  TestingProfile profile;
+  HostContentSettingsMap* map =
+      HostContentSettingsMapFactory::GetForProfile(&profile);
+
+  constexpr char kOriginPattern[] = "https://www.example.com:443";
+  const GURL origin(kOriginPattern);
+  map->SetContentSettingDefaultScope(origin, origin, kContentType,
+                                     CONTENT_SETTING_ALLOW);
+
+  // In incognito, the inherited ALLOW is downgraded to ASK, so the origin can
+  // be prompted and embargoed there.
+  TestingProfile* incognito_profile =
+      TestingProfile::Builder().BuildIncognito(&profile);
+  EmbargoOrigin(incognito_profile, origin, kContentType);
+
+  base::ListValue exceptions;
+  GetExceptionsForContentType(kContentType, incognito_profile,
+                              /*web_ui=*/nullptr,
+                              /*incognito=*/true, &exceptions);
+
+  ASSERT_EQ(1u, exceptions.size());
+  VerifySetting(exceptions, 0, kOriginPattern, kOriginPattern,
+                CONTENT_SETTING_BLOCK);
+  EXPECT_TRUE(exceptions[0].GetDict().FindBool(kIsEmbargoed).value_or(false));
+}
+
+TEST_F(SiteSettingsHelperTest, EmbargoWithPerEmbedderStorageAccessSetting) {
+  TestingProfile profile;
+  HostContentSettingsMap* map =
+      HostContentSettingsMapFactory::GetForProfile(&profile);
+  constexpr ContentSettingsType kStorageAccessType =
+      ContentSettingsType::STORAGE_ACCESS;
+
+  constexpr char kOriginPattern[] = "https://www.example.com:443";
+  const GURL origin(kOriginPattern);
+  EmbargoOrigin(&profile, origin, kStorageAccessType);
+
+  // A rule scoped to one embedding site (which also matches the origin as its
+  // own embedder) must not hide the origin-wide embargo.
+  map->SetContentSettingCustomScope(
+      ContentSettingsPattern::FromString(kOriginPattern),
+      ContentSettingsPattern::FromString("https://[*.]example.com"),
+      kStorageAccessType, CONTENT_SETTING_ALLOW);
+
+  base::ListValue exceptions;
+  GetExceptionsForContentType(kStorageAccessType, &profile,
+                              /*web_ui=*/nullptr,
+                              /*incognito=*/false, &exceptions);
+
+  // Both the per-embedder ALLOW rule and the embargo are listed.
+  ASSERT_EQ(2u, exceptions.size());
+  EXPECT_TRUE(std::ranges::any_of(exceptions, [](const base::Value& value) {
+    return value.GetDict().FindBool(kIsEmbargoed).value_or(false);
+  }));
+}
+
+TEST_F(SiteSettingsHelperTest, EmbargoWithDefaultBlockSetting) {
+  TestingProfile profile;
+  HostContentSettingsMap* map =
+      HostContentSettingsMapFactory::GetForProfile(&profile);
+
+  constexpr char kOriginPattern[] = "https://www.example.com:443";
+  const GURL origin(kOriginPattern);
+  EmbargoOrigin(&profile, origin, kContentType);
+
+  // A global default (wildcard, wildcard) is not an explicit exception, so the
+  // embargo is still listed.
+  map->SetDefaultContentSetting(kContentType, CONTENT_SETTING_BLOCK);
+
+  base::ListValue exceptions;
+  GetExceptionsForContentType(kContentType, &profile,
+                              /*web_ui=*/nullptr,
+                              /*incognito=*/false, &exceptions);
+
+  ASSERT_EQ(1u, exceptions.size());
+  VerifySetting(exceptions, 0, kOriginPattern, kOriginPattern,
+                CONTENT_SETTING_BLOCK);
+  EXPECT_TRUE(exceptions[0].GetDict().FindBool(kIsEmbargoed).value_or(false));
+}
+
+TEST_F(SiteSettingsHelperTest, EmbargoWithDefaultAllowSetting) {
+  TestingProfile profile;
+  HostContentSettingsMap* map =
+      HostContentSettingsMapFactory::GetForProfile(&profile);
+
+  constexpr char kOriginPattern[] = "https://www.example.com:443";
+  const GURL origin(kOriginPattern);
+  EmbargoOrigin(&profile, origin, kContentType);
+
+  // A global default ALLOW (e.g. set by policy) means the embargo is never
+  // consulted for this permission, so the embargo is not listed.
+  map->SetDefaultContentSetting(kContentType, CONTENT_SETTING_ALLOW);
+
+  base::ListValue exceptions;
+  GetExceptionsForContentType(kContentType, &profile,
+                              /*web_ui=*/nullptr,
+                              /*incognito=*/false, &exceptions);
+  EXPECT_TRUE(exceptions.empty());
 }
 
 // Tests the following content setting sources: Chrome default, user-set global
@@ -932,59 +1174,6 @@ TEST_F(SiteSettingsHelperTest, CreateChooserExceptionObject) {
   }
 }
 
-TEST_F(SiteSettingsHelperTest, ShowAutograntedRWSPermissions) {
-  TestingProfile profile;
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      permissions::features::kShowRelatedWebsiteSetsPermissionGrants);
-  HostContentSettingsMap* map =
-      HostContentSettingsMapFactory::GetForProfile(&profile);
-  content_settings::ContentSettingConstraints constraint;
-  constraint.set_session_model(content_settings::mojom::SessionModel::DURABLE);
-  constraint.set_decided_by_related_website_sets(true);
-  constexpr char kToplevelURL[] = "https://firstparty.com";
-  constexpr char kEmbeddedURL[] = "https://embedded.com";
-  map->SetContentSettingDefaultScope(GURL(kEmbeddedURL), GURL(kToplevelURL),
-                                     ContentSettingsType::STORAGE_ACCESS,
-                                     CONTENT_SETTING_BLOCK, constraint);
-
-  base::ListValue exceptions;
-  site_settings::GetExceptionsForContentType(
-      ContentSettingsType::STORAGE_ACCESS, &profile,
-      /*web_ui=*/nullptr,
-      /*incognito=*/false, &exceptions);
-  EXPECT_EQ(1U, exceptions.size());
-  EXPECT_EQ(exceptions[0].GetDict().Find("setting")->GetString(), "block");
-  EXPECT_EQ(exceptions[0].GetDict().Find("origin")->GetString(),
-            "https://[*.]embedded.com");
-  EXPECT_EQ(exceptions[0].GetDict().Find("embeddingOrigin")->GetString(),
-            "https://[*.]firstparty.com");
-}
-
-TEST_F(SiteSettingsHelperTest, HideAutograntedRWSPermissions) {
-  TestingProfile profile;
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      permissions::features::kShowRelatedWebsiteSetsPermissionGrants);
-  HostContentSettingsMap* map =
-      HostContentSettingsMapFactory::GetForProfile(&profile);
-  content_settings::ContentSettingConstraints constraint;
-  constraint.set_session_model(content_settings::mojom::SessionModel::DURABLE);
-  constraint.set_decided_by_related_website_sets(true);
-  constexpr char kToplevelURL[] = "https://firstparty.com";
-  constexpr char kEmbeddedURL[] = "https://embedded.com";
-  map->SetContentSettingDefaultScope(GURL(kEmbeddedURL), GURL(kToplevelURL),
-                                     ContentSettingsType::STORAGE_ACCESS,
-                                     CONTENT_SETTING_BLOCK, constraint);
-
-  base::ListValue exceptions;
-  site_settings::GetExceptionsForContentType(
-      ContentSettingsType::STORAGE_ACCESS, &profile,
-      /*web_ui=*/nullptr,
-      /*incognito=*/false, &exceptions);
-  EXPECT_TRUE(exceptions.empty());
-}
-
 TEST_F(SiteSettingsHelperTest, AutomaticFullscreenVisibility) {
   TestingProfile profile;
   profile.SetPermissionControllerDelegate(
@@ -1102,14 +1291,14 @@ class SiteSettingsHelperChooserExceptionTest : public testing::Test {
   const GURL kChromiumUrl{"https://chromium.org"};
   const GURL kAndroidUrl{"https://android.com"};
   const GURL kTestUrl{"https://test.com"};
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   const GURL kIWAUrl1{
       "isolated-app://"
       "anayaszofsyqapbofoli7ljxoxkp32qkothweire2o6t7xy6taz6oaacai/"};
   const GURL kIWAUrl2{
       "isolated-app://"
       "ajnpiorf3kprxsslcme5f2rkwfoxx24orkkudpf6roqxssxnjx7y4aacai/"};
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 
   Profile* profile() { return profile_.get(); }
 
@@ -1118,9 +1307,9 @@ class SiteSettingsHelperChooserExceptionTest : public testing::Test {
         /*profile_manager=*/false);
     profile_ = std::make_unique<TestingProfile>();
     SetUpUsbChooserContext();
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     SetUpSmartCardPermissionContext();
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
   }
 
   void TearDown() override {
@@ -1169,7 +1358,7 @@ class SiteSettingsHelperChooserExceptionTest : public testing::Test {
                                std::move(*policy_value));
   }
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   void SetUpSmartCardPermissionContext() {
     auto& permission_context =
         SmartCardPermissionContextFactory::GetForProfile(*profile());
@@ -1182,19 +1371,19 @@ class SiteSettingsHelperChooserExceptionTest : public testing::Test {
     permission_context.GrantPersistentReaderPermission(kIWA2Origin, "Reader 1");
     permission_context.FlushScheduledSaveSettingsCalls();
   }
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 
   device::FakeUsbDeviceManager device_manager_;
 
  private:
   content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<TestingProfile> profile_;
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   base::test::ScopedFeatureList feature_list_{blink::features::kSmartCard};
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 };
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 TEST_F(SiteSettingsHelperChooserExceptionTest,
        GetSmartCardExceptionListFromProfile) {
   const std::string kSmartCardChooserGroupName(
@@ -1242,7 +1431,7 @@ TEST_F(SiteSettingsHelperChooserExceptionTest,
         /*incognito=*/false);
   }
 }
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 
 TEST_F(SiteSettingsHelperChooserExceptionTest,
        GetChooserExceptionListFromProfile) {

@@ -9,7 +9,12 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import android.content.Context;
 import android.text.TextUtils;
 
+import androidx.annotation.VisibleForTesting;
 import androidx.collection.ArrayMap;
+
+import org.jni_zero.CalledByNative;
+import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 
 import org.chromium.base.Callback;
 import org.chromium.base.LocaleUtils;
@@ -70,6 +75,7 @@ import java.util.function.Supplier;
  * class need to close them with {@link PaymentRequestService#close()}, after which no usage is
  * allowed.
  */
+@JNINamespace("payments::android")
 @NullMarked
 public class PaymentRequestService
         implements PaymentAppServiceDelegate,
@@ -81,6 +87,16 @@ public class PaymentRequestService
                 PaymentResponseHelperInterface.PaymentResponseResultCallback,
                 CSPChecker {
     private static final String TAG = "PaymentRequestServ";
+
+    /**
+     * The payment handler's web content height in CSS pixels when PaymentHandlerStaticCustomSize is
+     * enabled and the payment app does not request one via PaymentRequestEvent.openWindow(url,
+     * {preferredSize}). Matches desktop's default dialog height
+     * (kPreferredPaymentHandlerDialogHeight, 600) minus its header (48) and progress bar (2), which
+     * are outside the web content.
+     */
+    @VisibleForTesting
+    /* package */ static final int DEFAULT_PAYMENT_HANDLER_CONTENT_HEIGHT_CSS_PX = 550;
 
     private static @Nullable PaymentRequestServiceObserverForTest sObserverForTest;
     private static @Nullable NativeObserverForTest sNativeObserverForTest;
@@ -560,7 +576,7 @@ public class PaymentRequestService
         }
         if (methodData.containsKey(MethodStrings.SECURE_PAYMENT_CONFIRMATION)) {
             @SecurePaymentConfirmationRequestValidationError
-            int validationResult = validateSecurePaymentConfirmationRequest(methodData, options);
+            int validationResult = validateSecurePaymentConfirmationRequest(rawMethodData, options);
             if (validationResult != SecurePaymentConfirmationRequestValidationError.OK) {
                 mJourneyLogger.setAborted(AbortReason.INVALID_DATA_FROM_RENDERER);
 
@@ -573,7 +589,7 @@ public class PaymentRequestService
                         == SecurePaymentConfirmationRequestValidationError
                                 .WEB_AUTHN_EXTENSIONS_NOT_SUPPORTED) {
                     disconnectFromClientWithDebugMessage(
-                            ErrorStrings.INVALID_PAYMENT_METHODS_OR_DATA,
+                            ErrorStrings.WEB_AUTHN_EXTENSIONS_NOT_SUPPORTED,
                             PaymentErrorReason.NOT_SUPPORTED);
                 } else {
                     disconnectFromClientWithDebugMessage(
@@ -622,27 +638,30 @@ public class PaymentRequestService
      * SecurePaymentConfirmation (SPC) request. Checks both structural constraints (e.g. SPC cannot
      * be combined with shipping/payer requests) and the SPC parameters.
      *
-     * @param methodData The map of requested payment methods.
+     * @param rawMethodData The array of raw PaymentMethodData from the renderer.
      * @param options The payment options requested by the merchant.
      * @return An error code indicating if the request parameters are valid and acceptable to
      *     proceed. Returns SecurePaymentConfirmationRequestValidationError.OK if valid.
      */
     private @SecurePaymentConfirmationRequestValidationError int
             validateSecurePaymentConfirmationRequest(
-                    Map<String, PaymentMethodData> methodData, PaymentOptions options) {
-        PaymentMethodData spcMethodData = methodData.get(MethodStrings.SECURE_PAYMENT_CONFIRMATION);
-        assumeNonNull(spcMethodData);
+                    PaymentMethodData[] rawMethodData, PaymentOptions options) {
+        assert rawMethodData.length > 0;
 
         // If the SPC feature is not enabled and a website specifies "secure-payment-confirmation",
         // the renderer should pass the browser a null SPC object.
         if (!PaymentFeatureList.isEnabled(PaymentFeatureList.SECURE_PAYMENT_CONFIRMATION)) {
-            return spcMethodData.securePaymentConfirmation == null
-                    ? SecurePaymentConfirmationRequestValidationError.OK
-                    : SecurePaymentConfirmationRequestValidationError.SPC_METHOD_MUST_BE_NULL;
+            for (PaymentMethodData entry : rawMethodData) {
+                if (MethodStrings.SECURE_PAYMENT_CONFIRMATION.equals(entry.supportedMethod)
+                        && entry.securePaymentConfirmation != null) {
+                    return SecurePaymentConfirmationRequestValidationError.SPC_METHOD_MUST_BE_NULL;
+                }
+            }
+            return SecurePaymentConfirmationRequestValidationError.OK;
         }
 
         // SPC cannot be combined with other payment methods or shipping/payer requests.
-        if (methodData.size() > 1) {
+        if (rawMethodData.length > 1) {
             return SecurePaymentConfirmationRequestValidationError
                     .MULTIPLE_PAYMENT_METHODS_NOT_ALLOWED;
         }
@@ -653,6 +672,9 @@ public class PaymentRequestService
                 || options.requestPayerName) {
             return SecurePaymentConfirmationRequestValidationError.UNSUPPORTED_OPTIONS;
         }
+
+        PaymentMethodData spcMethodData = rawMethodData[0];
+        assert MethodStrings.SECURE_PAYMENT_CONFIRMATION.equals(spcMethodData.supportedMethod);
 
         // The SPC data from the renderer must not be null if the feature is enabled.
         if (spcMethodData.securePaymentConfirmation == null) {
@@ -693,7 +715,8 @@ public class PaymentRequestService
     }
 
     /**
-     * Called to open a new PaymentHandler UI on the showing PaymentRequest.
+     * Called to open a new PaymentHandler UI on the showing PaymentRequest through the legacy
+     * ServiceTabLauncher path, which does not support custom sizing.
      *
      * <p>TODO(crbug.com/411013540): Change call-sites to retrieve the currently showing payment
      * flow from BrowserGlobalPaymentFlowManager.
@@ -703,6 +726,41 @@ public class PaymentRequestService
      *     successful; null if failed.
      */
     public static @Nullable WebContents openPaymentHandlerWindow(GURL url) {
+        return openPaymentHandlerWindowInternal(url, /* preferredHeightCssPx= */ null);
+    }
+
+    /**
+     * Called by native to open a new PaymentHandler UI on the showing PaymentRequest when
+     * PaymentHandlerStaticCustomSize is enabled.
+     *
+     * @param url The url of the payment app to be displayed in the UI.
+     * @param preferredHeightCssPx The height of the payment app's web content in CSS pixels
+     *     requested via PaymentRequestEvent.openWindow(url, {preferredSize}), or null if none was
+     *     requested, in which case {@link #DEFAULT_PAYMENT_HANDLER_CONTENT_HEIGHT_CSS_PX} is used.
+     * @return The WebContents of the payment handler that's just opened when the opening is
+     *     successful; null if failed.
+     */
+    @CalledByNative
+    public static @Nullable @JniType("content::WebContents*") WebContents
+            openPaymentHandlerWindowWithPreferredHeight(
+                    @JniType("GURL") GURL url,
+                    @JniType("std::optional<int>") @Nullable Integer preferredHeightCssPx) {
+        return openPaymentHandlerWindowInternal(
+                url,
+                preferredHeightCssPx != null
+                        ? preferredHeightCssPx
+                        : DEFAULT_PAYMENT_HANDLER_CONTENT_HEIGHT_CSS_PX);
+    }
+
+    /**
+     * @param url The url of the payment app to be displayed in the UI.
+     * @param preferredHeightCssPx The height of the payment app's web content in CSS pixels, or
+     *     null for the legacy ServiceTabLauncher path (no custom sizing).
+     * @return The WebContents of the payment handler that's just opened when the opening is
+     *     successful; null if failed.
+     */
+    private static @Nullable WebContents openPaymentHandlerWindowInternal(
+            GURL url, @Nullable Integer preferredHeightCssPx) {
         PaymentRequestService showingPaymentRequest =
                 BrowserGlobalPaymentFlowManager.getShowingPaymentFlow();
         if (showingPaymentRequest == null) {
@@ -726,7 +784,7 @@ public class PaymentRequestService
 
         assumeNonNull(showingPaymentRequest.mBrowserPaymentRequest);
         return showingPaymentRequest.mBrowserPaymentRequest.openPaymentHandlerWindow(
-                url, invokedPaymentApp.getUkmSourceId());
+                url, invokedPaymentApp.getUkmSourceId(), preferredHeightCssPx);
     }
 
     /**
@@ -1992,13 +2050,13 @@ public class PaymentRequestService
         if (mBrowserPaymentRequest == null) return;
         if (mBrowserPaymentRequest.hasSkippedAppSelector()) {
             assert !TextUtils.isEmpty(errorMessage);
-            mJourneyLogger.setAborted(AbortReason.ABORTED_BY_USER);
             int reason = PaymentErrorReason.USER_CANCEL;
             // LINT.IfChange(PaymentEventResponseTypeToErrorReason)
             switch (error) {
                 // User cancel
                 case PaymentEventResponseType.PAYMENT_EVENT_REJECT:
                 case PaymentEventResponseType.PAYMENT_HANDLER_WINDOW_CLOSING:
+                    mJourneyLogger.setAborted(AbortReason.ABORTED_BY_USER);
                     reason = PaymentErrorReason.USER_CANCEL;
                     break;
                 // App failures
@@ -2020,13 +2078,16 @@ public class PaymentRequestService
                 case PaymentEventResponseType.PAYMENT_DETAILS_NOT_OBJECT:
                 case PaymentEventResponseType.PAYMENT_DETAILS_STRINGIFY_ERROR:
                 case PaymentEventResponseType.PAYMENT_METHOD_NAME_EMPTY:
+                    mJourneyLogger.setAborted(AbortReason.INSTRUMENT_DETAILS_ERROR);
                     reason = PaymentErrorReason.PAYMENT_APP_ERROR;
                     break;
                 // Violations
                 case PaymentEventResponseType.PAYMENT_HANDLER_INSECURE_NAVIGATION:
+                    mJourneyLogger.setAborted(AbortReason.INSTRUMENT_DETAILS_ERROR);
                     reason = PaymentErrorReason.NOT_ALLOWED_ERROR;
                     break;
                 default:
+                    mJourneyLogger.setAborted(AbortReason.INSTRUMENT_DETAILS_ERROR);
                     reason = PaymentErrorReason.UNKNOWN;
                     break;
             }

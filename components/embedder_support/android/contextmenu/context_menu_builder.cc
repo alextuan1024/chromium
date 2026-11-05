@@ -12,8 +12,10 @@
 #include "content/public/browser/android/additional_navigation_params_android.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
 #include "third_party/blink/public/common/context_menu_data/context_menu_data.h"
 #include "third_party/blink/public/mojom/annotation/annotation.mojom-shared.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/menus/android/menu_model_bridge.h"
 #include "url/android/gurl_android.h"
 
@@ -38,14 +40,17 @@ base::android::ScopedJavaGlobalRef<jobject> BuildJavaContextMenuParams(
       (params.title_text.empty() ? params.alt_text : params.title_text);
 
   base::android::ScopedJavaLocalRef<jobject> additional_navigation_params =
-      content::CreateJavaAdditionalNavigationParams(env, initiator_frame_host);
+      content::CreateJavaAdditionalNavigationParams(
+          env, initiator_frame_host.GetFrameToken(),
+          initiator_frame_host.GetProcess()->GetID(),
+          initiator_frame_host.GetCurrentInitiatorNavigationState());
 
   ui::MenuModelBridge* menu_model_bridge =
       new ui::MenuModelBridge(menu_model ? menu_model->AsWeakPtr() : nullptr);
 
   return base::android::ScopedJavaGlobalRef<jobject>(
       Java_ContextMenuParams_create(
-          env, reinterpret_cast<intptr_t>(&params),
+          env, jni_zero::MakeUnique<content::ContextMenuParams>(params),
           menu_model_bridge->GetJavaObject(),
           static_cast<int>(params.media_type),
           static_cast<int>(params.media_flags),
@@ -60,15 +65,14 @@ base::android::ScopedJavaGlobalRef<jobject> BuildJavaContextMenuParams(
           params.y, static_cast<int>(params.source_type),
           params.annotation_type ==
               blink::mojom::AnnotationType::kSharedHighlight,
-          params.opened_from_interest_for, params.interest_for_node_id,
-          additional_navigation_params));
+          params.opened_from_interest_for, additional_navigation_params,
+          params.has_image_contents));
 }
 
 content::ContextMenuParams* ContextMenuParamsFromJavaObject(
     const base::android::JavaRef<jobject>& jcontext_menu_params) {
-  return reinterpret_cast<content::ContextMenuParams*>(
-      Java_ContextMenuParams_getNativePointer(
-          base::android::AttachCurrentThread(), jcontext_menu_params));
+  return Java_ContextMenuParams_getNativePointer(
+      base::android::AttachCurrentThread(), jcontext_menu_params);
 }
 
 }  // namespace context_menu

@@ -39,7 +39,7 @@ mojom::RoutePresentationConnectionPtr CastActivity::AddClient(
     const url::Origin& origin,
     content::FrameTreeNodeId frame_tree_node_id) {
   const std::string& client_id = source.client_id();
-  DCHECK(!connected_clients_.contains(client_id));
+  CHECK(!connected_clients_.contains(client_id), base::NotFatalUntil::M161);
   std::unique_ptr<CastSessionClient> client =
       client_factory_for_test_
           ? client_factory_for_test_->MakeClientForTest(  // IN-TEST
@@ -84,10 +84,12 @@ void CastActivity::SetOrUpdateSession(const CastSession& session,
   DVLOG(2) << "SetOrUpdateSession old session_id = "
            << session_id_.value_or("<missing>")
            << ", new session_id = " << session.session_id();
-  DCHECK(sink.is_cast_sink());
+  CHECK(sink.is_cast_sink(), base::NotFatalUntil::M161);
   route_.set_description(GetRouteDescription(session));
   sink_ = sink;
   if (session_id_) {
+    // TODO(crbug.com/583742427): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK_EQ(*session_id_, session.session_id());
     OnSessionUpdated(session, hash_token);
   } else {

@@ -18,13 +18,15 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/time/time.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_fetcher.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_issuer_config.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_store.h"
 
 namespace private_verification_tokens {
-class PrivacyPassAthmBatchRequest;
+enum class PrivacyPassAthmBatchRequestError;
+enum class PrivateVerificationTokensTokenParsingResult;
 }
 
 namespace url {
@@ -35,15 +37,29 @@ namespace network {
 class SharedURLLoaderFactory;
 }
 
+namespace private_verification_tokens {
+class PrivacyPassAthmBatchRequest;
+
+// Exposed purely for testing the exhaustive enum mappings statically.
+PrivateVerificationTokensTokenParsingResult MapTryGetTokensErrorToParsingResult(
+    TryGetTokensError error);
+
+PrivateVerificationTokensTokenParsingResult MapPrivacyPassErrorToParsingResult(
+    PrivacyPassAthmBatchRequestError error);
+}  // namespace private_verification_tokens
+
 class GURL;
 class HostContentSettingsMap;
 class Profile;
+
+class TemplateURLService;
 
 class PrivateVerificationTokensService : public KeyedService {
  public:
   static std::unique_ptr<PrivateVerificationTokensService> Create(
       const base::FilePath& data_directory,
-      HostContentSettingsMap* host_content_settings_map = nullptr);
+      HostContentSettingsMap* host_content_settings_map = nullptr,
+      TemplateURLService* template_url_service = nullptr);
   ~PrivateVerificationTokensService() override;
   void Shutdown() override;
   class Observer : public base::CheckedObserver {
@@ -58,6 +74,8 @@ class PrivateVerificationTokensService : public KeyedService {
   void RemoveObserver(Observer* observer);
 
   bool is_initialized() const;
+  bool IsSearchEngineSameOrigin(const url::Origin& issuer) const;
+  bool IsIssuerAllowed(const url::Origin& issuer) const;
 
   // Retrieve all token issuer origins asynchronously.
   void GetTokenIssuers(
@@ -128,8 +146,9 @@ class PrivateVerificationTokensService : public KeyedService {
   void TrackerInsert(Profile* profile, const url::Origin& redeemer_origin);
 
  private:
-  explicit PrivateVerificationTokensService(
-      HostContentSettingsMap* host_content_settings_map);
+  PrivateVerificationTokensService(
+      HostContentSettingsMap* host_content_settings_map,
+      TemplateURLService* template_url_service);
 
   void OnStoreInitialized();
 
@@ -141,6 +160,7 @@ class PrivateVerificationTokensService : public KeyedService {
       uint32_t key_id,
       base::Time expiration,
       uint32_t version,
+      base::TimeTicks fetch_start_time,
       base::expected<std::string,
                      private_verification_tokens::TryGetTokensResult> result);
 
@@ -156,6 +176,7 @@ class PrivateVerificationTokensService : public KeyedService {
   base::flat_map<url::Origin, url::Origin> redeemer_to_issuer_;
 
   raw_ptr<HostContentSettingsMap> host_content_settings_map_ = nullptr;
+  raw_ptr<TemplateURLService> template_url_service_ = nullptr;
   bool is_shutting_down_ = false;
 
   base::ObserverList<Observer, /*check_empty=*/true> observers_;

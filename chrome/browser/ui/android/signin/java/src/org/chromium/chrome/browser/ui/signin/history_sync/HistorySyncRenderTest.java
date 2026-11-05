@@ -4,12 +4,9 @@
 
 package org.chromium.chrome.browser.ui.signin.history_sync;
 
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
-import static org.hamcrest.Matchers.allOf;
-
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.app.Activity;
 import android.content.res.Configuration;
@@ -35,8 +32,8 @@ import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterProvider;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -54,8 +51,8 @@ import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.sync.SyncService;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.ui.test.util.BlankUiTestActivity;
+import org.chromium.ui.test.util.NightModeTestUtils;
 import org.chromium.ui.test.util.RenderTestRule;
-import org.chromium.ui.test.util.ViewUtils;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -67,7 +64,7 @@ import java.util.List;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DisableFeatures({ChromeFeatureList.USE_ALTERNATE_HISTORY_SYNC_ILLUSTRATION})
 @EnableFeatures({ChromeFeatureList.ANDROID_FRE_LAYOUT_UPDATE})
-@DoNotBatch(reason = "This test relies on native initialization")
+@Batch(Batch.PER_CLASS)
 public class HistorySyncRenderTest {
     /** Parameter provider for night mode, orientation, and FRE state. */
     public static class NightModeOrientationAndFreParameterProvider implements ParameterProvider {
@@ -131,18 +128,19 @@ public class HistorySyncRenderTest {
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
-    @Rule
+    @Rule(order = 0)
+    public final SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
+
+    @Rule(order = 1)
     public final BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
-
-    @Rule public final SigninTestRule mSigninTestRule = new SigninTestRule();
 
     @Rule
     public final RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.SERVICES_SIGN_IN)
-                    .setRevision(4)
-                    .setDescription("Update button stacking")
+                    .setRevision(5)
+                    .setDescription("Landscape subtitle top padding.")
                     .build();
 
     @Mock private SyncService mSyncServiceMock;
@@ -184,6 +182,7 @@ public class HistorySyncRenderTest {
                     });
         }
         ActivityTestUtils.clearActivityOrientation(mActivityTestRule.getActivity());
+        NightModeTestUtils.tearDownNightModeForBlankUiTestActivity();
     }
 
     @Test
@@ -199,7 +198,7 @@ public class HistorySyncRenderTest {
 
         buildHistorySyncCoordinator(orientation, isFre);
 
-        onViewWaiting(withId(R.id.button_primary));
+        waitForView(withId(R.id.button_primary));
         mRenderTestRule.render(mHistorySyncCoordinator.getView(), "history_sync");
     }
 
@@ -215,7 +214,7 @@ public class HistorySyncRenderTest {
         mSigninTestRule.addAccountThenSignin(TestAccounts.AADC_MINOR_ACCOUNT);
         buildHistorySyncCoordinator(orientation, isFre);
 
-        onViewWaiting(withId(R.id.button_primary));
+        waitForView(withId(R.id.button_primary));
         mRenderTestRule.render(
                 mHistorySyncCoordinator.getView(), "history_sync_with_minor_mode_enabled");
     }
@@ -234,7 +233,7 @@ public class HistorySyncRenderTest {
 
         buildHistorySyncCoordinator(orientation, isFre);
 
-        onViewWaiting(withId(R.id.button_primary));
+        waitForView(withId(R.id.button_primary));
         mRenderTestRule.render(
                 mHistorySyncCoordinator.getView(), "history_sync_alternate_illustration");
     }
@@ -270,6 +269,6 @@ public class HistorySyncRenderTest {
                             .getActivity()
                             .setContentView(mHistorySyncCoordinator.maybeRecreateView());
                 });
-        ViewUtils.waitForVisibleView(allOf(withId(R.id.history_sync_illustration), isDisplayed()));
+        waitForView(withId(R.id.history_sync_illustration));
     }
 }

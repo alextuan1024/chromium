@@ -386,12 +386,6 @@
       <message name="IDS_LOGIN_MARKETING_OPT_IN_SCREEN_SUBTITLE" desc="The sub-title of the dialog that allows user to opt-in into several Google marketing options.">
         Get <ph name="DEVICE_TYPE">$1<ex>Chromebook</ex></ph> tips, offers, and updates, and share feedback.
       </message>
-      <message name="IDS_LOGIN_MARKETING_OPT_IN_SCREEN_WITH_CLOUDGAMINGDEVICE_TITLE" desc="An alternate title for the last dialog the marketing opt-in for cloud gaming devices.">
-        Setup is complete! Get your device ready for gaming next
-      </message>
-      <message name="IDS_LOGIN_MARKETING_OPT_IN_SCREEN_WITH_CLOUDGAMINGDEVICE_SUBTITLE" desc="An alternate subtitle for the last dialog the marketing opt-in for cloud gaming devices.">
-        Your <ph name="DEVICE_TYPE">$1<ex>Chromebook</ex></ph> is built for gaming. The Explore app will open next where you can access hundreds of the latest games, see gaming offers, and discover gaming features that come with your device.
-      </message>
       <message name="IDS_LOGIN_MARKETING_OPT_IN_SCREEN_UNSUBSCRIBE_SHORT" desc="Disclaimer about being able to unsubscribe">
         Unsubscribe anytime.
       </message>
@@ -403,9 +397,6 @@
       </message>
       <message name="IDS_LOGIN_MARKETING_OPT_IN_SCREEN_GET_CHROMEBOOK_UPDATES_SIGN_ME_UP" desc="A lablel next to the checkbox that controls user subscription to marketing updates and useful information about the user's Chrome device.">
         Sign me up
-      </message>
-      <message name="IDS_LOGIN_MARKETING_OPT_IN_SCREEN_WITH_CLOUDGAMINGDEVICE_SIGN_ME_UP" desc="Alternate the lablel next to the checkbox that controls user subscription to marketing updates and useful information about the user's Chrome device for gaming device.">
-        Sign up for <ph name="DEVICE_TYPE">$1<ex>Chromebook</ex></ph> emails
       </message>
       <message name="IDS_LOGIN_GET_STARTED" desc="A label on the button. Used on the welcome screen (the first one on OOBE) and on the marketing optin screen (the last one in OOBE).">
         Get started
@@ -2017,6 +2008,12 @@
       <message name="IDS_FJORD_TOUCH_CONTROLLER_NEXT_BUTTON_TEXT" desc="Button shown to the user to go to the next step.">
         Next
       </message>
+      <message name="IDS_FJORD_TOUCH_CONTROLLER_NEXT_BUTTON_TOOLTIP" desc="Tooltip shown when hovering over the disabled next button on the touch controller setup screen, telling the user to set up the touch screen before continuing.">
+        Set up the touch screen
+      </message>
+      <message name="IDS_FJORD_TOUCH_CONTROLLER_TEST_IMAGE_SKIP_BUTTON_TEXT" desc="Button shown only on test images on the touch controller setup screen. Lets testers continue to the next step without finishing the TC10 touch controller setup.">
+        Skip
+      </message>
       <message name="IDS_FJORD_IMAGE_SELECTION_TITLE" desc="Title of the OOBE screen for choosing the device enrollment type.">
         Choose device enrollment type
       </message>
@@ -2752,6 +2749,185 @@
       <message name="IDS_REMOTE_ACTIVITY_NOTIFICATION_BUTTON_LABEL" desc="Button label for describing that the device is available for use and user can click on the button to remove the full screen notification.">
         Continue to use the device
       </message>
+
+      <!-- Update and enrollment status strings -->
+      <message name="IDS_GETTING_DEVICE_READY" desc="Message that the system is getting the device ready">
+        Getting the device ready...
+      </message>
+      <message name="IDS_DOWNLOADING" desc="The format for ETA during the update downloading stage">
+        Downloading: <ph name="STATUS">$1<ex>Less than 1 minute left</ex></ph>
+      </message>
+
+      <!-- Login authentication error -->
+      <message name="IDS_LOGIN_ERROR_AUTHENTICATING" desc="Couldn't sign in because password is invalid">
+        Sorry, your password could not be verified. Please try again.
+      </message>
+
+      <!-- Error screen certificate manager -->
+      <message name="IDS_CERTIFICATE_MANAGER_TITLE" desc="String to be displayed in the title bar of the certificate manager dialog">
+        Certificate manager
+      </message>
+
+      <!-- Login WebUI screen actions -->
+      <message name="IDS_REPORT_AN_ISSUE" desc="Text of the button which allows the user to report an issue with Chrome.">
+        Report an issue
+      </message>
+      <message name="IDS_RELAUNCH_BUTTON" desc="The label for the relaunch button that relaunches the browser once update is complete">
+        Restart
+      </message>
+
+      <!-- Sign-in error notification strings -->
+      <message name="IDS_SIGNIN_ERROR_DISPLAY_SOURCE" desc="Context title shown in the notification header of sign-in error notification.">
+        Sign In
+      </message>
+      <message name="IDS_SIGNIN_ERROR_BUBBLE_VIEW_TITLE" desc="Title in the sign-in error bubble view/notification.">
+        Sign-in error
+      </message>
+      <message name="IDS_SYNC_TOKEN_HANDLE_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error bubble view when the user's token handle is invalid.">
+        Your account sign-in details are out of date. Please sign out and sign in again.
+      </message>
+
+      <!-- Branded sign-in error notification strings -->
+      <if expr="_google_chrome">
+        <then>
+          <if expr="reven">
+            <then>
+              <message name="IDS_SIGNIN_ERROR_SECONDARY_ACCOUNT_DISPLAY_SOURCE" desc="Context title shown in the notification header of sign-in error notification for ChromeOS Flex Secondary Accounts.">
+                ChromeOS Flex System
+              </message>
+            </then>
+            <else>
+              <message name="IDS_SIGNIN_ERROR_SECONDARY_ACCOUNT_DISPLAY_SOURCE" desc="Context title shown in the notification header of sign-in error notification for ChromeOS Secondary Accounts.">
+                ChromeOS System
+              </message>
+            </else>
+          </if>
+        </then>
+        <else>
+          <message name="IDS_SIGNIN_ERROR_SECONDARY_ACCOUNT_DISPLAY_SOURCE" desc="Context title shown in the notification header of sign-in error notification for ChromiumOS Secondary Accounts.">
+            ChromiumOS System
+          </message>
+        </else>
+      </if>
+      <if expr="_google_chrome">
+        <then>
+          <if expr="reven">
+            <then>
+              <message name="IDS_SYNC_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error notification when the user's sign-in credentials are out of date.">
+                ChromeOS Flex could not sync your data because your account sign-in details are out of date.
+              </message>
+            </then>
+            <else>
+              <message name="IDS_SYNC_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error notification when the user's sign-in credentials are out of date.">
+                ChromeOS could not sync your data because your account sign-in details are out of date.
+              </message>
+            </else>
+          </if>
+        </then>
+        <else>
+          <message name="IDS_SYNC_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error notification when the user's sign-in credentials are out of date.">
+            ChromiumOS could not sync your data because your account sign-in details are out of date.
+          </message>
+        </else>
+      </if>
+      <if expr="_google_chrome">
+        <then>
+          <if expr="reven">
+            <then>
+              <message name="IDS_SYNC_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE_2" desc="Message in the sign-in error notification when the user's sign-in credentials are out of date.">
+                ChromeOS Flex could not save Chrome data in your Google Account because your account sign-in details are out of date
+              </message>
+            </then>
+            <else>
+              <message name="IDS_SYNC_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE_2" desc="Message in the sign-in error notification when the user's sign-in credentials are out of date.">
+                ChromeOS could not save Chrome data in your Google Account because your account sign-in details are out of date
+              </message>
+            </else>
+          </if>
+        </then>
+        <else>
+          <message name="IDS_SYNC_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE_2" desc="Message in the sign-in error notification when the user's sign-in credentials are out of date.">
+            ChromiumOS could not save Chromium data in your Google Account because your account sign-in details are out of date
+          </message>
+        </else>
+      </if>
+      <if expr="_google_chrome">
+        <then>
+          <if expr="reven">
+            <then>
+              <message name="IDS_SYNC_UNAVAILABLE_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error notification when sync is not available for their domain.">
+                ChromeOS Flex could not sync your data because Sync is not available for your domain.
+              </message>
+            </then>
+            <else>
+              <message name="IDS_SYNC_UNAVAILABLE_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error notification when sync is not available for their domain.">
+                ChromeOS could not sync your data because Sync is not available for your domain.
+              </message>
+            </else>
+          </if>
+        </then>
+        <else>
+          <message name="IDS_SYNC_UNAVAILABLE_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error notification when sync is not available for their domain.">
+            ChromiumOS could not sync your data because Sync is not available for your domain.
+          </message>
+        </else>
+      </if>
+      <if expr="_google_chrome">
+        <then>
+          <if expr="reven">
+            <then>
+              <message name="IDS_SYNC_OTHER_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error notification when there's an error signing in.">
+                ChromeOS Flex could not sync your data due to an error signing in.
+              </message>
+            </then>
+            <else>
+              <message name="IDS_SYNC_OTHER_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error notification when there's an error signing in.">
+                ChromeOS could not sync your data due to an error signing in.
+              </message>
+            </else>
+          </if>
+        </then>
+        <else>
+          <message name="IDS_SYNC_OTHER_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE" desc="Message in the sign-in error notification when there's an error signing in.">
+            ChromiumOS could not sync your data due to an error signing in.
+          </message>
+        </else>
+      </if>
+      <if expr="_google_chrome">
+        <then>
+          <if expr="reven">
+            <then>
+              <message name="IDS_SYNC_OTHER_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE_2" desc="Message in the sign-in error notification when there's an error signing in.">
+                ChromeOS Flex could not save Chrome data in your Google Account due to an error signing in
+              </message>
+            </then>
+            <else>
+              <message name="IDS_SYNC_OTHER_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE_2" desc="Message in the sign-in error notification when there's an error signing in.">
+                ChromeOS could not save Chrome data in your Google Account due to an error signing in
+              </message>
+            </else>
+          </if>
+        </then>
+        <else>
+          <message name="IDS_SYNC_OTHER_SIGN_IN_ERROR_BUBBLE_VIEW_MESSAGE_2" desc="Message in the sign-in error notification when there's an error signing in.">
+            ChromiumOS could not save Chromium data in your Google Account due to an error signing in
+          </message>
+        </else>
+      </if>
+
+      <!-- OOBE update installation -->
+      <if expr="_google_chrome">
+        <then>
+          <message name="IDS_INSTALLING_UPDATE" desc="Label shown on the updates installation screen during OOBE">
+            Please wait while Chrome installs the latest system updates.
+          </message>
+        </then>
+        <else>
+          <message name="IDS_INSTALLING_UPDATE" desc="Label shown on the updates installation screen during OOBE">
+            Please wait while Chromium installs the latest system updates.
+          </message>
+        </else>
+      </if>
     </messages>
   </release>
 </grit>

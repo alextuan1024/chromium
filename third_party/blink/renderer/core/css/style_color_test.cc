@@ -30,6 +30,23 @@ CSSValue* CreateCalcAddValue(CSSValueID value_a, CSSValueID value_b) {
           CSSMathOperator::kAdd));
 }
 
+// Creates the unresolved form of a two-color `color-mix()`, given the
+// progress percentage towards `color2` and the alpha multiplier.
+StyleColor::UnresolvedColorMix* MakeColorMix(
+    Color::ColorSpace color_interpolation_space,
+    Color::HueInterpolationMethod hue_interpolation_method,
+    const StyleColor& color1,
+    const StyleColor& color2,
+    double progress,
+    double alpha_multiplier) {
+  return MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
+      color_interpolation_space, hue_interpolation_method,
+      StyleColor::UnresolvedColorMix::ItemVector{
+          {color1, (1.0 - progress) * alpha_multiplier},
+          {color2, progress * alpha_multiplier}},
+      alpha_multiplier);
+}
+
 }  // namespace
 
 class StyleColorTest : public PageTestBase {
@@ -47,10 +64,9 @@ TEST_F(StyleColorTest, ConstructionAndIsCurrentColor) {
   StyleColor red_rgb(Color(255, 0, 0));
   EXPECT_FALSE(red_rgb.IsCurrentColor());
 
-  StyleColor unresolved_mix(
-      MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
-          Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
-          currentcolor, red_rgb, 0.5, 1.0));
+  StyleColor unresolved_mix(MakeColorMix(
+      Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
+      currentcolor, red_rgb, 0.5, 1.0));
   EXPECT_FALSE(unresolved_mix.IsCurrentColor());
 }
 
@@ -73,14 +89,12 @@ TEST_F(StyleColorTest, Equality) {
   StyleColor red_rgb_system_color(Color(255, 0, 0), CSSValueID::kCanvastext);
   EXPECT_NE(red_rgb_system_color, red_rgb_1);
 
-  StyleColor unresolved_mix_1(
-      MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
-          Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
-          currentcolor_1, red_keyword, 0.5, 1.0));
-  StyleColor unresolved_mix_2(
-      MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
-          Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
-          currentcolor_1, red_rgb_1, 0.5, 1.0));
+  StyleColor unresolved_mix_1(MakeColorMix(
+      Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
+      currentcolor_1, red_keyword, 0.5, 1.0));
+  StyleColor unresolved_mix_2(MakeColorMix(
+      Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
+      currentcolor_1, red_rgb_1, 0.5, 1.0));
   CSSIdentifierValue* r = CSSIdentifierValue::Create(CSSValueID::kR);
   CSSIdentifierValue* b = CSSIdentifierValue::Create(CSSValueID::kB);
   UpdateAllLifecyclePhasesForTest();
@@ -115,41 +129,41 @@ TEST_F(StyleColorTest, UnresolvedColorMix_Equality) {
   StyleColor blue_rgb(Color(0, 0, 255));
 
   using UnresolvedColorMix = StyleColor::UnresolvedColorMix;
-  UnresolvedColorMix* mix_1 = MakeGarbageCollected<UnresolvedColorMix>(
+  UnresolvedColorMix* mix_1 = MakeColorMix(
       Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
       currentcolor, red_rgb, 0.25, 1.0);
 
-  UnresolvedColorMix* mix_2 = MakeGarbageCollected<UnresolvedColorMix>(
+  UnresolvedColorMix* mix_2 = MakeColorMix(
       Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
       currentcolor, red_rgb, 0.25, 1.0);
   EXPECT_EQ(*mix_1, *mix_2);
 
-  UnresolvedColorMix* mix_3 = MakeGarbageCollected<UnresolvedColorMix>(
+  UnresolvedColorMix* mix_3 = MakeColorMix(
       Color::ColorSpace::kHSL, Color::HueInterpolationMethod::kShorter,
       currentcolor, red_rgb, 0.25, 1.0);
   EXPECT_NE(*mix_1, *mix_3);
 
-  UnresolvedColorMix* mix_4 = MakeGarbageCollected<UnresolvedColorMix>(
+  UnresolvedColorMix* mix_4 = MakeColorMix(
       Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kLonger,
       currentcolor, red_rgb, 0.25, 1.0);
   EXPECT_NE(*mix_1, *mix_4);
 
-  UnresolvedColorMix* mix_5 = MakeGarbageCollected<UnresolvedColorMix>(
+  UnresolvedColorMix* mix_5 = MakeColorMix(
       Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
       red_rgb, currentcolor, 0.25, 1.0);
   EXPECT_NE(*mix_1, *mix_5);
 
-  UnresolvedColorMix* mix_6 = MakeGarbageCollected<UnresolvedColorMix>(
+  UnresolvedColorMix* mix_6 = MakeColorMix(
       Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
       currentcolor, blue_rgb, 0.25, 1.0);
   EXPECT_NE(*mix_1, *mix_6);
 
-  UnresolvedColorMix* mix_7 = MakeGarbageCollected<UnresolvedColorMix>(
+  UnresolvedColorMix* mix_7 = MakeColorMix(
       Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
       currentcolor, red_rgb, 0.75, 1.0);
   EXPECT_NE(*mix_1, *mix_7);
 
-  UnresolvedColorMix* mix_8 = MakeGarbageCollected<UnresolvedColorMix>(
+  UnresolvedColorMix* mix_8 = MakeColorMix(
       Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
       currentcolor, red_rgb, 0.25, 0.5);
   EXPECT_NE(*mix_1, *mix_8);
@@ -157,7 +171,7 @@ TEST_F(StyleColorTest, UnresolvedColorMix_Equality) {
 
 TEST_F(StyleColorTest, UnresolvedRelativeColor_Equality) {
   StyleColor currentcolor;
-  StyleColor mix(MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
+  StyleColor mix(MakeColorMix(
       Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
       currentcolor, StyleColor(Color(255, 0, 0)), 0.25, 1.0));
 
@@ -235,15 +249,53 @@ TEST_F(StyleColorTest, UnresolvedRelativeColor_Equality) {
 
 TEST_F(StyleColorTest, UnresolvedColorMix_ToCSSValue) {
   StyleColor currentcolor;
-  StyleColor::UnresolvedColorMix* mix =
-      MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
-          Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
-          currentcolor, StyleColor(Color(255, 0, 0)), 0.25, 1.0);
+  StyleColor::UnresolvedColorMix* mix = MakeColorMix(
+      Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
+      currentcolor, StyleColor(Color(255, 0, 0)), 0.25, 1.0);
 
   CSSValue* value = mix->ToCSSValue();
   EXPECT_TRUE(value->IsColorMixValue());
   EXPECT_EQ(value->CssText(),
             "color-mix(in srgb, currentcolor 75%, rgb(255, 0, 0) 25%)");
+}
+
+TEST_F(StyleColorTest, UnresolvedColorMix_MultipleColors) {
+  using UnresolvedColorMix = StyleColor::UnresolvedColorMix;
+  StyleColor currentcolor;
+  StyleColor red(Color(255, 0, 0));
+  StyleColor blue(Color(0, 0, 255));
+  auto make_mix = [](UnresolvedColorMix::ItemVector items,
+                     double alpha_multiplier) {
+    return MakeGarbageCollected<UnresolvedColorMix>(
+        Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
+        std::move(items), alpha_multiplier);
+  };
+
+  const UnresolvedColorMix* mix =
+      make_mix({{currentcolor, 0.5}, {red, 0.3}, {blue, 0.2}}, 1.0);
+  EXPECT_EQ(*mix,
+            *make_mix({{currentcolor, 0.5}, {red, 0.3}, {blue, 0.2}}, 1.0));
+  EXPECT_NE(*mix,
+            *make_mix({{red, 0.3}, {currentcolor, 0.5}, {blue, 0.2}}, 1.0));
+  EXPECT_NE(*mix, *make_mix({{currentcolor, 0.5}, {red, 0.5}}, 1.0));
+
+  // Mixing white with red at 3/8, then with blue at 1/5.
+  const Color resolved = mix->Resolve(Color(255, 255, 255));
+  EXPECT_EQ(resolved.GetColorSpace(), Color::ColorSpace::kSRGB);
+  EXPECT_NEAR(resolved.Param0(), 0.8f, 1e-6);
+  EXPECT_NEAR(resolved.Param1(), 0.5f, 1e-6);
+  EXPECT_NEAR(resolved.Param2(), 0.7f, 1e-6);
+  EXPECT_NEAR(resolved.Alpha(), 1.0f, 1e-6);
+
+  EXPECT_EQ(
+      make_mix({{currentcolor, 1.0 / 3}, {red, 1.0 / 3}, {blue, 1.0 / 3}}, 1.0)
+          ->ToCSSValue()
+          ->CssText(),
+      "color-mix(in srgb, currentcolor, rgb(255, 0, 0), rgb(0, 0, 255))");
+  EXPECT_EQ(make_mix({{currentcolor, 0.5}}, 0.5)->ToCSSValue()->CssText(),
+            "color-mix(in srgb, currentcolor 50%)");
+  EXPECT_EQ(make_mix({{currentcolor, 1.0}}, 1.0)->ToCSSValue()->CssText(),
+            "color-mix(in srgb, currentcolor)");
 }
 
 TEST_F(StyleColorTest, UnresolvedRelativeColor_ToCSSValue) {
@@ -506,12 +558,15 @@ TEST_F(StyleColorTest, UnresolvedAlphaColor_Resolve) {
       StyleColor(red), none, length_resolver);
   Color resolved_none = alpha_none->Resolve(Color::kBlack);
   EXPECT_TRUE(resolved_none.AlphaIsNone());
-  // A legacy color space cannot represent a "none" alpha in its serialization,
-  // so the result is converted to the modern sRGB color space.
-  EXPECT_EQ(resolved_none.GetColorSpace(), Color::ColorSpace::kSRGB);
-  EXPECT_FLOAT_EQ(resolved_none.Param0(), 1.f);
-  EXPECT_FLOAT_EQ(resolved_none.Param1(), 0.f);
-  EXPECT_FLOAT_EQ(resolved_none.Param2(), 0.f);
+  // Since the color contains a missing / "none" component it is not considered
+  // to be "legacy syntax" anymore, but we represent "modern syntax" rgb()
+  // using the same color-space.
+  EXPECT_EQ(resolved_none.GetColorSpace(), Color::ColorSpace::kSRGBLegacy);
+  EXPECT_FALSE(resolved_none.IsLegacy());
+  // Color components should be preserved (legacy sRGB uses 0-255 range).
+  EXPECT_FLOAT_EQ(resolved_none.Param0(), red.Param0());
+  EXPECT_FLOAT_EQ(resolved_none.Param1(), red.Param1());
+  EXPECT_FLOAT_EQ(resolved_none.Param2(), red.Param2());
 
   // alpha(from semiTransparentBlue / alpha) => preserves alpha from origin
   CSSValue* alpha_keyword = CSSIdentifierValue::Create(CSSValueID::kAlpha);
@@ -602,9 +657,9 @@ TEST_F(StyleColorTest, UnresolvedAlphaColor_EqualityInStyleColor) {
   EXPECT_NE(alpha_style_1, currentcolor);
 
   // Different from a color mix.
-  StyleColor mix(MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
-      Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
-      currentcolor, red_rgb, 0.5, 1.0));
+  StyleColor mix(MakeColorMix(Color::ColorSpace::kSRGB,
+                              Color::HueInterpolationMethod::kShorter,
+                              currentcolor, red_rgb, 0.5, 1.0));
   EXPECT_NE(alpha_style_1, mix);
 }
 

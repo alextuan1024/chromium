@@ -12,10 +12,14 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
+#include "base/task/updateable_sequenced_task_runner.h"
 #include "base/trace_event/trace_event.h"
+#include "build/branding_buildflags.h"
+#include "components/optimization_guide/core/model_execution/manifest_broker/disk_space_status.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
-#include "components/optimization_guide/core/model_execution/model_execution_util.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
@@ -24,6 +28,23 @@
 namespace optimization_guide {
 
 namespace {
+
+scoped_refptr<base::UpdateableSequencedTaskRunner> CreateLoadTaskRunner() {
+#if BUILDFLAG(CHROME_FOR_TESTING)
+  // Chrome for Testing blocks browser startup until all required components
+  // are installed. However, BEST_EFFORT tasks are not allowed to run until
+  // after startup completion (see `scoped_best_effort_execution_fence_` in
+  // content/browser/browser_main_loop.h).
+  //
+  // Therefore use USER_VISIBLE task priority to prevent browser startup
+  // deadlock when loading required model manifests in Chrome for Testing.
+  constexpr base::TaskPriority kTaskPriority = base::TaskPriority::USER_VISIBLE;
+#else
+  constexpr base::TaskPriority kTaskPriority = base::TaskPriority::BEST_EFFORT;
+#endif
+  return base::ThreadPool::CreateUpdateableSequencedTaskRunner(
+      {base::MayBlock(), kTaskPriority, base::ThreadPolicy::PREFER_BACKGROUND});
+}
 
 DeviceCategory GetDeviceCategory(const PerformanceClassifier& classifier) {
   if (base::FeatureList::IsEnabled(
@@ -39,7 +60,9 @@ DeviceCategory GetDeviceCategory(const PerformanceClassifier& classifier) {
 
 bool IsAllowedByPolicy(const PrefService& local_state) {
   return features::IsOnDeviceExecutionEnabled() &&
-         GetGenAILocalFoundationalModelEnterprisePolicySettings(&local_state) ==
+         model_execution::prefs::
+                 GetGenAILocalFoundationalModelEnterprisePolicySettings(
+                     &local_state) ==
              model_execution::prefs::
                  GenAILocalFoundationalModelEnterprisePolicySettings::kAllowed;
 }
@@ -53,9 +76,10 @@ bool IsAllowedByUserSetting(const PrefService& local_state) {
 
 ManifestMonitor::ManifestMonitor(PrefService& local_state,
                                  PerformanceClassifier& performance_classifier,
-                                 Delegate& delegate)
+                                 ManifestMonitorDelegate& delegate)
     : performance_classifier_(performance_classifier),
-      local_state_(local_state) {
+      local_state_(local_state),
+      load_task_runner_(CreateLoadTaskRunner()) {
   TRACE_EVENT("optimization_guide", "ManifestMonitor::ManifestMonitor",
               perfetto::Flow::FromPointer(this));
   pref_change_registrar_.Init(&local_state_.get());
@@ -89,6 +113,10 @@ void ManifestMonitor::SetCallback(base::RepeatingClosure on_manifest_changed) {
   OnInputsChanged();
 }
 
+void ManifestMonitor::RaiseLoadPriority() {
+  load_task_runner_->UpdatePriority(base::TaskPriority::USER_VISIBLE);
+}
+
 void ManifestMonitor::OnDiskSpaceEvaluated(
     std::optional<base::ByteSize> free_space) {
   TRACE_EVENT("optimization_guide", "ManifestMonitor::OnDiskSpaceEvaluated",
@@ -111,7 +139,9 @@ void ManifestMonitor::OnManifestReady(base::FilePath manifest_dir) {
 void ManifestMonitor::OnInputsChanged() {
   TRACE_EVENT("optimization_guide", "ManifestMonitor::OnInputsChanged",
               perfetto::Flow::FromPointer(this));
-  if (!on_manifest_changed_) {
+  // Don't select a manifest (or complete `BrokerInit`) before perf class.
+  if (!on_manifest_changed_ ||
+      !performance_classifier_->IsPerformanceClassAvailable()) {
     return;
   }
   if (!IsAllowedByPolicy(*local_state_)) {
@@ -122,23 +152,21 @@ void ManifestMonitor::OnInputsChanged() {
     UseUninstallManifest(Manifest::UninstallReason::kDisallowedByUser);
     return;
   }
-  if (performance_classifier_->IsPerformanceClassAvailable() &&
-      !performance_classifier_->IsDeviceCapable()) {
+  if (!performance_classifier_->IsDeviceCapable()) {
     UseUninstallManifest(Manifest::UninstallReason::kDeviceNotCapable);
     return;
   }
   if (free_space_.has_value() &&
-      features::IsFreeDiskSpaceTooLowForOnDeviceModelInstall(*free_space_)) {
+      IsFreeDiskSpaceTooLowForOnDeviceModelInstall(*free_space_)) {
     UseUninstallManifest(Manifest::UninstallReason::kInsufficientDisk);
     return;
   }
-  if (!manifest_dir_ ||
-      !performance_classifier_->IsPerformanceClassAvailable() ||
-      !free_space_.has_value()) {
+  if (!manifest_dir_ || !free_space_.has_value()) {
     // We are not ready to load the manifest yet.
     return;
   }
-  Manifest::Load(*manifest_dir_, GetDeviceCategory(*performance_classifier_),
+  Manifest::Load(*load_task_runner_, *manifest_dir_,
+                 GetDeviceCategory(*performance_classifier_),
                  base::BindOnce(&ManifestMonitor::OnManifestLoaded,
                                 weak_ptr_factory_.GetWeakPtr()));
 }
@@ -191,16 +219,15 @@ std::vector<mojom::BrokerPropertyInfoPtr> ManifestMonitor::GetBrokerProperties()
   std::string disk_space_retain_string = "N/A";
   if (free_space_.has_value()) {
     base::ByteSize disk_space_install_required =
-        features::GetDiskSpaceRequiredForOnDeviceModelInstall();
+        GetDiskSpaceRequiredForOnDeviceModelInstall();
     base::ByteSize disk_space_retain_required =
-        features::GetDiskSpaceRequiredForOnDeviceModelRetain();
+        GetDiskSpaceRequiredForOnDeviceModelRetain();
     base::ByteSize disk_space_available = *free_space_;
 
     bool is_install_available =
-        features::IsFreeDiskSpaceSufficientForOnDeviceModelInstall(
-            *free_space_);
+        IsFreeDiskSpaceSufficientForOnDeviceModelInstall(*free_space_);
     bool is_retain_available =
-        !features::IsFreeDiskSpaceTooLowForOnDeviceModelInstall(*free_space_);
+        !IsFreeDiskSpaceTooLowForOnDeviceModelInstall(*free_space_);
 
     disk_space_install_string = base::StrCat(
         {is_install_available ? "true" : "false", " (",

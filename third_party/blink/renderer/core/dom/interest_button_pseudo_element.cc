@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/core/events/keyboard_event.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
+#include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -33,18 +34,47 @@ void InterestButtonPseudoElement::HandleButtonActivation() {
   CHECK(RuntimeEnabledFeatures::HTMLInterestForInterestButtonPseudoEnabled(
       GetDocument().GetExecutionContext()));
   Element& invoker = UltimateOriginatingElement();
+  auto* popover = DynamicTo<HTMLElement>(invoker.InterestForElement());
+  const bool popover_was_open = popover && popover->popoverOpen();
   invoker.ShowInterestNow();
+  // If this activation opened the target popover, make sure it is anchored to
+  // this ::interest-button, even if it isn't hovered (e.g. for touch input).
+  // A popover that was already open keeps its existing anchor, to avoid
+  // moving it.
+  if (!popover_was_open) {
+    AnchorTargetPopoverToSelf();
+  }
+}
+
+void InterestButtonPseudoElement::AnchorTargetPopoverToSelf() {
+  Element& invoker = UltimateOriginatingElement();
+  if (auto* popover = DynamicTo<HTMLElement>(invoker.InterestForElement());
+      popover && popover->popoverOpen() &&
+      popover->implicitAnchor() == &invoker &&
+      invoker.GetPseudoElement(kPseudoIdInterestButton) == this) {
+    popover->SetImplicitAnchor(this);
+  }
 }
 
 void InterestButtonPseudoElement::DefaultEventHandler(Event& event) {
   bool should_intercept =
-      event.IsMouseEvent() && event.type() == event_type_names::kClick;
+      (event.IsMouseEvent() && event.type() == event_type_names::kClick) ||
+      (event.IsGestureEvent() &&
+       event.type() == event_type_names::kGesturelongpress);
   if (auto* keyboard_event = DynamicTo<KeyboardEvent>(event)) {
     auto key_code = keyboard_event->keyCode();
     should_intercept |= event.type() == event_type_names::kKeydown &&
                         (key_code == VKEY_RETURN || key_code == VKEY_SPACE);
   }
   if (event.RawTarget() == this && should_intercept) {
+    if (event.IsGestureEvent() &&
+        !RuntimeEnabledFeatures::LightDismissFromClickEnabled()) {
+      if (auto* target_popover = DynamicTo<HTMLElement>(
+              UltimateOriginatingElement().InterestForElement());
+          target_popover && target_popover->IsPopover()) {
+        GetDocument().SetPopoverPointerdownTarget(target_popover);
+      }
+    }
     HandleButtonActivation();
     event.SetDefaultHandled();
   }

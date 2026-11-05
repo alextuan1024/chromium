@@ -13,33 +13,66 @@
 
 namespace blink {
 
-class CanvasResource;
 class StaticBitmapImage;
 
 class PLATFORM_EXPORT ExportedCanvasResource
     : public ThreadSafeRefCounted<ExportedCanvasResource> {
  public:
-  explicit ExportedCanvasResource(scoped_refptr<CanvasResource> resource);
+  explicit ExportedCanvasResource(
+      scoped_refptr<gpu::ClientSharedImage> client_si,
+      const gpu::SyncToken& sync_token,
+      viz::TransferableResource::ResourceSource resource_source,
+      const gfx::HDRMetadata& hdr_metadata,
+      base::WeakPtr<WebGraphicsContext3DProviderWrapper> provider,
+      bool accelerated_raster,
+      base::RepeatingCallback<void(gpu::SyncToken)> wait_sync_token,
+      viz::ReleaseCallback release_callback,
+      bool use_legacy_external_canvas_resource_bitmap_path);
+
   ~ExportedCanvasResource();
 
   static void OnPlaceholderReleasedResource(
-      scoped_refptr<ExportedCanvasResource>&& resource);
+      scoped_refptr<ExportedCanvasResource> resource);
 
   gfx::Size Size() const;
   bool OriginClean() const;
+  void SetOriginClean(bool clean);
   scoped_refptr<StaticBitmapImage> Bitmap();
-  void Transfer();
   void EndDisplayCompositorAccess(gpu::SharedImageExportResult export_result,
                                   bool is_lost);
   void EndDisplayCompositorAccess(gpu::SyncToken export_result, bool is_lost);
-  bool PrepareTransferableResource(
-      viz::TransferableResource& transferable_resource,
-      bool needs_verified_synctoken);
+  viz::TransferableResource PrepareTransferableResource();
 
-  CanvasResource* GetResourceForTesting() const { return resource_.get(); }
+  scoped_refptr<gpu::ClientSharedImage> GetSharedImageForTesting() {
+    return shared_image_;
+  }
+
+  gpu::SyncToken GetSyncTokenForTesting() const { return sync_token_; }
 
  private:
-  scoped_refptr<CanvasResource> resource_;
+  bool is_cross_thread() const {
+    return base::PlatformThread::CurrentRef() != owning_thread_ref_;
+  }
+
+  bool origin_clean_ = true;
+  bool is_lost_ = false;
+  gpu::SyncToken last_access_sync_token_;
+
+  const base::PlatformThreadRef owning_thread_ref_;
+  const scoped_refptr<base::SingleThreadTaskRunner> owning_thread_task_runner_;
+
+  const scoped_refptr<gpu::ClientSharedImage> shared_image_;
+  const gpu::SyncToken sync_token_;
+  const gfx::HDRMetadata hdr_metadata_;
+  const viz::TransferableResource::ResourceSource resource_source_;
+  const bool accelerated_raster_;
+
+  base::WeakPtr<WebGraphicsContext3DProviderWrapper> context_provider_wrapper_;
+
+  base::RepeatingCallback<void(gpu::SyncToken)> wait_sync_token_;
+  viz::ReleaseCallback release_callback_;
+
+  const bool use_legacy_external_canvas_resource_bitmap_path_;
 };
 
 }  // namespace blink

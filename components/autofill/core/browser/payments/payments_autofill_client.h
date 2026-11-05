@@ -90,7 +90,6 @@ class PaymentsNetworkInterface;
 class PaymentsWindowManager;
 class SaveAndFillManager;
 class WalletReminderNoticeManager;
-class WalletReminderNoticeUiDelegate;
 
 // A payments-specific client interface that handles dependency injection, and
 // its implementations serve as the integration for platform-specific code. One
@@ -174,6 +173,8 @@ class PaymentsAutofillClient : public RiskDataLoader {
     kCardSaveWithCvc = 1,
     // Only CVC is saved.
     kCvcSaveOnly = 2,
+    // Only cardholder name is updated for an existing server card.
+    kCardholderNameUpdateOnly = 3,
   };
 
   enum class SourceFeature {
@@ -238,6 +239,9 @@ class PaymentsAutofillClient : public RiskDataLoader {
       return *this;
     }
 
+    // Only used for the cardholder name fix flow during account creation, not
+    // for the separate cardholder name update flow
+    // (`kCardholderNameUpdateOnly`).
     bool should_request_name_from_user = false;
     bool should_request_expiration_date_from_user = false;
     bool show_prompt = false;
@@ -638,11 +642,6 @@ class PaymentsAutofillClient : public RiskDataLoader {
   // client (can be null for unsupported platforms).
   virtual MerchantPromoCodeManager* GetMerchantPromoCodeManager() = 0;
 
-  // Navigates to `url` in a new tab. `url` links to the promo code offer
-  // details page for the offers in a promo code suggestions popup. Every offer
-  // in a promo code suggestions popup links to the same offer details page.
-  virtual void OpenPromoCodeOfferDetailsURL(const GURL& url) = 0;
-
   // Gets an AutofillOfferManager instance (can be null for unsupported
   // platforms).
   virtual AutofillOfferManager* GetAutofillOfferManager() = 0;
@@ -822,9 +821,9 @@ class PaymentsAutofillClient : public RiskDataLoader {
   // UI in the BNPL flow depending on the platform.
   virtual BnplUiDelegate* GetBnplUiDelegate() = 0;
 
-  // Gets the `WalletReminderNoticeUiDelegate` instance associated with the
-  // client. Handles the UI for the Wallet Reminder Notice.
-  virtual WalletReminderNoticeUiDelegate* GetWalletReminderNoticeUiDelegate();
+  // Requests the platform UI layer to show the Wallet Reminder Notice bottom
+  // sheet/dialog displaying `legal_message_lines`.
+  virtual void ShowWalletReminderNotice(LegalMessageLines legal_message_lines);
 
   // Gets the `WalletReminderNoticeManager` instance associated with the
   // client.

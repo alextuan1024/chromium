@@ -6,12 +6,14 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBAUDIO_AUDIO_WORKLET_GLOBAL_SCOPE_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/types/expected.h"
 #include "third_party/blink/public/common/messaging/message_port_channel.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_param_descriptor.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/workers/worklet_global_scope.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
+#include "third_party/blink/renderer/modules/webaudio/audio_worklet_processor_error_details.h"
 #include "third_party/blink/renderer/platform/audio/audio_array.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
@@ -28,6 +30,7 @@ class MessagePort;
 class MessagePortChannel;
 class SerializedScriptValue;
 class V8BlinkAudioWorkletProcessorConstructor;
+class WorkletPerformance;
 struct GlobalScopeCreationParams;
 
 // The storage for the construction of AudioWorkletProcessor, contains the
@@ -73,12 +76,14 @@ class MODULES_EXPORT AudioWorkletGlobalScope final : public WorkletGlobalScope {
   // This is invoked by AudioWorkletMessagingProxy upon the construction of
   // AudioWorkletNode.
   //
-  // This function may return nullptr when a new V8 object cannot be constructed
-  // for some reason.
-  AudioWorkletProcessor* CreateProcessor(
-      const String& name,
-      MessagePortChannel,
-      scoped_refptr<SerializedScriptValue> node_options);
+  // On success, the returned processor is non-null. Returns
+  // `AudioWorkletProcessorErrorDetails` if `node_options` cannot be
+  // deserialized, or if the user-supplied constructor throws or does not
+  // return an AudioWorkletProcessor.
+  base::expected<AudioWorkletProcessor*, AudioWorkletProcessorErrorDetails>
+  CreateProcessor(const String& name,
+                  MessagePortChannel message_port_channel,
+                  scoped_refptr<SerializedScriptValue> node_options);
 
   AudioWorkletProcessorDefinition* FindDefinition(const String& name) const;
 
@@ -99,6 +104,7 @@ class MODULES_EXPORT AudioWorkletGlobalScope final : public WorkletGlobalScope {
   uint64_t currentFrame() const { return current_frame_; }
   double currentTime() const;
   MessagePort* port() const { return port_.Get(); }
+  WorkletPerformance* performance() const { return performance_.Get(); }
   float sampleRate() const { return sample_rate_; }
   uint32_t renderQuantumSize() const { return render_quantum_size_; }
 
@@ -134,6 +140,7 @@ class MODULES_EXPORT AudioWorkletGlobalScope final : public WorkletGlobalScope {
 
   size_t current_frame_ = 0;
   Member<MessagePort> port_;
+  Member<WorkletPerformance> performance_;
   float sample_rate_ = 0.0f;
   uint32_t render_quantum_size_ = 128;
 

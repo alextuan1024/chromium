@@ -15,12 +15,10 @@
 #import "ios/chrome/browser/sessions/model/session_restoration_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller_testing.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/public/commands/browser_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
@@ -55,7 +53,7 @@ void CloseAllTabsForBrowser(Browser* browser) {
 
 BOOL IsIncognitoMode() {
   return GetForegroundActiveScene()
-      .browserProviderInterface.currentBrowserProvider.browser->GetProfile()
+      .browserProviderInterface.currentBrowser->GetProfile()
       ->IsOffTheRecord();
 }
 
@@ -90,8 +88,7 @@ void OpenNewIncognitoTab() {
     if (GetForegroundActiveSceneController().mainCoordinator.isTabGridActive) {
       // The TabGrid is currently presented.
       Browser* browser =
-          GetForegroundActiveScene()
-              .browserProviderInterface.incognitoBrowserProvider.browser;
+          GetForegroundActiveScene().browserProviderInterface.incognitoBrowser;
       UrlLoadParams params = UrlLoadParams::InNewTab(GURL(kChromeUINewTabURL));
       [GetForegroundActiveSceneController() addANewTabAndPresentBrowser:browser
                                                       withURLLoadParams:params];
@@ -190,16 +187,15 @@ void CloseAllTabsInCurrentMode() {
 void CloseAllTabs() {
   if (GetIncognitoTabCount() && GetForegroundActiveSceneController()) {
     CloseAllTabsForBrowser(
-        GetForegroundActiveScene()
-            .browserProviderInterface.incognitoBrowserProvider.browser);
+        GetForegroundActiveScene().browserProviderInterface.incognitoBrowser);
   }
   if (GetMainTabCount() && GetForegroundActiveScene()) {
     CloseAllTabsForBrowser(GetMainBrowser());
   }
   if (GetInactiveTabCount() && GetForegroundActiveScene()) {
-    CloseAllTabsForBrowser(GetForegroundActiveScene()
-                               .browserProviderInterface.mainBrowserProvider
-                               .browser->GetInactiveBrowser());
+    CloseAllTabsForBrowser(
+        GetForegroundActiveScene()
+            .browserProviderInterface.mainBrowser->GetInactiveBrowser());
   }
 }
 
@@ -217,16 +213,14 @@ NSUInteger GetMainTabCount() {
 
 NSUInteger GetInactiveTabCount() {
   return GetForegroundActiveScene()
-      .browserProviderInterface.mainBrowserProvider.browser
-      ->GetInactiveBrowser()
+      .browserProviderInterface.mainBrowser->GetInactiveBrowser()
       ->GetWebStateList()
       ->count();
 }
 
 NSUInteger GetIncognitoTabCount() {
   return GetForegroundActiveScene()
-      .browserProviderInterface.incognitoBrowserProvider.browser
-      ->GetWebStateList()
+      .browserProviderInterface.incognitoBrowser->GetWebStateList()
       ->count();
 }
 
@@ -272,9 +266,8 @@ BOOL SimulateTabsBackgrounding() {
 void EvictOtherBrowserTabs() {
   id<BrowserProviderInterface> provider =
       GetForegroundActiveScene().browserProviderInterface;
-  Browser* otherBrowser = IsIncognitoMode()
-                              ? provider.mainBrowserProvider.browser
-                              : provider.incognitoBrowserProvider.browser;
+  Browser* otherBrowser =
+      IsIncognitoMode() ? provider.mainBrowser : provider.incognitoBrowser;
   // Disabling and enabling web usage will evict all web views.
   WebUsageEnablerBrowserAgent* enabler =
       WebUsageEnablerBrowserAgent::FromBrowser(otherBrowser);
@@ -295,8 +288,7 @@ BOOL CloseAllIncognitoTabs() {
   SceneState* scene_state = GetForegroundActiveScene();
   DCHECK(scene_state);
 
-  Browser* browser =
-      scene_state.browserProviderInterface.incognitoBrowserProvider.browser;
+  Browser* browser = scene_state.browserProviderInterface.incognitoBrowser;
   DCHECK(browser);
   CloseAllWebStates(*browser->GetWebStateList(),
                     WebStateList::ClosingReason::kUserAction);

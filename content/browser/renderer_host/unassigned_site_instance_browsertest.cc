@@ -17,6 +17,7 @@
 #include "content/common/content_navigation_policy.h"
 #include "content/common/features.h"
 #include "content/public/browser/back_forward_cache.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_exposed_isolation_level.h"
@@ -81,6 +82,8 @@ class UnassignedSiteInstanceBrowserTest
                                        std::get<0>(GetParam()));
     InitBackForwardCacheFeature(&feature_list_for_back_forward_cache_,
                                 std::get<1>(GetParam()));
+    feature_list_.InitAndEnableFeature(
+        features::kKeepUnassignedSiteInstanceInOriginalBrowsingInstance);
     url::AddEmptyDocumentScheme(kEmptySchemeForTesting.c_str());
   }
 
@@ -194,6 +197,7 @@ class UnassignedSiteInstanceBrowserTest
 
   base::test::ScopedFeatureList feature_list_for_render_document_;
   base::test::ScopedFeatureList feature_list_for_back_forward_cache_;
+  base::test::ScopedFeatureList feature_list_;
   url::ScopedSchemeRegistryForTests scheme_registry_;
 };
 
@@ -313,6 +317,13 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   } else {
     EXPECT_TRUE(unassigned_si->IsRelatedSiteInstance(initial_si.get()));
   }
+
+  // Since the SiteInstance is left unassigned, the committed origin must not
+  // inherit a precursor from the initiator.
+  const url::Origin& committed_origin =
+      web_contents()->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+  EXPECT_TRUE(committed_origin.opaque());
+  EXPECT_FALSE(committed_origin.GetTupleOrPrecursorTupleIfOpaque().IsValid());
 }
 
 IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
@@ -335,6 +346,57 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
       web_contents()->GetPrimaryMainFrame()->GetSiteInstance();
   EXPECT_FALSE(unassigned_si->HasSite());
   EXPECT_FALSE(unassigned_si->IsRelatedSiteInstance(initial_si.get()));
+}
+
+// Verify that a browser-initiated navigation to an embedder-defined empty
+// document scheme ignores the initiator when computing its own origin. Such
+// navigations leave the SiteInstance unassigned and the process unlocked, so
+// the committed origin must be opaque with no precursor. Otherwise, adding it
+// to the process's committed origins would let an unlocked process claim to
+// host opaque origins derived from the initiator's site. This mimics
+// chrome://newtab being rewritten to chrome-native://newtab on Android, where
+// the initiator origin may be set.
+IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
+                       BrowserInitiatedNavigationTo_CustomUrl_WithInitiator) {
+  // Get a base page with a site.
+  EXPECT_TRUE(NavigateToURL(web_contents(), regular_url()));
+  RenderFrameHostImpl* initial_rfh = web_contents()->GetPrimaryMainFrame();
+  EXPECT_TRUE(initial_rfh->GetSiteInstance()->HasSite());
+  url::Origin initiator_origin = initial_rfh->GetLastCommittedOrigin();
+  ChildProcessId initial_process_id = initial_rfh->GetProcess()->GetID();
+
+  // Do a browser-initiated navigation to an embedder-defined unassigned url,
+  // with an initiator origin. NavigateToURL() does not set an initiator, so use
+  // LoadURLParams directly.
+  TestNavigationObserver observer(web_contents());
+  NavigationController::LoadURLParams params(embedder_defined_unassigned_url());
+  params.initiator_origin = initiator_origin;
+  web_contents()->GetController().LoadURLWithParams(params);
+  observer.Wait();
+  EXPECT_TRUE(observer.last_navigation_succeeded());
+  EXPECT_EQ(initiator_origin, observer.last_initiator_origin());
+
+  RenderFrameHostImpl* rfh = web_contents()->GetPrimaryMainFrame();
+  EXPECT_EQ(embedder_defined_unassigned_url(), rfh->GetLastCommittedURL());
+  EXPECT_FALSE(rfh->GetSiteInstance()->HasSite());
+  EXPECT_TRUE(rfh->GetProcess()->GetProcessLock().AllowsAnySite());
+
+  // The committed origin should be opaque, with no precursor from the
+  // initiator.
+  const url::Origin& committed_origin = rfh->GetLastCommittedOrigin();
+  EXPECT_TRUE(committed_origin.opaque());
+  EXPECT_FALSE(committed_origin.GetTupleOrPrecursorTupleIfOpaque().IsValid());
+
+  // The unlocked process should not be able to claim it hosts opaque origins
+  // derived from the initiator's origin. Only check this when all sites are
+  // isolated, since otherwise the unassigned SiteInstance may share a process
+  // with the initiator, which legitimately hosts the initiator's origin.
+  if (AreAllSitesIsolatedForTesting()) {
+    EXPECT_NE(initial_process_id, rfh->GetProcess()->GetID());
+    EXPECT_FALSE(ChildProcessSecurityPolicyImpl::GetInstance()->CanAccessOrigin(
+        rfh->GetProcess()->GetID(), initiator_origin.DeriveNewOpaqueOrigin(),
+        ChildProcessSecurityPolicyImpl::AccessType::kHostsOrigin));
+  }
 }
 
 IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
@@ -784,13 +846,71 @@ IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
   // navigations.
   RenderProcessHost* new_process = new_instance->GetProcess();
   auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
-  EXPECT_TRUE(policy->CanAccessOrigin(
-      new_process->GetDeprecatedID(),
-      url::Origin::Create(embedder_defined_unassigned_url()),
-      ChildProcessSecurityPolicyImpl::AccessType::kCanCommitNewOrigin));
-  EXPECT_TRUE(policy->CanAccessOrigin(
-      new_process->GetDeprecatedID(), url::Origin::Create(regular_url()),
-      ChildProcessSecurityPolicyImpl::AccessType::kCanCommitNewOrigin));
+  EXPECT_TRUE(policy->CanCommitNewOrigin(
+      new_process->GetID(),
+      url::Origin::Create(embedder_defined_unassigned_url())));
+  EXPECT_TRUE(policy->CanCommitNewOrigin(new_process->GetID(),
+                                         url::Origin::Create(regular_url())));
+}
+
+// Ensure that when navigating from a URL with an unassigned SiteInstance to a
+// page that swaps to a different SiteInstance (such as a
+// Cross-Origin-Opener-Policy: same-origin page), the previous NavigationEntry's
+// unassigned SiteInstance is kept in place in its original BrowsingInstance
+// rather than replaced with one in the new BrowsingInstance. This allows a
+// subsequent back navigation to reuse the destination entry's SiteInstance
+// without replacing the NavigationEntry. See https://crbug.com/493236843.
+IN_PROC_BROWSER_TEST_P(UnassignedSiteInstanceBrowserTest,
+                       BackFromCoopPageToUnassignedSiteInstance) {
+  // 1. Navigate to an embedder-defined URL that does not assign a site URL
+  // (similar to chrome-native://newtab/ on Android).
+  EXPECT_TRUE(NavigateToURL(shell(), embedder_defined_unassigned_url()));
+  EXPECT_EQ(embedder_defined_unassigned_url(),
+            web_contents()->GetLastCommittedURL());
+  scoped_refptr<SiteInstanceImpl> instance1(
+      web_contents()->GetPrimaryMainFrame()->GetSiteInstance());
+  EXPECT_FALSE(instance1->HasSite());
+  int initial_nav_entry_id =
+      web_contents()->GetController().GetLastCommittedEntry()->GetUniqueID();
+
+  // 2. Navigate to a page with Cross-Origin-Opener-Policy: same-origin, which
+  // forces a BrowsingInstance swap.
+  GURL coop_url(https_server()->GetURL(
+      "a.test", "/set-header?Cross-Origin-Opener-Policy: same-origin"));
+  EXPECT_TRUE(NavigateToURL(shell(), coop_url));
+  scoped_refptr<SiteInstanceImpl> coop_instance(
+      web_contents()->GetPrimaryMainFrame()->GetSiteInstance());
+  EXPECT_TRUE(coop_instance->HasSite());
+  EXPECT_FALSE(coop_instance->IsRelatedSiteInstance(instance1.get()));
+
+  // Because the COOP navigation swapped to |coop_instance| instead of reusing
+  // |instance1|, the previous entry's SiteInstance should remain |instance1|
+  // (unassigned and in its original BrowsingInstance), unrelated to
+  // |coop_instance|.
+  scoped_refptr<SiteInstanceImpl> prev_entry_instance =
+      web_contents()
+          ->GetController()
+          .GetEntryAtIndex(0)
+          ->root_node()
+          ->frame_entry->site_instance();
+  EXPECT_EQ(prev_entry_instance, instance1);
+  EXPECT_FALSE(prev_entry_instance->IsRelatedSiteInstance(coop_instance.get()));
+  EXPECT_FALSE(prev_entry_instance->HasSite());
+
+  // 3. Navigate back to the unassigned URL and verify that
+  // |prev_entry_instance| can be used directly without replacing the
+  // NavigationEntry.
+  TestNavigationObserver back_observer(web_contents());
+  web_contents()->GetController().GoBack();
+  back_observer.Wait();
+
+  EXPECT_EQ(embedder_defined_unassigned_url(),
+            web_contents()->GetLastCommittedURL());
+  EXPECT_EQ(prev_entry_instance,
+            web_contents()->GetPrimaryMainFrame()->GetSiteInstance());
+  EXPECT_EQ(
+      initial_nav_entry_id,
+      web_contents()->GetController().GetLastCommittedEntry()->GetUniqueID());
 }
 
 // Check that when a navigation to a URL that doesn't require assigning a site

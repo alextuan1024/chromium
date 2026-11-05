@@ -9,7 +9,6 @@
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
 #include "components/spellcheck/common/spellcheck_common.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/features.h"
@@ -32,10 +31,8 @@ class TwoClientDictionarySyncTest
  public:
   TwoClientDictionarySyncTest() : SyncTest(TWO_CLIENT) {
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitWithFeatures(
-          {syncer::kReplaceSyncPromosWithSignInPromos,
-           syncer::kSpellcheckSeparateLocalAndAccountDictionaries},
-          {});
+      scoped_feature_list_.InitAndEnableFeature(
+          syncer::kSpellcheckSeparateLocalAndAccountDictionaries);
     }
   }
 

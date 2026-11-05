@@ -94,7 +94,7 @@ Any object acting as a `WebContentsModalDialogHost` must guarantee five core beh
 
 #### Canonical Reference
 * [`BrowserView::GetWebContentsModalDialogHost()`](../../chrome/browser/ui/views/frame/browser_view.h): Entrypoint on standard browser Views windows. This delegates directly to [`BrowserViewLayout::GetWebContentsModalDialogHost()`](../../chrome/browser/ui/views/frame/layout/browser_view_layout.h), which returns its internal [`BrowserModalDialogHostViews`](../../chrome/browser/ui/views/frame/browser_modal_dialog_host_views.h) instance (`dialog_host_`).
-* [`PaymentHandlerModalDialogManagerDelegate::GetWebContentsModalDialogHost()`](../../chrome/browser/ui/views/payments/payment_handler_modal_dialog_manager_delegate.cc): Demonstrates how a custom secondary container delegates to its parent window's modal host.
+* [`PaymentHandlerModalDialogManagerDelegate::GetWebContentsModalDialogHost()`](../../chrome/browser/ui/views/payments/payment_handler_modal_dialog_manager_delegate.cc): Implements `WebContentsModalDialogHost` directly to parent and position child modal dialogs over the Payment Request dialog widget.
 * [`WebUIBubbleDialogView::GetWebContentsModalDialogHost()`](../../chrome/browser/ui/views/bubble/webui_bubble_dialog_view.h): Implements `WebContentsModalDialogHost` to position and clip web-modal dialogs within Top Chrome WebUI bubbles.
 
 ---
@@ -124,13 +124,11 @@ web_modal::WebContentsModalDialogManager::FromWebContents(web_contents)
 Understanding how web-contents modal dialogs behave when the underlying `WebContents` navigates involves a clean division of responsibility between container hosts and dialog feature controllers:
 
 * **Automatic Cross-Site Teardown (Containers)**:
-  `WebContentsModalDialogManager` is a `content::WebContentsObserver`. When a primary main frame commits a cross-site (`!SameDomainOrHost(...)`) navigation, `DidFinishNavigation()` automatically notifies observers (`OnWillCloseOnNavigation`) and closes all active and queued child dialogs (`CloseAllDialogs()`). Container implementers **do not** need any navigation-handling code.
+  `WebContentsModalDialogManager` is a `content::WebContentsObserver`. When a primary main frame commits a cross-site (`!SameDomainOrHost(...)`) navigation, `DidFinishNavigation()` automatically closes all active and queued child dialogs (`CloseAllDialogs()`). Container implementers **do not** need any navigation-handling code.
 * **Automatic BackForwardCache (`BFCache`) Protection**:
   If a primary main frame navigates while a web-modal dialog is open, the manager automatically disables BFCache (`DisabledReasonId::kModalDialog`).
 * **Same-Origin / Same-Site Dismissal (Dialog Features)**:
   Because the manager only auto-closes dialogs on cross-site navigations, dialogs remain open across same-origin or same-site primary main frame navigations. Dialog feature controllers whose prompts should dismiss on *any* page navigation (e.g., [`PrintPreviewDialogController::DidFinishNavigation()`](../../chrome/browser/printing/print_preview_dialog_controller.cc)) must observe `WebContentsObserver` directly and tear down their own prompt.
-* **Pre-Teardown Navigation Hook**:
-  Dialog feature controllers needing to distinguish whether their prompt closed due to a user clicking "Cancel" versus being forcibly closed by an automatic cross-site navigation teardown (e.g., [`DigitalIdentitySafetyInterstitialControllerDesktop::CloseOnNavigationObserver`](../../chrome/browser/ui/views/digital_credentials/digital_identity_safety_interstitial_controller_desktop.h)) can implement `WebContentsModalDialogManager::Observer::OnWillCloseOnNavigation()`.
 
 ---
 

@@ -10,14 +10,15 @@
 #include <vector>
 
 #include "base/auto_reset.h"
+#include "base/callback_list.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
+#include "components/tabs/public/tab_interface.h"
 #include "extensions/browser/permissions/site_permissions_helper.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
@@ -39,7 +40,6 @@ class ExtensionMenuItemView;
 // This bubble view displays a list of user extensions and a button to get to
 // managing the user's extensions (chrome://extensions).
 class ExtensionsMenuView : public views::BubbleDialogDelegateView,
-                           public TabStripModelObserver,
                            public ToolbarActionsModel::Observer {
   METADATA_HEADER(ExtensionsMenuView, views::BubbleDialogDelegateView)
 
@@ -78,14 +78,6 @@ class ExtensionsMenuView : public views::BubbleDialogDelegateView,
   // views::BubbleDialogDelegateView:
   std::u16string GetAccessibleWindowTitle() const override;
 
-  // TabStripModelObserver:
-  void OnTabChangedAt(tabs::TabInterface* tab,
-                      TabChangeType change_type) override;
-  void OnTabStripModelChanged(
-      TabStripModel* tab_strip_model,
-      const TabStripModelChange& change,
-      const TabStripSelectionChange& selection) override;
-
   // ToolbarActionsModel::Observer:
   void OnToolbarActionAdded(const ToolbarActionsModel::ActionId& item) override;
   void OnToolbarActionRemoved(
@@ -96,7 +88,7 @@ class ExtensionsMenuView : public views::BubbleDialogDelegateView,
   void OnToolbarPinnedActionsChanged() override;
 
   // For testing.
-  base::flat_set<raw_ptr<ExtensionMenuItemView, CtnExperimental>>
+  base::flat_set<raw_ptr<ExtensionMenuItemView, DanglingUntriaged>>
   extensions_menu_items_for_testing();
   views::Button* manage_extensions_button_for_testing();
   // Returns a scoped object allowing test dialogs to be created (i.e.,
@@ -158,6 +150,12 @@ class ExtensionsMenuView : public views::BubbleDialogDelegateView,
   // Updates the menu.
   void Update();
 
+  // Handles active tab changes on `browser`.
+  void OnActiveTabChanged(BrowserWindowInterface* browser);
+
+  // Updates the subscription to the active tab's TabUIHelper.
+  void UpdateActiveTabSubscription(tabs::TabInterface* tab);
+
   // Runs a set of sanity checks on the appearance of the menu. This is a no-op
   // if DCHECKs are disabled.
   void SanityCheck();
@@ -170,10 +168,12 @@ class ExtensionsMenuView : public views::BubbleDialogDelegateView,
   const raw_ptr<ToolbarActionsModel> toolbar_model_;
   base::ScopedObservation<ToolbarActionsModel, ToolbarActionsModel::Observer>
       toolbar_model_observation_{this};
+  base::CallbackListSubscription active_tab_subscription_;
+  base::CallbackListSubscription active_tab_ui_subscription_;
 
   // A collection of all menu item views in the menu. Note that this is
   // *unordered*, since the menu puts extensions into different sections.
-  base::flat_set<raw_ptr<ExtensionMenuItemView, CtnExperimental>>
+  base::flat_set<raw_ptr<ExtensionMenuItemView, DanglingUntriaged>>
       extensions_menu_items_;
 
   raw_ptr<views::LabelButton> manage_extensions_button_ = nullptr;

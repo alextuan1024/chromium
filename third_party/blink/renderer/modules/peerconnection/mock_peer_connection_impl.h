@@ -5,7 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_MOCK_PEER_CONNECTION_IMPL_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_MOCK_PEER_CONNECTION_IMPL_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <functional>
 #include <memory>
 #include <optional>
@@ -40,6 +41,7 @@
 #include "third_party/webrtc/api/sctp_transport_interface.h"
 #include "third_party/webrtc/api/set_local_description_observer_interface.h"
 #include "third_party/webrtc/api/set_remote_description_observer_interface.h"
+#include "third_party/webrtc/api/sframe/sframe_encryptor_interface.h"
 #include "third_party/webrtc/api/stats/rtc_stats_collector_callback.h"
 #include "third_party/webrtc/api/stats/rtc_stats_report.h"
 #include "third_party/webrtc/api/test/mock_peerconnectioninterface.h"
@@ -50,6 +52,18 @@ namespace blink {
 
 class MockPeerConnectionDependencyFactory;
 class MockStreamCollection;
+
+class FakeSframeEncryptor : public webrtc::SframeEncryptorInterface {
+ public:
+  webrtc::RTCError SetEncryptionKey(
+      uint64_t key_id,
+      std::span<const uint8_t> key_material) override {
+    return webrtc::RTCError::OK();
+  }
+
+ protected:
+  ~FakeSframeEncryptor() override = default;
+};
 
 class FakeRtpSender : public webrtc::RtpSenderInterface {
  public:

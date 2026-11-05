@@ -7,6 +7,7 @@
 
 #include <list>
 #include <string>
+#include <vector>
 
 #include "base/gtest_prod_util.h"
 #include "net/http/http_auth_gssapi_posix.h"
@@ -14,6 +15,11 @@
 namespace net {
 
 namespace test {
+
+// `gss_buffer_desc` helpers. Buffers filled by CopyGssBuffer() own their data,
+// which must be released with ClearGssBuffer().
+void ClearGssBuffer(gss_buffer_desc* dest);
+void CopyGssBuffer(const gss_buffer_desc* src, gss_buffer_desc* dest);
 
 class GssContextMockImpl {
  public:
@@ -32,6 +38,10 @@ class GssContextMockImpl {
 
   std::string src_name;
   std::string targ_name;
+  bool has_targ_name = true;
+  gss_OID_desc targ_name_type;
+  OM_uint32 inquire_context_status = GSS_S_COMPLETE;
+  OM_uint32 display_targ_name_status = GSS_S_COMPLETE;
   OM_uint32 lifetime_rec;
   gss_OID_desc mech_type;
   OM_uint32 ctx_flags;
@@ -64,7 +74,6 @@ class MockGSSAPILibrary : public GSSAPILibrary {
   };
 
   MockGSSAPILibrary();
-  ~MockGSSAPILibrary() override;
 
   // Establishes an expectation for a |init_sec_context()| call.
   //
@@ -189,6 +198,16 @@ class MockGSSAPILibrary : public GSSAPILibrary {
                             int* open) override;
   const std::string& GetLibraryNameForTesting() override;
 
+  int inquire_context_call_count() const { return inquire_context_call_count_; }
+
+  // `req_flags` passed to each `init_sec_context()` call, in order.
+  const std::vector<OM_uint32>& init_sec_context_req_flags() const {
+    return init_sec_context_req_flags_;
+  }
+
+ protected:
+  ~MockGSSAPILibrary() override;
+
  private:
   FRIEND_TEST_ALL_PREFIXES(HttpAuthGSSAPIPOSIXTest, GSSAPICycle);
 
@@ -199,6 +218,9 @@ class MockGSSAPILibrary : public GSSAPILibrary {
 
   // Empty string. Enables GetLibraryNameForTesting() to return a reference.
   std::string library_name_;
+
+  int inquire_context_call_count_ = 0;
+  std::vector<OM_uint32> init_sec_context_req_flags_;
 };
 
 }  // namespace test

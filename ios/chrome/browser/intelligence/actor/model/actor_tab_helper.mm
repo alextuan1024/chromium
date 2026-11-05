@@ -4,26 +4,178 @@
 
 #import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
 
+#import <UIKit/UIKit.h>
+
+#import <utility>
+
+#import "base/functional/bind.h"
+#import "base/functional/callback.h"
+#import "base/functional/callback_helpers.h"
+#import "base/notreached.h"
+#import "base/task/sequenced_task_runner.h"
+#import "base/types/optional_ref.h"
+#import "components/actor/core/task_source_info.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper_observer.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/web/public/navigation/navigation_manager.h"
+#import "ios/web/public/ui/crw_web_view_proxy.h"
+#import "ios/web/public/web_state.h"
+#import "ui/base/page_transition_types.h"
+#import "url/gurl.h"
+
+namespace {
+
+// Returns whether `ActorTabHelper` should apply non-`kInactive` control states
+// (such as suppressing keyboard input during `kActorControlled` and notifying
+// overlay observers) for a task created by `task_source_info`. Defaults to
+// `true` when no `TaskSourceInfo` is set; `kTtc` tasks keep the tab in
+// `kInactive` because TTC manages its own UI and does not block user input.
+// TODO(crbug.com/581400371): Move UI configuration out of `ActorTabHelper` so
+// it only stores state and propagates messages.
+bool ShouldApplyControlStateForTaskSource(
+    base::optional_ref<const actor::TaskSourceInfo> task_source_info) {
+  if (!task_source_info.has_value()) {
+    return true;
+  }
+  switch (task_source_info->type) {
+    case actor::TaskSourceInfo::Client::kTtc:
+      return false;
+    case actor::TaskSourceInfo::Client::kUnknown:
+    case actor::TaskSourceInfo::Client::kTest:
+    case actor::TaskSourceInfo::Client::kExperimentalActor:
+    case actor::TaskSourceInfo::Client::kGlic:
+    case actor::TaskSourceInfo::Client::kContextualTasks:
+    case actor::TaskSourceInfo::Client::kBrowserActuator:
+      return true;
+  }
+  NOTREACHED();
+}
+
+}  // namespace
 
 ActorTabHelper::ActorTabHelper(web::WebState* web_state)
-    : web_state_(web_state) {}
+    : web_state_(web_state) {
+  web_state_observation_.Observe(web_state);
+}
 
-ActorTabHelper::~ActorTabHelper() = default;
-
-void ActorTabHelper::SetActuating(bool actuating) {
-  if (is_actuating_ == actuating) {
-    return;
-  }
-  is_actuating_ = actuating;
-  actuation_state_callbacks_.Notify(is_actuating_);
-  for (ActorTabHelperObserver& observer : observers_) {
-    observer.OnActuationStateChanged(this, web_state_, is_actuating_);
+ActorTabHelper::~ActorTabHelper() {
+  // Clear suppression if the tab helper is torn down mid-actuation, so that a
+  // surviving web view proxy is not left with input views permanently
+  // suppressed. Messaging a `nil` proxy is a no-op.
+  if (control_state_ == actor::ActorControlState::kActorControlled &&
+      web_state_ && ActorDisablesInputDuringActuation()) {
+    web_state_->GetWebViewProxy().shouldSuppressInputViews = NO;
   }
 }
 
+// static
+bool ActorTabHelper::IsActorControlled(const web::WebState* web_state) {
+  if (!web_state || !web_state->IsRealized()) {
+    return false;
+  }
+  const ActorTabHelper* tab_helper = FromWebState(web_state);
+  return tab_helper && tab_helper->GetControlState() ==
+                           actor::ActorControlState::kActorControlled;
+}
+
+// static
+base::CallbackListSubscription ActorTabHelper::ObserveControlState(
+    web::WebState* web_state,
+    base::RepeatingClosure callback) {
+  if (!web_state || !web_state->IsRealized()) {
+    return {};
+  }
+  ActorTabHelper* tab_helper = FromWebState(web_state);
+  if (!tab_helper) {
+    return {};
+  }
+  return tab_helper->AddControlStateChangedCallback(
+      base::IgnoreArgs<actor::ActorControlState, actor::ActorControlState>(
+          std::move(callback)));
+}
+
+void ActorTabHelper::SetControlState(
+    actor::ActorControlState control_state,
+    std::optional<actor::TaskSourceInfo> task_source_info) {
+  if (!ShouldApplyControlStateForTaskSource(task_source_info)) {
+    control_state = actor::ActorControlState::kInactive;
+  }
+  if (control_state_ == control_state) {
+    return;
+  }
+  const actor::ActorControlState previous_control_state = control_state_;
+  control_state_ = control_state;
+  ApplyKeepRenderProcessAlive();
+
+  const bool previous_active =
+      previous_control_state == actor::ActorControlState::kActorControlled;
+  const bool new_active =
+      control_state == actor::ActorControlState::kActorControlled;
+  if (previous_active != new_active && web_state_ &&
+      ActorDisablesInputDuringActuation()) {
+    if (!new_active && web_state_->IsRealized() &&
+        !web_state_->IsBeingDestroyed()) {
+      // Resign first responder before lifting suppression so the keyboard stays
+      // hidden until a new user gesture.
+      [web_state_->GetView() endEditing:YES];
+    }
+    // Suppress the software keyboard and input accessory views while actuating
+    // to prevent viewport shifts and keyboard occlusion.
+    web_state_->GetWebViewProxy().shouldSuppressInputViews = new_active;
+  }
+
+  control_state_callbacks_.Notify(previous_control_state, control_state);
+
+  if (previous_active != new_active) {
+    actuation_state_callbacks_.Notify(new_active);
+  }
+
+  for (ActorTabHelperObserver& observer : observers_) {
+    observer.OnControlStateChanged(this, web_state_, previous_control_state,
+                                   control_state);
+  }
+}
+
+void ActorTabHelper::SetActuating(bool actuating) {
+  SetControlState(actuating ? actor::ActorControlState::kActorControlled
+                            : actor::ActorControlState::kInactive);
+}
+
+actor::ActorControlState ActorTabHelper::GetControlState() const {
+  return control_state_;
+}
+
 bool ActorTabHelper::IsActuating() const {
-  return is_actuating_;
+  return control_state_ == actor::ActorControlState::kActorControlled;
+}
+
+bool ActorTabHelper::MaybeHandleNewTabRequest(const GURL& url) {
+  // `web_state_` is cleared in `WebStateDestroyed()` before user-data teardown.
+  if (!web_state_ ||
+      control_state_ != actor::ActorControlState::kActorControlled) {
+    return false;
+  }
+
+  // Restrict in-place redirects to valid HTTP(S) URLs so empty, `about:`,
+  // `javascript:`, `file:`, and `chrome:` URLs cannot overwrite the opener
+  // document or instantiate WebUI. Leave `referrer` unset (matching
+  // Desktop/Android `CreateCustomWebContents`) so `rel="noreferrer"` is not
+  // leaked; cross-origin gating still runs in `ActorWebStatePolicyDecider`.
+  // Note: `WebStateDelegate::CreateNewWebState` does not expose `WKFrameInfo`
+  // sandbox flags.
+  if (url.is_valid() && url.SchemeIsHTTPOrHTTPS()) {
+    web::NavigationManager::WebLoadParams load_params(url);
+    load_params.transition_type = ui::PAGE_TRANSITION_LINK;
+    load_params.is_renderer_initiated = true;
+    web_state_->GetNavigationManager()->LoadURLWithParams(load_params);
+  }
+  return true;
+}
+
+base::CallbackListSubscription ActorTabHelper::AddControlStateChangedCallback(
+    ControlStateCallback callback) {
+  return control_state_callbacks_.Add(std::move(callback));
 }
 
 base::CallbackListSubscription ActorTabHelper::AddActuationStateChangedCallback(
@@ -37,4 +189,37 @@ void ActorTabHelper::AddObserver(ActorTabHelperObserver* observer) {
 
 void ActorTabHelper::RemoveObserver(ActorTabHelperObserver* observer) {
   observers_.RemoveObserver(observer);
+}
+
+#pragma mark - web::WebStateObserver
+
+void ActorTabHelper::WasHidden(web::WebState* web_state) {
+  if (control_state_ == actor::ActorControlState::kInactive) {
+    return;
+  }
+
+  // The browser resets keep-alive synchronously right after `WasHidden()`, so
+  // re-applying it must be deferred to a posted task.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&ActorTabHelper::ApplyKeepRenderProcessAlive,
+                                weak_ptr_factory_.GetWeakPtr()));
+}
+
+void ActorTabHelper::WebStateDestroyed(web::WebState* web_state) {
+  if (control_state_ == actor::ActorControlState::kActorControlled &&
+      web_state_ && ActorDisablesInputDuringActuation()) {
+    web_state_->GetWebViewProxy().shouldSuppressInputViews = NO;
+  }
+  web_state_observation_.Reset();
+  web_state_ = nullptr;
+}
+
+#pragma mark - Private
+
+void ActorTabHelper::ApplyKeepRenderProcessAlive() {
+  if (!web_state_) {
+    return;
+  }
+  web_state_->SetKeepRenderProcessAlive(control_state_ !=
+                                        actor::ActorControlState::kInactive);
 }

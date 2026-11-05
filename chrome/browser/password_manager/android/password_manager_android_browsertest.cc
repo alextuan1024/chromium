@@ -272,7 +272,8 @@ IN_PROC_BROWSER_TEST_P(PasswordManagerAndroidBrowserTest,
       password_generation_controller
           ->GetTouchToFillGenerationControllerForTesting();
 
-  touch_to_fill_generation_controller->OnGeneratedPasswordAccepted(u"Password");
+  touch_to_fill_generation_controller->OnGeneratedPasswordAccepted(
+      password_manager::PasswordString(u"Password"));
 
   EXPECT_TRUE(
       content::EvalJs(
@@ -317,8 +318,9 @@ class PasswordManagerEnterpriseReportingAndroidBrowserTest
                                 kEnrollmentToken, "\"}"}));
   }
 
-  enterprise_connectors::test::RealtimeReportingTestServer* reporting_server() {
-    return reporting_environment_->reporting_server();
+  std::vector<::chrome::cros::reporting::proto::UploadEventsRequest>
+  GetUploadedReports() {
+    return reporting_environment_->GetUploadedReports();
   }
 
  private:
@@ -349,7 +351,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerEnterpriseReportingAndroidBrowserTest,
       enterprise_connectors::EnterpriseReportingEventType::kLoginEvent, 1);
   uma_recorder.ExpectTotalCount("Enterprise.ReportingEventUploadFailure", 0);
 
-  auto reports = reporting_server()->GetUploadedReports();
+  auto reports = GetUploadedReports();
   ASSERT_EQ(1u, reports.size());
   EXPECT_EQ("Android", reports[0].device().os_platform());
   ASSERT_EQ(1, reports[0].events_size());

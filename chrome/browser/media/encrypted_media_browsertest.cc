@@ -9,6 +9,7 @@
 #include "base/command_line.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/clear_key_cdm_test_helper.h"
@@ -19,6 +20,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/common/content_features.h"
@@ -31,9 +33,11 @@
 #include "media/cdm/clear_key_cdm_common.h"
 #include "media/cdm/supported_cdm_versions.h"
 #include "media/media_buildflags.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/widevine/cdm/buildflags.h"
 #include "third_party/widevine/cdm/widevine_cdm_common.h"
+#include "ui/gfx/geometry/size.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <mfapi.h>
@@ -498,6 +502,7 @@ class EncryptedMediaVisibilityRatioReportTest : public EncryptedMediaTestBase {
     query_params.emplace_back("keySystem", media::kExternalClearKeyKeySystem);
     query_params.emplace_back("useMSE", "1");
     query_params.emplace_back("playCount", "1");
+    query_params.emplace_back("stopAfterPlaybackStart", "1");
 
     if (!param.first.empty()) {
       query_params.push_back(param);
@@ -811,32 +816,24 @@ INSTANTIATE_TEST_SUITE_P(MSE_Widevine,
                          Values(kWidevineKeySystem));
 #endif  // BUILDFLAG(BUNDLE_WIDEVINE_CDM)
 
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_AudioClearVideo_WebM) {
-  TestSimplePlayback("bear-320x240-av_enc-a.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoAudio_WebM) {
-  TestSimplePlayback("bear-320x240-av_enc-av.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoClearAudio_WebM) {
-  TestSimplePlayback("bear-320x240-av_enc-v.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VP9Video_WebM_Fullsample) {
-  TestSimplePlayback("bear-320x240-v-vp9_fullsample_enc-v.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VP9Video_WebM_Subsample) {
-  TestSimplePlayback("bear-320x240-v-vp9_subsample_enc-v.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoAudio_WebM_Opus) {
-  TestSimplePlayback("bear-320x240-opus-av_enc-av.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoClearAudio_WebM_Opus) {
-  TestSimplePlayback("bear-320x240-opus-av_enc-v.webm");
+IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_WebM) {
+  static constexpr const char* kMediaFiles[] = {
+      "bear-320x240-av_enc-a.webm",
+      "bear-320x240-av_enc-av.webm",
+      "bear-320x240-av_enc-v.webm",
+      "bear-320x240-v-vp9_fullsample_enc-v.webm",
+      "bear-320x240-v-vp9_subsample_enc-v.webm",
+      "bear-320x240-opus-av_enc-av.webm",
+      "bear-320x240-opus-av_enc-v.webm",
+#if BUILDFLAG(ENABLE_AV1_DECODER)
+      "bear-av1-cenc.webm",
+      "bear-av1-320x180-10bit-cenc.webm",
+#endif  // BUILDFLAG(ENABLE_AV1_DECODER)
+  };
+  for (const char* media_file : kMediaFiles) {
+    SCOPED_TRACE(media_file);
+    TestSimplePlayback(media_file);
+  }
 }
 
 IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_Multiple_VideoAudio_WebM) {
@@ -847,12 +844,24 @@ IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_Multiple_VideoAudio_WebM) {
   TestMultiplePlayback("bear-320x240-av_enc-av.webm");
 }
 
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_AudioOnly_MP4_FLAC) {
-  TestSimplePlayback("bear-flac-cenc.mp4");
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_AudioOnly_MP4_OPUS) {
-  TestSimplePlayback("bear-opus-cenc.mp4");
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_MP4) {
+  static constexpr const char* kMediaFiles[] = {
+      "bear-flac-cenc.mp4",
+      "bear-opus-cenc.mp4",
+#if BUILDFLAG(ENABLE_AV1_DECODER)
+      "bear-av1-cenc.mp4",
+      "bear-av1-320x180-10bit-cenc.mp4",
+#endif  // BUILDFLAG(ENABLE_AV1_DECODER)
+#if BUILDFLAG(USE_PROPRIETARY_CODECS)
+      "bear-640x360-v_frag-cenc.mp4",
+      "bear-640x360-v_frag-cenc-mdat.mp4",
+      "bear-640x360-v_frag-cbcs.mp4",
+#endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
+  };
+  for (const char* media_file : kMediaFiles) {
+    SCOPED_TRACE(media_file);
+    TestSimplePlayback(media_file);
+  }
 }
 
 // TODO(crbug.com/40116010): Flaky on multiple platforms.
@@ -887,69 +896,31 @@ IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
   TestSimplePlayback("bear-320x240-v-vp9_profile2_subsample_cenc-v.mp4");
 }
 
-#if BUILDFLAG(ENABLE_AV1_DECODER)
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoOnly_WebM_AV1) {
-  TestSimplePlayback("bear-av1-cenc.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoOnly_WebM_AV1_10bit) {
-  TestSimplePlayback("bear-av1-320x180-10bit-cenc.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_VideoOnly_MP4_AV1) {
-  TestSimplePlayback("bear-av1-cenc.mp4");
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
-                       Playback_VideoOnly_MP4_AV1_10bit) {
-  TestSimplePlayback("bear-av1-320x180-10bit-cenc.mp4");
-}
-
-#endif  // BUILDFLAG(ENABLE_AV1_DECODER)
-
 IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, InvalidResponseKeyError) {
   RunInvalidResponseTest();
 }
 
 // This is not really an "encrypted" media test. Keep it here for completeness.
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, ConfigChangeVideo_ClearToClear) {
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, ConfigChangeVideo) {
   LOG(INFO) << UnitTest::GetInstance()->current_test_info()->name();
   if (!IsPlayBackPossible(CurrentKeySystem())) {
     GTEST_SKIP() << "ConfigChange test requires video playback.";
   }
 
-  TestConfigChange(ConfigChangeType::CLEAR_TO_CLEAR);
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
-                       ConfigChangeVideo_ClearToEncrypted) {
-  LOG(INFO) << UnitTest::GetInstance()->current_test_info()->name();
-  if (!IsPlayBackPossible(CurrentKeySystem())) {
-    GTEST_SKIP() << "ConfigChange test requires video playback.";
+  struct ConfigChangeCase {
+    const char* name;
+    ConfigChangeType type;
+  };
+  static constexpr ConfigChangeCase kCases[] = {
+      {"CLEAR_TO_CLEAR", ConfigChangeType::CLEAR_TO_CLEAR},
+      {"CLEAR_TO_ENCRYPTED", ConfigChangeType::CLEAR_TO_ENCRYPTED},
+      {"ENCRYPTED_TO_CLEAR", ConfigChangeType::ENCRYPTED_TO_CLEAR},
+      {"ENCRYPTED_TO_ENCRYPTED", ConfigChangeType::ENCRYPTED_TO_ENCRYPTED},
+  };
+  for (const auto& test_case : kCases) {
+    SCOPED_TRACE(test_case.name);
+    TestConfigChange(test_case.type);
   }
-
-  TestConfigChange(ConfigChangeType::CLEAR_TO_ENCRYPTED);
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
-                       ConfigChangeVideo_EncryptedToClear) {
-  LOG(INFO) << UnitTest::GetInstance()->current_test_info()->name();
-  if (!IsPlayBackPossible(CurrentKeySystem())) {
-    GTEST_SKIP() << "ConfigChange test requires video playback.";
-  }
-
-  TestConfigChange(ConfigChangeType::ENCRYPTED_TO_CLEAR);
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
-                       ConfigChangeVideo_EncryptedToEncrypted) {
-  LOG(INFO) << UnitTest::GetInstance()->current_test_info()->name();
-  if (!IsPlayBackPossible(CurrentKeySystem())) {
-    GTEST_SKIP() << "ConfigChange test requires video playback.";
-  }
-
-  TestConfigChange(ConfigChangeType::ENCRYPTED_TO_ENCRYPTED);
 }
 
 IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, FrameSizeChangeVideo) {
@@ -994,46 +965,24 @@ IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, EncryptedMediaDisabled) {
 
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
 
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_VideoOnly_MP4) {
-  TestSimplePlayback("bear-640x360-v_frag-cenc.mp4");
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_VideoOnly_MP4_MDAT) {
-  TestSimplePlayback("bear-640x360-v_frag-cenc-mdat.mp4");
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_Encryption_CBCS) {
-  TestSimplePlayback("bear-640x360-v_frag-cbcs.mp4");
-}
-
 IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
-                       Playback_EncryptedVideo_MP4_ClearAudio_WEBM) {
-  TestDifferentContainers("bear-640x360-v_frag-cenc.mp4",
-                          "bear-320x240-audio-only.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
-                       Playback_ClearVideo_WEBM_EncryptedAudio_MP4) {
-  TestDifferentContainers("bear-320x240-video-only.webm",
-                          "bear-640x360-a_frag-cenc.mp4");
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
-                       Playback_EncryptedVideo_WEBM_EncryptedAudio_MP4) {
-  TestDifferentContainers("bear-320x240-v_enc-v.webm",
-                          "bear-640x360-a_frag-cenc.mp4");
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
-                       Playback_EncryptedVideo_CBCS_EncryptedAudio_CENC) {
-  TestDifferentContainers("bear-640x360-v_frag-cbcs.mp4",
-                          "bear-640x360-a_frag-cenc.mp4");
-}
-
-IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
-                       Playback_EncryptedVideo_CENC_EncryptedAudio_CBCS) {
-  TestDifferentContainers("bear-640x360-v_frag-cenc.mp4",
-                          "bear-640x360-a_frag-cbcs.mp4");
+                       Playback_MixedContainersAndSchemes) {
+  struct ContainerPair {
+    const char* video_file;
+    const char* audio_file;
+  };
+  static constexpr ContainerPair kPairs[] = {
+      {"bear-640x360-v_frag-cenc.mp4", "bear-320x240-audio-only.webm"},
+      {"bear-320x240-video-only.webm", "bear-640x360-a_frag-cenc.mp4"},
+      {"bear-320x240-v_enc-v.webm", "bear-640x360-a_frag-cenc.mp4"},
+      {"bear-640x360-v_frag-cbcs.mp4", "bear-640x360-a_frag-cenc.mp4"},
+      {"bear-640x360-v_frag-cenc.mp4", "bear-640x360-a_frag-cbcs.mp4"},
+  };
+  for (const auto& pair : kPairs) {
+    SCOPED_TRACE(testing::Message()
+                 << pair.video_file << " + " << pair.audio_file);
+    TestDifferentContainers(pair.video_file, pair.audio_file);
+  }
 }
 
 #endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
@@ -1134,15 +1083,9 @@ IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, InitializeCDMFail) {
                        kEmeNotSupportedError);
 }
 
-// TODO(crbug.com/40105240): Failing on Windows.
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_CDMCrashDuringDecode DISABLED_CDMCrashDuringDecode
-#else
-#define MAYBE_CDMCrashDuringDecode CDMCrashDuringDecode
-#endif
 // When CDM crashes, we should still get a decode error and all sessions should
 // be closed.
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, MAYBE_CDMCrashDuringDecode) {
+IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, CDMCrashDuringDecode) {
   TestNonPlaybackCases(media::kExternalClearKeyCrashKeySystem,
                        kEmeSessionClosedAndError);
 }
@@ -1158,13 +1101,7 @@ IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaFileIOTest, FileIOTest) {
                        kUnitTestSuccess);
 }
 
-// Intermittent leaks on ASan/LSan runs: crbug.com/41417613
-#if defined(LEAK_SANITIZER) || defined(ADDRESS_SANITIZER)
-#define MAYBE_MessageTypeTest DISABLED_MessageTypeTest
-#else
-#define MAYBE_MessageTypeTest MessageTypeTest
-#endif
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, MAYBE_MessageTypeTest) {
+IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, MessageTypeTest) {
   TestPlaybackCase(media::kExternalClearKeyMessageTypeTestKeySystem,
                    kNoSessionToLoad, media::kEndedTitle);
   // Expects 3 message types: 'license-request', 'license-renewal' and
@@ -1195,59 +1132,51 @@ IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, LoadSessionAfterClose) {
                             media::kEndedTitle);
 }
 
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, DecryptOnly_VideoAudio_WebM) {
-  RunSimpleEncryptedMediaTest("bear-320x240-av_enc-av.webm",
-                              media::kExternalClearKeyDecryptOnlyKeySystem,
-                              SrcType::MSE, PlayCount::ONCE);
-}
-
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, DecryptOnly_VideoOnly_MP4_VP9) {
-  RunSimpleEncryptedMediaTest("bear-320x240-v_frag-vp9-cenc.mp4",
-                              media::kExternalClearKeyDecryptOnlyKeySystem,
-                              SrcType::MSE, PlayCount::ONCE);
+IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, DecryptOnly) {
+  static constexpr const char* kMediaFiles[] = {
+      "bear-320x240-av_enc-av.webm",
+      "bear-320x240-v_frag-vp9-cenc.mp4",
+#if BUILDFLAG(USE_PROPRIETARY_CODECS)
+      // 'cbcs' decryption is supported on CDM 10 or later as long as the
+      // appropriate buildflag is enabled.
+      "bear-640x360-v_frag-cbcs.mp4",
+#endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
+  };
+  for (const char* media_file : kMediaFiles) {
+    SCOPED_TRACE(media_file);
+    RunSimpleEncryptedMediaTest(media_file,
+                                media::kExternalClearKeyDecryptOnlyKeySystem,
+                                SrcType::MSE, PlayCount::ONCE);
+  }
 }
 
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
 
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, DecryptOnly_VideoOnly_MP4_CBCS) {
-  // 'cbcs' decryption is supported on CDM 10 or later as long as the
-  // appropriate buildflag is enabled.
-  std::string expected_result = media::kEndedTitle;
-
-  RunEncryptedMediaTest(kDefaultEmePlayer, "bear-640x360-v_frag-cbcs.mp4",
-                        media::kExternalClearKeyDecryptOnlyKeySystem,
-                        SrcType::MSE, kNoSessionToLoad, false, PlayCount::ONCE,
-                        expected_result);
-}
-
 // Encryption Scheme tests. ClearKey key system is covered in
 // content/browser/media/encrypted_media_browsertest.cc.
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, Playback_Encryption_CENC) {
-  RunEncryptedMediaMultipleFileTest(
-      media::kExternalClearKeyKeySystem, "bear-640x360-v_frag-cenc.mp4",
-      "bear-640x360-a_frag-cenc.mp4", media::kEndedTitle);
-}
-
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, Playback_Encryption_CBC1) {
-  RunEncryptedMediaMultipleFileTest(media::kExternalClearKeyKeySystem,
-                                    "bear-640x360-v_frag-cbc1.mp4",
-                                    std::string(), media::kErrorTitle);
-}
-
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, Playback_Encryption_CENS) {
-  RunEncryptedMediaMultipleFileTest(media::kExternalClearKeyKeySystem,
-                                    "bear-640x360-v_frag-cens.mp4",
-                                    std::string(), media::kErrorTitle);
-}
-
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, Playback_Encryption_CBCS) {
-  // 'cbcs' decryption is supported on CDM 10 or later as long as the
-  // appropriate buildflag is enabled.
-  std::string expected_result = media::kEndedTitle;
-
-  RunEncryptedMediaMultipleFileTest(
-      media::kExternalClearKeyKeySystem, "bear-640x360-v_frag-cbcs.mp4",
-      "bear-640x360-a_frag-cbcs.mp4", expected_result);
+IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, Playback_EncryptionSchemes) {
+  struct EncryptionSchemeCase {
+    const char* name;
+    const char* video_file;
+    const char* audio_file;
+    const char* expected_title;
+  };
+  static constexpr EncryptionSchemeCase kCases[] = {
+      {"CENC", "bear-640x360-v_frag-cenc.mp4", "bear-640x360-a_frag-cenc.mp4",
+       media::kEndedTitle},
+      {"CBC1", "bear-640x360-v_frag-cbc1.mp4", "", media::kErrorTitle},
+      {"CENS", "bear-640x360-v_frag-cens.mp4", "", media::kErrorTitle},
+      // 'cbcs' decryption is supported on CDM 10 or later as long as the
+      // appropriate buildflag is enabled.
+      {"CBCS", "bear-640x360-v_frag-cbcs.mp4", "bear-640x360-a_frag-cbcs.mp4",
+       media::kEndedTitle},
+  };
+  for (const auto& test_case : kCases) {
+    SCOPED_TRACE(test_case.name);
+    RunEncryptedMediaMultipleFileTest(
+        media::kExternalClearKeyKeySystem, test_case.video_file,
+        test_case.audio_file, test_case.expected_title);
+  }
 }
 
 #endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
@@ -1264,13 +1193,7 @@ IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, StorageIdTest) {
                        kUnitTestSuccess);
 }
 
-// TODO(crbug.com/40601162): Times out in debug builds.
-#if !defined(NDEBUG) || BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_MultipleCdmTypes DISABLED_MultipleCdmTypes
-#else
-#define MAYBE_MultipleCdmTypes MultipleCdmTypes
-#endif
-IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, MAYBE_MultipleCdmTypes) {
+IN_PROC_BROWSER_TEST_P(ECKEncryptedMediaTest, MultipleCdmTypes) {
   base::StringPairs empty_query_params;
   RunMediaTestPage("multiple_cdm_types.html", empty_query_params,
                    media::kEndedTitle, true);
@@ -1360,6 +1283,206 @@ class MediaFoundationEncryptedMediaTest : public EncryptedMediaTestBase {
                                 SrcType::MSE, PlayCount::ONCE);
   }
 
+  void TestMediaFoundationTrackSwitchPlayback(const std::string& video_file_0,
+                                              const gfx::Size& video_size_0,
+                                              const std::string& video_file_1,
+                                              const gfx::Size& video_size_1,
+                                              const std::string& audio_file) {
+    ASSERT_TRUE(IsPlayBackPossible(media::kMediaFoundationClearKeyKeySystem));
+
+    base::StringPairs query_params;
+    const auto video_format_0 = media::GetMimeTypeForFile(video_file_0);
+    const auto video_format_1 = media::GetMimeTypeForFile(video_file_1);
+    const auto audio_format = media::GetMimeTypeForFile(audio_file);
+    const auto media_type =
+        media::GetMimeTypeForFile(audio_file + ";" + video_file_0);
+    query_params.emplace_back("keySystem",
+                              media::kMediaFoundationClearKeyKeySystem);
+    query_params.emplace_back("runEncrypted", "1");
+    query_params.emplace_back("useMSE", "1");
+    query_params.emplace_back("playCount", "1");
+    query_params.emplace_back("videoFile", video_file_0);
+    query_params.emplace_back("videoFormat", video_format_0);
+    query_params.emplace_back("secondVideoFile", video_file_1);
+    query_params.emplace_back("secondVideoFormat", video_format_1);
+    query_params.emplace_back("audioFile", audio_file);
+    query_params.emplace_back("audioFormat", audio_format);
+    query_params.emplace_back("mediaType", media_type);
+
+    net::EmbeddedTestServer http_test_server;
+    http_test_server.ServeFilesFromSourceDirectory(media::GetTestDataPath());
+    ASSERT_TRUE(http_test_server.Start());
+
+    content::WebContents* web_contents =
+        browser()->GetTabStripModel()->GetActiveWebContents();
+    content::TitleWatcher title_watcher(web_contents,
+                                        base::ASCIIToUTF16(media::kEndedTitle));
+    AddWaitForTitles(&title_watcher);
+
+    GURL gurl =
+        http_test_server.GetURL("/" + std::string(kDefaultEmePlayer) + "?" +
+                                media::GetURLQueryString(query_params));
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), gurl));
+
+    // In MediaFoundationRenderer:
+    // - WebMediaPlayerImpl::SelectedVideoTrackChanged does not update
+    //   video.videoWidth or video.videoHeight.
+    // - MediaFoundationH264VideoStream::AreFormatChangesEnabled() returns
+    //   false, so DemuxerStream::Status::kConfigChanged does not send a format
+    //   change event to IMFMediaEngine.
+    // Therefore, video.videoWidth and video.videoHeight only change when
+    // IMFMediaEngine's H.264 decoder actually decodes the newly selected video
+    // track's bitstream and fires MF_MEDIA_ENGINE_EVENT_FORMATCHANGE ->
+    // MediaFoundationRenderer::OnVideoNaturalSizeChange().
+    //
+    // This helper waits for:
+    // 1. video.videoWidth and video.videoHeight to match `expected_size`, and
+    // 2. video.webkitDecodedFrameCount to increase across two subsequent
+    //    pipeline statistics updates while at `expected_size`.
+    auto wait_for_track_decoding = [&](int baseline_frames,
+                                       const gfx::Size& expected_size) -> int {
+      static constexpr char kWaitForTrackDecodingScript[] = R"(
+        new Promise((resolve, reject) => {
+          const minBaseline = $1;
+          const expectedWidth = $2;
+          const expectedHeight = $3;
+          let sizeMatchedBaseline = null;
+          let firstIncreaseSeen = null;
+          const check = () => {
+            const video = document.querySelector('video');
+            if (!video) {
+              setTimeout(check, 50);
+              return;
+            }
+            video.loop = true;
+            if (video.error) {
+              reject('Video error: ' + video.error.message);
+              return;
+            }
+            if (Utils.titleChanged && document.title !== 'ENDED') {
+              reject('Test failed with title: ' + document.title);
+              return;
+            }
+            if (!video.videoTracks || video.videoTracks.length < 2) {
+              setTimeout(check, 50);
+              return;
+            }
+            if (video.videoWidth !== expectedWidth ||
+                video.videoHeight !== expectedHeight) {
+              sizeMatchedBaseline = null;
+              firstIncreaseSeen = null;
+              setTimeout(check, 50);
+              return;
+            }
+            const count = video.webkitDecodedFrameCount;
+            if (sizeMatchedBaseline === null) {
+              sizeMatchedBaseline = Math.max(minBaseline, count);
+            } else if (firstIncreaseSeen === null) {
+              if (count > sizeMatchedBaseline) {
+                firstIncreaseSeen = count;
+              }
+            } else if (count > firstIncreaseSeen) {
+              resolve(count);
+              return;
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+      )";
+      return content::EvalJs(web_contents,
+                             content::JsReplace(
+                                 kWaitForTrackDecodingScript, baseline_frames,
+                                 expected_size.width(), expected_size.height()))
+          .ExtractInt();
+    };
+
+    // 1. Wait for initial playback to decode frames on video track 0
+    // (640x360).
+    int frames_on_track_0 = wait_for_track_decoding(0, video_size_0);
+    ASSERT_GT(frames_on_track_0, 0);
+    EXPECT_EQ(2, content::EvalJs(
+                     web_contents,
+                     "document.querySelector('video').videoTracks.length;"));
+    EXPECT_EQ(true,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[0].selected;"));
+    EXPECT_EQ(video_size_0.width(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoWidth;"));
+    EXPECT_EQ(video_size_0.height(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoHeight;"));
+
+    // 2. Switch to video track 1 (1280x720) and verify that the decoded video
+    // resolution changes to 1280x720 and decoded frames keep increasing.
+    // Note: Because each video track is loaded in its own MSE SourceBuffer,
+    // SourceBuffer::InitializationSegmentReceived initially sets
+    // VideoTrack::selected to true on the first video track of each
+    // SourceBuffer before attaching it to HTMLMediaElement (while ChunkDemuxer
+    // only enables video track 0). Clear videoTracks[1].selected to false first
+    // so that setting it to true transitions its state and triggers
+    // HTMLMediaElement::SelectedVideoTrackChanged.
+    ASSERT_TRUE(content::ExecJs(web_contents,
+                                "const video = document.querySelector('video');"
+                                "video.videoTracks[1].selected = false;"
+                                "video.videoTracks[1].selected = true;"));
+    EXPECT_EQ(false,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[0].selected;"));
+    EXPECT_EQ(true,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[1].selected;"));
+
+    int frames_after_switch_to_track_1 =
+        wait_for_track_decoding(frames_on_track_0, video_size_1);
+    EXPECT_GT(frames_after_switch_to_track_1, frames_on_track_0);
+    EXPECT_EQ(video_size_1.width(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoWidth;"));
+    EXPECT_EQ(video_size_1.height(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoHeight;"));
+
+    // 3. Switch back to video track 0 (640x360) and verify that the decoded
+    // video resolution returns to 640x360 and decoded frames keep increasing.
+    ASSERT_TRUE(content::ExecJs(
+        web_contents,
+        "document.querySelector('video').videoTracks[0].selected = true;"));
+    EXPECT_EQ(true,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[0].selected;"));
+    EXPECT_EQ(false,
+              content::EvalJs(
+                  web_contents,
+                  "document.querySelector('video').videoTracks[1].selected;"));
+
+    int frames_after_switch_back_to_track_0 =
+        wait_for_track_decoding(frames_after_switch_to_track_1, video_size_0);
+    EXPECT_GT(frames_after_switch_back_to_track_0,
+              frames_after_switch_to_track_1);
+    EXPECT_EQ(video_size_0.width(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoWidth;"));
+    EXPECT_EQ(video_size_0.height(),
+              content::EvalJs(web_contents,
+                              "document.querySelector('video').videoHeight;"));
+
+    // 4. Disable looping, wait for playback to finish cleanly, and verify EME
+    // key exchange occurred.
+    ASSERT_TRUE(content::ExecJs(
+        web_contents, "document.querySelector('video').loop = false;"));
+    EXPECT_EQ(base::ASCIIToUTF16(media::kEndedTitle),
+              title_watcher.WaitAndGetTitle());
+    EXPECT_EQ(true, content::EvalJs(
+                        web_contents,
+                        "document.querySelector('video').receivedKeyMessage;"));
+  }
+
   void TestMediaFoundationMultipleFilePlayback(const std::string& video_file,
                                                const std::string& audio_file) {
     std::string expected_title = media::kEndedTitle;
@@ -1397,6 +1520,8 @@ class MediaFoundationEncryptedMediaTest : public EncryptedMediaTestBase {
     EncryptedMediaTestBase::SetUpCommandLine(command_line);
     SetUpCommandLineForKeySystem(media::kMediaFoundationClearKeyKeySystem,
                                  command_line);
+    command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
+                                    "AudioVideoTracks");
   }
 
   bool IsMediaFoundationEncryptedPlaybackSupported() {
@@ -1577,6 +1702,29 @@ IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
   TestMediaFoundationMultipleFilePlayback(
       "bear-640x360-v_frag-cenc.mp4",   // H.264
       "bear-640x360-a_frag-cenc.mp4");  // MP4 AAC
+}
+
+IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,
+                       Playback_EncryptedCencVideoAudio_TrackSwitch) {
+  if (!IsMediaFoundationEncryptedPlaybackSupported()) {
+    GTEST_SKIP() << "MediaFoundationEncryptedPlayback not supported on device.";
+  }
+
+  // TODO(crbug.com/575560149): Re-enable once flakiness on these GPUs is
+  // resolved.
+  const auto& active_gpu =
+      content::GpuDataManager::GetInstance()->GetGPUInfo().active_gpu();
+  if (active_gpu.device_id == 0x2783 || active_gpu.device_id == 0x7480 ||
+      active_gpu.device_id == 0x4680 || active_gpu.device_id == 0x9bc5) {
+    GTEST_SKIP() << "Skipped on NVIDIA RTX 4070 Super (0x2783), AMD RX 7600 "
+                    "(0x7480), Intel UHD 770 (0x4680), and Intel UHD 630 "
+                    "(0x9bc5).";
+  }
+
+  TestMediaFoundationTrackSwitchPlayback(
+      "bear-640x360-v_frag-cenc.mp4", gfx::Size(640, 360),    // H.264 640x360
+      "bear-1280x720-v_frag-cenc.mp4", gfx::Size(1280, 720),  // H.264 1280x720
+      "bear-640x360-a_frag-cenc.mp4");                        // MP4 AAC
 }
 
 IN_PROC_BROWSER_TEST_F(MediaFoundationEncryptedMediaTest,

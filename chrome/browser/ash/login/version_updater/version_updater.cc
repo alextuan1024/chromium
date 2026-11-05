@@ -16,7 +16,6 @@
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/login/version_updater/update_time_estimator.h"
-#include "chrome/grit/branded_strings.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
@@ -409,7 +408,7 @@ void VersionUpdater::UpdateErrorMessage(const NetworkState* network,
     case NetworkState::PortalState::kPortal:
       [[fallthrough]];
     case NetworkState::PortalState::kPortalSuspected:
-      DCHECK(network);
+      CHECK(network, base::NotFatalUntil::M161);
       error_state = NetworkError::ERROR_STATE_PORTAL;
       network_name = network->name();
       break;

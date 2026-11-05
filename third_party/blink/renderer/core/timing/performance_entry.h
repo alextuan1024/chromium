@@ -32,10 +32,12 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_PERFORMANCE_ENTRY_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TIMING_PERFORMANCE_ENTRY_H_
 
+#include "base/containers/span.h"
 #include "third_party/blink/public/mojom/timing/performance_mark_or_measure.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/dom_high_res_time_stamp.h"
 #include "third_party/blink/renderer/core/frame/dom_window.h"
+#include "third_party/blink/renderer/core/frame/web_feature_forward.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -90,18 +92,28 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
   };
 
   const AtomicString& name() const { return name_; }
-  DOMHighResTimeStamp startTime() const;
   uint64_t navigationId() const;
   // source() will return null if the PerformanceEntry did not originate from a
   // Window context.
   DOMWindow* source() const;
   virtual const AtomicString& entryType() const = 0;
   virtual PerformanceEntryType EntryTypeEnum() const = 0;
-  // PerformanceNavigationTiming will override this due to
-  // the nature of reporting it early, which means not having a
-  // finish time available at construction time.
-  // Other classes must NOT override this.
+
+  // By default, returns the `start_time_` set during construction. Subclasses
+  // may override this to return other values, which may not be known at
+  // construction time.
+  virtual DOMHighResTimeStamp startTime() const;
+
+  // By default, returns the `duration_` set during construction. Subclasses
+  // may override this to return other values, which may not be known at
+  // construction time.
   virtual DOMHighResTimeStamp duration() const;
+
+  // Returns true if the value is ready to be reported to performance timeline,
+  // and false otherwise. Some entries are ready to be reported as soon as they
+  // are constructed, but others should not be reported until other conditions
+  // are met, e.g. until presentation of the relevant frame.
+  virtual bool IsReadyForReporting() const { return true; }
 
   ScriptObject toJSONForBinding(ScriptState*) const;
 
@@ -133,8 +145,31 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
     return a->startTime() < b->startTime();
   }
 
+  struct EntryTypeUseCounters {
+    EntryType entry_type;
+    WebFeature emitted;
+    WebFeature explicitly_requested;
+    WebFeature potentially_observed;
+    WebFeature observed;
+  };
+
+  // PerformanceEntry UseCounters follow four stages across all entry types:
+  // 1. *EntryEmitted: At least one entry of this type was produced and queued.
+  // 2. *ExplicitlyRequested: The page registered a PerformanceObserver or
+  //    called performance.getEntriesByType() / getEntriesByName(name, type)
+  //    for this type.
+  // 3. *PotentiallyObserved: At least one entry of this type was returned via
+  //    unfiltered performance.getEntries() or
+  //    performance.getEntriesByName(name) (without specifying a type).
+  // 4. *Observed: The page explicitly requested this type AND received at least
+  //    one entry of this type (the overlap of Emitted and ExplicitlyRequested).
+  static base::span<const EntryTypeUseCounters> GetUseCounters();
+  static const EntryTypeUseCounters* GetUseCountersForType(
+      EntryType entry_type);
+
   static PerformanceEntry::EntryType ToEntryTypeEnum(
       const AtomicString& entry_type);
+  static const AtomicString& ToEntryTypeString(EntryType entry_type);
 
   // Entries of the types listed here will be accessible from the
   // PerformanceTimeline or the PerformanceObserver.  Those not listed will
@@ -173,7 +208,17 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
   void Trace(Visitor*) const override;
 
   void SetPaintTimingInfo(const DOMPaintTimingInfo& paint_timing_info) {
+    CHECK(!paint_timing_info_.has_value());
     paint_timing_info_ = paint_timing_info;
+  }
+
+  // Finalizes the entry, setting its `DOMPaintTimingInfo` and navigation ID.
+  // Used to finalize pending entries created at paint time when presentation
+  // time is resolved. Subclasses can override this to set additional state.
+  virtual void FinalizeEntry(const DOMPaintTimingInfo& paint_timing_info,
+                             uint64_t navigation_id) {
+    SetPaintTimingInfo(paint_timing_info);
+    navigation_id_ = navigation_id;
   }
 
  protected:
@@ -190,6 +235,8 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
 
   virtual void BuildJSONValue(V8ObjectBuilder&) const;
 
+  bool HasPaintTimingInfo() const { return paint_timing_info_.has_value(); }
+
   // Protected and not const because PerformanceEventTiming needs to modify it.
   double duration_;
 
@@ -200,7 +247,7 @@ class CORE_EXPORT PerformanceEntry : public ScriptWrappable {
   // source_ will be null if the PerformanceEntry did not originate from a
   // Window context.
   const WeakMember<DOMWindow> source_;
-  const uint64_t navigation_id_;
+  uint64_t navigation_id_;
   // For entries implementing PaintTimingMixin.
   std::optional<DOMPaintTimingInfo> paint_timing_info_;
 };

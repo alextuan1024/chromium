@@ -5,6 +5,7 @@
 #include "chrome/browser/extensions/api/printing/printing_api.h"
 
 #include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/values.h"
@@ -12,6 +13,7 @@
 #include "chrome/browser/extensions/chrome_extension_function_details.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/quota_service.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom.h"
 
 namespace extensions {
 
@@ -30,9 +32,11 @@ ExtensionFunction::ResponseAction PrintingSubmitJobFunction::Run() {
   std::optional<api::printing::SubmitJob::Params> params =
       api::printing::SubmitJob::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
+  mojo::PendingRemote<blink::mojom::Blob> document = TakeBlobArg(0);
+  EXTENSION_FUNCTION_VALIDATE(document);
   PrintingAPIHandler::Get(browser_context())
       ->SubmitJob(ChromeExtensionFunctionDetails(this).GetNativeWindowForUI(),
-                  extension_, std::move(params),
+                  extension_, std::move(params), std::move(document),
                   base::BindOnce(
                       &PrintingSubmitJobFunction::OnPrintJobSubmitted, this));
 
@@ -48,7 +52,7 @@ void PrintingSubmitJobFunction::OnPrintJobSubmitted(
     return;
   }
   api::printing::SubmitJobResponse response;
-  DCHECK(status.has_value());
+  CHECK(status.has_value(), base::NotFatalUntil::M161);
   response.status = status.value();
   response.job_id = std::move(job_id);
   Respond(WithArguments(response.ToValue()));
@@ -127,7 +131,7 @@ void PrintingGetPrinterInfoFunction::OnPrinterInfoRetrieved(
     std::swap(response.capabilities->additional_properties,
               capabilities_value.GetDict());
   }
-  DCHECK(status.has_value());
+  CHECK(status.has_value(), base::NotFatalUntil::M161);
   response.status = status.value();
   Respond(WithArguments(response.ToValue()));
 }

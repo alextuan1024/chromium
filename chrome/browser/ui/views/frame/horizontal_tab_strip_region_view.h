@@ -21,6 +21,10 @@
 
 class BrowserView;
 
+namespace shared {
+class NewTabButton;
+}
+
 namespace views {
 class ActionViewController;
 class Button;
@@ -30,7 +34,6 @@ class TabStripActionContainer;
 class TabStripComboButton;
 class TabStrip;
 class TabStripScrollContainer;
-class TabStripControlButton;
 
 // Container for the tabstrip and the other views sharing space with it -
 // with the exception of the caption buttons.
@@ -117,8 +120,6 @@ class HorizontalTabStripRegionViewOld : public TabStripRegionView {
   // Updates the left and right margins for the tab strip.
   void UpdateTabStripMargin();
 
-  void OnUnfocusButtonVisibilityChanged();
-
   // Gets called on `Layout` and adjusts the x-axis position of the `view` based
   // on `offset`. This should only used for views that show before tab strip.
   void AdjustViewBoundsRect(View* view, int offset);
@@ -133,10 +134,8 @@ class HorizontalTabStripRegionViewOld : public TabStripRegionView {
   raw_ptr<TabStripScrollContainer> tab_strip_scroll_container_ = nullptr;
   raw_ptr<TabStripComboButton> combo_button_ = nullptr;
   raw_ptr<views::Button> new_tab_button_ = nullptr;
-  raw_ptr<TabStripControlButton> unfocus_button_ = nullptr;
 
   std::unique_ptr<views::ActionViewController> action_view_controller_;
-  base::CallbackListSubscription unfocus_button_subscription_;
 
   const base::CallbackListSubscription subscription_ =
       ui::TouchUiController::Get()->RegisterCallback(base::BindRepeating(
@@ -164,6 +163,7 @@ class HorizontalTabStripRegionViewNew : public BaseTabStripRegionView {
 
   bool HasLeadingButtons() const;
   TabStripComboButton* combo_button() { return combo_button_; }
+  views::Button* new_tab_button_for_testing();
 
   // TabStripRegionView:
   gfx::Size GetMinimumSize() const override;
@@ -185,11 +185,12 @@ class HorizontalTabStripRegionViewNew : public BaseTabStripRegionView {
   raw_ptr<TabStripActionContainer> tab_strip_action_container_ = nullptr;
   raw_ptr<views::View> reserved_grab_handle_space_ = nullptr;
   raw_ptr<TabStripComboButton> combo_button_ = nullptr;
-  raw_ptr<views::Button> new_tab_button_ = nullptr;
+  raw_ptr<shared::NewTabButton> new_tab_button_ = nullptr;
 
   std::unique_ptr<views::ActionViewController> action_view_controller_;
 
   base::CallbackListSubscription subscription_;
+  base::CallbackListSubscription new_tab_button_pressed_subscription_;
 };
 
 using HorizontalTabStripRegionView = HorizontalTabStripRegionViewOld;

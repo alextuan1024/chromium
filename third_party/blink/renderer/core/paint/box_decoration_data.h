@@ -13,8 +13,8 @@
 #include "third_party/blink/renderer/core/layout/layout_replaced.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/paint/paint_info.h"
+#include "third_party/blink/renderer/core/style/animated_color.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
-#include "third_party/blink/renderer/platform/graphics/color.h"
 
 namespace blink {
 
@@ -27,8 +27,8 @@ class BoxDecorationData {
                     const LayoutReplaced& layout_replaced)
       : BoxDecorationData(paint_info,
                           layout_replaced,
-                          layout_replaced.StyleRef(),
-                          layout_replaced.StyleRef().HasBorderDecoration()) {}
+                          layout_replaced.Style(),
+                          layout_replaced.Style().HasBorderDecoration()) {}
 
   BoxDecorationData(const PaintInfo& paint_info,
                     const PhysicalFragment& fragment,
@@ -77,8 +77,9 @@ class BoxDecorationData {
   }
 
   // This is not cached because the caller is unlikely to call this repeatedly.
-  Color BackgroundColor() const {
-    return style_.VisitedDependentColor(GetCSSPropertyBackgroundColor());
+  AnimatedColor BackgroundColor() const {
+    return style_.VisitedDependentAnimatedColor(
+        GetCSSPropertyBackgroundColor());
   }
 
  private:

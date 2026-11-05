@@ -4,6 +4,8 @@
 
 module cc.mojom;
 
+import "cc/mojom/browser_controls_snap_hint.mojom";
+import "cc/mojom/root_scroll_offset_update_frequency.mojom";
 import "services/viz/public/mojom/compositing/local_surface_id.mojom";
 import "services/viz/public/mojom/compositing/selection.mojom";
 import "services/viz/public/mojom/compositing/tracked_element_rects.mojom";
@@ -127,21 +129,6 @@ struct RenderFrameMetadata {
   bool has_transparent_background;
 };
 
-[EnableIf=is_android|is_ios]
-enum RootScrollOffsetUpdateFrequency {
-  // The client will only be notified of root scroll offsets via the regular
-  // RenderFrameMetadata updates. This is the default behavior. See
-  // `RenderFrameMetadataObserverImpl::ShouldSendRenderFrameMetadata()` for
-  // details on when the RenderFrameMetadata updates occur.
-  kNone,
-  // The client will also be notified with an updated root scroll offset when a
-  // scroll ends in addition to offset updates sent via RenderFrameMetadata
-  // updates.
-  kOnScrollEnd,
-  // The client will be notified of any change to the root scroll offset.
-  kAllUpdates,
-};
-
 // This interface is provided by the renderer. It impacts the frequency with
 // which a fully populated RenderFrameMetadata object (above) is delivered to
 // the RenderFrameMetadataObserverClient.
@@ -191,4 +178,10 @@ interface RenderFrameMetadataObserverClient {
   // report to the OS. janky_frames must be less than or equal to total_frames.
   [EnableIf=is_android]
   ReportScrollJankStats(uint32 total_frames, uint32 janky_frames);
+
+  // Notified when scrolling suggests that the browser controls should snap
+  // to shown or hidden. Only sent when the browser process owns the
+  // browser controls position (Controls-in-Browser).
+  [EnableIf=is_android]
+  ReportBrowserControlsSnapHint(BrowserControlsSnapHint hint);
 };

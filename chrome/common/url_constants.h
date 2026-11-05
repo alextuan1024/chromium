@@ -242,13 +242,6 @@ inline constexpr char16_t kFamilyGroupCreateURL[] =
 inline constexpr char16_t kFamilyGroupViewURL[] =
     u"https://myaccount.google.com/family/details?utm_source=cpwd";
 
-// "Learn more" URL for related website sets.
-inline constexpr char kRelatedWebsiteSetsLearnMoreURL[] =
-    "https://support.google.com/"
-    "chrome?p=cpn_cookies&rd=1#allow_block_cookies&zippy=%2Callow-or-block-"
-    "third-party-cookies%2Callow-related-sites-to-access-your-activity%2Cabout-"
-    "embedded-content";
-
 // URL of the 'Activity controls' section of the privacy settings page.
 inline constexpr char kGoogleAccountActivityControlsURL[] =
     "https://myaccount.google.com/activitycontrols/search";
@@ -556,20 +549,12 @@ inline constexpr char16_t kSyncEncryptionHelpURL[] =
 inline constexpr char kSyncErrorsHelpURL[] =
     "https://support.google.com/chrome?p=settings_sync_error";
 
-// Legacy URL to the sync google dashboard.
-inline constexpr char kLegacySyncGoogleDashboardURL[] =
-    "https://www.google.com/settings/chrome/sync";
-#if BUILDFLAG(IS_CHROMEOS)
-static_assert(std::string_view(kLegacySyncGoogleDashboardURL) ==
-              ash::chrome_external_urls::kLegacySyncGoogleDashboardURL);
-#endif
-
-// New URL to the sync google dashboard.
-inline constexpr char kNewSyncGoogleDashboardURL[] =
+// URL to the sync google dashboard.
+inline constexpr char kSyncGoogleDashboardURL[] =
     "https://chrome.google.com/data";
 #if BUILDFLAG(IS_CHROMEOS)
-static_assert(std::string_view(kNewSyncGoogleDashboardURL) ==
-              ash::chrome_external_urls::kNewSyncGoogleDashboardURL);
+static_assert(std::string_view(kSyncGoogleDashboardURL) ==
+              ash::chrome_external_urls::kSyncGoogleDashboardURL);
 #endif
 
 // The URL for the "Learn more" page for sync setup on the personal stuff page.
@@ -597,19 +582,6 @@ inline constexpr char kComposeLearnMorePageURL[] =
 // The URL for the "Learn more" page for Help me Write for managed users.
 inline constexpr char kComposeLearnMorePageManagedURL[] =
     "https://support.google.com/chrome/a?p=help_me_write_settings";
-
-// The URL for the "Learn more" links for pages related to History search.
-inline constexpr char kHistorySearchLearnMorePageURL[] =
-    "https://support.google.com/chrome?p=ai_history_search";
-
-// The URL for the "Learn more" links for pages related to History search for
-// managed users.
-inline constexpr char kHistorySearchLearnMorePageManagedURL[] =
-    "https://support.google.com/chrome/a?p=search_history";
-
-// The URL for the Settings page to enable history search.
-inline constexpr char16_t kHistorySearchSettingURL[] =
-    u"chrome://settings/ai/historySearch";
 
 // The URL for the "Learn more" page for Wallpaper Search.
 inline constexpr char kWallpaperSearchLearnMorePageURL[] =
@@ -663,10 +635,6 @@ inline constexpr char kPrivacyPolicyURL[] =
 inline constexpr char kPrivacyPolicyURLChina[] =
     "https://policies.google.cn/privacy";
 
-// The URL path to Google's Embedded Privacy Policy page.
-inline constexpr char kPrivacyPolicyOnlineURLPath[] =
-    "https://policies.google.com/privacy/embedded";
-
 // The URL path to Google's Embedded Privacy Policy page for users in China.
 inline constexpr char kPrivacyPolicyEmbeddedURLPathChina[] =
     "https://policies.google.cn/privacy/embedded";
@@ -716,8 +684,9 @@ inline constexpr char kWindowsXPVistaDeprecationURL[] =
     "https://chrome.blogspot.com/2015/11/"
     "updates-to-chrome-platform-support.html";
 
-// The URL for the Windows 7/8.1 deprecation help center article.
-inline constexpr char kWindows78DeprecationURL[] =
+// The URL for the "learn more" link on the Windows version obsolescence
+// infobar.
+inline constexpr char kWindowsObsoleteURL[] =
     "https://support.google.com/chrome?p=unsupported_windows";
 
 // The URL for the "Learn more" page for process isolation.

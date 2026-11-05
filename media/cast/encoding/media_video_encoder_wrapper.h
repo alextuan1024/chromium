@@ -6,6 +6,7 @@
 #define MEDIA_CAST_ENCODING_MEDIA_VIDEO_ENCODER_WRAPPER_H_
 
 #include <memory>
+#include <vector>
 
 #include "base/containers/queue.h"
 #include "base/task/sequenced_task_runner.h"
@@ -101,9 +102,26 @@ class MediaVideoEncoderWrapper final : public media::cast::VideoEncoder {
                              int encoder_version,
                              std::optional<double> estimated_complexity);
 
+  // Records `video_frame` metadata and dispatches the encode request.
+  void EnqueueFrameForEncode(scoped_refptr<VideoFrame> video_frame,
+                             media::VideoEncoder::EncodeOptions encode_options,
+                             base::TimeTicks reference_time,
+                             FrameEncodedCallback frame_encoded_callback,
+                             int encoder_version,
+                             std::optional<double> estimated_complexity);
+
   // Once we know the frame size on the first call to `EncodeVideoFrame`, we
   // can then construct the encoder.
   void ConstructEncoder();
+
+  // Calls `encoder_->Initialize()` for `encoder_version`. For hardware
+  // encoders this runs only after `gpu_factories_` knows which profiles the
+  // GPU supports, since the encoder cannot pick a profile before then.
+  void InitializeEncoder(int encoder_version);
+
+  // Called when `encoder_->Initialize()` completes. Runs the encoder calls
+  // that were queued while the encoder was initializing.
+  void OnEncoderInitialized(int encoder_version, EncoderStatus status);
 
   // Debounced reconstruction helper.
   void ReconstructEncoderForNewSize(const gfx::Size& new_size);
@@ -129,18 +147,10 @@ class MediaVideoEncoderWrapper final : public media::cast::VideoEncoder {
   double ComputeAndRecordUtilization(base::TimeDelta processing_time);
 
   // Computes the frame's lossiness metric based on the actual vs target bitrate
-  // and the estimated complexity of the frame.
+  // and the normalized quantizer (or estimated complexity) of the frame.
   double ComputeLossiness(size_t data_size,
                           base::TimeDelta frame_duration,
-                          double estimated_complexity) const;
-
-  // Posts a task to update the encoder options, such as whether a key frame
-  // is requested.
-  void UpdateEncoderOptions();
-  void OnFlushDoneForOptionsUpdate(int encoder_version,
-                                   media::VideoEncoder::Options options,
-                                   EncoderStatus status);
-  void OnOptionsUpdated(int encoder_version, EncoderStatus status);
+                          double complexity) const;
 
   // We currently manage the threads used for interacting with the encoder
   // manually. Hardware encoding demands posting to the "accelerator thread"
@@ -153,6 +163,11 @@ class MediaVideoEncoderWrapper final : public media::cast::VideoEncoder {
   // method is used to ensure we invoke the encoder method on the correct
   // thread. Any usage of `encoder_` should be wrapped in this method.
   void CallEncoderOnCorrectThread(base::OnceClosure closure);
+
+  // The media::VideoEncoder contract forbids any other encoder call before
+  // Initialize() reports completion. Queues `closure` while the encoder is
+  // initializing, and otherwise calls CallEncoderOnCorrectThread().
+  void CallEncoderWhenInitialized(base::OnceClosure closure);
 
   // Called every time a frame encode request is completed. The encoder only
   // calls OnEncodedFrame() if the frame encoding was completed, however
@@ -201,10 +216,6 @@ class MediaVideoEncoderWrapper final : public media::cast::VideoEncoder {
   // These options are for the entire encoder.
   media::VideoEncoder::Options options_;
 
-  // If we have any pending updates, any enqueued frames will be rejected. In
-  // some cases we may have multiple pending updates in flight.
-  int num_pending_updates_ = 0;
-
   // These options are intended to be per frame.
   media::VideoEncoder::EncodeOptions encode_options_;
 
@@ -223,11 +234,25 @@ class MediaVideoEncoderWrapper final : public media::cast::VideoEncoder {
   // Metadata associated with recently queued frames.
   base::queue<CachedMetadata> recent_metadata_;
 
-  // Used to compute utilization metrics for each frame.
+  // Used to estimate frame complexity when the encoder does not report a
+  // quantizer in `VideoEncoderOutput::qp`.
   base::SequenceBound<FrameComplexityEstimator> frame_complexity_estimator_;
 
-  // Pending encodes to be run when options are updated.
-  std::vector<base::OnceClosure> pending_encodes_;
+  // Number of frames currently in flight on `frame_complexity_estimator_`.
+  int pending_complexity_estimations_ = 0;
+
+  // True once the current encoder instance has populated
+  // `VideoEncoderOutput::qp`. When true (and no earlier frames are still in
+  // `frame_complexity_estimator_`), new frames skip
+  // `frame_complexity_estimator_` and use the encoder's real QP.
+  bool encoder_reports_qp_ = false;
+
+  // True from the time a new encoder is constructed until its Initialize()
+  // call completes.
+  bool encoder_initializing_ = false;
+
+  // Encoder calls, in order, that were made while `encoder_initializing_`.
+  std::vector<base::OnceClosure> pending_encoder_calls_;
 
   // Timer to debounce encoder reconstruction during active resizing.
   base::OneShotTimer resize_debounce_timer_;

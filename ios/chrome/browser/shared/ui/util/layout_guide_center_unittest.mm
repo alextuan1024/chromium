@@ -125,6 +125,50 @@ TEST_F(LayoutGuideCenterTest,
   EXPECT_TRUE(CGRectEqualToRect(layout_guide.layoutFrame, rect));
 }
 
+// Checks that `frameOfReferencedViewUnderName:convertedToView:` returns the
+// reference view's frame in the target view's coordinates, including across
+// windows.
+TEST_F(LayoutGuideCenterTest, FrameOfReferencedView) {
+  UIWindowScene* scene = chrome_test_util::GetAnyWindowScene();
+  UIWindow* reference_window = [[UIWindow alloc] initWithWindowScene:scene];
+  reference_window.frame = CGRectMake(50, 60, 300, 300);
+  UIWindow* window = [[UIWindow alloc] initWithWindowScene:scene];
+  window.frame = CGRectMake(0, 0, 300, 300);
+  UIView* reference_view =
+      [[UIView alloc] initWithFrame:CGRectMake(10, 20, 30, 40)];
+  [center_ referenceView:reference_view underName:@"view"];
+  UIView* view = [[UIView alloc] initWithFrame:CGRectMake(5, 5, 100, 100)];
+  [window addSubview:view];
+
+  // Returns `CGRectZero` while the reference view has no window.
+  EXPECT_TRUE(CGRectEqualToRect(CGRectZero,
+                                [center_ frameOfReferencedViewUnderName:@"view"
+                                                        convertedToView:view]));
+
+  // Same window.
+  [window addSubview:reference_view];
+  EXPECT_TRUE(CGRectEqualToRect(CGRectMake(5, 15, 30, 40),
+                                [center_ frameOfReferencedViewUnderName:@"view"
+                                                        convertedToView:view]));
+
+  // Different windows, offset from each other.
+  [reference_window addSubview:reference_view];
+  EXPECT_TRUE(CGRectEqualToRect(CGRectMake(55, 75, 30, 40),
+                                [center_ frameOfReferencedViewUnderName:@"view"
+                                                        convertedToView:view]));
+
+  // Returns `CGRectZero` while the target view has no window.
+  UIView* detached_view = [[UIView alloc] init];
+  EXPECT_TRUE(CGRectEqualToRect(
+      CGRectZero, [center_ frameOfReferencedViewUnderName:@"view"
+                                          convertedToView:detached_view]));
+
+  // Returns `CGRectZero` when nothing is referenced under the name.
+  EXPECT_TRUE(CGRectEqualToRect(CGRectZero,
+                                [center_ frameOfReferencedViewUnderName:@"other"
+                                                        convertedToView:view]));
+}
+
 // Checks that LayoutGuideCenter only keeps weak references to referenced views.
 TEST_F(LayoutGuideCenterTest, WeakReferenceView) {
   UIView* reference_view = [[UIView alloc] init];
@@ -204,4 +248,28 @@ TEST_F(LayoutGuideCenterTest, TestReferenceViewNoChangesIfSameView) {
   [center_ referenceView:reference_view underName:@"view"];
   reference_view.cr_onWindowCoordinatesChanged(view);
   EXPECT_TRUE(windowCoordinatesChangedCalled);
+}
+
+// Checks that alternately referencing two views under the same name doesn't
+// accumulate views or constraints in their window.
+TEST_F(LayoutGuideCenterTest, AlternatingReferencedViewsDoesNotLeak) {
+  UIWindow* window = [[UIWindow alloc]
+      initWithWindowScene:chrome_test_util::GetAnyWindowScene()];
+  UIView* first_view = [[UIView alloc] init];
+  UIView* second_view = [[UIView alloc] init];
+  [window addSubview:first_view];
+  [window addSubview:second_view];
+  [center_ referenceView:first_view underName:@"view"];
+  [center_ referenceView:second_view underName:@"view"];
+  const NSUInteger subviews_count = window.subviews.count;
+  const NSUInteger constraints_count = window.constraints.count;
+
+  for (int i = 0; i < 10; i++) {
+    [center_ referenceView:first_view underName:@"view"];
+    [center_ referenceView:second_view underName:@"view"];
+  }
+
+  EXPECT_EQ(subviews_count, window.subviews.count);
+  EXPECT_EQ(constraints_count, window.constraints.count);
+  EXPECT_EQ([center_ referencedViewUnderName:@"view"], second_view);
 }

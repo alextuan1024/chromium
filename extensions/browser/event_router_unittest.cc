@@ -6,6 +6,8 @@
 
 #include <array>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -20,13 +22,16 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/common/child_process_id.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "extensions/browser/event_listener_map.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/event_router_factory.h"
+#include "extensions/browser/events/listener_registration_phase_map.h"
 #include "extensions/browser/extension_prefs.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_test.h"
 #include "extensions/browser/process_map.h"
 #include "extensions/browser/process_map_factory.h"
@@ -44,6 +49,7 @@
 #include "extensions/common/url_pattern.h"
 #include "extensions/common/url_pattern_set.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_database.mojom-blink-forward.h"
 
 using base::Value;
@@ -483,16 +489,16 @@ TEST_F(EventRouterTest, WebUIEventsDoNotCrossIncognitoBoundaries) {
       incognito_context(), base::BindRepeating(&BuildProcessMap));
 
   // Create a SimpleFeature to allow this API call to be routed to our test URL.
-  FeatureProvider provider;
   static constexpr auto kMatches =
       std::to_array<std::string_view>({"chrome://settings/*"});
   static constexpr SimpleFeatureData kFeatureData = {
       .feature = {.name = kTestEventName},
       .config = {.match_patterns = StaticSpan(kMatches)},
   };
-  auto feature =
-      std::make_unique<SimpleFeature>(StaticFeatureData(kFeatureData));
-  provider.AddFeature(kTestEventName, std::move(feature));
+  SimpleFeature feature{StaticFeatureData(kFeatureData)};
+  std::array<Feature*, 1> features = {&feature};
+  FeatureProvider provider;
+  provider.AddStaticFeatures(features);
 
   ExtensionAPI api;
   api.RegisterDependencyProvider("api", &provider);
@@ -521,15 +527,14 @@ TEST_F(EventRouterTest, WebUIEventsDoNotCrossIncognitoBoundaries) {
   // Sending an otr event should not trigger the regular observer.
   auto otr_event =
       std::make_unique<Event>(extensions::events::FOR_TEST, kTestEventName,
-                              base::ListValue(), incognito_context());
+                              nullptr, incognito_context());
   router.BroadcastEvent(std::move(otr_event));
   EXPECT_EQ(0, regular_counter.dispatch_count);
   EXPECT_EQ(1, otr_counter.dispatch_count);
 
   // Setting a regular event should not trigger the otr observer.
-  std::unique_ptr<Event> regular_event =
-      std::make_unique<Event>(extensions::events::FOR_TEST, kTestEventName,
-                              base::ListValue(), browser_context());
+  std::unique_ptr<Event> regular_event = std::make_unique<Event>(
+      extensions::events::FOR_TEST, kTestEventName, nullptr, browser_context());
   router.BroadcastEvent(std::move(regular_event));
   EXPECT_EQ(1, regular_counter.dispatch_count);
   EXPECT_EQ(1, otr_counter.dispatch_count);
@@ -620,9 +625,8 @@ TEST_F(EventRouterTest, TestReportEvent) {
 // crbug.com/484218883.
 TEST_F(EventRouterTest, DispatchPendingEvent_NullContext) {
   EventRouter* router = EventRouter::Get(browser_context());
-  auto event =
-      std::make_unique<Event>(extensions::events::FOR_TEST, "test.event",
-                              base::ListValue(), browser_context());
+  auto event = std::make_unique<Event>(
+      extensions::events::FOR_TEST, "test.event", nullptr, browser_context());
   base::RunLoop run_loop;
   event->cannot_dispatch_callback = run_loop.QuitClosure();
 
@@ -650,8 +654,8 @@ TEST_F(EventRouterTest, AddLazyListenerForUnloadedExtension) {
 
   // === Service Worker ===
   router->AddLazyListenerForServiceWorkerImpl(
-      kExtensionId, Extension::GetBaseURLFromExtensionId(kExtensionId),
-      kEventName2);
+      *browser_context(), kExtensionId,
+      Extension::GetBaseURLFromExtensionId(kExtensionId), kEventName2);
   // The listener should not be registered. We don't want to add listeners to
   // contexts that are being shut down.
   EXPECT_FALSE(router->ExtensionHasEventListener(kExtensionId, kEventName2));
@@ -672,25 +676,28 @@ TEST_F(EventRouterTest, RemovesOrphanedWebRequestEvents) {
   router->AddLazyListenerForMainThreadImpl(extension->id(),
                                            "webRequest.onBeforeRequest/s1");
   router->AddLazyListenerForServiceWorkerImpl(
-      extension->id(), Extension::GetBaseURLFromExtensionId(extension->id()),
+      *browser_context(), extension->id(),
+      Extension::GetBaseURLFromExtensionId(extension->id()),
       "webRequest.onBeforeRequest/s2");
 
   router->AddLazyListenerForMainThreadImpl(extension->id(),
                                            "webViewInternal.onMessage/s1");
   router->AddLazyListenerForServiceWorkerImpl(
-      extension->id(), Extension::GetBaseURLFromExtensionId(extension->id()),
+      *browser_context(), extension->id(),
+      Extension::GetBaseURLFromExtensionId(extension->id()),
       "webViewInternal.onMessage/s2");
 
   // Add non-orphaned events to ensure they are kept.
   router->AddLazyListenerForMainThreadImpl(extension->id(), "tabs.onCreated");
   router->AddLazyListenerForServiceWorkerImpl(
-      extension->id(), Extension::GetBaseURLFromExtensionId(extension->id()),
-      "tabs.onRemoved");
+      *browser_context(), extension->id(),
+      Extension::GetBaseURLFromExtensionId(extension->id()), "tabs.onRemoved");
 
   router->AddLazyListenerForMainThreadImpl(extension->id(),
                                            "webRequest.onActionIgnored");
   router->AddLazyListenerForServiceWorkerImpl(
-      extension->id(), Extension::GetBaseURLFromExtensionId(extension->id()),
+      *browser_context(), extension->id(),
+      Extension::GetBaseURLFromExtensionId(extension->id()),
       "webRequest.onActionIgnored");
 
   // Trigger OnExtensionLoaded.
@@ -1040,6 +1047,376 @@ INSTANTIATE_TEST_SUITE_P(ServiceWorker,
                          EventRouterFilterTest,
                          testing::Values(true));
 
+// Tests lazy listener tracking across registration phase transitions for
+// `background.async_listener_registration`, driving `EventRouter` directly.
+class EventRouterAsyncListenerRegistrationTest : public EventRouterTest {
+ public:
+  void SetUp() override {
+    EventRouterTest::SetUp();
+    // `util::IsIncognitoEnabled()` reads `UserPrefs` on ChromeOS.
+    user_prefs::UserPrefs::Set(browser_context(), pref_service());
+    user_prefs::UserPrefs::Set(incognito_context(), pref_service());
+    // Declare split mode up front; it has no effect unless a test also enables
+    // the extension in incognito.
+    extension_ = ExtensionBuilder("Test")
+                     .SetBackgroundContext(
+                         ExtensionBuilder::BackgroundContext::SERVICE_WORKER)
+                     .SetManifestKey("incognito", "split")
+                     .Build();
+    ExtensionRegistry::Get(browser_context())->AddEnabled(extension_);
+  }
+
+ protected:
+  EventRouter* event_router() { return EventRouter::Get(browser_context()); }
+  ListenerRegistrationPhaseMap& phases() {
+    return event_router()->listener_registration_phases();
+  }
+  const ExtensionId& extension_id() const { return extension_->id(); }
+
+  // Adds or removes a lazy listener for the worker in `browser_context`.
+  void AddLazyListener(content::BrowserContext& browser_context,
+                       const std::string& event_name) {
+    event_router()->AddLazyListenerForServiceWorkerImpl(
+        browser_context, extension_id(), extension_->url(), event_name);
+  }
+  void RemoveLazyListener(content::BrowserContext& browser_context,
+                          const std::string& event_name) {
+    event_router()->RemoveLazyListenerForServiceWorkerImpl(
+        browser_context, extension_id(), extension_->url(), event_name);
+  }
+
+  // Adds or removes a filtered listener (active and lazy) for the regular
+  // worker.
+  void AddFilteredLazyListener(const std::string& event_name,
+                               const base::DictValue& filter) {
+    mojom::ServiceWorkerContext worker_context = GetWorkerContext();
+    event_router()->AddFilteredEventListener(
+        event_name, render_process_host(),
+        mojom::EventListenerOwner::NewExtensionId(extension_id()),
+        &worker_context, filter, /*add_lazy_listener=*/true);
+  }
+  void RemoveFilteredLazyListener(const std::string& event_name,
+                                  const base::DictValue& filter) {
+    mojom::ServiceWorkerContext worker_context = GetWorkerContext();
+    event_router()->RemoveFilteredEventListener(
+        event_name, render_process_host(),
+        mojom::EventListenerOwner::NewExtensionId(extension_id()),
+        &worker_context, filter, /*remove_lazy_listener=*/true);
+  }
+
+  bool HasLazyListener(const std::string& event_name) {
+    return event_router()->HasLazyEventListenerForTesting(event_name);
+  }
+  bool HasFilteredLazyListener(const std::string& event_name,
+                               const base::DictValue& filter) {
+    return event_router()->HasLazyEventListenerWithFilterForTesting(event_name,
+                                                                    filter);
+  }
+  std::set<std::string> GetPersistedEvents() {
+    return event_router()->GetRegisteredEvents(
+        extension_id(), EventRouter::RegisteredEventType::kServiceWorker);
+  }
+  base::ListValue GetPersistedFilters(const std::string& event_name) {
+    const base::DictValue* filtered_events = event_router()->GetFilteredEvents(
+        extension_id(), EventRouter::RegisteredEventType::kServiceWorker);
+    const base::ListValue* filters =
+        filtered_events ? filtered_events->FindList(event_name) : nullptr;
+    return filters ? filters->Clone() : base::ListValue();
+  }
+
+ private:
+  // Placeholder version and thread IDs. They only need to stay the same across
+  // calls, so that removals match the active listener added earlier.
+  mojom::ServiceWorkerContext GetWorkerContext() const {
+    return mojom::ServiceWorkerContext(extension_->url(), /*version_id=*/99,
+                                       /*thread_id=*/199);
+  }
+
+  scoped_refptr<const Extension> extension_;
+};
+
+// Tests that listener changes during a registration phase only take effect in
+// memory until `Commit()` replaces the persisted set, and that post-commit
+// changes are persisted immediately. Also verifies `EventRouter::Observer`s
+// aren't notified for listeners that stay registered across the commit.
+TEST_F(EventRouterAsyncListenerRegistrationTest,
+       CommitReplacesPersistedListeners) {
+  // Seed two persisted listeners from a previous run.
+  AddLazyListener(*browser_context(), "test.onKept");
+  AddLazyListener(*browser_context(), "test.onDropped");
+
+  MockEventRouterObserver kept_observer;
+  MockEventRouterObserver dropped_observer;
+  MockEventRouterObserver added_observer;
+  event_router()->RegisterObserver(&kept_observer, "test.onKept");
+  event_router()->RegisterObserver(&dropped_observer, "test.onDropped");
+  event_router()->RegisterObserver(&added_observer, "test.onAdded");
+
+  // Start a new phase that re-registers `onKept` and adds `onAdded`, omitting
+  // `onDropped`. All three remain in memory during the phase, while prefs still
+  // hold the previous run's set.
+  const blink::ServiceWorkerToken kWorkerToken;
+  phases().Start(extension_id(), *browser_context(), kWorkerToken);
+  AddLazyListener(*browser_context(), "test.onKept");
+  AddLazyListener(*browser_context(), "test.onAdded");
+  EXPECT_TRUE(HasLazyListener("test.onKept"));
+  EXPECT_TRUE(HasLazyListener("test.onDropped"));
+  EXPECT_TRUE(HasLazyListener("test.onAdded"));
+  EXPECT_EQ(GetPersistedEvents(),
+            (std::set<std::string>{"test.onDropped", "test.onKept"}));
+  // `onKept` was already in memory, so only `onAdded` triggers
+  // `OnListenerAdded()`.
+  EXPECT_EQ(0, kept_observer.listener_added_count());
+  EXPECT_EQ(1, added_observer.listener_added_count());
+
+  // Committing writes `{onKept, onAdded}` to prefs and drops `onDropped` from
+  // memory. Kept listeners stay in place without firing remove/add
+  // notifications.
+  ASSERT_TRUE(
+      phases().Commit(extension_id(), *browser_context(), kWorkerToken));
+  EXPECT_FALSE(HasLazyListener("test.onDropped"));
+  EXPECT_EQ(GetPersistedEvents(),
+            (std::set<std::string>{"test.onAdded", "test.onKept"}));
+  EXPECT_EQ(1, dropped_observer.listener_removed_count());
+  EXPECT_EQ(0, dropped_observer.listener_added_count());
+  EXPECT_EQ(0, kept_observer.listener_removed_count());
+  EXPECT_EQ(0, kept_observer.listener_added_count());
+  EXPECT_EQ(0, added_observer.listener_removed_count());
+  EXPECT_EQ(1, added_observer.listener_added_count());
+  event_router()->UnregisterObserver(&kept_observer);
+  event_router()->UnregisterObserver(&dropped_observer);
+  event_router()->UnregisterObserver(&added_observer);
+
+  // Post-commit updates are persisted immediately.
+  AddLazyListener(*browser_context(), "test.onAddedLater");
+  RemoveLazyListener(*browser_context(), "test.onKept");
+  EXPECT_TRUE(HasLazyListener("test.onAddedLater"));
+  EXPECT_FALSE(HasLazyListener("test.onKept"));
+  EXPECT_EQ(GetPersistedEvents(),
+            (std::set<std::string>{"test.onAdded", "test.onAddedLater"}));
+}
+
+// Tests that lazy listeners added after a registration phase aborts are
+// ignored, while previously persisted listeners remain registered.
+TEST_F(EventRouterAsyncListenerRegistrationTest,
+       IgnoresListenersAddedAfterAbort) {
+  // Seed a listener persisted by a previous run.
+  AddLazyListener(*browser_context(), "test.onPersisted");
+
+  const blink::ServiceWorkerToken kWorkerToken;
+  phases().Start(extension_id(), *browser_context(), kWorkerToken);
+  phases().AbortForInstance(extension_id(), *browser_context(), kWorkerToken);
+
+  AddLazyListener(*browser_context(), "test.onLate");
+  AddLazyListener(*browser_context(), "test.onPersisted");
+  EXPECT_FALSE(HasLazyListener("test.onLate"));
+  EXPECT_TRUE(HasLazyListener("test.onPersisted"));
+  EXPECT_EQ(GetPersistedEvents(), (std::set<std::string>{"test.onPersisted"}));
+}
+
+// Tests that a filtered listener removed during a registration phase stays in
+// memory while it's still persisted from a previous run, and that one removed
+// after commit is dropped from memory and prefs right away.
+TEST_F(EventRouterAsyncListenerRegistrationTest,
+       FilteredListenerRemovalBeforeAndAfterCommit) {
+  static constexpr char kEventName[] = "test.onFiltered";
+  const base::DictValue foo_filter = CreateHostSuffixFilter("foo.com");
+  const base::DictValue bar_filter = CreateHostSuffixFilter("bar.com");
+  const base::ListValue expected_filters =
+      base::ListValue().Append(foo_filter.Clone());
+
+  // Seed `foo_filter` as persisted by a previous run.
+  AddFilteredLazyListener(kEventName, foo_filter);
+  ASSERT_EQ(GetPersistedFilters(kEventName), expected_filters);
+
+  // The next worker adds and removes both filters. `foo_filter` stays in memory
+  // until commit because it's still persisted, while `bar_filter` is dropped.
+  const blink::ServiceWorkerToken kWorkerToken;
+  phases().Start(extension_id(), *browser_context(), kWorkerToken);
+  AddFilteredLazyListener(kEventName, foo_filter);
+  RemoveFilteredLazyListener(kEventName, foo_filter);
+  AddFilteredLazyListener(kEventName, bar_filter);
+  RemoveFilteredLazyListener(kEventName, bar_filter);
+  EXPECT_TRUE(HasFilteredLazyListener(kEventName, foo_filter));
+  EXPECT_FALSE(HasFilteredLazyListener(kEventName, bar_filter));
+  EXPECT_EQ(GetPersistedFilters(kEventName), expected_filters);
+
+  ASSERT_TRUE(
+      phases().Commit(extension_id(), *browser_context(), kWorkerToken));
+  EXPECT_FALSE(HasFilteredLazyListener(kEventName, foo_filter));
+  EXPECT_TRUE(GetPersistedFilters(kEventName).empty());
+
+  // After commit, adding and removing the listener update prefs and memory
+  // right away.
+  AddFilteredLazyListener(kEventName, foo_filter);
+  EXPECT_TRUE(HasFilteredLazyListener(kEventName, foo_filter));
+  EXPECT_EQ(GetPersistedFilters(kEventName), expected_filters);
+  RemoveFilteredLazyListener(kEventName, foo_filter);
+  EXPECT_FALSE(HasFilteredLazyListener(kEventName, foo_filter));
+  EXPECT_TRUE(GetPersistedFilters(kEventName).empty());
+}
+
+// Tests that for a split-mode extension with incognito enabled, prefs store
+// the union of the regular and incognito workers' listeners (including
+// previously persisted listeners until the other worker has committed).
+TEST_F(EventRouterAsyncListenerRegistrationTest,
+       SplitModeWorkersPersistUnionOfTheirListeners) {
+  ExtensionPrefs::Get(browser_context())
+      ->SetIsIncognitoEnabled(extension_id(), true);
+
+  // Simulate a listener persisted by an earlier incognito worker run.
+  AddLazyListener(*incognito_context(), "test.onPersisted");
+
+  // Both workers register listeners at the same time.
+  const blink::ServiceWorkerToken kWorkerToken;
+  const blink::ServiceWorkerToken kIncognitoWorkerToken;
+  phases().Start(extension_id(), *browser_context(), kWorkerToken);
+  phases().Start(extension_id(), *incognito_context(), kIncognitoWorkerToken);
+  AddLazyListener(*browser_context(), "test.onRegular");
+  AddLazyListener(*browser_context(), "test.onShared");
+  AddLazyListener(*incognito_context(), "test.onShared");
+  AddLazyListener(*incognito_context(), "test.onIncognito");
+
+  // `onTemporary` stays registered until both in-progress phases remove it.
+  AddLazyListener(*browser_context(), "test.onTemporary");
+  AddLazyListener(*incognito_context(), "test.onTemporary");
+  RemoveLazyListener(*browser_context(), "test.onTemporary");
+  EXPECT_TRUE(HasLazyListener("test.onTemporary"));
+  RemoveLazyListener(*incognito_context(), "test.onTemporary");
+  EXPECT_FALSE(HasLazyListener("test.onTemporary"));
+
+  // Committing the regular worker keeps `onPersisted` because the incognito
+  // worker hasn't committed yet, so its listener set isn't known. The incognito
+  // worker's listeners stay in memory, but aren't persisted yet.
+  ASSERT_TRUE(
+      phases().Commit(extension_id(), *browser_context(), kWorkerToken));
+  EXPECT_TRUE(HasLazyListener("test.onPersisted"));
+  EXPECT_TRUE(HasLazyListener("test.onIncognito"));
+  EXPECT_EQ(GetPersistedEvents(),
+            (std::set<std::string>{"test.onPersisted", "test.onRegular",
+                                   "test.onShared"}));
+
+  // When the incognito worker commits, prefs hold the union of both sets and
+  // `onPersisted` is dropped.
+  ASSERT_TRUE(phases().Commit(extension_id(), *incognito_context(),
+                              kIncognitoWorkerToken));
+  EXPECT_FALSE(HasLazyListener("test.onPersisted"));
+  EXPECT_EQ(GetPersistedEvents(),
+            (std::set<std::string>{"test.onIncognito", "test.onRegular",
+                                   "test.onShared"}));
+
+  // `onShared` stays registered until both workers remove it.
+  RemoveLazyListener(*browser_context(), "test.onShared");
+  EXPECT_TRUE(HasLazyListener("test.onShared"));
+  EXPECT_TRUE(GetPersistedEvents().contains("test.onShared"));
+  RemoveLazyListener(*incognito_context(), "test.onShared");
+  EXPECT_FALSE(HasLazyListener("test.onShared"));
+  EXPECT_FALSE(GetPersistedEvents().contains("test.onShared"));
+
+  // If the regular worker restarts and commits an empty set, `onRegular` is
+  // dropped while the incognito worker's `onIncognito` is preserved.
+  const blink::ServiceWorkerToken kNextWorkerToken;
+  phases().Start(extension_id(), *browser_context(), kNextWorkerToken);
+  ASSERT_TRUE(
+      phases().Commit(extension_id(), *browser_context(), kNextWorkerToken));
+  EXPECT_FALSE(HasLazyListener("test.onRegular"));
+  EXPECT_TRUE(HasLazyListener("test.onIncognito"));
+  EXPECT_EQ(GetPersistedEvents(), (std::set<std::string>{"test.onIncognito"}));
+}
+
+// Tests that in split mode, post-commit listener removals are deferred in
+// prefs and memory until the other worker has also committed, since the
+// listener might still belong to that worker.
+TEST_F(EventRouterAsyncListenerRegistrationTest,
+       SplitModeRemovalWaitsForOtherWorkerCommit) {
+  ExtensionPrefs::Get(browser_context())
+      ->SetIsIncognitoEnabled(extension_id(), true);
+
+  const blink::ServiceWorkerToken kWorkerToken;
+  phases().Start(extension_id(), *browser_context(), kWorkerToken);
+  AddLazyListener(*browser_context(), "test.onFirst");
+  AddLazyListener(*browser_context(), "test.onSecond");
+  AddLazyListener(*browser_context(), "test.onRegular");
+  ASSERT_TRUE(
+      phases().Commit(extension_id(), *browser_context(), kWorkerToken));
+  EXPECT_EQ(GetPersistedEvents(),
+            (std::set<std::string>{"test.onFirst", "test.onRegular",
+                                   "test.onSecond"}));
+
+  // The incognito context exists (`incognito_context()` was initialized in
+  // `SetUp()`), but its worker hasn't started or committed yet. Removing
+  // `onFirst` on the regular worker must keep it in prefs and memory for now.
+  RemoveLazyListener(*browser_context(), "test.onFirst");
+  EXPECT_TRUE(HasLazyListener("test.onFirst"));
+  EXPECT_EQ(GetPersistedEvents(),
+            (std::set<std::string>{"test.onFirst", "test.onRegular",
+                                   "test.onSecond"}));
+
+  // Same while the incognito worker's registration phase is in progress.
+  const blink::ServiceWorkerToken kIncognitoWorkerToken;
+  phases().Start(extension_id(), *incognito_context(), kIncognitoWorkerToken);
+  RemoveLazyListener(*browser_context(), "test.onSecond");
+  EXPECT_TRUE(HasLazyListener("test.onSecond"));
+  EXPECT_EQ(GetPersistedEvents(),
+            (std::set<std::string>{"test.onFirst", "test.onRegular",
+                                   "test.onSecond"}));
+
+  // The incognito worker registers `onSecond` (but not `onFirst`) and commits.
+  // `onFirst` is now dropped, while `onSecond` stays.
+  AddLazyListener(*incognito_context(), "test.onSecond");
+  ASSERT_TRUE(phases().Commit(extension_id(), *incognito_context(),
+                              kIncognitoWorkerToken));
+  EXPECT_FALSE(HasLazyListener("test.onFirst"));
+  EXPECT_TRUE(HasLazyListener("test.onSecond"));
+  EXPECT_EQ(GetPersistedEvents(),
+            (std::set<std::string>{"test.onRegular", "test.onSecond"}));
+
+  // With both workers committed, removals take effect immediately.
+  RemoveLazyListener(*incognito_context(), "test.onSecond");
+  EXPECT_FALSE(HasLazyListener("test.onSecond"));
+  EXPECT_EQ(GetPersistedEvents(), (std::set<std::string>{"test.onRegular"}));
+}
+
+// Tests that `DispatchEventWithLazyListener()` doesn't persist its temporary
+// listener or record it in the registration phase. In split mode with an
+// uncommitted incognito worker, a persisted listener would stay in prefs and
+// memory after the dispatch.
+TEST_F(EventRouterAsyncListenerRegistrationTest,
+       DispatchEventWithLazyListenerDoesNotPersistListener) {
+  ExtensionPrefs::Get(browser_context())
+      ->SetIsIncognitoEnabled(extension_id(), true);
+  const blink::ServiceWorkerToken kWorkerToken;
+  phases().Start(extension_id(), *browser_context(), kWorkerToken);
+  ASSERT_TRUE(
+      phases().Commit(extension_id(), *browser_context(), kWorkerToken));
+  const auto* phase_listeners =
+      phases().GetListeners(extension_id(), *browser_context());
+  ASSERT_TRUE(phase_listeners);
+
+  // While the event is dispatched, the temporary listener should only be in
+  // memory. Cancel the event before it's queued for the worker (the extension
+  // isn't activated in `ServiceWorkerTaskQueue` here).
+  bool routed_to_extension = false;
+  auto event = std::make_unique<Event>(events::FOR_TEST, "test.onEvent",
+                                       base::MakeRefCounted<EventArgs>());
+  event->will_dispatch_callback = base::BindLambdaForTesting(
+      [&](content::BrowserContext*, mojom::ContextType, const Extension*,
+          const base::DictValue*, std::optional<base::ListValue>&,
+          mojom::EventFilteringInfoPtr&, bool*) {
+        routed_to_extension = true;
+        EXPECT_TRUE(HasLazyListener("test.onEvent"));
+        EXPECT_FALSE(GetPersistedEvents().contains("test.onEvent"));
+        EXPECT_FALSE(phase_listeners->Has("test.onEvent", /*filter=*/nullptr));
+        return false;
+      });
+  event_router()->DispatchEventWithLazyListener(extension_id(),
+                                                std::move(event));
+
+  EXPECT_TRUE(routed_to_extension);
+  EXPECT_FALSE(HasLazyListener("test.onEvent"));
+  EXPECT_FALSE(GetPersistedEvents().contains("test.onEvent"));
+}
+
 class EventRouterDispatchTest : public ExtensionsTest {
  public:
   EventRouterDispatchTest() = default;
@@ -1066,14 +1443,16 @@ class EventRouterDispatchTest : public ExtensionsTest {
 
  protected:
   void RegisterTestApiFeature(StaticFeatureData<SimpleFeatureData> data) {
-    auto feature = std::make_unique<SimpleFeature>(data);
-    provider_.AddFeature(data->feature.name, std::move(feature));
+    test_api_feature_.emplace(data);
+    std::array<Feature*, 1> features = {&*test_api_feature_};
+    provider_.AddStaticFeatures(features);
     api_.RegisterDependencyProvider("api", &provider_);
     api_scope_ =
         std::make_unique<ExtensionAPI::OverrideSharedInstanceForTest>(&api_);
   }
 
  private:
+  std::optional<SimpleFeature> test_api_feature_;
   FeatureProvider provider_;
   ExtensionAPI api_;
   std::unique_ptr<ExtensionAPI::OverrideSharedInstanceForTest> api_scope_;
@@ -1109,7 +1488,7 @@ TEST_F(EventRouterDispatchTest, TestDispatch) {
   add_extension(ext2);
   auto event = [](std::string name) {
     return std::make_unique<extensions::Event>(extensions::events::FOR_TEST,
-                                               name, base::ListValue());
+                                               name, nullptr);
   };
 
   // Register both extensions and both URLs for event.
@@ -1177,7 +1556,7 @@ TEST_F(EventRouterDispatchTest, ActiveDispatchTargetRestrictsToWorker) {
   std::vector<extensions::EventTarget> dispatched;
   auto create_restricted_event = [&](int64_t sw_version_id, int sw_thread_id) {
     auto event = std::make_unique<extensions::Event>(
-        extensions::events::FOR_TEST, kTestEventName, base::ListValue());
+        extensions::events::FOR_TEST, kTestEventName, nullptr);
     event->restrict_to_dispatch_target =
         Event::DispatchTarget{.render_process_id = process()->GetID(),
                               .worker_thread_id = sw_thread_id,
@@ -1228,8 +1607,8 @@ TEST_F(EventRouterDispatchTest,
   // registered.
   auto other_process =
       std::make_unique<content::MockRenderProcessHost>(browser_context());
-  auto event = std::make_unique<extensions::Event>(
-      extensions::events::FOR_TEST, kTestEventName, base::ListValue());
+  auto event = std::make_unique<extensions::Event>(extensions::events::FOR_TEST,
+                                                   kTestEventName, nullptr);
   event->restrict_to_dispatch_target =
       Event::DispatchTarget{.render_process_id = other_process->GetID()};
 
@@ -1262,7 +1641,7 @@ TEST_F(EventRouterDispatchTest, TestDispatchCallback) {
   std::vector<extensions::EventTarget> dispatched;
   auto create_event = [&](const std::string& name) {
     auto event = std::make_unique<extensions::Event>(
-        extensions::events::FOR_TEST, name, base::ListValue());
+        extensions::events::FOR_TEST, name, nullptr);
     return event;
   };
 
@@ -1359,8 +1738,8 @@ TEST_F(EventRouterDispatchTest, TestDispatchCallback_NoListeners) {
 
   // A dispatch restricted to `ext1` should still trigger the callback when
   // EventRouter has no listener to receive the event.
-  auto event = std::make_unique<extensions::Event>(
-      extensions::events::FOR_TEST, kTestEventName, base::ListValue());
+  auto event = std::make_unique<extensions::Event>(extensions::events::FOR_TEST,
+                                                   kTestEventName, nullptr);
   base::RunLoop run_loop;
   bool callback_ran = false;
   event->cannot_dispatch_callback = base::BindLambdaForTesting([&]() {
@@ -1397,8 +1776,8 @@ TEST_F(EventRouterDispatchTest, TestDispatchCallback_OtherExtensionListener) {
       /*service_worker_context=*/nullptr, base::DictValue(),
       /*add_lazy_listener=*/false);
 
-  auto event = std::make_unique<extensions::Event>(
-      extensions::events::FOR_TEST, kTestEventName, base::ListValue());
+  auto event = std::make_unique<extensions::Event>(extensions::events::FOR_TEST,
+                                                   kTestEventName, nullptr);
   base::RunLoop run_loop;
   bool callback_ran = false;
   event->cannot_dispatch_callback = base::BindLambdaForTesting([&]() {
@@ -1418,8 +1797,8 @@ TEST_F(EventRouterDispatchTest, CopySelectivelyAndClone_Enabled) {
   feature_list.InitAndEnableFeature(
       extensions_features::kShareEventArgsOnDispatch);
 
-  base::ListValue args;
-  args.Append("test_arg");
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append("test_arg");
 
   auto info = mojom::EventFilteringInfo::New();
   info->instance_id = 42;
@@ -1472,9 +1851,10 @@ TEST_F(EventRouterDispatchTest, CopySelectivelyAndClone_Enabled) {
   ASSERT_TRUE(filter_copied->filter_info);
   EXPECT_EQ(99, filter_copied->filter_info->instance_id);
 
+  auto event_args = base::MakeRefCounted<EventArgs>();
   // Verify empty event args and default empty filter_info.
   auto empty_event1 = std::make_unique<Event>(events::FOR_TEST, "test.event",
-                                              base::ListValue());
+                                              std::move(event_args));
   auto empty_event2 = std::make_unique<Event>(events::FOR_TEST, "test.event",
                                               scoped_refptr<const EventArgs>());
   EXPECT_TRUE(empty_event1->args().empty());
@@ -1490,8 +1870,8 @@ TEST_F(EventRouterDispatchTest, CopySelectivelyAndClone_Disabled) {
   feature_list.InitAndDisableFeature(
       extensions_features::kShareEventArgsOnDispatch);
 
-  base::ListValue args;
-  args.Append("test_arg");
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append("test_arg");
 
   auto info = mojom::EventFilteringInfo::New();
   info->instance_id = 42;
@@ -1582,8 +1962,8 @@ TEST_F(EventRouterDispatchTest,
 
     TestEventRouterObserver observer(event_router());
 
-    base::ListValue broadcast_args;
-    broadcast_args.Append("broadcast_payload");
+    auto broadcast_args = base::MakeRefCounted<EventArgs>();
+    broadcast_args->data.Append("broadcast_payload");
     auto broadcast_event = std::make_unique<Event>(
         events::FOR_TEST, kTestEventName, std::move(broadcast_args));
     scoped_refptr<const EventArgs> original_args_ptr =
@@ -1607,8 +1987,8 @@ TEST_F(EventRouterDispatchTest,
 
     TestEventRouterObserver observer(event_router());
 
-    base::ListValue broadcast_args;
-    broadcast_args.Append("broadcast_payload");
+    auto broadcast_args = base::MakeRefCounted<EventArgs>();
+    broadcast_args->data.Append("broadcast_payload");
     auto broadcast_event = std::make_unique<Event>(
         events::FOR_TEST, kTestEventName, std::move(broadcast_args));
     scoped_refptr<const EventArgs> original_args_ptr =
@@ -1667,8 +2047,8 @@ TEST_F(EventRouterDispatchTest,
 
     TestEventRouterObserver observer(event_router());
 
-    base::ListValue event_args;
-    event_args.Append("original_val");
+    auto event_args = base::MakeRefCounted<EventArgs>();
+    event_args->data.Append("original_val");
     auto broadcast_event = std::make_unique<Event>(
         events::FOR_TEST, kTestEventName, std::move(event_args));
     scoped_refptr<const EventArgs> original_args_ptr =
@@ -1726,8 +2106,8 @@ TEST_F(EventRouterDispatchTest,
 
     TestEventRouterObserver observer(event_router());
 
-    base::ListValue event_args;
-    event_args.Append("original_val");
+    auto event_args = base::MakeRefCounted<EventArgs>();
+    event_args->data.Append("original_val");
     auto broadcast_event = std::make_unique<Event>(
         events::FOR_TEST, kTestEventName, std::move(event_args));
     scoped_refptr<const EventArgs> original_args_ptr =
@@ -1796,7 +2176,7 @@ TEST_F(EventRouterDispatchTest, DispatchedEventPreservesFilterInfo) {
   info->instance_id = 42;
 
   auto event = std::make_unique<extensions::Event>(
-      events::FOR_TEST, kTestEventName, base::ListValue(), browser_context(),
+      events::FOR_TEST, kTestEventName, nullptr, browser_context(),
       std::nullopt, GURL(), EventRouter::UserGestureState::kEnabled,
       std::move(info));
 
@@ -1841,7 +2221,7 @@ TEST_F(EventRouterDispatchTest, EventURLRespectsPolicyBlockedHosts) {
 
   auto create_event = [&](const char* url) {
     auto event = std::make_unique<Event>(events::FOR_TEST, kTestEventName,
-                                         base::ListValue(), browser_context());
+                                         nullptr, browser_context());
     event->event_url = GURL(url);
     return event;
   };

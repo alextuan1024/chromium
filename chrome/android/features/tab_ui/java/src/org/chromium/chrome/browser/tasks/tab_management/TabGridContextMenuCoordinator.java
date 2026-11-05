@@ -15,14 +15,12 @@ import androidx.annotation.IdRes;
 import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
 import org.chromium.chrome.browser.collaboration.CollaborationServiceFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.ShareUtils;
@@ -32,6 +30,7 @@ import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabClosureParamsUtils;
+import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
@@ -190,23 +189,23 @@ public class TabGridContextMenuCoordinator extends TabOverflowMenuCoordinator<@T
                         .share(tab, /* shareDirectly= */ false, TAB_STRIP_CONTEXT_MENU);
                 recordUserActionWithPrefix("ShareTab");
             } else if (menuId == R.id.add_to_new_tab_group) {
-                tabModel.createSingleTabGroup(tab);
-                Token groupId = assumeNonNull(tab.getTabGroupId());
-                dialogManager.showDialog(groupId, tabModel);
+                TabGroupUtils.createNewGroupForTabs(
+                        List.of(tab),
+                        tabModel,
+                        /* tabMovedCallback= */ null,
+                        groupId -> dialogManager.showDialog(groupId, tabModel));
                 recordUserActionWithPrefix("AddToNewGroup");
             } else if (menuId == R.id.add_to_tab_group) {
                 coordinator.showBottomSheet(List.of(tab));
                 recordUserActionWithPrefix(
                         tab.getTabGroupId() == null ? "AddToGroup" : "MoveToGroup");
             } else if (menuId == R.id.edit_bookmark) {
-                tabBookmarker.addOrEditBookmark(tab);
+                tabBookmarker.addOrEditBookmark(tab, /* anchorView= */ null);
                 recordUserActionWithPrefix("EditBookmark");
             } else if (menuId == R.id.add_to_bookmarks) {
-                tabBookmarker.addOrEditBookmark(tab);
+                tabBookmarker.addOrEditBookmark(tab, /* anchorView= */ null);
                 recordUserActionWithPrefix("AddBookmark");
             } else if (menuId == R.id.send_tab_to_self) {
-                assert ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS);
                 assert !tab.isIncognitoBranded();
                 assumeNonNull(shareDelegateSupplier.get()).sendTabToSelf(tab);
                 recordUserActionWithPrefix("SendTabToSelf");
@@ -245,7 +244,7 @@ public class TabGridContextMenuCoordinator extends TabOverflowMenuCoordinator<@T
 
         GroupWindowChecker windowChecker =
                 new GroupWindowChecker(mActivity, mTabGroupSyncService, mTabModel);
-        boolean hasTabGroups = windowChecker.hasOtherGroups(/* currentGroupId= */ null);
+        boolean hasTabGroups = windowChecker.hasOtherGroups(tab.getTabGroupId());
         if (!hasTabGroups) {
             itemList.add(
                     new ListItemBuilder()
@@ -295,9 +294,7 @@ public class TabGridContextMenuCoordinator extends TabOverflowMenuCoordinator<@T
                             .build());
         }
 
-        if (!isIncognito
-                && ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)) {
+        if (!isIncognito) {
             Integer sendTabToSelfDisplayReason =
                     SendTabToSelfAndroidBridge.getEntryPointDisplayReason(
                             assumeNonNull(mTabModel.getProfile()), tab.getUrl().getSpec());

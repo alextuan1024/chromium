@@ -72,6 +72,7 @@
   BOOL isIncognito = profile->IsOffTheRecord();
   _mediator = [[DownloadListMediator alloc]
       initWithDownloadRecordService:downloadRecordService
+                        prefService:profile->GetPrefs()
                         isIncognito:isIncognito];
 
   [_mediator connect];
@@ -99,6 +100,7 @@
                            completion:nil];
   }
 
+  [_downloadListViewController disconnect];
   _downloadListViewController = nil;
   _navigationController = nil;
   _shareActivityController = nil;

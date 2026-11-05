@@ -7,7 +7,6 @@
 #include <stddef.h>
 
 #include <array>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -26,6 +25,7 @@
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
@@ -103,7 +103,6 @@
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/webrtc/api/async_dns_resolver.h"
 #include "third_party/webrtc/api/create_modular_peer_connection_factory.h"
@@ -161,8 +160,10 @@ CreateMojoVideoEncoderMetricsProviderFactory(LocalFrame* local_frame) {
 network::mojom::IPAddressSpace FromSocketAddress(
     const webrtc::SocketAddress socket_address) {
   switch (socket_address.GetIPAddressType()) {
+    // Sending to the unspecified address (0.0.0.0 or ::) reaches the local
+    // host on some platforms, so classify it as loopback, like
+    // services/network/public/cpp/ip_address_space_util.cc does.
     case webrtc::IPAddressType::kAny:
-      return network::mojom::IPAddressSpace::kPublic;
     case webrtc::IPAddressType::kLoopback:
       return network::mojom::IPAddressSpace::kLoopback;
     case webrtc::IPAddressType::kPrivate:
@@ -298,7 +299,11 @@ class LocalNetworkAccessPermission final
         target_address_space, originator_address_space_);
 
     if (network::features::kLocalNetworkAccessChecksWebRTCLoopbackOnly.Get()) {
-      return candidate_address.IsLoopbackIP() && is_less_public;
+      // Unlike IsLoopbackIP(), the address space covers the unspecified
+      // address.
+      return target_address_space ==
+                 network::mojom::IPAddressSpace::kLoopback &&
+             is_less_public;
     }
 
     return is_less_public;
@@ -602,8 +607,8 @@ class PeerConnectionStaticDeps {
 };
 
 PeerConnectionStaticDeps& StaticDeps() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(PeerConnectionStaticDeps, instance, ());
-  return instance;
+  static base::NoDestructor<PeerConnectionStaticDeps> instance;
+  return *instance;
 }
 
 webrtc::Thread* GetSignalingThread() {

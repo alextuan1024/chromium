@@ -1,0 +1,52 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
+
+#include <utility>
+
+namespace glic {
+
+NudgeParams::~NudgeParams() = default;
+NudgeParams::NudgeParams(NudgeParams&&) = default;
+NudgeParams& NudgeParams::operator=(NudgeParams&&) = default;
+
+NudgeParams::NudgeParams(std::string label)
+    : NudgeParams(std::move(label), {}, {}) {}
+NudgeParams::NudgeParams(std::string label,
+                         std::string anchored_message_text,
+                         std::optional<std::string> prompt_suggestion)
+    : label(std::move(label)),
+      anchored_message_text(std::move(anchored_message_text)),
+      prompt_suggestion(std::move(prompt_suggestion)) {}
+
+GlicSplitButtonDelegate::~GlicSplitButtonDelegate() = default;
+
+void GlicSplitButtonDelegate::OnTriggerGlicNudgeUI(NudgeParams params) {}
+void GlicSplitButtonDelegate::OnHideGlicNudgeUI() {}
+bool GlicSplitButtonDelegate::GetIsShowingGlicNudge() {
+  return false;
+}
+void GlicSplitButtonDelegate::ShowGlicSecondaryButton() {}
+void GlicSplitButtonDelegate::HideGlicSecondaryButton() {}
+bool GlicSplitButtonDelegate::GetIsShowingGlicSecondaryNudge() {
+  return false;
+}
+void GlicSplitButtonDelegate::SetGlicSecondaryNudgeLabel(
+    const std::u16string& nudge_label) {}
+void GlicSplitButtonDelegate::TriggerGlicSecondaryNudge(
+    const std::u16string& nudge_label) {}
+void GlicSplitButtonDelegate::SetGlicSecondaryButtonPressedState(bool pressed) {
+}
+void GlicSplitButtonDelegate::UpdateGlicSplitButtonUi(
+    const GlicSplitButtonUiState& state) {}
+void GlicSplitButtonDelegate::ShowActivityListBubble() {}
+void GlicSplitButtonDelegate::CloseActivityListBubble() {}
+bool GlicSplitButtonDelegate::IsActivityListBubbleShowing() {
+  return false;
+}
+void GlicSplitButtonDelegate::SetGlicShowState(bool show) {}
+void GlicSplitButtonDelegate::SetGlicPanelIsOpen(bool open) {}
+
+}  // namespace glic

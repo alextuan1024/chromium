@@ -75,7 +75,6 @@ source_set("omnibox_internal") {
     "//components/strings",
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/autocomplete/model",
-    "//ios/chrome/browser/composebox/public:features",
     "//ios/chrome/browser/omnibox/model",
     "//ios/chrome/browser/omnibox/public",
     "//ios/chrome/browser/omnibox/public:constants",
@@ -112,6 +111,7 @@ source_set("omnibox_internal") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "omnibox_container_view_unittest.mm",
     "omnibox_text_field_ios_unittest.mm",
     "omnibox_text_view_ios_unittest.mm",
   ]
@@ -123,7 +123,6 @@ source_set("unit_tests") {
     ":ui",
     "//base/test:test_support",
     "//ios/chrome/app/strings",
-    "//ios/chrome/browser/composebox/public:features",
     "//ios/chrome/browser/omnibox/public",
     "//ios/chrome/browser/shared/model/paths",
     "//ios/chrome/browser/shared/ui/util",

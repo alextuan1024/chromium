@@ -48,6 +48,7 @@ blink_platform_sources("loader") {
     "fetch/data_pipe_bytes_consumer.cc",
     "fetch/data_pipe_bytes_consumer.h",
     "fetch/detachable_use_counter.h",
+    "fetch/drained_data_pipe_client.h",
     "fetch/early_hints_preload_entry.h",
     "fetch/fetch_api_request_body_mojom_traits.cc",
     "fetch/fetch_api_request_body_mojom_traits.h",
@@ -203,8 +204,6 @@ blink_platform_sources("loader") {
       get_target_outputs(":make_platform_loader_generated_delivery_type_names")
 
   deps = [
-    ":make_platform_loader_generated_delivery_type_names",
-    ":make_platform_loader_generated_fetch_initiator_type_names",
     "//components/link_header_util",
     "//components/persistent_cache",
     "//components/variations/net",
@@ -222,6 +221,8 @@ blink_platform_sources("loader") {
     "//third_party/blink/renderer/platform/scheduler",
   ]
   public_deps = [
+    ":make_platform_loader_generated_delivery_type_names",
+    ":make_platform_loader_generated_fetch_initiator_type_names",
     "//third_party/blink/public/mojom:mojom_platform_headers",
     "//third_party/blink/renderer/platform/heap",
   ]

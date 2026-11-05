@@ -4,11 +4,12 @@
 
 #include "components/certificate_model/x509_certificate_model_base.h"
 
+#include <ranges>
 #include <variant>
 
 #include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/containers/fixed_flat_map.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
@@ -77,6 +78,28 @@ std::string ProcessAlgorithmIdentifier(bssl::der::Input algorithm_tlv) {
     return std::string();
   }
   return GetAlgorithmOidTextOrNumeric(oid);
+}
+
+// Returns a display string for a name consisting of a single
+// id-rdna-trustAnchorID attribute with a RELATIVE-OID value, such as an MTC CA
+// name.
+std::optional<std::string> FormatSingleTrustAnchorIdRdn(
+    const bssl::RDNSequence& rdns) {
+  if (rdns.size() != 1 || rdns[0].size() != 1) {
+    return std::nullopt;
+  }
+  const bssl::X509NameAttribute& attribute = rdns[0][0];
+  if (attribute.type != bssl::der::Input(kTypeTrustAnchorIdOid) ||
+      attribute.value_tag != CBS_ASN1_RELATIVE_OID) {
+    return std::nullopt;
+  }
+  std::string trust_anchor_id =
+      net::x509_util::RelativeOidToString(attribute.value);
+  if (trust_anchor_id.empty()) {
+    return std::nullopt;
+  }
+  return base::StrCat({l10n_util::GetStringUTF8(IDS_CERT_OID_TRUST_ANCHOR_ID),
+                       "=", trust_anchor_id});
 }
 
 }  // namespace
@@ -153,7 +176,7 @@ OptionalStringOrError FindFirstNameOfType(bssl::der::Input oid,
 // Distinguished Names are specified in least to most specific.
 OptionalStringOrError FindLastNameOfType(bssl::der::Input oid,
                                          const bssl::RDNSequence& rdns) {
-  for (const bssl::RelativeDistinguishedName& rdn : base::Reversed(rdns)) {
+  for (const bssl::RelativeDistinguishedName& rdn : std::views::reverse(rdns)) {
     OptionalStringOrError r = FindAttributeOfType(oid, rdn);
     if (!std::holds_alternative<NotPresent>(r)) {
       return r;
@@ -244,7 +267,11 @@ std::optional<int> GetCommonOidStringId(bssl::der::Input oid) {
           {bssl::der::Input(kOidAlgMldsa44), IDS_CERT_OID_ML_DSA_44},
           {bssl::der::Input(kOidAlgMldsa65), IDS_CERT_OID_ML_DSA_65},
           {bssl::der::Input(kOidAlgMldsa87), IDS_CERT_OID_ML_DSA_87},
-          {bssl::der::Input(kOidAlgMtcProofDraft), IDS_CERT_OID_MTC_PROOF},
+          {bssl::der::Input(kOidAlgMtcProof), IDS_CERT_OID_MTC_PROOF},
+
+          // Name attribute fields:
+          {bssl::der::Input(kTypeTrustAnchorIdOid),
+           IDS_CERT_OID_TRUST_ANCHOR_ID},
 
           // Extended Key Usage fields:
           {bssl::der::Input(bssl::kAnyEKU), IDS_CERT_EKU_ANY_EKU},
@@ -394,6 +421,13 @@ std::string X509CertificateModelBase::GetTitle() const {
     }
     if (std::holds_alternative<Error>(common_name)) {
       return HashCertSHA256();
+    }
+
+    // RFC 2253 doesn't specify a string encoding for trust anchor IDs, such as
+    // MTC CA names. Handle those separately.
+    if (std::optional<std::string> trust_anchor_id_title =
+            FormatSingleTrustAnchorIdRdn(subject_rdns_)) {
+      return *std::move(trust_anchor_id_title);
     }
 
     std::string rv;

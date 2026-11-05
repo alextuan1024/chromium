@@ -33,6 +33,7 @@
 #include "remoting/base/logging.h"
 #include "remoting/host/action_executor.h"
 #include "remoting/host/active_display_monitor.h"
+#include "remoting/host/agent_integration_configurator.h"
 #include "remoting/host/audio_capturer.h"
 #include "remoting/host/base/desktop_environment_options.h"
 #include "remoting/host/base/screen_controls.h"
@@ -124,6 +125,11 @@ std::unique_ptr<FileOperations> IpcDesktopEnvironment::CreateFileOperations() {
 std::unique_ptr<UrlForwarderConfigurator>
 IpcDesktopEnvironment::CreateUrlForwarderConfigurator() {
   return desktop_session_proxy_->CreateUrlForwarderConfigurator();
+}
+
+std::unique_ptr<AgentIntegrationConfigurator>
+IpcDesktopEnvironment::CreateAgentIntegrationConfigurator() {
+  return nullptr;
 }
 
 std::string IpcDesktopEnvironment::GetCapabilities() const {
@@ -270,7 +276,12 @@ void IpcDesktopEnvironmentFactory::Core::ConnectTerminal(
 
   mojom::DesktopSessionOptionsPtr options = mojom::DesktopSessionOptions::New();
   options->screen_resolution = resolution;
-  options->is_curtained = is_curtained;
+  options->curtain_required = is_curtained;
+#if BUILDFLAG(IS_LINUX)
+  // On Linux this only runs in `peer_connection`; the trusted `network`
+  // process overwrites `terminate_local_session` in `IpcPeerSession::Start()`.
+  options->terminate_local_session = false;
+#endif  // BUILDFLAG(IS_LINUX)
   options->required_username = required_username_;
   options->client_id = client_id;
 
@@ -428,7 +439,7 @@ void IpcDesktopEnvironmentFactory::Core::OnDesktopSessionRemoteDisconnected(
 
   DesktopSessionProxy* proxy = it->second->desktop_session_proxy;
   connections_.erase(it);
-  proxy->DisconnectSession(ErrorCode::CHANNEL_CONNECTION_ERROR,
+  proxy->DisconnectSession(ErrorCode::INVALID_STATE,
                            "DesktopSession control remote disconnected.",
                            FROM_HERE);
 }

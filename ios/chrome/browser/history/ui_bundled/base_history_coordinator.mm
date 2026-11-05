@@ -5,8 +5,9 @@
 #import "base/check.h"
 #import "base/ios/ios_util.h"
 #import "components/history/core/browser/browsing_history_service.h"
-#import "components/keyed_service/core/service_access_type.h"
 #import "components/sync/service/sync_service.h"
+#import "components/sync_device_info/device_info_sync_service.h"
+#import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/history/model/history_service_factory.h"
 #import "ios/chrome/browser/history/model/web_history_service_factory.h"
 #import "ios/chrome/browser/history/ui_bundled/base_history_coordinator+subclassing.h"
@@ -24,18 +25,8 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_coordinator.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_params.h"
+#import "ios/chrome/browser/sync/model/device_info_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
-
-namespace {
-
-history::WebHistoryService* WebHistoryServiceGetter(
-    base::WeakPtr<ProfileIOS> weak_profile) {
-  DCHECK(weak_profile.get())
-      << "Getter should not be called after ProfileIOS destruction.";
-  return ios::WebHistoryServiceFactory::GetForProfile(weak_profile.get());
-}
-
-}  // anonymous namespace
 
 @interface BaseHistoryCoordinator () {
   // Provides delegate bridge instance for `_browsingHistoryDriver`.
@@ -68,8 +59,14 @@ history::WebHistoryService* WebHistoryServiceGetter(
   _browserObserver =
       std::make_unique<BrowserObserverBridge>(self.browser, self);
 
+  ProfileIOS* profile = self.profile;
+
   // Initialize and set HistoryMediator.
-  _mediator = [[HistoryMediator alloc] initWithProfile:self.profile];
+  _mediator = [[HistoryMediator alloc]
+      initWithFaviconLoader:IOSChromeFaviconLoaderFactory::GetForProfile(
+                                profile)
+                prefService:profile->GetPrefs()];
+  _mediator.consumer = self.viewController;
   self.viewController.imageDataSource = _mediator;
 
   // Initialize and configure HistoryServices.
@@ -77,13 +74,17 @@ history::WebHistoryService* WebHistoryServiceGetter(
       std::make_unique<IOSBrowsingHistoryDriverDelegateBridge>(
           self.viewController);
   _browsingHistoryDriver = std::make_unique<IOSBrowsingHistoryDriver>(
-      base::BindRepeating(&WebHistoryServiceGetter, self.profile->AsWeakPtr()),
-      _browsingHistoryDriverDelegate.get());
+      profile->GetPrefs(), _browsingHistoryDriverDelegate.get());
+  auto* device_info_service =
+      DeviceInfoSyncServiceFactory::GetForProfile(profile);
   _browsingHistoryService = std::make_unique<history::BrowsingHistoryService>(
       _browsingHistoryDriver.get(),
-      ios::HistoryServiceFactory::GetForProfile(
-          self.profile, ServiceAccessType::EXPLICIT_ACCESS),
-      SyncServiceFactory::GetForProfile(self.profile));
+      ios::HistoryServiceFactory::GetForProfile(profile),
+      ios::WebHistoryServiceFactory::GetForProfile(profile),
+      SyncServiceFactory::GetForProfile(profile),
+      device_info_service ? device_info_service->GetDeviceInfoTracker()
+                          : nullptr,
+      /*critical_action_provider=*/nullptr);
   self.viewController.historyService = _browsingHistoryService.get();
 
   self.viewController.presentationDelegate = self.presentationDelegate;
@@ -99,6 +100,8 @@ history::WebHistoryService* WebHistoryServiceGetter(
 
   // Clear C++ objects as they may reference objects that will become
   // unavailable.
+  [_mediator disconnect];
+  _mediator = nil;
   _browsingHistoryDriver = nullptr;
   _browsingHistoryService = nullptr;
   _browsingHistoryDriverDelegate = nullptr;
@@ -124,6 +127,8 @@ history::WebHistoryService* WebHistoryServiceGetter(
     _browserObserver.reset();
   }
 
+  [_mediator disconnect];
+  _mediator = nil;
   _browsingHistoryDriver = nullptr;
   _browsingHistoryService = nullptr;
   _browsingHistoryDriverDelegate = nullptr;
@@ -201,9 +206,12 @@ history::WebHistoryService* WebHistoryServiceGetter(
                     [weakSelf shareURL:item.URL title:item.text fromView:view];
                   }]];
 
-    [menuElements addObject:[actionFactory actionToDeleteWithBlock:^{
-                    [historyItemDelegate historyEntryItemDidRequestDelete:item];
-                  }]];
+    if ([historyItemDelegate isHistoryDeletionAllowed]) {
+      [menuElements addObject:[actionFactory actionToDeleteWithBlock:^{
+                      [historyItemDelegate
+                          historyEntryItemDidRequestDelete:item];
+                    }]];
+    }
 
     return [UIMenu menuWithTitle:@"" children:menuElements];
   };

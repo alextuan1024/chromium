@@ -20,12 +20,48 @@ using extensions::mojom::APIPermissionID;
 // add the corresponding permission message rule to
 // ChromePermissionMessageProvider::GetPermissionMessages as well.
 constexpr APIPermissionInfo::InitInfo kPermissionsToRegister[] = {
+    {APIPermissionID::kAccessibilityPrivate, "accessibilityPrivate",
+     APIPermissionInfo::kFlagCannotBeOptional},
+    {APIPermissionID::kAutoTestPrivate, "autotestPrivate",
+     APIPermissionInfo::kFlagCannotBeOptional},
+    {APIPermissionID::kCertificateProvider, "certificateProvider",
+     APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
+    {APIPermissionID::kEchoPrivate, "echoPrivate",
+     APIPermissionInfo::kFlagCannotBeOptional},
+    {APIPermissionID::kFileBrowserHandler, "fileBrowserHandler",
+     APIPermissionInfo::kFlagCannotBeOptional |
+         APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
     {APIPermissionID::kFileManagerPrivate, "fileManagerPrivate",
+     APIPermissionInfo::kFlagCannotBeOptional},
+    {APIPermissionID::kImageLoaderPrivate, "imageLoaderPrivate",
      APIPermissionInfo::kFlagCannotBeOptional},
     {APIPermissionID::kInputMethodPrivate, "inputMethodPrivate",
      APIPermissionInfo::kFlagCannotBeOptional},
+    {APIPermissionID::kLogin, "login"},
+    {APIPermissionID::kLoginScreenStorage, "loginScreenStorage"},
+    {APIPermissionID::kLoginScreenUi, "loginScreenUi"},
+    {APIPermissionID::kLoginState, "loginState",
+     APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
+    {APIPermissionID::kOdfsConfigPrivate, "odfsConfigPrivate",
+     APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
+    {APIPermissionID::kPrinting, "printing",
+     APIPermissionInfo::kFlagRequiresManagementUIWarning},
+    {APIPermissionID::kPrintingMetrics, "printingMetrics",
+     APIPermissionInfo::kFlagRequiresManagementUIWarning},
+    {APIPermissionID::kSmartCardProviderPrivate, "smartCardProviderPrivate"},
     {APIPermissionID::kSpeechRecognitionPrivate, "speechRecognitionPrivate",
      APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
+    {APIPermissionID::kSystemLog, "systemLog",
+     APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
+    {APIPermissionID::kUsersPrivate, "usersPrivate",
+     APIPermissionInfo::kFlagCannotBeOptional},
+    {APIPermissionID::kVpnProvider, "vpnProvider",
+     APIPermissionInfo::kFlagCannotBeOptional |
+         APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
+    {APIPermissionID::kWallpaper, "wallpaper",
+     APIPermissionInfo::kFlagCannotBeOptional |
+         APIPermissionInfo::kFlagDoesNotRequireManagedSessionFullLoginWarning},
+    {APIPermissionID::kWmDesksPrivate, "wmDesksPrivate"},
 
     // Platform-app permissions.
     {APIPermissionID::kFileSystemProvider, "fileSystemProvider",

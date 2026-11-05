@@ -31,6 +31,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 
 import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.base.ContentUriOwner;
 import org.chromium.base.ContentUriUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ResettersForTesting;
@@ -49,7 +50,6 @@ import org.chromium.url.GURL;
 
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -127,7 +127,7 @@ public class ClipboardImpl extends Clipboard
 
     @Override
     protected boolean hasCoercedText() {
-        ClipDescription description = mClipboardManager.getPrimaryClipDescription();
+        ClipDescription description = getPrimaryClipDescriptionNoException();
         if (description == null) return false;
 
         return description.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN)
@@ -190,7 +190,7 @@ public class ClipboardImpl extends Clipboard
 
     @Override
     public boolean hasHTMLOrStyledText() {
-        ClipDescription description = mClipboardManager.getPrimaryClipDescription();
+        ClipDescription description = getPrimaryClipDescriptionNoException();
         if (description == null) return false;
 
         boolean isPlainType = description.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN);
@@ -203,7 +203,7 @@ public class ClipboardImpl extends Clipboard
         // ClipDescription#getConfidenceScore is only available on Android S+, so before Android S,
         // we will access the clipboard content and valid by URLUtil#isValidUrl.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ClipDescription description = mClipboardManager.getPrimaryClipDescription();
+            ClipDescription description = getPrimaryClipDescriptionNoException();
             if (description == null) return false;
             if (description.hasMimeType(URL_MIME_TYPE)) return true;
 
@@ -225,8 +225,7 @@ public class ClipboardImpl extends Clipboard
     }
 
     @Override
-    @Nullable
-    String getUrl() {
+    @Nullable String getUrl() {
         if (!hasUrl()) return null;
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return getCoercedText();
@@ -248,7 +247,8 @@ public class ClipboardImpl extends Clipboard
                     TextLinks.TextLink textLink = it.next();
                     if (textLink.getConfidenceScore(TextClassifier.TYPE_URL)
                             > CONFIDENCE_THRESHOLD_FOR_URL_DETECTION) {
-                        firstLinkText = fullText.subSequence(textLink.getStart(), textLink.getEnd());
+                        firstLinkText =
+                                fullText.subSequence(textLink.getStart(), textLink.getEnd());
                         break;
                     }
                 }
@@ -318,12 +318,26 @@ public class ClipboardImpl extends Clipboard
     }
 
     private long getTextTimestamp() {
-        ClipDescription description = mClipboardManager.getPrimaryClipDescription();
-        if (description == null || !description.hasMimeType("text/*")) {
+        ClipDescription description = getPrimaryClipDescriptionNoException();
+        if (description == null
+                || (!description.hasMimeType("text/*")
+                        && !description.hasMimeType(CHROME_WEB_CUSTOM_DATA_MIME_TYPE))) {
             return ClipboardUriMetadata.INVALID_TIMESTAMP;
         }
 
         return description.getTimestamp();
+    }
+
+    /**
+     * Returns the primary clip description, or null if unavailable. Reading can throw an uncaught
+     * exception that would crash the browser.
+     */
+    private @Nullable ClipDescription getPrimaryClipDescriptionNoException() {
+        try {
+            return mClipboardManager.getPrimaryClipDescription();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -337,10 +351,12 @@ public class ClipboardImpl extends Clipboard
         if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
             return false;
         }
-        if (ContentUriUtils.isUriFromThisApp(uri) && !uri.equals(expectedOwnAppUri)) {
-            return false;
+        if (uri.equals(expectedOwnAppUri)) {
+            return true;
         }
-        return true;
+        @ContentUriOwner int owner = ContentUriUtils.resolveContentUriOwner(uri);
+        return owner != ContentUriOwner.EXPORTED_FROM_CURRENT_APP
+                && owner != ContentUriOwner.NON_EXPORTED_FROM_CURRENT_APP;
     }
 
     private boolean isTextUriSafeForRead(Uri uri) {
@@ -392,7 +408,7 @@ public class ClipboardImpl extends Clipboard
                 if (baos.size() > MAX_ALLOWED_PNG_SIZE_BYTES) return null;
 
                 return baos.toByteArray();
-            } catch (IOException | OutOfMemoryError e) {
+            } catch (Exception | OutOfMemoryError e) {
                 return null;
             }
         }
@@ -409,7 +425,7 @@ public class ClipboardImpl extends Clipboard
             fileStream = new FileInputStream(afd.getFileDescriptor());
             fileStream.read(data);
             return data;
-        } catch (IOException e) {
+        } catch (Exception e) {
             return null;
         } finally {
             StreamUtil.closeQuietly(fileStream);
@@ -418,7 +434,7 @@ public class ClipboardImpl extends Clipboard
 
     @Override
     public boolean hasImage() {
-        ClipDescription description = mClipboardManager.getPrimaryClipDescription();
+        ClipDescription description = getPrimaryClipDescriptionNoException();
         return hasImageMimeType(description);
     }
 
@@ -431,7 +447,7 @@ public class ClipboardImpl extends Clipboard
 
     /** Return the timestamp for the content in the clipboard if the clipboard contains an image. */
     private long getImageTimestamp() {
-        ClipDescription description = mClipboardManager.getPrimaryClipDescription();
+        ClipDescription description = getPrimaryClipDescriptionNoException();
         if (description == null || !description.hasMimeType("image/*")) {
             return ClipboardUriMetadata.INVALID_TIMESTAMP;
         }
@@ -523,7 +539,7 @@ public class ClipboardImpl extends Clipboard
     }
 
     @Override
-    protected void setClipboardText(
+    protected boolean setClipboardText(
             @JniType("std::map<std::string, std::string>") Map<String, String> textData) {
         String html = textData.get(ClipDescription.MIMETYPE_TEXT_HTML);
         String text = textData.get(ClipDescription.MIMETYPE_TEXT_PLAIN);
@@ -553,7 +569,7 @@ public class ClipboardImpl extends Clipboard
 
         if (item == null) {
             clear();
-            return;
+            return false;
         }
 
         ClipDescription description = new ClipDescription("data", mimeTypes.toArray(new String[0]));
@@ -566,28 +582,37 @@ public class ClipboardImpl extends Clipboard
         ClipData clip = new ClipData(description, item);
         if (!setPrimaryClipNoException(clip)) {
             showCopyToClipboardFailureMessage();
+            return false;
         }
+        return true;
     }
 
     @Override
     protected boolean hasClipboardDataForMimeType(@JniType("std::string") String mimeType) {
-        ClipDescription description = mClipboardManager.getPrimaryClipDescription();
+        ClipDescription description = getPrimaryClipDescriptionNoException();
         return description != null && description.hasMimeType(mimeType);
     }
 
     @Override
     protected @JniType("std::optional<std::string>") @Nullable String getCustomClipData(
             @JniType("std::string") String customMimeType) {
-        ClipData clipData = mClipboardManager.getPrimaryClip();
-        if (clipData == null || !hasClipboardDataForMimeType(customMimeType)) {
+        // getPrimaryClip() can throw, e.g. when the reply exceeds the Binder buffer.
+        try {
+            ClipData clipData = mClipboardManager.getPrimaryClip();
+            if (clipData == null || !clipData.getDescription().hasMimeType(customMimeType)) {
+                return null;
+            }
+            PersistableBundle extras = clipData.getDescription().getExtras();
+            if (extras != null && extras.containsKey(customMimeType)) {
+                return extras.getString(customMimeType);
+            }
+            // Oversized custom data is offloaded to a content URI instead of the extras.
+            Uri uri = clipData.getItemAt(0).getUri();
+            if (uri == null || !isTextUriSafeForRead(uri)) return null;
+            return ContentUriUtils.readTextFromUri(uri, customMimeType);
+        } catch (Exception e) {
             return null;
         }
-        ClipDescription description = clipData.getDescription();
-        PersistableBundle extras = description.getExtras();
-        if (extras != null && extras.containsKey(customMimeType)) {
-            return extras.getString(customMimeType);
-        }
-        return null;
     }
 
     @Override
@@ -608,6 +633,10 @@ public class ClipboardImpl extends Clipboard
 
     @Override
     public void setImageUri(final Uri uri, boolean notifyOnSuccess) {
+        setImageUri(uri, notifyOnSuccess, /* isNativeWrite= */ false);
+    }
+
+    private void setImageUri(final Uri uri, boolean notifyOnSuccess, boolean isNativeWrite) {
         if (uri == null) {
             showCopyToClipboardFailureMessage();
             return;
@@ -624,14 +653,20 @@ public class ClipboardImpl extends Clipboard
 
             @Override
             protected void onPostExecute(@Nullable ClipData clipData) {
-                setImageUri(uri, clipData, notifyOnSuccess);
+                setImageUri(uri, clipData, notifyOnSuccess, isNativeWrite);
             }
         }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 
     @Override
     public void setImageUri(Uri uri, ClipData clipData, boolean notifyOnSuccess) {
-        if (setPrimaryClipNoException(clipData)) {
+        setImageUri(uri, clipData, notifyOnSuccess, /* isNativeWrite= */ false);
+    }
+
+    private void setImageUri(
+            Uri uri, ClipData clipData, boolean notifyOnSuccess, boolean isNativeWrite) {
+        boolean clipWritten = setPrimaryClipNoException(clipData);
+        if (clipWritten) {
             if (notifyOnSuccess) {
                 showToastIfNeeded(R.string.image_copied);
             }
@@ -643,10 +678,18 @@ public class ClipboardImpl extends Clipboard
         // cause the clipboard access notification to show up, when we try to clean up the
         // image file. There is a small chance that the clipboard image is updated between
         // |setPrimaryClipNoException| and |getImageTimestamp|, and we will get a wrong
-        // timestamp. But it is okay since the timestamp is for deciding if the image file
-        // need to be deleted. If the timestamp is wrong here, we just keep the image file a
-        // little longer than expected.
+        // timestamp. That is okay: if the timestamp is wrong here, we just keep the image
+        // file (and, for native writes, local-only formats) until the next clipboard change.
         long imageTimestamp = getImageTimestamp();
+        if (clipWritten
+                && isNativeWrite
+                && imageTimestamp != ClipboardUriMetadata.INVALID_TIMESTAMP) {
+            // The image clip lands asynchronously after CommitToAndroidClipboard() finished, so
+            // its timestamp is newer than native's recorded write time. Record this clip as
+            // native's own so onPrimaryClipChanged() and window focus checks do not mistake it
+            // for an external clipboard change.
+            onNativeImageClipWritten(imageTimestamp);
+        }
 
         if (mImageFileProvider == null) {
             mPendingCopiedImageMetadata = new ClipboardUriMetadata(uri, imageTimestamp);
@@ -668,7 +711,7 @@ public class ClipboardImpl extends Clipboard
                 imageData,
                 extension,
                 (Uri uri) -> {
-                    setImageUri(uri);
+                    setImageUri(uri, /* notifyOnSuccess= */ false, /* isNativeWrite= */ true);
                 });
     }
 
@@ -733,10 +776,16 @@ public class ClipboardImpl extends Clipboard
         ClipData.Item item = clip.getItemAt(0);
         String text = Objects.toString(item.getText(), null);
         String html = item.getHtmlText();
+        PersistableBundle extras = clip.getDescription().getExtras();
+        String webCustomData =
+                extras != null ? extras.getString(CHROME_WEB_CUSTOM_DATA_MIME_TYPE) : null;
+        if (extras != null) {
+            extras.remove(CHROME_WEB_CUSTOM_DATA_MIME_TYPE);
+        }
 
-        // Offload HTML to provider URI while keeping text inline.
-        if (html != null) {
-            Uri uri = ClipboardTextDataProvider.store(/* text= */ null, html);
+        // Offload HTML and web custom data to provider URI while keeping text inline.
+        if (html != null || webCustomData != null) {
+            Uri uri = ClipboardTextDataProvider.store(/* text= */ null, html, webCustomData);
             if (uri != null) {
                 try {
                     setPrimaryClip(
@@ -751,8 +800,8 @@ public class ClipboardImpl extends Clipboard
             }
         }
 
-        // Offload both text and HTML to provider URI.
-        Uri uri = ClipboardTextDataProvider.store(text, html);
+        // Offload all payloads to provider URI.
+        Uri uri = ClipboardTextDataProvider.store(text, html, webCustomData);
         if (uri != null) {
             try {
                 setPrimaryClip(
@@ -801,17 +850,18 @@ public class ClipboardImpl extends Clipboard
     public void onPrimaryClipChanged() {
         RecordUserAction.record("MobileClipboardChanged");
         // Android delivers onPrimaryClipChanged for our own writes as well as
-        // for foreign clipboard changes. Our own write already bumped the native
-        // clipboard sequence number synchronously in CommitToAndroidClipboard
-        // and recorded its time as the last-modified time. Bumping the sequence
-        // number again would signal a false divergence for any listeners that captured
-        // it synchronously relative to the write. Only foreign changes,
-        // which carry a newer timestamp, should notify.
-        ClipDescription clipDescription = mClipboardManager.getPrimaryClipDescription();
-        if (clipDescription != null
-                && clipDescription.getTimestamp() > 0
-                && clipDescription.getTimestamp() <= getLastModifiedTimeMs()) {
-            return;
+        // for foreign clipboard changes. Native writes already bumped the native clipboard
+        // sequence number synchronously in CommitToAndroidClipboard and recorded last-modified
+        // time (updated in onNativeImageClipWritten for images). Bumping the sequence number
+        // again would signal a false divergence for any listeners that captured it synchronously
+        // relative to the write, so ignore native echoes. Newer non-native clips clear
+        // local-only formats and notify; empty clips notify without clearing local-only formats.
+        ClipDescription clipDescription = getPrimaryClipDescriptionNoException();
+        if (clipDescription != null && clipDescription.getTimestamp() > 0) {
+            if (clipDescription.getTimestamp() <= getLastModifiedTimeMs()) {
+                return;
+            }
+            clearLocalOnlyFormats();
         }
         notifyPrimaryClipChanged();
     }
@@ -839,10 +889,13 @@ public class ClipboardImpl extends Clipboard
     }
 
     private void onPrimaryClipTimestampInvalidated() {
-        ClipDescription clipDescription = mClipboardManager.getPrimaryClipDescription();
+        ClipDescription clipDescription = getPrimaryClipDescriptionNoException();
         if (clipDescription == null) return;
 
         long timestamp = clipDescription.getTimestamp();
+        if (timestamp > getLastModifiedTimeMs()) {
+            clearLocalOnlyFormats();
+        }
         notifyPrimaryClipTimestampInvalidated(timestamp);
     }
 

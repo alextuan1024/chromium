@@ -16,7 +16,6 @@
 #include "build/build_config.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/sync/base/features.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -39,9 +38,7 @@ SigninUIError SigninUIError::UsernameNotAllowedByPatternFromPrefs(
     std::string_view email) {
   return SigninUIError(
       Type::kUsernameNotAllowedByPatternFromPrefs, email,
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? l10n_util::GetStringUTF16(IDS_SIGN_IN_LOGIN_NAME_PROHIBITED)
-          : l10n_util::GetStringUTF16(IDS_SYNC_LOGIN_NAME_PROHIBITED));
+      l10n_util::GetStringUTF16(IDS_SIGN_IN_LOGIN_NAME_PROHIBITED));
 }
 
 // static
@@ -135,14 +132,16 @@ const std::u16string& SigninUIError::message() const {
 }
 
 const base::FilePath& SigninUIError::another_profile_path() const {
-  DCHECK(type() == Type::kAccountAlreadyUsedByAnotherProfile);
+  CHECK(type() == Type::kAccountAlreadyUsedByAnotherProfile,
+        base::NotFatalUntil::M162);
   return another_profile_path_;
 }
 
 #if BUILDFLAG(IS_WIN)
 credential_provider::UiExitCodes SigninUIError::credential_provider_exit_code()
     const {
-  DCHECK(type() == Type::kFromCredentialProviderUiExitCode);
+  CHECK(type() == Type::kFromCredentialProviderUiExitCode,
+        base::NotFatalUntil::M162);
   return credential_provider_exit_code_;
 }
 #endif
@@ -219,9 +218,7 @@ ForceSigninUIError::UiTexts ForceSigninUIError::GetErrorTexts() const {
       CHECK(!email_.empty());
       return {l10n_util::GetStringFUTF16(IDS_SIGNIN_ERROR_EMAIL_TITLE,
                                          base::UTF8ToUTF16(email_)),
-              syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-                  ? l10n_util::GetStringUTF16(IDS_SIGN_IN_LOGIN_NAME_PROHIBITED)
-                  : l10n_util::GetStringUTF16(IDS_SYNC_LOGIN_NAME_PROHIBITED)};
+              l10n_util::GetStringUTF16(IDS_SIGN_IN_LOGIN_NAME_PROHIBITED)};
     case Type::kReauthNotSupportedByGlicFlow:
       return {
           l10n_util::GetStringUTF16(

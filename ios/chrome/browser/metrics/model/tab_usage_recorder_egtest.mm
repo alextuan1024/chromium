@@ -30,7 +30,6 @@ using chrome_test_util::OpenLinkInNewTabButton;
 using chrome_test_util::SettingsDestinationButton;
 using chrome_test_util::SettingsDoneButton;
 using chrome_test_util::SettingsMenuPrivacyButton;
-using chrome_test_util::TabGridCellAtIndex;
 using chrome_test_util::WebViewMatcher;
 
 namespace {
@@ -109,29 +108,18 @@ void SwitchToNormalMode() {
   // Enter the tab grid to switch modes.
   [ChromeEarlGrey showTabSwitcher];
 
-  // Switch modes and exit the tab grid.
-  const int tab_index = [ChromeEarlGrey indexOfActiveNormalTab];
-  [[EarlGrey
-      selectElementWithMatcher:chrome_test_util::TabGridOpenTabsPanelButton()]
-      performAction:grey_tap()];
-  [[EarlGrey selectElementWithMatcher:TabGridCellAtIndex(tab_index)]
-      performAction:grey_tap()];
+  // Switch to the regular tabs panel and wait for it to become visible.
+  [ChromeEarlGrey
+      waitForAndTapButton:chrome_test_util::TabGridOpenTabsPanelButton()];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      chrome_test_util::RegularTabGrid()];
 
-  BOOL success = NO;
-  // Turn off synchronization of GREYAssert to test the pending states.
-  {
-    ScopedSynchronizationDisabler disabler;
-    success =
-        base::test::ios::WaitUntilConditionOrTimeout(kWaitElementTimeout, ^{
-          return ![ChromeEarlGrey isIncognitoMode];
-        });
-  }
-
-  if (!success) {
-    // TODO(crbug.com/40622599): Avoid asserting directly unless the test fails,
-    // due to timing issues.
-    GREYFail(@"Failed to switch to normal mode.");
-  }
+  // Exit the tab grid.
+  [ChromeEarlGrey hideTabSwitcher];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      chrome_test_util::ToolsMenuButton()];
+  GREYAssertFalse([ChromeEarlGrey isIncognitoMode],
+                  @"Failed to switch to normal mode.");
 }
 
 }  // namespace
@@ -206,8 +194,7 @@ void SwitchToNormalMode() {
 }
 
 // Tests that the recorder actual recorde tab state.
-// TODO(crbug.com/41442581) The test is flaky.
-- (void)DISABLED_testTabSwitchRecorder {
+- (void)testTabSwitchRecorder {
   [ChromeEarlGrey resetTabUsageRecorder];
 
   // Open two tabs with urls.
@@ -265,7 +252,11 @@ void SwitchToNormalMode() {
 // some tabs, forcing a tab eviction, then checking the histogram.
 - (void)testPageLoadCountBeforeEvictedTab {
   [ChromeEarlGrey resetTabUsageRecorder];
-  const GURL url1 = self.testServer->GetURL("/memory_usage.html");
+  const std::string testUrl1Path(GURL(kTestUrl1).path());
+  _responses[testUrl1Path] =
+      "<html><body><p>Page with some text and the Chromium logo.</p></body>"
+      "</html>";
+  const GURL url1 = self.testServer->GetURL(testUrl1Path);
   // This test opens three tabs.
   const int numberOfTabs = 3;
   [ChromeEarlGrey closeAllTabsInCurrentMode];
@@ -312,6 +303,7 @@ void SwitchToNormalMode() {
   SwitchToNormalMode();
 
   [ChromeEarlGrey selectTabAtIndex:0];
+  [ChromeEarlGrey waitForPageToFinishLoading];
   [ChromeEarlGrey waitForWebStateContainingText:kURL1FirstWord];
 
   // Verify that one page-load count has been recorded. It should contain two
@@ -335,8 +327,7 @@ void SwitchToNormalMode() {
 
 // Tests that tabs reloaded on cold start are reported as
 // EVICTED_DUE_TO_COLD_START.
-// TODO(crbug.com/41442581) The test is disabled due to flakiness.
-- (void)DISABLED_testColdLaunchReloadCount {
+- (void)testColdLaunchReloadCount {
   [ChromeEarlGrey resetTabUsageRecorder];
 
   // Open two tabs with urls.
@@ -405,8 +396,7 @@ void SwitchToNormalMode() {
 }
 
 // Tests that tabs reloads after backgrounding and eviction.
-// TODO(crbug.com/41442581) The test is flaky.
-- (void)DISABLED_testBackgroundingReloadCount {
+- (void)testBackgroundingReloadCount {
   [ChromeEarlGrey resetTabUsageRecorder];
 
   // Open two tabs with urls.

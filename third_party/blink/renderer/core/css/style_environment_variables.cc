@@ -4,9 +4,12 @@
 
 #include "third_party/blink/renderer/core/css/style_environment_variables.h"
 
+#include "base/check.h"
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/format.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -61,9 +64,10 @@ StyleEnvironmentVariables::StyleEnvironmentVariables() : parent_(nullptr) {
 
 // static
 StyleEnvironmentVariables& StyleEnvironmentVariables::GetRootInstance() {
-  DEFINE_STATIC_LOCAL(Persistent<StyleEnvironmentVariables>, instance,
-                      (MakeGarbageCollected<StyleEnvironmentVariables>()));
-  return *instance;
+  static base::NoDestructor<Persistent<StyleEnvironmentVariables>> instance(
+      MakeGarbageCollected<StyleEnvironmentVariables>());
+  CHECK(IsMainThread());
+  return **instance;
 }
 
 // static
@@ -147,10 +151,16 @@ const AtomicString StyleEnvironmentVariables::GetVariableName(
 
 void StyleEnvironmentVariables::SetVariable(const AtomicString& name,
                                             const String& value) {
-  data_.Set(name,
-            CSSVariableData::Create(value, false /* is_animation_tainted */,
-                                    false /* is_attr_tainted */,
-                                    CSSVariableData::HasReferences(false)));
+  SetVariable(name,
+              CSSVariableData::Create(value, false /* is_animation_tainted */,
+                                      false /* is_attr_tainted */,
+                                      CSSVariableData::HasReferences(false)));
+}
+
+void StyleEnvironmentVariables::SetVariable(const AtomicString& name,
+                                            CSSVariableData* value) {
+  CHECK(value);
+  data_.Set(name, value);
   InvalidateVariable(name);
 }
 

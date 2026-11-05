@@ -4,6 +4,8 @@
 
 module history.mojom;
 
+import "mojo/public/mojom/base/time.mojom";
+import "ui/base/mojom/window_open_disposition.mojom";
 import "url/mojom/url.mojom";
 
 /**
@@ -16,6 +18,13 @@ enum FilteringBehavior {
   // Deprecated, kWarn = 1.
   kBlock = 2,
   kInvalid = 3,
+};
+
+// Represents a synced device.
+struct Device {
+  string name;
+  bool is_local_device;
+  array<string> ids;
 };
 
 // Represents the possible states of the query process.
@@ -37,6 +46,17 @@ struct QueryState {
 
   // Whether actor visits should be shown.
   bool include_actor_visits;
+
+  // Client IDs of selected device to filter visits by.
+  array<string> client_ids;
+
+  // The selected predefined time period to filter visits by. kAllTime means
+  // no time period filtering is applied.
+  TimePeriodOptionId time_period_option_id;
+
+  // Domain (hostname suffix) to filter visits by. Empty means no domain
+  // filtering is applied.
+  string domain;
 };
 
 
@@ -146,6 +166,9 @@ enum CriticalActionType {
   kGooglePasswordManager = 5,
   kFederatedLogin = 6,
   kCredentialsOtp = 7,
+  kWebMcpTool = 8,
+  kFormFillContactInfo = 9,
+  kFormFillPayments = 10,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:CriticalActionType)
 
@@ -160,11 +183,17 @@ struct CriticalAction {
   // Tooltip describing the action category.
   string tooltip;
 
-  // Destination management URL for the action.
-  string linkout_url;
+  // Destination management URL for the action. Null if the action has no
+  // linkout, in which case the UI renders the action as a plain label.
+  string? linkout_url;
 
   // Category type of the critical action.
   CriticalActionType action_type;
+
+  // True iff the entry has a non-empty conversation ID. This does not reflect
+  // whether chat linkouts, action-level chat linkouts or Glic are enabled;
+  // callers must gate any UI on those separately.
+  bool can_open_chat;
 };
 
 
@@ -203,19 +232,90 @@ enum OpenConversationResult {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:OpenConversationResult)
 
+// Identifies which history-page surface requested opening a conversation.
+// LINT.IfChange(OpenConversationSource)
+enum OpenConversationSource {
+  kEntryMenu = 0,
+  kCriticalActionRow = 1,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/histograms.xml:OpenConversationSource)
+
+// Represents the entry point from which the user turns on history sync.
+enum AccessPoint {
+  kRecentTabs = 0,
+  kHistoryPage = 1,
+};
+
+// Identifies a predefined time period option for the history time filter.
+// Must be kept in sync with `history::TimePeriodOptionId` in
+// components/history/core/browser/time_period_filter_utils.h.
+// LINT.IfChange(TimePeriodOptionId)
+enum TimePeriodOptionId {
+  kAllTime = 0,
+  kYesterday = 1,
+  kEarlierThisWeek = 2,
+  kLastWeek = 3,
+  kTwoWeeksAgo = 4,
+};
+// LINT.ThenChange(//components/history/core/browser/time_period_filter_utils.h:TimePeriodOptionId)
+
+// A predefined time period option for the history page's time filter.
+struct TimePeriodOption {
+  TimePeriodOptionId id;
+
+  // The localized label shown to the user in the filter UI.
+  string label;
+
+  // The start of the time period (inclusive). Null if unbounded.
+  mojo_base.mojom.Time? begin_time;
+
+  // The end of the time period (exclusive). Null if unbounded.
+  mojo_base.mojom.Time? end_time;
+};
+
+// Differentiates all the relevant sign-in/history-sync states.
+enum HistorySignInState {
+  kSignedOut = 0,
+  // The user is signed in only in web.
+  kWebOnlySignedIn = 1,
+  // The user is signed in.
+  kSignedIn = 2,
+  // The user is pending sign-in.
+  kSignInPending = 3,
+};
+
+// Differentiates all the relevant history-sync states.
+enum SyncState {
+  kTurnedOff = 0,
+  kTurnedOn = 1,
+  kDisabled = 2,
+};
+
+// Represents the user's history identity and sync state.
+struct HistoryIdentityState {
+  HistorySignInState sign_in;
+  SyncState tabs_sync;
+  SyncState history_sync;
+};
+
 // Browser-side handler for requests from WebUI page.
 interface PageHandler {
   // The BrowserProxy singleton calls this when it's first initialized.
   SetPage(pending_remote<Page> page);
 
   // Queries for entries matching the query term. Returns a promise of a
-  // result object.
+  // result object. `begin_time` (inclusive) and `end_time` (exclusive)
+  // restrict the visit time; null means unbounded. `domain` restricts visits
+  // to hosts matching that hostname suffix; empty means unrestricted.
   QueryHistory(
       string query,
       int32 max_results,
-      double? begin_time,
+      mojo_base.mojom.Time? begin_time,
+      mojo_base.mojom.Time? end_time,
       bool include_user_visits,
-      bool include_actor_visits) => (QueryResult results);
+      bool include_actor_visits,
+      array<string> client_ids,
+      string domain) => (QueryResult results);
 
   // Completes continuation of ongoing query. Returns a promise of a result
   // object.
@@ -242,12 +342,42 @@ interface PageHandler {
   RequestAccountInfo() => (AccountInfo account_info);
 
   // The user turns on the history sync by clicking the "Sync history" button.
-  TurnOnHistorySync();
+  TurnOnHistorySync(AccessPoint access_point);
+
+  // Records that the sign-in pending promo was offered at `access_point`.
+  RecordSigninPendingOffered(AccessPoint access_point);
+
+  // Requests the initial identity and sync state.
+  GetInitialIdentityState() => (HistoryIdentityState identity_state);
+
+  // Requests the browser to navigate to `url` on behalf of the WebUI (e.g., for
+  // file:, about:, or external URLs clicked in the history view that the
+  // renderer cannot directly navigate). `open_in_new_tab` indicates whether the
+  // default disposition (before applying `modifiers`) should open a new
+  // foreground tab instead of navigating the current tab, and `modifiers`
+  // reflect keyboard/mouse button click states used to compute the final window
+  // open disposition.
+  NavigateToUrl(url.mojom.Url url,
+                bool open_in_new_tab,
+                ui.mojom.ClickModifiers modifiers);
 
   // Opens the conversation associated with the given critical action in
-  // split view.
-  OpenCriticalActionConversation(string critical_action_id)
+  // split view. `source` identifies the requesting surface. With
+  // `kCriticalActionRow`, the conversation is opened targeting the action's
+  // recorded turn (if one was stored) when action-level chat linkouts are
+  // enabled; otherwise the request is served like `kEntryMenu`, which opens
+  // the conversation at its default position. The result is recorded under
+  // CriticalActions.OpenConversationResult.{source}.
+  OpenCriticalActionConversation(string critical_action_id,
+                                 OpenConversationSource source)
       => (OpenConversationResult result);
+
+  // Fetches the list of known synced devices.
+  GetSyncedDevicesForFiltering() => (array<Device> devices);
+
+  // Returns the predefined time period options for the history page's time
+  // filter. Returns an empty list if the time filter is disabled.
+  GetTimePeriodOptions() => (array<TimePeriodOption> options);
 
   // Checks if the history sync promo should be shown on the history page.
   [EnableIfNot=is_chromeos]
@@ -272,4 +402,7 @@ interface Page {
 
   // Sends account info updates to the UI.
   SendAccountInfo(AccountInfo account_info);
+
+  // Notifies the page that the user's identity or sync state has changed.
+  OnIdentityStateChanged(HistoryIdentityState identity_state);
 };

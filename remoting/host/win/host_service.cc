@@ -10,7 +10,6 @@
 #include <windows.h>
 
 #include <sddl.h>
-#include <wtsapi32.h>
 
 #include "base/base_paths.h"
 #include "base/base_switches.h"
@@ -24,7 +23,6 @@
 #include "base/task/single_thread_task_executor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread.h"
-#include "base/win/message_window.h"
 #include "base/win/scoped_com_initializer.h"
 #include "remoting/base/auto_thread.h"
 #include "remoting/base/branding.h"
@@ -43,11 +41,6 @@ namespace remoting {
 namespace {
 
 const char kIoThreadName[] = "I/O thread";
-
-// Command line switches:
-
-// "--console" runs the service interactively for debugging purposes.
-const char kConsoleSwitchName[] = "console";
 
 // Security descriptor allowing local processes running under SYSTEM or
 // LocalService accounts to call COM methods exposed by the daemon.
@@ -94,6 +87,37 @@ void DisableAutoStart() {
   }
 }
 
+// Controls whether the service control manager applies the service's failure
+// actions (`SC_ACTION_RESTART`, configured by the installer) when the service
+// stops with a non-zero exit code, in addition to when the process crashes.
+// This is only enabled while stopping to load a deferred update so that other
+// non-zero exits (e.g. `kCpuNotSupported`) do not cause restart loops.
+bool SetFailureActionsOnNonCrashFailures(bool enabled) {
+  ScopedScHandle scmanager(
+      OpenSCManager(nullptr, SERVICES_ACTIVE_DATABASE, SC_MANAGER_CONNECT));
+  if (!scmanager.is_valid()) {
+    PLOG(ERROR) << "Failed to connect to the service control manager";
+    return false;
+  }
+
+  ScopedScHandle service(
+      OpenService(scmanager.Get(), kWindowsServiceName, SERVICE_CHANGE_CONFIG));
+  if (!service.is_valid()) {
+    PLOG(ERROR) << "Failed to open the '" << kWindowsServiceName << "' service";
+    return false;
+  }
+
+  SERVICE_FAILURE_ACTIONS_FLAG flag = {.fFailureActionsOnNonCrashFailures =
+                                           enabled ? TRUE : FALSE};
+  if (!ChangeServiceConfig2W(service.Get(), SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,
+                             &flag)) {
+    PLOG(ERROR) << "Failed to update the failure actions flag of the '"
+                << kWindowsServiceName << "' service";
+    return false;
+  }
+  return true;
+}
+
 // Grants PROCESS_QUERY_LIMITED_INFORMATION on the current process and
 // TOKEN_QUERY on its process token to standard users. This allows standard
 // user client processes to verify the session ID and integrity level of the
@@ -121,17 +145,25 @@ bool HostService::InitWithCommandLine(const base::CommandLine* command_line) {
     return false;
   }
 
-  // Run interactively if needed.
-  if (run_routine_ == &HostService::RunAsService &&
-      command_line->HasSwitch(kConsoleSwitchName)) {
-    run_routine_ = &HostService::RunInConsole;
-  }
-
   return true;
 }
 
 int HostService::Run() {
-  return (this->*run_routine_)();
+  SERVICE_TABLE_ENTRYW dispatch_table[] = {
+      {const_cast<LPWSTR>(kWindowsServiceName), &HostService::ServiceMain},
+      {nullptr, nullptr}};
+
+  if (!StartServiceCtrlDispatcherW(dispatch_table)) {
+    PLOG(ERROR) << "Failed to connect to the service control manager";
+    return kInitializationFailed;
+  }
+
+  // Wait until the service thread completely exited to avoid concurrent
+  // teardown of objects registered with base::AtExitManager and object
+  // destroyed by the service thread.
+  stopped_event_.Wait();
+
+  return kSuccessExitCode;
 }
 
 bool HostService::AddWtsTerminalObserver(const std::string& terminal_id,
@@ -187,8 +219,7 @@ void HostService::RemoveWtsTerminalObserver(WtsTerminalObserver* observer) {
 }
 
 HostService::HostService()
-    : run_routine_(&HostService::RunAsService),
-      service_status_handle_(0),
+    : service_status_handle_(0),
       stopped_event_(base::WaitableEvent::ResetPolicy::MANUAL,
                      base::WaitableEvent::InitialState::NOT_SIGNALED) {}
 
@@ -270,24 +301,6 @@ void HostService::CreateLauncher(
       base::BindOnce(&HostService::StopDaemonProcess, weak_ptr_));
 }
 
-int HostService::RunAsService() {
-  SERVICE_TABLE_ENTRYW dispatch_table[] = {
-      {const_cast<LPWSTR>(kWindowsServiceName), &HostService::ServiceMain},
-      {nullptr, nullptr}};
-
-  if (!StartServiceCtrlDispatcherW(dispatch_table)) {
-    PLOG(ERROR) << "Failed to connect to the service control manager";
-    return kInitializationFailed;
-  }
-
-  // Wait until the service thread completely exited to avoid concurrent
-  // teardown of objects registered with base::AtExitManager and object
-  // destoyed by the service thread.
-  stopped_event_.Wait();
-
-  return kSuccessExitCode;
-}
-
 void HostService::RunAsServiceImpl() {
   base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
   base::RunLoop run_loop;
@@ -317,6 +330,14 @@ void HostService::RunAsServiceImpl() {
     return;
   }
 
+  // Clear the flag in case the previous instance set it while stopping for an
+  // update (see `SetFailureActionsOnNonCrashFailures()`). The host owns this
+  // flag, so it is cleared unconditionally on every start. If clearing fails,
+  // the flag may still be enabled, so the error exit below is not reported to
+  // the service control manager to avoid restarting it in a loop.
+  const bool failure_actions_flag_cleared =
+      SetFailureActionsOnNonCrashFailures(false);
+
   // Query for supported hardware as soon as the Windows service is started.
   // This greatly reduces the risk of hitting a crash due to an unsupported CPU
   // instruction since very little specialized code has been executed at this
@@ -325,8 +346,10 @@ void HostService::RunAsServiceImpl() {
     LOG(ERROR) << "CPU not supported, shutting down to prevent random crashes";
     service_status.dwCurrentState = SERVICE_STOPPED;
     service_status.dwControlsAccepted = 0;
-    service_status.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
-    service_status.dwServiceSpecificExitCode = kCpuNotSupported;
+    if (failure_actions_flag_cleared) {
+      service_status.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
+      service_status.dwServiceSpecificExitCode = kCpuNotSupported;
+    }
     if (!SetServiceStatus(service_status_handle_, &service_status)) {
       PLOG(ERROR) << "Failed to report service status to the service control "
                   << "manager";
@@ -354,6 +377,23 @@ void HostService::RunAsServiceImpl() {
   run_loop.Run();
   weak_factory_.InvalidateWeakPtrs();
 
+  // If the daemon stopped to load a deferred update, report a service-specific
+  // error so the service control manager restarts the service (with the new
+  // binaries) using the installer-configured `SC_ACTION_RESTART` actions. This
+  // depends on those failure actions being configured; if the installer could
+  // not set them or an administrator removed them, the service stays stopped.
+  if (daemon_exit_code_ == kRestartForUpdateExitCode) {
+    // Report the error even if the flag cannot be set: without the flag the
+    // service control manager does not run the failure actions (same outcome
+    // as a clean stop), but it still records the exit code for diagnostics.
+    if (!SetFailureActionsOnNonCrashFailures(true)) {
+      LOG(ERROR) << "Failed to enable failure actions; the service may not be "
+                 << "restarted automatically to load the pending update.";
+    }
+    service_status.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
+    service_status.dwServiceSpecificExitCode = kRestartForUpdateExitCode;
+  }
+
   // Tell SCM that the service is stopped.
   service_status.dwCurrentState = SERVICE_STOPPED;
   service_status.dwControlsAccepted = 0;
@@ -362,68 +402,6 @@ void HostService::RunAsServiceImpl() {
                 << "manager";
     return;
   }
-}
-
-int HostService::RunInConsole() {
-  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
-  base::RunLoop run_loop;
-  main_task_runner_ = main_task_executor.task_runner();
-  weak_ptr_ = weak_factory_.GetWeakPtr();
-
-  int result = kInitializationFailed;
-
-  // Initialize COM.
-  base::win::ScopedCOMInitializer com_initializer;
-  if (!com_initializer.Succeeded()) {
-    return result;
-  }
-
-  if (!InitializeComSecurity(base::WideToUTF8(kComProcessSd),
-                             base::WideToUTF8(kComProcessMandatoryLabel),
-                             false)) {
-    return result;
-  }
-
-  // Subscribe to Ctrl-C and other console events.
-  if (!SetConsoleCtrlHandler(&HostService::ConsoleControlHandler, TRUE)) {
-    PLOG(ERROR) << "Failed to set console control handler";
-    return result;
-  }
-
-  // Create a window for receiving session change notifications.
-  base::win::MessageWindow window;
-  if (!window.Create(base::BindRepeating(&HostService::HandleMessage,
-                                         base::Unretained(this)))) {
-    PLOG(ERROR) << "Failed to create the session notification window";
-    goto cleanup;
-  }
-
-  // Subscribe to session change notifications.
-  if (WTSRegisterSessionNotification(window.hwnd(), NOTIFY_FOR_ALL_SESSIONS) !=
-      FALSE) {
-    GrantQueryAccessToAuthenticatedUsers();
-    CreateLauncher(scoped_refptr<AutoThreadTaskRunner>(
-        new AutoThreadTaskRunner(main_task_runner_, run_loop.QuitClosure())));
-
-    // Run the service.
-    run_loop.Run();
-
-    // Release the control handler.
-    stopped_event_.Signal();
-
-    WTSUnRegisterSessionNotification(window.hwnd());
-    result = kSuccessExitCode;
-  }
-
-cleanup:
-  weak_factory_.InvalidateWeakPtrs();
-
-  // Unsubscribe from console events. Ignore the exit code. There is nothing
-  // we can do about it now and the program is about to exit anyway. Even if
-  // it crashes nothing is going to be broken because of it.
-  SetConsoleCtrlHandler(&HostService::ConsoleControlHandler, FALSE);
-
-  return result;
 }
 
 void HostService::StopDaemonProcess(int exit_code) {
@@ -438,39 +416,11 @@ void HostService::StopDaemonProcess(int exit_code) {
     DisableAutoStart();
   }
 
+  // The last exit code wins: an explicit SERVICE_CONTROL_STOP or
+  // SERVICE_CONTROL_SHUTDOWN that arrives after an update stop records
+  // kSuccessExitCode, which intentionally suppresses the restart.
+  daemon_exit_code_ = exit_code;
   daemon_process_.reset();
-}
-
-bool HostService::HandleMessage(UINT message,
-                                WPARAM wparam,
-                                LPARAM lparam,
-                                LRESULT* result) {
-  if (message == WM_WTSSESSION_CHANGE) {
-    OnSessionChange(wparam, lparam);
-    *result = 0;
-    return true;
-  }
-
-  return false;
-}
-
-// static
-BOOL WINAPI HostService::ConsoleControlHandler(DWORD event) {
-  HostService* self = HostService::GetInstance();
-  switch (event) {
-    case CTRL_C_EVENT:
-    case CTRL_BREAK_EVENT:
-    case CTRL_CLOSE_EVENT:
-    case CTRL_LOGOFF_EVENT:
-    case CTRL_SHUTDOWN_EVENT:
-      self->main_task_runner_->PostTask(
-          FROM_HERE, base::BindOnce(&HostService::StopDaemonProcess,
-                                    self->weak_ptr_, kSuccessExitCode));
-      return TRUE;
-
-    default:
-      return FALSE;
-  }
 }
 
 // static

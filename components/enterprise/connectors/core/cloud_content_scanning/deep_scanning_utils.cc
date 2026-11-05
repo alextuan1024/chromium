@@ -9,8 +9,9 @@
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "components/crash/core/common/crash_key.h"
-#include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_request.h"
 #include "components/download/public/common/download_utils.h"
+#include "components/enterprise/common/proto/connectors.pb.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_request.h"
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/features.h"
 #include "components/safe_browsing/core/common/features.h"
@@ -181,7 +182,7 @@ void MaybeReportDeepScanningVerdict(
     const std::string& file_name,
     const HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& content_transfer_method,
     const std::string& source_email,
     const int64_t content_size,
@@ -200,7 +201,8 @@ void MaybeReportDeepScanningVerdict(
         GURL(content_analysis_info->url()), content_analysis_info->tab_url(),
         source, destination, file_name, sha256_or_cb, mime_type, trigger,
         response.request_token(), unscanned_reason, content_transfer_method,
-        content_size, content_analysis_info->referrer_chain(), event_result);
+        content_size, content_analysis_info->referrer_chain(), event_result,
+        content_analysis_info->extension_initiator());
   }
 
   if (result != ScanRequestUploadResult::kSuccess) {
@@ -221,7 +223,8 @@ void MaybeReportDeepScanningVerdict(
           source, destination, file_name, sha256_or_cb, mime_type, trigger,
           response.request_token(), std::move(unscanned_reason),
           content_transfer_method, content_size,
-          content_analysis_info->referrer_chain(), event_result);
+          content_analysis_info->referrer_chain(), event_result,
+          content_analysis_info->extension_initiator());
     } else if (response_result.triggered_rules_size() > 0) {
       reporting_event_router->OnAnalysisConnectorResult(
           GURL(content_analysis_info->url()), content_analysis_info->tab_url(),
@@ -229,7 +232,8 @@ void MaybeReportDeepScanningVerdict(
           response.request_token(), content_transfer_method, source_email,
           content_analysis_info->GetContentAreaAccountEmail(), response_result,
           content_size, content_analysis_info->referrer_chain(),
-          content_analysis_info->frame_url_chain(), event_result);
+          content_analysis_info->frame_url_chain(), event_result,
+          content_analysis_info->extension_initiator());
     }
   }
 }
@@ -242,7 +246,7 @@ void ReportAnalysisConnectorWarningBypass(
     const std::string& file_name,
     const enterprise_connectors::HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& content_transfer_method,
     const int64_t content_size,
     const ContentAnalysisResponse& response,
@@ -266,7 +270,8 @@ void ReportAnalysisConnectorWarningBypass(
         /*source_email=*/"",
         content_analysis_info->GetContentAreaAccountEmail(), user_justification,
         result, content_size, content_analysis_info->referrer_chain(),
-        content_analysis_info->frame_url_chain(), EventResult::BYPASSED);
+        content_analysis_info->frame_url_chain(), EventResult::BYPASSED,
+        content_analysis_info->extension_initiator());
   }
 }
 
@@ -364,6 +369,14 @@ void InitializeBinaryUploadRequest(BinaryUploadRequest* request,
 
     if (base::FeatureList::IsEnabled(kEnterpriseIframeDlpRulesSupport)) {
       request->set_frame_url_chain(info.frame_url_chain());
+    }
+
+    // Only set the initiator when known so the server can tell "unknown" from
+    // "empty".
+    if (base::FeatureList::IsEnabled(kEnterpriseExtensionActorAttribution)) {
+      if (auto extension_initiator = info.extension_initiator()) {
+        request->set_extension_initiator(std::move(*extension_initiator));
+      }
     }
   }
 
@@ -629,22 +642,28 @@ void DecrementCrashKey(ScanningCrashKey key, int delta) {
 }
 
 DeepScanAccessPoint AccessPointFromRequest(
-    AnalysisConnector connector,
-    ContentAnalysisRequest::Reason reason) {
-  switch (connector) {
+    const ContentAnalysisRequest& request) {
+  switch (request.analysis_connector()) {
     case FILE_DOWNLOADED:
       return DeepScanAccessPoint::DOWNLOAD;
     case FILE_ATTACHED:
-      if (reason == ContentAnalysisRequest::DRAG_AND_DROP) {
+      if (request.reason() == ContentAnalysisRequest::DRAG_AND_DROP) {
         return DeepScanAccessPoint::DRAG_AND_DROP;
       }
-      if (reason == ContentAnalysisRequest::CLIPBOARD_PASTE) {
+      if (request.reason() == ContentAnalysisRequest::CLIPBOARD_PASTE) {
         return DeepScanAccessPoint::PASTE;
       }
       return DeepScanAccessPoint::UPLOAD;
     case DATA_COPIED:
       return DeepScanAccessPoint::COPY;
     case BULK_DATA_ENTRY:
+      if (request.request_data().copied_text_source().context() ==
+          ContentMetaData::CopiedTextSource::GEMINI_IN_CHROME) {
+        return DeepScanAccessPoint::ACTOR;
+      }
+      if (request.reason() == ContentAnalysisRequest::DRAG_AND_DROP) {
+        return DeepScanAccessPoint::DRAG_AND_DROP;
+      }
       return DeepScanAccessPoint::PASTE;
     case PRINT:
       return DeepScanAccessPoint::PRINT;

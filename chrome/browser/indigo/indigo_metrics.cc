@@ -9,6 +9,7 @@
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/strings/strcat.h"
+#include "base/time/time.h"
 #include "chrome/browser/indigo/indigo_service.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 
@@ -65,6 +66,9 @@ void RecordShownEntryPoint(IndigoPageActionEntryPoint entry_point) {
       break;
     case IndigoPageActionEntryPoint::kErrorToast:
       break;
+    case IndigoPageActionEntryPoint::kContextMenu:
+      base::RecordAction(base::UserMetricsAction(kContextMenuShowAction));
+      break;
   }
   base::UmaHistogramEnumeration(kShownEntryPointHistogram, entry_point);
 }
@@ -83,7 +87,7 @@ void RecordClickedEntryPoint(
     case EntryPoint::kAnchoredMessage:
       base::RecordAction(base::UserMetricsAction(kAnchoredMessageClickAction));
       if (last_anchored_message_priority ==
-          page_actions::PageActionPriorityCategory::kContextualCue) {
+          page_actions::PageActionPriorityCategory::kProactiveSuggestion) {
         base::UmaHistogramEnumeration(
             kClickedEntryPointHistogram,
             IndigoPageActionEntryPoint::kProactiveAnchoredMessage);
@@ -99,7 +103,26 @@ void RecordClickedEntryPoint(
       base::UmaHistogramEnumeration(kClickedEntryPointHistogram,
                                     IndigoPageActionEntryPoint::kErrorToast);
       break;
+    case EntryPoint::kContextMenu:
+      base::RecordAction(base::UserMetricsAction(kContextMenuClickAction));
+      base::UmaHistogramEnumeration(kClickedEntryPointHistogram,
+                                    IndigoPageActionEntryPoint::kContextMenu);
+      break;
   }
+}
+
+void RecordContextMenuTargetType(IndigoContextMenuTargetType target_type) {
+  base::UmaHistogramEnumeration(kContextMenuTargetTypeHistogram, target_type);
+}
+
+void RecordSnoozeIphStateOnFirstUse(IndigoSnoozeIphStateOnFirstUse state) {
+  base::UmaHistogramEnumeration(kSnoozeIphStateOnFirstUseHistogram, state);
+}
+
+void RecordTimeSinceSnoozeIphLastShown(base::TimeDelta time_since_last_show) {
+  base::UmaHistogramCustomTimes(kTimeSinceSnoozeIphLastShownHistogram,
+                                time_since_last_show, base::Seconds(1),
+                                base::Days(7), 50);
 }
 
 void RecordApiHttpResponse(IndigoApiEndpoint endpoint,
@@ -127,6 +150,24 @@ void RecordApiStatusAndLatency(IndigoApiEndpoint endpoint,
       latency);
 }
 
+namespace {
+bool g_region_filter_result_recorded = false;
+}  // namespace
+
+void RecordRegionFilterResultOncePerSession(IndigoRegionFilterResult result) {
+  if (g_region_filter_result_recorded) {
+    return;
+  }
+  g_region_filter_result_recorded = true;
+  base::UmaHistogramEnumeration("Indigo.RegionFilterResult", result);
+}
+
+ScopedRegionFilterResultForTesting::ScopedRegionFilterResultForTesting()
+    : auto_reset_(&g_region_filter_result_recorded, false) {}
+
+ScopedRegionFilterResultForTesting::~ScopedRegionFilterResultForTesting() =
+    default;
+
 void RecordTransformationTrigger(IndigoTransformationTriggerSource source) {
   base::RecordAction(base::UserMetricsAction(kTransformationTriggerAction));
   base::UmaHistogramEnumeration(kTransformationTriggerSourceHistogram, source);
@@ -143,7 +184,7 @@ void RecordTransformationResult(IndigoTransformationResult result) {
 
 void RecordTransformationResultCannotGenerateImage(
     const CombinedEligibility& eligibility) {
-  DCHECK(!eligibility.CanGenerateImage());
+  CHECK(!eligibility.CanGenerateImage(), base::NotFatalUntil::M161);
   IndigoTransformationResult result = IndigoTransformationResult::kUnknown;
 
   switch (eligibility.local_eligibility) {
@@ -170,6 +211,12 @@ void RecordTransformationResultCannotGenerateImage(
       break;
     case LocalEligibility::kEnterpriseDisallowed:
       result = IndigoTransformationResult::kEnterpriseDisallowed;
+      break;
+    case LocalEligibility::kCountryNotAllowed:
+      result = IndigoTransformationResult::kCountryNotAllowed;
+      break;
+    case LocalEligibility::kLocaleNotAllowed:
+      result = IndigoTransformationResult::kLocaleNotAllowed;
       break;
     case LocalEligibility::kEligible:
       if (!eligibility.remote_eligibility.has_value()) {

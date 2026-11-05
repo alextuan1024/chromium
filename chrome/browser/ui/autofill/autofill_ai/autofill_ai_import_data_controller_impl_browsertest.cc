@@ -4,29 +4,52 @@
 
 #include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_data_controller_impl.h"
 
+#include <algorithm>
 #include <optional>
+#include <string_view>
 
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/language_tag.h"
 #include "base/notreached.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
-#include "chrome/browser/ui/autofill/autofill_ai/entity_attribute_update_details.h"
-#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
+#include "chrome/browser/ui/views/autofill/autofill_ai/autofill_ai_import_data_bubble_view.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/payments/test_legal_message_line.h"
 #include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
+#include "components/autofill/core/browser/ui/autofill_ai/entity_attribute_update_details.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "content/public/browser/visibility.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
+#include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/test/browser_test.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/views/controls/styled_label.h"
+#include "ui/views/test/widget_test.h"
+#include "ui/views/view_utils.h"
 
 namespace autofill {
 
 namespace {
+
+using ::testing::ElementsAre;
+using ::testing::Eq;
+using ::testing::FieldsAre;
+using ::testing::IsEmpty;
+
 // Helper method used to simulate an update entity dialog for a private pass
 // (passport). Returns two entities where the first is the new one and second is
 // the old one. The new one contains one updated and one edited attribute.
@@ -79,7 +102,7 @@ class AutofillAiImportDataControllerImplTest : public DialogBrowserTest {
     content::WebContents* web_contents =
         browser()->tab_strip_model()->GetActiveWebContents();
     AutofillAiImportDataControllerImpl::CreateForWebContents(
-        web_contents, /*app_locale=*/"en-US");
+        web_contents, /*app_locale=*/base::i18n::GetKnownLanguageTag("en-US"));
     controller_ =
         AutofillAiImportDataControllerImpl::FromWebContents(web_contents);
     CHECK(controller_);
@@ -131,6 +154,19 @@ class AutofillAiImportDataControllerImplTest : public DialogBrowserTest {
   }
 
   AutofillAiImportDataControllerImpl* controller() { return controller_; }
+
+  AutofillBubbleBase* bubble_view() { return controller_->bubble_view(); }
+
+  // Returns whether the bubble shows a `views::StyledLabel` containing `text`.
+  bool BubbleShowsText(std::u16string_view text) {
+    return views::test::AnyViewMatchingPredicate(
+        static_cast<AutofillAiImportDataBubbleView*>(bubble_view())
+            ->GetWidget(),
+        [&](const views::View* view) {
+          const auto* label = views::AsViewClass<views::StyledLabel>(view);
+          return label && label->GetText().contains(text);
+        });
+  }
 
   // Used in the save prompt case, this method can be called to set specific
   // attributes on the entity to be saved.
@@ -197,10 +233,13 @@ IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplTest,
 
   ASSERT_TRUE(controller()->IsShowingBubble());
   EXPECT_TRUE(controller()->CloseOnAccept());
-  controller()->OnSaveButtonClicked();
+  controller()->OnBubbleClosed(
+      AutofillClient::AutofillAiBubbleResult::kCancelled);
   ASSERT_FALSE(controller()->IsShowingBubble());
+  EXPECT_FALSE(controller()->ShouldReshowOnTabVisible());
 
-  controller()->OnVisibilityChanged(content::Visibility::VISIBLE);
+  ASSERT_TRUE(AddTabAtIndex(1, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED));
+  browser()->tab_strip_model()->ActivateTabAt(0);
   EXPECT_FALSE(controller()->IsShowingBubble());
 }
 
@@ -246,7 +285,7 @@ IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplTest,
 
   ASSERT_TRUE(controller()->IsShowingBubble());
   EXPECT_FALSE(controller()->CloseOnAccept());
-  controller()->OnSaveButtonClicked();
+  static_cast<AutofillAiImportDataBubbleView*>(bubble_view())->AcceptDialog();
   // Expect it to stay open
   EXPECT_TRUE(controller()->IsShowingBubble());
 
@@ -272,9 +311,8 @@ IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplTest,
 // in the prompt.
 IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplTest,
                        ShowEntityImportBubble_ForwardsPublicPassesNotice) {
-  ChromeAutofillClient* client =
-      ChromeAutofillClient::FromWebContentsForTesting(
-          browser()->tab_strip_model()->GetActiveWebContents());
+  ContentAutofillClient* client = ContentAutofillClient::FromWebContents(
+      browser()->tab_strip_model()->GetActiveWebContents());
   ASSERT_TRUE(client);
 
   client->ShowEntityImportBubble(
@@ -325,6 +363,321 @@ IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplTest,
   EXPECT_EQ(
       browser()->tab_strip_model()->GetActiveWebContents()->GetVisibleURL(),
       GURL(chrome::kWalletPassesPageURL));
+}
+
+class AutofillAiImportDataControllerImplWalletPrivatePassesTest
+    : public AutofillAiImportDataControllerImplTest {
+ private:
+  base::test::ScopedFeatureList feature_list_{
+      features::kAutofillAiWalletPrivatePasses};
+};
+
+// Tests that accepting the save prompt of a Wallet entity reports the string
+// IDs of all text shown in the notice.
+IN_PROC_BROWSER_TEST_F(
+    AutofillAiImportDataControllerImplWalletPrivatePassesTest,
+    AcceptPrompt_SaveWalletEntityConsentStringIds) {
+  base::test::TestFuture<AutofillClient::AutofillAiBubbleResult,
+                         std::optional<EntityInstance>,
+                         const AutofillClient::EntityImportUIContext&>
+      prompt_result_future;
+  controller()->ShowPrompt(
+      test::GetPassportEntityInstance(
+          {.record_type = EntityInstance::RecordType::kServerWallet}),
+      std::nullopt, /*close_on_accept=*/true, /*legal_message_lines=*/{},
+      prompt_result_future.GetCallback());
+  ASSERT_TRUE(controller()->IsShowingBubble());
+  auto* bubble = static_cast<AutofillAiImportDataBubbleView*>(bubble_view());
+  views::test::WidgetDestroyedWaiter widget_destroyed_waiter(
+      bubble->GetWidget());
+
+  bubble->AcceptDialog();
+
+  ASSERT_TRUE(prompt_result_future.IsReady());
+  EXPECT_THAT(
+      std::get<2>(prompt_result_future.Get()).accepted_consent_string_ids,
+      ElementsAre(IDS_AUTOFILL_AI_SAVE_ENTITY_TO_WALLET_DIALOG_SUBTITLE_NEW,
+                  IDS_AUTOFILL_GOOGLE_WALLET_TITLE,
+                  IDS_AUTOFILL_MANAGE_YOUR_INFO_LINK));
+  widget_destroyed_waiter.Wait();
+}
+
+// Tests that clicking the privacy policy link opens the Google Privacy Policy
+// in a new tab and marks the bubble to be reshown once the tab is visible.
+IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplTest,
+                       OnPrivacyPolicyLinkClicked) {
+  SetNewPassportOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  ShowUi("SaveNewPassportEntity");
+  ASSERT_TRUE(controller()->IsShowingBubble());
+  ASSERT_EQ(browser()->tab_strip_model()->count(), 1);
+
+  controller()->OnPrivacyPolicyLinkClicked();
+
+  EXPECT_TRUE(controller()->ShouldReshowOnTabVisible());
+  EXPECT_EQ(browser()->tab_strip_model()->count(), 2);
+  EXPECT_EQ(
+      browser()->tab_strip_model()->GetActiveWebContents()->GetVisibleURL(),
+      GURL(chrome::kPrivacyPolicyURL));
+}
+
+class AutofillAiImportDataControllerImplPrivatePassNoticeTest
+    : public AutofillAiImportDataControllerImplTest {
+ private:
+  base::test::ScopedFeatureList feature_list_{
+      features::kAutofillRegionalizedPrivatePassesUxRefine};
+};
+
+// Tests that saving a private pass shows the private pass notice and the link
+// to the Privacy Policy.
+IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplPrivatePassNoticeTest,
+                       SavePrivatePass_ShowsPrivatePassNotice) {
+  SetNewPassportOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  ShowUi("SaveNewPassportEntity");
+  ASSERT_TRUE(controller()->IsShowingBubble());
+
+  EXPECT_TRUE(BubbleShowsText(l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_HOW_THIS_INFO_IS_USED_ACROSS_GOOGLE_LINK)));
+  EXPECT_TRUE(BubbleShowsText(
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_PRIVACY_POLICY_LINK)));
+}
+
+// Tests that accepting the save prompt of a private pass reports the string IDs
+// of all text shown in the private pass notice, including the Privacy Policy.
+IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplPrivatePassNoticeTest,
+                       AcceptPrompt_SavePrivatePassConsentStringIds) {
+  base::test::TestFuture<AutofillClient::AutofillAiBubbleResult,
+                         std::optional<EntityInstance>,
+                         const AutofillClient::EntityImportUIContext&>
+      prompt_result_future;
+  controller()->ShowPrompt(
+      test::GetPassportEntityInstance(
+          {.record_type = EntityInstance::RecordType::kServerWallet}),
+      std::nullopt, /*close_on_accept=*/true, /*legal_message_lines=*/{},
+      prompt_result_future.GetCallback());
+  ASSERT_TRUE(controller()->IsShowingBubble());
+  auto* bubble = static_cast<AutofillAiImportDataBubbleView*>(bubble_view());
+  views::test::WidgetDestroyedWaiter widget_destroyed_waiter(
+      bubble->GetWidget());
+
+  bubble->AcceptDialog();
+
+  ASSERT_TRUE(prompt_result_future.IsReady());
+  EXPECT_THAT(
+      std::get<2>(prompt_result_future.Get()).accepted_consent_string_ids,
+      ElementsAre(
+          IDS_AUTOFILL_AI_SAVE_ENTITY_TO_WALLET_DIALOG_SUBTITLE_PRIVATE_PASS,
+          IDS_AUTOFILL_GOOGLE_WALLET_TITLE,
+          IDS_AUTOFILL_HOW_THIS_INFO_IS_USED_ACROSS_GOOGLE_LINK,
+          IDS_AUTOFILL_PRIVACY_POLICY_LINK));
+  widget_destroyed_waiter.Wait();
+}
+
+// Tests that saving a public pass doesn't show the private pass notice.
+IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplPrivatePassNoticeTest,
+                       SavePublicPass_DoesNotShowPrivatePassNotice) {
+  SetNewVehicleOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  ShowUi("SaveNewVehicleEntity");
+  ASSERT_TRUE(controller()->IsShowingBubble());
+
+  EXPECT_FALSE(BubbleShowsText(l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_HOW_THIS_INFO_IS_USED_ACROSS_GOOGLE_LINK)));
+  EXPECT_FALSE(BubbleShowsText(
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_PRIVACY_POLICY_LINK)));
+}
+
+class AutofillAiImportDataControllerImplPrivatePassNoticeDisabledTest
+    : public AutofillAiImportDataControllerImplTest {
+ public:
+  AutofillAiImportDataControllerImplPrivatePassNoticeDisabledTest() {
+    feature_list_.InitAndDisableFeature(
+        features::kAutofillRegionalizedPrivatePassesUxRefine);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Tests that saving a private pass doesn't show the private pass notice if
+// `kAutofillRegionalizedPrivatePassesUxRefine` is disabled.
+IN_PROC_BROWSER_TEST_F(
+    AutofillAiImportDataControllerImplPrivatePassNoticeDisabledTest,
+    SavePrivatePass_DoesNotShowPrivatePassNotice) {
+  SetNewPassportOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  ShowUi("SaveNewPassportEntity");
+  ASSERT_TRUE(controller()->IsShowingBubble());
+
+  EXPECT_FALSE(BubbleShowsText(l10n_util::GetStringUTF16(
+      IDS_AUTOFILL_HOW_THIS_INFO_IS_USED_ACROSS_GOOGLE_LINK)));
+  EXPECT_FALSE(BubbleShowsText(
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_PRIVACY_POLICY_LINK)));
+}
+
+// Tests that accepting a prompt that closes on accept keeps the bubble marked
+// as showing until the widget's asynchronous teardown (`WindowClosing()`)
+// completes, preventing a concurrent `ShowPrompt()` from sneaking in and being
+// auto-accepted by `WindowClosing()`.
+IN_PROC_BROWSER_TEST_F(AutofillAiImportDataControllerImplTest,
+                       AcceptPrompt_DeferredWidgetCloseBlocksConcurrentPrompt) {
+  base::test::TestFuture<AutofillClient::AutofillAiBubbleResult,
+                         std::optional<EntityInstance>,
+                         const AutofillClient::EntityImportUIContext&>
+      first_prompt_future;
+  controller()->ShowPrompt(test::GetPassportEntityInstance(), std::nullopt,
+                           /*close_on_accept=*/true,
+                           /*legal_message_lines=*/{},
+                           first_prompt_future.GetCallback());
+  ASSERT_TRUE(controller()->IsShowingBubble());
+  AutofillAiImportDataBubbleView* const first_bubble =
+      static_cast<AutofillAiImportDataBubbleView*>(bubble_view());
+  ASSERT_NE(first_bubble, nullptr);
+  views::test::WidgetDestroyedWaiter first_widget_destroyed_waiter(
+      first_bubble->GetWidget());
+
+  first_bubble->AcceptDialog();
+
+  ASSERT_TRUE(first_prompt_future.IsReady());
+  EXPECT_THAT(
+      first_prompt_future.Get(),
+      FieldsAre(
+          AutofillClient::AutofillAiBubbleResult::kAccepted, Eq(std::nullopt),
+          FieldsAre(
+              ElementsAre(IDS_AUTOFILL_AI_SAVE_ENTITY_DIALOG_SUBTITLE),
+              IDS_AUTOFILL_PREDICTION_IMPROVEMENTS_SAVE_DIALOG_SAVE_BUTTON)));
+  // The widget is closing asynchronously (`CloseNow()` is posted), so the
+  // controller still considers the bubble visible until `WindowClosing()` runs.
+  EXPECT_TRUE(controller()->IsShowingBubble());
+
+  // Attempting to show a second prompt before the first widget finishes
+  // closing is rejected with `kUnknown`.
+  base::test::TestFuture<AutofillClient::AutofillAiBubbleResult,
+                         std::optional<EntityInstance>,
+                         const AutofillClient::EntityImportUIContext&>
+      concurrent_prompt_future;
+  controller()->ShowPrompt(test::GetVehicleEntityInstance(), std::nullopt,
+                           /*close_on_accept=*/true,
+                           /*legal_message_lines=*/{},
+                           concurrent_prompt_future.GetCallback());
+  ASSERT_TRUE(concurrent_prompt_future.IsReady());
+  EXPECT_THAT(
+      concurrent_prompt_future.Get(),
+      FieldsAre(AutofillClient::AutofillAiBubbleResult::kUnknown,
+                Eq(std::nullopt), FieldsAre(IsEmpty(), Eq(std::nullopt))));
+
+  // Once the first widget finishes closing, the controller is ready to show a
+  // new prompt.
+  first_widget_destroyed_waiter.Wait();
+  EXPECT_FALSE(controller()->IsShowingBubble());
+}
+
+// TODO(crbug.com/571821268): Remove separate fixture when cleaning up
+// `kAutofillRegionalizedPrivatePassesUxRefine`.
+template <bool kIsFeatureEnabled>
+class AutofillAiImportDataControllerImplEquallyWeightedButtonsTest
+    : public AutofillAiImportDataControllerImplTest {
+ public:
+  AutofillAiImportDataControllerImplEquallyWeightedButtonsTest() {
+    scoped_features_.InitWithFeatureState(
+        features::kAutofillRegionalizedPrivatePassesUxRefine,
+        kIsFeatureEnabled);
+  }
+
+  void SignInAndSetMustShowEquallyWeightedButtons(
+      std::optional<bool> capability_value) {
+    signin::IdentityManager* identity_manager =
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile());
+    AccountInfo account_info = signin::MakePrimaryAccountAvailable(
+        identity_manager, "test@example.com", signin::ConsentLevel::kSignin);
+    if (capability_value.has_value()) {
+      AccountCapabilitiesTestMutator(&account_info)
+          .set_must_show_equally_weighted_buttons_for_private_passes_in_autofill(
+              *capability_value);
+      signin::UpdateAccountInfoForAccount(identity_manager, account_info);
+    }
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_features_;
+};
+using AutofillAiImportDataControllerImplEquallyWeightedButtonsEnabledTest =
+    AutofillAiImportDataControllerImplEquallyWeightedButtonsTest<true>;
+using AutofillAiImportDataControllerImplEquallyWeightedButtonsDisabledTest =
+    AutofillAiImportDataControllerImplEquallyWeightedButtonsTest<false>;
+
+// Tests that equally weighted buttons are not shown when
+// `kAutofillRegionalizedPrivatePassesUxRefine` is disabled.
+IN_PROC_BROWSER_TEST_F(
+    AutofillAiImportDataControllerImplEquallyWeightedButtonsDisabledTest,
+    MustShowEquallyWeightedButtons_FeatureDisabled) {
+  SignInAndSetMustShowEquallyWeightedButtons(true);
+  SetNewPassportOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  ShowUi("SaveNewPassportEntity");
+
+  EXPECT_FALSE(controller()->MustShowEquallyWeightedButtons());
+}
+
+// Tests that equally weighted buttons are shown for private passes (both
+// Wallet and local) when the account capability is `kTrue`.
+IN_PROC_BROWSER_TEST_F(
+    AutofillAiImportDataControllerImplEquallyWeightedButtonsEnabledTest,
+    MustShowEquallyWeightedButtons_CapabilityTrue) {
+  SignInAndSetMustShowEquallyWeightedButtons(true);
+  SetNewPassportOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  ShowUi("SaveNewPassportEntity");
+  EXPECT_TRUE(controller()->MustShowEquallyWeightedButtons());
+  controller()->OnBubbleClosed(
+      AutofillClient::AutofillAiBubbleResult::kAccepted);
+
+  SetNewPassportOptions({.record_type = EntityInstance::RecordType::kLocal});
+  ShowUi("SaveNewPassportEntity");
+  EXPECT_TRUE(controller()->MustShowEquallyWeightedButtons());
+}
+
+// Tests that equally weighted buttons are not shown for a private pass when
+// the account capability is `kFalse`.
+IN_PROC_BROWSER_TEST_F(
+    AutofillAiImportDataControllerImplEquallyWeightedButtonsEnabledTest,
+    MustShowEquallyWeightedButtons_CapabilityFalse) {
+  SignInAndSetMustShowEquallyWeightedButtons(false);
+  SetNewPassportOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  ShowUi("SaveNewPassportEntity");
+  EXPECT_FALSE(controller()->MustShowEquallyWeightedButtons());
+  controller()->OnBubbleClosed(
+      AutofillClient::AutofillAiBubbleResult::kAccepted);
+}
+
+// Tests that equally weighted buttons are shown for a private pass when the
+// account capability is `kUnknown` to be on the legally safe side. In practice,
+// prompts with an unknown account capability should be blocked.
+IN_PROC_BROWSER_TEST_F(
+    AutofillAiImportDataControllerImplEquallyWeightedButtonsEnabledTest,
+    MustShowEquallyWeightedButtons_CapabilityUnknown) {
+  SignInAndSetMustShowEquallyWeightedButtons(std::nullopt);
+  SetNewPassportOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  ShowUi("SaveNewPassportEntity");
+  EXPECT_TRUE(controller()->MustShowEquallyWeightedButtons());
+  controller()->OnBubbleClosed(
+      AutofillClient::AutofillAiBubbleResult::kAccepted);
+}
+
+// Tests that equally weighted buttons are not shown for public passes like
+// vehicles, even when the account capability is `kTrue`.
+IN_PROC_BROWSER_TEST_F(
+    AutofillAiImportDataControllerImplEquallyWeightedButtonsEnabledTest,
+    MustShowEquallyWeightedButtons_PublicPass) {
+  SignInAndSetMustShowEquallyWeightedButtons(true);
+  SetNewVehicleOptions(
+      {.record_type = EntityInstance::RecordType::kServerWallet});
+  ShowUi("SaveNewVehicleEntity");
+
+  EXPECT_FALSE(controller()->MustShowEquallyWeightedButtons());
 }
 
 }  // namespace autofill

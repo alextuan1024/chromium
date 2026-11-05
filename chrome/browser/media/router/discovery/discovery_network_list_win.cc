@@ -127,12 +127,14 @@ class WlanApi {
         wlan_free_memory(reinterpret_cast<WlanFreeMemoryFunction>(
             GetProcAddress(library, "WlanFreeMemory"))),
         library_(library) {
-    DCHECK(library);
-    DCHECK(wlan_open_handle);
-    DCHECK(wlan_close_handle);
-    DCHECK(wlan_enum_interfaces);
+    CHECK(library, base::NotFatalUntil::M161);
+    CHECK(wlan_open_handle, base::NotFatalUntil::M161);
+    CHECK(wlan_close_handle, base::NotFatalUntil::M161);
+    CHECK(wlan_enum_interfaces, base::NotFatalUntil::M161);
+    // TODO(crbug.com/584503286): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(wlan_query_interface);
-    DCHECK(wlan_free_memory);
+    CHECK(wlan_free_memory, base::NotFatalUntil::M161);
   }
 
   HINSTANCE library_;

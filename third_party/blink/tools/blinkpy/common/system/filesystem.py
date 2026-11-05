@@ -30,8 +30,10 @@
 A FileSystem object can be used to represent dependency on the
 filesystem, and can be replaced with a MockFileSystem in tests.
 """
+
 from __future__ import unicode_literals
 
+import contextlib
 import glob
 import hashlib
 import logging
@@ -42,6 +44,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import weakref
+
+if sys.platform == 'win32':
+    import msvcrt
+else:
+    import fcntl
 
 try:
     import exceptions
@@ -51,6 +59,25 @@ except ImportError:
 
 _log = logging.getLogger(__name__)
 
+_active_lock_files = weakref.WeakSet()
+
+
+def _close_inherited_lock_files():
+    for lock_file in list(_active_lock_files):
+        try:
+            lock_file.close()
+        except OSError:
+            pass
+    _active_lock_files.clear()
+
+
+if hasattr(os, 'register_at_fork'):
+    os.register_at_fork(after_in_child=_close_inherited_lock_files)
+
+
+class FileLockError(OSError):
+    """Raised when a non-blocking file lock cannot be acquired."""
+
 
 class FileSystem(object):
     """FileSystem interface for blinkpy.
@@ -58,6 +85,7 @@ class FileSystem(object):
     Unless otherwise noted, all paths are allowed to be either absolute
     or relative.
     """
+
     sep = os.sep
     pardir = os.pardir
 
@@ -79,7 +107,7 @@ class FileSystem(object):
         """
         if sys.platform == 'win32' and len(path) >= self.WINDOWS_MAX_PATH:
             assert not path.startswith(r'\\'), "must not already be UNC"
-            return r'\\?\%s' % (self.abspath(path), )
+            return r'\\?\%s' % (self.abspath(path),)
         return path
 
     def abspath(self, path):
@@ -108,7 +136,8 @@ class FileSystem(object):
     def copyfile(self, source, destination):
         # shutil.copyfile() uses open() underneath, which supports UNC paths.
         shutil.copyfile(
-            self._path_for_access(source), self._path_for_access(destination))
+            self._path_for_access(source), self._path_for_access(destination)
+        )
 
     def dirname(self, path):
         return os.path.dirname(path)
@@ -145,7 +174,7 @@ class FileSystem(object):
         if self.basename(path) in dirs_to_skip:
             return []
 
-        for (dirpath, dirnames, filenames) in os.walk(path):
+        for dirpath, dirnames, filenames in os.walk(path):
             for d in dirs_to_skip:
                 if d in dirnames:
                     dirnames.remove(d)
@@ -180,7 +209,8 @@ class FileSystem(object):
 
     def walk(self, top, topdown=True, onerror=None, followlinks=False):
         return os.walk(
-            top, topdown=topdown, onerror=onerror, followlinks=followlinks)
+            top, topdown=topdown, onerror=onerror, followlinks=followlinks
+        )
 
     def mkdtemp(self, **kwargs):
         """Creates and returns a uniquely-named directory.
@@ -268,22 +298,19 @@ class FileSystem(object):
         return f, temp_name
 
     def open_text_file_for_reading(self, path):
-        return open(self._path_for_access(path),
-                    'r',
-                    encoding='utf8',
-                    newline='')
+        return open(
+            self._path_for_access(path), 'r', encoding='utf8', newline=''
+        )
 
     def open_text_file_for_writing(self, path):
-        return open(self._path_for_access(path),
-                    'w',
-                    encoding='utf8',
-                    newline='')
+        return open(
+            self._path_for_access(path), 'w', encoding='utf8', newline=''
+        )
 
     def open_text_file_for_appending(self, path):
-        return open(self._path_for_access(path),
-                    'a',
-                    encoding='utf8',
-                    newline='')
+        return open(
+            self._path_for_access(path), 'a', encoding='utf8', newline=''
+        )
 
     def read_text_file(self, path):
         """Returns the contents of the file as a Unicode string.
@@ -346,8 +373,9 @@ class FileSystem(object):
             # Ensure the root of the tree being rmtree'd is not a long path.
             # We can't convert it to a long path (using _path_for_access),
             # because long paths are not supported in 'rmdir' on Windows 7.
-            assert len(path_abs) < self.WINDOWS_MAX_PATH, \
+            assert len(path_abs) < self.WINDOWS_MAX_PATH, (
                 'root path is too long'
+            )
 
             # Ensure (hopefully) that the quoting done on the next line is safe.
             assert '"' not in path_abs, 'path contains a quotation mark (")'
@@ -392,10 +420,18 @@ class FileSystem(object):
         """Return (dirname + os.sep + basename, '.' + ext)"""
         return os.path.splitext(path)
 
+    def chmod(self, path, mode):
+        os.chmod(self._path_for_access(path), mode)
+
     def make_executable(self, file_path):
         os.chmod(
-            file_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
-            | stat.S_IRGRP | stat.S_IXGRP)
+            file_path,
+            stat.S_IRUSR
+            | stat.S_IWUSR
+            | stat.S_IXUSR
+            | stat.S_IRGRP
+            | stat.S_IXGRP,
+        )
 
     def symlink(self, source, link_name):
         """Create a symbolic link. Unix only."""
@@ -416,6 +452,59 @@ class FileSystem(object):
             The sanitized filename.
         """
         return _sanitize_filename(filename, replacement)
+
+    def _open_lock_file(self, path):
+        access_path = self._path_for_access(path)
+        if sys.platform == 'win32':
+            return open(access_path, 'a+b')
+        # On POSIX, `flock(LOCK_EX)` works on read-only file descriptors. Open
+        # existing lock files with `'rb'` so multiple users sharing `/tmp` do
+        # not need write permission or trigger `fs.protected_regular` on
+        # `O_CREAT`.
+        try:
+            f = open(access_path, 'rb')
+        except FileNotFoundError:
+            try:
+                f = open(access_path, 'a+b')
+            except PermissionError:
+                f = open(access_path, 'rb')
+        try:
+            os.fchmod(
+                f.fileno(),
+                stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
+            )
+        except OSError:
+            pass
+        return f
+
+    @contextlib.contextmanager
+    def lock_file(self, path):
+        """Acquires an exclusive, non-blocking OS lock on `path`."""
+        parent = self.dirname(path)
+        if parent:
+            self.maybe_make_directory(parent)
+        with self._open_lock_file(path) as f:
+            _active_lock_files.add(f)
+            try:
+                try:
+                    if sys.platform == 'win32':
+                        f.seek(0)
+                        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as error:
+                    raise FileLockError('Failed to lock %s' % path) from error
+                try:
+                    yield
+                finally:
+                    if not f.closed:
+                        if sys.platform == 'win32':
+                            f.seek(0)
+                            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                        else:
+                            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            finally:
+                _active_lock_files.discard(f)
 
 
 # _remove_contents is implemented in terms of other FileSystem functions. To
@@ -473,13 +562,14 @@ def _remove_contents(fs, dirname, sleep=time.sleep):
 
     _log.warning('Unable to remove %s', dirname)
     for dirpath, dirnames, filenames in fs.walk(
-            dirname, onerror=onerror, topdown=False):
+        dirname, onerror=onerror, topdown=False
+    ):
         for fname in filenames:
-            _log.warning('File %s still in output dir.', fs.join(
-                dirpath, fname))
+            _log.warning(
+                'File %s still in output dir.', fs.join(dirpath, fname)
+            )
         for dname in dirnames:
-            _log.warning('Dir %s still in output dir.', fs.join(
-                dirpath, dname))
+            _log.warning('Dir %s still in output dir.', fs.join(dirpath, dname))
 
     return False
 

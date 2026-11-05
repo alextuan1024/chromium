@@ -1,0 +1,176 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "media/filters/symphonia_demuxer_util.h"
+
+#include <stdint.h>
+
+#include "base/test/scoped_feature_list.h"
+#include "media/base/media_switches.h"
+#include "testing/gtest/include/gtest/gtest.h"
+
+namespace media {
+
+namespace {
+
+// `SymphoniaCodecToSampleFormat()` only reads the bit depth for FLAC. Other
+// codecs ignore it.
+constexpr uint32_t kIgnoredBitsPerSample = 16;
+constexpr uint32_t k16BitFlac = 16;
+constexpr uint32_t k24BitFlac = 24;
+
+}  // namespace
+
+using container_names::MediaContainerName;
+
+TEST(SymphoniaDemuxerUtilTest, AudioCodecs) {
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::Aac), AudioCodec::kAAC);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::Flac),
+            AudioCodec::kFLAC);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::Mp3), AudioCodec::kMP3);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::Opus),
+            AudioCodec::kOpus);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::Vorbis),
+            AudioCodec::kVorbis);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::PcmAlaw),
+            AudioCodec::kPCM_ALAW);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::PcmMulaw),
+            AudioCodec::kPCM_MULAW);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::PcmS16be),
+            AudioCodec::kPCM_S16BE);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::PcmS24be),
+            AudioCodec::kPCM_S24BE);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::PcmS16),
+            AudioCodec::kPCM);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::PcmF32Planar),
+            AudioCodec::kPCM);
+}
+
+TEST(SymphoniaDemuxerUtilTest, UnsupportedCodecsAreUnknown) {
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::Unknown),
+            AudioCodec::kUnknown);
+  EXPECT_EQ(SymphoniaCodecToAudioCodec(SymphoniaCodec::Vp9),
+            AudioCodec::kUnknown);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::Unknown,
+                                         kIgnoredBitsPerSample),
+            kUnknownSampleFormat);
+  EXPECT_EQ(
+      SymphoniaCodecToSampleFormat(SymphoniaCodec::H264, kIgnoredBitsPerSample),
+      kUnknownSampleFormat);
+}
+
+TEST(SymphoniaDemuxerUtilTest, SampleFormats) {
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::PcmU8,
+                                         kIgnoredBitsPerSample),
+            kSampleFormatU8);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::PcmU8Planar,
+                                         kIgnoredBitsPerSample),
+            kSampleFormatPlanarU8);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::PcmS16be,
+                                         kIgnoredBitsPerSample),
+            kSampleFormatS16);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::PcmS16Planar,
+                                         kIgnoredBitsPerSample),
+            kSampleFormatPlanarS16);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::PcmS24be,
+                                         kIgnoredBitsPerSample),
+            kSampleFormatS24);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::PcmS32Planar,
+                                         kIgnoredBitsPerSample),
+            kSampleFormatPlanarS32);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::PcmF32,
+                                         kIgnoredBitsPerSample),
+            kSampleFormatF32);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::Flac, k16BitFlac),
+            kSampleFormatS16);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::Flac, k24BitFlac),
+            kSampleFormatS32);
+  // G.711 decodes to 16-bit linear PCM, even though it is 8 bits on the wire.
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::PcmAlaw,
+                                         kIgnoredBitsPerSample),
+            kSampleFormatS16);
+  EXPECT_EQ(SymphoniaCodecToSampleFormat(SymphoniaCodec::PcmMulaw,
+                                         kIgnoredBitsPerSample),
+            kSampleFormatS16);
+}
+
+// The names are the `FormatInfo::short_name` values of the vendored Symphonia
+// format readers.
+TEST(SymphoniaDemuxerUtilTest, ContainerNames) {
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("wave"),
+            MediaContainerName::kContainerWAV);
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("ogg"),
+            MediaContainerName::kContainerOgg);
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("flac"),
+            MediaContainerName::kContainerFLAC);
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("mp1"),
+            MediaContainerName::kContainerMP3);
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("mp2"),
+            MediaContainerName::kContainerMP3);
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("mp3"),
+            MediaContainerName::kContainerMP3);
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("aiff"),
+            MediaContainerName::kContainerAIFF);
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("isomp4"),
+            MediaContainerName::kContainerMOV);
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("matroska"),
+            MediaContainerName::kContainerWEBM);
+}
+
+TEST(SymphoniaDemuxerUtilTest, UnknownContainerNames) {
+  EXPECT_EQ(SymphoniaFormatNameToContainerName(""),
+            MediaContainerName::kContainerUnknown);
+  // Not reader names: the WAV reader reports "wave" and the Matroska reader
+  // reports "matroska".
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("wav"),
+            MediaContainerName::kContainerUnknown);
+  EXPECT_EQ(SymphoniaFormatNameToContainerName("webm"),
+            MediaContainerName::kContainerUnknown);
+}
+
+TEST(SymphoniaDemuxerUtilTest, DemuxingEnabledForContainerFollowsFeature) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeatures(
+      /*enabled_features=*/{kSymphoniaRiffDemuxing, kSymphoniaMp3Demuxing,
+                            kSymphoniaOggDemuxing},
+      /*disabled_features=*/{kSymphoniaFlacDemuxing, kSymphoniaIsomDemuxing,
+                             kSymphoniaMkvDemuxing});
+
+  EXPECT_TRUE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerWAV));
+  EXPECT_TRUE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerMP3));
+  EXPECT_TRUE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerOgg));
+  EXPECT_FALSE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerFLAC));
+  EXPECT_FALSE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerMOV));
+  EXPECT_FALSE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerWEBM));
+}
+
+TEST(SymphoniaDemuxerUtilTest, DemuxingNeverEnabledForOtherContainers) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeatures(
+      /*enabled_features=*/{kSymphoniaAacDemuxing, kSymphoniaFlacDemuxing,
+                            kSymphoniaIsomDemuxing, kSymphoniaMkvDemuxing,
+                            kSymphoniaMp3Demuxing, kSymphoniaOggDemuxing,
+                            kSymphoniaRiffDemuxing},
+      /*disabled_features=*/{});
+
+  EXPECT_FALSE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerUnknown));
+  EXPECT_FALSE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerHLS));
+  EXPECT_FALSE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerMPEG2TS));
+  // This build of Symphonia has no ADTS or AIFF reader.
+  EXPECT_FALSE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerAAC));
+  EXPECT_FALSE(IsSymphoniaDemuxingEnabledForContainer(
+      MediaContainerName::kContainerAIFF));
+}
+
+}  // namespace media

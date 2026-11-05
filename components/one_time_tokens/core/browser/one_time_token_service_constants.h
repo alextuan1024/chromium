@@ -33,14 +33,17 @@ inline GURL GetOneTimeTokenServiceUrl(const std::string& path) {
   return GURL(url_str + path);
 }
 
+inline constexpr char kEmailReceivedToTickleLatencyHistogram[] =
+    "OneTimeTokens.Gmail.EmailReceivedToTickleLatency";
+
 inline constexpr char kEmailSavedToTickleLatencyHistogram[] =
-    "Autofill.OneTimeTokens.EmailSavedToTickleLatency";
+    "OneTimeTokens.Gmail.EmailSavedToTickleLatency";
 
 inline constexpr char kTickleTransmissionLatencyHistogram[] =
-    "Autofill.OneTimeTokens.TickleTransmissionLatency";
+    "OneTimeTokens.Gmail.TickleTransmissionLatency";
 
 inline constexpr char kTickleArrivalHistogram[] =
-    "Autofill.OneTimeTokens.Tickle.Arrival";
+    "OneTimeTokens.Gmail.Tickle.Arrival";
 
 // Represents the arrival order and timing of push notifications (tickles)
 // relative to OTP form detection on a web page.
@@ -58,7 +61,7 @@ enum class TickleArrival {
 // LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:OneTimeTokensTickleArrival)
 
 inline constexpr char kTickleFormOutcomeHistogram[] =
-    "Autofill.OneTimeTokens.Tickle.FormOutcome";
+    "OneTimeTokens.Gmail.Tickle.FormOutcome";
 
 // Represents the outcome of every detected OTP form on a web page relative to
 // push notification delivery and user interaction.

@@ -5,8 +5,10 @@
 #ifndef GPU_COMMAND_BUFFER_SERVICE_SERVICE_UTILS_H_
 #define GPU_COMMAND_BUFFER_SERVICE_SERVICE_UTILS_H_
 
+#include <string_view>
+
 #include "base/command_line.h"
-#include "base/memory/memory_pressure_listener.h"
+#include "base/memory/memory_pressure_level.h"
 #include "base/memory_coordinator/memory_limit.h"
 #include "gpu/command_buffer/common/context_creation_attribs.h"
 #include "gpu/config/gpu_preferences.h"
@@ -40,6 +42,11 @@ ParseDefaultGrContextType(const base::CommandLine* command_line);
 bool MSAAIsSlow(const GpuDriverBugWorkarounds& workarounds);
 
 }  // namespace gles2
+
+// The name of the MemoryConsumer registered by the GpuChannelManager, which
+// forwards its memory limit to other classes, e.g. SharedContextState.
+inline constexpr std::string_view kGpuChannelManagerMemoryConsumerName =
+    "GpuChannelManager";
 
 GPU_GLES2_EXPORT size_t UpdateShaderCacheSizeOnMemoryPressure(
     size_t max_cache_size,

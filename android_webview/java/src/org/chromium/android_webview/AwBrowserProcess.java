@@ -12,14 +12,18 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.android_webview.accessibility.AwAccessibilityStateVisibilityManager;
 import org.chromium.android_webview.common.Lifetime;
-import org.chromium.base.ContextUtils;
 import org.chromium.base.PathUtils;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.content_public.browser.ChildProcessCreationParams;
 
-/** Wrapper for the steps needed to initialize the java and native sides of webview chromium. */
+/**
+ * Holds process-wide state, native library loading, and JNI hooks for the WebView browser process.
+ *
+ * <p>NOTE: Do not add general startup initialization steps or helper methods here. Browser startup
+ * orchestration belongs in {@link StartupController} and {@link StartupTasks}, and individual
+ * initialization steps belong in the domain class that owns that feature.
+ */
 @JNINamespace("android_webview")
 @Lifetime.Singleton
 public final class AwBrowserProcess {
@@ -84,27 +88,6 @@ public final class AwBrowserProcess {
         } finally {
             StrictMode.setThreadPolicy(oldPolicy);
         }
-    }
-
-    /**
-     * Configures child process launcher for tests. This is required for multiprocess mode to ensure
-     * the process type of the child process is WebView, but many of the other fields from
-     * configureChildProcessLauncher do not work in testing, so tests need a customized version of
-     * that method.
-     */
-    public static void configureChildProcessLauncherForTesting() {
-        final boolean isExternalService = false;
-        final boolean bindToCaller = false;
-        final boolean ignoreVisibilityForImportance = false;
-        final boolean isNativeWebViewZygoteEnabled = false;
-        ChildProcessCreationParams.set(
-                ContextUtils.getApplicationContext().getPackageName(),
-                ContextUtils.getApplicationContext().getPackageName(),
-                isExternalService,
-                LibraryProcessType.PROCESS_WEBVIEW_CHILD,
-                bindToCaller,
-                ignoreVisibilityForImportance,
-                isNativeWebViewZygoteEnabled);
     }
 
     /**

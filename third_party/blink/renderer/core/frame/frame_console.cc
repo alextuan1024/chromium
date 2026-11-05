@@ -31,6 +31,7 @@
 #include <memory>
 
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
@@ -43,6 +44,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_error.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -79,24 +81,30 @@ void FrameConsole::ReportMessageToClient(
   if (source == mojom::blink::ConsoleMessageSource::kConsoleApi) {
     if (!frame_->GetPage())
       return;
-    if (frame_->GetChromeClient()
-            .ShouldReportDetailedMessageForSourceAndSeverity(*frame_, level,
-                                                             url)) {
+    if (ShouldReportDetailedMessage(level, url)) {
       SourceLocation* full_location =
           SourceLocation::CaptureWithFullStackTrace();
       if (!full_location->IsUnknown())
         stack_trace = full_location->ToString();
     }
   } else {
-    if (!location->IsUnknown() &&
-        frame_->GetChromeClient()
-            .ShouldReportDetailedMessageForSourceAndSeverity(*frame_, level,
-                                                             url))
+    if (!location->IsUnknown() && ShouldReportDetailedMessage(level, url)) {
       stack_trace = location->ToString();
+    }
   }
 
   frame_->GetChromeClient().AddMessageToConsole(
       frame_, source, level, message, location->LineNumber(), url, stack_trace);
+}
+
+bool FrameConsole::ShouldReportDetailedMessage(
+    mojom::blink::ConsoleMessageLevel level,
+    const String& url) const {
+  if (frame_->WantErrorMessageStackTrace() &&
+      level == mojom::blink::ConsoleMessageLevel::kError) {
+    return true;
+  }
+  return Platform::Current()->ShouldReportDetailedMessageForSource(url);
 }
 
 void FrameConsole::ReportResourceResponseReceived(
@@ -107,10 +115,9 @@ void FrameConsole::ReportResourceResponseReceived(
     return;
   if (response.HttpStatusCode() < 400)
     return;
-  String message =
-      StrCat({"Failed to load resource: the server responded with a status of ",
-              String::Number(response.HttpStatusCode()), " (",
-              response.HttpStatusText(), ")"});
+  String message = Format(
+      "Failed to load resource: the server responded with a status of {} ({})",
+      response.HttpStatusCode(), response.HttpStatusText());
   auto* console_message = MakeGarbageCollected<ConsoleMessage>(
       mojom::blink::ConsoleMessageSource::kNetwork,
       mojom::blink::ConsoleMessageLevel::kError, message,

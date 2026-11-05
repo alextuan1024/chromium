@@ -8,15 +8,17 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
+import android.view.SoundEffectConstants;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.ImageView;
 
 import androidx.annotation.LayoutRes;
+import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.Callback;
@@ -26,6 +28,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.suggestions.ActivatableSuggestionView;
 import org.chromium.chrome.browser.omnibox.suggestions.SelectionController.TraversalMode;
 import org.chromium.chrome.browser.omnibox.suggestions.SimpleSelectionController;
+import org.chromium.chrome.browser.omnibox.suggestions.base.SuggestionLayout.LayoutParams.SuggestionViewType;
 import org.chromium.components.browser_ui.widget.RoundedCornerOutlineProvider;
 import org.chromium.ui.base.KeyNavigationUtil;
 
@@ -43,13 +46,16 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
         implements ActivatableSuggestionView {
     public final ImageView decorationIcon;
     public final T contentView;
-    public final ActionChipsView actionChipsView;
+    public @Nullable ActionChipsView actionChipsView;
+    public @Nullable ImageView endIcon;
     public final RoundedCornerOutlineProvider decorationIconOutline;
     private final List<ActionButtonView> mActionButtons;
     private final SimpleSelectionController mActionButtonsHighlighter;
     private final View.OnTouchListener mActionButtonTouchListener;
     private @Nullable Runnable mOnFocusViaSelectionListener;
     private @Nullable Callback<Integer> mOnActivateListener;
+    private @Px int mActionChipLeadInSpacing;
+    private boolean mActionChipsHorizontalFadingEdgeEnabled;
     // Tracks whether the suggestion view is currently hovered during motion. This value diffs
     // from isHovered(), which stays active if the action button is hovered even when the suggestion
     // view itself is not hovered.
@@ -85,19 +91,12 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
         decorationIcon = new ImageView(getContext());
         decorationIcon.setOutlineProvider(decorationIconOutline);
         decorationIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        addView(
-                decorationIcon,
-                LayoutParams.forViewType(LayoutParams.SuggestionViewType.DECORATION));
-
-        actionChipsView = new ActionChipsView(getContext());
-        actionChipsView.setVisibility(GONE);
-        addView(actionChipsView, LayoutParams.forViewType(LayoutParams.SuggestionViewType.FOOTER));
+        addView(decorationIcon, LayoutParams.forViewType(SuggestionViewType.DECORATION));
 
         mActionButtons = new ArrayList<>();
 
         contentView = view;
-        contentView.setLayoutParams(
-                LayoutParams.forViewType(LayoutParams.SuggestionViewType.CONTENT));
+        contentView.setLayoutParams(LayoutParams.forViewType(SuggestionViewType.CONTENT));
         addView(contentView);
 
         mActionButtonsHighlighter =
@@ -121,6 +120,34 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
                         return false;
                     }
                 };
+    }
+
+    /**
+     * Returns the {@link ActionChipsView} for this suggestion, lazily creating and attaching it if
+     * it does not yet exist.
+     */
+    public ActionChipsView ensureActionChipsView() {
+        if (actionChipsView == null) {
+            actionChipsView = new ActionChipsView(getContext());
+            actionChipsView.setVisibility(GONE);
+            actionChipsView.setLeadInSpacing(mActionChipLeadInSpacing);
+            actionChipsView.setHorizontalFadingEdgeEnabled(mActionChipsHorizontalFadingEdgeEnabled);
+            addView(actionChipsView, LayoutParams.forViewType(SuggestionViewType.FOOTER));
+        }
+        return actionChipsView;
+    }
+
+    /**
+     * Returns the view for {@link BaseSuggestionViewProperties#END_ICON}, lazily creating and
+     * attaching it if it does not yet exist.
+     */
+    public ImageView ensureEndIcon() {
+        if (endIcon == null) {
+            endIcon = new ImageView(getContext());
+            endIcon.setScaleType(ImageView.ScaleType.CENTER);
+            addView(endIcon, LayoutParams.forViewType(SuggestionViewType.ACTION_BUTTON));
+        }
+        return endIcon;
     }
 
     /**
@@ -196,10 +223,10 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
                     });
             actionView.setOnTouchListener(mActionButtonTouchListener);
 
-            actionView.setLayoutParams(
-                    LayoutParams.forViewType(LayoutParams.SuggestionViewType.ACTION_BUTTON));
+            actionView.setLayoutParams(LayoutParams.forViewType(SuggestionViewType.ACTION_BUTTON));
             mActionButtons.add(actionView);
-            addView(actionView);
+            // Keep the end icon after the action buttons, at the end of the suggestion.
+            addView(actionView, endIcon == null ? -1 : indexOfChild(endIcon));
         }
     }
 
@@ -232,7 +259,7 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         // Pass event to ActionChips first in case this key event is appropriate for ActionChip
         // navigation.
-        if (actionChipsView.onKeyDown(keyCode, event)) return true;
+        if (actionChipsView != null && actionChipsView.onKeyDown(keyCode, event)) return true;
         if (KeyNavigationUtil.isEnter(event)) {
             if (!mActionButtonsHighlighter.isParkedAtSentinel()) {
                 int selection = assumeNonNull(mActionButtonsHighlighter.getPosition());
@@ -289,7 +316,7 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
             v.onParentViewSelected(selected);
         }
 
-        if (!selected) {
+        if (!selected && actionChipsView != null) {
             actionChipsView.setSelected(false);
         }
 
@@ -305,7 +332,7 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
         // We temporarily force the buttons to be VISIBLE so they can receive the click event.
         boolean isDown = event.getActionMasked() == MotionEvent.ACTION_DOWN;
         List<ActionButtonView> temporarilyVisibleButtons = new ArrayList<>();
-        if (isDown && event.getSource() == android.view.InputDevice.SOURCE_MOUSE) {
+        if (isDown && event.getSource() == InputDevice.SOURCE_MOUSE) {
             for (ActionButtonView button : mActionButtons) {
                 if (button.getVisibility() == View.INVISIBLE) {
                     temporarilyVisibleButtons.add(button);
@@ -366,7 +393,7 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
     public boolean activate(int modifiers) {
         if (mOnActivateListener != null) {
             mOnActivateListener.onResult(modifiers);
-            playSoundEffect(android.view.SoundEffectConstants.CLICK);
+            playSoundEffect(SoundEffectConstants.CLICK);
             sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_CLICKED);
             return true;
         }
@@ -374,8 +401,19 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
     }
 
     /** Sets the lead-in spacing for the action chip carousel. */
-    public void setActionChipLeadInSpacing(int spacing) {
-        actionChipsView.setLeadInSpacing(spacing);
+    public void setActionChipLeadInSpacing(@Px int spacing) {
+        mActionChipLeadInSpacing = spacing;
+        if (actionChipsView != null) {
+            actionChipsView.setLeadInSpacing(spacing);
+        }
+    }
+
+    /** Sets whether the action chip carousel fades its horizontal edges. */
+    public void setActionChipsHorizontalFadingEdgeEnabled(boolean enabled) {
+        mActionChipsHorizontalFadingEdgeEnabled = enabled;
+        if (actionChipsView != null) {
+            actionChipsView.setHorizontalFadingEdgeEnabled(enabled);
+        }
     }
 
     /**
@@ -383,12 +421,13 @@ public class BaseSuggestionView<T extends View> extends SuggestionLayout
      * SuggestionLayout#SuggestionLayout(Context)} for the exact size difference.
      */
     public void setUseLargeDecorationIcon(boolean useLargeDecorationIcon) {
-        ViewGroup.LayoutParams oldParams = decorationIcon.getLayoutParams();
+        LayoutParams oldParams = (LayoutParams) decorationIcon.getLayoutParams();
+        if (oldParams.isLargeDecoration() == useLargeDecorationIcon) return;
+
         if (useLargeDecorationIcon) {
             decorationIcon.setLayoutParams(SuggestionLayout.LayoutParams.forLargeDecorationIcon());
         } else {
-            decorationIcon.setLayoutParams(
-                    LayoutParams.forViewType(LayoutParams.SuggestionViewType.DECORATION));
+            decorationIcon.setLayoutParams(LayoutParams.forViewType(SuggestionViewType.DECORATION));
         }
 
         decorationIcon.getLayoutParams().width = oldParams.width;

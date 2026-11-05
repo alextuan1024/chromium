@@ -19,6 +19,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.components.autofill.AutofillDelegate;
 import org.chromium.components.autofill.AutofillSuggestion;
+import org.chromium.components.autofill.autofill_ai.AutofillAiSourceAttributionInfo;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.AsyncViewStub;
@@ -62,7 +63,7 @@ public class EmptyManualFillingComponent implements ManualFillingComponent {
     public void registerSheetDataProvider(
             WebContents webContents,
             @AccessoryTabType int sheetType,
-            Provider<KeyboardAccessoryData.AccessorySheetData> sheetDataProvider) {}
+            Provider<KeyboardAccessoryData.@Nullable AccessorySheetData> sheetDataProvider) {}
 
     @Override
     public void registerSheetUpdateDelegate(
@@ -82,7 +83,12 @@ public class EmptyManualFillingComponent implements ManualFillingComponent {
     public void setSelectedSuggestion(@Nullable Integer suggestionIndex) {}
 
     @Override
-    public boolean navigateSuggestions(@NavigationDirection int direction) {
+    public boolean navigate(@NavigationAction int action) {
+        return false;
+    }
+
+    @Override
+    public boolean acceptFallback() {
         return false;
     }
 
@@ -90,7 +96,7 @@ public class EmptyManualFillingComponent implements ManualFillingComponent {
     public void show(
             boolean waitForKeyboard,
             boolean shouldShowOnLargeFormFactor,
-            boolean isContentEditable) {}
+            boolean isUnstructuredField) {}
 
     @Override
     public void closeAccessorySheet() {}
@@ -145,6 +151,7 @@ public class EmptyManualFillingComponent implements ManualFillingComponent {
             String body,
             String confirmButtonText,
             String primaryButtonText,
+            List<AutofillAiSourceAttributionInfo> sources,
             Runnable confirmedCallback,
             Runnable declinedCallback) {}
 

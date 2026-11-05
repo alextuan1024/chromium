@@ -10,6 +10,7 @@
 #include "base/win/windows_version.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_shortcut_manager_win.h"
 #include "chrome/browser/shell_integration_win.h"
@@ -31,7 +32,7 @@ BrowserWindowPropertyManager::BrowserWindowPropertyManager(
     HWND hwnd)
     : view_(view), hwnd_(hwnd) {
   // At this point, the HWND is unavailable from BrowserView.
-  DCHECK(hwnd);
+  CHECK(hwnd, base::NotFatalUntil::M162);
   profile_pref_registrar_.Init(
       const_cast<Profile*>(view_->browser()->GetProfile())->GetPrefs());
 
@@ -61,7 +62,7 @@ void BrowserWindowPropertyManager::UpdateWindowProperties() {
               browser->GetType() ==
                   BrowserWindowInterface::Type::TYPE_DEVTOOLS ||
               (browser->GetType() ==
-                   BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE &&
+                   BrowserWindowInterface::Type::TYPE_FLOATING &&
                !BrowserInitState::From(browser)
                     ->create_params()
                     .app_name.empty())
@@ -97,8 +98,12 @@ void BrowserWindowPropertyManager::UpdateWindowProperties() {
   if ((browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
        browser->GetType() == BrowserWindowInterface::Type::TYPE_POPUP) &&
       shortcut_manager &&
-      profile->GetPrefs()->HasPrefPath(prefs::kProfileIconVersion)) {
-    // Set relaunch details to use profile.
+      profile->GetPrefs()->HasPrefPath(prefs::kProfileIconVersion) &&
+      profile_manager->GetProfileAttributesStorage()
+          .GetProfileAttributesWithPath(profile->GetPath())) {
+    // Set relaunch details to use profile. Profile relaunch details are only
+    // set for profiles registered in `ProfileAttributesStorage` (excluding
+    // Guest, System, and removed profiles).
     base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
     shortcut_manager->GetShortcutProperties(profile->GetPath(), &command_line,
                                             &pinned_name, &icon_path);

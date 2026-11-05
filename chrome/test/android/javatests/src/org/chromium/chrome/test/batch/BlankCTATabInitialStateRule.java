@@ -10,6 +10,8 @@ import org.junit.runners.model.Statement;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.ui.KeyboardUtils;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManagerChrome;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
@@ -19,8 +21,11 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabHostUtils;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.test.ChromeActivityTestRule;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.ui.modaldialog.DialogDismissalCause;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.lang.ref.WeakReference;
 import java.util.Collections;
@@ -86,11 +91,7 @@ public class BlankCTATabInitialStateRule implements TestRule {
                                         + " validated.");
                     }
                     mActivityTestRule.setActivity(cta);
-                    if (shouldPerformFastReset()) {
-                        resetTabStateFast();
-                    } else {
-                        resetTabStateThorough();
-                    }
+                    resetState();
                 }
                 try {
                     base.evaluate();
@@ -124,6 +125,17 @@ public class BlankCTATabInitialStateRule implements TestRule {
         return regularTabCount() > 0;
     }
 
+    private void resetState() {
+        // Must run before the reset, which waits on tab interactability and the BROWSING layout.
+        ThreadUtils.runOnUiThreadBlocking(this::resetDialogsAndKeyboardOnUiThread);
+        ChromeActivityTestRule.ensureActivityFocused(getActivity());
+        if (shouldPerformFastReset()) {
+            resetTabStateFast();
+        } else {
+            resetTabStateThorough();
+        }
+    }
+
     private void closeAllButOneTab(TabModel tabModel) {
         ThreadUtils.assertOnUiThread();
 
@@ -133,6 +145,19 @@ public class BlankCTATabInitialStateRule implements TestRule {
                             TabClosureParams.closeTab(tabModel.getTabAt(1))
                                     .allowUndo(false)
                                     .build());
+        }
+    }
+
+    private void resetDialogsAndKeyboardOnUiThread() {
+        ThreadUtils.assertOnUiThread();
+        ChromeTabbedActivity activity = getActivity();
+        if (activity == null) return;
+        if (activity.getWindow() != null && activity.getWindow().getDecorView() != null) {
+            KeyboardUtils.hideAndroidSoftKeyboard(activity.getWindow().getDecorView());
+        }
+        ModalDialogManager modalDialogManager = activity.getModalDialogManager();
+        if (modalDialogManager != null) {
+            modalDialogManager.dismissAllDialogs(DialogDismissalCause.UNKNOWN);
         }
     }
 
@@ -205,8 +230,26 @@ public class BlankCTATabInitialStateRule implements TestRule {
                                                             .build());
                                 }
                             }
+                            // Closing the last tab in a batched test initiates an asynchronous
+                            // transition to LayoutType.HUB that is not cancelled on tablets when a
+                            // new tab is launched above. Ensure LayoutType.BROWSING is active
+                            // before the next test starts.
+                            LayoutManagerChrome layoutManager = getActivity().getLayoutManager();
+                            if (!layoutManager.isLayoutVisible(LayoutType.BROWSING)
+                                    || layoutManager.isLayoutStartingToHide(LayoutType.BROWSING)) {
+                                layoutManager.showLayout(LayoutType.BROWSING, /* animate= */ false);
+                            }
                             return newTab;
                         });
         ChromeTabUtils.waitForTabPageLoaded(createdTab, "about:blank");
+        // LayoutTestUtils is in chrome_java_transit, which this target can't depend on.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    LayoutManagerChrome layoutManager = getActivity().getLayoutManager();
+                    return layoutManager.isLayoutVisible(LayoutType.BROWSING)
+                            && !layoutManager.isLayoutStartingToShow(LayoutType.BROWSING)
+                            && !layoutManager.isLayoutStartingToHide(LayoutType.BROWSING);
+                },
+                "BROWSING layout never finished showing");
     }
 }

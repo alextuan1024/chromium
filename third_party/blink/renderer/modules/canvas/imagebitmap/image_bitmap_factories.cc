@@ -58,13 +58,10 @@
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
-#include "third_party/blink/renderer/platform/instrumentation/histogram.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_skia.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "v8/include/v8.h"
@@ -72,19 +69,6 @@
 namespace blink {
 
 namespace {
-// This enum is used in a UMA histogram.
-enum CreateImageBitmapSource {
-  kCreateImageBitmapSourceBlob = 0,
-  kCreateImageBitmapSourceImageBitmap = 1,
-  kCreateImageBitmapSourceImageData = 2,
-  kCreateImageBitmapSourceHTMLCanvasElement = 3,
-  kCreateImageBitmapSourceHTMLImageElement = 4,
-  kCreateImageBitmapSourceHTMLVideoElement = 5,
-  kCreateImageBitmapSourceOffscreenCanvas = 6,
-  kCreateImageBitmapSourceSVGImageElement = 7,
-  kCreateImageBitmapSourceVideoFrame = 8,
-  kMaxValue = kCreateImageBitmapSourceVideoFrame,
-};
 
 gfx::Rect NormalizedCropRect(int x, int y, int width, int height) {
   if (width < 0) {
@@ -127,55 +111,35 @@ void ThrowExceptionForStatus(ImageBitmapSourceError error,
   }
 }
 
-}  // namespace
-
 inline ImageBitmapSource* ToImageBitmapSourceInternal(
-    const V8ImageBitmapSource* value,
-    const ImageBitmapOptions* options,
-    bool has_crop_rect) {
+    const V8ImageBitmapSource* value) {
   DCHECK(value);
 
   switch (value->GetContentType()) {
     case V8ImageBitmapSource::ContentType::kBlob:
-      UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.CreateImageBitmapSource",
-                                kCreateImageBitmapSourceBlob);
       return value->GetAsBlob();
     case V8ImageBitmapSource::ContentType::kHTMLCanvasElement:
-      UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.CreateImageBitmapSource",
-                                kCreateImageBitmapSourceHTMLCanvasElement);
       return value->GetAsHTMLCanvasElement();
     case V8ImageBitmapSource::ContentType::kHTMLImageElement:
-      UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.CreateImageBitmapSource",
-                                kCreateImageBitmapSourceHTMLImageElement);
       return value->GetAsHTMLImageElement();
     case V8ImageBitmapSource::ContentType::kHTMLVideoElement:
-      UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.CreateImageBitmapSource",
-                                kCreateImageBitmapSourceHTMLVideoElement);
       return value->GetAsHTMLVideoElement();
     case V8ImageBitmapSource::ContentType::kImageBitmap:
-      UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.CreateImageBitmapSource",
-                                kCreateImageBitmapSourceImageBitmap);
       return value->GetAsImageBitmap();
     case V8ImageBitmapSource::ContentType::kImageData:
-      UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.CreateImageBitmapSource",
-                                kCreateImageBitmapSourceImageData);
       return value->GetAsImageData();
     case V8ImageBitmapSource::ContentType::kOffscreenCanvas:
-      UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.CreateImageBitmapSource",
-                                kCreateImageBitmapSourceOffscreenCanvas);
       return value->GetAsOffscreenCanvas();
     case V8ImageBitmapSource::ContentType::kSVGImageElement:
-      UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.CreateImageBitmapSource",
-                                kCreateImageBitmapSourceSVGImageElement);
       return value->GetAsSVGImageElement();
     case V8ImageBitmapSource::ContentType::kVideoFrame:
-      UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.CreateImageBitmapSource",
-                                kCreateImageBitmapSourceVideoFrame);
       return value->GetAsVideoFrame();
   }
 
   NOTREACHED();
 }
+
+}  // namespace
 
 // static
 ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmapFromBlob(
@@ -214,7 +178,7 @@ ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmap(
   WebFeature feature = WebFeature::kCreateImageBitmap;
   UseCounter::Count(ExecutionContext::From(script_state), feature);
   ImageBitmapSource* bitmap_source_internal =
-      ToImageBitmapSourceInternal(bitmap_source, options, false);
+      ToImageBitmapSourceInternal(bitmap_source);
   if (!bitmap_source_internal)
     return EmptyPromise();
   return CreateImageBitmap(script_state, bitmap_source_internal, std::nullopt,
@@ -251,7 +215,7 @@ ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmap(
   WebFeature feature = WebFeature::kCreateImageBitmap;
   UseCounter::Count(ExecutionContext::From(script_state), feature);
   ImageBitmapSource* bitmap_source_internal =
-      ToImageBitmapSourceInternal(bitmap_source, options, true);
+      ToImageBitmapSourceInternal(bitmap_source);
   if (!bitmap_source_internal)
     return EmptyPromise();
   gfx::Rect crop_rect = NormalizedCropRect(sx, sy, sw, sh);
@@ -422,24 +386,28 @@ void DecodeImageOnDecoderThread(
     ArrayBufferContents contents,
     ImageDecoder::AlphaOption alpha_option,
     ColorBehavior color_behavior,
-    CrossThreadOnceFunction<void(sk_sp<SkImage>, const ImageOrientationEnum)>
-        result_callback) {
+    CrossThreadOnceFunction<void(sk_sp<SkImage>,
+                                 const ImageOrientationEnum,
+                                 const gfx::HDRMetadata&)> result_callback) {
   const bool data_complete = true;
   std::unique_ptr<ImageDecoder> decoder = ImageDecoder::Create(
       SegmentReader::CreateFromSkData(
           SkData::MakeWithoutCopy(contents.Data(), contents.DataLength())),
-      data_complete, alpha_option, ImageDecoder::kDefaultBitDepth,
+      data_complete, alpha_option, ImageDecoder::kHighBitDepthToHalfFloat,
       color_behavior, cc::AuxImage::kDefault,
       Platform::GetMaxDecodedImageBytes());
   sk_sp<SkImage> frame;
   ImageOrientationEnum orientation = ImageOrientationEnum::kDefault;
+  gfx::HDRMetadata hdr_metadata;
   if (decoder) {
     orientation = decoder->Orientation();
+    hdr_metadata = decoder->GetHDRMetadata();
     frame = ImageBitmap::GetSkImageFromDecoder(std::move(decoder));
   }
-  PostCrossThreadTask(*task_runner, FROM_HERE,
-                      CrossThreadBindOnce(std::move(result_callback),
-                                          std::move(frame), orientation));
+  PostCrossThreadTask(
+      *task_runner, FROM_HERE,
+      CrossThreadBindOnce(std::move(result_callback), std::move(frame),
+                          orientation, hdr_metadata));
 }
 }  // namespace
 
@@ -468,7 +436,8 @@ void ImageBitmapFactories::ImageBitmapLoader::ScheduleAsyncImageBitmapDecoding(
 
 void ImageBitmapFactories::ImageBitmapLoader::ResolvePromiseOnOriginalThread(
     sk_sp<SkImage> frame,
-    const ImageOrientationEnum orientation) {
+    const ImageOrientationEnum orientation,
+    const gfx::HDRMetadata& hdr_metadata) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!frame) {
     RejectPromise(kUndecodableImageBitmapRejectionReason);
@@ -477,7 +446,8 @@ void ImageBitmapFactories::ImageBitmapLoader::ResolvePromiseOnOriginalThread(
   DCHECK(frame->width());
   DCHECK(frame->height());
   scoped_refptr<StaticBitmapImage> image =
-      UnacceleratedStaticBitmapImage::Create(std::move(frame), orientation);
+      UnacceleratedStaticBitmapImage::Create(std::move(frame), orientation,
+                                             hdr_metadata);
 
   image->SetOriginClean(true);
   auto* image_bitmap =

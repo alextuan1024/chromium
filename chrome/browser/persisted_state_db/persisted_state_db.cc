@@ -4,6 +4,8 @@
 
 #include "chrome/browser/persisted_state_db/persisted_state_db.h"
 
+#include <utility>
+
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
@@ -13,8 +15,9 @@
 #include "chrome/browser/persisted_state_db/session_proto_db_factory.h"
 #include "components/commerce/core/proto/persisted_state_db_content.pb.h"
 #include "content/public/browser/android/browser_context_handle.h"
+#include "third_party/jni_zero/default_conversions.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/tab/jni_headers/LevelDBPersistedDataStorage_jni.h"
 
 namespace {
@@ -54,71 +57,59 @@ PersistedStateDB::~PersistedStateDB() = default;
 
 void PersistedStateDB::Save(
     JNIEnv* env,
-    const base::android::JavaRef<jstring>& jkey,
-    const base::android::JavaRef<jbyteArray>& jbyte_array,
-    const base::android::JavaRef<jobject>& joncomplete_for_testing) {
-  const std::string& key = base::android::ConvertJavaStringToUTF8(env, jkey);
+    const std::string& key,
+    const jni_zero::JavaRef<jbyteArray>& byte_array,
+    const jni_zero::JavaRef<jobject>& oncomplete_for_testing) {
   std::string data;
-  base::android::JavaByteArrayToString(env, jbyte_array, &data);
+  base::android::JavaByteArrayToString(env, byte_array, &data);
   persisted_state_db::PersistedStateContentProto proto;
   proto.set_key(key);
-  proto.set_content_data(data);
+  proto.set_content_data(std::move(data));
   proto_db_->InsertContent(
       key, proto,
-      base::BindOnce(&OnUpdateCallback,
-                     base::android::ScopedJavaGlobalRef<jobject>(
-                         joncomplete_for_testing)));
+      base::BindOnce(
+          &OnUpdateCallback,
+          base::android::ScopedJavaGlobalRef<jobject>(oncomplete_for_testing)));
 }
 
-void PersistedStateDB::Load(JNIEnv* env,
-                            const base::android::JavaRef<jstring>& jkey,
-                            const base::android::JavaRef<jobject>& jcallback) {
+void PersistedStateDB::Load(const std::string& key,
+                            const jni_zero::JavaRef<jobject>& callback) {
   proto_db_->LoadContentWithPrefix(
-      base::android::ConvertJavaStringToUTF8(env, jkey),
+      key,
       base::BindOnce(&OnLoadCallback,
-                     base::android::ScopedJavaGlobalRef<jobject>(jcallback)));
+                     base::android::ScopedJavaGlobalRef<jobject>(callback)));
 }
 
 void PersistedStateDB::Delete(
-    JNIEnv* env,
-    const base::android::JavaRef<jstring>& jkey,
-    const base::android::JavaRef<jobject>& joncomplete_for_testing) {
+    const std::string& key,
+    const jni_zero::JavaRef<jobject>& oncomplete_for_testing) {
   proto_db_->DeleteContentWithPrefix(
-      base::android::ConvertJavaStringToUTF8(env, jkey),
-      base::BindOnce(&OnUpdateCallback,
-                     base::android::ScopedJavaGlobalRef<jobject>(
-                         joncomplete_for_testing)));
+      key, base::BindOnce(&OnUpdateCallback,
+                          base::android::ScopedJavaGlobalRef<jobject>(
+                              oncomplete_for_testing)));
 }
 
 void PersistedStateDB::PerformMaintenance(
-    JNIEnv* env,
-    const base::android::JavaRef<jobjectArray>& jkeys_to_keep,
-    const base::android::JavaRef<jstring>& jkey_substring_to_match,
-    const base::android::JavaRef<jobject>& joncomplete_for_testing) {
-  std::vector<std::string> keys_to_keep;
-  base::android::AppendJavaStringArrayToStringVector(env, jkeys_to_keep,
-                                                     &keys_to_keep);
+    const std::vector<std::string>& keys_to_keep,
+    const std::string& key_substring_to_match,
+    const jni_zero::JavaRef<jobject>& oncomplete_for_testing) {
   proto_db_->PerformMaintenance(
-      keys_to_keep,
-      base::android::ConvertJavaStringToUTF8(jkey_substring_to_match),
-      base::BindOnce(&OnUpdateCallback,
-                     base::android::ScopedJavaGlobalRef<jobject>(
-                         joncomplete_for_testing)));
+      keys_to_keep, key_substring_to_match,
+      base::BindOnce(
+          &OnUpdateCallback,
+          base::android::ScopedJavaGlobalRef<jobject>(oncomplete_for_testing)));
 }
 
-void PersistedStateDB::Destroy(JNIEnv* env) {
+void PersistedStateDB::Destroy() {
   proto_db_->Destroy();
   delete this;
 }
 
-static void JNI_LevelDBPersistedDataStorage_Init(
+static int64_t JNI_LevelDBPersistedDataStorage_Init(
     JNIEnv* env,
-    const base::android::JavaRef<jobject>& obj,
     const base::android::JavaRef<jobject>& jprofile) {
-  Java_LevelDBPersistedDataStorage_setNativePtr(
-      env, obj,
-      reinterpret_cast<intptr_t>(new PersistedStateDB(
-          content::BrowserContextFromJavaHandle(jprofile))));
+  return reinterpret_cast<intptr_t>(
+      new PersistedStateDB(content::BrowserContextFromJavaHandle(jprofile)));
 }
 
 DEFINE_JNI(LevelDBPersistedDataStorage)

@@ -26,8 +26,7 @@
 #import "components/sync/service/sync_prefs.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
-#import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
-#import "ios/chrome/browser/badges/model/features.h"
+#import "ios/chrome/browser/autofill/test/autofill_app_interface.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_constants.h"
 #import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_constants.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
@@ -45,6 +44,7 @@
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/base/apple/url_conversions.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -221,6 +221,10 @@ void LoginOnUff() {
   // enabled by default.
   [CredentialSuggestionBottomSheetAppInterface setDismissCount:0];
 
+  // Disable the proactive password generation bottom sheet; it is tested in its
+  // own suite in password_suggestion_egtest.mm.
+  [PasswordManagerAppInterface disableProactivePasswordGenerationBottomSheet];
+
   // Clear credentials and autofill profile before starting the test in case
   // there are some left over from a previous test case.
   GREYAssertTrue([PasswordManagerAppInterface clearCredentials],
@@ -246,6 +250,8 @@ void LoginOnUff() {
                  @"Clearing credentials wasn't done.");
   [AutofillAppInterface clearProfilesStore];
   [CredentialSuggestionBottomSheetAppInterface setDismissCount:0];
+  [ChromeEarlGrey clearUserPrefWithName:
+                      prefs::kIosPasswordGenerationBottomSheetDismissCount];
   [super tearDownHelper];
 }
 
@@ -271,24 +277,11 @@ void LoginOnUff() {
     config.relaunch_policy = ForceRelaunchByKilling;
   }
 
-  if ([self isRunningTest:@selector(FLAKY_testPasswordBreachEventReported)]) {
+  if ([self isRunningTest:@selector(testPasswordBreachEventReported)]) {
     config.features_enabled.push_back(
         password_manager::features::kMarkAllCredentialsAsLeaked);
   }
 
-  if ([self isRunningTest:@selector(testSavePromptAppearsOnFormSubmission)] ||
-      [self isRunningTest:@selector(testUpdatePromptAppearsOnFormSubmission)] ||
-      [self isRunningTest:@selector(
-                              testSyntheticTouchendOnBtnElementIsIgnored)] ||
-      [self isRunningTest:@selector(testProgrammaticSubmissionFails)]) {
-    // These tests need a badge.
-    config.features_disabled.push_back(kAutofillBadgeRemoval);
-  }
-
-  // The proactive password generation bottom sheet isn't tested here, it
-  // is tested in its own suite in password_suggestion_egtest.mm.
-  config.features_disabled.push_back(
-      password_manager::features::kIOSProactivePasswordGenerationBottomSheet);
   return config;
 }
 
@@ -311,8 +304,7 @@ void LoginOnUff() {
 - (std::optional<std::string_view>)enterpriseReportingEventForTest {
   if ([self isRunningTest:@selector(testLoginEventReported)]) {
     return "loginEvent";
-  } else if ([self isRunningTest:@selector
-                   (FLAKY_testPasswordBreachEventReported)]) {
+  } else if ([self isRunningTest:@selector(testPasswordBreachEventReported)]) {
     return "passwordBreachEvent";
   }
   return std::nullopt;
@@ -343,6 +335,7 @@ void LoginOnUff() {
 #pragma mark - Tests
 
 // Tests that save password prompt is shown on new login.
+TAG_SMOKE_TEST(PasswordControllerEGTest, testSavePromptAppearsOnFormSubmission);
 - (void)testSavePromptAppearsOnFormSubmission {
   [self loadLoginPage];
 
@@ -360,11 +353,11 @@ void LoginOnUff() {
       waitForUIElementToAppearWithMatcher:
           PasswordInfobarLabels(IDS_IOS_PASSWORD_MANAGER_SAVE_PASSWORD_PROMPT)];
 
-  // Verify that the password badge is in the omnibox.
+  // Verify that the password badge is not in the omnibox.
   [[EarlGrey
       selectElementWithMatcher:
           grey_accessibilityID(kBadgeButtonSavePasswordAccessibilityIdentifier)]
-      assertWithMatcher:grey_notNil()];
+      assertWithMatcher:grey_nil()];
 
   // Tap to save password.
   [[EarlGrey selectElementWithMatcher:PasswordInfobarButton(
@@ -452,11 +445,11 @@ void LoginOnUff() {
       waitForUIElementToAppearWithMatcher:
           PasswordInfobarLabels(IDS_IOS_PASSWORD_MANAGER_UPDATE_PASSWORD)];
 
-  // Verify that the password badge is in the omnibox.
+  // Verify that the password badge is not in the omnibox.
   [[EarlGrey selectElementWithMatcher:
                  grey_accessibilityID(
                      kBadgeButtonUpdatePasswordAccessibilityIdentifier)]
-      assertWithMatcher:grey_notNil()];
+      assertWithMatcher:grey_nil()];
 
   // Tap to update password.
   [[EarlGrey
@@ -591,13 +584,7 @@ void LoginOnUff() {
 }
 
 // Tests password generation flow.
-// TODO(crbug.com/40260214): The test fails on simulator.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_testPasswordGeneration FLAKY_testPasswordGeneration
-#else
-#define MAYBE_testPasswordGeneration testPasswordGeneration
-#endif
-- (void)MAYBE_testPasswordGeneration {
+- (void)testPasswordGeneration {
   [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/simple_signup_form.html")];
@@ -706,15 +693,7 @@ void LoginOnUff() {
 
 // Tests that password generation is not offered for signed in users with
 // passwords toggle disabled.
-// TODO(crbug.com/371189341): Test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_testPasswordGenerationWhileSignedInWithPasswordsDisabled \
-  testPasswordGenerationWhileSignedInWithPasswordsDisabled
-#else
-#define MAYBE_testPasswordGenerationWhileSignedInWithPasswordsDisabled \
-  FLAKY_testPasswordGenerationWhileSignedInWithPasswordsDisabled
-#endif
-- (void)MAYBE_testPasswordGenerationWhileSignedInWithPasswordsDisabled {
+- (void)testPasswordGenerationWhileSignedInWithPasswordsDisabled {
   [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
 
   // Disable Passwords toggle in account settings.
@@ -748,15 +727,7 @@ void LoginOnUff() {
 
 // Tests that password generation is not offered for signed in users with an
 // encryption error; missing passphrase.
-// TODO(crbug.com/371189341): Test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_testPasswordGenerationWhileSignedInWithError \
-  testPasswordGenerationWhileSignedInWithError
-#else
-#define MAYBE_testPasswordGenerationWhileSignedInWithError \
-  FLAKY_testPasswordGenerationWhileSignedInWithError
-#endif
-- (void)MAYBE_testPasswordGenerationWhileSignedInWithError {
+- (void)testPasswordGenerationWhileSignedInWithError {
   // Encrypt synced data with a passphrase to enable passphrase encryption for
   // the signed in account.
   [ChromeEarlGrey addSyncPassphrase:kPassphrase];
@@ -807,11 +778,6 @@ void LoginOnUff() {
 
 // Tests that the typed credentials are correctly saved in the sign-in UFF flow.
 - (void)testSaveTypedCredentialInUff {
-  // TODO(crbug.com/453627553): Re-enable the test.
-  if (@available(iOS 18.5, *)) {
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 18.5.");
-  }
-
   NSString* usernameValue = @"test-username";
   NSString* passwordValue = @"test-password";
 
@@ -893,11 +859,6 @@ void LoginOnUff() {
 // Tests that the typed credentials are correctly updated in the sign-in UFF
 // flow when there is already a credential stored for the corresponding email.
 - (void)testUpdateTypedCredentialInUff {
-  // TODO(crbug.com/453627553): Re-enable the test.
-  if (@available(iOS 18.5, *)) {
-    EARL_GREY_TEST_DISABLED(@"Test disabled on iOS 18.5.");
-  }
-
   NSString* usernameValue = @"test-username";
   NSString* passwordValue = @"test-password";
   NSString* passwordValueToBeReplaced = @"old-password";
@@ -955,7 +916,7 @@ void LoginOnUff() {
   [self waitForEnterpriseReports:1];
 
   std::vector<UploadEventsRequest> requests =
-      _reportingEnvironment->reporting_server()->GetUploadedReports();
+      _reportingEnvironment->GetUploadedReports();
   GREYAssertEqual(1U, requests.size(), @"Wrong number of reports.");
   GREYAssertEqual(std::string("iOS"), requests[0].device().os_platform(),
                   @"Wrong OS platform in report.");
@@ -973,8 +934,7 @@ void LoginOnUff() {
 }
 
 // Tests that a password breach event is reported to an enterprise connector.
-// TODO(crbug.com/429140546): flaky on chromium/ci/ios-simulator-noncq.
-- (void)FLAKY_testPasswordBreachEventReported {
+- (void)testPasswordBreachEventReported {
   [self loadLoginPage];
 
   // Simulate login.
@@ -992,7 +952,7 @@ void LoginOnUff() {
   // expected because during `-setUp`, the browser fetches a policy from
   // `_reportingEnvironment` that only enables password breach event reporting.
   std::vector<UploadEventsRequest> requests =
-      _reportingEnvironment->reporting_server()->GetUploadedReports();
+      _reportingEnvironment->GetUploadedReports();
   GREYAssertEqual(1U, requests.size(), @"Wrong number of reports.");
   GREYAssertEqual(std::string("iOS"), requests[0].device().os_platform(),
                   @"Wrong OS platform in report.");

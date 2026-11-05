@@ -5,15 +5,21 @@
 #ifndef CHROME_BROWSER_GLIC_PUBLIC_GLIC_INVOKE_OPTIONS_H_
 #define CHROME_BROWSER_GLIC_PUBLIC_GLIC_INVOKE_OPTIONS_H_
 
+#include <concepts>
+#include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "base/types/pass_key.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
 #include "chrome/browser/glic/public/glic_instance_id.h"
@@ -24,6 +30,7 @@ class BrowserWindowInterface;
 
 namespace glic {
 class GlicInstance;
+class InvokeErrorDiagnosticsPasskeyProvider;
 
 // Use ongoing conversation for the tab if it exists. Otherwise, fall back
 // to the default behavior for opening the UI (typically a new conversation).
@@ -75,7 +82,37 @@ struct Floating {
   friend class GlicInstanceImpl;
   friend class GlicInstanceCoordinatorImpl;
   friend class GlicInvokeHandler;
+  friend class GlicInvokePreparationTest;
   Floating() = default;
+};
+
+// Specifies what an invocation should do when it resolves to an instance that
+// is already showing in live (audio) mode. Live mode runs in the floating
+// panel, so an invocation that targets a tab would otherwise pull the
+// conversation out of it and into that tab's side panel.
+//
+// This supersedes `GlicInvokeOptions::preserve_active_surface`, which only
+// applies to instances that are not in live mode. Apart from `kFail`, these
+// options work by choosing which surface the conversation is shown on, so they
+// require a `Target::surface` they can steer; combining one with a surface it
+// can't steer fails the invocation with
+// `GlicInvokeError::kInvalidConfiguration`. Leaving live mode is ultimately up
+// to the web client; the browser only chooses the surface and requests a mode.
+enum class LiveModeBehavior {
+  // Carry on in live mode: leave the conversation in the floating panel.
+  kProceedInLiveMode,
+  // Show the conversation in the targeted tab's side panel, even if it is
+  // currently in the floating panel. The side panel doesn't host live mode, so
+  // this leaves it. Requires a surface that resolves to a tab
+  // (`DefaultSurface`, `NewTab` or `TabHandle`).
+  kForceSidePanelTextMode,
+  // Keep the conversation in the floating panel and request that it be shown
+  // in text mode. Unlike `kProceedInLiveMode`, this moves a conversation that
+  // is showing elsewhere into the floating panel. Requires a surface that
+  // resolves to a tab or `Floating`.
+  kForceFloatingTextMode,
+  // Fail the invocation with `GlicInvokeError::kLiveModeActive`.
+  kFail,
 };
 
 // The target for the invocation.
@@ -115,6 +152,10 @@ struct Target {
   //   back to creating a new tab.
   Surface surface = DefaultSurface();
 
+  // What to do if this invocation resolves to an instance that is already
+  // showing in live (audio) mode. Defaults to leaving it in live mode.
+  LiveModeBehavior live_mode_behavior = LiveModeBehavior::kProceedInLiveMode;
+
   // Specifies which conversation to use or create.
   // - DefaultConversation: Uses the conversation already bound to the target
   //   surface if available, otherwise creates a new one.
@@ -125,8 +166,13 @@ struct Target {
       conversation = DefaultConversation();
 
   // Specifies the target for actuation.
-  mojom::ActuationTarget actuation_target =
-      mojom::ActuationTarget::kAgentDecides;
+  // - mojom::ActuationTarget: Lets the agent decide, or forces a target, such
+  //   as a new tab. kTargetSurface forces the invoked tab, if there is one.
+  // - actor::ActorSurfaceHandle: Forces a specific actor surface, such as a
+  //   headless surface that has no tab or window. The web client receives it
+  //   as kTargetSurface with the surface ID. The handle must not be null.
+  std::variant<mojom::ActuationTarget, actor::ActorSurfaceHandle>
+      actuation_target = mojom::ActuationTarget::kAgentDecides;
 };
 
 // Configuration to override the default ZSS behavior for the invocation,
@@ -167,6 +213,24 @@ struct AdditionalTabContext {
   PolicyCheck policy_check = PolicyCheck::kClipboard;
 };
 
+// Policy checks to apply to `GlicInvokeOptions::prompts` when they carry page
+// data (e.g. selected text pre-filled into the editable prompt input on
+// Android, rather than attached as `AdditionalTabContext`) instead of
+// Chrome-generated text.
+struct PromptPolicy {
+  // The frame the prompt text was taken from.
+  content::GlobalRenderFrameHostId source_rfh_id;
+
+  // Specifies the policy check to perform, if any.
+  PolicyCheck policy_check = PolicyCheck::kClipboard;
+};
+
+// NOTE: Selected values of this enum are mapped to wire `chrome_error_code`
+// strings in `ExperimentalTriggering` `TaskUpdate.metadata` (see
+// `GlicInvokeErrorToChromeErrorCode`) and consumed by downstream server-side
+// (non-UMA) telemetry and alerting. Avoid changing the semantics of existing
+// values or splitting them without updating the downstream mapping and
+// coordinating with `chrome/browser/glic/experimental_triggering/OWNERS`.
 // LINT.IfChange(GlicInvokeError)
 // Possible errors that can occur during a Glic invocation.
 enum class GlicInvokeError {
@@ -180,17 +244,18 @@ enum class GlicInvokeError {
   kInvalidTab = 4,
   // The tab was closed before the invocation could complete.
   kTabClosed = 5,
-  // The instance was destroyed before the invocation could complete.
-  kInstanceDestroyed = 6,
+  // Deprecated: split by removal reason into the kInstanceDestroyed* values
+  // below.
+  // kInstanceDestroyed = 6,
   // The instance is already handling an invocation.
   kInvokeInProgress = 7,
   // The provided invocation configuration is invalid.
   kInvalidConfiguration = 8,
   // Observed a navigation before the policy checks completed.
   kAdditionalContextSawNavigation = 9,
-  // The clipboard copy policy check failed for the given additional context.
+  // The clipboard copy policy check failed for additional context or prompts.
   kAdditionalContextFailedCopyPolicy = 10,
-  // The clipboard paste policy check failed for the given additional context.
+  // The clipboard paste policy check failed for additional context or prompts.
   kAdditionalContextFailedPastePolicy = 11,
   // Could not find the source frame instance for the policy checks.
   kAdditionalContextNoSourceFrame = 12,
@@ -207,9 +272,40 @@ enum class GlicInvokeError {
   kCancelled = 17,
   // The invocation handler was superseded by another invocation.
   kSuperseded = 18,
-  kMaxValue = kSuperseded,
+  // The invocation targeted an instance that is in live mode, and
+  // `Target::live_mode_behavior` asked for it to fail.
+  kLiveModeActive = 19,
+  // The Glic client failed to load or reach a ready state.
+  kClientLoadError = 20,
+  // The instance was destroyed before the invocation could complete. The
+  // suffix says why the instance was removed (see InstanceRemovalReason).
+  kInstanceDestroyedBlankInstanceClosed = 21,
+  kInstanceDestroyedUnbound = 22,
+  kInstanceDestroyedArchived = 23,
+  kInstanceDestroyedSignedOut = 24,
+  kInstanceDestroyedShutdown = 25,
+  // The user explicitly closed the panel the invocation was showing before
+  // the client became usable (see Host::client_load_state()). Invocations
+  // that already have a usable client are not affected by a close.
+  kPanelClosed = 26,
+  // The invocation needed the client, the client stopped on the sign-in panel
+  // (ClientLoadErrorReason::kSignIn), and the user had not signed in when the
+  // invocation timed out. Not a failure of the client, and not a kTimeout
+  // either: nothing the product did ran late. (An invocation that only shows
+  // the panel succeeds at that point instead; see GatePanelBehavior.)
+  // Counted as ABANDONED, which is what CUI 1 recorded for the sign-in panel
+  // before it was resolved from the invocation.
+  kSignInRequired = 27,
+  // A browser window is in locked fullscreen mode.
+  kLockedFullscreen = 28,
+  kMaxValue = kLockedFullscreen,
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInvokeResult,//chrome/browser/glic/host/glic_internals_page_handler.cc:GlicInvokeError)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInvokeResult,//chrome/browser/glic/public/glic_invoke_options.cc:GlicInvokeErrorToString)
+
+// Returns a human-readable, non-localized description of `error`. Intended for
+// logging and developer-facing surfaces (e.g. chrome://glic-internals); not for
+// display to end users.
+std::string_view GlicInvokeErrorToString(GlicInvokeError error);
 
 // Details for invoking Glic with tabs shared. See
 // GlicSharingManagerInternal::PinTabs().
@@ -254,6 +350,26 @@ struct GlicInvokeOptions {
   // or a payload.
   glic::mojom::InvocationSource GetInvocationSource() const;
 
+  // Returns whether `additional_context` requests the clipboard policy checks.
+  bool RequiresContextClipboardPolicyCheck() const;
+
+  // Returns whether `prompts` need the clipboard policy checks requested by
+  // `prompt_policy`. `prompts` must not be empty when `prompt_policy` is set.
+  bool RequiresPromptClipboardPolicyCheck() const;
+
+  // Intended for internal diagnostic pass-through only. Reach out to
+  // c/b/glic/API_OWNERS before adding new callers.
+  // Invoked asynchronously alongside `on_error` when the invocation fails. The
+  // second parameter is an opaque, human-readable diagnostic string whose
+  // format and contents reflect internal Glic implementation state and carry no
+  // stability guarantee; callers must not parse or branch on it.
+  void SetOnErrorWithDiagnostics(
+      base::PassKey<InvokeErrorDiagnosticsPasskeyProvider>,
+      base::OnceCallback<void(GlicInvokeError, std::string)> callback);
+  base::OnceCallback<void(GlicInvokeError, std::string)>
+      TakeOnErrorWithDiagnostics(
+          base::PassKey<InvokeErrorDiagnosticsPasskeyProvider>);
+
   // The invocation source or a specific payload.
   std::variant<glic::mojom::InvocationSource, glic::mojom::InvocationPayloadPtr>
       source_or_payload;
@@ -261,6 +377,12 @@ struct GlicInvokeOptions {
   // One or more pre-determined prompts to offer or submit. Providing multiple
   // prompts can facilitate a chip-style UI on the client.
   std::vector<std::string> prompts;
+
+  // Policy checks for `prompts` that contain page data. If a check fails, the
+  // invocation fails. Requesting checks on both `prompts` and
+  // `additional_context` fails the invocation with
+  // `GlicInvokeError::kInvalidConfiguration`.
+  std::optional<PromptPolicy> prompt_policy;
 
   // Additional context (e.g., image data, Annotated Page Content) to be
   // included with the invocation.
@@ -333,8 +455,16 @@ struct GlicInvokeOptions {
   FreCompletionWaitMode fre_completion_wait_mode =
       FreCompletionWaitMode::kDefault;
 
-  // Browser-specific callback for when the side panel is opened (and stabilized
-  // if wait_for_panel_open is true).
+  // Browser-specific callback for when the invocation opens a visible panel.
+  // Called asynchronously. Not called for hidden invocations
+  // (`show_panel = false`) or for inactive background-tab side panels that do
+  // not open a visible panel.
+  // - When `wait_for_panel_open` is false (or for floating targets), posted
+  //   right after showing the panel, before waiting for the client to finish
+  //   loading.
+  // - When `wait_for_panel_open` is true for a tab target, posted after client
+  //   readiness and layout stabilization once showing the instance opened the
+  //   panel, even if the panel was subsequently closed or hidden.
   base::OnceClosure on_panel_opened;
 
   // Browser-specific callback for when the invocation successfully completes.
@@ -348,6 +478,13 @@ struct GlicInvokeOptions {
   // Browser-specific callback for when the invocation fails.
   // This is called asynchronously.
   base::OnceCallback<void(GlicInvokeError)> on_error;
+
+ private:
+  friend class GlicInstanceCoordinatorImpl;
+  friend class GlicInvokeHandler;
+
+  base::OnceCallback<void(GlicInvokeError, std::string)>
+      on_error_with_diagnostics_;
 };
 
 // Configuration options for invoking Glic with auto-submit.
@@ -363,6 +500,57 @@ struct GlicInvokeWithAutoSubmitOptions {
   // Whether or not to show the panel on invocation. Doesn't prevent the panel
   // from being shown later and has no impact if the panel is already showing.
   bool show_panel = true;
+};
+
+// Handle returned by `Invoke()` and `InvokeWithAutoSubmit()` representing an
+// accepted invocation and allowing the caller to cancel only that specific
+// invocation while it remains in flight.
+class GlicInvocationHandle {
+ public:
+  GlicInvocationHandle();
+  // NOLINTNEXTLINE(google-explicit-constructor)
+  GlicInvocationHandle(std::nullptr_t);
+  // Implicit conversion from `base::WeakPtr<GlicInstance>` (or derived types
+  // such as `MockGlicInstance`) keeps test mocks returning
+  // `mock_instance.GetWeakPtr()` ergonomic without cancel plumbing.
+  // TODO(b/582416328): Replace implicit `WeakPtr` conversion with an explicit
+  // `ForTesting` factory once external mock callers are updated.
+  // NOLINTNEXTLINE(google-explicit-constructor)
+  GlicInvocationHandle(base::WeakPtr<GlicInstance> instance);
+  template <typename T>
+    requires(!std::same_as<T, GlicInstance> &&
+             std::convertible_to<T*, GlicInstance*>)
+  // NOLINTNEXTLINE(google-explicit-constructor)
+  GlicInvocationHandle(base::WeakPtr<T> instance)
+      : GlicInvocationHandle(base::WeakPtr<GlicInstance>(std::move(instance))) {
+  }
+  GlicInvocationHandle(base::WeakPtr<GlicInstance> instance,
+                       base::RepeatingClosure cancel_closure);
+  // Copyable so gMock `testing::Return(mock_instance.GetWeakPtr())` satisfies
+  // `WillByDefault()` / `WillRepeatedly()`. `Cancel()` consumes this handle's
+  // closure and synchronously destroys the underlying `GlicInvokeHandler`,
+  // making any subsequent `Cancel()` on copies a no-op as well.
+  GlicInvocationHandle(const GlicInvocationHandle&);
+  GlicInvocationHandle& operator=(const GlicInvocationHandle&);
+  GlicInvocationHandle(GlicInvocationHandle&&) noexcept;
+  GlicInvocationHandle& operator=(GlicInvocationHandle&&) noexcept;
+  ~GlicInvocationHandle();
+
+  // Returns true if the invocation was routed to a live instance; it may
+  // already have finished.
+  explicit operator bool() const { return static_cast<bool>(instance_); }
+
+  base::WeakPtr<GlicInstance> instance() const { return instance_; }
+
+  // Cancels this specific invocation with `GlicInvokeError::kCancelled` if it
+  // is still in flight; no-op once the invocation has finished, been
+  // superseded, or already been cancelled. Destroying the handle without
+  // calling `Cancel()` leaves an in-flight invocation running.
+  void Cancel();
+
+ private:
+  base::WeakPtr<GlicInstance> instance_;
+  base::RepeatingClosure cancel_closure_;
 };
 
 }  // namespace glic

@@ -1142,7 +1142,8 @@ CaptureModeController::GetCurrentCaptureFolder() const {
             /*is_default_downloads_folder=*/policy_path.path ==
                 default_downloads_folder};
   }
-  // Otherwise use user chosen custom one, if present.
+  // Otherwise use user chosen custom one, if present, or the one recommended
+  // by admin.
   if (pref_service &&
       !pref_service->GetBoolean(kUsesDefaultCapturePathPrefName)) {
     const auto custom_path =
@@ -1152,13 +1153,12 @@ CaptureModeController::GetCurrentCaptureFolder() const {
               /*is_default_downloads_folder=*/custom_path ==
                   default_downloads_folder};
     }
-  }
-  // Otherwise use the recommended by admin.
-  if (policy_path.enforcement ==
-      CaptureModeDelegate::CapturePathEnforcement::kRecommended) {
-    return {policy_path.path,
-            /*is_default_downloads_folder=*/policy_path.path ==
-                default_downloads_folder};
+    if (policy_path.enforcement ==
+        CaptureModeDelegate::CapturePathEnforcement::kRecommended) {
+      return {policy_path.path,
+              /*is_default_downloads_folder=*/policy_path.path ==
+                  default_downloads_folder};
+    }
   }
 
   // By default - downloads folder.
@@ -2057,9 +2057,28 @@ void CaptureModeController::OnImageCapturedForSearch(
     VLOG(1) << "Image search token invalid after capturing image.";
     return;
   }
-  capture_mode_session_->OnPerformCaptureForSearchEnded(capture_type);
+
+  // Handle capture failure where snapshotting returned a null or empty buffer.
+  // We must notify the session to restore UI widgets without starting the glow
+  // animation or proceeding to decode and dispatch search requests.
+  if (!jpeg_bytes || !jpeg_bytes->size()) {
+    LOG(ERROR) << "Failed to capture image for search: empty buffer.";
+    image_search_token->OnPerformCaptureForSearchEnded(
+        capture_type, /*capture_succeeded=*/false);
+    return;
+  }
 
   const SkBitmap bitmap = gfx::JPEGCodec::Decode(*jpeg_bytes);
+  // Handle corrupted or un-decodable JPEG bytes.
+  if (bitmap.drawsNothing()) {
+    LOG(ERROR) << "Failed to decode captured image for search.";
+    image_search_token->OnPerformCaptureForSearchEnded(
+        capture_type, /*capture_succeeded=*/false);
+    return;
+  }
+
+  image_search_token->OnPerformCaptureForSearchEnded(
+      capture_type, /*capture_succeeded=*/true);
   if (ShouldPerformTextDetection(capture_type)) {
     delegate_->DetectTextInImage(
         bitmap, base::BindOnce(&CaptureModeController::OnTextDetectionComplete,
@@ -3002,8 +3021,7 @@ void CaptureModeController::OnDlpRestrictionCheckedAtCaptureScreenshot(
 void CaptureModeController::PerformScreenshotsOfAllDisplays(
     BehaviorType behavior_type) {
   // Get a vector of RootWindowControllers with primary root window at first.
-  const std::vector<RootWindowController*> controllers =
-      RootWindowController::root_window_controllers();
+  const auto controllers = RootWindowController::root_window_controllers();
   // Capture screenshot for each individual display.
   int display_index = 1;
   for (RootWindowController* controller : controllers) {

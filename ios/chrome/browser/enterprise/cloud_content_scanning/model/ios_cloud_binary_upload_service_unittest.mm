@@ -47,14 +47,9 @@ class MockBinaryUploadRequest : public BinaryUploadRequest {
 // authority in tests.
 class MockBrowserManagementService : public policy::BrowserManagementService {
  public:
-  explicit MockBrowserManagementService(ProfileIOS* profile)
-      : policy::BrowserManagementService(profile) {}
+  explicit MockBrowserManagementService(ProfileIOS& profile)
+      : policy::BrowserManagementService(&profile) {}
 };
-
-std::unique_ptr<KeyedService> CreateMockBrowserManagementService(
-    ProfileIOS* profile) {
-  return std::make_unique<MockBrowserManagementService>(profile);
-}
 
 }  // namespace
 
@@ -66,11 +61,12 @@ class IOSCloudBinaryUploadServiceTest : public PlatformTest {
     // Install mock management service and identity manager.
     builder.AddTestingFactory(
         policy::BrowserManagementServiceFactory::GetInstance(),
-        base::BindRepeating(&CreateMockBrowserManagementService));
+        base::BindOnce(
+            &std::make_unique<MockBrowserManagementService, ProfileIOS&>));
     builder.AddTestingFactory(
         IdentityManagerFactory::GetInstance(),
-        base::BindRepeating(&IdentityTestEnvironmentBrowserStateAdaptor::
-                                BuildIdentityManagerForTests));
+        base::BindOnce(&IdentityTestEnvironmentBrowserStateAdaptor::
+                           BuildIdentityManagerForTests));
     // Provide a policy connector to handle affiliation checks.
     builder.SetPolicyConnector(std::make_unique<ProfilePolicyConnector>());
     profile_ = std::move(builder).Build();

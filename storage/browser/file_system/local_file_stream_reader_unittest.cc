@@ -10,14 +10,18 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
@@ -52,6 +56,12 @@ file_access::ScopedFileAccess CreateScopedFileAccess(bool allowed) {
 #else
   return file_access::ScopedFileAccess(allowed);
 #endif
+}
+
+void DenyFileAccessInline(
+    const std::vector<base::FilePath>&,
+    base::OnceCallback<void(file_access::ScopedFileAccess)> callback) {
+  std::move(callback).Run(file_access::ScopedFileAccess::Denied());
 }
 
 }  // namespace
@@ -132,6 +142,46 @@ class LocalFileStreamReaderTest : public FileStreamReaderTest {
 INSTANTIATE_TYPED_TEST_SUITE_P(Local,
                                FileStreamReaderTypedTest,
                                LocalFileStreamReaderTest);
+
+TEST_F(LocalFileStreamReaderTest, ReadFileWithUnixEpochTimestamp) {
+  WriteTestFile();
+  const base::Time timestamp = base::Time::UnixEpoch();
+  ASSERT_TRUE(base::TouchFile(test_dir().AppendASCII(kTestFileName), timestamp,
+                              timestamp));
+
+  auto reader = CreateFileReader(std::string(kTestFileName), 0, timestamp);
+  auto length_result = GetLengthFromReader(reader.get());
+  ASSERT_TRUE(length_result.has_value());
+  EXPECT_EQ(static_cast<int64_t>(kTestData.size()), length_result.value());
+
+  auto data_or_error = ReadFromReader(*reader, kTestData.size());
+  ASSERT_TRUE(data_or_error.has_value());
+  EXPECT_EQ(kTestData, data_or_error.value());
+}
+
+TEST_F(LocalFileStreamReaderTest,
+       ReadAfterModifyingFileWithUnixEpochTimestamp) {
+  WriteTestFile();
+  const base::FilePath path = test_dir().AppendASCII(kTestFileName);
+  const base::Time timestamp = base::Time::UnixEpoch();
+  ASSERT_TRUE(base::TouchFile(path, timestamp, timestamp));
+
+  base::File::Info snapshot_info;
+  ASSERT_TRUE(base::GetFileInfo(path, &snapshot_info));
+  auto reader = CreateFileReader(std::string(kTestFileName), 0,
+                                 snapshot_info.last_modified);
+
+  ASSERT_TRUE(base::TouchFile(path, timestamp, timestamp + base::Seconds(2)));
+  auto length_result = GetLengthFromReader(reader.get());
+  EXPECT_FALSE(length_result.has_value());
+  if (!length_result.has_value()) {
+    EXPECT_EQ(net::ERR_UPLOAD_FILE_CHANGED, length_result.error());
+  }
+
+  auto data_or_error = ReadFromReader(*reader, kTestData.size());
+  ASSERT_FALSE(data_or_error.has_value());
+  EXPECT_EQ(net::ERR_UPLOAD_FILE_CHANGED, data_or_error.error());
+}
 
 // TODO(b/265908846): Replace direct call to
 // file_access::ScopedFileAccessDelegate with getting access through a callback.
@@ -227,6 +277,35 @@ TEST_F(LocalFileStreamReaderTest, ReadBlockedByDataLeakPreventionCallback) {
       ReadFromReader(*reader, /*bytes_to_read=*/this->kTestData.size());
   ASSERT_FALSE(data_or_error.has_value());
   EXPECT_EQ(data_or_error.error(), net::ERR_ACCESS_DENIED);
+}
+
+TEST_F(LocalFileStreamReaderTest, ReadDeniedInlineRunsCallbackAsynchronously) {
+  WriteTestFile();
+  std::unique_ptr<FileStreamReader> reader = CreateFileReader(
+      std::string(kTestFileName), 0, test_file_modification_time(),
+      base::BindRepeating(&DenyFileAccessInline));
+
+  auto buf = base::MakeRefCounted<net::IOBufferWithSize>(kTestData.size());
+  net::TestCompletionCallback callback;
+  int rv = reader->Read(buf, buf->size(), callback.callback());
+  ASSERT_EQ(rv, net::ERR_IO_PENDING);
+  EXPECT_FALSE(callback.have_result());
+  EXPECT_EQ(callback.WaitForResult(), net::ERR_ACCESS_DENIED);
+}
+
+TEST_F(LocalFileStreamReaderTest, DeleteWithPendingInlineDeniedRead) {
+  WriteTestFile();
+  std::unique_ptr<FileStreamReader> reader = CreateFileReader(
+      std::string(kTestFileName), 0, test_file_modification_time(),
+      base::BindRepeating(&DenyFileAccessInline));
+
+  auto buf = base::MakeRefCounted<net::IOBufferWithSize>(kTestData.size());
+  int rv = reader->Read(buf, buf->size(),
+                        base::BindOnce(&FileStreamReaderTest::NeverCalled));
+  ASSERT_EQ(rv, net::ERR_IO_PENDING);
+
+  reader.reset();
+  base::RunLoop().RunUntilIdle();
 }
 
 }  // namespace storage

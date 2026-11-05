@@ -30,7 +30,6 @@ if (!is_android) {
       "feedback_handler.cc",
       "feedback_ui.cc",
     ]
-    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
     deps = [
       ":feedback",
       "//base",
@@ -63,7 +62,7 @@ if (!is_android) {
     if (is_chromeos) {
       deps += [
         "//chrome/browser/ash/arc:arc_util",
-        "//chromeos/strings",
+        "//chromeos/resources:strings",
       ]
     }
   }

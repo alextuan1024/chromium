@@ -650,26 +650,17 @@ bool ElevateAndRegisterChrome(
   // when running out of a build output directory.
   base::FilePath exe_path = chrome_exe.DirName().Append(installer::kSetupExe);
 
-  // Failing that, read the path to setup.exe from Chrome's ClientState key,
-  // which is the canonical location of the installer for all types of installs
-  // (see AddUninstallShortcutWorkItems).
-  const bool is_per_user = InstallUtil::IsPerUserInstall();
+  // Failing that, locate setup.exe for the currently-running installation.
   if (!base::PathExists(exe_path)) {
-    RegKey key(is_per_user ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE,
-               install_static::GetClientStateKeyPath().c_str(),
-               KEY_QUERY_VALUE | KEY_WOW64_32KEY);
-    std::wstring uninstall_string;
-    if (key.ReadValue(installer::kUninstallStringField, &uninstall_string) ==
-        ERROR_SUCCESS) {
-      exe_path = base::FilePath(uninstall_string);
-    }
+    exe_path = installer::GetCurrentSetupPath();
   }
 
-  if (base::PathExists(exe_path)) {
+  if (!exe_path.empty() && base::PathExists(exe_path)) {
     base::CommandLine cmd(exe_path);
     InstallUtil::AppendModeAndChannelSwitches(&cmd);
-    if (!is_per_user)
+    if (!InstallUtil::IsPerUserInstall()) {
       cmd.AppendSwitch(installer::switches::kSystemLevel);
+    }
     cmd.AppendSwitchPath(installer::switches::kRegisterChromeBrowser,
                          chrome_exe);
     if (!suffix.empty()) {
@@ -901,8 +892,11 @@ base::win::ShortcutProperties TranslateShortcutProperties(
     shortcut_properties.set_working_dir(properties.target.DirName());
   }
 
-  if (properties.has_arguments())
+  if (properties.has_arguments()) {
     shortcut_properties.set_arguments(properties.arguments);
+  } else if (properties.has_arguments_to_merge()) {
+    shortcut_properties.set_arguments_to_merge(properties.arguments);
+  }
 
   if (properties.has_description())
     shortcut_properties.set_description(properties.description);
@@ -1161,6 +1155,7 @@ bool ShortcutOpListOrRemoveUnknownArgs(
       switches::kApp,
       switches::kAppId,
       switches::kProfileDirectory,
+      switches::kSourceShortcutLocation,
   };
   base::CommandLine desired_args(base::CommandLine::NO_PROGRAM);
   desired_args.CopySwitchesFrom(current_args, kept_switches);
@@ -1345,7 +1340,6 @@ bool RegisterChromeBrowserImpl(const base::FilePath& chrome_exe,
                                     &progid_and_appreg_entries);
     GetShellIntegrationEntries(chrome_exe, suffix, &shell_entries);
     GetDirectLaunchEntries(chrome_exe, &shell_entries);
-    const std::wstring html_prog_id = GetBrowserProgId(suffix);
     return ShellUtil::AddRegistryEntries(root, progid_and_appreg_entries,
                                          best_effort_no_rollback) &&
            ShellUtil::AddRegistryEntries(root, shell_entries,
@@ -2290,9 +2284,6 @@ bool ShellUtil::AddFileAssociations(
 
 // static
 bool ShellUtil::DeleteFileAssociations(const std::wstring& app_prog_id) {
-  const std::wstring app_prog_id_path =
-      base::StrCat({kRegClasses, kFilePathSeparator, app_prog_id});
-
   // Get the list of file handler ProgIds for the app. Do this before the
   // `app_prog_id` key is deleted.
   const std::vector<std::wstring> file_handler_prog_ids =
@@ -2499,8 +2490,6 @@ std::wstring ShellUtil::GetAppName(const std::wstring& prog_id) {
 // static
 base::FilePath ShellUtil::GetApplicationPathForProgId(
     const std::wstring& prog_id) {
-  std::wstring prog_id_path =
-      base::StrCat({kRegClasses, kFilePathSeparator, prog_id});
   std::wstring shell_open_key =
       base::StrCat({kRegClasses, kFilePathSeparator, prog_id, kRegShellOpen});
   std::wstring command_line;

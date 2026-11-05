@@ -119,7 +119,7 @@ class ExitTypeService::BrowserTabObserverImpl
       browser_collection_observation_{this};
 
   // Browsers whose TabStripModel this is observing.
-  base::flat_set<raw_ptr<BrowserWindowInterface, CtnExperimental>> browsers_;
+  base::flat_set<raw_ptr<BrowserWindowInterface>> browsers_;
 };
 
 ExitTypeService::CrashedLock::~CrashedLock() {
@@ -248,7 +248,7 @@ void ExitTypeService::CheckUserAckedCrash() {
 
 void ExitTypeService::CrashedLockDestroyed() {
   --crashed_lock_count_;
-  DCHECK_GE(crashed_lock_count_, 0);
+  CHECK_GE(crashed_lock_count_, 0, base::NotFatalUntil::M163);
   if (crashed_lock_count_ == 0) {
     CheckUserAckedCrash();
   }

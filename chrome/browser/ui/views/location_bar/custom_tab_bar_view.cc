@@ -6,17 +6,18 @@
 
 #include <memory>
 
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/bubble_anchor_util.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/page_info/page_info_dialog.h"
-#include "chrome/browser/ui/tabs/tab_change_type.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -24,10 +25,13 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/omnibox/browser/location_bar_model.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/url_formatter/url_formatter.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -55,6 +59,8 @@
 #include "ui/views/style/typography_provider.h"
 #include "ui/views/view_class_properties.h"
 #include "url/gurl.h"
+#include "url/origin.h"
+#include "url/url_constants.h"
 
 namespace {
 
@@ -136,10 +142,13 @@ class CustomTabBarTitleOriginView : public views::View {
         .SetCrossAxisAlignment(views::LayoutAlignment::kStart);
   }
 
-  void Update(const std::u16string title, const std::u16string location) {
+  void Update(const std::u16string title,
+              const std::u16string location,
+              gfx::ElideBehavior location_elide_behavior) {
     if (title_label_) {
       title_label_->SetText(title);
     }
+    location_label_->SetElideBehavior(location_elide_behavior);
     location_label_->SetText(location);
     location_label_->SetVisible(!location.empty());
   }
@@ -191,6 +200,10 @@ class CustomTabBarTitleOriginView : public views::View {
 
   bool IsShowingOriginForTesting() const {
     return location_label_ && location_label_->GetVisible();
+  }
+
+  gfx::ElideBehavior GetLocationElideBehaviorForTesting() const {
+    return location_label_->GetElideBehavior();
   }
 
  private:
@@ -247,7 +260,10 @@ CustomTabBarView::CustomTabBarView(BrowserView* browser_view,
       .SetCrossAxisAlignment(views::LayoutAlignment::kStretch)
       .SetInteriorMargin(interior_margin);
 
-  browser_->GetTabStripModel()->AddObserver(this);
+  active_tab_subscription_ =
+      browser_->RegisterActiveTabDidChange(base::BindRepeating(
+          &CustomTabBarView::OnActiveTabChanged, base::Unretained(this)));
+  OnActiveTabChanged(browser_);
 }
 
 CustomTabBarView::~CustomTabBarView() = default;
@@ -332,20 +348,27 @@ void CustomTabBarView::OnThemeChanged() {
   title_origin_view_->SetColors(background_color_);
 }
 
-void CustomTabBarView::OnTabChangedAt(tabs::TabInterface* tab,
-                                      TabChangeType change_type) {
-  if (delegate_->GetWebContents() == tab->GetContents()) {
-    UpdateContents();
-  }
+void CustomTabBarView::OnActiveTabChanged(
+    BrowserWindowInterface* browser_interface) {
+  tabs::TabInterface* const active_tab =
+      browser_interface->GetActiveTabInterface();
+  tab_ui_change_subscription_ =
+      active_tab
+          ? TabUIHelper::From(active_tab)
+                ->AddTabUIChangeCallback(base::BindRepeating(
+                    &CustomTabBarView::UpdateContents, base::Unretained(this)))
+          : base::CallbackListSubscription();
+  UpdateContents();
 }
 
-void CustomTabBarView::OnTabStripModelChanged(
-    TabStripModel* tab_strip_model,
-    const TabStripModelChange& change,
-    const TabStripSelectionChange& selection) {
-  if (selection.active_tab_changed()) {
-    UpdateContents();
+bool CustomTabBarView::HasSecurityStateChanged() const {
+  web_app::AppBrowserController* const app_controller =
+      web_app::AppBrowserController::From(browser_);
+  if (app_controller && !app_controller->ShouldShowCustomTabBar()) {
+    return false;
   }
+  return GetVisible() && location_icon_view_ &&
+         location_icon_view_->HasSecurityStateChanged();
 }
 
 void CustomTabBarView::UpdateContents() {
@@ -364,14 +387,37 @@ void CustomTabBarView::UpdateContents() {
 
   content::NavigationEntry* entry = contents->GetController().GetVisibleEntry();
   std::u16string title, location;
-  title = WindowMetadataController::FormatTitleForDisplay(
-      entry->GetTitleForDisplay());
+  if (entry) {
+    title = WindowMetadataController::FormatTitleForDisplay(
+        entry->GetTitleForDisplay());
+  }
+  GURL url_to_display = contents->GetVisibleURL();
+  if (url_to_display.is_empty()) {
+    // The initial empty document has no URL to show, e.g. when the opener
+    // aborted the pending navigation via document.open() + document.write().
+    // Display the origin the document inherited from its opener instead, so
+    // the page cannot control the entire bar through document.title. Opaque
+    // origins display as about:blank, matching the omnibox.
+    const url::Origin& committed_origin =
+        contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+    url_to_display = committed_origin.opaque() ? GURL(url::kAboutBlankURL)
+                                               : committed_origin.GetURL();
+  }
   if (ShouldDisplayUrl(contents)) {
     location = web_app::AppBrowserController::FormatUrlOrigin(
-        contents->GetVisibleURL(), url_formatter::kFormatUrlOmitDefaults);
+        url_to_display, url_formatter::kFormatUrlOmitDefaults);
   }
 
-  title_origin_view_->Update(title, location);
+  // Only head-elide hierarchical HTTP/HTTPS origins (where the registrable
+  // domain is at the end). For opaque origins or non-HTTP/HTTPS schemes, tail
+  // elision is required so that a crafted suffix cannot spoof an HTTPS origin.
+  const url::Origin origin = url::Origin::Create(url_to_display);
+  const gfx::ElideBehavior location_elide_behavior =
+      (!origin.opaque() && origin.GetURL().SchemeIsHTTPOrHTTPS())
+          ? gfx::ElideBehavior::ELIDE_HEAD
+          : gfx::ElideBehavior::ELIDE_TAIL;
+
+  title_origin_view_->Update(title, location, location_elide_behavior);
   location_icon_view_->Update(/*suppress animations = */ false);
 
   // Hide location icon if we're already hiding the origin.
@@ -453,6 +499,11 @@ bool CustomTabBarView::IsShowingOriginForTesting() const {
 
 bool CustomTabBarView::IsShowingCloseButtonForTesting() const {
   return close_button_->GetVisible();
+}
+
+gfx::ElideBehavior CustomTabBarView::GetLocationElideBehaviorForTesting()
+    const {
+  return title_origin_view_->GetLocationElideBehaviorForTesting();  // IN-TEST
 }
 
 void CustomTabBarView::GoBackToApp() {

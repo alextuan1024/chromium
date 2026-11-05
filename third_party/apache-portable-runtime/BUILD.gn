@@ -17,12 +17,25 @@ config("apr_warnings") {
   }
 }
 
+# Generated headers (include/) come before upstream's, which only has templates
+# for them.
+config("apr_config") {
+  include_dirs = [
+    "include",
+    "src/include",
+  ]
+}
+
 # Builds 'Apache Portable Runtime'. See http://apr.apache.org
 static_library("apr") {
   sources = [
+    "include/apr.h",
+    "include/arch/unix/apr_private.h",
     "src/atomic/unix/builtins.c",
+    "src/atomic/unix/builtins64.c",
     "src/atomic/unix/ia32.c",
     "src/atomic/unix/mutex.c",
+    "src/atomic/unix/mutex64.c",
     "src/atomic/unix/ppc.c",
     "src/atomic/unix/s390.c",
     "src/atomic/unix/solaris.c",
@@ -59,7 +72,6 @@ static_library("apr") {
     "src/include/arch/unix/apr_arch_thread_mutex.h",
     "src/include/arch/unix/apr_arch_thread_rwlock.h",
     "src/include/arch/unix/apr_arch_threadproc.h",
-    "src/include/arch/unix/apr_private.h",
     "src/locks/unix/global_mutex.c",
     "src/locks/unix/proc_mutex.c",
     "src/locks/unix/thread_cond.c",
@@ -91,6 +103,7 @@ static_library("apr") {
     "src/poll/unix/pollset.c",
     "src/poll/unix/port.c",
     "src/poll/unix/select.c",
+    "src/poll/unix/wakeup.c",
     "src/random/unix/apr_random.c",
     "src/random/unix/sha2.c",
     "src/random/unix/sha2.h",
@@ -116,10 +129,14 @@ static_library("apr") {
     "src/user/unix/groupinfo.c",
     "src/user/unix/userinfo.c",
   ]
+
+  # include/arch/unix/apr_private.h includes "arch/apr_private_common.h",
+  # which is found through src/include.
   include_dirs = [
-    "src/include",
+    "include/arch/unix",
     "src/include/arch/unix",
   ]
+  public_configs = [ ":apr_config" ]
   configs -= [ "//build/config/compiler:chromium_code" ]
   configs += [
     "//build/config/compiler:no_chromium_code",

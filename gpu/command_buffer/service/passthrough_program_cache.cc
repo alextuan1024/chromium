@@ -13,7 +13,6 @@
 
 #include "base/base64.h"
 #include "base/compiler_specific.h"
-#include "base/feature_list.h"
 #include "base/memory_coordinator/memory_coordinator_features.h"
 #include "base/memory_coordinator/traits.h"
 #include "base/memory_coordinator/utils.h"
@@ -46,14 +45,16 @@ bool g_blob_cache_funcs_set = false;
 constexpr base::MemoryConsumerTraits kPassthroughProgramCacheTraits(
     // Default capacity is small, under 10MB.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    // Evicting entries requires traversing the LRU cache.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // Eviction walks the LRU cache, reading the entries being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     // Shaders can be re-compiled and re-linked if evicted.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Asynchronous since AsyncMemoryConsumerRegistration is used.
     base::MemoryConsumerTraits::ExecutionType::kAsynchronous,
     // Compiling and linking shaders is highly CPU intensive.
     base::MemoryConsumerTraits::RecreateMemoryCost::kExpensive);
+
+constexpr std::string_view kMemoryConsumerName = "PassthroughProgramCache";
 
 }  // namespace
 
@@ -65,7 +66,7 @@ PassthroughProgramCache::PassthroughProgramCache(
       curr_size_bytes_(0),
       store_(ProgramLRUCache::NO_AUTO_EVICT),
       memory_consumer_registration_(
-          "PassthroughProgramCache",
+          kMemoryConsumerName,
           kPassthroughProgramCacheTraits,
           this,
           base::AsyncMemoryConsumerRegistration::CheckUnregister::kDisabled),
@@ -146,7 +147,7 @@ size_t PassthroughProgramCache::Trim(size_t limit) {
 
 void PassthroughProgramCache::OnUpdateMemoryLimit() {
   base::AutoLock auto_lock(lock_);
-  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (!base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     return;
   }
   // To match previous behavior, the size must be 1/4 at 50% memory limit.
@@ -157,7 +158,7 @@ void PassthroughProgramCache::OnUpdateMemoryLimit() {
 
 void PassthroughProgramCache::OnReleaseMemory() {
   base::AutoLock auto_lock(lock_);
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     // To match previous behavior, the size must be 1/4 at 50% memory limit.
     double ratio = std::clamp(memory_limit_ratio(), 0.0, 1.0);
     size_t target_size = max_size_bytes() * std::pow(ratio, 2.0);
@@ -166,7 +167,7 @@ void PassthroughProgramCache::OnReleaseMemory() {
     return;
   }
 
-  int limit = memory_limit();
+  base::MemoryLimit limit = memory_limit();
   if (limit <= base::kCriticalMemoryPressureThreshold) {
     TrimLocked(0);
   } else if (limit <= base::kModerateMemoryPressureThreshold) {
@@ -287,7 +288,7 @@ size_t PassthroughProgramCache::TrimLocked(size_t limit) {
 }
 
 size_t PassthroughProgramCache::GetCurrentMaxSizeBytes() const {
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     return current_max_size_bytes_;
   }
   return max_size_bytes();

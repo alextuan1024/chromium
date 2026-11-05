@@ -4,11 +4,17 @@
 
 #include "extensions/browser/url_request_util.h"
 
+#include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
 
+#include "base/strings/string_util.h"
 #include "base/types/optional_util.h"
 #include "components/guest_view/buildflags/buildflags.h"
+#include "content/public/browser/child_process_security_policy.h"
 #include "content/public/common/child_process_id.h"
+#include "extensions/browser/component_extension_resource_manager.h"
 #include "extensions/browser/extension_navigation_ui_data.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/process_map.h"
@@ -22,6 +28,7 @@
 #include "services/network/public/cpp/request_destination.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "third_party/blink/public/common/loader/resource_type_util.h"
+#include "ui/base/template_expressions.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_GUEST_VIEW)
@@ -113,16 +120,23 @@ bool AllowCrossRendererResourceLoad(
   }
 
   // If the request is initiated by an opaque origin, allow it if the origin's
-  // precursor matches the extension. This allows sandboxed data URLs and srcdoc
-  // documents from an extension to access its resources (necessary for
-  // backwards compatibility), even if they rendered in a non-extension process.
-  if (request.request_initiator && request.request_initiator.value().opaque()) {
-    const GURL precursor_url = request.request_initiator.value()
-                                   .GetTupleOrPrecursorTupleIfOpaque()
-                                   .GetURL();
+  // precursor matches the extension and the process is authorized to host that
+  // origin. This allows sandboxed data URLs and srcdoc documents from an
+  // extension to access its resources (necessary for backwards compatibility).
+  if (request.request_initiator && request.request_initiator->opaque()) {
+    const GURL precursor_url =
+        request.request_initiator->GetTupleOrPrecursorTupleIfOpaque().GetURL();
     if (extension->origin() == url::Origin::Create(precursor_url)) {
-      *allowed = true;
-      return true;
+      // Pass the opaque initiator rather than `extension->origin()`:
+      // HostsOrigin() checks an opaque origin's precursor, and sandboxed
+      // processes may only host opaque origins.
+      // TODO(crbug.com/379869738): Remove GetUnsafeValue.
+      if (child_id.is_null() ||
+          content::ChildProcessSecurityPolicy::GetInstance()->HostsOrigin(
+              child_id.GetUnsafeValue(), *request.request_initiator)) {
+        *allowed = true;
+        return true;
+      }
     }
   }
 
@@ -174,6 +188,52 @@ bool AllowCrossRendererResourceLoadHelper(bool is_guest,
   }
 
   return false;
+}
+
+namespace {
+
+bool IsHtmlOrCssMimeType(std::string_view mime_type) {
+  return base::EqualsCaseInsensitiveASCII(mime_type, "text/html") ||
+         base::EqualsCaseInsensitiveASCII(mime_type, "text/css");
+}
+
+bool IsJavaScriptMimeType(std::string_view mime_type) {
+  return base::EqualsCaseInsensitiveASCII(mime_type, "text/javascript") ||
+         base::EqualsCaseInsensitiveASCII(mime_type, "application/javascript");
+}
+
+}  // namespace
+
+const ui::TemplateReplacements* GetTemplateReplacementsForExtension(
+    const ExtensionId& extension_id,
+    content::BrowserContext* browser_context) {
+  const auto* resource_manager =
+      ExtensionsBrowserClient::Get()->GetComponentExtensionResourceManager();
+  return resource_manager
+             ? resource_manager->GetTemplateReplacementsForExtension(
+                   extension_id, browser_context)
+             : nullptr;
+}
+
+bool SupportsTemplateReplacement(std::string_view mime_type) {
+  return IsHtmlOrCssMimeType(mime_type) || IsJavaScriptMimeType(mime_type);
+}
+
+std::optional<std::string> ReplaceTemplateExpressionsForResource(
+    std::string_view resource_bytes,
+    std::string_view mime_type,
+    const ui::TemplateReplacements& replacements) {
+  if (IsHtmlOrCssMimeType(mime_type)) {
+    return ui::TryReplaceTemplateExpressions(resource_bytes, replacements);
+  }
+  if (IsJavaScriptMimeType(mime_type)) {
+    std::string replaced;
+    if (ui::ReplaceTemplateExpressionsInJS(resource_bytes, replacements,
+                                           &replaced)) {
+      return replaced;
+    }
+  }
+  return std::nullopt;
 }
 
 }  // namespace extensions::url_request_util

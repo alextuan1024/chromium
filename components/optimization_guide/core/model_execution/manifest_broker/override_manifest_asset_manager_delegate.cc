@@ -8,6 +8,7 @@
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
+#include "components/update_client/update_client_errors.h"
 
 namespace optimization_guide {
 
@@ -53,7 +54,7 @@ OverrideManifestAssetManagerDelegate::~OverrideManifestAssetManagerDelegate() =
 
 base::CallbackListSubscription
 OverrideManifestAssetManagerDelegate::ListenForManifestReady(
-    base::RepeatingCallback<void(base::FilePath)> on_ready) {
+    ReadyCallback on_ready) {
   if (!manifest_path_.empty()) {
     on_ready.Run(manifest_path_);
   }
@@ -65,39 +66,53 @@ void OverrideManifestAssetManagerDelegate::GetFreeDiskSpace(
   std::move(callback).Run(base::GiB(100));
 }
 
+void OverrideManifestAssetManagerDelegate::SetAssetManager(
+    base::WeakPtr<AssetManager> manager) {
+  asset_manager_ = std::move(manager);
+}
+
 void OverrideManifestAssetManagerDelegate::RegisterOnDemandComponent(
     const std::string& public_key_hex,
     const std::string& target_version,
-    const std::string& component_name,
-    base::WeakPtr<ManifestAssetManager> manager) {
+    const std::string& component_name) {
   std::string key = public_key_hex + ":" + target_version;
   auto it = component_overrides_.find(key);
-  if (it != component_overrides_.end()) {
+  bool is_already_installed = it != component_overrides_.end();
+  if (is_already_installed) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(&ManifestAssetManager::OnAssetReady, manager,
+        FROM_HERE, base::BindOnce(&AssetManager::OnAssetReady, asset_manager_,
                                   public_key_hex, base::Version(target_version),
                                   it->second));
-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(&ManifestAssetManager::InstallerRegistered, manager,
-                       public_key_hex, target_version, true));
   }
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&AssetManager::InstallerRegistered, asset_manager_,
+                     public_key_hex, target_version, is_already_installed));
 }
 
 void OverrideManifestAssetManagerDelegate::Uninstall(
-    const std::string& public_key_hex,
-    base::WeakPtr<ManifestAssetManager> manager) {
-  if (manager) {
+    const std::string& public_key_hex) {
+  if (asset_manager_) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(&ManifestAssetManager::OnAssetUninstalled,
-                                  manager, public_key_hex));
+        FROM_HERE, base::BindOnce(&AssetManager::OnAssetUninstalled,
+                                  asset_manager_, public_key_hex));
   }
 }
 
 void OverrideManifestAssetManagerDelegate::RequestUpdate(
     const std::string& public_key_hex,
     bool is_background) {
-  // Do nothing
+  if (asset_manager_) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&AssetManager::OnUpdateRequestComplete, asset_manager_,
+                       public_key_hex, update_client::Error::NONE));
+  }
+}
+
+void OverrideManifestAssetManagerDelegate::GetInstalledAssets(
+    base::OnceCallback<void(std::vector<InstalledAsset>)> callback) const {
+  std::move(callback).Run({});
 }
 
 }  // namespace optimization_guide

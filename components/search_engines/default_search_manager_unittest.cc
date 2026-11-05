@@ -41,40 +41,6 @@
 
 namespace {
 
-void SetOverrides(sync_preferences::TestingPrefServiceSyncable* prefs,
-                  bool update) {
-  auto overrides = base::ListValue();
-
-  // Lambda facilitating insertion of TemplateURL definitions, ensuring that all
-  // mandatory fields are present.
-  auto add_definition = [&overrides](TemplateURLID id,
-                                     std::string name_and_keyword,
-                                     std::string base_url) {
-    auto alternate_urls = base::ListValue();
-    alternate_urls.Append(base_url + "/alternate?q={searchTerms}");
-
-    overrides.Append(
-        base::DictValue()
-            .Set("name", name_and_keyword)
-            .Set("id", (int)id)
-            .Set("keyword", name_and_keyword)
-            .Set("search_url", base_url + "/search?q={searchTerms}")
-            .Set("suggest_url", base_url + "/suggest?q={searchTerms}")
-            .Set("favicon_url", base_url + "/favicon.ico")
-            .Set("encoding", "UTF-8")
-            .Set("alternate_urls", std::move(alternate_urls)));
-  };
-
-  add_definition(100, update ? "new_foo" : "foo", "https://atlas.com");
-  add_definition(101, update ? "new_bar" : "bar", "https://brave.com");
-  add_definition(102, update ? "new_bar" : "bar", "https://conduit.com");
-  add_definition(103, "at.yahoo.com", "https://at.search.yahoo.com");
-  add_definition(104, "emea.yahoo.com", "https://emea.search.yahoo.com");
-
-  prefs->SetUserPref(prefs::kSearchProviderOverridesVersion, base::Value(1));
-  prefs->SetUserPref(prefs::kSearchProviderOverrides, std::move(overrides));
-}
-
 void SetPolicy(sync_preferences::TestingPrefServiceSyncable* prefs,
                bool enabled,
                TemplateURLData* data,
@@ -223,66 +189,6 @@ TEST_F(DefaultSearchManagerTest, DefaultSearchSetByUserPref) {
   ExpectSimilar(fallback_t_url_data.get(),
                 manager->GetDefaultSearchEngine(&source));
   EXPECT_EQ(DefaultSearchManager::FROM_FALLBACK, source);
-}
-
-// Test that DefaultSearch manager ignores kSearchProviderOverrides when the
-// kIgnoreSearchProviderOverrides flag is enabled.
-TEST_F(DefaultSearchManagerTest, DefaultSearchOverridesIgnoredWhenFlagEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(switches::kIgnoreSearchProviderOverrides);
-
-  SetOverrides(pref_service(), false);
-  auto manager = create_manager();
-
-  // The fallback engine should be the default prepopulated one (Google), not
-  // the one from overrides.
-  std::unique_ptr<TemplateURLData> fallback_t_url_data =
-      prepopulate_data_resolver().GetFallbackSearch();
-  EXPECT_EQ(fallback_t_url_data->keyword(),
-            TemplateURLPrepopulateData::google.keyword);
-  EXPECT_EQ(fallback_t_url_data->prepopulate_id,
-            TemplateURLPrepopulateData::google.id);
-
-  DefaultSearchManager::Source source = DefaultSearchManager::FROM_POLICY;
-  const TemplateURLData* engine = manager->GetDefaultSearchEngine(&source);
-  ASSERT_TRUE(engine);
-  EXPECT_EQ(engine->keyword(), TemplateURLPrepopulateData::google.keyword);
-  EXPECT_EQ(DefaultSearchManager::FROM_FALLBACK, source);
-}
-
-// Test that DefaultSearch manager detects changes to kSearchProviderOverrides.
-TEST_F(DefaultSearchManagerTest, DefaultSearchSetByOverrides) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(switches::kIgnoreSearchProviderOverrides);
-
-  SetOverrides(pref_service(), false);
-  auto manager = create_manager();
-
-  std::unique_ptr<TemplateURLData> fallback_t_url_data =
-      prepopulate_data_resolver().GetFallbackSearch();
-  EXPECT_NE(fallback_t_url_data->keyword(),
-            TemplateURLPrepopulateData::google.keyword);
-  EXPECT_NE(fallback_t_url_data->prepopulate_id,
-            TemplateURLPrepopulateData::google.id);
-
-  DefaultSearchManager::Source source = DefaultSearchManager::FROM_POLICY;
-  EXPECT_TRUE(manager->GetDefaultSearchEngine(&source));
-  TemplateURLData first_default(*manager->GetDefaultSearchEngine(&source));
-  ExpectSimilar(fallback_t_url_data.get(), &first_default);
-  EXPECT_EQ(DefaultSearchManager::FROM_FALLBACK, source);
-
-  // Update the overrides:
-  SetOverrides(pref_service(), true);
-  fallback_t_url_data = prepopulate_data_resolver().GetFallbackSearch();
-
-  // Make sure DefaultSearchManager updated:
-  ExpectSimilar(fallback_t_url_data.get(),
-                manager->GetDefaultSearchEngine(&source));
-  EXPECT_EQ(DefaultSearchManager::FROM_FALLBACK, source);
-  EXPECT_NE(manager->GetDefaultSearchEngine(nullptr)->short_name(),
-            first_default.short_name());
-  EXPECT_NE(manager->GetDefaultSearchEngine(nullptr)->keyword(),
-            first_default.keyword());
 }
 
 // Test DefaultSearchManager handles policy-enforced DSEs correctly.
@@ -974,3 +880,38 @@ TEST_F(DefaultSearchManagerTest, EncryptionResetSetsUnacknowledgedResetPref) {
               base::Time());
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+
+TEST_F(DefaultSearchManagerTest, RecordsSearchProviderOverrideStatusOnInit) {
+  {
+    base::HistogramTester histogram_tester;
+    auto manager = create_manager();
+    histogram_tester.ExpectUniqueSample("Search.SearchProviderOverrideStatus2",
+                                        0, 1);
+  }
+
+  {
+    base::HistogramTester histogram_tester;
+    pref_service()->SetUserPref(prefs::kSearchProviderOverrides,
+                                base::ListValue());
+    auto manager = create_manager();
+    histogram_tester.ExpectUniqueSample("Search.SearchProviderOverrideStatus2",
+                                        1, 1);
+  }
+
+  {
+    base::HistogramTester histogram_tester;
+    pref_service()->SetUserPref(
+        prefs::kSearchProviderOverrides,
+        base::ListValue().Append(
+            base::DictValue()
+                .Set("name", "foo")
+                .Set("keyword", "fook")
+                .Set("search_url", "http://foo.com/s?q={searchTerms}")
+                .Set("favicon_url", "http://foi.com/favicon.ico")
+                .Set("encoding", "UTF-8")
+                .Set("id", 1001)));
+    auto manager = create_manager();
+    histogram_tester.ExpectUniqueSample("Search.SearchProviderOverrideStatus2",
+                                        2, 1);
+  }
+}

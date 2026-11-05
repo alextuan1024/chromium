@@ -5,9 +5,7 @@
 #ifndef CHROME_BROWSER_GLIC_BROWSER_UI_TAB_UNDERLINE_CONTROLLER_H_
 #define CHROME_BROWSER_GLIC_BROWSER_UI_TAB_UNDERLINE_CONTROLLER_H_
 
-#include <list>
-#include <optional>
-#include <string>
+#include <set>
 #include <vector>
 
 #include "base/callback_list.h"
@@ -18,7 +16,6 @@
 #include "chrome/browser/glic/host/context/glic_tab_data.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "components/tabs/public/tab_interface.h"
-#include "ui/views/view_observer.h"
 
 class BrowserWindowInterface;
 
@@ -29,8 +26,7 @@ class WebContents;
 namespace glic {
 
 class TabUnderlineController
-    : public GlicInstanceCoordinator::StateObserver,
-      public contextual_tasks::ActiveTaskContextProvider::Observer {
+    : public contextual_tasks::ActiveTaskContextProvider::Observer {
  public:
   class UiDelegate {
    public:
@@ -40,6 +36,10 @@ class TabUnderlineController
     virtual void ResetAnimationCycle() = 0;
     virtual void StartRampingDown() = 0;
     virtual bool IsShowing() const = 0;
+    // Whether the UI is attached to a widget with a compositor, and can
+    // therefore be shown. Requests to show while this is false are deferred
+    // until `OnUiReady()`.
+    virtual bool CanShow() const = 0;
   };
 
   explicit TabUnderlineController(tabs::TabHandle tab_handle);
@@ -65,10 +65,10 @@ class TabUnderlineController
   void OnIndicatorStatusChanged(bool enabled);
 
   // Called when the glic set of pinned tabs changes.
-  void OnPinnedTabsChanged(const std::vector<tabs::TabInterface*>& pinned_tabs);
+  void OnPinnedTabsChanged(
+      const std::vector<raw_ptr<tabs::TabInterface>>& pinned_tabs);
 
-  // GlicInstanceCoordinator::StateObserver:
-  void PanelStateChanged(const glic::mojom::PanelState& panel_state) override;
+  void PanelStateChanged(const glic::mojom::PanelState& panel_state);
 
   void OnUserInputSubmitted();
 
@@ -158,21 +158,15 @@ class TabUnderlineController
 
   bool IsAnyGlicPanelShowing() const;
 
-  std::string UpdateReasonToString(UpdateUnderlineReason reason);
-
-  void AddReasonForDebugging(UpdateUnderlineReason reason);
-
   // Helper methods to check feature flags for Glic and contextual tasks.
   bool ShouldUseSignalsForGlicUnderlines();
   bool ShouldUseSignalsForContextualTasks();
 
-  std::string UpdateReasonsToString() const;
+  BrowserWindowInterface* GetBrowserWindowInterface();
 
   // Back pointer to the owner. Guaranteed to outlive `this`.
   raw_ptr<UiDelegate> ui_delegate_;
   tabs::TabHandle tab_handle_;
-
-  BrowserWindowInterface* GetBrowserWindowInterface();
 
   // The Glic keyed service. This is only assigned if
   // ShouldUseSignalsForGlicUnderlines() returns true. Otherwise, it will stay
@@ -193,12 +187,13 @@ class TabUnderlineController
                           contextual_tasks::ActiveTaskContextProvider::Observer>
       contextual_task_observation_{this};
 
-  static constexpr size_t kNumReasonsToKeep = 10u;
-  std::list<std::string> underline_update_reasons_;
-
   // The current set of active sources for the underline. The underline is
   // hidden only when this bitmask is UnderlineSource::kNone.
   int active_sources_ = UnderlineSource::kNone;
+
+  // True while `OnUiReady()` is syncing initial state. Show requests made
+  // during this time are deferred and applied once at the end of the sync.
+  bool is_syncing_ui_state_ = false;
 };
 
 }  // namespace glic

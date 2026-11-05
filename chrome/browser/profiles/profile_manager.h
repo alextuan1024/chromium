@@ -44,6 +44,7 @@ class GlobalBrowserCollection;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
+class ProfileAttributesStorageAndroid;
 class ProfileManagerAndroid;
 #endif
 
@@ -240,7 +241,10 @@ class ProfileManager : public Profile::Delegate {
   bool IsValidProfile(const void* profile);
 
   // Returns the directory where the first created profile is stored,
-  // relative to the user data directory currently in use.
+  // relative to the user data directory currently in use. On Android with
+  // AndroidMultiprofileStartupData, this is the profile StartupData was built
+  // for (see StartupData::GetProfilePath()), which may not be Default. Java
+  // Profile#isInitialProfile() still means the Default profile.
   static base::FilePath GetInitialProfileDir();
 
   // Get the path of the last used profile, or if that's undefined, the default
@@ -266,7 +270,6 @@ class ProfileManager : public Profile::Delegate {
   // otherwise return null.
   Profile* GetProfileByPath(const base::FilePath& path) const;
 
-#if !BUILDFLAG(IS_ANDROID)
   // Asynchronously creates a new profile in the next available multiprofile
   // directory. Directories are named "profile_1", "profile_2", etc., in
   // sequence of creation. (Because directories can be deleted, however, it may
@@ -274,6 +277,7 @@ class ProfileManager : public Profile::Delegate {
   // continuous.) If |is_hidden| is true, the new profile
   // will be created as ephemeral (deleted on the next startup) and omitted (not
   // visible in the list of profiles).
+  // On Android, must only be called if `kAndroidMultiprofile` is enabled.
   // Params:
   // - `initialized_callback`: called when profile initialization is done, will
   // return nullptr if failed. If the profile has already been fully loaded then
@@ -288,7 +292,6 @@ class ProfileManager : public Profile::Delegate {
       bool is_hidden,
       base::OnceCallback<void(Profile*)> initialized_callback,
       base::OnceCallback<void(Profile*)> created_callback = {});
-#endif  // !BUILDFLAG(IS_ANDROID)
 
   // Returns the full path to be used for guest profiles.
   static base::FilePath GetGuestProfilePath();
@@ -630,6 +633,11 @@ class ProfileManager : public Profile::Delegate {
   std::unique_ptr<ProfileAttributesStorage> profile_attributes_storage_;
 
 #if BUILDFLAG(IS_ANDROID)
+  // Java counterpart of `profile_attributes_storage_`, created with it.
+  // Declared after it, so that it's destroyed first.
+  std::unique_ptr<ProfileAttributesStorageAndroid>
+      profile_attributes_storage_android_;
+
   // Handles the communication with the Java ProfileManager.
   std::unique_ptr<ProfileManagerAndroid> profile_manager_android_;
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -664,7 +672,7 @@ class ProfileManager : public Profile::Delegate {
   std::map<Profile*, int> browser_counts_;
   // On startup we launch the active profiles in the order they became active
   // during the last run. This is why they are kept in a list, not in a set.
-  std::vector<raw_ptr<Profile, VectorExperimental>> active_profiles_;
+  std::vector<raw_ptr<Profile>> active_profiles_;
   bool closing_all_browsers_ = false;
 
   // Tracks whether the list of last opened Profiles has been updated for

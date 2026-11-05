@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/drive_picker_host/untrusted/drive_picker_host_untrusted_ui.h"
 
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/drive_picker_host_untrusted_resources.h"
@@ -28,7 +29,8 @@ DrivePickerUntrustedHostUIConfig::~DrivePickerUntrustedHostUIConfig() = default;
 bool DrivePickerUntrustedHostUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
   return base::FeatureList::IsEnabled(
-      omnibox::kComposeboxDriveContextMenuOption);
+             omnibox::kComposeboxDriveContextMenuOption) ||
+         base::FeatureList::IsEnabled(features::kGlicDrivePicker);
 }
 
 // DrivePickerUntrustedHostUI
@@ -57,6 +59,16 @@ DrivePickerUntrustedHostUI::DrivePickerUntrustedHostUI(content::WebUI* web_ui)
   source->AddLocalizedString("driveDisclaimerTryAgain",
                              IDS_NTP_DRIVE_DISCLAIMER_TRY_AGAIN);
   source->AddLocalizedString("cancel", IDS_CANCEL);
+  source->AddLocalizedString("glicDrivePickerRecentTabLabel",
+                             IDS_GLIC_DRIVE_PICKER_RECENT_TAB_LABEL);
+  source->AddLocalizedString("glicDrivePickerMyDriveTabLabel",
+                             IDS_GLIC_DRIVE_PICKER_MY_DRIVE_TAB_LABEL);
+  source->AddLocalizedString("glicDrivePickerSharedDrivesTabLabel",
+                             IDS_GLIC_DRIVE_PICKER_SHARED_DRIVES_TAB_LABEL);
+  source->AddLocalizedString("glicDrivePickerSharedWithMeTabLabel",
+                             IDS_GLIC_DRIVE_PICKER_SHARED_WITH_ME_TAB_LABEL);
+  source->AddLocalizedString("glicDrivePickerStarredTabLabel",
+                             IDS_GLIC_DRIVE_PICKER_STARRED_TAB_LABEL);
   source->UseStringsJs();
 
   source->AddFrameAncestor(GURL(chrome::kChromeUIDrivePickerHostURL));
@@ -175,5 +187,11 @@ void DrivePickerUntrustedHostUI::OnConsentKitError(
 void DrivePickerUntrustedHostUI::OnShowErrorDialog() {
   if (delegate_) {
     delegate_->OnShowErrorDialog();
+  }
+}
+
+void DrivePickerUntrustedHostUI::OnHideErrorDialog() {
+  if (delegate_) {
+    delegate_->OnHideErrorDialog();
   }
 }

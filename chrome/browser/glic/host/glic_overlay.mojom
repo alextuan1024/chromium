@@ -13,6 +13,12 @@ enum ErrorPanelType {
   kDisabledByAdminWithLink = 5,
   kSignIn = 6,
   kLocationMismatch = 7,
+  kPendingProviderChangeGeminiToGeic = 8,
+  kPendingProviderChangeGeicToGemini = 9,
+  kPendingProviderChangeGeicToOtherGeic = 10,
+  kProviderSwitchNoticeGeminiToGeic = 11,
+  kProviderSwitchNoticeGeicToGemini = 12,
+  kProviderSwitchNoticeGeicToOtherGeic = 13,
 };
 
 enum LoadingStyle {
@@ -63,6 +69,19 @@ interface GlicOverlayPageHandler {
 
   // Called when the user clicks a panel close (X) button.
   OnClosePanelClicked();
+
+  // Called when the user clicks the "Show error page" button on the error
+  // panel.
+  OnShowErrorClicked();
+
+  // Called when the user clicks the relaunch button on the relaunch-required
+  // panel.
+  OnRelaunchClicked();
+
+  // Called when the user clicks the continue button on the provider switch
+  // notice panel. Acknowledges the notice and loads the client; ignored if no
+  // notice is showing.
+  OnProviderSwitchNoticeContinueClicked();
 };
 
 // Factory to bind the page and page handler.

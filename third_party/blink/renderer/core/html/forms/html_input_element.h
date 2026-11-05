@@ -53,7 +53,13 @@ class KURL;
 class ListAttributeTargetObserver;
 class RadioButtonGroupScope;
 class ScriptObject;
+class UIEvent;
 struct DateTimeChooserParameters;
+
+enum class PasswordVisibilityAnnouncement {
+  kSilent,
+  kAnnounce,
+};
 
 class CORE_EXPORT HTMLInputElement
     : public TextControlElement,
@@ -280,8 +286,6 @@ class CORE_EXPORT HTMLInputElement
 
   void OnSearch();
 
-  void UpdateClearButtonVisibility();
-
   bool WillRespondToMouseClickEvents() override;
 
   // Returns the DataList element associated via the list attribute, if any.
@@ -354,12 +358,14 @@ class CORE_EXPORT HTMLInputElement
   HTMLImageLoader& EnsureImageLoader();
 
   bool SetupDateTimeChooserParameters(DateTimeChooserParameters&);
+  void ClosePopupView();
 
   bool SupportsInputModeAttribute() const;
 
   void CapsLockStateMayHaveChanged();
   bool ShouldDrawCapsLockIndicator() const;
-  void SetShouldRevealPassword(bool value);
+  void SetShouldRevealPassword(bool value,
+                               PasswordVisibilityAnnouncement announcement);
   bool ShouldRevealPassword() const { return should_reveal_password_; }
 
   void DispatchSimulatedEnter();
@@ -372,8 +378,6 @@ class CORE_EXPORT HTMLInputElement
 
   bool IsPlaceholderVisible() const override { return is_placeholder_visible_; }
   void SetPlaceholderVisibility(bool) override;
-
-  unsigned SizeOfRadioGroup() const;
 
   bool SupportsPlaceholder() const final;
   String GetPlaceholderValue() const final;
@@ -398,10 +402,10 @@ class CORE_EXPORT HTMLInputElement
   // before that). While an input is in its Document's list of such inputs
   // (Document::ScheduleShadowTreeCreation()), it remembers the low
   // kShadowTreeCreationIndexBits bits of its position in that list, so that
-  // removal can find and take it out again in O(1) (or, with more than 2^16
+  // removal can find and take it out again in O(1) (or, with more than 2^15
   // inputs pending in one document, in a few probes; see
   // Document::UnscheduleShadowTreeCreation()).
-  static constexpr unsigned kShadowTreeCreationIndexBits = 16;
+  static constexpr unsigned kShadowTreeCreationIndexBits = 15;
   static constexpr wtf_size_t kShadowTreeCreationIndexHintRange =
       wtf_size_t{1} << kShadowTreeCreationIndexBits;
   bool IsShadowTreeCreationScheduled() const {
@@ -426,7 +430,8 @@ class CORE_EXPORT HTMLInputElement
   bool IsValidBuiltinCommand(HTMLElement& invoker,
                              CommandEventType command) override;
   bool HandleCommandInternal(HTMLElement& invoker,
-                             CommandEventType command) override;
+                             CommandEventType command,
+                             UIEvent* activate_event) override;
 
   void SetFocused(bool is_focused,
                   mojom::blink::FocusType,
@@ -500,6 +505,9 @@ class CORE_EXPORT HTMLInputElement
   void ResetImpl() final;
 
   EventDispatchHandlingState* LegacyPreActivationBehavior(Event&) final;
+  void RunActivationBehaviorBeforeDOMActivate(
+      Event&,
+      EventDispatchHandlingState*) final;
   void RunActivationBehavior(Event&, EventDispatchHandlingState*) final;
 
   bool IsURLAttribute(const Attribute&) const final;
@@ -529,6 +537,8 @@ class CORE_EXPORT HTMLInputElement
 
   void UpdateHasBeenPasswordField(const AtomicString& new_type_name);
 
+  void AnnouncePasswordVisibility();
+
   void SubtreeHasChanged() final;
 
   void SetListAttributeTargetObserver(ListAttributeTargetObserver*);
@@ -538,37 +548,40 @@ class CORE_EXPORT HTMLInputElement
   void RemoveFromRadioButtonGroup();
   void AdjustStyle(ComputedStyleBuilder&) override;
 
-  void MaybeReportPiiMetrics();
+  void DidChangeIsInCanvasSubtree(CanvasSubtreePropagation) final;
 
-  void DidChangeIsInCanvasSubtree() final;
+  static constexpr int kDefaultSize = 20;
 
   AtomicString name_;
   // The value string in |value| value mode.
   String non_attribute_value_;
-  unsigned size_;
+  unsigned size_ = kDefaultSize;
   // https://html.spec.whatwg.org/C/#concept-input-value-dirty-flag
-  unsigned has_dirty_value_ : 1;
+  unsigned has_dirty_value_ : 1 = false;
   // https://html.spec.whatwg.org/C/#concept-fe-checked
-  unsigned is_checked_ : 1;
+  unsigned is_checked_ : 1 = false;
   // https://html.spec.whatwg.org/C/#concept-input-checked-dirty-flag
-  unsigned dirty_checkedness_ : 1;
-  unsigned is_indeterminate_ : 1;
-  unsigned is_activated_submit_ : 1;
-  unsigned autocomplete_ : 2;  // AutoCompleteSetting
-  unsigned has_non_empty_list_ : 1;
-  unsigned state_restored_ : 1;
-  unsigned parsing_in_progress_ : 1;
-  unsigned can_receive_dropped_files_ : 1;
-  unsigned should_reveal_password_ : 1;
-  unsigned needs_to_update_view_value_ : 1;
-  unsigned is_placeholder_visible_ : 1;
-  unsigned has_been_password_field_ : 1;
-  // See ScheduledShadowTreeCreationIndexHint(). The flags above take 15 bits,
-  // so with these 1 + 16 the bit-fields fill exactly one 32-bit word (there
+  unsigned dirty_checkedness_ : 1 = false;
+  // https://html.spec.whatwg.org/C/#concept-input-indeterminate
+  unsigned is_indeterminate_ : 1 = false;
+  // https://html.spec.whatwg.org/C/#concept-input-indeterminate-dirty-flag
+  unsigned dirty_indeterminateness_ : 1 = false;
+  unsigned is_activated_submit_ : 1 = false;
+  unsigned autocomplete_ : 2 = kUninitialized;  // AutoCompleteSetting
+  unsigned has_non_empty_list_ : 1 = false;
+  unsigned state_restored_ : 1 = false;
+  unsigned parsing_in_progress_ : 1 = false;
+  unsigned can_receive_dropped_files_ : 1 = false;
+  unsigned should_reveal_password_ : 1 = false;
+  unsigned needs_to_update_view_value_ : 1 = true;
+  unsigned is_placeholder_visible_ : 1 = false;
+  unsigned has_been_password_field_ : 1 = false;
+  // See ScheduledShadowTreeCreationIndexHint(). The flags above take 16 bits,
+  // so with these 1 + 15 the bit-fields fill exactly one 32-bit word (there
   // is a static_assert in the constructor).
-  unsigned is_shadow_tree_creation_scheduled_ : 1;
+  unsigned is_shadow_tree_creation_scheduled_ : 1 = false;
   unsigned scheduled_shadow_tree_creation_index_hint_
-      : kShadowTreeCreationIndexBits;
+      : kShadowTreeCreationIndexBits = 0;
   Member<InputType> input_type_;
   Member<InputTypeView> input_type_view_;
   // The ImageLoader must be owned by this element because the loader code

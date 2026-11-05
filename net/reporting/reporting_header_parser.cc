@@ -11,16 +11,18 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/features.h"
 #include "net/base/isolation_info.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "net/http/structured_headers.h"
 #include "net/reporting/reporting_cache.h"
 #include "net/reporting/reporting_context.h"
 #include "net/reporting/reporting_delegate.h"
@@ -268,38 +270,28 @@ bool ProcessV1Endpoint(ReportingDelegate* delegate,
 
 std::optional<base::flat_map<std::string, std::string>> ParseReportingEndpoints(
     const std::string& header) {
-  // Ignore empty header values. Skip logging metric to maintain parity with
-  // ReportingHeaderType::kReportToInvalid.
-  if (header.empty())
+  // Ignore empty header values.
+  if (header.empty()) {
     return std::nullopt;
+  }
   std::optional<structured_headers::Dictionary> header_dict =
       structured_headers::ParseDictionary(header);
   if (!header_dict) {
-    ReportingHeaderParser::RecordReportingHeaderType(
-        ReportingHeaderParser::ReportingHeaderType::kReportingEndpointsInvalid);
     return std::nullopt;
   }
-  base::flat_map<std::string, std::string> parsed_header;
   for (const structured_headers::DictionaryMember& entry : *header_dict) {
-    const net::structured_headers::ParameterizedItem* item =
+    const structured_headers::ParameterizedItem* item =
         entry.second.GetIfItem();
-    const std::string* endpoint_url_string =
-        item ? item->item.GetIfString() : nullptr;
-    if (!endpoint_url_string) {
-      ReportingHeaderParser::RecordReportingHeaderType(
-          ReportingHeaderParser::ReportingHeaderType::
-              kReportingEndpointsInvalid);
+    if (!item || !item->item.is_string()) {
       return std::nullopt;
     }
-    parsed_header[entry.first] = *endpoint_url_string;
   }
-  return parsed_header;
-}
-
-// static
-void ReportingHeaderParser::RecordReportingHeaderType(
-    ReportingHeaderType header_type) {
-  base::UmaHistogramEnumeration("Net.Reporting.HeaderType", header_type);
+  return base::ToVector(
+      *header_dict, [](structured_headers::DictionaryMember& entry) {
+        return std::pair(
+            std::move(entry.first),
+            std::move(*entry.second.GetIfItem()->item.GetIfString()));
+      });
 }
 
 // static
@@ -323,17 +315,11 @@ void ReportingHeaderParser::ParseReportToHeader(
     }
   }
 
-  if (parsed_header.empty() && list.size() > 0) {
-    RecordReportingHeaderType(ReportingHeaderType::kReportToInvalid);
-  }
-
   // Remove the client if it has no valid endpoint groups.
   if (parsed_header.empty()) {
     cache->RemoveClient(network_anonymization_key, origin);
     return;
   }
-
-  RecordReportingHeaderType(ReportingHeaderType::kReportTo);
 
   cache->OnParsedHeader(network_anonymization_key, origin,
                         std::move(parsed_header));
@@ -368,11 +354,9 @@ void ReportingHeaderParser::ProcessParsedReportingEndpointsHeader(
   }
 
   if (parsed_header.empty()) {
-    RecordReportingHeaderType(ReportingHeaderType::kReportingEndpointsInvalid);
     return;
   }
 
-  RecordReportingHeaderType(ReportingHeaderType::kReportingEndpoints);
   cache->OnParsedReportingEndpointsHeader(reporting_source, isolation_info,
                                           std::move(parsed_header));
 }

@@ -74,6 +74,30 @@ void MaybeReportWeakHash(ValidationResult validation_result,
                                 reporting_id.value(), /*exclusive_max=*/101);
 }
 
+// Returns true if `validation_result` indicates that an encrypted hash could
+// not be decrypted due to key loss and should be treated as if it were missing.
+bool ShouldTreatAsMissing(ValidationResult validation_result) {
+  return PrefHashCalculator::IsKeyLoss(validation_result) &&
+         base::FeatureList::IsEnabled(
+             tracked::kTreatUndecryptableEncryptedHashAsMissing);
+}
+
+// Records the id of a tracked preference whose encrypted hash could not be
+// decrypted. Only recorded for validations that report (i.e. at load), not for
+// every write.
+void MaybeReportKeyLoss(ValidationResult validation_result,
+                        std::optional<size_t> reporting_id) {
+  if (!reporting_id.has_value() ||
+      !PrefHashCalculator::IsKeyLoss(validation_result)) {
+    return;
+  }
+  base::UmaHistogramExactLinear(
+      validation_result == ValidationResult::UNAVAILABLE_ENCRYPTED
+          ? "Settings.TrackedPreferences.EncryptedHashKeyLoss.Unavailable"
+          : "Settings.TrackedPreferences.EncryptedHashKeyLoss.Undecryptable",
+      reporting_id.value(), /*exclusive_max=*/101);
+}
+
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
@@ -82,7 +106,11 @@ enum class SuperEncryptedHashResult {
   kMatch = 0,
   kMismatch = 1,
   kMissing = 2,
-  kMaxValue = kMissing,
+  // The super encrypted hash could not be decrypted with the current key.
+  kUndecryptable = 3,
+  // The key the super encrypted hash was encrypted with is unavailable.
+  kUnavailable = 4,
+  kMaxValue = kUnavailable,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/settings/enums.xml:SuperEncryptedHashResult)
 
@@ -122,6 +150,7 @@ class PrefHashStoreImpl::PrefHashStoreTransactionImpl
   void ClearAuthenticators(const std::string& path) override;
   bool IsSuperHmacValid() const override;
   bool StampSuperHmac() override;
+  void RecordSuperEncryptedHashResult() const override;
 
   void StoreEncryptedHash(const std::string& path,
                           const base::Value* value) override;
@@ -173,6 +202,10 @@ class PrefHashStoreImpl::PrefHashStoreTransactionImpl
   bool super_encrypted_hash_valid_ = false;
   bool super_encrypted_hash_dirty_ = false;
   bool super_encrypted_hash_mismatch_ = false;
+  // The result of verifying the super encrypted hash at the start of this
+  // transaction. Only set if the store uses a super encrypted hash and an
+  // encryptor was provided.
+  std::optional<SuperEncryptedHashResult> super_encrypted_hash_result_;
 };
 
 PrefHashStoreImpl::PrefHashStoreImpl(const std::string& seed,
@@ -320,44 +353,53 @@ PrefHashStoreImpl::PrefHashStoreTransactionImpl::PrefHashStoreTransactionImpl(
 
   // Load and validate the new Super Encrypted Hash if enabled and the
   // encryptor is available. The flag controls verification.
-  std::string super_encrypted_hash;
   // `use_super_encrypted_hash_` controls the loading/verification of the
-  // Super Encrypted Hash here. It is disabled for the unprotected store.
-  if (outer_->use_super_encrypted_hash_ &&
-      contents_->SupportsSuperAuthenticator()) {
-    super_encrypted_hash = contents_->GetSuperEncryptedHash();
+  // Super Encrypted Hash here. It is disabled for the unprotected store, and
+  // stores such as the Windows registry do not support super authenticators.
+  const bool super_encrypted_hash_enabled =
+      outer_->use_super_encrypted_hash_ &&
+      contents_->SupportsSuperAuthenticator();
+  if (!super_encrypted_hash_enabled || !encryptor_) {
+    return;
   }
-  if (!super_encrypted_hash.empty() && encryptor_) {
-    const base::DictValue* contents = contents_->GetContents();
-    if (contents) {
-      base::DictValue filtered_dict;
-      // Filter out legacy HMACs to compute the hash over encrypted hashes only.
-      FilterEncryptedHashesRecursive(*contents, filtered_dict);
-      std::string expected_hash =
-          outer_->ComputeEncryptedHash("", &filtered_dict, encryptor_.get());
-      if (super_encrypted_hash == expected_hash) {
-        super_encrypted_hash_valid_ = true;
-      } else {
-        super_encrypted_hash_mismatch_ = true;
-      }
+
+  const std::string super_encrypted_hash = contents_->GetSuperEncryptedHash();
+  if (super_encrypted_hash.empty()) {
+    super_encrypted_hash_result_ = SuperEncryptedHashResult::kMissing;
+    return;
+  }
+
+  const base::DictValue* contents = contents_->GetContents();
+  if (contents) {
+    base::DictValue filtered_dict;
+    // Filter out legacy HMACs to compute the hash over encrypted hashes only.
+    FilterEncryptedHashesRecursive(*contents, filtered_dict);
+    base::Value filtered_value(std::move(filtered_dict));
+    const ValidationResult result =
+        outer_->pref_hash_calculator_.ValidateEncryptedHash(
+            "", &filtered_value, super_encrypted_hash, encryptor_.get());
+    if (result == ValidationResult::VALID_ENCRYPTED) {
+      super_encrypted_hash_valid_ = true;
+    } else if (PrefHashCalculator::IsKeyLoss(result)) {
+      // The super encrypted hash can not be decrypted because the key is
+      // unavailable or has changed. Treat it as missing rather than as a
+      // mismatch, so that key loss alone does not make preferences without an
+      // individual authenticator untrusted. This is no weaker than the super
+      // encrypted hash being deleted (https://crbug.com/575543754).
+      super_encrypted_hash_mismatch_ = !ShouldTreatAsMissing(result);
+      super_encrypted_hash_result_ =
+          result == ValidationResult::UNAVAILABLE_ENCRYPTED
+              ? SuperEncryptedHashResult::kUnavailable
+              : SuperEncryptedHashResult::kUndecryptable;
+      return;
+    } else {
+      super_encrypted_hash_mismatch_ = true;
     }
   }
 
-  if (encryptor_) {
-    if (super_encrypted_hash.empty()) {
-      base::UmaHistogramEnumeration(
-          "Settings.TrackedPreferenceSuperEncryptedHashResult",
-          SuperEncryptedHashResult::kMissing);
-    } else if (super_encrypted_hash_valid_) {
-      base::UmaHistogramEnumeration(
-          "Settings.TrackedPreferenceSuperEncryptedHashResult",
-          SuperEncryptedHashResult::kMatch);
-    } else {
-      base::UmaHistogramEnumeration(
-          "Settings.TrackedPreferenceSuperEncryptedHashResult",
-          SuperEncryptedHashResult::kMismatch);
-    }
-  }
+  super_encrypted_hash_result_ = super_encrypted_hash_valid_
+                                     ? SuperEncryptedHashResult::kMatch
+                                     : SuperEncryptedHashResult::kMismatch;
 }
 
 PrefHashStoreImpl::PrefHashStoreTransactionImpl::
@@ -367,7 +409,8 @@ PrefHashStoreImpl::PrefHashStoreTransactionImpl::
   }
 
   bool need_super_hmac = super_hmac_dirty_ && outer_->use_super_hmac_;
-  bool need_super_encrypted_hash = super_encrypted_hash_dirty_ && encryptor_;
+  bool need_super_encrypted_hash = super_encrypted_hash_dirty_ && encryptor_ &&
+                                   outer_->use_super_encrypted_hash_;
 
   if (need_super_hmac || need_super_encrypted_hash) {
     // Get the dictionary of hashes (or NULL if it doesn't exist).
@@ -447,8 +490,15 @@ ValueState PrefHashStoreImpl::PrefHashStoreTransactionImpl::CheckValueInternal(
         return ValueState::UNCHANGED_ENCRYPTED;
       }
       MaybeReportWeakHash(result, reporting_id);
-      return value ? ValueState::CHANGED_ENCRYPTED
-                   : ValueState::CLEARED_ENCRYPTED;
+      MaybeReportKeyLoss(result, reporting_id);
+      // If the encrypted hash can not be decrypted because the key is
+      // unavailable or has changed, the value can not be compared against it.
+      // Treat it as if no encrypted hash was stored, which is no weaker than
+      // the encrypted hash having been deleted (https://crbug.com/575543754).
+      if (!ShouldTreatAsMissing(result)) {
+        return value ? ValueState::CHANGED_ENCRYPTED
+                     : ValueState::CLEARED_ENCRYPTED;
+      }
     }
     // Priority 2: Fallback to legacy HMAC for healing.
     if (!base::FeatureList::IsEnabled(
@@ -470,10 +520,10 @@ ValueState PrefHashStoreImpl::PrefHashStoreTransactionImpl::CheckValueInternal(
           outer_->pref_hash_calculator_.ValidateHmac(path, value, *stored_hmac);
       if (hmac_validation_result == ValidationResult::VALID_HMAC) {
         // If we fell through from encrypted (which was unusable), a valid HMAC
-        // still means the value is UNCHANGED.
-        return ValueState::UNCHANGED;
+        // still means the value is UNCHANGED_HMAC.
+        return ValueState::UNCHANGED_HMAC;
       }
-      return value ? ValueState::CHANGED : ValueState::CLEARED;
+      return value ? ValueState::CHANGED_HMAC : ValueState::CLEARED_HMAC;
     }
   }
 
@@ -481,8 +531,8 @@ ValueState PrefHashStoreImpl::PrefHashStoreTransactionImpl::CheckValueInternal(
   // Arrive here if:
   // 1. No authenticators stored at all.
   // 2. ONLY encrypted hash stored, but no encryptor (fell through above).
-  // 3. Encryptor is present, encrypted hash missing, and legacy fallback
-  // disabled.
+  // 3. Encryptor is present, encrypted hash missing (or undecryptable due to
+  // key loss), and legacy fallback disabled or no legacy HMAC stored.
   if (!value) {
     // Null value is always trusted if no usable authenticator is present
     return ValueState::TRUSTED_NULL_VALUE;
@@ -608,6 +658,10 @@ PrefHashStoreImpl::PrefHashStoreTransactionImpl::CheckSplitValueInternal(
       // --- Priority 1: Check split encrypted hashes ---
       std::map<std::string, std::string> current_encrypted =
           split_encrypted_hashes;
+      // Number of encrypted hashes that could not be decrypted due to key loss,
+      // and whether any encrypted hash could be decrypted (valid or not).
+      size_t key_loss_count = 0;
+      bool any_decrypted = false;
       if (initial_split_value) {
         for (const auto [key, value] : *initial_split_value) {
           auto it = current_encrypted.find(key);
@@ -618,8 +672,14 @@ PrefHashStoreImpl::PrefHashStoreTransactionImpl::CheckSplitValueInternal(
             const auto validation_result =
                 outer_->pref_hash_calculator_.ValidateEncryptedHash(
                     keyed_path, &value, it->second, encryptor_.get());
+            if (ShouldTreatAsMissing(validation_result)) {
+              ++key_loss_count;
+            } else {
+              any_decrypted = true;
+            }
             if (validation_result != ValidationResult::VALID_ENCRYPTED) {
               MaybeReportWeakHash(validation_result, reporting_id);
+              MaybeReportKeyLoss(validation_result, reporting_id);
               invalid_keys->push_back(key);
             }
             current_encrypted.erase(it);
@@ -630,11 +690,22 @@ PrefHashStoreImpl::PrefHashStoreTransactionImpl::CheckSplitValueInternal(
         invalid_keys->push_back(key);
       }
 
-      if (invalid_keys->empty()) {
-        return ValueState::UNCHANGED_ENCRYPTED;
+      // If none of the encrypted hashes could be decrypted because the key is
+      // unavailable or has changed, treat the encrypted hashes as missing and
+      // fall through to the legacy fallback below. This is no weaker than all
+      // of the encrypted hashes for this preference having been deleted. If any
+      // encrypted hash could be decrypted, the key is not lost and the result
+      // stands, so that individual entries can not be downgraded
+      // (https://crbug.com/575543754).
+      if (key_loss_count > 0 && !any_decrypted) {
+        invalid_keys->clear();
+      } else {
+        if (invalid_keys->empty()) {
+          return ValueState::UNCHANGED_ENCRYPTED;
+        }
+        return is_initial_value_empty ? ValueState::CLEARED_ENCRYPTED
+                                      : ValueState::CHANGED_ENCRYPTED;
       }
-      return is_initial_value_empty ? ValueState::CLEARED_ENCRYPTED
-                                    : ValueState::CHANGED_ENCRYPTED;
     }
 
     // --- Priority 2: Fallback to legacy HMACs for healing.
@@ -692,9 +763,10 @@ PrefHashStoreImpl::PrefHashStoreTransactionImpl::CheckSplitValueInternal(
       }
 
       if (invalid_keys->empty()) {
-        return ValueState::UNCHANGED;
+        return ValueState::UNCHANGED_HMAC;
       }
-      return is_initial_value_empty ? ValueState::CLEARED : ValueState::CHANGED;
+      return is_initial_value_empty ? ValueState::CLEARED_HMAC
+                                    : ValueState::CHANGED_HMAC;
     }
     if (has_encrypted_hashes && !has_hmacs) {
       only_unusable_encrypted_present = true;
@@ -705,10 +777,10 @@ PrefHashStoreImpl::PrefHashStoreTransactionImpl::CheckSplitValueInternal(
   // Arrive here if:
   // 1. No authenticators stored at all.
   // 2. ONLY encrypted hashes stored, but no encryptor (fell through).
-  // 3. Encryptor is present, encrypted hashes missing, and legacy fallback
-  // disabled.
+  // 3. Encryptor is present, encrypted hashes missing (or all undecryptable due
+  // to key loss), and legacy fallback disabled or no legacy HMACs stored.
   if (is_initial_value_empty) {
-    return ValueState::UNCHANGED;
+    return ValueState::UNCHANGED_HMAC;
   }
 
   if (only_unusable_encrypted_present) {
@@ -948,4 +1020,14 @@ bool PrefHashStoreImpl::PrefHashStoreTransactionImpl::StampSuperHmac() {
   super_hmac_dirty_ = true;
   super_hmac_valid_ = true;
   return true;
+}
+
+void PrefHashStoreImpl::PrefHashStoreTransactionImpl::
+    RecordSuperEncryptedHashResult() const {
+  if (!super_encrypted_hash_result_.has_value()) {
+    return;
+  }
+  base::UmaHistogramEnumeration(
+      "Settings.TrackedPreferenceSuperEncryptedHashResult3",
+      *super_encrypted_hash_result_);
 }

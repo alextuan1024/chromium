@@ -46,9 +46,11 @@ namespace {
 constexpr base::TimeDelta kInstallationTimeout = base::Minutes(5);
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-// Returns whether the management environment for the profile is low-trust.
-bool IsLowTrustEnvironment(Profile* profile) {
-  switch (GetHigherManagementAuthorityTrustworthiness(profile)) {
+// Returns whether the management environment for the `trustworthiness` is `LOW`
+// or `NONE`.
+bool IsLowTrustEnvironment(
+    policy::ManagementAuthorityTrustworthiness trustworthiness) {
+  switch (trustworthiness) {
     case policy::ManagementAuthorityTrustworthiness::NONE:
     case policy::ManagementAuthorityTrustworthiness::LOW:
       return true;
@@ -316,14 +318,14 @@ void ReportCurrentStage(
   base::UmaHistogramEnumeration("Extensions.ForceInstalledStage2",
                                 install_stage);
   if (install_stage == InstallStageTracker::Stage::CREATED) {
-    DCHECK(installation.install_creation_stage);
+    CHECK(installation.install_creation_stage, base::NotFatalUntil::M161);
     InstallStageTracker::InstallCreationStage install_creation_stage =
         installation.install_creation_stage.value();
     base::UmaHistogramEnumeration("Extensions.ForceInstalledCreationStage",
                                   install_creation_stage);
   }
   if (install_stage == InstallStageTracker::Stage::DOWNLOADING) {
-    DCHECK(installation.downloading_stage);
+    CHECK(installation.downloading_stage, base::NotFatalUntil::M161);
     ExtensionDownloaderDelegate::Stage downloading_stage =
         installation.downloading_stage.value();
     base::UmaHistogramEnumeration("Extensions.ForceInstalledDownloadingStage",
@@ -370,21 +372,22 @@ void ReportDetailedFailureReasons(
   }
   if (failure_reason ==
       FailureReason::CRX_INSTALL_ERROR_SANDBOXED_UNPACKER_FAILURE) {
-    DCHECK(installation.unpacker_failure_reason);
+    CHECK(installation.unpacker_failure_reason, base::NotFatalUntil::M161);
     base::UmaHistogramEnumeration(
         "Extensions.ForceInstalledFailureSandboxUnpackFailureReason2",
         installation.unpacker_failure_reason.value(),
         SandboxedUnpackerFailureReason::NUM_FAILURE_REASONS);
   }
   if (failure_reason == FailureReason::CRX_FETCH_URL_EMPTY) {
-    DCHECK(installation.no_updates_info);
+    CHECK(installation.no_updates_info, base::NotFatalUntil::M161);
     base::UmaHistogramEnumeration(
         "Extensions."
         "ForceInstalledFailureNoUpdatesInfo",
         installation.no_updates_info.value());
   }
   if (installation.manifest_invalid_error) {
-    DCHECK_EQ(failure_reason, FailureReason::MANIFEST_INVALID);
+    CHECK_EQ(failure_reason, FailureReason::MANIFEST_INVALID,
+             base::NotFatalUntil::M161);
     if (is_from_store) {
       base::UmaHistogramEnumeration(
           "Extensions.WebStore_"
@@ -481,19 +484,27 @@ void ForceInstalledMetrics::ReportDisableReason(
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 void ForceInstalledMetrics::ReportGreylistedStateByTrustLevel(
     const ExtensionId& extension_id,
+    bool legacy_is_low_trust_environment,
     bool is_low_trust_environment) {
   if (!blocklist_prefs::IsExtensionGreylisted(extension_id,
                                               ExtensionPrefs::Get(profile_))) {
     return;
   }
-  if (is_low_trust_environment) {
+  const bool is_enabled =
+      registry_->enabled_extensions().Contains(extension_id);
+  if (legacy_is_low_trust_environment) {
     base::UmaHistogramBoolean(
-        "Extensions.GreylistedForceInstalled.LowTrust.Enabled",
-        registry_->enabled_extensions().Contains(extension_id));
+        "Extensions.GreylistedForceInstalled.LowTrust.Enabled", is_enabled);
   } else {
     base::UmaHistogramBoolean(
-        "Extensions.GreylistedForceInstalled.HighTrust.Enabled",
-        registry_->enabled_extensions().Contains(extension_id));
+        "Extensions.GreylistedForceInstalled.HighTrust.Enabled", is_enabled);
+  }
+  if (is_low_trust_environment) {
+    base::UmaHistogramBoolean(
+        "Extensions.GreylistedForceInstalledV2.LowTrust.Enabled", is_enabled);
+  } else {
+    base::UmaHistogramBoolean(
+        "Extensions.GreylistedForceInstalledV2.HighTrust.Enabled", is_enabled);
   }
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
@@ -518,9 +529,13 @@ void ForceInstalledMetrics::ReportMetrics() {
                               tracker_->extensions().size());
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-  const bool is_low_trust_environment = IsLowTrustEnvironment(profile_);
+  const bool legacy_is_low_trust_environment = IsLowTrustEnvironment(
+      GetHigherManagementAuthorityTrustworthiness(profile_));
+  const bool is_low_trust_environment = IsLowTrustEnvironment(
+      GetHigherManagementAuthorityTrustworthinessForPolicyLoading(profile_));
   for (const auto& extension : tracker_->extensions()) {
     ReportGreylistedStateByTrustLevel(extension.first,
+                                      legacy_is_low_trust_environment,
                                       is_low_trust_environment);
   }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)

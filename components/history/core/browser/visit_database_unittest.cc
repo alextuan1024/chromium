@@ -10,9 +10,7 @@
 #include <vector>
 
 #include "base/strings/string_util.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
-#include "components/history/core/browser/features.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/url_database.h"
 #include "components/history/core/browser/visit_annotations_database.h"
@@ -885,13 +883,6 @@ TEST_F(VisitDatabaseTest, GetVisibleVisitsInRange) {
   }
   AddContextAnnotationsForVisit(visit_404.visit_id, context_annotations_404);
 
-#if BUILDFLAG(IS_IOS)
-  for (auto& test_visit_row : test_visit_rows) {
-    test_visit_row.source = std::nullopt;
-  }
-  visit_404.source = std::nullopt;
-#endif  // BUILDFLAG(IS_IOS)
-
   // Query the visits for all time.
   VisitVector results;
   QueryOptions options;
@@ -1131,6 +1122,108 @@ TEST_F(VisitDatabaseTest, GetVisibleVisitsInRange_ClientIds) {
   ASSERT_EQ(3U, results.size());
 }
 
+TEST_F(VisitDatabaseTest, GetVisibleVisitsInRange_HostnameSuffix) {
+  URLRow url_row1(GURL("http://example.com/url1"));
+  URLID url_id1 = AddURL(url_row1);
+  ASSERT_NE(0, url_id1);
+
+  URLRow url_row2(GURL("https://sub.example.com/url2"));
+  URLID url_id2 = AddURL(url_row2);
+  ASSERT_NE(0, url_id2);
+
+  URLRow url_row3(GURL("http://other.com/url3"));
+  URLID url_id3 = AddURL(url_row3);
+  ASSERT_NE(0, url_id3);
+
+  URLRow url_row4(GURL("http://anotherexample.com/url4"));
+  URLID url_id4 = AddURL(url_row4);
+  ASSERT_NE(0, url_id4);
+
+  URLRow url_row5(GURL("https://sub.sub.example.com:8080/url5"));
+  URLID url_id5 = AddURL(url_row5);
+  ASSERT_NE(0, url_id5);
+
+  URLRow url_row6(GURL("http://example.com.attacker.com/url6"));
+  URLID url_id6 = AddURL(url_row6);
+  ASSERT_NE(0, url_id6);
+
+  auto create_visit = [&](URLID url_id, base::Time visit_time) {
+    VisitRow visit(url_id, visit_time, 0,
+                   ui::PageTransitionFromInt(ui::PAGE_TRANSITION_LINK |
+                                             ui::PAGE_TRANSITION_CHAIN_START |
+                                             ui::PAGE_TRANSITION_CHAIN_END),
+                   0, false, 0);
+    visit.source = SOURCE_BROWSED;
+    return visit;
+  };
+
+  base::Time now = base::Time::Now();
+  VisitRow visit1 = create_visit(url_id1, now);
+  ASSERT_TRUE(AddVisit(&visit1));
+
+  VisitRow visit2 = create_visit(url_id2, now + base::Seconds(1));
+  ASSERT_TRUE(AddVisit(&visit2));
+
+  VisitRow visit3 = create_visit(url_id3, now + base::Seconds(2));
+  ASSERT_TRUE(AddVisit(&visit3));
+
+  VisitRow visit4 = create_visit(url_id4, now + base::Seconds(3));
+  ASSERT_TRUE(AddVisit(&visit4));
+
+  VisitRow visit5 = create_visit(url_id5, now + base::Seconds(4));
+  ASSERT_TRUE(AddVisit(&visit5));
+
+  VisitRow visit6 = create_visit(url_id6, now + base::Seconds(5));
+  ASSERT_TRUE(AddVisit(&visit6));
+
+  QueryOptions options;
+  options.duplicate_policy = QueryOptions::KEEP_ALL_DUPLICATES;
+  VisitVector results;
+
+  // Default: empty hostname_suffix returns all visits.
+  GetVisibleVisitsInRange(options, &results);
+  ASSERT_EQ(6U, results.size());
+
+  // Filter for "example.com" should match visit1, visit2, visit5 (not visit4
+  // or visit6).
+  options.hostname_suffix = "example.com";
+  GetVisibleVisitsInRange(options, &results);
+  ASSERT_EQ(3U, results.size());
+  EXPECT_EQ(visit5.visit_time, results[0].visit_time);
+  EXPECT_EQ(visit2.visit_time, results[1].visit_time);
+  EXPECT_EQ(visit1.visit_time, results[2].visit_time);
+
+  // Case-insensitivity: "EXAMPLE.COM".
+  options.hostname_suffix = "EXAMPLE.COM";
+  GetVisibleVisitsInRange(options, &results);
+  ASSERT_EQ(3U, results.size());
+  EXPECT_EQ(visit5.visit_time, results[0].visit_time);
+  EXPECT_EQ(visit2.visit_time, results[1].visit_time);
+  EXPECT_EQ(visit1.visit_time, results[2].visit_time);
+
+  // Filter for "sub.example.com" should match visit2 and visit5.
+  options.hostname_suffix = "sub.example.com";
+  GetVisibleVisitsInRange(options, &results);
+  ASSERT_EQ(2U, results.size());
+  EXPECT_EQ(visit5.visit_time, results[0].visit_time);
+  EXPECT_EQ(visit2.visit_time, results[1].visit_time);
+
+  // Filter for non-matching domain.
+  options.hostname_suffix = "nonexistent.com";
+  GetVisibleVisitsInRange(options, &results);
+  EXPECT_TRUE(results.empty());
+
+  // Also verify GetVisibleVisitsForURL respects hostname_suffix.
+  options.hostname_suffix = "example.com";
+  GetVisibleVisitsForURL(url_id1, options, &results);
+  ASSERT_EQ(1U, results.size());
+  EXPECT_EQ(visit1.visit_time, results[0].visit_time);
+
+  options.hostname_suffix = "other.com";
+  GetVisibleVisitsForURL(url_id1, options, &results);
+  EXPECT_TRUE(results.empty());
+}
+
 TEST_F(VisitDatabaseTest, VisitSource) {
   // Add visits.
   VisitRow visit_info1(111, Time::Now(), 0, ui::PAGE_TRANSITION_LINK, 0, false,
@@ -1226,12 +1319,6 @@ TEST_F(VisitDatabaseTest, GetVisibleVisitsForURL) {
   // Make `visit_info9` a 404 visit.
   AddContextAnnotationsForVisit(visit_info9.visit_id, context_annotations_404);
 
-#if BUILDFLAG(IS_IOS)
-  for (auto& test_visit_row : test_visit_rows) {
-    test_visit_row.source = std::nullopt;
-  }
-#endif  // BUILDFLAG(IS_IOS)
-
   // Query the visits for the first url id, excluding 404s.
   VisitVector results;
   QueryOptions options;
@@ -1292,36 +1379,45 @@ TEST_F(VisitDatabaseTest, GetVisibleVisitsForURL) {
   options = QueryOptions();  // Reset options to default.
 
   // Now try with only per-day de-duping -- the second visit should appear,
-  // since it's a duplicate of visit6 but on a different day.
+  // since it's a duplicate of visit 9 but on a different day. 404s are included
+  // by default, so we expect visit 9 instead of visit6.
   options.duplicate_policy = QueryOptions::REMOVE_DUPLICATES_PER_DAY;
   GetVisibleVisitsForURL(url_id, options, &results);
   ASSERT_EQ(3U, results.size());
-  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[6]));
+#if !defined(ANDROID)
+  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[8]));
+#else
+  // On Android, the ones with an `app_id` are chosen among the duplicates.
+  // Visit 8 is the most recent of those.
+  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[7]));
+#endif
   EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[5]));
   EXPECT_THAT(results[2], MatchesVisitInfo(test_visit_rows[1]));
 
   // Now try without de-duping, expect to see all visible visits to url id 1.
   options.duplicate_policy = QueryOptions::KEEP_ALL_DUPLICATES;
   GetVisibleVisitsForURL(url_id, options, &results);
-  ASSERT_EQ(4U, results.size());
-  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[6]));
-  EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[5]));
-  EXPECT_THAT(results[2], MatchesVisitInfo(test_visit_rows[1]));
-  EXPECT_THAT(results[3], MatchesVisitInfo(test_visit_rows[0]));
+  ASSERT_EQ(6U, results.size());
+  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[8]));
+  EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[7]));
+  EXPECT_THAT(results[2], MatchesVisitInfo(test_visit_rows[6]));
+  EXPECT_THAT(results[3], MatchesVisitInfo(test_visit_rows[5]));
+  EXPECT_THAT(results[4], MatchesVisitInfo(test_visit_rows[1]));
+  EXPECT_THAT(results[5], MatchesVisitInfo(test_visit_rows[0]));
 
   // Now try with a `max_count` limit to get the newest 2 visits only.
   options.max_count = 2;
   GetVisibleVisitsForURL(url_id, options, &results);
   ASSERT_EQ(2U, results.size());
-  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[6]));
-  EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[5]));
-
-  // Try `max_count` again, including 404s this time.
-  options.policy_for_404_visits = VisitQuery404sPolicy::kInclude404s;
-  GetVisibleVisitsForURL(url_id, options, &results);
-  ASSERT_EQ(2U, results.size());
   EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[8]));
   EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[7]));
+
+  // Try `max_count` again, excluding 404s this time.
+  options.policy_for_404_visits = VisitQuery404sPolicy::kExclude404s;
+  GetVisibleVisitsForURL(url_id, options, &results);
+  ASSERT_EQ(2U, results.size());
+  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[6]));
+  EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[5]));
 
   // Now try getting the oldest 2 visits and make sure they're ordered oldest
   // first.
@@ -1351,7 +1447,6 @@ TEST_F(VisitDatabaseTest, GetVisibleVisitsForURL) {
   EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[5]));
 }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 TEST_F(VisitDatabaseTest, GetVisibleVisits_ActorVisits) {
   const URLID kUrlId1 = 1U;
   VisitRow visit_browsed(
@@ -1476,7 +1571,6 @@ TEST_F(VisitDatabaseTest, GetVisibleVisits_SeparateBySource) {
                                    MatchesVisitInfo(visit_actor2),
                                    MatchesVisitInfo(visit_user2)));
 }
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 TEST_F(VisitDatabaseTest, GetHistoryCount) {
   // Start with a day in the middle of summer, so that we are nowhere near
@@ -2125,8 +2219,11 @@ TEST_F(VisitDatabaseTest, GetDailyVisitsToOrigin_WithVisits) {
   base::Time begin_time = base::Time::Now();
   base::Time end_time = begin_time + base::Days(10);
 
-  base::Time day1_time = begin_time.LocalMidnight() + base::Hours(24);
-  base::Time day2_time = day1_time + base::Hours(24);
+  // Due to DST, the next day at midnight may be more than 24 hours away, so
+  // add 36 hours and round back down to midnight.
+  base::Time day1_time =
+      (begin_time.LocalMidnight() + base::Hours(36)).LocalMidnight();
+  base::Time day2_time = (day1_time + base::Hours(36)).LocalMidnight();
 
   auto add_visit = [&](const GURL& url, base::Time visit_time) {
     VisitRow row{AddURL(URLRow(url)),
@@ -2145,8 +2242,7 @@ TEST_F(VisitDatabaseTest, GetDailyVisitsToOrigin_WithVisits) {
   add_visit(GURL("https://foo.com/"), begin_time - base::Hours(1));
   // Two visits on first day.
   add_visit(GURL("https://foo.com/bar"), day1_time);
-  add_visit(GURL("https://foo.com/baz"),
-            day1_time + base::Hours(24) - base::Seconds(1));
+  add_visit(GURL("https://foo.com/baz"), day2_time - base::Seconds(1));
   // Five visits on the next day.
   for (int i = 0; i < 5; ++i) {
     add_visit(GURL("https://foo.com/bar"), day2_time);
@@ -2420,7 +2516,6 @@ TEST_F(VisitDatabaseTest, GetLastRowForVisitByVisitTime) {
   EXPECT_THAT(result3, MatchesVisitInfo(visit3c));
 }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 TEST_F(VisitDatabaseTest, ShouldFilterUserAndActorVisits) {
   auto add_visit_with_source = [&](const GURL& url, VisitSource source) {
     URLRow url_row(url);
@@ -2443,28 +2538,17 @@ TEST_F(VisitDatabaseTest, ShouldFilterUserAndActorVisits) {
 
   struct TestCase {
     std::string name;
-    bool m3_enabled;
     bool include_user;
     bool include_actor;
     size_t expected_count;
   } cases[] = {
-      {"All History", true, true, true, 2},
-      {"User Only", true, true, false, 1},
-      {"Agent Only", true, false, true, 1},
-      {"M3 Disabled", false, false, true, 2},
+      {"All History", true, true, 2},
+      {"User Only", true, false, 1},
+      {"Agent Only", false, true, 1},
   };
 
   for (const auto& c : cases) {
     SCOPED_TRACE(c.name);
-    base::test::ScopedFeatureList feature_list;
-
-    if (c.m3_enabled) {
-      feature_list.InitAndEnableFeature(
-          history::kBrowsingHistoryActorIntegrationM3);
-    } else {
-      feature_list.InitAndDisableFeature(
-          history::kBrowsingHistoryActorIntegrationM3);
-    }
 
     QueryOptions options;
     options.include_user_visits = c.include_user;
@@ -2494,7 +2578,6 @@ TEST_F(VisitDatabaseTest, ShouldFilterUserAndActorVisits) {
     }
   }
 }
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 // Tests for FillVisitRow micro-optimizations ----------------------------------
 

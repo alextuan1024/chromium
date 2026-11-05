@@ -17,13 +17,16 @@
 #import "components/collaboration/public/collaboration_service.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
-#import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/segmentation_platform/embedder/home_modules/tips_manager/constants.h"
 #import "components/send_tab_to_self/features.h"
 #import "components/supervised_user/core/common/features.h"
+#import "components/sync/service/sync_service.h"
+#import "components/trusted_vault/trusted_vault_server_constants.h"
 #import "components/webauthn/ios/ios_passkey_client_commands.h"
 #import "ios/chrome/browser/app_store_rating/model/features.h"
 #import "ios/chrome/browser/authentication/signin/non_modal_promo/coordinator/non_modal_signin_promo_coordinator.h"
+#import "ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator/trusted_vault_reauthentication_coordinator.h"
+#import "ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator/trusted_vault_reauthentication_coordinator_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/enterprise/enterprise_prompt/enterprise_prompt_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 #import "ios/chrome/browser/autofill/authentication/coordinator/card_unmask_authentication_coordinator.h"
@@ -76,10 +79,8 @@
 #import "ios/chrome/browser/page_info/coordinator/page_info_coordinator.h"
 #import "ios/chrome/browser/passwords/bottom_sheet/coordinator/credential_suggestion_bottom_sheet_coordinator.h"
 #import "ios/chrome/browser/passwords/bottom_sheet/coordinator/passkey_creation_bottom_sheet_coordinator.h"
-#import "ios/chrome/browser/passwords/model/password_controller_delegate.h"
 #import "ios/chrome/browser/passwords/password_breach/coordinator/password_breach_coordinator.h"
 #import "ios/chrome/browser/passwords/password_breach/coordinator/password_protection_coordinator.h"
-#import "ios/chrome/browser/passwords/password_breach/coordinator/password_protection_coordinator_delegate.h"
 #import "ios/chrome/browser/passwords/password_suggestion/coordinator/password_suggestion_coordinator.h"
 #import "ios/chrome/browser/phone_number/ui_bundled/add_contacts_coordinator.h"
 #import "ios/chrome/browser/phone_number/ui_bundled/country_code_picker_coordinator.h"
@@ -104,6 +105,7 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_ui_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_utils.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -135,6 +137,7 @@
 #import "ios/chrome/browser/shared/public/commands/mini_map_commands.h"
 #import "ios/chrome/browser/shared/public/commands/new_tab_page_commands.h"
 #import "ios/chrome/browser/shared/public/commands/non_modal_signin_promo_commands.h"
+#import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/page_action_menu_commands.h"
 #import "ios/chrome/browser/shared/public/commands/page_info_commands.h"
 #import "ios/chrome/browser/shared/public/commands/parent_access_commands.h"
@@ -151,18 +154,19 @@
 #import "ios/chrome/browser/shared/public/commands/save_to_drive_commands.h"
 #import "ios/chrome/browser/shared/public/commands/save_to_photos_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/search_engine_choice_commands.h"
 #import "ios/chrome/browser/shared/public/commands/send_tab_to_self_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/share_highlight_command.h"
 #import "ios/chrome/browser/shared/public/commands/shared_tab_group_last_tab_closed_alert_command.h"
 #import "ios/chrome/browser/shared/public/commands/shared_tab_group_last_tab_closed_alert_commands.h"
+#import "ios/chrome/browser/shared/public/commands/sync_presenter_commands.h"
 #import "ios/chrome/browser/shared/public/commands/synced_set_up_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_picker_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tips_passwords_commands.h"
 #import "ios/chrome/browser/shared/public/commands/unit_conversion_commands.h"
 #import "ios/chrome/browser/shared/public/commands/web_content_commands.h"
-#import "ios/chrome/browser/shared/public/commands/welcome_back_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/whats_new_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/layout_guide/layout_guide_swift.h"
@@ -176,6 +180,7 @@
 #import "ios/chrome/browser/store_kit/model/store_kit_coordinator.h"
 #import "ios/chrome/browser/store_kit/model/store_kit_coordinator_delegate.h"
 #import "ios/chrome/browser/supervised_user/coordinator/parent_access_coordinator.h"
+#import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/synced_set_up/coordinator/synced_set_up_coordinator.h"
 #import "ios/chrome/browser/synced_set_up/coordinator/synced_set_up_coordinator_delegate.h"
 #import "ios/chrome/browser/synced_set_up/public/synced_set_up_utils.h"
@@ -184,9 +189,9 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_group_confirmation_coordinator.h"
 #import "ios/chrome/browser/unit_conversion/ui_bundled/unit_conversion_coordinator.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
+#import "ios/chrome/browser/webauthn/coordinator/passkey_embedded_reauth_coordinator.h"
 #import "ios/chrome/browser/webauthn/coordinator/passkey_incognito_interstitial_coordinator.h"
 #import "ios/chrome/browser/webauthn/coordinator/passkey_welcome_screen_coordinator.h"
-#import "ios/chrome/browser/welcome_back/coordinator/welcome_back_coordinator.h"
 #import "ios/chrome/browser/whats_new/coordinator/whats_new_coordinator.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/public/provider/chrome/browser/cobalt/cobalt_api.h"
@@ -220,7 +225,6 @@ const char kContextPanelDismissedHistogram[] =
                                 DriveFilePickerCommands,
                                 EnhancedCalendarCommands,
                                 EnterpriseCommands,
-                                EnterprisePromptCoordinatorDelegate,
                                 FileUploadPanelCommands,
                                 GoogleOneCommands,
                                 IOSPasskeyClientCommands,
@@ -234,7 +238,6 @@ const char kContextPanelDismissedHistogram[] =
                                 PasskeyWelcomeScreenCoordinatorDelegate,
                                 PasswordBreachCommands,
                                 PasswordProtectionCommands,
-                                PasswordProtectionCoordinatorDelegate,
                                 PasswordSuggestionCommands,
                                 PictureInPictureCommands,
                                 PolicyChangeCommands,
@@ -251,14 +254,15 @@ const char kContextPanelDismissedHistogram[] =
                                 SendTabToSelfCoordinatorDelegate,
                                 SharedTabGroupLastTabAlertCommands,
                                 StoreKitCoordinatorDelegate,
+                                SyncPresenterCommands,
                                 SyncedSetUpCommands,
                                 SyncedSetUpCoordinatorDelegate,
                                 TabPickerCommands,
                                 TipsPasswordsCommands,
                                 TipsPasswordsCoordinatorDelegate,
+                                TrustedVaultReauthenticationCoordinatorDelegate,
                                 UnitConversionCommands,
                                 WebContentCommands,
-                                WelcomeBackPromoCommands,
                                 WhatsNewCommands>
 
 // The webState of the active tab.
@@ -313,6 +317,7 @@ const char kContextPanelDismissedHistogram[] =
   PageInfoCoordinator* _pageInfoCoordinator;
   ParentAccessCoordinator* _parentAccessCoordinator;
   PasskeyCreationBottomSheetCoordinator* _passkeyCreationBottomSheetCoordinator;
+  PasskeyEmbeddedReAuthCoordinator* _passkeyEmbeddedReAuthCoordinator;
   PasskeyIncognitoInterstitialCoordinator* _passkeyIncognitoCoordinator;
   PasskeyWelcomeScreenCoordinator* _passkeyWelcomeScreenCoordinator;
   PassKitCoordinator* _passKitCoordinator;
@@ -339,11 +344,14 @@ const char kContextPanelDismissedHistogram[] =
   ProceduralBlock _runAfterSyncedSetUpDismissal;
   TabPickerCoordinator* _tabPickerCoordinator;
   TipsPasswordsCoordinator* _tipsPasswordsCoordinator;
+  TrustedVaultReauthenticationCoordinator*
+      _trustedVaultReauthenticationCoordinator;
+  SyncPresenterCompletionCallback
+      _trustedVaultReauthenticationCoordinatorCompletion;
   UnitConversionCoordinator* _unitConversionCoordinator;
   VirtualCardEnrollmentBottomSheetCoordinator*
       _virtualCardEnrollmentBottomSheetCoordinator;
   WalletReminderNoticeCoordinator* _walletReminderNoticeCoordinator;
-  WelcomeBackCoordinator* _welcomeBackCoordinator;
   WhatsNewCoordinator* _whatsNewCoordinator;
 }
 
@@ -404,7 +412,7 @@ const char kContextPanelDismissedHistogram[] =
   [self hideDriveFilePicker];
   [self hideEnhancedCalendarBottomSheet];
   [self dismissEnterpriseWarningDialog];
-  [self stopEnterprisePromptCoordinator];
+  [self hideEnterprisePrompt];
   if (@available(iOS 18.4, *)) {
     [self hideFileUploadPanel];
   }
@@ -417,8 +425,9 @@ const char kContextPanelDismissedHistogram[] =
   [self dismissPasskeySuggestions];
   [self stopPasskeyWelcomeScreenCoordinator];
   [self dismissPasskeyIncognitoInterstitial];
+  [self dismissPasskeyEmbeddedReAuth];
   [self stopPasswordBreach];
-  [self stopPasswordProtectionCoordinator];
+  [self dismissPasswordProtectionWarning];
   [self closePasswordSuggestion];
   [self dismissPictureInPicture];
   [self hideMiniMap];
@@ -438,10 +447,10 @@ const char kContextPanelDismissedHistogram[] =
   [self stopStoreKitCoordinator];
   [self stopSyncedSetUpCoordinator];
   [self stopTabPickerCoordinator];
+  [self stopTrustedVaultReauthentication];
   [self dismissPasswordsTip];
   [self hideUnitConversion];
   [self dismissWalletReminderNotice];
-  [self hideWelcomeBackPromo];
   [self dismissWhatsNew];
 }
 
@@ -472,13 +481,6 @@ const char kContextPanelDismissedHistogram[] =
   _sendTabToSelfCoordinator = nil;
 }
 
-// Stops the Enterprise Prompt coordinator.
-- (void)stopEnterprisePromptCoordinator {
-  [_enterprisePromptCoordinator stop];
-  _enterprisePromptCoordinator.delegate = nil;
-  _enterprisePromptCoordinator = nil;
-}
-
 // Stops the sharing sheet.
 - (void)stopSharingSheet {
   [_sharingCoordinator stop];
@@ -496,13 +498,6 @@ const char kContextPanelDismissedHistogram[] =
 - (void)stopPasswordBreach {
   [_passwordBreachCoordinator stop];
   _passwordBreachCoordinator = nil;
-}
-
-// Stops the password protection coordinator.
-- (void)stopPasswordProtectionCoordinator {
-  [_passwordProtectionCoordinator stop];
-  _passwordProtectionCoordinator.delegate = nil;
-  _passwordProtectionCoordinator = nil;
 }
 
 // Stops the reminder notifications coordinator.
@@ -551,6 +546,18 @@ const char kContextPanelDismissedHistogram[] =
   _tabPickerCoordinator = nil;
 }
 
+// Stops the Trusted Vault reauthentication coordinator and runs its pending
+// completion, if any.
+- (void)stopTrustedVaultReauthentication {
+  [_trustedVaultReauthenticationCoordinator stop];
+  _trustedVaultReauthenticationCoordinator.delegate = nil;
+  _trustedVaultReauthenticationCoordinator = nil;
+
+  if (_trustedVaultReauthenticationCoordinatorCompletion) {
+    std::exchange(_trustedVaultReauthenticationCoordinatorCompletion, nil)();
+  }
+}
+
 // Stops the non-modal sign-in promo coordinator.
 - (void)stopNonModalSignInPromoCoordinator {
   [_nonModalSignInPromoCoordinator stop];
@@ -567,6 +574,9 @@ const char kContextPanelDismissedHistogram[] =
 // Starts the StoreKitCoordinator with the given productParameters.
 - (void)startStoreKitCoordinatorWithParameters:
     (NSDictionary*)productParameters {
+  if (_storeKitCoordinator) {
+    return;
+  }
   _storeKitCoordinator = [[StoreKitCoordinator alloc]
       initWithBaseViewController:_baseViewController
                          browser:_browser];
@@ -683,12 +693,12 @@ const char kContextPanelDismissedHistogram[] =
     @protocol(SearchEngineChoiceCommands),
     @protocol(SendTabToSelfCommands),
     @protocol(SharedTabGroupLastTabAlertCommands),
+    @protocol(SyncPresenterCommands),
     @protocol(SyncedSetUpCommands),
     @protocol(TabPickerCommands),
     @protocol(TipsPasswordsCommands),
     @protocol(UnitConversionCommands),
     @protocol(WebContentCommands),
-    @protocol(WelcomeBackPromoCommands),
     @protocol(WhatsNewCommands),
   ];
 
@@ -796,13 +806,20 @@ const char kContextPanelDismissedHistogram[] =
 
 #pragma mark - ActorOverlayCommands
 
-- (void)showActorOverlayForWebState:(web::WebState*)webState {
-  [_actorOverlayCoordinator stop];
-  _actorOverlayCoordinator = [[ActorOverlayCoordinator alloc]
-      initWithBaseViewController:_baseViewController
-                         browser:_browser
-                        webState:webState];
-  [_actorOverlayCoordinator start];
+- (void)showActorOverlayForWebState:(web::WebState*)webState
+                          showScrim:(BOOL)showScrim {
+  if (!_actorOverlayCoordinator) {
+    _actorOverlayCoordinator = [[ActorOverlayCoordinator alloc]
+        initWithBaseViewController:_baseViewController
+                           browser:_browser
+                          webState:webState];
+    _actorOverlayCoordinator.scrimVisible = showScrim;
+    [_actorOverlayCoordinator start];
+    return;
+  }
+  // `ActorOverlayCoordinator` does not retain `webState` (crbug.com/548051839),
+  // so updating `scrimVisible` in place avoids restarting the glow view.
+  _actorOverlayCoordinator.scrimVisible = showScrim;
 }
 
 - (void)hideActorOverlay {
@@ -845,8 +862,7 @@ const char kContextPanelDismissedHistogram[] =
       [[CredentialSuggestionBottomSheetCoordinator alloc]
           initWithBaseViewController:_baseViewController
                              browser:_browser
-                              params:params
-                            delegate:self.passwordControllerDelegate];
+                              params:params];
   [_credentialSuggestionBottomSheetCoordinator start];
 }
 
@@ -1026,12 +1042,6 @@ const char kContextPanelDismissedHistogram[] =
   _editProfileBottomSheetHandler = nil;
 }
 
-- (void)legacyResetAutofillSuggestionsLoadingStates {
-  // TODO(crbug.com/543386292): Remove this.
-  [HandlerForProtocol(self.dispatcher, BrowserCoordinatorCommands)
-      resetAutofillSuggestionsLoadingStates];
-}
-
 - (void)showAutofillErrorDialog:
     (autofill::AutofillErrorDialogContext)errorContext {
   [_autofillErrorDialogCoordinator stop];
@@ -1079,6 +1089,20 @@ const char kContextPanelDismissedHistogram[] =
 - (void)dismissAutofillProgressDialog {
   [_autofillProgressDialogCoordinator stop];
   _autofillProgressDialogCoordinator = nil;
+}
+
+- (void)showSaveEntityDialogOnWebState:(web::WebState*)webState {
+  // Do not show the dialog if the current tab is not the one where the request
+  // was triggered from, or if the dialog is already visible.
+  if (!webState || self.activeWebState != webState ||
+      _autofillAISaveEntityCoordinator) {
+    return;
+  }
+
+  _autofillAISaveEntityCoordinator = [[AutofillAISaveEntityCoordinator alloc]
+      initWithBaseViewController:_baseViewController
+                         browser:_browser];
+  [_autofillAISaveEntityCoordinator start];
 }
 
 - (void)showSaveEntityDialog:(autofill::SaveEntityParams)params {
@@ -1600,8 +1624,7 @@ const char kContextPanelDismissedHistogram[] =
       [[CredentialSuggestionBottomSheetCoordinator alloc]
           initWithBaseViewController:_baseViewController
                              browser:_browser
-                         requestInfo:std::move(requestInfo)
-                            delegate:self.passwordControllerDelegate];
+                         requestInfo:std::move(requestInfo)];
   [_credentialSuggestionBottomSheetCoordinator start];
 }
 
@@ -1649,6 +1672,27 @@ const char kContextPanelDismissedHistogram[] =
   _passkeyIncognitoCoordinator = nil;
 }
 
+- (void)
+    showPasskeyEmbeddedReAuthWithPackagedLookupToken:
+        (NSString*)packagedLookupToken
+                                            callback:
+                                                (webauthn::IOSPasskeyClient::
+                                                     EmbeddedReAuthCallback)
+                                                    callback {
+  [self dismissPasskeyEmbeddedReAuth];
+  _passkeyEmbeddedReAuthCoordinator = [[PasskeyEmbeddedReAuthCoordinator alloc]
+      initWithBaseViewController:_baseViewController
+                         browser:_browser
+             packagedLookupToken:packagedLookupToken
+                        callback:std::move(callback)];
+  [_passkeyEmbeddedReAuthCoordinator start];
+}
+
+- (void)dismissPasskeyEmbeddedReAuth {
+  [_passkeyEmbeddedReAuthCoordinator stop];
+  _passkeyEmbeddedReAuthCoordinator = nil;
+}
+
 - (void)cancelPasskeyRequest:
     (webauthn::IOSPasskeyClient::RequestInfo)requestInfo {
   if ([_passkeyCreationBottomSheetCoordinator hasPendingRequest:requestInfo]) {
@@ -1664,6 +1708,11 @@ const char kContextPanelDismissedHistogram[] =
 
   if (_passkeyIncognitoCoordinator) {
     [self dismissPasskeyIncognitoInterstitial];
+  }
+
+  // TODO(crbug.com/586442316): Scope to the originating tab.
+  if (_passkeyEmbeddedReAuthCoordinator) {
+    [self dismissPasskeyEmbeddedReAuth];
   }
 }
 
@@ -1878,22 +1927,18 @@ const char kContextPanelDismissedHistogram[] =
 - (void)showPasswordProtectionWarning:(NSString*)warningText
                            completion:(void (^)(safe_browsing::WarningAction))
                                           completion {
-  [self stopPasswordProtectionCoordinator];
+  [self dismissPasswordProtectionWarning];
   _passwordProtectionCoordinator = [[PasswordProtectionCoordinator alloc]
       initWithBaseViewController:_baseViewController
                          browser:_browser
                      warningText:warningText];
-  _passwordProtectionCoordinator.delegate = self;
   [_passwordProtectionCoordinator startWithCompletion:completion];
 }
 
-#pragma mark - PasswordProtectionCoordinatorDelegate
-
-- (void)passwordProtectionCoordinatorWantsToBeStopped:
-    (PasswordProtectionCoordinator*)coordinator {
-  // TODO(crbug.com/543366924): Remove this.
-  CHECK_EQ(_passwordProtectionCoordinator, coordinator);
-  [self stopPasswordProtectionCoordinator];
+- (void)dismissPasswordProtectionWarning {
+  PasswordProtectionCoordinator* coordinator = _passwordProtectionCoordinator;
+  _passwordProtectionCoordinator = nil;
+  [coordinator stop];
 }
 
 #pragma mark - PasswordSuggestionCommands
@@ -1964,7 +2009,6 @@ const char kContextPanelDismissedHistogram[] =
         initWithBaseViewController:_baseViewController
                            browser:_browser
                         promptType:EnterprisePromptTypeForceSignOut];
-    _enterprisePromptCoordinator.delegate = self;
   }
   [_enterprisePromptCoordinator start];
 }
@@ -1977,7 +2021,6 @@ const char kContextPanelDismissedHistogram[] =
         initWithBaseViewController:_baseViewController
                            browser:_browser
                         promptType:EnterprisePromptTypeSyncDisabled];
-    _enterprisePromptCoordinator.delegate = self;
   }
   [_enterprisePromptCoordinator start];
 }
@@ -1993,7 +2036,6 @@ const char kContextPanelDismissedHistogram[] =
                              browser:_browser
                           promptType:
                               EnterprisePromptTypeRestrictAccountSignedOut];
-      _enterprisePromptCoordinator.delegate = self;
     }
     [_enterprisePromptCoordinator start];
   } else {
@@ -2008,11 +2050,9 @@ const char kContextPanelDismissedHistogram[] =
   }
 }
 
-#pragma mark - EnterprisePromptCoordinatorDelegate
-
-- (void)hideEnterprisePrompForLearnMore:(BOOL)learnMore {
-  // TODO(crbug.com/545535699): Use a command instead of a delegate.
-  [self stopEnterprisePromptCoordinator];
+- (void)hideEnterprisePrompt {
+  [_enterprisePromptCoordinator stop];
+  _enterprisePromptCoordinator = nil;
 }
 
 #pragma mark - PriceTrackedItemsCommands
@@ -2137,19 +2177,12 @@ const char kContextPanelDismissedHistogram[] =
 - (void)showFullscreenSigninPromo {
   __weak __typeof(_promosManagerCoordinator) weakPromosManagerCoordinator =
       _promosManagerCoordinator;
-  [HandlerForProtocol(self.dispatcher, SceneCommands)
-      showFullscreenSigninPromoWithCompletion:^(SigninCoordinator* coordinator,
-                                                SigninCoordinatorResult result,
-                                                id<SystemIdentity>) {
+  [HandlerForProtocol(self.dispatcher, SceneSignInCommands)
+      showFullscreenSigninPromoWithCompletion:^(
+          SigninCoordinator* coordinator,
+          SigninCoordinatorResultOrIdentity result) {
         [weakPromosManagerCoordinator promoWasDismissed];
       }];
-}
-
-- (void)showWelcomeBackPromo {
-  // TODO(crbug.com/557066085): Do not pass the promosUIHandler and directly
-  // call the command.
-  [HandlerForProtocol(self.dispatcher, WelcomeBackPromoCommands)
-      showWelcomeBackPromoWithPromosUIHandler:_promosManagerCoordinator];
 }
 
 - (void)showHomeBackgroundCustomizationPromo {
@@ -2157,7 +2190,8 @@ const char kContextPanelDismissedHistogram[] =
   // call the command.
   [HandlerForProtocol(self.dispatcher, NewTabPageCommands)
       showHomeBackgroundCustomizationPromoWithUIHandler:
-          _promosManagerCoordinator];
+          _promosManagerCoordinator
+                              shouldAlertFETOfDismissal:YES];
 }
 
 - (void)showDockingPromo {
@@ -2244,11 +2278,14 @@ const char kContextPanelDismissedHistogram[] =
     // Properly shutdown all coordinators started either by this coordinator or
     // by the scene controller. This should include Quick Delete, History and
     // the Privacy Settings.
-    [HandlerForProtocol(weakDispatcher, BrowserCoordinatorCommands)
-        clearPresentedStateWithCompletion:nil
-                           dismissOmnibox:YES];
-    // The protocol might not have a valid target when the shutdown of Quick
+    // The protocols might not have a valid target when the shutdown of Quick
     // Delete is happening at the same time the UI is being shutdown.
+    if ([weakDispatcher
+            dispatchingForProtocol:@protocol(BrowserCoordinatorCommands)]) {
+      [HandlerForProtocol(weakDispatcher, BrowserCoordinatorCommands)
+          clearPresentedStateWithCompletion:nil
+                             dismissOmnibox:YES];
+    }
     if ([weakDispatcher dispatchingForProtocol:@protocol(SceneCommands)]) {
       id<SceneCommands> sceneHandler =
           HandlerForProtocol(weakDispatcher, SceneCommands);
@@ -2399,7 +2436,7 @@ const char kContextPanelDismissedHistogram[] =
 - (void)sendTabToSelfCoordinatorWantsToBeStopped:
     (SendTabToSelfCoordinator*)coordinator {
   // TODO(crbug.com/545567389): Use a command instead of a delegate here.
-  CHECK_EQ(_sendTabToSelfCoordinator, coordinator, base::NotFatalUntil::M150);
+  CHECK_EQ(_sendTabToSelfCoordinator, coordinator);
   [self stopSendTabToSelf];
 }
 
@@ -2514,6 +2551,96 @@ const char kContextPanelDismissedHistogram[] =
   _lastTabClosingAlert = nil;
 }
 
+#pragma mark - SyncPresenterCommands
+
+- (void)showSyncPassphraseSettings {
+  [self showSyncPassphraseSettingsWithDismissalCompletion:nil];
+}
+
+- (void)showSyncPassphraseSettingsWithDismissalCompletion:
+    (SyncPresenterCompletionCallback)completion {
+  [HandlerForProtocol(self.dispatcher, SettingsCommands)
+      showSyncPassphraseSettingsFromViewController:_baseViewController
+                                        completion:completion];
+}
+
+- (void)showGoogleServicesSettings {
+  [HandlerForProtocol(self.dispatcher, SettingsCommands)
+      showGoogleServicesSettingsFromViewController:_baseViewController];
+}
+
+- (void)showAccountSettings {
+  [HandlerForProtocol(self.dispatcher, SettingsCommands)
+      showAccountsSettingsFromViewController:_baseViewController
+                        skipIfUINotAvailable:NO];
+}
+
+- (void)showTrustedVaultReauthForFetchKeysWithTrigger:
+            (trusted_vault::TrustedVaultUserActionTriggerForUMA)trigger
+                                           completion:
+                                               (SyncPresenterCompletionCallback)
+                                                   completion {
+  [self
+      showTrustedVaultReauthWithTrigger:trigger
+                                 intent:SigninTrustedVaultDialogIntentFetchKeys
+                             completion:completion];
+}
+
+- (void)showTrustedVaultReauthForDegradedRecoverabilityWithTrigger:
+            (trusted_vault::TrustedVaultUserActionTriggerForUMA)trigger
+                                                        completion:
+                                                            (ProceduralBlock)
+                                                                completion {
+  SigninTrustedVaultDialogIntent intent =
+      SigninTrustedVaultDialogIntentDegradedRecoverability;
+  [self showTrustedVaultReauthWithTrigger:trigger
+                                   intent:intent
+                               completion:completion];
+}
+
+- (void)showBookmarksLimitExceededHelp {
+  ProfileIOS* profile = _browser->GetProfile();
+  syncer::SyncService* syncService = SyncServiceFactory::GetForProfile(profile);
+  if (syncService) {
+    syncService->AcknowledgeBookmarksLimitExceededError(
+        syncer::SyncService::BookmarksLimitExceededHelpClickedSource::
+            kSyncErrorMessage);
+  }
+  GURL helpUrl(kBookmarksLimitExceededHelpCenter);
+  OpenNewTabCommand* command =
+      [OpenNewTabCommand commandWithURLFromChrome:helpUrl
+                                      inIncognito:profile->IsOffTheRecord()];
+  command.appendTo = OpenPosition::kCurrentTab;
+  [HandlerForProtocol(self.dispatcher, SceneCommands)
+      closePresentedViewsAndOpenURL:command];
+}
+
+#pragma mark - SyncPresenterCommands helpers
+
+// Presents the Trusted Vault reauthentication dialog with `intent`, for the
+// sync security domain. Does nothing if the dialog is already presented.
+- (void)showTrustedVaultReauthWithTrigger:
+            (trusted_vault::TrustedVaultUserActionTriggerForUMA)trigger
+                                   intent:(SigninTrustedVaultDialogIntent)intent
+                               completion:
+                                   (SyncPresenterCompletionCallback)completion {
+  if (_trustedVaultReauthenticationCoordinator) {
+    // This can occur in case of double-tap.
+    return;
+  }
+  _trustedVaultReauthenticationCoordinator =
+      [[TrustedVaultReauthenticationCoordinator alloc]
+          initWithBaseViewController:_baseViewController
+                             browser:_browser
+                              intent:intent
+                    securityDomainID:trusted_vault::SecurityDomainId::
+                                         kChromeSync
+                             trigger:trigger];
+  _trustedVaultReauthenticationCoordinator.delegate = self;
+  _trustedVaultReauthenticationCoordinatorCompletion = completion;
+  [_trustedVaultReauthenticationCoordinator start];
+}
+
 #pragma mark - SyncedSetUpCommands
 
 - (void)showSyncedSetUpWithDismissalCompletion:(ProceduralBlock)completion {
@@ -2600,6 +2727,14 @@ const char kContextPanelDismissedHistogram[] =
   [self dismissPasswordsTip];
 }
 
+#pragma mark - TrustedVaultReauthenticationCoordinatorDelegate
+
+- (void)trustedVaultReauthenticationCoordinatorWantsToBeStopped:
+    (TrustedVaultReauthenticationCoordinator*)coordinator {
+  CHECK_EQ(coordinator, _trustedVaultReauthenticationCoordinator);
+  [self stopTrustedVaultReauthentication];
+}
+
 #pragma mark - UnitConversionCommands
 
 - (void)presentUnitConversionForSourceUnit:(NSUnit*)sourceUnit
@@ -2623,6 +2758,9 @@ const char kContextPanelDismissedHistogram[] =
 #pragma mark - WebContentCommands
 
 - (void)showAppStoreWithParameters:(NSDictionary*)productParameters {
+  if (_storeKitCoordinator) {
+    return;
+  }
   __weak __typeof(self) weakSelf = self;
   // Properly start the StoreKitCoordinator in a clean presented state.
   [HandlerForProtocol(self.dispatcher, BrowserCoordinatorCommands)
@@ -2648,23 +2786,6 @@ const char kContextPanelDismissedHistogram[] =
 - (void)dismissPassKitDialog {
   [_passKitCoordinator stop];
   _passKitCoordinator = nil;
-}
-
-#pragma mark - WelcomeBackPromoCommands
-
-- (void)showWelcomeBackPromoWithPromosUIHandler:
-    (id<PromosManagerUIHandler>)promosUIHandler {
-  [_welcomeBackCoordinator stop];
-  _welcomeBackCoordinator = [[WelcomeBackCoordinator alloc]
-      initWithBaseViewController:_baseViewController
-                         browser:_browser
-                 promosUIHandler:promosUIHandler];
-  [_welcomeBackCoordinator start];
-}
-
-- (void)hideWelcomeBackPromo {
-  [_welcomeBackCoordinator stop];
-  _welcomeBackCoordinator = nil;
 }
 
 #pragma mark - WhatsNewCommands

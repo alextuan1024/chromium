@@ -5,10 +5,12 @@
 """Wraps the turbine jar and expands @FileArgs."""
 
 import argparse
+import contextlib
 import functools
 import logging
 import os
 import sys
+import tempfile
 import time
 import zipfile
 
@@ -17,6 +19,39 @@ from util import build_utils
 import action_helpers  # build_utils adds //build to sys.path.
 import zip_helpers
 
+sys.path.insert(
+    1,
+    os.path.join(
+        build_utils.DIR_SOURCE_ROOT, 'third_party', 'protobuf', 'python'
+    ),
+)
+from proto import deps_pb2  # noqa: E402
+
+
+def ExtractUsedClasspathJarsFromJdeps(jdeps_bytes, classpath):
+    """Returns the subset of |classpath| jars marked as used in |jdeps_bytes|.
+
+    Turbine's --output_deps writes a serialized blaze_deps.Dependencies message
+    where each Dependency has a path and Kind (Dependency.Kind.UNUSED).
+
+    Pruning the depfile to used jars is safe because we continue to pass the
+    full classpath to Turbine and javac. If a used symbol moves to another jar
+    on the classpath, the jar it moved from changes and triggers a rebuild with
+    the full classpath. Note that Turbine's .jdeps walks lowered symbols and
+    currently omits jars referenced only for compile-time constants folded by
+    ConstEvaluator.
+    """
+    deps = deps_pb2.Dependencies()
+    deps.ParseFromString(jdeps_bytes)
+    if not deps.IsInitialized() or not deps.success:
+        raise ValueError('Turbine .jdeps is incomplete or unsuccessful')
+    used_jars = {
+        os.path.normpath(dep.path)
+        for dep in deps.dependency
+        if dep.kind != deps_pb2.Dependency.UNUSED
+    }
+    return [jar for jar in classpath if os.path.normpath(jar) in used_jars]
+
 
 def main(argv):
     build_utils.InitLogging('TURBINE_DEBUG')
@@ -24,10 +59,15 @@ def main(argv):
     parser = argparse.ArgumentParser()
     action_helpers.add_depfile_arg(parser)
     parser.add_argument('--target-name', help='Fully qualified GN target name.')
-    parser.add_argument(
+    turbine_group = parser.add_mutually_exclusive_group(required=True)
+    turbine_group.add_argument(
         '--turbine-jar-path',
-        required=True,
         help='Path to the turbine jar file.',
+    )
+    turbine_group.add_argument(
+        '--turbine-binary-path',
+        help='Path to the GraalVM native-image turbine executable. Does not '
+        'support annotation processors.',
     )
     parser.add_argument(
         '--java-srcjars',
@@ -98,17 +138,32 @@ def main(argv):
     # Turbine is run only on .java files.
     java_files = [f for f in files if f.endswith('.java')]
 
-    cmd = build_utils.JavaCmd() + [
-        '-classpath',
-        options.turbine_jar_path,
-        'com.google.turbine.main.Main',
-    ]
+    if options.turbine_binary_path:
+        if options.processors or options.processorpath:
+            parser.error(
+                '--turbine-binary-path does not support annotation processors.'
+            )
+        cmd = [
+            options.turbine_binary_path,
+            # Needed to locate lib/ct.sym for --release.
+            '-Djava.home=' + build_utils.JAVA_HOME,
+            # Start with a big heap to avoid frequent GCs. 1.7-2x faster for
+            # mid-sized targets with no RSS increase. Large targets (e.g.
+            # chrome_java) are ~18% faster but use more RSS (255MB -> 506MB).
+            '-Xms1g',
+        ]
+    else:
+        cmd = build_utils.JavaCmd() + [
+            '-classpath',
+            options.turbine_jar_path,
+            'com.google.turbine.main.Main',
+        ]
     # Keep consistent with javac_args release flag in
     # //build/android/gyp/compile_java.py and
     # compileOptions in //build/android/gradle/android.jinja
     # LINT.IfChange
     javac_cmd = ['--release', '25']
-    # LINT.ThenChange(//depot/chromium/components/cronet/gn2bp/templates/Android.extras.bp.template)
+    # LINT.ThenChange(//depot/chromium/build/android/gyp/compile_java.py)
 
     # Turbine reads lists from command line args by consuming args until one
     # starts with double dash (--). Thus command line args should be grouped
@@ -147,13 +202,23 @@ def main(argv):
     cmd += javac_cmd
     cmd += ['--']  # Terminate javacopts
 
+    # Annotation processors can inspect classes across the classpath without
+    # emitting direct bytecode references into the header jar.
+    prune_depfile = bool(options.depfile and not options.processorpath)
+    jdeps_bytes = None
+
     # Use AtomicOutput so that output timestamps are not updated when outputs
     # are not changed.
     with (
         action_helpers.atomic_output(options.jar_path) as output_jar,
         action_helpers.atomic_output(options.generated_jar_path) as gensrc_jar,
+        tempfile.NamedTemporaryFile(suffix='.jdeps')
+        if prune_depfile
+        else contextlib.nullcontext() as jdeps_file,
     ):
         cmd += ['--output', output_jar.name, '--gensrc_output', gensrc_jar.name]
+        if jdeps_file:
+            cmd += ['--output_deps', jdeps_file.name]
         process_javac_output_partial = functools.partial(
             javac_output_processor.Process, options.target_name
         )
@@ -168,6 +233,8 @@ def main(argv):
                 stderr_filter=process_javac_output_partial,
                 fail_on_output=options.warnings_as_errors,
             )
+            if jdeps_file:
+                jdeps_bytes = jdeps_file.read()
         except build_utils.CalledProcessError as e:
             # Do not output stacktrace as it takes up space on gerrit UI, forcing
             # you to click though to find the actual compilation error. It's never
@@ -178,7 +245,7 @@ def main(argv):
         logging.info('Header compilation took %ss', end)
         if options.kotlin_jar_path:
             with zipfile.ZipFile(output_jar.name, 'a') as out_zip:
-                path_transform = lambda p: p if p.endswith('.class') else None
+                path_transform = lambda p: p if p.endswith('.class') else None  # noqa: E731
                 zip_helpers.merge_zips(
                     out_zip,
                     [options.kotlin_jar_path],
@@ -186,10 +253,16 @@ def main(argv):
                 )
 
     if options.depfile:
+        depfile_jars = classpath_jars
+        if jdeps_bytes is not None:
+            depfile_jars = ExtractUsedClasspathJarsFromJdeps(
+                jdeps_bytes, classpath_jars
+            )
+
         # GN already knows of the java files, so avoid listing individual java files
         # in the depfile.
         action_helpers.write_depfile(
-            options.depfile, options.jar_path, classpath_jars
+            options.depfile, options.jar_path, depfile_jars
         )
 
 

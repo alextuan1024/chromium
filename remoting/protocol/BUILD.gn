@@ -191,10 +191,7 @@ static_library("protocol") {
     "webrtc_video_renderer_adapter.h",
   ]
 
-  configs += [
-    "//build/config:precompiled_headers",
-    "//build/config/compiler:wexit_time_destructors",
-  ]
+  configs += [ "//build/config:precompiled_headers" ]
 
   public_deps = [
     ":errors",
@@ -214,6 +211,7 @@ static_library("protocol") {
     "//remoting/base:logging",
     "//remoting/base:name_value_map",
     "//remoting/base:session_policies",
+    "//remoting/codec:utils",
     "//remoting/proto:internal_structs",
     "//remoting/proto/google/internal/remoting/cloud/v1alpha:messages",
     "//remoting/proto/remoting/v1:network_traversal_proto",
@@ -330,11 +328,13 @@ source_set("unit_tests") {
     "chromium_socket_factory_unittest.cc",
     "clipboard_echo_filter_unittest.cc",
     "clipboard_filter_unittest.cc",
+    "clipboard_thread_proxy_unittest.cc",
     "coordinate_conversion_test.cc",
     "coordinate_converter_unittest.cc",
     "data_channel_manager_unittest.cc",
     "fractional_input_filter_unittest.cc",
     "frame_stats_unittest.cc",
+    "host_event_dispatcher_unittest.cc",
     "ice_config_fetcher_cloud_unittest.cc",
     "ice_config_fetcher_default_unittest.cc",
     "ice_config_unittest.cc",
@@ -376,6 +376,7 @@ source_set("unit_tests") {
     "//remoting/base:session_policies",
     "//remoting/base:test_support",
     "//remoting/codec:encoder",
+    "//remoting/codec:utils",
     "//remoting/proto:internal_structs",
     "//remoting/proto/google/internal/remoting/cloud/v1alpha:messages",
     "//remoting/proto/remoting/v1:network_traversal_proto",
@@ -383,6 +384,7 @@ source_set("unit_tests") {
     "//services/network/public/cpp",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/libyuv",
     "//third_party/webrtc_overrides:webrtc_component",
   ]
 

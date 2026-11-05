@@ -37,7 +37,9 @@ class BeginFrameSourceWayland : public BeginFrameSourceExtension {
   void OnFrameCallback(base::TimeTicks callback_time);
   void OnPresentationFeedback(const gfx::PresentationFeedback& feedback);
   void OnFrameCallbackUnavailable();
-  void OnWindowSuspensionChanged(bool suspended);
+  // Stops begin frame production while `suspended`, e.g. because the window
+  // is occluded and nothing consumes its frames.
+  void SetProductionSuspended(bool suspended);
 
   static base::TimeDelta ComputeEffectiveInterval(
       base::TimeDelta preferred_interval,
@@ -54,6 +56,8 @@ class BeginFrameSourceWayland : public BeginFrameSourceExtension {
   // the current state. Called after every state transition.
   void UpdateFrameCallbackRecoveryTimer();
   void OnFrameCallbackRecoveryTimerFired();
+  void DeferIssueToNextFrame(const char* reason,
+                             base::TimeDelta time_to_next_frame);
 
   base::TimeDelta GetEffectiveInterval() const;
 
@@ -86,9 +90,10 @@ class BeginFrameSourceWayland : public BeginFrameSourceExtension {
   // Whether the delegate wants us to produce begin frames.
   bool needs_begin_frame_ = false;
 
-  // Whether the compositor reports the window as suspended (occluded). While
-  // suspended, missing frame callbacks are expected and not treated as stalls.
-  bool suspended_ = false;
+  // Whether begin frame production is suspended, see SetProductionSuspended().
+  // While suspended, missing frame callbacks are expected and not treated as
+  // stalls.
+  bool production_suspended_ = false;
 
   // Only one frame can be in flight at a time.
   bool frame_in_flight_ = false;
@@ -104,7 +109,7 @@ class BeginFrameSourceWayland : public BeginFrameSourceExtension {
 
   // Recovers from stalls if expected frame callbacks do not arrive.
   base::OneShotTimer frame_callback_recovery_timer_;
-  // Throttles if multiple frame callbacks arrive within the same vsync cycle.
+  // Waits out the vsync cycle we last issued for before issuing again.
   base::OneShotTimer deferred_issue_begin_frame_timer_;
 
   base::WeakPtrFactory<BeginFrameSourceWayland> weak_factory_{this};

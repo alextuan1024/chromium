@@ -11,11 +11,11 @@
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/style/icon_button.h"
 #include "ash/style/style_util.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "ash/style/tab_slider.h"
 #include "ash/style/tab_slider_button.h"
 #include "base/functional/bind.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
@@ -52,9 +52,9 @@ std::unique_ptr<IconButton> CreateIconButton(base::RepeatingClosure callback,
 
 OnTaskPodView::OnTaskPodView(OnTaskPodController* pod_controller)
     : pod_controller_(pod_controller),
-      shadow_(SystemShadow::CreateShadowOnNinePatchLayerForView(
+      shadow_(SystemDecoration::CreateForView(
           this,
-          SystemShadow::Type::kElevation4)) {
+          SystemDecoration::ShadowType::kElevation4)) {
   SetOrientation(views::BoxLayout::Orientation::kHorizontal);
   SetMainAxisAlignment(views::BoxLayout::MainAxisAlignment::kStart);
   SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kStart);

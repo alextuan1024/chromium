@@ -35,6 +35,7 @@
 
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-blink-forward.h"
@@ -53,6 +54,7 @@
 #include "third_party/blink/renderer/core/loader/history_item.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/loader_freeze_mode.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 
@@ -260,11 +262,16 @@ class CORE_EXPORT FrameLoader final {
 
   void WriteIntoTrace(perfetto::TracedValue context) const;
 
-  bool AllowRequestForThisFrame(const FrameLoadRequest&);
+  bool AllowRequestForThisFrame(const FrameLoadRequest&,
+                                bool is_same_document_navigation);
 
   mojo::PendingRemote<mojom::blink::CodeCacheHost> CreateWorkerCodeCacheHost();
 
   void ProcessPendingCrossDocumentFragment();
+
+  void AddAutoplayFlags(const scoped_refptr<const SecurityOrigin>& origin,
+                        int32_t flags);
+  void ApplyAutoplayFlags(bool is_within_same_document);
 
  private:
   bool ShouldPerformFragmentNavigation(bool is_form_submission,
@@ -359,6 +366,10 @@ class CORE_EXPORT FrameLoader final {
   bool has_pending_cross_document_fragment_ = false;
 
   WeakMember<DocumentLoader> previous_document_loader_for_xslt_;
+
+  using AutoplayOriginAndFlags =
+      std::pair<scoped_refptr<const SecurityOrigin>, int32_t>;
+  AutoplayOriginAndFlags autoplay_flags_;
 };
 
 }  // namespace blink

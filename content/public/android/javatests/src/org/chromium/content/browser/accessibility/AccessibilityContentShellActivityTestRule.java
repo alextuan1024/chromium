@@ -4,6 +4,8 @@
 
 package org.chromium.content.browser.accessibility;
 
+import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_SET_EXTENDED_SELECTION;
+
 import static org.chromium.base.test.util.CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL;
 import static org.chromium.content.browser.accessibility.AccessibilityContentShellTestUtils.ANP_ERROR;
 import static org.chromium.content.browser.accessibility.AccessibilityContentShellTestUtils.END_OF_TEST_ERROR;
@@ -34,6 +36,7 @@ import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer;
 import org.chromium.content_shell_apk.ContentShellActivityTestRule;
 import org.chromium.net.test.EmbeddedTestServerRule;
@@ -284,25 +287,50 @@ public class AccessibilityContentShellActivityTestRule extends ContentShellActiv
         mNodeProvider = getAccessibilityNodeProvider();
     }
 
+    /**
+     * Installs a test factory on {@link WebContentsAccessibilityImpl} before Content Shell launches
+     * so that the first and only instance created for {@link WebContents} is the Mockito mock.
+     */
+    public void installMockWebContentsAccessibilityFactory() {
+        WebContentsAccessibilityImpl.setFactoryForTesting(
+                webContents -> {
+                    WebContentsAccessibilityImpl wcax =
+                            createMockWebContentsAccessibility(webContents);
+                    // Empty map to imply no throttle delay for events.
+                    wcax.setThrottleDelayForTesting(new HashMap<>());
+                    // To prevent flakes, do not auto-disable accessibility mid test.
+                    wcax.setIsAutoDisableAccessibilityCandidateForTesting(false);
+                    return wcax;
+                });
+    }
+
+    // TODO(crbug.com/556209534): Migrate remaining callers (e.g. setupTestFromFile() and
+    // WebContentsAccessibilityTest) to installMockWebContentsAccessibilityFactory() and remove the
+    // removeUserData() swap.
     public void mockWebContentsAccessibilityImpl() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    org.chromium.content_public.browser.WebContents webContents = getWebContents();
+                    WebContents webContents = getWebContents();
                     if (webContents.getOrSetUserData(WebContentsAccessibilityImpl.class, null)
                             != null) {
                         webContents.removeUserData(WebContentsAccessibilityImpl.class);
                     }
                     WebContentsAccessibilityImpl mockWcax =
-                            Mockito.mock(
-                                    WebContentsAccessibilityImpl.class,
-                                    Mockito.withSettings()
-                                            .useConstructor(
-                                                    new WebContentsAccessibilityDelegate(
-                                                            webContents))
-                                            .defaultAnswer(Mockito.CALLS_REAL_METHODS));
+                            createMockWebContentsAccessibility(webContents);
                     webContents.getOrSetUserData(
                             WebContentsAccessibilityImpl.class, (wc) -> mockWcax);
                 });
+    }
+
+    private static WebContentsAccessibilityImpl createMockWebContentsAccessibility(
+            WebContents webContents) {
+        // A Mockito mock that calls the real methods, so that it behaves like the real
+        // implementation while tests can still verify interactions on it (e.g. performAction()).
+        return Mockito.mock(
+                WebContentsAccessibilityImpl.class,
+                Mockito.withSettings()
+                        .useConstructor(new WebContentsAccessibilityDelegate(webContents))
+                        .defaultAnswer(Mockito.CALLS_REAL_METHODS));
     }
 
     /** Helper method to tear down our tests so we can start the next test clean. */
@@ -318,6 +346,7 @@ public class AccessibilityContentShellActivityTestRule extends ContentShellActiv
         }
 
         AccessibilityContentShellTestData.resetData();
+        ThreadUtils.runOnUiThreadBlocking(AccessibilityStateTestHelper::uninitializeForTesting);
     }
 
     /**
@@ -369,7 +398,9 @@ public class AccessibilityContentShellActivityTestRule extends ContentShellActiv
             AccessibilityContentShellTestUtils.AccessibilityNodeInfoMatcher<T> matcher,
             T element) {
         AccessibilityNodeInfoCompat node = mNodeProvider.createAccessibilityNodeInfo(virtualViewId);
-        Assert.assertNotEquals(node, null);
+        // The node may not be available yet, e.g. before the frame info is initialized. Returning
+        // View.NO_ID allows callers that poll (such as waitForNodeMatching()) to retry.
+        if (node == null) return View.NO_ID;
         if (matcher.matches(node, element)) return virtualViewId;
 
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -432,7 +463,7 @@ public class AccessibilityContentShellActivityTestRule extends ContentShellActiv
      * @return boolean return value of performAction
      * @throws ExecutionException Error
      */
-    public boolean performActionOnUiThread(int viewId, int action, Bundle args)
+    public boolean performActionOnUiThread(int viewId, int action, @Nullable Bundle args)
             throws ExecutionException {
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> mNodeProvider.performAction(viewId, action, args));
@@ -511,12 +542,25 @@ public class AccessibilityContentShellActivityTestRule extends ContentShellActiv
     }
 
     /**
+     * Helper method to set extended selection with given arguments.
+     *
+     * @param viewId int virtualViewId of the node to which selection is assigned.
+     * @param args Bundle arguments for setting selection.
+     * @return boolean return value of setting selection.
+     */
+    public boolean setSelectionOnUiThread(int viewId, @Nullable Bundle args)
+            throws ExecutionException {
+        return performActionOnUiThread(viewId, ACTION_SET_EXTENDED_SELECTION.getId(), args);
+    }
+
+    /**
      * Helper method to clear extended selection.
      *
      * @param viewId int virtualViewId of the node from which selection is cleared.
+     * @return boolean whether the action was accepted.
      */
-    public void clearSelectionOnUiThread(int viewId) throws ExecutionException {
-        ThreadUtils.runOnUiThreadBlocking(
+    public boolean clearSelectionOnUiThread(int viewId) throws ExecutionException {
+        return ThreadUtils.runOnUiThreadBlocking(
                 () ->
                         WebContentsAccessibilityImplJni.get()
                                 .clearExtendedSelection(mWcax.mNativeObj, viewId));
@@ -586,7 +630,13 @@ public class AccessibilityContentShellActivityTestRule extends ContentShellActiv
     public void sendReadyForTestSignal() {
         ThreadUtils.runOnUiThreadBlocking(() -> mWcax.signalEndOfTestForTesting());
         CriteriaHelper.pollUiThread(() -> mTracker.testComplete(), READY_FOR_TEST_ERROR);
-        ThreadUtils.runOnUiThreadBlocking(() -> mTracker.signalReadyForTest());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mTracker.signalReadyForTest();
+                    // Reset event dispatcher state and event counts accumulated before this signal
+                    // so that they are not attributed to the test or affect event dispatching.
+                    mWcax.resetEventStateForTesting();
+                });
     }
 
     /**

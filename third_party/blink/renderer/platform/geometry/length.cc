@@ -27,14 +27,17 @@
 
 #include <array>
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/platform/geometry/blend.h"
 #include "third_party/blink/renderer/platform/geometry/calculation_value.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
 #include "third_party/blink/renderer/platform/wtf/size_assertions.h"
 #include "third_party/blink/renderer/platform/wtf/static_constructors.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
@@ -42,6 +45,7 @@ namespace blink {
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_auto_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_stretch_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_fit_content_length);
+DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_shrink_content_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_max_content_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_min_content_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_min_intrinsic_length);
@@ -52,6 +56,8 @@ void Length::Initialize() {
   new (base::NotNullTag::kNotNull, (void*)&g_stretch_length) Length(kStretch);
   new (base::NotNullTag::kNotNull, (void*)&g_fit_content_length)
       Length(kFitContent);
+  new (base::NotNullTag::kNotNull, (void*)&g_shrink_content_length)
+      Length(kShrinkContent);
   new (base::NotNullTag::kNotNull, (void*)&g_max_content_length)
       Length(kMaxContent);
   new (base::NotNullTag::kNotNull, (void*)&g_min_content_length)
@@ -60,8 +66,9 @@ void Length::Initialize() {
       Length(kMinIntrinsic);
 }
 
-class CalculationValueHandleMap
-    : public GarbageCollected<CalculationValueHandleMap> {
+class CalculationValueHandleMap {
+  USING_FAST_MALLOC(CalculationValueHandleMap);
+
  public:
   CalculationValueHandleMap() = default;
   CalculationValueHandleMap(const CalculationValueHandleMap&) = delete;
@@ -79,52 +86,74 @@ class CalculationValueHandleMap
     unsigned count = 1u;
   };
 
-  void Trace(Visitor* visitor) const { visitor->Trace(map_); }
-
   unsigned insert(const CalculationValue* calc_value) {
+    FlushDecrements();
+
     // FIXME calc(): https://bugs.webkit.org/show_bug.cgi?id=80489
     // This monotonically increasing handle generation scheme is potentially
     // wasteful of the handle space. Consider reusing empty handles.
     do {
       index_++;
     } while (IsHashTraitsEmptyOrDeletedValue<HashTraits<unsigned>>(index_) ||
-             !map_.insert(index_, calc_value).is_new_entry);
+             !map_->insert(index_, calc_value).is_new_entry);
     return index_;
   }
 
   const CalculationValue& Get(unsigned index) const {
-    return *map_.at(index).value;
+    return *map_->at(index).value;
   }
 
-  unsigned GetCount(unsigned index) const { return map_.at(index).count; }
+  unsigned GetCount(unsigned index) {
+    FlushDecrements();
+    return map_->at(index).count;
+  }
 
-  wtf_size_t GetMapSize() const { return map_.size(); }
+  wtf_size_t GetMapSize() {
+    FlushDecrements();
+    return map_->size();
+  }
 
   void DecrementCount(unsigned index) {
-    auto iter = map_.find(index);
-    CHECK(iter != map_.end());
+    auto iter = map_->find(index);
+    CHECK(iter != map_->end());
     unsigned count = --iter->value.count;
     if (count == 0u) {
-      map_.erase(iter);
+      map_->erase(iter);
     }
   }
 
+  void DeferredDecrementCount(unsigned index) {
+    // This is called from `~Length()`, which may execute during a GC sweep
+    // when touching `map_` is forbidden.
+    decrements_.push_back(index);
+  }
+
   void IncrementCount(unsigned index) {
-    auto iter = map_.find(index);
-    CHECK(iter != map_.end());
+    FlushDecrements();
+    auto iter = map_->find(index);
+    CHECK(iter != map_->end());
     unsigned count = ++iter->value.count;
     CHECK_GT(count, 0u);
   }
 
  private:
+  void FlushDecrements() {
+    while (!decrements_.empty()) {
+      unsigned index = decrements_.back();
+      decrements_.pop_back();
+      DecrementCount(index);
+    }
+  }
+
   unsigned index_ = 0;
-  HeapHashMap<unsigned, MemberWithCount> map_;
+  Vector<unsigned, 32> decrements_;
+  Persistent<GCedHeapHashMap<unsigned, MemberWithCount>> map_ =
+      MakeGarbageCollected<GCedHeapHashMap<unsigned, MemberWithCount>>();
 };
 
 static CalculationValueHandleMap& CalcHandles() {
-  DCHECK(IsMainThread());
-  DEFINE_STATIC_LOCAL(Persistent<CalculationValueHandleMap>, handle_map,
-                      (MakeGarbageCollected<CalculationValueHandleMap>()));
+  CHECK(IsMainThread());
+  static base::NoDestructor<CalculationValueHandleMap> handle_map;
   return *handle_map;
 }
 
@@ -236,6 +265,11 @@ void Length::DecrementCalculatedCount() const {
   CalcHandles().DecrementCount(CalculationHandle());
 }
 
+void Length::DeferredDecrementCalculatedCount() const {
+  DCHECK(IsCalculated());
+  CalcHandles().DeferredDecrementCount(CalculationHandle());
+}
+
 Length& Length::AssignSlow(const Length& length) {
   if (this == &length) {
     return *this;
@@ -293,8 +327,8 @@ bool Length::HasContentOrIntrinsic() const {
     return GetCalculationValue().HasContentOrIntrinsicSize();
   }
   return GetType() == kMinContent || GetType() == kMaxContent ||
-         GetType() == kFitContent || GetType() == kMinIntrinsic ||
-         GetType() == kContent;
+         GetType() == kFitContent || GetType() == kShrinkContent ||
+         GetType() == kMinIntrinsic || GetType() == kContent;
 }
 
 bool Length::HasAutoOrContentOrIntrinsic() const {
@@ -357,8 +391,8 @@ String Length::ToString() const {
   builder.Append("Length(");
   static const auto kTypeNames = std::to_array<const char* const>(
       {"Auto", "Percent", "Fixed", "MinContent", "MaxContent", "MinIntrinsic",
-       "FillAvailable", "Stretch", "FitContent", "Calculated", "Flex",
-       "ExtendToZoom", "DeviceWidth", "DeviceHeight", "None", "Content"});
+       "Stretch", "FitContent", "ShrinkContent", "Calculated", "Flex", "None",
+       "Content", "OverlapJoin"});
   if (type_ < std::size(kTypeNames))
     builder.Append(kTypeNames[type_]);
   else
@@ -372,7 +406,7 @@ String Length::ToString() const {
   if (quirk_)
     builder.Append(", Quirk");
   builder.Append(")");
-  return builder.ToString();
+  return builder.ReleaseString();
 }
 
 uint32_t Length::GetHash() const {

@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <initializer_list>
-#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -20,6 +19,7 @@
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/map_util.h"
 #include "base/containers/span.h"
 #include "base/debug/alias.h"
 #include "base/debug/dump_without_crashing.h"
@@ -44,17 +44,8 @@
 namespace autofill {
 
 SortedTokenComparisonResult::SortedTokenComparisonResult(
-    SortedTokenComparisonStatus status,
-    std::vector<AddressToken> additional_tokens)
-    : status(status), additional_tokens(additional_tokens) {}
-
-SortedTokenComparisonResult::SortedTokenComparisonResult(
-    SortedTokenComparisonResult&& other) = default;
-
-SortedTokenComparisonResult& SortedTokenComparisonResult::operator=(
-    SortedTokenComparisonResult&& other) = default;
-
-SortedTokenComparisonResult::~SortedTokenComparisonResult() = default;
+    SortedTokenComparisonStatus status)
+    : status(status) {}
 
 bool SortedTokenComparisonResult::OneIsSubset() const {
   return status == SortedTokenComparisonStatus::kSubset ||
@@ -81,20 +72,9 @@ const RE2* Re2RegExCache::GetRegEx(std::string_view pattern) {
   // For thread safety, acquire a lock to prevent concurrent access.
   base::AutoLock lock(lock_);
 
-  auto it = regex_map_.find(pattern);
-  if (it != regex_map_.end()) {
-    const RE2* regex = it->second.get();
-    return regex;
-  }
-
-  // Build the expression and verify it is correct.
-  auto regex_ptr = BuildRegExFromPattern(pattern);
-
-  // Insert the expression into the map, check the success and return the
-  // pointer.
-  auto result = regex_map_.emplace(pattern, std::move(regex_ptr));
-  DCHECK(result.second);
-  return result.first->second.get();
+  return base::GetOrCreate(regex_map_, pattern,
+                           [&] { return BuildRegExFromPattern(pattern); })
+      .get();
 }
 
 std::unique_ptr<const RE2> BuildRegExFromPattern(std::string_view pattern) {
@@ -399,21 +379,11 @@ SortedTokenComparisonResult CompareSortedTokens(
     return SortedTokenComparisonResult(SortedTokenComparisonStatus::kDistinct);
   }
 
-  std::vector<AddressToken> additional_tokens;
-
-  // Collect the additional tokens from the superset.
-  // Note, that the superset property is already assured.
-  std::set_symmetric_difference(
-      first.begin(), first.end(), second.begin(), second.end(),
-      std::back_inserter(additional_tokens), cmp_normalized);
-
   if (is_superset) {
-    return SortedTokenComparisonResult(SortedTokenComparisonStatus::kSuperset,
-                                       additional_tokens);
+    return SortedTokenComparisonResult(SortedTokenComparisonStatus::kSuperset);
   }
 
-  return SortedTokenComparisonResult(SortedTokenComparisonStatus::kSubset,
-                                     additional_tokens);
+  return SortedTokenComparisonResult(SortedTokenComparisonStatus::kSubset);
 }
 
 SortedTokenComparisonResult CompareSortedTokens(std::u16string_view first,
@@ -429,7 +399,6 @@ bool AreSortedTokensEqual(const std::vector<AddressToken>& first,
 
 std::vector<AddressToken> TokenizeValue(std::u16string_view value) {
   std::vector<AddressToken> tokens;
-  int index = 0;
 
   // CJK names are a special case and are tokenized by character without the
   // separators.
@@ -440,19 +409,15 @@ std::vector<AddressToken> TokenizeValue(std::u16string_view value) {
     std::optional<std::vector<std::u16string>> parts =
         SplitByRegex(value, **regex, value.size());
     if (!parts.has_value()) {
-      return {AddressToken{
-          .value = std::u16string(value),
-          .normalized_value = normalization::NormalizeForComparison(value),
-          .position = 0}};
+      return {AddressToken{.normalized_value =
+                               normalization::NormalizeForComparison(value)}};
     }
     tokens.reserve(value.size());
     for (const std::u16string& part : parts.value()) {
       for (size_t j = 0; j < part.size(); ++j) {
         tokens.emplace_back(AddressToken{
-            .value = part.substr(j, 1),
             .normalized_value =
-                normalization::NormalizeForComparison(part.substr(j, 1)),
-            .position = index++});
+                normalization::NormalizeForComparison(part.substr(j, 1))});
       }
     }
   } else {
@@ -461,15 +426,11 @@ std::vector<AddressToken> TokenizeValue(std::u16string_view value) {
          base::SplitString(value, u", \n", base::TRIM_WHITESPACE,
                            base::SPLIT_WANT_NONEMPTY)) {
       tokens.emplace_back(AddressToken{
-          .value = token,
-          .normalized_value = normalization::NormalizeForComparison(token),
-          .position = index++});
+          .normalized_value = normalization::NormalizeForComparison(token)});
     }
   }
   // Sort the tokens lexicographically by their normalized value.
-  std::sort(tokens.begin(), tokens.end(), [](const auto& a, const auto& b) {
-    return a.normalized_value < b.normalized_value;
-  });
+  std::ranges::sort(tokens, {}, &AddressToken::normalized_value);
 
   return tokens;
 }

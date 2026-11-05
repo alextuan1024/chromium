@@ -11,7 +11,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "components/user_manager/user.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -72,9 +72,6 @@ void Show(const user_manager::User& user,
   const std::string notification_id =
       CreateUserScopedNotificationId(kNotificationId, user.username_hash());
 
-  // Empty display source to show OS name as source.
-  const std::u16string kEmptyDisplaySource;
-
   // Office building.
   const gfx::VectorIcon& kIcon = ::features::IsRoundedIconsEnabled()
                                      ? vector_icons::kDomainIcon
@@ -88,9 +85,10 @@ void Show(const user_manager::User& user,
   HandleNotificationClickDelegate::ButtonClickCallback callback_wrapper =
       base::BindRepeating(&OnClick, click_callback, principal_name);
 
+  // Empty display source to show OS name as source.
   auto notification = ash::CreateSystemNotificationPtr(
-      kNotificationType, notification_id, kTitle, kBody, kEmptyDisplaySource,
-      notifier_id, notification_data,
+      kNotificationType, notification_id, kTitle, kBody,
+      /*display_source=*/std::u16string(), notifier_id, notification_data,
       base::MakeRefCounted<HandleNotificationClickDelegate>(callback_wrapper),
       kIcon, kWarningLevel);
 

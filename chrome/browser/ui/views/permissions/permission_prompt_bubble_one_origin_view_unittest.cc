@@ -69,8 +69,7 @@ class TestDelegate : public permissions::PermissionPrompt::Delegate {
   void InitializeRawRequests() {
     raw_requests_ = base::ToVector(
         requests_,
-        [](const auto& request)
-            -> raw_ptr<permissions::PermissionRequest, VectorExperimental> {
+        [](const auto& request) -> raw_ptr<permissions::PermissionRequest> {
           return request.get();
         });
   }
@@ -133,8 +132,7 @@ class TestDelegate : public permissions::PermissionPrompt::Delegate {
 
  private:
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests_;
-  std::vector<raw_ptr<permissions::PermissionRequest, VectorExperimental>>
-      raw_requests_;
+  std::vector<raw_ptr<permissions::PermissionRequest>> raw_requests_;
   base::WeakPtrFactory<TestDelegate> weak_factory_{this};
 };
 
@@ -255,10 +253,14 @@ class PermissionPromptBubbleOneOriginViewTestMediaPreview
   }
 
   void InitializePermissionPrompt(
-      const std::vector<permissions::RequestType>& request_types) {
+      const std::vector<permissions::RequestType>& request_types,
+      const std::vector<std::string>& requested_audio_capture_device_ids =
+          {kMicId},
+      const std::vector<std::string>& requested_video_capture_device_ids = {
+          kCameraId}) {
     test_delegate_.emplace(GURL("https://test.origin"), request_types,
-                           std::vector<std::string>{kMicId},
-                           std::vector<std::string>{kCameraId});
+                           requested_audio_capture_device_ids,
+                           requested_video_capture_device_ids);
     permission_prompt_ = std::make_unique<PermissionPromptBubbleOneOriginView>(
         web_contents_.get(), test_delegate_->GetWeakPtr(),
         PermissionPromptStyle::kBubbleOnly);
@@ -341,6 +343,9 @@ TEST_F(PermissionPromptBubbleOneOriginViewTestMediaPreview,
   EXPECT_EQ(mic_label->GetText(), GetExpectedMicLabelText(1));
   EXPECT_EQ(mic_label->GetRenderedTooltipText(gfx::Point()),
             base::UTF8ToUTF16(std::string(kMicName2)));
+
+  permission_prompt_->RunButtonCallback(static_cast<int>(
+      PermissionPromptBubbleBaseView::PermissionDialogButton::kAccept));
 }
 
 // Verify the device counter as well as the tooltip for the camera permission
@@ -459,6 +464,9 @@ TEST_F(PermissionPromptBubbleOneOriginViewTestMediaPreview,
   EXPECT_EQ(mic_label->GetText(), GetExpectedMicLabelText(1));
   EXPECT_EQ(mic_label->GetRenderedTooltipText(gfx::Point()),
             base::UTF8ToUTF16(std::string(kMicName2)));
+
+  permission_prompt_->RunButtonCallback(static_cast<int>(
+      PermissionPromptBubbleBaseView::PermissionDialogButton::kAccept));
 }
 
 // Verify there is no preview created when there is no camera or mic permissions
@@ -470,6 +478,68 @@ TEST_F(PermissionPromptBubbleOneOriginViewTestMediaPreview,
   ASSERT_FALSE(permission_prompt_->GetCameraPermissionLabelForTesting());
   ASSERT_FALSE(permission_prompt_->GetPtzCameraPermissionLabelForTesting());
   ASSERT_FALSE(permission_prompt_->GetMicPermissionLabelForTesting());
+}
+
+// Verify there is no preview created in PermissionPromptBubbleOneOriginView
+// when requested device ID lists are empty.
+TEST_F(PermissionPromptBubbleOneOriginViewTestMediaPreview,
+       MediaPreviewEmptyDeviceIds) {
+  InitializePermissionPrompt(
+      {permissions::RequestType::kMicStream,
+       permissions::RequestType::kCameraStream},
+      /*requested_audio_capture_device_ids=*/{},
+      /*requested_video_capture_device_ids=*/{});
+  EXPECT_FALSE(permission_prompt_->GetMediaPreviewsForTesting());
+}
+
+namespace {
+
+class TestMediaPreviewPromptView : public PermissionPromptBaseView {
+ public:
+  TestMediaPreviewPromptView(
+      content::WebContents* web_contents,
+      base::WeakPtr<permissions::PermissionPrompt::Delegate> delegate)
+      : PermissionPromptBaseView(web_contents, delegate) {}
+  ~TestMediaPreviewPromptView() override = default;
+
+  using PermissionPromptBaseView::MaybeAddMediaPreview;
+  using PermissionPromptBaseView::ResetMediaPreview;
+  using PermissionPromptBaseView::UpdateMediaDevicePreferenceRanking;
+
+  // PermissionPromptBaseView:
+  void RunButtonCallback(int button_view_id) override {}
+};
+
+}  // namespace
+
+// Verify that PermissionPromptBaseView::MaybeAddMediaPreview can create a
+// preview when `allow_empty_device_ids` is true, and that `ResetMediaPreview`
+// clears it.
+TEST_F(PermissionPromptBubbleOneOriginViewTestMediaPreview,
+       BaseViewMediaPreviewAllowsEmptyDeviceIdsAndReset) {
+  test_delegate_.emplace(
+      GURL("https://test.origin"),
+      std::vector<permissions::RequestType>{
+          permissions::RequestType::kMicStream,
+          permissions::RequestType::kCameraStream},
+      /*requested_audio_capture_device_ids=*/std::vector<std::string>{},
+      /*requested_video_capture_device_ids=*/std::vector<std::string>{});
+
+  TestMediaPreviewPromptView prompt(web_contents_.get(),
+                                    test_delegate_->GetWeakPtr());
+  EXPECT_FALSE(
+      prompt.MaybeAddMediaPreview(/*index=*/0, /*allow_empty_device_ids=*/false));
+  EXPECT_FALSE(prompt.GetMediaPreviewsForTesting());
+
+  EXPECT_TRUE(
+      prompt.MaybeAddMediaPreview(/*index=*/0, /*allow_empty_device_ids=*/true));
+  ASSERT_TRUE(prompt.GetMediaPreviewsForTesting());
+  EXPECT_EQ(prompt.GetMediaPreviewsForTesting()->GetViewTypeForTesting(),
+            MediaCoordinator::ViewType::kBoth);
+
+  prompt.UpdateMediaDevicePreferenceRanking();
+  prompt.ResetMediaPreview();
+  EXPECT_FALSE(prompt.GetMediaPreviewsForTesting());
 }
 
 #endif

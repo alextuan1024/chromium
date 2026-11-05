@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "build/android_buildflags.h"
+#include "build/build_config.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "content/public/test/browser_test.h"
@@ -64,6 +66,12 @@ IN_PROC_BROWSER_TEST_F(CrElementsTest, CrUrlListItem) {
   RunTest("cr_elements/cr_url_list_item_test.js", "mocha.run()");
 }
 
+#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
+IN_PROC_BROWSER_TEST_F(CrElementsTest, AsyncMapDirective) {
+  RunTest("cr_elements/async_map_directive_test.js", "mocha.run()");
+}
+#endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
+
 #if !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_F(CrElementsTest, CrA11yAnnouncer) {
   RunTest("cr_elements/cr_a11y_announcer_test.js", "mocha.run()");
@@ -99,10 +107,6 @@ IN_PROC_BROWSER_TEST_F(CrElementsTest, CrIconset) {
   RunTest("cr_elements/cr_iconset_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrElementsTest, FindShortcutMixin) {
-  RunTest("cr_elements/find_shortcut_mixin_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrElementsTest, FindShortcutMixinLit) {
   RunTest("cr_elements/find_shortcut_mixin_lit_test.js", "mocha.run()");
 }
@@ -128,24 +132,12 @@ IN_PROC_BROWSER_TEST_F(CrElementsTest, CrLazyList) {
   RunTest("cr_elements/cr_lazy_list_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrElementsTest, CrLazyRender) {
-  RunTest("cr_elements/cr_lazy_render_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrElementsTest, CrLinkRow) {
   RunTest("cr_elements/cr_link_row_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrElementsTest, ListPropertyUpdateMixin) {
-  RunTest("cr_elements/list_property_update_mixin_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrElementsTest, CrRadioButton) {
   RunTest("cr_elements/cr_radio_button_test.js", "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(CrElementsTest, CrRippleMixinPolymer) {
-  RunTest("cr_elements/cr_ripple_mixin_polymer_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(CrElementsTest, CrCardRadioButton) {
@@ -190,10 +182,6 @@ IN_PROC_BROWSER_TEST_F(CrElementsTest, CrProgress) {
 
 IN_PROC_BROWSER_TEST_F(CrElementsTest, CrToolbar) {
   RunTest("cr_elements/cr_toolbar_test.js", "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(CrElementsTest, WebUiListenerMixin) {
-  RunTest("cr_elements/web_ui_listener_mixin_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(CrElementsTest, WebUiListenerMixinLit) {

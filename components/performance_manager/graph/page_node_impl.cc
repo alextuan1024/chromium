@@ -10,6 +10,7 @@
 
 #include "base/byte_size.h"
 #include "base/check_op.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
@@ -27,6 +28,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/perfetto/include/perfetto/tracing/tracing.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
@@ -137,9 +139,9 @@ bool PageNodeImpl::IsVisible() const {
   return is_visible_.value();
 }
 
-base::TimeTicks PageNodeImpl::GetLastVisibilityChangeTime() const {
+PageNode::VisibilityState PageNodeImpl::GetVisibilityState() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return visibility_change_time_;
+  return {is_visible_.value(), visibility_change_time_};
 }
 
 bool PageNodeImpl::IsAudible() const {
@@ -147,13 +149,9 @@ bool PageNodeImpl::IsAudible() const {
   return is_audible_.value();
 }
 
-std::optional<base::TimeDelta> PageNodeImpl::GetTimeSinceLastAudibleChange()
-    const {
+PageNode::AudibleState PageNodeImpl::GetAudibleState() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (audible_change_time_.has_value()) {
-    return base::TimeTicks::Now() - audible_change_time_.value();
-  }
-  return std::nullopt;
+  return {is_audible_.value(), audible_change_time_};
 }
 
 bool PageNodeImpl::HasPictureInPicture() const {
@@ -173,6 +171,11 @@ bool PageNodeImpl::IsOffTheRecord() const {
 PageNode::LoadingState PageNodeImpl::GetLoadingState() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return loading_state_.value();
+}
+
+bool PageNodeImpl::IsUserOrBrowserInitiatedLoad() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return is_user_or_browser_initiated_load_.value();
 }
 
 ukm::SourceId PageNodeImpl::GetUkmSourceID() const {
@@ -342,6 +345,13 @@ void PageNodeImpl::SetLoadingState(LoadingState loading_state) {
   loading_state_.SetAndMaybeNotify(this, loading_state);
 }
 
+void PageNodeImpl::SetIsUserOrBrowserInitiatedLoad(
+    bool is_user_or_browser_initiated_load) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  is_user_or_browser_initiated_load_.SetAndMaybeNotify(
+      this, is_user_or_browser_initiated_load);
+}
+
 void PageNodeImpl::SetType(PageType type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK_NE(type, PageType::kUnknown);
@@ -356,23 +366,18 @@ void PageNodeImpl::SetIsFocused(bool is_focused) {
 
 void PageNodeImpl::SetIsVisible(bool is_visible) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (is_visible_.SetAndMaybeNotify(this, is_visible)) {
-    // The change time needs to be updated after observers are notified, as they
-    // use this to determine time passed since the *previous* visibility state
-    // change. They can infer the current state change time themselves via
-    // NowTicks.
+  if (is_visible_.value() != is_visible) {
     visibility_change_time_ = base::TimeTicks::Now();
   }
+  is_visible_.SetAndMaybeNotify(this, is_visible);
 }
 
 void PageNodeImpl::SetIsAudible(bool is_audible) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (is_audible_.SetAndMaybeNotify(this, is_audible)) {
-    // The change time needs to be updated after observers are notified, as they
-    // use this to determine time passed since the *previous* state change. They
-    // can infer the current state change time themselves via NowTicks.
+  if (is_audible_.value() != is_audible) {
     audible_change_time_ = base::TimeTicks::Now();
   }
+  is_audible_.SetAndMaybeNotify(this, is_audible);
 }
 
 void PageNodeImpl::SetHasPictureInPicture(bool has_picture_in_picture) {
@@ -482,7 +487,15 @@ FrameNodeImpl* PageNodeImpl::primary_main_frame_node() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (FrameNodeImpl* frame : main_frame_nodes()) {
     if (frame->IsActive() && !frame->parent_or_outer_document()) {
-      return frame;
+      if (frame->is_inner_frame_root()) {
+        // An inner frame root is never the primary main frame, even if it is
+        // currently detached from its outer document (see
+        // FrameNodeImpl::SetOuterDocumentForInnerFrameRoot()).
+        CHECK(base::FeatureList::IsEnabled(
+            blink::features::kPersistentWidgetAPI));
+      } else {
+        return frame;
+      }
     }
   }
   return nullptr;

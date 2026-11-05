@@ -11,6 +11,9 @@
 #import "components/feature_engagement/test/mock_tracker.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_chat_message_data_types.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_chat_message_handler.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_snackbar_data_types.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_view_state_delegate.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
@@ -23,6 +26,10 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message_action.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -30,6 +37,7 @@
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
 
 namespace ios::provider {
 void SetMockFeatureModeDisabledByQuota(bool disabled);
@@ -40,11 +48,6 @@ namespace {
 const base::TimeDelta kTestSessionDuration = base::Seconds(5);
 const base::TimeDelta kTestResponseLatency = base::Milliseconds(500);
 NSString* const kTestServerID = @"server_id";
-
-std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
-    ProfileIOS* profile) {
-  return std::make_unique<feature_engagement::test::MockTracker>();
-}
 }  // namespace
 
 class GeminiSessionHandlerTest : public PlatformTest {
@@ -62,7 +65,8 @@ class GeminiSessionHandlerTest : public PlatformTest {
         OptimizationGuideServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         feature_engagement::TrackerFactory::GetInstance(),
-        base::BindRepeating(&BuildFeatureEngagementMockTracker));
+        base::BindOnce(
+            &std::make_unique<feature_engagement::test::MockTracker>));
     profile_ = std::move(builder).Build();
     mock_tracker_ = static_cast<feature_engagement::test::MockTracker*>(
         feature_engagement::TrackerFactory::GetForProfile(profile_.get()));
@@ -79,8 +83,10 @@ class GeminiSessionHandlerTest : public PlatformTest {
     // Set up mock handlers.
     mock_gemini_handler_ = OCMProtocolMock(@protocol(GeminiCommands));
     mock_settings_handler_ = OCMProtocolMock(@protocol(SettingsCommands));
+    mock_snackbar_handler_ = OCMProtocolMock(@protocol(SnackbarCommands));
     session_handler_.geminiHandler = mock_gemini_handler_;
     session_handler_.settingsHandler = mock_settings_handler_;
+    session_handler_.snackbarHandler = mock_snackbar_handler_;
 
     AddWebState();
   }
@@ -88,6 +94,7 @@ class GeminiSessionHandlerTest : public PlatformTest {
   void TearDown() override {
     [mock_gemini_handler_ stopMocking];
     [mock_settings_handler_ stopMocking];
+    [mock_snackbar_handler_ stopMocking];
     ios::provider::SetMockFeatureModeDisabledByQuota(false);
     ios::provider::SetMockRefillDateForFeatureMode(nil);
     PlatformTest::TearDown();
@@ -121,6 +128,7 @@ class GeminiSessionHandlerTest : public PlatformTest {
   raw_ptr<OptimizationGuideService> optimization_guide_service_;
   id mock_gemini_handler_;
   id mock_settings_handler_;
+  id mock_snackbar_handler_;
 };
 
 // Tests that UIDidDisappearWithClientID records the session duration.
@@ -638,4 +646,585 @@ TEST_F(GeminiSessionHandlerTest, TestQuotaReachedMetricRecordedOnResponse) {
                         isNanoBananaToolSelected:NO
                                 isImageGenerated:NO];
   EXPECT_EQ(1, user_action_tester.GetActionCount("MobileGeminiQuotaReached"));
+}
+
+// Tests that transitioning to `kThinking` from `kTranscribing` or `kListening`
+// in Live mode records first prompt and prompt submission method histograms,
+// and increments session prompt count.
+TEST_F(GeminiSessionHandlerTest, TestLiveSessionThinkingRecordsPrompt) {
+  NSString* client_id = GetClientID();
+  [session_handler_ UIDidAppearWithClientID:client_id serverID:kTestServerID];
+
+  // Transition to transcribing then thinking.
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kTranscribing
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+
+  histogram_tester_.ExpectUniqueSample(
+      kFirstPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+  histogram_tester_.ExpectUniqueSample(
+      kPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+
+  // Consecutive thinking status does not record another prompt.
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  histogram_tester_.ExpectBucketCount(
+      kPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+
+  // Transition out and back into thinking via listening (a second prompt).
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kListening
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+
+  // First prompt submission should not be recorded again.
+  histogram_tester_.ExpectBucketCount(
+      kFirstPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+  // Prompt submission method should be recorded twice.
+  histogram_tester_.ExpectBucketCount(
+      kPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 2);
+
+  // End the session and verify it is classified as with-prompt, not abandoned.
+  task_environment_.FastForwardBy(kTestSessionDuration);
+  [session_handler_ UIDidDisappearWithClientID:client_id
+                                      serverID:kTestServerID];
+
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthWithPromptHistogram,
+                                     1);
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthAbandonedHistogram, 0);
+  histogram_tester_.ExpectUniqueSample(kSessionPromptCountHistogram, 2, 1);
+  histogram_tester_.ExpectUniqueSample(kSessionFirstPromptHistogram, true, 1);
+}
+
+// Tests that
+// `didUpdateProcessingStatus:dormantReason:sessionID:conversationID:` also
+// updates processing status and records prompts on transition to thinking.
+TEST_F(GeminiSessionHandlerTest, TestLiveSessionDormantReasonRecordsPrompt) {
+  NSString* client_id = GetClientID();
+  [session_handler_ UIDidAppearWithClientID:client_id serverID:kTestServerID];
+
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kListening
+                  dormantReason:ios::provider::GeminiDormantReason::kUnknown
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                  dormantReason:ios::provider::GeminiDormantReason::kUnknown
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+
+  histogram_tester_.ExpectUniqueSample(
+      kFirstPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+  histogram_tester_.ExpectUniqueSample(
+      kPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+
+  [session_handler_ UIDidDisappearWithClientID:client_id
+                                      serverID:kTestServerID];
+
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthWithPromptHistogram,
+                                     1);
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthAbandonedHistogram, 0);
+  histogram_tester_.ExpectUniqueSample(kSessionPromptCountHistogram, 1, 1);
+  histogram_tester_.ExpectUniqueSample(kSessionFirstPromptHistogram, true, 1);
+}
+
+// Tests that the error-forwarding `didUpdateProcessingStatus:...` overload
+// forwards error details to `geminiViewStateDelegate` and records prompts on
+// transition to thinking.
+TEST_F(GeminiSessionHandlerTest, TestLiveSessionErrorOverloadRecordsPrompt) {
+  NSString* client_id = GetClientID();
+  id mock_delegate = OCMProtocolMock(@protocol(GeminiViewStateDelegate));
+  session_handler_.geminiViewStateDelegate = mock_delegate;
+  OCMExpect([mock_delegate geminiUIDidAppear]);
+  [session_handler_ UIDidAppearWithClientID:client_id serverID:kTestServerID];
+
+  static constexpr NSInteger kTestErrorCode = 1;
+  NSString* const kTestErrorDomain = @"TestDomain";
+  NSError* error = [NSError errorWithDomain:kTestErrorDomain
+                                       code:kTestErrorCode
+                                   userInfo:nil];
+  OCMExpect([mock_delegate
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kTranscribing
+                  dormantReason:ios::provider::GeminiDormantReason::kUnknown
+                          error:nil
+                      errorCode:ios::provider::GeminiErrorCode::kNone
+                      sessionID:client_id
+                 conversationID:kTestServerID]);
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kTranscribing
+                  dormantReason:ios::provider::GeminiDormantReason::kUnknown
+                          error:nil
+                      errorCode:ios::provider::GeminiErrorCode::kNone
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+
+  OCMExpect([mock_delegate
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                  dormantReason:ios::provider::GeminiDormantReason::kUnknown
+                          error:error
+                      errorCode:ios::provider::GeminiErrorCode::kGenericError
+                      sessionID:client_id
+                 conversationID:kTestServerID]);
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                  dormantReason:ios::provider::GeminiDormantReason::kServerPause
+                          error:error
+                      errorCode:ios::provider::GeminiErrorCode::kGenericError
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  EXPECT_OCMOCK_VERIFY(mock_delegate);
+
+  histogram_tester_.ExpectUniqueSample(
+      kFirstPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+  histogram_tester_.ExpectUniqueSample(
+      kPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+
+  [session_handler_ UIDidDisappearWithClientID:client_id
+                                      serverID:kTestServerID];
+
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthWithPromptHistogram,
+                                     1);
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthAbandonedHistogram, 0);
+  histogram_tester_.ExpectUniqueSample(kSessionPromptCountHistogram, 1, 1);
+  histogram_tester_.ExpectUniqueSample(kSessionFirstPromptHistogram, true, 1);
+}
+
+// Tests that a session without prompts is classified as abandoned.
+TEST_F(GeminiSessionHandlerTest, TestAbandonedSessionWithoutPrompts) {
+  NSString* client_id = GetClientID();
+  [session_handler_ UIDidAppearWithClientID:client_id serverID:kTestServerID];
+
+  // Client enters listening state without reaching thinking.
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kListening
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+
+  task_environment_.FastForwardBy(kTestSessionDuration);
+  [session_handler_ UIDidDisappearWithClientID:client_id
+                                      serverID:kTestServerID];
+
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthWithPromptHistogram,
+                                     0);
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthAbandonedHistogram, 1);
+  histogram_tester_.ExpectUniqueSample(kSessionPromptCountHistogram, 0, 1);
+  histogram_tester_.ExpectUniqueSample(kSessionFirstPromptHistogram, false, 1);
+}
+
+// Tests that a session with both text and live prompts accumulates the prompt
+// count correctly, attributes the first prompt method to the initial chat
+// prompt, and does not record `kLivePrompt` when a chat prompt transitions to
+// `kThinking`.
+TEST_F(GeminiSessionHandlerTest, TestMixedChatAndLivePromptsInSession) {
+  NSString* client_id = GetClientID();
+  [session_handler_ UIDidAppearWithClientID:client_id serverID:kTestServerID];
+
+  // Send a text prompt first, which transitions status from `kUnknown` to
+  // `kThinking` and `kResponding` in Chat mode.
+  [session_handler_ didSendQueryWithInputType:gemini::InputType::kText
+                     isNanoBananaToolSelected:NO
+                          imagesAttachedCount:0
+                               longPressImage:NO
+                          pageContextAttached:NO];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+
+  histogram_tester_.ExpectUniqueSample(
+      kFirstPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kText, 1);
+  histogram_tester_.ExpectUniqueSample(
+      kPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kText, 1);
+
+  // Live turn transitions through transcribing to thinking.
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kTranscribing
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+
+  // First prompt submission method remains kText.
+  histogram_tester_.ExpectBucketCount(
+      kFirstPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 0);
+  // Prompt submission method now has both kText and kLivePrompt.
+  histogram_tester_.ExpectBucketCount(
+      kPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+  histogram_tester_.ExpectTotalCount(kPromptSubmissionMethodHistogram, 2);
+
+  [session_handler_ UIDidDisappearWithClientID:client_id
+                                      serverID:kTestServerID];
+
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthWithPromptHistogram,
+                                     1);
+  histogram_tester_.ExpectTotalCount(kGeminiSessionLengthAbandonedHistogram, 0);
+  histogram_tester_.ExpectUniqueSample(kSessionPromptCountHistogram, 2, 1);
+  histogram_tester_.ExpectUniqueSample(kSessionFirstPromptHistogram, true, 1);
+}
+
+// Tests that tapping new chat resets the live processing status so subsequent
+// non-Live thinking transitions are not treated as Live prompts, while a new
+// Live turn is treated as the new session's first prompt.
+TEST_F(GeminiSessionHandlerTest, TestNewChatResetsLiveProcessingStatus) {
+  NSString* client_id = GetClientID();
+  [session_handler_ UIDidAppearWithClientID:client_id serverID:kTestServerID];
+
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kListening
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+
+  histogram_tester_.ExpectBucketCount(
+      kFirstPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+
+  // Enter listening state, then tap new chat button.
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kListening
+                      sessionID:client_id
+                 conversationID:kTestServerID];
+  [session_handler_ didTapNewChatButtonWithSessionID:client_id
+                                      conversationID:@"new_conv"];
+
+  // Transition to thinking directly in the new chat (e.g., from Chat mode) does
+  // not record a Live prompt because `_lastProcessingStatus` was reset.
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:client_id
+                 conversationID:@"new_conv"];
+  histogram_tester_.ExpectBucketCount(
+      kFirstPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 1);
+
+  // Transitioning from listening to thinking in the new chat records the new
+  // session's first prompt.
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kListening
+                      sessionID:client_id
+                 conversationID:@"new_conv"];
+  [session_handler_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:client_id
+                 conversationID:@"new_conv"];
+
+  histogram_tester_.ExpectBucketCount(
+      kFirstPromptSubmissionMethodHistogram,
+      IOSGeminiFirstPromptSubmissionMethod::kLivePrompt, 2);
+
+  [session_handler_ UIDidDisappearWithClientID:client_id
+                                      serverID:kTestServerID];
+
+  histogram_tester_.ExpectUniqueSample(kSessionPromptCountHistogram, 1, 1);
+  histogram_tester_.ExpectUniqueSample(kSessionFirstPromptHistogram, true, 1);
+}
+
+// Test that chat messages are sent when no chat message handler is set.
+TEST_F(GeminiSessionHandlerTest, TestHandleChatMessageRequestWithoutHandler) {
+  GeminiChatMessageRequest* request =
+      [[GeminiChatMessageRequest alloc] initWithText:@"Hello"
+                                           sessionID:GetClientID()
+                                      conversationID:kTestServerID];
+  __block int completion_count = 0;
+  __block GeminiChatMessageResponse* received_response = nil;
+  [session_handler_
+      handleChatMessageRequest:request
+                    completion:^(GeminiChatMessageResponse* response) {
+                      ++completion_count;
+                      received_response = response;
+                    }];
+  EXPECT_EQ(1, completion_count);
+  ASSERT_TRUE(received_response);
+  EXPECT_FALSE(received_response.shouldConsume);
+}
+
+// Test that the request is forwarded unchanged to the chat message handler and
+// that a consuming response is passed back unchanged.
+TEST_F(GeminiSessionHandlerTest, TestHandleChatMessageRequestForwardsConsumed) {
+  GeminiChatMessageRequest* request =
+      [[GeminiChatMessageRequest alloc] initWithText:@"Hello"
+                                           sessionID:GetClientID()
+                                      conversationID:nil];
+  GeminiChatMessageResponse* handler_response =
+      [[GeminiChatMessageResponse alloc] initWithShouldConsume:YES];
+  id mock_handler = OCMProtocolMock(@protocol(GeminiChatMessageHandler));
+  id invoke_completion = [OCMArg invokeBlockWithArgs:handler_response, nil];
+  OCMExpect([mock_handler handleChatMessageRequest:request
+                                        completion:invoke_completion]);
+  session_handler_.chatMessageHandler = mock_handler;
+
+  __block int completion_count = 0;
+  __block GeminiChatMessageResponse* received_response = nil;
+  [session_handler_
+      handleChatMessageRequest:request
+                    completion:^(GeminiChatMessageResponse* response) {
+                      ++completion_count;
+                      received_response = response;
+                    }];
+  EXPECT_EQ(1, completion_count);
+  EXPECT_EQ(handler_response, received_response);
+  EXPECT_TRUE(received_response.shouldConsume);
+  EXPECT_OCMOCK_VERIFY(mock_handler);
+}
+
+// Test that a non-consuming response from the chat message handler is passed
+// back unchanged, so a hard-coded consuming answer would be caught.
+TEST_F(GeminiSessionHandlerTest,
+       TestHandleChatMessageRequestForwardsNotConsumed) {
+  GeminiChatMessageRequest* request =
+      [[GeminiChatMessageRequest alloc] initWithText:@"Hello"
+                                           sessionID:GetClientID()
+                                      conversationID:kTestServerID];
+  GeminiChatMessageResponse* handler_response =
+      [[GeminiChatMessageResponse alloc] initWithShouldConsume:NO];
+  id mock_handler = OCMProtocolMock(@protocol(GeminiChatMessageHandler));
+  id invoke_completion = [OCMArg invokeBlockWithArgs:handler_response, nil];
+  OCMExpect([mock_handler handleChatMessageRequest:request
+                                        completion:invoke_completion]);
+  session_handler_.chatMessageHandler = mock_handler;
+
+  __block int completion_count = 0;
+  __block GeminiChatMessageResponse* received_response = nil;
+  [session_handler_
+      handleChatMessageRequest:request
+                    completion:^(GeminiChatMessageResponse* response) {
+                      ++completion_count;
+                      received_response = response;
+                    }];
+  EXPECT_EQ(1, completion_count);
+  EXPECT_EQ(handler_response, received_response);
+  EXPECT_FALSE(received_response.shouldConsume);
+  EXPECT_OCMOCK_VERIFY(mock_handler);
+}
+
+// Tests that `didFinishLoadingConversationWithID:error:` forwards the call to
+// `geminiViewStateDelegate`.
+TEST_F(GeminiSessionHandlerTest,
+       TestDidFinishLoadingConversationNotifiesViewStateDelegate) {
+  id mock_delegate = OCMProtocolMock(@protocol(GeminiViewStateDelegate));
+  session_handler_.geminiViewStateDelegate = mock_delegate;
+  NSError* error = [NSError errorWithDomain:@"TestDomain" code:1 userInfo:nil];
+
+  OCMExpect([mock_delegate didFinishLoadingConversationWithID:@"conv_123"
+                                                        error:error]);
+
+  [session_handler_ didFinishLoadingConversationWithID:@"conv_123" error:error];
+
+  [mock_delegate verify];
+}
+
+// Tests that tab attachment and detachment events notify
+// `geminiViewStateDelegate`.
+TEST_F(GeminiSessionHandlerTest,
+       TestTabAttachmentEventsNotifyViewStateDelegate) {
+  id mock_delegate = OCMProtocolMock(@protocol(GeminiViewStateDelegate));
+  session_handler_.geminiViewStateDelegate = mock_delegate;
+
+  OCMExpect([mock_delegate didRequestToDetachTabWithID:@"tab_1"]);
+  [session_handler_ didRequestToDetachTabWithID:@"tab_1"];
+
+  OCMExpect([mock_delegate didAttachTabWithID:@"tab_2"]);
+  [session_handler_ didAttachTabWithID:@"tab_2"];
+
+  OCMExpect([mock_delegate didDetachTabWithID:@"tab_3"]);
+  [session_handler_ didDetachTabWithID:@"tab_3"];
+
+  [mock_delegate verify];
+}
+
+// Tests that input plate attachment events notify `geminiViewStateDelegate`.
+TEST_F(GeminiSessionHandlerTest,
+       TestInputPlateAttachmentEventsNotifyViewStateDelegate) {
+  id mock_delegate = OCMProtocolMock(@protocol(GeminiViewStateDelegate));
+  session_handler_.geminiViewStateDelegate = mock_delegate;
+
+  OCMExpect([mock_delegate inputPlateDidChangePageContextAttachment:YES]);
+  [session_handler_ inputPlateDidChangePageContextAttachment:YES];
+
+  OCMExpect([mock_delegate inputPlateDidChangeNanoBananaAttachment:YES]);
+  [session_handler_ inputPlateDidChangeNanoBananaAttachment:YES];
+
+  [mock_delegate verify];
+}
+
+// Tests that `didSendQueryWithInputType:` queries `attachedTabsCount` and
+// `isMultiTabUsed` from `geminiViewStateDelegate` when multi-tab context is
+// enabled.
+TEST_F(GeminiSessionHandlerTest, TestQueryMetricsRecorded_WithMultiTabContext) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures({kGeminiMultiTabContext, kPageActionMenu}, {});
+
+  id mock_delegate = OCMProtocolMock(@protocol(GeminiViewStateDelegate));
+  session_handler_.geminiViewStateDelegate = mock_delegate;
+
+  OCMExpect([mock_delegate attachedTabsCount]).andReturn(3u);
+  OCMExpect([mock_delegate isMultiTabUsed]).andReturn(YES);
+
+  [session_handler_ didSendQueryWithInputType:gemini::InputType::kText
+                     isNanoBananaToolSelected:NO
+                          imagesAttachedCount:0
+                               longPressImage:NO
+                          pageContextAttached:YES];
+
+  histogram_tester_.ExpectUniqueSample(kPromptTabsAttachedCountHistogram, 3, 1);
+  [mock_delegate verify];
+}
+
+// Tests that `showSnackbar:` presents a `SnackbarMessage` via
+// `snackbarHandler` when bottom sheet migration is enabled.
+TEST_F(GeminiSessionHandlerTest, TestShowSnackbarPresentsMessage) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration}, {});
+
+  GeminiSnackbar* snackbar =
+      [[GeminiSnackbar alloc] initWithType:GeminiSnackbarType::kResponseCopied
+                                   message:@"Response copied"];
+
+  OCMExpect([mock_snackbar_handler_
+      showSnackbarMessage:[OCMArg checkWithBlock:^BOOL(SnackbarMessage* msg) {
+        return
+            [msg.title isEqualToString:@"Response copied"] && msg.action == nil;
+      }]]);
+
+  [session_handler_ showSnackbar:snackbar];
+
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
+}
+
+// Tests that `showSnackbar:` configures `SnackbarMessageAction` when an action
+// title and handler are provided.
+TEST_F(GeminiSessionHandlerTest, TestShowSnackbarWithAction) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration}, {});
+
+  __block BOOL action_invoked = NO;
+  GeminiSnackbar* snackbar =
+      [[GeminiSnackbar alloc] initWithType:GeminiSnackbarType::kServerDriven
+                                   message:@"Event created"
+                               actionTitle:@"Undo"
+                             actionHandler:^{
+                               action_invoked = YES;
+                             }];
+
+  __block SnackbarMessage* captured_message = nil;
+  OCMExpect([mock_snackbar_handler_
+      showSnackbarMessage:[OCMArg checkWithBlock:^BOOL(SnackbarMessage* msg) {
+        captured_message = msg;
+        return [msg.title isEqualToString:@"Event created"];
+      }]]);
+
+  [session_handler_ showSnackbar:snackbar];
+
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
+  ASSERT_NE(captured_message.action, nil);
+  EXPECT_TRUE([captured_message.action.title isEqualToString:@"Undo"]);
+  ASSERT_NE(captured_message.action.handler, nil);
+  captured_message.action.handler();
+  EXPECT_TRUE(action_invoked);
+}
+
+// Tests that `showSnackbar:` is a no-op when bottom sheet migration is
+// disabled or when the snackbar message is empty.
+TEST_F(GeminiSessionHandlerTest,
+       TestShowSnackbarIgnoredWhenDisabledOrMessageEmpty) {
+  [[mock_snackbar_handler_ reject] showSnackbarMessage:[OCMArg any]];
+
+  GeminiSnackbar* snackbar =
+      [[GeminiSnackbar alloc] initWithType:GeminiSnackbarType::kGeneric
+                                   message:@"Snackbar message"];
+  [session_handler_ showSnackbar:snackbar];
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration}, {});
+
+  GeminiSnackbar* empty_snackbar =
+      [[GeminiSnackbar alloc] initWithType:GeminiSnackbarType::kGeneric
+                                   message:@""];
+  [session_handler_ showSnackbar:empty_snackbar];
+
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
+}
+
+// Tests that `dismissSnackbar` is a no-op before any snackbar has been shown.
+TEST_F(GeminiSessionHandlerTest, TestDismissSnackbarNoOpBeforeShowing) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration}, {});
+
+  [[mock_snackbar_handler_ reject] dismissSnackbarWithMessage:[OCMArg any]
+                                                     animated:YES];
+  [session_handler_ dismissSnackbar];
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
+}
+
+// Tests that `dismissSnackbar` dismisses the last presented Gemini snackbar
+// with animation and clears the tracked message.
+TEST_F(GeminiSessionHandlerTest, TestDismissSnackbarDismissesLastShownMessage) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration}, {});
+
+  GeminiSnackbar* snackbar = [[GeminiSnackbar alloc]
+      initWithType:GeminiSnackbarType::kPublicLinkSharing
+           message:@"Creating public link"];
+  OCMExpect([mock_snackbar_handler_ showSnackbarMessage:[OCMArg any]]);
+  [session_handler_ showSnackbar:snackbar];
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
+
+  OCMExpect([mock_snackbar_handler_
+      dismissSnackbarWithMessage:@"Creating public link"
+                        animated:YES]);
+  [session_handler_ dismissSnackbar];
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
+
+  // A second `dismissSnackbar` call does not dispatch again.
+  [[mock_snackbar_handler_ reject] dismissSnackbarWithMessage:[OCMArg any]
+                                                     animated:YES];
+  [session_handler_ dismissSnackbar];
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
 }

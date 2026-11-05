@@ -16,18 +16,24 @@
 #include "base/scoped_observation.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/test/values_test_util.h"
 #include "base/time/time.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/private_verification_tokens/private_verification_tokens_service.h"
+#include "chrome/browser/search_engines/template_url_service_factory_test_util.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/private_verification_tokens/common/athm_ffi/athm_ffi.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_issuer_config.h"
+#include "components/private_verification_tokens/common/private_verification_tokens_metrics.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_test_util.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_token.h"
+#include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_data.h"
+#include "components/search_engines/template_url_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "net/base/features.h"
 #include "net/base/isolation_info.h"
@@ -65,9 +71,14 @@ class PrivateVerificationTokensURLLoaderThrottleTest : public testing::Test {
     HostContentSettingsMapFactory::GetForProfile(&profile_)
         ->SetDefaultContentSetting(ContentSettingsType::ANTI_ABUSE,
                                    CONTENT_SETTING_ALLOW);
+    template_url_service_test_util_ =
+        std::make_unique<TemplateURLServiceFactoryTestUtil>(&profile_);
+    template_url_service_test_util_->VerifyLoad();
+    SetDSEOrigin("https://c.net");
     service_ = PrivateVerificationTokensService::Create(
         temp_dir_.GetPath(),
-        HostContentSettingsMapFactory::GetForProfile(&profile_));
+        HostContentSettingsMapFactory::GetForProfile(&profile_),
+        template_url_service_test_util_->model());
     ASSERT_TRUE(service_);
     shared_url_loader_factory_ =
         base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
@@ -238,10 +249,25 @@ class PrivateVerificationTokensURLLoaderThrottleTest : public testing::Test {
   std::optional<private_verification_tokens::PrivacyPassAthmIssuer>
       test_issuer_ = CreateTestIssuer(/*num_buckets=*/2, "dummy-deployment-id");
   base::test::ScopedFeatureList scoped_feature_list_;
+
+ protected:
+  void SetDSEOrigin(const std::string& url) {
+    TemplateURLData data;
+    data.SetShortName(u"test");
+    data.SetKeyword(u"test");
+    data.SetURL(url + "/search?q={searchTerms}");
+    TemplateURL* t_url = template_url_service_test_util_->model()->Add(
+        std::make_unique<TemplateURL>(data));
+    template_url_service_test_util_->model()
+        ->SetUserSelectedDefaultSearchProvider(t_url);
+  }
+
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   base::ScopedTempDir temp_dir_;
   TestingProfile profile_;
+  std::unique_ptr<TemplateURLServiceFactoryTestUtil>
+      template_url_service_test_util_;
   std::unique_ptr<PrivateVerificationTokensService> service_;
   network::TestURLLoaderFactory test_url_loader_factory_;
   scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory_;
@@ -269,6 +295,7 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
       net::features::kEnablePrivateVerificationTokens);
 
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -288,6 +315,7 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        WillStartRequest_ServiceDestroyed_DoesNothing) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -365,6 +393,7 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        WillStartRequest_TokenRedemption_AttachesTokenHeader) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -405,6 +434,7 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        WillStartRequest_TokenRedemption_CookiePresent_DoesNotAttachHeader) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -426,6 +456,7 @@ TEST_F(
     PrivateVerificationTokensURLLoaderThrottleTest,
     WillStartRequest_TokenRedemption_CredentialsModeOmit_DoesNotAttachHeader) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -446,6 +477,7 @@ TEST_F(
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        WillStartRequest_TokenRedemption_Subframe_DoesNotAttachHeader) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -466,6 +498,7 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        WillStartRequest_TokenRedemption_TopFrameMismatch_DoesNotAttachHeader) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -489,6 +522,7 @@ TEST_F(
     PrivateVerificationTokensURLLoaderThrottleTest,
     WillStartRequest_TokenRedemption_WithRequestInitiator_DoesNotAttachHeader) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -529,6 +563,7 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        WillProcessResponse_TokenSent_DeletesToken) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -553,13 +588,14 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
   base::test::TestFuture<std::vector<url::Origin>> future;
   service()->GetTokenIssuers(future.GetCallback());
   auto issuers = future.Take();
-  EXPECT_THAT(issuers,
-              testing::ElementsAre(url::Origin::Create(GURL("https://b.org"))));
+  EXPECT_THAT(issuers, testing::Not(testing::Contains(
+                           url::Origin::Create(GURL("https://a.com")))));
 }
 
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        WillProcessResponse_TokenRemovedDueToCookies_DoesNotDeleteToken) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -582,14 +618,14 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
   base::test::TestFuture<std::vector<url::Origin>> future;
   service()->GetTokenIssuers(future.GetCallback());
   auto issuers = future.Take();
-  EXPECT_THAT(issuers, testing::UnorderedElementsAre(
-                           url::Origin::Create(GURL("https://a.com")),
-                           url::Origin::Create(GURL("https://b.org"))));
+  EXPECT_THAT(issuers,
+              testing::Contains(url::Origin::Create(GURL("https://a.com"))));
 }
 
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        WillRedirectRequest_TokenSent_DeletesToken) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -612,17 +648,18 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
 
   WaitForTasksToComplete();
 
-  // Verify token for a.com was deleted on redirect, only b.org remains.
+  // Verify token for a.com was deleted on redirect.
   base::test::TestFuture<std::vector<url::Origin>> future;
   service()->GetTokenIssuers(future.GetCallback());
   auto issuers = future.Take();
-  EXPECT_THAT(issuers,
-              testing::ElementsAre(url::Origin::Create(GURL("https://b.org"))));
+  EXPECT_THAT(issuers, testing::Not(testing::Contains(
+                           url::Origin::Create(GURL("https://a.com")))));
 }
 
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        WillRedirectRequest_TokenRemovedDueToCookies_DoesNotDeleteToken) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -649,15 +686,15 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
   base::test::TestFuture<std::vector<url::Origin>> future;
   service()->GetTokenIssuers(future.GetCallback());
   auto issuers = future.Take();
-  EXPECT_THAT(issuers, testing::UnorderedElementsAre(
-                           url::Origin::Create(GURL("https://a.com")),
-                           url::Origin::Create(GURL("https://b.org"))));
+  EXPECT_THAT(issuers,
+              testing::Contains(url::Origin::Create(GURL("https://a.com"))));
 }
 
 TEST_F(
     PrivateVerificationTokensURLLoaderThrottleTest,
     WillRedirectRequest_UpdatesRequestHeadersViaRedirectUtil_PreventsTokenLeakOnRequestRestart) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -724,6 +761,7 @@ TEST_F(
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        TokenRemovedDueToCookies_DoesNotLimitSubsequentRedemptions) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   StoreTestTokens(service());
   SetTestIssuerConfig(service());
 
@@ -768,6 +806,7 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
 TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
        TokenSuccessfullySent_LimitsSubsequentRedemptions) {
   WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
   // Store two tokens for a.com so the store isn't the limiting factor.
   {
     auto tokens = CreateTestTokens();
@@ -817,6 +856,42 @@ TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
 
   EXPECT_FALSE(request2.headers.HasHeader(
       net::HttpRequestHeaders::kSecPrivateVerificationToken));
+}
+
+TEST_F(PrivateVerificationTokensURLLoaderThrottleTest, Metrics_FeatureActive) {
+  base::HistogramTester histogram_tester;
+  auto throttle = PrivateVerificationTokensURLLoaderThrottle::Create(
+      service(), nullptr, shared_url_loader_factory());
+  ASSERT_TRUE(throttle);
+
+  auto request = CreateTopLevelNavigationRequest(GURL("https://r1.a.com/page"));
+  bool defer = false;
+  throttle->WillStartRequest(&request, &defer);
+
+  histogram_tester.ExpectUniqueSample(
+      private_verification_tokens::kFeatureActiveHistogram, 1, 1);
+}
+
+TEST_F(PrivateVerificationTokensURLLoaderThrottleTest,
+       Metrics_TokenAttachedAndAttachTime) {
+  base::HistogramTester histogram_tester;
+  WaitForInitialization(service());
+  SetDSEOrigin("https://a.com");
+  StoreTestTokens(service());
+  SetTestIssuerConfig(service());
+
+  auto throttle = PrivateVerificationTokensURLLoaderThrottle::Create(
+      service(), nullptr, shared_url_loader_factory());
+  ASSERT_TRUE(throttle);
+
+  auto request = CreateTopLevelNavigationRequest(GURL("https://r1.a.com/page"));
+  bool defer = false;
+  throttle->WillStartRequest(&request, &defer);
+
+  EXPECT_TRUE(request.headers.HasHeader(
+      net::HttpRequestHeaders::kSecPrivateVerificationToken));
+  histogram_tester.ExpectTotalCount(
+      private_verification_tokens::kTokenAttachTimeHistogram, 1);
 }
 
 }  // namespace

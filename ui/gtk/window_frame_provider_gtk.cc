@@ -152,7 +152,7 @@ int ComputeTopCornerRadius(ui::FrameType type, bool tiled, bool maximized) {
       GtkCheckVersion(4)
           ? PaintBitmap(size_dip, {{0, 0}, gfx::SizeF(size_dip)}, context, 1)
           : PaintHeaderbar(size_dip, context, 1);
-  DCHECK_EQ(bitmap.width(), bitmap.height());
+  CHECK_EQ(bitmap.width(), bitmap.height(), base::NotFatalUntil::M163);
   for (int i = 0; i < bitmap.width(); ++i) {
     if (SkColorGetA(bitmap.getColor(0, i)) == 255 &&
         SkColorGetA(bitmap.getColor(i, 0)) == 255) {
@@ -307,11 +307,14 @@ void WindowFrameProviderGtk::PaintWindowFrame(gfx::Canvas* canvas,
   gfx::ScopedCanvas scoped_canvas(canvas);
   float scale = canvas->UndoDeviceScaleFactor();
 
+  // GetFrameThicknessDip() may add an entry to `assets_`, so call it before
+  // taking a reference to the asset for `scale`.
+  const gfx::Insets frame_thickness_dip = GetFrameThicknessDip();
   const auto& asset = GetOrCreateAsset(scale);
 
   const auto input_insets_px = gfx::ScaleToRoundedInsets(input_insets, scale);
   auto effective_frame_thickness_px =
-      gfx::ScaleToRoundedInsets(GetFrameThicknessDip(), scale);
+      gfx::ScaleToRoundedInsets(frame_thickness_dip, scale);
   effective_frame_thickness_px.SetToMax(input_insets_px);
 
   auto client_bounds_px = gfx::ScaleToRoundedRect(rect_dip, scale);

@@ -94,7 +94,6 @@ class WebAppFrameToolbarView : public views::AccessiblePaneView,
   AvatarToolbarButtonInterface* GetAvatarToolbarButtonInterface() override;
   ToolbarButton* GetBackButton() override;
   ReloadControl* GetReloadButton() override;
-  ToolbarButton* GetDownloadButton() override;
   WebUIToolbarWebView* GetWebUIToolbarViewForTesting() override;
 
   void OnWindowControlsOverlayEnabledChanged();
@@ -130,7 +129,7 @@ class WebAppFrameToolbarView : public views::AccessiblePaneView,
 
   views::View* GetContentSettingContainerForTesting();
 
-  const std::vector<raw_ptr<ContentSettingImageView, VectorExperimental>>&
+  const std::vector<raw_ptr<ContentSettingImageView>>&
   GetContentSettingViewsForTesting() const;
 
   void UpdateCachedColors();

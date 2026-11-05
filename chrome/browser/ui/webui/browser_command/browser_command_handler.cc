@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -14,9 +15,10 @@
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/glic/glic_settings_util.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
-#include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_whats_new_invoke.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -39,6 +41,7 @@
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/common/glic_enums.mojom.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/password_manager/core/common/password_manager_features.h"
@@ -55,29 +58,27 @@
 #include "components/user_education/common/tutorial/tutorial_service.h"
 #include "net/base/url_util.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 
 using browser_command::mojom::ClickInfoPtr;
 using browser_command::mojom::Command;
 using browser_command::mojom::CommandHandler;
 
-// static
-const char BrowserCommandHandler::kPromoBrowserCommandHistogramName[] =
-    "NewTabPage.Promos.PromoBrowserCommand";
-
 BrowserCommandHandler::BrowserCommandHandler(
     mojo::PendingReceiver<CommandHandler> pending_page_handler,
     Profile* profile,
     std::vector<browser_command::mojom::Command> supported_commands,
-    content::WebContents* web_contents)
+    content::WebContents* web_contents,
+    std::optional<glic::InvokeFromWhatsNewPasskey> glic_passkey)
     : profile_(profile),
       supported_commands_(supported_commands),
       command_updater_(std::make_unique<CommandUpdaterImpl>(this)),
       page_handler_(this, std::move(pending_page_handler)),
-      web_contents_(web_contents) {
+      web_contents_(web_contents),
+      glic_passkey_(glic_passkey) {
   if (supported_commands_.empty()) {
     return;
   }
@@ -148,6 +149,7 @@ void BrowserCommandHandler::CanExecuteCommand(
       can_execute = true;
       break;
     case Command::kOpenGlic:
+    case Command::kOpenGlicForQuizzes:
       can_execute = true;
       break;
     case Command::kOpenGlicSettings:
@@ -182,10 +184,9 @@ void BrowserCommandHandler::ExecuteCommand(Command command_id,
 
 void BrowserCommandHandler::HandleCommandWithDisposition(
     int id,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     base::TimeTicks time_stamp) {
   const auto command = static_cast<Command>(id);
-  base::UmaHistogramEnumeration(kPromoBrowserCommandHistogramName, command);
 
   switch (command) {
     case Command::kUnknownCommand:
@@ -246,6 +247,9 @@ void BrowserCommandHandler::HandleCommandWithDisposition(
       OpenGlic();
       break;
     }
+    case Command::kOpenGlicForQuizzes:
+      OpenGlicForQuizzes();
+      break;
     case Command::kOpenGlicSettings:
       OpenGlicSettings();
       break;
@@ -363,16 +367,37 @@ void BrowserCommandHandler::StartSavedTabGroupTutorial() {
 }
 
 void BrowserCommandHandler::OpenGlic() {
+  OpenGlicInternal(/*for_quizzes=*/false);
+}
+
+void BrowserCommandHandler::OpenGlicForQuizzes() {
+  OpenGlicInternal(/*for_quizzes=*/true);
+}
+
+void BrowserCommandHandler::OpenGlicInternal(bool for_quizzes) {
   glic::GlicKeyedService* glic_service = glic::GlicKeyedService::Get(profile_);
 
-  if (!glic_service) {
+  if (!glic_service || !glic::GlicEnabling::ShouldShowGlicButton(profile_)) {
+    if (base::FeatureList::IsEnabled(features::kGlicBrowserCommandFallback)) {
+      NavigateToURL(GURL(features::kGlicBrowserCommandFallbackUrl.Get()),
+                    ui::mojom::WindowOpenDisposition::kNewForegroundTab);
+    }
     return;
   }
 
-  auto* browser_window = webui::GetBrowserWindowInterface(web_contents_);
-
-  glic_service->ToggleUI(browser_window, /*prevent_close=*/false,
-                         glic::mojom::InvocationSource::kWhatsNew);
+  auto* browser_window =
+      web_contents_ ? webui::GetBrowserWindowInterface(web_contents_) : nullptr;
+  if (!glic_passkey_.has_value()) {
+    glic_service->ToggleUI(browser_window, /*prevent_close=*/false,
+                           glic::mojom::InvocationSource::kWhatsNew);
+    return;
+  }
+  if (for_quizzes) {
+    glic::InvokeFromWhatsNewForQuizzes(*glic_passkey_, *glic_service,
+                                       browser_window);
+  } else {
+    glic::InvokeFromWhatsNew(*glic_passkey_, *glic_service, browser_window);
+  }
 }
 
 void BrowserCommandHandler::OpenGlicSettings() {
@@ -392,7 +417,7 @@ void BrowserCommandHandler::OpenGlicSettings() {
     }
 
     NavigateToURL(glic::GetHelpCenterUrl(url),
-                  WindowOpenDisposition::SINGLETON_TAB);
+                  ui::mojom::WindowOpenDisposition::kSingletonTab);
   }
 }
 
@@ -440,8 +465,9 @@ CommandUpdater* BrowserCommandHandler::GetCommandUpdater() {
   return command_updater_.get();
 }
 
-void BrowserCommandHandler::NavigateToURL(const GURL& url,
-                                          WindowOpenDisposition disposition) {
+void BrowserCommandHandler::NavigateToURL(
+    const GURL& url,
+    ui::mojom::WindowOpenDisposition disposition) {
   NavigateParams params(profile_, url, ui::PAGE_TRANSITION_LINK);
   params.disposition = disposition;
   Navigate(&params);

@@ -7,6 +7,8 @@
 
 #include <windows.h>
 
+#include <stddef.h>
+
 #include <array>
 #include <memory>
 #include <optional>
@@ -47,7 +49,14 @@ class ProgressWndEvents : public CompleteWndEvents {
   virtual void DoCancel() = 0;
 };
 
+// Application messages posted to the progress windows. Keep them together so
+// that new messages don't collide.
+//
+// Carries the app logo bitmaps to the progress window. See `LoadLogo`.
 inline constexpr UINT WM_SET_APP_LOGO = WM_APP + 10;
+// Posted by `WebView2ProgressWnd` to itself to defer native UI fallback after
+// a creation or runtime failure. `WPARAM` and `LPARAM` are unused.
+inline constexpr UINT WM_WEBVIEW2_CREATE_FAILED = WM_APP + 11;
 
 // Implements the UI progress window.
 class ProgressWnd : public CompleteWnd, public AppInstallProgress {
@@ -75,7 +84,6 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, ClickedButton);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnInstallStopped);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, MaybeCloseWindow);
-  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, GetBundleCompletionCode);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, DeterminePostInstallUrls);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnCheckingForUpdate);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnWaitingToDownload);
@@ -118,11 +126,6 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
     STATE_COMPLETE_REBOOT,
     STATE_END,
   };
-
-  static CompletionCodes GetBundleCompletionCode(
-      const ObserverCompletionInfo& info);
-  static std::wstring GetBundleCompletionErrorMessages(
-      const ObserverCompletionInfo& info);
 
   // Overrides for AppInstallProgress.
   // These functions are called on the thread which owns this window.

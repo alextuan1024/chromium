@@ -9,6 +9,7 @@
 #include <set>
 #include <vector>
 
+#include "base/functional/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -22,8 +23,11 @@
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/performance_manager/public/graph/page_node.h"
+#include "components/performance_manager/public/performance_manager.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/restore_type.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
@@ -31,7 +35,10 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/http_request.h"
+#include "net/test/embedded_test_server/http_response.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "url/gurl.h"
 
@@ -67,7 +74,7 @@ class TabModelJniBridgeTest : public AndroidBrowserTest {
 
   // Calls SetMuteSetting on the bridge.
   void SetMuteSetting(const std::vector<TabAndroid*>& tabs, bool mute) {
-    bridge()->SetMuteSetting(/*env=*/nullptr, tabs, mute);
+    bridge()->SetMuteSetting(tabs, mute);
   }
 
   // Navigates the given tab to the URL and waits for completion.
@@ -176,17 +183,29 @@ IN_PROC_BROWSER_TEST_F(TabModelJniBridgeTest, ChangeActivationAndSelection) {
 
   auto* tab_a = tab_list->GetTab(0);
   auto* tab_b = tab_list->OpenTab(GURL("about:blank"), /*index=*/-1);
+  auto* tab_c = tab_list->OpenTab(GURL("about:blank"), /*index=*/-1);
+  ASSERT_TRUE(tab_b);
+  ASSERT_TRUE(tab_c);
 
   tab_list->ActivateTab(tab_a->GetHandle());
   ASSERT_EQ(tab_a, tab_list->GetActiveTab());
-  ASSERT_THAT(tab_model->GetOrderedMultiSelectedTabs(),
+  EXPECT_THAT(tab_model->GetOrderedMultiSelectedTabs(),
               testing::ElementsAre(tab_a->GetHandle()));
+  EXPECT_THAT(tab_list->GetHighlightedTabs(), testing::ElementsAre(tab_a));
 
-  tab_list->HighlightTabs(tab_b->GetHandle(),
-                          {tab_a->GetHandle(), tab_b->GetHandle()});
-  ASSERT_EQ(tab_b, tab_list->GetActiveTab());
-  ASSERT_THAT(tab_model->GetOrderedMultiSelectedTabs(),
-              testing::ElementsAre(tab_a->GetHandle(), tab_b->GetHandle()));
+  tab_list->HighlightTabs(tab_c->GetHandle(),
+                          {tab_a->GetHandle(), tab_c->GetHandle()});
+  ASSERT_EQ(tab_c, tab_list->GetActiveTab());
+  EXPECT_THAT(tab_model->GetOrderedMultiSelectedTabs(),
+              testing::ElementsAre(tab_a->GetHandle(), tab_c->GetHandle()));
+  EXPECT_THAT(tab_list->GetHighlightedTabs(),
+              testing::ElementsAre(tab_a, tab_c));
+
+  tab_list->MoveTab(tab_c->GetHandle(), 0);
+  EXPECT_THAT(tab_model->GetOrderedMultiSelectedTabs(),
+              testing::ElementsAre(tab_a->GetHandle(), tab_c->GetHandle()));
+  EXPECT_THAT(tab_list->GetHighlightedTabs(),
+              testing::ElementsAre(tab_c, tab_a));
 }
 
 class MockTabListInterfaceObserver : public TabListInterfaceObserver {
@@ -424,8 +443,13 @@ IN_PROC_BROWSER_TEST_F(TabModelJniBridgeBackgroundTabLoadingTest,
   ASSERT_TRUE(tab1);
 
   // Tab 1 is opened in background with restored navigation entry.
-  tabs::TabInterface* tab2 =
-      GetTabListInterface()->OpenTab(GURL(), /*index=*/1, /*foreground=*/false);
+  std::unique_ptr<content::WebContents> web_contents =
+      content::WebContents::Create(
+          content::WebContents::CreateParams(GetProfile()));
+  tabs::TabInterface* tab2 = bridge()->CreateTab(
+      /*parent=*/nullptr, std::move(web_contents), /*index=*/1,
+      TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE_BACKGROUND,
+      /*should_pin=*/false);
   ASSERT_TRUE(tab2);
 
   std::vector<std::unique_ptr<content::NavigationEntry>> entries;
@@ -437,10 +461,119 @@ IN_PROC_BROWSER_TEST_F(TabModelJniBridgeBackgroundTabLoadingTest,
   ASSERT_EQ(tab2->GetContents()->GetLastCommittedURL(), url2);
 
   content::TestNavigationObserver observer(tab2->GetContents());
-  bridge()->BroadcastSessionRestoreComplete(/*env=*/nullptr);
+  bridge()->BroadcastSessionRestoreComplete();
   observer.WaitForNavigationFinished();
 
   EXPECT_FALSE(tab2->GetContents()->GetController().NeedsReload());
+  EXPECT_TRUE(observer.last_navigation_succeeded());
+}
+
+IN_PROC_BROWSER_TEST_F(
+    TabModelJniBridgeBackgroundTabLoadingTest,
+    BroadcastSessionRestoreCompleteSkipsAlreadyInitializedTabs) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url1 = embedded_test_server()->GetURL("/title1.html");
+  const GURL url2 = embedded_test_server()->GetURL("/title2.html");
+  const GURL url3 = embedded_test_server()->GetURL("/title3.html");
+  const GURL url4 = embedded_test_server()->GetURL("/simple.html");
+
+  // Tab 0 is active. Wait for any initial startup navigation on Tab 0 to settle
+  // before navigating it to `url1`.
+  tabs::TabInterface* tab1 = GetTabListInterface()->GetTab(0);
+  ASSERT_TRUE(tab1);
+  ASSERT_TRUE(content::WaitForLoadStop(tab1->GetContents()));
+  ASSERT_TRUE(NavigateTab(tab1, url1));
+
+  auto create_restored_background_tab = [&](int index, const GURL& url) {
+    std::unique_ptr<content::WebContents> web_contents =
+        content::WebContents::Create(
+            content::WebContents::CreateParams(GetProfile()));
+    tabs::TabInterface* tab = bridge()->CreateTab(
+        /*parent=*/nullptr, std::move(web_contents), index,
+        TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE_BACKGROUND,
+        /*should_pin=*/false);
+    EXPECT_TRUE(tab);
+    std::vector<std::unique_ptr<content::NavigationEntry>> entries;
+    entries.push_back(content::NavigationEntry::Create());
+    entries.back()->SetURL(url);
+    tab->GetContents()->GetController().Restore(
+        0, content::RestoreType::kRestored, &entries);
+    EXPECT_TRUE(tab->GetContents()->GetController().NeedsReload());
+    EXPECT_EQ(tab->GetContents()->GetLastCommittedURL(), url);
+    return tab;
+  };
+
+  // Tab 1: Background tab that already committed a navigation, then had
+  // SetNeedsReload() called (simulating renderer kill / discard / load cancel
+  // before deferred startup). Navigated before creating the restored tabs below
+  // so any nested message loop during navigation cannot trigger a deferred
+  // BroadcastSessionRestoreComplete() before all test tabs are set up.
+  std::unique_ptr<content::WebContents> committed_web_contents =
+      content::WebContents::Create(
+          content::WebContents::CreateParams(GetProfile()));
+  tabs::TabInterface* already_committed_tab = bridge()->CreateTab(
+      /*parent=*/nullptr, std::move(committed_web_contents), /*index=*/1,
+      TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE_BACKGROUND,
+      /*should_pin=*/false);
+  ASSERT_TRUE(already_committed_tab);
+  NavigateTab(already_committed_tab, url3);
+  if (bridge()->GetActiveIndex() != 0) {
+    GetTabListInterface()->ActivateTab(tab1->GetHandle());
+  }
+  ASSERT_EQ(bridge()->GetActiveIndex(), 0);
+  ASSERT_EQ(already_committed_tab->GetContents()
+                ->GetPrimaryMainFrame()
+                ->GetLastCommittedURL(),
+            url3);
+  already_committed_tab->GetContents()->GetController().SetNeedsReload();
+  ASSERT_TRUE(
+      already_committed_tab->GetContents()->GetController().NeedsReload());
+
+  // Tab 2: Restored background tab whose PageNode already had
+  // SetMainFrameRestoredState() called by an earlier
+  // ScheduleLoadForRestoredTabs call (simulating a reparented tab already
+  // scheduled by a prior TabModelJniBridge, whose in-flight restored load was
+  // stopped before commit), while NeedsReload() remains true and primary main
+  // frame has no committed URL.
+  tabs::TabInterface* already_scheduled_tab =
+      create_restored_background_tab(/*index=*/2, url2);
+  ASSERT_TRUE(already_scheduled_tab);
+  content::TestNavigationManager nav_manager(
+      already_scheduled_tab->GetContents(), url2);
+  performance_manager::policies::SetMaxSimultaneousBackgroundTabLoadsForTesting(
+      10);
+  performance_manager::policies::ScheduleLoadForRestoredTabs(
+      {already_scheduled_tab->GetContents()});
+  ASSERT_TRUE(nav_manager.WaitForRequestStart());
+  already_scheduled_tab->GetContents()->Stop();
+  already_scheduled_tab->GetContents()->GetController().SetNeedsReload();
+  ASSERT_TRUE(
+      already_scheduled_tab->GetContents()->GetController().NeedsReload());
+  ASSERT_TRUE(already_scheduled_tab->GetContents()
+                  ->GetPrimaryMainFrame()
+                  ->GetLastCommittedURL()
+                  .is_empty());
+  auto scheduled_page_node =
+      performance_manager::PerformanceManager::GetPrimaryPageNodeForWebContents(
+          already_scheduled_tab->GetContents());
+  ASSERT_TRUE(scheduled_page_node);
+  ASSERT_EQ(scheduled_page_node->GetMainFrameUrl(), url2);
+
+  // Tab 3: Fresh restored background tab, never scheduled or navigated yet.
+  tabs::TabInterface* fresh_restored_tab =
+      create_restored_background_tab(/*index=*/3, url4);
+  ASSERT_TRUE(fresh_restored_tab);
+
+  content::TestNavigationObserver observer(fresh_restored_tab->GetContents());
+  bridge()->BroadcastSessionRestoreComplete();
+  observer.WaitForNavigationFinished();
+
+  EXPECT_TRUE(
+      already_scheduled_tab->GetContents()->GetController().NeedsReload());
+  EXPECT_TRUE(
+      already_committed_tab->GetContents()->GetController().NeedsReload());
+  EXPECT_FALSE(
+      fresh_restored_tab->GetContents()->GetController().NeedsReload());
   EXPECT_TRUE(observer.last_navigation_succeeded());
 }
 
@@ -468,8 +601,13 @@ IN_PROC_BROWSER_TEST_F(TabModelJniBridgeDisabledBackgroundTabLoadingTest,
   ASSERT_TRUE(tab1);
 
   // Tab 1 is in background.
-  tabs::TabInterface* tab2 =
-      GetTabListInterface()->OpenTab(GURL(), /*index=*/1, /*foreground=*/false);
+  std::unique_ptr<content::WebContents> web_contents =
+      content::WebContents::Create(
+          content::WebContents::CreateParams(GetProfile()));
+  tabs::TabInterface* tab2 = bridge()->CreateTab(
+      /*parent=*/nullptr, std::move(web_contents), /*index=*/1,
+      TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE_BACKGROUND,
+      /*should_pin=*/false);
   ASSERT_TRUE(tab2);
 
   std::vector<std::unique_ptr<content::NavigationEntry>> entries;
@@ -480,10 +618,60 @@ IN_PROC_BROWSER_TEST_F(TabModelJniBridgeDisabledBackgroundTabLoadingTest,
   ASSERT_TRUE(tab2->GetContents()->GetController().NeedsReload());
 
   EXPECT_FALSE(performance_manager::policies::CanScheduleLoadForRestoredTabs());
-  bridge()->BroadcastSessionRestoreComplete(/*env=*/nullptr);
+  bridge()->BroadcastSessionRestoreComplete();
 
   // Should still need reload because background loading policy was not active.
   EXPECT_TRUE(tab2->GetContents()->GetController().NeedsReload());
+}
+
+IN_PROC_BROWSER_TEST_F(TabModelJniBridgeTest,
+                       HandlePopupNavigationPreservesInitiatorPolicyContainer) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+      [](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        if (request.relative_url != "/csp.html") {
+          return nullptr;
+        }
+        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+        response->set_code(net::HTTP_OK);
+        response->set_content_type("text/html");
+        response->AddCustomHeader("Content-Security-Policy",
+                                  "script-src 'self'");
+        response->set_content("<!doctype html><html><body></body></html>");
+        return response;
+      }));
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  const GURL url = embedded_test_server()->GetURL("a.test", "/csp.html");
+  TabListInterface* tab_list = GetTabListInterface();
+  ASSERT_TRUE(tab_list);
+  tabs::TabInterface* initial_tab = NavigateTab(tab_list->GetTab(0), url);
+  ASSERT_TRUE(initial_tab);
+
+  content::WebContentsAddedObserver new_tab_observer;
+  ASSERT_TRUE(content::ExecJs(initial_tab->GetContents(),
+                              R"(
+        const html = "<title>INITIAL</title>" +
+                     "<script>document.title='EXECUTED';</script>";
+        const blobUrl = URL.createObjectURL(
+            new Blob([html], {type: "text/html"}));
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        document.body.appendChild(a);
+        a.dispatchEvent(new MouseEvent("click", {
+          ctrlKey: true,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true
+        }));
+      )"));
+
+  content::WebContents* new_contents = new_tab_observer.GetWebContents();
+  ASSERT_TRUE(new_contents);
+  ASSERT_TRUE(content::WaitForLoadStop(new_contents));
+
+  EXPECT_TRUE(new_contents->GetLastCommittedURL().SchemeIsBlob());
+  EXPECT_EQ(u"INITIAL", new_contents->GetTitle());
 }
 
 }  // namespace

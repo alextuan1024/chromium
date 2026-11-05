@@ -17,7 +17,6 @@ static_library("print_compositor") {
     "//components/discardable_memory/client",
     "//components/enterprise/buildflags",
     "//content/public/utility",
-    "//printing/common",
     "//printing/mojom",
     "//third_party/blink/public:blink_headers",
     "//ui/accessibility",
@@ -32,6 +31,7 @@ static_library("print_compositor") {
     "//components/services/print_compositor/public/cpp",
     "//components/services/print_compositor/public/mojom",
     "//printing/buildflags",
+    "//printing/common",
     "//skia",
   ]
 
@@ -71,6 +71,7 @@ if (enable_printing) {
       sources += [ "print_watermark_unittest.cc" ]
 
       data = [
+        "//components/test/data/enterprise/a4_page.pdf",
         "//components/test/data/enterprise/watermark_pdf_overlay.png",
         "//components/test/data/enterprise/watermark_pdf_overlay_mac.png",
         "//components/test/data/enterprise/watermark_pdf_overlay_win.png",

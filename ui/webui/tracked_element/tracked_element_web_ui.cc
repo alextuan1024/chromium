@@ -4,15 +4,19 @@
 
 #include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
+#include <algorithm>
 #include <sstream>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/pass_key.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "ui/base/interaction/element_events.h"
@@ -123,6 +127,22 @@ gfx::Rect TrackedElementWebUI::GetBoundsInWebContents() const {
   if (result.height() < 1) {
     result.set_height(1);
   }
+
+  if (visible()) {
+    content::RenderFrameHost* const rfh = handler_->render_frame_host();
+    if (rfh && rfh->GetParentOrOuterDocument()) {
+      // Out-of-process subframes (OOPIFs) report element bounds relative to
+      // their own RenderWidgetHostView origin. Offset by the subframe view's
+      // position relative to the WebContents container.
+      content::RenderWidgetHostView* const rfh_view = rfh->GetView();
+      content::WebContents* const contents = handler_->web_contents();
+      if (rfh_view && contents) {
+        result.Offset(rfh_view->GetViewBounds().OffsetFromOrigin() -
+                      contents->GetContainerBounds().OffsetFromOrigin());
+      }
+    }
+  }
+
   return result;
 }
 
@@ -131,6 +151,41 @@ views::WebView* TrackedElementWebUI::GetWebView() const {
   return handler_ ? handler_->GetWebView() : nullptr;
 }
 #endif
+
+base::WeakPtr<TrackedElementWebUI> TrackedElementWebUI::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
+
+void TrackedElementWebUI::AddAnchoredDialog(
+    AnchoredDialogRegistry::FocusTarget& dialog) {
+  CHECK(!std::ranges::contains(anchored_dialogs_, &dialog));
+  anchored_dialogs_.push_back(&dialog);
+  if (anchored_dialogs_.size() == 1u) {
+    handler_->SetHasAnchoredDialog(*this, true,
+                                   base::PassKey<TrackedElementWebUI>());
+  }
+}
+
+void TrackedElementWebUI::RemoveAnchoredDialog(
+    AnchoredDialogRegistry::FocusTarget& dialog) {
+  if (!std::erase(anchored_dialogs_, &dialog)) {
+    return;
+  }
+  if (anchored_dialogs_.empty()) {
+    handler_->SetHasAnchoredDialog(*this, false,
+                                   base::PassKey<TrackedElementWebUI>());
+  }
+}
+
+bool TrackedElementWebUI::FocusAnchoredDialog(bool reverse) {
+  if (anchored_dialogs_.empty()) {
+    return false;
+  }
+  // Moving focus may change which dialogs are anchored here, so don't touch
+  // `anchored_dialogs_` after the call.
+  AnchoredDialogRegistry::FocusTarget* const dialog = anchored_dialogs_.back();
+  return dialog->FocusFromAnchor(reverse);
+}
 
 gfx::NativeView TrackedElementWebUI::GetNativeView() const {
   auto* const contents = handler_->web_contents();
@@ -160,7 +215,7 @@ std::string TrackedElementWebUI::ToString() const {
 
 scoped_refptr<TrackedElementWebUI::HighlightHandle>
 TrackedElementWebUI::GetOrMakeHighlightHandle() {
-  DCHECK(can_highlight_);
+  CHECK(can_highlight_, base::NotFatalUntil::M163);
 
   if (highlight_handle_) {
     return highlight_handle_.get();
@@ -174,7 +229,7 @@ TrackedElementWebUI::GetOrMakeHighlightHandle() {
 }
 
 void TrackedElementWebUI::ReleaseHighlightHandle() {
-  DCHECK(highlight_handle_);
+  CHECK(highlight_handle_, base::NotFatalUntil::M163);
   highlight_handle_ = nullptr;
   handler_->SetHighlightState(*this, false,
                               base::PassKey<TrackedElementWebUI>());
@@ -192,7 +247,7 @@ void TrackedElementWebUI::AddVisibilityLock() {
 }
 
 void TrackedElementWebUI::RemoveVisibilityLock() {
-  DCHECK_GT(visibility_lock_count_, 0);
+  CHECK_GT(visibility_lock_count_, 0, base::NotFatalUntil::M163);
   --visibility_lock_count_;
   UpdateEffectiveVisibility();
 }
@@ -205,8 +260,9 @@ void TrackedElementWebUI::SetRawVisible(bool visible, gfx::RectF bounds) {
 }
 
 void TrackedElementWebUI::UpdateEffectiveVisibility(bool bounds_changed) {
-  const bool visible = raw_visible_ && (handler_->is_web_contents_visible() ||
-                                        visibility_lock_count_ > 0);
+  const bool visible =
+      raw_visible_ && handler_->is_subframe_unoccluded() &&
+      (handler_->is_web_contents_visible() || visibility_lock_count_ > 0);
 
   if (visible == visible_) {
     if (visible && bounds_changed) {
@@ -231,12 +287,12 @@ void TrackedElementWebUI::UpdateEffectiveVisibility(bool bounds_changed) {
 }
 
 void TrackedElementWebUI::Activate() {
-  DCHECK(visible_);
+  CHECK(visible_, base::NotFatalUntil::M163);
   ui::ElementTracker::GetFrameworkDelegate()->NotifyElementActivated(this);
 }
 
 void TrackedElementWebUI::CustomEvent(ui::CustomElementEventType event_type) {
-  DCHECK(visible_);
+  CHECK(visible_, base::NotFatalUntil::M163);
   ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(this,
                                                                 event_type);
 }

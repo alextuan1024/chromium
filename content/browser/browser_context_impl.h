@@ -8,15 +8,19 @@
 #include <memory>
 #include <string>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
+#include "base/types/pass_key.h"
 #include "build/build_config.h"
 #include "content/browser/btm/btm_service_impl.h"
+#include "content/browser/site_shard.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/shared_cors_origin_access_list.h"
 #include "mojo/public/cpp/bindings/unique_receiver_set.h"
+#include "net/base/schemeful_site.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/frame/remote_frame.mojom.h"
@@ -40,15 +44,19 @@ class BackgroundSyncScheduler;
 class BrowserContextImpl;
 class BrowsingDataRemoverImpl;
 class DownloadManager;
-class InMemoryFederatedPermissionContext;
 class NavigationStateKeepAlive;
 class PermissionController;
+class PermissionControllerImpl;
 class PrefetchService;
 class StoragePartitionImplMap;
 
 #if BUILDFLAG(IS_ANDROID)
 class NavigationEntryScreenshotManager;
 #endif  // BUILDFLAG(IS_ANDROID)
+
+namespace webid {
+class InMemoryFederatedPermissionContext;
+}  // namespace webid
 
 // content-internal parts of BrowserContext.
 //
@@ -102,15 +110,23 @@ class CONTENT_EXPORT BrowserContextImpl {
     return background_sync_scheduler_.get();
   }
 
+  // Returns the `PrefetchService` of `this`, creating it if not yet created.
   PrefetchService* GetPrefetchService();
+  // Sets `prefetch_service` (e.g. a subclass of `PrefetchService` for testing)
+  // as the `PrefetchService` of `this`. `prefetch_service` must be non-null
+  // and for `this`, and this must be called before `GetPrefetchService()`
+  // creates the `PrefetchService` of `this`.
   void SetPrefetchServiceForTesting(
       std::unique_ptr<PrefetchService> prefetch_service);
+  // Called from the `PrefetchService` constructor, to record and `CHECK()` that
+  // at most one `PrefetchService` is created for `this` in its lifetime.
+  void SetIsPrefetchServiceCreated(base::PassKey<PrefetchService>);
 
 #if BUILDFLAG(IS_ANDROID)
   NavigationEntryScreenshotManager* GetNavigationEntryScreenshotManager();
 #endif  // BUILDFLAG(IS_ANDROID)
 
-  InMemoryFederatedPermissionContext* GetFederatedPermissionContext();
+  webid::InMemoryFederatedPermissionContext* GetFederatedPermissionContext();
   void ResetFederatedPermissionContext();
 
   using TraceProto = perfetto::protos::pbzero::ChromeBrowserContext;
@@ -155,6 +171,29 @@ class CONTENT_EXPORT BrowserContextImpl {
   void RemoveInitiatorNavigationStateFromMap(
       InitiatorNavigationState* initiator_navigation_state);
 
+  // Implements BrowserContext::SetSitesForEmbedderShard(). See the comments
+  // there.
+  void SetSitesForEmbedderShard(
+      const base::flat_set<net::SchemefulSite>& sites);
+
+  // Implements BrowserContext::CanSetSitesForEmbedderShard(). See the comments
+  // there.
+  bool CanSetSitesForEmbedderShard() const;
+
+  // Returns the shard that `site` belongs to in this BrowserContext, i.e.
+  // SiteShard::kEmbedderSites if `site` was passed to
+  // SetSitesForEmbedderShard(), or SiteShard::kDefault otherwise.
+  //
+  // Callers should use SiteInfo::GetShardForUrlInfo() rather than calling this
+  // directly, so that shards are computed consistently.
+  SiteShard GetShardForSite(const net::SchemefulSite& site) const;
+
+  // Returns true if any sites are assigned to a non-default shard in this
+  // BrowserContext. When this returns false, GetShardForSite() always returns
+  // SiteShard::kDefault, which allows callers to skip computing the site in the
+  // common case.
+  bool HasShards() const;
+
  private:
   // Creates the media service for storing/retrieving WebRTC encoding and
   // decoding performance stats.  Exposed here rather than StoragePartition
@@ -181,19 +220,28 @@ class CONTENT_EXPORT BrowserContextImpl {
   const std::string unique_id_ = unique_token_.ToString();
   bool will_be_destroyed_soon_ = false;
 
+  // If true, `storage_partition_map_` is already shut down and expected to stay
+  // null until destruction.
+  bool storage_partitions_shut_down_ = false;
+
   std::unique_ptr<StoragePartitionImplMap> storage_partition_map_;
   scoped_refptr<SharedCorsOriginAccessList> shared_cors_origin_access_list_ =
       SharedCorsOriginAccessList::Create();
   std::unique_ptr<BrowsingDataRemoverImpl> browsing_data_remover_;
   std::unique_ptr<DownloadManager> download_manager_;
-  std::unique_ptr<PermissionController> permission_controller_;
+  std::unique_ptr<PermissionControllerImpl> permission_controller_;
+  std::unique_ptr<PermissionController> permission_controller_for_testing_;
   scoped_refptr<BackgroundSyncScheduler> background_sync_scheduler_;
   std::unique_ptr<PrefetchService> prefetch_service_;
+  // Whether a `PrefetchService` for `this` has ever been created. At most one
+  // `PrefetchService` is created for `this` in its lifetime, and it is owned
+  // by `prefetch_service_`.
+  bool is_prefetch_service_created_ = false;
 #if BUILDFLAG(IS_ANDROID)
   std::unique_ptr<NavigationEntryScreenshotManager>
       nav_entry_screenshot_manager_;
 #endif  // BUILDFLAG(IS_ANDROID)
-  std::unique_ptr<InMemoryFederatedPermissionContext>
+  std::unique_ptr<webid::InMemoryFederatedPermissionContext>
       federated_permission_context_;
 
   std::unique_ptr<media::VideoDecodePerfHistory> video_decode_perf_history_;
@@ -244,6 +292,12 @@ class CONTENT_EXPORT BrowserContextImpl {
   // of multiple navigations in the same RenderFrameHost.
   mojo::UniqueReceiverSet<blink::mojom::NavigationStateKeepAliveHandle>
       keep_alive_handles_receiver_set_;
+
+  // The sites in SiteShard::kEmbedderSites (see SetSitesForEmbedderShard()), or
+  // empty if no shards are configured. This is only set once, before this
+  // BrowserContext is used for navigations, so the mapping doesn't change while
+  // content is loaded.
+  base::flat_set<net::SchemefulSite> embedder_shard_sites_;
 
   // TODO: crbug.com/40169693 - BrowserContext and BrowserContextImpl both have
   // WeakPtrFactories. Remove one once the inheritance is sorted out.

@@ -8,9 +8,9 @@
 #include <optional>
 #include <utility>
 
-#include "base/barrier_closure.h"
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/containers/extend.h"
-#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/not_fatal_until.h"
@@ -33,8 +33,8 @@
 #include "chrome/browser/web_applications/locks/web_app_lock_manager.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
-#include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
+#include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/browser/web_applications/web_app_icon_operations.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
@@ -45,13 +45,18 @@
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_contents/web_app_data_retriever.h"
 #include "chrome/browser/web_applications/web_contents/web_contents_manager.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/uninstall_result_code.h"
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
 #include "components/webapps/common/web_app_id.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "url/gurl.h"
 #include "url/origin.h"
 
 namespace web_app {
@@ -188,6 +193,10 @@ void ExternalAppResolutionCommand::OnUrlLoadedAndBranchInstallation(
   //    try to install from the app info factory as a last resort.
   GetMutableDebugValue().Set("load_url_result", base::ToString(result));
   if (result == webapps::WebAppUrlLoaderResult::kUrlLoaded) {
+    if (IsCrossOriginCommittedDocument()) {
+      RejectCrossOriginInstallInfo();
+      return;
+    }
     data_retriever_->GetWebAppInstallInfo(
         web_contents_.get(),
         base::BindOnce(
@@ -196,9 +205,47 @@ void ExternalAppResolutionCommand::OnUrlLoadedAndBranchInstallation(
     return;
   }
 
-  // If we could not load the URL and we are supposed to install a placeholder
-  // as fallback, acquire with the app id derived from the install url and lock
-  // this app id to see if this placeholder is already installed.
+  // Avoid counting an error if we are shutting down. This matches later
+  // stages of install where if the WebContents is destroyed we return early.
+  if (result == webapps::WebAppUrlLoaderResult::kFailedWebContentsDestroyed &&
+      !install_options_.install_placeholder) {
+    Abort(webapps::InstallResultCode::kWebContentsDestroyed);
+    return;
+  }
+
+  webapps::InstallResultCode code =
+      webapps::InstallResultCode::kInstallURLLoadFailed;
+
+  switch (result) {
+    case webapps::WebAppUrlLoaderResult::kUrlLoaded:
+      // Handled above.
+      NOTREACHED();
+    case webapps::WebAppUrlLoaderResult::kFailedWebContentsDestroyed:
+      code = webapps::InstallResultCode::kWebContentsDestroyed;
+      break;
+    case webapps::WebAppUrlLoaderResult::kRedirectedUrlLoaded:
+      code = webapps::InstallResultCode::kInstallURLRedirected;
+      break;
+    case webapps::WebAppUrlLoaderResult::kFailedUnknownReason:
+      code = webapps::InstallResultCode::kInstallURLLoadFailed;
+      break;
+    case webapps::WebAppUrlLoaderResult::kFailedPageTookTooLong:
+      code = webapps::InstallResultCode::kInstallURLLoadTimeOut;
+      break;
+    case webapps::WebAppUrlLoaderResult::kFailedErrorPageLoaded:
+      code = webapps::InstallResultCode::kInstallURLLoadFailed;
+      break;
+  }
+
+  MaybeInstallPlaceholderOrFallback(code);
+}
+
+void ExternalAppResolutionCommand::MaybeInstallPlaceholderOrFallback(
+    webapps::InstallResultCode code) {
+  // If we could not load the URL (or the resolved install info was rejected)
+  // and we are supposed to install a placeholder as fallback, acquire with the
+  // app id derived from the install url and lock this app id to see if this
+  // placeholder is already installed.
   if (install_options_.install_placeholder) {
     if (installed_placeholder_app_id_.has_value() &&
         !install_options_.force_reinstall) {
@@ -226,36 +273,21 @@ void ExternalAppResolutionCommand::OnUrlLoadedAndBranchInstallation(
     return;
   }
 
-  // Avoid counting an error if we are shutting down. This matches later
-  // stages of install where if the WebContents is destroyed we return early.
-  if (result == webapps::WebAppUrlLoaderResult::kFailedWebContentsDestroyed) {
-    Abort(webapps::InstallResultCode::kWebContentsDestroyed);
-    return;
-  }
-
-  webapps::InstallResultCode code =
-      webapps::InstallResultCode::kInstallURLLoadFailed;
-
-  switch (result) {
-    case webapps::WebAppUrlLoaderResult::kUrlLoaded:
-    case webapps::WebAppUrlLoaderResult::kFailedWebContentsDestroyed:
-      // Handled above.
-      NOTREACHED();
-    case webapps::WebAppUrlLoaderResult::kRedirectedUrlLoaded:
-      code = webapps::InstallResultCode::kInstallURLRedirected;
-      break;
-    case webapps::WebAppUrlLoaderResult::kFailedUnknownReason:
-      code = webapps::InstallResultCode::kInstallURLLoadFailed;
-      break;
-    case webapps::WebAppUrlLoaderResult::kFailedPageTookTooLong:
-      code = webapps::InstallResultCode::kInstallURLLoadTimeOut;
-      break;
-    case webapps::WebAppUrlLoaderResult::kFailedErrorPageLoaded:
-      code = webapps::InstallResultCode::kInstallURLLoadFailed;
-      break;
-  }
-
   TryAppInfoFactoryOnFailure(ExternallyManagedAppManager::InstallResult(code));
+}
+
+bool ExternalAppResolutionCommand::IsCrossOriginCommittedDocument() const {
+  content::RenderFrameHost* main_frame = web_contents_->GetPrimaryMainFrame();
+  return !main_frame->GetLastCommittedURL().is_empty() &&
+         main_frame->GetLastCommittedOrigin() !=
+             url::Origin::Create(install_options_.install_url);
+}
+
+void ExternalAppResolutionCommand::RejectCrossOriginInstallInfo() {
+  GetMutableDebugValue().Set("cross_origin_install_info_rejected", true);
+  web_app_info_.reset();
+  MaybeInstallPlaceholderOrFallback(
+      webapps::InstallResultCode::kInstallURLInvalid);
 }
 
 void ExternalAppResolutionCommand::OnGetWebAppInstallInfoInCommand(
@@ -294,7 +326,7 @@ void ExternalAppResolutionCommand::OnGetWebAppInstallInfoInCommand(
 }
 
 void ExternalAppResolutionCommand::OnDidPerformInstallableCheck(
-    blink::mojom::ManifestPtr opt_manifest,
+    std::optional<blink::Manifest> opt_manifest,
     bool valid_manifest_for_web_app,
     webapps::InstallableStatusCode error_code) {
   CHECK(install_params_.has_value());
@@ -314,10 +346,17 @@ void ExternalAppResolutionCommand::OnDidPerformInstallableCheck(
   // A system app should always have a manifest icon.
   if (install_surface_ == webapps::WebappInstallSource::SYSTEM_DEFAULT) {
     CHECK(opt_manifest);
-    CHECK(!opt_manifest->icons.empty());
+    CHECK(!opt_manifest->icons().empty());
   }
 
   GetMutableDebugValue().Set("had_manifest", opt_manifest ? true : false);
+  if (IsCrossOriginCommittedDocument() ||
+      (opt_manifest && !url::IsSameOriginWith(install_options_.install_url,
+                                              opt_manifest->id()))) {
+    RejectCrossOriginInstallInfo();
+    return;
+  }
+
   if (install_params_->install_as_diy) {
     *web_app_info_ = CreateInstallInfoForCreateDiy(
         web_contents_->GetLastCommittedURL(), web_contents_->GetTitle(),
@@ -326,7 +365,7 @@ void ExternalAppResolutionCommand::OnDidPerformInstallableCheck(
 
   // Follow the path with a valid `opt_manifest`.
   if (opt_manifest) {
-    RetrieveWebAppInfoFromManifest(std::move(opt_manifest));
+    RetrieveWebAppInfoFromManifest(std::move(*opt_manifest));
     return;
   }
 
@@ -352,10 +391,9 @@ void ExternalAppResolutionCommand::OnDidPerformInstallableCheck(
 }
 
 void ExternalAppResolutionCommand::RetrieveWebAppInfoFromManifest(
-    blink::mojom::ManifestPtr opt_manifest) {
-  CHECK(opt_manifest);
+    blink::Manifest manifest) {
   WebAppInstallInfoConstructOptions construct_options;
-  construct_options.download_page_favicons = opt_manifest->icons.empty();
+  construct_options.download_page_favicons = manifest.icons().empty();
   // For installations triggered via policy with `install_as_shortcut` set to
   // true, the app needs resources fetched from the manifest and it should also
   // behave like DIY apps.
@@ -364,11 +402,11 @@ void ExternalAppResolutionCommand::RetrieveWebAppInfoFromManifest(
   // All external installs are done by Chrome and can be considered trusted.
   construct_options.use_manifest_icons_as_trusted = true;
 
-  GetMutableDebugValue().Set("manifest_id", opt_manifest->id.spec());
+  GetMutableDebugValue().Set("manifest_id", manifest.id().spec());
 
   manifest_to_install_info_job_ =
       ManifestToWebAppInstallInfoJob::CreateAndStart(
-          *opt_manifest, *data_retriever_.get(),
+          manifest, *data_retriever_.get(),
           /*background_installation=*/true, install_surface_,
           web_contents_->GetWeakPtr(), [](IconUrlSizeSet&) {},
           GetMutableDebugValue(),
@@ -487,6 +525,12 @@ void ExternalAppResolutionCommand::OnCustomIconDecodedPopulateBitmaps(
 
 void ExternalAppResolutionCommand::ContinueUpdateInfoWithParamsAndUpgradeLock(
     bool icon_download_failed) {
+  if (!url::IsSameOriginWith(install_options_.install_url,
+                             web_app_info_->manifest_id().value())) {
+    RejectCrossOriginInstallInfo();
+    return;
+  }
+
   // TODO(b/300878868): Reject installation if the manifest id provided in the
   // WebAppInstallForceList does not match the final manifest id.
   app_id_ = GenerateAppIdFromManifestId(web_app_info_->manifest_id());
@@ -672,11 +716,10 @@ void ExternalAppResolutionCommand::OnPlaceholderUninstalledMaybeRelaunch(
       *installed_placeholder_app_id_, app_id_, web_app_info_->title.value(),
       profile_->GetWeakPtr(), AppRelaunchState::kAppAboutToRelaunch);
   provider().ui_manager().LaunchWebApp(
-      WebAppUiManager::CreateAppLaunchParamsWithoutWindowConfig(
-          app_id_, *base::CommandLine::ForCurrentProcess(),
-          /*current_directory=*/base::FilePath(),
-          /*protocol_handler_launch_url=*/std::nullopt,
-          /*file_launch_url=*/std::nullopt, /*launch_files=*/{}),
+      apps::AppLaunchParams(app_id_,
+                            apps::LaunchContainer::kLaunchContainerNone,
+                            ui::mojom::WindowOpenDisposition::kUnknown,
+                            apps::LaunchSource::kFromChromeInternal),
       LaunchWebAppWindowSetting::kOverrideWithWebAppConfig, *profile_,
       base::BindOnce(&ExternalAppResolutionCommand::OnLaunch,
                      weak_ptr_factory_.GetWeakPtr()),

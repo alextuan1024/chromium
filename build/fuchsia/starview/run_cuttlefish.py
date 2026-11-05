@@ -10,13 +10,9 @@ import os
 from pathlib import Path
 import re
 import shutil
-import socket
-import struct
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 import zipfile
 
 
@@ -24,7 +20,7 @@ STARVIEW_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Setup import path for common testing utils
 sys.path.append(os.path.abspath(os.path.join(STARVIEW_DIR, '..', 'test')))
-import common
+import common  # noqa: E402
 
 AVBTOOL = os.path.join(STARVIEW_DIR, 'avbtool.py')
 CVD_AVB_TESTKEY = os.path.join(STARVIEW_DIR, 'cvd_avb_testkey_rsa4096.pem')
@@ -42,9 +38,10 @@ if (
 
 
 sys.path.append(STARVIEW_DIR)
-import partition_creator
-import simg2img
-from hvc_mock import start_hvc_mock_responder
+import partition_creator  # noqa: E402
+import provision_starview  # noqa: E402
+import simg2img  # noqa: E402
+from hvc_mock import start_hvc_mock_responder  # noqa: E402
 
 
 IS_HEADLESS_BY_DEFAULT = not (
@@ -52,6 +49,10 @@ IS_HEADLESS_BY_DEFAULT = not (
     or 'WAYLAND_DISPLAY' in os.environ
     or 'XDG_CURRENT_DESKTOP' in os.environ
 )
+
+# Standard Android phone display metrics (matching standard Chromium test bots).
+_DISPLAY_SIZE = '1080x1920'
+_DISPLAY_DENSITY = 480
 
 
 def sign_uboot_env_image(image_path, partition_size=73728):
@@ -118,12 +119,14 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
         f.truncate(f.seek(0, os.SEEK_END) + 8 * 1024 * 1024 * 1024)
 
     userdata_img = os.path.join(temp_dir, 'userdata.img')
-    assert os.path.exists(userdata_img), f"userdata.img not found in {temp_dir}"
-    simg2img.unsparse_in_place(userdata_img)
-    # Ensure sufficient capacity on /data for installing large APKs (such as
-    # Chrome) and writing runtime dex caches.
-    with open(userdata_img, 'r+b') as f:
-        f.truncate(f.seek(0, os.SEEK_END) + 16 * 1024 * 1024 * 1024)
+    # Generate a fresh, blank userdata partition with 16GB capacity for
+    # installing large test APKs (such as components_unittests) and writing
+    # runtime dex caches. Because userdata is flagged with formattable in
+    # Android's fstab, Android fs_mgr will format the partition to fill the full
+    # disk size on first boot. Overwriting the prebuilt userdata.img avoids
+    # inheriting a fixed-size ext4 filesystem that truncate cannot expand without
+    # resize2fs.
+    partition_creator.create_zero_image(userdata_img, 16384)
 
     partition_creator.create_zero_image(
         os.path.join(temp_dir, 'metadata.img'), 16
@@ -207,7 +210,7 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
         '-smp',
         '6',
         '-machine',
-        'pc',
+        'q35',
         '-cpu',
         'host',
         '-enable-kvm',
@@ -217,17 +220,23 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
         # Load U-Boot vars flash (read-write environment)
         '-drive',
         f'if=pflash,format=raw,file={os.path.join(temp_dir, "u-boot-vars.img")}',
+        # Disable default VGA so we can configure VGA at slot 1.0 with multifunction=on,
+        # allowing virtio-net to attach to function 1.2 matching Fuchsia/Starnix network slot spec.
+        '-vga',
+        'none',
+        '-device',
+        'VGA,addr=1.0,multifunction=on',
         # Shift our main system disk to virtio 1 (second slot) by mapping a dummy disk
         # to virtio 0, since Cuttlefish U-Boot and fstab expect Android on virtio 1.
         '-drive',
         f'file={os.path.join(temp_dir, "dummy.img")},format=raw,if=none,id=drive-disk0',
         '-device',
-        'virtio-blk-pci-non-transitional,drive=drive-disk0,id=virtio-disk0,bootindex=1',
+        'virtio-blk-pci-non-transitional,drive=drive-disk0,id=virtio-disk0,bootindex=1,addr=3.0',
         # Map our partitioned VMDK disk as virtio 1
         '-drive',
         f'file={os.path.join(temp_dir, "disk.vmdk")},format=vmdk,if=none,id=drive-disk1',
         '-device',
-        'virtio-blk-pci-non-transitional,drive=drive-disk1,id=virtio-disk1',
+        'virtio-blk-pci-non-transitional,drive=drive-disk1,id=virtio-disk1,addr=4.0',
         # User-mode networking with static hostfwd for ADB and SSH
         '-netdev',
         f'user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::{args.adb_port}-:5555',
@@ -254,22 +263,17 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
     return qemu_proc, hvc_stop_event
 
 
-def _wait_adb_shell(adb_path, adb_port, cmd, pattern):
-    """Waits for an ADB shell command output to match regex pattern or times out."""
+def _configure_display(adb_path, adb_port):
+    """Configures guest Android display size and density."""
     target = f'127.0.0.1:{adb_port}'
-    start_time = time.time()
-    while time.time() - start_time < 300:
-        res = subprocess.run(
-            [adb_path, '-s', target, 'shell'] + cmd,
-            capture_output=True,
-            text=True,
-        )
-        if res.returncode == 0 and re.fullmatch(
-            pattern, res.stdout.strip(), re.DOTALL
-        ):
-            return True
-        time.sleep(10)
-    return False
+    logging.info(f"Configuring display size to {_DISPLAY_SIZE}...")
+    provision_starview.run_shell(
+        adb_path, target, ['wm', 'size', _DISPLAY_SIZE]
+    )
+    logging.info(f"Configuring display density to {_DISPLAY_DENSITY}...")
+    provision_starview.run_shell(
+        adb_path, target, ['wm', 'density', str(_DISPLAY_DENSITY)]
+    )
 
 
 def main():
@@ -296,14 +300,7 @@ def main():
     )
     parser.add_argument(
         '--adb-path',
-        default=os.path.join(
-            common.DIR_SRC_ROOT,
-            'third_party',
-            'android_sdk',
-            'public',
-            'platform-tools',
-            'adb',
-        ),
+        default=provision_starview.DEFAULT_ADB_PATH,
         help='Path to adb binary.',
     )
     parser.add_argument(
@@ -361,14 +358,14 @@ def main():
         f"No Cuttlefish guest image ZIP found in {cuttlefish_dir}"
     )
 
-    bootloader = args.packages / 'uboot' / 'u-boot.rom'
+    bootloader = args.packages / 'uboot_q35' / 'u-boot.rom'
     assert bootloader.exists(), f"Bootloader not found at {bootloader}"
 
     hvc_stop_event = None
     qemu_proc = None
 
     subprocess.run(['killall', '-9', 'qemu-system-x86_64'])
-    subprocess.run([args.adb_path, 'kill-server'])
+    provision_starview.run_adb(args.adb_path, ['kill-server'], check=False)
     subprocess.run(['killall', '-9', 'adb'])
 
     tmp_dir = tempfile.gettempdir()
@@ -382,53 +379,11 @@ def main():
                 args, cuttlefish_zip, bootloader, temp_dir
             )
 
-            target = f'127.0.0.1:{args.adb_port}'
-            subprocess.run([args.adb_path, 'connect', target])
-
-            logging.info(
-                f"Waiting for guest ADB to respond on port {args.adb_port}..."
+            provision_starview.provision_device(
+                f'127.0.0.1:{args.adb_port}',
+                adb_path=args.adb_path,
             )
-            if not _wait_adb_shell(
-                args.adb_path, args.adb_port, ['echo', 'ready'], 'ready'
-            ):
-                logging.error("Timed out waiting for guest ADB to respond.")
-                return 1
-            logging.info("Guest ADB is ready.")
-
-            logging.info("Restarting ADB daemon as root...")
-            subprocess.run([args.adb_path, '-s', target, 'root'])
-
-            # Wait for ADB to reconnect as root after daemon restart.
-            if not _wait_adb_shell(
-                args.adb_path, args.adb_port, ['echo', 'ready'], 'ready'
-            ):
-                logging.error(
-                    "Timed out waiting for guest ADB after root restart."
-                )
-                return 1
-
-            # Wait for Android to complete boot.
-            logging.info("Waiting for Android to complete boot...")
-            if not _wait_adb_shell(
-                args.adb_path,
-                args.adb_port,
-                ['getprop', 'sys.boot_completed'],
-                '1',
-            ):
-                logging.warning("Timed out waiting for sys.boot_completed=1.")
-
-            # Wait for package manager to become responsive.
-            logging.info(
-                "Waiting for Android package manager to become ready..."
-            )
-            if not _wait_adb_shell(
-                args.adb_path,
-                args.adb_port,
-                ['pm', 'list', 'packages'],
-                'package:.*',
-            ):
-                logging.error("Timed out waiting for package manager.")
-                return 1
+            _configure_display(args.adb_path, args.adb_port)
 
             logging.info("Successfully connected to guest ADB!")
 

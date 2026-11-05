@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/page_action/page_action_model.h"
 #include "chrome/browser/ui/page_action/page_action_properties_provider.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
 #include "components/tabs/public/tab_interface.h"
@@ -111,6 +112,9 @@ PageActionControllerImpl::PageActionControllerImpl(
     }
   }
   chip_selector_ = CreateChipSelector(
+      base::BindRepeating(
+          &PageActionControllerImpl::IsPageActionSuppressedByOmnibox,
+          base::Unretained(this)),
       base::BindRepeating(&PageActionControllerImpl::DoShowSuggestionChip,
                           base::Unretained(this)),
       base::BindRepeating(&PageActionControllerImpl::DoHideSuggestionChip,
@@ -162,8 +166,16 @@ void PageActionControllerImpl::Register(
 }
 
 void PageActionControllerImpl::Show(actions::ActionId action_id) {
-  FindPageActionModel(action_id).SetShowRequested(PageActionPassKey(),
-                                                  /*requested=*/true);
+  Show(action_id, PageActionVisibilityConfig());
+}
+
+void PageActionControllerImpl::Show(actions::ActionId action_id,
+                                    const PageActionVisibilityConfig& config) {
+  PageActionModelInterface& model = FindPageActionModel(action_id);
+  if (features::IsPageActionsElevatedToolbarEnabled()) {
+    model.SetVisibilityConfig(PageActionPassKey(), config);
+  }
+  model.SetShowRequested(PageActionPassKey(), /*requested=*/true);
 }
 
 void PageActionControllerImpl::Hide(actions::ActionId action_id) {
@@ -336,6 +348,11 @@ ScopedPageActionActivity PageActionControllerImpl::AddActivity(
   return ScopedPageActionActivity(*this, action_id);
 }
 
+bool PageActionControllerImpl::IsPageActionSuppressedByOmnibox(
+    actions::ActionId page_action_id) {
+  return FindPageActionModel(page_action_id).IsAffectedByOmniboxSuppression();
+}
+
 void PageActionControllerImpl::DecrementActivityCounter(
     actions::ActionId action_id) {
   auto it = activity_counters_.find(action_id);
@@ -475,6 +492,13 @@ void PageActionControllerImpl::OverrideBackgroundColor(
       PageActionPassKey(), override_background_color_id);
 }
 
+void PageActionControllerImpl::OverrideForegroundColor(
+    actions::ActionId action_id,
+    std::optional<ui::ColorId> override_foreground_color_id) {
+  FindPageActionModel(action_id).SetOverrideForegroundColorId(
+      PageActionPassKey(), override_foreground_color_id);
+}
+
 void PageActionControllerImpl::SetAnchoredMessageText(
     actions::ActionId action_id,
     const std::u16string& anchored_message_text) {
@@ -544,6 +568,7 @@ void PageActionControllerImpl::SetShouldHidePageActions(
     model->SetIsSuppressedByOmnibox(PageActionPassKey(),
                                     should_hide_page_actions);
   }
+  chip_selector_->ReevaluateAfterSuppressionChange();
 }
 
 void PageActionControllerImpl::OnActionsChanged() {
@@ -604,6 +629,9 @@ void PageActionControllerImpl::RegisterCallbacks(PageActionPassKey,
   delegate->SetImageAnimationStartedCallback(
       base::BindRepeating(&PageActionControllerImpl::OnImageAnimationStarted,
                           weak_factory_.GetWeakPtr(), action_id));
+  delegate->SetVisibilityAnimationStartedCallback(base::BindRepeating(
+      &PageActionControllerImpl::OnVisibilityAnimationStarted,
+      weak_factory_.GetWeakPtr(), action_id));
   delegate->SetAnchoredMessageCloseCallback(
       base::BindRepeating(&PageActionControllerImpl::HideAnchoredMessage,
                           weak_factory_.GetWeakPtr(), action_id));
@@ -616,6 +644,9 @@ void PageActionControllerImpl::RegisterCallbacks(PageActionPassKey,
   delegate->SetAnchoredMessageCollapseCallback(base::BindRepeating(
       &PageActionControllerImpl::ResumeAnchoredMessageTimeout,
       weak_factory_.GetWeakPtr(), action_id));
+  delegate->SetAnchoredMessageDowngradeCallback(
+      base::BindRepeating(&PageActionControllerImpl::DowngradeAnchoredMessage,
+                          weak_factory_.GetWeakPtr(), action_id));
 }
 
 void PageActionControllerImpl::RecordClickMetric(
@@ -650,6 +681,11 @@ void PageActionControllerImpl::OnIsChipShowingChanged(
 void PageActionControllerImpl::OnImageAnimationStarted(
     actions::ActionId action_id) {
   FindPageActionModel(action_id).SetDidAnimateImage(PageActionPassKey());
+}
+
+void PageActionControllerImpl::OnVisibilityAnimationStarted(
+    actions::ActionId action_id) {
+  FindPageActionModel(action_id).SetDidAnimateVisibility(PageActionPassKey());
 }
 
 std::ostream& operator<<(std::ostream& os, const SuggestionChipConfig& config) {

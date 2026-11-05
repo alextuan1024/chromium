@@ -36,6 +36,7 @@
 #include <cstddef>
 #include <optional>
 
+#include "base/numerics/angle_conversions.h"
 #include "third_party/blink/renderer/platform/geometry/path_builder.h"
 #include "third_party/blink/renderer/platform/geometry/skia_geometry_utils.h"
 #include "third_party/blink/renderer/platform/geometry/stroke_data.h"
@@ -174,6 +175,33 @@ static base::span<gfx::PointF> ConvertPathPoints(
   return base::span(dst).first(src.size());
 }
 
+std::optional<SkRRect> Path::MaybeConvertToSkRRect() const {
+  const SkPath sk_path = GetSkPath();
+  if (sk_path.isInverseFillType()) {
+    return std::nullopt;
+  }
+  SkRect rect;
+  if (sk_path.isRect(&rect)) {
+    return SkRRect::MakeRect(rect);
+  }
+  SkRRect rrect;
+  if (sk_path.isRRect(&rrect)) {
+    return rrect;
+  }
+  if (sk_path.isOval(&rect)) {
+    return SkRRect::MakeOval(rect);
+  }
+  return std::nullopt;
+}
+
+std::optional<FloatRoundedRect> Path::MaybeConvertToFloatRoundedRect() const {
+  std::optional<SkRRect> rrect = MaybeConvertToSkRRect();
+  if (!rrect.has_value()) {
+    return std::nullopt;
+  }
+  return FloatRoundedRect(rrect.value());
+}
+
 void Path::Apply(base::FunctionRef<void(const PathElement&)> function) const {
   SkPath::RawIter iter(path_);
   std::array<SkPoint, 4> pts;
@@ -260,7 +288,7 @@ static std::optional<PointAndTangent> CalculatePointAndNormalOnPath(
         PointAndTangent result;
         result.point = gfx::SkPointToPointF(position);
         result.tangent_in_degrees =
-            Rad2deg(SkScalarATan2(tangent.fY, tangent.fX));
+            base::RadToDeg(SkScalarATan2(tangent.fY, tangent.fX));
         return result;
       }
     }

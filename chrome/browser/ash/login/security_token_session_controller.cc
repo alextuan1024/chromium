@@ -16,6 +16,7 @@
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/ptr_util.h"
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/syslog_logging.h"
@@ -25,7 +26,6 @@
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service_factory.h"
 #include "chrome/browser/ash/login/lock/screen_locker_controller.h"
-#include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/extensions/forced_extensions/force_installed_tracker.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/security_token_restriction/security_token_session_restriction_view.h"
@@ -198,9 +198,9 @@ SecurityTokenSessionController::SecurityTokenSessionController(
       extensions_tracker_(extensions::ExtensionRegistry::Get(profile), profile),
       session_manager_(session_manager::SessionManager::Get()),
       session_activation_seconds_(kSessionActivationTimeout) {
-  DCHECK(local_state_);
-  DCHECK(primary_user_);
-  DCHECK(certificate_provider_service_);
+  CHECK(local_state_, base::NotFatalUntil::M161);
+  CHECK(primary_user_, base::NotFatalUntil::M161);
+  CHECK(certificate_provider_service_, base::NotFatalUntil::M161);
   session_manager_observation_.Observe(session_manager_.get());
   certificate_provider_ =
       certificate_provider_service_->CreateCertificateProvider();
@@ -512,15 +512,16 @@ void SecurityTokenSessionController::ExtensionStopsProvidingCertificate() {
                      weak_ptr_factory_.GetWeakPtr()));
 
   if (!notification_seconds_.is_zero()) {
-    fullscreen_notification_ = views::DialogDelegate::CreateDialogWidget(
-        std::make_unique<SecurityTokenSessionRestrictionView>(
-            notification_seconds_,
-            base::BindOnce(&SecurityTokenSessionController::TriggerAction,
-                           weak_ptr_factory_.GetWeakPtr()),
-            behavior_,
-            enterprise_util::GetDomainFromEmail(
-                primary_user_->GetDisplayEmail())),
-        nullptr, nullptr);
+    auto view = std::make_unique<SecurityTokenSessionRestrictionView>(
+        notification_seconds_,
+        base::BindOnce(&SecurityTokenSessionController::TriggerAction,
+                       weak_ptr_factory_.GetWeakPtr()),
+        behavior_, gaia::ExtractDomainName(primary_user_->GetDisplayEmail()));
+    view->SetOwnershipOfNewWidget(
+        views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+    fullscreen_notification_ =
+        base::WrapUnique(views::DialogDelegate::CreateDialogWidget(
+            std::move(view), nullptr, nullptr));
     fullscreen_notification_->Show();
   }
 }
@@ -533,7 +534,7 @@ void SecurityTokenSessionController::AddLockNotification() {
   SetNotificationDisplayedKnownUserFlag();
 
   std::string domain =
-      enterprise_util::GetDomainFromEmail(primary_user_->GetDisplayEmail());
+      gaia::ExtractDomainName(primary_user_->GetDisplayEmail());
   DisplayNotification(
       l10n_util::GetStringFUTF16(IDS_SECURITY_TOKEN_SESSION_LOCK_MESSAGE_TITLE,
                                  ui::GetChromeOSDeviceName()),
@@ -551,7 +552,7 @@ void SecurityTokenSessionController::ScheduleLogoutNotification() {
 
   local_state_->SetString(
       ash::prefs::kSecurityTokenSessionNotificationScheduledDomain,
-      enterprise_util::GetDomainFromEmail(primary_user_->GetDisplayEmail()));
+      gaia::ExtractDomainName(primary_user_->GetDisplayEmail()));
 }
 
 void SecurityTokenSessionController::Reset() {

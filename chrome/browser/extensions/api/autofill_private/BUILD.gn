@@ -21,10 +21,9 @@ source_set("autofill_private") {
     "autofill_util.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     "//base",
+    "//base:i18n",
     "//chrome/browser:browser_process",
     "//chrome/browser/autofill",
     "//chrome/browser/extensions",
@@ -32,6 +31,7 @@ source_set("autofill_private") {
     "//chrome/browser/search_engines",
     "//chrome/browser/sync",
     "//chrome/browser/ui/user_education",
+    "//chrome/browser/ui/webui/settings",
     "//chrome/common/extensions/api",
     "//components/autofill/content/browser",
     "//components/autofill/core/browser",

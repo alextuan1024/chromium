@@ -18,8 +18,8 @@
 namespace manta {
 
 // The Anchovy provider for the Manta project. Provides a method for clients to
-// call the relevant google API, handling OAuth and http fetching.
-class COMPONENT_EXPORT(MANTA) AnchovyProvider : public BaseProvider {
+// call the relevant google API, handling auth and http fetching.
+class COMPONENT_EXPORT(MANTA) AnchovyProvider : virtual public BaseProvider {
  public:
   AnchovyProvider(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
@@ -29,10 +29,13 @@ class COMPONENT_EXPORT(MANTA) AnchovyProvider : public BaseProvider {
   AnchovyProvider& operator=(const AnchovyProvider&) = delete;
   ~AnchovyProvider() override;
 
-  virtual void GetImageDescription(
-      anchovy::ImageDescriptionRequest& request,
+  // Requests image descriptions for `request.images`, which must contain at
+  // least one entry (fails fast with `MantaStatusCode::kInvalidInput` if
+  // `request.images.size()` exceeds `anchovy::kMaxBatchSize`).
+  virtual void GetImageDescriptions(
+      const anchovy::ImageDescriptionBatchRequest& request,
       net::NetworkTrafficAnnotationTag traffic_annotation,
-      MantaGenericCallback callback);
+      MantaGenericCallback done_callback);
 
  private:
   base::WeakPtrFactory<AnchovyProvider> weak_ptr_factory_{this};

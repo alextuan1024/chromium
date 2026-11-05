@@ -16,6 +16,7 @@ source_set("incognito") {
     "//chrome/browser:browser_process",
     "//chrome/browser:resources",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/webui:webui_url_utils",
     "//chrome/common",
     "//components/prefs",
     "//components/strings:components_strings",
@@ -40,8 +41,6 @@ if (!is_android) {
       "//base",
       "//chrome/browser/sync/test/integration:sync_integration_test_support",
       "//chrome/browser/ui/browser_window",
-      "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//content/test:test_support",
       "//testing/gmock",
     ]

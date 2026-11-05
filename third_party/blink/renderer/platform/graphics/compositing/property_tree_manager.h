@@ -11,6 +11,7 @@
 #include "cc/layers/layer_collections.h"
 #include "third_party/blink/renderer/platform/graphics/compositor_element_id.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 
@@ -25,12 +26,12 @@ class TransformTree;
 struct EffectNode;
 struct TransformNode;
 enum class RenderSurfaceReason : uint8_t;
-}
+}  // namespace cc
 
 namespace gfx {
 class PointF;
 class RRectF;
-}
+}  // namespace gfx
 
 namespace blink {
 
@@ -44,7 +45,7 @@ class TransformPaintPropertyNode;
 using StackTransformPaintPropertyNodeVector =
     HeapVector<Member<const TransformPaintPropertyNode>, 32>;
 
-class PropertyTreeManagerClient {
+class PropertyTreeManagerClient : public GarbageCollectedMixin {
  public:
   virtual ~PropertyTreeManagerClient() = default;
   virtual SynthesizedClip& CreateOrReuseSynthesizedClipLayer(
@@ -141,10 +142,18 @@ class PropertyTreeManager {
   // clip". Upon exiting a synthesized clip, a mask layer will be appended,
   // which will be kDstIn blended on top of contents enclosed by the synthetic
   // effect, i.e. applying the clip as a mask.
+  //
+  // If |layer_applies_mask_filter_info| is true (e.g. a scrollbar layer that
+  // applies its own rounded-corner mask filter to its thumb quad) and the
+  // layer would inherit an ancestor mask_filter_info in the current render
+  // target, ensures the layer is isolated in its own render surface so both
+  // mask filters can be applied.
   int SwitchToEffectNodeWithSynthesizedClip(
       const EffectPaintPropertyNode& next_effect,
       const ClipPaintPropertyNode& next_clip,
-      bool layer_draws_content);
+      bool layer_draws_content,
+      bool layer_applies_mask_filter_info = false,
+      CompositorElementId layer_element_id = CompositorElementId());
   // Expected to be invoked after emitting the last layer. This will exit all
   // effects on the effect stack, generating clip mask layers for all the
   // unclosed synthesized clips.
@@ -287,6 +296,16 @@ class PropertyTreeManager {
     // for all ancestor synthetic rounded clips if a descendant is found.
     bool contained_by_non_render_surface_synthetic_rounded_clip;
 
+    // Whether a non-render-surface child of this effect would inherit a
+    // non-empty `mask_filter_info` in
+    // `cc::draw_property_utils::GetMaskFilterInfoPair()`. Unlike
+    // `contained_by_non_render_surface_synthetic_rounded_clip`, this remains
+    // true when a render surface itself carries `mask_filter_info` (e.g.
+    // backdrop-filter merged onto a fast rounded clip), because
+    // `GetMaskFilterInfoPair()` checks `mask_filter_info` before stopping at
+    // an ancestor render surface.
+    bool child_inherits_mask_filter_info;
+
     void Trace(Visitor* visitor) const {
       visitor->Trace(effect);
       visitor->Trace(clip);
@@ -308,7 +327,6 @@ class PropertyTreeManager {
       const TransformPaintPropertyNode& transform,
       const EffectPaintPropertyNode* next_effect);
 
-  void CollectAnimationElementId(CompositorElementId);
   void BuildEffectNodesRecursively(const EffectPaintPropertyNode& next_effect);
   void ForceRenderSurfaceIfSyntheticRoundedCornerClip(EffectState& state);
 

@@ -13,8 +13,12 @@
 #include <iterator>
 #include <string>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include "base/check.h"
+#include "base/check_op.h"
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/json/values_util.h"
@@ -307,17 +311,17 @@ std::optional<TimestampedPrefValueInternal> ParseCrossDevicePrefEntry(
 // CHECK-fail.
 void ValidatePrefMapping(const PrefService* tracked_pref_service,
                          const PrefService* profile_pref_service,
-                         std::string_view tracked_pref_name) {
+                         std::string_view tracked_pref_name,
+                         std::string_view cross_device_pref_name) {
   CHECK(tracked_pref_service);
   CHECK(profile_pref_service);
 
+  DCHECK(cross_device_pref_name == GetCrossDevicePrefName(tracked_pref_name));
   const PrefService::Preference* tracked_pref =
       tracked_pref_service->FindPreference(tracked_pref_name);
   CHECK(tracked_pref) << "Tracked pref '" << tracked_pref_name
                       << "' is not registered.";
 
-  std::string cross_device_pref_name =
-      GetCrossDevicePrefName(tracked_pref_name);
   const PrefService::Preference* cross_device_pref =
       profile_pref_service->FindPreference(cross_device_pref_name);
 
@@ -398,13 +402,27 @@ void ApplyPrefChangeToCrossDevice(
   std::string cross_device_pref_name =
       GetCrossDevicePrefName(tracked_pref_name);
 
+  const base::Value& current_value =
+      tracked_pref_service->GetValue(tracked_pref_name);
+  const base::DictValue& cross_device_dict =
+      profile_pref_service->GetDict(cross_device_pref_name);
+  const base::DictValue* existing_cross_device_entry =
+      cross_device_dict.FindDict(cache_guid.value());
+
   // If the current value is the default, it should not be propagated. Instead,
   // the corresponding entry in the cross-device dictionary should be cleared to
   // signal that this device no longer has a value set by the user.
-  if (tracked_pref->IsDefaultValue()) {
-    const base::DictValue& cross_device_dict =
-        profile_pref_service->GetDict(cross_device_pref_name);
-
+  if (tracked_pref->IsDefaultValue() ||
+      // Additionally, `PrefService::Set*` with a value equal to the default
+      // value stores an entry in the user pref store
+      // (`IsDefaultValue() == false`) even when the effective value did not
+      // change from default (e.g., startup initialization), so when there is no
+      // existing cross-device entry and
+      // `current_value == *tracked_pref_service->GetDefaultPrefValue(...)`, we
+      // should not record or propagate it.
+      (!existing_cross_device_entry &&
+       current_value ==
+           *tracked_pref_service->GetDefaultPrefValue(tracked_pref_name))) {
     // Only instantiate `ScopedDictPrefUpdate` (which triggers a Sync server
     // notification) if there is actually an entry to remove.
     if (cross_device_dict.contains(cache_guid.value())) {
@@ -418,13 +436,6 @@ void ApplyPrefChangeToCrossDevice(
 
     return;
   }
-
-  const base::Value& current_value =
-      tracked_pref_service->GetValue(tracked_pref_name);
-  const base::DictValue& cross_device_dict =
-      profile_pref_service->GetDict(cross_device_pref_name);
-  const base::DictValue* existing_cross_device_entry =
-      cross_device_dict.FindDict(cache_guid.value());
 
   // Optimization: Minimize writes to the syncable pref to reduce sync traffic,
   // but ensure observed changes always update timestamps for recency.
@@ -497,7 +508,7 @@ GetCrossDeviceEntriesMatchingDeviceFilter(
 
   for (const auto [cache_guid, entry_value] : cross_device_dict) {
     const syncer::DeviceInfo* device_info =
-        device_info_tracker->GetDeviceInfo(cache_guid);
+        device_info_tracker->GetChromeDeviceInfo(cache_guid);
 
     if (!device_info) {
       VLOG_IF(1, debug_logs_enabled)
@@ -605,9 +616,8 @@ CrossDevicePrefTrackerImpl::CrossDevicePrefTrackerImpl(
           device_info_sync_service_->GetDeviceInfoTracker()) {
     device_info_observation_.Observe(tracker);
 
-    for (const syncer::DeviceInfo* device_info : GetActiveDevices()) {
-      active_device_guids_.insert(device_info->guid());
-    }
+    active_device_guids_ = base::flat_set<std::string>(
+        base::ToVector(GetActiveDevices(), &syncer::DeviceInfo::guid));
   }
 
   // Initialize the registrars with the corresponding `PrefService`.
@@ -813,42 +823,50 @@ void CrossDevicePrefTrackerImpl::OnSyncShutdown(syncer::SyncService* sync) {
 }
 
 void CrossDevicePrefTrackerImpl::StartObservingCrossDevicePrefs() {
-  base::flat_set<std::string> cross_device_pref_names;
+  const base::flat_set<std::string_view>& profile_prefs =
+      pref_provider_->GetProfilePrefs();
+  const base::flat_set<std::string_view>& local_state_prefs =
+      pref_provider_->GetLocalStatePrefs();
 
-  // Helper lambda to validate mappings and collect cross-device pref names.
+  const size_t total_prefs = profile_prefs.size() + local_state_prefs.size();
+  std::vector<std::pair<std::string, base::DictValue>> storage_cache_entries;
+  storage_cache_entries.reserve(total_prefs);
+
+  // Helper lambda to validate mappings and collect cross-device cache entries.
   auto process_prefs =
       [&](const base::flat_set<std::string_view>& tracked_prefs,
           PrefService* tracked_pref_service) {
         for (std::string_view tracked_pref_name : tracked_prefs) {
+          std::string cross_device_pref_name =
+              GetCrossDevicePrefName(tracked_pref_name);
+
           // Validate the mapping early. This `CHECK`-fails if misconfigured.
           ValidatePrefMapping(tracked_pref_service, profile_pref_service_,
-                              tracked_pref_name);
+                              tracked_pref_name, cross_device_pref_name);
 
-          cross_device_pref_names.insert(
-              GetCrossDevicePrefName(tracked_pref_name));
+          base::DictValue dict =
+              profile_pref_service_->GetDict(cross_device_pref_name).Clone();
+          storage_cache_entries.emplace_back(std::move(cross_device_pref_name),
+                                             std::move(dict));
         }
       };
-
-  const auto& profile_prefs = pref_provider_->GetProfilePrefs();
-  const auto& local_state_prefs = pref_provider_->GetLocalStatePrefs();
 
   process_prefs(profile_prefs, profile_pref_service_);
   process_prefs(local_state_prefs, local_pref_service_);
 
+  cross_device_storage_cache_ = base::flat_map<std::string, base::DictValue>(
+      std::move(storage_cache_entries));
+
   // `GetProfilePrefs()` and `GetLocalStatePrefs()` should never have any
   // overlap.
-  CHECK_EQ(cross_device_pref_names.size(),
-           profile_prefs.size() + local_state_prefs.size())
+  CHECK_EQ(cross_device_storage_cache_.size(), total_prefs)
       << "Tracked pref lists must not have any overlap.";
 
-  for (const std::string& pref_name : cross_device_pref_names) {
-    cross_device_storage_cache_[pref_name] =
-        profile_pref_service_->GetDict(pref_name).Clone();
-
-    cross_device_pref_registrar_.Add(
-        pref_name, base::BindRepeating(
-                       &CrossDevicePrefTrackerImpl::OnCrossDevicePrefChanged,
-                       weak_ptr_factory_.GetWeakPtr()));
+  auto callback =
+      base::BindRepeating(&CrossDevicePrefTrackerImpl::OnCrossDevicePrefChanged,
+                          weak_ptr_factory_.GetWeakPtr());
+  for (const auto& [pref_name, _] : cross_device_storage_cache_) {
+    cross_device_pref_registrar_.Add(pref_name, callback);
   }
 }
 
@@ -976,7 +994,7 @@ void CrossDevicePrefTrackerImpl::ProcessRemoteUpdates(
       // Remote change detected.
 
       const syncer::DeviceInfo* device_info =
-          device_info_tracker->GetDeviceInfo(cache_guid);
+          device_info_tracker->GetChromeDeviceInfo(cache_guid);
 
       if (!device_info) {
         // Device info not available yet. Skip notification for now.
@@ -1004,7 +1022,7 @@ void CrossDevicePrefTrackerImpl::ProcessRemoteUpdates(
     // Remote deletion detected.
 
     const syncer::DeviceInfo* device_info =
-        device_info_tracker->GetDeviceInfo(cache_guid);
+        device_info_tracker->GetChromeDeviceInfo(cache_guid);
 
     if (!device_info) {
       // `DeviceInfo` for the device that previously held the pref is
@@ -1149,17 +1167,19 @@ void CrossDevicePrefTrackerImpl::RecordObservedPrefChange(
 }
 
 void CrossDevicePrefTrackerImpl::HandleRemoteDeviceInfoChanges() {
-  base::flat_set<std::string> current_active_guids;
+  const std::vector<const syncer::DeviceInfo*> active_devices =
+      GetActiveDevices();
+
+  std::vector<std::string> current_active_guids =
+      base::ToVector(active_devices, &syncer::DeviceInfo::guid);
 
   std::vector<const syncer::DeviceInfo*> new_or_reactivated_devices;
 
   const std::optional<std::string> local_cache_guid =
       GetLocalCacheGuid(device_info_sync_service_);
 
-  for (const syncer::DeviceInfo* device_info : GetActiveDevices()) {
+  for (const syncer::DeviceInfo* device_info : active_devices) {
     const std::string& guid = device_info->guid();
-
-    current_active_guids.insert(guid);
 
     // Don't notify for the local device itself.
     if (local_cache_guid == guid) {
@@ -1182,7 +1202,8 @@ void CrossDevicePrefTrackerImpl::HandleRemoteDeviceInfoChanges() {
 
   // Update the cached set of known devices for the next iteration.
   // This handles device removals and expirations as well.
-  active_device_guids_ = std::move(current_active_guids);
+  active_device_guids_ =
+      base::flat_set<std::string>(std::move(current_active_guids));
 }
 
 void CrossDevicePrefTrackerImpl::NotifyObserversOfExistingPrefsForNewDevices(
@@ -1207,7 +1228,8 @@ void CrossDevicePrefTrackerImpl::GarbageCollectStaleCacheGuids() {
   const base::flat_set<std::string>& active_guids = active_device_guids_;
 
   // Identify stale entries without modifying the PrefService or cache.
-  base::flat_map<std::string, std::vector<std::string>> entries_to_remove;
+  std::vector<std::pair<std::string, std::vector<std::string>>>
+      entries_to_remove;
 
   for (const auto& [cross_device_pref_name, cache_dict] :
        cross_device_storage_cache_) {
@@ -1220,8 +1242,13 @@ void CrossDevicePrefTrackerImpl::GarbageCollectStaleCacheGuids() {
     }
 
     if (!guids_to_remove.empty()) {
-      entries_to_remove[cross_device_pref_name] = std::move(guids_to_remove);
+      entries_to_remove.emplace_back(cross_device_pref_name,
+                                     std::move(guids_to_remove));
     }
+  }
+
+  if (entries_to_remove.empty()) {
+    return;
   }
 
   const bool debug_logs_enabled = base::FeatureList::IsEnabled(

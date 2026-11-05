@@ -45,6 +45,7 @@ class TranslateKitLanguagePackComponentInstallerPolicy
                           const base::FilePath& install_dir) const override;
   bool SupportsGroupPolicyEnabledComponentUpdates() const override;
   bool RequiresNetworkEncryption() const override;
+  bool AllowCachedCopies() const override;
   update_client::CrxInstaller::Result OnCustomInstall(
       const base::DictValue& manifest,
       const base::FilePath& install_dir) override;
@@ -57,10 +58,12 @@ class TranslateKitLanguagePackComponentInstallerPolicy
   std::string GetName() const override;
   update_client::InstallerAttributes GetInstallerAttributes() const override;
 
-  // Requests to update a given language pack component.
+  // Requests to update a given language pack component. `callback` runs with
+  // the result of the update request.
   static void UpdateComponentOnDemand(
       component_updater::ComponentUpdateService* cus,
-      on_device_translation::LanguagePackKey language_pack_key);
+      on_device_translation::LanguagePackKey language_pack_key,
+      base::OnceCallback<void(update_client::Error)> callback);
 
  private:
   const on_device_translation::LanguagePackComponentConfig& GetConfig() const;
@@ -77,9 +80,14 @@ void RegisterTranslateKitLanguagePackComponent(
     base::OnceClosure registered_callback,
     base::RepeatingClosure on_ready_callback);
 
+// Registers previously requested language packs with `cus` so installed packs
+// receive updates. When `resume_unfinished_downloads` is false, any pack whose
+// registration flag is set without an installed path has its flag cleared
+// instead of resuming a download at startup.
 void RegisterTranslateKitLanguagePackComponentsForUpdate(
     ComponentUpdateService* cus,
-    PrefService* pref_service);
+    PrefService* pref_service,
+    bool resume_unfinished_downloads);
 
 void RegisterTranslateKitLanguagePackComponentsForAutoDownload(
     ComponentUpdateService* cus,

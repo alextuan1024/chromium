@@ -5,10 +5,10 @@
 """An interactive console for looking analyzing .size files."""
 
 import argparse
-import bisect
 import code
 import collections
 import contextlib
+import gc
 import itertools
 import logging
 import os
@@ -40,7 +40,6 @@ _THRESHOLD_FOR_PAGER = 50
 def _LessPipe():
   """Output to `less`. Yields a file object to write to."""
   try:
-    # pylint: disable=unexpected-keyword-arg
     proc = subprocess.Popen(
       ['less'], stdin=subprocess.PIPE, stdout=sys.stdout, encoding='utf-8'
     )
@@ -101,7 +100,6 @@ class _Session:
       'SaveSizeInfo': self._SaveSizeInfo,
       'SaveDeltaSizeInfo': self._SaveDeltaSizeInfo,
       'ReadStringLiterals': self._ReadStringLiterals,
-      'ReplaceWithRelocations': self._ReplaceWithRelocations,
       'Disassemble': self._DisassembleFunc,
       'ExpandRegex': match_util.ExpandRegexIdentifierPlaceholder,
       'SizeStats': self._SizeStats,
@@ -167,7 +165,11 @@ class _Session:
     after = after if after is not None else self._size_infos[1]
     return diff.Diff(before, after, sort=sort)
 
-  def _PrintUploadCommand(self, file_to_upload, is_internal=False):
+  def _PrintUploadCommand(self, file_to_upload, size_info):
+    is_internal = any(
+      s.source_path.startswith('clank') or s.object_path.startswith('clank')
+      for s in size_info.raw_symbols
+    )
     oneoffs_dir = 'oneoffs'
     visibility = '-a public-read '
     if is_internal:
@@ -204,9 +206,7 @@ class _Session:
     assert to_file.endswith('.size'), 'to_file should end with .size'
 
     file_format.SaveSizeInfo(size_info, to_file)
-
-    is_internal = len(size_info.symbols.WherePathMatches('^clank')) > 0
-    self._PrintUploadCommand(to_file, is_internal)
+    self._PrintUploadCommand(to_file, size_info)
 
   def _SaveDeltaSizeInfo(self, size_info, to_file=None):
     """Writes a .sizediff file.
@@ -219,8 +219,7 @@ class _Session:
     assert to_file.endswith('.sizediff'), 'to_file should end with .sizediff'
 
     file_format.SaveDeltaSizeInfo(size_info, to_file)
-    is_internal = len(size_info.symbols.WherePathMatches('^clank')) > 0
-    self._PrintUploadCommand(to_file, is_internal)
+    self._PrintUploadCommand(to_file, size_info)
 
   def _SizeStats(self, size_info=None):
     """Prints some statistics for the given size info.
@@ -420,69 +419,6 @@ class _Session:
     else:
       raise Exception('Symbol type is not supported: ' + symbol.section_name)
 
-  def _ReplaceWithRelocations(self, size_info=None):
-    """Replace all symbol sizes with counts of native relocations.
-
-    Removes all symbols that do not contain relocations.
-
-    Args:
-      size_info: The size_info to filter. Defaults to size_infos[0].
-
-    Returns:
-      A new SizeInfo.
-    """
-    size_info = size_info or self._size_infos[0]
-
-    new_syms = []
-    new_containers = []
-
-    for container, group in itertools.groupby(
-      size_info.raw_symbols, lambda s: s.container
-    ):
-      if models.METADATA_ELF_FILENAME not in container.metadata:
-        continue
-
-      raw_symbols = [s for s in group if s.IsNative()]
-      if not raw_symbols:
-        continue
-
-      new_containers.append(container)
-
-      elf_path = self._ElfPathForSymbol(size_info, container)
-      relro_addresses = readelf.CollectRelocationAddresses(elf_path)
-
-      # More likely for there to be a bug in supersize than an ELF to have any
-      # relative relocations.
-      assert relro_addresses
-
-      # Last symbol address is the end of the last symbol, so we don't
-      # misattribute all relros after the last symbol to that symbol.
-      symbol_addresses = [s.address for s in raw_symbols]
-      symbol_addresses.append(raw_symbols[-1].end_address)
-
-      for symbol in raw_symbols:
-        symbol.address = 0
-        symbol.size = 0
-        symbol.padding = 0
-
-      logging.info('Adding %d relocations', len(relro_addresses))
-      for addr in relro_addresses:
-        # Attribute relros to largest symbol start address that precede them.
-        idx = bisect.bisect_right(symbol_addresses, addr) - 1
-        if 0 <= idx < len(raw_symbols):
-          symbol = raw_symbols[idx]
-          for alias in symbol.aliases or [symbol]:
-            alias.size += 1
-
-      new_syms.extend(s for s in raw_symbols if s.size)
-
-    return models.SizeInfo(
-      size_info.build_config,
-      new_containers,
-      models.SymbolGroup(new_syms),
-      size_path=size_info.size_path,
-    )
-
   def _ShowExamplesFunc(self):
     print(self._CreateBanner())
     print(
@@ -578,9 +514,7 @@ class _Session:
       if isinstance(value, types.ModuleType):
         continue
       if key.startswith('size_info'):
-        # pylint: disable=no-member
         lines.append(f'  {key}: Loaded from {value.size_path}')
-        # pylint: enable=no-member
     lines.append('*' * 80)
     return '\n'.join(lines)
 
@@ -615,6 +549,11 @@ def Run(args, on_config_error):
     if not path.endswith('.size') and not path.endswith('.sizediff'):
       on_config_error('All inputs must end with ".size" or ".sizediff"')
 
+  # Loading creates millions of long-lived objects, which makes cyclic GC
+  # passes slow.
+  if not args.no_disable_gc:
+    gc.disable()
+
   size_infos = []
   for path in args.inputs:
     logging.warning('Loading %s', path)
@@ -631,11 +570,16 @@ def Run(args, on_config_error):
     logging.info('Running query from command-line.')
     session.Eval(args.query)
   else:
+    # Re-enable GC for interactive sessions, but exclude already-loaded objects
+    # from future collections.
+    if not args.no_disable_gc:
+      gc.freeze()
+      gc.enable()
     logging.info('Entering interactive console.')
     session.GoInteractive()
 
   # Exit without running GC, which can save multiple seconds due the large
-  # number of objects created. It meants atexit and __del__ calls are not
+  # number of objects created. It means atexit and __del__ calls are not
   # made, but this shouldn't matter for console.
   sys.stdout.flush()
   sys.stderr.flush()

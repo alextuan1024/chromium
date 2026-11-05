@@ -28,7 +28,7 @@
 
 namespace blink {
 
-enum class UnicodeBidi : unsigned {
+enum class UnicodeBidi : uint8_t {
   kNormal,
   kEmbed,
   kBidiOverride,
@@ -36,12 +36,6 @@ enum class UnicodeBidi : unsigned {
   kPlaintext,
   kIsolateOverride,
 };
-
-inline bool IsIsolated(const UnicodeBidi& unicode_bidi) {
-  return unicode_bidi == UnicodeBidi::kIsolate ||
-         unicode_bidi == UnicodeBidi::kIsolateOverride ||
-         unicode_bidi == UnicodeBidi::kPlaintext;
-}
 
 inline bool IsOverride(UnicodeBidi unicode_bidi) {
   return unicode_bidi == UnicodeBidi::kBidiOverride ||

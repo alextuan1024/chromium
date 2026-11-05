@@ -11,8 +11,11 @@
 
 namespace trusted_vault {
 
-// TODO(crug.com/425990763): Complete MD5 -> SHA256 migration.
-BASE_DECLARE_FEATURE(kEnableTrustedVaultSHA256);
+BASE_DECLARE_FEATURE(kTrustedVaultSharedRecoveryFactorsAndEncryption);
+
+#if BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kTrustedVaultRefreshStalePreEnrollmentKey);
+#endif
 
 }  // namespace trusted_vault
 

@@ -5,7 +5,6 @@
 #include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d_state.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <optional>
 
 #include "base/check.h"
@@ -132,7 +131,7 @@ TextRenderingMode CanvasTextRenderingToTextRenderingMode(
     V8CanvasTextRendering::Enum text_rendering) {
   switch (text_rendering) {
     case (V8CanvasTextRendering::Enum::kAuto):
-      return TextRenderingMode::kAutoTextRendering;
+      return TextRenderingMode::kAuto;
     case (V8CanvasTextRendering::Enum::kOptimizeSpeed):
       return TextRenderingMode::kOptimizeSpeed;
     case (V8CanvasTextRendering::Enum::kOptimizeLegibility):
@@ -539,8 +538,9 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilterForOffscreenCanvas(
   FilterEffectBuilder filter_effect_builder(
       gfx::RectF(canvas_viewport), canvas_viewport,
       1.0f,  // Deliberately ignore zoom on the canvas element.
-      Color::kBlack, mojom::blink::ColorScheme::kLight, &fill_flags_for_filter,
-      &stroke_flags_for_filter);
+      Color::kBlack, mojom::blink::ColorScheme::kLight,
+      /*is_in_canvas_subtree=*/false,  // OffscreenCanvas has no DOM subtree.
+      &fill_flags_for_filter, &stroke_flags_for_filter);
 
   FilterEffect* last_effect = filter_effect_builder.BuildFilterEffect(
       operations, !context->OriginClean());
@@ -576,9 +576,10 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilter(
     // StyleResolver cannot be used in frame-less documents.
     if (!document.GetFrame())
       return nullptr;
-    // Update the filter value to the proper base URL if needed.
+    // Update the filter value to the proper base URL if needed. Style and
+    // layout have already been updated by
+    // `CanvasRenderingContext2D::StateGetFilter`.
     if (css_filter_value_->MayContainUrl()) {
-      document.UpdateStyleAndLayout(DocumentUpdateReason::kCanvas);
       css_filter_value_->ReResolveUrl(document);
     }
 
@@ -588,7 +589,7 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilter(
     // If font_for_filter_ was never set (ie frame-less documents) use base font
     if (!font_for_filter_->GetFontSelector()) [[unlikely]] {
       if (LayoutView* layout_view = document.GetLayoutView()) {
-        font = layout_view->StyleRef().GetFont();
+        font = layout_view->Style().GetFont();
       } else {
         return nullptr;
       }
@@ -611,7 +612,9 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilter(
   FilterEffectBuilder filter_effect_builder(
       gfx::RectF(canvas_viewport), canvas_viewport,
       1.0f,  // Deliberately ignore zoom on the canvas element.
-      Color::kBlack, mojom::blink::ColorScheme::kLight, &fill_flags_for_filter,
+      Color::kBlack, mojom::blink::ColorScheme::kLight,
+      // 2D context filters rely on origin tainting, not subtree scoping.
+      /*is_in_canvas_subtree=*/false, &fill_flags_for_filter,
       &stroke_flags_for_filter);
 
   FilterEffect* last_effect = filter_effect_builder.BuildFilterEffect(
@@ -619,12 +622,11 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilter(
   if (last_effect) {
     resolved_filter_ =
         paint_filter_builder::Build(last_effect, kInterpolationSpaceSRGB);
-    if (resolved_filter_) {
-      context->UpdateFilterReferences(operations);
-      if (last_effect->OriginTainted())
-        context->SetOriginTainted();
+    if (resolved_filter_ && last_effect->OriginTainted()) {
+      context->SetOriginTainted();
     }
   }
+  context->UpdateFilterReferences(operations);
 
   filter_state_ =
       resolved_filter_ ? FilterState::kResolved : FilterState::kInvalid;
@@ -888,7 +890,7 @@ void CanvasRenderingContext2DState::SetLetterSpacing(
   StringBuilder builder;
   builder.AppendNumber(num_spacing);
   builder.Append(CSSPrimitiveValue::UnitTypeToString(unit));
-  parsed_letter_spacing_ = builder.ToString();
+  parsed_letter_spacing_ = builder.ReleaseString();
   // Convert letter spacing to pixel length and set it in font_description.
   FontDescription font_description(GetFontDescription());
   CSSToLengthConversionData conversion_data =
@@ -926,7 +928,7 @@ void CanvasRenderingContext2DState::SetWordSpacing(
   StringBuilder builder;
   builder.AppendNumber(num_spacing);
   builder.Append(CSSPrimitiveValue::UnitTypeToString(unit));
-  parsed_word_spacing_ = builder.ToString();
+  parsed_word_spacing_ = builder.ReleaseString();
   // Convert letter spacing to pixel length and set it in font_description.
   FontDescription font_description(GetFontDescription());
   CSSToLengthConversionData conversion_data =

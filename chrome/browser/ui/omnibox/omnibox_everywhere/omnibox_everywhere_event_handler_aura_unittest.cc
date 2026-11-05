@@ -21,7 +21,8 @@ class OmniboxEverywhereEventHandlerAuraTest : public ChromeViewsTestBase {};
 
 TEST_F(OmniboxEverywhereEventHandlerAuraTest, DraggableRegionsAndHitTesting) {
   OmniboxEverywhereUIManager ui_manager;
-  OmniboxEverywhereWidgetDelegate widget_delegate;
+  OmniboxEverywhereWidgetDelegate widget_delegate(
+      /*template_url_service=*/nullptr);
   OmniboxEverywhereEventHandlerAura event_handler(ui_manager);
 
   std::vector<blink::mojom::DraggableRegionPtr> regions;
@@ -50,6 +51,15 @@ TEST_F(OmniboxEverywhereEventHandlerAuraTest, DraggableRegionsAndHitTesting) {
   EXPECT_FALSE(ui_manager.IsPointInDraggableRegion(gfx::Point(400, 50)));
   EXPECT_FALSE(widget_delegate.IsPointInDraggableRegion(gfx::Point(200, 40)));
   EXPECT_FALSE(widget_delegate.IsPointInDraggableRegion(gfx::Point(400, 50)));
+
+  // Event targeting should always descend into child windows (such as
+  // RenderWidgetHostViewAura) even inside draggable regions so that WebUI
+  // receives mouse-move (:hover) and click events while
+  // OmniboxEverywhereEventHandlerAura intercepts drags as a pre-target handler.
+  EXPECT_TRUE(widget_delegate.ShouldDescendIntoChildForEventHandling(
+      gfx::NativeView(), gfx::Point(10, 10)));
+  EXPECT_TRUE(widget_delegate.ShouldDescendIntoChildForEventHandling(
+      gfx::NativeView(), gfx::Point(200, 40)));
 
   // Test event_handler processes mouse events cleanly without crashing when
   // widget is null.

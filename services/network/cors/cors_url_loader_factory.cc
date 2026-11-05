@@ -4,12 +4,17 @@
 
 #include "services/network/cors/cors_url_loader_factory.h"
 
+#include <stddef.h>
+
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "base/debug/crash_logging.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -22,7 +27,6 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/features.h"
 #include "net/base/load_flags.h"
-#include "net/base/network_handle.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_util.h"
 #include "net/shared_dictionary/shared_dictionary_isolation_key.h"
@@ -53,6 +57,13 @@
 namespace network::cors {
 
 namespace {
+
+// Maximum size, in bytes, of `ResourceRequest::content_user_agent`; longer
+// values are truncated. The value is CORS-exempt, so it reaches cross-origin
+// servers without a preflight; the cap keeps legacy servers, which have only
+// seen browser-generated User-Agent values, from receiving arbitrarily large
+// ones.
+constexpr size_t kMaxContentUserAgentSize = 512;
 
 // Verifies state that should hold for Trust Tokens parameters provided by a
 // functioning renderer:
@@ -266,6 +277,8 @@ CorsURLLoaderFactory::CorsURLLoaderFactory(
       is_outermost_main_frame_(params->is_outermost_main_frame),
       renderer_accessible_http_cache_write_enabled_(
           params->renderer_accessible_http_cache_write_enabled),
+      factory_is_storage_access_potentially_allowed_(
+          params->is_storage_access_potentially_allowed),
       origin_access_list_(origin_access_list),
       owner_(owner),
       network_restrictions_id_(params->network_restrictions_id) {
@@ -281,21 +294,6 @@ CorsURLLoaderFactory::CorsURLLoaderFactory(
     mojo::ReportBadMessage(
         "CorsURLLoaderFactory: isolated_world_origin_lock set when "
         "ignore_isolated_world_origin is true");
-  }
-  if (context_->url_request_context()->bound_network() !=
-      net::handles::kInvalidNetworkHandle) {
-    // CorsURLLoaderFactories bound to a network allow CORS preflight load
-    // options (see CorsURLLoaderFactory::IsCorsPreflighLoadOptionAllowed for
-    // the rationale). To prevent security issues, such a factory must not be
-    // issuing CORS preflight requests itself. This is, for example, to prevent
-    // compromised renderers from using a CorsURLLoaderFactory that doesn't
-    // trigger CORS preflight requests, but also does not fail requests which
-    // represent CORS preflights. In other words, these two things are mutually
-    // exclusive and a CorsURLLoaderFactory must either:
-    // 1. Perform CORS, but fail loads that represent CORS preflight requests
-    // 2. Allow loads that represent CORS preflight requests, but do not perform
-    //    CORS
-    CHECK(disable_web_security_);
   }
   if (params->automatically_assign_isolation_info) {
     DCHECK(params->isolation_info.IsEmpty());
@@ -325,6 +323,11 @@ CorsURLLoaderFactory::CorsURLLoaderFactory(
   } else {
     network_loader_factory_ = std::move(network_loader_factory);
   }
+
+  if (network_restrictions_id_.has_value()) {
+    context_->OnURLLoaderFactoryCreatedWithNetworkRestrictionsId(
+        *network_restrictions_id_);
+  }
 }
 
 CorsURLLoaderFactory::~CorsURLLoaderFactory() {
@@ -341,6 +344,11 @@ CorsURLLoaderFactory::~CorsURLLoaderFactory() {
   // Same as above for CorsURLLoaders.
   while (!cors_url_loaders_.empty()) {
     cors_url_loaders_.erase(cors_url_loaders_.begin());
+  }
+
+  if (network_restrictions_id_.has_value()) {
+    context_->OnURLLoaderFactoryDestroyedWithNetworkRestrictionsId(
+        *network_restrictions_id_);
   }
 }
 
@@ -395,13 +403,9 @@ void CorsURLLoaderFactory::CreateLoaderAndStart(
               perfetto::Flow::FromPointer(this));
 
   std::optional<base::ElapsedTimer> timer;
-  std::optional<base::ElapsedThreadTimer> thread_timer;
 
   if (base::ShouldRecordSubsampledMetric(0.001)) {
     timer.emplace();
-    if (base::ThreadTicks::IsSupported()) {
-      thread_timer.emplace();
-    }
   }
 
   debug::ScopedResourceRequestCrashKeys request_crash_keys(resource_request);
@@ -511,7 +515,8 @@ void CorsURLLoaderFactory::CreateLoaderAndStart(
         shared_dictionary_observer_ ? shared_dictionary_observer_.get()
                                     : nullptr,
         context_, network_restrictions_id_, factory_cookie_setting_overrides_,
-        devtools_cookie_setting_overrides_);
+        devtools_cookie_setting_overrides_,
+        factory_is_storage_access_potentially_allowed_);
     auto* raw_loader = loader.get();
     OnCorsURLLoaderCreated(std::move(loader));
     raw_loader->Start();
@@ -525,13 +530,6 @@ void CorsURLLoaderFactory::CreateLoaderAndStart(
     UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
         "NetworkService.CorsURLLoaderFactory.CreateLoaderAndStart2.Duration",
         timer->Elapsed(), base::Microseconds(1), base::Milliseconds(16), 100);
-  }
-  if (thread_timer.has_value()) {
-    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-        "NetworkService.CorsURLLoaderFactory.CreateLoaderAndStart2."
-        "ThreadDuration",
-        thread_timer->Elapsed(), base::Microseconds(1), base::Milliseconds(16),
-        100);
   }
 }
 
@@ -561,48 +559,6 @@ bool CorsURLLoaderFactory::IsValidCorsExemptHeaders(
     return false;
   }
   return true;
-}
-
-bool CorsURLLoaderFactory::IsMultiNetworkCCTWorkFlow() const {
-  return context_->url_request_context()->bound_network() !=
-         net::handles::kInvalidNetworkHandle;
-}
-
-bool CorsURLLoaderFactory::IsCorsPreflighLoadOptionAllowed() const {
-  // kURLLoadOptionAsCorsPreflight is set by CorsURLLoader itself, when
-  // starting a request, if CORS preflight request is needed.
-  // More precisely:
-  // - CorsURLLoader will create an additional request
-  // - Set kURLLoadOptionAsCorsPreflight within that one
-  // - Send that request via the network URLLoaderFactory that
-  //   CorsURLLoaderFactory is wrapping
-  // The code then makes the following assumption: the network
-  // URLLoaderFactory should not be a CorsURLLoaderFactory. As such,
-  // we should never see kURLLoadOptionAsCorsPreflight for a
-  // request going through CorsURLLoaderFactory (since they should only be sent
-  // via network URLLoaderFactories, which we're assuming are not
-  // CorsURLLoaderFactories).
-  // This is generally true, with the exception of two special scenarios:
-  // 1) PreflightControllerTest, tracked at crbug.com/40203308 and allowed via
-  //    `allow_external_preflights_for_testing_`.
-  // 2) Multi-network CCT, tracked at crbug.com/366242716 and allowed via
-  //    context_->url_request_context()->bound_network().
-  // In both scenarios, we end up with a CorsURLLoaderFactory acting as another
-  // CorsURLLoaderFactory's network URLLoaderFactory (for different reasons,
-  // see associated bugs for context). This is due to the way
-  // `URLLoaderFactoryParams.disable_web_security` works: the generated
-  // URLLoaderFactory won't create CorsURLLoaders but it will still be a
-  // CorsURLLoaderFactory. Due to that, the CORS preflight request will be
-  // flowing through the inner CorsURLLoaderFactory: here, we must not fail
-  // them, as this happening is "correct".
-  //
-  // Note: we could also just check for `disable_web_security_`. This is
-  // "simpler", but it casts a widernet : the subset of calling sites disabling
-  // web security is bigger than those creating a CorsURLLoaderFactory targeting
-  // a valid network. So, given that this config is security critical, it's best
-  // to "peek into implementation details" rather than granting this exception
-  // to a bigger group.
-  return allow_external_preflights_for_testing_ || IsMultiNetworkCCTWorkFlow();
 }
 
 bool CorsURLLoaderFactory::IsValidRequest(
@@ -642,24 +598,8 @@ bool CorsURLLoaderFactory::IsValidRequest(
   if (request.load_flags &
       (net::LOAD_CAN_USE_SHARED_DICTIONARY |
        net::LOAD_DISABLE_SHARED_DICTIONARY_AFTER_CROSS_ORIGIN_REDIRECT)) {
-    // In the multi-network CCT workflow, when fetching the subresource, we
-    // create a nested CorsURLLoaderFactory to run the same request on a
-    // specific network. That causes this check to be invoked twice: the first
-    // invocation performs the authoritative validation, and later passes may
-    // add internal flags to the request. Re-validating here is unnecessary and
-    // can falsely reject otherwise valid requests (See
-    // CorsURLLoaderFactory::IsCorsPreflighLoadOptionAllowed for the rational).
-    // Note: Skipping this check is appropriate for subresource requests.
-    // For main page loads or navigation requests, ideally the check should
-    // still be performed as there is no nesting. However, since this is only
-    // a sanity check, skipping it here is safe.
-    // TODO(crbug.com/449098586): refactor to get rid of nested
-    // CorsURLLoaderFactory to make the design clearer.
-    if (!IsMultiNetworkCCTWorkFlow()) {
-      mojo::ReportBadMessage(
-          "CorsURLLoaderFactory: Internal load flag received");
-      return false;
-    }
+    mojo::ReportBadMessage("CorsURLLoaderFactory: Internal load flag received");
+    return false;
   }
 
   if (!process_id_.is_browser() && request.is_outermost_main_frame &&
@@ -668,12 +608,20 @@ bool CorsURLLoaderFactory::IsValidRequest(
     // The request value is renderer-controlled, while the factory value is
     // browser-derived. Initial empty documents in opener-retaining popups can
     // legitimately use a factory inherited from their creating subframe.
-    // Canonicalize to the factory's less-privileged value so Network Service
-    // downstream cookie policy does not allow top-level storage-access.
+    // Canonicalize to the factory's less-privileged value.
     request.is_outermost_main_frame = is_outermost_main_frame_;
     UMA_HISTOGRAM_BOOLEAN(
         "NetworkService.CorsURLLoaderFactory.IsOutermostMainFrameClamped",
         true);
+  }
+
+  if (request.storage_access_api_status != net::StorageAccessApiStatus::kNone &&
+      !url_loader_util::IsStorageAccessPotentiallyAllowed(
+          factory_is_storage_access_potentially_allowed_, request)) {
+    mojo::ReportBadMessage(
+        "CorsURLLoaderFactory: storage_access_api_status must be kNone when "
+        "storage access is not allowed");
+    return false;
   }
 
   // Check if this is an untrusted factory being provided parameters that should
@@ -754,9 +702,16 @@ bool CorsURLLoaderFactory::IsValidRequest(
     return false;
   }
 
-  // Validate that `require_cross_site_request_for_cookies_` is respected by an
-  // empty SiteForCookies (indicating a cross-site request being made).
-  if (require_cross_site_request_for_cookies_ &&
+  // Validate that `require_cross_site_request_for_cookies_` and
+  // `kSharedWorkerSameSiteCookiesNone` are respected by an empty SiteForCookies
+  // (indicating a cross-site request being made).
+  const net::IsolationInfo& request_isolation_info =
+      request_network_isolation_info_present
+          ? request.trusted_params->isolation_info
+          : isolation_info_;
+  if ((require_cross_site_request_for_cookies_ ||
+       request_isolation_info.GetNetworkIsolationPartition() ==
+           net::NetworkIsolationPartition::kSharedWorkerSameSiteCookiesNone) &&
       !request.site_for_cookies.IsNull()) {
     mojo::ReportBadMessage(
         "CorsURLLoaderFactory: all requests in this context must be "
@@ -984,9 +939,17 @@ bool CorsURLLoaderFactory::IsValidRequest(
   }
 
   if ((options & mojom::kURLLoadOptionAsCorsPreflight) &&
-      !IsCorsPreflighLoadOptionAllowed()) {
+      !allow_external_preflights_for_testing_) {
     mojo::ReportBadMessage(
         "CorsURLLoaderFactory: kURLLoadOptionAsCorsPreflight is set");
+    return false;
+  }
+
+  if ((options & mojom::kURLLoadOptionReadAndDiscardBody) &&
+      (options & mojom::kURLLoadOptionSniffMimeType)) {
+    mojo::ReportBadMessage(
+        "CorsURLLoaderFactory: kURLLoadOptionReadAndDiscardBody and "
+        "kURLLoadOptionSniffMimeType cannot be used together");
     return false;
   }
 
@@ -1044,6 +1007,26 @@ bool CorsURLLoaderFactory::IsValidRequest(
     return false;
   }
 
+  // `content_user_agent` is set only when the AllowUserAgentHeaderFromScript
+  // feature is enabled.
+  if (request.content_user_agent) {
+    if (!base::FeatureList::IsEnabled(
+            net::features::kAllowUserAgentHeaderFromScript)) {
+      mojo::ReportBadMessage(
+          "CorsURLLoaderFactory: content_user_agent is set unexpectedly.");
+      return false;
+    }
+    const size_t size = request.content_user_agent->size();
+    base::UmaHistogramCounts10000("NetworkService.ContentUserAgentSize", size);
+    if (size > kMaxContentUserAgentSize) {
+      // The cut may leave whitespace at the end, which header values must not
+      // have.
+      request.content_user_agent->resize(kMaxContentUserAgentSize);
+      *request.content_user_agent =
+          std::string(net::HttpUtil::TrimLWS(*request.content_user_agent));
+    }
+  }
+
   // TODO(yhirano): If the request mode is "no-cors", the redirect mode should
   // be "follow".
   return true;
@@ -1076,12 +1059,6 @@ mojom::SharedDictionaryAccessObserver*
 CorsURLLoaderFactory::GetSharedDictionaryAccessObserver() const {
   return shared_dictionary_observer_ ? shared_dictionary_observer_.get()
                                      : nullptr;
-}
-
-net::handles::NetworkHandle CorsURLLoaderFactory::GetBoundNetworkForTesting()
-    const {
-  CHECK(!factory_override_);
-  return network_loader_factory_->GetBoundNetworkForTesting();  // IN-TEST
 }
 
 }  // namespace network::cors

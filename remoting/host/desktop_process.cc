@@ -32,6 +32,10 @@
 #include "base/win/windows_version.h"
 #endif  // BUILDFLAG(IS_WIN)
 
+#if BUILDFLAG(IS_LINUX)
+#include "remoting/host/linux/pulse_audio_capturer.h"
+#endif  // BUILDFLAG(IS_LINUX)
+
 namespace remoting {
 
 DesktopProcess::DesktopProcess(
@@ -58,6 +62,15 @@ DesktopEnvironmentFactory& DesktopProcess::desktop_environment_factory() {
   return *desktop_environment_factory_;
 }
 
+void DesktopProcess::OnDesktopEnvironmentCreated(bool success) {
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  if (initial_creation_state_ == InitialCreationState::kPending) {
+    initial_creation_state_ = success ? InitialCreationState::kSucceeded
+                                      : InitialCreationState::kFailed;
+  }
+}
+
 void DesktopProcess::OnNetworkProcessDisconnected() {
   DCHECK(caller_task_runner_->BelongsToCurrentThread());
 
@@ -67,6 +80,12 @@ void DesktopProcess::OnNetworkProcessDisconnected() {
   }
   if (on_network_process_disconnected_callback_) {
     std::move(on_network_process_disconnected_callback_).Run();
+  }
+  // A process that never created a DesktopEnvironment cannot serve a reconnect,
+  // so exit with a permanent-error code to make the daemon tear the session
+  // down instead of leaving an idle worker attached to the session.
+  if (initial_creation_state_ == InitialCreationState::kFailed) {
+    Shutdown(kInvalidHostConfigurationExitCode);
   }
 }
 
@@ -107,6 +126,17 @@ void DesktopProcess::OnChannelConnected(int32_t peer_pid) {
 }
 
 void DesktopProcess::OnChannelError() {
+  Shutdown();
+}
+
+void DesktopProcess::Shutdown(int exit_code) {
+  if (!caller_task_runner_) {
+    // Already shut down.
+    return;
+  }
+  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+
+  exit_code_ = exit_code;
   // Shutdown the desktop process.
   daemon_channel_.reset();
   if (desktop_agent_) {
@@ -115,6 +145,13 @@ void DesktopProcess::OnChannelError() {
   }
   desktop_session_request_handler_.reset();
   worker_process_control_.reset();
+  desktop_process_control_.reset();
+
+#if BUILDFLAG(IS_LINUX)
+  // Cause the global AudioPipeReader to be freed, otherwise the audio thread
+  // will remain in-use and prevent the process from exiting.
+  PulseAudioCapturer::InitializePipeReader(nullptr);
+#endif  // BUILDFLAG(IS_LINUX)
 
   caller_task_runner_ = nullptr;
   input_task_runner_ = nullptr;
@@ -173,6 +210,12 @@ bool DesktopProcess::Start(
   audio_task_runner_ = AutoThread::CreateWithType(
       "ChromotingAudioThread", caller_task_runner_, base::MessagePumpType::IO);
 #endif  // !BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_LINUX)
+  // Wayland sessions do not set `CHROME_REMOTE_DESKTOP_AUDIO_PIPE`, in which
+  // case this will fail and `PipewireAudioCapturer` will be used instead.
+  PulseAudioCapturer::InitializePipeReader(audio_task_runner_);
+#endif  // BUILDFLAG(IS_LINUX)
 
   // Create a desktop agent.
   mojo::ScopedMessagePipeHandle desktop_pipe = CreateDesktopAgent();

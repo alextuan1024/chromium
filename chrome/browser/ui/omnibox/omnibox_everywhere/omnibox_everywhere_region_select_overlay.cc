@@ -346,6 +346,7 @@ class TeardropCursorChipView : public views::View {
   static constexpr int kTotalSize = kChipSize + (kPadding * 2);
 
   TeardropCursorChipView() {
+    SetMirrored(false);
     SetCanProcessEventsWithinSubtree(false);
     GetViewAccessibility().SetIsIgnored(true);
 
@@ -426,6 +427,7 @@ class RegionSelectOverlayView : public views::View {
         bitmap_(screenshot),
         image_(!bitmap_.empty() ? gfx::ImageSkia::CreateFromBitmap(bitmap_, 1.f)
                                 : gfx::ImageSkia()) {
+    SetMirrored(false);
     SetFocusBehavior(FocusBehavior::ALWAYS);
     GetViewAccessibility().SetRole(ax::mojom::Role::kImage);
     GetViewAccessibility().SetName(l10n_util::GetStringUTF16(
@@ -473,12 +475,6 @@ class RegionSelectOverlayView : public views::View {
     }
   }
 
-  void ClearBitmaps() {
-    is_dragging_ = false;
-    bitmap_.reset();
-    image_ = gfx::ImageSkia();
-  }
-
   void SetGlobalSelectionRect(const gfx::Rect& global_rect) {
     gfx::Rect new_rect;
     if (!global_rect.IsEmpty()) {
@@ -504,6 +500,9 @@ class RegionSelectOverlayView : public views::View {
 
   void AddedToWidget() override {
     views::View::AddedToWidget();
+    if (views::Widget* widget = GetWidget(); widget && widget->GetRootView()) {
+      widget->GetRootView()->SetMirrored(false);
+    }
     UpdateToastPosition();
   }
 
@@ -805,23 +804,7 @@ OmniboxEverywhereRegionSelectOverlay::OmniboxEverywhereRegionSelectOverlay(
 
 OmniboxEverywhereRegionSelectOverlay::~OmniboxEverywhereRegionSelectOverlay() {
   auto callback = std::move(callback_);
-  widget_observations_.RemoveAllObservations();
-  for (auto& widget : widgets_) {
-    if (widget) {
-      if (auto* overlay_view = views::AsViewClass<RegionSelectOverlayView>(
-              widget->GetContentsView())) {
-        overlay_view->ClearBitmaps();
-      }
-      // Not reachable from a Widget close notification, so the widget can be
-      // torn down synchronously here.
-      if (!widget->IsClosed()) {
-        widget->CloseNow();
-      }
-    }
-  }
-  widgets_.clear();
-  screenshot_.reset();
-  display_slices_.clear();
+  ResetWidgets();
   if (callback) {
     std::move(callback).Run(SkBitmap());
   }
@@ -966,6 +949,7 @@ OmniboxEverywhereRegionSelectOverlay::CreateWidgetForDisplay(
       views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.name = "OmniboxEverywhereRegionSelectOverlay";
+  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
   params.shadow_type = views::Widget::InitParams::ShadowType::kNone;
 #if BUILDFLAG(IS_MAC)
   // Required to support Widget::SetActivationIndependence().
@@ -986,7 +970,9 @@ OmniboxEverywhereRegionSelectOverlay::CreateWidgetForDisplay(
   widget->SetActivationIndependence(true);
   widget->SetCanAppearInExistingFullscreenSpaces(true);
 #endif
-  widget_observations_.AddObservation(widget.get());
+  widget->MakeCloseSynchronous(base::BindOnce(
+      &OmniboxEverywhereRegionSelectOverlay::OnWidgetCloseRequested,
+      weak_factory_.GetWeakPtr()));
 
 #if defined(USE_AURA)
   wm::SetWindowVisibilityAnimationTransition(widget->GetNativeView(),
@@ -1105,40 +1091,26 @@ void OmniboxEverywhereRegionSelectOverlay::Finish(
     return;
   }
   auto callback = std::move(callback_);
-
-  widget_observations_.RemoveAllObservations();
-
-  for (auto& widget : widgets_) {
-    if (widget) {
-      if (auto* overlay_view = views::AsViewClass<RegionSelectOverlayView>(
-              widget->GetContentsView())) {
-        overlay_view->ClearBitmaps();
-      }
-      if (!widget->IsClosed()) {
-        // Hide before closing so this fullscreen overlay skips any platform
-        // close animation and prevents paint flashes.
-        widget->Hide();
-        // This may be running inside a Widget close notification, where the
-        // Widget forbids synchronous destruction, so close asynchronously.
-        widget->Close();
-      }
-    }
-  }
-
-  screenshot_.reset();
-  display_slices_.clear();
-
+  ResetWidgets();
   std::move(callback).Run(result_bitmap);
 }
 
-// Closing or destroying any widget cancels the selection overlay in unison.
-void OmniboxEverywhereRegionSelectOverlay::OnWidgetClosing(
-    views::Widget* widget) {
-  Finish(SkBitmap());
+void OmniboxEverywhereRegionSelectOverlay::ResetWidgets() {
+  weak_factory_.InvalidateWeakPtrs();
+  for (auto& widget : widgets_) {
+    if (widget && !widget->IsClosed()) {
+      // Hide before destroying so this fullscreen overlay skips any platform
+      // close animation and prevents paint flashes.
+      widget->Hide();
+    }
+  }
+  widgets_.clear();
+  screenshot_.reset();
+  display_slices_.clear();
 }
 
-void OmniboxEverywhereRegionSelectOverlay::OnWidgetDestroying(
-    views::Widget* widget) {
+void OmniboxEverywhereRegionSelectOverlay::OnWidgetCloseRequested(
+    views::Widget::ClosedReason reason) {
   Finish(SkBitmap());
 }
 

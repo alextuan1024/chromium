@@ -15,8 +15,6 @@ import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.prefs.LocalStatePrefs;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
-import org.chromium.components.signin.SigninFeatureMap;
-import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 
@@ -51,19 +49,20 @@ public class ForcedSigninController
     }
 
     /**
-     * Displays the forced sign-in UI. Returns {@code true} if the prompt was successfully
-     * displayed.
+     * Displays the forced sign-in UI if it is required by the forced sign-in policy. Returns {@code
+     * true} if the prompt was successfully displayed.
      */
-    public boolean showFullscreenSigninPromptIfForced() {
-        return FullscreenSigninPromoLauncher.launchPromoIfForced(mContext, mProfile, mLauncher);
+    public boolean showFullscreenSigninPromptIfRequired() {
+        if (!shouldDisplayForcedSignin(mProfile)) {
+            return false;
+        }
+        return FullscreenSigninPromoLauncher.launchForcedSigninFlow(mContext, mProfile, mLauncher);
     }
 
     /** Implements {@link PauseResumeWithNativeObserver}. */
     @Override
     public void onResumeWithNative() {
-        if (shouldDisplayForcedSignin(mProfile)) {
-            showFullscreenSigninPromptIfForced();
-        }
+        showFullscreenSigninPromptIfRequired();
     }
 
     /** Implements {@link PauseResumeWithNativeObserver}. */
@@ -72,10 +71,7 @@ public class ForcedSigninController
 
     /** Whether the forced sign-in policy is enabled. */
     public static boolean isForcedSigninPolicyEnabled() {
-        boolean isPolicyEnabled =
-                assumeNonNull(LocalStatePrefs.get()).getBoolean(Pref.FORCE_BROWSER_SIGNIN);
-        return SigninFeatureMap.isEnabled(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
-                && isPolicyEnabled;
+        return LocalStatePrefs.get().getBoolean(Pref.FORCE_BROWSER_SIGNIN);
     }
 
     /** Whether the forced sign-in screen should be displayed for the given profile. */
@@ -90,7 +86,7 @@ public class ForcedSigninController
     @Override
     public void onPrimaryAccountChanged(PrimaryAccountChangeEvent eventDetails) {
         if (eventDetails.getEventTypeFor() == PrimaryAccountChangeEvent.Type.CLEARED) {
-            showFullscreenSigninPromptIfForced();
+            showFullscreenSigninPromptIfRequired();
         }
     }
 }

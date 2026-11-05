@@ -61,7 +61,6 @@
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "net/dns/mock_host_resolver.h"
@@ -71,7 +70,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "ui/base/interaction/element_tracker.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/keycode_converter.h"
 #include "ui/views/widget/widget.h"
@@ -194,7 +193,7 @@ class PopupBlockerBrowserTest : public InProcessBrowserTest {
   // Returns the WebContents of the launched popup.
   WebContents* RunCheckTest(BrowserWindowInterface* browser,
                             const std::string& test_name,
-                            WindowOpenDisposition disposition,
+                            ui::mojom::WindowOpenDisposition disposition,
                             WhatToExpect what_to_expect,
                             ShouldCheckTitle check_title,
                             const std::u16string& expected_title = u"PASS") {
@@ -262,8 +261,8 @@ class PopupBlockerBrowserTest : public InProcessBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, BlockWebContentsCreation) {
   RunCheckTest(browser(), "/popup_blocker/popup-blocked-to-post-blank.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab,
-               kDontCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab,
+               kExpectForegroundTab, kDontCheckTitle);
 }
 
 // TODO(crbug.com/40144522): Flaky on Mac ASAN and Chrome OS.
@@ -278,21 +277,21 @@ IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest,
                        MAYBE_BlockWebContentsCreationIncognito) {
   RunCheckTest(CreateIncognitoBrowser(),
                "/popup_blocker/popup-blocked-to-post-blank.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab,
-               kDontCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab,
+               kExpectForegroundTab, kDontCheckTitle);
 }
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, PopupBlockedFakeClickOnAnchor) {
   RunCheckTest(browser(), "/popup_blocker/popup-fake-click-on-anchor.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab,
-               kDontCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab,
+               kExpectForegroundTab, kDontCheckTitle);
 }
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest,
                        PopupBlockedFakeClickOnAnchorNoTarget) {
   RunCheckTest(browser(), "/popup_blocker/popup-fake-click-on-anchor2.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab,
-               kDontCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab,
+               kExpectForegroundTab, kDontCheckTitle);
 }
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, PopupMetrics) {
@@ -320,7 +319,7 @@ IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, PopupMetrics) {
       browser()->GetTabStripModel()->GetActiveWebContents());
   popup_blocker->ShowBlockedPopup(
       popup_blocker->GetBlockedPopupRequests().begin()->first,
-      WindowOpenDisposition::NEW_BACKGROUND_TAB);
+      ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
 
   tester.ExpectBucketCount(
       kPopupActions,
@@ -489,9 +488,10 @@ IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest,
 #define MAYBE_WindowFeatures WindowFeatures
 #endif
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, MAYBE_WindowFeatures) {
-  WebContents* popup = RunCheckTest(
-      browser(), "/popup_blocker/popup-window-open.html",
-      WindowOpenDisposition::CURRENT_TAB, kExpectPopup, kDontCheckTitle);
+  WebContents* popup =
+      RunCheckTest(browser(), "/popup_blocker/popup-window-open.html",
+                   ui::mojom::WindowOpenDisposition::kCurrentTab, kExpectPopup,
+                   kDontCheckTitle);
 
   // Check that the new popup has (roughly) the requested size.
   auto* const popup_widget =
@@ -506,40 +506,42 @@ IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, MAYBE_WindowFeatures) {
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, CorrectReferrer) {
   RunCheckTest(browser(), "/popup_blocker/popup-referrer.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab,
-               kCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab,
+               kExpectForegroundTab, kCheckTitle);
 }
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, CorrectFrameName) {
   RunCheckTest(browser(), "/popup_blocker/popup-framename.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab,
-               kCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab,
+               kExpectForegroundTab, kCheckTitle);
 }
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, WindowFeaturesBarProps) {
   RunCheckTest(browser(), "/popup_blocker/popup-windowfeatures.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectPopup, kCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab, kExpectPopup,
+               kCheckTitle);
 }
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, SessionStorage) {
   RunCheckTest(browser(), "/popup_blocker/popup-sessionstorage.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab,
-               kCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab,
+               kExpectForegroundTab, kCheckTitle);
 }
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, Opener) {
   RunCheckTest(browser(), "/popup_blocker/popup-opener.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab,
-               kCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab,
+               kExpectForegroundTab, kCheckTitle);
 }
 
 // Tests that the popup can still close itself after navigating. This tests that
 // the openedByDOM bit is preserved across blocked popups.
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, ClosableAfterNavigation) {
   // Open a popup.
-  WebContents* popup = RunCheckTest(
-      browser(), "/popup_blocker/popup-opener.html",
-      WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab, kCheckTitle);
+  WebContents* popup =
+      RunCheckTest(browser(), "/popup_blocker/popup-opener.html",
+                   ui::mojom::WindowOpenDisposition::kCurrentTab,
+                   kExpectForegroundTab, kCheckTitle);
 
   // Navigate it elsewhere.
   content::TestNavigationObserver nav_observer(popup);
@@ -558,14 +560,14 @@ IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, ClosableAfterNavigation) {
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, OpenerSuppressed) {
   RunCheckTest(browser(), "/popup_blocker/popup-openersuppressed.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectForegroundTab,
-               kCheckTitle);
+               ui::mojom::WindowOpenDisposition::kCurrentTab,
+               kExpectForegroundTab, kCheckTitle);
 }
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, ShiftClick) {
   RunCheckTest(browser(), "/popup_blocker/popup-fake-click-on-anchor3.html",
-               WindowOpenDisposition::CURRENT_TAB, kExpectPopup, kCheckTitle,
-               u"Popup Success!");
+               ui::mojom::WindowOpenDisposition::kCurrentTab, kExpectPopup,
+               kCheckTitle, u"Popup Success!");
 }
 
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, WebUI) {
@@ -821,21 +823,21 @@ IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, MultiplePopupsViaPostMessage) {
 // Test that popup blocker can show blocked contents in new foreground tab.
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, OpenInNewForegroundTab) {
   RunCheckTest(browser(), "/popup_blocker/popup-window-open.html",
-               WindowOpenDisposition::NEW_FOREGROUND_TAB, kExpectForegroundTab,
-               kDontCheckTitle);
+               ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+               kExpectForegroundTab, kDontCheckTitle);
 }
 
 // Test that popup blocker can show blocked contents in new background tab.
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, OpenInNewBackgroundTab) {
   RunCheckTest(browser(), "/popup_blocker/popup-window-open.html",
-               WindowOpenDisposition::NEW_BACKGROUND_TAB, kExpectBackgroundTab,
-               kDontCheckTitle);
+               ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
+               kExpectBackgroundTab, kDontCheckTitle);
 }
 
 // Test that popup blocker can show blocked contents in new window.
 IN_PROC_BROWSER_TEST_F(PopupBlockerBrowserTest, OpenInNewWindow) {
   RunCheckTest(browser(), "/popup_blocker/popup-window-open.html",
-               WindowOpenDisposition::NEW_WINDOW, kExpectNewWindow,
+               ui::mojom::WindowOpenDisposition::kNewWindow, kExpectNewWindow,
                kDontCheckTitle);
 }
 

@@ -14,13 +14,11 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.UnownedUserDataHost;
-import org.chromium.base.UserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.tab.Tab;
@@ -53,7 +51,6 @@ public class TrustedCdnTest {
     @Mock WindowAndroid mWindowAndroid;
     @Mock WebContents mWebContents;
     @Mock ActivityLifecycleDispatcher mLifecycleDispatcher;
-    private final UserDataHost mTabUserDataHost = new UserDataHost();
     private final UnownedUserDataHost mWindowUserDataHost = new UnownedUserDataHost();
 
     boolean mShouldPackageShowPublisherUrl = true;
@@ -62,13 +59,11 @@ public class TrustedCdnTest {
 
     @Before
     public void setUp() {
-
         TrustedCdnJni.setInstanceForTesting(mTrustedCdnNatives);
         SecurityStateModelJni.setInstanceForTesting(mSecurityStateModelNatives);
         when(mSecurityStateModelNatives.getSecurityLevelForWebContents(eq(mWebContents)))
                 .thenAnswer((mock) -> mConnectionSecurityLevel);
 
-        when(mTab.getUserDataHost()).thenReturn(mTabUserDataHost);
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mWindowAndroid.getUnownedUserDataHost()).thenReturn(mWindowUserDataHost);
         when(mWebContents.getTopLevelNativeWindow()).thenReturn(mWindowAndroid);
@@ -76,15 +71,18 @@ public class TrustedCdnTest {
         mCustomTabTrustedCdnPublisherUrlVisibility =
                 new CustomTabTrustedCdnPublisherUrlVisibility(
                         mWindowAndroid, mLifecycleDispatcher, () -> mShouldPackageShowPublisherUrl);
-        doReturn(PUBLISHER_URL)
-                .when(mTrustedCdnNatives)
-                .getPublisherUrl(ArgumentMatchers.anyLong());
-        TrustedCdn.initForTesting(mTab);
+        doReturn(PUBLISHER_URL).when(mTrustedCdnNatives).getPublisherUrl(eq(mWebContents));
     }
 
     @Test
     public void publisherUrlIsUsed() {
         assertEquals(PUBLISHER_URL, TrustedCdn.getPublisherUrl(mTab));
+    }
+
+    @Test
+    public void publisherUrlIsNotUsed_destroyedTab() {
+        when(mTab.isDestroyed()).thenReturn(true);
+        assertNull(TrustedCdn.getPublisherUrl(mTab));
     }
 
     @Test

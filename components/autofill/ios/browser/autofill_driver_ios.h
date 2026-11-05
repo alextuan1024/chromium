@@ -16,6 +16,7 @@
 #import "base/memory/weak_ptr.h"
 #import "components/autofill/core/browser/foundations/autofill_client.h"
 #import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
+#import "components/autofill/core/common/aliases.h"
 #import "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #import "components/autofill/ios/browser/form_fetch_batcher.h"
 #import "third_party/abseil-cpp/absl/container/flat_hash_map.h"
@@ -106,6 +107,7 @@ class AutofillDriverIOS final : public AutofillDriver,
   bool IsPolicyControlledFeatureAutofillEnabled() const override;
   bool IsPolicyControlledFeatureManualTextEnabled() const override;
   bool CanShowAutofillUi() const override;
+  bool DocumentUsedWebOtp() const override;
   base::flat_set<FieldGlobalId> ApplyFormAction(
       mojom::FormActionType action_type,
       mojom::ActionPersistence action_persistence,
@@ -133,11 +135,12 @@ class AutofillDriverIOS final : public AutofillDriver,
       const FieldGlobalId& field_id,
       const std::u16string& value) override;
   void TriggerFormExtractionInDriverFrame(
-      AutofillDriverRouterAndFormForestPassKey pass_key) override;
+      AutofillDriverRouterAndFormForestPassKey pass_key,
+      bool force) override;
   void TriggerFormExtractionInAllFrames(
+      bool force,
       base::OnceCallback<void(bool)> form_extraction_finished_callback)
       override;
-  void ClearFormCacheInAllFrames() override;
   void ObserveFieldVisibility(
       const FieldGlobalId& field_id,
       mojo::PendingRemote<mojom::AutofillVisibilityObserver> observer) override;
@@ -167,6 +170,7 @@ class AutofillDriverIOS final : public AutofillDriver,
       mojom::AutofillSuggestionAvailability suggestion_availability) override;
   std::optional<net::IsolationInfo> GetIsolationInfo() override;
   void ScrollFieldIntoView(FieldGlobalId field_id) override;
+  void LoadCustomFormControlScript(const std::string& script) override;
 
   bool is_processed() const { return processed_; }
   void set_processed(bool processed) { processed_ = processed; }
@@ -183,7 +187,9 @@ class AutofillDriverIOS final : public AutofillDriver,
   // for further documentation of each method.
   // TODO(crbug.com/514243241): Make these functions take FormData by value to
   // avoid copying (as done for FormsSeen).
-  void AskForValuesToFill(const FormData& form, const FieldGlobalId& field_id);
+  void AskForValuesToFill(const FormData& form,
+                          const FieldGlobalId& field_id,
+                          AutofillSuggestionTriggerSource trigger_source);
   void DidAutofillForm(const FormData& form);
   void FormsSeen(std::vector<FormData> updated_forms,
                  const std::vector<FormGlobalId>& removed_forms);
@@ -238,7 +244,7 @@ class AutofillDriverIOS final : public AutofillDriver,
 
     // Renderer id of the last interacted formless field or `FieldRendererId()`
     // if the last interaction was not with a single formless field.
-    // TODO: crbug.com/40266699 - Convert to FieldGlobalId.
+    // TODO(crbug.com/585077444): Convert to FieldGlobalId.
     FieldRendererId formless_field;
   };
 

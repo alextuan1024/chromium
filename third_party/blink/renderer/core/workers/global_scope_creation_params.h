@@ -10,6 +10,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/storage_access_api/status.h"
@@ -24,6 +25,7 @@
 #include "third_party/blink/public/mojom/frame/reporting_observer.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/loader/code_cache.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/script/script_type.mojom-blink-forward.h"
+#include "third_party/blink/public/mojom/security_context/outside_context_csp_violation_reporter.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/v8_cache_options.mojom-blink.h"
 #include "third_party/blink/public/platform/web_content_settings_client.h"
 #include "third_party/blink/public/platform/web_worker_fetch_context.h"
@@ -57,10 +59,9 @@ struct CORE_EXPORT GlobalScopeCreationParams final {
       scoped_refptr<WebWorkerFetchContext>,
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>
           outside_content_security_policies,
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-          response_content_security_policies,
+      mojo::PendingRemote<mojom::blink::OutsideContextCSPViolationReporter>
+          outside_settings_reporter,
       network::mojom::ReferrerPolicy referrer_policy,
-      DocumentPolicy::DocumentPolicyBundle document_policy,
       const SecurityOrigin*,
       bool starter_secure_context,
       HttpsState starter_https_state,
@@ -85,6 +86,7 @@ struct CORE_EXPORT GlobalScopeCreationParams final {
           std::nullopt,
       bool cross_origin_isolated_capability = false,
       bool parent_is_isolated_context = false,
+      base::TimeTicks time_origin = base::TimeTicks(),
       bool direct_sockets_force_enabled_in_parent = false,
       InterfaceRegistry* interface_registry = nullptr,
       scoped_refptr<base::SingleThreadTaskRunner>
@@ -139,22 +141,20 @@ struct CORE_EXPORT GlobalScopeCreationParams final {
   Vector<network::mojom::blink::ContentSecurityPolicyPtr>
       outside_content_security_policies;
 
+  // Reports the violations that the worker or the worklet detects while
+  // fetching with the outside settings object to the context that creates it.
+  // Null if the reporter is not available. See
+  // mojom::blink::OutsideContextCSPViolationReporter.
+  mojo::PendingRemote<mojom::blink::OutsideContextCSPViolationReporter>
+      outside_settings_reporter;
+
   // The creator's document policy. This is populated only for dedicated
   // workers, which inherit it for local schemes (about:, blob:, data:,
   // filesystem:). Other worker and worklet types leave it empty.
   DocumentPolicy::DocumentPolicyBundle creator_document_policy;
 
-  // This is used only for classic dedicated workers with off-the-main-thread
-  // fetch disabled.
-  //
-  // TODO(https://crbug.com/835717): Remove this after dedicated workers support
-  // off-the-main-thread script fetch by default.
-  Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-      response_content_security_policies;
-
+  // Only for worklets.
   network::mojom::ReferrerPolicy referrer_policy;
-
-  DocumentPolicy::DocumentPolicyBundle document_policy;
 
   // Origin trial features to be inherited by worker/worklet from the document
   // loading it.
@@ -246,6 +246,10 @@ struct CORE_EXPORT GlobalScopeCreationParams final {
   // false when no parent exists.
   // https://wicg.github.io/isolated-web-apps/isolated-contexts.html
   const bool parent_is_isolated_context;
+
+  // Parent document's time origin for WorkletGlobalScope (HTML spec "set up a
+  // worklet environment settings object").
+  const base::TimeTicks time_origin;
 
   // Direct Sockets might be enabled outside of Isolated Context in selected
   // scenarios.

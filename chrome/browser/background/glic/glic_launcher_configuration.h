@@ -14,6 +14,8 @@
 #include "components/version_info/channel.h"
 #include "ui/base/accelerators/accelerator.h"
 
+class Profile;
+
 namespace glic {
 
 // This class observes and reports changes to glic prefs such as the
@@ -30,14 +32,14 @@ class GlicLauncherConfiguration {
   explicit GlicLauncherConfiguration(Observer* manager);
   ~GlicLauncherConfiguration();
 
-  // Returns whether the glic launcher is enabled. If `is_default_value` is
+  // Returns whether the glic launcher icon is enabled. If `is_default_value` is
   // provided, then it will be updated to reflect if the glic launcher enabled
   // pref is the default value.
-  static bool IsEnabled(bool* is_default_value = nullptr);
+  static bool IsLauncherIconEnabled(bool* is_default_value = nullptr);
 
   static ui::Accelerator GetToggleHotkey();
 
-  static ui::Accelerator GetSelectionHotkey();
+  static ui::Accelerator GetSelectionHotkey(Profile* profile);
 
   // Checks if the browser is the default browser and enables the launcher if it
   // is.

@@ -5,6 +5,7 @@
 #include "cc/tiles/gpu_image_decode_cache.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <map>
 #include <memory>
@@ -33,6 +34,8 @@
 #include "cc/test/test_tile_task_runner.h"
 #include "cc/test/transfer_cache_test_helper.h"
 #include "cc/tiles/raster_dark_mode_filter.h"
+#include "components/viz/common/gpu/context_cache_controller.h"
+#include "components/viz/common/gpu/raster_context_provider.h"
 #include "components/viz/test/test_context_provider.h"
 #include "components/viz/test/test_raster_interface.h"
 #include "gpu/command_buffer/common/command_buffer_id.h"
@@ -41,12 +44,14 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkColorFilter.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkImageGenerator.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkM44.h"
+#include "third_party/skia/include/core/SkPixmap.h"
 #include "third_party/skia/include/core/SkRect.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkSize.h"
@@ -96,6 +101,32 @@ class FakeGPUImageDecodeTestRasterInterface : public viz::TestRasterInterface,
     transfer_cache_helper_->DeleteEntryDirect(MakeEntryKey(type, id));
   }
 
+  void SetAggressivelyFreeResources(bool aggressively_free_resources) override {
+    viz::TestContextSupport::SetAggressivelyFreeResources(
+        aggressively_free_resources);
+    if (aggressively_free_resources) {
+      ++aggressively_free_resources_count_;
+    }
+  }
+
+  void FlushPendingWork() override {
+    viz::TestContextSupport::FlushPendingWork();
+    ++flush_pending_work_count_;
+  }
+
+  void ShallowFlushCHROMIUM() override {
+    viz::TestRasterInterface::ShallowFlushCHROMIUM();
+    ++shallow_flush_count_;
+  }
+
+  size_t aggressively_free_resources_count() const {
+    return aggressively_free_resources_count_;
+  }
+
+  size_t flush_pending_work_count() const { return flush_pending_work_count_; }
+
+  size_t shallow_flush_count() const { return shallow_flush_count_; }
+
   std::pair<TransferCacheEntryType, uint32_t> MakeEntryKey(uint32_t type,
                                                            uint32_t id) {
     DCHECK_LE(type, static_cast<uint32_t>(TransferCacheEntryType::kLast));
@@ -106,6 +137,9 @@ class FakeGPUImageDecodeTestRasterInterface : public viz::TestRasterInterface,
   raw_ptr<TransferCacheTestHelper> transfer_cache_helper_;
   size_t mapped_entry_size_ = 0;
   base::AlignedHeapArray<uint8_t> mapped_entry_;
+  size_t aggressively_free_resources_count_ = 0;
+  size_t flush_pending_work_count_ = 0;
+  size_t shallow_flush_count_ = 0;
 };
 
 class FakeRasterDarkModeFilter : public RasterDarkModeFilter {
@@ -1371,7 +1405,6 @@ TEST_P(GpuImageDecodeCacheTest, GetHdrDecodedImageForDrawToHdr) {
   bitmap.allocPixels(info);
   PaintImage image = PaintImageBuilder::WithDefault()
                          .set_id(PaintImage::kInvalidId)
-                         .set_is_high_bit_depth(true)
                          .set_image(SkImages::RasterFromBitmap(bitmap),
                                     PaintImage::GetNextContentId())
                          .TakePaintImage();
@@ -1426,7 +1459,6 @@ TEST_P(GpuImageDecodeCacheTest, GetHdrDecodedImageForDrawToSdr) {
   bitmap.allocPixels(info);
   PaintImage image = PaintImageBuilder::WithDefault()
                          .set_id(PaintImage::kInvalidId)
-                         .set_is_high_bit_depth(true)
                          .set_image(SkImages::RasterFromBitmap(bitmap),
                                     PaintImage::GetNextContentId())
                          .TakePaintImage();
@@ -3990,6 +4022,7 @@ class GpuImageDecodeCachePurgeOnTimerTest : public GpuImageDecodeCacheTest {
     current_default_handle_ = std::make_unique<
         base::SingleThreadTaskRunner::CurrentHandleOverrideForTesting>(
         task_runner_);
+    context_provider_->SetCacheControllerTaskRunnerForTesting(task_runner_);
 
     cache_ = CreateCache();
     client_id_ = cache_->GenerateClientId();
@@ -4235,6 +4268,78 @@ TEST_P(GpuImageDecodeCachePurgeOnTimerTest, NoCache) {
   EXPECT_EQ(cache_->GetNumCacheEntriesForTesting(), 0u);
 }
 
+TEST_P(GpuImageDecodeCachePurgeOnTimerTest,
+       PurgeNotifiesCacheControllerAndFreesResourcesOnIdle) {
+  auto* test_support = static_cast<FakeGPUImageDecodeTestRasterInterface*>(
+      context_provider_->support());
+  auto* test_raster = static_cast<FakeGPUImageDecodeTestRasterInterface*>(
+      context_provider_->UnboundTestRasterInterface());
+
+  std::unique_ptr<viz::ContextCacheController::ScopedVisibility> visibility;
+  {
+    viz::RasterContextProvider::ScopedRasterContextLock context_lock(
+        context_provider_.get());
+    visibility = context_provider_->CacheController()->ClientBecameVisible();
+  }
+  FastForwardBy(base::Seconds(1));
+  EXPECT_EQ(test_support->aggressively_free_resources_count(), 1u);
+
+  CreateAndUnrefImage(1);
+
+  // Let the post-upload ContextCacheController idle task run 1s after upload.
+  FastForwardBy(base::Seconds(1));
+  EXPECT_EQ(test_support->aggressively_free_resources_count(), 2u);
+  EXPECT_EQ(test_raster->shallow_flush_count(), 0u);
+
+  // UnrefImage() queued a pending unlock (with no pending deletion). Flushing
+  // via ReduceCacheUsage() flushes the unlock and schedules 1s idle cleanup.
+  cache_->ReduceCacheUsage();
+  EXPECT_EQ(cache_->GetNumCacheEntriesForTesting(), 1u);
+  EXPECT_EQ(test_raster->shallow_flush_count(), 1u);
+  FastForwardBy(base::Seconds(1));
+  EXPECT_EQ(test_support->aggressively_free_resources_count(), 3u);
+
+  // 30s after upload, the entry is purged. TryFlushPendingWork() deletes the
+  // transfer cache entry (with no pending unlock), flushes, and notifies
+  // ContextCacheController so idle cleanup runs 1s later.
+  FastForwardBy(GpuImageDecodeCache::get_purge_interval() - base::Seconds(2));
+  EXPECT_EQ(cache_->GetNumCacheEntriesForTesting(), 0u);
+  EXPECT_FALSE(cache_->HasPendingPurgeTaskForTesting());
+  EXPECT_EQ(cache_->ids_pending_deletion_count_for_testing(), 0u);
+  EXPECT_EQ(test_support->flush_pending_work_count(), 5u);
+  EXPECT_EQ(test_raster->shallow_flush_count(), 2u);
+  EXPECT_EQ(test_support->aggressively_free_resources_count(), 3u);
+
+  // A per-frame `ReduceCacheUsage()` call with no pending unlock or deletion
+  // work while the 1s idle cleanup is pending still flushes context work, but
+  // does not notify `ContextCacheController` or delay the scheduled cleanup.
+  FastForwardBy(base::Milliseconds(500));
+  cache_->ReduceCacheUsage();
+  EXPECT_EQ(test_support->flush_pending_work_count(), 6u);
+  EXPECT_EQ(test_raster->shallow_flush_count(), 3u);
+  EXPECT_EQ(test_support->aggressively_free_resources_count(), 3u);
+
+  FastForwardBy(base::Milliseconds(500));
+  EXPECT_EQ(test_support->aggressively_free_resources_count(), 4u);
+  EXPECT_EQ(test_support->flush_pending_work_count(), 7u);
+
+  // Once already idle, another no-op `ReduceCacheUsage()` still flushes
+  // pending context work without scheduling a new idle cleanup.
+  cache_->ReduceCacheUsage();
+  EXPECT_EQ(test_support->flush_pending_work_count(), 8u);
+  EXPECT_EQ(test_raster->shallow_flush_count(), 4u);
+  FastForwardBy(base::Seconds(1));
+  EXPECT_EQ(test_support->aggressively_free_resources_count(), 4u);
+  EXPECT_EQ(test_support->flush_pending_work_count(), 8u);
+
+  {
+    viz::RasterContextProvider::ScopedRasterContextLock context_lock(
+        context_provider_.get());
+    context_provider_->CacheController()->ClientBecameNotVisible(
+        std::move(visibility));
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(
     GpuImageDecodeCacheTests,
     GpuImageDecodeCachePurgeOnTimerTest,
@@ -4303,6 +4408,104 @@ TEST_P(GpuImageDecodeCacheTest, GainmapImage) {
 
   cache->DrawWithImageFinished(draw_image, decoded_draw_image);
   cache->UnrefImage(draw_image);
+}
+
+TEST_P(GpuImageDecodeCacheTest, GainmapDecodePreservesRawSamples) {
+  if (color_type_ == kARGB_4444_SkColorType) {
+    GTEST_SKIP() << "ARGB_4444 does not support color-space conversion.";
+  }
+
+  class GainmapRecordingGenerator : public FakePaintImageGenerator {
+   public:
+    explicit GainmapRecordingGenerator(const SkImageInfo& info)
+        : FakePaintImageGenerator(info) {}
+
+    bool GetPixels(SkPixmap pixmap,
+                   size_t frame_index,
+                   PaintImage::GeneratorClientId client_id,
+                   uint64_t lazy_pixel_ref) override {
+      if (!FakePaintImageGenerator::GetPixels(pixmap, frame_index, client_id,
+                                              lazy_pixel_ref)) {
+        return false;
+      }
+      decoded_samples.clear();
+      for (int x = 0; x < pixmap.width(); ++x) {
+        decoded_samples.push_back(pixmap.getColor(x, 0));
+      }
+      return true;
+    }
+
+    std::vector<SkColor> decoded_samples;
+  };
+
+  for (bool use_pq_transfer : {false, true}) {
+    SCOPED_TRACE(use_pq_transfer ? "PQ Rec. 2020" : "linear Rec. 2020");
+    const skcms_TransferFunction& transfer_function =
+        use_pq_transfer ? SkNamedTransferFn::kPQ : SkNamedTransferFn::kLinear;
+    sk_sp<SkColorSpace> base_color_space =
+        SkColorSpace::MakeRGB(transfer_function, SkNamedGamut::kRec2020);
+    constexpr int kWidth = 3;
+    const SkImageInfo base_info = SkImageInfo::Make(
+        kWidth, 1, kN32_SkColorType, kPremul_SkAlphaType, base_color_space);
+    const SkImageInfo gainmap_sk_image_info = SkImageInfo::Make(
+        kWidth, 1, kN32_SkColorType, kOpaque_SkAlphaType, nullptr);
+    auto base_generator = sk_make_sp<FakePaintImageGenerator>(base_info);
+    auto gainmap_generator =
+        sk_make_sp<GainmapRecordingGenerator>(gainmap_sk_image_info);
+    constexpr std::array<uint8_t, kWidth> kSamples = {0, 128, 255};
+    for (int x = 0; x < kWidth; ++x) {
+      gainmap_generator->GetPixmap().writable_addr32(x, 0)[0] =
+          SkColorSetARGB(255, kSamples.at(x), kSamples.at(x), kSamples.at(x));
+    }
+
+    PaintImage paint_image = PaintImageBuilder::WithDefault()
+                                 .set_id(PaintImage::GetNextId())
+                                 .set_paint_image_generator(base_generator)
+                                 .set_gainmap_paint_image_generator(
+                                     gainmap_generator, SkGainmapInfo())
+                                 .TakePaintImage();
+    DrawImage draw_image = CreateDrawImageInternal(paint_image);
+    auto cache = CreateCache();
+    const uint32_t client_id = cache->GenerateClientId();
+    ImageDecodeCache::TaskResult result = cache->GetTaskForImageAndRef(
+        client_id, draw_image, ImageDecodeCache::TracingInfo());
+    ASSERT_TRUE(result.need_unref);
+    ASSERT_TRUE(result.task);
+    ASSERT_FALSE(result.task->dependencies().empty());
+
+    TestTileTaskRunner::ProcessTask(result.task->dependencies()[0].get());
+    TestTileTaskRunner::ProcessTask(result.task.get());
+
+    {
+      viz::RasterContextProvider::ScopedRasterContextLock context_lock(
+          context_provider());
+      DecodedDrawImage decoded_draw_image =
+          cache->GetDecodedImageForDraw(draw_image);
+      cache->DrawWithImageFinished(draw_image, decoded_draw_image);
+    }
+    cache->UnrefImage(draw_image);
+
+    const std::vector<SkImageInfo> base_decode_infos =
+        base_generator->decode_infos();
+    ASSERT_FALSE(base_decode_infos.empty());
+    for (const SkImageInfo& decode_info : base_decode_infos) {
+      EXPECT_TRUE(SkColorSpace::Equals(base_color_space.get(),
+                                       decode_info.colorSpace()));
+    }
+    const std::vector<SkImageInfo> gainmap_decode_infos =
+        gainmap_generator->decode_infos();
+    ASSERT_FALSE(gainmap_decode_infos.empty());
+    for (const SkImageInfo& decode_info : gainmap_decode_infos) {
+      EXPECT_EQ(nullptr, decode_info.colorSpace());
+    }
+    ASSERT_EQ(kWidth,
+              static_cast<int>(gainmap_generator->decoded_samples.size()));
+    for (int x = 0; x < kWidth; ++x) {
+      const SkColor expected =
+          SkColorSetARGB(255, kSamples.at(x), kSamples.at(x), kSamples.at(x));
+      EXPECT_EQ(expected, gainmap_generator->decoded_samples[x]);
+    }
+  }
 }
 
 TEST_P(GpuImageDecodeCacheTest, GainmapImageFailsDecode) {

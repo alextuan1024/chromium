@@ -32,7 +32,7 @@ namespace {
 
 void RunDeclarativeContentHooksDelegateHandlerCallback(
     const v8::FunctionCallbackInfo<v8::Value>& info) {
-  CHECK(info.Data()->IsExternal());
+  CHECK(info.Data().As<v8::Value>()->IsExternal());
   v8::Local<v8::External> external = info.Data().As<v8::External>();
   auto* callback =
       static_cast<DeclarativeContentHooksDelegate::HandlerCallback*>(

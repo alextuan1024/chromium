@@ -2,14 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
 
 import {CrLitElement, html} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {assertEquals, assertFalse, assertThrows, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {AnimationTracker, ToolbarActionContainerMixin} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {KeyedActionState, ToolbarActionContainerMixinInterface} from 'chrome://webui-toolbar.top-chrome/app.js';
+import {AnimationTracker, FlatEdge, ToolbarActionContainerMixin} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import type {KeyedActionState, ToolbarActionContainerMixinInterface} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {PinnedToolbarAction, PinnedToolbarActionEngagedIndicatorStyle} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 interface TestState {
   id: string;
@@ -433,11 +434,7 @@ suite('ToolbarActionContainerMixinTest', function() {
     await microtasksFinished();
 
     // Start drag.
-    element.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'a'},
-      bubbles: true,
-      composed: true,
-    }));
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
     await microtasksFinished();
 
     // Dispatch dragenter to simulate entering the host from outside.
@@ -532,11 +529,7 @@ suite('ToolbarActionContainerMixinTest', function() {
     await microtasksFinished();
 
     // Start drag on 'a'.
-    element.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'a'},
-      bubbles: true,
-      composed: true,
-    }));
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
     await microtasksFinished();
 
     // Verify 'a' has placeholder.
@@ -600,11 +593,7 @@ suite('ToolbarActionContainerMixinTest', function() {
     assertEquals('Item A Updated', childElA_afterUpdate.textContent.trim());
 
     // Start drag on 'a'.
-    element.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'a'},
-      bubbles: true,
-      composed: true,
-    }));
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
     await microtasksFinished();
 
     // Verify drag is NOT aborted (placeholder flag should be set).
@@ -619,11 +608,7 @@ suite('ToolbarActionContainerMixinTest', function() {
     await microtasksFinished();
 
     // Start drag.
-    element.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'a'},
-      bubbles: true,
-      composed: true,
-    }));
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
     await microtasksFinished();
 
     // Verify element 'a' has dragPlaceholder.
@@ -647,11 +632,7 @@ suite('ToolbarActionContainerMixinTest', function() {
     assertEquals('b', element.keyedStates[1]!.key);
 
     // End drag (aborted)
-    element.dispatchEvent(new CustomEvent('toolbar-action-drag-end', {
-      detail: {itemId: 'a', dropEffect: 'none'},
-      bubbles: true,
-      composed: true,
-    }));
+    element.fire('toolbar-action-drag-end', {itemId: 'a', dropEffect: 'none'});
     await microtasksFinished();
 
     // Verify drag is ended and layout updated to Mojo order (b then a).
@@ -669,11 +650,7 @@ suite('ToolbarActionContainerMixinTest', function() {
     await microtasksFinished();
 
     // Start drag.
-    element.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: 'a'},
-      bubbles: true,
-      composed: true,
-    }));
+    element.fire('toolbar-action-drag-start', {itemId: 'a'});
     await microtasksFinished();
 
     assertTrue(element.keyedStates[0]!.dragPlaceholder === true);
@@ -693,5 +670,116 @@ suite('ToolbarActionContainerMixinTest', function() {
     assertEquals('b', element.keyedStates[0]!.key);
     assertFalse(element.keyedStates.some(s => s.key === 'a'));
     assertFalse(!!element.shadowRoot.querySelector('[data-key="a"]'));
+  });
+
+  test('RespectsReducedMotion', async function() {
+    const prefersReducedMotion =
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    AnimationTracker.resetForTesting();
+    assertEquals(!prefersReducedMotion, AnimationTracker.showAnimations);
+
+    // Verify real toolbar_action_container.css @media (prefers-reduced-motion:
+    // reduce) rules on webui-toolbar-extensions and pinned-toolbar-actions
+    // (including ::after border-color transition and child action/divider
+    // transitions).
+    const extensions = document.createElement('webui-toolbar-extensions');
+    const pinnedActions = document.createElement('pinned-toolbar-actions');
+    document.body.appendChild(extensions);
+    document.body.appendChild(pinnedActions);
+    try {
+      await microtasksFinished();
+      extensions.markInitialStateRendered();
+      extensions.states = [{
+        id: {extensionId: 'ext-1'},
+        accessibleName: 'Ext 1',
+        tooltip: 'Ext 1',
+        isVisible: true,
+        forceVisible: false,
+        icon: {handleId: 0n},
+        isPinnedByDefaultIphAnchor: false,
+        highlighted: false,
+        text: '',
+        flatEdge: FlatEdge.kNone,
+      }];
+      await microtasksFinished();
+
+      pinnedActions.states = [
+        {
+          action: PinnedToolbarAction.kNewIncognitoWindow,
+          highlighted: false,
+          enabled: true,
+          activated: false,
+          engagedIndicatorStyle:
+              PinnedToolbarActionEngagedIndicatorStyle.kUnderline,
+          elementId: null,
+          accessibilityText: 'Incognito',
+          tooltip: 'Incognito',
+          icon: {handleId: 0n},
+          progressRing: null,
+          badgeNumber: null,
+          iconSizeDelta: 0,
+        },
+      ];
+      await microtasksFinished();
+      pinnedActions.states = [
+        ...pinnedActions.states,
+        {
+          action: PinnedToolbarAction.kDivider,
+          highlighted: false,
+          enabled: false,
+          activated: false,
+          engagedIndicatorStyle:
+              PinnedToolbarActionEngagedIndicatorStyle.kUnderline,
+          elementId: null,
+          accessibilityText: '',
+          tooltip: '',
+          icon: {handleId: 0n},
+          progressRing: null,
+          badgeNumber: null,
+          iconSizeDelta: 0,
+        },
+      ];
+      await microtasksFinished();
+
+      const extChild =
+          extensions.shadowRoot.querySelector('webui-toolbar-extension')!;
+      const extDivider =
+          extensions.shadowRoot.querySelector('toolbar-divider')!;
+      const pinnedChild =
+          pinnedActions.shadowRoot.querySelector('pinned-toolbar-action')!;
+      const pinnedDivider =
+          pinnedActions.shadowRoot.querySelector('toolbar-divider')!;
+
+      if (prefersReducedMotion) {
+        assertEquals(
+            'none',
+            window.getComputedStyle(extensions, '::after').transitionProperty);
+        assertEquals(
+            '0s',
+            window.getComputedStyle(extensions, '::after').transitionDuration);
+        for (const child
+                 of [extChild, extDivider, pinnedChild, pinnedDivider]) {
+          assertEquals(
+              'none', window.getComputedStyle(child).transitionProperty);
+          assertEquals('0s', window.getComputedStyle(child).transitionDuration);
+        }
+      } else {
+        assertEquals(
+            'border-color',
+            window.getComputedStyle(extensions, '::after').transitionProperty);
+        assertEquals(
+            '0.15s',
+            window.getComputedStyle(extensions, '::after').transitionDuration);
+        for (const child
+                 of [extChild, extDivider, pinnedChild, pinnedDivider]) {
+          assertEquals(
+              '0.3s, 0.3s, 0.3s, 0.2s',
+              window.getComputedStyle(child).transitionDuration);
+        }
+      }
+    } finally {
+      extensions.remove();
+      pinnedActions.remove();
+    }
   });
 });

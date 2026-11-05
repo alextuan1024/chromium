@@ -8,17 +8,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <concepts>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
 #include <utility>
 
+#include "base/callback_list.h"
+#include "base/check.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/memory_pressure_listener.h"
+#include "base/memory/memory_pressure_level.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/safe_ref.h"
@@ -47,6 +50,7 @@
 #include "content/common/media/media_log_records.mojom-forward.h"
 #include "content/common/renderer.mojom.h"
 #include "content/common/renderer_host.mojom.h"
+#include "content/common/renderer_variations_configuration.mojom.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/process_allocation_context.h"
@@ -116,6 +120,7 @@
 namespace base {
 class CommandLine;
 class PersistentMemoryAllocator;
+class ReadOnlySharedMemoryRegion;
 #if BUILDFLAG(IS_ANDROID)
 namespace android {
 enum class ChildBindingState;
@@ -178,7 +183,8 @@ struct GlobalRenderFrameHostId;
 
 typedef base::Thread* (*RendererMainThreadFactoryFunction)(
     const InProcessChildThreadParams& params,
-    int32_t renderer_client_id);
+    int32_t renderer_client_id,
+    base::ReadOnlySharedMemoryRegion renderer_process_security_state);
 
 // Implements a concrete RenderProcessHost for the browser process for talking
 // to actual renderer processes (as opposed to mocks).
@@ -205,11 +211,10 @@ class CONTENT_EXPORT RenderProcessHostImpl
       public mojom::RendererHost,
       public blink::mojom::DomStorageProvider,
       public memory_instrumentation::mojom::CoordinatorConnector,
-      public metrics::HistogramChildProcess,
 #if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
       public media::mojom::VideoDecoderTracker,
 #endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
-      public base::MemoryPressureListener {
+      public metrics::HistogramChildProcess {
  public:
   // Special depth used when there are no RenderProcessHostPriorityClients.
   static const unsigned int kMaxFrameDepthForPriority;
@@ -233,6 +238,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
   RenderProcessHostImpl& operator=(const RenderProcessHostImpl& other) = delete;
 
   // RenderProcessHost implementation (public portion).
+  bool IsMock() const override;
   bool Init() override;
   void EnableSendQueue() override;
   int GetNextRoutingID() override;
@@ -313,6 +319,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
   const base::TimeTicks& GetLastInitTime() override;
   base::Process::Priority GetPriority() const override;
   base::TimeTicks GetProcessLaunchedTime() const override;
+  const StartupTimings& GetStartupTimings() const override;
   std::string GetKeepAliveDurations() const override;
   size_t GetShutdownDelayRefCount() const override;
   int GetRenderFrameHostCount() const override;
@@ -322,6 +329,8 @@ class CONTENT_EXPORT RenderProcessHostImpl
   void UnregisterRenderFrameHost(
       const GlobalRenderFrameHostId& render_frame_host_id,
       bool is_outermost_main_frame) override;
+  void GrantRendererProcessCapability(
+      blink::RendererProcessCapability capability) override;
   void ForEachRenderFrameHost(
       base::FunctionRef<void(RenderFrameHost*)> on_render_frame_host) override;
   void IncrementWorkerRefCount() override;
@@ -332,6 +341,8 @@ class CONTENT_EXPORT RenderProcessHostImpl
   void DisableRefCounts() override;
   bool AreRefCountsDisabled() override;
   mojom::Renderer* GetRendererInterface() override;
+  mojom::RendererVariationsConfiguration* GetRendererVariationsConfiguration()
+      override;
 
   blink::mojom::CallStackGenerator* GetJavaScriptCallStackGeneratorInterface();
 
@@ -341,8 +352,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
 
   bool HostHasNotBeenUsed() override;
   bool IsSpare() const override;
-  void SetProcessLock(const IsolationContext& isolation_context,
-                      const ProcessLock& process_lock) override;
+  void SetProcessLock(const ProcessLock& process_lock) override;
   ProcessLock GetProcessLock() const override;
   bool IsProcessLockedToSiteForTesting() override;
   void BindCacheStorage(
@@ -374,6 +384,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
   void SetBatterySaverMode(bool battery_saver_mode_enabled) override;
   uint64_t GetPrivateMemoryFootprint() override;
   bool IsOnlyHostingPrerenderedFramesOrEmpty() override;
+  bool HasLoadingFrames() const override;
 
   void PauseSocketManagerForRenderFrameHost(
       const GlobalRenderFrameHostId& render_frame_host_id) override;
@@ -442,11 +453,6 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // list.
   static void RegisterHost(ChildProcessId host_id, RenderProcessHost* host);
   static void UnregisterHost(ChildProcessId host_id);
-
-  // TODO(crbug.com/379869738): Deprecated, please use the ChildProcessId
-  // version above.
-  static void RegisterHost(int host_id, RenderProcessHost* host);
-  static void UnregisterHost(int host_id);
 
   // "Keep alive ref count" represents the number of the customers of this
   // render process who wish the renderer process to be alive. While the ref
@@ -701,6 +707,12 @@ class CONTENT_EXPORT RenderProcessHostImpl
 
   void OnBoostForLoadingAdded() override;
   void OnBoostForLoadingRemoved() override;
+
+  // Called when the process enters a state where it is executing in the
+  // background but requires OS foreground priority. This is used to determine
+  // if the process should be backgrounded or not.
+  void OnBoostForBackgroundExecutionAdded();
+  void OnBoostForBackgroundExecutionRemoved();
 
   void OnImmersiveXrSessionStarted() override;
   void OnImmersiveXrSessionStopped() override;
@@ -1152,9 +1164,9 @@ class CONTENT_EXPORT RenderProcessHostImpl
       mojo::PendingRemote<memory_instrumentation::mojom::ClientProcess>
           client_process) override;
 
-  // base::MemoryPressureListener:
-  void OnMemoryPressure(
-      base::MemoryPressureLevel memory_pressure_level) override;
+  // Forwards the memory pressure level to the child process.
+  void OnMemoryPressureLevelUpdated(
+      base::MemoryPressureLevel memory_pressure_level);
 
   // Generates a command line to be used to spawn a renderer and appends the
   // results to |*command_line|.
@@ -1236,7 +1248,9 @@ class CONTENT_EXPORT RenderProcessHostImpl
 
   // Returns whether this RenderProcessHost contains at least one
   // RenderFrameHost, but all of its RenderFrameHosts are non-live. In this case
-  // the RenderProcessHost is needed but the renderer process is not.
+  // the RenderProcessHost is needed but the renderer process is not. As
+  // exceptions, this returns false if any RenderFrameHost is pending deletion
+  // or belongs to an inner WebContents for a guest.
   bool HasOnlyNonLiveRenderFrameHosts();
 
   // Get an existing RenderProcessHost associated with the given browser
@@ -1415,7 +1429,15 @@ class CONTENT_EXPORT RenderProcessHostImpl
   base::flat_set<raw_ptr<RenderProcessHostPriorityClient, CtnExperimental>>
       priority_clients_;
 
+  // The calculated priority of this process, which is exposed through
+  // GetPriority() and to observers.
   RenderProcessPriority priority_;
+
+  // The priority actually applied to the OS process and sent to the renderer.
+  // This matches `priority_`, except when --disable-renderer-backgrounding is
+  // set, in which case the process is kept visible and, on desktop, the
+  // priority override is ignored.
+  RenderProcessPriority applied_priority_;
 
   // On Desktop platforms, if this is set then the built-in process priority
   // calculation system is ignored, and an externally computed process priority
@@ -1490,8 +1512,15 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // Records the last time we regarded the child process active.
   base::TimeTicks child_process_activity_time_;
 
-  // The time that this process was launched.
+  // The time that this process was launched. Reset in `Init()` and set in
+  // `OnProcessLaunched()`.
   base::TimeTicks process_launched_time_;
+
+  // Browser-side launch timestamps for this process. Reset in `Init()`, with
+  // the launch fields filled in `OnProcessLaunched()` (falling back to
+  // `process_launched_time_` when there is no `ChildProcessLauncher`, i.e. for
+  // the in-process renderer).
+  StartupTimings startup_timings_;
 
   // The time that a shutdown of the renderer process was requested.
   base::TimeTicks shutdown_start_time_;
@@ -1501,11 +1530,6 @@ class CONTENT_EXPORT RenderProcessHostImpl
 
   // A set of flags that influence RenderProcessHost behavior.
   int flags_;
-
-  // Indicates whether this RenderProcessHost is unused, meaning that it has
-  // not committed any web content, and it has not been given to a SiteInstance
-  // that has a site assigned.
-  bool is_unused_ = true;
 
   // Set if a call to Cleanup is required once the RenderProcessHostImpl is no
   // longer within the RenderProcessHostObserver::RenderProcessExited callbacks.
@@ -1579,6 +1603,16 @@ class CONTENT_EXPORT RenderProcessHostImpl
   scoped_refptr<base::RefCountedData<base::ReadOnlySharedMemoryRegion>>
       tracing_config_memory_region_;
 
+  // Capabilities monotonically granted to this RenderProcessHost. Used to
+  // initialize `renderer_process_security_state_` in `Init()`, preserving
+  // grants made before `Init()` or across renderer restarts.
+  uint32_t granted_renderer_process_capabilities_ = 0;
+
+  // Browser-owned writable state for the currently initialized renderer
+  // process. The renderer receives only a read-only handle to this region.
+  std::optional<base::AtomicSharedMemory<uint32_t>>
+      renderer_process_security_state_;
+
   // The tracing output memory region.  Ownership of the memory region is
   // allocated by the process host (this object) but ownership is shared with
   // the child process launcher/helper which runs, and is destroyed,
@@ -1609,6 +1643,8 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // This will be bound to |io_thread_host_impl_|.
   mojo::PendingReceiver<mojom::ChildProcessHost> child_host_pending_receiver_;
   mojo::AssociatedRemote<mojom::Renderer> renderer_interface_;
+  mojo::AssociatedRemote<mojom::RendererVariationsConfiguration>
+      renderer_variations_configuration_;
   mojo::Remote<blink::mojom::CallStackGenerator>
       javascript_call_stack_generator_interface_;
   mojo::AssociatedReceiver<mojom::RendererHost> renderer_host_receiver_{this};
@@ -1635,6 +1671,10 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // Tracks the count of render frame host that requested prioritize the
   // processing commit navigation and initial loading (crbug/351953350).
   int boost_for_loading_count_ = 0;
+
+  // Tracks the count of background execution environments (e.g. headless
+  // automation targets) that strictly require OS foreground priority.
+  int boost_for_background_execution_count_ = 0;
 
   // Tracks whether or not the current process is in an immersive webxr session.
   // Used to determine if a process should not be backgrounded.
@@ -1705,8 +1745,9 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // Tracing track used to emit async event related to lifecycle.
   perfetto::NamedTrack tracing_track_;
 
-  std::optional<base::MemoryPressureListenerRegistration>
-      memory_pressure_listener_registration_;
+  // Subscription to the memory pressure notifications of the
+  // MemoryPressureSource.
+  base::CallbackListSubscription memory_pressure_subscription_;
 
   mojo::ScopedMessagePipeHandle initial_gpu_channel_;
 
@@ -1723,6 +1764,19 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // doesn't get reset until this RenderProcessHost object is actually deleted.
   base::WeakPtrFactory<RenderProcessHostImpl> safe_ref_factory_{this};
 };
+
+// Downcasts `rph` to a RenderProcessHostImpl. Every RenderProcessHost in
+// //content is one except MockRenderProcessHost, which derives straight from
+// the public interface, so this CHECKs rather than letting a test fake through
+// as undefined behavior.
+template <typename T>
+  requires std::derived_from<T, RenderProcessHostImpl>
+T* To(RenderProcessHost* rph) {
+  // Null passes through, like the static_cast this stands in for.
+  CHECK(!rph || !rph->IsMock())
+      << "A test fake cannot be cast to RenderProcessHostImpl";
+  return static_cast<T*>(rph);
+}
 
 }  // namespace content
 

@@ -15,7 +15,9 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/timing/animation_frame_timing_info.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
@@ -46,7 +48,7 @@ class CORE_EXPORT AnimationFrameTimingMonitor final
     : public GarbageCollected<AnimationFrameTimingMonitor>,
       public base::sequence_manager::TaskTimeObserver {
  public:
-  class Client {
+  class Client : public GarbageCollectedMixin {
    public:
     virtual void ReportLongTaskTiming(base::TimeTicks start,
                                       base::TimeTicks end,
@@ -97,13 +99,11 @@ class CORE_EXPORT AnimationFrameTimingMonitor final
                          LazySourceLocation* location);
   void Will(const probe::EvaluateScriptBlock&);
   void Did(const probe::EvaluateScriptBlock& probe_data) {
-    PopScriptEntryPoint(&probe_data.script_state, &probe_data);
+    PopScriptEntryPoint(&probe_data);
   }
   void Will(const probe::ExecuteScript&);
   void Did(const probe::ExecuteScript& probe_data) {
-    PopScriptEntryPoint(
-        ScriptState::ForCurrentRealm(probe_data.context->GetIsolate()),
-        &probe_data);
+    PopScriptEntryPoint(&probe_data);
   }
   void Will(const probe::RecalculateStyle&);
   void Did(const probe::RecalculateStyle&);
@@ -111,7 +111,7 @@ class CORE_EXPORT AnimationFrameTimingMonitor final
   void Did(const probe::UpdateLayout&);
   void Will(const probe::InvokeCallback&);
   void Did(const probe::InvokeCallback& probe_data) {
-    PopScriptEntryPoint(&probe_data.script_state, &probe_data);
+    PopScriptEntryPoint(&probe_data);
   }
   void Will(const probe::FrameRelatedTask& probe) { probe.CaptureStartTime(); }
   void Did(const probe::FrameRelatedTask& probe);
@@ -124,18 +124,27 @@ class CORE_EXPORT AnimationFrameTimingMonitor final
   void DidFinishSyncXHR(base::TimeDelta);
   void WillHandleInput(LocalFrame*);
 
-  void MarkConditional(const AtomicString& name, base::TimeTicks start_time);
+  void MarkConditional(const AtomicString& name,
+                       base::TimeTicks start_time,
+                       LocalDOMWindow* window);
   void MeasureConditional(const AtomicString& name,
                           const AtomicString& start_mark,
                           const AtomicString& end_mark,
-                          base::TimeTicks end_time);
+                          base::TimeTicks end_time,
+                          LocalDOMWindow* window);
 
  private:
   Member<AnimationFrameTimingInfo> current_frame_timing_info_;
   HeapVector<Member<ScriptTimingInfo>> current_scripts_;
-  Vector<ConditionalMarkInfo> conditional_marks_;
-  Vector<ConditionalMeasureInfo> conditional_measures_;
-  HashMap<AtomicString, base::TimeTicks> conditional_mark_names_to_timestamps_;
+  HeapVector<Member<ConditionalMarkInfo>> conditional_marks_;
+  HeapVector<Member<ConditionalMeasureInfo>> conditional_measures_;
+  using ConditionalMarkNameToTimestampMap =
+      HashMap<AtomicString, base::TimeTicks>;
+  // Mark timestamps, partitioned by the window that created them, so that a
+  // conditional measure can only resolve its own window's marks. The weak key
+  // drops entries automatically once a window goes away.
+  HeapHashMap<WeakMember<LocalDOMWindow>, ConditionalMarkNameToTimestampMap>
+      window_to_conditional_mark_timestamps_;
   viz::BeginFrameId current_begin_frame_id_;
   struct PendingScriptInfo {
     ScriptTimingInfo::InvokerType invoker_type;
@@ -156,7 +165,6 @@ class CORE_EXPORT AnimationFrameTimingMonitor final
   };
 
   ScriptTimingInfo* PopScriptEntryPoint(
-      ScriptState* script_state,
       const probe::ProbeBase* probe,
       base::TimeTicks end_time = base::TimeTicks());
   ScriptTimingInfo* PopScriptEntryPointInternal(
@@ -193,8 +201,10 @@ class CORE_EXPORT AnimationFrameTimingMonitor final
   void ApplyTaskDuration(base::TimeDelta task_duration);
 
   std::optional<PendingScriptInfo> pending_script_info_;
+  WeakMember<ExecutionContext> pending_script_context_;
   HashMap<size_t, PendingScriptInfo> user_entry_points_;
-  const raw_ref<Client, UnprotectedInRelease | DanglingUntriaged> client_;
+  const Member<Client> client_;
+  Member<CoreProbeSink> probe_sink_;
 
   enum class State {
     // No task running, no pending frames.

@@ -36,6 +36,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -395,7 +396,7 @@ class AshNotificationViewTestBase : public AshTestBase,
     return static_cast<AshNotificationView*>(
         view->grouped_notifications_container_->children().front());
   }
-  std::vector<raw_ptr<views::View, VectorExperimental>> GetChildNotifications(
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> GetChildNotifications(
       AshNotificationView* view) {
     return view->grouped_notifications_container_->children();
   }
@@ -446,7 +447,7 @@ class AshNotificationViewTestBase : public AshTestBase,
   views::View* GetActionButtonsRow(AshNotificationView* view) {
     return view->action_buttons_row();
   }
-  std::vector<raw_ptr<views::LabelButton, VectorExperimental>> GetActionButtons(
+  std::vector<raw_ptr<views::LabelButton, DanglingUntriaged>> GetActionButtons(
       AshNotificationView* view) {
     return view->action_buttons();
   }
@@ -2294,6 +2295,12 @@ TEST_F(AshNotificationViewTest, TestDeleteOnToggleInlineSettings) {
             test_api->GetNotificationViewForId(id));
         if (view && view->GetWidget()) {
           view->GetWidget()->CloseNow();
+          // The tray frees the closed widget, and with it the view, in a
+          // posted task. Run it so the view is deleted during the call.
+          base::RunLoop run_loop;
+          base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+              FROM_HERE, run_loop.QuitClosure());
+          run_loop.Run();
         }
       },
       base::Unretained(test_api), "id");
@@ -2339,6 +2346,12 @@ TEST_F(AshNotificationViewTest, TestDeleteOnToggleSnoozeSettings) {
             test_api->GetNotificationViewForId(id));
         if (view && view->GetWidget()) {
           view->GetWidget()->CloseNow();
+          // The tray frees the closed widget, and with it the view, in a
+          // posted task. Run it so the view is deleted during the call.
+          base::RunLoop run_loop;
+          base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+              FROM_HERE, run_loop.QuitClosure());
+          run_loop.Run();
         }
       },
       base::Unretained(test_api), "id");
@@ -2385,6 +2398,12 @@ TEST_F(AshNotificationViewTest, TestDeleteOnToggleExpand) {
             test_api->GetNotificationViewForId(id));
         if (view && view->GetWidget()) {
           view->GetWidget()->CloseNow();
+          // The tray frees the closed widget, and with it the view, in a
+          // posted task. Run it so the view is deleted during the call.
+          base::RunLoop run_loop;
+          base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+              FROM_HERE, run_loop.QuitClosure());
+          run_loop.Run();
         }
       },
       base::Unretained(test_api), "id");

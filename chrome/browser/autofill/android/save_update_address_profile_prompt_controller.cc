@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "base/i18n/language_tag.h"
 #include "base/notimplemented.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -18,7 +19,9 @@
 #include "chrome/browser/autofill/android/save_update_address_profile_prompt_view.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/field_types.h"
@@ -28,6 +31,7 @@
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/base/l10n/l10n_util.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -52,7 +56,9 @@ SaveUpdateAddressProfilePromptController::
       decision_callback_(std::move(decision_callback)),
       dismissal_callback_(std::move(dismissal_callback)) {
   if (original_profile_) {
-    const std::string& locale = g_browser_process->GetApplicationLocale();
+    const base::i18n::LanguageTag& locale = g_browser_process->GetFeatures()
+                                                ->application_locale_storage()
+                                                ->GetTag();
     differences_for_ui_ =
         GetProfileDifferenceForUi(original_profile_.value(), profile_, locale);
     // TODO(crbug.com/481234059): Convert this to CHECK after investigation.
@@ -61,9 +67,9 @@ SaveUpdateAddressProfilePromptController::
     DUMP_WILL_BE_CHECK(!differences_for_ui_.empty());
     std::tie(old_diff_, new_diff_) = GetDiffFromOldToNewProfile();
   }
-  DCHECK(prompt_view_);
-  DCHECK(decision_callback_);
-  DCHECK(dismissal_callback_);
+  CHECK(prompt_view_, base::NotFatalUntil::M161);
+  CHECK(decision_callback_, base::NotFatalUntil::M161);
+  CHECK(dismissal_callback_, base::NotFatalUntil::M161);
 }
 
 SaveUpdateAddressProfilePromptController::
@@ -208,7 +214,9 @@ std::u16string SaveUpdateAddressProfilePromptController::GetAddress() const {
     return base::StrCat({name, separator, address});
   } else {
     return GetEnvelopeStyleAddress(profile_,
-                                   g_browser_process->GetApplicationLocale(),
+                                   g_browser_process->GetFeatures()
+                                       ->application_locale_storage()
+                                       ->GetTag(),
                                    /*include_recipient=*/true,
                                    /*include_country=*/true);
   }
@@ -226,8 +234,9 @@ std::u16string SaveUpdateAddressProfilePromptController::GetPhoneNumber()
 }
 
 std::u16string SaveUpdateAddressProfilePromptController::GetSubtitle() const {
-  DCHECK(original_profile_);
-  const std::string locale = g_browser_process->GetApplicationLocale();
+  CHECK(original_profile_, base::NotFatalUntil::M161);
+  const base::i18n::LanguageTag& locale =
+      g_browser_process->GetFeatures()->application_locale_storage()->GetTag();
   bool address_updated = std::ranges::contains(
       differences_for_ui_, ADDRESS_HOME_ADDRESS, &ProfileValueDifference::type);
   return GetProfileDescription(
@@ -245,7 +254,7 @@ std::u16string SaveUpdateAddressProfilePromptController::GetNewDiff() const {
 
 std::pair<std::u16string, std::u16string>
 SaveUpdateAddressProfilePromptController::GetDiffFromOldToNewProfile() const {
-  DCHECK(original_profile_);
+  CHECK(original_profile_, base::NotFatalUntil::M161);
 
   std::u16string old_diff;
   std::u16string new_diff;
@@ -273,7 +282,7 @@ base::android::ScopedJavaLocalRef<jobject>
 SaveUpdateAddressProfilePromptController::GetJavaObject() {
   if (!java_object_) {
     java_object_ = Java_SaveUpdateAddressProfilePromptController_create(
-        base::android::AttachCurrentThread(), reinterpret_cast<intptr_t>(this));
+        base::android::AttachCurrentThread(), jni_zero::MakeRaw(this));
   }
   return base::android::ScopedJavaLocalRef<jobject>(java_object_);
 }

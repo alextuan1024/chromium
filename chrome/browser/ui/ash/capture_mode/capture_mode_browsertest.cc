@@ -5,6 +5,7 @@
 #include "ash/capture_mode/capture_mode_test_util.h"
 #include "ash/capture_mode/capture_mode_types.h"
 #include "ash/constants/ash_features.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "ash/public/cpp/capture_mode/capture_mode_test_api.h"
 #include "ash/public/cpp/projector/projector_client.h"
 #include "ash/public/cpp/projector/projector_controller.h"
@@ -44,7 +45,6 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
@@ -52,6 +52,7 @@
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "media/base/media_switches.h"
 #include "media/base/video_frame.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -65,19 +66,16 @@
 
 namespace {
 
-// Defines a report-level restriction type for screen captures.
-const policy::DlpContentRestrictionSet kScreenCaptureReported{
-    policy::DlpContentRestriction::kScreenshot,
-    policy::DlpRulesManager::Level::kReport};
-// Defines a warning-level restriction type for screen captures.
-const policy::DlpContentRestrictionSet kScreenCaptureWarned{
-    policy::DlpContentRestriction::kScreenshot,
-    policy::DlpRulesManager::Level::kWarn};
-
 constexpr char kSrcPattern[] = "example.com";
 constexpr char kRuleName[] = "rule #1";
 constexpr char kRuleId[] = "testid1";
-const policy::DlpRulesManager::RuleMetadata kRuleMetadata(kRuleName, kRuleId);
+
+// Returns a screen capture restriction set at the given enforcement `level`.
+policy::DlpContentRestrictionSet ScreenCaptureRestriction(
+    policy::DlpRulesManager::Level level) {
+  return policy::DlpContentRestrictionSet(
+      policy::DlpContentRestriction::kScreenshot, level);
+}
 
 // Returns the native window of the given `browser`.
 aura::Window* GetBrowserWindow(BrowserWindowInterface* browser) {
@@ -143,8 +141,9 @@ void MarkActiveTabAsDlpWarnedForScreenCapture(BrowserWindowInterface* browser) {
   content::WebContents* web_contents =
       browser->GetTabStripModel()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
-  dlp_content_observer->OnConfidentialityChanged(web_contents,
-                                                 kScreenCaptureWarned);
+  dlp_content_observer->OnConfidentialityChanged(
+      web_contents,
+      ScreenCaptureRestriction(policy::DlpRulesManager::Level::kWarn));
 }
 
 // Waits for video record countdown to be finished.
@@ -181,8 +180,10 @@ std::unique_ptr<KeyedService> SetDlpRulesManager(
       std::make_unique<testing::NiceMock<policy::MockDlpRulesManager>>(
           Profile::FromBrowserContext(context));
   ON_CALL(*dlp_rules_manager, GetSourceUrlPattern)
-      .WillByDefault(testing::DoAll(testing::SetArgPointee<3>(kRuleMetadata),
-                                    testing::Return(kSrcPattern)));
+      .WillByDefault(testing::DoAll(
+          testing::SetArgPointee<3>(
+              policy::DlpRulesManager::RuleMetadata(kRuleName, kRuleId)),
+          testing::Return(kSrcPattern)));
   return dlp_rules_manager;
 }
 
@@ -274,8 +275,9 @@ IN_PROC_BROWSER_TEST_F(CaptureModeDlpBrowserTest, DlpReportingVideoCapture) {
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
-  dlp_content_observer->OnConfidentialityChanged(web_contents,
-                                                 kScreenCaptureReported);
+  dlp_content_observer->OnConfidentialityChanged(
+      web_contents,
+      ScreenCaptureRestriction(policy::DlpRulesManager::Level::kReport));
 
   ash::CaptureModeTestApi test_api;
 
@@ -327,8 +329,9 @@ IN_PROC_BROWSER_TEST_F(CaptureModeDlpBrowserTest,
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   ASSERT_TRUE(web_contents);
-  dlp_content_observer->OnConfidentialityChanged(web_contents,
-                                                 kScreenCaptureReported);
+  dlp_content_observer->OnConfidentialityChanged(
+      web_contents,
+      ScreenCaptureRestriction(policy::DlpRulesManager::Level::kReport));
 
   // Set up a waiter to wait for the file to be saved.
   base::RunLoop loop;
@@ -829,10 +832,10 @@ IN_PROC_BROWSER_TEST_F(CaptureModeSettingsBrowserTest,
             test_api.GetEffectiveAudioRecordingMode());
 
   auto* prefs = ProfileManager::GetActiveUserProfile()->GetPrefs();
-  prefs->SetBoolean(prefs::kAudioCaptureAllowed, false);
+  prefs->SetBoolean(ash::chrome_prefs::kAudioCaptureAllowed, false);
   EXPECT_EQ(ash::AudioRecordingMode::kOff,
             test_api.GetEffectiveAudioRecordingMode());
-  prefs->SetBoolean(prefs::kAudioCaptureAllowed, true);
+  prefs->SetBoolean(ash::chrome_prefs::kAudioCaptureAllowed, true);
   EXPECT_EQ(ash::AudioRecordingMode::kMicrophone,
             test_api.GetEffectiveAudioRecordingMode());
 }
@@ -925,8 +928,20 @@ IN_PROC_BROWSER_TEST_F(CaptureModeProjectorBrowserTests,
   ash::CaptureModeTestApi test_api;
   ASSERT_TRUE(test_api.GetCameraPreviewWidget());
   test_api.SetCaptureModeSource(ash::CaptureModeSource::kWindow);
+
+  auto* app_browser = FindSystemWebAppBrowser(browser()->GetProfile(),
+                                              ash::SystemWebAppType::PROJECTOR,
+                                              ash::BrowserType::kApp);
+  ASSERT_TRUE(app_browser);
+  ASSERT_TRUE(app_browser->IsMinimized());
+  // Escape asynchronously relaunches the existing Projector window. Wait for a
+  // fresh activation so teardown cannot race with that launch.
+  ui_test_utils::BrowserDidBecomeActiveWaiter app_relaunched_waiter(
+      &app_browser->GetBrowser(), /*wait_for_set_last_active_observed=*/true);
   SendKeyEvent(browser(), ui::VKEY_ESCAPE);
   EXPECT_FALSE(test_api.IsSessionActive());
+  app_relaunched_waiter.Wait();
+  ASSERT_TRUE(content::WaitForLoadStop(app_browser->GetActiveWebContents()));
 }
 
 class CaptureModeVideoConferenceBrowserTests

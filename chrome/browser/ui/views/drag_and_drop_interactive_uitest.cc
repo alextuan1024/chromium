@@ -70,7 +70,7 @@
 #include "ui/base/dragdrop/drop_target_event.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/compositor/layer_tree_owner.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
@@ -121,7 +121,7 @@ class DragStartWaiter : public aura::client::DragDropClient {
   explicit DragStartWaiter(content::WebContents* web_contents)
       : web_contents_(web_contents),
         message_loop_runner_(new content::MessageLoopRunner) {
-    DCHECK(web_contents_);
+    CHECK(web_contents_, base::NotFatalUntil::M162);
 
     // Intercept calls to the old DragDropClient.
     gfx::NativeWindow root_window =
@@ -162,7 +162,7 @@ class DragStartWaiter : public aura::client::DragDropClient {
     message_loop_runner_->Run();
 
     // message_loop_runner_->Quit is only called from StartDragAndDrop.
-    DCHECK(drag_started_);
+    CHECK(drag_started_, base::NotFatalUntil::M162);
 
     if (source_origin) {
       *source_origin = source_origin_;
@@ -200,7 +200,7 @@ class DragStartWaiter : public aura::client::DragDropClient {
                                  const gfx::Point& screen_location,
                                  int allowed_operations,
                                  ui::mojom::DragEventSource source) override {
-    DCHECK(!drag_started_);
+    CHECK(!drag_started_, base::NotFatalUntil::M162);
     if (!drag_started_) {
       drag_started_ = true;
       message_loop_runner_->Quit();
@@ -247,7 +247,21 @@ class DragStartWaiter : public aura::client::DragDropClient {
   }
 
   void DragCancel() override {
-    ADD_FAILURE() << "Unexpected call to DragCancel";
+    // Intentionally ignore requests to cancel.
+    //
+    // Some of the tests below validate that no bypassing of cross-origin
+    // restrictions happens in the situation where a drag is initiated and then
+    // the page navigates.
+    //
+    // Starting in 2026, an additional safeguard was added: when a page
+    // navigates, all its ongoing drags are canceled. This makes the earlier
+    // protection (that it being tested for here) moot. However, it's worth
+    // keeping the earlier protection. Therefore, ignore requests to cancel the
+    // drag, and ensure that even if the drag isn't canceled, all cross-origin
+    // restrictions are correctly obeyed.
+    //
+    // Belt and suspenders and all that.
+    drag_was_canceled_ = true;
   }
 
 #if BUILDFLAG(IS_LINUX)
@@ -261,6 +275,8 @@ class DragStartWaiter : public aura::client::DragDropClient {
   void RemoveObserver(aura::client::DragDropClientObserver* observer) override {
   }
 
+  bool WasDragCanceled() { return drag_was_canceled_; }
+
  private:
   raw_ptr<content::WebContents> web_contents_;
   scoped_refptr<content::MessageLoopRunner> message_loop_runner_;
@@ -273,7 +289,8 @@ class DragStartWaiter : public aura::client::DragDropClient {
   std::optional<url::Origin> source_origin_;
   std::string text_;
   std::string html_;
-  int operation_;
+  int operation_ = 0;
+  bool drag_was_canceled_ = false;
   gfx::Point location_inside_web_contents_;
 };
 
@@ -680,7 +697,7 @@ class DragAndDropBrowserTest : public InProcessBrowserTest,
     // going forward.
     frame = web_contents ? GetFrameByName(frame_name, web_contents)
                          : GetFrameByName(frame_name);
-    DCHECK(frame);
+    CHECK(frame, base::NotFatalUntil::M162);
 
     // Wait until hit testing data is ready.
     WaitForHitTestData(frame);
@@ -1920,6 +1937,10 @@ IN_PROC_BROWSER_TEST_P(DragAndDropBrowserTest, MAYBE_CrossNavCrossSiteDrag) {
   // drag-and-drop has already ended.
   drag_start_waiter.WaitUntilDragStart();
 
+  // By now the drag-cancelation-on-navigation should have kicked in, so verify
+  // that.
+  EXPECT_TRUE(drag_start_waiter.WasDragCanceled());
+
   CrossNavCrossSiteDrag_Step3(&state);
 }
 
@@ -2031,7 +2052,7 @@ IN_PROC_BROWSER_TEST_P(DragAndDropBrowserTest, MAYBE_CrossTabDrag) {
   // Add a new tab navigated to the test page, and navigate the right subframe.
   GURL url = https_test_server()->GetURL("a.test", kTestPagePath);
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ASSERT_EQ(browser()->GetTabStripModel()->count(), 2);
 

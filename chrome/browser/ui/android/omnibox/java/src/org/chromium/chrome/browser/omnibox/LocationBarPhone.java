@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.omnibox;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
+import android.graphics.Canvas;
 import android.util.AttributeSet;
 import android.view.Gravity;
 import android.view.View;
@@ -20,8 +21,9 @@ import androidx.core.widget.ImageViewCompat;
 import org.chromium.base.TraceEvent;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.status.StatusCoordinator;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.toolbar.ToolbarVariationUtils;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
@@ -37,6 +39,7 @@ class LocationBarPhone extends LocationBarLayout {
     private final int mUrlCenteringSafetyMarginPx;
     private final int mMinUrlWidthPx;
     private final int mNonCenteredUrlBarEndPaddingPx;
+    private final int mOptionalButtonUrlGapPx;
     private LocationBarDataProvider.@Nullable Observer mUrlObserver;
 
     private @FuseboxState int mFuseboxState = FuseboxState.DISABLED;
@@ -67,6 +70,8 @@ class LocationBarPhone extends LocationBarLayout {
                 res.getDimensionPixelSize(R.dimen.location_bar_url_centering_safety_margin);
         mMinUrlWidthPx = res.getDimensionPixelSize(R.dimen.location_bar_min_url_width);
         mNonCenteredUrlBarEndPaddingPx = res.getDimensionPixelSize(R.dimen.url_bar_end_padding);
+        mOptionalButtonUrlGapPx =
+                res.getDimensionPixelSize(R.dimen.location_bar_optional_button_url_gap);
     }
 
     @Override
@@ -86,13 +91,15 @@ class LocationBarPhone extends LocationBarLayout {
             UrlBarCoordinator urlCoordinator,
             StatusCoordinator statusCoordinator,
             LocationBarDataProvider locationBarDataProvider,
-            WindowAndroid windowAndroid) {
+            WindowAndroid windowAndroid,
+            OmniboxResourceProvider resourceProvider) {
         super.initialize(
                 autocompleteCoordinator,
                 urlCoordinator,
                 statusCoordinator,
                 locationBarDataProvider,
-                windowAndroid);
+                windowAndroid,
+                resourceProvider);
 
         if (isToolbarUiRefactorEnabled()) {
             mUrlObserver =
@@ -152,6 +159,32 @@ class LocationBarPhone extends LocationBarLayout {
         try (TraceEvent e = TraceEvent.scoped("LocationBarPhone.onLayout")) {
             super.onLayout(changed, left, top, right, bottom);
         }
+    }
+
+    @Override
+    protected boolean drawChild(Canvas canvas, View child, long drawingTime) {
+        if (child != mUrlBar
+                || mOptionalButton == null
+                || mOptionalButton.getVisibility() != VISIBLE) {
+            return super.drawChild(canvas, child, drawingTime);
+        }
+
+        // The optional button's action chip expands over the URL. Where it does, stop drawing the
+        // URL short of the chip, so the location bar shows between the two.
+        boolean isRtl = getLayoutDirection() == LAYOUT_DIRECTION_RTL;
+        int chipEdge = isRtl ? mOptionalButton.getRight() : mOptionalButton.getLeft();
+        boolean coversUrl = isRtl ? chipEdge > mUrlBar.getLeft() : chipEdge < mUrlBar.getRight();
+        if (!coversUrl) return super.drawChild(canvas, child, drawingTime);
+
+        canvas.save();
+        if (isRtl) {
+            canvas.clipRect(chipEdge + mOptionalButtonUrlGapPx, 0, getWidth(), getHeight());
+        } else {
+            canvas.clipRect(0, 0, chipEdge - mOptionalButtonUrlGapPx, getHeight());
+        }
+        boolean result = super.drawChild(canvas, child, drawingTime);
+        canvas.restore();
+        return result;
     }
 
     @Override

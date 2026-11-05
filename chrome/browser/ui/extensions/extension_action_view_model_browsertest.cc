@@ -59,9 +59,9 @@
 #include "ui/native_theme/native_theme.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
+#include "chrome/browser/ui/views/extensions/extensions_container_views.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -436,10 +436,15 @@ IN_PROC_BROWSER_TEST_P(ExtensionActionViewModelFeatureRolloutBrowserTest,
   // Unpin the extension and ephemerally pop it out.
   // We skip this test on Android because popping out an extension via the
   // direct container access is not supported.
-  ExtensionsToolbarDesktop* toolbar =
+  // Use the ExtensionsContainerViews interface rather than
+  // extensions_container_for_testing() so this works with both the Views
+  // (ExtensionsToolbarDesktop) and WebUI (WebUIToolbarExtensionsContainer)
+  // implementations.
+  ExtensionsContainerViews* toolbar =
       BrowserView::GetBrowserViewForBrowser(browser())
-          ->toolbar()
-          ->extensions_container();
+          ->toolbar_button_provider()
+          ->GetExtensionsContainerViews();
+  ASSERT_TRUE(toolbar);
   toolbar_model()->SetActionVisibility(id, false);
   EXPECT_FALSE(toolbar->IsActionVisibleOnToolbar(id));
   base::RunLoop run_loop;
@@ -1277,7 +1282,9 @@ class FakeExtensionActionDelegate : public ExtensionActionDelegate {
   void UnregisterCommand() override {}
   bool IsShowingPopup() const override { return false; }
   void HidePopup() override {}
-  gfx::NativeView GetPopupNativeView() override { return gfx::NativeView(); }
+  gfx::NativeView GetPopupNativeViewForTesting() override {
+    return gfx::NativeView();
+  }
   void TriggerPopup(std::unique_ptr<extensions::ExtensionViewHost> host,
                     PopupShowAction show_action,
                     bool by_user,
@@ -1322,7 +1329,7 @@ IN_PROC_BROWSER_TEST_P(ExtensionActionViewModelFeatureRolloutBrowserTest,
   EXPECT_EQ(SiteInteraction::kNone, action->GetSiteInteraction(web_contents));
   EXPECT_EQ(false, action->IsEnabled(web_contents));
   EXPECT_EQ(false, action->IsShowingPopup());
-  EXPECT_EQ(gfx::NativeView(), action->GetPopupNativeView());
+  EXPECT_EQ(gfx::NativeView(), action->GetPopupNativeViewForTesting());
   EXPECT_EQ(nullptr,
             action->GetContextMenu(extensions::ExtensionContextMenuModel::
                                        ContextMenuSource::kToolbarAction));

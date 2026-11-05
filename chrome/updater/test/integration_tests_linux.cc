@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,8 @@
 #include "base/test/bind.h"
 #include "base/test/test_timeouts.h"
 #include "base/time/time.h"
+#include "base/values.h"
+#include "base/version.h"
 #include "build/branding_buildflags.h"
 #include "chrome/updater/activity.h"
 #include "chrome/updater/activity_impl_util_posix.h"
@@ -153,7 +156,9 @@ void ExpectClean(UpdaterScope scope) {
   ExpectCleanProcesses();
   ExpectMostlyClean(GetInstallDirectory(scope));
   EXPECT_FALSE(SystemdUnitsInstalled(scope));
-  ASSERT_NO_FATAL_FAILURE(ExpectEnterpriseCompanionAppNotInstalled());
+  if (IsSystemInstall(scope)) {
+    ASSERT_NO_FATAL_FAILURE(ExpectEnterpriseCompanionAppNotInstalled());
+  }
 }
 
 base::TimeDelta GetOverinstallTimeoutForEnterTestMode() {

@@ -16,7 +16,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
@@ -37,8 +36,7 @@
 class CobrowseTabHelperTest : public PlatformTest {
  public:
   CobrowseTabHelperTest() {
-    feature_list_.InitWithFeatures({kAimCobrowse, kAssistantContainer},
-                                   {kPreventCobrowseOnAimSrpTap});
+    feature_list_.InitWithFeatures({kAimCobrowse, kAssistantContainer}, {});
 
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
@@ -46,11 +44,10 @@ class CobrowseTabHelperTest : public PlatformTest {
         ios::TemplateURLServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         IOSChromeAimEligibilityServiceFactory::GetInstance(),
-        base::BindRepeating([](ProfileIOS* profile)
-                                -> std::unique_ptr<KeyedService> {
+        base::BindOnce([](ProfileIOS& profile) {
           auto service =
               std::make_unique<testing::NiceMock<MockAimEligibilityService>>(
-                  *profile->GetPrefs(),
+                  *profile.GetPrefs(),
                   ios::TemplateURLServiceFactory::GetForProfile(profile),
                   nullptr, IdentityManagerFactory::GetForProfile(profile));
           ON_CALL(*service, IsFuseboxEligible())
@@ -161,13 +158,12 @@ class CobrowseTabHelperTest : public PlatformTest {
 
   // Returns the regular browser.
   Browser* browser() {
-    return scene_state_.browserProviderInterface.mainBrowserProvider.browser;
+    return scene_state_.browserProviderInterface.mainBrowser;
   }
 
   // Returns the incognito browser.
   Browser* incognito_browser() {
-    return scene_state_.browserProviderInterface.incognitoBrowserProvider
-        .browser;
+    return scene_state_.browserProviderInterface.incognitoBrowser;
   }
 
   web::WebTaskEnvironment task_environment_;
@@ -178,8 +174,11 @@ class CobrowseTabHelperTest : public PlatformTest {
 };
 
 // Tests that showAssistant is called when navigating in a new tab if the opener
-// was an AIM URL.
+// was an AIM URL and the enable flag is enabled.
 TEST_F(CobrowseTabHelperTest, TriggerAssistantFromOpener) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEnableCobrowseOnAimSrpTap);
+
   GURL aim_url("https://www.google.com/search?q=test&udm=50");
   GURL next_url("https://www.example.com");
 
@@ -199,11 +198,8 @@ TEST_F(CobrowseTabHelperTest, TriggerAssistantFromOpener) {
 }
 
 // Tests that showAssistant is NOT called when navigating in a new tab if the
-// opener was an AIM URL but the prevent flag is enabled.
-TEST_F(CobrowseTabHelperTest, NoTriggerFromOpenerWhenPreventFlagEnabled) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kPreventCobrowseOnAimSrpTap);
-
+// opener was an AIM URL but the flag is disabled by default.
+TEST_F(CobrowseTabHelperTest, NoTriggerFromOpenerWhenFlagDisabled) {
   GURL aim_url("https://www.google.com/search?q=test&udm=50");
   GURL next_url("https://www.example.com");
 
@@ -312,6 +308,49 @@ TEST_F(CobrowseTabHelperTest, NoCloseAssistantOnRegularSearchNavigation) {
   [mock_scene_commands_handler() verify];
 }
 
+// Tests that hideAssistant is NOT called when navigating to about:blank.
+TEST_F(CobrowseTabHelperTest, NoHideAssistantOnAboutBlankNavigation) {
+  GURL about_blank_url("about:blank");
+
+  web::FakeWebState* web_state = CreateAndInsertWebState({});
+  web_state->WasShown();
+  CobrowseTabHelper* tab_helper = CobrowseTabHelper::FromWebState(web_state);
+
+  web::FakeNavigationContext context;
+  context.SetUrl(about_blank_url);
+
+  [[mock_scene_commands_handler() reject] closeAssistant];
+  [[mock_scene_commands_handler() reject] hideAssistant];
+  [[mock_scene_commands_handler() reject] showAssistant];
+  [[mock_scene_commands_handler() reject] showAssistantInMinimizedState:YES];
+
+  tab_helper->DidStartNavigation(web_state, &context);
+
+  [mock_scene_commands_handler() verify];
+}
+
+// Tests that showAssistant is NOT called when navigating to about:blank even
+// if the opener was an AIM URL.
+TEST_F(CobrowseTabHelperTest, NoTriggerFromOpenerOnAboutBlankNavigation) {
+  GURL aim_url("https://www.google.com/search?q=test&udm=50");
+  GURL about_blank_url("about:blank");
+
+  web::FakeWebState* opener = CreateAndInsertWebState(aim_url);
+  web::FakeWebState* web_state = CreateAndInsertWebStateWithOpener({}, opener);
+  web_state->WasShown();
+  CobrowseTabHelper* tab_helper = CobrowseTabHelper::FromWebState(web_state);
+
+  web::FakeNavigationContext context;
+  context.SetUrl(about_blank_url);
+
+  [[mock_scene_commands_handler() reject] showAssistantInMinimizedState:YES];
+  [[mock_scene_commands_handler() reject] hideAssistant];
+
+  tab_helper->DidStartNavigation(web_state, &context);
+
+  [mock_scene_commands_handler() verify];
+}
+
 // Tests that hideAssistant is called when navigating to an AIM search URL.
 TEST_F(CobrowseTabHelperTest, HideAssistantOnAimSearchNavigation) {
   GURL aim_search_url("https://www.google.com/search?q=test&udm=50");
@@ -352,6 +391,9 @@ TEST_F(CobrowseTabHelperTest, HideAssistantOnAimZeroStateSearchNavigation) {
 // Tests that hideAssistant is called when navigating to the NTP, and
 // showAssistant is restored when navigating to a normal web page.
 TEST_F(CobrowseTabHelperTest, HideOnNtpAndRestoreOnNormalNavigation) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEnableCobrowseOnAimSrpTap);
+
   GURL aim_url("https://www.google.com/search?q=test&udm=50");
   GURL ntp_url("chrome://newtab");
   GURL normal_url("https://www.example.com");
@@ -436,7 +478,7 @@ TEST_F(CobrowseTabHelperTest,
   CobrowseContext* empty_query_with_attachment_context =
       [[CobrowseContext alloc] initWithURL:empty_query_url];
   // Mock an attachment item. A non-empty array is sufficient.
-  empty_query_with_attachment_context.attachedItems =
+  empty_query_with_attachment_context.attachedTabItems =
       @[ [[NSObject alloc] init] ];
 
   agent()->SetCobrowseContext(empty_query_with_attachment_context);
@@ -469,4 +511,165 @@ TEST_F(CobrowseTabHelperTest,
   // valid query to an empty query without attachments, simulating the chip tap
   // bug.
   EXPECT_EQ(agent()->GetCobrowseContext(), valid_query_context);
+}
+
+// Tests that a cross-document navigation closes the assistant and terminates
+// the session when `kEphemeralBottomSheet` is enabled.
+TEST_F(CobrowseTabHelperTest,
+       CloseAssistantOnCrossDocumentNavigationWhenEphemeral) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEphemeralBottomSheet);
+
+  web::FakeWebState* web_state =
+      CreateAndInsertWebState(GURL("https://www.example.com"));
+  web_state->WasShown();
+  agent()->SetSessionActive(true);
+  CobrowseTabHelper* tab_helper = CobrowseTabHelper::FromWebState(web_state);
+
+  web::FakeNavigationContext context;
+  context.SetUrl(GURL("https://www.example.com/next"));
+  context.SetIsSameDocument(false);
+
+  OCMExpect([mock_scene_commands_handler() closeAssistant]);
+
+  tab_helper->DidStartNavigation(web_state, &context);
+
+  [mock_scene_commands_handler() verify];
+  EXPECT_FALSE(agent()->IsSessionActive());
+}
+
+// Tests that a reload closes the assistant and terminates the session when
+// `kEphemeralBottomSheet` is enabled.
+TEST_F(CobrowseTabHelperTest, CloseAssistantOnReloadWhenEphemeral) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEphemeralBottomSheet);
+
+  web::FakeWebState* web_state =
+      CreateAndInsertWebState(GURL("https://www.example.com"));
+  web_state->WasShown();
+  agent()->SetSessionActive(true);
+  CobrowseTabHelper* tab_helper = CobrowseTabHelper::FromWebState(web_state);
+
+  web::FakeNavigationContext context;
+  context.SetUrl(GURL("https://www.example.com"));
+  context.SetPageTransition(ui::PAGE_TRANSITION_RELOAD);
+  context.SetIsSameDocument(false);
+
+  OCMExpect([mock_scene_commands_handler() closeAssistant]);
+
+  tab_helper->DidStartNavigation(web_state, &context);
+
+  [mock_scene_commands_handler() verify];
+  EXPECT_FALSE(agent()->IsSessionActive());
+}
+
+// Tests that same-document navigations (such as anchor jumps, `pushState`, and
+// `replaceState`) do not close the assistant when `kEphemeralBottomSheet` is
+// enabled.
+TEST_F(CobrowseTabHelperTest,
+       NoCloseAssistantOnSameDocumentNavigationWhenEphemeral) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEphemeralBottomSheet);
+
+  web::FakeWebState* web_state =
+      CreateAndInsertWebState(GURL("https://www.example.com"));
+  web_state->WasShown();
+  agent()->SetSessionActive(true);
+  CobrowseTabHelper* tab_helper = CobrowseTabHelper::FromWebState(web_state);
+
+  [[mock_scene_commands_handler() reject] closeAssistant];
+
+  // Simulate `pushState` / anchor navigation (`PAGE_TRANSITION_LINK`).
+  web::FakeNavigationContext push_state_context;
+  push_state_context.SetUrl(GURL("https://www.example.com?pushed"));
+  push_state_context.SetPageTransition(ui::PAGE_TRANSITION_LINK);
+  push_state_context.SetIsSameDocument(true);
+  tab_helper->DidStartNavigation(web_state, &push_state_context);
+  EXPECT_TRUE(agent()->IsSessionActive());
+
+  // Simulate `replaceState` (`PAGE_TRANSITION_CLIENT_REDIRECT`).
+  web::FakeNavigationContext replace_state_context;
+  replace_state_context.SetUrl(GURL("https://www.example.com?replaced"));
+  replace_state_context.SetPageTransition(ui::PAGE_TRANSITION_CLIENT_REDIRECT);
+  replace_state_context.SetIsSameDocument(true);
+  tab_helper->DidStartNavigation(web_state, &replace_state_context);
+  EXPECT_TRUE(agent()->IsSessionActive());
+
+  [mock_scene_commands_handler() verify];
+}
+
+// Tests that a same-document back/forward navigation to an entry whose stored
+// transition is `PAGE_TRANSITION_RELOAD` combined with
+// `PAGE_TRANSITION_FORWARD_BACK` does not close the assistant when
+// `kEphemeralBottomSheet` is enabled.
+TEST_F(CobrowseTabHelperTest,
+       NoCloseAssistantOnSameDocumentBackForwardReloadWhenEphemeral) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEphemeralBottomSheet);
+
+  web::FakeWebState* web_state =
+      CreateAndInsertWebState(GURL("https://www.example.com#section"));
+  web_state->WasShown();
+  agent()->SetSessionActive(true);
+  CobrowseTabHelper* tab_helper = CobrowseTabHelper::FromWebState(web_state);
+
+  web::FakeNavigationContext context;
+  context.SetUrl(GURL("https://www.example.com"));
+  context.SetPageTransition(ui::PageTransitionFromInt(
+      ui::PAGE_TRANSITION_RELOAD | ui::PAGE_TRANSITION_FORWARD_BACK));
+  context.SetIsSameDocument(true);
+
+  [[mock_scene_commands_handler() reject] closeAssistant];
+
+  tab_helper->DidStartNavigation(web_state, &context);
+
+  [mock_scene_commands_handler() verify];
+  EXPECT_TRUE(agent()->IsSessionActive());
+}
+
+// Tests that a cross-document client redirect does not close the assistant when
+// `kEphemeralBottomSheet` is enabled.
+TEST_F(CobrowseTabHelperTest, NoCloseAssistantOnClientRedirectWhenEphemeral) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kEphemeralBottomSheet);
+
+  web::FakeWebState* web_state =
+      CreateAndInsertWebState(GURL("https://www.example.com"));
+  web_state->WasShown();
+  agent()->SetSessionActive(true);
+  CobrowseTabHelper* tab_helper = CobrowseTabHelper::FromWebState(web_state);
+
+  web::FakeNavigationContext context;
+  context.SetUrl(GURL("https://www.example.com/redirected"));
+  context.SetPageTransition(ui::PAGE_TRANSITION_CLIENT_REDIRECT);
+  context.SetIsSameDocument(false);
+
+  [[mock_scene_commands_handler() reject] closeAssistant];
+
+  tab_helper->DidStartNavigation(web_state, &context);
+
+  [mock_scene_commands_handler() verify];
+  EXPECT_TRUE(agent()->IsSessionActive());
+}
+
+// Tests that a cross-document navigation does not close the assistant when
+// `kEphemeralBottomSheet` is disabled.
+TEST_F(CobrowseTabHelperTest,
+       NoCloseAssistantOnNavigationWhenEphemeralDisabled) {
+  web::FakeWebState* web_state =
+      CreateAndInsertWebState(GURL("https://www.example.com"));
+  web_state->WasShown();
+  agent()->SetSessionActive(true);
+  CobrowseTabHelper* tab_helper = CobrowseTabHelper::FromWebState(web_state);
+
+  web::FakeNavigationContext context;
+  context.SetUrl(GURL("https://www.example.com/next"));
+  context.SetIsSameDocument(false);
+
+  [[mock_scene_commands_handler() reject] closeAssistant];
+
+  tab_helper->DidStartNavigation(web_state, &context);
+
+  [mock_scene_commands_handler() verify];
+  EXPECT_TRUE(agent()->IsSessionActive());
 }

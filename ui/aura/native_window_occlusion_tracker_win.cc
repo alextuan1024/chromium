@@ -95,7 +95,7 @@ void NativeWindowOcclusionTrackerWin::DeleteInstanceForTesting() {
 }
 
 void NativeWindowOcclusionTrackerWin::Enable(Window* window) {
-  DCHECK(window->IsRootWindow());
+  CHECK(window->IsRootWindow(), base::NotFatalUntil::M163);
   if (window->HasObserver(this)) {
     NOTREACHED() << "window shouldn't already be observing occlusion tracker";
   }
@@ -116,10 +116,10 @@ void NativeWindowOcclusionTrackerWin::Enable(Window* window) {
 }
 
 void NativeWindowOcclusionTrackerWin::Disable(Window* window) {
-  DCHECK(window->IsRootWindow());
+  CHECK(window->IsRootWindow(), base::NotFatalUntil::M163);
   HWND root_window_hwnd = window->GetHost()->GetAcceleratedWidget();
   // Check that the root_window_hwnd doesn't get cleared before this is called.
-  DCHECK(root_window_hwnd);
+  CHECK(root_window_hwnd, base::NotFatalUntil::M163);
   hwnd_root_window_map_.erase(root_window_hwnd);
   window->RemoveObserver(this);
   update_occlusion_task_runner_->PostTask(
@@ -319,7 +319,9 @@ NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
       ui_thread_task_runner_(ui_thread_task_runner),
       update_occlusion_state_callback_(update_occlusion_state_callback),
       recalculate_on_window_destroy_(base::FeatureList::IsEnabled(
-          features::kRecalculateNativeWinOcclusionOnWindowDestroy)) {
+          features::kRecalculateNativeWinOcclusionOnWindowDestroy)),
+      filter_location_changes_(base::FeatureList::IsEnabled(
+          features::kFilterNativeWinOcclusionLocationChanges)) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
 
@@ -333,14 +335,14 @@ void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::CreateInstance(
     scoped_refptr<base::SequencedTaskRunner> task_runner,
     scoped_refptr<base::SequencedTaskRunner> ui_thread_task_runner,
     UpdateOcclusionStateCallback update_occlusion_state_callback) {
-  DCHECK(!instance_);
+  CHECK(!instance_, base::NotFatalUntil::M163);
   instance_ = new WindowOcclusionCalculator(task_runner, ui_thread_task_runner,
                                             update_occlusion_state_callback);
 }
 
 void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
     DeleteInstanceForTesting(base::WaitableEvent* done_event) {
-  DCHECK(instance_);
+  CHECK(instance_, base::NotFatalUntil::M163);
   delete instance_;
   instance_ = nullptr;
   done_event->Signal();
@@ -496,9 +498,9 @@ void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
   } else {
     base::flat_set<DWORD> current_pids_with_visible_windows;
     unoccluded_desktop_region_ = screen_region;
-    // Reset the set of occluding top-level HWNDs, which will be repopulated
+    // Reset the map of occluding top-level HWNDs, which will be repopulated
     // by ProcessComputeNativeWindowOcclusionStatusCallback during enumeration.
-    occluding_hwnds_.clear();
+    occluding_window_rects_.clear();
     // Calculate unoccluded region if there is a non-minimized native window.
     // Also compute `current_pids_with_visible_windows` as we enumerate
     // the windows.
@@ -548,6 +550,35 @@ void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
   }
 }
 
+void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
+    HandleLocationChanged(HWND hwnd) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // An already scheduled occlusion calculation will see the new location.
+  if (occlusion_update_timer_.IsRunning()) {
+    return;
+  }
+
+  // A tracked root window's own occlusion state depends on its bounds, even if
+  // it can't occlude other windows, so always recalculate when it moves.
+  if (!root_window_hwnds_occlusion_state_.contains(hwnd)) {
+    // Other windows affect occlusion only via whether they can occlude other
+    // windows and, if they can, their bounds (and z-order, but z-order-only
+    // changes don't raise location change events). Layered windows, e.g.,
+    // raise location change events whenever they update their contents,
+    // without changing either.
+    gfx::Rect window_rect;
+    const bool window_is_occluding =
+        WindowCanOccludeOtherWindowsOnCurrentVirtualDesktop(hwnd, &window_rect);
+    const auto it = occluding_window_rects_.find(hwnd);
+    const bool window_was_occluding = it != occluding_window_rects_.end();
+    if (window_is_occluding == window_was_occluding &&
+        (!window_is_occluding || it->second == window_rect)) {
+      return;
+    }
+  }
+  ScheduleOcclusionCalculationIfNeeded();
+}
+
 const base::TimeDelta NativeWindowOcclusionTrackerWin::
     WindowOcclusionCalculator::GetUpdateOcclusionDelay() {
   return moving_window_ ? kUpdateOcclusionDelayMax : kUpdateOcclusionDelayMin;
@@ -575,7 +606,7 @@ void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
 void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
     RegisterEventHooks() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(global_event_hooks_.empty());
+  CHECK(global_event_hooks_.empty(), base::NotFatalUntil::M163);
 
   // This helps with the case where an extension tried to foreground a window,
   // but Windows prevented it, and the user clicks on the task bar to bring the
@@ -603,8 +634,9 @@ void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
   // occlusion when a previously-occluding window goes away (e.g., its
   // process is forcibly terminated, in which case EVENT_OBJECT_HIDE and
   // EVENT_SYSTEM_FOREGROUND don't reliably fire). The destroy events are
-  // filtered against `occluding_hwnds_` in ProcessEventHookCallback to avoid
-  // recalculating for unrelated window destruction (menus, tooltips, etc.).
+  // filtered against `occluding_window_rects_` in ProcessEventHookCallback to
+  // avoid recalculating for unrelated window destruction (menus, tooltips,
+  // etc.).
   if (recalculate_on_window_destroy_) {
     RegisterGlobalEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE);
   } else {
@@ -641,7 +673,7 @@ void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
   process_event_hooks_.clear();
 
   pids_for_location_change_hook_.clear();
-  occluding_hwnds_.clear();
+  occluding_window_rects_.clear();
 }
 
 bool NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
@@ -654,11 +686,14 @@ bool NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
   const bool window_is_occluding =
       WindowCanOccludeOtherWindowsOnCurrentVirtualDesktop(hwnd, &window_rect);
   if (window_is_occluding) {
-    // Track this HWND so that we can recompute occlusion if it gets destroyed.
-    // See ProcessEventHookCallback's EVENT_OBJECT_DESTROY handling. Skipped
-    // when the feature is disabled to avoid the memory/CPU cost.
-    if (recalculate_on_window_destroy_) {
-      occluding_hwnds_.insert(hwnd);
+    // Remember this HWND and the bounds used for it in this calculation, so
+    // that we can recompute occlusion if it gets destroyed, and ignore
+    // location changes that don't move or resize it. See
+    // ProcessEventHookCallback's EVENT_OBJECT_DESTROY handling and
+    // HandleLocationChanged. Skipped when both features are disabled to avoid
+    // the memory/CPU cost.
+    if (recalculate_on_window_destroy_ || filter_location_changes_) {
+      occluding_window_rects_[hwnd] = window_rect;
     }
     // Hook this window's process with EVENT_OBJECT_LOCATION_CHANGE, if we are
     // not already doing so.
@@ -745,14 +780,14 @@ void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
   // TerminateProcess), since in that scenario EVENT_OBJECT_HIDE and
   // EVENT_SYSTEM_FOREGROUND typically don't fire (the destroyed window
   // wasn't the foreground window from the OS's perspective; it was just
-  // covering it as a topmost window). Filter on `occluding_hwnds_` rather
-  // than querying the HWND, because Win32 calls like GetWindowLong and
+  // covering it as a topmost window). Filter on `occluding_window_rects_`
+  // rather than querying the HWND, because Win32 calls like GetWindowLong and
   // GetWindowThreadProcessId can return zero for an already-destroyed HWND.
   if (event == EVENT_OBJECT_DESTROY) {
-    if (!occluding_hwnds_.contains(hwnd)) {
+    if (!occluding_window_rects_.contains(hwnd)) {
       return;
     }
-    occluding_hwnds_.erase(hwnd);
+    occluding_window_rects_.erase(hwnd);
     // ProcessEventHookCallback runs on the COMSTA thread but outside of the
     // task runner's sequence, so we have to schedule the timer start via a
     // task. See the longer note before the PostTask below.
@@ -762,6 +797,19 @@ void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
             &WindowOcclusionCalculator::ScheduleOcclusionCalculationIfNeeded,
             weak_factory_.GetWeakPtr()));
     return;
+  }
+
+  // The location change event hook is per process, so it reports location
+  // changes of child windows too, e.g., every time a layered child window
+  // updates its contents. A child window can only move within its parent, so
+  // it can't change the occlusion state of the tracked root windows, which is
+  // computed from top-level windows only. A null top-level ancestor means
+  // `hwnd` has been destroyed; let HandleLocationChanged deal with that.
+  if (filter_location_changes_ && event == EVENT_OBJECT_LOCATIONCHANGE) {
+    HWND top_level_hwnd = ::GetAncestor(hwnd, GA_ROOT);
+    if (top_level_hwnd && top_level_hwnd != hwnd) {
+      return;
+    }
   }
 
   // We generally ignore events for popup windows, except for when the taskbar
@@ -847,6 +895,13 @@ void NativeWindowOcclusionTrackerWin::WindowOcclusionCalculator::
   // |occlusion_update_timer_, we need to call
   // ScheduleOcclusionCalculationIfNeeded from a task.
   // See WorkerThreadCOMDelegate::GetWorkFromWindowsMessageQueue().
+  if (filter_location_changes_ && event == EVENT_OBJECT_LOCATIONCHANGE) {
+    task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(&WindowOcclusionCalculator::HandleLocationChanged,
+                       weak_factory_.GetWeakPtr(), hwnd));
+    return;
+  }
   task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(

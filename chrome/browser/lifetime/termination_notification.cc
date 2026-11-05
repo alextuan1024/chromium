@@ -24,6 +24,8 @@ base::CallbackListSubscription AddAppTerminatingCallback(
 }
 
 void NotifyAppTerminating() {
+  // TODO(crbug.com/584702463): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   static bool notified = false;
   if (notified) {

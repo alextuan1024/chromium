@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <tuple>
 #include <utility>
 
@@ -17,9 +18,13 @@
 #include "build/build_config.h"
 #include "cc/trees/render_frame_metadata.h"
 #include "components/input/child_frame_input_helper.h"
+#include "components/viz/common/hit_test/hit_test_query.h"
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
+#include "components/viz/host/host_frame_sink_manager.h"
 #include "components/viz/test/begin_frame_args_test.h"
 #include "components/viz/test/fake_external_begin_frame_source.h"
+#include "components/viz/test/host_frame_sink_manager_test_api.h"
+#include "content/browser/compositor/surface_utils.h"
 #include "content/browser/gpu/compositor_util.h"
 #include "content/browser/renderer_host/cross_process_frame_connector.h"
 #include "content/browser/renderer_host/frame_token_message_queue.h"
@@ -58,6 +63,7 @@
 #include "content/browser/renderer_host/input/stylus_handwriting_callback_sink_win.h"
 #include "content/browser/renderer_host/input/stylus_handwriting_controller_win.h"
 #include "content/browser/renderer_host/input/stylus_handwriting_win_test_helper.h"
+#include "ui/events/win/stylus_handwriting_properties_win.h"
 
 using testing::_;
 using testing::Return;
@@ -155,6 +161,19 @@ class MockParentRenderWidgetHostView : public TestRenderWidgetHostView {
     bounds_without_transform_ = bounds_without;
   }
 
+#if BUILDFLAG(IS_WIN)
+  MOCK_METHOD(std::optional<ui::StylusHandwritingPropertiesWin>,
+              TakeStylusHandwritingProperties,
+              (uint32_t),
+              (override));
+  MOCK_METHOD(void,
+              StartStylusWritingFromChildHostView,
+              (RenderWidgetHostViewBase*,
+               OnFocusHandwritingTargetCallback,
+               const std::optional<input::StylusWritingProperties>&),
+              (override));
+#endif
+
  private:
   gfx::Rect bounds_;
   gfx::Rect bounds_without_transform_;
@@ -213,8 +232,18 @@ class MockRenderWidgetHostView : public TestRenderWidgetHostView {
       const gfx::PointF& point,
       input::RenderWidgetHostViewInput* target_view,
       gfx::PointF* transformed_point) override {
-    *transformed_point = point;
+    if (!can_transform_point_) {
+      return false;
+    }
+    *transformed_point = point + transform_offset_;
     return true;
+  }
+
+  void set_can_transform_point(bool can_transform_point) {
+    can_transform_point_ = can_transform_point;
+  }
+  void set_transform_offset(const gfx::Vector2dF& transform_offset) {
+    transform_offset_ = transform_offset;
   }
 
   bool TransformPointToLocalCoordSpace(
@@ -245,8 +274,36 @@ class MockRenderWidgetHostView : public TestRenderWidgetHostView {
     return &selection_manager_;
   }
 
+  void UpdateTooltipFromKeyboard(const std::u16string& tooltip_text,
+                                 const gfx::Rect& bounds) override {
+    last_tooltip_text_ = tooltip_text;
+    last_tooltip_bounds_ = bounds;
+  }
+
+  void ClearKeyboardTriggeredTooltip() override {
+    last_tooltip_text_.clear();
+    last_tooltip_bounds_ = gfx::Rect();
+    tooltip_cleared_ = true;
+  }
+
+  const viz::FrameSinkId& GetFrameSinkId() const override {
+    return frame_sink_id_;
+  }
+  viz::FrameSinkId GetRootFrameSinkId() override { return frame_sink_id_; }
+
+  const std::u16string& last_tooltip_text() const { return last_tooltip_text_; }
+  const gfx::Rect& last_tooltip_bounds() const { return last_tooltip_bounds_; }
+  bool tooltip_cleared() const { return tooltip_cleared_; }
+  void reset_tooltip_cleared() { tooltip_cleared_ = false; }
+
  private:
+  viz::FrameSinkId frame_sink_id_{999, 999};
   TestTouchSelectionControllerClientManager selection_manager_;
+  std::u16string last_tooltip_text_;
+  gfx::Rect last_tooltip_bounds_;
+  bool tooltip_cleared_ = false;
+  bool can_transform_point_ = true;
+  gfx::Vector2dF transform_offset_;
 };
 
 class RenderWidgetHostViewChildFrameTest
@@ -352,6 +409,57 @@ class RenderWidgetHostViewChildFrameTest
   raw_ptr<RenderWidgetHostViewChildFrame> view_ = nullptr;
   std::unique_ptr<MockFrameConnector> test_frame_connector_;
 };
+
+#if BUILDFLAG(IS_WIN)
+TEST_F(RenderWidgetHostViewChildFrameTest,
+       ForwardsHandwritingPropertiesToRoot) {
+  auto root =
+      std::make_unique<testing::NiceMock<MockParentRenderWidgetHostView>>(
+          widget_host_.get());
+  test_frame_connector_->SetRootRenderWidgetHostView(root.get());
+  const ui::StylusHandwritingPropertiesWin properties(
+      1, 101, gfx::Vector2dF(192.f, 288.f));
+  EXPECT_CALL(*root, TakeStylusHandwritingProperties(1))
+      .WillOnce(Return(properties));
+  auto taken = view_->TakeStylusHandwritingProperties(1);
+  ASSERT_TRUE(taken);
+  EXPECT_EQ(properties.handwriting_pointer_id, taken->handwriting_pointer_id);
+  EXPECT_EQ(properties.handwriting_stroke_id, taken->handwriting_stroke_id);
+  EXPECT_EQ(properties.pixels_per_inch, taken->pixels_per_inch);
+  EXPECT_CALL(*root, StartStylusWritingFromChildHostView(view_.get(), _, _))
+      .WillOnce(
+          [&properties](
+              RenderWidgetHostViewBase*,
+              RenderWidgetHostViewBase::OnFocusHandwritingTargetCallback
+                  callback,
+              const std::optional<input::StylusWritingProperties>& forwarded) {
+            EXPECT_TRUE(callback);
+            ASSERT_TRUE(forwarded);
+            EXPECT_EQ(properties.handwriting_pointer_id,
+                      forwarded->handwriting_pointer_id);
+            EXPECT_EQ(properties.handwriting_stroke_id,
+                      forwarded->handwriting_stroke_id);
+            EXPECT_EQ(properties.pixels_per_inch, forwarded->pixels_per_inch);
+          });
+
+  view_->OnStartStylusWriting(*taken);
+  EXPECT_CALL(*root, StartStylusWritingFromChildHostView(view_.get(), _, _))
+      .WillOnce(
+          [](RenderWidgetHostViewBase*,
+             RenderWidgetHostViewBase::OnFocusHandwritingTargetCallback
+                 callback,
+             const std::optional<input::StylusWritingProperties>& forwarded) {
+            EXPECT_TRUE(callback);
+            EXPECT_FALSE(forwarded);
+          });
+  view_->OnStartStylusWriting(std::nullopt);
+  test_frame_connector_->SetRootRenderWidgetHostView(nullptr);
+
+  // Verify properties take and stylus writing fail after root is removed.
+  EXPECT_FALSE(view_->TakeStylusHandwritingProperties(1));
+  view_->OnStartStylusWriting(*taken);
+}
+#endif
 
 #if BUILDFLAG(IS_MAC)
 TEST_F(RenderWidgetHostViewChildFrameTest, ShowSharePickerFromChildFrame) {
@@ -500,6 +608,16 @@ TEST_F(RenderWidgetHostViewChildFrameTest, UsesInitialSizeBeforeAttachment) {
   view_->SetFrameConnector(test_frame_connector_.get());
 
   EXPECT_EQ(gfx::Size(400, 300), view_->GetViewBounds().size());
+}
+
+TEST_F(RenderWidgetHostViewChildFrameTest,
+       TouchscreenPinchTargetDelegatesToParent) {
+  auto* parent_view = static_cast<RenderWidgetHostViewBase*>(
+      contents()->GetRenderWidgetHostView());
+  ASSERT_TRUE(parent_view);
+  test_frame_connector_->SetParentRenderWidgetHostView(parent_view);
+
+  EXPECT_EQ(parent_view->GetPinchZoomTarget(), view_->GetPinchZoomTarget());
 }
 
 // Tests that SynchronizeVisualProperties is called only once and all the
@@ -893,6 +1011,181 @@ TEST_F(RenderWidgetHostViewChildFrameTest, SelectionBoundsClampedToViewBounds) {
   connector->SetRootRenderWidgetHostView(nullptr);
 }
 
+TEST_F(RenderWidgetHostViewChildFrameTest,
+       TooltipBoundsClampedToViewportIntersection) {
+  auto root_view =
+      std::make_unique<testing::NiceMock<MockRenderWidgetHostView>>(
+          widget_host_.get());
+  RenderWidgetHostViewChildFrame* child_view =
+      RenderWidgetHostViewChildFrame::Create(widget_host_.get(),
+                                             display::ScreenInfos());
+  std::unique_ptr<MockFrameConnector> connector =
+      std::make_unique<MockFrameConnector>();
+
+  connector->SetRootRenderWidgetHostView(root_view.get());
+  connector->SetView(child_view, false);
+
+  // Set child frame visible viewport intersection to [0, 0, 200, 200].
+  connector->SetViewportIntersection(
+      gfx::Rect(0, 0, 200, 200), gfx::Rect(0, 0, 200, 200),
+      gfx::Rect(0, 0, 200, 200),
+      blink::mojom::FrameOcclusionState::kGuaranteedNotOccluded);
+  connector->SetRectInParentView(gfx::Rect(0, 0, 200, 200));
+  connector->SetLocalFrameSize(gfx::Size(200, 200));
+  child_view->SetSize(gfx::Size(200, 200));
+
+  // 0. If hit-test data / transform to root view is unavailable, fail closed
+  // and clear the tooltip rather than using untransformed child coordinates.
+  root_view->reset_tooltip_cleared();
+  child_view->UpdateTooltipFromKeyboard(u"sample_no_transform",
+                                        gfx::Rect(10, 20, 30, 40));
+  EXPECT_TRUE(root_view->last_tooltip_text().empty());
+  EXPECT_TRUE(root_view->tooltip_cleared());
+
+  // Populate hit-test data so GetTransformToViewCoordSpace() succeeds.
+  std::vector<viz::AggregatedHitTestRegion> regions = {
+      {root_view->GetFrameSinkId(), viz::HitTestRegionFlags::kHitTestMine,
+       gfx::RRectF(gfx::RectF(0, 0, 400, 400)), gfx::Transform(),
+       /*child_count=*/1},
+      {child_view->GetFrameSinkId(), viz::HitTestRegionFlags::kHitTestMine,
+       gfx::RRectF(gfx::RectF(0, 0, 400, 400)), gfx::Transform(),
+       /*child_count=*/0},
+  };
+  viz::DisplayHitTestQueryMap hit_test_map;
+  auto query = std::make_unique<viz::HitTestQuery>(std::nullopt);
+  query->OnAggregatedHitTestRegionListUpdated(regions);
+  hit_test_map[root_view->GetFrameSinkId()] = std::move(query);
+  viz::HostFrameSinkManagerTestApi(GetHostFrameSinkManager())
+      .SetDisplayHitTestQuery(std::move(hit_test_map));
+
+  // 1. Elements with valid bounds within the viewport intersection should have
+  // their tooltips and bounds forwarded to the root view.
+  child_view->UpdateTooltipFromKeyboard(u"sample_tooltip",
+                                        gfx::Rect(10, 20, 30, 40));
+  EXPECT_EQ(u"sample_tooltip", root_view->last_tooltip_text());
+  EXPECT_EQ(gfx::Rect(10, 20, 30, 40), root_view->last_tooltip_bounds());
+
+  // 2. Elements with bounds extending partially outside the viewport
+  // intersection should have their bounds clamped to the intersection.
+  child_view->UpdateTooltipFromKeyboard(u"sample_tooltip_2",
+                                        gfx::Rect(150, 150, 100, 100));
+  EXPECT_EQ(u"sample_tooltip_2", root_view->last_tooltip_text());
+  EXPECT_EQ(gfx::Rect(150, 150, 50, 50), root_view->last_tooltip_bounds());
+
+  // 3. Elements with bounds completely outside the viewport intersection
+  // should not show a tooltip.
+  root_view->reset_tooltip_cleared();
+  child_view->UpdateTooltipFromKeyboard(u"sample_tooltip_3",
+                                        gfx::Rect(-350, -530, 400, 300));
+  EXPECT_TRUE(root_view->last_tooltip_text().empty());
+  EXPECT_TRUE(root_view->last_tooltip_bounds().IsEmpty());
+  EXPECT_TRUE(root_view->tooltip_cleared());
+
+  // 4. If the viewport intersection is empty (e.g. frame is scrolled out of
+  // view), no tooltip should be shown.
+  connector->SetViewportIntersection(
+      gfx::Rect(), gfx::Rect(), gfx::Rect(),
+      blink::mojom::FrameOcclusionState::kGuaranteedNotOccluded);
+  root_view->reset_tooltip_cleared();
+  child_view->UpdateTooltipFromKeyboard(u"sample_tooltip_4",
+                                        gfx::Rect(10, 20, 30, 40));
+  EXPECT_TRUE(root_view->last_tooltip_text().empty());
+  EXPECT_TRUE(root_view->last_tooltip_bounds().IsEmpty());
+
+  // 5. Passing empty tooltip text should clear any active tooltip.
+  connector->SetViewportIntersection(
+      gfx::Rect(0, 0, 200, 200), gfx::Rect(0, 0, 200, 200),
+      gfx::Rect(0, 0, 200, 200),
+      blink::mojom::FrameOcclusionState::kGuaranteedNotOccluded);
+  root_view->reset_tooltip_cleared();
+  child_view->UpdateTooltipFromKeyboard(std::u16string(),
+                                        gfx::Rect(10, 20, 30, 40));
+  EXPECT_TRUE(root_view->last_tooltip_text().empty());
+  EXPECT_TRUE(root_view->tooltip_cleared());
+
+  // 6. With DSF = 2.0, viewport_intersection is in physical pixels ([0, 0, 400,
+  // 400] for a 200x200 DIP frame), while bounds is in DIPs. Ensure clamping
+  // converts viewport_intersection to DIPs ([0, 0, 200, 200]).
+  display::ScreenInfo screen_info;
+  screen_info.device_scale_factor = 2.0f;
+  blink::FrameVisualProperties visual_properties;
+  visual_properties.screen_infos = display::ScreenInfos(screen_info);
+  visual_properties.local_frame_size = gfx::Size(400, 400);
+  connector->SynchronizeVisualProperties(visual_properties, false);
+  connector->SetViewportIntersection(
+      gfx::Rect(0, 0, 400, 400), gfx::Rect(0, 0, 400, 400),
+      gfx::Rect(0, 0, 400, 400),
+      blink::mojom::FrameOcclusionState::kGuaranteedNotOccluded);
+  child_view->UpdateTooltipFromKeyboard(u"sample_tooltip_dsf2",
+                                        gfx::Rect(150, 150, 100, 100));
+  EXPECT_EQ(u"sample_tooltip_dsf2", root_view->last_tooltip_text());
+  EXPECT_EQ(gfx::Rect(150, 150, 50, 50), root_view->last_tooltip_bounds());
+
+  // 7. With DSF = 0.5, viewport_intersection is [0, 0, 100, 100] in physical
+  // pixels for a 200x200 DIP frame. Legitimate tooltips in [100..200] DIPs
+  // must not be clipped or dropped.
+  screen_info.device_scale_factor = 0.5f;
+  visual_properties.screen_infos = display::ScreenInfos(screen_info);
+  visual_properties.local_frame_size = gfx::Size(100, 100);
+  connector->SynchronizeVisualProperties(visual_properties, false);
+  connector->SetViewportIntersection(
+      gfx::Rect(0, 0, 100, 100), gfx::Rect(0, 0, 100, 100),
+      gfx::Rect(0, 0, 100, 100),
+      blink::mojom::FrameOcclusionState::kGuaranteedNotOccluded);
+  child_view->UpdateTooltipFromKeyboard(u"sample_tooltip_dsf_half",
+                                        gfx::Rect(120, 120, 30, 40));
+  EXPECT_EQ(u"sample_tooltip_dsf_half", root_view->last_tooltip_text());
+  EXPECT_EQ(gfx::Rect(120, 120, 30, 40), root_view->last_tooltip_bounds());
+
+  viz::HostFrameSinkManagerTestApi(GetHostFrameSinkManager())
+      .SetDisplayHitTestQuery(viz::DisplayHitTestQueryMap());
+  child_view->DestroyOrDefer();
+  connector->SetRootRenderWidgetHostView(nullptr);
+}
+
+TEST_F(RenderWidgetHostViewChildFrameTest, MouseWheelPhaseHandling) {
+  ASSERT_NE(view_->GetMouseWheelPhaseHandler(), nullptr);
+  EXPECT_FALSE(view_->GetMouseWheelPhaseHandler()->HasPendingWheelEndEvent());
+
+  // First wheel tick without phase (such as from a Linux platform event).
+  blink::WebMouseWheelEvent event1 =
+      blink::SyntheticWebMouseWheelEventBuilder::Build(
+          0, 0, 0, -10.f, 0, ui::ScrollGranularity::kScrollByPixel);
+  event1.phase = blink::WebMouseWheelEvent::kPhaseNone;
+  event1.momentum_phase = blink::WebMouseWheelEvent::kPhaseNone;
+
+  view_->ProcessMouseWheelEvent(event1, ui::LatencyInfo());
+  EXPECT_TRUE(view_->GetMouseWheelPhaseHandler()->HasPendingWheelEndEvent());
+
+  // Second wheel tick in multi-tick sequence continues the active scroll.
+  blink::WebMouseWheelEvent event2 = event1;
+  view_->ProcessMouseWheelEvent(event2, ui::LatencyInfo());
+  EXPECT_TRUE(view_->GetMouseWheelPhaseHandler()->HasPendingWheelEndEvent());
+
+  // GestureEventAck for GestureScrollUpdate updates the first scroll update
+  // state.
+  blink::WebGestureEvent scroll_update =
+      blink::SyntheticWebGestureEventBuilder::BuildScrollUpdate(
+          0.f, -10.f, 0, blink::WebGestureDevice::kTouchpad);
+  view_->GestureEventAck(
+      scroll_update, blink::mojom::InputEventResultSource::kCompositorThread,
+      blink::mojom::InputEventResultState::kConsumed);
+  EXPECT_EQ(FirstScrollUpdateAckState::kConsumed,
+            view_->GetMouseWheelPhaseHandler()
+                ->first_scroll_update_ack_state_for_testing());
+
+  // Dispatch the pending wheel end event to finish the sequence.
+  view_->GetMouseWheelPhaseHandler()->DispatchPendingWheelEndEvent();
+  EXPECT_FALSE(view_->GetMouseWheelPhaseHandler()->HasPendingWheelEndEvent());
+
+  // Pre-phased events (e.g. from macOS or trackpads) should pass through
+  // without activating the synthetic phase timer.
+  blink::WebMouseWheelEvent phased_event = event1;
+  phased_event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
+  view_->ProcessMouseWheelEvent(phased_event, ui::LatencyInfo());
+  EXPECT_FALSE(view_->GetMouseWheelPhaseHandler()->HasPendingWheelEndEvent());
+}
+
 #if BUILDFLAG(IS_ANDROID)
 TEST_F(RenderWidgetHostViewChildFrameTest, ReportScrollJankStats) {
   auto root_view =
@@ -926,5 +1219,47 @@ TEST_F(RenderWidgetHostViewChildFrameTest, ReportScrollJankStats) {
   connector->SetRootRenderWidgetHostView(nullptr);
 }
 #endif
+
+TEST_F(RenderWidgetHostViewChildFrameTest,
+       TryTransformRootPointToViewCoordSpace) {
+  auto root_view =
+      std::make_unique<testing::NiceMock<MockRenderWidgetHostView>>(
+          widget_host_.get());
+  root_view->set_transform_offset(gfx::Vector2dF(-20.0f, -30.0f));
+
+  RenderWidgetHostViewChildFrame* child_view =
+      RenderWidgetHostViewChildFrame::Create(widget_host_.get(),
+                                             display::ScreenInfos());
+  auto connector = std::make_unique<MockFrameConnector>();
+  connector->SetView(child_view, false);
+  connector->SetRootRenderWidgetHostView(root_view.get());
+  child_view->SetFrameConnector(connector.get());
+
+  constexpr gfx::PointF kRootPoint(100.0f, 150.0f);
+  EXPECT_EQ(gfx::PointF(80.0f, 120.0f),
+            child_view->TryTransformRootPointToViewCoordSpace(kRootPoint));
+
+  // When coordinate transformation fails in the root view,
+  // TryTransformRootPointToViewCoordSpace returns std::nullopt instead of
+  // falling back to the untransformed root point.
+  root_view->set_can_transform_point(false);
+  EXPECT_EQ(std::nullopt,
+            child_view->TryTransformRootPointToViewCoordSpace(kRootPoint));
+  EXPECT_EQ(kRootPoint,
+            child_view->TransformRootPointToViewCoordSpace(kRootPoint));
+
+  // When detached from the root view or frame connector,
+  // TryTransformRootPointToViewCoordSpace returns std::nullopt.
+  root_view->set_can_transform_point(true);
+  connector->SetRootRenderWidgetHostView(nullptr);
+  EXPECT_EQ(std::nullopt,
+            child_view->TryTransformRootPointToViewCoordSpace(kRootPoint));
+
+  connector->SetView(nullptr, false);
+  EXPECT_EQ(std::nullopt,
+            child_view->TryTransformRootPointToViewCoordSpace(kRootPoint));
+
+  child_view->DestroyOrDefer();
+}
 
 }  // namespace content

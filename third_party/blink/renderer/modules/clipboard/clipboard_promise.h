@@ -5,7 +5,9 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_CLIPBOARD_CLIPBOARD_PROMISE_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_CLIPBOARD_CLIPBOARD_PROMISE_H_
 
-#include <cstdint>
+#include <stdint.h>
+
+#include <optional>
 #include <utility>
 
 #include "base/sequence_checker.h"
@@ -25,7 +27,6 @@
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_wrapper_mode.h"
-#include "third_party/blink/renderer/platform/wtf/hash_set.h"
 
 namespace blink {
 
@@ -35,7 +36,7 @@ class LocalFrame;
 class ExceptionState;
 class ExecutionContext;
 class ClipboardItem;
-class ClipboardReadOptions;
+class ClipboardUnsanitizedFormats;
 class SystemClipboard;
 
 // Represents a promise to execute Async Clipboard API functions off the main
@@ -57,7 +58,7 @@ class MODULES_EXPORT ClipboardPromise final
   static ScriptPromise<IDLSequence<ClipboardItem>> CreateForRead(
       ExecutionContext* execution_context,
       ScriptState* script_state,
-      ClipboardReadOptions* options,
+      ClipboardUnsanitizedFormats* formats,
       ExceptionState& exception_state);
 
   // Creates a promise for reading plain text from the clipboard.
@@ -112,7 +113,7 @@ class MODULES_EXPORT ClipboardPromise final
     return ExecutionContextLifecycleObserver::GetExecutionContext();
   }
 
-  SystemClipboard* GetSystemClipboard() const;
+  SystemClipboard* GetSystemClipboard();
 
   // Same as GetSystemClipboard(), but rejects the promise before returning
   // null, so a detached frame doesn't leave the promise unsettled.
@@ -132,8 +133,6 @@ class MODULES_EXPORT ClipboardPromise final
   void Trace(Visitor* visitor) const override;
 
  private:
-  class ClipboardItemDataPromiseFulfill;
-  class ClipboardItemDataPromiseReject;
   void HandlePromiseWrite(
       HeapVector<Member<V8UnionBlobOrString>> clipboard_item_list);
   void WriteClipboardItemData(
@@ -145,7 +144,7 @@ class MODULES_EXPORT ClipboardPromise final
   void WriteNextRepresentation();
 
   // Checks Read/Write permission (interacting with `PermissionService`).
-  void HandleRead(ClipboardReadOptions* options);
+  void HandleRead(ClipboardUnsanitizedFormats* formats);
   void HandleReadText();
   void HandleWrite(const HeapVector<Member<ClipboardItem>>& items);
   void HandleWriteText(const String& text);
@@ -178,6 +177,10 @@ class MODULES_EXPORT ClipboardPromise final
 
   // Resolves the read promise.
   void ResolveRead();
+
+  // Resolves a `read()` promise directly from synthetic paste text without
+  // accessing the system clipboard.
+  void ResolveSyntheticRead(const String& text);
 
   // Callback for the asynchronous SystemClipboard::ReadPlainText used by
   // navigator.clipboard.readText(). Resolves `script_promise_resolver_`.
@@ -213,6 +216,10 @@ class MODULES_EXPORT ClipboardPromise final
   bool will_read_unprocessed_html_ = false;
   // Plain text data to be written to the clipboard.
   String plain_text_;
+  // Synthetic plain text payload captured when `read()` / `readText()` is
+  // invoked synchronously during a synthetic paste event. When set, the read
+  // resolves from this value without touching the system clipboard.
+  std::optional<String> synthetic_paste_text_;
   // Clipboard sequence number as of the start of the paste event whose implicit
   // permission grant this read is riding.
   std::optional<absl::uint128> sequence_number_at_paste_start_;
@@ -228,9 +235,6 @@ class MODULES_EXPORT ClipboardPromise final
   Vector<String> write_custom_format_types_;
   // Stores the types provided by the web authors.
   Vector<String> write_clipboard_item_types_;
-  // Stores the types that the web author requested to receive for a clipboard
-  // read operation
-  std::optional<HashSet<String>> read_clipboard_item_types_;
   HeapVector<String> item_mime_types_;
   // Cumulative size of blobs read in eager mode for telemetry.
   // Uses uint64_t to match Blob::size() return type and avoid truncation on

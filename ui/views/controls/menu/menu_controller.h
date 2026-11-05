@@ -9,6 +9,7 @@
 
 #include <list>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -19,6 +20,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -34,6 +36,7 @@
 #include "ui/views/controls/button/menu_button_controller.h"
 #include "ui/views/controls/menu/menu_config.h"
 #include "ui/views/controls/menu/menu_delegate.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget_observer.h"
 
@@ -52,6 +55,10 @@ class OSExchangeData;
 struct OwnedWindowAnchor;
 }  // namespace ui
 
+namespace base {
+class TickClock;
+}  // namespace base
+
 namespace views {
 
 class Button;
@@ -60,6 +67,7 @@ class MenuHostRootView;
 class MenuItemView;
 class MenuPreTargetHandler;
 class SubmenuView;
+class Textfield;
 class View;
 class ViewTracker;
 
@@ -78,7 +86,8 @@ class MenuControllerUITest;
 // showing, selecting and drag/drop for menus. All relevant events are
 // forwarded to the MenuController from SubmenuView and MenuHost.
 class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
-                                          public WidgetObserver {
+                                          public WidgetObserver,
+                                          public FocusChangeListener {
  public:
   // Enumeration of how the menu should exit.
   enum class ExitType {
@@ -263,6 +272,11 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Returns ui::POST_DISPATCH_NONE if the event was swallowed by the menu.
   ui::PostDispatchAction OnWillDispatchKeyEvent(ui::KeyEvent* event);
 
+  // Returns true if a Textfield hosted inside the active menu stack currently
+  // has focus and receives key events. Public so platform pre-target and IME
+  // handlers (e.g. MenuPreTargetHandlerMac, TextInputHost) can query it.
+  bool HasFocusedTextfield() const;
+
   // Update the submenu's selection based on the current mouse location
   void UpdateSubmenuSelection(SubmenuView* source);
 
@@ -270,8 +284,15 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   void OnWidgetDestroying(Widget* widget) override;
   void OnWidgetShowStateChanged(Widget* widget) override;
 
+  // FocusChangeListener overrides, observing each submenu widget's
+  // FocusManager:
+  void OnWillChangeFocus(View* focused_before, View* focused_now) override;
+  void OnDidChangeFocus(View* focused_before, View* focused_now) override;
+  void OnFocusManagerDestroying(FocusManager* focus_manager) override;
+
   // Only used for testing.
   bool IsCancelAllTimerRunningForTest();
+  void SetPrefixSelectorTickClockForTesting(const base::TickClock* clock);
 
   // Only used for testing.
   static void TurnOffMenuSelectionHoldForTest();
@@ -295,6 +316,9 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Returns whether this menu can handle input events right now. This method
   // can return false while running animations.
   bool CanProcessInputEvents() const;
+
+  // Returns whether the menu is currently running its dismissal animation.
+  bool IsDismissAnimationRunning() const;
 
   // Gets the animation used for menu item alerts. The returned pointer lives as
   // long as the MenuController.
@@ -356,6 +380,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   friend class MenuControllerTest;
   friend class MenuHostRootView;
   friend class MenuItemView;
+  friend class MenuModelAdapter;
   friend class SubmenuView;
   friend class test::MenuControllerUITest;
 
@@ -386,6 +411,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   struct MenuPart;
 
   class MenuScrollTask;
+  class MenuPrefixDelegate;
 
   struct SelectByCharDetails;
 
@@ -458,6 +484,34 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
 
   // Returns true if OnKeyPressed handled the key |event|.
   bool OnKeyPressed(const ui::KeyEvent& event);
+
+  // Returns the Textfield focused inside the active menu stack, if any. Kept
+  // up to date by OnDidChangeFocus().
+  Textfield* GetFocusedTextfield();
+
+  // Clears any hot-tracked button and focuses `text_input`. Selection and
+  // accessibility state follow in OnWillChangeFocus() and OnDidChangeFocus().
+  void FocusTextfield(Textfield* text_input);
+
+  // Clears focus from any focused Textfield inside the menu, after confirming
+  // its IME composition (the composing text stays in the Textfield).
+  void ClearFocusedTextfield();
+
+  // Routes a key press the menu did not handle to the focused `text_input`.
+  // Returns the dispatch action if routing finished the key, or std::nullopt
+  // to continue with menu accelerator handling. A key ends one of two ways:
+  // - Consumed: StopPropagation() and POST_DISPATCH_NONE, when the Textfield
+  //   or the menu used it, including character events, which are typed into
+  //   `text_input` here. Nothing else sees the key, and the Aura InputMethods
+  //   reset any composition, so this is avoided while composing.
+  //   (SetSkipped(), used for keys the menu swallows, also consumes.)
+  // - Handled: SetHandled() and POST_DISPATCH_PERFORM_DEFAULT, when a key
+  //   press belongs to the Textfield but the InputMethod still has work to do
+  //   (InsertChar(), composition). Aura stops routing it to the owner widget,
+  //   while propagation continues for the InputMethod.
+  std::optional<ui::PostDispatchAction> RouteKeyEventToTextfield(
+      Textfield* text_input,
+      ui::KeyEvent* event);
 
   // Creates a MenuController. See |for_drop_| member for details on |for_drop|.
   MenuController(bool for_drop, internal::MenuControllerDelegate* delegate);
@@ -594,6 +648,13 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Returns the depth of the menu.
   static size_t MenuDepth(MenuItemView* item);
 
+  // Returns true if a pointer release (mouse release or gesture tap) that no
+  // child view handled should activate `item`. An item that hosts child views
+  // is a container of its own controls; the release landed between them, so it
+  // activates the item only if the item opts in.
+  static bool CanPointerReleaseActivate(MenuItemView* item,
+                                        const ui::Event& event);
+
   // Selects the next or previous (depending on |direction|) menu item.
   void IncrementSelection(SelectionIncrementDirectionType direction);
 
@@ -706,10 +767,22 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Updates the current |hot_button_| and its hot tracked state.
   void SetHotTrackedButton(Button* new_hot_button);
 
-  // Returns whether typing a new character will continue the existing prefix
-  // selection. If this returns false, typing a new character will start a new
-  // prefix selection, and some characters (such as Space) will be treated as
-  // commands instead of parts of the prefix.
+  // Returns `hot_button_` if it is still hot-tracked and is inside `item`,
+  // otherwise null.
+  Button* GetHotTrackedButtonIn(const MenuItemView* item) const;
+
+  // Selects `item` and hot-tracks `button` within it. Passing a null `button`
+  // clears any hot-tracked button. Safe if selecting `item` destroys the menu.
+  void SelectItemAndHotTrackButton(MenuItemView* item, Button* button);
+
+  // Returns the hot-trackable buttons inside `item` in forward focus order,
+  // using the same traversal as arrow-key navigation.
+  static std::vector<Button*> GetFocusableButtonsIn(MenuItemView* item);
+
+  // Returns whether typing a new character will continue the existing
+  // prefix selection. If this returns false, typing a new character will
+  // start a new prefix selection, and some characters (such as Space) will
+  // be treated as commands instead of parts of the prefix.
   bool ShouldContinuePrefixSelection() const;
 
   // Manage alerted MenuItemViews that we are animating.
@@ -788,8 +861,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // When Run is invoked during an active Run, it may be called from a separate
   // MenuControllerDelegate. The stacked delegates are stored here, with the top
   // (back) of the stack being the active delegate.
-  std::list<raw_ptr<internal::MenuControllerDelegate, CtnExperimental>>
-      delegate_stack_;
+  std::list<raw_ptr<internal::MenuControllerDelegate>> delegate_stack_;
 
   // Returns the current delegate (the top element of `delegate_stack_`), or
   // nullptr if the stack is empty.
@@ -820,6 +892,15 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // is destroyed first.
   base::ScopedObservation<Widget, WidgetObserver> owner_observation_{this};
 
+  // Observes the FocusManager of each submenu widget shown by this controller,
+  // so menu-hosted Textfields keep accessibility focus and selection however
+  // they gain or lose FocusManager focus.
+  base::ScopedMultiSourceObservation<FocusManager, FocusChangeListener>
+      submenu_focus_manager_observations_{this};
+
+  // The Textfield focused in one of those FocusManagers, if any.
+  ViewTracker focused_textfield_;
+
   // An optional NativeView to which gestures will be forwarded to if
   // RunType::SEND_GESTURE_EVENTS_TO_OWNER is set.
   gfx::NativeView native_view_for_gestures_ = gfx::NativeView();
@@ -845,6 +926,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Task for scrolling the menu via scroll button. If non-null, indicates a
   // scroll is currently underway.
   std::unique_ptr<MenuScrollTask> scroll_task_;
+  std::unique_ptr<MenuPrefixDelegate> prefix_delegate_;
 
   // The lock to keep the menu button pressed while a menu is visible.
   std::unique_ptr<MenuButtonController::PressedLock> pressed_lock_;
@@ -908,7 +990,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   gfx::ThrobAnimation alert_animation_;
 
   // Currently showing alerted menu items. Updated when submenus open and close.
-  base::flat_set<raw_ptr<MenuItemView, CtnExperimental>> alerted_items_;
+  base::flat_set<raw_ptr<MenuItemView>> alerted_items_;
 
   // The rounded corners of the context menu.
   std::optional<gfx::RoundedCornersF> rounded_corners_ = std::nullopt;

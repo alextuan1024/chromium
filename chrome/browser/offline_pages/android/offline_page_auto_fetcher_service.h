@@ -21,6 +21,8 @@
 #include "components/offline_pages/core/offline_page_model.h"
 #include "url/gurl.h"
 
+class Profile;
+
 namespace offline_pages {
 class RequestCoordinator;
 class SavePageRequest;
@@ -65,6 +67,7 @@ class OfflinePageAutoFetcherService : public KeyedService,
    public:
     // Calls |offline_pages::ShowAutoFetchCompleteNotification()|.
     virtual void ShowAutoFetchCompleteNotification(
+        Profile* profile,
         const std::u16string& pageTitle,
         const std::string& original_url,
         const std::string& final_url,
@@ -72,10 +75,10 @@ class OfflinePageAutoFetcherService : public KeyedService,
         int64_t offline_id) = 0;
   };
 
-  explicit OfflinePageAutoFetcherService(
-      RequestCoordinator* request_coordinator,
-      OfflinePageModel* offline_page_model,
-      Delegate* delegate);
+  OfflinePageAutoFetcherService(Profile* profile,
+                                RequestCoordinator* request_coordinator,
+                                OfflinePageModel* offline_page_model,
+                                Delegate* delegate);
   ~OfflinePageAutoFetcherService() override;
 
   AutoFetchPageLoadWatcher* page_load_watcher() { return &page_load_watcher_; }
@@ -112,6 +115,7 @@ class OfflinePageAutoFetcherService : public KeyedService,
   void CancelAllDone(base::OnceClosure callback,
                      const MultipleItemStatuses& result);
 
+  raw_ptr<Profile> profile_;
   std::unique_ptr<AutoFetchNotifier> notifier_;
   AutoFetchPageLoadWatcher page_load_watcher_;
   raw_ptr<RequestCoordinator> request_coordinator_;

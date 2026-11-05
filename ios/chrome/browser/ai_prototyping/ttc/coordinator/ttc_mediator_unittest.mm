@@ -4,88 +4,142 @@
 
 #import "ios/chrome/browser/ai_prototyping/ttc/coordinator/ttc_mediator.h"
 
-#import "base/test/task_environment.h"
+#import <memory>
+
+#import "base/memory/raw_ptr.h"
+#import "base/test/scoped_feature_list.h"
+#import "ios/chrome/browser/ai_prototyping/ttc/model/ttc_journal.h"
+#import "ios/chrome/browser/ai_prototyping/ttc/model/ttc_keyed_service.h"
+#import "ios/chrome/browser/ai_prototyping/ttc/model/ttc_keyed_service_factory.h"
 #import "ios/chrome/browser/ai_prototyping/ttc/ui/ttc_consumer.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
-#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 
-class TTCMediatorTest : public PlatformTest {
+namespace {
+
+class TtcMediatorTest : public PlatformTest {
  public:
   void SetUp() override {
     PlatformTest::SetUp();
-    mediator_ = [[TTCMediator alloc] init];
+    scoped_feature_list_.InitAndEnableFeature(kTTCEnabled);
+    TTCKeyedServiceFactory::GetInstance();
+    profile_ = TestProfileIOS::Builder().Build();
+    ttc_service_ = TTCKeyedServiceFactory::GetForProfile(profile_.get());
+    mediator_ = [[TTCMediator alloc] initWithTTCService:ttc_service_];
     mock_consumer_ = OCMProtocolMock(@protocol(TTCConsumer));
   }
 
   void TearDown() override {
     [mediator_ disconnect];
     mediator_ = nil;
+    ttc_service_ = nullptr;
     mock_consumer_ = nil;
+    profile_.reset();
     PlatformTest::TearDown();
   }
 
  protected:
-  base::test::TaskEnvironment task_environment_;
+  base::test::ScopedFeatureList scoped_feature_list_;
+  web::WebTaskEnvironment task_environment_;
+  std::unique_ptr<TestProfileIOS> profile_;
+  raw_ptr<TTCKeyedService> ttc_service_ = nullptr;
   TTCMediator* mediator_ = nil;
-  id mock_consumer_ = nil;
+  id<TTCConsumer> mock_consumer_ = nil;
 };
 
-// Tests that attaching a consumer pushes initial session state and 0.0 RMS
-// energy.
-TEST_F(TTCMediatorTest, TestSetConsumerPushesInitialState) {
-  OCMExpect([mock_consumer_ setSessionState:TTCSessionState::kIdle]);
-  OCMExpect([mock_consumer_ setMicEnergyLevel:0.0f]);
+// Tests journal hydration, detailed mode toggle, component filtering, in-place
+// updates, and clearing.
+TEST_F(TtcMediatorTest, JournalHydrationFilteringAndClear) {
+  ttc_service_->journal().Log(
+      TTCJournalComponent::kSession, "TtcSessionLifecycle",
+      TTCJournalDetailsBuilder().SetSummary("Session live").Build());
+  ttc_service_->journal().Log(TTCJournalComponent::kBackend, "ClockSync");
 
+  OCMExpect([mock_consumer_ setJournalLines:@[ @"Session live" ]]);
   mediator_.consumer = mock_consumer_;
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
 
+  // Toggling detailed mode shows both entries with component tags.
+  OCMExpect([mock_consumer_
+      setJournalLines:[OCMArg checkWithBlock:^BOOL(NSArray<NSString*>* lines) {
+        if (lines.count != 2u) {
+          return NO;
+        }
+        return [lines[0] containsString:@"[Session] TtcSessionLifecycle"] &&
+               [lines[1] containsString:@"[Backend] ClockSync"];
+      }]]);
+  [mediator_ setJournalDetailedMode:YES];
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
+
+  [mediator_ setJournalDetailedMode:NO];
+
+  // Live append and in-place update.
+  OCMExpect([mock_consumer_ appendJournalLine:@"Input: Hello"]);
+  uint64_t transcript_id = ttc_service_->journal().Log(
+      TTCJournalComponent::kConversation, "TtcInputTranscription",
+      TTCJournalDetailsBuilder().SetSummary("Input: Hello").Build());
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
+
+  OCMExpect([mock_consumer_
+      setJournalLines:(@[ @"Session live", @"Input: Hello world" ])]);
+  ttc_service_->journal().UpdateEntry(
+      transcript_id,
+      TTCJournalDetailsBuilder().SetSummary("Input: Hello world").Build());
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
+
+  // Filter to Session only, then clear.
+  OCMExpect([mock_consumer_ setJournalLines:@[ @"Session live" ]]);
+  [mediator_ setJournalComponentFilter:TTCJournalFilter::kSession];
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
+
+  OCMExpect([mock_consumer_ setJournalLines:@[]]);
+  [mediator_ clearJournal];
+  EXPECT_TRUE(ttc_service_->journal().entries().empty());
   EXPECT_OCMOCK_VERIFY(mock_consumer_);
 }
 
-// Tests that starting a voice session updates the consumer to listening state.
-TEST_F(TTCMediatorTest, TestStartSessionUpdatesState) {
+// Tests that calling `viewWillAppear` triggers hydration of the consumer.
+TEST_F(TtcMediatorTest, ViewWillAppearHydratesConsumer) {
   mediator_.consumer = mock_consumer_;
 
-  OCMExpect([mock_consumer_ setSessionState:TTCSessionState::kListening]);
+  ttc_service_->journal().Log(
+      TTCJournalComponent::kSession, "TtcSessionLifecycle",
+      TTCJournalDetailsBuilder().SetSummary("Session live").Build());
 
-  [mediator_ startSession];
-
-  EXPECT_OCMOCK_VERIFY(mock_consumer_);
-}
-
-// Tests that stopping a voice session resets the consumer to idle state.
-TEST_F(TTCMediatorTest, TestStopSessionUpdatesState) {
-  mediator_.consumer = mock_consumer_;
-
-  [mediator_ startSession];
-
-  OCMExpect([mock_consumer_ setSessionState:TTCSessionState::kIdle]);
-
-  [mediator_ stopSession];
-
-  EXPECT_OCMOCK_VERIFY(mock_consumer_);
-}
-
-// Tests that calling viewWillAppear triggers complete hydration of consumer.
-TEST_F(TTCMediatorTest, TestViewWillAppearHydratesConsumer) {
-  mediator_.consumer = mock_consumer_;
-
-  OCMExpect([mock_consumer_ setSessionState:TTCSessionState::kIdle]);
-  OCMExpect([mock_consumer_ setMicEnergyLevel:0.0f]);
+  OCMExpect([mock_consumer_ setJournalLines:@[ @"Session live" ]]);
 
   [mediator_ viewWillAppear];
 
   EXPECT_OCMOCK_VERIFY(mock_consumer_);
 }
 
-// Tests that calling disconnect unhooks and clears the consumer.
-TEST_F(TTCMediatorTest, TestDisconnectClearsConsumer) {
+// Tests that calling `disconnect` detaches the consumer and stops forwarding
+// journal entry additions, updates, and clear events.
+TEST_F(TtcMediatorTest, DisconnectStopsForwardingJournalEvents) {
+  uint64_t entry_id = ttc_service_->journal().Log(
+      TTCJournalComponent::kSession, "TtcSessionLifecycle",
+      TTCJournalDetailsBuilder().SetSummary("Session live").Build());
+  OCMExpect([mock_consumer_ setJournalLines:@[ @"Session live" ]]);
   mediator_.consumer = mock_consumer_;
-  ASSERT_TRUE(mediator_.consumer != nil);
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
 
   [mediator_ disconnect];
 
-  EXPECT_TRUE(mediator_.consumer == nil);
+  OCMReject([mock_consumer_ appendJournalLine:[OCMArg any]]);
+  OCMReject([mock_consumer_ setJournalLines:[OCMArg any]]);
+
+  ttc_service_->journal().Log(TTCJournalComponent::kSession,
+                              "After disconnect");
+  ttc_service_->journal().UpdateEntry(
+      entry_id, TTCJournalDetailsBuilder().SetSummary("Updated").Build());
+  ttc_service_->journal().Clear();
+
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
 }
+
+}  // namespace

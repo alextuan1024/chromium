@@ -7,21 +7,44 @@
 
 #include <stdint.h>
 
+#include <atomic>
+#include <memory>
+#include <set>
+#include <vector>
+
+#include "base/containers/flat_map.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/ref_counted.h"
+#include "components/user_data_importer/mojom/bookmark_html_parser.mojom-forward.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "url/gurl.h"
 
 class ImporterBridge;
 
 namespace user_data_importer {
 struct SourceProfile;
-namespace mojom {
-class BookmarkHtmlParser;
-}  // namespace mojom
 }  // namespace user_data_importer
 
 // The base class of all importers.
 class Importer : public base::RefCountedThreadSafe<Importer> {
  public:
+  // Raw favicon image bytes and URL metadata collected prior to sandboxed
+  // decoding and PNG re-encoding.
+  struct RawFaviconUsageData {
+    RawFaviconUsageData();
+    RawFaviconUsageData(GURL favicon_url,
+                        std::set<GURL> urls,
+                        std::vector<uint8_t> raw_data);
+    RawFaviconUsageData(RawFaviconUsageData&&);
+    RawFaviconUsageData& operator=(RawFaviconUsageData&&);
+    ~RawFaviconUsageData();
+
+    GURL favicon_url;
+    std::set<GURL> urls;
+    std::vector<uint8_t> raw_data;
+  };
+
   Importer(const Importer&) = delete;
   Importer& operator=(const Importer&) = delete;
 
@@ -34,16 +57,16 @@ class Importer : public base::RefCountedThreadSafe<Importer> {
       uint16_t items,
       ImporterBridge* bridge) = 0;
 
-  // Provides a remote to a BookmarkHtmlParser running in another process. Must
-  // be called before StartImport().
-  virtual void SetBookmarkHtmlParser(
+  // Provides a remote to a sandboxed BookmarkHtmlParser running in another
+  // process. Must be called before StartImport().
+  void SetBookmarkHtmlParser(
       mojo::PendingRemote<user_data_importer::mojom::BookmarkHtmlParser>
           parser);
 
   // Cancels the import process.
   virtual void Cancel();
 
-  bool cancelled() const { return cancelled_; }
+  bool cancelled() const { return cancelled_.load(std::memory_order_relaxed); }
 
  protected:
   friend class base::RefCountedThreadSafe<Importer>;
@@ -51,11 +74,42 @@ class Importer : public base::RefCountedThreadSafe<Importer> {
   Importer();
   virtual ~Importer();
 
+  // Binds and returns the BookmarkHtmlParser remote on the import thread.
+  // Callers must keep ownership of the bound Remote on the import thread (e.g.
+  // in Mojo callbacks) rather than storing it on `Importer`, which may be
+  // destroyed on the main utility thread.
+  std::unique_ptr<mojo::Remote<user_data_importer::mojom::BookmarkHtmlParser>>
+  BindBookmarkHtmlParser();
+
+  // Re-encodes `raw_favicons` into PNGs via the sandboxed `parser` (binding
+  // `bookmark_html_parser_remote_` in the two-argument overload if `parser` is
+  // not already bound), passes any valid favicons to `bridge_->SetFavicons()`,
+  // and invokes `on_done` (including when `raw_favicons` is empty,
+  // `cancelled()` is true, or `parser` disconnects).
+  void ReencodeFaviconsAndSetOnBridge(
+      std::vector<RawFaviconUsageData> raw_favicons,
+      base::OnceClosure on_done);
+  void ReencodeFaviconsAndSetOnBridge(
+      std::vector<RawFaviconUsageData> raw_favicons,
+      base::OnceClosure on_done,
+      std::unique_ptr<
+          mojo::Remote<user_data_importer::mojom::BookmarkHtmlParser>> parser);
+
   scoped_refptr<ImporterBridge> bridge_;
 
  private:
+  void OnFaviconsReencoded(
+      std::unique_ptr<
+          mojo::Remote<user_data_importer::mojom::BookmarkHtmlParser>> parser,
+      std::vector<RawFaviconUsageData> raw_favicons,
+      base::OnceClosure on_done,
+      const base::flat_map<uint32_t, std::vector<uint8_t>>& png_favicons);
+
+  mojo::PendingRemote<user_data_importer::mojom::BookmarkHtmlParser>
+      bookmark_html_parser_remote_;
+
   // True if the caller cancels the import process.
-  bool cancelled_;
+  std::atomic<bool> cancelled_{false};
 };
 
 #endif  // CHROME_UTILITY_IMPORTER_IMPORTER_H_

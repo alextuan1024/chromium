@@ -5,6 +5,8 @@
 #include "ui/views/animation/animation_builder.h"
 
 #include <algorithm>
+#include <iterator>
+#include <memory>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -14,6 +16,7 @@
 #include "base/functional/callback.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/time/time.h"
 #include "ui/compositor/layer.h"
@@ -28,6 +31,15 @@
 #include "ui/views/animation/animation_sequence_block.h"
 
 namespace views {
+namespace {
+// Used during scheduling to track whether a layer had been destroyed due to
+// a previously scheduled animation sequence terminating early.
+struct LayerSequences {
+  base::WeakPtr<ui::Layer> layer;
+  std::vector<std::unique_ptr<ui::LayerAnimationSequence>> sequences;
+};
+
+}  // namespace
 
 AnimationBuilder::Observer::Observer() = default;
 
@@ -46,32 +58,32 @@ AnimationBuilder::Observer::~Observer() {
 }
 
 void AnimationBuilder::Observer::SetOnStarted(base::OnceClosure callback) {
-  DCHECK(!on_started_);
+  CHECK(!on_started_, base::NotFatalUntil::M163);
   on_started_ = std::move(callback);
 }
 
 void AnimationBuilder::Observer::SetOnEnded(base::OnceClosure callback,
                                             base::Location location) {
-  DCHECK(!on_ended_);
+  CHECK(!on_ended_, base::NotFatalUntil::M163);
   on_ended_ = std::move(callback);
   on_ended_location_ = location;
 }
 
 void AnimationBuilder::Observer::SetOnWillRepeat(
     base::RepeatingClosure callback) {
-  DCHECK(!on_will_repeat_);
+  CHECK(!on_will_repeat_, base::NotFatalUntil::M163);
   on_will_repeat_ = std::move(callback);
 }
 
 void AnimationBuilder::Observer::SetOnAborted(base::OnceClosure callback,
                                               base::Location location) {
-  DCHECK(!on_aborted_);
+  CHECK(!on_aborted_, base::NotFatalUntil::M163);
   on_aborted_ = std::move(callback);
   on_aborted_location_ = location;
 }
 
 void AnimationBuilder::Observer::SetOnScheduled(base::OnceClosure callback) {
-  DCHECK(!on_scheduled_);
+  CHECK(!on_scheduled_, base::NotFatalUntil::M163);
   on_scheduled_ = std::move(callback);
 }
 
@@ -101,7 +113,15 @@ void AnimationBuilder::Observer::OnLayerAnimationEnded(
       // TODO(b/335902543): Remove on_ended_location.
       base::Location on_ended_location = on_ended_location_;
       base::debug::Alias(&on_ended_location);
+      // The callback may destroy `sequence`. If that is the last sequence this
+      // observer is attached to, OnDetachedFromSequence() deletes `this`.
+      base::WeakPtr<Observer> weak_this = weak_factory_.GetWeakPtr();
       std::move(on_ended_).Run();
+      if (!weak_this) {
+        // The abort handle, if any, is not marked as ended, so destroying it
+        // still aborts the animations on its layers.
+        return;
+      }
     }
     if (abort_handle_ && abort_handle_->animation_state() ==
                              AnimationAbortHandle::AnimationState::kRunning) {
@@ -140,7 +160,15 @@ void AnimationBuilder::Observer::OnLayerAnimationAborted(
     // TODO(b/335902543): Remove on_aborted_location_.
     base::Location on_aborted_location = on_aborted_location_;
     base::debug::Alias(&on_aborted_location);
+    // Defensive: ui::LayerAnimator keeps an aborted sequence alive until its
+    // observers have been notified, so the callback cannot delete `this`
+    // there, but nothing requires that of other callers of
+    // LayerAnimationSequence::Abort().
+    base::WeakPtr<Observer> weak_this = weak_factory_.GetWeakPtr();
     std::move(on_aborted_).Run();
+    if (!weak_this) {
+      return;
+    }
   }
   if (abort_handle_ && abort_handle_->animation_state() ==
                            AnimationAbortHandle::AnimationState::kRunning) {
@@ -220,10 +248,30 @@ AnimationBuilder::~AnimationBuilder() {
     animation_observer_.release();
   }
 
+  std::vector<LayerSequences> layer_sequences;
   for (auto it = layer_animation_sequences_.begin();
        it != layer_animation_sequences_.end();) {
     auto* const target = it->first;
     auto end_it = layer_animation_sequences_.upper_bound(target);
+    LayerSequences this_layer_sequences;
+    this_layer_sequences.layer = target->AsWeakPtr();
+    std::transform(it, end_it,
+                   std::back_inserter(this_layer_sequences.sequences),
+                   [](auto& it) { return std::move(it.second); });
+    layer_sequences.emplace_back(std::move(this_layer_sequences));
+    it = end_it;
+  }
+
+  for (auto& layer_sequence : layer_sequences) {
+    if (!layer_sequence.layer) {
+      // If the layer had been destroyed from an earlier animation sequence
+      // terminating early, make sure all remaining sequences are also aborted.
+      for (auto& sequence : layer_sequence.sequences) {
+        sequence->Abort(nullptr);
+      }
+      continue;
+    }
+    auto* const target = layer_sequence.layer.get();
 
     if (abort_handle_) {
       abort_handle_->AddLayer(target);
@@ -233,11 +281,13 @@ AnimationBuilder::~AnimationBuilder() {
     if (preemption_strategy_) {
       settings.SetPreemptionStrategy(preemption_strategy_.value());
     }
+
     std::vector<ui::LayerAnimationSequence*> sequences;
-    std::transform(it, end_it, std::back_inserter(sequences),
-                   [](auto& it) { return it.second.release(); });
+    std::transform(layer_sequence.sequences.begin(),
+                   layer_sequence.sequences.end(),
+                   std::back_inserter(sequences),
+                   [](auto& sequence) { return sequence.release(); });
     target->GetAnimator()->StartTogether(std::move(sequences));
-    it = end_it;
   }
 }
 
@@ -345,7 +395,7 @@ void AnimationBuilder::TerminateSequence(base::PassKey<AnimationSequenceBlock>,
 }
 
 AnimationSequenceBlock& AnimationBuilder::GetCurrentSequence() {
-  DCHECK(current_sequence_);
+  CHECK(current_sequence_, base::NotFatalUntil::M163);
   return *current_sequence_;
 }
 

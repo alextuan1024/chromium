@@ -71,7 +71,6 @@
 #include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/global_features.h"
-#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/common/chrome_content_client.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -3881,12 +3880,14 @@ TEST_F(DeviceStatusCollectorTest, DemoModeDimensions) {
 }
 
 struct FakeSimSlotInfo {
-  std::string object_path;
-  std::string eid;
+  const char* object_path;
+  const char* eid;
   bool is_active;
   uint32_t physical_slot;
-} kFakeSimSlots[] = {{"euicc_path", "123", true, 1},
-                     {"euicc_path2", "234", false, 2}};
+};
+
+constexpr FakeSimSlotInfo kFakeSimSlots[] = {{"euicc_path", "123", true, 1},
+                                             {"euicc_path2", "234", false, 2}};
 
 // Fake device state.
 struct FakeDeviceData {

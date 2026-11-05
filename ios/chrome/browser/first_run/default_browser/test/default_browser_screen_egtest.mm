@@ -2,18 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#import "base/strings/strcat.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
+#import "ios/chrome/browser/first_run/public/features.h"
 #import "ios/chrome/browser/first_run/public/first_run_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
-#import "ios/chrome/common/ui/promo_style/constants.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
+#import "ios/chrome/test/earl_grey/test_switches.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ui/base/l10n/l10n_util.h"
 
@@ -77,15 +80,47 @@ id<GREYMatcher> DefaultPromoSubtitle() {
   config.additional_args.push_back(
       "--disable-features=AnimatedDefaultBrowserPromoInFRE");
 
-  // The UpdatedFirstRunSequence experiment makes changes to the Default Browser
-  // screen's view that cause the test to fail.
-  config.additional_args.push_back(
-      "--disable-features=UpdatedFirstRunSequence");
+  // Add a fake identity at startup so the Sign-In screen is included in the FRE
+  // sequence.
+  config.additional_args.push_back(std::string("-") +
+                                   test_switches::kAddFakeIdentitiesAtStartup);
+
+  if ([self isRunningAndroidSwitcherTest]) {
+    const char* armParam =
+        [self isRunningTest:@selector(testAndroidSwitcherHybridPromoDisplayed)]
+            ? first_run::kAndroidSwitcherDefaultBrowserPromoInFREArmHybrid
+            : first_run::
+                  kAndroidSwitcherDefaultBrowserPromoInFREArmGoogleEcosystem;
+    // GCRGemini crashes on nil identity in this sign-in setup.
+    config.additional_args.push_back(base::StrCat(
+        {"--enable-features=GeminiKillSwitch,",
+         first_run::kAndroidSwitcherDefaultBrowserPromoInFRE.name, ":",
+         first_run::kAndroidSwitcherDefaultBrowserPromoInFREParam, "/",
+         first_run::
+             kAndroidSwitcherDefaultBrowserPromoInFREParamSegmentationSignal,
+         "/", first_run::kAndroidSwitcherDefaultBrowserPromoInFREArmParam, "/",
+         armParam}));
+    config.additional_args.push_back(
+        "-force-device-switcher-experience=AndroidPhone");
+  } else {
+    // GCRGemini crashes on nil identity in this sign-in setup.
+    config.additional_args.push_back("--enable-features=GeminiKillSwitch");
+    config.features_disabled.push_back(
+        first_run::kAndroidSwitcherDefaultBrowserPromoInFRE);
+  }
 
   return config;
 }
 
 #pragma mark - Helpers
+
+// Returns whether the currently running test expects the Android Switcher
+// Default Browser promo screen.
+- (BOOL)isRunningAndroidSwitcherTest {
+  return
+      [self isRunningTest:@selector(testAndroidSwitcherPromoDisplayed)] ||
+      [self isRunningTest:@selector(testAndroidSwitcherHybridPromoDisplayed)];
+}
 
 // Signs in and enables sync.
 - (void)signIn {
@@ -93,8 +128,12 @@ id<GREYMatcher> DefaultPromoSubtitle() {
       waitForUIElementToAppearWithMatcher:
           grey_accessibilityID(
               first_run::kFirstRunSignInScreenAccessibilityIdentifier)];
+  // The startup identity may not have been cleared (e.g. for the first test of
+  // the suite), so only add it if needed.
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
-  [SigninEarlGrey addFakeIdentity:fakeIdentity];
+  if (![SigninEarlGrey isIdentityAdded:fakeIdentity]) {
+    [SigninEarlGrey addFakeIdentity:fakeIdentity];
+  }
   // Sign in.
   [self tapPromoButton:chrome_test_util::ButtonStackPrimaryButton()];
   // Enable history/tab sync.
@@ -104,10 +143,14 @@ id<GREYMatcher> DefaultPromoSubtitle() {
   [self tapPromoButton:chrome_test_util::ButtonStackPrimaryButton()];
   [ChromeEarlGrey
       waitForSyncTransportStateActiveWithTimeout:kSyncOperationTimeout];
+  NSString* expectedScreenAccessibilityID =
+      [self isRunningAndroidSwitcherTest]
+          ? first_run::
+                kFirstRunDefaultBrowserAndroidSwitcherScreenAccessibilityIdentifier
+          : first_run::kFirstRunDefaultBrowserScreenAccessibilityIdentifier;
   [ChromeEarlGrey
-      waitForUIElementToAppearWithMatcher:
-          grey_accessibilityID(
-              first_run::kFirstRunDefaultBrowserScreenAccessibilityIdentifier)];
+      waitForUIElementToAppearWithMatcher:grey_accessibilityID(
+                                              expectedScreenAccessibilityID)];
 }
 
 // Signs out and clears sync data.
@@ -119,7 +162,7 @@ id<GREYMatcher> DefaultPromoSubtitle() {
 // Taps a promo button.
 - (void)tapPromoButton:(id<GREYMatcher>)buttonMatcher {
   id<GREYMatcher> scrollViewMatcher =
-      grey_accessibilityID(kPromoStyleScrollViewAccessibilityIdentifier);
+      grey_accessibilityID(kButtonStackScrollViewAccessibilityIdentifier);
   // Needs to scroll slowly to make sure to not miss a cell if it is not
   // currently on the screen. It should not be bigger than the visible part
   // of the collection view.
@@ -131,6 +174,39 @@ id<GREYMatcher> DefaultPromoSubtitle() {
   [element performAction:grey_tap()];
 }
 
+// Verifies that the Android Switcher promo screen displays `expectedTitle`, the
+// switcher subtitle, and all three feature rows.
+- (void)verifyAndroidSwitcherPromoWithExpectedTitle:(NSString*)expectedTitle {
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(
+              first_run::
+                  kFirstRunDefaultBrowserAndroidSwitcherScreenAccessibilityIdentifier)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey selectElementWithMatcher:grey_text(expectedTitle)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_text(GetNSString(
+              IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_SUBTITLE))]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_text(GetNSString(
+              IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_YOUTUBE_MAPS_ROW))]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_text(GetNSString(
+              IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_DRIVE_PHOTOS_ROW))]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_text(GetNSString(
+              IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_LENS_ROW))]
+      assertWithMatcher:grey_sufficientlyVisible()];
+}
+
 #pragma mark - Tests
 
 // Tests if the default promo is correctly displayed.
@@ -139,6 +215,24 @@ id<GREYMatcher> DefaultPromoSubtitle() {
       assertWithMatcher:grey_sufficientlyVisible()];
   [[EarlGrey selectElementWithMatcher:DefaultPromoSubtitle()]
       assertWithMatcher:grey_sufficientlyVisible()];
+}
+
+// Tests that the Google Ecosystem arm of the Android Switcher default browser
+// promo is displayed when the flag is enabled and the user is signed in.
+- (void)testAndroidSwitcherPromoDisplayed {
+  NSString* expectedTitle = GetNSString(
+      [ChromeEarlGrey isIPadIdiom]
+          ? IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_GOOGLE_ECOSYSTEM_TITLE_IPAD
+          : IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_GOOGLE_ECOSYSTEM_TITLE);
+  [self verifyAndroidSwitcherPromoWithExpectedTitle:expectedTitle];
+}
+
+// Tests that the Hybrid arm of the Android Switcher default browser promo is
+// displayed when selected and the user is signed in.
+- (void)testAndroidSwitcherHybridPromoDisplayed {
+  NSString* expectedTitle = GetNSString(
+      IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_HYBRID_TITLE);
+  [self verifyAndroidSwitcherPromoWithExpectedTitle:expectedTitle];
 }
 
 @end

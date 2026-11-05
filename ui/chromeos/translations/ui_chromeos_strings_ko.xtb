@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">카메라</translation>
 <translation id="162175252992296058">포르투갈어(미국 국제 키보드)</translation>
 <translation id="1629521517399325891">사용자 인증서를 네트워크 인증에 사용할 수 없습니다.</translation>
+<translation id="1639239467298939599">로드 중</translation>
 <translation id="1641780993263690097">중국어(병음)</translation>
 <translation id="164969095109328410">Chrome 기기</translation>
 <translation id="1661207570040737402">공유 드라이브의 Google Workspace 스토리지를 모두 사용했습니다.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">파일 동기화 사용 중지됨</translation>
 <translation id="2820957248982571256">검색 중...</translation>
 <translation id="2830077785865012357">중국어(주음부호)</translation>
+<translation id="2838379631617906747">설치 중</translation>
 <translation id="2843806747483486897">기본값 변경...</translation>
 <translation id="2873951654529031587">휴지통</translation>
 <translation id="2887314858867008269">영어(미국) 콜맥</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">비밀번호가 잘못되었습니다.</translation>
 <translation id="5059127710849015030">네팔어(음역)</translation>
 <translation id="5068919226082848014">피자</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" />에서 프록시 재정의 규칙을 설정했습니다.</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" />의 파일이 삭제됩니다.</translation>
 <translation id="508423945471810158">항목 <ph name="NUMBER_OF_ITEMS" />개를 <ph name="FOLDER_NAME" /> 폴더로 이동 중</translation>
 <translation id="509429900233858213">오류가 발생했습니다.</translation>
-<translation id="5102922915594634436">동기화된 폴더 관리</translation>
 <translation id="5109254780565519649">오류가 발생했습니다. 일부 항목은 복원되지 않았을 수 있습니다.</translation>
 <translation id="5110329002213341433">영어(캐나다)</translation>
 <translation id="5119780910075847424">동기화가 일시중지됨</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">설치된 인증서 없음</translation>
 <translation id="5317780077021120954">저장</translation>
 <translation id="5318819489018851358">Linux로 공유</translation>
-<translation id="5330145655348521461">파일이 다른 데스크톱에서 열려 있습니다. 파일을 보려면 <ph name="USER_NAME" />(<ph name="MAIL_ADDRESS" />)(으)로 이동하세요.</translation>
 <translation id="5330512191124428349">정보 보기</translation>
 <translation id="535792325654997756">고양이들과 함께 있는 사람</translation>
 <translation id="5358764674931277">프레임 속도</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">잘못된 도메인 서픽스 일치 값</translation>
 <translation id="6364301859968397756">조직 저장용량이 가득 참</translation>
 <translation id="6367976544441405720">승합차</translation>
-<translation id="637062427944097960">파일이 다른 데스크톱에서 열려 있습니다. 파일을 보려면 <ph name="USER_NAME" />(<ph name="MAIL_ADDRESS" />)(으)로 이동하세요.</translation>
 <translation id="6394388407447716302">읽기 전용</translation>
 <translation id="6395575651121294044">항목 <ph name="NUMBER_OF_FILES" />개</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> 파일이 암호화되어 있으므로 이동할 수 없습니다.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> - 포트</translation>
 <translation id="8656407365183407932">오프라인 파일이 삭제됨</translation>
 <translation id="8656768832129462377">확인 안함</translation>
+<translation id="8662978096466608964">Chrome에서 배경화면을 설정할 수 없습니다.</translation>
 <translation id="8688591111840995413">비밀번호가 잘못됨</translation>
 <translation id="8698464937041809063">Google 드로잉</translation>
 <translation id="8698877009525468705">이 파일은 기밀이며 관리자 정책의 제한사항이 적용됩니다.</translation>

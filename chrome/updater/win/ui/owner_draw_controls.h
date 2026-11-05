@@ -20,9 +20,56 @@
 namespace updater::test {
 class CaptionButtonTestApi;
 class OwnerDrawTitleBarTestApi;
+class TrackedButtonTestApi;
 }  // namespace updater::test
 
 namespace updater::ui {
+
+// Subclassed button base class that manages mouse tracking and hover state
+// across mouse moves, capture, enable/disable, and show/hide transitions.
+class TrackedButton : public SubclassedWindow {
+ public:
+  TrackedButton();
+  TrackedButton(const TrackedButton&) = delete;
+  TrackedButton& operator=(const TrackedButton&) = delete;
+  ~TrackedButton() override;
+
+  CR_BEGIN_MSG_MAP_EX(TrackedButton)
+    CR_MESSAGE_HANDLER_EX(WM_MOUSEMOVE, OnMouseMove)
+    CR_MESSAGE_HANDLER_EX(WM_MOUSELEAVE, OnMouseLeave)
+    CR_MESSAGE_HANDLER_EX(WM_ENABLE, OnEnable)
+    CR_MESSAGE_HANDLER_EX(WM_SHOWWINDOW, OnShowWindow)
+  CR_END_MSG_MAP()
+
+ protected:
+  // Reports the control's own WS_DISABLED bit. Hover gating needs the enabled
+  // bit outside a draw cycle; an owner-draw paint path uses ODS_DISABLED from
+  // `DRAWITEMSTRUCT` instead.
+  bool IsEnabled() const;
+
+  // Whether the cursor is currently over the control. Subclasses read this to
+  // pick the hover treatment while painting. Read only on purpose: the flag is
+  // only meaningful in lockstep with the TME_LEAVE registration that clears
+  // it, and both are maintained together by the handlers below.
+  bool is_mouse_hovering() const { return is_mouse_hovering_; }
+
+  // Cancels any outstanding TME_LEAVE registration so that the next cursor
+  // entry re-arms it.
+  void CancelMouseTracking();
+
+  LRESULT OnMouseMove(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnMouseLeave(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnEnable(UINT msg, WPARAM wparam, LPARAM lparam);
+  LRESULT OnShowWindow(UINT msg, WPARAM wparam, LPARAM lparam);
+
+ private:
+  friend class updater::test::TrackedButtonTestApi;
+
+  bool is_tracking_mouse_events_ = false;
+  bool is_mouse_hovering_ = false;
+
+  CR_MSG_MAP_CLASS_DECLARATIONS(TrackedButton)
+};
 
 // Owner-drawn caption button used by the custom title bar. The control is a
 // real `BUTTON`-class window so it participates in MSAA/UIA as
@@ -31,13 +78,16 @@ namespace updater::ui {
 // The `BS_OWNERDRAW` style suppresses the default `BUTTON` paint (including
 // the focus rectangle and default-button frame); the parent's `WM_DRAWITEM`
 // handler routes back to `DrawItem` to paint the custom icon.
-class CaptionButton : public SubclassedWindow {
+class CaptionButton : public TrackedButton {
  public:
   CaptionButton();
   CaptionButton(const CaptionButton&) = delete;
   CaptionButton& operator=(const CaptionButton&) = delete;
   ~CaptionButton() override;
 
+  // Creates and subclasses the `BUTTON` control as a child of `parent`.
+  // Returns its HWND, or nullptr if it could not be created or subclassed, in
+  // which case `IsWindow()` is false. A missing tool tip is tolerated.
   HWND Create(HWND parent, const RECT& bounds, int control_id);
 
   void DrawItem(LPDRAWITEMSTRUCT draw_item_struct);
@@ -49,11 +99,7 @@ class CaptionButton : public SubclassedWindow {
   void set_tool_tip_text(const std::wstring& tool_tip_text);
 
   CR_BEGIN_MSG_MAP_EX(CaptionButton)
-    CR_MESSAGE_RANGE_HANDLER_EX(WM_MOUSEFIRST, WM_MOUSELAST, OnMouseMessage)
-    CR_MESSAGE_HANDLER_EX(WM_MOUSEMOVE, OnMouseMove)
-    CR_MESSAGE_HANDLER_EX(WM_MOUSELEAVE, OnMouseLeave)
-    CR_MESSAGE_HANDLER_EX(WM_ENABLE, OnEnable)
-    CR_MESSAGE_HANDLER_EX(WM_SHOWWINDOW, OnShowWindow)
+    CR_CHAIN_MSG_MAP(TrackedButton)
     CR_MESSAGE_HANDLER_EX(WM_THEMECHANGED, OnThemeChanged)
     CR_MESSAGE_HANDLER_EX(WM_SYSCOLORCHANGE, OnThemeChanged)
     CR_MESSAGE_HANDLER_EX(WM_SETTINGCHANGE, OnThemeChanged)
@@ -62,18 +108,13 @@ class CaptionButton : public SubclassedWindow {
  private:
   friend class updater::test::CaptionButtonTestApi;
 
-  virtual HRGN GetButtonRgn(int rgn_width, int rgn_height) = 0;
+  // Returns the glyph region for a `rgn_width` x `rgn_height` area, or an
+  // invalid object if the area is too small or too large to draw.
+  virtual base::win::ScopedGDIObject<HRGN> GetButtonRgn(int rgn_width,
+                                                        int rgn_height) = 0;
 
   // Refreshes the cached theme flags that the paint path reads.
   void UpdateThemeState();
-
-  // Cancels any outstanding TME_LEAVE registration so that the next cursor
-  // entry re-arms it.
-  void CancelMouseTracking();
-
-  // Reports the control's own WS_DISABLED bit. Hover gating needs the enabled
-  // bit outside a draw cycle; the paint path uses ODS_DISABLED instead.
-  bool IsEnabled() const;
 
   // Everything a single paint resolves against, snapshotted once so that the
   // glyph and the background resolve against the same state.
@@ -100,19 +141,12 @@ class CaptionButton : public SubclassedWindow {
                       const RECT& button_rect,
                       PaintState paint_state) const;
 
-  LRESULT OnMouseMessage(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnMouseMove(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnMouseLeave(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnEnable(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnShowWindow(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnThemeChanged(UINT msg, WPARAM wparam, LPARAM lparam);
 
   COLORREF bk_color_ = RGB(0, 0, 0);
 
   HWND tool_tip_window_ = nullptr;
   std::wstring tool_tip_text_;
-  bool is_tracking_mouse_events_ = false;
-  bool is_mouse_hovering_ = false;
   bool is_high_contrast_ = false;
   bool is_dark_mode_ = false;
 
@@ -126,7 +160,8 @@ class CloseButton : public CaptionButton {
   CloseButton& operator=(const CloseButton&) = delete;
 
  private:
-  HRGN GetButtonRgn(int rgn_width, int rgn_height) override;
+  base::win::ScopedGDIObject<HRGN> GetButtonRgn(int rgn_width,
+                                                int rgn_height) override;
 };
 
 class MinimizeButton : public CaptionButton {
@@ -136,7 +171,8 @@ class MinimizeButton : public CaptionButton {
   MinimizeButton& operator=(const MinimizeButton&) = delete;
 
  private:
-  HRGN GetButtonRgn(int rgn_width, int rgn_height) override;
+  base::win::ScopedGDIObject<HRGN> GetButtonRgn(int rgn_width,
+                                                int rgn_height) override;
 };
 
 // Owner-drawn custom title bar. A child of the host dialog; positions and
@@ -306,6 +342,12 @@ class CustomProgressBarCtrl : public SubclassedWindow {
                     COLORREF top_color,
                     COLORREF bottom_color);
 
+  // Draws the progress bar (track, progress fill, and the frame exposed at
+  // the rounded corners) into `rect` of `dc`. Pen widths and corner radii are
+  // multiplied by `scale`, so that the bar can be rendered into an enlarged
+  // offscreen bitmap and downsampled for anti-aliasing.
+  void DrawBar(HDC dc, const RECT& rect, int scale) const;
+
   LRESULT OnEraseBkgnd(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnPaint(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnTimer(UINT msg, WPARAM wparam, LPARAM lparam);
@@ -318,6 +360,7 @@ class CustomProgressBarCtrl : public SubclassedWindow {
 
   static constexpr int kMinPosition = 0;
   static constexpr int kMaxPosition = 100;
+  static_assert(kMaxPosition > kMinPosition);
   static constexpr int kMarqueeWidth = 20;
   static constexpr UINT_PTR kMarqueeTimerId = 111;
 
@@ -336,7 +379,7 @@ class CustomProgressBarCtrl : public SubclassedWindow {
 // A flat implementation of button subclassed from standard Win32 push buttons,
 // styling them as Chrome/Google Design System (GDS) primary/secondary style
 // flat buttons.
-class FlatButton : public SubclassedWindow {
+class FlatButton : public TrackedButton {
  public:
   FlatButton();
   FlatButton(const FlatButton&) = delete;
@@ -346,10 +389,7 @@ class FlatButton : public SubclassedWindow {
   void UpdateThemeState();
 
   CR_BEGIN_MSG_MAP_EX(FlatButton)
-    CR_MESSAGE_RANGE_HANDLER_EX(WM_MOUSEFIRST, WM_MOUSELAST, OnMouseMessage)
-    CR_MESSAGE_HANDLER_EX(WM_MOUSEMOVE, OnMouseMove)
-    CR_MESSAGE_HANDLER_EX(WM_MOUSEHOVER, OnMouseHover)
-    CR_MESSAGE_HANDLER_EX(WM_MOUSELEAVE, OnMouseLeave)
+    CR_CHAIN_MSG_MAP(TrackedButton)
     CR_MESSAGE_HANDLER_EX(WM_PAINT, OnPaint)
     CR_MESSAGE_HANDLER_EX(WM_ERASEBKGND, OnEraseBkgnd)
     CR_MESSAGE_HANDLER_EX(WM_THEMECHANGED, OnThemeChanged)
@@ -360,16 +400,10 @@ class FlatButton : public SubclassedWindow {
   void SetIsPrimary(bool is_primary);
 
  private:
-  LRESULT OnMouseMessage(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnMouseMove(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnMouseHover(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnMouseLeave(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnPaint(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnEraseBkgnd(UINT msg, WPARAM wparam, LPARAM lparam);
   LRESULT OnThemeChanged(UINT msg, WPARAM wparam, LPARAM lparam);
 
-  bool is_tracking_mouse_events_ = false;
-  bool is_mouse_hovering_ = false;
   bool is_primary_ = true;
   bool is_high_contrast_ = false;
   bool is_dark_mode_ = false;

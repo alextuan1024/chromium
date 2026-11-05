@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/core/events/pointer_event_util.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 
 namespace blink {
@@ -34,7 +35,7 @@ PointerEvent::PointerEvent(const AtomicString& type,
       tilt_x_(0),
       tilt_y_(0),
       azimuth_angle_(0),
-      altitude_angle_(kPiDouble / 2),
+      altitude_angle_(kPiOverTwoDouble),
       tangential_pressure_(0),
       twist_(0),
       is_primary_(false),
@@ -160,6 +161,46 @@ HeapVector<Member<PointerEvent>> PointerEvent::getPredictedEvents() {
   return predicted_events_;
 }
 
+PointerEvent* PointerEvent::CloneCoalescedOrPredictedEvent() const {
+  CHECK(RuntimeEnabledFeatures::RetargetEventsInPointerEventListsEnabled());
+  PointerEventInit* initializer = PointerEventInit::Create();
+
+  if (AbstractView* abstract_view = view()) {
+    initializer->setView(abstract_view);
+  }
+  UIEventWithKeyState::SetFromWebInputEventModifiers(initializer,
+                                                     GetModifiers());
+
+  initializer->setScreenX(screen_x_);
+  initializer->setScreenY(screen_y_);
+  initializer->setClientX(client_x_);
+  initializer->setClientY(client_y_);
+  initializer->setButton(RawButton());
+  initializer->setButtons(buttons());
+  initializer->setMovementX(movementX());
+  initializer->setMovementY(movementY());
+
+  initializer->setPointerId(pointer_id_);
+  initializer->setWidth(width_);
+  initializer->setHeight(height_);
+  initializer->setPressure(pressure_);
+  initializer->setTiltX(tilt_x_);
+  initializer->setTiltY(tilt_y_);
+  initializer->setAzimuthAngle(azimuth_angle_);
+  initializer->setAltitudeAngle(altitude_angle_);
+  initializer->setTangentialPressure(tangential_pressure_);
+  initializer->setTwist(twist_);
+  initializer->setPointerType(pointer_type_);
+  initializer->setIsPrimary(is_primary_);
+  initializer->setPersistentDeviceId(persistent_device_id_);
+
+  PointerEvent* clone =
+      PointerEvent::Create(type(), initializer, PlatformTimeStamp());
+  clone->SetTrusted(isTrusted());
+
+  return clone;
+}
+
 base::TimeTicks PointerEvent::OldestPlatformTimeStamp() const {
   if (coalesced_events_.size() > 0) {
     // Assume that time stamps of coalesced events are in ascending order.
@@ -179,11 +220,15 @@ DispatchEventResult PointerEvent::DispatchEvent(EventDispatcher& dispatcher) {
     return DispatchEventResult::kNotCanceled;  // Shouldn't happen.
 
   if (isTrusted()) {
-    for (const auto& coalesced_event : coalesced_events_) {
-      coalesced_event->SetTarget(&dispatcher.GetNode());
-    }
-    for (const auto& predicted_event : predicted_events_) {
-      predicted_event->SetTarget(&dispatcher.GetNode());
+    if (RuntimeEnabledFeatures::RetargetEventsInPointerEventListsEnabled()) {
+      GetEventPath().AdjustForPointerEvent(*this);
+    } else {
+      for (const auto& coalesced_event : coalesced_events_) {
+        coalesced_event->SetTarget(&dispatcher.GetNode());
+      }
+      for (const auto& predicted_event : predicted_events_) {
+        predicted_event->SetTarget(&dispatcher.GetNode());
+      }
     }
   }
 
@@ -193,6 +238,7 @@ DispatchEventResult PointerEvent::DispatchEvent(EventDispatcher& dispatcher) {
 
   DCHECK(!RawTarget() || RawTarget() != relatedTarget());
 
+  CheckCrossOriginRelatedTarget(dispatcher.GetNode(), related_target_);
   GetEventPath().AdjustForRelatedTarget(dispatcher.GetNode(), relatedTarget());
 
   return dispatcher.Dispatch();

@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/lens/lens_search_controller.h"
 #include "chrome/browser/ui/lens/lens_search_feature_flag_utils.h"
 #include "chrome/browser/ui/lens/lens_searchbox_controller.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/plural_string_provider.h"
 #include "chrome/browser/ui/webui/searchbox/lens_searchbox_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/pref_names.h"
@@ -87,14 +88,8 @@ LensSidePanelUntrustedUI::LensSidePanelUntrustedUI(content::WebUI* web_ui)
   html_source->AddString("resultsSearchURL",
                          lens::features::GetLensOverlayResultsSearchURL());
   html_source->AddBoolean(
-      "enableCloseButtonTweaks",
-      lens::features::GetVisualSelectionUpdatesEnableCloseButtonTweaks());
-  html_source->AddBoolean(
       "enableSummarizeSuggestionHint",
       lens::features::ShouldEnableSummarizeHintForContextualSuggest());
-  html_source->AddBoolean(
-      "enableWebviewResults",
-      lens::features::IsLensSidePanelWebviewResultsEnabled());
   html_source->AddBoolean("enableLensAimSuggestions",
                           lens::features::GetAimSuggestionsEnabled());
   html_source->AddBoolean(
@@ -217,25 +212,13 @@ LensSidePanelUntrustedUI::LensSidePanelUntrustedUI(content::WebUI* web_ui)
   html_source->AddLocalizedStrings(kLocalizedStrings);
   html_source->AddString(
       "searchboxDefaultIcon",
-      lens::features::GetVisualSelectionUpdatesEnableGradientSuperG()
-          ? "//resources/cr_components/searchbox/icons/google_g_gradient.svg"
-      : dark_mode
-          ? "//resources/cr_components/searchbox/icons/google_g_cr23.svg"
-          : "//resources/cr_components/searchbox/icons/google_g.svg");
+      "//resources/cr_components/searchbox/icons/google_g_gradient.svg");
   html_source->AddBoolean("reportMetrics", false);
   html_source->AddBoolean("isLensSearchbox", true);
-  html_source->AddBoolean(
-      "forceHideEllipsis",
-      lens::features::GetVisualSelectionUpdatesHideCsbEllipsis());
-  html_source->AddBoolean(
-      "enableCsbMotionTweaks",
-      lens::features::GetVisualSelectionUpdatesEnableCsbMotionTweaks());
-  html_source->AddBoolean(
-      "enableVisualSelectionUpdates",
-      lens::features::IsLensOverlayVisualSelectionUpdatesEnabled());
-  html_source->AddBoolean(
-      "enableThumbnailSizingTweaks",
-      lens::features::GetVisualSelectionUpdatesEnableThumbnailSizingTweaks());
+  html_source->AddBoolean("forceHideEllipsis", true);
+  html_source->AddBoolean("enableCsbMotionTweaks", true);
+  html_source->AddBoolean("enableVisualSelectionUpdates", true);
+  html_source->AddBoolean("enableThumbnailSizingTweaks", true);
   html_source->AddString(
       "searchboxComposePlaceholder",
       l10n_util::GetStringUTF8(IDS_LENS_COMPOSEBOX_HINT_TEXT));
@@ -281,6 +264,13 @@ void LensSidePanelUntrustedUI::BindInterface(
     help_bubble_handler_factory_receiver_.reset();
   }
   help_bubble_handler_factory_receiver_.Bind(std::move(receiver));
+}
+
+void LensSidePanelUntrustedUI::BindInterface(
+    mojo::PendingReceiver<plural_string::mojom::PluralStringProvider>
+        receiver) {
+  PluralStringProvider::Create(std::move(receiver),
+                               GetSearchboxPluralStringIds());
 }
 
 void LensSidePanelUntrustedUI::BindInterface(

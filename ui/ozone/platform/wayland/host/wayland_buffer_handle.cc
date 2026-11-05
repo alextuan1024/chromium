@@ -56,7 +56,11 @@ void WaylandBufferHandle::OnWlBufferCreated(wl::Object<wl_buffer> wl_buffer) {
   };
   if (sync_method_ == SyncMethod::kSyncobj) {
     release_timeline_ = WaylandSyncobjReleaseTimeline::Create(connection_);
-  } else if (sync_method_ != SyncMethod::kNone) {
+  }
+  // kSyncobj buffers also need the listener: until a surface receives its
+  // first acquire fence, they are attached without explicit sync and released
+  // with wl_buffer.release.
+  if (sync_method_ != SyncMethod::kNone) {
     wl_buffer_add_listener(wl_buffer_.get(), &kBufferListener, this);
   }
 
@@ -71,10 +75,14 @@ void WaylandBufferHandle::OnExplicitRelease(WaylandSurface* requestor) {
 }
 
 void WaylandBufferHandle::OnWlBufferReleased(wl_buffer* wl_buff) {
-  DCHECK_EQ(wl_buff, wl_buffer_.get());
-  DCHECK(sync_method_ == SyncMethod::kDMAFence ||
-         sync_method_ == SyncMethod::kImplicit);
-  DCHECK_LE(released_callbacks_.size(), 1u);
+  CHECK_EQ(wl_buff, wl_buffer_.get(), base::NotFatalUntil::M163);
+  CHECK_NE(sync_method_, SyncMethod::kNone, base::NotFatalUntil::M163);
+  if (sync_method_ == SyncMethod::kSyncobj && attached_with_explicit_sync_) {
+    // The delivery of wl_buffer.release is undefined while explicit sync is
+    // used; the release point signals the release instead.
+    return;
+  }
+  CHECK_LE(released_callbacks_.size(), 1u, base::NotFatalUntil::M163);
 
   if (!released_callbacks_.empty()) {
     std::move(released_callbacks_.begin()->second).Run(wl_buff, false);
@@ -89,7 +97,7 @@ base::WeakPtr<WaylandBufferHandle> WaylandBufferHandle::AsWeakPtr() {
 // static
 void WaylandBufferHandle::OnRelease(void* data, wl_buffer* buffer) {
   auto* self = static_cast<WaylandBufferHandle*>(data);
-  DCHECK(self);
+  CHECK(self, base::NotFatalUntil::M163);
   self->OnWlBufferReleased(buffer);
 }
 

@@ -53,7 +53,7 @@ class COMPONENT_EXPORT(DEVICE_FIDO) MakeCredentialRequestHandler
   MakeCredentialRequestHandler(
       FidoDiscoveryFactory* fido_discovery_factory,
       std::vector<std::unique_ptr<FidoDiscoveryBase>> additional_discoveries,
-      const base::flat_set<FidoTransportProtocol>& supported_transports,
+      FidoTransportProtocolSet supported_transports,
       CtapMakeCredentialRequest request_parameter,
       const MakeCredentialOptions& options,
       CompletionCallback completion_callback);
@@ -125,9 +125,8 @@ class COMPONENT_EXPORT(DEVICE_FIDO) MakeCredentialRequestHandler
       std::unique_ptr<CtapMakeCredentialRequest> request,
       pin::TokenResponse token);
 
-  void SpecializeRequestForAuthenticator(
-      CtapMakeCredentialRequest* request,
-      const FidoAuthenticator* authenticator);
+  void SpecializeRequestForAuthenticator(CtapMakeCredentialRequest* request,
+                                         FidoAuthenticator* authenticator);
 
   CompletionCallback completion_callback_;
   State state_ = State::kWaitingForTouch;

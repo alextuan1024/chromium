@@ -110,7 +110,7 @@ class RasterTaskImpl : public TileTask {
                  bool is_gpu_rasterization,
                  DispatchingImageProvider image_provider,
                  GURL url,
-                 ScrollOffsetMap raster_inducing_scroll_offsets)
+                 RasterInducingValues raster_inducing_values)
       : TileTask(
             is_gpu_rasterization ? TileTask::SupportsConcurrentExecution::kNo
                                  : TileTask::SupportsConcurrentExecution::kYes,
@@ -135,12 +135,10 @@ class RasterTaskImpl : public TileTask {
         raster_buffer_(std::move(raster_buffer)),
         image_provider_(std::move(image_provider)),
         url_(std::move(url)),
-        raster_inducing_scroll_offsets_(
-            std::move(raster_inducing_scroll_offsets)) {
+        raster_inducing_values_(std::move(raster_inducing_values)) {
     DCHECK(origin_thread_checker_.CalledOnValidThread());
     playback_settings_.image_provider = &image_provider_;
-    playback_settings_.raster_inducing_scroll_offsets =
-        &raster_inducing_scroll_offsets_;
+    playback_settings_.raster_inducing_values = &raster_inducing_values_;
   }
   RasterTaskImpl(const RasterTaskImpl&) = delete;
   RasterTaskImpl& operator=(const RasterTaskImpl&) = delete;
@@ -207,7 +205,7 @@ class RasterTaskImpl : public TileTask {
   std::unique_ptr<RasterBuffer> raster_buffer_;
   DispatchingImageProvider image_provider_;
   const GURL url_;
-  const ScrollOffsetMap raster_inducing_scroll_offsets_;
+  const RasterInducingValues raster_inducing_values_;
 };
 
 TaskCategory TaskCategoryForTileTask(TileTask* task,
@@ -346,7 +344,8 @@ gfx::ContentColorUsage GetContentColorUsageForPrioritizedTile(
     const PrioritizedTile& prioritized_tile) {
   return prioritized_tile.raster_source()
       ->GetDisplayItemList()
-      ->content_color_usage();
+      ->content_color_volume()
+      .GetContentColorUsage();
 }
 
 }  // namespace
@@ -467,25 +466,6 @@ void TileManager::ScheduleReduceTileMemoryWhenIdle(
       delay);
 }
 
-// static
-base::TimeDelta TileManager::GetTrimPrepaintTilesDelay() {
-  return base::Seconds(::features::kReclaimDelayInSeconds.Get());
-}
-
-void TileManager::ScheduleTrimPrepaintTiles() {
-  if (!base::FeatureList::IsEnabled(features::kReclaimOldPrepaintTiles) ||
-      has_pending_tile_trimming_task_) {
-    return;
-  }
-
-  has_pending_tile_trimming_task_ = true;
-  TaskRunnerWithOverride()->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&TileManager::TrimPrepaintTiles,
-                     ready_to_draw_callback_weak_ptr_factory_.GetWeakPtr()),
-      GetTrimPrepaintTilesDelay());
-}
-
 void TileManager::ReduceTileMemoryWhenIdle() {
   has_pending_idle_task_ = false;
 
@@ -514,68 +494,6 @@ void TileManager::ReduceTileMemoryWhenIdle() {
   if (freed_required_for_draw_tile) {
     client_->SetNeedsRedraw(/*animation_only=*/false,
                             /*skip_if_inside_draw=*/true);
-  }
-}
-
-void TileManager::TrimPrepaintTiles() {
-  has_pending_tile_trimming_task_ = false;
-
-  std::unique_ptr<EvictionTilePriorityQueue> eviction_priority_queue =
-      client_->BuildEvictionQueue();
-  bool has_eligible_used_tiles = false;
-  bool freed_required_for_draw_tile = false;
-  for (; !eviction_priority_queue->IsEmpty(); eviction_priority_queue->Pop()) {
-    const auto& prioritized_tile = eviction_priority_queue->Top();
-    Tile* tile = prioritized_tile.tile();
-    // Evict tiles that haven't been used in a while, that are not close to the
-    // viewport or part of the skewport (the SOON tiles).
-    //
-    // The last part of the eligibility condition is to make sure that we are
-    // not evicting a tile that would be re-rasterized at the next frame. Since
-    // it violates the current memory policy, it will not get rasterized. In
-    // practice, as of 2023, the memory policy generally doesn't allow tiles are
-    // not in the SOON bin to be rasterized anyway, but this is to ensure that
-    // we are not wasting CPU and GPU time.
-    bool eligible =
-        prioritized_tile.priority().priority_bin > TilePriority::SOON &&
-        TilePriorityViolatesMemoryPolicy(prioritized_tile.priority());
-    if (!eligible) {
-      continue;
-    }
-
-    if (!tile->used()) {
-      // Note: we may want to add `DCHECK(!tile->required_for_draw())` but it is
-      // not possible, as some tiles in the EVENTUALLY priority bin are marked
-      // as required for draw.
-      //
-      // This is the case if they are part of a non-drawing layer, in which case
-      // PictureLayerTiling::ComputePriorityForTile() sets the bin to EVENTUALLY
-      // regardless (because the client doesn't have valid priorities).
-      // We don't want to keep these tiles, so no DCHECK() or exclusion here.
-      freed_required_for_draw_tile |=
-          FreeResourcesForTileAndNotifyClientIfTileWasReadyToDraw(tile);
-    } else {
-      // Tile has been used recently, reset this so that if it's not used until
-      // the next reclaim task, then we know it has been at least
-      // `kPrepaintTilesTrimDelay` since the last time it was used, and thus can
-      // be reclaimed.
-      tile->clear_used();
-      has_eligible_used_tiles = true;
-    }
-  }
-  eviction_priority_queue.reset();
-  if (freed_required_for_draw_tile) {
-    client_->SetNeedsRedraw(/*animation_only=*/false,
-                            /*skip_if_inside_draw=*/true);
-  }
-
-  // Reschedule the task, since there are tiles that would be eligible to evict
-  // if they were old enough. Note that we don't choose the smallest delay
-  // possible to make progress, on purpose, resource reclaim can wait. Eligible
-  // tiles are marked as "not used" above, so unless they are used before the
-  // next scheduled task, they will be reclaimed then.
-  if (has_eligible_used_tiles) {
-    ScheduleTrimPrepaintTiles();
   }
 }
 
@@ -688,7 +606,6 @@ bool TileManager::PrepareTiles(
   ++prepare_tiles_count_;
   last_active_time_ = NowWithOverride();
   ScheduleReduceTileMemoryWhenIdle(base::TimeDelta());
-  ScheduleTrimPrepaintTiles();
 
   TRACE_EVENT1("cc,benchmark", "TileManager::PrepareTiles", "prepare_tiles_id",
                prepare_tiles_count_);
@@ -838,6 +755,7 @@ void TileManager::SetTileTaskManagerForTesting(
 
 std::vector<Tile*> TileManager::AllTilesForTesting() const {
   std::vector<Tile*> tiles;
+  tiles.reserve(tiles_.size());
   for (auto& tile_pair : tiles_) {
     tiles.push_back(tile_pair.second);
   }
@@ -1074,9 +992,6 @@ TileManager::PrioritizedWorkToSchedule TileManager::AssignGpuMemoryToTiles() {
       }
 
       tile->raster_task_ = std::move(raster_task);
-      // Even if the tile is pre-paint, mark it used here to make sure that the
-      // next reclaim task doesn't evict it right away.
-      tile->mark_used();
     }
 
     tile->scheduled_priority_ = schedule_priority++;
@@ -1532,8 +1447,6 @@ scoped_refptr<TileTask> TileManager::CreateRasterTask(
   RasterSource::PlaybackSettings playback_settings;
   playback_settings.use_lcd_text = tile->can_use_lcd_text();
   playback_settings.msaa_sample_count = msaa_sample_count;
-  playback_settings.visible =
-      tile->required_for_activation() || tile->required_for_draw();
   playback_settings.hdr_headroom = target_color_params.GetHdrHeadroom();
 
   // Create and queue all image decode tasks that this tile depends on. Note
@@ -1627,7 +1540,7 @@ scoped_refptr<TileTask> TileManager::CreateRasterTask(
       invalidated_rect, prepare_tiles_count_, std::move(raster_buffer),
       &decode_tasks, use_gpu_rasterization_,
       std::move(dispatching_image_provider), active_url_,
-      prioritized_tile.GetRasterInducingScrollOffsets());
+      prioritized_tile.GetRasterInducingValues());
 }
 
 void TileManager::InsertNodeForDecodeTask(TileTask* task,
@@ -1802,9 +1715,8 @@ std::unique_ptr<Tile> TileManager::CreateTile(const Tile::CreateInfo& info,
   DCHECK(tile_task_manager_);
   std::unique_ptr<Tile> tile(
       new Tile(this, info, layer_id, source_frame_number, flags));
-  DCHECK(!tiles_.contains(tile->id()));
-
-  tiles_[tile->id()] = tile.get();
+  const bool inserted = tiles_.try_emplace(tile->id(), tile.get()).second;
+  DCHECK(inserted);
   return tile;
 }
 
@@ -2130,38 +2042,40 @@ void TileManager::CheckPendingGpuWorkAndIssueSignals() {
 
   std::vector<const ResourcePool::InUsePoolResource*> required_for_activation;
   std::vector<const ResourcePool::InUsePoolResource*> required_for_draw;
+  bool ready_tile_required_for_draw = false;
 
-  for (auto it = pending_gpu_work_tiles_.begin();
-       it != pending_gpu_work_tiles_.end();) {
-    Tile* tile = *it;
+  absl::erase_if(pending_gpu_work_tiles_, [&](Tile* tile) {
     DCHECK(tile->draw_info().has_resource());
     const ResourcePool::InUsePoolResource& resource =
         tile->draw_info().GetResource();
 
     // Update requirements first so that if the tile has become required
     // it will force a redraw.
-    if (pending_tile_requirements_dirty_)
+    if (pending_tile_requirements_dirty_) {
       tile->tiling()->UpdateRequiredStatesOnTile(tile);
+    }
 
     if (global_state_.tree_priority != SMOOTHNESS_TAKES_PRIORITY ||
         raster_buffer_provider_->IsResourceReadyToDraw(resource)) {
       tile->draw_info().set_resource_ready_for_draw();
       client_->NotifyTileStateChanged(tile, /*update_damage=*/true,
-                                      /*set_needs_redraw=*/true);
-      it = pending_gpu_work_tiles_.erase(it);
-      continue;
+                                      /*set_needs_redraw=*/false);
+      ready_tile_required_for_draw |= tile->required_for_draw();
+      return true;
     }
 
     // TODO(ericrk): If a tile in our list no longer has valid tile priorities,
     // it may still report that it is required, and unnecessarily delay
     // activation. crbug.com/687265
-    if (tile->required_for_activation())
+    if (tile->required_for_activation()) {
       required_for_activation.push_back(&resource);
-    if (tile->required_for_draw())
+    }
+    if (tile->required_for_draw()) {
       required_for_draw.push_back(&resource);
+    }
 
-    ++it;
-  }
+    return false;
+  });
 
   if (required_for_activation.empty()) {
     pending_required_for_activation_callback_id_ = 0;
@@ -2185,6 +2099,18 @@ void TileManager::CheckPendingGpuWorkAndIssueSignals() {
                 &TileManager::CheckPendingGpuWorkAndIssueSignals,
                 ready_to_draw_callback_weak_ptr_factory_.GetWeakPtr()),
             pending_required_for_draw_callback_id_);
+  }
+
+  // Similar to MarkTilesOutOfMemory(), if we trigger SetNeedsRedraw() while
+  // iterating pending_gpu_work_tiles_, we may end up triggering
+  // Scheduler::ProcessScheduledActions(), which is inefficient and may in turn
+  // trigger ActivateSyncTree() and other actions that remove tiles still
+  // referenced by the loop iterator and the resource lists above, leading to
+  // UAF (crbug.com/534956586). Defer the redraw until the iteration is
+  // complete and the resource lists have been consumed.
+  if (ready_tile_required_for_draw) {
+    client_->SetNeedsRedraw(/*animation_only=*/false,
+                            /*skip_if_inside_draw=*/true);
   }
 
   // Update our signals now that we know whether we have pending resources.
@@ -2304,7 +2230,6 @@ bool TileManager::OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
 
   std::unique_ptr<EvictionTilePriorityQueue> eviction_priority_queue(
       client_->BuildEvictionQueue());
-  std::set<Tile*> tiles_to_evict;
   while (!eviction_priority_queue->IsEmpty()) {
     const PrioritizedTile& tile = eviction_priority_queue->Top();
 
@@ -2323,7 +2248,6 @@ bool TileManager::OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
     auto size = tile.tile()->desired_texture_size();
     tile_dump->AddScalar("width", "px", size.width());
     tile_dump->AddScalar("height", "px", size.height());
-    tile_dump->AddScalar("young", "bool", tile.tile()->used());
 
     eviction_priority_queue->Pop();
   }

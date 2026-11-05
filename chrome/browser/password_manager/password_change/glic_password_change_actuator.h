@@ -7,37 +7,32 @@
 
 #include <memory>
 #include <optional>
-#include <string>
 
 #include "base/callback_list.h"
-#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "base/timer/timer.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
-#include "chrome/browser/password_manager/password_change/change_password_form_filler.h"
 #include "chrome/browser/password_manager/password_change/password_change_actuator.h"
-#include "components/password_manager/core/browser/password_form.h"
+#include "components/affiliations/core/browser/affiliation_service.h"
 #include "components/password_manager/core/browser/password_store/stored_credential.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "url/gurl.h"
 
 namespace content {
 class WebContents;
 }
 
+namespace password_manager {
+struct LeakedPasswordDetails;
+struct PasswordForm;
+class PasswordFormManager;
+}  // namespace password_manager
+
 namespace glic {
 class GlicInstance;
 class GlicKeyedService;
 }  // namespace glic
-
-namespace password_manager {
-class PasswordFormManager;
-}  // namespace password_manager
-
-class ChangePasswordFormWaiter;
-class Profile;
 
 // Actuator implementation that uses Gemini in Chrome (Glic) and Actor for
 // password change navigation, form filling, and submission verification.
@@ -45,20 +40,22 @@ class GlicPasswordChangeActuator
     : public PasswordChangeActuator,
       public glic::mojom::ExperimentalTriggeringUpdatesHandler {
  public:
-  // Enumerates the verification task outcome returned by Glic.
+  // Enumerates the task outcome returned by Glic.
   enum class TaskResult {
     kPasswordChangeFinishedSuccessfully,
-    kPasswordFormFound,
     kFailedToFindChangePasswordForm,
     kFailedToChangePassword,
     kUserInterventionRequired,
     kUnknownFailure,
   };
 
+  GlicPasswordChangeActuator(
+      password_manager::LeakedPasswordDetails leak_details,
+      content::WebContents* originator);
+  // TODO(crbug.com/537619236): Clean up once `StartPasswordChangeFromCheckup()`
+  // passes `LeakedPasswordDetails`.
   GlicPasswordChangeActuator(password_manager::StoredCredential credential,
-                             content::WebContents* originator,
-                             Profile* profile,
-                             GURL change_password_url = GURL());
+                             content::WebContents* originator);
   ~GlicPasswordChangeActuator() override;
 
   GlicPasswordChangeActuator(const GlicPasswordChangeActuator&) = delete;
@@ -70,7 +67,8 @@ class GlicPasswordChangeActuator
   void Cancel() override;
   content::WebContents* GetExecutorWebContents() const override;
   void OpenPasswordChangeTab(content::WebContents* originator) override;
-  std::u16string GetGeneratedPassword() const override;
+  NewPasswordResult GetOrGenerateNewPassword(
+      password_manager::PasswordFormManager* form_manager) override;
   void AddObserver(PasswordChangeActuator::Observer* observer) override;
   void RemoveObserver(PasswordChangeActuator::Observer* observer) override;
 
@@ -84,40 +82,35 @@ class GlicPasswordChangeActuator
   void OnTabWillDetach(tabs::TabInterface* tab,
                        tabs::TabInterface::DetachReason reason);
   void OnActorTaskStateChanged(actor::ActorTask& task);
-  void OnChangePasswordFormManagerFound(
-      password_manager::PasswordFormManager* form_manager);
-  void OnChangePasswordFormFilled(
-      ChangePasswordFormFiller::FillingResult result);
-  void InvokeVerificationFlow(std::string post_submission_prompt);
-  void HandleMaybeSuccessfulPasswordChange();
   void CloseGlicSession();
   void ResetInternalState(actor::ActorTask::StoppedReason stop_reason);
   void NotifyStateChanged(PasswordChangeActuator::State new_state);
+  // Saves the generated password, keeping the old password as a backup. Must be
+  // called at most once, when the password change finishes successfully.
+  void SaveGeneratedPassword();
 
   void SubscribeForTriggeringUpdates(
       base::WeakPtr<glic::GlicInstance> instance);
   void OnExperimentalTriggeringRegistered(bool success);
   void OnUpdatesReceiverDisconnected();
 
-  const GURL change_password_url_;
   const password_manager::StoredCredential credential_;
-  std::u16string generated_password_;
+  const affiliations::AffiliationService::ChangePasswordUrlMatch
+      change_password_url_match_;
+  std::optional<password_manager::PasswordString> generated_password_;
+  std::unique_ptr<password_manager::PasswordForm> parsed_form_;
+  // Copy of the form manager of the change password form, used to save the
+  // generated password as a backup and to promote it later.
+  std::unique_ptr<password_manager::PasswordFormManager> form_manager_;
 
   base::WeakPtr<content::WebContents> originator_;
-  const raw_ptr<Profile> profile_ = nullptr;
 
   base::WeakPtr<content::WebContents> actuation_web_contents_;
   base::WeakPtr<glic::GlicInstance> glic_instance_;
   base::CallbackListSubscription tab_will_detach_subscription_;
 
-  std::optional<actor::TaskId> find_form_task_id_;
-  std::optional<actor::TaskId> verification_task_id_;
+  std::optional<actor::TaskId> task_id_;
   base::CallbackListSubscription actor_task_state_subscription_;
-
-  std::unique_ptr<ChangePasswordFormFiller> form_filler_;
-  std::unique_ptr<ChangePasswordFormWaiter> form_waiter_;
-
-  std::unique_ptr<password_manager::PasswordFormManager> saved_form_manager_;
 
   mojo::Receiver<glic::mojom::ExperimentalTriggeringUpdatesHandler>
       updates_receiver_{this};

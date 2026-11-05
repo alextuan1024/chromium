@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-from mojom.generate import module
 from mojom.generate import compatibility_checker
 from mojom_parser_test_case import MojomParserTestCase
 
@@ -200,7 +199,7 @@ class VersionCompatibilityTest(MojomParserTestCase):
       'struct S { string a; [MinVersion=2] string? b; };',
     )
 
-  def testStructFieldTypeChange(self):
+  def testStructFieldTypeChange(self):  # noqa: F811
     """If a struct field's own type definition changes, the containing struct
     is backward-compatible if and only if the field type's change is
     backward-compatible."""
@@ -371,7 +370,7 @@ class VersionCompatibilityTest(MojomParserTestCase):
       'union U { string a; [MinVersion=2] string b; };',
     )
 
-  def testUnionFieldTypeChange(self):
+  def testUnionFieldTypeChange(self):  # noqa: F811
     """If a union field's own type definition changes, the containing union
     is backward-compatible if and only if the field type's change is
     backward-compatible."""
@@ -652,4 +651,16 @@ class VersionCompatibilityTest(MojomParserTestCase):
     self.assertBackwardCompatible(
       'union U { hash_map<string, int32> m; };',
       'union U { map<string, int32> m; };',
+    )
+
+  def testUnverifiedParameterCompatibility(self):
+    """Adding or removing [Unverified] on request parameters does not alter the
+    wire format and is backward-compatible."""
+    self.assertBackwardCompatible(
+      'interface F { A(int32 x, string s); };',
+      'interface F { A([Unverified] int32 x, [Unverified] string s); };',
+    )
+    self.assertBackwardCompatible(
+      'interface F { A([Unverified] int32 x, [Unverified] string s); };',
+      'interface F { A(int32 x, string s); };',
     )

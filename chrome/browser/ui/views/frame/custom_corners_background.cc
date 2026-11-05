@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
 
 #include <memory>
+#include <optional>
 #include <tuple>
 #include <variant>
 
@@ -32,6 +33,7 @@
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/scoped_canvas.h"
+#include "ui/views/controls/separator.h"
 #include "ui/views/view.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
@@ -119,6 +121,8 @@ void CustomCornersBackground::SetCorners(const Corners& corners) {
   }
 
   corners_ = corners;
+  // Reset cached bounds so SetUseBackgroundBlur() recomputes the filter path.
+  backdrop_filter_bounds_.reset();
   view_->SchedulePaint();
 }
 
@@ -154,12 +158,22 @@ void CustomCornersBackground::SetUseBackgroundBlur(bool use_background_blur) {
   }
   auto* const layer = view_->layer();
   CHECK(!layer->fills_bounds_opaquely());
-  if (!use_background_blur) {
-    layer->SetBackgroundBlur(0.0f);
+  const float blur_radius = use_background_blur ? kBackgroundBlurRadius : 0.0f;
+  const std::optional<gfx::Rect> local_bounds =
+      use_background_blur ? std::make_optional(view_->GetLocalBounds())
+                          : std::nullopt;
+  if (layer->background_blur() == blur_radius &&
+      backdrop_filter_bounds_ == local_bounds) {
     return;
   }
-  layer->SetBackgroundBlur(kBackgroundBlurRadius);
-  layer->SetBackdropFilterBounds(GetBackgroundPath(view_->GetLocalBounds()));
+
+  backdrop_filter_bounds_ = local_bounds;
+  if (use_background_blur) {
+    layer->SetBackdropFilterBounds(GetBackgroundPath(*local_bounds));
+  } else {
+    layer->ClearBackdropFilterBounds();
+  }
+  layer->SetBackgroundBlur(blur_radius);
   SchedulePaintHost();
 }
 
@@ -188,34 +202,34 @@ std::vector<SkPath> CustomCornersBackground::GetCornerPaths(
 
   // Bump out the corners by 1 DIP to avoid cracking/subpixel issues.
   // (This is why the insets are applied below.)
-  if (corners[VisualCorner::kTopLeft].type != CornerType::kSquare) {
-    const int radius =
-        corners[VisualCorner::kTopLeft].radius.value_or(default_radius());
+  if (const int radius =
+          CornerToRadius(corners[VisualCorner::kTopLeft], default_radius_);
+      radius > 0) {
     gfx::Rect bounds(in_bounds.x(), in_bounds.y(), radius, radius);
     const gfx::Insets insets = gfx::Insets::TLBR(1, 1, 0, 0);
     bounds.Inset(-insets);
     result.push_back(GetCornerPath(VisualCorner::kTopLeft, bounds, insets));
   }
-  if (corners[VisualCorner::kTopRight].type != CornerType::kSquare) {
-    const int radius =
-        corners[VisualCorner::kTopRight].radius.value_or(default_radius());
+  if (const int radius =
+          CornerToRadius(corners[VisualCorner::kTopRight], default_radius_);
+      radius > 0) {
     gfx::Rect bounds(in_bounds.right() - radius, in_bounds.y(), radius, radius);
     const gfx::Insets insets = gfx::Insets::TLBR(1, 0, 0, 1);
     bounds.Inset(-insets);
     result.push_back(GetCornerPath(VisualCorner::kTopRight, bounds, insets));
   }
-  if (corners[VisualCorner::kBottomRight].type != CornerType::kSquare) {
-    const int radius =
-        corners[VisualCorner::kBottomRight].radius.value_or(default_radius());
+  if (const int radius =
+          CornerToRadius(corners[VisualCorner::kBottomRight], default_radius_);
+      radius > 0) {
     gfx::Rect bounds(in_bounds.right() - radius, in_bounds.bottom() - radius,
                      radius, radius);
     const gfx::Insets insets = gfx::Insets::TLBR(0, 0, 1, 1);
     bounds.Inset(-insets);
     result.push_back(GetCornerPath(VisualCorner::kBottomRight, bounds, insets));
   }
-  if (corners[VisualCorner::kBottomLeft].type != CornerType::kSquare) {
-    const int radius =
-        corners[VisualCorner::kBottomLeft].radius.value_or(default_radius());
+  if (const int radius =
+          CornerToRadius(corners[VisualCorner::kBottomLeft], default_radius_);
+      radius > 0) {
     gfx::Rect bounds(in_bounds.x(), in_bounds.bottom() - radius, radius,
                      radius);
     const gfx::Insets insets = gfx::Insets::TLBR(0, 1, 1, 0);
@@ -229,8 +243,8 @@ void CustomCornersBackground::SetCutoutFrom(const Cutouts& cutouts) {
   std::vector<SkPath> new_cutout_paths;
 
   for (const auto& cutout : cutouts) {
-    if (const views::View* const* view_ptr =
-            std::get_if<const views::View*>(&cutout)) {
+    if (const auto* view_ptr =
+            std::get_if<raw_ptr<const views::View>>(&cutout)) {
       const views::View* const view = *view_ptr;
       if (!view->GetVisible()) {
         continue;
@@ -386,10 +400,27 @@ void CustomCornersBackground::Paint(gfx::Canvas* canvas,
     PaintPath(canvas, corner_path, corner_color_, /*anti_alias=*/false);
   }
 
-  // Draw solid rect/rrect background:
+  // Draw solid rect/rrect background. When the corner radii fit within `rect`,
+  // anti-alias only the rounded corner cutouts and draw `rect` without
+  // anti-aliasing so straight edges snap to integer pixels instead of leaving a
+  // semi-transparent subpixel seam at fractional scale factors.
   CornerRadii radii;
-  PaintPath(canvas, GetBackgroundPath(view_->GetLocalBounds(), &radii),
-            primary_color_, /*anti_alias=*/true);
+  const SkPath background_path = GetBackgroundPath(rect, &radii);
+  const bool corners_fit = radii[0].x() + radii[1].x() <= rect.width() &&
+                           radii[3].x() + radii[2].x() <= rect.width() &&
+                           radii[0].y() + radii[3].y() <= rect.height() &&
+                           radii[1].y() + radii[2].y() <= rect.height();
+  if (corners_fit) {
+    gfx::ScopedCanvas primary_scope(canvas);
+    for (const SkPath& corner_path : GetCornerPaths(rect)) {
+      canvas->ClipPath(corner_path, /*do_anti_alias=*/true,
+                       SkClipOp::kDifference);
+    }
+    PaintPath(canvas, SkPath::Rect(gfx::RectToSkRect(rect)), primary_color_,
+              /*anti_alias=*/false);
+  } else {
+    PaintPath(canvas, background_path, primary_color_, /*anti_alias=*/true);
+  }
 
   // Paint strokes around the outside. Corners get strokes if they are between
   // two sides with strokes and have a radius. Multiple paths may be drawn if
@@ -513,8 +544,13 @@ const views::View& CustomCornersBackground::GetView() const {
 }
 
 void CustomCornersBackground::OnBrowserPaintAsActiveChanged() {
-  if (std::holds_alternative<FrameTheme>(primary_color_.color) ||
-      std::holds_alternative<FrameTheme>(corner_color_.color)) {
+  const bool primary_uses_frame_theme =
+      primary_color_.is_visible() &&
+      std::holds_alternative<FrameTheme>(primary_color_.color);
+  const bool corner_uses_frame_theme =
+      corner_color_.is_visible() &&
+      std::holds_alternative<FrameTheme>(corner_color_.color);
+  if (primary_uses_frame_theme || corner_uses_frame_theme) {
     view_->SchedulePaint();
   }
 }

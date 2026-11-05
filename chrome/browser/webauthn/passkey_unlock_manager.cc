@@ -5,11 +5,16 @@
 #include "chrome/browser/webauthn/passkey_unlock_manager.h"
 
 #include <optional>
+#include <utility>
 
+#include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -18,7 +23,6 @@
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/webauthn/enclave_manager.h"
 #include "chrome/browser/webauthn/enclave_manager_interface.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/service/sync_service.h"
@@ -26,8 +30,8 @@
 #include "components/trusted_vault/trusted_vault_histograms.h"
 #include "content/public/browser/navigation_handle.h"
 #include "device/fido/public/features.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/gaia_urls.h"
-#include "ui/base/l10n/l10n_util.h"
 
 namespace webauthn {
 
@@ -51,15 +55,16 @@ PasskeyUnlockManager::PasskeyUnlockManager(
     MaybeRecordDelayedPasskeyReadinessHistogram();
   } else {
     enclave_manager->LoadAfterDelay(
-        base::Minutes(4), base::BindOnce(&PasskeyUnlockManager::OnStateUpdated,
-                                         weak_ptr_factory_.GetWeakPtr()));
+        base::Minutes(4),
+        base::BindOnce(&PasskeyUnlockManager::OnEnclaveManagerLoaded,
+                       weak_ptr_factory_.GetWeakPtr()));
   }
   UpdateHasPasskeys();
   MaybeRecordDelayedPasskeyCountHistogram();
   UpdateSyncState();
   AsynchronouslyCheckSystemUVAvailability();
-  AsynchronouslyCheckGpmPinAvailability();
   MaybeRecordDelayedPasswordReadinessHistogram();
+  ActAccordingToPasskeyUnlockState();
 }
 
 PasskeyUnlockManager::~PasskeyUnlockManager() = default;
@@ -78,8 +83,33 @@ bool PasskeyUnlockManager::ShouldDisplayErrorUi() const {
   return should_display_error_ui_;
 }
 
+void PasskeyUnlockManager::ActAccordingToPasskeyUnlockState() {
+  switch (stage_) {
+    case Stage::kWaitingForEnclaveLoad:
+      if (enclave_manager()->IsLoaded()) {
+        StartAccountStateDownload();
+      }
+      return;
+    case Stage::kDownloadingAccountState:
+      return;
+#if BUILDFLAG(IS_MAC)
+    case Stage::kAwaitingICloudRecovery:
+      if (ArePasskeysLocked().value_or(false)) {
+        StartICloudRecovery(/*account_state=*/std::nullopt,
+                            /*account_state_gaia_id=*/std::nullopt);
+      }
+      return;
+    case Stage::kRecoveringWithICloudKeychain:
+      return;
+#endif  // BUILDFLAG(IS_MAC)
+    case Stage::kReady:
+      ComputeShouldDisplayErrorUiAndNotifyObservers();
+      return;
+  }
+}
+
 void PasskeyUnlockManager::ComputeShouldDisplayErrorUiAndNotifyObservers() {
-  bool previous_value = should_display_error_ui_;
+  bool previous_should_display_error_ui = should_display_error_ui_;
   // Compute the new value of `should_display_error_ui_`.
   std::optional<bool> passkeys_are_locked = ArePasskeysLocked();
   std::optional<bool> passkeys_are_unlockable = ArePasskeysUnlockable();
@@ -92,8 +122,19 @@ void PasskeyUnlockManager::ComputeShouldDisplayErrorUiAndNotifyObservers() {
     should_display_error_ui_ =
         passkeys_are_locked.value() && passkeys_are_unlockable.value();
   }
+
+  bool previous_passkeys_locked_for_sync = passkeys_locked_for_sync_;
+  passkeys_locked_for_sync_ =
+      base::FeatureList::IsEnabled(device::kPasskeyUnlockIdentityErrorUi) &&
+      has_passkeys_ == true && enclave_ready_ == false &&
+      passkeys_are_unlockable == true;
+  if (passkeys_locked_for_sync_ != previous_passkeys_locked_for_sync &&
+      sync_service()) {
+    sync_service()->SetPasskeysLocked(passkeys_locked_for_sync_);
+  }
+
   // If `should_display_error_ui_` changed - notify observers.
-  if (should_display_error_ui_ != previous_value) {
+  if (should_display_error_ui_ != previous_should_display_error_ui) {
     NotifyObservers();
   }
 }
@@ -136,50 +177,10 @@ void PasskeyUnlockManager::OpenTabWithPasskeyUnlockChallenge(
   }
 }
 
-std::u16string PasskeyUnlockManager::GetPasskeyErrorProfilePillTitle() const {
-  switch (device::kPasskeyUnlockErrorUiExperimentArm.Get()) {
-    case device::PasskeyUnlockErrorUiExperimentArm::kUnlock:
-      return l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_PASSKEYS_ERROR_UNLOCK);
-    case device::PasskeyUnlockErrorUiExperimentArm::kGet:
-      return l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_PASSKEYS_ERROR_GET);
-    case device::PasskeyUnlockErrorUiExperimentArm::kVerify:
-      return l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_PASSKEYS_ERROR_VERIFY);
-  }
-}
-
-std::u16string PasskeyUnlockManager::GetPasskeyErrorProfileMenuDetails() const {
-  switch (device::kPasskeyUnlockErrorUiExperimentArm.Get()) {
-    case device::PasskeyUnlockErrorUiExperimentArm::kUnlock:
-      return l10n_util::GetStringUTF16(
-          IDS_PROFILE_MENU_PASSKEYS_ERROR_DESCRIPTION_UNLOCK);
-    case device::PasskeyUnlockErrorUiExperimentArm::kGet:
-      return l10n_util::GetStringUTF16(
-          IDS_PROFILE_MENU_PASSKEYS_ERROR_DESCRIPTION_GET);
-    case device::PasskeyUnlockErrorUiExperimentArm::kVerify:
-      return l10n_util::GetStringUTF16(
-          IDS_PROFILE_MENU_PASSKEYS_ERROR_DESCRIPTION_VERIFY);
-  }
-}
-
-std::u16string PasskeyUnlockManager::GetPasskeyErrorProfileMenuButtonLabel()
-    const {
-  switch (device::kPasskeyUnlockErrorUiExperimentArm.Get()) {
-    case device::PasskeyUnlockErrorUiExperimentArm::kUnlock:
-      return l10n_util::GetStringUTF16(
-          IDS_PROFILE_MENU_PASSKEYS_ERROR_BUTTON_UNLOCK);
-    case device::PasskeyUnlockErrorUiExperimentArm::kGet:
-      return l10n_util::GetStringUTF16(
-          IDS_PROFILE_MENU_PASSKEYS_ERROR_BUTTON_GET);
-    case device::PasskeyUnlockErrorUiExperimentArm::kVerify:
-      return l10n_util::GetStringUTF16(
-          IDS_PROFILE_MENU_PASSKEYS_ERROR_BUTTON_VERIFY);
-  }
-}
-
 // static
 bool PasskeyUnlockManager::IsPasskeyUnlockErrorUiEnabled() {
   return base::FeatureList::IsEnabled(device::kPasskeyUnlockErrorUi) &&
-         base::FeatureList::IsEnabled(device::kWebAuthnOpportunisticRetrieval);
+         !base::FeatureList::IsEnabled(device::kPasskeyUnlockIdentityErrorUi);
 }
 
 void PasskeyUnlockManager::NotifyObserversForTesting() {
@@ -212,25 +213,55 @@ void PasskeyUnlockManager::UpdateHasPasskeys() {
 }
 
 void PasskeyUnlockManager::UpdateSyncState() {
-  sync_active_ =
+  syncing_webauthn_enabled_ =
       sync_service() &&
-      sync_service()->GetActiveDataTypes().Has(syncer::WEBAUTHN_CREDENTIAL) &&
-      sync_service()->GetUserActionableError() ==
-          syncer::SyncService::UserActionableError::kNone;
+      sync_service()->GetActiveDataTypes().Has(syncer::WEBAUTHN_CREDENTIAL);
+  // Reading `GetUserActionableError()` is safe: the
+  // `passkeys_locked_for_sync_` state pushed via
+  // `SyncService::SetPasskeysLocked()` does not depend on Sync state.
+  no_sync_errors_ =
+      sync_service() && sync_service()->GetUserActionableError() ==
+                            syncer::SyncService::UserActionableError::kNone;
 }
 
-void PasskeyUnlockManager::AsynchronouslyCheckGpmPinAvailability() {
-  download_account_state_request_ = enclave_manager()->CheckGpmPinAvailability(
-      base::BindOnce(&PasskeyUnlockManager::OnHaveGpmPinAvailability,
+void PasskeyUnlockManager::OnEnclaveManagerLoaded() {
+  ActAccordingToPasskeyUnlockState();
+}
+
+void PasskeyUnlockManager::StartAccountStateDownload() {
+  stage_ = Stage::kDownloadingAccountState;
+  download_account_state_request_ = enclave_manager()->DownloadAccountState(
+      base::BindOnce(&PasskeyUnlockManager::OnAccountStateDownloaded,
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-void PasskeyUnlockManager::OnHaveGpmPinAvailability(
-    EnclaveManager::GpmPinAvailability gpm_pin_availability) {
-  has_gpm_pin_ = gpm_pin_availability ==
-                 EnclaveManager::GpmPinAvailability::kGpmPinSetAndUsable;
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
-  MaybeRecordDelayedGpmPinStatusHistogram(gpm_pin_availability);
+void PasskeyUnlockManager::OnAccountStateDownloaded(
+    AccountState account_state,
+    GaiaId account_state_gaia_id) {
+  download_account_state_request_.reset();
+  // TODO(crbug.com/581321113): Ignore or re-fetch GPM PIN availability when the
+  // primary account changes (including while this download was in flight).
+  const EnclaveManager::GpmPinAvailability gpm_pin =
+      enclave_manager()->CheckGpmPinAvailability(account_state);
+  has_gpm_pin_ =
+      (gpm_pin == EnclaveManager::GpmPinAvailability::kGpmPinSetAndUsable);
+  MaybeRecordDelayedGpmPinStatusHistogram(gpm_pin);
+
+#if BUILDFLAG(IS_MAC)
+  if (base::FeatureList::IsEnabled(device::kPasskeyUnlockICloudRecovery)) {
+    stage_ = Stage::kAwaitingICloudRecovery;
+    if (ArePasskeysLocked().value_or(false)) {
+      const bool valid = account_state.state != AccountState::State::kError;
+      StartICloudRecovery(
+          valid ? std::make_optional(std::move(account_state)) : std::nullopt,
+          valid ? std::make_optional(std::move(account_state_gaia_id))
+                : std::nullopt);
+    }
+    return;
+  }
+#endif  // BUILDFLAG(IS_MAC)
+  stage_ = Stage::kReady;
+  ActAccordingToPasskeyUnlockState();
 }
 
 void PasskeyUnlockManager::AsynchronouslyCheckSystemUVAvailability() {
@@ -238,19 +269,50 @@ void PasskeyUnlockManager::AsynchronouslyCheckSystemUVAvailability() {
       base::BindOnce(&PasskeyUnlockManager::OnHaveSystemUVAvailability,
                      weak_ptr_factory_.GetWeakPtr()));
 }
+
 void PasskeyUnlockManager::OnHaveSystemUVAvailability(bool has_system_uv) {
   has_system_uv_ = has_system_uv;
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
+  ActAccordingToPasskeyUnlockState();
 }
 
+#if BUILDFLAG(IS_MAC)
+void PasskeyUnlockManager::StartICloudRecovery(
+    std::optional<AccountState> account_state,
+    std::optional<GaiaId> account_state_gaia_id) {
+  stage_ = Stage::kRecoveringWithICloudKeychain;
+  enclave_manager()->RecoverWithICloudKeychain(
+      std::move(account_state), std::move(account_state_gaia_id),
+      base::IgnoreArgs<bool>(
+          base::BindOnce(&PasskeyUnlockManager::OnICloudRecoveryComplete,
+                         weak_ptr_factory_.GetWeakPtr())));
+}
+
+void PasskeyUnlockManager::OnICloudRecoveryComplete() {
+  enclave_ready_ = enclave_manager()->IsReady();
+  stage_ = Stage::kReady;
+  ActAccordingToPasskeyUnlockState();
+}
+#endif  // BUILDFLAG(IS_MAC)
+
 std::optional<bool> PasskeyUnlockManager::ArePasskeysLocked() const {
-  if (!has_passkeys_.has_value()) {
+  if (!has_passkeys_.has_value() || !enclave_ready_.has_value()) {
     return std::nullopt;
   }
-  if (!enclave_ready_.has_value()) {
-    return std::nullopt;
+  const bool passkeys_locked = has_passkeys_.value() &&
+                               syncing_webauthn_enabled_ &&
+                               !enclave_ready_.value();
+  // With `kPasskeyUnlockIdentityErrorUi` disabled, require `no_sync_errors_` so
+  // the standalone passkey pill does not compete with other Sync errors. With
+  // it enabled, Sync ranks errors itself via `GetUserActionableError()`, so
+  // lower-ranked Sync errors must not block iCloud Keychain recovery. Ignoring
+  // `no_sync_errors_` is safe because `WEBAUTHN_CREDENTIAL` is only active when
+  // `TransportState` is `ACTIVE` and the data type has no crypto or
+  // precondition error, so Sync errors that stop Sync or block
+  // `WEBAUTHN_CREDENTIAL` already make `syncing_webauthn_enabled_` false.
+  if (!base::FeatureList::IsEnabled(device::kPasskeyUnlockIdentityErrorUi)) {
+    return passkeys_locked && no_sync_errors_;
   }
-  return has_passkeys_.value() && sync_active_ && !enclave_ready_.value();
+  return passkeys_locked;
 }
 
 std::optional<bool> PasskeyUnlockManager::ArePasskeysUnlockable() const {
@@ -268,34 +330,35 @@ void PasskeyUnlockManager::Shutdown() {
   enclave_manager_observation_.Reset();
   passkey_model_observation_.Reset();
   sync_service_observation_.Reset();
+  download_account_state_request_.reset();
   weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
 void PasskeyUnlockManager::OnStateUpdated() {
   enclave_ready_ = enclave_manager()->IsReady();
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
   MaybeRecordDelayedPasskeyReadinessHistogram();
+  ActAccordingToPasskeyUnlockState();
 }
 
 void PasskeyUnlockManager::OnPasskeysChanged(
     const std::vector<webauthn::PasskeyModelChange>& changes) {
   UpdateHasPasskeys();
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
+  ActAccordingToPasskeyUnlockState();
 }
 
 void PasskeyUnlockManager::OnPasskeyModelShuttingDown() {}
 
 void PasskeyUnlockManager::OnPasskeyModelIsReady(bool is_ready) {
   UpdateHasPasskeys();
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
   // If the passkey model wasn't ready on startup, record the histogram now.
   MaybeRecordDelayedPasskeyCountHistogram();
+  ActAccordingToPasskeyUnlockState();
 }
 
 void PasskeyUnlockManager::OnStateChanged(syncer::SyncService* sync) {
   UpdateSyncState();
-  ComputeShouldDisplayErrorUiAndNotifyObservers();
   MaybeRecordDelayedPasswordReadinessHistogram();
+  ActAccordingToPasskeyUnlockState();
 }
 
 void PasskeyUnlockManager::OnSyncShutdown(syncer::SyncService* sync) {

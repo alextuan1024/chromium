@@ -7,10 +7,10 @@
 #include <optional>
 
 #include "base/values.h"
-#include "chrome/browser/chromeos/reporting/metric_default_utils.h"
+#include "chromeos/ash/components/metrics_reporting/metric_default_utils.h"
+#include "chromeos/ash/components/metrics_reporting/reporting_settings.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "components/pref_registry/pref_registry_syncable.h"
-#include "components/reporting/metrics/reporting_settings.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 
 namespace ash::reporting {

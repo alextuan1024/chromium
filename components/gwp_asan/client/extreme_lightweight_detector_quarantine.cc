@@ -6,6 +6,7 @@
 #include "partition_alloc/internal/partition_page_internal.h"  // nogncheck
 #include "partition_alloc/internal/partition_root_internal.h"  // nogncheck
 #include "partition_alloc/internal_allocator.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/slot_start.h"
 
 namespace gwp_asan::internal {
@@ -101,8 +102,7 @@ bool ExtremeLightweightDetectorQuarantineBranch::Quarantine(
     // cannot fit within the capacity.
     root_->allocator_root_
         ->FreeNoHooksImmediate<partition_alloc::FreeFlags::kNone>(
-            partition_alloc::UntaggedSlotStart::Unchecked(slot_start).Tag(),
-            slot_span);
+            partition_alloc::SlotStart::Unchecked(object), slot_span);
     root_->quarantine_miss_count_.fetch_add(1u, std::memory_order_relaxed);
     return false;
   }

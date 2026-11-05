@@ -478,7 +478,7 @@ TEST_F(DocumentMetadataExtractorTest, truncateLongString) {
       "\n"
       "{\"@type\": \"Restaurant\","
       "\"name\": \"" +
-      tooLongString.ToString() +
+      StringView(tooLongString) +
       "\""
       "}\n"
       "\n"
@@ -496,7 +496,7 @@ TEST_F(DocumentMetadataExtractorTest, truncateLongString) {
   EntityPtr restaurant = Entity::New();
   restaurant->type = "Restaurant";
   restaurant->properties.push_back(
-      CreateStringProperty("name", maxLengthString.ToString()));
+      CreateStringProperty("name", maxLengthString.ReleaseString()));
 
   expected->entities.push_back(std::move(restaurant));
   EXPECT_EQ(expected, extracted);
@@ -556,7 +556,7 @@ TEST_F(DocumentMetadataExtractorTest, truncateTooManyValuesInField) {
       "\n"
       "{\"@type\": \"Restaurant\","
       "\"name\": " +
-      largeRepeatedField.ToString() +
+      StringView(largeRepeatedField) +
       "}\n"
       "\n"
       "</script>"

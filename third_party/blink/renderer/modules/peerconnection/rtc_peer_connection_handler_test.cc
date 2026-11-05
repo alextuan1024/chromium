@@ -7,7 +7,6 @@
 #include <stddef.h>
 #include <string.h>
 
-#include <cstdint>
 #include <limits>
 #include <map>
 #include <memory>
@@ -1374,6 +1373,34 @@ TEST_F(RTCPeerConnectionHandlerTest, TracerForwardsOnTrack) {
   EXPECT_EQ(String("track_id"), info.id);
   ASSERT_EQ(1u, info.stream_ids.size());
   EXPECT_EQ(String("stream_id"), info.stream_ids[0]);
+}
+
+// A remote track does not have to belong to any stream, e.g. if the remote
+// description does not contain an "a=msid" line.
+TEST_F(RTCPeerConnectionHandlerTest, TracerForwardsOnTrackWithoutStreams) {
+  auto* tracer = mock_peer_connection_->tracer();
+  ASSERT_TRUE(tracer);
+  PeerConnectionTracker::TrackInfo info;
+  EXPECT_CALL(*mock_tracker_.Get(), TrackOnTrack(pc_handler_.get(), _))
+      .WillOnce(testing::SaveArg<1>(&info));
+
+  auto track = MockWebRtcVideoTrack::Create("track_id");
+  webrtc::scoped_refptr<FakeRtpReceiver> receiver(
+      new webrtc::RefCountedObject<FakeRtpReceiver>(
+          webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface>(
+              track.get())));
+  webrtc::scoped_refptr<FakeRtpTransceiver> transceiver(
+      new webrtc::RefCountedObject<FakeRtpTransceiver>(
+          webrtc::MediaType::VIDEO, /*sender=*/nullptr, receiver,
+          /*mid=*/std::nullopt, /*stopped=*/false,
+          webrtc::RtpTransceiverDirection::kRecvOnly,
+          /*current_direction=*/std::nullopt));
+
+  tracer->OnTrack(*transceiver);
+  RunMessageLoopsUntilIdle();
+  EXPECT_EQ(String("video"), info.kind);
+  EXPECT_EQ(String("track_id"), info.id);
+  EXPECT_TRUE(info.stream_ids.empty());
 }
 
 TEST_F(RTCPeerConnectionHandlerTest, TracerForwardsStateChanges) {

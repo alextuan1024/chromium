@@ -140,6 +140,7 @@ Si la casella <ph name="SERVICE_SCRIPT_NAME" /> ja està marcada, desmarca-la i 
 <translation id="7067321367069083429">La pantalla fa de pantalla tàctil</translation>
 <translation id="7116737094673640201">Et donem la benvinguda a Escriptori remot de Chrome</translation>
 <translation id="7144878232160441200">Torna-ho a provar</translation>
+<translation id="7162927787954413908">Prem Ctrl+Alt+Esc per desconnectar la sessió</translation>
 <translation id="7312846573060934304">L'amfitrió no està connectat</translation>
 <translation id="7319983568955948908">Deixa de compartir</translation>
 <translation id="7359298090707901886">No es pot utilitzar el navegador escollit per obrir URL a l'equip local.</translation>
@@ -161,7 +162,7 @@ Si la casella <ph name="SERVICE_SCRIPT_NAME" /> ja està marcada, desmarca-la i 
 <translation id="7970576581263377361">L'autenticació ha fallat. Torneu a iniciar la sessió a Chromium.</translation>
 <translation id="7981525049612125370">La sessió remota ha caducat.</translation>
 <translation id="8038111231936746805">(predeterminada)</translation>
-<translation id="8041089156583427627">Envia suggeriments</translation>
+<translation id="8041089156583427627">Envia comentaris</translation>
 <translation id="8060029310790625334">Centre d'ajuda</translation>
 <translation id="806699900641041263">S'està connectant amb <ph name="HOSTNAME" /></translation>
 <translation id="8073845705237259513">Per utilitzar l'escriptori remot de Chrome, haureu d'afegir un compte de Google al dispositiu.</translation>

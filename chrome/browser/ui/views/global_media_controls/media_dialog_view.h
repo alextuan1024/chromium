@@ -27,6 +27,7 @@ class PrefChangeRegistrar;
 class RichHoverButton;
 class MediaDialogViewObserver;
 class MediaNotificationService;
+class MediaSessionRouteObserver;
 class Profile;
 
 namespace content {
@@ -107,9 +108,9 @@ class MediaDialogView : public views::BubbleDialogDelegateView,
 
   void TargetLanguageChanged();
 
-  const std::map<
-      const std::string,
-      raw_ptr<global_media_controls::MediaItemUIUpdatedView, CtnExperimental>>&
+  const std::map<const std::string,
+                 raw_ptr<global_media_controls::MediaItemUIUpdatedView,
+                         DanglingUntriaged>>&
   GetItemsForTesting() const;
 
   const global_media_controls::MediaItemUIListView* GetListViewForTesting()
@@ -129,6 +130,10 @@ class MediaDialogView : public views::BubbleDialogDelegateView,
       global_media_controls::GlobalMediaControlsEntryPoint entry_point);
 
   ~MediaDialogView() override;
+
+  // Keeps the dialog open when a Picture-in-Picture window takes focus on
+  // platforms that can't show windows inactive. Defined in the .cc file.
+  class PictureInPictureFocusHandler;
 
   static MediaDialogView* instance_;
 
@@ -182,8 +187,11 @@ class MediaDialogView : public views::BubbleDialogDelegateView,
   // observing.
   std::map<
       const std::string,
-      raw_ptr<global_media_controls::MediaItemUIUpdatedView, CtnExperimental>>
+      raw_ptr<global_media_controls::MediaItemUIUpdatedView, DanglingUntriaged>>
       items_;
+
+  // Refreshes items in `items_` when their associated Media Route changes.
+  std::unique_ptr<MediaSessionRouteObserver> route_observer_;
 
   raw_ptr<views::View> live_caption_container_ = nullptr;
   raw_ptr<views::Label> live_caption_title_ = nullptr;
@@ -210,6 +218,8 @@ class MediaDialogView : public views::BubbleDialogDelegateView,
   const global_media_controls::GlobalMediaControlsEntryPoint entry_point_;
 
   media_message_center::MediaColorTheme media_color_theme_;
+
+  std::unique_ptr<PictureInPictureFocusHandler> pip_focus_handler_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_GLOBAL_MEDIA_CONTROLS_MEDIA_DIALOG_VIEW_H_

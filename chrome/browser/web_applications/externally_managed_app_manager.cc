@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
@@ -22,6 +23,7 @@
 #include "chrome/browser/web_applications/external_install_options.h"
 #include "chrome/browser/web_applications/externally_managed_app_registration_task.h"
 #include "chrome/browser/web_applications/locks/all_apps_lock.h"
+#include "chrome/browser/web_applications/model/management_data.h"
 #include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_filter.h"
@@ -114,7 +116,12 @@ ExternallyManagedAppManager::SynchronizeRequest::SynchronizeRequest(
 struct ExternallyManagedAppManager::ExternalInstallMetadata {
   ExternalInstallMetadata(ExternalInstallOptions options,
                           OnceInstallCallback callback)
-      : options(std::move(options)), callback(std::move(callback)) {}
+      : options(std::move(options)), callback(std::move(callback)) {
+    CHECK(!this->options.install_placeholder ||
+          kSourcesWithPlaceholder.Has(ConvertExternalInstallSourceToSource(
+              this->options.install_source)))
+        << base::ToString(this->options.install_source);
+  }
   ~ExternalInstallMetadata() = default;
 
   ExternalInstallOptions options;
@@ -125,7 +132,7 @@ ExternallyManagedAppManager::ExternallyManagedAppManager(Profile* profile)
     : profile_(profile) {}
 
 ExternallyManagedAppManager::~ExternallyManagedAppManager() {
-  DCHECK(!registration_callback_);
+  CHECK(!registration_callback_, base::NotFatalUntil::M162);
   // Extra check to verify that web_contents is released even if
   // shutdown somehow has not been invoked.
   if (!IsShuttingDown()) {
@@ -178,8 +185,13 @@ void ExternallyManagedAppManager::SynchronizeInstalledApps(
   CHECK(std::ranges::all_of(
       desired_apps_install_options,
       [&install_source](const ExternalInstallOptions& install_options) {
-        return install_options.install_source == install_source;
-      }));
+        return install_options.install_source == install_source &&
+               (!install_options.install_placeholder ||
+                kSourcesWithPlaceholder.Has(
+                    ConvertExternalInstallSourceToSource(
+                        install_options.install_source)));
+      }))
+      << base::ToString(install_source);
   // Only one concurrent SynchronizeInstalledApps() expected per
   // ExternalInstallSource.
   CHECK(!synchronize_requests_.contains(install_source));
@@ -219,10 +231,10 @@ void ExternallyManagedAppManager::SetDataRetrieverFactoryForTesting(
 }
 
 void ExternallyManagedAppManager::ReleaseWebContents() {
-  DCHECK(pending_registrations_.empty());
-  DCHECK(!current_registration_);
-  DCHECK(pending_installs_metadata_.empty());
-  DCHECK(!current_install_metadata_);
+  CHECK(pending_registrations_.empty(), base::NotFatalUntil::M162);
+  CHECK(!current_registration_, base::NotFatalUntil::M162);
+  CHECK(pending_installs_metadata_.empty(), base::NotFatalUntil::M162);
+  CHECK(!current_install_metadata_, base::NotFatalUntil::M162);
 
   web_contents_.reset();
 }
@@ -231,7 +243,7 @@ std::unique_ptr<ExternallyManagedAppRegistrationTaskBase>
 ExternallyManagedAppManager::CreateRegistration(
     GURL install_url,
     const base::TimeDelta registration_timeout) {
-  DCHECK(!IsShuttingDown());
+  CHECK(!IsShuttingDown(), base::NotFatalUntil::M162);
   ExternallyManagedAppRegistrationTask::RegistrationCallback callback =
       base::BindOnce(&ExternallyManagedAppManager::OnRegistrationFinished,
                      weak_ptr_factory_.GetWeakPtr(), install_url);
@@ -247,8 +259,9 @@ void ExternallyManagedAppManager::OnRegistrationFinished(
     return;
   }
 
-  DCHECK(!current_registration_ ||
-         current_registration_->install_url() == install_url);
+  CHECK(!current_registration_ ||
+            current_registration_->install_url() == install_url,
+        base::NotFatalUntil::M162);
 
   if (registration_callback_) {
     registration_callback_.Run(install_url, result);
@@ -362,7 +375,7 @@ void ExternallyManagedAppManager::MaybeStartNextOnLockAcquired(
       WebApp* app_to_update = update->UpdateApp(app_id.value());
       app_to_update->AddSource(
           ConvertExternalInstallSourceToSource(install_options.install_source));
-      app_to_update->AddInstallURLToManagementExternalConfigMap(
+      app_to_update->AddInstallUrl(
           ConvertExternalInstallSourceToSource(install_options.install_source),
           install_options.install_url);
 
@@ -381,7 +394,7 @@ void ExternallyManagedAppManager::MaybeStartNextOnLockAcquired(
                           /*installed_placeholder_app_id=*/std::nullopt);
     return;
   }
-  DCHECK(!current_install_metadata_);
+  CHECK(!current_install_metadata_, base::NotFatalUntil::M162);
 
   if (current_registration_ || RunNextRegistration()) {
     return;
@@ -396,8 +409,8 @@ void ExternallyManagedAppManager::StartInstallationTask(
   if (IsShuttingDown()) {
     return;
   }
-  DCHECK(!current_install_metadata_);
-  DCHECK(!is_in_shutdown_);
+  CHECK(!current_install_metadata_, base::NotFatalUntil::M162);
+  CHECK(!is_in_shutdown_, base::NotFatalUntil::M162);
   if (current_registration_) {
     // Preempt current registration.
     pending_registrations_.push_front(
@@ -433,7 +446,7 @@ bool ExternallyManagedAppManager::RunNextRegistration() {
 }
 
 void ExternallyManagedAppManager::CreateWebContentsIfNecessary() {
-  DCHECK(!IsShuttingDown());
+  CHECK(!IsShuttingDown(), base::NotFatalUntil::M162);
   if (web_contents_) {
     return;
   }
@@ -571,16 +584,10 @@ void ExternallyManagedAppManager::SynchronizeInstalledAppsOnLockAcquired(
     const WebApp* app = lock.registrar().GetAppById(app_id);
     CHECK(app);
 
-    absl::flat_hash_set<GURL> install_urls;
-    const WebApp::ExternalConfigMap& config_map =
-        app->management_to_external_config_map();
-    auto it =
-        config_map.find(ConvertExternalInstallSourceToSource(install_source));
-    if (it != config_map.end() && !it->second.install_urls.empty()) {
-      install_urls = absl::flat_hash_set<GURL>(it->second.install_urls.begin(),
-                                               it->second.install_urls.end());
-    }
-    return install_urls;
+    const base::flat_set<GURL>& install_urls =
+        app->management_data().GetInstallUrls(
+            ConvertExternalInstallSourceToSource(install_source));
+    return absl::flat_hash_set<GURL>(install_urls.begin(), install_urls.end());
   };
 
   absl::flat_hash_set<GURL> desired_urls;
@@ -687,7 +694,7 @@ void ExternallyManagedAppManager::InstallForSynchronizeCallback(
   SynchronizeRequest& request = source_and_request->second;
   request.install_results[install_url] = std::move(result);
   --request.remaining_install_requests;
-  DCHECK_GE(request.remaining_install_requests, 0);
+  CHECK_GE(request.remaining_install_requests, 0, base::NotFatalUntil::M162);
 
   ContinueSynchronization(source);
 }
@@ -701,7 +708,7 @@ void ExternallyManagedAppManager::UninstallForSynchronizeCallback(
   SynchronizeRequest& request = source_and_request->second;
   request.uninstall_results[install_url] = code;
   --request.remaining_uninstall_requests;
-  DCHECK_GE(request.remaining_uninstall_requests, 0);
+  CHECK_GE(request.remaining_uninstall_requests, 0, base::NotFatalUntil::M162);
 
   ContinueSynchronization(source);
 }
@@ -719,7 +726,7 @@ void ExternallyManagedAppManager::ContinueSynchronization(
 
   // Installs only take place after all uninstalls.
   if (!request.pending_installs.empty()) {
-    DCHECK_GT(request.remaining_install_requests, 0);
+    CHECK_GT(request.remaining_install_requests, 0, base::NotFatalUntil::M162);
     // Note: It is intentional that std::move(request.pending_installs) clears
     // the vector in `request`, preventing this branch from triggering again.
     InstallApps(std::move(request.pending_installs),

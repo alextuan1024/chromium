@@ -5,12 +5,12 @@
 #include "third_party/blink/renderer/core/frame/local_frame_mojo_handler.h"
 
 #include "base/command_line.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
+#include "partition_alloc/oom.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
@@ -37,6 +37,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_fullscreen_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_oom.h"
+#include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/focus_params.h"
 #include "third_party/blink/renderer/core/dom/ignore_opens_during_unload_count_incrementer.h"
@@ -46,6 +47,8 @@
 #include "third_party/blink/renderer/core/exported/web_plugin_container_impl.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/frame_console.h"
+#include "third_party/blink/renderer/core/frame/frame_owner.h"
+#include "third_party/blink/renderer/core/frame/frame_swap_scope.h"
 #include "third_party/blink/renderer/core/frame/intervention.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -58,6 +61,7 @@
 #include "third_party/blink/renderer/core/fullscreen/fullscreen.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_embed_element.h"
+#include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
 #include "third_party/blink/renderer/core/html/html_link_element.h"
 #include "third_party/blink/renderer/core/html/html_meta_element.h"
 #include "third_party/blink/renderer/core/html/html_object_element.h"
@@ -66,6 +70,7 @@
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/inspector/main_thread_debugger.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_content.h"
+#include "third_party/blink/renderer/core/loader/frame_loader.h"
 #include "third_party/blink/renderer/core/loader/mixed_content_checker.h"
 #include "third_party/blink/renderer/core/messaging/message_port.h"
 #include "third_party/blink/renderer/core/navigation_api/navigation_api.h"
@@ -80,8 +85,13 @@
 #include "third_party/blink/renderer/core/view_transition/page_swap_event.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_skip_reason.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_supplement.h"
+#include "third_party/blink/renderer/core/workers/worker_backing_thread.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_timing_utils.h"
+#include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/widget/frame_widget.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "ui/accessibility/ax_mode.h"
+#include "ui/accessibility/ax_tree_update.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "base/apple/foundation_util.h"
@@ -299,6 +309,13 @@ class JavaScriptExecuteRequestForTestsHandler
   LocalFrameMojoHandler::JavaScriptExecuteRequestForTestsCallback callback_;
 };
 
+NOINLINE void SimulateBlinkWorkerOOM(
+    std::unique_ptr<WorkerBackingThread> worker_thread) {
+  CHECK(!IsMainThread());
+  CHECK(worker_thread->BackingThread().IsCurrentThread());
+  OOM_CRASH(0);
+}
+
 }  // namespace
 
 ActiveURLMessageFilter::~ActiveURLMessageFilter() {
@@ -356,6 +373,12 @@ LocalFrameMojoHandler::LocalFrameMojoHandler(blink::LocalFrame& frame)
   registry->AddAssociatedInterface(
       BindRepeating(&LocalFrameMojoHandler::BindFullscreenVideoElementReceiver,
                     WrapWeakPersistent(this)));
+  registry->AddAssociatedInterface(BindRepeating(
+      &LocalFrameMojoHandler::BindOutsideContextCSPViolationReporterReceiver,
+      WrapWeakPersistent(this)));
+  registry->AddAssociatedInterface(
+      BindRepeating(&LocalFrameMojoHandler::BindAutoplayConfigurationReceiver,
+                    WrapWeakPersistent(this)));
 }
 
 void LocalFrameMojoHandler::Trace(Visitor* visitor) const {
@@ -371,6 +394,8 @@ void LocalFrameMojoHandler::Trace(Visitor* visitor) const {
   visitor->Trace(local_frame_receiver_);
   visitor->Trace(main_frame_receiver_);
   visitor->Trace(fullscreen_video_receiver_);
+  visitor->Trace(outside_context_csp_violation_reporter_receiver_);
+  visitor->Trace(autoplay_configuration_receiver_);
   visitor->Trace(device_posture_receiver_);
 }
 
@@ -385,11 +410,19 @@ void LocalFrameMojoHandler::DidDetachFrame() {
   // automatically reset on context destruction.
   local_frame_receiver_.reset();
   main_frame_receiver_.reset();
+  outside_context_csp_violation_reporter_receiver_.reset();
+  autoplay_configuration_receiver_.reset();
   // TODO(tkent): Should we reset other receivers?
 }
 
 void LocalFrameMojoHandler::ClosePageForTesting() {
   ClosePage(base::DoNothing());
+}
+
+void LocalFrameMojoHandler::FlushLocalFrameHostForTesting() {
+  if (local_frame_host_remote_.is_bound()) {
+    local_frame_host_remote_.FlushForTesting();
+  }
 }
 
 mojom::blink::BackForwardCacheControllerHost&
@@ -488,6 +521,34 @@ void LocalFrameMojoHandler::BindFullscreenVideoElementReceiver(
   fullscreen_video_receiver_.Bind(
       std::move(receiver), frame_->GetTaskRunner(TaskType::kInternalDefault));
   fullscreen_video_receiver_.SetFilter(
+      std::make_unique<ActiveURLMessageFilter>(frame_));
+}
+
+void LocalFrameMojoHandler::BindOutsideContextCSPViolationReporterReceiver(
+    mojo::PendingAssociatedReceiver<
+        mojom::blink::OutsideContextCSPViolationReporter> receiver) {
+  if (frame_->IsDetached()) {
+    return;
+  }
+
+  outside_context_csp_violation_reporter_receiver_.Bind(
+      std::move(receiver), frame_->GetTaskRunner(TaskType::kNetworking));
+  outside_context_csp_violation_reporter_receiver_.SetFilter(
+      std::make_unique<ActiveURLMessageFilter>(frame_));
+}
+
+void LocalFrameMojoHandler::BindAutoplayConfigurationReceiver(
+    mojo::PendingAssociatedReceiver<mojom::blink::AutoplayConfigurationClient>
+        receiver) {
+  if (frame_->IsDetached()) {
+    return;
+  }
+
+  autoplay_configuration_receiver_.reset();
+  autoplay_configuration_receiver_.Bind(
+      std::move(receiver),
+      frame_->GetTaskRunner(TaskType::kInternalNavigationAssociated));
+  autoplay_configuration_receiver_.SetFilter(
       std::make_unique<ActiveURLMessageFilter>(frame_));
 }
 
@@ -609,7 +670,13 @@ void LocalFrameMojoHandler::AddMessageToConsole(
 }
 
 void LocalFrameMojoHandler::SwapInImmediately() {
-  frame_->SwapIn();
+  {
+    FrameSwapScope frame_swap_scope(frame_->Owner());
+    if (!frame_->SwapIn()) {
+      return;
+    }
+    frame_->AttachViewToOwner();
+  }
   // Normally, this happens as part of committing a cross-Document navigation.
   // However, there is no navigation being committed here. Instead, the browser
   // navigation code is optimistically early-swapping in this frame to replace a
@@ -773,31 +840,24 @@ void LocalFrameMojoHandler::AdvanceFocusForIME(
   next_element->Focus(FocusParams(FocusTrigger::kUserGesture));
 }
 
-void LocalFrameMojoHandler::ReportContentSecurityPolicyViolation(
-    network::mojom::blink::CSPViolationPtr violation) {
-  auto* source_location = MakeGarbageCollected<SourceLocation>(
-      violation->source_location->url, String(),
-      violation->source_location->line, violation->source_location->column,
-      nullptr);
+bool LocalFrameMojoHandler::IsCSPEffectiveDirectiveAllowedForViolationReporting(
+    network::mojom::blink::CSPDirectiveName effective_type) const {
+  // The effective directive is not validated since the frame host is trusted.
+  return true;
+}
 
-  frame_->Console().AddMessage(MakeGarbageCollected<ConsoleMessage>(
-      mojom::blink::ConsoleMessageSource::kSecurity,
-      mojom::blink::ConsoleMessageLevel::kError, violation->console_message,
-      source_location));
+blink::LocalFrame*
+LocalFrameMojoHandler::GetContextFrameForCSPViolationReporting(
+    network::mojom::blink::CSPDirectiveName effective_type) {
+  return effective_type ==
+                 network::mojom::blink::CSPDirectiveName::FrameAncestors
+             ? frame_
+             : nullptr;
+}
 
-  auto directive_type =
-      ContentSecurityPolicy::GetDirectiveType(violation->effective_directive);
-  blink::LocalFrame* context_frame =
-      directive_type == network::mojom::blink::CSPDirectiveName::FrameAncestors
-          ? frame_
-          : nullptr;
-
-  DomWindow()->GetContentSecurityPolicy()->ReportViolation(
-      violation->directive, directive_type, violation->console_message,
-      violation->blocked_url, violation->report_endpoints,
-      violation->use_reporting_api, violation->header, violation->type,
-      ContentSecurityPolicyViolationType::kURLViolation, source_location,
-      context_frame, nullptr /* Element */);
+ContentSecurityPolicy*
+LocalFrameMojoHandler::GetContentSecurityPolicyForViolationReporting() {
+  return DomWindow()->GetContentSecurityPolicy();
 }
 
 void LocalFrameMojoHandler::DidUpdateFramePolicy(
@@ -993,19 +1053,26 @@ void LocalFrameMojoHandler::JavaScriptExecuteRequestInIsolatedWorld(
 }
 
 void LocalFrameMojoHandler::InvokeScriptToolForInspector(
-    const base::UnguessableToken& invocation_id,
-    const String& tool_name,
+    const ToolInvocationToken& invocation_id,
+    mojom::blink::ScriptToolSelectorPtr tool,
     const String& input_arguments,
     InvokeScriptToolForInspectorCallback callback) {
   if (auto* model_context =
           ModelContextSupplement::GetIfExists(*GetDocument())) {
-    if (model_context->GetScriptToolDeclaration(tool_name)) {
+    // `ExecuteTool()` keys on the tool's (non-web-exposed) id, so resolve a
+    // name to an id here. Either way, if the tool is unregistered before the
+    // posted task runs, `ExecuteTool()` simply won't find the id and will fail,
+    // rather than running whatever tool happens to hold the name by then.
+    ToolData* tool_data =
+        tool->is_id() ? model_context->FindToolDataById(tool->get_id())
+                      : model_context->FindToolDataByName(tool->get_name());
+    if (tool_data) {
       frame_->GetTaskRunner(TaskType::kInternalInspector)
-          ->PostTask(
-              FROM_HERE,
-              blink::BindOnce(base::IgnoreResult(&ModelContext::ExecuteTool),
-                              WrapPersistent(model_context), invocation_id,
-                              tool_name, input_arguments, base::DoNothing()));
+          ->PostTask(FROM_HERE,
+                     blink::BindOnce(
+                         base::IgnoreResult(&ModelContext::ExecuteTool),
+                         WrapPersistent(model_context), invocation_id,
+                         tool_data->Id(), input_arguments, base::DoNothing()));
       std::move(callback).Run(true);
       return;
     }
@@ -1014,7 +1081,7 @@ void LocalFrameMojoHandler::InvokeScriptToolForInspector(
 }
 
 void LocalFrameMojoHandler::NotifyInspectorOfCrossDocumentScriptToolResult(
-    const base::UnguessableToken& invocation_id) {
+    const ToolInvocationToken& invocation_id) {
   auto* model_context = ModelContextSupplement::modelContext(*GetDocument());
   model_context->GetCrossDocumentScriptToolResult(invocation_id,
                                                   base::DoNothing());
@@ -1167,6 +1234,19 @@ void LocalFrameMojoHandler::HandleRendererDebugURL(const KURL& url) {
     // depend on //third_party/blink/renderer/core without a layering violation.
     ReportV8OOMError("HandleRendererDebugURL",
                      v8::OOMDetails{.is_heap_oom = true});
+  } else if (url == kChromeUIBlinkWorkerOOMURL) {
+    LOG(ERROR)
+        << "Intentionally causing Blink worker OOM because user navigated to "
+        << url;
+    // Handled here, because code in //third_party/blink/common cannot use
+    // //third_party/blink/renderer/core to create an actual worker thread.
+    auto worker_thread = std::make_unique<WorkerBackingThread>(
+        ThreadCreationParams(ThreadType::kDedicatedWorkerThread));
+    scoped_refptr<base::SingleThreadTaskRunner> task_runner =
+        worker_thread->BackingThread().GetTaskRunner();
+    PostCrossThreadTask(
+        *task_runner, FROM_HERE,
+        CrossThreadBindOnce(&SimulateBlinkWorkerOOM, std::move(worker_thread)));
   } else {
     // This is a Chrome Debug URL. Handle it.
     HandleChromeDebugURL(GURL(url));
@@ -1181,9 +1261,6 @@ void LocalFrameMojoHandler::HandleRendererDebugURL(const KURL& url) {
 
 void LocalFrameMojoHandler::GetCanonicalUrlForSharing(
     GetCanonicalUrlForSharingCallback callback) {
-#if BUILDFLAG(IS_ANDROID)
-  base::TimeTicks start_time = base::TimeTicks::Now();
-#endif
   KURL canon_url;
   HTMLLinkElement* link_element = GetDocument()->LinkCanonical();
   if (link_element) {
@@ -1199,10 +1276,6 @@ void LocalFrameMojoHandler::GetCanonicalUrlForSharing(
   }
   std::move(callback).Run(canon_url.IsNull() ? std::nullopt
                                              : std::make_optional(canon_url));
-#if BUILDFLAG(IS_ANDROID)
-  base::UmaHistogramMicrosecondsTimes("Blink.Frame.GetCanonicalUrlRendererTime",
-                                      base::TimeTicks::Now() - start_time);
-#endif
 }
 
 void LocalFrameMojoHandler::GetOpenGraphMetadata(
@@ -1493,6 +1566,10 @@ void LocalFrameMojoHandler::AddResourceTimingEntryForFailedSubframeNavigation(
     response.SetEncodedDataLength(-1);
   }
   response.SetHttpStatusCode(response_code);
+  if (!mime_type.empty()) {
+    response.SetHttpHeaderField(http_names::kContentType,
+                                AtomicString(mime_type));
+  }
   if (!normalized_server_timing.empty()) {
     response.SetHttpHeaderField(http_names::kServerTiming,
                                 AtomicString(normalized_server_timing));
@@ -1511,6 +1588,20 @@ void LocalFrameMojoHandler::GetScrollPosition(
     GetScrollPositionCallback callback) {
   std::move(callback).Run(gfx::ToFlooredPoint(
       frame_->LocalFrameRoot().View()->LayoutViewport()->ScrollPosition()));
+}
+
+void LocalFrameMojoHandler::SetWantErrorMessageStackTrace() {
+  frame_->SetWantErrorMessageStackTrace();
+}
+
+void LocalFrameMojoHandler::SnapshotAccessibilityTree(
+    mojom::blink::SnapshotAccessibilityTreeParamsPtr params,
+    SnapshotAccessibilityTreeCallback callback) {
+  ui::AXTreeUpdate response;
+  AXObjectCache::SnapshotAccessibilityTree(
+      GetDocument(), base::saturated_cast<size_t>(params->max_nodes),
+      params->timeout, &response, ui::AXMode(params->ax_mode));
+  std::move(callback).Run(response);
 }
 
 void LocalFrameMojoHandler::RequestFullscreenVideoElement() {
@@ -1567,5 +1658,11 @@ void LocalFrameMojoHandler::PerformFullContentSpellCheck() {
   frame_->PerformFullContentSpellCheck();
 }
 #endif
+
+void LocalFrameMojoHandler::AddAutoplayFlags(
+    const scoped_refptr<const SecurityOrigin>& origin,
+    int32_t flags) {
+  frame_->Loader().AddAutoplayFlags(origin, flags);
+}
 
 }  // namespace blink

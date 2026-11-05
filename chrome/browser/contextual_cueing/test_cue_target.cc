@@ -40,6 +40,10 @@ bool TestCueTarget::SupportsIntrusivenessImpl(
   return supported_intrusiveness.contains(intrusiveness);
 }
 
+bool TestCueTarget::IsPersistent() const {
+  return is_persistent;
+}
+
 bool TestCueTarget::IsEligible() const {
   return eligible;
 }
@@ -88,6 +92,14 @@ void TestCueTarget::OnAnchoredMessageClicked(CueActionData data) {
 
 void TestCueTarget::OnEditPrompt(CueActionData data) {
   edit_prompt_data = std::move(data);
+}
+
+void TestCueTarget::OnDismissed() {
+  dismissed = true;
+}
+
+void TestCueTarget::OnSuggestionsSettingsOpened() {
+  suggestions_settings_opened = true;
 }
 
 ui::ImageModel TestCueTarget::GetAnchoredMessageIcon() const {

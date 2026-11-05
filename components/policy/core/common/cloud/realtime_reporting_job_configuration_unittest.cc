@@ -5,14 +5,19 @@
 #include "components/policy/core/common/cloud/realtime_reporting_job_configuration.h"
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "base/check_deref.h"
+#include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/values.h"
@@ -28,6 +33,7 @@
 #include "components/policy/core/common/cloud/dm_auth.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
 #include "components/policy/core/common/cloud/mock_device_management_service.h"
+#include "components/policy/core/common/cloud/network_name_cache.h"
 #include "components/policy/core/common/features.h"
 #include "components/version_info/version_info.h"
 #include "net/base/net_errors.h"
@@ -76,12 +82,14 @@ class RealtimeReportingJobConfigurationTest : public testing::Test {
       : client_(&service_)
 #endif
   {
+    feature_list_.InitWithFeatures(
+        {policy::features::kEnhancedSecurityEventFields,
+         policy::kUseCachedNetworkName},
+        {});
   }
 
   void SetUp() override {
     client_.SetDMToken(kDummyToken);
-    feature_list_.InitWithFeatures(
-        {policy::features::kEnhancedSecurityEventFields}, {});
 
     configuration_ = std::make_unique<RealtimeReportingJobConfiguration>(
         &client_, service_.configuration()->GetRealtimeReportingServerUrl(),
@@ -164,7 +172,8 @@ class RealtimeReportingJobConfigurationTest : public testing::Test {
     return base::WriteJson(response).value_or("");
   }
 
-  base::test::SingleThreadTaskEnvironment task_environment_;
+  base::test::ScopedFeatureList feature_list_;
+  base::test::TaskEnvironment task_environment_;
   StrictMock<MockJobCreationHandler> job_creation_handler_;
   FakeDeviceManagementService service_{&job_creation_handler_};
   MockCloudPolicyClient client_;
@@ -187,9 +196,6 @@ class RealtimeReportingJobConfigurationTest : public testing::Test {
   ScopedFakeSerialNumber fake_serial_number_;
 #endif
   std::unique_ptr<RealtimeReportingJobConfiguration> configuration_;
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(RealtimeReportingJobConfigurationTest, ValidatePayload) {
@@ -207,7 +213,8 @@ TEST_F(RealtimeReportingJobConfigurationTest, ValidatePayload) {
   EXPECT_EQ(GetDeviceName(), request.device().name());
   EXPECT_FALSE(GetDeviceFqdn().empty());
   EXPECT_EQ(GetDeviceFqdn(), request.device().device_fqdn());
-  EXPECT_EQ(GetNetworkName(), request.device().network_name());
+  EXPECT_EQ(GetNetworkName(service_.network_name_cache()),
+            request.device().network_name());
 
   EXPECT_EQ(kIds.size(), base::checked_cast<size_t>(request.events_size()));
   int i = -1;
@@ -365,6 +372,70 @@ TEST_F(RealtimeReportingJobConfigurationTest, OnBeforeRetry_InvalidResponse) {
   auto original_payload = configuration_->GetPayload();
   configuration_->OnBeforeRetry(DeviceManagementService::kSuccess, "error");
   EXPECT_EQ(original_payload, configuration_->GetPayload());
+}
+
+TEST_F(RealtimeReportingJobConfigurationTest, EnhancedFieldsDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      policy::features::kEnhancedSecurityEventFields);
+
+  auto configuration = std::make_unique<RealtimeReportingJobConfiguration>(
+      &client_, service_.configuration()->GetRealtimeReportingServerUrl(),
+      /*include_device_info=*/true,
+      base::BindOnce(&MockCallbackObserver::OnURLLoadComplete,
+                     base::Unretained(&callback_observer_)));
+  ::chrome::cros::reporting::proto::UploadEventsRequest request;
+  request.mutable_browser()->set_user_agent("dummyAgent");
+  request.add_events()->MergeFrom(CreateEventProto(kIds[0], 0));
+  configuration->AddRequest(std::move(request));
+
+  ::chrome::cros::reporting::proto::UploadEventsRequest parsed_request;
+  parsed_request.ParseFromString(configuration->GetPayload());
+  EXPECT_TRUE(parsed_request.device().device_fqdn().empty());
+  EXPECT_TRUE(parsed_request.device().network_name().empty());
+}
+
+TEST_F(RealtimeReportingJobConfigurationTest,
+       CachedNetworkNamePopulatedAfterAsyncRefresh) {
+  // The configuration reads the network name from the cache owned by the
+  // client's `DeviceManagementService`.
+  service_.SetNetworkNameCache(NetworkNameCache::CreateForTesting(
+      base::BindRepeating([]() -> std::string { return "CachedCorpWiFi"; })));
+  NetworkNameCache* network_name_cache = service_.network_name_cache();
+
+  // First configuration triggers the background network name refresh and uses
+  // an empty string before the task completes.
+  auto first_config = std::make_unique<RealtimeReportingJobConfiguration>(
+      &client_, service_.configuration()->GetRealtimeReportingServerUrl(),
+      /*include_device_info=*/true,
+      base::BindOnce(&MockCallbackObserver::OnURLLoadComplete,
+                     base::Unretained(&callback_observer_)));
+  ::chrome::cros::reporting::proto::UploadEventsRequest first_request;
+  first_request.add_events()->MergeFrom(CreateEventProto(kIds[0], 0));
+  first_config->AddRequest(std::move(first_request));
+
+  ::chrome::cros::reporting::proto::UploadEventsRequest parsed_first_request;
+  parsed_first_request.ParseFromString(first_config->GetPayload());
+  EXPECT_EQ("", parsed_first_request.device().network_name());
+
+  // Once the background refresh completes, subsequent configurations include
+  // the cached network name.
+  ASSERT_TRUE(base::test::RunUntil([network_name_cache] {
+    return network_name_cache->GetNetworkName() == "CachedCorpWiFi";
+  }));
+
+  auto second_config = std::make_unique<RealtimeReportingJobConfiguration>(
+      &client_, service_.configuration()->GetRealtimeReportingServerUrl(),
+      /*include_device_info=*/true,
+      base::BindOnce(&MockCallbackObserver::OnURLLoadComplete,
+                     base::Unretained(&callback_observer_)));
+  ::chrome::cros::reporting::proto::UploadEventsRequest second_request;
+  second_request.add_events()->MergeFrom(CreateEventProto(kIds[0], 0));
+  second_config->AddRequest(std::move(second_request));
+
+  ::chrome::cros::reporting::proto::UploadEventsRequest parsed_second_request;
+  parsed_second_request.ParseFromString(second_config->GetPayload());
+  EXPECT_EQ("CachedCorpWiFi", parsed_second_request.device().network_name());
 }
 
 }  // namespace policy

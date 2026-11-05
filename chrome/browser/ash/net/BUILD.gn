@@ -38,8 +38,6 @@ static_library("net") {
     "xdr_manager.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash/public/cpp",
     "//base",
@@ -56,7 +54,6 @@ static_library("net") {
     "//chrome/browser/net",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/login",
-    "//chrome/common",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus",
     "//chromeos/ash/components/dbus/shill",
@@ -84,7 +81,6 @@ static_library("net") {
     "//components/proxy_config",
     "//components/session_manager/core",
     "//components/user_manager",
-    "//components/user_prefs",
     "//components/variations",
     "//components/variations/service",
     "//content/public/browser",
@@ -128,8 +124,10 @@ source_set("unit_tests") {
     "//chrome/browser/ash/net/rollback_network_config:unit_tests",
     "//chrome/browser/ash/policy/core:test_support",
     "//chrome/browser/ash/settings:test_support",
+    "//chrome/browser/net",
     "//chrome/browser/prefs",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus",
     "//chromeos/ash/components/dbus/shill",
     "//chromeos/ash/components/dbus/system_proxy",

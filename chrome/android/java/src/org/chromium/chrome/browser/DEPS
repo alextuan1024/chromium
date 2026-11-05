@@ -9,7 +9,6 @@ include_rules = [
   "+chrome/browser/contextmenu/java/src/org/chromium/chrome/browser/contextmenu/ContextMenuPopulatorFactory.java",
   "+chrome/browser/ui/android/theme",
   "+chrome/browser/ui/android/toolbar",
-  "+third_party/blink/public/mojom:mojom_platform_java",
   "+components/browser_ui/device_lock/android",
   "+components/sensitive_content/android/java/src/org/chromium/components/sensitive_content/SensitiveContentClient.java",
   "+components/trusted_vault/android/java/src/org/chromium/components/trusted_vault",
@@ -113,6 +112,9 @@ specific_include_rules = {
   "TabbedCrashRecoveryDelegate\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
   ],
+  "TabbedStartupCoordinator\\.java": [
+    "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
+  ],
   "TabbedStartupWindowPolicyDelegate\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
   ],
@@ -122,7 +124,7 @@ specific_include_rules = {
   "DragAndDropLauncherActivity\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
   ],
-  "ActorBackgroundActuationManager\\.java": [
+  "BackgroundSessionTabRestorer\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
   ],
 }

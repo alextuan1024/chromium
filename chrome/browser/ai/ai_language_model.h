@@ -19,9 +19,7 @@
 #include "chrome/browser/ai/ai_context_bound_object_set.h"
 #include "components/on_device_ai/ai_utils.h"
 #include "components/optimization_guide/core/model_execution/model_broker_client.h"
-#include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
-#include "components/optimization_guide/core/model_execution/safety_checker.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/proto/features/prompt_api.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
@@ -37,7 +35,6 @@
 // for model execution.
 class AILanguageModel : public AIContextBoundObject,
                         public blink::mojom::AILanguageModel,
-                        public optimization_guide::TextSafetyClient,
                         public on_device_model::mojom::ContextClient {
  public:
   using PromptApiMetadata = optimization_guide::proto::PromptApiMetadata;
@@ -150,16 +147,21 @@ class AILanguageModel : public AIContextBoundObject,
   static base::flat_set<std::string> GetDefaultSupportedLanguageBaseCodes();
 
   // Format the initial prompts, gets the token count, updates the session,
-  // and reports to `create_client`.
+  // and reports to `create_client`. `thinking_effort` is the default for
+  // prompts, and `include_thoughts` controls whether thoughts are streamed.
   void Initialize(
       std::vector<blink::mojom::AILanguageModelPromptPtr> initial_prompts,
       std::vector<blink::mojom::AILanguageModelToolDeclarationPtr> tools,
+      blink::mojom::AILanguageModelThinkingEffort thinking_effort,
+      bool include_thoughts,
       mojo::PendingRemote<blink::mojom::AIManagerCreateLanguageModelClient>
           create_client);
 
   // `blink::mojom::AILanguageModel` implementation.
   void Prompt(std::vector<blink::mojom::AILanguageModelPromptPtr> prompts,
               on_device_model::mojom::ResponseConstraintPtr constraint,
+              std::optional<blink::mojom::AILanguageModelThinkingEffort>
+                  thinking_effort,
               mojo::PendingRemote<blink::mojom::ModelStreamingResponder>
                   pending_responder) override;
   void Append(std::vector<blink::mojom::AILanguageModelPromptPtr> prompts,
@@ -175,11 +177,6 @@ class AILanguageModel : public AIContextBoundObject,
 
   // AIContextBoundObject:
   void SetPriority(on_device_model::mojom::Priority priority) override;
-
-  // optimization_guide::TextSafetyClient:
-  void StartSession(
-      mojo::PendingReceiver<on_device_model::mojom::TextSafetySession> session)
-      override;
 
   // on_device_model::mojom::ContextClient:
   void OnComplete(uint32_t tokens_processed) override;
@@ -198,11 +195,6 @@ class AILanguageModel : public AIContextBoundObject,
       mojo::PendingRemote<blink::mojom::AIManagerCreateLanguageModelClient>
           create_client,
       std::optional<uint32_t> token_count);
-  void InitializeSafetyChecksComplete(
-      on_device_model::mojom::InputPtr input,
-      mojo::PendingRemote<blink::mojom::AIManagerCreateLanguageModelClient>
-          create_client,
-      optimization_guide::SafetyChecker::Result safety_result);
 
   void ForkInternal(
       mojo::PendingRemote<blink::mojom::AIManagerCreateLanguageModelClient>
@@ -212,6 +204,8 @@ class AILanguageModel : public AIContextBoundObject,
   void PromptInternal(
       std::vector<blink::mojom::AILanguageModelPromptPtr> prompts,
       on_device_model::mojom::ResponseConstraintPtr constraint,
+      std::optional<blink::mojom::AILanguageModelThinkingEffort>
+          thinking_effort,
       mojo::PendingRemote<blink::mojom::ModelStreamingResponder>
           pending_responder,
       base::OnceClosure on_complete);
@@ -250,6 +244,12 @@ class AILanguageModel : public AIContextBoundObject,
   on_device_model::mojom::InputPtr initial_input_;
   // The tools declared for this session.
   std::vector<blink::mojom::AILanguageModelToolDeclarationPtr> tools_;
+  // The default thinking effort for prompts in this session.
+  blink::mojom::AILanguageModelThinkingEffort thinking_effort_ =
+      blink::mojom::AILanguageModelThinkingEffort::kNone;
+  // Whether thoughts are streamed to the client. This is fixed for the session
+  // by whether its expected outputs include thoughts.
+  bool include_thoughts_ = false;
 
   // Contains the current committed session state. This will be replaced after a
   // successful prompt with the latest session state.
@@ -269,11 +269,9 @@ class AILanguageModel : public AIContextBoundObject,
   // Whether a task is currently running.
   bool task_running_ = false;
 
-  std::unique_ptr<optimization_guide::SafetyChecker> safety_checker_;
   base::WeakPtr<optimization_guide::ModelClient> model_client_;
 
-  // Holds state for any currently active prompt. This holds a reference to
-  // `safety_checker_` so must be ordered after that member.
+  // Holds state for any currently active prompt.
   std::unique_ptr<PromptState> prompt_state_;
 
   base::WeakPtr<OptimizationGuideLogger> logger_;

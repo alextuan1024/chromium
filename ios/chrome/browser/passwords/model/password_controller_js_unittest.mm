@@ -8,14 +8,17 @@
 #import <string>
 
 #import "base/json/json_writer.h"
+#import "base/memory/raw_ptr.h"
 #import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/gmock_expected_support.h"
 #import "base/test/ios/wait_util.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/values.h"
 #import "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #import "components/autofill/core/common/form_data.h"
 #import "components/autofill/ios/browser/autofill_util.h"
+#import "components/autofill/ios/common/autofill_optimization_features.h"
 #import "components/autofill/ios/common/field_data_manager_factory_ios.h"
 #import "components/password_manager/ios/password_form_helper.h"
 #import "components/password_manager/ios/password_manager_java_script_feature.h"
@@ -136,7 +139,7 @@ std::unique_ptr<base::Value> ParseFormFillResult(id wk_result) {
 
 class TestChromeWebClient : public ChromeWebClient {
  public:
-  void SetFeatures(std::vector<web::JavaScriptFeature*> features) {
+  void SetFeatures(std::vector<raw_ptr<web::JavaScriptFeature>> features) {
     features_ = std::move(features);
   }
 
@@ -149,7 +152,7 @@ class TestChromeWebClient : public ChromeWebClient {
   }
 
  private:
-  std::vector<web::JavaScriptFeature*> features_;
+  std::vector<raw_ptr<web::JavaScriptFeature>> features_;
 };
 
 class PasswordControllerJsTest : public PlatformTest {
@@ -314,11 +317,11 @@ class PasswordControllerJsTest : public PlatformTest {
   }
 
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  std::unique_ptr<web::JavaScriptFeature> fill_test_feature_;
   web::ScopedTestingWebClient web_client_;
   web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<web::WebState> web_state_;
-  std::unique_ptr<web::JavaScriptFeature> fill_test_feature_;
 };
 
 // IDs used in the Username and Password <input> elements.
@@ -1431,8 +1434,23 @@ TEST_F(PasswordControllerJsTest, FillUsernameAndPassword_MissingUsernameInput) {
               ExecuteJavaScript(@"document.getElementById('password').value"));
 }
 
+// Test fixture parameterized on whether `kAutofillOptimizationFormSearchIos`
+// is enabled.
+class PasswordControllerJsFormSearchTest
+    : public PasswordControllerJsTest,
+      public testing::WithParamInterface<bool> {
+ protected:
+  PasswordControllerJsFormSearchTest() {
+    feature_list_.InitWithFeatureState(
+        autofill::features::kAutofillOptimizationFormSearchIos, GetParam());
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
 // Check that password form outside the <form> tag is extracted correctly.
-TEST_F(PasswordControllerJsTest, ExtractFormOutsideTheFormTag) {
+TEST_P(PasswordControllerJsFormSearchTest, ExtractFormOutsideTheFormTag) {
   constexpr char kLoginUrl[] = "http://example.com/loginform";
   web::test::LoadHtml(@"<html><body>"
                        "  Name: <input type='text' name='username'>"
@@ -1442,18 +1460,23 @@ TEST_F(PasswordControllerJsTest, ExtractFormOutsideTheFormTag) {
                       GURL(kLoginUrl), web_state());
   ASSERT_TRUE(SetUpUniqueIDs());
 
+  const bool use_renderer_id_identifiers = GetParam();
   auto expected_form = base::DictValue()
                            .Set("name", "")
                            .Set("origin", kLoginUrl)
                            .Set("action", "");
-  base::DictValue expected_username_field =
-      ParsedField(/*renderer_id=*/"1", /*contole_type=*/"text",
-                  /*identifier=*/"gChrome~field~~INPUT~0", /*value=*/"",
-                  /*label=*/"Name:", /*name=*/"username");
+  base::DictValue expected_username_field = ParsedField(
+      /*renderer_id=*/"1", /*control_type=*/"text",
+      /*identifier=*/
+      use_renderer_id_identifiers ? "gChrome~field~rid~1"
+                                  : "gChrome~field~~INPUT~0",
+      /*value=*/"", /*label=*/"Name:", /*name=*/"username");
   base::DictValue expected_password_field = ParsedField(
-      /*renderer_id=*/"2", /*contole_type=*/"password",
-      /*identifier=*/"gChrome~field~~INPUT~1", /*value=*/"",
-      /*label=*/"Password:", /*name=*/"password");
+      /*renderer_id=*/"2", /*control_type=*/"password",
+      /*identifier=*/
+      use_renderer_id_identifiers ? "gChrome~field~rid~2"
+                                  : "gChrome~field~~INPUT~1",
+      /*value=*/"", /*label=*/"Password:", /*name=*/"password");
   auto expected_fields = base::ListValue()
                              .Append(std::move(expected_username_field))
                              .Append(std::move(expected_password_field));
@@ -1482,6 +1505,10 @@ TEST_F(PasswordControllerJsTest, ExtractFormOutsideTheFormTag) {
 
   EXPECT_EQ(expected_form, *results);
 }
+
+INSTANTIATE_TEST_SUITE_P(/* No InstantiationName */,
+                         PasswordControllerJsFormSearchTest,
+                         testing::Bool());
 
 // Tests that scrollAndCheckViewAreaVisible returns true for a visible password
 // field.

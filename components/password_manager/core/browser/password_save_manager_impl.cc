@@ -752,7 +752,6 @@ PasswordForm PasswordSaveManagerImpl::BuildPendingCredentials(
     // password also loses it's purpose, so we can delete it.
     pending_credentials.DeletePasswordBackupNote();
   }
-  pending_credentials.date_last_used = base::Time::Now();
   pending_credentials.form_has_autofilled_value =
       parsed_submitted_form.form_has_autofilled_value;
   pending_credentials.all_alternative_passwords =
@@ -782,7 +781,7 @@ PasswordForm PasswordSaveManagerImpl::BuildPendingCredentials(
     pending_credentials.type = PasswordForm::Type::kGenerated;
   }
 
-  if (client_->IsPasswordChangeOngoing()) {
+  if (parsed_submitted_form.type == PasswordForm::Type::kChangeSubmission) {
     pending_credentials.type = PasswordForm::Type::kChangeSubmission;
   }
 

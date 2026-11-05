@@ -6,10 +6,10 @@
 
 #include <sstream>
 
+#include "base/containers/flat_set.h"
 #include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/memory/safe_ref.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/types/optional_util.h"
 #include "net/base/features.h"
@@ -30,7 +30,7 @@ namespace net {
 
 HostResolverManager::ServiceEndpointRequestImpl::FinalizedResult::
     FinalizedResult(std::vector<ServiceEndpoint> endpoints,
-                    std::set<std::string> dns_aliases)
+                    base::flat_set<std::string> dns_aliases)
     : endpoints(std::move(endpoints)), dns_aliases(std::move(dns_aliases)) {}
 
 HostResolverManager::ServiceEndpointRequestImpl::FinalizedResult::
@@ -142,7 +142,7 @@ HostResolverManager::ServiceEndpointRequestImpl::GetEndpointResults() {
   return {};
 }
 
-const std::set<std::string>&
+const base::flat_set<std::string>&
 HostResolverManager::ServiceEndpointRequestImpl::GetDnsAliasResults() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -154,8 +154,7 @@ HostResolverManager::ServiceEndpointRequestImpl::GetDnsAliasResults() {
     return job_.value()->dns_task_results_manager()->GetAliases();
   }
 
-  static const base::NoDestructor<std::set<std::string>> kEmptyDnsAliases;
-  return *kEmptyDnsAliases.get();
+  return dns_alias_utility::EmptyDnsAliases();
 }
 
 bool HostResolverManager::ServiceEndpointRequestImpl::EndpointsCryptoReady() {
@@ -222,7 +221,8 @@ void HostResolverManager::ServiceEndpointRequestImpl::AssignJob(
 void HostResolverManager::ServiceEndpointRequestImpl::OnJobCompleted(
     const HostCache::Entry& results,
     bool obtained_securely,
-    ResolutionDetails resolution_details) {
+    ResolutionDetails resolution_details,
+    std::optional<HostCache::EntryStaleness> stale_info) {
   CHECK(job_);
   CHECK(delegate_);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -233,6 +233,9 @@ void HostResolverManager::ServiceEndpointRequestImpl::OnJobCompleted(
   }
   SetFinalizedResultFromLegacyResults(results);
   MaybeClearStaleResults();
+  if (stale_info.has_value() && !parameters_.is_speculative) {
+    stale_info_ = std::move(stale_info);
+  }
 
   const bool is_secure_network_error =
       obtained_securely && results.error() != OK;
@@ -494,8 +497,7 @@ void HostResolverManager::ServiceEndpointRequestImpl::
 
 void HostResolverManager::ServiceEndpointRequestImpl::MaybeClearStaleResults() {
   if (parameters_.cache_usage ==
-          ResolveHostParameters::CacheUsage::STALE_ALLOWED_WHILE_REFRESHING &&
-      stale_info_.has_value()) {
+      ResolveHostParameters::CacheUsage::STALE_ALLOWED_WHILE_REFRESHING) {
     stale_endpoints_.clear();
     stale_info_.reset();
   }

@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -23,6 +24,7 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/sessions/content/session_tab_helper_delegate.h"
 #include "components/sessions/core/command_storage_manager_delegate.h"
+#include "components/sessions/core/command_storage_read_status.h"
 #include "components/sessions/core/session_service_commands.h"
 #include "components/sessions/core/tab_restore_service_client.h"
 #include "content/public/browser/web_contents.h"
@@ -61,6 +63,8 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
  public:
   enum class SessionServiceType { kAppRestore, kSessionRestore };
 
+  // Every kWritesPerReset commands triggers recreating the file.
+  static constexpr int kWritesPerReset = 250;
   SessionServiceBase(const SessionServiceBase&) = delete;
   SessionServiceBase& operator=(const SessionServiceBase&) = delete;
 
@@ -77,9 +81,16 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
   void SetWindowVisibleOnAllWorkspaces(SessionID window_id,
                                        bool visible_on_all_workspaces);
 
+  enum class ResetReason {
+    kServiceStartup,
+    kNavigationIndexOutOfRange,
+    kWebAppReparenting,
+  };
+
   // Resets the contents of the file from the current state of all open
-  // apps whose profile matches our profile.
-  void ResetFromCurrentBrowsers();
+  // browsers whose profile matches our profile.
+  void ResetFromCurrentBrowsers(ResetReason reason);
+  void ResetFromCurrentBrowsersForTesting();
 
   // Associates a tab with a window.
   void SetTabWindow(SessionID window_id, SessionID tab_id);
@@ -88,6 +99,11 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
   void SetWindowBounds(SessionID window_id,
                        const gfx::Rect& bounds,
                        ui::mojom::WindowShowState show_state);
+
+  // Writes all pending commands to disk now, and runs `done_callback` on the
+  // backend task runner once they are written. Used when the session is ending
+  // and the process is terminated without a normal shutdown.
+  void SaveNow(base::OnceClosure done_callback);
 
   // Sets the workspace the window resides in.
   void SetWindowWorkspace(SessionID window_id, const std::string& workspace);
@@ -139,10 +155,21 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
                          SessionID tab_id,
                          base::Time last_active_time);
 
+  // Callback for GetLastSession(). Reports the restored windows, the active
+  // window's id, and how the read and replay stages went. This is intentionally
+  // not called GetLastSessionCallback: that name belongs to
+  // sessions::GetLastSessionCallback, and shadowing it made call sites
+  // impossible to read locally.
+  using LastSessionCallback = base::OnceCallback<void(
+      std::vector<std::unique_ptr<sessions::SessionWindow>>,
+      SessionID,
+      sessions::CommandStorageReadStatus,
+      sessions::SessionReplayResult)>;
+
   // Fetches the contents of the last session, notifying the callback when
   // done. If the callback is supplied an empty vector of SessionWindows
   // it means the session could not be restored.
-  void GetLastSession(sessions::GetLastSessionCallback callback);
+  void GetLastSession(LastSessionCallback callback);
 
   // Sets the application name of the specified window.
   void SetWindowAppName(SessionID window_id, const std::string& app_name);
@@ -237,9 +264,9 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
 
   // Converts |commands| to SessionWindows and notifies the callback.
   void OnGotSessionCommands(
-      sessions::GetLastSessionCallback callback,
+      LastSessionCallback callback,
       std::vector<std::unique_ptr<sessions::SessionCommand>> commands,
-      bool read_error);
+      sessions::CommandStorageReadStatus status);
 
   // Adds commands to commands that will recreate the state of the specified
   // tab. This adds at most kMaxNavigationCountToPersist navigations (in each
@@ -277,6 +304,9 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
 
   virtual void DidScheduleCommand() {}
 
+  // Returns true if a full rewrite now would lose tabs restore still needs.
+  virtual bool HasPendingTabCloses() const;
+
   // Returns true if changes to tabs in the specified window should be tracked.
   bool ShouldTrackChangesToWindow(SessionID window_id) const;
 
@@ -285,6 +315,12 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
 
   // Will rebuild session commands if rebuild_on_next_save_ is true.
   virtual void RebuildCommandsIfRequired() = 0;
+
+  // Returns whether closing a tab in `window_id` should mark its sessionStorage
+  // namespace for deletion. For example, tabs closing with the last browser
+  // window keep their namespaces available for session restore.
+  virtual bool ShouldDeleteSessionStorageOnTabClosing(
+      SessionID window_id) const;
 
   // Unit test accessors.
   sessions::CommandStorageManager* GetCommandStorageManagerForTest();
@@ -313,6 +349,8 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
   // This is always non-null.
   raw_ptr<Profile> profile_;
 
+  const SessionServiceType type_;
+
   // Whether to use delayed save. Set to false when constructed with a FilePath
   // (which should only be used for testing).
   bool should_use_delayed_save_ = true;
@@ -326,6 +364,9 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
   // written.
   IdToRange tab_to_available_range_;
 
+  // Tabs one step past their rebuild-time range bound.
+  base::flat_set<SessionID> tabs_past_rebuild_bound_;
+
   // Force session commands to be rebuild before next save event.
   bool rebuild_on_next_save_ = false;
 
@@ -336,6 +377,9 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
   // Set of windows we're tracking changes to. This is only browsers that
   // return true from |ShouldRestoreWindowOfType|.
   WindowsTracking windows_tracking_;
+
+  // Closed windows can't fire: TabInserted ignores untracked windows.
+  base::flat_set<SessionID> windows_empty_at_last_rebuild_;
 
   bool is_saving_enabled_ = true;
 

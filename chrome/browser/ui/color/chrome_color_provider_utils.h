@@ -15,12 +15,16 @@
 
 inline constexpr SkAlpha kToolbarInkDropHighlightVisibleAlpha = 0x14;
 
+// The minimum contrast ratio between the active tab and the frame for system
+// themes. Below it, tab strokes are drawn to tell the active tab apart.
+inline constexpr float kMinimumActiveTabContrastRatio = 1.3f;
+
 // Converts ColorId if |color_id| is in CHROME_COLOR_IDS.
 std::string ChromeColorIdName(ui::ColorId color_id);
 
 // Converts ColorId to its CSS variable name format "--color-..." as a string
 // view with zero allocations if |color_id| is in CHROME_COLOR_IDS. Backed by a
-// compile-time fixed flat map using `ui::internal::CssNameHolder`.
+// compile-time `ui::color_internal::CssColorIdTable`.
 std::string_view ChromeColorIdToCSSColorId(ui::ColorId color_id);
 
 // Returns the tint associated with the given ID either from the custom theme or

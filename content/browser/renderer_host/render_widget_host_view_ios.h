@@ -129,9 +129,10 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   bool RequestRepaintOnNewSurface() override;
   void DestroyImpl() override;
   bool IsSurfaceAvailableForCopy() override;
-  void CopyFromSurface(
+  void CopyFromSurfaceImpl(
       const gfx::Rect& src_rect,
       const gfx::Size& dst_size,
+      bool is_copy_request_secure,
       base::TimeDelta timeout,
       base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
       override;
@@ -224,6 +225,11 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
 
   bool CanBecomeFirstResponderForTesting() const;
   bool CanResignFirstResponderForTesting() const;
+  // Allows layout tests to use UIKit sizing without changing test-app behavior.
+  // Set before attaching the view to its parent.
+  void SetUseFixedSizeForTesting(bool use_fixed_size) {
+    use_fixed_size_for_testing_ = use_fixed_size;
+  }
   void ContentInsetChanged();
 #if !BUILDFLAG(IS_IOS_TVOS)
   void OnKeyboardVisibilityChanged();
@@ -234,6 +240,7 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
                                  const std::u16string& replacement_text);
   void ExecuteEditCommand(const std::string& command);
   void AdvanceFocusForIME(blink::mojom::FocusType focus_type);
+  void ClearFocusedElement();
   void SendKeyEvent(const input::NativeWebKeyboardEvent& event);
   void ForwardKeyboardEventWithCommands(
       const input::NativeWebKeyboardEvent& key_event,
@@ -265,6 +272,9 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   void ApplyRootScrollOffsetChanged(const gfx::PointF& root_scroll_offset,
                                     bool force);
   void UpdateFrameBounds();
+  // Updates cached bounds unless resizing is deferred or test sizing is fixed.
+  // Returns whether the cached bounds changed.
+  bool UpdateViewBounds(const gfx::Rect& bounds);
   void ComputeDisplayFeature();
 
   blink::mojom::FrameWidgetInputHandler*
@@ -288,9 +298,9 @@ class CONTENT_EXPORT RenderWidgetHostViewIOS
   // is locked.
   bool pointer_lock_unadjusted_movement_ = false;
 
-
   std::optional<gfx::PointF> last_root_scroll_offset_;
   bool is_scrolling_ = false;
+  bool use_fixed_size_for_testing_;
 
   // This stores the underlying view bounds. The UIView might change size but
   // we do not change its size during scroll.

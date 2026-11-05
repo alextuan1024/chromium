@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
@@ -150,23 +151,6 @@ TEST(SendTabToSelfEntry, AsProto) {
   EXPECT_FALSE(specifics.has_activated_time_windows_epoch_micros());
 }
 
-// Tests that the send tab to self entry is correctly created from the required
-// fields
-TEST(SendTabToSelfEntry, FromRequiredFields) {
-  EXPECT_THAT(
-      SendTabToSelfEntry::FromRequiredFields("1", GURL("http://example.com"),
-                                             "target_device"),
-      Pointee(MatchesEntry(
-          "1", GURL("http://example.com"), "", "", "target_device",
-          MatchesPageContext(IsEmpty()),
-          MatchesNavigationHistory(IsEmpty(), testing::Eq(std::nullopt)))));
-
-  EXPECT_EQ(nullptr, SendTabToSelfEntry::FromRequiredFields(
-                         "1", GURL("chrome://flags"), "target_device"));
-  EXPECT_EQ(nullptr, SendTabToSelfEntry::FromRequiredFields(
-                         "1", GURL("about:blank"), "target_device"));
-}
-
 // Tests that the send tab to self entry is correctly parsed from
 // sync_pb::SendTabToSelfSpecifics.
 TEST(SendTabToSelfEntry, FromProto) {
@@ -191,6 +175,7 @@ TEST(SendTabToSelfEntry, FromProto) {
   EXPECT_FALSE(entry->IsActivated());
 }
 
+// Tests that `FromProto` rejects entries with non-HTTP(S) or invalid URLs.
 TEST(SendTabToSelfEntry, FromProto_InvalidUrl) {
   sync_pb::SendTabToSelfSpecifics pb_entry;
   pb_entry.set_guid("1");
@@ -200,6 +185,10 @@ TEST(SendTabToSelfEntry, FromProto_InvalidUrl) {
 
   // Invalid scheme.
   pb_entry.set_url("chrome://flags");
+  EXPECT_EQ(nullptr,
+            SendTabToSelfEntry::FromProto(pb_entry, base::Time::FromTimeT(10)));
+
+  pb_entry.set_url("about:blank");
   EXPECT_EQ(nullptr,
             SendTabToSelfEntry::FromProto(pb_entry, base::Time::FromTimeT(10)));
 
@@ -222,8 +211,7 @@ TEST(SendTabToSelfEntry, IsExpired) {
 // Tests that the send tab to self entry rejects strings that are not utf8.
 TEST(SendTabToSelfEntry, InvalidStrings) {
   const std::array<char16_t, 1> term = {u'\uFDD1'};
-  std::string invalid_utf8;
-  base::UTF16ToUTF8(&term[0], 1, &invalid_utf8);
+  std::string invalid_utf8 = base::UTF16ToUTF8(base::as_string_view(term));
 
   const SendTabToSelfEntry invalid1(
       "1", GURL("http://example.com"), invalid_utf8, base::Time::FromTimeT(10),

@@ -10,12 +10,16 @@
 #include <set>
 #include <vector>
 
+#include "base/check.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "components/offline_pages/core/auto_fetch.h"
 #include "components/offline_pages/core/background/request_coordinator.h"
 #include "components/offline_pages/core/client_id.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "url/gurl.h"
+
+class Profile;
 
 namespace content {
 class WebContents;
@@ -23,8 +27,27 @@ class NavigationHandle;
 }  // namespace content
 
 namespace offline_pages {
+class AutoFetchPageLoadWatcher;
 class SavePageRequest;
 class RequestCoordinator;
+
+// Observes a WebContents to relay navigation events to
+// AutoFetchPageLoadWatcher.
+class AutoFetchNavigationObserver : public content::WebContentsObserver {
+ public:
+  explicit AutoFetchNavigationObserver(content::WebContents* web_contents);
+  AutoFetchNavigationObserver(const AutoFetchNavigationObserver&) = delete;
+  AutoFetchNavigationObserver& operator=(const AutoFetchNavigationObserver&) =
+      delete;
+  ~AutoFetchNavigationObserver() override;
+
+  // content::WebContentsObserver implementation.
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
+
+ private:
+  raw_ptr<AutoFetchPageLoadWatcher> page_load_watcher_;
+};
 
 // Manages showing the in-progress notification.
 class AutoFetchNotifier {
@@ -49,16 +72,15 @@ struct TabInfo {
   GURL current_url;
 };
 
-// Interface to Android tabs used by |AutoFetchPageLoadWatcher|. This is the
-// real implementation, methods are virtual for testing only.
+// Interface to Android tabs used by |AutoFetchPageLoadWatcher|.
 class AndroidTabFinder {
  public:
-  virtual ~AndroidTabFinder();
+  virtual ~AndroidTabFinder() = default;
   // Returns a mapping of Android tab ID to TabInfo.
   virtual std::map<int, TabInfo> FindAndroidTabs(
-      std::vector<int> android_tab_ids);
+      std::vector<int> android_tab_ids) = 0;
   virtual std::optional<TabInfo> FindNavigationTab(
-      content::WebContents* web_contents);
+      content::WebContents* web_contents) = 0;
 };
 
 // Information about an auto-fetch |SavePageRequest|.
@@ -155,29 +177,30 @@ class AutoFetchPageLoadWatcher
     : public RequestCoordinator::Observer,
       public auto_fetch_internal::InternalImpl::Delegate {
  public:
-  using AndroidTabFinder = auto_fetch_internal::AndroidTabFinder;
+  static std::unique_ptr<AutoFetchNavigationObserver>
+  MaybeCreateNavigationObserver(content::WebContents* web_contents);
 
-  static void CreateForWebContents(content::WebContents* web_contents);
-
-  AutoFetchPageLoadWatcher(AutoFetchNotifier* notifier,
-                           RequestCoordinator* request_coordinator,
-                           std::unique_ptr<AndroidTabFinder> tab_finder);
+  AutoFetchPageLoadWatcher(Profile* profile,
+                           AutoFetchNotifier* notifier,
+                           RequestCoordinator* request_coordinator);
 
   AutoFetchPageLoadWatcher(const AutoFetchPageLoadWatcher&) = delete;
   AutoFetchPageLoadWatcher& operator=(const AutoFetchPageLoadWatcher&) = delete;
 
   ~AutoFetchPageLoadWatcher() override;
 
+  void Shutdown();
+
   // Called when navigation completes, even on errors. This is only called
   // once per navigation.
   void HandleNavigation(content::NavigationHandle* navigation_handle);
 
   std::vector<GURL>& loaded_pages_for_testing() {
-    return impl_.pages_loaded_before_observer_ready_for_testing();
+    CHECK(impl_);
+    return impl_->pages_loaded_before_observer_ready_for_testing();
   }
 
  private:
-  class NavigationObserver;
   class TabWatcher;
   base::WeakPtr<AutoFetchPageLoadWatcher> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
@@ -199,7 +222,7 @@ class AutoFetchPageLoadWatcher
                          int64_t received_bytes) override {}
 
   raw_ptr<RequestCoordinator> request_coordinator_;  // Not owned.
-  auto_fetch_internal::InternalImpl impl_;
+  std::unique_ptr<auto_fetch_internal::InternalImpl> impl_;
   std::unique_ptr<TabWatcher> tab_watcher_;
   base::WeakPtrFactory<AutoFetchPageLoadWatcher> weak_ptr_factory_{this};
 };

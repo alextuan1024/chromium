@@ -177,6 +177,7 @@ void PdfInfoBarController::RegisterInfoBarSpec() {
                                ? omnibox::kChromeProductIcon
                                : omnibox::kProductChromeRefreshOldIcon)
           .SetScope(infobars::InfoBarScope::kTab)
+          .SetIsPromotional(true)
           .AddOkButton(l10n_util::GetStringUTF16(
                            IDS_DEFAULT_BROWSER_INFOBAR_OK_BUTTON_LABEL),
                        base::BindRepeating(
@@ -197,8 +198,10 @@ void PdfInfoBarController::RegisterInfoBarSpec() {
                         PdfInfoBarUserInteraction::kIgnored);
                     break;
                   case infobars::InfoBarResult::kCancelled:
+                  case infobars::InfoBarResult::kExtraButtonPressed:
                   case infobars::InfoBarResult::kLinkClicked:
-                    // The PDF infobar has no cancel button and no links.
+                    // The PDF infobar has no cancel or extra button and no
+                    // links.
                     break;
                 }
               }))
@@ -280,8 +283,9 @@ void PdfInfoBarController::MaybeShowInfoBar() {
 
 void PdfInfoBarController::MaybeShowInfoBarCallback(
     shell_integration::DefaultWebClientState default_state) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(base::FeatureList::IsEnabled(features::kPdfInfoBar));
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(base::FeatureList::IsEnabled(features::kPdfInfoBar),
+        base::NotFatalUntil::M162);
 
   // If Chrome is already the default PDF viewer, do nothing.
   if (default_state == shell_integration::DefaultWebClientState::IS_DEFAULT ||
@@ -297,6 +301,18 @@ void PdfInfoBarController::MaybeShowInfoBarCallback(
   // a policy.
   if (IsDefaultBrowserPolicyControlled()) {
     return;
+  }
+
+  // Don't show the infobar if promotions are disabled by policy. This only
+  // needs to be checked if the infobar isn't migrated to the new infobar code
+  // (where registering it as a 'promotional' infobar causes this to be checked
+  // automatically).
+  if (!infobars::IsInfoBarMigrated(
+          infobars::InfoBarDelegate::PDF_INFOBAR_DELEGATE)) {
+    const auto* local_state = g_browser_process->local_state();
+    if (local_state && !local_state->GetBoolean(prefs::kPromotionsEnabled)) {
+      return;
+    }
   }
 
   // Don't show the infobar if it's already showing.

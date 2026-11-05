@@ -18,6 +18,7 @@
 
 namespace blink {
 class DOMViewTransition;
+class ShadowRoot;
 
 class CORE_EXPORT ViewTransitionSupplement
     : public GarbageCollected<ViewTransitionSupplement>,
@@ -49,6 +50,7 @@ class CORE_EXPORT ViewTransitionSupplement
       Element*,
       V8ViewTransitionCallback* callback,
       const std::optional<Vector<String>>& types,
+      const HeapVector<Member<ShadowRoot>>* shadow_roots,
       ExceptionState&);
 
   // Creates a ViewTransition to cache the state of a Document before a
@@ -86,7 +88,7 @@ class CORE_EXPORT ViewTransitionSupplement
   ~ViewTransitionSupplement() override;
 
   // GC functionality.
-  void Trace(Visitor* visitor) const;
+  void Trace(Visitor* visitor) const override;
 
   // ViewTransition::Delegate implementation.
   void AddPendingRequest(std::unique_ptr<ViewTransitionRequest>) override;
@@ -133,10 +135,12 @@ class CORE_EXPORT ViewTransitionSupplement
   void InitializeResourceIdSequence(uint32_t next_local_id);
 
  private:
-  DOMViewTransition* StartTransition(Element& element,
-                                     V8ViewTransitionCallback* callback,
-                                     const std::optional<Vector<String>>& types,
-                                     ExceptionState& exception_state);
+  DOMViewTransition* StartTransition(
+      Element& element,
+      V8ViewTransitionCallback* callback,
+      const std::optional<Vector<String>>& types,
+      const HeapVector<Member<ShadowRoot>>* shadow_roots,
+      ExceptionState& exception_state);
   void StartTransition(Document& document,
                        const blink::ViewTransitionToken& transition_token,
                        mojom::blink::PageSwapEventParamsPtr,
@@ -149,6 +153,11 @@ class CORE_EXPORT ViewTransitionSupplement
   void SendOptInStatusToHost();
 
   bool HasActiveCaptures() const;
+  // Advances captured transitions to their DOM callback phase if no other
+  // captures are in flight. Advancing runs script (the DOM callbacks), so if
+  // script is not allowed (e.g. because we're in the middle of the rendering
+  // lifecycle), this posts a task to do so instead.
+  void MaybeAdvanceCapturedTransitions();
   void AdvanceCapturedTransitions();
 
   // The document we belong to.
@@ -187,6 +196,8 @@ class CORE_EXPORT ViewTransitionSupplement
   // DOM callback is deferred until all in flight captures are complete in order
   // to trigger the DOM callbacks in creation order.
   HeapVector<Member<ViewTransition>> captured_transitions_;
+  // True if a task has been posted to advance captured transitions.
+  bool advance_captured_transitions_scheduled_ = false;
 
   // This allow deferring starting a navigation transition until some conditions
   // are met, such as existing transitions are finished.

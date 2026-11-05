@@ -7,8 +7,10 @@
 #import <memory>
 #import <optional>
 
+#import "base/check.h"
 #import "base/files/file_path.h"
 #import "base/files/file_util.h"
+#import "base/functional/callback_helpers.h"
 #import "base/json/json_reader.h"
 #import "base/json/json_writer.h"
 #import "base/path_service.h"
@@ -22,6 +24,7 @@
 #import "components/policy/core/browser/url_list/url_blocklist_manager.h"
 #import "components/policy/core/common/cloud/cloud_policy_client.h"
 #import "components/policy/core/common/cloud/cloud_policy_core.h"
+#import "components/policy/core/common/cloud/cloud_policy_service.h"
 #import "components/policy/core/common/cloud/cloud_policy_store.h"
 #import "components/policy/core/common/cloud/device_management_service.h"
 #import "components/policy/core/common/cloud/machine_level_user_cloud_policy_manager.h"
@@ -106,6 +109,14 @@ void MergePolicyValue(NSString* jsonValue,
                       std::move(value), /*external_data_fetcher=*/nullptr);
   // Update the policy.
   platformProvider->UpdatePolicy(std::move(mutablePolicyBundle));
+}
+
+// Returns the core of the user cloud policy manager of the current Profile.
+policy::CloudPolicyCore* GetUserPolicyCoreInCurrentProfile() {
+  policy::UserCloudPolicyManager* manager =
+      chrome_test_util::GetOriginalProfile()->GetUserCloudPolicyManager();
+  CHECK(manager);
+  return manager->core();
 }
 
 }  // namespace
@@ -205,6 +216,11 @@ void MergePolicyValue(NSString* jsonValue,
   policy::CloudPolicyStore* store = manager->core()->store();
   DCHECK(store);
 
+  if (!domain) {
+    store->set_policy_data_for_testing(nullptr);
+    return;
+  }
+
   auto policy_data = std::make_unique<enterprise_management::PolicyData>();
   policy_data->set_managed_by(base::SysNSStringToUTF8(domain));
   store->set_policy_data_for_testing(std::move(policy_data));
@@ -285,6 +301,24 @@ void MergePolicyValue(NSString* jsonValue,
       base::SysNSStringToUTF8(policyName), base::Value::Type::INTEGER);
 
   return value && value->GetInt() == expectedValue;
+}
+
++ (BOOL)refreshUserPolicyInCurrentProfile {
+  policy::CloudPolicyCore* core = GetUserPolicyCoreInCurrentProfile();
+  if (!core->client() || !core->client()->is_registered()) {
+    return NO;
+  }
+  core->service()->RefreshPolicy(base::DoNothing(),
+                                 policy::PolicyFetchReason::kTest);
+  return YES;
+}
+
++ (NSInteger)userPolicyStoreStatusInCurrentProfile {
+  return GetUserPolicyCoreInCurrentProfile()->store()->status();
+}
+
++ (NSInteger)userPolicyValidationStatusInCurrentProfile {
+  return GetUserPolicyCoreInCurrentProfile()->store()->validation_status();
 }
 
 + (void)logErrorPolicy:(NSString*)message {

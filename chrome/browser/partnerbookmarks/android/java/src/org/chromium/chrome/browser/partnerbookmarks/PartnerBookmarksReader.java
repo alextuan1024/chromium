@@ -132,6 +132,9 @@ public class PartnerBookmarksReader {
                     }
                     mFinishedResolvingBrowserCustomizations = true;
                     maybeMarkCreationComplete();
+                    synchronized (mProgressLock) {
+                        if (canShutdown()) shutDown();
+                    }
                 });
     }
 
@@ -439,8 +442,8 @@ public class PartnerBookmarksReader {
 
         long addPartnerBookmark(
                 long nativePartnerBookmarksReader,
-                @Nullable String url,
-                String title,
+                @JniType("std::u16string") @Nullable String url,
+                @JniType("std::u16string") String title,
                 boolean isFolder,
                 long parentId,
                 byte @Nullable [] favicon,

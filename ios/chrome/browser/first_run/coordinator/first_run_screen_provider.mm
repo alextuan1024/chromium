@@ -4,17 +4,21 @@
 
 #import "ios/chrome/browser/first_run/coordinator/first_run_screen_provider.h"
 
-#import "base/feature_list.h"
+#import <utility>
+#import <vector>
+
 #import "base/notreached.h"
-#import "components/regional_capabilities/regional_capabilities_service.h"
+#import "base/values.h"
+#import "components/prefs/pref_service.h"
 #import "ios/chrome/app/tests_hook.h"
 #import "ios/chrome/browser/first_run/public/features.h"
-#import "ios/chrome/browser/regional_capabilities/model/regional_capabilities_service_factory.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_provider+protected.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_type.h"
 #import "ios/chrome/browser/search_engine_choice/model/search_engine_choice_util.h"
 #import "ios/chrome/browser/search_engine_choice/ui/search_engine_choice_ui_util.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
+#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
@@ -22,106 +26,135 @@
 
 namespace {
 
+// Returns true if `screen_type` should be skipped during First Run and deferred
+// for post-First Run presentation under `ablation_type`.
+bool ShouldSkipAndDeferScreen(
+    ScreenType screen_type,
+    first_run::FREAblationVariationType ablation_type) {
+  using enum ScreenType;
+  switch (ablation_type) {
+    case first_run::FREAblationVariationType::kSkipHistorySync:
+      return screen_type == kHistorySync;
+    case first_run::FREAblationVariationType::kSkipAllExceptSignInAndChoice:
+      switch (screen_type) {
+        case kSignIn:
+        case kChoice:
+        case kStepsCompleted:
+          return false;
+        case kHistorySync:
+        case kDefaultBrowserPromo:
+        case kBestFeatures:
+        case kLensInteractivePromo:
+        case kLensAnimatedPromo:
+          return true;
+        case kSyncedSetUp:
+        case kGuidedTour:
+        case kSafariImport:
+          NOTREACHED();
+      }
+  }
+}
+
+// Filters `screens` according to the active `kFREAblation` variation and
+// persists skipped screens in sequence order to `kFirstRunDeferredScreens`.
+void ApplyFREAblationIfNeeded(std::vector<ScreenType>& screens) {
+  if (!first_run::IsFREAblationEnabled()) {
+    return;
+  }
+  first_run::FREAblationVariationType ablation_type =
+      first_run::GetFREAblationVariationType();
+
+  std::vector<ScreenType> remaining_screens;
+  remaining_screens.reserve(screens.size());
+  base::ListValue deferred_screens;
+  for (ScreenType screen_type : screens) {
+    if (ShouldSkipAndDeferScreen(screen_type, ablation_type)) {
+      deferred_screens.Append(static_cast<int>(screen_type));
+    } else {
+      remaining_screens.push_back(screen_type);
+    }
+  }
+
+  screens = std::move(remaining_screens);
+  PrefService* local_state = GetApplicationContext()->GetLocalState();
+  if (local_state) {
+    local_state->SetList(prefs::kFirstRunDeferredScreens,
+                         std::move(deferred_screens));
+    // TODO(crbug.com/548482305): Register the deferred First Run promo with
+    // `PromosManager` here once `Promo::DeferredFirstRun` is added.
+  }
+}
+
 // Helper function to add the Best Features, Default Browser Promo, and Address
-// Bar screens when kUpdatedFirstRunSequence is disabled.
-void AddDBPromoAndBestFeaturesScreens(NSMutableArray* screens) {
+// Bar screens.
+void AddDBPromoAndBestFeaturesScreens(std::vector<ScreenType>& screens) {
   using enum first_run::BestFeaturesScreenVariationType;
   first_run::BestFeaturesScreenVariationType bestFeaturesType =
       first_run::GetBestFeaturesScreenVariationType();
   switch (bestFeaturesType) {
     case kGeneralScreenAfterDBPromo:
     case kGeneralScreenWithPasswordItemAfterDBPromo:
-    case kShoppingUsersWithFallbackAfterDBPromo:
     case kSignedInUsersOnlyAfterDBPromo:
-      [screens addObject:@(kDefaultBrowserPromo)];
-      [screens addObject:@(kBestFeatures)];
+      screens.push_back(ScreenType::kDefaultBrowserPromo);
+      screens.push_back(ScreenType::kBestFeatures);
       break;
     case kGeneralScreenBeforeDBPromo:
-      [screens addObject:@(kBestFeatures)];
-      [screens addObject:@(kDefaultBrowserPromo)];
+      screens.push_back(ScreenType::kBestFeatures);
+      screens.push_back(ScreenType::kDefaultBrowserPromo);
       break;
     case kAddressBarPromoInsteadOfBestFeaturesScreen:
       // TODO(crbug.com/402429544): Add address bar promo screen.
-      [screens addObject:@(kDefaultBrowserPromo)];
+      screens.push_back(ScreenType::kDefaultBrowserPromo);
       break;
     case kDisabled:
     case kBestOfApp:
-      [screens addObject:@(kDefaultBrowserPromo)];
+      screens.push_back(ScreenType::kDefaultBrowserPromo);
       break;
   }
 }
 
-NSArray* FirstRunScreenSequenceForProfile(ProfileIOS* profile) {
-  NSMutableArray* screens = [NSMutableArray array];
+std::vector<ScreenType> FirstRunScreenSequenceForProfile(ProfileIOS* profile) {
+  std::vector<ScreenType> screens;
+
+  // Clear any stale deferred screens from an interrupted First Run attempt
+  // without querying `base::FeatureList`.
+  if (PrefService* local_state = GetApplicationContext()->GetLocalState()) {
+    local_state->ClearPref(prefs::kFirstRunDeferredScreens);
+  }
 
   BOOL shouldDisplayChoiceScreen = ShouldDisplaySearchEngineChoiceScreen(
       *profile, /*is_first_run_entrypoint=*/true,
       /*app_started_via_external_intent=*/false);
 
-  first_run::UpdatedFRESequenceVariationType variationType =
-      shouldDisplayChoiceScreen
-          ? first_run::UpdatedFRESequenceVariationType::kDisabled
-          : first_run::GetUpdatedFRESequenceVariation();
-
   BOOL hasIdentities =
       ChromeAccountManagerServiceFactory::GetForProfile(profile)
           ->HasIdentities();
 
-  switch (variationType) {
-    case first_run::UpdatedFRESequenceVariationType::kDisabled:
-      [screens addObject:@(kSignIn)];
-      [screens addObject:@(kHistorySync)];
-      if (shouldDisplayChoiceScreen) {
-        [screens addObject:@(kChoice)];
-      }
-      // Only add best features screen if feature
-      // kUpdatedFirstRunSequence is disabled for now.
-      AddDBPromoAndBestFeaturesScreens(screens);
-      break;
-    case first_run::UpdatedFRESequenceVariationType::kDBPromoFirst:
-      [screens addObject:@(kDefaultBrowserPromo)];
-      [screens addObject:@(kSignIn)];
-      [screens addObject:@(kHistorySync)];
-      break;
-    case first_run::UpdatedFRESequenceVariationType::kRemoveSignInSync:
-      if (hasIdentities) {
-        [screens addObject:@(kSignIn)];
-        [screens addObject:@(kHistorySync)];
-      }
-      [screens addObject:@(kDefaultBrowserPromo)];
-      break;
-    case first_run::UpdatedFRESequenceVariationType::
-        kDBPromoFirstAndRemoveSignInSync:
-      [screens addObject:@(kDefaultBrowserPromo)];
-      if (hasIdentities) {
-        [screens addObject:@(kSignIn)];
-        [screens addObject:@(kHistorySync)];
-      }
-      break;
+  if (hasIdentities || shouldDisplayChoiceScreen) {
+    screens.push_back(ScreenType::kSignIn);
+    screens.push_back(ScreenType::kHistorySync);
+    if (shouldDisplayChoiceScreen) {
+      screens.push_back(ScreenType::kChoice);
+    }
   }
+  AddDBPromoAndBestFeaturesScreens(screens);
 
   if (IsBestOfAppLensInteractivePromoEnabled()) {
-    [screens addObject:@(kLensInteractivePromo)];
+    screens.push_back(ScreenType::kLensInteractivePromo);
   } else if (IsBestOfAppLensAnimatedPromoEnabled()) {
-    [screens addObject:@(kLensAnimatedPromo)];
+    screens.push_back(ScreenType::kLensAnimatedPromo);
   } else if (IsBestOfAppBestFeaturesEnabled()) {
-    [screens addObject:@(kBestFeatures)];
+    screens.push_back(ScreenType::kBestFeatures);
   }
 
-  // Conditionally remove the Default Browser promo if it's skipped and there
-  // is a sign-in screen in the sequence. If the sign-in screen is removed,
-  // do not remove the DB screen. At least one of these two screens must be
-  // shown because we need the TOS disclaimer to be displayed.
-  regional_capabilities::RegionalCapabilitiesService*
-      regional_capabilities_service =
-          ios::RegionalCapabilitiesServiceFactory::GetForProfile(profile);
-  if (first_run::IsSkipDefaultBrowserPromoInFirstRunEnabled(
-          regional_capabilities_service->IsInEeaCountry()) &&
-      [screens containsObject:@(kSignIn)]) {
-    [screens removeObject:@(kDefaultBrowserPromo)];
+  // Only evaluate `kFREAblation` when the device has at least one identity so
+  // `sticky_starts_active` Finch enrollment is restricted to users who see the
+  // Sign-in screen (and accept Terms of Service there).
+  if (hasIdentities) {
+    ApplyFREAblationIfNeeded(screens);
   }
 
-  [screens addObject:@(kStepsCompleted)];
+  screens.push_back(ScreenType::kStepsCompleted);
   return screens;
 }
 

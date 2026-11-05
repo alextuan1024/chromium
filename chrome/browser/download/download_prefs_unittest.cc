@@ -7,7 +7,6 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/values_util.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/download/download_prompt_status.h"
@@ -16,7 +15,7 @@
 #include "components/download/public/common/download_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
@@ -34,6 +33,7 @@
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/test/base/testing_browser_process.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
 #include "chromeos/ash/components/disks/disk_mount_manager.h"
 #include "chromeos/ash/components/disks/fake_disk_mount_manager.h"
@@ -42,6 +42,9 @@
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #endif
 
@@ -62,7 +65,6 @@ TEST(DownloadPrefsTest, Prerequisites) {
 // Verifies prefs are registered correctly.
 TEST(DownloadPrefsTest, RegisterPrefs) {
   content::BrowserTaskEnvironment task_environment_;
-  base::HistogramTester histogram_tester;
 
   // Download prefs are registered when creating the profile.
   TestingProfile profile;
@@ -70,8 +72,6 @@ TEST(DownloadPrefsTest, RegisterPrefs) {
 
 #if BUILDFLAG(IS_ANDROID)
   // Download prompt prefs should be registered correctly.
-  histogram_tester.ExpectBucketCount("MobileDownload.DownloadPromptStatus",
-                                     DownloadPromptStatus::SHOW_INITIAL, 1);
   int prompt_status = profile.GetTestingPrefService()->GetInteger(
       prefs::kPromptForDownloadAndroid);
   EXPECT_EQ(prompt_status,
@@ -662,6 +662,38 @@ TEST(DownloadPrefsTest, DefaultDownloadPathPrefMigrationFromOldFormat) {
           prefs::kDownloadDefaultDirectory),
       base::FilePath("/home/chronos/u-0123456789abcdef/MyFiles/Downloads"));
 }
+
+// Ash internal Profiles, such as the sign-in Profile, are not associated with
+// any user. DownloadPrefs always uses the legacy default download directory
+// under the Profile directory for them, for backward compatibility.
+TEST(DownloadPrefsTest, AshInternalProfile) {
+  content::BrowserTaskEnvironment task_environment;
+  const base::FilePath profile_path =
+      base::FilePath("/home/chronos")
+          .Append(ash::kSigninBrowserContextBaseName);
+  TestingProfile profile(profile_path);
+  ASSERT_FALSE(ash::IsUserBrowserContext(&profile));
+  base::test::ScopedRunningOnChromeOS running_on_chromeos;
+
+  DownloadPrefs prefs(&profile);
+  const base::FilePath default_dir =
+      profile_path.Append("MyFiles").Append("Downloads");
+  EXPECT_EQ(default_dir, prefs.GetDefaultDownloadDirectoryForProfile());
+  EXPECT_EQ(default_dir, prefs.DownloadPath());
+  EXPECT_EQ(default_dir, prefs.SaveFilePath());
+
+  // Any other paths fall back to the default directory.
+  for (const base::FilePath& path :
+       {default_dir.Append("testdir"), base::FilePath("testdir"),
+        base::FilePath("/home/chronos"),
+        ash::CrosDisksClient::GetRemovableDiskMountPoint().Append(
+            "MY_USB_KEY")}) {
+    SCOPED_TRACE(path);
+    prefs.SetDownloadPath(path);
+    EXPECT_EQ(default_dir, prefs.DownloadPath());
+    EXPECT_EQ(default_dir, prefs.SaveFilePath());
+  }
+}
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
@@ -682,6 +714,48 @@ TEST(DownloadPrefsTest, ManagedPromptForDownload) {
   profile.GetTestingPrefService()->SetManagedPref(
       prefs::kPromptForDownload, std::make_unique<base::Value>(false));
   EXPECT_FALSE(prefs.PromptForDownload());
+}
+
+TEST(DownloadPrefsTest, PromptForDownload_AndroidDesktopSystemFileDialog) {
+  content::BrowserTaskEnvironment task_environment;
+  base::android::device_info::set_is_desktop_for_testing(true);
+  base::ScopedClosureRunner reset_desktop(base::BindOnce(
+      &base::android::device_info::reset_is_desktop_for_testing));
+  base::test::ScopedFeatureList scoped_feature_list(
+      download::features::kEnableDownloadSaveAsSystemFileDialog);
+
+  TestingProfile profile;
+  DownloadPrefs prefs(&profile);
+
+  // Even though kPromptForDownloadAndroid defaults to SHOW_INITIAL,
+  // PromptForDownload() should default to false (from
+  // prefs::kPromptForDownload).
+  EXPECT_FALSE(prefs.PromptForDownload());
+
+  profile.GetPrefs()->SetBoolean(prefs::kPromptForDownload, true);
+  profile.GetPrefs()->SetInteger(
+      prefs::kPromptForDownloadAndroid,
+      static_cast<int>(DownloadPromptStatus::DONT_SHOW));
+  EXPECT_TRUE(prefs.PromptForDownload());
+
+  profile.GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
+  profile.GetPrefs()->SetInteger(
+      prefs::kPromptForDownloadAndroid,
+      static_cast<int>(DownloadPromptStatus::SHOW_PREFERENCE));
+  EXPECT_FALSE(prefs.PromptForDownload());
+
+  // When the feature is disabled on desktop, fallback to
+  // kPromptForDownloadAndroid.
+  {
+    base::test::ScopedFeatureList disabled_feature_list;
+    disabled_feature_list.InitAndDisableFeature(
+        download::features::kEnableDownloadSaveAsSystemFileDialog);
+    EXPECT_TRUE(prefs.PromptForDownload());
+  }
+
+  // When not on desktop, fallback to kPromptForDownloadAndroid.
+  base::android::device_info::set_is_desktop_for_testing(false);
+  EXPECT_TRUE(prefs.PromptForDownload());
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 

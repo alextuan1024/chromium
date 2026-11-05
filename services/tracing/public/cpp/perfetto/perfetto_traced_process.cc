@@ -197,6 +197,11 @@ PerfettoTracedProcess& PerfettoTracedProcess::Get() {
   return *g_instance;
 }
 
+// static
+bool PerfettoTracedProcess::HasInstance() {
+  return g_instance != nullptr;
+}
+
 PerfettoTracedProcess::PerfettoTracedProcess(bool will_trace_thread_restart)
     : tracing_backend_(std::make_unique<PerfettoTracingBackend>()),
       trace_process_thread_(
@@ -278,15 +283,19 @@ void PerfettoTracedProcess::DeferOrConnectProducerSocket(
 }
 #endif  // BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_ANDROID)
 
-void PerfettoTracedProcess::SetupClientLibrary(bool enable_consumer,
-                                               bool enable_system_backend) {
+void PerfettoTracedProcess::SetupClientLibrary(
+    bool enable_consumer,
+    bool enable_system_backend,
+    bool defer_thread_pool_data_sources) {
   perfetto::TracingInitArgs init_args;
   init_args.platform = &base::tracing::PerfettoPlatform::Get();
   init_args.custom_backend = tracing_backend_.get();
   init_args.backends |= perfetto::kCustomBackend;
   init_args.shmem_batch_commits_duration_ms = 1000;
   init_args.shmem_size_hint_kb =
-      features::kPerfettoSharedMemorySizeBytes.Get() / 1024;
+      (enable_consumer ? features::kPerfettoBrowserSharedMemorySizeBytes.Get()
+                       : features::kPerfettoSharedMemorySizeBytes.Get()) /
+      1024;
   init_args.shmem_direct_patching_enabled = true;
   init_args.use_monotonic_clock = true;
   init_args.disallow_merging_with_system_tracks = true;
@@ -314,7 +323,8 @@ void PerfettoTracedProcess::SetupClientLibrary(bool enable_consumer,
   base::UmaHistogramTimes("Tracing.Init.Perfetto.Initialize",
                           base::TimeTicks::Now() - initialize_start);
 
-  RegisterCommonPerfettoDataSources(enable_consumer);
+  RegisterCommonPerfettoDataSources(enable_consumer,
+                                    defer_thread_pool_data_sources);
 }
 
 void PerfettoTracedProcess::SetAllowSystemTracingConsumerCallback(

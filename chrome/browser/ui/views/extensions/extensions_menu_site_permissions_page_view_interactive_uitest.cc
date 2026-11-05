@@ -13,12 +13,13 @@
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_interactive_uitest.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/test/permissions_manager_waiter.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace {
 
@@ -60,7 +61,8 @@ ExtensionsMenuSitePermissionsPageViewInteractiveUITest::
     ExtensionsMenuSitePermissionsPageViewInteractiveUITest() {
   scoped_feature_list_.InitWithFeatures(
       {extensions_features::kExtensionsMenuAccessControl},
-      {features::kExtensionsPinnedByDefault});
+      {features::kExtensionsPinnedByDefault,
+       features::kWebUIExtensionsContainer});
 }
 
 void ExtensionsMenuSitePermissionsPageViewInteractiveUITest::
@@ -180,7 +182,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuSitePermissionsPageViewInteractiveUITest,
   // OnPageNavigation.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL("chrome://newtab"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Verify that the site permissions page is no longer opened.

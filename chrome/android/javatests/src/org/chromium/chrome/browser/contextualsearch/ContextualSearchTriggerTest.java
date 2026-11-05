@@ -143,8 +143,8 @@ public class ContextualSearchTriggerTest extends ContextualSearchInstrumentation
         waitForPanelToPeek();
         assertLoadedLowPriorityUrl();
         scrollBasePage();
-        assertPanelClosedOrUndefined();
-        Assert.assertTrue(TextUtils.isEmpty(mSelectionController.getSelectedText()));
+        waitForPanelToCloseAndSelectionEmpty();
+        Assert.assertTrue(TextUtils.isEmpty(getSelectedText()));
     }
 
     /** Tests that a Tap gesture followed by tapping an invalid character doesn't select. */
@@ -183,8 +183,9 @@ public class ContextualSearchTriggerTest extends ContextualSearchInstrumentation
         Assert.assertEquals("States", getSelectedText());
         waitForPanelToPeek();
         clickNode("states-far");
-        waitForPanelToClose();
-        Assert.assertNull(getSelectedText());
+        waitForPanelToCloseAndSelectionEmpty();
+        Assert.assertTrue(TextUtils.isEmpty(getSelectedText()));
+        waitToPreventDoubleTapRecognition();
         clickNode("states-far");
         waitForPanelToPeek();
         Assert.assertEquals("States", getSelectedText());
@@ -229,7 +230,7 @@ public class ContextualSearchTriggerTest extends ContextualSearchInstrumentation
         longPressNode("intelligence");
         waitForPanelToPeek();
         scrollBasePage();
-        assertPanelClosedOrUndefined();
+        waitForPanelToClose();
         Assert.assertEquals("Intelligence", getSelectedText());
         assertLoadedNoUrl();
     }

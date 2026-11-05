@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/tabs/browser_tab_strip_controller.h"
 
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/tabs/features.h"
@@ -18,7 +19,10 @@
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/tab_groups/tab_group_color.h"
 #include "components/tab_groups/tab_group_id.h"
+#include "components/tab_groups/tab_group_visual_data.h"
+#include "components/tabs/public/tab_group.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/event.h"
@@ -37,7 +41,9 @@ constexpr char kHistogramName[] = "Tab.GroupingTransition2";
 class BrowserTabStripControllerTestBase : public InProcessBrowserTest {
  public:
   BrowserTabStripControllerTestBase()
-      : task_runner_(base::MakeRefCounted<base::TestMockTimeTaskRunner>()) {}
+      : task_runner_(base::MakeRefCounted<base::TestMockTimeTaskRunner>()) {
+    scoped_feature_list_.InitAndDisableFeature(tabs::kTabStripUnification);
+  }
 
   void SetUpOnMainThread() override {
     tabs::TabCreationMetricsController::SetTaskRunnerForTesting(task_runner_);
@@ -68,10 +74,13 @@ class BrowserTabStripControllerTestBase : public InProcessBrowserTest {
     // Make the observer
     tab_groups::TabGroupSyncServiceInitializedObserver tgss_observer{
         tgss_service};
-    tgss_observer.Wait();
+    ASSERT_TRUE(tgss_observer.Wait());
   }
 
   scoped_refptr<base::TestMockTimeTaskRunner> task_runner_;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 using BrowserTabStripControllerTest = BrowserTabStripControllerTestBase;
@@ -273,6 +282,21 @@ class BrowserTabStripControllerTestFocusedGroup
   }
   ~BrowserTabStripControllerTestFocusedGroup() override = default;
 
+ protected:
+  // Returns visuals for `group` with a new title and a different color.
+  tab_groups::TabGroupVisualData ChangedVisuals(
+      const tab_groups::TabGroupId& group) {
+    const tab_groups::TabGroupColorId current_color = tab_strip_model()
+                                                          ->group_model()
+                                                          ->GetTabGroup(group)
+                                                          ->visual_data()
+                                                          ->color();
+    return tab_groups::TabGroupVisualData(
+        u"Promoted", current_color == tab_groups::TabGroupColorId::kRed
+                         ? tab_groups::TabGroupColorId::kBlue
+                         : tab_groups::TabGroupColorId::kRed);
+  }
+
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
 };
@@ -294,15 +318,15 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
   EXPECT_EQ(controller()->GetFocusedGroup(), std::nullopt);
 
   // Focus on group1.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   EXPECT_EQ(controller()->GetFocusedGroup(), group1);
 
   // Focus on group2.
-  controller()->SetFocusedGroup(group2);
+  controller()->EnterFocusMode(group2);
   EXPECT_EQ(controller()->GetFocusedGroup(), group2);
 
   // Unset focused group.
-  controller()->SetFocusedGroup(std::nullopt);
+  controller()->ExitFocusMode();
   EXPECT_EQ(controller()->GetFocusedGroup(), std::nullopt);
 }
 
@@ -314,7 +338,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
   const tab_groups::TabGroupId group = tab_strip_model()->AddToNewGroup({0, 1});
 
   // Focus on the group.
-  controller()->SetFocusedGroup(group);
+  controller()->EnterFocusMode(group);
   EXPECT_EQ(controller()->GetFocusedGroup(), group);
 
   // Delete the group by ungrouping all its tabs.
@@ -336,37 +360,89 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
   const tab_groups::TabGroupId group = tab_strip_model()->AddToNewGroup({0, 1});
 
   // Focus on the group.
-  controller()->SetFocusedGroup(group);
+  controller()->EnterFocusMode(group);
   EXPECT_NE(widget->user_color_override(), std::nullopt);
 
   // Unset focused group.
-  controller()->SetFocusedGroup(std::nullopt);
+  controller()->ExitFocusMode();
   EXPECT_EQ(widget->user_color_override(), std::nullopt);
 
   // Focus on the group again.
-  controller()->SetFocusedGroup(group);
+  controller()->EnterFocusMode(group);
   EXPECT_NE(widget->user_color_override(), std::nullopt);
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
-                       TemporaryGroupDoesNotUpdateTheme) {
+                       EphemeralGroupDoesNotUpdateTheme) {
   BrowserWidget* widget =
       BrowserView::GetBrowserViewForBrowser(browser())->browser_widget();
   EXPECT_EQ(widget->user_color_override(), std::nullopt);
 
-  // Create a tab and a temporary group.
+  // Create a tab and an ephemeral group.
   controller()->CreateNewTab(NewTabTypes::kNewTabCommand);
   EXPECT_EQ(tab_strip_model()->count(), 2);
-  const tab_groups::TabGroupId temp_group =
-      tab_strip_model()->AddToNewGroup({0, 1}, /*is_temporary=*/true);
-
-  // Focus on the temporary group. The browser itself should not theme.
-  controller()->SetFocusedGroup(temp_group);
+  // Focus on an ephemeral group. The browser itself should not theme.
+  tab_strip_model()->EnterFocusMode({0, 1});
   EXPECT_EQ(widget->user_color_override(), std::nullopt);
 
   // Unset focused group.
-  controller()->SetFocusedGroup(std::nullopt);
+  controller()->ExitFocusMode();
   EXPECT_EQ(widget->user_color_override(), std::nullopt);
+}
+
+// Promoting the focused ephemeral group turns it into a regular focused group
+// without a focus change, so the browser must start theming.
+IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
+                       PromotingEphemeralGroupUpdatesTheme) {
+  BrowserWidget* widget =
+      BrowserView::GetBrowserViewForBrowser(browser())->browser_widget();
+  controller()->CreateNewTab(NewTabTypes::kNewTabCommand);
+  EXPECT_EQ(tab_strip_model()->count(), 2);
+  const tab_groups::TabGroupId group =
+      tab_strip_model()->EnterFocusMode({0, 1});
+  EXPECT_EQ(widget->user_color_override(), std::nullopt);
+
+  tab_strip_model()->PromoteEphemeralTabGroup(group);
+  ASSERT_FALSE(tab_strip_model()->IsEphemeralTabGroup(group));
+  EXPECT_EQ(controller()->GetFocusedGroup(), group);
+  EXPECT_NE(widget->user_color_override(), std::nullopt);
+}
+
+// The promotion bubble applies the chosen title and color while the group is
+// still ephemeral, then promotes it. The browser must theme after that
+// sequence too.
+IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
+                       VisualsChangeBeforePromotionUpdatesTheme) {
+  BrowserWidget* widget =
+      BrowserView::GetBrowserViewForBrowser(browser())->browser_widget();
+  controller()->CreateNewTab(NewTabTypes::kNewTabCommand);
+  EXPECT_EQ(tab_strip_model()->count(), 2);
+  const tab_groups::TabGroupId group =
+      tab_strip_model()->EnterFocusMode({0, 1});
+
+  // The group is still ephemeral, so its visuals do not theme the browser.
+  tab_strip_model()->ChangeTabGroupVisuals(group, ChangedVisuals(group));
+  EXPECT_EQ(widget->user_color_override(), std::nullopt);
+
+  tab_strip_model()->PromoteEphemeralTabGroup(group);
+  ASSERT_FALSE(tab_strip_model()->IsEphemeralTabGroup(group));
+  EXPECT_NE(widget->user_color_override(), std::nullopt);
+}
+
+// Changing the visuals of a group after it was promoted themes the browser.
+IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
+                       VisualsChangeAfterPromotionUpdatesTheme) {
+  BrowserWidget* widget =
+      BrowserView::GetBrowserViewForBrowser(browser())->browser_widget();
+  controller()->CreateNewTab(NewTabTypes::kNewTabCommand);
+  EXPECT_EQ(tab_strip_model()->count(), 2);
+  const tab_groups::TabGroupId group =
+      tab_strip_model()->EnterFocusMode({0, 1});
+
+  tab_strip_model()->PromoteEphemeralTabGroup(group);
+  ASSERT_FALSE(tab_strip_model()->IsEphemeralTabGroup(group));
+  tab_strip_model()->ChangeTabGroupVisuals(group, ChangedVisuals(group));
+  EXPECT_NE(widget->user_color_override(), std::nullopt);
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
@@ -377,7 +453,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
   const tab_groups::TabGroupId group = tab_strip_model()->AddToNewGroup({0, 1});
 
   // Focus on the group.
-  controller()->SetFocusedGroup(group);
+  controller()->EnterFocusMode(group);
   EXPECT_EQ(controller()->GetFocusedGroup(), group);
 
   // Creating a new tab via user intent (controller/command) should join the
@@ -435,7 +511,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       FreezingVoteReason::kFocusedGroup));
 
   // Focus on group1. Unpinned tabs outside group1 should be frozen.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
   EXPECT_FALSE(tabstrip()->tab_at(1)->HasFreezingVote(
@@ -446,7 +522,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       FreezingVoteReason::kFocusedGroup));
 
   // Unfocus group1. All tabs should be unfrozen.
-  controller()->SetFocusedGroup(std::nullopt);
+  controller()->ExitFocusMode();
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
   EXPECT_FALSE(tabstrip()->tab_at(1)->HasFreezingVote(
@@ -469,7 +545,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       tab_strip_model()->AddToNewGroup({1, 2});
 
   // Focus on group1.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   // Pinned tab (0) and focused group tabs (1, 2) should not be frozen.
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
@@ -506,7 +582,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       tab_strip_model()->AddToNewGroup({2, 3});
 
   // Focus group1.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
   EXPECT_FALSE(tabstrip()->tab_at(1)->HasFreezingVote(
@@ -517,7 +593,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       FreezingVoteReason::kFocusedGroup));
 
   // Switch focus to group2.
-  controller()->SetFocusedGroup(group2);
+  controller()->EnterFocusMode(group2);
   EXPECT_TRUE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
   EXPECT_TRUE(tabstrip()->tab_at(1)->HasFreezingVote(
@@ -556,7 +632,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       FreezingVoteReason::kFocusedGroup));
 
   // Focus group1 while group2 is collapsed.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote());
   EXPECT_FALSE(tabstrip()->tab_at(1)->HasFreezingVote());
   // Tabs in group2 now have both collapsed and unfocused freezing votes.
@@ -573,7 +649,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
 
   // Unfocus group1. Unfocused votes should be released, but collapsed votes
   // remain.
-  controller()->SetFocusedGroup(std::nullopt);
+  controller()->ExitFocusMode();
   EXPECT_TRUE(tabstrip()->tab_at(2)->HasFreezingVote(
       FreezingVoteReason::kCollapsedGroup));
   EXPECT_FALSE(tabstrip()->tab_at(2)->HasFreezingVote(

@@ -90,7 +90,7 @@ class MODULES_EXPORT ImageBitmapRenderingContext final
   // ImageBitmap.
   bool IsOpaque() const override { return false; }
   bool IsComposited() const final { return true; }
-  scoped_refptr<CanvasResource> GetResourceForPushFrame(
+  scoped_refptr<ExportedCanvasResource> GetResourceForPushFrame(
       bool& should_call_push_frame) override;
 
   cc::Layer* CcLayer() const final;
@@ -102,8 +102,6 @@ class MODULES_EXPORT ImageBitmapRenderingContext final
 
   // TODO(junov): handle lost contexts when content is GPU-backed
   void LoseContext(LostContextMode) override {}
-
-  void Reset() override;
 
   base::ByteSize AllocatedBufferSize() const override;
 
@@ -119,6 +117,7 @@ class MODULES_EXPORT ImageBitmapRenderingContext final
 
   // CanvasRenderingContext implementation
   ImageBitmap* TransferToImageBitmap(ScriptState*, ExceptionState&) override;
+  void Reshape(gfx::Size old_size, gfx::Size new_size) override;
 
   V8RenderingContext* AsV8RenderingContext() final;
   V8OffscreenRenderingContext* AsV8OffscreenRenderingContext() final;
@@ -136,6 +135,9 @@ class MODULES_EXPORT ImageBitmapRenderingContext final
   void ResetInternalBitmapToBlackTransparent(int width, int height);
 
   void SetImageInternal(scoped_refptr<StaticBitmapImage>);
+  scoped_refptr<gpu::ClientSharedImage> PrepareGpuSharedImage(
+      gpu::SyncToken& sync_token,
+      viz::ReleaseCallback* out_release_callback);
   void ResourceReleasedGpu(scoped_refptr<StaticBitmapImage>,
                            const gpu::SyncToken&,
                            bool lost_resource);
@@ -153,6 +155,9 @@ class MODULES_EXPORT ImageBitmapRenderingContext final
   SoftwareResource CreateOrRecycleSoftwareResource(
       const gfx::Size& size,
       const gfx::ColorSpace& color_space);
+  scoped_refptr<gpu::ClientSharedImage> PrepareSoftwareSharedImage(
+      gpu::SyncToken& sync_token,
+      viz::ReleaseCallback* out_release_callback);
 
   void ResourceReleasedSoftware(SoftwareResource resource,
                                 const gpu::SyncToken&,

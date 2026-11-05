@@ -8,6 +8,7 @@ import android.content.Context;
 import android.view.View;
 import android.view.Window;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.IntDef;
 
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -25,6 +26,7 @@ import org.chromium.ui.base.WindowAndroid;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.function.BooleanSupplier;
 
 /** Implementation of {@link TabBottomSheetManager}. */
 @NullMarked
@@ -85,6 +87,7 @@ public class TabBottomSheetManagerImpl implements TabBottomSheetManager {
     private final Context mContext;
     private final WindowAndroid mWindowAndroid;
     private final BottomSheetController mBottomSheetController;
+    private final BooleanSupplier mCanCoverBottomControlsSupplier;
     private final TouchEventProvider mTouchEventProvider;
     private final TabBottomSheetSuppressionController mSuppressionController;
 
@@ -121,6 +124,8 @@ public class TabBottomSheetManagerImpl implements TabBottomSheetManager {
      * @param context Context.
      * @param windowAndroid The {@link WindowAndroid} for managing window-level operations.
      * @param bottomSheetController The {@link BottomSheetController} used to show the bottom sheet.
+     * @param canCoverBottomControlsSupplier Supplier indicating whether the bottom sheet can cover
+     *     the bottom browser controls.
      * @param layoutStateProviderOneShotSupplier The {@link LayoutStateProvider} for managing layout
      *     state.
      * @param touchEventProvider The {@link TouchEventProvider} used to observe touch events on the
@@ -132,12 +137,14 @@ public class TabBottomSheetManagerImpl implements TabBottomSheetManager {
             Context context,
             WindowAndroid windowAndroid,
             BottomSheetController bottomSheetController,
+            BooleanSupplier canCoverBottomControlsSupplier,
             OneshotSupplier<LayoutStateProvider> layoutStateProviderOneShotSupplier,
             TouchEventProvider touchEventProvider,
             NonNullObservableSupplier<Boolean> omniboxFocusStateSupplier) {
         mContext = context;
         mWindowAndroid = windowAndroid;
         mBottomSheetController = bottomSheetController;
+        mCanCoverBottomControlsSupplier = canCoverBottomControlsSupplier;
         mTouchEventProvider = touchEventProvider;
 
         mSuppressionController =
@@ -186,6 +193,7 @@ public class TabBottomSheetManagerImpl implements TabBottomSheetManager {
                         mContext,
                         mWindowAndroid,
                         mBottomSheetController,
+                        mCanCoverBottomControlsSupplier,
                         mTouchEventProvider,
                         coBrowseViews,
                         mSheetEventsCallback,
@@ -258,6 +266,24 @@ public class TabBottomSheetManagerImpl implements TabBottomSheetManager {
         return mTabBottomSheetCoordinator != null
                 && mTabBottomSheetCoordinator.isSheetShowing()
                 && mTabBottomSheetCoordinator.isInPeekMode();
+    }
+
+    @Override
+    public @Nullable @ColorInt Integer getSheetColorToReshowAfterTabSwitcher(Tab tab) {
+        // The sheet comes back through unsuppressBottomSheet() once the tab switcher suppression
+        // ends, as long as nothing else suppresses it. A sheet that is closing, or waiting behind
+        // another bottom sheet, won't come back then. The sheet belongs to one tab, so it doesn't
+        // come back when a different tab is opened from the tab switcher.
+        if (mTabBottomSheetCoordinator == null
+                || mNativeInterfaceDelegate == null
+                || mNativeInterfaceDelegate.getTab() != tab
+                || mState == SheetState.SHOWING
+                || mState == SheetState.CLOSING
+                || mSuppressedByBottomSheetController
+                || !mSuppressionController.isSuppressedOnlyByTabSwitcher()) {
+            return null;
+        }
+        return mTabBottomSheetCoordinator.getBackgroundColor();
     }
 
     @Override

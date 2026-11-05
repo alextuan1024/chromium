@@ -7,6 +7,7 @@
 #include "base/strings/strcat.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/app_id_helpers.h"
+#include "chrome/browser/web_applications/model/management_data.h"
 #include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -14,7 +15,6 @@
 #include "components/crx_file/id_util.h"
 #include "components/webapps/common/web_app_id.h"
 #include "crypto/sha2.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -50,9 +50,13 @@ webapps::AppId GenerateAppId(const std::optional<std::string>& manifest_id_path,
   return internal::GenerateAppId(manifest_id_path, start_url);
 }
 
-webapps::AppId GenerateAppIdFromManifest(
-    const blink::mojom::Manifest& manifest) {
+webapps::AppId GenerateAppIdFromManifest(const blink::Manifest& manifest) {
   return internal::GenerateAppIdFromManifest(manifest);
+}
+
+webapps::ManifestId GenerateManifestIdFromManifest(
+    const blink::Manifest& manifest) {
+  return internal::GenerateManifestIdFromManifest(manifest);
 }
 
 webapps::AppId GenerateAppIdFromManifestId(
@@ -89,22 +93,23 @@ std::optional<webapps::AppId> FindInstalledAppWithUrlInScope(Profile* profile,
 
 bool IsNonLocallyInstalledAppWithUrlInScope(Profile* profile, const GURL& url) {
   if (auto* provider = WebAppProvider::GetForWebApps(profile)) {
-    FindBestAppInScopeOptions options(WebAppFilter::IsSuggestedApp());
-    options.eligibility_filter = WebAppFilter::IsAppSurfaceableToUser();
     return provider->registrar_unsafe()
-        .FindBestAppWithUrlInScope(url, options)
+        .FindBestAppWithUrlInScope(
+            url, WebAppFilter::IsSuggestedApp(),
+            {.eligibility_filter = WebAppFilter::IsAppSurfaceableToUser()})
         .has_value();
   }
   return false;
 }
 
 bool LooksLikePlaceholder(const WebApp& app) {
-  for (const auto& [install_source, config] :
-       app.management_to_external_config_map()) {
-    if (config.is_placeholder) {
+  for (WebAppManagement::Type install_source :
+       app.management_data().GetSources()) {
+    if (app.management_data().IsPlaceholder(install_source)) {
       return true;
     }
-    for (const GURL& install_url : config.install_urls) {
+    for (const GURL& install_url :
+         app.management_data().GetInstallUrls(install_source)) {
       if (app.untranslated_name() == install_url.spec()) {
         return true;
       }

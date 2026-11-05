@@ -11,10 +11,9 @@ import android.graphics.Rect;
 import android.util.Size;
 
 import org.chromium.base.Callback;
-import org.chromium.base.MemoryPressureLevel;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.UnguessableToken;
-import org.chromium.base.memory.MemoryPressureMonitor;
+import org.chromium.base.memory_coordinator.MemoryLimit;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.paintpreview.player.PlayerCompositorDelegate;
@@ -33,19 +32,15 @@ public class PlayerFrameBitmapState {
     /** The scale factor of bitmaps. */
     private final float mScaleFactor;
 
-    /**
-     * Bitmaps that make up the contents.
-     * Should be "@Nullable Bitmap @Nullable [][]", but there is a bug in NullAway
-     * (https://github.com/uber/NullAway/issues/1150) that prevents us from doing that.
-     */
-    private Bitmap @Nullable [][] mBitmapMatrix;
+    /** Bitmaps that make up the contents. */
+    private @Nullable Bitmap @Nullable [][] mBitmapMatrix;
 
     /** Whether a request for a bitmap tile is pending. */
-    private BitmapRequestHandler @Nullable [][] mPendingBitmapRequests;
+    private @Nullable BitmapRequestHandler @Nullable [][] mPendingBitmapRequests;
 
     /**
-     * Whether we currently need a bitmap tile. This is used for deleting bitmaps that we don't
-     * need and freeing up memory.
+     * Whether we currently need a bitmap tile. This is used for deleting bitmaps that we don't need
+     * and freeing up memory.
      */
     private boolean @Nullable [][] mRequiredBitmaps;
 
@@ -92,7 +87,7 @@ public class PlayerFrameBitmapState {
         return mRequiredBitmaps;
     }
 
-    Bitmap @Nullable [][] getMatrix() {
+    @Nullable Bitmap @Nullable [][] getMatrix() {
         return mBitmapMatrix;
     }
 
@@ -118,8 +113,9 @@ public class PlayerFrameBitmapState {
         assumeNonNull(mBitmapMatrix);
         for (int i = 0; i < mBitmapMatrix.length; i++) {
             for (int j = 0; j < mBitmapMatrix[i].length; j++) {
-                if (mBitmapMatrix[i][j] != null) {
-                    mBitmapMatrix[i][j].recycle();
+                Bitmap bitmap = mBitmapMatrix[i][j];
+                if (bitmap != null) {
+                    bitmap.recycle();
                 }
             }
         }
@@ -175,8 +171,8 @@ public class PlayerFrameBitmapState {
         }
 
         // Only fetch out-of-viewport bitmaps eagerly if not under memory pressure.
-        if (MemoryPressureMonitor.INSTANCE.getLastReportedPressure()
-                < MemoryPressureLevel.MODERATE) {
+        if (mStateController.getMemoryLimit().getPercent()
+                >= MemoryLimit.NO_PRESSURE.getPercent()) {
             // Request bitmaps for adjacent tiles that are not currently in the view port. The
             // reason that we do this in a separate loop is to make sure bitmaps for tiles inside
             // the view port are fetched first.
@@ -253,8 +249,9 @@ public class PlayerFrameBitmapState {
                         bitmapRequestHandler::onError);
         // It is possible that the request failed immediately, so make sure the request still
         // exists.
-        if (mPendingBitmapRequests[row][col] != null) {
-            mPendingBitmapRequests[row][col].setRequestId(requestId);
+        BitmapRequestHandler pendingRequest = mPendingBitmapRequests[row][col];
+        if (pendingRequest != null) {
+            pendingRequest.setRequestId(requestId);
         }
         return true;
     }
@@ -328,10 +325,11 @@ public class PlayerFrameBitmapState {
 
         for (int row = 0; row < mPendingBitmapRequests.length; row++) {
             for (int col = 0; col < mPendingBitmapRequests[row].length; col++) {
-                if (mPendingBitmapRequests[row][col] != null && !mRequiredBitmaps[row][col]) {
+                BitmapRequestHandler pendingRequest = mPendingBitmapRequests[row][col];
+                if (pendingRequest != null && !mRequiredBitmaps[row][col]) {
                     // If the cancellation failed, the bitmap is being processed already. If this
                     // happens don't delete the request.
-                    if (mPendingBitmapRequests[row][col].cancel()) {
+                    if (pendingRequest.cancel()) {
                         mPendingBitmapRequests[row][col] = null;
                     }
                 }

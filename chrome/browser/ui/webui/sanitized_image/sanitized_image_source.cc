@@ -10,12 +10,14 @@
 #include <string>
 #include <string_view>
 
+#include "base/containers/flat_map.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "build/build_config.h"
 #include "chrome/browser/image_fetcher/image_decoder_impl.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -41,6 +43,10 @@
 #include "ui/gfx/image/image.h"
 #include "url/url_util.h"
 
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 namespace {
 
 const int64_t kMaxImageSizeInBytes =
@@ -51,17 +57,18 @@ constexpr char kIsGooglePhotosKey[] = "isGooglePhotos";
 constexpr char kStaticEncodeKey[] = "staticEncode";
 constexpr char kUrlKey[] = "url";
 
-std::map<std::string, std::string> ParseParams(std::string_view param_string) {
+base::flat_map<std::string_view, std::string> ParseParams(
+    std::string_view param_string) {
   url::Component query(param_string);
   url::Component key;
   url::Component value;
   constexpr int kMaxUriDecodeLen = 2048;
-  std::map<std::string, std::string> params;
+  base::flat_map<std::string_view, std::string> params;
   while (url::ExtractQueryKeyValue(param_string, &query, &key, &value)) {
     url::UrlEscapeDecoder<kMaxUriDecodeLen> output(
         value.AsViewOn(param_string), url::DecodeUrlMode::kUtf8OrIsomorphic);
-    params.insert({std::string(key.AsViewOn(param_string)),
-                   base::UTF16ToUTF8(output.view())});
+    params.insert(
+        {key.AsViewOn(param_string), base::UTF16ToUTF8(output.view())});
   }
   return params;
 }
@@ -114,7 +121,9 @@ SanitizedImageSource::SanitizedImageSource(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     std::unique_ptr<DataDecoderDelegate> delegate)
     : identity_manager_(IdentityManagerFactory::GetForProfile(profile)),
-      url_loader_factory_(url_loader_factory),
+      url_loader_factory_(profile->IsTopChromeWebUIProfile()
+                              ? nullptr
+                              : std::move(url_loader_factory)),
       data_decoder_delegate_(std::move(delegate)) {}
 
 SanitizedImageSource::~SanitizedImageSource() = default;
@@ -129,7 +138,7 @@ void SanitizedImageSource::StartDataRequest(
     content::URLDataSource::GotDataCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  std::string image_url_or_params = url.GetQuery();
+  std::string_view image_url_or_params = url.query();
   if (url != GURL(base::StrCat(
                  {chrome::kChromeUIImageURL, "?", image_url_or_params}))) {
     std::move(callback).Run(nullptr);
@@ -178,6 +187,25 @@ void SanitizedImageSource::StartDataRequest(
 
   request_attributes.image_url = image_url;
 
+  signin::IdentityManager* identity_manager = identity_manager_;
+  request_attributes.url_loader_factory = url_loader_factory_;
+#if !BUILDFLAG(IS_ANDROID)
+  if (!url_loader_factory_) {
+    // In TopChromeWebUIProfile, which is shared by the windows of all profiles,
+    // use the account and the network of the user who requests the image. A
+    // WebContents whose user profile is not bound yet gets an empty response.
+    content::WebContents* web_contents = wc_getter.Run();
+    CHECK(web_contents);
+    Profile* user_profile = webui::GetUserProfile(web_contents);
+    if (!user_profile) {
+      std::move(callback).Run(nullptr);
+      return;
+    }
+    identity_manager = IdentityManagerFactory::GetForProfile(user_profile);
+    request_attributes.url_loader_factory = user_profile->GetURLLoaderFactory();
+  }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
   // Download the image body.
   if (!send_auth_token) {
     StartImageDownload(std::move(request_attributes), std::move(callback));
@@ -186,7 +214,7 @@ void SanitizedImageSource::StartDataRequest(
 
   // Request an auth token for downloading the image body.
   auto fetcher = std::make_unique<signin::PrimaryAccountAccessTokenFetcher>(
-      signin::OAuthConsumerId::kSanitizedImageSource, identity_manager_,
+      signin::OAuthConsumerId::kSanitizedImageSource, identity_manager,
       signin::PrimaryAccountAccessTokenFetcher::Mode::kImmediate,
       signin::ConsentLevel::kSignin);
   auto* fetcher_ptr = fetcher.get();
@@ -234,7 +262,7 @@ void SanitizedImageSource::StartImageDownload(
   if (request_attributes.access_token_info) {
     request->headers.SetHeader(
         net::HttpRequestHeaders::kAuthorization,
-        "Bearer " + request_attributes.access_token_info->token);
+        base::StrCat({"Bearer ", request_attributes.access_token_info->token}));
   }
 
   std::unique_ptr<network::SimpleURLLoader> loader;
@@ -288,8 +316,11 @@ void SanitizedImageSource::StartImageDownload(
         })"));
   }
   auto* loader_ptr = loader.get();
+  // Take the factory before `request_attributes` is moved into the callback.
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
+      request_attributes.url_loader_factory;
   loader_ptr->DownloadToString(
-      url_loader_factory_.get(),
+      url_loader_factory.get(),
       base::BindOnce(&SanitizedImageSource::OnImageLoaded,
                      weak_ptr_factory_.GetWeakPtr(), std::move(loader),
                      std::move(request_attributes), std::move(callback)),

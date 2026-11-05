@@ -10,17 +10,28 @@
 #include <vector>
 
 #include "base/allocator/partition_alloc_features.h"
+#include "base/callback_list.h"
 #include "base/command_line.h"
+#include "base/memory_coordinator/memory_pressure_source.h"
+#include "base/run_loop.h"
 #include "base/test/gtest_util.h"
+#include "base/test/mock_callback.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
+#include "partition_alloc/address_pool_manager.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/dangling_raw_ptr_checks.h"
+#include "partition_alloc/page_allocator.h"
 #include "partition_alloc/partition_alloc_base/cpu.h"
+#include "partition_alloc/partition_alloc_constants.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_IOS)
+#include "base/ios/ios_util.h"
+#endif
 
 namespace base::allocator {
 
@@ -74,6 +85,24 @@ class ScopedInstallDanglingRawPtrChecks {
   test::ScopedFeatureList enabled_feature_list_;
   partition_alloc::DanglingRawPtrDetectedFn* old_detected_fn_;
   partition_alloc::DanglingRawPtrReleasedFn* old_dereferenced_fn_;
+};
+
+// Installs a release-exemption function returning `exempt`, and restores the
+// previous one when going out of scope.
+class ScopedReleaseExemption {
+ public:
+  explicit ScopedReleaseExemption(bool exempt)
+      : old_fn_(GetDanglingRawPtrReleaseExemptFn()) {
+    if (exempt) {
+      SetDanglingRawPtrReleaseExemptFn([] { return true; });
+    } else {
+      SetDanglingRawPtrReleaseExemptFn([] { return false; });
+    }
+  }
+  ~ScopedReleaseExemption() { SetDanglingRawPtrReleaseExemptFn(old_fn_); }
+
+ private:
+  DanglingRawPtrReleaseExemptFn* const old_fn_;
 };
 
 }  // namespace
@@ -207,6 +236,29 @@ TEST(PartitionAllocDanglingPtrChecks, CrossTaskNoFreeConsideredCrossTask) {
       .type = "cross_task",
   });
   partition_alloc::GetDanglingRawPtrReleasedFn()(42);
+}
+
+TEST(PartitionAllocDanglingPtrChecks, ReleaseExempt) {
+  ScopedInstallDanglingRawPtrChecks scoped_install_dangling_checks;
+  ScopedReleaseExemption scoped_exemption(/*exempt=*/true);
+  partition_alloc::GetDanglingRawPtrDetectedFn()(42);
+  partition_alloc::GetDanglingRawPtrReleasedFn()(42);
+}
+
+TEST(PartitionAllocDanglingPtrChecks, ReleaseNotExemptReported) {
+  EXPECT_DEATH(
+      {
+        ScopedInstallDanglingRawPtrChecks scoped_install_dangling_checks;
+        ScopedReleaseExemption outer_exemption(/*exempt=*/false);
+        {
+          ScopedReleaseExemption inner_exemption(/*exempt=*/true);
+          partition_alloc::GetDanglingRawPtrDetectedFn()(41);
+          partition_alloc::GetDanglingRawPtrReleasedFn()(41);
+        }
+        partition_alloc::GetDanglingRawPtrDetectedFn()(42);
+        partition_alloc::GetDanglingRawPtrReleasedFn()(42);
+      },
+      HasSubstr("[DanglingPtr](1/3) A raw_ptr/raw_ref is dangling."));
 }
 
 TEST(PartitionAllocDanglingPtrChecks,
@@ -388,5 +440,126 @@ TEST(PartitionAllocSupportTest, GetProcessTypeIdentifierUtilitySubType) {
   cl->AppendSwitchASCII("utility-sub-type", "network.mojom.NetworkService");
   EXPECT_EQ("utility.network.mojom.NetworkService", GetProcessTypeIdentifier());
 }
+
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC) && \
+    PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) && \
+    !PA_BUILDFLAG(FORCE_DISABLE_BACKUP_REF_PTR_FEATURE)
+TEST(PartitionAllocSupportTest, GetBrpConfiguration) {
+  test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kPartitionAllocBackupRefPtr);
+  PartitionAllocSupport::BrpConfiguration config =
+      PartitionAllocSupport::GetBrpConfiguration("");
+#if BUILDFLAG(IS_IOS)
+  EXPECT_EQ(config.enable_brp, ios::IsRunningOnOrLater(26, 5, 0));
+#else
+  EXPECT_TRUE(config.enable_brp);
+#endif
+  EXPECT_FALSE(config.suppress_corruption_detected_crash);
+}
+#endif
+
+#if PA_BUILDFLAG(HAS_64_BIT_POINTERS) && BUILDFLAG(IS_POSIX)
+class PartitionAllocMemoryPressureTest : public testing::Test {
+ protected:
+  static constexpr size_t kTestPoolPages = 100;
+  static constexpr size_t kTestPoolSize =
+      kTestPoolPages * partition_alloc::internal::kSuperPageSize;
+  static constexpr auto kPoolHandle =
+      partition_alloc::internal::kConfigurablePoolHandle;
+
+  void SetUp() override {
+    base_address_ = partition_alloc::AllocPages(
+        kTestPoolSize, partition_alloc::internal::kSuperPageSize,
+        partition_alloc::PageAccessibilityConfiguration(
+            partition_alloc::PageAccessibilityConfiguration::kInaccessible),
+        partition_alloc::PageTag::kPartitionAlloc);
+    ASSERT_NE(base_address_, 0u);
+    manager().Add(kPoolHandle, base_address_, kTestPoolSize);
+  }
+
+  void TearDown() override {
+    PartitionAllocMemoryPressureMonitor::Instance().ResetForTesting();
+    manager().Remove(kPoolHandle);
+    partition_alloc::FreePages(base_address_, kTestPoolSize);
+  }
+
+  partition_alloc::internal::AddressPoolManager& manager() {
+    return partition_alloc::internal::AddressPoolManager::GetInstance();
+  }
+
+  test::TaskEnvironment task_environment_;
+  uintptr_t base_address_ = 0;
+};
+
+TEST_F(PartitionAllocMemoryPressureTest, MonitorEndToEnd) {
+  MemoryPressureSource source;
+  MockCallback<MemoryPressureSource::Callback> on_level_updated;
+  CallbackListSubscription subscription =
+      source.AddCallback(on_level_updated.Get());
+
+  auto& monitor = PartitionAllocMemoryPressureMonitor::Instance();
+  monitor.Start(task_environment_.GetMainThreadTaskRunner());
+
+  // 1. Transition to CRITICAL pressure (reserve 90 out of 100 pages = 90%).
+  base::RunLoop critical_run_loop;
+  EXPECT_CALL(on_level_updated, Run(base::MEMORY_PRESSURE_LEVEL_CRITICAL))
+      .WillOnce([&] { critical_run_loop.Quit(); });
+
+  uintptr_t addr1 = manager().Reserve(
+      kPoolHandle, 0, 90 * partition_alloc::internal::kSuperPageSize);
+  ASSERT_NE(addr1, 0u);
+  critical_run_loop.Run();
+
+  // Unreserve 2 pages to 88% (inside (85%, 90%) hysteresis deadband) -> should
+  // not trigger MEMORY_PRESSURE_LEVEL_NONE.
+  manager().UnreserveAndDecommit(
+      kPoolHandle, addr1 + 88 * partition_alloc::internal::kSuperPageSize,
+      2 * partition_alloc::internal::kSuperPageSize);
+  EXPECT_EQ(PartitionAllocSupport::GetMemoryPressureLevel(),
+            PartitionAllocSupport::MemoryPressureLevel::kCriticalPressure);
+
+  // 2. Transition back to NONE pressure (unreserve 3 more pages -> 85% = 90% -
+  // 5%).
+  base::RunLoop none_run_loop;
+  EXPECT_CALL(on_level_updated, Run(base::MEMORY_PRESSURE_LEVEL_NONE))
+      .WillOnce([&] { none_run_loop.Quit(); });
+
+  manager().UnreserveAndDecommit(
+      kPoolHandle, addr1 + 85 * partition_alloc::internal::kSuperPageSize,
+      3 * partition_alloc::internal::kSuperPageSize);
+  none_run_loop.Run();
+
+  manager().UnreserveAndDecommit(
+      kPoolHandle, addr1, 85 * partition_alloc::internal::kSuperPageSize);
+}
+
+TEST_F(PartitionAllocMemoryPressureTest, MonitorStartupAlreadyCritical) {
+  MemoryPressureSource source;
+  MockCallback<MemoryPressureSource::Callback> on_level_updated;
+  CallbackListSubscription subscription =
+      source.AddCallback(on_level_updated.Get());
+
+  // Allocate 92 out of 100 pages (92% >= 90%) BEFORE starting monitor.
+  uintptr_t addr = manager().Reserve(
+      kPoolHandle, 0, 92 * partition_alloc::internal::kSuperPageSize);
+  ASSERT_NE(addr, 0u);
+  EXPECT_EQ(PartitionAllocSupport::GetMemoryPressureLevel(),
+            PartitionAllocSupport::MemoryPressureLevel::kCriticalPressure);
+
+  // Starting the monitor when already critical should immediately trigger
+  // MEMORY_PRESSURE_LEVEL_CRITICAL.
+  base::RunLoop critical_run_loop;
+  EXPECT_CALL(on_level_updated, Run(base::MEMORY_PRESSURE_LEVEL_CRITICAL))
+      .WillOnce([&] { critical_run_loop.Quit(); });
+
+  auto& monitor = PartitionAllocMemoryPressureMonitor::Instance();
+  monitor.Start(task_environment_.GetMainThreadTaskRunner());
+  critical_run_loop.Run();
+
+  manager().UnreserveAndDecommit(
+      kPoolHandle, addr, 92 * partition_alloc::internal::kSuperPageSize);
+}
+#endif  // PA_BUILDFLAG(HAS_64_BIT_POINTERS) && BUILDFLAG(IS_POSIX)
 
 }  // namespace base::allocator

@@ -19,7 +19,7 @@ namespace views {
 AXWidgetObjWrapper::AXWidgetObjWrapper(AXAuraObjCache* aura_obj_cache,
                                        Widget* widget)
     : AXAuraObjWrapper(aura_obj_cache), widget_(widget) {
-  DCHECK(widget->GetNativeView());
+  CHECK(widget->GetNativeView(), base::NotFatalUntil::M163);
   widget_observation_.Observe(widget);
 }
 
@@ -30,13 +30,16 @@ AXAuraObjWrapper* AXWidgetObjWrapper::GetParent() {
 }
 
 void AXWidgetObjWrapper::GetChildren(
-    std::vector<raw_ptr<AXAuraObjWrapper, VectorExperimental>>* out_children) {
+    std::vector<raw_ptr<AXAuraObjWrapper>>* out_children) {
   if (!widget_->IsVisible() || !widget_->GetRootView() ||
       !widget_->GetRootView()->GetVisible()) {
     return;
   }
 
-  out_children->push_back(aura_obj_cache_->GetOrCreate(widget_->GetRootView()));
+  if (AXAuraObjWrapper* root_view =
+          aura_obj_cache_->GetOrCreate(widget_->GetRootView())) {
+    out_children->push_back(root_view);
+  }
 }
 
 void AXWidgetObjWrapper::Serialize(ui::AXNodeData* out_node_data) {

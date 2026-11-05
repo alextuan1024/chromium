@@ -4,12 +4,16 @@
 
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_toolbar/customize_toolbar_handler.h"
 
+#include <algorithm>
+
+#include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/strcat.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/actions/chrome_action_properties.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
@@ -30,14 +34,51 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "skia/ext/image_operations.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/display/screen.h"
+#include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/size_f.h"
+#include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/image/image_skia_operations.h"
 #include "ui/gfx/vector_icon_types.h"
 
 namespace {
+
+constexpr int kToolbarIconSize = 20;
+
+// Draws `icon` at `kToolbarIconSize + icon_size_delta` centered on a
+// transparent canvas of `kToolbarIconSize`. The WebUI scales every icon image
+// to fit the same box, so the padding keeps icons with a size delta at the
+// same relative size as in the toolbar (see
+// PinnedActionToolbarButton::GetIconSize()). `icon_size_delta` must be
+// negative; a larger icon cannot be represented since it would be scaled back
+// down to the same box.
+ui::ImageModel CreatePaddedIcon(const ui::ImageModel& icon,
+                                int icon_size_delta,
+                                ui::ColorId color_id,
+                                const ui::ColorProvider& provider) {
+  CHECK_LT(icon_size_delta, 0);
+  const int icon_size = std::max(1, kToolbarIconSize + icon_size_delta);
+  const gfx::ImageSkia resized_image =
+      icon.IsVectorIcon()
+          ? ui::ImageModel::FromVectorIcon(*icon.GetVectorIcon().vector_icon(),
+                                           color_id, icon_size)
+                .Rasterize(&provider)
+          : gfx::ImageSkiaOperations::CreateResizedImage(
+                icon.GetImage().AsImageSkia(),
+                skia::ImageOperations::RESIZE_BEST,
+                gfx::Size(icon_size, icon_size));
+  return ui::ImageModel::FromImageSkia(
+      gfx::ImageSkiaOperations::CreateImageWithRoundRectBackground(
+          gfx::SizeF(kToolbarIconSize, kToolbarIconSize), /*radius=*/0,
+          SK_ColorTRANSPARENT, resized_image));
+}
+
 std::optional<side_panel::customize_chrome::mojom::ActionId>
 MojoActionForChromeAction(actions::ActionId action_id) {
   switch (action_id) {
@@ -95,9 +136,13 @@ MojoActionForChromeAction(actions::ActionId action_id) {
       return side_panel::customize_chrome::mojom::ActionId::kSplitTab;
     case kActionSidePanelShowContextualTasks:
       return side_panel::customize_chrome::mojom::ActionId::kContextualTasks;
+    case kActionTtcToolbar:
+      return side_panel::customize_chrome::mojom::ActionId::kTtc;
     case kActionSidePanelShowTabsFromOtherDevices:
       return side_panel::customize_chrome::mojom::ActionId::
           kShowTabsFromOtherDevices;
+    case kActionGlicSmartSelectionToolbar:
+      return side_panel::customize_chrome::mojom::ActionId::kGlicSmartSelection;
     default:
       return std::nullopt;
   }
@@ -161,6 +206,10 @@ std::optional<actions::ActionId> ChromeActionForMojoAction(
       return kActionSplitTab;
     case side_panel::customize_chrome::mojom::ActionId::kContextualTasks:
       return kActionSidePanelShowContextualTasks;
+    case side_panel::customize_chrome::mojom::ActionId::kTtc:
+      return kActionTtcToolbar;
+    case side_panel::customize_chrome::mojom::ActionId::kGlicSmartSelection:
+      return kActionGlicSmartSelectionToolbar;
     default:
       return std::nullopt;
   }
@@ -293,16 +342,22 @@ void CustomizeToolbarHandler::ListActions(ListActionsCallback callback) {
         }
 
         // If the icon is a vector icon, recolor it to match the spec.
-        // Non-vector icons cannot be recolored, but there aren't any of those
-        // currently anyways.
+        // Non-vector icons cannot be recolored.
         const ui::ImageModel& original_icon = action_item->GetImage();
-        const ui::ImageModel recolored_icon =
-            original_icon.IsVectorIcon()
-                ? ui::ImageModel::FromVectorIcon(
-                      *(action_item->GetImage().GetVectorIcon().vector_icon()),
-                      icon_color_id,
-                      action_item->GetImage().GetVectorIcon().icon_size())
-                : original_icon;
+        const int icon_size_delta =
+            action_item->GetProperty(chrome::kActionItemIconSizeDeltaKey);
+        ui::ImageModel recolored_icon;
+        if (icon_size_delta < 0 &&
+            (original_icon.IsVectorIcon() || original_icon.IsImage())) {
+          recolored_icon = CreatePaddedIcon(original_icon, icon_size_delta,
+                                            icon_color_id, provider);
+        } else if (original_icon.IsVectorIcon()) {
+          recolored_icon = ui::ImageModel::FromVectorIcon(
+              *original_icon.GetVectorIcon().vector_icon(), icon_color_id,
+              original_icon.GetVectorIcon().icon_size());
+        } else {
+          recolored_icon = original_icon;
+        }
 
         bool has_enterprise_controlled_pinned_state =
             action_item->GetProperty(actions::kActionItemPinnableKey) ==
@@ -346,7 +401,11 @@ void CustomizeToolbarHandler::ListActions(ListActionsCallback callback) {
     add_action(kActionSidePanelShowContextualTasks,
                side_panel::customize_chrome::mojom::CategoryId::kTools);
   }
+  add_action(kActionTtcToolbar,
+             side_panel::customize_chrome::mojom::CategoryId::kTools);
   add_action(kActionSidePanelShowLensOverlayResults,
+             side_panel::customize_chrome::mojom::CategoryId::kTools);
+  add_action(kActionGlicSmartSelectionToolbar,
              side_panel::customize_chrome::mojom::CategoryId::kTools);
   add_action(kActionSidePanelShowSearchCompanion,
              side_panel::customize_chrome::mojom::CategoryId::kTools);

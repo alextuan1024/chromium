@@ -15,7 +15,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/types/expected_macros.h"
@@ -95,10 +94,10 @@ CastActivityManager::CastActivityManager(
       logger_(logger),
       debugger_(debugger),
       hash_token_(hash_token) {
-  DCHECK(media_sink_service_);
-  DCHECK(session_tracker_);
-  DCHECK(message_handler_);
-  DCHECK(media_router_);
+  CHECK(media_sink_service_, base::NotFatalUntil::M161);
+  CHECK(session_tracker_, base::NotFatalUntil::M161);
+  CHECK(message_handler_, base::NotFatalUntil::M161);
+  CHECK(media_router_, base::NotFatalUntil::M161);
   message_handler_->AddObserver(this);
   for (const auto& sink_id_session : session_tracker_->GetSessions()) {
     const MediaSinkInternal* sink =
@@ -194,11 +193,6 @@ void CastActivityManager::DoLaunchSession(DoLaunchSessionParams params) {
   const content::FrameTreeNodeId frame_tree_node_id = params.frame_tree_node_id;
   std::string app_id = ChooseAppId(cast_source, params.sink);
   auto app_params = std::move(params.app_params);
-
-  if (IsSiteInitiatedMirroringSource(cast_source.source_id())) {
-    base::UmaHistogramBoolean(kHistogramAudioSender,
-                              cast_source.site_requested_audio_capture());
-  }
 
   cast_source.ContainsStreamingApp()
       ? AddMirroringActivity(route, app_id, frame_tree_node_id,
@@ -611,7 +605,8 @@ void CastActivityManager::OnSessionAddedOrUpdated(const MediaSinkInternal& sink,
   }
 
   CastActivity* activity = activity_it->second.get();
-  DCHECK(activity->route().media_sink_id() == sink.sink().id());
+  CHECK(activity->route().media_sink_id() == sink.sink().id(),
+        base::NotFatalUntil::M161);
 
   const auto& existing_session_id = activity->session_id();
 
@@ -895,7 +890,6 @@ void CastActivityManager::HandleLaunchSessionResponse(
 
   mojom::RoutePresentationConnectionPtr presentation_connection;
   const std::string& client_id = cast_source.client_id();
-  std::string app_id = ChooseAppId(cast_source, params.sink);
   const auto channel_id = sink.cast_data().cast_channel_id;
   const auto destination_id = session->destination_id();
   auto media_source = MediaSource(cast_source.source_id());
@@ -933,7 +927,6 @@ void CastActivityManager::HandleLaunchSessionResponse(
     // Request media status from the receiver.
     base::DictValue request;
     request.Set("type", cast_util::EnumToString<
-                            cast_channel::V2MessageType,
                             cast_channel::V2MessageType::kMediaGetStatus>());
     message_handler_->SendMediaRequest(channel_id, request, client_id,
                                        destination_id);
@@ -1019,7 +1012,7 @@ void CastActivityManager::HandleLaunchSessionResponseMiddleStages(
     DoLaunchSessionParams params,
     const std::string& message,
     cast_channel::LaunchSessionCallbackWrapper* out_callback) {
-  DCHECK(out_callback);
+  CHECK(out_callback, base::NotFatalUntil::M161);
   logger_.get()->LogInfo(mojom::LogCategory::kRoute, kLoggerComponent, message,
                          params.sink.id(), params.cast_source.source_id(),
                          MediaRoute::GetPresentationIdFromMediaRouteId(

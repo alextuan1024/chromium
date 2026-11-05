@@ -94,8 +94,8 @@ class SaasUsageTabHelperTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         SaasUsageReportingControllerFactoryIOS::GetInstance(),
-        base::BindRepeating(&SaasUsageTabHelperTest::BuildMockController,
-                            base::Unretained(this)));
+        base::BindOnce(&SaasUsageTabHelperTest::BuildMockController,
+                       base::Unretained(this)));
     profile_ = std::move(builder).Build();
 
     web_state_.SetBrowserState(profile_.get());
@@ -115,7 +115,7 @@ class SaasUsageTabHelperTest : public PlatformTest {
     PlatformTest::TearDown();
   }
 
-  std::unique_ptr<KeyedService> BuildMockController(ProfileIOS* profile) {
+  std::unique_ptr<KeyedService> BuildMockController(ProfileIOS& profile) {
     auto controller = std::make_unique<MockSaasUsageReportingController>(
         &testing_pref_service_);
     mock_controller_ = controller.get();
@@ -204,6 +204,53 @@ TEST_F(SaasUsageTabHelperTest, DoNotReportForIncognito) {
   ProfileIOS* otr_profile = profile_->GetOffTheRecordProfile();
   EXPECT_EQ(SaasUsageReportingControllerFactoryIOS::GetForProfile(otr_profile),
             nullptr);
+}
+
+TEST_F(SaasUsageTabHelperTest, DelayAndFlushNavigationRecording) {
+  GURL test_url1("https://example.com/app1");
+  GURL test_url2("https://example.com/app2");
+  fake_prober()->SetProtocol("TLS 1.3");
+
+  auto* tab_helper = SaasUsageTabHelper::FromWebState(&web_state_);
+  ASSERT_TRUE(tab_helper);
+  tab_helper->SetDelayNavigationRecording(true);
+
+  EXPECT_CALL(*mock_controller(), RecordNavigation).Times(0);
+
+  web::FakeNavigationContext context1;
+  context1.SetUrl(test_url1);
+  context1.SetHasCommitted(true);
+  web_state_.OnNavigationFinished(&context1);
+
+  web::FakeNavigationContext context2;
+  context2.SetUrl(test_url2);
+  context2.SetHasCommitted(true);
+  web_state_.OnNavigationFinished(&context2);
+
+  testing::Mock::VerifyAndClearExpectations(mock_controller());
+
+  {
+    testing::InSequence seq;
+    EXPECT_CALL(*mock_controller(), RecordNavigation(SaasUsageNavigationMatcher(
+                                        test_url1, "TLS 1.3")))
+        .Times(1);
+    EXPECT_CALL(*mock_controller(), RecordNavigation(SaasUsageNavigationMatcher(
+                                        test_url2, "TLS 1.3")))
+        .Times(1);
+  }
+
+  tab_helper->SetDelayNavigationRecording(false);
+
+  // Subsequent navigations are recorded immediately.
+  GURL test_url3("https://example.com/app3");
+  EXPECT_CALL(*mock_controller(), RecordNavigation(SaasUsageNavigationMatcher(
+                                      test_url3, "TLS 1.3")))
+      .Times(1);
+
+  web::FakeNavigationContext context3;
+  context3.SetUrl(test_url3);
+  context3.SetHasCommitted(true);
+  web_state_.OnNavigationFinished(&context3);
 }
 
 }  // namespace enterprise_reporting

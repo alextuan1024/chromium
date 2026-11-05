@@ -84,8 +84,6 @@ Matcher<Suggestion> EqualsDomainPasswordSuggestion(
     const std::u16string& realm_label,
     const gfx::Image& custom_icon,
     Suggestion::Icon trailing_icon = Suggestion::Icon::kNoIcon) {
-  const std::u16string voice_over_suffix =
-      realm_label.empty() ? u"" : base::StrCat({u", ", realm_label});
   return AllOf(
       EqualsSuggestion(id, main_text, Suggestion::Icon::kGlobe),
       Field("additional_label", &Suggestion::additional_label, realm_label),
@@ -250,13 +248,16 @@ class MockPasswordManagerClient : public StubPasswordManagerClient {
   MockPasswordManagerClient() = default;
   ~MockPasswordManagerClient() override = default;
 
-  MOCK_METHOD(const syncer::SyncService*, GetSyncService, (), (const override));
+  MOCK_METHOD(const syncer::SyncService*,
+              GetSyncService,
+              (),
+              (const, override));
   MOCK_METHOD(WebAuthnCredentialsDelegate*,
               GetWebAuthnCredentialsDelegateForDriver,
               (PasswordManagerDriver*),
               (override));
   MOCK_METHOD(const GURL&, GetLastCommittedURL, (), (const, override));
-  MOCK_METHOD(bool, IsChromeSigninPage, (), (const, override));
+  MOCK_METHOD(bool, IsPageEligibleForInlineQrCodeSignin, (), (const, override));
 
   const MockPasswordFeatureManager* GetPasswordFeatureManager() const override {
     return &feature_manager_;
@@ -289,12 +290,14 @@ class PasswordSuggestionGeneratorTest : public testing::Test {
     identity_test_env_ = std::make_unique<signin::IdentityTestEnvironment>();
     client_.SetIdentityManager(identity_test_env_->identity_manager());
 
+    driver_.set_last_committed_url(GURL(kExternalURL));
     ON_CALL(client_, GetSyncService).WillByDefault(Return(&sync_service()));
     ON_CALL(client_, GetWebAuthnCredentialsDelegateForDriver)
         .WillByDefault(Return(&credentials_delegate()));
     ON_CALL(client_, GetLastCommittedURL)
         .WillByDefault(ReturnRef(kExternalURL));
-    ON_CALL(client_, IsChromeSigninPage).WillByDefault(Return(false));
+    ON_CALL(client_, IsPageEligibleForInlineQrCodeSignin)
+        .WillByDefault(Return(false));
   }
 
   const gfx::Image& favicon() const { return favicon_; }
@@ -410,6 +413,23 @@ class PasswordSuggestionGeneratorTest : public testing::Test {
         base::span(suggested_credentials), base::span(all_credentials),
         on_password_form);
   }
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  auto ExpectedHttpManualFallbackSuggestions(
+      const std::u16string& username = u"username@example.com") {
+    return testing::ElementsAre(
+        EqualsManualFallbackSuggestion(
+            SuggestionType::kPasswordEntry, u"http://example.com", username,
+            Suggestion::Icon::kGlobe,
+            /*is_acceptable=*/true, gfx::Image(),
+            Suggestion::PasswordSuggestionDetails(username, u"password",
+                                                  "http://example.com/",
+                                                  u"http://example.com",
+                                                  /*is_cross_domain=*/true)),
+        EqualsSuggestion(SuggestionType::kSeparator),
+        EqualsManagePasswordsSuggestion());
+  }
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
   void EnablePasswordSync() {
     ON_CALL(sync_service(), GetActiveDataTypes)
@@ -865,6 +885,67 @@ TEST_F(PasswordSuggestionGeneratorTest, ManualFallback_NoCredentials) {
       std::vector<PasswordForm>(), std::vector<CredentialUIEntry>(),
       IsTriggeredOnPasswordForm(true));
   EXPECT_THAT(suggestions, IsEmpty());
+}
+
+TEST_F(PasswordSuggestionGeneratorTest,
+       ManualFallback_HttpPage_FiltersOutHttpsCredentials) {
+  driver().set_last_committed_url(GURL("http://example.com/"));
+
+  EXPECT_THAT(GenerateBothSections({password_form()}, {credential_ui_entry()},
+                                   IsTriggeredOnPasswordForm(true)),
+              IsEmpty());
+}
+
+TEST_F(PasswordSuggestionGeneratorTest,
+       ManualFallback_HttpPage_AllowsHttpCredentials) {
+  driver().set_last_committed_url(GURL("http://example.com/"));
+
+  EXPECT_THAT(
+      GenerateAllPasswordsSection(
+          {CredentialUIEntry(CreateEntry("username@example.com", "password",
+                                         GURL("http://example.com/"),
+                                         affiliations::MatchType::kExact))},
+          IsTriggeredOnPasswordForm(true)),
+      ExpectedHttpManualFallbackSuggestions());
+}
+
+TEST_F(PasswordSuggestionGeneratorTest,
+       ManualFallback_HttpPage_FiltersOutAndroidCredentials) {
+  driver().set_last_committed_url(GURL("http://example.com/"));
+
+  EXPECT_THAT(GenerateBothSections({}, {android_credential_ui_entry()},
+                                   IsTriggeredOnPasswordForm(true)),
+              IsEmpty());
+}
+
+TEST_F(PasswordSuggestionGeneratorTest,
+       ManualFallback_HttpPage_MixedAffiliatedDomains) {
+  driver().set_last_committed_url(GURL("http://example.com/"));
+
+  EXPECT_THAT(
+      GenerateAllPasswordsSection(
+          {CredentialUIEntry({CreateEntry("user@example.com", "password",
+                                          GURL("https://example.com/"),
+                                          affiliations::MatchType::kExact),
+                              CreateEntry("user@example.com", "password",
+                                          GURL("http://example.com/"),
+                                          affiliations::MatchType::kExact)})},
+          IsTriggeredOnPasswordForm(true)),
+      ExpectedHttpManualFallbackSuggestions(u"user@example.com"));
+}
+
+TEST_F(PasswordSuggestionGeneratorTest,
+       ManualFallback_HttpPage_AsymmetricSections_NoSuggestedHeader) {
+  driver().set_last_committed_url(GURL("http://example.com/"));
+
+  EXPECT_THAT(
+      GenerateBothSections(
+          {password_form()},
+          {CredentialUIEntry(CreateEntry("username@example.com", "password",
+                                         GURL("http://example.com/"),
+                                         affiliations::MatchType::kExact))},
+          IsTriggeredOnPasswordForm(true)),
+      ExpectedHttpManualFallbackSuggestions());
 }
 
 TEST_F(PasswordSuggestionGeneratorTest,
@@ -1918,7 +1999,8 @@ TEST_F(PasswordSuggestionGeneratorTest, GetWebauthnInlineQrCodeSuggestion) {
   const std::string kTestQrString = "test_qr_string";
   ON_CALL(credentials_delegate(), GetCableQrString)
       .WillByDefault(Return(kTestQrString));
-  EXPECT_CALL(client(), IsChromeSigninPage).WillOnce(Return(true));
+  EXPECT_CALL(client(), IsPageEligibleForInlineQrCodeSignin)
+      .WillOnce(Return(true));
 
   std::optional<Suggestion> suggestion =
       generator().GetWebauthnInlineQrCodeSuggestion();
@@ -1934,7 +2016,7 @@ TEST_F(PasswordSuggestionGeneratorTest, GetWebauthnInlineQrCodeSuggestion) {
 }
 
 TEST_F(PasswordSuggestionGeneratorTest,
-       GetWebauthnInlineQrCodeSuggestion_NotChromeSigninPage) {
+       GetWebauthnInlineQrCodeSuggestion_PageNotEligible) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       switches::kMagiChromePasskeySignIn, {{"flow_type", "autofill"}});
@@ -1942,7 +2024,8 @@ TEST_F(PasswordSuggestionGeneratorTest,
   const std::string kTestQrString = "test_qr_string";
   ON_CALL(credentials_delegate(), GetCableQrString)
       .WillByDefault(Return(kTestQrString));
-  EXPECT_CALL(client(), IsChromeSigninPage).WillOnce(Return(false));
+  EXPECT_CALL(client(), IsPageEligibleForInlineQrCodeSignin)
+      .WillOnce(Return(false));
 
   std::optional<Suggestion> suggestion =
       generator().GetWebauthnInlineQrCodeSuggestion();
@@ -2044,7 +2127,8 @@ TEST_F(PasswordSuggestionGeneratorTest,
   const std::string kTestQrString = "test_qr_string";
   ON_CALL(credentials_delegate(), GetCableQrString)
       .WillByDefault(Return(kTestQrString));
-  ON_CALL(client(), IsChromeSigninPage).WillByDefault(Return(true));
+  ON_CALL(client(), IsPageEligibleForInlineQrCodeSignin)
+      .WillByDefault(Return(true));
   ON_CALL(credentials_delegate(), IsSecurityKeyOrHybridFlowAvailable)
       .WillByDefault(Return(true));
   const std::vector<PasskeyCredential> passkeys;
@@ -2086,7 +2170,8 @@ TEST_F(PasswordSuggestionGeneratorTest, GetSuggestionsForDomain_InlineQrOnly) {
   const std::string kTestQrString = "test_qr_string";
   ON_CALL(credentials_delegate(), GetCableQrString)
       .WillByDefault(Return(kTestQrString));
-  ON_CALL(client(), IsChromeSigninPage).WillByDefault(Return(true));
+  ON_CALL(client(), IsPageEligibleForInlineQrCodeSignin)
+      .WillByDefault(Return(true));
   ON_CALL(credentials_delegate(), IsSecurityKeyOrHybridFlowAvailable)
       .WillByDefault(Return(false));
 

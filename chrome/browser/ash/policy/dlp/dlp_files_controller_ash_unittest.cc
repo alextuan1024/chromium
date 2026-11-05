@@ -125,6 +125,9 @@ constexpr char kRemoteAppId[] = "remoteApp";
 constexpr char kBorealisAppId[] = "borealisApp";
 constexpr char kBruschettaAppId[] = "bruschettaApp";
 
+// Placeholder for the Crostini mount name, which depends on the profile.
+constexpr char kCrostiniMountName[] = "crostini";
+
 constexpr char kRuleName1[] = "rule #1";
 constexpr char kRuleName2[] = "rule #2";
 constexpr char kRuleName3[] = "rule #3";
@@ -158,6 +161,12 @@ GURL ToGURL(const base::FilePath& root, const std::string& path) {
   return GURL(base::StrCat({url::kFileSystemScheme, ":",
                             file_manager::util::GetFilesAppOrigin().Serialize(),
                             abs_path}));
+}
+
+std::string ResolveMountName(Profile* profile, const std::string& mount_name) {
+  return mount_name == kCrostiniMountName
+             ? file_manager::util::GetCrostiniMountPointName(profile)
+             : mount_name;
 }
 
 struct FilesTransferInfo {
@@ -1166,46 +1175,34 @@ TEST_F(DlpFilesControllerAshTest, CheckReportingOnIsFilesTransferRestricted) {
   const GURL dst_url("https://wetransfer.com/");
 
   EXPECT_CALL(*rules_manager(), IsRestrictedDestination(_, _, _, _, _, _))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                               testing::SetArgPointee<5>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kBlock)))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl2),
-                               testing::SetArgPointee<5>(RuleMetadata2()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata2()),
                                testing::Return(DlpRulesManager::Level::kAllow)))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                               testing::SetArgPointee<5>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kBlock)))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl2),
-                               testing::SetArgPointee<5>(RuleMetadata2()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata2()),
                                testing::Return(DlpRulesManager::Level::kAllow)))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                               testing::SetArgPointee<5>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kBlock)))
       .WillOnce(
-          testing::DoAll(testing::SetArgPointee<3>(kExampleUrl2),
-                         testing::SetArgPointee<5>(RuleMetadata2()),
+          testing::DoAll(testing::SetArgPointee<5>(RuleMetadata2()),
                          testing::Return(DlpRulesManager::Level::kAllow)));
 
   EXPECT_CALL(*rules_manager(),
               IsRestrictedComponent(_, data_controls::Component::kUsb, _, _, _))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                               testing::SetArgPointee<4>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<4>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kBlock)))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl2),
-                               testing::SetArgPointee<4>(RuleMetadata2()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<4>(RuleMetadata2()),
                                testing::Return(DlpRulesManager::Level::kAllow)))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                               testing::SetArgPointee<4>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<4>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kBlock)))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl2),
-                               testing::SetArgPointee<4>(RuleMetadata2()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<4>(RuleMetadata2()),
                                testing::Return(DlpRulesManager::Level::kAllow)))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                               testing::SetArgPointee<4>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<4>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kBlock)))
       .WillOnce(
-          testing::DoAll(testing::SetArgPointee<3>(kExampleUrl2),
-                         testing::SetArgPointee<4>(RuleMetadata2()),
+          testing::DoAll(testing::SetArgPointee<4>(RuleMetadata2()),
                          testing::Return(DlpRulesManager::Level::kAllow)));
 
   EXPECT_CALL(*rules_manager(), GetReportingManager())
@@ -1277,12 +1274,10 @@ TEST_F(DlpFilesControllerAshTest, CheckReportingOnMixedCalls) {
                          testing::Return(DlpRulesManager::Level::kBlock)));
 
   EXPECT_CALL(*rules_manager(), IsRestrictedDestination(_, _, _, _, _, _))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                               testing::SetArgPointee<5>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kBlock)))
       .WillOnce(
-          testing::DoAll(testing::SetArgPointee<3>(kExampleUrl2),
-                         testing::SetArgPointee<5>(RuleMetadata2()),
+          testing::DoAll(testing::SetArgPointee<5>(RuleMetadata2()),
                          testing::Return(DlpRulesManager::Level::kAllow)));
 
   EXPECT_CALL(*rules_manager(), GetReportingManager())
@@ -1328,12 +1323,10 @@ TEST_F(DlpFilesControllerAshTest, DoNotReportOnSystemApps) {
       kReferrerUrl1);
 
   EXPECT_CALL(*rules_manager(), IsRestrictedDestination(_, _, _, _, _, _))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleSourceUrl1),
-                               testing::SetArgPointee<5>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kBlock)))
       .WillOnce(
-          testing::DoAll(testing::SetArgPointee<3>(kExampleSourceUrl1),
-                         testing::SetArgPointee<5>(RuleMetadata1()),
+          testing::DoAll(testing::SetArgPointee<5>(RuleMetadata1()),
                          testing::Return(DlpRulesManager::Level::kBlock)));
 
   files_controller_->IsFilesTransferRestricted(
@@ -1372,8 +1365,7 @@ TEST_F(DlpFilesControllerAshTest, BlockWarningFilesOnSystemApps) {
   EXPECT_CALL(*rules_manager(), IsRestrictedDestination)
       .Times(2)
       .WillRepeatedly(
-          testing::DoAll(testing::SetArgPointee<3>(kExampleSourceUrl1),
-                         testing::SetArgPointee<5>(RuleMetadata1()),
+          testing::DoAll(testing::SetArgPointee<5>(RuleMetadata1()),
                          testing::Return(DlpRulesManager::Level::kWarn)));
 
   files_controller_->IsFilesTransferRestricted(
@@ -1448,7 +1440,7 @@ INSTANTIATE_TEST_SUITE_P(
         std::make_tuple("removable",
                         "MyUSB/path/in/removable/filename",
                         data_controls::Component::kUsb),
-        std::make_tuple("crostini_test_termina_penguin",
+        std::make_tuple(kCrostiniMountName,
                         "path/in/crostini/filename",
                         data_controls::Component::kCrostini),
         std::make_tuple("drivefs-84675c855b63e12f384d45f033826980",
@@ -1479,22 +1471,20 @@ TEST_P(DlpFilesExternalDestinationTest, IsFilesTransferRestricted_Component) {
 
   EXPECT_CALL(*rules_manager(),
               IsRestrictedComponent(_, expected_component, _, _, _))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                               testing::SetArgPointee<4>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<4>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kBlock)))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl2),
-                               testing::SetArgPointee<4>(RuleMetadata2()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<4>(RuleMetadata2()),
                                testing::Return(DlpRulesManager::Level::kAllow)))
       .WillOnce(
-          testing::DoAll(testing::SetArgPointee<3>(kExampleUrl3),
-                         testing::SetArgPointee<4>(RuleMetadata3()),
+          testing::DoAll(testing::SetArgPointee<4>(RuleMetadata3()),
                          testing::Return(DlpRulesManager::Level::kBlock)));
 
   EXPECT_CALL(*rules_manager(), GetReportingManager())
       .Times(::testing::AnyNumber());
 
   auto dst_url = mount_points_->CreateExternalFileSystemURL(
-      blink::StorageKey(), mount_name, base::FilePath(path));
+      blink::StorageKey(), ResolveMountName(profile(), mount_name),
+      base::FilePath(path));
   ASSERT_TRUE(dst_url.is_valid());
 
   files_controller_->IsFilesTransferRestricted(
@@ -1517,6 +1507,48 @@ TEST_P(DlpFilesExternalDestinationTest, IsFilesTransferRestricted_Component) {
           DlpRulesManager::Level::kBlock)));
 }
 
+TEST_F(DlpFilesControllerAshTest,
+       IsFilesTransferRestricted_UnknownComponent) {
+  auto fileDaemonInfo1 = DlpFilesControllerAsh::FileDaemonInfo(
+      kInode1, kCrtime1, base::FilePath(), kExampleUrl1, kReferrerUrl1);
+  auto fileDaemonInfo2 = DlpFilesControllerAsh::FileDaemonInfo(
+      kInode2, kCrtime2, base::FilePath(), kExampleUrl2, kReferrerUrl2);
+
+  std::vector<DlpFilesControllerAsh::FileDaemonInfo> transferred_files(
+      {fileDaemonInfo1, fileDaemonInfo2});
+  std::vector<std::pair<FileDaemonInfo, ::dlp::RestrictionLevel>> files_levels =
+      {{fileDaemonInfo1, ::dlp::RestrictionLevel::LEVEL_BLOCK},
+       {fileDaemonInfo2, ::dlp::RestrictionLevel::LEVEL_ALLOW}};
+
+  MockIsFilesTransferRestrictedCallback cb;
+  EXPECT_CALL(cb, Run(files_levels)).Times(1);
+
+  EXPECT_CALL(*rules_manager(),
+              IsRestrictedDestination(
+                  _, GURL(), DlpRulesManager::Restriction::kFiles, _, _, _))
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata1()),
+                               testing::Return(DlpRulesManager::Level::kBlock)))
+      .WillOnce(
+          testing::DoAll(testing::SetArgPointee<5>(RuleMetadata2()),
+                         testing::Return(DlpRulesManager::Level::kAllow)));
+
+  EXPECT_CALL(*rules_manager(), GetReportingManager())
+      .Times(::testing::AnyNumber());
+
+  files_controller_->IsFilesTransferRestricted(
+      /*task_id=*/std::nullopt, transferred_files,
+      DlpFileDestination(data_controls::Component::kUnknownComponent),
+      dlp::FileAction::kCopy, cb.Get());
+
+  ASSERT_EQ(events_.size(), 1u);
+  EXPECT_THAT(
+      events_[0],
+      data_controls::IsDlpPolicyEvent(data_controls::CreateDlpPolicyEvent(
+          kExampleUrl1, data_controls::Component::kUnknownComponent,
+          DlpRulesManager::Restriction::kFiles, kRuleName1, kRuleId1,
+          DlpRulesManager::Level::kBlock)));
+}
+
 TEST_P(DlpFilesExternalDestinationTest, FileDownloadBlocked) {
   auto [mount_name, path, expected_component] = GetParam();
 
@@ -1526,15 +1558,15 @@ TEST_P(DlpFilesExternalDestinationTest, FileDownloadBlocked) {
   EXPECT_CALL(*rules_manager(),
               IsRestrictedComponent(_, expected_component, _, _, _))
       .WillOnce(
-          testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                         testing::SetArgPointee<4>(RuleMetadata1()),
+          testing::DoAll(testing::SetArgPointee<4>(RuleMetadata1()),
                          testing::Return(DlpRulesManager::Level::kBlock)));
 
   EXPECT_CALL(*rules_manager(), GetReportingManager())
       .Times(::testing::AnyNumber());
 
   auto dst_url = mount_points_->CreateExternalFileSystemURL(
-      blink::StorageKey(), mount_name, base::FilePath(path));
+      blink::StorageKey(), ResolveMountName(profile(), mount_name),
+      base::FilePath(path));
   ASSERT_TRUE(dst_url.is_valid());
 
   EXPECT_CALL(*fpnm_, ShowDlpBlockedFiles(
@@ -1568,7 +1600,8 @@ TEST_P(DlpFilesExternalDestinationTest, FilePromptForDownload) {
       .WillOnce(testing::Return(DlpRulesManager::Level::kReport));
 
   auto dst_url = mount_points_->CreateExternalFileSystemURL(
-      blink::StorageKey(), mount_name, base::FilePath(path));
+      blink::StorageKey(), ResolveMountName(profile(), mount_name),
+      base::FilePath(path));
   ASSERT_TRUE(dst_url.is_valid());
 
   // Block
@@ -1646,18 +1679,12 @@ TEST_P(DlpFilesUrlDestinationTest, IsFilesTransferRestricted_Url) {
     }
   }
   EXPECT_CALL(*rules_manager(), IsRestrictedDestination(_, _, _, _, _, _))
-      .WillOnce(testing::DoAll(
-          testing::SetArgPointee<3>(transferred_files[0].source_url.spec()),
-          testing::SetArgPointee<5>(RuleMetadata1()),
-          testing::Return(levels[0])))
-      .WillOnce(testing::DoAll(
-          testing::SetArgPointee<3>(transferred_files[1].source_url.spec()),
-          testing::SetArgPointee<5>(RuleMetadata2()),
-          testing::Return(levels[1])))
-      .WillOnce(testing::DoAll(
-          testing::SetArgPointee<3>(transferred_files[2].source_url.spec()),
-          testing::SetArgPointee<5>(RuleMetadata3()),
-          testing::Return(levels[2])));
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata1()),
+                               testing::Return(levels[0])))
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata2()),
+                               testing::Return(levels[1])))
+      .WillOnce(testing::DoAll(testing::SetArgPointee<5>(RuleMetadata3()),
+                               testing::Return(levels[2])));
 
   EXPECT_CALL(*rules_manager(), GetReportingManager())
       .Times(::testing::AnyNumber());
@@ -1720,8 +1747,7 @@ TEST_P(DlpFilesWarningDialogChoiceTest, FileDownloadWarned) {
 
   EXPECT_CALL(*rules_manager(),
               IsRestrictedComponent(_, data_controls::Component::kUsb, _, _, _))
-      .WillOnce(testing::DoAll(testing::SetArgPointee<3>(kExampleUrl1),
-                               testing::SetArgPointee<4>(RuleMetadata1()),
+      .WillOnce(testing::DoAll(testing::SetArgPointee<4>(RuleMetadata1()),
                                testing::Return(DlpRulesManager::Level::kWarn)));
 
   EXPECT_CALL(*rules_manager(), GetReportingManager())
@@ -2564,7 +2590,7 @@ INSTANTIATE_TEST_SUITE_P(
         std::make_tuple("removable",
                         "MyUSB/path/in/removable",
                         data_controls::Component::kUsb),
-        std::make_tuple("crostini_test_termina_penguin",
+        std::make_tuple(kCrostiniMountName,
                         "path/in/crostini",
                         data_controls::Component::kCrostini),
         std::make_tuple("drivefs-84675c855b63e12f384d45f033826980",
@@ -2575,7 +2601,8 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(DlpFilesControllerAshComponentsTest, MapFilePathToPolicyComponentTest) {
   auto [mount_name, path, expected_component] = GetParam();
   auto url = mount_points_->CreateExternalFileSystemURL(
-      blink::StorageKey(), mount_name, base::FilePath(path));
+      blink::StorageKey(), ResolveMountName(profile(), mount_name),
+      base::FilePath(path));
   EXPECT_EQ(
       files_controller_->MapFilePathToPolicyComponent(profile(), url.path()),
       expected_component);

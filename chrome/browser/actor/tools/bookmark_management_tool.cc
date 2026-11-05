@@ -19,7 +19,6 @@
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
-#include "components/tabs/public/tab_interface.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 
 namespace actor {
@@ -45,7 +44,7 @@ BookmarkManagementTool::BookmarkManagementTool(TaskId task_id,
 
 BookmarkManagementTool::~BookmarkManagementTool() = default;
 
-void BookmarkManagementTool::Validate(ToolCallback callback) {
+void BookmarkManagementTool::Validate(DeprecatedToolCallback callback) {
   if (url_.is_empty() || !url_.is_valid()) {
     PostResponseTask(
         std::move(callback),
@@ -68,7 +67,7 @@ void BookmarkManagementTool::Validate(ToolCallback callback) {
   PostResponseTask(std::move(callback), MakeOkResult());
 }
 
-void BookmarkManagementTool::Invoke(ToolCallback callback) {
+void BookmarkManagementTool::Invoke(DeprecatedToolCallback callback) {
   bookmarks::BookmarkModel* bookmark_model = GetBookmarkModel(tool_delegate());
   CHECK(bookmark_model);
   CHECK(bookmark_model->loaded());
@@ -120,8 +119,8 @@ BookmarkManagementTool::GetObservationDelayer(
   return nullptr;
 }
 
-tabs::TabHandle BookmarkManagementTool::GetTargetTab() const {
-  return tabs::TabHandle::Null();
+ActorSurfaceHandle BookmarkManagementTool::GetTargetActorSurface() const {
+  return ActorSurfaceHandle::Null();
 }
 
 }  // namespace actor

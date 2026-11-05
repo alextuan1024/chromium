@@ -5,39 +5,65 @@
 package org.chromium.chrome.browser.share.qrcode;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import android.app.Activity;
+import android.graphics.Bitmap;
+import android.os.Bundle;
+import android.os.Looper;
 import android.view.View;
 
-import androidx.test.filters.MediumTest;
 import androidx.viewpager.widget.ViewPager;
 
 import com.google.android.material.tabs.TabLayout;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
+import org.robolectric.Shadows;
 
-import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.BaseActivityTestRule;
-import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.share.BitmapDownloadRequest;
+import org.chromium.chrome.browser.share.BitmapDownloadRequestJni;
+import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.base.WindowAndroid;
-import org.chromium.ui.test.util.BlankUiTestActivity;
 
 import java.util.ArrayList;
 
 /** Tests for the {@link QrCodeDialog}. */
-@RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@Batch(Batch.UNIT_TESTS)
+@RunWith(BaseRobolectricTestRunner.class)
 public class QrCodeDialogTest {
-    @Rule
-    public final BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
-            new BaseActivityTestRule<>(BlankUiTestActivity.class);
+    private static final String TEST_URL = "https://example.com/";
+
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    @Mock private ChromeBrowserInitializer mBrowserInitializer;
+    @Mock private QRCodeGenerator.Natives mQrCodeGeneratorJni;
+    @Mock private BitmapDownloadRequest.Natives mBitmapDownloadRequestJni;
+    @Mock private WindowAndroid mWindowAndroid;
+    @Mock private Profile mProfile;
+
+    private View mTabView;
+    private Activity mActivity;
 
     private static class CustomQrCodeDialog extends QrCodeDialog {
         private void setTabs(ArrayList<QrCodeDialogTab> tabs) {
@@ -82,59 +108,124 @@ public class QrCodeDialogTest {
 
     @Before
     public void setUp() {
-        mActivityTestRule.setFinishActivity(true);
+        ChromeBrowserInitializer.setForTesting(mBrowserInitializer);
+        doAnswer(
+                        invocation -> {
+                            ((Runnable) invocation.getArgument(0)).run();
+                            return null;
+                        })
+                .when(mBrowserInitializer)
+                .runNowOrAfterFullBrowserStarted(any());
+
+        QRCodeGeneratorJni.setInstanceForTesting(mQrCodeGeneratorJni);
+        Bitmap bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888);
+        when(mQrCodeGeneratorJni.generateBitmap(anyString())).thenReturn(bitmap);
+        BitmapDownloadRequestJni.setInstanceForTesting(mBitmapDownloadRequestJni);
+        when(mWindowAndroid.hasPermission(anyString())).thenReturn(true);
+
+        mActivity = Robolectric.buildActivity(TestActivity.class).setup().get();
+        mTabView = new View(mActivity);
+    }
+
+    @After
+    public void tearDown() {
+        ChromeBrowserInitializer.setForTesting(null);
     }
 
     @Test
-    @MediumTest
     public void testGetDialogView_disabledTabIsNotInDialog() {
-        mActivityTestRule.launchActivity(null);
+        CustomQrCodeDialog qrCodeDialog = new CustomQrCodeDialog();
+        ArrayList<QrCodeDialogTab> tabs = new ArrayList<>();
+        tabs.add(new CustomQrCodeDialogTab(mTabView, false));
+        qrCodeDialog.setTabs(tabs);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    CustomQrCodeDialog qrCodeDialog = new CustomQrCodeDialog();
-                    ArrayList<QrCodeDialogTab> tabs = new ArrayList<>();
-                    View tab = new View(mActivityTestRule.getActivity());
-                    tabs.add(new CustomQrCodeDialogTab(tab, false));
-                    qrCodeDialog.setTabs(tabs);
+        View dialog = qrCodeDialog.getDialogView(mActivity);
+        ViewPager viewPager = dialog.findViewById(R.id.qrcode_view_pager);
+        TabLayout tabLayout = dialog.findViewById(R.id.tab_layout);
 
-                    View dialog = qrCodeDialog.getDialogView(mActivityTestRule.getActivity());
-                    ViewPager viewPager = dialog.findViewById(R.id.qrcode_view_pager);
-                    TabLayout tabLayout = dialog.findViewById(R.id.tab_layout);
-
-                    assertEquals(
-                            "Tab is disabled and should not be in adapter.",
-                            0,
-                            viewPager.getAdapter().getCount());
-                    assertEquals(
-                            "Tab is disabled and should not be in tab layout.",
-                            0,
-                            tabLayout.getTabCount());
-                });
+        assertEquals(
+                "Tab is disabled and should not be in adapter.",
+                0,
+                viewPager.getAdapter().getCount());
+        assertEquals(
+                "Tab is disabled and should not be in tab layout.", 0, tabLayout.getTabCount());
     }
 
     @Test
-    @MediumTest
     public void testGetDialogView() {
-        mActivityTestRule.launchActivity(null);
+        CustomQrCodeDialog qrCodeDialog = new CustomQrCodeDialog();
+        ArrayList<QrCodeDialogTab> tabs = new ArrayList<>();
+        tabs.add(new CustomQrCodeDialogTab(mTabView, true));
+        qrCodeDialog.setTabs(tabs);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    CustomQrCodeDialog qrCodeDialog = new CustomQrCodeDialog();
-                    ArrayList<QrCodeDialogTab> tabs = new ArrayList<>();
-                    View tab = new View(mActivityTestRule.getActivity());
-                    tabs.add(new CustomQrCodeDialogTab(tab, true));
-                    qrCodeDialog.setTabs(tabs);
+        View dialog = qrCodeDialog.getDialogView(mActivity);
+        ViewPager viewPager = dialog.findViewById(R.id.qrcode_view_pager);
+        TabLayout tabLayout = dialog.findViewById(R.id.tab_layout);
 
-                    View dialog = qrCodeDialog.getDialogView(mActivityTestRule.getActivity());
-                    ViewPager viewPager = dialog.findViewById(R.id.qrcode_view_pager);
-                    TabLayout tabLayout = dialog.findViewById(R.id.tab_layout);
+        assertEquals("Tab views should be in the viewPager.", 1, viewPager.getAdapter().getCount());
+        assertEquals("Tabs should be in the tabLayout.", 1, tabLayout.getTabCount());
+    }
 
-                    assertEquals(
-                            "Tab views should be in the viewPager.",
-                            1,
-                            viewPager.getAdapter().getCount());
-                    assertEquals("Tabs should be in the tabLayout.", 1, tabLayout.getTabCount());
-                });
+    @Test
+    public void testDownloadQrCode_PassesProfile() {
+        QrCodeDialog qrCodeDialog = QrCodeDialog.newInstance(TEST_URL, mWindowAndroid, mProfile);
+        qrCodeDialog.show(mActivity.getFragmentManager(), null);
+        mActivity.getFragmentManager().executePendingTransactions();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        View downloadButton = qrCodeDialog.mTabs.get(0).getView().findViewById(R.id.download);
+        assertNotNull(downloadButton);
+        downloadButton.performClick();
+
+        verify(mBitmapDownloadRequestJni)
+                .downloadBitmap(eq(mProfile), anyString(), any(Bitmap.class));
+    }
+
+    @Test
+    public void testDownloadQrCode_ShutdownStartedProfileSkipsDownload() {
+        QrCodeDialog qrCodeDialog = QrCodeDialog.newInstance(TEST_URL, mWindowAndroid, mProfile);
+        qrCodeDialog.show(mActivity.getFragmentManager(), null);
+        mActivity.getFragmentManager().executePendingTransactions();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        when(mProfile.shutdownStarted()).thenReturn(true);
+        View downloadButton = qrCodeDialog.mTabs.get(0).getView().findViewById(R.id.download);
+        assertNotNull(downloadButton);
+        downloadButton.performClick();
+        verify(mBitmapDownloadRequestJni, never()).downloadBitmap(any(), any(), any());
+        assertTrue(qrCodeDialog.getDialog().isShowing());
+
+        // Verify mIsDownloadInProgress was not latched when skipping due to shutdownStarted().
+        when(mProfile.shutdownStarted()).thenReturn(false);
+        downloadButton.performClick();
+        verify(mBitmapDownloadRequestJni)
+                .downloadBitmap(eq(mProfile), anyString(), any(Bitmap.class));
+    }
+
+    @Test
+    public void testRecreatedDialogWithoutProfileDismisses() {
+        QrCodeDialog qrCodeDialog = new QrCodeDialog();
+        Bundle args = new Bundle();
+        args.putString(QrCodeDialog.URL_KEY, TEST_URL);
+        qrCodeDialog.setArguments(args);
+        qrCodeDialog.setWindowAndroid(mWindowAndroid);
+        qrCodeDialog.show(mActivity.getFragmentManager(), null);
+        mActivity.getFragmentManager().executePendingTransactions();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertFalse(qrCodeDialog.isAdded());
+        assertNull(qrCodeDialog.getDialog());
+    }
+
+    @Test
+    public void testDialogWithShutdownStartedProfileDismisses() {
+        when(mProfile.shutdownStarted()).thenReturn(true);
+        QrCodeDialog qrCodeDialog = QrCodeDialog.newInstance(TEST_URL, mWindowAndroid, mProfile);
+        qrCodeDialog.show(mActivity.getFragmentManager(), null);
+        mActivity.getFragmentManager().executePendingTransactions();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        assertFalse(qrCodeDialog.isAdded());
+        assertNull(qrCodeDialog.getDialog());
     }
 }

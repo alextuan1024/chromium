@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/containers/span.h"
 #include "base/functional/callback_helpers.h"
@@ -23,7 +24,6 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/printing/printer_configuration.h"
 #include "chromeos/printing/usb_printer_id.h"
 #include "components/device_event_log/device_event_log.h"
@@ -384,7 +384,7 @@ bool UsbDeviceIsPrinter(const UsbDeviceInfo& device_info) {
 // from arbitrary devices. The results are saved in the second parameter.
 bool UsbDeviceToPrinter(const UsbDeviceInfo& device_info,
                         PrinterDetector::DetectedPrinter* entry) {
-  DCHECK(entry);
+  CHECK(entry, base::NotFatalUntil::M160);
 
   // Preflight all required fields and log errors if we find something wrong.
   if (device_info.vendor_id == 0 || device_info.product_id == 0) {
@@ -441,7 +441,7 @@ std::string MakeDisplayName(const std::string& make, const std::string& model) {
                                      base::UTF8ToUTF16(model));
   } else {
     // Exactly one string is present.
-    DCHECK_NE(make.empty(), model.empty());
+    CHECK_NE(make.empty(), model.empty(), base::NotFatalUntil::M160);
     return l10n_util::GetStringFUTF8(IDS_USB_PRINTER_DISPLAY_NAME_MAKE_OR_MODEL,
                                      base::UTF8ToUTF16(make + model));
   }

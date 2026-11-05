@@ -151,11 +151,18 @@ class PLATFORM_EXPORT Color {
            color_space == ColorSpace::kHSL || color_space == ColorSpace::kHWB;
   }
 
-  static bool ColorSpaceHasHue(ColorSpace color_space) {
-    return color_space == Color::ColorSpace::kLch ||
-           color_space == Color::ColorSpace::kOklch ||
-           color_space == Color::ColorSpace::kHSL ||
-           color_space == Color::ColorSpace::kHWB;
+  // Returns the index of the hue component if the color space `color_space`
+  // has one, otherwise std::nullopt.
+  static std::optional<int> HueComponentIndex(Color::ColorSpace color_space) {
+    if (color_space == Color::ColorSpace::kHSL ||
+        color_space == Color::ColorSpace::kHWB) {
+      return 0;
+    }
+    if (color_space == Color::ColorSpace::kLch ||
+        color_space == Color::ColorSpace::kOklch) {
+      return 2;
+    }
+    return std::nullopt;
   }
 
   // The default constructor creates a transparent color.
@@ -232,9 +239,20 @@ class PLATFORM_EXPORT Color {
     kDecreasing,
   };
 
-  // Creates a color with the Color-Mix method in CSS Color 5. This will produce
-  // an interpolation between two colors, and apply an alpha multiplier if the
-  // proportion was not 100% when parsing.
+  // Creates a color with the color-mix() method in CSS Color 5. This will
+  // produce an interpolation between the colors, and apply an alpha multiplier
+  // if their percentages did not add up to 100% when parsing.
+  // https://drafts.csswg.org/css-color-5/#color-mix-result
+  static Color FromColorMix(ColorSpace interpolation_space,
+                            std::optional<HueInterpolationMethod> hue_method,
+                            base::span<const Color> colors,
+                            base::span<const double> percentages,
+                            float alpha_multiplier);
+
+  // This is now a wrapper over the list version above. It's kept for palette
+  // interpolation, which stores a progress percentage towards `color2`.
+  // TODO(crbug.com/407806416): Remove it once palette interpolation calls the
+  // list version.
   static Color FromColorMix(ColorSpace interpolation_space,
                             std::optional<HueInterpolationMethod> hue_method,
                             Color color1,
@@ -280,11 +298,11 @@ class PLATFORM_EXPORT Color {
   static bool IsBakedGamutMappingEnabled();
 
   String SerializeInternal() const;
-  // Returns the color serialized according to HTML5:
-  // http://www.whatwg.org/specs/web-apps/current-work/#serialization-of-a-color
+  // Returns the color serialized according to CSS Color:
+  // https://drafts.csswg.org/css-color/#serializing-color-values
   String SerializeAsCSSColor() const;
   // Canvas colors are serialized somewhat differently:
-  // https://html.spec.whatwg.org/multipage/canvas.html#serialisation-of-a-color
+  // https://drafts.csswg.org/css-color/#color-serialization-html-compatible-serialization-is-requested
   String SerializeAsCanvasColor() const;
   // For appending color interpolation spaces and hue interpolation methods to
   // the serialization of gradients and color-mix functions.
@@ -304,6 +322,9 @@ class PLATFORM_EXPORT Color {
 
   bool IsFullyTransparent() const { return Alpha() <= 0.0f; }
   bool IsOpaque() const { return Alpha() >= 1.0f; }
+  bool IsLegacy() const {
+    return IsLegacyColorSpace(color_space_) && !HasNoneParams();
+  }
 
   float Param0() const { return param0_; }
   float Param1() const { return param1_; }
@@ -409,6 +430,8 @@ class PLATFORM_EXPORT Color {
 
  private:
   String SerializeLegacyColorAsCSSColor() const;
+  String SerializeModernHslAndHwb() const;
+
   constexpr explicit Color(RGBA32 color)
       : param0_is_none_(0),
         param1_is_none_(0),

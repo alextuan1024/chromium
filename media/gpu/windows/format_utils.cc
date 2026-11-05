@@ -35,6 +35,29 @@ size_t GetFormatPlaneCount(DXGI_FORMAT format) {
   }
 }
 
+// Returns the bit depth of the given DXGI format. Used by the D3D12 encoder to
+// determine the bit depth used for bitstream syntax elements. Monochrome
+// formats are not added since they are currently not used by the D3D12
+// encoders.
+uint8_t GetDxgiFormatBitDepth(DXGI_FORMAT format) {
+  switch (format) {
+    case DXGI_FORMAT_NV12:
+    case DXGI_FORMAT_AYUV:
+    case DXGI_FORMAT_YUY2:
+      return 8;
+    case DXGI_FORMAT_P010:
+    case DXGI_FORMAT_Y410:
+    case DXGI_FORMAT_Y210:
+      return 10;
+    case DXGI_FORMAT_P016:
+    case DXGI_FORMAT_Y216:
+    case DXGI_FORMAT_Y416:
+      return 12;
+    default:
+      NOTREACHED();
+  }
+}
+
 bool IsYuvDxgiFormat(DXGI_FORMAT format) {
   switch (format) {
     case DXGI_FORMAT_AYUV:
@@ -87,6 +110,10 @@ DXGI_FORMAT VideoPixelFormatToDxgiFormat(VideoPixelFormat format) {
       return DXGI_FORMAT_B8G8R8A8_UNORM;
     case PIXEL_FORMAT_P010LE:
       return DXGI_FORMAT_P010;
+    case PIXEL_FORMAT_Y410:
+      return DXGI_FORMAT_Y410;
+    case PIXEL_FORMAT_Y210:
+      return DXGI_FORMAT_Y210;
     default:
       return DXGI_FORMAT_UNKNOWN;
   }
@@ -104,6 +131,12 @@ DXGI_FORMAT SharedImageFormatToDXGIFormat(viz::SharedImageFormat format) {
   }
   if (format == viz::SinglePlaneFormat::kRGBA_1010102) {
     return DXGI_FORMAT_R10G10B10A2_UNORM;
+  }
+  if (format == viz::SinglePlaneFormat::kY410) {
+    return DXGI_FORMAT_Y410;
+  }
+  if (format == viz::SinglePlaneFormat::kY210) {
+    return DXGI_FORMAT_Y210;
   }
   return DXGI_FORMAT_UNKNOWN;
 }

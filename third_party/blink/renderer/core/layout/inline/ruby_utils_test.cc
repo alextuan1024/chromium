@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/layout/inline/ruby_utils.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/core/geometry/dom_rect.h"
 #include "third_party/blink/renderer/core/layout/inline/fragment_item.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_box_state.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_cursor.h"
@@ -126,8 +127,7 @@ TEST_F(RubyBlockPositionCalculatorTest, GroupLinesAnnotationForAnnotation) {
             calculator.RubyLineListForTesting()[2]->Level());
 }
 
-TEST_F(RubyBlockPositionCalculatorTest,
-       PlaceLinesTreePlacementDisabledAndEnabled) {
+TEST_F(RubyBlockPositionCalculatorTest, PlaceLinesTreePlacement) {
   ColumnList column_list;
   column_list.push_back(MakeGarbageCollected<LogicalRubyColumn>());
   column_list.back()->start_index = 0;
@@ -138,80 +138,13 @@ TEST_F(RubyBlockPositionCalculatorTest,
 
   auto* line_items = MakeGarbageCollected<LogicalLineItems>();
 
-  {
-    ScopedTreeRubyPlacementForTest tree_ruby_placement(false);
-    RubyBlockPositionCalculator calculator;
-    calculator.GroupLines(column_list);
-    calculator.PlaceLines(*line_items,
-                          FontHeight(LayoutUnit(10), LayoutUnit(4)));
-    EXPECT_EQ(2u, calculator.RubyLineListForTesting().size());
-  }
-
-  {
-    ScopedTreeRubyPlacementForTest tree_ruby_placement(true);
-    RubyBlockPositionCalculator calculator;
-    calculator.GroupLines(column_list);
-    calculator.PlaceLines(*line_items,
-                          FontHeight(LayoutUnit(10), LayoutUnit(4)));
-    EXPECT_EQ(2u, calculator.RubyLineListForTesting().size());
-  }
-}
-
-TEST_F(RubyBlockPositionCalculatorTest, PlaceLinesTreePlacementComparison) {
-  ColumnList column_list;
-  auto* col1 = MakeGarbageCollected<LogicalRubyColumn>();
-  col1->start_index = 0;
-  col1->size = 0;
-  col1->ruby_position = RubyPosition::kOver;
-  col1->annotation_items = MakeGarbageCollected<LogicalLineItems>();
-
-  auto* col1_1 = MakeGarbageCollected<LogicalRubyColumn>();
-  col1_1->start_index = 0;
-  col1_1->size = 0;
-  col1_1->ruby_position = RubyPosition::kOver;
-  col1_1->annotation_items = MakeGarbageCollected<LogicalLineItems>();
-  col1->RubyColumnList().push_back(col1_1);
-
-  auto* col1_under = MakeGarbageCollected<LogicalRubyColumn>();
-  col1_under->start_index = 0;
-  col1_under->size = 0;
-  col1_under->ruby_position = RubyPosition::kUnder;
-  col1_under->annotation_items = MakeGarbageCollected<LogicalLineItems>();
-  col1->RubyColumnList().push_back(col1_under);
-
-  column_list.push_back(col1);
-
-  auto* line_items = MakeGarbageCollected<LogicalLineItems>();
-  FontHeight line_box_metrics(LayoutUnit(12), LayoutUnit(4));
-
-  Vector<LayoutUnit> offsets_disabled;
-  Vector<LayoutUnit> offsets_enabled;
-
-  {
-    ScopedTreeRubyPlacementForTest tree_ruby_placement(false);
-    RubyBlockPositionCalculator calculator;
-    calculator.GroupLines(column_list);
-    calculator.PlaceLines(*line_items, line_box_metrics);
-    for (const auto& line : calculator.RubyLineListForTesting()) {
-      offsets_disabled.push_back(line->Offset());
-    }
-  }
-
-  {
-    ScopedTreeRubyPlacementForTest tree_ruby_placement(true);
-    RubyBlockPositionCalculator calculator;
-    calculator.GroupLines(column_list);
-    calculator.PlaceLines(*line_items, line_box_metrics);
-    for (const auto& line : calculator.RubyLineListForTesting()) {
-      offsets_enabled.push_back(line->Offset());
-    }
-  }
-
-  EXPECT_EQ(offsets_disabled, offsets_enabled);
+  RubyBlockPositionCalculator calculator;
+  calculator.GroupLines(column_list);
+  calculator.PlaceLines(*line_items, FontHeight(LayoutUnit(10), LayoutUnit(4)));
+  EXPECT_EQ(2u, calculator.RubyLineListForTesting().size());
 }
 
 TEST_F(RubyBlockPositionCalculatorTest, PlaceLinesNestedRubyWithTextEmphasis) {
-  ScopedTreeRubyPlacementForTest tree_ruby_placement(true);
   LoadAhem();
 
   SetBodyContent(R"HTML(
@@ -227,8 +160,8 @@ TEST_F(RubyBlockPositionCalculatorTest, PlaceLinesNestedRubyWithTextEmphasis) {
   )HTML");
   UpdateAllLifecyclePhasesForTest();
 
-  LayoutBlockFlow* target = To<LayoutBlockFlow>(
-      GetDocument().getElementById(AtomicString("target"))->GetLayoutObject());
+  LayoutBlockFlow* target =
+      To<LayoutBlockFlow>(GetElementById("target")->GetLayoutObject());
   ASSERT_NE(target, nullptr);
 
   auto find_fragment_item = [](const LayoutBlockFlow& block,
@@ -315,6 +248,31 @@ TEST_F(RubyBlockPositionCalculatorTest, PlaceLinesNestedRubyWithTextEmphasis) {
   // "second anno" touches its under emphasis below, and "base"'s over
   // emphasis above
   EXPECT_EQ(second_top, base_over_emphasis_bottom);
+}
+
+// A decoration that only applies on hover doesn't push the annotation away
+// until then.
+TEST_F(RubyBlockPositionCalculatorTest, DecorationOnlyAppliedOnHover) {
+  ScopedCompositeHoverStyleForTest composite_hover_style(true);
+  SetBodyContent(R"HTML(
+    <style>
+      #overline { text-decoration: overline 5px; }
+      #hover:hover { text-decoration: overline 5px; }
+    </style>
+    <ruby><span id="none">base</span><rt>a</rt></ruby><br>
+    <ruby><span id="overline">base</span><rt>a</rt></ruby><br>
+    <ruby><span id="hover">base</span><rt>a</rt></ruby>
+  )HTML");
+
+  // Returns how far above the base `id` its annotation is.
+  auto AnnotationOffsetOf = [&](const char* id) {
+    Element* base = GetElementById(id);
+    return base->GetBoundingClientRect()->top() -
+           base->nextElementSibling()->GetBoundingClientRect()->top();
+  };
+  // A decoration in effect pushes the annotation away.
+  ASSERT_GT(AnnotationOffsetOf("overline"), AnnotationOffsetOf("none"));
+  EXPECT_EQ(AnnotationOffsetOf("hover"), AnnotationOffsetOf("none"));
 }
 
 }  // namespace blink

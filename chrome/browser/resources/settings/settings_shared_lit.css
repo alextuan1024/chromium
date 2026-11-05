@@ -13,21 +13,93 @@
 
 /* Style overrides for Settings Refresh 2026 experiment */
 :host-context([settings-refresh-2026]) {
+  --cr-active-background-color: var(--color-settings-row-background-active);
   --cr-card-border-radius: 16px;
-  --cr-card-background-color: var(--color-settings-section-background);
+  --cr-hover-background-color: var(--color-settings-row-background-hovered);
+  --cr-section-vertical-padding: 16px;
+  --cr-card-background-color: transparent;
   --cr-card-shadow: none;
+  --cr-separator-line: none;
   --cr-title-text-color: var(--color-settings-title-text);
+  --cr-icon-button-margin-start: 8px;
+  --settings-header-font-size: 16px;
+  --settings-header-font-weight: 500;
+  --settings-header-line-height: 24px;
+  --settings-header-padding: 16px 20px;
 
-  .cr-title-text {
-    font-size: 16px;
-    font-weight: 500;
-    line-height: 24px;
+  .cr-title-text,
+  .section-header {
+    color: var(--color-settings-title-text);
+    font-size: var(--settings-header-font-size);
+    font-weight: var(--settings-header-font-weight);
+    line-height: var(--settings-header-line-height);
     margin: 0;
-    padding: 16px 20px;
+    padding: var(--settings-header-padding);
   }
 
-  .cr-row:has(.cr-title-text) {
+  cr-input.stroked,
+  cr-textarea.stroked {
+    --cr-input-hover-background-color: transparent;
+  }
+
+  cr-input.stroked[disabled],
+  cr-textarea.stroked[disabled] {
+    --cr-input-background-color: var(--cr-hover-background-color);
+    --cr-input-border: 1px solid transparent;
+  }
+
+  cr-link-row {
+    --cr-link-row-start-icon-padding-end: 16px;
+  }
+
+  .cr-row,
+  cr-link-row,
+  .settings-box,
+  settings-toggle-button,
+  settings-columned-section,
+  .list-frame {
+    --cr-actionable-row-background-color:
+        var(--color-settings-section-background);
+    --cr-section-vertical-padding: 16px;
+    border-radius: 4px;
+  }
+
+  .cr-row,
+  .list-frame {
+    background-color: var(--color-settings-section-background);
+  }
+
+  .list-frame {
+    padding-inline-start: var(--cr-section-padding);
+  }
+
+  .section-header-row {
+    align-items: center;
+    background-color: transparent;
+    display: flex;
+    justify-content: space-between;
+    min-height: 0;
     padding: 0;
+    padding-inline-end: 4px;
+  }
+
+  .section-header-row .header-aligned-button {
+    margin-top: 0;
+  }
+
+  .header-aligned-button {
+    --cr-button-border: none;
+    --cr-button-disabled-border: none;
+  }
+
+  .settings-card,
+  .card {
+    background-color: transparent;
+    border-radius: var(--cr-card-border-radius);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    row-gap: 1px;
   }
 }
 
@@ -59,21 +131,6 @@ iron-icon {
 cr-icon.policy,
 iron-icon.policy {
   margin-inline-end: var(--cr-controlled-by-spacing);
-}
-
-iron-list {
-  /* Text selection in an iron-list is problematic because the items are
-   * reused. The result is the selection happens somewhat arbitrarily.
-   * Add a |risk-selection| attribute to enabled selection in an
-   * iron-list. */
-  user-select: none;
-}
-
-iron-list[risk-selection] {
-  /* On short lists where selection is likely desired, we'll risk having
-   * text selection enabled. If the list is short enough that items are
-   * not actually reused, the bugs with selection are not evident. */
-  user-select: text;
 }
 
 .separator + cr-icon-button {
@@ -314,10 +371,8 @@ h2.first {
   outline: none;
 }
 
-/* Prevent icon-button's ripples from fighting with potential scrollbars.
- * Also apply to all iron-lists to align the buttons across them all.*/
+/* Prevent icon-button's ripples from fighting with potential scrollbars. */
 [scrollable],
-iron-list,
 .list-item {
   --cr-icon-button-margin-end: 0;
 }

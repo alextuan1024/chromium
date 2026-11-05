@@ -55,6 +55,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
@@ -155,9 +156,10 @@ CSSParserContext* CSSStyleSheet::InlineParserContext(
           // document. `Referrer::ClientReferrerString()` for a fetch request
           // just means "use the default referrer", which will be computed from
           // the client (in this case, the owner document's ExecutionContext)
-          // when fetching.
+          // when fetching. The referrer policy is the owner document's policy
+          // at the time the inline CSS is parsed.
           Referrer::ClientReferrerString(),
-          network::mojom::ReferrerPolicy::kDefault),
+          owner_node_document.GetReferrerPolicy()),
       encoding);
   if (AdTracker::IsAdScriptExecutingInDocument(&owner_node_document)) {
     parser_context->SetIsAdRelated();
@@ -262,10 +264,9 @@ void CSSStyleSheet::DidMutate(Mutation mutation) {
     document->GetStyleEngine().SetNeedsActiveStyleUpdate(
         ownerNode()->GetTreeScope());
     invalidate_matched_properties_cache = true;
-  } else if (!adopted_tree_scopes_.empty()) {
-    for (const auto& tree_scope : adopted_tree_scopes_.Keys()) {
-      // It is currently required that adopted sheets can not be moved between
-      // documents.
+  } else {
+    for (const auto& tree_scope : referenced_tree_scopes_.Keys()) {
+      // Constructed sheets cannot be moved between documents.
       DCHECK(tree_scope->GetDocument() == document);
       if (!tree_scope->RootNode().isConnected()) {
         continue;
@@ -358,25 +359,25 @@ bool CSSStyleSheet::MatchesMediaQueries(const MediaQueryEvaluator& evaluator) {
   return evaluator.Eval(*media_queries_, &media_query_result_flags_);
 }
 
-void CSSStyleSheet::AddedAdoptedToTreeScope(TreeScope& tree_scope) {
-  auto add_result = adopted_tree_scopes_.insert(&tree_scope, 1u);
+void CSSStyleSheet::AddedReferenceToTreeScope(TreeScope& tree_scope) {
+  auto add_result = referenced_tree_scopes_.insert(&tree_scope, 1u);
   if (!add_result.is_new_entry) {
     add_result.stored_value->value++;
   }
 }
 
-void CSSStyleSheet::RemovedAdoptedFromTreeScope(TreeScope& tree_scope) {
-  auto it = adopted_tree_scopes_.find(&tree_scope);
-  if (it != adopted_tree_scopes_.end()) {
+void CSSStyleSheet::RemovedReferenceFromTreeScope(TreeScope& tree_scope) {
+  auto it = referenced_tree_scopes_.find(&tree_scope);
+  if (it != referenced_tree_scopes_.end()) {
     CHECK_GT(it->value, 0u);
     if (--it->value == 0) {
-      adopted_tree_scopes_.erase(&tree_scope);
+      referenced_tree_scopes_.erase(&tree_scope);
     }
   }
 }
 
-bool CSSStyleSheet::IsAdoptedByTreeScope(const TreeScope& tree_scope) {
-  return adopted_tree_scopes_.Contains(const_cast<TreeScope*>(&tree_scope));
+bool CSSStyleSheet::IsReferencedByTreeScope(const TreeScope& tree_scope) {
+  return referenced_tree_scopes_.Contains(const_cast<TreeScope*>(&tree_scope));
 }
 
 bool CSSStyleSheet::HasViewportDependentMediaQueries() const {
@@ -442,9 +443,8 @@ unsigned CSSStyleSheet::insertRule(const String& rule_string,
   if (index > length()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The index provided (", String::Number(index),
-                ") is larger than the maximum index (",
-                String::Number(length()), ")."}));
+        Format("The index provided ({}) is larger than the maximum index ({}).",
+               index, length()));
     return 0;
   }
 
@@ -502,9 +502,9 @@ void CSSStyleSheet::deleteRule(unsigned index,
     if (length()) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kIndexSizeError,
-          StrCat({"The index provided (", String::Number(index),
-                  ") is larger than the maximum index (",
-                  String::Number(length() - 1), ")."}));
+          Format(
+              "The index provided ({}) is larger than the maximum index ({}).",
+              index, length() - 1));
     } else {
       exception_state.ThrowDOMException(DOMExceptionCode::kIndexSizeError,
                                         "Style sheet is empty (length 0).");
@@ -607,6 +607,12 @@ bool CSSStyleSheet::IsLoading() const {
 }
 
 MediaList* CSSStyleSheet::media() {
+  // https://drafts.csswg.org/cssom/#dom-cssimportrule-media
+  // CSSImportRule.media must return the media attribute of the associated
+  // style sheet, so an imported sheet shares the import rule's MediaList.
+  if (auto* import_rule = DynamicTo<CSSImportRule>(owner_rule_.Get())) {
+    return import_rule->media();
+  }
   if (!media_queries_) {
     media_queries_ = MediaQuerySet::Create();
   }
@@ -761,7 +767,7 @@ void CSSStyleSheet::Trace(Visitor* visitor) const {
   visitor->Trace(media_cssom_wrapper_);
   visitor->Trace(child_rule_cssom_wrappers_);
   visitor->Trace(rule_list_cssom_wrapper_);
-  visitor->Trace(adopted_tree_scopes_);
+  visitor->Trace(referenced_tree_scopes_);
   visitor->Trace(constructor_document_);
   StyleSheet::Trace(visitor);
 }

@@ -148,8 +148,7 @@ zucchini::status::Code MainCrc32(MainParams params) {
   if (input.status != kStatusSuccess)
     return input.status;
 
-  uint32_t crc =
-      zucchini::CalculateCrc32(input.region().begin(), input.region().end());
+  uint32_t crc = zucchini::CalculateCrc32(input.region());
   *params.out << "CRC32: " << zucchini::AsHex<8>(crc) << std::endl;
   return kStatusSuccess;
 }
@@ -162,8 +161,6 @@ zucchini::status::Code MainSuffixArray(MainParams params) {
 
   zucchini::ImageIndex image_index(input.region());
   zucchini::EncodedView view_raw(image_index);
-  std::vector<zucchini::offset_t> sa_raw =
-      zucchini::MakeSuffixArray<zucchini::InducedSuffixSort>(view_raw,
-                                                             size_t(256));
+  zucchini::MakeSuffixArray<zucchini::InducedSuffixSort>(view_raw, size_t(256));
   return kStatusSuccess;
 }

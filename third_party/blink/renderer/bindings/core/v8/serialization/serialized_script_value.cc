@@ -34,6 +34,7 @@
 #include <memory>
 
 #include "base/containers/span.h"
+#include "base/no_destructor.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
@@ -63,7 +64,6 @@
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/blob/blob_data.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
@@ -74,9 +74,9 @@ namespace blink {
 namespace {
 
 SerializedScriptValue::CanDeserializeInCallback& GetCanDeserializeInCallback() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      SerializedScriptValue::CanDeserializeInCallback, g_callback, ());
-  return g_callback;
+  static base::NoDestructor<SerializedScriptValue::CanDeserializeInCallback>
+      g_callback;
+  return *g_callback;
 }
 
 }  // namespace
@@ -409,7 +409,6 @@ void SerializedScriptValue::TransferOffscreenCanvas(
     }
     visited.insert(offscreen_canvases[i].Get());
     offscreen_canvases[i].Get()->SetNeutered();
-    offscreen_canvases[i].Get()->RecordTransfer();
   }
 }
 
@@ -614,33 +613,11 @@ bool SerializedScriptValue::ExtractTransferables(
   return true;
 }
 
-ArrayBufferArray SerializedScriptValue::ExtractNonSharedArrayBuffers(
-    Transferables& transferables) {
-  ArrayBufferArray& array_buffers = transferables.array_buffers;
-  ArrayBufferArray result;
-  // Partition array_buffers into [shared..., non_shared...], maintaining
-  // relative ordering of elements with the same predicate value.
-  auto non_shared_begin =
-      std::stable_partition(array_buffers.begin(), array_buffers.end(),
-                            [](Member<DOMArrayBufferBase>& array_buffer) {
-                              return array_buffer->IsShared();
-                            });
-  // Copy the non-shared array buffers into result, and remove them from
-  // array_buffers.
-  result.Append(non_shared_begin, array_buffers.end());
-  array_buffers.EraseAt(
-      static_cast<wtf_size_t>(non_shared_begin - array_buffers.begin()),
-      static_cast<wtf_size_t>(array_buffers.end() - non_shared_begin));
-  return result;
-}
-
 SerializedScriptValue::ArrayBufferContentsArray
 SerializedScriptValue::TransferArrayBufferContents(
     v8::Isolate* isolate,
     const ArrayBufferArray& array_buffers,
     ExceptionState& exception_state) {
-  ArrayBufferContentsArray contents;
-
   if (!array_buffers.size())
     return ArrayBufferContentsArray();
 
@@ -655,49 +632,20 @@ SerializedScriptValue::TransferArrayBufferContents(
     i++;
   }
 
-  contents.Grow(array_buffers.size());
-  HeapHashSet<Member<DOMArrayBufferBase>> visited;
-  // The scope object to promptly free the backing store to avoid memory
-  // regressions.
-  // TODO(bikineev): Revisit after young generation is there.
-  struct PromptlyFreeSet {
-    // The void* is to avoid blink-gc-plugin error.
-    void* buffer;
-    ~PromptlyFreeSet() {
-      static_cast<HeapHashSet<Member<DOMArrayBufferBase>>*>(buffer)->clear();
-    }
-  } promptly_free_array_buffers{&visited};
-  for (wtf_size_t i = 0; auto& array_buffer_base : array_buffers) {
+  ArrayBufferContentsArray contents(array_buffers.size());
+  for (wtf_size_t i = 0; auto& array_buffer : array_buffers) {
     auto index = i++;
-    if (visited.Contains(array_buffer_base))
-      continue;
-    visited.insert(array_buffer_base);
-
-    if (array_buffer_base->IsShared()) {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kDataCloneError,
-          StrCat({"SharedArrayBuffer at index ", String::Number(index),
-                  " is not transferable."}));
+    if (!array_buffer->IsDetachable(isolate)) {
+      exception_state.ThrowTypeError(
+          StrCat({"ArrayBuffer at index ", String::Number(index),
+                  " is not detachable and could not be transferred."}));
       return ArrayBufferContentsArray();
-    } else {
-      DOMArrayBuffer* array_buffer =
-          static_cast<DOMArrayBuffer*>(array_buffer_base.Get());
-
-      if (!array_buffer->IsDetachable(isolate)) {
-        exception_state.ThrowTypeError(
-            StrCat({"ArrayBuffer at index ", String::Number(index),
-                    " is not detachable and could not be transferred."}));
-        return ArrayBufferContentsArray();
-      } else if (array_buffer->IsDetached()) {
-        exception_state.ThrowDOMException(
-            DOMExceptionCode::kDataCloneError,
-            StrCat({"ArrayBuffer at index ", String::Number(index),
-                    " could not be transferred."}));
-        return ArrayBufferContentsArray();
-      } else if (!array_buffer->Transfer(isolate, contents.at(index),
-                                         exception_state)) {
-        return ArrayBufferContentsArray();
-      }
+    }
+    // Per pre-flight check above along with ExtractTransferables() enforcing
+    // non-duplicate transferables.
+    CHECK(!array_buffer->IsDetached());
+    if (!array_buffer->Transfer(isolate, contents.at(index), exception_state)) {
+      return ArrayBufferContentsArray();
     }
   }
   return contents;

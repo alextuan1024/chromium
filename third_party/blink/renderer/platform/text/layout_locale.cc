@@ -11,7 +11,10 @@
 #include <array>
 
 #include "base/compiler_specific.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "third_party/blink/renderer/platform/language.h"
 #include "third_party/blink/renderer/platform/text/hyphenation.h"
@@ -40,9 +43,9 @@ IgnoringCaseHashSet CreateMacrolanguageChineseLanguageTags() {
 }
 
 const IgnoringCaseHashSet& MacrolanguageChineseLanguageTags() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(IgnoringCaseHashSet, tags,
-                                  (CreateMacrolanguageChineseLanguageTags()));
-  return tags;
+  static base::NoDestructor<IgnoringCaseHashSet> tags(
+      CreateMacrolanguageChineseLanguageTags());
+  return *tags;
 }
 
 bool ComputeIsMacrolanguageChinese(const String& value) {
@@ -65,8 +68,8 @@ struct PerThreadData {
 };
 
 PerThreadData& GetPerThreadData() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<PerThreadData>, data, ());
-  return *data;
+  static base::NoDestructor<ThreadSpecific<PerThreadData>> data;
+  return **data;
 }
 
 // Expect returned buffer size is 1 to match QuotesData type
@@ -149,6 +152,13 @@ inline const char* LbValueFromStrictness(LineBreakStrictness strictness) {
   NOTREACHED();
 }
 
+inline UScriptCode NormalizeStylishVariants(UScriptCode script) {
+  if (script == USCRIPT_ARABIC_NASTALIQ) [[unlikely]] {
+    return USCRIPT_ARABIC;
+  }
+  return script;
+}
+
 }  // namespace
 
 static hb_language_t ToHarfbuzzLanguage(const AtomicString& locale) {
@@ -170,6 +180,8 @@ static const char* ToSkFontMgrLocale(UScriptCode script) {
       return "zh-Hans";
     case USCRIPT_TRADITIONAL_HAN:
       return "zh-Hant";
+    case USCRIPT_ARABIC_NASTALIQ:
+      return "und-Aran";
     default:
       return nullptr;
   }
@@ -179,7 +191,7 @@ const char* LayoutLocale::LocaleForSkFontMgr() const {
   if (!string_for_sk_font_mgr_.empty())
     return string_for_sk_font_mgr_.c_str();
 
-  if (const char* sk_font_mgr_locale = ToSkFontMgrLocale(script_)) {
+  if (const char* sk_font_mgr_locale = ToSkFontMgrLocale(script_for_font_)) {
     string_for_sk_font_mgr_ = sk_font_mgr_locale;
     DCHECK(!string_for_sk_font_mgr_.empty());
     return string_for_sk_font_mgr_.c_str();
@@ -277,7 +289,8 @@ void LayoutLocale::ComputeCaseMapLocale() const {
 LayoutLocale::LayoutLocale(const AtomicString& locale)
     : string_(locale),
       harfbuzz_language_(ToHarfbuzzLanguage(locale)),
-      script_(LocaleToScriptCodeForFontSelection(locale)) {}
+      script_for_font_(LocaleToScriptCodeForFontSelection(locale)),
+      script_(NormalizeStylishVariants(script_for_font_)) {}
 
 // static
 const LayoutLocale* LayoutLocale::Get(const AtomicString& locale) {
@@ -307,9 +320,8 @@ const LayoutLocale& LayoutLocale::GetSystem() {
   if (!data.system_locale) [[unlikely]] {
     // Platforms such as Windows can give more information than the default
     // locale, such as "en-JP" for English speakers in Japan.
-    String name = icu::Locale::getDefault().getName();
-    data.system_locale =
-        LayoutLocale::Get(AtomicString(name.Replace('_', '-')));
+    data.system_locale = LayoutLocale::Get(
+        AtomicString::FromUtf8(base::i18n::GetDefaultIcuLocale().tag_string()));
   }
   return *data.system_locale;
 }
@@ -368,8 +380,9 @@ scoped_refptr<QuotesData> LayoutLocale::GetQuotesData() const {
 AtomicString LayoutLocale::LocaleWithBreakKeyword(
     LineBreakStrictness strictness,
     bool use_phrase) const {
-  if (string_.empty())
+  if (string_.empty() && strictness == LineBreakStrictness::kDefault) {
     return string_;
+  }
 
   // uloc_setKeywordValue_58 has a problem to handle "@" in the original
   // string. crbug.com/697859

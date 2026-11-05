@@ -30,7 +30,7 @@ import org.chromium.chrome.browser.history_clusters.HistoryClustersTabHelper;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.offlinepages.OfflinePageUtils;
 import org.chromium.chrome.browser.pdf.PdfUtils;
-import org.chromium.chrome.browser.printing.PrintHelper;
+import org.chromium.chrome.browser.printing.PrintingDelegate;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.share.ShareContentTypeHelper.ContentType;
 import org.chromium.chrome.browser.share.android_share_sheet.AndroidShareSheetController;
@@ -45,7 +45,6 @@ import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLaunche
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.browser_ui.util.AutomotiveUtils;
-import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.ActivityResultTracker;
@@ -150,7 +149,7 @@ public class ShareDelegateImpl implements ShareDelegate {
                             mTabProvider,
                             mTabModelSelectorProvider,
                             assertNonNull(mProfileSupplier.get()),
-                            this::printTab,
+                            PrintingDelegate.getInstance(),
                             new TabGroupSharingControllerImpl(mDataSharingTabManager),
                             shareOrigin,
                             mShareStartTime,
@@ -300,10 +299,6 @@ public class ShareDelegateImpl implements ShareDelegate {
         return visibleUrl.getSpec();
     }
 
-    private void printTab(Tab tab) {
-        PrintHelper.printTab(tab);
-    }
-
     @Override
     public boolean isSharingHubEnabled() {
         if (DeviceInfo.isAutomotive() && !AutomotiveUtils.doesDeviceSupportOsShareSheet(mContext)) {
@@ -327,8 +322,8 @@ public class ShareDelegateImpl implements ShareDelegate {
         // Safely resolve the Activity (weak reference might be null during teardown).
         Activity activity = windowAndroid.getActivity().get();
         if (activity == null) {
-            if (mContext instanceof Activity) {
-                activity = (Activity) mContext;
+            if (mContext instanceof Activity activityContext) {
+                activity = activityContext;
             } else {
                 return;
             }
@@ -369,7 +364,7 @@ public class ShareDelegateImpl implements ShareDelegate {
                 Supplier<@Nullable Tab> tabProvider,
                 Supplier<@Nullable TabModelSelector> tabModelSelectorSupplier,
                 Profile profile,
-                Callback<Tab> printCallback,
+                @Nullable PrintingDelegate printingDelegate,
                 TabGroupSharingController tabGroupSharingController,
                 @ShareOrigin int shareOrigin,
                 long shareStartTime,
@@ -403,8 +398,7 @@ public class ShareDelegateImpl implements ShareDelegate {
                                     controller,
                                     lifecycleDispatcher,
                                     tabProvider,
-                                    printCallback,
-                                    new LargeIconBridge(profile),
+                                    printingDelegate,
                                     isIncognito,
                                     TrackerFactory.getTrackerForProfile(profile),
                                     profile,
@@ -430,7 +424,7 @@ public class ShareDelegateImpl implements ShareDelegate {
                             tabProvider,
                             tabModelSelectorSupplier,
                             profile,
-                            printCallback,
+                            printingDelegate,
                             tabGroupSharingController,
                             DeviceLockActivityLauncherImpl.get(),
                             signinAndHistorySyncActivityLauncher,

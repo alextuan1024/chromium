@@ -25,11 +25,13 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.ParameterizedRobolectricTestRunner.Parameter;
 
 import org.chromium.base.Callback;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.blink.mojom.RpContext;
 import org.chromium.blink.mojom.RpMode;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.AccountProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ButtonData;
+import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ContinueButtonProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ItemProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.LoginButtonProperties;
 import org.chromium.chrome.browser.ui.android.webid.data.Account;
@@ -131,6 +133,7 @@ public class AccountSelectionJUnitTestBase {
     @Mock Callback<ButtonData> mAccountCallback;
     @Mock Callback<ButtonData> mIdpLoginCallback;
     @Mock AccountSelectionComponent.Delegate mMockDelegate;
+    @Mock AccountSelectionMediator.ActiveSheetSwitcher mMockActiveSheetSwitcher;
     @Mock BottomSheetController mMockBottomSheetController;
     @Mock Tab mTab;
     Context mContext;
@@ -146,7 +149,12 @@ public class AccountSelectionJUnitTestBase {
     GURL mTestIdpBrandIconUrl;
     GURL mTestRpBrandIconUrl;
     GURL mTestConfigUrl;
+    GURL mTestConfigUrl2;
     GURL mTestLoginUrl;
+    GURL mTestLoginUrl2;
+    GURL mTestIdpAccountManagementUrl;
+    GURL mTestIdpPrivacyPolicyUrl;
+    GURL mTestIdpTermsOfServiceUrl;
     GURL mTestErrorUrl;
     GURL mTestEmptyErrorUrl;
     Account mAnaAccount;
@@ -154,11 +162,14 @@ public class AccountSelectionJUnitTestBase {
     Account mAnaAccountWithoutBrandIcons;
     Account mBobAccount;
     Account mCarlAccount;
+    Account mDanAccount;
     Account mNewUserAccount;
     Account mNewUserAccountWithoutFields;
+    Account mNewUserAccountForIdp2;
     Account mNoOneAccount;
     Account mFilteredOutAccount;
     Account mFilteredOutAccountWithUseDifferentAccount;
+    Account mFilteredOutAccountForIdp2;
     Account mNicolasAccount;
     Account mSingleIdentifierAccount;
     Account mSingleIdentifierAccountFilteredOut;
@@ -173,6 +184,8 @@ public class AccountSelectionJUnitTestBase {
     IdentityProviderMetadata mIdpMetadata;
     IdentityProviderMetadata mIdpMetadataWithoutIcon;
     IdentityProviderData mIdpData;
+    // A second IDP, for multi IDP tests. It supports use a different account.
+    IdentityProviderData mIdpData2;
     IdentityProviderData mIdpDataWithoutIcons;
     IdentityProviderMetadata mIdpMetadataWithUseDifferentAccount;
     IdentityProviderData mIdpDataWithUseDifferentAccount;
@@ -196,7 +209,12 @@ public class AccountSelectionJUnitTestBase {
         mTestIdpBrandIconUrl = JUnitTestGURLs.RED_3;
         mTestRpBrandIconUrl = JUnitTestGURLs.RED_3;
         mTestConfigUrl = new GURL("https://idp.com/fedcm.json");
+        mTestConfigUrl2 = new GURL("https://idp2.com/fedcm.json");
         mTestLoginUrl = new GURL("https://idp.com/login");
+        mTestLoginUrl2 = new GURL("https://idp2.com/login");
+        mTestIdpAccountManagementUrl = new GURL("https://idp.com/account");
+        mTestIdpPrivacyPolicyUrl = new GURL("https://idp.com/privacy");
+        mTestIdpTermsOfServiceUrl = new GURL("https://idp.com/terms");
         mTestErrorUrl = new GURL("https://idp.com/error");
         mTestEmptyErrorUrl = new GURL("");
 
@@ -210,6 +228,9 @@ public class AccountSelectionJUnitTestBase {
                         Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_4444),
                         mTestConfigUrl,
                         mTestLoginUrl,
+                        mTestIdpAccountManagementUrl,
+                        mTestIdpPrivacyPolicyUrl,
+                        mTestIdpTermsOfServiceUrl,
                         /* showUseDifferentAccountButton= */ false);
 
         mIdpMetadataWithoutIcon =
@@ -219,12 +240,36 @@ public class AccountSelectionJUnitTestBase {
                         null,
                         mTestConfigUrl,
                         mTestLoginUrl,
+                        /* accountManagementUrl= */ GURL.emptyGURL(),
+                        /* privacyPolicyUrl= */ GURL.emptyGURL(),
+                        /* termsOfServiceUrl= */ GURL.emptyGURL(),
                         /* showUseDifferentAccountButton= */ false);
 
         mIdpData =
                 new IdentityProviderData(
                         mTestEtldPlusOne2,
                         mIdpMetadata,
+                        new ClientIdMetadata(
+                                mTestUrlTermsOfService,
+                                mTestUrlPrivacyPolicy,
+                                Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)),
+                        RpContext.SIGN_IN,
+                        DEFAULT_DISCLOSURE_FIELDS,
+                        /* hasLoginStatusMismatch= */ false);
+
+        mIdpData2 =
+                new IdentityProviderData(
+                        mTestEtldPlusOne1,
+                        new IdentityProviderMetadata(
+                                Color.RED,
+                                Color.YELLOW,
+                                Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_4444),
+                                mTestConfigUrl2,
+                                mTestLoginUrl2,
+                                /* accountManagementUrl= */ GURL.emptyGURL(),
+                                /* privacyPolicyUrl= */ GURL.emptyGURL(),
+                                /* termsOfServiceUrl= */ GURL.emptyGURL(),
+                                /* showUseDifferentAccountButton= */ true),
                         new ClientIdMetadata(
                                 mTestUrlTermsOfService,
                                 mTestUrlPrivacyPolicy,
@@ -249,6 +294,9 @@ public class AccountSelectionJUnitTestBase {
                         null,
                         mTestConfigUrl,
                         mTestLoginUrl,
+                        /* accountManagementUrl= */ GURL.emptyGURL(),
+                        /* privacyPolicyUrl= */ GURL.emptyGURL(),
+                        /* termsOfServiceUrl= */ GURL.emptyGURL(),
                         /* showUseDifferentAccountButton= */ true);
         mIdpDataWithUseDifferentAccount =
                 new IdentityProviderData(
@@ -332,6 +380,21 @@ public class AccountSelectionJUnitTestBase {
                         /* isFilteredOut= */ false,
                         /* fields= */ new int[0],
                         mIdpData);
+        mDanAccount =
+                new Account(
+                        "Dan",
+                        "dan@idp2.example",
+                        "Dan Doe",
+                        "Dan",
+                        /* secondaryDescription= */ mTestEtldPlusOne1,
+                        /* pictureBitmap= */ null,
+                        /* circledBadgedPictureBitmap= */ Bitmap.createBitmap(
+                                100, 100, Bitmap.Config.ARGB_4444),
+                        /* isIdpClaimedSignIn= */ true,
+                        /* isBrowserTrustedSignIn= */ true,
+                        /* isFilteredOut= */ false,
+                        /* fields= */ new int[0],
+                        mIdpData2);
         mNewUserAccount =
                 new Account(
                         "602214076",
@@ -363,6 +426,22 @@ public class AccountSelectionJUnitTestBase {
                         /* isFilteredOut= */ false,
                         /* fields= */ new int[0],
                         mIdpData);
+
+        mNewUserAccountForIdp2 =
+                new Account(
+                        "Eve",
+                        "eve@idp2.example",
+                        "Eve Doe",
+                        "Eve",
+                        /* secondaryDescription= */ mTestEtldPlusOne1,
+                        /* pictureBitmap= */ null,
+                        /* circledBadgedPictureBitmap= */ Bitmap.createBitmap(
+                                100, 100, Bitmap.Config.ARGB_4444),
+                        /* isIdpClaimedSignIn= */ false,
+                        /* isBrowserTrustedSignIn= */ false,
+                        /* isFilteredOut= */ false,
+                        DEFAULT_DISCLOSURE_FIELDS,
+                        mIdpData2);
 
         mNoOneAccount =
                 new Account(
@@ -406,6 +485,21 @@ public class AccountSelectionJUnitTestBase {
                         /* isFilteredOut= */ true,
                         /* fields= */ new int[0],
                         mIdpDataWithUseDifferentAccount);
+        mFilteredOutAccountForIdp2 =
+                new Account(
+                        "Fay",
+                        "fay@idp2.example",
+                        "Fay Doe",
+                        "Fay",
+                        /* secondaryDescription= */ mTestEtldPlusOne1,
+                        /* pictureBitmap= */ null,
+                        /* circledBadgedPictureBitmap= */ Bitmap.createBitmap(
+                                100, 100, Bitmap.Config.ARGB_4444),
+                        /* isIdpClaimedSignIn= */ true,
+                        /* isBrowserTrustedSignIn= */ true,
+                        /* isFilteredOut= */ true,
+                        /* fields= */ new int[0],
+                        mIdpData2);
         mNicolasAccount =
                 new Account(
                         "NicoId",
@@ -474,10 +568,7 @@ public class AccountSelectionJUnitTestBase {
 
         mBottomSheetContent =
                 new AccountSelectionBottomSheetContent(
-                        /* contentView= */ null,
-                        /* bottomSheetController= */ null,
-                        /* scrollOffsetSupplier= */ null,
-                        mRpMode);
+                        mContentView, mMockBottomSheetController, SupplierUtils.of(0), mRpMode);
         mMockModalDialogManager = new MockModalDialogManager();
         resetMediator();
     }
@@ -493,11 +584,8 @@ public class AccountSelectionJUnitTestBase {
     }
 
     MVCListAdapter.ListItem buildIdpLoginItem(IdentityProviderData idpData, boolean showIdp) {
-        LoginButtonProperties.Properties properties = new LoginButtonProperties.Properties();
-        properties.mIdentityProvider = idpData;
-        properties.mOnClickListener = mIdpLoginCallback;
-        properties.mRpMode = mRpMode;
-        properties.mShowIdp = showIdp;
+        LoginButtonProperties.Properties properties =
+                new LoginButtonProperties.Properties(idpData, mIdpLoginCallback, mRpMode, showIdp);
         return new MVCListAdapter.ListItem(
                 AccountSelectionProperties.ITEM_TYPE_LOGIN,
                 new PropertyModel.Builder(LoginButtonProperties.ALL_KEYS)
@@ -542,6 +630,17 @@ public class AccountSelectionJUnitTestBase {
                         mRpMode,
                         mContext,
                         mMockModalDialogManager,
-                        /* canShowUi= */ true);
+                        /* canShowUi= */ true,
+                        mRpMode == RpMode.PASSIVE ? mMockActiveSheetSwitcher : null);
+    }
+
+    /** Clicks the continue button the same way the view does. */
+    void clickContinueButton() {
+        // Do not let test inputs be ignored.
+        mMediator.setComponentShowTime(-1000);
+        ContinueButtonProperties.Properties continueButton =
+                mModel.get(ItemProperties.CONTINUE_BUTTON).get(ContinueButtonProperties.PROPERTIES);
+        continueButton.mOnClickListener.onResult(
+                new ButtonData(continueButton.mAccount, continueButton.mIdpMetadata));
     }
 }

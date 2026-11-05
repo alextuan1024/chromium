@@ -149,8 +149,8 @@ class FetchLoaderClient final : public GarbageCollected<FetchLoaderClient>,
   FetchLoaderClient(const FetchLoaderClient&) = delete;
   FetchLoaderClient& operator=(const FetchLoaderClient&) = delete;
 
-  void DidFetchDataStartedDataPipe(
-      mojo::ScopedDataPipeConsumerHandle pipe) override {
+  void DidFetchDataStartedDataPipe(mojo::ScopedDataPipeConsumerHandle pipe,
+                                   DrainedDataPipeClient*) override {
     DCHECK(!body_stream_.is_valid());
     DCHECK(pipe.is_valid());
     body_stream_ = std::move(pipe);
@@ -357,11 +357,17 @@ void FetchRespondWithObserver::OnResponseFulfilled(ScriptState* script_state,
     return;
   }
 
+  if (auto pending_side_data_writer =
+          response->GetResponse()->TakeCacheStorageSideDataWriter()) {
+    fetch_api_response->cache_storage_side_data_writer =
+        std::move(pending_side_data_writer);
+  }
+
   BodyStreamBuffer* buffer = response->InternalBodyBuffer();
   if (buffer) {
-    // The |side_data_blob| must be taken before the body buffer is
+    // The cached metadata must be taken before the body buffer is
     // drained or loading begins.
-    fetch_api_response->side_data_blob = buffer->TakeSideDataBlob();
+    fetch_api_response->cached_metadata = buffer->TakeCachedMetadata();
 
     ExceptionState exception_state(script_state->GetIsolate());
 

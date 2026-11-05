@@ -87,6 +87,11 @@ _ABIS_TO_DIGIT_MASK.
 _APKS = {
     '32': [
         ('CHROME', 'CHROME', '32'),
+        # 32-bit Chrome with a 64-bit placeholder library.
+        ('CHROME_32_64', 'CHROME', '32_64'),
+        # Obsolete Chrome Modern version code being used for Chrome 32_64
+        # OpenBeta.
+        ('CHROME_32_64_BETA', 'CHROME_MODERN', '32_64'),
         ('CHROME_MODERN', 'CHROME_MODERN', '32'),
         ('MONOCHROME', 'MONOCHROME', '32'),
         ('TRICHROME', 'TRICHROME', '32'),
@@ -338,7 +343,7 @@ def TranslateVersionCode(version_code, is_webview=False):
                 package_name = package
                 break
     if not package_name:
-        raise Error(
+        raise ValueError(
             f'Unable to match package with package_digit={package_digit} '
             f'and is_webview={is_webview}'
         )

@@ -15,7 +15,6 @@ static_library("auto_sleep") {
   ]
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chromeos/ash/components/policy/weekly_time",
     "//chromeos/ash/components/settings",
     "//chromeos/dbus/power",
@@ -27,7 +26,6 @@ static_library("auto_sleep") {
   deps = [
     "//ash",
     "//chrome/browser/ash/policy/scheduled_task_handler",
-    "//chrome/common:constants",
     "//components/policy:generated",
     "//components/policy:policy_code_generate",
     "//components/policy/core/browser",
@@ -54,7 +52,6 @@ static_library("test_support") {
     "//chrome/common",
     "//chrome/common:constants",
     "//chrome/common:non_code_constants",
-    "//chrome/test:test_support_ui",
   ]
 }
 
@@ -71,6 +68,7 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/policy/weekly_time",
     "//chromeos/ash/components/settings",
     "//chromeos/dbus/power",
@@ -97,6 +95,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//content/test:test_support",
     "//ui/events:test_support",
   ]

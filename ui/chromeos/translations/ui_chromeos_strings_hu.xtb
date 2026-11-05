@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Kamera</translation>
 <translation id="162175252992296058">portugál, amerikai nemzetközi billentyűzettel</translation>
 <translation id="1629521517399325891">Nem áll rendelkezésre felhasználói tanúsítvány a hálózati hitelesítéshez.</translation>
+<translation id="1639239467298939599">Betöltés</translation>
 <translation id="1641780993263690097">kínai pinjin</translation>
 <translation id="164969095109328410">Chrome-eszköz</translation>
 <translation id="1661207570040737402">Felhasználta a megosztott meghajtó Google Workspace-tárhelyét.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Fájlszinkronizálás kikapcsolva</translation>
 <translation id="2820957248982571256">Keresés…</translation>
 <translation id="2830077785865012357">kínai zujin</translation>
+<translation id="2838379631617906747">Telepítés</translation>
 <translation id="2843806747483486897">Alapértelmezés módosítása...</translation>
 <translation id="2873951654529031587">Kuka</translation>
 <translation id="2887314858867008269">USA Colemak</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Helytelen jelszó</translation>
 <translation id="5059127710849015030">nepáli, betű szerinti átírás</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691">A(z) <ph name="EXTENSION_NAME" /> proxy-felülbírálási szabályokat állított be</translation>
 <translation id="5081517858322016911">A törlésre kerülő fájlok mérete összesen <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> elem áthelyezése ide: <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Hiba történt.</translation>
-<translation id="5102922915594634436">Szinkronizált mappák kezelése</translation>
 <translation id="5109254780565519649">Hiba történt. Előfordulhat, hogy egyes elemek visszaállítására nem került sor.</translation>
 <translation id="5110329002213341433">angol (Kanada)</translation>
 <translation id="5119780910075847424">A szinkronizálás szünetel</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Nincs telepítve</translation>
 <translation id="5317780077021120954">Mentés</translation>
 <translation id="5318819489018851358">Megosztás a Linuxszal</translation>
-<translation id="5330145655348521461">Ezek a fájlok meg vannak nyitva egy másik asztalon. A megtekintésükhöz váltson át <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) profiljára.</translation>
 <translation id="5330512191124428349">Információk megtekintése</translation>
 <translation id="535792325654997756">Ember macskákkal</translation>
 <translation id="5358764674931277">Képkockasebesség</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Érvénytelen érték: Domainvégződés – egyezés</translation>
 <translation id="6364301859968397756">Megtelt a szervezet tárhelye</translation>
 <translation id="6367976544441405720">Kisteherautó</translation>
-<translation id="637062427944097960">Ez a fájl meg van nyitva egy másik asztalon. A megtekintéséhez váltson át <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) profiljára.</translation>
 <translation id="6394388407447716302">Írásvédett</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> elem</translation>
 <translation id="6407769893376380348">Nem sikerült áthelyezni a(z) <ph name="FILE_NAME" /> fájlt, mert titkosítva van.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – port</translation>
 <translation id="8656407365183407932">Az offline fájlokat el kellett távolítani</translation>
 <translation id="8656768832129462377">Ne ellenőrizze</translation>
+<translation id="8662978096466608964">A Chrome nem tud háttérképet beállítani.</translation>
 <translation id="8688591111840995413">Helytelen jelszó</translation>
 <translation id="8698464937041809063">Google-rajz</translation>
 <translation id="8698877009525468705">Ez a fájl bizalmas, és a rendszergazdai házirend által meghatározott korlátozások vonatkoznak rá.</translation>

@@ -39,6 +39,8 @@ enum LanguageModelMessageType { "text", "image", "audio", "tool-call", "tool-res
 
 enum LanguageModelSamplingMode { "most-predictable", "predictable", "slightly-predictable", "balanced", "slightly-creative", "creative", "most-creative" };
 
+enum LanguageModelThinkingEffort { "none", "low", "medium", "high" };
+
 typedef (
   ImageBitmapSource
   or AudioBuffer
@@ -74,13 +76,13 @@ dictionary LanguageModelToolResultContent {
 ]
 interface LanguageModelToolCall {
   [RaisesException] constructor(LanguageModelToolCallInit init);
-  readonly attribute DOMString callID;
+  readonly attribute DOMString callId;
   readonly attribute DOMString name;
   [CallWith=ScriptState] readonly attribute object? arguments;
 };
 
 dictionary LanguageModelToolCallInit {
-  required DOMString callID;
+  required DOMString callId;
   required DOMString name;
   object arguments;
 };
@@ -93,13 +95,13 @@ dictionary LanguageModelToolCallInit {
 ]
 interface LanguageModelToolSuccess {
   [RaisesException] constructor(LanguageModelToolSuccessInit init);
-  readonly attribute DOMString callID;
+  readonly attribute DOMString callId;
   readonly attribute DOMString name;
   readonly attribute FrozenArray<LanguageModelToolResultContent> result;
 };
 
 dictionary LanguageModelToolSuccessInit {
-  required DOMString callID;
+  required DOMString callId;
   required DOMString name;
   required sequence<LanguageModelToolResultContent> result;
 };
@@ -112,13 +114,13 @@ dictionary LanguageModelToolSuccessInit {
 ]
 interface LanguageModelToolError {
   [RaisesException] constructor(LanguageModelToolErrorInit init);
-  readonly attribute DOMString callID;
+  readonly attribute DOMString callId;
   readonly attribute DOMString name;
   readonly attribute DOMString errorMessage;
 };
 
 dictionary LanguageModelToolErrorInit {
-  required DOMString callID;
+  required DOMString callId;
   required DOMString name;
   required DOMString errorMessage;
 };
@@ -135,14 +137,17 @@ dictionary LanguageModelToolDeclaration {
 };
 
 dictionary LanguageModelCreateCoreOptions {
-  // **EXPERIMENTAL**: Only functional in extension contexts; these are
-  // otherwise ignored at runtime and only exposed to log deprecation warnings.
+  // **DEPRECATED**: this will be removed; use samplingMode instead. Only
+  // functional in extension contexts; these are otherwise ignored at runtime
+  // and only exposed to log deprecation warnings.
   // Note: these two have custom out-of-range handling behavior, not in the IDL layer.
   // They are unrestricted double so as to allow +Infinity without failing.
   unrestricted double topK;
   unrestricted double temperature;
 
   [RuntimeEnabled=AIPromptAPIParams] LanguageModelSamplingMode samplingMode;
+
+  [RuntimeEnabled=AIPromptAPIThinkingMode] LanguageModelThinkingEffort thinkingEffort;
 
   // The expected types and languages for the session.
   sequence<LanguageModelExpected> expectedInputs;

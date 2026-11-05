@@ -18,6 +18,7 @@
 
 class Browser;
 class BrowserList;
+class PrefService;
 class TabGroup;
 
 namespace history {
@@ -44,6 +45,7 @@ class SyncedSessions;
 }  // namespace synced_sessions
 
 namespace syncer {
+class DeviceInfoTracker;
 class SyncService;
 }  // namespace syncer
 
@@ -56,17 +58,16 @@ class WebState;
 class TabsSearchService : public IOSBrowsingHistoryDriverDelegate,
                           public KeyedService {
  public:
-  using WebHistoryServiceGetter =
-      base::RepeatingCallback<history::WebHistoryService*()>;
-
   TabsSearchService(bool is_off_the_record,
+                    PrefService* pref_service,
                     BrowserList* browser_list,
                     signin::IdentityManager* identity_manager,
                     syncer::SyncService* sync_service,
                     sessions::TabRestoreService* restore_service,
                     sync_sessions::SessionSyncService* session_sync_service,
                     history::HistoryService* history_service,
-                    WebHistoryServiceGetter web_history_service_getter);
+                    history::WebHistoryService* web_history_service,
+                    syncer::DeviceInfoTracker* device_info_tracker);
   ~TabsSearchService() override;
 
   // A container to store matched WebStates and TabGroups with a reference to
@@ -74,15 +75,15 @@ class TabsSearchService : public IOSBrowsingHistoryDriverDelegate,
   // `browser`.
   struct TabsSearchBrowserResults {
     TabsSearchBrowserResults(Browser*,
-                             const std::vector<web::WebState*>,
-                             const std::vector<const TabGroup*>);
+                             std::vector<raw_ptr<web::WebState>>,
+                             std::vector<raw_ptr<const TabGroup>>);
     ~TabsSearchBrowserResults();
 
     TabsSearchBrowserResults(const TabsSearchBrowserResults&);
 
     raw_ptr<Browser> browser;
-    const std::vector<web::WebState*> web_states;
-    const std::vector<const TabGroup*> tab_groups;
+    const std::vector<raw_ptr<web::WebState>> web_states;
+    const std::vector<raw_ptr<const TabGroup>> tab_groups;
   };
   // Searches through tabs in all the Browsers associated with `profile`
   // for WebStates with current titles or URLs matching `term`. The matching
@@ -152,6 +153,9 @@ class TabsSearchService : public IOSBrowsingHistoryDriverDelegate,
 
   // Is the service used for off-the-record BrowserState?
   const bool is_off_the_record_;
+  // Passed to `IOSBrowsingHistoryDriver` to enforce
+  // `AllowDeletingBrowserHistory`; must outlive this service.
+  raw_ptr<PrefService> pref_service_;
   // The KeyedServices used.
   raw_ptr<BrowserList> browser_list_;
   // The optional KeyedServices used (may be null when off-the-record).
@@ -160,7 +164,8 @@ class TabsSearchService : public IOSBrowsingHistoryDriverDelegate,
   raw_ptr<sessions::TabRestoreService> restore_service_;
   raw_ptr<sync_sessions::SessionSyncService> session_sync_service_;
   raw_ptr<history::HistoryService> history_service_;
-  WebHistoryServiceGetter web_history_service_getter_;
+  raw_ptr<history::WebHistoryService> web_history_service_;
+  raw_ptr<syncer::DeviceInfoTracker> device_info_tracker_;
 
   // The most recent search history term.
   std::u16string ongoing_history_search_term_;

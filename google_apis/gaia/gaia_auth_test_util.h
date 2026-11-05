@@ -5,10 +5,12 @@
 #ifndef GOOGLE_APIS_GAIA_GAIA_AUTH_TEST_UTIL_H_
 #define GOOGLE_APIS_GAIA_GAIA_AUTH_TEST_UTIL_H_
 
+#include <memory>
 #include <optional>
 #include <string>
 
 #include "base/base64url.h"
+#include "google_apis/gaia/device_management_error_details.h"
 #include "google_apis/gaia/gaia_id.h"
 
 namespace gaia {
@@ -20,6 +22,8 @@ struct CookieParams {
   bool valid;
   bool signed_out;
   bool verified;
+  std::string display_name;
+  std::string photo_url;
 };
 
 std::string GenerateOAuth2MintTokenConsentResult(
@@ -32,6 +36,13 @@ std::string GenerateOAuth2MintTokenConsentResult(
 // Creates the content for listing accounts in binary format.
 std::string CreateListAccountsResponseInBinaryFormat(
     const std::vector<CookieParams>& params);
+
+// Creates a platform-specific DeviceManagementErrorDetails instance for
+// testing (an AndroidDeviceManagementErrorDetails with a null PendingIntent on
+// Android to support JNI conversions, or a fake implementation on other
+// platforms).
+std::unique_ptr<DeviceManagementErrorDetails>
+CreateFakeDeviceManagementErrorDetails();
 
 }  // namespace gaia
 

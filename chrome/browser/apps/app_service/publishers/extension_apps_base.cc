@@ -32,6 +32,7 @@
 #include "chrome/browser/ui/extensions/extension_enable_flow_delegate.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/waap/window_creation.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/extensions/extension_metrics.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
@@ -56,8 +57,8 @@
 #include "extensions/common/manifest_handlers/description_info.h"
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "extensions/common/switches.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/display/types/display_constants.h"
 #include "url/url_constants.h"
@@ -231,10 +232,10 @@ void ExtensionAppsBase::LaunchAppWithParamsImpl(AppLaunchParams&& params,
 
 const extensions::Extension* ExtensionAppsBase::MaybeGetExtension(
     const std::string& app_id) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
   extensions::ExtensionRegistry* registry =
       extensions::ExtensionRegistry::Get(profile_);
-  DCHECK(registry);
+  CHECK(registry, base::NotFatalUntil::M161);
   const extensions::Extension* extension =
       registry->GetInstalledExtension(app_id);
   if (!extension || !Accepts(extension)) {
@@ -250,7 +251,7 @@ void ExtensionAppsBase::Initialize() {
   prefs_observation_.Observe(extensions::ExtensionPrefs::Get(profile_));
   registry_observation_.Observe(extensions::ExtensionRegistry::Get(profile_));
 
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
 
   // Publish apps after all extensions have been loaded, to include all apps
   // including the disabled apps.
@@ -455,7 +456,7 @@ void ExtensionAppsBase::Uninstall(const std::string& app_id,
   NavigateParams params(
       profile(), extension_urls::GetWebstoreReportAbuseUrl(app_id, kReferrerId),
       ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&params);
 }
 
@@ -474,7 +475,9 @@ void ExtensionAppsBase::OpenNativeSettings(const std::string& app_id) {
     BrowserWindowInterface* browser =
         ProfileBrowserCollection::GetForProfile(profile_)->FindTabbedBrowser();
     if (!browser) {
-      browser = CreateBrowserWindow(BrowserWindowCreateParams(profile_, true));
+      browser = waap::CreateBrowserWindowAndRecordCreationSource(
+          BrowserWindowCreateParams(profile_, true),
+          waap::NewWindowCreationSource::kNewEmptyWindow);
     }
 
     chrome::ShowExtensions(browser, extension->id());
@@ -496,7 +499,7 @@ void ExtensionAppsBase::OnExtensionLastLaunchTimeChanged(
 
 void ExtensionAppsBase::OnExtensionPrefsWillBeDestroyed(
     extensions::ExtensionPrefs* prefs) {
-  DCHECK(prefs_observation_.IsObservingSource(prefs));
+  CHECK(prefs_observation_.IsObservingSource(prefs), base::NotFatalUntil::M161);
   prefs_observation_.Reset();
 }
 

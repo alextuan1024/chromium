@@ -395,6 +395,7 @@ class EventRouter : public KeyedService,
 
  private:
   friend class BookmarksApiEventsTest;
+  friend class EventRouterAsyncListenerRegistrationTest;
   friend class EventRouterFilterTest;
   friend class EventRouterTest;
   friend class ash::file_system_provider::
@@ -488,7 +489,9 @@ class EventRouter : public KeyedService,
 
   // Reports a bad message when `process` is not authorized for `extension_id`,
   // recording crash keys to help diagnose unexpected renderer kills.
+  // `event_name` is the event whose listener was being updated.
   void ReportUnauthorizedExtensionProcess(const ExtensionId& extension_id,
+                                          std::string_view event_name,
                                           content::RenderProcessHost& process);
 
   // Validates a main-thread listener owner from a renderer-originated message.
@@ -499,6 +502,7 @@ class EventRouter : public KeyedService,
   // reported).
   bool ValidateMainThreadListenerOwner(
       const mojom::EventListenerOwner& listener_owner,
+      std::string_view event_name,
       content::RenderProcessHost& process,
       bool require_extension_process);
 
@@ -506,6 +510,7 @@ class EventRouter : public KeyedService,
   // acting for an extension-owned worker scope that `process` may host.
   bool ValidateServiceWorkerListenerForExtension(
       const ExtensionId& extension_id,
+      std::string_view event_name,
       const GURL& worker_scope_url,
       content::RenderProcessHost& process);
 
@@ -548,23 +553,78 @@ class EventRouter : public KeyedService,
       content::BrowserContext& browser_context,
       const WorkerId& worker_id) override;
 
-  // Adds/removes lazy listeners for trusted browser-internal callers that do
-  // not have a current EventRouter Mojo receiver.
+  // Adds/removes lazy listeners after the Mojo handlers have validated the
+  // message (tests also call these directly). For service workers,
+  // `browser_context` is the context associated with the worker.
   void AddLazyListenerForMainThreadImpl(const ExtensionId& extension_id,
                                         const std::string& event_name);
-  void AddLazyListenerForServiceWorkerImpl(const ExtensionId& extension_id,
-                                           const GURL& worker_scope_url,
-                                           const std::string& event_name);
+  void AddLazyListenerForServiceWorkerImpl(
+      content::BrowserContext& browser_context,
+      const ExtensionId& extension_id,
+      const GURL& worker_scope_url,
+      const std::string& event_name);
   void RemoveLazyListenerForMainThreadImpl(const ExtensionId& extension_id,
                                            const std::string& event_name);
-  void RemoveLazyListenerForServiceWorkerImpl(const ExtensionId& extension_id,
-                                              const GURL& worker_scope_url,
-                                              const std::string& event_name);
+  void RemoveLazyListenerForServiceWorkerImpl(
+      content::BrowserContext& browser_context,
+      const ExtensionId& extension_id,
+      const GURL& worker_scope_url,
+      const std::string& event_name);
 
-  void AddLazyEventListenerImpl(std::unique_ptr<EventListener> listener,
-                                RegisteredEventType type);
-  void RemoveLazyEventListenerImpl(std::unique_ptr<EventListener> listener,
-                                   RegisteredEventType type);
+  // Adds or removes a lazy `listener` in memory and in prefs. When the service
+  // worker has a registration phase, updates are recorded in that phase and
+  // only written to prefs once it has committed; on removal, the listener also
+  // stays in memory if it is still in prefs or in an in-progress phase of the
+  // other split-mode worker.
+  //
+  // For a service worker, `browser_context` is the context associated with the
+  // worker, used to look up its phase. It can differ from
+  // `listener->browser_context()`, since `CreateLazyListener()` callers pass
+  // the original context even for incognito workers. Non-service-worker
+  // listeners ignore `browser_context`.
+  void AddLazyEventListenerImpl(content::BrowserContext& browser_context,
+                                std::unique_ptr<EventListener> listener);
+  void RemoveLazyEventListenerImpl(content::BrowserContext& browser_context,
+                                   std::unique_ptr<EventListener> listener);
+
+  // Adds or removes a single lazy `listener` in prefs (used when no
+  // registration phase applies). Assumes `listener` is not already in prefs
+  // when adding (so filtered events aren't duplicated), and is in prefs when
+  // removing.
+  void AddLazyListenerToPrefs(const EventListener& listener);
+  void RemoveLazyListenerFromPrefs(const EventListener& listener);
+
+  // Called when a worker's listener registration phase finishes (`state` is
+  // `kCommitted` or `kAborted`).
+  void OnListenerRegistrationPhaseFinished(
+      const ExtensionId& extension_id,
+      content::BrowserContext& browser_context,
+      ListenerRegistrationPhaseMap::State state);
+
+  // Returns true if the lazy service worker `listener` is still in prefs or
+  // registered in an in-progress phase of the other split-mode worker
+  // (`browser_context` is the calling worker's context).
+  bool IsLazyListenerPersistedOrPending(
+      content::BrowserContext& browser_context,
+      const EventListener& listener);
+
+  // Writes `extension_id`'s lazy service worker listeners to prefs from the
+  // committed phase in `browser_context` (including any post-commit updates).
+  // In split mode, also preserves any listeners that may belong to the other
+  // worker while its context exists.
+  void PersistCommittedListeners(const ExtensionId& extension_id,
+                                 content::BrowserContext& browser_context);
+
+  // Returns the persisted lazy service worker listeners for `extension_id`.
+  ListenerRegistrationPhaseMap::ListenerSet GetPersistedListeners(
+      const ExtensionId& extension_id);
+
+  // Syncs `extension_id`'s in-memory lazy service worker listeners with prefs
+  // and any in-progress registration phase (in `browser_context` or its
+  // split-mode counterpart). No-op if the extension is unloaded.
+  void ResetLazyServiceWorkerListeners(
+      const ExtensionId& extension_id,
+      content::BrowserContext& browser_context);
 
   // Shared by all event dispatch methods. If `restrict_to_extension_id`  and
   // `restrict_to_url` is empty, the event is broadcast.  An event that just
@@ -821,28 +881,6 @@ struct Event {
   // and limit usages of this constructor and introduce "include incognito"
   // option to a constructor version for clients that need to dispatch events to
   // related browser_contexts. See https://crbug.com/40522431.
-  Event(events::HistogramValue histogram_value,
-        std::string_view event_name,
-        base::ListValue event_args);
-
-  Event(events::HistogramValue histogram_value,
-        std::string_view event_name,
-        base::ListValue event_args,
-        content::BrowserContext* restrict_to_browser_context,
-        std::optional<mojom::ContextType> restrict_to_context_type =
-            std::nullopt);
-
-  Event(events::HistogramValue histogram_value,
-        std::string_view event_name,
-        base::ListValue event_args,
-        content::BrowserContext* restrict_to_browser_context,
-        std::optional<mojom::ContextType> restrict_to_context_type,
-        const GURL& event_url,
-        EventRouter::UserGestureState user_gesture,
-        mojom::EventFilteringInfoPtr info,
-        bool lazy_background_active_on_dispatch = false,
-        base::TimeTicks dispatch_start_time = base::TimeTicks{});
-
   Event(events::HistogramValue histogram_value,
         std::string_view event_name,
         scoped_refptr<const EventArgs> event_args);

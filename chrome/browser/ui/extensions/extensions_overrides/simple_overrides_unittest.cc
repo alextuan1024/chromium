@@ -24,6 +24,7 @@
 #include "extensions/common/api/shared_module.h"
 #include "extensions/common/api/web_accessible_resources.h"
 #include "extensions/common/extension_builder.h"
+#include "extensions/common/features/feature.h"
 #include "extensions/common/features/feature_provider.h"
 #include "extensions/common/manifest_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -42,6 +43,7 @@ constexpr const char* kDisallowedFeatures[] = {
     extensions::manifest_keys::kAction,
     extensions::manifest_keys::kApp,
     extensions::manifest_keys::kAutomation,
+    extensions::manifest_keys::kBackForwardCache,
     extensions::manifest_keys::kBackground,
     extensions::manifest_keys::kBackgroundAsyncListenerRegistration,
     extensions::manifest_keys::kBackgroundPage,
@@ -59,7 +61,6 @@ constexpr const char* kDisallowedFeatures[] = {
     extensions::manifest_keys::kDisplayInNewTabPage,
     extensions::manifest_keys::kEventRules,
     extensions::manifest_keys::kExternallyConnectable,
-    extensions::manifest_keys::kFileBrowserHandlers,
     extensions::manifest_keys::kFileHandlers,
     extensions::manifest_keys::kHostPermissions,
     extensions::manifest_keys::kInputComponents,
@@ -119,6 +120,7 @@ constexpr const char* kDisallowedFeatures[] = {
 #if BUILDFLAG(IS_CHROMEOS)
     "file_system_provider_capabilities",
     extensions::manifest_keys::kChromeOSSystemExtension,
+    extensions::manifest_keys::kFileBrowserHandlers,
 #endif
 
     // The following features have no declared constant, but are present in
@@ -129,6 +131,11 @@ constexpr const char* kDisallowedFeatures[] = {
     "oauth2.auto_approve",
     "platforms",
     "sandbox",
+    // TODO(crbug.com/586554274): Use
+    // `extensions::api::sidebar::ManifestKeys::kSidebar` in the compiled
+    // manifest keys section above once sidebar.webidl declares the `sidebar`
+    // manifest key.
+    "sidebar",
     "storage",
 };
 
@@ -142,9 +149,11 @@ TEST(ExtensionSimpleOverridesTest,
       extensions::FeatureProvider::GetManifestFeatures();
   ASSERT_TRUE(manifest_features);
 
-  const extensions::FeatureMap& known_features =
-      manifest_features->GetAllFeatures();
+  extensions::FeatureSpan known_features = manifest_features->GetAllFeatures();
 
+  auto is_known = [manifest_features](std::string_view name) {
+    return manifest_features->GetFeature(name) != nullptr;
+  };
   std::vector<std::string> allowlisted_features =
       simple_overrides::GetAllowlistedManifestKeysForTesting();
 
@@ -154,8 +163,7 @@ TEST(ExtensionSimpleOverridesTest,
   // Verify that all disallowed features are recognized and that none are in
   // both the disallowed and allowed feature sets.
   for (const auto& feature : disallowed_features) {
-    EXPECT_TRUE(known_features.contains(feature))
-        << "Unknown feature: " << feature;
+    EXPECT_TRUE(is_known(feature)) << "Unknown feature: " << feature;
     EXPECT_FALSE(std::ranges::contains(allowlisted_features, feature))
         << "Feature in both allowed and disallowed: " << feature;
   }
@@ -163,15 +171,15 @@ TEST(ExtensionSimpleOverridesTest,
   // Verify that all allowed features are recognized and that none are in
   // both the disallowed and allowed feature sets.
   for (const auto& feature : allowlisted_features) {
-    EXPECT_TRUE(known_features.contains(feature))
-        << "Unknown feature: " << feature;
+    EXPECT_TRUE(is_known(feature)) << "Unknown feature: " << feature;
     EXPECT_FALSE(std::ranges::contains(disallowed_features, feature))
         << "Feature in both allowed and disallowed: " << feature;
   }
 
   // Verify that all known features are in either the allowed or disallowed
   // set.
-  for (const auto& [key, value] : known_features) {
+  for (const extensions::Feature* feature : known_features) {
+    const std::string_view key = feature->name();
     // Is this expectation failing for you?
     // Review the comment in simple_overrides.cc above the allowed feature
     // list and evaluate whether your new feature belongs in the allowed or

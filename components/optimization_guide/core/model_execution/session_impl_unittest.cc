@@ -13,13 +13,14 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/power_monitor_test.h"
-#include "base/test/scoped_feature_list.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
@@ -33,20 +34,20 @@
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/scenario_builder.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/test_manifest_asset_manager_component_state.h"
 #include "components/optimization_guide/core/model_execution/model_broker_client.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
-#include "components/optimization_guide/core/model_execution/on_device_execution.h"
 #include "components/optimization_guide/core/model_execution/on_device_features.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_access_controller.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_execution_proto_value_utils.h"
-#include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
+#include "components/optimization_guide/core/model_execution/on_device_telemetry_logger.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
 #include "components/optimization_guide/core/model_execution/test/request_builder.h"
 #include "components/optimization_guide/core/model_execution/test/response_holder.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
+#include "components/optimization_guide/core/model_execution/usage_tracker.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
@@ -60,13 +61,11 @@
 #include "components/optimization_guide/proto/on_device_model_execution_config.pb.h"
 #include "components/optimization_guide/proto/redaction.pb.h"
 #include "components/optimization_guide/proto/substitution.pb.h"
-#include "components/optimization_guide/proto/text_safety_model_metadata.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
 #include "components/prefs/testing_pref_service.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "services/on_device_model/public/cpp/capabilities.h"
-#include "services/on_device_model/public/cpp/features.h"
 #include "services/on_device_model/public/cpp/service_client.h"
 #include "services/on_device_model/public/cpp/test_support/fake_service.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
@@ -79,11 +78,14 @@ namespace {
 
 using ::on_device_model::mojom::LoadModelResult;
 using ::on_device_model::mojom::PerformanceClass;
-using ExecuteModelResult = ::optimization_guide::OnDeviceExecution::Result;
+using ExecuteModelResult =
+    ::optimization_guide::OnDeviceRequestTelemetryLogger::Result;
 
 using ::testing::AllOf;
+using ::testing::Contains;
 using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
+using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 using ::testing::ResultOf;
 
@@ -95,15 +97,37 @@ auto SimpleComposeConfigForTesting() {
   return cfg;
 }
 
-auto UnsafeComposeConfig() {
-  auto cfg = SimpleComposeConfigForTesting();
-  cfg.set_can_skip_text_safety(true);
-  return cfg;
-}
+// Records messages logged to chrome://on-device-internals. Observing a logger
+// also enables its debug logs.
+class TestLoggerObserver : public OptimizationGuideLogger::Observer {
+ public:
+  void OnLogMessageAdded(base::Time event_time,
+                         optimization_guide_common::mojom::LogSource log_source,
+                         const std::string& source_file,
+                         int source_line,
+                         const std::string& message) override {
+    messages_.push_back(message);
+  }
 
-const std::string& GetCheckText(
-    const proto::InternalOnDeviceModelExecutionInfo& log) {
-  return log.request().text_safety_model_request().text();
+  const std::vector<std::string>& messages() const { return messages_; }
+
+ private:
+  std::vector<std::string> messages_;
+};
+
+// Returns a callback that owns `session` and destroys it before running
+// `callback`, matching `AIManager` during initial input prefill.
+OnDeviceSession::SetInputCallback DestroySessionThen(
+    std::unique_ptr<OnDeviceSession> session,
+    OnDeviceSession::SetInputCallback callback) {
+  return base::BindOnce(
+      [](std::unique_ptr<OnDeviceSession> session,
+         OnDeviceSession::SetInputCallback callback,
+         base::expected<size_t, OnDeviceError> result) {
+        session.reset();
+        std::move(callback).Run(result);
+      },
+      std::move(session), std::move(callback));
 }
 
 }  // namespace
@@ -119,17 +143,10 @@ std::string ConcatResponses(const std::vector<std::string>& responses) {
 class SessionImplTest : public testing::Test {
  public:
   void SetUp() override {
-    feature_list_.InitWithFeaturesAndParameters(
-        {{features::kOptimizationGuideModelExecution, {}},
-         {features::kOnDeviceModelPerformanceParams,
-          {{"compatible_on_device_performance_classes", "3,4,5,6"},
-           {"compatible_low_tier_on_device_performance_classes", "3"}}},
-         {features::kOnDeviceModelValidation,
-          {{"on_device_model_validation_delay", "0"}}}},
-        {});
     // Mark a feature used so the model is eligible to install.
-    model_execution::prefs::RecordFeatureUsage(&broker_.local_state(),
-                                               mojom::OnDeviceFeature::kTest);
+    UsageTracker(&broker_.local_state())
+        .RaisePriority(ToUseCaseName(mojom::OnDeviceFeature::kTest),
+                       UsageTracker::Priority::kBestEffort);
   }
 
   void Initialize(proto::SolutionConfig solution_config) {
@@ -151,9 +168,6 @@ class SessionImplTest : public testing::Test {
         solution_config.feature().feature();
     mojom::OnDeviceFeature feature = *ToOnDeviceFeature(feature_proto);
     std::string use_case = ToUseCaseName(feature);
-    if (solution_config.has_safety()) {
-      solution_config.mutable_safety()->set_feature(feature_proto);
-    }
 
     ScenarioBuilder builder(broker_.component_state());
     builder.AddBaseModel(
@@ -163,14 +177,8 @@ class SessionImplTest : public testing::Test {
             proto::BaseModelRecipe::PERFORMANCE_HINT_HIGHEST_QUALITY, {},
             /*max_tokens=*/0),
         FakeBaseModelAsset::Content{}, "1");
-    if (solution_config.has_safety()) {
-      builder.AddSafetyModel("safety_model");
-      builder.AddSafeSolution(use_case, "base_model", "safety_model",
+    builder.AddUnsafeSolution(use_case, "base_model",
                               std::move(solution_config));
-    } else {
-      builder.AddUnsafeSolution(use_case, "base_model",
-                                std::move(solution_config));
-    }
     builder.Finish();
 
     broker_.Startup();
@@ -182,7 +190,6 @@ class SessionImplTest : public testing::Test {
   void Initialize() {
     proto::SolutionConfig config;
     *config.mutable_feature() = SimpleComposeConfigForTesting();
-    *config.mutable_safety() = ComposeSafetyConfig();
     Initialize(std::move(config));
   }
 
@@ -219,11 +226,11 @@ class SessionImplTest : public testing::Test {
   }
 
  protected:
+  ScopedModelBrokerFeatureList scoped_feature_list_;
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   FakeManifestBroker broker_;
   ResponseHolder response_;
-  base::test::ScopedFeatureList feature_list_;
   OptimizationGuideLogger logger_;
 };
 
@@ -274,7 +281,6 @@ TEST_F(SessionImplTest, TokenLimits) {
     input_config.set_max_context_tokens(5);
     input_config.set_max_execute_tokens(3);
     config.mutable_feature()->mutable_output_config()->set_max_output_tokens(1);
-    *config.mutable_safety() = ComposeSafetyConfig();
     return config;
   }());
   auto session = CreateSession(SessionConfigParams{});
@@ -296,7 +302,6 @@ TEST_F(SessionImplTest, TokenLimitsCapped) {
     input_config.set_max_execute_tokens(100000);
     config.mutable_feature()->mutable_output_config()->set_max_output_tokens(
         100000);
-    *config.mutable_safety() = ComposeSafetyConfig();
     return config;
   }());
   auto session = CreateSession(SessionConfigParams{});
@@ -330,287 +335,15 @@ TEST_F(SessionImplTest, ExecutionDisconnectInvalidConstraint) {
   EXPECT_EQ(response_.error(), OnDeviceError::kInvalidRequest);
 }
 
-TEST_F(SessionImplTest, SucceedsWithPassingSafetyChecks) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto& safety_config = *config.mutable_safety();
-    safety_config.set_feature(proto::MODEL_EXECUTION_FEATURE_COMPOSE);
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    {
-      auto* check = safety_config.add_request_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("request_check: %s", PageUrlField()));
-    }
-    {
-      auto* check = safety_config.mutable_raw_output_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("raw_output_check: %s", StringValueField()));
-    }
-    return config;
-  }());
-
+TEST_F(SessionImplTest, ExecutionDisconnectContextWindowExceeded) {
+  Initialize();
   auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  broker_.settings().set_execute_result({"safe_output"});
-  session->ExecuteModel(PageUrlRequest("safe_url"),
+  broker_.settings().set_execute_error(
+      on_device_model::mojom::GenerateError::kContextWindowExceeded);
+  session->ExecuteModel(PageUrlRequest("foo"),
                         response_.GetStreamingCallback());
-  ASSERT_TRUE(response_.GetFinalStatus());
-  ASSERT_TRUE(response_.model_execution_info());
-  EXPECT_THAT(response_.model_execution_info()
-                  ->on_device_model_execution_info()
-                  .execution_infos(),
-              ElementsAre(testing::_,  // Base Model Execution
-                          ResultOf("check text", &GetCheckText,
-                                   "request_check: safe_url"),
-                          ResultOf("check text", &GetCheckText,
-                                   "raw_output_check: safe_output")));
-}
-
-TEST_F(SessionImplTest, FailsWithFailingRequestSafetyChecks) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto& safety_config = *config.mutable_safety();
-    safety_config.set_feature(proto::MODEL_EXECUTION_FEATURE_COMPOSE);
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    {
-      auto* check = safety_config.add_request_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("request_check: %s", PageUrlField()));
-    }
-    {
-      auto* check = safety_config.mutable_raw_output_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("raw_output_check: %s", StringValueField()));
-    }
-    return config;
-  }());
-
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  broker_.settings().set_execute_result({"safe_output"});
-  session->ExecuteModel(PageUrlRequest("unsafe_url"),
-                        response_.GetStreamingCallback());
-  ASSERT_FALSE(response_.GetFinalStatus());
-  EXPECT_EQ(*response_.error(), OnDeviceError::kFiltered);
-
-  ASSERT_TRUE(response_.model_execution_info());
-  EXPECT_THAT(response_.model_execution_info()
-                  ->on_device_model_execution_info()
-                  .execution_infos(),
-              ElementsAre(testing::_,  // Base Model Execution
-                          ResultOf("check text", &GetCheckText,
-                                   "request_check: unsafe_url")
-                          // Raw output check not done.
-                          ));
-}
-
-TEST_F(SessionImplTest, FailsWithInvalidRequestSafetyChecks) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto& safety_config = *config.mutable_safety();
-    safety_config.set_feature(proto::MODEL_EXECUTION_FEATURE_COMPOSE);
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    {
-      auto* check = safety_config.add_request_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("request_check: %s", ProtoField({9999})));
-    }
-    {
-      auto* check = safety_config.mutable_raw_output_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("raw_output_check: %s", StringValueField()));
-    }
-    return config;
-  }());
-
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  broker_.settings().set_execute_result({"safe_output"});
-  session->ExecuteModel(PageUrlRequest("safe_url"),
-                        response_.GetStreamingCallback());
-  ASSERT_FALSE(response_.GetFinalStatus());
-}
-
-TEST_F(SessionImplTest, FailsWithFailingRawOutputSafetyChecks) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto& safety_config = *config.mutable_safety();
-    safety_config.set_feature(proto::MODEL_EXECUTION_FEATURE_COMPOSE);
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    {
-      auto* check = safety_config.add_request_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("request_check: %s", PageUrlField()));
-    }
-    {
-      auto* check = safety_config.mutable_raw_output_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("raw_output_check: %s", StringValueField()));
-    }
-    return config;
-  }());
-
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  broker_.settings().set_execute_result({"unsafe_output"});
-  session->ExecuteModel(PageUrlRequest("safe_url"),
-                        response_.GetStreamingCallback());
-  ASSERT_FALSE(response_.GetFinalStatus());
-  EXPECT_EQ(*response_.error(), OnDeviceError::kFiltered);
-
-  ASSERT_TRUE(response_.model_execution_info());
-  EXPECT_THAT(response_.model_execution_info()
-                  ->on_device_model_execution_info()
-                  .execution_infos(),
-              ElementsAre(testing::_,  // Base Model Execution
-                          ResultOf("check text", &GetCheckText,
-                                   "request_check: safe_url"),
-                          ResultOf("check text", &GetCheckText,
-                                   "raw_output_check: unsafe_output")));
-}
-
-TEST_F(SessionImplTest, FailsWithInvalidRawOutputChecks) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto& safety_config = *config.mutable_safety();
-    safety_config.set_feature(proto::MODEL_EXECUTION_FEATURE_COMPOSE);
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    {
-      auto* check = safety_config.add_request_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("request_check: %s", PageUrlField()));
-    }
-    {
-      auto* check = safety_config.mutable_raw_output_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("raw_output_check: %s", ProtoField({9999})));
-    }
-    return config;
-  }());
-
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  broker_.settings().set_execute_result({"safe_output"});
-  session->ExecuteModel(PageUrlRequest("safe_url"),
-                        response_.GetStreamingCallback());
-
-  ASSERT_FALSE(response_.GetFinalStatus());
-}
-
-TEST_F(SessionImplTest, SucceedsWithPassingResponseSafetyCheck) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto& safety_config = *config.mutable_safety();
-    safety_config.set_feature(proto::MODEL_EXECUTION_FEATURE_COMPOSE);
-    {
-      auto* check = safety_config.add_response_check();
-      auto* i1 = check->add_inputs();
-      i1->set_input_type(proto::CHECK_INPUT_TYPE_REQUEST);
-      i1->mutable_templates()->Add(
-          FieldSubstitution("response_check: %s", PageUrlField()));
-      auto* i2 = check->add_inputs();
-      i2->set_input_type(proto::CHECK_INPUT_TYPE_RESPONSE);
-      i2->mutable_templates()->Add(FieldSubstitution("%s", ProtoField({1})));
-      check->mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-      check->set_ignore_language_result(true);
-    }
-    return config;
-  }());
-
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  broker_.settings().set_execute_result({"safe_output"});
-  session->ExecuteModel(PageUrlRequest("url_very_"),
-                        response_.GetStreamingCallback());
-  ASSERT_TRUE(response_.GetFinalStatus());
-  ASSERT_TRUE(response_.model_execution_info());
-  EXPECT_THAT(response_.model_execution_info()
-                  ->on_device_model_execution_info()
-                  .execution_infos(),
-              ElementsAre(testing::_,
-                          ResultOf("check text", &GetCheckText,
-                                   "response_check: url_very_safe_output")));
-}
-
-TEST_F(SessionImplTest, FailsWithFailingResponseSafetyCheck) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto& safety_config = *config.mutable_safety();
-    safety_config.set_feature(proto::MODEL_EXECUTION_FEATURE_COMPOSE);
-    {
-      auto* check = safety_config.add_response_check();
-      auto* i1 = check->add_inputs();
-      i1->set_input_type(proto::CHECK_INPUT_TYPE_REQUEST);
-      i1->mutable_templates()->Add(
-          FieldSubstitution("response_check: %s", PageUrlField()));
-      auto* i2 = check->add_inputs();
-      i2->set_input_type(proto::CHECK_INPUT_TYPE_RESPONSE);
-      i2->mutable_templates()->Add(FieldSubstitution("%s", ProtoField({1})));
-      check->mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-      check->set_ignore_language_result(true);
-    }
-    return config;
-  }());
-
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  broker_.settings().set_execute_result({"safe_output"});
-  session->ExecuteModel(PageUrlRequest("url_un"),
-                        response_.GetStreamingCallback());
-  ASSERT_FALSE(response_.GetFinalStatus());
-  EXPECT_EQ(*response_.error(), OnDeviceError::kFiltered);
-  ASSERT_TRUE(response_.model_execution_info());
-  EXPECT_THAT(response_.model_execution_info()
-                  ->on_device_model_execution_info()
-                  .execution_infos(),
-              ElementsAre(testing::_,  // Base Model Execution
-                          ResultOf("check text", &GetCheckText,
-                                   "response_check: url_unsafe_output")));
-}
-
-TEST_F(SessionImplTest, FailsWithInvalidResponseSafetyCheck) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto& safety_config = *config.mutable_safety();
-    safety_config.set_feature(proto::MODEL_EXECUTION_FEATURE_COMPOSE);
-    {
-      auto* check = safety_config.add_response_check();
-      auto* i1 = check->add_inputs();
-      i1->set_input_type(proto::CHECK_INPUT_TYPE_UNSPECIFIED);
-      i1->mutable_templates()->Add(
-          FieldSubstitution("response_check: %s", PageUrlField()));
-      auto* i2 = check->add_inputs();
-      i2->set_input_type(proto::CHECK_INPUT_TYPE_RESPONSE);
-      i2->mutable_templates()->Add(FieldSubstitution("%s", ProtoField({1})));
-      check->mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-      check->set_ignore_language_result(true);
-    }
-    return config;
-  }());
-
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  broker_.settings().set_execute_result({"safe_output"});
-  session->ExecuteModel(PageUrlRequest("url_very_"),
-                        response_.GetStreamingCallback());
-
-  ASSERT_FALSE(response_.GetFinalStatus());
+  EXPECT_FALSE(response_.GetFinalStatus());
+  EXPECT_EQ(response_.error(), OnDeviceError::kInvalidRequest);
 }
 
 TEST_F(SessionImplTest, ReturnsErrorOnServiceDisconnect) {
@@ -737,6 +470,46 @@ TEST_F(SessionImplTest, AddContextMultipleSessions) {
   EXPECT_EQ(*response2.value(), expected_response2);
 }
 
+TEST_F(SessionImplTest, LogsInputContextTokensProcessed) {
+  Initialize();
+  // Observing the logger enables debug logs and captures their output.
+  TestLoggerObserver logger_observer;
+  base::ScopedObservation<OptimizationGuideLogger,
+                          OptimizationGuideLogger::Observer>
+      logger_observation(&logger_observer);
+  logger_observation.Observe(&logger_);
+
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+
+  base::test::TestFuture<base::expected<size_t, OnDeviceError>>
+      set_input_future;
+  session->SetInput(MultimodalMessage(UserInputRequest("foo")),
+                    set_input_future.GetCallback());
+  // The fake service counts one token per character of "ctx:foo".
+  ASSERT_EQ(*set_input_future.Take(), 7ul);
+  EXPECT_THAT(logger_observer.messages(),
+              Contains(AllOf(HasSubstr("Processed input context of 7 tokens"),
+                             HasSubstr("ctx:foo"))));
+
+  session->ExecuteModel(PageUrlRequest("bar"),
+                        response_.GetStreamingCallback());
+  ASSERT_TRUE(response_.GetFinalStatus());
+  ASSERT_TRUE(response_.model_execution_info());
+  ASSERT_GT(response_.model_execution_info()
+                ->on_device_model_execution_info()
+                .execution_infos_size(),
+            0);
+  const auto& logged_request = response_.model_execution_info()
+                                   ->on_device_model_execution_info()
+                                   .execution_infos(0)
+                                   .request()
+                                   .on_device_model_service_request();
+  EXPECT_EQ(logged_request.input_context_string(), "ctx:foo");
+  EXPECT_EQ(logged_request.input_context_num_tokens_processed(), 7u);
+  EXPECT_EQ(logged_request.execution_string(), "execute:foobar");
+}
+
 TEST_F(SessionImplTest, FailsOnGpuBlockedService) {
   Initialize();
   broker_.settings().service_disconnect_reason =
@@ -762,12 +535,7 @@ TEST_F(SessionImplTest, FailsOnGpuBlockedService) {
 }
 
 TEST_F(SessionImplTest, AddContextInvalidConfig) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    auto* feature = config.mutable_feature();
-    feature->set_can_skip_text_safety(true);
-    return config;
-  }());
+  Initialize(proto::SolutionConfig{});
 
   auto session = CreateSession(SessionConfigParams{});
   ASSERT_TRUE(session);
@@ -791,12 +559,7 @@ TEST_F(SessionImplTest, AddContextInvalidConfig) {
 }
 
 TEST_F(SessionImplTest, ExecuteInvalidConfig) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    auto* feature = config.mutable_feature();
-    feature->set_can_skip_text_safety(true);
-    return config;
-  }());
+  Initialize(proto::SolutionConfig{});
 
   auto session = CreateSession(SessionConfigParams{});
   ASSERT_TRUE(session);
@@ -848,7 +611,7 @@ TEST_F(SessionImplTest, DetectsRepeatsAndCancelsResponse) {
   base::HistogramTester histogram_tester;
   Initialize([]() {
     proto::SolutionConfig config;
-    *config.mutable_feature() = UnsafeComposeConfig();
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
     return config;
   }());
 
@@ -888,13 +651,14 @@ TEST_F(SessionImplTest, ExcusedFeaturesIgnoreRepeats) {
   // TODO(crbug.com/512149280): Move repetition checker to solution config.
   // Currently, this is a hardcoded override in IsRepetitionTrackedFeature.
   // Mark kProofreaderApi as used so the model is eligible.
-  model_execution::prefs::RecordFeatureUsage(
-      &broker_.local_state(), mojom::OnDeviceFeature::kProofreaderApi);
+  UsageTracker(&broker_.local_state())
+      .RaisePriority(ToUseCaseName(mojom::OnDeviceFeature::kProofreaderApi),
+                     UsageTracker::Priority::kBestEffort);
 
   base::HistogramTester histogram_tester;
   Initialize([]() {
     proto::SolutionConfig config;
-    *config.mutable_feature() = UnsafeComposeConfig();
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
     config.mutable_feature()->set_feature(
         proto::MODEL_EXECUTION_FEATURE_PROOFREADER_API);
     return config;
@@ -947,7 +711,7 @@ TEST_F(SessionImplTest, DetectsRepeatsAcrossResponses) {
   base::HistogramTester histogram_tester;
   Initialize([]() {
     proto::SolutionConfig config;
-    *config.mutable_feature() = UnsafeComposeConfig();
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
     return config;
   }());
 
@@ -990,7 +754,7 @@ TEST_F(SessionImplTest, IgnoresNonRepeatingText) {
   base::HistogramTester histogram_tester;
   Initialize([]() {
     proto::SolutionConfig config;
-    *config.mutable_feature() = UnsafeComposeConfig();
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
     return config;
   }());
 
@@ -1033,7 +797,7 @@ TEST_F(SessionImplTest, IgnoresNonRepeatingText) {
 TEST_F(SessionImplTest, WithholdsTrailingNewlinesAcrossResponses) {
   Initialize([]() {
     proto::SolutionConfig config;
-    *config.mutable_feature() = UnsafeComposeConfig();
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
     return config;
   }());
 
@@ -1068,7 +832,7 @@ TEST_F(SessionImplTest, WithholdsTrailingNewlinesAcrossResponses) {
 TEST_F(SessionImplTest, WithholdsTrailingNewlinesNoTrailingNewlines) {
   Initialize([]() {
     proto::SolutionConfig config;
-    *config.mutable_feature() = UnsafeComposeConfig();
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
     return config;
   }());
 
@@ -1103,7 +867,6 @@ TEST_F(SessionImplTest, UsesSessionTopKAndTemperature) {
     *config.mutable_feature() = SimpleComposeConfig();
     config.mutable_feature()->mutable_sampling_params()->set_top_k(4);
     config.mutable_feature()->mutable_sampling_params()->set_temperature(1.5);
-    *config.mutable_safety() = ComposeSafetyConfig();
     return config;
   }());
 
@@ -1132,211 +895,6 @@ TEST_F(SessionImplTest, UsesSessionTopKAndTemperature) {
   EXPECT_EQ(*response_.value(), ConcatResponses(partial_responses));
   EXPECT_THAT(response_.partials(), ElementsAreArray(partial_responses));
 }
-
-// Validate that a missing partial output config suppresses partial output.
-TEST_F(SessionImplTest, TsInterval0) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto safety_config = ComposeSafetyConfig();
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    *config.mutable_safety() = std::move(safety_config);
-    return config;
-  }());
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  const std::vector<std::string> tokens = {"token1", " token2", " token3",
-                                           " token4"};
-  broker_.settings().set_execute_result(tokens);
-  session->ExecuteModel(PageUrlRequest("foo"),
-                        response_.GetStreamingCallback());
-  task_environment_.RunUntilIdle();
-
-  EXPECT_EQ(*response_.value(), ConcatResponses(tokens));
-  EXPECT_THAT(response_.partials(), ElementsAreArray(tokens));
-}
-
-// Validate that token interval 1 evaluates all partial output.
-TEST_F(SessionImplTest, TsInterval1) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto safety_config = ComposeSafetyConfig();
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    safety_config.mutable_partial_output_checks()->set_token_interval(1);
-    *config.mutable_safety() = std::move(safety_config);
-    return config;
-  }());
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  const std::vector<std::string> tokens = {"token1", " token2", " token3",
-                                           " token4"};
-  broker_.settings().set_execute_result(tokens);
-  session->ExecuteModel(PageUrlRequest("foo"),
-                        response_.GetStreamingCallback());
-  task_environment_.RunUntilIdle();
-
-  EXPECT_EQ(*response_.value(), ConcatResponses(tokens));
-  EXPECT_THAT(response_.partials(), ElementsAreArray(tokens));
-}
-
-// Validate that token interval 3 only evaluates every third and final chunk.
-TEST_F(SessionImplTest, TsInterval3) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto safety_config = ComposeSafetyConfig();
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    safety_config.mutable_partial_output_checks()->set_token_interval(3);
-    *config.mutable_safety() = std::move(safety_config);
-    return config;
-  }());
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  const std::vector<std::string> tokens = {"token1",  " token2", " token3",
-                                           " token4", " token5", " token6",
-                                           " token7"};
-  broker_.settings().set_execute_result(tokens);
-  session->ExecuteModel(PageUrlRequest("foo"),
-                        response_.GetStreamingCallback());
-  task_environment_.RunUntilIdle();
-
-  EXPECT_EQ(*response_.value(), ConcatResponses(tokens));
-  EXPECT_THAT(response_.partials(), ElementsAreArray({
-                                        "token1 token2 token3",
-                                        " token4 token5 token6",
-                                    }));
-}
-
-// Validate that PartialOutputChecks::minimum_tokens is respected.
-TEST_F(SessionImplTest, MinimumSafetyTokens) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto safety_config = ComposeSafetyConfig();
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    safety_config.mutable_partial_output_checks()->set_minimum_tokens(2);
-    safety_config.mutable_partial_output_checks()->set_token_interval(1);
-    *config.mutable_safety() = std::move(safety_config);
-    return config;
-  }());
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  const std::vector<std::string> tokens = {"token1", " token2", " token3",
-                                           " token4"};
-  broker_.settings().set_execute_result(tokens);
-  session->ExecuteModel(PageUrlRequest("foo"),
-                        response_.GetStreamingCallback());
-  task_environment_.RunUntilIdle();
-
-  const std::vector<std::string> expected_responses = {
-      "token1 token2",
-      " token3",
-      " token4",
-  };
-  EXPECT_EQ(*response_.value(), ConcatResponses(tokens));
-  EXPECT_THAT(response_.partials(), ElementsAreArray(expected_responses));
-}
-
-TEST_F(SessionImplTest, WaitUntilCompleteToCancel) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto safety_config = ComposeSafetyConfig();
-    safety_config.set_only_cancel_unsafe_response_on_complete(true);
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    safety_config.add_allowed_languages("en");
-    *config.mutable_safety() = std::move(safety_config);
-    return config;
-  }());
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  const std::vector<std::string> tokens = {"safe", " safe", " lang:en=1.0",
-                                           " safe", " unsafe"};
-  broker_.settings().set_execute_result(tokens);
-  session->ExecuteModel(PageUrlRequest("foo"),
-                        response_.GetStreamingCallback());
-
-  // The full output was unsafe so it resulted it in it being filtered.
-  EXPECT_FALSE(response_.GetFinalStatus());
-  EXPECT_EQ(response_.error(), OnDeviceError::kFiltered);
-
-  const std::vector<std::string> expected_responses = {
-      // The first two responses are filtered because their language hasn't been
-      // detected yet. Because `only_cancel_unsafe_response_on_complete` is
-      // true, this doesn't cause the input to be cancelled.
-      //
-      // "safe", "safe safe",
-
-      // The next two responses are not filtered because the language has been
-      // reliably detected as a supported language.
-      "safe safe lang:en=1.0",
-      " safe",
-      // The last response is unsafe so it is filtered. Since the output is
-      // complete the response is cancelled.
-      //
-      // "safe safe lang:en=1.0 safe unsafe",
-  };
-  EXPECT_THAT(response_.partials(), ElementsAreArray(expected_responses));
-}
-
-class SessionImplTsIntervalTest : public SessionImplTest,
-                                  public ::testing::WithParamInterface<int> {};
-
-TEST_P(SessionImplTsIntervalTest, DetectsRepeatsWithSafetyModel) {
-  base::HistogramTester histogram_tester;
-  Initialize([&]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto safety_config = ComposeSafetyConfig();
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    safety_config.mutable_partial_output_checks()->set_token_interval(
-        GetParam());
-    *config.mutable_safety() = std::move(safety_config);
-    return config;
-  }());
-
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-
-  broker_.settings().set_execute_result({
-      "some text",
-      " some more repeating text",
-      " some more repeating text",
-      " unsafe stuff not processed",
-  });
-  session->ExecuteModel(UserInputRequest("foo"),
-                        response_.GetStreamingCallback());
-  task_environment_.RunUntilIdle();
-
-  EXPECT_FALSE(response_.value());
-  ASSERT_TRUE(response_.error());
-  EXPECT_EQ(*response_.error(), OnDeviceError::kResponseLowQuality);
-
-  ASSERT_TRUE(response_.model_execution_info());
-  EXPECT_GT(response_.model_execution_info()
-                ->on_device_model_execution_info()
-                .execution_infos_size(),
-            0);
-  EXPECT_TRUE(response_.model_execution_info()
-                  ->on_device_model_execution_info()
-                  .execution_infos(0)
-                  .response()
-                  .on_device_model_service_response()
-                  .has_repeats());
-  histogram_tester.ExpectUniqueSample(
-      "OptimizationGuide.ModelExecution.OnDeviceExecuteModelResult.Test",
-      ExecuteModelResult::kResponseHadRepeats, 1);
-}
-
-INSTANTIATE_TEST_SUITE_P(SessionImplTsIntervalTests,
-                         SessionImplTsIntervalTest,
-                         testing::ValuesIn<int>({1, 2, 3, 4, 10}));
 
 TEST_F(SessionImplTest, ImageExecutionSuccess) {
   using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
@@ -1368,7 +926,6 @@ TEST_F(SessionImplTest, ImageExecutionSuccess) {
   sampling->set_top_k(1);
   sampling->set_temperature(0);
   *config->mutable_output_config() = ResponseHolderOutputConfig();
-  *solution_config.mutable_safety() = ComposeSafetyConfig();
   Initialize(std::move(solution_config));
   MultimodalMessage request((proto::ExampleForTestingRequest()));
   request.edit()
@@ -1427,7 +984,6 @@ TEST_F(SessionImplTest, KeepInputOnExtension) {
     *feature->mutable_input_config() = TestInputConfig(
         ForEachRepeated(FormatTestMessage()), EmptySubstitution());
     *feature->mutable_output_config() = ResponseHolderOutputConfig();
-    *config.mutable_safety() = ComposeSafetyConfig();
     return config;
   }());
   base::test::TestFuture<base::expected<size_t, OnDeviceError>>
@@ -1523,7 +1079,6 @@ TEST_F(SessionImplTest, OmitEmptyInputs) {
     *input_config.add_input_context_substitutions() = EmptySubstitution();
     *input_config.add_execute_substitutions() = EmptySubstitution();
     *feature->mutable_output_config() = ResponseHolderOutputConfig();
-    *config.mutable_safety() = ComposeSafetyConfig();
     return config;
   }());
   auto session = CreateSession(SessionConfigParams{});
@@ -1543,7 +1098,6 @@ TEST_F(SessionImplTest, CloneUsesSessionTopKAndTemperature) {
     *config.mutable_feature() = SimpleComposeConfig();
     config.mutable_feature()->mutable_sampling_params()->set_top_k(4);
     config.mutable_feature()->mutable_sampling_params()->set_temperature(1.5);
-    *config.mutable_safety() = ComposeSafetyConfig();
     return config;
   }());
 
@@ -1572,48 +1126,6 @@ TEST_F(SessionImplTest, CloneUsesSessionTopKAndTemperature) {
   };
   EXPECT_EQ(*response_.value(), ConcatResponses(partial_responses));
   EXPECT_THAT(response_.partials(), ElementsAreArray(partial_responses));
-}
-
-TEST_F(SessionImplTest, CloneFailsWithFailingRequestSafetyChecks) {
-  Initialize([]() {
-    proto::SolutionConfig config;
-    *config.mutable_feature() = SimpleComposeConfig();
-    auto& safety_config = *config.mutable_safety();
-    safety_config.set_feature(proto::MODEL_EXECUTION_FEATURE_COMPOSE);
-    safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-    {
-      auto* check = safety_config.add_request_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("request_check: %s", PageUrlField()));
-    }
-    {
-      auto* check = safety_config.mutable_raw_output_check();
-      check->mutable_input_template()->Add(
-          FieldSubstitution("raw_output_check: %s", StringValueField()));
-    }
-    return config;
-  }());
-
-  auto session = CreateSession(SessionConfigParams{});
-  ASSERT_TRUE(session);
-  auto clone = session->Clone();
-  EXPECT_TRUE(clone);
-
-  broker_.settings().set_execute_result({"safe_output"});
-  clone->ExecuteModel(PageUrlRequest("unsafe_url"),
-                      response_.GetStreamingCallback());
-  ASSERT_FALSE(response_.GetFinalStatus());
-  EXPECT_EQ(*response_.error(), OnDeviceError::kFiltered);
-
-  ASSERT_TRUE(response_.model_execution_info());
-  EXPECT_THAT(response_.model_execution_info()
-                  ->on_device_model_execution_info()
-                  .execution_infos(),
-              ElementsAre(testing::_,  // Base Model Execution
-                          ResultOf("check text", &GetCheckText,
-                                   "request_check: unsafe_url")
-                          // Raw output check not done.
-                          ));
 }
 
 TEST_F(SessionImplTest, ScoreAfterClone) {
@@ -1821,6 +1333,117 @@ TEST_F(SessionImplTest, SetInputCallbackError) {
   EXPECT_EQ(future.Get().error(), OnDeviceError::kInvalidRequest);
 }
 
+TEST_F(SessionImplTest, SetInputCallbackDestroysSession) {
+  Initialize();
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+  auto* raw_session = session.get();
+
+  base::test::TestFuture<base::expected<size_t, OnDeviceError>> future;
+  raw_session->SetInput(
+      MultimodalMessage(UserInputRequest("foo")),
+      DestroySessionThen(std::move(session), future.GetCallback()));
+  EXPECT_EQ(*future.Get(), std::string("ctx:foo").size());
+}
+
+TEST_F(SessionImplTest, SetInputCallbackDestroysSessionUsingServer) {
+  Initialize();
+  broker_.settings().service_disconnect_reason =
+      on_device_model::ServiceDisconnectReason::kGpuBlocked;
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+  auto* raw_session = session.get();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !static_cast<SessionImpl*>(raw_session)->ShouldUseOnDeviceModel();
+  }));
+
+  base::HistogramTester histogram_tester;
+  base::test::TestFuture<base::expected<size_t, OnDeviceError>> future;
+  raw_session->SetInput(
+      MultimodalMessage(UserInputRequest("foo")),
+      DestroySessionThen(std::move(session), future.GetCallback()));
+  EXPECT_FALSE(future.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceAddContextResult.Test",
+      SessionImpl::AddContextResult::kUsingServer, 1);
+  EXPECT_EQ(future.Get().error(), OnDeviceError::kCancelled);
+}
+
+TEST_F(SessionImplTest, SetInputCallbackDestroysSessionInvalidRequest) {
+  Initialize();
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+  auto* raw_session = session.get();
+
+  base::HistogramTester histogram_tester;
+  base::test::TestFuture<base::expected<size_t, OnDeviceError>> future;
+  raw_session->SetInput(
+      MultimodalMessage(proto::ExampleForTestingRequest()),
+      DestroySessionThen(std::move(session), future.GetCallback()));
+  EXPECT_FALSE(future.IsReady());
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceAddContextResult.Test",
+      SessionImpl::AddContextResult::kFailedConstructingInput, 1);
+  EXPECT_EQ(future.Get().error(), OnDeviceError::kInvalidRequest);
+}
+
+TEST_F(SessionImplTest, SetInputCallbackDestroysSessionEmptyInputContext) {
+  Initialize([]() {
+    proto::SolutionConfig config;
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
+    config.mutable_feature()
+        ->mutable_input_config()
+        ->clear_input_context_substitutions();
+    return config;
+  }());
+
+  // Connected session (prefix-update branch with 0 pieces).
+  {
+    auto session = CreateSession(SessionConfigParams{});
+    ASSERT_TRUE(session);
+    auto* raw_session = session.get();
+    base::test::TestFuture<base::expected<size_t, OnDeviceError>> future;
+    raw_session->SetInput(
+        MultimodalMessage(PageUrlRequest("foo")),
+        DestroySessionThen(std::move(session), future.GetCallback()));
+    EXPECT_FALSE(future.IsReady());
+    EXPECT_EQ(*future.Get(), 0u);
+  }
+
+  // Reconnecting session (`GetOrCreateSession()` branch with 0 pieces).
+  {
+    auto session = CreateSession(SessionConfigParams{});
+    ASSERT_TRUE(session);
+    broker_.launcher().CrashService();
+    task_environment_.FastForwardBy(base::Milliseconds(1));
+    auto* raw_session = session.get();
+    base::test::TestFuture<base::expected<size_t, OnDeviceError>> future;
+    raw_session->SetInput(
+        MultimodalMessage(PageUrlRequest("foo")),
+        DestroySessionThen(std::move(session), future.GetCallback()));
+    EXPECT_FALSE(future.IsReady());
+    EXPECT_EQ(*future.Get(), 0u);
+  }
+}
+
+TEST_F(SessionImplTest, SetInputCallbackDestroysSessionServiceDisconnect) {
+  Initialize();
+  broker_.settings().set_append_delay(base::Seconds(10));
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+  auto* raw_session = session.get();
+
+  base::test::TestFuture<base::expected<size_t, OnDeviceError>> future;
+  raw_session->SetInput(
+      MultimodalMessage(UserInputRequest("foo")),
+      DestroySessionThen(std::move(session), future.GetCallback()));
+  task_environment_.FastForwardBy(base::Seconds(1));
+  ASSERT_FALSE(future.IsReady());
+
+  broker_.launcher().CrashService();
+  EXPECT_EQ(future.Get().error(), OnDeviceError::kGenericFailure);
+}
+
 TEST_F(SessionImplTest, TokenCounts) {
   Initialize();
 
@@ -1834,6 +1457,47 @@ TEST_F(SessionImplTest, TokenCounts) {
   EXPECT_EQ(response_.input_token_count(), strlen("execute:foo"));
   // +1 accounts for the terminating EOS/End-of-turn token.
   EXPECT_EQ(response_.output_token_count(), strlen("execute:foo max:1024") + 1);
+}
+
+TEST_F(SessionImplTest, EmptyInputContextHasZeroTokens) {
+  Initialize([]() {
+    proto::SolutionConfig config;
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
+    config.mutable_feature()
+        ->mutable_input_config()
+        ->clear_input_context_substitutions();
+    return config;
+  }());
+  // The fake service reports this size for any non-empty input.
+  broker_.settings().set_size_in_tokens(100);
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+
+  auto request = PageUrlRequest("foo");
+  base::test::TestFuture<std::optional<InputSizeInTokens>> size;
+  session->GetInputSizeInTokens(MultimodalMessageReadView(request),
+                                size.GetCallback());
+  ASSERT_TRUE(size.Get().has_value());
+  EXPECT_EQ(size.Get()->input_context, 0u);
+  EXPECT_EQ(size.Get()->execution, 100u);
+  EXPECT_EQ(size.Get()->total(), 100u);
+}
+
+TEST_F(SessionImplTest, InputSizeInTokensCountsContextAndExecution) {
+  Initialize();
+  // The fake service reports this size for any non-empty input.
+  broker_.settings().set_size_in_tokens(100);
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+
+  auto request = PageUrlRequest("foo");
+  base::test::TestFuture<std::optional<InputSizeInTokens>> size;
+  session->GetInputSizeInTokens(MultimodalMessageReadView(request),
+                                size.GetCallback());
+  ASSERT_TRUE(size.Get().has_value());
+  EXPECT_EQ(size.Get()->input_context, 100u);
+  EXPECT_EQ(size.Get()->execution, 100u);
+  EXPECT_EQ(size.Get()->total(), 200u);
 }
 
 TEST_F(SessionImplTest, ResponseConstraintOnExecute) {
@@ -1859,7 +1523,6 @@ TEST_F(SessionImplTest, ResponseConstraintConfigJson) {
         ->mutable_output_config()
         ->mutable_response_constraint()
         ->set_json_schema("{ type: \"object\"}");
-    *config.mutable_safety() = ComposeSafetyConfig();
     return config;
   }());
 
@@ -1883,7 +1546,6 @@ TEST_F(SessionImplTest, ResponseConstraintConfigRegex) {
         ->mutable_output_config()
         ->mutable_response_constraint()
         ->set_regex("[A-Z]*");
-    *config.mutable_safety() = ComposeSafetyConfig();
     return config;
   }());
 
@@ -1897,6 +1559,65 @@ TEST_F(SessionImplTest, ResponseConstraintConfigRegex) {
             "Hint: constrained_decoding "
             "Constraint: regex [A-Z]*"
             "execute:input max:1024");
+}
+
+TEST_F(SessionImplTest, BaseModelCompletionAndExecuteResultHistograms) {
+  Initialize([]() {
+    proto::SolutionConfig config;
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
+    config.mutable_model_versions()
+        ->mutable_on_device_model_service_version()
+        ->mutable_on_device_base_model_metadata()
+        ->set_base_model_name("gemma4_component");
+    return config;
+  }());
+
+  base::HistogramTester histogram_tester;
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+
+  session->ExecuteModel(PageUrlRequest("foo"),
+                        response_.GetStreamingCallback());
+  ASSERT_TRUE(response_.GetFinalStatus());
+
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceModelCompleted",
+      OnDeviceBaseModel::kGemma4, 1);
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceModelCompleted.Test",
+      OnDeviceBaseModel::kGemma4, 1);
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceExecuteModelResult.Test",
+      ExecuteModelResult::kUsedOnDevice, 1);
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceExecuteModelResult.Test.Gemma4",
+      ExecuteModelResult::kUsedOnDevice, 1);
+}
+
+TEST_F(SessionImplTest, UnknownBaseModelEmitsUnknownSuffixedExecuteResult) {
+  Initialize();
+
+  base::HistogramTester histogram_tester;
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+
+  session->ExecuteModel(PageUrlRequest("foo"),
+                        response_.GetStreamingCallback());
+  ASSERT_TRUE(response_.GetFinalStatus());
+
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceModelCompleted",
+      OnDeviceBaseModel::kUnknown, 1);
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceModelCompleted.Test",
+      OnDeviceBaseModel::kUnknown, 1);
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceExecuteModelResult.Test",
+      ExecuteModelResult::kUsedOnDevice, 1);
+  histogram_tester.ExpectUniqueSample(
+      "OptimizationGuide.ModelExecution.OnDeviceExecuteModelResult.Test."
+      "Unknown",
+      ExecuteModelResult::kUsedOnDevice, 1);
 }
 
 }  // namespace optimization_guide

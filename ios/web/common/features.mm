@@ -128,4 +128,9 @@ BASE_FEATURE(kWebFrameTree, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kNewGeolocationPermissionDelegate,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kWebPageAlternativeTextZoom, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kIsolatedWorldDisableLegacyBuiltinOverrides,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 }  // namespace web::features

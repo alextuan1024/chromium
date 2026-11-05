@@ -52,6 +52,7 @@ class TaskAttributionInfo;
 
 class KURL;
 class LinkLoader;
+class LinkModuleImport;
 struct LinkLoadParameters;
 
 class CORE_EXPORT HTMLLinkElement final : public HTMLElement,
@@ -91,18 +92,16 @@ class CORE_EXPORT HTMLLinkElement final : public HTMLElement,
 
   bool Async() const;
 
-  CSSStyleSheet* sheet() const {
-    return GetLinkStyle() ? GetLinkStyle()->Sheet() : nullptr;
-  }
+  CSSStyleSheet* sheet() const;
 
   bool StyleSheetIsLoading() const;
 
-  bool IsDisabled() const {
-    return GetLinkStyle() && GetLinkStyle()->IsDisabled();
-  }
-  bool IsEnabledViaScript() const {
-    return GetLinkStyle() && GetLinkStyle()->IsEnabledViaScript();
-  }
+  bool IsDisabled() const;
+  bool IsEnabledViaScript() const;
+
+  bool IsModuleStyleSheetLink() const;
+  // True when a LinkModuleImport resource is currently backing this link.
+  bool HasStyleModuleResource() const;
 
   DOMTokenList* sizes() const;
 
@@ -120,22 +119,24 @@ class CORE_EXPORT HTMLLinkElement final : public HTMLElement,
                       ResourceClient*,
                       RenderBlockingBehavior render_blocking);
   bool IsAlternate() const {
-    return GetLinkStyle()->IsUnset() && rel_attribute_.IsAlternate() &&
-           !GetLinkStyle()->IsExplicitlyEnabled();
+    return disabled_state_ == DisabledState::kUnset &&
+           rel_attribute_.IsAlternate();
   }
-  bool ShouldProcessStyle() {
-    return LinkResourceToProcess() && GetLinkStyle();
-  }
+  bool ShouldProcessStyle() const { return GetLinkStyle(); }
+  void Process(
+      LinkLoadParameters::Reason reason = LinkLoadParameters::Reason::kDefault);
   bool IsCreatedByParser() const { return created_by_parser_; }
 
   void Trace(Visitor*) const override;
 
  private:
+  enum class DisabledState { kUnset, kDisabled, kEnabledViaScript };
+
   LinkStyle* GetLinkStyle() const;
+  LinkModuleImport* GetLinkModuleImport() const;
+  LinkResource* GetStyleSheetResource() const;
   LinkResource* LinkResourceToProcess();
 
-  void Process(
-      LinkLoadParameters::Reason reason = LinkLoadParameters::Reason::kDefault);
   static void ProcessCallback(Node*);
 
   // Always call this asynchronously because this can cause synchronous
@@ -164,11 +165,10 @@ class CORE_EXPORT HTMLLinkElement final : public HTMLElement,
   bool MediaQueryMatches() const;
 
   void HandleExpectBlockingChanges();
-  void HandleExpectHrefChanges(const String& old_value,
-                               const String& new_value);
+  void HandleExpectHrefChanges(const String& new_value);
   void HandleExpectMediaChanges();
 
-  void RemoveExpectRenderBlockingLink(const String& href = String());
+  void RemoveExpectRenderBlockingLink();
   void AddExpectRenderBlockingLinkIfNeeded(const String& href = String(),
                                            bool media_known_to_match = false);
 
@@ -214,6 +214,7 @@ class CORE_EXPORT HTMLLinkElement final : public HTMLElement,
   Member<scheduler::TaskAttributionInfo> load_initiator_task_state_;
 
   bool created_by_parser_;
+  DisabledState disabled_state_ = DisabledState::kUnset;
 };
 
 }  // namespace blink

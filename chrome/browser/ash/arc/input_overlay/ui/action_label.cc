@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/arc/input_overlay/ui/action_label.h"
 
+#include <array>
 #include <set>
 
 #include "ash/resources/vector_icons/vector_icons.h"
@@ -17,7 +18,7 @@
 #include "chrome/browser/ash/arc/input_overlay/ui/touch_point.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/ui_utils.h"
 #include "chrome/browser/ash/arc/input_overlay/util.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -205,9 +206,9 @@ class ActionLabelMove : public ActionLabel {
     auto center = touch_point_size_.width() / 2;
     int offset_to_center =
         touch_point_size_.width() / 2 - kCrossPadding - label_size.height() / 2;
-    int x = center + UNSAFE_TODO(kDirection[index_])[0] * offset_to_center -
+    int x = center + kDirection[index_][0] * offset_to_center -
             label_size.width() / 2;
-    int y = center + UNSAFE_TODO(kDirection[index_])[1] * offset_to_center -
+    int y = center + kDirection[index_][1] * offset_to_center -
             label_size.height() / 2;
     SetPosition(gfx::Point(x, y));
     GetParent()->SetTouchPointCenter(gfx::Point(center, center));
@@ -221,12 +222,12 @@ END_METADATA
 
 }  // namespace
 
-std::vector<raw_ptr<ActionLabel, VectorExperimental>> ActionLabel::Show(
+std::vector<raw_ptr<ActionLabel>> ActionLabel::Show(
     views::View* parent,
     ActionType action_type,
     const InputElement& input_element,
     TapLabelPosition label_position) {
-  std::vector<raw_ptr<ActionLabel, VectorExperimental>> labels;
+  std::vector<raw_ptr<ActionLabel>> labels;
   gfx::Size touch_point_size;
 
   switch (action_type) {

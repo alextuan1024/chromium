@@ -20,7 +20,6 @@
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_web_contents_listener.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_action_context_desktop.h"
@@ -61,7 +60,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/view_utils.h"
 #include "url/gurl.h"
 
@@ -217,11 +216,8 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTest,
       browser()->tab_strip_model()->AddToNewGroup({0, 1});
 
   SavedTabGroupWebContentsListener* listener =
-      browser()
-          ->tab_strip_model()
-          ->GetTabAtIndex(0)
-          ->GetTabFeatures()
-          ->saved_tab_group_web_contents_listener();
+      SavedTabGroupWebContentsListener::From(
+          browser()->tab_strip_model()->GetTabAtIndex(0));
 
   ASSERT_TRUE(listener->saved_group());
   EXPECT_EQ(listener->saved_group()->local_group_id(), group_id);
@@ -243,11 +239,8 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTest,
   LocalTabGroupID group_id = browser()->tab_strip_model()->AddToNewGroup({1});
 
   SavedTabGroupWebContentsListener* listener =
-      browser()
-          ->tab_strip_model()
-          ->GetTabAtIndex(0)
-          ->GetTabFeatures()
-          ->saved_tab_group_web_contents_listener();
+      SavedTabGroupWebContentsListener::From(
+          browser()->tab_strip_model()->GetTabAtIndex(0));
 
   EXPECT_FALSE(listener->saved_group());
   ASSERT_TRUE(model_->Contains(group_id));
@@ -274,7 +267,7 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateSessionRestoreBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), urls[0]));
   for (int i = 1; i < 6; ++i) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), urls[i], WindowOpenDisposition::NEW_BACKGROUND_TAB,
+        browser(), urls[i], ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
 
@@ -484,11 +477,8 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTest,
 
   // Simulate a sync navigation.
   GURL url_to_navigate_to = GURL("https://www.google.com/1");
-  browser()
-      ->tab_strip_model()
-      ->GetTabAtIndex(0)
-      ->GetTabFeatures()
-      ->saved_tab_group_web_contents_listener()
+  SavedTabGroupWebContentsListener::From(
+      browser()->tab_strip_model()->GetTabAtIndex(0))
       ->NavigateToUrlForTest(url_to_navigate_to);
 
   EXPECT_EQ(browser()->tab_strip_model()->GetWebContentsAt(0)->GetURL(),
@@ -516,11 +506,8 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTest,
 
   // Perform a sync navigation.
   GURL second_url_to_navigate_to = GURL("https://www.google.com/2");
-  browser()
-      ->tab_strip_model()
-      ->GetTabAtIndex(0)
-      ->GetTabFeatures()
-      ->saved_tab_group_web_contents_listener()
+  SavedTabGroupWebContentsListener::From(
+      browser()->tab_strip_model()->GetTabAtIndex(0))
       ->NavigateToUrlForTest(second_url_to_navigate_to);
   EXPECT_EQ(browser()->tab_strip_model()->GetWebContentsAt(0)->GetURL(),
             second_url_to_navigate_to);
@@ -536,11 +523,8 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTest,
 
   // Perform a local navigation.
   GURL first_url_to_navigate_to = GURL("https://www.google.com/1");
-  browser()
-      ->tab_strip_model()
-      ->GetTabAtIndex(0)
-      ->GetTabFeatures()
-      ->saved_tab_group_web_contents_listener()
+  SavedTabGroupWebContentsListener::From(
+      browser()->tab_strip_model()->GetTabAtIndex(0))
       ->NavigateToUrlForTest(first_url_to_navigate_to);
   EXPECT_EQ(browser()->tab_strip_model()->GetWebContentsAt(0)->GetURL(),
             first_url_to_navigate_to);
@@ -592,7 +576,8 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTest,
 
 // TODO(crbug.com/438299988): Re-enable this test after resolving null tab in
 // SavedTabGroupWebContentsListener::DidFinishNavigation.
-#if BUILDFLAG(IS_LINUX)
+// TODO(crbug.com/552566225): Re-enable this test on macOS.
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
 #define MAYBE_RemoveLastTabFromSyncKeepsGroupAndAddsPendingNTP \
   DISABLED_RemoveLastTabFromSyncKeepsGroupAndAddsPendingNTP
 #else
@@ -1008,7 +993,8 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTest,
 }
 
 // TODO(crbug.com/438395752): Re-enable this test on Linux.
-#if BUILDFLAG(IS_LINUX)
+// TODO(crbug.com/552566225): Re-enable this test on macOS.
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
 #define MAYBE_TabRemovalsFromSyncDontCauseZeroTabStateInLocal \
   DISABLED_TabRemovalsFromSyncDontCauseZeroTabStateInLocal
 #else
@@ -1049,10 +1035,10 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTest,
   // the group locally. We send the addition first and removal next because this
   // is the order merges are sent from bridge. If removal is sent first, model
   // will delete the group instead for last tab closure.
-  const SavedTabGroupTab added_tab1(GURL(chrome::kChromeUINewTabURL),
+  const SavedTabGroupTab added_tab1(chrome::ChromeUINewTabURLAsGURL(),
                                     u"New Tab 1", saved_group_id,
                                     /*position=*/0);
-  const SavedTabGroupTab added_tab2(GURL(chrome::kChromeUINewTabURL),
+  const SavedTabGroupTab added_tab2(chrome::ChromeUINewTabURLAsGURL(),
                                     u"New Tab 2", saved_group_id,
                                     /*position=*/1);
   model_->AddTabToGroupFromSync(saved_group_id, added_tab1);
@@ -1187,7 +1173,7 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTestWithFocusing,
   base::Uuid saved_guid = saved_group->saved_guid();
 
   // Focus the group.
-  browser()->tab_strip_model()->SetFocusedGroup(local_id);
+  browser()->tab_strip_model()->EnterFocusMode(local_id);
   ASSERT_EQ(local_id, browser()->tab_strip_model()->GetFocusedGroup());
 
   // Delete the saved group.

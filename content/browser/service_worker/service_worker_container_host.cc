@@ -16,6 +16,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/service_worker/service_worker_client.h"
 #include "content/browser/service_worker/service_worker_consts.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
@@ -430,7 +431,6 @@ void ServiceWorkerContainerHostForServiceWorker::GetRegistrations(
 
 void ServiceWorkerContainerHostForServiceWorker::GetRegistrationForReady(
     GetRegistrationForReadyCallback callback) {
-  std::string error_message;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   mojo::ReportBadMessage(ServiceWorkerConsts::kBadMessageFromUnsupportedClient);
   // ReportBadMessage() will kill the renderer process, but Mojo complains if
@@ -482,6 +482,27 @@ void ServiceWorkerContainerHostForClient::PostMessageToClient(
     blink::TransferableMessage message) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(service_worker_client().is_execution_ready());
+
+  if (message.delegated_capability ==
+      blink::mojom::DelegatedCapability::kPopup) {
+    if (base::FeatureList::IsEnabled(
+            blink::features::kCapabilityDelegationPopup) &&
+        version.HasPendingWindowInteractionEvent() &&
+        service_worker_client().IsContainerForWindowClient()) {
+      GlobalRenderFrameHostId rfh_id =
+          service_worker_client().GetRenderFrameHostId();
+      if (auto* rfh = RenderFrameHostImpl::FromID(rfh_id)) {
+        rfh->AllowPopupThroughCapabilityDelegation();
+      }
+    } else {
+      message.delegated_capability = blink::mojom::DelegatedCapability::kNone;
+    }
+  } else if (message.delegated_capability !=
+             blink::mojom::DelegatedCapability::kNone) {
+    mojo::ReportBadMessage(
+        "Service workers can only delegate the popup capability.");
+    return;
+  }
 
   blink::mojom::ServiceWorkerObjectInfoPtr info;
   if (base::WeakPtr<ServiceWorkerObjectHost> object_host =
@@ -590,8 +611,10 @@ void ServiceWorkerContainerHostForClient::SendSetController(
 
   CHECK(service_worker_client().controller_registration(),
         base::NotFatalUntil::M159);
-  CHECK_EQ(service_worker_client().controller_registration()->active_version(),
-           controller(), base::NotFatalUntil::M159);
+  // TODO(crbug.com/571334917): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_EQ(service_worker_client().controller_registration()->active_version(),
+            controller());
 
   // TODO(crbug.com/331279951): Remove these crash keys after investigation.
   SCOPED_CRASH_KEY_NUMBER(
@@ -656,8 +679,9 @@ ServiceWorkerRegistrationObjectManager::CreateInfo(
 void ServiceWorkerRegistrationObjectManager::RemoveHost(
     int64_t registration_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(registration_object_hosts_.contains(registration_id),
-        base::NotFatalUntil::M159);
+  // TODO(crbug.com/562865789): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
+  DCHECK(registration_object_hosts_.contains(registration_id));
   // This is a workaround for a really unfavorable ownership structure of
   // service worker content code. This boils down to the following ownership
   // cycle:
@@ -793,23 +817,12 @@ bool ServiceWorkerContainerHostForClient::AllowServiceWorker(
   }
 
   // A WebContents created with PrivilegedParams may forbid service worker
-  // control of the pages it hosts. Every container-host method (register,
-  // getRegistration(s), and the registration-object methods) funnels through
-  // here, so denying access closes all of them: such a page can neither
-  // register a service worker nor reach an existing registration.
-  if (service_worker_client().IsContainerForWindowClient()) {
-    auto* rfh = RenderFrameHostImpl::FromID(
-        service_worker_client().GetRenderFrameHostId());
-    auto* web_contents =
-        static_cast<WebContentsImpl*>(WebContents::FromRenderFrameHost(rfh));
-    if (web_contents) {
-      const std::optional<WebContents::PrivilegedParams>& privileged_params =
-          web_contents->privileged_params();
-      if (privileged_params &&
-          privileged_params->disallow_service_worker_control) {
-        return false;
-      }
-    }
+  // control of the pages and workers it hosts. Every container-host method
+  // (register, getRegistration(s), and the registration-object methods) funnels
+  // through here, so denying access closes all of them: such a client can
+  // neither register a service worker nor reach an existing registration.
+  if (service_worker_client().disallows_service_worker_control()) {
+    return false;
   }
 
   auto start_time = base::TimeTicks::Now();
@@ -1143,6 +1156,11 @@ void ServiceWorkerContainerHostForClient::GetRegistrationsComplete(
 
 bool ServiceWorkerContainerHostForClient::HasValidSandboxFlags() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (service_worker_client().IsContainerForWorkerClient() &&
+      !base::FeatureList::IsEnabled(
+          features::kServiceWorkerDropHandleForCSPSandboxedWorker)) {
+    return true;
+  }
   return (policy_container_policies_.sandbox_flags &
           network::mojom::WebSandboxFlags::kOrigin) !=
          network::mojom::WebSandboxFlags::kOrigin;

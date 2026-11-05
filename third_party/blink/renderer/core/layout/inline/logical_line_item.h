@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_INLINE_LOGICAL_LINE_ITEM_H_
 
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/layout/geometry/box_strut.h"
 #include "third_party/blink/renderer/core/layout/geometry/logical_rect.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_item.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_item_result.h"
@@ -39,19 +40,23 @@ struct LogicalLineItem {
   // Create an in-flow |LayoutResult|.
   LogicalLineItem(const LayoutResult* layout_result,
                   const LogicalRect& rect,
+                  const PhysicalBoxStrut& margins,
                   unsigned children_count,
                   UBiDiLevel bidi_level)
       : layout_result(layout_result),
         rect(rect),
+        margins(margins),
         children_count(children_count),
         bidi_level(bidi_level) {}
   LogicalLineItem(const LayoutResult* layout_result,
                   LogicalOffset offset,
+                  const PhysicalBoxStrut& margins,
                   LayoutUnit inline_size,
                   unsigned children_count,
                   UBiDiLevel bidi_level)
       : layout_result(layout_result),
         rect(offset, LogicalSize()),
+        margins(margins),
         inline_size(inline_size),
         children_count(children_count),
         bidi_level(bidi_level) {}
@@ -135,7 +140,8 @@ struct LogicalLineItem {
       WritingDirectionMode container_writing_direction);
   static LogicalLineItem PositionedFloat(
       const InlineItem& inline_item,
-      const InlineItemResult::OptionalPositionedFloat& positioned_float);
+      const InlineItemResult::OptionalPositionedFloat& positioned_float,
+      WritingDirectionMode container_writing_direction);
   static LogicalLineItem UnpositionedFloat(const InlineItem& inline_item,
                                            InlineItemTextIndex item_index);
 
@@ -251,6 +257,7 @@ struct LogicalLineItem {
   // The offset of the border box, initially in this child coordinate system.
   // |ComputeInlinePositions()| converts it to the offset within the line box.
   LogicalRect rect;
+  PhysicalBoxStrut margins;
   // The offset of a positioned float wrt. the root BFC. This should only be
   // set for positioned floats.
   BfcOffset bfc_offset;
@@ -276,7 +283,9 @@ struct LogicalLineItem {
   // to be ignored, and just use paragraph direction (UAX#9 L1)
   bool has_only_bidi_trailing_spaces = false;
 
-  bool is_hidden_for_paint = false;
+  bool has_non_empty_inline_box_start = false;
+
+  bool is_hidden_due_to_layout = false;
 
   bool has_over_annotation = false;
   bool has_under_annotation = false;
@@ -343,11 +352,12 @@ class CORE_EXPORT LogicalLineItems : public GarbageCollected<LogicalLineItems> {
   void InsertChild(unsigned index,
                    const LayoutResult* layout_result,
                    const LogicalRect& rect,
+                   const PhysicalBoxStrut& margins,
                    unsigned children_count) {
     WillInsertChild(index);
-    children_.insert(
-        index, LogicalLineItem(std::move(layout_result), rect, children_count,
-                               /* bidi_level */ 0));
+    children_.insert(index,
+                     LogicalLineItem(std::move(layout_result), rect, margins,
+                                     children_count, /* bidi_level */ 0));
   }
 
   void MoveInInlineDirection(LayoutUnit);
@@ -381,10 +391,13 @@ inline LogicalLineItem LogicalLineItem::OutOfFlowPositioned(
 
 inline LogicalLineItem LogicalLineItem::PositionedFloat(
     const InlineItem& inline_item,
-    const InlineItemResult::OptionalPositionedFloat& positioned_float) {
+    const InlineItemResult::OptionalPositionedFloat& positioned_float,
+    WritingDirectionMode container_writing_direction) {
   DCHECK(positioned_float->layout_result);
   LogicalLineItem line_item;
   line_item.layout_result = positioned_float->layout_result;
+  line_item.margins =
+      positioned_float->margins.ConvertToPhysical(container_writing_direction);
   line_item.bfc_offset = positioned_float->bfc_offset;
   line_item.bidi_level = inline_item.BidiLevel();
   return line_item;

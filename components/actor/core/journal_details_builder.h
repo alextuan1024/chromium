@@ -60,6 +60,14 @@ class JournalDetailsBuilder {
   JournalDetailsBuilder& AddUiState(ActorUiMode mode) &;
   JournalDetailsBuilder AddUiState(ActorUiMode mode) &&;
 
+  // Adds an actor surface. `tab_id` is 0 if the surface has no tab. Logs
+  // "tab_id" with `tab_id` if it is set, or "actor_surface_id" with
+  // `actor_surface_id` otherwise.
+  JournalDetailsBuilder& AddActorSurface(int32_t actor_surface_id,
+                                         int32_t tab_id) &;
+  JournalDetailsBuilder AddActorSurface(int32_t actor_surface_id,
+                                        int32_t tab_id) &&;
+
   std::vector<mojom::JournalDetailsPtr> Build() && {
     return std::move(details_);
   }
@@ -93,6 +101,30 @@ inline uint64_t MakeRendererTrackUUID(TaskId task_id) {
 inline uint64_t MakeFrontEndTrackUUID(TaskId task_id) {
   constexpr uint64_t kFrontEndTrack = 0xda00000200000000LL;
   return kFrontEndTrack + task_id.value();
+}
+
+// A specific TTC backend track for a task.
+inline uint64_t MakeTtcBackendTrackUUID(TaskId task_id) {
+  constexpr uint64_t kTtcBackendTrack = 0xda00000400000000LL;
+  return kTtcBackendTrack + task_id.value();
+}
+
+// A specific TTC current turn track for a task.
+inline uint64_t MakeTtcCurrentTurnTrackUUID(TaskId task_id) {
+  constexpr uint64_t kTtcCurrentTurnTrack = 0xda00000500000000LL;
+  return kTtcCurrentTurnTrack + task_id.value();
+}
+
+// A specific TTC MES client receive track for a task.
+inline uint64_t MakeTtcMesClientRecvTrackUUID(TaskId task_id) {
+  constexpr uint64_t kTtcMesClientRecvTrack = 0xda00000600000000LL;
+  return kTtcMesClientRecvTrack + task_id.value();
+}
+
+// A specific TTC MES client send track for a task.
+inline uint64_t MakeTtcMesClientSendTrackUUID(TaskId task_id) {
+  constexpr uint64_t kTtcMesClientSendTrack = 0xda00000700000000LL;
+  return kTtcMesClientSendTrack + task_id.value();
 }
 
 // A specific Glic Experimental Triggering track for a context ID.

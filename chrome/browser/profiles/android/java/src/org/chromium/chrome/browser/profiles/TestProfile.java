@@ -18,14 +18,25 @@ import java.util.Map;
  */
 @NullMarked
 public class TestProfile extends Profile {
+    private static final String DEFAULT_BASE_NAME = "Default";
+
     private final @Nullable TestProfile mOriginalProfile;
     private final Map<OtrProfileId, TestProfile> mOtrProfiles = new HashMap<>();
 
     private TestProfile(
-            @Nullable TestProfile originalProfile, @Nullable OtrProfileId otrProfileId) {
-        super(/* nativeProfile= */ 0L, otrProfileId);
+            String baseName,
+            @Nullable TestProfile originalProfile,
+            @Nullable OtrProfileId otrProfileId,
+            boolean isIncognitoBranded) {
+        super(/* nativeProfile= */ 0L, otrProfileId, isIncognitoBranded, baseName);
         assertBrowserProcessNotStarted();
+        assert !baseName.isEmpty();
         mOriginalProfile = originalProfile;
+    }
+
+    @Override
+    public boolean isNativeInitialized() {
+        return true;
     }
 
     /** Asserts that the full C++ browser process has not been instantiated. */
@@ -40,7 +51,19 @@ public class TestProfile extends Profile {
 
     /** Creates a regular (non-OTR) in-memory profile. */
     public static TestProfile createRegular() {
-        return new TestProfile(/* originalProfile= */ null, /* otrProfileId= */ null);
+        return createRegular(DEFAULT_BASE_NAME);
+    }
+
+    /**
+     * Creates a regular (non-OTR) in-memory profile with the given profile directory base name
+     * (e.g. "Default", "Profile 1").
+     */
+    public static TestProfile createRegular(String baseName) {
+        return new TestProfile(
+                baseName,
+                /* originalProfile= */ null,
+                /* otrProfileId= */ null,
+                /* isIncognitoBranded= */ false);
     }
 
     /** Creates a primary incognito in-memory profile. */
@@ -62,8 +85,15 @@ public class TestProfile extends Profile {
     /** Creates an incognito CCT in-memory profile. */
     public static TestProfile createIncognitoCct() {
         TestProfile original = createRegular();
-        return original.getOrCreateOffTheRecordProfile(
-                new OtrProfileId("CCT:Incognito::test_profile"));
+        OtrProfileId otrProfileId = new OtrProfileId("TestProfile::IncognitoCct");
+        TestProfile profile =
+                new TestProfile(
+                        original.getBaseName(),
+                        original,
+                        otrProfileId,
+                        /* isIncognitoBranded= */ true);
+        original.mOtrProfiles.put(otrProfileId, profile);
+        return profile;
     }
 
     /**
@@ -98,7 +128,7 @@ public class TestProfile extends Profile {
 
     @Override
     public boolean isInitialProfile() {
-        return !isOffTheRecord();
+        return !isOffTheRecord() && DEFAULT_BASE_NAME.equals(getBaseName());
     }
 
     @Override
@@ -110,7 +140,7 @@ public class TestProfile extends Profile {
         }
         TestProfile profile = mOtrProfiles.get(profileId);
         if (profile == null && createIfNeeded) {
-            profile = new TestProfile(this, profileId);
+            profile = new TestProfile(getBaseName(), this, profileId, profileId.isPrimaryOtrId());
             mOtrProfiles.put(profileId, profile);
         }
         return profile;

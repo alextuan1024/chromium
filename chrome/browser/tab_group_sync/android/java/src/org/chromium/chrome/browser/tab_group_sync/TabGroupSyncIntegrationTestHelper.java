@@ -22,6 +22,7 @@ import org.chromium.chrome.browser.sync.SyncTestRule;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
+import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.protocol.EntitySpecifics;
 import org.chromium.components.sync.protocol.SavedTabGroup;
@@ -29,6 +30,7 @@ import org.chromium.components.sync.protocol.SavedTabGroup.SavedTabGroupColor;
 import org.chromium.components.sync.protocol.SavedTabGroupSpecifics;
 import org.chromium.components.sync.protocol.SavedTabGroupTab;
 import org.chromium.components.sync.protocol.SyncEntity;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
@@ -335,11 +337,9 @@ public class TabGroupSyncIntegrationTestHelper {
     }
 
     private static void verifyTitleAndUrlForTab(TabInfo expectedTab, TabInfo actualTab) {
-        boolean isNtpUrl = TabGroupSyncUtils.isNtpOrAboutBlankUrl(new GURL(expectedTab.url));
+        boolean isNtpUrl = UrlUtilities.isNtpOrAboutBlank(new GURL(expectedTab.url));
         if (isNtpUrl) {
-            assertTrue(
-                    "URL is not NTP",
-                    TabGroupSyncUtils.isNtpOrAboutBlankUrl(new GURL(actualTab.url)));
+            assertTrue("URL is not NTP", UrlUtilities.isNtpOrAboutBlank(new GURL(actualTab.url)));
             assertTrue(
                     "Title is not new tab",
                     NEW_TAB_TITLE.equals(actualTab.title) || "about:blank".equals(actualTab.title));
@@ -371,10 +371,17 @@ public class TabGroupSyncIntegrationTestHelper {
     public void verifyGroupInfoMatchesLocalData(int index, GroupInfo expectedGroup) {
         TabModel tabModel = getTabModel();
         Token tabGroupId = getTabGroupIdAt(index);
-        String actualTitle = runOnUiThreadBlocking(() -> tabModel.getTabGroupTitle(tabGroupId));
+        String actualTitle =
+                runOnUiThreadBlocking(
+                        () -> tabModel.getTabGroupTitle(TabGroupId.fromRawToken(tabGroupId)));
         int actualColor =
-                runOnUiThreadBlocking(() -> tabModel.getTabGroupColorWithFallback(tabGroupId));
-        List<Tab> tabs = runOnUiThreadBlocking(() -> tabModel.getTabsInGroup(tabGroupId));
+                runOnUiThreadBlocking(
+                        () ->
+                                tabModel.getTabGroupColorWithFallback(
+                                        TabGroupId.fromRawToken(tabGroupId)));
+        List<Tab> tabs =
+                runOnUiThreadBlocking(
+                        () -> tabModel.getTabsInGroup(TabGroupId.fromOptionalToken(tabGroupId)));
 
         // group details
         assertEquals(

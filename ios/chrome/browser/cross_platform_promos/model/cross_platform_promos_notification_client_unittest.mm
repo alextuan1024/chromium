@@ -27,8 +27,8 @@ namespace {
 
 class MockCrossPlatformPromosService : public CrossPlatformPromosService {
  public:
-  MockCrossPlatformPromosService(ProfileIOS* profile)
-      : CrossPlatformPromosService(profile) {}
+  explicit MockCrossPlatformPromosService(ProfileIOS& profile)
+      : CrossPlatformPromosService(&profile) {}
   MOCK_METHOD1(ShowLensPromo, void(Browser*));
   MOCK_METHOD1(ShowESBPromo, void(Browser*));
   MOCK_METHOD1(ShowCPEPromo, void(Browser*));
@@ -43,10 +43,8 @@ class CrossPlatformPromosNotificationClientTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         CrossPlatformPromosServiceFactory::GetInstance(),
-        base::BindRepeating(
-            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
-              return std::make_unique<MockCrossPlatformPromosService>(profile);
-            }));
+        base::BindOnce(
+            &std::make_unique<MockCrossPlatformPromosService, ProfileIOS&>));
     profile_ = std::move(builder).Build();
 
     // Set up SceneState with activation level.

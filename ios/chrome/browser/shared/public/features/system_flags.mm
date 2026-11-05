@@ -9,6 +9,8 @@
 
 #import <Foundation/Foundation.h>
 
+#import <string_view>
+
 #import "base/command_line.h"
 #import "base/feature_list.h"
 #import "base/metrics/field_trial.h"
@@ -18,15 +20,19 @@
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/segmentation_platform/public/constants.h"
 #import "components/variations/variations_associated_data.h"
+#import "components/version_info/channel.h"
 #import "ios/chrome/browser/flags/chrome_switches.h"
 #import "ios/chrome/browser/memory/model/features.h"
 #import "ios/chrome/browser/safety_check/model/ios_chrome_safety_check_manager_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/common/channel_info.h"
 
 namespace {
 
 NSString* const kAlternateDiscoverFeedServerURL =
     @"AlternateDiscoverFeedServerURL";
+NSString* const kBypassGeolocationPromptRestriction =
+    @"BypassGeolocationPromptRestriction";
 NSString* const kEnableStartupCrash = @"EnableStartupCrash";
 NSString* const kFirstRunForceEnabled = @"FirstRunForceEnabled";
 NSString* const kFirstRunForceDisabled = @"FirstRunForceDisabled";
@@ -39,6 +45,13 @@ NSString* const kFirstRunRecency = @"FirstRunRecency";
 NSString* const kIgnoreDeviceLocaleConditions = @"IgnoreDeviceLocaleConditions";
 NSString* const kForceExperienceForDeviceSwitcherExperimentalSettings =
     @"ForceExperienceForDeviceSwitcher";
+// Matches `segmentation_platform::DeviceSwitcherModel::kAndroidPhoneLabel`
+// without depending on
+// `//components/segmentation_platform/embedder/default_model` from
+// `:system_flags`, which is linked into EarlGrey 2 test runner modules where
+// transitive `//ios/web` dependencies are disallowed.
+constexpr std::string_view kForcedDeviceSwitcherAndroidPhoneSegment =
+    "AndroidPhone";
 NSString* const kForceExperienceForShopperExperimentalSettings =
     @"ForceExperienceForShopper";
 NSString* const kSafetyCheckUpdateChromeStateOverride =
@@ -62,7 +75,9 @@ BASE_FEATURE(kEnableThirdPartyKeyboardWorkaround,
              base::FEATURE_ENABLED_BY_DEFAULT);
 NSString* const kTipsMagicStackLensShopWithImage =
     @"TipsMagicStackLensShopWithImage";
-NSString* const kTipsMagicStackStateOverride = @"TipsMagicStackStateOverride";
+NSString* const kResetMagicStackTipsState = @"ResetMagicStackTipsState";
+NSString* const kUniversalOptOutEligibilityOverride =
+    @"UniversalOptOutEligibilityOverride";
 NSString* const kInactiveTabsDemoMode = @"InactiveTabsDemoMode";
 NSString* const kForceInactiveTabsUserEducation =
     @"ForceInactiveTabsUserEducation";
@@ -71,23 +86,24 @@ NSString* const kAsyncStartupOverrideResponse = @"AsyncStartupOverrideResponse";
 NSString* const kLensResultPanelGwsURL = @"LensResultPanelGwsURL";
 NSString* const kCobrowseGwsURL = @"CobrowseGwsURL";
 NSString* const kForceDisableAIMEligibility = @"ForceDisableAIMEligibility";
-NSString* const kForceDisableCreateImagesEligibility =
-    @"ForceDisableCreateImagesEligibility";
-NSString* const kForceDisableCanvasEligibility =
-    @"ForceDisableCanvasEligibility";
-NSString* const kForceDisableDeepSearchEligibility =
-    @"ForceDisableDeepSearchEligibility";
-NSString* const kForceDisablePdfUploadEligibility =
-    @"ForceDisablePdfUploadEligibility";
 NSString* const kShowCatalogItems = @"ShowCatalogItems";
 NSString* const kForceMultiProfileForcedMigrationDone =
     @"ForceMultiProfileForcedMigrationDone";
 NSString* const kShowBackendPromoDebugTools = @"ShowBackendPromoDebugTools";
 NSString* const kForcedPushNotificationType = @"ForcedPushNotificationType";
 NSString* const kForcedPushNotificationDelay = @"ForcedPushNotificationDelay";
+NSString* const kEnableAppSwitcherAISummarizationTestingExternalURL =
+    @"EnableAppSwitcherAISummarizationTestingExternalURL";
 }  // namespace
 
 namespace experimental_flags {
+
+NSString* const kWebExtensionLoadDelay = @"WebExtensionLoadDelay";
+NSString* const kWebExtensionLoadDelayNoDelayFail = @"NoDelayFail";
+NSString* const kWebExtensionLoadDelay1s = @"Delay1s";
+NSString* const kWebExtensionLoadDelay1sFail = @"Delay1sFail";
+NSString* const kWebExtensionLoadDelay5s = @"Delay5s";
+NSString* const kWebExtensionLoadDelay5sFail = @"Delay5sFail";
 
 bool AlwaysDisplayFirstRun() {
   return
@@ -280,6 +296,14 @@ std::string GetSegmentForForcedDeviceSwitcherExperience() {
   return segment;
 }
 
+std::optional<bool> IsForcedDeviceSwitcherAndroidPhone() {
+  std::string forced_segment = GetSegmentForForcedDeviceSwitcherExperience();
+  if (forced_segment.empty()) {
+    return std::nullopt;
+  }
+  return forced_segment == kForcedDeviceSwitcherAndroidPhoneSegment;
+}
+
 std::string GetSegmentForForcedShopperExperience() {
   // Checks iOS Experimental Settings.
   std::string segment =
@@ -319,20 +343,19 @@ std::optional<int> GetForcedInactivityThresholdForSafetyCheckNotifications() {
   return threshold;
 }
 
-std::optional<int> GetForcedTipsMagicStackState() {
-  int tipsIdentifier = [[NSUserDefaults standardUserDefaults]
-      integerForKey:kTipsMagicStackStateOverride];
-
-  if (tipsIdentifier == 0) {
-    return std::nullopt;
-  }
-
-  return tipsIdentifier;
-}
-
 bool ShouldDisplayLensShopTipWithImage() {
   return [[NSUserDefaults standardUserDefaults]
       boolForKey:kTipsMagicStackLensShopWithImage];
+}
+
+bool ShouldResetMagicStackTipsState() {
+  NSUserDefaults* standardDefaults = [NSUserDefaults standardUserDefaults];
+  bool value = [standardDefaults boolForKey:kResetMagicStackTipsState];
+  if (value) {
+    [standardDefaults setBool:NO forKey:kResetMagicStackTipsState];
+    [standardDefaults synchronize];
+  }
+  return value;
 }
 
 bool ShouldUseInactiveTabsDemoThreshold() {
@@ -390,26 +413,6 @@ bool ShouldForceDisableComposeboxAIM() {
       boolForKey:kForceDisableAIMEligibility];
 }
 
-bool ShouldForceDisableComposeboxCreateImages() {
-  return [[NSUserDefaults standardUserDefaults]
-      boolForKey:kForceDisableCreateImagesEligibility];
-}
-
-bool ShouldForceDisableComposeboxCanvas() {
-  return [[NSUserDefaults standardUserDefaults]
-      boolForKey:kForceDisableCanvasEligibility];
-}
-
-bool ShouldForceDisableComposeboxDeepSearch() {
-  return [[NSUserDefaults standardUserDefaults]
-      boolForKey:kForceDisableDeepSearchEligibility];
-}
-
-bool ShouldForceDisableComposeboxPdfUpload() {
-  return [[NSUserDefaults standardUserDefaults]
-      boolForKey:kForceDisablePdfUploadEligibility];
-}
-
 bool ShouldShowCatalogItems() {
 #if BUILDFLAG(CHROMIUM_BRANDING) && !defined(NDEBUG)
   // Always show catalog items in debug builds.
@@ -436,6 +439,68 @@ int GetForcedPushNotificationType() {
 int GetForcedPushNotificationDelay() {
   return [[NSUserDefaults standardUserDefaults]
       integerForKey:kForcedPushNotificationDelay];
+}
+
+UniversalOptOutEligibilityOverride GetUniversalOptOutEligibilityOverride() {
+  int value = [[NSUserDefaults standardUserDefaults]
+      integerForKey:kUniversalOptOutEligibilityOverride];
+  switch (value) {
+    case 1:
+      return UniversalOptOutEligibilityOverride::kForcedOn;
+    case 2:
+      return UniversalOptOutEligibilityOverride::kForcedOff;
+    default:
+      return UniversalOptOutEligibilityOverride::kDefault;
+  }
+}
+
+base::TimeDelta GetWebExtensionLoadDelay() {
+  NSString* value = [[NSUserDefaults standardUserDefaults]
+      stringForKey:kWebExtensionLoadDelay];
+  if ([value isEqualToString:kWebExtensionLoadDelay1s] ||
+      [value isEqualToString:kWebExtensionLoadDelay1sFail]) {
+    return base::Seconds(1);
+  }
+  if ([value isEqualToString:kWebExtensionLoadDelay5s] ||
+      [value isEqualToString:kWebExtensionLoadDelay5sFail]) {
+    return base::Seconds(5);
+  }
+  return base::TimeDelta();
+}
+
+bool ShouldWebExtensionLoadFail() {
+  NSString* value = [[NSUserDefaults standardUserDefaults]
+      stringForKey:kWebExtensionLoadDelay];
+  return [value isEqualToString:kWebExtensionLoadDelayNoDelayFail] ||
+         [value isEqualToString:kWebExtensionLoadDelay1sFail] ||
+         [value isEqualToString:kWebExtensionLoadDelay5sFail];
+}
+
+bool IsWebExtensionLoadDelayDefault() {
+  NSString* value = [[NSUserDefaults standardUserDefaults]
+      stringForKey:kWebExtensionLoadDelay];
+  return value.length == 0;
+}
+
+bool IsAppSwitcherAISummarizationTestingExternalURLEnabled() {
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+  return [[NSUserDefaults standardUserDefaults]
+             boolForKey:kEnableAppSwitcherAISummarizationTestingExternalURL] ||
+         command_line->HasSwitch(
+             switches::kEnableAppSwitcherAISummarizationTestingExternalURL);
+}
+
+bool ShouldBypassGeolocationPromptRestriction() {
+  int value = [[NSUserDefaults standardUserDefaults]
+      integerForKey:kBypassGeolocationPromptRestriction];
+  switch (value) {
+    case 1:
+      return true;
+    case 2:
+      return false;
+    default:
+      return GetChannel() == version_info::Channel::CANARY;
+  }
 }
 
 }  // namespace experimental_flags

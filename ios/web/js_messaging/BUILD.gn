@@ -17,6 +17,7 @@ source_set("js_messaging") {
     ":setup_frame_js",
     ":web_view_js_utils",
     "//base",
+    "//components/sync_tab_context:constants",
     "//ios/public/provider/web:cobalt",
     "//ios/web/common:features",
     "//ios/web/js_features/window_error:error_reporting",
@@ -55,6 +56,7 @@ source_set("java_script_feature") {
     ":java_script_feature_manager_header",
   ]
   deps = [
+    ":java_script_content_world_util",
     ":js_messaging",
     ":scoped_wk_script_message_handler",
     ":web_view_js_utils",
@@ -101,6 +103,7 @@ source_set("java_script_content_world_header") {
 source_set("java_script_content_world_util") {
   deps = [
     "//base",
+    "//ios/web/common:features",
     "//ios/web/public/js_messaging:content_world_header",
   ]
 
@@ -217,12 +220,12 @@ source_set("unittests") {
     "//ios/web/common:web_view_creation_util",
     "//ios/web/public/js_messaging",
     "//ios/web/public/test",
+    "//ios/web/public/test:javascript_test",
     "//ios/web/public/test:test_fixture",
     "//ios/web/public/test/fakes",
     "//ios/web/test:js_test_util_internal",
     "//ios/web/test/fakes",
     "//ios/web/web_state:web_state_impl_header",
-    "//ios/web/web_state:web_view_internal_creation_util",
     "//ios/web/web_state/ui:web_controller_header",
     "//ios/web/web_state/ui:wk_web_view_configuration_provider",
     "//testing/gtest",
@@ -254,6 +257,7 @@ source_set("inttests") {
   testonly = true
   deps = [
     ":java_script_content_world_header",
+    ":java_script_content_world_util",
     ":java_script_feature",
     ":js_messaging",
     "//base",

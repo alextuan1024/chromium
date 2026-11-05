@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme_overlay_mobile.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/public/platform/web_theme_engine.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/paint/paint_auto_dark_mode.h"
@@ -23,14 +24,13 @@ static const WebThemeEngine::ScrollbarStyle& ScrollbarStyle() {
 ScrollbarThemeOverlayMobile& ScrollbarThemeOverlayMobile::GetInstance() {
   // For unit tests.
   if (MockScrollbarsEnabled()) {
-    DEFINE_STATIC_LOCAL(ScrollbarThemeOverlayMock, theme, ());
-    return theme;
+    static base::NoDestructor<ScrollbarThemeOverlayMock> theme;
+    return *theme;
   }
 
-  DEFINE_STATIC_LOCAL(
-      ScrollbarThemeOverlayMobile, theme,
-      (ScrollbarStyle().thumb_thickness, ScrollbarStyle().scrollbar_margin));
-  return theme;
+  static base::NoDestructor<ScrollbarThemeOverlayMobile> theme(
+      ScrollbarStyle().thumb_thickness, ScrollbarStyle().scrollbar_margin);
+  return *theme;
 }
 
 ScrollbarThemeOverlayMobile::ScrollbarThemeOverlayMobile(int thumb_thickness,
@@ -61,7 +61,7 @@ void ScrollbarThemeOverlayMobile::PaintThumb(const PaintInfo& paint_info,
 
   Color color = Color::FromSkColor4f(ThumbColor(scrollbar));
   AutoDarkMode auto_dark_mode(PaintAutoDarkMode(
-      box->StyleRef(), DarkModeFilter::ElementRole::kBackground));
+      box->Style(), DarkModeFilter::ElementRole::kBackground));
   context.FillRect(rect, color, auto_dark_mode);
 }
 

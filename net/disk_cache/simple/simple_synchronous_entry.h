@@ -231,7 +231,11 @@ class SimpleSynchronousEntry {
   // it again, but allowing operations to continue to be executed through that
   // instance. The renamed file will be removed once the entry is closed.
   // Returns a net error code.
-  int Doom();
+  //
+  // `sparse_file_may_be_unchecked` should be set to true if there was problem
+  // during initialization, which may result in sparse file not being open
+  // despite existing.
+  int Doom(bool sparse_file_may_be_unchecked);
 
   // Deletes an entry from the file system.  This variant should only be used
   // if there is no actual open instance around, as it doesn't account for
@@ -251,13 +255,11 @@ class SimpleSynchronousEntry {
       uint64_t entry_hash,
       std::unique_ptr<UnboundBackendFileOperations> file_operations);
 
-  // Like |DeleteEntryFiles()| above. Deletes all entries corresponding to the
-  // |key_hashes|. Succeeds only when all entries are deleted. Returns a net
-  // error code.
-  static int DeleteEntrySetFiles(
-      const std::vector<uint64_t>* key_hashes,
-      const base::FilePath& path,
-      std::unique_ptr<UnboundBackendFileOperations> unbound_file_operations);
+  // Like |DeleteEntryFiles()| above, but with bound |file_operations|. Returns
+  // true on success.
+  static bool DeleteFilesForEntryHash(const base::FilePath& path,
+                                      uint64_t entry_hash,
+                                      BackendFileOperations* file_operations);
 
   // N.B. ReadData(), WriteData(), CheckEOFRecord(), ReadSparseData(),
   // WriteSparseData() and Close() may block on IO.
@@ -475,14 +477,12 @@ class SimpleSynchronousEntry {
                                      uint64_t entry_hash,
                                      int file_index,
                                      BackendFileOperations* file_operations);
-  static bool DeleteFilesForEntryHash(const base::FilePath& path,
-                                      uint64_t entry_hash,
-                                      BackendFileOperations* file_operations);
   static bool TruncateFilesForEntryHash(const base::FilePath& path,
                                         uint64_t entry_hash,
                                         BackendFileOperations* file_operations);
 
-  int DoomInternal(BackendFileOperations* file_operations);
+  int DoomInternal(BackendFileOperations* file_operations,
+                   bool sparse_file_may_be_unchecked = false);
 
   base::FilePath GetFilenameFromFileIndex(int file_index) const;
 

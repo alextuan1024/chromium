@@ -50,8 +50,8 @@ class CORE_EXPORT StyleInvalidator {
   bool CheckInvalidationSetsAgainstElement(Element&, SiblingData&);
 
   bool MatchesCurrentInvalidationSets(Element&) const;
+  bool MatchesCurrentInvalidationSetsAsFocused(Element&) const;
   bool MatchesCurrentInvalidationSetsAsSlotted(Element&) const;
-  bool MatchesCurrentInvalidationSetsAsParts(Element&) const;
 
   bool HasInvalidationSets() const {
     return !WholeSubtreeInvalid() &&
@@ -74,6 +74,9 @@ class CORE_EXPORT StyleInvalidator {
   bool InvalidatesParts() const {
     return invalidation_flags_.InvalidatesParts();
   }
+  bool InvalidatesFocused() const {
+    return invalidation_flags_.InvalidatesFocused();
+  }
 
   void AddPendingNthSiblingInvalidationSet(
       const NthSiblingInvalidationSet& nth_set) {
@@ -92,8 +95,10 @@ class CORE_EXPORT StyleInvalidator {
   DescendantInvalidationSets invalidation_sets_;
   // NthSiblingInvalidationSets are added here from the parent node on which it
   // is scheduled, and pushed to SiblingData before invalidating the children.
-  // See the NthSiblingInvalidationSet documentation.
-  Vector<const NthSiblingInvalidationSet*> pending_nth_sets_;
+  // See the NthSiblingInvalidationSet documentation. Currently at most two sets
+  // can be scheduled on a node (RuleInvalidationData::nth_invalidation_set and
+  // InvalidationSet::TreeCountingInvalidationSet()).
+  Vector<const NthSiblingInvalidationSet*, 2> pending_nth_sets_;
   InvalidationFlags invalidation_flags_;
 
   class SiblingData {
@@ -116,8 +121,11 @@ class CORE_EXPORT StyleInvalidator {
           : invalidation_set_(invalidation_set),
             invalidation_limit_(invalidation_limit) {}
 
+      // UnprotectedInReleaseForPerformance: Based on analysis of
+      // blink_perf.css ClassInvalidation. A SiblingData is created on the
+      // stack for every element visited by InvalidateChildren().
       raw_ptr<const SiblingInvalidationSet,
-              UnprotectedInRelease | DanglingUntriaged>
+              UnprotectedInReleaseForPerformance | DanglingUntriaged>
           invalidation_set_;
       unsigned invalidation_limit_;
     };

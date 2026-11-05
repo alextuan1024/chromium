@@ -325,9 +325,8 @@ public class DualControlLayoutTest {
         Assert.assertEquals(DualControlLayoutAlignment.END, inflatedLayout.getAlignment());
         Assert.assertEquals(
                 "Incorrect stacked margin. Should be 24dp",
-                24 * dpToPx,
-                inflatedLayout.getStackedMargin(),
-                0.f);
+                Math.round(24 * dpToPx),
+                inflatedLayout.getStackedMargin());
 
         Button primaryButton = inflatedLayout.findViewById(R.id.button_primary);
         Assert.assertNotNull(primaryButton);

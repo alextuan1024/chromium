@@ -52,8 +52,10 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/schemeful_site.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/dom_storage/storage_area.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/origin.h"
 
 namespace content {
@@ -192,8 +194,7 @@ class DOMStorageBrowserTest : public base::test::WithFeatureOverride,
   }
 
   std::string CreateSessionStorageNamespace() {
-    std::string namespace_id =
-        base::Uuid::GenerateRandomV4().AsLowercaseString();
+    std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
     context_wrapper()->GetSessionStorageControl()->CreateNamespace(
         namespace_id);
     return namespace_id;
@@ -414,31 +415,25 @@ IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, MAYBE_SanityCheckIncognito) {
 }
 
 // http://crbug.com/654704 PRE_ tests aren't supported on Android.
-// TODO(crbug.com/40885339): Re-enable this test for fuchsia.
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_FUCHSIA)
+#if BUILDFLAG(IS_ANDROID)
 #define MAYBE_DataPersists DISABLED_DataPersists
 #else
 #define MAYBE_DataPersists DataPersists
 #endif
 IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, PRE_DataPersists) {
+  if (IsSqliteBackendOnFuchsia()) {
+    GTEST_SKIP() << "SQLite DomStorage backend unsupported on Fuchsia";
+  }
   SimpleTest(GetTestUrl("dom_storage", "store_data.html"), kNotIncognito);
 
-  // Browser shutdown can always race with async work on non-shutdown-blocking
-  // task runners. This includes the local storage implementation. If opening
-  // the database takes too long, by the time it finishes the IO thread may be
-  // shut down and the Local Storage implementation may be unable to commit its
-  // pending operations.
-  //
-  // Since the point of this test is to verify that committed data is actually
-  // retrievable by a subsequent browser session, wait for the database to be
-  // ready.
-  base::RunLoop loop;
-  context_wrapper()->GetLocalStorageUsage(base::BindLambdaForTesting(
-      [&](const std::vector<StorageUsageInfo>&) { loop.Quit(); }));
-  loop.Run();
+  // Wait for the write to commit before shutdown.
+  CommitLocalStorage();
 }
 
 IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, MAYBE_DataPersists) {
+  if (IsSqliteBackendOnFuchsia()) {
+    GTEST_SKIP() << "SQLite DomStorage backend unsupported on Fuchsia";
+  }
   SimpleTest(GetTestUrl("dom_storage", "verify_data.html"), kNotIncognito);
 }
 
@@ -507,8 +502,14 @@ IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, SessionStorageOnDiskSize) {
 IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, MAYBE_DeletePhysicalStorageKey) {
   EXPECT_EQ(0U, GetUsage().size());
   SimpleTest(GetTestUrl("dom_storage", "store_data.html"), kNotIncognito);
-  std::vector<StorageUsageInfo> usage = GetUsage();
-  ASSERT_EQ(1U, usage.size());
+  // The page's writes reach the storage service asynchronously. An area that
+  // is still loading can appear in the usage list with zero bytes, so wait for
+  // nonzero usage before deleting it.
+  std::vector<StorageUsageInfo> usage;
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    usage = GetUsage();
+    return usage.size() == 1U && usage[0].total_size_bytes > 0;
+  }));
   DeletePhysicalStorageKey(usage[0].storage_key);
   EXPECT_EQ(0U, GetUsage().size());
 }
@@ -554,7 +555,7 @@ class NoWindowsContentBrowserClient
                        const GURL& target_url,
                        const Referrer& referrer,
                        const std::string& frame_name,
-                       WindowOpenDisposition disposition,
+                       ui::mojom::WindowOpenDisposition disposition,
                        const blink::mojom::WindowFeatures& features,
                        bool user_gesture,
                        bool opener_suppressed,

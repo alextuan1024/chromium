@@ -5,9 +5,6 @@
 package org.chromium.android_webview;
 
 import android.content.Context;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager.NameNotFoundException;
-import android.os.Build;
 import android.os.UserHandle;
 import android.os.UserManager;
 
@@ -15,13 +12,10 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 
-import org.chromium.base.ApkInfo;
 import org.chromium.base.ContextUtils;
 import org.chromium.build.annotations.NullMarked;
 
-import java.lang.reflect.Field;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Utility class to fetch information about system, or system-level information about the bundle.
@@ -47,31 +41,6 @@ public class SystemStateUtil {
             // there are. See https://crbug.com/332989719 for reference.
             return MultipleUserProfilesState.UNKNOWN;
         }
-    }
-
-    @CalledByNative
-    @SuppressWarnings("DiscouragedPrivateApi")
-    public static @PrimaryCpuAbiBitness int getPrimaryCpuAbiBitness() {
-        ApplicationInfo applicationInfo = null;
-        String packageName = ApkInfo.getPackageName();
-        try {
-            applicationInfo =
-                    ContextUtils.getApplicationContext()
-                            .getPackageManager()
-                            .getPackageInfo(packageName, 0)
-                            .applicationInfo;
-            Field primaryCpuAbiField = ApplicationInfo.class.getDeclaredField("primaryCpuAbi");
-            String primaryCpuAbi = (String) primaryCpuAbiField.get(applicationInfo);
-            if (primaryCpuAbi != null) {
-                if (Set.of(Build.SUPPORTED_32_BIT_ABIS).contains(primaryCpuAbi)) {
-                    return PrimaryCpuAbiBitness.k32bit;
-                } else if (Set.of(Build.SUPPORTED_64_BIT_ABIS).contains(primaryCpuAbi)) {
-                    return PrimaryCpuAbiBitness.k64bit;
-                }
-            }
-        } catch (NameNotFoundException | NoSuchFieldException | IllegalAccessException e) {
-        }
-        return PrimaryCpuAbiBitness.UNKNOWN;
     }
 
     @CalledByNative

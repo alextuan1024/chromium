@@ -37,6 +37,8 @@ GURL::GURL(const GURL& other)
   DCHECK(!is_valid_ || !SchemeIsFileSystem() || inner_url_);
 }
 
+// This type is marked `CRUBIT_UNSAFE_BITWISE_RELOCATABLE`; see class
+// header for invariants the move constructor must follow.
 GURL::GURL(GURL&& other) noexcept
     : spec_(std::move(other.spec_)),
       is_valid_(other.is_valid_),
@@ -129,6 +131,8 @@ void GURL::InitializeFromCanonicalSpec() {
 #endif
 }
 
+// This type is marked `CRUBIT_UNSAFE_BITWISE_RELOCATABLE`; see class
+// header for invariants the destructor must follow.
 GURL::~GURL() = default;
 
 GURL& GURL::operator=(const GURL& other) {
@@ -541,8 +545,8 @@ std::ostream& operator<<(std::ostream& out, const GURL& url) {
   return out << url.possibly_invalid_spec();
 }
 
-bool operator==(const GURL& x, const GURL& y) {
-  return x.possibly_invalid_spec() == y.possibly_invalid_spec();
+bool operator==(const GURL& lhs, const GURL& rhs) {
+  return lhs.possibly_invalid_spec() == rhs.possibly_invalid_spec();
 }
 
 bool operator==(const GURL& x, std::string_view spec) {

@@ -38,7 +38,7 @@ chromium-metrics-reviews@google.com.
 </variants>
 
 <histogram name="Compose.ContextMenu.CTR" enum="ComposeContextMenuCtrEvent"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>sophey@chromium.org</owner>
   <owner>chrome-compose-frontend@google.com</owner>
   <summary>
@@ -60,35 +60,14 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="Compose.ContextMenu.SelectedAll" enum="ComposeSelectAllStatus"
-    expires_after="2025-09-14">
-  <owner>dewittj@chromium.org</owner>
-  <owner>chrome-compose-frontend@google.com</owner>
-  <summary>
-    Histogram that records whether all text was selected on behalf of the user
-    when opening the Compose dialog from the context menu item.
-  </summary>
-</histogram>
-
 <histogram name="Compose.ContextMenu.ShowStatus" enum="ComposeShowStatus"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>sophey@chromium.org</owner>
   <owner>chrome-compose-frontend@google.com</owner>
   <summary>
     Histogram that records the show status of the Compose context menu item.
     Logged each time the menu item is displayed or blocked from displaying (with
     a reason why).
-  </summary>
-</histogram>
-
-<histogram name="Compose.Dialog.InnerTextNodeOffsetFound"
-    enum="ComposeInnerTextNodeOffset" expires_after="2025-07-13">
-  <owner>jeffreycohen@chromium.org</owner>
-  <owner>chrome-compose-frontend@google.com</owner>
-  <summary>
-    Records if a Compose request generated a valid node offset for the inner
-    text. Logged each time the dialog is opened when the inner text response is
-    sent to the new compose session.
   </summary>
 </histogram>
 
@@ -156,7 +135,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Compose.ProactiveNudge.CTR" enum="ComposeNudgeCtrEvent"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>perrier@chromium.org</owner>
   <owner>chrome-compose-frontend@google.com</owner>
   <summary>
@@ -179,7 +158,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Compose.ProactiveNudge.ShowStatus" enum="ComposeShowStatus"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>perrier@chromium.org</owner>
   <owner>chrome-compose-frontend@google.com</owner>
   <summary>
@@ -187,17 +166,6 @@ chromium-metrics-reviews@google.com.
     Segmentation Platform block reasons are recorded with the lowest priority.
     Logged each time the nudge is displayed or blocked from displaying (with a
     reason why).
-  </summary>
-</histogram>
-
-<histogram name="Compose.SelectionNudge.CTR" enum="ComposeNudgeCtrEvent"
-    expires_after="2025-03-09">
-  <owner>perrier@chromium.org</owner>
-  <owner>chrome-compose-frontend@google.com</owner>
-  <summary>
-    Histogram for calculating the click-through rate (CTR) of the Compose
-    selection nudge. Logged each time the nudge is displayed and when it's
-    clicked by the user. CTR is calculated through `clicked/displayed`.
   </summary>
 </histogram>
 
@@ -341,7 +309,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Compose.{ComposeEvalLocation}Request.Status"
-    enum="ComposeRequestStatus" expires_after="2027-02-07">
+    enum="ComposeRequestStatus" expires_after="2027-04-11">
   <owner>cuianthony@chromium.org</owner>
   <owner>chrome-compose-frontend@google.com</owner>
   <summary>
@@ -351,29 +319,8 @@ chromium-metrics-reviews@google.com.
   <token key="ComposeEvalLocation" variants="ComposeEvalLocation"/>
 </histogram>
 
-<histogram
-    name="Compose.{ComposeEvalLocation}Request.{PageLanguageStatus}.Status"
-    enum="ComposeRequestStatus" expires_after="2025-09-14">
-  <owner>carlosk@chromium.org</owner>
-  <owner>chrome-compose-frontend@google.com</owner>
-  <summary>
-    Records the Compose server request status when a request is made from a
-    {PageLanguageStatus}. Logged each time a Compose request receives a
-    response. {ComposeEvalLocation}
-  </summary>
-  <token key="PageLanguageStatus">
-    <variant name="PageLanguageSupported"
-        summary="page whose client-assessed language is expected to be
-                 supported by Compose"/>
-    <variant name="PageLanguageUnsupported"
-        summary="page whose client-assessed language is expected to be not
-                 supported by Compose (but usage was still allowed)."/>
-  </token>
-  <token key="ComposeEvalLocation" variants="ComposeEvalLocation"/>
-</histogram>
-
 <histogram name="Compose.{ComposeEvalLocation}Session.CloseReason"
-    enum="ComposeSessionCloseReasonType" expires_after="2027-02-07">
+    enum="ComposeSessionCloseReasonType" expires_after="2027-04-11">
   <owner>petewil@chromium.org</owner>
   <owner>chrome-compose-frontend@google.com</owner>
   <summary>
@@ -388,7 +335,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Compose.{ComposeEvalLocation}Session.ComposeCount.{FinalStatus}"
-    units="count" expires_after="2027-02-07">
+    units="count" expires_after="2027-04-11">
   <owner>perrier@chromium.org</owner>
   <owner>chrome-compose-frontend@google.com</owner>
   <summary>
@@ -438,7 +385,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Compose.{ComposeEvalLocation}Session.EventCounts"
-    enum="ComposeSessionEventTypes" expires_after="2027-02-07">
+    enum="ComposeSessionEventTypes" expires_after="2027-04-11">
   <owner>perrier@chromium.org</owner>
   <owner>chrome-compose-frontend@google.com</owner>
   <summary>

@@ -4,7 +4,9 @@
 
 #include "chrome/browser/devtools/devtools_file_helper.h"
 
+#include <algorithm>
 #include <set>
+#include <string_view>
 #include <vector>
 
 #include "base/base64.h"
@@ -12,13 +14,17 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/json/string_escape.h"
 #include "base/json/values_util.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversion_utils.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/devtools/devtools_file_watcher.h"
 #include "chrome/browser/download/download_prefs.h"
@@ -41,6 +47,10 @@
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/files/file_android.h"
+#endif
 
 using content::BrowserThread;
 using std::set;
@@ -69,7 +79,7 @@ base::FilePath& GetLastSavePath() {
 void WriteToFile(const base::FilePath& path,
                  const std::string& content,
                  bool is_base64) {
-  DCHECK(!path.empty());
+  CHECK(!path.empty(), base::NotFatalUntil::M161);
 
   std::optional<std::vector<uint8_t>> decoded_content;
   if (is_base64) {
@@ -95,9 +105,19 @@ void WriteToFile(const base::FilePath& path,
 }
 
 void AppendToFile(const base::FilePath& path, const std::string& content) {
-  DCHECK(!path.empty());
+  CHECK(!path.empty(), base::NotFatalUntil::M161);
 
+#if BUILDFLAG(IS_ANDROID)
+  // Save() has already created the document, so no create-if-absent is
+  // needed, and providers cannot honor OPEN_ALWAYS by name.
+  base::File file = path.IsContentUri()
+                        ? base::OpenAndroidDocument(
+                              path, base::AndroidDocumentAccessMode::kAppend)
+                        : base::File(path, base::File::FLAG_OPEN_ALWAYS |
+                                               base::File::FLAG_APPEND);
+#else
   base::File file(path, base::File::FLAG_OPEN_ALWAYS | base::File::FLAG_APPEND);
+#endif
   if (!file.IsValid()) {
     LOG(ERROR) << "Failed to open file: " << path.value();
     return;
@@ -106,6 +126,70 @@ void AppendToFile(const base::FilePath& path, const std::string& content) {
     LOG(ERROR) << "Failed to append: " << path.value();
     return;
   }
+}
+
+constexpr bool IsBidiControlCharacter(base_icu::UChar32 code_point) {
+  return code_point == 0x061C ||
+         (code_point >= 0x200E && code_point <= 0x200F) ||
+         (code_point >= 0x202A && code_point <= 0x202E) ||
+         (code_point >= 0x2066 && code_point <= 0x2069);
+}
+
+constexpr bool IsDisallowedUnicodeFormatOrSeparator(
+    base_icu::UChar32 code_point) {
+  // Reject zero-width space, line/paragraph separators, word joiner, and
+  // BOM/ZWNBSP, while preserving U+200C (ZWNJ) and U+200D (ZWJ) for valid
+  // orthography and emoji sequences.
+  return code_point == 0x200B || code_point == 0x2028 || code_point == 0x2029 ||
+         code_point == 0x2060 || code_point == 0xFEFF;
+}
+
+bool IsValidLocalAbsoluteDirectoryPath(std::string_view file_system_path) {
+  if (file_system_path.empty()) {
+    return false;
+  }
+  for (size_t index = 0; index < file_system_path.size(); ++index) {
+    base_icu::UChar32 code_point = 0;
+    if (!base::ReadUnicodeCharacter(file_system_path, &index, &code_point) ||
+        base::IsUnicodeControl(code_point) ||
+        IsBidiControlCharacter(code_point) ||
+        IsDisallowedUnicodeFormatOrSeparator(code_point)) {
+      return false;
+    }
+  }
+
+  std::u16string trimmed;
+  if (base::TrimWhitespace(base::UTF8ToUTF16(file_system_path), base::TRIM_ALL,
+                           &trimmed) != base::TRIM_NONE ||
+      trimmed.empty()) {
+    return false;
+  }
+
+  base::FilePath path = base::FilePath::FromUTF8Unsafe(file_system_path);
+  if (!path.IsAbsolute() || path.IsNetwork() || path.ReferencesParent() ||
+      path.StripTrailingSeparators() == path.DirName()) {
+    return false;
+  }
+
+  const std::vector<base::FilePath::StringType> components =
+      path.GetComponents();
+  if (std::ranges::contains(
+          components,
+          base::FilePath::StringViewType(base::FilePath::kCurrentDirectory))) {
+    return false;
+  }
+#if BUILDFLAG(IS_WIN)
+  if (file_system_path.find(':', 2) != std::string_view::npos ||
+      std::ranges::any_of(
+          components, [](const base::FilePath::StringType& component) {
+            return !component.empty() &&
+                   (component.back() == FILE_PATH_LITERAL('.') ||
+                    component.back() == FILE_PATH_LITERAL(' '));
+          })) {
+    return false;
+  }
+#endif
+  return true;
 }
 
 }  // namespace
@@ -167,15 +251,18 @@ void DevToolsFileHelper::Save(const std::string& url,
   }
 
   if (initial_path.empty()) {
-    // SECURITY: |url| is page-controlled. Derive the suggested filename via
-    // net::GenerateFileName(), which strips path separators, "..", BiDi
-    // control characters and shell-integrated extensions - the same
-    // sanitization the download stack applies. This prevents %2F / %5C
-    // traversal out of the default Save-As folder and U+202E filename
-    // spoofing.
+    // SECURITY: |url| is page-controlled and may be either a valid URL or a
+    // raw filename (e.g. "Trace-20261019T154233.json.gz"). Derive the
+    // suggested filename via net::GenerateFileName(), which strips path
+    // separators, "..", BiDi control characters and shell-integrated
+    // extensions - the same sanitization the download stack applies. This
+    // prevents %2F / %5C traversal out of the default Save-As folder and
+    // U+202E filename spoofing.
+    GURL gurl(url);
     base::FilePath suggested_file_name = net::GenerateFileName(
-        GURL(url), /*content_disposition=*/std::string(),
-        /*referrer_charset=*/std::string(), /*suggested_name=*/std::string(),
+        gurl, /*content_disposition=*/std::string(),
+        /*referrer_charset=*/std::string(),
+        /*suggested_name=*/gurl.is_valid() ? std::string() : url,
         /*mime_type=*/std::string(), /*default_name=*/"download");
 
     if (!GetLastSavePath().empty()) {
@@ -283,33 +370,29 @@ void DevToolsFileHelper::ConnectAutomaticFileSystem(
     bool add_if_missing,
     const HandlePermissionsCallback& handle_permissions_callback,
     ConnectCallback connect_callback) {
-  DCHECK(file_system_uuid.is_valid());
+  CHECK(file_system_uuid.is_valid(), base::NotFatalUntil::M161);
 
-  // Reject unsafe network, relative, or parent-referencing paths synchronously
-  // to avoid performing any filesystem existence/presence checks.
-  base::FilePath path = base::FilePath::FromUTF8Unsafe(file_system_path);
-  if (!path.IsAbsolute() || path.IsNetwork() || path.ReferencesParent()) {
-    LOG(ERROR) << "Rejected automatic file system " << file_system_path
-               << " with UUID " << file_system_uuid
-               << " (not a safe local absolute path).";
+  // Reject invalid, root, network, relative, or dot-referencing paths
+  // synchronously to avoid performing any filesystem existence/presence checks.
+  if (!IsValidLocalAbsoluteDirectoryPath(file_system_path)) {
+    LOG(ERROR) << "Rejected automatic file system "
+               << base::GetQuotedJSONString(file_system_path) << " with UUID "
+               << file_system_uuid << " (not a safe local absolute path).";
     std::move(connect_callback).Run(false);
     FailedToAddFileSystem(kIllegalPath);
     return;
   }
+  base::FilePath path = base::FilePath::FromUTF8Unsafe(file_system_path);
 
   auto* permission_context =
       FileSystemAccessPermissionContextFactory::GetForProfile(profile_);
   if (permission_context) {
     content::PathInfo path_info(path);
-    // TODO(crbug.com/545006893): DevTools automatic file systems can write to
-    // disk, but currently use AccessTrigger::kProgrammaticRead. Investigate
-    // updating this to a write trigger. This CL is a pure refactoring so we
-    // avoid making behavioral changes here.
     permission_context->ConfirmSensitiveEntryAccess(
         url::Origin(), path_info,
         content::FileSystemAccessPermissionContext::HandleType::kDirectory,
         content::FileSystemAccessPermissionContext::AccessTrigger::
-            kProgrammaticRead,
+            kProgrammaticWrite,
         content::GlobalRenderFrameHostId(),
         base::BindOnce(
             &DevToolsFileHelper::CheckBlocklistAndConnectAutomaticFileSystem,
@@ -433,7 +516,7 @@ void DevToolsFileHelper::ConnectUserConfirmedAutomaticFileSystem(
 bool DevToolsFileHelper::IsUserConfirmedAutomaticFileSystem(
     const std::string& file_system_path,
     const base::Uuid& file_system_uuid) const {
-  DCHECK(file_system_uuid.is_valid());
+  CHECK(file_system_uuid.is_valid(), base::NotFatalUntil::M161);
   const base::DictValue& file_system_paths_value =
       profile_->GetPrefs()->GetDict(prefs::kDevToolsFileSystemPaths);
   const base::Value* value = file_system_paths_value.Find(file_system_path);
@@ -525,7 +608,7 @@ DevToolsFileHelper::GetFileSystems() {
 }
 
 void DevToolsFileHelper::RemoveFileSystem(const std::string& file_system_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   auto path = base::FilePath::FromUTF8Unsafe(file_system_path);
 
   if (connected_automatic_file_systems_.erase(file_system_path) == 1) {
@@ -541,12 +624,12 @@ void DevToolsFileHelper::RemoveFileSystem(const std::string& file_system_path) {
 
 bool DevToolsFileHelper::IsFileSystemAdded(
     const std::string& file_system_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   return file_system_paths_.contains(file_system_path);
 }
 
 bool DevToolsFileHelper::IsFileInFileSystem(const std::string& file_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   base::FilePath path = base::FilePath::FromUTF8Unsafe(file_path);
   if (path.ReferencesParent()) {
     return false;
@@ -564,14 +647,14 @@ bool DevToolsFileHelper::IsFileInFileSystem(const std::string& file_path) {
 void DevToolsFileHelper::OnOpenItemComplete(
     const base::FilePath& path,
     platform_util::OpenOperationResult result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (result == platform_util::OPEN_FAILED_INVALID_TYPE) {
     platform_util::ShowItemInFolder(profile_, path);
   }
 }
 
 void DevToolsFileHelper::ShowItemInFolder(const std::string& file_system_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (file_system_path.empty()) {
     return;
   }
@@ -583,10 +666,10 @@ void DevToolsFileHelper::ShowItemInFolder(const std::string& file_system_path) {
 }
 
 void DevToolsFileHelper::UpdateFileSystemPathsOnUI() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   PathToType remaining;
   remaining.swap(file_system_paths_);
-  DCHECK(file_watcher_.get());
+  CHECK(file_watcher_.get(), base::NotFatalUntil::M161);
 
   for (const auto& file_system_path : GetActiveFileSystemPaths()) {
     if (remaining.find(file_system_path.first) == remaining.end()) {

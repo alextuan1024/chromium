@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 
+#include "base/no_destructor.h"
 #include "services/network/public/cpp/web_sandbox_flags.h"
 #include "skia/ext/font_utils.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
@@ -116,9 +117,9 @@ RenderingTest::RenderingTest(
     : PageTestBase(time_source), local_frame_client_(local_frame_client) {}
 
 RenderingTestChromeClient& RenderingTest::GetChromeClient() const {
-  DEFINE_STATIC_LOCAL(Persistent<RenderingTestChromeClient>, client,
-                      (MakeGarbageCollected<RenderingTestChromeClient>()));
-  return *client;
+  static base::NoDestructor<Persistent<RenderingTestChromeClient>> client(
+      MakeGarbageCollected<RenderingTestChromeClient>());
+  return **client;
 }
 
 const Node* RenderingTest::HitTest(int x, int y) {
@@ -219,7 +220,7 @@ PhysicalRect VisualRectInDocument(const LayoutObject& object,
 }
 
 PhysicalRect LocalVisualRect(const LayoutObject& object) {
-  if (object.StyleRef().Visibility() != EVisibility::kVisible &&
+  if (object.Style().Visibility() != EVisibility::kVisible &&
       object.VisualRectRespectsVisibility()) {
     return PhysicalRect();
   }

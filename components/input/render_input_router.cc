@@ -16,6 +16,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "base/tracing/protos/chrome_track_event.pbzero.h"
+#include "cc/input/browser_controls_animation_params.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
 #include "components/input/features.h"
 #include "components/input/input_constants.h"
@@ -131,6 +132,10 @@ class UnboundWidgetInputHandler : public blink::mojom::WidgetInputHandler {
           offset_tag_modifications) override {
     NOTREACHED() << "Input request on unbound interface";
   }
+  void StartBrowserControlsAnimation(
+      const cc::BrowserControlsAnimationParams& params) override {
+    NOTREACHED() << "Input request on unbound interface";
+  }
 };
 
 }  // namespace
@@ -166,6 +171,8 @@ void RenderInputRouter::SetupInputRouter(float device_scale_factor) {
   StopInputEventAckTimeout();
   delegate_->RendererIsResponsive();
 
+  ClearScrollTrackingState();
+
   bool was_active = input_router_ && input_router_->IsActive();
 
   input_router_ = std::make_unique<InputRouterImpl>(
@@ -178,6 +185,28 @@ void RenderInputRouter::SetupInputRouter(float device_scale_factor) {
   if (was_active) {
     input_router_->MakeActive();
   }
+}
+
+void RenderInputRouter::ClearScrollTrackingState() {
+  // Cancel and reset `scroll_peak_gpu_mem_tracker_` before calling
+  // `StopFling()`. `StopFling()` synchronously dispatches a synthetic
+  // `kGestureScrollEnd` into `ForwardGestureEventWithLatencyInfo()`, which
+  // would otherwise destroy `scroll_peak_gpu_mem_tracker_` without canceling it
+  // when `is_currently_scrolling_viewport()` is true.
+  if (scroll_peak_gpu_mem_tracker_) {
+    scroll_peak_gpu_mem_tracker_->Cancel();
+    scroll_peak_gpu_mem_tracker_.reset();
+  }
+  // `StopFling()` must also run before clearing `is_in_gesture_scroll_` because
+  // `SendGestureEventWithLatencyInfo()` asserts that `is_in_gesture_scroll_` is
+  // true when processing the synthetic `kGestureScrollEnd` from `StopFling()`.
+  if (input_router_) {
+    input_router_->StopFling();
+  }
+  set_is_currently_scrolling_viewport(false);
+  is_in_gesture_scroll_.fill(false);
+  is_in_touchpad_gesture_fling_ = false;
+  gsb_filtered_for_paint_holding_ = false;
 }
 
 void RenderInputRouter::SetFlingScheduler(
@@ -271,8 +300,9 @@ StylusInterface* RenderInputRouter::GetStylusInterface() {
   return delegate_->GetStylusInterface();
 }
 
-void RenderInputRouter::OnStartStylusWriting() {
-  render_input_router_client_->OnStartStylusWriting();
+void RenderInputRouter::OnStartStylusWriting(
+    const std::optional<StylusWritingProperties>& properties) {
+  render_input_router_client_->OnStartStylusWriting(properties);
 }
 
 bool RenderInputRouter::IsWheelScrollInProgress() {

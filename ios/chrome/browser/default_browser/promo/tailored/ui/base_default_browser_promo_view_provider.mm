@@ -9,10 +9,10 @@
 #import "base/metrics/user_metrics_action.h"
 #import "base/notreached.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
-#import "ios/chrome/browser/default_browser/promo/public/features.h"
 #import "ios/chrome/browser/promos_manager/model/promo_config.h"
 #import "ios/chrome/browser/shared/public/commands/picture_in_picture_commands.h"
 #import "ios/chrome/browser/shared/public/commands/promos_manager_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/common/ui/button_stack/button_stack_configuration.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
@@ -75,14 +75,15 @@ constexpr CGFloat kHelpSymbolSize = 20;
 // The "Primary Action" was touched.
 - (void)standardPromoPrimaryAction {
   RecordDefaultBrowserPromoLastAction(
-      IOSDefaultBrowserPromoAction::kActionButton);
+      IOSDefaultBrowserPromoAction::kActionButton,
+      IOSDefaultBrowserPromoSurface::kTailored);
   RecordAction(
       UserMetricsAction("IOS.DefaultBrowserPromo.TailoredFullscreen.Accepted"));
   LogDefaultBrowserPromoHistogramForAction(
       self.defaultBrowserPromoType,
       IOSDefaultBrowserPromoAction::kActionButton);
 
-  if (IsDefaultBrowserPictureInPictureEnabled()) {
+  if (IsDefaultAppsDestinationAvailable()) {
     [self.promosManagerHandler dismissCurrentPromo];
   }
 

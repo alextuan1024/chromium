@@ -5,6 +5,7 @@
 #include "chrome/browser/extensions/chrome_url_request_util.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -19,6 +20,7 @@
 #include "base/task/thread_pool.h"
 #include "chrome/common/chrome_paths.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/child_process_security_policy.h"
 #include "content/public/common/child_process_id.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/component_extension_resource_manager.h"
@@ -63,19 +65,10 @@ void DetermineCharset(const std::string& mime_type,
                        base::CompareCase::INSENSITIVE_ASCII)) {
     // All of our HTML files should be UTF-8 and for other resource types
     // (like images), charset doesn't matter.
-    DCHECK(base::IsStringUTF8(base::as_string_view(*data)));
+    CHECK(base::IsStringUTF8(base::as_string_view(*data)),
+          base::NotFatalUntil::M161);
     *out_charset = "utf-8";
   }
-}
-
-bool IsHtmlMimeType(std::string_view mime_type) {
-  return base::EqualsCaseInsensitiveASCII(mime_type, "text/html") ||
-         base::EqualsCaseInsensitiveASCII(mime_type, "text/css");
-}
-
-bool IsJavaScriptMimeType(std::string_view mime_type) {
-  return base::EqualsCaseInsensitiveASCII(mime_type, "text/javascript") ||
-         base::EqualsCaseInsensitiveASCII(mime_type, "application/javascript");
 }
 
 scoped_refptr<base::RefCountedMemory> GetResource(
@@ -92,27 +85,19 @@ scoped_refptr<base::RefCountedMemory> GetResource(
     return base::MakeRefCounted<base::RefCountedBytes>();
   }
 
-  auto* replacements =
-      ExtensionsBrowserClient::Get()->GetComponentExtensionResourceManager()
-          ? ExtensionsBrowserClient::Get()
-                ->GetComponentExtensionResourceManager()
-                ->GetTemplateReplacementsForExtension(extension_id,
-                                                      browser_context)
-          : nullptr;
-
-  std::string temp_str;
-  if (replacements && IsHtmlMimeType(mime_type)) {
-    temp_str = ui::ReplaceTemplateExpressions(base::as_string_view(*bytes),
-                                              *replacements);
-    DCHECK(!temp_str.empty());
-    return base::MakeRefCounted<base::RefCountedString>(std::move(temp_str));
-  } else if (replacements && IsJavaScriptMimeType(mime_type)) {
-    CHECK(ui::ReplaceTemplateExpressionsInJS(base::as_string_view(*bytes),
-                                             *replacements, &temp_str));
-    return base::MakeRefCounted<base::RefCountedString>(std::move(temp_str));
-  } else {
-    return bytes;
+  const ui::TemplateReplacements* replacements =
+      extensions::url_request_util::GetTemplateReplacementsForExtension(
+          extension_id, browser_context);
+  if (replacements &&
+      extensions::url_request_util::SupportsTemplateReplacement(mime_type)) {
+    std::optional<std::string> temp_str =
+        extensions::url_request_util::ReplaceTemplateExpressionsForResource(
+            base::as_string_view(*bytes), mime_type, *replacements);
+    CHECK(temp_str.has_value());
+    CHECK(!temp_str->empty(), base::NotFatalUntil::M161);
+    return base::MakeRefCounted<base::RefCountedString>(std::move(*temp_str));
   }
+  return bytes;
 }
 
 // Loads an extension resource in a Chrome .pak file. These are used by
@@ -292,11 +277,26 @@ bool AllowCrossRendererResourceLoad(
 
   if (extension &&
       !chrome_manifest_urls::GetDevToolsPage(extension).is_empty()) {
-    // Allow the load if the initiator is either a devtools origin, or if
-    // there is no initiator (in which case it was likely a browser-initiated
-    // request).
-    if (!request.request_initiator ||
-        request.request_initiator->scheme() == content::kChromeDevToolsScheme) {
+    // Allow the load only if it actually comes from the browser process or
+    // from a renderer hosting the DevTools front-end. `request_initiator` is
+    // renderer-supplied and not validated on this path, so cross-check it
+    // against the browser-trusted `child_id` that the factory was bound to.
+    // TODO(crbug.com/512142568): Validate request_initiator centrally in
+    // ExtensionURLLoader (e.g. require HostsOrigin when render_process_id is
+    // non-null) rather than checking individual call sites.
+    const bool is_devtools_scheme =
+        request.request_initiator &&
+        request.request_initiator->scheme() == content::kChromeDevToolsScheme;
+    // TODO(crbug.com/379869738): Remove GetUnsafeValue.
+    const bool is_devtools_allowed =
+        is_devtools_scheme &&
+        (child_id.is_null() ||
+         content::ChildProcessSecurityPolicy::GetInstance()->HostsOrigin(
+             child_id.GetUnsafeValue(), *request.request_initiator));
+    const bool is_browser_without_initiator =
+        child_id.is_null() && !request.request_initiator;
+
+    if (is_devtools_allowed || is_browser_without_initiator) {
       *allowed = true;
       return true;
     }
@@ -333,7 +333,7 @@ base::FilePath GetBundleResourcePath(
           extension_resources_path, request_relative_path, resource_id)) {
     return base::FilePath();
   }
-  DCHECK_NE(0, *resource_id);
+  CHECK_NE(0, *resource_id, base::NotFatalUntil::M161);
 
   return request_relative_path;
 }
@@ -346,7 +346,7 @@ void LoadResourceFromResourceBundle(
     scoped_refptr<net::HttpResponseHeaders> headers,
     mojo::PendingRemote<network::mojom::URLLoaderClient> client,
     content::BrowserContext* browser_context) {
-  DCHECK(!resource_relative_path.empty());
+  CHECK(!resource_relative_path.empty(), base::NotFatalUntil::M161);
   ResourceBundleFileLoader::CreateAndStart(
       request, std::move(loader), std::move(client), resource_relative_path,
       resource_id, std::move(headers), browser_context);

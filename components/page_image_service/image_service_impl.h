@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/functional/callback_forward.h"
@@ -31,6 +32,7 @@ class OptimizationGuideDecider;
 namespace page_image_service {
 
 class ImageServiceConsentHelper;
+class SuggestEntityImageURLFetcher;
 enum class PageImageServiceConsentStatus;
 
 // Through my manual testing, 16ms (which is about a frame at 60hz) allowed
@@ -67,14 +69,27 @@ class ImageServiceImpl : public ImageService {
       base::OnceCallback<void(PageImageServiceConsentStatus)> callback);
 
  private:
-  class SuggestEntityImageURLFetcher;
-
   struct OptGuideRequest {
     OptGuideRequest();
     ~OptGuideRequest();
     OptGuideRequest(OptGuideRequest&& other);
     GURL url;
     ResultCallback callback;
+  };
+
+  struct OptGuideClientState {
+    OptGuideClientState();
+    OptGuideClientState(OptGuideClientState&&);
+    OptGuideClientState& operator=(OptGuideClientState&&);
+    ~OptGuideClientState();
+
+    // Optimization Guide requests waiting to be aggregated into a batch.
+    std::vector<OptGuideRequest> unsent_requests;
+    // Optimization Guide requests that have been sent and are awaiting a
+    // response.
+    std::vector<OptGuideRequest> sent_requests;
+    // Timer used to allow requests to accumulate before sending a batch.
+    std::unique_ptr<base::OneShotTimer> timer;
   };
 
   // Callback to `GetConsentToFetchImage`, proceeds to call the appropriate
@@ -95,10 +110,9 @@ class ImageServiceImpl : public ImageService {
                          ResultCallback callback);
 
   // Callback for `FetchSuggestImage`.
-  void OnSuggestImageFetched(
-      std::unique_ptr<SuggestEntityImageURLFetcher> fetcher,
-      ResultCallback callback,
-      const GURL& image_url);
+  void OnSuggestImageFetched(SuggestEntityImageURLFetcher* fetcher,
+                             ResultCallback callback,
+                             const GURL& image_url);
 
   // Fetches an image from Optimization Guide appropriate for the parameters.
   // This internally puts the request into a queue for batching purposes.
@@ -135,21 +149,13 @@ class ImageServiceImpl : public ImageService {
   // Used to make proper suggest requests.
   std::unique_ptr<AutocompleteSchemeClassifier> autocomplete_scheme_classifier_;
 
-  // Stores all the Optimization Guide requests that are still waiting to be
-  // aggregated into a batch and sent. When sent in a batch, the requests are
-  // moved to `sent_opt_guide_requests_`.
-  base::flat_map<mojom::ClientId, std::vector<OptGuideRequest>>
-      unsent_opt_guide_requests_;
-  // Stores all the Optimization Guide requests that have already been sent, and
-  // are awaiting a response from the Optimization Guide service.
-  base::flat_map<mojom::ClientId, std::vector<OptGuideRequest>>
-      sent_opt_guide_requests_;
+  // Destroy pending requests before their scheme classifier. Completion removes
+  // the fetcher from this collection before invoking the caller's callback.
+  std::vector<std::unique_ptr<SuggestEntityImageURLFetcher>>
+      pending_suggest_fetchers_;
 
-  // The timers used to allow for some requests to accumulate before sending a
-  // batch request to Optimization Guide Service. One timer per client ID.
-  // Insertion doesn't compile unless the timer is wrapped in a unique pointer.
-  base::flat_map<mojom::ClientId, std::unique_ptr<base::OneShotTimer>>
-      opt_guide_timers_;
+  base::flat_map<mojom::ClientId, OptGuideClientState>
+      opt_guide_client_states_;
 
   base::WeakPtrFactory<ImageServiceImpl> weak_factory_{this};
 };

@@ -2,22 +2,30 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/check_deref.h"
+#include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
+#include "chrome/browser/autocomplete/chrome_aim_eligibility_service.h"
 #include "chrome/browser/background/omnibox_everywhere/omnibox_everywhere_background_mode_manager.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
+#include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
+#include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/status_icons/status_tray.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
@@ -32,28 +40,40 @@
 #include "chrome/browser/ui/omnibox/omnibox_everywhere_service.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere_service_factory.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/profiles/profile_picker.h"
+#include "chrome/browser/ui/startup/startup_browser_creator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/contextual_searchbox_handler.h"
 #include "chrome/browser/ui/webui/omnibox_everywhere/omnibox_everywhere_ui.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
+#include "components/keyed_service/core/keyed_service.h"
 #include "components/permissions/permission_request_manager.h"
+#include "components/policy/core/browser/browser_policy_connector.h"
+#include "components/policy/core/common/mock_configuration_policy_provider.h"
+#include "components/policy/core/common/policy_map.h"
+#include "components/policy/core/common/policy_types.h"
+#include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "extensions/buildflags/buildflags.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/webui/web_ui_util.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/display/screen.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -85,6 +105,18 @@
 #endif
 
 namespace omnibox_everywhere {
+
+namespace {
+
+OmniboxEverywhereController* GetController() {
+  return g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+}
+
+OmniboxEverywhereUIManager* GetUIManager() {
+  return GetController()->ui_manager();
+}
+
+}  // namespace
 
 class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
  public:
@@ -127,8 +159,7 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
   // Everywhere widget.
   auto InvokeViaHotkey() {
     return Do([]() {
-      OmniboxEverywhereController* controller =
-          g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+      OmniboxEverywhereController* controller = GetController();
       controller->OnKeyPressed(
           ui::Accelerator(ui::VKEY_SPACE, ui::EF_ALT_DOWN));
     });
@@ -138,13 +169,12 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
   // of `view`, converting view-local coordinates to absolute screen
   // coordinates.
   auto MoveMouseInView(ElementSpecifier view, gfx::Point offset) {
-    return MoveMouseTo(view, base::BindOnce(
-                                 [](gfx::Point pt, ui::TrackedElement* el) {
-                                   views::View* v = AsView<views::View>(el);
-                                   return views::View::ConvertPointToScreen(v,
-                                                                            pt);
-                                 },
-                                 offset));
+    return MoveMouseTo(
+        view,
+        base::BindLambdaForTesting([this, offset](ui::TrackedElement* el) {
+          views::View* v = AsView<views::View>(el);
+          return views::View::ConvertPointToScreen(v, offset);
+        }));
   }
 
   // Checks whether the Omnibox Everywhere widget exists and matches the
@@ -152,8 +182,7 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
   auto CheckWidgetVisible(bool expected_visible) {
     return CheckResult(
         []() {
-          OmniboxEverywhereController* controller =
-              g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+          OmniboxEverywhereController* controller = GetController();
           views::Widget* widget = controller->ui_manager()->widget();
           return controller->IsVisible() && widget && widget->IsVisible();
         },
@@ -163,8 +192,7 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
   // Waits for the Omnibox Everywhere widget to reach `active` activation state.
   auto WaitForWidgetActiveState(bool active) {
     return Do([active]() {
-      OmniboxEverywhereController* controller =
-          g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+      OmniboxEverywhereController* controller = GetController();
       if (controller && controller->ui_manager()->widget()) {
         views::test::WaitForWidgetActive(controller->ui_manager()->widget(),
                                          active);
@@ -177,8 +205,7 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
   auto NameOmniboxContentsView(std::string_view name) {
     return NameView(
         name, base::BindOnce([]() -> views::View* {
-          OmniboxEverywhereController* controller =
-              g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+          OmniboxEverywhereController* controller = GetController();
           return controller->ui_manager()->widget_delegate()->GetContentsView();
         }));
   }
@@ -197,8 +224,7 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
     return Steps(InstrumentNonTabWebView(
                      web_contents_id, base::BindOnce([]() -> views::View* {
                        OmniboxEverywhereController* controller =
-                           g_browser_process->GetFeatures()
-                               ->omnibox_everywhere_controller();
+                           GetController();
                        return controller->ui_manager()
                            ->widget_delegate()
                            ->GetContentsView();
@@ -211,8 +237,7 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
   auto WaitForDraggableRegions() {
     return CheckResult(
         []() {
-          OmniboxEverywhereController* controller =
-              g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+          OmniboxEverywhereController* controller = GetController();
           return base::test::RunUntil([controller]() {
             return controller && controller->ui_manager() &&
                    controller->ui_manager()
@@ -226,6 +251,44 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
         true);
   }
 
+  // Moves the cursor to `query` in `web_contents_id` and waits until the
+  // browser's cached draggable region reports `expected_draggable` at that
+  // point.
+  auto WaitForPointDraggable(ui::ElementIdentifier web_contents_id,
+                             const DeepQuery& query,
+                             bool expected_draggable) {
+    return Steps(
+        MoveMouseTo(web_contents_id, query),
+        CheckResult(
+            [expected_draggable]() {
+              OmniboxEverywhereController* controller = GetController();
+              views::View* contents_view = controller->ui_manager()
+                                               ->widget_delegate()
+                                               ->GetContentsView();
+              gfx::Point point_in_contents =
+                  display::Screen::Get()->GetCursorScreenPoint();
+              views::View::ConvertPointFromScreen(contents_view,
+                                                  &point_in_contents);
+              return base::test::RunUntil(
+                  [controller, point_in_contents, expected_draggable]() {
+                    return controller && controller->ui_manager() &&
+                           controller->ui_manager()->IsPointInDraggableRegion(
+                               point_in_contents) == expected_draggable;
+                  });
+            },
+            true));
+  }
+
+  // Dismisses the widget with the hotkey: hides it in the ephemeral model, and
+  // demotes (deactivates) it in the persistent model.
+  auto DismissViaHotkey() {
+    if (prefs::IsEphemeralModelEnabled()) {
+      return Steps(InvokeViaHotkey(), CheckWidgetVisible(false));
+    }
+    return Steps(InvokeViaHotkey(), CheckWidgetVisible(true),
+                 WaitForWidgetActiveState(false));
+  }
+
   // Simulates dragging the mouse from `start_point` to `end_point` within
   // `view`. Crosses the drag threshold to ensure window drag handlers are
   // triggered.
@@ -234,10 +297,10 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
                        gfx::Point end_point) {
     const gfx::Point threshold_point = start_point + gfx::Vector2d(15, 15);
     return Steps(MoveMouseInView(view, start_point),
-                 ClickMouse(ui_controls::LEFT, /*release=*/false),
-                 MoveMouseInView(view, threshold_point),
-                 MoveMouseInView(view, end_point),
-                 ReleaseMouse(ui_controls::LEFT));
+                 InSameContext(ClickMouse(ui_controls::LEFT, /*release=*/false),
+                               MoveMouseInView(view, threshold_point),
+                               MoveMouseInView(view, end_point),
+                               ReleaseMouse(ui_controls::LEFT)));
   }
 
   // Tests that OpenUrl creates a browser window when no other browsers are
@@ -246,9 +309,7 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
     Profile* profile = browser()->GetProfile();
     set_exit_when_last_browser_closes(false);
 
-    GlobalFeatures* features = g_browser_process->GetFeatures();
-    ASSERT_TRUE(features);
-    auto* controller = features->omnibox_everywhere_controller();
+    auto* controller = GetController();
     ASSERT_TRUE(controller);
 
     // Show the Omnibox Everywhere widget.
@@ -264,7 +325,7 @@ class OmniboxEverywhereBrowserTest : public InteractiveBrowserTest {
     auto* service = OmniboxEverywhereServiceFactory::GetForProfile(profile);
     ASSERT_TRUE(service);
     service->OpenUrl(GURL("chrome://version/"),
-                     WindowOpenDisposition::CURRENT_TAB,
+                     ui::mojom::WindowOpenDisposition::kCurrentTab,
                      ui::PAGE_TRANSITION_TYPED);
 
     // Verify that a new browser window was created.
@@ -336,6 +397,55 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest, FocusAndActivationState) {
   ui_manager.Shutdown();
 }
 
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
+                       SynthesizesMouseEventOnMenuClosed) {
+  OmniboxEverywhereUIManager ui_manager;
+
+  ui_manager.ShowForProfile(browser()->GetProfile(),
+                            browser()->GetWindow()->GetNativeWindow());
+  views::Widget* widget = ui_manager.widget();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->IsVisible());
+
+  ASSERT_TRUE(ui_manager.contents_wrapper_for_testing());
+  content::WebContents* web_contents =
+      ui_manager.contents_wrapper_for_testing()->web_contents();
+  ASSERT_TRUE(web_contents);
+  ASSERT_TRUE(content::WaitForLoadStop(web_contents));
+
+  auto* rwh = web_contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  ASSERT_TRUE(rwh);
+
+  ASSERT_TRUE(web_contents->GetWebUI());
+  auto* controller =
+      web_contents->GetWebUI()->GetController()->GetAs<OmniboxEverywhereUI>();
+  ASSERT_TRUE(controller);
+
+  // 1. Verify OnContextMenuClosed forwards a synthetic mouse event to the host.
+  {
+    content::RenderWidgetHostMouseEventMonitor monitor(rwh);
+    controller->OnContextMenuClosed();
+    EXPECT_TRUE(monitor.EventWasReceived());
+    EXPECT_TRUE(
+        monitor.event().GetType() == blink::WebInputEvent::Type::kMouseMove ||
+        monitor.event().GetType() == blink::WebInputEvent::Type::kMouseLeave);
+  }
+
+  // 2. Verify OnScreenshotMenuClosed forwards a synthetic mouse event to the
+  // host.
+  {
+    content::RenderWidgetHostMouseEventMonitor monitor(rwh);
+    controller->OnScreenshotMenuClosed();
+    EXPECT_TRUE(monitor.EventWasReceived());
+    EXPECT_TRUE(
+        monitor.event().GetType() == blink::WebInputEvent::Type::kMouseMove ||
+        monitor.event().GetType() == blink::WebInputEvent::Type::kMouseLeave);
+  }
+
+  ui_manager.Close();
+  ui_manager.Shutdown();
+}
+
 class OmniboxEverywhereEphemeralBrowserTest
     : public OmniboxEverywhereBrowserTest {
  public:
@@ -346,6 +456,45 @@ class OmniboxEverywhereEphemeralBrowserTest
   }
 };
 
+namespace {
+
+class EligibleAimEligibilityService : public ChromeAimEligibilityService {
+ public:
+  explicit EligibleAimEligibilityService(PrefService& pref_service)
+      : ChromeAimEligibilityService(pref_service,
+                                    /*template_url_service=*/nullptr,
+                                    /*url_loader_factory=*/nullptr,
+                                    /*identity_manager=*/nullptr,
+                                    /*configuration=*/{}) {}
+
+  variations::VariationsService* GetVariationsService() const override {
+    return nullptr;
+  }
+  bool IsAimEligible() const override { return true; }
+  bool IsFuseboxEligible() const override { return true; }
+  bool IsAimAllowedByDse() const override { return true; }
+};
+
+}  // namespace
+
+// Runs Omnibox Everywhere in ephemeral mode with AI Mode eligible (bots are
+// ineligible by default).
+class OmniboxEverywhereAimEligibleBrowserTest
+    : public OmniboxEverywhereEphemeralBrowserTest {
+ public:
+  void SetUpBrowserContextKeyedServices(
+      content::BrowserContext* context) override {
+    OmniboxEverywhereEphemeralBrowserTest::SetUpBrowserContextKeyedServices(
+        context);
+    AimEligibilityServiceFactory::GetInstance()->SetTestingFactory(
+        context, base::BindOnce([](content::BrowserContext* context)
+                                    -> std::unique_ptr<KeyedService> {
+          return std::make_unique<EligibleAimEligibilityService>(
+              CHECK_DEREF(Profile::FromBrowserContext(context)->GetPrefs()));
+        }));
+  }
+};
+
 #if BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_ShowAndDismissViaHotkey DISABLED_ShowAndDismissViaHotkey
 #else
@@ -353,8 +502,7 @@ class OmniboxEverywhereEphemeralBrowserTest
 #endif
 IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
                        MAYBE_ShowAndDismissViaHotkey) {
-  OmniboxEverywhereController* controller =
-      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  OmniboxEverywhereController* controller = GetController();
   ASSERT_TRUE(controller);
 
   EXPECT_FALSE(controller->IsVisible());
@@ -373,8 +521,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
 #endif
 IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
                        MAYBE_CopyPasteSupportInQueryBox) {
-  OmniboxEverywhereController* controller =
-      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  OmniboxEverywhereController* controller = GetController();
   ASSERT_TRUE(controller);
 
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
@@ -430,13 +577,13 @@ class OmniboxEverywherePersistentBrowserTest
   }
 };
 
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #define MAYBE_IgnoreDragToMoveInNoDragRegion IgnoreDragToMoveInNoDragRegion
 #else
 #define MAYBE_IgnoreDragToMoveInNoDragRegion \
   DISABLED_IgnoreDragToMoveInNoDragRegion
 #endif
-IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
                        MAYBE_IgnoreDragToMoveInNoDragRegion) {
 #if BUILDFLAG(IS_OZONE)
   if (ui::OzonePlatform::RunningOnWaylandForTest()) {
@@ -445,8 +592,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
   }
 #endif
 
-  OmniboxEverywhereController* controller =
-      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  OmniboxEverywhereController* controller = GetController();
   ASSERT_TRUE(controller);
 
   gfx::Point initial_origin;
@@ -464,8 +610,13 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
       InvokeViaHotkey(), CheckWidgetVisible(true),
       WaitForWidgetActiveState(true),
       WaitForOmniboxWebUIReady(kOmniboxWebContentsId),
-      WaitForDraggableRegions(),
-      MoveMouseTo(kOmniboxWebContentsId, kSearchInputElement), Do([&]() {
+      // Empty input is draggable; typing text must turn it non-draggable so
+      // pointer drags select text instead of moving the window.
+      ExecuteJsAt(kOmniboxWebContentsId, kSearchInputElement,
+                  "el => { el.focus(); el.value = 'query'; "
+                  "el.dispatchEvent(new Event('input', {bubbles: true})); }"),
+      WaitForPointDraggable(kOmniboxWebContentsId, kSearchInputElement, false),
+      Do([&]() {
         initial_origin = controller->ui_manager()
                              ->widget()
                              ->GetWindowBoundsInScreen()
@@ -474,25 +625,136 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
                       gfx::Vector2d(50, 0);
       }),
       // Drag horizontally within the non-draggable search input element.
-      ClickMouse(ui_controls::LEFT, /*release=*/false),
-      MoveMouseTo(std::ref(drag_target)), ReleaseMouse(ui_controls::LEFT),
+      InSameContextAs(kOmniboxWebContentsId,
+                      ClickMouse(ui_controls::LEFT, /*release=*/false),
+                      MoveMouseTo(std::ref(drag_target)),
+                      ReleaseMouse(ui_controls::LEFT)),
       Check([&]() {
         views::Widget* widget = controller->ui_manager()->widget();
         return widget->GetWindowBoundsInScreen().origin() == initial_origin;
       }),
-      InvokeViaHotkey(), CheckWidgetVisible(true),
-      WaitForWidgetActiveState(false));
+      DismissViaHotkey());
 }
 
-// TODO(crbug.com/40249472): Support modal dragging on Windows with Kombucha.
-#if BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#define MAYBE_DragToMoveWindowFromEmptySearchInput \
+  DragToMoveWindowFromEmptySearchInput
+#else
+#define MAYBE_DragToMoveWindowFromEmptySearchInput \
+  DISABLED_DragToMoveWindowFromEmptySearchInput
+#endif
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
+                       MAYBE_DragToMoveWindowFromEmptySearchInput) {
+  OmniboxEverywhereController* controller = GetController();
+  ASSERT_TRUE(controller);
+
+  gfx::Point initial_origin;
+  gfx::Point threshold_target;
+  gfx::Point drag_target;
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
+
+  const DeepQuery kSearchInputElement = {
+      "omnibox-everywhere-app",
+      "omnibox-everywhere-omnibox",
+      "cr-searchbox-input",
+      "#input",
+  };
+  const DeepQuery kOmniboxElement = {
+      "omnibox-everywhere-app",
+      "omnibox-everywhere-omnibox",
+  };
+
+  RunTestSequence(
+      InvokeViaHotkey(), CheckWidgetVisible(true),
+      WaitForWidgetActiveState(true),
+      WaitForOmniboxWebUIReady(kOmniboxWebContentsId),
+      WaitForPointDraggable(kOmniboxWebContentsId, kSearchInputElement, true),
+      Do([&]() {
+        initial_origin = controller->ui_manager()
+                             ->widget()
+                             ->GetWindowBoundsInScreen()
+                             .origin();
+        const gfx::Point start = display::Screen::Get()->GetCursorScreenPoint();
+        threshold_target = start + gfx::Vector2d(15, 0);
+        drag_target = start + gfx::Vector2d(50, 0);
+      }),
+      // Cross the drag threshold first, so the move loop sees the rest of the
+      // drag.
+      InSameContextAs(kOmniboxWebContentsId,
+                      ClickMouse(ui_controls::LEFT, /*release=*/false),
+                      MoveMouseTo(std::ref(threshold_target)),
+                      MoveMouseTo(std::ref(drag_target)),
+                      ReleaseMouse(ui_controls::LEFT)),
+      Check([&]() {
+        views::Widget* widget = controller->ui_manager()->widget();
+        return widget->GetWindowBoundsInScreen().origin() != initial_origin;
+      }),
+      // Dragging from empty input must not open zero-suggest dropdown.
+      CheckJsResultAt(kOmniboxWebContentsId, kOmniboxElement,
+                      "el => el.dropdownIsVisible", false),
+      DismissViaHotkey());
+}
+
+// A click on the empty, draggable search input is held in the browser until
+// release, then still reaches the page and focuses the input.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#define MAYBE_ClickFocusesEmptySearchInput ClickFocusesEmptySearchInput
+#else
+#define MAYBE_ClickFocusesEmptySearchInput DISABLED_ClickFocusesEmptySearchInput
+#endif
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
+                       MAYBE_ClickFocusesEmptySearchInput) {
+  OmniboxEverywhereController* controller = GetController();
+  ASSERT_TRUE(controller);
+
+  gfx::Point initial_origin;
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
+
+  const DeepQuery kSearchInputElement = {
+      "omnibox-everywhere-app",
+      "omnibox-everywhere-omnibox",
+      "cr-searchbox-input",
+      "#input",
+  };
+
+  RunTestSequence(
+      InvokeViaHotkey(), CheckWidgetVisible(true),
+      WaitForWidgetActiveState(true),
+      WaitForOmniboxWebUIReady(kOmniboxWebContentsId),
+      // Blur the input and record whether the next click focuses it.
+      ExecuteJsAt(
+          kOmniboxWebContentsId, kSearchInputElement,
+          "el => { el.blur(); window.clickFocusedInput = new Promise("
+          "    resolve => el.addEventListener('click', "
+          "        () => resolve(el.getRootNode().activeElement === el),"
+          "        {once: true})); }"),
+      WaitForPointDraggable(kOmniboxWebContentsId, kSearchInputElement, true),
+      Do([&]() {
+        initial_origin = controller->ui_manager()
+                             ->widget()
+                             ->GetWindowBoundsInScreen()
+                             .origin();
+      }),
+      InSameContextAs(kOmniboxWebContentsId, ClickMouse(ui_controls::LEFT)),
+      CheckJsResultAt(kOmniboxWebContentsId, kSearchInputElement,
+                      "el => window.clickFocusedInput", true),
+      Check([&]() {
+        return controller->ui_manager()
+                   ->widget()
+                   ->GetWindowBoundsInScreen()
+                   .origin() == initial_origin;
+      }),
+      DismissViaHotkey());
+}
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #define MAYBE_DragToMoveWindowInDraggableRegion \
   DragToMoveWindowInDraggableRegion
 #else
 #define MAYBE_DragToMoveWindowInDraggableRegion \
   DISABLED_DragToMoveWindowInDraggableRegion
 #endif
-IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
                        MAYBE_DragToMoveWindowInDraggableRegion) {
 #if BUILDFLAG(IS_OZONE)
   if (ui::OzonePlatform::RunningOnWaylandForTest()) {
@@ -501,8 +763,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
   }
 #endif
 
-  OmniboxEverywhereController* controller =
-      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  OmniboxEverywhereController* controller = GetController();
   ASSERT_TRUE(controller);
 
   gfx::Point initial_origin;
@@ -525,8 +786,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
         views::Widget* widget = controller->ui_manager()->widget();
         return widget->GetWindowBoundsInScreen().origin() != initial_origin;
       }),
-      InvokeViaHotkey(), CheckWidgetVisible(true),
-      WaitForWidgetActiveState(false));
+      DismissViaHotkey());
 }
 
 IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest, VoicePermissionState) {
@@ -565,28 +825,15 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
   }
 #endif
 
-  OmniboxEverywhereController* controller =
-      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  OmniboxEverywhereController* controller = GetController();
   ASSERT_TRUE(controller);
 
   gfx::Point dragged_origin;
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
-  // TODO(crbug.com/40249472): Modal drag loops in tests aren't supported on
-  // MacOS and Windows. Manually set widget bounds to test position retention
-  // across re-invocations.
-  auto reposition_step = Steps(Do([&]() {
-    views::Widget* widget = controller->ui_manager()->widget();
-    gfx::Rect target_bounds = widget->GetWindowBoundsInScreen();
-    target_bounds.Offset(100, 100);
-    widget->SetBounds(target_bounds);
-    dragged_origin = target_bounds.origin();
-  }));
-#else
   const char kContentsView[] = "OmniboxContentsView";
   auto reposition_step = Steps(
-      NameOmniboxContentsView(kContentsView),
+      WaitForDraggableRegions(), NameOmniboxContentsView(kContentsView),
       DragMouseInView(kContentsView, gfx::Point(10, 5), gfx::Point(110, 5)),
       Do([&]() {
         dragged_origin = controller->ui_manager()
@@ -594,7 +841,6 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
                              ->GetWindowBoundsInScreen()
                              .origin();
       }));
-#endif
 
   RunTestSequence(InvokeViaHotkey(), CheckWidgetVisible(true),
                   WaitForOmniboxWebUIReady(kOmniboxWebContentsId),
@@ -618,8 +864,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
 #endif
 IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
                        MAYBE_RetainInputTextOnReinvoke) {
-  OmniboxEverywhereController* controller =
-      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  OmniboxEverywhereController* controller = GetController();
   ASSERT_TRUE(controller);
 
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
@@ -662,8 +907,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
 #endif
 IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
                        MAYBE_ShowAndDemoteViaHotkey) {
-  OmniboxEverywhereController* controller =
-      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  OmniboxEverywhereController* controller = GetController();
   ASSERT_TRUE(controller);
 
   EXPECT_FALSE(controller->IsVisible());
@@ -685,8 +929,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
                        DemoteOnQuerySubmitInPersistentMode) {
-  OmniboxEverywhereController* controller =
-      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  OmniboxEverywhereController* controller = GetController();
   ASSERT_TRUE(controller);
 
   EXPECT_FALSE(controller->IsVisible());
@@ -704,7 +947,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
             browser()->GetProfile());
         ASSERT_TRUE(service);
         service->OpenUrl(GURL("https://www.google.com/search?q=test"),
-                         WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                         ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                          ui::PAGE_TRANSITION_GENERATED);
       }),
       // In persistent mode, submitting a query should demote the widget
@@ -714,8 +957,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywherePersistentBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
                        CloseOnQuerySubmitInEphemeralMode) {
-  OmniboxEverywhereController* controller =
-      g_browser_process->GetFeatures()->omnibox_everywhere_controller();
+  OmniboxEverywhereController* controller = GetController();
   ASSERT_TRUE(controller);
 
   EXPECT_FALSE(controller->IsVisible());
@@ -733,7 +975,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
             browser()->GetProfile());
         ASSERT_TRUE(service);
         service->OpenUrl(GURL("https://www.google.com/search?q=test"),
-                         WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                         ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                          ui::PAGE_TRANSITION_GENERATED);
       }),
       // In ephemeral mode, submitting a query should close the widget.
@@ -841,9 +1083,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
   PrefService* local_state = g_browser_process->local_state();
   ASSERT_TRUE(local_state);
 
-  GlobalFeatures* features = g_browser_process->GetFeatures();
-  ASSERT_TRUE(features);
-  auto* controller = features->omnibox_everywhere_controller();
+  auto* controller = GetController();
   ASSERT_TRUE(controller);
 
   // Enable background mode so background_mode_manager is active.
@@ -889,9 +1129,7 @@ IN_PROC_BROWSER_TEST_F(
   PrefService* local_state = g_browser_process->local_state();
   ASSERT_TRUE(local_state);
 
-  GlobalFeatures* features = g_browser_process->GetFeatures();
-  ASSERT_TRUE(features);
-  auto* controller = features->omnibox_everywhere_controller();
+  auto* controller = GetController();
   ASSERT_TRUE(controller);
 
   // Enable background mode so background_mode_manager is active.
@@ -933,9 +1171,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
   Profile* profile1 = browser()->GetProfile();
   ASSERT_TRUE(profile1);
 
-  GlobalFeatures* features = g_browser_process->GetFeatures();
-  ASSERT_TRUE(features);
-  auto* controller = features->omnibox_everywhere_controller();
+  auto* controller = GetController();
   ASSERT_TRUE(controller);
 
   // Activating the first browser window sets controller's target profile to
@@ -971,9 +1207,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
   ASSERT_TRUE(profile);
   ASSERT_TRUE(local_state);
 
-  GlobalFeatures* features = g_browser_process->GetFeatures();
-  ASSERT_TRUE(features);
-  auto* controller = features->omnibox_everywhere_controller();
+  auto* controller = GetController();
   ASSERT_TRUE(controller);
 
   // Set target profile to profile1 in initial session.
@@ -991,9 +1225,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
   ASSERT_TRUE(profile);
   ASSERT_TRUE(local_state);
 
-  GlobalFeatures* features = g_browser_process->GetFeatures();
-  ASSERT_TRUE(features);
-  auto* controller = features->omnibox_everywhere_controller();
+  auto* controller = GetController();
   ASSERT_TRUE(controller);
 
   // Verify local state persisted profile1 path across restart.
@@ -1077,6 +1309,41 @@ IN_PROC_BROWSER_TEST_F(
   TestOpenUrlCreatesBrowserWhenNoBrowsers(/*ephemeral=*/false);
 }
 
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
+                       OpenUrlDoesNotTriggerSessionRestoreWhenNoBrowsers) {
+  Profile* profile = browser()->GetProfile();
+  set_exit_when_last_browser_closes(false);
+
+  // Set startup pref to restore last session.
+  SessionStartupPref::SetStartupPref(
+      profile, SessionStartupPref(SessionStartupPref::LAST));
+
+  auto* controller = GetController();
+  ASSERT_TRUE(controller);
+
+  // Show the Omnibox Everywhere widget.
+  controller->OnInvoke(InvocationSource::kGlobalHotkey, profile);
+  EXPECT_TRUE(controller->IsVisible());
+
+  // Close the existing browser window so 0 browser windows exist.
+  CloseBrowserSynchronously(browser());
+  EXPECT_EQ(0u, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_TRUE(controller->IsVisible());
+
+  // Trigger OpenUrl from the Omnibox Everywhere service.
+  auto* service = OmniboxEverywhereServiceFactory::GetForProfile(profile);
+  ASSERT_TRUE(service);
+  service->OpenUrl(GURL("chrome://version/"),
+                   ui::mojom::WindowOpenDisposition::kCurrentTab,
+                   ui::PAGE_TRANSITION_TYPED);
+
+  // Verify that only one browser window was created and session restore was
+  // not triggered.
+  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_FALSE(SessionRestore::IsRestoring(profile));
+  EXPECT_FALSE(controller->IsVisible());
+}
+
 class OmniboxEverywhereCommandLineBrowserTest
     : public OmniboxEverywhereBrowserTest {
  public:
@@ -1093,9 +1360,7 @@ class OmniboxEverywhereCommandLineBrowserTest
 #endif
 IN_PROC_BROWSER_TEST_F(OmniboxEverywhereCommandLineBrowserTest,
                        MAYBE_LaunchesWidgetOnStartup) {
-  GlobalFeatures* features = g_browser_process->GetFeatures();
-  ASSERT_TRUE(features);
-  auto* controller = features->omnibox_everywhere_controller();
+  auto* controller = GetController();
   ASSERT_TRUE(controller);
 
   // Verify that the Omnibox Everywhere widget is visible on startup when
@@ -1103,6 +1368,128 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereCommandLineBrowserTest,
   EXPECT_TRUE(controller->IsVisible());
   ASSERT_TRUE(controller->target_profile());
   EXPECT_FALSE(controller->target_profile()->IsOffTheRecord());
+}
+
+// Provides the SearchFromDesktopEnabled policy through a mock policy provider.
+class OmniboxEverywherePolicyBrowserTest : public OmniboxEverywhereBrowserTest {
+ public:
+  void SetUpInProcessBrowserTestFixture() override {
+    OmniboxEverywhereBrowserTest::SetUpInProcessBrowserTestFixture();
+    policy_provider_.SetDefaultReturns(
+        /*is_initialization_complete_return=*/true,
+        /*is_first_policy_load_complete_return=*/true);
+    policy::BrowserPolicyConnector::SetPolicyProviderForTesting(
+        &policy_provider_);
+  }
+
+  // Sets the SearchFromDesktopEnabled policy to `enabled`.
+  void SetSearchFromDesktopPolicy(bool enabled) {
+    policy::PolicyMap policies;
+    policies.Set(policy::key::kSearchFromDesktopEnabled,
+                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
+                 policy::POLICY_SOURCE_CLOUD, base::Value(enabled), nullptr);
+    policy_provider_.UpdateChromePolicy(policies);
+  }
+
+ private:
+  testing::NiceMock<policy::MockConfigurationPolicyProvider> policy_provider_;
+};
+
+// Launches with --omnibox-everywhere while SearchFromDesktopEnabled is false,
+// like an existing Start Menu or pinned taskbar shortcut would.
+class OmniboxEverywhereDisabledByPolicyCommandLineBrowserTest
+    : public OmniboxEverywherePolicyBrowserTest {
+ public:
+  OmniboxEverywhereDisabledByPolicyCommandLineBrowserTest() {
+    // Launch with only --omnibox-everywhere, without the about:blank URL that
+    // `InProcessBrowserTest` appends by default.
+    set_open_about_blank_on_browser_launch(false);
+  }
+
+  void SetUpInProcessBrowserTestFixture() override {
+    OmniboxEverywherePolicyBrowserTest::SetUpInProcessBrowserTestFixture();
+    SetSearchFromDesktopPolicy(false);
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    OmniboxEverywherePolicyBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(switches::kOmniboxEverywhere);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereDisabledByPolicyCommandLineBrowserTest,
+                       FallsBackToBrowserWindowWhenDisabledByPolicy) {
+  PrefService* local_state = g_browser_process->local_state();
+  ASSERT_TRUE(local_state);
+  EXPECT_TRUE(
+      local_state->IsManagedPreference(prefs::kOmniboxEverywhereEnabled));
+  EXPECT_FALSE(local_state->GetBoolean(prefs::kOmniboxEverywhereEnabled));
+
+  auto* controller = GetController();
+  ASSERT_TRUE(controller);
+  EXPECT_FALSE(controller->IsEnabled());
+  EXPECT_FALSE(controller->IsVisible());
+
+  // Launching with --omnibox-everywhere while disabled by policy should fall
+  // back to opening a standard browser window instead of silently exiting.
+  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
+}
+
+IN_PROC_BROWSER_TEST_F(OmniboxEverywherePolicyBrowserTest,
+                       StartupProfilePickerOnlySkippedWhenEnabled) {
+  PrefService* local_state = g_browser_process->local_state();
+  ASSERT_TRUE(local_state);
+  local_state->SetInteger(
+      ::prefs::kBrowserProfilePickerAvailabilityOnStartup,
+      static_cast<int>(ProfilePicker::AvailabilityOnStartup::kForced));
+
+  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+  command_line.AppendSwitch(switches::kOmniboxEverywhere);
+
+  // While enabled, --omnibox-everywhere skips the startup Profile Picker
+  // because `OmniboxEverywhereController` picks the profile.
+  EXPECT_EQ(StartupProfileMode::kBrowserWindow,
+            GetStartupProfilePath(base::FilePath(), command_line,
+                                  /*ignore_profile_picker=*/false)
+                .mode);
+
+  // While disabled by policy, the switch is ignored and the Profile Picker is
+  // shown as for a normal launch.
+  SetSearchFromDesktopPolicy(false);
+  EXPECT_EQ(StartupProfileMode::kProfilePicker,
+            GetStartupProfilePath(base::FilePath(), command_line,
+                                  /*ignore_profile_picker=*/false)
+                .mode);
+
+  local_state->ClearPref(::prefs::kBrowserProfilePickerAvailabilityOnStartup);
+}
+
+IN_PROC_BROWSER_TEST_F(OmniboxEverywherePolicyBrowserTest,
+                       DynamicRefreshClosesWidgetAndBlocksInvocation) {
+  auto* controller = GetController();
+  ASSERT_TRUE(controller);
+  EXPECT_TRUE(controller->IsEnabled());
+  controller->OnInvoke(InvocationSource::kGlobalHotkey, browser()->GetProfile(),
+                       browser()->GetWindow()->GetNativeWindow());
+  ASSERT_TRUE(controller->IsVisible());
+
+  // Disabling via dynamic policy refresh destroys the open widget and blocks
+  // subsequent invocations.
+  SetSearchFromDesktopPolicy(false);
+  EXPECT_FALSE(controller->IsEnabled());
+  EXPECT_FALSE(controller->IsVisible());
+  EXPECT_FALSE(controller->ui_manager()->widget());
+  controller->OnInvoke(InvocationSource::kGlobalHotkey, browser()->GetProfile(),
+                       browser()->GetWindow()->GetNativeWindow());
+  EXPECT_FALSE(controller->IsVisible());
+
+  // Re-enabling via dynamic policy refresh allows invoking again.
+  SetSearchFromDesktopPolicy(true);
+  EXPECT_TRUE(controller->IsEnabled());
+  controller->OnInvoke(InvocationSource::kGlobalHotkey, browser()->GetProfile(),
+                       browser()->GetWindow()->GetNativeWindow());
+  EXPECT_TRUE(controller->IsVisible());
+  controller->Hide();
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -1126,24 +1513,25 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
   entry->SetIsUsingGAIAPicture(true);
   entry->SetGAIAPicture(std::string(), gfx::Image());
 
-  GlobalFeatures* features = g_browser_process->GetFeatures();
-  ASSERT_TRUE(features);
-  auto* controller = features->omnibox_everywhere_controller();
+  auto* controller = GetController();
   ASSERT_TRUE(controller);
 
   DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
   DEFINE_LOCAL_CUSTOM_ELEMENT_EVENT_TYPE(kAvatarUpdatedEvent);
 
   // 2. Compute the initial placeholder avatar data URL.
-  gfx::Image initial_icon =
-      profiles::GetSizedAvatarIcon(entry->GetAvatarIcon(), 48, 48);
+  gfx::Image initial_icon = profiles::GetSizedAvatarIcon(
+      entry->GetAvatarIcon(OmniboxEverywhereUI::kProfileAvatarSizePx),
+      OmniboxEverywhereUI::kProfileAvatarSizePx,
+      OmniboxEverywhereUI::kProfileAvatarSizePx);
   const std::string initial_avatar_data_url =
       webui::GetBitmapDataUrl(initial_icon.AsBitmap());
 
-  // 3. Create a unique 48x48 GAIA avatar image (solid red) that will be
+  // 3. Create a unique GAIA avatar image (solid red) that will be
   // delivered when disk loading finishes.
   SkBitmap gaia_bitmap;
-  gaia_bitmap.allocN32Pixels(48, 48);
+  gaia_bitmap.allocN32Pixels(OmniboxEverywhereUI::kProfileAvatarSizePx,
+                             OmniboxEverywhereUI::kProfileAvatarSizePx);
   gaia_bitmap.eraseColor(SK_ColorRED);
   gfx::Image gaia_image = gfx::Image::CreateFrom1xBitmap(gaia_bitmap);
   const std::string expected_gaia_avatar_data_url =
@@ -1177,11 +1565,9 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereBrowserTest,
       WaitForStateChange(kOmniboxWebContentsId, avatar_updated_to_gaia));
 }
 
-IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereAimEligibleBrowserTest,
                        ScreenshotSharingDisclosureFlow) {
-  GlobalFeatures* features = g_browser_process->GetFeatures();
-  ASSERT_TRUE(features);
-  auto* controller = features->omnibox_everywhere_controller();
+  auto* controller = GetController();
   ASSERT_TRUE(controller);
 
   Profile* profile = browser()->GetProfile();
@@ -1247,8 +1633,8 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
       WaitForState(kScreenshotDisclosureAcceptedState, true), Check([&]() {
         return !controller->ui_manager()
                     ->disclosure_dialog_widget_for_testing() &&
-               !controller->ui_manager()
-                    ->is_screenshare_disclosure_open_for_testing();
+               !controller->ui_manager()->IsModalOpenForTesting(
+                   OmniboxEverywhereUIManager::Modal::kScreenshareDisclosure);
       }),
       // Dismiss the screenshare picker dialog that opened upon accepting
       // disclosure.
@@ -1271,6 +1657,36 @@ IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
       WaitForWidgetActiveState(true),
       // Dismiss the widget to cleanly release keep-alives.
       InvokeViaHotkey(), CheckWidgetVisible(false));
+}
+
+IN_PROC_BROWSER_TEST_F(OmniboxEverywhereEphemeralBrowserTest,
+                       AiModeActionsRefusedWhenAiModeUnavailable) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kOmniboxWebContentsId);
+
+  RunTestSequence(InvokeViaHotkey(), CheckWidgetVisible(true),
+                  WaitForOmniboxWebUIReady(kOmniboxWebContentsId), Check([&]() {
+                    content::WebContents* web_contents =
+                        GetUIManager()->web_contents();
+                    if (!web_contents || !web_contents->GetWebUI()) {
+                      return false;
+                    }
+                    auto* omnibox_ui = web_contents->GetWebUI()
+                                           ->GetController()
+                                           ->GetAs<OmniboxEverywhereUI>();
+                    if (!omnibox_ui) {
+                      return false;
+                    }
+                    omnibox_ui->OpenComposebox(/*initial_state=*/nullptr);
+                    return !omnibox_ui->is_composebox_mode() &&
+                           !omnibox_ui->IsCommandIdEnabled(
+                               OmniboxEverywhereUI::kScreenshotEntireScreen) &&
+                           !omnibox_ui->IsCommandIdEnabled(
+                               OmniboxEverywhereUI::kScreenshotWindow) &&
+                           !omnibox_ui->IsCommandIdEnabled(
+                               OmniboxEverywhereUI::kScreenshotRegion);
+                  }),
+                  // Dismiss the widget to cleanly release keep-alives.
+                  InvokeViaHotkey(), CheckWidgetVisible(false));
 }
 
 }  // namespace omnibox_everywhere

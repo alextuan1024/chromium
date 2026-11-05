@@ -144,4 +144,77 @@ TEST_F(ActionTargetTest, TestToDictValue_ContentNodeId) {
   EXPECT_FALSE(dict.FindDict("coordinate"));
 }
 
+// Test that DebugString formats coordinates according to their pixel type, node
+// IDs, and empty targets.
+TEST_F(ActionTargetTest, TestDebugString) {
+  ActionTarget empty_target;
+  EXPECT_EQ("target(null)", empty_target.DebugString());
+
+  optimization_guide::proto::ActionTarget dip_proto;
+  dip_proto.mutable_coordinate()->set_x(10);
+  dip_proto.mutable_coordinate()->set_y(20);
+  dip_proto.mutable_coordinate()->set_pixel_type(
+      optimization_guide::proto::Coordinate::PIXEL_TYPE_DIPS);
+  EXPECT_EQ("target(XY[PIXEL_TYPE_DIPS]=10,20)",
+            ActionTarget::FromProto(dip_proto).DebugString());
+
+  optimization_guide::proto::ActionTarget physical_proto;
+  physical_proto.mutable_coordinate()->set_x(30);
+  physical_proto.mutable_coordinate()->set_y(40);
+  physical_proto.mutable_coordinate()->set_pixel_type(
+      optimization_guide::proto::Coordinate::PIXEL_TYPE_PHYSICAL_PIXELS);
+  EXPECT_EQ("target(XY[PIXEL_TYPE_PHYSICAL_PIXELS]=30,40)",
+            ActionTarget::FromProto(physical_proto).DebugString());
+
+  optimization_guide::proto::ActionTarget unspecified_proto;
+  unspecified_proto.mutable_coordinate()->set_x(50);
+  unspecified_proto.mutable_coordinate()->set_y(60);
+  unspecified_proto.mutable_coordinate()->set_pixel_type(
+      optimization_guide::proto::Coordinate::PIXEL_TYPE_UNSPECIFIED);
+  EXPECT_EQ("target(XY[PIXEL_TYPE_UNSPECIFIED]=50,60)",
+            ActionTarget::FromProto(unspecified_proto).DebugString());
+
+  optimization_guide::proto::ActionTarget node_proto;
+  node_proto.set_content_node_id(123);
+  node_proto.mutable_document_identifier()->set_serialized_token("doc_token");
+  EXPECT_EQ("target(ID=123)",
+            ActionTarget::FromProto(node_proto).DebugString());
+}
+
+// Tests that `ToProto()` serializes coordinate, node ID, and empty targets
+// without populating unrelated fields.
+TEST_F(ActionTargetTest, TestToProto) {
+  ActionTarget empty_target;
+  optimization_guide::proto::ActionTarget empty_out = empty_target.ToProto();
+  EXPECT_FALSE(empty_out.has_coordinate());
+  EXPECT_FALSE(empty_out.has_content_node_id());
+  EXPECT_FALSE(empty_out.has_document_identifier());
+
+  optimization_guide::proto::ActionTarget coord_proto;
+  coord_proto.mutable_coordinate()->set_x(10);
+  coord_proto.mutable_coordinate()->set_y(20);
+  coord_proto.mutable_coordinate()->set_pixel_type(
+      optimization_guide::proto::Coordinate::PIXEL_TYPE_DIPS);
+  ActionTarget coord_target = ActionTarget::FromProto(coord_proto);
+  optimization_guide::proto::ActionTarget coord_out = coord_target.ToProto();
+  ASSERT_TRUE(coord_out.has_coordinate());
+  EXPECT_EQ(coord_out.coordinate().x(), 10);
+  EXPECT_EQ(coord_out.coordinate().y(), 20);
+  EXPECT_EQ(coord_out.coordinate().pixel_type(),
+            optimization_guide::proto::Coordinate::PIXEL_TYPE_DIPS);
+  EXPECT_FALSE(coord_out.has_content_node_id());
+  EXPECT_FALSE(coord_out.has_document_identifier());
+
+  optimization_guide::proto::ActionTarget node_proto;
+  node_proto.set_content_node_id(123);
+  node_proto.mutable_document_identifier()->set_serialized_token("doc_token");
+  ActionTarget node_target = ActionTarget::FromProto(node_proto);
+  optimization_guide::proto::ActionTarget node_out = node_target.ToProto();
+  EXPECT_FALSE(node_out.has_coordinate());
+  ASSERT_TRUE(node_out.has_content_node_id());
+  EXPECT_EQ(node_out.content_node_id(), 123);
+  ASSERT_TRUE(node_out.has_document_identifier());
+  EXPECT_EQ(node_out.document_identifier().serialized_token(), "doc_token");
+}
+
 }  // namespace actor

@@ -66,12 +66,11 @@ void CompositorLockManager::RemoveCompositorLock(CompositorLock* lock) {
 
 void CompositorLockManager::TimeoutLocks() {
   // Make a copy, we're going to cause |active_locks_| to become empty.
-  std::vector<raw_ptr<CompositorLock, VectorExperimental>> locks =
-      active_locks_;
+  std::vector<raw_ptr<CompositorLock>> locks = active_locks_;
   for (ui::CompositorLock* lock : locks) {
     lock->TimeoutLock();
   }
-  DCHECK(active_locks_.empty());
+  CHECK(active_locks_.empty(), base::NotFatalUntil::M163);
 }
 
 CompositorLock::CompositorLock(CompositorLockClient* client,

@@ -10,7 +10,6 @@ import static org.junit.Assert.assertTrue;
 import android.net.Uri;
 
 import androidx.test.filters.LargeTest;
-import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.After;
 import org.junit.Before;
@@ -22,20 +21,19 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ChromeTriggers;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.transit.ssl.AskBeforeHttpDialogFacility;
-import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.chrome.test.transit.tabmodel.TabClosingCondition;
 import org.chromium.components.browser_ui.modaldialog.ModalDialogTestUtils;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.common.ContentSwitches;
@@ -44,13 +42,8 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"
-})
+@CommandLineFlags.Add(ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1")
 @EnableFeatures({"HttpsUpgrades", "HttpsFirstDialogUi"})
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class AskBeforeHttpDialogTest {
 
     @Rule
@@ -179,6 +172,7 @@ public class AskBeforeHttpDialogTest {
 
     @Test
     @LargeTest
+    @DisabledTest(message = "https://crbug.com/581428041")
     public void testDialogIsShownAndClickLearnMoreWorks() {
         // Expect 0 = "TOTAL_VISITS" and 4 = "SHOW_LEARN_MORE" once, and 0 = "SHOW" once.
         var histogramWatcher =
@@ -201,8 +195,8 @@ public class AskBeforeHttpDialogTest {
         assertTrue(newTab.getTab().getUrl().getSpec().contains("p=first_mode"));
 
         // Close the new tab, which should bring us back to the original tab and resume the dialog.
-        ChromeTabUtils.closeCurrentTab(
-                InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
+        ChromeTriggers.closeCurrentTabTo(newTab)
+                .waitFor(new TabClosingCondition(newTab.tabModelElement));
 
         // Wait for the dialog to be shown again on the original tab.
         CriteriaHelper.pollUiThread(
@@ -297,8 +291,8 @@ public class AskBeforeHttpDialogTest {
         mStartStation.loadUrlTo(httpUrl).enterFacility(dialog);
 
         // Close the tab.
-        ChromeTabUtils.closeCurrentTab(
-                InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
+        ChromeTriggers.closeCurrentTabTo(mStartStation)
+                .waitFor(new TabClosingCondition(mStartStation.tabModelElement));
 
         histogramWatcher.assertExpected();
     }

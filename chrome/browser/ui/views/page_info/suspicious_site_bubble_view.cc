@@ -34,8 +34,8 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/md_text_button.h"
@@ -100,6 +100,7 @@ SuspiciousSiteBubbleView::SuspiciousSiteBubbleView(
   // Keep the bubble open until the user interacts or navigates away.
   set_close_on_deactivate(false);
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+  SetTitle(IDS_SUSPICIOUS_SITE_TITLE);
 
   views::BubbleDialogDelegateView::CreateBubble(this);
 
@@ -206,13 +207,21 @@ void SuspiciousSiteBubbleView::OnVisibilityChanged(
 
 void SuspiciousSiteBubbleView::OnWidgetDestroying(views::Widget* widget) {
   UnblockWebContents();
-  if (!is_closing_for_tab_switch_) {
-    if (web_contents()) {
-      if (auto* controller =
-              safe_browsing::SuspiciousSiteControllerDesktop::FromWebContents(
-                  web_contents())) {
-        controller->OnBubbleDismissed();
-      }
+  if (!is_closing_for_tab_switch_ && web_contents()) {
+    switch (widget->closed_reason()) {
+      case views::Widget::ClosedReason::kUnspecified:
+      case views::Widget::ClosedReason::kLostFocus:
+      case views::Widget::ClosedReason::kAcceptButtonClicked:
+        break;
+      case views::Widget::ClosedReason::kEscKeyPressed:
+      case views::Widget::ClosedReason::kCloseButtonClicked:
+      case views::Widget::ClosedReason::kCancelButtonClicked:
+        if (auto* controller =
+                safe_browsing::SuspiciousSiteControllerDesktop::FromWebContents(
+                    web_contents())) {
+          controller->OnBubbleDismissed();
+        }
+        break;
     }
   }
   PageInfoBubbleViewBase::OnWidgetDestroying(widget);
@@ -304,11 +313,12 @@ void SuspiciousSiteBubbleView::OpenHelpCenter() {
       controller->OnLearnMoreClicked();
       return;
     }
-    web_contents()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
-                                GURL(chrome::kSafeBrowsingHelpCenterURL),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK),
-                            /*navigation_handle_callback=*/{});
+    web_contents()->OpenURL(
+        content::OpenURLParams::CreateBrowserInitiated(
+            GURL(chrome::kSafeBrowsingHelpCenterURL),
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            ui::PAGE_TRANSITION_LINK),
+        /*navigation_handle_callback=*/{});
   }
 }
 

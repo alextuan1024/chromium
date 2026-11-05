@@ -4,7 +4,10 @@
 
 #include "content/browser/webid/config_fetcher.h"
 
+#include <string>
+
 #include "base/check.h"
+#include "base/strings/stringprintf.h"
 #include "content/browser/webid/flags.h"
 #include "content/browser/webid/webid_utils.h"
 #include "net/base/schemeful_site.h"
@@ -25,6 +28,51 @@ void SetError(ConfigFetcher::FetchResult& fetch_result,
               std::optional<std::string> additional_console_error_message) {
   fetch_result.error = ConfigFetcher::FetchError(
       result, token_status, additional_console_error_message);
+}
+
+// Returns `value` as a URL if it's an absolute HTTP(S) URL same-site with
+// `config_url`. Otherwise, returns an empty URL, after logging a console
+// warning if `value` is non-empty. These URLs are shown as links to the
+// identity provider's own pages, so they must be on its site, but they don't
+// need to be on the same origin as the config file.
+GURL ParseSameSiteUrl(const GURL& config_url,
+                      const std::string& value,
+                      const char* key,
+                      RenderFrameHost& render_frame_host) {
+  if (value.empty()) {
+    return GURL();
+  }
+  GURL url(value);
+  if (url.is_valid() && url.SchemeIsHTTPOrHTTPS() &&
+      net::SchemefulSite::IsSameSite(config_url, url)) {
+    return url;
+  }
+  render_frame_host.AddMessageToConsole(
+      blink::mojom::ConsoleMessageLevel::kWarning,
+      base::StringPrintf(
+          "The FedCM %s in the well-known file is ignored because it isn't an "
+          "absolute HTTP(S) URL that is same-site with the config URL.",
+          key));
+  return GURL();
+}
+
+// Sets the identity provider's links in the metadata of `fetch_result` from its
+// well-known file, leaving out the ones that `ParseSameSiteUrl()` rejects.
+void SetValidIdpLinksFromWellKnown(ConfigFetcher::FetchResult& fetch_result,
+                                   RenderFrameHost& render_frame_host) {
+  IdentityProviderMetadata& metadata = *fetch_result.metadata;
+  const GURL& config_url = fetch_result.identity_provider_config_url;
+  const IdpNetworkRequestManager::WellKnown& well_known =
+      fetch_result.wellknown;
+  metadata.account_management_url =
+      ParseSameSiteUrl(config_url, well_known.account_management_url,
+                       "account_management_url", render_frame_host);
+  metadata.privacy_policy_url =
+      ParseSameSiteUrl(config_url, well_known.privacy_policy_url,
+                       "privacy_policy_url", render_frame_host);
+  metadata.terms_of_service_url =
+      ParseSameSiteUrl(config_url, well_known.terms_of_service_url,
+                       "terms_of_service_url", render_frame_host);
 }
 
 }  // namespace
@@ -386,6 +434,11 @@ void ConfigFetcher::RunCallbackIfDone() {
   }
 
   for (auto& result : fetch_results_) {
+    // Like the config file's warnings, e.g. for its brand colors, the links'
+    // warnings are logged even if the identity provider fails validation below.
+    if (result.metadata) {
+      SetValidIdpLinksFromWellKnown(result, *render_frame_host_);
+    }
     ValidateAndMaybeSetError(result);
   }
 

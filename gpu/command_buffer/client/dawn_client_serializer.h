@@ -37,9 +37,6 @@ class DawnClientSerializer : public dawn::wire::CommandSerializer {
   size_t GetMaximumAllocationSize() const final;
   std::optional<std::span<volatile std::byte>> GetCommandSpace(
       size_t size) final;
-#if DCHECK_IS_ON()
-  void OnSerializeError() final;
-#endif
 
   // Signal that it's important that the previously encoded commands are
   // flushed. Calling |AwaitingFlush| will return whether or not a flush still
@@ -62,11 +59,8 @@ class DawnClientSerializer : public dawn::wire::CommandSerializer {
   // dawn::wire::CommandSerializer implementation
   bool Flush() final;
 
-  // Found dangling on `linux-rel` in
-  // `gpu_tests.context_lost_integration_test.ContextLostIntegrationTest.
-  // ContextLost_WebGPUStressRequestDeviceAndRemoveLoop`
-  raw_ptr<WebGPUImplementation, DanglingUntriaged> client_;
-  raw_ptr<WebGPUCmdHelper, DanglingUntriaged> helper_;
+  raw_ptr<WebGPUImplementation> client_;
+  raw_ptr<WebGPUCmdHelper> helper_;
 
   raw_ptr<DawnClientMemoryTransferService> memory_transfer_service_;
   uint32_t put_offset_ = 0;

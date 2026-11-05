@@ -8,6 +8,7 @@
 #include "chrome/browser/ash/login/signin/signin_error_notifier.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_error_controller_factory.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 
@@ -18,13 +19,10 @@ SigninErrorNotifierFactory::SigninErrorNotifierFactory()
           "SigninErrorNotifier",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOriginalOnly)
-              // TODO(crbug.com/40257657): Check if this service is needed in
-              // Guest mode.
-              .WithGuest(ProfileSelection::kOriginalOnly)
-              // TODO(crbug.com/41488885): Check if this service is needed for
-              // Ash Internals.
-              .WithAshInternals(ProfileSelection::kOriginalOnly)
+              .WithGuest(ProfileSelection::kNone)
+              .WithAshInternals(ProfileSelection::kNone)
               .Build()) {
+  DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(SigninErrorControllerFactory::GetInstance());
   DependsOn(supervised_user::SupervisedUserServiceFactory::GetInstance());
 }
@@ -59,7 +57,7 @@ SigninErrorNotifierFactory::BuildServiceInstanceForBrowserContext(
 
   return std::make_unique<SigninErrorNotifier>(
       local_state, SigninErrorControllerFactory::GetForProfile(profile),
-      profile,
+      profile, IdentityManagerFactory::GetForProfile(profile),
       supervised_user::SupervisedUserServiceFactory::GetForProfile(profile));
 }
 

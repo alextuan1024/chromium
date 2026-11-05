@@ -4,21 +4,35 @@
 
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
+#include "build/build_config.h"
+#include "ui/aura/env.h"
 #include "ui/aura/native_window_occlusion_tracker.h"
+#include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/compositor/compositor.h"
 #include "ui/display/display_switches.h"
+#include "ui/events/base_event_utils.h"
 #include "ui/platform_window/platform_window.h"
 #include "ui/views/test/configurable_test_custom_frame_view.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h"
 #include "ui/views/widget/widget_delegate.h"
+
+#if BUILDFLAG(IS_LINUX)
+#include "base/run_loop.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
+#include "ui/platform_window/wm/wm_move_loop_handler.h"
+#include "ui/views/widget/desktop_aura/desktop_window_tree_host_linux.h"
+#endif
 
 namespace views {
 
@@ -50,6 +64,28 @@ class MouseEventRecorder : public ui::EventHandler {
 
   std::vector<ui::MouseEvent> mouse_events_;
 };
+
+#if BUILDFLAG(IS_LINUX)
+class TouchEventTypeRecorder : public ui::EventHandler {
+ public:
+  TouchEventTypeRecorder() = default;
+  TouchEventTypeRecorder(const TouchEventTypeRecorder&) = delete;
+  TouchEventTypeRecorder& operator=(const TouchEventTypeRecorder&) = delete;
+  ~TouchEventTypeRecorder() override = default;
+
+  void Reset() { event_types_.clear(); }
+
+  const std::vector<ui::EventType>& event_types() const { return event_types_; }
+
+ private:
+  // ui::EventHandler:
+  void OnTouchEvent(ui::TouchEvent* touch) override {
+    event_types_.push_back(touch->type());
+  }
+
+  std::vector<ui::EventType> event_types_;
+};
+#endif  // BUILDFLAG(IS_LINUX)
 
 }  // namespace
 
@@ -286,5 +322,233 @@ TEST_F(DesktopWindowTreeHostPlatformImplHighDPITest, MouseNCEvents) {
 
   widget->GetNativeWindow()->RemovePreTargetHandler(&recorder);
 }
+
+#if BUILDFLAG(IS_LINUX)
+// Verifies that disabling event listening (e.g. for a modal dialog) cancels
+// active touches and clears held mouse button and drag-press state even if no
+// release event reaches the host window, and that normal touch and mouse input
+// resumes once event listening is re-enabled.
+TEST_F(DesktopWindowTreeHostPlatformImplTest,
+       DisableEventListeningClearsInputState) {
+  auto widget = std::make_unique<Widget>();
+  Widget::InitParams params(Widget::InitParams::CLIENT_OWNS_WIDGET,
+                            Widget::InitParams::TYPE_WINDOW);
+  auto* native_widget = new DesktopNativeWidgetAura(widget.get());
+  params.native_widget = native_widget;
+  auto* host_linux =
+      new DesktopWindowTreeHostLinux(widget.get(), native_widget);
+  params.desktop_window_tree_host = host_linux;
+  params.remove_standard_frame = true;
+  params.bounds = gfx::Rect(100, 100, 100, 100);
+  widget->Init(std::move(params));
+  widget->Show();
+
+  aura::Window* content_window = widget->GetNativeWindow();
+  ASSERT_TRUE(content_window);
+  ui::PlatformWindowDelegate* platform_delegate = host_linux;
+  aura::WindowEventDispatcher* dispatcher =
+      host_linux->AsWindowTreeHost()->dispatcher();
+
+  TouchEventTypeRecorder touch_recorder;
+  content_window->AddPreTargetHandler(&touch_recorder);
+
+  auto* env = aura::Env::GetInstance();
+  base::TimeTicks time = ui::EventTimeForNow();
+  auto dispatch_touch = [&](ui::EventType type, const gfx::Point& location) {
+    time += base::Milliseconds(10);
+    ui::TouchEvent event(
+        type, location, time,
+        ui::PointerDetails(ui::EventPointerType::kTouch, /*pointer_id=*/0));
+    platform_delegate->DispatchEvent(&event);
+  };
+
+  // Press a touch on the window, then disable event listening without
+  // delivering a touch release (simulating a modal dialog consuming the
+  // release).
+  constexpr gfx::Point kPoint(50, 50);
+  dispatch_touch(ui::EventType::kTouchPressed, kPoint);
+  ASSERT_TRUE(env->is_touch_down());
+  ASSERT_EQ(std::vector<ui::EventType>({ui::EventType::kTouchPressed}),
+            touch_recorder.event_types());
+
+  base::OnceClosure enable_events = host_linux->DisableEventListening();
+  EXPECT_EQ(std::vector<ui::EventType>(
+                {ui::EventType::kTouchPressed, ui::EventType::kTouchCancelled}),
+            touch_recorder.event_types());
+  EXPECT_FALSE(env->is_touch_down());
+  EXPECT_FALSE(env->ConsumeTouchForDrag(content_window));
+
+  std::move(enable_events).Run();
+  EXPECT_FALSE(env->is_touch_down());
+  EXPECT_FALSE(env->ConsumeTouchForDrag(content_window));
+
+  // Likewise, a left mouse press held when event listening is disabled is
+  // cleared even when the release is consumed outside the host window.
+  time += base::Milliseconds(10);
+  ui::MouseEvent mouse_press(ui::EventType::kMousePressed, kPoint, kPoint, time,
+                             ui::EF_LEFT_MOUSE_BUTTON,
+                             ui::EF_LEFT_MOUSE_BUTTON);
+  platform_delegate->DispatchEvent(&mouse_press);
+  ASSERT_TRUE(env->IsLeftMouseButtonDown());
+  ASSERT_EQ(content_window, dispatcher->mouse_pressed_handler());
+
+  enable_events = host_linux->DisableEventListening();
+  EXPECT_FALSE(env->IsLeftMouseButtonDown());
+  EXPECT_FALSE(env->ConsumeLeftMousePressForDrag(content_window));
+  EXPECT_EQ(nullptr, dispatcher->mouse_pressed_handler());
+
+  std::move(enable_events).Run();
+  EXPECT_FALSE(env->IsLeftMouseButtonDown());
+  EXPECT_FALSE(env->ConsumeLeftMousePressForDrag(content_window));
+  // Verify the recorded press target itself was cleared, not only the button
+  // flags.
+  env->set_mouse_button_flags(ui::EF_LEFT_MOUSE_BUTTON);
+  EXPECT_FALSE(env->ConsumeLeftMousePressForDrag(content_window));
+  env->set_mouse_button_flags(ui::EF_NONE);
+
+  // Once event listening is re-enabled, new touch and mouse presses are
+  // dispatched and tracked normally.
+  touch_recorder.Reset();
+  constexpr gfx::Point kNextPoint(60, 60);
+  dispatch_touch(ui::EventType::kTouchPressed, kNextPoint);
+  EXPECT_EQ(std::vector<ui::EventType>({ui::EventType::kTouchPressed}),
+            touch_recorder.event_types());
+  EXPECT_TRUE(env->is_touch_down());
+  EXPECT_EQ(content_window->GetBoundsInScreen().origin() +
+                kNextPoint.OffsetFromOrigin(),
+            env->ConsumeTouchForDrag(content_window));
+  dispatch_touch(ui::EventType::kTouchReleased, kNextPoint);
+  EXPECT_FALSE(env->is_touch_down());
+
+  time += base::Milliseconds(10);
+  ui::MouseEvent next_mouse_press(ui::EventType::kMousePressed, kNextPoint,
+                                  kNextPoint, time, ui::EF_LEFT_MOUSE_BUTTON,
+                                  ui::EF_LEFT_MOUSE_BUTTON);
+  platform_delegate->DispatchEvent(&next_mouse_press);
+  EXPECT_TRUE(env->ConsumeLeftMousePressForDrag(content_window));
+  time += base::Milliseconds(10);
+  ui::MouseEvent next_mouse_release(ui::EventType::kMouseReleased, kNextPoint,
+                                    kNextPoint, time, ui::EF_LEFT_MOUSE_BUTTON,
+                                    ui::EF_LEFT_MOUSE_BUTTON);
+  platform_delegate->DispatchEvent(&next_mouse_release);
+
+  content_window->RemovePreTargetHandler(&touch_recorder);
+
+  // Closing the widget synchronously during touch cancellation inside
+  // DisableEventListening() must be handled safely.
+  class CloseOnTouchCancelHandler : public ui::EventHandler {
+   public:
+    explicit CloseOnTouchCancelHandler(Widget* widget) : widget_(widget) {}
+    void OnTouchEvent(ui::TouchEvent* touch) override {
+      if (touch->type() == ui::EventType::kTouchCancelled) {
+        widget_->GetNativeWindow()->RemovePreTargetHandler(this);
+        widget_->CloseNow();
+      }
+    }
+
+   private:
+    raw_ptr<Widget> widget_;
+  } close_handler(widget.get());
+
+  content_window->AddPreTargetHandler(&close_handler);
+  dispatch_touch(ui::EventType::kTouchPressed, kPoint);
+  enable_events = host_linux->DisableEventListening();
+  std::move(enable_events).Run();
+  if (widget->GetNativeWindow()) {
+    widget->GetNativeWindow()->RemovePreTargetHandler(&close_handler);
+  }
+}
+
+namespace {
+
+// Replaces the platform window's move loop handler and runs `on_run_` instead
+// of a real move loop.
+class FakeWmMoveLoopHandler : public ui::WmMoveLoopHandler {
+ public:
+  explicit FakeWmMoveLoopHandler(ui::PlatformWindow* window)
+      : window_(window), original_(ui::GetWmMoveLoopHandler(*window)) {
+    ui::SetWmMoveLoopHandler(window_, this);
+  }
+  FakeWmMoveLoopHandler(const FakeWmMoveLoopHandler&) = delete;
+  FakeWmMoveLoopHandler& operator=(const FakeWmMoveLoopHandler&) = delete;
+  ~FakeWmMoveLoopHandler() override {
+    ui::SetWmMoveLoopHandler(window_, original_);
+  }
+
+  void set_on_run(base::OnceCallback<bool()> on_run) {
+    on_run_ = std::move(on_run);
+  }
+
+  // ui::WmMoveLoopHandler:
+  bool RunMoveLoop(const gfx::Vector2d& drag_offset) override {
+    return std::move(on_run_).Run();
+  }
+  void EndMoveLoop() override {}
+
+ private:
+  raw_ptr<ui::PlatformWindow> window_;
+  raw_ptr<ui::WmMoveLoopHandler> original_;
+  base::OnceCallback<bool()> on_run_;
+};
+
+}  // namespace
+
+// Verifies that a move loop clears the held mouse button state when the
+// platform consumes the release that ends it, unless capture was transferred
+// to another window during the loop (e.g. a tab drag attaching to another tab
+// strip with the button still held).
+TEST_F(DesktopWindowTreeHostPlatformImplTest,
+       RunMoveLoopClearsMouseButtonState) {
+  std::unique_ptr<Widget> widget =
+      CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET);
+  std::unique_ptr<Widget> target_widget =
+      CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET);
+  widget->Show();
+  target_widget->Show();
+  auto* host = static_cast<DesktopWindowTreeHostPlatform*>(
+      widget->GetNativeWindow()->GetHost());
+  FakeWmMoveLoopHandler move_loop_handler(host->platform_window());
+  auto* env = aura::Env::GetInstance();
+
+  auto run_move_loop = [&]() {
+    return widget->RunMoveLoop(gfx::Vector2d(), Widget::MoveLoopSource::kMouse,
+                               Widget::MoveLoopEscapeBehavior::kDontHide);
+  };
+
+  for (bool moved : {true, false}) {
+    // The loop ends without the release reaching aura.
+    env->set_mouse_button_flags(ui::EF_LEFT_MOUSE_BUTTON);
+    move_loop_handler.set_on_run(base::BindLambdaForTesting([&, moved]() {
+      EXPECT_TRUE(env->IsLeftMouseButtonDown());
+      EXPECT_TRUE(widget->GetNativeWindow()->HasCapture());
+      return moved;
+    }));
+    EXPECT_EQ(moved ? Widget::MoveLoopResult::kSuccessful
+                    : Widget::MoveLoopResult::kCanceled,
+              run_move_loop());
+    EXPECT_FALSE(env->IsMouseButtonDown());
+    EXPECT_FALSE(widget->GetNativeWindow()->HasCapture());
+
+    // Capture moves to another window while the loop runs.
+    env->set_mouse_button_flags(ui::EF_LEFT_MOUSE_BUTTON);
+    move_loop_handler.set_on_run(base::BindLambdaForTesting([&, moved]() {
+      base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindLambdaForTesting([&]() {
+            target_widget->GetNativeWindow()->SetCapture();
+            run_loop.Quit();
+          }));
+      run_loop.Run();
+      return moved;
+    }));
+    run_move_loop();
+    EXPECT_TRUE(env->IsLeftMouseButtonDown());
+    EXPECT_TRUE(target_widget->GetNativeWindow()->HasCapture());
+    target_widget->GetNativeWindow()->ReleaseCapture();
+  }
+
+  env->set_mouse_button_flags(ui::EF_NONE);
+}
+#endif  // BUILDFLAG(IS_LINUX)
 
 }  // namespace views

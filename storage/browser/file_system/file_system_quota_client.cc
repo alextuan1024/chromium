@@ -75,9 +75,11 @@ blink::mojom::QuotaStatusCode DeleteBucketOnFileTaskRunner(
   FileSystemBackend* provider = context->GetFileSystemBackend(type);
   if (!provider || !provider->GetQuotaUtil())
     return blink::mojom::QuotaStatusCode::kErrorNotSupported;
+  // Do not pass a `quota_manager_proxy` because the `QuotaManager` initiated
+  // this deletion and consequently doesn't need to be notified of the update.
   base::File::Error result =
       provider->GetQuotaUtil()->DeleteBucketDataOnFileTaskRunner(
-          context, context->quota_manager_proxy().get(), bucket_locator, type);
+          context, /*quota_manager_proxy=*/nullptr, bucket_locator, type);
 
   // If obfuscated_file_util() was caching this default bucket, it should be
   // deleted as well. If it was not cached, result is a no-op.
@@ -123,7 +125,7 @@ void FileSystemQuotaClient::GetBucketUsage(const BucketLocator& bucket,
       base::BarrierCallback<int64_t>(
           types.size(), base::BindOnce([](std::vector<int64_t> usages) {
                           return std::accumulate(usages.begin(), usages.end(),
-                                                 0U);
+                                                 int64_t{0});
                         }).Then(std::move(callback)));
 
   for (auto type : types) {

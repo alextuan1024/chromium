@@ -4,9 +4,13 @@
 
 #include "chrome/browser/ui/lens/lens_overlay_url_builder.h"
 
+#include <iterator>
 #include <string>
+#include <string_view>
 
 #include "base/base64url.h"
+#include "base/containers/flat_set.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
@@ -16,7 +20,7 @@
 #include "components/lens/lens_features.h"
 #include "components/lens/lens_url_utils.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
-#include "net/base/url_search_params.h"
+#include "net/base/url_search_params_view.h"
 #include "net/base/url_util.h"
 #include "third_party/lens_server_proto/lens_overlay_cluster_info.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_knowledge_intent_query.pb.h"
@@ -72,7 +76,7 @@ inline constexpr char kXSRFTokenQueryParamKey[] = "sxsrf";
 inline constexpr char kSecActQueryParamKey[] = "sec_act";
 
 // The list of query parameters to ignore when comparing search URLs.
-inline constexpr std::string kIgnoredSearchUrlQueryParameters[] = {
+inline constexpr std::string_view kIgnoredSearchUrlQueryParameters[] = {
     kViewportWidthQueryParamKey, kViewportHeightQueryParamKey,
     kXSRFTokenQueryParamKey,     kSecActQueryParamKey,
     kModeParameterKey,           kToolbeltModeParameterKey};
@@ -146,11 +150,8 @@ GURL AppendUrlParamsFromMap(
 std::string CompressAndEncode(const std::string& serialized_proto) {
   std::string compressed_proto;
   compression::GzipCompress(serialized_proto, &compressed_proto);
-  std::string stickiness_signal_value;
-  base::Base64UrlEncode(compressed_proto,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &stickiness_signal_value);
-  return stickiness_signal_value;
+  return base::Base64UrlEncode(compressed_proto,
+                               base::Base64UrlEncodePolicy::OMIT_PADDING);
 }
 
 std::string GetURLRefWithoutTextFragment(const GURL& url) {
@@ -320,12 +321,10 @@ GURL BuildLensSearchURL(
 
   std::string serialized_request_id;
   CHECK(request_id.get()->SerializeToString(&serialized_request_id));
-  std::string encoded_request_id;
-  base::Base64UrlEncode(serialized_request_id,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &encoded_request_id);
   url_with_query_params = net::AppendOrReplaceQueryParameter(
-      url_with_query_params, kRequestIdParameterKey, encoded_request_id);
+      url_with_query_params, kRequestIdParameterKey,
+      base::Base64UrlEncode(serialized_request_id,
+                            base::Base64UrlEncodePolicy::OMIT_PADDING));
   url_with_query_params =
       AppendQuerySubmissionTimeAndClientUploadDurationParamToURL(
           url_with_query_params, query_start_time);
@@ -354,10 +353,13 @@ bool AreSearchUrlsEquivalent(const GURL& a, const GURL& b) {
 
   // Now, compare each query param individually to ensure equivalence. Remove
   // params that should not contribute to differing search results.
-  net::UrlSearchParams a_search_params(
-      lens::RemoveIgnoredSearchURLParameters(a));
-  net::UrlSearchParams b_search_params(
-      lens::RemoveIgnoredSearchURLParameters(b));
+  static const base::NoDestructor<base::flat_set<std::string>> ignored_params(
+      std::begin(kIgnoredSearchUrlQueryParameters),
+      std::end(kIgnoredSearchUrlQueryParameters));
+  net::UrlSearchParamsView a_search_params(a);
+  a_search_params.DeleteAllWithNames(*ignored_params);
+  net::UrlSearchParamsView b_search_params(b);
+  b_search_params.DeleteAllWithNames(*ignored_params);
 
   // Sort params so they are in the same order during comparison.
   a_search_params.Sort();
@@ -366,7 +368,7 @@ bool AreSearchUrlsEquivalent(const GURL& a, const GURL& b) {
   // Check Search Params for equality
   // All search params, in order, need to have the same keys and the same
   // values.
-  return a_search_params.params() == b_search_params.params();
+  return a_search_params == b_search_params;
 }
 
 bool IsValidSearchResultsUrl(const GURL& url) {
@@ -423,15 +425,6 @@ GURL GetSearchResultsUrlFromRedirectUrl(const GURL& url) {
   }
 
   return GURL();
-}
-
-GURL RemoveIgnoredSearchURLParameters(const GURL& url) {
-  GURL processed_url = url;
-  for (const std::string& query_param : kIgnoredSearchUrlQueryParameters) {
-    processed_url = net::AppendOrReplaceQueryParameter(
-        processed_url, query_param, std::nullopt);
-  }
-  return processed_url;
 }
 
 GURL MaybeStripParamsForShopping(const GURL& url) {

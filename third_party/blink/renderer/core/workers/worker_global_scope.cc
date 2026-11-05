@@ -27,11 +27,13 @@
 
 #include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 
+#include "base/feature_list.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/trace_event/typed_macros.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "services/metrics/public/cpp/mojo_ukm_recorder.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/loader/javascript_framework_detection.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/browser_interface_broker.mojom-blink.h"
@@ -43,6 +45,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_trustedscripturl_usvstring.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_void_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/worker_or_worklet_script_controller.h"
+#include "third_party/blink/renderer/core/clipboard/system_clipboard.h"
 #include "third_party/blink/renderer/core/css/font_face_set_worker.h"
 #include "third_party/blink/renderer/core/css/offscreen_font_selector.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
@@ -271,6 +274,14 @@ WorkerNavigator* WorkerGlobalScope::navigator() const {
   return navigator_.Get();
 }
 
+SystemClipboard* WorkerGlobalScope::GetSystemClipboard() const {
+  if (!system_clipboard_) {
+    system_clipboard_ =
+        MakeGarbageCollected<SystemClipboard>(GetExecutionContext());
+  }
+  return system_clipboard_.Get();
+}
+
 void WorkerGlobalScope::close() {
   // Let current script run to completion, but tell the worker micro task
   // runner to tear down the thread after this task.
@@ -365,6 +376,7 @@ void WorkerGlobalScope::ImportScriptsInternal(const Vector<String>& urls,
   for (const KURL& complete_url : completed_urls) {
     KURL response_url;
     String source_code;
+    TextEncoding encoding;
     std::unique_ptr<Vector<uint8_t>> cached_meta_data;
     const String error_message =
         NetworkErrorMessageAtImportScript(complete_url);
@@ -374,7 +386,7 @@ void WorkerGlobalScope::ImportScriptsInternal(const Vector<String>& urls,
     // this succeeds, let script be the result. Otherwise, rethrow the
     // exception."
     if (!FetchClassicImportedScript(complete_url, &response_url, &source_code,
-                                    &cached_meta_data)) {
+                                    &cached_meta_data, &encoding)) {
       // TODO(vogelheim): In case of certain types of failure - e.g. 'nosniff'
       // block - this ought to be a DOMExceptionCode::kSecurityError, but that
       // information presently gets lost on the way.
@@ -397,7 +409,7 @@ void WorkerGlobalScope::ImportScriptsInternal(const Vector<String>& urls,
     // fetch options, and muted errors.
     // TODO(crbug.com/1082086): Fix the base URL.
     CachedMetadataHandler* handler(CreateWorkerScriptCachedMetadataHandler(
-        complete_url, std::move(cached_meta_data)));
+        complete_url, std::move(cached_meta_data), std::move(encoding)));
     ClassicScript* script = ClassicScript::Create(
         source_code, ClassicScript::StripFragmentIdentifier(complete_url),
         response_url /* base_url */, ScriptFetchOptions(),
@@ -431,7 +443,8 @@ bool WorkerGlobalScope::FetchClassicImportedScript(
     const KURL& script_url,
     KURL* out_response_url,
     String* out_source_code,
-    std::unique_ptr<Vector<uint8_t>>* out_cached_meta_data) {
+    std::unique_ptr<Vector<uint8_t>>* out_cached_meta_data,
+    TextEncoding* out_response_encoding) {
   ExecutionContext* execution_context = GetExecutionContext();
   WorkerClassicScriptLoader* classic_script_loader =
       MakeGarbageCollected<WorkerClassicScriptLoader>();
@@ -444,6 +457,7 @@ bool WorkerGlobalScope::FetchClassicImportedScript(
   *out_response_url = classic_script_loader->ResponseURL();
   *out_source_code = classic_script_loader->SourceText();
   *out_cached_meta_data = classic_script_loader->ReleaseCachedMetadata();
+  *out_response_encoding = classic_script_loader->GetScriptEncoding();
   probe::ScriptImported(execution_context, classic_script_loader->Identifier(),
                         classic_script_loader->SourceText());
   return true;
@@ -633,7 +647,8 @@ void WorkerGlobalScope::DidFetchClassicScript(
           : Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
       classic_script_loader->GetDocumentPolicy(), response_origin_trial_tokens,
       classic_script_loader->SourceText(),
-      classic_script_loader->ReleaseCachedMetadata(), stack_id);
+      classic_script_loader->ReleaseCachedMetadata(), stack_id,
+      classic_script_loader->GetScriptEncoding());
 }
 
 // [Worker]
@@ -648,7 +663,8 @@ void WorkerGlobalScope::RunClassicScript(
     const Vector<String>* response_origin_trial_tokens,
     const String& source_code,
     std::unique_ptr<Vector<uint8_t>> cached_meta_data,
-    const v8_inspector::V8StackTraceId& stack_id) {
+    const v8_inspector::V8StackTraceId& stack_id,
+    TextEncoding encoding) {
   // [Worker] Step 12, performFetch, Step 3.
   //
   // [ServiceWorker] Step 8.1: "Set workerGlobalScope to be the result of
@@ -663,18 +679,19 @@ void WorkerGlobalScope::RunClassicScript(
   // [ServiceWorker] Step 9.4.1. "Set evaluationStatus to the result of running
   // the classic script script." [spec text]
   EvaluateClassicScript(response_url, source_code, std::move(cached_meta_data),
-                        stack_id);
+                        stack_id, std::move(encoding));
 }
 
 void WorkerGlobalScope::EvaluateClassicScript(
     const KURL& script_url,
     String source_code,
     std::unique_ptr<Vector<uint8_t>> cached_meta_data,
-    const v8_inspector::V8StackTraceId& stack_id) {
+    const v8_inspector::V8StackTraceId& stack_id,
+    TextEncoding encoding) {
   DCHECK(!IsContextPaused());
 
   CachedMetadataHandler* handler = CreateWorkerScriptCachedMetadataHandler(
-      script_url, std::move(cached_meta_data));
+      script_url, std::move(cached_meta_data), std::move(encoding));
   // Cross-origin workers are disallowed, so use
   // SanitizeScriptErrors::kDoNotSanitize.
   Script* worker_script = ClassicScript::Create(
@@ -936,6 +953,13 @@ WorkerGlobalScope::WorkerGlobalScope(
   InstanceCounters::IncrementCounter(
       InstanceCounters::kWorkerGlobalScopeCounter);
 
+  if (!creation_params->script_url.ProtocolIsData() &&
+      base::FeatureList::IsEnabled(features::kCSPSandboxedWorkerOpaqueOrigin) &&
+      creation_params->origin_to_use &&
+      creation_params->origin_to_use->IsOpaque()) {
+    SetSandboxOriginToUse(creation_params->origin_to_use->IsolatedCopy());
+  }
+
   // https://html.spec.whatwg.org/C/#run-a-worker
   // 4. Set worker global scope's HTTPS state to response's HTTPS state. [spec
   // text]
@@ -944,6 +968,8 @@ WorkerGlobalScope::WorkerGlobalScope(
 
   SetOutsideContentSecurityPolicies(
       std::move(creation_params->outside_content_security_policies));
+  SetOutsideSettingsReporter(
+      std::move(creation_params->outside_settings_reporter));
   SetWorkerSettings(std::move(creation_params->worker_settings));
 
   // TODO(sammc): Require a valid |creation_params->browser_interface_broker|
@@ -974,11 +1000,14 @@ WorkerGlobalScope::WorkerGlobalScope(
       std::move(creation_params->worker_permissions_policy));
 }
 
-void WorkerGlobalScope::ExceptionThrown(ErrorEvent* event) {
+void WorkerGlobalScope::ExceptionThrown(
+    ErrorEvent* event,
+    SanitizeScriptErrors sanitize_script_errors) {
   int next_id = ++last_pending_error_event_id_;
   pending_error_events_.Set(next_id, event);
   ReportingProxy().ReportException(event->MessageForConsole(),
-                                   event->Location(), next_id);
+                                   event->Location(), next_id,
+                                   sanitize_script_errors);
 }
 
 void WorkerGlobalScope::RemoveURLFromMemoryCache(const KURL& url) {
@@ -998,7 +1027,8 @@ NOINLINE void WorkerGlobalScope::InitializeURL(const KURL& url) {
     // for local origins, and the logic doesn't work here, so we have this
     // DCHECK instead.
     auto origin = SecurityOrigin::Create(url);
-    DCHECK(origin->IsOpaque() || origin->IsLocal());
+    DCHECK(origin->IsOpaque() || origin->IsLocal() ||
+           GetSecurityOrigin()->CanReadContent(url));
   } else {
     DCHECK(GetSecurityOrigin()->CanReadContent(url));
   }
@@ -1049,6 +1079,7 @@ WorkerGlobalScope::TakeWorkerMainScriptLoadingParametersForModules() {
 void WorkerGlobalScope::Trace(Visitor* visitor) const {
   visitor->Trace(location_);
   visitor->Trace(navigator_);
+  visitor->Trace(system_clipboard_);
   visitor->Trace(pending_error_events_);
   visitor->Trace(font_selector_);
   visitor->Trace(trusted_types_);

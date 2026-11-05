@@ -15,6 +15,7 @@
 #include "content/browser/devtools/devtools_background_services.pb.h"
 #include "content/browser/service_worker/embedded_worker_test_helper.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
+#include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/common/content_client.h"
 #include "content/public/test/browser_task_environment.h"
@@ -279,17 +280,8 @@ class DevToolsBackgroundServicesContextTest
       scoped_content_browser_client_setting_;
 };
 
-// Flaky on Fuchsia.
-// TODO(crbug.com/40936408): Reenable test on Fuchsia.
-#if BUILDFLAG(IS_FUCHSIA)
-#define MAYBE_NothingStoredWithRecordingModeOff \
-  DISABLED_NothingStoredWithRecordingModeOff
-#else
-#define MAYBE_NothingStoredWithRecordingModeOff \
-  NothingStoredWithRecordingModeOff
-#endif
 TEST_F(DevToolsBackgroundServicesContextTest,
-       MAYBE_NothingStoredWithRecordingModeOff) {
+       NothingStoredWithRecordingModeOff) {
   // Initially there are no entries.
   EXPECT_TRUE(GetLoggedBackgroundServiceEvents().empty());
 

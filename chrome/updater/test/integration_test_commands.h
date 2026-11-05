@@ -15,6 +15,7 @@
 #include "chrome/updater/external_constants.h"
 #include "chrome/updater/registration_data.h"
 #include "chrome/updater/test/integration_tests_impl.h"
+#include "chrome/updater/test/json_matchers.h"
 #include "chrome/updater/test/test_scope.h"
 #include "chrome/updater/update_service.h"
 
@@ -67,9 +68,11 @@ class IntegrationTestCommands
   virtual void ExpectNotActive(const std::string& app_id) const = 0;
   virtual void ExpectSelfUpdateSequence(ScopedServer& test_server) const = 0;
   virtual void ExpectPing(ScopedServer& test_server,
+                          const std::string& app_id,
                           int event_type,
                           std::optional<GURL> target_url) const = 0;
   virtual void ExpectInstallSource(ScopedServer& test_server,
+                                   const std::string& app_id,
                                    const std::string& install_source) const = 0;
   virtual void ExpectAppCommandPing(
       ScopedServer& test_server,
@@ -88,17 +91,18 @@ class IntegrationTestCommands
       const base::Version& from_version,
       const base::Version& to_version,
       const base::Version& updater_version) const = 0;
-  virtual void ExpectUpdateSequence(ScopedServer& test_server,
-                                    const std::string& app_id,
-                                    const std::string& install_data_index,
-                                    UpdateService::Priority priority,
-                                    const base::Version& from_version,
-                                    const base::Version& to_version,
-                                    bool do_fault_injection,
-                                    bool skip_download,
-                                    const base::Version& updater_version,
-                                    const std::string& event_regex,
-                                    bool use_xz) const = 0;
+  virtual void ExpectUpdateSequence(
+      ScopedServer& test_server,
+      const std::string& app_id,
+      const std::string& install_data_index,
+      UpdateService::Priority priority,
+      const base::Version& from_version,
+      const base::Version& to_version,
+      bool do_fault_injection,
+      bool skip_download,
+      const base::Version& updater_version,
+      std::optional<json::ValueMatcher> ping_app_matcher,
+      bool use_xz) const = 0;
   virtual void ExpectUpdateSequenceBadHash(
       ScopedServer& test_server,
       const std::string& app_id,
@@ -106,16 +110,17 @@ class IntegrationTestCommands
       UpdateService::Priority priority,
       const base::Version& from_version,
       const base::Version& to_version) const = 0;
-  virtual void ExpectInstallSequence(ScopedServer& test_server,
-                                     const std::string& app_id,
-                                     const std::string& install_data_index,
-                                     UpdateService::Priority priority,
-                                     const base::Version& from_version,
-                                     const base::Version& to_version,
-                                     bool do_fault_injection,
-                                     bool skip_download,
-                                     const base::Version& updater_version,
-                                     const std::string& event_regex) const = 0;
+  virtual void ExpectInstallSequence(
+      ScopedServer& test_server,
+      const std::string& app_id,
+      const std::string& install_data_index,
+      UpdateService::Priority priority,
+      const base::Version& from_version,
+      const base::Version& to_version,
+      bool do_fault_injection,
+      bool skip_download,
+      const base::Version& updater_version,
+      std::optional<json::ValueMatcher> ping_app_matcher) const = 0;
   virtual void ExpectEnterpriseCompanionAppOTAInstallSequence(
       ScopedServer& test_server) const = 0;
   virtual void ExpectVersionActive(const std::string& version) const = 0;
@@ -216,6 +221,8 @@ class IntegrationTestCommands
   virtual void DeleteLegacyUpdater() const = 0;
   virtual void ExpectPrepareToRunBundleSuccess(
       const base::FilePath& bundle_path) const = 0;
+  virtual void QuarantineWakePlist() const = 0;
+  virtual void ExpectWakeJobLoaded() const = 0;
   virtual void ExpectKSAdminFetchTag(
       bool elevate,
       const std::string& product_id,

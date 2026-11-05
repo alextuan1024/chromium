@@ -48,7 +48,6 @@
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/case_folding_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
@@ -180,7 +179,7 @@ class PLATFORM_EXPORT FontCache final {
   static void SetAntialiasedTextEnabled(bool enabled) {
     antialiased_text_enabled_ = enabled;
   }
-  static void SetLCDTextEnabled(bool enabled) { lcd_text_enabled_ = enabled; }
+  static void SetLcdTextEnabled(bool enabled) { lcd_text_enabled_ = enabled; }
   // Functions to cache and retrieve the system font metrics.
   static void SetMenuFontMetrics(const AtomicString& family_name,
                                  int32_t font_height);
@@ -364,6 +363,7 @@ class PLATFORM_EXPORT FontCache final {
   friend class FontFallbackList;
   friend class FontPlatformDataCache;
   friend class FontCacheMacTest;
+  friend class FontCacheTest;
   FRIEND_TEST_ALL_PREFIXES(FontCacheAndroidTest, LocaleSpecificTypeface);
 };
 

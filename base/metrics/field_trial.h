@@ -74,13 +74,16 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "base/base_export.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/read_only_shared_memory_region.h"
@@ -399,13 +402,56 @@ class BASE_EXPORT FieldTrial : public RefCounted<FieldTrial> {
 };
 
 //------------------------------------------------------------------------------
+// Shared-memory allocator storing serialized FieldTrial and FeatureList entries
+// for child processes, along with a leading generation metadata block used to
+// coordinate append-only runtime updates.
+class BASE_EXPORT FieldTrialAllocator : public PersistentMemoryAllocator {
+ public:
+  FieldTrialAllocator(WritableSharedMemoryMapping memory,
+                      uint64_t id,
+                      std::string_view name);
+  FieldTrialAllocator(ReadOnlySharedMemoryMapping memory,
+                      uint64_t id,
+                      std::string_view name);
+
+  FieldTrialAllocator(const FieldTrialAllocator&) = delete;
+  FieldTrialAllocator& operator=(const FieldTrialAllocator&) = delete;
+
+  ~FieldTrialAllocator() override;
+
+  // Allocates and publishes a generation metadata block as the first iterable
+  // record in this allocator, initialized to `initial_generation_id`. Returns
+  // false if allocation fails.
+  bool InitializeGenerationId(uint64_t initial_generation_id = 0);
+
+  // Returns the generation ID stored in the leading metadata block, or
+  // `std::nullopt` if this allocator does not start with one.
+  std::optional<uint64_t> GetGenerationId() const;
+
+  // Updates the generation ID in the leading metadata block. Returns false if
+  // this allocator does not start with a valid generation metadata block (i.e.
+  // `InitializeGenerationId()` was not called before adding entries).
+  // CHECK-fails if the allocator is read-only or if `generation_id` is smaller
+  // than the previously stored value.
+  bool SetGenerationId(uint64_t generation_id);
+
+  // Resets the generation ID in the leading metadata block to 0. CHECK-fails if
+  // the allocator is read-only.
+  void ResetGenerationIdForTesting();
+
+ private:
+  std::variant<WritableSharedMemoryMapping, ReadOnlySharedMemoryMapping>
+      shared_memory_;
+};
+
+//------------------------------------------------------------------------------
 // Class with a list of all active field trials.  A trial is active if it has
 // been registered, which includes evaluating its state based on its
 // probability. Only one instance of this class exists and outside of testing,
 // will live for the entire life time of the process.
 class BASE_EXPORT FieldTrialList {
  public:
-  using FieldTrialAllocator = PersistentMemoryAllocator;
+  using FieldTrialAllocator = ::base::FieldTrialAllocator;
 
   // Type for function pointer passed to |AllParamsToString| used to escape
   // special characters from |input|.
@@ -524,7 +570,8 @@ class BASE_EXPORT FieldTrialList {
   // to it through PopulateLaunchOptionsWithFieldTrialState(), an empty set will
   // be returned.
   // Must be called only after a call to CreateTrialsInChildProcess().
-  static std::set<std::string> GetActiveTrialsOfParentProcess();
+  using ActiveTrialNames = flat_set<std::string>;
+  static ActiveTrialNames GetActiveTrialsOfParentProcess();
 
   // Use a state string (re: AllStatesToString()) to augment the current list of
   // field trials to include the supplied trials, and using a 100% probability
@@ -561,6 +608,13 @@ class BASE_EXPORT FieldTrialList {
 #endif  // !BUILDFLAG(USE_BLINK)
 
   static ReadOnlySharedMemoryRegion DuplicateFieldTrialSharedMemoryForTesting();
+
+  // Gets or sets the logical generation identifier for the process's active
+  // field trial configuration; see `generation_id_`. Must only increase
+  // monotonically (unless reset for testing).
+  static uint64_t GetGenerationId();
+  static void SetGenerationId(uint64_t generation_id);
+  static void ResetGenerationIdForTesting();
 
   // Create a FieldTrial with the given |name| and using 100% probability for
   // the FieldTrial, force FieldTrial to have the same group string as
@@ -668,6 +722,7 @@ class BASE_EXPORT FieldTrialList {
                            SerializeSharedMemoryRegionMetadata);
   friend int SerializeSharedMemoryRegionMetadata();
   FRIEND_TEST_ALL_PREFIXES(FieldTrialListTest, CheckReadOnlySharedMemoryRegion);
+  FRIEND_TEST_ALL_PREFIXES(FieldTrialListTest, GenerationId);
   FRIEND_TEST_ALL_PREFIXES(FieldTrialListTest,
                            GetActiveFieldTrialGroups_RuntimeOverrides);
   FRIEND_TEST_ALL_PREFIXES(FieldTrialListTest,
@@ -720,6 +775,12 @@ class BASE_EXPORT FieldTrialList {
   // |readonly_allocator_handle|.
   static void InstantiateFieldTrialAllocatorIfNeeded();
 
+  // Populates `allocator` with all registered field trials and feature
+  // overrides. Caller must hold `lock_` before calling this.
+  static void PopulateSharedMemoryAllocatorWhileLocked(
+      FieldTrialAllocator* allocator,
+      uint64_t generation_id);
+
   // Adds the field trial to the allocator. Caller must hold a lock before
   // calling this.
   static void AddToAllocatorWhileLocked(PersistentMemoryAllocator* allocator,
@@ -730,7 +791,7 @@ class BASE_EXPORT FieldTrialList {
 
   // A map from FieldTrial names to the actual instances.
   typedef std::
-      map<std::string, raw_ptr<FieldTrial, CtnExperimental>, std::less<>>
+      map<std::string, raw_ptr<FieldTrial, DanglingUntriaged>, std::less<>>
           RegistrationMap;
 
   // Helper function should be called only while holding lock_.
@@ -794,12 +855,12 @@ class BASE_EXPORT FieldTrialList {
 
   // List of observers to be notified when a group is selected for a FieldTrial.
   // Excludes low anonymity field trials.
-  std::vector<raw_ptr<Observer, VectorExperimental>> observers_
+  std::vector<raw_ptr<Observer, DanglingUntriaged>> observers_
       GUARDED_BY(lock_);
 
   // List of observers to be notified when a group is selected for a FieldTrial.
   // Includes low anonymity field trials.
-  std::vector<raw_ptr<Observer, VectorExperimental>>
+  std::vector<raw_ptr<Observer, DanglingUntriaged>>
       observers_including_low_anonymity_ GUARDED_BY(lock_);
 
   // Counts the ongoing calls to
@@ -816,6 +877,14 @@ class BASE_EXPORT FieldTrialList {
   // Readonly copy of the region to the allocator. Needs to be a member variable
   // because it's needed from multiple methods.
   ReadOnlySharedMemoryRegion readonly_allocator_region_;
+
+  // Monotonically increasing sequence identifier for the process's active field
+  // trial state. Stamped into `field_trial_allocator_` metadata so the browser
+  // can append runtime field trial updates in place to the existing shared
+  // memory segment while newly launched child processes bound their reads to a
+  // consistent generation, and advanced via Mojo IPC as running child processes
+  // apply updates.
+  uint64_t generation_id_ GUARDED_BY(lock_) = 0;
 
   // Tracks whether CreateTrialsInChildProcess() has been called.
   bool create_trials_in_child_process_called_ = false;

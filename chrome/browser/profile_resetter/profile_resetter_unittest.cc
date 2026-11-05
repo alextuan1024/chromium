@@ -21,12 +21,15 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_path_override.h"
 #include "base/test/with_feature_override.h"
+#include "base/time/time.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/google/google_brand.h"
+#include "chrome/browser/new_tab_page/prefs/ntp_pref_names.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profile_resetter/brandcode_config_fetcher.h"
 #include "chrome/browser/profile_resetter/profile_reset_report.pb.h"
@@ -94,36 +97,6 @@ const char kDistributionConfig[] =
     "   \"restore_on_startup\" : 4,"
     "   \"startup_urls\" : [\"http://goo.gl\", \"http://foo.de\"]"
     "  },"
-    " \"extensions\" : {"
-    "   \"settings\" : {"
-    "     \"placeholder_for_id\": {"
-    "      }"
-    "    }"
-    "  }"
-    "}";
-
-const char kDistributionConfigWithSearch[] =
-    "{"
-    " \"homepage\" : \"http://www.foo.com\","
-    " \"homepage_is_newtabpage\" : false,"
-    " \"browser\" : {"
-    "   \"show_home_button\" : true"
-    "  },"
-    " \"session\" : {"
-    "   \"restore_on_startup\" : 4,"
-    "   \"startup_urls\" : [\"http://goo.gl\", \"http://foo.de\"]"
-    "  },"
-    " \"search_provider_overrides\" : ["
-    "    {"
-    "      \"name\" : \"first\","
-    "      \"keyword\" : \"firstkey\","
-    "      \"search_url\" : \"http://www.foo.com/s?q={searchTerms}\","
-    "      \"favicon_url\" : \"http://www.foo.com/favicon.ico\","
-    "      \"suggest_url\" : \"http://www.foo.com/s?q={searchTerms}\","
-    "      \"encoding\" : \"UTF-8\","
-    "      \"id\" : 1001"
-    "    }"
-    "  ],"
     " \"extensions\" : {"
     "   \"settings\" : {"
     "     \"placeholder_for_id\": {"
@@ -417,40 +390,6 @@ TEST_F(ProfileResetterTest, ResetNothing) {
   // The callback should be called even if there is nothing to reset.
   ResetAndWait(0);
 }
-
-class ProfileResetterTestWithIgnoreSearchProviderOverrides
-    : public base::test::WithFeatureOverride,
-      public ProfileResetterTest {
- public:
-  ProfileResetterTestWithIgnoreSearchProviderOverrides()
-      : base::test::WithFeatureOverride(
-            switches::kIgnoreSearchProviderOverrides) {}
-};
-
-TEST_P(ProfileResetterTestWithIgnoreSearchProviderOverrides,
-       ResetDefaultSearchEngineNonOrganic) {
-  ResetAndWait(ProfileResetter::DEFAULT_SEARCH_ENGINE,
-               kDistributionConfigWithSearch);
-
-  TemplateURLService* model =
-      TemplateURLServiceFactory::GetForProfile(profile());
-  const TemplateURL* default_engine = model->GetDefaultSearchProvider();
-  ASSERT_NE(static_cast<TemplateURL*>(nullptr), default_engine);
-
-  if (IsParamFeatureEnabled()) {
-    EXPECT_EQ(u"Google", default_engine->short_name());
-    EXPECT_EQ(u"google.com", default_engine->keyword());
-    EXPECT_NE(std::string::npos,
-              default_engine->url().find("{google:baseURL}"));
-  } else {
-    EXPECT_EQ(u"first", default_engine->short_name());
-    EXPECT_EQ(u"firstkey", default_engine->keyword());
-    EXPECT_EQ("http://www.foo.com/s?q={searchTerms}", default_engine->url());
-  }
-}
-
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
-    ProfileResetterTestWithIgnoreSearchProviderOverrides);
 
 TEST_F(ProfileResetterTest, ResetDefaultSearchEnginePartially) {
   // Search engine's logic is tested by
@@ -976,8 +915,7 @@ TEST_F(ConfigParserTest, InvalidResponseDeleteFromCallback) {
   run_loop.Run();
 }
 
-class ProfileResetterTestForSnapshots
-    : public ProfileResetterTestWithIgnoreSearchProviderOverrides {
+class ProfileResetterTestForSnapshots : public ProfileResetterTest {
  protected:
   void CheckSnapshots(std::string_view initial_prefs,
                       int expected_nonorganic_diff_fields,
@@ -1061,32 +999,13 @@ class ProfileResetterTestForSnapshots
   }
 };
 
-TEST_P(ProfileResetterTestForSnapshots, CheckSnapshots) {
+TEST_F(ProfileResetterTestForSnapshots, CheckSnapshots) {
   CheckSnapshots(kDistributionConfig,
                  /*expected_nonorganic_diff_fields=*/
                  ResettableSettingsSnapshot::ALL_FIELDS &
                      ~ResettableSettingsSnapshot::DSE_URL,
                  TemplateURLPrepopulateData::google.search_url);
 }
-
-TEST_P(ProfileResetterTestForSnapshots, CheckSnapshots_WithSearch) {
-  int expected_nonorganic_diff_fields;
-  std::string expected_search_url;
-
-  if (IsParamFeatureEnabled()) {
-    expected_nonorganic_diff_fields = ResettableSettingsSnapshot::ALL_FIELDS &
-                                      ~ResettableSettingsSnapshot::DSE_URL;
-    expected_search_url = TemplateURLPrepopulateData::google.search_url;
-  } else {
-    expected_nonorganic_diff_fields = ResettableSettingsSnapshot::ALL_FIELDS;
-    expected_search_url = "http://www.foo.com/s?q={searchTerms}";
-  }
-
-  CheckSnapshots(kDistributionConfigWithSearch, expected_nonorganic_diff_fields,
-                 expected_search_url);
-}
-
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(ProfileResetterTestForSnapshots);
 
 TEST_F(ProfileResetterTest, FeedbackSerializationAsProtoTest) {
   // Reset to non organic defaults.
@@ -1240,9 +1159,35 @@ TEST_F(ProfileResetterTest, ResetNTPCustomizationsTest) {
       /*action_url=*/GURL("https://action.com"),
       /*collection_id=*/"");
   EXPECT_TRUE(ntp_custom_background_service->GetCustomBackground().has_value());
+  PrefService* prefs = profile()->GetPrefs();
+  const base::Time prev_nav_time =
+      base::Time::FromSecondsSinceUnixEpoch(1700000000);
+  prefs->SetTime(ntp_prefs::kNtpPrevNavigationTime, prev_nav_time);
+  prefs->SetBoolean(ntp_prefs::kNtpShortcutsVisible, false);
+  prefs->SetTime(ntp_prefs::kNtpLastModuleStalenessUpdate, prev_nav_time);
+  prefs->SetDict(ntp_prefs::kNtpModuleStalenessCountDict,
+                 base::DictValue().Set("module", 3));
+  prefs->SetDict(ntp_prefs::kNtpModulesAutoRemovalDisabledDict,
+                 base::DictValue().Set("module", true));
+  prefs->SetBoolean(ntp_prefs::kNtpAnimatedDoodlesEnabled, false);
+  prefs->SetBoolean(ntp_prefs::kNtpDoodleMuralsEnabled, false);
+  prefs->SetDict(prefs::kContextMenuAnimationState,
+                 base::DictValue().Set("state", 1));
+
   ResetAndWait(ProfileResetter::NTP_CUSTOMIZATIONS);
+
   EXPECT_FALSE(
       ntp_custom_background_service->GetCustomBackground().has_value());
+  EXPECT_EQ(prev_nav_time, prefs->GetTime(ntp_prefs::kNtpPrevNavigationTime));
+  EXPECT_TRUE(prefs->GetBoolean(ntp_prefs::kNtpShortcutsVisible));
+  EXPECT_TRUE(
+      prefs->GetTime(ntp_prefs::kNtpLastModuleStalenessUpdate).is_null());
+  EXPECT_TRUE(prefs->GetDict(ntp_prefs::kNtpModuleStalenessCountDict).empty());
+  EXPECT_TRUE(
+      prefs->GetDict(ntp_prefs::kNtpModulesAutoRemovalDisabledDict).empty());
+  EXPECT_TRUE(prefs->GetBoolean(ntp_prefs::kNtpAnimatedDoodlesEnabled));
+  EXPECT_TRUE(prefs->GetBoolean(ntp_prefs::kNtpDoodleMuralsEnabled));
+  EXPECT_TRUE(prefs->GetDict(prefs::kContextMenuAnimationState).empty());
 }
 
 }  // namespace

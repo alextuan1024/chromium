@@ -35,8 +35,7 @@ enum class ShareEntryPoint {
   kShareSheet = 5,
   // The context menu on a tab (in the tab strip or tab switcher).
   kTabMenu = 6,
-  // A physical gesture.
-  kGesture = 7,
+  // Deprecated: kGesture = 7,
   // A DirectShare target on the OS-level Share Sheet.
   kShareSheetDirectShare = 8,
   kMaxValue = kShareSheetDirectShare,
@@ -75,7 +74,7 @@ void RecordSendResult(SendTabToSelfResult result);
 // Records the status of a received STTS notification.
 void RecordNotificationStatus(NotificationStatus status);
 
-// Status of the auto-open attempt for a received STTS tab.
+// Outcome of an auto-open attempt when opening a tab is triggered.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
@@ -83,12 +82,7 @@ void RecordNotificationStatus(NotificationStatus status);
 //   org.chromium.chrome.browser.share.send_tab_to_self)
 // LINT.IfChange(AutoOpenOutcome)
 enum class AutoOpenOutcome {
-  // Tab(s) received but could not be opened immediately. This happens when:
-  // - Desktop: No active browser window is available.
-  // - Android: The app is in the background (a system notification is shown).
-  // - iOS: The app is in the background or the active tab is not visible (e.g.,
-  //   user is in the Tab Grid).
-  kUnopenedImmediately = 0,
+  // Deprecated: kUnopenedImmediately = 0,
 
   // Tab(s) opened immediately upon receipt (browser was active).
   kTabOpenedInForeground = 1,  // Desktop only (single tab).
@@ -113,6 +107,11 @@ enum class AutoOpenOutcome {
   kMaxValue = kDeprecatedUnopenedUponActivation,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sharing/enums.xml:SendTabToSelfAutoOpenOutcome)
+
+// Records whether received STTS tab(s) were auto-opened immediately upon
+// arrival (`true`) or not (`false`). `count` is the number of entries being
+// recorded.
+void RecordAutoOpenedImmediately(bool opened_immediately, size_t count = 1);
 
 // Records the outcome of an auto-open attempt.
 void RecordAutoOpenOutcome(AutoOpenOutcome outcome);
@@ -157,6 +156,30 @@ enum class ShareActivatedEntryPoint {
 // Records the entry point from which a received tab was opened.
 void RecordActivatedEntryPoint(ShareActivatedEntryPoint entry_point);
 
+// Entry point from which a received Send Tab to Self link was opened in a
+// native Android app.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// GENERATED_JAVA_ENUM_PACKAGE: (
+//   org.chromium.chrome.browser.share.send_tab_to_self)
+// LINT.IfChange(SendTabToSelfNativeAppOpenEntryPoint)
+enum class NativeAppOpenEntryPoint {
+  // Opened directly in a native app by tapping the system notification.
+  kMobileNotification = 0,
+  // Opened directly in a native app by tapping the "Link received" in-app
+  // message banner (when a single tab was received).
+  kLinkReceivedMessageBanner = 1,
+  // Opened in a native app by tapping the "Continue to [App]" in-tab message
+  // banner after switching to the background tab in Chrome.
+  kContinueToAppMessageBanner = 2,
+  kMaxValue = kContinueToAppMessageBanner,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/sharing/enums.xml:SendTabToSelfNativeAppOpenEntryPoint)
+
+// Records the entry point from which a received tab was opened in a native app.
+void RecordOpenedInNativeApp(NativeAppOpenEntryPoint entry_point);
+
 // Outcome of matching a received form field to a field on the page.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -176,9 +199,6 @@ void RecordFormFieldMatchOutcome(FormFieldMatchOutcome outcome, int count = 1);
 // Status of scroll position generation when sending a tab.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
-//
-// GENERATED_JAVA_ENUM_PACKAGE: (
-//   org.chromium.chrome.browser.share.send_tab_to_self)
 // LINT.IfChange(ScrollPositionGenerationOutcome)
 enum class ScrollPositionGenerationOutcome {
   kSuccess = 0,

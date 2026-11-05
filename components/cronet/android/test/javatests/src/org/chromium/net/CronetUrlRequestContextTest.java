@@ -175,8 +175,32 @@ public class CronetUrlRequestContextTest {
         mTestRule.getTestFramework().interceptContext(new CronetManifestInterceptor(metaData));
     }
 
+    private void setApplicationInfoFlags(int flags) {
+        mTestRule
+                .getTestFramework()
+                .interceptContext(
+                        new ContextInterceptor() {
+                            @Override
+                            public Context interceptContext(Context context) {
+                                return new ContextWrapper(context) {
+                                    @Override
+                                    public ApplicationInfo getApplicationInfo() {
+                                        var applicationInfo =
+                                                new ApplicationInfo(context.getApplicationInfo());
+                                        applicationInfo.flags = flags;
+                                        return applicationInfo;
+                                    }
+                                };
+                            }
+                        });
+    }
+
     private void setLogFlag(
-            String marker, String appId, String minVersion, boolean applyIfTelemetryDisabled) {
+            String marker,
+            String appId,
+            String minVersion,
+            boolean applyIfTelemetryDisabled,
+            boolean applyToSystemProcesses) {
         FlagValue.ConstrainedValue.Builder constrainedValueBuilder =
                 FlagValue.ConstrainedValue.newBuilder()
                         .setStringValue("Test log flag value " + marker);
@@ -188,6 +212,9 @@ public class CronetUrlRequestContextTest {
         }
         if (applyIfTelemetryDisabled) {
             constrainedValueBuilder.setApplyEvenIfCronetTelemetryDisabled(applyIfTelemetryDisabled);
+        }
+        if (applyToSystemProcesses) {
+            constrainedValueBuilder.setApplyToSystemProcesses(applyToSystemProcesses);
         }
         mTestRule
                 .getTestFramework()
@@ -271,7 +298,8 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ null,
                 /* minVersion= */ null,
-                /* applyIfTelemetryDisabled= */ false);
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
         runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
     }
 
@@ -290,7 +318,8 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ null,
                 /* minVersion= */ null,
-                /* applyIfTelemetryDisabled= */ false);
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
         getHttpFlagsFromAPIWhileExpectingLog(marker);
     }
 
@@ -308,7 +337,8 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ null,
                 /* minVersion= */ null,
-                /* applyIfTelemetryDisabled= */ false);
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
         runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ false);
     }
 
@@ -326,7 +356,8 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ "org.chromium.fake.app.id",
                 /* minVersion= */ null,
-                /* applyIfTelemetryDisabled= */ false);
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
         runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ false);
     }
 
@@ -345,7 +376,8 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ mTestRule.getTestFramework().getContext().getPackageName(),
                 /* minVersion= */ ImplVersion.getCronetVersion(),
-                /* applyIfTelemetryDisabled= */ false);
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
         runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
     }
 
@@ -363,7 +395,8 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ null,
                 /* minVersion= */ "999999.0.0.0",
-                /* applyIfTelemetryDisabled= */ false);
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
         runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ false);
     }
 
@@ -381,7 +414,8 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ null,
                 /* minVersion= */ ImplVersion.getCronetVersion(),
-                /* applyIfTelemetryDisabled= */ false);
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
         runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ false);
     }
 
@@ -400,8 +434,163 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ null,
                 /* minVersion= */ ImplVersion.getCronetVersion(),
-                /* applyIfTelemetryDisabled= */ true);
+                /* applyIfTelemetryDisabled= */ true,
+                /* applyToSystemProcesses= */ false);
         runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
+    }
+
+    @Test
+    @SmallTest
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason =
+                    "HTTP flags are only supported on native Cronet for now. "
+                            + "crbug.com/1495401: Emulator image does not have HttpFlags code yet")
+    public void testHttpFlagsNotAppliedIfPersistentSystemApp() throws Exception {
+        setupManifest(/* enableHttpFlags= */ true, /* enableTelemetry= */ true);
+        setApplicationInfoFlags(ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_PERSISTENT);
+        String marker = UUID.randomUUID().toString();
+        setLogFlag(
+                marker,
+                /* appId= */ null,
+                /* minVersion= */ ImplVersion.getCronetVersion(),
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
+        runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ false);
+    }
+
+    @Test
+    @SmallTest
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason =
+                    "HTTP flags are only supported on native Cronet for now. "
+                            + "crbug.com/1495401: Emulator image does not have HttpFlags code yet")
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testHttpFlagsAppliedIfOnlySystemApp() throws Exception {
+        setupManifest(/* enableHttpFlags= */ true, /* enableTelemetry= */ true);
+        setApplicationInfoFlags(ApplicationInfo.FLAG_SYSTEM);
+        String marker = UUID.randomUUID().toString();
+        setLogFlag(
+                marker,
+                /* appId= */ null,
+                /* minVersion= */ ImplVersion.getCronetVersion(),
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
+        runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
+    }
+
+    @Test
+    @SmallTest
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason =
+                    "HTTP flags are only supported on native Cronet for now. "
+                            + "crbug.com/1495401: Emulator image does not have HttpFlags code yet")
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testHttpFlagsAppliedIfOnlyPersistentApp() throws Exception {
+        setupManifest(/* enableHttpFlags= */ true, /* enableTelemetry= */ true);
+        setApplicationInfoFlags(ApplicationInfo.FLAG_PERSISTENT);
+        String marker = UUID.randomUUID().toString();
+        setLogFlag(
+                marker,
+                /* appId= */ null,
+                /* minVersion= */ ImplVersion.getCronetVersion(),
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
+        runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
+    }
+
+    @Test
+    @SmallTest
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason =
+                    "HTTP flags are only supported on native Cronet for now. "
+                            + "crbug.com/1495401: Emulator image does not have HttpFlags code yet")
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testHttpFlagsAppliedIfPersistentSystemAppOverrideIsUsed() throws Exception {
+        setupManifest(/* enableHttpFlags= */ true, /* enableTelemetry= */ true);
+        setApplicationInfoFlags(ApplicationInfo.FLAG_SYSTEM | ApplicationInfo.FLAG_PERSISTENT);
+        String marker = UUID.randomUUID().toString();
+        setLogFlag(
+                marker,
+                /* appId= */ null,
+                /* minVersion= */ ImplVersion.getCronetVersion(),
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ true);
+        runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
+    }
+
+    @Test
+    @SmallTest
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason =
+                    "HTTP flags are only supported on native Cronet for now. "
+                            + "crbug.com/1495401: Emulator image does not have HttpFlags code yet")
+    public void testHttpFlagsNotAppliedIfNonAppUid() throws Exception {
+        setupManifest(/* enableHttpFlags= */ true, /* enableTelemetry= */ true);
+        try (var processOverride =
+                new HttpFlagsLoader.WithProcessForTesting(
+                        Process.SYSTEM_UID, /* isSdkSandbox= */ null)) {
+            String marker = UUID.randomUUID().toString();
+            setLogFlag(
+                    marker,
+                    /* appId= */ null,
+                    /* minVersion= */ ImplVersion.getCronetVersion(),
+                    /* applyIfTelemetryDisabled= */ false,
+                    /* applyToSystemProcesses= */ false);
+            runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ false);
+        }
+    }
+
+    @Test
+    @SmallTest
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason =
+                    "HTTP flags are only supported on native Cronet for now. "
+                            + "crbug.com/1495401: Emulator image does not have HttpFlags code yet")
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testHttpFlagsAppliedIfNonAppUidOverrideIsUsed() throws Exception {
+        setupManifest(/* enableHttpFlags= */ true, /* enableTelemetry= */ true);
+        try (var processOverride =
+                new HttpFlagsLoader.WithProcessForTesting(
+                        Process.SYSTEM_UID, /* isSdkSandbox= */ null)) {
+            String marker = UUID.randomUUID().toString();
+            setLogFlag(
+                    marker,
+                    /* appId= */ null,
+                    /* minVersion= */ ImplVersion.getCronetVersion(),
+                    /* applyIfTelemetryDisabled= */ false,
+                    /* applyToSystemProcesses= */ true);
+            runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
+        }
+    }
+
+    @Test
+    @SmallTest
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason =
+                    "HTTP flags are only supported on native Cronet for now. "
+                            + "crbug.com/1495401: Emulator image does not have HttpFlags code yet")
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testHttpFlagsAppliedIfSdkSandbox() throws Exception {
+        setupManifest(/* enableHttpFlags= */ true, /* enableTelemetry= */ true);
+        try (var processOverride =
+                new HttpFlagsLoader.WithProcessForTesting(
+                        Process.SYSTEM_UID, /* isSdkSandbox= */ true)) {
+            String marker = UUID.randomUUID().toString();
+            setLogFlag(
+                    marker,
+                    /* appId= */ null,
+                    /* minVersion= */ ImplVersion.getCronetVersion(),
+                    /* applyIfTelemetryDisabled= */ false,
+                    /* applyToSystemProcesses= */ false);
+            runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
+        }
     }
 
     @Test
@@ -419,7 +608,8 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ null,
                 /* minVersion= */ ImplVersion.getCronetVersion(),
-                /* applyIfTelemetryDisabled= */ false);
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
         runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
     }
 
@@ -438,7 +628,8 @@ public class CronetUrlRequestContextTest {
                 marker,
                 /* appId= */ null,
                 /* minVersion= */ "100.0.0.0",
-                /* applyIfTelemetryDisabled= */ false);
+                /* applyIfTelemetryDisabled= */ false,
+                /* applyToSystemProcesses= */ false);
         runRequestWhileExpectingLog(marker, /* shouldBeLogged= */ true);
     }
 
@@ -825,11 +1016,18 @@ public class CronetUrlRequestContextTest {
         urlRequest.cancel();
     }
 
+    // TODO(crbug.com/495684670): Delete this test once multi-network Cronet always relies on
+    // UrlRequest's target_network instead of URLRequestContext's.
     @Test
     @SmallTest
     @IgnoreFor(
             implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
             reason = "Tests native implementation internals")
+    @Flags(
+            boolFlags = {
+                @BoolFlag(name = BaseFeature.FLAG_PREFIX + "CronetUseMultiNetworkV2", value = false)
+            })
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
     public void testNetworkBoundContextLifetime() throws Exception {
         ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
         ConnectivityManagerWrapper wrapper =
@@ -879,11 +1077,18 @@ public class CronetUrlRequestContextTest {
         assertThat(ApiHelper.doesContextExistForNetwork(cronetEngine, defaultNetwork)).isFalse();
     }
 
+    // TODO(crbug.com/495684670): Delete this test once multi-network Cronet always relies on
+    // UrlRequest's target_network instead of URLRequestContext's.
     @Test
     @SmallTest
     @IgnoreFor(
             implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
             reason = "Tests native implementation internals")
+    @Flags(
+            boolFlags = {
+                @BoolFlag(name = BaseFeature.FLAG_PREFIX + "CronetUseMultiNetworkV2", value = false)
+            })
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
     public void testNetworkBoundRequestCancel() throws Exception {
         // Upon a network disconnection, NCN posts a tasks onto the network thread that calls
         // CronetContext::NetworkTasks::OnNetworkDisconnected.
@@ -934,7 +1139,115 @@ public class CronetUrlRequestContextTest {
     }
 
     @Test
+    @SmallTest
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason = "Tests native implementation internals")
+    @Flags(
+            boolFlags = {
+                @BoolFlag(name = BaseFeature.FLAG_PREFIX + "CronetUseMultiNetworkV2", value = true)
+            })
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testNetworkBoundContextNotSpawnedWithMultiNetworkV2() throws Exception {
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        ConnectivityManagerWrapper wrapper =
+                new ConnectivityManagerWrapper(mTestRule.getTestFramework().getContext());
+        Network defaultNetwork = wrapper.getDefaultNetwork();
+        assume().that(defaultNetwork).isNotNull();
+
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        // Allows to check the underlying network-bound context state while the request is in
+        // progress.
+        callback.setAutoAdvance(false);
+
+        ExperimentalUrlRequest.Builder urlRequestBuilder =
+                cronetEngine.newUrlRequestBuilder(mUrl, callback, callback.getExecutor());
+        urlRequestBuilder.bindToNetwork(defaultNetwork.getNetworkHandle());
+        UrlRequest urlRequest = urlRequestBuilder.build();
+        assertThat(ApiHelper.doesContextExistForNetwork(cronetEngine, defaultNetwork)).isFalse();
+        urlRequest.start();
+        assertThat(ApiHelper.doesContextExistForNetwork(cronetEngine, defaultNetwork)).isFalse();
+
+        // Resume callback execution.
+        callback.waitForNextStep();
+        assertThat(callback.mResponseStep).isEqualTo(ResponseStep.ON_RESPONSE_STARTED);
+        assertThat(ApiHelper.doesContextExistForNetwork(cronetEngine, defaultNetwork)).isFalse();
+        callback.setAutoAdvance(true);
+        callback.startNextRead(urlRequest);
+        callback.blockForDone();
+        assertThat(callback.mError).isNull();
+        assertThat(ApiHelper.doesContextExistForNetwork(cronetEngine, defaultNetwork)).isFalse();
+    }
+
+    @Test
+    @SmallTest
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason = "Tests native implementation internals")
+    @Flags(
+            boolFlags = {
+                @BoolFlag(name = BaseFeature.FLAG_PREFIX + "CronetUseMultiNetworkV2", value = true)
+            })
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testNetworkBoundRequestCancelWithMultiNetworkV2() throws Exception {
+        ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        callback.setAutoAdvance(false);
+        ExperimentalUrlRequest.Builder urlRequestBuilder =
+                cronetEngine.newUrlRequestBuilder(mUrl, callback, callback.getExecutor());
+        ConnectivityManagerWrapper delegate =
+                new ConnectivityManagerWrapper(mTestRule.getTestFramework().getContext());
+        Network defaultNetwork = delegate.getDefaultNetwork();
+        assume().that(defaultNetwork).isNotNull();
+
+        urlRequestBuilder.bindToNetwork(defaultNetwork.getNetworkHandle());
+        UrlRequest urlRequest = urlRequestBuilder.build();
+
+        assertThat(ApiHelper.doesContextExistForNetwork(cronetEngine, defaultNetwork)).isFalse();
+        urlRequest.start();
+        assertThat(ApiHelper.doesContextExistForNetwork(cronetEngine, defaultNetwork)).isFalse();
+
+        callback.waitForNextStep();
+        assertThat(callback.mResponseStep).isEqualTo(ResponseStep.ON_RESPONSE_STARTED);
+        assertThat(ApiHelper.doesContextExistForNetwork(cronetEngine, defaultNetwork)).isFalse();
+
+        CronetLibraryLoader.postToInitThread(
+                () -> {
+                    NetworkChangeNotifier.fakeNetworkDisconnected(
+                            defaultNetwork.getNetworkHandle());
+                    urlRequest.cancel();
+                });
+
+        callback.blockForDone();
+        assertThat(callback.mOnCanceledCalled).isTrue();
+        assertThat(callback.mError).isNull();
+        assertThat(ApiHelper.doesContextExistForNetwork(cronetEngine, defaultNetwork)).isFalse();
+    }
+
+    @Test
+    @Flags(
+            boolFlags = {
+                @BoolFlag(name = BaseFeature.FLAG_PREFIX + "CronetUseMultiNetworkV2", value = false)
+            })
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
     public void testBindToInvalidNetworkFails() {
+        testBindToInvalidNetworkFailsImpl();
+    }
+
+    @Test
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason = "CronetUseMultiNetworkV2 is only supported by the native implementation")
+    @Flags(
+            boolFlags = {
+                @BoolFlag(name = BaseFeature.FLAG_PREFIX + "CronetUseMultiNetworkV2", value = true)
+            })
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testBindToInvalidNetworkFailsWithMultiNetworkV2() {
+        testBindToInvalidNetworkFailsImpl();
+    }
+
+    private void testBindToInvalidNetworkFailsImpl() {
         ExperimentalCronetEngine cronetEngine = mTestRule.getTestFramework().startEngine();
         TestUrlRequestCallback callback = new TestUrlRequestCallback();
         if (mTestRule.implementationUnderTest() == CronetImplementation.AOSP_PLATFORM) {
@@ -966,7 +1279,29 @@ public class CronetUrlRequestContextTest {
     }
 
     @Test
+    @Flags(
+            boolFlags = {
+                @BoolFlag(name = BaseFeature.FLAG_PREFIX + "CronetUseMultiNetworkV2", value = false)
+            })
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
     public void testBindToDefaultNetworkSucceeds() {
+        testBindToDefaultNetworkSucceedsImpl();
+    }
+
+    @Test
+    @IgnoreFor(
+            implementations = {CronetImplementation.FALLBACK, CronetImplementation.AOSP_PLATFORM},
+            reason = "CronetUseMultiNetworkV2 is only supported by the native implementation")
+    @Flags(
+            boolFlags = {
+                @BoolFlag(name = BaseFeature.FLAG_PREFIX + "CronetUseMultiNetworkV2", value = true)
+            })
+    @RequiresMinAndroidApi(Build.VERSION_CODES.N)
+    public void testBindToDefaultNetworkSucceedsWithMultiNetworkV2() {
+        testBindToDefaultNetworkSucceedsImpl();
+    }
+
+    private void testBindToDefaultNetworkSucceedsImpl() {
         ConnectivityManagerWrapper delegate =
                 new ConnectivityManagerWrapper(mTestRule.getTestFramework().getContext());
         Network defaultNetwork = delegate.getDefaultNetwork();

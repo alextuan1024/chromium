@@ -109,6 +109,7 @@
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/color_provider_browser_helper.h"
+#include "chrome/browser/ui/waap/window_creation.h"
 #include "chrome/browser/ui/webui/util/webui_util_desktop.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/common/channel_info.h"
@@ -144,7 +145,7 @@
 #import "ui/base/cocoa/nsmenuitem_additions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/l10n/l10n_util_mac.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/color/color_provider.h"
 #include "ui/color/color_provider_manager.h"
 #include "ui/color/color_provider_source.h"
@@ -279,8 +280,8 @@ void AttemptSessionRestore(Profile* profile) {
   if (!profile) {
     return;
   }
-  DCHECK(!profile->IsGuestSession());
-  DCHECK(!IsProfileSignedOut(profile->GetPath()));
+  CHECK(!profile->IsGuestSession(), base::NotFatalUntil::M163);
+  CHECK(!IsProfileSignedOut(profile->GetPath()), base::NotFatalUntil::M163);
   SessionService* sessionService =
       SessionServiceFactory::GetForProfileForSessionRestore(profile);
   if (sessionService &&
@@ -402,7 +403,7 @@ void FocusWindowSetOnCurrentSpace(NSSet<NSWindow*>* windows) {
     }
   }
   if (all_miniaturized && frontmost_miniaturized_window) {
-    DCHECK(!frontmost_window);
+    CHECK(!frontmost_window, base::NotFatalUntil::M163);
     // Note the call to makeKeyAndOrderFront: will deminiaturize the window.
     frontmost_window = frontmost_miniaturized_window;
   }
@@ -429,7 +430,8 @@ base::FilePath GetStartupProfilePathMac() {
   StartupProfilePathInfo profile_path_info = GetStartupProfilePath(
       /*cur_dir=*/base::FilePath(), *base::CommandLine::ForCurrentProcess(),
       /*ignore_profile_picker=*/true);
-  DCHECK_EQ(profile_path_info.mode, StartupProfileMode::kBrowserWindow);
+  CHECK_EQ(profile_path_info.mode, StartupProfileMode::kBrowserWindow,
+           base::NotFatalUntil::M163);
   return profile_path_info.path;
 }
 
@@ -582,6 +584,10 @@ Profile* GetLastProfileMac() {
 // called without any initialized Profile.
 - (BOOL)isProfileReady;
 
+// Replays `-applicationDidFinishLaunching:` if AppKit delivered it while the
+// Enterprise startup dialog was showing.
+- (void)enterpriseStartupDialogClosed;
+
 // Reset `_keepAlive` if Chrome is running in hidden mode, recreating it when
 // Chrome is no longer hidden.
 - (void)resetKeepAliveWhileHidden;
@@ -600,8 +606,8 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
       ProfileManager* profile_manager, AppController* app_controller)
       : profile_manager_(profile_manager),
         app_controller_(app_controller) {
-    DCHECK(profile_manager_);
-    DCHECK(app_controller_);
+    CHECK(profile_manager_, base::NotFatalUntil::M163);
+    CHECK(app_controller_, base::NotFatalUntil::M163);
     // Listen to ProfileObserver and ProfileManagerObserver.
     profile_manager_observer_.Observe(profile_manager_.get());
     for (Profile* profile : profile_manager_->GetLoadedProfiles()) {
@@ -716,6 +722,10 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   // |_startupTabs| so that they can go in the first browser window/tab.
   StartupTabs _startupTabs;
   BOOL _startupComplete;
+
+  // Deferred `NSApplicationDidFinishLaunchingNotification` received while the
+  // Enterprise startup dialog was showing.
+  NSNotification* __strong _deferredFinishLaunchingNotification;
 
   // Outlets for testing close tab/window menu items.
   NSMenuItem* __strong _cmdWMenuItemForTesting;
@@ -929,8 +939,6 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
 // (NSApplicationDelegate protocol) This is the Apple-approved place to override
 // the default handlers.
 - (void)applicationWillFinishLaunching:(NSNotification*)notification {
-  NSWindow.allowsAutomaticWindowTabbing = NO;
-
   [self initShareMenu];
 }
 
@@ -1093,7 +1101,8 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   }
   auto* browser_collection =
       ProfileBrowserCollection::GetForProfile(_lastProfile);
-  DCHECK_EQ(0u, browser_collection ? browser_collection->GetSize() : 0u);
+  CHECK_EQ(0u, browser_collection ? browser_collection->GetSize() : 0u,
+           base::NotFatalUntil::M163);
   if (!browser_collection || !browser_collection->GetSize()) {
     // As we're shutting down, we need to nuke the TabRestoreService, which
     // will start the shutdown of the NavigationControllers and allow for
@@ -1107,7 +1116,7 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
 // See if the focused window window has tabs, and adjust the key equivalents for
 // Close Tab/Close Window accordingly.
 - (void)menuNeedsUpdate:(NSMenu*)menu {
-  DCHECK(menu == [self fileMenu]);
+  CHECK(menu == [self fileMenu], base::NotFatalUntil::M163);
   [self updateMenuItemKeyEquivalents];
 }
 
@@ -1291,13 +1300,20 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
 // This is called after profiles have been loaded and preferences registered.
 // It is safe to access the default profile here.
 - (void)applicationDidFinishLaunching:(NSNotification*)notify {
+  if (_isShuttingDown) {
+    return;
+  }
+
   if (g_browser_process->browser_policy_connector()
           ->chrome_browser_cloud_management_controller()
           ->IsEnterpriseStartupDialogShowing()) {
-    // As Chrome is not ready when the Enterprise startup dialog is being shown.
-    // Store the notification as it will be reposted when the dialog is closed.
+    // As Chrome is not ready when the Enterprise startup dialog is being shown,
+    // store the notification so it can be replayed when the dialog closes.
+    _deferredFinishLaunchingNotification = notify;
     return;
   }
+
+  CHECK(!_startupComplete);
 
   [self setUpdateCheckInterval];
 
@@ -1495,8 +1511,9 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
         ProfileBrowserCollection::GetForProfile(profile.get())
             ->GetLastActiveBrowser();
     if (!browser) {
-      browser = CreateBrowserWindow(
-          BrowserWindowCreateParams(profile.get(), /*user_gesture=*/true));
+      browser = waap::CreateBrowserWindowAndRecordCreationSource(
+          BrowserWindowCreateParams(profile.get(), /*user_gesture=*/true),
+          waap::NewWindowCreationSource::kNewEmptyWindow);
       browser->GetWindow()->Show();
     }
 
@@ -1837,7 +1854,7 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
 // a button in a background browser window whose action is
 // |-commandDispatchUsingKeyModifiers:|
 - (void)commandDispatchUsingKeyModifiers:(id)sender {
-  DCHECK(sender);
+  CHECK(sender, base::NotFatalUntil::M163);
   if ([sender respondsToSelector:@selector(window)]) {
     id delegate = [[sender window] windowController];
     if ([delegate respondsToSelector:
@@ -1880,7 +1897,8 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   }
 
   base::FilePath lastProfilePath = GetStartupProfilePathMac();
-  DCHECK_NE(lastProfilePath, ProfileManager::GetSystemProfilePath());
+  CHECK_NE(lastProfilePath, ProfileManager::GetSystemProfilePath(),
+           base::NotFatalUntil::M163);
 
   // If launched as a hidden login item (due to installation of a persistent app
   // or by the user, for example in System Settings->General->Login Items),
@@ -1948,7 +1966,9 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   _menuState->UpdateCommandEnabled(IDC_HELP_PAGE_VIA_MENU, true);
   _menuState->UpdateCommandEnabled(IDC_IMPORT_SETTINGS, true);
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  _menuState->UpdateCommandEnabled(IDC_FEEDBACK, true);
+  _menuState->UpdateCommandEnabled(
+      IDC_FEEDBACK,
+      !base::FeatureList::IsEnabled(features::kFeedbackDisabledDialog));
 #endif
   _menuState->UpdateCommandEnabled(IDC_TASK_MANAGER_MAIN_MENU, true);
   _menuState->UpdateCommandEnabled(IDC_EXIT, true);
@@ -2045,7 +2065,7 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   if (!profile)
     return nullptr;
 
-  DCHECK(!profile->IsSystemProfile());
+  CHECK(!profile->IsSystemProfile(), base::NotFatalUntil::M163);
   if (profile->IsGuestSession() && !profiles::IsGuestModeEnabled())
     return nullptr;
 
@@ -2282,8 +2302,8 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
     bookmarkItem.hidden = NO;
     _bookmarkMenuBridge = nullptr;
   } else if (_bookmarkMenuBridge && !_isShuttingDown) {
-    DCHECK_EQ(_bookmarkMenuBridge->GetProfile(),
-              _lastProfile->GetOriginalProfile());
+    CHECK_EQ(_bookmarkMenuBridge->GetProfile(),
+             _lastProfile->GetOriginalProfile(), base::NotFatalUntil::M163);
     // |_bookmarkMenuBridge| always points to the original profile. So, no need
     // to call OnProfileWillBeDestroyed() when the OTR profile is destroyed.
     if (!_lastProfile->IsOffTheRecord()) {
@@ -2542,6 +2562,15 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
               ->IsEnterpriseStartupDialogShowing();
 }
 
+- (void)enterpriseStartupDialogClosed {
+  if (!_deferredFinishLaunchingNotification) {
+    return;
+  }
+  NSNotification* notify = _deferredFinishLaunchingNotification;
+  _deferredFinishLaunchingNotification = nil;
+  [self applicationDidFinishLaunching:notify];
+}
+
 #pragma mark - HandoffObserverDelegate
 
 - (void)handoffContentsChanged:(content::WebContents*)webContents {
@@ -2662,7 +2691,9 @@ void OpenStartupTabsInBrowserWithProfile(const StartupTabs& tabs,
     startupContent = browser->GetTabStripModel()->GetActiveWebContents();
   } else if (!browser) {
     // if no browser window exists then create one with no tabs to be filled in.
-    browser = CreateBrowserWindow(BrowserWindowCreateParams(profile, true));
+    browser = waap::CreateBrowserWindowAndRecordCreationSource(
+        BrowserWindowCreateParams(profile, true),
+        waap::NewWindowCreationSource::kLaunch);
     browser->GetWindow()->Show();
   }
 
@@ -2742,16 +2773,13 @@ void EnterpriseStartupDialogClosed() {
              ->chrome_browser_cloud_management_controller()
              ->IsEnterpriseStartupDialogShowing(),
         base::NotFatalUntil::M155);
-  NSNotification* notify = [NSNotification
-      notificationWithName:NSApplicationDidFinishLaunchingNotification
-                    object:NSApp];
-  [AppController.sharedController applicationDidFinishLaunching:notify];
+  [AppController.sharedController enterpriseStartupDialogClosed];
 }
 
 void RunInLastProfileSafely(
     base::OnceCallback<void(Profile*)> callback,
     app_controller_mac::ProfileLoadFailureBehavior on_failure) {
-  DCHECK(callback);
+  CHECK(callback, base::NotFatalUntil::M163);
   if (Profile* profile = [AppController.sharedController lastProfileIfLoaded]) {
     OnProfileLoaded(std::move(callback), on_failure, profile);
     return;
@@ -2766,7 +2794,7 @@ void RunInProfileSafely(
     const base::FilePath& profile_dir,
     base::OnceCallback<void(Profile*)> callback,
     app_controller_mac::ProfileLoadFailureBehavior on_failure) {
-  DCHECK(callback);
+  CHECK(callback, base::NotFatalUntil::M163);
   ProfileManager* profile_manager = g_browser_process->profile_manager();
   // `profile_manager` can be null in tests.
   if (!profile_manager) {
@@ -2799,7 +2827,7 @@ void TabRestorer::RestoreMostRecent(Profile* profile) {
 
 // static
 void TabRestorer::RestoreByID(Profile* profile, SessionID session_id) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M163);
   auto* service = TabRestoreServiceFactory::GetForProfile(profile);
   if (!service)
     return;
@@ -2815,7 +2843,7 @@ void TabRestorer::RestoreByID(Profile* profile, SessionID session_id) {
 
 // static
 void TabRestorer::DoRestoreTab(Profile* profile, SessionID session_id) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M163);
   auto* service = TabRestoreServiceFactory::GetForProfile(profile);
   if (!service)
     return;
@@ -2825,7 +2853,7 @@ void TabRestorer::DoRestoreTab(Profile* profile, SessionID session_id) {
       browser ? BrowserLiveTabContext::From(browser) : nullptr;
   if (session_id.is_valid()) {
     service->RestoreEntryById(context, session_id,
-                              WindowOpenDisposition::UNKNOWN);
+                              ui::mojom::WindowOpenDisposition::kUnknown);
   } else {
     service->RestoreMostRecentEntry(context);
   }
@@ -2834,7 +2862,7 @@ void TabRestorer::DoRestoreTab(Profile* profile, SessionID session_id) {
 TabRestorer::TabRestorer(Profile* profile, SessionID session_id)
     : profile_(profile), session_id_(session_id) {
   auto* service = TabRestoreServiceFactory::GetForProfile(profile);
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M163);
   observation_.Observe(service);
 }
 

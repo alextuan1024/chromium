@@ -15,6 +15,8 @@
 #include "base/task/bind_post_task.h"
 #include "base/task/thread_pool.h"
 #include "base/timer/elapsed_timer.h"
+#include "base/unguessable_token.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "services/webnn/coreml/graph_builder_coreml.h"
 #include "services/webnn/coreml/utils_coreml.h"
 #include "services/webnn/public/mojom/webnn_error.mojom.h"
@@ -25,15 +27,36 @@
 
 namespace webnn::coreml {
 
+namespace {
+
+base::unexpected<mojom::ErrorPtr> BuildGraphError() {
+  return base::unexpected(mojom::Error::New(mojom::Error::Code::kUnknownError,
+                                            "Failed to build graph."));
+}
+
+}  // namespace
+
 CompilerContextImplCoreml::CompilerContextImplCoreml(
+    WebNNCompilerServiceImpl& service,
     mojom::CreateContextOptionsPtr options,
     ContextProperties properties,
     mojo::PendingRemote<mojom::WebNNModelLoader> model_loader)
-    : properties_(std::move(properties)),
+    : service_(service),
+      properties_(std::move(properties)),
       options_(std::move(options)),
-      model_loader_(std::move(model_loader)) {}
+      model_loader_(std::move(model_loader)) {
+  model_loader_.set_disconnect_handler(
+      base::BindOnce(&CompilerContextImplCoreml::OnModelLoaderDisconnected,
+                     base::Unretained(this)));
+}
 
 CompilerContextImplCoreml::~CompilerContextImplCoreml() = default;
+
+void CompilerContextImplCoreml::SetId(
+    mojo::ReceiverId id,
+    base::PassKey<WebNNCompilerServiceImpl> /*pass_key*/) {
+  id_ = id;
+}
 
 void CompilerContextImplCoreml::CreateGraphBuilder(
     mojo::PendingReceiver<mojom::WebNNGraphBuilder> receiver) {
@@ -54,9 +77,18 @@ void CompilerContextImplCoreml::BuildGraph(
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands,
     BuildGraphCallback callback) {
-  auto did_compile_callback = base::BindPostTaskToCurrentDefault(
-      base::BindOnce(&CompilerContextImplCoreml::DidCompile,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  // Wrap the callback so it is automatically called with an error if dropped
+  // without being run (e.g. the model loader is disconnected).
+  auto wrapped_callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+      std::move(callback), BuildGraphError());
+
+  if (!model_loader_.is_connected()) {
+    return;
+  }
+
+  auto did_compile_callback = base::BindPostTaskToCurrentDefault(base::BindOnce(
+      &CompilerContextImplCoreml::DidCompile, weak_ptr_factory_.GetWeakPtr(),
+      std::move(wrapped_callback)));
   base::ThreadPool::PostTask(
       FROM_HERE,
       {base::TaskPriority::USER_BLOCKING,
@@ -88,25 +120,29 @@ void CompilerContextImplCoreml::CompileOnBackgroundThread(
   base::ScopedTempDir model_file_dir;
   if (!model_file_dir.CreateUniqueTempDir()) {
     std::move(callback).Run(base::unexpected(mojom::Error::New(
-        mojom::Error::Code::kUnknownError, "Failed to create temp dir.")));
+        mojom::Error::Code::kUnknownError, "Model allocation error.")));
     return;
   }
 
   // Pre-calculate inputs and outputs name mappings
   base::flat_map<std::string, std::string> input_name_to_coreml_name;
   for (auto const& input_id : graph_info->input_operands) {
-    auto& name = graph_info->operands.at(input_id.value())->name;
-    CHECK(name.has_value());
+    const mojom::Operand& operand = *graph_info->operands.at(input_id.value());
+    CHECK(operand.name.has_value());
     input_name_to_coreml_name.emplace(
-        name.value(), GetCoreMLNameFromInput(name.value(), input_id));
+        operand.name.value(),
+        GetCoreMLNameFromInput(operand.name.value(), input_id,
+                               operand.descriptor.Rank() == 0));
   }
 
   base::flat_map<std::string, std::string> output_name_to_coreml_name;
   for (auto const& output_id : graph_info->output_operands) {
-    auto& name = graph_info->operands.at(output_id.value())->name;
-    CHECK(name.has_value());
+    const mojom::Operand& operand = *graph_info->operands.at(output_id.value());
+    CHECK(operand.name.has_value());
     output_name_to_coreml_name.emplace(
-        name.value(), GetCoreMLNameFromOutput(name.value(), output_id));
+        operand.name.value(),
+        GetCoreMLNameFromOutput(operand.name.value(), output_id,
+                                operand.descriptor.Rank() == 0));
   }
 
   base::ElapsedTimer ml_model_write_timer;
@@ -140,11 +176,11 @@ void CompilerContextImplCoreml::CompileOnBackgroundThread(
                     "WebNN.CoreML.TimingMs.MLModelCompile",
                     compilation_timer.Elapsed());
                 if (error) {
-                  LOG(ERROR) << "CoreML model compilation failed: " << error;
+                  LOG(ERROR) << "Model compilation error: " << error;
                   std::move(compile_callback)
-                      .Run(base::unexpected(mojom::Error::New(
-                          mojom::Error::Code::kUnknownError,
-                          "CoreML model compilation failed.")));
+                      .Run(base::unexpected(
+                          mojom::Error::New(mojom::Error::Code::kUnknownError,
+                                            "Model compilation error.")));
                   return;
                 }
 
@@ -179,21 +215,17 @@ void CompilerContextImplCoreml::CompileOnBackgroundThread(
                   return;
                 }
 
-                base::ScopedTempDir compiled_model_dir;
-                if (!compiled_model_dir.CreateUniqueTempDirUnderPath(
-                        compiler_protected_dir)) {
-                  std::move(compile_callback)
-                      .Run(base::unexpected(mojom::Error::New(
-                          mojom::Error::Code::kUnknownError,
-                          "Failed to create unique directory under compiler "
-                          "protected path.")));
-                  return;
-                }
-
+                // Move to a non-existent destination path before adopting into
+                // `ScopedTempDir` so cross-volume `base::Move` fallback
+                // (`CopyDirectory`) does not nest an extra `model.mlmodelc`
+                // subdirectory.
                 base::FilePath dest_compiled_model_path =
-                    compiled_model_dir.GetPath().AppendASCII("model.mlmodelc");
+                    compiler_protected_dir.AppendASCII(
+                        base::UnguessableToken::Create().ToString());
+                base::ScopedTempDir compiled_model_dir;
                 if (!base::Move(raw_compiled_model_path,
-                                dest_compiled_model_path)) {
+                                dest_compiled_model_path) ||
+                    !compiled_model_dir.Set(dest_compiled_model_path)) {
                   LOG(ERROR) << "[WebNN] Failed to move compiled model from "
                              << raw_compiled_model_path << " to "
                              << dest_compiled_model_path;
@@ -219,6 +251,10 @@ void CompilerContextImplCoreml::DidCompile(
     BuildGraphCallback callback,
     base::expected<std::unique_ptr<CompilationResult>, mojom::ErrorPtr>
         result) {
+  if (!model_loader_.is_connected()) {
+    return;
+  }
+
   if (!result.has_value()) {
     std::move(callback).Run(base::unexpected(std::move(result.error())));
     return;
@@ -227,7 +263,7 @@ void CompilerContextImplCoreml::DidCompile(
   std::unique_ptr<CompilationResult> compilation = std::move(result.value());
 
   auto compiled_graph = mojom::CompiledGraph::New(
-      compilation->compiled_model_dir.GetPath().AppendASCII("model.mlmodelc"),
+      compilation->compiled_model_dir.GetPath(),
       std::move(compilation->input_name_to_coreml_name),
       std::move(compilation->output_name_to_coreml_name));
 
@@ -248,6 +284,16 @@ void CompilerContextImplCoreml::DidCompile(
                                     std::move(result.value()->devices)));
           },
           std::move(compilation), std::move(callback)));
+}
+
+void CompilerContextImplCoreml::OnModelLoaderDisconnected() {
+  // Destroy the context now instead of waiting for the WebNNCompilerContext
+  // receiver to disconnect: that end is held by the renderer, which may keep it
+  // open indefinitely while requesting replacement contexts (each replacing the
+  // GPU process's ModelLoader pipe), accumulating dead contexts in this
+  // process.
+  service_->RemoveCompilerContext(id_,
+                                  base::PassKey<CompilerContextImplCoreml>());
 }
 
 }  // namespace webnn::coreml

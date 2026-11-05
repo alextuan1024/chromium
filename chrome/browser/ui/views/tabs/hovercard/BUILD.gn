@@ -12,6 +12,7 @@ source_set("hovercard_helpers") {
     "fade_label_view.h",
     "fade_view.h",
     "filename_elider.h",
+    "hover_card_update_type.h",
     "tab_hover_card_thumbnail_observer.h",
   ]
 
@@ -52,20 +53,12 @@ source_set("hovercard") {
     "//chrome/browser/ui/tabs:tab_enums",
     "//chrome/browser/ui/thumbnails",
     "//chrome/browser/ui/views:layout_provider",
-    "//chrome/browser/ui/views/tabs:base",
     "//components/prefs",
     "//ui/base/metadata",
     "//ui/gfx",
     "//ui/gfx/geometry",
     "//ui/views",
   ]
-
-  # TODO(crbug.com/451609048): Remove this circular dependency when the
-  # following header gets componentized:
-  # - c/b/ui/views/tabs/tab_slot_controller.h
-  # (No allow_circular_includes_from entry belongs here -- the waiver that
-  # makes this legal is declared on //chrome/browser/ui:ui, which is the
-  # target that owns tab_slot_controller.h and depends on this target.)
 }
 
 source_set("impl") {
@@ -95,6 +88,7 @@ source_set("impl") {
     "//chrome/browser/ui/thumbnails",
     "//chrome/browser/ui/views",
     "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/frame",
     "//chrome/browser/ui/web_applications",
     "//chrome/common:constants",
     "//components/collaboration/public",
@@ -117,8 +111,6 @@ source_set("impl") {
     "//ui/views",
     "//url",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("test_support") {
@@ -130,16 +122,18 @@ source_set("test_support") {
   public_deps = [
     ":hovercard",
     "//base",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/tabs:features",
     "//chrome/browser/ui/views/frame",
+    "//chrome/browser/ui/views/frame:base_tab_strip_region_view",
     "//chrome/browser/ui/views/tabs:tab",
     "//chrome/browser/ui/views/tabs:tab_strip",
     "//chrome/browser/ui/views/tabs/common:impl",
     "//ui/gfx:test_support",
     "//ui/views:test_support",
   ]
+
+  deps = [ "//chrome/browser/ui/views/frame:browser_view_header" ]
 }
 
 source_set("browser_tests") {
@@ -152,12 +146,12 @@ source_set("browser_tests") {
     "//base",
     "//chrome/browser",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_tabstrip",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/performance_controls",
     "//chrome/browser/ui/tabs:features",
     "//chrome/browser/ui/thumbnails",
-    "//chrome/browser/ui/views/tabs:base",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/tabs/common:impl",
     "//chrome/common:constants",
     "//chrome/test:test_support",
@@ -191,6 +185,8 @@ if (!is_chromeos_device) {
       ":test_support",
       "//chrome/app:command_ids",
       "//chrome/browser/interstitials:test_support",
+      "//chrome/browser/ui:browser_command_controller",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui:browser_element_identifiers",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/interaction",
@@ -200,11 +196,11 @@ if (!is_chromeos_device) {
       "//chrome/browser/ui/views/tabs/tab",
       "//chrome/browser/ui/views/tabs/tab:impl",
       "//chrome/browser/ui/views/test:test_support",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/common",
       "//chrome/common:constants",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//chrome/test/interaction",
       "//components/collaboration/public",
       "//components/data_sharing/public",

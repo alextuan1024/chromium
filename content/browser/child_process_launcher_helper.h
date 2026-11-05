@@ -139,7 +139,8 @@ class ChildProcessLauncherHelper
       scoped_refptr<base::RefCountedData<base::ReadOnlySharedMemoryRegion>>
           tracing_config_memory_region,
       scoped_refptr<base::RefCountedData<base::UnsafeSharedMemoryRegion>>
-          tracing_output_memory_region);
+          tracing_output_memory_region,
+      base::ReadOnlySharedMemoryRegion renderer_process_security_state_region);
 
   // The methods below are defined in the order they are called.
 
@@ -150,6 +151,9 @@ class ChildProcessLauncherHelper
   void BeforeLaunchOnClientThread();
 
   ChildProcessId child_process_id() const { return child_process_id_; }
+
+  // Returns the time when this helper began initializing on the client thread.
+  base::TimeTicks init_start_time() const { return init_start_time_; }
 
 #if !BUILDFLAG(IS_FUCHSIA)
   // Called to give implementors a chance at creating a server pipe. Platform-
@@ -219,6 +223,8 @@ class ChildProcessLauncherHelper
 
   // Posted by PostLaunchOnLauncherThread onto the client thread.
   void PostLaunchOnClientThread(ChildProcessLauncherHelper::Process process,
+                                base::TimeTicks launch_begin_time,
+                                base::TimeTicks launch_complete_time,
 #if BUILDFLAG(IS_WIN)
                                 DWORD last_error,
 #endif
@@ -261,17 +267,19 @@ class ChildProcessLauncherHelper
 
   base::android::ChildBindingState GetEffectiveChildBindingState();
 
+  bool HasIsolatedUid() const;
+
   // Dumps the stack of the child process without crashing it.
-  void DumpProcessStack(const base::Process& process);
+  void DumpProcessStack();
 
   void SetRenderProcessPriorityOnLauncherThread(
-      base::Process process,
       const RenderProcessPriority& priority,
       base::TimeTicks post_from_ui_thread_time);
 #else   // !BUILDFLAG(IS_ANDROID)
-  void SetProcessPriorityOnLauncherThread(base::Process process,
-                                          base::Process::Priority priority);
+  void SetProcessPriorityOnLauncherThread(base::Process::Priority priority);
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+  void CloseProcessOnLauncherThread();
 
   std::string GetProcessType();
 
@@ -299,6 +307,13 @@ class ChildProcessLauncherHelper
   static void ForceNormalProcessTerminationSync(
       ChildProcessLauncherHelper::Process process);
 
+#if !BUILDFLAG(IS_ANDROID)
+  // Applies `priority` to `process`. Implemented per platform.
+  static void ApplyProcessPriorityOnLauncherThread(
+      base::Process& process,
+      base::Process::Priority priority);
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 #if BUILDFLAG(IS_ANDROID)
   void set_java_peer_available_on_client_thread() {
     java_peer_avaiable_on_client_thread_ = true;
@@ -312,6 +327,24 @@ class ChildProcessLauncherHelper
   std::unique_ptr<base::CommandLine> command_line_;
   std::unique_ptr<SandboxedProcessLauncherDelegate> delegate_;
   base::WeakPtr<ChildProcessLauncher> child_process_launcher_;
+
+  // The launcher thread's own copy of the child process handle. Kept so that
+  // operations requested from the client thread, which can happen many times
+  // over a child's lifetime, don't have to duplicate the handle there: on
+  // Windows that duplication is expensive and has been observed to stall the
+  // UI thread. See base::Process::Duplicate() and
+  // https://crbug.com/40716800. Accessed only on the launcher thread.
+  //
+  // CloseProcessOnLauncherThread() releases this once the child is known to
+  // have exited. That is an eager release, not a requirement: if the child is
+  // still running when the helper is destroyed, this is closed by ~Process on
+  // whichever thread dropped the last reference, which may be the UI thread.
+  // That is fine because closing a handle is cheap relative to duplicating
+  // one. It takes the same handle table lock, but it is not subject to the
+  // ObRegisterCallbacks() callbacks that third-party drivers register, which
+  // only cover handle creation and duplication. ChildProcessLauncher already
+  // closes its own copy on the UI thread for the same reason.
+  base::Process child_process_;
 
 #if BUILDFLAG(IS_CHROMEOS)
   std::optional<base::ProcessId> process_id_ = std::nullopt;
@@ -384,6 +417,11 @@ class ChildProcessLauncherHelper
   // asynchronously.
   scoped_refptr<base::RefCountedData<base::UnsafeSharedMemoryRegion>>
       tracing_output_memory_region_;
+
+  // Renderer process security state shared memory region passed to the child
+  // process during launch. Released once the child has its own handle. The
+  // browser retains the writable mapping.
+  base::ReadOnlySharedMemoryRegion renderer_process_security_state_region_;
 
   // Creation time of the helper, used for metrics.
   // TODO(crbug.com/40287847): Remove when parallel launching is finished.

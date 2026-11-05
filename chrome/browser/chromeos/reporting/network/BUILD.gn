@@ -13,9 +13,8 @@ static_library("network") {
   deps = [
     "//base",
     "//chrome/browser/profiles:profile",
-    "//chrome/common:constants",
+    "//chromeos/ash/components/metrics_reporting",
     "//components/prefs",
-    "//components/reporting/metrics:metrics_data_collection",
     "//components/reporting/proto:metric_data_proto",
     "//content/public/browser",
     "//services/network/public/cpp",
@@ -29,10 +28,11 @@ source_set("unit_tests") {
 
   deps = [
     ":network",
+    "//ash/constants",
     "//base/test:test_support",
     "//chrome/browser:browser_process",
-    "//chrome/common:constants",
-    "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
+    "//chrome/test/base:testing_profile",
     "//components/reporting/proto:metric_data_proto",
     "//components/reporting/util:test_callbacks_support",
     "//content/test:test_support",
@@ -57,7 +57,7 @@ source_set("browser_tests") {
     "//chrome/browser/ash/policy/core:test_support",
     "//chrome/browser/ash/settings",
     "//chrome/browser/ash/settings:test_support",
-    "//chrome/browser/chromeos/reporting",
+    "//chromeos/ash/components/metrics_reporting",
     "//chromeos/ash/components/policy/device_policy:test_support",
     "//chromeos/ash/components/settings",
     "//chromeos/dbus/missive:test_support",

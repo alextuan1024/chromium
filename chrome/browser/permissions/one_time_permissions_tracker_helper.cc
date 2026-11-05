@@ -4,12 +4,13 @@
 
 #include "chrome/browser/permissions/one_time_permissions_tracker_helper.h"
 
-#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/permissions/one_time_permissions_condition_tracker.h"
 #include "chrome/browser/permissions/one_time_permissions_tracker.h"
 #include "chrome/browser/permissions/one_time_permissions_tracker_factory.h"
+#include "chrome/browser/search/search.h"
 #include "components/permissions/permission_util.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/page_user_data.h"
@@ -24,9 +25,8 @@ bool ShouldIgnoreOrigin(const url::Origin& origin) {
   // There are cases where chrome://newtab/ and chrome://new-tab-page/ are
   // used synonymously causing inconsistencies in the map. So we just ignore
   // them.
-  return origin.opaque() ||
-         origin == url::Origin::Create(GURL("chrome://newtab/")) ||
-         origin == url::Origin::Create(GURL("chrome://new-tab-page/"));
+  return origin.opaque() || search::IsNewTabOrigin(origin) ||
+         search::IsNewTabPageOrigin(origin);
 }
 
 // A helper class for tracking events relevant to OneTimePermissions expiration
@@ -44,7 +44,15 @@ class OneTimePermissionsPageTracker
     if (ShouldIgnoreOrigin(origin)) {
       return;
     }
-    CreateForPage(page, origin);
+    // The tracker service is not instantiated for every profile type, e.g. it
+    // does not exist for the System Profile. There is nothing to track in that
+    // case.
+    auto* tracker = OneTimePermissionsTrackerFactory::GetForBrowserContext(
+        page.GetMainDocument().GetBrowserContext());
+    if (!tracker) {
+      return;
+    }
+    CreateForPage(page, std::move(origin), *tracker);
   }
 
   ~OneTimePermissionsPageTracker() override;
@@ -54,12 +62,18 @@ class OneTimePermissionsPageTracker
   void OnIsCapturingAudioChanged(bool is_capturing_audio);
 
  private:
-  OneTimePermissionsPageTracker(content::Page& page, url::Origin origin);
+  OneTimePermissionsPageTracker(content::Page& page,
+                                url::Origin origin,
+                                OneTimePermissionsTracker& tracker);
 
   friend PageUserData;
   PAGE_USER_DATA_KEY_DECL();
 
-  raw_ptr<OneTimePermissionsTracker> tracker_ = nullptr;
+  // OneTimePermissionsTracker is a BrowserContextKeyedService. As the
+  // WebContents is always destroyed before the BrowserContext is shut down,
+  // holding a reference here is safe.
+  const raw_ref<OneTimePermissionsTracker> tracker_;
+
   url::Origin origin_;
   std::unique_ptr<OneTimePermissionsTracker::Condition> active_page_tracker_;
   std::unique_ptr<OneTimePermissionsTracker::Condition>
@@ -74,20 +88,15 @@ PAGE_USER_DATA_KEY_IMPL(OneTimePermissionsPageTracker);
 
 OneTimePermissionsPageTracker::OneTimePermissionsPageTracker(
     content::Page& page,
-    url::Origin origin)
-    : PageUserData(page), origin_(std::move(origin)) {
-  auto* tracker = OneTimePermissionsTrackerFactory::GetForBrowserContext(
-      page.GetMainDocument().GetBrowserContext());
-  if (!tracker) {
-    return;
-  }
-  tracker_ = tracker;
+    url::Origin origin,
+    OneTimePermissionsTracker& tracker)
+    : PageUserData(page), tracker_(tracker), origin_(std::move(origin)) {
   active_page_tracker_ = tracker_->NewActivePage(origin_);
+  // Pages created hidden do not acquire a foreground condition. Note that
+  // acquiring and immediately releasing one would restart any partially
+  // elapsed expiration countdown for this origin (see crbug.com/563176035).
   if (content::WebContents::FromRenderFrameHost(&page.GetMainDocument())
-          ->GetVisibility() == content::Visibility::HIDDEN) {
-    // Make sure we track this page being in background.
-    tracker_->NewForegroundPage(origin_);
-  } else {
+          ->GetVisibility() != content::Visibility::HIDDEN) {
     foreground_page_tracker_ = tracker_->NewForegroundPage(origin_);
   }
 }
@@ -96,9 +105,6 @@ OneTimePermissionsPageTracker::~OneTimePermissionsPageTracker() = default;
 
 void OneTimePermissionsPageTracker::OnVisibilityChanged(
     content::Visibility visibility) {
-  if (!tracker_) {
-    return;
-  }
   const bool is_hidden = (visibility == content::Visibility::HIDDEN);
   if (is_hidden && foreground_page_tracker_) {
     foreground_page_tracker_.reset();
@@ -109,9 +115,6 @@ void OneTimePermissionsPageTracker::OnVisibilityChanged(
 
 void OneTimePermissionsPageTracker::OnIsCapturingVideoChanged(
     bool is_capturing_video) {
-  if (!tracker_) {
-    return;
-  }
   if (is_capturing_video && !video_capturing_tracker_) {
     video_capturing_tracker_ = tracker_->NewVideoCapturing(origin_);
   } else if (!is_capturing_video && video_capturing_tracker_) {
@@ -121,9 +124,6 @@ void OneTimePermissionsPageTracker::OnIsCapturingVideoChanged(
 
 void OneTimePermissionsPageTracker::OnIsCapturingAudioChanged(
     bool is_capturing_audio) {
-  if (!tracker_) {
-    return;
-  }
   if (is_capturing_audio && !audio_capturing_tracker_) {
     audio_capturing_tracker_ = tracker_->NewAudioCapturing(origin_);
   } else if (!is_capturing_audio && audio_capturing_tracker_) {
@@ -139,7 +139,11 @@ bool OneTimePermissionsTrackerHelper::ShouldIgnoreOriginForTesting(
   return ShouldIgnoreOrigin(origin);
 }
 
-OneTimePermissionsTrackerHelper::~OneTimePermissionsTrackerHelper() = default;
+OneTimePermissionsTrackerHelper::~OneTimePermissionsTrackerHelper() {
+  MediaCaptureDevicesDispatcher::GetInstance()
+      ->GetMediaStreamCaptureIndicator()
+      ->RemoveObserver(this);
+}
 
 void OneTimePermissionsTrackerHelper::WebContentsDestroyed() {
   MediaCaptureDevicesDispatcher::GetInstance()
@@ -202,12 +206,14 @@ void OneTimePermissionsTrackerHelper::OnIsCapturingAudioChanged(
 
 OneTimePermissionsTrackerHelper::OneTimePermissionsTrackerHelper(
     content::WebContents* web_contents)
-    : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<OneTimePermissionsTrackerHelper>(
-          *web_contents) {
+    : content::WebContentsObserver(web_contents) {
   MediaCaptureDevicesDispatcher::GetInstance()
       ->GetMediaStreamCaptureIndicator()
       ->AddObserver(this);
+  // The current primary page became primary before this helper was attached,
+  // so PrimaryPageChanged() was never observed for it. This matters e.g. for
+  // the initial empty document of a renderer-created popup, which inherits
+  // its opener's origin and may never commit a navigation.
+  OneTimePermissionsPageTracker::MaybeCreateForPage(
+      web_contents->GetPrimaryPage());
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(OneTimePermissionsTrackerHelper);

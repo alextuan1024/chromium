@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/assistant/ui/assistant_container_view_controller.h"
 
 #import "base/test/ios/wait_util.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/time/time.h"
 #import "ios/chrome/browser/assistant/ui/assistant_container_delegate.h"
 #import "ios/chrome/browser/assistant/ui/assistant_container_detent.h"
@@ -14,17 +15,22 @@
 #import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/layout_state_test_passkey_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/app/uikit_test_util.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
+#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "ui/base/l10n/l10n_util.h"
 
 // Expose private methods needed for testing.
 @interface AssistantContainerViewController (ExposedMethods)
@@ -98,8 +104,35 @@ class AssistantContainerViewControllerTest : public PlatformTest {
     [window_ layoutIfNeeded];
   }
 
+  void TearDown() override {
+    view_controller_.accessibilityNotificationPoster = nil;
+    PlatformTest::TearDown();
+  }
+
+  // Installs a recorder block on `view_controller_` to capture posted
+  // accessibility notifications.
+  void InstallAccessibilityNotificationRecorder() {
+    ResetAccessibilityNotifications();
+    view_controller_.accessibilityNotificationPoster =
+        ^(UIAccessibilityNotifications notification, id argument) {
+          accessibility_notification_count_++;
+          last_accessibility_notification_ = notification;
+          last_accessibility_argument_ = argument;
+        };
+  }
+
+  // Resets the recorded accessibility notification state.
+  void ResetAccessibilityNotifications() {
+    accessibility_notification_count_ = 0;
+    last_accessibility_notification_ = 0;
+    last_accessibility_argument_ = nil;
+  }
+
   AssistantContainerViewController* view_controller_;
   UIWindow* window_;
+  NSUInteger accessibility_notification_count_ = 0;
+  UIAccessibilityNotifications last_accessibility_notification_ = 0;
+  id last_accessibility_argument_ = nil;
 };
 
 // Tests that the container snaps to the nearest detent.
@@ -154,6 +187,114 @@ TEST_F(AssistantContainerViewControllerTest, UpdatesMinimizedDetentHeight) {
   view_controller_.heightConstraint.constant = new_min_height - 10.0;
   [view_controller_ updateHeightConstraint];
   EXPECT_EQ(view_controller_.heightConstraint.constant, new_min_height);
+}
+
+// Tests that updating the `mediumDetentHeight` property in points dynamically
+// updates the medium detent height, clamps values strictly between
+// `minimizedDetentHeight` and `absoluteMaxHeight`, and resets to default when
+// `std::nullopt`.
+TEST_F(AssistantContainerViewControllerTest, UpdatesMediumDetentHeight) {
+  [view_controller_ setDetents:{AssistantContainerDetent::kMedium}];
+
+  NSInteger max_height = [view_controller_ absoluteMaxHeight];
+  constexpr CGFloat kDefaultMediumRatio = 0.5;
+  NSInteger default_medium_height = max_height * kDefaultMediumRatio;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      default_medium_height);
+
+  constexpr NSInteger kCustomMediumHeight = 350;
+  view_controller_.mediumDetentHeight = kCustomMediumHeight;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      kCustomMediumHeight);
+
+  // Heights at or below `minimizedDetentHeight` clamp to
+  // `minimizedDetentHeight + 1` so `kMedium` remains strictly above
+  // `kMinimized`.
+  view_controller_.mediumDetentHeight = view_controller_.minimizedDetentHeight;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      view_controller_.minimizedDetentHeight + 1);
+
+  // Heights at or above `max_height` clamp to `max_height - 1` so `kMedium`
+  // remains strictly below `kLarge`.
+  view_controller_.mediumDetentHeight = max_height;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      max_height - 1);
+
+  view_controller_.mediumDetentHeight = std::nullopt;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      default_medium_height);
+}
+
+// Tests that updating the `mediumDetentPercentage` property dynamically updates
+// the medium detent height, clamps the computed height strictly between
+// `minimizedDetentHeight` and `absoluteMaxHeight`, is overridden when
+// `mediumDetentHeight` (in points) is set, and resets to the default 50% ratio
+// when `std::nullopt`.
+TEST_F(AssistantContainerViewControllerTest, UpdatesMediumDetentPercentage) {
+  [view_controller_ setDetents:{AssistantContainerDetent::kMedium}];
+
+  CGFloat max_height = [view_controller_ absoluteMaxHeight];
+  NSInteger default_medium_height = max_height * 0.5;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      default_medium_height);
+
+  // Setting 60% updates the medium detent height to 60% of `max_height`.
+  view_controller_.mediumDetentPercentage = 60;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      static_cast<NSInteger>(max_height * 0.6));
+
+  // Setting 80% updates the medium detent height to 80% of `max_height`.
+  view_controller_.mediumDetentPercentage = 80;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      static_cast<NSInteger>(max_height * 0.8));
+
+  // Percentages that produce a height at or below `minimizedDetentHeight` clamp
+  // the height to `minimizedDetentHeight + 1`, and percentages at or above 100%
+  // clamp the height to `max_height - 1`.
+  view_controller_.mediumDetentPercentage = 5;
+  EXPECT_EQ(5, view_controller_.mediumDetentPercentage);
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      view_controller_.minimizedDetentHeight + 1);
+
+  view_controller_.mediumDetentPercentage = 100;
+  EXPECT_EQ(100, view_controller_.mediumDetentPercentage);
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      static_cast<NSInteger>(max_height) - 1);
+
+  // Explicit `mediumDetentHeight` in points takes precedence over percentage.
+  view_controller_.mediumDetentPercentage = 60;
+  view_controller_.mediumDetentHeight = 350;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      350);
+
+  // Clearing both restores the default 50% ratio.
+  view_controller_.mediumDetentHeight = std::nullopt;
+  view_controller_.mediumDetentPercentage = std::nullopt;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      default_medium_height);
+
+  // The `kAssistantContainer` feature parameter overrides
+  // `mediumDetentPercentage`.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      kAssistantContainer,
+      {{kAssistantContainerMediumDetentPercentParam, "80"}});
+  view_controller_.mediumDetentPercentage = 60;
+  EXPECT_EQ(
+      [view_controller_ heightForDetent:AssistantContainerDetent::kMedium],
+      static_cast<NSInteger>(max_height * 0.8));
 }
 
 // Tests that specific limits are respected.
@@ -598,6 +739,260 @@ TEST_F(AssistantContainerViewControllerTest,
 
   EXPECT_TRUE(view_controller_.headerPanGesture.enabled);
   EXPECT_FALSE(view_controller_.grabberButton.hidden);
+}
+
+// Tests that largestUndimmedDetent defaults to kMedium and controls background
+// dimming and dimming view tap handling.
+TEST_F(AssistantContainerViewControllerTest,
+       LargestUndimmedDetentControlsDimmingAndTap) {
+  EXPECT_EQ(view_controller_.largestUndimmedDetent,
+            kDefaultLargestUndimmedDetent);
+
+  [view_controller_ setDetents:{AssistantContainerDetent::kMinimized,
+                                AssistantContainerDetent::kMedium,
+                                AssistantContainerDetent::kLarge}];
+
+  // At kMedium (the default largestUndimmedDetent), the dimming view should not
+  // be dimmed and tapping it should not collapse the container.
+  [view_controller_ animateToDetent:AssistantContainerDetent::kMedium
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  CGFloat medium_height = view_controller_.heightConstraint.constant;
+  EXPECT_EQ(0.0, view_controller_.dimmingView.alpha);
+
+  UITapGestureRecognizer* dummy_gesture = [[UITapGestureRecognizer alloc] init];
+  [view_controller_ handleDimmingViewTap:dummy_gesture];
+  EXPECT_EQ(medium_height, view_controller_.heightConstraint.constant);
+
+  // Setting largestUndimmedDetent to kMinimized should dim kMedium and allow
+  // tapping the dimming view to collapse to kMinimized.
+  view_controller_.largestUndimmedDetent = AssistantContainerDetent::kMinimized;
+  EXPECT_NEAR(kMaxBackgroundDimmingAlpha, view_controller_.dimmingView.alpha,
+              0.001);
+
+  [view_controller_ handleDimmingViewTap:dummy_gesture];
+  [view_controller_.view layoutIfNeeded];
+  EXPECT_EQ(view_controller_.heightConstraint.constant,
+            static_cast<CGFloat>(kAssistantContainerMinimizedDetentHeight));
+  view_controller_.isAnimating = NO;
+}
+
+// Tests that `assistantContainerView.accessibilityViewIsModal` remains YES
+// across undimmed and dimmed sheet detents and in panel mode when presented
+// over browser content.
+TEST_F(AssistantContainerViewControllerTest,
+       AccessibilityViewIsModalAcrossSheetDetentsAndPanel) {
+  [view_controller_ setDetents:{AssistantContainerDetent::kMinimized,
+                                AssistantContainerDetent::kMedium,
+                                AssistantContainerDetent::kLarge}];
+  view_controller_.largestUndimmedDetent = AssistantContainerDetent::kMedium;
+
+  // By default (`tabGridState` nil), `kMinimized`, `kMedium`, and `kLarge` are
+  // all modal.
+  EXPECT_EQ(nil, view_controller_.tabGridState);
+  [view_controller_ animateToDetent:AssistantContainerDetent::kMinimized
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  EXPECT_EQ(0.0, view_controller_.dimmingView.alpha);
+  EXPECT_TRUE(view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  [view_controller_ animateToDetent:AssistantContainerDetent::kMedium
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  EXPECT_EQ(0.0, view_controller_.dimmingView.alpha);
+  EXPECT_TRUE(view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  [view_controller_ animateToDetent:AssistantContainerDetent::kLarge
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  EXPECT_GT(view_controller_.dimmingView.alpha, 0.0);
+  EXPECT_TRUE(view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  // Switching to panel presentation keeps `accessibilityViewIsModal` YES.
+  view_controller_.presentationContext = AssistantPresentationContext::kPanel;
+  [window_ layoutIfNeeded];
+  EXPECT_TRUE(view_controller_.assistantContainerView.accessibilityViewIsModal);
+}
+
+// Tests that `assistantContainerView.accessibilityViewIsModal` is NO when
+// undimmed over the Tab Grid (`tabGridState.tabGridVisible == YES`), YES when
+// dimmed at `kLarge`, and YES again when exiting the Tab Grid or clearing
+// `tabGridState` at an undimmed detent.
+TEST_F(AssistantContainerViewControllerTest,
+       AccessibilityViewIsNotModalWhenUndimmedOverTabGrid) {
+  TabGridState* tab_grid_state = [[TabGridState alloc] init];
+  view_controller_.tabGridState = tab_grid_state;
+  [view_controller_ setDetents:{AssistantContainerDetent::kMinimized,
+                                AssistantContainerDetent::kMedium,
+                                AssistantContainerDetent::kLarge}];
+  view_controller_.largestUndimmedDetent = AssistantContainerDetent::kMedium;
+  [view_controller_ animateToDetent:AssistantContainerDetent::kMinimized
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  EXPECT_TRUE(view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  // Entering the Tab Grid while undimmed at `kMinimized` immediately clears
+  // modal state so the Tab Grid remains accessible to VoiceOver.
+  tab_grid_state.tabGridVisible = YES;
+  EXPECT_EQ(0.0, view_controller_.dimmingView.alpha);
+  EXPECT_FALSE(
+      view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  [view_controller_ animateToDetent:AssistantContainerDetent::kMedium
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  EXPECT_EQ(0.0, view_controller_.dimmingView.alpha);
+  EXPECT_FALSE(
+      view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  // Dimmed at `kLarge` over the Tab Grid: modal.
+  [view_controller_ animateToDetent:AssistantContainerDetent::kLarge
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  EXPECT_GT(view_controller_.dimmingView.alpha, 0.0);
+  EXPECT_TRUE(view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  // Returning to undimmed `kMedium` over the Tab Grid restores non-modal state,
+  // and exiting the Tab Grid immediately restores modal state without a detent
+  // change.
+  [view_controller_ animateToDetent:AssistantContainerDetent::kMedium
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  EXPECT_EQ(0.0, view_controller_.dimmingView.alpha);
+  EXPECT_FALSE(
+      view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  tab_grid_state.tabGridVisible = NO;
+  EXPECT_EQ(0.0, view_controller_.dimmingView.alpha);
+  EXPECT_TRUE(view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  // Assigning an already-visible `TabGridState` immediately clears modal state
+  // at an undimmed detent, and clearing `tabGridState` detaches observation and
+  // restores modal state.
+  TabGridState* visible_tab_grid_state = [[TabGridState alloc] init];
+  visible_tab_grid_state.tabGridVisible = YES;
+  view_controller_.tabGridState = visible_tab_grid_state;
+  EXPECT_FALSE(
+      view_controller_.assistantContainerView.accessibilityViewIsModal);
+
+  view_controller_.tabGridState = nil;
+  EXPECT_TRUE(view_controller_.assistantContainerView.accessibilityViewIsModal);
+  visible_tab_grid_state.tabGridVisible = NO;
+  visible_tab_grid_state.tabGridVisible = YES;
+  EXPECT_TRUE(view_controller_.assistantContainerView.accessibilityViewIsModal);
+}
+
+// Tests that adding the container view to a parent view with different size
+// class traits before `didMoveToParentViewController:` does not crash when
+// trait changes fire before parent-relative bottom constraints are created.
+TEST_F(AssistantContainerViewControllerTest,
+       TraitChangeBeforeDidMoveToParentViewController) {
+  UIViewController* child = [[UIViewController alloc] init];
+  AssistantContainerViewController* container_vc =
+      [[AssistantContainerViewController alloc] initWithViewController:child];
+  container_vc.minimizedDetentHeight = kAssistantContainerMinimizedDetentHeight;
+
+  // Load the view before moving to the parent view controller so trait change
+  // registration in `viewDidLoad` is active.
+  UIView* container_view = container_vc.view;
+  ASSERT_TRUE(container_view);
+
+  UIViewController* parent_vc = [[UIViewController alloc] init];
+  parent_vc.view.frame = window_.bounds;
+  // Force a trait difference relative to the unparented container view.
+  UIUserInterfaceSizeClass initial_size_class =
+      container_vc.traitCollection.horizontalSizeClass;
+  parent_vc.traitOverrides.horizontalSizeClass =
+      initial_size_class == UIUserInterfaceSizeClassRegular
+          ? UIUserInterfaceSizeClassCompact
+          : UIUserInterfaceSizeClassRegular;
+  [window_.rootViewController.view addSubview:parent_vc.view];
+  [window_ layoutIfNeeded];
+
+  [parent_vc addChildViewController:container_vc];
+  [parent_vc.view addSubview:container_view];
+  [parent_vc.view layoutIfNeeded];
+  [container_vc didMoveToParentViewController:parent_vc];
+  [parent_vc.view layoutIfNeeded];
+
+  EXPECT_NE(nil, container_vc.outerBottomConstraint);
+  [parent_vc.view removeFromSuperview];
+}
+
+// Tests that `viewDidAppear:` does not post an accessibility notification,
+// `completePresentationAnimation` posts
+// `UIAccessibilityScreenChangedNotification` targeting the grabber button, and
+// resetting `accessibilityNotificationPoster` to nil restores a non-nil
+// default poster.
+TEST_F(AssistantContainerViewControllerTest,
+       PostsScreenChangedNotificationOnPresentationCompletion) {
+  EXPECT_NE(nil, view_controller_.accessibilityNotificationPoster);
+  InstallAccessibilityNotificationRecorder();
+
+  [view_controller_ viewDidAppear:YES];
+  EXPECT_EQ(0u, accessibility_notification_count_);
+
+  [view_controller_ completePresentationAnimation];
+  EXPECT_EQ(1u, accessibility_notification_count_);
+  EXPECT_EQ(UIAccessibilityScreenChangedNotification,
+            last_accessibility_notification_);
+  EXPECT_NSEQ(view_controller_.grabberButton, last_accessibility_argument_);
+
+  view_controller_.accessibilityNotificationPoster = nil;
+  EXPECT_NE(nil, view_controller_.accessibilityNotificationPoster);
+}
+
+// Tests that `completePresentationAnimation` posts
+// `UIAccessibilityAnnouncementNotification` instead of
+// `UIAccessibilityScreenChangedNotification` when `announceArrivalOnly` is YES.
+TEST_F(
+    AssistantContainerViewControllerTest,
+    PostsArrivalAnnouncementOnPresentationCompletionWhenAnnounceArrivalOnly) {
+  view_controller_.announceArrivalOnly = YES;
+  InstallAccessibilityNotificationRecorder();
+
+  [view_controller_ completePresentationAnimation];
+  EXPECT_EQ(1u, accessibility_notification_count_);
+  EXPECT_EQ(UIAccessibilityAnnouncementNotification,
+            last_accessibility_notification_);
+  EXPECT_NSEQ(l10n_util::GetNSString(
+                  IDS_IOS_ASSISTANT_SHEET_GRABBER_ACCESSIBILITY_LABEL),
+              last_accessibility_argument_);
+}
+
+// Tests that detent changes do not post
+// `UIAccessibilityAnnouncementNotification` before
+// `completePresentationAnimation`, and post
+// `UIAccessibilityAnnouncementNotification` with the grabber's accessibility
+// value once presentation completes.
+TEST_F(AssistantContainerViewControllerTest,
+       SuppressesDetentAnnouncementBeforePresentationCompletes) {
+  InstallAccessibilityNotificationRecorder();
+
+  [view_controller_ viewDidAppear:YES];
+  [view_controller_ animateToDetent:AssistantContainerDetent::kMedium
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  EXPECT_EQ(0u, accessibility_notification_count_);
+
+  [view_controller_ completePresentationAnimation];
+  EXPECT_EQ(1u, accessibility_notification_count_);
+  EXPECT_EQ(UIAccessibilityScreenChangedNotification,
+            last_accessibility_notification_);
+
+  ResetAccessibilityNotifications();
+
+  [view_controller_ animateToDetent:AssistantContainerDetent::kLarge
+                           duration:0.0
+                              curve:UIViewAnimationCurveEaseInOut];
+  EXPECT_EQ(1u, accessibility_notification_count_);
+  EXPECT_EQ(UIAccessibilityAnnouncementNotification,
+            last_accessibility_notification_);
+  ASSERT_NE(nil, view_controller_.grabberButton.accessibilityValue);
+  EXPECT_NSEQ(l10n_util::GetNSString(IDS_IOS_ASSISTANT_GRABBER_VALUE_LARGE),
+              view_controller_.grabberButton.accessibilityValue);
+  EXPECT_NSEQ(view_controller_.grabberButton.accessibilityValue,
+              last_accessibility_argument_);
 }
 
 }  // namespace

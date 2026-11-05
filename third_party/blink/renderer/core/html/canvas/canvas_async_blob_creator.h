@@ -30,8 +30,7 @@ class ImageDataBuffer;
 class CORE_EXPORT CanvasAsyncBlobCreator
     : public GarbageCollected<CanvasAsyncBlobCreator> {
  public:
-  // This enum is used to back an UMA histogram, and should therefore be treated
-  // as append-only. Idle tasks are not implemented for some image types.
+  // Idle tasks are not implemented for some image types.
   enum IdleTaskStatus {
     kIdleTaskNotStarted = 0,
     kIdleTaskStarted = 1,
@@ -51,14 +50,12 @@ class CORE_EXPORT CanvasAsyncBlobCreator
   CanvasAsyncBlobCreator(scoped_refptr<StaticBitmapImage>,
                          const ImageEncodeOptions* options,
                          ToBlobFunctionType function_type,
-                         base::TimeTicks start_time,
                          ExecutionContext*,
                          ScriptPromiseResolver<Blob>*);
   CanvasAsyncBlobCreator(scoped_refptr<StaticBitmapImage>,
                          const ImageEncodeOptions*,
                          ToBlobFunctionType,
                          V8BlobCallback*,
-                         base::TimeTicks start_time,
                          ExecutionContext*,
                          ScriptPromiseResolver<Blob>* = nullptr);
   virtual ~CanvasAsyncBlobCreator();
@@ -109,7 +106,6 @@ class CORE_EXPORT CanvasAsyncBlobCreator
   ToBlobFunctionType function_type_;
 
   // Chrome metrics use
-  base::TimeTicks start_time_;
   base::TimeTicks schedule_idle_task_start_time_;
   bool static_bitmap_image_loaded_;
 

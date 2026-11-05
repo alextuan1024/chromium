@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBCODECS_ENCODER_BASE_H_
 
 #include <memory>
+#include <optional>
 
 #include "base/sequence_checker.h"
 #include "media/base/encoder_status.h"
@@ -64,7 +65,7 @@ class MODULES_EXPORT EncoderBase
               const EncodeOptionsType* opts,
               ExceptionState& exception_state);
 
-  ScriptPromise<IDLUndefined> flush(ExceptionState&);
+  ScriptPromise<IDLUndefined> flush(ScriptState*, ExceptionState&);
 
   void reset(ExceptionState&);
 
@@ -125,7 +126,8 @@ class MODULES_EXPORT EncoderBase
   };
 
   void QueueHandleError(DOMException* ex);
-  virtual void HandleError(DOMException* ex);
+  void HandleError(DOMException* ex,
+                   std::optional<uint32_t> reset_count = std::nullopt);
   virtual void EnqueueRequest(Request* request);
   virtual void ProcessRequests();
   virtual bool ReadyToProcessNextRequest();
@@ -164,6 +166,9 @@ class MODULES_EXPORT EncoderBase
   V8CodecState state_;
 
   Member<InternalConfigType> active_config_;
+  // The `ScriptState` in which this encoder was created. Used for lifetime
+  // checks and callback invocation. Do not use it to create values returned to
+  // callers (e.g. promises), which may be in a different world or realm.
   Member<ScriptState> script_state_;
   Member<OutputCallbackType> output_callback_;
   Member<V8WebCodecsErrorCallback> error_callback_;
@@ -183,6 +188,11 @@ class MODULES_EXPORT EncoderBase
   //
   // During reset(), this member is used to reject any pending promises.
   Member<Request> blocking_request_in_progress_;
+
+  // True while an async `HandleError()` task posted by `QueueHandleError()` is
+  // pending. Stops `ProcessRequests()` from dispatching further queued requests
+  // and keeps `HasPendingActivity()` true until `ResetInternal()` clears it.
+  bool has_pending_error_ = false;
 
   bool first_output_after_configure_ = true;
 

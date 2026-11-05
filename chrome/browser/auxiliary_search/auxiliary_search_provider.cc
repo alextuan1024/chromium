@@ -5,16 +5,21 @@
 #include "chrome/browser/auxiliary_search/auxiliary_search_provider.h"
 
 #include <algorithm>
+#include <array>
+#include <limits>
 
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/barrier_callback.h"
+#include "base/check.h"
+#include "base/check_deref.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
-#include "base/hash/hash.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
+#include "base/numerics/byte_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/android/persisted_tab_data/sensitivity_persisted_tab_data_android.h"
 #include "chrome/browser/android/tab_android.h"
@@ -30,7 +35,9 @@
 #include "components/visited_url_ranking/public/url_visit.h"
 #include "components/visited_url_ranking/public/url_visit_util.h"
 #include "components/visited_url_ranking/public/visited_url_ranking_service.h"
+#include "crypto/hash.h"
 #include "url/android/gurl_android.h"
+#include "url/gurl.h"
 #include "url/url_constants.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -83,7 +90,7 @@ class AuxiliarySearchProviderFactory : public ProfileKeyedServiceFactory {
   std::unique_ptr<KeyedService> BuildServiceInstanceForBrowserContext(
       content::BrowserContext* context) const override {
     Profile* profile = Profile::FromBrowserContext(context);
-    DCHECK(!profile->IsOffTheRecord());
+    CHECK(!profile->IsOffTheRecord(), base::NotFatalUntil::M161);
 
     if (base::FeatureList::IsEnabled(
             chrome::android::kAndroidAppIntegrationMultiDataSource)) {
@@ -98,8 +105,9 @@ void CallJavaCallbackWithTabList(
     JNIEnv* env,
     const base::android::ScopedJavaGlobalRef<jobject>& j_callback_obj,
     std::vector<base::WeakPtr<TabAndroid>> non_sensitive_tabs) {
-  DCHECK_LE(non_sensitive_tabs.size(),
-            chrome::android::kAuxiliarySearchMaxTabsCountParam.Get());
+  CHECK_LE(non_sensitive_tabs.size(),
+           AuxiliarySearchProvider::kMaxDonatedTabsCount,
+           base::NotFatalUntil::M161);
   std::vector<base::android::ScopedJavaLocalRef<jobject>> j_tabs_list;
   std::ranges::transform(non_sensitive_tabs, std::back_inserter(j_tabs_list),
                          [](const auto& tab) { return tab->GetJavaObject(); });
@@ -138,6 +146,14 @@ void OnDataReady(JNIEnv* env,
   Java_AuxiliarySearchBridge_onDataReady(env, entries, j_callback);
 }
 
+// Converts the first 8 bytes of a SHA-256 `digest` to a non-negative 63-bit
+// visit ID.
+int64_t ToVisitId(base::span<const uint8_t, crypto::hash::kSha256Size> digest) {
+  return static_cast<int64_t>(
+      base::U64FromBigEndian(digest.first<8u>()) &
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()));
+}
+
 }  // namespace
 
 AuxiliarySearchProvider::AuxiliarySearchProvider(
@@ -151,7 +167,7 @@ void AuxiliarySearchProvider::GetNonSensitiveTabs(
     std::vector<TabAndroid*> tabs,
     const base::android::JavaRef<jobject>& j_callback_obj) const {
   GetNonSensitiveTabsInternal(
-      std::move(tabs),
+      std::move(tabs), kMaxDonatedTabsCount,
       base::BindOnce(
           &CallJavaCallbackWithTabList, env,
           base::android::ScopedJavaGlobalRef<jobject>(j_callback_obj)));
@@ -198,6 +214,7 @@ void AuxiliarySearchProvider::FilterTabsByScheme(
 
 void AuxiliarySearchProvider::GetNonSensitiveTabsInternal(
     std::vector<TabAndroid*> all_tabs,
+    size_t max_donated_tabs_count,
     NonSensitiveTabsCallback callback) const {
   FilterTabsByScheme(all_tabs);
 
@@ -209,15 +226,17 @@ void AuxiliarySearchProvider::GetNonSensitiveTabsInternal(
       // In theory, this could be folded into CallJavaCallbackWithTabList
       // instead of using a trampoline callback, but some tests exercise this
       // helper function directly.
-      base::BindOnce([](std::vector<base::WeakPtr<TabAndroid>> tabs) {
-        std::erase_if(tabs, [](const auto& tab) { return !tab; });
-        const size_t max_tabs =
-            chrome::android::kAuxiliarySearchMaxTabsCountParam.Get();
-        if (tabs.size() > max_tabs) {
-          tabs.resize(max_tabs);
-        }
-        return tabs;
-      }).Then(std::move(callback)));
+      base::BindOnce(
+          [](size_t max_donated_tabs_count,
+             std::vector<base::WeakPtr<TabAndroid>> tabs) {
+            std::erase_if(tabs, [](const auto& tab) { return !tab; });
+            if (tabs.size() > max_donated_tabs_count) {
+              tabs.resize(max_donated_tabs_count);
+            }
+            return tabs;
+          },
+          max_donated_tabs_count)
+          .Then(std::move(callback)));
 
   for (const auto& tab : all_tabs) {
     SensitivityPersistedTabDataAndroid::From(
@@ -227,13 +246,56 @@ void AuxiliarySearchProvider::GetNonSensitiveTabsInternal(
   }
 }
 
-// static
-static int64_t JNI_AuxiliarySearchBridge_GetForProfile(JNIEnv* env,
-                                                       Profile* profile) {
-  DCHECK(profile);
+static void JNI_AuxiliarySearchBridge_GetNonSensitiveTabs(
+    JNIEnv* env,
+    Profile* profile,
+    std::vector<TabAndroid*> tabs,
+    const base::android::JavaRef<jobject>& j_callback_obj) {
+  CHECK(profile);
+  CHECK_DEREF(AuxiliarySearchProviderFactory::GetForProfile(profile))
+      .GetNonSensitiveTabs(env, std::move(tabs), j_callback_obj);
+}
 
-  return reinterpret_cast<intptr_t>(
-      AuxiliarySearchProviderFactory::GetForProfile(profile));
+static void JNI_AuxiliarySearchBridge_GetNonSensitiveHistoryData(
+    JNIEnv* env,
+    Profile* profile,
+    const base::android::JavaRef<jobject>& j_callback_obj) {
+  CHECK(profile);
+  CHECK_DEREF(AuxiliarySearchProviderFactory::GetForProfile(profile))
+      .GetNonSensitiveHistoryData(env, j_callback_obj);
+}
+
+static void JNI_AuxiliarySearchBridge_GetCustomTabs(
+    JNIEnv* env,
+    Profile* profile,
+    const base::android::JavaRef<jobject>& j_url,
+    int64_t j_begin_time,
+    const base::android::JavaRef<jobject>& j_callback_obj) {
+  CHECK(profile);
+  CHECK_DEREF(AuxiliarySearchProviderFactory::GetForProfile(profile))
+      .GetCustomTabs(env, j_url, j_begin_time, j_callback_obj);
+}
+
+// static
+int64_t AuxiliarySearchProvider::GetCustomTabVisitId(std::string_view url_key) {
+  return ToVisitId(crypto::hash::Sha256(url_key));
+}
+
+// static
+int64_t AuxiliarySearchProvider::GetTopSiteVisitId(
+    const GURL& url,
+    const std::u16string& title) {
+  crypto::hash::Hasher hasher(crypto::hash::kSha256);
+  // Prefixes each field with its length, so that moving characters between the
+  // URL and the title changes the visit ID.
+  const std::string& url_spec = url.possibly_invalid_spec();
+  hasher.Update(base::U64ToBigEndian(url_spec.size()));
+  hasher.Update(url_spec);
+  hasher.Update(base::U64ToBigEndian(title.size()));
+  hasher.Update(base::as_byte_span(title));
+  std::array<uint8_t, crypto::hash::kSha256Size> digest;
+  hasher.Finish(digest);
+  return ToVisitId(digest);
 }
 
 // static

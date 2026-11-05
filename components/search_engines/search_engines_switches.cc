@@ -30,11 +30,6 @@ const char kForceSearchEngineChoiceScreen[] =
 const char kQuickenSiteSearchExpiryForTesting[] =
     "quicken-site-search-expiry-for-testing";
 
-BASE_FEATURE(kVisitCustomSearchOnUndefaulting,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kIgnoreSearchProviderOverrides, base::FEATURE_ENABLED_BY_DEFAULT);
-
 bool IsInvalidateSearchEngineChoiceOnDeviceRestoreDetectionEnabled() {
 #if BUILDFLAG(IS_IOS)
   return true;
@@ -75,10 +70,6 @@ const base::FeatureParam<std::string> kSearchEngineChoiceTriggerRepromptParams{
     /*name=*/"reprompt",
     /*default_value=*/kSearchEngineChoiceNoRepromptString};
 
-
-BASE_FEATURE(kWipeChoicePrefsOnMissingDefaultSearchEngine,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kPrefetchParameterFix, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kRemoveSearchboxStatsParamFromPrefetchRequests,
@@ -94,10 +85,6 @@ BASE_FEATURE(kClankDefaultSearchApi, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kKwdbRefreshDebugging, base::FEATURE_DISABLED_BY_DEFAULT);
 
-#if BUILDFLAG(IS_ANDROID)
-BASE_FEATURE(kApplyDeviceChoiceRenewal, base::FEATURE_DISABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_ANDROID)
-
 #if !BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kSearchSettingsUpdate, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -105,6 +92,12 @@ BASE_FEATURE(kSearchSettingsUpdate, base::FEATURE_DISABLED_BY_DEFAULT);
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 BASE_FEATURE(kSearchSettingsUpdateV2, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+
+#if BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kChoiceEngineStatusReporting, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kChromeSearchOnlyClayScope, base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN)
 // When enabled, will reject encrypted keyword table hashes that are weakly

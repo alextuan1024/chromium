@@ -11,13 +11,17 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/check.h"
+#include "base/check_is_test.h"
+#include "base/check_op.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/location.h"
 #include "base/logging.h"
-#include "base/no_destructor.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
@@ -44,15 +48,18 @@ namespace {
 constexpr size_t kImageAnnotationMaxResponseSize = 1024 * 1024;  // 1MB.
 constexpr size_t kServerLangsMaxResponseSize = 1024;             // 1KB.
 
-const std::map<std::string, mojom::AnnotationType>& annotation_types() {
-  static const base::NoDestructor<std::map<std::string, mojom::AnnotationType>>
-      kAnnotationTypes({{"OCR", mojom::AnnotationType::kOcr},
-                        {"CAPTION", mojom::AnnotationType::kCaption},
-                        {"LABEL", mojom::AnnotationType::kLabel}});
+constexpr auto kAnnotationTypes =
+    base::MakeFixedFlatMap<std::string_view, mojom::AnnotationType>({
+        {manta::anchovy::kTypeOcr, mojom::AnnotationType::kOcr},
+        {manta::anchovy::kTypeCaption, mojom::AnnotationType::kCaption},
+        {manta::anchovy::kTypePrimaryCaption, mojom::AnnotationType::kCaption},
+        {manta::anchovy::kTypeLabel, mojom::AnnotationType::kLabel},
+    });
 
-  return *kAnnotationTypes;
-}
-
+// TODO(crbug.com/340320912): Update or split this traffic annotation for
+// Anchovy/Manta before rolling out `kImageDescriptionsAlternateRouting` (under
+// alternate routing, Chrome sends only image pixels and language context to
+// Manta without image URLs or daily `/langs` requests).
 net::NetworkTrafficAnnotationTag GetTrafficAnnotation() {
   return net::DefineNetworkTrafficAnnotation("image_annotation", R"(
         semantics {
@@ -75,6 +82,7 @@ net::NetworkTrafficAnnotationTag GetTrafficAnnotation() {
           data: "Image pixels and URLs. No user identifier is sent along with "
                 "the data."
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "ckintersect-pa.googleapis.com"
         }
         policy {
           cookies_allowed: NO
@@ -90,24 +98,17 @@ net::NetworkTrafficAnnotationTag GetTrafficAnnotation() {
         })");
 }
 
-// For a given source ID and requested description language, returns the unique
-// image ID string that can be used to look up results from a server response.
-std::string MakeImageId(const std::string& source_id,
-                        const std::string& desc_lang_tag) {
-  return source_id + (desc_lang_tag.empty() ? "" : " " + desc_lang_tag);
-}
-
-std::string NormalizeLanguageCode(std::string language) {
+std::string NormalizeLanguageCode(std::string_view language) {
   // Remove anything after a comma, in case we got more than one language
   // like "de,de-DE".
   language = language.substr(0, language.find(','));
 
   // Split based on underscore or dash so that we catch both
   // "zh_CN" and "zh-CN".
-  const std::vector<std::string> tokens = base::SplitString(
+  const std::vector<std::string_view> tokens = base::SplitStringPiece(
       language, "-_", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
 
-  if (tokens.size() == 0) {
+  if (tokens.empty()) {
     return "";
   }
 
@@ -279,8 +280,8 @@ std::tuple<bool, std::vector<mojom::AnnotationPtr>> ParseJsonDescAnnotations(
       continue;
     }
 
-    const auto type_lookup = annotation_types().find(*type);
-    if (type_lookup == annotation_types().end()) {
+    const auto type_lookup = kAnnotationTypes.find(*type);
+    if (type_lookup == kAnnotationTypes.end()) {
       continue;
     }
 
@@ -506,27 +507,20 @@ std::map<std::string, mojom::AnnotateImageResultPtr> UnpackJsonResponse(
 
 mojom::AnnotationPtr CreateAnnotationFromMantaResponse(
     const base::DictValue& result_data) {
-  auto* text = result_data.FindString("text");
+  // The caller validates that `text`, `type` (in `kAnnotationTypes`), and a
+  // non-negative `score` are present before calling this helper.
+  // Uncalibrated model scores > 1.0 are clamped to [0.0, 1.0].
+  const auto* text = result_data.FindString("text");
   CHECK(text);
-
-  auto* type = result_data.FindString("type");
+  const auto* type = result_data.FindString("type");
   CHECK(type);
-  auto score = result_data.FindDouble("score");
+  const auto score = result_data.FindDouble("score");
   CHECK(score.has_value());
 
-  std::optional<mojom::AnnotationType> annotation_type;
+  auto itr = kAnnotationTypes.find(*type);
+  CHECK(itr != kAnnotationTypes.end());
 
-  if (auto itr = annotation_types().find(*type);
-      itr != annotation_types().end()) {
-    annotation_type = itr->second;
-  }
-
-  CHECK(annotation_type.has_value());
-
-  auto annotation =
-      mojom::Annotation::New(annotation_type.value(), score.value(), *text);
-
-  return annotation;
+  return mojom::Annotation::New(itr->second, std::min(*score, 1.0), *text);
 }
 
 }  // namespace
@@ -548,17 +542,38 @@ Annotator::ClientRequestInfo::ClientRequestInfo(
 
 Annotator::ClientRequestInfo::~ClientRequestInfo() = default;
 
+Annotator::RequestKey::RequestKey(uint64_t in_origin_id,
+                                  std::string in_source_id,
+                                  std::string in_desc_lang_tag)
+    : origin_id(in_origin_id),
+      source_id(std::move(in_source_id)),
+      desc_lang_tag(std::move(in_desc_lang_tag)) {}
+
+Annotator::RequestKey::RequestKey(const RequestKey& other) = default;
+Annotator::RequestKey::RequestKey(RequestKey&& other) = default;
+Annotator::RequestKey& Annotator::RequestKey::operator=(
+    const RequestKey& other) = default;
+Annotator::RequestKey& Annotator::RequestKey::operator=(RequestKey&& other) =
+    default;
+Annotator::RequestKey::~RequestKey() = default;
+
+std::string Annotator::RequestKey::MakeImageId() const {
+  return base::NumberToString(origin_id) + " " + desc_lang_tag + " " +
+         source_id;
+}
+
 Annotator::ServerRequestInfo::ServerRequestInfo(
-    const std::string& in_source_id,
+    RequestKey in_request_key,
     const bool in_desc_requested,
     const bool in_icon_requested,
-    const std::string& in_desc_lang_tag,
     const std::vector<uint8_t>& in_image_bytes)
-    : source_id(in_source_id),
+    : request_key(std::move(in_request_key)),
       desc_requested(in_desc_requested),
       icon_requested(in_icon_requested),
-      desc_lang_tag(in_desc_lang_tag),
       image_bytes(in_image_bytes) {}
+
+Annotator::ServerRequestInfo::ServerRequestInfo(ServerRequestInfo&& other) =
+    default;
 
 Annotator::ServerRequestInfo& Annotator::ServerRequestInfo::operator=(
     ServerRequestInfo&& other) = default;
@@ -585,11 +600,16 @@ Annotator::Annotator(
       min_ocr_confidence_(min_ocr_confidence),
       server_languages_({"cs", "de", "en", "es", "fi", "fr", "hi", "hr", "id",
                          "it", "iw", "nl", "no", "pt", "ru", "sv", "tr"}) {
+  CHECK_GE(batch_size_, 1);
   server_request_timer_ = std::make_unique<base::RepeatingTimer>(
       FROM_HERE, throttle,
       base::BindRepeating(&Annotator::SendRequestBatchToServer,
                           weak_factory_.GetWeakPtr()));
-  FetchServerLanguages();
+  // Do not query the legacy languages endpoint when alternate routing is
+  // enabled.
+  if (!features::IsImageDescriptionsAlternateRoutingEnabled()) {
+    FetchServerLanguages();
+  }
 }
 
 Annotator::~Annotator() {
@@ -601,8 +621,17 @@ Annotator::~Annotator() {
   }
 }
 
-void Annotator::BindReceiver(mojo::PendingReceiver<mojom::Annotator> receiver) {
-  receivers_.Add(this, std::move(receiver));
+void Annotator::BindReceiver(mojo::PendingReceiver<mojom::Annotator> receiver,
+                             const url::Origin& parent_origin) {
+  const uint64_t origin_id =
+      origin_ids_.try_emplace(parent_origin, origin_ids_.size()).first->second;
+  receivers_.Add(this, std::move(receiver), origin_id);
+}
+
+void Annotator::BindReceiverForTesting(
+    mojo::PendingReceiver<mojom::Annotator> receiver) {
+  CHECK_IS_TEST();
+  BindReceiver(std::move(receiver), url::Origin());
 }
 
 void Annotator::AnnotateImage(
@@ -617,7 +646,8 @@ void Annotator::AnnotateImage(
       ComputePreferredLanguage(page_language);
   client_->RecordLanguageMetrics(page_language, preferred_language);
 
-  const RequestKey request_key(source_id, preferred_language);
+  const RequestKey request_key(receivers_.current_context(), source_id,
+                               preferred_language);
 
   // Return cached results if they exist.
   const auto cache_lookup = cached_results_.find(request_key);
@@ -715,9 +745,9 @@ std::string Annotator::FormatJsonRequest(
       base::DictValue desc_params;
 
       // Add preferred description language if it has been specified.
-      if (!it->desc_lang_tag.empty()) {
+      if (!it->request_key.desc_lang_tag.empty()) {
         base::ListValue desc_lang_list;
-        desc_lang_list.Append(it->desc_lang_tag);
+        desc_lang_list.Append(it->request_key.desc_lang_tag);
 
         desc_params.Set("preferredLanguages", std::move(desc_lang_list));
       }
@@ -741,7 +771,7 @@ std::string Annotator::FormatJsonRequest(
     ReportImageRequestIncludesIcon(it->icon_requested);
 
     base::DictValue image_request;
-    image_request.Set("imageId", MakeImageId(it->source_id, it->desc_lang_tag));
+    image_request.Set("imageId", it->request_key.MakeImageId());
     image_request.Set("imageBytes", std::move(base64_data));
     image_request.Set("engineParameters", std::move(engine_params_list));
 
@@ -786,9 +816,6 @@ void Annotator::OnJpgImageDataReceived(
     const std::vector<uint8_t>& image_bytes,
     const int32_t width,
     const int32_t height) {
-  const std::string& source_id = request_key.first;
-  const std::string& request_language = request_key.second;
-
   ReportPixelFetchSuccess(!image_bytes.empty());
 
   // Failed to retrieve bytes from local processor; remove dead processor and
@@ -801,10 +828,23 @@ void Annotator::OnJpgImageDataReceived(
   // Local processing is no longer ongoing.
   local_processors_.erase(request_key);
 
+  const bool desc_requested = IsWithinDescPolicy(width, height);
+  if (features::IsImageDescriptionsAlternateRoutingEnabled() &&
+      !desc_requested) {
+    // Under alternate routing, the server requires images to meet
+    // IsWithinDescPolicy() (which covers captions, labels, and in-policy OCR)
+    // and does not support icon classification or OCR-only requests for
+    // smaller/wider images. Fail out-of-policy images immediately without
+    // buffering image_bytes or occupying a batch throttle slot.
+    ReportImageRequestIncludesDesc(false);
+    ProcessResult(request_key, {});
+    return;
+  }
+
   // Schedule a server request for this image.
-  server_request_queue_.emplace_front(
-      source_id, IsWithinDescPolicy(width, height),
-      IsWithinIconPolicy(width, height), request_language, image_bytes);
+  server_request_queue_.emplace_front(request_key, desc_requested,
+                                      IsWithinIconPolicy(width, height),
+                                      image_bytes);
   pending_requests_.insert(request_key);
 
   // Start sending batches to the server.
@@ -819,130 +859,268 @@ void Annotator::SendRequestBatchToServer() {
     return;
   }
 
+  // Use anchovy if the flag is enabled.
+  if (features::IsImageDescriptionsAlternateRoutingEnabled()) {
+    CHECK(anchovy_provider_);
+
+    // Cap each popped slice at both the configured `batch_size_` and the
+    // server's 100-image per-request ceiling; any remaining entries stay in
+    // `server_request_queue_` for subsequent timer ticks.
+    const size_t batch_count = std::min({server_request_queue_.size(),
+                                         static_cast<size_t>(batch_size_),
+                                         manta::anchovy::kMaxBatchSize});
+    // `OnJpgImageDataReceived` pushes via `emplace_front`, so `back()` is the
+    // oldest queued request. Pop in FIFO order into a local vector upfront
+    // before invoking any provider or client callbacks.
+    std::vector<ServerRequestInfo> batch;
+    batch.reserve(batch_count);
+    for (size_t i = 0; i < batch_count; ++i) {
+      batch.push_back(std::move(server_request_queue_.back()));
+      server_request_queue_.pop_back();
+    }
+
+    using LanguageGroup =
+        std::pair<std::string, std::vector<const ServerRequestInfo*>>;
+    std::vector<LanguageGroup> language_groups;
+    for (const auto& request_info : batch) {
+      CHECK(request_info.desc_requested);
+      ReportImageRequestIncludesDesc(request_info.desc_requested);
+
+      // Group eligible requests by exact `desc_lang_tag` in chronological
+      // arrival order because each Manta request carries a single shared
+      // language context.
+      auto group_it = std::ranges::find(language_groups,
+                                        request_info.request_key.desc_lang_tag,
+                                        &LanguageGroup::first);
+      if (group_it == language_groups.end()) {
+        language_groups.emplace_back(
+            request_info.request_key.desc_lang_tag,
+            std::vector<const ServerRequestInfo*>{&request_info});
+      } else {
+        group_it->second.push_back(&request_info);
+      }
+    }
+
+    for (const auto& [lang_tag, group_items] : language_groups) {
+      manta::anchovy::ImageDescriptionBatchRequest batch_request(lang_tag);
+      batch_request.images.reserve(group_items.size());
+      std::vector<RequestKey> group_keys;
+      group_keys.reserve(group_items.size());
+
+      for (size_t i = 0; i < group_items.size(); ++i) {
+        // Populate per-request decimal indices ("0".."K-1") rather than sending
+        // visited image URLs (`source_id`) in `tag`.
+        batch_request.images.emplace_back(base::NumberToString(i),
+                                          group_items[i]->image_bytes);
+        group_keys.push_back(group_items[i]->request_key);
+      }
+
+      const base::Time now = base::Time::Now();
+      anchovy_provider_->GetImageDescriptions(
+          batch_request, GetTrafficAnnotation(),
+          base::BindOnce(&Annotator::OnMantaBatchResponseReceived,
+                         weak_factory_.GetWeakPtr(), std::move(group_keys),
+                         now));
+    }
+    return;
+  }
+
   // Take last n elements (or all elements if there are less than n).
   const auto begin =
       server_request_queue_.end() -
       std::min<size_t>(server_request_queue_.size(), batch_size_);
   const auto end = server_request_queue_.end();
 
-  // Use anchovy if the flag is enabled.
-
-  if (features::IsImageDescriptionsAlternateRoutingEnabled()) {
-    CHECK(anchovy_provider_);
-    // The set of (source ID, desc lang) pairs relevant for this request.
-    std::set<RequestKey> request_keys;
-    for (std::deque<ServerRequestInfo>::iterator it = begin; it != end; it++) {
-      RequestKey key = {it->source_id, it->desc_lang_tag};
-      request_keys.insert(key);
-      manta::anchovy::ImageDescriptionRequest request = {
-          it->source_id, it->desc_lang_tag, it->image_bytes};
-      const auto now = base::Time::Now();
-      anchovy_provider_->GetImageDescription(
-          request, GetTrafficAnnotation(),
-          base::BindOnce(&Annotator::OnMantaResponseReceived,
-                         weak_factory_.GetWeakPtr(), key, now));
-    }
-  } else {
-    // The set of (source ID, desc lang) pairs relevant for this request.
-    std::set<RequestKey> request_keys;
-    for (std::deque<ServerRequestInfo>::iterator it = begin; it != end; it++) {
-      request_keys.insert({it->source_id, it->desc_lang_tag});
-    }
-
-    // Kick off server communication.
-    std::unique_ptr<network::SimpleURLLoader> url_loader =
-        MakeRequestLoader(pixels_server_url_, api_key_);
-    url_loader->AttachStringForUpload(FormatJsonRequest(begin, end),
-                                      "application/json");
-    ongoing_server_requests_.push_back(std::move(url_loader));
-    ongoing_server_requests_.back()->DownloadToString(
-        url_loader_factory_.get(),
-        base::BindOnce(&Annotator::OnServerResponseReceived,
-                       weak_factory_.GetWeakPtr(), request_keys,
-                       --ongoing_server_requests_.end()),
-        kImageAnnotationMaxResponseSize);
+  // The set of request keys relevant for this request.
+  std::set<RequestKey> request_keys;
+  for (std::deque<ServerRequestInfo>::iterator it = begin; it != end; it++) {
+    request_keys.insert(it->request_key);
   }
+
+  // Kick off server communication.
+  std::unique_ptr<network::SimpleURLLoader> url_loader =
+      MakeRequestLoader(pixels_server_url_, api_key_);
+  url_loader->AttachStringForUpload(FormatJsonRequest(begin, end),
+                                    "application/json");
+  ongoing_server_requests_.push_back(std::move(url_loader));
+  ongoing_server_requests_.back()->DownloadToString(
+      url_loader_factory_.get(),
+      base::BindOnce(&Annotator::OnServerResponseReceived,
+                     weak_factory_.GetWeakPtr(), request_keys,
+                     --ongoing_server_requests_.end()),
+      kImageAnnotationMaxResponseSize);
 
   server_request_queue_.erase(begin, end);
 }
 
-void Annotator::OnMantaResponseReceived(const RequestKey& request_key,
-                                        const base::Time request_time,
-                                        base::DictValue dict,
-                                        manta::MantaStatus status) {
-  const auto now = base::Time::Now();
-  const auto delta = now - request_time;
-  ReportServerLatency(delta);
+std::vector<mojom::AnnotationPtr> Annotator::ExtractMantaAnnotations(
+    const base::ListValue& results_list) const {
+  // Candidate selection and scoring overview:
+  // 1. Each response entry is bucketed into one of four categories:
+  //    PRIMARY_CAPTION (full conceptual sentence), SECONDARY_CAPTION (noun-
+  //    phrase appendix), LABEL (single-word object/entity tag), or OCR
+  //    (extracted text). Within each bucket, only the entry with the highest
+  //    non-negative score is retained (clamping scores > 1.0 to 1.0 for
+  //    averaging, histograms, and Mojo output, and requiring OCR entries to
+  //    meet `min_ocr_confidence_`).
+  // 2. For the image description annotation, PRIMARY_CAPTION takes priority
+  //    over LABEL even if a LABEL has a higher raw confidence score:
+  //    - If both PRIMARY_CAPTION and SECONDARY_CAPTION are present, their texts
+  //      are joined with a newline and their clamped scores are averaged.
+  //    - If only PRIMARY_CAPTION is present, it is used directly.
+  //    - If no PRIMARY_CAPTION is present, any orphan SECONDARY_CAPTION is
+  //      ignored and the highest-scoring LABEL is used as a fallback.
+  // 3. The highest-scoring OCR annotation (if any) is emitted alongside the
+  //    description annotation, and UMA metrics are reported once for each
+  //    emitted annotation.
+  const base::DictValue* best_primary_caption = nullptr;
+  std::optional<double> best_primary_caption_score;
+  const base::DictValue* best_secondary_caption = nullptr;
+  std::optional<double> best_secondary_caption_score;
+  const base::DictValue* best_label = nullptr;
+  std::optional<double> best_label_score;
+  const base::DictValue* best_ocr = nullptr;
+  std::optional<double> best_ocr_score;
 
-  if (dict.empty()) {
-    ProcessResult(request_key, {});
-    return;
-  }
+  for (const auto& result : results_list) {
+    const auto* result_dict = result.GetIfDict();
+    if (!result_dict) {
+      continue;
+    }
+    const auto* text = result_dict->FindString("text");
+    const auto* type = result_dict->FindString("type");
+    const auto score = result_dict->FindDouble("score");
+    if (!text || text->empty() || !type || !score.has_value() || *score < 0.0) {
+      continue;
+    }
 
-  auto* results_list = dict.FindList("results");
-
-  if (!results_list || results_list->size() == 0) {
-    ProcessResult(request_key, {});
-    return;
-  }
-
-  if (status.status_code == manta::MantaStatusCode::kOk) {
-    // Find the result with the best score.
-    base::DictValue* best = nullptr;
-    std::optional<double> best_score;
-
-    // Store OCR values separately.
-    base::DictValue* best_ocr = nullptr;
-    std::optional<double> best_ocr_score;
-
-    for (auto& result : *results_list) {
-      auto* result_dict = result.GetIfDict();
-      CHECK(result_dict);
-      auto score = result_dict->FindDouble("score");
-      CHECK(score.has_value());
-      auto* type = result_dict->FindString("type");
-      CHECK(type);
-
-      // The better score in image descriptions is the larger number.
-      if (*type == "OCR") {
-        ReportOcrAnnotation(*score, false);
-        if (!best_ocr_score.has_value() || *score > *best_ocr_score) {
-          best_ocr_score = score;
-          best_ocr = result_dict;
-        }
-      } else {
-        if (auto itr = annotation_types().find(*type);
-            itr != annotation_types().end()) {
-          ReportDescAnnotation(itr->second, *score, false);
-        }
-        if (!best_score.has_value() || *score > *best_score) {
-          best_score = score;
-          best = result_dict;
-        }
+    if (*type == manta::anchovy::kTypeOcr) {
+      // Enforce the minimum OCR confidence threshold before accepting OCR text
+      // (comparing as float because `OutputData::score` is a wire float).
+      if (static_cast<float>(*score) <
+          static_cast<float>(min_ocr_confidence_)) {
+        continue;
+      }
+      if (!best_ocr_score.has_value() || *score > *best_ocr_score) {
+        best_ocr_score = score;
+        best_ocr = result_dict;
+      }
+    } else if (*type == manta::anchovy::kTypePrimaryCaption ||
+               *type == manta::anchovy::kTypeCaption) {
+      if (!best_primary_caption_score.has_value() ||
+          *score > *best_primary_caption_score) {
+        best_primary_caption_score = score;
+        best_primary_caption = result_dict;
+      }
+    } else if (*type == manta::anchovy::kTypeSecondaryCaption) {
+      if (!best_secondary_caption_score.has_value() ||
+          *score > *best_secondary_caption_score) {
+        best_secondary_caption_score = score;
+        best_secondary_caption = result_dict;
+      }
+    } else if (*type == manta::anchovy::kTypeLabel) {
+      if (!best_label_score.has_value() || *score > *best_label_score) {
+        best_label_score = score;
+        best_label = result_dict;
       }
     }
-
-    std::vector<mojom::AnnotationPtr> annotations;
-
-    if (best) {
-      annotations.push_back(CreateAnnotationFromMantaResponse(*best));
-    }
-
-    if (best_ocr) {
-      annotations.push_back(CreateAnnotationFromMantaResponse(*best_ocr));
-    }
-
-    // Add all annotations for the image.
-    std::string image_id = MakeImageId(request_key.first, request_key.second);
-    std::map<std::string, mojom::AnnotateImageResultPtr> results;
-    results[image_id] =
-        mojom::AnnotateImageResult::NewAnnotations(std::move(annotations));
-    // Process the result from manta.
-    ProcessResult(request_key, std::move(results));
-  } else {
-    LOG(ERROR) << "\nRequest for: " << request_key.first << " Failed: \n"
-               << base::ToString(status.status_code);
   }
+
+  std::vector<mojom::AnnotationPtr> annotations;
+  if (best_primary_caption) {
+    if (best_secondary_caption) {
+      // Join the primary conceptual caption and secondary noun-phrase appendix
+      // with a newline and average their clamped scores, matching the legacy
+      // server.
+      const std::string* primary_text =
+          best_primary_caption->FindString("text");
+      const std::string* secondary_text =
+          best_secondary_caption->FindString("text");
+      const double avg_score = (std::min(*best_primary_caption_score, 1.0) +
+                                std::min(*best_secondary_caption_score, 1.0)) /
+                               2.0;
+      ReportDescAnnotation(mojom::AnnotationType::kCaption, avg_score, false);
+      annotations.push_back(
+          mojom::Annotation::New(mojom::AnnotationType::kCaption, avg_score,
+                                 *primary_text + "\n" + *secondary_text));
+    } else {
+      // Emit the primary caption directly when no secondary caption is present.
+      mojom::AnnotationPtr annotation =
+          CreateAnnotationFromMantaResponse(*best_primary_caption);
+      ReportDescAnnotation(annotation->type, annotation->score, false);
+      annotations.push_back(std::move(annotation));
+    }
+  } else if (best_label) {
+    // Fall back to the highest-scoring label only when no primary caption is
+    // available (ignoring any orphan secondary caption).
+    mojom::AnnotationPtr annotation =
+        CreateAnnotationFromMantaResponse(*best_label);
+    ReportDescAnnotation(annotation->type, annotation->score, false);
+    annotations.push_back(std::move(annotation));
+  }
+
+  if (best_ocr) {
+    // Emit the highest-scoring OCR annotation alongside any description.
+    mojom::AnnotationPtr annotation =
+        CreateAnnotationFromMantaResponse(*best_ocr);
+    ReportOcrAnnotation(annotation->score, false);
+    annotations.push_back(std::move(annotation));
+  }
+
+  return annotations;
+}
+
+void Annotator::OnMantaBatchResponseReceived(
+    std::vector<RequestKey> request_keys,
+    const base::Time request_time,
+    base::DictValue dict,
+    manta::MantaStatus status) {
+  // Record latency once per HTTP batch response rather than per image.
+  ReportServerLatency(base::Time::Now() - request_time);
+
+  const std::set<RequestKey> all_keys(request_keys.begin(), request_keys.end());
+
+  // Check for a non-OK Manta status first so failed batch requests are logged
+  // and every queued image in the batch resolves cleanly in ProcessResults().
+  if (status.status_code != manta::MantaStatusCode::kOk) {
+    DVLOG(1) << "Manta image annotation batch request failed with status: "
+             << base::ToString(status.status_code);
+    ProcessResults(all_keys, {});
+    return;
+  }
+
+  const base::DictValue* results_by_tag =
+      dict.FindDict(manta::anchovy::kResultsByTagKey);
+  if (!results_by_tag || results_by_tag->empty()) {
+    ProcessResults(all_keys, {});
+    return;
+  }
+
+  std::map<std::string, mojom::AnnotateImageResultPtr> results;
+  for (size_t i = 0; i < request_keys.size(); ++i) {
+    // `SendRequestBatchToServer` sent `request_keys[i]` with tag `"i"`, and
+    // `AnchovyProtoHelper` groups all candidates echoed with tag `"i"` under
+    // `results_by_tag["i"]`. Look up only expected indices ("0".."K-1"),
+    // ignoring any extraneous or untagged entries returned by the server.
+    const base::ListValue* tag_results =
+        results_by_tag->FindList(base::NumberToString(i));
+    if (!tag_results || tag_results->empty()) {
+      continue;
+    }
+
+    std::vector<mojom::AnnotationPtr> annotations =
+        ExtractMantaAnnotations(*tag_results);
+    // Only populate and cache results for images that yielded at least one
+    // valid annotation; omitted or fully filtered tags remain absent from
+    // `results` so ProcessResults() resolves them with kFailure without
+    // caching.
+    if (!annotations.empty()) {
+      results[request_keys[i].MakeImageId()] =
+          mojom::AnnotateImageResult::NewAnnotations(std::move(annotations));
+    }
+  }
+
+  ProcessResults(all_keys, results);
 }
 
 void Annotator::OnServerResponseReceived(
@@ -992,9 +1170,8 @@ void Annotator::ProcessResult(
   pending_requests_.erase(request_key);
 
   // The lookup will be successful if there is a valid result (i.e. not an
-  // error and not a malformed result) for this (source ID, desc lang) pair.
-  const auto result_lookup =
-      results.find(MakeImageId(request_key.first, request_key.second));
+  // error and not a malformed result) for this request key.
+  const auto result_lookup = results.find(request_key.MakeImageId());
 
   // Populate the result struct for this image and copy it into the cache if
   // necessary.
@@ -1009,7 +1186,7 @@ void Annotator::ProcessResult(
   const auto request_info_it = request_infos_.find(request_key);
   if (request_info_it == request_infos_.end()) {
     LOG(ERROR) << "Could not find request key in request_infos_: "
-               << request_key.first << "," << request_key.second;
+               << request_key.source_id << "," << request_key.desc_lang_tag;
     return;
   }
 

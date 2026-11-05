@@ -10,8 +10,7 @@
 #include "base/android/self_compaction_manager.h"
 #endif
 #include "base/feature_list.h"
-#include "base/memory/memory_pressure_listener.h"
-#include "base/memory/memory_pressure_listener_registry.h"
+#include "base/memory_coordinator/memory_pressure_source.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/rand_util.h"
@@ -20,6 +19,7 @@
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/platform.h"
+#include "third_party/blink/renderer/platform/scheduler/common/features.h"
 
 namespace blink {
 
@@ -50,8 +50,10 @@ MemoryPurgeManager::MemoryPurgeManager(
 MemoryPurgeManager::~MemoryPurgeManager() = default;
 
 void MemoryPurgeManager::OnPageCreated() {
+  bool were_all_frozen = AreAllPagesFrozen();
   total_page_count_++;
   memory_pressure_suppression_token_.reset();
+  MaybeRunAllPagesFrozenCallback(were_all_frozen);
 
   if (!CanPurge()) {
     purge_timer_.Stop();
@@ -61,10 +63,13 @@ void MemoryPurgeManager::OnPageCreated() {
 void MemoryPurgeManager::OnPageDestroyed(bool is_frozen) {
   DCHECK_GT(total_page_count_, 0);
   DCHECK_GE(frozen_page_count_, 0);
+  bool were_all_frozen = AreAllPagesFrozen();
   total_page_count_--;
   if (is_frozen) {
     frozen_page_count_--;
   }
+
+  MaybeRunAllPagesFrozenCallback(were_all_frozen);
 
   if (!CanPurge()) {
     purge_timer_.Stop();
@@ -78,6 +83,8 @@ void MemoryPurgeManager::OnPageFrozen(
   DCHECK_LT(frozen_page_count_, total_page_count_);
   frozen_page_count_++;
 
+  MaybeRunAllPagesFrozenCallback(/*were_all_frozen=*/false);
+
   if (CanPurge()) {
     if (called_from == base::MemoryReductionTaskContext::kProactive) {
       PerformMemoryPurge();
@@ -88,8 +95,11 @@ void MemoryPurgeManager::OnPageFrozen(
 }
 
 void MemoryPurgeManager::OnPageResumed() {
+  bool were_all_frozen = AreAllPagesFrozen();
   DCHECK_GT(frozen_page_count_, 0);
   frozen_page_count_--;
+
+  MaybeRunAllPagesFrozenCallback(were_all_frozen);
 
   if (!CanPurge()) {
     purge_timer_.Stop();
@@ -146,6 +156,28 @@ void MemoryPurgeManager::OnRendererForegrounded() {
   backgrounded_purge_pending_ = false;
   did_purge_with_page_frozen_since_backgrounded_ = false;
   purge_timer_.Stop();
+
+  if (!did_purge_since_backgrounded_) {
+    return;
+  }
+  did_purge_since_backgrounded_ = false;
+
+#if !BUILDFLAG(IS_ANDROID)
+  // Nothing else lowers the level set by PerformMemoryPurge(). The browser only
+  // forwards system memory pressure on CastOS, and only when its level changes
+  // (see RenderProcessHostImpl::OnMemoryPressure()). Without this, the renderer
+  // stays at critical pressure indefinitely. On CastOS, a real pressure level
+  // cleared here is restored by the browser's next notification.
+  //
+  // On Android, renderers get system memory pressure directly through
+  // MemoryPressureListenerAndroid, which this would clear.
+  if (base::FeatureList::IsEnabled(
+          scheduler::kMemoryPurgeResetPressureOnForeground)) {
+    // In --single-process mode, `OnRendererForegrounded()` does not run on the
+    // main thread.
+    base::SetMemoryPressureLevelFromAnyThread(base::MEMORY_PRESSURE_LEVEL_NONE);
+  }
+#endif
 }
 
 void MemoryPurgeManager::RecordAreAllPagesFrozenMetric(std::string_view name) {
@@ -180,8 +212,9 @@ void MemoryPurgeManager::PerformMemoryPurge() {
       !purge_inhibited_because_already_purged_with_frozen_page) {
     // In --single-process mode, `PerformMemoryPurge()` does not run on the main
     // thread.
-    base::MemoryPressureListenerRegistry::NotifyMemoryPressureFromAnyThread(
+    base::SetMemoryPressureLevelFromAnyThread(
         base::MEMORY_PRESSURE_LEVEL_CRITICAL);
+    did_purge_since_backgrounded_ = true;
   }
 
   if (AreAllPagesFrozen()) {
@@ -198,6 +231,13 @@ void MemoryPurgeManager::PerformMemoryPurge() {
   backgrounded_purge_pending_ = false;
 }
 
+#if BUILDFLAG(IS_ANDROID)
+void MemoryPurgeManager::SetOnAllPagesFrozenCallback(
+    base::RepeatingCallback<void(bool)> callback) {
+  all_pages_frozen_callback_ = std::move(callback);
+}
+#endif
+
 bool MemoryPurgeManager::CanPurge() const {
   if (total_page_count_ == 0) {
     return false;
@@ -212,6 +252,16 @@ bool MemoryPurgeManager::CanPurge() const {
   }
 
   return true;
+}
+
+void MemoryPurgeManager::MaybeRunAllPagesFrozenCallback(bool were_all_frozen) {
+#if BUILDFLAG(IS_ANDROID)
+  const bool are_all_frozen = AreAllPagesFrozen();
+  // Run the callback if the "all pages frozen" state changed.
+  if (were_all_frozen != are_all_frozen && all_pages_frozen_callback_) {
+    all_pages_frozen_callback_.Run(are_all_frozen);
+  }
+#endif
 }
 
 bool MemoryPurgeManager::AreAllPagesFrozen() const {

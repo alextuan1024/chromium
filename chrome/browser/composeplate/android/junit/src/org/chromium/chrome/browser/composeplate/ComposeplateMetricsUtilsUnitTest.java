@@ -9,6 +9,7 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.browser.composeplate.ComposeplateMetricsUtils.ComposeplateViewButtonType;
 import org.chromium.chrome.browser.util.BrowserUiUtils.ModuleTypeOnStartAndNtp;
 
 /** Unit tests for {@link ComposeplateMetricsUtils}. */
@@ -56,13 +57,37 @@ public class ComposeplateMetricsUtilsUnitTest {
     }
 
     @Test
-    public void testRecordFakeSearchBoxComposeplateButtonImpression() {
-        String histogramName = "NewTabPage.FakeSearchBox.ComposeplateButton.Impression2";
-        var histogramWatcher = HistogramWatcher.newSingleRecordWatcher(histogramName, true);
-        ComposeplateMetricsUtils.recordFakeSearchBoxComposeplateButtonImpression2(true);
+    public void testRecordComposeplateButtonImpression_aiModeButton() {
+        testRecordComposeplateButtonImpressionImpl(
+                ComposeplateViewButtonType.AI_MODE, /* expectedSample= */ 0);
+    }
 
-        histogramWatcher = HistogramWatcher.newSingleRecordWatcher(histogramName, false);
-        ComposeplateMetricsUtils.recordFakeSearchBoxComposeplateButtonImpression2(false);
+    @Test
+    public void testRecordComposeplateButtonImpression_incognitoButton() {
+        testRecordComposeplateButtonImpressionImpl(
+                ComposeplateViewButtonType.INCOGNITO, /* expectedSample= */ 1);
+    }
+
+    @Test
+    public void testRecordComposeplateButtonImpression_createImageButton() {
+        testRecordComposeplateButtonImpressionImpl(
+                ComposeplateViewButtonType.CREATE_IMAGE, /* expectedSample= */ 2);
+    }
+
+    @Test
+    public void testRecordComposeplateButtonImpression_addImageButton() {
+        testRecordComposeplateButtonImpressionImpl(
+                ComposeplateViewButtonType.ADD_IMAGE, /* expectedSample= */ 3);
+    }
+
+    private void testRecordComposeplateButtonImpressionImpl(
+            @ComposeplateViewButtonType int buttonType, int expectedSample) {
+        // The samples are persisted to logs, so the values of ComposeplateViewButtonType must not
+        // change.
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "NewTabPage.Composeplate.Buttons.Impression", expectedSample);
+        ComposeplateMetricsUtils.recordComposeplateButtonImpression(buttonType);
         histogramWatcher.assertExpected();
     }
 }

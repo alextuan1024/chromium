@@ -4,18 +4,27 @@
 
 #include "chrome/browser/safe_browsing/extension_telemetry/extension_telemetry_service.h"
 
+#include "base/callback_list.h"
 #include "base/command_line.h"
+#include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_file_value_serializer.h"
 #include "base/json/values_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/strcat.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/time/time.h"
+#include "base/values.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/enterprise/connectors/reporting/extension_telemetry_event_router_factory.h"
 #include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client.h"
 #include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client_factory.h"
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
+#include "chrome/browser/extensions/activity_log/activity_log.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/safe_browsing/extension_telemetry/cookies_get_signal.h"
@@ -31,6 +40,8 @@
 #include "components/crx_file/id_util.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
 #include "components/enterprise/connectors/core/reporting_service_settings.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/scoped_isolated_mode_override_for_testing.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
@@ -107,7 +118,8 @@ class ExtensionTelemetryServiceTest : public ::testing::Test {
  protected:
   explicit ExtensionTelemetryServiceTest(
       base::test::TaskEnvironment::TimeSource time_source =
-          base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+          base::test::TaskEnvironment::TimeSource::MOCK_TIME,
+      const std::vector<base::test::FeatureRef>& enabled_features = {});
   void SetUp() override {
     ASSERT_NE(telemetry_service_, nullptr);
     ASSERT_TRUE(extensions_root_dir_.CreateUniqueTempDir());
@@ -136,6 +148,8 @@ class ExtensionTelemetryServiceTest : public ::testing::Test {
            IsTelemetryServiceEnabledForEnterprise();
   }
 
+  bool HasPersister() { return !telemetry_service_->persister_.is_null(); }
+
   bool IsTelemetryServiceEnabledForESB() {
     return telemetry_service_->esb_enabled_ &&
            !telemetry_service_->signal_processors_.empty() &&
@@ -150,6 +164,11 @@ class ExtensionTelemetryServiceTest : public ::testing::Test {
 
   bool IsExtensionStoreEmpty() {
     return telemetry_service_->extension_store_.empty();
+  }
+
+  bool IsObservingEsbPref() {
+    return telemetry_service_->pref_change_registrar_.IsObserved(
+        prefs::kSafeBrowsingEnhanced);
   }
 
   bool IsEnterpriseExtensionStoreEmpty() {
@@ -191,6 +210,10 @@ class ExtensionTelemetryServiceTest : public ::testing::Test {
     return telemetry_service_->activity_log_ingester_ != nullptr;
   }
 
+  void TriggerOffstoreFileDataCollection() {
+    telemetry_service_->StartOffstoreFileDataCollection();
+  }
+
   void SetEnterpriseReportingConfig(
       bool enabled,
       const std::vector<std::string>& enabled_opt_in_events) {
@@ -220,6 +243,9 @@ class ExtensionTelemetryServiceTest : public ::testing::Test {
         ->SetBrowserCloudPolicyClientForTesting(nullptr);
   }
 
+  // Initialized before the task environment and the profile, so that their
+  // services see the enabled features.
+  base::test::ScopedFeatureList scoped_feature_list_;
   // Test directory that serves as the root directory for all test extension
   // files.
   base::ScopedTempDir extensions_root_dir_;
@@ -235,8 +261,9 @@ class ExtensionTelemetryServiceTest : public ::testing::Test {
 };
 
 ExtensionTelemetryServiceTest::ExtensionTelemetryServiceTest(
-    base::test::TaskEnvironment::TimeSource time_source)
-    : task_environment_{time_source} {
+    base::test::TaskEnvironment::TimeSource time_source,
+    const std::vector<base::test::FeatureRef>& enabled_features)
+    : scoped_feature_list_(enabled_features), task_environment_{time_source} {
   // Create extension prefs and registry instances.
   extension_prefs_ = extensions::ExtensionPrefs::Get(&profile_);
   extension_registrar_ = extensions::ExtensionRegistrar::Get(&profile_);
@@ -1172,7 +1199,7 @@ TEST_F(ExtensionTelemetryServiceTest,
   ASSERT_NE(detector, nullptr);
 
   AutocompleteMatch match(nullptr, 0, false,
-                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   match.destination_url = GURL("http://www.google.com/search?q=test");
 
   telemetry_service_->OnOmniboxSearch(match);
@@ -1206,7 +1233,7 @@ TEST_F(ExtensionTelemetryServiceTest,
   telemetry_service_->SetEnabledForESB(true);
 
   AutocompleteMatch match(nullptr, 0, false,
-                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   match.destination_url = GURL("http://www.google.com/search?q=test");
   telemetry_service_->OnOmniboxSearch(match);
   telemetry_service_->OnDseSerpLoaded();
@@ -1254,7 +1281,7 @@ TEST_F(ExtensionTelemetryServiceTest,
   telemetry_service_->SetEnabledForESB(true);
 
   AutocompleteMatch match(nullptr, 0, false,
-                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   match.destination_url = GURL("http://www.google.com/search?q=test");
   telemetry_service_->OnOmniboxSearch(match);
   telemetry_service_->OnDseSerpLoaded();
@@ -1757,6 +1784,23 @@ TEST_F(ExtensionTelemetryServiceTest,
   EXPECT_EQ(telemetry_report_pb->reports(1).extension().file_infos_size(), 0);
 }
 
+TEST_F(ExtensionTelemetryServiceTest, FileData_HandlesStopDuringCollection) {
+  // Start a collection pass so a file processor task is in flight, then
+  // toggle the service off and on before its reply runs. The stale reply is
+  // dropped, and the next scheduled pass completes normally.
+  TriggerOffstoreFileDataCollection();
+  telemetry_service_->SetEnabledForESB(false);
+  telemetry_service_->SetEnabledForESB(true);
+
+  task_environment_.FastForwardBy(
+      telemetry_service_->GetOffstoreFileDataCollectionStartupDelaySeconds());
+
+  const auto& file_data_dict =
+      prefs()->GetDict(prefs::kExtensionTelemetryFileData);
+  EXPECT_TRUE(file_data_dict.contains(kExtensionId[0]));
+  EXPECT_TRUE(file_data_dict.contains(kExtensionId[1]));
+}
+
 TEST_F(ExtensionTelemetryServiceTest, DisableOffstoreExtensions) {
   // Extension 0 is enabled and not on blocklist.
   EXPECT_TRUE(
@@ -1908,6 +1952,248 @@ TEST_F(ExtensionTelemetryServiceSystemTimeTest,
   // Verify management authority.
   EXPECT_EQ(request.management_authority(),
             TelemetryReport::MANAGEMENT_AUTHORITY_UNSPECIFIED);
+}
+
+// Runs the tests against the service of an Enterprise Isolated Mode profile.
+class ExtensionTelemetryServiceIsolatedModeTest
+    : public ExtensionTelemetryServiceTest {
+ protected:
+  // `ExtensionTelemetryEventRouter` is only created for Isolated Mode
+  // profiles when Milestone 2 is enabled. DOM activity telemetry also needs
+  // its own feature.
+  ExtensionTelemetryServiceIsolatedModeTest()
+      : ExtensionTelemetryServiceTest(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME,
+            {enterprise_isolated_mode::kEnterpriseIsolatedModeMilestone2,
+             extensions_features::kEnterpriseExtensionDOMActivityTelemetry}) {
+    isolated_profile_ =
+        profile_.GetPrimaryOTRProfile(/*create_if_needed=*/true);
+    enterprise_connectors::RealtimeReportingClientFactory::GetInstance()
+        ->SetTestingFactory(
+            isolated_profile_,
+            base::BindRepeating(
+                &enterprise_connectors::test::BuildRealtimeReportingClient));
+
+    // Replace the regular profile's service with the Isolated Mode profile's.
+    telemetry_service_ = CreateTelemetryService(isolated_profile_);
+  }
+
+  void SetUp() override {
+    ASSERT_TRUE(isolated_profile_->IsEnterpriseIsolatedModeProfile());
+    ExtensionTelemetryServiceTest::SetUp();
+  }
+
+  // Makes the primary Off-The-Record profile an Isolated Mode profile.
+  enterprise_isolated_mode::ScopedIsolatedModeOverrideForTesting
+      scoped_isolated_mode_;
+  raw_ptr<Profile> isolated_profile_ = nullptr;
+};
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest, IsNeverEnabledForESB) {
+  // The test fixture enables ESB on the parent profile, which the Isolated
+  // Mode profile inherits.
+  ASSERT_TRUE(IsEnhancedProtectionEnabled(*isolated_profile_->GetPrefs()));
+  EXPECT_FALSE(IsTelemetryServiceEnabledForESB());
+  EXPECT_FALSE(IsObservingEsbPref());
+
+  // Toggling the ESB pref does not enable ESB reporting.
+  prefs()->SetBoolean(prefs::kSafeBrowsingEnhanced, false);
+  prefs()->SetBoolean(prefs::kSafeBrowsingEnhanced, true);
+  EXPECT_FALSE(IsTelemetryServiceEnabledForESB());
+
+  // Explicitly enabling ESB reporting has no effect either.
+  telemetry_service_->SetEnabledForESB(true);
+  EXPECT_FALSE(IsTelemetryServiceEnabledForESB());
+  // Without a persister, the service can't touch the parent profile's
+  // persisted ESB reports.
+  EXPECT_FALSE(HasPersister());
+}
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest,
+       KeepsParentProfilePersistedReports) {
+  // Simulate an ESB report persisted by the parent profile's service. The
+  // Isolated Mode profile shares the parent profile's path.
+  ASSERT_EQ(isolated_profile_->GetPath(), profile_.GetPath());
+  const base::FilePath persisted_report = profile_.GetPath()
+                                              .AppendASCII("CRXTelemetry")
+                                              .AppendASCII("CRXTelemetry_0");
+  ASSERT_TRUE(base::CreateDirectory(persisted_report.DirName()));
+  ASSERT_TRUE(base::WriteFile(persisted_report, "report"));
+  ASSERT_TRUE(IsEnhancedProtectionEnabled(*isolated_profile_->GetPrefs()));
+
+  // Turning the parent profile's ESB off would make a regular profile's
+  // service delete its persisted reports. The fixture's Isolated Mode service
+  // must not.
+  prefs()->SetBoolean(prefs::kSafeBrowsingEnhanced, false);
+  ASSERT_FALSE(IsEnhancedProtectionEnabled(*isolated_profile_->GetPrefs()));
+  telemetry_service_->Shutdown();
+  telemetry_service_.reset();
+  // A service enabled for ESB would have posted
+  // `ExtensionTelemetryPersister::ClearPersistedFiles()` to its persister's
+  // thread pool sequence. With mock time, this runs the posted tasks without
+  // advancing the clock.
+  task_environment_.FastForwardBy(base::TimeDelta());
+
+  EXPECT_TRUE(base::PathExists(persisted_report));
+}
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest,
+       KeepsParentProfileSearchHijackingData) {
+  // Simulate search hijacking data saved by the parent profile's service.
+  prefs()->SetDict(prefs::kExtensionTelemetrySearchHijackingSignalData,
+                   base::DictValue().Set(kExtensionId[0], base::DictValue()));
+  const base::DictValue search_hijacking_data =
+      prefs()
+          ->GetDict(prefs::kExtensionTelemetrySearchHijackingSignalData)
+          .Clone();
+  ASSERT_FALSE(search_hijacking_data.empty());
+
+  // Turning the parent profile's ESB off would make a regular profile's
+  // service clear its search hijacking data. The fixture's Isolated Mode
+  // service must not.
+  prefs()->SetBoolean(prefs::kSafeBrowsingEnhanced, false);
+  ASSERT_FALSE(IsEnhancedProtectionEnabled(*isolated_profile_->GetPrefs()));
+  telemetry_service_->Shutdown();
+  telemetry_service_.reset();
+
+  EXPECT_EQ(
+      prefs()->GetDict(prefs::kExtensionTelemetrySearchHijackingSignalData),
+      search_hijacking_data);
+}
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest,
+       UsesShortEnterpriseReportingInterval) {
+  SetEnterpriseReportingConfig(
+      /*enabled=*/true, {enterprise_connectors::kExtensionTelemetryEvent});
+  ASSERT_TRUE(IsTelemetryServiceEnabledForEnterprise());
+  EXPECT_EQ(telemetry_service_->GetEnterpriseTimerDelayForTesting(),
+            base::Seconds(30));
+}
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest, CanBeEnabledForEnterprise) {
+  EXPECT_FALSE(IsTelemetryServiceEnabledForEnterprise());
+
+  SetEnterpriseReportingConfig(
+      /*enabled=*/true, {enterprise_connectors::kExtensionTelemetryEvent});
+  EXPECT_TRUE(IsTelemetryServiceEnabledForEnterprise());
+  EXPECT_FALSE(IsTelemetryServiceEnabledForESB());
+
+  // Signals are stored for enterprise reporting only.
+  PrimeTelemetryServiceWithSignal();
+  EXPECT_NE(GetExtensionInfoFromEnterpriseExtensionStore(kExtensionId[0]),
+            nullptr);
+  EXPECT_TRUE(IsExtensionStoreEmpty());
+}
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest,
+       DoesNotCollectOffstoreFileData) {
+  SetEnterpriseReportingConfig(
+      /*enabled=*/true, {enterprise_connectors::kExtensionTelemetryEvent});
+  ASSERT_TRUE(IsTelemetryServiceEnabledForEnterprise());
+
+  // With mock time, this also runs the tasks posted to the thread pool.
+  task_environment_.FastForwardBy(
+      telemetry_service_->GetOffstoreFileDataCollectionStartupDelaySeconds());
+
+  // The Isolated Mode profile's prefs are an in-memory overlay of the parent
+  // profile's prefs, so check both.
+  EXPECT_TRUE(isolated_profile_->GetPrefs()
+                  ->GetDict(prefs::kExtensionTelemetryFileData)
+                  .empty());
+  EXPECT_TRUE(prefs()->GetDict(prefs::kExtensionTelemetryFileData).empty());
+}
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest,
+       ReportsOffstoreFileDataCollectedByParentProfile) {
+  // Simulate file data collected by the parent profile's service.
+  constexpr char kFileHash[] = "file-hash";
+  constexpr char kManifestContents[] = "manifest-contents";
+  base::DictValue file_data_dict;
+  file_data_dict.Set(
+      kExtensionId[0],
+      base::DictValue()
+          .Set(kFileDataProcessTimestampPref,
+               base::TimeToValue(base::Time::Now()))
+          .Set(kFileDataDictPref, base::DictValue()
+                                      .Set(kJavaScriptFile, kFileHash)
+                                      .Set(kManifestFile, kManifestContents)));
+  prefs()->SetDict(prefs::kExtensionTelemetryFileData,
+                   std::move(file_data_dict));
+
+  SetEnterpriseReportingConfig(
+      /*enabled=*/true, {enterprise_connectors::kExtensionTelemetryEvent});
+  PrimeTelemetryServiceWithSignal();
+
+  std::unique_ptr<TelemetryReport> report = GetTelemetryReportForEnterprise();
+  ASSERT_TRUE(report);
+  ASSERT_EQ(report->reports_size(), 1);
+  const ExtensionInfo& extension_info = report->reports(0).extension();
+  EXPECT_EQ(extension_info.id(), kExtensionId[0]);
+  EXPECT_EQ(extension_info.manifest_json(), kManifestContents);
+  ASSERT_EQ(extension_info.file_infos_size(), 1);
+  EXPECT_EQ(extension_info.file_infos(0).name(), kJavaScriptFile);
+  EXPECT_EQ(extension_info.file_infos(0).hash(), kFileHash);
+}
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest,
+       RecordsIsolatedEnterpriseHistograms) {
+  constexpr char kSignalTypeHistogram[] =
+      "SafeBrowsing.ExtensionTelemetry.Enterprise.Signals.SignalType";
+  constexpr char kReportSizeHistogram[] =
+      "SafeBrowsing.ExtensionTelemetry.Enterprise.ReportSize";
+  base::HistogramTester histogram_tester;
+  SetEnterpriseReportingConfig(
+      /*enabled=*/true, {enterprise_connectors::kExtensionTelemetryEvent});
+
+  // Add a signal, then trigger an enterprise report.
+  PrimeTelemetryServiceWithSignal();
+  task_environment_.FastForwardBy(
+      telemetry_service_->GetEnterpriseTimerDelayForTesting());
+
+  // Both histograms are recorded only in their Isolated Mode variants.
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({kSignalTypeHistogram, ".Isolated"}),
+      ExtensionSignalType::kCookiesGet, 1);
+  histogram_tester.ExpectTotalCount(kSignalTypeHistogram, 0);
+  histogram_tester.ExpectTotalCount(
+      base::StrCat({kReportSizeHistogram, ".Isolated"}), 1);
+  histogram_tester.ExpectTotalCount(kReportSizeHistogram, 0);
+}
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest,
+       CreatesActivityLogIngesterAlongsideRegularOne) {
+  // Simulate the regular profile's ingester. Both profiles share the same
+  // `ActivityLog`.
+  auto* activity_log = extensions::ActivityLog::GetInstance(&profile_);
+  ASSERT_EQ(extensions::ActivityLog::GetInstance(isolated_profile_),
+            activity_log);
+  base::CallbackListSubscription regular_subscription =
+      activity_log->AddTelemetrySubscriber(&profile_, base::DoNothing());
+
+  SetEnterpriseReportingConfig(
+      /*enabled=*/true, {enterprise_connectors::kExtensionTelemetryEvent,
+                         enterprise_connectors::kExtensionDOMActivityEvent});
+  ASSERT_TRUE(IsTelemetryServiceEnabledForEnterprise());
+  EXPECT_TRUE(HasActivityLogIngester());
+  EXPECT_TRUE(
+      activity_log->IsTelemetryLoggingActiveForContext(isolated_profile_));
+}
+
+TEST_F(ExtensionTelemetryServiceIsolatedModeTest,
+       DestroyingIsolatedServiceKeepsRegularDomTelemetry) {
+  auto* activity_log = extensions::ActivityLog::GetInstance(&profile_);
+  base::CallbackListSubscription regular_subscription =
+      activity_log->AddTelemetrySubscriber(&profile_, base::DoNothing());
+  SetEnterpriseReportingConfig(
+      /*enabled=*/true, {enterprise_connectors::kExtensionTelemetryEvent,
+                         enterprise_connectors::kExtensionDOMActivityEvent});
+  ASSERT_TRUE(HasActivityLogIngester());
+
+  telemetry_service_.reset();
+
+  EXPECT_FALSE(
+      activity_log->IsTelemetryLoggingActiveForContext(isolated_profile_));
+  EXPECT_TRUE(activity_log->IsTelemetryLoggingActiveForContext(&profile_));
 }
 
 }  // namespace safe_browsing

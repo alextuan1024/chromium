@@ -22,6 +22,7 @@
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/public/test/element_selector.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "net/test/embedded_test_server/http_request.h"
@@ -458,6 +459,7 @@ id<GREYMatcher> ResendPostButtonMatcher() {
 
 // Tests that pressing the button on a POST-based form changes the page and that
 // the back button works as expected afterwards.
+TAG_SMOKE_TEST(FormsTestCase, testGoBackButtonAfterFormSubmission);
 - (void)testGoBackButtonAfterFormSubmission {
   [self setUpFormTestSimpleHttpServer];
   GURL destinationURL = [self destinationUrl];
@@ -475,21 +477,7 @@ id<GREYMatcher> ResendPostButtonMatcher() {
 }
 
 // Tests that a POST followed by a redirect does not show the popup.
-// TODO(crbug.com/495387290): Flaky on iPad simulator.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_testRepostFormCancellingAfterRedirect \
-  FLAKY_testRepostFormCancellingAfterRedirect
-#else
-#define MAYBE_testRepostFormCancellingAfterRedirect \
-  testRepostFormCancellingAfterRedirect
-#endif
-- (void)MAYBE_testRepostFormCancellingAfterRedirect {
-#if TARGET_OS_SIMULATOR
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Flaky on iPad simulator.");
-  }
-#endif
-
+- (void)testRepostFormCancellingAfterRedirect {
   const GURL destinationURL = [self destinationUrl];
 
   [ChromeEarlGrey loadURL:[self redirectFormUrl]];
@@ -539,13 +527,7 @@ id<GREYMatcher> ResendPostButtonMatcher() {
 // Tests that submitting a POST-based form by tapping the 'Go' button on the
 // keyboard navigates to the correct URL and the back button works as expected
 // afterwards.
-// TODO:(crbug.com/1147654): re-enable after figuring out why it is failing.
-- (void)DISABLE_testPostFormEntryWithKeyboard {
-  // Test fails on iPad Air 2 13.4 crbug.com/1102608.
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Fails in iOS 13 on iPads.");
-  }
-
+- (void)testPostFormEntryWithKeyboard {
   [self setUpFormTestSimpleHttpServer];
   const GURL destinationURL = [self destinationUrl];
 

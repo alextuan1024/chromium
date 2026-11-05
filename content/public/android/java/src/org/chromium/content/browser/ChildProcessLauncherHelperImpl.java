@@ -13,6 +13,7 @@ import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.text.TextUtils;
 
+import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
@@ -20,6 +21,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ApplicationState;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
@@ -35,6 +37,7 @@ import org.chromium.base.TraceEvent;
 import org.chromium.base.library_loader.IRelroLibInfo;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryLoader.MultiProcessMediator;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.process_launcher.ChildConnectionAllocator;
 import org.chromium.base.process_launcher.ChildProcessConnection;
 import org.chromium.base.process_launcher.ChildProcessLauncher;
@@ -54,6 +57,10 @@ import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.content_public.common.ContentSwitches;
 
 import java.io.IOException;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -70,9 +77,17 @@ import java.util.Map;
 public final class ChildProcessLauncherHelperImpl {
     private static final String TAG = "ChildProcLH";
 
+    // The type of service used to host the child process.
+    @IntDef({ServiceType.SANDBOXED, ServiceType.PRIVILEGED, ServiceType.SANDBOXED_GPU})
+    @Retention(RetentionPolicy.SOURCE)
+    @Target(ElementType.TYPE_USE)
+    public @interface ServiceType {
+        int SANDBOXED = 0;
+        int PRIVILEGED = 1;
+        int SANDBOXED_GPU = 2;
+    }
+
     // Manifest values used to specify the service names.
-    private static final String NUM_SANDBOXED_SERVICES_KEY =
-            "org.chromium.content.browser.NUM_SANDBOXED_SERVICES";
     private static final String NUM_PRIVILEGED_SERVICES_KEY =
             "org.chromium.content.browser.NUM_PRIVILEGED_SERVICES";
 
@@ -107,6 +122,9 @@ public final class ChildProcessLauncherHelperImpl {
     // Allocator used for non-sandboxed services.
     private static @Nullable ChildConnectionAllocator sPrivilegedChildConnectionAllocator;
 
+    // Allocator used for SandboxedGpuProcessService when sandboxed GPU process is enabled.
+    private static @Nullable ChildConnectionAllocator sSandboxedGpuChildConnectionAllocator;
+
     // Used by tests to override the default sandboxed service allocator settings.
     private static ChildConnectionAllocator.@Nullable ConnectionFactory
             sSandboxedServiceFactoryForTesting;
@@ -130,8 +148,8 @@ public final class ChildProcessLauncherHelperImpl {
     private final @Nullable ChildProcessRanking mRanking;
     private final @Nullable BindingManager mBindingManager;
 
-    // Whether the created process should be sandboxed.
-    private final boolean mSandboxed;
+    // The type of service used to host the created process.
+    private final @ServiceType int mServiceType;
 
     // Remove strong binding when app is in background.
     private final boolean mReducePriorityOnBackground;
@@ -169,7 +187,9 @@ public final class ChildProcessLauncherHelperImpl {
                         @ChildBindingState int initialBindingState) {
                     if (!mCanUseWarmUpConnection) return null;
                     SpareChildConnection spareConnection =
-                            mSandboxed ? sSpareSandboxedConnection : null;
+                            mServiceType == ServiceType.SANDBOXED
+                                    ? sSpareSandboxedConnection
+                                    : null;
                     if (spareConnection == null) return null;
                     return spareConnection.getConnection(
                             connectionAllocator, serviceCallback, initialBindingState);
@@ -211,7 +231,7 @@ public final class ChildProcessLauncherHelperImpl {
                                     mEffectiveImportance);
                             if (mBindingManager != null) mBindingManager.rankingChanged();
                         }
-                        if (mSandboxed) {
+                        if (mServiceType == ServiceType.SANDBOXED) {
                             ChildProcessConnectionMetrics.getInstance().addConnection(connection);
                         }
                         if (mReducePriorityOnBackground
@@ -251,7 +271,7 @@ public final class ChildProcessLauncherHelperImpl {
                         mRanking.removeConnection(connection);
                         if (mBindingManager != null) mBindingManager.rankingChanged();
                     }
-                    if (mSandboxed) {
+                    if (mServiceType == ServiceType.SANDBOXED) {
                         ChildProcessConnectionMetrics.getInstance().removeConnection(connection);
                     }
                 }
@@ -396,7 +416,7 @@ public final class ChildProcessLauncherHelperImpl {
     }
 
     @CalledByNative
-    private static ChildProcessLauncherHelperImpl createAndStart(
+    static ChildProcessLauncherHelperImpl createAndStart(
             long nativePointer,
             String[] commandLine,
             IFileDescriptorInfo[] filesToBeMapped,
@@ -412,11 +432,18 @@ public final class ChildProcessLauncherHelperImpl {
             commandLine = Arrays.copyOf(commandLine, commandLine.length + 1);
             commandLine[commandLine.length - 1] = TRACE_EARLY_JAVA_IN_CHILD_SWITCH;
         }
-        boolean sandboxed = true;
+        @ServiceType int serviceType = ServiceType.SANDBOXED;
         boolean reducePriorityOnBackground = false;
         if (!ContentSwitches.SWITCH_RENDERER_PROCESS.equals(processType)) {
             if (ContentSwitches.SWITCH_GPU_PROCESS.equals(processType)) {
-                sandboxed = false;
+                AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+                boolean useSandboxedGpuProcess =
+                        delegate != null
+                                && delegate.isIsolatedGpuProcessEnabled()
+                                && ChildProcessLauncherHelperImplJni.get()
+                                        .isSandboxedGpuProcessEnabled();
+                serviceType =
+                        useSandboxedGpuProcess ? ServiceType.SANDBOXED_GPU : ServiceType.PRIVILEGED;
                 reducePriorityOnBackground =
                         ContentFeatureMap.isEnabled(
                                 ContentFeatures.REDUCE_GPU_PRIORITY_ON_BACKGROUND);
@@ -427,7 +454,7 @@ public final class ChildProcessLauncherHelperImpl {
                 if (ContentSwitches.NONE_SANDBOX_TYPE.equals(
                         ContentSwitchUtils.getSwitchValue(
                                 commandLine, ContentSwitches.SWITCH_SERVICE_SANDBOX_TYPE))) {
-                    sandboxed = false;
+                    serviceType = ServiceType.PRIVILEGED;
                 }
             }
         }
@@ -442,15 +469,37 @@ public final class ChildProcessLauncherHelperImpl {
                         nativePointer,
                         commandLine,
                         filesToBeMapped,
-                        sandboxed,
+                        serviceType,
                         reducePriorityOnBackground,
                         canUseWarmUpConnection,
                         binderCallback,
                         isSpareRenderer,
                         isForOutermostMainFrame);
-        helper.start();
+        boolean started = helper.start();
+        if (serviceType == ServiceType.SANDBOXED_GPU) {
+            RecordHistogram.recordBooleanHistogram(
+                    "Android.ChildProcessLauncher.SandboxedGpuBindSuccess", started);
+            if (!started) {
+                Log.w(
+                        TAG,
+                        "Failed to bind sandboxed GPU process, falling back to privileged"
+                                + " process.");
+                helper =
+                        new ChildProcessLauncherHelperImpl(
+                                nativePointer,
+                                commandLine,
+                                filesToBeMapped,
+                                ServiceType.PRIVILEGED,
+                                reducePriorityOnBackground,
+                                canUseWarmUpConnection,
+                                binderCallback,
+                                isSpareRenderer,
+                                isForOutermostMainFrame);
+                helper.start();
+            }
+        }
 
-        if (sandboxed && !sCheckedServiceGroupImportance) {
+        if (serviceType == ServiceType.SANDBOXED && !sCheckedServiceGroupImportance) {
             sCheckedServiceGroupImportance = true;
             if (sSandboxedChildConnectionRanking != null
                     && ChildProcessLauncherHelperImplJni.get().serviceGroupImportanceEnabled()) {
@@ -479,7 +528,7 @@ public final class ChildProcessLauncherHelperImpl {
         }
 
         Bundle serviceBundle = populateServiceBundle(new Bundle());
-        ChildConnectionAllocator allocator = getConnectionAllocator(context, /* sandboxed= */ true);
+        ChildConnectionAllocator allocator = getConnectionAllocator(context, ServiceType.SANDBOXED);
         sSpareSandboxedConnection = new SpareChildConnection(context, allocator, serviceBundle);
     }
 
@@ -504,25 +553,11 @@ public final class ChildProcessLauncherHelperImpl {
                     @Override
                     public void run() {
                         assumeNonNull(sSandboxedChildConnectionRanking);
-                        ChildConnectionAllocator allocator =
-                                getConnectionAllocator(context, /* sandboxed= */ true);
-                        if (ChildProcessConnection.supportVariableConnections()) {
-                            sBindingManager =
-                                    new BindingManager(
-                                            context,
-                                            BindingManager.NO_MAX_SIZE,
-                                            sSandboxedChildConnectionRanking,
-                                            ChildProcessLauncherHelperImpl
-                                                    ::onBindingChangedImplicitly);
-                        } else {
-                            sBindingManager =
-                                    new BindingManager(
-                                            context,
-                                            allocator.getMaxNumberOfAllocations(),
-                                            sSandboxedChildConnectionRanking,
-                                            ChildProcessLauncherHelperImpl
-                                                    ::onBindingChangedImplicitly);
-                        }
+                        sBindingManager =
+                                new BindingManager(
+                                        context,
+                                        sSandboxedChildConnectionRanking,
+                                        ChildProcessLauncherHelperImpl::onBindingChangedImplicitly);
                         ChildProcessConnectionMetrics.getInstance()
                                 .setBindingManager(sBindingManager);
                     }
@@ -630,122 +665,138 @@ public final class ChildProcessLauncherHelperImpl {
     }
 
     @VisibleForTesting
-    static ChildConnectionAllocator getConnectionAllocator(Context context, boolean sandboxed) {
+    static ChildConnectionAllocator getConnectionAllocator(
+            Context context, @ServiceType int serviceType) {
         assert LauncherThread.runningOnLauncherThread();
-        boolean bindToCaller = ChildProcessCreationParamsImpl.getBindToCallerCheck();
         boolean bindAsExternalService =
-                sandboxed && ChildProcessCreationParamsImpl.getIsSandboxedServiceExternal();
+                serviceType != ServiceType.PRIVILEGED
+                        && ChildProcessCreationParamsImpl.getIsSandboxedServiceExternal();
 
-        if (!sandboxed) {
-            if (sPrivilegedChildConnectionAllocator == null) {
-                boolean fallbackToNextSlot =
-                        ContentFeatureMap.isEnabled(ContentFeatures.ANDROID_FALLBACK_TO_NEXT_SLOT);
-                sPrivilegedChildConnectionAllocator =
-                        ChildConnectionAllocator.create(
-                                context,
-                                LauncherThread.getHandler(),
-                                null,
-                                ChildProcessCreationParamsImpl.getPackageNameForPrivilegedService(),
-                                ChildProcessCreationParamsImpl.getPrivilegedServicesName(),
-                                NUM_PRIVILEGED_SERVICES_KEY,
-                                bindToCaller,
-                                bindAsExternalService,
-                                fallbackToNextSlot,
-                                sandboxed);
-            }
-            return sPrivilegedChildConnectionAllocator;
-        }
-
-        if (sSandboxedChildConnectionAllocator == null) {
-            final String packageName =
-                    ChildProcessCreationParamsImpl.getPackageNameForSandboxedService();
-            Log.d(
-                    TAG,
-                    "Create a new ChildConnectionAllocator with package name = %s,"
-                            + " sandboxed = true",
-                    packageName);
-            Runnable freeSlotRunnable =
-                    () -> {
-                        assumeNonNull(sSandboxedChildConnectionRanking);
-                        ChildProcessConnection lowestRank =
-                                sSandboxedChildConnectionRanking.getLowestRankedConnection();
-                        if (lowestRank != null) {
-                            lowestRank.kill();
-                        }
-                    };
-
-            ChildConnectionAllocator connectionAllocator = null;
-            if (sSandboxedServicesCountForTesting != -1) {
-                // Testing case where allocator settings are overridden.
-                String serviceName =
-                        !TextUtils.isEmpty(sSandboxedServicesNameForTesting)
-                                ? sSandboxedServicesNameForTesting
-                                : SandboxedProcessService.class.getName();
-                connectionAllocator =
-                        ChildConnectionAllocator.createFixedForTesting(
-                                freeSlotRunnable,
-                                packageName,
-                                serviceName,
-                                sSandboxedServicesCountForTesting,
-                                bindToCaller,
-                                bindAsExternalService,
-                                /* fallbackToNextSlot= */ false,
-                                sandboxed);
-            } else if (ChildProcessConnection.supportVariableConnections()) {
-                final int maxIsolatedServices;
-                if (SysUtils.hasLargeProcessCountSupport()
-                        && ContentFeatureList.sSandboxedProcessServiceLimitOnAndroid.isEnabled()) {
-                    maxIsolatedServices = Integer.MAX_VALUE;
-                } else {
-                    maxIsolatedServices = ChildConnectionAllocator.MAX_VARIABLE_ALLOCATED;
+        switch (serviceType) {
+            case ServiceType.PRIVILEGED:
+                if (sPrivilegedChildConnectionAllocator == null) {
+                    boolean fallbackToNextSlot =
+                            ContentFeatureMap.isEnabled(
+                                    ContentFeatures.ANDROID_FALLBACK_TO_NEXT_SLOT);
+                    sPrivilegedChildConnectionAllocator =
+                            ChildConnectionAllocator.create(
+                                    context,
+                                    LauncherThread.getHandler(),
+                                    null,
+                                    ChildProcessCreationParamsImpl
+                                            .getPackageNameForPrivilegedService(),
+                                    ChildProcessCreationParamsImpl.getPrivilegedServicesName(),
+                                    NUM_PRIVILEGED_SERVICES_KEY,
+                                    bindAsExternalService,
+                                    fallbackToNextSlot,
+                                    /* isSandboxedForHistograms= */ false);
                 }
+                return sPrivilegedChildConnectionAllocator;
 
-                connectionAllocator =
-                        ChildConnectionAllocator.createVariableSize(
-                                context,
-                                LauncherThread.getHandler(),
-                                freeSlotRunnable,
-                                packageName,
-                                ChildProcessCreationParamsImpl.getSandboxedServicesName(),
-                                bindToCaller,
-                                bindAsExternalService,
-                                sandboxed,
-                                maxIsolatedServices);
-            } else {
-                connectionAllocator =
-                        ChildConnectionAllocator.create(
-                                context,
-                                LauncherThread.getHandler(),
-                                freeSlotRunnable,
-                                packageName,
-                                ChildProcessCreationParamsImpl.getSandboxedServicesName(),
-                                NUM_SANDBOXED_SERVICES_KEY,
-                                bindToCaller,
-                                bindAsExternalService,
-                                /* fallbackToNextSlot= */ false,
-                                sandboxed);
-            }
-            if (sSandboxedServiceFactoryForTesting != null) {
-                connectionAllocator.setConnectionFactoryForTesting(
-                        sSandboxedServiceFactoryForTesting);
-            }
-            sSandboxedChildConnectionAllocator = connectionAllocator;
-            if (ChildProcessConnection.supportVariableConnections()) {
-                sSandboxedChildConnectionRanking = new ChildProcessRanking();
-            } else {
-                sSandboxedChildConnectionRanking =
-                        new ChildProcessRanking(
-                                sSandboxedChildConnectionAllocator.getMaxNumberOfAllocations());
-            }
+            case ServiceType.SANDBOXED_GPU:
+                if (sSandboxedGpuChildConnectionAllocator == null) {
+                    final String packageName =
+                            ChildProcessCreationParamsImpl.getPackageNameForPrivilegedService();
+                    Log.d(
+                            TAG,
+                            "Create a new sandboxed GPU ChildConnectionAllocator with package name"
+                                    + " = %s",
+                            packageName);
+                    boolean retryOnTimeout =
+                            ContentFeatureMap.isEnabled(
+                                    ContentFeatures.ANDROID_FALLBACK_TO_NEXT_SLOT);
+                    sSandboxedGpuChildConnectionAllocator =
+                            ChildConnectionAllocator.createNonZygoteVariableSize(
+                                    context,
+                                    LauncherThread.getHandler(),
+                                    /* freeSlotCallback= */ null,
+                                    packageName,
+                                    ChildProcessCreationParamsImpl.getSandboxedGpuServicesName(),
+                                    bindAsExternalService,
+                                    retryOnTimeout,
+                                    /* allowBindFailure= */ true,
+                                    /* isSandboxedForHistograms= */ true,
+                                    ChildConnectionAllocator.MAX_VARIABLE_ALLOCATED);
+                }
+                return sSandboxedGpuChildConnectionAllocator;
+
+            case ServiceType.SANDBOXED:
+                if (sSandboxedChildConnectionAllocator == null) {
+                    final String packageName =
+                            ChildProcessCreationParamsImpl.getPackageNameForSandboxedService();
+                    Log.d(
+                            TAG,
+                            "Create a new ChildConnectionAllocator with package name = %s,"
+                                    + " sandboxed = true",
+                            packageName);
+                    Runnable freeSlotRunnable =
+                            () -> {
+                                assumeNonNull(sSandboxedChildConnectionRanking);
+                                ChildProcessConnection lowestRank =
+                                        sSandboxedChildConnectionRanking
+                                                .getLowestRankedConnection();
+                                if (lowestRank != null) {
+                                    lowestRank.kill();
+                                }
+                            };
+
+                    ChildConnectionAllocator connectionAllocator = null;
+                    if (sSandboxedServicesCountForTesting != -1) {
+                        // Testing case where allocator settings are overridden.
+                        String serviceName =
+                                !TextUtils.isEmpty(sSandboxedServicesNameForTesting)
+                                        ? sSandboxedServicesNameForTesting
+                                        : SandboxedProcessService.class.getName();
+                        connectionAllocator =
+                                ChildConnectionAllocator.createFixedForTesting(
+                                        freeSlotRunnable,
+                                        packageName,
+                                        serviceName,
+                                        sSandboxedServicesCountForTesting,
+                                        bindAsExternalService,
+                                        /* fallbackToNextSlot= */ false,
+                                        /* isSandboxedForHistograms= */ true);
+                    } else {
+                        final int maxIsolatedServices;
+                        if (SysUtils.hasLargeProcessCountSupport()
+                                && ContentFeatureList.sSandboxedProcessServiceLimitOnAndroid
+                                        .isEnabled()) {
+                            maxIsolatedServices = Integer.MAX_VALUE;
+                        } else {
+                            maxIsolatedServices = ChildConnectionAllocator.MAX_VARIABLE_ALLOCATED;
+                        }
+
+                        connectionAllocator =
+                                ChildConnectionAllocator.createVariableSize(
+                                        context,
+                                        LauncherThread.getHandler(),
+                                        freeSlotRunnable,
+                                        packageName,
+                                        ChildProcessCreationParamsImpl.getSandboxedServicesName(),
+                                        bindAsExternalService,
+                                        /* isSandboxedForHistograms= */ true,
+                                        maxIsolatedServices);
+                    }
+                    if (sSandboxedServiceFactoryForTesting != null) {
+                        connectionAllocator.setConnectionFactoryForTesting(
+                                sSandboxedServiceFactoryForTesting);
+                    }
+                    sSandboxedChildConnectionAllocator = connectionAllocator;
+                    sSandboxedChildConnectionRanking = new ChildProcessRanking();
+                }
+                return sSandboxedChildConnectionAllocator;
+
+            default:
+                assert false;
+                throw new IllegalArgumentException("Unexpected serviceType: " + serviceType);
         }
-        return sSandboxedChildConnectionAllocator;
     }
 
     private ChildProcessLauncherHelperImpl(
             long nativePointer,
             String[] commandLine,
             IFileDescriptorInfo[] filesToBeMapped,
-            boolean sandboxed,
+            @ServiceType int serviceType,
             boolean reducePriorityOnBackground,
             boolean canUseWarmUpConnection,
             @Nullable IBinder binderCallback,
@@ -754,11 +805,11 @@ public final class ChildProcessLauncherHelperImpl {
         assert LauncherThread.runningOnLauncherThread();
 
         mNativeChildProcessLauncherHelper = nativePointer;
-        mSandboxed = sandboxed;
+        mServiceType = serviceType;
         mReducePriorityOnBackground = reducePriorityOnBackground;
         mCanUseWarmUpConnection = canUseWarmUpConnection;
         ChildConnectionAllocator connectionAllocator =
-                getConnectionAllocator(ContextUtils.getApplicationContext(), sandboxed);
+                getConnectionAllocator(ContextUtils.getApplicationContext(), serviceType);
 
         mLauncher =
                 new ChildProcessLauncher(
@@ -772,7 +823,7 @@ public final class ChildProcessLauncherHelperImpl {
                 ContentSwitchUtils.getSwitchValue(commandLine, ContentSwitches.SWITCH_PROCESS_TYPE);
         mIsSpareRenderer = isSpareRenderer;
 
-        if (sandboxed) {
+        if (serviceType == ServiceType.SANDBOXED) {
             mRanking = sSandboxedChildConnectionRanking;
             mBindingManager = sBindingManager;
         } else {
@@ -785,7 +836,7 @@ public final class ChildProcessLauncherHelperImpl {
         boolean useNotPerceptibleBinding =
                 isSpareRenderer
                         && ContentFeatureList.sSpareRendererAddNotPerceptibleBinding.getValue();
-        if (sandboxed) {
+        if (serviceType == ServiceType.SANDBOXED) {
             if (useWaivedBinding) {
                 mEffectiveImportance = ChildProcessImportance.NORMAL;
             } else if (useNotPerceptibleBinding) {
@@ -854,12 +905,14 @@ public final class ChildProcessLauncherHelperImpl {
                 });
     }
 
-    private void start() {
-        mLauncher.start(
-                /* setupConnection= */ true,
-                /* queueIfNoFreeConnection= */ true,
-                getBindingStateFromImportance());
+    private boolean start() {
+        boolean started =
+                mLauncher.start(
+                        /* setupConnection= */ true,
+                        /* queueIfNoFreeConnection= */ mServiceType != ServiceType.SANDBOXED_GPU,
+                        getBindingStateFromImportance());
         mStartTimeMs = System.currentTimeMillis();
+        return started;
     }
 
     private @ChildBindingState int getBindingStateFromImportance() {
@@ -1081,6 +1134,15 @@ public final class ChildProcessLauncherHelperImpl {
         return connection.bindingStateCurrent();
     }
 
+    // Called on client (UI or IO) thread.
+    @CalledByNative
+    private boolean hasIsolatedUid() {
+        ChildProcessConnection connection = mLauncher.getConnection();
+        if (connection == null) return false;
+
+        return connection.hasIsolatedUid();
+    }
+
     /**
      * Dumps the stack of the child process with |pid| without crashing it.
      *
@@ -1149,7 +1211,7 @@ public final class ChildProcessLauncherHelperImpl {
     public static ChildProcessLauncherHelperImpl createAndStartForTesting(
             String[] commandLine,
             IFileDescriptorInfo[] filesToBeMapped,
-            boolean sandboxed,
+            @ServiceType int serviceType,
             boolean reducePriorityOnBackground,
             boolean canUseWarmUpConnection,
             IBinder binderCallback,
@@ -1161,7 +1223,7 @@ public final class ChildProcessLauncherHelperImpl {
                         0L,
                         commandLine,
                         filesToBeMapped,
-                        sandboxed,
+                        serviceType,
                         reducePriorityOnBackground,
                         canUseWarmUpConnection,
                         binderCallback,
@@ -1182,6 +1244,11 @@ public final class ChildProcessLauncherHelperImpl {
                 sPrivilegedChildConnectionAllocator == null
                         ? 0
                         : sPrivilegedChildConnectionAllocator.allocatedConnectionsCountForTesting();
+        count +=
+                sSandboxedGpuChildConnectionAllocator == null
+                        ? 0
+                        : sSandboxedGpuChildConnectionAllocator
+                                .allocatedConnectionsCountForTesting();
         return count + getConnectedSandboxedServicesCountForTesting();
     }
 
@@ -1218,5 +1285,7 @@ public final class ChildProcessLauncherHelperImpl {
                 boolean isSpareRenderer);
 
         boolean serviceGroupImportanceEnabled();
+
+        boolean isSandboxedGpuProcessEnabled();
     }
 }

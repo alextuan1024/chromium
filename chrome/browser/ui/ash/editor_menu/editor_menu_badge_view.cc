@@ -5,7 +5,7 @@
 #include "chrome/browser/ui/ash/editor_menu/editor_menu_badge_view.h"
 
 #include "chrome/browser/ui/ash/editor_menu/editor_menu_strings.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -32,10 +32,6 @@ constexpr SkColor kBadgeBackgroundColorDark = SkColorSetRGB(0x13, 0x50, 0x3D);
 
 constexpr int kBadgeFontSize = 10;
 constexpr int kBadgeLineHeight = kBadgeFontSize;
-const gfx::FontList kBadgeFont({"Roboto", "Google Sans"},
-                               gfx::Font::NORMAL,
-                               kBadgeFontSize,
-                               gfx::Font::Weight::MEDIUM);
 
 constexpr gfx::Insets kBadgeInsets = gfx::Insets::VH(4, 8);
 
@@ -44,9 +40,11 @@ constexpr gfx::Insets kBadgeInsets = gfx::Insets::VH(4, 8);
 EditorMenuBadgeView::EditorMenuBadgeView() {
   SetLayoutManager(std::make_unique<views::FillLayout>());
 
-  auto* label = AddChildView(
-      std::make_unique<views::Label>(GetEditorMenuExperimentBadgeLabel(),
-                                     views::Label::CustomFont({kBadgeFont})));
+  auto* label = AddChildView(std::make_unique<views::Label>(
+      GetEditorMenuExperimentBadgeLabel(),
+      views::Label::CustomFont{gfx::FontList({"Roboto", "Google Sans"},
+                                             gfx::Font::NORMAL, kBadgeFontSize,
+                                             gfx::Font::Weight::MEDIUM)}));
   label->SetEnabledColor(ui::kColorSysOnSurface);
   label->SetLineHeight(kBadgeLineHeight);
   label->SetBorder(views::CreateEmptyBorder(kBadgeInsets));

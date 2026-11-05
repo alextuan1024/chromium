@@ -18,13 +18,13 @@ android_library("java") {
     ":java_resources",
     "//base:base_java",
     "//base:base_shared_preferences_java",
-    "//chrome/android/features/tab_ui:java_resources",
     "//chrome/browser/commerce/android:java",
     "//chrome/browser/commerce/price_tracking/android:java",
     "//chrome/browser/magic_stack/android:java",
     "//chrome/browser/preferences:java",
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/tab:java",
+    "//chrome/browser/tab_ui/android:java_resources",
     "//chrome/browser/tabmodel:java",
     "//chrome/browser/ui/android/favicon:java",
     "//components/browser_ui/styles/android:java",
@@ -33,6 +33,7 @@ android_library("java") {
     "//components/embedder_support/android:util_java",
     "//components/image_fetcher:java",
     "//content/public/android:content_full_java",
+    "//net/android:net_java",
     "//third_party/android_deps:material_design_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_appcompat_appcompat_resources_java",
@@ -53,6 +54,7 @@ android_resources("java_resources") {
   ]
 
   deps = [
+    "//chrome/browser/magic_stack/android:java_resources",
     "//components/browser_ui/strings/android:browser_ui_strings_grd",
     "//components/browser_ui/styles/android:java_resources",
   ]

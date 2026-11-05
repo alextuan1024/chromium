@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.ntp;
 
 import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.action.ViewActions.scrollTo;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
@@ -22,8 +21,8 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
 import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
-import static org.chromium.ui.test.util.ViewUtils.waitForVisibleView;
 
 import android.text.format.DateUtils;
 import android.widget.TextView;
@@ -32,7 +31,6 @@ import androidx.test.espresso.matcher.ViewMatchers.Visibility;
 import androidx.test.filters.MediumTest;
 
 import org.hamcrest.Matchers;
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -52,17 +50,13 @@ import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
 import org.chromium.chrome.browser.educational_tip.EducationalTipModuleUtils;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.setup_list.SetupListManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
@@ -94,9 +88,8 @@ import java.util.List;
 @DoNotBatch(reason = "This test relies on native initialization")
 @RunWith(ParameterizedRunner.class)
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
-@EnableFeatures(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
+// Tests the Java native NTP, which is not used on desktop (it uses the WebUI NTP).
+@Restriction(DeviceFormFactor.PHONE_OR_TABLET)
 public class NewTabPageSigninPromoTest {
     @ParameterAnnotations.ClassParameter
     public static final List<ParameterSet> sClassParams =
@@ -145,10 +138,6 @@ public class NewTabPageSigninPromoTest {
                 .thenReturn(false);
     }
 
-    @After
-    public void tearDown() {
-        DeviceLockActivityLauncherImpl.setInstanceForTesting(null);
-    }
 
     private void openNewTabPage() {
         if (!mIsActivityStarted) {
@@ -176,8 +165,6 @@ public class NewTabPageSigninPromoTest {
     @Test
     @MediumTest
     @Feature({"FeedNewTabPage"})
-    // Restrict to Phones and Tablets because Desktop Android does not show feed in NTP.
-    @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
     public void testSignInPromo_AccountsReady() {
         openNewTabPage();
         // Check that the sign-in promo is displayed this time.
@@ -187,8 +174,6 @@ public class NewTabPageSigninPromoTest {
     @Test
     @MediumTest
     @Feature({"FeedNewTabPage"})
-    // Restrict to Phones and Tablets because Desktop Android does not show feed in NTP.
-    @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
     public void testSignInPromo_NotShownAfterSignIn() {
         openNewTabPage();
         verifySigninPromoShown();
@@ -202,8 +187,6 @@ public class NewTabPageSigninPromoTest {
     @Test
     @MediumTest
     @Feature({"FeedNewTabPage"})
-    // Restrict to Phones and Tablets because Desktop Android does not show feed in NTP.
-    @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
     public void testSignInPromoDisplayedWithDefaultUser() {
         mSigninTestRule.addAccount(TestAccounts.ACCOUNT1);
 
@@ -215,8 +198,6 @@ public class NewTabPageSigninPromoTest {
     @Test
     @MediumTest
     @Feature({"FeedNewTabPage"})
-    // Restrict to Phones and Tablets because Desktop Android does not show feed in NTP.
-    @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
     public void testSignInPromoDisplayedWithAADCMinorAccount() {
         mSigninTestRule.addAccount(TestAccounts.AADC_MINOR_ACCOUNT);
 
@@ -228,8 +209,6 @@ public class NewTabPageSigninPromoTest {
     @Test
     @MediumTest
     @Feature({"FeedNewTabPage"})
-    // TODO(crbug.com/483105856): Test is flaky on desktop bots.
-    @DisableIf.Device(DeviceFormFactor.DESKTOP)
     public void testSigninPromoLoadingState() {
         openNewTabPage();
         // An account with an unknown hosted domain emulates a long sign-in. This way the loading
@@ -244,22 +223,18 @@ public class NewTabPageSigninPromoTest {
         assertNull(mSigninTestRule.getPrimaryAccount());
 
         onView(withId(R.id.signin_promo_primary_button)).perform(scrollTo());
-        waitForVisibleView(withId(R.id.signin_promo_primary_button));
 
         // Before click: primary button, secondary CTA, and dismiss button are enabled.
-        onView(withId(R.id.signin_promo_primary_button))
-                .check(
-                        matches(
-                                allOf(
-                                        isDisplayed(),
-                                        isEnabled(),
-                                        withText(R.string.sync_promo_continue))));
+        var primaryButton =
+                waitForView(
+                        withId(R.id.signin_promo_primary_button),
+                        withText(R.string.sync_promo_continue));
         onView(withId(R.id.account_picker_selected_account))
                 .check(matches(allOf(isDisplayed(), isEnabled())));
         onView(withId(R.id.signin_promo_dismiss_button))
                 .check(matches(allOf(isDisplayed(), isEnabled())));
 
-        onView(withId(R.id.signin_promo_primary_button)).perform(click());
+        primaryButton.click();
         onView(withId(R.id.signin_promo_primary_button))
                 .check(
                         matches(
@@ -281,8 +256,6 @@ public class NewTabPageSigninPromoTest {
     @Test
     @MediumTest
     @Feature({"FeedNewTabPage"})
-    // TODO(crbug.com/483438567): Test is flaky on desktop bots.
-    @DisableIf.Device(DeviceFormFactor.DESKTOP)
     public void testSeamlessSigninFlow_WithFinalSnackbarUndoSignin() {
         mSigninTestRule.addAccount(TestAccounts.AADC_ADULT_ACCOUNT);
         openNewTabPage();
@@ -292,8 +265,7 @@ public class NewTabPageSigninPromoTest {
         // Click the sign-in button.
         // For landscape mode tests, scroll to ensure button is visible.
         onView(withId(R.id.signin_promo_primary_button)).perform(scrollTo());
-        waitForVisibleView(withId(R.id.signin_promo_primary_button));
-        onView(withId(R.id.signin_promo_primary_button)).perform(click());
+        waitForView(withId(R.id.signin_promo_primary_button)).click();
         // Handle Automotive Device Lock (for Automotive Tests).
         SigninTestUtil.completeDeviceLockIfOnAutomotive(mDeviceLockActivityLauncher);
         // Wait for promo to disappear.
@@ -351,8 +323,6 @@ public class NewTabPageSigninPromoTest {
     @Test
     @MediumTest
     @Feature({"FeedNewTabPage"})
-    // Restrict to Phones and Tablets because Desktop Android does not show feed in NTP.
-    @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
     public void testSignInPromo_shownIfTimeElapsedSinceFirstShownIsLessThanFirstShownLimit() {
         // Show the promo for the first time.
         openNewTabPage();
@@ -371,8 +341,6 @@ public class NewTabPageSigninPromoTest {
     @Test
     @MediumTest
     @Feature({"FeedNewTabPage"})
-    // Restrict to Phones and Tablets because Desktop Android does not show feed in NTP.
-    @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
     public void
             testSignInPromo_hiddenIfTimeElapsedSinceFirstShownExceedsFirstShownLimitButNotResetThreshold() {
         // Show the promo for the first time.
@@ -393,8 +361,6 @@ public class NewTabPageSigninPromoTest {
     @Test
     @MediumTest
     @Feature({"FeedNewTabPage"})
-    // Restrict to Phones and Tablets because Desktop Android does not show feed in NTP.
-    @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
     public void
             testSignInPromo_shownIfTimeElapsedSinceFirstShownExceedsFirstShownLimitAndResetThreshold() {
         // Show the promo for the first time.

@@ -38,12 +38,7 @@ source_set("impl") {
     "share_metrics.cc",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
-  public_deps = [
-    ":share",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":share" ]
 
   deps = [
     "//base",
@@ -135,6 +130,7 @@ source_set("browser_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/test:test_support",
+    "//chrome/test/base:platform_browser_test",
     "//components/qr_code_generator:bitmap_generator",
     "//content/public/common",
     "//content/test:test_support",

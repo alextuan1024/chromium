@@ -168,6 +168,16 @@ export class PostSelectionRendererElement extends
         reflectToAttribute: true,
         value: false,
       },
+      hideHandles: {
+        type: Boolean,
+        reflectToAttribute: true,
+        value: false,
+      },
+      hideCloseButton: {
+        type: Boolean,
+        reflectToAttribute: true,
+        value: false,
+      },
       multiRegionSelectionEnabled: {
         type: Boolean,
         value: () => loadTimeData.getBoolean('enableMultiRegionSelection'),
@@ -253,16 +263,21 @@ export class PostSelectionRendererElement extends
   declare private canvasWidth: number;
   declare private canvasPhysicalHeight: number;
   declare private canvasPhysicalWidth: number;
+  // Whether the region selected glow is enabled via feature flag.
+  declare regionSelectedGlowEnabled: boolean;
   // The bounds of the parent element. This is updated by the parent to avoid
   // this class needing to call getBoundingClientRect().
-  // Whether the region selected glow is enabled via feature flag.
-  declare private regionSelectedGlowEnabled: boolean;
-  declare private selectionOverlayRect: DOMRect;
+  declare selectionOverlayRect: DOMRect;
   // Whether the background gradient should be hidden.
   declare private backgroundGradientHidden: boolean;
+  // Whether to hide the corner handles. The region can't be resized without
+  // them.
+  declare hideHandles: boolean;
+  // Whether to hide the close button on the active region.
+  declare hideCloseButton: boolean;
   declare private multiRegionSelectionEnabled: boolean;
   declare private staticRegions: StaticRegion[];
-  declare private activeRegionId: string;
+  declare activeRegionId: string;
   declare private activeRegionHasPolyline: boolean;
   declare protected activePolylinePoints: Point[];
   declare private selectedRegions: SelectedRegion[];
@@ -371,8 +386,8 @@ export class PostSelectionRendererElement extends
     const elements = this.shadowRoot!.elementsFromPoint(
                          event.clientX, event.clientY) as HTMLElement[];
 
-    // If we're hovering over the active region's controls (close button, corners),
-    // don't switch focus.
+    // If we're hovering over the active region's controls (close button,
+    // corners), don't switch focus.
     if (elements.some(
             el => el.classList.contains('close-button') ||
                 el.classList.contains('corner-hit-box'))) {

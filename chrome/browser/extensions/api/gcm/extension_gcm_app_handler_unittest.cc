@@ -23,18 +23,20 @@
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "base/test/test_future.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/gcm/gcm_api.h"
+#include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/scoped_test_mv2_enabler.h"
 #include "chrome/browser/extensions/test_extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/browser/gcm/gcm_product_util.h"
 #include "chrome/browser/gcm/gcm_profile_service_factory.h"
+#include "chrome/browser/gcm/instance_id/instance_id_profile_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_profile.h"
@@ -45,6 +47,9 @@
 #include "components/gcm_driver/gcm_client_factory.h"
 #include "components/gcm_driver/gcm_driver.h"
 #include "components/gcm_driver/gcm_profile_service.h"
+#include "components/gcm_driver/instance_id/instance_id.h"
+#include "components/gcm_driver/instance_id/instance_id_driver.h"
+#include "components/gcm_driver/instance_id/instance_id_profile_service.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/os_crypt/async/browser/test_utils.h"
 #include "content/public/browser/browser_context.h"
@@ -61,7 +66,6 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/permissions/api_permission.h"
@@ -254,14 +258,13 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
         base::ThreadPool::CreateSequencedTaskRunner(
             {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
     return std::make_unique<gcm::GCMProfileService>(
-        profile->GetPrefs(), profile->GetPath(),
+        profile->GetPath(),
         base::BindRepeating(&RequestProxyResolvingSocketFactory, profile),
         profile->GetDefaultStoragePartition()
             ->GetURLLoaderFactoryForBrowserProcess(),
         network::TestNetworkConnectionTracker::GetInstance(),
         chrome::GetChannel(),
         gcm::GetProductCategoryForSubtypes(profile->GetPrefs()),
-        IdentityManagerFactory::GetForProfile(profile),
         base::WrapUnique(new gcm::FakeGCMClientFactory(ui_thread, io_thread)),
         ui_thread, io_thread, blocking_task_runner, os_crypt);
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -270,11 +273,7 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
   ExtensionGCMAppHandlerTest()
       : task_environment_(content::BrowserTaskEnvironment::REAL_IO_THREAD),
         os_crypt_(os_crypt_async::GetTestOSCryptAsyncForTesting(
-            /*is_sync_for_unittests=*/true)) {
-    // Allow unpacked extensions without developer mode for testing.
-    scoped_feature_list_.InitAndDisableFeature(
-        extensions_features::kExtensionDisableUnsupportedDeveloper);
-  }
+            /*is_sync_for_unittests=*/true)) {}
 
   ExtensionGCMAppHandlerTest(const ExtensionGCMAppHandlerTest&) = delete;
   ExtensionGCMAppHandlerTest& operator=(const ExtensionGCMAppHandlerTest&) =
@@ -301,6 +300,8 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
     // Create a new profile.
     TestingProfile::Builder builder;
     profile_ = builder.Build();
+    allow_unpacked_without_developer_mode_ =
+        ExtensionManagement::AllowUnpackedWithoutDeveloperModeForTesting();
 
     // Create extension service in order to uninstall the extension.
     TestExtensionSystem* extension_system(
@@ -445,7 +446,6 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
   content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_;
   std::unique_ptr<content::InProcessUtilityThreadHelper>
@@ -467,6 +467,7 @@ class ExtensionGCMAppHandlerTest : public testing::Test {
   // TODO(https://crbug.com/40804030): Migrate this to only rely on MV3
   // extensions.
   ScopedTestMV2Enabler mv2_enabler_;
+  std::optional<base::AutoReset<bool>> allow_unpacked_without_developer_mode_;
 };
 
 TEST_F(ExtensionGCMAppHandlerTest, AddAndRemoveAppHandler) {
@@ -550,6 +551,46 @@ TEST_F(ExtensionGCMAppHandlerTest, UpdateExtensionWithGcmPermissionRemoved) {
   waiter()->PumpUILoop();
   EXPECT_TRUE(gcm_app_handler()->app_handler_count_drop_to_zero());
   EXPECT_FALSE(HasAppHandlers(extension->id()));
+}
+
+TEST_F(ExtensionGCMAppHandlerTest, RemoveInstanceIDOnExtensionUnload) {
+  scoped_refptr<const Extension> extension(CreateExtension());
+  LoadExtension(extension);
+
+  instance_id::InstanceIDDriver* instance_id_driver =
+      instance_id::InstanceIDProfileServiceFactory::GetForProfile(profile())
+          ->driver();
+  ASSERT_TRUE(instance_id_driver);
+  EXPECT_FALSE(instance_id_driver->ExistsInstanceID(extension->id()));
+
+  instance_id::InstanceID* instance_id =
+      instance_id_driver->GetInstanceID(extension->id());
+  ASSERT_TRUE(instance_id);
+  EXPECT_TRUE(instance_id_driver->ExistsInstanceID(extension->id()));
+
+  base::test::TestFuture<const std::string&> get_id_future;
+  instance_id->GetID(get_id_future.GetCallback());
+  const std::string initial_id = get_id_future.Get();
+  EXPECT_FALSE(initial_id.empty());
+
+  // Unloading the extension removes the in-memory InstanceID instance.
+  DisableExtension(extension.get());
+  EXPECT_FALSE(HasAppHandlers(extension->id()));
+  EXPECT_FALSE(instance_id_driver->ExistsInstanceID(extension->id()));
+
+  // Re-enabling the extension allows a fresh InstanceID instance to be created
+  // that reloads the persisted ID.
+  EnableExtension(extension.get());
+  EXPECT_TRUE(HasAppHandlers(extension->id()));
+
+  instance_id::InstanceID* reloaded_instance_id =
+      instance_id_driver->GetInstanceID(extension->id());
+  ASSERT_TRUE(reloaded_instance_id);
+  EXPECT_TRUE(instance_id_driver->ExistsInstanceID(extension->id()));
+
+  base::test::TestFuture<const std::string&> reloaded_get_id_future;
+  reloaded_instance_id->GetID(reloaded_get_id_future.GetCallback());
+  EXPECT_EQ(initial_id, reloaded_get_id_future.Get());
 }
 
 }  // namespace extensions

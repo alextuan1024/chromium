@@ -44,7 +44,7 @@ class PLATFORM_EXPORT ParkableImageManager
   friend class ParkableImage;
   friend class ParkableImageImpl;
   friend class base::NoDestructor<ParkableImageManager>;
-  friend class ParkableImageBaseTest;
+  friend class ParkableImageTest;
 
   ParkableImageManager();
 
@@ -78,11 +78,6 @@ class PLATFORM_EXPORT ParkableImageManager
                  HashSet<ParkableImageImpl*>* from,
                  HashSet<ParkableImageImpl*>* to)
       EXCLUSIVE_LOCKS_REQUIRED(lock_);
-
-  void RecordDiskWriteTime(base::TimeDelta write_time) LOCKS_EXCLUDED(lock_) {
-    base::AutoLock lock(lock_);
-    total_disk_write_time_ += write_time;
-  }
 
   void RecordDiskReadTime(base::TimeDelta read_time) LOCKS_EXCLUDED(lock_) {
     base::AutoLock lock(lock_);
@@ -129,7 +124,6 @@ class PLATFORM_EXPORT ParkableImageManager
   bool has_posted_accounting_task_ GUARDED_BY(lock_) = false;
 
   base::TimeDelta total_disk_read_time_ GUARDED_BY(lock_) = base::TimeDelta();
-  base::TimeDelta total_disk_write_time_ GUARDED_BY(lock_) = base::TimeDelta();
 
   scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
   std::unique_ptr<DiskDataAllocator> allocator_for_testing_;

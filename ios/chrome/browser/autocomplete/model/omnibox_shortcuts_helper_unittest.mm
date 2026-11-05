@@ -42,6 +42,7 @@ class OmniboxShortcutsHelperTest
   void UseAutocompleteMatch(const std::u16string& input_text,
                             const AutocompleteMatch& match);
   void FinishCurrentNavigationSuccessfully();
+  void FinishUncommittedNavigation();
   void FailCurrentNavigation();
   void RedirectNavigationWithBackButton();
 
@@ -135,11 +136,19 @@ void OmniboxShortcutsHelperTest::UseAutocompleteMatch(
 }
 
 void OmniboxShortcutsHelperTest::FinishCurrentNavigationSuccessfully() {
+  navigation_context_->SetHasCommitted(true);
+  navigation_context_->SetError(nil);
+  web_state_->OnNavigationFinished(navigation_context_.get());
+}
+
+void OmniboxShortcutsHelperTest::FinishUncommittedNavigation() {
+  navigation_context_->SetHasCommitted(false);
   navigation_context_->SetError(nil);
   web_state_->OnNavigationFinished(navigation_context_.get());
 }
 
 void OmniboxShortcutsHelperTest::FailCurrentNavigation() {
+  navigation_context_->SetHasCommitted(true);
   navigation_context_->SetError(
       testing::NSErrorWithLocalizedDescription(@"error"));
   web_state_->OnNavigationFinished(navigation_context_.get());
@@ -154,9 +163,10 @@ TEST_F(OmniboxShortcutsHelperTest, SuccessfulNavigationAddsShortcut) {
   InitShortcutsBackend();
 
   scoped_refptr<FakeAutocompleteProvider> bookmark_provider =
-      new FakeAutocompleteProvider(AutocompleteProvider::Type::TYPE_BOOKMARK);
-  AutocompleteMatch bookmark_match(bookmark_provider.get(), 400, true,
-                                   AutocompleteMatchType::BOOKMARK_TITLE);
+      new FakeAutocompleteProvider(AutocompleteProvider::Type::kBookmark);
+  AutocompleteMatch bookmark_match(
+      bookmark_provider.get(), 400, true,
+      omnibox::AutocompleteMatchType::kBookmarkTitle);
 
   // Navigate to `bookmark_match` with `search_terms`.
   std::u16string search_terms = u"input";
@@ -177,9 +187,10 @@ TEST_F(OmniboxShortcutsHelperTest, UnsuccessfulNavigationDontAddShortcut) {
   InitShortcutsBackend();
 
   scoped_refptr<FakeAutocompleteProvider> bookmark_provider =
-      new FakeAutocompleteProvider(AutocompleteProvider::Type::TYPE_BOOKMARK);
-  AutocompleteMatch bookmark_match(bookmark_provider.get(), 400, true,
-                                   AutocompleteMatchType::BOOKMARK_TITLE);
+      new FakeAutocompleteProvider(AutocompleteProvider::Type::kBookmark);
+  AutocompleteMatch bookmark_match(
+      bookmark_provider.get(), 400, true,
+      omnibox::AutocompleteMatchType::kBookmarkTitle);
 
   // Navigate using `search_terms`.
   std::u16string search_terms = u"input";
@@ -216,9 +227,10 @@ TEST_F(OmniboxShortcutsHelperTest, SuccessfulNonOmniboxDontAddShortcut) {
   InitShortcutsBackend();
 
   scoped_refptr<FakeAutocompleteProvider> bookmark_provider =
-      new FakeAutocompleteProvider(AutocompleteProvider::Type::TYPE_BOOKMARK);
-  AutocompleteMatch bookmark_match(bookmark_provider.get(), 400, true,
-                                   AutocompleteMatchType::BOOKMARK_TITLE);
+      new FakeAutocompleteProvider(AutocompleteProvider::Type::kBookmark);
+  AutocompleteMatch bookmark_match(
+      bookmark_provider.get(), 400, true,
+      omnibox::AutocompleteMatchType::kBookmarkTitle);
 
   // Navigate to `bookmark_match` with `search_terms`.
   std::u16string search_terms = u"input";
@@ -243,16 +255,16 @@ TEST_F(OmniboxShortcutsHelperTest,
        SearchMatchesWithoutSearchTermsArgsDoesNotCrash) {
   InitShortcutsBackend();
 
-  AutocompleteMatchType::Type search_types[] = {
-      AutocompleteMatchType::CLIPBOARD_TEXT,
-      AutocompleteMatchType::CLIPBOARD_IMAGE,
-      AutocompleteMatchType::VOICE_SUGGEST,
+  omnibox::AutocompleteMatchType search_types[] = {
+      omnibox::AutocompleteMatchType::kClipboardText,
+      omnibox::AutocompleteMatchType::kClipboardImage,
+      omnibox::AutocompleteMatchType::kVoiceSuggest,
   };
 
   size_t i = 0;
   for (auto type : search_types) {
     scoped_refptr<FakeAutocompleteProvider> provider =
-        new FakeAutocompleteProvider(AutocompleteProvider::TYPE_SEARCH);
+        new FakeAutocompleteProvider(AutocompleteProvider::Type::kSearch);
     AutocompleteMatch match(provider.get(), 400, true, type);
     match.search_terms_args = nullptr;
     match.destination_url = GURL("http://www.google.com/search?q=test");
@@ -268,4 +280,27 @@ TEST_F(OmniboxShortcutsHelperTest,
     ASSERT_TRUE(ShortcutExists(search_terms));
     i++;
   }
+}
+
+// Tests that uncommitted navigations are not added to the shortcuts database.
+TEST_F(OmniboxShortcutsHelperTest, UncommittedNavigationDoesNotAddShortcut) {
+  InitShortcutsBackend();
+
+  scoped_refptr<FakeAutocompleteProvider> bookmark_provider =
+      base::MakeRefCounted<FakeAutocompleteProvider>(
+          AutocompleteProvider::Type::kBookmark);
+  AutocompleteMatch bookmark_match(
+      bookmark_provider.get(), 400, true,
+      omnibox::AutocompleteMatchType::kBookmarkTitle);
+
+  std::u16string search_terms = u"input";
+  UseAutocompleteMatch(search_terms, bookmark_match);
+
+  ASSERT_FALSE(changed_notified());
+  ASSERT_FALSE(ShortcutExists(search_terms));
+
+  FinishUncommittedNavigation();
+
+  ASSERT_FALSE(ShortcutExists(search_terms));
+  ASSERT_FALSE(changed_notified());
 }

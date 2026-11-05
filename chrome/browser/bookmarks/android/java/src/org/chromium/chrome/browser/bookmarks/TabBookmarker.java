@@ -4,13 +4,16 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
+import android.view.View;
 
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.bookmarks.BookmarkPopupCoordinator.BookmarkPopupLaunchType;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -82,11 +85,26 @@ public class TabBookmarker {
      * @param tabsToBookmark The tabs that need to be bookmarked.
      */
     public void addOrEditBookmark(final List<Tab> tabsToBookmark) {
-        addOrEditBookmark(tabsToBookmark, BookmarkType.NORMAL, /* fromExplicitTrackUi= */ false);
+        addOrEditBookmark(
+                tabsToBookmark,
+                BookmarkType.NORMAL,
+                /* fromExplicitTrackUi= */ false,
+                /* anchorView= */ null);
     }
 
-    public void addOrEditBookmark(final Tab tabToBookmark) {
-        addOrEditBookmark(Collections.singletonList(tabToBookmark));
+    /**
+     * Adds or edits a bookmark for the specified tab, anchoring the desktop bookmark popup to the
+     * given view when non-null.
+     *
+     * @param tabToBookmark The tab that needs to be bookmarked.
+     * @param anchorView The view that triggered the flow, or null to use the default anchor.
+     */
+    public void addOrEditBookmark(final Tab tabToBookmark, @Nullable View anchorView) {
+        addOrEditBookmark(
+                Collections.singletonList(tabToBookmark),
+                BookmarkType.NORMAL,
+                /* fromExplicitTrackUi= */ false,
+                anchorView);
     }
 
     /**
@@ -97,7 +115,10 @@ public class TabBookmarker {
      */
     public void addToReadingList(final List<Tab> tabsToBookmark) {
         addOrEditBookmark(
-                tabsToBookmark, BookmarkType.READING_LIST, /* fromExplicitTrackUi= */ false);
+                tabsToBookmark,
+                BookmarkType.READING_LIST,
+                /* fromExplicitTrackUi= */ false,
+                /* anchorView= */ null);
     }
 
     public void addToReadingList(final Tab tabToAdd) {
@@ -109,15 +130,17 @@ public class TabBookmarker {
      * edit price tracking flow will start.
      *
      * @param currentTab The tab being currently shown.
+     * @param anchorView The view that triggered the flow, or null to use the default anchor.
      */
-    public void startOrModifyPriceTracking(@Nullable Tab currentTab) {
+    public void startOrModifyPriceTracking(@Nullable Tab currentTab, @Nullable View anchorView) {
         BookmarkId bookmarkId =
                 assumeNonNull(mBookmarkModelSupplier.get()).getUserBookmarkIdForTab(currentTab);
         if (bookmarkId == null) {
             addOrEditBookmark(
-                    Collections.singletonList(currentTab),
+                    Collections.singletonList(assertNonNull(currentTab)),
                     BookmarkType.NORMAL,
-                    /* fromExplicitTrackUi= */ true);
+                    /* fromExplicitTrackUi= */ true,
+                    anchorView);
         } else {
             // In the case where the bookmark exists, re-show the save flow with price-tracking
             // enabled.
@@ -131,14 +154,54 @@ public class TabBookmarker {
                     /* wasBookmarkMoved= */ false,
                     /* isNewBookmark= */ false,
                     mBookmarkManagerOpener,
-                    mPriceDropNotificationManagerSupplier.get());
+                    mPriceDropNotificationManagerSupplier.get(),
+                    anchorView);
         }
+    }
+
+    /** Returns whether bookmark flows open the desktop bookmark popup in this activity. */
+    public boolean shouldUseBookmarkPopup() {
+        return BookmarkUtils.shouldUseBookmarkPopup(mActivity);
+    }
+
+    /**
+     * Opens the desktop bookmark popup to manage price tracking for the current tab's bookmark,
+     * creating the bookmark and starting price tracking if the tab is not yet bookmarked. Callers
+     * gate on {@link #shouldUseBookmarkPopup()} and bookmark editing being enabled.
+     *
+     * @param currentTab The tab being currently shown.
+     * @param anchorView The view that triggered the flow, used to anchor the popup.
+     */
+    public void showPriceTrackingManagePopup(@Nullable Tab currentTab, View anchorView) {
+        if (currentTab == null) return;
+
+        BookmarkId bookmarkId =
+                assumeNonNull(mBookmarkModelSupplier.get()).getUserBookmarkIdForTab(currentTab);
+        if (bookmarkId == null) {
+            addOrEditBookmark(
+                    Collections.singletonList(currentTab),
+                    BookmarkType.NORMAL,
+                    /* fromExplicitTrackUi= */ true,
+                    anchorView);
+            return;
+        }
+
+        BookmarkUtils.showBookmarkPopup(
+                mActivity,
+                currentTab.getProfile(),
+                bookmarkId,
+                BookmarkPopupLaunchType.PRICE_TRACKING_MANAGE,
+                /* isNewBookmark= */ false,
+                mBookmarkManagerOpener,
+                mPriceDropNotificationManagerSupplier.get(),
+                anchorView);
     }
 
     private void addOrEditBookmark(
             final @Nullable List<Tab> tabsToBookmark,
             @BookmarkType int bookmarkType,
-            boolean fromExplicitTrackUi) {
+            boolean fromExplicitTrackUi,
+            @Nullable View anchorView) {
         if (tabsToBookmark == null) {
             return;
         }
@@ -175,7 +238,8 @@ public class TabBookmarker {
                             currentBookmarkItems,
                             bookmarkModel,
                             bookmarkType,
-                            fromExplicitTrackUi);
+                            fromExplicitTrackUi,
+                            anchorView);
                 });
     }
 
@@ -184,7 +248,8 @@ public class TabBookmarker {
             final List<@Nullable BookmarkItem> currentBookmarkItems,
             final BookmarkModel bookmarkModel,
             @BookmarkType int bookmarkType,
-            boolean fromExplicitTrackUi) {
+            boolean fromExplicitTrackUi,
+            @Nullable View anchorView) {
         BookmarkUtils.addOrEditBookmark(
                 currentBookmarkItems,
                 bookmarkModel,
@@ -212,6 +277,7 @@ public class TabBookmarker {
                 fromExplicitTrackUi,
                 mBookmarkManagerOpener,
                 mPriceDropNotificationManagerSupplier.get(),
-                mBookmarkBarVisibilitySupplier.get());
+                mBookmarkBarVisibilitySupplier.get(),
+                anchorView);
     }
 }

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/gtest_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
@@ -228,6 +229,48 @@ TEST_F(WeaknessMarkingTest, StrongifyAlreadyMarkedOnBackingDuringIteration) {
   }
   CHECK_EQ(weak_set->size(), kNumberOfWeakEntries);
 }
+
+TEST_F(WeaknessMarkingTest, StrongLinkedHashSetIteratorAcrossRehashAndGC) {
+  using StrongSet = GCedHeapLinkedHashSet<Member<IntegerObject>>;
+  Persistent<StrongSet> set = MakeGarbageCollected<StrongSet>();
+  Persistent<IntegerObject> first = MakeGarbageCollected<IntegerObject>(1);
+  set->insert(first.Get());
+  set->insert(MakeGarbageCollected<IntegerObject>(2));
+
+  size_t visited = 0;
+  for (auto it = set->begin(); it != set->end();) {
+    EXPECT_NE(it->Get(), nullptr);
+    if (visited == 0) {
+      // Trigger rehash of the underlying LinkedHashSet::value_to_index_ map.
+      for (int j = 10; j < 40; ++j) {
+        set->insert(MakeGarbageCollected<IntegerObject>(j));
+      }
+    }
+    ++it;
+    TestSupportingGC::ConservativelyCollectGarbage();
+    ++visited;
+  }
+  EXPECT_EQ(visited, 32u);
+}
+
+#if DCHECK_IS_ON() || BUILDFLAG(ENABLE_HEAP_HASH_TABLE_MODIFICATION_CHECKS)
+TEST_F(WeaknessMarkingTest, WeakLinkedHashSetModificationDuringIteration) {
+  using WeakSet = GCedHeapLinkedHashSet<WeakMember<IntegerObject>>;
+  Persistent<WeakSet> set = MakeGarbageCollected<WeakSet>();
+  Persistent<IntegerObject> first = MakeGarbageCollected<IntegerObject>(1);
+  Persistent<IntegerObject> second = MakeGarbageCollected<IntegerObject>(2);
+  set->insert(first.Get());
+  set->insert(second.Get());
+
+  auto it = set->begin();
+  EXPECT_EQ(it->Get(), first.Get());
+  set->insert(MakeGarbageCollected<IntegerObject>(3));
+  EXPECT_CHECK_DEATH_WITH(++it, "HashTable modified while being iterated.");
+  EXPECT_CHECK_DEATH_WITH(*it, "HashTable modified while being iterated.");
+  EXPECT_CHECK_DEATH_WITH(it->Get(),
+                          "HashTable modified while being iterated.");
+}
+#endif
 
 }  // namespace weakness_marking_test
 

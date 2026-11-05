@@ -5,6 +5,7 @@
 #ifndef CHROME_TEST_BASE_UI_TEST_UTILS_H_
 #define CHROME_TEST_BASE_UI_TEST_UTILS_H_
 
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -12,6 +13,7 @@
 
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
@@ -22,7 +24,7 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/views/view_observer.h"
@@ -137,7 +139,7 @@ void NavigateToURLWithPost(BrowserWindowInterface* browser, const GURL& url);
 content::RenderFrameHost* NavigateToURLWithDisposition(
     BrowserWindowInterface* browser,
     const GURL& url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     int browser_test_flags);
 
 // Same as |NavigateToURL|, but wait for a given number of navigations to
@@ -154,7 +156,7 @@ NavigateToURLWithDispositionBlockUntilNavigationsComplete(
     BrowserWindowInterface* browser,
     const GURL& url,
     int number_of_navigations,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     int browser_test_flags);
 
 // Generate the path of the build directory, relative to the source root.
@@ -396,7 +398,7 @@ void GetCookies(const GURL& url,
 
 // Get all tags from the `WebContentsTagsManager`.
 // `exclude_web_ui` determines whether to exclude tags of web UI web contents.
-const std::vector<raw_ptr<task_manager::WebContentsTag, VectorExperimental>>
+const std::vector<raw_ptr<task_manager::WebContentsTag, DanglingUntriaged>>
 GetAllTrackedTags(bool exclude_web_ui);
 
 // Helper to get the titles of all tags. Can be used with
@@ -649,8 +651,8 @@ class BrowserDestroyedObserver : public BrowserCollectionObserver {
       browser_collection_observation_{this};
 };
 
-// Waits for the creation of `browser`. If `browser` is null will wait on the
-// creation of any Browser.
+// Waits for the creation of a Browser. If multiple browsers are created before
+// `Wait()` is called, returns the most recently created live browser.
 class BrowserCreatedObserver : public BrowserCollectionObserver {
  public:
   BrowserCreatedObserver();
@@ -662,11 +664,10 @@ class BrowserCreatedObserver : public BrowserCollectionObserver {
 
   // BrowserCollectionObserver:
   void OnBrowserCreated(BrowserWindowInterface* browser) override;
-  void OnBrowserClosed(BrowserWindowInterface* browser) override;
 
  private:
-  raw_ptr<BrowserWindowInterface> browser_ = nullptr;
-  base::RunLoop run_loop_{base::RunLoop::Type::kNestableTasksAllowed};
+  base::WeakPtr<BrowserWindowInterface> browser_;
+  std::optional<base::RunLoop> run_loop_;
   base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
       browser_collection_observation_{this};
 };

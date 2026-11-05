@@ -59,7 +59,7 @@ using testing::Return;
 namespace collaboration {
 namespace {
 
-std::unique_ptr<KeyedService> BuildTestShareKitService(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildTestShareKitService(ProfileIOS& profile) {
   data_sharing::DataSharingService* data_sharing_service =
       data_sharing::DataSharingServiceFactory::GetForProfile(profile);
   TabGroupService* tab_group_service =
@@ -69,13 +69,8 @@ std::unique_ptr<KeyedService> BuildTestShareKitService(ProfileIOS* profile) {
                                                nullptr, tab_group_service);
 }
 
-std::unique_ptr<KeyedService> BuildFakeTabGroupSyncService(
-    ProfileIOS* profile) {
-  return std::make_unique<tab_groups::FakeTabGroupSyncService>();
-}
-
 std::unique_ptr<KeyedService> BuildMockCollaborationService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   ServiceStatus collaboration_status;
   collaboration_status.collaboration_status =
       CollaborationStatus::kEnabledCreateAndJoin;
@@ -84,10 +79,6 @@ std::unique_ptr<KeyedService> BuildMockCollaborationService(
   ON_CALL(*mock_collaboration_service.get(), GetServiceStatus())
       .WillByDefault(Return(collaboration_status));
   return std::move(mock_collaboration_service);
-}
-
-std::unique_ptr<KeyedService> BuildTestFaviconLoader(ProfileIOS* profile) {
-  return std::make_unique<TestFaviconLoader>();
 }
 
 }  // namespace
@@ -110,19 +101,19 @@ class IOSCollaborationControllerDelegateTest : public PlatformTest {
         AuthenticationServiceFactory::GetDefaultFactory());
     test_profile_builder.AddTestingFactory(
         SyncServiceFactory::GetInstance(),
-        base::BindRepeating(&CreateTestSyncService));
+        base::BindOnce(&CreateTestSyncService));
     test_profile_builder.AddTestingFactory(
         CollaborationServiceFactory::GetInstance(),
-        base::BindRepeating(&BuildMockCollaborationService));
+        base::BindOnce(&BuildMockCollaborationService));
     test_profile_builder.AddTestingFactory(
         tab_groups::TabGroupSyncServiceFactory::GetInstance(),
-        base::BindRepeating(&BuildFakeTabGroupSyncService));
+        base::BindOnce(&std::make_unique<tab_groups::FakeTabGroupSyncService>));
     test_profile_builder.AddTestingFactory(
         ShareKitServiceFactory::GetInstance(),
-        base::BindRepeating(&BuildTestShareKitService));
+        base::BindOnce(&BuildTestShareKitService));
     test_profile_builder.AddTestingFactory(
         IOSChromeFaviconLoaderFactory::GetInstance(),
-        base::BindRepeating(&BuildTestFaviconLoader));
+        base::BindOnce(&std::make_unique<TestFaviconLoader>));
 
     profile_ =
         profile_manager_.AddProfileWithBuilder(std::move(test_profile_builder));
@@ -415,8 +406,8 @@ TEST_F(IOSCollaborationControllerDelegateTest,
       .andReturn(signin_coordinator_mock_);
 
   OCMExpect([signin_coordinator_mock_ start]).andDo(^(NSInvocation*) {
-    completion(signin_coordinator_mock_, SigninCoordinatorResultCanceledByUser,
-               nil);
+    completion(signin_coordinator_mock_,
+               base::unexpected(SigninCoordinatorResultCanceledByUser));
   });
   OCMExpect([signin_coordinator_mock_ stop]);
   delegate_->ShowAuthenticationUi(FlowType::kJoin, mock_callback.Get());
@@ -447,8 +438,7 @@ TEST_F(IOSCollaborationControllerDelegateTest,
       .andReturn(signin_coordinator_mock_);
   OCMExpect([signin_coordinator_mock_ start]).andDo(^(NSInvocation*) {
     AcceptSyncOptIn();
-    completion(signin_coordinator_mock_, SigninCoordinatorResultSuccess,
-               [FakeSystemIdentity fakeIdentity1]);
+    completion(signin_coordinator_mock_, [FakeSystemIdentity fakeIdentity1]);
   });
   OCMExpect([signin_coordinator_mock_ stop]);
 
@@ -477,8 +467,7 @@ TEST_F(IOSCollaborationControllerDelegateTest, ShowAuthenticationUiSyncDenied) {
       .andReturn(signin_coordinator_mock_);
   OCMExpect([signin_coordinator_mock_ start]).andDo(^(NSInvocation*) {
     DenySyncOptIn();
-    completion(signin_coordinator_mock_, SigninCoordinatorResultSuccess,
-               [FakeSystemIdentity fakeIdentity1]);
+    completion(signin_coordinator_mock_, [FakeSystemIdentity fakeIdentity1]);
   });
   OCMExpect([signin_coordinator_mock_ stop]);
   delegate_->ShowAuthenticationUi(FlowType::kJoin, mock_callback.Get());
@@ -507,8 +496,7 @@ TEST_F(IOSCollaborationControllerDelegateTest, ShowAuthenticationUiWithSignIn) {
       .andReturn(signin_coordinator_mock_);
   OCMExpect([signin_coordinator_mock_ start]).andDo(^(NSInvocation*) {
     AcceptSyncOptIn();
-    completion(signin_coordinator_mock_, SigninCoordinatorResultSuccess,
-               [FakeSystemIdentity fakeIdentity1]);
+    completion(signin_coordinator_mock_, [FakeSystemIdentity fakeIdentity1]);
   });
   OCMExpect([signin_coordinator_mock_ stop]);
   delegate_->ShowAuthenticationUi(FlowType::kJoin, mock_callback.Get());

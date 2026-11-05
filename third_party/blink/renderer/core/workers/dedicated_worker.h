@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_WORKERS_DEDICATED_WORKER_H_
 
 #include <memory>
+#include <optional>
 
 #include "base/functional/function_ref.h"
 #include "base/gtest_prod_util.h"
@@ -131,7 +132,8 @@ class CORE_EXPORT DedicatedWorker final
       CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
           coep_reporting_observer,
       CrossVariantMojoReceiver<mojom::blink::ReportingObserverInterfaceBase>
-          dip_reporting_observer) override;
+          dip_reporting_observer,
+      const std::optional<WebSecurityOrigin>& updated_origin) override;
   void OnScriptLoadStartFailed() override;
 
   void DispatchErrorEventForScriptFetchFailure();
@@ -148,34 +150,20 @@ class CORE_EXPORT DedicatedWorker final
       mojom::blink::FrameLifecycleState state) override;
   void Trace(Visitor*) const override;
 
+  // Emulate necessary parts of `Start()` for testing. This does NOT actually
+  // start the worker.
+  void EmulateStartForTesting();
+
  private:
+  friend class DedicatedWorkerEarlyAbortTest;
   FRIEND_TEST_ALL_PREFIXES(DedicatedWorkerTest, TopLevelFrameSecurityOrigin);
 
   // Starts the worker.
   void Start();
-  void ContinueStart(
-      const KURL& script_url,
-      std::unique_ptr<WorkerMainScriptLoadParameters>
-          worker_main_script_load_params,
-      network::mojom::ReferrerPolicy,
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-          response_content_security_policies,
-      DocumentPolicy::DocumentPolicyBundle response_document_policy,
-      mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
-          back_forward_cache_controller_host,
-      std::unique_ptr<WebPolicyContainer> policy_container,
-      mojo::PendingReceiver<mojom::blink::ReportingObserver>
-          coep_reporting_observer,
-      mojo::PendingReceiver<mojom::blink::ReportingObserver>
-          dip_reporting_observer);
   void ContinueStartInternal(
       const KURL& script_url,
       std::unique_ptr<WorkerMainScriptLoadParameters>
           worker_main_script_load_params,
-      network::mojom::ReferrerPolicy,
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-          response_content_security_policies,
-      DocumentPolicy::DocumentPolicyBundle response_document_policy,
       mojo::PendingRemote<mojom::blink::BackForwardCacheControllerHost>
           back_forward_cache_controller_host,
       std::unique_ptr<WebPolicyContainer> policy_container,
@@ -185,10 +173,6 @@ class CORE_EXPORT DedicatedWorker final
           dip_reporting_observer);
   std::unique_ptr<GlobalScopeCreationParams> CreateGlobalScopeCreationParams(
       const KURL& script_url,
-      network::mojom::ReferrerPolicy,
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-          response_content_security_policies,
-      DocumentPolicy::DocumentPolicyBundle response_document_policy,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>
           coep_reporting_observer,
       mojo::PendingReceiver<mojom::blink::ReportingObserver>

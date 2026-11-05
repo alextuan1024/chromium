@@ -31,8 +31,7 @@
 
 #include "third_party/blink/renderer/core/html/forms/text_field_input_type.h"
 
-#include "base/feature_list.h"
-#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_focus_options.h"
 #include "third_party/blink/renderer/core/accessibility/scoped_blink_ax_event_intent.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_forbidden_scope.h"
@@ -87,6 +86,10 @@ class DataListIndicatorElement final : public HTMLDivElement {
   bool WillRespondToMouseClickEvents() override {
     return HostInput() && !HostInput()->IsDisabledOrReadOnly() &&
            GetDocument().IsActive();
+  }
+
+  FocusableState SupportsFocus(UpdateBehavior) const override {
+    return FocusableState::kNotFocusable;
   }
 
  public:
@@ -254,11 +257,7 @@ void TextFieldInputType::HandleKeydownEvent(KeyboardEvent& event) {
     return;
   }
   if (ChromeClient* chrome_client = GetChromeClient()) {
-    if (chrome_client->HandleKeyboardEventOnEditableElement(GetElement(),
-                                                            event)) {
-      event.SetDefaultHandled();
-      return;
-    }
+    chrome_client->HandleKeyboardEventOnTextField(GetElement(), event);
   }
 }
 
@@ -429,10 +428,6 @@ void TextFieldInputType::HandleBlurEvent() {
       }
     }
   }
-
-  if (HTMLSelectElement* select = input.FilterTarget()) {
-    select->StopFiltering();
-  }
 }
 
 bool TextFieldInputType::ShouldSubmitImplicitly(const Event& event) {
@@ -566,8 +561,16 @@ void TextFieldInputType::ListAttributeTargetChanged() {
       rp_container->AppendChild(data_list);
       data_list->InitializeInShadowTree();
       Element& input = GetElement();
-      if (input.GetDocument().FocusedElement() == input)
-        input.UpdateSelectionOnFocus(SelectionBehaviorOnFocus::kRestore);
+      if (input.GetDocument().FocusedElement() == input) {
+        // This can be called synchronously from DOM mutation notifications
+        // (e.g. id changes during insertion/removal of the list target), so
+        // it must not scroll, which would force a synchronous style and
+        // layout update while the DOM is in an intermediate state.
+        FocusOptions* focus_options = FocusOptions::Create();
+        focus_options->setPreventScroll(true);
+        input.UpdateSelectionOnFocus(SelectionBehaviorOnFocus::kRestore,
+                                     focus_options);
+      }
     }
   } else {
     picker->remove(ASSERT_NO_EXCEPTION);
@@ -581,14 +584,10 @@ void TextFieldInputType::ValueAttributeChanged() {
 void TextFieldInputType::DisabledOrReadonlyAttributeChanged(
     DisabledChangedReason reason) {
   if (SpinButtonElement* spin_button = GetSpinButtonElement()) {
-    bool avoid_dispatch =
-        RuntimeEnabledFeatures::
-            DisableFormControlChangeEventDuringMutationEnabled() &&
-        (GetElement().GetDocument().StatePreservingAtomicMoveInProgress() ||
-         reason == DisabledChangedReason::kFieldsetChildrenChanged);
     SpinButtonElement::EventDispatch dispatch =
-        avoid_dispatch ? SpinButtonElement::kEventDispatchDisallowed
-                       : SpinButtonElement::kEventDispatchAllowed;
+        ShouldSuppressChangeEventForDisabledStateChange(reason)
+            ? SpinButtonElement::kEventDispatchDisallowed
+            : SpinButtonElement::kEventDispatchAllowed;
     spin_button->ReleaseCapture(dispatch);
   }
   UpdateWheelEventRegistration(/*is_detaching=*/false);
@@ -744,8 +743,7 @@ HTMLElement* TextFieldInputType::UpdatePlaceholderText(
     auto* new_element =
         MakeGarbageCollected<HTMLDivElement>(GetElement().GetDocument());
     placeholder = new_element;
-    placeholder->SetShadowPseudoId(
-        shadow_element_names::kPseudoInputPlaceholder);
+    GetElement().UpdatePlaceholderShadowPseudoId(*placeholder);
     placeholder->SetInlineStyleProperty(CSSPropertyID::kDisplay,
                                         GetElement().IsPlaceholderVisible()
                                             ? CSSValueID::kBlock
@@ -774,13 +772,11 @@ String TextFieldInputType::ConvertFromVisibleValue(
 }
 
 void TextFieldInputType::SubtreeHasChanged() {
+  // SetValueFromRenderer() invalidates the validity pseudo-classes through
+  // SetNeedsValidityCheck(). It does not invalidate the range ones.
   GetElement().SetValueFromRenderer(SanitizeUserInputValue(
       ConvertFromVisibleValue(GetElement().InnerEditorValue())));
   GetElement().UpdatePlaceholderVisibility();
-  GetElement().PseudoStateChanged(CSSSelector::kPseudoValid);
-  GetElement().PseudoStateChanged(CSSSelector::kPseudoInvalid);
-  GetElement().PseudoStateChanged(CSSSelector::kPseudoUserValid);
-  GetElement().PseudoStateChanged(CSSSelector::kPseudoUserInvalid);
   GetElement().PseudoStateChanged(CSSSelector::kPseudoInRange);
   GetElement().PseudoStateChanged(CSSSelector::kPseudoOutOfRange);
 
@@ -810,6 +806,8 @@ void TextFieldInputType::DidSetValueByUserEdit() {
     }
     chrome_client->DidChangeValueInTextField(GetElement());
   }
+  GetElement().GetDocument().DidHaveFormEdit();
+
   if (GetElement().IsBaseAppearanceCombobox()) {
     // TODO(https://crbug.com/453705243): Make IsBaseAppearanceCombobox return
     // the datalist element since i am always using the datalist afterwards and
@@ -877,12 +875,6 @@ void TextFieldInputType::HandleFocusInEvent(
     if (auto* datalist = input.DataList()) {
       datalist->ShowPopoverInternal(&input, /*exception_state=*/nullptr);
     }
-  } else if (HTMLSelectElement* select = input.FilterTarget()) {
-    select->StartFiltering();
-
-    // TODO(crbug.com/453705243): Track the target select element like we are
-    // already doing for the list attribute in order to remove the
-    // :active-option pseudo.
   }
   UpdateWheelEventRegistration(/*is_detaching=*/false);
 }

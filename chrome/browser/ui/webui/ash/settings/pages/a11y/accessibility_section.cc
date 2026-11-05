@@ -36,6 +36,7 @@
 #include "chrome/browser/ui/webui/settings/font_handler.h"
 #include "chrome/browser/ui/webui/settings/shared_settings_localized_strings_provider.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "components/live_caption/caption_util.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
@@ -565,6 +566,23 @@ base::span<const SearchConcept> GetA11yDisableTouchpadSearchConcepts() {
   return tags;
 }
 
+base::span<const SearchConcept> GetA11yShakeToLocateSearchConcepts() {
+  static constexpr auto tags = std::to_array<SearchConcept>(
+      {{IDS_OS_SETTINGS_TAG_A11Y_SHAKE_TO_LOCATE_CURSOR,
+        mojom::kCursorAndTouchpadSubpagePath,
+        mojom::SearchResultIcon::kCursorClick,
+        mojom::SearchResultDefaultRank::kMedium,
+        mojom::SearchResultType::kSetting,
+        {.setting = mojom::Setting::kShakeToLocateCursor},
+        {
+            IDS_OS_SETTINGS_TAG_A11Y_SHAKE_TO_LOCATE_CURSOR_ALT1,
+            IDS_OS_SETTINGS_TAG_A11Y_SHAKE_TO_LOCATE_CURSOR_ALT2,
+            IDS_OS_SETTINGS_TAG_A11Y_SHAKE_TO_LOCATE_CURSOR_ALT3,
+            SearchConcept::kAltTagEnd,
+        }}});
+  return tags;
+}
+
 base::span<const SearchConcept> GetA11yBounceKeysSearchConcepts() {
   static constexpr auto tags = std::to_array<SearchConcept>({
       {IDS_OS_SETTINGS_TAG_A11Y_BOUNCE_KEYS,
@@ -983,7 +1001,7 @@ void AccessibilitySection::AddLoadTimeData(
       {"durationInSeconds", IDS_SETTINGS_DURATION_IN_SECONDS},
       {"reEnableTouchpadLabel", IDS_SETTINGS_RE_ENABLE_TOUCHPAD},
       {"focusHighlightLabel",
-       IDS_SETTINGS_ACCESSIBILITY_FOCUS_HIGHLIGHT_DESCRIPTION},
+       IDS_OS_SETTINGS_ACCESSIBILITY_FOCUS_HIGHLIGHT_DESCRIPTION},
       {"focusHighlightLabelSubtext",
        IDS_SETTINGS_ACCESSIBILITY_FOCUS_HIGHLIGHT_DESCRIPTION_SUBTEXT},
       {"focusHighlightDisabledByChromevoxTooltip",
@@ -1239,6 +1257,8 @@ void AccessibilitySection::AddLoadTimeData(
       {"keyboardSettingsTitle",
        IDS_SETTINGS_ACCESSIBILITY_KEYBOARD_SETTINGS_TITLE},
       {"largeMouseCursorLabel", IDS_SETTINGS_LARGE_MOUSE_CURSOR_LABEL},
+      {"shakeToLocateLabel",
+       IDS_OS_SETTINGS_ACCESSIBILITY_SHAKE_TO_LOCATE_LABEL},
       {"largeMouseCursorSizeDefaultLabel",
        IDS_SETTINGS_LARGE_MOUSE_CURSOR_SIZE_DEFAULT_LABEL},
       {"largeMouseCursorSizeLabel", IDS_SETTINGS_LARGE_MOUSE_CURSOR_SIZE_LABEL},
@@ -1537,7 +1557,7 @@ void AccessibilitySection::AddLoadTimeData(
        IDS_SETTINGS_TEXT_TO_SPEECH_VOLUME_MINIMUM_LABEL},
       {"ttsSettingsLinkDescription", IDS_SETTINGS_TTS_LINK_DESCRIPTION},
       {"overscrollHistoryNavigationTitle",
-       IDS_SETTINGS_OVERSCROLL_HISTORY_NAVIGATION_TITLE},
+       IDS_OS_SETTINGS_OVERSCROLL_HISTORY_NAVIGATION_TITLE},
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
@@ -1570,15 +1590,14 @@ void AccessibilitySection::AddLoadTimeData(
   html_source->AddBoolean("showTabletModeShelfNavigationButtonsSettings",
                           AreTabletNavigationButtonsAllowed());
 
+  html_source->AddBoolean("isAccessibilityShakeToLocateEnabled",
+                          ::features::IsAccessibilityShakeToLocateEnabled());
+
   html_source->AddString("tabletModeShelfNavigationButtonsLearnMoreUrl",
                          ash::external_urls::kTabletModeGesturesLearnMoreURL);
 
   html_source->AddString("faceGazeLearnMoreUrl",
                          ash::external_urls::kFaceGazeLearnMoreURL);
-
-  html_source->AddBoolean(
-      "isAccessibilityInvertedMouseCursorEnabled",
-      ::features::IsAccessibilityInvertedMouseCursorEnabled());
 
   html_source->AddInteger(
       "defaultBounceKeysDelayMillis",
@@ -1906,6 +1925,7 @@ void AccessibilitySection::RegisterHierarchy(
       mojom::Setting::kBounceKeys,
       mojom::Setting::kSlowKeys,
       mojom::Setting::kDisableTouchpad,
+      mojom::Setting::kShakeToLocateCursor,
   };
   RegisterNestedSettingBulk(mojom::Subpage::kManageAccessibility,
                             kManageAccessibilitySettings, generator);
@@ -1958,17 +1978,10 @@ void AccessibilitySection::OnVoicesChanged() {
 }
 
 void AccessibilitySection::UpdateTextToSpeechVoiceSearchTags() {
-  // Start with no text-to-speech voice search tags.
+  // Built-in TTS voices are always available; avoid GetVoices() as it loads
+  // TTS engines.
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
-  updater.RemoveSearchTags(GetTextToSpeechVoiceSearchConcepts());
-
-  content::TtsController* tts_controller =
-      content::TtsController::GetInstance();
-  std::vector<content::VoiceData> voices;
-  tts_controller->GetVoices(profile(), GURL(), &voices);
-  if (!voices.empty()) {
-    updater.AddSearchTags(GetTextToSpeechVoiceSearchConcepts());
-  }
+  updater.AddSearchTags(GetTextToSpeechVoiceSearchConcepts());
 }
 
 void AccessibilitySection::OnExtensionLoaded(
@@ -2041,6 +2054,10 @@ void AccessibilitySection::UpdateSearchTags() {
   updater.AddSearchTags(GetA11yMouseKeysSearchConcepts());
 
   updater.AddSearchTags(GetA11yDisableTouchpadSearchConcepts());
+
+  if (::features::IsAccessibilityShakeToLocateEnabled()) {
+    updater.AddSearchTags(GetA11yShakeToLocateSearchConcepts());
+  }
 
   if (!pref_service_->GetBoolean(prefs::kAccessibilitySwitchAccessEnabled)) {
     return;

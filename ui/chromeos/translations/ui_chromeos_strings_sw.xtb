@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Kamera</translation>
 <translation id="162175252992296058">Kireno kwenye kibodi ya Kimataifa ya Marekani</translation>
 <translation id="1629521517399325891">Cheti cha mtumiaji hakipatikani kwa ajili ya uthibitishaji wa mtandao.</translation>
+<translation id="1639239467298939599">Inapakia</translation>
 <translation id="1641780993263690097">Pinyin ya Kichina</translation>
 <translation id="164969095109328410">Kifaa cha Chrome</translation>
 <translation id="1661207570040737402">Umetumia nafasi yako yote ya hifadhi ya pamoja ya Google Workspace.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Kipengele cha kusawazisha faili kimezimwa</translation>
 <translation id="2820957248982571256">Inatafuta...</translation>
 <translation id="2830077785865012357">Zhuyin ya Kichina</translation>
+<translation id="2838379631617906747">Inasakinisha</translation>
 <translation id="2843806747483486897">Badilisha chaguomsingi...</translation>
 <translation id="2873951654529031587">Tupio</translation>
 <translation id="2887314858867008269">Colemak ya Marekani</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Nenosiri lisilo sahihi</translation>
 <translation id="5059127710849015030">Unukuzi wa mfumo wa kuandika Kinepali</translation>
 <translation id="5068919226082848014">Piza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> imeweka kanuni za kubatilisha seva mbadala</translation>
 <translation id="5081517858322016911">Itafuta <ph name="TOTAL_FILE_SIZE" /> za faili</translation>
 <translation id="508423945471810158">Inahamishia vipengee <ph name="NUMBER_OF_ITEMS" /> kwenye <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Hitilafu fulani imetokea.</translation>
-<translation id="5102922915594634436">Dhibiti folda zilizosawazishwa</translation>
 <translation id="5109254780565519649">Hitilafu fulani imetokea. Huenda baadhi ya vipengee havijarejeshwa.</translation>
 <translation id="5110329002213341433">Kiingereza (Kanada)</translation>
 <translation id="5119780910075847424">Usawazishaji umesitishwa</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Hakuna iliyosakinishwa</translation>
 <translation id="5317780077021120954">Hifadhi</translation>
 <translation id="5318819489018851358">Shiriki kwenye Linux</translation>
-<translation id="5330145655348521461">Faili hizi zilifunguka kwenye eneo-kazi tofauti. Sogea kwenye <ph name="USER_NAME" /> ( <ph name="MAIL_ADDRESS" /> ) ili uzione.</translation>
 <translation id="5330512191124428349">Pata maelezo</translation>
 <translation id="535792325654997756">Mtu aliye na paka</translation>
 <translation id="5358764674931277">Kasi ya picha</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Thamani ya kiambishi cha kikoa kinacholingana si sahihi</translation>
 <translation id="6364301859968397756">Nafasi ya hifadhi ya shirika imejaa</translation>
 <translation id="6367976544441405720">Gari</translation>
-<translation id="637062427944097960">Faili hii ilifunguka kwenye eneo-kazi tofauti. Sogea kwenye <ph name="USER_NAME" /> ( <ph name="MAIL_ADDRESS" /> ) ili uione.</translation>
 <translation id="6394388407447716302">Kusoma tu</translation>
 <translation id="6395575651121294044">Faili <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> imeshindwa kuhamishwa kwa sababu imesimbwa kwa njia fiche.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> - Mlango</translation>
 <translation id="8656407365183407932">Faili zako zilizo nje ya mtandao zilipaswa kuondolewa</translation>
 <translation id="8656768832129462377">Usikague</translation>
+<translation id="8662978096466608964">Chrome haiwezi kuweka mandhari.</translation>
 <translation id="8688591111840995413">Nenosiri lisilo sahihi</translation>
 <translation id="8698464937041809063">Mchoro wa Google</translation>
 <translation id="8698877009525468705">Faili hii ni ya siri na inadhibitiwa na vizuizi vya sera ya msimamizi.</translation>

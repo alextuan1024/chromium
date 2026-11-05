@@ -33,6 +33,7 @@
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_track.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component_impl.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_source.h"
+#include "third_party/blink/renderer/platform/peerconnection/rtc_rtp_sender_platform.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_stats.h"
 #include "third_party/blink/renderer/platform/testing/io_task_runner_testing_platform_support.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
@@ -40,7 +41,11 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/webrtc/api/make_ref_counted.h"
+#include "third_party/webrtc/api/rtc_error.h"
 #include "third_party/webrtc/api/scoped_refptr.h"
+#include "third_party/webrtc/api/sframe/sframe_encryptor_interface.h"
+#include "third_party/webrtc/api/sframe/sframe_types.h"
 #include "third_party/webrtc/api/stats/rtc_stats_report.h"
 #include "third_party/webrtc/api/stats/rtcstats_objects.h"
 #include "third_party/webrtc/api/units/timestamp.h"
@@ -186,6 +191,65 @@ TEST_F(RTCRtpSenderImplTest, CreateSenderWithNullTrack) {
   EXPECT_FALSE(sender_->Track());
 }
 
+TEST_F(RTCRtpSenderImplTest, CreateSframeEncryptorForwardsConfiguration) {
+  sender_ = CreateSender(/*component=*/nullptr);
+  RTCRtpSenderPlatform& platform_sender = *sender_;
+  constexpr webrtc::SframeEncryptorInit kConfigurations[] = {
+      {.mode = webrtc::SframeMode::kPerFrame,
+       .cipher_suite = webrtc::SframeCipherSuite::kAes128GcmSha256_128},
+      {.mode = webrtc::SframeMode::kPerPacket,
+       .cipher_suite = webrtc::SframeCipherSuite::kAes256CtrHmacSha512_80},
+  };
+  for (const webrtc::SframeEncryptorInit& init : kConfigurations) {
+    EXPECT_CALL(
+        *mock_webrtc_sender_,
+        CreateSframeEncryptorOrError(testing::AllOf(
+            testing::Field(&webrtc::SframeEncryptorInit::mode, init.mode),
+            testing::Field(&webrtc::SframeEncryptorInit::cipher_suite,
+                           init.cipher_suite))))
+        .WillOnce(Return(webrtc::RTCError::InternalError()));
+
+    // A known native error confirms that the request reaches WebRTC.
+    webrtc::RTCErrorOr<scoped_refptr<webrtc::SframeEncryptorInterface>> result =
+        platform_sender.CreateSframeEncryptor(init);
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.error().type(), webrtc::RTCErrorType::INTERNAL_ERROR);
+  }
+}
+
+TEST_F(RTCRtpSenderImplTest, CreateSframeEncryptorPreservesNativeError) {
+  sender_ = CreateSender(/*component=*/nullptr);
+  RTCRtpSenderPlatform& platform_sender = *sender_;
+  const webrtc::SframeEncryptorInit init{
+      .mode = webrtc::SframeMode::kPerFrame,
+      .cipher_suite = webrtc::SframeCipherSuite::kAes128GcmSha256_128};
+  EXPECT_CALL(*mock_webrtc_sender_, CreateSframeEncryptorOrError(_))
+      .WillOnce(Return(webrtc::RTCError::InvalidState("Sender is stopped")));
+
+  webrtc::RTCErrorOr<scoped_refptr<webrtc::SframeEncryptorInterface>> result =
+      platform_sender.CreateSframeEncryptor(init);
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.error().type(), webrtc::RTCErrorType::INVALID_STATE);
+  EXPECT_STREQ(result.error().message(), "Sender is stopped");
+}
+
+TEST_F(RTCRtpSenderImplTest, CreateSframeEncryptorReturnsNativeEncryptor) {
+  sender_ = CreateSender(/*component=*/nullptr);
+  RTCRtpSenderPlatform& platform_sender = *sender_;
+  const webrtc::SframeEncryptorInit init{
+      .mode = webrtc::SframeMode::kPerFrame,
+      .cipher_suite = webrtc::SframeCipherSuite::kAes128GcmSha256_128};
+  webrtc::scoped_refptr<webrtc::SframeEncryptorInterface> native_encryptor =
+      webrtc::make_ref_counted<FakeSframeEncryptor>();
+  EXPECT_CALL(*mock_webrtc_sender_, CreateSframeEncryptorOrError(_))
+      .WillOnce(Return(native_encryptor));
+
+  webrtc::RTCErrorOr<scoped_refptr<webrtc::SframeEncryptorInterface>> result =
+      platform_sender.CreateSframeEncryptor(init);
+  ASSERT_TRUE(result.ok());
+  EXPECT_EQ(result.value().get(), native_encryptor.get());
+}
+
 TEST_F(RTCRtpSenderImplTest, ReplaceTrackSetsTrack) {
   auto* component1 = CreateTrack("track1");
   sender_ = CreateSender(component1);
@@ -274,6 +338,98 @@ TEST_F(RTCRtpSenderImplTest, CopiedSenderSharesInternalStates) {
   // Both original and copy shows a modified state.
   EXPECT_FALSE(sender_->Track());
   EXPECT_FALSE(copy->Track());
+}
+
+TEST_F(RTCRtpSenderImplTest,
+       GenerateKeyFrameSelectsActiveLayersAndNotifiesBeforeEncoder) {
+  auto* component = CreateTrack("track_id");
+  sender_ = CreateSender(component);
+
+  webrtc::RtpParameters params;
+  webrtc::RtpEncodingParameters layer0;
+  layer0.rid = "0";
+  layer0.active = true;
+  webrtc::RtpEncodingParameters layer1;
+  layer1.rid = "1";
+  layer1.active = false;
+  webrtc::RtpEncodingParameters layer2;
+  layer2.rid = "2";
+  layer2.active = true;
+  params.encodings = {layer0, layer1, layer2};
+
+  EXPECT_CALL(*mock_webrtc_sender_, GetParameters())
+      .WillRepeatedly(Return(params));
+
+  bool layers_notified = false;
+  Vector<String> selected_rids;
+  base::RunLoop run_loop;
+  EXPECT_CALL(*mock_webrtc_sender_,
+              GenerateKeyFrame(testing::ElementsAre("0", "2")))
+      .WillOnce([&](const std::vector<std::string>&) {
+        EXPECT_TRUE(layers_notified);
+        run_loop.Quit();
+        return webrtc::RTCError::OK();
+      });
+
+  sender_->GenerateKeyFrame(
+      /*rid=*/String(),
+      CrossThreadBindOnce(
+          [](bool* notified, Vector<String>* out_rids, Vector<String> rids) {
+            *notified = true;
+            *out_rids = std::move(rids);
+          },
+          CrossThreadUnretained(&layers_notified),
+          CrossThreadUnretained(&selected_rids)),
+      CrossThreadBindOnce([](webrtc::RTCError) { FAIL(); }));
+  run_loop.Run();
+  EXPECT_THAT(selected_rids, testing::ElementsAre("0", "2"));
+
+  // Requesting an inactive layer reports empty rids and does not call WebRTC.
+  EXPECT_CALL(*mock_webrtc_sender_, GenerateKeyFrame(_)).Times(0);
+  base::RunLoop inactive_loop;
+  Vector<String> inactive_rids;
+  sender_->GenerateKeyFrame(
+      "1",
+      CrossThreadBindOnce(
+          [](Vector<String>* out_rids, base::RepeatingClosure quit,
+             Vector<String> rids) {
+            *out_rids = std::move(rids);
+            quit.Run();
+          },
+          CrossThreadUnretained(&inactive_rids), inactive_loop.QuitClosure()),
+      CrossThreadBindOnce([](webrtc::RTCError) { FAIL(); }));
+  inactive_loop.Run();
+  EXPECT_TRUE(inactive_rids.empty());
+}
+
+TEST_F(RTCRtpSenderImplTest, GenerateKeyFrameReportsEncoderError) {
+  auto* component = CreateTrack("track_id");
+  sender_ = CreateSender(component);
+
+  webrtc::RtpParameters params;
+  webrtc::RtpEncodingParameters layer0;
+  layer0.rid = "0";
+  layer0.active = true;
+  params.encodings = {layer0};
+
+  EXPECT_CALL(*mock_webrtc_sender_, GetParameters()).WillOnce(Return(params));
+  EXPECT_CALL(*mock_webrtc_sender_, GenerateKeyFrame(testing::ElementsAre("0")))
+      .WillOnce(
+          Return(webrtc::RTCError(webrtc::RTCErrorType::INVALID_PARAMETER)));
+
+  base::RunLoop run_loop;
+  webrtc::RTCErrorType received_error = webrtc::RTCErrorType::NONE;
+  sender_->GenerateKeyFrame(
+      "0", CrossThreadBindOnce([](Vector<String>) {}),
+      CrossThreadBindOnce(
+          [](webrtc::RTCErrorType* out_type, base::RepeatingClosure quit,
+             webrtc::RTCError error) {
+            *out_type = error.type();
+            quit.Run();
+          },
+          CrossThreadUnretained(&received_error), run_loop.QuitClosure()));
+  run_loop.Run();
+  EXPECT_EQ(received_error, webrtc::RTCErrorType::INVALID_PARAMETER);
 }
 
 }  // namespace blink

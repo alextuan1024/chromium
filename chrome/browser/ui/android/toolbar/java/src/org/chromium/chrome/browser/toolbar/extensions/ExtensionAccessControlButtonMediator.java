@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.toolbar.extensions;
 
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
@@ -16,9 +17,11 @@ import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.ui.extensions.ExtensionAction;
 import org.chromium.chrome.browser.ui.extensions.ExtensionsToolbarBridge;
 import org.chromium.chrome.browser.ui.extensions.RequestAccessButtonParams;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.messages.DismissReason;
 import org.chromium.components.messages.MessageBannerProperties;
 import org.chromium.components.messages.MessageDispatcher;
@@ -41,9 +44,11 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
     private static final long CONFIRMATION_DISPLAY_DURATION = 4000L;
     private static final int MAX_EXTENSION_NAME_LENGTH = 30;
     private final ExtensionsToolbarBridge.Observer mToolbarObserver = new ToolbarObserver();
+    private final ThemeColorProvider.TintObserver mTintObserver = this::onTintChanged;
     private final NullableObservableSupplier<Tab> mCurrentTabSupplier;
     private final Context mContext;
     private final ExtensionsToolbarBridge mExtensionsToolbarBridge;
+    private final ThemeColorProvider mThemeColorProvider;
     private final PropertyModel mModel;
     private final Callback<Boolean> mVisibilityObserver;
     private boolean mIsShowingAllowedText;
@@ -52,6 +57,7 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
     private @Nullable PropertyModel mMessage;
     private String[] mMessageExtensionIds = new String[0];
     private @Nullable WebContents mMessageWebContents;
+    private final Runnable mClearOmniboxFocus;
     private final Callback<@Nullable Tab> mTabSupplierObserver =
             (tab) -> refreshRequestAccessButton();
     private final Runnable mClearAllowedTextRunnable =
@@ -66,16 +72,26 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
             PropertyModel model,
             NullableObservableSupplier<Tab> currentTabSupplier,
             ExtensionsToolbarBridge extensionsToolbarBridge,
+            ThemeColorProvider themeColorProvider,
             Callback<Boolean> visibilityObserver,
-            Supplier<Boolean> isWindowCompactSupplier) {
+            Supplier<Boolean> isWindowCompactSupplier,
+            Runnable clearOmniboxFocus) {
         mContext = context;
         mCurrentTabSupplier = currentTabSupplier;
         mExtensionsToolbarBridge = extensionsToolbarBridge;
+        mThemeColorProvider = themeColorProvider;
         mModel = model;
         mVisibilityObserver = visibilityObserver;
         mIsWindowCompactSupplier = isWindowCompactSupplier;
+        mClearOmniboxFocus = clearOmniboxFocus;
 
         mExtensionsToolbarBridge.addObserver(mToolbarObserver);
+        mThemeColorProvider.addTintObserver(mTintObserver);
+        if (mThemeColorProvider.getActivityFocusTint() != null) {
+            mModel.set(
+                    ExtensionsToolbarProperties.REQUEST_ACCESS_BUTTON_TINT,
+                    mThemeColorProvider.getActivityFocusTint());
+        }
         mCurrentTabSupplier.addSyncObserverAndPostIfNonNull(mTabSupplierObserver);
         refreshRequestAccessButton();
     }
@@ -248,6 +264,7 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
         mModel.set(
                 ExtensionsToolbarProperties.REQUEST_ACCESS_BUTTON_CLICK_LISTENER,
                 (v) -> {
+                    mClearOmniboxFocus.run();
                     handleAccessGranted(webContents);
                 });
     }
@@ -310,6 +327,7 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
     public void destroy() {
         ThreadUtils.getUiThreadHandler().removeCallbacks(mClearAllowedTextRunnable);
         mCurrentTabSupplier.removeObserver(mTabSupplierObserver);
+        mThemeColorProvider.removeTintObserver(mTintObserver);
         mExtensionsToolbarBridge.removeObserver(mToolbarObserver);
 
         if (mMessageWebContents != null) {
@@ -322,11 +340,19 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
         }
     }
 
+    private void onTintChanged(
+            @Nullable ColorStateList tint,
+            @Nullable ColorStateList activityFocusTint,
+            float unfocusedAlpha,
+            @BrandedColorScheme int brandedColorScheme) {
+        mModel.set(ExtensionsToolbarProperties.REQUEST_ACCESS_BUTTON_TINT, activityFocusTint);
+    }
+
     private class ToolbarObserver implements ExtensionsToolbarBridge.Observer {
         @Override
-        public void onActiveWebContentsChanged(WebContents webContents) {
+        public void onActiveWebContentsChanged(@Nullable WebContents webContents) {
             clearAllowedTextStateIfDifferentWebContents(webContents);
-            if (mIsShowingAllowedText) return;
+            if (mIsShowingAllowedText || webContents == null) return;
             refreshRequestAccessButtonWithWebContents(webContents);
         }
 

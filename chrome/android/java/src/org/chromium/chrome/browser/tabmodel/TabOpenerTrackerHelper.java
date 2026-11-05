@@ -9,11 +9,11 @@ import android.util.ArraySet;
 import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -35,16 +35,7 @@ import java.util.Set;
 /* package */ final class TabOpenerTrackerHelper implements TabModelObserver {
     private final Set<Integer> mRelatedTabIds = new ArraySet<>();
 
-    /**
-     * Returns a new {@link TabOpenerTrackerHelper} if the TabOpenerTracking feature is enabled, or
-     * {@code null} otherwise.
-     */
-    /* package */ static @Nullable TabOpenerTrackerHelper create() {
-        if (!ChromeFeatureList.sTabOpenerTracking.isEnabled()) return null;
-        return new TabOpenerTrackerHelper();
-    }
-
-    private TabOpenerTrackerHelper() {}
+    /* package */ TabOpenerTrackerHelper() {}
 
     // ============================================================================================
     // TabModelObserver Implementation
@@ -200,7 +191,7 @@ import java.util.Set;
 
     private boolean isTabGroupCollapsed(TabModel tabModel, Tab tab) {
         Token groupId = tab.getTabGroupId();
-        return groupId != null && tabModel.getTabGroupCollapsed(groupId);
+        return groupId != null && tabModel.getTabGroupCollapsed(TabGroupId.fromRawToken(groupId));
     }
 
     // ============================================================================================

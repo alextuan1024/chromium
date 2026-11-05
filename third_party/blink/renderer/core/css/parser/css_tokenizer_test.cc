@@ -151,11 +151,11 @@ static CSSParserToken Percentage(NumericValueType type, double value) {
 // We need to initialize PartitionAlloc before creating CSSParserTokens
 // because CSSParserToken depends on PartitionAlloc. It is safe to call
 // Partitions::initialize() multiple times.
-#define DEFINE_TOKEN(name, argument)                       \
-  static CSSParserToken& name() {                          \
-    Partitions::Initialize();                              \
-    DEFINE_STATIC_LOCAL(CSSParserToken, name, (argument)); \
-    return name;                                           \
+#define DEFINE_TOKEN(name, argument)      \
+  static CSSParserToken& name() {         \
+    Partitions::Initialize();             \
+    static CSSParserToken name(argument); \
+    return name;                          \
   }
 
 DEFINE_TOKEN(Whitespace, (kWhitespaceToken))
@@ -292,7 +292,7 @@ TEST(CSSTokenizerTest, Escapes) {
     for (int i = 0; i < 3000; ++i) {
       many.Append(".w-\\[24px\\] ");
     }
-    CSSParserTokenStream stream(many.ToString());
+    CSSParserTokenStream stream(many);
     int count = 0;
     while (!stream.AtEnd()) {
       const CSSParserToken& token = stream.ConsumeRaw();

@@ -45,10 +45,7 @@ source_set("tracked") {
     sources += [ "device_id_stub.cc" ]
   }
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   public_deps = [
     "//services/preferences/public/cpp/tracked",
@@ -76,6 +73,7 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "device_id_unittest.cc",
+    "dictionary_hash_store_contents_unittest.cc",
     "interceptable_pref_filter_unittest.cc",
     "pref_hash_calculator_unittest.cc",
     "pref_hash_filter_unittest.cc",
@@ -109,8 +107,6 @@ source_set("features") {
     "features.cc",
     "features.h",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   deps = [ "//base" ]
 }

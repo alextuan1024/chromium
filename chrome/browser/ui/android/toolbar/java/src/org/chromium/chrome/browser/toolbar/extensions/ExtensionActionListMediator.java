@@ -6,11 +6,13 @@ package org.chromium.chrome.browser.toolbar.extensions;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
@@ -27,6 +29,7 @@ import org.chromium.chrome.browser.extensions.ContextMenuSource;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.MenuBuilderHelper;
 import org.chromium.chrome.browser.toolbar.extensions.ExtensionActionButtonProperties.ListItemType;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
@@ -35,10 +38,12 @@ import org.chromium.chrome.browser.ui.extensions.ExtensionAction.HoverCardState;
 import org.chromium.chrome.browser.ui.extensions.ExtensionActionContextMenuBridge;
 import org.chromium.chrome.browser.ui.extensions.ExtensionActionPopupContents;
 import org.chromium.chrome.browser.ui.extensions.ExtensionsToolbarBridge;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.browser.ui.toolbar.InvocationSource;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate;
+import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.listmenu.ListMenuButton;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -52,6 +57,7 @@ import org.chromium.ui.widget.RectProvider;
 
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 @NullMarked
@@ -136,12 +142,15 @@ class ExtensionActionListMediator implements Destroyable {
     private final ExtensionActionListCoordinator.RecyclerViewDelegate mRecyclerViewDelegate;
     private final TabModelSelector mTabModelSelector;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mClearOmniboxFocus;
 
     private @Nullable AnchoredPopupWindow mHoverCard;
     private @Nullable String mHoverCardActionId;
     private @Nullable Runnable mShowHoverCardRunnable;
 
     private final ExtensionsToolbarBridge mExtensionsToolbarBridge;
+    private final ThemeColorProvider mThemeColorProvider;
+    private final ThemeColorProvider.TintObserver mTintObserver = this::onTintChanged;
     private final ToolbarDelegate mToolbarDelegate = new ToolbarDelegate();
     private final ToolbarObserver mToolbarObserver = new ToolbarObserver();
 
@@ -171,6 +180,8 @@ class ExtensionActionListMediator implements Destroyable {
     // the toolbar requests us to be a certain size. Until then, we assume we have infinite space.
     private @Nullable Integer mAvailableWidthForPinnedActions;
 
+    private float mUnfocusedAlpha;
+
     public ExtensionActionListMediator(
             Context context,
             WindowAndroid windowAndroid,
@@ -180,10 +191,12 @@ class ExtensionActionListMediator implements Destroyable {
             NullableObservableSupplier<Tab> currentTabSupplier,
             ExtensionActionListCoordinator.RecyclerViewDelegate recyclerViewDelegate,
             ExtensionsToolbarBridge extensionsToolbarBridge,
+            ThemeColorProvider themeColorProvider,
             @Nullable ContextMenuPopulatorFactory contextMenuPopulatorFactory,
             @Nullable SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
             TabModelSelector tabModelSelector,
-            ModalDialogManager modalDialogManager) {
+            ModalDialogManager modalDialogManager,
+            Runnable clearOmniboxFocus) {
         mContext = context;
         mWindowAndroid = windowAndroid;
         mModels = models;
@@ -192,11 +205,16 @@ class ExtensionActionListMediator implements Destroyable {
         mCurrentTabSupplier = currentTabSupplier;
         mRecyclerViewDelegate = recyclerViewDelegate;
         mExtensionsToolbarBridge = extensionsToolbarBridge;
+        mThemeColorProvider = themeColorProvider;
         mContextMenuPopulatorFactory = contextMenuPopulatorFactory;
         mSelectionDropdownMenuDelegate = selectionDropdownMenuDelegate;
         mTabModelSelector = tabModelSelector;
         mModalDialogManager = modalDialogManager;
+        mClearOmniboxFocus = clearOmniboxFocus;
         mModalDialogManager.addObserver(mModalDialogManagerObserver);
+
+        mUnfocusedAlpha = mThemeColorProvider.getUnfocusedAlpha();
+        mThemeColorProvider.addTintObserver(mTintObserver);
 
         mExtensionsToolbarBridge.setActionListDelegate(mToolbarDelegate);
         mExtensionsToolbarBridge.addObserver(mToolbarObserver);
@@ -218,6 +236,7 @@ class ExtensionActionListMediator implements Destroyable {
 
         assert mActionState instanceof ActionState.Idle;
 
+        mThemeColorProvider.removeTintObserver(mTintObserver);
         mModalDialogManager.removeObserver(mModalDialogManagerObserver);
         mExtensionsToolbarBridge.removeObserver(mToolbarObserver);
         mExtensionsToolbarBridge.setActionListDelegate(null);
@@ -275,7 +294,7 @@ class ExtensionActionListMediator implements Destroyable {
 
         // Optimization: Remove items that are no longer present in the new list.
         // This prevents unnecessary moves if the first item is removed.
-        Set<String> pinnedActionIdsSet = new HashSet<>(Arrays.asList(pinnedActionIds));
+        Set<String> pinnedActionIdsSet = new LinkedHashSet<>(Arrays.asList(pinnedActionIds));
         for (int i = mModels.size() - 1; i >= 0; i--) {
             String id = getActionIdForIndex(i);
 
@@ -303,7 +322,7 @@ class ExtensionActionListMediator implements Destroyable {
         int currentModelIndex = 0;
 
         // Go through non-popped-out actions.
-        for (String actionId : pinnedActionIds) {
+        for (String actionId : pinnedActionIdsSet) {
             if (mPoppedOutActionId != null && mPoppedOutActionId.equals(actionId)) {
                 continue;
             }
@@ -400,6 +419,7 @@ class ExtensionActionListMediator implements Destroyable {
                         .with(
                                 ExtensionActionButtonProperties.ACCESSIBLE_NAME,
                                 action.getAccessibleName())
+                        .with(ExtensionActionButtonProperties.ALPHA, mUnfocusedAlpha)
                         .with(
                                 ExtensionActionButtonProperties.ICON,
                                 getIconForAction(actionId, webContents))
@@ -417,12 +437,29 @@ class ExtensionActionListMediator implements Destroyable {
                                     return onHover(actionId, event, webContents);
                                 })
                         .with(
+                                ExtensionActionButtonProperties.ON_KEY_LISTENER,
+                                (view, keyCode, event) -> onKeyEvent(actionId, event))
+                        .with(
                                 ExtensionActionButtonProperties.ON_LONG_CLICK_LISTENER,
                                 (view) -> {
                                     requestShowContextMenu(actionId);
                                     return true;
                                 })
                         .build());
+    }
+
+    private void onTintChanged(
+            @Nullable ColorStateList tint,
+            @Nullable ColorStateList activityFocusTint,
+            float unfocusedAlpha,
+            @BrandedColorScheme int brandedColorScheme) {
+        if (mUnfocusedAlpha == unfocusedAlpha) {
+            return;
+        }
+        mUnfocusedAlpha = unfocusedAlpha;
+        for (int i = 0; i < mModels.size(); i++) {
+            mModels.get(i).model.set(ExtensionActionButtonProperties.ALPHA, mUnfocusedAlpha);
+        }
     }
 
     @VisibleForTesting
@@ -468,7 +505,7 @@ class ExtensionActionListMediator implements Destroyable {
         model.set(ExtensionActionButtonProperties.ACCESSIBLE_NAME, action.getAccessibleName());
     }
 
-    void updateActionPropertiesForAll(WebContents webContents) {
+    void updateActionPropertiesForAll(@Nullable WebContents webContents) {
         for (int i = 0; i < mModels.size(); i++) {
             updateActionPropertiesForIndex(i, getActionIdForIndex(i), webContents);
         }
@@ -619,6 +656,7 @@ class ExtensionActionListMediator implements Destroyable {
     }
 
     private void onPrimaryClick(String actionId) {
+        mClearOmniboxFocus.run();
         if (mActionState instanceof ActionState.PopupActive activeState) {
             boolean closeOnly = activeState.getActionId().equals(actionId);
             closePopup();
@@ -631,6 +669,31 @@ class ExtensionActionListMediator implements Destroyable {
             return;
         }
         executeUserAction(actionId, InvocationSource.TOOLBAR_BUTTON);
+    }
+
+    private boolean onKeyEvent(String actionId, KeyEvent event) {
+        if (event.getAction() != KeyEvent.ACTION_DOWN) {
+            return false;
+        }
+
+        // Reorder pinned extension action on Ctrl + Left/Right.
+        int keyCode = event.getKeyCode();
+        if (event.hasModifiers(KeyEvent.META_CTRL_ON)
+                && (keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                        || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+            if (!mExtensionsToolbarBridge.isActionDraggable(actionId)
+                    || actionId.equals(mPoppedOutActionId)) {
+                return false;
+            }
+            boolean isRight = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT;
+            boolean isRtl = LocalizationUtils.isLayoutRtl();
+            int moveBy = (isRight != isRtl) ? 1 : -1;
+            closeHoverCard();
+            mExtensionsToolbarBridge.movePinnedActionBy(actionId, moveBy);
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -737,16 +800,9 @@ class ExtensionActionListMediator implements Destroyable {
                         mContextMenuPopulatorFactory,
                         mSelectionDropdownMenuDelegate,
                         mTabModelSelector,
-                        mExtensionsToolbarBridge,
                         inspectWithDevTools);
         popup.loadInitialPage();
-        popup.addOnDismissListener(
-                () -> {
-                    if (mActionState instanceof ActionState.PopupActive activeState
-                            && activeState.getPopup() == popup) {
-                        closePopup();
-                    }
-                });
+        popup.addOnDismissListener(this::closePopup);
         mActionState = new ActionState.PopupActive(popup, actionId);
     }
 
@@ -784,6 +840,7 @@ class ExtensionActionListMediator implements Destroyable {
 
     @VisibleForTesting
     void requestShowContextMenu(String actionId) {
+        mClearOmniboxFocus.run();
         closeHoverCard();
         closePopup();
         closeContextMenu();
@@ -901,7 +958,7 @@ class ExtensionActionListMediator implements Destroyable {
         }
 
         @Override
-        public void onActiveWebContentsChanged(WebContents webContents) {
+        public void onActiveWebContentsChanged(@Nullable WebContents webContents) {
             updateActionPropertiesForAll(webContents);
         }
     }

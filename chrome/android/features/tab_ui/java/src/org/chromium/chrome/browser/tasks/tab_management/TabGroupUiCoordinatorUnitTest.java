@@ -31,13 +31,14 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.ui.base.TestActivity;
+import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.util.function.Supplier;
@@ -63,6 +64,7 @@ public class TabGroupUiCoordinatorUnitTest {
     @Mock private ThemeColorProvider mThemeColorProvider;
     @Mock private UndoBarThrottle mUndoBarThrottle;
     @Mock private Supplier<ShareDelegate> mShareDelegateSupplier;
+    @Mock private WindowAndroid mWindowAndroid;
 
     private Activity mActivity;
 
@@ -84,6 +86,7 @@ public class TabGroupUiCoordinatorUnitTest {
         TabGroupUiCoordinator coordinator =
                 new TabGroupUiCoordinator(
                         mActivity,
+                        mWindowAndroid,
                         parentView,
                         mBrowserControlsStateProvider,
                         mScrimManager,

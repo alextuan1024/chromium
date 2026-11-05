@@ -202,6 +202,12 @@ TEST(HeaderUtilTest, ParseReferrerPolicy) {
       {"unknown-value", mojom::ReferrerPolicy::kDefault},
       // Multiple values.
       {"no-referrer,unsafe-url", mojom::ReferrerPolicy::kAlways},
+      // Whitespace handling: only HTTP tab or space (0x09, 0x20) is stripped.
+      {" \tno-referrer\t ", mojom::ReferrerPolicy::kNever},
+      {"\vno-referrer", mojom::ReferrerPolicy::kDefault},
+      {"no-referrer\f", mojom::ReferrerPolicy::kDefault},
+      {"origin, \vno-referrer", mojom::ReferrerPolicy::kOrigin},
+      {"origin, no-referrer\f", mojom::ReferrerPolicy::kOrigin},
   };
 
   for (const auto& test : kTests) {
@@ -262,16 +268,6 @@ TEST(HeaderUtilTest, ContainsForbiddenSecurityHeader) {
   ASSERT_TRUE(value_opt.has_value());
   value = *value_opt;
   EXPECT_EQ(value.length(), 2000u);
-
-  // Sec-Shared-Storage-Data-Origin boundary cases
-  net::HttpRequestHeaders origin_headers;
-  std::string origin_267(267, 'a');
-  origin_headers.SetHeader("Sec-Shared-Storage-Data-Origin", origin_267);
-  EXPECT_FALSE(ContainsForbiddenSecurityHeader(origin_headers));
-
-  std::string origin_268(268, 'a');
-  origin_headers.SetHeader("Sec-Shared-Storage-Data-Origin", origin_268);
-  EXPECT_TRUE(ContainsForbiddenSecurityHeader(origin_headers));
 
   // Forbidden Sec- header
   headers.SetHeader("Sec-Invalid", "value");

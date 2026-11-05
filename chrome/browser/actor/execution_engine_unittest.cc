@@ -9,55 +9,78 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/files/scoped_temp_dir.h"
+#include "base/run_loop.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_proto_conversion.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/autofill_selection_dialog_event_handler.h"
 #include "chrome/browser/actor/enterprise_policy_checker.h"
+#include "chrome/browser/actor/javascript_dialog_interceptor.h"
 #include "chrome/browser/actor/site_policy.h"
 #include "chrome/browser/actor/tools/click_tool_request.h"
+#include "chrome/browser/actor/tools/execute_js_tool_request.h"
 #include "chrome/browser/actor/tools/fake_tool_request.h"
+#include "chrome/browser/actor/tools/history_tool_request.h"
+#include "chrome/browser/actor/tools/script_tool_request.h"
+#include "chrome/browser/actor/tools/select_tool_request.h"
+#include "chrome/browser/actor/tools/tool_controller.h"
 #include "chrome/browser/actor/tools/tool_request.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/actor/tools/wait_tool.h"
 #include "chrome/browser/actor/ui/event_dispatcher.h"
 #include "chrome/browser/actor/ui/test_support/mock_event_dispatcher.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
+#include "chrome/browser/preloading/preloading_prefs.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/actor/action_result.h"
+#include "chrome/common/actor/actor_constants.h"
 #include "chrome/common/actor_webui.mojom.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/actor/core/actor_features.h"
+#include "components/actor/core/actor_switches.h"
 #include "components/actor/core/shared_types.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/autofill/core/browser/integrators/actor/actor_form_filling_types.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/core/filters/optimization_hints_component_update_listener.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/page_content_annotations/content/mojom/page_stability.mojom.h"
 #include "components/tabs/public/mock_tab_interface.h"
+#include "content/public/browser/javascript_dialog_manager.h"
 #include "content/public/test/mock_navigation_handle.h"
+#include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/navigation_simulator.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "net/http/http_response_headers.h"
 #include "pdf/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/mojom/content_extraction/script_tools.mojom.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 #include "url/gurl.h"
 
@@ -133,6 +156,37 @@ class MockAutofillSelectionDialogEventHandler
       this};
 };
 
+// Reports the page as stable right away and records each wait.
+class FakePageStabilityMonitor
+    : public page_content_annotations::mojom::PageStabilityMonitor {
+ public:
+  void NotifyWhenStable(base::TimeDelta observation_delay,
+                        NotifyWhenStableCallback callback) override {
+    observation_delays_.push_back(observation_delay);
+    if (on_next_wait_held_) {
+      held_callback_ = std::move(callback);
+      std::move(on_next_wait_held_).Run();
+      return;
+    }
+    std::move(callback).Run();
+  }
+
+  // Holds the next wait instead of reporting the page as stable, and runs
+  // `on_held` from the task that receives it.
+  void HoldNextWait(base::OnceClosure on_held) {
+    on_next_wait_held_ = std::move(on_held);
+  }
+
+  const std::vector<base::TimeDelta>& observation_delays() const {
+    return observation_delays_;
+  }
+
+ private:
+  base::OnceClosure on_next_wait_held_;
+  NotifyWhenStableCallback held_callback_;
+  std::vector<base::TimeDelta> observation_delays_;
+};
+
 class FakeChromeRenderFrame : public chrome::mojom::ChromeRenderFrame {
  public:
   FakeChromeRenderFrame() = default;
@@ -175,11 +229,23 @@ class FakeChromeRenderFrame : public chrome::mojom::ChromeRenderFrame {
   }
   void ExecuteTool(const actor::TaskId& task_id,
                    ExecuteToolCallback callback) override {
-    std::move(callback).Run(MakeOkResult());
+    RunNextToolHook();
+    std::move(callback).Run(TakeToolResult());
   }
+  void set_on_invoke_tool(
+      base::RepeatingCallback<void(actor::mojom::ToolInvocationPtr,
+                                   InvokeToolCallback)> callback) {
+    on_invoke_tool_ = std::move(callback);
+  }
+
   void InvokeTool(actor::mojom::ToolInvocationPtr request,
                   InvokeToolCallback callback) override {
-    std::move(callback).Run(MakeOkResult());
+    if (on_invoke_tool_) {
+      on_invoke_tool_.Run(std::move(request), std::move(callback));
+      return;
+    }
+    RunNextToolHook();
+    std::move(callback).Run(TakeToolResult());
   }
   void StartActorJournal(
       mojo::PendingAssociatedRemote<actor::mojom::JournalClient> client)
@@ -188,10 +254,17 @@ class FakeChromeRenderFrame : public chrome::mojom::ChromeRenderFrame {
       mojo::PendingReceiver<
           page_content_annotations::mojom::PageStabilityMonitor> monitor,
       const TaskId& task_id,
-      bool supports_paint_stability) override {}
+      bool supports_paint_stability) override {
+    ++page_stability_monitor_count_;
+    monitor_paint_stability_flags_.push_back(supports_paint_stability);
+    if (bind_page_stability_monitors_) {
+      page_stability_monitor_receivers_.Add(&page_stability_monitor_,
+                                            std::move(monitor));
+    }
+  }
   void CancelTool(const TaskId& task_id) override {}
   void GetCrossDocumentScriptToolResult(
-      const base::UnguessableToken& execution_id,
+      const blink::ToolInvocationToken& execution_id,
       GetCrossDocumentScriptToolResultCallback callback) override {
     std::move(callback).Run("");
   }
@@ -204,6 +277,43 @@ class FakeChromeRenderFrame : public chrome::mojom::ChromeRenderFrame {
                        const GURL& page_url) override {}
 #endif
 
+  // Makes the next tool executed in the renderer fail with `code`.
+  void FailNextTool(mojom::ActionResultCode code) {
+    SetNextToolResult(MakeResult(code));
+  }
+
+  void SetNextToolResult(mojom::ActionResultPtr result) {
+    next_tool_result_ = std::move(result);
+  }
+
+  void SetNextToolHook(base::OnceClosure hook) {
+    next_tool_hook_ = std::move(hook);
+  }
+
+  // The number of PageStabilityMonitors created, i.e. of observation delayers
+  // armed.
+  int page_stability_monitor_count() const {
+    return page_stability_monitor_count_;
+  }
+
+  const std::vector<bool>& monitor_paint_stability_flags() const {
+    return monitor_paint_stability_flags_;
+  }
+
+  // If set, created PageStabilityMonitors are bound to
+  // `page_stability_monitor()`. Otherwise they're dropped, which makes
+  // observation delayers skip waiting for page stability.
+  void set_bind_page_stability_monitors(bool bind) {
+    bind_page_stability_monitors_ = bind;
+  }
+
+  FakePageStabilityMonitor& page_stability_monitor() {
+    return page_stability_monitor_;
+  }
+  const FakePageStabilityMonitor& page_stability_monitor() const {
+    return page_stability_monitor_;
+  }
+
  private:
   void Bind(mojo::ScopedInterfaceEndpointHandle handle) {
     receivers_.Add(
@@ -211,7 +321,31 @@ class FakeChromeRenderFrame : public chrome::mojom::ChromeRenderFrame {
                   std::move(handle)));
   }
 
+  void RunNextToolHook() {
+    if (next_tool_hook_) {
+      std::move(next_tool_hook_).Run();
+    }
+  }
+
+  mojom::ActionResultPtr TakeToolResult() {
+    if (next_tool_result_) {
+      return std::move(next_tool_result_);
+    }
+    return MakeOkResult();
+  }
+
   mojo::AssociatedReceiverSet<chrome::mojom::ChromeRenderFrame> receivers_;
+  base::RepeatingCallback<void(actor::mojom::ToolInvocationPtr,
+                               InvokeToolCallback)>
+      on_invoke_tool_;
+  mojom::ActionResultPtr next_tool_result_;
+  base::OnceClosure next_tool_hook_;
+  int page_stability_monitor_count_ = 0;
+  std::vector<bool> monitor_paint_stability_flags_;
+  bool bind_page_stability_monitors_ = false;
+  FakePageStabilityMonitor page_stability_monitor_;
+  mojo::ReceiverSet<page_content_annotations::mojom::PageStabilityMonitor>
+      page_stability_monitor_receivers_;
 };
 
 class ExecutionEngineTest : public ChromeRenderViewHostTestHarness {
@@ -232,11 +366,12 @@ class ExecutionEngineTest : public ChromeRenderViewHostTestHarness {
     mock_ui_event_dispatcher_ =
         static_cast<ui::MockUiEventDispatcher*>(ui_event_dispatcher.get());
 
+    ActorTaskOptions options;
+    options.delegate = mock_actor_task_delegate_.GetWeakPtr();
     task_ = ActorTask::CreateForTesting(
         *ActorKeyedService::Get(profile()), TaskId(1),
-        std::move(ui_event_dispatcher),
-        /*options=*/nullptr, TestTaskSourceInfo(), &no_enterprise_checker_,
-        mock_actor_task_delegate_.GetWeakPtr());
+        std::move(ui_event_dispatcher), TestTaskSourceInfo(),
+        &no_enterprise_checker_, options);
 
     ON_CALL(*mock_ui_event_dispatcher_, OnPreTool)
         .WillByDefault(
@@ -286,8 +421,8 @@ class ExecutionEngineTest : public ChromeRenderViewHostTestHarness {
                          .document_identifier = document_identifier});
       std::unique_ptr<ToolRequest> request =
           std::make_unique<actor::ClickToolRequest>(
-              GetTab()->GetHandle(), target, mojom::ClickType::kLeft,
-              mojom::ClickCount::kSingle);
+              ActorSurfaceHandle::From(GetTab()->GetHandle()), target,
+              mojom::ClickType::kLeft, mojom::ClickCount::kSingle);
       return request;
     });
   }
@@ -307,7 +442,7 @@ class ExecutionEngineTest : public ChromeRenderViewHostTestHarness {
     task_->Act(ToRequestList(std::move(action)), success.GetCallback());
     const auto& action_results = success.Get();
     for (const auto& action_result : action_results) {
-      if (!IsOk(*action_result.result)) {
+      if (!IsOk(*action_result.tool_result.deprecated_action_result())) {
         return false;
       }
     }
@@ -320,6 +455,19 @@ class ExecutionEngineTest : public ChromeRenderViewHostTestHarness {
 
   void AssociateTabInterface() { tab_state_.emplace(web_contents()); }
   void ClearTabInterface() { tab_state_.reset(); }
+
+  void EmitJavaScriptDialog(std::string_view message) {
+    JavaScriptDialogInterceptor::CreateForWebContents(web_contents());
+    auto* interceptor =
+        JavaScriptDialogInterceptor::FromWebContents(web_contents());
+    ASSERT_NE(interceptor, nullptr);
+    bool suppressed = true;
+    interceptor->RunJavaScriptDialog(
+        web_contents(), main_rfh(), content::JAVASCRIPT_DIALOG_TYPE_ALERT,
+        base::UTF8ToUTF16(message), u"",
+        base::BindLambdaForTesting([](bool, const std::u16string&) {}),
+        &suppressed);
+  }
 
   base::test::ScopedFeatureList scoped_feature_list_;
   base::HistogramTester histograms_;
@@ -459,6 +607,51 @@ TEST_F(ExecutionEngineTest, MAYBE_ActFailsWhenTabDestroyed) {
 
 // TODO(crbug.com/480230075): Crashing on Android.
 #if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_ActFailsWithRendererCrashedWhenToolActsOnWebContents \
+  DISABLED_ActFailsWithRendererCrashedWhenToolActsOnWebContents
+#define MAYBE_ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents \
+  DISABLED_ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents
+#else
+#define MAYBE_ActFailsWithRendererCrashedWhenToolActsOnWebContents \
+  ActFailsWithRendererCrashedWhenToolActsOnWebContents
+#define MAYBE_ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents \
+  ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_ActFailsWithRendererCrashedWhenToolActsOnWebContents) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  process()->SimulateCrash();
+  ASSERT_TRUE(web_contents()->IsCrashed());
+
+  ActResultFuture result;
+  std::unique_ptr<ToolRequest> action =
+      MakeClickCallback(kFakeContentNodeId).Run();
+  task_->Act(ToRequestList(action), result.GetCallback());
+  ExpectErrorResult(result, mojom::ActionResultCode::kRendererCrashed);
+}
+
+TEST_F(ExecutionEngineTest,
+       MAYBE_ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  process()->SimulateCrash();
+  ASSERT_TRUE(web_contents()->IsCrashed());
+
+  ActResultFuture result;
+  std::unique_ptr<ToolRequest> action = std::make_unique<ReloadPageToolRequest>(
+      ActorSurfaceHandle::From(GetTab()->GetHandle()));
+  task_->Act(ToRequestList(action), result.GetCallback());
+  const auto& action_results = result.Get();
+  ASSERT_FALSE(action_results.empty());
+  for (const auto& action_result : action_results) {
+    EXPECT_NE(action_result.tool_result.deprecated_action_result()->code,
+              mojom::ActionResultCode::kRendererCrashed);
+  }
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
 #define MAYBE_CrossOriginNavigationBeforeAction \
   DISABLED_CrossOriginNavigationBeforeAction
 #else
@@ -505,7 +698,7 @@ TEST_F(ExecutionEngineTest, MAYBE_CancelOngoingAction) {
   content::NavigationSimulator::NavigateAndCommitFromBrowser(
       web_contents(), GURL("http://localhost/"));
 
-  base::test::TestFuture<ToolCallback> on_invoke_future;
+  base::test::TestFuture<DeprecatedToolCallback> on_invoke_future;
   base::test::TestFuture<void> on_destroy_future;
   std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
       on_invoke_future.GetCallback(), on_destroy_future.GetCallback());
@@ -523,6 +716,556 @@ TEST_F(ExecutionEngineTest, MAYBE_CancelOngoingAction) {
   EXPECT_TRUE(on_destroy_future.Wait());
 
   ExpectErrorResult(result, mojom::ActionResultCode::kTaskWentAway);
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionPreservesParentMessageWhenEmpty \
+  DISABLED_FollowupActionPreservesParentMessageWhenEmpty
+#else
+#define MAYBE_FollowupActionPreservesParentMessageWhenEmpty \
+  FollowupActionPreservesParentMessageWhenEmpty
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FollowupActionPreservesParentMessageWhenEmpty) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](DeprecatedToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](DeprecatedToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeOkResult(/*requires_page_stabilization=*/false));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(MakeOkResultWithMessage(
+            /*requires_page_stabilization=*/false, "Parent message."));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].tool_result.deprecated_action_result()->message,
+            "Parent message.");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionSetsMessageWhenParentEmpty \
+  DISABLED_FollowupActionSetsMessageWhenParentEmpty
+#else
+#define MAYBE_FollowupActionSetsMessageWhenParentEmpty \
+  FollowupActionSetsMessageWhenParentEmpty
+#endif
+TEST_F(ExecutionEngineTest, MAYBE_FollowupActionSetsMessageWhenParentEmpty) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](DeprecatedToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](DeprecatedToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeOkResultWithMessage(
+                          /*requires_page_stabilization=*/false,
+                          "Followup message."));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(
+            MakeOkResult(/*requires_page_stabilization=*/false));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].tool_result.deprecated_action_result()->message,
+            "Followup message.");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionOverwritesParentMessageWhenNonEmpty \
+  DISABLED_FollowupActionOverwritesParentMessageWhenNonEmpty
+#else
+#define MAYBE_FollowupActionOverwritesParentMessageWhenNonEmpty \
+  FollowupActionOverwritesParentMessageWhenNonEmpty
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FollowupActionOverwritesParentMessageWhenNonEmpty) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](DeprecatedToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](DeprecatedToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeOkResultWithMessage(
+                          /*requires_page_stabilization=*/false,
+                          "Followup message."));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(MakeOkResultWithMessage(
+            /*requires_page_stabilization=*/false, "Parent message."));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].tool_result.deprecated_action_result()->message,
+            "Followup message.");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionFailureUsesFollowupErrorMessage \
+  DISABLED_FollowupActionFailureUsesFollowupErrorMessage
+#else
+#define MAYBE_FollowupActionFailureUsesFollowupErrorMessage \
+  FollowupActionFailureUsesFollowupErrorMessage
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FollowupActionFailureUsesFollowupErrorMessage) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](DeprecatedToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](DeprecatedToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeResult(mojom::ActionResultCode::kElementDisabled,
+                                      /*requires_page_stabilization=*/false,
+                                      "Followup failed."));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(MakeOkResultWithMessage(
+            /*requires_page_stabilization=*/false, "Parent message."));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectErrorResult(result, mojom::ActionResultCode::kElementDisabled);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].tool_result.deprecated_action_result()->message,
+            "Followup failed.");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty \
+  DISABLED_FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty
+#else
+#define MAYBE_FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty \
+  FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](DeprecatedToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](DeprecatedToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeResult(
+                          mojom::ActionResultCode::kElementDisabled));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(MakeOkResultWithMessage(
+            /*requires_page_stabilization=*/false, "Parent message."));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectErrorResult(result, mojom::ActionResultCode::kElementDisabled);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].tool_result.deprecated_action_result()->message,
+            "");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionPreservesParentMetadata \
+  DISABLED_FollowupActionPreservesParentMetadata
+#else
+#define MAYBE_FollowupActionPreservesParentMetadata \
+  FollowupActionPreservesParentMetadata
+#endif
+TEST_F(ExecutionEngineTest, MAYBE_FollowupActionPreservesParentMetadata) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](DeprecatedToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](DeprecatedToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeOkResult(/*requires_page_stabilization=*/false));
+                }),
+                base::DoNothing()));
+        mojom::ActionResultPtr parent_result =
+            MakeOkResult(/*requires_page_stabilization=*/true);
+        parent_result->attempt_login_status =
+            mojom::AttemptLoginStatus::kPasswordManager;
+        parent_result->screenshot_policy = mojom::ScreenshotPolicy::kRequired;
+        parent_result->page_content_policy =
+            mojom::PageContentExtractionPolicy::kRequired;
+        std::move(callback).Run(std::move(parent_result));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  const mojom::ActionResult& final_result =
+      *result.Get()[0].tool_result.deprecated_action_result();
+  EXPECT_TRUE(final_result.requires_page_stabilization);
+  EXPECT_EQ(final_result.attempt_login_status,
+            mojom::AttemptLoginStatus::kPasswordManager);
+  EXPECT_EQ(final_result.screenshot_policy, mojom::ScreenshotPolicy::kRequired);
+  EXPECT_EQ(final_result.page_content_policy,
+            mojom::PageContentExtractionPolicy::kRequired);
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionMergesAndCapsJavaScriptDialogs \
+  DISABLED_FollowupActionMergesAndCapsJavaScriptDialogs
+#else
+#define MAYBE_FollowupActionMergesAndCapsJavaScriptDialogs \
+  FollowupActionMergesAndCapsJavaScriptDialogs
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FollowupActionMergesAndCapsJavaScriptDialogs) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  const ActorSurfaceHandle surface =
+      ActorSurfaceHandle::From(GetTab()->GetHandle());
+
+  auto emit_dialogs = [this](std::string_view prefix, size_t count) {
+    JavaScriptDialogInterceptor::CreateForWebContents(web_contents());
+    auto* interceptor =
+        JavaScriptDialogInterceptor::FromWebContents(web_contents());
+    ASSERT_NE(interceptor, nullptr);
+    for (size_t i = 0; i < count; ++i) {
+      bool suppressed = true;
+      interceptor->RunJavaScriptDialog(
+          web_contents(), main_rfh(), content::JAVASCRIPT_DIALOG_TYPE_ALERT,
+          base::UTF8ToUTF16(base::StrCat({prefix, base::NumberToString(i)})),
+          u"", base::BindLambdaForTesting([](bool, const std::u16string&) {}),
+          &suppressed);
+    }
+  };
+
+  constexpr size_t kParentDialogs = 35;
+  constexpr size_t kFollowupDialogs = 25;
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([&](DeprecatedToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindLambdaForTesting(
+                    [&](DeprecatedToolCallback followup_callback) {
+                      emit_dialogs("followup-", kFollowupDialogs);
+                      std::move(followup_callback)
+                          .Run(MakeOkResult(
+                              /*requires_page_stabilization=*/false));
+                    }),
+                base::DoNothing(), surface));
+        emit_dialogs("parent-", kParentDialogs);
+        std::move(callback).Run(
+            MakeOkResult(/*requires_page_stabilization=*/false));
+      }),
+      base::DoNothing(), surface);
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  const auto& dialogs = result.Get()[0].javascript_dialogs;
+  ASSERT_EQ(dialogs.size(),
+            JavaScriptDialogInterceptor::kMaxInterceptedDialogs);
+  for (size_t i = 0; i < kParentDialogs; ++i) {
+    EXPECT_EQ(dialogs[i].dialog_message,
+              base::StrCat({"parent-", base::NumberToString(i)}));
+  }
+  const size_t expected_followup =
+      JavaScriptDialogInterceptor::kMaxInterceptedDialogs - kParentDialogs;
+  for (size_t i = 0; i < expected_followup; ++i) {
+    EXPECT_EQ(dialogs[kParentDialogs + i].dialog_message,
+              base::StrCat({"followup-", base::NumberToString(i)}));
+  }
+}
+
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_DeferredToolInvokeDrainsDialogsBeforeWaitingOnUser \
+  DISABLED_DeferredToolInvokeDrainsDialogsBeforeWaitingOnUser
+#else
+#define MAYBE_DeferredToolInvokeDrainsDialogsBeforeWaitingOnUser \
+  DeferredToolInvokeDrainsDialogsBeforeWaitingOnUser
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_DeferredToolInvokeDrainsDialogsBeforeWaitingOnUser) {
+  base::test::ScopedFeatureList features(kGlicDeferActUntilUninterrupted);
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  const ActorSurfaceHandle surface =
+      ActorSurfaceHandle::From(GetTab()->GetHandle());
+
+  auto emit_dialog = [this](std::u16string_view message) {
+    JavaScriptDialogInterceptor::CreateForWebContents(web_contents());
+    auto* interceptor =
+        JavaScriptDialogInterceptor::FromWebContents(web_contents());
+    ASSERT_NE(interceptor, nullptr);
+    bool suppressed = true;
+    interceptor->RunJavaScriptDialog(
+        web_contents(), main_rfh(), content::JAVASCRIPT_DIALOG_TYPE_ALERT,
+        std::u16string(message), u"",
+        base::BindLambdaForTesting([](bool, const std::u16string&) {}),
+        &suppressed);
+  };
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([&](DeprecatedToolCallback callback) {
+        emit_dialog(u"during-tool");
+        task_->Interrupt(/*retain_user_control=*/false,
+                         ActorTask::InterruptReason::kWaitingUserConfirmation);
+        std::move(callback).Run(
+            MakeOkResult(/*requires_page_stabilization=*/false));
+      }),
+      base::DoNothing(), surface);
+
+  base::RunLoop tool_invoke_complete_loop;
+  task_->GetExecutionEngine().set_tool_invoke_complete_callback_for_testing(
+      tool_invoke_complete_loop.QuitClosure());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  tool_invoke_complete_loop.Run();
+  EXPECT_FALSE(result.IsReady());
+  EXPECT_EQ(task_->GetState(), ActorTask::State::kWaitingOnUser);
+
+  // Dialogs fired while waiting on the user must not be attributed to the
+  // already-finished tool invocation once uninterrupted.
+  emit_dialog(u"while-waiting");
+
+  task_->Uninterrupt(ActorTask::State::kActing);
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  const auto& dialogs = result.Get()[0].javascript_dialogs;
+  ASSERT_EQ(dialogs.size(), 1u);
+  EXPECT_EQ(dialogs[0].dialog_message, "during-tool");
+
+  // Confirm the post-tool dialog remained in the interceptor rather than being
+  // silently dropped.
+  const auto remaining_dialogs =
+      JavaScriptDialogInterceptor::TakeInterceptedDialogs(*web_contents());
+  ASSERT_EQ(remaining_dialogs.size(), 1u);
+  EXPECT_EQ(remaining_dialogs[0].dialog_message, "while-waiting");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FailingFollowupActionMergesInterceptedDialogs \
+  DISABLED_FailingFollowupActionMergesInterceptedDialogs
+#else
+#define MAYBE_FailingFollowupActionMergesInterceptedDialogs \
+  FailingFollowupActionMergesInterceptedDialogs
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FailingFollowupActionMergesInterceptedDialogs) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  const ActorSurfaceHandle surface =
+      ActorSurfaceHandle::From(GetTab()->GetHandle());
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([&](DeprecatedToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindLambdaForTesting(
+                    [&](DeprecatedToolCallback followup_callback) {
+                      EmitJavaScriptDialog("followup-failure");
+                      std::move(followup_callback)
+                          .Run(MakeNotImplementedResult());
+                    }),
+                base::DoNothing(), surface));
+        EmitJavaScriptDialog("parent-ok");
+        std::move(callback).Run(
+            MakeOkResult(/*requires_page_stabilization=*/false));
+      }),
+      base::DoNothing(), surface);
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectErrorResult(result, mojom::ActionResultCode::kNotImplemented);
+  ASSERT_EQ(result.Get().size(), 1u);
+  const auto& dialogs = result.Get()[0].javascript_dialogs;
+  ASSERT_EQ(dialogs.size(), 2u);
+  EXPECT_EQ(dialogs[0].dialog_message, "parent-ok");
+  EXPECT_EQ(dialogs[1].dialog_message, "followup-failure");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_ExternalToolFailurePreservesInterceptedDialogs \
+  DISABLED_ExternalToolFailurePreservesInterceptedDialogs
+#else
+#define MAYBE_ExternalToolFailurePreservesInterceptedDialogs \
+  ExternalToolFailurePreservesInterceptedDialogs
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_ExternalToolFailurePreservesInterceptedDialogs) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  const ActorSurfaceHandle surface =
+      ActorSurfaceHandle::From(GetTab()->GetHandle());
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([&](DeprecatedToolCallback callback) {
+        EmitJavaScriptDialog("before-external-failure");
+        task_->GetExecutionEngine().FailCurrentTool(
+            mojom::ActionResultCode::kUrlBlocked);
+        std::move(callback).Run(
+            MakeOkResult(/*requires_page_stabilization=*/false));
+      }),
+      base::DoNothing(), surface);
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectErrorResult(result, mojom::ActionResultCode::kUrlBlocked);
+  ASSERT_EQ(result.Get().size(), 1u);
+  const auto& dialogs = result.Get()[0].javascript_dialogs;
+  ASSERT_EQ(dialogs.size(), 1u);
+  EXPECT_EQ(dialogs[0].dialog_message, "before-external-failure");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_NullValidationSurfaceFallsBackToLastActuatedSurfaceForDialogs \
+  DISABLED_NullValidationSurfaceFallsBackToLastActuatedSurfaceForDialogs
+#else
+#define MAYBE_NullValidationSurfaceFallsBackToLastActuatedSurfaceForDialogs \
+  NullValidationSurfaceFallsBackToLastActuatedSurfaceForDialogs
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_NullValidationSurfaceFallsBackToLastActuatedSurfaceForDialogs) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  const ActorSurfaceHandle surface =
+      ActorSurfaceHandle::From(GetTab()->GetHandle());
+
+  base::test::TestFuture<mojom::ActionResultPtr> add_result;
+  task_->AddActorSurface(surface, /*stop_task_on_detach=*/false,
+                         add_result.GetCallback());
+  ExpectOkResult(*add_result.Get());
+  ASSERT_EQ(task_->GetLastActuatedActorSurface(), surface);
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([&](DeprecatedToolCallback callback) {
+        EmitJavaScriptDialog("fallback-surface");
+        std::move(callback).Run(
+            MakeOkResult(/*requires_page_stabilization=*/false));
+      }),
+      base::DoNothing(), ActorSurfaceHandle::Null());
+  ASSERT_TRUE(request->GetActorSurfaceForValidation().is_null());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  const auto& dialogs = result.Get()[0].javascript_dialogs;
+  ASSERT_EQ(dialogs.size(), 1u);
+  EXPECT_EQ(dialogs[0].dialog_message, "fallback-surface");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_ExecuteJsTimeoutPreservesInterceptedDialogs \
+  DISABLED_ExecuteJsTimeoutPreservesInterceptedDialogs
+#else
+#define MAYBE_ExecuteJsTimeoutPreservesInterceptedDialogs \
+  ExecuteJsTimeoutPreservesInterceptedDialogs
+#endif
+TEST_F(ExecutionEngineTest, MAYBE_ExecuteJsTimeoutPreservesInterceptedDialogs) {
+  using ProtoDialog =
+      optimization_guide::proto::ExecuteJsResult::JavaScriptDialog;
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  const ActorSurfaceHandle surface =
+      ActorSurfaceHandle::From(GetTab()->GetHandle());
+
+  // Declare `held_invoke_callback` before `fake_chrome_render_frame` so the
+  // mojo receiver set closes before the un-invoked callback is destroyed.
+  FakeChromeRenderFrame::InvokeToolCallback held_invoke_callback;
+  FakeChromeRenderFrame fake_chrome_render_frame;
+  base::RunLoop invoke_loop;
+  fake_chrome_render_frame.set_on_invoke_tool(base::BindLambdaForTesting(
+      [&](actor::mojom::ToolInvocationPtr,
+          FakeChromeRenderFrame::InvokeToolCallback callback) {
+        EmitJavaScriptDialog("before timeout");
+        held_invoke_callback = std::move(callback);
+        invoke_loop.Quit();
+      }));
+  fake_chrome_render_frame.OverrideBinder(main_rfh());
+
+  const base::UnguessableToken document_id =
+      optimization_guide::DocumentIdentifierUserData::
+          GetOrCreateForCurrentDocument(main_rfh())
+              ->token();
+  std::unique_ptr<ToolRequest> request = std::make_unique<ExecuteJsToolRequest>(
+      surface, document_id,
+      "window.alert('before timeout'); new Promise(() => {});",
+      /*timeout_ms=*/1000);
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  invoke_loop.Run();
+  EXPECT_FALSE(result.IsReady());
+
+  // Advance mock time past the 1000ms script timeout plus renderer slack so
+  // ExecuteJsToolHost deterministically triggers kExecuteJsTimeout.
+  task_environment()->FastForwardBy(base::Seconds(3));
+  ExpectErrorResult(result, mojom::ActionResultCode::kExecuteJsTimeout);
+
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].tool_name, ExecuteJsToolRequest::kName);
+  EXPECT_FALSE(result.Get()[0]
+                   .tool_result.deprecated_action_result()
+                   ->execute_js_response);
+  ASSERT_EQ(result.Get()[0].javascript_dialogs.size(), 1u);
+  EXPECT_EQ(result.Get()[0].javascript_dialogs[0].type,
+            JavaScriptDialogType::kAlert);
+  EXPECT_EQ(result.Get()[0].javascript_dialogs[0].dialog_message,
+            "before timeout");
+
+  optimization_guide::proto::ActionsResult actions_result;
+  CopyExecuteJsResults(actions_result, result.Get());
+  ASSERT_EQ(actions_result.execute_js_results_size(), 1);
+  const auto& execute_js_result = actions_result.execute_js_results(0);
+  EXPECT_EQ(execute_js_result.index_of_execute_js_action(), 0);
+  ASSERT_EQ(execute_js_result.javascript_dialogs_size(), 1);
+  EXPECT_EQ(execute_js_result.javascript_dialogs(0).type(),
+            ProtoDialog::TYPE_ALERT);
+  EXPECT_EQ(execute_js_result.javascript_dialogs(0).dialog_message(),
+            "before timeout");
 }
 
 // TODO(crbug.com/480230075): Crashing on Android.
@@ -762,7 +1505,7 @@ TEST_F(ExecutionEngineTest, MAYBE_LatencyInfoAndActionDurationHistogram) {
   const base::TimeDelta simulated_duration = base::Milliseconds(150);
   const base::TimeTicks action_start_time = base::TimeTicks::Now();
 
-  base::test::TestFuture<ToolCallback> on_invoke_future;
+  base::test::TestFuture<DeprecatedToolCallback> on_invoke_future;
 
   std::unique_ptr<ToolRequest> action = std::make_unique<FakeToolRequest>(
       on_invoke_future.GetCallback(), base::OnceClosure());
@@ -780,7 +1523,7 @@ TEST_F(ExecutionEngineTest, MAYBE_LatencyInfoAndActionDurationHistogram) {
   ASSERT_TRUE(result.Wait());
   const auto& action_results = result.Get();
   for (const auto& action_result : action_results) {
-    EXPECT_TRUE(IsOk(*action_result.result));
+    EXPECT_TRUE(IsOk(*action_result.tool_result.deprecated_action_result()));
   }
 
   const auto& actions_result = action_results;
@@ -1033,6 +1776,64 @@ TEST_F(ExecutionEngineTest,
   EXPECT_EQ(received_handler.get(), &event_handler);
 }
 
+struct TestToolData : public ToolResultData {
+  explicit TestToolData(int value) : value(value) {}
+  ~TestToolData() override = default;
+
+  base::DictValue ToDict() const override {
+    return base::DictValue().Set("value", value);
+  }
+
+  std::unique_ptr<ToolResultData> Clone() const override {
+    return std::make_unique<TestToolData>(*this);
+  }
+
+  int value = 0;
+};
+
+TEST_F(ExecutionEngineTest, ToolResultSuccessWithData) {
+  std::unique_ptr<ToolRequest> action =
+      std::make_unique<FakeToolRequest>(ToolResult::Success(TestToolData(42)));
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(action), result.GetCallback());
+
+  ASSERT_TRUE(result.Wait());
+  const auto& action_results = result.Get();
+  ASSERT_EQ(action_results.size(), 1u);
+  EXPECT_TRUE(action_results[0].tool_result.Ok());
+  ASSERT_TRUE(action_results[0].tool_result.deprecated_action_result());
+  EXPECT_TRUE(IsOk(*action_results[0].tool_result.deprecated_action_result()));
+  ASSERT_NE(action_results[0].tool_result.data(), nullptr);
+  const TestToolData* data =
+      action_results[0].tool_result.data()->As<TestToolData>();
+  ASSERT_NE(data, nullptr);
+  EXPECT_EQ(data->value, 42);
+}
+
+TEST_F(ExecutionEngineTest, ToolResultError) {
+  std::unique_ptr<ToolRequest> action =
+      std::make_unique<FakeToolRequest>(ToolResult::Error(
+          ToolError(mojom::ActionResultCode::kTabWentAway, "No matching tab")));
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(action), result.GetCallback());
+
+  ASSERT_TRUE(result.Wait());
+  const auto& action_results = result.Get();
+  ASSERT_EQ(action_results.size(), 1u);
+  EXPECT_FALSE(action_results[0].tool_result.Ok());
+  ASSERT_TRUE(action_results[0].tool_result.deprecated_action_result());
+  EXPECT_EQ(action_results[0].tool_result.deprecated_action_result()->code,
+            mojom::ActionResultCode::kTabWentAway);
+  EXPECT_EQ(action_results[0].tool_result.deprecated_action_result()->message,
+            "No matching tab");
+  ASSERT_TRUE(action_results[0].tool_result.error().has_value());
+  EXPECT_EQ(action_results[0].tool_result.error()->code,
+            mojom::ActionResultCode::kTabWentAway);
+  EXPECT_EQ(action_results[0].tool_result.error()->message, "No matching tab");
+}
+
 INSTANTIATE_TEST_SUITE_P(
     All,
     ExecutionEngineStopReasonParamTest,
@@ -1044,6 +1845,508 @@ INSTANTIATE_TEST_SUITE_P(
                     std::make_tuple(kShutdown, "Shutdown"),
                     std::make_tuple(kUserStartedNewChat, "NewChat"),
                     std::make_tuple(kUserLoadedPreviousChat, "PreviousChat")));
+
+class ToolControllerDeferredObservationTest : public ExecutionEngineTest {
+ public:
+  ToolControllerDeferredObservationTest() {
+    // This suite drives ToolController directly without going through
+    // ExecutionEngine::Act(), so disable the subframe-gating dry run that
+    // queries ExecutionEngine::GetInProgressAction().
+    subframe_gating_feature_list_.InitAndDisableFeature(
+        kGlicActorSubframeGatingDryRun);
+  }
+
+  void SetUp() override {
+    ExecutionEngineTest::SetUp();
+    // Browser-initiated navigations preconnect a socket when preloading is
+    // enabled. This suite waits long enough for that connect to run, which
+    // crashes on Android where the in-process network service runs on the UI
+    // thread.
+    prefetch::SetPreloadPagesState(profile()->GetPrefs(),
+                                   prefetch::PreloadPagesState::kNoPreloading);
+    content::NavigationSimulator::NavigateAndCommitFromBrowser(
+        web_contents(), GURL("http://localhost/"));
+    fake_chrome_render_frame_.OverrideBinder(main_rfh());
+    fake_chrome_render_frame_.set_bind_page_stability_monitors(true);
+    tool_controller_ =
+        std::make_unique<ToolController>(*task_, task_->GetExecutionEngine());
+  }
+
+  void TearDown() override {
+    tool_controller_.reset();
+    ExecutionEngineTest::TearDown();
+  }
+
+ protected:
+  std::unique_ptr<ClickToolRequest> MakeClickRequest(
+      base::TimeDelta start_delay) {
+    std::string doc_id =
+        *optimization_guide::DocumentIdentifierUserData::GetDocumentIdentifier(
+            main_rfh()->GetGlobalFrameToken());
+    return std::make_unique<ClickToolRequest>(
+        ActorSurfaceHandle::From(GetTab()->GetHandle()),
+        PageTarget(DomNode{.node_id = kFakeContentNodeId,
+                           .document_identifier = doc_id}),
+        mojom::ClickType::kLeft, mojom::ClickCount::kSingle,
+        /*requires_opening_web_contents=*/false,
+        ObservationDelayController::PageStabilityConfig{.start_delay =
+                                                            start_delay});
+  }
+
+  mojom::ActionResultPtr CreateAndInvoke(
+      const ToolRequest& request,
+      std::optional<ObservationDelayController::PageStabilityConfig>
+          deferred_observation_config = std::nullopt) {
+    base::test::TestFuture<mojom::ActionResultPtr> created;
+    tool_controller_->CreateToolAndValidate(request, created.GetCallback());
+    if (mojom::ActionResultPtr res = created.Take(); !IsOk(*res)) {
+      return res;
+    }
+    base::test::TestFuture<ToolResult> invoked;
+    tool_controller_->Invoke(invoked.GetCallback(),
+                             std::move(deferred_observation_config));
+    return std::move(invoked.Take().deprecated_action_result());
+  }
+
+  const std::vector<base::TimeDelta>& observation_delays() const {
+    return fake_chrome_render_frame_.page_stability_monitor()
+        .observation_delays();
+  }
+
+  base::test::ScopedFeatureList subframe_gating_feature_list_;
+  std::unique_ptr<ToolController> tool_controller_;
+};
+
+TEST_F(ToolControllerDeferredObservationTest, NextToolReusesDeferredDelayer) {
+  auto click1 = MakeClickRequest(base::Seconds(1));
+  auto click2 = MakeClickRequest(base::Seconds(2));
+  ASSERT_TRUE(IsOk(
+      *CreateAndInvoke(*click1, click1->GetObservationPageStabilityConfig())));
+  EXPECT_TRUE(tool_controller_->HasPendingObservation());
+  EXPECT_THAT(observation_delays(), testing::IsEmpty());
+
+  EXPECT_FALSE(tool_controller_->ShouldSettlePendingObservationBefore(*click2));
+  ASSERT_TRUE(IsOk(*CreateAndInvoke(*click2)));
+  EXPECT_FALSE(tool_controller_->HasPendingObservation());
+  EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 1);
+  EXPECT_THAT(observation_delays(), testing::ElementsAre(base::Seconds(2)));
+}
+
+TEST_F(ToolControllerDeferredObservationTest, SettlePendingObservation) {
+  auto click1 = MakeClickRequest(base::Seconds(1));
+  auto click2 = MakeClickRequest(base::Seconds(2));
+  ASSERT_TRUE(IsOk(
+      *CreateAndInvoke(*click1, click1->GetObservationPageStabilityConfig())));
+  ASSERT_TRUE(IsOk(
+      *CreateAndInvoke(*click2, click2->GetObservationPageStabilityConfig())));
+  ASSERT_TRUE(tool_controller_->HasPendingObservation());
+
+  base::test::TestFuture<void> settled;
+  tool_controller_->SettlePendingObservation(settled.GetCallback());
+  ASSERT_TRUE(settled.Wait());
+  EXPECT_FALSE(tool_controller_->HasPendingObservation());
+  EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 1);
+  EXPECT_THAT(observation_delays(), testing::ElementsAre(base::Seconds(2)));
+}
+
+TEST_F(ToolControllerDeferredObservationTest, CancelDropsPendingObservation) {
+  auto click = MakeClickRequest(base::Seconds(1));
+  ASSERT_TRUE(IsOk(
+      *CreateAndInvoke(*click, click->GetObservationPageStabilityConfig())));
+  tool_controller_->Cancel();
+  EXPECT_FALSE(tool_controller_->HasPendingObservation());
+  task_environment()->RunUntilIdle();
+  EXPECT_THAT(observation_delays(), testing::IsEmpty());
+
+  ASSERT_TRUE(IsOk(
+      *CreateAndInvoke(*click, click->GetObservationPageStabilityConfig())));
+  bool settled = false;
+  tool_controller_->SettlePendingObservation(
+      base::BindLambdaForTesting([&]() { settled = true; }));
+  tool_controller_->Cancel();
+  task_environment()->RunUntilIdle();
+  EXPECT_FALSE(settled);
+  EXPECT_FALSE(tool_controller_->HasPendingObservation());
+}
+
+TEST_F(ToolControllerDeferredObservationTest, ShouldSettleBefore) {
+  auto click = MakeClickRequest(base::Seconds(1));
+  ASSERT_TRUE(IsOk(
+      *CreateAndInvoke(*click, click->GetObservationPageStabilityConfig())));
+  EXPECT_FALSE(tool_controller_->ShouldSettlePendingObservationBefore(
+      *MakeClickRequest(base::Seconds(1))));
+  FakeToolRequest non_page_request(
+      base::DoNothing(), base::DoNothing(),
+      ActorSurfaceHandle::From(GetTab()->GetHandle()));
+  EXPECT_TRUE(
+      tool_controller_->ShouldSettlePendingObservationBefore(non_page_request));
+
+  content::NavigationSimulator::CreateRendererInitiated(
+      GURL("http://localhost/#foo"), main_rfh())
+      ->CommitSameDocument();
+  EXPECT_TRUE(tool_controller_->ShouldSettlePendingObservationBefore(
+      *MakeClickRequest(base::Seconds(1))));
+}
+
+TEST_F(ToolControllerDeferredObservationTest, FailedToolHandling) {
+  auto click1 = MakeClickRequest(base::Seconds(1));
+  fake_chrome_render_frame_.FailNextTool(
+      mojom::ActionResultCode::kNotImplemented);
+  EXPECT_EQ(
+      CreateAndInvoke(*click1, click1->GetObservationPageStabilityConfig())
+          ->code,
+      mojom::ActionResultCode::kNotImplemented);
+  EXPECT_FALSE(tool_controller_->HasPendingObservation());
+  EXPECT_THAT(observation_delays(), testing::IsEmpty());
+
+  ASSERT_TRUE(IsOk(
+      *CreateAndInvoke(*click1, click1->GetObservationPageStabilityConfig())));
+  fake_chrome_render_frame_.FailNextTool(
+      mojom::ActionResultCode::kNotImplemented);
+  EXPECT_EQ(CreateAndInvoke(*MakeClickRequest(base::Seconds(2)))->code,
+            mojom::ActionResultCode::kNotImplemented);
+  EXPECT_FALSE(tool_controller_->HasPendingObservation());
+  EXPECT_THAT(observation_delays(), testing::ElementsAre(base::Seconds(2)));
+}
+
+TEST_F(ToolControllerDeferredObservationTest,
+       CreateToolFailurePreservesPendingObservation) {
+  auto click1 = MakeClickRequest(base::Seconds(1));
+  ASSERT_TRUE(IsOk(
+      *CreateAndInvoke(*click1, click1->GetObservationPageStabilityConfig())));
+  ASSERT_TRUE(tool_controller_->HasPendingObservation());
+
+  // A request targeting a closed surface fails synchronously in CreateTool()
+  // without consuming the deferred observation.
+  ActorSurfaceHandle gone_surface;
+  {
+    std::unique_ptr<content::WebContents> closed_contents =
+        CreateTestWebContents();
+    TestTabState closed_tab(closed_contents.get());
+    gone_surface = ActorSurfaceHandle::From(closed_tab.tab.GetHandle());
+  }
+  ASSERT_FALSE(gone_surface.is_null());
+  ASSERT_EQ(gone_surface.Get(), nullptr);
+
+  ClickToolRequest invalid_click(gone_surface, PageTarget(gfx::Point(10, 10)),
+                                 mojom::ClickType::kLeft,
+                                 mojom::ClickCount::kSingle);
+  EXPECT_EQ(CreateAndInvoke(invalid_click)->code,
+            mojom::ActionResultCode::kTabWentAway);
+  EXPECT_TRUE(tool_controller_->HasPendingObservation());
+
+  base::test::TestFuture<void> settled;
+  tool_controller_->SettlePendingObservation(settled.GetCallback());
+  ASSERT_TRUE(settled.Wait());
+  EXPECT_FALSE(tool_controller_->HasPendingObservation());
+  EXPECT_THAT(observation_delays(), testing::ElementsAre(base::Seconds(1)));
+}
+
+TEST_F(ToolControllerDeferredObservationTest,
+       SettlePendingObservationRestartsOnNavigation) {
+  auto click = MakeClickRequest(base::Seconds(1));
+  ASSERT_TRUE(IsOk(
+      *CreateAndInvoke(*click, click->GetObservationPageStabilityConfig())));
+  ASSERT_TRUE(tool_controller_->HasPendingObservation());
+
+  // Quit from the task that holds the wait. Waiting for the thread to go idle
+  // instead would let mock time fast-forward to the observation timeout.
+  base::RunLoop wait_held;
+  fake_chrome_render_frame_.page_stability_monitor().HoldNextWait(
+      wait_held.QuitClosure());
+  base::test::TestFuture<void> settled;
+  tool_controller_->SettlePendingObservation(settled.GetCallback());
+  wait_held.Run();
+  EXPECT_FALSE(settled.IsReady());
+
+  auto navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL("http://localhost/next"), main_rfh());
+  navigation->ReadyToCommit();
+  fake_chrome_render_frame_.OverrideBinder(
+      navigation->GetFinalRenderFrameHost());
+  navigation->Commit();
+
+  ASSERT_TRUE(settled.Wait());
+  EXPECT_FALSE(tool_controller_->HasPendingObservation());
+  EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 2);
+  EXPECT_EQ(observation_delays().size(), 2u);
+}
+
+class ExecutionEngineStabilizeOncePerBundleTest : public ExecutionEngineTest {
+ public:
+  ExecutionEngineStabilizeOncePerBundleTest() {
+    bundle_feature_list_.InitAndEnableFeature(kActorStabilizeOncePerBundle);
+  }
+
+  void SetUp() override {
+    ExecutionEngineTest::SetUp();
+    // Browser-initiated navigations preconnect a socket when preloading is
+    // enabled, which crashes on Android where the in-process network service
+    // runs on the UI thread.
+    prefetch::SetPreloadPagesState(profile()->GetPrefs(),
+                                   prefetch::PreloadPagesState::kNoPreloading);
+    content::NavigationSimulator::NavigateAndCommitFromBrowser(
+        web_contents(), GURL("http://localhost/"));
+    fake_chrome_render_frame_.OverrideBinder(main_rfh());
+    fake_chrome_render_frame_.set_bind_page_stability_monitors(true);
+  }
+
+ protected:
+  PageTarget MainFrameNodeTarget(int node_id = kFakeContentNodeId) {
+    std::string doc_id =
+        *optimization_guide::DocumentIdentifierUserData::GetDocumentIdentifier(
+            main_rfh()->GetGlobalFrameToken());
+    return PageTarget(
+        DomNode{.node_id = node_id, .document_identifier = doc_id});
+  }
+
+  std::unique_ptr<ToolRequest> MakeBundleClickRequest(
+      base::TimeDelta start_delay,
+      bool supports_paint_stability = true,
+      mojom::ClickType click_type = mojom::ClickType::kLeft,
+      bool requires_opening_web_contents = false) {
+    return std::make_unique<ClickToolRequest>(
+        ActorSurfaceHandle::From(GetTab()->GetHandle()), MainFrameNodeTarget(),
+        click_type, mojom::ClickCount::kSingle, requires_opening_web_contents,
+        ObservationDelayController::PageStabilityConfig{
+            .supports_paint_stability = supports_paint_stability,
+            .start_delay = start_delay});
+  }
+
+  std::unique_ptr<ToolRequest> MakeBundleSelectRequest(
+      std::string_view value = "opt") {
+    return std::make_unique<SelectToolRequest>(
+        ActorSurfaceHandle::From(GetTab()->GetHandle()), MainFrameNodeTarget(),
+        value);
+  }
+
+  const std::vector<base::TimeDelta>& observation_delays() const {
+    return fake_chrome_render_frame_.page_stability_monitor()
+        .observation_delays();
+  }
+
+ private:
+  base::test::ScopedFeatureList bundle_feature_list_;
+};
+
+TEST_F(ExecutionEngineStabilizeOncePerBundleTest,
+       WaitsOnceAtEndOfPageActionBundle) {
+  {
+    base::test::ScopedFeatureList disabled;
+    disabled.InitAndDisableFeature(kActorStabilizeOncePerBundle);
+    ActResultFuture result;
+    task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(1)),
+                             MakeBundleClickRequest(base::Seconds(2))),
+               result.GetCallback());
+    ExpectOkResult(result);
+    EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 2);
+    EXPECT_THAT(observation_delays(),
+                testing::ElementsAre(base::Seconds(1), base::Seconds(2)));
+  }
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(1)),
+                           MakeBundleClickRequest(base::Seconds(2)),
+                           MakeBundleClickRequest(base::Seconds(3))),
+             result.GetCallback());
+  ExpectOkResult(result);
+  EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 3);
+  EXPECT_THAT(fake_chrome_render_frame_.monitor_paint_stability_flags(),
+              testing::ElementsAre(true, true, true));
+  EXPECT_THAT(observation_delays(),
+              testing::ElementsAre(base::Seconds(1), base::Seconds(2),
+                                   base::Seconds(3)));
+}
+
+TEST_F(ExecutionEngineStabilizeOncePerBundleTest,
+       PaintStabilityRequiresAllActionsInBundleToSupportIt) {
+  ActResultFuture click_then_select;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(1)),
+                           MakeBundleSelectRequest()),
+             click_then_select.GetCallback());
+  ExpectOkResult(click_then_select);
+
+  ActResultFuture select_then_click;
+  task_->Act(ToRequestList(MakeBundleSelectRequest(),
+                           MakeBundleClickRequest(base::Seconds(2))),
+             select_then_click.GetCallback());
+  ExpectOkResult(select_then_click);
+
+  EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 2);
+  EXPECT_THAT(fake_chrome_render_frame_.monitor_paint_stability_flags(),
+              testing::ElementsAre(false, false));
+  EXPECT_THAT(observation_delays(),
+              testing::ElementsAre(base::TimeDelta(), base::Seconds(2)));
+}
+
+TEST_F(ExecutionEngineStabilizeOncePerBundleTest,
+       NonPageFollowupAndTabBoundariesSettleBeforeSplittingBundle) {
+  std::vector<base::TimeDelta> delays_at_non_page;
+  std::unique_ptr<ToolRequest> non_page = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([&](DeprecatedToolCallback cb) {
+        delays_at_non_page = observation_delays();
+        std::move(cb).Run(MakeOkResult());
+      }),
+      base::DoNothing(), ActorSurfaceHandle::From(GetTab()->GetHandle()));
+  ActResultFuture res1;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(1)),
+                           MakeBundleClickRequest(base::Seconds(2)),
+                           std::move(non_page),
+                           MakeBundleClickRequest(base::Seconds(3)),
+                           MakeBundleClickRequest(base::Seconds(4))),
+             res1.GetCallback());
+  ExpectOkResult(res1);
+  EXPECT_THAT(delays_at_non_page, testing::ElementsAre(base::Seconds(2)));
+  EXPECT_THAT(observation_delays(),
+              testing::ElementsAre(base::Seconds(2), base::Seconds(4)));
+
+  fake_chrome_render_frame_.SetNextToolHook(base::BindLambdaForTesting([&]() {
+    task_->GetExecutionEngine().EnqueueFollowupAction(
+        MakeBundleClickRequest(base::Seconds(5)));
+  }));
+  ActResultFuture res2;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(1)),
+                           MakeBundleClickRequest(base::Seconds(2))),
+             res2.GetCallback());
+  ExpectOkResult(res2);
+  EXPECT_THAT(
+      observation_delays(),
+      testing::ElementsAre(base::Seconds(2), base::Seconds(4), base::Seconds(1),
+                           base::Seconds(5), base::Seconds(2)));
+
+  // Switching tabs mid-sequence settles the first tab's bundle before acting on
+  // the second tab.
+  std::unique_ptr<content::WebContents> second_contents =
+      CreateTestWebContents();
+  TestTabState second_tab(second_contents.get());
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      second_contents.get(), GURL("http://localhost/other"));
+  fake_chrome_render_frame_.OverrideBinder(
+      second_contents->GetPrimaryMainFrame());
+  std::string second_doc_id =
+      *optimization_guide::DocumentIdentifierUserData::GetDocumentIdentifier(
+          second_contents->GetPrimaryMainFrame()->GetGlobalFrameToken());
+  std::unique_ptr<ToolRequest> second_tab_click =
+      std::make_unique<ClickToolRequest>(
+          ActorSurfaceHandle::From(second_tab.tab.GetHandle()),
+          PageTarget(DomNode{.node_id = kFakeContentNodeId,
+                             .document_identifier = second_doc_id}),
+          mojom::ClickType::kLeft, mojom::ClickCount::kSingle,
+          /*requires_opening_web_contents=*/false,
+          ObservationDelayController::PageStabilityConfig{
+              .supports_paint_stability = true,
+              .start_delay = base::Seconds(6)});
+  ActResultFuture res3;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(1)),
+                           MakeBundleClickRequest(base::Seconds(2)),
+                           std::move(second_tab_click)),
+             res3.GetCallback());
+  ExpectOkResult(res3);
+  EXPECT_THAT(
+      observation_delays(),
+      testing::ElementsAre(base::Seconds(2), base::Seconds(4), base::Seconds(1),
+                           base::Seconds(5), base::Seconds(2), base::Seconds(2),
+                           base::Seconds(6)));
+  task_->Stop(kTaskComplete);
+}
+
+TEST_F(ExecutionEngineStabilizeOncePerBundleTest,
+       NavigationMidBundleAndBoundaryParam) {
+  fake_chrome_render_frame_.SetNextToolHook(base::BindLambdaForTesting([&]() {
+    content::NavigationSimulator::CreateRendererInitiated(
+        GURL("http://localhost/#section"), main_rfh())
+        ->CommitSameDocument();
+  }));
+  ActResultFuture res1;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(1)),
+                           MakeBundleClickRequest(base::Seconds(2))),
+             res1.GetCallback());
+  ExpectOkResult(res1);
+  EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 2);
+  EXPECT_THAT(observation_delays(),
+              testing::ElementsAre(base::Seconds(1), base::Seconds(2)));
+
+  base::test::ScopedFeatureList params;
+  params.InitAndEnableFeatureWithParameters(
+      kActorStabilizeOncePerBundle,
+      {{kActorBundleSameDocumentNavigationIsBoundary.name, "false"}});
+  fake_chrome_render_frame_.SetNextToolHook(base::BindLambdaForTesting([&]() {
+    content::NavigationSimulator::CreateRendererInitiated(
+        GURL("http://localhost/#step2"), main_rfh())
+        ->CommitSameDocument();
+  }));
+  ActResultFuture res2;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(3)),
+                           MakeBundleClickRequest(base::Seconds(4))),
+             res2.GetCallback());
+  ExpectOkResult(res2);
+  EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 3);
+  EXPECT_THAT(observation_delays(),
+              testing::ElementsAre(base::Seconds(1), base::Seconds(2),
+                                   base::Seconds(4)));
+}
+
+TEST_F(ExecutionEngineStabilizeOncePerBundleTest,
+       NoOpLastActionStillWaitsForEarlierDeferredActions) {
+  fake_chrome_render_frame_.SetNextToolHook(base::BindLambdaForTesting([&]() {
+    fake_chrome_render_frame_.SetNextToolResult(
+        MakeOkResult(/*requires_page_stabilization=*/false));
+  }));
+  ActResultFuture result;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(1)),
+                           MakeBundleClickRequest(base::Seconds(2))),
+             result.GetCallback());
+  ExpectOkResult(result);
+  EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 1);
+  EXPECT_THAT(observation_delays(), testing::ElementsAre(base::Seconds(2)));
+}
+
+TEST_F(ExecutionEngineStabilizeOncePerBundleTest,
+       EarlyTerminationSettlesOrPauseCancelsPendingObservation) {
+  // Action 2 fails mid-bundle: action 1's pending wait settles and action 3
+  // never runs.
+  ActResultFuture toctou_res;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(1)),
+                           MakeBundleClickRequest(
+                               base::Seconds(2),
+                               /*supports_paint_stability=*/true,
+                               mojom::ClickType::kLeftOnOccludedTarget),
+                           MakeBundleClickRequest(base::Seconds(3))),
+             toctou_res.GetCallback());
+  ASSERT_EQ(toctou_res.Get().size(), 2u);
+  EXPECT_TRUE(toctou_res.Get()[0].tool_result.Ok());
+  EXPECT_FALSE(toctou_res.Get()[1].tool_result.Ok());
+  EXPECT_EQ(fake_chrome_render_frame_.page_stability_monitor_count(), 1);
+  EXPECT_THAT(observation_delays(), testing::ElementsAre(base::Seconds(1)));
+
+  fake_chrome_render_frame_.SetNextToolHook(base::BindLambdaForTesting([&]() {
+    task_->GetExecutionEngine().FailCurrentTool(
+        mojom::ActionResultCode::kLoginNotLoginPage);
+  }));
+  ActResultFuture ext_res;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(2)),
+                           MakeBundleClickRequest(base::Seconds(3))),
+             ext_res.GetCallback());
+  ExpectErrorResult(ext_res, mojom::ActionResultCode::kLoginNotLoginPage);
+  EXPECT_THAT(observation_delays(),
+              testing::ElementsAre(base::Seconds(1), base::Seconds(2)));
+
+  base::RunLoop held_loop;
+  fake_chrome_render_frame_.page_stability_monitor().HoldNextWait(
+      held_loop.QuitClosure());
+  ActResultFuture pause_res;
+  task_->Act(ToRequestList(MakeBundleClickRequest(base::Seconds(4)),
+                           MakeBundleClickRequest(
+                               base::Seconds(5),
+                               /*supports_paint_stability=*/true,
+                               mojom::ClickType::kLeftOnOccludedTarget,
+                               /*requires_opening_web_contents=*/true)),
+             pause_res.GetCallback());
+  held_loop.Run();
+  EXPECT_FALSE(task_->GetExecutionEngine().TabsCanOpenNewWebContents());
+  task_->Pause(/*from_actor=*/false);
+  ExpectErrorResult(pause_res, mojom::ActionResultCode::kTaskPaused);
+}
 
 class ExecutionEngineNavigationGatingTest : public ExecutionEngineTest {
  public:
@@ -1205,7 +2508,7 @@ class ExecutionEngineUrlGatingTest : public ChromeRenderViewHostTestHarness {
     // The result should not be provided synchronously.
     EXPECT_FALSE(result.IsReady());
     ASSERT_EQ(result.Get().size(), 1u);
-    EXPECT_THAT(result.Get()[0].result->code,
+    EXPECT_THAT(result.Get()[0].tool_result.deprecated_action_result()->code,
                 Conditional(expected_allowed, mojom::ActionResultCode::kOk,
                             Not(mojom::ActionResultCode::kOk)));
   }
@@ -1221,7 +2524,9 @@ class ExecutionEngineUrlGatingTest : public ChromeRenderViewHostTestHarness {
   // Lazily creates a real ActorTask/ExecutionEngine and returns its engine, so
   // that IsAcceptableNavigationDestination tests can exercise the
   // OriginGatingChecker-backed path.
-  ExecutionEngine& GetExecutionEngine() {
+  ExecutionEngine& GetExecutionEngine(
+      ExecutionEngine::AllowedSchemes allowed_schemes =
+          ExecutionEngine::AllowedSchemes::kRequireHttpsOrHttp) {
     if (!task_) {
       std::unique_ptr<ui::UiEventDispatcher> task_dispatcher =
           ui::NewMockUiEventDispatcher();
@@ -1240,11 +2545,13 @@ class ExecutionEngineUrlGatingTest : public ChromeRenderViewHostTestHarness {
                          ui::UiEventDispatcher::ActorTaskAsyncChange>(
               base::BindRepeating(MakeOkResult,
                                   /*requires_page_stabilization=*/true)));
-      task_ = ActorTask::CreateForTesting(
-          *ActorKeyedService::Get(profile()), TaskId(1),
-          std::move(task_dispatcher),
-          /*options=*/nullptr, TestTaskSourceInfo(), &task_policy_checker_,
-          mock_actor_task_delegate_.GetWeakPtr());
+      ActorTaskOptions options;
+      options.delegate = mock_actor_task_delegate_.GetWeakPtr();
+      options.allowed_schemes = allowed_schemes;
+      task_ = ActorTask::CreateForTesting(*ActorKeyedService::Get(profile()),
+                                          TaskId(1), std::move(task_dispatcher),
+                                          TestTaskSourceInfo(),
+                                          &task_policy_checker_, options);
     }
     return task_->GetExecutionEngine();
   }
@@ -1483,6 +2790,30 @@ TEST_F(ExecutionEngineUrlGatingTest,
   EXPECT_EQ(allowed.Get(), MayActOnUrlBlockReason::kAllowed);
 }
 
+TEST_F(ExecutionEngineUrlGatingTest,
+       IsAcceptableNavigationDestination_DefaultRejectsNewTabPage) {
+  base::test::TestFuture<MayActOnUrlBlockReason> allowed;
+  GetExecutionEngine().IsAcceptableNavigationDestination(
+      GURL("chrome://newtab/"), allowed.GetCallback());
+  EXPECT_EQ(allowed.Get(), MayActOnUrlBlockReason::kWrongScheme);
+}
+
+TEST_F(ExecutionEngineUrlGatingTest,
+       IsAcceptableNavigationDestination_TtcAllowsNewTabPage) {
+  base::test::TestFuture<MayActOnUrlBlockReason> allowed_ntp;
+  GetExecutionEngine(ExecutionEngine::AllowedSchemes::kRequireHttpsOrHttpOrNtp)
+      .IsAcceptableNavigationDestination(GURL("chrome://newtab/"),
+                                         allowed_ntp.GetCallback());
+  EXPECT_EQ(allowed_ntp.Get(), MayActOnUrlBlockReason::kAllowed);
+
+  // Still rejects non-NTP chrome:// URLs.
+  base::test::TestFuture<MayActOnUrlBlockReason> allowed_settings;
+  GetExecutionEngine(ExecutionEngine::AllowedSchemes::kRequireHttpsOrHttpOrNtp)
+      .IsAcceptableNavigationDestination(GURL("chrome://settings/"),
+                                         allowed_settings.GetCallback());
+  EXPECT_EQ(allowed_settings.Get(), MayActOnUrlBlockReason::kWrongScheme);
+}
+
 TEST_F(ExecutionEngineUrlGatingTest, SafetyChecksForNextAction_AllowedByCache) {
   const GURL url("https://c.test/");
 
@@ -1528,6 +2859,77 @@ TEST_F(ExecutionEngineUrlGatingTest,
               RequestToShowUserConfirmationDialog(_, _, _, _))
       .Times(0);
   CheckUrl(url, /*expected_allowed=*/true);
+
+  // Subsequent check for a same-site subdomain is also allowed via cache
+  // without re-prompting.
+  const GURL sub_url("https://sub.c.test/");
+  CheckUrl(sub_url, /*expected_allowed=*/true);
+}
+
+TEST_F(ExecutionEngineUrlGatingTest,
+       SafetyChecksForNextAction_PromptsForSensitiveSiteFromCommandLine) {
+  const GURL url("https://c.test/");
+  const GURL sub_url("https://sub.c.test/");
+  const GURL other_sub_url("https://sub.d.test/");
+  const GURL non_matching_url("https://other.test/");
+
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kGlicCrossOriginNavigationGating);
+
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
+      switches::kActorSensitiveSites, "https://c.test,https://d.test");
+
+  // Matching URL prompts for confirmation without querying Optimization Guide.
+  EXPECT_CALL(
+      *mock_optimization_guide_keyed_service_,
+      CanApplyOptimization(
+          url, optimization_guide::proto::GLIC_ACTION_PAGE_BLOCK,
+          testing::An<optimization_guide::OptimizationGuideDecisionCallback>()))
+      .Times(0);
+
+  EXPECT_CALL(
+      mock_actor_task_delegate(),
+      RequestToShowUserConfirmationDialog(_, url::Origin::Create(url),
+                                          /*for_blocklisted_origin=*/true, _))
+      .WillOnce(base::test::RunOnceCallback<3>(
+          webui::mojom::UserConfirmationDialogResponse::New(
+              webui::mojom::ConfirmationRequestResult::NewPermissionGranted(
+                  true))));
+
+  CheckUrl(url, /*expected_allowed=*/true);
+
+  // Subsequent check for the same origin is allowed via cache.
+  EXPECT_CALL(mock_actor_task_delegate(),
+              RequestToShowUserConfirmationDialog(_, _, _, _))
+      .Times(0);
+  CheckUrl(url, /*expected_allowed=*/true);
+
+  // Same-site subdomain is also allowed via cache without re-prompting.
+  CheckUrl(sub_url, /*expected_allowed=*/true);
+
+  // Same-site subdomain of an unconfirmed sensitive site matches SchemefulSite
+  // and prompts without Optimization Guide.
+  EXPECT_CALL(
+      *mock_optimization_guide_keyed_service_,
+      CanApplyOptimization(
+          other_sub_url, optimization_guide::proto::GLIC_ACTION_PAGE_BLOCK,
+          testing::An<optimization_guide::OptimizationGuideDecisionCallback>()))
+      .Times(0);
+  EXPECT_CALL(
+      mock_actor_task_delegate(),
+      RequestToShowUserConfirmationDialog(_, url::Origin::Create(other_sub_url),
+                                          /*for_blocklisted_origin=*/true, _))
+      .WillOnce(base::test::RunOnceCallback<3>(
+          webui::mojom::UserConfirmationDialogResponse::New(
+              webui::mojom::ConfirmationRequestResult::NewPermissionGranted(
+                  true))));
+  CheckUrl(other_sub_url, /*expected_allowed=*/true);
+
+  // Non-matching URL falls back to Optimization Guide.
+  SetExpectedOptimizationGuideCall(
+      non_matching_url, optimization_guide::OptimizationGuideDecision::kTrue);
+  CheckUrl(non_matching_url, /*expected_allowed=*/true);
 }
 
 TEST_F(ExecutionEngineUrlGatingTest,
@@ -1540,6 +2942,13 @@ TEST_F(ExecutionEngineUrlGatingTest,
 
   SetExpectedOptimizationGuideCall(
       destination_url, optimization_guide::OptimizationGuideDecision::kTrue);
+  EXPECT_CALL(
+      mock_actor_task_delegate(),
+      RequestToConfirmNavigation(_, url::Origin::Create(destination_url), _))
+      .WillOnce(base::test::RunOnceCallback<2>(
+          webui::mojom::NavigationConfirmationResponse::New(
+              webui::mojom::ConfirmationRequestResult::NewPermissionGranted(
+                  true))));
 
   content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
                                                              source_url);
@@ -1674,6 +3083,218 @@ TEST_F(ExecutionEngineUrlGatingTest,
 
   EXPECT_EQ(future.Get(), MayActOnUrlBlockReason::kAllowed);
 }
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+mojom::ExecuteJsResponsePtr MakeForgedExecuteJsResponse() {
+  return mojom::ExecuteJsResponse::New(
+      /*result=*/"bad\xFF\xFEutf8" + std::string(kExecuteJsMaxResultBytes, 'r'),
+      /*truncated=*/false,
+      /*js_error_message=*/"bad\xFF\xFEmsg",
+      /*console_logs=*/"bad\xFF\xFElog" +
+          std::string(kExecuteJsMaxConsoleBytes, 'c'));
+}
+
+class ForgedExecuteJsResponseRenderFrame : public FakeChromeRenderFrame {
+ public:
+  void set_fail_initialize_tool(bool fail) { fail_initialize_tool_ = fail; }
+  void set_populate_script_tool_response(bool populate) {
+    populate_script_tool_response_ = populate;
+  }
+
+  int initialize_tool_calls() const { return initialize_tool_calls_; }
+  int execute_tool_calls() const { return execute_tool_calls_; }
+  int invoke_tool_calls() const { return invoke_tool_calls_; }
+
+  void InitializeTool(actor::mojom::ToolInvocationPtr request,
+                      InitializeToolCallback callback) override {
+    ++initialize_tool_calls_;
+    if (fail_initialize_tool_) {
+      mojom::ActionResultPtr error =
+          MakeResult(mojom::ActionResultCode::kInvalidDomNodeId,
+                     /*requires_page_stabilization=*/false, "Target not found");
+      error->execute_js_response = MakeForgedExecuteJsResponse();
+      std::move(callback).Run(
+          mojom::InitializeToolResult::NewErrorResult(std::move(error)));
+      return;
+    }
+    FakeChromeRenderFrame::InitializeTool(std::move(request),
+                                          std::move(callback));
+  }
+
+  void ExecuteTool(const actor::TaskId& task_id,
+                   ExecuteToolCallback callback) override {
+    ++execute_tool_calls_;
+    mojom::ActionResultPtr result = MakeOkResult();
+    result->execute_js_response = MakeForgedExecuteJsResponse();
+    std::move(callback).Run(std::move(result));
+  }
+
+  void InvokeTool(actor::mojom::ToolInvocationPtr request,
+                  InvokeToolCallback callback) override {
+    ++invoke_tool_calls_;
+    mojom::ActionResultPtr result = MakeOkResult();
+    if (populate_script_tool_response_) {
+      result->script_tool_response = mojom::ScriptToolResponse::New();
+      result->script_tool_response->tool = blink::mojom::ScriptTool::New();
+      result->script_tool_response->tool->name = "test_tool";
+      result->script_tool_response->result = "ok";
+    }
+    result->execute_js_response = MakeForgedExecuteJsResponse();
+    std::move(callback).Run(std::move(result));
+  }
+
+ private:
+  bool fail_initialize_tool_ = false;
+  bool populate_script_tool_response_ = false;
+  int initialize_tool_calls_ = 0;
+  int execute_tool_calls_ = 0;
+  int invoke_tool_calls_ = 0;
+};
+
+TEST_F(ExecutionEngineTest, PageToolInvokeStripsForgedExecuteJsResponse) {
+  base::test::ScopedFeatureList disable_split_mode;
+  disable_split_mode.InitAndDisableFeature(
+      features::kGlicActorSplitValidateAndExecute);
+
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  ForgedExecuteJsResponseRenderFrame fake_render_frame;
+  fake_render_frame.OverrideBinder(main_rfh());
+
+  ActResultFuture result;
+  std::unique_ptr<ToolRequest> action =
+      MakeClickCallback(kFakeContentNodeId).Run();
+  task_->Act(ToRequestList(action), result.GetCallback());
+
+  const auto& action_results = result.Get();
+  EXPECT_EQ(fake_render_frame.initialize_tool_calls(), 0);
+  EXPECT_EQ(fake_render_frame.execute_tool_calls(), 0);
+  EXPECT_EQ(fake_render_frame.invoke_tool_calls(), 1);
+  ASSERT_EQ(action_results.size(), 1u);
+  const mojom::ActionResultPtr& action_result =
+      action_results[0].tool_result.deprecated_action_result();
+  ASSERT_TRUE(action_result);
+  EXPECT_TRUE(IsOk(*action_result));
+  EXPECT_FALSE(action_result->execute_js_response);
+
+  optimization_guide::proto::ActionsResult actions_result;
+  CopyExecuteJsResults(actions_result, action_results);
+  EXPECT_EQ(actions_result.execute_js_results_size(), 0);
+}
+
+TEST_F(ExecutionEngineTest,
+       PageToolSplitModeExecuteStripsForgedExecuteJsResponse) {
+  base::test::ScopedFeatureList split_features;
+  split_features.InitWithFeatures(
+      /*enabled_features=*/{features::kGlicActorSplitValidateAndExecute,
+                            features::kGlicActorUiMagicCursor},
+      /*disabled_features=*/{});
+
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  ForgedExecuteJsResponseRenderFrame fake_render_frame;
+  fake_render_frame.OverrideBinder(main_rfh());
+
+  ActResultFuture result;
+  std::unique_ptr<ToolRequest> action =
+      MakeClickCallback(kFakeContentNodeId).Run();
+  task_->Act(ToRequestList(action), result.GetCallback());
+
+  const auto& action_results = result.Get();
+  EXPECT_EQ(fake_render_frame.initialize_tool_calls(), 1);
+  EXPECT_EQ(fake_render_frame.execute_tool_calls(), 1);
+  EXPECT_EQ(fake_render_frame.invoke_tool_calls(), 0);
+  ASSERT_EQ(action_results.size(), 1u);
+  const mojom::ActionResultPtr& action_result =
+      action_results[0].tool_result.deprecated_action_result();
+  ASSERT_TRUE(action_result);
+  EXPECT_TRUE(IsOk(*action_result));
+  EXPECT_FALSE(action_result->execute_js_response);
+
+  optimization_guide::proto::ActionsResult actions_result;
+  CopyExecuteJsResults(actions_result, action_results);
+  EXPECT_EQ(actions_result.execute_js_results_size(), 0);
+}
+
+TEST_F(ExecutionEngineTest,
+       PageToolSplitModeInitializeErrorStripsForgedExecuteJsResponse) {
+  base::test::ScopedFeatureList split_features;
+  split_features.InitWithFeatures(
+      /*enabled_features=*/{features::kGlicActorSplitValidateAndExecute,
+                            features::kGlicActorUiMagicCursor},
+      /*disabled_features=*/{});
+
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  ForgedExecuteJsResponseRenderFrame fake_render_frame;
+  fake_render_frame.set_fail_initialize_tool(true);
+  fake_render_frame.OverrideBinder(main_rfh());
+
+  ActResultFuture result;
+  std::unique_ptr<ToolRequest> action =
+      MakeClickCallback(kFakeContentNodeId).Run();
+  task_->Act(ToRequestList(action), result.GetCallback());
+
+  const auto& action_results = result.Get();
+  EXPECT_EQ(fake_render_frame.initialize_tool_calls(), 1);
+  EXPECT_EQ(fake_render_frame.execute_tool_calls(), 0);
+  EXPECT_EQ(fake_render_frame.invoke_tool_calls(), 0);
+  ASSERT_EQ(action_results.size(), 1u);
+  const mojom::ActionResultPtr& action_result =
+      action_results[0].tool_result.deprecated_action_result();
+  ASSERT_TRUE(action_result);
+  EXPECT_EQ(action_result->code, mojom::ActionResultCode::kInvalidDomNodeId);
+  EXPECT_FALSE(action_result->execute_js_response);
+
+  optimization_guide::proto::ActionsResult actions_result;
+  CopyExecuteJsResults(actions_result, action_results);
+  EXPECT_EQ(actions_result.execute_js_results_size(), 0);
+}
+
+TEST_F(ExecutionEngineTest, ScriptToolHostStripsForgedExecuteJsResponse) {
+  base::test::ScopedFeatureList web_mcp_features;
+  web_mcp_features.InitAndEnableFeature(blink::features::kWebMCP);
+
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  ForgedExecuteJsResponseRenderFrame fake_render_frame;
+  fake_render_frame.set_populate_script_tool_response(true);
+  fake_render_frame.OverrideBinder(main_rfh());
+
+  const base::UnguessableToken document_id =
+      optimization_guide::DocumentIdentifierUserData::
+          GetOrCreateForCurrentDocument(main_rfh())
+              ->token();
+  std::unique_ptr<ToolRequest> action = std::make_unique<ScriptToolRequest>(
+      ActorSurfaceHandle::From(GetTab()->GetHandle()), document_id, "test_tool",
+      "{}");
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(action), result.GetCallback());
+
+  const auto& action_results = result.Get();
+  EXPECT_EQ(fake_render_frame.initialize_tool_calls(), 0);
+  EXPECT_EQ(fake_render_frame.execute_tool_calls(), 0);
+  EXPECT_EQ(fake_render_frame.invoke_tool_calls(), 1);
+  ASSERT_EQ(action_results.size(), 1u);
+  const mojom::ActionResultPtr& action_result =
+      action_results[0].tool_result.deprecated_action_result();
+  ASSERT_TRUE(action_result);
+  EXPECT_TRUE(IsOk(*action_result));
+  ASSERT_TRUE(action_result->script_tool_response);
+  EXPECT_EQ(action_result->script_tool_response->result, "ok");
+  EXPECT_FALSE(action_result->execute_js_response);
+
+  optimization_guide::proto::ActionsResult actions_result;
+  CopyExecuteJsResults(actions_result, action_results);
+  EXPECT_EQ(actions_result.execute_js_results_size(), 0);
+}
+#endif  // !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
 
 }  // namespace
 

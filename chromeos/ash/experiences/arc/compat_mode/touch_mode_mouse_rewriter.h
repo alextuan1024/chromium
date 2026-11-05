@@ -74,8 +74,8 @@ class TouchModeMouseRewriter : public aura::WindowObserver,
   int scroll_x_offset_ = 0;
   base::TimeDelta scroll_timeout_;
 
-  std::multiset<aura::WindowTreeHost*> hosts_;
-  std::set<raw_ptr<const aura::Window, SetExperimental>> enabled_windows_;
+  std::multiset<raw_ptr<aura::WindowTreeHost>> hosts_;
+  std::set<raw_ptr<const aura::Window>> enabled_windows_;
 
   base::ScopedMultiSourceObservation<aura::Window, aura::WindowObserver>
       window_observations_{this};

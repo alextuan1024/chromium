@@ -33,7 +33,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -65,10 +64,6 @@ namespace tab_groups {
 
 namespace {
 
-std::unique_ptr<KeyedService> CreateMockSyncService(ProfileIOS* profile) {
-  return std::make_unique<::testing::NiceMock<MockTabGroupSyncService>>();
-}
-
 // Updates the association of the local tab id.
 void FakeUpdateLocalTabId(web::WebState* web_state,
                           SavedTabGroupTab& saved_tab,
@@ -83,8 +78,10 @@ class IOSTabGroupSyncDelegateTest : public PlatformTest {
  public:
   IOSTabGroupSyncDelegateTest() {
     TestProfileIOS::Builder builder;
-    builder.AddTestingFactory(TabGroupSyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateMockSyncService));
+    builder.AddTestingFactory(
+        TabGroupSyncServiceFactory::GetInstance(),
+        base::BindOnce(
+            &std::make_unique<::testing::NiceMock<MockTabGroupSyncService>>));
     builder.AddTestingFactory(
         SessionRestorationServiceFactory::GetInstance(),
         TestSessionRestorationService::GetTestingFactory());
@@ -94,21 +91,19 @@ class IOSTabGroupSyncDelegateTest : public PlatformTest {
         TabGroupSyncServiceFactory::GetForProfile(profile_.get()));
 
     scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
-    browser_ =
-        scene_state_.browserProviderInterface.mainBrowserProvider.browser;
+    browser_ = scene_state_.browserProviderInterface.mainBrowser;
     TabInsertionBrowserAgent::CreateForBrowser(browser_);
 
     scene_state_same_profile_ =
         [[FakeSceneState alloc] initWithProfile:profile_.get()];
-    browser_same_profile_ = scene_state_same_profile_.browserProviderInterface
-                                .mainBrowserProvider.browser;
+    browser_same_profile_ =
+        scene_state_same_profile_.browserProviderInterface.mainBrowser;
     TabInsertionBrowserAgent::CreateForBrowser(browser_same_profile_);
 
     other_profile_ = TestProfileIOS::Builder().Build();
     other_scene_state_ =
         [[FakeSceneState alloc] initWithProfile:other_profile_.get()];
-    other_browser_ =
-        other_scene_state_.browserProviderInterface.mainBrowserProvider.browser;
+    other_browser_ = other_scene_state_.browserProviderInterface.mainBrowser;
     TabInsertionBrowserAgent::CreateForBrowser(other_browser_);
     other_inactive_browser_ = other_browser_->CreateInactiveBrowser();
 
@@ -137,6 +132,10 @@ class IOSTabGroupSyncDelegateTest : public PlatformTest {
   }
 
   ~IOSTabGroupSyncDelegateTest() override {
+    other_inactive_browser_ = nullptr;
+    other_browser_ = nullptr;
+    browser_same_profile_ = nullptr;
+    browser_ = nullptr;
     [other_scene_state_ shutdown];
     other_scene_state_ = nil;
     [scene_state_same_profile_ shutdown];
@@ -223,11 +222,11 @@ class IOSTabGroupSyncDelegateTest : public PlatformTest {
   FakeSceneState* scene_state_same_profile_;
   FakeSceneState* other_scene_state_;
   std::unique_ptr<TestProfileIOS> profile_;
-  raw_ptr<Browser, DanglingUntriaged> browser_;
-  raw_ptr<Browser, DanglingUntriaged> browser_same_profile_;
+  raw_ptr<Browser> browser_;
+  raw_ptr<Browser> browser_same_profile_;
   std::unique_ptr<TestProfileIOS> other_profile_;
-  raw_ptr<Browser, DanglingUntriaged> other_browser_;
-  raw_ptr<Browser, DanglingUntriaged> other_inactive_browser_;
+  raw_ptr<Browser> other_browser_;
+  raw_ptr<Browser> other_inactive_browser_;
   raw_ptr<BrowserList> browser_list_;
   std::unique_ptr<IOSTabGroupSyncDelegate> delegate_;
   raw_ptr<MockTabGroupSyncService> mock_service_;

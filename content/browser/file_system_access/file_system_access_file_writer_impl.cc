@@ -281,7 +281,8 @@ void FileSystemAccessFileWriterImpl::MaybeStartClose() {
               {FileSystemOperation::CopyOrMoveOption::
                    kPreserveDestinationPermissions}),
           std::move(quarantine_connection_callback_),
-          has_transient_user_activation_);
+          has_transient_user_activation_, web_contents(),
+          outermost_main_frame_id());
   // Allows the unique pointer to be bound to the callback so the helper stays
   // alive until the operation completes.
   FileSystemAccessSafeMoveHelper* raw_helper =
@@ -331,6 +332,11 @@ base::WeakPtr<FileSystemAccessHandleBase>
 FileSystemAccessFileWriterImpl::AsWeakPtr() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return weak_factory_.GetWeakPtr();
+}
+
+FileSystemAccessHandleBase::HandleType
+FileSystemAccessFileWriterImpl::GetHandleType() const {
+  return HandleType::kFile;
 }
 
 }  // namespace content

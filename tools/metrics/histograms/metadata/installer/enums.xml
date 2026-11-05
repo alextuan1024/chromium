@@ -153,6 +153,8 @@ chromium-metrics-reviews@google.com.
   </int>
 </enum>
 
+<!-- LINT.IfChange(SetupInstallResult) -->
+
 <enum name="SetupInstallResult">
   <summary>
     Return status of the Windows installer. The values in this enum must be kept
@@ -213,6 +215,33 @@ chromium-metrics-reviews@google.com.
   <int value="56" label="Autoupdates could not be enabled."/>
   <int value="57"
       label="Unpacking the (possibly patched) uncompressed archive failed."/>
+  <int value="58"
+      label="Successfully downgraded Chrome, but the current version is still
+             running."/>
+  <int value="59" label="Successfully downgraded Chrome to an older version."/>
+  <int value="60"
+      label="The setup process could not acquire the exclusive right to
+             modify the Chrome installation."/>
+  <int value="61"
+      label="The task did not complete because another process asked this
+             process to release the exclusive right to modify the Chrome
+             installation."/>
+  <int value="62"
+      label="All files that belong to old versions of Chrome were
+             successfully deleted."/>
+  <int value="63"
+      label="A --delete-old-versions process exited after trying to delete
+             all files that belong to old versions of Chrome too many times
+             without success."/>
+  <int value="64"
+      label="Failed to write the specified DMToken to the registry."/>
+  <int value="65"
+      label="Writing the specified DMToken to the registry succeeded."/>
+  <int value="66" label="Downgrade cleanup failed."/>
+  <int value="67" label="Downgrade cleanup succeeded."/>
+  <int value="68" label="Undoing downgrade cleanup failed."/>
+  <int value="69" label="Undoing downgrade cleanup succeeded."/>
+  <int value="70" label="Unknown downgrade cleanup operation."/>
   <int value="71" label="Rotation of the device trust key failed."/>
   <int value="72" label="Rotation of the device trust key succeeded."/>
   <int value="73" label="Creation of shortcuts succeeded."/>
@@ -231,6 +260,8 @@ chromium-metrics-reviews@google.com.
   <int value="84" label="Failed to install component due to invalid input"/>
 </enum>
 
+<!-- LINT.ThenChange(//chrome/installer/util/util_constants.h:SetupInstallResult) -->
+
 <enum name="UnPackStatus">
   <int value="0" label="No Error"/>
   <int value="1" label="Archive file not found"/>
@@ -248,6 +279,39 @@ chromium-metrics-reviews@google.com.
   <int value="13" label="There is not enough space on the disk."/>
   <int value="14" label="I/O device error."/>
 </enum>
+
+<!-- LINT.IfChange(WofLocalePakCompressionDecision) -->
+
+<enum name="WofLocalePakCompressionDecision">
+  <summary>
+    Whether setup.exe scheduled WOF compression of the locale packs it installs
+    and, if it did not, why.
+  </summary>
+  <int value="0" label="Scheduled">
+    Windows setup had finished, so compression was scheduled. The work item that
+    compresses the packs is best effort, so this does not mean that it
+    succeeded.
+  </int>
+  <int value="1" label="WindowsSetupIncomplete">
+    The machine's ImageState was present but was not IMAGE_STATE_COMPLETE, so
+    Windows setup, OOBE included, had not finished. The packs were left
+    uncompressed.
+  </int>
+  <int value="2" label="ImageStateMissing">
+    The machine had no ImageState, so there was nothing to say that Windows
+    setup had finished and the packs were left uncompressed. Recorded apart from
+    WindowsSetupIncomplete so that a configuration that never records the value,
+    and so never compresses, can be told from machines genuinely in audit mode
+    or OOBE.
+  </int>
+  <int value="3" label="ImageStateUnreadable">
+    Setup could not read the machine's ImageState, so the packs were left
+    uncompressed. The error is recorded in
+    Setup.Install.WofLocalePakImageStateError.
+  </int>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/installer/setup/wof_compression.cc:WofLocalePakCompressionDecision) -->
 
 </enums>
 

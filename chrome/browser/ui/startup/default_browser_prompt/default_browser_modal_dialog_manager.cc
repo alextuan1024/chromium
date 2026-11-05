@@ -7,6 +7,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/default_browser/default_browser_controller.h"
+#include "chrome/browser/default_browser/default_browser_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -45,28 +46,18 @@ void DefaultBrowserModalDialogManager::ShowForBrowser(
       can_pin_to_taskbar(), is_parent_active);
   dialog_widget->MakeCloseSynchronous(base::BindOnce(
       &DefaultBrowserModalDialogManager::OnDialogWidgetCloseRequested,
-      base::Unretained(this), browser));
+      weak_ptr_factory_.GetWeakPtr(), browser));
   dialog_widgets_[browser] = std::move(dialog_widget);
 }
 
 void DefaultBrowserModalDialogManager::CloseForBrowser(
     BrowserWindowInterface* browser) {
-  if (auto entry = dialog_widgets_.extract(browser)) {
-    // The entry mapped value is a std::unique_ptr<views::Widget>.
-    if (entry.mapped()) {
-      entry.mapped()->MakeCloseSynchronous(base::NullCallback());
-    }
-  }
+  dialog_widgets_.erase(browser);
 }
 
 void DefaultBrowserModalDialogManager::CloseAllPromptInstances() {
-  auto widgets = std::move(dialog_widgets_);
-  for (auto& [browser, widget] : widgets) {
-    if (widget) {
-      widget->MakeCloseSynchronous(base::NullCallback());
-      widget->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
-    }
-  }
+  weak_ptr_factory_.InvalidateWeakPtrs();
+  dialog_widgets_.clear();
 }
 
 void DefaultBrowserModalDialogManager::RemoveWidget(
@@ -76,6 +67,13 @@ void DefaultBrowserModalDialogManager::RemoveWidget(
 
 default_browser::DefaultBrowserEntrypointType
 DefaultBrowserModalDialogManager::GetEntrypointType() const {
+  if (IsDefaultBrowserModalSticky()) {
+    return use_settings_illustration_
+               ? default_browser::DefaultBrowserEntrypointType::
+                     kStickyModalDialogWithSettingsIllustration
+               : default_browser::DefaultBrowserEntrypointType::
+                     kStickyModalDialogWithoutSettingsIllustration;
+  }
   return use_settings_illustration_
              ? default_browser::DefaultBrowserEntrypointType::
                    kModalDialogWithSettingsIllustration

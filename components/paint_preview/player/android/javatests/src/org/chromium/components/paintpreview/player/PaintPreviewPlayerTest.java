@@ -4,10 +4,9 @@
 
 package org.chromium.components.paintpreview.player;
 
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
-
-import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.equalTo;
+
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.graphics.Rect;
 import android.os.Build;
@@ -39,17 +38,14 @@ import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.test.util.FakeAccountManagerFacade;
 import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.RenderTestRule;
-import org.chromium.ui.test.util.ViewUtils;
 import org.chromium.url.GURL;
 
 import java.util.List;
@@ -225,16 +221,21 @@ public class PaintPreviewPlayerTest {
 
     @Test
     @MediumTest
-    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289160
     public void overscrollRefreshTest() throws Exception {
         initPlayerManager(true);
         UiDevice uiDevice = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
-        int deviceHeight = uiDevice.getDisplayHeight();
-        int statusBarHeight = statusBarHeight();
-        int viewportHeight = deviceHeight - statusBarHeight - navigationBarHeight();
-        int fromY = statusBarHeight + viewportHeight / 4;
-        int toY = statusBarHeight + viewportHeight * 3 / 4;
-        uiDevice.swipe(50, fromY, 50, toY, 5);
+        int[] swipeCoords =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            View playerHostView = mPlayerManager.getView();
+                            int[] locationXY = new int[2];
+                            playerHostView.getLocationOnScreen(locationXY);
+                            int x = locationXY[0] + playerHostView.getWidth() / 2;
+                            int fromY = locationXY[1] + playerHostView.getHeight() / 4;
+                            int toY = locationXY[1] + playerHostView.getHeight() * 3 / 4;
+                            return new int[] {x, fromY, toY};
+                        });
+        uiDevice.swipe(swipeCoords[0], swipeCoords[1], swipeCoords[0], swipeCoords[2], 5);
 
         mRefreshedCallback.waitForOnly();
     }
@@ -582,10 +583,7 @@ public class PaintPreviewPlayerTest {
                 TIMEOUT_MS,
                 CriteriaHelper.DEFAULT_POLLING_INTERVAL);
 
-        ViewUtils.onViewWaiting(
-                allOf(
-                        equalTo(((ViewGroup) mPlayerManager.getView()).getChildAt(0)),
-                        isDisplayed()));
+        waitForView(equalTo(((ViewGroup) mPlayerManager.getView()).getChildAt(0)));
 
         CriteriaHelper.pollUiThread(
                 () -> {

@@ -84,6 +84,9 @@
 // called.
 @property(nonatomic, assign) CGRect lastDrawnRect;
 
+// YES if `-setDelegate:` was last called with `nil`.
+@property(nonatomic, assign) BOOL delegateExplicitlyCleared;
+
 @end
 
 @implementation CRWFakeScrollView
@@ -99,6 +102,11 @@
     _lastDrawnRect = CGRectNull;
   }
   return self;
+}
+
+- (void)setDelegate:(id<UIScrollViewDelegate>)delegate {
+  [super setDelegate:delegate];
+  self.delegateExplicitlyCleared = (delegate == nil);
 }
 
 - (UIViewPrintFormatter*)viewPrintFormatter {
@@ -158,6 +166,18 @@ TEST_F(CRWWebViewScrollViewProxyTest, DelegateClearingUp) {
             [mock_scroll_view1 delegate]);
   [web_view_scroll_view_proxy_ setScrollView:nil];
   EXPECT_FALSE([mock_scroll_view1 delegate]);
+}
+
+// Tests that deallocating `CRWWebViewScrollViewProxy` explicitly clears the
+// underlying `UIScrollView`'s delegate via `-setDelegate:nil`.
+TEST_F(CRWWebViewScrollViewProxyTest, DelegateClearedOnDealloc) {
+  [web_view_scroll_view_proxy_ setScrollView:fake_underlying_scroll_view_];
+  EXPECT_EQ(web_view_scroll_view_proxy_.delegateProxy,
+            fake_underlying_scroll_view_.delegate);
+  EXPECT_FALSE(fake_underlying_scroll_view_.delegateExplicitlyCleared);
+  web_view_scroll_view_proxy_ = nil;
+  EXPECT_TRUE(fake_underlying_scroll_view_.delegateExplicitlyCleared);
+  EXPECT_FALSE(fake_underlying_scroll_view_.delegate);
 }
 
 // Tests that CRWWebViewScrollViewProxy returns the correct property values from
@@ -379,6 +399,33 @@ TEST_F(CRWWebViewScrollViewProxyTest, FrameDidChange) {
   OCMExpect([mock_delegate
       webViewScrollViewFrameDidChange:web_view_scroll_view_proxy_]);
   underlying_scroll_view.frame = CGRectMake(1, 2, 3, 4);
+  // Setting the same frame again should not notify observers.
+  underlying_scroll_view.frame = CGRectMake(1, 2, 3, 4);
+  EXPECT_OCMOCK_VERIFY((id)mock_delegate);
+  [web_view_scroll_view_proxy_ setScrollView:nil];
+  EXPECT_OCMOCK_VERIFY((id)mock_delegate);
+}
+
+// Tests that contentSize changes are communicated to observers only when the
+// value changes.
+TEST_F(CRWWebViewScrollViewProxyTest, ContentSizeDidChange) {
+  web::ScopedTestingWebClient web_client(
+      std::make_unique<web::FakeWebClient>());
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      web::features::kSmoothScrollingDefault);
+
+  UIScrollView* underlying_scroll_view =
+      [[UIScrollView alloc] initWithFrame:CGRectZero];
+  [web_view_scroll_view_proxy_ setScrollView:underlying_scroll_view];
+  id mock_delegate =
+      OCMProtocolMock(@protocol(CRWWebViewScrollViewProxyObserver));
+  [web_view_scroll_view_proxy_ addObserver:mock_delegate];
+  OCMExpect([mock_delegate
+      webViewScrollViewDidResetContentSize:web_view_scroll_view_proxy_]);
+  underlying_scroll_view.contentSize = CGSizeMake(10, 20);
+  // Setting the same contentSize again should not notify observers.
+  underlying_scroll_view.contentSize = CGSizeMake(10, 20);
   EXPECT_OCMOCK_VERIFY((id)mock_delegate);
   [web_view_scroll_view_proxy_ setScrollView:nil];
   EXPECT_OCMOCK_VERIFY((id)mock_delegate);
@@ -952,6 +999,26 @@ TEST_F(CRWWebViewScrollViewProxyTest, DontPreserveBackgroundColor) {
 
   // Verify that the second scroll view's background color remains black.
   EXPECT_EQ(UIColor.blackColor, underlying_scroll_view2.backgroundColor);
+}
+
+// Tests that `adjustedContentInset` is implemented directly on
+// `CRWWebViewScrollViewProxy` and forwards to the underlying scroll view.
+TEST_F(CRWWebViewScrollViewProxyTest, AdjustedContentInsetForwardsDirectly) {
+  EXPECT_TRUE([CRWWebViewScrollViewProxy
+      instancesRespondToSelector:@selector(adjustedContentInset)]);
+
+  UIScrollView* underlying_scroll_view = [[UIScrollView alloc] init];
+  underlying_scroll_view.contentInsetAdjustmentBehavior =
+      UIScrollViewContentInsetAdjustmentNever;
+  const UIEdgeInsets kExpectedInsets = UIEdgeInsetsMake(64, 0, 44, 0);
+  underlying_scroll_view.contentInset = kExpectedInsets;
+  [web_view_scroll_view_proxy_ setScrollView:underlying_scroll_view];
+
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(
+      kExpectedInsets, web_view_scroll_view_proxy_.adjustedContentInset));
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(
+      kExpectedInsets,
+      [web_view_scroll_view_proxy_ asUIScrollView].adjustedContentInset));
 }
 
 }  // namespace

@@ -21,10 +21,10 @@
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
-#import "ios/components/enterprise/analysis/features.h"
 #import "ios/testing/earl_grey/app_launch_configuration.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/embedded_test_server_handlers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/common/features.h"
 #import "ios/web/public/test/element_selector.h"
 #import "net/test/embedded_test_server/http_request.h"
@@ -37,6 +37,7 @@ using chrome_test_util::ButtonWithAccessibilityLabelId;
 using chrome_test_util::OpenLinkInNewTabButton;
 using chrome_test_util::WebViewMatcher;
 using download::DownloadButton;
+using download::StartLocalDownload;
 using download::WaitForDownloadButton;
 using download::WaitForOpenInButton;
 using download::WaitForOpenPDFButton;
@@ -106,12 +107,9 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
   // enabled.
   configuration.features_disabled.push_back(
       kDownloadAutoDeletionFeatureEnabled);
-  configuration.features_disabled.push_back(kIOSSaveToDriveSignedOut);
   configuration.features_disabled.push_back(kChromeNextIa);
 
   if ([self isEnterpriseDownloadTest]) {
-    configuration.features_enabled.push_back(
-        enterprise_connectors::kEnableFileDownloadConnectorIOS);
     configuration.additional_args.push_back(base::StrCat(
         {"--", safe_browsing::switches::kCloudBinaryUploadServiceUrlFlag, "=",
          _uploadServer->GetServiceURL().spec()}));
@@ -128,16 +126,25 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 }
 
 - (bool)isEnterpriseDownloadTest {
-  return [self isRunningTest:@selector
-               (testSuccessfulDownloadWhenDownloadProtectionEnabled)] ||
-         [self isRunningTest:@selector
-               (testSuccessfulDownloadScanWhenDownloadProtectionEnabled)] ||
-         [self isRunningTest:@selector
-               (testDownloadBlockWhenDownloadProtectionEnabled)] ||
-         [self isRunningTest:@selector
-               (testDownloadWarnCancelWhenDownloadProtectionEnabled)] ||
-         [self isRunningTest:@selector
-               (testDownloadWarnProceedWhenDownloadProtectionEnabled)];
+  return
+      [self
+          isRunningTest:
+              @selector(testSuccessfulDownloadWhenDownloadProtectionEnabled)] ||
+      [self isRunningTest:
+                @selector(
+                    testSuccessfulDownloadScanWhenDownloadProtectionEnabled)] ||
+      [self
+          isRunningTest:@selector(
+                            testDownloadBlockWhenDownloadProtectionEnabled)] ||
+      [self
+          isRunningTest:
+              @selector(testDownloadWarnCancelWhenDownloadProtectionEnabled)] ||
+      [self isRunningTest:
+                @selector(
+                    testDownloadWarnProceedWhenDownloadProtectionEnabled)] ||
+      [self
+          isRunningTest:@selector(
+                            testDownloadAllowForNonBlockingScanWhenDLPEnabled)];
 }
 
 - (bool)isEnterpriseDownloadAllowTest {
@@ -160,6 +167,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 // Tests successful download up to the point where "Open in..." button is
 // presented. EarlGrey does not allow testing "Open in..." dialog, because it
 // is run in a separate process.
+TAG_SMOKE_TEST(DownloadManagerTestCase, testSuccessfulDownload);
 - (void)testSuccessfulDownload {
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/")];
   [ChromeEarlGrey waitForWebStateContainingText:"Download"];
@@ -167,8 +175,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
 }
@@ -195,8 +202,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
 }
@@ -204,15 +210,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 // Tests successful download up to the point where "Open in..." button is
 // presented. EarlGrey does not allow testing "Open in..." dialog, because it
 // is run in a separate process. Performs download in Incognito.
-#if !TARGET_OS_SIMULATOR
-// TODO(crbug.com/40678419): Test consistently failing on device.
-#define MAYBE_testSuccessfulDownloadInIncognito \
-  DISABLED_testSuccessfulDownloadInIncognito
-#else
-#define MAYBE_testSuccessfulDownloadInIncognito \
-  testSuccessfulDownloadInIncognito
-#endif
-- (void)MAYBE_testSuccessfulDownloadInIncognito {
+- (void)testSuccessfulDownloadInIncognito {
   [ChromeEarlGrey openNewIncognitoTab];
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/")];
   [ChromeEarlGrey waitForWebStateContainingText:"Download"];
@@ -220,8 +218,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
 }
@@ -258,8 +255,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   {
     // In order to open a new Tab, disable EG synchronization so the framework
@@ -301,8 +297,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
              @"Download button did not show up");
 
   // Proceed with download.
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
 }
 
@@ -321,21 +316,14 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 }
 
 // Tests accessibility on Download Manager UI when download is complete.
-// TODO(crbug.com/438749917): Flaky on iPhone simulators.
 - (void)testAccessibilityOnCompletedDownloadToolbar {
-#if TARGET_IPHONE_SIMULATOR
-  if (![ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Failing on iPhone simulator, crbug.com/438749917");
-  }
-#endif
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/")];
   [ChromeEarlGrey waitForWebStateContainingText:"Download"];
   [ChromeEarlGrey tapWebStateElementWithID:@"download"];
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
 
@@ -343,13 +331,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 }
 
 // Tests that filename label and "Open in Downloads" button are showing.
-// TODO(crbug.com/438749917): Flaky on iPhone simulators.
-// TODO(crbug.com/515624708): Fails on iPhone devices.
 - (void)testVisibleFileNameAndOpenInDownloads {
-  if (![ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Failing on iPhone simulator, crbug.com/438749917 "
-                            @"crbug.com/515624708");
-  }
   // Apple is hiding UIActivityViewController's contents from the host app on
   // iPad.
   if ([ChromeEarlGrey isIPadIdiom]) {
@@ -362,8 +344,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
   [[EarlGrey selectElementWithMatcher:chrome_test_util::OpenInButton()]
@@ -384,14 +365,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
 // Tests that "Open in..." works if the download ended while waiting in a
 // different tab which also contains a download task.
-// TODO(crbug.com/438749917): Flaky on iPhone simulators.
-// TODO(crbug.com/515613762): Fails on iPhone devices.
 - (void)testSwitchTabsAndOpenInDownloads {
-  if (![ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(
-        @"Failing on iPhone, crbug.com/438749917 crbug.com/515613762");
-  }
-
   // Apple is hiding UIActivityViewController's contents from the host app on
   // iPad.
   if ([ChromeEarlGrey isIPadIdiom]) {
@@ -418,8 +392,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
   [ChromeEarlGrey tapWebStateElementWithID:@"download"];
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   // Go back to first tab and wait enough time for download B to complete.
   [ChromeEarlGrey selectTabAtIndex:0];
@@ -453,8 +426,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
 }
@@ -470,8 +442,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
   GREYAssert(WaitForOpenPDFButton(), @"Open button did not show up");
 }
 
@@ -485,8 +456,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
   GREYAssert(WaitForOpenPDFButton(), @"Open button did not show up");
 }
 
@@ -499,8 +469,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenPDFButton(), @"Open button did not show up");
 }
@@ -540,8 +509,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
   [ChromeEarlGrey
       waitForSufficientlyVisibleElementWithMatcher:DownloadButton()];
 
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
 }
@@ -555,8 +523,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
   GREYAssertEqual(_uploadServer->GetRequestCount(), 0,
@@ -574,8 +541,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
   GREYAssertEqual(_uploadServer->GetRequestCount(), 1,
@@ -595,8 +561,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   // Wait for download to finish and check that the snackbar is shown.
   id<GREYMatcher> snackbarMessage = grey_text(l10n_util::GetNSString(
@@ -627,8 +592,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   // Wait for download to finish and the dialog to show up.
   [ChromeEarlGrey
@@ -654,11 +618,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
 // Tests that a warning dialog will show up if the scan result is warn, download
 // will proceed if the user decides to continue.
-// TODO(crbug.com/518764990): Flaky on iPad.
 - (void)testDownloadWarnProceedWhenDownloadProtectionEnabled {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_DISABLED(@"Flaky on iPad.");
-  }
   [AnalysisConnectorsAppInterface setDownloadProtectionRules];
   [AnalysisConnectorsAppInterface setBrowserDMToken];
 
@@ -668,8 +628,7 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
 
   GREYAssert(WaitForDownloadButton(/*loading*/ true),
              @"Download button did not show up");
-  [[EarlGrey selectElementWithMatcher:DownloadButton()]
-      performAction:grey_tap()];
+  StartLocalDownload();
 
   // Wait for download to finish and the dialog to show up.
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
@@ -689,6 +648,35 @@ NSString* const kActivityMenuIdentifier = @"ActivityListView";
   GREYAssertEqual(_uploadServer->GetRequestCount(), 1,
                   @"Expected 1 scan request but received %d request(s)",
                   _uploadServer->GetRequestCount());
+}
+
+// Tests that download can proceed immediately while a scan request can still
+// be sent in the background for non-blocking download protection scan.
+- (void)testDownloadAllowForNonBlockingScanWhenDLPEnabled {
+  [AnalysisConnectorsAppInterface setNonBlockingDownloadProtectionRules];
+  [AnalysisConnectorsAppInterface setBrowserDMToken];
+
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/download_test_page.html")];
+  [ChromeEarlGrey waitForWebStateContainingText:"DataURL"];
+  [ChromeEarlGrey tapWebStateElementWithID:@"data"];
+
+  GREYAssert(WaitForDownloadButton(/*loading*/ true),
+             @"Download button did not show up");
+  StartLocalDownload();
+
+  GREYAssert(WaitForOpenInButton(), @"Open in... button did not show up");
+
+  // Using a raw pointer to the `_uploadServer` to avoid implicitly capturing
+  // `self`.
+  enterprise_connectors::test::UploadRequestTestServer* uploadServer =
+      _uploadServer.get();
+  GREYAssert(base::test::ios::WaitUntilConditionOrTimeout(
+                 kWaitForDownloadTimeout,
+                 ^{
+                   return uploadServer->GetRequestCount() == 1;
+                 }),
+             @"Expected 1 scan request but received %d request(s)",
+             _uploadServer->GetRequestCount());
 }
 
 @end

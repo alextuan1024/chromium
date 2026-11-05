@@ -28,7 +28,6 @@
 #include "chrome/browser/chromeos/policy/dlp/test/mock_dlp_rules_manager.h"
 #include "chrome/browser/enterprise/data_controls/dlp_reporting_manager.h"
 #include "chrome/browser/enterprise/data_controls/dlp_reporting_manager_test_helper.h"
-#include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/policy/messaging_layer/public/report_client_test_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -48,6 +47,7 @@
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/message_center/message_center.h"
 
 using ::testing::_;
 using ::testing::Mock;
@@ -131,13 +131,16 @@ class DlpContentManagerAshTest : public testing::Test {
     // `WebContents` from `DlpContentManager`'s list of `WebContents`;
     // instantiate it here to make sure that cleanup happens even in unit
     // tests.
-    DlpContentTabHelper::MaybeCreateForWebContents(web_contents.get());
-    CHECK(DlpContentTabHelper::FromWebContents(web_contents.get()));
+    auto dlp_tab_helper = DlpContentTabHelper::MaybeCreate(web_contents.get());
+    CHECK(dlp_tab_helper);
+    dlp_tab_helpers_.push_back(std::move(dlp_tab_helper));
     return web_contents;
   }
 
   void SetUp() override {
     testing::Test::SetUp();
+
+    message_center::MessageCenter::Initialize();
 
     ASSERT_TRUE(profile_manager_.SetUp());
     LoginFakeUser();
@@ -149,9 +152,12 @@ class DlpContentManagerAshTest : public testing::Test {
   }
 
   void TearDown() override {
-    testing::Test::TearDown();
-
+    dlp_tab_helpers_.clear();
     helper_.ResetWarnNotifierForTesting();
+
+    message_center::MessageCenter::Shutdown();
+
+    testing::Test::TearDown();
   }
 
   void SetReportQueueForReportingManager() {
@@ -226,6 +232,7 @@ class DlpContentManagerAshTest : public testing::Test {
   std::vector<DlpPolicyEvent> events_;
   raw_ptr<MockDlpRulesManager, DanglingUntriaged> mock_rules_manager_ = nullptr;
   MockPrivacyScreenHelper mock_privacy_screen_helper_;
+  std::vector<std::unique_ptr<DlpContentTabHelper>> dlp_tab_helpers_;
 
  private:
   void LoginFakeUser() {
@@ -632,9 +639,6 @@ TEST_F(DlpContentManagerAshTest, VideoCaptureReportDuringRecording) {
 }
 
 TEST_F(DlpContentManagerAshTest, PrintingRestricted) {
-  // Needs to be set because CheckPrintingRestriction() will show the blocked
-  // notification.
-  NotificationDisplayServiceTester display_service_tester(profile());
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
       .WillRepeatedly(
@@ -846,9 +850,6 @@ TEST_F(DlpContentManagerAshTest, PrintingWarnedCancelled) {
 }
 
 TEST_F(DlpContentManagerAshTest, CaptureModeInitRestricted) {
-  // Needs to be set because CheckCaptureModeInitRestriction() will show the
-  // blocked notification.
-  NotificationDisplayServiceTester display_service_tester(profile());
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
       .WillRepeatedly(
@@ -1017,9 +1018,6 @@ TEST_F(DlpContentManagerAshTest, CaptureModeInitWarnedCancelled) {
 }
 
 TEST_F(DlpContentManagerAshTest, ScreenshotRestricted) {
-  // Needs to be set because CheckScreenshotRestriction() will show the blocked
-  // notification.
-  NotificationDisplayServiceTester display_service_tester(profile());
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
       .WillRepeatedly(
@@ -1176,9 +1174,6 @@ TEST_F(DlpContentManagerAshTest, ScreenshotWarnedCancelled) {
 }
 
 TEST_F(DlpContentManagerAshTest, ScreenShareRestricted) {
-  // Needs to be set because CheckScreenShareRestriction() will show the blocked
-  // notification.
-  NotificationDisplayServiceTester display_service_tester(profile());
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
       .WillRepeatedly(
@@ -1438,6 +1433,46 @@ TEST_F(DlpContentManagerAshTest, RememberProceedOnShutdown) {
           data_controls::dlp::kScreenshotWarnProceededUMA,
       true, 1);
   EXPECT_EQ(events_.size(), 1u);
+}
+
+TEST_F(DlpContentManagerAshTest,
+       ActiveWebContentsChangedWithSelectionOnlyFalse) {
+  EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
+      .Times(1)
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
+
+  std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
+  const content::DesktopMediaID media_id(
+      content::DesktopMediaID::TYPE_WEB_CONTENTS,
+      content::DesktopMediaID::kNullId,
+      content::WebContentsMediaCaptureId(
+          web_contents->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID(),
+          web_contents->GetPrimaryMainFrame()->GetRoutingID()));
+
+  testing::StrictMock<
+      base::MockCallback<content::MediaStreamUI::StateChangeCallback>>
+      state_change_cb;
+  testing::StrictMock<base::MockCallback<base::RepeatingClosure>> stop_cb;
+
+  GetManager()->OnScreenShareStarted("label", {media_id}, application_name_,
+                                     stop_cb.Get(), state_change_cb.Get(),
+                                     /*source_callback=*/base::DoNothing());
+
+  // Update confidentiality without triggering CheckRunningScreenShares() to
+  // simulate a confidential tab being inserted and activated in a window.
+  helper_.UpdateConfidentiality(web_contents.get(), screen_share_restricted_);
+
+  EXPECT_CALL(state_change_cb,
+              Run(testing::_, blink::mojom::MediaStreamStateChange::PAUSE))
+      .Times(1);
+
+  static_cast<ash::BrowserController::TabObserver*>(GetManager())
+      ->OnActiveWebContentsChanged(/*browser=*/nullptr,
+                                   /*old_contents=*/nullptr, web_contents.get(),
+                                   /*selection_only=*/false);
+  GetManager()->OnScreenShareStopped("label", media_id);
 }
 
 }  // namespace policy

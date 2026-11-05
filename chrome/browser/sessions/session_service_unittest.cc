@@ -20,6 +20,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/atomic_flag.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
@@ -270,6 +271,28 @@ TEST_F(SessionServiceTest, Basic) {
   helper_.AssertTabEquals(window_id, tab_id, 0, 0, 1, *tab);
 
   helper_.AssertNavigationEquals(nav1, tab->navigations[0]);
+}
+
+// Verifies that the platform session id is kept when the session file is
+// rebuilt from the current browsers (which happens every kWritesPerReset
+// commands).
+TEST_F(SessionServiceTest, PlatformSessionIdSurvivesReset) {
+  service()->SetPlatformSessionIdForTesting("some-platform-session-id");
+  helper_.SaveNow();
+
+  service()->ResetFromCurrentBrowsersForTesting();
+  EXPECT_TRUE(helper_.HasPendingReset());
+  // The test has no browsers. Schedule a command so that the reset writes a
+  // new session file in any case.
+  service()->SetWindowType(SessionID::NewUnique(),
+                           BrowserWindowInterface::TYPE_NORMAL);
+  helper_.SaveNow();
+  EXPECT_FALSE(helper_.HasPendingReset());
+
+  std::vector<std::unique_ptr<sessions::SessionWindow>> unused_windows;
+  std::string platform_session_id;
+  ReadWindows(&unused_windows, nullptr, &platform_session_id, nullptr);
+  EXPECT_EQ("some-platform-session-id", platform_session_id);
 }
 
 // Make sure we persist post entries.
@@ -725,7 +748,6 @@ TEST_F(SessionServiceTest, PruneFromMiddle) {
 
 // Tests possible computations of available ranges.
 TEST_F(SessionServiceTest, AvailableRanges) {
-  const std::string base_url("http://google.com/");
   SessionID tab_id = SessionID::NewUnique();
 
   helper_.PrepareTabInWindow(window_id, tab_id, 0, true);
@@ -1359,7 +1381,8 @@ namespace {
 void OnGotPreviousSession(
     std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
     SessionID ignored_active_window,
-    bool error_reading) {
+    sessions::CommandStorageReadStatus status,
+    sessions::SessionReplayResult replay_result) {
   FAIL() << "SessionService was destroyed, this shouldn't be reached.";
 }
 
@@ -1462,6 +1485,29 @@ TEST_F(SessionServiceTest, ObserverNotifiedOnDestruction) {
   EXPECT_CALL(observer, OnDestroying(service()));
 
   DestroySessionService();
+}
+
+TEST_F(SessionServiceTest,
+       ResetFromCurrentBrowsersDisabledSavingDoesNotRecordMetric) {
+  base::HistogramTester histogram_tester;
+  helper_.SetSavingEnabled(false);
+
+  service()->ResetFromCurrentBrowsers(
+      SessionServiceBase::ResetReason::kServiceStartup);
+  service()->ResetFromCurrentBrowsers(
+      SessionServiceBase::ResetReason::kNavigationIndexOutOfRange);
+  service()->ResetFromCurrentBrowsers(
+      SessionServiceBase::ResetReason::kWebAppReparenting);
+
+  histogram_tester.ExpectTotalCount(
+      "Session.ResetFromCurrentBrowsers.ServiceStartup.HasPendingTabCloses", 0);
+  histogram_tester.ExpectTotalCount(
+      "Session.ResetFromCurrentBrowsers.NavigationIndexOutOfRange."
+      "HasPendingTabCloses",
+      0);
+  histogram_tester.ExpectTotalCount(
+      "Session.ResetFromCurrentBrowsers.WebAppReparenting.HasPendingTabCloses",
+      0);
 }
 
 #if BUILDFLAG(IS_CHROMEOS)

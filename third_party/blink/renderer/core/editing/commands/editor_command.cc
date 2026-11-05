@@ -69,6 +69,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 #include "third_party/blink/renderer/core/html/html_br_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
@@ -1129,6 +1130,14 @@ static bool SupportedFromMenuOrKeyBinding(LocalFrame*) {
 
 // Enabled functions
 
+// Updates style and layout, returning true if `frame` is still attached to the
+// same `Document` afterward (i.e. neither detached nor navigated).
+static bool UpdateStyleAndLayoutForCommand(LocalFrame& frame) {
+  Document* const document = frame.GetDocument();
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  return frame.GetDocument() == document && document->GetFrame() == &frame;
+}
+
 static bool Enabled(LocalFrame&, Event*, EditorCommandSource) {
   return true;
 }
@@ -1141,7 +1150,9 @@ static bool EnabledVisibleSelection(LocalFrame& frame,
     return false;
   }
 
-  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (!UpdateStyleAndLayoutForCommand(frame)) {
+    return false;
+  }
 
   if (source == EditorCommandSource::kMenuOrKeyBinding &&
       !frame.Selection().SelectionHasFocus()) {
@@ -1153,7 +1164,9 @@ static bool EnabledVisibleSelection(LocalFrame& frame,
   const VisibleSelection& selection =
       CreateVisibleSelection(frame.GetEditor().SelectionForCommand(event));
   return (selection.IsCaret() &&
-          (selection.IsContentEditable() || frame.IsCaretBrowsingEnabled())) ||
+          (selection.IsContentEditable() ||
+           EnclosingCaretNavigableTextControl(selection.Anchor()) ||
+           frame.IsCaretBrowsingEnabled())) ||
          selection.IsRange();
 }
 
@@ -1165,7 +1178,9 @@ static bool EnabledVisibleSelectionAndMark(LocalFrame& frame,
     return false;
   }
 
-  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (!UpdateStyleAndLayoutForCommand(frame)) {
+    return false;
+  }
 
   if (source == EditorCommandSource::kMenuOrKeyBinding &&
       !frame.Selection().SelectionHasFocus()) {
@@ -1175,7 +1190,9 @@ static bool EnabledVisibleSelectionAndMark(LocalFrame& frame,
   const VisibleSelection& selection =
       CreateVisibleSelection(frame.GetEditor().SelectionForCommand(event));
   return ((selection.IsCaret() &&
-           (selection.IsContentEditable() || frame.IsCaretBrowsingEnabled())) ||
+           (selection.IsContentEditable() ||
+            EnclosingCaretNavigableTextControl(selection.Anchor()) ||
+            frame.IsCaretBrowsingEnabled())) ||
           selection.IsRange()) &&
          !frame.GetEditor().Mark().IsNone();
 }
@@ -1188,7 +1205,9 @@ static bool EnableCaretInEditableText(LocalFrame& frame,
     return false;
   }
 
-  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (!UpdateStyleAndLayoutForCommand(frame)) {
+    return false;
+  }
 
   if (source == EditorCommandSource::kMenuOrKeyBinding &&
       !frame.Selection().SelectionHasFocus()) {
@@ -1215,7 +1234,9 @@ static bool EnabledInEditableText(LocalFrame& frame,
     }
   }
 
-  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (!UpdateStyleAndLayoutForCommand(frame)) {
+    return false;
+  }
   if (source == EditorCommandSource::kMenuOrKeyBinding &&
       !frame.Selection().SelectionHasFocus()) {
     return false;
@@ -1226,11 +1247,36 @@ static bool EnabledInEditableText(LocalFrame& frame,
       CreateVisiblePosition(selection.Anchor()).DeepEquivalent());
 }
 
+static bool EnabledInTextControlOrEditableText(LocalFrame& frame,
+                                               Event* event,
+                                               EditorCommandSource source) {
+  if (frame.GetInputMethodController().GetActiveEditContext()) {
+    if (source == EditorCommandSource::kDom) {
+      return false;
+    } else if (source == EditorCommandSource::kMenuOrKeyBinding) {
+      return true;
+    }
+  }
+
+  if (!UpdateStyleAndLayoutForCommand(frame)) {
+    return false;
+  }
+  if (source == EditorCommandSource::kMenuOrKeyBinding &&
+      !frame.Selection().SelectionHasFocus()) {
+    return false;
+  }
+  const SelectionInDomTree selection =
+      frame.GetEditor().SelectionForCommand(event);
+  Position anchor = CreateVisiblePosition(selection.Anchor()).DeepEquivalent();
+  return RootEditableElementOf(anchor) ||
+         EnclosingCaretNavigableTextControl(anchor);
+}
+
 static bool EnabledInEditableTextOrCaretBrowsing(LocalFrame& frame,
                                                  Event* event,
                                                  EditorCommandSource source) {
   return frame.IsCaretBrowsingEnabled() ||
-         EnabledInEditableText(frame, event, source);
+         EnabledInTextControlOrEditableText(frame, event, source);
 }
 
 static bool EnabledDelete(LocalFrame& frame,
@@ -1256,7 +1302,9 @@ static bool EnabledInRichlyEditableText(LocalFrame& frame,
     return false;
   }
 
-  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (!UpdateStyleAndLayoutForCommand(frame)) {
+    return false;
+  }
   if (source == EditorCommandSource::kMenuOrKeyBinding &&
       !frame.Selection().SelectionHasFocus()) {
     return false;
@@ -1275,7 +1323,9 @@ static bool EnabledRangeInRichlyEditableText(LocalFrame& frame,
     return false;
   }
 
-  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (!UpdateStyleAndLayoutForCommand(frame)) {
+    return false;
+  }
   if (source == EditorCommandSource::kMenuOrKeyBinding &&
       !frame.Selection().SelectionHasFocus()) {
     return false;
@@ -1307,7 +1357,9 @@ static bool EnabledUnselect(LocalFrame& frame,
     return false;
   }
 
-  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (!UpdateStyleAndLayoutForCommand(frame)) {
+    return false;
+  }
 
   // The term "visible" here includes a caret in editable text or a range in any
   // text.
@@ -1327,7 +1379,9 @@ static bool EnabledSelectAll(LocalFrame& frame,
 
   // TODO(editing-dev): The use of UpdateStyleAndLayout
   // needs to be audited.  See http://crbug.com/590369 for more details.
-  frame.GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (!UpdateStyleAndLayoutForCommand(frame)) {
+    return false;
+  }
   const VisibleSelection& selection =
       frame.Selection().ComputeVisibleSelectionInDomTree();
   if (selection.IsNone()) {
@@ -1789,7 +1843,7 @@ static const EditorInternalCommand* InternalCommand(
        kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kMoveToLeftEndOfLineAndModifySelection,
        MoveCommands::ExecuteMoveToLeftEndOfLineAndModifySelection,
-       SupportedFromMenuOrKeyBinding, EnabledInEditableText, StateNone,
+       SupportedFromMenuOrKeyBinding, EnabledVisibleSelection, StateNone,
        ValueStateOrNull, kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kMoveToRightEndOfLine,
        MoveCommands::ExecuteMoveToRightEndOfLine, SupportedFromMenuOrKeyBinding,
@@ -1797,7 +1851,7 @@ static const EditorInternalCommand* InternalCommand(
        kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kMoveToRightEndOfLineAndModifySelection,
        MoveCommands::ExecuteMoveToRightEndOfLineAndModifySelection,
-       SupportedFromMenuOrKeyBinding, EnabledInEditableText, StateNone,
+       SupportedFromMenuOrKeyBinding, EnabledVisibleSelection, StateNone,
        ValueStateOrNull, kNotTextInsertion, CanNotExecuteWhenDisabled},
       {EditingCommandType::kMoveUp, MoveCommands::ExecuteMoveUp,
        SupportedFromMenuOrKeyBinding, EnabledInEditableTextOrCaretBrowsing,
@@ -2079,18 +2133,28 @@ EditorCommand::EditorCommand()
 EditorCommand::EditorCommand(const EditorInternalCommand* command,
                              EditorCommandSource source,
                              LocalFrame* frame)
-    : command_(command), source_(source), frame_(command ? frame : nullptr) {
+    : command_(command),
+      source_(source),
+      frame_(command ? frame : nullptr),
+      document_((command && frame) ? frame->GetDocument() : nullptr) {
   // Use separate assertions so we can tell which bad thing happened.
   if (!command) {
     DCHECK(!frame_);
+    DCHECK(!document_);
   } else {
     DCHECK(frame_);
+    DCHECK(document_);
   }
 }
 
 LocalFrame& EditorCommand::GetFrame() const {
   DCHECK(frame_);
   return *frame_;
+}
+
+bool EditorCommand::IsCurrentDocument() const {
+  return frame_ && document_ && frame_->GetDocument() == document_ &&
+         document_->GetFrame() == frame_;
 }
 
 bool EditorCommand::Execute(const String& parameter,
@@ -2117,16 +2181,15 @@ bool EditorCommand::Execute(const String& parameter,
           undo_step = *frame_->GetEditor().GetUndoStack().RedoSteps().begin();
         }
       }
-      Node* target_node =
-          undo_step ? undo_step->StartingRootEditableElement()
-                    : EventTargetNodeForDocument(frame_->GetDocument());
+      Node* target_node = undo_step ? undo_step->StartingRootEditableElement()
+                                    : EventTargetNodeForDocument(document_);
       if (DispatchBeforeInputEditorCommand(target_node, input_type,
                                            GetTargetRanges()) !=
           DispatchEventResult::kNotCanceled) {
         return true;
       }
-      // 'beforeinput' event handler may destroy target frame.
-      if (frame_->GetDocument()->GetFrame() != frame_) {
+      // 'beforeinput' event handler may destroy or navigate target frame.
+      if (!IsCurrentDocument()) {
         return false;
       }
     }
@@ -2170,17 +2233,16 @@ bool EditorCommand::Execute(const String& parameter,
   // We need to force unlock activatable DisplayLocks for Editor::FindString
   // before the following call to UpdateStyleAndLayout. Otherwise,
   // ExecuteFindString/Editor::FindString will hit bad style/layout data.
-  std::optional<DisplayLockDocumentState::ScopedForceActivatableDisplayLocks>
-      forced_locks;
+  DisplayLockDocumentState::ScopedForceActivatableDisplayLocks forced_locks;
   if (command_->command_type == EditingCommandType::kFindString) {
-    forced_locks = GetFrame()
-                       .GetDocument()
-                       ->GetDisplayLockDocumentState()
-                       .GetScopedForceActivatableLocks();
+    forced_locks.Add(document_->GetDisplayLockDocumentState()
+                         .GetScopedForceActivatableLocks());
   }
 
-  GetFrame().GetDocument()->UpdateStyleAndLayout(
-      DocumentUpdateReason::kEditing);
+  document_->UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
+  if (!IsCurrentDocument()) {
+    return false;
+  }
   return command_->execute(*frame_, triggering_event, source_, parameter);
 }
 
@@ -2192,7 +2254,8 @@ bool EditorCommand::CanExecute(Event* triggering_event) const {
   if (IsEnabled(triggering_event)) {
     return true;
   }
-  return IsSupported() && frame_ && command_->can_execute(*frame_, source_);
+  return IsSupported() && IsCurrentDocument() &&
+         command_->can_execute(*frame_, source_);
 }
 
 bool EditorCommand::IsSupported() const {
@@ -2209,24 +2272,27 @@ bool EditorCommand::IsSupported() const {
 }
 
 bool EditorCommand::IsEnabled(Event* triggering_event) const {
-  if (!IsSupported() || !frame_) {
+  if (!IsSupported() || !IsCurrentDocument()) {
     return false;
   }
-  return command_->is_enabled(*frame_, triggering_event, source_);
+  return command_->is_enabled(*frame_, triggering_event, source_) &&
+         IsCurrentDocument();
 }
 
 EditingTriState EditorCommand::GetState(Event* triggering_event) const {
-  if (!IsSupported() || !frame_) {
+  if (!IsSupported() || !IsCurrentDocument()) {
     return EditingTriState::kFalse;
   }
-  return command_->state(*frame_, triggering_event);
+  const EditingTriState state = command_->state(*frame_, triggering_event);
+  return IsCurrentDocument() ? state : EditingTriState::kFalse;
 }
 
 String EditorCommand::Value(Event* triggering_event) const {
-  if (!IsSupported() || !frame_) {
+  if (!IsSupported() || !IsCurrentDocument()) {
     return String();
   }
-  return command_->value(*command_, *frame_, triggering_event);
+  const String value = command_->value(*command_, *frame_, triggering_event);
+  return IsCurrentDocument() ? value : String();
 }
 
 bool EditorCommand::IsTextInsertion() const {
@@ -2243,8 +2309,11 @@ int EditorCommand::IdForHistogram() const {
 }
 
 const GCedStaticRangeVector* EditorCommand::GetTargetRanges() const {
-  const Node* target = EventTargetNodeForDocument(frame_->GetDocument());
-  if (!IsSupported() || !frame_ || !target || !IsRichlyEditable(*target)) {
+  if (!IsSupported() || !IsCurrentDocument()) {
+    return nullptr;
+  }
+  const Node* target = EventTargetNodeForDocument(document_);
+  if (!target || !IsRichlyEditable(*target)) {
     return nullptr;
   }
 

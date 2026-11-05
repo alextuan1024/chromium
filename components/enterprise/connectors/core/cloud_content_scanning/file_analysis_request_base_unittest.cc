@@ -4,12 +4,17 @@
 
 #include "components/enterprise/connectors/core/cloud_content_scanning/file_analysis_request_base.h"
 
+#include <cstdint>
+#include <optional>
+#include <vector>
+
 #include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/callback_helpers.h"
 #include "base/no_destructor.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/scoped_feature_list.h"
@@ -23,6 +28,7 @@
 #include "components/enterprise/obfuscation/core/download_obfuscator.h"
 #include "components/file_access/scoped_file_access.h"
 #include "components/file_access/test/mock_scoped_file_access_delegate.h"
+#include "crypto/hash.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -30,6 +36,10 @@
 
 #include <winioctl.h>
 #endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/test/android/content_uri_test_utils.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace enterprise_connectors {
 
@@ -86,7 +96,7 @@ class FileAnalysisRequestBaseTest : public testing::Test {
     base::ScopedTempDir temp_dir;
     ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
     base::FilePath file_path = temp_dir.GetPath().AppendASCII("normal.doc");
-    base::WriteFile(file_path, file_contents);
+    ASSERT_TRUE(base::WriteFile(file_path, file_contents));
 
     auto request = MakeRequest(file_path, file_path.BaseName(),
                                /*delay_opening_file*/ false);
@@ -241,46 +251,47 @@ class FileAnalysisRequestBaseHashInFinalInvariantTest
             enterprise_connectors::kContentHashInFileUploadFinalCall) {}
 };
 
-#if BUILDFLAG(IS_ANDROID)
-// TODO(https://crbug.com/504414003): de-flake and re-enable.
-#define MAYBE_LargeFileAlwaysHasHashWhenNotDelayOpen \
-  DISABLED_LargeFileAlwaysHasHashWhenNotDelayOpen
-#else
-#define MAYBE_LargeFileAlwaysHasHashWhenNotDelayOpen \
-  LargeFileAlwaysHasHashWhenNotDelayOpen
-#endif
 TEST_P(FileAnalysisRequestBaseHashInFinalInvariantTest,
-       MAYBE_LargeFileAlwaysHasHashWhenNotDelayOpen) {
+       LargeFileAlwaysHasHashWhenNotDelayOpen) {
+  // Keep the threshold above `BinaryUploadService::kMaxUploadSizeBytes`
+  // (50 MB) in case there is interaction with the large file upload limit.
+  static_assert(51 * 1024 * 1024 > BinaryUploadService::kMaxUploadSizeBytes);
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeatureWithParameters(
-      kEnableNewUploadSizeLimit, {{"max_file_size_mb", "250"}});
+      kEnableNewUploadSizeLimit, {{"max_file_size_mb", "51"}});
 
   enterprise_connectors::ScanRequestUploadResult result;
   BinaryUploadRequest::Data data;
 
-  std::string large_file_contents(250 * 1024 * 1024 + 1, 'a');
-  GetResultsForFileContents(large_file_contents, &result, &data);
-  EXPECT_EQ(result, ScanRequestUploadResult::kFileTooLarge);
-  EXPECT_EQ(data.size, large_file_contents.size());
-  EXPECT_TRUE(data.contents.empty());
-  // python3 -c "print('a' * (250 * 1024 * 1024 + 1), end='')" | sha256sum | tr
-  // '[:lower:]' '[:upper:]'
-  EXPECT_EQ(data.hash,
-            "1EAD1363BDB75A874D9730E97661672C5CDBAA2F3EBCE01611E06C835D12FE20");
-  EXPECT_TRUE(IsDocMimeType(data.mime_type))
-      << data.mime_type << " is not an expected mimetype";
+  {
+    std::string large_file_contents(51 * 1024 * 1024 + 1, 'a');
+    GetResultsForFileContents(large_file_contents, &result, &data);
+    EXPECT_EQ(result, ScanRequestUploadResult::kFileTooLarge);
+    EXPECT_EQ(data.size, large_file_contents.size());
+    EXPECT_TRUE(data.contents.empty());
+    // python3 -c "print('a' * (51 * 1024 * 1024 + 1), end='')" |
+    // sha256sum | tr '[:lower:]' '[:upper:]'
+    EXPECT_EQ(
+        data.hash,
+        "432C15C6E49926D1385CADC79DDAC2FDA6FD8C0FFA0F7F7A042F616CDB519CDA");
+    EXPECT_TRUE(IsDocMimeType(data.mime_type))
+        << data.mime_type << " is not an expected mimetype";
+  }
 
-  std::string very_large_file_contents(500 * 1024 * 1024, 'a');
-  GetResultsForFileContents(very_large_file_contents, &result, &data);
-  EXPECT_EQ(result, ScanRequestUploadResult::kFileTooLarge);
-  EXPECT_EQ(data.size, very_large_file_contents.size());
-  EXPECT_TRUE(data.contents.empty());
-  // python3 -c "print('a' * (500 * 1024 * 1024), end='')" | sha256sum | tr
-  // '[:lower:]' '[:upper:]'
-  EXPECT_EQ(data.hash,
-            "D2FB707E70A804CF2EA770C9229295689831B4C88879C62BDB966E77E7336F18");
-  EXPECT_TRUE(IsDocMimeType(data.mime_type))
-      << data.mime_type << " is not an expected mimetype";
+  {
+    std::string very_large_file_contents(102 * 1024 * 1024, 'a');
+    GetResultsForFileContents(very_large_file_contents, &result, &data);
+    EXPECT_EQ(result, ScanRequestUploadResult::kFileTooLarge);
+    EXPECT_EQ(data.size, very_large_file_contents.size());
+    EXPECT_TRUE(data.contents.empty());
+    // python3 -c "print('a' * (102 * 1024 * 1024), end='')" | sha256sum | tr
+    // '[:lower:]' '[:upper:]'
+    EXPECT_EQ(
+        data.hash,
+        "756874F5544AC97D0002D88343687716BAED72FC6C8170D4DBA1D52E95B510FC");
+    EXPECT_TRUE(IsDocMimeType(data.mime_type))
+        << data.mime_type << " is not an expected mimetype";
+  }
 }
 
 INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
@@ -527,10 +538,16 @@ TEST_F(FileAnalysisRequestBaseTest, ObfuscatedFile) {
   ASSERT_TRUE(obfuscation_result.has_value());
   ASSERT_TRUE(base::WriteFile(file_path, obfuscation_result.value()));
 
+  std::optional<crypto::hash::Hasher> hasher = obfuscator.GetUnobfuscatedHash();
+  ASSERT_TRUE(hasher.has_value());
+  std::vector<uint8_t> hash_bytes(crypto::hash::kSha256Size);
+  hasher->Finish(hash_bytes);
+  std::string unobfuscated_hash = base::HexEncode(hash_bytes);
   auto obfuscated_request = MakeRequest(file_path, file_path.BaseName(),
                                         /*delay_opening_file=*/false,
                                         /*mime_type=*/"",
                                         /*is_obfuscated=*/true);
+  obfuscated_request->set_digest(unobfuscated_hash);
   base::test::TestFuture<ScanRequestUploadResult, BinaryUploadRequest::Data>
       future;
   obfuscated_request->GetRequestData(future.GetCallback());
@@ -538,9 +555,120 @@ TEST_F(FileAnalysisRequestBaseTest, ObfuscatedFile) {
 
   EXPECT_EQ(result, ScanRequestUploadResult::kSuccess);
 
-  // Check if size has been updated to use the calculated unobfuscated content
-  // size.
+  // Check if size and hash match the unobfuscated content rather than the
+  // obfuscated bytes on disk.
   EXPECT_EQ(data.size, original_contents.size());
+  EXPECT_EQ(data.hash, unobfuscated_hash);
+  EXPECT_EQ(obfuscated_request->digest(), unobfuscated_hash);
+}
+
+TEST_F(FileAnalysisRequestBaseTest, ReusesPrecomputedDigest) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeaturesAndParameters(
+      {{enterprise_connectors::kContentHashInFileUploadFinalCall, {}},
+       {enterprise_connectors::kEnableNewUploadSizeLimit,
+        {{"max_file_size_mb", "51"}}}},
+      {});
+
+  constexpr char kPrecomputedDigest[] =
+      "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  // Normal file: pre-set digest is preserved without hashing on-disk bytes.
+  {
+    std::string file_contents = "Normal file contents";
+    base::FilePath file_path = temp_dir.GetPath().AppendASCII("normal.doc");
+    ASSERT_TRUE(base::WriteFile(file_path, file_contents));
+
+    auto request = MakeRequest(file_path, file_path.BaseName(),
+                               /*delay_opening_file=*/false);
+    request->set_digest(kPrecomputedDigest);
+
+    base::test::TestFuture<ScanRequestUploadResult, BinaryUploadRequest::Data>
+        future;
+    request->GetRequestData(future.GetCallback());
+    auto [result, data] = future.Take();
+
+    EXPECT_EQ(result, ScanRequestUploadResult::kSuccess);
+    EXPECT_EQ(data.size, file_contents.size());
+    EXPECT_EQ(data.hash, kPrecomputedDigest);
+    EXPECT_EQ(request->digest(), kPrecomputedDigest);
+  }
+
+  // Large file (> `max_file_size_bytes`): pre-set digest is preserved rather
+  // than cleared, even when the hash isn't forced to be computed synchronously.
+  base::FilePath large_path = temp_dir.GetPath().AppendASCII("large.doc");
+  constexpr uint64_t kLargeSize = 51ull * 1024 * 1024 + 1;
+  {
+    base::File file(large_path,
+                    base::File::FLAG_CREATE | base::File::FLAG_WRITE);
+    ASSERT_TRUE(file.IsValid());
+#if BUILDFLAG(IS_WIN)
+    DWORD bytes_returned = 0;
+    ASSERT_TRUE(::DeviceIoControl(file.GetPlatformFile(), FSCTL_SET_SPARSE,
+                                  nullptr, 0, nullptr, 0, &bytes_returned,
+                                  nullptr));
+#endif
+    ASSERT_TRUE(file.SetLength(kLargeSize));
+  }
+
+  {
+    auto request =
+        MakeRequest(large_path, large_path.BaseName(),
+                    /*delay_opening_file=*/false,
+                    /*mime_type=*/"application/msword", /*is_obfuscated=*/false,
+                    /*force_sync_hash_computation=*/false);
+    request->set_digest(kPrecomputedDigest);
+
+    base::test::TestFuture<ScanRequestUploadResult, BinaryUploadRequest::Data>
+        future;
+    request->GetRequestData(future.GetCallback());
+    auto [result, data] = future.Take();
+
+    EXPECT_EQ(result, ScanRequestUploadResult::kFileTooLarge);
+    EXPECT_EQ(data.size, kLargeSize);
+    EXPECT_EQ(data.hash, kPrecomputedDigest);
+    EXPECT_EQ(request->digest(), kPrecomputedDigest);
+  }
+
+  // Missing and empty files still clear the digest to empty string.
+  {
+    base::FilePath missing_path = temp_dir.GetPath().AppendASCII("missing.doc");
+    auto request = MakeRequest(missing_path, missing_path.BaseName(),
+                               /*delay_opening_file=*/false);
+    request->set_digest(kPrecomputedDigest);
+
+    base::test::TestFuture<ScanRequestUploadResult, BinaryUploadRequest::Data>
+        future;
+    request->GetRequestData(future.GetCallback());
+    auto [result, data] = future.Take();
+
+    EXPECT_EQ(result, ScanRequestUploadResult::kUnknown);
+    EXPECT_EQ(data.size, 0u);
+    EXPECT_TRUE(data.hash.empty());
+    EXPECT_TRUE(request->digest().empty());
+  }
+
+  {
+    base::FilePath empty_path = temp_dir.GetPath().AppendASCII("empty.doc");
+    base::File file(empty_path,
+                    base::File::FLAG_CREATE | base::File::FLAG_WRITE);
+    auto request = MakeRequest(empty_path, empty_path.BaseName(),
+                               /*delay_opening_file=*/false);
+    request->set_digest(kPrecomputedDigest);
+
+    base::test::TestFuture<ScanRequestUploadResult, BinaryUploadRequest::Data>
+        future;
+    request->GetRequestData(future.GetCallback());
+    auto [result, data] = future.Take();
+
+    EXPECT_EQ(result, ScanRequestUploadResult::kSuccess);
+    EXPECT_EQ(data.size, 0u);
+    EXPECT_TRUE(data.hash.empty());
+    EXPECT_TRUE(request->digest().empty());
+  }
 }
 
 TEST_F(FileAnalysisRequestBaseTest, FileHashComputesAsyncWhenEnabled) {
@@ -663,8 +791,6 @@ class FileAnalysisRequestBaseVirtualFileTest
  public:
   void SetUp() override {
     FileAnalysisRequestBaseTest::SetUp();
-    scoped_feature_list_.InitAndEnableFeature(
-        enterprise_connectors::kEnableDlpFileSystemApi);
     FileAnalysisRequestBase::SetIsVirtualFileForTesting(true);
   }
 
@@ -672,16 +798,13 @@ class FileAnalysisRequestBaseVirtualFileTest
     FileAnalysisRequestBase::SetIsVirtualFileForTesting(false);
     FileAnalysisRequestBaseTest::TearDown();
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(FileAnalysisRequestBaseVirtualFileTest, LargeFileNoHashAndFileTooLarge) {
   base::ScopedTempDir temp_dir;
   ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
 
-  const size_t kLargeFileSize = 251 * 1024 * 1024;  // 251MB
+  constexpr uint64_t kLargeFileSize = 3ull * 1024 * 1024 * 1024;  // 3GB
   base::FilePath file_path = temp_dir.GetPath().AppendASCII("large.pdf");
   {
     base::File file(file_path,
@@ -702,6 +825,39 @@ TEST_F(FileAnalysisRequestBaseVirtualFileTest, LargeFileNoHashAndFileTooLarge) {
   EXPECT_EQ(result, ScanRequestUploadResult::kFileTooLarge);
   EXPECT_EQ(data.size, kLargeFileSize);
   EXPECT_TRUE(data.hash.empty());
+  EXPECT_EQ(data.mime_type, "application/pdf");
+}
+
+TEST_F(FileAnalysisRequestBaseVirtualFileTest,
+       LargeFilePreservesPrecomputedDigest) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  constexpr uint64_t kLargeFileSize = 3ull * 1024 * 1024 * 1024;  // 3GB
+  constexpr char kPrecomputedDigest[] =
+      "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+  base::FilePath file_path = temp_dir.GetPath().AppendASCII("large.pdf");
+  {
+    base::File file(file_path,
+                    base::File::FLAG_CREATE | base::File::FLAG_WRITE);
+    ASSERT_TRUE(file.SetLength(kLargeFileSize));
+  }
+
+  auto request = MakeRequest(file_path, file_path.BaseName(),
+                             /*delay_opening_file=*/false, "", false,
+                             /*force_sync_hash_computation=*/false);
+  request->set_digest(kPrecomputedDigest);
+
+  base::test::TestFuture<ScanRequestUploadResult, BinaryUploadRequest::Data>
+      future;
+  request->GetRequestData(future.GetCallback());
+
+  auto [result, data] = future.Take();
+
+  EXPECT_EQ(result, ScanRequestUploadResult::kFileTooLarge);
+  EXPECT_EQ(data.size, kLargeFileSize);
+  EXPECT_EQ(data.hash, kPrecomputedDigest);
+  EXPECT_EQ(request->digest(), kPrecomputedDigest);
   EXPECT_EQ(data.mime_type, "application/pdf");
 }
 
@@ -728,5 +884,108 @@ TEST_F(FileAnalysisRequestBaseVirtualFileTest,
   EXPECT_FALSE(data.hash.empty());
   EXPECT_EQ(data.mime_type, "application/pdf");
 }
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(FileAnalysisRequestBaseTest, ContentUriFile) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  std::string file_contents = "Normal file contents";
+  base::FilePath file_path = temp_dir.GetPath().AppendASCII("normal.doc");
+  ASSERT_TRUE(base::WriteFile(file_path, file_contents));
+
+  std::optional<base::FilePath> content_uri =
+      base::test::android::GetContentUriFromCacheDirFilePath(file_path);
+  ASSERT_TRUE(content_uri.has_value());
+  EXPECT_TRUE(content_uri->IsContentUri());
+
+  auto request = MakeRequest(*content_uri, file_path.BaseName(),
+                             /*delay_opening_file=*/false);
+
+  base::test::TestFuture<ScanRequestUploadResult, BinaryUploadRequest::Data>
+      future;
+  request->GetRequestData(future.GetCallback());
+
+  auto [result, data] = future.Take();
+  EXPECT_EQ(result, ScanRequestUploadResult::kSuccess);
+  EXPECT_EQ(data.size, file_contents.size());
+  EXPECT_TRUE(data.contents.empty());
+  EXPECT_EQ(data.path, *content_uri);
+  // printf "Normal file contents" | sha256sum | tr '[:lower:]' '[:upper:]'
+  EXPECT_EQ(data.hash,
+            "29644C10BD036866FCFD2BDACFF340DB5DE47A90002D6AB0C42DE6A22C26158B");
+  EXPECT_TRUE(IsDocMimeType(data.mime_type))
+      << data.mime_type << " is not an expected mimetype";
+}
+
+TEST_F(FileAnalysisRequestBaseTest, ContentUriUsesDisplayNameAsFilename) {
+  base::FilePath content_uri("content://authority/document/123");
+
+  auto request = MakeRequest(content_uri, base::FilePath("report.docx"),
+                             /*delay_opening_file=*/true);
+  EXPECT_EQ(request->content_analysis_request().request_data().filename(),
+            "report.docx");
+
+  // Without a display name, fall back to the content URI itself.
+  auto request_without_name =
+      MakeRequest(content_uri, base::FilePath(), /*delay_opening_file=*/true);
+  EXPECT_EQ(request_without_name->content_analysis_request()
+                .request_data()
+                .filename(),
+            content_uri.value());
+}
+
+TEST_F(FileAnalysisRequestBaseTest, ContentUriMimeTypeFromContentResolver) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  // Plain text contents would sniff as "text/plain", and a content URI has no
+  // usable extension, so "application/pdf" can only come from the
+  // ContentResolver.
+  base::FilePath file_path = temp_dir.GetPath().AppendASCII("document.pdf");
+  ASSERT_TRUE(base::WriteFile(file_path, "Normal file contents"));
+
+  std::optional<base::FilePath> content_uri =
+      base::test::android::GetContentUriFromCacheDirFilePath(file_path);
+  ASSERT_TRUE(content_uri.has_value());
+
+  auto request = MakeRequest(*content_uri, file_path.BaseName(),
+                             /*delay_opening_file=*/false);
+
+  base::test::TestFuture<ScanRequestUploadResult, BinaryUploadRequest::Data>
+      future;
+  request->GetRequestData(future.GetCallback());
+
+  auto [result, data] = future.Take();
+  EXPECT_EQ(result, ScanRequestUploadResult::kSuccess);
+  EXPECT_EQ(data.mime_type, "application/pdf");
+}
+
+TEST_F(FileAnalysisRequestBaseTest, PipeBackedContentUriFails) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+
+  base::FilePath file_path = temp_dir.GetPath().AppendASCII("normal.doc");
+  ASSERT_TRUE(base::WriteFile(file_path, "Normal file contents"));
+
+  // The in-memory provider serves the contents through a pipe, which reports
+  // a size of 0. It must not be treated as an empty file that skips scanning.
+  std::optional<base::FilePath> content_uri =
+      base::test::android::GetInMemoryContentUriFromCacheDirFilePath(file_path);
+  ASSERT_TRUE(content_uri.has_value());
+
+  auto request = MakeRequest(*content_uri, file_path.BaseName(),
+                             /*delay_opening_file=*/false);
+
+  base::test::TestFuture<ScanRequestUploadResult, BinaryUploadRequest::Data>
+      future;
+  request->GetRequestData(future.GetCallback());
+
+  auto [result, data] = future.Take();
+  EXPECT_EQ(result, ScanRequestUploadResult::kUnknown);
+  EXPECT_EQ(data.size, 0u);
+  EXPECT_TRUE(data.hash.empty());
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace enterprise_connectors

@@ -17,17 +17,23 @@ import android.view.View;
 import android.view.View.OnDragListener;
 import android.webkit.MimeTypeMap;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.ContentUriOwner;
+import org.chromium.base.ContentUriUtils;
+import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.ui.base.MimeTypeUtils;
 import org.chromium.ui.base.PageTransition;
+import org.chromium.ui.base.UiAndroidFeatureMap;
+import org.chromium.ui.base.UiAndroidFeatures;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.dragdrop.DragAndDropPermissionsUtils;
 import org.chromium.url.GURL;
 
 import java.util.Locale;
@@ -38,6 +44,8 @@ import java.util.Locale;
  */
 @NullMarked
 public class LocationBarDragDropHandler implements OnDragListener {
+    private static final String TAG = "LocationBarDragDrop";
+
     private final OmniboxStub mOmniboxStub;
     private final LocationBarDataProvider mDataProvider;
 
@@ -107,15 +115,27 @@ public class LocationBarDragDropHandler implements OnDragListener {
         if (activity == null) return false;
 
         DragAndDropPermissions permissions =
-                hasContentUri(clipData) ? activity.requestDragAndDropPermissions(event) : null;
+                hasContentUri(clipData)
+                        ? DragAndDropPermissionsUtils.requestPermissions(activity, event)
+                        : null;
 
         try {
             Uri uriToLoad = findUriToLoad(context, clipData, event.getClipDescription());
             if (uriToLoad == null) return false;
 
+            // Reject content URIs that the drop did not grant permissions for, so that the browser
+            // does not load them using its own permissions.
+            if (permissions == null
+                    && ContentResolver.SCHEME_CONTENT.equalsIgnoreCase(uriToLoad.getScheme())
+                    && UiAndroidFeatureMap.isEnabled(
+                            UiAndroidFeatures.DRAG_DROP_REQUIRES_URI_PERMISSIONS)) {
+                Log.w(TAG, "Ignoring drop without permissions: " + uriToLoad.getAuthority());
+                return false;
+            }
+
             String url = uriToLoad.toString();
             if (permissions != null
-                    && ContentResolver.SCHEME_CONTENT.equals(uriToLoad.getScheme())) {
+                    && ContentResolver.SCHEME_CONTENT.equalsIgnoreCase(uriToLoad.getScheme())) {
                 tab.addObserver(new DragAndDropPermissionsReleaseObserver(tab, permissions));
                 permissions = null;
             }
@@ -157,12 +177,15 @@ public class LocationBarDragDropHandler implements OnDragListener {
      * @return The mime type, or null if it cannot be determined.
      */
     @VisibleForTesting
-    @Nullable
-    String getMimeType(Context context, Uri uri) {
-        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
-            return context.getContentResolver().getType(uri);
+    @Nullable String getMimeType(Context context, Uri uri) {
+        if (ContentResolver.SCHEME_CONTENT.equalsIgnoreCase(uri.getScheme())) {
+            try {
+                return context.getContentResolver().getType(uri);
+            } catch (Exception e) {
+                return null;
+            }
         }
-        if (!ContentResolver.SCHEME_FILE.equals(uri.getScheme())) {
+        if (!ContentResolver.SCHEME_FILE.equalsIgnoreCase(uri.getScheme())) {
             return null;
         }
         String extension = MimeTypeMap.getFileExtensionFromUrl(uri.toString());
@@ -204,11 +227,25 @@ public class LocationBarDragDropHandler implements OnDragListener {
     boolean hasContentUri(ClipData clipData) {
         for (int i = 0; i < clipData.getItemCount(); i++) {
             Uri uri = clipData.getItemAt(i).getUri();
-            if (uri != null && ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            if (uri != null && ContentResolver.SCHEME_CONTENT.equalsIgnoreCase(uri.getScheme())) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Checks if the URI has a content or file scheme (case-insensitive).
+     *
+     * @param uri The URI to check.
+     * @return True if the URI has a content or file scheme, false otherwise.
+     */
+    @VisibleForTesting
+    boolean isContentOrFileUri(@Nullable Uri uri) {
+        if (uri == null) return false;
+        String scheme = uri.getScheme();
+        return ContentResolver.SCHEME_CONTENT.equalsIgnoreCase(scheme)
+                || ContentResolver.SCHEME_FILE.equalsIgnoreCase(scheme);
     }
 
     /**
@@ -222,8 +259,8 @@ public class LocationBarDragDropHandler implements OnDragListener {
      * @return The first acceptable URI, or null if none is found.
      */
     @VisibleForTesting
-    @Nullable
-    Uri findUriToLoad(Context context, ClipData clipData, @Nullable ClipDescription desc) {
+    @Nullable Uri findUriToLoad(
+            Context context, ClipData clipData, @Nullable ClipDescription desc) {
         for (int i = 0; i < clipData.getItemCount(); i++) {
             ClipData.Item item = clipData.getItemAt(i);
 
@@ -240,7 +277,24 @@ public class LocationBarDragDropHandler implements OnDragListener {
             }
 
             Uri uri = item.getUri();
-            if (uri == null) continue;
+            if (uri == null || !isContentOrFileUri(uri)) continue;
+
+            // Reject file URIs and URIs originating from this app to prevent the browser
+            // from opening private files on behalf of an untrusted drop request.
+            if (UiAndroidFeatureMap.isEnabled(
+                    UiAndroidFeatures.CLIPBOARD_CONFUSED_DEPUTY_DEFENSE_FILES)) {
+                String scheme = uri.getScheme();
+                if (ContentResolver.SCHEME_FILE.equalsIgnoreCase(scheme)) {
+                    continue;
+                }
+                if (ContentResolver.SCHEME_CONTENT.equalsIgnoreCase(scheme)) {
+                    @ContentUriOwner int owner = ContentUriUtils.resolveContentUriOwner(uri);
+                    if (owner == ContentUriOwner.EXPORTED_FROM_CURRENT_APP
+                            || owner == ContentUriOwner.NON_EXPORTED_FROM_CURRENT_APP) {
+                        continue;
+                    }
+                }
+            }
 
             String mimeType = getMimeType(context, uri);
             if (mimeType == null && clipData.getItemCount() == 1 && desc != null) {

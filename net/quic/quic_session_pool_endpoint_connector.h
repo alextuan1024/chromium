@@ -7,8 +7,11 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -74,6 +77,18 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
 
   bool is_stale() const;
 
+  bool started_with_stale_dns() const { return started_with_stale_dns_; }
+
+  void set_was_promoted_to_fresh_dns(bool was_promoted_to_fresh_dns) {
+    was_promoted_to_fresh_dns_ = was_promoted_to_fresh_dns;
+  }
+  bool was_promoted_to_fresh_dns() const { return was_promoted_to_fresh_dns_; }
+
+  void set_recorded_ip_match_metrics(bool recorded_ip_match_metrics) {
+    recorded_ip_match_metrics_ = recorded_ip_match_metrics;
+  }
+  bool recorded_ip_match_metrics() const { return recorded_ip_match_metrics_; }
+
   // True when this connector could start an attempt as soon as the job has a
   // candidate for it. The job advances such connectors when new resolver
   // results arrive.
@@ -95,14 +110,29 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
   // while this connector has one.
   void PopulateNetErrorDetails(NetErrorDetails* details) const;
 
+  // Cancels the attempt in flight, if any, because another connector settled
+  // the job (other than via cross-origin IP pooling).
+  void OnSuperseded();
+
+  // Cancels the attempt in flight, if any, because the job pooled to an
+  // existing session with a matching IP.
+  void CancelForPooling();
+
+  // Updates the fallback IPv4 address on the current IPv6 attempt, if any.
+  void MaybeUpdateFallbackIpv4Address();
+
   // QuicSessionAttempt::Delegate implementation.
   QuicSessionPool* GetQuicSessionPool() override;
   const QuicSessionAliasKey& GetKey() override;
   const NetLogWithSource& GetNetLog() override;
+  std::vector<IPEndPoint> GetResolvedIpEndpoints() const override;
+  const base::flat_set<std::string>* GetDnsAliases() const override;
   void OnConnectionFailedOnDefaultNetwork() override;
   void OnQuicSessionCreationComplete(int rv) override;
 
  private:
+  void RecordAttemptTime(std::string_view result) const;
+
   // Hands the failed attempt's result and error details to the job, then
   // destroys the attempt. The job keeps the error details because the attempt
   // does not survive its own failure.
@@ -125,6 +155,9 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
   // connector that already failed once re-checks IP pooling before it starts
   // another attempt.
   std::optional<int> last_attempt_error_;
+  bool started_with_stale_dns_ = false;
+  bool was_promoted_to_fresh_dns_ = false;
+  bool recorded_ip_match_metrics_ = false;
   base::WeakPtrFactory<EndpointConnector> weak_factory_{this};
 };
 

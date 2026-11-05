@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <type_traits>
+
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -72,6 +74,10 @@ class OriginTest : public ::testing::Test {
   Origin::Nonce CreateNonce(base::UnguessableToken nonce) {
     return Origin::Nonce(nonce);
   }
+
+  // `Origin::Nonce` is annotated with `CRUBIT_UNSAFE_BITWISE_RELOCATABLE`,
+  // which relies on its (implicitly declared) destructor staying trivial.
+  static_assert(std::is_trivially_destructible_v<Origin::Nonce>);
 
   const base::UnguessableToken* GetNonce(const Origin& origin) {
     return origin.GetNonceForSerialization();
@@ -385,7 +391,8 @@ TEST_F(OriginTest, UnsafelyCreateUniqueOnInvalidInput) {
                {"unknown-scheme", "example.com"},
                {"host-only", "\r", 0},
                {"host-only", "example.com", 22},
-               {"file", "", 123}};  // file: shouldn't have a port.
+               {"host-only", "", 0},  // Only file: may have an empty host.
+               {"file", "", 123}};    // file: shouldn't have a port.
 
   for (const auto& test : cases) {
     SCOPED_TRACE(testing::Message()
@@ -819,6 +826,21 @@ TEST_F(OriginTest, IsSameOriginWith) {
   EXPECT_FALSE(foo_origin.IsSameOriginWith(GURL("about:blank")));
   EXPECT_FALSE(foo_origin.IsSameOriginWith(GURL()));  // Invalid GURL.
   EXPECT_TRUE(foo_origin.IsSameOriginWith(GURL("blob:https://foo.com/guid")));
+
+  // `file:` origins preserve their host in the tuple, even though they all
+  // serialize as "file://".
+  GURL local_file_url("file:///etc/passwd");
+  GURL remote_file_url("file://example.com/etc/passwd");
+  url::Origin local_file_origin = url::Origin::Create(local_file_url);
+  url::Origin remote_file_origin = url::Origin::Create(remote_file_url);
+  EXPECT_EQ("", local_file_origin.host());
+  EXPECT_EQ("example.com", remote_file_origin.host());
+  EXPECT_EQ("file://", local_file_origin.Serialize());
+  EXPECT_EQ("file://", remote_file_origin.Serialize());
+  EXPECT_TRUE(local_file_origin.IsSameOriginWith(local_file_url));
+  EXPECT_TRUE(remote_file_origin.IsSameOriginWith(remote_file_url));
+  EXPECT_FALSE(local_file_origin.IsSameOriginWith(remote_file_origin));
+  EXPECT_FALSE(local_file_origin.IsSameOriginWith(remote_file_url));
 }
 
 TEST_F(OriginTest, IsSameOriginLocalNonStandardScheme) {

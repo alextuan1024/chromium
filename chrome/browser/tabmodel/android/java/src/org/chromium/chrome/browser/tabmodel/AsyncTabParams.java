@@ -15,31 +15,42 @@ import org.chromium.content_public.browser.WebContents;
 /** Interface for handling tab related async operations over multiple activities. */
 @NullMarked
 public interface AsyncTabParams {
-    /**
-     * @return The {@link LoadUrlParams} associated with the initial URL to load.
-     */
+    /** Returns the {@link LoadUrlParams} associated with the initial URL to load. */
     @Nullable LoadUrlParams getLoadUrlParams();
 
-    /**
-     * @return The request ID (tab ID) for this {@link AsyncTabParams}.
-     */
+    /** Returns the request ID (tab ID) for this {@link AsyncTabParams}. */
     @Nullable Integer getRequestId();
 
-    /**
-     * @return The {@link WebContents} associated with this {@link AsyncTabParams}.
-     */
+    /** Returns the {@link WebContents} associated with this {@link AsyncTabParams}. */
     @Nullable WebContents getWebContents();
 
-    /**
-     * @return The {@link ComponentName} that should handle this Intent.
-     */
+    /** Returns the {@link ComponentName} that should handle this Intent. */
     @Nullable ComponentName getComponentName();
 
-    /**
-     * @return The tab that would be reparenting through this {@link AsyncTabParams}.
-     */
+    /** Returns the tab that would be reparenting through this {@link AsyncTabParams}. */
     @Nullable Tab getTabToReparent();
+
+    /**
+     * Returns whether the tab to reparent should be reloaded once attached during activity
+     * recreation.
+     */
+    boolean shouldReload();
+
+    /** Returns the callback to run once tab reparenting has finished, if any. */
+    @Nullable Runnable getFinalizeCallback();
+
+    /** Detaches the tab to reparent from its source {@link TabModelSelector}, if still pending. */
+    void detachFromOriginalModel();
 
     /** Destroy any internal fields if it is necessary. */
     void destroy();
+
+    /**
+     * Destroy any internal fields other than {@link #getLoadUrlParams()}, for callers that transfer
+     * ownership of {@link #getLoadUrlParams()} onward.
+     */
+    default void destroyPreservingLoadUrlParams() {
+        assert getLoadUrlParams() == null;
+        destroy();
+    }
 }

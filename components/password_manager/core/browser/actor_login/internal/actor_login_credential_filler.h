@@ -18,7 +18,6 @@
 #include "components/password_manager/core/browser/password_manager_driver.h"
 #include "components/password_manager/core/browser/password_manager_interface.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
-#include "url/gurl.h"
 
 namespace affiliations {
 struct Facet;
@@ -88,12 +87,13 @@ class ActorLoginCredentialFiller {
 
   void FetchEligibleForms(
       base::OnceCallback<
-          void(std::vector<password_manager::PasswordFormManager*>)>
+          void(std::vector<raw_ptr<password_manager::PasswordFormManager>>)>
           on_forms_retrieved_cb);
 
   // Should always be called synchronously.
   void ProcessRetrievedForms(
-      std::vector<password_manager::PasswordFormManager*> eligible_managers);
+      std::vector<raw_ptr<password_manager::PasswordFormManager>>
+          eligible_managers);
 
   // If there are multiple forms on the page, one will be chosen as
   // reference based on whether it's in the primary main frame, or whether
@@ -101,7 +101,7 @@ class ActorLoginCredentialFiller {
   std::pair<password_manager::PasswordFormManager*,
             const password_manager::StoredCredential*>
   FindReferenceFormAndCredential(
-      const std::vector<password_manager::PasswordFormManager*>&
+      const std::vector<raw_ptr<password_manager::PasswordFormManager>>&
           eligible_managers);
 
   // Checks if device reauthentication is required before filling.
@@ -110,7 +110,8 @@ class ActorLoginCredentialFiller {
   // If not required, proceeds directly to filling all eligible fields in
   // `eligible_managers`.
   void MaybeReauthAndFillAllEligibleFields(
-      std::vector<password_manager::PasswordFormManager*> eligible_managers,
+      std::vector<raw_ptr<password_manager::PasswordFormManager>>
+          eligible_managers,
       password_manager::StoredCredential stored_credential,
       bool is_primary_main_frame);
 
@@ -133,7 +134,8 @@ class ActorLoginCredentialFiller {
   void FillAllEligibleFields(
       password_manager::StoredCredential stored_credential,
       bool should_skip_iframes,
-      std::vector<password_manager::PasswordFormManager*> eligible_managers);
+      std::vector<raw_ptr<password_manager::PasswordFormManager>>
+          eligible_managers);
 
   // Fills the field of `type` identified by `field_renderer_id` within the
   // `driver`'s frame with `value`. `closure` will be called to signal

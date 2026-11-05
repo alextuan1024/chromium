@@ -12,7 +12,10 @@ import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
+import {PolicyLevel, PolicyScope} from './policy.mojom-webui.js';
 import type {Conflict, Policy} from './policy.mojom-webui.js';
+import {OPTIONAL_POLICY_COLUMNS} from './policy_columns.js';
+import type {OptionalPolicyColumn} from './policy_columns.js';
 import {copyValue, stringifyPolicyValue} from './policy_conflict.js';
 import {getCss} from './policy_row.css.js';
 import {getHtml} from './policy_row.html.js';
@@ -51,13 +54,16 @@ export class PolicyRowElement extends CrLitElement {
         type: Boolean,
         reflect: true,
       },
+      visibleColumns: {type: Array},
     };
   }
 
   accessor policy: PolicyUiModel|null = null;
   accessor expanded: boolean = false;
+  accessor visibleColumns: OptionalPolicyColumn[] =
+      [...OPTIONAL_POLICY_COLUMNS];
 
-  protected get unset(): boolean {
+  private get unset(): boolean {
     return !!(this.policy && this.policy.value === undefined);
   }
 
@@ -86,6 +92,10 @@ export class PolicyRowElement extends CrLitElement {
     }
   }
 
+  protected isColumnVisible(column: OptionalPolicyColumn): boolean {
+    return this.visibleColumns.includes(column);
+  }
+
   protected getShowMoreLessLabel(): string {
     return loadTimeData.getString(this.expanded ? 'showLess' : 'showMore');
   }
@@ -106,11 +116,8 @@ export class PolicyRowElement extends CrLitElement {
     if (!this.policy || this.unset) {
       return '';
     }
-    const scopeMap: Record<string, string> = {
-      'user': 'scopeUser',
-      'allUsers': 'scopeAllUsers',
-    };
-    return loadTimeData.getString(scopeMap[this.policy.scope] || 'scopeDevice');
+    return loadTimeData.getString(
+        this.policy.scope === PolicyScope.kUser ? 'scopeUser' : 'scopeDevice');
   }
 
   protected getLevelText(): string {
@@ -118,12 +125,15 @@ export class PolicyRowElement extends CrLitElement {
       return '';
     }
     return loadTimeData.getString(
-        this.policy.level === 'recommended' ? 'levelRecommended' :
-                                              'levelMandatory');
+        this.policy.level === PolicyLevel.kRecommended ? 'levelRecommended' :
+                                                         'levelMandatory');
   }
 
   protected getSourceText(): string {
-    if (!this.policy || this.unset) {
+    // Entries without a source (e.g. web app managed configurations when the
+    // ManagedConfigurationPerOrigin policy metadata is unavailable) have no
+    // localized source string to look up.
+    if (!this.policy || this.unset || !this.policy.source) {
       return '';
     }
     return loadTimeData.getString(this.policy.source);

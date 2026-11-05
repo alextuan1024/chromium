@@ -197,7 +197,9 @@ Connection::~Connection() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   window_event_manager_.Reset();
-  platform_event_source.reset();
+  // Destroy attached user data (such as the viz compositor thread's
+  // X11EventSource) while `connection_` and `event_observers_` are still valid.
+  ClearAllUserData();
 }
 
 size_t Connection::MaxRequestSizeInBytes() const {
@@ -389,14 +391,8 @@ bool Connection::HasNextEvent() {
     }
     events_.pop_front();
   }
-#if BUILDFLAG(IS_LINUX)
   // Move an event from XCB's internal queue to our queue, if available.
   return ReadResponse(/*queued=*/false);
-#else
-  // linux-chromeos-rel has a failing browser test, but should also eventually
-  // read XCB-queued events.
-  return false;
-#endif
 }
 
 int Connection::GetFd() {
@@ -522,6 +518,7 @@ std::unique_ptr<Connection> Connection::Clone() const {
 void Connection::DetachFromSequence() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DETACH_FROM_SEQUENCE(sequence_checker_);
+  SupportsUserData::DetachFromSequence();
 }
 
 bool Connection::Dispatch() {
@@ -872,9 +869,9 @@ void Connection::PreDispatchEvent(const Event& event) {
   if (auto* mapping = event.As<MappingNotifyEvent>()) {
     if (mapping->request == Mapping::Modifier ||
         mapping->request == Mapping::Keyboard) {
-      setup_.min_keycode = mapping->first_keycode;
-      setup_.max_keycode = static_cast<KeyCode>(
-          static_cast<int>(mapping->first_keycode) + mapping->count - 1);
+      // MappingNotify describes changed keys, not the server's supported
+      // keycode range. Keep the full range when refreshing the cached mapping.
+      // For modifier changes, first_keycode and count are not meaningful.
       keyboard_state_->UpdateMapping();
     }
   }

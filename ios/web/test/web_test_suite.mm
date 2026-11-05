@@ -4,11 +4,14 @@
 
 #import "ios/web/public/test/web_test_suite.h"
 
+#import <TargetConditionals.h>
+
 #import "base/check.h"
 #import "base/files/file_path.h"
 #import "base/memory/ptr_util.h"
 #import "base/path_service.h"
 #import "components/crash/core/common/objc_zombie.h"
+#import "ios/testing/screen_time_util.h"
 #import "ios/testing/verify_custom_webkit.h"
 #import "ios/web/public/navigation/url_schemes.h"
 #import "ios/web/public/test/fakes/fake_web_client.h"
@@ -34,6 +37,8 @@ WebTestSuite::~WebTestSuite() {
 
 void WebTestSuite::Initialize() {
   base::TestSuite::Initialize();
+
+  EnsureScreenTimeReady();
 
   RegisterWebSchemes();
 

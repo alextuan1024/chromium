@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/functional/callback.h"
@@ -74,6 +75,10 @@ namespace syncer {
 class SyncService;
 }  // namespace syncer
 
+namespace trusted_vault {
+enum class TrustedVaultUserActionTriggerForUMA;
+}  // namespace trusted_vault
+
 namespace url {
 class Origin;
 }
@@ -87,8 +92,9 @@ class PasswordProtectionService;
 #endif
 
 namespace device_reauth {
+class DeviceAuthAvailabilityChecker;
 class DeviceAuthenticator;
-}
+}  // namespace device_reauth
 
 namespace version_info {
 enum class Channel;
@@ -260,10 +266,19 @@ class PasswordManagerClient {
   // Checks whether user re-authentication should be triggered before password
   // filling.
   virtual bool IsReauthBeforeFillingRequired(
+      device_reauth::DeviceAuthAvailabilityChecker* checker);
+
+  // TODO(crbug.com/568405852): Remove with `kDeviceReauthRefactor`.
+  virtual bool IsReauthBeforeFillingRequiredLegacy(
       device_reauth::DeviceAuthenticator* authenticator);
 
-  // Returns a pointer to a DeviceAuthenticator. Might be null if
-  // BiometricAuthentication is not available for a given platform.
+  // Creates a `DeviceAuthAvailabilityChecker`, or returns null if device auth
+  // isn't supported on this platform (e.g. Linux).
+  virtual std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+  GetDeviceAuthAvailabilityChecker();
+
+  // Creates a `DeviceAuthenticator`, or returns null if device auth isn't
+  // supported on this platform (e.g. Linux).
   virtual std::unique_ptr<device_reauth::DeviceAuthenticator>
   GetDeviceAuthenticator();
 
@@ -371,6 +386,17 @@ class PasswordManagerClient {
   // action, or ActionableError::kNoError if there is none.
   virtual ActionableError GetActionableError() const;
 
+  // Starts trusted vault key retrieval for the primary account. `trigger`
+  // specifies the UI surface that initiated the flow for UMA metrics tracking.
+  // The default implementation is a no-op (e.g. on Android where retrieval is
+  // platform-mediated).
+  virtual void StartTrustedVaultKeyRetrieval(
+      trusted_vault::TrustedVaultUserActionTriggerForUMA trigger);
+
+  // Opens the UI allowing the user to enter their custom sync passphrase to
+  // decrypt synced data. The default implementation is a no-op.
+  virtual void StartSyncPassphraseDecryption();
+
   // Gets the affiliation service associated with this client.
   virtual affiliations::AffiliationService* GetAffiliationService() = 0;
 
@@ -459,15 +485,13 @@ class PasswordManagerClient {
   GetPasswordProtectionService() const = 0;
 #endif
 
-  // Maybe triggers a hats survey that measures the user's perception of
-  // Autofill for passwords. When triggering happens, the survey dialog will be
-  // displayed with a 5s delay. This survey should be triggered after form
-  // submissions.
-  // `filling_assistance` will be logged together with the responses as
-  // in-product data and should be a string representation of the
-  // `FillingAssistance` enum, i.e "Manually filled".
-  virtual void TriggerUserPerceptionOfPasswordManagerSurvey(
-      const std::string& filling_assistance);
+  // Triggers a survey to ask the user about their experience regarding
+  // personalization features in Chrome. When triggering happens, the survey
+  // dialog will be displayed with a 5s delay. This survey should be triggered
+  // after form submissions. `filling_assistance` should be a human-readable
+  // string that is sent to the server in addition to the survey answers (PSD).
+  virtual void TriggerPersonalizationAndTrustSurvey(
+      std::string_view filling_assistance);
 
 #if defined(ON_FOCUS_PING_ENABLED) && BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   // Checks the safe browsing reputation of the webpage when the
@@ -559,8 +583,9 @@ class PasswordManagerClient {
   // Returns true if the current page is to the new tab page.
   virtual bool IsNewTabPage() const = 0;
 
-  // Returns true if the current page is a Chrome sign-in page.
-  virtual bool IsChromeSigninPage() const;
+  // Returns true if the current page is eligible for inline passkey QR code
+  // sign-in (i.e. a primary Chrome sign-in page).
+  virtual bool IsPageEligibleForInlineQrCodeSignin() const;
 
   // Returns the WebAuthnCredentialsDelegate for the given driver, if available.
   virtual WebAuthnCredentialsDelegate* GetWebAuthnCredentialsDelegateForDriver(
@@ -612,12 +637,11 @@ class PasswordManagerClient {
 
   virtual UndoPasswordChangeController* GetUndoPasswordChangeController();
 
-  // TODO(crbug.com/509852350): Figure out if this is needed on iOS and
-  //  implement it.
+  // Returns true if an actor task is actively actuating on the tab/web state.
   virtual bool IsActorTaskActive();
 
   // Notifies the client that a password fill event occurred.
-  virtual void OnPasswordFilled(PasswordManagerDriver* driver, const GURL& url);
+  virtual void OnPasswordFilled(PasswordManagerDriver* driver);
 };
 
 }  // namespace password_manager

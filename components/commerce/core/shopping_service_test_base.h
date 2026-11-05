@@ -32,6 +32,7 @@ using optimization_guide::OnDemandOptimizationGuideDecisionRepeatingCallback;
 using optimization_guide::OptimizationGuideDecision;
 using optimization_guide::OptimizationGuideDecisionCallback;
 using optimization_guide::OptimizationMetadata;
+using optimization_guide::OptimizationTypeSet;
 using optimization_guide::proto::OptimizationType;
 using optimization_guide::proto::RequestContext;
 using optimization_guide::proto::RequestContextMetadata;
@@ -70,12 +71,12 @@ class MockOptGuideDecider
 
   MOCK_METHOD(void,
               RegisterOptimizationTypes,
-              (const std::vector<OptimizationType>& optimization_types),
+              (OptimizationTypeSet optimization_types),
               (override));
   MOCK_METHOD(void,
               CanApplyOptimizationOnDemand,
               (const std::vector<GURL>& urls,
-               const base::flat_set<OptimizationType>& optimization_types,
+               OptimizationTypeSet optimization_types,
                RequestContext request_context,
                OnDemandOptimizationGuideDecisionRepeatingCallback callback,
                std::optional<RequestContextMetadata> request_context_metadata),

@@ -35,9 +35,7 @@ def check_presubmit_results(results: dict, allow_warnings: bool) -> None:
         'git cl presubmit had warnings.\n'
         + 'Hint: maybe you want --allow-warnings?'
       )
-    val = input(
-      'There were presubmit warnings. Are you sure you wish to continue? (y/N):'
-    )
+    val = input('Are you sure you wish to continue? (y/N): ')
     if val.strip().lower() not in ('y', 'yes'):
       exit(1)
 
@@ -141,7 +139,7 @@ def main(args, unknown_args):
   if not args.bypass_hooks:
     # Find the commits that `git cl presubmit` will actually run on
     got_presubmits = jj_log(
-      revisions=f'mutable()::@',
+      revisions='mutable()::@',
       templates={'empty': 'empty', 'immutable_parents': IMMUTABLE_PARENTS},
       ignore_working_copy=snapshot_taken,
     )
@@ -203,16 +201,6 @@ def main(args, unknown_args):
             f'--json={out}',
             next(iter(immutable_parents)),
           ]
-        )
-        run_command(
-          [
-            'git',
-            'update-ref',
-            '--no-deref',
-            'HEAD',
-            to_upload[0]['commit_id'],
-          ],
-          cwd=jj_root,
         )
         run_command(presubmit_cmd, cwd=jj_root)
         results = json.loads(out.read_text())

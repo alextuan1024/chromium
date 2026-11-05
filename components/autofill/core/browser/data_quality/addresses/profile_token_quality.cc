@@ -20,6 +20,8 @@
 #include "base/check_op.h"
 #include "base/containers/circular_deque.h"
 #include "base/containers/span.h"
+#include "base/containers/to_vector.h"
+#include "base/i18n/language_tag.h"
 #include "base/rand_util.h"
 #include "base/strings/levenshtein_distance.h"
 #include "base/strings/string_util.h"
@@ -47,13 +49,13 @@ ObservationType GetObservationTypeForEditedField(
     std::u16string_view edited_value,
     const AutofillProfile& profile,
     const std::vector<const AutofillProfile*>& other_profiles,
-    const std::string& app_locale) {
+    const base::i18n::LanguageTag& app_locale) {
   if (edited_value.empty()) {
     return ObservationType::kEditedValueCleared;
   }
 
   if (base::LevenshteinDistance(
-          base::ToLowerASCII(profile.GetInfo(type, app_locale)),
+          base::ToLowerASCII(profile.GetInfo(type, app_locale.tag_string())),
           base::ToLowerASCII(edited_value),
           ProfileTokenQuality::kMaximumLevenshteinDistance) <=
       ProfileTokenQuality::kMaximumLevenshteinDistance) {
@@ -66,8 +68,8 @@ ObservationType GetObservationTypeForEditedField(
     const l10n::CaseInsensitiveCompare compare;
     return std::ranges::any_of(types, [&](FieldType type) {
       return profile.HasInfo(type) &&
-             compare.StringsEqual(edited_value,
-                                  profile.GetInfo(type, app_locale));
+             compare.StringsEqual(
+                 edited_value, profile.GetInfo(type, app_locale.tag_string()));
     });
   };
 
@@ -211,19 +213,15 @@ ProfileTokenQuality::GetObservationTypesForFieldType(FieldType type) const {
   if (it == observations_.end()) {
     return {};
   }
-  std::vector<ObservationType> types;
-  types.reserve(it->second.size());
-  for (const Observation& observation : it->second) {
+  return base::ToVector(it->second, [](const Observation& observation) {
     if (observation.type <= std::to_underlying(ObservationType::kMaxValue)) {
-      types.push_back(static_cast<ObservationType>(observation.type));
-    } else {
-      // This is possible if the `observation.type` was synced from a newer
-      // client that supports additional `ObservationType`s that this client
-      // doesn't understand.
-      types.push_back(ObservationType::kUnknown);
+      return static_cast<ObservationType>(observation.type);
     }
-  }
-  return types;
+    // This is possible if the `observation.type` was synced from a newer
+    // client that supports additional `ObservationType`s that this client
+    // doesn't understand.
+    return ObservationType::kUnknown;
+  });
 }
 
 void ProfileTokenQuality::AddObservation(FieldType type,
@@ -262,7 +260,7 @@ ObservationType ProfileTokenQuality::GetObservationTypeFromField(
     const AutofillField& field,
     std::u16string_view current_field_value,
     const std::vector<const AutofillProfile*>& other_profiles,
-    const std::string& app_locale) const {
+    const base::i18n::LanguageTag& app_locale) const {
   CHECK(field.autofill_source_profile_guid() == profile_->guid());
   DCHECK(!std::ranges::contains(
       other_profiles, profile_->guid(),

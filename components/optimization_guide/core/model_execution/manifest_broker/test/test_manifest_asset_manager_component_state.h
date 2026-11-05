@@ -17,10 +17,12 @@
 #include "base/memory/weak_ptr.h"
 #include "base/test/run_until.h"
 #include "base/version.h"
-#include "components/optimization_guide/core/model_execution/manifest_broker/manifest_asset_manager.h"
+#include "components/optimization_guide/core/model_execution/manifest_broker/manifest_asset_manager_delegate.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/manifest_component_directory.h"
 #include "components/optimization_guide/core/model_execution/test/fake_component_update_service.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
+#include "components/update_client/update_client.h"
+#include "components/update_client/update_client_errors.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
@@ -34,7 +36,7 @@ class TestManifestAssetManagerComponentState final {
   struct InstallTarget {
     InstallTarget();
     InstallTarget(const std::string& public_key_hex,
-                  const base::Version& version);
+                  std::optional<base::Version> version);
     ~InstallTarget();
     InstallTarget(const InstallTarget&);
     InstallTarget& operator=(const InstallTarget&);
@@ -49,7 +51,8 @@ class TestManifestAssetManagerComponentState final {
     template <typename H>
     friend H AbslHashValue(H h, const InstallTarget& target) {
       return H::combine(std::move(h), target.public_key_hex,
-                        target.version->components());
+                        target.version ? target.version->components()
+                                       : std::vector<uint32_t>());
     }
   };
 
@@ -81,8 +84,6 @@ class TestManifestAssetManagerComponentState final {
 
     // The last target that was registered.
     InstallTarget target;
-    // The manager to send callbacks to.
-    base::WeakPtr<ManifestAssetManager> manager;
     // Whether the manager is expecting OnInstallerRegistered to be called.
     bool pending_registration = false;
     // Whether the manager is expecting OnAssetUninstalled to be called.
@@ -101,7 +102,7 @@ class TestManifestAssetManagerComponentState final {
   ~TestManifestAssetManagerComponentState();
 
   // Constructs the delegate for the ManifestBrokerState to use.
-  std::unique_ptr<ManifestAssetManager::Delegate> CreateDelegate();
+  std::unique_ptr<ManifestAssetManagerDelegate> CreateDelegate();
 
   /////////////////////////////
   // Behavior configuration  //
@@ -125,6 +126,12 @@ class TestManifestAssetManagerComponentState final {
   // Indicates how downloads should behave.
   void SetDownloadScenario(DownloadScenario scenario);
 
+  // If set, `RequestUpdate()` immediately posts `OnUpdateRequestComplete` with
+  // `error` instead of completing the download.
+  void SetOnDemandUpdateError(std::optional<update_client::Error> error) {
+    on_demand_update_error_ = error;
+  }
+
   // Methods for making components installable.
   // These will also cause installations to complete based on the download
   // scenario and active registrations.
@@ -133,11 +140,6 @@ class TestManifestAssetManagerComponentState final {
                        std::unique_ptr<FakeBaseModelAsset> asset);
   void UpdateModelAdaptation(const std::string& public_key,
                              std::unique_ptr<FakeAdaptationAsset> asset);
-  void UpdateSafetyModel(const std::string& public_key,
-                         std::unique_ptr<FakeSafetyModelAsset> asset);
-  void UpdateLanguageDetectionModel(
-      const std::string& public_key,
-      std::unique_ptr<FakeLanguageModelAsset> asset);
 
   // Simulate restart behavior.
   // This will clear all registrations, but not installed components.
@@ -145,11 +147,17 @@ class TestManifestAssetManagerComponentState final {
 
   // Clears all installed components.
   void ClearInstalledComponents();
+  void SetInstalled(const InstallTarget& target);
   void Uninstall(const std::string& public_key);
   // Simulates the component being uninstalled by something other than the
   // manager (e.g. the component updater unregistering it): removes the
   // installed component and notifies the manager.
   void SimulateExternalUninstall(const std::string& public_key);
+  // Simulates an on-demand download failing or being cancelled (e.g. due to a
+  // metered network policy block or mid-download network switch).
+  void SimulateDownloadFailed(const std::string& public_key);
+  // Simulates switching between a metered and unmetered network connection.
+  void SetConnectionMetered(bool is_metered);
   // Returns how many times RegisterOnDemandComponent was called for
   // `public_key`.
   int GetRegistrationCount(const std::string& public_key) const;
@@ -187,6 +195,15 @@ class TestManifestAssetManagerComponentState final {
     return component_update_service_;
   }
 
+  void SendUpdateEvent(const std::string& public_key,
+                       update_client::ComponentState state,
+                       update_client::ErrorCategory error_category =
+                           update_client::ErrorCategory::kNone,
+                       int error_code = 0);
+
+  void SendUpdateRequestComplete(const std::string& public_key,
+                                 update_client::Error error);
+
   bool WaitForDownloadObserver() const {
     return base::test::RunUntil(
         [&]() { return component_update_service_.HasObserver(); });
@@ -195,6 +212,7 @@ class TestManifestAssetManagerComponentState final {
   void UpdateDownloadProgress(const std::string& public_key,
                               uint64_t downloaded_bytes,
                               uint64_t total_bytes);
+
  private:
   class DelegateImpl;
 
@@ -203,6 +221,7 @@ class TestManifestAssetManagerComponentState final {
 
   // The simulated network behavior.
   DownloadScenario download_scenario_ = DownloadScenario::kHealthy;
+  std::optional<update_client::Error> on_demand_update_error_;
   // The contents we are pretending that server has available for download.
   absl::flat_hash_map<InstallTarget, InstallableComponent>
       installable_components_;
@@ -217,11 +236,12 @@ class TestManifestAssetManagerComponentState final {
 
   // Whether to defer calling OnInstallerRegistered/OnAssetUninstalled.
   bool defer_registration_callbacks_ = false;
+  // Whether the simulated network connection is metered.
+  bool is_connection_metered_ = false;
   // The simulated state of CUS registrations for on-demand components.
   absl::flat_hash_map<std::string, Registration> registrations_;
-  // The manager most recently seen by the delegate. Used to deliver
-  // notifications for keys the manager never registered.
-  base::WeakPtr<ManifestAssetManager> manager_;
+  // The manager registered with the delegate via `SetAssetManager()`.
+  base::WeakPtr<ManifestAssetManagerDelegate::AssetManager> manager_;
 
   // All registrations for the Manifest component.
   base::RepeatingCallbackList<void(base::FilePath)> manifest_ready_callbacks_;
@@ -230,9 +250,8 @@ class TestManifestAssetManagerComponentState final {
   std::vector<std::unique_ptr<ManifestComponentDirectory>> manifest_assets_;
   std::vector<std::unique_ptr<FakeBaseModelAsset>> base_model_assets_;
   std::vector<std::unique_ptr<FakeAdaptationAsset>> adaptation_assets_;
-  std::vector<std::unique_ptr<FakeSafetyModelAsset>> safety_model_assets_;
-  std::vector<std::unique_ptr<FakeLanguageModelAsset>> language_model_assets_;
 
+  absl::flat_hash_map<std::string, FakeComponent> fake_components_;
   testing::NiceMock<FakeComponentUpdateService> component_update_service_;
   base::WeakPtrFactory<TestManifestAssetManagerComponentState>
       weak_ptr_factory_{this};

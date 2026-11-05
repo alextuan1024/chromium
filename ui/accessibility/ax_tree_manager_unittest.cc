@@ -296,8 +296,8 @@ TEST(AXTreeManagerTest, MenuPopupDeleteWhileExposedFiresEnd) {
       std::make_unique<AXTree>(CreateInitialUpdate(CreateRootOnlyUpdate())));
 
   ASSERT_TRUE(manager.GetTree()->Unserialize(CreateMenuUpdate(false)));
-  EXPECT_TRUE(HasGeneratedEvent(manager.event_generator(),
-                                AXEventGenerator::Event::MENU_POPUP_START, 2));
+  EXPECT_FALSE(HasGeneratedEvent(manager.event_generator(),
+                                 AXEventGenerator::Event::MENU_POPUP_START, 2));
 
   manager.event_generator().ClearEvents();
   ASSERT_TRUE(manager.GetTree()->Unserialize(CreateRootOnlyUpdate()));
@@ -308,7 +308,7 @@ TEST(AXTreeManagerTest, MenuPopupDeleteWhileExposedFiresEnd) {
   EXPECT_EQ(2, manager.fired_events()[0].node_id);
 }
 
-TEST(AXTreeManagerTest, MenuPopupDeleteWhileIgnoredDoesNotFireEnd) {
+TEST(AXTreeManagerTest, MenuPopupDeleteWhileIgnoredFiresEnd) {
   TestMenuPopupAXTreeManager manager(
       std::make_unique<AXTree>(CreateInitialUpdate(CreateRootOnlyUpdate())));
 
@@ -317,16 +317,19 @@ TEST(AXTreeManagerTest, MenuPopupDeleteWhileIgnoredDoesNotFireEnd) {
 
   ASSERT_TRUE(manager.GetTree()->Unserialize(CreateRootOnlyUpdate()));
 
-  EXPECT_TRUE(manager.fired_events().empty());
+  ASSERT_EQ(1u, manager.fired_events().size());
+  EXPECT_EQ(AXEventGenerator::Event::MENU_POPUP_END,
+            manager.fired_events()[0].event_type);
+  EXPECT_EQ(2, manager.fired_events()[0].node_id);
 }
 
-TEST(AXTreeManagerTest, MenuPopupHideThenDeleteFiresOneEnd) {
+TEST(AXTreeManagerTest, MenuPopupHideThenDeleteFiresTwoEnds) {
   TestMenuPopupAXTreeManager manager(
       std::make_unique<AXTree>(CreateInitialUpdate(CreateRootOnlyUpdate())));
 
   ASSERT_TRUE(manager.GetTree()->Unserialize(CreateMenuUpdate(false)));
-  ASSERT_TRUE(HasGeneratedEvent(manager.event_generator(),
-                                AXEventGenerator::Event::MENU_POPUP_START, 2));
+  ASSERT_FALSE(HasGeneratedEvent(manager.event_generator(),
+                                 AXEventGenerator::Event::MENU_POPUP_START, 2));
   manager.event_generator().ClearEvents();
 
   ASSERT_TRUE(manager.GetTree()->Unserialize(CreateMenuUpdate(true)));
@@ -339,7 +342,51 @@ TEST(AXTreeManagerTest, MenuPopupHideThenDeleteFiresOneEnd) {
   ASSERT_TRUE(manager.GetTree()->Unserialize(CreateRootOnlyUpdate()));
 
   EXPECT_EQ(
-      1, CountFiredEvents(manager, AXEventGenerator::Event::MENU_POPUP_END, 2));
+      2, CountFiredEvents(manager, AXEventGenerator::Event::MENU_POPUP_END, 2));
+}
+
+TEST(AXTreeManagerTest, CrashOnRoleChangeToInlineText) {
+  AXTreeUpdate initial_state;
+  initial_state.root_id = 1;
+  initial_state.nodes.resize(2);
+  initial_state.nodes[0].id = 1;
+  initial_state.nodes[0].role = ax::mojom::Role::kRootWebArea;
+  initial_state.nodes[0].child_ids = {2};
+
+  initial_state.nodes[1].id = 2;
+  initial_state.nodes[1].role = ax::mojom::Role::kImage;
+
+  TestSingleAXTreeManager manager(std::make_unique<AXSerializableTree>());
+  manager.Initialize(initial_state);
+
+  ui::AXTreeUpdate update;
+  update.nodes.resize(1);
+  update.nodes[0].id = 2;
+  update.nodes[0].role = ax::mojom::Role::kInlineTextBox;
+
+  EXPECT_DEATH_IF_SUPPORTED(manager.GetTree()->Unserialize(update), "");
+}
+
+TEST(AXTreeManagerTest, CrashOnRoleChangeFromInlineText) {
+  AXTreeUpdate initial_state;
+  initial_state.root_id = 1;
+  initial_state.nodes.resize(2);
+  initial_state.nodes[0].id = 1;
+  initial_state.nodes[0].role = ax::mojom::Role::kRootWebArea;
+  initial_state.nodes[0].child_ids = {2};
+
+  initial_state.nodes[1].id = 2;
+  initial_state.nodes[1].role = ax::mojom::Role::kInlineTextBox;
+
+  TestSingleAXTreeManager manager(std::make_unique<AXSerializableTree>());
+  manager.Initialize(initial_state);
+
+  ui::AXTreeUpdate update;
+  update.nodes.resize(1);
+  update.nodes[0].id = 2;
+  update.nodes[0].role = ax::mojom::Role::kImage;
+
+  EXPECT_DEATH_IF_SUPPORTED(manager.GetTree()->Unserialize(update), "");
 }
 
 }  // namespace ui

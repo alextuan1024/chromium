@@ -6,9 +6,11 @@
 
 #include <memory>
 
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/prefs/prefs_tab_helper.h"
 #include "chrome/browser/ui/views/drive_picker_host/drive_picker_result_handler.mojom.h"
 #include "chrome/browser/ui/webui/drive_picker_host/drive_picker_host_ui.h"
 #include "chrome/common/webui_url_constants.h"
@@ -20,24 +22,35 @@
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/compositor/layer.h"
+#include "ui/display/screen.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/gfx/geometry/point.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/bubble/bubble_frame_view.h"
+#include "ui/views/buildflags.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
 
+#if BUILDFLAG(ENABLE_DESKTOP_AURA)
+#include "ui/aura/window.h"
+#include "ui/views/widget/desktop_aura/desktop_native_widget_aura.h"
+#endif
+
 DrivePickerHostView::DrivePickerHostView(
     Profile* profile,
     BrowserWindowInterface* browser_window_interface,
-    drive_picker_host::DrivePickerHostRequest::RequestType initial_ui_type)
+    drive_picker_host::DrivePickerHostRequest::RequestType initial_ui_type,
+    Style style)
     : browser_window_interface_(browser_window_interface),
-      current_ui_type_(initial_ui_type) {
+      current_ui_type_(initial_ui_type),
+      style_(style) {
   // Set the view to paint to a layer so that the view can be transparent over
   // the web contents. This allows the web contents to appear like a floating
   // dialog over the browser window.
@@ -55,9 +68,18 @@ DrivePickerHostView::DrivePickerHostView(
   // `GetWebContents()` is guaranteed to return a valid pointer. We use a
   // `CHECK` here to assert this state and remove redundant defensive checks.
   CHECK(web_view->GetWebContents());
-  web_view->GetWebContents()->SetDelegate(this);
-  web_view->GetWebContents()->SetPageBaseBackgroundColor(SK_ColorTRANSPARENT);
 
+  // Apply Chrome's renderer preferences (focus ring color, fonts, etc.) to the
+  // hosted `WebContents`. Without this, Blink falls back to its built-in
+  // default focus ring color (orange), which shows up around the Drive Picker
+  // while it loads and takes focus.
+  PrefsTabHelper::CreateForWebContents(web_view->GetWebContents());
+
+  web_view->GetWebContents()->SetDelegate(this);
+  SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
+  SetOnEscCloseWidget();
+
+  web_view->GetWebContents()->SetPageBaseBackgroundColor(SK_ColorTRANSPARENT);
   web_view->LoadInitialURL(GURL(chrome::kChromeUIDrivePickerHostURL));
 
   AddAccelerator(ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE));
@@ -84,38 +106,84 @@ content::WebContents* DrivePickerHostView::GetWebContents() {
 
 gfx::Size DrivePickerHostView::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
-  gfx::Size size;
   if (current_ui_type_ ==
       drive_picker_host::DrivePickerHostRequest::RequestType::kConsentDialog) {
-    // Tight fit for the Google ConsentKit card
-    size = gfx::Size(520, 580);
-  } else if (current_ui_type_ == drive_picker_host::DrivePickerHostRequest::
-                                     RequestType::kErrorDialog) {
-    // Small size for the error dialog
-    size = gfx::Size(512, 180);
-  } else {
-    // Standard size for the Google Drive Picker UI
-    size = gfx::Size(830, 600);
+    return kConsentDialogSize;
   }
-  return size;
+  if (current_ui_type_ ==
+      drive_picker_host::DrivePickerHostRequest::RequestType::kErrorDialog) {
+    return kErrorDialogSize;
+  }
+  return style_ == Style::kGlic ? kGlicPickerDialogSize : kPickerDialogSize;
 }
 
 void DrivePickerHostView::OnTransitionToPicker() {
   current_ui_type_ =
       drive_picker_host::DrivePickerHostRequest::RequestType::kPickerUi;
   PreferredSizeChanged();
-  if (GetWidget()) {
-    GetWidget()->CenterWindow(GetPreferredSize());
-  }
+  CenterInWidget();
 }
 
 void DrivePickerHostView::OnTransitionToError() {
   current_ui_type_ =
       drive_picker_host::DrivePickerHostRequest::RequestType::kErrorDialog;
   PreferredSizeChanged();
-  if (GetWidget()) {
-    GetWidget()->CenterWindow(GetPreferredSize());
+  CenterInWidget();
+}
+
+void DrivePickerHostView::OnTransitionToConsent() {
+  if (current_ui_type_ !=
+      drive_picker_host::DrivePickerHostRequest::RequestType::kErrorDialog) {
+    return;
   }
+  current_ui_type_ =
+      drive_picker_host::DrivePickerHostRequest::RequestType::kConsentDialog;
+  PreferredSizeChanged();
+  CenterInWidget();
+}
+
+// static
+void DrivePickerHostView::CenterPickerWidget(views::Widget* widget,
+                                             const gfx::Size& size) {
+  if (!widget) {
+    return;
+  }
+#if BUILDFLAG(ENABLE_DESKTOP_AURA)
+  // On Desktop Aura (Windows and Linux), when `widget` is a top-level
+  // `DesktopNativeWidgetAura` (e.g. a Glic picker anchored to the smaller
+  // detached floaty, or any `TYPE_WINDOW_FRAMELESS` dialog on Windows),
+  // `HWNDMessageHandler::CenterWindow()` aligns a wider dialog's left edge
+  // with its owner instead of centering and skips monitor clamping whenever an
+  // owner `HWND` exists. Center over the parent widget (if any) and clamp to
+  // the parent's display work area.
+  aura::Window* window = widget->GetNativeWindow();
+  if (window && window->GetRootWindow() &&
+      views::DesktopNativeWidgetAura::ForWindow(window->GetRootWindow()) ==
+          widget->native_widget_private()) {
+    const gfx::Rect reference_bounds =
+        widget->parent() ? widget->parent()->GetWindowBoundsInScreen()
+                         : widget->GetWindowBoundsInScreen();
+    const gfx::Rect work_area = display::Screen::Get()
+                                    ->GetDisplayMatching(reference_bounds)
+                                    .work_area();
+    const gfx::Point center = !reference_bounds.IsEmpty()
+                                  ? reference_bounds.CenterPoint()
+                                  : work_area.CenterPoint();
+    gfx::Rect bounds(center.x() - size.width() / 2,
+                     center.y() - size.height() / 2, size.width(),
+                     size.height());
+    if (!work_area.IsEmpty()) {
+      bounds.AdjustToFit(work_area);
+    }
+    widget->SetBoundsConstrained(bounds);
+    return;
+  }
+#endif
+  widget->CenterWindow(size);
+}
+
+void DrivePickerHostView::CenterInWidget() {
+  CenterPickerWidget(GetWidget(), GetPreferredSize());
 }
 
 void DrivePickerHostView::RequestFocus() {
@@ -134,11 +202,19 @@ void DrivePickerHostView::AddedToWidget() {
   views::WebView* web_view =
       views::AsViewClass<views::WebView>(view_tracker_.view());
   if (web_view) {
-    // Remove rounded corners to align with the Drive Picker's rectangular look.
-    web_view->holder()->SetNativeViewCornerRadii(gfx::RoundedCornersF(0));
-
-    // Also ensure this view's layer is rectangular.
-    layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(0));
+#if BUILDFLAG(IS_MAC)
+    // On Mac, `ModalType::kWindow` dialogs are presented as native AppKit
+    // sheets (`IsWindowModalSheet()`), which force an opaque `NSWindow`
+    // background and apply AppKit's own sheet corner radius
+    // (crbug.com/40144839). Leave the view unclipped so OnePick's surface fills
+    // the native sheet corner-to-corner without exposing the white `NSWindow`.
+    const gfx::RoundedCornersF radii(0);
+#else
+    const gfx::RoundedCornersF radii(style_ == Style::kGlic ? kGlicCornerRadius
+                                                            : 0);
+#endif
+    web_view->holder()->SetNativeViewCornerRadii(radii);
+    layer()->SetRoundedCornerRadius(radii);
   }
 }
 
@@ -158,9 +234,7 @@ void DrivePickerHostView::TriggerDrivePickerHostUi(
     std::unique_ptr<drive_picker_host::DrivePickerHostRequest> request) {
   current_ui_type_ = request->type();
   PreferredSizeChanged();
-  if (GetWidget()) {
-    GetWidget()->CenterWindow(GetPreferredSize());
-  }
+  CenterInWidget();
 
   if (!view_tracker_.view()) {
     mojo::PendingRemote<drive_picker_host::mojom::DrivePickerResultHandler>
@@ -226,9 +300,10 @@ content::WebContents* DrivePickerHostView::OpenURLFromTab(
     return nullptr;
   }
   content::OpenURLParams new_params(params);
-  if (new_params.disposition == WindowOpenDisposition::CURRENT_TAB ||
-      new_params.disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) {
-    new_params.disposition = WindowOpenDisposition::NEW_WINDOW;
+  if (new_params.disposition == ui::mojom::WindowOpenDisposition::kCurrentTab ||
+      new_params.disposition ==
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab) {
+    new_params.disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
   }
   return browser_window_interface_->OpenURL(
       new_params, std::move(navigation_handle_callback));
@@ -238,7 +313,7 @@ content::WebContents* DrivePickerHostView::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
@@ -254,39 +329,15 @@ content::WebContents* DrivePickerHostView::AddNewContents(
     }
     return nullptr;
   }
-  WindowOpenDisposition new_disposition = disposition;
-  if (new_disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-      new_disposition == WindowOpenDisposition::CURRENT_TAB) {
-    new_disposition = WindowOpenDisposition::NEW_WINDOW;
+  ui::mojom::WindowOpenDisposition new_disposition = disposition;
+  if (new_disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab ||
+      new_disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) {
+    new_disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
   }
   chrome::AddWebContents(browser_window_interface_, source,
                          std::move(new_contents), target_url, new_disposition,
                          window_features);
   return nullptr;
-}
-
-content::KeyboardEventProcessingResult
-DrivePickerHostView::PreHandleKeyboardEvent(
-    content::WebContents* source,
-    const input::NativeWebKeyboardEvent& event) {
-  if (event.windows_key_code == ui::VKEY_ESCAPE &&
-      event.GetType() == blink::WebInputEvent::Type::kRawKeyDown) {
-    views::Widget* widget = GetWidget();
-    if (widget) {
-      widget->CloseWithReason(views::Widget::ClosedReason::kEscKeyPressed);
-    }
-    return content::KeyboardEventProcessingResult::HANDLED;
-  }
-  return content::KeyboardEventProcessingResult::NOT_HANDLED;
-}
-bool DrivePickerHostView::HandleKeyboardEvent(
-    content::WebContents* source,
-    const input::NativeWebKeyboardEvent& event) {
-  if (!event.os_event) {
-    return false;
-  }
-  return unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-      event, GetFocusManager());
 }
 
 BEGIN_METADATA(DrivePickerHostView)

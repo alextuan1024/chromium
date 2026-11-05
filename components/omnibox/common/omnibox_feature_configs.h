@@ -134,13 +134,6 @@ struct AiMode : Config<AiMode> {
   // side. But disabling this will hide the server echo matches.
   bool allow_ai_mode_matches;
 
-  // Deduping doesn't consider extra query params like `udm=50`.
-  // `google.com/?q=query&udm=50` and `google.com/?q=query` would usually be
-  // deduped. This param makes `udm=50` in the match's suggest template a
-  // differentiating signal in deduping. Does not apply to `udm=50` in normal
-  // URLs. Does not apply to e.g. `udm=49` in the suggest template.
-  bool do_not_dedupe_aim_suggestions = true;
-
   // Navigations that match a site search update the `keyword_search_terms`
   // table in the history DB. E.g. youtube.com/id/x, google.com/?q=x, or
   // google.com/?q=x&udm=50. Determining which site search was used and should
@@ -289,22 +282,6 @@ struct ContextualSearch : Config<ContextualSearch> {
   int loading_suggestions_opacity_animation_duration;
 };
 
-// If enabled, allows MIA zero-prefix suggestions in NTP omnibox and realbox.
-struct MiaZPS : Config<MiaZPS> {
-  DECLARE_FEATURE(kOmniboxMiaZPS);
-
-  MiaZPS();
-  MiaZPS(const MiaZPS&);
-  MiaZPS(MiaZPS&&);
-  MiaZPS& operator=(const MiaZPS&);
-  MiaZPS& operator=(MiaZPS&&);
-  ~MiaZPS();
-  bool enabled;
-  // Whether to use non-normalized text for local history zp suggestions.
-  bool local_history_non_normalized_contents;
-  bool suppress_psuggest_backfill_with_mia;
-};
-
 BASE_DECLARE_FEATURE(kEmbeddedPermissionEnabled);
 
 // A config struct for the omnibox toolbelt.
@@ -363,22 +340,21 @@ struct Toolbelt : Config<Toolbelt> {
   bool select_toolbelt_before_opening;
 };
 
-// If enabled, adjusts the indentation of the omnibox input and matches to fix
-// the visual shift in omnibox input text when the omnibox popup opens.
-struct AdjustOmniboxIndent : Config<AdjustOmniboxIndent> {
-  DECLARE_FEATURE(kAdjustOmniboxIndent);
-
-  AdjustOmniboxIndent();
-  // Whether to indent the omnibox input text and icon when the popup is closed.
-  bool indent_input_when_popup_closed;
-  // Amount by which the indentation of the omnibox input icon is offset.
-  int input_icon_indent_offset;
-  // Amount by which the indentation of the omnibox input text is offset.
-  int input_text_indent_offset;
-  // Amount by which the indentation of the omnibox match icon is offset.
-  int match_icon_indent_offset;
-  // Amount by which the indentation of the omnibox match text is offset.
-  int match_text_indent_offset;
+// If enabled, what a match's suggest template says it does on click, e.g. its
+// `udm` or the tool its fusebox action preselects, is part of the dedupe key
+// (see `AutocompleteMatch::GetSuggestTemplateBehaviorKey()`). So e.g. an AI
+// Mode or tool suggestion doesn't dedupe with a plain search for the same
+// query. Kill switch, enabled by default.
+BASE_DECLARE_FEATURE(kOmniboxDedupeBySuggestTemplateBehavior);
+struct DedupeBySuggestTemplateBehavior
+    : Config<DedupeBySuggestTemplateBehavior> {
+  DedupeBySuggestTemplateBehavior();
+  DedupeBySuggestTemplateBehavior(const DedupeBySuggestTemplateBehavior&);
+  DedupeBySuggestTemplateBehavior& operator=(
+      const DedupeBySuggestTemplateBehavior&);
+  ~DedupeBySuggestTemplateBehavior();
+  // Whether `kOmniboxDedupeBySuggestTemplateBehavior` is enabled.
+  bool enabled;
 };
 
 // If enabled, allow document provider requests when all other conditions are
@@ -506,19 +482,6 @@ struct SearchAggregatorProvider : Config<SearchAggregatorProvider> {
   // If enabled, Chrome will blend search suggestions with other Omnibox
   // suggestions without requiring keyword mode.
   bool require_shortcut;
-};
-
-// If enabled, uses RichAnswerTemplate instead of SuggestionAnswer to display
-// answers.
-struct SuggestionAnswerMigration : Config<SuggestionAnswerMigration> {
-  DECLARE_FEATURE(kOmniboxSuggestionAnswerMigration);
-  SuggestionAnswerMigration();
-  SuggestionAnswerMigration(const SuggestionAnswerMigration&);
-  SuggestionAnswerMigration(SuggestionAnswerMigration&&);
-  SuggestionAnswerMigration& operator=(const SuggestionAnswerMigration&);
-  SuggestionAnswerMigration& operator=(SuggestionAnswerMigration&&);
-  ~SuggestionAnswerMigration();
-  bool enabled;
 };
 
 struct OmniboxZpsSuggestionLimit : Config<OmniboxZpsSuggestionLimit> {

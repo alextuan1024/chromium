@@ -325,6 +325,13 @@ void PageLoadMetricsForwardObserver::OnResourceDataUseObserved(
     content::RenderFrameHost* rfh,
     const std::vector<mojom::ResourceDataUpdatePtr>& resources) {}
 
+// OnSubresourceLoadMetricsObserved is called through
+// PageLoadTracker::UpdateMetrics, which already forwards raw UpdateMetrics
+// calls directly to parent_tracker_. So, we don't need to forward here.
+void PageLoadMetricsForwardObserver::OnSubresourceLoadMetricsObserved(
+    content::RenderFrameHost* rfh,
+    const blink::SubresourceLoadMetrics& subresource_load_metrics) {}
+
 void PageLoadMetricsForwardObserver::MediaStartedPlaying(
     const content::WebContentsObserver::MediaPlayerInfo& video_type,
     content::RenderFrameHost* render_frame_host) {
@@ -398,6 +405,15 @@ void PageLoadMetricsForwardObserver::FrameSizeChanged(
   parent_observer_->FrameSizeChanged(render_frame_host, frame_size);
 }
 
+void PageLoadMetricsForwardObserver::OnFrameVisibilityChanged(
+    content::RenderFrameHost* render_frame_host,
+    blink::mojom::FrameVisibility visibility) {
+  if (!parent_observer_) {
+    return;
+  }
+  parent_observer_->OnFrameVisibilityChanged(render_frame_host, visibility);
+}
+
 // OnRenderFrameDeleted and OnSubFrameDeleted are handled at PageLoadTracker to
 // forward events as sub-frames deletion regardless of each observer's policy.
 void PageLoadMetricsForwardObserver::OnRenderFrameDeleted(
@@ -448,19 +464,6 @@ void PageLoadMetricsForwardObserver::OnStorageAccessed(
 
 void PageLoadMetricsForwardObserver::DidActivatePrerenderedPage(
     content::NavigationHandle* navigation_handle) {}
-
-void PageLoadMetricsForwardObserver::OnSharedStorageWorkletHostCreated() {
-  if (!parent_observer_)
-    return;
-  parent_observer_->OnSharedStorageWorkletHostCreated();
-}
-
-void PageLoadMetricsForwardObserver::OnSharedStorageSelectURLCalled() {
-  if (!parent_observer_) {
-    return;
-  }
-  parent_observer_->OnSharedStorageSelectURLCalled();
-}
 
 void PageLoadMetricsForwardObserver::OnCustomUserTimingMarkObserved(
     const std::vector<mojom::CustomUserTimingMarkPtr>& timings) {

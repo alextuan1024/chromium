@@ -11,11 +11,11 @@ import '//resources/cr_elements/cr_button/cr_button.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 
+import {MojoPluralStringProxy} from '//resources/cr_components/search/mojo_plural_string_proxy.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {assert} from '//resources/js/assert.js';
 import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
-import {PluralStringProxyImpl} from '//resources/js/plural_string_proxy.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
@@ -51,14 +51,12 @@ export class ContextualEntrypointButtonElement extends
       showContextMenuDescription: {type: Boolean},
       inputState: {type: Object},
       glifAnimationState: {type: String, reflect: true},
-      uploadButtonDisabled: {type: Boolean},
       hasVirtualFocus: {type: Boolean, reflect: true},
       applyContextButtonBackground: {type: Boolean, reflect: true},
       isOblongShape: {type: Boolean, reflect: true},
       windowWidthBelowThreshold_: {type: Boolean},
       sharedTabs: {type: Array},
       restoredTabs: {type: Array},
-      tabFaviconChipsToCoinsEnabled_: {type: Boolean},
       energyEffectAnimationEnabled: {type: Boolean, reflect: true},
       disableFallbackGlifAnimation: {type: Boolean},
       smartTabSharingActive: {type: Boolean},
@@ -76,19 +74,18 @@ export class ContextualEntrypointButtonElement extends
   accessor restoredTabs: TabInfo[] = [];
   accessor glifAnimationState: GlifAnimationState =
       GlifAnimationState.INELIGIBLE;
-  accessor uploadButtonDisabled: boolean = false;
   accessor hasVirtualFocus: boolean = false;
   accessor applyContextButtonBackground: boolean = false;
   accessor isOblongShape: boolean = false;
   accessor energyEffectAnimationEnabled: boolean = false;
   accessor disableFallbackGlifAnimation: boolean = false;
   accessor smartTabSharingActive: boolean = false;
-  protected accessor entrypointAriaLabel_: string = '';
+  private accessor entrypointAriaLabel_: string = '';
   protected accessor windowWidthBelowThreshold_: boolean = false;
   protected accessor isLensSearchbox_: boolean =
       loadTimeData.valueExists('isLensSearchbox') &&
       loadTimeData.getBoolean('isLensSearchbox');
-  protected accessor tabFaviconChipsToCoinsEnabled_: boolean =
+  protected readonly tabFaviconChipsToCoinsEnabled_: boolean =
       loadTimeData.getBoolean('tabFaviconChipsToCoinsEnabled');
   private showContextMenuDescriptionEnabled_: boolean =
       getLoadTimeBoolean('composeboxShowContextMenuDescription', false);
@@ -155,7 +152,7 @@ export class ContextualEntrypointButtonElement extends
     }
 
     const sharingTabsStr =
-        await PluralStringProxyImpl.getInstance().getPluralString(
+        await MojoPluralStringProxy.getInstance().getPluralString(
             'sharingTabs', tabCount);
     this.entrypointAriaLabel_ = `${baseLabel}, ${sharingTabsStr}`;
   }
@@ -164,19 +161,24 @@ export class ContextualEntrypointButtonElement extends
     return this.entrypointAriaLabel_ || this.i18n('addContextTitle');
   }
 
+  getAnchorPoint(): {x: number, y: number} {
+    const entrypoint =
+        this.shadowRoot.querySelector<HTMLElement>('#entrypoint');
+    assert(entrypoint);
+    const rect = entrypoint.getBoundingClientRect();
+    return {
+      x: Math.round(rect.left),
+      y: Math.round(rect.bottom),
+    };
+  }
+
   protected onEntrypointClick_(e: Event) {
     e.stopPropagation();
 
     const metricName =
         'ContextualSearch.ContextMenuEntry.Clicked.' + this.metricsSource_;
     recordBoolean(metricName, true);
-    const entrypoint =
-        this.shadowRoot.querySelector<HTMLElement>('#entrypoint');
-    assert(entrypoint);
-    this.fire('context-menu-entrypoint-click', {
-      x: entrypoint.getBoundingClientRect().left,
-      y: entrypoint.getBoundingClientRect().bottom,
-    });
+    this.fire('context-menu-entrypoint-click', this.getAnchorPoint());
   }
 
   protected onEntrypointPointerenter_() {

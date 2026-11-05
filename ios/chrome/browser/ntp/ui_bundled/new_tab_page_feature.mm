@@ -18,9 +18,6 @@
 
 BASE_FEATURE(kOverrideFeedSettings, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kNTPHeaderUseTransformsForAnimations,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kFeedSwipeInProductHelp, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUseFeedEligibilityService, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -32,6 +29,10 @@ BASE_FEATURE(kNewTabPageRedesign, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kMVTInBottomSheet, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kNewTabPageUICleanup, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kNewTabPageEphemeralTheme, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kAimButtonRefactor, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #pragma mark - Feature parameters
 
@@ -63,10 +64,46 @@ BASE_FEATURE_PARAM(int,
                    kNewTabPageUICleanupArmParam,
                    static_cast<int>(NTPUICleanupVariation::kTightPadding));
 
+const char kAimButtonRefactorArmParam[] = "aim-button-refactor-arm";
+
+BASE_FEATURE_PARAM(int,
+                   kAimButtonRefactorArmParamFeature,
+                   &kAimButtonRefactor,
+                   kAimButtonRefactorArmParam,
+                   static_cast<int>(AimButtonRefactorArm::kDisabled));
+
+BASE_FEATURE_PARAM(std::string,
+                   kNewTabPageEphemeralThemeAnimationUrlParam,
+                   &kNewTabPageEphemeralTheme,
+                   "animation-url",
+                   "");
+
+BASE_FEATURE_PARAM(std::string,
+                   kNewTabPageEphemeralThemeAnimationColorMappingParam,
+                   &kNewTabPageEphemeralTheme,
+                   "animation-colormapping",
+                   "");
+
+BASE_FEATURE_PARAM(std::string,
+                   kNewTabPageEphemeralThemeSeedColorParam,
+                   &kNewTabPageEphemeralTheme,
+                   "seed-color",
+                   "");
+
+BASE_FEATURE_PARAM(int,
+                   kNewTabPageEphemeralThemeVersionParam,
+                   &kNewTabPageEphemeralTheme,
+                   "version",
+                   0);
+
 #pragma mark - Helpers
 
 bool IsMVTInBottomSheetEnabled() {
   return base::FeatureList::IsEnabled(kMVTInBottomSheet);
+}
+
+bool IsNTPEphemeralThemeEnabled() {
+  return base::FeatureList::IsEnabled(kNewTabPageEphemeralTheme);
 }
 
 bool IsDiscoverFeedTopSyncPromoEnabled() {
@@ -104,12 +141,49 @@ bool IsAimEnabledInNtp() {
   return YES;
 }
 
-bool IsConsistentLogoDoodleHeightEnabled() {
-  return base::FeatureList::IsEnabled(kConsistentLogoDoodleHeight);
+AimButtonRefactorArm GetAimButtonRefactorArm() {
+  if (!IsAimEnabledInNtp()) {
+    return AimButtonRefactorArm::kDisabled;
+  }
+  if (base::FeatureList::IsEnabled(kAimButtonRefactor)) {
+    return static_cast<AimButtonRefactorArm>(
+        kAimButtonRefactorArmParamFeature.Get());
+  }
+  return AimButtonRefactorArm::kDisabled;
 }
 
-bool IsNTPHeaderTransformsForAnimationsEnabled() {
-  return base::FeatureList::IsEnabled(kNTPHeaderUseTransformsForAnimations);
+bool IsImageGenerationQuickActionEnabled() {
+  switch (GetAimButtonRefactorArm()) {
+    case AimButtonRefactorArm::kImageGenerationQuickAction:
+    case AimButtonRefactorArm::kGenerateAndAttachQuickActions:
+      return true;
+    case AimButtonRefactorArm::kAttachImageQuickAction:
+    case AimButtonRefactorArm::kFocusComposeboxAimQuickAction:
+    case AimButtonRefactorArm::kAimAsModule:
+    case AimButtonRefactorArm::kAimAsMvt:
+    case AimButtonRefactorArm::kNoChips:
+    case AimButtonRefactorArm::kDisabled:
+      return false;
+  }
+}
+
+bool AreAimMerchandisingQuickActionsEnabled() {
+  switch (GetAimButtonRefactorArm()) {
+    case AimButtonRefactorArm::kImageGenerationQuickAction:
+    case AimButtonRefactorArm::kAttachImageQuickAction:
+    case AimButtonRefactorArm::kGenerateAndAttachQuickActions:
+      return true;
+    case AimButtonRefactorArm::kFocusComposeboxAimQuickAction:
+    case AimButtonRefactorArm::kAimAsModule:
+    case AimButtonRefactorArm::kAimAsMvt:
+    case AimButtonRefactorArm::kNoChips:
+    case AimButtonRefactorArm::kDisabled:
+      return false;
+  }
+}
+
+bool IsConsistentLogoDoodleHeightEnabled() {
+  return base::FeatureList::IsEnabled(kConsistentLogoDoodleHeight);
 }
 
 bool IsNTPRedesignEnabled() {
@@ -128,6 +202,14 @@ bool IsNewTabPageUICleanupEnabled() {
   NTPUICleanupVariation variation = GetNewTabPageUICleanupVariation();
   return variation == NTPUICleanupVariation::kTightPadding ||
          variation == NTPUICleanupVariation::kMediumPadding ||
+         variation == NTPUICleanupVariation::kPreferredPadding ||
+         variation == NTPUICleanupVariation::kControlPadding;
+}
+
+bool ShouldApplyNewTabPageUICleanupPadding() {
+  NTPUICleanupVariation variation = GetNewTabPageUICleanupVariation();
+  return variation == NTPUICleanupVariation::kTightPadding ||
+         variation == NTPUICleanupVariation::kMediumPadding ||
          variation == NTPUICleanupVariation::kPreferredPadding;
 }
 
@@ -135,18 +217,4 @@ bool ShouldApplyFakeboxBackgroundAndShadow() {
   return IsNewTabPageUICleanupEnabled() ||
          GetNewTabPageUICleanupVariation() ==
              NTPUICleanupVariation::kFakeboxBackgroundAndShadow;
-}
-
-NTPUICleanupVariation GetNewTabPageUICleanupPaddingVariation() {
-  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
-    return NTPUICleanupVariation::kDisabled;
-  }
-  return GetNewTabPageUICleanupVariation();
-}
-
-bool IsNewTabPageUICleanupPaddingEnabled() {
-  NTPUICleanupVariation variation = GetNewTabPageUICleanupPaddingVariation();
-  return variation == NTPUICleanupVariation::kTightPadding ||
-         variation == NTPUICleanupVariation::kMediumPadding ||
-         variation == NTPUICleanupVariation::kPreferredPadding;
 }

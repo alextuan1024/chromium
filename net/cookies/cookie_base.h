@@ -15,6 +15,7 @@
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_options.h"
 #include "net/cookies/cookie_partition_key.h"
+#include "url/third_party/mozilla/url_parse.h"
 
 class GURL;
 
@@ -225,9 +226,7 @@ class NET_EXPORT CookieBase {
   // after inclusion has been determined for the respective access.
   virtual void PostIncludeForRequestURL(
       const CookieAccessResult& access_result,
-      const CookieOptions& options_used,
-      CookieOptions::SameSiteCookieContext::ContextType
-          cookie_inclusion_context_used) const {}
+      const CookieOptions& options_used) const {}
   virtual void PostIsSetPermittedInContext(
       const CookieAccessResult& access_result,
       const CookieOptions& options_used) const {}

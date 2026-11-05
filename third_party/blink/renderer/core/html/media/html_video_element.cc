@@ -80,7 +80,6 @@
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_detector.h"
 #include "third_party/blink/renderer/platform/blob/blob_data.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_non_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_snapshot_info.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/extensions_3d_util.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
@@ -95,6 +94,7 @@
 #include "third_party/blink/renderer/platform/scheduler/public/page_scheduler.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
 #include "third_party/blink/renderer/platform/widget/frame_widget.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -113,9 +113,6 @@ constexpr int kVisibilityThreshold = 10000;
 
 constexpr base::TimeDelta kTemporaryResourceDeletionDelay = base::Seconds(3);
 
-// If enabled, VideoTiming is held as a strong member of HTMLVideoElement.
-BASE_FEATURE(kKeepVideoTimingAlive, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
@@ -127,19 +124,30 @@ enum class PictureInPictureSizeConstraintResult {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:PictureInPictureSizeConstraintResult)
 
+AtomicString GetDefaultPosterURLFromSettings(const Document& document) {
+  return document.GetSettings()
+             ? AtomicString(document.GetSettings()->GetDefaultVideoPosterURL())
+             : g_null_atom;
+}
+
+KURL CompletePosterURL(const Document& document,
+                       const AtomicString& poster_url) {
+  StringView url = StripLeadingAndTrailingHtmlSpaces(poster_url);
+  if (url.empty()) {
+    return KURL();
+  }
+  return document.CompleteURL(url);
+}
+
 }  // namespace
 
 HTMLVideoElement::HTMLVideoElement(Document& document)
     : HTMLMediaElement(html_names::kVideoTag, document),
+      default_poster_url_(GetDefaultPosterURLFromSettings(document)),
       cache_deleting_timer_(
           GetDocument().GetTaskRunner(TaskType::kInternalMedia),
           this,
           &HTMLVideoElement::ResetCache) {
-  if (document.GetSettings()) {
-    default_poster_url_ =
-        AtomicString(document.GetSettings()->GetDefaultVideoPosterURL());
-  }
-
   custom_controls_fullscreen_detector_ =
       MakeGarbageCollected<MediaCustomControlsFullscreenDetector>(*this);
 
@@ -156,7 +164,6 @@ void HTMLVideoElement::Trace(Visitor* visitor) const {
   visitor->Trace(wake_lock_);
   visitor->Trace(remoting_interstitial_);
   visitor->Trace(picture_in_picture_interstitial_);
-  visitor->Trace(video_timing_);
   visitor->Trace(cache_deleting_timer_);
   Supplementable<HTMLVideoElement>::Trace(visitor);
   HTMLMediaElement::Trace(visitor);
@@ -183,7 +190,6 @@ Node::InsertionNotificationRequest HTMLVideoElement::InsertedInto(
         AdTracker::AdScriptAncestry ad_script_ancestry;
         if (!IsAdRelated() &&
             ad_tracker->IsAdScriptInStack(
-                AdTracker::StackType::kTopOnly,
                 /*ignore_monkey_patch=*/
                 AdTracker::MonkeyPatchableApi::kNodeAppendChild,
                 &ad_script_ancestry)) {
@@ -599,8 +605,7 @@ void HTMLVideoElement::RequestSaveVideoFrame() {
   params->should_prompt_for_save_location = true;
   auto timestamp_ms = base::saturated_cast<uint32_t>(
       currentTime() * base::Time::kMillisecondsPerSecond);
-  params->suggested_name =
-      StrCat({"videoframe_", String::Number(timestamp_ms)});
+  params->suggested_name = Format("videoframe_{}", timestamp_ms);
   params->url = KURL(blob_url);
   params->blob_url_token = std::move(blob_url_token);
 
@@ -617,7 +622,8 @@ void HTMLVideoElement::OnVisibilityRatioReport(double ratio) {
 }
 
 void HTMLVideoElement::ResetCache(TimerBase*) {
-  snapshot_provider_.reset();
+  cache_deleting_timer_.Stop();
+  snapshot_pool_.reset();
   cached_draw_info_.reset();
 }
 
@@ -798,22 +804,18 @@ void HTMLVideoElement::OnFirstFrame(base::TimeTicks frame_time,
   // picture-in-picture video may return false here.
   if (layout_object &&
       layout_object->FirstFragment().HasLocalBorderBoxProperties()) {
+    // PaintTiming manages the lifetime of `video_timing`.
     VideoTiming* video_timing = MakeGarbageCollected<VideoTiming>();
     video_timing->SetFirstVideoFrameTime(frame_time);
     video_timing->SetIsSufficientContentLoadedForPaint();
     video_timing->SetUrl(currentSrc());
     video_timing->SetContentSizeForEntropy(bytes_to_first_frame);
+    video_timing->SetIsCorsSameOrigin(!WouldTaintOrigin());
 
     PaintTimingDetector::NotifyFirstVideoFrame(
         *layout_object, videoVisibleSize(), *video_timing,
         layout_object->FirstFragment().LocalBorderBoxProperties(),
         layout_object->AbsoluteBoundingBoxRect());
-
-    if (base::FeatureList::IsEnabled(kKeepVideoTimingAlive)) {
-      // Keep VideoTiming alive as a strong member so it isn't garbage collected
-      // before being reported as LCP.
-      video_timing_ = video_timing;
-    }
   }
 
   MaybeEnterImmersivePictureInPicture();
@@ -868,6 +870,8 @@ void HTMLVideoElement::DidExitFullscreen() {
 }
 
 void HTMLVideoElement::DidMoveToNewDocument(Document& old_document) {
+  default_poster_url_ = GetDefaultPosterURLFromSettings(GetDocument());
+
   if (image_loader_) {
     image_loader_->ElementDidMoveToNewDocument();
   }
@@ -897,8 +901,11 @@ unsigned HTMLVideoElement::webkitDecodedFrameCount() const {
   return 0;
 }
 
-void HTMLVideoElement::DidChangeIsInCanvasSubtree() {
-  HTMLMediaElement::DidChangeIsInCanvasSubtree();
+void HTMLVideoElement::DidChangeIsInCanvasSubtree(
+    CanvasSubtreePropagation propagation_behavior) {
+  // Reachable from slot assignment recalc; see "Recalc hooks" in
+  // slot_assignment.h.
+  HTMLMediaElement::DidChangeIsInCanvasSubtree(propagation_behavior);
   if (IsInCanvasSubtree()) {
     UpdateLayoutObject();
     if (auto* wmp = GetWebMediaPlayer()) {
@@ -915,11 +922,11 @@ unsigned HTMLVideoElement::webkitDroppedFrameCount() const {
 }
 
 KURL HTMLVideoElement::PosterImageURL() const {
-  StringView url = StripLeadingAndTrailingHtmlSpaces(ImageSourceURL());
-  if (url.empty()) {
-    return KURL();
-  }
-  return GetDocument().CompleteURL(url);
+  return CompletePosterURL(GetDocument(), ImageSourceURL());
+}
+
+KURL HTMLVideoElement::DefaultPosterImageURL() const {
+  return CompletePosterURL(GetDocument(), default_poster_url_);
 }
 
 bool HTMLVideoElement::IsDefaultPosterImageURL() const {
@@ -968,16 +975,12 @@ scoped_refptr<StaticBitmapImage> HTMLVideoElement::CreateStaticBitmapImage(
       cached_draw_info_ &&
       required_provider_info.Matches(cached_draw_info_.value());
   if (!cached_info_matches_required_info) {
-    snapshot_provider_.reset();
+    snapshot_pool_.reset();
 
     if (is_accelerated) {
-      snapshot_provider_ = CanvasNon2DResourceProvider::Create(
-          required_provider_info.size, required_provider_info.format,
-          required_provider_info.alpha_type, required_provider_info.color_space,
-          required_provider_info.hdr_metadata,
-          SharedGpuContext::ContextProviderWrapper(),
-          gpu::SHARED_IMAGE_USAGE_DISPLAY_READ);
-      if (!snapshot_provider_) {
+      snapshot_pool_ =
+          VideoFrameAcceleratedSnapshotPool::Create(required_provider_info);
+      if (!snapshot_pool_) {
         return nullptr;
       }
     }
@@ -988,9 +991,9 @@ scoped_refptr<StaticBitmapImage> HTMLVideoElement::CreateStaticBitmapImage(
                                      FROM_HERE);
 
   scoped_refptr<StaticBitmapImage> image;
-  if (snapshot_provider_) {
+  if (snapshot_pool_) {
     image = CreateAcceleratedImageFromVideoFrame(
-        std::move(media_video_frame), snapshot_provider_.get(), video_renderer,
+        std::move(media_video_frame), snapshot_pool_.get(), video_renderer,
         orientation_behavior, color_space_interpretation);
   } else {
     image = CreateUnacceleratedImageFromVideoFrame(
@@ -1269,6 +1272,7 @@ void HTMLVideoElement::OnWebMediaPlayerCreated() {
 }
 
 void HTMLVideoElement::OnWebMediaPlayerCleared() {
+  ResetCache();
   has_received_first_frame_ = false;
   if (auto* vfc_requester = VideoFrameCallbackRequester::From(*this)) {
     vfc_requester->OnWebMediaPlayerCleared();

@@ -8,6 +8,7 @@
 
 #include "base/check_op.h"
 #include "base/functional/bind.h"
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -16,12 +17,9 @@
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/modules/media/audio/mojo_audio_output_ipc.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_media.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
 namespace blink {
 
@@ -57,9 +55,9 @@ class AudioOutputIPCFactory::Impl {
 
 // static
 AudioOutputIPCFactory& AudioOutputIPCFactory::GetInstance() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(AudioOutputIPCFactory, instance,
-                                  (Platform::Current()->GetIOTaskRunner()));
-  return instance;
+  static base::NoDestructor<AudioOutputIPCFactory> instance(
+      Platform::Current()->GetIOTaskRunner());
+  return *instance;
 }
 
 AudioOutputIPCFactory::AudioOutputIPCFactory(

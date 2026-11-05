@@ -13,24 +13,18 @@ namespace component_updater {
 // Abstract interface for an update task scheduler.
 class UpdateScheduler {
  public:
-  using OnFinishedCallback = base::OnceCallback<void()>;
-  // Type of task to be run by the scheduler. The task can start asynchronous
-  // operations and must call |on_finished| when all operations have completed.
-  using UserTask =
-      base::RepeatingCallback<void(OnFinishedCallback on_finished)>;
-  using OnStopTaskCallback = base::RepeatingCallback<void()>;
+  // Type of task to be run by the scheduler.
+  using UserTask = base::RepeatingClosure;
 
   virtual ~UpdateScheduler() = default;
 
-  // Schedules |user_task| to be run periodically with at least an interval of
-  // |delay|. The first time |user_task| will be run after at least
-  // |initial_delay|. If the execution of |user_task| must be stopped before it
-  // called its |on_finished| callback, |on_stop| will be called.
+  // Schedules `user_task` to run after at least `initial_delay`, then
+  // repeatedly at intervals of at least `delay`.
   virtual void Schedule(base::TimeDelta initial_delay,
                         base::TimeDelta delay,
-                        const UserTask& user_task,
-                        const OnStopTaskCallback& on_stop) = 0;
-  // Stops to periodically run |user_task| previously scheduled with |Schedule|.
+                        const UserTask& user_task) = 0;
+
+  // Stops running the task passed to `Schedule()`.
   virtual void Stop() = 0;
 };
 

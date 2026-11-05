@@ -4,37 +4,29 @@
 
 #include "chrome/browser/ui/read_anything/read_anything_controller.h"
 
+#include <utility>
+
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
-#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/accelerator_utils.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
+#include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/read_anything/read_anything_contents_wrapper.h"
-#include "chrome/browser/ui/read_anything/read_anything_entry_point_controller.h"
 #include "chrome/browser/ui/read_anything/read_anything_enums.h"
 #include "chrome/browser/ui/read_anything/read_anything_hats_survey_controller.h"
 #include "chrome/browser/ui/read_anything/read_anything_omnibox_controller.h"
 #include "chrome/browser/ui/read_anything/read_anything_prefs.h"
 #include "chrome/browser/ui/read_anything/read_anything_service.h"
-#include "chrome/browser/ui/side_panel/side_panel_entry.h"
+#include "chrome/browser/ui/read_anything/read_anything_side_panel_controller.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/tab_model.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_ui.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/feature_engagement/public/feature_constants.h"
 #include "components/find_in_page/find_tab_helper.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/prefs/pref_service.h"
@@ -45,32 +37,62 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "pdf/buildflags.h"
+#include "printing/buildflags/buildflags.h"
 #include "ui/accessibility/accessibility_features.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/events/keycodes/keyboard_codes.h"
-#include "ui/views/accessibility/view_accessibility.h"
+#include "url/gurl.h"
+
+#if BUILDFLAG(ENABLE_PDF)
+#include <string>
+#include <vector>
+
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
+#include "chrome/browser/pdf/pdf_extension_util.h"
+#endif  // BUILDFLAG(ENABLE_PDF)
+
+#if BUILDFLAG(ENABLE_PRINTING)
+#include "chrome/browser/printing/printing_init.h"
+#endif
+
+#if BUILDFLAG(ENABLE_PDF)
+GURL GetPdfUrlWithFitToWidth(const GURL& pdf_url) {
+  std::vector<std::string> params =
+      base::SplitString(pdf_url.ref(), "&", base::KEEP_WHITESPACE,
+                        base::SPLIT_WANT_NONEMPTY);
+
+  // Replace any existing view params, including duplicates, with a single one.
+  std::erase_if(params, [](const std::string& param) {
+    return param == "view" || base::StartsWith(param, "view=");
+  });
+  params.push_back("view=FitH");
+
+  // `Replacements` doesn't own the string, so it must outlive
+  // `ReplaceComponents()`.
+  const std::string ref = base::JoinString(params, "&");
+  GURL::Replacements replacements;
+  replacements.SetRefStr(ref);
+  return pdf_url.ReplaceComponents(replacements);
+}
+#endif  // BUILDFLAG(ENABLE_PDF)
 
 ///////////////////////////////////////////////////////////////////////////////
 // WebContentsObserverInstance
 
 WebContentsObserverInstance::WebContentsObserverInstance(
     content::WebContents* web_contents,
-    base::RepeatingClosure primary_page_changed_callback,
     base::RepeatingClosure renderer_crashed_callback,
     base::RepeatingCallback<void(content::Visibility)>
         visibility_changed_callback)
     : content::WebContentsObserver(web_contents),
-      primary_page_changed_callback_(primary_page_changed_callback),
       renderer_crashed_callback_(renderer_crashed_callback),
       visibility_changed_callback_(visibility_changed_callback) {}
 
 WebContentsObserverInstance::~WebContentsObserverInstance() = default;
 
 // content::WebContentsObserver:
-void WebContentsObserverInstance::PrimaryPageChanged(content::Page& page) {
-  primary_page_changed_callback_.Run();
-}
-
 void WebContentsObserverInstance::OnVisibilityChanged(
     content::Visibility visibility) {
   visibility_changed_callback_.Run(visibility);
@@ -100,17 +122,17 @@ ReadAnythingControllerGlue::ReadAnythingControllerGlue(
       controller_(controller) {}
 
 // static
-bool ReadAnythingController::freeze_distillation_for_testing_ = false;
+bool ReadAnythingController::freeze_empty_state_for_testing_ = false;
 
 // static
 void ReadAnythingController::
-    SetFreezeDistillationOnCreationForTesting(  // IN-TEST
+    SetFreezeEmptyStateOnCreationForTesting(  // IN-TEST
         bool locked) {
-  freeze_distillation_for_testing_ = locked;
+  freeze_empty_state_for_testing_ = locked;
 }
 
 ReadAnythingController* ReadAnythingController::From(tabs::TabInterface* tab) {
-  return Get(tab->GetUnownedUserDataHost());
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
 }
 
 ReadAnythingController::ReadAnythingController(
@@ -118,7 +140,6 @@ ReadAnythingController::ReadAnythingController(
     SidePanelRegistry* side_panel_registry)
     : tabs::ContentsObservingTabFeature(*tab),
       tab_(tab),
-      side_panel_registry_(side_panel_registry),
       scoped_unowned_user_data_(tab->GetUnownedUserDataHost(), *this),
       read_anything_side_panel_controller_(
           std::make_unique<ReadAnythingSidePanelController>(
@@ -133,7 +154,9 @@ ReadAnythingController::ReadAnythingController(
           &ReadAnythingController::MaybeUpdateFindBarController,
           base::Unretained(this))));
 
-  if (features::IsReadAnythingOmniboxChipEnabled()) {
+  if (features::IsReadAnythingOmniboxChipEnabled() &&
+      tab_->GetBrowserWindowInterface() &&
+      page_actions::PageActionController::From(tab_)) {
     omnibox_controller_ = std::make_unique<ReadAnythingOmniboxController>(tab_);
   }
 
@@ -144,11 +167,11 @@ ReadAnythingController::ReadAnythingController(
 }
 
 ReadAnythingController::~ReadAnythingController() {
-  observers_.Notify(&Observer::OnDestroyed);
-
   if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
     CloseImmersiveUI(ReadAnythingCloseReason::kControllerDestroyed);
   }
+
+  observers_.Notify(&Observer::OnDestroyed);
 
   // Notify the renderer that we don't need the main webpage treated as
   // visible anymore for IRM. Although we already do this in OnVisibilityChanged
@@ -203,21 +226,24 @@ void ReadAnythingController::RemoveImmersiveActivationObserver(
 }
 
 void ReadAnythingController::OnEntryShown(ReadAnythingOpenTrigger trigger) {
-  observers_.Notify(&Observer::Activate, /*active=*/true, trigger,
-                    /*completed_session_duration=*/std::nullopt);
-  active_service_ =
-      ReadAnythingService::Get(tab_->GetBrowserWindowInterface()->GetProfile());
-  // At the moment, services are created for normal, guest, and incognito
-  // profiles but not unusual profile types. On the other hand,
-  // ReadAnythingController is created for all tabs. Thus we need a
-  // nullptr check.
-  if (active_service_) {
-    active_service_->OnReadAnythingShown();
-  }
-
-  if (is_presentation_transitioning_) {
-    is_presentation_transitioning_ = false;
+  // A presentation switch keeps the session that's already open, so it skips
+  // Activate(true) and the work for opening Reading Mode.
+  const bool is_presentation_switch =
+      std::exchange(is_presentation_transitioning_, false);
+  if (is_presentation_switch) {
+    observers_.Notify(&Observer::OnPresentationTransitioned, trigger);
   } else {
+    observers_.Notify(&Observer::Activate, /*active=*/true, trigger,
+                      /*completed_session_duration=*/std::nullopt);
+
+    // Services exist for normal, guest and incognito profiles, but not for
+    // unusual profile types, while ReadAnythingController exists for every
+    // tab. So the service can be null.
+    if (auto* service = ReadAnythingService::Get(
+            tab_->GetBrowserWindowInterface()->GetProfile())) {
+      service->OnReadAnythingShown();
+    }
+
     // Log once per tab session.
     if (entry_shown_timestamp_.is_null() &&
         trigger != ReadAnythingOpenTrigger::kTabSwitch) {
@@ -231,44 +257,40 @@ void ReadAnythingController::OnEntryShown(ReadAnythingOpenTrigger trigger) {
     entry_shown_timestamp_ = base::TimeTicks::Now();
   }
 
-  if (auto* user_ed = BrowserUserEducationInterface::From(
-          tab_->GetBrowserWindowInterface())) {
-    if (GetPresentationState() == PresentationState::kInImmersiveOverlay ||
-        GetPresentationState() == PresentationState::kInSidePanel) {
-      user_ed->MaybeShowFeaturePromo(
-          feature_engagement::kIPHReadingModeKeyboardShortcutFeature);
-    }
-    if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-      user_ed->MaybeShowFeaturePromo(
-          feature_engagement::kIPHReadingModePresentationModeFeature);
+  MaybeUpdateFindBarController();
+
+#if BUILDFLAG(ENABLE_PDF)
+  // When Reading Mode opens for PDF translation, the PDF viewer's viewport
+  // becomes narrower, so fit the PDF to the new width.
+  if (trigger == ReadAnythingOpenTrigger::kPdfTranslation) {
+    content::WebContents* contents = tab_->GetContents();
+    if (contents && contents->GetPrimaryMainFrame()) {
+      pdf_extension_util::DispatchShouldUpdateViewportEvent(
+          contents->GetPrimaryMainFrame(),
+          GetPdfUrlWithFitToWidth(contents->GetLastCommittedURL()));
     }
   }
-
-  MaybeUpdateFindBarController();
+#endif  // BUILDFLAG(ENABLE_PDF)
 }
 
 void ReadAnythingController::OnEntryHidden() {
+  // If the host is closing so the other host can show the same session, skip
+  // RecordEntryHiddenMetrics() and Activate(false). The other host's
+  // OnEntryShown() notifies OnPresentationTransitioned() instead.
+  if (is_presentation_transitioning_) {
+    return;
+  }
+
   std::optional<base::TimeDelta> completed_session_duration =
       RecordEntryHiddenMetrics();
 
   observers_.Notify(&Observer::Activate, /*active=*/false,
                     /*trigger=*/ReadAnythingOpenTrigger::kUnknown,
                     completed_session_duration);
-
-  if (active_service_) {
-    active_service_->OnReadAnythingHidden();
-    active_service_ = nullptr;
-  }
 }
 
 std::optional<base::TimeDelta>
 ReadAnythingController::RecordEntryHiddenMetrics() {
-  // If we are transitioning between UI modes (e.g., Side Panel to Immersive),
-  // don't record OnEntryHidden metrics.
-  if (is_presentation_transitioning_) {
-    return std::nullopt;
-  }
-
   // Record whether the UI was closed before it was successfully shown.
   const bool hidden_before_shown = entry_shown_timestamp_.is_null();
   base::UmaHistogramBoolean("Accessibility.ReadAnything.HiddenBeforeShown",
@@ -305,10 +327,21 @@ SidePanelUI* ReadAnythingController::GetSidePanelUI() {
   return SidePanelUI::From(tab_->GetBrowserWindowInterface());
 }
 
+bool ReadAnythingController::CanMoveSessionToOtherHost() const {
+  if (entry_shown_timestamp_.is_null()) {
+    return false;
+  }
+  // The other host gets a new WebUI if RecreateWebUIWrapper() was called (e.g.
+  // after a soft navigation), or if this one never became visible (see
+  // TransferWebUiOwnership()). `ra_web_ui_observer_` is only null in unit
+  // tests, which don't create a WebUI.
+  return !should_recreate_web_ui_ && (has_shown_ui_ || !ra_web_ui_observer_);
+}
+
 // Lazily creates and returns the WebUIContentsWrapper for Reading Mode.
 ReadAnythingContentsWrapper ReadAnythingController::GetOrCreateWebUIWrapper(
     PresentationState web_ui_new_presentation_state) {
-  SetPresentationState(web_ui_new_presentation_state);
+  set_presentation_state(web_ui_new_presentation_state);
   if (should_recreate_web_ui_ || !web_ui_wrapper_) {
     should_recreate_web_ui_ = false;
     has_shown_ui_ = false;
@@ -321,7 +354,6 @@ ReadAnythingContentsWrapper ReadAnythingController::GetOrCreateWebUIWrapper(
 
     ra_web_ui_observer_ = std::make_unique<WebContentsObserverInstance>(
         /*web_contents=*/web_ui_wrapper_->web_contents(),
-        /*primary_page_changed_callback=*/base::DoNothing(),
         /*renderer_crashed_callback=*/
         base::BindRepeating(&ReadAnythingController::OnRendererCrashed,
                             base::Unretained(this)),
@@ -344,6 +376,14 @@ ReadAnythingContentsWrapper ReadAnythingController::GetOrCreateWebUIWrapper(
     webui::SetTabInterface(web_ui_wrapper_->web_contents(), tab_);
     find_in_page::FindTabHelper::CreateForWebContents(
         web_ui_wrapper_->web_contents());
+#if BUILDFLAG(ENABLE_PRINTING)
+    // Lets Immersive Reading Mode print this WebContents. Printing is attached
+    // once, for the WebContents' whole lifetime.
+    if (features::IsImmersiveReadAnythingPrintEnabled()) {
+      printing::InitializePrintingForWebContents(
+          web_ui_wrapper_->web_contents());
+    }
+#endif
   }
   return std::move(web_ui_wrapper_);
 }
@@ -382,7 +422,7 @@ void ReadAnythingController::TransferWebUiOwnership(
   CHECK(web_ui_wrapper);
   CHECK(!web_ui_wrapper_);
   web_ui_wrapper_ = std::move(web_ui_wrapper);
-  SetPresentationState(PresentationState::kInactive);
+  set_presentation_state(PresentationState::kInactive);
 
   // If the WebUI was never shown, it likely means it was still loading when
   // we closed it. If we reuse this wrapper, we might miss the "ShowUI" signal
@@ -411,16 +451,16 @@ void ReadAnythingController::MaybeUpdateFindBarController() {
     target_contents = tab_->GetContents();
   }
 
-  // If the target is just the main web contents, we don't need to force the
-  // FindBarController's creation if it doesn't already exist.
-  auto& window_features = tab_->GetBrowserWindowInterface()->GetFeatures();
-  if (target_contents == tab_->GetContents() &&
-      !window_features.HasFindBarController()) {
+  auto* find_bar_controller =
+      FindBarController::From(tab_->GetBrowserWindowInterface());
+  if (!find_bar_controller) {
     return;
   }
 
-  auto* find_bar_controller = window_features.GetFindBarController();
-  if (!find_bar_controller) {
+  // If the target is just the main web contents, we don't need to force the
+  // FindBar's creation if it doesn't already exist.
+  if (target_contents == tab_->GetContents() &&
+      !find_bar_controller->HasFindBar()) {
     return;
   }
 
@@ -431,9 +471,9 @@ void ReadAnythingController::MaybeUpdateFindBarController() {
 }
 
 void ReadAnythingController::ShowImmersiveUI(ReadAnythingOpenTrigger trigger) {
-  // Show Reading Mode in side panel mode if the distillation is empty and
-  // Reading Mode was inactive.
-  if (distillation_state_ == DistillationState::kDistillationEmpty &&
+  // If Reading Mode's content is empty, open it in the side panel instead so
+  // that the user can still see the page.
+  if (is_showing_empty_state_ &&
       GetPresentationState() == PresentationState::kInactive) {
     base::UmaHistogramEnumeration(
         "Accessibility.ReadAnything.SidePanelTriggeredByEmptyState", trigger);
@@ -450,7 +490,7 @@ void ReadAnythingController::ShowImmersiveUI(ReadAnythingOpenTrigger trigger) {
   }
 
   if (GetPresentationState() == PresentationState::kInSidePanel) {
-    is_presentation_transitioning_ = true;
+    is_presentation_transitioning_ = CanMoveSessionToOtherHost();
     CloseSidePanelUI(ReadAnythingCloseReason::kToggledPresentation);
     // Ensure we got the web_ui_wrapper_ back from the Side Panel if one ever
     // existed.
@@ -466,7 +506,7 @@ void ReadAnythingController::ShowImmersiveUI(ReadAnythingOpenTrigger trigger) {
 
 void ReadAnythingController::ShowSidePanelUI(SidePanelOpenTrigger trigger) {
   if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-    is_presentation_transitioning_ = true;
+    is_presentation_transitioning_ = CanMoveSessionToOtherHost();
     CloseImmersiveUI(ReadAnythingCloseReason::kToggledPresentation);
     // Ensure we got the web_ui_wrapper_ back from the immersive overlay if one
     // ever existed.
@@ -476,6 +516,21 @@ void ReadAnythingController::ShowSidePanelUI(SidePanelOpenTrigger trigger) {
   if (SidePanelUI* side_panel_ui = GetSidePanelUI()) {
     side_panel_ui->Show(SidePanelEntryId::kReadAnything, trigger);
   }
+  // If the side panel shows Reading Mode, it calls OnEntryShown() before Show()
+  // returns, which clears is_presentation_transitioning_. If the flag is still
+  // set, the side panel didn't show it (e.g. the tab isn't active, or the side
+  // panel is still closing), so the overlay closed without ending the session.
+  // End it now.
+  if (is_presentation_transitioning_) {
+    is_presentation_transitioning_ = false;
+    OnEntryHidden();
+  }
+}
+
+void ReadAnythingController::CloseImmersiveUI(
+    base::PassKey<ReadAnythingUntrustedPageHandler>,
+    ReadAnythingCloseReason reason) {
+  CloseImmersiveUI(reason);
 }
 
 void ReadAnythingController::CloseImmersiveUI(ReadAnythingCloseReason reason) {
@@ -510,9 +565,15 @@ void ReadAnythingController::CloseSidePanelUI(ReadAnythingCloseReason reason) {
         (reason == ReadAnythingCloseReason::kTabSwitched)
             ? SidePanelEntryHideReason::kBackgrounded
             : SidePanelEntryHideReason::kSidePanelClosed;
-    side_panel_ui->Close(hide_reason,
-                         /*suppress_animations=*/true);
+    // Only user-initiated closes should animate.
+    bool suppress_animations = reason != ReadAnythingCloseReason::kClosedByUser;
+    side_panel_ui->Close(hide_reason, suppress_animations);
   }
+
+  // If the side panel closed, OnSidePanelWillHide() already reported the
+  // reason. If it didn't (e.g. it's still loading, or the tab is in the
+  // background), don't report the reason for a later, unrelated close.
+  pending_side_panel_close_reason_.reset();
 }
 
 void ReadAnythingController::OnSidePanelWillHide(
@@ -527,6 +588,12 @@ void ReadAnythingController::OnSidePanelWillHide(
     reason = ReadAnythingCloseReason::kClosedByUser;
   }
   observers_.Notify(&ReadAnythingLifecycleObserver::OnWillClose, reason);
+}
+
+void ReadAnythingController::ShowInPreferredUI(
+    base::PassKey<read_anything::ReadAnythingEntryPointController>,
+    ReadAnythingOpenTrigger trigger) {
+  ShowInPreferredUI(trigger);
 }
 
 void ReadAnythingController::ShowInPreferredUI(
@@ -558,16 +625,29 @@ void ReadAnythingController::ShowInPreferredUI(
   }
 }
 
-void ReadAnythingController::ToggleUI(ReadAnythingOpenTrigger trigger) {
-  if (trigger == ReadAnythingOpenTrigger::kKeyboardShortcut) {
-    if (auto* user_ed = BrowserUserEducationInterface::From(
-            tab_->GetBrowserWindowInterface())) {
-      user_ed->NotifyFeaturePromoFeatureUsed(
-          feature_engagement::kIPHReadingModeKeyboardShortcutFeature,
-          FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
-    }
-  }
+void ReadAnythingController::ShowInSidePanel(
+    base::PassKey<read_anything::ReadAnythingEntryPointController>,
+    ReadAnythingOpenTrigger trigger) {
+  ShowSidePanelUI(read_anything::ReadAnythingToSidePanelOpenTrigger(trigger));
+}
 
+void ReadAnythingController::CloseUI(
+    base::PassKey<read_anything::ReadAnythingEntryPointController>,
+    ReadAnythingCloseReason reason) {
+  if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
+    CloseImmersiveUI(reason);
+  } else if (GetPresentationState() == PresentationState::kInSidePanel) {
+    CloseSidePanelUI(reason);
+  }
+}
+
+void ReadAnythingController::ToggleUI(
+    base::PassKey<read_anything::ReadAnythingEntryPointController>,
+    ReadAnythingOpenTrigger trigger) {
+  ToggleUI(trigger);
+}
+
+void ReadAnythingController::ToggleUI(ReadAnythingOpenTrigger trigger) {
   PresentationState state = GetPresentationState();
   if (state == PresentationState::kInImmersiveOverlay) {
     CloseImmersiveUI(ReadAnythingCloseReason::kClosedByUser);
@@ -580,6 +660,12 @@ void ReadAnythingController::ToggleUI(ReadAnythingOpenTrigger trigger) {
   }
 
   ShowInPreferredUI(trigger);
+}
+
+void ReadAnythingController::TogglePresentation(
+    base::PassKey<ReadAnythingUntrustedPageHandler>,
+    bool is_user_initiated) {
+  TogglePresentation(is_user_initiated);
 }
 
 void ReadAnythingController::TogglePresentation(bool is_user_initiated) {
@@ -608,18 +694,9 @@ void ReadAnythingController::SavePresentationPreference(
   }
 }
 
-// TODO(crbug.com/458335664): Add logic to check if IRM SidePanel is showing
 ReadAnythingController::PresentationState
 ReadAnythingController::GetPresentationState() const {
   return presentation_state_;
-}
-
-void ReadAnythingController::SetPresentationState(PresentationState new_state) {
-  if (presentation_state_ == new_state) {
-    return;
-  }
-  presentation_state_ = new_state;
-  observers_.Notify(&Observer::OnReadingModePresenterChanged);
 }
 
 void ReadAnythingController::PrimaryPageChanged(content::Page& page) {
@@ -713,15 +790,16 @@ content::WebContents* ReadAnythingController::OpenURLFromTab(
     // strictly allow-list dispositions that open new windows/tabs, and demote
     // all others.
     switch (modified_params.disposition) {
-      case WindowOpenDisposition::NEW_FOREGROUND_TAB:
-      case WindowOpenDisposition::NEW_BACKGROUND_TAB:
-      case WindowOpenDisposition::NEW_POPUP:
-      case WindowOpenDisposition::NEW_WINDOW:
-      case WindowOpenDisposition::SAVE_TO_DISK:
-      case WindowOpenDisposition::OFF_THE_RECORD:
+      case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
+      case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
+      case ui::mojom::WindowOpenDisposition::kNewPopup:
+      case ui::mojom::WindowOpenDisposition::kNewWindow:
+      case ui::mojom::WindowOpenDisposition::kSaveToDisk:
+      case ui::mojom::WindowOpenDisposition::kOffTheRecord:
         break;
       default:
-        modified_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+        modified_params.disposition =
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab;
         break;
     }
 
@@ -747,40 +825,25 @@ bool ReadAnythingController::HandleEscapeKey(
   return false;
 }
 
-void ReadAnythingController::OnDistillationStateChanged(
-    DistillationState new_state) {
-  if (freeze_distillation_for_testing_) {
+void ReadAnythingController::OnEmptyStateChanged(bool is_empty) {
+  if (freeze_empty_state_for_testing_) {
     return;
   }
 
-  auto* user_ed =
-      BrowserUserEducationInterface::From(tab_->GetBrowserWindowInterface());
+  is_showing_empty_state_ = is_empty;
 
-  if (new_state == DistillationState::kDistillationEmpty) {
-    if (user_ed) {
-      user_ed->AbortFeaturePromo(
-          feature_engagement::kIPHReadingModeLineFocusFeature);
-    }
+  if (is_empty &&
+      GetPresentationState() == PresentationState::kInImmersiveOverlay) {
+    base::UmaHistogramEnumeration(
+        "Accessibility.ReadAnything.SidePanelTriggeredByEmptyState",
+        ReadAnythingOpenTrigger::kReadAnythingTogglePresentationButton);
 
-    if (GetPresentationState() == PresentationState::kInImmersiveOverlay) {
-      base::UmaHistogramEnumeration(
-          "Accessibility.ReadAnything.SidePanelTriggeredByEmptyState",
-          ReadAnythingOpenTrigger::kReadAnythingTogglePresentationButton);
-
-      TogglePresentation(/*is_user_initiated=*/false);
-    }
-  } else if (features::IsReadAnythingLineFocusEnabled() &&
-             new_state == DistillationState::kDistillationWithContent &&
-             GetPresentationState() != PresentationState::kInactive &&
-             user_ed) {
-    // Only show the line focus IPH if there is content because line focus does
-    // not do anything on an empty page.
-    user_ed->MaybeShowFeaturePromo(
-        feature_engagement::kIPHReadingModeLineFocusFeature);
+    TogglePresentation(/*is_user_initiated=*/false);
   }
-  distillation_state_ = new_state;
 }
 
 void ReadAnythingController::SetDwellTimeForTesting(base::TimeTicks test_time) {
-  omnibox_controller_->SetDwellTimeForTesting(test_time);
+  if (omnibox_controller_) {
+    omnibox_controller_->SetDwellTimeForTesting(test_time);
+  }
 }

@@ -88,27 +88,12 @@ enum class GetDisplayMediaSystemWindowOrExcludeConstraint {
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
-enum class GetDisplayMediaConstraintsDisplaySurface {
-  kNotSpecified = 0,
-  kTab = 1,
-  kWindow = 2,
-  kMonitor = 3,
-  kMaxValue = kMonitor
-};
-
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
 enum class GetDisplayMediaBooleanConstraint {
   kNotSpecified = 0,
   kTrue = 1,
   kFalse = 2,
   kMaxValue = kFalse
 };
-
-void RecordUma(GetDisplayMediaConstraintsDisplaySurface value) {
-  base::UmaHistogramEnumeration(
-      "Media.GetDisplayMedia.Constraints.DisplaySurface", value);
-}
 
 template <typename NumericConstraint>
 bool SetUsesNumericConstraint(
@@ -328,25 +313,6 @@ void RecordGetDisplayMediaSystemWindowOrExcludeConstraintUma(
     }
   }
   base::UmaHistogramEnumeration(histogram_name, value);
-}
-
-void RecordPreferredDisplaySurfaceConstraintUma(
-    const mojom::blink::PreferredDisplaySurface preferred_display_surface) {
-  switch (preferred_display_surface) {
-    case mojom::blink::PreferredDisplaySurface::NO_PREFERENCE:
-      RecordUma(GetDisplayMediaConstraintsDisplaySurface::kNotSpecified);
-      return;
-    case mojom::blink::PreferredDisplaySurface::MONITOR:
-      RecordUma(GetDisplayMediaConstraintsDisplaySurface::kMonitor);
-      return;
-    case mojom::blink::PreferredDisplaySurface::WINDOW:
-      RecordUma(GetDisplayMediaConstraintsDisplaySurface::kWindow);
-      return;
-    case mojom::blink::PreferredDisplaySurface::BROWSER:
-      RecordUma(GetDisplayMediaConstraintsDisplaySurface::kTab);
-      return;
-  }
-  NOTREACHED();
 }
 
 void RecordBooleanConstraintUma(std::optional<bool> boolean,
@@ -590,15 +556,6 @@ UserMediaRequest* UserMediaRequest::Create(
     return nullptr;
   }
   result->set_exclude_self_browser_surface(exclude_self_browser_surface);
-  if (media_type == UserMediaRequestType::kDisplayMedia) {
-    std::optional<V8DisplayMediaIncludeOrExclude::Enum> include_or_exclude;
-    if (options->hasSelfBrowserSurface()) {
-      include_or_exclude = options->selfBrowserSurface().AsEnum();
-    }
-    RecordGetDisplayMediaIncludeExcludeConstraintUma(
-        include_or_exclude,
-        "Media.GetDisplayMedia.Constraints.SelfBrowserSurface");
-  }
 
   mojom::blink::PreferredDisplaySurface preferred_display_surface =
       mojom::blink::PreferredDisplaySurface::NO_PREFERENCE;
@@ -610,23 +567,12 @@ UserMediaRequest* UserMediaRequest::Create(
     preferred_display_surface = mojom::blink::PreferredDisplaySurface::BROWSER;
   }
   result->set_preferred_display_surface(preferred_display_surface);
-  if (media_type == UserMediaRequestType::kDisplayMedia)
-    RecordPreferredDisplaySurfaceConstraintUma(preferred_display_surface);
 
   // The default is to request dynamic surface switching.
   result->set_dynamic_surface_switching_requested(
       !options->hasSurfaceSwitching() ||
       options->surfaceSwitching().AsEnum() ==
           V8DisplayMediaIncludeOrExclude::Enum::kInclude);
-  if (media_type == UserMediaRequestType::kDisplayMedia) {
-    std::optional<V8DisplayMediaIncludeOrExclude::Enum> include_or_exclude;
-    if (options->hasSurfaceSwitching()) {
-      include_or_exclude = options->surfaceSwitching().AsEnum();
-    }
-    RecordGetDisplayMediaIncludeExcludeConstraintUma(
-        include_or_exclude,
-        "Media.GetDisplayMedia.Constraints.SurfaceSwitching");
-  }
 
   // The default is to include.
   const bool exclude_monitor_type_surfaces =
@@ -641,15 +587,6 @@ UserMediaRequest* UserMediaRequest::Create(
     return nullptr;
   }
   result->set_exclude_monitor_type_surfaces(exclude_monitor_type_surfaces);
-  if (media_type == UserMediaRequestType::kDisplayMedia) {
-    std::optional<V8DisplayMediaIncludeOrExclude::Enum> include_or_exclude;
-    if (options->hasMonitorTypeSurfaces()) {
-      include_or_exclude = options->monitorTypeSurfaces().AsEnum();
-    }
-    RecordGetDisplayMediaIncludeExcludeConstraintUma(
-        include_or_exclude,
-        "Media.GetDisplayMedia.Constraints.MonitorTypeSurfaces");
-  }
 
   result->set_audio_selection_preferred(options->hasAudioSelection());
   if (media_type == UserMediaRequestType::kDisplayMedia) {
@@ -661,11 +598,6 @@ UserMediaRequest* UserMediaRequest::Create(
 
   result->set_suppress_local_audio_playback(
       suppress_local_audio_playback.value_or(false));
-  if (media_type == UserMediaRequestType::kDisplayMedia) {
-    RecordBooleanConstraintUma(
-        suppress_local_audio_playback,
-        "Media.GetDisplayMedia.Constraints.SuppressLocalAudioPlayback");
-  }
   result->set_restrict_own_audio(restrict_own_audio.value_or(false));
   if (RuntimeEnabledFeatures::RestrictOwnAudioEnabled()) {
     if (media_type == UserMediaRequestType::kDisplayMedia) {

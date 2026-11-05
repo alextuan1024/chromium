@@ -11,7 +11,6 @@
 #include "base/test/bind.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/common/pref_names.h"
@@ -42,7 +41,8 @@ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWidgetContentsViewElementId);
 DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<gfx::Rect>,
                                     kWidgetBoundsState);
 
-std::unique_ptr<views::Widget> CreateWidgetWithNoNonClientView() {
+std::unique_ptr<views::Widget> CreateWidgetWithNoNonClientView(
+    gfx::NativeView parent = gfx::NativeView()) {
   auto content_view = std::make_unique<views::View>();
   content_view->SetPreferredSize(gfx::Size(500, 500));
   content_view->SetBackground(views::CreateSolidBackground(SK_ColorBLUE));
@@ -51,6 +51,7 @@ std::unique_ptr<views::Widget> CreateWidgetWithNoNonClientView() {
       views::Widget::InitParams::Ownership::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::Type::TYPE_WINDOW_FRAMELESS);
   widget_params.bounds = gfx::Rect({0, 0}, content_view->GetPreferredSize());
+  widget_params.parent = parent;
 
   auto widget = std::make_unique<views::Widget>();
   widget->Init(std::move(widget_params));
@@ -62,7 +63,7 @@ std::unique_ptr<views::Widget> CreateWidgetWithNoNonClientView() {
   return widget;
 }
 
-std::unique_ptr<views::Widget> CreateAutoresizeWidget() {
+std::unique_ptr<views::Widget> CreateAutoresizeWidget(gfx::NativeView parent) {
   auto content_view = std::make_unique<views::View>();
   content_view->SetPreferredSize(gfx::Size(500, 500));
   content_view->SetBackground(views::CreateSolidBackground(SK_ColorBLUE));
@@ -72,6 +73,7 @@ std::unique_ptr<views::Widget> CreateAutoresizeWidget() {
       views::Widget::InitParams::Type::TYPE_WINDOW_FRAMELESS);
   widget_params.bounds = gfx::Rect({0, 0}, content_view->GetPreferredSize());
   widget_params.autosize = true;
+  widget_params.parent = parent;
 
   auto widget = std::make_unique<views::Widget>();
   widget->Init(std::move(widget_params));
@@ -126,7 +128,13 @@ class TabDialogManagerBrowserTest : public InteractiveBrowserTest {
   TabDialogManager* GetTabDialogManager() {
     TabInterface* tab_interface = browser()->GetActiveTabInterface();
     CHECK(tab_interface);
-    return tab_interface->GetTabFeatures()->tab_dialog_manager();
+    return TabDialogManager::From(tab_interface);
+  }
+
+  gfx::NativeView GetHostNativeView() {
+    views::Widget* host = GetTabDialogManager()->GetHostWidget();
+    CHECK(host);
+    return host->GetNativeView();
   }
 
   void SetUpOnMainThread() override {
@@ -270,7 +278,7 @@ IN_PROC_BROWSER_TEST_F(TabDialogManagerBrowserTest,
 
   RunTestSequence(
       Do([&, this]() {
-        widget = CreateAutoresizeWidget();
+        widget = CreateAutoresizeWidget(GetHostNativeView());
         GetTabDialogManager()->ShowDialog(
             widget.get(), std::make_unique<tabs::TabDialogManager::Params>());
       }),
@@ -305,7 +313,7 @@ IN_PROC_BROWSER_TEST_F(TabDialogManagerBrowserTest,
 
   RunTestSequence(
       Do([&, this]() {
-        widget = CreateAutoresizeWidget();
+        widget = CreateAutoresizeWidget(GetHostNativeView());
         GetTabDialogManager()->ShowDialog(
             widget.get(), std::make_unique<tabs::TabDialogManager::Params>());
       }),
@@ -341,7 +349,7 @@ IN_PROC_BROWSER_TEST_F(TabDialogManagerBrowserTest, AnimatedBoundsChange) {
 
   RunTestSequence(
       Do([&, this]() {
-        widget = CreateWidgetWithNoNonClientView();
+        widget = CreateWidgetWithNoNonClientView(GetHostNativeView());
         TabDialogManager* manager = GetTabDialogManager();
         auto params = std::make_unique<tabs::TabDialogManager::Params>();
         params->animated = true;
@@ -406,8 +414,7 @@ class TabDialogManagerPixelTest : public DialogBrowserTest {
   void ShowUi(const std::string& name) override {
     TabInterface* tab_interface = browser()->GetActiveTabInterface();
     CHECK(tab_interface);
-    TabDialogManager* manager =
-        tab_interface->GetTabFeatures()->tab_dialog_manager();
+    TabDialogManager* manager = TabDialogManager::From(tab_interface);
 
     widget_ = CreateWidgetWithDialogModel();
     manager->ShowDialog(widget_.get(),

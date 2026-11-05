@@ -23,6 +23,7 @@
 #include "components/autofill/core/browser/form_parsing/determine_regex_types.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/geo/alternative_state_name_map_test_util.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_util.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
 #include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
@@ -81,6 +82,7 @@ using ::testing::IsEmpty;
 using ::testing::Matcher;
 using ::testing::Not;
 using ::testing::Pair;
+using ::testing::SizeIs;
 using ::testing::UnorderedElementsAre;
 using ::testing::UnorderedElementsAreArray;
 
@@ -935,6 +937,42 @@ TEST_F(DeterminePossibleFieldTypesForUploadTest,
       ElementsAre(HasTypes(PASSPORT_NUMBER), HasTypes(UNKNOWN_TYPE)));
 }
 
+// Tests that no votes are generated for values on file or in fields that don't
+// meet `ShouldImportValueForAttribute()`.
+TEST_F(DeterminePossibleFieldTypesForUploadTest,
+       CrowdsourceMaskedAutofillAiTypes_ValidValueForImport) {
+  constexpr char16_t kInvalidRedressNumber[] = u"123456";
+  ASSERT_FALSE(ShouldImportValueForAttribute(
+      AttributeType(AttributeTypeName::kRedressNumberNumber),
+      kInvalidRedressNumber));
+
+  FormData form;
+  form.set_fields({CreateTestFormField("number", "number",
+                                       base::UTF16ToUTF8(kInvalidRedressNumber),
+                                       FormControlType::kInputText)});
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(form);
+
+  EntityInstance unmasked_entity =
+      test::GetRedressNumberEntityInstance({.number = kInvalidRedressNumber});
+  // A masked redress number whose suffix matches the field's value.
+  EntityInstance masked_entity =
+      test::MaskEntityInstance(test::GetRedressNumberEntityInstance(
+          {.number = u"56",
+           .record_type = EntityInstance::RecordType::kServerWallet}));
+
+  // Expect that no votes are generated for the field.
+  EXPECT_THAT(
+      DeterminePossibleFieldTypesForUpload(
+          std::vector<AutofillProfile>(), std::vector<CreditCard>(),
+          std::vector<EntityInstance>{unmasked_entity, masked_entity},
+          std::vector<LoyaltyCard>(),
+          /*fields_that_match_state=*/{},
+          /*last_unlocked_credit_card_cvc=*/u"", std::vector<OneTimeToken>(),
+          "en-US", form_structure->fields()),
+      ElementsAre(HasTypes(UNKNOWN_TYPE)));
+}
+
 // Tests that only masked attributes with at least 2 known digits are
 // crowdsourced to prevent false positives.
 TEST_F(DeterminePossibleFieldTypesForUploadTest,
@@ -1155,8 +1193,9 @@ TEST_F(PreProcessStateMatchingTypesTest, PreProcessStateMatchingTypes) {
     ASSERT_EQ(form_structure.fields()[0]->initial_value(), u"");
     ASSERT_EQ(form_structure.fields()[1]->initial_value(), u"");
 
-    EXPECT_THAT(PreProcessStateMatchingTypes(profiles, form_structure,
-                                             client().GetAppLocale()),
+    EXPECT_THAT(PreProcessStateMatchingTypes(
+                    profiles, form_structure,
+                    std::string(client().GetAppLocale().tag_string())),
                 ElementsAre(form_structure.field(1)->global_id()));
   }
 
@@ -1173,8 +1212,9 @@ TEST_F(PreProcessStateMatchingTypesTest, PreProcessStateMatchingTypes) {
     FormStructure form_structure(form);
     EXPECT_EQ(form_structure.field_count(), 2U);
 
-    EXPECT_THAT(PreProcessStateMatchingTypes(profiles, form_structure,
-                                             client().GetAppLocale()),
+    EXPECT_THAT(PreProcessStateMatchingTypes(
+                    profiles, form_structure,
+                    std::string(client().GetAppLocale().tag_string())),
                 IsEmpty());
   }
 
@@ -1202,8 +1242,9 @@ TEST_F(PreProcessStateMatchingTypesTest, PreProcessStateMatchingTypes) {
   ASSERT_EQ(form_structure.fields()[0]->initial_value(), u"");
   ASSERT_EQ(form_structure.fields()[1]->initial_value(), u"");
 
-  EXPECT_THAT(PreProcessStateMatchingTypes(profiles, form_structure,
-                                           client().GetAppLocale()),
+  EXPECT_THAT(PreProcessStateMatchingTypes(
+                  profiles, form_structure,
+                  std::string(client().GetAppLocale().tag_string())),
               ElementsAre(form_structure.field(1)->global_id()));
 }
 
@@ -1635,10 +1676,8 @@ TEST_F(DeterminePossibleFieldTypesForUploadTest,
           /*last_unlocked_credit_card_cvc=*/u"", /*recent_otps=*/{}, "en-us",
           form_structure->fields());
 
-  ASSERT_EQ(possible_types.size(), 3u);
-  EXPECT_TRUE(possible_types[1].types.contains(PHONE_HOME_COUNTRY_CODE));
-  EXPECT_FALSE(possible_types[1].types.contains(ADDRESS_HOME_COUNTRY));
-  EXPECT_EQ(possible_types[1].types.size(), 1u);
+  ASSERT_THAT(possible_types, SizeIs(3u));
+  EXPECT_THAT(possible_types[1].types, ElementsAre(PHONE_HOME_COUNTRY_CODE));
 }
 
 // Test that Autofill.Timing.DeterminePossibleFieldTypesForUpload is logged.
@@ -1657,7 +1696,7 @@ TEST_F(DeterminePossibleFieldTypesForUploadTest,
           /*loyalty_cards=*/{}, /*fields_that_match_state=*/{},
           /*last_unlocked_credit_card_cvc=*/u"", /*recent_otps=*/{}, "en-US",
           form_structure->fields());
-  EXPECT_EQ(possible_types.size(), 1u);
+  EXPECT_THAT(possible_types, SizeIs(1u));
 
   histogram_tester.ExpectTotalCount(
       "Autofill.Timing.DeterminePossibleFieldTypesForUpload", 1);

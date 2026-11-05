@@ -154,7 +154,7 @@ QueryFields::QueryFields() = default;
 QueryFields::~QueryFields() = default;
 
 VectorIterator::VectorIterator(
-    std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>* nodes)
+    std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>* nodes)
     : nodes_(nodes), current_(nodes->begin()) {}
 
 VectorIterator::~VectorIterator() = default;
@@ -252,7 +252,7 @@ BookmarkNodesSplitByAccountAndLocal GetMostRecentlyUsedFoldersForDisplay(
   static constexpr size_t kMaxMRUFolders = 5;
 
   std::vector<raw_ptr<const BookmarkNode>> mru_nodes =
-      bookmarks::GetMostRecentlyModifiedUserFolders(model);
+      GetMostRecentlyModifiedUserFolders(model);
   const BookmarkNode* const most_recent_node =
       mru_nodes.empty() ? nullptr : mru_nodes[0];
 
@@ -312,8 +312,6 @@ BookmarkNodesSplitByAccountAndLocal GetMostRecentlyUsedFoldersForDisplay(
   // Split between account and local nodes if there are account nodes.
   BookmarkNodesSplitByAccountAndLocal result;
   if (account_nodes_exist) {
-    std::vector<const BookmarkNode*> account_nodes;
-    std::vector<const BookmarkNode*> local_nodes;
     for (const BookmarkNode* mru_node : mru_nodes) {
       (model->IsLocalOnlyNode(*mru_node) ? result.local_nodes
                                          : result.account_nodes)
@@ -408,7 +406,7 @@ std::vector<const BookmarkNode*> GetBookmarksMatchingProperties(
   if (query.url) {
     // Shortcut into the BookmarkModel if searching for URL.
     GURL url(*query.url);
-    std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>
+    std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>
         url_matched_nodes;
     if (url.is_valid()) {
       url_matched_nodes = model->GetNodesByURL(url);
@@ -426,7 +424,7 @@ std::vector<const BookmarkNode*> GetBookmarksMatchingProperties(
 
 // Parses the provided query and returns a vector of query words.
 std::vector<std::u16string> ParseBookmarkQuery(
-    const bookmarks::QueryFields& query) {
+    const QueryFields& query) {
   std::vector<std::u16string> query_words;
   if (query.word_phrase_query) {
     query_parser::QueryParser::ParseQueryWords(
@@ -540,7 +538,7 @@ bool IsDescendantOf(const BookmarkNode* node, const BookmarkNode* root) {
 }
 
 bool HasDescendantsOf(
-    const std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>& list,
+    const std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>& list,
     const BookmarkNode* root) {
   for (const BookmarkNode* node : list) {
     if (IsDescendantOf(node, root)) {

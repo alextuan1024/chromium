@@ -4,9 +4,21 @@
 
 #include "ui/gfx/win/hwnd_util.h"
 
+#include <shobjidl.h>
+#include <windows.h>
+
 #include <dwmapi.h>
 #include <winuser.h>
+#include <wrl/client.h>
+#include <wrl/implements.h>
 
+#include <map>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <utility>
+
+#include "base/win/scoped_com_initializer.h"
 #include "base/win/scoped_gdi_object.h"
 #include "base/win/scoped_hdc.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -77,6 +89,56 @@ HWND TestWin32Window::Create(DWORD style) {
                          nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
   ShowWindow(hwnd_, SW_SHOWNORMAL);
   EXPECT_TRUE(UpdateWindow(hwnd_));
+  return hwnd_;
+}
+
+// Registers a window class with the given name, and creates and shows a window
+// of that class. Destroys the window and unregisters the class when destroyed.
+class TestWindowOfClass {
+ public:
+  explicit TestWindowOfClass(std::wstring class_name)
+      : class_name_(std::move(class_name)) {}
+
+  TestWindowOfClass(const TestWindowOfClass&) = delete;
+  TestWindowOfClass& operator=(const TestWindowOfClass&) = delete;
+
+  ~TestWindowOfClass();
+
+  // Returns null on failure.
+  HWND Create(DWORD style, DWORD ex_style);
+
+ private:
+  const std::wstring class_name_;
+  const HINSTANCE instance_ = ::GetModuleHandle(nullptr);
+  bool registered_ = false;
+  HWND hwnd_ = nullptr;
+};
+
+TestWindowOfClass::~TestWindowOfClass() {
+  // The window must be gone before its class can be unregistered.
+  if (hwnd_) {
+    EXPECT_TRUE(DestroyWindow(hwnd_));
+  }
+  if (registered_) {
+    EXPECT_TRUE(UnregisterClass(class_name_.c_str(), instance_));
+  }
+}
+
+HWND TestWindowOfClass::Create(DWORD style, DWORD ex_style) {
+  WNDCLASSEX wcex = {sizeof(wcex)};
+  wcex.lpfnWndProc = DefWindowProc;
+  wcex.hInstance = instance_;
+  wcex.lpszClassName = class_name_.c_str();
+  registered_ = RegisterClassEx(&wcex) != 0;
+  if (!registered_) {
+    return nullptr;
+  }
+  hwnd_ =
+      CreateWindowEx(ex_style, class_name_.c_str(), class_name_.c_str(), style,
+                     0, 0, 100, 100, nullptr, nullptr, instance_, nullptr);
+  if (hwnd_) {
+    ShowWindow(hwnd_, SW_SHOWNORMAL);
+  }
   return hwnd_;
 }
 
@@ -237,6 +299,63 @@ TEST_F(WindowVisibleAndFullyOpaqueTest, CloakedWindow) {
   EXPECT_FALSE(CheckWindowVisibleAndFullyOpaque(hwnd, &win_rect));
 }
 
+TEST_F(WindowVisibleAndFullyOpaqueTest, SimpleRegionWindow) {
+  HWND hwnd = CreateNativeWindow(/*style=*/0, /*ex_style=*/0);
+  Rect win_rect;
+  base::win::ScopedGDIObject<HRGN> region(CreateRectRgn(0, 0, 50, 50));
+  ASSERT_TRUE(region.is_valid());
+  ASSERT_TRUE(SetWindowRgn(hwnd, region.get(), /*redraw=*/TRUE));
+  // The system owns the region once SetWindowRgn() succeeds.
+  std::ignore = region.release();
+  RECT region_box;
+  ASSERT_EQ(GetWindowRgnBox(hwnd, &region_box), SIMPLEREGION);
+  // A rectangular region is a simple region, so the window still counts.
+  EXPECT_TRUE(CheckWindowVisibleAndFullyOpaque(hwnd, &win_rect));
+}
+
+TEST_F(WindowVisibleAndFullyOpaqueTest, MaximizedWindow) {
+  HWND hwnd = CreateNativeWindow(/*style=*/0, /*ex_style=*/0);
+  ShowWindow(hwnd, SW_MAXIMIZE);
+  ASSERT_TRUE(IsZoomed(hwnd));
+  Rect returned_rect;
+  EXPECT_TRUE(CheckWindowVisibleAndFullyOpaque(hwnd, &returned_rect));
+
+  // The frame of a maximized window extends past the monitor's work area, so
+  // the returned rect is the window rect fitted to the work area.
+  RECT win_rect;
+  ASSERT_TRUE(GetWindowRect(hwnd, &win_rect));
+  MONITORINFO monitor_info = {sizeof(monitor_info)};
+  ASSERT_TRUE(GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                             &monitor_info));
+  Rect expected_rect(win_rect);
+  expected_rect.AdjustToFit(Rect(monitor_info.rcWork));
+  EXPECT_EQ(returned_rect, expected_rect);
+}
+
+// The Windows taskbar is a popup tool window. Its class name exempts it from
+// both the tool window and the popup window filters.
+TEST_F(WindowVisibleAndFullyOpaqueTest, TaskbarWindow) {
+  TestWindowOfClass test_window(L"Shell_TrayWnd");
+  HWND hwnd = test_window.Create(WS_POPUP, WS_EX_TOOLWINDOW);
+  ASSERT_TRUE(hwnd);
+  Rect win_rect;
+  EXPECT_TRUE(CheckWindowVisibleAndFullyOpaque(hwnd, &win_rect));
+}
+
+// A popup window whose class name starts with "Chrome_WidgetWin_" is exempt
+// from the popup window filter, even when the class name has the maximum
+// length of 255 characters. A name that long must not be mistaken for a
+// truncated one.
+TEST_F(WindowVisibleAndFullyOpaqueTest, PopupWindowWithLongestClassName) {
+  std::wstring class_name = L"Chrome_WidgetWin_";
+  class_name.resize(255, L'x');
+  TestWindowOfClass test_window(class_name);
+  HWND hwnd = test_window.Create(WS_POPUP, /*ex_style=*/0);
+  ASSERT_TRUE(hwnd);
+  Rect win_rect;
+  EXPECT_TRUE(CheckWindowVisibleAndFullyOpaque(hwnd, &win_rect));
+}
+
 // Verifies that WindowImpl::WndProc forwards messages to DefWindowProc when
 // GWLP_USERDATA is null (for example after ClearUserData() runs before
 // DestroyWindow()).
@@ -254,6 +373,199 @@ TEST(WindowImplTest, WndProcCallsDefWindowProcWhenUserDataIsNull) {
   EXPECT_NE(result, 0)
       << "WndProc should forward to DefWindowProc when GWLP_USERDATA is "
          "null.";
+}
+
+namespace {
+
+constexpr GUID kCurrentDesktopId = {
+    0x11111111,
+    0x2222,
+    0x3333,
+    {0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb}};
+constexpr GUID kOtherDesktopId = {
+    0x22222222,
+    0x3333,
+    0x4444,
+    {0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc}};
+
+// Models Explorer's per-window virtual desktop state: a newly registered window
+// starts with GUID_NULL (which is not on the current desktop) until Explorer
+// asynchronously assigns a concrete desktop GUID.
+class FakeVirtualDesktopManager
+    : public Microsoft::WRL::RuntimeClass<
+          Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+          IVirtualDesktopManager> {
+ public:
+  FakeVirtualDesktopManager() = default;
+  FakeVirtualDesktopManager(const FakeVirtualDesktopManager&) = delete;
+  FakeVirtualDesktopManager& operator=(const FakeVirtualDesktopManager&) =
+      delete;
+  ~FakeVirtualDesktopManager() override = default;
+
+  IFACEMETHODIMP IsWindowOnCurrentVirtualDesktop(
+      HWND top_level_window,
+      BOOL* on_current_desktop) override {
+    if (!on_current_desktop) {
+      return E_POINTER;
+    }
+    *on_current_desktop = FALSE;
+    if (FAILED(is_on_current_desktop_error_)) {
+      if (is_on_current_desktop_calls_before_failure_ == 0) {
+        return is_on_current_desktop_error_;
+      }
+      --is_on_current_desktop_calls_before_failure_;
+    }
+    auto it = window_desktops_.find(top_level_window);
+    if (it == window_desktops_.end()) {
+      return TYPE_E_ELEMENTNOTFOUND;
+    }
+    *on_current_desktop =
+        (it->second != GUID_NULL && it->second == current_desktop_id_) ? TRUE
+                                                                       : FALSE;
+    ApplyPendingAssignment();
+    return S_OK;
+  }
+
+  IFACEMETHODIMP GetWindowDesktopId(HWND top_level_window,
+                                    GUID* desktop_id) override {
+    if (!desktop_id) {
+      return E_POINTER;
+    }
+    *desktop_id = GUID_NULL;
+    ++get_desktop_id_call_count_;
+    if (FAILED(get_desktop_id_error_)) {
+      return get_desktop_id_error_;
+    }
+    auto it = window_desktops_.find(top_level_window);
+    if (it == window_desktops_.end()) {
+      return TYPE_E_ELEMENTNOTFOUND;
+    }
+    *desktop_id = it->second;
+    return S_OK;
+  }
+
+  IFACEMETHODIMP MoveWindowToDesktop(HWND top_level_window,
+                                     REFGUID desktop_id) override {
+    return E_NOTIMPL;
+  }
+
+  int get_desktop_id_call_count() const { return get_desktop_id_call_count_; }
+
+  void SetWindowDesktopId(HWND window, const GUID& desktop_id) {
+    window_desktops_[window] = desktop_id;
+  }
+
+  // Registers `window` with GUID_NULL initially, then assigns `desktop_id`
+  // after the first IsWindowOnCurrentVirtualDesktop() call completes.
+  void QueueAsyncDesktopAssignment(HWND window, const GUID& desktop_id) {
+    window_desktops_[window] = GUID_NULL;
+    pending_assignment_ = std::make_pair(window, desktop_id);
+  }
+
+  void FailIsWindowOnCurrentVirtualDesktop(HRESULT hr,
+                                           int calls_before_failure = 0) {
+    is_on_current_desktop_error_ = hr;
+    is_on_current_desktop_calls_before_failure_ = calls_before_failure;
+  }
+
+  void FailGetWindowDesktopId(HRESULT hr) { get_desktop_id_error_ = hr; }
+
+ private:
+  void ApplyPendingAssignment() {
+    if (pending_assignment_) {
+      window_desktops_[pending_assignment_->first] =
+          pending_assignment_->second;
+      pending_assignment_.reset();
+    }
+  }
+
+  GUID current_desktop_id_ = kCurrentDesktopId;
+  std::map<HWND, GUID> window_desktops_;
+  std::optional<std::pair<HWND, GUID>> pending_assignment_;
+  int get_desktop_id_call_count_ = 0;
+  HRESULT is_on_current_desktop_error_ = S_OK;
+  int is_on_current_desktop_calls_before_failure_ = 0;
+  HRESULT get_desktop_id_error_ = S_OK;
+};
+
+class IsWindowOnCurrentVirtualDesktopTest : public testing::Test {
+ public:
+  IsWindowOnCurrentVirtualDesktopTest() = default;
+  IsWindowOnCurrentVirtualDesktopTest(
+      const IsWindowOnCurrentVirtualDesktopTest&) = delete;
+  IsWindowOnCurrentVirtualDesktopTest& operator=(
+      const IsWindowOnCurrentVirtualDesktopTest&) = delete;
+
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(com_initializer_.Succeeded());
+    window_.Init(nullptr, Rect(0, 0, 100, 100));
+    ASSERT_TRUE(::IsWindow(window_.hwnd()));
+    vdm_ = Microsoft::WRL::Make<FakeVirtualDesktopManager>();
+  }
+
+  HWND hwnd() const { return window_.hwnd(); }
+
+  base::win::ScopedCOMInitializer com_initializer_;
+  TestNativeWindow window_;
+  Microsoft::WRL::ComPtr<FakeVirtualDesktopManager> vdm_;
+};
+
+}  // namespace
+
+TEST_F(IsWindowOnCurrentVirtualDesktopTest, OnCurrentDesktop) {
+  vdm_->SetWindowDesktopId(hwnd(), kCurrentDesktopId);
+
+  EXPECT_EQ(IsWindowOnCurrentVirtualDesktop(hwnd(), vdm_), true);
+  // Fast path should not make a second COM call to query the desktop GUID.
+  EXPECT_EQ(vdm_->get_desktop_id_call_count(), 0);
+}
+
+TEST_F(IsWindowOnCurrentVirtualDesktopTest, OffCurrentDesktop) {
+  vdm_->SetWindowDesktopId(hwnd(), kOtherDesktopId);
+
+  EXPECT_EQ(IsWindowOnCurrentVirtualDesktop(hwnd(), vdm_), false);
+}
+
+TEST_F(IsWindowOnCurrentVirtualDesktopTest, GuidNullTreatedAsOnCurrentDesktop) {
+  vdm_->SetWindowDesktopId(hwnd(), GUID_NULL);
+
+  EXPECT_EQ(IsWindowOnCurrentVirtualDesktop(hwnd(), vdm_), true);
+}
+
+TEST_F(IsWindowOnCurrentVirtualDesktopTest,
+       AssignedToCurrentDesktopDuringCheck) {
+  vdm_->QueueAsyncDesktopAssignment(hwnd(), kCurrentDesktopId);
+
+  EXPECT_EQ(IsWindowOnCurrentVirtualDesktop(hwnd(), vdm_), true);
+}
+
+TEST_F(IsWindowOnCurrentVirtualDesktopTest, AssignedToOtherDesktopDuringCheck) {
+  vdm_->QueueAsyncDesktopAssignment(hwnd(), kOtherDesktopId);
+
+  EXPECT_EQ(IsWindowOnCurrentVirtualDesktop(hwnd(), vdm_), false);
+}
+
+TEST_F(IsWindowOnCurrentVirtualDesktopTest, InitialCheckFailureReturnsNullopt) {
+  // Untracked window fails IsWindowOnCurrentVirtualDesktop() with
+  // TYPE_E_ELEMENTNOTFOUND.
+  EXPECT_EQ(IsWindowOnCurrentVirtualDesktop(hwnd(), vdm_), std::nullopt);
+}
+
+TEST_F(IsWindowOnCurrentVirtualDesktopTest,
+       GetWindowDesktopIdFailureReturnsNullopt) {
+  vdm_->SetWindowDesktopId(hwnd(), GUID_NULL);
+  vdm_->FailGetWindowDesktopId(TYPE_E_ELEMENTNOTFOUND);
+
+  EXPECT_EQ(IsWindowOnCurrentVirtualDesktop(hwnd(), vdm_), std::nullopt);
+}
+
+TEST_F(IsWindowOnCurrentVirtualDesktopTest, RecheckFailureReturnsNullopt) {
+  vdm_->QueueAsyncDesktopAssignment(hwnd(), kCurrentDesktopId);
+  vdm_->FailIsWindowOnCurrentVirtualDesktop(RPC_E_DISCONNECTED,
+                                            /*calls_before_failure=*/1);
+
+  EXPECT_EQ(IsWindowOnCurrentVirtualDesktop(hwnd(), vdm_), std::nullopt);
 }
 
 }  // namespace gfx

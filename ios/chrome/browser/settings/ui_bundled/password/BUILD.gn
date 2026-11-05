@@ -13,11 +13,14 @@ source_set("password") {
   ]
   deps = [
     ":common",
-    ":password_constants",
     ":password_utils",
     ":ui",
+    "//components/application_locale_storage",
     "//components/feature_engagement/public",
+    "//components/google/core/common",
     "//components/password_manager/core/browser",
+    "//components/password_manager/core/common",
+    "//components/prefs",
     "//components/strings",
     "//components/sync/service",
     "//ios/chrome/app/strings",
@@ -34,8 +37,9 @@ source_set("password") {
     "//ios/chrome/browser/passwords/model:password_checkup_metrics",
     "//ios/chrome/browser/passwords/model:password_checkup_utils",
     "//ios/chrome/browser/passwords/model/metrics",
+    "//ios/chrome/browser/settings/password/public:features",
+    "//ios/chrome/browser/settings/password/public:password_constants",
     "//ios/chrome/browser/settings/ui_bundled/cells",
-    "//ios/chrome/browser/settings/ui_bundled/password:features",
     "//ios/chrome/browser/settings/ui_bundled/password/password_checkup",
     "//ios/chrome/browser/settings/ui_bundled/password/password_details",
     "//ios/chrome/browser/settings/ui_bundled/password/password_issues",
@@ -46,6 +50,7 @@ source_set("password") {
     "//ios/chrome/browser/settings/ui_bundled/utils",
     "//ios/chrome/browser/shared/coordinator/alert",
     "//ios/chrome/browser/shared/coordinator/chrome_coordinator",
+    "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/public/commands",
     "//ios/chrome/browser/shared/ui/table_view",
@@ -56,7 +61,6 @@ source_set("password") {
     "//ios/chrome/common:string_util",
     "//ios/chrome/common/ui/colors",
     "//ios/chrome/common/ui/favicon:favicon_constants",
-    "//ios/chrome/common/ui/reauthentication",
     "//net",
     "//ui/base",
     "//url",
@@ -81,6 +85,8 @@ source_set("common") {
 
 source_set("ui") {
   sources = [
+    "password_filter_chips_header_item.h",
+    "password_filter_chips_header_item.mm",
     "password_manager_view_controller+Testing.h",
     "password_manager_view_controller.h",
     "password_manager_view_controller.mm",
@@ -91,37 +97,23 @@ source_set("ui") {
     "passwords_consumer.h",
     "passwords_settings_commands.h",
   ]
+  public_deps =
+      [ "//ios/chrome/browser/settings/password/public:password_constants" ]
   deps = [
-    ":features",
-    ":password_constants",
     ":password_utils",
     ":title_view",
     "//base",
-    "//components/application_locale_storage",
-    "//components/google/core/common",
-    "//components/keyed_service/core",
     "//components/password_manager/core/browser",
     "//components/password_manager/core/browser/ui",
     "//components/password_manager/core/browser/ui:credential_ui_entry",
-    "//components/password_manager/core/common",
-    "//components/prefs",
-    "//components/signin/public/identity_manager/objc",
-    "//components/strings",
-    "//components/sync/service",
     "//ios/chrome/app/strings",
-    "//ios/chrome/browser/level_up/model:task_info",
     "//ios/chrome/browser/net/model:crurl",
-    "//ios/chrome/browser/passwords/model",
     "//ios/chrome/browser/passwords/model:password_checkup_metrics",
     "//ios/chrome/browser/settings/ui_bundled:settings_root",
     "//ios/chrome/browser/settings/ui_bundled:settings_root_categories",
     "//ios/chrome/browser/settings/ui_bundled:settings_root_constants",
     "//ios/chrome/browser/settings/ui_bundled/cells",
-    "//ios/chrome/browser/settings/ui_bundled/elements:enterprise_info_popover_view_controller",
-    "//ios/chrome/browser/shared/model/application_context",
-    "//ios/chrome/browser/shared/model/url:constants",
-    "//ios/chrome/browser/shared/public/commands",
-    "//ios/chrome/browser/shared/public/features",
+    "//ios/chrome/browser/settings/ui_bundled/password/resources",
     "//ios/chrome/browser/shared/ui/elements",
     "//ios/chrome/browser/shared/ui/image",
     "//ios/chrome/browser/shared/ui/symbols",
@@ -131,31 +123,15 @@ source_set("ui") {
     "//ios/chrome/browser/shared/ui/table_view:views",
     "//ios/chrome/browser/shared/ui/table_view/cells",
     "//ios/chrome/browser/shared/ui/table_view/cells:generic_cells",
-    "//ios/chrome/browser/shared/ui/util",
     "//ios/chrome/common:string_util",
     "//ios/chrome/common/ui/colors",
     "//ios/chrome/common/ui/elements:branded_navigation_item_title_view",
     "//ios/chrome/common/ui/elements:popover_label_view_controller",
     "//ios/chrome/common/ui/favicon",
-    "//ios/chrome/common/ui/reauthentication",
     "//ios/chrome/common/ui/table_view:cells_constants",
     "//ios/chrome/common/ui/util",
-    "//net",
     "//ui/base",
     "//url",
-  ]
-}
-
-source_set("password_constants") {
-  sources = [
-    "passwords_table_view_constants.h",
-    "passwords_table_view_constants.mm",
-  ]
-  deps = [
-    "//base",
-    "//ios/chrome/browser/shared/ui/image",
-    "//ios/chrome/browser/shared/ui/list_model",
-    "//ios/chrome/browser/shared/ui/symbols",
   ]
 }
 
@@ -178,14 +154,6 @@ source_set("title_view") {
   ]
 }
 
-source_set("features") {
-  sources = [
-    "password_manager_ui_features.h",
-    "password_manager_ui_features.mm",
-  ]
-  public_deps = [ "//base" ]
-}
-
 source_set("password_utils") {
   sources = [
     "password_utils.h",
@@ -203,6 +171,7 @@ source_set("password_utils") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "password_filter_chips_header_item_unittest.mm",
     "password_manager_view_controller_unittest.mm",
     "password_utils_unittest.mm",
     "passwords_coordinator_unittest.mm",
@@ -210,7 +179,6 @@ source_set("unit_tests") {
   ]
   deps = [
     ":password",
-    ":password_constants",
     ":password_utils",
     ":ui",
     "//base",
@@ -224,9 +192,11 @@ source_set("unit_tests") {
     "//components/password_manager/core/browser:password_form",
     "//components/password_manager/core/browser:test_support",
     "//components/password_manager/core/browser/leak_detection:test_support",
+    "//components/password_manager/core/common",
     "//components/password_manager/core/common:features",
     "//components/signin/public/identity_manager/objc",
     "//components/strings",
+    "//components/sync_preferences:test_support",
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/affiliations/model",
     "//ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator",
@@ -235,8 +205,9 @@ source_set("unit_tests") {
     "//ios/chrome/browser/net/model:crurl",
     "//ios/chrome/browser/passwords/model",
     "//ios/chrome/browser/passwords/model:store_factory",
+    "//ios/chrome/browser/settings/password/public:features",
+    "//ios/chrome/browser/settings/password/public:password_constants",
     "//ios/chrome/browser/settings/ui_bundled/cells",
-    "//ios/chrome/browser/settings/ui_bundled/password:features",
     "//ios/chrome/browser/settings/ui_bundled/password/reauthentication",
     "//ios/chrome/browser/settings/ui_bundled/utils",
     "//ios/chrome/browser/shared/model/application_context",
@@ -257,8 +228,8 @@ source_set("unit_tests") {
     "//ios/chrome/browser/sync/model",
     "//ios/chrome/browser/sync/model:test_support",
     "//ios/chrome/common/ui/colors",
-    "//ios/chrome/common/ui/reauthentication:mock_reauthentication_module",
     "//ios/chrome/common/ui/table_view:cells_constants",
+    "//ios/chrome/common/ui/util",
     "//ios/chrome/test:test_support",
     "//ios/chrome/test/fakes",
     "//ios/web/public/test",
@@ -275,12 +246,14 @@ source_set("eg_test_support") {
     "password_manager_egtest_utils.h",
     "password_manager_egtest_utils.mm",
   ]
+  public_deps =
+      [ "//ios/chrome/browser/settings/password/public:password_constants" ]
   deps = [
     "//base",
     "//ios/chrome/app/strings",
+    "//ios/chrome/browser/settings/ui_bundled:constants",
     "//ios/chrome/browser/settings/ui_bundled:settings_root_constants",
     "//ios/chrome/browser/settings/ui_bundled/password:eg_test_support+eg2",
-    "//ios/chrome/browser/settings/ui_bundled/password:password_constants",
     "//ios/chrome/browser/settings/ui_bundled/password/password_checkup:password_checkup_constants",
     "//ios/chrome/browser/settings/ui_bundled/password/password_details:password_details_table_view_constants",
     "//ios/chrome/browser/settings/ui_bundled/password/password_settings:password_settings_constants",
@@ -299,7 +272,6 @@ source_set("eg_app_support+eg2") {
     "password_settings_app_interface.mm",
   ]
   deps = [
-    ":password",
     "//base",
     "//base/test:test_support",
     "//components/autofill/core/common",
@@ -310,15 +282,12 @@ source_set("eg_app_support+eg2") {
     "//components/prefs",
     "//components/strings",
     "//components/webauthn/core/browser:passkey_model",
-    "//ios/chrome/browser/device_reauth/model",
     "//ios/chrome/browser/passwords/model",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/public/commands",
     "//ios/chrome/browser/sync/model",
     "//ios/chrome/browser/webauthn/model",
-    "//ios/chrome/common/ui/reauthentication",
-    "//ios/chrome/common/ui/reauthentication:mock_reauthentication_module",
     "//ios/chrome/test/app:test_support",
     "//ios/public/provider/chrome/browser/passcode_settings:passcode_settings_api",
     "//ios/testing/earl_grey:eg_app_support+eg2",
@@ -337,7 +306,6 @@ source_set("eg_test_support+eg2") {
 
   deps = [
     "//components/password_manager/core/browser",
-    "//ios/chrome/common/ui/reauthentication",
     "//ios/testing/earl_grey:eg_test_support+eg2",
   ]
 }
@@ -349,7 +317,6 @@ source_set("eg2_tests") {
   deps = [
     ":eg_test_support",
     ":eg_test_support+eg2",
-    ":password_constants",
     "//base",
     "//base/test:test_support",
     "//components/feature_engagement/public",
@@ -367,6 +334,7 @@ source_set("eg2_tests") {
     "//ios/chrome/browser/passwords/model/metrics",
     "//ios/chrome/browser/policy/model:eg_test_support+eg2",
     "//ios/chrome/browser/settings/manage_sync/public",
+    "//ios/chrome/browser/settings/password/public:password_constants",
     "//ios/chrome/browser/settings/ui_bundled:settings_root_constants",
     "//ios/chrome/browser/settings/ui_bundled/password/password_checkup:password_checkup_constants",
     "//ios/chrome/browser/settings/ui_bundled/password/password_details:password_details_table_view_constants",
@@ -382,6 +350,7 @@ source_set("eg2_tests") {
     "//ios/chrome/test:eg_test_support+eg2",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
     "//ios/chrome/test/earl_grey:switches",
+    "//ios/testing:test_tag_registry",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//ios/web/public/test:element_selector",
     "//ui/base",

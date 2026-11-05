@@ -5,9 +5,11 @@
 #include "components/autofill/core/browser/form_import/addresses/autofill_save_update_address_profile_delegate_ios.h"
 
 #include <algorithm>
+#include <string>
 #include <utility>
 
 #include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/types/optional_util.h"
 #include "components/autofill/core/browser/ui/addresses/autofill_address_util.h"
@@ -26,7 +28,7 @@ AutofillSaveUpdateAddressProfileDelegateIOS::
         const AutofillProfile& profile,
         const AutofillProfile* original_profile,
         std::optional<std::u16string> user_email,
-        const std::string& locale,
+        const base::i18n::LanguageTag& locale,
         bool is_migration_to_account,
         AutofillClient::AddressProfileSavePromptCallback callback)
     : locale_(locale),
@@ -151,7 +153,7 @@ AutofillSaveUpdateAddressProfileDelegateIOS::GetOriginalProfile() const {
 
 std::u16string AutofillSaveUpdateAddressProfileDelegateIOS::GetProfileInfo(
     FieldType type) const {
-  return profile_.GetInfo(type, locale_);
+  return profile_.GetInfo(type, locale_.tag_string());
 }
 
 std::vector<ProfileValueDifference>

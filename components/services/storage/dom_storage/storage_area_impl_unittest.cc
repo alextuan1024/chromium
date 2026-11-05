@@ -39,6 +39,7 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 #include "url/gurl.h"
 
 namespace storage {
@@ -417,7 +418,7 @@ class StorageAreaImplTestBase : public testing::Test,
 
   scoped_refptr<DomStorageDatabase::SharedMapLocator> GenerateMapLocator(
       int64_t map_id) {
-    std::string session_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+    std::string session_id = blink::AllocateSessionStorageNamespaceId();
     return base::MakeRefCounted<DomStorageDatabase::SharedMapLocator>(
         DomStorageDatabase::MapLocator(std::move(session_id), test_storage_key_,
                                        map_id));
@@ -949,7 +950,6 @@ TEST_P(StorageAreaImplCacheModeTest, PutWhenAlreadyOverQuotaBecauseOfLargeKey) {
 
 TEST_P(StorageAreaImplCacheModeTest, PutAfterPurgeMemory) {
   storage_area_impl()->SetCacheModeForTesting(GetCacheMode());
-  std::vector<uint8_t> result;
   const auto key = test_key2_bytes_;
   const auto value = test_value2_bytes_;
   EXPECT_TRUE(PutSync(key, value, value));
@@ -1499,7 +1499,6 @@ TEST_P(StorageAreaImplTest, MapForkingPseudoFuzzer) {
   // areas (which may or may not be maintaining their own cache).
   for (size_t i = 0; i < kTotalAreas; i++) {
     FuzzState& state = states[i];
-    std::vector<uint8_t> result;
 
     // Note: this will cause all keys-only areas to commit.
     std::string result1 = GetSyncStrUsingGetAll(areas[i].get(), kKey1);
@@ -1547,7 +1546,6 @@ TEST_P(StorageAreaImplTest, MapForkingPseudoFuzzer) {
 
 TEST_P(StorageAreaImplCacheModeTest, EmptyMapIgnoresDisk) {
   const std::string kValue = "foo";
-  const std::vector<uint8_t> kValueVec = ToBytes(kValue);
 
   // Set fake data to ensure that our shortcut doesn't read it.
   SetDatabaseEntry(*cloned_map_locator1_, test_key1_, kValue);
@@ -1565,7 +1563,6 @@ TEST_P(StorageAreaImplCacheModeTest, EmptyMapIgnoresDisk) {
 
 TEST_P(StorageAreaImplCacheModeTest, ForkFromEmptyMap) {
   const std::string kValue = "foo";
-  const std::vector<uint8_t> kValueVec = ToBytes(kValue);
 
   // Set fake data to ensure that our shortcut doesn't read it.
   SetDatabaseEntry(*cloned_map_locator1_, test_key1_, kValue);

@@ -19,13 +19,27 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/thread_annotations.h"
+#include "base/time/time.h"
 #include "media/base/android/media_codec_util.h"
 #include "media/base/android/media_format_color_space.h"
 #include "media/base/media_switches.h"
 
 namespace media {
+
+namespace {
+
+// Threshold for detecting sub-VSync consecutive output buffer releases (~half
+// of a 16.67 ms 60 Hz VSync period). Fixed to 60 Hz because CodecWrapperImpl
+// operates at the MediaCodec layer without display refresh-rate state and 60 Hz
+// is the standard TV/HDMI cadence; callers analyzing 50/90/120 Hz displays can
+// inspect the continuous Media.CodecOutputBuffer.ReleaseInterval.* histogram.
+constexpr base::TimeDelta kSubVsyncReleaseThreshold = base::Milliseconds(8);
+
+}  // namespace
 
 BASE_FEATURE(kFallbackToMediaFormatCodedSizeOnTV,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -84,7 +98,7 @@ class CodecWrapperImpl : public base::RefCountedThreadSafe<CodecWrapperImpl> {
   friend base::RefCountedThreadSafe<CodecWrapperImpl>;
   ~CodecWrapperImpl();
 
-  void DiscardOutputBuffers_Locked();
+  void DiscardOutputBuffers_Locked() EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // |lock_| protects access to all member variables.
   mutable base::Lock lock_;
@@ -122,6 +136,15 @@ class CodecWrapperImpl : public base::RefCountedThreadSafe<CodecWrapperImpl> {
 
   // Most recently reported color space.
   MediaFormatColorSpace color_space_;
+
+  // Whether Media.CodecWrapper.IsOverlayBacked has been recorded for the
+  // current `surface_bundle_`. Reset on SetSurface() so each configured surface
+  // is recorded at most once, on its first rendered output buffer.
+  bool surface_mode_recorded_ GUARDED_BY(lock_) = false;
+
+  // Reset on Flush(), DiscardOutputBuffers(), and SetSurface() so inter-frame
+  // release deltas are only measured within a continuous surface session.
+  std::optional<base::TimeTicks> last_render_release_time_ GUARDED_BY(lock_);
 
   // The alignment to use for width, height when guessing coded size.
   const std::optional<gfx::Size> coded_size_alignment_;
@@ -205,10 +228,12 @@ gfx::Size CodecOutputBuffer::GuessCodedSize() const {
   }
 
   return gfx::Size(
-      base::bits::AlignUpDeprecatedDoNotUse(visible_rect_.width(),
-                                            coded_size_alignment_->width()),
-      base::bits::AlignUpDeprecatedDoNotUse(visible_rect_.height(),
-                                            coded_size_alignment_->height()));
+      base::bits::AlignUp(
+          base::checked_cast<uint32_t>(visible_rect_.width()),
+          base::checked_cast<uint32_t>(coded_size_alignment_->width())),
+      base::bits::AlignUp(
+          base::checked_cast<uint32_t>(visible_rect_.height()),
+          base::checked_cast<uint32_t>(coded_size_alignment_->height())));
 }
 
 CodecWrapperImpl::CodecWrapperImpl(
@@ -223,6 +248,7 @@ CodecWrapperImpl::CodecWrapperImpl(
       output_buffer_release_cb_(std::move(output_buffer_release_cb)),
       coded_size_alignment_(coded_size_alignment) {
   CHECK(codec_);
+  CHECK(surface_bundle_);
   DVLOG(2) << __func__;
 }
 
@@ -269,6 +295,7 @@ void CodecWrapperImpl::DiscardOutputBuffers_Locked() {
   for (auto& kv : buffer_ids_)
     codec_->ReleaseOutputBuffer(kv.second, false);
   buffer_ids_.clear();
+  last_render_release_time_.reset();
 }
 
 bool CodecWrapperImpl::Flush() {
@@ -279,6 +306,7 @@ bool CodecWrapperImpl::Flush() {
   // Dequeued buffers are invalidated by flushing.
   buffer_ids_.clear();
   owned_input_buffer_.reset();
+  last_render_release_time_.reset();
   MediaCodecResult result = codec_->Flush();
   if (result.code() == MediaCodecResult::Codes::kError) {
     state_ = State::kError;
@@ -450,7 +478,6 @@ CodecWrapperImpl::DequeueStatus CodecWrapperImpl::DequeueOutputBuffer(
                    << " r: " << color_space_.range
                    << " t: " << color_space_.transfer;
         }
-        UMA_HISTOGRAM_BOOLEAN("Media.Android.GetColorSpaceError", error);
         // If we fail to get a color space after we have gotten a valid size,
         // reset the color space. The higher levels of the stack will decide
         // the color space (e.g, based on the container settings).
@@ -477,7 +504,7 @@ bool CodecWrapperImpl::SetSurface(
     scoped_refptr<CodecSurfaceBundle> surface_bundle) {
   DVLOG(2) << __func__;
   base::AutoLock l(lock_);
-  DCHECK(surface_bundle);
+  CHECK(surface_bundle);
   DCHECK(codec_ && state_ != State::kError);
 
   if (!codec_->SetSurface(surface_bundle->GetJavaSurface())) {
@@ -485,6 +512,8 @@ bool CodecWrapperImpl::SetSurface(
     return false;
   }
   surface_bundle_ = std::move(surface_bundle);
+  surface_mode_recorded_ = false;
+  last_render_release_time_.reset();
   return true;
 }
 
@@ -505,6 +534,38 @@ bool CodecWrapperImpl::ReleaseCodecOutputBuffer(int64_t id, bool render) {
            << " valid=" << valid;
   if (!valid) {
     return false;
+  }
+
+  if (render) {
+    CHECK(surface_bundle_);
+    const bool is_overlay = surface_bundle_->overlay() != nullptr;
+    if (!surface_mode_recorded_) {
+      surface_mode_recorded_ = true;
+      base::UmaHistogramBoolean("Media.CodecWrapper.IsOverlayBacked",
+                                is_overlay);
+    }
+
+    const base::TimeTicks now = base::TimeTicks::Now();
+    if (last_render_release_time_.has_value()) {
+      const base::TimeDelta delta = now - *last_render_release_time_;
+      const bool sub_vsync_collision = delta < kSubVsyncReleaseThreshold;
+      if (is_overlay) {
+        base::UmaHistogramBoolean(
+            "Media.CodecOutputBuffer.SubVsyncRelease.Overlay",
+            sub_vsync_collision);
+        base::UmaHistogramCustomTimes(
+            "Media.CodecOutputBuffer.ReleaseInterval.Overlay", delta,
+            base::Milliseconds(1), base::Milliseconds(200), 50);
+      } else {
+        base::UmaHistogramBoolean(
+            "Media.CodecOutputBuffer.SubVsyncRelease.TextureOwner",
+            sub_vsync_collision);
+        base::UmaHistogramCustomTimes(
+            "Media.CodecOutputBuffer.ReleaseInterval.TextureOwner", delta,
+            base::Milliseconds(1), base::Milliseconds(200), 50);
+      }
+    }
+    last_render_release_time_ = now;
   }
 
   codec_->ReleaseOutputBuffer(buffer_it->second, render);

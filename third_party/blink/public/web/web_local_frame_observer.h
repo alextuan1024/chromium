@@ -5,14 +5,31 @@
 #ifndef THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_LOCAL_FRAME_OBSERVER_H_
 #define THIRD_PARTY_BLINK_PUBLIC_WEB_WEB_LOCAL_FRAME_OBSERVER_H_
 
+#include <stdint.h>
+
 #include "base/observer_list_types.h"
+#include "base/time/time.h"
+#include "third_party/blink/public/common/loader/loading_behavior_flag.h"
 #include "third_party/blink/public/platform/web_common.h"
 #include "third_party/blink/public/platform/web_private_ptr.h"
+#include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
+
+namespace gfx {
+class Rect;
+}  // namespace gfx
 
 namespace blink {
 class WebFormElement;
 class WebLocalFrame;
 class WebLocalFrameImpl;
+class WebString;
+struct WebConsoleMessage;
+
+enum class BFCacheStateChange {
+  kStoredToBFCache,
+  kRestoredFromBFCache,
+  kNoChange,
+};
 
 // Base class for objects that want to get notified of changes to the local
 // frame.
@@ -24,6 +41,38 @@ class BLINK_EXPORT WebLocalFrameObserver : public base::CheckedObserver {
   // A form submission has been requested, but the page's submit event handler
   // hasn't yet had a chance to run (and possibly alter/interrupt the submit.)
   virtual void WillSendSubmitEvent(const WebFormElement&) {}
+
+  // Notification that the frame was hidden/shown.
+  virtual void WasHidden() {}
+  virtual void WasShown() {}
+
+  // Called when a frame's page lifecycle state gets updated.
+  virtual void DidSetPageLifecycleState(BFCacheStateChange bfcache_change) {}
+
+  // Called when an ad element's geometry changed. An empty `ad_rect` is used to
+  // signal the removal of the element. Only invoked on the outermost main
+  // frame.
+  virtual void OnMainFrameAdRectangleChanged(int element_id,
+                                             const gfx::Rect& ad_rect) {}
+
+  // A performance timing event (e.g. first paint) occurred.
+  virtual void DidChangePerformanceTiming() {}
+
+  // Blink exhibited a certain loading behavior that the browser process will
+  // use for segregated histograms.
+  virtual void DidObserveLoadingBehavior(LoadingBehaviorFlag behavior) {}
+
+  // A new soft navigation was observed.
+  virtual void DidObserveSoftNavigation(
+      SoftNavigationMetricsForReporting metrics) {}
+
+  // A new message was added to the console. `stack_trace` is only populated
+  // when detailed messages are requested for `source_name` (e.g. via
+  // Platform::ShouldReportDetailedMessageForSource()).
+  virtual void DidAddMessageToConsole(const WebConsoleMessage& message,
+                                      const WebString& source_name,
+                                      unsigned source_line,
+                                      const WebString& stack_trace) {}
 
   // Retrieves the WebLocalFrame that is being observed. Can be null.
   WebLocalFrame* GetWebLocalFrame() const;

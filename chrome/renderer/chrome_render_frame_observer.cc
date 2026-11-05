@@ -15,6 +15,7 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/functional/bind.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
@@ -84,12 +85,12 @@
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/codec/webp_codec.h"
 #include "ui/gfx/geometry/size_f.h"
+#include "ui/webui/buildflags.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/renderer/accessibility/read_anything/read_anything_app_controller.h"
-#include "chrome/renderer/searchbox/searchbox_extension.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
@@ -103,6 +104,10 @@
 
 #if BUILDFLAG(ENABLE_PLUGINS)
 #include "chrome/renderer/plugins/chrome_plugin_placeholder.h"
+#endif
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+#include "chrome/renderer/searchbox/searchbox_extension.h"
 #endif
 
 using blink::WebDocumentLoader;
@@ -217,6 +222,7 @@ ChromeRenderFrameObserver::ChromeRenderFrameObserver(
     content::RenderFrame* render_frame,
     web_cache::WebCacheImpl* web_cache_impl)
     : content::RenderFrameObserver(render_frame),
+      blink::WebLocalFrameObserver(render_frame->GetWebFrame()),
       translate_agent_(nullptr),
       page_text_agent_(new optimization_guide::PageTextAgent(render_frame)),
       actor_journal_(std::make_unique<actor::Journal>()),
@@ -234,10 +240,15 @@ ChromeRenderFrameObserver::ChromeRenderFrameObserver(
   SetClientSidePhishingDetection();
 #endif
 
-  bool skip_translate = base::FeatureList::IsEnabled(features::kInitialWebUI) &&
-                        features::kInitialWebUIWithoutTranslate.Get() &&
-                        base::CommandLine::ForCurrentProcess()->HasSwitch(
-                            switches::kTopChromeWebUI);
+  bool skip_translate =
+      (base::FeatureList::IsEnabled(features::kInitialWebUI) &&
+       features::kInitialWebUIWithoutTranslate.Get() &&
+       base::CommandLine::ForCurrentProcess()->HasSwitch(
+           switches::kTopChromeWebUI)) ||
+      (base::FeatureList::IsEnabled(
+           features::kInitialWebUIWithoutTranslateForNtp) &&
+       base::CommandLine::ForCurrentProcess()->HasSwitch(
+           switches::kNtpProcess));
 
   if (!skip_translate) {
     translate_agent_ = new translate::TranslateAgent(
@@ -380,11 +391,13 @@ void ChromeRenderFrameObserver::DidCommitProvisionalLoad(
 }
 
 void ChromeRenderFrameObserver::DidClearWindowObject() {
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
   if (process_state::IsInstantProcess()) {
     SearchBoxExtension::Install(render_frame()->GetWebFrame());
   }
+#endif
 
+#if !BUILDFLAG(IS_ANDROID)
   // Install ReadAnythingAppController on render frames with the Read Anything
   // url, which is chrome-untrusted. ReadAnythingAppController installs v8
   // bindings in the chrome.readingMode namespace which are consumed by
@@ -413,6 +426,10 @@ void ChromeRenderFrameObserver::DidMeaningfulLayout(
 
 void ChromeRenderFrameObserver::OnDestruct() {
   delete this;
+}
+
+void ChromeRenderFrameObserver::OnFrameDetached() {
+  translate_agent_ = nullptr;
 }
 
 void ChromeRenderFrameObserver::WillDetach(blink::DetachReason detach_reason) {
@@ -451,14 +468,15 @@ void ChromeRenderFrameObserver::RequestImageForContextNode(
   // Map for converting between multiple mojom ImageFormat structures to
   // prevent a circular dependency (go/lens-logging-in-chromium)
   // TODO(shivpatel): add default value UNKNOWN for if ImageFormat is updated
-  const std::map<chrome::mojom::ImageFormat, lens::mojom::ImageFormat>
-      image_format_conversion = {
+  static constexpr auto kImageFormatConversion =
+      base::MakeFixedFlatMap<chrome::mojom::ImageFormat,
+                             lens::mojom::ImageFormat>({
           {chrome::mojom::ImageFormat::ORIGINAL,
            lens::mojom::ImageFormat::ORIGINAL},
           {chrome::mojom::ImageFormat::PNG, lens::mojom::ImageFormat::PNG},
           {chrome::mojom::ImageFormat::JPEG, lens::mojom::ImageFormat::JPEG},
           {chrome::mojom::ImageFormat::WEBP, lens::mojom::ImageFormat::WEBP},
-      };
+      });
 
   if (context_node.IsNull() || !context_node.IsElementNode()) {
     // The downscaled size is the original size, since no downscaling was
@@ -489,7 +507,7 @@ void ChromeRenderFrameObserver::RequestImageForContextNode(
   if (needs_downscale) {
     latency_logs.push_back(lens::mojom::LatencyLog::New(
         lens::mojom::Phase::DOWNSCALE_START, original_size, gfx::Size(),
-        image_format_conversion.at(image_format), base::Time::Now(),
+        kImageFormatConversion.at(image_format), base::Time::Now(),
         /*encoded_size_bytes=*/0));
   }
   SkBitmap thumbnail =
@@ -498,7 +516,7 @@ void ChromeRenderFrameObserver::RequestImageForContextNode(
   if (needs_downscale) {
     latency_logs.push_back(lens::mojom::LatencyLog::New(
         lens::mojom::Phase::DOWNSCALE_END, original_size, downscaled_size,
-        image_format_conversion.at(image_format), base::Time::Now(),
+        kImageFormatConversion.at(image_format), base::Time::Now(),
         /*encoded_size_bytes=*/0));
   }
 
@@ -525,7 +543,7 @@ void ChromeRenderFrameObserver::RequestImageForContextNode(
   if (needs_encode) {
     latency_logs.push_back(lens::mojom::LatencyLog::New(
         lens::mojom::Phase::ENCODE_START, original_size, downscaled_size,
-        image_format_conversion.at(image_format), base::Time::Now(),
+        kImageFormatConversion.at(image_format), base::Time::Now(),
         /*encoded_size_bytes=*/0));
   }
   std::optional<std::vector<uint8_t>> data;
@@ -558,7 +576,7 @@ void ChromeRenderFrameObserver::RequestImageForContextNode(
   if (needs_encode) {
     latency_logs.push_back(lens::mojom::LatencyLog::New(
         lens::mojom::Phase::ENCODE_END, original_size, downscaled_size,
-        image_format_conversion.at(image_format), base::Time::Now(),
+        kImageFormatConversion.at(image_format), base::Time::Now(),
         sizeof(uint8_t) * image_data.size()));
   }
 
@@ -720,7 +738,7 @@ void ChromeRenderFrameObserver::StartActorJournal(
 }
 
 void ChromeRenderFrameObserver::GetCrossDocumentScriptToolResult(
-    const base::UnguessableToken& execution_id,
+    const blink::ToolInvocationToken& execution_id,
     GetCrossDocumentScriptToolResultCallback callback) {
   render_frame()->GetWebFrame()->GetDocument().GetCrossDocumentScriptToolResult(
       execution_id,

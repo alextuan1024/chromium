@@ -31,11 +31,14 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
+#include "services/network/public/mojom/web_sandbox_flags.mojom-shared.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+#include "url/scheme_host_port.h"
 
 using blink::PermissionType;
 
@@ -68,8 +71,7 @@ PermissionDelegationMode GetPermissionDelegationMode(
   if (permission == ContentSettingsType::NOTIFICATIONS) {
     return PermissionDelegationMode::kUndelegated;
   }
-  if (permission == ContentSettingsType::STORAGE_ACCESS ||
-      permission == ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS) {
+  if (permission == ContentSettingsType::STORAGE_ACCESS) {
     return PermissionDelegationMode::kDoubleKeyed;
   }
   return PermissionDelegationMode::kDelegated;
@@ -79,6 +81,22 @@ PermissionDelegationMode GetPermissionDelegationMode(
 constexpr const char* kIsFileURLHistogram =
     "Permissions.GetLastCommittedOriginAsURL.IsFileURL";
 #endif
+
+// Returns true if the opaque-origin document in `render_frame_host` may use the
+// permissions of its precursor origin. See https://crbug.com/576129749.
+//
+// Due to dependency issues, this function is duplicated in
+// content/browser/permissions/permission_util.cc.
+bool ShouldUsePrecursorOrigin(content::RenderFrameHost* render_frame_host) {
+  const url::SchemeHostPort& precursor =
+      render_frame_host->GetLastCommittedOrigin()
+          .GetTupleOrPrecursorTupleIfOpaque();
+  return precursor.IsValid() &&
+         precursor ==
+             url::SchemeHostPort(render_frame_host->GetLastCommittedURL()) &&
+         render_frame_host->IsSandboxed(
+             network::mojom::WebSandboxFlags::kOrigin);
+}
 
 }  // namespace
 
@@ -131,6 +149,10 @@ RequestTypeForUma PermissionUtil::GetUmaValueForRequestType(
     RequestType request_type,
     std::optional<GeolocationPromptType> geolocation_prompt_type) {
   switch (request_type) {
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+    case RequestType::kAmbientLogin:
+      return RequestTypeForUma::PERMISSION_AMBIENT_LOGIN;
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
     case RequestType::kArSession:
       return RequestTypeForUma::PERMISSION_AR;
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
@@ -199,7 +221,7 @@ RequestTypeForUma PermissionUtil::GetUmaValueForRequestType(
     case RequestType::kRegisterProtocolHandler:
       return RequestTypeForUma::REGISTER_PROTOCOL_HANDLER;
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     case RequestType::kSmartCard:
       return RequestTypeForUma::PERMISSION_SMART_CARD;
 #endif
@@ -213,8 +235,6 @@ RequestTypeForUma PermissionUtil::GetUmaValueForRequestType(
 #endif
     case RequestType::kWindowManagement:
       return RequestTypeForUma::PERMISSION_WINDOW_MANAGEMENT;
-    case RequestType::kTopLevelStorageAccess:
-      return RequestTypeForUma::PERMISSION_TOP_LEVEL_STORAGE_ACCESS;
     case RequestType::kFileSystemAccess:
       return RequestTypeForUma::PERMISSION_FILE_SYSTEM_ACCESS;
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
@@ -331,9 +351,6 @@ bool PermissionUtil::GetPermissionType(ContentSettingsType type,
       break;
     case ContentSettingsType::STORAGE_ACCESS:
       *out = PermissionType::STORAGE_ACCESS_GRANT;
-      break;
-    case ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS:
-      *out = PermissionType::TOP_LEVEL_STORAGE_ACCESS;
       break;
     case ContentSettingsType::CAMERA_PAN_TILT_ZOOM:
       *out = PermissionType::CAMERA_PAN_TILT_ZOOM;
@@ -471,9 +488,9 @@ GURL PermissionUtil::GetLastCommittedOriginAsURL(
     content::RenderFrameHost* render_frame_host) {
   CHECK(render_frame_host);
 
+#if BUILDFLAG(IS_ANDROID)
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(render_frame_host);
-#if BUILDFLAG(IS_ANDROID)
   // If `allow_universal_access_from_file_urls` flag is enabled, a file:/// can
   // change its url via history.pushState/replaceState to any other url,
   // including about:blank. To avoid user confusion we should always use a
@@ -488,13 +505,17 @@ GURL PermissionUtil::GetLastCommittedOriginAsURL(
   }
 #endif
 
-  GURL origin = render_frame_host->GetLastCommittedOrigin().GetURL();
-  if (origin.is_empty() && render_frame_host->IsInPrimaryMainFrame()) {
-    if (!web_contents->GetVisibleURL().is_empty()) {
-      origin = web_contents->GetVisibleURL().DeprecatedGetOriginAsURL();
-    }
+  const url::Origin& origin = render_frame_host->GetLastCommittedOrigin();
+  // An opaque origin has no permissions of its own. For historical reasons,
+  // some top-level documents with an opaque origin may use the permissions of
+  // their precursor origin instead.
+  // TODO(https://crbug.com/571135408): Revisit this logic.
+  if (origin.opaque() && render_frame_host->IsInPrimaryMainFrame() &&
+      ShouldUsePrecursorOrigin(render_frame_host)) {
+    return origin.GetTupleOrPrecursorTupleIfOpaque().GetURL();
   }
-  return origin;
+
+  return origin.GetURL();
 }
 
 ContentSettingsType PermissionUtil::PermissionTypeToContentSettingsTypeSafe(
@@ -554,8 +575,6 @@ ContentSettingsType PermissionUtil::PermissionTypeToContentSettingsTypeSafe(
       return ContentSettingsType::SMART_CARD_DATA;
     case PermissionType::STORAGE_ACCESS_GRANT:
       return ContentSettingsType::STORAGE_ACCESS;
-    case PermissionType::TOP_LEVEL_STORAGE_ACCESS:
-      return ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS;
     case PermissionType::CAMERA_PAN_TILT_ZOOM:
       return ContentSettingsType::CAMERA_PAN_TILT_ZOOM;
     case PermissionType::WINDOW_MANAGEMENT:

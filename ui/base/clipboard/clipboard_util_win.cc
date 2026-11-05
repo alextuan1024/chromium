@@ -105,7 +105,7 @@ bool GetData(IDataObject* data_object,
 bool GetUrlFromHDrop(IDataObject* data_object,
                      GURL* url,
                      std::u16string* title) {
-  DCHECK(data_object && url && title);
+  CHECK(data_object && url && title, base::NotFatalUntil::M163);
 
   bool success = false;
   STGMEDIUM medium;
@@ -140,7 +140,7 @@ bool GetUrlFromHDrop(IDataObject* data_object,
 void SplitUrlAndTitle(const std::u16string& str,
                       GURL* url,
                       std::u16string* title) {
-  DCHECK(url && title);
+  CHECK(url && title, base::NotFatalUntil::M163);
   size_t newline_pos = str.find('\n');
   if (newline_pos != std::u16string::npos) {
     *url = GURL(std::u16string(str, 0, newline_pos));
@@ -148,48 +148,6 @@ void SplitUrlAndTitle(const std::u16string& str,
   } else {
     *url = GURL(str);
     title->assign(str);
-  }
-}
-
-// Parses a BookmarkListType clipboard payload. Accepts a JSON array of
-// objects with a required "url" string and an optional "title" string.
-// On success, appends each entry to url_infos as {GURL(url), title}.
-//
-// Example JSON payload:
-// [
-//   { "url": "https://chromium.org", "title": "Chromium Project" },
-//   { "url": "https://www.mozilla.org", "title": "Mozilla Home" }
-// ]
-void ParseBookmarkListData(const std::u16string& str,
-                           std::vector<ClipboardUrlInfo>& url_infos) {
-  const std::string utf8_payload = base::UTF16ToUTF8(str);
-
-  std::optional<base::Value> json_payload =
-      base::JSONReader::Read(utf8_payload, base::JSON_PARSE_RFC);
-
-  if (json_payload && json_payload->is_list()) {
-    for (const base::Value& item : json_payload->GetList()) {
-      if (!item.is_dict()) {
-        continue;
-      }
-
-      const auto& dict = item.GetDict();
-      const std::string* url_str = dict.FindString("url");
-      if (!url_str) {
-        continue;
-      }
-      GURL url(*url_str);
-      if (!url.is_valid()) {
-        continue;
-      }
-
-      std::u16string title;
-      if (const std::string* title_str = dict.FindString("title")) {
-        title = base::UTF8ToUTF16(*title_str);
-      }
-
-      url_infos.emplace_back(std::move(url), std::move(title));
-    }
   }
 }
 
@@ -325,7 +283,8 @@ base::FilePath WriteFileContentsToTempFile(const base::FilePath& suggested_name,
 VirtualFileResults WriteAllFileContentsToTempFiles(
     const std::vector<base::FilePath>& display_names,
     const std::vector<HGLOBAL>& memory_backed_contents) {
-  DCHECK_EQ(display_names.size(), memory_backed_contents.size());
+  CHECK_EQ(display_names.size(), memory_backed_contents.size(),
+           base::NotFatalUntil::M163);
 
   VirtualFileResults filepaths_and_names;
   for (size_t i = 0; i < display_names.size(); i++) {
@@ -346,7 +305,7 @@ VirtualFileResults WriteAllFileContentsToTempFiles(
 // the data. This method must be performed on main thread as it is using the
 // IDataObject marshalled there.
 HGLOBAL CopyFileContentsToHGlobal(IDataObject* data_object, LONG index) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   HGLOBAL hdata = nullptr;
 
   if (!HasData(data_object, ClipboardFormatType::FileContentAtIndexType(index)))
@@ -658,7 +617,7 @@ bool GetFileNameFromFirstDescriptor(IDataObject* data_object,
 namespace clipboard_util {
 
 bool HasUrl(IDataObject* data_object, bool convert_filenames) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   return HasData(data_object, ClipboardFormatType::MozUrlType()) ||
          HasData(data_object, ClipboardFormatType::UrlType()) ||
          HasData(data_object, ClipboardFormatType::UrlAType()) ||
@@ -667,7 +626,7 @@ bool HasUrl(IDataObject* data_object, bool convert_filenames) {
 }
 
 bool HasFilenames(IDataObject* data_object) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   return HasData(data_object, ClipboardFormatType::CFHDropType()) ||
          HasData(data_object, ClipboardFormatType::FilenameType()) ||
          HasData(data_object, ClipboardFormatType::FilenameAType());
@@ -678,7 +637,7 @@ bool HasFilenames(IDataObject* data_object) {
 // on GetData, so it must be checked if those formats can provide data to
 // correctly identify real files.
 bool HasRealFiles(IDataObject* data_object) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   STGMEDIUM medium;
   if (GetData(data_object, ClipboardFormatType::CFHDropType(), &medium) ||
       GetData(data_object, ClipboardFormatType::FilenameType(), &medium) ||
@@ -690,7 +649,7 @@ bool HasRealFiles(IDataObject* data_object) {
 }
 
 bool HasVirtualFilenames(IDataObject* data_object) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   const bool has_real_files = base::FeatureList::IsEnabled(
                                   features::kUseClipboardStrictVirtualFileCheck)
                                   ? HasRealFiles(data_object)
@@ -703,7 +662,7 @@ bool HasVirtualFilenames(IDataObject* data_object) {
 }
 
 bool HasFileContents(IDataObject* data_object) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   FORMATETC format_etc =
       ClipboardFormatType::FileContentAtIndexType(0).ToFormatEtc();
   format_etc.tymed = TYMED_HGLOBAL | TYMED_ISTREAM;
@@ -713,21 +672,55 @@ bool HasFileContents(IDataObject* data_object) {
 }
 
 bool HasHtml(IDataObject* data_object) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   return HasData(data_object, ClipboardFormatType::HtmlType()) ||
          HasData(data_object, ClipboardFormatType::TextHtmlType());
 }
 
 bool HasPlainText(IDataObject* data_object) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   return HasData(data_object, ClipboardFormatType::PlainTextType()) ||
          HasData(data_object, ClipboardFormatType::PlainTextAType());
+}
+
+void ParseBookmarkListData(const std::u16string& str,
+                           std::vector<ClipboardUrlInfo>& url_infos) {
+  const std::string utf8_payload = base::UTF16ToUTF8(str);
+
+  std::optional<base::Value> json_payload =
+      base::JSONReader::Read(utf8_payload, base::JSON_PARSE_RFC);
+
+  if (json_payload && json_payload->is_list()) {
+    const base::ListValue& list = json_payload->GetList();
+    for (const base::Value& item : list) {
+      if (!item.is_dict()) {
+        continue;
+      }
+
+      const auto& dict = item.GetDict();
+      const std::string* url_str = dict.FindString("url");
+      if (!url_str) {
+        continue;
+      }
+      GURL url(*url_str);
+      if (!url.is_valid()) {
+        continue;
+      }
+
+      std::u16string title;
+      if (const std::string* title_str = dict.FindString("title")) {
+        title = base::UTF8ToUTF16(*title_str);
+      }
+
+      url_infos.emplace_back(std::move(url), std::move(title));
+    }
+  }
 }
 
 bool GetUrlInfos(IDataObject* data_object,
                  std::vector<ClipboardUrlInfo>& url_infos,
                  bool convert_filenames) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   if (!HasUrl(data_object, convert_filenames))
     return false;
 
@@ -780,7 +773,7 @@ bool GetUrlInfos(IDataObject* data_object,
     std::vector<std::wstring> filenames;
     if (!GetFilenames(data_object, &filenames))
       return false;
-    DCHECK_GT(filenames.size(), 0U);
+    CHECK_GT(filenames.size(), 0U, base::NotFatalUntil::M163);
     for (const auto& filename : filenames) {
       GURL file_url = net::FilePathToFileURL(base::FilePath(filename));
       if (file_url.is_valid()) {
@@ -818,7 +811,7 @@ std::vector<std::wstring> GetFilenames(HDROP hdrop) {
 
 bool GetFilenames(IDataObject* data_object,
                   std::vector<std::wstring>* filenames) {
-  DCHECK(data_object && filenames);
+  CHECK(data_object && filenames, base::NotFatalUntil::M163);
   if (!HasFilenames(data_object))
     return false;
 
@@ -912,7 +905,7 @@ STGMEDIUM CreateStorageForFileNames(const std::vector<FileInfo>& filenames) {
 
 std::optional<std::vector<base::FilePath>> GetVirtualFilenames(
     IDataObject* data_object) {
-  DCHECK(data_object);
+  CHECK(data_object, base::NotFatalUntil::M163);
   if (!HasVirtualFilenames(data_object))
     return std::nullopt;
 
@@ -1048,7 +1041,7 @@ void GetVirtualFilesAsTempFiles(
 }
 
 bool GetPlainText(IDataObject* data_object, std::u16string* plain_text) {
-  DCHECK(data_object && plain_text);
+  CHECK(data_object && plain_text, base::NotFatalUntil::M163);
   if (!HasPlainText(data_object))
     return false;
 
@@ -1086,7 +1079,7 @@ bool GetPlainText(IDataObject* data_object, std::u16string* plain_text) {
 bool GetHtml(IDataObject* data_object,
              std::u16string* html,
              std::string* base_url) {
-  DCHECK(data_object && html && base_url);
+  CHECK(data_object && html && base_url, base::NotFatalUntil::M163);
 
   STGMEDIUM store;
   if (HasData(data_object, ClipboardFormatType::HtmlType()) &&
@@ -1120,8 +1113,8 @@ bool GetHtml(IDataObject* data_object,
 }
 
 bool ReadStreamToVector(IStream* stream, std::vector<uint8_t>* out) {
-  DCHECK(stream);
-  DCHECK(out);
+  CHECK(stream, base::NotFatalUntil::M163);
+  CHECK(out, base::NotFatalUntil::M163);
   STATSTG statstg;
   if (FAILED(stream->Stat(&statstg, STATFLAG_NONAME)) ||
       statstg.cbSize.QuadPart == 0) {
@@ -1151,7 +1144,7 @@ bool ReadStreamToVector(IStream* stream, std::vector<uint8_t>* out) {
 bool GetFileContents(IDataObject* data_object,
                      std::wstring* filename,
                      std::vector<uint8_t>* file_contents) {
-  DCHECK(data_object && filename && file_contents);
+  CHECK(data_object && filename && file_contents, base::NotFatalUntil::M163);
   if (!HasFileContents(data_object))
     return false;
 
@@ -1174,7 +1167,12 @@ bool GetFileContents(IDataObject* data_object,
       base::win::ScopedHGlobal<uint8_t*> data(content.hGlobal);
       *file_contents = base::ToVector(data);
     } else if (TYMED_ISTREAM == content.tymed) {
-      if (!ReadStreamToVector(content.pstm, file_contents)) {
+      if (!content.pstm) {
+        LOG(WARNING)
+            << "Drag source returned TYMED_ISTREAM with a null stream.";
+        file_contents->clear();
+        content.tymed = TYMED_NULL;
+      } else if (!ReadStreamToVector(content.pstm, file_contents)) {
         file_contents->clear();
       }
     }
@@ -1202,7 +1200,7 @@ bool GetFileContents(IDataObject* data_object,
 bool GetDataTransferCustomData(
     IDataObject* data_object,
     std::unordered_map<std::u16string, std::u16string>* custom_data) {
-  DCHECK(data_object && custom_data);
+  CHECK(data_object && custom_data, base::NotFatalUntil::M163);
 
   if (!HasData(data_object, ClipboardFormatType::DataTransferCustomType())) {
     return false;

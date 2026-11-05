@@ -125,10 +125,15 @@ gfx::Point PdfAXActionTarget::MaximumScrollOffset() const {
 
 void PdfAXActionTarget::SetScrollOffset(const gfx::Point& point) const {}
 
-bool PdfAXActionTarget::SetSelection(const ui::AXActionTarget* anchor_object,
-                                     int anchor_offset,
-                                     const ui::AXActionTarget* focus_object,
-                                     int focus_offset) const {
+bool PdfAXActionTarget::SetSelection(
+    const ui::AXActionTarget* anchor_object,
+    int anchor_offset,
+    std::optional<ax::mojom::OffsetType> anchor_offset_type,
+    const ui::AXActionTarget* focus_object,
+    int focus_offset,
+    std::optional<ax::mojom::OffsetType> focus_offset_type) const {
+  // `anchor_offset_type` and `focus_offset_type` are unused here because PDF
+  // selection only operates on character offsets via `FindCharacterOffset()`.
   const PdfAXActionTarget* pdf_anchor_object =
       FromAXActionTarget(anchor_object);
   const PdfAXActionTarget* pdf_focus_object = FromAXActionTarget(focus_object);
@@ -157,15 +162,13 @@ bool PdfAXActionTarget::ShowContextMenu() const {
   return pdf_accessibility_tree_source_->ShowContextMenu();
 }
 
-bool PdfAXActionTarget::ScrollToMakeVisible() const {
-  return false;
-}
-
-bool PdfAXActionTarget::ScrollToMakeVisibleWithSubFocus(
-    const gfx::Rect& rect,
+bool PdfAXActionTarget::ScrollToMakeVisible(
     ax::mojom::ScrollAlignment horizontal_scroll_alignment,
     ax::mojom::ScrollAlignment vertical_scroll_alignment,
     ax::mojom::ScrollBehavior scroll_behavior) const {
+  // `chrome_pdf::AccessibilityActionData` does not support `scroll_behavior`,
+  // so `PDFiumEngine` always scrolls to the requested alignment regardless of
+  // whether the target is already visible.
   chrome_pdf::AccessibilityActionData pdf_action_data;
   pdf_action_data.action =
       chrome_pdf::AccessibilityAction::kScrollToMakeVisible;
@@ -178,6 +181,15 @@ bool PdfAXActionTarget::ScrollToMakeVisibleWithSubFocus(
 
   pdf_accessibility_tree_source_->HandleAction(pdf_action_data);
   return true;
+}
+
+bool PdfAXActionTarget::ScrollToMakeVisibleWithSubFocus(
+    const gfx::Rect& rect,
+    ax::mojom::ScrollAlignment horizontal_scroll_alignment,
+    ax::mojom::ScrollAlignment vertical_scroll_alignment,
+    ax::mojom::ScrollBehavior scroll_behavior) const {
+  return ScrollToMakeVisible(horizontal_scroll_alignment,
+                             vertical_scroll_alignment, scroll_behavior);
 }
 
 bool PdfAXActionTarget::ScrollToGlobalPoint(const gfx::Point& point) const {

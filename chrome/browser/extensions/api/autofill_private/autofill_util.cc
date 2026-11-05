@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -14,6 +15,7 @@
 
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/to_vector.h"
+#include "base/i18n/time_formatting.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -24,23 +26,26 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/extensions/api/autofill_private.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/common/url_constants.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
+#include "components/autofill/core/browser/data_manager/valuables/valuables_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
+#include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
 #include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
+#include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/autofill_country.h"
 #include "components/autofill/core/browser/payments/constants.h"
 #include "components/autofill/core/browser/ui/country_combobox_model.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/prefs/pref_service.h"
@@ -127,17 +132,11 @@ autofill_private::AddressEntry ProfileToAddressEntry(
 }
 
 std::string CardNetworkToIconResourceIdString(const std::string& network) {
-  if (network == autofill::kAmericanExpressCard &&
-      base::FeatureList::IsEnabled(
-          autofill::features::kAutofillEnableNewAmexNetworkArt)) {
-    return "chrome://theme/IDR_AUTOFILL_METADATA_CC_AMEX_NEW";
-  }
-
   if (ShouldUseNewFopDisplay()) {
     static constexpr auto kNetworkToResourceIdStringMap =
         base::MakeFixedFlatMap<std::string_view, std::string_view>(
             {{autofill::kAmericanExpressCard,
-              "chrome://theme/IDR_AUTOFILL_METADATA_CC_AMEX"},
+              "chrome://theme/IDR_AUTOFILL_METADATA_CC_AMEX_NEW"},
              {autofill::kDiscoverCard,
               "chrome://theme/IDR_AUTOFILL_METADATA_CC_DISCOVER"},
              {autofill::kDinersCard,
@@ -173,7 +172,7 @@ std::string CardNetworkToIconResourceIdString(const std::string& network) {
            {autofill::kVisaCard,
             "chrome://theme/IDR_AUTOFILL_METADATA_CC_VISA_OLD"},
            {autofill::kAmericanExpressCard,
-            "chrome://theme/IDR_AUTOFILL_METADATA_CC_AMEX_OLD"},
+            "chrome://theme/IDR_AUTOFILL_METADATA_CC_AMEX_NEW"},
            {autofill::kDinersCard,
             "chrome://theme/IDR_AUTOFILL_METADATA_CC_DINERS_OLD"},
            {autofill::kJCBCard,
@@ -266,6 +265,24 @@ autofill_private::PayOverTimeIssuerEntry BnplIssuerToPayOverTimeIssuerEntry(
   return issuer_entry;
 }
 
+autofill_private::WalletDirectOfferEntry
+WalletDirectOfferToWalletDirectOfferEntry(
+    const autofill::AutofillOfferData& offer) {
+  autofill_private::WalletDirectOfferEntry offer_entry;
+  offer_entry.offer_id = offer.GetOfferId();
+  offer_entry.issuer_name = offer.issuer_name();
+  offer_entry.short_title = offer.GetOfferShortTitle();
+  offer_entry.promo_code = offer.GetPromoCode();
+  // Formatted the same way as the expiration date in the promo code
+  // suggestions.
+  offer_entry.expiration_date =
+      base::UTF16ToUTF8(base::TimeFormatShortDate(offer.GetExpiry()));
+  // TODO(crbug.com/546252995): Use `offer.GetOfferDetailsUrl()` once it
+  // redirects to wallet.google.com instead of pay.google.com.
+  offer_entry.offer_details_url = chrome::kWalletPassesPageURL;
+  return offer_entry;
+}
+
 }  // namespace
 
 namespace extensions::autofill_util {
@@ -277,7 +294,7 @@ AddressEntryList GenerateAddressList(const autofill::AddressDataManager& adm) {
   std::vector<std::u16string> labels =
       autofill::AutofillProfile::CreateDifferentiatingLabels(
           profiles, ExtensionsBrowserClient::Get()->GetApplicationLocale());
-  DCHECK_EQ(labels.size(), profiles.size());
+  CHECK_EQ(labels.size(), profiles.size(), base::NotFatalUntil::M161);
 
   AddressEntryList list;
   list.reserve(profiles.size());
@@ -348,6 +365,30 @@ PayOverTimeIssuerEntryList GeneratePayOverTimeIssuerList(
       linked_issuers.end());
 
   return base::ToVector(linked_issuers, &BnplIssuerToPayOverTimeIssuerEntry);
+}
+
+LoyaltyCardEntryList GenerateLoyaltyCardList(
+    const autofill::ValuablesDataManager& vdm) {
+  return base::ToVector(
+      vdm.GetLoyaltyCards(), [](const autofill::LoyaltyCard& loyalty_card) {
+        autofill_private::LoyaltyCardEntry entry;
+        entry.id = loyalty_card.id().value();
+        entry.merchant_name = loyalty_card.merchant_name();
+        entry.loyalty_card_number = loyalty_card.loyalty_card_number();
+        // TODO(crbug.com/546252995): Use each card's `pass_view_url` when
+        // available.
+        entry.wallet_url = chrome::kWalletPassesPageURL;
+        return entry;
+      });
+}
+
+WalletDirectOfferEntryList GenerateWalletDirectOfferList(
+    const autofill::PaymentsDataManager& paydm) {
+  return base::ToVector(
+      paydm.GetActiveAutofillPromoCodeOffers(),
+      [](const autofill::AutofillOfferData* offer) {
+        return WalletDirectOfferToWalletDirectOfferEntry(*offer);
+      });
 }
 
 std::optional<api::autofill_private::AccountInfo> GetAccountInfo(

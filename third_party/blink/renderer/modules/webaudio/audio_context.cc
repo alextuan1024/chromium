@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <tuple>
 
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
@@ -22,6 +23,7 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/mediastream/media_devices.h"
+#include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
@@ -159,10 +161,9 @@ bool IsAudible(const AudioBus* rendered_data) {
   // for the total energy.
   float energy = 0;
 
-  uint32_t data_size = rendered_data->length();
   for (uint32_t k = 0; k < rendered_data->NumberOfChannels(); ++k) {
     base::span<const float> data = rendered_data->Channel(k)->Span();
-    float channel_energy = vector_math::Vsvesq(data, data_size);
+    float channel_energy = vector_math::Vsvesq(data);
     energy += channel_energy;
   }
 
@@ -175,11 +176,14 @@ const char* GetResumeErrorMessage(AudioContext::ResumeError error) {
       return "Cannot resume a closed AudioContext.";
     case AudioContext::ResumeError::kInterrupted:
       return "Cannot resume an interrupted AudioContext.";
-    case AudioContext::ResumeError::kUnknownFrameVisibility:
-    case AudioContext::ResumeError::kAlreadyRunning:
-      NOTREACHED();
   }
   NOTREACHED();
+}
+
+void RejectResolver(ScriptPromiseResolver<IDLUndefined>& resolver,
+                    const String& message) {
+  resolver.Reject(MakeGarbageCollected<DOMException>(
+      DOMExceptionCode::kInvalidStateError, message));
 }
 
 }  // namespace
@@ -240,6 +244,7 @@ AudioContext::SetSinkIdResolver::SetSinkIdResolver(
       resolver_(MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(
           script_state)) {
   DCHECK(IsMainThread());
+  resolver_->SuppressDetachCheck();
 
   // Currently the only available AudioSinkOptions is a type of a silent sink,
   // which can be specified by an empty descriptor constructor.
@@ -325,6 +330,14 @@ void AudioContext::SetSinkIdResolver::Reject(v8::Local<v8::Value> value) {
   DCHECK(resolver_);
   resolver_->Reject(value);
   resolver_ = nullptr;
+}
+
+void AudioContext::SetSinkIdResolver::Detach() {
+  DCHECK(IsMainThread());
+  if (resolver_) {
+    resolver_->SuppressDetachCheck();
+    resolver_ = nullptr;
+  }
 }
 
 ScriptPromise<IDLUndefined> AudioContext::SetSinkIdResolver::GetPromise() {
@@ -511,46 +524,52 @@ AudioContext* AudioContext::Create(ExecutionContext* context,
     return nullptr;
   }
 
-  // Pre-validation for renderSizeHint if sampleRate is provided. This prevents
-  // allocating excessive memory for clearly invalid renderSizeHint values
-  // before the AudioContext is fully constructed.
-  bool render_quantum_frames_validated = false;
-  if (sample_rate.has_value() && render_quantum_frames.has_value()) {
+  // Validate renderSizeHint before constructing the context, because the
+  // render quantum size drives the size of the buffers allocated during
+  // construction. When sampleRate is not provided the context sample rate is
+  // not known until the audio device has been created, so validate against the
+  // maximum supported sample rate here; the actual bound is checked below.
+  if (render_quantum_frames.has_value()) {
+    const float validation_sample_rate =
+        sample_rate.value_or(audio_utilities::MaxAudioBufferSampleRate());
     if (!audio_utilities::IsValidRenderQuantumSize(
-            render_quantum_frames.value(), sample_rate.value())) {
+            render_quantum_frames.value(), validation_sample_rate)) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kNotSupportedError,
           ExceptionMessages::IndexOutsideRange(
               "renderSizeHint", render_quantum_frames.value(),
               audio_utilities::MinRenderQuantumSize(),
               ExceptionMessages::kInclusiveBound,
-              audio_utilities::MaxRenderQuantumSize(sample_rate.value()),
+              audio_utilities::MaxRenderQuantumSize(validation_sample_rate),
               ExceptionMessages::kInclusiveBound));
       return nullptr;
     }
-    render_quantum_frames_validated = true;
   }
 
   SCOPED_UMA_HISTOGRAM_TIMER("WebAudio.AudioContext.CreateTime");
   AudioContext* audio_context = MakeGarbageCollected<AudioContext>(
       window, latency_hint, sample_rate, sink_descriptor,
       update_echo_cancellation_on_first_start, render_quantum_frames);
+  // Must be called exactly once after construction, even if the context is
+  // rejected below.
+  audio_context->UpdateStateIfNeeded();
 
+  // A context rejected after construction must be uninitialized. Otherwise it
+  // stays alive with pending activity until the execution context is destroyed.
   if (audio_context->HasAllocationFailed()) {
+    audio_context->UninitializeRejectedContext();
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
         "The context could not be created due to memory limitation.");
     return nullptr;
   }
 
-  ++hardware_context_count;
-  audio_context->UpdateStateIfNeeded();
-
-  // If the render quantum size was not able to be validated before due to the
-  // sample rate or hardware buffer size not being known, validate it here.
-  if (!render_quantum_frames_validated &&
-      !audio_utilities::IsValidRenderQuantumSize(
+  // Now that the context sample rate is known, validate the render quantum
+  // size against it. This cannot fail when sampleRate was provided, because
+  // the exact bound was already checked above.
+  if (!audio_utilities::IsValidRenderQuantumSize(
           audio_context->renderQuantumSize(), audio_context->sampleRate())) {
+    audio_context->UninitializeRejectedContext();
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
         ExceptionMessages::IndexOutsideRange(
@@ -621,6 +640,7 @@ AudioContext::AudioContext(LocalDOMWindow& window,
       use_audibility_hysteresis_(base::FeatureList::IsEnabled(
           blink::features::kWebAudioAudibilityHysteresis)),
       stats_update_restrictor_(std::make_unique<StatsUpdateRestrictor>()) {
+  ++hardware_context_count;
   RecordAudioContextOperation(AudioContextOperation::kCreate);
   SendLogMessage(__func__, GetAudioContextLogString(latency_hint, sample_rate));
 
@@ -671,12 +691,14 @@ AudioContext::AudioContext(LocalDOMWindow& window,
   // AudioContext caused by the rendering quantum size or the hardware buffer
   // size, whichever is greater.
   //
-  size_t base_latency_frames =
-      std::max(static_cast<size_t>(destinationNode()
-                                       ->GetAudioDestinationHandler()
-                                       .GetFramesPerBuffer()),
-               static_cast<size_t>(renderQuantumSize()));
-  base_latency_ = base_latency_frames / static_cast<double>(sampleRate());
+  size_t base_latency_frames = std::max(
+      static_cast<size_t>(
+          destinationNode()->GetAudioDestinationHandler().GetFramesPerBuffer()),
+      static_cast<size_t>(renderQuantumSize()));
+  const double context_sample_rate = sampleRate();
+  base_latency_ = context_sample_rate > 0.0
+                      ? base_latency_frames / context_sample_rate
+                      : 0.0;
   SendLogMessage(__func__,
                  Format("=> (base latency={:.3f} seconds))", base_latency_));
 
@@ -688,7 +710,7 @@ AudioContext::AudioContext(LocalDOMWindow& window,
   permission_service_->HasPermission(
       CreatePermissionDescriptor(microphone_permission_name),
       blink::BindOnce(&AudioContext::DidInitialPermissionCheck,
-                      WrapPersistent(this),
+                      WrapWeakPersistent(this),
                       CreatePermissionDescriptor(microphone_permission_name)));
 
   // Initializes MediaDeviceService and `output_device_ids_` only for a valid
@@ -712,15 +734,32 @@ AudioContext::AudioContext(LocalDOMWindow& window,
 
 void AudioContext::Uninitialize() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
+  // This runs for a context rejected by Create(), via
+  // UninitializeRejectedContext(), and again from ContextDestroyed() if the
+  // context has not been collected by then. Check `is_cleared_` directly rather
+  // than the override, which also reports true for a context that was only
+  // close()d.
+  if (BaseAudioContext::IsContextCleared()) {
+    return;
+  }
   DCHECK_NE(hardware_context_count, 0u);
   SendLogMessage(__func__, "");
   --hardware_context_count;
   StopRendering();
   DidClose();
   RecordAutoplayMetrics();
-  UninitializeMediaDeviceService();
   BaseAudioContext::Uninitialize();
   DCHECK_EQ(pending_resume_resolvers_.size(), 0u);
+}
+
+void AudioContext::UninitializeRejectedContext() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
+  // The constructor provisionally sets `autoplay_status_` to kFailed, which
+  // MaybeAllowAutoplayWithUnlockType() would have upgraded had the context been
+  // accepted. Drop it so that Uninitialize() does not record it.
+  DCHECK(!autoplay_unlock_type_.has_value());
+  autoplay_status_.reset();
+  Uninitialize();
 }
 
 AudioContext::~AudioContext() {
@@ -787,11 +826,10 @@ ScriptPromise<IDLUndefined> AudioContext::suspendContext(
   ScriptPromise<IDLUndefined> promise;
   base::OnceClosure callback;
 
-  // If resume() is called before the async transition to "suspended" runs,
-  // it will clear suspended_by_user_ to make that task a no-op.
+  // Prevent autoplay from starting the context until resume() is called.
   suspended_by_user_ = true;
 
-  pending_transition_to_suspend_ = true;
+  pending_transition_to_suspend_count_++;
 
   if (RuntimeEnabledFeatures::AudioContextAsyncStateTransitionsEnabled()) {
     // The transition to "suspended" is executed asynchronously to prevent race
@@ -806,8 +844,9 @@ ScriptPromise<IDLUndefined> AudioContext::suspendContext(
     // Probe reports the user action to the inspector synchronously.
     probe::DidSuspendAudioContext(GetExecutionContext());
 
-    callback = blink::BindOnce(&AudioContext::PerformTransitionToSuspended,
-                               WrapWeakPersistent(this));
+    callback =
+        blink::BindOnce(&AudioContext::PerformTransitionToSuspended,
+                        WrapWeakPersistent(this), WrapWeakPersistent(resolver));
   } else {
     // Stop rendering now.
     if (destinationNode()) {
@@ -821,14 +860,18 @@ ScriptPromise<IDLUndefined> AudioContext::suspendContext(
     // we'll just resolve the promise now.
     promise = ToResolvedUndefinedPromise(script_state);
 
-    // Clear pending_transition_to_suspend_ asynchronously for the
-    // kAudioContextAsyncTransitionToSuspendedStateRead use counter.
+    // Decrease pending_transition_to_suspend_count_ asynchronously for
+    // the kAudioContextAsyncTransitionToSuspendedStateRead use counter.
     callback = blink::BindOnce(
         [](AudioContext* context) {
           if (context) {
             DCHECK_CALLED_ON_VALID_SEQUENCE(
                 context->main_thread_sequence_checker_);
-            context->pending_transition_to_suspend_ = false;
+            if (context->pending_transition_to_suspend_count_ == 0) {
+              // Cancelled by DidClose().
+              return;
+            }
+            context->pending_transition_to_suspend_count_--;
           }
         },
         WrapWeakPersistent(this));
@@ -855,24 +898,46 @@ ScriptPromise<IDLUndefined> AudioContext::resumeContext(
 
   auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(
       script_state, exception_state.GetContext());
+  resolver->SuppressDetachCheck();
   auto promise = resolver->Promise();
 
-  std::optional<ResumeError> error = ResumeInternal();
-  if (error) {
-    if (error == ResumeError::kUnknownFrameVisibility) {
-      deferred_resume_resolvers_.push_back(resolver);
-      return promise;
-    }
+  // The context is no longer suspended by the user, so autoplay can start it.
+  suspended_by_user_ = false;
 
-    if (error == ResumeError::kAlreadyRunning) {
-      resolver->Resolve();
-      return promise;
-    }
-
-    resolver->Reject(MakeGarbageCollected<DOMException>(
-        DOMExceptionCode::kInvalidStateError,
-        GetResumeErrorMessage(error.value())));
+  // A resume request made during an interruption normally arms the context to
+  // restart when the interruption ends. Keep it pending while restricted.
+  if (AutoplayPolicy::ShouldBlockForInitialAutoplayRestriction(
+          *GetWindow()->document())) {
+    std::ignore = IsAllowedToStart();
+    AddPendingResumeResolver(resolver);
     return promise;
+  }
+
+  // Defer the resume until the frame visibility is known.
+  if (should_interrupt_when_frame_is_hidden_ && !is_frame_hidden_.has_value()) {
+    deferred_resume_resolvers_.push_back(resolver);
+    return promise;
+  }
+
+  StartContextInterruptionWhenFrameHiddenIfNeeded();
+  TransitionToInterruptedIfTriggeredWhileSuspended();
+  if (ContextState() == V8AudioContextState::Enum::kInterrupted) {
+    RejectResolver(*resolver, GetResumeErrorMessage(ResumeError::kInterrupted));
+    return promise;
+  }
+
+  if (RuntimeEnabledFeatures::AudioContextAsyncStateTransitionsEnabled()) {
+    ScheduleTransitionsToRunning({resolver});
+    return promise;
+  }
+
+  if (ContextState() == V8AudioContextState::Enum::kRunning) {
+    resolver->Resolve();
+    return promise;
+  }
+
+  if (StartRenderingIfAllowed()) {
+    probe::DidResumeAudioContext(GetExecutionContext());
   }
 
   AddPendingResumeResolver(resolver);
@@ -880,44 +945,104 @@ ScriptPromise<IDLUndefined> AudioContext::resumeContext(
   return promise;
 }
 
-std::optional<AudioContext::ResumeError> AudioContext::ResumeInternal() {
+void AudioContext::ScheduleTransitionsToRunning(
+    const HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>& resolvers) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
+  DCHECK(RuntimeEnabledFeatures::AudioContextAsyncStateTransitionsEnabled());
+
+  if (destinationNode()) {
+    MaybeAllowAutoplayWithUnlockType(AutoplayUnlockType::kContextResume);
+  }
+
+  // If the context is not allowed to start, keep the promises pending until
+  // it is allowed.
+  if (!IsAllowedToStart()) {
+    for (auto& resolver : resolvers) {
+      AddPendingResumeResolver(resolver);
+    }
+    return;
+  }
+
+  // Start rendering instead of doing it in the transition task, so that
+  // playback starts immediately. Skip it if already rendering.
+  if (!IsPullingAudioGraph() && StartRenderingIfAllowed()) {
+    probe::DidResumeAudioContext(GetExecutionContext());
+  }
+
+  // Keep each resolver pending until its PerformTransitionToRunning() settles
+  // it in the call order, or until close() rejects it.
+  auto task_runner =
+      GetExecutionContext()->GetTaskRunner(TaskType::kMediaElementEvent);
+  for (auto& resolver : resolvers) {
+    AddPendingPromiseResolver(resolver);
+    task_runner->PostTask(
+        FROM_HERE, blink::BindOnce(&AudioContext::PerformTransitionToRunning,
+                                   WrapWeakPersistent(this),
+                                   WrapWeakPersistent(resolver.Get())));
+  }
+}
+
+void AudioContext::PerformTransitionToRunning(
+    ScriptPromiseResolver<IDLUndefined>* resume_resolver) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
 
-  if (ContextState() == V8AudioContextState::Enum::kClosed) {
-    return ResumeError::kClosed;
+  if (!HasPendingPromiseResolver(resume_resolver)) {
+    return;
   }
 
-  // Clear this flag to cancel any pending async transition to "suspended".
-  suspended_by_user_ = false;
-  pending_transition_to_suspend_ = false;  // Cancel the pending suspend window.
-
-  if (should_interrupt_when_frame_is_hidden_) {
-    if (!is_frame_hidden_.has_value()) {
-      return ResumeError::kUnknownFrameVisibility;
-    }
-
-    if (is_frame_hidden_.value()) {
-      RecordMediaPlaybackInterruptionType(
-          AudioContextInterruptionType::kPlayAttemptWhileFrameHidden);
-      StartContextInterruption();
-    }
-  }
-
+  TransitionToInterruptedIfTriggeredWhileSuspended();
   if (ContextState() == V8AudioContextState::Enum::kInterrupted) {
-    return ResumeError::kInterrupted;
+    // Stop the rendering that ScheduleTransitionsToRunning() started before
+    // the interruption.
+    if (IsPullingAudioGraph()) {
+      destinationNode()->GetAudioDestinationHandler().StopRendering();
+      ClearAudibilityState();
+    }
+
+    RemovePendingPromiseResolver(resume_resolver);
+    RejectResolver(*resume_resolver,
+                   GetResumeErrorMessage(ResumeError::kInterrupted));
+    return;
   }
+
+  if (ContextState() != V8AudioContextState::Enum::kRunning) {
+    if (!IsPullingAudioGraph()) {
+      StartRenderingIfAllowed();
+    }
+
+    SetContextState(V8AudioContextState::Enum::kRunning);
+  }
+
+  ResolvePendingResumeResolvers();
+  ResolvePendingPromiseResolver(resume_resolver);
+}
+
+void AudioContext::StartContextInterruptionWhenFrameHiddenIfNeeded() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
+
+  if (!should_interrupt_when_frame_is_hidden_ ||
+      !is_frame_hidden_.has_value() || !is_frame_hidden_.value()) {
+    return;
+  }
+
+  RecordMediaPlaybackInterruptionType(
+      AudioContextInterruptionType::kPlayAttemptWhileFrameHidden);
+  StartContextInterruption();
+}
+
+void AudioContext::TransitionToInterruptedIfTriggeredWhileSuspended() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
 
   if (ContextState() == V8AudioContextState::Enum::kSuspended &&
       is_interrupted_while_suspended_) {
     // When the interruption ends, the context should be in the running state.
     should_transition_to_running_after_interruption_ = true;
     SetContextState(V8AudioContextState::Enum::kInterrupted);
-    return ResumeError::kInterrupted;
   }
+}
 
-  if (ContextState() == V8AudioContextState::Enum::kRunning) {
-    return ResumeError::kAlreadyRunning;
-  }
+bool AudioContext::StartRenderingIfAllowed() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
 
   // Restart the destination node to pull on the audio graph.
   if (destinationNode()) {
@@ -926,12 +1051,10 @@ std::optional<AudioContext::ResumeError> AudioContext::ResumeInternal() {
       // Do not set the state to running here.  We wait for the
       // destination to start to set the state.
       StartRendering();
-
-      // Probe reports only when the user gesture allows the audio rendering.
-      probe::DidResumeAudioContext(GetExecutionContext());
+      return true;
     }
   }
-  return std::nullopt;
+  return false;
 }
 
 void AudioContext::ProcessDeferredResume() {
@@ -942,26 +1065,51 @@ void AudioContext::ProcessDeferredResume() {
     return;
   }
 
-  std::optional<ResumeError> error = ResumeInternal();
-  if (error) {
-    if (error == ResumeError::kAlreadyRunning) {
-      for (auto& resolver : deferred_resume_resolvers_) {
-        resolver->Resolve();
-      }
-    } else {
-      for (auto& resolver : deferred_resume_resolvers_) {
-        resolver->Reject(MakeGarbageCollected<DOMException>(
-            DOMExceptionCode::kInvalidStateError,
-            GetResumeErrorMessage(error.value())));
-      }
-    }
-  } else {
-    // Move the resolvers to `pending_resume_resolvers_` to resolve them when
-    // the state transition finishes.
-    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+  // The context is no longer suspended by the user, so autoplay can start it.
+  suspended_by_user_ = false;
+
+  if (AutoplayPolicy::ShouldBlockForInitialAutoplayRestriction(
+          *GetWindow()->document())) {
+    std::ignore = IsAllowedToStart();
     for (auto& resolver : deferred_resume_resolvers_) {
-      pending_resume_resolvers_.push_back(resolver);
+      AddPendingResumeResolver(resolver);
     }
+    deferred_resume_resolvers_.clear();
+    return;
+  }
+
+  StartContextInterruptionWhenFrameHiddenIfNeeded();
+  TransitionToInterruptedIfTriggeredWhileSuspended();
+  if (ContextState() == V8AudioContextState::Enum::kInterrupted) {
+    RejectDeferredResumeResolversWithException(
+        GetResumeErrorMessage(ResumeError::kInterrupted));
+    return;
+  }
+
+  if (RuntimeEnabledFeatures::AudioContextAsyncStateTransitionsEnabled()) {
+    HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>> resolvers;
+    resolvers.swap(deferred_resume_resolvers_);
+    ScheduleTransitionsToRunning(resolvers);
+    return;
+  }
+
+  if (ContextState() == V8AudioContextState::Enum::kRunning) {
+    for (auto& resolver : deferred_resume_resolvers_) {
+      resolver->Resolve();
+    }
+    deferred_resume_resolvers_.clear();
+    return;
+  }
+
+  if (StartRenderingIfAllowed()) {
+    probe::DidResumeAudioContext(GetExecutionContext());
+  }
+
+  // Register the deferred resume resolvers as pending resume resolvers
+  // so that they are resolved when the state transition finishes, or
+  // rejected if the context goes away before that.
+  for (auto& resolver : deferred_resume_resolvers_) {
+    AddPendingResumeResolver(resolver);
   }
   deferred_resume_resolvers_.clear();
 }
@@ -1033,14 +1181,19 @@ ScriptPromise<IDLUndefined> AudioContext::closeContext(
 }
 
 void AudioContext::DidClose() {
+  if (is_closed_) {
+    return;
+  }
+
   // Cancel any pending async transition to the "running" state.
   pending_initial_transition_to_running_ = false;
   // Clear the pending state transition to the "suspended" state.
-  pending_transition_to_suspend_ = false;
+  pending_transition_to_suspend_count_ = 0;
 
   EnsureAudioContextManagerService();
   if (audio_context_manager_.is_bound()) {
     audio_context_manager_->AudioContextClosed(context_id_);
+    audio_context_manager_.reset();
   }
 
   SetContextState(V8AudioContextState::Enum::kClosed);
@@ -1058,21 +1211,25 @@ void AudioContext::DidClose() {
   }
   set_sink_id_resolvers_.clear();
 
-  RejectPendingPromiseResolversWithException(
-      "AudioContext closed before a pending suspend() could complete.");
+  RejectPendingPromiseResolversWithException("AudioContext is closed.");
 
   // Reject all resume() promises that are still deferred waiting for the
   // frame's visibility to become known. They can never settle now that the
   // context is closing.
-  for (auto& resolver : deferred_resume_resolvers_) {
-    resolver->Reject(MakeGarbageCollected<DOMException>(
-        DOMExceptionCode::kInvalidStateError,
-        "AudioContext closed before a pending resume() could complete."));
-  }
-  deferred_resume_resolvers_.clear();
+  RejectDeferredResumeResolversWithException(
+      "AudioContext closed before a pending resume() could complete.");
 
   if (auto* frame = GetLocalFrame()) {
     frame->RemoveVisibilityObserver(this);
+  }
+
+  SetPage(nullptr);
+
+  permission_service_.reset();
+  permission_receiver_.reset();
+  UninitializeMediaDeviceService();
+  if (media_player_host_.is_bound()) {
+    OnMediaPlayerDisconnect();
   }
 
   is_closed_ = true;
@@ -1080,6 +1237,30 @@ void AudioContext::DidClose() {
 
 bool AudioContext::IsContextCleared() const {
   return close_resolver_ || BaseAudioContext::IsContextCleared();
+}
+
+void AudioContext::DetachPendingResolvers() {
+  DCHECK(IsMainThread());
+
+  for (auto& resolver : set_sink_id_resolvers_) {
+    resolver->Detach();
+  }
+  set_sink_id_resolvers_.clear();
+
+  for (auto& resolver : deferred_resume_resolvers_) {
+    resolver->SuppressDetachCheck();
+  }
+  deferred_resume_resolvers_.clear();
+
+  {
+    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+    for (auto& resolver : pending_resume_resolvers_) {
+      resolver->SuppressDetachCheck();
+    }
+    pending_resume_resolvers_.clear();
+  }
+
+  BaseAudioContext::DetachPendingResolvers();
 }
 
 void AudioContext::ScheduleInitialTransitionToRunning() {
@@ -1128,7 +1309,12 @@ void AudioContext::PerformInitialTransitionToRunning() {
   if (!pending_initial_transition_to_running_) {
     return;  // Cancelled by DidClose().
   }
+
   pending_initial_transition_to_running_ = false;
+
+  // DidClose() clears pending_initial_transition_to_running_ whenever the
+  // state becomes closed, so a closed context returns early above.
+  CHECK_NE(ContextState(), V8AudioContextState::Enum::kClosed);
 
   if (ContextState() == V8AudioContextState::Enum::kSuspended) {
     SetContextState(V8AudioContextState::Enum::kRunning);
@@ -1138,24 +1324,30 @@ void AudioContext::PerformInitialTransitionToRunning() {
   ResolvePendingResumeResolvers();
 }
 
-void AudioContext::PerformTransitionToSuspended() {
+void AudioContext::PerformTransitionToSuspended(
+    ScriptPromiseResolver<IDLUndefined>* suspend_resolver) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
 
-  pending_transition_to_suspend_ = false;
+  if (pending_transition_to_suspend_count_ == 0) {
+    return;  // Cancelled by DidClose().
+  }
 
-  // If the context has already been closed, reject pending suspend promises.
+  pending_transition_to_suspend_count_--;
+
   if (ContextState() == V8AudioContextState::Enum::kClosed) {
-    RejectPendingPromiseResolversWithException(
-        "Cannot suspend a closed AudioContext.");
+    // Unreachable. The state only becomes closed via StopRendering() or
+    // DidClose(), both of which are called together in closeContext() and
+    // Uninitialize(). DidClose() clears pending_transition_to_suspend_count_,
+    // making this method return early.
+    CHECK_NE(ContextState(), V8AudioContextState::Enum::kClosed);
     return;
   }
 
-  // Stop rendering unless resume() was called after this task was scheduled.
-  if (suspended_by_user_ && destinationNode()) {
+  if (destinationNode()) {
     SuspendRendering();
   }
 
-  ResolvePendingPromiseResolvers();
+  ResolvePendingPromiseResolver(suspend_resolver);
 }
 
 void AudioContext::StartRendering() {
@@ -1223,10 +1415,11 @@ V8AudioContextState AudioContext::state() const {
   // the AudioContextAsyncStateTransitions feature is enabled, the old state
   // is returned until the transition completes.
   // To measure existing usage even with the feature disabled, construction
-  // and suspend() set the two flags (pending_initial_transition_to_running_,
-  // pending_transition_to_suspend_) and clear them asynchronously to keep
-  // the pending state transition window.
-  if (pending_transition_to_suspend_) {
+  // and suspend() set the flag pending_initial_transition_to_running_ or
+  // increase the counter pending_transition_to_suspend_count_, and clear the
+  // flag or decrease the counter asynchronously to keep the pending state
+  // transition window.
+  if (pending_transition_to_suspend_count_ > 0) {
     UseCounter::Count(
         GetExecutionContext(),
         WebFeature::kAudioContextAsyncTransitionToSuspendedStateRead);
@@ -1391,8 +1584,13 @@ bool AudioContext::AreAutoplayRequirementsFulfilled() const {
   switch (GetAutoplayPolicy()) {
     case AutoplayPolicy::Type::kNoUserGestureRequired:
       return true;
-    case AutoplayPolicy::Type::kUserGestureRequired:
-      return LocalFrame::HasTransientUserActivation(GetWindow()->GetFrame());
+    case AutoplayPolicy::Type::kUserGestureRequired: {
+      // user_gesture_required_ can remain set after the temporary restriction
+      // clears. This policy only requires a gesture for cross-origin frames.
+      LocalFrame* frame = GetWindow()->GetFrame();
+      return !frame->IsCrossOriginToOutermostMainFrame() ||
+             LocalFrame::HasTransientUserActivation(frame);
+    }
     case AutoplayPolicy::Type::kDocumentUserActivationRequired:
       return AutoplayPolicy::IsDocumentAllowedToPlay(*GetWindow()->document());
   }
@@ -1401,7 +1599,10 @@ bool AudioContext::AreAutoplayRequirementsFulfilled() const {
 }
 
 void AudioContext::MaybeAllowAutoplayWithUnlockType(AutoplayUnlockType type) {
-  if (!user_gesture_required_ || !AreAutoplayRequirementsFulfilled()) {
+  if (!user_gesture_required_ ||
+      AutoplayPolicy::ShouldBlockForInitialAutoplayRestriction(
+          *GetWindow()->document()) ||
+      !AreAutoplayRequirementsFulfilled()) {
     return;
   }
 
@@ -1419,6 +1620,12 @@ void AudioContext::UpdateAutoplayRequirement() {
   LocalDOMWindow* window = GetWindow();
   if (!window) {
     return;
+  }
+
+  if (AutoplayPolicy::ShouldBlockForInitialAutoplayRestriction(
+          *window->document())) {
+    autoplay_status_ = AutoplayStatus::kFailed;
+    user_gesture_required_ = true;
   }
 
   switch (GetAutoplayPolicy()) {
@@ -1442,6 +1649,22 @@ bool AudioContext::IsAllowedToStart(bool should_suppress_warning) const {
   if (blocked_by_prerendering_) {
     // In prerendering, the AudioContext will not start rendering. See:
     // https://wicg.github.io/nav-speculation/prerendering.html#web-audio-patch
+    return false;
+  }
+
+  // Prefer the normal policy's warning if it would independently block
+  // playback.
+  if (AutoplayPolicy::ShouldBlockForInitialAutoplayRestriction(
+          *GetWindow()->document()) &&
+      (!user_gesture_required_ || AreAutoplayRequirementsFulfilled())) {
+    if (!should_suppress_warning) {
+      GetWindow()->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
+          mojom::blink::ConsoleMessageSource::kOther,
+          mojom::blink::ConsoleMessageLevel::kWarning,
+          "The AudioContext was not allowed to start because autoplay is "
+          "temporarily blocked after session restore. Resume or recreate it "
+          "after a user gesture in the page."));
+    }
     return false;
   }
 
@@ -1517,18 +1740,29 @@ void AudioContext::RecordAutoplayMetrics() {
   }
 }
 
+void AudioContext::ContextLifecycleStateChanged(
+    mojom::blink::FrameLifecycleState state) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
+  BaseAudioContext::ContextLifecycleStateChanged(state);
+  if (state == mojom::blink::FrameLifecycleState::kFrozen) {
+    ClearAudibilityState();
+  }
+}
+
 void AudioContext::ContextDestroyed() {
   permission_receiver_.reset();
   Uninitialize();
 }
 
 bool AudioContext::HasPendingActivity() const {
-  // There's activity if the context is is not closed.  Suspended contexts count
-  // as having activity even though they are basically idle with nothing going
-  // on.  However, they can be resumed at any time, so we don't want contexts
-  // going away prematurely.
-  return ((ContextState() != V8AudioContextState::Enum::kClosed) &&
-          BaseAudioContext::HasPendingActivity()) ||
+  // There's no pending activity if the context is closed.
+  if (ContextState() == V8AudioContextState::Enum::kClosed) {
+    return false;
+  }
+  // Suspended contexts count as having activity even though they are basically
+  // idle with nothing going on. However, they can be resumed at any time, so we
+  // don't want contexts going away prematurely.
+  return BaseAudioContext::HasPendingActivity() ||
          permission_receiver_.is_bound();
 }
 
@@ -1738,7 +1972,8 @@ void AudioContext::NotifyAudibleAudioStopped(unsigned sequence_id,
 }
 
 void AudioContext::EnsureAudioContextManagerService() {
-  if (audio_context_manager_.is_bound() || !GetWindow()) {
+  if (audio_context_manager_.is_bound() || !GetWindow() ||
+      !GetWindow()->GetFrame()) {
     return;
   }
 
@@ -1794,6 +2029,10 @@ void AudioContext::OnPermissionStatusChange(
 void AudioContext::DidInitialPermissionCheck(
     mojom::blink::PermissionDescriptorPtr descriptor,
     mojom::blink::PermissionStatusWithDetailsPtr status_with_details) {
+  if (ContextState() == V8AudioContextState::Enum::kClosed) {
+    return;
+  }
+
   mojom::blink::PermissionStatus status = status_with_details->status;
   if (descriptor->name == mojom::blink::PermissionName::AUDIO_CAPTURE &&
       status == mojom::blink::PermissionStatus::GRANTED) {
@@ -2202,7 +2441,6 @@ void AudioContext::HandleRenderError() {
 
       DispatchEvent(*Event::Create(event_type_names::kError));
       suspended_by_user_ = false;
-      pending_transition_to_suspend_ = false;
       SetContextState(V8AudioContextState::Enum::kSuspended);
       return;
     case V8AudioContextState::Enum::kSuspended:
@@ -2334,14 +2572,15 @@ void AudioContext::PerformCleanupPendingResumePromises() {
   has_posted_cleanup_pending_resume_task_ = false;
 }
 
-void AudioContext::RejectPendingResolvers() {
+void AudioContext::RejectPendingPromiseResolversWithException(
+    const String& message) {
   DCHECK(IsMainThread());
 
-  // Audio context is closing down so reject any resume promises that are still
-  // pending.
-  RejectPendingResumeResolversWithException("Audio context is going away");
-
-  BaseAudioContext::RejectPendingResolvers();
+  {
+    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+    pending_resume_resolvers_.clear();
+  }
+  BaseAudioContext::RejectPendingPromiseResolversWithException(message);
 }
 
 void AudioContext::AddPendingResumeResolver(
@@ -2350,6 +2589,7 @@ void AudioContext::AddPendingResumeResolver(
 
   DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
   pending_resume_resolvers_.push_back(resolver);
+  AddPendingPromiseResolver(resolver);
 }
 
 void AudioContext::ResolvePendingResumeResolvers() {
@@ -2359,6 +2599,7 @@ void AudioContext::ResolvePendingResumeResolvers() {
   {
     DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
     resolvers.swap(pending_resume_resolvers_);
+    RemovePendingPromiseResolvers(resolvers);
   }
 
   for (auto& resolver : resolvers) {
@@ -2374,12 +2615,22 @@ void AudioContext::RejectPendingResumeResolversWithException(
   {
     DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
     resolvers.swap(pending_resume_resolvers_);
+    RemovePendingPromiseResolvers(resolvers);
   }
 
   for (auto& resolver : resolvers) {
-    resolver->Reject(MakeGarbageCollected<DOMException>(
-        DOMExceptionCode::kInvalidStateError, message));
+    RejectResolver(*resolver, message);
   }
+}
+
+void AudioContext::RejectDeferredResumeResolversWithException(
+    const String& message) {
+  DCHECK(IsMainThread());
+
+  for (auto& resolver : deferred_resume_resolvers_) {
+    RejectResolver(*resolver, message);
+  }
+  deferred_resume_resolvers_.clear();
 }
 
 }  // namespace blink

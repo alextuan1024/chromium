@@ -7,6 +7,8 @@ package org.chromium.chrome.browser.ui.signin;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.Assert.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -68,6 +70,7 @@ public class SigninSnackbarControllerTest {
         SyncServiceFactory.setInstanceForTesting(mSyncService);
         HistorySyncHelper.setInstanceForTesting(mHistorySyncHelper);
         mIdentityManager.setPrimaryAccount(TestAccounts.ACCOUNT1);
+        when(mSnackbarManager.canShowSnackbar()).thenReturn(true);
     }
 
     @Test
@@ -145,6 +148,69 @@ public class SigninSnackbarControllerTest {
                 SIGN_IN_AND_HISTORY_SYNC);
         clickSnackbarUndoButton();
         verify(mHistorySyncHelper).setHistoryAndTabsSync(false);
+    }
+
+    @Test
+    public void testSignOutWhileSnackbarShown_dismissesSnackbar() {
+        when(mIdentityServicesProvider.getIdentityManager(mProfile)).thenReturn(mIdentityManager);
+
+        SigninSnackbarController.showUndoSnackbarIfNeeded(
+                mActivity,
+                mProfile,
+                SigninAccessPoint.BOOKMARK_MANAGER,
+                mSnackbarManager,
+                mListener,
+                SIGN_IN_ONLY);
+        ArgumentCaptor<Snackbar> snackbarCaptor = ArgumentCaptor.forClass(Snackbar.class);
+        verify(mSnackbarManager).showSnackbar(snackbarCaptor.capture());
+        SnackbarManager.SnackbarController controller = snackbarCaptor.getValue().getController();
+        assertEquals(1, mIdentityManager.getObserverCount());
+
+        mIdentityManager.setPrimaryAccount(null);
+
+        verify(mSnackbarManager).dismissSnackbars(controller);
+        assertEquals(0, mIdentityManager.getObserverCount());
+        verifyNoInteractions(mListener);
+    }
+
+    @Test
+    public void testSignOutAfterSnackbarDismissed_doesNotDismissAgain() {
+        when(mIdentityServicesProvider.getIdentityManager(mProfile)).thenReturn(mIdentityManager);
+
+        SigninSnackbarController.showUndoSnackbarIfNeeded(
+                mActivity,
+                mProfile,
+                SigninAccessPoint.BOOKMARK_MANAGER,
+                mSnackbarManager,
+                mListener,
+                SIGN_IN_ONLY);
+        ArgumentCaptor<Snackbar> snackbarCaptor = ArgumentCaptor.forClass(Snackbar.class);
+        verify(mSnackbarManager).showSnackbar(snackbarCaptor.capture());
+        Snackbar snackbar = snackbarCaptor.getValue();
+        snackbar.getController().onDismissNoAction(snackbar.getActionData());
+
+        mIdentityManager.setPrimaryAccount(null);
+
+        verify(mSnackbarManager, never()).dismissSnackbars(any());
+    }
+
+    @Test
+    public void testSignOutAfterUndoClick_doesNotDismissSnackbar() {
+        when(mIdentityServicesProvider.getIdentityManager(mProfile)).thenReturn(mIdentityManager);
+        when(mIdentityServicesProvider.getSigninManager(mProfile)).thenReturn(mSigninManager);
+
+        SigninSnackbarController.showUndoSnackbarIfNeeded(
+                mActivity,
+                mProfile,
+                SigninAccessPoint.BOOKMARK_MANAGER,
+                mSnackbarManager,
+                mListener,
+                SIGN_IN_ONLY);
+        clickSnackbarUndoButton();
+
+        mIdentityManager.setPrimaryAccount(null);
+
+        verify(mSnackbarManager, never()).dismissSnackbars(any());
     }
 
     @Test

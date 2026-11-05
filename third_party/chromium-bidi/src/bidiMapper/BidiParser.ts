@@ -16,11 +16,14 @@
  */
 
 import type {
+  Autofill,
   Bluetooth,
   Browser,
   BrowsingContext,
-  Cdp,
+  GoogCdp,
+  GoogSession,
   Emulation,
+  GoogBrowsingContext,
   Input,
   Network,
   Permissions,
@@ -33,6 +36,11 @@ import type {
 } from '../protocol/protocol.js';
 
 export interface BidiCommandParameterParser {
+  // Autofill module
+  // keep-sorted start block=yes
+  parseAutofillTriggerParams(params: unknown): Autofill.TriggerParameters;
+  // keep-sorted end
+
   // Bluetooth module
   // keep-sorted start block=yes
   parseDisableSimulationParameters(
@@ -65,6 +73,9 @@ export interface BidiCommandParameterParser {
   parseSimulateGattDisconnectionParameters(
     params: unknown,
   ): Bluetooth.SimulateGattDisconnectionParameters;
+  parseSimulateGattMtuChangeParameters(
+    params: unknown,
+  ): Bluetooth.SimulateGattMtuChangeParameters;
   parseSimulatePreconnectedPeripheralParameters(
     params: unknown,
   ): Bluetooth.SimulatePreconnectedPeripheralParameters;
@@ -126,9 +137,16 @@ export interface BidiCommandParameterParser {
 
   // CDP module
   // keep-sorted start block=yes
-  parseGetSessionParams(params: unknown): Cdp.GetSessionParameters;
-  parseResolveRealmParams(params: unknown): Cdp.ResolveRealmParameters;
-  parseSendCommandParams(params: unknown): Cdp.SendCommandParameters;
+  parseGetSessionParams(params: unknown): GoogCdp.GetSessionParameters;
+  parseResolveRealmParams(params: unknown): GoogCdp.ResolveRealmParameters;
+  parseSendCommandParams(params: unknown): GoogCdp.SendCommandParameters;
+  // keep-sorted end
+
+  // Goog BrowsingContext module
+  // keep-sorted start block=yes
+  parseGetAccessibilityTreeParams(
+    params: unknown,
+  ): GoogBrowsingContext.GetAccessibilityTreeParameters;
   // keep-sorted end
 
   // Emulation module
@@ -245,6 +263,7 @@ export interface BidiCommandParameterParser {
 
   // Session module
   // keep-sorted start block=yes
+  parseSetAclParams(params: unknown): GoogSession.SetAclParameters;
   parseSubscribeParams(params: unknown): Session.SubscribeParameters;
   parseUnsubscribeParams(params: unknown): Session.UnsubscribeParameters;
   // keep-sorted end

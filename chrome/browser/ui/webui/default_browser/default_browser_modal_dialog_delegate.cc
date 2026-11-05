@@ -52,9 +52,9 @@ std::unique_ptr<views::Widget> Show(Profile* profile,
 
   auto contents_wrapper =
       std::make_unique<WebUIContentsWrapperT<DefaultBrowserModalUI>>(
-          url, profile, /*task_manager_string_id=*/0,
-          /*esc_closes_ui=*/true,
-          /*supports_draggable_regions=*/false);
+          url, profile,
+          /*task_manager_string_id=*/0,
+          /*esc_closes_ui=*/true);
 
   constexpr int kInitialWidth = 615;
 

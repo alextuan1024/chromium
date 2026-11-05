@@ -89,6 +89,8 @@ class _VersionTest(unittest.TestCase):
         arch_chrome_version_code = output['CHROME_VERSION_CODE']
 
         self.assertEqual(arch_chrome_version_code, '484400000')
+        self.assertEqual(output['CHROME_32_64_VERSION_CODE'], '484400003')
+        self.assertEqual(output['CHROME_32_64_BETA_VERSION_CODE'], '484400013')
 
     def testGenerateVersionCodesAndroidArchX86(self):
         """Assert it handles different architectures correctly.
@@ -102,6 +104,8 @@ class _VersionTest(unittest.TestCase):
         arch_chrome_version_code = output['CHROME_VERSION_CODE']
 
         self.assertEqual(arch_chrome_version_code, '484400001')
+        self.assertEqual(output['CHROME_32_64_VERSION_CODE'], '484400006')
+        self.assertEqual(output['CHROME_32_64_BETA_VERSION_CODE'], '484400016')
 
     def testGenerateVersionCodesAndroidArchArm64(self):
         """Assert it handles different architectures correctly.
@@ -441,6 +445,8 @@ class _VersionGroupedTest(unittest.TestCase):
         arch_chrome_version_code = output['CHROME_VERSION_CODE']
 
         self.assertEqual(arch_chrome_version_code, '575000000')
+        self.assertEqual(output['CHROME_32_64_VERSION_CODE'], '575000001')
+        self.assertEqual(output['CHROME_32_64_BETA_VERSION_CODE'], '575000011')
 
     def testGenerateVersionCodesAndroidArchX86(self):
         """Assert it handles different architectures correctly.
@@ -454,6 +460,8 @@ class _VersionGroupedTest(unittest.TestCase):
         arch_chrome_version_code = output['CHROME_VERSION_CODE']
 
         self.assertEqual(arch_chrome_version_code, '575000006')
+        self.assertEqual(output['CHROME_32_64_VERSION_CODE'], '575000007')
+        self.assertEqual(output['CHROME_32_64_BETA_VERSION_CODE'], '575000017')
 
     def testGenerateVersionCodesAndroidArchArm64(self):
         """Assert it handles different architectures correctly.
@@ -763,6 +771,23 @@ class _VersionGroupedTest(unittest.TestCase):
         self.assertGreater(
             trichrome_beta_version_code, trichrome_stable_version_code
         )
+
+    def testGenerateVersionCodesChrome3264ChannelOrderBeta(self):
+        """Assert Chrome 32_64 OpenBeta > Stable and 32-bit OpenBeta."""
+        for arch in ('arm', 'x86'):
+            output = GenerateVersionCodes(5750, 0, arch=arch)
+            self.assertGreater(
+                output['CHROME_32_64_VERSION_CODE'],
+                output['CHROME_VERSION_CODE'],
+            )
+            self.assertGreater(
+                output['CHROME_32_64_BETA_VERSION_CODE'],
+                output['CHROME_MODERN_VERSION_CODE'],
+            )
+            self.assertGreater(
+                output['CHROME_32_64_BETA_VERSION_CODE'],
+                output['CHROME_32_64_VERSION_CODE'],
+            )
 
 
 class _VersionCodeTest(unittest.TestCase):
@@ -1141,7 +1166,7 @@ class _VersionCodeGroupedTest(unittest.TestCase):
         self.assertEqual(abi, 'x86_64_32')
         self.assertEqual(is_next_build, False)
 
-    def testX86_Auto_64_32Translate(self):
+    def testX86_Auto_64_32Translate(self):  # noqa: F811
         """Test for a desktop build with x86_64_32."""
         build, patch, package, abi, is_next_build = TranslateVersionCode(
             '575000068'

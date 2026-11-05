@@ -11,7 +11,6 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/logging.h"
-#include "base/task/single_thread_task_runner.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "services/device/wake_lock/wake_lock.h"
@@ -34,19 +33,13 @@ struct WakeLockProvider::WakeLockDataPerType {
   // Currently activated wake locks of this wake lock type.
   int64_t count = 0;
 
-  // Map of all wake locks of this type created by this provider. An entry is
-  // removed from this map when an |OnConnectionError| is received.
-  std::map<WakeLock*, std::unique_ptr<WakeLock>> wake_locks;
-
   // Observers for this wake lock type.
   mojo::RemoteSet<mojom::WakeLockObserver> observers;
 };
 
 WakeLockProvider::WakeLockProvider(
-    scoped_refptr<base::SingleThreadTaskRunner> file_task_runner,
     const WakeLockContextCallback& native_view_getter)
-    : file_task_runner_(std::move(file_task_runner)),
-      native_view_getter_(native_view_getter) {
+    : native_view_getter_(native_view_getter) {
   // Populates |wake_lock_store_| with entries for all types of wake locks.
   wake_lock_store_[mojom::WakeLockType::kPreventAppSuspension] =
       std::make_unique<WakeLockDataPerType>();
@@ -65,9 +58,7 @@ WakeLockProvider::~WakeLockProvider() {
   // TODO(crbug.com/352093447): Resolve the issue(s) that
   // necessitate this code being here and remove this code.
   if (base::FeatureList::IsEnabled(features::kRemoveWakeLockInDestructor)) {
-    for (auto& wake_lock_data : wake_lock_store_) {
-      GetWakeLockDataPerType(wake_lock_data.first).wake_locks.clear();
-    }
+    wake_locks_.clear();
   }
 }
 
@@ -81,8 +72,7 @@ void WakeLockProvider::GetWakeLockContextForID(
     mojo::PendingReceiver<mojom::WakeLockContext> receiver) {
   DCHECK_GE(context_id, 0);
   mojo::MakeSelfOwnedReceiver(
-      std::make_unique<WakeLockContext>(context_id, file_task_runner_,
-                                        native_view_getter_),
+      std::make_unique<WakeLockContext>(context_id, native_view_getter_),
       std::move(receiver));
 }
 
@@ -94,8 +84,7 @@ void WakeLockProvider::GetWakeLockWithoutContext(
   std::unique_ptr<WakeLock> wake_lock = std::make_unique<WakeLock>(
       std::move(receiver), type, reason, description,
       WakeLockContext::WakeLockInvalidContextId, native_view_getter_, this);
-  WakeLock* const key = wake_lock.get();
-  GetWakeLockDataPerType(type).wake_locks[key] = std::move(wake_lock);
+  wake_locks_.insert(std::move(wake_lock));
 }
 
 void WakeLockProvider::NotifyOnWakeLockDeactivation(
@@ -149,10 +138,10 @@ void WakeLockProvider::OnWakeLockChanged(mojom::WakeLockType old_type,
   OnWakeLockActivated(new_type);
 }
 
-void WakeLockProvider::OnConnectionError(mojom::WakeLockType type,
-                                         WakeLock* wake_lock) {
-  size_t result = GetWakeLockDataPerType(type).wake_locks.erase(wake_lock);
-  DCHECK_GT(result, 0UL);
+void WakeLockProvider::OnConnectionError(WakeLock* wake_lock) {
+  auto it = wake_locks_.find(wake_lock);
+  CHECK(it != wake_locks_.end());
+  wake_locks_.erase(it);
 }
 
 WakeLockProvider::WakeLockDataPerType& WakeLockProvider::GetWakeLockDataPerType(

@@ -12,7 +12,6 @@
 #include "base/synchronization/lock.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
-#include "chrome/browser/ash/arc/vmm/arcvm_working_set_trim_executor.h"
 #include "chrome/browser/performance_manager/mechanisms/working_set_trimmer.h"
 #include "chrome/browser/performance_manager/policies/policy_features.h"
 #include "chrome/browser/performance_manager/policies/working_set_trimmer_policy_arcvm.h"
@@ -46,7 +45,7 @@ void GetArcProcessList(
     base::WeakPtr<
         performance_manager::policies::WorkingSetTrimmerPolicyChromeOS> ptr,
     int processes_per_trim) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
   arc::ArcProcessService* arc_process_service = arc::ArcProcessService::Get();
   if (!arc_process_service) {
     return;
@@ -191,7 +190,7 @@ void WorkingSetTrimmerPolicyChromeOS::OnUpdateMemoryLimit() {}
 
 void WorkingSetTrimmerPolicyChromeOS::set_arcvm_delegate_for_testing(
     ArcVmDelegate* delegate) {
-  DCHECK(!g_arcvm_delegate_for_testing || !delegate);
+  CHECK(!g_arcvm_delegate_for_testing || !delegate, base::NotFatalUntil::M163);
   g_arcvm_delegate_for_testing = delegate;
 }
 
@@ -199,8 +198,10 @@ void WorkingSetTrimmerPolicyChromeOS::TrimNodesOnGraph() {
   const base::TimeTicks now_ticks = base::TimeTicks::Now();
   if (!trim_imperceptible_process_) {
     for (const PageNode* page_node : GetOwningGraph()->GetAllPageNodes()) {
-      if (!page_node->IsVisible() &&
-          (now_ticks - page_node->GetLastVisibilityChangeTime()) >
+      auto [is_visible, last_visibility_change_time] =
+          page_node->GetVisibilityState();
+      if (!is_visible &&
+          (now_ticks - last_visibility_change_time) >
               params_.node_invisible_time) {
         // Get the process node and if it has not been
         // trimmed within the backoff period, we will do that
@@ -244,7 +245,7 @@ void WorkingSetTrimmerPolicyChromeOS::TrimNodesOnGraph() {
         const PageNode* page_node = frame_node->GetPageNode();
         if (page_node &&
             (IsPagePerceptible(page_node) ||
-             (now_ticks - page_node->GetLastVisibilityChangeTime()) <=
+             (now_ticks - page_node->GetVisibilityState().last_change_time) <=
                  params_.node_invisible_time)) {
           all_frames_imperceptible = false;
           break;
@@ -372,7 +373,7 @@ void WorkingSetTrimmerPolicyChromeOS::TrimArcProcesses() {
 }
 
 void WorkingSetTrimmerPolicyChromeOS::TrimArcVmProcesses(bool is_critical) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
   // TODO(crbug.com/40755583): Let the policy own WorkingSetTrimmerPolicyArcVm
   // instance once performance_manager code is migrated to UI thread.
   auto* arcvm_delegate = g_arcvm_delegate_for_testing
@@ -443,7 +444,7 @@ void WorkingSetTrimmerPolicyChromeOS::DoTrimArcVm(
     mechanism::WorkingSetTrimmerChromeOS* trimmer,
     mechanism::ArcVmReclaimType reclaim_type,
     int page_limit) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
 
   trimmer->TrimArcVmWorkingSet(
       base::BindOnce(&WorkingSetTrimmerPolicyChromeOS::OnTrimArcVmWorkingSet,
@@ -455,7 +456,7 @@ void WorkingSetTrimmerPolicyChromeOS::OnTrimArcVmWorkingSet(
     mechanism::ArcVmReclaimType reclaim_type,
     bool success,
     const std::string& failure_reason) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
 
   // NOTE: To ease unit test, we invoke OnArcVmTrimEnded even when
   // |reclaim_type| is not kReclaimAll.
@@ -514,8 +515,10 @@ void WorkingSetTrimmerPolicyChromeOS::OnPassedToGraph(Graph* graph) {
   constexpr base::MemoryConsumerTraits traits(
       // Trimming renderers and ARCVM can save hundreds of MBs.
       base::MemoryConsumerTraits::EstimatedMemoryUsage::kLarge,
-      // Requires walking the graph to find eligible nodes.
-      base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+      // The trimmed memory isn't read. Only the performance manager graph is
+      // walked to pick which processes to trim, and many components access it
+      // frequently, so it's unlikely to be swapped out.
+      base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
       // Trimming working sets does not lose user state.
       base::MemoryConsumerTraits::InformationRetention::kLossless,
       // Trimming processes is an asynchronous OS/VM operation.
@@ -524,7 +527,9 @@ void WorkingSetTrimmerPolicyChromeOS::OnPassedToGraph(Graph* graph) {
       // persists.
       base::MemoryConsumerTraits::IsStateful::kNo,
       // Frees memory in external processes, not in the Browser process.
-      base::MemoryConsumerTraits::InProcess::kNo);
+      base::MemoryConsumerTraits::InProcess::kNo,
+      // The OS compresses the trimmed pages into zram.
+      base::MemoryConsumerTraits::ReleaseMemoryCpuCost::kExpensive);
 
   memory_consumer_registration_.emplace("WorkingSetTrimmerPolicyChromeOS",
                                         traits, this);

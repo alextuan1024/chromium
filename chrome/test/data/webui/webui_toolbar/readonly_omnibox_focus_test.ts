@@ -2,16 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
 
 import {assertArrayEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {TestSearchboxBrowserProxy} from 'chrome://webui-test/cr_components/searchbox/test_searchbox_browser_proxy.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, EventDispositionFlag, OmniboxTextColor, SearchboxBrowserProxy} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {ReadonlyOmniboxElement} from 'chrome://webui-toolbar.top-chrome/app.js';
+import type {ReadonlyOmniboxElement} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {BrowserProxyImpl, EventDispositionFlag, FocusRequestTarget, OmniboxTextColor} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {FocusRequestListener} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {TestToolbarBrowserProxy} from './test_toolbar_browser_proxy.js';
 import type {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
+
+class FocusTestToolbarBrowserProxy extends TestToolbarBrowserProxy {
+  focusRequestListener: FocusRequestListener|null = null;
+
+  override addFocusRequestListener(listener: FocusRequestListener): number {
+    this.focusRequestListener = listener;
+    return 0;
+  }
+}
 
 // These tests care about focus and selection so can't be parallelized.
 // TODO(crbug.com/500653057): Since the <input> now keeps track of selection,
@@ -19,6 +28,7 @@ import type {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
 suite('ReadOnlyOmniboxFocus', function() {
   let omnibox: ReadonlyOmniboxElement;
   let other: HTMLInputElement;  // A focusable sibling element.
+  let browserProxy: FocusTestToolbarBrowserProxy;
   let uiHandler: TestToolbarUiHandler;
 
   const initialState = {
@@ -33,6 +43,7 @@ suite('ReadOnlyOmniboxFocus', function() {
     selection: null,
     textIsUrl: false,
     userInputInProgress: false,
+    hasTemporaryText: false,
   };
 
   function getTextInput(): HTMLInputElement|HTMLTextAreaElement {
@@ -45,13 +56,18 @@ suite('ReadOnlyOmniboxFocus', function() {
   }
 
   setup(async () => {
-    const browserProxy = new TestToolbarBrowserProxy();
+    browserProxy = new FocusTestToolbarBrowserProxy();
     uiHandler = browserProxy.toolbarUIHandler;
     BrowserProxyImpl.setInstance(browserProxy);
-    SearchboxBrowserProxy.setInstance(new TestSearchboxBrowserProxy());
-
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     omnibox = document.createElement('readonly-omnibox');
+
+    omnibox.style.setProperty('--color-omnibox-text', 'rgb(0, 255, 255)');
+    omnibox.style.setProperty('--color-omnibox-text-dimmed', 'rgb(0, 255, 0)');
+    omnibox.style.setProperty(
+        '--color-omnibox-foreground-disabled', 'rgb(0, 0, 255)');
+    omnibox.style.setProperty(
+        '--color-omnibox-security-chip-dangerous', 'rgb(255, 0, 0)');
     // `other` can be any focusable element; it's here for tests that move
     // the focus around.
     other = document.createElement('input');
@@ -224,4 +240,86 @@ suite('ReadOnlyOmniboxFocus', function() {
     assertEquals(3, args[4].focusChange.selection.start);
     assertEquals(2, args[4].focusChange.selection.end);
   });
+
+  test('Placeholder formatting when focused', async () => {
+    omnibox.browserOmniboxState = {
+      ...initialState,
+      textPieces: [],
+      placeholder: {
+        text: 'Search your Default Search Engine',
+        strikethrough: false,
+        color: OmniboxTextColor.kOmniboxText,
+      },
+    };
+    const input = getTextInput();
+    await microtasksFinished();
+    let placeHolderStyle = getComputedStyle(input, '::placeholder');
+    assertEquals('rgb(0, 255, 255)', placeHolderStyle.color);
+    assertEquals('Search your Default Search Engine', input.placeholder);
+    assertTrue(input.matches(':focus'));
+    assertEquals('visible', placeHolderStyle.visibility);
+
+    omnibox.browserOmniboxState = {
+      ...initialState,
+      textPieces: [],
+      placeholder: {
+        text: 'Some other placeholder hint',
+        strikethrough: false,
+        color: OmniboxTextColor.kOmniboxForegroundDisabled,
+      },
+    };
+    await microtasksFinished();
+    placeHolderStyle = getComputedStyle(getTextInput(), '::placeholder');
+    assertEquals('rgb(0, 0, 255)', placeHolderStyle.color);
+    assertEquals('Some other placeholder hint', input.placeholder);
+    assertTrue(input.matches(':focus'));
+    assertEquals('visible', placeHolderStyle.visibility);
+  });
+
+  test(
+      'Focus request select-all is preserved against stale browser state push',
+      async () => {
+        omnibox.browserOmniboxState = {
+          ...initialState,
+          browserVersion: 1,
+          uiVersion: 0,
+          textPieces: [
+            {
+              text: 'about:blank',
+              strikethrough: false,
+              color: OmniboxTextColor.kOmniboxText,
+            },
+          ],
+          formattedFullUrl: 'about:blank',
+          selection: {start: 11, end: 11},
+          textIsUrl: true,
+        };
+        await microtasksFinished();
+        other.focus();
+        await microtasksFinished();
+        assertEquals('', getStringSelection());
+
+        assertTrue(browserProxy.focusRequestListener !== null);
+        browserProxy.focusRequestListener(
+            FocusRequestTarget.kLocationBarUserInitiated);
+        await microtasksFinished();
+        assertEquals('about:blank', getStringSelection());
+        assertEquals(1, omnibox.omniboxViewState.uiVersion);
+
+        // Simulate a browser state push queued during SetFocusWithTarget()
+        // (e.g. ApplyCaretVisibility() on focus) before the browser received
+        // the WebUI's select-all update.
+        omnibox.browserOmniboxState = {
+          ...omnibox.browserOmniboxState,
+          uiVersion: 0,
+          selection: {start: 11, end: 11},
+          placeholder: {
+            text: 'Search Google or type a URL',
+            strikethrough: false,
+            color: OmniboxTextColor.kOmniboxText,
+          },
+        };
+        await microtasksFinished();
+        assertEquals('about:blank', getStringSelection());
+      });
 });

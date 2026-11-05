@@ -186,6 +186,20 @@ inline constexpr bool
     IsReturnTypeCompatible<blink::NotShared<std::remove_pointer_t<ReturnType>>,
                            ReturnType> = true;
 
+template <typename T>
+  requires std::derived_from<T, DOMArrayBufferView> &&
+           requires { typename T::V8Type; }
+inline constexpr bool
+    IsReturnTypeCompatible<blink::NotShared<T>,
+                           v8::Local<typename T::V8Type>> = true;
+
+template <typename T>
+  requires std::derived_from<T, DOMArrayBufferView> &&
+           requires { typename T::V8Type; }
+inline constexpr bool
+    IsReturnTypeCompatible<blink::NotShared<T>,
+                           v8::MaybeLocal<typename T::V8Type>> = true;
+
 // IDLRecords are compatible to arrays of pairs, as long as key/value types
 // are compatible between records and pairs.
 template <typename IDLKey,
@@ -222,6 +236,16 @@ inline constexpr bool IsReturnTypeCompatible<IDLObject, v8::Local<v8::Value>> =
 template <typename IDLStringType>
   requires std::derived_from<IDLStringType, IDLStringTypeBase>
 inline constexpr bool IsReturnTypeCompatible<IDLStringType, String> = true;
+
+template <typename IDLStringType>
+  requires std::derived_from<IDLStringType, IDLStringTypeBase>
+inline constexpr bool
+    IsReturnTypeCompatible<IDLStringType, v8::Local<v8::String>> = true;
+
+template <typename IDLStringType>
+  requires std::derived_from<IDLStringType, IDLStringTypeBase>
+inline constexpr bool
+    IsReturnTypeCompatible<IDLStringType, v8::MaybeLocal<v8::String>> = true;
 
 template <typename IDLStringType>
   requires std::derived_from<IDLStringType, IDLStringTypeBase>

@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -31,7 +32,7 @@
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/dbus/power/power_manager_client.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
@@ -166,8 +167,9 @@ void VersionUpdaterCros::GetUpdateStatus(StatusCallback callback) {
 void VersionUpdaterCros::ApplyDeferredUpdateAdvanced() {
   UpdateEngineClient* update_engine_client = UpdateEngineClient::Get();
 
-  DCHECK(update_engine_client->GetLastStatus().current_operation() ==
-         update_engine::Operation::UPDATED_BUT_DEFERRED);
+  CHECK(update_engine_client->GetLastStatus().current_operation() ==
+            update_engine::Operation::UPDATED_BUT_DEFERRED,
+        base::NotFatalUntil::M162);
 
   update_engine_client->ApplyDeferredUpdateAdvanced(
       /*shutdown_after_update=*/false, base::DoNothing());

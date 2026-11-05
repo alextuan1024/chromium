@@ -6,6 +6,8 @@
 
 // Branded image names.
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+NSString* const kChromeDefaultBrowser1pBannerImage =
+    @"chrome_default_browser_1p_banner";
 NSString* const kChromeDefaultBrowserIllustrationImage =
     @"chrome_default_browser_illustration";
 NSString* const kChromeDefaultBrowserScreenBannerImage =
@@ -19,6 +21,8 @@ NSString* const kChromeSearchEngineChoiceIcon =
     @"chrome_search_engine_choice_icon";
 NSString* const kChromeSigninBannerImage = @"chrome_signin_banner";
 NSString* const kChromeSigninPromoLogoImage = @"chrome_signin_promo_logo";
+NSString* const kGeminiSparkMulticolor40ptImage =
+    @"gemini_spark_multicolor_40pt";
 NSString* const kGoogleSearchEngineLogoImage = @"google_logo";
 NSString* const kGooglePasswordManagerWidgetPromoImage =
     @"google_password_manager_widget_promo";
@@ -27,6 +31,8 @@ NSString* const kGooglePasswordManagerWidgetPromoDisabledImage =
 NSString* const kGoogleSettingsPasswordsInOtherAppsBannerImage =
     @"google_settings_passwords_in_other_apps_banner";
 #else
+NSString* const kChromiumDefaultBrowser1pBannerImage =
+    @"chromium_default_browser_1p_banner";
 NSString* const kChromiumDefaultBrowserIllustrationImage =
     @"chromium_default_browser_illustration";
 NSString* const kChromiumDefaultBrowserScreenBannerImage =

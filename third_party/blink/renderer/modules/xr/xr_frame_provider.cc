@@ -79,6 +79,7 @@ XRFrameProvider::XRFrameProvider(XRSystem* xr)
       immersive_data_provider_(xr->GetExecutionContext()),
       immersive_presentation_provider_(xr->GetExecutionContext()),
       layer_manager_(xr->GetExecutionContext()),
+      frame_rate_controller_(xr->GetExecutionContext()),
       last_has_focus_(xr->IsFrameFocused()) {}
 
 void XRFrameProvider::AddImmersiveSessionObserver(
@@ -127,6 +128,15 @@ void XRFrameProvider::OnSessionStarted(
                           xr_->GetExecutionContext()->GetTaskRunner(
                               TaskType::kMiscPlatformAPI));
       layer_manager_.set_disconnect_handler(
+          BindOnce(&XRFrameProvider::OnProviderConnectionError,
+                   WrapWeakPersistent(this), WrapWeakPersistent(session)));
+    }
+
+    if (session_ptr->frame_rate_controller) {
+      frame_rate_controller_.Bind(std::move(session_ptr->frame_rate_controller),
+                                  xr_->GetExecutionContext()->GetTaskRunner(
+                                      TaskType::kMiscPlatformAPI));
+      frame_rate_controller_.set_disconnect_handler(
           BindOnce(&XRFrameProvider::OnProviderConnectionError,
                    WrapWeakPersistent(this), WrapWeakPersistent(session)));
     }
@@ -197,6 +207,7 @@ void XRFrameProvider::OnSessionEnded(XRSession* session) {
     immersive_presentation_provider_.reset();
     immersive_data_provider_.reset();
     layer_manager_.reset();
+    frame_rate_controller_.reset();
     shared_images_.clear();
 
     first_immersive_frame_time_ = std::nullopt;
@@ -772,10 +783,15 @@ void XRFrameProvider::UpdateLayerViewports(XRProjectionLayer* layer) {
 
   XRGraphicsBinding* binding = layer->binding();
 
-  bool is_shared_buffer = frame_transport_->DrawingIntoSharedBuffer();
-  float width = (is_shared_buffer || layer->textureArrayLength() <= 1)
-                    ? layer->textureWidth()
-                    : layer->textureWidth() * layer->textureArrayLength();
+  // TODO(crbug.com/359418629): WebGPU and non-shared-buffer WebGL swapchains
+  // still copy array textures to a side-by-side 2D texture prior to submission.
+  bool uses_texture_array_shared_image =
+      frame_transport_->DrawingIntoSharedBuffer() &&
+      immersive_session_->GraphicsApi() != XRGraphicsBinding::Api::kWebGPU;
+  float width =
+      (uses_texture_array_shared_image || layer->textureArrayLength() <= 1)
+          ? layer->textureWidth()
+          : layer->textureWidth() * layer->textureArrayLength();
   float height = layer->textureHeight();
 
   gfx::RectF left_coords;
@@ -790,7 +806,7 @@ void XRFrameProvider::UpdateLayerViewports(XRProjectionLayer* layer) {
     gfx::Rect right = binding->GetViewportForView(layer, right_view);
 
     // Only offset right viewport if we are using the side-by-side fallback.
-    if (!is_shared_buffer && layer->textureArrayLength() > 1) {
+    if (!uses_texture_array_shared_image && layer->textureArrayLength() > 1) {
       right.set_x(right.x() + layer->textureWidth());
     }
 
@@ -952,6 +968,7 @@ void XRFrameProvider::Trace(Visitor* visitor) const {
   visitor->Trace(requesting_sessions_);
   visitor->Trace(immersive_observers_);
   visitor->Trace(layer_manager_);
+  visitor->Trace(frame_rate_controller_);
 }
 
 }  // namespace blink

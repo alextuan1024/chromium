@@ -4,7 +4,39 @@
 
 import SwiftUI
 import UIKit
+import ios_chrome_browser_shared_ui_util_util_swiftui
 import ios_chrome_common_ui_colors_swift
+
+/// A SwiftUI wrapper around `AITierAvatarView`.
+private struct OverflowMenuIdentityAvatarView: UIViewRepresentable {
+  let image: UIImage
+  let diameter: CGFloat
+  let showsAITierRing: Bool
+
+  func makeUIView(context: Context) -> UIView {
+    let container = UIView()
+    container.isUserInteractionEnabled = false
+    return container
+  }
+
+  func updateUIView(_ uiView: UIView, context: Context) {
+    uiView.subviews.forEach { $0.removeFromSuperview() }
+    let configuration = AITierAvatarContentConfiguration(
+      avatarImage: image,
+      diameter: diameter,
+      sizeType: .fullView,
+      showsAITierRing: showsAITierRing
+    )
+    guard let avatarView = AITierAvatarView(configuration: configuration) else {
+      return
+    }
+    uiView.addSubview(avatarView)
+    NSLayoutConstraint.activate([
+      avatarView.centerXAnchor.constraint(equalTo: uiView.centerXAnchor),
+      avatarView.centerYAnchor.constraint(equalTo: uiView.centerYAnchor),
+    ])
+  }
+}
 
 /// A view that displays the identity/signed-in state in the overflow menu.
 struct OverflowMenuIdentityRow: View {
@@ -66,6 +98,9 @@ struct OverflowMenuIdentityRow: View {
     )
     .accentColor(.textPrimary)
     .listRowBackground(background)
+    .ifLet(action.customAccessibilityLabel) { view, accessibilityLabel in
+      view.accessibilityLabel(accessibilityLabel)
+    }
     .accessibilityIdentifier(action.accessibilityIdentifier)
     .disabled(!action.enabled || action.enterpriseDisabled)
     .listRowSeparatorTint(.overflowMenuSeparator)
@@ -74,12 +109,13 @@ struct OverflowMenuIdentityRow: View {
   @ViewBuilder
   private var signinIcon: some View {
     if let avatarImage = action.image {
-      Image(uiImage: avatarImage)
-        .resizable()
-        .aspectRatio(contentMode: .fill)
-        .frame(width: Self.imageSize, height: Self.imageSize)
-        .clipShape(Circle())
-        .accessibilityHidden(true)
+      OverflowMenuIdentityAvatarView(
+        image: avatarImage,
+        diameter: Self.imageSize,
+        showsAITierRing: action.showsAITierRing
+      )
+      .frame(width: Self.imageSize, height: Self.imageSize)
+      .accessibilityHidden(true)
     } else if let symbolName = action.symbolName {
       let symbol = action.systemSymbol ? Image(systemName: symbolName) : Image(symbolName)
       symbol

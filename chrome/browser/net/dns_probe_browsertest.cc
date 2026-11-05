@@ -258,8 +258,8 @@ void DnsProbeBrowserTest::SetActiveBrowser(BrowserWindowInterface* browser) {
         NetErrorTabHelper::DnsProbeStatusSnoopCallback());
   }
   active_browser_ = browser;
-  monitored_tab_helper_ = NetErrorTabHelper::FromWebContents(
-      active_browser_->tab_strip_model()->GetActiveWebContents());
+  monitored_tab_helper_ = NetErrorTabHelper::From(
+      active_browser_->GetTabStripModel()->GetActiveTab());
   monitored_tab_helper_->set_dns_probe_status_snoop_callback_for_testing(
       BindRepeating(&DnsProbeBrowserTest::OnDnsProbeStatusSent,
                     Unretained(this)));
@@ -313,8 +313,6 @@ DnsProbeStatus DnsProbeBrowserTest::WaitForSentStatus() {
 // Check title by roundtripping to renderer, to make sure any probe results
 // sent before this have been applied.
 std::string DnsProbeBrowserTest::Title() {
-  std::string title;
-
   WebContents* contents =
       active_browser_->tab_strip_model()->GetActiveWebContents();
 

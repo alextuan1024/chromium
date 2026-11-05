@@ -4,7 +4,9 @@
 
 #include "components/search_engines/util.h"
 
+#include <map>
 #include <string>
+#include <vector>
 
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
@@ -134,6 +136,26 @@ TEST_F(SearchEngineUtilTest, IsAimURL) {
   EXPECT_FALSE(IsAimURL(GURL("https://www.google.com/search?q=test")));
 }
 
+// The AIM URL keeps a single `udm` when the params already have `udm=50` (e.g.
+// from a tool), since its own `udm=50` is only a fallback.
+TEST_F(SearchEngineUtilTemplateUrlTest, GetUrlForAim_KeepsSingleUdm) {
+  TemplateURLService* service = &template_url_service();
+
+  for (const auto& params : std::vector<std::map<std::string, std::string>>{
+           {}, {{"udm", "50"}}, {{"rc", "1"}, {"udm", "50"}}}) {
+    GURL url = GetUrlForAim(service, omnibox::ChromeAimEntryPoint(0),
+                            base::Time::Now(), u"test", std::nullopt, params);
+    int udm_count = 0;
+    for (net::QueryIterator it(url); !it.IsAtEnd(); it.Advance()) {
+      if (it.GetKey() == "udm") {
+        ++udm_count;
+        EXPECT_EQ(it.GetValue(), "50") << url;
+      }
+    }
+    EXPECT_EQ(udm_count, 1) << url;
+  }
+}
+
 TEST_F(SearchEngineUtilTemplateUrlTest, GetUrlForAim_QsubtsFlag) {
   TemplateURLService* service = &template_url_service();
 
@@ -151,4 +173,19 @@ TEST_F(SearchEngineUtilTemplateUrlTest, GetUrlForAim_QsubtsFlag) {
   url = GetUrlForAim(service, omnibox::ChromeAimEntryPoint(0),
                      base::Time::Now(), u"test", std::nullopt, {});
   EXPECT_TRUE(net::GetValueForKeyInQuery(url, "qsubts", &qsubts));
+}
+
+// Without context, the SRP URL keeps the given params and `aep`, and adds no
+// `udm` or `cinpts`.
+TEST_F(SearchEngineUtilTemplateUrlTest, GetUrlForContextualSrp_NoContext) {
+  GURL url = GetUrlForContextualSrp(
+      &template_url_service(), omnibox::ChromeAimEntryPoint(7),
+      base::Time::Now(), u"test", std::nullopt, {{"imgn", "1"}});
+  std::string value;
+  EXPECT_TRUE(net::GetValueForKeyInQuery(url, "imgn", &value));
+  EXPECT_EQ(value, "1");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(url, "aep", &value));
+  EXPECT_EQ(value, "7");
+  EXPECT_FALSE(net::GetValueForKeyInQuery(url, "udm", &value));
+  EXPECT_FALSE(net::GetValueForKeyInQuery(url, "cinpts", &value));
 }

@@ -7,14 +7,23 @@
 
 #import <Foundation/Foundation.h>
 
-#import <vector>
-
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
 
 @protocol ActorTaskUpdatesObserver;
 @protocol ActorTaskInterventionDelegate;
 @class GeminiActuationRequest;
 @class GeminiActuationResponse;
+
+// Callback invoked with the origin critic decision (`allowed` = YES if the
+// navigation is permitted).
+typedef void (^GeminiNavigationConfirmationDecisionBlock)(BOOL allowed);
+
+// Block invoked to confirm whether an uncached cross-origin navigation to
+// `navigationOrigin` is aligned with the task and invoke `completion` with the
+// decision.
+typedef void (^GeminiNavigationConfirmationBlock)(
+    NSString* navigationOrigin,
+    GeminiNavigationConfirmationDecisionBlock completion);
 
 // Protocol for the Gemini actor delegate. This protocol is implemented by a
 // Gemini actuation handler passed downstream to enable it to communicate with
@@ -51,46 +60,11 @@
 - (void)setTaskInterventionDelegate:(id<ActorTaskInterventionDelegate>)delegate
                           forTaskID:(actor::ActorTaskId)taskID;
 
-// TODO(crbug.com/556739755): Cleanup deprecated method once
-// `dispatchActuationRequest` lands.
-- (void)performActionsWithTaskID:(actor::ActorTaskId)taskID
-                      taskUpdate:(NSString*)taskUpdate
-          serializedActionProtos:(NSArray<NSData*>*)serializedActionProtos
-                      completion:
-                          (void (^)(BOOL success,
-                                    std::vector<bool> results))completionBlock;
-
-// TODO(crbug.com/556739755): Cleanup deprecated method once
-// `dispatchActuationRequest` lands.
-- (void)performActionsWithTaskID:(actor::ActorTaskId)taskID
-                      taskUpdate:(NSString*)taskUpdate
-          serializedActionProtos:(NSArray<NSData*>*)serializedActionProtos
-                 completionBlock:
-                     (void (^)(NSData* serializedActionsResult))completionBlock;
-
-// TODO(crbug.com/556739755): Cleanup deprecated method once
-// `dispatchActuationRequest` lands.
-- (void)requestActionablePageContextForWebStateIDs:
-            (NSArray<NSNumber*>*)webStateIDs
-                                            taskID:(actor::ActorTaskId)taskID
-                                   completionBlock:
-                                       (void (^)(NSArray<NSData*>*
-                                                     serializedTabObservations))
-                                           completionBlock;
-
-// TODO(crbug.com/556739755): Cleanup deprecated method once
-// `dispatchActuationRequest` lands.
-- (void)pauseTaskWithID:(actor::ActorTaskId)taskID;
-
-// TODO(crbug.com/556739755): Cleanup deprecated method once
-// `dispatchActuationRequest` lands.
-- (void)interruptTaskWithID:(actor::ActorTaskId)taskID
-                     reason:(actor::ActorTaskInterruptReason)reason;
-
-// TODO(crbug.com/556739755): Cleanup deprecated method once
-// `dispatchActuationRequest` lands.
-- (void)stopTaskWithID:(actor::ActorTaskId)taskID
-                reason:(actor::ActorTaskStoppedReason)reason;
+// Registers `handler` as the navigation confirmation callback for `taskID`
+// (1-to-1). Passing nil clears any registered handler.
+- (void)setNavigationConfirmationHandler:
+            (GeminiNavigationConfirmationBlock)handler
+                               forTaskID:(actor::ActorTaskId)taskID;
 
 @end
 

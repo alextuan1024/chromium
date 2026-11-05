@@ -48,8 +48,6 @@ static_library("core") {
     "history_clusters_service_task_get_most_recent_clusters_for_ui.h",
     "history_clusters_service_task_update_cluster_triggerability.cc",
     "history_clusters_service_task_update_cluster_triggerability.h",
-    "history_clusters_service_task_update_clusters.cc",
-    "history_clusters_service_task_update_clusters.h",
     "history_clusters_types.cc",
     "history_clusters_types.h",
     "history_clusters_util.cc",
@@ -80,7 +78,6 @@ static_library("core") {
   ]
   deps = [
     "//base",
-    "//base/i18n:language_tag",
     "//components/history/core/browser",
     "//components/history_clusters/public/mojom:mojo_bindings",
     "//components/keyed_service/core",
@@ -107,7 +104,6 @@ source_set("unit_tests") {
     "cluster_interaction_state_processor_unittest.cc",
     "cluster_similarity_heuristics_processor_unittest.cc",
     "clusterer_unittest.cc",
-    "config_unittest.cc",
     "content_visibility_cluster_finalizer_unittest.cc",
     "context_clusterer_history_service_observer_unittest.cc",
     "file_clustering_backend_unittest.cc",

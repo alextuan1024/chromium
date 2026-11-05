@@ -63,9 +63,6 @@ public interface FullscreenManager {
     /** Returns whether the application is in persistent fullscreen mode. */
     boolean getPersistentFullscreenMode();
 
-    /** Returns target display id for which full screen was requested. */
-    long getFullscreenTargetDisplay();
-
     /** Returns a supplier of whether the activity is in persistent fullscreen mode. */
     NonNullObservableSupplier<Boolean> getPersistentFullscreenModeSupplier();
 
@@ -95,4 +92,10 @@ public interface FullscreenManager {
 
     /** Sets the custom FullscreenManagerDelegate. */
     void setFullscreenManagerDelegate(FullscreenManagerDelegate delegate);
+
+    /**
+     * Notifies the manager that the upcoming fullscreen session is user-initiated Browser immersive
+     * mode (rather than renderer-initiated HTML5 tab fullscreen) for session metrics tracking.
+     */
+    default void onEnterBrowserImmersiveMode() {}
 }

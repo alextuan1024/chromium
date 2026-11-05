@@ -4,6 +4,8 @@
 
 source_set("tracked_element") {
   sources = [
+    "anchored_dialog_registry_webui.cc",
+    "anchored_dialog_registry_webui.h",
     "element_highlighter_webui.cc",
     "element_highlighter_webui.h",
     "tracked_element_handler.cc",
@@ -42,7 +44,10 @@ source_set("test_support") {
   ]
   deps = []
   if (!is_android) {
-    deps += [ "//ui/views/controls/webview" ]
+    deps += [
+      "//ui/views",
+      "//ui/views/controls/webview",
+    ]
   }
   public_deps = [
     ":tracked_element",

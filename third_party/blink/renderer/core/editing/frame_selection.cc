@@ -75,6 +75,7 @@
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
+#include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_frame_element_base.h"
 #include "third_party/blink/renderer/core/html_names.h"
@@ -103,6 +104,7 @@
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/text/unicode_utilities.h"
 #include "third_party/blink/renderer/platform/widget/frame_widget.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "ui/gfx/geometry/quad_f.h"
 
 #define EDIT_DEBUG 0
@@ -112,6 +114,8 @@ namespace blink {
 namespace {
 
 class ScopedHandlingInputEvent {
+  STACK_ALLOCATED();
+
  public:
   explicit ScopedHandlingInputEvent(FrameWidget* widget) : widget_(widget) {
     if (widget_) {
@@ -367,7 +371,6 @@ void FrameSelection::DidSetSelectionDeprecated(
     const SelectionInDomTree& new_selection,
     const SetSelectionOptions& options) {
   Document& current_document = GetDocument();
-  const SetSelectionBy set_selection_by = options.GetSetSelectionBy();
 
   // Provides details to accessibility about the selection change throughout the
   // current call stack.
@@ -380,10 +383,9 @@ void FrameSelection::DidSetSelectionDeprecated(
     scoped_blink_ax_event_intent.emplace(
         is_being_modified_ ? BlinkAXEventIntent()
         : new_selection.IsNone()
-            ? BlinkAXEventIntent::FromClearedSelection(set_selection_by)
+            ? BlinkAXEventIntent::FromClearedSelection()
             : BlinkAXEventIntent::FromNewSelection(
-                  options.Granularity(), new_selection.IsAnchorFirst(),
-                  set_selection_by),
+                  options.Granularity(), new_selection.IsAnchorFirst()),
         &current_document);
   }
 
@@ -417,6 +419,7 @@ void FrameSelection::DidSetSelectionDeprecated(
     }
   }
 
+  const SetSelectionBy set_selection_by = options.GetSetSelectionBy();
   NotifyTextControlOfSelectionChange(set_selection_by);
   if (set_selection_by == SetSelectionBy::kUser) {
     const CursorAlignOnScroll align = options.GetCursorAlignOnScroll();
@@ -564,7 +567,7 @@ void FrameSelection::UpdateTextOverflowOfSelectionFocus(const Element& element,
     return;
   }
   LayoutObject* style_owner =
-      focus_node->GetLayoutObject()->ContainingBlockForTextOverflow();
+      focus_node->GetLayoutObject()->ContainerForTextOverflow();
   if (!style_owner || style_owner->ContainsSelectionFocus() == focused) {
     return;
   }
@@ -647,7 +650,7 @@ bool FrameSelection::Modify(SelectionModifyAlteration alter,
   if (document.ExistingAXObjectCache()) {
     scoped_blink_ax_event_intent.emplace(
         BlinkAXEventIntent::FromModifiedSelection(
-            alter, direction, granularity, set_selection_by,
+            alter, direction, granularity,
             selection_modifier.DirectionOfSelection(), platform_word_behavior),
         &document);
   }
@@ -749,6 +752,18 @@ bool FrameSelection::SelectionHasFocus() const {
   if (focused_element->IsTextControl() &&
       focused_element->ContainsIncludingHostElements(*current)) {
     return true;
+  }
+
+  // A selection inside a text control belongs to that control and loses
+  // focus with it. Disabled controls are excluded: they can never hold
+  // focus, so their selection is an ordinary document selection.
+  if (RuntimeEnabledFeatures::
+          HideUnfocusedReadonlyTextControlSelectionEnabled() &&
+      !IsEditable(*current)) {
+    const TextControlElement* text_control = EnclosingTextControl(current);
+    if (text_control && !text_control->IsDisabledFormControl()) {
+      return false;
+    }
   }
 
   // Selection has focus if it contains the focused element.
@@ -877,6 +892,8 @@ bool FrameSelection::ShouldPaintCaret(const LayoutBlock& block) const {
   DCHECK(!result ||
          (ComputeVisibleSelectionInDomTree().IsCaret() &&
           (IsEditablePosition(ComputeVisibleSelectionInDomTree().Start()) ||
+           EnclosingCaretNavigableTextControl(
+               ComputeVisibleSelectionInDomTree().Start()) ||
            frame_->IsCaretBrowsingEnabled())));
   return result;
 }
@@ -889,6 +906,8 @@ bool FrameSelection::ShouldPaintCaret(
   DCHECK(!result ||
          (ComputeVisibleSelectionInDomTree().IsCaret() &&
           (IsEditablePosition(ComputeVisibleSelectionInDomTree().Start()) ||
+           EnclosingCaretNavigableTextControl(
+               ComputeVisibleSelectionInDomTree().Start()) ||
            frame_->IsCaretBrowsingEnabled())));
   return result;
 }
@@ -1058,13 +1077,29 @@ void FrameSelection::SelectAll(SetSelectionBy set_selection_by,
 
   Node* root = nullptr;
   Node* select_start_target = nullptr;
-  if (set_selection_by == SetSelectionBy::kUser && IsHidden()) {
-    // Hidden selection appears as no selection to user, in which case user-
-    // triggered SelectAll should act as if there is no selection.
-    root = GetDocument().documentElement();
-    select_start_target = GetDocument().body();
+
+  auto visible_selection = ComputeVisibleSelectionInDomTree();
+  bool is_empty = visible_selection.IsNone() ||
+                  (set_selection_by == SetSelectionBy::kUser && IsHidden());
+
+  if (is_empty) {
+    // Empty or hidden selection appears as no selection to user, in which
+    // case user-triggered SelectAll should act as if there is no selection.
+    Element* focused = GetDocument().FocusedElement();
+    if (RuntimeEnabledFeatures::SelectAllInFocusedEditingHostEnabled() &&
+        focused && IsEditable(*focused)) {
+      Position focused_pos = Position::FirstPositionInNode(*focused);
+      root = HighestEditableRoot(focused_pos);
+      if (Node* shadow_root = NonBoundaryShadowTreeRootNode(focused_pos)) {
+        select_start_target = shadow_root->OwnerShadowHost();
+      } else {
+        select_start_target = root;
+      }
+    } else {
+      root = GetDocument().documentElement();
+      select_start_target = GetDocument().body();
+    }
   } else {
-    auto visible_selection = ComputeVisibleSelectionInDomTree();
     if (visible_selection.IsContentEditable()) {
       root = HighestEditableRoot(visible_selection.Start());
       if (Node* shadow_root =

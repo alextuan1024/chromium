@@ -14,6 +14,7 @@
 #include "media/base/limits.h"
 #include "media/base/media_switches.h"
 #include "media/gpu/av1_picture.h"
+#include "media/parsers/av1_svc_utils.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/libgav1/src/src/decoder_state.h"
 #include "third_party/libgav1/src/src/gav1/status_code.h"
@@ -54,15 +55,11 @@ VideoCodecProfile AV1ProfileToVideoCodecProfile(
   }
 }
 
-// Returns true iff the current decode sequence has multiple spatial layers.
-bool IsSpatialLayerDecoding(int operating_point_idc) {
-  // Spec 6.4.1.
-  constexpr int kTemporalLayerBitMaskBits = 8;
-  const int kUsedSpatialLayerBitMask =
-      (operating_point_idc >> kTemporalLayerBitMaskBits) & 0b1111;
-  // In case of an only temporal layer encoding e.g. L1T3, spatial layer#0 bit
-  // is 1. We allow this case.
-  return kUsedSpatialLayerBitMask > 1;
+// Returns the spatial_id of the frame whose OBUs are `obu_headers`, as parsed
+// by one ObuParser::ParseOneFrame() call: that of the last OBU, which carries
+// the frame (or show_existing_frame) header or its last tile group.
+int GetFrameSpatialId(const libgav1::Vector<libgav1::ObuHeader>& obu_headers) {
+  return obu_headers.empty() ? 0 : obu_headers.back().spatial_id;
 }
 
 bool IsValidBitDepth(uint8_t bit_depth, VideoCodecProfile profile) {
@@ -166,6 +163,10 @@ AV1Decoder::AV1Accelerator::Status AV1Decoder::AV1Accelerator::SetStream(
   return Status::kOk;
 }
 
+bool AV1Decoder::AV1Accelerator::SupportsSpatialLayers() const {
+  return false;
+}
+
 AV1Decoder::AV1Decoder(std::unique_ptr<AV1Accelerator> accelerator,
                        VideoCodecProfile profile,
                        const VideoColorSpace& container_color_space)
@@ -200,11 +201,11 @@ void AV1Decoder::Reset() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ClearCurrentFrame();
 
-  // We must reset the |current_sequence_header_| to ensure we don't try to
-  // decode frames using an incorrect sequence header. If the first
-  // DecoderBuffer after the reset doesn't contain a sequence header, we'll just
-  // skip it and will keep skipping until we get a sequence header.
-  current_sequence_header_.reset();
+  // We must require a new sequence header after a reset to ensure we don't try
+  // to decode frames using an incorrect sequence header, while keeping
+  // `current_sequence_header_` so the first post-reset sequence header can be
+  // compared against the current hardware configuration.
+  need_sequence_header_ = true;
   stream_id_ = 0;
   on_error_ = false;
 
@@ -213,6 +214,7 @@ void AV1Decoder::Reset() {
   parser_.reset();
   decrypt_config_.reset();
   decoder_buffer_.reset();
+  hdr_metadata_bitstream_.Reset();
   secure_handle_ = 0;
 
   buffer_pool_ = std::make_unique<libgav1::BufferPool>(
@@ -232,6 +234,10 @@ void AV1Decoder::SetStream(int32_t id,
   decoder_buffer_ = std::move(decoder_buffer);
   stream_id_ = id;
   ClearCurrentFrame();
+  // A picture still held from an aborted decode must not be output for this
+  // buffer.
+  spatial_layer_output_pic_.reset();
+  temporal_unit_spatial_id_.reset();
 
   parser_ = base::WrapUnique(new (std::nothrow) libgav1::ObuParser(
       base::span(*decoder_buffer_).data(), decoder_buffer_->size(),
@@ -241,8 +247,9 @@ void AV1Decoder::SetStream(int32_t id,
     return;
   }
 
-  if (current_sequence_header_)
+  if (current_sequence_header_ && !need_sequence_header_) {
     parser_->set_sequence_header(*current_sequence_header_);
+  }
   if (decoder_buffer_->decrypt_config()) {
     decrypt_config_ = decoder_buffer_->decrypt_config()->Clone();
   } else {
@@ -301,7 +308,15 @@ AcceleratedVideoDecoder::DecodeResult AV1Decoder::DecodeInternal() {
       continue;
     }
     if (!current_frame_header_) {
-      libgav1::StatusCode status_code = parser_->ParseOneFrame(&current_frame_);
+      if (decoder_buffer_->side_data() &&
+          decoder_buffer_->side_data()->spatial_layers.size() > 1 &&
+          !accelerator_->SupportsSpatialLayers()) {
+        DVLOG(1) << "Spatial layer decoding is not supported";
+        return kDecodeError;
+      }
+
+      libgav1::StatusCode status_code =
+          ParseOneAV1Frame(*parser_, &current_frame_);
       if (status_code != libgav1::kStatusOk) {
         DLOG(WARNING) << "Failed to parse OBU: "
                       << libgav1::GetErrorString(status_code);
@@ -313,11 +328,33 @@ AcceleratedVideoDecoder::DecodeResult AV1Decoder::DecodeInternal() {
       }
 
       current_frame_header_ = parser_->frame_header();
+      if (HasAV1SpatialLayerObu(parser_->obu_headers()) &&
+          !accelerator_->SupportsSpatialLayers()) {
+        DVLOG(1) << "Spatial layer decoding is not supported";
+        return kDecodeError;
+      }
+      if (accelerator_->SupportsSpatialLayers()) {
+        // Spec 7.5: "OBUs with obu_extension_flag equal to 1 must appear
+        // within a temporal unit in non-decreasing order of spatial_id values."
+        for (const libgav1::ObuHeader& header : parser_->obu_headers()) {
+          if (!header.has_extension) {
+            continue;
+          }
+          if (temporal_unit_spatial_id_.has_value() &&
+              header.spatial_id < *temporal_unit_spatial_id_) {
+            DVLOG(1) << "OBU spatial_id " << int{header.spatial_id}
+                     << " follows spatial_id " << *temporal_unit_spatial_id_
+                     << " in the same temporal unit";
+            return kDecodeError;
+          }
+          temporal_unit_spatial_id_ = header.spatial_id;
+        }
+      }
+
       // Detects if a new coded video sequence is starting.
       if (parser_->sequence_header_changed()) {
-        if (IsSpatialLayerDecoding(
-                parser_->sequence_header()
-                    .operating_point_idc[kDefaultOperatingPoint])) {
+        if (IsAV1SpatialLayerSequence(parser_->sequence_header()) &&
+            !accelerator_->SupportsSpatialLayers()) {
           constexpr size_t kOperatingPointIdcBits = 12;
           DVLOG(1) << "Spatial layer decoding is not supported: "
                    << "operating_point_idc="
@@ -399,6 +436,7 @@ AcceleratedVideoDecoder::DecodeResult AV1Decoder::DecodeInternal() {
                                          new_sequence_header);
 
         current_sequence_header_ = new_sequence_header;
+        need_sequence_header_ = false;
         ClearReferenceFrames();
 
         // Issue kConfigChange if the sequence header changed significantly,
@@ -429,7 +467,7 @@ AcceleratedVideoDecoder::DecodeResult AV1Decoder::DecodeInternal() {
       }
     }
 
-    if (!current_sequence_header_) {
+    if (need_sequence_header_) {
       // Decoding is not doable because we haven't received a sequence header.
       // This occurs when seeking a video.
       DVLOG(3) << "Discarded the current frame because no sequence header has "
@@ -439,6 +477,33 @@ AcceleratedVideoDecoder::DecodeResult AV1Decoder::DecodeInternal() {
 
     DCHECK(current_frame_header_);
     const auto& frame_header = *current_frame_header_;
+
+    // AV1 HDR metadata may appear in the below places:
+    // 1. Container.
+    // 2. Bitstream.
+    // 3. Both container and bitstream.
+    // Thus we should also extract HDR metadata here in case we
+    // miss the information.
+    if (const libgav1::ObuMetadata* metadata = parser_->metadata()) {
+      if (metadata->hdr_cll_set) {
+        hdr_metadata_bitstream_.SetCLLI(ToSkHdrCLLI(metadata->hdr_cll));
+      }
+      if (metadata->hdr_mdcv_set) {
+        hdr_metadata_bitstream_.SetMDCV(ToSkHdrMDCV(metadata->hdr_mdcv));
+      }
+      for (const auto& itut_t35 :
+           base::span(metadata->itut_t35)
+               .first(base::checked_cast<size_t>(metadata->itut_t35_count))) {
+        // SAFETY: `itut_t35` is populated by `libgav1::ObuParser` with
+        // `payload_bytes` pointing to `payload_size` valid bytes.
+        auto t35_payload_span = UNSAFE_BUFFERS(base::span<const uint8_t>(
+            itut_t35.payload_bytes,
+            base::checked_cast<size_t>(itut_t35.payload_size)));
+        SetAgtmFromT35WithCountryCode(hdr_metadata_bitstream_,
+                                      itut_t35.country_code, t35_payload_span);
+      }
+    }
+
     if (frame_header.show_existing_frame) {
       const size_t frame_to_show =
           base::checked_cast<size_t>(frame_header.frame_to_show);
@@ -459,7 +524,9 @@ AcceleratedVideoDecoder::DecodeResult AV1Decoder::DecodeInternal() {
       }
 
       pic->set_bitstream_id(stream_id_);
-      if (!accelerator_->OutputPicture(*pic)) {
+      pic->SetDynamicHdrMetadata(hdr_metadata_bitstream_,
+                                 decoder_buffer_.get());
+      if (!OutputOrHoldPicture(pic)) {
         return kDecodeError;
       }
 
@@ -514,32 +581,6 @@ AcceleratedVideoDecoder::DecodeResult AV1Decoder::DecodeInternal() {
       visible_rect_ = current_visible_rect;
     }
 
-    // AV1 HDR metadata may appears in the below places:
-    // 1. Container.
-    // 2. Bitstream.
-    // 3. Both container and bitstream.
-    // Thus we should also extract HDR metadata here in case we
-    // miss the information.
-    if (current_frame_->hdr_cll_set()) {
-      hdr_metadata_bitstream_.SetCLLI(ToSkHdrCLLI(current_frame_->hdr_cll()));
-    }
-    if (current_frame_->hdr_mdcv_set()) {
-      hdr_metadata_bitstream_.SetMDCV(ToSkHdrMDCV(current_frame_->hdr_mdcv()));
-    }
-    if (current_frame_->itut_t35_count() > 0) {
-      // SAFETY: The best we can do is trust the count provided by libgav1.
-      for (const auto& itut_t35 : UNSAFE_BUFFERS(base::span(
-               current_frame_->itut_t35(),
-               static_cast<size_t>(current_frame_->itut_t35_count())))) {
-        // SAFETY: The best we can do is trust the size provided by libgav1.
-        auto t35_payload_span = UNSAFE_BUFFERS(base::span<const uint8_t>(
-            itut_t35.payload_bytes,
-            static_cast<size_t>(itut_t35.payload_size)));
-        SetAgtmFromT35WithCountryCode(hdr_metadata_bitstream_,
-                                      itut_t35.country_code, t35_payload_span);
-      }
-    }
-
     DCHECK(current_sequence_header_->film_grain_params_present ||
            !frame_header.film_grain_params.apply_grain);
     auto pic = secure_handle_ ? accelerator_->CreateAV1PictureSecure(
@@ -571,7 +612,39 @@ AcceleratedVideoDecoder::DecodeResult AV1Decoder::DecodeInternal() {
       return kTryAgain;
     }
   }
+  if (spatial_layer_output_pic_) {
+    const scoped_refptr<AV1Picture> pic = std::move(spatial_layer_output_pic_);
+    if (!accelerator_->OutputPicture(*pic)) {
+      return kDecodeError;
+    }
+  }
   return kRanOutOfStreamData;
+}
+
+bool AV1Decoder::OutputOrHoldPicture(scoped_refptr<AV1Picture> pic) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!accelerator_->SupportsSpatialLayers()) {
+    return accelerator_->OutputPicture(*pic);
+  }
+  // A temporal unit carries at most one shown frame per spatial layer, in
+  // increasing spatial_id order, and only the highest one is meant for display
+  // (Spec 7.5). Whether a DecoderBuffer has spatial layers cannot be told in
+  // advance: neither the RTP wildcard operating point nor an
+  // operating_point_idc of 0 says, and side data may be absent. So always hold
+  // the last shown picture and output it once the buffer is decoded; for a
+  // single-layer temporal unit that is its only shown frame.
+  const int spatial_id = GetFrameSpatialId(parser_->obu_headers());
+  if (spatial_layer_output_pic_ &&
+      spatial_id <= spatial_layer_output_pic_spatial_id_) {
+    // A second shown frame in the same spatial layer is a malformed temporal
+    // unit, not a layer to display instead of the first.
+    DVLOG(1) << "More than one shown frame with spatial_id " << spatial_id
+             << " in the same temporal unit";
+    return false;
+  }
+  spatial_layer_output_pic_ = std::move(pic);
+  spatial_layer_output_pic_spatial_id_ = spatial_id;
+  return true;
 }
 
 void AV1Decoder::UpdateReferenceFrames(scoped_refptr<AV1Picture> pic) {
@@ -594,6 +667,7 @@ void AV1Decoder::ClearReferenceFrames() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(state_);
   ref_frames_.fill(nullptr);
+  spatial_layer_output_pic_.reset();
   // If AV1Decoder has decided to clear the reference frames, then ObuParser
   // must have also decided to do so.
   DCHECK_EQ(std::ranges::count(state_->reference_frame, nullptr),
@@ -654,8 +728,9 @@ AV1Decoder::AV1Accelerator::Status AV1Decoder::DecodeAndOutputPicture(
     return status;
   }
 
-  if (pic->frame_header.show_frame && !accelerator_->OutputPicture(*pic))
+  if (pic->frame_header.show_frame && !OutputOrHoldPicture(pic)) {
     return AV1Accelerator::Status::kFail;
+  }
 
   // |current_frame_header_->refresh_frame_flags| should be 0xff if the frame is
   // either a SWITCH_FRAME or a visible KEY_FRAME (Spec 5.9.2).

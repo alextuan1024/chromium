@@ -6,12 +6,13 @@
 
 #include <stddef.h>
 
+#include <algorithm>
+
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/new_window_delegate.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/path_service.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
@@ -22,8 +23,6 @@
 #include "chrome/browser/ash/file_manager/office_file_tasks.h"
 #include "chrome/browser/ash/fileapi/external_file_url_util.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
-#include "chrome/common/chrome_content_client.h"
-#include "chrome/common/chrome_paths.h"
 #include "chromeos/ash/components/drivefs/drivefs_util.h"
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
 #include "components/drive/drive_api_util.h"
@@ -90,13 +89,16 @@ std::optional<std::string> GetAppIdFromFilePath(
   }
   const std::string& file_extension = file_path.FinalExtension();
   if (file_extension == ".gdoc" ||
-      file_tasks::WordGroupExtensions().contains(file_extension)) {
+      std::ranges::contains(file_tasks::WordGroupExtensions(),
+                            file_extension)) {
     return ash::kGoogleDocsAppId;
   } else if (file_extension == ".gsheet" ||
-             file_tasks::ExcelGroupExtensions().contains(file_extension)) {
+             std::ranges::contains(file_tasks::ExcelGroupExtensions(),
+                                   file_extension)) {
     return ash::kGoogleSheetsAppId;
   } else if (file_extension == ".gslides" ||
-             file_tasks::PowerPointGroupExtensions().contains(file_extension)) {
+             std::ranges::contains(file_tasks::PowerPointGroupExtensions(),
+                                   file_extension)) {
     return ash::kGoogleSlidesAppId;
   }
   return std::nullopt;

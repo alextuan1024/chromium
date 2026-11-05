@@ -8,13 +8,14 @@
 #include <map>
 #include <set>
 #include <utility>
+#include <vector>
 
 #include "base/barrier_closure.h"
+#include "base/containers/enum_set.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "components/cbor/diagnostic_writer.h"
@@ -144,10 +145,6 @@ MakeCredentialStatus IsCandidateAuthenticatorPostTouch(
   std::optional<base::span<const int32_t>> supported_algorithms(
       authenticator->GetAlgorithms());
   if (supported_algorithms) {
-    // Substitution of defaults should have happened by this point.
-    DCHECK(!request.public_key_credential_params.public_key_credential_params()
-                .empty());
-
     bool at_least_one_common_algorithm = false;
     for (const auto& algo :
          request.public_key_credential_params.public_key_credential_params()) {
@@ -169,7 +166,34 @@ MakeCredentialStatus IsCandidateAuthenticatorPostTouch(
   return MakeCredentialStatus::kSuccess;
 }
 
-base::flat_set<FidoTransportProtocol> GetTransportsAllowedByRP(
+// Restricts the public key algorithms in `request` to those advertised by
+// `authenticator`, preserving the order requested by the RP. Some security
+// keys mishandle unknown algorithm identifiers. The result may be empty, in
+// which case IsCandidateAuthenticatorPostTouch reports kNoCommonAlgorithms.
+void FilterAlgorithmsForAuthenticator(CtapMakeCredentialRequest* request,
+                                      FidoAuthenticator* authenticator) {
+  if (!base::FeatureList::IsEnabled(
+          kWebAuthnFilterAlgorithmsForAuthenticator)) {
+    return;
+  }
+  std::optional<base::span<const int32_t>> supported_algorithms =
+      authenticator->GetAlgorithms();
+  if (!supported_algorithms) {
+    return;
+  }
+  std::vector<PublicKeyCredentialParams::CredentialInfo> filtered;
+  for (const auto& algo :
+       request->public_key_credential_params.public_key_credential_params()) {
+    if (algo.type == CredentialType::kPublicKey &&
+        std::ranges::contains(*supported_algorithms, algo.algorithm)) {
+      filtered.push_back(algo);
+    }
+  }
+  request->public_key_credential_params =
+      PublicKeyCredentialParams(std::move(filtered));
+}
+
+FidoTransportProtocolSet GetTransportsAllowedByRP(
     AuthenticatorAttachment authenticator_attachment) {
   switch (authenticator_attachment) {
     case AuthenticatorAttachment::kPlatform:
@@ -313,7 +337,7 @@ bool ResponseValid(const FidoAuthenticator& authenticator,
   if (extensions && !ValidateResponseExtensions(request, options, authenticator,
                                                 response, *extensions)) {
     FIDO_LOG(ERROR) << "Invalid extensions block: "
-                    << cbor::DiagnosticWriter::Write(*extensions);
+                    << cbor::WriteDiagnostic(*extensions);
     return false;
   }
 
@@ -353,7 +377,7 @@ UserVerificationRequirement AtLeastUVPreferred(UserVerificationRequirement uv) {
 MakeCredentialRequestHandler::MakeCredentialRequestHandler(
     FidoDiscoveryFactory* fido_discovery_factory,
     std::vector<std::unique_ptr<FidoDiscoveryBase>> additional_discoveries,
-    const base::flat_set<FidoTransportProtocol>& supported_transports,
+    FidoTransportProtocolSet supported_transports,
     CtapMakeCredentialRequest request,
     const MakeCredentialOptions& options,
     CompletionCallback completion_callback)
@@ -366,6 +390,9 @@ MakeCredentialRequestHandler::MakeCredentialRequestHandler(
   DCHECK(!request_.resident_key_required);
   DCHECK(!request_.cred_protect);
   DCHECK(!request_.cred_protect_enforce);
+  // AuthenticatorCommonImpl rejects requests with no algorithms.
+  CHECK(!request_.public_key_credential_params.public_key_credential_params()
+             .empty());
 
   transport_availability_info().request_type = FidoRequestType::kMakeCredential;
   transport_availability_info().resident_key_requirement =
@@ -379,7 +406,7 @@ MakeCredentialRequestHandler::MakeCredentialRequestHandler(
   transport_availability_info().make_credential_attachment =
       options_.authenticator_attachment;
 
-  base::flat_set<FidoTransportProtocol> allowed_transports =
+  FidoTransportProtocolSet allowed_transports =
       GetTransportsAllowedByRP(options_.authenticator_attachment);
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -390,22 +417,18 @@ MakeCredentialRequestHandler::MakeCredentialRequestHandler(
       AuthenticatorAttachment::kCrossPlatform) {
     allow_platform_authenticator_for_cross_platform_request_ = true;
     fido_discovery_factory->set_require_legacy_cros_authenticator(true);
-    allowed_transports.insert(FidoTransportProtocol::kInternal);
+    allowed_transports.Put(FidoTransportProtocol::kInternal);
   }
 #endif
 
-  auto available_transports =
-      base::STLSetIntersection<base::flat_set<FidoTransportProtocol>>(
-          supported_transports, allowed_transports);
-  bool consider_enclave = request_.authenticator_attachment !=
-                          AuthenticatorAttachment::kCrossPlatform;
+  FidoTransportProtocolSet available_transports =
+      base::Intersection(supported_transports, allowed_transports);
   if (options_.is_passkey_upgrade_request) {
-    consider_enclave = true;
     available_transports = {};
   }
 
   InitDiscoveries(fido_discovery_factory, std::move(additional_discoveries),
-                  std::move(available_transports), consider_enclave);
+                  available_transports);
   std::string json_string;
   if (!options_.json ||
       !base::JSONWriter::WriteWithOptions(
@@ -797,8 +820,17 @@ void MakeCredentialRequestHandler::HandleResponse(
 
   if (status == MakeCredentialStatus::kNoCommonAlgorithms) {
     // The authenticator didn't support any of the requested public-key
-    // algorithms. This status will have been returned immediately.
-    // Collect a touch and tell the user that it's unsupported.
+    // algorithms.
+    if (authenticator->Options().is_platform_device !=
+        AuthenticatorSupportedOptions::PlatformDevice::kNo) {
+      // Platform authenticators, like the enclave, cannot collect a touch. Fail
+      // the request immediately rather than waiting forever.
+      HandleInapplicableAuthenticator(
+          authenticator, MakeCredentialStatus::kNoCommonAlgorithms);
+      return;
+    }
+    // This status will have been returned immediately. Collect a touch and
+    // tell the user that it's unsupported.
     authenticator->GetTouch(base::BindOnce(
         &MakeCredentialRequestHandler::HandleInapplicableAuthenticator,
         weak_factory_.GetWeakPtr(), authenticator,
@@ -942,7 +974,9 @@ void MakeCredentialRequestHandler::DispatchRequestWithToken(
 
 void MakeCredentialRequestHandler::SpecializeRequestForAuthenticator(
     CtapMakeCredentialRequest* request,
-    const FidoAuthenticator* authenticator) {
+    FidoAuthenticator* authenticator) {
+  FilterAlgorithmsForAuthenticator(request, authenticator);
+
 #if BUILDFLAG(IS_CHROMEOS)
   if (authenticator->AuthenticatorTransport() ==
           FidoTransportProtocol::kInternal &&

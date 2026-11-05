@@ -26,12 +26,9 @@
 #include "media/base/video_types.h"
 #include "media/gpu/command_buffer_helper.h"
 #include "media/gpu/media_gpu_export.h"
-#include "media/gpu/windows/d3d11_texture_selector.h"
-#include "media/gpu/windows/d3d11_video_decoder_wrapper.h"
-#include "media/gpu/windows/d3d_com_defs.h"
-#include "media/gpu/windows/d3d_decoder_configurator.h"
 #include "media/gpu/windows/d3d_h264_accelerator.h"
 #include "media/gpu/windows/d3d_status.h"
+#include "media/gpu/windows/d3d_video_decoder_backend.h"
 #include "media/gpu/windows/d3d_video_decoder_client.h"
 #include "media/gpu/windows/d3d_video_frame_mailbox_release_helper.h"
 #include "media/gpu/windows/d3d_vp9_accelerator.h"
@@ -42,9 +39,11 @@ class CommandBufferStub;
 
 namespace media {
 
+class D3DDecoderConfigurator;
 class D3DPictureBuffer;
 class D3DVideoDecoderTest;
 class MediaLog;
+class TextureSelector;
 
 // Video decoder that uses D3D. It is intended that this class will run the
 // decoder on whatever thread it lives on. However, at the moment, it only works
@@ -52,11 +51,6 @@ class MediaLog;
 class MEDIA_GPU_EXPORT D3DVideoDecoder : public VideoDecoder,
                                          public D3DVideoDecoderClient {
  public:
-  enum class D3DVersion { kD3D11, kD3D12 };
-
-  // Callback to get a D3D11/12 device.
-  using GetD3DDeviceCB = base::RepeatingCallback<ComUnknown(D3DVersion)>;
-
   // List of configs that we'll check against when initializing.  This is only
   // needed since GpuMojoMediaClient merges our supported configs with the VDA
   // supported configs.
@@ -100,12 +94,9 @@ class MEDIA_GPU_EXPORT D3DVideoDecoder : public VideoDecoder,
 
   bool SubmitBitstreamBufferForTesting(base::span<const uint8_t> bitstream);
 
-  static bool IsD3D11FeatureLevelSupported(ComD3D11Device device);
-
   // Return the set of video decoder configs that we support.
   static std::vector<SupportedVideoDecoderConfig>
   GetSupportedVideoDecoderConfigs(
-      const gpu::GpuPreferences& gpu_preferences,
       const gpu::GpuDriverBugWorkarounds& gpu_workarounds,
       GetD3DDeviceCB get_d3d_device_cb);
 
@@ -125,6 +116,7 @@ class MEDIA_GPU_EXPORT D3DVideoDecoder : public VideoDecoder,
                   base::RepeatingCallback<scoped_refptr<CommandBufferHelper>()>
                       get_helper_cb,
                   GetD3DDeviceCB get_d3d_device_cb,
+                  std::unique_ptr<D3DVideoDecoderBackend> backend,
                   SupportedConfigs supported_configs);
 
   // Receive |buffer|, that is now unused by the client.
@@ -150,6 +142,11 @@ class MEDIA_GPU_EXPORT D3DVideoDecoder : public VideoDecoder,
   // gpu main thread.
   void CreatePictureBuffers();
 
+  // Releases decoder-bound output views on all current picture buffers, clears
+  // |picture_buffers_|, and releases cached backend resources if any picture
+  // buffers existed.
+  void ClearPictureBuffers();
+
   // Measure the number of picture buffers that are currently unused, and see if
   // it's smaller than the minimum we've seen since we've allocated them.
   void MeasurePictureBufferUsage();
@@ -158,14 +155,6 @@ class MEDIA_GPU_EXPORT D3DVideoDecoder : public VideoDecoder,
   // `MeasurePictureBufferUsage()`, and clear the measurement.  Do nothing,
   // successfully, if no measurement has been made.
   void LogPictureBufferUsage();
-
-  // Log the LUID of the adapter used for decoding.
-  void LogDecoderAdapterLUID();
-
-  // Create the D3DVideoDecoderWrapper according to the version level.
-  std::unique_ptr<D3DVideoDecoderWrapper> CreateD3DVideoDecoderWrapper(
-      D3DDecoderConfigurator* decoder_configurator,
-      uint8_t bit_depth);
 
   std::unique_ptr<MediaLog> media_log_;
 
@@ -221,13 +210,12 @@ class MEDIA_GPU_EXPORT D3DVideoDecoder : public VideoDecoder,
   // the ANGLE device for display (plus texture sharing, if needed).
   GetD3DDeviceCB get_d3d_device_cb_;
 
-  // These may be accessed from |decoder_task_runner_|, since the angle device
-  // is in multi-threaded mode.  Just be sure not to set any global state.
-  ComD3D11Device device_;
-  ComD3D11DeviceContext device_context_;
-  ComD3D11VideoDevice1 video_device_;
-
-  std::unique_ptr<AcceleratedVideoDecoder> accelerated_video_decoder_;
+  // Owns API-specific decoder devices and resource-creation logic. Declared
+  // before decoder_configurator_, texture_selector_, picture_buffers_,
+  // d3d_video_decoder_wrapper_, and accelerated_video_decoder_ so it outlives
+  // all D3D decoder resources and flushes the device context after their
+  // release.
+  std::unique_ptr<D3DVideoDecoderBackend> backend_;
 
   std::unique_ptr<D3DDecoderConfigurator> decoder_configurator_;
 
@@ -269,6 +257,8 @@ class MEDIA_GPU_EXPORT D3DVideoDecoder : public VideoDecoder,
   bool use_single_video_decoder_texture_ = false;
 
   std::unique_ptr<D3DVideoDecoderWrapper> d3d_video_decoder_wrapper_;
+
+  std::unique_ptr<AcceleratedVideoDecoder> accelerated_video_decoder_;
 
   // The currently configured bit depth for the decoder. When this changes we
   // need to recreate the decoder.

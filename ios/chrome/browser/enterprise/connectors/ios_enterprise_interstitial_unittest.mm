@@ -6,11 +6,17 @@
 
 #import <string.h>
 
+#import <memory>
+
 #import "base/strings/strcat.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/time/time.h"
 #import "components/enterprise/connectors/core/features.h"
 #import "components/enterprise/connectors/core/reporting_event_router.h"
+#import "components/history/core/browser/history_service.h"
+#import "components/history/core/browser/history_types.h"
+#import "components/history/core/test/history_service_test_util.h"
 #import "components/keyed_service/core/keyed_service.h"
 #import "components/safe_browsing/core/common/proto/realtimeapi.pb.h"
 #import "components/safe_browsing/ios/browser/safe_browsing_url_allow_list.h"
@@ -19,6 +25,7 @@
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_realtime_reporting_client.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_realtime_reporting_client_factory.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
+#import "ios/chrome/browser/history/model/history_service_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/components/security_interstitials/safe_browsing/safe_browsing_unsafe_resource_container.h"
@@ -44,10 +51,14 @@ namespace {
 
 constexpr char kBlockDecisionHistogram[] =
     "interstitial.enterprise_block.decision";
+constexpr char kBlockRepeatVisitDecisionHistogram[] =
+    "interstitial.enterprise_block.decision.repeat_visit";
 constexpr char kBlockInteractionHistogram[] =
     "interstitial.enterprise_block.interaction";
 constexpr char kWarnDecisionHistogram[] =
     "interstitial.enterprise_warn.decision";
+constexpr char kWarnRepeatVisitDecisionHistogram[] =
+    "interstitial.enterprise_warn.decision.repeat_visit";
 constexpr char kWarnInteractionHistogram[] =
     "interstitial.enterprise_warn.interaction";
 constexpr char kTestUrl[] = "http://example.com";
@@ -61,6 +72,8 @@ class IOSEnterpriseInterstitialTest : public PlatformTest {
         IOSReportingEventRouterFactory::GetInstance(),
         base::BindOnce(
             &MockReportingEventRouter::BuildMockReportingEventRouter));
+    builder.AddTestingFactory(ios::HistoryServiceFactory::GetInstance(),
+                              ios::HistoryServiceFactory::GetDefaultFactory());
 
     profile_ = std::move(builder).Build();
 
@@ -134,6 +147,17 @@ class IOSEnterpriseInterstitialTest : public PlatformTest {
     return IOSEnterpriseInterstitial::CreateWarningPage(resource);
   }
 
+  history::HistoryService* history_service() {
+    return ios::HistoryServiceFactory::GetForProfile(profile_.get());
+  }
+
+  // Waits until the history backend has handled all pending requests and their
+  // replies (e.g. the visit count lookup started by `MetricsHelper`) have run.
+  void WaitForHistory() {
+    history::BlockUntilHistoryProcessesPendingRequests(history_service());
+    task_environment_.RunUntilIdle();
+  }
+
  protected:
   web::WebTaskEnvironment task_environment_{
       web::WebTaskEnvironment::MainThreadType::IO};
@@ -150,9 +174,10 @@ TEST_F(IOSEnterpriseInterstitialTest, EnterpriseBlock_MetricsRecorded) {
   histograms.ExpectTotalCount(kBlockDecisionHistogram, 0);
 
   // Creating the blocking page should trigger a blocked seen event.;
-  EXPECT_CALL(*event_router_, OnUrlFilteringInterstitial(
-                                  Eq(GURL(kTestUrl)),
-                                  Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq("")));
+  EXPECT_CALL(
+      *event_router_,
+      OnUrlFilteringInterstitial(
+          Eq(GURL(kTestUrl)), Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq(""), _));
 
   auto test_page = CreateBlockingPage(CreateBlockUnsafeResource());
   EXPECT_TRUE(test_page->ShouldCreateNewNavigation());
@@ -175,9 +200,10 @@ TEST_F(IOSEnterpriseInterstitialTest, EnterpriseBlock_MetricsRecorded) {
 TEST_F(IOSEnterpriseInterstitialTest, EnterpriseBlock_VerifyTitleString) {
   // Creating the blocking page should trigger a blocked seen event with the
   // title string.
-  EXPECT_CALL(*event_router_, OnUrlFilteringInterstitial(
-                                  Eq(GURL(kTestUrl)),
-                                  Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq("")));
+  EXPECT_CALL(
+      *event_router_,
+      OnUrlFilteringInterstitial(
+          Eq(GURL(kTestUrl)), Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq(""), _));
 
   auto test_page = CreateBlockingPage(CreateBlockUnsafeResource());
 }
@@ -191,16 +217,17 @@ TEST_F(IOSEnterpriseInterstitialTest, EnterpriseWarn_MetricsRecorded) {
     // Creating the warning page should trigger a warned seen event.;
     EXPECT_CALL(
         *event_router_,
-        OnUrlFilteringInterstitial(Eq(GURL(kTestUrl)),
-                                   Eq("ENTERPRISE_WARNED_SEEN"), _, _, Eq("")));
-    // Proceed command should trigger reporting a bypass event;
-    EXPECT_CALL(
-        *event_router_,
         OnUrlFilteringInterstitial(
-            Eq(GURL(kTestUrl)), Eq("ENTERPRISE_WARNED_BYPASS"), _, _, Eq("")));
+            Eq(GURL(kTestUrl)), Eq("ENTERPRISE_WARNED_SEEN"), _, _, Eq(""), _));
+    // Proceed command should trigger reporting a bypass event;
+    EXPECT_CALL(*event_router_,
+                OnUrlFilteringInterstitial(Eq(GURL(kTestUrl)),
+                                           Eq("ENTERPRISE_WARNED_BYPASS"), _, _,
+                                           Eq(""), _));
   }
 
-  auto test_page = CreateWarningPage(CreateWarnUnsafeResource());
+  std::unique_ptr<IOSEnterpriseInterstitial> test_page =
+      CreateWarningPage(CreateWarnUnsafeResource());
   EXPECT_TRUE(test_page->ShouldCreateNewNavigation());
   EXPECT_EQ(test_page->request_url(), GURL(kTestUrl));
 
@@ -236,7 +263,8 @@ TEST_F(IOSEnterpriseInterstitialTest, CustomMessageDisplayed) {
   auto warn_resource = CreateWarnUnsafeResource();
   AddCustomMessageToResource(warn_resource,
                              safe_browsing::RTLookupResponse::ThreatInfo::WARN);
-  auto warn_page = CreateWarningPage(warn_resource);
+  std::unique_ptr<IOSEnterpriseInterstitial> warn_page =
+      CreateWarningPage(warn_resource);
 
   EXPECT_NE(warn_page->GetHtmlContents().find(expected_primary_paragraph),
             std::string::npos);
@@ -297,10 +325,11 @@ TEST_F(IOSEnterpriseInterstitialTest, HandProceedCommand) {
   ASSERT_FALSE(allow_list->AreUnsafeNavigationsAllowed(GURL(kTestUrl)));
   ASSERT_FALSE(navigation_manager_->ReloadWasCalled());
 
-  auto test_page = CreateWarningPage(CreateWarnUnsafeResource());
+  std::unique_ptr<IOSEnterpriseInterstitial> test_page =
+      CreateWarningPage(CreateWarnUnsafeResource());
   test_page->HandleCommand(security_interstitials::CMD_PROCEED);
 
-  std::set<SBThreatType> allowed_threats;
+  safe_browsing::SBThreatTypeSet allowed_threats;
   EXPECT_TRUE(allow_list->AreUnsafeNavigationsAllowed(GURL(kTestUrl),
                                                       &allowed_threats));
   EXPECT_THAT(
@@ -318,17 +347,124 @@ TEST_F(IOSEnterpriseInterstitialTest, RemovePendingDecisionsUponDestruction) {
       SafeBrowsingUrlAllowList::FromWebState(&web_state_);
   allow_list->AddPendingUnsafeNavigationDecision(
       GURL(kTestUrl), SBThreatType::SB_THREAT_TYPE_MANAGED_POLICY_WARN);
-  std::set<safe_browsing::SBThreatType> pending_threats;
+  safe_browsing::SBThreatTypeSet pending_threats;
   ASSERT_TRUE(allow_list->IsUnsafeNavigationDecisionPending(GURL(kTestUrl),
                                                             &pending_threats));
   EXPECT_THAT(
       pending_threats,
       ::testing::ElementsAre(SBThreatType::SB_THREAT_TYPE_MANAGED_POLICY_WARN));
 
-  auto test_page = CreateWarningPage(CreateWarnUnsafeResource());
+  std::unique_ptr<IOSEnterpriseInterstitial> test_page =
+      CreateWarningPage(CreateWarnUnsafeResource());
   // Destroying interstitial should remove pending allow list decisions.
   test_page = nullptr;
   EXPECT_FALSE(allow_list->IsUnsafeNavigationDecisionPending(GURL(kTestUrl)));
+}
+
+// Tests that the repeat visit decision histogram is recorded when the user
+// dismisses a warning for a host they have visited before.
+TEST_F(IOSEnterpriseInterstitialTest,
+       EnterpriseWarn_RepeatVisitRecordedOnDontProceed) {
+  base::HistogramTester histograms;
+  history_service()->AddPage(GURL(kTestUrl), base::Time::Now() - base::Days(1),
+                             history::SOURCE_BROWSED);
+  WaitForHistory();
+
+  std::unique_ptr<IOSEnterpriseInterstitial> test_page =
+      CreateWarningPage(CreateWarnUnsafeResource());
+  WaitForHistory();
+
+  test_page->WasDismissed();
+
+  histograms.ExpectTotalCount(kWarnRepeatVisitDecisionHistogram, 2);
+  histograms.ExpectBucketCount(kWarnRepeatVisitDecisionHistogram,
+                               security_interstitials::MetricsHelper::SHOW, 1);
+  histograms.ExpectBucketCount(
+      kWarnRepeatVisitDecisionHistogram,
+      security_interstitials::MetricsHelper::DONT_PROCEED, 1);
+}
+
+// Tests that the repeat visit decision histogram is recorded when the user
+// proceeds through a warning for a host they have visited before.
+TEST_F(IOSEnterpriseInterstitialTest,
+       EnterpriseWarn_RepeatVisitRecordedOnProceed) {
+  base::HistogramTester histograms;
+  history_service()->AddPage(GURL(kTestUrl), base::Time::Now() - base::Days(1),
+                             history::SOURCE_BROWSED);
+  WaitForHistory();
+
+  std::unique_ptr<IOSEnterpriseInterstitial> test_page =
+      CreateWarningPage(CreateWarnUnsafeResource());
+  WaitForHistory();
+
+  test_page->HandleCommand(security_interstitials::CMD_PROCEED);
+
+  histograms.ExpectTotalCount(kWarnRepeatVisitDecisionHistogram, 2);
+  histograms.ExpectBucketCount(kWarnRepeatVisitDecisionHistogram,
+                               security_interstitials::MetricsHelper::SHOW, 1);
+  histograms.ExpectBucketCount(kWarnRepeatVisitDecisionHistogram,
+                               security_interstitials::MetricsHelper::PROCEED,
+                               1);
+}
+
+// Tests that the repeat visit decision histogram is not recorded when the host
+// has not been visited before.
+TEST_F(IOSEnterpriseInterstitialTest,
+       EnterpriseWarn_RepeatVisitNotRecordedOnFirstVisit) {
+  base::HistogramTester histograms;
+
+  std::unique_ptr<IOSEnterpriseInterstitial> test_page =
+      CreateWarningPage(CreateWarnUnsafeResource());
+  WaitForHistory();
+
+  test_page->WasDismissed();
+
+  histograms.ExpectBucketCount(
+      kWarnDecisionHistogram,
+      security_interstitials::MetricsHelper::DONT_PROCEED, 1);
+  histograms.ExpectTotalCount(kWarnRepeatVisitDecisionHistogram, 0);
+}
+
+// Tests that the repeat visit decision histogram is recorded when the user
+// dismisses a blocking page for a host they have visited before, e.g. before
+// the block policy took effect.
+TEST_F(IOSEnterpriseInterstitialTest,
+       EnterpriseBlock_RepeatVisitRecordedOnDontProceed) {
+  base::HistogramTester histograms;
+  history_service()->AddPage(GURL(kTestUrl), base::Time::Now() - base::Days(1),
+                             history::SOURCE_BROWSED);
+  WaitForHistory();
+
+  std::unique_ptr<IOSEnterpriseInterstitial> test_page =
+      CreateBlockingPage(CreateBlockUnsafeResource());
+  WaitForHistory();
+
+  test_page->WasDismissed();
+
+  histograms.ExpectTotalCount(kBlockRepeatVisitDecisionHistogram, 2);
+  histograms.ExpectBucketCount(kBlockRepeatVisitDecisionHistogram,
+                               security_interstitials::MetricsHelper::SHOW, 1);
+  histograms.ExpectBucketCount(
+      kBlockRepeatVisitDecisionHistogram,
+      security_interstitials::MetricsHelper::DONT_PROCEED, 1);
+}
+
+// Tests that the repeat visit decision histogram is not recorded for a blocking
+// page when the host has not been visited before.
+TEST_F(IOSEnterpriseInterstitialTest,
+       EnterpriseBlock_RepeatVisitNotRecordedOnFirstVisit) {
+  base::HistogramTester histograms;
+
+  std::unique_ptr<IOSEnterpriseInterstitial> test_page =
+      CreateBlockingPage(CreateBlockUnsafeResource());
+  WaitForHistory();
+
+  test_page->WasDismissed();
+
+  histograms.ExpectBucketCount(
+      kBlockDecisionHistogram,
+      security_interstitials::MetricsHelper::DONT_PROCEED, 1);
+  histograms.ExpectTotalCount(kBlockRepeatVisitDecisionHistogram, 0);
 }
 
 }  // namespace enterprise_connectors

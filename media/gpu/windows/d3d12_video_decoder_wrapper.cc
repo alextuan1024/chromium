@@ -18,6 +18,8 @@
 #include "base/notreached.h"
 #include "base/trace_event/trace_event.h"
 #include "base/win/scoped_handle.h"
+#include "gpu/config/gpu_driver_bug_workarounds.h"
+#include "media/gpu/windows/d3d12_command_allocator_provider.h"
 #include "media/gpu/windows/d3d12_fence.h"
 #include "media/gpu/windows/d3d12_helpers.h"
 #include "media/gpu/windows/d3d12_video_decode_task.h"
@@ -57,7 +59,8 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
                                ComD3D12VideoDecoder video_decoder,
                                ComD3D12VideoDecoderHeap video_decoder_heap,
                                scoped_refptr<D3D12Fence> fence,
-                               int max_decode_requests)
+                               int max_decode_requests,
+                               bool use_persistent_bitstream_map)
       : D3D12VideoDecoderWrapper(media_log),
         device_(std::move(device)),
         video_device_(std::move(video_device)),
@@ -66,11 +69,17 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
         video_decoder_heap_(std::move(video_decoder_heap)),
         reference_frame_list_(std::move(video_decoder_heap)),
         fence_(std::move(fence)),
-        tasks_(max_decode_requests) {
+        command_allocator_provider_(device_, fence_),
+        tasks_(max_decode_requests),
+        use_persistent_bitstream_map_(use_persistent_bitstream_map) {
     input_stream_arguments_.pHeap = video_decoder_heap_.Get();
   }
 
-  ~D3D12VideoDecoderWrapperImpl() override = default;
+  ~D3D12VideoDecoderWrapperImpl() override {
+    // |bitstream_buffer_| may point into a mapping owned by |tasks_|, which is
+    // destroyed before the base class members.
+    bitstream_buffer_.reset();
+  }
 
   std::optional<bool> UseSingleTexture() const override { return true; }
 
@@ -84,7 +93,7 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
       base::span<scoped_refptr<D3DPictureBuffer>> picture_buffers) override {
     reference_frame_list_.SetPictureBuffers(picture_buffers);
     for (size_t i = 0; i < picture_buffers.size(); ++i) {
-      auto result = picture_buffers[i]->ToD3D12Resource(device_.Get());
+      auto result = picture_buffers[i]->GetOrCreateD3D12Resource(device_.Get());
       if (!result.has_value()) {
         return std::move(result).error();
       }
@@ -98,26 +107,19 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
     TRACE_EVENT("gpu", "D3D12VideoDecoderWrapperImpl::WaitForFrameBegins");
     Reset();
 
-    auto result = output_picture->AcquireOutputView();
-    if (!result.has_value()) {
-      media_log_->NotifyError<D3DStatusTraits>(std::move(result).error());
+    D3DStatus result = output_picture->BeginSharedImageAccess();
+    if (!result.is_ok()) {
+      media_log_->NotifyError<D3DStatusTraits>(std::move(result));
       return false;
     }
 
-    ComD3D11Texture2D d3d11_texture2d = output_picture->Texture();
-    D3D11_TEXTURE2D_DESC desc;
-    d3d11_texture2d->GetDesc(&desc);
-    CHECK(desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)
-        << "Cannot create shared handle for d3d11 texture2d without "
-           "D3D11_RESOURCE_MISC_SHARED_NTHANDLE flag.";
-
-    auto d3d12_resource_or_error =
-        output_picture->ToD3D12Resource(device_.Get());
-    if (!d3d12_resource_or_error.has_value()) {
+    auto d3d12_resource =
+        output_picture->GetOrCreateD3D12Resource(device_.Get());
+    if (!d3d12_resource.has_value()) {
       return false;
     }
     output_stream_arguments_ = {
-        .pOutputTexture2D = std::move(d3d12_resource_or_error).value(),
+        .pOutputTexture2D = std::move(d3d12_resource).value(),
         .OutputSubresource = output_picture->array_slice(),
     };
 
@@ -187,25 +189,26 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
 
   bool SubmitDecode() override {
     TRACE_EVENT("gpu", "D3D12VideoDecoderWrapperImpl::SubmitDecode");
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> command_allocator =
-        tasks_[current_task_index_].ResetAndGetCommandAllocator(device_.Get());
-    if (!command_allocator) {
+    auto command_allocator_or_error =
+        command_allocator_provider_.PrepareCommandAllocator();
+    if (!command_allocator_or_error.has_value()) {
       media_log_->NotifyError<D3DStatusTraits>(
-          {D3DStatusCode::kDecoderBeginFrameFailed,
-           "ResetAndGetCommandAllocator failed"});
+          std::move(command_allocator_or_error).error());
       return false;
     }
+    ID3D12CommandAllocator* command_allocator =
+        command_allocator_or_error.value();
     HRESULT hr;
     if (!command_list_) {
       TRACE_EVENT("gpu", "CreateCommandList");
       hr = device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE,
-                                      command_allocator.Get(), nullptr,
+                                      command_allocator, nullptr,
                                       IID_PPV_ARGS(&command_list_));
       RETURN_IF_FAILED("Failed to create command list",
                        D3DStatusCode::kDecoderBeginFrameFailed, hr);
     } else {
       TRACE_EVENT("gpu", "ResetCommandList");
-      hr = command_list_->Reset(command_allocator.Get());
+      hr = command_list_->Reset(command_allocator);
     }
     RETURN_IF_FAILED("Failed to reset command list",
                      D3DStatusCode::kDecoderBeginFrameFailed, hr);
@@ -238,6 +241,7 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
       return false;
     }
     uint64_t fence_value = std::move(fence_value_or_error).value();
+    command_allocator_provider_.OnSubmitted(fence_value);
     // Let the task know when it can be reused.
     tasks_[current_task_index_].SetFenceAndValue(fence_, fence_value);
     return true;
@@ -262,9 +266,17 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
   D3D12ReferenceFrameList reference_frame_list_;
 
   scoped_refptr<D3D12Fence> fence_;
+  // Declared before `tasks_` so that it is released after all the tasks have
+  // waited for the GPU to complete.
+  D3D12CommandAllocatorProvider command_allocator_provider_;
+
   // The task pool for multiple ongoing decode requests.
   std::vector<D3D12VideoDecoderTask> tasks_;
   uint32_t current_task_index_ = 0;
+
+  // Whether each task keeps its bitstream buffer mapped instead of mapping it
+  // per submission.
+  const bool use_persistent_bitstream_map_;
 };
 
 class ScopedD3D12MemoryBuffer : public ScopedD3DBuffer {
@@ -304,6 +316,8 @@ class ScopedD3D12MemoryBuffer : public ScopedD3DBuffer {
 
 class ScopedD3D12ResourceBuffer : public ScopedD3DBuffer {
  public:
+  // Maps the resource for the lifetime of this buffer and unmaps it in
+  // Commit().
   ScopedD3D12ResourceBuffer(D3D12VideoDecoderWrapperImpl* decoder,
                             ComD3D12Resource resource,
                             MediaLog* media_log)
@@ -319,20 +333,26 @@ class ScopedD3D12ResourceBuffer : public ScopedD3DBuffer {
         base::span(reinterpret_cast<uint8_t*>(mapped_data),
                    static_cast<size_t>(resource_->GetDesc().Width)));
   }
+  // Wraps an already-mapped span whose mapping is owned elsewhere. |resource_|
+  // stays empty and Commit() does not unmap.
+  explicit ScopedD3D12ResourceBuffer(base::span<uint8_t> mapped_data)
+      : ScopedD3DBuffer(mapped_data) {}
   ~ScopedD3D12ResourceBuffer() override { ScopedD3D12ResourceBuffer::Commit(); }
 
   ScopedD3D12ResourceBuffer(ScopedD3D12ResourceBuffer&) = delete;
   ScopedD3D12ResourceBuffer& operator=(ScopedD3D12ResourceBuffer&) = delete;
 
-  bool Commit() override { return Commit(resource_->GetDesc().Width); }
+  bool Commit() override { return Commit(data_.size()); }
 
   bool Commit(uint32_t written_size) override {
     if (data_.empty()) {
       return false;
     }
     CHECK_LE(written_size, data_.size());
-    D3D12_RANGE range{0, written_size};
-    resource_->Unmap(0, &range);
+    if (resource_) {
+      D3D12_RANGE range{0, written_size};
+      resource_->Unmap(0, &range);
+    }
     data_ = base::span<uint8_t>();
     return true;
   }
@@ -381,6 +401,16 @@ std::unique_ptr<ScopedD3DBuffer> D3D12VideoDecoderWrapperImpl::GetBuffer(
           .Offset = 0,
           .Size = 0,  // Will be correctly populated in SubmitSlice().
       };
+      if (use_persistent_bitstream_map_) {
+        base::span<uint8_t> mapped_data = task.GetBitstreamBufferMappedData();
+        if (mapped_data.empty()) {
+          MEDIA_LOG(ERROR, media_log_)
+              << "Failed to map the compressed bitstream buffer";
+          return std::make_unique<ScopedD3D12MemoryBuffer>(
+              this, D3D12_VIDEO_DECODE_ARGUMENT_TYPE{}, base::span<uint8_t>{});
+        }
+        return std::make_unique<ScopedD3D12ResourceBuffer>(mapped_data);
+      }
       return std::make_unique<ScopedD3D12ResourceBuffer>(this, bitstream_buffer,
                                                          media_log_.get());
   }
@@ -396,7 +426,8 @@ std::unique_ptr<D3D12VideoDecoderWrapper> D3D12VideoDecoderWrapper::Create(
     VideoDecoderConfig config,
     uint8_t bit_depth,
     VideoChromaSampling chroma_sampling,
-    int max_decode_requests) {
+    int max_decode_requests,
+    const gpu::GpuDriverBugWorkarounds& gpu_workarounds) {
   GUID guid =
       GetD3D12VideoDecodeGUID(config.profile(), bit_depth, chroma_sampling);
   DXGI_FORMAT decode_format = GetOutputDXGIFormat(bit_depth, chroma_sampling);
@@ -479,7 +510,8 @@ std::unique_ptr<D3D12VideoDecoderWrapper> D3D12VideoDecoderWrapper::Create(
   return std::make_unique<D3D12VideoDecoderWrapperImpl>(
       media_log, std::move(device), std::move(command_queue),
       std::move(video_device), std::move(video_decoder),
-      std::move(video_decoder_heap), std::move(fence), max_decode_requests);
+      std::move(video_decoder_heap), std::move(fence), max_decode_requests,
+      gpu_workarounds.d3d12_persistent_upload_buffer_map);
 }
 
 D3D12VideoDecoderWrapper::D3D12VideoDecoderWrapper(MediaLog* media_log)

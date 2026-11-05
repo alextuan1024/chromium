@@ -15,18 +15,23 @@
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
 #include "third_party/blink/renderer/core/html/html_style_element.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/layout_block_flow.h"
 #include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/layout_text_fragment.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
+#include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
+#include "third_party/blink/renderer/core/paint/paint_layer.h"
+#include "third_party/blink/renderer/core/paint/pre_paint_subtree_walk_reasons.h"
 #include "third_party/blink/renderer/core/svg/svg_g_element.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/json/json_values.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/skia/include/docs/SkPDFDocument.h"
 #include "ui/gfx/geometry/decomposed_transform.h"
 
@@ -198,18 +203,18 @@ TEST_F(LayoutObjectTest, BackdropFilterAsGroupingProperty) {
     <div id=target3 style="position: relative"></div>
   )HTML");
   EXPECT_TRUE(GetLayoutObjectByElementId("target1")
-                  ->StyleRef()
+                  ->Style()
                   .HasGroupingPropertyForUsedTransformStyle3D());
   EXPECT_TRUE(GetLayoutObjectByElementId("target2")
-                  ->StyleRef()
+                  ->Style()
                   .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->StyleRef().Preserves3D());
-  EXPECT_FALSE(GetLayoutObjectByElementId("target2")->StyleRef().Preserves3D());
+  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->Style().Preserves3D());
+  EXPECT_FALSE(GetLayoutObjectByElementId("target2")->Style().Preserves3D());
 
   EXPECT_FALSE(GetLayoutObjectByElementId("target3")
-                   ->StyleRef()
+                   ->Style()
                    .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_TRUE(GetLayoutObjectByElementId("target3")->StyleRef().Preserves3D());
+  EXPECT_TRUE(GetLayoutObjectByElementId("target3")->Style().Preserves3D());
 }
 
 TEST_F(LayoutObjectTest, BlendModeAsGroupingProperty) {
@@ -219,14 +224,14 @@ TEST_F(LayoutObjectTest, BlendModeAsGroupingProperty) {
     <div id=target2 style="position: relative"></div>
   )HTML");
   EXPECT_TRUE(GetLayoutObjectByElementId("target1")
-                  ->StyleRef()
+                  ->Style()
                   .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->StyleRef().Preserves3D());
+  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->Style().Preserves3D());
 
   EXPECT_FALSE(GetLayoutObjectByElementId("target2")
-                   ->StyleRef()
+                   ->Style()
                    .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_TRUE(GetLayoutObjectByElementId("target2")->StyleRef().Preserves3D());
+  EXPECT_TRUE(GetLayoutObjectByElementId("target2")->Style().Preserves3D());
 }
 
 TEST_F(LayoutObjectTest, CSSClipAsGroupingProperty) {
@@ -238,18 +243,18 @@ TEST_F(LayoutObjectTest, CSSClipAsGroupingProperty) {
     <div id=target3 style="position: relative"></div>
   )HTML");
   EXPECT_FALSE(GetLayoutObjectByElementId("target1")
-                   ->StyleRef()
+                   ->Style()
                    .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_TRUE(GetLayoutObjectByElementId("target1")->StyleRef().Preserves3D());
+  EXPECT_TRUE(GetLayoutObjectByElementId("target1")->Style().Preserves3D());
   EXPECT_TRUE(GetLayoutObjectByElementId("target2")
-                  ->StyleRef()
+                  ->Style()
                   .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_FALSE(GetLayoutObjectByElementId("target2")->StyleRef().Preserves3D());
+  EXPECT_FALSE(GetLayoutObjectByElementId("target2")->Style().Preserves3D());
 
   EXPECT_FALSE(GetLayoutObjectByElementId("target3")
-                   ->StyleRef()
+                   ->Style()
                    .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_TRUE(GetLayoutObjectByElementId("target3")->StyleRef().Preserves3D());
+  EXPECT_TRUE(GetLayoutObjectByElementId("target3")->Style().Preserves3D());
 }
 
 TEST_F(LayoutObjectTest, ClipPathAsGroupingProperty) {
@@ -259,14 +264,14 @@ TEST_F(LayoutObjectTest, ClipPathAsGroupingProperty) {
     <div id=target2 style="position: relative"></div>
   )HTML");
   EXPECT_TRUE(GetLayoutObjectByElementId("target1")
-                  ->StyleRef()
+                  ->Style()
                   .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->StyleRef().Preserves3D());
+  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->Style().Preserves3D());
 
   EXPECT_FALSE(GetLayoutObjectByElementId("target2")
-                   ->StyleRef()
+                   ->Style()
                    .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_TRUE(GetLayoutObjectByElementId("target2")->StyleRef().Preserves3D());
+  EXPECT_TRUE(GetLayoutObjectByElementId("target2")->Style().Preserves3D());
 }
 
 TEST_F(LayoutObjectTest, IsolationAsGroupingProperty) {
@@ -276,14 +281,14 @@ TEST_F(LayoutObjectTest, IsolationAsGroupingProperty) {
     <div id=target2 style="position: relative"></div>
   )HTML");
   EXPECT_TRUE(GetLayoutObjectByElementId("target1")
-                  ->StyleRef()
+                  ->Style()
                   .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->StyleRef().Preserves3D());
+  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->Style().Preserves3D());
 
   EXPECT_FALSE(GetLayoutObjectByElementId("target2")
-                   ->StyleRef()
+                   ->Style()
                    .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_TRUE(GetLayoutObjectByElementId("target2")->StyleRef().Preserves3D());
+  EXPECT_TRUE(GetLayoutObjectByElementId("target2")->Style().Preserves3D());
 }
 
 TEST_F(LayoutObjectTest, MaskAsGroupingProperty) {
@@ -294,14 +299,40 @@ TEST_F(LayoutObjectTest, MaskAsGroupingProperty) {
     <div id=target2 style="position: relative"></div>
   )HTML");
   EXPECT_TRUE(GetLayoutObjectByElementId("target1")
-                  ->StyleRef()
+                  ->Style()
                   .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->StyleRef().Preserves3D());
+  EXPECT_FALSE(GetLayoutObjectByElementId("target1")->Style().Preserves3D());
 
   EXPECT_FALSE(GetLayoutObjectByElementId("target2")
-                   ->StyleRef()
+                   ->Style()
                    .HasGroupingPropertyForUsedTransformStyle3D());
-  EXPECT_TRUE(GetLayoutObjectByElementId("target2")->StyleRef().Preserves3D());
+  EXPECT_TRUE(GetLayoutObjectByElementId("target2")->Style().Preserves3D());
+}
+
+TEST_F(LayoutObjectTest, UseCountGridLanesLayout) {
+  ScopedCSSGridLanesLayoutForTest grid_lanes_enabled(true);
+  for (const char* style :
+       {"display: grid-lanes", "display: inline-grid-lanes"}) {
+    SCOPED_TRACE(style);
+    GetDocument().ClearUseCounterForTesting(WebFeature::kCSSGridLanesLayout);
+    SetBodyInnerHTML(R"HTML(
+      <div style="display: grid"></div>
+      <div id="container" style="display: none">
+        <div id="target"></div>
+      </div>
+    )HTML");
+    GetElementById("target")->setAttribute(html_names::kStyleAttr,
+                                           AtomicString(style));
+    UpdateAllLifecyclePhasesForTest();
+    EXPECT_FALSE(GetLayoutObjectByElementId("target"));
+    EXPECT_FALSE(GetDocument().IsUseCounted(WebFeature::kCSSGridLanesLayout));
+
+    GetElementById("container")->removeAttribute(html_names::kStyleAttr);
+    UpdateAllLifecyclePhasesForTest();
+    ASSERT_TRUE(GetLayoutObjectByElementId("target"));
+    EXPECT_TRUE(GetLayoutObjectByElementId("target")->IsLayoutGridLanes());
+    EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCSSGridLanesLayout));
+  }
 }
 
 TEST_F(LayoutObjectTest, UseCountContainWithoutContentVisibility) {
@@ -352,39 +383,37 @@ TEST_F(LayoutObjectTest, UseCountContainWithoutContentVisibility) {
 }
 
 // Containing block test.
-TEST_F(LayoutObjectTest, ContainingBlockLayoutViewShouldBeNull) {
-  EXPECT_EQ(nullptr, GetLayoutView().ContainingBlock());
+TEST_F(LayoutObjectTest, ContainingBoxLayoutViewShouldBeNull) {
+  EXPECT_EQ(nullptr, GetLayoutView().ContainingBox());
 }
 
-TEST_F(LayoutObjectTest, ContainingBlockBodyShouldBeDocumentElement) {
-  EXPECT_EQ(GetDocument().body()->GetLayoutObject()->ContainingBlock(),
+TEST_F(LayoutObjectTest, ContainingBoxBodyShouldBeDocumentElement) {
+  EXPECT_EQ(GetDocument().body()->GetLayoutObject()->ContainingBox(),
             GetDocument().documentElement()->GetLayoutObject());
 }
 
-TEST_F(LayoutObjectTest, ContainingBlockDocumentElementShouldBeLayoutView) {
-  EXPECT_EQ(
-      GetDocument().documentElement()->GetLayoutObject()->ContainingBlock(),
-      GetLayoutView());
+TEST_F(LayoutObjectTest, ContainingBoxDocumentElementShouldBeLayoutView) {
+  EXPECT_EQ(GetDocument().documentElement()->GetLayoutObject()->ContainingBox(),
+            GetLayoutView());
 }
 
-TEST_F(LayoutObjectTest, ContainingBlockStaticLayoutObjectShouldBeParent) {
+TEST_F(LayoutObjectTest, ContainingBoxStaticLayoutObjectShouldBeParent) {
   SetBodyInnerHTML("<foo style='position:static'></foo>");
   LayoutObject* body_layout_object = GetDocument().body()->GetLayoutObject();
   LayoutObject* layout_object = body_layout_object->SlowFirstChild();
-  EXPECT_EQ(layout_object->ContainingBlock(), body_layout_object);
+  EXPECT_EQ(layout_object->ContainingBox(), body_layout_object);
 }
 
-TEST_F(LayoutObjectTest,
-       ContainingBlockAbsoluteLayoutObjectShouldBeLayoutView) {
+TEST_F(LayoutObjectTest, ContainingBoxAbsoluteLayoutObjectShouldBeLayoutView) {
   SetBodyInnerHTML("<foo style='position:absolute'></foo>");
   LayoutObject* layout_object =
       GetDocument().body()->GetLayoutObject()->SlowFirstChild();
-  EXPECT_EQ(layout_object->ContainingBlock(), GetLayoutView());
+  EXPECT_EQ(layout_object->ContainingBox(), GetLayoutView());
 }
 
 TEST_F(
     LayoutObjectTest,
-    ContainingBlockAbsoluteLayoutObjectShouldBeNonStaticallyPositionedBlockAncestor) {
+    ContainingBoxAbsoluteLayoutObjectShouldBeNonStaticallyPositionedBlockAncestor) {
   SetBodyInnerHTML(R"HTML(
     <div style='position:relative; left:20px'>
       <bar style='position:absolute; left:2px; top:10px'></bar>
@@ -400,16 +429,16 @@ TEST_F(
       containing_blocklayout_object->CanContainOutOfFlowPositionedElement(
           EPosition::kFixed));
   EXPECT_EQ(layout_object->Container(), containing_blocklayout_object);
-  EXPECT_EQ(layout_object->ContainingBlock(), containing_blocklayout_object);
-  EXPECT_EQ(layout_object->ContainingBlockForAbsolutePosition(),
+  EXPECT_EQ(layout_object->ContainingBox(), containing_blocklayout_object);
+  EXPECT_EQ(layout_object->ContainingBoxForAbsolutePosition(),
             containing_blocklayout_object);
-  EXPECT_EQ(layout_object->ContainingBlockForFixedPosition(), GetLayoutView());
+  EXPECT_EQ(layout_object->ContainingBoxForFixedPosition(), GetLayoutView());
   auto offset =
       layout_object->OffsetFromContainer(containing_blocklayout_object);
   EXPECT_EQ(PhysicalOffset(2, 10), offset);
 }
 
-TEST_F(LayoutObjectTest, ContainingBlockFixedPosUnderFlattened3D) {
+TEST_F(LayoutObjectTest, ContainingBoxFixedPosUnderFlattened3D) {
   SetBodyInnerHTML(R"HTML(
     <div id=container style='transform-style: preserve-3d; opacity: 0.9'>
       <div id=target style='position:fixed'></div>
@@ -421,7 +450,7 @@ TEST_F(LayoutObjectTest, ContainingBlockFixedPosUnderFlattened3D) {
   EXPECT_EQ(container, target->Container());
 }
 
-TEST_F(LayoutObjectTest, ContainingBlockFixedLayoutObjectInTransformedDiv) {
+TEST_F(LayoutObjectTest, ContainingBoxFixedLayoutObjectInTransformedDiv) {
   SetBodyInnerHTML(R"HTML(
     <div style='transform:translateX(0px)'>
       <bar style='position:fixed'></bar>
@@ -437,14 +466,14 @@ TEST_F(LayoutObjectTest, ContainingBlockFixedLayoutObjectInTransformedDiv) {
       containing_blocklayout_object->CanContainOutOfFlowPositionedElement(
           EPosition::kFixed));
   EXPECT_EQ(layout_object->Container(), containing_blocklayout_object);
-  EXPECT_EQ(layout_object->ContainingBlock(), containing_blocklayout_object);
-  EXPECT_EQ(layout_object->ContainingBlockForAbsolutePosition(),
+  EXPECT_EQ(layout_object->ContainingBox(), containing_blocklayout_object);
+  EXPECT_EQ(layout_object->ContainingBoxForAbsolutePosition(),
             containing_blocklayout_object);
-  EXPECT_EQ(layout_object->ContainingBlockForFixedPosition(),
+  EXPECT_EQ(layout_object->ContainingBoxForFixedPosition(),
             containing_blocklayout_object);
 }
 
-TEST_F(LayoutObjectTest, ContainingBlockFixedLayoutObjectInBody) {
+TEST_F(LayoutObjectTest, ContainingBoxFixedLayoutObjectInBody) {
   SetBodyInnerHTML("<div style='position:fixed'></div>");
   LayoutObject* layout_object =
       GetDocument().body()->GetLayoutObject()->SlowFirstChild();
@@ -453,13 +482,12 @@ TEST_F(LayoutObjectTest, ContainingBlockFixedLayoutObjectInBody) {
   EXPECT_FALSE(
       layout_object->CanContainOutOfFlowPositionedElement(EPosition::kFixed));
   EXPECT_EQ(layout_object->Container(), GetLayoutView());
-  EXPECT_EQ(layout_object->ContainingBlock(), GetLayoutView());
-  EXPECT_EQ(layout_object->ContainingBlockForAbsolutePosition(),
-            GetLayoutView());
-  EXPECT_EQ(layout_object->ContainingBlockForFixedPosition(), GetLayoutView());
+  EXPECT_EQ(layout_object->ContainingBox(), GetLayoutView());
+  EXPECT_EQ(layout_object->ContainingBoxForAbsolutePosition(), GetLayoutView());
+  EXPECT_EQ(layout_object->ContainingBoxForFixedPosition(), GetLayoutView());
 }
 
-TEST_F(LayoutObjectTest, ContainingBlockAbsoluteLayoutObjectInBody) {
+TEST_F(LayoutObjectTest, ContainingBoxAbsoluteLayoutObjectInBody) {
   SetBodyInnerHTML("<div style='position:absolute'></div>");
   LayoutObject* layout_object =
       GetDocument().body()->GetLayoutObject()->SlowFirstChild();
@@ -468,15 +496,14 @@ TEST_F(LayoutObjectTest, ContainingBlockAbsoluteLayoutObjectInBody) {
   EXPECT_FALSE(
       layout_object->CanContainOutOfFlowPositionedElement(EPosition::kFixed));
   EXPECT_EQ(layout_object->Container(), GetLayoutView());
-  EXPECT_EQ(layout_object->ContainingBlock(), GetLayoutView());
-  EXPECT_EQ(layout_object->ContainingBlockForAbsolutePosition(),
-            GetLayoutView());
-  EXPECT_EQ(layout_object->ContainingBlockForFixedPosition(), GetLayoutView());
+  EXPECT_EQ(layout_object->ContainingBox(), GetLayoutView());
+  EXPECT_EQ(layout_object->ContainingBoxForAbsolutePosition(), GetLayoutView());
+  EXPECT_EQ(layout_object->ContainingBoxForFixedPosition(), GetLayoutView());
 }
 
 TEST_F(
     LayoutObjectTest,
-    ContainingBlockAbsoluteLayoutObjectShouldNotBeNonStaticallyPositionedInlineAncestor) {
+    ContainingBoxAbsoluteLayoutObjectShouldNotBeNonStaticallyPositionedInlineAncestor) {
   // Test note: We can't use a raw string literal here, since extra whitespace
   // causes failures.
   SetBodyInnerHTML(
@@ -500,10 +527,10 @@ TEST_F(
   EXPECT_EQ(nullptr, layout_object->NextSibling());
 
   EXPECT_EQ(layout_object->Container(), span_layout_object);
-  EXPECT_EQ(layout_object->ContainingBlock(), body_layout_object);
-  EXPECT_EQ(layout_object->ContainingBlockForAbsolutePosition(),
+  EXPECT_EQ(layout_object->ContainingBox(), body_layout_object);
+  EXPECT_EQ(layout_object->ContainingBoxForAbsolutePosition(),
             body_layout_object);
-  EXPECT_EQ(layout_object->ContainingBlockForFixedPosition(), GetLayoutView());
+  EXPECT_EQ(layout_object->ContainingBoxForFixedPosition(), GetLayoutView());
 }
 
 TEST_F(LayoutObjectTest, PaintingLayerOfOverflowClipLayerUnderColumnSpanAll) {
@@ -540,7 +567,7 @@ TEST_F(LayoutObjectTest, FloatUnderBlock) {
   EXPECT_EQ(layered_div->Layer(), layered_div->PaintingLayer());
   EXPECT_EQ(layered_div->Layer(), floating->PaintingLayer());
   EXPECT_EQ(container, floating->Container());
-  EXPECT_EQ(container, floating->ContainingBlock());
+  EXPECT_EQ(container, floating->ContainingBox());
 }
 
 TEST_F(LayoutObjectTest, InlineFloatMismatch) {
@@ -582,7 +609,7 @@ TEST_F(LayoutObjectTest, FloatUnderInline) {
   // LayoutNG paints these within the correct inline-level layer.
   EXPECT_EQ(layered_span->Layer(), floating->PaintingLayer());
   EXPECT_EQ(layered_span, floating->Container());
-  EXPECT_EQ(container, floating->ContainingBlock());
+  EXPECT_EQ(container, floating->ContainingBox());
 
   LayoutObject::AncestorSkipInfo skip_info(layered_span);
   EXPECT_EQ(layered_span, floating->Container(&skip_info));
@@ -664,6 +691,78 @@ TEST_F(LayoutObjectTest, SubtreeAndDelayFullPaintInvalidation) {
   EXPECT_FALSE(object->SubtreeShouldDoFullPaintInvalidation());
   EXPECT_FALSE(object->ShouldDoFullPaintInvalidation());
   EXPECT_FALSE(object->ShouldDelayFullPaintInvalidation());
+}
+
+TEST_F(LayoutObjectTest, NoPaintInvalidationWhileStayingInvisible) {
+  // crbug.com/41254682: paint-only style changes (e.g. from an animation) on
+  // an object that was and stays visibility:hidden paint nothing, so they
+  // should not trigger paint invalidation.
+  SetBodyInnerHTML(R"HTML(
+    <div id="target" style="visibility: hidden; width: 100px; height: 100px;
+        background: blue"></div>
+  )HTML");
+  Element* target = GetElementById("target");
+  LayoutObject* object = target->GetLayoutObject();
+  EXPECT_FALSE(object->ShouldCheckForPaintInvalidation());
+
+  target->SetInlineStyleProperty(CSSPropertyID::kBackgroundColor, "green");
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_FALSE(object->ShouldDoFullPaintInvalidation());
+  EXPECT_FALSE(object->BackgroundNeedsFullPaintInvalidation());
+  EXPECT_FALSE(object->ShouldCheckForPaintInvalidation());
+  EXPECT_FALSE(object->PaintingLayer()->SelfNeedsRepaint());
+  UpdateAllLifecyclePhasesForTest();
+
+  // Becoming visible still requires paint invalidation.
+  target->SetInlineStyleProperty(CSSPropertyID::kVisibility, "visible");
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_TRUE(object->ShouldDoFullPaintInvalidation());
+  UpdateAllLifecyclePhasesForTest();
+
+  // So does becoming hidden.
+  target->SetInlineStyleProperty(CSSPropertyID::kVisibility, "hidden");
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_TRUE(object->ShouldDoFullPaintInvalidation());
+}
+
+TEST_F(LayoutObjectTest, VisibleDescendantOfInvisibleObjectStillInvalidates) {
+  // A visibility:visible descendant of a visibility:hidden object paints, so
+  // inherited paint-only style changes on the hidden ancestor must still
+  // invalidate the descendant (via the descendant's own style diff) even
+  // though the ancestor's own paint invalidation is skipped.
+  SetBodyInnerHTML(R"HTML(
+    <div id="hidden" style="visibility: hidden; color: blue">
+      <div id="visible" style="visibility: visible; width: 100px;
+          height: 100px; background: currentColor">text</div>
+    </div>
+  )HTML");
+  Element* hidden = GetElementById("hidden");
+  LayoutObject* hidden_object = hidden->GetLayoutObject();
+  LayoutObject* visible_object = GetLayoutObjectByElementId("visible");
+
+  // `color` inherits into the visible descendant and affects its painted
+  // background (currentColor).
+  hidden->SetInlineStyleProperty(CSSPropertyID::kColor, "green");
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_FALSE(hidden_object->ShouldDoFullPaintInvalidation());
+  EXPECT_TRUE(visible_object->ShouldDoFullPaintInvalidation());
+}
+
+TEST_F(LayoutObjectTest, PaintInvalidationWhileStayingInvisibleKillSwitch) {
+  // With the feature disabled, style changes on invisible objects still
+  // invalidate paint.
+  ScopedSkipPaintInvalidationWhileStayingInvisibleForTest disabled(false);
+  SetBodyInnerHTML(R"HTML(
+    <div id="target" style="visibility: hidden; width: 100px; height: 100px;
+        background: blue"></div>
+  )HTML");
+  Element* target = GetElementById("target");
+  LayoutObject* object = target->GetLayoutObject();
+
+  target->SetInlineStyleProperty(CSSPropertyID::kBackgroundColor, "green");
+  GetDocument().UpdateStyleAndLayoutTree();
+  EXPECT_TRUE(object->ShouldDoFullPaintInvalidation());
+  EXPECT_TRUE(object->BackgroundNeedsFullPaintInvalidation());
 }
 
 TEST_F(LayoutObjectTest, SubtreePaintPropertyUpdateReasons) {
@@ -1020,7 +1119,7 @@ lime'>
   result.Clear();
   text->DumpLayoutObject(result, false, 0);
   EXPECT_EQ(
-      result.ToString(),
+      StringView(result),
       String("LayoutText\t#text \"\\n      testing "
              "\\u0421\\u0440\\u0435\\u045C\\u0435\\u043D "
              "\\u0440\\u043E\\u0434\\u0435\\u043D\\u0434\\u0435\\u043D\\n\""));
@@ -1035,15 +1134,13 @@ TEST_F(LayoutObjectTest, DumpDestroyedLayoutObject) {
   LayoutObject* layout_object = element->GetLayoutObject();
   StringBuilder builder;
   layout_object->DumpLayoutObject(builder, false, 0);
-  String result = builder.ToString();
-  EXPECT_FALSE(result.starts_with("[DESTROYED] "));
+  EXPECT_FALSE(StringView(builder).starts_with("[DESTROYED] "));
 
   element->remove();
   UpdateAllLifecyclePhasesForTest();
   builder.Clear();
   layout_object->DumpLayoutObject(builder, false, 0);
-  result = builder.ToString();
-  EXPECT_TRUE(result.starts_with("[DESTROYED] "));
+  EXPECT_TRUE(StringView(builder).starts_with("[DESTROYED] "));
 }
 #endif  // DCHECK_IS_ON()
 
@@ -1181,7 +1278,7 @@ TEST_F(LayoutObjectSimTest, TouchActionUpdatesSubframeEventHandler) {
   Document* iframe_doc = frame_owner_element->contentDocument();
   Element* inner = iframe_doc->getElementById(AtomicString("inner"));
   Element* iframe_doc_element = iframe_doc->documentElement();
-  Element* container = GetDocument().getElementById(AtomicString("container"));
+  Element* container = GetElementById("container");
 
   EventHandlerRegistry& registry =
       iframe_doc->GetFrame()->GetEventHandlerRegistry();
@@ -1241,7 +1338,7 @@ TEST_F(LayoutObjectSimTest, HitTestForOcclusionInIframe) {
   HitTestResult result = HitTestForOcclusion(*target);
   EXPECT_EQ(result.InnerNode(), target);
 
-  Element* occluder = GetDocument().getElementById(AtomicString("occluder"));
+  Element* occluder = GetElementById("occluder");
   occluder->SetInlineStyleProperty(CSSPropertyID::kMarginTop, "-150px");
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
   result = HitTestForOcclusion(*target);
@@ -1268,9 +1365,9 @@ TEST_F(LayoutObjectSimTest, FirstLineBackgroundImage) {
 
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
-  auto* target = GetDocument().getElementById(AtomicString("target"));
+  auto* target = GetElementById("target");
   auto* target_object = target->GetLayoutObject();
-  auto* image_resource_content = target_object->FirstLineStyleRef()
+  auto* image_resource_content = target_object->FirstLineStyle()
                                      .BackgroundLayers()
                                      .GetImage()
                                      ->CachedImage();
@@ -1284,19 +1381,13 @@ TEST_F(LayoutObjectSimTest, FirstLineBackgroundImage) {
   // invalidate it.
   EXPECT_TRUE(target_object->ShouldDoFullPaintInvalidation());
 
-  auto* first_line1 = GetDocument()
-                          .getElementById(AtomicString("first-line1"))
-                          ->GetLayoutObject();
+  auto* first_line1 = GetElementById("first-line1")->GetLayoutObject();
   EXPECT_TRUE(first_line1->ShouldDoFullPaintInvalidation());
   EXPECT_TRUE(first_line1->SlowFirstChild()->ShouldDoFullPaintInvalidation());
-  auto* first_line2 = GetDocument()
-                          .getElementById(AtomicString("first-line2"))
-                          ->GetLayoutObject();
+  auto* first_line2 = GetElementById("first-line2")->GetLayoutObject();
   EXPECT_TRUE(first_line2->ShouldDoFullPaintInvalidation());
   EXPECT_TRUE(first_line2->SlowFirstChild()->ShouldDoFullPaintInvalidation());
-  auto* second_line = GetDocument()
-                          .getElementById(AtomicString("second-line"))
-                          ->GetLayoutObject();
+  auto* second_line = GetElementById("second-line")->GetLayoutObject();
   EXPECT_FALSE(second_line->ShouldDoFullPaintInvalidation());
   EXPECT_FALSE(second_line->SlowFirstChild()->ShouldDoFullPaintInvalidation());
 
@@ -1382,18 +1473,16 @@ TEST_F(LayoutObjectSimTest, FirstLineBackgroundImageDirtyStyleCrash) {
 
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
-  CSSStyleSheet* sheet =
-      To<HTMLStyleElement>(GetDocument().getElementById(AtomicString("style")))
-          ->sheet();
+  CSSStyleSheet* sheet = To<HTMLStyleElement>(GetElementById("style"))->sheet();
   {
     // "Mutate" the rules to clear the StyleSheetContents RuleSet member.
     CSSStyleSheet::RuleMutationScope scope(sheet);
   }
   EXPECT_FALSE(sheet->Contents()->HasRuleSet());
 
-  auto* target = GetDocument().getElementById(AtomicString("target"));
+  auto* target = GetElementById("target");
   auto* target_object = target->GetLayoutObject();
-  auto* image_resource_content = target_object->FirstLineStyleRef()
+  auto* image_resource_content = target_object->FirstLineStyle()
                                      .BackgroundLayers()
                                      .GetImage()
                                      ->CachedImage();
@@ -2091,16 +2180,16 @@ TEST_F(LayoutObjectTest, NoEllipsisForAnonymousBlockWithNonBlockParent) {
   const LayoutObject* text_layout = GetLayoutObjectByElementId("text");
   ASSERT_TRUE(text_layout);
 
-  // ContainingBlockForTextOverflow() returns nullptr because the parent is a
+  // ContainerForTextOverflow() returns nullptr because the parent is a
   // flex container (non-block-container).
-  EXPECT_EQ(nullptr, text_layout->ContainingBlockForTextOverflow());
+  EXPECT_EQ(nullptr, text_layout->ContainerForTextOverflow());
 
-  // Since ContainingBlockForTextOverflow() is nullptr, no block will have
+  // Since ContainingerForTextOverflow() is nullptr, no block will have
   // ShouldTruncateOverflowingText() set to true. Verify this on the anonymous
   // block flow inside the flex container.
   const LayoutObject* flex_layout = GetLayoutObjectByElementId("flex");
   ASSERT_TRUE(flex_layout);
-  EXPECT_FALSE(flex_layout->BehavesLikeBlockContainer());
+  EXPECT_FALSE(flex_layout->CanApplyTextOverflow());
 
   const LayoutObject* child = flex_layout->SlowFirstChild();
   while (child && !child->IsAnonymousBlockFlow()) {
@@ -2213,6 +2302,47 @@ TEST_F(LayoutObjectTest, MAYBE_Depth) {
     object = object->SlowFirstChild();
     ++depth;
   }
+}
+
+TEST_F(LayoutObjectTest, MarkIsHiddenForPaintChanged) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #clamp { line-clamp: 2; }
+    </style>
+    <div id=clamp>
+      Line 1 <br>
+      Line 2
+      <div id=target>
+        Line 3
+      </div>
+    </div>
+  )HTML");
+
+  const LayoutObject* clamp = GetLayoutObjectByElementId("clamp");
+  const LayoutObject* target = GetLayoutObjectByElementId("target");
+
+  To<Element>(clamp->GetNode())
+      ->setAttribute(html_names::kStyleAttr, AtomicString("line-clamp: 3"));
+  GetDocument().View()->UpdateLifecycleToLayoutClean(
+      DocumentUpdateReason::kTest);
+  EXPECT_FALSE(
+      To<LayoutBox>(target)->GetPhysicalFragment(0)->IsHiddenDueToLayout());
+  EXPECT_TRUE(target->GetPrePaintSubtreeWalkReasons().Has(
+      PrePaintSubtreeWalkReason::kIsHiddenDueToLayout));
+  EXPECT_TRUE(clamp->GetDescendantPrePaintSubtreeWalkReasons().Has(
+      PrePaintSubtreeWalkReason::kIsHiddenDueToLayout));
+
+  UpdateAllLifecyclePhasesForTest();
+
+  To<Element>(clamp->GetNode())->removeAttribute(html_names::kStyleAttr);
+  GetDocument().View()->UpdateLifecycleToLayoutClean(
+      DocumentUpdateReason::kTest);
+  EXPECT_TRUE(
+      To<LayoutBox>(target)->GetPhysicalFragment(0)->IsHiddenDueToLayout());
+  EXPECT_TRUE(target->GetPrePaintSubtreeWalkReasons().Has(
+      PrePaintSubtreeWalkReason::kIsHiddenDueToLayout));
+  EXPECT_TRUE(clamp->GetDescendantPrePaintSubtreeWalkReasons().Has(
+      PrePaintSubtreeWalkReason::kIsHiddenDueToLayout));
 }
 
 }  // namespace blink

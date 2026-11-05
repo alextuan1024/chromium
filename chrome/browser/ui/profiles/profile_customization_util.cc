@@ -12,13 +12,11 @@
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profiles_state.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/sync/base/features.h"
 
 namespace {
 
@@ -44,21 +42,13 @@ void FinalizeNewProfileSetup(Profile* profile,
 
   // We don't expect this to be run for profiles where the user already had a
   // chance to set a custom profile name.
+  // TODO(crbug.com/578547973): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(entry->IsUsingDefaultName());
 
   entry->SetLocalProfileName(profile_name, is_default_name);
 
   if (signin_util::IsForceSigninEnabled()) {
-    if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-      // Managed accounts do not need to have Sync consent set.
-      if (!entry->CanBeManaged()) {
-        signin::IdentityManager* identity_manager =
-            IdentityManagerFactory::GetForProfile(profile);
-        CHECK(identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync))
-            << "A non syncing account should not be able to finalize the "
-               "profile.";
-      }
-    }
     entry->LockForceSigninProfile(/*is_lock=*/false);
   }
 
@@ -149,7 +139,8 @@ void ProfileNameResolver::OnExtendedAccountInfoUpdated(
 void ProfileNameResolver::OnProfileNameResolved(
     const std::u16string& profile_name) {
   CHECK(!profile_name.empty());
-  DCHECK(resolved_profile_name_.empty());  // Should be resolved only once.
+  CHECK(resolved_profile_name_.empty(),
+        base::NotFatalUntil::M162);  // Should be resolved only once.
 
   // Cancel timeout and stop listening to further changes.
   extended_account_info_timeout_closure_.Cancel();

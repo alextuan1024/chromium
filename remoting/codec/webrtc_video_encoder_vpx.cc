@@ -8,19 +8,19 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/system/sys_info.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "remoting/base/cpu_utils.h"
 #include "remoting/base/util.h"
 #include "remoting/codec/utils.h"
-#include "remoting/proto/video.pb.h"
 #include "third_party/libvpx/source/libvpx/vpx/vp8cx.h"
 #include "third_party/libvpx/source/libvpx/vpx/vpx_encoder.h"
-#include "third_party/libyuv/include/libyuv/convert_from_argb.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_region.h"
@@ -29,28 +29,12 @@ namespace remoting {
 
 namespace {
 
-// Number of bytes in an RGBx pixel.
-constexpr int kBytesPerRgbPixel = 4;
-
 // Magic encoder profile numbers for I420 and I444 input formats.
 constexpr int kVp9I420ProfileNumber = 0;
 constexpr int kVp9I444ProfileNumber = 1;
 
 // Magic encoder constant for adaptive quantization strategy.
 constexpr int kVp9AqModeCyclicRefresh = 3;
-
-constexpr int kDefaultTargetBitrateKbps = 1000;
-
-// Minimum target bitrate per megapixel. The value is chosen experimentally such
-// that when screen is not changing the codec converges to the target quantizer
-// above in less than 10 frames.
-// TODO(zijiehe): This value is for VP8 only; reconsider the value for VP9.
-constexpr int kVp8MinimumTargetBitrateKbpsPerMegapixel = 2500;
-
-// Default values for the encoder speed of the supported codecs.
-constexpr int kVp9LosslessEncodeSpeed = 5;
-constexpr int kVp9DefaultEncoderSpeed = 6;
-constexpr int kVp9MaxEncoderSpeed = 9;
 
 void SetCommonCodecParameters(vpx_codec_enc_cfg_t* config,
                               const webrtc::DesktopSize& size) {
@@ -61,11 +45,6 @@ void SetCommonCodecParameters(vpx_codec_enc_cfg_t* config,
   config->g_w = size.width();
   config->g_h = size.height();
   config->g_pass = VPX_RC_ONE_PASS;
-  // TODO(joedow): Determine whether it is possible to support portrait mode.
-  // VP9 only supports breaking an image up into columns for parallel encoding,
-  // this means that a display in portrait mode cannot be broken up into as many
-  // columns as a display in landscape mode can so performance will be degraded.
-  config->g_threads = WebrtcVideoEncoder::GetEncoderThreadCount(config->g_w);
 
   // Start emitting packets immediately.
   config->g_lag_in_frames = 0;
@@ -78,6 +57,10 @@ void SetCommonCodecParameters(vpx_codec_enc_cfg_t* config,
 
   // Do not drop any frames at encoder.
   config->rc_dropframe_thresh = 0;
+  // Set a reasonable default for the first key frame before WebRTC begins
+  // sending updated max/min qp values based on network conditions.
+  config->rc_min_quantizer = WebrtcVideoEncoder::kMinQuantizer;
+  config->rc_max_quantizer = WebrtcVideoEncoder::kMaxQuantizer;
   // We do not want variations in bandwidth.
   config->rc_end_usage = VPX_CBR;
   config->rc_undershoot_pct = 100;
@@ -87,6 +70,8 @@ void SetCommonCodecParameters(vpx_codec_enc_cfg_t* config,
 void SetVp8CodecParameters(vpx_codec_enc_cfg_t* config,
                            const webrtc::DesktopSize& size) {
   SetCommonCodecParameters(config, size);
+  config->g_threads =
+      WebrtcVideoEncoder::GetEncoderThreadCount(static_cast<int>(config->g_w));
 
 #if BUILDFLAG(IS_LINUX)
   // On Linux, using too many threads for VP8 encoding has been linked to high
@@ -99,6 +84,13 @@ void SetVp8CodecParameters(vpx_codec_enc_cfg_t* config,
   // and leave plenty of cores for the non-remoting workload.
   uint threshold = config->g_threads >= 16 ? 4U : 2U;
   config->g_threads = std::min(config->g_threads, threshold);
+#else
+  // Increasing thread count on VP8 does not necessarily lead to better
+  // performance and causes CBR overshoot and PSNR loss at 1080p, so keep
+  // sub-1440p widths capped at 4 threads.
+  if (config->g_w < 2560) {
+    config->g_threads = std::min(config->g_threads, 4U);
+  }
 #endif  // BUILDFLAG(IS_LINUX)
 
   // Value of 2 means using the real time profile. This is basically a
@@ -111,6 +103,15 @@ void SetVp9CodecParameters(vpx_codec_enc_cfg_t* config,
                            const webrtc::DesktopSize& size,
                            bool lossless_color) {
   SetCommonCodecParameters(config, size);
+
+  // Although libvpx only splits tiles into columns (clamping
+  // VP9E_SET_TILE_COLUMNS to the maximum supported for the frame width),
+  // SetVp9CodecOptions() enables row-based multi-threading (VP9E_SET_ROW_MT =
+  // 1), which parallelizes 64x64 superblock rows across worker threads within
+  // each column tile. Scaling the thread count by the larger dimension avoids
+  // starving portrait displays of worker threads.
+  config->g_threads = WebrtcVideoEncoder::GetEncoderThreadCount(
+      static_cast<int>(std::max(config->g_w, config->g_h)));
 
   // Configure VP9 for I420 or I444 source frames.
   config->g_profile =
@@ -125,7 +126,8 @@ void SetVp9CodecParameters(vpx_codec_enc_cfg_t* config,
 void SetVp8CodecOptions(vpx_codec_ctx_t* codec) {
   // CPUUSED of 16 will have the smallest CPU load. This turns off sub-pixel
   // motion search.
-  vpx_codec_err_t ret = vpx_codec_control(codec, VP8E_SET_CPUUSED, 16);
+  vpx_codec_err_t ret = vpx_codec_control(
+      codec, VP8E_SET_CPUUSED, WebrtcVideoEncoderVpx::kVp8DefaultEncoderSpeed);
   DCHECK_EQ(VPX_CODEC_OK, ret) << "Failed to set CPUUSED";
 
   // Use the lowest level of noise sensitivity so as to spend less time
@@ -179,11 +181,6 @@ std::unique_ptr<WebrtcVideoEncoder> WebrtcVideoEncoderVpx::CreateForVP9() {
 
 WebrtcVideoEncoderVpx::~WebrtcVideoEncoderVpx() = default;
 
-void WebrtcVideoEncoderVpx::SetTickClockForTests(
-    const base::TickClock* tick_clock) {
-  clock_ = tick_clock;
-}
-
 void WebrtcVideoEncoderVpx::SetLosslessColor(bool want_lossless) {
   if (!use_vp9_) {
     return;
@@ -205,8 +202,8 @@ void WebrtcVideoEncoderVpx::SetEncoderSpeed(int encoder_speed) {
     return;
   }
 
-  int clamped_speed = std::clamp<int>(encoder_speed, kVp9LosslessEncodeSpeed,
-                                      kVp9MaxEncoderSpeed);
+  int clamped_speed =
+      std::clamp<int>(encoder_speed, kVp9MinEncoderSpeed, kVp9MaxEncoderSpeed);
   if (vp9_encoder_speed_ != clamped_speed) {
     VLOG(0) << "Setting VP9 encoder speed to " << clamped_speed;
     vp9_encoder_speed_ = clamped_speed;
@@ -234,12 +231,12 @@ void WebrtcVideoEncoderVpx::Encode(std::unique_ptr<webrtc::DesktopFrame> frame,
     return;
   }
 
-  DCHECK_GE(frame_size.width(), 32);
-  DCHECK_GE(frame_size.height(), 32);
+  DCHECK_GE(frame_size.width(), kMinDimension);
+  DCHECK_GE(frame_size.height(), kMinDimension);
 
   // Create or reconfigure the codec to match the size of |frame|.
   if (!codec_ || !frame_size.equals(previous_frame_size)) {
-    Configure(frame_size);
+    Configure(frame_size, params);
   }
 
   UpdateConfig(params);
@@ -249,22 +246,31 @@ void WebrtcVideoEncoderVpx::Encode(std::unique_ptr<webrtc::DesktopFrame> frame,
   PrepareImage(frame.get(), &updated_region);
 
   if (use_active_map_) {
-    if (params.clear_active_map || params.key_frame) {
-      active_map_data_.Clear();
-    }
-
-    // VPX codecs do not use an active map for keyframes so skip in that case.
-    if (!params.key_frame) {
-      active_map_data_.Update(updated_region);
-      if (vpx_codec_control(codec_.get(), VP8E_SET_ACTIVEMAP, &active_map_)) {
-        LOG(ERROR) << "Unable to apply active map";
+    // VPX codecs do not use an active map for keyframes, but we still populate
+    // |active_map_data_| with the full frame so subsequent top-off frames (with
+    // clear_active_map = false) can top off the keyframe.
+    if (params.key_frame) {
+      active_map_data_.SetFull();
+      codec_active_map_enabled_ = false;
+    } else {
+      if (params.clear_active_map) {
+        active_map_data_.Clear();
       }
+      active_map_data_.Update(updated_region);
+      const bool all_blocks_active =
+          active_map_data_.active_blocks() == active_map_data_.total_blocks();
+      const bool bypass_active_map = use_vp9_ && all_blocks_active;
+      SetCodecActiveMap(/*enable=*/!bypass_active_map);
     }
   }
 
+  auto duration_ms = params.duration.InMilliseconds();
+  DCHECK_GT(duration_ms, 0);
   vpx_codec_err_t ret = vpx_codec_encode(
-      codec_.get(), image_.get(), 0, params.duration.InMicroseconds(),
-      (params.key_frame) ? VPX_EFLAG_FORCE_KF : 0, VPX_DL_REALTIME);
+      codec_.get(), image_.get(), artificial_timestamp_.InMilliseconds(),
+      duration_ms, (params.key_frame) ? VPX_EFLAG_FORCE_KF : 0,
+      VPX_DL_REALTIME);
+  artificial_timestamp_ += params.duration;
   if (ret != VPX_CODEC_OK) {
     const char* error_detail = vpx_codec_error_detail(codec_.get());
     LOG(ERROR) << "Encoding error: " << vpx_codec_err_to_string(ret) << "\n  "
@@ -328,8 +334,8 @@ void WebrtcVideoEncoderVpx::Encode(std::unique_ptr<webrtc::DesktopFrame> frame,
 WebrtcVideoEncoderVpx::WebrtcVideoEncoderVpx(bool use_vp9)
     : use_vp9_(use_vp9),
       image_(nullptr, vpx_img_free),
-      clock_(base::DefaultTickClock::GetInstance()),
-      bitrate_filter_(kVp8MinimumTargetBitrateKbpsPerMegapixel) {
+      bitrate_filter_(
+          EncoderBitrateFilter::kDefaultMinimumBitrateKbpsPerMegapixel) {
   // Indicates config is still uninitialized.
   config_.g_timebase.den = 0;
 
@@ -338,7 +344,8 @@ WebrtcVideoEncoderVpx::WebrtcVideoEncoderVpx(bool use_vp9)
   }
 }
 
-void WebrtcVideoEncoderVpx::Configure(const webrtc::DesktopSize& size) {
+void WebrtcVideoEncoderVpx::Configure(const webrtc::DesktopSize& size,
+                                      const FrameParams& params) {
   DCHECK(use_vp9_ || !lossless_color_);
 
   if (use_vp9_) {
@@ -365,6 +372,7 @@ void WebrtcVideoEncoderVpx::Configure(const webrtc::DesktopSize& size) {
         .rows = active_map_data_.height(),
         .cols = active_map_data_.width(),
     };
+    codec_active_map_enabled_ = false;
   }
 
   // Fetch a default configuration for the desired codec.
@@ -380,7 +388,17 @@ void WebrtcVideoEncoderVpx::Configure(const webrtc::DesktopSize& size) {
     SetVp8CodecParameters(&config_, size);
   }
 
-  config_.rc_target_bitrate = kDefaultTargetBitrateKbps;
+  config_.rc_target_bitrate = EncoderBitrateFilter::kDefaultMinimumBitrateKbps;
+  if (params.bitrate_kbps >= 0) {
+    bitrate_filter_.SetBandwidthEstimateKbps(params.bitrate_kbps);
+    config_.rc_target_bitrate = bitrate_filter_.GetTargetBitrateKbps();
+  }
+  if (params.vpx_min_quantizer >= 0) {
+    config_.rc_min_quantizer = params.vpx_min_quantizer;
+  }
+  if (params.vpx_max_quantizer >= 0) {
+    config_.rc_max_quantizer = params.vpx_max_quantizer;
+  }
 
   // Initialize or re-configure the codec with the custom configuration.
   if (!codec_) {
@@ -483,48 +501,35 @@ void WebrtcVideoEncoderVpx::PrepareImage(
   }
 
   // Convert the updated region to YUV ready for encoding.
-  const uint8_t* rgb_data = frame->data();
-  CHECK_EQ(frame->pixel_format(), webrtc::FOURCC_ARGB);
-  const int rgb_stride = frame->stride();
-  const int y_stride = image_->stride[0];
-  DCHECK_EQ(image_->stride[1], image_->stride[2]);
-  const int uv_stride = image_->stride[1];
-  uint8_t* y_data = image_->planes[0];
-  uint8_t* u_data = image_->planes[1];
-  uint8_t* v_data = image_->planes[2];
+  DCHECK(image_->fmt == VPX_IMG_FMT_I420 || image_->fmt == VPX_IMG_FMT_I444);
+  const bool is_i444 = image_->fmt == VPX_IMG_FMT_I444;
+  const size_t y_rows = image_->d_h;
+  const size_t uv_rows = is_i444 ? image_->d_h : (image_->d_h + 1) / 2;
+  // SAFETY: `image_->planes[i]` is allocated by `vpx_img_alloc` with at least
+  // `image_->stride[i] * rows` bytes for each plane.
+  ConvertDesktopFrameRegionToYuv(
+      *frame, *updated_region, is_i444,
+      UNSAFE_TODO(base::span(image_->planes[0],
+                             static_cast<size_t>(image_->stride[0]) * y_rows)),
+      image_->stride[0],
+      UNSAFE_TODO(base::span(image_->planes[1],
+                             static_cast<size_t>(image_->stride[1]) * uv_rows)),
+      image_->stride[1],
+      UNSAFE_TODO(base::span(image_->planes[2],
+                             static_cast<size_t>(image_->stride[2]) * uv_rows)),
+      image_->stride[2]);
+}
 
-  switch (image_->fmt) {
-    case VPX_IMG_FMT_I444:
-      for (webrtc::DesktopRegion::Iterator r(*updated_region); !r.IsAtEnd();
-           r.Advance()) {
-        webrtc::DesktopRect rect = GetRowAlignedRect(r.rect(), image_->d_w);
-        int rgb_offset =
-            rgb_stride * rect.top() + rect.left() * kBytesPerRgbPixel;
-        int yuv_offset = uv_stride * rect.top() + rect.left();
-        libyuv::ARGBToI444(UNSAFE_TODO(rgb_data + rgb_offset), rgb_stride,
-                           UNSAFE_TODO(y_data + yuv_offset), y_stride,
-                           UNSAFE_TODO(u_data + yuv_offset), uv_stride,
-                           UNSAFE_TODO(v_data + yuv_offset), uv_stride,
-                           rect.width(), rect.height());
-      }
-      break;
-    case VPX_IMG_FMT_I420:
-      for (webrtc::DesktopRegion::Iterator r(*updated_region); !r.IsAtEnd();
-           r.Advance()) {
-        webrtc::DesktopRect rect = GetRowAlignedRect(r.rect(), image_->d_w);
-        int rgb_offset =
-            rgb_stride * rect.top() + rect.left() * kBytesPerRgbPixel;
-        int y_offset = y_stride * rect.top() + rect.left();
-        int uv_offset = uv_stride * rect.top() / 2 + rect.left() / 2;
-        libyuv::ARGBToI420(UNSAFE_TODO(rgb_data + rgb_offset), rgb_stride,
-                           UNSAFE_TODO(y_data + y_offset), y_stride,
-                           UNSAFE_TODO(u_data + uv_offset), uv_stride,
-                           UNSAFE_TODO(v_data + uv_offset), uv_stride,
-                           rect.width(), rect.height());
-      }
-      break;
-    default:
-      NOTREACHED();
+void WebrtcVideoEncoderVpx::SetCodecActiveMap(bool enable) {
+  if (!enable && !codec_active_map_enabled_) {
+    return;
+  }
+  active_map_.active_map = enable ? active_map_data_.data() : nullptr;
+  if (vpx_codec_control(codec_.get(), VP8E_SET_ACTIVEMAP, &active_map_)) {
+    LOG(ERROR) << (enable ? "Unable to apply active map"
+                          : "Unable to disable active map");
+  } else {
+    codec_active_map_enabled_ = enable;
   }
 }
 

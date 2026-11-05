@@ -21,6 +21,7 @@
 #include "third_party/lens_server_proto/lens_overlay_image_crop.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_request_id.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_server.pb.h"
+#include "third_party/lens_server_proto/lens_overlay_visual_search_interaction_data.pb.h"
 #include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
 #include "third_party/omnibox_proto/model_mode.pb.h"
 #include "third_party/omnibox_proto/tool_mode.pb.h"
@@ -89,10 +90,14 @@ class ContextualSearchContextController {
 
   // The possible search url types.
   enum class SearchUrlType {
-    // The standard "All" tab search experience
+    // The Lens results URL (`udm=24` or `udm=26`), sending a single file as
+    // `vsrid`.
     kStandard = 0,
     // The AIM search type.
     kAim = 1,
+    // The Search results page, with no `udm`. Attached context is always sent
+    // as `cinpts`.
+    kSrp = 2,
   };
 
   // Struct containing information needed to construct a search url.
@@ -244,11 +249,30 @@ class ContextualSearchContextController {
   virtual const FileInfo* GetFileInfo(
       const base::UnguessableToken& file_token) = 0;
 
+  // Marks the file associated with `file_token` as superceded and returns a
+  // pointer to its FileInfo, or nullptr if not found.
+  virtual const FileInfo* MarkFileSuperceded(
+      const base::UnguessableToken& file_token) = 0;
+
   // Return the file infos for all files in the request.
   virtual std::vector<raw_ptr<const FileInfo>> GetFileInfoList() = 0;
 
+  // Sets the multi-login account index to use when fetching 1P auth headers.
+  virtual void SetAuthUserIndex(size_t auth_user_index) = 0;
+
   // Returns a weak pointer to the context controller.
   virtual base::WeakPtr<ContextualSearchContextController> AsWeakPtr() = 0;
+
+  // Returns the search session ID from cluster info, or empty string if not
+  // available.
+  virtual std::string search_session_id() const = 0;
+
+  // Constructs the visual search interaction data for the given file token, if
+  // available.
+  virtual std::optional<lens::LensOverlayVisualSearchInteractionData>
+  GetVisualSearchInteractionData(
+      const base::UnguessableToken& file_token,
+      const std::optional<std::string>& query_text) = 0;
 };
 
 }  // namespace contextual_search

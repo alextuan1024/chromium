@@ -15,7 +15,6 @@
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "chrome/browser/sync/test/integration/updated_progress_marker_checker.h"
 #include "chrome/browser/sync/test/integration/wallet_helper.h"
 #include "chrome/browser/webdata_services/web_data_service_factory.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
@@ -32,7 +31,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/engine/loopback_server/persistent_tombstone_entity.h"
 #include "components/sync/protocol/autofill_specifics.pb.h"
 #include "components/sync/protocol/data_type_state.pb.h"
@@ -123,33 +121,13 @@ GetCreditCardCloudTokenData(
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
-// Waits until local changes are committed or an auth error is encountered.
-class TestForAuthError : public UpdatedProgressMarkerChecker {
- public:
-  explicit TestForAuthError(syncer::SyncServiceImpl* service)
-      : UpdatedProgressMarkerChecker(service) {}
-
-  // StatusChangeChecker implementation.
-  bool IsExitConditionSatisfied(std::ostream* os) override {
-    *os << "Waiting for auth error";
-    return service()->GetAuthError() !=
-               GoogleServiceAuthError::AuthErrorNone() ||
-           UpdatedProgressMarkerChecker::IsExitConditionSatisfied(os);
-  }
-};
-
 }  // namespace
 
 class SingleClientWalletSyncTest
     : public SyncTest,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientWalletSyncTest() : SyncTest(SINGLE_CLIENT) {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitAndEnableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
-    }
-  }
+  SingleClientWalletSyncTest() : SyncTest(SINGLE_CLIENT) {}
   SingleClientWalletSyncTest(const SingleClientWalletSyncTest&) = delete;
   SingleClientWalletSyncTest& operator=(const SingleClientWalletSyncTest&) =
       delete;
@@ -206,7 +184,6 @@ class SingleClientWalletSyncTest
         .Wait();
   }
 
-  base::test::ScopedFeatureList scoped_feature_list_;
   base::HistogramTester histogram_tester_;
 };
 

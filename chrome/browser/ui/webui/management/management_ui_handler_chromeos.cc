@@ -28,9 +28,7 @@
 #include "chrome/browser/browser_process_platform_part_ash.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager_factory.h"
-#include "chrome/browser/chromeos/reporting/metric_reporting_prefs.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
-#include "chrome/browser/enterprise/reporting/prefs.h"
 #include "chrome/browser/net/stub_resolver_config_reader.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/policy/networking/policy_cert_service.h"
@@ -38,14 +36,15 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/management/management_ui_constants.h"
 #include "chrome/browser/ui/webui/management/management_ui_handler_chromeos.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/metrics_reporting/metric_reporting_prefs.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "chromeos/ash/components/network/proxy/proxy_config_handler.h"
 #include "chromeos/ash/components/network/proxy/ui_proxy_config_service.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/enterprise/browser/reporting/common_pref_names.h"
+#include "components/enterprise/browser/reporting/prefs.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_manager.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/policy/policy_constants.h"
@@ -212,7 +211,7 @@ void AddDeviceReportingInfo(base::ListValue* report_sources,
                                        &device_report_xdr_events);
   if (collector->IsReportingActivityTimes() || report_device_peripherals ||
       report_audio_status || device_report_xdr_events ||
-      profile->GetPrefs()->GetBoolean(::prefs::kInsightsExtensionEnabled)) {
+      profile->GetPrefs()->GetBoolean(ash::prefs::kInsightsExtensionEnabled)) {
     AddDeviceReportingElement(report_sources, kManagementReportActivityTimes,
                               DeviceReportingType::kDeviceActivity);
   } else {
@@ -222,7 +221,7 @@ void AddDeviceReportingInfo(base::ListValue* report_sources,
     }
   }
   if (collector->IsReportingNetworkData() ||
-      profile->GetPrefs()->GetBoolean(::prefs::kInsightsExtensionEnabled)) {
+      profile->GetPrefs()->GetBoolean(ash::prefs::kInsightsExtensionEnabled)) {
     AddDeviceReportingElement(report_sources, kManagementReportNetworkData,
                               DeviceReportingType::kDevice);
   }
@@ -793,12 +792,13 @@ void ManagementUIHandlerChromeOS::HandleGetLocalTrustRootsInfo(
 
 std::u16string ManagementUIHandlerChromeOS::GetFilesUploadToCloudInfo(
     Profile* profile) {
+  const PrefService& profile_prefs = *profile->GetPrefs();
   FileSaveDestination camera_destination =
-      policy::local_user_files::GetCameraDestination(profile);
+      policy::local_user_files::GetCameraDestination(profile_prefs);
   FileSaveDestination download_destination =
-      policy::local_user_files::GetDownloadsDestination(profile);
+      policy::local_user_files::GetDownloadsDestination(profile_prefs);
   FileSaveDestination screenshot_destination =
-      policy::local_user_files::GetScreenCaptureDestination(profile);
+      policy::local_user_files::GetScreenCaptureDestination(profile_prefs);
   const bool is_camera_gdrive =
       camera_destination == FileSaveDestination::kGoogleDrive;
   const bool is_downloads_gdrive =

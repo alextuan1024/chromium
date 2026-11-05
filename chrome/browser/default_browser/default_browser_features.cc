@@ -9,6 +9,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/notreached.h"
 #include "build/build_config.h"
 #include "chrome/common/webui_url_constants.h"
 #include "url/gurl.h"
@@ -19,26 +20,62 @@
 #include "base/i18n/win/preferred_languages.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/win/windows_version.h"
 #include "chrome/browser/browser_process.h"
 #endif
 
 namespace default_browser {
 
-bool IsDefaultBrowserFrameworkEnabled() {
-  return base::FeatureList::IsEnabled(kDefaultBrowserFramework);
-}
+namespace {
 
-bool IsDefaultBrowserChangedOsNotificationEnabled() {
+bool IsWin11OrGreater() {
 #if BUILDFLAG(IS_WIN)
-  return base::FeatureList::IsEnabled(kDefaultBrowserChangedOsNotification);
+  return base::win::GetVersion() >= base::win::Version::WIN11;
 #else
   return false;
 #endif
 }
 
+// Whether `setter_type` can run on this platform. The guided setters work
+// with the Windows 11 Settings "Default apps" page. They are built on every
+// desktop platform, so this check is what keeps them from running elsewhere.
+bool IsSetterTypeSupported(DefaultBrowserSetterType setter_type) {
+  switch (setter_type) {
+    case DefaultBrowserSetterType::kShellIntegration:
+      return true;
+    case DefaultBrowserSetterType::kVisualGuide:
+    case DefaultBrowserSetterType::kAnnotatedShellIntegration:
+      return IsWin11OrGreater();
+  }
+  NOTREACHED();
+}
+
+}  // namespace
+
+bool IsDefaultBrowserChangedOsNotificationEnabled() {
+  return IsWin11OrGreater() &&
+         base::FeatureList::IsEnabled(kDefaultBrowserChangedOsNotification);
+}
+
 bool IsDefaultBrowserPromptSurfacesEnabled() {
+  return IsWin11OrGreater() &&
+         base::FeatureList::IsEnabled(kDefaultBrowserPromptSurfaces);
+}
+
+bool IsPerformDefaultBrowserCheckValidationsEnabled() {
+  return IsWin11OrGreater() &&
+         base::FeatureList::IsEnabled(kPerformDefaultBrowserCheckValidations);
+}
+
+bool IsDefaultBrowserModalSticky() {
 #if BUILDFLAG(IS_WIN)
-  return base::FeatureList::IsEnabled(kDefaultBrowserPromptSurfaces);
+  // When the visual guided setter is selected, disable sticky modal because
+  // the visual guide opens its own dedicated full-tab stage.
+  if (GetDefaultBrowserSetterType() == DefaultBrowserSetterType::kVisualGuide) {
+    return false;
+  }
+  return base::FeatureList::IsEnabled(kDefaultBrowserStickyModal) &&
+         kIsSticky.Get();
 #else
   return false;
 #endif
@@ -59,6 +96,20 @@ DefaultBrowserPromptSurface GetDefaultBrowserPromptSurface() {
 
   DefaultBrowserPromptSurface prompt_surface =
       kDefaultBrowserPromptSurfaceParam.Get();
+  // Only query `kDefaultBrowserStickyModal` once the prompt surface has been
+  // determined to be a modal dialog, so that clients are only enrolled in the
+  // sticky modal experiment when they would be shown the modal dialog.
+  if ((prompt_surface ==
+           DefaultBrowserPromptSurface::kModalDialogWithSettingsIllustration ||
+       prompt_surface == DefaultBrowserPromptSurface::
+                             kModalDialogWithoutSettingsIllustration) &&
+      base::FeatureList::IsEnabled(kDefaultBrowserStickyModal)) {
+    prompt_surface =
+        kWithSettingsIllustration.Get()
+            ? DefaultBrowserPromptSurface::kModalDialogWithSettingsIllustration
+            : DefaultBrowserPromptSurface::
+                  kModalDialogWithoutSettingsIllustration;
+  }
 #if BUILDFLAG(IS_WIN)
   // The modal prompt surface with settings illustration features an OS-level
   // diagram of Windows Settings with text in English. Because the visual UI
@@ -102,7 +153,12 @@ DefaultBrowserSetterType GetDefaultBrowserSetterType() {
     return DefaultBrowserSetterType::kShellIntegration;
   }
 
-  return kDefaultBrowserSetterParam.Get();
+  const DefaultBrowserSetterType setter_type = kDefaultBrowserSetterParam.Get();
+  // Fall back to the setter that runs everywhere.
+  if (!IsSetterTypeSupported(setter_type)) {
+    return DefaultBrowserSetterType::kShellIntegration;
+  }
+  return setter_type;
 }
 
 GURL GetDefaultBrowserVisualGuideURL() {
@@ -113,9 +169,7 @@ GURL GetDefaultBrowserVisualGuideURL() {
 #endif
 }
 
-BASE_FEATURE(kDefaultBrowserFramework, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kDefaultBrowserPromptSurfaces, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDefaultBrowserPromptSurfaces, base::FEATURE_ENABLED_BY_DEFAULT);
 
 constexpr inline auto kDefaultBrowserPromptSurfaceOptions =
     std::to_array<base::FeatureParam<DefaultBrowserPromptSurface>::Option>({
@@ -127,18 +181,28 @@ constexpr inline auto kDefaultBrowserPromptSurfaceOptions =
          "modal_dialog_without_settings_illustration"},
     });
 
-BASE_FEATURE_ENUM_PARAM(DefaultBrowserPromptSurface,
-                        kDefaultBrowserPromptSurfaceParam,
-                        &kDefaultBrowserPromptSurfaces,
-                        "prompt_surface",
-                        DefaultBrowserPromptSurface::kInfobar,
-                        kDefaultBrowserPromptSurfaceOptions);
+BASE_FEATURE_ENUM_PARAM(
+    DefaultBrowserPromptSurface,
+    kDefaultBrowserPromptSurfaceParam,
+    &kDefaultBrowserPromptSurfaces,
+    "prompt_surface",
+    DefaultBrowserPromptSurface::kModalDialogWithSettingsIllustration,
+    kDefaultBrowserPromptSurfaceOptions);
+
+BASE_FEATURE(kDefaultBrowserStickyModal, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(bool, kIsSticky, &kDefaultBrowserStickyModal, true);
+
+BASE_FEATURE_PARAM(bool,
+                   kWithSettingsIllustration,
+                   &kDefaultBrowserStickyModal,
+                   false);
 
 BASE_FEATURE(kPerformDefaultBrowserCheckValidations,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kDefaultBrowserChangedOsNotification,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kDefaultBrowserSetterSelection, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -147,7 +211,9 @@ BASE_FEATURE(kVisualGuidedSetterDocking, base::FEATURE_DISABLED_BY_DEFAULT);
 constexpr inline auto kDefaultBrowserSetterSelectionOption =
     std::to_array<base::FeatureParam<DefaultBrowserSetterType>::Option>(
         {{DefaultBrowserSetterType::kShellIntegration, "shell_integration"},
-         {DefaultBrowserSetterType::kVisualGuide, "visual_guide"}});
+         {DefaultBrowserSetterType::kVisualGuide, "visual_guide"},
+         {DefaultBrowserSetterType::kAnnotatedShellIntegration,
+          "annotated_shell_integration"}});
 
 BASE_FEATURE_ENUM_PARAM(DefaultBrowserSetterType,
                         kDefaultBrowserSetterParam,
@@ -161,11 +227,11 @@ BASE_FEATURE_PARAM(std::string,
                    kDefaultBrowserVisualGuideUrlParam,
                    &kDefaultBrowserSetterSelection,
                    chrome::kChromeUIDefaultBrowserVisualGuidedSetterURL);
+#endif
 
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kFindSettingsTimeout,
                    &kDefaultBrowserSetterSelection,
                    base::Seconds(5));
-#endif
 
 }  // namespace default_browser

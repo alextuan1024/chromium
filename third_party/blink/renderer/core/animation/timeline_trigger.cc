@@ -135,8 +135,7 @@ void TimelineTrigger::HandlePostTripAdd(Animation* animation,
   if (old_behavior_for_current_state != new_behavior_for_current_state) {
     // We are retroactively activating or deactivating the animation. The same
     // restrictions on activation/deactivation should apply.
-    base::AutoReset<bool> is_activating_or_deactivating(
-        &is_activating_or_deactivating_, true);
+    base::AutoReset<bool> forbid_updates(&forbid_behavior_map_updates_, true);
     PerformBehavior(*animation, *new_behavior_for_current_state,
                     /*async_event_time=*/std::nullopt, exception_state);
     animation->UpdateIfNecessary();
@@ -229,27 +228,49 @@ void TimelineTrigger::CreateCompositorTrigger() {
 }
 
 void TimelineTrigger::NotifyActivated(base::TimeTicks activate_time) {
-  state_ = State::kPrimary;
-  DCHECK(GetRange());
-  // The trigger typically gets its state from the underlying trigger ranges,
-  // so the trigger's state reflects the state of its underlying ranges.
-  // However, when triggering from the comppositor, the compositor determines
-  // the state of the trigger. So when updating to the compositor trigger state,
-  // the underlying ranges should also be kept in sync by having their state
-  // updated.
-  // Note that we only support a single range currently, so we only need to
-  // update the state for that single range.
-  GetRange()->SetState(state_);
-
-  PerformActivate(activate_time - base::TimeTicks());
+  pending_compositor_notifications_.push_back(AnimationTriggerEvent(
+      compositor_trigger_->id(), AnimationTriggerEvent::Type::kActivate,
+      activate_time));
 }
 
 void TimelineTrigger::NotifyDeactivated(base::TimeTicks deactivate_time) {
-  state_ = State::kInverse;
-  DCHECK(GetRange());
-  GetRange()->SetState(state_);
+  pending_compositor_notifications_.push_back(AnimationTriggerEvent(
+      compositor_trigger_->id(), AnimationTriggerEvent::Type::kDeactivate,
+      deactivate_time));
+}
 
-  PerformDeactivate(deactivate_time - base::TimeTicks());
+void TimelineTrigger::ExecuteCompositorNotification(
+    const AnimationTriggerEvent& event) {
+  const bool activate = event.type == AnimationTriggerEvent::Type::kActivate;
+  state_ = activate ? State::kPrimary : State::kInverse;
+  DCHECK(GetRange());
+  // The trigger typically gets its state from the underlying trigger ranges,
+  // but when triggering from the compositor, the compositor determines the
+  // state of the trigger, so the range is kept in sync with it. Only a single
+  // range is supported currently.
+  GetRange()->SetState(state_);
+  const base::TimeDelta time = event.time - base::TimeTicks();
+  if (activate) {
+    PerformActivate(time);
+  } else {
+    PerformDeactivate(time);
+  }
+}
+
+void TimelineTrigger::ExecutePendingCompositorNotifications() {
+  // The notifications reach the main thread at the start of a main frame,
+  // before "update animations and send events". Syncing them after that step
+  // lets the finish event listeners and finished promise callbacks of an
+  // animation that finished before the compositor observed the event run
+  // before the trigger acts on the animation (e.g. replays it).
+  // TODO(crbug.com/451238244): If the compositor acted on an animation shortly
+  // before its end, "update animations and send events" can report a finish
+  // that the trigger's action preempted.
+  Vector<AnimationTriggerEvent> notifications;
+  notifications.swap(pending_compositor_notifications_);
+  for (const auto& notification : notifications) {
+    ExecuteCompositorNotification(notification);
+  }
 }
 
 }  // namespace blink

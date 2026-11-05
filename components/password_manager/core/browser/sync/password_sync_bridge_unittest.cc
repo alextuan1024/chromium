@@ -363,12 +363,12 @@ class MockPasswordStoreSync : public PasswordStoreSync {
               GetMetadataStore,
               (),
               (override));
-  MOCK_METHOD(bool, IsAccountStore, (), (const override));
+  MOCK_METHOD(bool, IsAccountStore, (), (const, override));
   MOCK_METHOD(bool, DeleteAndRecreateDatabaseFile, (), (override));
   MOCK_METHOD(std::optional<bool>,
               WereUndecryptableLoginsDeleted,
               (),
-              (const override));
+              (const, override));
   MOCK_METHOD(void, ClearWereUndecryptableLoginsDeleted, (), (override));
 };
 
@@ -1561,6 +1561,37 @@ TEST_F(PasswordSyncBridgeAccountStoreTest,
   EXPECT_CALL(*mock_sync_enabled_or_disabled_cb(), Run());
 
   bridge()->ApplyDisableSyncChanges(bridge()->CreateMetadataChangeList());
+}
+
+TEST_F(PasswordSyncBridgeTest, ShouldNotNotifyOnSyncChange) {
+  // New password data becoming available due to an incoming sync change should
+  // *not* trigger the callback. This is mainly for performance reasons: In
+  // practice, this callback will cause all PasswordFormManagers to re-query
+  // from the password store, which can be expensive.
+  EXPECT_CALL(*mock_sync_enabled_or_disabled_cb(), Run()).Times(0);
+
+  syncer::EntityChangeList entity_changes;
+  entity_changes.push_back(syncer::EntityChange::CreateAdd(
+      /*storage_key=*/"",
+      SpecificsToEntity(CreateSpecificsWithSignonRealm(kSignonRealm1))));
+
+  std::optional<syncer::ModelError> error =
+      bridge()->ApplyIncrementalSyncChanges(
+          bridge()->CreateMetadataChangeList(), std::move(entity_changes));
+  ASSERT_FALSE(error);
+}
+
+TEST_F(PasswordSyncBridgeTest, ShouldNotifyOnSyncEnable) {
+  EXPECT_CALL(*mock_sync_enabled_or_disabled_cb(), Run());
+
+  syncer::EntityChangeList initial_entity_data;
+  initial_entity_data.push_back(syncer::EntityChange::CreateAdd(
+      /*storage_key=*/"",
+      SpecificsToEntity(CreateSpecificsWithSignonRealm(kSignonRealm1))));
+
+  std::optional<syncer::ModelError> error = bridge()->MergeFullSyncData(
+      bridge()->CreateMetadataChangeList(), std::move(initial_entity_data));
+  ASSERT_FALSE(error);
 }
 
 TEST_F(PasswordSyncBridgeTest, ShouldNotifyOnSyncDisableIfProfileStore) {

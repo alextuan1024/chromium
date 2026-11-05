@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {getTrustedScriptURL} from 'chrome://resources/js/static_types.js';
+
 let instance: WindowProxy|null = null;
+let lazyLoadPromise: Promise<void>|null = null;
 
 /** Abstracts some builtin JS functions to mock them in tests. */
 export class WindowProxy {
@@ -42,7 +45,15 @@ export class WindowProxy {
     return window.matchMedia(query);
   }
 
+  /**
+   * Returns milliseconds elapsed since navigation start (`performance.now()`).
+   */
   now(): number {
+    return performance.now();
+  }
+
+  /** Returns milliseconds elapsed since the Unix epoch (`Date.now()`). */
+  currentTimeMs(): number {
     return Date.now();
   }
 
@@ -51,6 +62,23 @@ export class WindowProxy {
     return new Promise<void>(resolve => {
       requestIdleCallback(() => resolve(), {timeout: 500});
     });
+  }
+
+  /**
+   * Adds a <script> tag that holds the lazy loaded code, if not already
+   * added, and returns a promise that resolves when it has loaded.
+   */
+  ensureLazyLoaded(): Promise<void> {
+    if (!lazyLoadPromise) {
+      const script = document.createElement('script');
+      script.type = 'module';
+      script.src = getTrustedScriptURL`./lazy_load.js`;
+      document.body.appendChild(script);
+      lazyLoadPromise = new Promise<void>(resolve => {
+        script.onload = () => resolve();
+      });
+    }
+    return lazyLoadPromise;
   }
 
   /**

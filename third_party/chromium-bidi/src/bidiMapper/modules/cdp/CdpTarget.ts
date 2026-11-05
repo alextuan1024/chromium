@@ -54,6 +54,8 @@ interface FetchStages {
 }
 export class CdpTarget {
   readonly #id: Protocol.Target.TargetID;
+  readonly #targetType: Protocol.Target.TargetInfo['type'];
+  readonly #parentFrameId?: Protocol.Page.FrameId;
   readonly userContext: Browser.UserContext;
   readonly #cdpClient: CdpClient;
   readonly #browserCdpClient: CdpClient;
@@ -101,7 +103,9 @@ export class CdpTarget {
     configStorage: ContextConfigStorage,
     userContext: Browser.UserContext,
     defaultUserAgent: string,
+    targetType: Protocol.Target.TargetInfo['type'],
     logger?: LoggerFn,
+    parentFrameId?: Protocol.Page.FrameId,
   ): CdpTarget {
     const cdpTarget = new CdpTarget(
       targetId,
@@ -116,7 +120,9 @@ export class CdpTarget {
       networkStorage,
       userContext,
       defaultUserAgent,
+      targetType,
       logger,
+      parentFrameId,
     );
 
     LogManager.create(cdpTarget, realmStorage, eventManager, logger);
@@ -143,11 +149,15 @@ export class CdpTarget {
     networkStorage: NetworkStorage,
     userContext: Browser.UserContext,
     defaultUserAgent: string,
+    targetType: Protocol.Target.TargetInfo['type'],
     logger: LoggerFn | undefined,
+    parentFrameId?: Protocol.Page.FrameId,
   ) {
     this.#defaultUserAgent = defaultUserAgent;
     this.userContext = userContext;
     this.#id = targetId;
+    this.#targetType = targetType;
+    this.#parentFrameId = parentFrameId;
     this.#cdpClient = cdpClient;
     this.#browserCdpClient = browserCdpClient;
     this.#parentCdpClient = parentCdpClient;
@@ -158,6 +168,32 @@ export class CdpTarget {
     this.#browsingContextStorage = browsingContextStorage;
     this.contextConfigStorage = configStorage;
     this.#logger = logger;
+  }
+
+  /**
+   * Top-level page target (`page` or DevTools `other`); excludes OOPIFs and workers.
+   */
+  static isPageTarget(targetType: Protocol.Target.TargetInfo['type']): boolean {
+    // The only `other` target kept attached is DevTools.
+    return targetType === 'page' || targetType === 'other';
+  }
+
+  /**
+   * Document frame target (`page`, DevTools `other`, or `iframe`); excludes workers.
+   */
+  static isFrameTarget(
+    targetType: Protocol.Target.TargetInfo['type'],
+  ): boolean {
+    return CdpTarget.isPageTarget(targetType) || targetType === 'iframe';
+  }
+
+  get #isPageTarget(): boolean {
+    return CdpTarget.isPageTarget(this.#targetType);
+  }
+
+  /** Dedicated workers do not expose the CDP Fetch domain. */
+  get #isFetchSupported(): boolean {
+    return this.#targetType !== 'worker';
   }
 
   /** Returns a deferred that resolves when the target is unblocked. */
@@ -208,19 +244,24 @@ export class CdpTarget {
       this.userContext,
     );
 
-    const results = await Promise.allSettled([
-      this.#cdpClient.sendCommand('Page.enable', {
-        enableFileChooserOpenedEvent: true,
-      }),
-      ...(this.#ignoreFileDialog()
-        ? []
-        : [
-            this.#cdpClient.sendCommand('Page.setInterceptFileChooserDialog', {
-              enabled: true,
-              // The intercepted dialog should be canceled.
-              cancel: true,
-            }),
-          ]),
+    const promises: Promise<unknown>[] = [];
+
+    if (CdpTarget.isFrameTarget(this.#targetType)) {
+      // Page domain is only supported on frame targets.
+      promises.push(
+        this.#cdpClient.sendCommand('Page.enable', {
+          enableFileChooserOpenedEvent: true,
+        }),
+      );
+      if (!this.#ignoreFileDialog()) {
+        promises.push(
+          this.#cdpClient.sendCommand('Page.setInterceptFileChooserDialog', {
+            enabled: true,
+            // The intercepted dialog should be canceled.
+            cancel: true,
+          }),
+        );
+      }
       // There can be some existing frames in the target, if reconnecting to an
       // existing browser instance, e.g. via Puppeteer. Need to restore the browsing
       // contexts for the frames to correctly handle further events, like
@@ -229,23 +270,30 @@ export class CdpTarget {
       // prepare the tree before the events (e.g. Runtime.executionContextCreated) start
       // coming.
       // https://github.com/GoogleChromeLabs/chromium-bidi/issues/2282
-      this.#cdpClient
-        .sendCommand('Page.getFrameTree')
-        .then((frameTree) => this.#restoreFrameTreeState(frameTree.frameTree)),
+      promises.push(
+        this.#cdpClient
+          .sendCommand('Page.getFrameTree')
+          .then((frameTree) =>
+            this.#restoreFrameTreeState(frameTree.frameTree),
+          ),
+        this.#cdpClient.sendCommand('Page.setLifecycleEventsEnabled', {
+          enabled: true,
+        }),
+      );
+    }
+
+    promises.push(
       this.#cdpClient.sendCommand('Runtime.enable'),
-      this.#cdpClient.sendCommand('Page.setLifecycleEventsEnabled', {
-        enabled: true,
-      }),
       // Enabling CDP Network domain is required for navigation detection:
       // https://github.com/GoogleChromeLabs/chromium-bidi/issues/2856.
-      this.#cdpClient
-        .sendCommand('Network.enable', {
-          // If `googDisableNetworkDurableMessages` flag is set, do not enable durable
-          // messages.
-          enableDurableMessages: config.disableNetworkDurableMessages !== true,
-          maxTotalBufferSize: MAX_TOTAL_COLLECTED_SIZE,
-        })
-        .then(() => this.toggleNetworkIfNeeded()),
+      this.#cdpClient.sendCommand('Network.enable', {
+        // If `googDisableNetworkDurableMessages` flag is set, do not enable durable
+        // messages.
+        enableDurableMessages: config.disableNetworkDurableMessages !== true,
+        maxTotalBufferSize: MAX_TOTAL_COLLECTED_SIZE,
+      }),
+      // Schedule network and Fetch configuration before unpausing the target so initial popup requests are intercepted.
+      this.toggleNetworkIfNeeded(),
       this.#cdpClient.sendCommand('Target.setAutoAttach', {
         autoAttach: true,
         waitForDebuggerOnStart: true,
@@ -254,12 +302,20 @@ export class CdpTarget {
       this.#updateWindowId(),
       this.#setUserContextConfig(config),
       this.#initAndEvaluatePreloadScripts(),
-      this.#cdpClient.sendCommand('Runtime.runIfWaitingForDebugger'),
-      // Resume tab execution as well if it was paused by the debugger.
-      this.#parentCdpClient.sendCommand('Runtime.runIfWaitingForDebugger'),
       this.toggleDeviceAccessIfNeeded(),
       this.togglePreloadIfNeeded(),
-    ]);
+      this.#cdpClient.sendCommand('Runtime.runIfWaitingForDebugger'),
+    );
+
+    if (this.#isPageTarget) {
+      // For top-level page targets, `#parentCdpClient` is the `tab` target session,
+      // which was left paused in `CdpTargetManager` to be resumed by the page target.
+      promises.push(
+        this.#parentCdpClient.sendCommand('Runtime.runIfWaitingForDebugger'),
+      );
+    }
+
+    const results = await Promise.allSettled(promises);
     for (const result of results) {
       if (result instanceof Error) {
         // Ignore errors during configuring targets, just log them.
@@ -276,31 +332,95 @@ export class CdpTarget {
     });
   }
 
-  #restoreFrameTreeState(frameTree: Protocol.Page.FrameTree) {
+  async #restoreFrameTreeState(frameTree: Protocol.Page.FrameTree) {
     const frame = frameTree.frame;
-    const maybeContext = this.#browsingContextStorage.findContext(frame.id);
-    if (maybeContext !== undefined) {
-      // Restoring parent of already known browsing context. This means the target is
-      // OOPiF and the BiDi session was connected to already existing browser instance.
+    // The root of a target's frame tree must be the target's own frame.
+    if (frame.id !== this.#id) {
+      this.#logger?.(LogType.debugError)?.(
+        `Ignoring getFrameTree root ${frame.id} for target ${this.#id}`,
+      );
+      return;
+    }
+    const rootContext = this.#browsingContextStorage.findContext(frame.id);
+    // Only restore state for a root context hosted by this target.
+    if (rootContext?.cdpTarget !== this) {
+      this.#logger?.(LogType.debugError)?.(
+        `Ignoring getFrameTree for ${frame.id}: context is not hosted by target ${this.#id}`,
+      );
+      return;
+    }
+    // Restoring parent of already known browsing context. This means the target is
+    // OOPiF and the BiDi session was connected to already existing browser instance.
+    const parentFrameId = this.#parentFrameId ?? frame.parentId;
+    if (
+      this.#targetType === 'iframe' &&
+      rootContext.parentId === null &&
+      parentFrameId !== null &&
+      parentFrameId !== undefined
+    ) {
+      let parentBrowsingContext =
+        this.#browsingContextStorage.findContext(parentFrameId);
       if (
-        maybeContext.parentId === null &&
-        frame.parentId !== null &&
-        frame.parentId !== undefined
+        parentBrowsingContext === undefined &&
+        this.#parentCdpClient.sessionId !== undefined
       ) {
-        maybeContext.parentId = frame.parentId;
+        // On reconnect, the browser can attach an existing OOPIF before the
+        // embedding target finishes `Page.getFrameTree` for nested frames.
+        await this.#browsingContextStorage.findContextBySession(
+          this.#parentCdpClient.sessionId,
+        )?.cdpTarget.unblocked;
+        if (
+          this.#browsingContextStorage.findContext(frame.id) !== rootContext ||
+          rootContext.cdpTarget !== this
+        ) {
+          return;
+        }
+        parentBrowsingContext =
+          this.#browsingContextStorage.findContext(parentFrameId);
+      }
+      // Only attach to an existing parent context hosted by the embedding session.
+      if (
+        rootContext.parentId === null &&
+        parentBrowsingContext !== undefined &&
+        parentBrowsingContext.cdpTarget !== this &&
+        parentBrowsingContext.cdpTarget.cdpClient === this.#parentCdpClient
+      ) {
+        rootContext.parentId = parentFrameId;
+      } else if (
+        rootContext.parentId === null &&
+        parentBrowsingContext !== undefined
+      ) {
+        this.#logger?.(LogType.debugError)?.(
+          `Ignoring getFrameTree parent ${parentFrameId} for ${frame.id}: parent session does not host ${parentFrameId}`,
+        );
       }
     }
-    if (maybeContext === undefined && frame.parentId !== undefined) {
+    frameTree.childFrames?.map((childFrameTree) =>
+      this.#restoreChildFrameTreeState(childFrameTree, rootContext),
+    );
+  }
+
+  #restoreChildFrameTreeState(
+    frameTree: Protocol.Page.FrameTree,
+    parentBrowsingContext: BrowsingContextImpl,
+  ) {
+    const frame = frameTree.frame;
+    // A child frame entry must reference the enclosing parent in the tree.
+    if (frame.parentId !== parentBrowsingContext.id) {
+      this.#logger?.(LogType.debugError)?.(
+        `Ignoring getFrameTree child ${frame.id}: parentId ${frame.parentId} does not match enclosing frame ${parentBrowsingContext.id}`,
+      );
+      return;
+    }
+    let context = this.#browsingContextStorage.findContext(frame.id);
+    if (context === undefined) {
       // Restore not yet known nested frames. The top-level frame is created when the
       // target is attached.
-      const parentBrowsingContext = this.#browsingContextStorage.getContext(
-        frame.parentId,
-      );
-      BrowsingContextImpl.create(
+      context = BrowsingContextImpl.create(
         frame.id,
-        frame.parentId,
+        parentBrowsingContext.id,
         this.userContext,
-        parentBrowsingContext.cdpTarget,
+        this,
         this.#eventManager,
         this.#browsingContextStorage,
         this.#realmStorage,
@@ -309,13 +429,26 @@ export class CdpTarget {
         undefined,
         this.#logger,
       );
+    } else if (
+      // Never re-parent or traverse into an existing context owned by another
+      // target or attached under a different parent.
+      context.cdpTarget !== this ||
+      context.parentId !== parentBrowsingContext.id
+    ) {
+      this.#logger?.(LogType.debugError)?.(
+        `Ignoring getFrameTree child ${frame.id}: context is already bound to target ${context.cdpTarget.id} and parent ${context.parentId}`,
+      );
+      return;
     }
-    frameTree.childFrames?.map((frameTree) =>
-      this.#restoreFrameTreeState(frameTree),
+    frameTree.childFrames?.map((childFrameTree) =>
+      this.#restoreChildFrameTreeState(childFrameTree, context),
     );
   }
 
-  async toggleFetchIfNeeded() {
+  async toggleFetchIfNeeded(): Promise<void> {
+    if (!this.#isFetchSupported) {
+      return;
+    }
     const stages = this.#networkStorage.getInterceptionStages(this.topLevelId);
 
     if (
@@ -387,10 +520,9 @@ export class CdpTarget {
     }
   }
 
-  async toggleSetCacheDisabled(disable?: boolean) {
-    const defaultCacheDisabled =
-      this.#networkStorage.defaultCacheBehavior === 'bypass';
-    const cacheDisabled = disable ?? defaultCacheDisabled;
+  async toggleSetCacheDisabled(): Promise<void> {
+    const cacheDisabled =
+      this.#networkStorage.getCacheBehavior(this.topLevelId) === 'bypass';
 
     if (this.#cacheDisableState === cacheDisabled) {
       return;
@@ -410,6 +542,10 @@ export class CdpTarget {
   }
 
   async toggleDeviceAccessIfNeeded(): Promise<void> {
+    if (!CdpTarget.isFrameTarget(this.#targetType)) {
+      // DeviceAccess domain is only supported on frame targets.
+      return;
+    }
     const enabled = this.isSubscribedTo(
       Bluetooth.EventNames.RequestDevicePromptUpdated,
     );
@@ -432,6 +568,10 @@ export class CdpTarget {
   }
 
   async togglePreloadIfNeeded(): Promise<void> {
+    if (!CdpTarget.isFrameTarget(this.#targetType)) {
+      // Preload domain is only supported on frame targets.
+      return;
+    }
     const enabled = this.isSubscribedTo(
       Speculation.EventNames.PrefetchStatusUpdated,
     );
@@ -533,9 +673,15 @@ export class CdpTarget {
     }
   }
 
-  async toggleNetwork() {
+  async toggleNetwork(): Promise<void> {
     // TODO: respect the data collectors once CDP Network domain is enabled on-demand:
     // const networkEnable = this.#networkStorage.getCollectorsForBrowsingContext(this.topLevelId).length > 0;
+
+    if (!this.#isFetchSupported) {
+      // Currently `Network.enable` is called unconditionally in `#unblock`, and
+      // this method only toggles the `Fetch` domain.
+      return;
+    }
 
     const stages = this.#networkStorage.getInterceptionStages(this.topLevelId);
     const fetchEnable = Object.values(stages).some((value) => value);
@@ -559,15 +705,22 @@ export class CdpTarget {
 
   /**
    * All the ProxyChannels from all the preload scripts of the given
-   * BrowsingContext.
+   * BrowsingContext and sandbox.
    */
-  getChannels(): ChannelProxy[] {
+  getChannels(sandbox?: string): ChannelProxy[] {
     return this.#preloadScriptStorage
-      .find()
+      .find({
+        targetId: this.topLevelId,
+      })
+      .filter((script) => script.sandbox === sandbox)
       .flatMap((script) => script.channels);
   }
 
   async #updateWindowId() {
+    if (!CdpTarget.isFrameTarget(this.#targetType)) {
+      // Only frame targets belong to a browser window.
+      return;
+    }
     const {windowId} = await this.#browserCdpClient.sendCommand(
       'Browser.getWindowForTarget',
       {targetId: this.id},
@@ -577,6 +730,10 @@ export class CdpTarget {
 
   /** Loads all top-level preload scripts. */
   async #initAndEvaluatePreloadScripts() {
+    if (!CdpTarget.isFrameTarget(this.#targetType)) {
+      // Preload scripts are only supported on frame targets.
+      return;
+    }
     await Promise.all(
       this.#preloadScriptStorage
         .find({
@@ -596,14 +753,20 @@ export class CdpTarget {
     screenArea: Emulation.ScreenArea | null,
     scrollbarType: 'classic' | 'overlay' | null = null,
     viewportMeta: true | null = null,
-  ) {
+    textLayoutMode: Emulation.TextLayoutMode | null = null,
+  ): Promise<void> {
+    if (!this.#isPageTarget) {
+      // Device metrics overrides are only supported on top-level page targets.
+      return;
+    }
     if (
       viewport === null &&
       devicePixelRatio === null &&
       screenOrientation === null &&
       screenArea === null &&
       scrollbarType === null &&
-      viewportMeta === null
+      viewportMeta === null &&
+      textLayoutMode === null
     ) {
       await this.cdpClient.sendCommand('Emulation.clearDeviceMetricsOverride');
       return;
@@ -621,6 +784,7 @@ export class CdpTarget {
         screenHeight: screenArea?.height,
         scrollbarType: scrollbarType === 'overlay' ? 'overlay' : 'default',
         viewportMeta: viewportMeta === true ? 'enable' : 'default',
+        textLayoutMode: textLayoutMode === 'mobile' ? 'mobile' : 'default',
       };
 
     await this.cdpClient.sendCommand(
@@ -637,44 +801,97 @@ export class CdpTarget {
   async #setUserContextConfig(config: ContextConfig) {
     const promises = [];
 
-    promises.push(
-      this.#cdpClient
-        .sendCommand('Page.setPrerenderingAllowed', {
-          isAllowed: !config.prerenderingDisabled,
-        })
-        .catch(() => {
-          // Ignore CDP errors, as the command is not supported by iframe targets or
-          // prerendered pages. Generic catch, as the error can vary between CdpClient
-          // implementations: Tab vs Puppeteer.
-        }),
-    );
-
-    if (
-      config.viewport !== undefined ||
-      config.devicePixelRatio !== undefined ||
-      config.screenOrientation !== undefined ||
-      config.screenArea !== undefined ||
-      config.scrollbarType !== undefined ||
-      config.viewportMeta !== undefined
-    ) {
+    if (this.#isPageTarget) {
+      // Prerendering, device metrics, and digital credentials only apply to top-level pages.
       promises.push(
-        this.setDeviceMetricsOverride(
-          config.viewport ?? null,
-          config.devicePixelRatio ?? null,
-          config.screenOrientation ?? null,
-          config.screenArea ?? null,
-          config.scrollbarType ?? null,
-          config.viewportMeta ?? null,
-        ).catch(() => {
-          // Ignore CDP errors, as the command is not supported by iframe targets. Generic
-          // catch, as the error can vary between CdpClient implementations: Tab vs
-          // Puppeteer.
-        }),
+        this.#cdpClient
+          .sendCommand('Page.setPrerenderingAllowed', {
+            isAllowed: !config.prerenderingDisabled,
+          })
+          .catch(() => {
+            // Ignore CDP errors, as the command is not supported by prerendered pages.
+            // Generic catch, as the error can vary between CdpClient implementations:
+            // Tab vs Puppeteer.
+          }),
       );
+
+      if (
+        config.viewport !== undefined ||
+        config.devicePixelRatio !== undefined ||
+        config.screenOrientation !== undefined ||
+        config.screenArea !== undefined ||
+        config.scrollbarType !== undefined ||
+        config.viewportMeta !== undefined ||
+        config.textLayoutMode !== undefined
+      ) {
+        promises.push(
+          this.setDeviceMetricsOverride(
+            config.viewport ?? null,
+            config.devicePixelRatio ?? null,
+            config.screenOrientation ?? null,
+            config.screenArea ?? null,
+            config.scrollbarType ?? null,
+            config.viewportMeta ?? null,
+            config.textLayoutMode ?? null,
+          ).catch(() => {
+            // Ignore CDP errors if the target does not support metrics override.
+          }),
+        );
+      }
+
+      if (config.digitalCredentialsBehavior) {
+        promises.push(
+          this.cdpClient
+            .sendCommand('DigitalCredentials.setVirtualWalletBehavior', {
+              action: config.digitalCredentialsBehavior.action,
+              protocol: config.digitalCredentialsBehavior.protocol,
+              response: config.digitalCredentialsBehavior.response,
+            })
+            .catch(() => {
+              // Ignore CDP errors, as the command is not supported on older browser versions.
+            }),
+        );
+      }
     }
 
-    if (config.geolocation !== undefined && config.geolocation !== null) {
-      promises.push(this.setGeolocationOverride(config.geolocation));
+    if (CdpTarget.isFrameTarget(this.#targetType)) {
+      // CSP bypass, geolocation, script execution, certificate errors, touch,
+      // and media emulation are only supported on frame targets.
+      if (config.bypassCSP !== undefined) {
+        promises.push(this.setBypassCSP(config.bypassCSP));
+      }
+
+      if (config.geolocation !== undefined && config.geolocation !== null) {
+        promises.push(this.setGeolocationOverride(config.geolocation));
+      }
+
+      if (config.scriptingEnabled !== undefined) {
+        promises.push(this.setScriptingEnabled(config.scriptingEnabled));
+      }
+
+      if (config.acceptInsecureCerts !== undefined) {
+        promises.push(
+          this.cdpClient.sendCommand('Security.setIgnoreCertificateErrors', {
+            ignore: config.acceptInsecureCerts,
+          }),
+        );
+      }
+
+      if (config.maxTouchPoints !== undefined) {
+        promises.push(this.setTouchOverride(config.maxTouchPoints));
+      }
+
+      if (
+        config.mediaFeatures !== undefined ||
+        config.forcedColorsModeTheme !== undefined
+      ) {
+        promises.push(
+          this.setEmulatedMedia(
+            config.mediaFeatures ?? null,
+            config.forcedColorsModeTheme ?? null,
+          ),
+        );
+      }
     }
 
     if (config.locale !== undefined) {
@@ -703,51 +920,16 @@ export class CdpTarget {
       );
     }
 
-    if (config.scriptingEnabled !== undefined) {
-      promises.push(this.setScriptingEnabled(config.scriptingEnabled));
-    }
-
-    if (config.acceptInsecureCerts !== undefined) {
-      promises.push(
-        this.cdpClient.sendCommand('Security.setIgnoreCertificateErrors', {
-          ignore: config.acceptInsecureCerts,
-        }),
-      );
-    }
-
     if (config.emulatedNetworkConditions !== undefined) {
       promises.push(
         this.setEmulatedNetworkConditions(config.emulatedNetworkConditions),
       );
     }
 
-    if (config.maxTouchPoints !== undefined) {
-      promises.push(this.setTouchOverride(config.maxTouchPoints));
-    }
-
-    if (config.mediaFeatures !== undefined) {
-      promises.push(this.setMediaFeaturesOverride(config.mediaFeatures));
-    }
-
-    if (config.digitalCredentialsBehavior && this.id === this.topLevelId) {
-      promises.push(
-        this.cdpClient
-          .sendCommand('DigitalCredentials.setVirtualWalletBehavior', {
-            action: config.digitalCredentialsBehavior.action,
-            protocol: config.digitalCredentialsBehavior.protocol,
-            response: config.digitalCredentialsBehavior.response,
-          })
-          .catch(() => {
-            // Ignore CDP errors, as the command is not supported by iframe targets
-            // or older browser versions.
-          }),
-      );
-    }
-
     await Promise.all(promises);
   }
 
-  get topLevelId() {
+  get topLevelId(): string {
     return (
       this.#browsingContextStorage.findTopLevelContextId(this.id) ?? this.id
     );
@@ -780,6 +962,10 @@ export class CdpTarget {
       | Emulation.GeolocationPositionError
       | null,
   ): Promise<void> {
+    if (!CdpTarget.isFrameTarget(this.#targetType)) {
+      // Geolocation override is only supported on frame targets.
+      return;
+    }
     if (geolocation === null) {
       await this.cdpClient.sendCommand('Emulation.clearGeolocationOverride');
     } else if ('type' in geolocation) {
@@ -811,6 +997,10 @@ export class CdpTarget {
   }
 
   async setTouchOverride(maxTouchPoints: number | null): Promise<void> {
+    if (!CdpTarget.isFrameTarget(this.#targetType)) {
+      // Touch emulation is only supported on frame targets.
+      return;
+    }
     const touchEmulationParams: Protocol.Emulation.SetTouchEmulationEnabledRequest =
       {
         enabled: maxTouchPoints !== null,
@@ -905,7 +1095,24 @@ export class CdpTarget {
     }
   }
 
+  async setBypassCSP(bypassCSP: true | null): Promise<void> {
+    if (!CdpTarget.isFrameTarget(this.#targetType)) {
+      // Bypassing CSP is only supported on frame targets.
+      return;
+    }
+    // In Chromium, `Page.setBypassCSP` only takes effect when a new document is
+    // created (i.e. on the next navigation), and does not bypass
+    // `frame-ancestors`.
+    await this.cdpClient.sendCommand('Page.setBypassCSP', {
+      enabled: bypassCSP === true,
+    });
+  }
+
   async setScriptingEnabled(scriptingEnabled: false | null): Promise<void> {
+    if (!CdpTarget.isFrameTarget(this.#targetType)) {
+      // Disabling script execution is only supported on frame targets.
+      return;
+    }
     await this.cdpClient.sendCommand('Emulation.setScriptExecutionDisabled', {
       value: scriptingEnabled === false,
     });
@@ -997,18 +1204,34 @@ export class CdpTarget {
     ]);
   }
 
-  async setMediaFeaturesOverride(
+  async setEmulatedMedia(
     mediaFeatures: Emulation.MediaFeatures | null,
+    forcedColorsModeTheme: Emulation.ForcedColorsModeTheme | null,
   ): Promise<void> {
-    const features: Protocol.Emulation.MediaFeature[] = [];
+    if (!CdpTarget.isFrameTarget(this.#targetType)) {
+      // Media emulation is only supported on frame targets.
+      return;
+    }
+    const featuresMap = new Map<string, string>();
+    if (forcedColorsModeTheme !== null) {
+      featuresMap.set('forced-colors', 'active');
+      featuresMap.set('prefers-color-scheme', forcedColorsModeTheme);
+    }
+    // Explicit `emulation.setMediaFeaturesOverride` values take precedence over
+    // the defaults derived from `forcedColorsModeTheme` (BiDi spec §8.3.2).
+    // Note: in Blink (`InspectorEmulationAgent::setEmulatedMedia`),
+    // `prefers-color-scheme` also selects the forced-colors palette and
+    // `forced-colors: none` disables forced colors entirely, so CDP cannot
+    // currently decouple the forced-colors palette from those media queries.
     for (const [name, value] of Object.entries(mediaFeatures ?? {})) {
       if (value !== null && value !== undefined) {
-        features.push({
-          name,
-          value: String(value),
-        });
+        featuresMap.set(name, String(value));
       }
     }
+    const features: Protocol.Emulation.MediaFeature[] = Array.from(
+      featuresMap,
+      ([name, value]) => ({name, value}),
+    );
 
     await this.cdpClient.sendCommand('Emulation.setEmulatedMedia', {
       features,

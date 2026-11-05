@@ -10,10 +10,13 @@
 #include <utility>
 
 #include "base/memory/platform_shared_memory_region.h"
+#include "base/memory/read_only_shared_memory_region.h"
 #include "build/blink_buildflags.h"
 #include "build/build_config.h"
+#include "mojo/core/embedder/embedder.h"
 #include "mojo/core/test/mojo_test_base.h"
 #include "mojo/public/c/system/types.h"
+#include "mojo/public/cpp/system/platform_handle.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace mojo::core {
@@ -49,8 +52,8 @@ TEST_F(SharedBufferTest, PassSharedBufferLocal) {
   MojoHandle p0, p1;
   CreateMessagePipe(&p0, &p1);
 
-  WriteMessageWithHandles(p0, "...", &dupe, 1);
-  EXPECT_EQ("...", ReadMessageWithHandles(p1, &dupe, 1));
+  WriteMessageWithHandle(p0, "...", dupe);
+  EXPECT_EQ("...", ReadMessageWithHandle(p1, &dupe));
 
   ExpectBufferContents(dupe, 0, message);
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(h));
@@ -65,7 +68,7 @@ TEST_F(SharedBufferTest, PassSharedBufferLocal) {
 // the message contents into it, then exits.
 DEFINE_TEST_CLIENT_TEST_WITH_PIPE(CopyToBufferClient, SharedBufferTest, h) {
   MojoHandle b;
-  std::string message = ReadMessageWithHandles(h, &b, 1);
+  std::string message = ReadMessageWithHandle(h, &b);
   WriteToBuffer(b, 0, message);
 
   EXPECT_EQ("quit", ReadMessage(h));
@@ -85,7 +88,7 @@ TEST_F(SharedBufferTest, MAYBE_PassSharedBufferCrossProcess) {
 
   RunTestClient("CopyToBufferClient", [&](MojoHandle h) {
     MojoHandle dupe = DuplicateBuffer(b, false);
-    WriteMessageWithHandles(h, message, &dupe, 1);
+    WriteMessageWithHandle(h, message, dupe);
     WriteMessage(h, "quit");
   });
 
@@ -99,7 +102,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(CreateBufferClient, SharedBufferTest, h) {
   std::string message = ReadMessage(h);
   MojoHandle b = CreateBuffer(message.size());
   WriteToBuffer(b, 0, message);
-  WriteMessageWithHandles(h, "have a buffer", &b, 1);
+  WriteMessageWithHandle(h, "have a buffer", b);
 
   EXPECT_EQ("quit", ReadMessage(h));
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(h));
@@ -116,7 +119,7 @@ TEST_F(SharedBufferTest, MAYBE_PassSharedBufferFromChild) {
   MojoHandle b;
   RunTestClient("CreateBufferClient", [&](MojoHandle h) {
     WriteMessage(h, message);
-    ReadMessageWithHandles(h, &b, 1);
+    ReadMessageWithHandle(h, &b);
     WriteMessage(h, "quit");
   });
 
@@ -128,15 +131,15 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(CreateAndPassBuffer, SharedBufferTest, h) {
   // Receive a pipe handle over the primordial pipe. This will be connected to
   // another child process.
   MojoHandle other_child;
-  std::string message = ReadMessageWithHandles(h, &other_child, 1);
+  std::string message = ReadMessageWithHandle(h, &other_child);
 
   // Create a new shared buffer.
   MojoHandle b = CreateBuffer(message.size());
 
   // Send a copy of the buffer to the parent and the other child.
   MojoHandle dupe = DuplicateBuffer(b, false);
-  WriteMessageWithHandles(h, "", &b, 1);
-  WriteMessageWithHandles(other_child, "", &dupe, 1);
+  WriteMessageWithHandle(h, "", b);
+  WriteMessageWithHandle(other_child, "", dupe);
 
   EXPECT_EQ("quit", ReadMessage(h));
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(h));
@@ -147,11 +150,11 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReceiveAndEditBuffer, SharedBufferTest, h) {
   // Receive a pipe handle over the primordial pipe. This will be connected to
   // another child process (running CreateAndPassBuffer).
   MojoHandle other_child;
-  std::string message = ReadMessageWithHandles(h, &other_child, 1);
+  std::string message = ReadMessageWithHandle(h, &other_child);
 
   // Receive a shared buffer from the other child.
   MojoHandle b;
-  ReadMessageWithHandles(other_child, &b, 1);
+  ReadMessageWithHandle(other_child, &b);
 
   // Write the message from the parent into the buffer and exit.
   WriteToBuffer(b, 0, message);
@@ -179,11 +182,11 @@ TEST_F(SharedBufferTest, MAYBE_PassSharedBufferFromChildToChild) {
       // Send one end of the pipe to each child. The first child will create
       // and pass a buffer to the second child and back to us. The second child
       // will write our message into the buffer.
-      WriteMessageWithHandles(h0, message, &p0, 1);
-      WriteMessageWithHandles(h1, message, &p1, 1);
+      WriteMessageWithHandle(h0, message, p0);
+      WriteMessageWithHandle(h1, message, p1);
 
       // Receive the buffer back from the first child.
-      ReadMessageWithHandles(h0, &b, 1);
+      ReadMessageWithHandle(h0, &b);
 
       WriteMessage(h1, "quit");
     });
@@ -200,7 +203,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadAndMapWriteSharedBuffer,
                                   h) {
   // Receive the shared buffer.
   MojoHandle b;
-  EXPECT_EQ("hello", ReadMessageWithHandles(h, &b, 1));
+  EXPECT_EQ("hello", ReadMessageWithHandle(h, &b));
 
   // Read from the bufer.
   ExpectBufferContents(b, 0, "hello");
@@ -229,7 +232,7 @@ TEST_F(SharedBufferTest, MAYBE_CreateAndPassReadOnlyBuffer) {
 
     // Send a read-only copy of the buffer to the child.
     MojoHandle dupe = DuplicateBuffer(b, true /* read_only */);
-    WriteMessageWithHandles(h, "hello", &dupe, 1);
+    WriteMessageWithHandle(h, "hello", dupe);
 
     EXPECT_EQ("ok", ReadMessage(h));
     WriteMessage(h, "quit");
@@ -246,7 +249,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(CreateAndPassReadOnlyBuffer,
 
   // Send a read-only copy of the buffer to the parent.
   MojoHandle dupe = DuplicateBuffer(b, true /* read_only */);
-  WriteMessageWithHandles(h, "", &dupe, 1);
+  WriteMessageWithHandle(h, "", dupe);
 
   WriteMessage(h, "ok");
   EXPECT_EQ("quit", ReadMessage(h));
@@ -265,7 +268,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(CreateAndPassReadOnlyBuffer,
 TEST_F(SharedBufferTest, MAYBE_CreateAndPassFromChildReadOnlyBuffer) {
   RunTestClient("CreateAndPassReadOnlyBuffer", [&](MojoHandle h) {
     MojoHandle b;
-    EXPECT_EQ("", ReadMessageWithHandles(h, &b, 1));
+    EXPECT_EQ("", ReadMessageWithHandle(h, &b));
     ExpectBufferContents(b, 0, "hello");
 
     // Extract the shared memory handle and verify that it is read-only.
@@ -277,6 +280,49 @@ TEST_F(SharedBufferTest, MAYBE_CreateAndPassFromChildReadOnlyBuffer) {
     WriteMessage(h, "quit");
   });
 }
+
+// Keep in sync with SHARED_MEMORY_SERVICE_REQUIRED() in
+// ipcz_driver/base_shared_memory_service.cc.
+#if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_ANDROID)
+// Installs the hooks with which sandboxed processes create shared memory
+// regions through the broker process, then creates a read-only region with
+// base's shared memory API and passes it to the parent.
+DEFINE_TEST_CLIENT_TEST_WITH_PIPE(CreateReadOnlyRegionThroughBroker,
+                                  SharedBufferTest,
+                                  h) {
+  InstallMojoIpczBaseSharedMemoryHooks();
+
+  const std::string message = ReadMessage(h);
+  base::MappedReadOnlyRegion region =
+      base::ReadOnlySharedMemoryRegion::Create(message.size());
+  ASSERT_TRUE(region.IsValid());
+  region.mapping.GetMemoryAsSpan<char>().copy_from(message);
+  WriteMessageWithHandle(
+      h, "",
+      WrapReadOnlySharedMemoryRegion(std::move(region.region))
+          .release()
+          .value());
+
+  EXPECT_EQ("quit", ReadMessage(h));
+  EXPECT_EQ(MOJO_RESULT_OK, MojoClose(h));
+}
+
+TEST_F(SharedBufferTest, CreateReadOnlyRegionThroughBrokerInChild) {
+  RunTestClient("CreateReadOnlyRegionThroughBroker", [&](MojoHandle h) {
+    WriteMessage(h, "hello");
+
+    MojoHandle b;
+    EXPECT_EQ("", ReadMessageWithHandle(h, &b));
+    ExpectBufferContents(b, 0, "hello");
+    auto buffer = ipcz_driver::SharedBuffer::Unbox(b);
+    EXPECT_EQ(buffer->region().GetMode(),
+              base::subtle::PlatformSharedMemoryRegion::Mode::kReadOnly);
+
+    WriteMessage(h, "quit");
+  });
+}
+#endif  // BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_APPLE) &&
+        // !BUILDFLAG(IS_ANDROID)
 
 #endif  // BUILDFLAG(USE_BLINK)
 

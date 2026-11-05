@@ -25,11 +25,14 @@
 #include "third_party/blink/renderer/core/svg/svg_element.h"
 
 #include "base/auto_reset.h"
+#include "base/check.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_view_util.h"
 #include "third_party/blink/renderer/bindings/core/v8/js_event_handler_for_content_attribute.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
 #include "third_party/blink/renderer/core/css/post_style_update_scope.h"
+#include "third_party/blink/renderer/core/css/properties/css_property.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
@@ -48,6 +51,7 @@
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/svg/layout_svg_resource_container.h"
+#include "third_party/blink/renderer/core/layout/svg/svg_resources.h"
 #include "third_party/blink/renderer/core/layout/svg/transform_helper.h"
 #include "third_party/blink/renderer/core/svg/animation/element_smil_animations.h"
 #include "third_party/blink/renderer/core/svg/properties/svg_animated_property.h"
@@ -71,6 +75,7 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -180,6 +185,11 @@ String SVGElement::title() const {
 template <typename T>
 static void ForSelfAndInstances(SVGElement* element, T callback) {
   callback(element);
+  // Animations cloned into the <use> shadow tree apply their results to the
+  // instance elements directly.
+  if (RuntimeEnabledFeatures::SvgUseInstanceAnimationsEnabled()) {
+    return;
+  }
   for (SVGElement* instance : element->InstancesForElement())
     callback(instance);
 }
@@ -268,7 +278,7 @@ AffineTransform SVGElement::CalculateTransform(
     const gfx::RectF reference_box =
         TransformHelper::ComputeReferenceBox(*layout_object);
     matrix = TransformHelper::ComputeTransform(
-        GetDocument(), layout_object->StyleRef(), reference_box,
+        GetDocument(), layout_object->Style(), reference_box,
         ComputedStyle::kIncludeTransformOrigin);
   }
 
@@ -313,6 +323,16 @@ void SVGElement::ChildrenChanged(const ChildrenChange& change) {
 
   // Invalidate all instances associated with us.
   InvalidateInstances();
+}
+
+void SVGElement::DidChangeIsInCanvasSubtree(
+    CanvasSubtreePropagation propagation_behavior) {
+  // Reachable from slot assignment recalc; see "Recalc hooks" in
+  // slot_assignment.h.
+  Element::DidChangeIsInCanvasSubtree(propagation_behavior);
+  if (SVGElementResourceClient* client = GetSVGResourceClient()) {
+    client->InvalidateFilterData();
+  }
 }
 
 CSSPropertyID SVGElement::CssPropertyIdForSVGAttributeName(
@@ -378,6 +398,7 @@ CSSPropertyID SVGElement::CssPropertyIdForSVGAttributeName(
         &svg_names::kStrokeWidthAttr,
         &svg_names::kTextAnchorAttr,
         &svg_names::kTextDecorationAttr,
+        &svg_names::kTextOverflowAttr,
         &svg_names::kTextRenderingAttr,
         &svg_names::kTransformOriginAttr,
         &svg_names::kUnicodeBidiAttr,
@@ -456,9 +477,9 @@ void SVGElement::RemoveInstance(SVGElement* instance) {
 static HeapHashSet<WeakMember<SVGElement>>& EmptyInstances() {
   using EmptyInstanceHolder =
       DisallowNewWrapper<HeapHashSet<WeakMember<SVGElement>>>;
-  DEFINE_STATIC_LOCAL(Persistent<EmptyInstanceHolder>, empty_instances,
-                      (MakeGarbageCollected<EmptyInstanceHolder>()));
-  return empty_instances->Value();
+  static base::NoDestructor<Persistent<EmptyInstanceHolder>> empty_instances(
+      MakeGarbageCollected<EmptyInstanceHolder>());
+  return (*empty_instances)->Value();
 }
 
 const HeapHashSet<WeakMember<SVGElement>>& SVGElement::InstancesForElement()
@@ -752,6 +773,12 @@ void SVGElement::SvgAttributeChanged(const SvgAttributeChangedParams& params) {
 
 void SVGElement::BaseValueChanged(const SVGAnimatedPropertyBase& property) {
   EnsureUniqueElementData().SetSvgAttributesAreDirty(true);
+  // baseVal bypasses attribute notifications. Presentation-attribute updates
+  // rematch selectors via full recalc when incremental SVG style is disabled.
+  if (RuntimeEnabledFeatures::SvgIncrementalStyleEnabled()) {
+    GetDocument().GetStyleEngine().AttributeChangedForElement(
+        property.AttributeName(), *this);
+  }
   SvgAttributeChanged({property, property.AttributeName(),
                        AttributeModificationReason::kDirectly});
   if (class_name_ && class_name_ == &property) {
@@ -811,11 +838,24 @@ SVGElement::GetPresentationAttributeStyleForDirectUpdate() {
 void SVGElement::UpdatePresentationAttributeStyle(
     const SVGAnimatedPropertyBase& property) {
   DCHECK(property.HasPresentationAttributeMapping());
-  if (auto* mutable_style = GetPresentationAttributeStyleForDirectUpdate()) {
-    const CSSPropertyID property_id = property.CssPropertyId();
+  const bool incremental_style_enabled =
+      RuntimeEnabledFeatures::SvgIncrementalStyleEnabled();
+  const CSSPropertyID property_id = property.CssPropertyId();
+  MutableCSSPropertyValueSet* mutable_style =
+      GetPresentationAttributeStyleForDirectUpdate();
+  bool modified_existing_property = false;
+  if (mutable_style) {
     if (property.IsSpecified()) {
       if (const CSSValue* value = property.CssValue()) {
-        mutable_style->SetProperty(property_id, *value);
+        if (incremental_style_enabled) {
+          const auto set_result = mutable_style->SetLonghandProperty(
+              CSSPropertyValue(CSSPropertyName(property_id), *value));
+          modified_existing_property =
+              set_result == MutableCSSPropertyValueSet::kModifiedExisting ||
+              set_result == MutableCSSPropertyValueSet::kUnchanged;
+        } else {
+          mutable_style->SetProperty(property_id, *value);
+        }
       } else {
         mutable_style->RemoveProperty(property_id);
       }
@@ -826,7 +866,10 @@ void SVGElement::UpdatePresentationAttributeStyle(
     InvalidateSVGPresentationAttributeStyle();
   }
   SetNeedsStyleRecalc(
-      kLocalStyleChange,
+      modified_existing_property &&
+              CSSProperty::Get(property_id).SupportsIncrementalStyle()
+          ? kIndependentStyleChange
+          : kLocalStyleChange,
       StyleChangeReasonForTracing::FromAttribute(property.AttributeName()));
 }
 
@@ -834,8 +877,14 @@ void SVGElement::UpdatePresentationAttributeStyle(
     CSSPropertyID property_id,
     const QualifiedName& attr_name,
     const AtomicString& value) {
-  auto set_result = MutableCSSPropertyValueSet::kModifiedExisting;
-  if (auto* mutable_style = GetPresentationAttributeStyleForDirectUpdate()) {
+  const bool incremental_style_enabled =
+      RuntimeEnabledFeatures::SvgIncrementalStyleEnabled();
+  auto set_result = incremental_style_enabled
+                        ? MutableCSSPropertyValueSet::kChangedPropertySet
+                        : MutableCSSPropertyValueSet::kModifiedExisting;
+  MutableCSSPropertyValueSet* mutable_style =
+      GetPresentationAttributeStyleForDirectUpdate();
+  if (mutable_style) {
     auto* execution_context = GetExecutionContext();
     set_result = mutable_style->ParseAndSetProperty(
         property_id, value, false,
@@ -853,8 +902,13 @@ void SVGElement::UpdatePresentationAttributeStyle(
     InvalidateSVGPresentationAttributeStyle();
   }
   if (set_result >= MutableCSSPropertyValueSet::kModifiedExisting) {
-    SetNeedsStyleRecalc(kLocalStyleChange,
-                        StyleChangeReasonForTracing::FromAttribute(attr_name));
+    SetNeedsStyleRecalc(
+        incremental_style_enabled &&
+                set_result == MutableCSSPropertyValueSet::kModifiedExisting &&
+                CSSProperty::Get(property_id).SupportsIncrementalStyle()
+            ? kIndependentStyleChange
+            : kLocalStyleChange,
+        StyleChangeReasonForTracing::FromAttribute(attr_name));
   }
 }
 
@@ -918,10 +972,14 @@ void SVGElement::MarkForLayoutAndParentResourceInvalidation(
 }
 
 void SVGElement::NotifyResourceClients() const {
+  SVGTreeScopeResources* scope_resources =
+      GetTreeScope().ExistingSVGTreeScopedResources();
+  if (!scope_resources) {
+    return;
+  }
   LocalSVGResource* resource =
-      GetTreeScope().EnsureSVGTreeScopedResources().ExistingResourceForId(
-          GetIdAttribute());
-  if (!resource || resource->Target() != this) {
+      scope_resources->ExistingResourceForId(GetIdAttribute());
+  if (!resource || resource->Target(SVGResource::Usage::kElement) != this) {
     return;
   }
   resource->NotifyContentChanged();
@@ -931,8 +989,11 @@ void SVGElement::InvalidateStyleAttribute(
     bool only_changed_independent_properties) {
   Element::InvalidateStyleAttribute(only_changed_independent_properties);
   if (!InstancesForElement().empty()) {
-    SynchronizeAttributeInShadowInstances(html_names::kStyleAttr,
-                                          getAttribute(html_names::kStyleAttr));
+    // construct a new AtomicString (reference-counting its internals) rather
+    // than pass a reference to the element's attribute storage that might not
+    // live long enough.
+    AtomicString style_value = getAttribute(html_names::kStyleAttr);
+    SynchronizeAttributeInShadowInstances(html_names::kStyleAttr, style_value);
   }
 }
 
@@ -969,105 +1030,104 @@ void SVGElement::SetNeedsStyleRecalcForInstances(
 bool SVGElement::IsAnimatableAttribute(const QualifiedName& name) const {
   // This static is atomically initialized to dodge a warning about
   // a race when dumping debug data for a layer.
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(HashSet<QualifiedName>, animatable_attributes,
-                                  ({
-                                      svg_names::kAmplitudeAttr,
-                                      svg_names::kAzimuthAttr,
-                                      svg_names::kBaseFrequencyAttr,
-                                      svg_names::kBiasAttr,
-                                      svg_names::kClipPathUnitsAttr,
-                                      svg_names::kCxAttr,
-                                      svg_names::kCyAttr,
-                                      svg_names::kDiffuseConstantAttr,
-                                      svg_names::kDivisorAttr,
-                                      svg_names::kDxAttr,
-                                      svg_names::kDyAttr,
-                                      svg_names::kEdgeModeAttr,
-                                      svg_names::kElevationAttr,
-                                      svg_names::kExponentAttr,
-                                      svg_names::kFilterUnitsAttr,
-                                      svg_names::kFxAttr,
-                                      svg_names::kFyAttr,
-                                      svg_names::kGradientTransformAttr,
-                                      svg_names::kGradientUnitsAttr,
-                                      svg_names::kHeightAttr,
-                                      svg_names::kHrefAttr,
-                                      svg_names::kIn2Attr,
-                                      svg_names::kInAttr,
-                                      svg_names::kInterceptAttr,
-                                      svg_names::kK1Attr,
-                                      svg_names::kK2Attr,
-                                      svg_names::kK3Attr,
-                                      svg_names::kK4Attr,
-                                      svg_names::kKernelMatrixAttr,
-                                      svg_names::kKernelUnitLengthAttr,
-                                      svg_names::kLengthAdjustAttr,
-                                      svg_names::kLimitingConeAngleAttr,
-                                      svg_names::kMarkerHeightAttr,
-                                      svg_names::kMarkerUnitsAttr,
-                                      svg_names::kMarkerWidthAttr,
-                                      svg_names::kMaskContentUnitsAttr,
-                                      svg_names::kMaskUnitsAttr,
-                                      svg_names::kMethodAttr,
-                                      svg_names::kModeAttr,
-                                      svg_names::kNumOctavesAttr,
-                                      svg_names::kOffsetAttr,
-                                      svg_names::kOperatorAttr,
-                                      svg_names::kOrderAttr,
-                                      svg_names::kOrientAttr,
-                                      svg_names::kPathLengthAttr,
-                                      svg_names::kPatternContentUnitsAttr,
-                                      svg_names::kPatternTransformAttr,
-                                      svg_names::kPatternUnitsAttr,
-                                      svg_names::kPointsAtXAttr,
-                                      svg_names::kPointsAtYAttr,
-                                      svg_names::kPointsAtZAttr,
-                                      svg_names::kPreserveAlphaAttr,
-                                      svg_names::kPreserveAspectRatioAttr,
-                                      svg_names::kPrimitiveUnitsAttr,
-                                      svg_names::kRadiusAttr,
-                                      svg_names::kRAttr,
-                                      svg_names::kRefXAttr,
-                                      svg_names::kRefYAttr,
-                                      svg_names::kResultAttr,
-                                      svg_names::kRotateAttr,
-                                      svg_names::kRxAttr,
-                                      svg_names::kRyAttr,
-                                      svg_names::kScaleAttr,
-                                      svg_names::kSeedAttr,
-                                      svg_names::kSlopeAttr,
-                                      svg_names::kSpacingAttr,
-                                      svg_names::kSpecularConstantAttr,
-                                      svg_names::kSpecularExponentAttr,
-                                      svg_names::kSpreadMethodAttr,
-                                      svg_names::kStartOffsetAttr,
-                                      svg_names::kStdDeviationAttr,
-                                      svg_names::kStitchTilesAttr,
-                                      svg_names::kSurfaceScaleAttr,
-                                      svg_names::kTableValuesAttr,
-                                      svg_names::kTargetAttr,
-                                      svg_names::kTargetXAttr,
-                                      svg_names::kTargetYAttr,
-                                      svg_names::kTransformAttr,
-                                      svg_names::kTypeAttr,
-                                      svg_names::kValuesAttr,
-                                      svg_names::kViewBoxAttr,
-                                      svg_names::kWidthAttr,
-                                      svg_names::kX1Attr,
-                                      svg_names::kX2Attr,
-                                      svg_names::kXAttr,
-                                      svg_names::kXChannelSelectorAttr,
-                                      svg_names::kY1Attr,
-                                      svg_names::kY2Attr,
-                                      svg_names::kYAttr,
-                                      svg_names::kYChannelSelectorAttr,
-                                      svg_names::kZAttr,
-                                  }));
+  static base::NoDestructor<HashSet<QualifiedName>> animatable_attributes({
+      svg_names::kAmplitudeAttr,
+      svg_names::kAzimuthAttr,
+      svg_names::kBaseFrequencyAttr,
+      svg_names::kBiasAttr,
+      svg_names::kClipPathUnitsAttr,
+      svg_names::kCxAttr,
+      svg_names::kCyAttr,
+      svg_names::kDiffuseConstantAttr,
+      svg_names::kDivisorAttr,
+      svg_names::kDxAttr,
+      svg_names::kDyAttr,
+      svg_names::kEdgeModeAttr,
+      svg_names::kElevationAttr,
+      svg_names::kExponentAttr,
+      svg_names::kFilterUnitsAttr,
+      svg_names::kFxAttr,
+      svg_names::kFyAttr,
+      svg_names::kGradientTransformAttr,
+      svg_names::kGradientUnitsAttr,
+      svg_names::kHeightAttr,
+      svg_names::kHrefAttr,
+      svg_names::kIn2Attr,
+      svg_names::kInAttr,
+      svg_names::kInterceptAttr,
+      svg_names::kK1Attr,
+      svg_names::kK2Attr,
+      svg_names::kK3Attr,
+      svg_names::kK4Attr,
+      svg_names::kKernelMatrixAttr,
+      svg_names::kKernelUnitLengthAttr,
+      svg_names::kLengthAdjustAttr,
+      svg_names::kLimitingConeAngleAttr,
+      svg_names::kMarkerHeightAttr,
+      svg_names::kMarkerUnitsAttr,
+      svg_names::kMarkerWidthAttr,
+      svg_names::kMaskContentUnitsAttr,
+      svg_names::kMaskUnitsAttr,
+      svg_names::kMethodAttr,
+      svg_names::kModeAttr,
+      svg_names::kNumOctavesAttr,
+      svg_names::kOffsetAttr,
+      svg_names::kOperatorAttr,
+      svg_names::kOrderAttr,
+      svg_names::kOrientAttr,
+      svg_names::kPathLengthAttr,
+      svg_names::kPatternContentUnitsAttr,
+      svg_names::kPatternTransformAttr,
+      svg_names::kPatternUnitsAttr,
+      svg_names::kPointsAtXAttr,
+      svg_names::kPointsAtYAttr,
+      svg_names::kPointsAtZAttr,
+      svg_names::kPreserveAlphaAttr,
+      svg_names::kPreserveAspectRatioAttr,
+      svg_names::kPrimitiveUnitsAttr,
+      svg_names::kRadiusAttr,
+      svg_names::kRAttr,
+      svg_names::kRefXAttr,
+      svg_names::kRefYAttr,
+      svg_names::kResultAttr,
+      svg_names::kRotateAttr,
+      svg_names::kRxAttr,
+      svg_names::kRyAttr,
+      svg_names::kScaleAttr,
+      svg_names::kSeedAttr,
+      svg_names::kSlopeAttr,
+      svg_names::kSpacingAttr,
+      svg_names::kSpecularConstantAttr,
+      svg_names::kSpecularExponentAttr,
+      svg_names::kSpreadMethodAttr,
+      svg_names::kStartOffsetAttr,
+      svg_names::kStdDeviationAttr,
+      svg_names::kStitchTilesAttr,
+      svg_names::kSurfaceScaleAttr,
+      svg_names::kTableValuesAttr,
+      svg_names::kTargetAttr,
+      svg_names::kTargetXAttr,
+      svg_names::kTargetYAttr,
+      svg_names::kTransformAttr,
+      svg_names::kTypeAttr,
+      svg_names::kValuesAttr,
+      svg_names::kViewBoxAttr,
+      svg_names::kWidthAttr,
+      svg_names::kX1Attr,
+      svg_names::kX2Attr,
+      svg_names::kXAttr,
+      svg_names::kXChannelSelectorAttr,
+      svg_names::kY1Attr,
+      svg_names::kY2Attr,
+      svg_names::kYAttr,
+      svg_names::kYChannelSelectorAttr,
+      svg_names::kZAttr,
+  });
 
   if (name == html_names::kClassAttr)
     return true;
 
-  return animatable_attributes.Contains(name);
+  return animatable_attributes->Contains(name);
 }
 #endif  // DCHECK_IS_ON()
 
@@ -1075,6 +1135,13 @@ SVGElementSet* SVGElement::SetOfIncomingReferences() const {
   if (!HasSVGRareData())
     return nullptr;
   return &SvgRareData()->IncomingReferences();
+}
+
+const SVGElementSet* SVGElement::SetOfOutgoingReferences() const {
+  if (!HasSVGRareData()) {
+    return nullptr;
+  }
+  return &SvgRareData()->OutgoingReferences();
 }
 
 void SVGElement::AddReferenceTo(SVGElement* target_element) {
@@ -1085,13 +1152,13 @@ void SVGElement::AddReferenceTo(SVGElement* target_element) {
 }
 
 SVGElementSet& SVGElement::GetDependencyTraversalVisitedSet() {
+  DCHECK(IsMainThread());
   // This strong reference is safe, as it is guaranteed that this set will be
   // emptied at the end of recursion in NotifyIncomingReferences.
   using SVGElementSetHolder = DisallowNewWrapper<SVGElementSet>;
-  DEFINE_STATIC_LOCAL(Persistent<SVGElementSetHolder>,
-                      invalidating_dependencies,
-                      (MakeGarbageCollected<SVGElementSetHolder>()));
-  return invalidating_dependencies->Value();
+  static base::NoDestructor<Persistent<SVGElementSetHolder>>
+      invalidating_dependencies(MakeGarbageCollected<SVGElementSetHolder>());
+  return (*invalidating_dependencies)->Value();
 }
 
 void SVGElement::RemoveAllIncomingReferences() {
@@ -1174,7 +1241,12 @@ SMILTimeContainer* SVGElement::GetTimeContainer() const {
 
 void SVGElement::SynchronizeAttributeInShadowInstances(
     const QualifiedName& name,
-    const AtomicString& value) {
+    AtomicString value) {
+  // `value` is passed by value because it may be a reference to an attribute
+  // in this element's attribute vector (e.g. from InvalidateStyleAttribute()).
+  // Setting attributes on shadow instances can trigger script or mutations
+  // that reallocate this element's attributes. Hold our own reference for the
+  // duration of the loop.
   if (RuntimeEnabledFeatures::SvgInstanceSyncOptimizationEnabled() &&
       !MayHaveInstances()) {
     return;

@@ -21,6 +21,7 @@
 
 #include "third_party/blink/renderer/core/svg/svg_length.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/css/css_math_function_value.h"
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
@@ -203,11 +204,10 @@ const CSSParserContext* GetSVGAttributeParserContext() {
   // NOTE(ikilpatrick): We will always parse SVG lengths in the insecure
   // context mode. If a function/unit/etc will require a secure context check
   // in the future, plumbing will need to be added.
-  DEFINE_STATIC_LOCAL(
-      const Persistent<CSSParserContext>, svg_parser_context,
-      (MakeGarbageCollected<CSSParserContext>(
-          kSVGAttributeMode, SecureContextMode::kInsecureContext)));
-  return svg_parser_context;
+  static const base::NoDestructor<Persistent<CSSParserContext>>
+      svg_parser_context(MakeGarbageCollected<CSSParserContext>(
+          kSVGAttributeMode, SecureContextMode::kInsecureContext));
+  return *svg_parser_context;
 }
 
 }  // namespace
@@ -219,16 +219,6 @@ SVGParsingError SVGLength::SetValueAsString(const String& string) {
 SVGParsingError SVGLength::SetValueAsString(
     const String& string,
     const CSSParserContext* parser_context) {
-  // TODO(fs): Preferably we wouldn't need to special-case the null
-  // string (which we'll get for example for removeAttribute.)
-  // Hopefully work on crbug.com/225807 can help here.
-  if (!RuntimeEnabledFeatures::SvgEmptyAttributeStringParsingFixEnabled() &&
-      string.IsNull()) {
-    value_ = CSSNumericLiteralValue::Create(
-        0, CSSPrimitiveValue::UnitType::kUserUnits);
-    return SVGParseStatus::kNoError;
-  }
-
   const CSSValue* parsed = CSSParser::ParseSingleValue(
       CSSPropertyID::kX, string, GetSVGAttributeParserContext());
   const auto* new_value = DynamicTo<CSSPrimitiveValue>(parsed);
@@ -300,15 +290,18 @@ void SVGLength::ConvertToSpecifiedUnits(CSSPrimitiveValue::UnitType type,
 
 bool SVGLength::NegativeValuesForbiddenForAnimatedLengthAttribute(
     const QualifiedName& attr_name) {
-  DEFINE_STATIC_LOCAL(
-      HashSet<QualifiedName>, no_negative_values_set,
-      ({
-          svg_names::kFrAttr, svg_names::kRAttr, svg_names::kRxAttr,
-          svg_names::kRyAttr, svg_names::kWidthAttr, svg_names::kHeightAttr,
-          svg_names::kMarkerWidthAttr, svg_names::kMarkerHeightAttr,
-          svg_names::kTextLengthAttr,
-      }));
-  return no_negative_values_set.Contains(attr_name);
+  static base::NoDestructor<HashSet<QualifiedName>> no_negative_values_set({
+      svg_names::kFrAttr,
+      svg_names::kRAttr,
+      svg_names::kRxAttr,
+      svg_names::kRyAttr,
+      svg_names::kWidthAttr,
+      svg_names::kHeightAttr,
+      svg_names::kMarkerWidthAttr,
+      svg_names::kMarkerHeightAttr,
+      svg_names::kTextLengthAttr,
+  });
+  return no_negative_values_set->Contains(attr_name);
 }
 
 bool SVGLength::Add(const SVGPropertyBase* other,

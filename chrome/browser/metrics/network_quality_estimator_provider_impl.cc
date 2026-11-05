@@ -5,7 +5,6 @@
 #include "chrome/browser/metrics/network_quality_estimator_provider_impl.h"
 
 #include "base/functional/bind.h"
-#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -14,7 +13,8 @@
 namespace metrics {
 
 NetworkQualityEstimatorProviderImpl::NetworkQualityEstimatorProviderImpl() {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M161);
 }
 
 NetworkQualityEstimatorProviderImpl::~NetworkQualityEstimatorProviderImpl() {
@@ -38,7 +38,7 @@ void NetworkQualityEstimatorProviderImpl::PostReplyOnNetworkQualityChanged(
                                           PostReplyOnNetworkQualityChanged,
                                       weak_ptr_factory_.GetWeakPtr(),
                                       std::move(callback)));
-    DCHECK(task_posted);
+    CHECK(task_posted, base::NotFatalUntil::M161);
     return;
   }
 
@@ -47,11 +47,12 @@ void NetworkQualityEstimatorProviderImpl::PostReplyOnNetworkQualityChanged(
   // may take up to ~20 seconds to execute. Figure out a way to call
   // g_browser_process->network_quality_tracker earlier rather than waiting for
   // BEST_EFFORT to run (which happens sometime after startup is completed)
-  content::BrowserThread::PostBestEffortTask(
-      FROM_HERE, base::SequencedTaskRunner::GetCurrentDefault(),
-      base::BindOnce(&NetworkQualityEstimatorProviderImpl::
-                         AddEffectiveConnectionTypeObserverNow,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
+      ->PostTask(
+          FROM_HERE,
+          base::BindOnce(&NetworkQualityEstimatorProviderImpl::
+                             AddEffectiveConnectionTypeObserverNow,
+                         weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
   return;
 #else
   bool task_posted =
@@ -60,14 +61,14 @@ void NetworkQualityEstimatorProviderImpl::PostReplyOnNetworkQualityChanged(
           base::BindOnce(&NetworkQualityEstimatorProviderImpl::
                              AddEffectiveConnectionTypeObserverNow,
                          weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
-  DCHECK(task_posted);
+  CHECK(task_posted, base::NotFatalUntil::M161);
 #endif
 }
 
 void NetworkQualityEstimatorProviderImpl::AddEffectiveConnectionTypeObserverNow(
     base::RepeatingCallback<void(net::EffectiveConnectionType)> callback) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(!callback_);
+  CHECK(!callback_, base::NotFatalUntil::M161);
 
   callback_ = callback;
 

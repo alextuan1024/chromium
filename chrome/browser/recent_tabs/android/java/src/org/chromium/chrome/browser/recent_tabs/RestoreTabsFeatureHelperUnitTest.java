@@ -5,8 +5,8 @@
 package org.chromium.chrome.browser.recent_tabs;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
@@ -17,6 +17,8 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 
+import org.jni_zero.JniUniquePtr;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -30,23 +32,35 @@ import org.robolectric.Robolectric;
 import org.chromium.base.Callback;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSession;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSessionTab;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSessionWindow;
+import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.NativeForeignSessionHelper;
+import org.chromium.chrome.browser.recent_tabs.RestoreTabsMetricsHelper.RestoreTabsOnFREPromoShowResult;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeatures;
+import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeaturesJni;
+import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.feature_engagement.UiFormat;
 import org.chromium.components.sync_device_info.FormFactor;
+import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.url.JUnitTestGURLs;
 
@@ -64,6 +78,7 @@ public class RestoreTabsFeatureHelperUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock ForeignSessionHelper.Natives mForeignSessionHelperJniMock;
+    private JniUniquePtr<NativeForeignSessionHelper> mNativeForeignSessionHelper;
     @Mock private RestoreTabsControllerDelegate mDelegate;
     @Mock private Profile mProfile;
     @Mock private Tracker mMockTracker;
@@ -71,6 +86,8 @@ public class RestoreTabsFeatureHelperUnitTest {
     @Mock private BottomSheetController mBottomSheetController;
     @Mock private Supplier<Integer> mGTSTabListModelSizeSupplier;
     @Mock private Callback<Integer> mScrollGTSToRestoredTabsCallback;
+    @Mock private TabGroupSyncService mTabGroupSyncService;
+    @Mock private TabGroupSyncFeatures.Natives mTabGroupSyncFeaturesJniMock;
     private SharedPreferencesManager mSharedPreferencesManager;
 
     private Activity mActivity;
@@ -80,16 +97,27 @@ public class RestoreTabsFeatureHelperUnitTest {
     public void setUp() {
         ForeignSessionHelperJni.setInstanceForTesting(mForeignSessionHelperJniMock);
         TrackerFactory.setTrackerForTests(mMockTracker);
-        when(mMockTracker.wouldTriggerHelpUi(eq(RESTORE_TABS_FEATURE))).thenReturn(true);
-        when(mMockTracker.shouldTriggerHelpUi(eq(RESTORE_TABS_FEATURE))).thenReturn(true);
-        when(mForeignSessionHelperJniMock.init(any(Profile.class))).thenReturn(1L);
-        when(mForeignSessionHelperJniMock.isTabSyncEnabled(1L)).thenReturn(true);
+        when(mMockTracker.wouldTriggerHelpUi(
+                        eq(RESTORE_TABS_FEATURE), eq(new FeatureProperties(UiFormat.BOTTOM_SHEET))))
+                .thenReturn(true);
+        when(mMockTracker.shouldTriggerHelpUi(eq(RESTORE_TABS_FEATURE), any())).thenReturn(true);
+        mNativeForeignSessionHelper = JniUniquePtr.createForTesting(1L);
+        when(mForeignSessionHelperJniMock.init(any(Profile.class)))
+                .thenReturn(mNativeForeignSessionHelper);
+        when(mForeignSessionHelperJniMock.isTabSyncEnabled(mNativeForeignSessionHelper))
+                .thenReturn(true);
 
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mHelper = new RestoreTabsFeatureHelper();
         mHelper.setRestoreTabsControllerDelegateForTesting(mDelegate);
 
         mSharedPreferencesManager = ChromeSharedPreferences.getInstance();
+    }
+
+    @After
+    public void tearDown() {
+        mHelper.destroy();
+        mNativeForeignSessionHelper.destroy();
     }
 
     @Test
@@ -103,13 +131,13 @@ public class RestoreTabsFeatureHelperUnitTest {
                 mScrollGTSToRestoredTabsCallback,
                 /* modalDialogManagerSupplier= */ null);
         verify(mForeignSessionHelperJniMock)
-                .getMobileAndTabletForeignSessions(1L, new ArrayList<>());
-        verify(mForeignSessionHelperJniMock).destroy(1L);
+                .getMobileAndTabletForeignSessions(mNativeForeignSessionHelper, new ArrayList<>());
     }
 
     @Test
     public void testRestoreTabsFeatureHelper_tabSyncDisabled() {
-        when(mForeignSessionHelperJniMock.isTabSyncEnabled(1L)).thenReturn(false);
+        when(mForeignSessionHelperJniMock.isTabSyncEnabled(mNativeForeignSessionHelper))
+                .thenReturn(false);
         mHelper.maybeShowPromo(
                 mActivity,
                 mProfile,
@@ -119,11 +147,11 @@ public class RestoreTabsFeatureHelperUnitTest {
                 mScrollGTSToRestoredTabsCallback,
                 /* modalDialogManagerSupplier= */ null);
         verify(mForeignSessionHelperJniMock, never())
-                .getMobileAndTabletForeignSessions(anyLong(), any());
-        verify(mForeignSessionHelperJniMock).destroy(1L);
+                .getMobileAndTabletForeignSessions(any(), any());
     }
 
     @Test
+    @DisableFeatures(ChromeFeatureList.USER_EDUCATION_INTERRUPTIVE_COOLDOWN_GROUP)
     public void testRestoreTabsFeatureHelper_hasValidSyncedDevices() {
         // Setup mock data
         ForeignSessionTab tab = new ForeignSessionTab(JUnitTestGURLs.URL_1, "title", 32L, 32L, 0);
@@ -144,7 +172,7 @@ public class RestoreTabsFeatureHelperUnitTest {
                             return true;
                         })
                 .when(mForeignSessionHelperJniMock)
-                .getMobileAndTabletForeignSessions(1L, new ArrayList<>());
+                .getMobileAndTabletForeignSessions(mNativeForeignSessionHelper, new ArrayList<>());
         mHelper.maybeShowPromo(
                 mActivity,
                 mProfile,
@@ -153,6 +181,54 @@ public class RestoreTabsFeatureHelperUnitTest {
                 mGTSTabListModelSizeSupplier,
                 mScrollGTSToRestoredTabsCallback,
                 /* modalDialogManagerSupplier= */ null);
+        verify(mMockTracker)
+                .wouldTriggerHelpUi(
+                        eq(RESTORE_TABS_FEATURE), eq(new FeatureProperties(UiFormat.BOTTOM_SHEET)));
+        verify(mMockTracker)
+                .shouldTriggerHelpUi(
+                        eq(RESTORE_TABS_FEATURE), eq(new FeatureProperties(UiFormat.BOTTOM_SHEET)));
+        verify(mDelegate).showPromo(anyList());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.USER_EDUCATION_FRAMEWORK,
+        ChromeFeatureList.USER_EDUCATION_INTERRUPTIVE_COOLDOWN_GROUP
+    })
+    public void testRestoreTabsFeatureHelper_hasValidSyncedDevices_cooldownGroupEnabled() {
+        ForeignSessionTab tab = new ForeignSessionTab(JUnitTestGURLs.URL_1, "title", 32L, 32L, 0);
+        List<ForeignSessionTab> tabs = new ArrayList<>();
+        tabs.add(tab);
+        ForeignSessionWindow window = new ForeignSessionWindow(31L, 1, tabs);
+        List<ForeignSessionWindow> windows = new ArrayList<>();
+        windows.add(window);
+        ForeignSession session =
+                new ForeignSession("tag", "John's iPhone 6", 32L, windows, FormFactor.PHONE);
+        List<ForeignSession> sessions = new ArrayList<>();
+        sessions.add(session);
+
+        doAnswer(
+                        invocation -> {
+                            List<ForeignSession> invokedSessions = invocation.getArgument(1);
+                            invokedSessions.addAll(sessions);
+                            return true;
+                        })
+                .when(mForeignSessionHelperJniMock)
+                .getMobileAndTabletForeignSessions(mNativeForeignSessionHelper, new ArrayList<>());
+        mHelper.maybeShowPromo(
+                mActivity,
+                mProfile,
+                mTabCreatorManager,
+                mBottomSheetController,
+                mGTSTabListModelSizeSupplier,
+                mScrollGTSToRestoredTabsCallback,
+                /* modalDialogManagerSupplier= */ null);
+        verify(mMockTracker)
+                .wouldTriggerHelpUi(
+                        eq(RESTORE_TABS_FEATURE), eq(new FeatureProperties(UiFormat.BOTTOM_SHEET)));
+        verify(mMockTracker)
+                .shouldTriggerHelpUi(
+                        eq(RESTORE_TABS_FEATURE), eq(new FeatureProperties(UiFormat.BOTTOM_SHEET)));
         verify(mDelegate).showPromo(anyList());
     }
 
@@ -179,7 +255,8 @@ public class RestoreTabsFeatureHelperUnitTest {
                             return true;
                         })
                 .when(mForeignSessionHelperJniMock)
-                .getMobileAndTabletForeignSessions(eq(1L), eq(new ArrayList<>()));
+                .getMobileAndTabletForeignSessions(
+                        eq(mNativeForeignSessionHelper), eq(new ArrayList<>()));
 
         mHelper.maybeShowPromo(
                 mActivity,
@@ -193,7 +270,6 @@ public class RestoreTabsFeatureHelperUnitTest {
         verify(mMockTracker).notifyEvent(eq(EventConstants.RESTORE_TABS_ON_FIRST_RUN_SHOW_PROMO));
 
         verify(mDelegate).showPromo(anyList());
-        verify(mForeignSessionHelperJniMock, never()).destroy(eq(1L));
     }
 
     @Test
@@ -217,7 +293,8 @@ public class RestoreTabsFeatureHelperUnitTest {
                             return true;
                         })
                 .when(mForeignSessionHelperJniMock)
-                .getMobileAndTabletForeignSessions(eq(1L), eq(new ArrayList<>()));
+                .getMobileAndTabletForeignSessions(
+                        eq(mNativeForeignSessionHelper), eq(new ArrayList<>()));
 
         mHelper.maybeShowPromo(
                 mActivity,
@@ -231,7 +308,6 @@ public class RestoreTabsFeatureHelperUnitTest {
         verify(mMockTracker).notifyEvent(eq(EventConstants.RESTORE_TABS_ON_FIRST_RUN_SHOW_PROMO));
 
         verify(mDelegate).showPromo(anyList());
-        verify(mForeignSessionHelperJniMock, never()).destroy(eq(1L));
     }
 
     @Test
@@ -241,8 +317,10 @@ public class RestoreTabsFeatureHelperUnitTest {
         mSharedPreferencesManager.writeLong(
                 ChromePreferenceKeys.FIRST_CTA_START_TIMESTAMP, oldTimestamp);
 
-        when(mMockTracker.wouldTriggerHelpUi(eq(RESTORE_TABS_FEATURE))).thenReturn(false);
-        when(mMockTracker.shouldTriggerHelpUi(eq(RESTORE_TABS_FEATURE))).thenReturn(false);
+        when(mMockTracker.wouldTriggerHelpUi(
+                        eq(RESTORE_TABS_FEATURE), eq(new FeatureProperties(UiFormat.BOTTOM_SHEET))))
+                .thenReturn(false);
+        when(mMockTracker.shouldTriggerHelpUi(eq(RESTORE_TABS_FEATURE), any())).thenReturn(false);
 
         mHelper.maybeShowPromo(
                 mActivity,
@@ -258,7 +336,6 @@ public class RestoreTabsFeatureHelperUnitTest {
 
         verify(mDelegate, never()).showPromo(anyList());
         verify(mForeignSessionHelperJniMock, never()).init(any(Profile.class));
-        verify(mForeignSessionHelperJniMock, never()).destroy(anyLong());
     }
 
     @Test
@@ -267,14 +344,14 @@ public class RestoreTabsFeatureHelperUnitTest {
         ForeignSession session =
                 new ForeignSession(
                         "tag", "John's iPhone 6", 32L, Collections.emptyList(), FormFactor.PHONE);
-        int result =
+        int[] result =
                 foreignSessionHelper.openForeignSessionTabsAsBackgroundTabs(
                         Collections.emptyList(), session, mTabCreatorManager);
 
-        Assert.assertEquals(0, result);
+        Assert.assertArrayEquals(new int[0], result);
         verify(mTabCreatorManager, never()).getTabCreator(/* incognito= */ false);
         verify(mForeignSessionHelperJniMock, never())
-                .openForeignSessionTabsAsBackgroundTabs(anyLong(), any(), any(), any());
+                .openForeignSessionTabsAsBackgroundTabs(any(), any(), any(), any(), anyBoolean());
     }
 
     @Test
@@ -302,21 +379,53 @@ public class RestoreTabsFeatureHelperUnitTest {
                         FormFactor.PHONE);
 
         when(mForeignSessionHelperJniMock.openForeignSessionTabsAsBackgroundTabs(
-                        eq(1L), eq(newTab), eq(new int[] {101, 102}), eq("test_tag")))
-                .thenReturn(2);
+                        eq(mNativeForeignSessionHelper),
+                        eq(newTab),
+                        eq(new int[] {101, 102}),
+                        eq("test_tag"),
+                        eq(false)))
+                .thenReturn(new int[] {7, Tab.INVALID_TAB_ID});
 
         var userActionTester = new UserActionTester();
-        int result =
+        int[] result =
                 foreignSessionHelper.openForeignSessionTabsAsBackgroundTabs(
                         sessionTabs, session, mTabCreatorManager);
 
-        Assert.assertEquals(2, result);
-        Assert.assertEquals(2, userActionTester.getActionCount("MobileCrossDeviceTabJourney"));
+        Assert.assertArrayEquals(new int[] {7, Tab.INVALID_TAB_ID}, result);
+        Assert.assertEquals(1, userActionTester.getActionCount("MobileCrossDeviceTabJourney"));
         userActionTester.tearDown();
 
         verify(mForeignSessionHelperJniMock)
                 .openForeignSessionTabsAsBackgroundTabs(
-                        eq(1L), eq(newTab), eq(new int[] {101, 102}), eq("test_tag"));
+                        eq(mNativeForeignSessionHelper),
+                        eq(newTab),
+                        eq(new int[] {101, 102}),
+                        eq("test_tag"),
+                        eq(false));
+    }
+
+    @Test
+    public void testOpenForeignSessionTabsInBackground_returnsIdsForAnchor() {
+        ForeignSessionHelper foreignSessionHelper = new ForeignSessionHelper(mProfile);
+        Tab anchorTab = mock(Tab.class);
+        ForeignSessionTab tab1 =
+                new ForeignSessionTab(JUnitTestGURLs.URL_1, "title1", 32L, 32L, 101);
+        ForeignSession session =
+                new ForeignSession(
+                        "test_tag",
+                        "John's iPhone 6",
+                        32L,
+                        Collections.emptyList(),
+                        FormFactor.PHONE);
+        when(mForeignSessionHelperJniMock.openForeignSessionTabsAsBackgroundTabs(
+                        mNativeForeignSessionHelper, anchorTab, new int[] {101}, "test_tag", true))
+                .thenReturn(new int[] {7});
+
+        int[] result =
+                foreignSessionHelper.openForeignSessionTabsInBackground(
+                        List.of(tab1), session, anchorTab);
+
+        Assert.assertArrayEquals(new int[] {7}, result);
     }
 
     @Test
@@ -340,12 +449,101 @@ public class RestoreTabsFeatureHelperUnitTest {
                         Collections.emptyList(),
                         FormFactor.PHONE);
 
-        int result =
+        int[] result =
                 foreignSessionHelper.openForeignSessionTabsAsBackgroundTabs(
                         sessionTabs, session, mTabCreatorManager);
 
-        Assert.assertEquals(0, result);
+        Assert.assertArrayEquals(new int[] {Tab.INVALID_TAB_ID}, result);
         verify(mForeignSessionHelperJniMock, never())
-                .openForeignSessionTabsAsBackgroundTabs(anyLong(), any(), any(), any());
+                .openForeignSessionTabsAsBackgroundTabs(any(), any(), any(), any(), anyBoolean());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.RESTORE_TAB_GROUPS_ON_FRE)
+    public void testRestoreTabsFeatureHelper_tabGroupsNotReady_skipsWithoutTrigger() {
+        setUpTabGroupSync(/* enabled= */ true);
+        when(mTabGroupSyncService.isInitialized()).thenReturn(false);
+        setUpSyncedSession();
+        HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.RestoreTabsOnFRE.PromoShowResult2",
+                        RestoreTabsOnFREPromoShowResult.TAB_GROUPS_NOT_READY);
+
+        maybeShowPromo();
+
+        verify(mMockTracker, never()).shouldTriggerHelpUi(any(), any());
+        verify(mDelegate, never()).showPromo(anyList());
+        watcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.RESTORE_TAB_GROUPS_ON_FRE)
+    public void testRestoreTabsFeatureHelper_tabGroupsReady_showsPromo() {
+        setUpTabGroupSync(/* enabled= */ true);
+        when(mTabGroupSyncService.isInitialized()).thenReturn(true);
+        setUpSyncedSession();
+
+        maybeShowPromo();
+
+        verify(mDelegate).showPromo(anyList());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.RESTORE_TAB_GROUPS_ON_FRE)
+    public void testRestoreTabsFeatureHelper_tabGroupSyncDisabled_showsPromo() {
+        setUpTabGroupSync(/* enabled= */ false);
+        setUpSyncedSession();
+
+        maybeShowPromo();
+
+        verify(mTabGroupSyncService, never()).isInitialized();
+        verify(mDelegate).showPromo(anyList());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.RESTORE_TAB_GROUPS_ON_FRE)
+    public void testRestoreTabsFeatureHelper_flagOff_ignoresTabGroupSync() {
+        setUpTabGroupSync(/* enabled= */ true);
+        setUpSyncedSession();
+
+        maybeShowPromo();
+
+        verify(mTabGroupSyncService, never()).isInitialized();
+        verify(mDelegate).showPromo(anyList());
+    }
+
+    private void setUpTabGroupSync(boolean enabled) {
+        TabGroupSyncFeaturesJni.setInstanceForTesting(mTabGroupSyncFeaturesJniMock);
+        when(mTabGroupSyncFeaturesJniMock.isTabGroupSyncEnabled(mProfile)).thenReturn(enabled);
+        TabGroupSyncServiceFactory.setForTesting(mTabGroupSyncService);
+    }
+
+    /** Makes the foreign session helper report one phone with one tab. */
+    private void setUpSyncedSession() {
+        List<ForeignSessionTab> tabs = new ArrayList<>();
+        tabs.add(new ForeignSessionTab(JUnitTestGURLs.URL_1, "title", 32L, 32L, 0));
+        List<ForeignSessionWindow> windows = new ArrayList<>();
+        windows.add(new ForeignSessionWindow(31L, 1, tabs));
+        ForeignSession session =
+                new ForeignSession("tag", "John's iPhone 6", 32L, windows, FormFactor.PHONE);
+        doAnswer(
+                        invocation -> {
+                            List<ForeignSession> invokedSessions = invocation.getArgument(1);
+                            invokedSessions.add(session);
+                            return true;
+                        })
+                .when(mForeignSessionHelperJniMock)
+                .getMobileAndTabletForeignSessions(mNativeForeignSessionHelper, new ArrayList<>());
+    }
+
+    private void maybeShowPromo() {
+        mHelper.maybeShowPromo(
+                mActivity,
+                mProfile,
+                mTabCreatorManager,
+                mBottomSheetController,
+                mGTSTabListModelSizeSupplier,
+                mScrollGTSToRestoredTabsCallback,
+                /* modalDialogManagerSupplier= */ null);
     }
 }

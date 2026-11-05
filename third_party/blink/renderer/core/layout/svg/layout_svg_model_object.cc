@@ -92,7 +92,7 @@ void LayoutSVGModelObject::AddOutlineRects(OutlineRectCollector& collector,
     return;
   collector.AddRect(PhysicalRect::EnclosingRect(visual_rect));
   if (info)
-    *info = OutlineInfo::GetUnzoomedFromStyle(StyleRef());
+    *info = OutlineInfo::GetUnzoomedFromStyle(Style());
 }
 
 gfx::RectF LayoutSVGModelObject::LocalBoundingBoxRectForAccessibility(
@@ -128,7 +128,7 @@ bool LayoutSVGModelObject::CheckForImplicitTransformChange(
   NOT_DESTROYED();
   // If the transform is relative to the reference box, check relevant
   // conditions to see if we need to recompute the transform.
-  switch (StyleRef().TransformBox()) {
+  switch (Style().TransformBox()) {
     case ETransformBox::kViewBox:
       return layout_info.viewport_changed;
     case ETransformBox::kFillBox:
@@ -140,10 +140,17 @@ bool LayoutSVGModelObject::CheckForImplicitTransformChange(
   NOTREACHED();
 }
 
+void LayoutSVGModelObject::RecalcVisualOverflow() {
+  NOT_DESTROYED();
+  // Inside SVG we need to walk the subtree in search for physical fragment
+  // roots, such as SVG text.
+  RecalcVisualOverflowForChildren();
+}
+
 void LayoutSVGModelObject::ImageChanged(WrappedImagePtr image,
                                         CanDeferInvalidation defer) {
   NOT_DESTROYED();
-  for (const FillLayer* layer = &StyleRef().MaskLayers(); layer;
+  for (const FillLayer* layer = &Style().MaskLayers(); layer;
        layer = layer->NextForUsedValue()) {
     const StyleImage* style_image = layer->GetImage();
     if (style_image && image == style_image->Data()) {
@@ -171,6 +178,12 @@ void LayoutSVGModelObject::StyleDidChange(
     if (diff.transform_changed) {
       SetNeedsTransformUpdate();
     }
+  }
+
+  if (old_style && old_style->EffectiveZoom() != new_style.EffectiveZoom()) {
+    // `CompositorAnimations::CanStartTransformAnimationOnCompositorForSVG` has
+    // a dependency on zoom which is used for the transform paint property.
+    SetNeedsPaintPropertyUpdate();
   }
 
   SetHasTransformRelatedProperty(new_style.HasTransformRelatedPropertyForSVG());
@@ -204,16 +217,18 @@ void LayoutSVGModelObject::InsertedIntoTree() {
   LayoutObject::InsertedIntoTree();
   LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this,
                                                                          false);
-  if (StyleRef().HasSVGEffect())
+  if (Style().HasSVGEffect()) {
     SetNeedsPaintPropertyUpdate();
+  }
 }
 
 void LayoutSVGModelObject::WillBeRemovedFromTree() {
   NOT_DESTROYED();
   LayoutSVGResourceContainer::MarkForLayoutAndParentResourceInvalidation(*this,
                                                                          false);
-  if (StyleRef().HasSVGEffect())
+  if (Style().HasSVGEffect()) {
     SetNeedsPaintPropertyUpdate();
+  }
   LayoutObject::WillBeRemovedFromTree();
 }
 

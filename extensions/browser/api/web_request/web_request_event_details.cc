@@ -9,10 +9,13 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
@@ -27,12 +30,15 @@
 #include "extensions/browser/api/web_request/web_request_permissions.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/web_request/web_request_resource_type.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "net/base/auth.h"
 #include "net/base/upload_data_stream.h"
 #include "net/cert/cert_status_flags.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
+#include "net/ssl/ssl_cipher_suite_names.h"
+#include "net/ssl/ssl_connection_status_flags.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -55,16 +61,27 @@ void EraseHeadersIf(
 
 // NOTE: Keep in sync with `filterSecurityInfo()` in
 // //extensions/renderer/resources/web_request_event.js.
-void FilterSecurityInfo(base::DictValue& result, int extra_info_spec) {
+void FilterSecurityInfo(base::DictValue& result,
+                        int extra_info_spec,
+                        const ExtensionId& extension_id) {
   if (!(extra_info_spec & ExtraInfoSpec::SECURITY_INFO)) {
     result.Remove(keys::kSecurityInfoKey);
     return;
   }
+  auto* security_info = result.FindDict(keys::kSecurityInfoKey);
+  if (!security_info) {
+    return;
+  }
+  // Controlled Frame is the only non-extension context allowed to register
+  // `SECURITY_INFO` (see `WebRequestAPI::OnListenerAdded` in
+  // `web_request_api.cc`), and only exposes the WICG-specified `state` and
+  // `certificates` fields. `filterSecurityInfo()` in `web_request_event.js`
+  // intentionally omits this check because the browser strips these keys here.
+  if (extension_id.empty()) {
+    security_info->Remove(keys::kProtocolVersionKey);
+    security_info->Remove(keys::kCipherSuiteKey);
+  }
   if (!(extra_info_spec & ExtraInfoSpec::SECURITY_INFO_RAW_DER)) {
-    auto* security_info = result.FindDict(keys::kSecurityInfoKey);
-    if (!security_info) {
-      return;
-    }
     auto* certificates = security_info->FindList(keys::kCertificatesKey);
     if (!certificates || certificates->size() <= 0) {
       return;
@@ -90,6 +107,39 @@ std::string StringifyCertificateFingerprintBytes(
   }
 
   return fingerprint_str;
+}
+
+// The status line's reason phrase consists of arbitrary bytes sent by the
+// server, so it isn't guaranteed to be valid UTF-8. base::Value requires valid
+// UTF-8 strings, and `statusLine` is exposed to extensions as a string, so
+// replace any invalid sequences with U+FFFD.
+std::string SanitizeStatusLine(std::string status_line) {
+  if (base::IsStringUTF8AllowingNoncharacters(status_line)) {
+    return status_line;
+  }
+  return base::UTF16ToUTF8(base::UTF8ToUTF16(status_line));
+}
+
+// Maps `net::SSLVersion` to the `webRequest.SecurityInfo.protocolVersion`
+// string format (matching Firefox). BoringSSL's QUIC handshake always uses
+// TLS 1.3.
+const char* SSLVersionToWebRequestProtocolVersion(net::SSLVersion version) {
+  switch (version) {
+    case net::SSL_CONNECTION_VERSION_TLS1:
+      return "TLSv1";
+    case net::SSL_CONNECTION_VERSION_TLS1_1:
+      return "TLSv1.1";
+    case net::SSL_CONNECTION_VERSION_TLS1_2:
+      return "TLSv1.2";
+    case net::SSL_CONNECTION_VERSION_TLS1_3:
+    case net::SSL_CONNECTION_VERSION_QUIC:
+      return "TLSv1.3";
+    case net::SSL_CONNECTION_VERSION_UNKNOWN:
+    case net::SSL_CONNECTION_VERSION_SSL2:
+    case net::SSL_CONNECTION_VERSION_SSL3:
+    case net::SSL_CONNECTION_VERSION_MAX:
+      return nullptr;
+  }
 }
 
 }  // namespace
@@ -176,7 +226,8 @@ void WebRequestEventDetails::SetResponseHeaders(
     dict_.Set(keys::kStatusLineKey, "");
   } else {
     dict_.Set(keys::kStatusCodeKey, response_headers->response_code());
-    dict_.Set(keys::kStatusLineKey, response_headers->GetStatusLine());
+    dict_.Set(keys::kStatusLineKey,
+              SanitizeStatusLine(response_headers->GetStatusLine()));
   }
 
   if (extra_info_spec_ & ExtraInfoSpec::RESPONSE_HEADERS) {
@@ -201,9 +252,13 @@ void WebRequestEventDetails::SetSecurityInfo(const WebRequestInfo& request) {
     return;
   }
 
+  if (!request.ssl_info) {
+    return;
+  }
+
   base::DictValue security_info;
 
-  if (!request.ssl_info || !request.ssl_info->cert) {
+  if (!request.ssl_info->cert) {
     security_info.Set(keys::kStateKey, "insecure");
   } else {
     if (net::IsCertStatusError(request.ssl_info->cert_status)) {
@@ -232,6 +287,24 @@ void WebRequestEventDetails::SetSecurityInfo(const WebRequestInfo& request) {
     certificates.Append(std::move(leaf_cert));
 
     security_info.Set(keys::kCertificatesKey, std::move(certificates));
+
+    if (base::FeatureList::IsEnabled(
+            extensions_features::kWebRequestSecurityInfo) &&
+        request.ssl_info->connection_status != 0) {
+      net::SSLVersion ssl_version = net::SSLConnectionStatusToVersion(
+          request.ssl_info->connection_status);
+      if (const char* protocol_version =
+              SSLVersionToWebRequestProtocolVersion(ssl_version)) {
+        security_info.Set(keys::kProtocolVersionKey, protocol_version);
+      }
+
+      uint16_t cipher_suite = net::SSLConnectionStatusToCipherSuite(
+          request.ssl_info->connection_status);
+      if (const char* cipher_name =
+              net::SSLCipherSuiteToStandardName(cipher_suite)) {
+        security_info.Set(keys::kCipherSuiteKey, cipher_name);
+      }
+    }
   }
 
   dict_.Set(keys::kSecurityInfoKey, std::move(security_info));
@@ -275,7 +348,7 @@ base::DictValue WebRequestEventDetails::GetFilteredDict(
     result.Set(keys::kResponseHeadersKey, std::move(response_headers));
   }
 
-  FilterSecurityInfo(result, extra_info_spec);
+  FilterSecurityInfo(result, extra_info_spec, extension_id);
 
   // Only listeners with a permission for the initiator should receive it.
   if (initiator_) {

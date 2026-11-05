@@ -141,6 +141,11 @@ class NetworkServiceTest : public testing::Test {
 
   void DestroyService() { service_.reset(); }
 
+  void RecreateService(mojom::NetworkServiceParamsPtr params) {
+    service_.reset();
+    service_ = NetworkService::CreateForTesting(std::move(params));
+  }
+
  private:
   base::test::TaskEnvironment task_environment_;
   std::unique_ptr<NetworkService> service_;
@@ -758,6 +763,30 @@ TEST_F(NetworkServiceTest, DnsClientEnableDisable) {
   EXPECT_FALSE(dns_client_ptr->CanUseInsecureDnsTransactions(std::nullopt));
   EXPECT_EQ(net::SecureDnsMode::kAutomatic,
             dns_client_ptr->GetEffectiveConfig().secure_dns_mode);
+}
+
+TEST_F(NetworkServiceTest, InitialInsecureDnsMode) {
+  EXPECT_EQ(service()->host_resolver_manager()->GetDnsConfigAsValue().FindBool(
+                "can_use_insecure_dns_transactions"),
+            false);
+
+  if (!net::features::IsDnsPlatformSupported()) {
+    return;
+  }
+
+  DestroyService();
+  mojom::NetworkServiceParamsPtr params = mojom::NetworkServiceParams::New();
+  params->initial_insecure_dns_mode =
+      net::InsecureDnsMode::kEnabledPlatformNoSystem;
+  auto custom_service = std::make_unique<NetworkService>(
+      /*registry=*/nullptr, mojo::NullReceiver(),
+      /*delay_initialization_until_set_client=*/true);
+  custom_service->Initialize(std::move(params),
+                             /*mock_network_change_notifier=*/true);
+  EXPECT_EQ(
+      custom_service->host_resolver_manager()->GetDnsConfigAsValue().FindBool(
+          "can_use_insecure_dns_transactions"),
+      true);
 }
 
 TEST_F(NetworkServiceTest, HandlesAdditionalDnsQueryTypesEnableDisable) {
@@ -1802,6 +1831,29 @@ TEST_F(NetworkServiceTestWithService, SetNetworkConditions) {
   client()->RunUntilComplete();
   EXPECT_EQ(net::ERR_INTERNET_DISCONNECTED,
             client()->completion_status().error_code);
+
+  {
+    std::vector<mojom::MatchedNetworkConditionsPtr> network_conditions;
+    network_conditions.emplace_back(mojom::MatchedNetworkConditions::New());
+    network_conditions.back()->conditions = mojom::NetworkConditions::New();
+    network_conditions.back()->conditions->offline = false;
+    network_conditions.back()->conditions->latency = base::Milliseconds(100);
+    context()->SetNetworkConditions(profile_id, client_id,
+                                    std::move(network_conditions));
+  }
+  request.enable_load_timing = true;
+  StartLoadingURL(request, OriginatingProcessId::browser());
+  client()->RunUntilComplete();
+  EXPECT_EQ(net::OK, client()->completion_status().error_code);
+  const net::LoadTimingInfo& load_timing =
+      client()->response_head()->load_timing;
+  EXPECT_GE(load_timing.receive_headers_start - load_timing.send_end,
+            base::Milliseconds(100));
+  EXPECT_GE(load_timing.receive_non_informational_headers_start -
+                load_timing.send_end,
+            base::Milliseconds(100));
+  EXPECT_GE(load_timing.receive_headers_end, load_timing.receive_headers_start);
+
   context()->SetNetworkConditions(profile_id, client_id, {});
   StartLoadingURL(request, OriginatingProcessId::browser());
   client()->RunUntilComplete();
@@ -2138,6 +2190,8 @@ class ClearSiteDataAuthCertObserver : public TestURLLoaderNetworkObserver {
 
   void OnClearSiteData(
       const GURL& url,
+      const std::optional<net::SchemefulSite>& top_level_site,
+      const std::optional<base::UnguessableToken>& nonce,
       const std::string& header_value,
       int load_flags,
       const std::optional<net::CookiePartitionKey>& cookie_partition_key,
@@ -2193,6 +2247,57 @@ TEST_F(NetworkServiceNetworkDelegateTest, ClearSiteDataObserver) {
   LoadURL(url, mojom::kURLLoadOptionNone, clear_site_observer.Bind());
   EXPECT_EQ(net::OK, client()->completion_status().error_code);
   EXPECT_EQ(1, clear_site_observer.on_clear_site_data_counter());
+}
+
+// Verifies the observer precedence:
+// per-URLLoaderFactory > per-NetworkContext > per-NetworkService.
+TEST_F(NetworkServiceNetworkDelegateTest,
+       DefaultURLLoaderNetworkObserverPrecedence) {
+  const char kClearCookiesHeader[] = "Clear-Site-Data: \"cookies\"";
+  ClearSiteDataAuthCertObserver service_observer;
+  mojom::NetworkServiceParamsPtr service_params =
+      mojom::NetworkServiceParams::New();
+  service_params->default_observer = service_observer.Bind();
+  RecreateService(std::move(service_params));
+
+  // 1. When NetworkContext and URLLoaderFactory do not specify an observer,
+  // the NetworkService default observer is used.
+  CreateNetworkContext();
+  GURL url = AddQuery(https_server()->GetURL("/service"), "header",
+                      kClearCookiesHeader);
+  LoadURL(url);
+  EXPECT_EQ(net::OK, client()->completion_status().error_code);
+  EXPECT_EQ(1, service_observer.on_clear_site_data_counter());
+  service_observer.ClearOnClearSiteDataCounter();
+
+  // 2. When NetworkContext specifies `default_url_loader_network_observer` and
+  // URLLoaderFactory does not specify an observer, the NetworkContext default
+  // observer is used instead of the NetworkService default observer.
+  network_context_.reset();
+  ClearSiteDataAuthCertObserver context_observer;
+  mojom::NetworkContextParamsPtr context_params =
+      mojom::NetworkContextParams::New();
+  context_params->default_url_loader_network_observer = context_observer.Bind();
+  CreateNetworkContext(std::move(context_params));
+
+  url = AddQuery(https_server()->GetURL("/context"), "header",
+                 kClearCookiesHeader);
+  LoadURL(url);
+  EXPECT_EQ(net::OK, client()->completion_status().error_code);
+  EXPECT_EQ(1, context_observer.on_clear_site_data_counter());
+  EXPECT_EQ(0, service_observer.on_clear_site_data_counter());
+  context_observer.ClearOnClearSiteDataCounter();
+
+  // 3. When URLLoaderFactory also specifies `url_loader_network_observer`, the
+  // per-factory observer takes precedence over both defaults.
+  ClearSiteDataAuthCertObserver factory_observer;
+  url = AddQuery(https_server()->GetURL("/factory"), "header",
+                 kClearCookiesHeader);
+  LoadURL(url, mojom::kURLLoadOptionNone, factory_observer.Bind());
+  EXPECT_EQ(net::OK, client()->completion_status().error_code);
+  EXPECT_EQ(1, factory_observer.on_clear_site_data_counter());
+  EXPECT_EQ(0, context_observer.on_clear_site_data_counter());
+  EXPECT_EQ(0, service_observer.on_clear_site_data_counter());
 }
 
 // Check that headers are handled and passed to the client correctly.

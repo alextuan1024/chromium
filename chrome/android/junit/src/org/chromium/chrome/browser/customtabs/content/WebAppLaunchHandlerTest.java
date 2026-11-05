@@ -29,18 +29,20 @@ import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PathPermission;
 import android.content.pm.ProviderInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
-import android.os.Looper;
+import android.os.PatternMatcher;
 import android.os.Process;
 import android.text.TextUtils;
 
 import androidx.annotation.Nullable;
 import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.browser.customtabs.CustomTabsSessionToken;
+import androidx.browser.customtabs.TrustedWebUtils;
 import androidx.browser.trusted.FileHandlingData;
 import androidx.browser.trusted.LaunchHandlerClientMode;
 import androidx.browser.trusted.TrustedWebActivityIntentBuilder;
@@ -54,50 +56,136 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.IntentUtils;
 import org.chromium.base.Promise;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.ShortcutHelper;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
+import org.chromium.chrome.browser.browserservices.intents.WebApkExtras;
+import org.chromium.chrome.browser.browserservices.intents.WebappIcon;
 import org.chromium.chrome.browser.browserservices.ui.controller.CurrentPageVerifier;
 import org.chromium.chrome.browser.browserservices.ui.controller.Verifier;
 import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.CustomTabsConnection;
+import org.chromium.chrome.browser.flags.ActivityType;
+import org.chromium.components.webapps.WebApkDistributor;
 import org.chromium.content_public.browser.test.mock.MockWebContents;
 import org.chromium.url.JUnitTestGURLs;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /** Tests for {@link WebAppLaunchHandler}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class WebAppLaunchHandlerTest {
+    // Robolectric does not shadow ContextImpl#checkUriPermission(Uri, int, int, int), and
+    // Activity#attach initializes mInitialCaller to a non-null ComponentCaller with uid 0.
+    private static class TestActivity extends Activity {
+        private final Map<Uri, Integer> mGrantedUriModes = new HashMap<>();
+        private final Map<Uri, Integer> mGrantedFullUriModes = new HashMap<>();
+        private @Nullable Integer mExpectedPid;
+        private int mExpectedUid = -1;
+        private @Nullable ComponentCaller mCaller;
+
+        void setUriPermission(Uri uri, int grantedModeFlags) {
+            mGrantedUriModes.put(uri, grantedModeFlags);
+        }
+
+        void setFullUriPermission(Uri uri, int grantedModeFlags) {
+            mGrantedFullUriModes.put(uri, grantedModeFlags);
+        }
+
+        void denyUriPermission(Uri uri) {
+            mGrantedUriModes.put(uri, /* grantedModeFlags= */ 0);
+        }
+
+        @Override
+        public int checkUriPermission(Uri uri, int pid, int uid, int modeFlags) {
+            if (modeFlags == 0) {
+                return PackageManager.PERMISSION_DENIED;
+            }
+            if (mExpectedPid != null && pid != mExpectedPid) {
+                return PackageManager.PERMISSION_DENIED;
+            }
+            if (mExpectedUid != -1 && uid != mExpectedUid) {
+                return PackageManager.PERMISSION_DENIED;
+            }
+            Integer grantedModes = mGrantedUriModes.get(uri);
+            if (grantedModes == null) {
+                return PackageManager.PERMISSION_GRANTED;
+            }
+            return (grantedModes & modeFlags) == modeFlags
+                    ? PackageManager.PERMISSION_GRANTED
+                    : PackageManager.PERMISSION_DENIED;
+        }
+
+        @Override
+        public int checkContentUriPermissionFull(Uri uri, int pid, int uid, int modeFlags) {
+            if (modeFlags == 0) {
+                return PackageManager.PERMISSION_DENIED;
+            }
+            if (mExpectedPid != null && pid != mExpectedPid) {
+                return PackageManager.PERMISSION_DENIED;
+            }
+            if (mExpectedUid != -1 && uid != mExpectedUid) {
+                return PackageManager.PERMISSION_DENIED;
+            }
+            Integer grantedFullModes = mGrantedFullUriModes.get(uri);
+            if (grantedFullModes != null) {
+                return (grantedFullModes & modeFlags) == modeFlags
+                        ? PackageManager.PERMISSION_GRANTED
+                        : PackageManager.PERMISSION_DENIED;
+            }
+            return checkUriPermission(uri, pid, uid, modeFlags);
+        }
+
+        @Override
+        public @Nullable ComponentCaller getInitialCaller() {
+            return mCaller;
+        }
+
+        @Override
+        public @Nullable ComponentCaller getCurrentCaller() {
+            return mCaller;
+        }
+    }
+
     static final int WRONG_CLIENT_MODE = 65;
 
     public static final String INITIAL_URL = JUnitTestGURLs.INITIAL_URL.getSpec();
     public static final String OTHER_URL = JUnitTestGURLs.EXAMPLE_URL.getSpec();
     public static final String CONTENT_URI = "content://com.a.b.c/a";
     public static final String TEST_PACKAGE_NAME = "com.test";
-    private FileHandlingData mFileHandlingData;
-    private String[] mExpectedFileList = new String[0];
-    private boolean[] mExpectedCanWriteList = new boolean[0];
 
     @Rule public MockitoRule mockitoRule = MockitoJUnit.rule();
     @Mock MockWebContents mWebContentsMock;
     @Mock CustomTabActivityNavigationController mNavigationControllerMock;
     @Mock Verifier mVerifierMock;
     @Mock CurrentPageVerifier mCurrentPageVerifierMock;
-    @Mock Activity mActivityMock;
     @Mock WebAppLaunchHandler.Natives mWebAppLaunchHandlerJniMock;
     @Mock CustomTabsConnection mCustomTabsConnectionMock;
+    @Mock CustomTabActivityTabProvider mTabProviderMock;
+
     private final SessionHolder.CustomTab mSessionHolder =
             SessionHolder.of(CustomTabsSessionToken.createMockSessionTokenForTesting());
-    @Mock CustomTabActivityTabProvider mTabProviderMock;
+    private TestActivity mActivity;
+    private FileHandlingData mFileHandlingData;
+    private String[] mExpectedFileList = new String[0];
+    private boolean[] mExpectedCanWriteList = new boolean[0];
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(TestActivity.class).setup().get();
         WebAppLaunchHandlerJni.setInstanceForTesting(mWebAppLaunchHandlerJniMock);
         CustomTabsConnection.setInstanceForTesting(mCustomTabsConnectionMock);
 
@@ -107,10 +195,8 @@ public class WebAppLaunchHandlerTest {
                         new CurrentPageVerifier.VerificationState(
                                 "", "", CurrentPageVerifier.VerificationStatus.SUCCESS));
 
-        when(mCustomTabsConnectionMock.getClientUidForSession(eq(mSessionHolder)))
-                .thenReturn(12345);
-        when(mCustomTabsConnectionMock.getClientPidForSession(eq(mSessionHolder)))
-                .thenReturn(67890);
+        when(mCustomTabsConnectionMock.getClientUidForSession(any())).thenReturn(12345);
+        when(mCustomTabsConnectionMock.getClientPidForSession(any())).thenReturn(67890);
         when(mWebContentsMock.getLastCommittedUrl()).thenReturn(JUnitTestGURLs.INITIAL_URL);
         when(mTabProviderMock.getInitialTabCreationMode()).thenReturn(TabCreationMode.DEFAULT);
         when(mTabProviderMock.getSpeculatedUrl()).thenReturn(null);
@@ -161,7 +247,7 @@ public class WebAppLaunchHandlerTest {
                 mCurrentPageVerifierMock,
                 mNavigationControllerMock,
                 mWebContentsMock,
-                mActivityMock,
+                mActivity,
                 mTabProviderMock);
     }
 
@@ -279,7 +365,7 @@ public class WebAppLaunchHandlerTest {
             launchHandler.handleNewIntent(dataProvider);
         }
 
-        shadowOf(Looper.getMainLooper()).idle();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         if (expectedLoadUrl) {
             verify(mNavigationControllerMock, times(1))
@@ -569,15 +655,16 @@ public class WebAppLaunchHandlerTest {
                 /* expectedNotifyQueue= */ true);
     }
 
-    void doTestNavigateNewInitialIntent(Integer clientMode) {
+    private void doTestNavigateNewInitialIntent(
+            @LaunchHandlerClientMode.ClientMode int clientMode) {
         clearInvocations(mWebAppLaunchHandlerJniMock, mNavigationControllerMock);
         CustomTabIntentDataProvider dataProvider =
                 createIntentDataProvider(clientMode, INITIAL_URL);
         WebAppLaunchHandler launchHandler = createWebAppLaunchHandler();
         launchHandler.handleInitialIntent(dataProvider);
-        shadowOf(Looper.getMainLooper()).idle();
+        RobolectricUtil.runAllBackgroundAndUi();
 
-        verify(mActivityMock, never()).startActivity(any());
+        Assert.assertNull(shadowOf(mActivity).getNextStartedActivity());
         verifyNoInteractions(mNavigationControllerMock);
 
         String expectedScope = ShortcutHelper.getScopeFromUrl(INITIAL_URL);
@@ -598,12 +685,16 @@ public class WebAppLaunchHandlerTest {
         verify(mWebAppLaunchHandlerJniMock, times(1)).onLaunchVerified(any(), anyLong(), eq(true));
     }
 
-    void doTestNavigateNewNewIntent(Integer clientMode, int expectedStartActivityTimes) {
-        doTestNavigateNewNewIntent(clientMode, expectedStartActivityTimes, false);
+    private void doTestNavigateNewNewIntent(
+            @LaunchHandlerClientMode.ClientMode int clientMode, int expectedStartActivityTimes) {
+        doTestNavigateNewNewIntent(
+                clientMode, expectedStartActivityTimes, /* hasSpeculativeNavigation= */ false);
     }
 
-    void doTestNavigateNewNewIntent(
-            Integer clientMode, int expectedStartActivityTimes, boolean hasSpeculativeNavigation) {
+    private void doTestNavigateNewNewIntent(
+            @LaunchHandlerClientMode.ClientMode int clientMode,
+            int expectedStartActivityTimes,
+            boolean hasSpeculativeNavigation) {
         clearInvocations(mWebAppLaunchHandlerJniMock, mNavigationControllerMock);
         if (hasSpeculativeNavigation) {
             when(mTabProviderMock.getSpeculatedUrl()).thenReturn(OTHER_URL);
@@ -614,28 +705,28 @@ public class WebAppLaunchHandlerTest {
         CustomTabIntentDataProvider dataProvider = createIntentDataProvider(clientMode, OTHER_URL);
         WebAppLaunchHandler launchHandler = createWebAppLaunchHandler();
         launchHandler.handleNewIntent(dataProvider);
-        shadowOf(Looper.getMainLooper()).idle();
+        RobolectricUtil.runAllBackgroundAndUi();
 
+        Intent startedIntent = shadowOf(mActivity).getNextStartedActivity();
         if (expectedStartActivityTimes == 0) {
-            verify(mActivityMock, never()).startActivity(any());
+            Assert.assertNull(startedIntent);
         } else {
-            verify(mActivityMock, times(expectedStartActivityTimes))
-                    .startActivity(
-                            argThat(
-                                    params -> {
-                                        if (params == null
-                                                || params.getData() == null
-                                                || params.getAction() == null) {
-                                            return false;
-                                        }
-                                        return Objects.equals(
-                                                        params.getAction(), Intent.ACTION_VIEW)
-                                                && OTHER_URL.equals(params.getData().toString())
-                                                && (params.getFlags() & FLAG_ACTIVITY_MULTIPLE_TASK)
-                                                        != 0
-                                                && (params.getFlags() & FLAG_ACTIVITY_NEW_TASK)
-                                                        != 0;
-                                    }));
+            Assert.assertEquals(1, expectedStartActivityTimes);
+            Assert.assertNotNull(startedIntent);
+            Assert.assertEquals(Intent.ACTION_VIEW, startedIntent.getAction());
+            Assert.assertEquals(Uri.parse(OTHER_URL), startedIntent.getData());
+            Assert.assertNotEquals(0, startedIntent.getFlags() & FLAG_ACTIVITY_MULTIPLE_TASK);
+            Assert.assertNotEquals(0, startedIntent.getFlags() & FLAG_ACTIVITY_NEW_TASK);
+            if (mExpectedFileList.length > 0) {
+                Bundle fileBundle =
+                        startedIntent.getBundleExtra(
+                                TrustedWebActivityIntentBuilder.EXTRA_FILE_HANDLING_DATA);
+                Assert.assertNotNull(fileBundle);
+                Assert.assertEquals(
+                        Arrays.stream(mExpectedFileList).map(Uri::parse).toList(),
+                        FileHandlingData.fromBundle(fileBundle).uris);
+            }
+            Assert.assertNull(shadowOf(mActivity).getNextStartedActivity());
         }
 
         final int expectedOtherTimes = expectedStartActivityTimes == 0 ? 1 : 0;
@@ -712,9 +803,6 @@ public class WebAppLaunchHandlerTest {
         mExpectedCanWriteList = new boolean[] {true};
         doTestNavigateNewNewIntent(
                 LaunchHandlerClientMode.NAVIGATE_NEW, /* expectedStartActivityTimes= */ 1);
-        verify(mActivityMock, never())
-                .grantUriPermission(
-                        eq(TEST_PACKAGE_NAME), eq(mFileHandlingData.uris.get(0)), anyInt());
     }
 
     @Test
@@ -726,20 +814,13 @@ public class WebAppLaunchHandlerTest {
                         "content://com.android.chrome.FileProvider/passwords/"
                                 + "Chrome%20Passwords.csv");
 
-        when(mActivityMock.checkUriPermission(eq(pwCsv), anyInt(), anyInt(), anyInt()))
-                .thenReturn(PackageManager.PERMISSION_DENIED);
+        mActivity.denyUriPermission(pwCsv);
 
         mFileHandlingData = new FileHandlingData(Arrays.asList(Uri.parse(CONTENT_URI), pwCsv));
         mExpectedFileList = new String[] {CONTENT_URI};
         mExpectedCanWriteList = new boolean[] {true};
         doTestNavigateNewNewIntent(
                 LaunchHandlerClientMode.NAVIGATE_NEW, /* expectedStartActivityTimes= */ 1);
-        verify(mActivityMock, never())
-                .grantUriPermission(
-                        eq(TEST_PACKAGE_NAME), eq(mFileHandlingData.uris.get(0)), anyInt());
-        verify(mActivityMock, never())
-                .grantUriPermission(
-                        eq(TEST_PACKAGE_NAME), eq(mFileHandlingData.uris.get(1)), anyInt());
     }
 
     @Test
@@ -748,8 +829,7 @@ public class WebAppLaunchHandlerTest {
         mFileHandlingData = new FileHandlingData(Arrays.asList(sensitiveUri));
         mExpectedFileList = new String[0]; // Empty array because unauthorized URI is dropped
 
-        when(mActivityMock.checkUriPermission(eq(sensitiveUri), anyInt(), anyInt(), anyInt()))
-                .thenReturn(PackageManager.PERMISSION_DENIED);
+        mActivity.denyUriPermission(sensitiveUri);
 
         doTestHandleIntent(
                 LaunchHandlerClientMode.AUTO,
@@ -769,8 +849,9 @@ public class WebAppLaunchHandlerTest {
         mExpectedFileList = new String[] {authorizedUri.toString()};
         mExpectedCanWriteList = new boolean[] {true};
 
-        when(mActivityMock.checkUriPermission(eq(authorizedUri), anyInt(), anyInt(), anyInt()))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
+        mActivity.setUriPermission(
+                authorizedUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
 
         doTestHandleIntent(
                 LaunchHandlerClientMode.AUTO,
@@ -795,9 +876,8 @@ public class WebAppLaunchHandlerTest {
         intent.putExtra(
                 CustomTabIntentDataProvider.EXTRA_VERIFIED_FILE_CAN_WRITE, new boolean[] {true});
 
-        // Mock checkUriPermission to return DENIED to prove we don't use it
-        when(mActivityMock.checkUriPermission(eq(authorizedUri), anyInt(), anyInt(), anyInt()))
-                .thenReturn(PackageManager.PERMISSION_DENIED);
+        // Deny URI permission to prove we use the stashed data instead.
+        mActivity.denyUriPermission(authorizedUri);
 
         doTestHandleIntent(
                 LaunchHandlerClientMode.AUTO,
@@ -840,9 +920,6 @@ public class WebAppLaunchHandlerTest {
         mExpectedCanWriteList = new boolean[] {true};
         doTestNavigateNewNewIntent(
                 LaunchHandlerClientMode.NAVIGATE_EXISTING, /* expectedStartActivityTimes= */ 1);
-        verify(mActivityMock, never())
-                .grantUriPermission(
-                        eq(TEST_PACKAGE_NAME), eq(mFileHandlingData.uris.get(0)), anyInt());
     }
 
     @Test
@@ -854,7 +931,7 @@ public class WebAppLaunchHandlerTest {
         CustomTabIntentDataProvider dataProvider =
                 createIntentDataProvider(LaunchHandlerClientMode.FOCUS_EXISTING, INITIAL_URL);
         launchHandler.handleInitialIntent(dataProvider);
-        shadowOf(Looper.getMainLooper()).idle();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         String expectedScope = ShortcutHelper.getScopeFromUrl(INITIAL_URL);
         if (TextUtils.isEmpty(expectedScope)) {
@@ -876,7 +953,7 @@ public class WebAppLaunchHandlerTest {
                 .onLaunchVerified(any(), anyLong(), anyBoolean());
 
         promise.fulfill(true);
-        shadowOf(Looper.getMainLooper()).idle();
+        RobolectricUtil.runAllBackgroundAndUi();
 
         verify(mWebAppLaunchHandlerJniMock, times(1)).onLaunchVerified(any(), anyLong(), eq(true));
     }
@@ -890,18 +967,7 @@ public class WebAppLaunchHandlerTest {
         mExpectedCanWriteList = new boolean[] {false};
 
         // Grant read, deny write
-        when(mActivityMock.checkUriPermission(
-                        eq(authorizedUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
-        when(mActivityMock.checkUriPermission(
-                        eq(authorizedUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_DENIED);
+        mActivity.setUriPermission(authorizedUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
         doTestHandleIntent(
                 LaunchHandlerClientMode.AUTO,
@@ -915,7 +981,7 @@ public class WebAppLaunchHandlerTest {
     public void testFileHandling_trampolineFallback() {
         ComponentCaller callerMock = mock(ComponentCaller.class);
         when(callerMock.getUid()).thenReturn(Process.myUid());
-        when(mActivityMock.getCurrentCaller()).thenReturn(callerMock);
+        mActivity.mCaller = callerMock;
 
         final Uri authorizedUri =
                 Uri.parse("content://com.android.externalstorage.documents/photo.png");
@@ -923,8 +989,11 @@ public class WebAppLaunchHandlerTest {
         mExpectedFileList = new String[] {authorizedUri.toString()};
         mExpectedCanWriteList = new boolean[] {true};
 
-        when(mActivityMock.checkUriPermission(eq(authorizedUri), eq(67890), eq(12345), anyInt()))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
+        mActivity.mExpectedPid = 67890;
+        mActivity.mExpectedUid = 12345;
+        mActivity.setUriPermission(
+                authorizedUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
 
         doTestHandleIntent(
                 LaunchHandlerClientMode.AUTO,
@@ -938,7 +1007,7 @@ public class WebAppLaunchHandlerTest {
     public void testFileHandling_trampolineFallback_denied() {
         ComponentCaller callerMock = mock(ComponentCaller.class);
         when(callerMock.getUid()).thenReturn(Process.myUid());
-        when(mActivityMock.getCurrentCaller()).thenReturn(callerMock);
+        mActivity.mCaller = callerMock;
 
         final Uri authorizedUri =
                 Uri.parse("content://com.android.externalstorage.documents/photo.png");
@@ -946,8 +1015,9 @@ public class WebAppLaunchHandlerTest {
         mExpectedFileList = new String[0];
         mExpectedCanWriteList = new boolean[0];
 
-        when(mActivityMock.checkUriPermission(eq(authorizedUri), eq(67890), eq(12345), anyInt()))
-                .thenReturn(PackageManager.PERMISSION_DENIED);
+        mActivity.mExpectedPid = 67890;
+        mActivity.mExpectedUid = 12345;
+        mActivity.denyUriPermission(authorizedUri);
 
         doTestHandleIntent(
                 LaunchHandlerClientMode.AUTO,
@@ -967,7 +1037,8 @@ public class WebAppLaunchHandlerTest {
         CustomTabIntentDataProvider dataProvider = mock(CustomTabIntentDataProvider.class);
         when(dataProvider.getIntent()).thenReturn(intent);
 
-        ShareData result = WebAppLaunchHandler.filterShareData(dataProvider, mActivityMock, null);
+        ShareData result =
+                WebAppLaunchHandler.filterShareData(dataProvider, mActivity, /* caller= */ null);
         Assert.assertNotNull(result);
         Assert.assertEquals("title", result.title);
         Assert.assertEquals(fileUri, result.uris.get(0));
@@ -986,20 +1057,11 @@ public class WebAppLaunchHandlerTest {
         when(dataProvider.getShareData()).thenReturn(rawData);
         when(dataProvider.getSession()).thenReturn(mSessionHolder);
 
-        when(mActivityMock.checkUriPermission(
-                        eq(authorizedUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
-        when(mActivityMock.checkUriPermission(
-                        eq(unauthorizedUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_DENIED);
+        mActivity.setUriPermission(authorizedUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        mActivity.denyUriPermission(unauthorizedUri);
 
-        ShareData result = WebAppLaunchHandler.filterShareData(dataProvider, mActivityMock, null);
+        ShareData result =
+                WebAppLaunchHandler.filterShareData(dataProvider, mActivity, /* caller= */ null);
         Assert.assertNotNull(result);
         Assert.assertEquals("title", result.title);
         Assert.assertEquals(1, result.uris.size());
@@ -1024,24 +1086,71 @@ public class WebAppLaunchHandlerTest {
         when(dataProvider.getShareData()).thenReturn(rawData);
         when(dataProvider.getSession()).thenReturn(mSessionHolder);
 
-        when(mActivityMock.checkUriPermission(
-                        eq(validUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
-        when(mActivityMock.checkUriPermission(
-                        eq(internalUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
+        mActivity.setUriPermission(validUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        mActivity.setUriPermission(internalUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
-        ShareData result = WebAppLaunchHandler.filterShareData(dataProvider, mActivityMock, null);
+        ShareData result =
+                WebAppLaunchHandler.filterShareData(dataProvider, mActivity, /* caller= */ null);
         Assert.assertNotNull(result);
         Assert.assertEquals("title", result.title);
         Assert.assertEquals(1, result.uris.size());
         Assert.assertEquals(validUri, result.uris.get(0));
+    }
+
+    @Test
+    public void testFilterShareData_WebApk_AuthorizedUriKept() throws Exception {
+        Intent intent = new Intent();
+        Uri authorizedUri = Uri.parse("content://org.chromium.webapk.test/file.jpg");
+        ShareData rawData = new ShareData("title", "text", Arrays.asList(authorizedUri));
+
+        BrowserServicesIntentDataProvider dataProvider =
+                mock(BrowserServicesIntentDataProvider.class);
+        WebApkExtras webApkExtras = createWebApkExtras("org.chromium.webapk.test");
+
+        when(dataProvider.getIntent()).thenReturn(intent);
+        when(dataProvider.getShareData()).thenReturn(rawData);
+        when(dataProvider.getActivityType()).thenReturn(ActivityType.WEB_APK);
+        when(dataProvider.getWebApkExtras()).thenReturn(webApkExtras);
+        when(dataProvider.getSession()).thenReturn(null);
+
+        shadowOf(mActivity.getPackageManager())
+                .setPackagesForUid(10123, "org.chromium.webapk.test");
+        mActivity.mExpectedUid = 10123;
+        mActivity.setUriPermission(authorizedUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        ShareData result =
+                WebAppLaunchHandler.filterShareData(dataProvider, mActivity, /* caller= */ null);
+        Assert.assertNotNull(result);
+        Assert.assertEquals("title", result.title);
+        Assert.assertEquals(1, result.uris.size());
+        Assert.assertEquals(authorizedUri, result.uris.get(0));
+    }
+
+    @Test
+    public void testFilterShareData_WebApk_UnauthorizedUriFiltered() throws Exception {
+        Intent intent = new Intent();
+        Uri unauthorizedUri = Uri.parse("content://com.victim.downloads/sensitive.pdf");
+        ShareData rawData = new ShareData("title", "text", Arrays.asList(unauthorizedUri));
+
+        BrowserServicesIntentDataProvider dataProvider =
+                mock(BrowserServicesIntentDataProvider.class);
+        WebApkExtras webApkExtras = createWebApkExtras("org.chromium.webapk.test");
+
+        when(dataProvider.getIntent()).thenReturn(intent);
+        when(dataProvider.getShareData()).thenReturn(rawData);
+        when(dataProvider.getActivityType()).thenReturn(ActivityType.WEB_APK);
+        when(dataProvider.getWebApkExtras()).thenReturn(webApkExtras);
+        when(dataProvider.getSession()).thenReturn(null);
+
+        shadowOf(mActivity.getPackageManager())
+                .setPackagesForUid(10123, "org.chromium.webapk.test");
+        mActivity.mExpectedUid = 10123;
+        mActivity.denyUriPermission(unauthorizedUri);
+
+        ShareData result =
+                WebAppLaunchHandler.filterShareData(dataProvider, mActivity, /* caller= */ null);
+        Assert.assertNotNull(result);
+        Assert.assertTrue(result.uris.isEmpty());
     }
 
     @Test
@@ -1064,18 +1173,8 @@ public class WebAppLaunchHandlerTest {
         when(dataProvider.getUrlToLoad()).thenReturn(INITIAL_URL);
         when(dataProvider.getClientPackageName()).thenReturn(TEST_PACKAGE_NAME);
 
-        when(mActivityMock.checkUriPermission(
-                        eq(validUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
-        when(mActivityMock.checkUriPermission(
-                        eq(internalUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
+        mActivity.setUriPermission(validUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        mActivity.setUriPermission(internalUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
         WebAppLaunchHandler launchHandler = createWebAppLaunchHandler();
         launchHandler.handleInitialIntent(dataProvider);
@@ -1108,25 +1207,15 @@ public class WebAppLaunchHandlerTest {
                 new ShareData("title", "text", Arrays.asList(internalUri, fileSchemeUri, validUri));
         sourceIntent.putExtra(TrustedWebActivityIntentBuilder.EXTRA_SHARE_DATA, rawData.toBundle());
 
-        when(mActivityMock.checkUriPermission(
-                        eq(validUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
-        when(mActivityMock.checkUriPermission(
-                        eq(internalUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
+        mActivity.setUriPermission(validUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        mActivity.setUriPermission(internalUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
         Intent targetIntent = new Intent();
         targetIntent.putExtra(
                 CustomTabIntentDataProvider.EXTRA_VERIFIED_SHARE_DATA,
                 new ShareData("sample_title", "sample_text", Arrays.asList(internalUri))
                         .toBundle());
-        WebAppLaunchHandler.copyShareDataPermissions(mActivityMock, sourceIntent, targetIntent);
+        WebAppLaunchHandler.copyShareDataPermissions(mActivity, sourceIntent, targetIntent);
 
         Bundle resultBundle =
                 targetIntent.getBundleExtra(CustomTabIntentDataProvider.EXTRA_VERIFIED_SHARE_DATA);
@@ -1135,6 +1224,244 @@ public class WebAppLaunchHandlerTest {
         Assert.assertNotNull(result);
         Assert.assertEquals(1, result.uris.size());
         Assert.assertEquals(validUri, result.uris.get(0));
+    }
+
+    /** Returns a TWA share intent from a client app, as received by ChromeLauncherActivity. */
+    private Intent createShareIntentToSelf(Uri... uris) {
+        Intent intent = new Intent();
+        intent.putExtra(CustomTabsIntent.EXTRA_SESSION, mock(IBinder.class));
+        intent.putExtra(TrustedWebUtils.EXTRA_LAUNCH_AS_TRUSTED_WEB_ACTIVITY, true);
+        intent.putExtra(
+                TrustedWebActivityIntentBuilder.EXTRA_SHARE_DATA,
+                new ShareData("title", "text", Arrays.asList(uris)).toBundle());
+        return intent;
+    }
+
+    private static boolean hasPreFreToken(Intent intent) {
+        return intent.hasExtra(WebAppLaunchHandler.EXTRA_PRE_FRE_SHARE_DATA_TOKEN);
+    }
+
+    /** Returns the share data verified for |intent| as Chrome relaunches it after the FRE. */
+    private ShareData verifyAfterFirstRun(Intent intent) {
+        Intent targetIntent = new Intent();
+        WebAppLaunchHandler.copyShareDataPermissions(mActivity, intent, targetIntent);
+        Assert.assertFalse(hasPreFreToken(targetIntent));
+        ShareData result = getVerifiedShareData(targetIntent);
+        Assert.assertNotNull(result);
+        return result;
+    }
+
+    private static @Nullable ShareData getVerifiedShareData(Intent intent) {
+        Bundle bundle =
+                intent.getBundleExtra(CustomTabIntentDataProvider.EXTRA_VERIFIED_SHARE_DATA);
+        return bundle == null ? null : ShareData.fromBundle(bundle);
+    }
+
+    @Test
+    public void testVerifyShareDataBeforeFirstRun_RelaunchUsesPreVerifiedData() {
+        Uri uri = Uri.parse("content://com.example/shared.jpg");
+        Intent intent = createShareIntentToSelf(uri);
+        mActivity.setUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        // Before the FRE, the caller (the client app) can read the URI.
+        WebAppLaunchHandler.verifyShareDataBeforeFirstRun(mActivity, intent);
+        Assert.assertTrue(hasPreFreToken(intent));
+        // The external intent is not marked as trusted.
+        Assert.assertFalse(IntentUtils.isTrustedIntentFromSelf(intent));
+
+        // After the FRE, Chrome relaunches the intent, and the client app's access has lapsed.
+        mActivity.denyUriPermission(uri);
+        Assert.assertEquals(Arrays.asList(uri), verifyAfterFirstRun(intent).uris);
+    }
+
+    @Test
+    public void testVerifyShareDataBeforeFirstRun_TokenIsSingleUse() {
+        Uri uri = Uri.parse("content://com.example/shared.jpg");
+        Intent intent = createShareIntentToSelf(uri);
+        mActivity.setUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        WebAppLaunchHandler.verifyShareDataBeforeFirstRun(mActivity, intent);
+        mActivity.denyUriPermission(uri);
+        Assert.assertEquals(Arrays.asList(uri), verifyAfterFirstRun(intent).uris);
+
+        // Replaying the same intent does not reuse the earlier verification.
+        Assert.assertTrue(verifyAfterFirstRun(intent).uris.isEmpty());
+    }
+
+    @Test
+    public void testVerifyShareDataBeforeFirstRun_UnauthorizedUriNotKept() {
+        Uri uri = Uri.parse("content://com.victim/secret.pdf");
+        Intent intent = createShareIntentToSelf(uri);
+        mActivity.denyUriPermission(uri);
+
+        WebAppLaunchHandler.verifyShareDataBeforeFirstRun(mActivity, intent);
+
+        Assert.assertFalse(hasPreFreToken(intent));
+        Assert.assertTrue(verifyAfterFirstRun(intent).uris.isEmpty());
+    }
+
+    @Test
+    public void testVerifyShareDataBeforeFirstRun_TextOnlyShareNotKept() {
+        Intent intent = createShareIntentToSelf();
+
+        WebAppLaunchHandler.verifyShareDataBeforeFirstRun(mActivity, intent);
+
+        Assert.assertFalse(hasPreFreToken(intent));
+    }
+
+    @Test
+    public void testVerifyShareDataBeforeFirstRun_NonTwaIntentNotKept() {
+        Uri uri = Uri.parse("content://com.example/shared.jpg");
+        Intent intent = createShareIntentToSelf(uri);
+        intent.removeExtra(TrustedWebUtils.EXTRA_LAUNCH_AS_TRUSTED_WEB_ACTIVITY);
+        mActivity.setUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        WebAppLaunchHandler.verifyShareDataBeforeFirstRun(mActivity, intent);
+
+        Assert.assertFalse(hasPreFreToken(intent));
+    }
+
+    @Test
+    public void testVerifyShareDataBeforeFirstRun_KeepsEarlierVerification() {
+        Uri uri = Uri.parse("content://com.example/shared.jpg");
+        Intent intent = createShareIntentToSelf(uri);
+        mActivity.setUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        WebAppLaunchHandler.verifyShareDataBeforeFirstRun(mActivity, intent);
+
+        // Chrome relaunches the intent on the way to the FRE (e.g. to add NEW_TASK), by when the
+        // URI can no longer be verified. The earlier verification is kept.
+        mActivity.denyUriPermission(uri);
+        WebAppLaunchHandler.verifyShareDataBeforeFirstRun(mActivity, intent);
+
+        Assert.assertEquals(Arrays.asList(uri), verifyAfterFirstRun(intent).uris);
+    }
+
+    @Test
+    public void testCopyShareDataPermissions_ForgedTokenIgnored() {
+        // An external app cannot bypass verification by setting a token itself.
+        Uri uri = Uri.parse("content://com.victim/secret.pdf");
+        Intent intent = createShareIntentToSelf(uri);
+        intent.putExtra(WebAppLaunchHandler.EXTRA_PRE_FRE_SHARE_DATA_TOKEN, "forged");
+        mActivity.denyUriPermission(uri);
+
+        Assert.assertTrue(verifyAfterFirstRun(intent).uris.isEmpty());
+    }
+
+    @Test
+    public void testCopyShareDataPermissionsForWebApk_InvalidUrisFiltered() throws Exception {
+        Intent sourceIntent = new Intent();
+        Uri internalUri =
+                Uri.parse(
+                        "content://"
+                                + ContextUtils.getApplicationContext().getPackageName()
+                                + ".FileProvider/net_export/sample.txt");
+        Uri fileSchemeUri = Uri.parse("file:///sdcard/sample.txt");
+        Uri validUri = Uri.parse("content://com.example/valid.jpg");
+        sourceIntent.putExtra(
+                Intent.EXTRA_STREAM,
+                new ArrayList<>(Arrays.asList(internalUri, fileSchemeUri, validUri)));
+
+        shadowOf(mActivity.getPackageManager()).setPackagesForUid(12345, TEST_PACKAGE_NAME);
+        mActivity.mExpectedUid = 12345;
+        mActivity.setUriPermission(validUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        Intent targetIntent = new Intent();
+        WebAppLaunchHandler.copyShareDataPermissionsForWebApk(
+                mActivity, sourceIntent, targetIntent, TEST_PACKAGE_NAME);
+
+        Bundle resultBundle =
+                targetIntent.getBundleExtra(CustomTabIntentDataProvider.EXTRA_VERIFIED_SHARE_DATA);
+        Assert.assertNotNull(resultBundle);
+        ShareData result = ShareData.fromBundle(resultBundle);
+        Assert.assertNotNull(result);
+        Assert.assertEquals(1, result.uris.size());
+        Assert.assertEquals(validUri, result.uris.get(0));
+    }
+
+    @Test
+    public void testCopyShareDataPermissionsForWebApk_UnauthorizedUrisFiltered() throws Exception {
+        Intent sourceIntent = new Intent();
+        Uri unauthorizedUri = Uri.parse("content://com.victim/secret.pdf");
+        sourceIntent.putExtra(Intent.EXTRA_STREAM, new ArrayList<>(Arrays.asList(unauthorizedUri)));
+
+        shadowOf(mActivity.getPackageManager()).setPackagesForUid(12345, TEST_PACKAGE_NAME);
+        mActivity.mExpectedUid = 12345;
+        mActivity.denyUriPermission(unauthorizedUri);
+
+        Intent targetIntent = new Intent();
+        WebAppLaunchHandler.copyShareDataPermissionsForWebApk(
+                mActivity, sourceIntent, targetIntent, TEST_PACKAGE_NAME);
+
+        Bundle resultBundle =
+                targetIntent.getBundleExtra(CustomTabIntentDataProvider.EXTRA_VERIFIED_SHARE_DATA);
+        Assert.assertNotNull(resultBundle);
+        ShareData result = ShareData.fromBundle(resultBundle);
+        Assert.assertNotNull(result);
+        Assert.assertTrue(result.uris.isEmpty());
+    }
+
+    @Test
+    public void testCopyShareDataPermissionsForWebApk_PartialFiltering() throws Exception {
+        Intent sourceIntent = new Intent();
+        Uri authorizedUri = Uri.parse("content://com.example/public.jpg");
+        Uri unauthorizedUri = Uri.parse("content://com.victim/secret.pdf");
+        sourceIntent.putExtra(
+                Intent.EXTRA_STREAM,
+                new ArrayList<>(Arrays.asList(authorizedUri, unauthorizedUri)));
+
+        shadowOf(mActivity.getPackageManager()).setPackagesForUid(12345, TEST_PACKAGE_NAME);
+        mActivity.mExpectedUid = 12345;
+        mActivity.setUriPermission(authorizedUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        mActivity.denyUriPermission(unauthorizedUri);
+
+        Intent targetIntent = new Intent();
+        WebAppLaunchHandler.copyShareDataPermissionsForWebApk(
+                mActivity, sourceIntent, targetIntent, TEST_PACKAGE_NAME);
+
+        Bundle resultBundle =
+                targetIntent.getBundleExtra(CustomTabIntentDataProvider.EXTRA_VERIFIED_SHARE_DATA);
+        Assert.assertNotNull(resultBundle);
+        ShareData result = ShareData.fromBundle(resultBundle);
+        Assert.assertNotNull(result);
+        Assert.assertEquals(1, result.uris.size());
+        Assert.assertEquals(authorizedUri, result.uris.get(0));
+    }
+
+    @Test
+    public void testCopyShareDataPermissionsForWebApk_TextOnly() {
+        Intent sourceIntent = new Intent();
+        sourceIntent.putExtra(Intent.EXTRA_SUBJECT, "Shared Title");
+        sourceIntent.putExtra(Intent.EXTRA_TEXT, "Shared Text");
+
+        Intent targetIntent = new Intent();
+        WebAppLaunchHandler.copyShareDataPermissionsForWebApk(
+                mActivity, sourceIntent, targetIntent, TEST_PACKAGE_NAME);
+
+        Bundle resultBundle =
+                targetIntent.getBundleExtra(CustomTabIntentDataProvider.EXTRA_VERIFIED_SHARE_DATA);
+        Assert.assertNotNull(resultBundle);
+        ShareData result = ShareData.fromBundle(resultBundle);
+        Assert.assertNotNull(result);
+        Assert.assertEquals("Shared Title", result.title);
+        Assert.assertEquals("Shared Text", result.text);
+        Assert.assertTrue(result.uris == null || result.uris.isEmpty());
+    }
+
+    @Test
+    public void testCopyShareDataPermissionsForWebApk_NameNotFoundExceptionFallback() {
+        Intent sourceIntent = new Intent();
+        Uri uri = Uri.parse("content://com.example/file.jpg");
+        sourceIntent.putExtra(Intent.EXTRA_STREAM, new ArrayList<>(Arrays.asList(uri)));
+
+        Intent targetIntent = new Intent();
+        WebAppLaunchHandler.copyShareDataPermissionsForWebApk(
+                mActivity, sourceIntent, targetIntent, "unknown.pkg");
+
+        Bundle resultBundle =
+                targetIntent.getBundleExtra(CustomTabIntentDataProvider.EXTRA_VERIFIED_SHARE_DATA);
+        Assert.assertNotNull(resultBundle);
+        ShareData result = ShareData.fromBundle(resultBundle);
+        Assert.assertNotNull(result);
+        Assert.assertTrue(result.uris.isEmpty());
     }
 
     @Test
@@ -1154,30 +1481,16 @@ public class WebAppLaunchHandlerTest {
         sourceIntent.putExtra(
                 TrustedWebActivityIntentBuilder.EXTRA_FILE_HANDLING_DATA, rawData.toBundle());
 
-        when(mActivityMock.checkUriPermission(
-                        eq(validUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
-        when(mActivityMock.checkUriPermission(
-                        eq(validUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
-        when(mActivityMock.checkUriPermission(
-                        eq(internalUri),
-                        anyInt(),
-                        anyInt(),
-                        eq(Intent.FLAG_GRANT_READ_URI_PERMISSION)))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
+        mActivity.setUriPermission(
+                validUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        mActivity.setUriPermission(internalUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
         Intent targetIntent = new Intent();
         targetIntent.putExtra(
                 CustomTabIntentDataProvider.EXTRA_VERIFIED_FILE_HANDLING_DATA,
                 new FileHandlingData(Arrays.asList(internalUri)).toBundle());
-        WebAppLaunchHandler.copyFilePermissions(mActivityMock, sourceIntent, targetIntent);
+        WebAppLaunchHandler.copyFilePermissions(mActivity, sourceIntent, targetIntent);
 
         Bundle resultBundle =
                 targetIntent.getBundleExtra(
@@ -1194,5 +1507,268 @@ public class WebAppLaunchHandlerTest {
         Assert.assertNotNull(canWrite);
         Assert.assertEquals(1, canWrite.length);
         Assert.assertTrue(canWrite[0]);
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    public void testCopyFilePermissions_ComponentCallerThrowsForBundleUri_ChecksFullPermission() {
+        Uri driveUri =
+                registerExternalProvider(
+                        "com.google.android.apps.docs.storage.legacy",
+                        /* providerUid= */ Process.myUid() + 500,
+                        /* exported= */ true,
+                        /* customizer= */ null);
+
+        // Case A: standard TWA launch without setShareIdentityEnabled (INVALID_UID caller);
+        // falls back to bound session UID/PID (12345 / 67890) and checkContentUriPermissionFull.
+        ComponentCaller callerMock = mock(ComponentCaller.class);
+        when(callerMock.getUid()).thenReturn(Process.INVALID_UID);
+        when(callerMock.checkContentUriPermission(eq(driveUri), anyInt()))
+                .thenThrow(
+                        new IllegalArgumentException("URI not in getData/EXTRA_STREAM/ClipData"));
+        mActivity.mCaller = callerMock;
+        mActivity.setFullUriPermission(driveUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        mActivity.mExpectedUid = 12345;
+        mActivity.mExpectedPid = 67890;
+
+        Intent sourceIntent = new Intent();
+        sourceIntent.putExtra(CustomTabsIntent.EXTRA_SESSION, mock(IBinder.class));
+        sourceIntent.putExtra(
+                TrustedWebActivityIntentBuilder.EXTRA_FILE_HANDLING_DATA,
+                new FileHandlingData(Arrays.asList(driveUri)).toBundle());
+
+        Intent targetIntent = new Intent();
+        WebAppLaunchHandler.copyFilePermissions(mActivity, sourceIntent, targetIntent);
+        assertVerifiedSingleFile(targetIntent, driveUri, /* expectedCanWrite= */ false);
+
+        // Case B: caller opted into setShareIdentityEnabled (known callerUid) with unbound session
+        // UID (-1) while session PID stub still returns 67890; verifies callerUid is adopted and
+        // clientPid is overwritten to -1.
+        when(callerMock.getUid()).thenReturn(12345);
+        when(mCustomTabsConnectionMock.getClientUidForSession(any())).thenReturn(-1);
+        mActivity.mExpectedUid = 12345;
+        mActivity.mExpectedPid = -1;
+        mActivity.setFullUriPermission(
+                driveUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+
+        Intent targetIntentWithIdentity = new Intent();
+        WebAppLaunchHandler.copyFilePermissions(mActivity, sourceIntent, targetIntentWithIdentity);
+        assertVerifiedSingleFile(targetIntentWithIdentity, driveUri, /* expectedCanWrite= */ true);
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    public void testDoesCallerHavePermissionForUri_PostV_Checks() {
+        Uri uri =
+                registerExternalProvider(
+                        "com.example.public", Process.myUid() + 800, /* exported= */ true, null);
+
+        // Post-V returns checkContentUriPermissionFull result directly without provider fallback.
+        mActivity.setFullUriPermission(uri, /* grantedModeFlags= */ 0);
+        Assert.assertFalse(hasReadPerm(12345, uri));
+
+        mActivity.setFullUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        // Mismatched callerUid vs session clientUid fails closed even if ComponentCaller grants.
+        ComponentCaller mismatchCaller = mock(ComponentCaller.class);
+        when(mismatchCaller.getUid()).thenReturn(99999);
+        when(mismatchCaller.checkContentUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                .thenReturn(PackageManager.PERMISSION_GRANTED);
+        Assert.assertFalse(
+                hasUriPerm(mismatchCaller, 12345, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION));
+
+        // SecurityException from ComponentCaller (Chrome lacks access) fails closed immediately.
+        ComponentCaller securityExceptionCaller = mock(ComponentCaller.class);
+        when(securityExceptionCaller.getUid()).thenReturn(Process.INVALID_UID);
+        when(securityExceptionCaller.checkContentUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                .thenThrow(new SecurityException("Chrome lacks access"));
+        Assert.assertFalse(
+                hasUriPerm(
+                        securityExceptionCaller,
+                        12345,
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION));
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.TIRAMISU)
+    public void testCopyFilePermissions_PreV_ExportedProviderReadOnlyAllowed() {
+        Uri uri =
+                registerExternalProvider(
+                        "com.example.worldreadable",
+                        Process.myUid() + 500,
+                        /* exported= */ true,
+                        pi -> pi.writePermission = "com.example.WRITE_PERM");
+
+        Intent sourceIntent = new Intent();
+        sourceIntent.putExtra(CustomTabsIntent.EXTRA_SESSION, mock(IBinder.class));
+        sourceIntent.putExtra(
+                TrustedWebActivityIntentBuilder.EXTRA_FILE_HANDLING_DATA,
+                new FileHandlingData(Arrays.asList(uri)).toBundle());
+
+        Intent targetIntent = new Intent();
+        WebAppLaunchHandler.copyFilePermissions(mActivity, sourceIntent, targetIntent);
+        assertVerifiedSingleFile(targetIntent, uri, /* expectedCanWrite= */ false);
+
+        // Pinned to API 33 (TIRAMISU) to also exercise the pre-API 34 isIsolatedUid range fallback
+        // (both app-zygote 90000..98999 and isolated 99000..99999).
+        Assert.assertFalse(hasReadPerm(90001, uri));
+        Assert.assertFalse(hasReadPerm(99001, uri));
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public void testDoesCallerHavePermissionForUri_PreV_ProviderAndBoundaryChecks() {
+        Uri publicUri =
+                registerExternalProvider(
+                        "com.example.public", Process.myUid() + 800, /* exported= */ true, null);
+        Assert.assertTrue(hasReadPerm(12345, publicUri));
+
+        // forceUriPermissions requires an explicit dynamic grant.
+        Uri mediaUri =
+                registerExternalProvider(
+                        "media",
+                        Process.myUid() + 600,
+                        /* exported= */ true,
+                        pi -> pi.forceUriPermissions = true);
+        Assert.assertFalse(hasReadPerm(12345, mediaUri));
+
+        // Non-exported provider: allowed for owner UID (12345), denied for other UIDs (54321).
+        Uri clientOwnedUri =
+                registerExternalProvider("com.twa.files", 12345, /* exported= */ false, null);
+        Assert.assertTrue(hasReadPerm(12345, clientOwnedUri));
+        Assert.assertFalse(hasReadPerm(54321, clientOwnedUri));
+
+        // Exported Chrome-owned provider is always blocked.
+        Uri chromeExportedUri =
+                registerExternalProvider(
+                        "com.chrome.exported", Process.myUid(), /* exported= */ true, null);
+        Assert.assertFalse(hasReadPerm(12345, chromeExportedUri));
+
+        // Any non-null pathPermissions array fails closed without a dynamic grant.
+        Uri pathPermUri =
+                registerExternalProvider(
+                        "com.example.pathperm",
+                        Process.myUid() + 700,
+                        /* exported= */ true,
+                        pi ->
+                                pi.pathPermissions =
+                                        new PathPermission[] {
+                                            new PathPermission(
+                                                    "/secret",
+                                                    PatternMatcher.PATTERN_PREFIX,
+                                                    "perm.R",
+                                                    "perm.W")
+                                        });
+        Assert.assertFalse(hasReadPerm(12345, pathPermUri));
+
+        // Non-null readPermission: denied until granted to (pid=67890, uid=12345).
+        Uri readPermUri =
+                registerExternalProvider(
+                        "com.example.readperm",
+                        Process.myUid() + 900,
+                        /* exported= */ true,
+                        pi -> pi.readPermission = "com.example.READ_PERM");
+        Assert.assertFalse(hasReadPerm(12345, readPermUri));
+        shadowOf(mActivity).grantPermissions(67890, 12345, "com.example.READ_PERM");
+        Assert.assertTrue(hasReadPerm(12345, readPermUri));
+
+        // URI, UID, and modeFlags boundary checks.
+        Uri crossUserAuthUri = Uri.parse("content://10@com.example.public/doc.txt");
+        Uri opaqueUri = Uri.fromParts("content", "//com.example.public/doc.txt", null);
+        mActivity.denyUriPermission(crossUserAuthUri);
+        mActivity.denyUriPermission(opaqueUri);
+
+        Assert.assertFalse(hasReadPerm(12345, null));
+        Assert.assertFalse(hasReadPerm(12345, Uri.parse("https://com.example.public/doc.txt")));
+        Assert.assertFalse(hasReadPerm(12345, Uri.parse("CONTENT://com.example.public/doc.txt")));
+        Assert.assertFalse(hasReadPerm(12345, crossUserAuthUri));
+        Assert.assertFalse(hasReadPerm(12345, opaqueUri));
+        Assert.assertFalse(hasReadPerm(10 * 100000 + 12345, publicUri));
+        Assert.assertFalse(hasReadPerm(99001, publicUri));
+        Assert.assertFalse(hasUriPerm(null, 12345, publicUri, /* modeFlags= */ 0));
+        Assert.assertFalse(
+                hasUriPerm(
+                        null,
+                        12345,
+                        publicUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION));
+    }
+
+    private boolean hasUriPerm(
+            @Nullable ComponentCaller caller, int uid, @Nullable Uri uri, int modeFlags) {
+        return WebAppLaunchHandler.doesCallerHavePermissionForUri(
+                mActivity, caller, uid, /* clientPid= */ 67890, uri, modeFlags);
+    }
+
+    private boolean hasReadPerm(int uid, @Nullable Uri uri) {
+        return hasUriPerm(/* caller= */ null, uid, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+    }
+
+    private static void assertVerifiedSingleFile(
+            Intent targetIntent, Uri expectedUri, boolean expectedCanWrite) {
+        Bundle bundle =
+                targetIntent.getBundleExtra(
+                        CustomTabIntentDataProvider.EXTRA_VERIFIED_FILE_HANDLING_DATA);
+        Assert.assertNotNull(bundle);
+        FileHandlingData result = FileHandlingData.fromBundle(bundle);
+        Assert.assertEquals(Arrays.asList(expectedUri), result.uris);
+        boolean[] canWrite =
+                targetIntent.getBooleanArrayExtra(
+                        CustomTabIntentDataProvider.EXTRA_VERIFIED_FILE_CAN_WRITE);
+        Assert.assertArrayEquals(new boolean[] {expectedCanWrite}, canWrite);
+    }
+
+    private Uri registerExternalProvider(
+            String authority,
+            int providerUid,
+            boolean exported,
+            @Nullable Consumer<ProviderInfo> customizer) {
+        PackageManager pm = ContextUtils.getApplicationContext().getPackageManager();
+        String packageName = "pkg." + authority;
+        PackageInfo packageInfo = new PackageInfo();
+        packageInfo.packageName = packageName;
+        ApplicationInfo appInfo = new ApplicationInfo();
+        appInfo.packageName = packageName;
+        appInfo.uid = providerUid;
+        packageInfo.applicationInfo = appInfo;
+
+        ProviderInfo providerInfo = new ProviderInfo();
+        providerInfo.packageName = packageName;
+        providerInfo.authority = authority;
+        providerInfo.applicationInfo = appInfo;
+        providerInfo.exported = exported;
+        if (customizer != null) {
+            customizer.accept(providerInfo);
+        }
+        packageInfo.providers = new ProviderInfo[] {providerInfo};
+        shadowOf(pm).installPackage(packageInfo);
+
+        Uri uri = Uri.parse("content://" + authority + "/doc.txt");
+        mActivity.denyUriPermission(uri);
+        return uri;
+    }
+
+    private static WebApkExtras createWebApkExtras(String packageName) {
+        return new WebApkExtras(
+                packageName,
+                new WebappIcon(),
+                /* isSplashIconMaskable= */ false,
+                /* shellApkVersion= */ 0,
+                /* manifestUrl= */ null,
+                /* manifestStartUrl= */ null,
+                /* manifestId= */ null,
+                /* appKey= */ null,
+                WebApkDistributor.OTHER,
+                new HashMap<>(),
+                /* shareTarget= */ null,
+                /* isSplashProvidedByWebApk= */ false,
+                new ArrayList<>(),
+                /* webApkVersionCode= */ 0,
+                /* lastUpdateTime= */ 0,
+                /* hasCustomName= */ false);
     }
 }

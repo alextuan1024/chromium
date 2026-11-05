@@ -8,7 +8,6 @@ import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.net.Uri;
 
 import androidx.annotation.DrawableRes;
@@ -17,28 +16,26 @@ import androidx.browser.customtabs.CustomTabsIntent;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ChromeStringConstants;
-import org.chromium.chrome.browser.autofill.AutofillUiUtils.IconSpecs;
 import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinator;
 import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinatorProvider;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.Description;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.IssuerIcon;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.LegalMessages;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.LayoutManagerProvider;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
-import org.chromium.components.autofill.AutofillFeatures;
-import org.chromium.components.autofill.ImageSize;
-import org.chromium.components.autofill.ImageType;
 import org.chromium.components.autofill.VirtualCardEnrollmentLinkType;
 import org.chromium.components.autofill.payments.LegalMessageLine;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -56,7 +53,11 @@ import java.util.List;
 /*package*/ class AutofillVcnEnrollBottomSheetBridge
         implements AutofillVcnEnrollBottomSheetCoordinator.Delegate,
                 AutofillVcnEnrollBottomSheetProperties.LinkOpener {
-    private long mNativeAutofillVcnEnrollBottomSheetBridge;
+    @JniType("::autofill::AutofillVCNEnrollBottomSheetBridge")
+    interface NativeAutofillVCNEnrollBottomSheetBridge extends JniTypeToken {}
+
+    private @Nullable JniRawPtr<NativeAutofillVCNEnrollBottomSheetBridge>
+            mNativeAutofillVcnEnrollBottomSheetBridge;
     private @Nullable BottomSheetController mBottomSheetController;
     private @Nullable AnchoredDialogCoordinator mAnchoredDialogCoordinator;
     private @Nullable Context mContext;
@@ -81,13 +82,10 @@ import java.util.List;
      * @param descriptionText A text that describes what a virtual card does, e.g., "A virtual card
      *     hides your actual card..." and so on. This text includes a "learn more" link text.
      * @param learnMoreLinkText The text of the "learn more" link in descriptionText.
-     * @param issuerIconBitmap The icon for the card. For example, could be an American Express
-     *     logo. Not used when
-     *     AutofillFeatures.AUTOFILL_ENABLE_VIRTUAL_CARD_JAVA_PAYMENTS_DATA_MANAGER is enabled.
      * @param networkIconResource The resource-id icon for the card. For example, could be an
      *     American Express logo.
      * @param issuerIconUrl The url for the card icon. For example, could be a custom card art for a
-     *     credit card. This takes precedence over the issuerIconResource.
+     *     credit card. This takes precedence over the networkIconResource.
      * @param cardLabel The label for the card, e.g., "Amex ****1234".
      * @param googleLegalMessages Legal messages from Google Pay.
      * @param issuerLegalMessages Legal messages from the issuer bank.
@@ -98,38 +96,55 @@ import java.util.List;
     @CalledByNative
     @VisibleForTesting
     boolean requestShowContent(
-            long nativeAutofillVcnEnrollBottomSheetBridge,
+            JniRawPtr<NativeAutofillVCNEnrollBottomSheetBridge>
+                    nativeAutofillVcnEnrollBottomSheetBridge,
             WebContents webContents,
             @JniType("std::u16string") String messageText,
             @JniType("std::u16string") String descriptionText,
             @JniType("std::u16string") String learnMoreLinkText,
-            Bitmap issuerIconBitmap,
             @DrawableRes int networkIconResource,
             @JniType("GURL") GURL issuerIconUrl,
             @JniType("std::u16string") String cardLabel,
-            @JniType("std::vector") List<LegalMessageLine> googleLegalMessages,
-            @JniType("std::vector") List<LegalMessageLine> issuerLegalMessages,
+            @JniType("std::vector<autofill::LegalMessageLine>")
+                    List<LegalMessageLine> googleLegalMessages,
+            @JniType("std::vector<autofill::LegalMessageLine>")
+                    List<LegalMessageLine> issuerLegalMessages,
             @JniType("std::u16string") String acceptButtonLabel,
             @JniType("std::u16string") String cancelButtonLabel) {
-        if (webContents == null || webContents.isDestroyed()) return false;
+        if (webContents == null || webContents.isDestroyed()) {
+            nativeAutofillVcnEnrollBottomSheetBridge.release();
+            return false;
+        }
 
         WindowAndroid window = webContents.getTopLevelNativeWindow();
-        if (window == null) return false;
+        if (window == null) {
+            nativeAutofillVcnEnrollBottomSheetBridge.release();
+            return false;
+        }
 
         mBottomSheetController = BottomSheetControllerProvider.from(window);
-        if (mBottomSheetController == null) return false;
+        if (mBottomSheetController == null) {
+            nativeAutofillVcnEnrollBottomSheetBridge.release();
+            return false;
+        }
 
         mAnchoredDialogCoordinator = AnchoredDialogCoordinatorProvider.from(window);
-        if (mAnchoredDialogCoordinator == null) return false;
+        if (mAnchoredDialogCoordinator == null) {
+            nativeAutofillVcnEnrollBottomSheetBridge.release();
+            return false;
+        }
 
         mContext = window.getContext().get();
-        if (mContext == null) return false;
+        if (mContext == null) {
+            nativeAutofillVcnEnrollBottomSheetBridge.release();
+            return false;
+        }
 
-        if (mNativeAutofillVcnEnrollBottomSheetBridge != 0) return false;
+        if (mNativeAutofillVcnEnrollBottomSheetBridge != null) {
+            nativeAutofillVcnEnrollBottomSheetBridge.release();
+            return false;
+        }
         mNativeAutofillVcnEnrollBottomSheetBridge = nativeAutofillVcnEnrollBottomSheetBridge;
-
-        IconSpecs iconSpecs =
-                IconSpecs.create(mContext, ImageType.CREDIT_CARD_ART_IMAGE, ImageSize.LARGE);
 
         PropertyModel.Builder modelBuilder =
                 new PropertyModel.Builder(AutofillVcnEnrollBottomSheetProperties.ALL_KEYS)
@@ -144,17 +159,9 @@ import java.util.List;
                                         VirtualCardEnrollmentLinkType
                                                 .VIRTUAL_CARD_ENROLLMENT_LEARN_MORE_LINK,
                                         /* linkOpener= */ this))
-                        .with(AutofillVcnEnrollBottomSheetProperties.IS_GPAY_LOGO_VISIBLE, false)
                         .with(
                                 AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON,
-                                ChromeFeatureList.isEnabled(
-                                                AutofillFeatures
-                                                        .AUTOFILL_ENABLE_VIRTUAL_CARD_JAVA_PAYMENTS_DATA_MANAGER)
-                                        ? new IssuerIcon(networkIconResource, issuerIconUrl)
-                                        : new IssuerIcon(
-                                                issuerIconBitmap,
-                                                iconSpecs.getWidth(),
-                                                iconSpecs.getHeight()))
+                                new IssuerIcon(networkIconResource, issuerIconUrl))
                         .with(AutofillVcnEnrollBottomSheetProperties.CARD_LABEL, cardLabel)
                         .with(
                                 AutofillVcnEnrollBottomSheetProperties.GOOGLE_LEGAL_MESSAGES,
@@ -199,7 +206,11 @@ import java.util.List;
                         assumeNonNull(selectorSupplier),
                         /* delegate= */ this);
 
-        return mCoordinator.requestShowContent();
+        if (!mCoordinator.requestShowContent()) {
+            hide();
+            return false;
+        }
+        return true;
     }
 
     void setLayoutStateProviderForTesting(LayoutStateProvider layoutStateProvider) {
@@ -220,7 +231,7 @@ import java.util.List;
                 .build()
                 .launchUrl(mContext, Uri.parse(url));
 
-        if (mNativeAutofillVcnEnrollBottomSheetBridge == 0) return;
+        if (mNativeAutofillVcnEnrollBottomSheetBridge == null) return;
         AutofillVcnEnrollBottomSheetBridgeJni.get()
                 .recordLinkClickMetric(mNativeAutofillVcnEnrollBottomSheetBridge, linkType);
     }
@@ -228,34 +239,43 @@ import java.util.List;
     // AutofillVcnEnrollBottomSheetCoordinator.Delegate:
     @Override
     public void onAccept() {
-        if (mNativeAutofillVcnEnrollBottomSheetBridge == 0) return;
-        AutofillVcnEnrollBottomSheetBridgeJni.get()
-                .onAccept(mNativeAutofillVcnEnrollBottomSheetBridge);
-        mNativeAutofillVcnEnrollBottomSheetBridge = 0;
+        if (mNativeAutofillVcnEnrollBottomSheetBridge == null) return;
+        JniRawPtr<NativeAutofillVCNEnrollBottomSheetBridge> nativeBridge =
+                mNativeAutofillVcnEnrollBottomSheetBridge;
+        mNativeAutofillVcnEnrollBottomSheetBridge = null;
+        AutofillVcnEnrollBottomSheetBridgeJni.get().onAccept(nativeBridge);
+        nativeBridge.release();
     }
 
     // AutofillVcnEnrollBottomSheetCoordinator.Delegate:
     @Override
     public void onCancel() {
-        if (mNativeAutofillVcnEnrollBottomSheetBridge == 0) return;
-        AutofillVcnEnrollBottomSheetBridgeJni.get()
-                .onCancel(mNativeAutofillVcnEnrollBottomSheetBridge);
-        mNativeAutofillVcnEnrollBottomSheetBridge = 0;
+        if (mNativeAutofillVcnEnrollBottomSheetBridge == null) return;
+        JniRawPtr<NativeAutofillVCNEnrollBottomSheetBridge> nativeBridge =
+                mNativeAutofillVcnEnrollBottomSheetBridge;
+        mNativeAutofillVcnEnrollBottomSheetBridge = null;
+        AutofillVcnEnrollBottomSheetBridgeJni.get().onCancel(nativeBridge);
+        nativeBridge.release();
     }
 
     // AutofillVcnEnrollBottomSheetCoordinator.Delegate:
     @Override
     public void onDismiss() {
-        if (mNativeAutofillVcnEnrollBottomSheetBridge == 0) return;
-        AutofillVcnEnrollBottomSheetBridgeJni.get()
-                .onDismiss(mNativeAutofillVcnEnrollBottomSheetBridge);
-        mNativeAutofillVcnEnrollBottomSheetBridge = 0;
+        if (mNativeAutofillVcnEnrollBottomSheetBridge == null) return;
+        JniRawPtr<NativeAutofillVCNEnrollBottomSheetBridge> nativeBridge =
+                mNativeAutofillVcnEnrollBottomSheetBridge;
+        mNativeAutofillVcnEnrollBottomSheetBridge = null;
+        AutofillVcnEnrollBottomSheetBridgeJni.get().onDismiss(nativeBridge);
+        nativeBridge.release();
     }
 
     @CalledByNative
     @VisibleForTesting
     void hide() {
-        mNativeAutofillVcnEnrollBottomSheetBridge = 0;
+        if (mNativeAutofillVcnEnrollBottomSheetBridge != null) {
+            mNativeAutofillVcnEnrollBottomSheetBridge.release();
+            mNativeAutofillVcnEnrollBottomSheetBridge = null;
+        }
         if (mCoordinator == null) return;
         mCoordinator.hide();
         mCoordinator = null;
@@ -267,12 +287,13 @@ import java.util.List;
 
     @NativeMethods
     interface Natives {
-        void onAccept(long nativeAutofillVCNEnrollBottomSheetBridge);
+        void onAccept(JniPtr<NativeAutofillVCNEnrollBottomSheetBridge> self);
 
-        void onCancel(long nativeAutofillVCNEnrollBottomSheetBridge);
+        void onCancel(JniPtr<NativeAutofillVCNEnrollBottomSheetBridge> self);
 
-        void onDismiss(long nativeAutofillVCNEnrollBottomSheetBridge);
+        void onDismiss(JniPtr<NativeAutofillVCNEnrollBottomSheetBridge> self);
 
-        void recordLinkClickMetric(long nativeAutofillVCNEnrollBottomSheetBridge, int linkType);
+        void recordLinkClickMetric(
+                JniPtr<NativeAutofillVCNEnrollBottomSheetBridge> self, int linkType);
     }
 }

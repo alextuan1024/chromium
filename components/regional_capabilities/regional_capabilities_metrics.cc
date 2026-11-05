@@ -52,8 +52,6 @@ std::string ToString(SearchEngineChoiceScreenConditions condition) {
   switch (condition) {
     case SearchEngineChoiceScreenConditions::kHasCustomSearchEngine:
       return "HasCustomSearchEngine";
-    case SearchEngineChoiceScreenConditions::kSearchProviderOverride:
-      return "SearchProviderOverride";
     case SearchEngineChoiceScreenConditions::kNotInRegionalScope:
       return "NotInRegionalScope";
     case SearchEngineChoiceScreenConditions::kControlledByPolicy:
@@ -112,7 +110,6 @@ bool IsEligible(SearchEngineChoiceScreenConditions condition) {
     case SearchEngineChoiceScreenConditions::kEligibleForRestore:
       return true;
     case SearchEngineChoiceScreenConditions::kHasCustomSearchEngine:
-    case SearchEngineChoiceScreenConditions::kSearchProviderOverride:
     case SearchEngineChoiceScreenConditions::kNotInRegionalScope:
     case SearchEngineChoiceScreenConditions::kControlledByPolicy:
     case SearchEngineChoiceScreenConditions::kExtensionControlled:
@@ -229,6 +226,13 @@ void RecordActiveRegionalProgramPerProfile(
     metrics::ProfileMetricsService& profile_metrics_service) {
   profile_metrics_service.UmaHistogramEnumeration(
       "RegionalCapabilities.ActiveRegionalProgram3", program);
+}
+
+void RecordDynamicCountryRegionalProgram(
+    ActiveRegionalProgram program,
+    metrics::ProfileMetricsService& profile_metrics_service) {
+  profile_metrics_service.UmaHistogramEnumeration(
+      "RegionalCapabilities.Debug.DynamicCountryRegionalProgram", program);
 }
 
 void RecordProgramSpecificExclusion(ProgramSpecificExclusion exclusion) {

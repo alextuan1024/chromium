@@ -9,8 +9,8 @@
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/webui/webui_url_utils.h"
 #include "chrome/common/pref_names.h"
-#include "chrome/common/webui_url_utils.h"
 #include "chrome/grit/browser_resources.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
@@ -133,7 +133,7 @@ const char* IncognitoNavigationThrottle::GetNameForLogging() {
 }
 
 void IncognitoNavigationThrottle::ReadMandatoryExtensionsStatus() {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
   blocking_extensions_.clear();
   missing_extensions_.clear();
   extensions::ExtensionRegistry* registry =

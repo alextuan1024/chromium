@@ -94,7 +94,7 @@ webview {
 #loadingPanel #floatingLoading .p1 {
   flex: 1;
   height: 17px;
-  margin-right: 60px;
+  margin-inline-end: 60px;
   margin-top: 4px;
   border-radius: 5px;
 }
@@ -152,11 +152,13 @@ webview {
 }
 
 .panel .header {
-  padding: 12px 20px 12px 12px;
   height: 24px;
   display: flex;
   justify-content: space-between;
   -webkit-app-region: drag;
+  padding-block: 12px;
+  padding-inline-end: 20px;
+  padding-inline-start: 12px;
 }
 
 #loadingPanel .header {
@@ -172,7 +174,7 @@ webview {
 }
 
 .panel .logo {
-  padding: 0 0 0 2px;
+  padding-inline-start: 2px;
 }
 
 /* Adjust brightness of SVG logo */
@@ -232,6 +234,115 @@ webview {
 
 #disabledByAdminPanel.show-disabled-by-admin-link .without-link {
   display: none;
+}
+
+/* GEiC relaunch prompt. */
+#providerChangePanel {
+  /* Google Sans Flex only applies where the OS has it installed; Glic doesn't
+   * load web fonts. */
+  --relaunch-font: 'Google Sans Flex', Roboto, sans-serif;
+  /* The button color; the glow fades out from it. */
+  --relaunch-accent: #9dd2ff;
+  --relaunch-glow-inner: color-mix(in srgb, var(--relaunch-accent) 55%,
+      transparent);
+  --relaunch-glow-outer: rgba(220, 241, 255, 0.45);
+  --relaunch-card-background: var(--cr-fallback-color-surface);
+  --relaunch-card-border: rgba(0, 0, 0, 0.08);
+  --relaunch-card-shadow: rgba(0, 0, 0, 0.04);
+  --relaunch-button-text: #000;
+}
+
+@media (prefers-color-scheme: dark) {
+  #providerChangePanel {
+    --relaunch-accent: #1f3b9b;
+    --relaunch-glow-inner: color-mix(in srgb, var(--relaunch-accent) 75%,
+        transparent);
+    --relaunch-glow-outer: rgba(25, 41, 103, 0.6);
+    --relaunch-card-background: #1c1c1c;
+    --relaunch-card-border: rgba(255, 255, 255, 0.12);
+    --relaunch-card-shadow: rgba(0, 0, 0, 0.28);
+    --relaunch-button-text: #e0e0e0;
+  }
+}
+
+/* Suppress the browser focus ring on the full-panel dialog container itself;
+ * interactive controls inside keep their focus rings. */
+#providerChangePanel:focus-visible {
+  outline: none;
+}
+
+#providerChangePanel .container {
+  isolation: isolate;
+  position: relative;
+}
+
+/* Soft blue glow along the bottom of the panel, behind the card. */
+#providerChangePanel .container::before {
+  background: radial-gradient(ellipse 110% 45% at 50% 100%,
+      var(--relaunch-glow-inner), var(--relaunch-glow-outer) 50%,
+      transparent 100%);
+  content: '';
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: -1;
+}
+
+/* The 16px side padding plus the 352px max card width make up the mock's
+ * 384px side panel. */
+#providerChangePanel .notice {
+  background-color: transparent;
+  padding: 0 16px;
+}
+
+#providerChangePanel .relaunch-card {
+  align-items: center;
+  background-color: var(--relaunch-card-background);
+  border: 1px solid var(--relaunch-card-border);
+  border-radius: 24px;
+  box-shadow: 0 0 20px var(--relaunch-card-shadow);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  max-width: 352px;
+  padding: 20px;
+  width: 100%;
+}
+
+#providerChangePanel .spark-icon {
+  height: 32px;
+  margin-bottom: 16px;
+  width: 32px;
+}
+
+#providerChangePanel .headline {
+  font-family: var(--relaunch-font);
+  font-size: 20px;
+  font-weight: 420;
+  line-height: 26px;
+  margin: 0 0 12px;
+}
+
+#providerChangePanel .relaunch-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+#providerChangePanel .notice-message {
+  font-family: var(--relaunch-font);
+  line-height: 17px;
+  margin: 0;
+}
+
+#providerChangePanel #relaunchButton,
+#providerChangePanel #continueButton {
+  background-color: var(--relaunch-accent);
+  border: none;
+  color: var(--relaunch-button-text);
+  font-family: var(--relaunch-font);
+  font-weight: 400;
 }
 
 .dialog p {
@@ -299,11 +410,6 @@ webview {
 .tonal-button {
   background-color: var(--cr-fallback-color-secondary-container);
   color: var(--cr-fallback-color-on-secondary-container);
-}
-
-#debug {
-  position: absolute;
-  right: 30px;
 }
 
 cr-progress {

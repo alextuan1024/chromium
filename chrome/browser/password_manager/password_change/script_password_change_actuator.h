@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_PASSWORD_MANAGER_PASSWORD_CHANGE_SCRIPT_PASSWORD_CHANGE_ACTUATOR_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
@@ -18,13 +19,17 @@
 #include "chrome/browser/password_manager/password_change/model_quality_logs_uploader.h"
 #include "chrome/browser/password_manager/password_change/password_change_actuator.h"
 #include "chrome/browser/password_manager/password_change/password_change_submission_verifier.h"
-#include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_form_manager.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "url/gurl.h"
 
 namespace content {
 class WebContents;
 }
+
+namespace password_manager {
+struct LeakedPasswordDetails;
+}  // namespace password_manager
 
 class CrossOriginNavigationObserver;
 class Profile;
@@ -34,8 +39,7 @@ class Profile;
 class ScriptPasswordChangeActuator : public PasswordChangeActuator {
  public:
   ScriptPasswordChangeActuator(
-      GURL change_password_url,
-      password_manager::PasswordForm password_form_info,
+      password_manager::LeakedPasswordDetails leak_details,
       Profile* profile,
       ModelQualityLogsUploader* logs_uploader);
   ~ScriptPasswordChangeActuator() override;
@@ -49,7 +53,8 @@ class ScriptPasswordChangeActuator : public PasswordChangeActuator {
   void Cancel() override;
   content::WebContents* GetExecutorWebContents() const override;
   void OpenPasswordChangeTab(content::WebContents* originator) override;
-  std::u16string GetGeneratedPassword() const override;
+  NewPasswordResult GetOrGenerateNewPassword(
+      password_manager::PasswordFormManager* form_manager) override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
 
@@ -62,6 +67,10 @@ class ScriptPasswordChangeActuator : public PasswordChangeActuator {
   }
   ModelQualityLogsUploader* GetLogsUploaderForTesting() {
     return logs_uploader_.get();
+  }
+  void inject_hidden_executor_for_testing(
+      std::unique_ptr<DetachedWebContents> detached_web_contents) {
+    hidden_executor_ = std::move(detached_web_contents);
   }
 #endif
 
@@ -81,8 +90,8 @@ class ScriptPasswordChangeActuator : public PasswordChangeActuator {
 
   const GURL change_password_url_;
   const std::u16string username_;
-  const std::u16string original_password_;
-  std::u16string generated_password_;
+  const password_manager::PasswordString original_password_;
+  std::optional<password_manager::PasswordString> generated_password_;
 
   const raw_ptr<Profile> profile_ = nullptr;
   const raw_ptr<ModelQualityLogsUploader> logs_uploader_ = nullptr;

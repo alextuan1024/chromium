@@ -5,8 +5,8 @@
 #include "components/bookmarks/browser/url_index.h"
 
 #include <iterator>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/uuid.h"
@@ -93,7 +93,7 @@ void UrlIndex::GetNodesWithIconUrl(const GURL& icon_url,
 
 void UrlIndex::GetNodesByUrl(
     const GURL& url,
-    std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>* nodes) {
+    std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>* nodes) {
   base::AutoLock url_lock(url_lock_);
   auto range = nodes_ordered_by_url_set_.equal_range<GURL>(url);
   nodes->insert(nodes->end(), range.first, range.second);
@@ -176,7 +176,7 @@ void UrlIndex::RemoveImpl(BookmarkNode* node, std::set<GURL>* removed_urls) {
       removed_urls->insert(node->url());
     }
   }
-  for (const auto& child : base::Reversed(node->children())) {
+  for (const auto& child : std::views::reverse(node->children())) {
     RemoveImpl(child.get(), removed_urls);
   }
 }

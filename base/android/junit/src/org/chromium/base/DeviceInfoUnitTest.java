@@ -21,6 +21,7 @@ import android.content.pm.PackageManager;
 import android.hardware.Sensor;
 import android.hardware.SensorManager;
 import android.os.Build;
+import android.provider.Settings;
 
 import org.junit.After;
 import org.junit.Before;
@@ -41,11 +42,47 @@ public class DeviceInfoUnitTest {
     @Before
     public void setUp() {
         DeviceInfo.resetGmsInfoForTesting();
+        DeviceInfo.resetDeviceNameForTesting();
     }
 
     @After
     public void tearDown() {
         DeviceInfo.resetGmsInfoForTesting();
+        DeviceInfo.resetDeviceNameForTesting();
+    }
+
+    @Test
+    public void testGetDeviceName() {
+        assertNull(DeviceInfo.getDeviceName());
+
+        Settings.Global.putString(
+                ContextUtils.getApplicationContext().getContentResolver(),
+                Settings.Global.DEVICE_NAME,
+                "Pixel Test Device");
+        assertEquals("Pixel Test Device", DeviceInfo.getDeviceName());
+
+        assertNull(DeviceInfo.setDeviceNameForTesting("Override Device Name"));
+        assertEquals("Override Device Name", DeviceInfo.getDeviceName());
+
+        assertEquals("Override Device Name", DeviceInfo.setDeviceNameForTesting(null));
+        assertEquals("Pixel Test Device", DeviceInfo.getDeviceName());
+
+        DeviceInfo.setDeviceNameForTesting("Override Device Name");
+        DeviceInfo.resetDeviceNameForTesting();
+        assertEquals("Pixel Test Device", DeviceInfo.getDeviceName());
+    }
+
+    @Test
+    public void testGetDeviceName_runtimeExceptionReturnsNull() {
+        Context originalContext = ContextUtils.getApplicationContext();
+        Context mockContext = mock(Context.class);
+        when(mockContext.getContentResolver()).thenThrow(new SecurityException());
+        ContextUtils.initApplicationContextForTests(mockContext);
+        try {
+            assertNull(DeviceInfo.getDeviceName());
+        } finally {
+            ContextUtils.initApplicationContextForTests(originalContext);
+        }
     }
 
     @Test
@@ -184,6 +221,35 @@ public class DeviceInfoUnitTest {
         addHingeAngleSensor();
 
         assertFalse(DeviceInfo.isFoldable());
+    }
+
+    @Test
+    public void testInstanceIsCachedAndResetForTesting() {
+        ShadowPackageManager pm =
+                shadowOf(ContextUtils.getApplicationContext().getPackageManager());
+        assertFalse(DeviceInfo.isAutomotive());
+
+        pm.setSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, true);
+        // Cached instance should still return false until resetInstanceForTesting() is called.
+        assertFalse(DeviceInfo.isAutomotive());
+
+        DeviceInfo.resetInstanceForTesting();
+        assertTrue(DeviceInfo.isAutomotive());
+    }
+
+    @Test
+    public void testForceDesktopSwitchAddedAfterCachingIsPickedUp() {
+        assertFalse(DeviceInfo.isDesktop());
+
+        // Native browser tests add this switch after DeviceInfo may already have been cached.
+        // CommandLineFlags.reset() only undoes flags applied via annotations, so remove the switch
+        // explicitly to avoid leaking it into later tests in the same JVM.
+        CommandLine.getInstance().appendSwitch(BaseSwitches.FORCE_DESKTOP_ANDROID);
+        try {
+            assertTrue(DeviceInfo.isDesktop());
+        } finally {
+            CommandLine.getInstance().removeSwitch(BaseSwitches.FORCE_DESKTOP_ANDROID);
+        }
     }
 
     private static void setHasHingeAngleFeature(boolean hasFeature) {

@@ -25,7 +25,6 @@ import org.chromium.base.ChildBindingState;
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.library_loader.LibraryLoader;
-import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.base.process_launcher.ChildProcessConnection;
 import org.chromium.base.process_launcher.IFileDescriptorInfo;
 import org.chromium.base.test.util.Criteria;
@@ -33,6 +32,7 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.content.browser.ChildProcessLauncherHelperImpl.ServiceType;
 import org.chromium.content.common.ContentInternalFeatures;
 import org.chromium.content_public.browser.ChildProcessImportance;
 import org.chromium.content_public.browser.ContentFeatureList;
@@ -77,7 +77,10 @@ public class ChildProcessLauncherHelperTest {
         blockUntilConnected(connection);
     }
 
-    private void testWarmUpImpl() {
+    @Test
+    @MediumTest
+    @Feature({"ProcessManagement"})
+    public void testWarmUp() {
         Context context = InstrumentationRegistry.getTargetContext();
         warmUpOnUiThreadBlocking(context);
 
@@ -95,30 +98,6 @@ public class ChildProcessLauncherHelperTest {
         stopProcess(launcherHelper);
 
         waitForConnectedSandboxedServicesCount(0);
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"ProcessManagement"})
-    public void testWarmUp() {
-        // Use the default creation parameters.
-        testWarmUpImpl();
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"ProcessManagement"})
-    public void testWarmUpWithBindToCaller() {
-        Context context = InstrumentationRegistry.getTargetContext();
-        ChildProcessCreationParamsImpl.set(
-                context.getPackageName(),
-                context.getPackageName(),
-                /* isExternalSandboxedService= */ false,
-                LibraryProcessType.PROCESS_CHILD,
-                /* bindToCallerCheck= */ true,
-                /* ignoreVisibilityForImportance= */ false,
-                /* forceNativeSandboxedService= */ false);
-        testWarmUpImpl();
     }
 
     // Tests that the warm-up connection is freed from its allocator if it crashes.
@@ -211,7 +190,7 @@ public class ChildProcessLauncherHelperTest {
                 startChildProcess(
                         BLOCK_UNTIL_SETUP,
                         /* doSetupConnection= */ true,
-                        /* sandboxed= */ false,
+                        ServiceType.PRIVILEGED,
                         /* reducePriorityOnBackground= */ true,
                         /* canUseWarmUpConnection= */ true);
         final ChildProcessConnection connection =
@@ -248,7 +227,7 @@ public class ChildProcessLauncherHelperTest {
                 startChildProcess(
                         BLOCK_UNTIL_SETUP,
                         /* doSetupConnection= */ true,
-                        /* sandboxed= */ false,
+                        ServiceType.PRIVILEGED,
                         /* reducePriorityOnBackground= */ true,
                         /* canUseWarmUpConnection= */ true);
         final ChildProcessConnection connection =
@@ -282,7 +261,7 @@ public class ChildProcessLauncherHelperTest {
                 startChildProcess(
                         BLOCK_UNTIL_SETUP,
                         /* doSetupConnection= */ true,
-                        /* sandboxed= */ true,
+                        ServiceType.SANDBOXED,
                         /* reducePriorityOnBackground= */ true,
                         /* canUseWarmUpConnection= */ true);
         final ChildProcessConnection connection =
@@ -326,7 +305,7 @@ public class ChildProcessLauncherHelperTest {
                 startChildProcess(
                         BLOCK_UNTIL_SETUP,
                         /* doSetupConnection= */ true,
-                        /* sandboxed= */ true,
+                        ServiceType.SANDBOXED,
                         /* reducePriorityOnBackground= */ false,
                         /* canUseWarmUpConnection= */ false);
         final ChildProcessConnection connection =
@@ -353,7 +332,7 @@ public class ChildProcessLauncherHelperTest {
                                 return ChildProcessLauncherHelperImpl.createAndStartForTesting(
                                         sProcessWaitArguments,
                                         new IFileDescriptorInfo[0],
-                                        /* sandboxed= */ true,
+                                        ServiceType.SANDBOXED,
                                         /* reducePriorityOnBackground= */ false,
                                         /* canUseWarmUpConnection= */ false,
                                         /* binderCallback= */ null,
@@ -388,7 +367,7 @@ public class ChildProcessLauncherHelperTest {
                                 return ChildProcessLauncherHelperImpl.createAndStartForTesting(
                                         sProcessWaitArguments,
                                         new IFileDescriptorInfo[0],
-                                        /* sandboxed= */ true,
+                                        ServiceType.SANDBOXED,
                                         /* reducePriorityOnBackground= */ false,
                                         /* canUseWarmUpConnection= */ false,
                                         /* binderCallback= */ null,
@@ -419,7 +398,7 @@ public class ChildProcessLauncherHelperTest {
         return startChildProcess(
                 blockingPolicy,
                 doSetupConnection,
-                /* sandboxed= */ true,
+                ServiceType.SANDBOXED,
                 /* reducePriorityOnBackground= */ false,
                 /* canUseWarmUpConnection= */ true);
     }
@@ -427,7 +406,7 @@ public class ChildProcessLauncherHelperTest {
     private static ChildProcessLauncherHelperImpl startChildProcess(
             int blockingPolicy,
             final boolean doSetupConnection,
-            boolean sandboxed,
+            @ServiceType int serviceType,
             boolean reducePriorityOnBackground,
             boolean canUseWarmUpConnection) {
         assertThat(doSetupConnection || blockingPolicy != BLOCK_UNTIL_SETUP).isTrue();
@@ -439,7 +418,7 @@ public class ChildProcessLauncherHelperTest {
                                 return ChildProcessLauncherHelperImpl.createAndStartForTesting(
                                         sProcessWaitArguments,
                                         new IFileDescriptorInfo[0],
-                                        sandboxed,
+                                        serviceType,
                                         reducePriorityOnBackground,
                                         canUseWarmUpConnection,
                                         /* binderCallback= */ null,

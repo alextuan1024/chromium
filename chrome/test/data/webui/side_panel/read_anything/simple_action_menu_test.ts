@@ -7,16 +7,12 @@ import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js'
 import {ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import type {SimpleActionMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
-import {microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
+import {eventToPromise, microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {assertTestSettingsAreNotDefaultSettings, getItemsInMenu, setupTestEnvironment} from './common.js';
+import {getItemsInMenu, setupTestEnvironment} from './common.js';
 
 suite('SimpleActionMenuElement', () => {
   let menu: SimpleActionMenuElement;
-
-  suiteSetup(() => {
-    assertTestSettingsAreNotDefaultSettings();
-  });
 
   setup(() => {
     setupTestEnvironment();
@@ -26,42 +22,61 @@ suite('SimpleActionMenuElement', () => {
     return microtasksFinished();
   });
 
+  // Returns the index of the item showing a checkmark, or -1 if none does.
+  function getCheckedIndex(): number {
+    return getItemsInMenu(menu.$.lazyMenu)
+        .findIndex(item => !!item.querySelector('.check-mark-showing-true'));
+  }
+
   test('onClick sends menu event name if no item event name', async () => {
-    let sent = false;
     menu.eventName = ToolbarEvent.FONT_SIZE;
     menu.menuItems = [
       {title: 'Item 1', data: 1},
       {title: 'Item 2', data: 2},
     ];
     await microtasksFinished();
-    document.addEventListener(ToolbarEvent.FONT_SIZE, () => {
-      sent = true;
-    });
+    const whenMenuEventFired = eventToPromise(ToolbarEvent.FONT_SIZE, menu);
 
     const items = getItemsInMenu(menu.$.lazyMenu);
     assertTrue(items.length > 0);
     const item = items[0];
     assertTrue(!!item);
     item.click();
+
+    await whenMenuEventFired;
+  });
+
+  test('shows checkmark on selected value', async () => {
+    menu.eventName = ToolbarEvent.FONT_SIZE;
+    menu.menuItems = [
+      {title: 'Item 1', data: 1},
+      {title: 'Item 2', data: 2},
+    ];
+    menu.selectedValue = 2;
     await microtasksFinished();
 
-    assertTrue(sent);
+    const items = menu.$.lazyMenu.get().querySelectorAll<HTMLElement>(
+        '.check-mark-showing-true');
+    assertEquals(1, items.length);
+    assertEquals('Item 2', items[0]!.parentElement!.textContent.trim());
   });
 
   test(
-      'shows checkmark on selected index', async () => {
+      'click does not move checkmark until selectedValue changes', async () => {
         menu.eventName = ToolbarEvent.FONT_SIZE;
         menu.menuItems = [
           {title: 'Item 1', data: 1},
           {title: 'Item 2', data: 2},
         ];
-        menu.currentSelectedIndex = 1;
+        menu.selectedValue = 1;
         await microtasksFinished();
 
-        const items = menu.$.lazyMenu.get().querySelectorAll<HTMLElement>(
-            '.check-mark-showing-true');
-        assertEquals(1, items.length);
-        assertEquals('Item 2', items[0]!.parentElement!.textContent.trim());
-      });
+        getItemsInMenu(menu.$.lazyMenu)[1]!.click();
+        await microtasksFinished();
+        assertEquals(0, getCheckedIndex());
 
+        menu.selectedValue = 2;
+        await microtasksFinished();
+        assertEquals(1, getCheckedIndex());
+      });
 });

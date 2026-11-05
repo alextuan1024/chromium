@@ -5,6 +5,19 @@
 #ifndef IOS_CHROME_BROWSER_LOCATION_BAR_BADGE_MODEL_BADGE_TYPE_H_
 #define IOS_CHROME_BROWSER_LOCATION_BAR_BADGE_MODEL_BADGE_TYPE_H_
 
+// Priority tiers used by `LocationBarBadgeTabHelper` to arbitrate between
+// competing badges and chips.
+enum class LocationBarBadgePriority {
+  // Idle states, default search engine icon, and placeholders.
+  kLow = 0,
+  // Standard persistent informational badges (e.g. infobars).
+  kDefault = 1,
+  // High priority: transient expanding chips, user cues, educational prompts.
+  kHigh = 2,
+  // Critical priority: security alerts, permission prompts, non-preemptible.
+  kCritical = 3,
+};
+
 // Features that can be displayed as a badge in the location bar.
 //
 // These values are persisted to logs. Entries should not be renumbered and
@@ -33,10 +46,9 @@ enum class LocationBarBadgeType {
   kPermissionsMicrophone,
   // Badge type for the Contextual Panel entrypoint.
   kContextualPanelEntryPointSample = 10,
-  // Badge type for Price insight from Contextual Panel entrypoint.
-  kPriceInsights = 11,
+  // kPriceInsights = 11,  // Obsolete.
   // Badge type for Reader mode from Contextual Panel entrypoint.
-  kReaderMode,
+  kReaderMode = 12,
   // Chip type for Gemini contextual cue chip.
   kGeminiContextualCueChip = 13,
 

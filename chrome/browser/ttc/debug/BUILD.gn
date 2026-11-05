@@ -1,0 +1,108 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//chrome/browser/ttc/core/buildflags.gni")
+
+assert(enable_ttc_debug_tools)
+
+# Browser-side support for the TTC debug tools: the per-session debug record
+# (pipeline health, timeline, turns, tool calls, problems and audio). See
+# TtcDebugToolsService.
+source_set("debug") {
+  sources = [
+    "ttc_debug_session.cc",
+    "ttc_debug_session.h",
+    "ttc_debug_session_issues.cc",
+    "ttc_debug_tools_service.cc",
+    "ttc_debug_tools_service.h",
+    "ttc_debug_tools_service_factory.cc",
+    "ttc_debug_tools_service_factory.h",
+    "ttc_session_audio_recorder.cc",
+    "ttc_session_audio_recorder.h",
+    "ttc_tool_call_tracer.cc",
+    "ttc_tool_call_tracer.h",
+    "ttc_tool_effect_verifier.cc",
+    "ttc_tool_effect_verifier.h",
+  ]
+  public_deps = [
+    "//base",
+    "//components/actor/core:journal",
+    "//components/actor/core:task_id",
+    "//components/keyed_service/core",
+    "//components/ttc/app/public",
+    "//content/public/browser",
+  ]
+  deps = [
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ttc/core:features",
+    "//components/actor/core",
+    "//components/actor/public/mojom:mojo_bindings_shared",
+    "//components/page_content_annotations/content",
+    "//components/tabs:public",
+    "//net",
+    "//url",
+  ]
+}
+
+if (!is_android) {
+  source_set("browser_tests") {
+    testonly = true
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+    sources = [ "ttc_debug_pipeline_browsertest.cc" ]
+    deps = [
+      ":debug",
+      "//base/test:test_support",
+      "//chrome/browser/profiles:profile",
+      "//chrome/browser/tab_list",
+      "//chrome/browser/ttc/app:browser_test_support",
+      "//chrome/browser/ttc/app:impl",
+      "//chrome/browser/ttc/app:public",
+      "//chrome/browser/ttc/core",
+      "//chrome/browser/ttc/core:features",
+      "//chrome/browser/ttc/core:impl",
+      "//chrome/test:test_support",
+      "//chrome/test/base:chrome_test_utils",
+      "//chrome/test/base:platform_browser_test",
+      "//components/optimization_guide/proto:optimization_guide_proto",
+      "//components/tabs:public",
+      "//components/ttc/app/public",
+      "//content/test:test_support",
+      "//media",
+      "//net:test_support",
+      "//testing/gmock",
+      "//testing/gtest",
+      "//url",
+    ]
+  }
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [
+    "ttc_debug_session_unittest.cc",
+    "ttc_debug_tools_service_unittest.cc",
+    "ttc_session_audio_recorder_unittest.cc",
+    "ttc_tool_call_tracer_unittest.cc",
+    "ttc_tool_effect_verifier_unittest.cc",
+  ]
+  deps = [
+    ":debug",
+    "//base/test:test_support",
+    "//chrome/browser/ttc/core:features",
+    "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//components/actor/core",
+    "//components/actor/core:journal",
+    "//components/actor/core:task_id",
+    "//components/actor/public/mojom:mojo_bindings_shared",
+    "//components/page_content_annotations/content",
+    "//components/ttc/app/public",
+    "//content/public/browser",
+    "//content/test:test_support",
+    "//net",
+    "//testing/gmock",
+    "//testing/gtest",
+    "//url",
+  ]
+}

@@ -15,7 +15,14 @@
   display: flex;
   flex-shrink: 0;
   justify-content: center;
+  user-select: none;
   width: var(--cr-searchbox-icon-container-size, 32px);
+}
+
+#image,
+#iconImg,
+#faviconImage {
+  -webkit-user-drag: none;
 }
 
 :host(:not([is-lens-searchbox_])) {
@@ -80,9 +87,45 @@
   width: 16px;
 }
 
+/* Anchors badges to the icon inside the square container. */
+#badge {
+  position: absolute;
+}
+
+/* The 6x6 dot places its inner edge 1/4 of the icon size from center so its
+   gap from the glyph stays consistent at both 20px (-1px) and 16px (-2px).
+   The dot uses the URL color so that it follows dark mode and themes. */
+#badge.dot {
+  -webkit-mask-image: url(chrome://resources/cr_components/searchbox/icons/dot.svg);
+  -webkit-mask-size: contain;
+  background-color: var(--color-searchbox-results-url);
+  height: 6px;
+  inset-inline-end: calc(
+      50% - var(--cr-searchbox-results-search-icon-size, 16px) / 4 - 6px);
+  top: calc(
+      50% - var(--cr-searchbox-results-search-icon-size, 16px) / 4 - 6px);
+  width: 6px;
+}
+
+:host-context(cr-searchbox-match:is(:focus-within, [selected])) #badge.dot {
+  background-color: var(--color-searchbox-results-url-selected);
+}
+
 @media (forced-colors: active) {
-  #icon {
+  :host {
+    --color-searchbox-answer-icon-background: transparent;
+    --color-searchbox-answer-icon-foreground:
+        var(--color-searchbox-search-icon-background);
+    --color-searchbox-google-g-background:
+        var(--color-searchbox-search-icon-background);
+    --color-searchbox-results-icon-container-background: transparent;
+    --color-searchbox-results-starter-pack-icon:
+        var(--color-searchbox-search-icon-background);
     --color-searchbox-search-icon-background: ButtonText;
+  }
+
+  #icon {
+    forced-color-adjust: none;
   }
 }
 
@@ -90,6 +133,18 @@
   background-color: var(--color-searchbox-google-g-background);
   height: var(--cr-searchbox-icon-size-in-searchbox);
   width: var(--cr-searchbox-icon-size-in-searchbox);
+}
+
+/* In dark mode, TopChrome searchbox uses a monochrome Google G mask colored
+   white. */
+:host([in-searchbox][mask-image*='google_g_cr23.svg']) #icon {
+  background-color: var(--color-searchbox-google-g-background, #fff);
+}
+
+@media (forced-colors: active) {
+  :host([in-searchbox][mask-image*='google_g_cr23.svg']) #icon {
+    background-color: ButtonText;
+  }
 }
 
 :host([in-searchbox][favicon-image_*='//resources/cr_components/omnibox/icons/google_g.svg']) #faviconImage {
@@ -110,8 +165,8 @@
   background-color: var(--color-searchbox-answer-icon-foreground);
 }
 
-:host([has-icon-container-background][is-starter-pack]:not([in-searchbox])) #icon,
-:host([has-icon-container-background][is-featured-enterprise-search]:not([in-searchbox])) #icon {
+:host([has-icon-container-background][is-featured-search]:not([in-searchbox]))
+    #icon {
   background-color: var(--color-searchbox-results-starter-pack-icon,
       var(--color-searchbox-answer-icon-foreground));
 }
@@ -137,4 +192,13 @@
 :host(:not([in-searchbox])[is-lens-searchbox_]) #container {
   background-color: var(--color-searchbox-results-icon-container-background);
   border-radius: 4000px;
+}
+
+@media (forced-colors: active) {
+  /* Same color as the icon, which turns HighlightText on hover and
+     selection. */
+  #badge.dot {
+    background-color: var(--color-searchbox-search-icon-background);
+    forced-color-adjust: none;
+  }
 }

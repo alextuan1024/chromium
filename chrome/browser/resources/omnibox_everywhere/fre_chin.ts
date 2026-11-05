@@ -44,12 +44,18 @@ export class OmniboxEverywhereFreChinElement extends
       mode: {type: String},
       hotkeyTokens: {type: Array},
       dropdownOpen: {type: Boolean},
+      smallLoomnibox: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'small-loomnibox',
+      },
     };
   }
 
   accessor mode: FreChinMode = FreChinMode.SHORTCUT_SETUP;
   accessor hotkeyTokens: string[] = [];
   accessor dropdownOpen: boolean = false;
+  accessor smallLoomnibox: boolean = false;
 
   protected isSetupMode_(): boolean {
     return this.mode === FreChinMode.SHORTCUT_SETUP;
@@ -99,7 +105,7 @@ export class OmniboxEverywhereFreChinElement extends
     }
   }
 
-  protected onSettingsClick_(e: Event) {
+  private onSettingsClick_(e: Event) {
     e.preventDefault();
     this.fire('open-settings');
   }

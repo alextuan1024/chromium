@@ -7,6 +7,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/ui/browser_manager_service_factory.h"
 
 // static
 AccountsPolicyManagerFactory* AccountsPolicyManagerFactory::GetInstance() {
@@ -17,7 +18,7 @@ AccountsPolicyManagerFactory* AccountsPolicyManagerFactory::GetInstance() {
 // static
 AccountsPolicyManager* AccountsPolicyManagerFactory::GetForProfile(
     Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   return static_cast<AccountsPolicyManager*>(
       GetInstance()->GetServiceForBrowserContext(profile, true));
 }
@@ -33,6 +34,7 @@ AccountsPolicyManagerFactory::AccountsPolicyManagerFactory()
               .Build()) {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(ChromeSigninClientFactory::GetInstance());
+  DependsOn(BrowserManagerServiceFactory::GetInstance());
 }
 
 AccountsPolicyManagerFactory::~AccountsPolicyManagerFactory() = default;

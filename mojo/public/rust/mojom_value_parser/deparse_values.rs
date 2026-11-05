@@ -264,7 +264,8 @@ struct NestedDataInfo<'a> {
     nested_data: NestedData<'a>,
     // Logically this can be thought of as a &mut [u8; 8] pointing to the bytes
     // in the data vector in which we'll store the pointer value. But since the
-    // borrow checker isn't that fine in granularity, we store its index instead.
+    // borrow checker isn't that fine in granularity, we store its index
+    // instead.
     ptr_loc: usize,
 }
 
@@ -329,7 +330,7 @@ fn deparse_array(
 
     let array_body = crate::pack::pack_array_body(element_type, num_elements);
 
-    deparse_structured_body(data, None, true, element_values, array_body.into_iter())
+    deparse_structured_body(data, None, true, element_values, array_body)
 }
 
 /// Serialize a union to the wire.
@@ -607,10 +608,7 @@ fn append_interface_ids(data: &mut DeparsedData) {
     assert!(mismatch == 0);
 
     let array_mojom_value = MojomValue::Array(
-        std::mem::take(&mut data.interface_ids)
-            .into_iter()
-            .map(|id| MojomValue::UInt32(id.into()))
-            .collect(),
+        data.interface_ids.iter().map(|&id| MojomValue::UInt32(id.into())).collect(),
     );
 
     deparse_array(data, array_mojom_value, &INTERFACE_ARRAY_TY, &PackedArrayType::UnsizedArray)
@@ -671,13 +669,21 @@ pub fn deparse_single_value_for_testing(
     Ok(data)
 }
 
+/// The serialized representation of a top-level Mojom value.
+pub struct SerializedData {
+    /// The serialized bytes, including the interface ID array (if any).
+    pub bytes: Vec<u8>,
+    /// Any handles that were contained within the value.
+    pub handles: Vec<UntypedHandle>,
+    /// The offset from the beginning of `bytes` to the embedded interface ID
+    /// array, or 0 if the array is absent.
+    pub interface_ids_offset: u64,
+    /// The interface IDs that were serialized into the value.
+    pub interface_ids: Vec<InterfaceId>,
+}
+
 /// Serialize a value including its attached interface IDs array at the end.
-/// Returns the raw bytes, attached handles, and the offset to the interface
-/// IDs array from the beginning of the body (0 if none).
-pub fn deparse_top_level_value(
-    value: MojomValue,
-    ty: &MojomWireType,
-) -> Result<(Vec<u8>, Vec<UntypedHandle>, u64)> {
+pub fn deparse_top_level_value(value: MojomValue, ty: &MojomWireType) -> Result<SerializedData> {
     let mut data = DeparsedData::new();
 
     // Make sure we actually got a struct, and unpack it.
@@ -694,14 +700,16 @@ pub fn deparse_top_level_value(
 
     deparse_struct(&mut data, field_values, packed_fields)?;
 
-    if data.interface_ids.is_empty() {
-        return Ok((data.bytes, data.handles, 0));
-    }
-
     // If we've got interface IDs, we need to append them to the payload as an
     // array.
-    let interface_ids_offset = data.bytes.len() as u64;
-    append_interface_ids(&mut data);
+    let interface_ids_offset = if data.interface_ids.is_empty() {
+        0
+    } else {
+        let offset = data.bytes.len() as u64;
+        append_interface_ids(&mut data);
+        offset
+    };
 
-    Ok((data.bytes, data.handles, interface_ids_offset))
+    let DeparsedData { bytes, handles, interface_ids } = data;
+    Ok(SerializedData { bytes, handles, interface_ids_offset, interface_ids })
 }

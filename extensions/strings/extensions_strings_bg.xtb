@@ -6,6 +6,7 @@
 
 <ph name="EXTENSION_NAME" /></translation>
 <translation id="1076698951459398590">Активиране на темата</translation>
+<translation id="1085064499066015002">Винаги на всички сайтове</translation>
 <translation id="1135328998467923690">Пакетът е невалиден: „<ph name="ERROR_CODE" />“.</translation>
 <translation id="1140871961407805696">Задна</translation>
 <translation id="1171831736360285680"><ph name="PARTNER_NAME" /> добави разширение, което може да промени начина на работа на Chromium.
@@ -28,6 +29,7 @@
 <translation id="1757786065507923842">Заявката за разрешение от родител не бе успешна.</translation>
 <translation id="1803557475693955505">Не можа да се зареди фоновата страница „<ph name="BACKGROUND_PAGE" />“.</translation>
 <translation id="1875387611427697908">Това може да бъде добавено само от <ph name="CHROME_WEB_STORE" /></translation>
+<translation id="1901182793187376715"><ph name="EXTENSION_NAME" /> (ID на разширението: <ph name="EXTENSION_ID" />) не може да се инсталира чрез правила в среди с ниско ниво на доверие.</translation>
 <translation id="2131077480075264"><ph name="APP_NAME" /> не може да се инсталира, защото няма разрешение за импортиране на ресурси от <ph name="IMPORT_NAME" /></translation>
 <translation id="2150661552845026580">Да се добави ли „<ph name="EXTENSION_NAME" />“?</translation>
 <translation id="2159915644201199628">Изображението не можа да се декодира: „<ph name="IMAGE_NAME" />“</translation>
@@ -79,6 +81,7 @@
 <translation id="4660476621274971848">Очакваната версия е <ph name="EXPECTED_VERSION" />, но тя бе <ph name="NEW_ID" /></translation>
 <translation id="471800408830181311">Извеждането на личния ключ не бе успешно.</translation>
 <translation id="4811956658694082538">Пакетът не можа да се инсталира поради срив на помощен процес. Рестартирайте Chrome и опитайте отново.</translation>
+<translation id="4883436287898674711">Всички <ph name="WEBSITE_1" /> сайта</translation>
 <translation id="4988792151665380515">Експортирането на публичен ключ не бе успешно.</translation>
 <translation id="501057610015570208">Приложенията с атрибут kiosk_only в манифеста трябва да бъдат инсталирани в павилионния режим на ChromeOS Flex</translation>
 <translation id="5026754133087629784">Изглед в мрежата: <ph name="WEBVIEW_TAG_NAME" /></translation>

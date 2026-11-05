@@ -146,7 +146,7 @@ class WebAppUiManagerImpl : public BrowserCollectionObserver,
       content::WebContents* initiating_web_contents,
       base::WeakPtr<content::Page> initiating_page,
       std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
-      blink::mojom::ManifestPtr manifest,
+      blink::Manifest manifest,
       const GURL& manifest_url,
       const GURL& requesting_page_url,
       InstallCallback callback) override;
@@ -214,7 +214,7 @@ class WebAppUiManagerImpl : public BrowserCollectionObserver,
 
 #if BUILDFLAG(IS_CHROMEOS)
   // TabStripModelObserver:
-  void OnTabCloseCancelled(const tabs::TabInterface* contents) override;
+  void OnTabCloseCancelled(tabs::TabHandle tab) override;
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_WIN)

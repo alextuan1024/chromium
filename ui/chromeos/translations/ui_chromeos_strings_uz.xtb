@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Kamera</translation>
 <translation id="162175252992296058">Portugal va AQSH klaviaturasi (xalqaro)</translation>
 <translation id="1629521517399325891">Tarmoq autentifikatsiyasi uchun foydalanuvchi sertifikati mavjud emas</translation>
+<translation id="1639239467298939599">Yuklanmoqda</translation>
 <translation id="1641780993263690097">Xitoy (Pinyin)</translation>
 <translation id="164969095109328410">Chrome qurilmasi</translation>
 <translation id="1661207570040737402">Umumiy disk va Google Workspace xotirasida joy qolmadi.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Fayllar sinxronlanishi oʻchirildi</translation>
 <translation id="2820957248982571256">Tekshirilmoqda...</translation>
 <translation id="2830077785865012357">Xitoy (Chjuin)</translation>
+<translation id="2838379631617906747">O‘rnatilmoqda</translation>
 <translation id="2843806747483486897">Standartni o‘zgartirish...</translation>
 <translation id="2873951654529031587">Chiqitdon</translation>
 <translation id="2887314858867008269">AQSH Colemak</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Parol noto‘g‘ri</translation>
 <translation id="5059127710849015030">Nepal tili transliteratsiyasi</translation>
 <translation id="5068919226082848014">Pitsa</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> proksi qoidalarini qaytadan belgilagan</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> joy tozalanadi</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> ta fayl <ph name="FOLDER_NAME" /> jildiga koʻchirilmoqda</translation>
 <translation id="509429900233858213">Xatolik yuz berdi.</translation>
-<translation id="5102922915594634436">Sinxronlangan jildlarni boshqarish</translation>
 <translation id="5109254780565519649">Xatolik yuz berdi. Ayrim elementlar tiklanmasligi mumkin.</translation>
 <translation id="5110329002213341433">Ingliz (Kanada)</translation>
 <translation id="5119780910075847424">Sinxronizatsiya toʻxtatilgan</translation>
@@ -558,7 +560,6 @@ Amal bajarilishini kuting va qurilmani “Fayllar” ilovasida chiqarib oling. A
 <translation id="5305688511332277257">O‘rnatilmagan</translation>
 <translation id="5317780077021120954">Saqlash</translation>
 <translation id="5318819489018851358">Linux bilan ulashish</translation>
-<translation id="5330145655348521461">Ushbu fayllar boshqa ish stolida ochilgan. Ularni ko‘rish uchun <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) profiliga o‘ting.</translation>
 <translation id="5330512191124428349">Fayl haqida</translation>
 <translation id="535792325654997756">Mushuklari bor odam</translation>
 <translation id="5358764674931277">Kadrlar chastotasi</translation>
@@ -699,7 +700,6 @@ Amal bajarilishini kuting va qurilmani “Fayllar” ilovasida chiqarib oling. A
 <translation id="636254897931573416">Xato domen kengaytmasiga mos keladigan qiymat topildi</translation>
 <translation id="6364301859968397756">Tashkilot ombori toʻlgan</translation>
 <translation id="6367976544441405720">Furgon</translation>
-<translation id="637062427944097960">Ushbu fayl boshqa ish stolida ochilgan. Uni ko‘rish uchun <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) profiliga o‘tib oling.</translation>
 <translation id="6394388407447716302">Faqat oʻqish</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> ta fayl</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> shifrlangani uchun koʻchirilmadi.</translation>
@@ -1021,6 +1021,7 @@ Amal bajarilishini kuting va qurilmani “Fayllar” ilovasida chiqarib oling. A
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – port</translation>
 <translation id="8656407365183407932">Oflayn fayllar olib tashlandi</translation>
 <translation id="8656768832129462377">Tekshirilmasin</translation>
+<translation id="8662978096466608964">Chrome bu rasmni orqa fonga o‘rnata olmadi.</translation>
 <translation id="8688591111840995413">Parol noto‘g‘ri</translation>
 <translation id="8698464937041809063">Google-chizmasi</translation>
 <translation id="8698877009525468705">Bu maxfiy fayl va administrator siyosati tomonidan taqiqlanishi mumkin.</translation>

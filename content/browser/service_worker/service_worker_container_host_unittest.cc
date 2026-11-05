@@ -20,12 +20,14 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/policy_container_host.h"
 #include "content/browser/service_worker/embedded_worker_test_helper.h"
 #include "content/browser/service_worker/service_worker_client.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
 #include "content/browser/service_worker/service_worker_context_core_observer.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/browser/service_worker/service_worker_host.h"
+#include "content/browser/service_worker/service_worker_main_resource_handle.h"
 #include "content/browser/service_worker/service_worker_metrics.h"
 #include "content/browser/service_worker/service_worker_register_job.h"
 #include "content/browser/service_worker/service_worker_registration.h"
@@ -130,8 +132,6 @@ class ServiceWorkerContainerHostTest : public testing::Test {
   void SetUp() override {
     old_content_browser_client_ =
         SetBrowserClientForTesting(&test_content_browser_client_);
-    mojo::SetDefaultProcessErrorHandler(base::BindRepeating(
-        &ServiceWorkerContainerHostTest::OnMojoError, base::Unretained(this)));
 
     helper_ = std::make_unique<EmbeddedWorkerTestHelper>(base::FilePath());
     context_ = helper_->context()->AsWeakPtr();
@@ -168,7 +168,6 @@ class ServiceWorkerContainerHostTest : public testing::Test {
     registration3_ = nullptr;
     helper_.reset();
     SetBrowserClientForTesting(old_content_browser_client_);
-    mojo::SetDefaultProcessErrorHandler(base::NullCallback());
   }
 
   // Creates a committed ServiceWorkerContainerHost.
@@ -303,6 +302,19 @@ class ServiceWorkerContainerHostTest : public testing::Test {
     EXPECT_FALSE(version->update_timer_.IsRunning());
   }
 
+  // Runs Client#postMessage() of the service worker `version`.
+  void PostMessageFromServiceWorker(ServiceWorkerVersion& version,
+                                    const std::string& client_uuid) {
+    version.PostMessageToClient(client_uuid, blink::TransferableMessage());
+  }
+
+  // Whether `version` expects to Uncontrol() the client `client_uuid` after
+  // evicting it from the back/forward cache.
+  bool IsControlleeToBeEvicted(const ServiceWorkerVersion& version,
+                               const std::string& client_uuid) const {
+    return version.controllees_to_be_evicted_.contains(client_uuid);
+  }
+
   bool HasVersionToUpdate(ServiceWorkerClient* service_worker_client) {
     return !service_worker_client->versions_to_update_.empty();
   }
@@ -334,8 +346,10 @@ class ServiceWorkerContainerHostTest : public testing::Test {
   std::vector<std::string> bad_messages_;
 
  private:
-
   url::ScopedSchemeRegistryForTests scoped_registry_;
+  mojo::ScopedDefaultProcessErrorHandlerForTesting mojo_error_handler_{
+      base::BindRepeating(&ServiceWorkerContainerHostTest::OnMojoError,
+                          base::Unretained(this))};
 };
 
 TEST_F(ServiceWorkerContainerHostTest, MatchRegistration) {
@@ -415,6 +429,52 @@ TEST_F(ServiceWorkerContainerHostTest,
       GlobalRenderFrameHostId(helper_->mock_render_process_id(),
                               /*mock frame_routing_id=*/1));
   EXPECT_EQ(nullptr, committed_client->MatchRegistration());
+}
+
+TEST_F(ServiceWorkerContainerHostTest,
+       WorkerClientInheritsDisallowsServiceWorkerControlFromCreator) {
+  ScopedServiceWorkerClient parent_client = CreateServiceWorkerClient(
+      context_.get(), GURL("https://www.example.com/example1"));
+  parent_client->SetDisallowsServiceWorkerControl();
+  ASSERT_TRUE(parent_client->disallows_service_worker_control());
+
+  ServiceWorkerMainResourceHandle handle(
+      helper_->context_wrapper(), base::DoNothing(),
+      parent_client->client_uuid(), parent_client->AsWeakPtr());
+  const GURL worker_url("https://www.example.com/worker.js");
+  const url::Origin origin = url::Origin::Create(worker_url);
+  handle.set_service_worker_client(
+      context_->service_worker_client_owner()
+          .CreateServiceWorkerClientForWorker(
+              helper_->mock_render_process_id(),
+              ServiceWorkerClientInfo(blink::DedicatedWorkerToken())),
+      net::IsolationInfo::Create(net::IsolationInfo::RequestType::kOther,
+                                 origin, origin,
+                                 net::SiteForCookies::FromOrigin(origin)));
+
+  ASSERT_TRUE(handle.service_worker_client());
+  EXPECT_TRUE(
+      handle.service_worker_client()->disallows_service_worker_control());
+  EXPECT_TRUE(handle.InitializeForRequest(worker_url, origin,
+                                          /*client_for_prefetch=*/nullptr));
+  EXPECT_FALSE(
+      handle.service_worker_client()->IsEligibleForServiceWorkerController());
+  EXPECT_EQ(nullptr, handle.service_worker_client()->MatchRegistration());
+
+  mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>
+      coep_reporter;
+  std::ignore = coep_reporter.InitWithNewPipeAndPassReceiver();
+  mojo::PendingRemote<network::mojom::DocumentIsolationPolicyReporter>
+      dip_reporter;
+  std::ignore = dip_reporter.InitWithNewPipeAndPassReceiver();
+  std::ignore = handle.scoped_service_worker_client()->CommitResponseAndRelease(
+      /*rfh_id=*/std::nullopt, PolicyContainerPolicies(),
+      std::move(coep_reporter), std::move(dip_reporter), ukm::kInvalidSourceId);
+  ASSERT_TRUE(handle.service_worker_client());
+  ASSERT_TRUE(handle.service_worker_client()->container_host());
+  EXPECT_FALSE(
+      handle.service_worker_client()->container_host()->AllowServiceWorker(
+          GURL("https://www.example.com/"), worker_url));
 }
 
 TEST_F(ServiceWorkerContainerHostTest, UpdateUrls_SameOriginRedirect) {
@@ -1167,6 +1227,54 @@ TEST_F(ServiceWorkerContainerHostTest,
   EXPECT_FALSE(service_worker_client->IsEligibleForServiceWorkerController());
 }
 
+TEST_F(ServiceWorkerContainerHostTest, SandboxedWorker_FeatureEnabledRejected) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kServiceWorkerDropHandleForCSPSandboxedWorker);
+
+  GURL url("https://www.example.com/worker.js");
+  ScopedServiceWorkerClient client(
+      helper_->context()
+          ->service_worker_client_owner()
+          .CreateServiceWorkerClientForWorker(
+              helper_->mock_render_process_id(),
+              ServiceWorkerClientInfo(blink::DedicatedWorkerToken())));
+  client->UpdateUrls(
+      url, url::Origin::Create(url),
+      blink::StorageKey::CreateFirstParty(url::Origin::Create(url)));
+
+  PolicyContainerPolicies policies;
+  policies.sandbox_flags = network::mojom::WebSandboxFlags::kOrigin;
+  CommittedServiceWorkerClient committed_client(std::move(client), policies);
+
+  EXPECT_FALSE(committed_client->IsEligibleForServiceWorkerController());
+  EXPECT_FALSE(committed_client->container_host()->HasValidSandboxFlags());
+}
+
+TEST_F(ServiceWorkerContainerHostTest, SandboxedWorker_FeatureDisabledAllowed) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kServiceWorkerDropHandleForCSPSandboxedWorker);
+
+  GURL url("https://www.example.com/worker.js");
+  ScopedServiceWorkerClient client(
+      helper_->context()
+          ->service_worker_client_owner()
+          .CreateServiceWorkerClientForWorker(
+              helper_->mock_render_process_id(),
+              ServiceWorkerClientInfo(blink::DedicatedWorkerToken())));
+  client->UpdateUrls(
+      url, url::Origin::Create(url),
+      blink::StorageKey::CreateFirstParty(url::Origin::Create(url)));
+
+  PolicyContainerPolicies policies;
+  policies.sandbox_flags = network::mojom::WebSandboxFlags::kOrigin;
+  CommittedServiceWorkerClient committed_client(std::move(client), policies);
+
+  EXPECT_TRUE(committed_client->IsEligibleForServiceWorkerController());
+  EXPECT_TRUE(committed_client->container_host()->HasValidSandboxFlags());
+}
+
 TEST_F(ServiceWorkerContainerHostTest, Register_BadCharactersShouldFail) {
   CommittedServiceWorkerClient service_worker_client =
       PrepareServiceWorkerContainerHost(GURL("https://www.example.com"));
@@ -1796,6 +1904,113 @@ TEST_F(ServiceWorkerContainerHostTestWithBackForwardCache, ControlleeEvents) {
   EXPECT_EQ(observer.on_controllee_added_count(), 2);
   EXPECT_EQ(observer.on_controllee_navigation_committed_count(), 2);
   EXPECT_EQ(observer.on_controllee_removed_count(), 1);
+}
+
+// A service worker can hold a client that another service worker controls:
+// clients.matchAll({includeUncontrolled: true}) returns one, and so does
+// `event.source` when the page posts to a worker other than its controller.
+// When the worker posts back after the page entered the back/forward cache,
+// the page is in its controller's bfcache map, not in the sender's. Evicting
+// it through the sender CHECK-failed in RemoveControlleeFromBackForwardCacheMap
+// and took down the browser process (crbug.com/341322515).
+TEST_F(ServiceWorkerContainerHostTestWithBackForwardCache,
+       PostMessageFromNonControllerToBackForwardCachedClient) {
+  ScopedServiceWorkerClient service_worker_client = CreateServiceWorkerClient(
+      context_.get(), GURL("https://www.example.com/"));
+
+  // The service worker that controls the page.
+  scoped_refptr<ServiceWorkerVersion> controller =
+      base::MakeRefCounted<ServiceWorkerVersion>(
+          registration1_.get(), GURL("https://www.example.com/sw.js"),
+          blink::mojom::ScriptType::kClassic, 1 /* version_id */,
+          mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>(),
+          helper_->context()->AsWeakPtr(), std::nullopt, std::nullopt,
+          PolicyContainerPolicies());
+  controller->set_fetch_handler_type(
+      ServiceWorkerVersion::FetchHandlerType::kNotSkippable);
+  controller->SetStatus(ServiceWorkerVersion::ACTIVATED);
+  registration1_->SetActiveVersion(controller);
+
+  // A service worker of the same origin with another scope.
+  scoped_refptr<ServiceWorkerVersion> sender =
+      base::MakeRefCounted<ServiceWorkerVersion>(
+          registration2_.get(), GURL("https://www.example.com/sw.js"),
+          blink::mojom::ScriptType::kClassic, 2 /* version_id */,
+          mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>(),
+          helper_->context()->AsWeakPtr(), std::nullopt, std::nullopt,
+          PolicyContainerPolicies());
+  sender->set_fetch_handler_type(
+      ServiceWorkerVersion::FetchHandlerType::kNotSkippable);
+  sender->SetStatus(ServiceWorkerVersion::ACTIVATED);
+  registration2_->SetActiveVersion(sender);
+
+  base::RunLoop client_destroyed;
+  {
+    CommittedServiceWorkerClient committed_service_worker_client =
+        FinishNavigation(std::move(service_worker_client));
+    auto container = std::make_unique<MockServiceWorkerContainer>(
+        committed_service_worker_client.TakeClientReceiver());
+    committed_service_worker_client->SetControllerRegistration(
+        registration1_, false /* notify_controllerchange */);
+    committed_service_worker_client.host_remote()->OnExecutionReady();
+    base::RunLoop().RunUntilIdle();
+    ASSERT_EQ(controller.get(), committed_service_worker_client->controller());
+    const std::string client_uuid =
+        committed_service_worker_client->client_uuid();
+
+    committed_service_worker_client->OnEnterBackForwardCache();
+    ASSERT_TRUE(controller->BFCacheContainsControllee(client_uuid));
+
+    // The page is evicted and leaves its controller's bfcache map.
+    PostMessageFromServiceWorker(*sender, client_uuid);
+    EXPECT_FALSE(committed_service_worker_client->IsInBackForwardCache());
+    EXPECT_FALSE(controller->BFCacheContainsControllee(client_uuid));
+
+    committed_service_worker_client->SetDestructionCallbackForTesting(
+        client_destroyed.QuitClosure());
+  }
+  // Destroying the evicted page un-controls it from `controller`, which
+  // CHECKs that `controller` is the one that recorded the eviction.
+  client_destroyed.Run();
+}
+
+// A service worker can also hold a client that no service worker controls,
+// via clients.matchAll({includeUncontrolled: true}). When it posts to the
+// client in the back/forward cache, the client is evicted without being
+// recorded in the sender, since no controller will Uncontrol() it later.
+TEST_F(ServiceWorkerContainerHostTestWithBackForwardCache,
+       PostMessageToUncontrolledBackForwardCachedClient) {
+  ScopedServiceWorkerClient service_worker_client = CreateServiceWorkerClient(
+      context_.get(), GURL("https://www.example.com/"));
+
+  scoped_refptr<ServiceWorkerVersion> sender =
+      base::MakeRefCounted<ServiceWorkerVersion>(
+          registration1_.get(), GURL("https://www.example.com/sw.js"),
+          blink::mojom::ScriptType::kClassic, 1 /* version_id */,
+          mojo::PendingRemote<storage::mojom::ServiceWorkerLiveVersionRef>(),
+          helper_->context()->AsWeakPtr(), std::nullopt, std::nullopt,
+          PolicyContainerPolicies());
+  sender->set_fetch_handler_type(
+      ServiceWorkerVersion::FetchHandlerType::kNotSkippable);
+  sender->SetStatus(ServiceWorkerVersion::ACTIVATED);
+  registration1_->SetActiveVersion(sender);
+
+  CommittedServiceWorkerClient committed_service_worker_client =
+      FinishNavigation(std::move(service_worker_client));
+  auto container = std::make_unique<MockServiceWorkerContainer>(
+      committed_service_worker_client.TakeClientReceiver());
+  committed_service_worker_client.host_remote()->OnExecutionReady();
+  base::RunLoop().RunUntilIdle();
+  ASSERT_FALSE(committed_service_worker_client->controller());
+  const std::string client_uuid =
+      committed_service_worker_client->client_uuid();
+
+  committed_service_worker_client->OnEnterBackForwardCache();
+  ASSERT_TRUE(committed_service_worker_client->IsInBackForwardCache());
+
+  PostMessageFromServiceWorker(*sender, client_uuid);
+  EXPECT_FALSE(committed_service_worker_client->IsInBackForwardCache());
+  EXPECT_FALSE(IsControlleeToBeEvicted(*sender, client_uuid));
 }
 
 // Tests that the service worker involved with a navigation (via

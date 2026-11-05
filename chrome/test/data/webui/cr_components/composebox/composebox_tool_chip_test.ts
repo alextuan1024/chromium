@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://contextual-tasks/strings.m.js';
 import 'chrome://resources/cr_elements/icons.html.js';
 import 'chrome://resources/cr_components/composebox/icons.html.js';
 import 'chrome://resources/cr_components/composebox/composebox_tool_chip.js';
@@ -14,7 +13,7 @@ import {ToolMode} from 'chrome://resources/mojo/components/omnibox/composebox/co
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {$$, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {MockInputState} from './composebox_test_utils.js';
+import {createToolConfig, MockInputState} from './composebox_test_utils.js';
 
 suite('ComposeboxToolChipTest', () => {
   let toolChip: ComposeboxToolChipElement;
@@ -36,18 +35,7 @@ suite('ComposeboxToolChipTest', () => {
   test('Renders icon defined in toolConfig', async () => {
     toolChip['inputState'] = new MockInputState({
       activeTool: ToolMode.kDeepSearch,
-      toolConfigs: [
-        {
-          tool: ToolMode.kDeepSearch,
-          menuLabel: 'Deep Search',
-          disableActiveModelSelection: false,
-          chipLabel: 'Deep Search',
-          icon: 94,
-          hintText: '',
-          aimUrlParams: [],
-          menuTooltip: '',
-        },
-      ],
+      toolConfigs: [createToolConfig(ToolMode.kDeepSearch, {icon: 94})],
     });
     await microtasksFinished();
 
@@ -56,23 +44,24 @@ suite('ComposeboxToolChipTest', () => {
     assertEquals('searchbox_config:94', toolIcon!.icon);
   });
 
+  test('Renders new tool icon defined in toolConfig', async () => {
+    toolChip['inputState'] = new MockInputState({
+      activeTool: ToolMode.kImageGen,
+      toolConfigs: [createToolConfig(ToolMode.kImageGen, {icon: 108})],
+    });
+    await microtasksFinished();
+
+    const toolIcon = $$<CrIconElement>(toolChip, '.tool-icon');
+    assertTrue(isVisible(toolIcon));
+    assertEquals('searchbox_config:108', toolIcon!.icon);
+  });
+
   test(
       'Uses searchbox_config:0 when icon is 0 or unspecified in config',
       async () => {
         toolChip['inputState'] = new MockInputState({
           activeTool: ToolMode.kDeepSearch,
-          toolConfigs: [
-            {
-              tool: ToolMode.kDeepSearch,
-              menuLabel: 'Deep Search',
-              disableActiveModelSelection: false,
-              chipLabel: 'Deep Search',
-              icon: 0,
-              hintText: '',
-              aimUrlParams: [],
-              menuTooltip: '',
-            },
-          ],
+          toolConfigs: [createToolConfig(ToolMode.kDeepSearch, {icon: 0})],
         });
         await microtasksFinished();
 
@@ -103,23 +92,42 @@ suite('ComposeboxToolChipTest', () => {
         });
         toolChip['inputState'] = new MockInputState({
           activeTool: ToolMode.kDeepSearch,
-          toolConfigs: [
-            {
-              tool: ToolMode.kDeepSearch,
-              menuLabel: 'Deep Search',
-              disableActiveModelSelection: false,
-              chipLabel: 'Deep Search',
-              icon: 94,
-              hintText: '',
-              aimUrlParams: [],
-              menuTooltip: '',
-            },
-          ],
+          toolConfigs: [createToolConfig(ToolMode.kDeepSearch, {icon: 94})],
         });
         await microtasksFinished();
 
         const toolIcon = $$<CrIconElement>(toolChip, '.tool-icon');
         assertTrue(isVisible(toolIcon));
         assertEquals('composebox:travel-explore', toolIcon!.icon);
+      });
+
+  test('Uses chipA11yLabel from toolConfig as the aria-label', async () => {
+    toolChip['inputState'] = new MockInputState({
+      activeTool: ToolMode.kCanvas,
+      toolConfigs: [createToolConfig(
+          ToolMode.kCanvas,
+          {chipA11yLabel: 'Canvas (active), click to remove'})],
+    });
+    await microtasksFinished();
+
+    const button = $$(toolChip, '#toolEnabledButton');
+    assertTrue(!!button);
+    assertEquals(
+        'Canvas (active), click to remove', button.getAttribute('aria-label'));
+  });
+
+  test(
+      'Falls back to removeToolChipAriaLabel when chipA11yLabel is empty',
+      async () => {
+        toolChip['inputState'] = new MockInputState({
+          activeTool: ToolMode.kCanvas,
+          toolConfigs: [createToolConfig(
+              ToolMode.kCanvas, {chipLabel: 'Canvas', chipA11yLabel: ''})],
+        });
+        await microtasksFinished();
+
+        const button = $$(toolChip, '#toolEnabledButton');
+        assertTrue(!!button);
+        assertEquals('Remove Canvas', button.getAttribute('aria-label'));
       });
 });

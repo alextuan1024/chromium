@@ -51,12 +51,7 @@ CSSValueList::CSSValueList(ValueListSeparator list_separator,
 
 CSSValueList::CSSValueList(ValueListSeparator list_separator,
                            HeapVector<Member<const CSSValue>, 4> values)
-    : CSSValueList(kValueListClass, list_separator, std::move(values)) {}
-
-CSSValueList::CSSValueList(ClassType class_type,
-                           ValueListSeparator list_separator,
-                           HeapVector<Member<const CSSValue>, 4> values)
-    : CSSValue(class_type), values_(std::move(values)) {
+    : CSSValue(kValueListClass), values_(std::move(values)) {
   value_list_separator_ = list_separator;
 }
 
@@ -196,9 +191,10 @@ uint32_t CSSValueList::CustomHash() const {
   return hash;
 }
 
-bool CSSValueList::HasFailedOrCanceledSubresources() const {
+bool CSSValueList::HasFailedOrCanceledSubresources(
+    ResourceFetcher* fetcher) const {
   for (const auto& value : values_) {
-    if (value->HasFailedOrCanceledSubresources()) {
+    if (value->HasFailedOrCanceledSubresources(fetcher)) {
       return true;
     }
   }

@@ -4,19 +4,14 @@
 
 package org.chromium.chrome.browser.autofill.vcn;
 
-import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 
 import androidx.annotation.DrawableRes;
 
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.VirtualCardEnrollmentLinkType;
 import org.chromium.components.autofill.payments.LegalMessageLine;
 import org.chromium.ui.modelutil.PropertyKey;
-import org.chromium.ui.modelutil.PropertyModel.ReadableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableObjectPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.url.GURL;
@@ -109,50 +104,20 @@ import java.util.function.Function;
 
     /** Issuer icon. */
     static class IssuerIcon {
-        /** The bitmap for the issuer icon. */
-        final @Nullable Bitmap mBitmap;
-
         /** The resource id for the issuer icon. */
         final @DrawableRes int mIconResource;
 
-        /** The url for an issuer icon. */
-        final @Nullable GURL mIconUrl;
+        /** The url for an issuer icon, or an empty {@link GURL} when using the default resource. */
+        final GURL mIconUrl;
 
-        /** The width of the issuer icon. */
-        final int mWidth;
-
-        /** The height of the issuer icon. */
-        final int mHeight;
-
-        /** Constructs an issuer icon. */
-        IssuerIcon(Bitmap bitmap, int width, int height) {
-            assert !ChromeFeatureList.isEnabled(
-                    AutofillFeatures.AUTOFILL_ENABLE_VIRTUAL_CARD_JAVA_PAYMENTS_DATA_MANAGER);
-            mBitmap = bitmap;
-            mIconResource = 0;
-            mIconUrl = null;
-            mWidth = width;
-            mHeight = height;
-        }
-
-        /* Constructs an issuer icon given a default icon resource and an optional custom url. */
+        /** Constructs an issuer icon given a default icon resource and an icon url. */
         IssuerIcon(@DrawableRes int iconResource, GURL iconUrl) {
-            assert ChromeFeatureList.isEnabled(
-                    AutofillFeatures.AUTOFILL_ENABLE_VIRTUAL_CARD_JAVA_PAYMENTS_DATA_MANAGER);
-            mBitmap = null;
             mIconResource = iconResource;
             mIconUrl = iconUrl;
-            mWidth = 0;
-            mHeight = 0;
         }
     }
 
-    /**
-     * A call back to retrieve the drawable for the given issuer icon when the issuer icon.
-     *
-     * <p>This callback does not apply to IssuerIcons initialized with a bitmap, constructed via
-     * {@link IssuerIcon#IssuerIcon(Bitmap, int, int)}.
-     */
+    /** A call back to retrieve the drawable for the given issuer icon. */
     static final ReadableObjectPropertyKey<Function<IssuerIcon, Drawable>>
             ISSUER_ICON_FETCH_CALLBACK = new ReadableObjectPropertyKey<>();
 
@@ -162,9 +127,6 @@ import java.util.function.Function;
     /** The description text with a "learn more" link. */
     static final ReadableObjectPropertyKey<Description> DESCRIPTION =
             new ReadableObjectPropertyKey<>();
-
-    /** Whether or not to display the Google Pay icon. */
-    static final ReadableBooleanPropertyKey IS_GPAY_LOGO_VISIBLE = new ReadableBooleanPropertyKey();
 
     /** The icon for the card. */
     static final ReadableObjectPropertyKey<IssuerIcon> ISSUER_ICON =
@@ -189,13 +151,20 @@ import java.util.function.Function;
     static final ReadableObjectPropertyKey<String> CANCEL_BUTTON_LABEL =
             new ReadableObjectPropertyKey<>();
 
+    /** The callback to run when the button that enrolls a virtual card is clicked. */
+    static final ReadableObjectPropertyKey<Runnable> ON_ACCEPT_BUTTON_CLICK_ACTION =
+            new ReadableObjectPropertyKey<>();
+
+    /** The callback to run when the button that cancels enrollment is clicked. */
+    static final ReadableObjectPropertyKey<Runnable> ON_CANCEL_BUTTON_CLICK_ACTION =
+            new ReadableObjectPropertyKey<>();
+
     /** Indicates whether the bottom sheet is in a loading state. */
     static final WritableBooleanPropertyKey SHOW_LOADING_STATE = new WritableBooleanPropertyKey();
 
     static final PropertyKey[] ALL_KEYS = {
         MESSAGE_TEXT,
         DESCRIPTION,
-        IS_GPAY_LOGO_VISIBLE,
         ISSUER_ICON,
         ISSUER_ICON_FETCH_CALLBACK,
         CARD_LABEL,
@@ -203,6 +172,8 @@ import java.util.function.Function;
         ISSUER_LEGAL_MESSAGES,
         ACCEPT_BUTTON_LABEL,
         CANCEL_BUTTON_LABEL,
+        ON_ACCEPT_BUTTON_CLICK_ACTION,
+        ON_CANCEL_BUTTON_CLICK_ACTION,
         SHOW_LOADING_STATE
     };
 

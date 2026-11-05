@@ -14,9 +14,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 
-import android.graphics.Bitmap;
+import static org.chromium.net.NetworkTrafficAnnotationTag.TRAFFIC_ANNOTATION_FOR_TESTS;
 
-import jp.tomorrowkey.android.gifplayer.BaseGifImage;
+import android.graphics.Bitmap;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -32,6 +32,7 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
+import org.chromium.net.NetError;
 import org.chromium.ui.test.util.MockitoHelper;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
@@ -48,7 +49,6 @@ public class CachedImageFetcherTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock ImageFetcherBridge mBridge;
     @Mock CachedImageFetcher.ImageLoader mImageLoader;
-    @Mock BaseGifImage mGif;
     @Mock Callback<Bitmap> mBitmapCallback;
     @Mock Callback<ImageDataFetchResult> mGifCallback;
 
@@ -64,11 +64,11 @@ public class CachedImageFetcherTest {
 
         mBitmap = Bitmap.createBitmap(WIDTH_PX, HEIGHT_PX, Bitmap.Config.ARGB_8888);
         mTestGifData = new byte[] {1, 2, 3};
-        doReturn(mTestGifData).when(mGif).getData();
         mImageDataFetchResult =
                 new ImageDataFetchResult(
                         mTestGifData,
-                        new RequestMetadata("image/gif", 200, "test_content_location_header"));
+                        new RequestMetadata(
+                                "image/gif", 200, NetError.OK, "test_content_location_header"));
         ArgumentCaptor<Callback<Bitmap>> bitmapCallbackCaptor = MockitoHelper.callbackCaptor();
         doAnswer(
                         (InvocationOnMock invocation) -> {
@@ -88,7 +88,9 @@ public class CachedImageFetcherTest {
                 .when(mBridge)
                 .fetchGif(
                         anyInt(),
-                        eq(ImageFetcher.Params.create(URL, UMA_CLIENT_NAME)),
+                        eq(
+                                ImageFetcher.Params.create(
+                                        URL, UMA_CLIENT_NAME, TRAFFIC_ANNOTATION_FOR_TESTS)),
                         gifCallbackCaptor.capture());
     }
 
@@ -97,7 +99,8 @@ public class CachedImageFetcherTest {
         doReturn(null).when(mImageLoader).tryToLoadImageFromDisk(PATH);
 
         ImageFetcher.Params params =
-                ImageFetcher.Params.create(URL, UMA_CLIENT_NAME, WIDTH_PX, HEIGHT_PX);
+                ImageFetcher.Params.create(
+                        URL, UMA_CLIENT_NAME, TRAFFIC_ANNOTATION_FOR_TESTS, WIDTH_PX, HEIGHT_PX);
         mCachedImageFetcher.fetchImage(params, mBitmapCallback);
         RobolectricUtil.runAllBackgroundAndUi();
         verify(mBitmapCallback).onResult(mBitmap);
@@ -110,7 +113,11 @@ public class CachedImageFetcherTest {
 
         ImageFetcher.Params params =
                 ImageFetcher.Params.createNoResizing(
-                        new GURL(URL), UMA_CLIENT_NAME, WIDTH_PX + 1, HEIGHT_PX + 1);
+                        new GURL(URL),
+                        UMA_CLIENT_NAME,
+                        TRAFFIC_ANNOTATION_FOR_TESTS,
+                        WIDTH_PX + 1,
+                        HEIGHT_PX + 1);
         mCachedImageFetcher.fetchImage(params, mBitmapCallback);
         RobolectricUtil.runAllBackgroundAndUi();
 
@@ -130,7 +137,12 @@ public class CachedImageFetcherTest {
         doReturn(mBitmap).when(mImageLoader).tryToLoadImageFromDisk(PATH);
 
         ImageFetcher.Params params =
-                ImageFetcher.Params.create(URL, UMA_CLIENT_NAME, WIDTH_PX + 1, HEIGHT_PX + 1);
+                ImageFetcher.Params.create(
+                        URL,
+                        UMA_CLIENT_NAME,
+                        TRAFFIC_ANNOTATION_FOR_TESTS,
+                        WIDTH_PX + 1,
+                        HEIGHT_PX + 1);
         mCachedImageFetcher.fetchImage(params, mBitmapCallback);
         RobolectricUtil.runAllBackgroundAndUi();
 
@@ -144,7 +156,13 @@ public class CachedImageFetcherTest {
         verify(mBridge, never())
                 .fetchImage(
                         eq(ImageFetcherConfig.DISK_CACHE_ONLY),
-                        eq(ImageFetcher.Params.create(URL, UMA_CLIENT_NAME, WIDTH_PX, HEIGHT_PX)),
+                        eq(
+                                ImageFetcher.Params.create(
+                                        URL,
+                                        UMA_CLIENT_NAME,
+                                        TRAFFIC_ANNOTATION_FOR_TESTS,
+                                        WIDTH_PX,
+                                        HEIGHT_PX)),
                         any());
         verify(mBridge).reportEvent(UMA_CLIENT_NAME, ImageFetcherEvent.JAVA_DISK_CACHE_HIT);
         verify(mBridge).reportCacheHitTime(eq(UMA_CLIENT_NAME), anyLong());
@@ -154,7 +172,8 @@ public class CachedImageFetcherTest {
     public void testFetchGif_fileNotFoundOnDisk() {
         doReturn(null).when(mImageLoader).tryToLoadGifFromDisk(PATH);
 
-        ImageFetcher.Params params = ImageFetcher.Params.create(URL, UMA_CLIENT_NAME);
+        ImageFetcher.Params params =
+                ImageFetcher.Params.create(URL, UMA_CLIENT_NAME, TRAFFIC_ANNOTATION_FOR_TESTS);
         mCachedImageFetcher.fetchGif(params, mGifCallback);
         RobolectricUtil.runAllBackgroundAndUi();
 
@@ -168,9 +187,10 @@ public class CachedImageFetcherTest {
 
     @Test
     public void testFetchGif_fileFoundOnDisk() {
-        doReturn(mGif).when(mImageLoader).tryToLoadGifFromDisk(PATH);
+        doReturn(mTestGifData).when(mImageLoader).tryToLoadGifFromDisk(PATH);
 
-        ImageFetcher.Params params = ImageFetcher.Params.create(URL, UMA_CLIENT_NAME);
+        ImageFetcher.Params params =
+                ImageFetcher.Params.create(URL, UMA_CLIENT_NAME, TRAFFIC_ANNOTATION_FOR_TESTS);
         mCachedImageFetcher.fetchGif(params, mGifCallback);
         RobolectricUtil.runAllBackgroundAndUi();
 

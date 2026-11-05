@@ -44,12 +44,24 @@
 #endif
 
 namespace glic {
+namespace {
+
+std::vector<base::test::FeatureRef> GetEnabledSkillsFeatures() {
+#if BUILDFLAG(IS_ANDROID)
+  // Android additionally requires the WebView V2 UI.
+  return {::features::kSkillsEnabled, ::features::kSkillsWebViewV2Enabled};
+#else
+  return {::features::kSkillsEnabled};
+#endif
+}
+
+}  // namespace
 
 class GlicApiTestWithSkills : public GlicApiBrowserTest {
  public:
   GlicApiTestWithSkills()
       : GlicApiBrowserTest(GlicTestJsPath("./glic_api_skills_browsertest.js")) {
-    scoped_feature_list_.InitAndEnableFeature(::features::kSkillsEnabled);
+    scoped_feature_list_.InitWithFeatures(GetEnabledSkillsFeatures(), {});
   }
 
   void SetUpOnMainThread() override {
@@ -130,7 +142,7 @@ class GlicApiTestWithSkillsDisabled : public GlicApiBrowserTest {
  public:
   GlicApiTestWithSkillsDisabled()
       : GlicApiBrowserTest(GlicTestJsPath("./glic_api_skills_browsertest.js")) {
-    scoped_feature_list_.InitAndEnableFeature(::features::kSkillsEnabled);
+    scoped_feature_list_.InitWithFeatures(GetEnabledSkillsFeatures(), {});
   }
 
   void SetUpOnMainThread() override {
@@ -372,7 +384,8 @@ IN_PROC_BROWSER_TEST_F(GlicApiTestWithSkills, testShowManageSkillsUiNoWindow) {
   ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
     auto all_bwis = GetAllBrowserWindowInterfaces();
     for (auto* bwi : all_bwis) {
-      for (auto* tab : TabListInterface::From(bwi)->GetAllTabs()) {
+      for (tabs::TabInterface* tab :
+           TabListInterface::From(bwi)->GetAllTabs()) {
         if (tab->GetContents()->GetLastCommittedURL().spec().starts_with(
                 chrome::kChromeUISkillsURL)) {
           return true;
@@ -396,7 +409,8 @@ IN_PROC_BROWSER_TEST_F(GlicApiTestWithSkills, testCreateSkillNoWindow) {
   ASSERT_TRUE(base::test::RunUntil([&]() -> bool {
     auto all_bwis = GetAllBrowserWindowInterfaces();
     for (auto* bwi : all_bwis) {
-      for (auto* tab : TabListInterface::From(bwi)->GetAllTabs()) {
+      for (tabs::TabInterface* tab :
+           TabListInterface::From(bwi)->GetAllTabs()) {
         if (tab->GetContents()->GetLastCommittedURL().spec().starts_with(
                 chrome::kChromeUISkillsURL)) {
           return true;

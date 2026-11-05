@@ -10,11 +10,11 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <ranges>
 #include <utility>
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/debug/alias.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
@@ -84,7 +84,7 @@ const uint64_t MemoryDumpManager::kInvalidTracingProcessId = 0;
 // static
 const char* const MemoryDumpManager::kSystemAllocatorPoolName =
 #if defined(MALLOC_MEMORY_TRACING_SUPPORTED)
-    MallocDumpProvider::kAllocatedObjects;
+    MallocDumpProvider::kSuballocationTarget;
 #else
     nullptr;
 #endif
@@ -597,7 +597,7 @@ MemoryDumpManager::ProcessMemoryDumpAsyncState::ProcessMemoryDumpAsyncState(
   pending_dump_providers.reserve(dump_providers.size());
   absl::flat_hash_map<std::string, size_t> provider_counts;
   for (scoped_refptr<MemoryDumpProviderInfo> provider :
-       base::Reversed(dump_providers)) {
+       std::views::reverse(dump_providers)) {
     ++provider_counts[provider->name.histogram_name()];
     pending_dump_providers.emplace_back(std::move(provider), req_args);
   }

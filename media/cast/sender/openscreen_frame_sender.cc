@@ -47,6 +47,20 @@ CastStreamingFrameDropReason ToFrameDropReason(EnqueueFrameResult result) {
   }
 }
 
+perfetto::StaticString TransportSliceName(bool is_audio) {
+  return is_audio ? perfetto::StaticString("Audio Transport")
+                  : perfetto::StaticString("Video Transport");
+}
+
+// Each frame gets its own transport slice. It starts when Open Screen accepts
+// the frame and ends when the frame is canceled, which is usually when the
+// Receiver ACKs it. So the slice shows how long the frame was in flight.
+perfetto::NamedTrack TransportTrack(bool is_audio,
+                                    openscreen::cast::FrameId frame_id) {
+  return perfetto::NamedTrack(TransportSliceName(is_audio),
+                              frame_id.lower_32_bits());
+}
+
 }  // namespace
 
 std::unique_ptr<FrameSender> FrameSender::Create(
@@ -120,6 +134,7 @@ base::TimeDelta OpenscreenFrameSender::GetTargetPlayoutDelay() const {
 
 void OpenscreenFrameSender::OnFrameCanceled(
     openscreen::cast::FrameId frame_id) {
+  TRACE_EVENT_END("cast.stream", TransportTrack(is_audio_, frame_id));
   if (frame_id > last_acked_frame_id_) {
     last_acked_frame_id_ = frame_id;
   }
@@ -143,12 +158,17 @@ base::TimeDelta OpenscreenFrameSender::GetInFlightMediaDuration() const {
   base::TimeDelta duration = client_->GetEncoderBacklogDuration();
 
   // If we have sent at least one frame, then include the duration currently
-  // in flight (as recorded by the Open Screen sender).
+  // in flight (as recorded by the Open Screen sender), capping per-frame
+  // duration so static screen gaps between in-flight frames do not inflate
+  // the backlog.
   if (!last_enqueued_frame_id_.is_null()) {
     const RtpTimeTicks newest_timestamp =
         GetRecordedRtpTimestamp(last_enqueued_frame_id_);
-    duration +=
-        ToTimeDelta(sender_->GetInFlightMediaDuration(newest_timestamp));
+    const base::TimeDelta max_in_flight_duration =
+        GetUnacknowledgedFrameCount() * base::Seconds(1.0 / max_frame_rate_);
+    duration += std::min(
+        ToTimeDelta(sender_->GetInFlightMediaDuration(newest_timestamp)),
+        max_in_flight_duration);
   }
   return duration;
 }
@@ -207,78 +227,88 @@ CastStreamingFrameDropReason OpenscreenFrameSender::EnqueueFrame(
 
   CHECK_GE(encoded_frame->frame_id, last_enqueued_frame_id_)
       << "enqueued frames out of order.";
-  last_enqueued_frame_id_ = encoded_frame->frame_id;
-  last_send_time_ = cast_environment_->NowTicks();
-
-  if (!is_audio_ && encoded_frame->is_key_frame) {
-    VLOG_WITH_SSRC(1) << "Sending encoded key frame, id="
-                      << encoded_frame->frame_id;
-    frame_id_map_.clear();
-  }
-
-  RecordLatestFrameTimestamps(encoded_frame->frame_id,
-                              encoded_frame->reference_time,
-                              encoded_frame->rtp_timestamp);
-
-  if (!is_audio_) {
-    // Used by chrome/browser/media/cast_mirroring_performance_browsertest.cc
-    TRACE_EVENT_INSTANT("cast_perf_test", "VideoFrameEncoded", "rtp_timestamp",
-                        encoded_frame->rtp_timestamp.lower_32_bits());
-  }
 
   if (send_target_playout_delay_) {
     encoded_frame->new_playout_delay = target_playout_delay_;
-    send_target_playout_delay_ = false;
   }
-
-  static const perfetto::StaticString name =
-      is_audio_ ? "Audio Transport" : "Video Transport";
-  TRACE_EVENT_BEGIN(
-      "cast.stream", name,
-      perfetto::NamedTrack(name, encoded_frame->frame_id.lower_32_bits()),
-      "rtp_timestamp", encoded_frame->rtp_timestamp.lower_32_bits());
 
   // The `FrameId` given to us by child classes such as VideoSender should
   // be at least the result of openscreen::cast::Sender::GetNextFrameId(). If
   // the Open Screen Sender choose to not send a frame, it does not advance the
-  // frame identifier.
+  // frame identifier, so the two may diverge. The frame is always enqueued
+  // using the Open Screen identifier.
   const FrameId openscreen_frame_id = sender_->GetNextFrameId();
   CHECK_GE(encoded_frame->frame_id, openscreen_frame_id);
 
-  // We only need to use the frame ID map if the identifiers have diverged and
-  // are no longer in sync. The remoting sender should always be in sync, so
-  // this optimization improves memory usage significantly for remoting cases as
-  // well as high quality mirroring sessions that do not have any dropped
-  // frames.
-  if (!diverged_frame_id_ && encoded_frame->frame_id != openscreen_frame_id) {
-    diverged_frame_id_ = encoded_frame->frame_id;
+  // A frame whose referenced frame was never accepted by the Open Screen sender
+  // cannot be decoded by the receiver, so drop it. VideoSender will request a
+  // key frame in response.
+  const std::optional<FrameId> openscreen_referenced_frame_id =
+      GetOpenscreenReferencedFrameId(*encoded_frame, openscreen_frame_id);
+  if (!openscreen_referenced_frame_id) {
+    return CastStreamingFrameDropReason::kInvalidReferencedFrameId;
   }
 
-  // Finally, convert to an Open Screen encoded frame using the equivalent frame
-  // identifiers generated by the Open Screen sender.
   auto openscreen_frame = ToOpenscreenEncodedFrame(*encoded_frame);
-  if (diverged_frame_id_) {
-    frame_id_map_.insert_or_assign(encoded_frame->frame_id,
-                                   openscreen_frame_id);
-    openscreen_frame.frame_id = openscreen_frame_id;
-
-    // We should have the referenced ID in the map if it was added after we
-    // started tracking.
-    if (encoded_frame->referenced_frame_id >= *diverged_frame_id_) {
-      auto it = frame_id_map_.find(encoded_frame->referenced_frame_id);
-      if (it == frame_id_map_.end()) {
-        return CastStreamingFrameDropReason::kInvalidReferencedFrameId;
-      }
-      openscreen_frame.referenced_frame_id = it->second;
-    }
-  }
+  openscreen_frame.frame_id = openscreen_frame_id;
+  openscreen_frame.referenced_frame_id = *openscreen_referenced_frame_id;
 
   const auto result = sender_->EnqueueFrame(std::move(openscreen_frame));
+  if (result == EnqueueFrameResult::OK) {
+    TRACE_EVENT_BEGIN("cast.stream", TransportSliceName(is_audio_),
+                      TransportTrack(is_audio_, openscreen_frame_id),
+                      "rtp_timestamp",
+                      encoded_frame->rtp_timestamp.lower_32_bits(),
+                      "payload_bytes", encoded_frame->data.size(),
+                      "is_key_frame", encoded_frame->is_key_frame);
+    last_accepted_frame_ids_ = AcceptedFrameIds{
+        .frame_id = encoded_frame->frame_id,
+        .openscreen_frame_id = openscreen_frame_id,
+    };
+    last_enqueued_frame_id_ = encoded_frame->frame_id;
+    last_send_time_ = cast_environment_->NowTicks();
+    send_target_playout_delay_ = false;
+
+    if (!is_audio_ && encoded_frame->is_key_frame) {
+      VLOG_WITH_SSRC(1) << "Sending encoded key frame, id="
+                        << encoded_frame->frame_id;
+    }
+
+    RecordLatestFrameTimestamps(encoded_frame->frame_id,
+                                encoded_frame->reference_time,
+                                encoded_frame->rtp_timestamp);
+  }
   return ToFrameDropReason(result);
 }
 
+std::optional<FrameId> OpenscreenFrameSender::GetOpenscreenReferencedFrameId(
+    const SenderEncodedFrame& frame,
+    FrameId openscreen_frame_id) const {
+  // All producers reference either the frame itself (key frames, audio) or the
+  // immediately preceding frame.
+  if (frame.referenced_frame_id == frame.frame_id) {
+    return openscreen_frame_id;
+  }
+  if (last_accepted_frame_ids_ &&
+      frame.referenced_frame_id == last_accepted_frame_ids_->frame_id) {
+    return last_accepted_frame_ids_->openscreen_frame_id;
+  }
+  return std::nullopt;
+}
+
+void OpenscreenFrameSender::ReportFrameDroppedByEncoder(
+    RtpTimeTicks rtp_timestamp) {
+  DCHECK(cast_environment_->CurrentlyOn(CastEnvironment::ThreadId::kMain));
+  // The dropped frame was never assigned an Open Screen frame ID, so use the
+  // one it would have been assigned.
+  sender_->ReportFrameDropEvent(
+      sender_->GetNextFrameId(), rtp_timestamp,
+      ToOpenscreenTimePoint(cast_environment_->NowTicks()));
+}
+
 CastStreamingFrameDropReason OpenscreenFrameSender::ShouldDropNextFrame(
-    base::TimeDelta frame_duration) {
+    base::TimeDelta frame_duration,
+    std::optional<RtpTimeTicks> next_frame_rtp_timestamp) {
   // Check that accepting the next frame won't cause more frames to become
   // in-flight than the system's design limit.
   const int count_frames_in_flight =
@@ -297,11 +327,25 @@ CastStreamingFrameDropReason OpenscreenFrameSender::ShouldDropNextFrame(
   }
 
   // At this point, we know we don't have too many frames, but we still need
-  // to ensure we don't have too much duration in flight. This case should
-  // not be hit very often, unless some frames have a higher duration than
-  // expected.
+  // to ensure we don't have too much duration in flight.
+  //
+  // When frames are waiting for an ACK, none are in the encoder, and the next
+  // frame's RTP timestamp is known, ask the Sender for the in-flight duration
+  // it will compute in Sender::EnqueueFrame() for that frame. ACKs that arrive
+  // while the frame is being encoded can only lower it. The estimate can let a
+  // frame through that the Sender then rejects after encoding, which breaks
+  // the encoder's reference chain and forces a key frame.
+  //
+  // Frames still in the encoder are not known to the Sender yet, and the
+  // Sender caps each step between frames, so it would undercount them. In that
+  // case, keep using the estimate, which includes the encoder backlog.
+  const bool use_sender_duration = next_frame_rtp_timestamp.has_value() &&
+                                   GetUnacknowledgedFrameCount() > 0 &&
+                                   client_->GetNumberOfFramesInEncoder() == 0;
   const base::TimeDelta duration_would_be_in_flight =
-      duration_in_flight + frame_duration;
+      use_sender_duration ? ToTimeDelta(sender_->GetInFlightMediaDuration(
+                                *next_frame_rtp_timestamp))
+                          : duration_in_flight + frame_duration;
   const base::TimeDelta allowed_in_flight = GetAllowedInFlightMediaDuration();
   if (VLOG_IS_ON(1)) {
     const int64_t percent =
@@ -311,11 +355,10 @@ CastStreamingFrameDropReason OpenscreenFrameSender::ShouldDropNextFrame(
             : std::numeric_limits<int64_t>::max();
 
     if (percent > 50) {
-      VLOG_WITH_SSRC(1) << duration_in_flight.InMicroseconds()
-                        << " usec in-flight + "
-                        << frame_duration.InMicroseconds()
-                        << " usec for next frame --> " << percent
-                        << "% of allowed in-flight.";
+      VLOG_WITH_SSRC(1) << duration_would_be_in_flight.InMicroseconds()
+                        << " usec would be in-flight"
+                        << (use_sender_duration ? " (from sender)" : "")
+                        << " --> " << percent << "% of allowed in-flight.";
     }
   }
   if (duration_would_be_in_flight > allowed_in_flight) {

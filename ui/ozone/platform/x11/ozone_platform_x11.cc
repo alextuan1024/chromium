@@ -30,14 +30,13 @@
 #include "ui/gfx/linux/gbm_support_x11.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/switches.h"
-#include "ui/gfx/x/atom_cache.h"
+#include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/visual_manager.h"
 #include "ui/linux/linux_ui_delegate.h"
 #include "ui/ozone/common/stub_overlay_manager.h"
 #include "ui/ozone/platform/x11/gl_egl_utility_x11.h"
 #include "ui/ozone/platform/x11/linux_ui_delegate_x11.h"
 #include "ui/ozone/platform/x11/x11_clipboard_ozone.h"
-#include "ui/ozone/platform/x11/x11_global_shortcut_listener_ozone.h"
 #include "ui/ozone/platform/x11/x11_keyboard_hook.h"
 #include "ui/ozone/platform/x11/x11_menu_utils.h"
 #include "ui/ozone/platform/x11/x11_screen_ozone.h"
@@ -59,6 +58,7 @@
 #else
 #include "ui/base/ime/linux/input_method_auralinux.h"
 #include "ui/ozone/platform/x11/os_exchange_data_provider_x11.h"
+#include "ui/ozone/platform/x11/x11_global_shortcut_listener_ozone.h"
 #endif
 
 namespace ui {
@@ -149,6 +149,7 @@ class OzonePlatformX11 : public OzonePlatform,
 
   PlatformUtils* GetPlatformUtils() override { return x11_utils_.get(); }
 
+#if !BUILDFLAG(IS_CHROMEOS)
   PlatformGlobalShortcutListener* GetPlatformGlobalShortcutListener(
       PlatformGlobalShortcutListenerDelegate* delegate) override {
     if (!global_shortcut_listener_) {
@@ -157,6 +158,7 @@ class OzonePlatformX11 : public OzonePlatform,
     }
     return global_shortcut_listener_.get();
   }
+#endif
 
   std::unique_ptr<PlatformKeyboardHook> CreateKeyboardHook(
       PlatformKeyboardHookTypes type,
@@ -181,11 +183,6 @@ class OzonePlatformX11 : public OzonePlatform,
   }
 
   const PlatformProperties& GetPlatformProperties() override {
-    using SupportsForTest = OzonePlatform::PlatformProperties::SupportsForTest;
-    const auto& override_set_parent_for_non_top_level_windows_for_test =
-        OzonePlatform::PlatformProperties::
-            override_set_parent_for_non_top_level_windows_for_test;
-
     static base::NoDestructor<OzonePlatform::PlatformProperties> properties;
     static bool initialised = false;
     if (!initialised) {
@@ -202,11 +199,6 @@ class OzonePlatformX11 : public OzonePlatform,
       properties->skia_can_fall_back_to_x11 = true;
       properties->platform_shows_drag_image = false;
       properties->app_modal_dialogs_use_event_blocker = true;
-
-      // Defaults to false unless explicitly enabled for testing.
-      properties->set_parent_for_non_top_level_windows =
-          override_set_parent_for_non_top_level_windows_for_test ==
-          SupportsForTest::kYes;
 
       initialised = true;
     }
@@ -225,9 +217,9 @@ class OzonePlatformX11 : public OzonePlatform,
     }
     properties.supports_subwindows_as_accelerated_widgets = false;
     properties.supports_system_tray_windowing = true;
-    properties.supports_server_window_menus =
-        x11::Connection::Get()->WmSupportsHint(
-            x11::GetAtom("_GTK_SHOW_WINDOW_MENU"));
+    auto* connection = x11::Connection::Get();
+    properties.supports_server_window_menus = connection->WmSupportsHint(
+        connection->GetAtom("_GTK_SHOW_WINDOW_MENU"));
     properties.supports_global_application_menus = true;
 
     return properties;
@@ -353,7 +345,9 @@ class OzonePlatformX11 : public OzonePlatform,
   std::unique_ptr<GpuPlatformSupportHost> gpu_platform_support_host_;
   std::unique_ptr<X11MenuUtils> menu_utils_;
   std::unique_ptr<X11Utils> x11_utils_;
+#if !BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<PlatformGlobalShortcutListener> global_shortcut_listener_;
+#endif
 
   // Objects in the GPU process.
   std::unique_ptr<X11SurfaceFactory> surface_factory_ozone_;

@@ -8,9 +8,11 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#include <array>
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value.h"
@@ -270,22 +272,6 @@ bool ParseCTMBlob(const void* data, size_t size, skcms_Matrix3x3& result) {
   return true;
 }
 
-ScopedDrmModeRectPtr CreateDCBlob(const gfx::Rect& rect) {
-  // Damage rect can be empty, but sending empty or negative rects can result in
-  // artifacting and black screens. Filter them out here.
-  if (rect.width() <= 0 || rect.height() <= 0 || rect.x() < 0 || rect.y() < 0) {
-    return nullptr;
-  }
-
-  ScopedDrmModeRectPtr dmg_rect(
-      static_cast<drm_mode_rect*>(malloc(sizeof(drm_mode_rect))));
-  dmg_rect->x1 = rect.x();
-  dmg_rect->y1 = rect.y();
-  dmg_rect->x2 = rect.right();
-  dmg_rect->y2 = rect.bottom();
-  return dmg_rect;
-}
-
 std::vector<std::unique_ptr<HardwareDisplayControllerInfo>>
 GetDisplayInfosAndUpdateCrtcs(DrmWrapper& drm) {
   auto [displays, invalid_crtcs] = GetDisplayInfosAndInvalidCrtcs(drm);
@@ -341,7 +327,7 @@ std::vector<CrtcConnectorPairs> GetAllCrtcConnectorPermutations(
 
 void ApplyCrtcColorSpaceConversion(DrmWrapper* drm,
                                    uint32_t crtc_id,
-                                   float rgb[3]) {
+                                   std::array<float, 3>& rgb) {
   // Look up all properties on this CRTC and create a helper lambda to look up
   // their blobs.
   ScopedDrmObjectPropertyPtr props(
@@ -362,7 +348,7 @@ void ApplyCrtcColorSpaceConversion(DrmWrapper* drm,
   if (degamma_blob) {
     display::GammaCurve curve;
     if (ParseLutBlob(degamma_blob->data, degamma_blob->length, curve)) {
-      curve.Evaluate(UNSAFE_TODO(base::span<float, 3>(rgb, rgb + 3u)));
+      curve.Evaluate(rgb);
     }
   }
 
@@ -371,15 +357,13 @@ void ApplyCrtcColorSpaceConversion(DrmWrapper* drm,
   if (ctm_blob) {
     skcms_Matrix3x3 ctm;
     if (ParseCTMBlob(ctm_blob->data, ctm_blob->length, ctm)) {
-      float temp[3] = {0, 0, 0};
+      std::array<float, 3> temp = {};
       for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 3; ++j) {
           UNSAFE_TODO(temp[i] += ctm.vals[i][j] * rgb[j]);
         }
       }
-      for (int i = 0; i < 3; ++i) {
-        UNSAFE_TODO(rgb[i]) = UNSAFE_TODO(temp[i]);
-      }
+      rgb = temp;
     }
   }
 
@@ -388,7 +372,7 @@ void ApplyCrtcColorSpaceConversion(DrmWrapper* drm,
   if (gamma_blob) {
     display::GammaCurve curve;
     if (ParseLutBlob(gamma_blob->data, gamma_blob->length, curve)) {
-      curve.Evaluate(UNSAFE_TODO(base::span<float, 3>(rgb, rgb + 3u)));
+      curve.Evaluate(rgb);
     }
   }
 }

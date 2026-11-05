@@ -4,11 +4,15 @@
 
 #include <stddef.h>
 
+#include <array>
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/base64.h"
 #include "base/command_line.h"
@@ -22,12 +26,16 @@
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
+#include "base/run_loop.h"
 #include "base/strings/safe_sprintf.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/synchronization/lock.h"
 #include "base/system/sys_info.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/test/values_test_util.h"
@@ -42,10 +50,14 @@
 #include "content/browser/devtools/protocol/devtools_download_manager_delegate.h"
 #include "content/browser/devtools/protocol/devtools_protocol_test_support.h"
 #include "content/browser/devtools/protocol/system_info.h"
+#include "content/browser/devtools/protocol/tracing_handler.h"
 #include "content/browser/devtools/render_frame_devtools_agent_host.h"
 #include "content/browser/download/download_manager_impl.h"
 #include "content/browser/host_zoom_map_impl.h"
+#include "content/browser/preloading/preloading_decider.h"
+#include "content/browser/preloading/prerender/prerender_features.h"
 #include "content/browser/preloading/prerender/prerender_final_status.h"
+#include "content/browser/renderer_host/navigation_controller_impl.h"
 #include "content/browser/renderer_host/navigator.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
@@ -67,6 +79,7 @@
 #include "content/public/browser/tracing_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
+#include "content/public/common/result_codes.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
@@ -84,21 +97,26 @@
 #include "content/shell/browser/shell_download_manager_delegate.h"
 #include "content/test/content_browser_test_utils_internal.h"
 #include "media/media_buildflags.h"
+#include "mojo/public/cpp/bindings/clone_traits.h"
 #include "net/base/features.h"
 #include "net/dns/dns_test_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/dns/public/secure_dns_mode.h"
 #include "net/dns/public/util.h"
+#include "net/test/embedded_test_server/http_request.h"
+#include "net/test/embedded_test_server/install_default_websocket_handlers.h"
 #include "net/test/ssl_test_util.h"
 #include "net/test/test_doh_server.h"
 #include "services/network/public/cpp/features.h"
 #include "services/tracing/public/cpp/perfetto/perfetto_config.h"
+#include "services/tracing/public/cpp/perfetto/perfetto_data_source_names.h"
 #include "services/tracing/public/cpp/perfetto/perfetto_traced_process.h"
 #include "services/tracing/public/cpp/tracing_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
+#include "third_party/blink/public/mojom/speculation_rules/speculation_rules.mojom.h"
 #include "third_party/boringssl/src/include/openssl/nid.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
 #include "third_party/inspector_protocol/crdtp/cbor.h"
@@ -121,6 +139,10 @@
 #include "base/task/deferred_sequenced_task_runner.h"
 #include "base/tracing/perfetto_task_runner.h"
 #include "services/tracing/perfetto/system_test_utils.h"
+#endif
+
+#if BUILDFLAG(ENABLE_LIBAOM) && !BUILDFLAG(IS_ANDROID)
+#include "content/public/browser/service_process_host.h"
 #endif
 
 #define EXPECT_SIZE_EQ(expected, actual)               \
@@ -229,6 +251,48 @@ class SyntheticKeyEventTest : public DevToolsProtocolTest {
   }
 };
 
+class SpeculationCandidatesUpdateWaiter
+    : public PreloadingDeciderObserverForTesting {
+ public:
+  explicit SpeculationCandidatesUpdateWaiter(RenderFrameHost* rfh)
+      : preloading_decider_(
+            *PreloadingDecider::GetOrCreateForCurrentDocument(rfh)),
+        old_observer_(preloading_decider_->SetObserverForTesting(this)) {}
+
+  SpeculationCandidatesUpdateWaiter(const SpeculationCandidatesUpdateWaiter&) =
+      delete;
+  SpeculationCandidatesUpdateWaiter& operator=(
+      const SpeculationCandidatesUpdateWaiter&) = delete;
+
+  ~SpeculationCandidatesUpdateWaiter() override {
+    EXPECT_EQ(this, preloading_decider_->SetObserverForTesting(old_observer_));
+  }
+
+  void UpdateSpeculationCandidates(
+      const std::vector<blink::mojom::SpeculationCandidatePtr>& candidates)
+      override {
+    candidates_ = mojo::Clone(candidates);
+    update_received_.SetValue();
+  }
+
+  void OnPointerDown(const GURL& url) override {}
+
+  void OnPointerHover(
+      const GURL& url,
+      blink::mojom::SpeculationEagerness target_eagerness) override {}
+
+  const std::vector<blink::mojom::SpeculationCandidatePtr>& Wait() {
+    EXPECT_TRUE(update_received_.Wait());
+    return candidates_;
+  }
+
+ private:
+  raw_ref<PreloadingDecider> preloading_decider_;
+  raw_ptr<PreloadingDeciderObserverForTesting> old_observer_;
+  std::vector<blink::mojom::SpeculationCandidatePtr> candidates_;
+  base::test::TestFuture<void> update_received_;
+};
+
 class PrerenderDevToolsProtocolTest : public DevToolsProtocolTest {
  public:
   PrerenderDevToolsProtocolTest() {
@@ -248,6 +312,14 @@ class PrerenderDevToolsProtocolTest : public DevToolsProtocolTest {
 
   PrerenderHostId AddPrerender(const GURL& prerendering_url) {
     return prerender_helper_->AddPrerender(prerendering_url);
+  }
+
+  void AddPrerenderAsync(const GURL& prerendering_url) {
+    prerender_helper_->AddPrerenderAsync(prerendering_url);
+  }
+
+  void AddPrerenderUntilScriptAsync(const GURL& prerendering_url) {
+    prerender_helper_->AddPrerenderUntilScriptAsync(prerendering_url);
   }
 
   RenderFrameHostImpl* GetPrerenderedMainFrameHost(PrerenderHostId host_id) {
@@ -325,6 +397,16 @@ class SyntheticMouseEventTest : public DevToolsProtocolTest {
     SendCommand("Input.dispatchMouseEvent", std::move(params), wait);
   }
 
+  const base::DictValue* SendWheelEvent(double delta_x, double delta_y) {
+    base::DictValue params;
+    params.Set("type", "mouseWheel");
+    params.Set("x", 15);
+    params.Set("y", 15);
+    params.Set("deltaX", delta_x);
+    params.Set("deltaY", delta_y);
+    return SendCommandSync("Input.dispatchMouseEvent", std::move(params));
+  }
+
   void InitMouseDownLog() {
     ASSERT_TRUE(
         content::ExecJs(shell()->web_contents(),
@@ -335,6 +417,31 @@ class SyntheticMouseEventTest : public DevToolsProtocolTest {
   std::string GetMouseDownLog() {
     return content::EvalJs(shell()->web_contents(), "window.logs.join(';')")
         .ExtractString();
+  }
+
+  void InitScrollableWheelLog() {
+    ASSERT_TRUE(content::ExecJs(
+        shell()->web_contents(),
+        "document.documentElement.style.overflow = 'hidden';"
+        "document.body.style.margin = '0';"
+        "document.body.innerHTML = '<div id=wheelScroller "
+        "style=\"width:100px;height:100px;overflow:scroll\">' +"
+        "'<div style=\"width:500px;height:500px\"></div></div>';"
+        "wheelDeltas = [];"
+        "wheelEventPromise = new Promise(resolve => "
+        "window.addEventListener('wheel', e => {"
+        "wheelDeltas = [e.deltaX, e.deltaY];"
+        "resolve();"
+        "}, {once: true, passive: false}));"
+        "scrollEndPromise = new Promise(resolve => "
+        "wheelScroller.addEventListener('scrollend', resolve, {once: true}));"
+        "void 0;"));
+    // Wait until the compositor knows that the wheel listener is blocking.
+    MainThreadFrameObserver observer(shell()
+                                         ->web_contents()
+                                         ->GetRenderWidgetHostView()
+                                         ->GetRenderWidgetHost());
+    observer.Wait();
   }
 
  private:
@@ -473,6 +580,39 @@ IN_PROC_BROWSER_TEST_F(SyntheticMouseEventTest, MouseEventCoordinatesWithZoom) {
   ASSERT_EQ("mousedown,15,15", GetMouseDownLog());
 }
 
+// Inspector Protocol zoom helpers only change renderer-side zoom. This test
+// exercises the browser zoom read by InputHandler::ScaleFactor().
+IN_PROC_BROWSER_TEST_F(SyntheticMouseEventTest,
+                       WheelEventDeltasWithBrowserZoom) {
+#if BUILDFLAG(IS_ANDROID)
+  GTEST_SKIP() << "Browser zoom is not supported on Android.";
+#endif
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL test_url = embedded_test_server()->GetURL("/devtools/zoom.html");
+  NavigateToURLBlockUntilNavigationsComplete(shell(), test_url, 1);
+  Attach();
+  SendCommandSync("Page.enable");
+
+  HostZoomMap* host_zoom_map =
+      HostZoomMap::GetForWebContents(shell()->web_contents());
+  host_zoom_map->SetZoomLevelForHost(test_url.GetHost(),
+                                     blink::ZoomFactorToZoomLevel(2.5));
+  WaitForNotification("Page.frameResized", true);
+  InitScrollableWheelLog();
+
+  ASSERT_TRUE(SendWheelEvent(6, 10));
+  EvalJsResult result = content::EvalJs(
+      shell()->web_contents(),
+      "Promise.all([wheelEventPromise, scrollEndPromise]).then(() => "
+      "[...wheelDeltas, wheelScroller.scrollLeft, wheelScroller.scrollTop])");
+  const base::ListValue& values = result.ExtractList();
+  ASSERT_EQ(4u, values.size());
+  EXPECT_NEAR(6, values[0].GetDouble(), 1.0e-4);   // deltaX
+  EXPECT_NEAR(10, values[1].GetDouble(), 1.0e-4);  // deltaY
+  EXPECT_NEAR(6, values[2].GetDouble(), 0.5);      // scrollLeft
+  EXPECT_NEAR(10, values[3].GetDouble(), 0.5);     // scrollTop
+}
+
 namespace {
 SkBitmap DecodePNG(std::string_view base64_data) {
   std::optional<std::vector<uint8_t>> data = base::Base64Decode(base64_data);
@@ -501,8 +641,10 @@ int ColorsSquareDiff(SkColor color1, SkColor color2) {
              b_diff * b_diff;
 }
 
-bool ColorsMatchWithinLimit(SkColor color1, SkColor color2, int max_collor_diff) {
-  return ColorsSquareDiff(color1, color2) <= max_collor_diff * max_collor_diff;
+bool ColorsMatchWithinLimit(SkColor color1,
+                            SkColor color2,
+                            int max_color_diff) {
+  return ColorsSquareDiff(color1, color2) <= max_color_diff * max_color_diff;
 }
 
 // Adapted from cc::ExactPixelComparator.
@@ -510,7 +652,7 @@ bool MatchesBitmap(const SkBitmap& expected_bmp,
                    const SkBitmap& actual_bmp,
                    const gfx::Rect& matching_mask,
                    float device_scale_factor,
-                   int max_collor_diff) {
+                   int max_color_diff) {
   // Number of pixels with an error
   int error_pixels_count = 0;
 
@@ -532,7 +674,8 @@ bool MatchesBitmap(const SkBitmap& expected_bmp,
       SkColor actual_color =
           actual_bmp.getColor(x * device_scale_factor, y * device_scale_factor);
       SkColor expected_color = expected_bmp.getColor(x, y);
-      if (!ColorsMatchWithinLimit(actual_color, expected_color, max_collor_diff)) {
+      if (!ColorsMatchWithinLimit(actual_color, expected_color,
+                                  max_color_diff)) {
         if (error_pixels_count < 10) {
           LOG(ERROR) << "Pixel (" << x << "," << y
                      << "). Expected: " << std::hex << expected_color
@@ -635,10 +778,10 @@ class CaptureScreenshotTest : public DevToolsProtocolTest {
     // Allow some error between actual and expected pixel values.
     // That assumes there is no shift in pixel positions, so it only works
     // reliably if all pixels have equal values.
-    int max_collor_diff = 20;
+    int max_color_diff = 20;
 
     EXPECT_TRUE(MatchesBitmap(expected_bitmap, result_bitmap, matching_mask,
-                              device_scale_factor, max_collor_diff));
+                              device_scale_factor, max_color_diff));
   }
 
   gfx::Size GetPageContentSize() {
@@ -754,9 +897,138 @@ class CaptureScreenshotTest : public DevToolsProtocolTest {
     SendCommandSync("Emulation.clearDeviceMetricsOverride");
   }
 
+#if BUILDFLAG(ENABLE_LIBAOM)
+  protocol::TracingHandler* GetTracingHandler() {
+    auto handlers = protocol::TracingHandler::ForAgentHost(
+        static_cast<DevToolsAgentHostImpl*>(agent_host_.get()));
+    return handlers.empty() ? nullptr : handlers[0];
+  }
+
+  void RepaintUntilVideoFrameSize(
+      base::FunctionRef<bool(const gfx::Size&)> predicate) {
+    protocol::TracingHandler* handler = GetTracingHandler();
+    ASSERT_TRUE(handler);
+    RenderFrameSubmissionObserver observer(shell()->web_contents());
+    while (!predicate(handler->last_video_frame_size_for_testing())) {
+      ++repaint_color_step_;
+      observer.SetWaitForNextFrame();
+      ASSERT_TRUE(content::ExecJs(
+          shell()->web_contents(),
+          base::StringPrintf(
+              "document.body.style.backgroundColor = 'rgb(%d, %d, %d)';",
+              (repaint_color_step_ * 37) % 256,
+              (repaint_color_step_ * 73) % 256,
+              (repaint_color_step_ * 109) % 256)));
+      observer.WaitForNextFrameSubmission();
+      ForceNewCompositorFrameFromBrowser(shell()->web_contents());
+      WaitForBrowserCompositorFramePresented(shell()->web_contents());
+      if (!predicate(handler->last_video_frame_size_for_testing())) {
+        base::RunLoop loop;
+        base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+            FROM_HERE, loop.QuitClosure(), base::Milliseconds(15));
+        loop.Run();
+      }
+    }
+  }
+
+  void TriggerRepaintsForTracing() {
+    constexpr auto kColors = std::to_array<std::string_view>(
+        {"#654321", "#abcdef", "#fedcba", "#112233"});
+    RenderFrameSubmissionObserver observer(shell()->web_contents());
+    for (std::string_view color : kColors) {
+      observer.SetWaitForNextFrame();
+      ASSERT_TRUE(content::ExecJs(
+          shell()->web_contents(),
+          base::StringPrintf("document.body.style.backgroundColor = '%.*s';",
+                             static_cast<int>(color.size()), color.data())));
+      observer.WaitForNextFrameSubmission();
+      ForceNewCompositorFrameFromBrowser(shell()->web_contents());
+      WaitForBrowserCompositorFramePresented(shell()->web_contents());
+    }
+  }
+
+  void VerifyVideoScreenshotEvents(
+      const std::vector<base::DictValue>& screenshot_events,
+      size_t min_key_frames = 1) {
+    ASSERT_GE(screenshot_events.size(), 2u)
+        << "Expected >= 2 video screenshot events, got "
+        << screenshot_events.size();
+
+    double last_display_time = 0.0;
+    size_t key_frame_count = 0;
+    for (size_t i = 0; i < screenshot_events.size(); ++i) {
+      const base::DictValue* args = screenshot_events[i].FindDict("args");
+      ASSERT_TRUE(args) << "Event " << i << " missing args";
+
+      const std::string* av1_chunk = args->FindString("av1_chunk");
+      ASSERT_TRUE(av1_chunk) << "Event " << i << " missing av1_chunk";
+      std::string decoded_chunk;
+      EXPECT_TRUE(base::Base64Decode(*av1_chunk, &decoded_chunk))
+          << "Event " << i << " av1_chunk is not valid base64";
+      EXPECT_FALSE(decoded_chunk.empty());
+
+      std::optional<bool> key_frame = args->FindBool("key_frame");
+      ASSERT_NE(key_frame, std::nullopt)
+          << "Event " << i << " missing key_frame";
+      if (i == 0) {
+        EXPECT_TRUE(*key_frame);
+      }
+      if (*key_frame) {
+        ++key_frame_count;
+      }
+
+      std::optional<double> display_time =
+          args->FindDouble("expected_display_time");
+      ASSERT_NE(display_time, std::nullopt)
+          << "Event " << i << " missing expected_display_time";
+      EXPECT_GT(*display_time, 0.0);
+      EXPECT_GE(*display_time, last_display_time);
+      last_display_time = *display_time;
+
+      EXPECT_NE(args->FindDouble("frame_sequence"), std::nullopt);
+      EXPECT_NE(args->FindDouble("source_id"), std::nullopt);
+    }
+    EXPECT_GE(key_frame_count, min_key_frames)
+        << "Expected >= " << min_key_frames << " keyframes, got "
+        << key_frame_count;
+  }
+
+  void CollectScreenshotEvents(
+      std::vector<base::DictValue>* video_events,
+      std::vector<base::DictValue>* bitmap_events = nullptr) {
+    while (HasExistingNotification("Tracing.dataCollected")) {
+      base::DictValue notification =
+          WaitForNotification("Tracing.dataCollected", /*allow_existing=*/true);
+      const base::ListValue* value_list = notification.FindList("value");
+      if (!value_list) {
+        continue;
+      }
+      for (const auto& item : *value_list) {
+        const base::DictValue* dict = item.GetIfDict();
+        if (!dict) {
+          continue;
+        }
+        const std::string* name = dict->FindString("name");
+        const std::string* cat = dict->FindString("cat");
+        if (!name || *name != "Screenshot" || !cat) {
+          continue;
+        }
+        if (video_events &&
+            *cat == "disabled-by-default-devtools.video_screenshot") {
+          video_events->push_back(dict->Clone());
+        } else if (bitmap_events &&
+                   *cat == "disabled-by-default-devtools.screenshot") {
+          bitmap_events->push_back(dict->Clone());
+        }
+      }
+    }
+  }
+#endif  // BUILDFLAG(ENABLE_LIBAOM)
+
   bool IsTrusted() override { return is_trusted_; }
 
   bool is_trusted_ = true;
+  int repaint_color_step_ = 0;
 
  private:
 #if !BUILDFLAG(IS_ANDROID)
@@ -913,7 +1185,7 @@ IN_PROC_BROWSER_TEST_F(
 class NoGPUCaptureScreenshotTest : public CaptureScreenshotTest {
   void SetUpCommandLine(base::CommandLine* command_line) override {
     CaptureScreenshotTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitch(switches::kDisableGpuCompositing);
+    command_line->AppendSwitch(switches::kDisableGpu);
   }
 };
 
@@ -969,6 +1241,121 @@ IN_PROC_BROWSER_TEST_F(NoGPUCaptureScreenshotTest, MAYBE_LargeScreenshot) {
 }
 
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+
+class HiDpiCaptureScreenshotTest : public CaptureScreenshotTest {
+ protected:
+  void SetUp() override {
+    EnablePixelOutput(/*force_device_scale_factor=*/2.0f);
+    DevToolsProtocolTest::SetUp();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(HiDpiCaptureScreenshotTest,
+                       FractionalClipRoundsAfterScale) {
+  shell()->LoadURL(
+      GURL("data:text/html,"
+           "<!doctype html><style>html,body{margin:0;width:400px;height:300px}"
+           "body{background:%230000ff}.edge{position:absolute}"
+           ".left{left:0;top:0;width:4px;height:100px;background:%23ff0000}"
+           ".right{left:188px;top:0;width:20px;height:100px;"
+           "background:%2300ff00}.top{left:0;top:0;width:220px;height:4px;"
+           "background:%23ffff00}.bottom{left:0;top:18px;width:220px;"
+           "height:20px;background:%2300ffff}</style>"
+           "<div class='edge left'></div><div class='edge right'></div>"
+           "<div class='edge top'></div><div class='edge bottom'></div>"));
+  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
+  Attach();
+
+  constexpr float kDeviceScaleFactor = 3;
+  SetDeviceMetricsOverride(/*width=*/400, /*height=*/300, kDeviceScaleFactor,
+                           /*mobile=*/false,
+                           /*fitWindow=*/std::nullopt);
+  ASSERT_FALSE(error());
+  ASSERT_FLOAT_EQ(2.0f, shell()
+                            ->web_contents()
+                            ->GetPrimaryMainFrame()
+                            ->GetRenderWidgetHost()
+                            ->GetDeviceScaleFactor());
+
+  auto capture_clip = [this](double width, double height) {
+    base::DictValue params;
+    params.Set("format", EncodingEnumToString(ScreenshotEncoding::PNG));
+    params.Set("fromSurface", true);
+    base::DictValue clip;
+    clip.Set("x", 0);
+    clip.Set("y", 0);
+    clip.Set("width", width);
+    clip.Set("height", height);
+    clip.Set("scale", 1);
+    params.Set("clip", std::move(clip));
+    const base::DictValue* result =
+        SendCommandSync("Page.captureScreenshot", std::move(params));
+    if (error() || !result) {
+      ADD_FAILURE() << "Page.captureScreenshot failed";
+      return SkBitmap();
+    }
+    const std::string* encoded_screenshot = result->FindString("data");
+    if (!encoded_screenshot) {
+      ADD_FAILURE() << "Page.captureScreenshot returned no data";
+      return SkBitmap();
+    }
+    return DecodePNG(*encoded_screenshot);
+  };
+
+  auto expect_edge_colors = [](const SkBitmap& screenshot) {
+    EXPECT_TRUE(ColorsMatchWithinLimit(
+        screenshot.getColor(0, screenshot.height() / 2),
+        SkColorSetRGB(0xff, 0x00, 0x00), /*max_color_diff=*/20));
+    EXPECT_TRUE(ColorsMatchWithinLimit(
+        screenshot.getColor(screenshot.width() - 1, screenshot.height() / 2),
+        SkColorSetRGB(0x00, 0xff, 0x00), /*max_color_diff=*/20));
+    EXPECT_TRUE(ColorsMatchWithinLimit(
+        screenshot.getColor(screenshot.width() / 2, 0),
+        SkColorSetRGB(0xff, 0xff, 0x00), /*max_color_diff=*/20));
+    EXPECT_TRUE(ColorsMatchWithinLimit(
+        screenshot.getColor(screenshot.width() / 2, screenshot.height() - 1),
+        SkColorSetRGB(0x00, 0xff, 0xff), /*max_color_diff=*/20));
+    EXPECT_TRUE(ColorsMatchWithinLimit(
+        screenshot.getColor(screenshot.width() / 2, screenshot.height() / 2),
+        SkColorSetRGB(0x00, 0x00, 0xff), /*max_color_diff=*/20));
+  };
+
+  SkBitmap bitmap = capture_clip(/*width=*/192.65625,
+                                 /*height=*/21.671875);
+  ASSERT_FALSE(bitmap.empty());
+  // The scaled dimensions are 577.96875 by 65.015625. This distinguishes
+  // nearest rounding from truncating before scale, floor, and ceiling. The
+  // asymmetric edges also catch wrapping if the captured source is too small.
+  EXPECT_EQ(gfx::Size(578, 65), gfx::Size(bitmap.width(), bitmap.height()));
+  expect_edge_colors(bitmap);
+
+  // This width rounds to 579 directly but 580 after narrowing to float, so it
+  // also protects the protocol's double precision through the conversion.
+  SkBitmap precision_bitmap = capture_clip(/*width=*/193.166666,
+                                           /*height=*/21.671875);
+  ASSERT_FALSE(precision_bitmap.empty());
+  EXPECT_EQ(gfx::Size(579, 65),
+            gfx::Size(precision_bitmap.width(), precision_bitmap.height()));
+
+  // An empty requested size is the no-crop sentinel, so a positive subpixel
+  // clip must still produce the minimum 1x1 physical bitmap.
+  SkBitmap subpixel_bitmap = capture_clip(/*width=*/0.1, /*height=*/0.1);
+  ASSERT_FALSE(subpixel_bitmap.empty());
+  EXPECT_EQ(gfx::Size(1, 1),
+            gfx::Size(subpixel_bitmap.width(), subpixel_bitmap.height()));
+
+  // Nearest rounding requests 579x65 physical pixels, while rounding the
+  // temporary view before applying its 2x native scale would provide only
+  // 578x64. Verify that the final column and row come from the right and
+  // bottom edges instead of wrapping around to the left and top edges.
+  SkBitmap containment_bitmap =
+      capture_clip(/*width=*/192.83333333333334, /*height=*/21.5);
+  ASSERT_FALSE(containment_bitmap.empty());
+  EXPECT_EQ(gfx::Size(579, 65),
+            gfx::Size(containment_bitmap.width(), containment_bitmap.height()));
+  expect_edge_colors(containment_bitmap);
+  SendCommandSync("Emulation.clearDeviceMetricsOverride");
+}
 
 // Setting frame size (through RWHV) is not supported on Android.
 // This test seems to be very flaky on all platforms: https://crbug.com/801173
@@ -1418,6 +1805,11 @@ IN_PROC_BROWSER_TEST_F(CaptureScreenshotTest, ScreencastSendsLastRepaint) {
   std::optional<int> session_id = frame.FindInt("sessionId");
   const std::string* data = frame.FindString("data");
   ASSERT_TRUE(session_id && data) << "Did not receive a screencast frame";
+  std::optional<double> timestamp =
+      frame.FindDoubleByDottedPath("metadata.timestamp");
+  ASSERT_TRUE(timestamp);
+  EXPECT_NEAR(*timestamp, base::Time::Now().InSecondsFSinceUnixEpoch(),
+              base::Minutes(1).InSecondsF());
   // Screencast frames go through video encoding, so the colors are not exact.
   constexpr int kMaxColorDiff = 20;
   SkBitmap bitmap = DecodePNG(*data);
@@ -1483,6 +1875,133 @@ IN_PROC_BROWSER_TEST_F(CaptureScreenshotTest, StartStopScreenRecording) {
   ASSERT_TRUE(read_response);
   const std::string* data = read_response->FindString("data");
   ASSERT_TRUE(data);
+}
+
+IN_PROC_BROWSER_TEST_F(CaptureScreenshotTest, TracingVideoScreenshots) {
+  shell()->LoadURL(
+      GURL("data:text/html,<body style='background:#123456;'></body>"));
+  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
+  Attach();
+
+  base::DictValue start_params;
+  start_params.Set("categories",
+                   "-*,disabled-by-default-devtools.video_screenshot");
+  const base::DictValue* start_result =
+      SendCommandSync("Tracing.start", std::move(start_params));
+  ASSERT_TRUE(start_result);
+
+  // Repaint until at least one pre-resize frame is accepted for encoding.
+  RepaintUntilVideoFrameSize(
+      [](const gfx::Size& size) { return !size.IsEmpty(); });
+  const gfx::Size initial_size =
+      GetTracingHandler()->last_video_frame_size_for_testing();
+
+  // Resize viewport mid-trace and repaint until a frame at the new dimensions
+  // is accepted for encoding, triggering encoder flush + recreate (keyframe).
+  SetDeviceMetricsOverride(320, 240, 1.0f, false, std::nullopt);
+  RepaintUntilVideoFrameSize([&](const gfx::Size& size) {
+    return !size.IsEmpty() && size != initial_size;
+  });
+
+  // Stop tracing; verify that a second Tracing.end while the encoder flush is
+  // pending is rejected with "Tracing is already being stopped".
+  ASSERT_TRUE(SendCommandSync("Tracing.end"));
+  SendCommandSync("Tracing.end");
+  ASSERT_TRUE(error());
+  EXPECT_EQ(*error()->FindString("message"),
+            "Tracing is already being stopped");
+  WaitForNotification("Tracing.tracingComplete", /*allow_existing=*/true);
+
+  std::vector<base::DictValue> screenshot_events;
+  CollectScreenshotEvents(&screenshot_events);
+
+  VerifyVideoScreenshotEvents(screenshot_events, /*min_key_frames=*/2);
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+// Sandboxed utility services on Android run under isolated UIDs, so
+// base::Process::Terminate() from the browser process fails with EPERM.
+IN_PROC_BROWSER_TEST_F(CaptureScreenshotTest,
+                       TracingVideoScreenshotsServiceCrash) {
+  class EncodingServiceLaunchObserver : public ServiceProcessHost::Observer {
+   public:
+    EncodingServiceLaunchObserver() { ServiceProcessHost::AddObserver(this); }
+    ~EncodingServiceLaunchObserver() override {
+      ServiceProcessHost::RemoveObserver(this);
+    }
+
+    void OnServiceProcessLaunched(const ServiceProcessInfo& info) override {
+      if (info.IsService<devtools_media_encoding_service::mojom::
+                             DevToolsMediaEncodingService>() &&
+          !process_.IsReady()) {
+        process_.SetValue(info.GetProcess().Duplicate());
+      }
+    }
+
+    base::Process WaitForProcess() { return process_.Take(); }
+
+   private:
+    base::test::TestFuture<base::Process> process_;
+  };
+
+  shell()->LoadURL(
+      GURL("data:text/html,<body style='background:#123456;'></body>"));
+  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
+  Attach();
+
+  EncodingServiceLaunchObserver launch_observer;
+  base::DictValue start_params;
+  start_params.Set("categories",
+                   "-*,disabled-by-default-devtools.video_screenshot");
+  ASSERT_TRUE(SendCommandSync("Tracing.start", std::move(start_params)));
+  base::Process service_process = launch_observer.WaitForProcess();
+  ASSERT_TRUE(service_process.IsValid());
+  RepaintUntilVideoFrameSize(
+      [](const gfx::Size& size) { return !size.IsEmpty(); });
+
+  ASSERT_TRUE(service_process.Terminate(/*exit_code=*/1, /*wait=*/false));
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !GetTracingHandler()->is_video_encoding_active_for_testing();
+  }));
+
+  ASSERT_TRUE(SendCommandSync("Tracing.end"));
+  WaitForNotification("Tracing.tracingComplete", /*allow_existing=*/true);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+IN_PROC_BROWSER_TEST_F(CaptureScreenshotTest,
+                       TracingVideoScreenshotsConcurrentWithBitmap) {
+  shell()->LoadURL(
+      GURL("data:text/html,<body style='background:#123456;'></body>"));
+  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
+  Attach();
+
+  base::DictValue start_params;
+  start_params.Set("categories",
+                   "-*,disabled-by-default-devtools.screenshot,"
+                   "disabled-by-default-devtools.video_screenshot");
+  const base::DictValue* start_result =
+      SendCommandSync("Tracing.start", std::move(start_params));
+  ASSERT_TRUE(start_result);
+
+  TriggerRepaintsForTracing();
+
+  SendCommandSync("Tracing.end");
+  WaitForNotification("Tracing.tracingComplete", /*allow_existing=*/true);
+
+  std::vector<base::DictValue> video_events;
+  std::vector<base::DictValue> bitmap_events;
+  CollectScreenshotEvents(&video_events, &bitmap_events);
+
+  VerifyVideoScreenshotEvents(video_events);
+  ASSERT_GE(bitmap_events.size(), 2u);
+  for (size_t i = 0; i < bitmap_events.size(); ++i) {
+    const base::DictValue* args = bitmap_events[i].FindDict("args");
+    ASSERT_TRUE(args) << "Bitmap event " << i << " missing args";
+    const std::string* snapshot = args->FindString("snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_FALSE(snapshot->empty());
+  }
 }
 #endif  // BUILDFLAG(ENABLE_LIBAOM)
 
@@ -1835,6 +2354,40 @@ IN_PROC_BROWSER_TEST_F(FlattenedDevToolsProtocolTest,
                                /*use_cbor=*/true);
 }
 
+IN_PROC_BROWSER_TEST_F(FlattenedDevToolsProtocolTest,
+                       BrowserOnlyDomainValidationFails) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL test_url =
+      embedded_test_server()->GetURL("/devtools/page-with-oopif.html");
+  NavigateToURLBlockUntilNavigationsComplete(shell(), test_url, 1);
+  Attach();
+
+  // Root session, auto-attach OOPIF.
+  base::DictValue command_params;
+  command_params.Set("autoAttach", true);
+  command_params.Set("waitForDebuggerOnStart", false);
+  command_params.Set("flatten", true);
+  SendCommandSync("Target.setAutoAttach", std::move(command_params));
+
+  auto notification = WaitForNotification("Target.attachedToTarget", true);
+  const std::string* session_id_ptr = notification.FindString("sessionId");
+  ASSERT_TRUE(session_id_ptr);
+  std::string session_id = *session_id_ptr;
+
+  DevToolsAgentHostImpl* host_impl =
+      static_cast<DevToolsAgentHostImpl*>(agent_host_.get());
+
+  // Simulate a message from the renderer that has the correct sessionId but
+  // belongs to a domain that only the browser implements.
+  std::string message_json =
+      "{\"method\":\"Target.attachedToTarget\",\"params\":{},\"sessionId\":\"" +
+      session_id + "\"}";
+
+  ClearNotifications();
+  DispatchProtocolNotification(host_impl, session_id, message_json, true);
+  EXPECT_FALSE(HasExistingNotification("Target.attachedToTarget"));
+}
+
 // TODO(crbug.com/440535492): Flaky on Win dbg. Re-enable this test.
 #if BUILDFLAG(IS_WIN) && !defined(NDEBUG)
 #define MAYBE_PageCrashClearsPendingCommands \
@@ -1856,7 +2409,6 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
 
   base::DictValue params = WaitForNotification("Target.targetCreated", true);
   EXPECT_THAT(*params.FindStringByDottedPath("targetInfo.type"), Eq("page"));
-  std::string target_id = *params.FindStringByDottedPath("targetInfo.targetId");
 
   SendCommandSync("Debugger.enable");
 
@@ -1959,6 +2511,886 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
       testing::Optional(static_cast<int>(crdtp::DispatchCode::SERVER_ERROR)));
 }
 #endif
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       GetNavigationHistoryRedactsFileUrlsWithoutFileAccess) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL file_url = GetTestUrl("devtools", "navigation.html");
+  const GURL http_url = embedded_test_server()->GetURL("/title1.html");
+  NavigateToURLBlockUntilNavigationsComplete(shell(), file_url, 1);
+  NavigateToURLBlockUntilNavigationsComplete(shell(), http_url, 1);
+
+  // With file access, the file:// entry is exposed.
+  Attach();
+  const base::ListValue* entries =
+      SendCommandSync("Page.getNavigationHistory")->FindList("entries");
+  ASSERT_TRUE(entries);
+  ASSERT_EQ(2u, entries->size());
+  EXPECT_EQ(file_url.spec(), *(*entries)[0].GetDict().FindString("url"));
+
+  Detach();
+  SetMayReadLocalFiles(false);
+  Attach();
+
+  // Without file access, the file:// entry is redacted, but it is still listed
+  // so that the remaining entries and `currentIndex` stay meaningful.
+  entries = SendCommandSync("Page.getNavigationHistory")->FindList("entries");
+  ASSERT_TRUE(entries);
+  ASSERT_EQ(2u, entries->size());
+  const base::DictValue& file_entry = (*entries)[0].GetDict();
+  EXPECT_EQ("", *file_entry.FindString("url"));
+  EXPECT_EQ("", *file_entry.FindString("userTypedURL"));
+  EXPECT_EQ("", *file_entry.FindString("title"));
+  EXPECT_EQ(http_url.spec(), *(*entries)[1].GetDict().FindString("url"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       FrameStartedNavigatingRedactsInaccessibleUrls) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL file_url = GetTestUrl("devtools", "navigation.html");
+  const GURL http_url = embedded_test_server()->GetURL("/title1.html");
+  const GURL allowed_url = embedded_test_server()->GetURL("/title2.html");
+  const GURL disallowed_url =
+      embedded_test_server()->GetURL("disallowed.test", "/title1.html");
+
+  NavigateToURLBlockUntilNavigationsComplete(shell(), http_url, 1);
+
+  set_agent_host_can_close();
+  SetMayReadLocalFiles(false);
+  SetNotAttachableHosts({"disallowed.test"});
+  Attach();
+  SendCommandSync("Page.enable");
+
+  // Accessible URLs are disclosed in Page.frameStartedNavigating.
+  NavigateToURLBlockUntilNavigationsComplete(shell(), allowed_url, 1);
+  base::DictValue notification =
+      WaitForNotification("Page.frameStartedNavigating", true);
+  EXPECT_EQ(allowed_url.spec(), *notification.FindString("url"));
+
+  // Navigating to a file:// URL without local file access still emits
+  // Page.frameStartedNavigating, but redacts the URL.
+  ClearNotifications();
+  NavigateToURLBlockUntilNavigationsComplete(shell(), file_url, 1);
+  notification = WaitForNotification("Page.frameStartedNavigating", true);
+  EXPECT_EQ("", *notification.FindString("url"));
+  EXPECT_FALSE(notification.FindString("loaderId")->empty());
+
+  // Calling Page.enable while a navigation to an inaccessible URL is already
+  // pending also redacts the URL in the catch-up FrameStartedNavigating event.
+  Detach();
+  NavigateToURLBlockUntilNavigationsComplete(shell(), http_url, 1);
+  TestNavigationManager pending_file_nav(shell()->web_contents(), file_url);
+  shell()->LoadURL(file_url);
+  ASSERT_TRUE(pending_file_nav.WaitForRequestStart());
+
+  Attach();
+  SendCommandAsync("Page.enable");
+  notification = WaitForNotification("Page.frameStartedNavigating", true);
+  EXPECT_EQ("", *notification.FindString("url"));
+  ASSERT_TRUE(pending_file_nav.WaitForNavigationFinished());
+
+  // Navigating to a host that fails MayAttachToURL() fires DidStartNavigating()
+  // before the session is force-detached; the URL must be redacted there too.
+  ClearNotifications();
+  shell()->LoadURL(disallowed_url);
+  notification = WaitForNotification("Page.frameStartedNavigating", true);
+  EXPECT_EQ("", *notification.FindString("url"));
+}
+
+// Records the request headers received by the embedded test server, keyed by
+// relative URL, to verify which DevTools network overrides reach the network.
+class DevToolsNetworkOverridesPolicyTest : public DevToolsProtocolTest {
+ protected:
+  void SetUpOnMainThread() override {
+    DevToolsProtocolTest::SetUpOnMainThread();
+    net::test_server::InstallDefaultWebSocketHandlers(embedded_test_server());
+    embedded_test_server()->RegisterRequestMonitor(
+        base::BindRepeating(&DevToolsNetworkOverridesPolicyTest::OnRequest,
+                            base::Unretained(this)));
+    ASSERT_TRUE(embedded_test_server()->Start());
+  }
+
+  // Returns the headers of the last request received for `relative_url`, or
+  // std::nullopt if no such request was received.
+  std::optional<net::test_server::HttpRequest::HeaderMap> GetRequestHeaders(
+      const std::string& relative_url) {
+    base::AutoLock lock(lock_);
+    auto it = request_headers_.find(relative_url);
+    if (it == request_headers_.end()) {
+      return std::nullopt;
+    }
+    return it->second;
+  }
+
+  // Attaches a session that may not attach to disallowed.test and makes it
+  // inject `X-Test: 1` and a `Referer` of `referrer` into requests.
+  void AttachRestrictedSessionWithExtraHeaders(const GURL& referrer) {
+    base::DictValue headers;
+    headers.Set("X-Test", "1");
+    headers.Set("Referer", referrer.spec());
+    AttachRestrictedSessionWithExtraHeaders(std::move(headers));
+  }
+
+  // Attaches a session that may not attach to disallowed.test.
+  void AttachRestrictedSession() {
+    set_agent_host_can_close();
+    SetNotAttachableHosts({"disallowed.test"});
+    Attach();
+  }
+
+  // Attaches a session that may not attach to disallowed.test and makes it
+  // inject `headers` into requests.
+  void AttachRestrictedSessionWithExtraHeaders(base::DictValue headers) {
+    AttachRestrictedSession();
+    SendCommandSync("Network.enable");
+    ASSERT_FALSE(error());
+    base::DictValue params;
+    params.Set("headers", std::move(headers));
+    SendCommandSync("Network.setExtraHTTPHeaders", std::move(params));
+    ASSERT_FALSE(error());
+  }
+
+ private:
+  void OnRequest(const net::test_server::HttpRequest& request) {
+    base::AutoLock lock(lock_);
+    request_headers_[request.relative_url] = request.headers;
+  }
+
+  base::Lock lock_;
+  std::map<std::string, net::test_server::HttpRequest::HeaderMap>
+      request_headers_ GUARDED_BY(lock_);
+};
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       ExtraHeadersAppliedToNavigationToAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL allowed_url =
+      embedded_test_server()->GetURL("a.test", "/echoall?navigation");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  EXPECT_TRUE(NavigateToURL(shell(), allowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?navigation");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("X-Test"));
+  EXPECT_EQ("1", headers->at("X-Test"));
+  ASSERT_TRUE(headers->contains("Referer"));
+  EXPECT_EQ(injected_referrer.spec(), headers->at("Referer"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       ExtraHeadersNotAppliedToNavigationToNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL disallowed_url =
+      embedded_test_server()->GetURL("disallowed.test", "/echoall?navigation");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  EXPECT_TRUE(NavigateToURL(shell(), disallowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?navigation");
+  ASSERT_TRUE(headers);
+  EXPECT_FALSE(headers->contains("X-Test"));
+  if (headers->contains("Referer")) {
+    EXPECT_NE(injected_referrer.spec(), headers->at("Referer"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsNetworkOverridesPolicyTest,
+    ExtraHeadersNotAppliedToFormPostNavigationToNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL disallowed_url =
+      embedded_test_server()->GetURL("disallowed.test", "/echoall?form-post");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  TestNavigationObserver observer(shell()->web_contents(), 1);
+  EXPECT_TRUE(ExecJs(shell()->web_contents(), JsReplace(R"(
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = $1;
+    const input = document.createElement('input');
+    input.name = 'field';
+    input.value = 'value';
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+  )",
+                                                        disallowed_url)));
+  observer.Wait();
+  EXPECT_EQ(disallowed_url, observer.last_navigation_url());
+
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?form-post");
+  ASSERT_TRUE(headers);
+  EXPECT_FALSE(headers->contains("X-Test"));
+  if (headers->contains("Referer")) {
+    EXPECT_NE(injected_referrer.spec(), headers->at("Referer"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       ExtraHeadersNotAppliedToWebSocketToNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  constexpr char kOpenWebSocket[] = R"(
+    new Promise(resolve => {
+      const ws = new WebSocket($1);
+      ws.onopen = () => { ws.close(); resolve('open'); };
+      ws.onerror = () => resolve('error');
+    });
+  )";
+
+  const GURL allowed_ws_url = net::test_server::GetWebSocketURL(
+      *embedded_test_server(), "a.test", "/echo-request-headers?allowed");
+  EXPECT_EQ("open", EvalJs(shell()->web_contents(),
+                           JsReplace(kOpenWebSocket, allowed_ws_url)));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echo-request-headers?allowed");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("X-Test"));
+  EXPECT_EQ("1", headers->at("X-Test"));
+
+  const GURL disallowed_ws_url = net::test_server::GetWebSocketURL(
+      *embedded_test_server(), "disallowed.test",
+      "/echo-request-headers?disallowed");
+  EXPECT_EQ("open", EvalJs(shell()->web_contents(),
+                           JsReplace(kOpenWebSocket, disallowed_ws_url)));
+  headers = GetRequestHeaders("/echo-request-headers?disallowed");
+  ASSERT_TRUE(headers);
+  EXPECT_FALSE(headers->contains("X-Test"));
+}
+
+constexpr char kFetchScript[] = R"(
+  fetch($1, {mode: $2, credentials: 'include'}).then(() => 'done',
+                                                     () => 'error');
+)";
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       UntrustedClientExtraHeadersAppliedToSameOriginFetch) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL fetch_url =
+      embedded_test_server()->GetURL("a.test", "/echoall?same-origin");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  SetIsTrusted(false);
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  EXPECT_EQ("done", EvalJs(shell()->web_contents(),
+                           JsReplace(kFetchScript, fetch_url, "no-cors")));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?same-origin");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("X-Test"));
+  EXPECT_EQ("1", headers->at("X-Test"));
+  if (headers->contains("Referer")) {
+    EXPECT_NE(injected_referrer.spec(), headers->at("Referer"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsNetworkOverridesPolicyTest,
+    UntrustedClientExtraHeadersNotAppliedToCrossOriginNoCorsFetch) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL fetch_url =
+      embedded_test_server()->GetURL("b.test", "/echoall?no-cors");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  SetIsTrusted(false);
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  EXPECT_EQ("done", EvalJs(shell()->web_contents(),
+                           JsReplace(kFetchScript, fetch_url, "no-cors")));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?no-cors");
+  ASSERT_TRUE(headers);
+  EXPECT_FALSE(headers->contains("X-Test"));
+  if (headers->contains("Referer")) {
+    EXPECT_NE(injected_referrer.spec(), headers->at("Referer"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsNetworkOverridesPolicyTest,
+    UntrustedClientExtraHeadersOnCrossOriginCorsFetchRequirePreflight) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL fetch_url =
+      embedded_test_server()->GetURL("b.test", "/echoall?cors");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  SetIsTrusted(false);
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  EXPECT_EQ("error", EvalJs(shell()->web_contents(),
+                            JsReplace(kFetchScript, fetch_url, "cors")));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?cors");
+  ASSERT_TRUE(headers);
+  EXPECT_FALSE(headers->contains("X-Test"));
+  ASSERT_TRUE(headers->contains("Access-Control-Request-Headers"));
+  EXPECT_EQ("x-test", headers->at("Access-Control-Request-Headers"));
+  if (headers->contains("Referer")) {
+    EXPECT_NE(injected_referrer.spec(), headers->at("Referer"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsNetworkOverridesPolicyTest,
+    TrustedClientExtraHeadersAppliedToCrossOriginNoCorsFetch) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL fetch_url =
+      embedded_test_server()->GetURL("b.test", "/echoall?no-cors");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  EXPECT_EQ("done", EvalJs(shell()->web_contents(),
+                           JsReplace(kFetchScript, fetch_url, "no-cors")));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?no-cors");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("X-Test"));
+  EXPECT_EQ("1", headers->at("X-Test"));
+  ASSERT_TRUE(headers->contains("Referer"));
+  EXPECT_EQ(injected_referrer.spec(), headers->at("Referer"));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsNetworkOverridesPolicyTest,
+    UntrustedClientExtraHeadersStrippedOnCrossOriginRedirect) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL cross_origin_url =
+      embedded_test_server()->GetURL("b.test", "/echoall");
+  const GURL fetch_url = embedded_test_server()->GetURL(
+      "a.test", "/server-redirect-307?" + cross_origin_url.spec());
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  SetIsTrusted(false);
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  EXPECT_EQ("done", EvalJs(shell()->web_contents(),
+                           JsReplace(kFetchScript, fetch_url, "no-cors")));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall");
+  ASSERT_TRUE(headers);
+  EXPECT_FALSE(headers->contains("X-Test"));
+  if (headers->contains("Referer")) {
+    EXPECT_NE(injected_referrer.spec(), headers->at("Referer"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       UntrustedClientForbiddenExtraHeadersDoNotFailRedirect) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL cross_origin_url =
+      embedded_test_server()->GetURL("b.test", "/echoall?forbidden");
+  const GURL fetch_url = embedded_test_server()->GetURL(
+      "a.test", "/server-redirect-307?" + cross_origin_url.spec());
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  SetIsTrusted(false);
+  base::DictValue extra_headers;
+  extra_headers.Set("Origin", "https://evil.test");
+  extra_headers.Set("Sec-Fetch-Mode", "navigate");
+  AttachRestrictedSessionWithExtraHeaders(std::move(extra_headers));
+
+  EXPECT_EQ("done", EvalJs(shell()->web_contents(),
+                           JsReplace(kFetchScript, fetch_url, "no-cors")));
+  EXPECT_EQ(2, EvalJs(shell()->web_contents(), "1 + 1"));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?forbidden");
+  ASSERT_TRUE(headers);
+  if (headers->contains("Origin")) {
+    EXPECT_NE("https://evil.test", headers->at("Origin"));
+  }
+  if (headers->contains("Sec-Fetch-Mode")) {
+    EXPECT_NE("navigate", headers->at("Sec-Fetch-Mode"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       UntrustedClientDoesNotStripPageHeadersOnRedirect) {
+  constexpr char kFetchWithHeaderScript[] = R"(
+    fetch($1, {mode: 'no-cors', credentials: 'include',
+               headers: {'Content-Language': 'page'}})
+        .then(() => 'done', () => 'error');
+  )";
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL final_url =
+      embedded_test_server()->GetURL("c.test", "/echoall?page-header");
+  const GURL fetch_url = embedded_test_server()->GetURL(
+      "b.test", "/server-redirect-307?" + final_url.spec());
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  SetIsTrusted(false);
+  base::DictValue extra_headers;
+  extra_headers.Set("Content-Language", "devtools");
+  AttachRestrictedSessionWithExtraHeaders(std::move(extra_headers));
+
+  EXPECT_EQ("done", EvalJs(shell()->web_contents(),
+                           JsReplace(kFetchWithHeaderScript, fetch_url)));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?page-header");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("Content-Language"));
+  EXPECT_EQ("page", headers->at("Content-Language"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       ExtraHeadersRemovedOnRedirectToNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL disallowed_url =
+      embedded_test_server()->GetURL("disallowed.test", "/echoall?redirected");
+  const std::string redirect_path =
+      "/server-redirect-307?" + disallowed_url.spec();
+  const GURL redirect_url =
+      embedded_test_server()->GetURL("a.test", redirect_path);
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  base::DictValue extra_headers;
+  extra_headers.Set("X-Test", "1");
+  AttachRestrictedSessionWithExtraHeaders(std::move(extra_headers));
+
+  EXPECT_TRUE(NavigateToURL(shell(), redirect_url, disallowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders(redirect_path);
+  ASSERT_TRUE(headers);
+  EXPECT_TRUE(headers->contains("X-Test"));
+  headers = GetRequestHeaders("/echoall?redirected");
+  ASSERT_TRUE(headers);
+  EXPECT_FALSE(headers->contains("X-Test"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       ReferrerOverrideBlocksRedirectToNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL disallowed_url =
+      embedded_test_server()->GetURL("disallowed.test", "/echoall?blocked");
+  const std::string redirect_path =
+      "/server-redirect-307?" + disallowed_url.spec();
+  const GURL redirect_url =
+      embedded_test_server()->GetURL("a.test", redirect_path);
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  TestNavigationObserver observer(shell()->web_contents());
+  EXPECT_FALSE(NavigateToURL(shell(), redirect_url));
+  EXPECT_EQ(net::ERR_BLOCKED_BY_CLIENT, observer.last_net_error_code());
+  EXPECT_TRUE(GetRequestHeaders(redirect_path));
+  EXPECT_FALSE(GetRequestHeaders("/echoall?blocked"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       ExtraHeadersKeptOnRedirectToAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL injected_referrer =
+      embedded_test_server()->GetURL("a.test", "/injected-referrer");
+  const GURL allowed_url =
+      embedded_test_server()->GetURL("b.test", "/echoall?redirected");
+  const GURL redirect_url = embedded_test_server()->GetURL(
+      "a.test", "/server-redirect-307?" + allowed_url.spec());
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSessionWithExtraHeaders(injected_referrer);
+
+  EXPECT_TRUE(NavigateToURL(shell(), redirect_url, allowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall?redirected");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("X-Test"));
+  EXPECT_EQ("1", headers->at("X-Test"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       OverriddenHeaderRevertedOnRedirectToNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL disallowed_url =
+      embedded_test_server()->GetURL("disallowed.test", "/echoall?reverted");
+  const std::string redirect_path =
+      "/server-redirect-307?" + disallowed_url.spec();
+  const GURL redirect_url =
+      embedded_test_server()->GetURL("a.test", redirect_path);
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  base::DictValue extra_headers;
+  extra_headers.Set("Accept", "devtools/accept");
+  extra_headers.Set("Upgrade-Insecure-Requests", "devtools");
+  AttachRestrictedSessionWithExtraHeaders(std::move(extra_headers));
+
+  EXPECT_TRUE(NavigateToURL(shell(), redirect_url, disallowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders(redirect_path);
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("Upgrade-Insecure-Requests"));
+  EXPECT_EQ("devtools", headers->at("Upgrade-Insecure-Requests"));
+  headers = GetRequestHeaders("/echoall?reverted");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("Upgrade-Insecure-Requests"));
+  EXPECT_EQ("1", headers->at("Upgrade-Insecure-Requests"));
+  ASSERT_TRUE(headers->contains("Accept"));
+  EXPECT_NE("devtools/accept", headers->at("Accept"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       OtherSessionHeaderKeptOnRedirectToNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL disallowed_url =
+      embedded_test_server()->GetURL("disallowed.test", "/echoall?sessions");
+  const std::string redirect_path =
+      "/server-redirect-307?" + disallowed_url.spec();
+  const GURL redirect_url =
+      embedded_test_server()->GetURL("a.test", redirect_path);
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  TestDevToolsProtocolClient allowed_client;
+  allowed_client.AttachToWebContents(shell()->web_contents());
+  base::ScopedClosureRunner detach_allowed_client(base::BindLambdaForTesting(
+      [&allowed_client] { allowed_client.DetachProtocolClient(); }));
+  allowed_client.SendCommandSync("Network.enable");
+  base::DictValue allowed_params;
+  allowed_params.SetByDottedPath("headers.X-Test", "allowed");
+  allowed_client.SendCommandSync("Network.setExtraHTTPHeaders",
+                                 std::move(allowed_params));
+  base::DictValue extra_headers;
+  extra_headers.Set("X-Test", "restricted");
+  AttachRestrictedSessionWithExtraHeaders(std::move(extra_headers));
+
+  EXPECT_TRUE(NavigateToURL(shell(), redirect_url, disallowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders(redirect_path);
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("X-Test"));
+  EXPECT_EQ("restricted", headers->at("X-Test"));
+  headers = GetRequestHeaders("/echoall?sessions");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("X-Test"));
+  EXPECT_EQ("allowed", headers->at("X-Test"));
+
+  base::DictValue request_will_be_sent =
+      allowed_client.WaitForMatchingNotification(
+          "Network.requestWillBeSent",
+          base::BindRepeating(
+              [](const GURL& url, const base::DictValue& params) {
+                const std::string* request_url =
+                    params.FindStringByDottedPath("request.url");
+                return request_url && *request_url == url.spec();
+              },
+              disallowed_url));
+  const std::string* reported_header =
+      request_will_be_sent.FindStringByDottedPath("request.headers.X-Test");
+  ASSERT_TRUE(reported_header);
+  EXPECT_EQ("allowed", *reported_header);
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       UntrustedClientEmulationOverridesKeptOnAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL allowed_url = embedded_test_server()->GetURL("b.test", "/echoall");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSession();
+
+  base::DictValue params;
+  params.Set("userAgent", "TestUA");
+  params.Set("acceptLanguage", "xx");
+  SendCommandSync("Emulation.setUserAgentOverride", std::move(params));
+
+  EXPECT_TRUE(NavigateToURL(shell(), allowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("User-Agent"));
+  EXPECT_EQ("TestUA", headers->at("User-Agent"));
+  ASSERT_TRUE(headers->contains("Accept-Language"));
+  EXPECT_EQ("xx", headers->at("Accept-Language"));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsNetworkOverridesPolicyTest,
+    UntrustedClientEmulationOverridesRemovedOnNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL disallowed_url =
+      embedded_test_server()->GetURL("disallowed.test", "/echoall");
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSession();
+
+  base::DictValue params;
+  params.Set("userAgent", "TestUA");
+  params.Set("acceptLanguage", "xx");
+  SendCommandSync("Emulation.setUserAgentOverride", std::move(params));
+
+  EXPECT_TRUE(NavigateToURL(shell(), disallowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders("/echoall");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("User-Agent"));
+  EXPECT_NE("TestUA", headers->at("User-Agent"));
+  if (headers->contains("Accept-Language")) {
+    EXPECT_NE("xx", headers->at("Accept-Language"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsNetworkOverridesPolicyTest,
+    UntrustedClientEmulationOverridesRemovedOnRedirectToNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL disallowed_url =
+      embedded_test_server()->GetURL("disallowed.test", "/echoall?redirected");
+  const std::string redirect_path =
+      "/server-redirect-307?" + disallowed_url.spec();
+  const GURL redirect_url =
+      embedded_test_server()->GetURL("a.test", redirect_path);
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  AttachRestrictedSession();
+
+  base::DictValue params;
+  params.Set("userAgent", "TestUA");
+  params.Set("acceptLanguage", "xx");
+  SendCommandSync("Emulation.setUserAgentOverride", std::move(params));
+
+  EXPECT_TRUE(NavigateToURL(shell(), redirect_url, disallowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders(redirect_path);
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("User-Agent"));
+  EXPECT_EQ("TestUA", headers->at("User-Agent"));
+  ASSERT_TRUE(headers->contains("Accept-Language"));
+  EXPECT_EQ("xx", headers->at("Accept-Language"));
+
+  headers = GetRequestHeaders("/echoall?redirected");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("User-Agent"));
+  EXPECT_NE("TestUA", headers->at("User-Agent"));
+  if (headers->contains("Accept-Language")) {
+    EXPECT_NE("xx", headers->at("Accept-Language"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsNetworkOverridesPolicyTest,
+    OtherSessionEmulationOverridesKeptOnRedirectToNotAttachableHost) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL disallowed_url = embedded_test_server()->GetURL(
+      "disallowed.test", "/echoall?emulation-sessions");
+  const std::string redirect_path =
+      "/server-redirect-307?" + disallowed_url.spec();
+  const GURL redirect_url =
+      embedded_test_server()->GetURL("a.test", redirect_path);
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  TestDevToolsProtocolClient allowed_client;
+  allowed_client.AttachToWebContents(shell()->web_contents());
+  base::ScopedClosureRunner detach_allowed_client(base::BindLambdaForTesting(
+      [&allowed_client] { allowed_client.DetachProtocolClient(); }));
+  base::DictValue allowed_params;
+  allowed_params.Set("userAgent", "AllowedUA");
+  allowed_client.SendCommandSync("Emulation.setUserAgentOverride",
+                                 std::move(allowed_params));
+  AttachRestrictedSession();
+  base::DictValue params;
+  params.Set("userAgent", "RestrictedUA");
+  SendCommandSync("Emulation.setUserAgentOverride", std::move(params));
+
+  EXPECT_TRUE(NavigateToURL(shell(), redirect_url, disallowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders(redirect_path);
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("User-Agent"));
+  EXPECT_EQ("RestrictedUA", headers->at("User-Agent"));
+  headers = GetRequestHeaders("/echoall?emulation-sessions");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("User-Agent"));
+  EXPECT_EQ("AllowedUA", headers->at("User-Agent"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       EmulationOverridesRevertedToOtherSessionHeaders) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL disallowed_url = embedded_test_server()->GetURL(
+      "disallowed.test", "/echoall?emulation-reverted");
+  const std::string redirect_path =
+      "/server-redirect-307?" + disallowed_url.spec();
+  const GURL redirect_url =
+      embedded_test_server()->GetURL("a.test", redirect_path);
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  TestDevToolsProtocolClient allowed_client;
+  allowed_client.AttachToWebContents(shell()->web_contents());
+  base::ScopedClosureRunner detach_allowed_client(base::BindLambdaForTesting(
+      [&allowed_client] { allowed_client.DetachProtocolClient(); }));
+  allowed_client.SendCommandSync("Network.enable");
+  base::DictValue allowed_params;
+  allowed_params.SetByDottedPath("headers.Accept-Language", "fr");
+  allowed_client.SendCommandSync("Network.setExtraHTTPHeaders",
+                                 std::move(allowed_params));
+  AttachRestrictedSession();
+  base::DictValue params;
+  params.Set("userAgent", "RestrictedUA");
+  params.Set("acceptLanguage", "xx");
+  SendCommandSync("Emulation.setUserAgentOverride", std::move(params));
+
+  EXPECT_TRUE(NavigateToURL(shell(), redirect_url, disallowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders(redirect_path);
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("Accept-Language"));
+  EXPECT_EQ("xx", headers->at("Accept-Language"));
+  headers = GetRequestHeaders("/echoall?emulation-reverted");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("User-Agent"));
+  EXPECT_NE("RestrictedUA", headers->at("User-Agent"));
+  ASSERT_TRUE(headers->contains("Accept-Language"));
+  EXPECT_EQ("fr", headers->at("Accept-Language"));
+
+  base::DictValue request_will_be_sent =
+      allowed_client.WaitForMatchingNotification(
+          "Network.requestWillBeSent",
+          base::BindRepeating(
+              [](const GURL& url, const base::DictValue& params) {
+                const std::string* request_url =
+                    params.FindStringByDottedPath("request.url");
+                return request_url && *request_url == url.spec();
+              },
+              disallowed_url));
+  const std::string* user_agent =
+      request_will_be_sent.FindStringByDottedPath("request.headers.User-Agent");
+  ASSERT_TRUE(user_agent);
+  EXPECT_NE("RestrictedUA", *user_agent);
+  const std::string* accept_language =
+      request_will_be_sent.FindStringByDottedPath(
+          "request.headers.Accept-Language");
+  ASSERT_TRUE(accept_language);
+  EXPECT_EQ("fr", *accept_language);
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsNetworkOverridesPolicyTest,
+                       EmulationOverrideRemovedWithoutOriginalHeader) {
+  const GURL start_url =
+      embedded_test_server()->GetURL("a.test", "/title1.html");
+  const GURL disallowed_url = embedded_test_server()->GetURL(
+      "disallowed.test", "/echoall?emulation-removed");
+  const std::string redirect_path =
+      "/server-redirect-307?" + disallowed_url.spec();
+  const GURL redirect_url =
+      embedded_test_server()->GetURL("a.test", redirect_path);
+  ASSERT_TRUE(NavigateToURL(shell(), start_url));
+  TestDevToolsProtocolClient allowed_client;
+  allowed_client.AttachToWebContents(shell()->web_contents());
+  base::ScopedClosureRunner detach_allowed_client(base::BindLambdaForTesting(
+      [&allowed_client] { allowed_client.DetachProtocolClient(); }));
+  allowed_client.SendCommandSync("Network.enable");
+  AttachRestrictedSession();
+  base::DictValue params;
+  params.Set("userAgent", "RestrictedUA");
+  params.Set("acceptLanguage", "xx");
+  SendCommandSync("Emulation.setUserAgentOverride", std::move(params));
+
+  EXPECT_TRUE(NavigateToURL(shell(), redirect_url, disallowed_url));
+  std::optional<net::test_server::HttpRequest::HeaderMap> headers =
+      GetRequestHeaders(redirect_path);
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("Accept-Language"));
+  EXPECT_EQ("xx", headers->at("Accept-Language"));
+  headers = GetRequestHeaders("/echoall?emulation-removed");
+  ASSERT_TRUE(headers);
+  ASSERT_TRUE(headers->contains("Accept-Language"));
+  EXPECT_NE("xx", headers->at("Accept-Language"));
+
+  // The navigation had no Accept-Language before the override, so it is
+  // removed and the network stack adds its default.
+  base::DictValue request_will_be_sent =
+      allowed_client.WaitForMatchingNotification(
+          "Network.requestWillBeSent",
+          base::BindRepeating(
+              [](const GURL& url, const base::DictValue& params) {
+                const std::string* request_url =
+                    params.FindStringByDottedPath("request.url");
+                return request_url && *request_url == url.spec();
+              },
+              disallowed_url));
+  EXPECT_FALSE(request_will_be_sent.FindStringByDottedPath(
+      "request.headers.Accept-Language"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       NavigateToHistoryEntryWithFileUrlRequiresFileAccess) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL file_url = GetTestUrl("devtools", "navigation.html");
+  const GURL first_http_url = embedded_test_server()->GetURL("/title1.html");
+  const GURL second_http_url = embedded_test_server()->GetURL("/title2.html");
+  NavigateToURLBlockUntilNavigationsComplete(shell(), file_url, 1);
+  NavigateToURLBlockUntilNavigationsComplete(shell(), first_http_url, 1);
+  NavigateToURLBlockUntilNavigationsComplete(shell(), second_http_url, 1);
+
+  Attach();
+  const base::ListValue* entries =
+      SendCommandSync("Page.getNavigationHistory")->FindList("entries");
+  ASSERT_TRUE(entries);
+  ASSERT_EQ(3u, entries->size());
+  const std::optional<int> file_entry_id =
+      (*entries)[0].GetDict().FindInt("id");
+  ASSERT_TRUE(file_entry_id.has_value());
+  const std::optional<int> http_entry_id =
+      (*entries)[1].GetDict().FindInt("id");
+  ASSERT_TRUE(http_entry_id.has_value());
+
+  Detach();
+  SetMayReadLocalFiles(false);
+  Attach();
+
+  // Traversing to the file:// entry is rejected, just like navigating to it
+  // with Page.navigate would be.
+  base::DictValue params;
+  params.Set("entryId", *file_entry_id);
+  ASSERT_FALSE(
+      SendCommandSync("Page.navigateToHistoryEntry", std::move(params)));
+  EXPECT_THAT(
+      error()->FindInt("code"),
+      testing::Optional(static_cast<int>(crdtp::DispatchCode::SERVER_ERROR)));
+  EXPECT_EQ(*error()->FindString("message"),
+            "Navigating to local URL is not allowed");
+  EXPECT_EQ(second_http_url, shell()->web_contents()->GetLastCommittedURL());
+
+  // Traversing to an entry the client is allowed to access still works.
+  base::DictValue allowed_params;
+  allowed_params.Set("entryId", *http_entry_id);
+  TestNavigationObserver navigation_observer(shell()->web_contents());
+  ASSERT_TRUE(SendCommandSync("Page.navigateToHistoryEntry",
+                              std::move(allowed_params)));
+  navigation_observer.Wait();
+  EXPECT_EQ(first_http_url, shell()->web_contents()->GetLastCommittedURL());
+}
 
 IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
                        DOMGetFileInfoRequiresFileAccess) {
@@ -2291,6 +3723,224 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, ReloadBlankPage) {
   Attach();
   SendCommandAsync("Page.reload");
   // Should not crash at this point.
+}
+
+// Tests the form repost dialog for Page.reload with `checkForRepost`.
+class PageReloadRepostTest : public DevToolsProtocolTest {
+ protected:
+  void SetUpOnMainThread() override {
+    DevToolsProtocolTest::SetUpOnMainThread();
+    // Browser tests disable the form repost dialog by default.
+    show_repost_dialog_.emplace();
+  }
+
+  void TearDownOnMainThread() override {
+    show_repost_dialog_.reset();
+    DevToolsProtocolTest::TearDownOnMainThread();
+  }
+
+  // WebContentsDelegate:
+  bool ShowRepostFormWarningDialog(WebContents* source) override {
+    ++repost_form_warning_count_;
+    return can_show_repost_form_warning_;
+  }
+
+  NavigationControllerImpl& controller() {
+    return static_cast<NavigationControllerImpl&>(
+        shell()->web_contents()->GetController());
+  }
+
+  ReloadType pending_reload() { return controller().pending_reload_; }
+
+  // Navigates the page with a POST request.
+  void SubmitPostForm() {
+    ASSERT_TRUE(embedded_test_server()->Start());
+    ASSERT_TRUE(
+        NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
+    TestNavigationObserver observer(shell()->web_contents());
+    ASSERT_TRUE(ExecJs(
+        shell(), JsReplace("const form = document.createElement('form');"
+                           "form.method = 'POST';"
+                           "form.action = $1;"
+                           "document.body.appendChild(form);"
+                           "form.submit();",
+                           embedded_test_server()->GetURL("/title2.html"))));
+    observer.Wait();
+    ASSERT_TRUE(controller().GetLastCommittedEntry()->GetHasPostData());
+  }
+
+  // Attaches to the tab target and then to the frame target, as the DevTools
+  // UI does. Returns the session id of the frame target.
+  std::string AttachToTabTargetAndGetFrameSessionId() {
+    AttachToTabTarget(shell()->web_contents());
+    shell()->web_contents()->SetDelegate(this);
+
+    base::DictValue discover_params;
+    discover_params.Set("discover", true);
+    SendCommandSync("Target.setDiscoverTargets", std::move(discover_params));
+    std::string target_id;
+    while (target_id.empty()) {
+      base::DictValue created =
+          WaitForNotification("Target.targetCreated", true);
+      if (*created.FindStringByDottedPath("targetInfo.type") == "page") {
+        target_id = *created.FindStringByDottedPath("targetInfo.targetId");
+      }
+    }
+
+    base::DictValue attach_params;
+    attach_params.Set("targetId", target_id);
+    attach_params.Set("flatten", true);
+    const base::DictValue* result =
+        SendCommandSync("Target.attachToTarget", std::move(attach_params));
+    CHECK(result);
+    return *result->FindString("sessionId");
+  }
+
+  // Sends Page.reload with `checkForRepost` and with a script that sets
+  // `window.injected`. Does not wait for the response. The renderer runs the
+  // script only if the Page domain is enabled, thus this enables it first.
+  void SendReloadWithRepostCheck(const std::string& session_id = "") {
+    SendSessionCommand("Page.enable", base::DictValue(), session_id,
+                       /*wait=*/true);
+    responses_before_reload_ = received_responses_count();
+    base::DictValue params;
+    params.Set("checkForRepost", true);
+    params.Set("scriptToEvaluateOnLoad", "window.injected = true;");
+    SendSessionCommand("Page.reload", std::move(params), session_id,
+                       /*wait=*/false);
+  }
+
+  // Accepts the form repost dialog and waits for the reload and for the
+  // response to Page.reload.
+  void AcceptDialogAndWaitForReload() {
+    TestNavigationObserver observer(shell()->web_contents());
+    controller().ContinuePendingReload();
+    observer.Wait();
+    EXPECT_TRUE(observer.last_navigation_succeeded());
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return received_responses_count() == responses_before_reload_ + 1;
+    }));
+    EXPECT_TRUE(result());
+    EXPECT_FALSE(error());
+  }
+
+  int repost_form_warning_count_ = 0;
+  // False simulates an embedder that cannot show the dialog.
+  bool can_show_repost_form_warning_ = true;
+  // The number of responses before the last Page.reload command.
+  int responses_before_reload_ = 0;
+
+ private:
+  std::optional<NavigationControllerImpl::ScopedShowRepostDialogForTesting>
+      show_repost_dialog_;
+};
+
+// Without `checkForRepost`, Page.reload shows no dialog.
+IN_PROC_BROWSER_TEST_F(PageReloadRepostTest, NoDialogByDefault) {
+  SubmitPostForm();
+  Attach();
+
+  TestNavigationObserver observer(shell()->web_contents());
+  SendCommandSync("Page.reload");
+  observer.Wait();
+  EXPECT_EQ(0, repost_form_warning_count_);
+  EXPECT_TRUE(observer.last_navigation_succeeded());
+  EXPECT_TRUE(controller().GetLastCommittedEntry()->GetHasPostData());
+}
+
+// If the user accepts the dialog, the reload commits and the script runs.
+IN_PROC_BROWSER_TEST_F(PageReloadRepostTest, AcceptDialogRunsScript) {
+  SubmitPostForm();
+  Attach();
+
+  SendReloadWithRepostCheck();
+  EXPECT_EQ(1, repost_form_warning_count_);
+  // The reload and the response wait for the user.
+  EXPECT_FALSE(controller().GetPendingEntry());
+  EXPECT_EQ(responses_before_reload_, received_responses_count());
+
+  AcceptDialogAndWaitForReload();
+  EXPECT_TRUE(controller().GetLastCommittedEntry()->GetHasPostData());
+  EXPECT_EQ(true, EvalJs(shell(), "window.injected === true"));
+}
+
+// If the user cancels the dialog, Page.reload fails and a subsequent reload
+// does not run the script.
+IN_PROC_BROWSER_TEST_F(PageReloadRepostTest, CancelDialogDropsScript) {
+  SubmitPostForm();
+  Attach();
+
+  SendReloadWithRepostCheck();
+  EXPECT_EQ(1, repost_form_warning_count_);
+  EXPECT_EQ(responses_before_reload_, received_responses_count());
+
+  controller().CancelPendingReload();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return received_responses_count() == responses_before_reload_ + 1;
+  }));
+  EXPECT_TRUE(error());
+  EXPECT_FALSE(controller().GetPendingEntry());
+
+  TestNavigationObserver observer(shell()->web_contents());
+  ExecuteScriptAsync(shell(), "location.reload();");
+  observer.Wait();
+  EXPECT_TRUE(observer.last_navigation_succeeded());
+  EXPECT_EQ(false, EvalJs(shell(), "'injected' in window"));
+}
+
+// A reload without `checkForRepost` replaces a pending repost. The first
+// Page.reload fails and the second Page.reload starts the reload.
+IN_PROC_BROWSER_TEST_F(PageReloadRepostTest, ReloadReplacesPendingRepost) {
+  SubmitPostForm();
+  Attach();
+
+  SendReloadWithRepostCheck();
+  EXPECT_EQ(1, repost_form_warning_count_);
+  EXPECT_EQ(ReloadType::NORMAL, pending_reload());
+
+  TestNavigationObserver observer(shell()->web_contents());
+  SendCommandAsync("Page.reload");
+  EXPECT_EQ(ReloadType::NONE, pending_reload());
+  observer.Wait();
+  EXPECT_TRUE(observer.last_navigation_succeeded());
+  // One response for each Page.reload command.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return received_responses_count() == responses_before_reload_ + 2;
+  }));
+  EXPECT_EQ(1, repost_form_warning_count_);
+
+  // The dialog of the first command has no effect now.
+  controller().ContinuePendingReload();
+  EXPECT_FALSE(controller().GetPendingEntry());
+}
+
+// If the embedder cannot show the dialog, Page.reload fails and does not
+// wait.
+IN_PROC_BROWSER_TEST_F(PageReloadRepostTest, DialogNotSupported) {
+  SubmitPostForm();
+  Attach();
+  can_show_repost_form_warning_ = false;
+
+  SendReloadWithRepostCheck();
+  EXPECT_EQ(1, repost_form_warning_count_);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return received_responses_count() == responses_before_reload_ + 1;
+  }));
+  EXPECT_TRUE(error());
+  EXPECT_FALSE(controller().GetPendingEntry());
+}
+
+// The DevTools UI sends Page.reload through a child session of the tab target.
+IN_PROC_BROWSER_TEST_F(PageReloadRepostTest, TabTargetChildSession) {
+  SubmitPostForm();
+  const std::string session_id = AttachToTabTargetAndGetFrameSessionId();
+
+  SendReloadWithRepostCheck(session_id);
+  EXPECT_EQ(1, repost_form_warning_count_);
+  EXPECT_EQ(responses_before_reload_, received_responses_count());
+
+  AcceptDialogAndWaitForReload();
+  EXPECT_EQ(true, EvalJs(shell(), "window.injected === true"));
 }
 
 IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, EvaluateInBlankPage) {
@@ -4265,22 +5915,6 @@ IN_PROC_BROWSER_TEST_F(DevToolsDownloadContentTest,
   EXPECT_FALSE(error());
 }
 
-IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, GetAnnotatedPageContent) {
-  GURL url = GURL("data:text/html,<body>Hello, world!</body>");
-  NavigateToURLBlockUntilNavigationsComplete(shell(), url, 1);
-  Attach();
-  const base::DictValue* result_ptr = SendCommandSync(
-      "Page.getAnnotatedPageContent",
-      base::DictValue().Set("includeActionableInformation", false));
-  ASSERT_FALSE(result_ptr);
-  EXPECT_EQ(*error()->FindInt("code"),
-            static_cast<int>(crdtp::DispatchCode::SERVER_ERROR));
-  EXPECT_EQ(
-      *error()->FindString("message"),
-      "Failed to get annotated page content: Annotated page content is not "
-      "available for this browser target.");
-}
-
 // Flaky on ChromeOS https://crbug.com/860312
 // Also flaky on Wndows and other platforms: http://crbug.com/1070302
 // Check that downloading multiple (in this case, 2) files does not result in
@@ -4390,6 +6024,189 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, TracingWithPerfettoConfig) {
   EXPECT_TRUE(SendCommandSync("Tracing.end"));
 
   WaitForNotification("Tracing.tracingComplete", true);
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       TracingMemoryDumpRequiresTrustedClient) {
+  NavigateToURLBlockUntilNavigationsComplete(shell(), GURL("about:blank"), 1);
+
+  SetIsTrusted(false);
+  Attach();
+
+  // Starting with a perfettoConfig containing only memory dump data sources
+  // should fail for an untrusted client because the disallowed data sources
+  // are stripped.
+  perfetto::TraceConfig memory_only_perfetto_config;
+  memory_only_perfetto_config.add_buffers()->set_size_kb(1024);
+  memory_only_perfetto_config.add_data_sources()->mutable_config()->set_name(
+      tracing::kMemoryInstrumentationDataSourceName);
+  memory_only_perfetto_config.add_data_sources()->mutable_config()->set_name(
+      tracing::kNativeHeapProfilerSourceName);
+  base::DictValue perfetto_start_params;
+  perfetto_start_params.Set(
+      "perfettoConfig",
+      base::Base64Encode(memory_only_perfetto_config.SerializeAsString()));
+  perfetto_start_params.Set("transferMode", "ReturnAsStream");
+  EXPECT_FALSE(
+      SendCommandSync("Tracing.start", std::move(perfetto_start_params)));
+  EXPECT_THAT(
+      error()->FindInt("code"),
+      testing::Optional(static_cast<int>(crdtp::DispatchCode::INVALID_PARAMS)));
+
+  base::DictValue trace_config;
+  base::ListValue categories;
+  categories.Append("disabled-by-default-memory-infra");
+  trace_config.Set("includedCategories", std::move(categories));
+  base::DictValue start_params;
+  start_params.Set("traceConfig", std::move(trace_config));
+  start_params.Set("transferMode", "ReturnAsStream");
+  EXPECT_TRUE(SendCommandSync("Tracing.start", start_params.Clone()));
+
+  ASSERT_FALSE(SendCommandSync("Tracing.requestMemoryDump"));
+  EXPECT_THAT(
+      error()->FindInt("code"),
+      testing::Optional(static_cast<int>(crdtp::DispatchCode::SERVER_ERROR)));
+  EXPECT_EQ(*error()->FindString("message"), "Not allowed");
+
+  EXPECT_TRUE(SendCommandSync("Tracing.end"));
+  WaitForNotification("Tracing.tracingComplete", true);
+
+  Detach();
+  SetIsTrusted(true);
+  Attach();
+
+  EXPECT_TRUE(SendCommandSync("Tracing.start", std::move(start_params)));
+  // Request a "background" dump rather than the default "detailed" dump,
+  // because "detailed" dumps require OSMetrics::GetProcessMemoryMaps(), which
+  // is not implemented on Fuchsia (https://crbug.com/40720107).
+  base::DictValue dump_params;
+  dump_params.Set("levelOfDetail", "background");
+  const base::DictValue* dump_result =
+      SendCommandSync("Tracing.requestMemoryDump", std::move(dump_params));
+  ASSERT_TRUE(dump_result);
+  EXPECT_THAT(dump_result->FindBool("success"), testing::Optional(true));
+  EXPECT_TRUE(SendCommandSync("Tracing.end"));
+  WaitForNotification("Tracing.tracingComplete", true);
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       TracingBrowserProcessRequiresTrustedClient) {
+  content::SetupCrossSiteRedirector(embedded_test_server());
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  GURL url_a = embedded_test_server()->GetURL("a.com", "/title1.html");
+  GURL url_b =
+      embedded_test_server()->GetURL("b.com", "/title1.html?secret_tab_b");
+
+  NavigateToURLBlockUntilNavigationsComplete(shell(), url_a, 1);
+
+  auto run_trace_and_read_json = [&](bool is_trusted, const GURL& url_b,
+                                     Shell** out_shell_b) -> std::string {
+    Detach();
+    SetIsTrusted(is_trusted);
+    Attach();
+
+    base::trace_event::TraceConfig chrome_config(
+        "navigation,blink.user_timing," TRACE_DISABLED_BY_DEFAULT(
+            "devtools.timeline"),
+        "");
+    perfetto::TraceConfig perfetto_config =
+        tracing::GetDefaultPerfettoConfig(chrome_config,
+                                          /*privacy_filtering_enabled=*/false,
+                                          /*convert_to_legacy_json=*/true);
+    // Attempt to explicitly request the browser process PID in
+    // producer_name_filter to verify that untrusted sessions cannot bypass
+    // the process filter.
+    std::string browser_producer =
+        base::StrCat({tracing::kPerfettoProducerNamePrefix,
+                      base::NumberToString(static_cast<uint32_t>(
+                          base::Process::Current().Pid()))});
+    for (auto& ds : *perfetto_config.mutable_data_sources()) {
+      *ds.add_producer_name_filter() = browser_producer;
+      ds.add_producer_name_regex_filter(".*");
+    }
+
+    base::DictValue params;
+    params.Set("perfettoConfig",
+               base::Base64Encode(perfetto_config.SerializeAsString()));
+    params.Set("transferMode", "ReturnAsStream");
+
+    EXPECT_TRUE(SendCommandSync("Tracing.start", std::move(params)));
+
+    // Create a new renderer mid-session to trigger AddProcessToFilter
+    Shell* shell_b = CreateBrowser();
+    if (out_shell_b) {
+      *out_shell_b = shell_b;
+    }
+
+    NavigateToURLBlockUntilNavigationsComplete(shell(), url_a, 1);
+    NavigateToURLBlockUntilNavigationsComplete(shell_b, url_b, 1);
+    EXPECT_TRUE(content::ExecJs(shell(), "performance.mark('mark_a');"));
+    EXPECT_TRUE(content::ExecJs(shell_b, "performance.mark('mark_b');"));
+
+    EXPECT_TRUE(SendCommandSync("Tracing.end"));
+
+    base::DictValue complete_notification =
+        WaitForNotification("Tracing.tracingComplete", true);
+    const std::string* stream_handle_ptr =
+        complete_notification.FindString("stream");
+    EXPECT_TRUE(stream_handle_ptr);
+    std::string stream_handle = stream_handle_ptr ? *stream_handle_ptr : "";
+
+    std::string trace_json;
+    bool eof = false;
+    while (!eof) {
+      base::DictValue read_params;
+      read_params.Set("handle", stream_handle);
+      const base::DictValue* response =
+          SendCommandSync("IO.read", std::move(read_params));
+      EXPECT_TRUE(response);
+      if (!response) {
+        break;
+      }
+      const std::string* data = response->FindString("data");
+      EXPECT_TRUE(data);
+      if (data) {
+        if (response->FindBool("base64Encoded").value_or(false)) {
+          std::string decoded;
+          EXPECT_TRUE(base::Base64Decode(*data, &decoded));
+          trace_json += decoded;
+        } else {
+          trace_json += *data;
+        }
+      }
+      eof = response->FindBool("eof").value_or(false);
+    }
+    return trace_json;
+  };
+
+  Shell* shell_b_untrusted = nullptr;
+  std::string untrusted_trace =
+      run_trace_and_read_json(/*is_trusted=*/false, url_b, &shell_b_untrusted);
+  EXPECT_THAT(untrusted_trace, testing::HasSubstr("mark_a"));
+  EXPECT_THAT(untrusted_trace, testing::Not(testing::HasSubstr("mark_b")));
+  EXPECT_THAT(untrusted_trace,
+              testing::Not(testing::HasSubstr("secret_tab_b")));
+  EXPECT_THAT(untrusted_trace,
+              testing::Not(testing::HasSubstr("TracingStartedInBrowser")));
+  EXPECT_THAT(untrusted_trace,
+              testing::Not(testing::HasSubstr("FrameCommittedInBrowser")));
+  if (shell_b_untrusted) {
+    shell_b_untrusted->Close();
+  }
+
+  GURL url_b2 =
+      embedded_test_server()->GetURL("b.com", "/title2.html?secret_tab_b2");
+  Shell* shell_b_trusted = nullptr;
+  std::string trusted_trace =
+      run_trace_and_read_json(/*is_trusted=*/true, url_b2, &shell_b_trusted);
+  EXPECT_THAT(trusted_trace, testing::HasSubstr("mark_a"));
+  EXPECT_THAT(trusted_trace, testing::HasSubstr("secret_tab_b2"));
+  EXPECT_THAT(trusted_trace, testing::HasSubstr("TracingStartedInBrowser"));
+  EXPECT_THAT(trusted_trace, testing::HasSubstr("FrameCommittedInBrowser"));
+  if (shell_b_trusted) {
+    shell_b_trusted->Close();
+  }
 }
 
 IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, TracingPerfettoSiteIsolation) {
@@ -4525,8 +6342,9 @@ IN_PROC_BROWSER_TEST_F(SystemTracingDevToolsProtocolTest,
             "System backend is not allowed for the current client");
 }
 
-IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
-                       TracingAutoBackendNonChromeSourceRequiresTrustedClient) {
+IN_PROC_BROWSER_TEST_F(
+    DevToolsProtocolTest,
+    TracingUntrustedClientCannotProvideNonAllowlistedDataSource) {
   perfetto::TraceConfig perfetto_config;
   perfetto_config.add_buffers()->set_size_kb(1024);
   perfetto_config.add_data_sources()->mutable_config()->set_name(
@@ -4546,9 +6364,10 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
   EXPECT_FALSE(SendCommandSync("Tracing.start", std::move(params)));
   EXPECT_THAT(
       error()->FindInt("code"),
-      testing::Optional(static_cast<int>(crdtp::DispatchCode::SERVER_ERROR)));
+      testing::Optional(static_cast<int>(crdtp::DispatchCode::INVALID_PARAMS)));
   EXPECT_EQ(*error()->FindString("message"),
-            "System backend is not allowed for the current client");
+            "Supplied perfettoConfig doesn't have any allowed data sources "
+            "specified");
 }
 
 #if BUILDFLAG(IS_POSIX)
@@ -5094,6 +6913,87 @@ IN_PROC_BROWSER_TEST_F(
     }
   }
   EXPECT_TRUE(result.Find("mismatchedHeaders"));
+}
+
+class PrerenderUntilScriptUpgradeDevToolsProtocolTest
+    : public PrerenderDevToolsProtocolTest {
+ public:
+  PrerenderUntilScriptUpgradeDevToolsProtocolTest() {
+    feature_list_.InitWithFeatures({blink::features::kPrerenderUntilScript,
+                                    features::kPrerenderUntilScriptUpgrade},
+                                   {});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    PrerenderUntilScriptUpgradeDevToolsProtocolTest,
+    PrerenderStatusUpdatedReportsAndReplaysPrerenderUntilScriptUpgrade) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL initial_url = GetUrl("/empty.html");
+  const GURL prerendering_url = GetUrl("/empty.html?prerender");
+  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
+
+  // Start a prerender-until-script attempt and remember its host so the test
+  // can verify that the upgrade retains it.
+  AddPrerenderUntilScriptAsync(prerendering_url);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return HasHostForUrl(prerendering_url); }));
+  const PrerenderHostId host_id = test::PrerenderTestHelper::GetHostForUrl(
+      *web_contents(), prerendering_url);
+  ASSERT_TRUE(host_id);
+
+  Attach();
+  SendCommandSync("Preload.enable");
+
+  // Adding a regular prerender candidate upgrades the existing attempt while
+  // preserving its original prerender-until-script identity.
+  AddPrerenderAsync(prerendering_url);
+  base::DictValue result;
+  while (true) {
+    result = WaitForNotification("Preload.prerenderStatusUpdated", true);
+    const std::string* action = result.FindStringByDottedPath("key.action");
+    const std::string* effective_action = result.FindString("effectiveAction");
+    if (action && effective_action && *action == "PrerenderUntilScript" &&
+        *effective_action == "Prerender") {
+      break;
+    }
+  }
+
+  // Wait until the browser processes removal of the original candidate, then
+  // verify that only the regular prerender candidate remains.
+  {
+    SpeculationCandidatesUpdateWaiter candidates_update_waiter(
+        web_contents()->GetPrimaryMainFrame());
+    ASSERT_TRUE(ExecJs(web_contents(),
+                       "document.querySelector('script[type="
+                       "\"speculationrules\"]').remove()"));
+    const auto& candidates = candidates_update_waiter.Wait();
+    ASSERT_EQ(candidates.size(), 1u);
+    EXPECT_EQ(candidates[0]->url, prerendering_url);
+    EXPECT_EQ(candidates[0]->action,
+              blink::mojom::SpeculationAction::kPrerender);
+  }
+
+  // The matching candidate group should retain the upgraded runtime host.
+  EXPECT_EQ(test::PrerenderTestHelper::GetHostForUrl(*web_contents(),
+                                                     prerendering_url),
+            host_id);
+
+  // A fresh DevTools client must receive the upgraded attempt from storage,
+  // rather than from notifications queued for the original client.
+  Detach();
+  TestDevToolsProtocolClient late_client;
+  late_client.AttachToWebContents(web_contents());
+  late_client.SendCommandSync("Preload.enable");
+  result =
+      late_client.WaitForNotification("Preload.prerenderStatusUpdated", true);
+  EXPECT_THAT(result.FindStringByDottedPath("key.action"),
+              Pointee(Eq("PrerenderUntilScript")));
+  EXPECT_THAT(result.FindString("effectiveAction"), Pointee(Eq("Prerender")));
+  late_client.DetachProtocolClient();
 }
 
 IN_PROC_BROWSER_TEST_F(PrerenderDevToolsProtocolTest,
@@ -5792,6 +7692,467 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, PageGetSubApps) {
   const base::ListValue* sibling_apps = siblings_result->FindList("subApps");
   ASSERT_TRUE(sibling_apps);
   EXPECT_TRUE(sibling_apps->empty());
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       SetDeviceMetricsOverrideWithoutView) {
+  ASSERT_FALSE(shell()->web_contents()->GetPrimaryMainFrame()->GetView());
+  Attach();
+  base::DictValue params;
+  params.Set("width", 400);
+  params.Set("height", 300);
+  params.Set("deviceScaleFactor", 1);
+  params.Set("mobile", false);
+  // Next two commands should not crash without a RenderWidgetHostView.
+  SendCommandAsync("Emulation.setDeviceMetricsOverride", std::move(params));
+  SendCommandAsync("Emulation.clearDeviceMetricsOverride");
+  SendCommandSync("Target.getTargets");
+}
+
+// A WebContents that has never been navigated has no RenderFrame.
+// Inspector.enable must not report that as a crash: the first navigation is
+// going to create the RenderFrame.
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       InspectorEnableBeforeFirstNavigation) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  // The initial shell has never been navigated.
+  ASSERT_FALSE(
+      shell()->web_contents()->GetPrimaryMainFrame()->IsRenderFrameLive());
+  ASSERT_TRUE(
+      shell()->web_contents()->GetController().IsInitialBlankNavigation());
+
+  Attach();
+  SendCommandSync("Inspector.enable");
+  EXPECT_FALSE(HasExistingNotification("Inspector.targetCrashed"));
+
+  ASSERT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
+  EXPECT_FALSE(HasExistingNotification("Inspector.targetCrashed"));
+  base::DictValue params;
+  params.Set("expression", "1 + 1");
+  const base::DictValue* result =
+      SendCommandSync("Runtime.evaluate", std::move(params));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(2, result->FindIntByDottedPath("result.value"));
+}
+
+// A "discarded" WebContents will not have a RenderFrame until it is reloaded,
+// so Inspector.enable reports Inspector.targetCrashed.
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       InspectorEnableAfterDiscardByReplacement) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
+
+  Shell* new_shell =
+      Shell::CreateNewWindow(shell()->web_contents()->GetBrowserContext(),
+                             GURL(), nullptr, gfx::Size());
+  WebContents* new_contents = new_shell->web_contents();
+  new_contents->GetController().CopyStateFrom(
+      &shell()->web_contents()->GetController(), /*needs_reload=*/false);
+  ASSERT_FALSE(new_contents->GetPrimaryMainFrame()->IsRenderFrameLive());
+  ASSERT_FALSE(new_contents->GetController().IsInitialBlankNavigation());
+
+  AttachToWebContents(new_contents);
+  SendCommandSync("Inspector.enable");
+  EXPECT_TRUE(HasExistingNotification("Inspector.targetCrashed"));
+}
+
+// Inspector.enable on a tab whose renderer has crashed before the client
+// attached reports Inspector.targetCrashed.
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, InspectorEnableAfterCrash) {
+  set_agent_host_can_close();
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url = embedded_test_server()->GetURL("/title1.html");
+  ASSERT_TRUE(NavigateToURL(shell(), url));
+
+  {
+    ScopedAllowRendererCrashes scoped_allow_renderer_crashes(shell());
+    RenderProcessHostWatcher watcher(
+        shell()->web_contents()->GetPrimaryMainFrame()->GetProcess(),
+        RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+    shell()->LoadURL(GURL(blink::kChromeUICrashURL));
+    watcher.Wait();
+  }
+  ASSERT_FALSE(
+      shell()->web_contents()->GetPrimaryMainFrame()->IsRenderFrameLive());
+
+  Attach();
+  SendCommandSync("Inspector.enable");
+  EXPECT_TRUE(HasExistingNotification("Inspector.targetCrashed"));
+}
+
+// The renderer crashes while a cross-site navigation is in progress.
+// Inspector.enable reports Inspector.targetCrashed, and once the navigation
+// commits in a new RenderFrame, Inspector.targetReloadedAfterCrash follows.
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       InspectorEnableAfterCrashDuringNavigation) {
+  set_agent_host_can_close();
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("a.com", "/title1.html")));
+
+  const GURL url = embedded_test_server()->GetURL("b.com", "/title2.html");
+  TestNavigationManager manager(shell()->web_contents(), url);
+  shell()->LoadURL(url);
+  ASSERT_TRUE(manager.WaitForRequestStart());
+
+  {
+    ScopedAllowRendererCrashes scoped_allow_renderer_crashes(shell());
+    RenderProcessHost* process =
+        shell()->web_contents()->GetPrimaryMainFrame()->GetProcess();
+    RenderProcessHostWatcher watcher(
+        process, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+    process->Shutdown(RESULT_CODE_KILLED);
+    watcher.Wait();
+  }
+  ASSERT_FALSE(
+      shell()->web_contents()->GetPrimaryMainFrame()->IsRenderFrameLive());
+
+  Attach();
+  SendCommandSync("Inspector.enable");
+  EXPECT_TRUE(HasExistingNotification("Inspector.targetCrashed"));
+  EXPECT_FALSE(HasExistingNotification("Inspector.targetReloadedAfterCrash"));
+
+  ASSERT_TRUE(manager.WaitForNavigationFinished());
+  WaitForNotification("Inspector.targetReloadedAfterCrash", true);
+  base::DictValue params;
+  params.Set("expression", "1 + 1");
+  const base::DictValue* result =
+      SendCommandSync("Runtime.evaluate", std::move(params));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(2, result->FindIntByDottedPath("result.value"));
+}
+
+namespace {
+
+class MockActivationDelegate : public WebContentsDelegate {
+ public:
+  MOCK_METHOD(void, ActivateContents, (WebContents*), (override));
+};
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       BringToFrontInnerWebContentsActivatesOutermost) {
+  testing::StrictMock<MockActivationDelegate> outer_delegate;
+  testing::StrictMock<MockActivationDelegate> inner_delegate;
+  std::unique_ptr<WebContents> outer_contents = WebContents::Create(
+      WebContents::CreateParams(shell()->web_contents()->GetBrowserContext()));
+  ASSERT_TRUE(NavigateToURL(outer_contents.get(),
+                            GURL("data:text/html,<iframe></iframe>")));
+  RenderFrameHost* child_frame =
+      ChildFrameAt(outer_contents->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(child_frame);
+
+  std::unique_ptr<WebContents> inner_contents = WebContents::Create(
+      WebContents::CreateParams(shell()->web_contents()->GetBrowserContext()));
+  WebContents* inner = inner_contents.get();
+  outer_contents->AttachInnerWebContents(std::move(inner_contents), child_frame,
+                                         /*is_full_page=*/false);
+  outer_contents->SetDelegate(&outer_delegate);
+  inner->SetDelegate(&inner_delegate);
+  AttachToWebContents(inner);
+
+  EXPECT_CALL(outer_delegate, ActivateContents(outer_contents.get()));
+  EXPECT_CALL(inner_delegate, ActivateContents(testing::_)).Times(0);
+  EXPECT_TRUE(SendCommandSync("Page.bringToFront"));
+
+  Detach();
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       BringToFrontHandlesSynchronousWebContentsDestruction) {
+  set_agent_host_can_close();
+  testing::StrictMock<MockActivationDelegate> delegate;
+  std::unique_ptr<WebContents> contents = WebContents::Create(
+      WebContents::CreateParams(shell()->web_contents()->GetBrowserContext()));
+  contents->SetDelegate(&delegate);
+  AttachToWebContents(contents.get());
+
+  EXPECT_CALL(delegate, ActivateContents(contents.get()))
+      .WillOnce([&](WebContents*) { contents.reset(); });
+  SendCommandAsync("Page.bringToFront");
+  EXPECT_FALSE(contents);
+  EXPECT_EQ(nullptr, agent_host_->GetWebContents());
+}
+
+namespace {
+
+base::Value StopTracingAndReadJson(DevToolsProtocolTest* test) {
+  EXPECT_TRUE(test->SendCommandSync("Tracing.end"));
+  base::DictValue complete =
+      test->WaitForNotification("Tracing.tracingComplete", true);
+  const std::string* stream_handle_ptr = complete.FindString("stream");
+  if (!stream_handle_ptr) {
+    ADD_FAILURE() << "Missing stream handle in Tracing.tracingComplete";
+    return base::Value();
+  }
+  std::string stream_handle = *stream_handle_ptr;
+  std::string trace_json;
+  bool eof = false;
+  while (!eof) {
+    base::DictValue read_params;
+    read_params.Set("handle", stream_handle);
+    const base::DictValue* response =
+        test->SendCommandSync("IO.read", std::move(read_params));
+    if (!response) {
+      ADD_FAILURE() << "IO.read failed";
+      break;
+    }
+    const std::string* data = response->FindString("data");
+    if (data) {
+      if (response->FindBool("base64Encoded").value_or(false)) {
+        std::string decoded;
+        EXPECT_TRUE(base::Base64Decode(*data, &decoded));
+        trace_json += decoded;
+      } else {
+        trace_json += *data;
+      }
+    }
+    eof = response->FindBool("eof").value_or(false);
+  }
+  base::DictValue close_params;
+  close_params.Set("handle", stream_handle);
+  test->SendCommandSync("IO.close", std::move(close_params));
+
+  std::optional<base::Value> parsed =
+      base::JSONReader::Read(trace_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  EXPECT_TRUE(parsed.has_value());
+  return std::move(parsed).value_or(base::Value());
+}
+
+const base::ListValue* GetTraceEventsList(const base::Value& root) {
+  if (root.is_dict()) {
+    return root.GetDict().FindList("traceEvents");
+  }
+  return root.GetIfList();
+}
+
+void StartTimelineTracing(DevToolsProtocolTest* test) {
+  base::DictValue trace_config;
+  base::ListValue categories;
+  categories.Append(TRACE_DISABLED_BY_DEFAULT("devtools.timeline"));
+  trace_config.Set("includedCategories", std::move(categories));
+  base::DictValue start_params;
+  start_params.Set("traceConfig", std::move(trace_config));
+  start_params.Set("transferMode", "ReturnAsStream");
+  ASSERT_TRUE(test->SendCommandSync("Tracing.start", std::move(start_params)));
+}
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolBackForwardCacheTest,
+                       TracingStartedInBrowserOmitsBackForwardCachedFrames) {
+  content::SetupCrossSiteRedirector(embedded_test_server());
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  GURL victim_url =
+      embedded_test_server()->GetURL("victim.com", "/title1.html");
+  GURL attacker_url =
+      embedded_test_server()->GetURL("attacker.com", "/title2.html");
+
+  ASSERT_TRUE(NavigateToURL(shell(), victim_url));
+  RenderFrameHostWrapper rfh_victim(
+      shell()->web_contents()->GetPrimaryMainFrame());
+
+  // Attach before navigating away so `IsBackForwardCacheSupported` is active.
+  Attach();
+
+  ASSERT_TRUE(NavigateToURL(shell(), attacker_url));
+  ASSERT_TRUE(rfh_victim->IsInLifecycleState(
+      RenderFrameHost::LifecycleState::kInBackForwardCache));
+
+  StartTimelineTracing(this);
+  base::Value trace_root = StopTracingAndReadJson(this);
+  const base::ListValue* events = GetTraceEventsList(trace_root);
+  ASSERT_TRUE(events);
+
+  const base::ListValue* started_frames = nullptr;
+  for (const base::Value& event_val : *events) {
+    const base::DictValue* event = event_val.GetIfDict();
+    if (!event) {
+      continue;
+    }
+    const std::string* name = event->FindString("name");
+    if (name && *name == "TracingStartedInBrowser") {
+      started_frames = event->FindListByDottedPath("args.data.frames");
+      break;
+    }
+  }
+  ASSERT_TRUE(started_frames);
+
+  int primary_main_frame_count = 0;
+  for (const base::Value& frame_val : *started_frames) {
+    const base::DictValue* frame = frame_val.GetIfDict();
+    ASSERT_TRUE(frame);
+    const std::string* url = frame->FindString("url");
+    ASSERT_TRUE(url);
+    EXPECT_NE(victim_url.spec(), *url);
+    if (frame->FindBool("isInPrimaryMainFrame").value_or(false) &&
+        frame->FindBool("isOutermostMainFrame").value_or(false)) {
+      ++primary_main_frame_count;
+      EXPECT_EQ(attacker_url.spec(), *url);
+      EXPECT_EQ(false, frame->FindBool("isOpaqueOrigin"));
+    }
+  }
+  EXPECT_EQ(1, primary_main_frame_count);
+
+  // Verify that restoring the cached page during an active trace still marks
+  // its FrameCommittedInBrowser event as isInPrimaryMainFrame: true.
+  StartTimelineTracing(this);
+  shell()->web_contents()->GetController().GoBack();
+  ASSERT_TRUE(WaitForLoadStop(shell()->web_contents()));
+  base::Value restore_trace = StopTracingAndReadJson(this);
+  const base::ListValue* restore_events = GetTraceEventsList(restore_trace);
+  ASSERT_TRUE(restore_events);
+
+  bool saw_restored_victim_commit = false;
+  for (const base::Value& event_val : *restore_events) {
+    const base::DictValue* event = event_val.GetIfDict();
+    if (!event) {
+      continue;
+    }
+    const std::string* name = event->FindString("name");
+    if (!name || *name != "FrameCommittedInBrowser") {
+      continue;
+    }
+    const base::DictValue* data = event->FindDictByDottedPath("args.data");
+    ASSERT_TRUE(data);
+    const std::string* url = data->FindString("url");
+    if (url && *url == victim_url.spec()) {
+      saw_restored_victim_commit = true;
+      EXPECT_EQ(true, data->FindBool("isOutermostMainFrame"));
+      EXPECT_EQ(true, data->FindBool("isInPrimaryMainFrame"));
+      EXPECT_EQ(false, data->FindBool("isOpaqueOrigin"));
+    }
+  }
+  EXPECT_TRUE(saw_restored_victim_commit);
+}
+
+class DevToolsProtocolPrerenderTracingTest : public DevToolsProtocolTest {
+ public:
+  DevToolsProtocolPrerenderTracingTest()
+      : prerender_helper_(base::BindRepeating(
+            &DevToolsProtocolPrerenderTracingTest::GetWebContents,
+            base::Unretained(this))) {}
+
+  void SetUp() override {
+    prerender_helper_.RegisterServerRequestMonitor(embedded_test_server());
+    DevToolsProtocolTest::SetUp();
+  }
+
+  PreloadingEligibility IsPrerender2Supported(
+      WebContents& web_contents,
+      PreloadingTriggerType trigger_type) override {
+    return PreloadingEligibility::kEligible;
+  }
+
+ protected:
+  WebContents* GetWebContents() { return shell()->web_contents(); }
+  test::PrerenderTestHelper prerender_helper_;
+};
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolPrerenderTracingTest,
+                       TracingFrameCommittedPrimaryVsPrerenderAndOpaqueOrigin) {
+  content::SetupCrossSiteRedirector(embedded_test_server());
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  GURL initial_url = embedded_test_server()->GetURL("a.com", "/title1.html");
+  GURL prerender_url = embedded_test_server()->GetURL("a.com", "/title2.html");
+  GURL cross_site_url = embedded_test_server()->GetURL("b.com", "/title1.html");
+  GURL sandbox_url_1 = embedded_test_server()->GetURL(
+      "c.com",
+      "/set-header?Content-Security-Policy:%20sandbox%20allow-scripts");
+  GURL sandbox_url_2 = embedded_test_server()->GetURL(
+      "d.com",
+      "/set-header?Content-Security-Policy:%20sandbox%20allow-scripts");
+
+  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
+  AttachToTabTarget(shell()->web_contents());
+  shell()->web_contents()->SetDelegate(this);
+
+  StartTimelineTracing(this);
+  prerender_helper_.AddPrerender(prerender_url);
+  ASSERT_TRUE(NavigateToURL(shell(), cross_site_url));
+  ASSERT_TRUE(NavigateToURL(shell(), sandbox_url_1));
+  base::Value nav_trace = StopTracingAndReadJson(this);
+  const base::ListValue* nav_events = GetTraceEventsList(nav_trace);
+  ASSERT_TRUE(nav_events);
+
+  bool saw_prerender_commit = false;
+  bool saw_cross_site_primary_commit = false;
+  bool saw_sandbox_commit = false;
+  for (const base::Value& event_val : *nav_events) {
+    const base::DictValue* event = event_val.GetIfDict();
+    if (!event) {
+      continue;
+    }
+    const std::string* name = event->FindString("name");
+    if (!name || *name != "FrameCommittedInBrowser") {
+      continue;
+    }
+    const base::DictValue* data = event->FindDictByDottedPath("args.data");
+    ASSERT_TRUE(data);
+    const std::string* url = data->FindString("url");
+    if (!url) {
+      continue;
+    }
+    if (*url == prerender_url.spec()) {
+      saw_prerender_commit = true;
+      EXPECT_EQ(true, data->FindBool("isOutermostMainFrame"));
+      EXPECT_EQ(false, data->FindBool("isInPrimaryMainFrame"));
+      EXPECT_EQ(false, data->FindBool("isOpaqueOrigin"));
+    } else if (*url == cross_site_url.spec()) {
+      saw_cross_site_primary_commit = true;
+      EXPECT_EQ(true, data->FindBool("isOutermostMainFrame"));
+      EXPECT_EQ(true, data->FindBool("isInPrimaryMainFrame"));
+      EXPECT_EQ(false, data->FindBool("isOpaqueOrigin"));
+    } else if (*url == sandbox_url_1.spec()) {
+      saw_sandbox_commit = true;
+      EXPECT_EQ(true, data->FindBool("isOutermostMainFrame"));
+      EXPECT_EQ(true, data->FindBool("isInPrimaryMainFrame"));
+      EXPECT_EQ(true, data->FindBool("isOpaqueOrigin"));
+    }
+  }
+  EXPECT_TRUE(saw_prerender_commit);
+  EXPECT_TRUE(saw_cross_site_primary_commit);
+  EXPECT_TRUE(saw_sandbox_commit);
+
+  // Also verify TracingStartedInBrowser on a committed CSP-sandboxed main
+  // frame reports isOpaqueOrigin: true alongside its URL.
+  ASSERT_TRUE(NavigateToURL(shell(), sandbox_url_2));
+  ASSERT_TRUE(shell()
+                  ->web_contents()
+                  ->GetPrimaryMainFrame()
+                  ->GetLastCommittedOrigin()
+                  .opaque());
+
+  StartTimelineTracing(this);
+  base::Value sandbox_trace = StopTracingAndReadJson(this);
+  const base::ListValue* sandbox_events = GetTraceEventsList(sandbox_trace);
+  ASSERT_TRUE(sandbox_events);
+
+  const base::ListValue* sandbox_frames = nullptr;
+  for (const base::Value& event_val : *sandbox_events) {
+    const base::DictValue* event = event_val.GetIfDict();
+    if (!event) {
+      continue;
+    }
+    const std::string* name = event->FindString("name");
+    if (name && *name == "TracingStartedInBrowser") {
+      sandbox_frames = event->FindListByDottedPath("args.data.frames");
+      break;
+    }
+  }
+  ASSERT_TRUE(sandbox_frames);
+  ASSERT_EQ(1u, sandbox_frames->size());
+  const base::DictValue* main_frame = (*sandbox_frames)[0].GetIfDict();
+  ASSERT_TRUE(main_frame);
+  EXPECT_EQ(sandbox_url_2.spec(), *main_frame->FindString("url"));
+  EXPECT_EQ(true, main_frame->FindBool("isOutermostMainFrame"));
+  EXPECT_EQ(true, main_frame->FindBool("isInPrimaryMainFrame"));
+  EXPECT_EQ(true, main_frame->FindBool("isOpaqueOrigin"));
 }
 
 }  // namespace content

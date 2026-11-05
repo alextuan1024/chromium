@@ -5,11 +5,14 @@
 #ifndef CHROME_BROWSER_DICTATION_DICTATION_BROWSER_TEST_BASE_H_
 #define CHROME_BROWSER_DICTATION_DICTATION_BROWSER_TEST_BASE_H_
 
+#include <memory>
+
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/dictation/session_state.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "third_party/blink/public/common/dom/dom_node_id.h"
 
+class GURL;
 class Profile;
 
 namespace content {
@@ -20,7 +23,9 @@ class WebContents;
 namespace dictation {
 
 class DictationKeyedService;
+class FakeGlobalAcceleratorListener;
 class ListenerStreamProvider;
+class ScopedFakeGlobalAcceleratorListener;
 class SessionController;
 struct TargetDetails;
 
@@ -28,18 +33,22 @@ struct TargetDetails;
 class DictationBrowserTestBase : public PlatformBrowserTest {
  public:
   DictationBrowserTestBase();
-  explicit DictationBrowserTestBase(bool session_ends_on_stream_end);
   ~DictationBrowserTestBase() override;
 
   // PlatformBrowserTest:
   void SetUpCommandLine(base::CommandLine* command_line) override;
   void SetUpOnMainThread() override;
+  void TearDownOnMainThread() override;
 
   Profile* profile();
   content::WebContents* web_contents();
   DictationKeyedService& dictation_service();
   SessionController* session_controller();
   ListenerStreamProvider* attached_stream();
+
+  // The fake OS-wide accelerator listener installed on `dictation_service()`.
+  // Use it to observe global hotkey registration and simulate presses.
+  FakeGlobalAcceleratorListener& fake_global_listener();
 
   // Starts a session for the given target.
   void StartSession(const TargetDetails& target_details);
@@ -55,8 +64,23 @@ class DictationBrowserTestBase : public PlatformBrowserTest {
   // Waits until the session reaches the expected state.
   void WaitForSessionState(SessionState target_state);
 
+  // Adds an Optimization Guide DICTATION_ELIGIBLE hint for `url` whose metadata
+  // marks the page eligible, as the server would for pages that pass its safety
+  // checks.
+  void AddOptimizationGuideEligibleHint(const GURL& url);
+
+  // Adds a DICTATION_ELIGIBLE hint for `url` whose metadata marks the page
+  // ineligible, as the server would for pages that fail its safety checks.
+  void AddOptimizationGuideIneligibleHint(const GURL& url);
+
  private:
+  // Adds a DICTATION_ELIGIBLE hint for `url` with DictationMetadata carrying
+  // `eligible`.
+  void AddDictationHint(const GURL& url, bool eligible);
+
   base::test::ScopedFeatureList scoped_feature_list_;
+  // Prevents tests from registering real OS-wide hotkeys.
+  std::unique_ptr<ScopedFakeGlobalAcceleratorListener> fake_global_listener_;
 };
 
 }  // namespace dictation

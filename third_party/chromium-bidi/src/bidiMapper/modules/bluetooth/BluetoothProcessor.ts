@@ -423,6 +423,20 @@ export class BluetoothProcessor {
     return {};
   }
 
+  async simulateGattMtuChange(
+    params: Bluetooth.SimulateGattMtuChangeParameters,
+  ): Promise<EmptyResult> {
+    const context = this.#browsingContextStorage.getContext(params.context);
+    await context.cdpTarget.browserCdpClient.sendCommand(
+      'BluetoothEmulation.simulateGATTMtuChange',
+      {
+        address: params.address,
+        mtu: params.mtu,
+      },
+    );
+    return {};
+  }
+
   async simulateService(
     params: Bluetooth.SimulateServiceParameters,
   ): Promise<EmptyResult> {
@@ -466,7 +480,7 @@ export class BluetoothProcessor {
     }
   }
 
-  onCdpTargetCreated(cdpTarget: CdpTarget) {
+  onCdpTargetCreated(cdpTarget: CdpTarget): void {
     cdpTarget.cdpClient.on('DeviceAccess.deviceRequestPrompted', (event) => {
       this.#eventManager.registerEvent(
         {

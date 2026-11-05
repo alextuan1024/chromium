@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,6 +17,7 @@
 #include "base/i18n/test/scoped_icu_locale.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/scoped_observation.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/icu_test_util.h"
 #include "base/test/run_until.h"
@@ -27,6 +29,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/accessible_pane_view.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
@@ -45,11 +48,22 @@
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/window/frame_view.h"
+#include "ui/views/window/non_client_view.h"
 
 #if defined(USE_AURA)
+#include "base/test/scoped_feature_list.h"
 #include "ui/aura/client/focus_client.h"
+#include "ui/aura/scoped_keyboard_hook.h"
+#include "ui/aura/window.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/views/widget/native_widget_aura.h"
 #endif  // USE_AURA
+
+#if BUILDFLAG(IS_MAC)
+#include "ui/base/test/scoped_fake_full_keyboard_access.h"
+#endif  // BUILDFLAG(IS_MAC)
 
 namespace views {
 
@@ -83,7 +97,16 @@ class SimpleTestView : public View {
 
   SimpleTestView(const SimpleTestView&) = delete;
   SimpleTestView& operator=(const SimpleTestView&) = delete;
+  ~SimpleTestView() override = default;
 
+  bool had_focus_in_removed_from_widget() const {
+    return had_focus_in_removed_from_widget_;
+  }
+  bool blurred_before_removed_from_widget() const {
+    return blurred_before_removed_from_widget_;
+  }
+
+  // View:
   void OnFocus() override {
     event_list_->vec.push_back({
         ON_FOCUS,
@@ -100,8 +123,16 @@ class SimpleTestView : public View {
     });
   }
 
+  void RemovedFromWidget() override {
+    had_focus_in_removed_from_widget_ = HasFocus();
+    blurred_before_removed_from_widget_ =
+        !event_list_->vec.empty() && event_list_->vec.back().type == ON_BLUR;
+  }
+
  private:
   const scoped_refptr<FocusTestEventList> event_list_;
+  bool had_focus_in_removed_from_widget_ = false;
+  bool blurred_before_removed_from_widget_ = false;
 };
 
 BEGIN_METADATA(SimpleTestView)
@@ -211,12 +242,20 @@ class DidChangeFocusListener : public FocusChangeListener {
   void OnDidChangeFocus(View* focused_before, View* focused_now) override {
     focus_changes_.emplace_back(focused_before, focused_now);
   }
+  void OnKeyboardAccessibleChanged(bool keyboard_accessible) override {
+    keyboard_accessible_changes_.push_back(keyboard_accessible);
+  }
 
   const std::vector<ViewPair>& focus_changes() const { return focus_changes_; }
   void ClearFocusChanges() { focus_changes_.clear(); }
 
+  const std::vector<bool>& keyboard_accessible_changes() const {
+    return keyboard_accessible_changes_;
+  }
+
  private:
   std::vector<ViewPair> focus_changes_;
+  std::vector<bool> keyboard_accessible_changes_;
 };
 
 }  // namespace
@@ -619,7 +658,7 @@ TEST_F(FocusManagerTest, RotateFocus) {
   v4->SetFocusBehavior(View::FocusBehavior::ALWAYS);
   pane2->AddChildViewRaw(v4);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> panes;
+  std::vector<raw_ptr<views::View>> panes;
   panes.push_back(pane1);
   panes.push_back(pane2);
   SetAccessiblePanes(panes);
@@ -1032,11 +1071,14 @@ TEST_F(FocusManagerTest, StoreFocusedViewFullKeyboardAccess) {
   EXPECT_EQ(nullptr, GetFocusManager()->GetFocusedView());
 
   // Turn off full keyboard access mode and restore focused view. Since view1 is
-  // no longer focusable, view3 should have focus.
+  // no longer focusable, it isn't restored, and focus doesn't move to another
+  // view either.
   GetFocusManager()->SetKeyboardAccessible(false);
   EXPECT_FALSE(GetFocusManager()->RestoreFocusedView());
-  EXPECT_EQ(view3, GetFocusManager()->GetFocusedView());
+  EXPECT_EQ(nullptr, GetFocusManager()->GetFocusedView());
 
+  view3->RequestFocus();
+  EXPECT_EQ(view3, GetFocusManager()->GetFocusedView());
   GetFocusManager()->StoreFocusedView(false);
   EXPECT_EQ(nullptr, GetFocusManager()->GetFocusedView());
 
@@ -1080,6 +1122,29 @@ TEST_F(FocusManagerTest, RequestFocus) {
 }
 
 #endif
+
+TEST_F(FocusManagerTest, SetKeyboardAccessibleObservation) {
+  auto* focus_manager = GetFocusManager();
+  focus_manager->SetKeyboardAccessible(false);
+
+  DidChangeFocusListener listener;
+  base::ScopedObservation<views::FocusManager, views::FocusChangeListener>
+      focus_manager_observation{&listener};
+  focus_manager_observation.Observe(GetFocusManager());
+  EXPECT_THAT(listener.keyboard_accessible_changes(), testing::ElementsAre());
+
+  focus_manager->SetKeyboardAccessible(true);
+  EXPECT_THAT(listener.keyboard_accessible_changes(),
+              testing::ElementsAre(true));
+
+  focus_manager->SetKeyboardAccessible(true);
+  EXPECT_THAT(listener.keyboard_accessible_changes(),
+              testing::ElementsAre(true));
+
+  focus_manager->SetKeyboardAccessible(false);
+  EXPECT_THAT(listener.keyboard_accessible_changes(),
+              testing::ElementsAre(true, false));
+}
 
 namespace {
 
@@ -1258,6 +1323,45 @@ TEST_F(FocusManagerTest, NavigateIntoAnchoredDialog) {
   bubble_widget->GetFocusManager()->AdvanceFocus(true);
   EXPECT_TRUE(parent3->HasFocus());
 }
+
+#if BUILDFLAG(IS_MAC)
+// Tests that activating a widget whose stored focus view isn't focusable in the
+// current mode (an ACCESSIBLE_ONLY view with Full Keyboard Access off) doesn't
+// move focus out of the widget into its focus traversable parent.
+// Regression test for crbug.com/576344604.
+TEST_F(FocusManagerTest,
+       ActivationDoesNotTraverseOutFromUnfocusableStoredView) {
+  ui::test::ScopedFakeFullKeyboardAccess::GetInstance()
+      ->set_full_keyboard_access_state(false);
+
+  View* anchor = GetContentsView()->AddChildView(std::make_unique<View>());
+  anchor->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+  View* parent_view = GetContentsView()->AddChildView(std::make_unique<View>());
+  parent_view->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+
+  auto* bubble = new FocusManagerTestBubbleDialogDelegateView(anchor);
+  View* bubble_view = bubble->AddChildView(std::make_unique<View>());
+  bubble_view->SetFocusBehavior(View::FocusBehavior::ACCESSIBLE_ONLY);
+  Widget* bubble_widget = BubbleDialogDelegateView::CreateBubble(bubble);
+  bubble_widget->SetFocusTraversableParent(GetWidget()->GetFocusTraversable());
+  bubble_widget->SetFocusTraversableParentView(anchor);
+  bubble->set_close_on_deactivate(false);
+  bubble_widget->ShowInactive();
+  ASSERT_TRUE(GetWidget()->IsActive());
+  ASSERT_FALSE(bubble_widget->IsActive());
+
+  // Like Widget::SetInitialFocus() does for a widget shown inactive.
+  FocusManager* bubble_focus_manager = bubble_widget->GetFocusManager();
+  bubble_focus_manager->SetStoredFocusView(bubble_view);
+  ASSERT_FALSE(bubble_focus_manager->keyboard_accessible());
+
+  bubble_widget->Activate();
+  EXPECT_TRUE(bubble_widget->IsActive());
+  EXPECT_EQ(nullptr, bubble_focus_manager->GetFocusedView());
+  EXPECT_FALSE(anchor->HasFocus());
+  EXPECT_FALSE(parent_view->HasFocus());
+}
+#endif  // BUILDFLAG(IS_MAC)
 
 TEST_F(FocusManagerTest, AnchoredDialogOnContainerView) {
   // The parent Widget has four focusable views, with the middle two views
@@ -1581,6 +1685,90 @@ TEST_F(RedirectToParentFocusManagerTest, NotProcessedAccelerator) {
   EXPECT_FALSE(bubble_widget->IsClosed());
 }
 
+// View that requests raw key events and marks received key events as handled,
+// modeling a focused WebView/RenderWidgetHostView.
+class KeyEventConsumingView : public View {
+  METADATA_HEADER(KeyEventConsumingView, View)
+
+ public:
+  KeyEventConsumingView() { SetFocusBehavior(FocusBehavior::ALWAYS); }
+  KeyEventConsumingView(const KeyEventConsumingView&) = delete;
+  KeyEventConsumingView& operator=(const KeyEventConsumingView&) = delete;
+  ~KeyEventConsumingView() override = default;
+
+  int key_events_received() const { return key_events_received_; }
+
+  // View:
+  bool SkipDefaultKeyEventProcessing(const ui::KeyEvent& event) override {
+    return true;
+  }
+  bool OnKeyPressed(const ui::KeyEvent& event) override {
+    ++key_events_received_;
+    return true;
+  }
+
+ private:
+  int key_events_received_ = 0;
+};
+
+BEGIN_METADATA(KeyEventConsumingView)
+END_METADATA
+
+// Verifies that FocusManagerEventHandler skips high-priority accelerators when
+// the key is locked via KeyboardLock, except for ESCAPE.
+TEST_F(FocusManagerTest, FocusManagerEventHandlerSkipsLockedKeys) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(features::kSystemKeyboardLock);
+
+  KeyEventConsumingView* view = GetContentsView()->AddChildView(
+      std::make_unique<KeyEventConsumingView>());
+  view->RequestFocus();
+  ASSERT_EQ(view, GetFocusManager()->GetFocusedView());
+
+  ui::Accelerator alt_d_accelerator(ui::VKEY_D, ui::EF_ALT_DOWN);
+  ui::Accelerator escape_accelerator(ui::VKEY_ESCAPE, ui::EF_NONE);
+  ui::TestAcceleratorTarget high_priority_target(true);
+  GetFocusManager()->RegisterAccelerator(alt_d_accelerator,
+                                         ui::AcceleratorManager::kHighPriority,
+                                         &high_priority_target);
+  GetFocusManager()->RegisterAccelerator(escape_accelerator,
+                                         ui::AcceleratorManager::kHighPriority,
+                                         &high_priority_target);
+
+  std::unique_ptr<aura::ScopedKeyboardHook> keyboard_hook =
+      GetWidget()->GetNativeWindow()->CaptureSystemKeyEvents(std::nullopt);
+  ASSERT_TRUE(keyboard_hook);
+
+  // Locked non-Escape key should not be consumed by FocusManagerEventHandler
+  // in EP_PRETARGET and should be delivered to the focused view.
+  ui::KeyEvent alt_d_event(ui::EventType::kKeyPressed, ui::VKEY_D,
+                           ui::DomCode::US_D, ui::EF_ALT_DOWN);
+  ui::EventDispatchDetails details =
+      GetEventSink()->OnEventFromSource(&alt_d_event);
+  ASSERT_FALSE(details.dispatcher_destroyed);
+  EXPECT_EQ(0, high_priority_target.accelerator_count());
+  EXPECT_EQ(1, view->key_events_received());
+
+  // Escape is never considered locked and should still be processed by
+  // FocusManagerEventHandler in EP_PRETARGET.
+  ui::KeyEvent escape_event(ui::EventType::kKeyPressed, ui::VKEY_ESCAPE,
+                            ui::DomCode::ESCAPE, ui::EF_NONE);
+  details = GetEventSink()->OnEventFromSource(&escape_event);
+  ASSERT_FALSE(details.dispatcher_destroyed);
+  EXPECT_EQ(1, high_priority_target.accelerator_count());
+  EXPECT_EQ(1, view->key_events_received());
+
+  // After releasing KeyboardLock, the high-priority accelerator is processed in
+  // EP_PRETARGET before reaching the focused view.
+  keyboard_hook.reset();
+  ui::KeyEvent alt_d_event2(ui::EventType::kKeyPressed, ui::VKEY_D,
+                            ui::DomCode::US_D, ui::EF_ALT_DOWN);
+  details = GetEventSink()->OnEventFromSource(&alt_d_event2);
+  ASSERT_FALSE(details.dispatcher_destroyed);
+  EXPECT_EQ(2, high_priority_target.accelerator_count());
+  EXPECT_EQ(1, view->key_events_received());
+}
+
 #endif
 
 // Regression tests for crashes during callbacks.
@@ -1649,6 +1837,162 @@ TEST_F(FocusManagerTest,
 
   GetFocusManager()->ClearFocus();
   GetFocusManager()->RemoveFocusChangeListener(&listener);
+}
+
+// Fixture providing shared setup and focus/blur verification helpers for frame
+// replacement and `kRetainsFocusWhenReparented` tests.
+class FocusManagerReparentingTest : public FocusManagerTest {
+ public:
+  FocusManagerReparentingTest() = default;
+  FocusManagerReparentingTest(const FocusManagerReparentingTest&) = delete;
+  FocusManagerReparentingTest& operator=(const FocusManagerReparentingTest&) =
+      delete;
+  ~FocusManagerReparentingTest() override = default;
+
+ protected:
+  // Adds a focusable `SimpleTestView` to `parent`, focuses it, and clears the
+  // initial focus event so later assertions observe only post-setup events.
+  SimpleTestView* AddFocusedTestView(View* parent) {
+    SimpleTestView* view = parent->AddChildView(
+        std::make_unique<SimpleTestView>(event_list_, /*view_id=*/1));
+    view->RequestFocus();
+    EXPECT_EQ(1u, event_list_->vec.size());
+    if (!event_list_->vec.empty()) {
+      EXPECT_EQ(ON_FOCUS, event_list_->vec[0].type);
+    }
+    EXPECT_EQ(view, GetFocusManager()->GetFocusedView());
+    event_list_->vec.clear();
+    return view;
+  }
+
+  // Adds a container with `kRetainsFocusWhenReparented` set to `parent`, along
+  // with a focused `SimpleTestView` child inside it.
+  std::pair<View*, SimpleTestView*> AddFocusedReparentableContainer(
+      View* parent) {
+    View* container = parent->AddChildView(std::make_unique<View>());
+    container->SetProperty(kRetainsFocusWhenReparented, /*value=*/true);
+    return {container, AddFocusedTestView(container)};
+  }
+
+  // Moves an already-parented `view` into `new_parent`. `AddChildViewRaw()` is
+  // required to exercise atomic reparenting (`new_parent` non-null), because
+  // `RemoveChildViewT()` detaches `view` with a null `new_parent` first.
+  void ReparentView(View* view, View* new_parent) {
+    new_parent->AddChildViewRaw(view);
+  }
+
+  // Replaces the widget's `FrameView` via `NonClientView::SetFrameView()`.
+  void ReplaceFrameView() {
+    GetWidget()->non_client_view()->SetFrameView(
+        GetWidget()->CreateFrameView());
+  }
+
+  // Creates and initializes a child `Widget` parented to `GetWidget()`.
+  std::unique_ptr<Widget> CreateChildWidget() {
+    Widget::InitParams params =
+        CreateParams(Widget::InitParams::CLIENT_OWNS_WIDGET,
+                     Widget::InitParams::TYPE_WINDOW);
+    params.child = true;
+    params.bounds =
+        gfx::Rect(/*x=*/10, /*y=*/10, /*width=*/100, /*height=*/100);
+    params.parent = GetWidget()->GetNativeView();
+    auto child_widget = std::make_unique<Widget>();
+    child_widget->Init(std::move(params));
+    return child_widget;
+  }
+
+  // Verifies that `expected_view` remains both the focused and stored focus
+  // view without any focus or blur events firing.
+  void ExpectFocusRetained(const View* expected_view) {
+    EXPECT_TRUE(event_list_->vec.empty());
+    EXPECT_EQ(expected_view, GetFocusManager()->GetFocusedView());
+    EXPECT_EQ(expected_view, GetFocusManager()->GetStoredFocusView());
+  }
+
+  // Verifies that focus and stored focus were cleared with a single `ON_BLUR`.
+  void ExpectFocusClearedWithSingleBlur() {
+    ASSERT_EQ(1u, event_list_->vec.size());
+    EXPECT_EQ(ON_BLUR, event_list_->vec[0].type);
+    EXPECT_EQ(nullptr, GetFocusManager()->GetFocusedView());
+    EXPECT_EQ(nullptr, GetFocusManager()->GetStoredFocusView());
+  }
+
+  // Verifies that `child` was blurred before `RemovedFromWidget()` ran and that
+  // focus was cleared.
+  void ExpectDetachedFromWidgetWithBlur(const SimpleTestView* child) {
+    ExpectFocusClearedWithSingleBlur();
+    EXPECT_FALSE(child->had_focus_in_removed_from_widget());
+    EXPECT_TRUE(child->blurred_before_removed_from_widget());
+  }
+
+  // Records `OnFocus()` and `OnBlur()` events for `SimpleTestView` instances.
+  scoped_refptr<FocusTestEventList> event_list_ =
+      base::MakeRefCounted<FocusTestEventList>();
+};
+
+TEST_F(FocusManagerReparentingTest,
+       SetFrameViewPreservesClientViewFocusWithoutBlur) {
+  SimpleTestView* view = AddFocusedTestView(GetContentsView());
+  MockFocusChangeListener listener;
+  EXPECT_CALL(listener, OnWillChangeFocus).Times(0);
+  EXPECT_CALL(listener, OnDidChangeFocus).Times(0);
+  base::ScopedObservation<FocusManager, FocusChangeListener> observation(
+      &listener);
+  observation.Observe(GetFocusManager());
+
+  ReplaceFrameView();
+
+  ExpectFocusRetained(view);
+}
+
+TEST_F(FocusManagerReparentingTest, SetFrameViewClearsOldFrameViewFocus) {
+  AddFocusedTestView(GetWidget()->non_client_view()->frame_view());
+
+  ReplaceFrameView();
+
+  ExpectFocusClearedWithSingleBlur();
+}
+
+TEST_F(FocusManagerReparentingTest,
+       RetainsFocusWhenFlaggedViewReparentedWithinSameWidget) {
+  View* old_parent = GetContentsView()->AddChildView(std::make_unique<View>());
+  View* new_parent = GetContentsView()->AddChildView(std::make_unique<View>());
+  auto [container, child] = AddFocusedReparentableContainer(old_parent);
+
+  ReparentView(container, new_parent);
+
+  ExpectFocusRetained(child);
+}
+
+TEST_F(FocusManagerReparentingTest, ClearsFocusWhenFlaggedViewDetached) {
+  auto [container, child] = AddFocusedReparentableContainer(GetContentsView());
+
+  std::unique_ptr<View> detached =
+      GetContentsView()->RemoveChildViewT(container);
+
+  ExpectDetachedFromWidgetWithBlur(child);
+}
+
+TEST_F(FocusManagerReparentingTest,
+       ClearsFocusWhenFlaggedViewReparentedAcrossWidgets) {
+  auto [container, child] = AddFocusedReparentableContainer(GetContentsView());
+  std::unique_ptr<Widget> child_widget = CreateChildWidget();
+
+  ReparentView(container, child_widget->GetContentsView());
+
+  ExpectDetachedFromWidgetWithBlur(child);
+}
+
+TEST_F(FocusManagerReparentingTest,
+       ClearsFocusWhenUnflaggedDescendantReparented) {
+  // `GetContentsView()` is inside `ClientView`, which sets
+  // `kRetainsFocusWhenReparented`. Moving an unflagged child out of
+  // `ClientView` into `frame_view()` must still clear focus.
+  SimpleTestView* child = AddFocusedTestView(GetContentsView());
+
+  ReparentView(child, GetWidget()->non_client_view()->frame_view());
+
+  ExpectFocusClearedWithSingleBlur();
 }
 
 }  // namespace views

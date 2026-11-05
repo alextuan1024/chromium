@@ -11,15 +11,18 @@
 #include <shlobj.h>
 #include <wrl/client.h>
 
+#include <iterator>
+#include <string>
 #include <string_view>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/process/process.h"
 #include "base/strings/string_util.h"
-#include "base/win/scoped_handle.h"
+#include "base/strings/string_view_util.h"
 #include "base/win/scoped_propvariant.h"
 #include "ui/gfx/win/hwnd_util.h"
 
@@ -49,26 +52,28 @@ base::WeakPtr<SettingsWindowFinderWin>& GetGlobalFinderInstance() {
   return *instance;
 }
 
-bool GetWindowProcessImagePath(HWND hwnd, std::wstring* path_out) {
-  DWORD pid;
-  if (!::GetWindowThreadProcessId(hwnd, &pid)) {
-    return false;
+base::Process OpenWindowProcess(HWND hwnd) {
+  // Enough for the pid and image path, plus SYNCHRONIZE to poll the exit.
+  static constexpr DWORD kWindowProcessAccess =
+      PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE;
+
+  DWORD pid = 0;
+  if (!::GetWindowThreadProcessId(hwnd, &pid) || !pid) {
+    return base::Process();
   }
 
-  base::win::ScopedHandle process(
-      ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
-  if (!process.is_valid()) {
-    return false;
-  }
+  return base::Process::OpenWithAccess(pid, kWindowProcessAccess);
+}
 
+std::wstring GetProcessImagePath(const base::Process& process) {
   wchar_t buffer[MAX_PATH];
   DWORD size = std::size(buffer);
-  if (!::QueryFullProcessImageNameW(process.get(), 0, buffer, &size)) {
-    return false;
+  if (!::QueryFullProcessImageNameW(process.Handle(), 0, buffer, &size)) {
+    return std::wstring();
   }
 
-  *path_out = buffer;
-  return true;
+  // On success `size` is the length of the path, excluding the terminator.
+  return std::wstring(base::as_string_view(base::span(buffer).first(size)));
 }
 
 // Installs an out-of-context hook for a single `event`, scoped to `pid` when
@@ -101,6 +106,7 @@ SettingsWindowFinderWin::~SettingsWindowFinderWin() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   Stop();
   StopObservingLocationChanges();
+  StopObservingForegroundChanges();
 }
 
 void SettingsWindowFinderWin::Start(base::TimeDelta timeout,
@@ -110,10 +116,10 @@ void SettingsWindowFinderWin::Start(base::TimeDelta timeout,
   on_found_ = std::move(on_found);
   on_timeout_ = std::move(on_timeout);
 
-  if (HWND existing_hwnd = FindSettingsTopLevelWindow()) {
+  if (std::optional<WindowAndProcess> existing = FindSettingsTopLevelWindow()) {
     WindowFoundCallback callback = std::move(on_found_);
     on_timeout_.Reset();
-    std::move(callback).Run(existing_hwnd);
+    std::move(callback).Run(existing->hwnd, std::move(existing->process));
     return;
   }
 
@@ -127,7 +133,7 @@ void SettingsWindowFinderWin::Start(base::TimeDelta timeout,
                         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
   //  Launching Settings window can be transiently DWM-cloaked, which
-  //  IsLikelySettingsWindow() rejects. Listen for the uncloak so such a window
+  //  MatchSettingsWindow() rejects. Listen for the uncloak so such a window
   //  is matched the moment it becomes visible.
   uncloak_hook_ =
       ::SetWinEventHook(EVENT_OBJECT_UNCLOAKED, EVENT_OBJECT_UNCLOAKED, nullptr,
@@ -203,13 +209,45 @@ void SettingsWindowFinderWin::StopObservingLocationChanges() {
   UpdateGlobalInstance();
 }
 
+void SettingsWindowFinderWin::StartObservingForegroundChanges(
+    ForegroundChangedCallback on_foreground_changed) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  StopObservingForegroundChanges();
+
+  on_foreground_changed_ = std::move(on_foreground_changed);
+
+  // Not scoped to the Settings process, and the only hook here that does not
+  // skip this one: the owner needs to learn that focus moved to any window,
+  // including a Chrome window or its own bubble.
+  foreground_hook_ = ::SetWinEventHook(
+      EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+      &SettingsWindowFinderWin::WinEventCallback, /*idProcess=*/0,
+      /*idThread=*/0, WINEVENT_OUTOFCONTEXT);
+
+  UpdateGlobalInstance();
+}
+
+void SettingsWindowFinderWin::StopObservingForegroundChanges() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (foreground_hook_) {
+    ::UnhookWinEvent(foreground_hook_);
+    foreground_hook_ = nullptr;
+  }
+  on_foreground_changed_.Reset();
+
+  UpdateGlobalInstance();
+}
+
 void SettingsWindowFinderWin::UpdateGlobalInstance() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (winevent_hook_ || uncloak_hook_ || !observation_hooks_.empty()) {
+  if (winevent_hook_ || uncloak_hook_ || foreground_hook_ ||
+      !observation_hooks_.empty()) {
     if (GetGlobalFinderInstance().get() != this) {
       if (auto old_finder = GetGlobalFinderInstance()) {
         old_finder->Stop();
         old_finder->StopObservingLocationChanges();
+        old_finder->StopObservingForegroundChanges();
       }
       GetGlobalFinderInstance() = weak_ptr_factory_.GetWeakPtr();
     }
@@ -229,52 +267,61 @@ void SettingsWindowFinderWin::OnTimeout() {
   std::move(callback).Run();
 }
 
-HWND SettingsWindowFinderWin::FindSettingsTopLevelWindow() const {
+std::optional<SettingsWindowFinderWin::WindowAndProcess>
+SettingsWindowFinderWin::FindSettingsTopLevelWindow() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   HWND hwnd = nullptr;
   while ((hwnd = ::FindWindowExW(nullptr, hwnd, L"ApplicationFrameWindow",
                                  nullptr)) != nullptr) {
-    if (IsLikelySettingsWindow(hwnd)) {
-      return hwnd;
+    if (base::Process process = MatchSettingsWindow(hwnd); process.IsValid()) {
+      return WindowAndProcess(hwnd, std::move(process));
     }
   }
-  return nullptr;
+  return std::nullopt;
 }
 
-bool SettingsWindowFinderWin::IsLikelySettingsWindow(HWND hwnd) const {
+base::Process SettingsWindowFinderWin::MatchSettingsWindow(HWND hwnd) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!::IsWindow(hwnd) || !::IsWindowVisible(hwnd) ||
       gfx::IsWindowCloaked(hwnd)) {
-    return false;
+    return base::Process();
+  }
+
+  // The image path is read through the handle that is handed out, so the
+  // identity checked is the identity kept.
+  base::Process process = OpenWindowProcess(hwnd);
+  if (!process.IsValid()) {
+    return base::Process();
+  }
+
+  std::wstring path = GetProcessImagePath(process);
+  if (path.empty()) {
+    return base::Process();
   }
 
   base::FilePath system_dir;
   if (!base::PathService::Get(base::DIR_SYSTEM, &system_dir)) {
-    return false;
-  }
-
-  std::wstring path;
-  if (!GetWindowProcessImagePath(hwnd, &path)) {
-    return false;
+    return base::Process();
   }
 
   bool is_app_frame = base::FilePath::CompareEqualIgnoreCase(
       path,
       system_dir.Append(FILE_PATH_LITERAL("ApplicationFrameHost.exe")).value());
   if (!is_app_frame) {
-    return false;
+    return base::Process();
   }
 
-  // First check via PKEY_AppUserModel_ID.
+  // ApplicationFrameHost.exe hosts the frame of every UWP app. The Settings
+  // app's is the one carrying its AppUserModelID.
   Microsoft::WRL::ComPtr<IPropertyStore> prop_store;
   if (FAILED(::SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(&prop_store))) ||
       !prop_store) {
-    return false;
+    return base::Process();
   }
 
   base::win::ScopedPropVariant prop_var;
   if (FAILED(prop_store->GetValue(PKEY_AppUserModel_ID, prop_var.Receive()))) {
-    return false;
+    return base::Process();
   }
 
   if (prop_var.get().vt == VT_LPWSTR && prop_var.get().pwszVal) {
@@ -283,11 +330,11 @@ bool SettingsWindowFinderWin::IsLikelySettingsWindow(HWND hwnd) const {
             app_id,
             L"windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft."
             L"windows.immersivecontrolpanel")) {
-      return true;
+      return process;
     }
   }
 
-  return false;
+  return base::Process();
 }
 
 // static
@@ -316,6 +363,18 @@ void SettingsWindowFinderWin::HandleWinEvent(DWORD event,
                                              LONG idObject) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!hwnd || idObject != OBJID_WINDOW) {
+    return;
+  }
+
+  // Reported whatever window it names: the owner cares about focus leaving
+  // Settings as much as returning to it.
+  if (event == EVENT_SYSTEM_FOREGROUND) {
+    if (on_foreground_changed_) {
+      // Run a copy: the callback may reentrantly stop the observation while
+      // the invocation is still on the stack.
+      ForegroundChangedCallback callback = on_foreground_changed_;
+      callback.Run();
+    }
     return;
   }
 
@@ -354,7 +413,8 @@ void SettingsWindowFinderWin::HandleWinEvent(DWORD event,
   }
 
   HWND root_hwnd = GetRootWindow(hwnd);
-  if (!IsLikelySettingsWindow(root_hwnd)) {
+  base::Process process = MatchSettingsWindow(root_hwnd);
+  if (!process.IsValid()) {
     return;
   }
 
@@ -362,7 +422,7 @@ void SettingsWindowFinderWin::HandleWinEvent(DWORD event,
   // This prevents use-after-free if the callback destroys the finder.
   WindowFoundCallback callback = std::move(on_found_);
   Stop();
-  std::move(callback).Run(root_hwnd);
+  std::move(callback).Run(root_hwnd, std::move(process));
 }
 
 HWND SettingsWindowFinderWin::GetRootWindow(HWND hwnd) const {

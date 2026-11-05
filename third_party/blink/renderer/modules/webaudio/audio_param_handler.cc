@@ -25,7 +25,6 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/fdlibm/ieee754.h"
 
@@ -95,9 +94,8 @@ bool IsNonNegativeAudioParamTime(double time,
     return true;
   }
 
-  exception_state.ThrowRangeError(StrCat(
-      {message,
-       " must be a finite non-negative number: ", String::Number(time)}));
+  exception_state.ThrowRangeError(
+      Format("{} must be a finite non-negative number: {:g}", message, time));
   return false;
 }
 
@@ -108,8 +106,8 @@ bool IsPositiveAudioParamTime(double time,
     return true;
   }
 
-  exception_state.ThrowRangeError(StrCat(
-      {message, " must be a finite positive number: ", String::Number(time)}));
+  exception_state.ThrowRangeError(
+      Format("{} must be a finite positive number: {:g}", message, time));
   return false;
 }
 
@@ -310,7 +308,7 @@ float AudioParamHandler::Value() {
   }
 
   SetValue(v);
-  return v;
+  return IntrinsicValue();
 }
 
 void AudioParamHandler::SetValue(float value) {
@@ -432,8 +430,7 @@ double AudioParamHandler::ClampedToCurrentTime(double time) {
 String AudioParamHandler::EventToString(const ParamEvent& event) const {
   // The default arguments for most automation methods is the value and the
   // time.
-  String args = StrCat(
-      {String::Number(event.Value()), ", ", String::Number(event.Time(), 16)});
+  String args = Format("{:g}, {:.16g}", event.Value(), event.Time());
 
   // Get a nice printable name for the event and update the args if necessary.
   String s;
@@ -450,13 +447,12 @@ String AudioParamHandler::EventToString(const ParamEvent& event) const {
     case ParamEvent::Type::kSetTarget:
       s = "setTargetAtTime";
       // This has an extra time constant arg
-      args = StrCat({args, ", ", String::Number(event.TimeConstant(), 16)});
+      args = Format("{}, {:.16g}", args, event.TimeConstant());
       break;
     case ParamEvent::Type::kSetValueCurve:
       s = "setValueCurveAtTime";
       // Replace the default arg, using "..." to denote the curve argument.
-      args = StrCat({"..., ", String::Number(event.Time(), 16), ", ",
-                     String::Number(event.Duration(), 16)});
+      args = Format("..., {:.16g}, {:.16g}", event.Time(), event.Duration());
       break;
     case ParamEvent::Type::kCancelValues:
     case ParamEvent::Type::kSetValueCurveEnd:
@@ -760,11 +756,11 @@ void AudioParamHandler::ExponentialRampToValueAtTime(
   }
 
   if (!value) {
-    exception_state.ThrowRangeError(StrCat(
-        {"The float target value provided (", String::Number(value),
-         ") should not be in the range (",
-         String::Number(-std::numeric_limits<float>::denorm_min()), ", ",
-         String::Number(std::numeric_limits<float>::denorm_min()), ")."}));
+    exception_state.ThrowRangeError(
+        Format("The float target value provided ({:g}) should not be in the "
+               "range ({:g}, {:g}).",
+               value, -std::numeric_limits<float>::denorm_min(),
+               std::numeric_limits<float>::denorm_min()));
     return;
   }
 
@@ -973,7 +969,8 @@ bool AudioParamHandler::InsertEvent(std::unique_ptr<ParamEvent> event,
         break;
       }
     }
-  } else {
+  } else if (event->GetType() != ParamEvent::Type::kSetValueCurveEnd &&
+             event->GetType() != ParamEvent::Type::kCancelValues) {
     // Not a `SetValueCurve` new event. Make sure this new event doesn't overlap
     // any existing `SetValueCurve` event.
     for (int i = ub; i >= 0; i--) {
@@ -985,8 +982,7 @@ bool AudioParamHandler::InsertEvent(std::unique_ptr<ParamEvent> event,
       }
       if (test_type == ParamEvent::Type::kSetValueCurve) {
         double end_time = events_[i]->Time() + events_[i]->Duration();
-        if (event->GetType() != ParamEvent::Type::kSetValueCurveEnd &&
-            event->Time() >= events_[i]->Time() && event->Time() < end_time) {
+        if (event->Time() >= events_[i]->Time() && event->Time() < end_time) {
           exception_state.ThrowDOMException(
               DOMExceptionCode::kNotSupportedError,
               StrCat({EventToString(*event), " overlaps ",
@@ -1281,7 +1277,7 @@ std::tuple<bool, float> AudioParamHandler::ValueForContextTime(
   }
 
   // Ask for just a single value.
-  float value;
+  float value = 0.0f;
   double sample_rate = audio_destination.SampleRate();
   size_t start_frame = audio_destination.CurrentSampleFrame();
   // One parameter change per render quantum.
@@ -1305,21 +1301,21 @@ float AudioParamHandler::ValuesForFrameRange(size_t start_frame,
   // We can't contend the lock in the realtime audio thread.
   base::AutoTryLock try_locker(events_lock_);
   if (!try_locker.is_acquired()) {
+    default_value = ClampTo(default_value, min_value, max_value);
     std::ranges::fill(values, default_value);
     return default_value;
   }
 
-  float last_value =
-      ValuesForFrameRangeImpl(start_frame, end_frame, default_value, values,
-                              sample_rate, control_rate, render_quantum_frames);
+  ValuesForFrameRangeImpl(start_frame, end_frame, default_value, values,
+                          sample_rate, control_rate, render_quantum_frames);
 
   // Clamp the values now to the nominal range
   vector_math::Vclip(values, min_value, max_value, values);
 
-  return last_value;
+  return values.back();
 }
 
-float AudioParamHandler::ValuesForFrameRangeImpl(
+void AudioParamHandler::ValuesForFrameRangeImpl(
     const size_t start_frame,
     const size_t end_frame,
     float default_value,
@@ -1333,7 +1329,7 @@ float AudioParamHandler::ValuesForFrameRangeImpl(
   // range.
   if (!events_.size() || (end_frame / sample_rate <= events_[0]->Time())) {
     std::ranges::fill(values, default_value);
-    return default_value;
+    return;
   }
 
   wtf_size_t number_of_events = events_.size();
@@ -1354,7 +1350,7 @@ float AudioParamHandler::ValuesForFrameRangeImpl(
 
     if (HandleAllEventsInThePast(current_time, sample_rate, default_value,
                                  values, render_quantum_frames)) {
-      return default_value;
+      return;
     }
   }
 
@@ -1386,12 +1382,9 @@ float AudioParamHandler::ValuesForFrameRangeImpl(
       continue;
     }
 
-    // If there's no next event, set nextEventType to LastType to indicate that.
-    ProcessSetTargetFollowedByRamp(
-        i, event,
-        next_event ? static_cast<ParamEvent::Type>(next_event->GetType())
-                   : ParamEvent::Type::kLastType,
-        current_frame, sample_rate, control_rate, value);
+    // If there's no next event, there's nothing to ramp to.
+    ProcessSetTargetFollowedByRamp(i, event, next_event, current_frame,
+                                   sample_rate, control_rate, value);
 
     const float value1 = event->Value();
     const double time1 = event->Time();
@@ -1514,10 +1507,6 @@ float AudioParamHandler::ValuesForFrameRangeImpl(
   // If there's any time left after processing the last event then just
   // propagate the last value to the end of the values buffer.
   std::ranges::fill(values.subspan(write_index), value);
-
-  // This value is used to set the `.value` attribute of the AudioParam.  it
-  // should be the last computed value.
-  return values.back();
 }
 
 std::tuple<size_t, size_t> AudioParamHandler::HandleFirstEvent(
@@ -1671,7 +1660,7 @@ bool AudioParamHandler::HandleAllEventsInThePast(
 void AudioParamHandler::ProcessSetTargetFollowedByRamp(
     wtf_size_t event_index,
     ParamEvent*& event,
-    ParamEvent::Type next_event_type,
+    const ParamEvent* next_event,
     size_t current_frame,
     double sample_rate,
     double control_rate,
@@ -1680,9 +1669,11 @@ void AudioParamHandler::ProcessSetTargetFollowedByRamp(
   // LinearRampToValue or ExponentialRampToValue, special handling is needed.
   // In this case, the linear and exponential ramp should start at wherever
   // the SetTarget processing has reached.
-  if (event->GetType() == ParamEvent::Type::kSetTarget &&
-      (next_event_type == ParamEvent::Type::kLinearRampToValue ||
-       next_event_type == ParamEvent::Type::kExponentialRampToValue)) {
+  if (event->GetType() == ParamEvent::Type::kSetTarget && next_event &&
+      (next_event->GetType() == ParamEvent::Type::kLinearRampToValue ||
+       next_event->GetType() == ParamEvent::Type::kExponentialRampToValue)) {
+    const double start_time = std::clamp(current_frame / sample_rate,
+                                         event->Time(), next_event->Time());
     // Replace the SetTarget with a SetValue to set the starting time and
     // value for the ramp using the current frame.  We need to update `value`
     // appropriately depending on whether the ramp has started or not.
@@ -1706,10 +1697,9 @@ void AudioParamHandler::ProcessSetTargetFollowedByRamp(
       // SetTarget is starting somewhere between currentFrame - 1 and
       // currentFrame. Compute the value the SetTarget would have at the
       // currentFrame.
-      value = event->Value() +
-              (value - event->Value()) *
-                  fdlibm::exp(-(current_frame / sample_rate - event->Time()) /
-                              event->TimeConstant());
+      value = event->Value() + (value - event->Value()) *
+                                   fdlibm::exp(-(start_time - event->Time()) /
+                                               event->TimeConstant());
     } else {
       // SetTarget has already started.  Update `value` one frame because it's
       // the value from the previous frame.
@@ -1720,9 +1710,16 @@ void AudioParamHandler::ProcessSetTargetFollowedByRamp(
     }
 
     // Insert a SetValueEvent to mark the starting value and time.
-    // Clear the clamp check because this doesn't need it.
-    events_[event_index] =
-        ParamEvent::CreateSetValueEvent(value, current_frame / sample_rate);
+    //
+    // `IsEventCurrent()` compares times in frames, but the new event time is
+    // computed in seconds, and the two can disagree by one ULP in either
+    // direction.  Clamp the new time between the times of the SetTarget and
+    // the ramp so that `events_` stays sorted.  Otherwise the new event could
+    // be later than the ramp, or earlier than a preceding event scheduled at
+    // the same time as the SetTarget, which a later evaluation of this render
+    // quantum would see.  Either case fails CHECK_GE(time2, time1) in
+    // `ValuesForFrameRangeImpl()`.
+    events_[event_index] = ParamEvent::CreateSetValueEvent(value, start_time);
 
     // Update our pointer to the current event because we just changed it.
     event = events_[event_index].get();
@@ -2035,7 +2032,7 @@ std::tuple<size_t, float, size_t> AudioParamHandler::ProcessSetTarget(
       const float c2 = c0 * ((c0 - 3) * c0 + 3);
       const float c3 = c0 * (c0 * ((4 - c0) * c0 - 6) + 4);
 
-      float delta;
+      float delta = 0.0f;
       __m128 v_c = _mm_set_ps(c2, c1, c0, 0);
       __m128 v_delta, v_value, v_result;
 
@@ -2229,7 +2226,7 @@ std::tuple<size_t, float, size_t> AudioParamHandler::ProcessSetValueCurve(
         // occurred by incrementing the index by curvePointsPerFrame.
         double current_virtual_index =
             curve_virtual_index + k * curve_points_per_frame;
-        size_t curve_index0;
+        size_t curve_index0 = 0;
 
         // Clamp index to the last element of the array.
         if (current_virtual_index < curve_data.size()) {

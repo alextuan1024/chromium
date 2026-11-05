@@ -23,6 +23,8 @@
 
 #include "third_party/blink/renderer/core/dom/container_node.h"
 
+#include <algorithm>
+
 #include "third_party/blink/renderer/bindings/core/v8/v8_get_html_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_sethtmlunsafeoptions_trustedhtmlparseroptions.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
@@ -34,6 +36,7 @@
 #include "third_party/blink/renderer/core/dom/child_frame_disconnector.h"
 #include "third_party/blink/renderer/core/dom/child_list_mutation_scope.h"
 #include "third_party/blink/renderer/core/dom/class_collection.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_forbidden_scope.h"
@@ -51,6 +54,7 @@
 #include "third_party/blink/renderer/core/dom/node_traversal.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/dom/slot_assignment_recalc_forbidden_scope.h"
+#include "third_party/blink/renderer/core/dom/slot_assignment_recalc_in_progress_scope.h"
 #include "third_party/blink/renderer/core/dom/static_node_list.h"
 #include "third_party/blink/renderer/core/dom/whitespace_attacher.h"
 #include "third_party/blink/renderer/core/editing/serializers/serialization.h"
@@ -66,6 +70,8 @@
 #include "third_party/blink/renderer/core/html/html_dialog_element.h"
 #include "third_party/blink/renderer/core/html/html_document.h"
 #include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
+#include "third_party/blink/renderer/core/html/html_html_element.h"
+#include "third_party/blink/renderer/core/html/html_slot_element.h"
 #include "third_party/blink/renderer/core/html/html_stream.h"
 #include "third_party/blink/renderer/core/html/html_tag_collection.h"
 #include "third_party/blink/renderer/core/html/html_template_element.h"
@@ -184,7 +190,7 @@ static inline bool CollectChildrenAndRemoveFromOldParent(
 }
 
 void ContainerNode::ParserTakeAllChildrenFrom(ContainerNode& old_parent) {
-  HeapVector<Member<Node>> children;
+  NodeVector children;
   for (Node* child = old_parent.firstChild(); child;
        child = child->nextSibling()) {
     children.push_back(child);
@@ -578,6 +584,11 @@ void ContainerNode::InsertBeforeCommon(Node& next_child, Node& new_child) {
   DCHECK(EventDispatchForbiddenScope::IsEventDispatchForbidden());
 #endif
   DCHECK(ScriptForbiddenScope::IsScriptForbidden());
+  // Every child insertion and removal goes through InsertBeforeCommon(),
+  // AppendChildCommon(), or RemoveBetween(). None may happen during slot
+  // assignment recalc (rule R2 in slot_assignment.h).
+  SlotAssignmentRecalcInProgressScope::CheckNotActive(
+      SlotAssignmentInvariant::kNoDOMMutation);
   // Use insertBefore if you need to handle reparenting.
   DCHECK(!new_child.parentNode());
   DCHECK(!new_child.HasNextSibling());
@@ -612,6 +623,9 @@ void ContainerNode::AppendChildCommon(Node& child) {
   DCHECK(EventDispatchForbiddenScope::IsEventDispatchForbidden());
 #endif
   DCHECK(ScriptForbiddenScope::IsScriptForbidden());
+  // See InsertBeforeCommon().
+  SlotAssignmentRecalcInProgressScope::CheckNotActive(
+      SlotAssignmentInvariant::kNoDOMMutation);
 
   child.SetParentNode(this);
   if (lastChild()) {
@@ -636,9 +650,6 @@ bool ContainerNode::CheckParserAcceptChild(const Node& new_child) const {
 
 void ContainerNode::ParserInsertBefore(Node* new_child, Node& next_child) {
   DCHECK(new_child);
-  DCHECK(next_child.parentNode() == this ||
-         (IsA<DocumentFragment>(*this) &&
-          To<DocumentFragment>(*this).IsTemplateContent()));
   DCHECK(!new_child->IsDocumentFragment());
   DCHECK(!IsA<HTMLTemplateElement>(this));
 
@@ -745,6 +756,16 @@ void ContainerNode::ReplaceChild(const VectorOf<Node>& new_children,
         return;
       }
       if (!detector.NeedsRecheck()) {
+        needs_recheck = true;
+      }
+      // The detector above only watches this node's document. Synchronous
+      // event handlers run during the removal (e.g. `blur`) could have
+      // inserted one of `new_children` into a different document, so a
+      // recheck is needed if any of them is not in this document.
+      if (!needs_recheck &&
+          std::ranges::any_of(new_children, [this](const Node* child) {
+            return child->GetDocument() != GetDocument();
+          })) {
         needs_recheck = true;
       }
     }
@@ -1053,12 +1074,27 @@ void ContainerNode::RemoveBetween(Node* previous_child,
                                   Node* next_child,
                                   Node& old_child) {
   EventDispatchForbiddenScope assert_no_event_dispatch;
+  // See InsertBeforeCommon().
+  SlotAssignmentRecalcInProgressScope::CheckNotActive(
+      SlotAssignmentInvariant::kNoDOMMutation);
 
   DCHECK_EQ(old_child.parentNode(), this);
 
-  if (InActiveDocument() &&
-      !GetDocument().StatePreservingAtomicMoveInProgress()) {
-    old_child.DetachLayoutTree();
+  if (InActiveDocument()) {
+    if (!GetDocument().StatePreservingAtomicMoveInProgress()) {
+      old_child.DetachLayoutTree();
+    } else if (IsInShadowTree() &&
+               GetDocument().StatePreservingAtomicMoveBetweenTrees() &&
+               ContainingShadowRoot()->HasSlotAssignment()) {
+      // Moving a <slot> between trees leaves its assigned nodes in the host's
+      // light tree without a layout parent once the <slot> is no longer in this
+      // shadow tree, so detach their layout trees before removal.
+      for (HTMLSlotElement* slot =
+               Traversal<HTMLSlotElement>::InclusiveFirstWithin(old_child);
+           slot; slot = Traversal<HTMLSlotElement>::Next(*slot, &old_child)) {
+        slot->DetachAssignedNodesLayoutTree();
+      }
+    }
   }
 
   if (next_child)
@@ -1332,8 +1368,7 @@ void ContainerNode::NotifyNodeAtEndOfBuildingFragmentTree(
   }
 
   // As an optimization we don't notify leaf nodes when when inserting
-  // into detached subtrees that are not in a shadow tree, unless the
-  // node has DOM Parts attached.
+  // into detached subtrees that are not in a shadow tree.
   if (!node.IsContainerNode() && !IsInShadowTree()) {
     return;
   }
@@ -1429,9 +1464,8 @@ void ContainerNode::NotifyNodeRemoved(Node& root) {
 
   for (Node& node : NodeTraversal::InclusiveDescendantsOf(root)) {
     // As an optimization we skip notifying Text nodes and other leaf nodes
-    // of removal when they're not in the Document tree, not in a shadow root,
-    // and don't have DOM Parts, since the virtual call to removedFrom is not
-    // needed.
+    // of removal when they're not in the Document tree or a shadow root, since
+    // the virtual call to removedFrom is not needed.
     if (!node.IsContainerNode() && !node.IsInTreeScope()) {
       continue;
     }
@@ -1466,7 +1500,8 @@ void ContainerNode::AttachLayoutTree(AttachContext& context) {
 void ContainerNode::DetachLayoutTree(bool performing_reattach) {
   for (Node* child = firstChild(); child; child = child->nextSibling())
     child->DetachLayoutTree(performing_reattach);
-  Node::DetachLayoutTree(performing_reattach);
+  Node::DetachLayoutTree(performing_reattach,
+                         /*dom_children_already_detached=*/true);
 }
 
 void ContainerNode::ChildrenChanged(const ChildrenChange& change) {
@@ -1494,7 +1529,7 @@ void ContainerNode::ChildrenChanged(const ChildrenChange& change) {
   }
   if (!InActiveDocument())
     return;
-  if (Element* element = DynamicTo<Element>(this)) {
+  if (Element* element = inserted_node->ParentOrShadowHostElement()) {
     if (GetDocument().StatePreservingAtomicMoveInProgress()) {
       // This is always safe, since `inserted_node` is either an element or text
       // node, whose style can be dirtied.
@@ -1532,7 +1567,10 @@ PhysicalRect ContainerNode::BoundingBox() const {
 }
 
 HTMLCollection* ContainerNode::children() {
-  return EnsureCachedCollection<HTMLCollection>(kNodeChildren);
+  if (NodeListsNodeData* node_lists = NodeLists()) {
+    return node_lists->EnsureChildren(*this);
+  }
+  return EnsureNodeLists().EnsureChildren(*this);
 }
 
 Element* ContainerNode::firstElementChild() {
@@ -1985,6 +2023,9 @@ WritableStream* ContainerNode::streamAppendHTMLUnsafe(
   }
 
   ContainerNode* target = TargetForHTMLInsertion();
+  if (!target->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
   return HTMLStream::Create(script_state, target, nullptr,
                             Sanitizer::Mode::kUnsafe, *resolved_options,
 
@@ -1996,7 +2037,9 @@ WritableStream* ContainerNode::streamAppendHTML(
     SetHTMLOptions* options,
     ExceptionState& exception_state) {
   ContainerNode* target = TargetForHTMLInsertion();
-  ;
+  if (!target->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
   return HTMLStream::Create(script_state, target, nullptr,
                             Sanitizer::Mode::kSafe,
                             FragmentParserOptions(options), exception_state);
@@ -2016,6 +2059,9 @@ WritableStream* ContainerNode::streamPrependHTMLUnsafe(
   }
 
   ContainerNode* target = TargetForHTMLInsertion();
+  if (!target->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
   return HTMLStream::Create(script_state, target, target->firstChild(),
                             Sanitizer::Mode::kUnsafe, *resolved_options,
                             exception_state);
@@ -2026,6 +2072,9 @@ WritableStream* ContainerNode::streamPrependHTML(
     SetHTMLOptions* options,
     ExceptionState& exception_state) {
   ContainerNode* target = TargetForHTMLInsertion();
+  if (!target->CheckValidParentForPartialInsertion(exception_state)) {
+    return nullptr;
+  }
   return HTMLStream::Create(script_state, target, target->firstChild(),
                             Sanitizer::Mode::kSafe,
                             FragmentParserOptions(options), exception_state);
@@ -2066,13 +2115,10 @@ void ContainerNode::appendHTML(const String& html,
                                SetHTMLOptions* options,
                                ExceptionState& exception_state) {
   CHECK(IsElementNode() || IsShadowRoot());
-  InsertHTMLBefore(nullptr, html,
-                   FragmentParserConfig::ForContainer(
-                       this, Sanitizer::Mode::kSafe,
-                       IsElementNode() ? trusted_types_names::kElement
-                                       : trusted_types_names::kShadowRoot,
-                       trusted_types_names::kAppendHTML),
-                   FragmentParserOptions(options), exception_state);
+  InsertHTMLBefore(
+      nullptr, html,
+      FragmentParserConfig::ForContainer(this, Sanitizer::Mode::kSafe),
+      FragmentParserOptions(options), exception_state);
 }
 
 void ContainerNode::appendHTMLUnsafe(
@@ -2092,9 +2138,8 @@ void ContainerNode::appendHTMLUnsafe(
 
   CHECK(IsElementNode() || IsShadowRoot());
 
-  const FragmentParserConfig config = FragmentParserConfig::ForContainer(
-      this, Sanitizer::Mode::kUnsafe, interface_name,
-      trusted_types_names::kAppendHTMLUnsafe);
+  const FragmentParserConfig config =
+      FragmentParserConfig::ForContainer(this, Sanitizer::Mode::kUnsafe);
   InsertHTMLBefore(nullptr, compliant_string, config, resolved_options,
                    exception_state);
 }
@@ -2103,16 +2148,12 @@ void ContainerNode::prependHTML(const String& html,
                                 SetHTMLOptions* options,
                                 ExceptionState& exception_state) {
   CHECK(IsElementNode() || IsShadowRoot());
-  InsertHTMLBefore(IsA<HTMLTemplateElement>(this)
-                       ? To<HTMLTemplateElement>(this)->content()->firstChild()
-                       : firstChild(),
-                   html,
-                   FragmentParserConfig::ForContainer(
-                       this, Sanitizer::Mode::kSafe,
-                       IsElementNode() ? trusted_types_names::kElement
-                                       : trusted_types_names::kShadowRoot,
-                       trusted_types_names::kPrependHTML),
-                   FragmentParserOptions(options), exception_state);
+  InsertHTMLBefore(
+      IsA<HTMLTemplateElement>(this)
+          ? To<HTMLTemplateElement>(this)->content()->firstChild()
+          : firstChild(),
+      html, FragmentParserConfig::ForContainer(this, Sanitizer::Mode::kSafe),
+      FragmentParserOptions(options), exception_state);
 }
 
 void ContainerNode::prependHTMLUnsafe(
@@ -2132,9 +2173,8 @@ void ContainerNode::prependHTMLUnsafe(
 
   CHECK(IsElementNode() || IsShadowRoot());
 
-  const FragmentParserConfig config = FragmentParserConfig::ForContainer(
-      this, Sanitizer::Mode::kUnsafe, interface_name,
-      trusted_types_names::kPrependHTMLUnsafe);
+  const FragmentParserConfig config =
+      FragmentParserConfig::ForContainer(this, Sanitizer::Mode::kUnsafe);
   InsertHTMLBefore(IsA<HTMLTemplateElement>(this)
                        ? To<HTMLTemplateElement>(this)->content()->firstChild()
                        : firstChild(),
@@ -2147,6 +2187,9 @@ void ContainerNode::InsertHTMLBefore(Node* ref_child,
                                      const FragmentParserOptions& options,
                                      ExceptionState& exception_state) {
   if (exception_state.HadException()) {
+    return;
+  }
+  if (!CheckValidParentForPartialInsertion(exception_state)) {
     return;
   }
   if (DocumentFragment* fragment =
@@ -2163,11 +2206,34 @@ void ContainerNode::ReplaceChildWithHTML(Node* ref_child,
   if (exception_state.HadException()) {
     return;
   }
+  if (!CheckValidParentForPartialInsertion(exception_state)) {
+    return;
+  }
   if (DocumentFragment* fragment =
           ParseHTMLFragment(html, config, options, exception_state)) {
     TargetForHTMLInsertion()->ReplaceChild(fragment, ref_child,
                                            exception_state);
   }
+}
+
+bool ContainerNode::CheckValidParentForPartialInsertion(
+    ExceptionState& exception_state) {
+  // https://html.spec.whatwg.org/C/#filter-and-pre-insert-html
+  // https://html.spec.whatwg.org/C/#filter-and-replace-with-html
+  // https://html.spec.whatwg.org/C/#get-the-parent-for-html-streaming
+  // "If parent is an html element, then throw a HierarchyRequestError
+  // DOMException." Parsing a fragment with an html context element always
+  // produces head and body elements, which is only suitable when replacing all
+  // children, i.e. for setHTML{Unsafe}() and streamHTML{Unsafe}(). This
+  // precedes parsing, and thus sanitizer config validation.
+  if (IsA<HTMLHtmlElement>(this)) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kHierarchyRequestError,
+        "Cannot insert HTML into or around a child of an html element. Use "
+        "setHTML() or setHTMLUnsafe() to replace its children.");
+    return false;
+  }
+  return true;
 }
 
 ContainerNode* ContainerNode::TargetForHTMLInsertion() {

@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Cámara</translation>
 <translation id="162175252992296058">Portugués con teclado internacional de EE.UU.</translation>
 <translation id="1629521517399325891">El certificado del usuario no está disponible para realizar la autenticación de la red.</translation>
+<translation id="1639239467298939599">Cargando</translation>
 <translation id="1641780993263690097">Chino (Pinyin)</translation>
 <translation id="164969095109328410">Dispositivo Chrome</translation>
 <translation id="1661207570040737402">Usaste todo tu almacenamiento de la unidad compartida de Google Workspace.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Se desactivó la sincronización de archivos</translation>
 <translation id="2820957248982571256">Buscando…</translation>
 <translation id="2830077785865012357">Chino (Zhuyin)</translation>
+<translation id="2838379631617906747">Instalando</translation>
 <translation id="2843806747483486897">Cambiar el valor predeterminado...</translation>
 <translation id="2873951654529031587">Papelera</translation>
 <translation id="2887314858867008269">Inglés (EE.UU.; Colemak)</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Contraseña incorrecta</translation>
 <translation id="5059127710849015030">Nepalí (transliteración)</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> estableció reglas de anulación de proxy</translation>
 <translation id="5081517858322016911">Se eliminarán <ph name="TOTAL_FILE_SIZE" /> de archivos</translation>
 <translation id="508423945471810158">Moviendo <ph name="NUMBER_OF_ITEMS" /> elementos a <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Se ha producido un error.</translation>
-<translation id="5102922915594634436">Administrar carpetas sincronizadas</translation>
 <translation id="5109254780565519649">Se produjo un error. Es posible que no se hayan restablecido algunos elementos.</translation>
 <translation id="5110329002213341433">Inglés (Canadá)</translation>
 <translation id="5119780910075847424">Se pausó la sincronización</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">No hay certificados instalados</translation>
 <translation id="5317780077021120954">Guardar</translation>
 <translation id="5318819489018851358">Compartir con Linux</translation>
-<translation id="5330145655348521461">Estos archivos están abiertos en otro escritorio. Ve a <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) para visualizarlos.</translation>
 <translation id="5330512191124428349">Obtener información</translation>
 <translation id="535792325654997756">Persona con gatos</translation>
 <translation id="5358764674931277">Velocidad de fotogramas</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">El valor de la coincidencia del sufijo de dominio no es válido</translation>
 <translation id="6364301859968397756">El almacenamiento de la organización está lleno</translation>
 <translation id="6367976544441405720">Camioneta</translation>
-<translation id="637062427944097960">Este archivo está abierto en otro escritorio. Ve a <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) para visualizarlo.</translation>
 <translation id="6394388407447716302">Solo lectura</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> elementos</translation>
 <translation id="6407769893376380348">No se pudo mover <ph name="FILE_NAME" /> porque está encriptado.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" />: puerto</translation>
 <translation id="8656407365183407932">Se tuvieron que quitar tus archivos sin conexión</translation>
 <translation id="8656768832129462377">No revisar</translation>
+<translation id="8662978096466608964">Chrome no puede establecer el fondo de pantalla.</translation>
 <translation id="8688591111840995413">Contraseña incorrecta</translation>
 <translation id="8698464937041809063">Dibujo de Google</translation>
 <translation id="8698877009525468705">Este archivo es confidencial y está sujeto a las restricciones de la política del administrador.</translation>

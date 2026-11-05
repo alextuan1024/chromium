@@ -99,8 +99,7 @@ class TabSharingUIViews : public TabSharingUI,
       TabStripModel* tab_strip_model,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override;
-  void OnTabChangedAt(tabs::TabInterface* tab,
-                      TabChangeType change_type) override;
+  void OnTabChanged(tabs::TabHandle tab, TabChangeType change_type) override;
 
   // InfoBarManager::Observer:
   void OnInfoBarRemoved(infobars::InfoBar* infobar, bool animate) override;
@@ -120,7 +119,7 @@ class TabSharingUIViews : public TabSharingUI,
 
  private:
   using InfoBars = std::map<content::WebContents*,
-                            raw_ptr<infobars::InfoBar, CtnExperimental>>;
+                            raw_ptr<infobars::InfoBar, DanglingUntriaged>>;
   friend class TabSharingUIViewsBrowserTestBase;
 
   // Used to identify |TabSharingUIViews| instances to
@@ -157,6 +156,12 @@ class TabSharingUIViews : public TabSharingUI,
 
   void CreateInfobarsForAllTabs();
   void CreateInfobarForWebContents(content::WebContents* contents);
+  infobars::InfoBar* CreateMigratedInfobarForWebContents(
+      content::WebContents* contents,
+      infobars::InfoBar* old_infobar,
+      TabSharingInfoBarDelegate::TabRole role,
+      TabSharingInfoBarDelegate::ButtonState
+          share_this_tab_instead_button_state);
   void RefreshAllTabSharingInfoBars(bool recreate_shared_tab);
   void RemoveInfobarsForAllTabs();
 

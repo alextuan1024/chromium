@@ -831,7 +831,6 @@ void DOMWindow::InstallCoopAccessMonitor(
   DCHECK(!accessing_frame->IsInFencedFrameTree());
   monitor->report_type = coop_reporter_params->report_type;
   monitor->accessing_main_frame = accessing_frame->GetLocalFrameToken();
-  monitor->endpoint_defined = coop_reporter_params->endpoint_defined;
   monitor->reported_window_url =
       std::move(coop_reporter_params->reported_window_url);
 
@@ -937,28 +936,28 @@ void DOMWindow::ReportCoopAccess(const char* property_name) {
                 mojom::blink::ConsoleMessageLevel::kError,
                 CoopReportOnlyErrorMessage(property_name), location));
 
-        // If the reporting document hasn't specified any network report
-        // endpoint(s), then it is likely not interested in receiving
-        // ReportingObserver's reports.
-        //
-        // TODO(arthursonzogni): Reconsider this decision later, developers
-        // might be interested.
-        if (monitor->endpoint_defined) {
-          if (monitor->reporter.is_bound()) {
-            monitor->reporter->QueueAccessReport(
-                monitor->report_type, property_name, std::move(source_location),
-                std::move(monitor->reported_window_url));
-          }
-          // Send a coop-access-violation report.
-          if (network::IsAccessFromCoopPage(monitor->report_type)) {
-            ReportingContext::From(accessing_main_frame.DomWindow())
-                ->QueueReport(MakeGarbageCollected<Report>(
-                    ReportType::kCoopAccessViolation,
-                    accessing_main_frame.GetDocument()->Url().GetString(),
-                    MakeGarbageCollected<CoopAccessViolationReportBody>(
-                        location, monitor->report_type, String(property_name),
-                        monitor->reported_window_url)));
-          }
+        // The browser reporter gates network delivery on its endpoint.
+        // This is the only network path for these reports;
+        // ReportingContext::SendToReportingAPI() does not handle the type.
+        if (monitor->reporter.is_bound()) {
+          monitor->reporter->QueueAccessReport(
+              monitor->report_type, property_name, std::move(source_location),
+              monitor->reported_window_url);
+        }
+
+        // Observer delivery is independent of the endpoint above and only for
+        // accesses from the COOP-Report-Only document. The endpoint vector is
+        // empty since the reporter above owns network delivery.
+        if (network::IsAccessFromCoopPage(monitor->report_type)) {
+          ReportingContext::From(accessing_main_frame.DomWindow())
+              ->QueueReport(
+                  MakeGarbageCollected<Report>(
+                      ReportType::kCoopAccessViolation,
+                      accessing_main_frame.GetDocument()->Url().GetString(),
+                      MakeGarbageCollected<CoopAccessViolationReportBody>(
+                          location, monitor->report_type, String(property_name),
+                          monitor->reported_window_url)),
+                  /*endpoints=*/{});
         }
 
         // CoopAccessMonitor are used once and destroyed. This avoids sending
@@ -1066,31 +1065,9 @@ void DOMWindow::DoPostMessage(scoped_refptr<SerializedScriptValue> message,
   mojom::blink::DelegatedCapability delegated_capability =
       mojom::blink::DelegatedCapability::kNone;
   if (options->hasDelegate()) {
-    Vector<StringView> capability_list =
-        StringView(options->delegate()).SplitSkippingEmpty(' ');
-    if (capability_list.Contains("payment")) {
-      delegated_capability = mojom::blink::DelegatedCapability::kPaymentRequest;
-    } else if (capability_list.Contains("fullscreen")) {
-      delegated_capability =
-          mojom::blink::DelegatedCapability::kFullscreenRequest;
-    } else if (capability_list.Contains("display-capture")) {
-      delegated_capability =
-          mojom::blink::DelegatedCapability::kDisplayCaptureRequest;
-    } else if (RuntimeEnabledFeatures::
-                   CapabilityDelegationDigitalCredentialsEnabled(source) &&
-               capability_list.Contains("digital-credentials-create")) {
-      delegated_capability =
-          mojom::blink::DelegatedCapability::kDigitalCredentialsCreate;
-    } else if (RuntimeEnabledFeatures::
-                   CapabilityDelegationDigitalCredentialsEnabled(source) &&
-               capability_list.Contains("digital-credentials-get")) {
-      delegated_capability =
-          mojom::blink::DelegatedCapability::kDigitalCredentialsGet;
-    } else {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kNotSupportedError,
-          StrCat({"Delegation of \'", options->delegate(),
-                  "\' is not supported."}));
+    delegated_capability = PostMessageHelper::MapStringToDelegatedCapability(
+        options->delegate(), source, exception_state);
+    if (exception_state.HadException()) {
       return;
     }
 

@@ -49,6 +49,7 @@ import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.blink.mojom.AttestationConveyancePreference;
 import org.chromium.blink.mojom.AuthenticatorAttachment;
@@ -69,7 +70,6 @@ import org.chromium.blink.mojom.RemoteDesktopClientOverride;
 import org.chromium.blink.mojom.ResidentKeyRequirement;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -94,8 +94,6 @@ import org.chromium.components.webauthn.WebauthnMode;
 import org.chromium.components.webauthn.WebauthnModeProvider;
 import org.chromium.components.webauthn.WebauthnRequestCallback;
 import org.chromium.components.webauthn.cred_man.CredManSupportProvider;
-import org.chromium.content.browser.ClientDataJsonImpl;
-import org.chromium.content.browser.ClientDataJsonImplJni;
 import org.chromium.content_public.browser.ClientDataRequestType;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
@@ -103,6 +101,7 @@ import org.chromium.content_public.browser.test.mock.MockWebContents;
 import org.chromium.content_public.common.ContentSwitches;
 import org.chromium.mojo_base.mojom.String16;
 import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.GmsCoreVersionRestriction;
 import org.chromium.ui.util.RunnableTimer;
 import org.chromium.url.GURL;
@@ -117,12 +116,12 @@ import java.util.List;
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
-    "ignore-certificate-errors",
+    "ignore-certificate-errors"
 })
 @Batch(Batch.PER_CLASS)
 @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_19W13)
+@DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/1515446
 public class Fido2CredentialRequestTest {
     private static final String TAG = "Fido2CredentialRequestTest";
 
@@ -132,7 +131,7 @@ public class Fido2CredentialRequestTest {
     public final AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
-    @Mock ClientDataJsonImpl.Natives mClientDataJsonImplMock;
+    @Mock Fido2ApiTestHelper.ClientDataJsonMock mClientDataJsonMock;
     @Mock UkmRecorder.Natives mUkmRecorderJniMock;
 
     private WebPageStation mPage;
@@ -142,7 +141,7 @@ public class Fido2CredentialRequestTest {
     private WebauthnTestUtils.MockAuthenticatorRenderFrameHost mFrameHost;
     private MockWebContents mWebContents;
     private WebauthnTestUtils.MockBrowserBridge mMockBrowserBridge;
-    private WebauthnTestUtils.MockFido2ApiCallHelper mFido2ApiCallHelper;
+    private MockFido2ApiCallHelper mFido2ApiCallHelper;
     private AuthenticationContextProvider mAuthenticationContextProvider;
     private Origin mOrigin;
     private Bundle mBrowserOptions;
@@ -246,7 +245,6 @@ public class Fido2CredentialRequestTest {
     public void setUp() throws Exception {
         mPage = mActivityTestRule.startOnBlankPage();
         mContext = ContextUtils.getApplicationContext();
-        WebauthnTestUtils.applyFidoOverride(mContext);
         mIntentSender = new WebauthnTestUtils.MockIntentSender();
         mTestServer = mActivityTestRule.getTestServer();
         mCallback = Fido2ApiTestHelper.getAuthenticatorCallback();
@@ -305,13 +303,13 @@ public class Fido2CredentialRequestTest {
                         return mRequestCallback;
                     }
                 };
-        mRequest = new Fido2CredentialRequest(mAuthenticationContextProvider);
-        AuthenticatorImpl.overrideFido2CredentialRequestForTesting(mRequest);
-
-        mFido2ApiCallHelper = new WebauthnTestUtils.MockFido2ApiCallHelper();
+        mFido2ApiCallHelper = new MockFido2ApiCallHelper();
         mFido2ApiCallHelper.setReturnedCredentialDetails(
                 Arrays.asList(Fido2ApiTestHelper.getCredentialDetails()));
         Fido2ApiCallHelper.overrideInstanceForTesting(mFido2ApiCallHelper);
+
+        mRequest = new Fido2CredentialRequest(mAuthenticationContextProvider);
+        AuthenticatorImpl.overrideFido2CredentialRequestForTesting(mRequest);
 
         sPasswordCredUsername16 =
                 WebauthnBrowserBridge.stringToMojoString16(PASSWORD_CRED_USERNAME);
@@ -1106,10 +1104,8 @@ public class Fido2CredentialRequestTest {
 
         Origin topOrigin = Origin.create(new GURL("https://www.chromium.org/pay"));
 
-        // ClientDataJsonImplJni is mocked directly instead of using
-        // Fido2ApiTestHelper.mockClientDataJson so that it can be used to verify the call arguments
-        // below.
-        ClientDataJsonImplJni.setInstanceForTesting(mClientDataJsonImplMock);
+        // Use the callback mock to verify the arguments passed to ClientDataJson below.
+        Fido2ApiTestHelper.mockClientDataJsonWithCallback(mClientDataJsonMock);
 
         PaymentOptions payment = Fido2ApiTestHelper.createPaymentOptions();
         mRequestOptions.publicKey.challenge = new byte[3];
@@ -1118,7 +1114,7 @@ public class Fido2CredentialRequestTest {
         Fido2ApiTestHelper.verifyRespondedBeforeTimeout(mStartTimeMs);
 
         ArgumentCaptor<Origin> topOriginCaptor = ArgumentCaptor.forClass(Origin.class);
-        Mockito.verify(mClientDataJsonImplMock, Mockito.times(1))
+        Mockito.verify(mClientDataJsonMock, Mockito.times(1))
                 .buildClientDataJson(
                         eq(ClientDataRequestType.PAYMENT_GET),
                         eq(Fido2CredentialRequest.convertOriginToString(mOrigin)),
@@ -1735,9 +1731,9 @@ public class Fido2CredentialRequestTest {
                 Fido2ApiTestHelper.createSuccessfulMakeCredentialIntent());
 
         String clientDataJson = "fakeClientDataJson";
-        // Mock ClientDataJsonImplJni to verify the call arguments below.
-        ClientDataJsonImplJni.setInstanceForTesting(mClientDataJsonImplMock);
-        when(mClientDataJsonImplMock.buildClientDataJson(
+        // Mock ClientDataJson to verify the call arguments below.
+        Fido2ApiTestHelper.mockClientDataJsonWithCallback(mClientDataJsonMock);
+        when(mClientDataJsonMock.buildClientDataJson(
                         anyInt(), any(), any(), anyBoolean(), any(), any(), any()))
                 .thenReturn(clientDataJson);
         PaymentOptions payment = Fido2ApiTestHelper.createPaymentOptions();
@@ -1747,7 +1743,7 @@ public class Fido2CredentialRequestTest {
                 mCreationOptions, mBrowserOptions, mOrigin, mOrigin, payment);
         mCallback.blockUntilCalled();
 
-        Mockito.verify(mClientDataJsonImplMock, Mockito.times(1))
+        Mockito.verify(mClientDataJsonMock, Mockito.times(1))
                 .buildClientDataJson(
                         eq(ClientDataRequestType.WEB_AUTHN_CREATE),
                         eq(Fido2CredentialRequest.convertOriginToString(mOrigin)),
@@ -1772,9 +1768,9 @@ public class Fido2CredentialRequestTest {
                 Fido2ApiTestHelper.createSuccessfulMakeCredentialIntent());
 
         String clientDataJson = "fakeClientDataJson";
-        // Mock ClientDataJsonImplJni to verify the call arguments below.
-        ClientDataJsonImplJni.setInstanceForTesting(mClientDataJsonImplMock);
-        when(mClientDataJsonImplMock.buildClientDataJson(
+        // Mock ClientDataJson to verify the call arguments below.
+        Fido2ApiTestHelper.mockClientDataJsonWithCallback(mClientDataJsonMock);
+        when(mClientDataJsonMock.buildClientDataJson(
                         anyInt(), any(), any(), anyBoolean(), any(), any(), any()))
                 .thenReturn(clientDataJson);
         PaymentOptions payment = Fido2ApiTestHelper.createPaymentOptions();
@@ -1787,7 +1783,7 @@ public class Fido2CredentialRequestTest {
                 mCreationOptions, mBrowserOptions, mOrigin, mOrigin, payment);
         mCallback.blockUntilCalled();
 
-        Mockito.verify(mClientDataJsonImplMock, Mockito.times(1))
+        Mockito.verify(mClientDataJsonMock, Mockito.times(1))
                 .buildClientDataJson(
                         eq(ClientDataRequestType.WEB_AUTHN_CREATE),
                         eq(Fido2CredentialRequest.convertOriginToString(mOrigin)),
@@ -1812,10 +1808,10 @@ public class Fido2CredentialRequestTest {
         mIntentSender.setNextResultIntent(
                 Fido2ApiTestHelper.createSuccessfulMakeCredentialIntent());
 
-        // Mock ClientDataJsonImplJni to capture the call arguments.
-        ClientDataJsonImplJni.setInstanceForTesting(mClientDataJsonImplMock);
+        // Mock ClientDataJson to capture the call arguments.
+        Fido2ApiTestHelper.mockClientDataJsonWithCallback(mClientDataJsonMock);
         String clientDataJson = "fakeClientDataJson";
-        when(mClientDataJsonImplMock.buildClientDataJson(
+        when(mClientDataJsonMock.buildClientDataJson(
                         anyInt(), any(), any(), anyBoolean(), any(), any(), any()))
                 .thenReturn(clientDataJson);
 
@@ -1838,7 +1834,7 @@ public class Fido2CredentialRequestTest {
                 mCreationOptions, mBrowserOptions, mOrigin, mOrigin, /* paymentOptions= */ null);
         mCallback.blockUntilCalled();
 
-        Mockito.verify(mClientDataJsonImplMock, Mockito.times(1))
+        Mockito.verify(mClientDataJsonMock, Mockito.times(1))
                 .buildClientDataJson(
                         eq(ClientDataRequestType.WEB_AUTHN_CREATE),
                         // Verify that the origin used in buildClientDataJson is the
@@ -1867,10 +1863,10 @@ public class Fido2CredentialRequestTest {
             boolean sameOriginWithAncestors) {
         mIntentSender.setNextResultIntent(Fido2ApiTestHelper.createSuccessfulGetAssertionIntent());
 
-        // Mock ClientDataJsonImplJni to capture the call arguments.
-        ClientDataJsonImplJni.setInstanceForTesting(mClientDataJsonImplMock);
+        // Mock ClientDataJson to capture the call arguments.
+        Fido2ApiTestHelper.mockClientDataJsonWithCallback(mClientDataJsonMock);
         String clientDataJson = "fakeClientDataJson";
-        when(mClientDataJsonImplMock.buildClientDataJson(
+        when(mClientDataJsonMock.buildClientDataJson(
                         anyInt(), any(), any(), anyBoolean(), any(), any(), any()))
                 .thenReturn(clientDataJson);
 
@@ -1894,7 +1890,7 @@ public class Fido2CredentialRequestTest {
                 mRequestOptions, mOrigin, mOrigin, /* payment= */ null);
         mCallback.blockUntilCalled();
 
-        Mockito.verify(mClientDataJsonImplMock, Mockito.times(1))
+        Mockito.verify(mClientDataJsonMock, Mockito.times(1))
                 .buildClientDataJson(
                         eq(ClientDataRequestType.WEB_AUTHN_GET),
                         // Verify that the origin used in buildClientDataJson is the

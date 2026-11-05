@@ -7,9 +7,7 @@
 
 #include <bit>
 #include <cstddef>
-#include <utility>
 
-#include "partition_alloc/address_pool_manager_types.h"
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/page_allocator_constants.h"
@@ -17,12 +15,22 @@
 #include "partition_alloc/partition_alloc_base/component_export.h"
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/partition_alloc_config.h"
-#include "partition_alloc/partition_alloc_constants.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/tagging.h"
 #include "partition_alloc/thread_isolation/alignment.h"
+#include "partition_alloc/thread_isolation/pkey.h"
 
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
 #include "partition_alloc/thread_isolation/thread_isolation.h"
+#endif
+
+#if PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)
+#include <array>
+#endif
+
+#if PA_BUILDFLAG(IS_FUCHSIA)
+#include <lib/zx/vmar.h>
+#include <zircon/types.h>
 #endif
 
 // The feature is not applicable to 32-bit address space.
@@ -112,12 +120,49 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC) PartitionAddressSpace {
   //
   // This function must only be called from the main thread.
   static void Init();
-  // Initialize the ConfigurablePool at the given address |pool_base|. It must
-  // be aligned to the size of the pool. The size must be a power of two and
-  // must be within [kConfigurablePoolMinSize, kConfigurablePoolMaxSize].
+  // Configuration for initializing the ConfigurablePool via
+  // InitConfigurablePool().
+  struct ConfigurablePoolConfig {
+    // Base address of the pre-reserved address space region. Must be non-zero
+    // and aligned to `size`.
+    uintptr_t pool_base = 0;
+    // Size of the pool in bytes. Must be a power of two within
+    // [kConfigurablePoolMinSize, kConfigurablePoolMaxSize].
+    size_t size = 0;
+    // Memory protection key to tag the pool with so freed regions are
+    // re-tagged upon decommit, or `kInvalidPkey` if none.
+    int pkey = kInvalidPkey;
+#if PA_BUILDFLAG(IS_FUCHSIA)
+    // VMAR handle in which the pool's backing VMO is mapped (for example, a
+    // child VMAR backing the V8 Sandbox). Must be valid; the caller retains
+    // ownership and must keep the handle valid while the pool is initialized.
+    zx::unowned_vmar vmar = zx::vmar::root_self();
+#endif
+  };
+
+  // Initializes the ConfigurablePool using `config`.
   //
-  // This function must only be called from the main thread.
-  static void InitConfigurablePool(uintptr_t pool_base, size_t size);
+  // Must only be called from the main thread.
+  static void InitConfigurablePool(const ConfigurablePoolConfig& config);
+
+  // Forwards to InitConfigurablePool(const ConfigurablePoolConfig&).
+  // TODO(crbug.com/42050478): Remove once callers migrate to
+  // ConfigurablePoolConfig.
+  static void InitConfigurablePool(uintptr_t pool_base,
+                                   size_t size,
+                                   int pkey = kInvalidPkey) {
+    InitConfigurablePool(ConfigurablePoolConfig{
+        .pool_base = pool_base,
+        .size = size,
+        .pkey = pkey,
+    });
+  }
+#if PA_BUILDFLAG(IS_FUCHSIA)
+  PA_ALWAYS_INLINE static zx::unowned_vmar GetConfigurablePoolVmar() {
+    PA_DCHECK(setup_.configurable_pool_vmar_ != ZX_HANDLE_INVALID);
+    return zx::unowned_vmar(setup_.configurable_pool_vmar_);
+  }
+#endif  // PA_BUILDFLAG(IS_FUCHSIA)
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
   static void InitThreadIsolatedPool(ThreadIsolationOption thread_isolation);
   static void UninitThreadIsolatedPoolForTesting();
@@ -384,6 +429,9 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC) PartitionAddressSpace {
     uintptr_t glued_pools_base_mask_ = 0;
 #endif  // PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
     uintptr_t configurable_pool_base_mask_ = 0;
+#if PA_BUILDFLAG(IS_FUCHSIA)
+    zx_handle_t configurable_pool_vmar_ = ZX_HANDLE_INVALID;
+#endif  // PA_BUILDFLAG(IS_FUCHSIA)
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
     ThreadIsolationOption thread_isolation_;
 #endif

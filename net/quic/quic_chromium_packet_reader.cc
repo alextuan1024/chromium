@@ -24,12 +24,8 @@ namespace {
 const size_t kReadBufferSize =
     static_cast<size_t>(quic::kMaxIncomingPacketSize + 1);
 
-// Number of packets to read when using ReadMultiple. Computed to ensure the
-// total read buffer size (kNumPacketsToRead * kReadBufferSize) is at least 64KB
-// (kMinimumReadMultipleBufferSize) to prevent packet truncation when GRO is
-// enabled.
-constexpr size_t kNumPacketsToRead =
-    (kMinimumReadMultipleBufferSize + kReadBufferSize - 1) / kReadBufferSize;
+// Maximum number of packets to read per ReadMultiple call.
+constexpr size_t kNumPacketsToRead = 16;
 }  // namespace
 
 QuicChromiumPacketReader::QuicChromiumPacketReader(
@@ -100,7 +96,6 @@ void QuicChromiumPacketReader::StartReading() {
           read_buffer_.get(), read_buffer_->size(),
           base::BindOnce(&QuicChromiumPacketReader::OnReadComplete,
                          weak_factory_.GetWeakPtr()));
-      UMA_HISTOGRAM_BOOLEAN("Net.QuicSession.AsyncRead", rv == ERR_IO_PENDING);
       if (rv == ERR_IO_PENDING) {
         num_packets_read_ = 0;
         return;
@@ -160,16 +155,27 @@ bool QuicChromiumPacketReader::ProcessReadResult(int result) {
                                   /*packet_headers=*/nullptr,
                                   /*headers_length=*/0,
                                   /*owns_header_buffer=*/false, ecn);
+  return DispatchPacket(packet);
+}
+
+bool QuicChromiumPacketReader::DispatchPacket(
+    const quic::QuicReceivedPacket& packet) {
   IPEndPoint local_address;
   IPEndPoint peer_address;
   socket_->GetLocalAddress(&local_address);
   socket_->GetPeerAddress(&peer_address);
   auto self = weak_factory_.GetWeakPtr();
+  is_dispatching_packet_ = true;
   // Notifies the visitor that |this| reader gets a new packet, which may delete
   // |this| if |this| is a connectivity probing reader.
-  return visitor_->OnPacket(packet, ToQuicSocketAddress(local_address),
-                            ToQuicSocketAddress(peer_address)) &&
-         self;
+  const bool packet_handled =
+      visitor_->OnPacket(packet, ToQuicSocketAddress(local_address),
+                         ToQuicSocketAddress(peer_address));
+  if (!self) {
+    return false;
+  }
+  is_dispatching_packet_ = false;
+  return packet_handled;
 }
 
 bool QuicChromiumPacketReader::ShouldYield() {
@@ -290,15 +296,7 @@ bool QuicChromiumPacketReader::ProcessSingleDatagram(
       /*owns_buffer=*/false, /*ttl=*/0, /*ttl_valid=*/true,
       /*packet_headers=*/nullptr, /*headers_length=*/0,
       /*owns_header_buffer=*/false, ecn);
-
-  IPEndPoint local_address;
-  IPEndPoint peer_address;
-  socket_->GetLocalAddress(&local_address);
-  socket_->GetPeerAddress(&peer_address);
-  auto self = weak_factory_.GetWeakPtr();
-  return visitor_->OnPacket(packet, ToQuicSocketAddress(local_address),
-                            ToQuicSocketAddress(peer_address)) &&
-         self;
+  return DispatchPacket(packet);
 }
 
 }  // namespace net

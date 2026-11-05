@@ -15,12 +15,40 @@
 #import "ios/chrome/browser/web/model/web_performance_metrics/web_performance_metrics_tab_helper.h"
 #import "ios/web/public/js_messaging/script_message.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
+#import "ios/web/public/test/fakes/fake_web_frame.h"
+#import "ios/web/public/test/fakes/fake_web_frames_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "url/gurl.h"
 #import "url/origin.h"
+
+namespace {
+
+// Creates `WebPerformanceMetricsTabHelper` for `web_state` with a main frame
+// and a child frame.
+void SetUpWebStateWithTabHelper(web::FakeWebState& web_state) {
+  // FakeWebFramesManager is needed for the observer.
+  auto web_frames_manager = std::make_unique<web::FakeWebFramesManager>();
+  web_frames_manager->AddWebFrame(web::FakeWebFrame::CreateMainWebFrame());
+  web_frames_manager->AddWebFrame(web::FakeWebFrame::CreateChildWebFrame());
+  web_state.SetWebFramesManager(
+      WebPerformanceMetricsJavaScriptFeature::GetInstance()
+          ->GetSupportedContentWorld(),
+      std::move(web_frames_manager));
+  WebPerformanceMetricsTabHelper::CreateForWebState(&web_state);
+}
+
+// Simulates a committed cross-document navigation in `web_state`.
+void CommitCrossDocumentNavigation(web::FakeWebState& web_state) {
+  web::FakeNavigationContext navigation_context;
+  navigation_context.SetHasCommitted(true);
+  web_state.OnNavigationStarted(&navigation_context);
+  web_state.OnNavigationFinished(&navigation_context);
+}
+
+}  // namespace
 
 using WebPerformanceMetricsJavaScriptFeatureTest = PlatformTest;
 
@@ -33,7 +61,7 @@ TEST_F(WebPerformanceMetricsJavaScriptFeatureTest,
 
   base::HistogramTester histogram_tester;
   web::FakeWebState fake_web_state;
-  WebPerformanceMetricsTabHelper::CreateForWebState(&fake_web_state);
+  SetUpWebStateWithTabHelper(fake_web_state);
   WebPerformanceMetricsTabHelper* tab_helper =
       WebPerformanceMetricsTabHelper::FromWebState(&fake_web_state);
 
@@ -41,11 +69,12 @@ TEST_F(WebPerformanceMetricsJavaScriptFeatureTest,
   main_frame_dict.Set(web_performance_metrics::kMetricKey,
                       web_performance_metrics::kInteractionToNextPaintMetric);
   base::ListValue main_durations;
-  main_durations.Append(85.0);
+  main_durations.Append(base::Milliseconds(85).InMillisecondsF());
   main_frame_dict.Set(web_performance_metrics::kDurationsKey,
                       std::move(main_durations));
-  main_frame_dict.Set(web_performance_metrics::kInteractionCountKey, 1);
-  main_frame_dict.Set(web_performance_metrics::kFrameIdKey, "main_1");
+  main_frame_dict.Set(web_performance_metrics::kInteractionCountKey, 1.0);
+  main_frame_dict.Set(web_performance_metrics::kFrameIdKey,
+                      web::kMainFakeFrameId);
   web::ScriptMessage main_frame_message(
       std::make_unique<base::Value>(std::move(main_frame_dict)),
       /*is_user_interacting=*/true, /*is_main_frame=*/true,
@@ -58,12 +87,12 @@ TEST_F(WebPerformanceMetricsJavaScriptFeatureTest,
   // Directly flush the tab helper to verify that the message was recorded.
   tab_helper->FlushInteractionToNextPaintMetrics();
 
-  histogram_tester.ExpectUniqueSample(
-      web_performance_metrics::kInteractionToNextPaintMainFrameHistogram, 85,
-      1);
-  histogram_tester.ExpectUniqueSample(
-      web_performance_metrics::kAggregateInteractionToNextPaintHistogram, 85,
-      1);
+  histogram_tester.ExpectUniqueTimeSample(
+      web_performance_metrics::kInteractionToNextPaintMainFrameHistogram,
+      base::Milliseconds(85), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      web_performance_metrics::kAggregateInteractionToNextPaintHistogram,
+      base::Milliseconds(85), 1);
 }
 
 // Tests that ScriptMessageReceived ignores INP messages when the killswitch is
@@ -75,7 +104,7 @@ TEST_F(WebPerformanceMetricsJavaScriptFeatureTest,
 
   base::HistogramTester histogram_tester;
   web::FakeWebState fake_web_state;
-  WebPerformanceMetricsTabHelper::CreateForWebState(&fake_web_state);
+  SetUpWebStateWithTabHelper(fake_web_state);
   WebPerformanceMetricsTabHelper* tab_helper =
       WebPerformanceMetricsTabHelper::FromWebState(&fake_web_state);
 
@@ -86,8 +115,9 @@ TEST_F(WebPerformanceMetricsJavaScriptFeatureTest,
   main_durations.Append(base::Milliseconds(85).InMillisecondsF());
   main_frame_dict.Set(web_performance_metrics::kDurationsKey,
                       std::move(main_durations));
-  main_frame_dict.Set(web_performance_metrics::kInteractionCountKey, 1);
-  main_frame_dict.Set(web_performance_metrics::kFrameIdKey, "main_1");
+  main_frame_dict.Set(web_performance_metrics::kInteractionCountKey, 1.0);
+  main_frame_dict.Set(web_performance_metrics::kFrameIdKey,
+                      web::kMainFakeFrameId);
   web::ScriptMessage main_frame_message(
       std::make_unique<base::Value>(std::move(main_frame_dict)),
       /*is_user_interacting=*/true, /*is_main_frame=*/true,
@@ -108,23 +138,24 @@ TEST_F(WebPerformanceMetricsJavaScriptFeatureTest,
 }
 
 // Tests that LogInteractionToNextPaint parses dictionary payloads and records
-// interaction timing data for both main frame and subframes.
+// interaction timing data for both main frame and subframes, while ignoring
+// payloads that report no interactions.
 TEST_F(WebPerformanceMetricsJavaScriptFeatureTest, LogInteractionToNextPaint) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kIOSWebPerformanceMetricsINP);
 
   base::HistogramTester histogram_tester;
   web::FakeWebState fake_web_state;
-  WebPerformanceMetricsTabHelper::CreateForWebState(&fake_web_state);
+  SetUpWebStateWithTabHelper(fake_web_state);
 
   // 1. Direct call with main frame dictionary.
   base::DictValue main_dict;
   base::ListValue main_durations;
-  main_durations.Append(110.0);
+  main_durations.Append(base::Milliseconds(110).InMillisecondsF());
   main_dict.Set(web_performance_metrics::kDurationsKey,
                 std::move(main_durations));
-  main_dict.Set(web_performance_metrics::kInteractionCountKey, 1);
-  main_dict.Set(web_performance_metrics::kFrameIdKey, "main_frame_1");
+  main_dict.Set(web_performance_metrics::kInteractionCountKey, 1.0);
+  main_dict.Set(web_performance_metrics::kFrameIdKey, web::kMainFakeFrameId);
 
   WebPerformanceMetricsJavaScriptFeature::GetInstance()
       ->LogInteractionToNextPaint(&fake_web_state, main_dict,
@@ -133,36 +164,89 @@ TEST_F(WebPerformanceMetricsJavaScriptFeatureTest, LogInteractionToNextPaint) {
   // 2. Direct call with subframe dictionary.
   base::DictValue sub_dict;
   base::ListValue sub_durations;
-  sub_durations.Append(75.0);
+  sub_durations.Append(base::Milliseconds(75).InMillisecondsF());
   sub_dict.Set(web_performance_metrics::kDurationsKey,
                std::move(sub_durations));
-  sub_dict.Set(web_performance_metrics::kInteractionCountKey, 1);
-  sub_dict.Set(web_performance_metrics::kFrameIdKey, "sub_frame_1");
+  sub_dict.Set(web_performance_metrics::kInteractionCountKey, 1.0);
+  sub_dict.Set(web_performance_metrics::kFrameIdKey, web::kChildFakeFrameId);
 
   WebPerformanceMetricsJavaScriptFeature::GetInstance()
       ->LogInteractionToNextPaint(&fake_web_state, sub_dict,
                                   /*is_main_frame=*/false);
 
-  // 3. Direct call with empty durations (should be safely ignored).
-  base::DictValue empty_dict;
-  empty_dict.Set(web_performance_metrics::kDurationsKey, base::ListValue());
-  empty_dict.Set(web_performance_metrics::kFrameIdKey, "empty_frame");
+  // 3. Direct call with a missing interaction count (safely ignored). The frame
+  // id is distinct so that a regression dropping the early return would
+  // register an extra frame entry in the tab helper.
+  base::DictValue missing_count_dict;
+  missing_count_dict.Set(web_performance_metrics::kDurationsKey,
+                         base::ListValue());
+  missing_count_dict.Set(web_performance_metrics::kFrameIdKey,
+                         "missing_count_frame_1");
   WebPerformanceMetricsJavaScriptFeature::GetInstance()
-      ->LogInteractionToNextPaint(&fake_web_state, empty_dict,
+      ->LogInteractionToNextPaint(&fake_web_state, missing_count_dict,
                                   /*is_main_frame=*/false);
 
-  // Trigger navigation flush.
-  web::FakeNavigationContext navigation_context;
-  fake_web_state.OnNavigationStarted(&navigation_context);
+  // 4. Direct call with an explicit zero interaction count (safely ignored).
+  base::DictValue zero_count_dict;
+  zero_count_dict.Set(web_performance_metrics::kDurationsKey,
+                      base::ListValue());
+  zero_count_dict.Set(web_performance_metrics::kInteractionCountKey, 0.0);
+  zero_count_dict.Set(web_performance_metrics::kFrameIdKey,
+                      "zero_count_frame_1");
+  WebPerformanceMetricsJavaScriptFeature::GetInstance()
+      ->LogInteractionToNextPaint(&fake_web_state, zero_count_dict,
+                                  /*is_main_frame=*/false);
 
-  histogram_tester.ExpectUniqueSample(
-      web_performance_metrics::kInteractionToNextPaintMainFrameHistogram, 110,
-      1);
-  histogram_tester.ExpectUniqueSample(
-      web_performance_metrics::kInteractionToNextPaintSubFrameHistogram, 75, 1);
-  histogram_tester.ExpectUniqueSample(
-      web_performance_metrics::kAggregateInteractionToNextPaintHistogram, 110,
-      1);
+  // Trigger the flush by committing two navigations: the page that is left is
+  // only logged at the next committed navigation, because its last message can
+  // arrive after the first commit.
+  CommitCrossDocumentNavigation(fake_web_state);
+  CommitCrossDocumentNavigation(fake_web_state);
+
+  histogram_tester.ExpectUniqueTimeSample(
+      web_performance_metrics::kInteractionToNextPaintMainFrameHistogram,
+      base::Milliseconds(110), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      web_performance_metrics::kInteractionToNextPaintSubFrameHistogram,
+      base::Milliseconds(75), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      web_performance_metrics::kAggregateInteractionToNextPaintHistogram,
+      base::Milliseconds(110), 1);
+}
+
+// Tests that LogInteractionToNextPaint records the synthesized sub-threshold
+// duration when every interaction completed below WebKit's 16ms Event Timing
+// threshold, leaving the reported durations empty.
+TEST_F(WebPerformanceMetricsJavaScriptFeatureTest,
+       LogInteractionToNextPaintSubThreshold) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kIOSWebPerformanceMetricsINP);
+
+  base::HistogramTester histogram_tester;
+  web::FakeWebState fake_web_state;
+  SetUpWebStateWithTabHelper(fake_web_state);
+
+  base::DictValue main_dict;
+  main_dict.Set(web_performance_metrics::kDurationsKey, base::ListValue());
+  main_dict.Set(web_performance_metrics::kInteractionCountKey, 5.0);
+  main_dict.Set(web_performance_metrics::kFrameIdKey, web::kMainFakeFrameId);
+
+  WebPerformanceMetricsJavaScriptFeature::GetInstance()
+      ->LogInteractionToNextPaint(&fake_web_state, main_dict,
+                                  /*is_main_frame=*/true);
+
+  // Trigger the flush by committing two navigations: the page that is left is
+  // only logged at the next committed navigation, because its last message can
+  // arrive after the first commit.
+  CommitCrossDocumentNavigation(fake_web_state);
+  CommitCrossDocumentNavigation(fake_web_state);
+
+  histogram_tester.ExpectUniqueTimeSample(
+      web_performance_metrics::kInteractionToNextPaintMainFrameHistogram,
+      web_performance_metrics::kSubThresholdInteractionDuration, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      web_performance_metrics::kAggregateInteractionToNextPaintHistogram,
+      web_performance_metrics::kSubThresholdInteractionDuration, 1);
 }
 
 class MockObserver : public WebPerformanceMetricsTabHelper::Observer {
@@ -178,7 +262,7 @@ class MockObserver : public WebPerformanceMetricsTabHelper::Observer {
 // notifications when the aggregate First Contentful Paint is updated.
 TEST_F(WebPerformanceMetricsJavaScriptFeatureTest, TabHelperObserver) {
   auto web_state = std::make_unique<web::FakeWebState>();
-  WebPerformanceMetricsTabHelper::CreateForWebState(web_state.get());
+  SetUpWebStateWithTabHelper(*web_state);
   WebPerformanceMetricsTabHelper* tab_helper =
       WebPerformanceMetricsTabHelper::FromWebState(web_state.get());
   ASSERT_THAT(tab_helper, testing::NotNull());
@@ -202,7 +286,7 @@ TEST_F(WebPerformanceMetricsJavaScriptFeatureTest, TabHelperObserver) {
 TEST_F(WebPerformanceMetricsJavaScriptFeatureTest,
        LogAggregateFirstContentfulPaintUpdatesAggregate) {
   auto web_state = std::make_unique<web::FakeWebState>();
-  WebPerformanceMetricsTabHelper::CreateForWebState(web_state.get());
+  SetUpWebStateWithTabHelper(*web_state);
   WebPerformanceMetricsTabHelper* tab_helper =
       WebPerformanceMetricsTabHelper::FromWebState(web_state.get());
   ASSERT_THAT(tab_helper, testing::NotNull());

@@ -34,6 +34,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy_features_bitset.h"
 #include "third_party/blink/public/mojom/blob/blob_url_store.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/worker/shared_worker_client.mojom-blink.h"
 #include "third_party/blink/public/mojom/worker/shared_worker_connector.mojom-blink.h"
@@ -42,12 +43,14 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_unique_receiver_set.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 
 namespace blink {
 
+class Document;
 class MessagePortChannel;
 class KURL;
 class SharedWorker;
@@ -74,19 +77,26 @@ class CORE_EXPORT SharedWorkerClientHolder final
   // Establishes a connection with SharedWorkerHost in the browser process.
   // `connector_override` is used to force creation of the shared worker on
   // a custom worker pool instead of the default pool `connector_`.
-  void Connect(SharedWorker*,
-               MessagePortChannel,
-               const KURL&,
-               mojo::PendingRemote<mojom::blink::BlobURLToken>,
-               mojom::blink::WorkerOptionsPtr options,
-               mojom::blink::SharedWorkerSameSiteCookies same_site_cookies,
-               const HeapMojoRemote<mojom::blink::SharedWorkerConnector>*
-                   connector_override,
-               bool extended_lifetime);
+  void Connect(
+      SharedWorker*,
+      MessagePortChannel,
+      const KURL&,
+      mojo::PendingRemote<mojom::blink::BlobURLToken>,
+      mojom::blink::WorkerOptionsPtr options,
+      mojom::blink::SharedWorkerSameSiteCookies same_site_cookies,
+      const HeapMojoRemote<mojom::blink::SharedWorkerConnector>*
+          connector_override,
+      bool extended_lifetime,
+      const network::PermissionsPolicyFeaturesBitset& permissions_policy);
 
   void Trace(Visitor* visitor) const override;
 
  private:
+  // Tracks the active Document to detect when LocalDOMWindow is reused across a
+  // same-origin initial empty document navigation. Because the browser-side
+  // SharedWorkerConnectorImpl is a DocumentService destroyed on cross-document
+  // commit, `connector_` must be rebound whenever the active Document changes.
+  WeakMember<Document> document_;
   HeapMojoRemote<mojom::blink::SharedWorkerConnector> connector_;
   HeapMojoUniqueReceiverSet<mojom::blink::SharedWorkerClient> client_receivers_;
 

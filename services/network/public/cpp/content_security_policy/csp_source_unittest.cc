@@ -4,6 +4,9 @@
 
 #include "services/network/public/cpp/content_security_policy/csp_source.h"
 
+#include <string_view>
+
+#include "base/strings/strcat.h"
 #include "net/http/http_response_headers.h"
 #include "services/network/public/cpp/content_security_policy/content_security_policy.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -17,10 +20,11 @@ namespace {
 // 'self'. It doesn't match any URL.
 static const network::mojom::CSPSource no_self;
 
-network::mojom::CSPSourcePtr CSPSource(const std::string& raw) {
+network::mojom::CSPSourcePtr CSPSource(std::string_view raw) {
   scoped_refptr<net::HttpResponseHeaders> headers(
       new net::HttpResponseHeaders("HTTP/1.1 200 OK"));
-  headers->SetHeader("Content-Security-Policy", "script-src " + raw);
+  headers->SetHeader("Content-Security-Policy",
+                     base::StrCat({"script-src ", raw}));
   std::vector<mojom::ContentSecurityPolicyPtr> policies;
   AddContentSecurityPolicyFromHeaders(*headers, GURL("https://example.com/"),
                                       &policies);
@@ -401,13 +405,24 @@ TEST_P(CSPSourceTest, Intersect) {
       {"http://example.org:*/page.html", "https://example.org/",
        "https://example.org/page.html"},
       {"http://*.example.com:*", "http://*.com", "http://*.example.com"},
-      // Empty intersection
+      // Percent-encoded paths are decoded once when parsed.
+      {"http://example.org/%70age.html", "http://example.org/page.html",
+       "http://example.org/page.html"},
+      {"http://example.org/%2570age.html", "http://example.org/%2570age.html",
+       "http://example.org/%70age.html"},
+      {"http://example.org/", "http://example.org/%2570age.html",
+       "http://example.org/%70age.html"},
+      //  Empty intersection
       {"data:", "http:", nullptr},
       {"data:", "http://example.org", nullptr},
       {"data://example.org", "http://example.org", nullptr},
       {"http://example.com", "http://example.org", nullptr},
       {"http://example.org:90", "http://example.org", nullptr},
       {"http://example.org/page.html", "http://example.org/about.html",
+       nullptr},
+      {"http://example.org/%2570age.html", "http://example.org/page.html",
+       nullptr},
+      {"http://example.org/dir/", "http://example.org/%2564ir/page.html",
        nullptr},
   };
 
@@ -451,6 +466,9 @@ TEST_P(CSPSourceTest, DoesNotSubsume) {
       {"http://example.com/", "about://example.com/"},
       // Different paths.
       {"http://example.com/1.html", "http://example.com/2.html"},
+      {"http://example.com/page.html", "http://example.com/%2570age.html"},
+      {"http://example.com/dir/", "http://example.com/%2564ir/page.html"},
+      {"http://example.com/dir/", "http://example.com/dir%252Fpage.html"},
       // Different ports.
       {"http://example.com:443/", "http://example.com:800/"},
   };
@@ -476,6 +494,9 @@ TEST_P(CSPSourceTest, Subsumes) {
       {"http://a.org/", "http://a.org/", true, true},
       {"https://a.org/", "https://a.org/", true, true},
       {"https://a.org/page.html", "https://a.org/page.html", true, true},
+      {"https://a.org/%70age.html", "https://a.org/page.html", true, true},
+      {"https://a.org/%2570age.html", "https://a.org/%2570age.html", true,
+       true},
       {"http://a.org:70", "http://a.org:70", true, true},
       {"https://a.org:70", "https://a.org:70", true, true},
       {"https://a.org/page.html", "https://a.org/page.html", true, true},
@@ -489,6 +510,8 @@ TEST_P(CSPSourceTest, Subsumes) {
       // One stronger signal in the first CSPSource.
       {"http://a.org/", "https://a.org/", true, false},
       {"http://a.org/page.html", "http://a.org/", false, true},
+      {"http://a.org/%61/page.html", "http://a.org/a/", false, true},
+      {"http://a.org/%2570age.html", "http://a.org/", false, true},
       {"http://a.org:80/page.html", "http://a.org:80/", false, true},
       {"http://a.org:80", "http://a.org/", true, true},
       {"http://a.org:700", "http://a.org/", false, false},

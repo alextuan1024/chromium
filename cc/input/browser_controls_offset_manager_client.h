@@ -13,6 +13,8 @@ class PointF;
 
 namespace cc {
 
+struct BrowserControlsSnapHint;
+
 class CC_EXPORT BrowserControlsOffsetManagerClient {
  public:
   virtual float TopControlsHeight() const = 0;
@@ -30,8 +32,11 @@ class CC_EXPORT BrowserControlsOffsetManagerClient {
   virtual bool HaveRootScrollNode() const = 0;
   virtual void SetNeedsCommit(
       BeginMainFrameReason reason = BeginMainFrameReason::kOther) = 0;
-  virtual base::TimeDelta CurrentFrameInterval() const = 0;
   virtual float DeviceScaleFactor() const = 0;
+  // Forwards a snap animation hint to the browser process. Only called when
+  // the browser process owns the controls position.
+  virtual void ReportBrowserControlsSnapHint(
+      const BrowserControlsSnapHint& hint) = 0;
 
  protected:
   virtual ~BrowserControlsOffsetManagerClient() {}

@@ -4,6 +4,7 @@
 
 #import "ios/chrome/browser/toolbar/coordinator/toolbar_mediator.h"
 
+#import "base/i18n/language_tag.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
@@ -23,16 +24,20 @@
 #import "ios/chrome/browser/default_browser/model/promo_source.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/test/test_fullscreen_controller.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_browser_agent.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_impl.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state_test_passkey_factory.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -40,6 +45,7 @@
 #import "ios/chrome/browser/shared/public/commands/activity_service_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/page_side_swipe_commands.h"
 #import "ios/chrome/browser/shared/public/commands/popup_menu_commands.h"
@@ -64,6 +70,7 @@
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
+#import "ios/web/public/ui/crw_web_view_proxy.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
@@ -73,11 +80,25 @@
 
 @interface ToolbarMediator (Test)
 - (void)updateAssistantButton;
+- (void)navigateToPageForItem:(web::NavigationItem*)item;
 @end
 
 namespace {
 
 MenuScenarioHistogram kTestMenuScenario = kMenuScenarioHistogramToolbarMenu;
+
+// `FakeNavigationManager` subclass that records calls to `GoToIndex`.
+class RecordingNavigationManager : public web::FakeNavigationManager {
+ public:
+  void GoToIndex(int index) override {
+    last_navigated_index_ = index;
+    SetLastCommittedItemIndex(index);
+  }
+  int last_navigated_index() const { return last_navigated_index_; }
+
+ private:
+  int last_navigated_index_ = -1;
+};
 
 }  // namespace
 
@@ -95,26 +116,20 @@ class ToolbarMediatorTest : public PlatformTest,
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         IdentityManagerFactory::GetInstance(),
-        base::BindRepeating(&IdentityTestEnvironmentBrowserStateAdaptor::
-                                BuildIdentityManagerForTests));
+        base::BindOnce(&IdentityTestEnvironmentBrowserStateAdaptor::
+                           BuildIdentityManagerForTests));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
-    builder.AddTestingFactory(GeminiServiceFactory::GetInstance(),
-                              GeminiServiceFactory::GetDefaultFactory());
+                              base::BindOnce(&CreateTestSyncService));
     builder.AddTestingFactory(
         OptimizationGuideServiceFactory::GetInstance(),
         OptimizationGuideServiceFactory::GetDefaultFactory());
     profile_ = std::move(builder).Build();
 
     auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_.get());
-    gemini_service_ptr_ = std::make_unique<GeminiServiceImpl>(
-        profile_.get(), auth_service_,
-        IdentityManagerFactory::GetForProfile(profile_.get()),
-        profile_->GetTestingPrefService(),
-        OptimizationGuideServiceFactory::GetForProfile(profile_.get()));
+    gemini_service_ = GeminiServiceFactory::GetForProfile(profile_.get());
 
     browser_ = std::make_unique<TestBrowser>(profile_.get());
     WebNavigationBrowserAgent::CreateForBrowser(browser_.get());
@@ -150,7 +165,7 @@ class ToolbarMediatorTest : public PlatformTest,
                         webStateList:browser_->GetWebStateList()
                        actionFactory:action_factory_
                              profile:profile_.get()
-                         prefService:profile_->GetTestingPrefService()
+                         prefService:profile_->GetPrefs()
                 fullscreenController:TestFullscreenController::FromBrowser(
                                          browser_.get())
               fullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
@@ -158,7 +173,7 @@ class ToolbarMediatorTest : public PlatformTest,
                          topPosition:GetParam()
         defaultBrowserBannerAppAgent:GetParam() ? mock_app_agent_ : nil
                authenticationService:auth_service_
-                       geminiService:gemini_service_ptr_.get()
+                       geminiService:gemini_service_.get()
                   geminiBrowserAgent:gemini_browser_agent_];
     mediator_.navigationBrowserAgent =
         WebNavigationBrowserAgent::FromBrowser(browser_.get());
@@ -221,17 +236,13 @@ class ToolbarMediatorTest : public PlatformTest,
       scoped_variations_service_.Get()->OverrideStoredPermanentCountry("us");
       TestingApplicationContext::GetGlobal()
           ->GetApplicationLocaleStorage()
-          ->Set("en-US");
+          ->SetTag(base::i18n::GetKnownLanguageTag("en-US"));
     } else {
       scoped_variations_service_.Get()->OverrideStoredPermanentCountry("fr");
       TestingApplicationContext::GetGlobal()
           ->GetApplicationLocaleStorage()
-          ->Set("fr-FR");
+          ->SetTag(base::i18n::GetKnownLanguageTag("fr-FR"));
     }
-  }
-
-  void SetFloatyInvoked(bool invoked) {
-    gemini_browser_agent_->is_floaty_invoked_ = invoked;
   }
 
   void TearDown() override {
@@ -255,7 +266,7 @@ class ToolbarMediatorTest : public PlatformTest,
   id settings_handler_;
   raw_ptr<AuthenticationService> auth_service_;
   raw_ptr<GeminiBrowserAgent> gemini_browser_agent_;
-  std::unique_ptr<GeminiService> gemini_service_ptr_;
+  raw_ptr<GeminiService> gemini_service_;
   raw_ptr<web::FakeNavigationManager> fake_navigation_manager_;
 };
 
@@ -338,6 +349,28 @@ TEST_P(ToolbarMediatorTest, TestWebStateSelectionUpdatesConsumer) {
   browser_->GetWebStateList()->InsertWebState(
       CreateWebState(), WebStateList::InsertionParams::AtIndex(0).Activate());
 
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that `setShareEnabled:` is disabled on internal `chrome://` URLs except
+// for downloaded and external files.
+TEST_P(ToolbarMediatorTest, TestShareEnabledForChromeURLs) {
+  std::unique_ptr<web::FakeWebState> version_web_state = CreateWebState();
+  version_web_state->SetVisibleURL(GURL("chrome://version"));
+
+  OCMExpect([consumer_ setShareEnabled:NO]);
+  browser_->GetWebStateList()->InsertWebState(
+      std::move(version_web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  std::unique_ptr<web::FakeWebState> downloads_web_state = CreateWebState();
+  downloads_web_state->SetVisibleURL(GURL("chrome://downloads/fileName"));
+
+  OCMExpect([consumer_ setShareEnabled:YES]);
+  browser_->GetWebStateList()->InsertWebState(
+      std::move(downloads_web_state),
+      WebStateList::InsertionParams::AtIndex(1).Activate());
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
 
@@ -467,6 +500,72 @@ TEST_P(ToolbarMediatorTest, TestMutatorGoForward) {
       2, fake_web_state->GetNavigationManager()->GetLastCommittedItemIndex());
 }
 
+// Tests that back and forward buttons are disabled on the consumer and mutator
+// and history-menu navigations are blocked while the active tab is
+// `kActorControlled`, then restored when returning to `kInactive`.
+TEST_P(ToolbarMediatorTest,
+       TestBackForwardDisabledAndBlockedWhenActorControlled) {
+  constexpr char kTestURL0[] = "https://example.com/0";
+  constexpr char kTestURL1[] = "https://example.com/1";
+  constexpr char kTestURL2[] = "https://example.com/2";
+  constexpr int kFirstIndex = 0;
+  constexpr int kMiddleIndex = 1;
+  constexpr int kLastIndex = 2;
+  constexpr int kNoNavigatedIndex = -1;
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  web_state->SetVisibleURL(GURL(kTestURL1));
+  web_state->SetBrowserState(profile_.get());
+  auto nav_manager = std::make_unique<RecordingNavigationManager>();
+  RecordingNavigationManager* raw_nav_manager = nav_manager.get();
+  nav_manager->AddItem(GURL(kTestURL0), ui::PAGE_TRANSITION_TYPED);
+  nav_manager->AddItem(GURL(kTestURL1), ui::PAGE_TRANSITION_TYPED);
+  nav_manager->AddItem(GURL(kTestURL2), ui::PAGE_TRANSITION_TYPED);
+  nav_manager->SetLastCommittedItemIndex(kMiddleIndex);
+  web::NavigationItem* target_item =
+      raw_nav_manager->GetItemAtIndex(kLastIndex);
+  web_state->SetNavigationManager(std::move(nav_manager));
+
+  ActorTabHelper::CreateForWebState(web_state.get());
+  ActorTabHelper* actor_tab_helper =
+      ActorTabHelper::FromWebState(web_state.get());
+  ASSERT_NE(nullptr, actor_tab_helper);
+
+  OCMExpect([consumer_ setCanGoBack:YES]);
+  OCMExpect([consumer_ setCanGoForward:YES animated:NO]);
+  browser_->GetWebStateList()->InsertWebState(
+      std::move(web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  OCMExpect([consumer_ setCanGoBack:NO]);
+  OCMExpect([consumer_ setCanGoForward:NO animated:NO]);
+  actor_tab_helper->SetControlState(actor::ActorControlState::kActorControlled);
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  [mediator_ goBack];
+  EXPECT_EQ(kMiddleIndex, raw_nav_manager->GetLastCommittedItemIndex());
+
+  [mediator_ goForward];
+  EXPECT_EQ(kMiddleIndex, raw_nav_manager->GetLastCommittedItemIndex());
+
+  [mediator_ navigateToPageForItem:target_item];
+  EXPECT_EQ(kNoNavigatedIndex, raw_nav_manager->last_navigated_index());
+  EXPECT_EQ(kMiddleIndex, raw_nav_manager->GetLastCommittedItemIndex());
+
+  OCMExpect([consumer_ setCanGoBack:YES]);
+  OCMExpect([consumer_ setCanGoForward:YES animated:NO]);
+  actor_tab_helper->SetControlState(actor::ActorControlState::kInactive);
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  [mediator_ goBack];
+  EXPECT_EQ(kFirstIndex, raw_nav_manager->GetLastCommittedItemIndex());
+
+  [mediator_ navigateToPageForItem:target_item];
+  EXPECT_EQ(kLastIndex, raw_nav_manager->last_navigated_index());
+  EXPECT_EQ(kLastIndex, raw_nav_manager->GetLastCommittedItemIndex());
+}
+
 // Tests that the mutator handles reload action.
 TEST_P(ToolbarMediatorTest, TestMutatorReload) {
   browser_->GetWebStateList()->InsertWebState(
@@ -495,37 +594,100 @@ TEST_P(ToolbarMediatorTest, TestMutatorStop) {
   EXPECT_TRUE(fake_web_state->was_stopped());
 }
 
-// Tests that the consumer is updated when the bottom omnibox pref changes.
-TEST_P(ToolbarMediatorTest, TestBottomOmniboxEnabled) {
-  if (!IsBottomOmniboxAvailable()) {
-    return;
-  }
+// Tests that changing BrowserLayoutState.toolbarPosition updates the consumer's
+// hasOmnibox state accordingly.
+TEST_P(ToolbarMediatorTest, TestBrowserLayoutStateUpdatesHasOmnibox) {
+  BrowserLayoutState* layout_state = browser_->GetBrowserLayoutState();
   BOOL top_position = GetParam();
 
   OCMExpect([consumer_ setHasOmnibox:top_position]);
-  TestingApplicationContext::GetGlobal()->GetLocalState()->SetBoolean(
-      omnibox::kIsOmniboxInBottomPosition, false);
+  mediator_.browserLayoutState = layout_state;
   EXPECT_OCMOCK_VERIFY(consumer_);
 
+  // Transition toolbar to bottom.
   OCMExpect([consumer_ setHasOmnibox:!top_position]);
-  TestingApplicationContext::GetGlobal()->GetLocalState()->SetBoolean(
-      omnibox::kIsOmniboxInBottomPosition, true);
+  [layout_state setToolbarPosition:ToolbarPosition::kBottom
+                           passKey:layout_state::LayoutStateTestPassKeyFactory::
+                                       CreateToolbarKey()];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  // Transition toolbar back to top.
+  OCMExpect([consumer_ setHasOmnibox:top_position]);
+  [layout_state setToolbarPosition:ToolbarPosition::kTop
+                           passKey:layout_state::LayoutStateTestPassKeyFactory::
+                                       CreateToolbarKey()];
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
 
-// Tests that the consumer is not updated when the bottom omnibox pref changes
-// if the bottom toolbar is not available.
-TEST_P(ToolbarMediatorTest, TestBottomOmniboxNotEnabled) {
-  if (IsBottomOmniboxAvailable()) {
-    return;
+// Tests that consumer updates are skipped while a toolbar does not have the
+// omnibox, except for NTP visibility on the top toolbar.
+TEST_P(ToolbarMediatorTest, TestInactiveToolbarSkipsConsumerUpdates) {
+  BrowserLayoutState* layout_state = browser_->GetBrowserLayoutState();
+  BOOL top_position = GetParam();
+  ToolbarPosition inactive_position =
+      top_position ? ToolbarPosition::kBottom : ToolbarPosition::kTop;
+
+  [layout_state setToolbarPosition:inactive_position
+                           passKey:layout_state::LayoutStateTestPassKeyFactory::
+                                       CreateToolbarKey()];
+  OCMExpect([consumer_ setHasOmnibox:NO]);
+  mediator_.browserLayoutState = layout_state;
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  // Insert and activate a WebState while this toolbar is inactive. Button and
+  // menu updates should be skipped, while the top toolbar still updates NTP
+  // visibility.
+  if (top_position) {
+    OCMExpect([consumer_ setNTPVisible:NO
+                        isStartSurface:NO
+                             isLoading:NO
+                       loadingProgress:0]);
+  } else {
+    OCMReject([consumer_ setNTPVisible:OCMOCK_ANY
+                        isStartSurface:OCMOCK_ANY
+                             isLoading:OCMOCK_ANY
+                       loadingProgress:0]);
   }
+  OCMReject([consumer_ setCanGoBack:OCMOCK_ANY]);
+  OCMReject([consumer_ setShareEnabled:OCMOCK_ANY]);
+  OCMReject([consumer_ setMenu:[OCMArg any]
+                 forButtonType:ToolbarButtonTypeTabGrid]);
+  browser_->GetWebStateList()->InsertWebState(
+      CreateWebState(), WebStateList::InsertionParams::AtIndex(0).Activate());
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
 
-  OCMReject([consumer_ setHasOmnibox:YES]).ignoringNonObjectArgs();
+// Tests that consumer state is synced immediately when the toolbar position
+// switches to make the toolbar active.
+TEST_P(ToolbarMediatorTest,
+       TestSwitchingToolbarPositionSyncsNewlyActiveConsumer) {
+  BrowserLayoutState* layout_state = browser_->GetBrowserLayoutState();
+  BOOL top_position = GetParam();
+  ToolbarPosition inactive_position =
+      top_position ? ToolbarPosition::kBottom : ToolbarPosition::kTop;
+  ToolbarPosition active_position =
+      top_position ? ToolbarPosition::kTop : ToolbarPosition::kBottom;
 
-  TestingApplicationContext::GetGlobal()->GetLocalState()->SetBoolean(
-      omnibox::kIsOmniboxInBottomPosition, false);
-  TestingApplicationContext::GetGlobal()->GetLocalState()->SetBoolean(
-      omnibox::kIsOmniboxInBottomPosition, true);
+  [layout_state setToolbarPosition:inactive_position
+                           passKey:layout_state::LayoutStateTestPassKeyFactory::
+                                       CreateToolbarKey()];
+  OCMExpect([consumer_ setHasOmnibox:NO]);
+  mediator_.browserLayoutState = layout_state;
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  browser_->GetWebStateList()->InsertWebState(
+      CreateWebState(), WebStateList::InsertionParams::AtIndex(0).Activate());
+
+  // Switching the toolbar position to make this toolbar active should
+  // immediately sync the consumer state.
+  OCMExpect([consumer_ setHasOmnibox:YES]);
+  OCMExpect([consumer_ setCanGoBack:YES]);
+  OCMExpect([consumer_ setShareEnabled:YES]);
+  OCMExpect([consumer_ setMenu:[OCMArg any]
+                 forButtonType:ToolbarButtonTypeTabGrid]);
+  [layout_state setToolbarPosition:active_position
+                           passKey:layout_state::LayoutStateTestPassKeyFactory::
+                                       CreateToolbarKey()];
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
 
@@ -547,7 +709,7 @@ TEST_P(ToolbarMediatorTest, TestDisplayPromo) {
                       webStateList:browser_->GetWebStateList()
                      actionFactory:action_factory
                            profile:profile_.get()
-                       prefService:profile_->GetTestingPrefService()
+                       prefService:profile_->GetPrefs()
               fullscreenController:TestFullscreenController::FromBrowser(
                                        browser_.get())
             fullscreenBrowserAgent:nil
@@ -586,7 +748,7 @@ TEST_P(ToolbarMediatorTest, TestHidePromo) {
                       webStateList:browser_->GetWebStateList()
                      actionFactory:action_factory
                            profile:profile_.get()
-                       prefService:profile_->GetTestingPrefService()
+                       prefService:profile_->GetPrefs()
               fullscreenController:TestFullscreenController::FromBrowser(
                                        browser_.get())
             fullscreenBrowserAgent:nil
@@ -659,7 +821,7 @@ TEST_P(ToolbarMediatorTest, TestAssistantButtonTapped) {
   id mock_gemini_handler = OCMProtocolMock(@protocol(GeminiCommands));
   mediator_.geminiHandler = mock_gemini_handler;
 
-  SetFloatyInvoked(false);
+  gemini_browser_agent_->SetContainerInvoked(false);
   OCMExpect([mock_gemini_handler
       startGeminiEntryFlowWithStartupState:[OCMArg any]
                         baseViewController:nil
@@ -669,7 +831,7 @@ TEST_P(ToolbarMediatorTest, TestAssistantButtonTapped) {
 
   // Test that the floaty is dismissed if the assistant button is tapped while
   // it is showing.
-  SetFloatyInvoked(true);
+  gemini_browser_agent_->SetContainerInvoked(true);
   OCMExpect([mock_gemini_handler dismissGeminiFlowWithCompletion:nil]);
   [mediator_ assistantButtonTapped];
 
@@ -686,7 +848,7 @@ TEST_P(ToolbarMediatorTest, TestAssistantButtonTappedInIncognito) {
                       webStateList:browser_->GetWebStateList()
                      actionFactory:action_factory
                            profile:profile_.get()
-                       prefService:profile_->GetTestingPrefService()
+                       prefService:profile_->GetPrefs()
               fullscreenController:TestFullscreenController::FromBrowser(
                                        browser_.get())
             fullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
@@ -694,7 +856,7 @@ TEST_P(ToolbarMediatorTest, TestAssistantButtonTappedInIncognito) {
                        topPosition:GetParam()
       defaultBrowserBannerAppAgent:GetParam() ? mock_app_agent_ : nil
              authenticationService:auth_service_
-                     geminiService:gemini_service_ptr_.get()
+                     geminiService:gemini_service_.get()
                 geminiBrowserAgent:gemini_browser_agent_];
   id mock_delegate = OCMProtocolMock(@protocol(ToolbarMediatorDelegate));
   incognito_mediator.delegate = mock_delegate;
@@ -727,7 +889,7 @@ TEST_P(ToolbarMediatorTest, TestTabGridMenu_IncognitoDisabled) {
                       webStateList:browser_->GetWebStateList()
                      actionFactory:action_factory
                            profile:profile_.get()
-                       prefService:profile_->GetTestingPrefService()
+                       prefService:profile_->GetPrefs()
               fullscreenController:TestFullscreenController::FromBrowser(
                                        browser_.get())
             fullscreenBrowserAgent:nil
@@ -789,7 +951,7 @@ TEST_P(ToolbarMediatorTest, TestTabGridMenu_IncognitoEnabled) {
                       webStateList:browser_->GetWebStateList()
                      actionFactory:action_factory
                            profile:profile_.get()
-                       prefService:profile_->GetTestingPrefService()
+                       prefService:profile_->GetPrefs()
               fullscreenController:TestFullscreenController::FromBrowser(
                                        browser_.get())
             fullscreenBrowserAgent:nil
@@ -899,8 +1061,8 @@ TEST_P(ToolbarMediatorTest, TestAssistantButtonNotVisible_EEACountryGated) {
 
   // France is in EEA.
   scoped_variations_service_.Get()->OverrideStoredPermanentCountry("fr");
-  TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage()->Set(
-      "en-US");
+  TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   browser_->GetWebStateList()->InsertWebState(
       CreateWebState(), WebStateList::InsertionParams::AtIndex(0).Activate());
@@ -919,8 +1081,8 @@ TEST_P(ToolbarMediatorTest, TestAssistantButtonNotVisible_JapanCountryGated) {
 
   // Set country to Japan ("jp").
   scoped_variations_service_.Get()->OverrideStoredPermanentCountry("jp");
-  TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage()->Set(
-      "en-US");
+  TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   browser_->GetWebStateList()->InsertWebState(
       CreateWebState(), WebStateList::InsertionParams::AtIndex(0).Activate());
@@ -938,8 +1100,7 @@ TEST_P(ToolbarMediatorTest, TestAssistantButtonVisibleInIncognito) {
   scoped_feature_list.InitWithFeatures({kPageActionMenu}, {});
 
   SetLocationEligible(true);
-  ProfileIOS* otr_profile =
-      profile_->CreateOffTheRecordProfileWithTestingFactories();
+  ProfileIOS* otr_profile = profile_->GetOffTheRecordProfile();
   std::unique_ptr<web::FakeWebState> web_state = CreateWebState();
   web_state->SetBrowserState(otr_profile);
   browser_->GetWebStateList()->InsertWebState(
@@ -949,6 +1110,82 @@ TEST_P(ToolbarMediatorTest, TestAssistantButtonVisibleInIncognito) {
 
   OCMExpect([consumer_ setAssistantButtonVisible:YES enabled:YES]);
   [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that keyboard notifications force fullscreen mode for the bottom
+// toolbar when `kFullscreenRefactoring` is enabled.
+TEST_P(ToolbarMediatorTest, TestKeyboardForcesFullscreenWhenRefactored) {
+  if (GetParam() || !IsBottomOmniboxAvailable()) {
+    // Only the bottom toolbar pins above the keyboard, and bottom omnibox is
+    // not available on iPad.
+    return;
+  }
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kFullscreenRefactoring);
+
+  BrowserLayoutState* layout_state = browser_->GetBrowserLayoutState();
+  [layout_state setToolbarPosition:ToolbarPosition::kBottom
+                           passKey:layout_state::LayoutStateTestPassKeyFactory::
+                                       CreateToolbarKey()];
+  mediator_.browserLayoutState = layout_state;
+
+  id mock_fullscreen_commands = OCMProtocolMock(@protocol(FullscreenCommands));
+  mediator_.fullscreenCommands = mock_fullscreen_commands;
+
+  id mock_web_view_proxy = OCMProtocolMock(@protocol(CRWWebViewProxy));
+  OCMStub([mock_web_view_proxy isKeyboardVisible]).andReturn(YES);
+
+  std::unique_ptr<web::FakeWebState> web_state = CreateWebState();
+  web_state->SetWebViewProxy(mock_web_view_proxy);
+  browser_->GetWebStateList()->InsertWebState(
+      std::move(web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+
+  OCMExpect([mock_fullscreen_commands
+      forceFullscreen:YES
+              feature:ForceFullscreenFeature::kKeyboard]);
+  OCMExpect([consumer_ setLocationIndicatorVisible:YES
+                                   forNotification:[OCMArg any]]);
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:UIKeyboardWillShowNotification
+                    object:nil];
+  EXPECT_OCMOCK_VERIFY(mock_fullscreen_commands);
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  OCMExpect([mock_fullscreen_commands
+      forceFullscreen:NO
+              feature:ForceFullscreenFeature::kKeyboard]);
+  OCMExpect([consumer_ setLocationIndicatorVisible:NO
+                                   forNotification:[OCMArg any]]);
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:UIKeyboardWillHideNotification
+                    object:nil];
+  EXPECT_OCMOCK_VERIFY(mock_fullscreen_commands);
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  // Re-show the keyboard, then move the toolbar position to `kTop` while the
+  // keyboard is still visible; forced fullscreen should be exited immediately.
+  OCMExpect([mock_fullscreen_commands
+      forceFullscreen:YES
+              feature:ForceFullscreenFeature::kKeyboard]);
+  OCMExpect([consumer_ setLocationIndicatorVisible:YES
+                                   forNotification:[OCMArg any]]);
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:UIKeyboardWillShowNotification
+                    object:nil];
+  EXPECT_OCMOCK_VERIFY(mock_fullscreen_commands);
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  OCMExpect([mock_fullscreen_commands
+      forceFullscreen:NO
+              feature:ForceFullscreenFeature::kKeyboard]);
+  OCMExpect([consumer_ setLocationIndicatorVisible:NO forNotification:nil]);
+  OCMExpect([consumer_ setHasOmnibox:NO]);
+  [layout_state setToolbarPosition:ToolbarPosition::kTop
+                           passKey:layout_state::LayoutStateTestPassKeyFactory::
+                                       CreateToolbarKey()];
+  EXPECT_OCMOCK_VERIFY(mock_fullscreen_commands);
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
 

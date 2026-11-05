@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/check_deref.h"
@@ -15,17 +16,18 @@
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "build/buildflag.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
+#include "components/autofill/core/browser/data_quality/validation.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/metrics/payments/cardholder_name_update_flow_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/wallet_reminder_notice_metrics.h"
 #include "components/autofill/core/browser/payments/credit_card_save_manager.h"
 #include "components/autofill/core/browser/payments/iban_save_manager.h"
@@ -39,6 +41,35 @@
 #include "services/metrics/public/cpp/ukm_source_id.h"
 
 namespace autofill::payments {
+
+namespace {
+
+// Returns why the cardholder name of `existing_server_card` can't be updated
+// from `extracted_credit_card`, or nullopt if it can.
+std::optional<autofill_metrics::CardholderNameUpdateFlowEligibility>
+GetCardholderNameUpdateExclusionReason(const CreditCard& existing_server_card,
+                                       const CreditCard& extracted_credit_card,
+                                       std::string_view app_locale) {
+  using autofill_metrics::CardholderNameUpdateFlowEligibility;
+  if (existing_server_card.HasNameOnCard()) {
+    return CardholderNameUpdateFlowEligibility::kServerCardAlreadyHasName;
+  }
+  if (!extracted_credit_card.HasNameOnCard()) {
+    return CardholderNameUpdateFlowEligibility::kNoNameExtractedFromForm;
+  }
+  if (!IsValidNameOnCard(
+          extracted_credit_card.GetInfo(CREDIT_CARD_NAME_FULL, app_locale))) {
+    return CardholderNameUpdateFlowEligibility::kInvalidNameExtractedFromForm;
+  }
+  if (!IsValidCreditCardSecurityCode(extracted_credit_card.cvc(),
+                                     extracted_credit_card.network())) {
+    return CardholderNameUpdateFlowEligibility::
+        kInvalidOrMissingCvcExtractedFromForm;
+  }
+  return std::nullopt;
+}
+
+}  // namespace
 
 PaymentsFormDataImporter::PaymentsFormDataImporter(AutofillClient* client)
     : client_(CHECK_DEREF(client)),
@@ -97,7 +128,7 @@ PaymentsFormDataImporter::ExtractCreditCardFromFormResult
 PaymentsFormDataImporter::ExtractCreditCardFromForm(const FormStructure& form) {
   // Populated by the lambdas below.
   ExtractCreditCardFromFormResult result;
-  std::string app_locale = client_->GetAppLocale();
+  const std::string_view app_locale = client_->GetAppLocale().tag_string();
 
   // Populates `result` from `field` if it's a credit card field.
   // For example, if `field` contains credit card number, this sets the number
@@ -106,9 +137,8 @@ PaymentsFormDataImporter::ExtractCreditCardFromForm(const FormStructure& form) {
                                        app_locale](const AutofillField& field) {
     std::u16string value = [&field] {
       if (field.Type().GetCreditCardType() == FieldType::CREDIT_CARD_NUMBER ||
-          (field.Type().GetCreditCardType() ==
-               FieldType::CREDIT_CARD_VERIFICATION_CODE &&
-           base::FeatureList::IsEnabled(features::kAutofillFixCvcImport))) {
+          field.Type().GetCreditCardType() ==
+              FieldType::CREDIT_CARD_VERIFICATION_CODE) {
         // Credit card numbers and CVCs are sometimes obfuscated on form
         // submission. Therefore, we give preference to the user input over the
         // field value.
@@ -128,11 +158,11 @@ PaymentsFormDataImporter::ExtractCreditCardFromForm(const FormStructure& form) {
         !field.Type().GetGroups().contains(FieldTypeGroup::kCreditCard)) {
       return;
     }
-    std::u16string old_value = result.card.GetInfo(field.Type(), app_locale);
+    const FieldType field_type = field.Type().GetCreditCardType();
+    std::u16string old_value = result.card.GetInfo(field_type, app_locale);
     if (field.form_control_type() == FormControlType::kInputMonth) {
       // If |field| is an HTML5 month input, handle it as a special case.
-      DCHECK_EQ(CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR,
-                field.Type().GetCreditCardType());
+      DCHECK_EQ(CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR, field_type);
       result.card.SetInfoForMonthInputType(value);
     } else {
       // If the credit card number offset is within the range of the old value,
@@ -145,7 +175,7 @@ PaymentsFormDataImporter::ExtractCreditCardFromForm(const FormStructure& form) {
         value = old_value.replace(field.credit_card_number_offset(),
                                   value.size(), value);
       }
-      bool saved = result.card.SetInfo(field.Type(), value, app_locale);
+      bool saved = result.card.SetInfo(field_type, value, app_locale);
       if (!saved && field.IsSelectElement()) {
         // Saving with the option text (here `value`) may fail for the
         // expiration month. Attempt to save with the option value. First find
@@ -154,16 +184,16 @@ PaymentsFormDataImporter::ExtractCreditCardFromForm(const FormStructure& form) {
         if (auto it =
                 std::ranges::find(field.options(), value, &SelectOption::text);
             it != field.options().end()) {
-          result.card.SetInfo(field.Type(), it->value, app_locale);
+          result.card.SetInfo(field_type, it->value, app_locale);
         }
       }
     }
 
-    std::u16string new_value = result.card.GetInfo(field.Type(), app_locale);
+    std::u16string new_value = result.card.GetInfo(field_type, app_locale);
     // Skip duplicate field check if the field is a split credit card
     // number field.
     const bool skip_duplication_check =
-        field.Type().GetCreditCardType() == FieldType::CREDIT_CARD_NUMBER &&
+        field_type == FieldType::CREDIT_CARD_NUMBER &&
         field.credit_card_number_offset() > 0;
     result.has_duplicate_credit_card_field_type |=
         !skip_duplication_check && !old_value.empty() && old_value != new_value;
@@ -185,7 +215,9 @@ PaymentsFormDataImporter::ExtractCreditCardFromForm(const FormStructure& form) {
         }
         std::erase_if(fields, [&](const AutofillField* field) {
           return std::invoke(pred, *field) ||
-                 !result.card.GetInfo(field->Type(), app_locale).empty();
+                 !result.card
+                      .GetInfo(field->Type().GetCreditCardType(), app_locale)
+                      .empty();
         });
       };
 
@@ -286,6 +318,12 @@ std::optional<CreditCard> PaymentsFormDataImporter::ExtractCreditCard(
   // overwrite this type if we discover it is already a local or server card.
   credit_card_import_type_ = CreditCardImportType::kNewCard;
 
+  // Capture the cardholder name extracted from `form` before merging with local
+  // cards, so a matched server card does not inherit a local card's name when
+  // `form` has no cardholder name field.
+  const std::u16string extracted_name = candidate.GetInfo(
+      CREDIT_CARD_NAME_FULL, client_->GetAppLocale().tag_string());
+
   // Attempt to merge with an existing local credit card without presenting a
   // prompt.
   for (const CreditCard* local_card :
@@ -293,8 +331,8 @@ std::optional<CreditCard> PaymentsFormDataImporter::ExtractCreditCard(
     // Make a local copy so that the data in `local_credit_cards_` isn't
     // modified directly by the UpdateFromImportedCard() call.
     CreditCard maybe_updated_card = *local_card;
-    if (maybe_updated_card.UpdateFromImportedCard(candidate,
-                                                  client_->GetAppLocale())) {
+    if (maybe_updated_card.UpdateFromImportedCard(
+            candidate, std::string(client_->GetAppLocale().tag_string()))) {
       payments_data_manager().UpdateCreditCard(maybe_updated_card);
       credit_card_import_type_ = CreditCardImportType::kLocalCard;
       // Update `candidate` to reflect all the details of the updated card.
@@ -309,7 +347,7 @@ std::optional<CreditCard> PaymentsFormDataImporter::ExtractCreditCard(
 
   // Return `candidate` if no server card is matched but the card in the form is
   // a valid card.
-  return TryMatchingExistingServerCard(candidate);
+  return TryMatchingExistingServerCard(candidate, extracted_name);
 }
 
 bool PaymentsFormDataImporter::ProcessExtractedCreditCard(
@@ -343,7 +381,8 @@ bool PaymentsFormDataImporter::ProcessExtractedCreditCard(
       if (is_wallet_reminder_notice_eligible) {
         autofill_metrics::LogWalletReminderNoticeShowResult(
             autofill_metrics::WalletReminderNoticeShowResult::
-                kNotShownDueToMandatoryReauth);
+                kNotShownDueToMandatoryReauth,
+            WalletReminderNoticeManager::FlowType::kChromeDownstream);
       }
       return true;
     } else if (is_wallet_reminder_notice_eligible) {
@@ -375,13 +414,40 @@ bool PaymentsFormDataImporter::ProcessExtractedCreditCard(
     if (is_wallet_reminder_notice_eligible) {
       autofill_metrics::LogWalletReminderNoticeShowResult(
           autofill_metrics::WalletReminderNoticeShowResult::
-              kNotShownDueToVcnEnrollment);
+              kNotShownDueToVcnEnrollment,
+          WalletReminderNoticeManager::FlowType::kChromeDownstream);
+    }
+    if (const CreditCard* existing_server_card =
+            GetServerCardForCardholderNameUpdate(
+                *extracted_credit_card, is_credit_card_upstream_enabled)) {
+      // Only count the cardholder name update as suppressed if it would
+      // otherwise have been offered.
+      autofill_metrics::LogCardholderNameUpdateFlowEligibility(
+          GetCardholderNameUpdateExclusionReason(
+              *existing_server_card, *extracted_credit_card,
+              client_->GetAppLocale().tag_string())
+              .value_or(autofill_metrics::CardholderNameUpdateFlowEligibility::
+                            kSuppressedByVcnEnrollment));
     }
     virtual_card_enrollment_manager->InitVirtualCardEnroll(
         *extracted_credit_card, VirtualCardEnrollmentSource::kDownstream,
         base::BindOnce(
             &VirtualCardEnrollmentManager::ShowVirtualCardEnrollBubble,
             base::Unretained(virtual_card_enrollment_manager)));
+    return true;
+  }
+
+  // The cardholder name update takes precedence over CVC save.
+  if (ShouldOfferCardholderNameUpdate(*extracted_credit_card,
+                                      is_credit_card_upstream_enabled) &&
+      credit_card_save_manager_->AttemptToOfferCardholderNameUpdate(
+          *extracted_credit_card)) {
+    if (is_wallet_reminder_notice_eligible) {
+      autofill_metrics::LogWalletReminderNoticeShowResult(
+          autofill_metrics::WalletReminderNoticeShowResult::
+              kNotShownDueToCardholderNameUpdate,
+          WalletReminderNoticeManager::FlowType::kChromeDownstream);
+    }
     return true;
   }
 
@@ -392,15 +458,8 @@ bool PaymentsFormDataImporter::ProcessExtractedCreditCard(
     if (is_wallet_reminder_notice_eligible) {
       autofill_metrics::LogWalletReminderNoticeShowResult(
           autofill_metrics::WalletReminderNoticeShowResult::
-              kNotShownDueToCardOrCvcSave);
-    }
-    if (!extracted_credit_card->cvc().empty()) {
-      // TODO(crbug.com/526738761): Clean up after launch of
-      // kAutofillFixCvcImport.
-      base::UmaHistogramBoolean(
-          "Autofill.CreditCardImportCandidateHasNumericCvc",
-          std::ranges::all_of(extracted_credit_card->cvc(),
-                              &base::IsAsciiDigit<char16_t>));
+              kNotShownDueToCardOrCvcSave,
+          WalletReminderNoticeManager::FlowType::kChromeDownstream);
     }
     return true;
   }
@@ -410,7 +469,8 @@ bool PaymentsFormDataImporter::ProcessExtractedCreditCard(
     if (is_wallet_reminder_notice_eligible) {
       autofill_metrics::LogWalletReminderNoticeShowResult(
           autofill_metrics::WalletReminderNoticeShowResult::
-              kNotShownDueToMandatoryReauth);
+              kNotShownDueToMandatoryReauth,
+          WalletReminderNoticeManager::FlowType::kChromeDownstream);
     }
     return true;
   }
@@ -422,6 +482,42 @@ bool PaymentsFormDataImporter::ProcessExtractedCreditCard(
   }
 
   return false;
+}
+
+bool PaymentsFormDataImporter::ShouldOfferCardholderNameUpdate(
+    const CreditCard& extracted_credit_card,
+    bool is_credit_card_upstream_enabled) {
+  const CreditCard* existing_server_card = GetServerCardForCardholderNameUpdate(
+      extracted_credit_card, is_credit_card_upstream_enabled);
+  if (!existing_server_card) {
+    return false;
+  }
+  if (std::optional<autofill_metrics::CardholderNameUpdateFlowEligibility>
+          exclusion_reason = GetCardholderNameUpdateExclusionReason(
+              *existing_server_card, extracted_credit_card,
+              client_->GetAppLocale().tag_string())) {
+    autofill_metrics::LogCardholderNameUpdateFlowEligibility(*exclusion_reason);
+    return false;
+  }
+  return true;
+}
+
+const CreditCard*
+PaymentsFormDataImporter::GetServerCardForCardholderNameUpdate(
+    const CreditCard& extracted_credit_card,
+    bool is_credit_card_upstream_enabled) {
+  // A card with an updated expiration date doesn't match the existing server
+  // card, so it isn't a masked server card here. The expiration date fix
+  // (upload save) takes precedence in that case.
+  if (!base::FeatureList::IsEnabled(
+          features::kAutofillEnableCardholderNameFixFlow) ||
+      !is_credit_card_upstream_enabled ||
+      extracted_credit_card.record_type() !=
+          CreditCard::RecordType::kMaskedServerCard) {
+    return nullptr;
+  }
+  return payments_data_manager().GetCreditCardByInstrumentId(
+      extracted_credit_card.instrument_id());
 }
 
 bool PaymentsFormDataImporter::
@@ -463,7 +559,8 @@ Iban PaymentsFormDataImporter::ExtractIbanFromForm(const FormStructure& form) {
 
 std::optional<CreditCard>
 PaymentsFormDataImporter::TryMatchingExistingServerCard(
-    const CreditCard& candidate) {
+    const CreditCard& candidate,
+    const std::u16string& extracted_name) {
   // Used for logging purposes later if we found a matching masked server card
   // with the same last four digits, but different expiration date as
   // `candidate`, and we treat it as a new card.
@@ -490,10 +587,18 @@ PaymentsFormDataImporter::TryMatchingExistingServerCard(
           AutofillMetrics::MASKED_SERVER_CARD_EXPIRATION_DATE_MATCHED);
 
       // Return that we found a masked server card with matching last four
-      // digits and copy over the user entered CVC so that future processing
-      // logic check if CVC upload save should be offered.
+      // digits and copy over the user entered CVC and cardholder name (if
+      // missing on the server card) so that future processing logic can check
+      // if CVC upload save or cardholder name fix flow should be offered.
       CreditCard server_card_with_cvc = *server_card;
       server_card_with_cvc.set_cvc(candidate.cvc());
+      if (!server_card->HasNameOnCard() && !extracted_name.empty() &&
+          IsValidNameOnCard(extracted_name) &&
+          base::FeatureList::IsEnabled(
+              features::kAutofillEnableCardholderNameFixFlow)) {
+        server_card_with_cvc.SetInfo(CREDIT_CARD_NAME_FULL, extracted_name,
+                                     client_->GetAppLocale().tag_string());
+      }
 
       // If `credit_card_import_type_` was local card, then a local card was
       // extracted from the form. If a server card is now also extracted from

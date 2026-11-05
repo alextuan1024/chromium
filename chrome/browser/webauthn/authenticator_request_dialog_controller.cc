@@ -23,6 +23,9 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/i18n/icu4c_tag_converter.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/string_compare.h"
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
@@ -46,6 +49,7 @@
 #include "chrome/browser/ui/webauthn/ambient/ambient_signin_controller.h"
 #include "chrome/browser/ui/webauthn/passkey_upgrade_request_controller.h"
 #include "chrome/browser/ui/webauthn/user_actions.h"
+#include "chrome/browser/ui/webauthn/webauthn_ui_helpers.h"
 #include "chrome/browser/webauthn/authenticator_reference.h"
 #include "chrome/browser/webauthn/authenticator_request_dialog_model.h"
 #include "chrome/browser/webauthn/authenticator_transport.h"
@@ -77,7 +81,6 @@
 #include "device/fido/enclave/constants.h"
 #include "device/fido/enclave/metrics.h"
 #include "device/fido/fido_authenticator.h"
-#include "device/fido/fido_discovery_factory.h"
 #include "device/fido/fido_request_handler_base.h"
 #include "device/fido/pin.h"
 #include "device/fido/public/features.h"
@@ -85,7 +88,6 @@
 #include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/public/fido_types.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
-#include "third_party/icu/source/common/unicode/locid.h"
 #include "third_party/icu/source/common/unicode/utypes.h"
 #include "third_party/icu/source/i18n/unicode/coll.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -339,6 +341,14 @@ inline bool IsModalRequest(UIPresentation ui_presentation) {
          ui_presentation == UIPresentation::kModalImmediate;
 }
 
+// Returns true for presentations that run in the background without a modal
+// dialog (conditional/autofill and ambient). Such requests should never surface
+// a page-modal sheet before the user has chosen to interact with them.
+inline bool IsPassiveRequest(UIPresentation ui_presentation) {
+  return ui_presentation == UIPresentation::kAutofill ||
+         ui_presentation == UIPresentation::kAmbient;
+}
+
 // Returns the vector icon associated with the given mechanism type.
 // For Mechanism::WindowsAPI, the effective transport must be provided.
 const gfx::VectorIcon& GetMechanismIcon(
@@ -355,17 +365,10 @@ const gfx::VectorIcon& GetMechanismIcon(
                  base::FeatureList::IsEnabled(
                      device::kWebAuthnModalProviderIcons));
             if (show_modal_provider_icons) {
-              switch (credential.value().source) {
-                case AuthenticatorType::kICloudKeychain:
-                  return kIcloudKeychainColorCustomIcon;
-                case AuthenticatorType::kEnclave:
-                  return GooglePasswordManagerVectorIcon();
-                case AuthenticatorType::kWinNative:
-                  return kWindowsHelloColorCustomIcon;
-                case AuthenticatorType::kTouchID:
-                  return vector_icons::kProductRefreshIcon;
-                default:
-                  break;
+              if (const gfx::VectorIcon* provider_icon =
+                      webauthn_ui_helpers::GetProviderIcon(
+                          credential.value())) {
+                return *provider_icon;
               }
             }
             // Default icon for non-modal mode or other credential sources.
@@ -383,8 +386,8 @@ const gfx::VectorIcon& GetMechanismIcon(
             return GetTransportIcon(*effective_transport);
           },
           [](const Mechanism::ICloudKeychain&) -> const gfx::VectorIcon& {
-            // Always use the standard iCloud Keychain icon here.
-            return kIcloudKeychainCustomIcon;
+            // Always use the standard Apple Passwords icon here.
+            return kApplePasswordsCustomIcon;
           },
           [](const Mechanism::Hybrid&) -> const gfx::VectorIcon& {
             return kQrcodeGeneratorCustomIcon;
@@ -570,15 +573,17 @@ void AuthenticatorRequestDialogController::OnGPMRecoverSecurityDomainClosed() {
 
 void AuthenticatorRequestDialogController::
     ContinueWithFlowAfterBleAdapterPowered() {
-  DCHECK(model_->step() == Step::kBlePowerOnManual ||
-         model_->step() == Step::kBlePowerOnAutomatic);
-  DCHECK(model_->ble_adapter_is_powered);
+  CHECK(model_->step() == Step::kBlePowerOnManual ||
+            model_->step() == Step::kBlePowerOnAutomatic,
+        base::NotFatalUntil::M163);
+  CHECK(model_->ble_adapter_is_powered, base::NotFatalUntil::M163);
 
   std::move(after_ble_adapter_powered_).Run();
 }
 
 void AuthenticatorRequestDialogController::PowerOnBleAdapter() {
-  DCHECK_EQ(model_->step(), Step::kBlePowerOnAutomatic);
+  CHECK_EQ(model_->step(), Step::kBlePowerOnAutomatic,
+           base::NotFatalUntil::M163);
   if (!bluetooth_adapter_power_on_callback_) {
     return;
   }
@@ -588,7 +593,7 @@ void AuthenticatorRequestDialogController::PowerOnBleAdapter() {
 
 void AuthenticatorRequestDialogController::OpenBlePreferences() {
 #if BUILDFLAG(IS_MAC)
-  DCHECK_EQ(model_->step(), Step::kBlePermissionMac);
+  CHECK_EQ(model_->step(), Step::kBlePermissionMac, base::NotFatalUntil::M163);
   base::mac::OpenSystemSettingsPane(
       base::mac::SystemSettingsPane::kPrivacySecurity_Bluetooth);
 #endif  // IS_MAC
@@ -616,8 +621,9 @@ void AuthenticatorRequestDialogController::CancelAuthenticatorRequest() {
     ChangePinControllerImpl::RecordHistogram(
         EnclaveChangePinEvent::kNewPinCancelled);
   }
-  if (ui_presentation() == UIPresentation::kAutofill) {
-    // Conditional UI requests are never cancelled, they restart silently.
+  if (IsPassiveRequest(ui_presentation())) {
+    // Conditional and ambient UI requests are never cancelled, they restart
+    // silently.
     ResetEphemeralState();
     for (auto& observer : model_->observers) {
       observer.OnStartOver();
@@ -655,7 +661,8 @@ void AuthenticatorRequestDialogController::OnRequestComplete() {
 }
 
 void AuthenticatorRequestDialogController::OnResidentCredentialConfirmed() {
-  DCHECK_EQ(model_->step(), Step::kResidentCredentialConfirmation);
+  CHECK_EQ(model_->step(), Step::kResidentCredentialConfirmation,
+           base::NotFatalUntil::M163);
   HideDialogAndDispatchToPlatformAuthenticator(AuthenticatorType::kWinNative);
 }
 
@@ -735,11 +742,12 @@ bool AuthenticatorRequestDialogController::is_request_complete() const {
 void AuthenticatorRequestDialogController::StartFlow(
     TransportAvailabilityInfo transport_availability,
     PasswordCredentials passwords) {
-  DCHECK(!started_);
-  DCHECK_EQ(model_->step(), Step::kNotStarted);
-  DCHECK_EQ(
+  CHECK(!started_, base::NotFatalUntil::M163);
+  CHECK_EQ(model_->step(), Step::kNotStarted, base::NotFatalUntil::M163);
+  CHECK_EQ(
       transport_availability.attestation_conveyance_preference.has_value(),
-      transport_availability.request_type == FidoRequestType::kMakeCredential);
+      transport_availability.request_type == FidoRequestType::kMakeCredential,
+      base::NotFatalUntil::M163);
 
   started_ = true;
   transport_availability_ = std::move(transport_availability);
@@ -1144,7 +1152,8 @@ void AuthenticatorRequestDialogController::OnBleStatusKnown(
 }
 
 void AuthenticatorRequestDialogController::TryUsbDevice() {
-  DCHECK_EQ(model_->step(), Step::kUsbInsertAndActivate);
+  CHECK_EQ(model_->step(), Step::kUsbInsertAndActivate,
+           base::NotFatalUntil::M163);
 }
 
 void AuthenticatorRequestDialogController::StartPlatformAuthenticatorFlow() {
@@ -1231,12 +1240,12 @@ void AuthenticatorRequestDialogController::OnRequestTimeout() {
 }
 
 void AuthenticatorRequestDialogController::OnActivatedKeyNotRegistered() {
-  DCHECK(!is_request_complete());
+  CHECK(!is_request_complete(), base::NotFatalUntil::M163);
   SetCurrentStep(Step::kKeyNotRegistered);
 }
 
 void AuthenticatorRequestDialogController::OnActivatedKeyAlreadyRegistered() {
-  DCHECK(!is_request_complete());
+  CHECK(!is_request_complete(), base::NotFatalUntil::M163);
   SetCurrentStep(Step::kKeyAlreadyRegistered);
 }
 
@@ -1278,9 +1287,9 @@ void AuthenticatorRequestDialogController::OnAuthenticatorStorageFull() {
 }
 
 void AuthenticatorRequestDialogController::OnUserConsentDenied() {
-  if (ui_presentation() == UIPresentation::kAutofill) {
+  if (IsPassiveRequest(ui_presentation())) {
     // Do not show a page-modal retry error sheet if the user cancelled out of
-    // their platform authenticator during a conditional UI request.
+    // their platform authenticator during a conditional or ambient UI request.
     // Instead, retry silently.
     CancelAuthenticatorRequest();
     return;
@@ -1289,7 +1298,7 @@ void AuthenticatorRequestDialogController::OnUserConsentDenied() {
   if (ephemeral_state_.dispatched_platform_authenticator_type_ ==
       AuthenticatorType::kICloudKeychain) {
     webauthn::user_actions::RecordICloudCancelled();
-    // If we dispatched automatically to iCloud Keychain and the
+    // If we dispatched automatically to Apple Passwords and the
     // user clicked cancel, give them the option to try something else.
     bool did_trigger_automatically =
         ephemeral_state_.did_invoke_platform_despite_no_priority_mechanism_;
@@ -1334,9 +1343,9 @@ void AuthenticatorRequestDialogController::OnUserConsentDenied() {
 
 bool AuthenticatorRequestDialogController::OnWinUserCancelled() {
 #if BUILDFLAG(IS_WIN)
-  if (ui_presentation() == UIPresentation::kAutofill) {
+  if (IsPassiveRequest(ui_presentation())) {
     // Do not show a page-modal retry error sheet if the user cancelled out of
-    // their platform authenticator during a conditional UI request.
+    // their platform authenticator during a conditional or ambient UI request.
     // Instead, retry silently.
     CancelAuthenticatorRequest();
     return true;
@@ -1427,8 +1436,9 @@ void AuthenticatorRequestDialogController::AddAuthenticator(
   // Only the webauthn.dll authenticator omits a transport completely. This
   // makes sense given how it works, but here it is treated as a platform
   // authenticator and so given a `kInternal` transport.
-  DCHECK(authenticator.AuthenticatorTransport() ||
-         authenticator.GetType() == AuthenticatorType::kWinNative);
+  CHECK(authenticator.AuthenticatorTransport() ||
+            authenticator.GetType() == AuthenticatorType::kWinNative,
+        base::NotFatalUntil::M163);
   const AuthenticatorTransport transport =
       authenticator.AuthenticatorTransport().value_or(
           AuthenticatorTransport::kInternal);
@@ -1477,7 +1487,7 @@ AuthenticatorType AuthenticatorRequestDialogController::OnAccountPreselected(
       << "OnAccountPreselected() called with unknown credential_id "
       << base::HexEncode(credential_id);
   const AuthenticatorType source = cred->source;
-  DCHECK(account_preselected_callback_);
+  CHECK(account_preselected_callback_, base::NotFatalUntil::M163);
   account_preselected_callback_.Run(*cred);
   model_->preselected_cred = *cred;
 
@@ -1543,7 +1553,8 @@ void AuthenticatorRequestDialogController::StartInlineBioEnrollment(
 
 void AuthenticatorRequestDialogController::OnSampleCollected(
     int bio_samples_remaining) {
-  DCHECK(model_->step() == Step::kInlineBioEnrollment);
+  CHECK(model_->step() == Step::kInlineBioEnrollment,
+        base::NotFatalUntil::M163);
 
   model_->bio_samples_remaining = bio_samples_remaining;
   if (!model_->max_bio_samples) {
@@ -1569,18 +1580,19 @@ void AuthenticatorRequestDialogController::set_should_create_in_icloud_keychain(
 
 #if BUILDFLAG(IS_MAC)
 
-// This enum is used in a histogram. Never change assigned values and only add
-// new entries at the end.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(MacOsHistogramValues)
 enum class MacOsHistogramValues {
-  kStartedCreateForProfileAuthenticatorICloudDriveEnabled = 0,
-  kStartedCreateForProfileAuthenticatorICloudDriveDisabled = 1,
-  kStartedCreateForICloudKeychainICloudDriveEnabled = 2,
-  kStartedCreateForICloudKeychainICloudDriveDisabled = 3,
+  kStartedCreateForProfileAuthenticatorICloudKeychainAvailable = 0,
+  kStartedCreateForProfileAuthenticatorICloudKeychainUnavailable = 1,
+  kStartedCreateForICloudKeychainICloudKeychainAvailable = 2,
+  kStartedCreateForICloudKeychainICloudKeychainUnavailable = 3,
 
-  kSuccessfulCreateForProfileAuthenticatorICloudDriveEnabled = 4,
-  kSuccessfulCreateForProfileAuthenticatorICloudDriveDisabled = 5,
-  kSuccessfulCreateForICloudKeychainICloudDriveEnabled = 6,
-  kSuccessfulCreateForICloudKeychainICloudDriveDisabled = 7,
+  kSuccessfulCreateForProfileAuthenticatorICloudKeychainAvailable = 4,
+  kSuccessfulCreateForProfileAuthenticatorICloudKeychainUnavailable = 5,
+  kSuccessfulCreateForICloudKeychainICloudKeychainAvailable = 6,
+  kSuccessfulCreateForICloudKeychainICloudKeychainUnavailable = 7,
 
   kStartedGetOnlyProfileAuthenticatorRecognised = 8,
   kStartedGetOnlyICloudKeychainRecognised = 9,
@@ -1590,6 +1602,7 @@ enum class MacOsHistogramValues {
   kSuccessfulGetFromICloudKeychain = 12,
   kMaxValue = kSuccessfulGetFromICloudKeychain,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/webauthn/enums.xml:WebAuthenticationMacOSPlatformAuthenticatorActionV2)
 
 void AuthenticatorRequestDialogController::RecordMacOsStartedHistogram() {
   if (is_non_webauthn_request_ || model_->relying_party_id == "google.com") {
@@ -1603,17 +1616,17 @@ void AuthenticatorRequestDialogController::RecordMacOsStartedHistogram() {
       *transport_availability_.make_credential_attachment !=
           device::AuthenticatorAttachment::kCrossPlatform) {
     if (should_create_in_icloud_keychain_) {
-      v = has_icloud_drive_enabled_
+      v = is_icloud_keychain_configured_
               ? MacOsHistogramValues::
-                    kStartedCreateForICloudKeychainICloudDriveEnabled
+                    kStartedCreateForICloudKeychainICloudKeychainAvailable
               : MacOsHistogramValues::
-                    kStartedCreateForICloudKeychainICloudDriveDisabled;
+                    kStartedCreateForICloudKeychainICloudKeychainUnavailable;
     } else {
-      v = has_icloud_drive_enabled_
+      v = is_icloud_keychain_configured_
               ? MacOsHistogramValues::
-                    kStartedCreateForProfileAuthenticatorICloudDriveEnabled
+                    kStartedCreateForProfileAuthenticatorICloudKeychainAvailable
               : MacOsHistogramValues::
-                    kStartedCreateForProfileAuthenticatorICloudDriveDisabled;
+                    kStartedCreateForProfileAuthenticatorICloudKeychainUnavailable;
     }
   } else if (transport_availability_.request_type ==
                  device::FidoRequestType::kGetAssertion &&
@@ -1637,7 +1650,7 @@ void AuthenticatorRequestDialogController::RecordMacOsStartedHistogram() {
 
   if (v) {
     base::UmaHistogramEnumeration(
-        "WebAuthentication.MacOS.PlatformAuthenticatorAction", *v);
+        "WebAuthentication.MacOS.PlatformAuthenticatorActionV2", *v);
     did_record_macos_start_histogram_ = true;
   }
 }
@@ -1654,17 +1667,17 @@ void AuthenticatorRequestDialogController::RecordMacOsSuccessHistogram(
   if (transport_availability_.request_type ==
       FidoRequestType::kMakeCredential) {
     if (authenticator_type == AuthenticatorType::kTouchID) {
-      v = has_icloud_drive_enabled_
+      v = is_icloud_keychain_configured_
               ? MacOsHistogramValues::
-                    kSuccessfulCreateForProfileAuthenticatorICloudDriveEnabled
+                    kSuccessfulCreateForProfileAuthenticatorICloudKeychainAvailable
               : MacOsHistogramValues::
-                    kSuccessfulCreateForProfileAuthenticatorICloudDriveDisabled;
+                    kSuccessfulCreateForProfileAuthenticatorICloudKeychainUnavailable;
     } else if (authenticator_type == AuthenticatorType::kICloudKeychain) {
-      v = has_icloud_drive_enabled_
+      v = is_icloud_keychain_configured_
               ? MacOsHistogramValues::
-                    kSuccessfulCreateForICloudKeychainICloudDriveEnabled
+                    kSuccessfulCreateForICloudKeychainICloudKeychainAvailable
               : MacOsHistogramValues::
-                    kSuccessfulCreateForICloudKeychainICloudDriveDisabled;
+                    kSuccessfulCreateForICloudKeychainICloudKeychainUnavailable;
     }
   } else {
     if (authenticator_type == AuthenticatorType::kTouchID) {
@@ -1676,13 +1689,13 @@ void AuthenticatorRequestDialogController::RecordMacOsSuccessHistogram(
 
   if (v) {
     base::UmaHistogramEnumeration(
-        "WebAuthentication.MacOS.PlatformAuthenticatorAction", *v);
+        "WebAuthentication.MacOS.PlatformAuthenticatorActionV2", *v);
   }
 }
 
-void AuthenticatorRequestDialogController::set_has_icloud_drive_enabled(
-    bool is_enabled) {
-  has_icloud_drive_enabled_ = is_enabled;
+void AuthenticatorRequestDialogController::set_is_icloud_keychain_configured(
+    bool is_configured) {
+  is_icloud_keychain_configured_ = is_configured;
 }
 
 #endif
@@ -1702,17 +1715,10 @@ void AuthenticatorRequestDialogController::SetUIPresentation(
 }
 
 void AuthenticatorRequestDialogController::ConfigureEnclaveForUpgrade(
-    device::FidoDiscoveryFactory* discovery_factory,
+    PasskeyUpgradeRequestController::EnclaveRequestCallback
+        enclave_request_callback,
     bool cmtg_key_requested) {
   CHECK(!passkey_upgrade_request_controller_);
-
-  using EnclaveEventStream = device::FidoDiscoveryBase::EventStream<
-      std::unique_ptr<device::enclave::CredentialRequest>>;
-  std::unique_ptr<EnclaveEventStream> event_stream;
-  PasskeyUpgradeRequestController::EnclaveRequestCallback
-      enclave_request_callback;
-  std::tie(enclave_request_callback, event_stream) = EnclaveEventStream::New();
-  discovery_factory->set_enclave_ui_request_stream(std::move(event_stream));
 
   content::RenderFrameHost* render_frame_host = MaybeGetRenderFrameHost();
   if (!render_frame_host) {
@@ -1745,14 +1751,15 @@ void AuthenticatorRequestDialogController::SetCurrentStep(Step step) {
 
 void AuthenticatorRequestDialogController::StartGuidedFlowForTransport(
     AuthenticatorTransport transport) {
-  DCHECK(model_->step() == Step::kMechanismSelection ||
-         model_->step() == Step::kUsbInsertAndActivate ||
-         model_->step() == Step::kPasskeyAutofill ||
-         model_->step() == Step::kChromeProfileCreatePasskey ||
-         model_->step() == Step::kPreSelectAccount ||
-         model_->step() == Step::kSelectPriorityMechanism ||
-         model_->step() == Step::kSelectAccount ||
-         model_->step() == Step::kNotStarted);
+  CHECK(model_->step() == Step::kMechanismSelection ||
+            model_->step() == Step::kUsbInsertAndActivate ||
+            model_->step() == Step::kPasskeyAutofill ||
+            model_->step() == Step::kChromeProfileCreatePasskey ||
+            model_->step() == Step::kPreSelectAccount ||
+            model_->step() == Step::kSelectPriorityMechanism ||
+            model_->step() == Step::kSelectAccount ||
+            model_->step() == Step::kNotStarted,
+        base::NotFatalUntil::M163);
   switch (transport) {
     case AuthenticatorTransport::kUsbHumanInterfaceDevice:
       SetCurrentStep(Step::kUsbInsertAndActivate);
@@ -1777,7 +1784,8 @@ void AuthenticatorRequestDialogController::StartHybridFlow() {
 }
 
 void AuthenticatorRequestDialogController::StartWinNativeApi() {
-  DCHECK(transport_availability_.has_win_native_api_authenticator);
+  CHECK(transport_availability_.has_win_native_api_authenticator,
+        base::NotFatalUntil::M163);
   if (transport_availability_.request_is_internal_only &&
       !transport_availability_.win_is_uvpaa) {
     model_->offer_try_again_in_ui = false;
@@ -1795,7 +1803,7 @@ void AuthenticatorRequestDialogController::StartWinNativeApi() {
 }
 
 void AuthenticatorRequestDialogController::StartICloudKeychain() {
-  DCHECK(transport_availability_.has_icloud_keychain);
+  CHECK(transport_availability_.has_icloud_keychain, base::NotFatalUntil::M163);
   if (transport_availability_.has_icloud_keychain_credential ==
           device::FidoRequestHandlerBase::RecognizedCredential::
               kHasRecognizedCredential &&
@@ -1864,8 +1872,7 @@ void AuthenticatorRequestDialogController::StartAutofillRequest() {
   }
   ReportConditionalUiPasskeyCount(credentials.size());
 
-  if (ui_presentation() == UIPresentation::kAmbient &&
-      (!credentials.empty() || !passwords_.empty())) {
+  if (ui_presentation() == UIPresentation::kAmbient) {
     auto* controller =
         ambient_signin::AmbientSigninController::GetOrCreateForCurrentDocument(
             render_frame_host);
@@ -1910,9 +1917,11 @@ void AuthenticatorRequestDialogController::SortRecognizedCredentials() {
                     std::ref(id_comparator));
 
   struct UsernameComparator {
-    explicit UsernameComparator(const icu::Locale* locale) {
+    explicit UsernameComparator(const base::i18n::LanguageTag& locale) {
       UErrorCode error = U_ZERO_ERROR;
-      collator_.reset(icu::Collator::createInstance(*locale, error));
+      collator_.reset(icu::Collator::createInstance(
+          base::i18n::IcuLocaleConverter::GetInstance().FromLanguageTag(locale),
+          error));
     }
 
     bool operator()(const device::DiscoverableCredentialMetadata& a,
@@ -1924,7 +1933,7 @@ void AuthenticatorRequestDialogController::SortRecognizedCredentials() {
 
     std::unique_ptr<icu::Collator> collator_;
   };
-  UsernameComparator user_name_comparator(&icu::Locale::getDefault());
+  UsernameComparator user_name_comparator(base::i18n::GetDefaultIcuLocale());
 
   std::ranges::stable_sort(transport_availability_.recognized_credentials,
                            std::ref(user_name_comparator));
@@ -1951,8 +1960,9 @@ void AuthenticatorRequestDialogController::PopulateMechanisms() {
       }
       specific_local_passkeys_listed = true;
       std::u16string name = base::UTF8ToUTF16(cred.user.name.value_or(""));
-      Mechanism::Type mechanism_type = Mechanism::Credential(
-          {cred.source, cred.user.id, cred.last_used_time});
+      Mechanism::Type mechanism_type =
+          Mechanism::Credential({cred.source, cred.user.id, cred.last_used_time,
+                                 cred.is_apple_passwords});
       auto& mechanism = model_->mechanisms.emplace_back(
           mechanism_type, name,
           GetMechanismIcon(mechanism_type, ui_presentation()),
@@ -1995,7 +2005,7 @@ void AuthenticatorRequestDialogController::PopulateMechanisms() {
     }
   }
   if (!did_enumerate_local_passkeys &&
-      transport_availability_.available_transports.contains(
+      transport_availability_.available_transports.Has(
           AuthenticatorTransport::kInternal)) {
     transports_to_list_if_active.push_back(AuthenticatorTransport::kInternal);
   }
@@ -2005,7 +2015,7 @@ void AuthenticatorRequestDialogController::PopulateMechanisms() {
   bool include_add_phone_option = false;
 
   if (model_->cable_qr_string.has_value() &&
-      transport_availability_.available_transports.contains(kCable)) {
+      transport_availability_.available_transports.Has(kCable)) {
     include_add_phone_option = !windows_handles_hybrid;
   }
 
@@ -2046,7 +2056,7 @@ void AuthenticatorRequestDialogController::PopulateMechanisms() {
   }
 
   if (transport_availability_.has_icloud_keychain && allow_icloud_keychain_ &&
-      // The mechanism for iCloud Keychain only appears for create(), or if
+      // The mechanism for Apple Passwords only appears for create(), or if
       // Chrome doesn't have permission to enumerate credentials and thus the
       // user needs a generic mechanism to trigger it.
       (!is_get_assertion ||
@@ -2077,7 +2087,7 @@ void AuthenticatorRequestDialogController::PopulateMechanisms() {
   // not available, if tapping it would trigger a prompt to enable BLE, or if
   // hints suggest that hybrid and USB should be separate options.
   const bool include_usb_option =
-      transport_availability_.available_transports.contains(
+      transport_availability_.available_transports.Has(
           AuthenticatorTransport::kUsbHumanInterfaceDevice) &&
       (!include_add_phone_option ||
        transport_availability_.ble_status != BleStatus::kOn ||
@@ -2086,7 +2096,7 @@ void AuthenticatorRequestDialogController::PopulateMechanisms() {
 
   if (include_add_phone_option) {
     model_->show_security_key_on_qr_sheet =
-        transport_availability_.available_transports.contains(
+        transport_availability_.available_transports.Has(
             AuthenticatorTransport::kUsbHumanInterfaceDevice) &&
         !include_usb_option;
     std::u16string label = l10n_util::GetStringUTF16(
@@ -2105,7 +2115,7 @@ void AuthenticatorRequestDialogController::PopulateMechanisms() {
   }
 
   for (const auto transport : transports_to_list_if_active) {
-    if (!transport_availability_.available_transports.contains(transport)) {
+    if (!transport_availability_.available_transports.Has(transport)) {
       continue;
     }
 
@@ -2394,7 +2404,7 @@ void AuthenticatorRequestDialogController::PopulatePasswords() {
             &AuthenticatorRequestDialogModel::OnPasswordCredentialSelected,
             base::Unretained(model_.get()),
             std::make_pair(password->username_value,
-                           password->password_value.value())));
+                           password->password_value)));
     mechanism.description = l10n_util::GetStringUTF16(
         IDS_PASSWORD_MANAGER_PASSWORD_FROM_GOOGLE_PASSWORD_MANAGER);
 

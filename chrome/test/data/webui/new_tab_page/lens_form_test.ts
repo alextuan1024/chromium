@@ -116,6 +116,40 @@ suite('LensFormTest', () => {
         assertEquals(null, lastSubmit);
       });
 
+  test(
+      'select unsupported heic file type should fail with file type error',
+      async () => {
+        // Arrange.
+        lensForm.addEventListener('loading', loadingHandler);
+        const file = new File([], 'file-name.heic', {type: 'image/heic'});
+
+        // Act.
+        dispatchFileInputChange(file);
+        await microtasksFinished();
+
+        // Assert.
+        assertFalse(fileFormSubmitted);
+        assertEquals(LensErrorType.FILE_TYPE, lastError);
+        assertEquals(null, lastSubmit);
+      });
+
+  test(
+      'select unsupported heif file type should fail with file type error',
+      async () => {
+        // Arrange.
+        lensForm.addEventListener('loading', loadingHandler);
+        const file = new File([], 'file-name.heif', {type: 'image/heif'});
+
+        // Act.
+        dispatchFileInputChange(file);
+        await microtasksFinished();
+
+        // Assert.
+        assertFalse(fileFormSubmitted);
+        assertEquals(LensErrorType.FILE_TYPE, lastError);
+        assertEquals(null, lastSubmit);
+      });
+
   test('submit file should set entrypoint parameter', async () => {
     // Arrange.
     const file = new File([], 'file-name.png', {type: 'image/png'});
@@ -312,6 +346,12 @@ suite('LensFormTest', () => {
     assertFalse(urlFormSubmitted);
     assertEquals(LensErrorType.LENGTH_TOO_GREAT, lastError);
     assertEquals(null, lastSubmit);
+  });
+
+  test('url form action should target v3 upload endpoint', () => {
+    const action = new URL(lensForm.$.urlForm.action);
+    assertEquals('https://lens.google.com', action.origin);
+    assertEquals('/v3/upload', action.pathname);
   });
 
   test('submit url should set entrypoint parameter', () => {

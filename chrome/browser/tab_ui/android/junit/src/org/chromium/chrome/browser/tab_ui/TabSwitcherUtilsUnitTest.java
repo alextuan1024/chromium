@@ -15,7 +15,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.chrome.browser.tab.Tab.INVALID_TAB_ID;
 import static org.chromium.components.tab_group_sync.SyncedGroupTestHelper.SYNC_GROUP_ID1;
 
 import org.junit.After;
@@ -45,6 +44,7 @@ import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.components.tab_group_sync.TabGroupUiActionHandler;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.List;
 
@@ -61,7 +61,7 @@ public class TabSwitcherUtilsUnitTest {
     @Mock private LayoutManager mLayoutManager;
     @Mock private TabGroupSyncService mTabGroupSyncService;
     @Mock private TabGroupUiActionHandler mTabGroupUiActionHandler;
-    @Mock private Callback<Integer> mRequestOpenTabGroupDialog;
+    @Mock private Callback<Token> mRequestOpenTabGroupDialog;
 
     @Before
     public void setUp() {
@@ -107,12 +107,13 @@ public class TabSwitcherUtilsUnitTest {
         SavedTabGroup syncGroup2 = new SavedTabGroup();
         syncGroup2.localId = new LocalTabGroupId(TAB_GROUP_ID_1);
         when(mTabGroupSyncService.getGroup(SYNC_GROUP_ID1)).thenReturn(syncGroup1);
-        when(mTabModel.getGroupLastShownTabId(TAB_GROUP_ID_1)).thenReturn(TAB_ID_1);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TAB_GROUP_ID_1)))
+                .thenReturn(true);
         doAnswer(
                         invocation -> {
                             Mockito.reset(mTabGroupSyncService);
                             when(mTabGroupSyncService.getGroup(SYNC_GROUP_ID1))
-                                     .thenReturn(syncGroup2);
+                                    .thenReturn(syncGroup2);
                             return null;
                         })
                 .when(mTabGroupUiActionHandler)
@@ -125,15 +126,16 @@ public class TabSwitcherUtilsUnitTest {
                 mTabModel,
                 mRequestOpenTabGroupDialog);
 
-        verify(mRequestOpenTabGroupDialog).onResult(TAB_ID_1);
+        verify(mRequestOpenTabGroupDialog).onResult(TAB_GROUP_ID_1);
     }
 
     @Test
-    public void testFocusTabGroup_invalidRoot() {
+    public void testFocusTabGroup_groupDoesNotExist() {
         SavedTabGroup syncGroup = new SavedTabGroup();
         syncGroup.localId = new LocalTabGroupId(TAB_GROUP_ID_1);
         when(mTabGroupSyncService.getGroup(SYNC_GROUP_ID1)).thenReturn(syncGroup);
-        when(mTabModel.getGroupLastShownTabId(TAB_GROUP_ID_1)).thenReturn(INVALID_TAB_ID);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TAB_GROUP_ID_1)))
+                .thenReturn(false);
 
         TabSwitcherUtils.focusTabGroup(
                 SYNC_GROUP_ID1,
@@ -151,7 +153,8 @@ public class TabSwitcherUtilsUnitTest {
         SavedTabGroup syncGroup = new SavedTabGroup();
         syncGroup.localId = new LocalTabGroupId(TAB_GROUP_ID_1);
         when(mTabGroupSyncService.getGroup(SYNC_GROUP_ID1)).thenReturn(syncGroup);
-        when(mTabModel.getGroupLastShownTabId(TAB_GROUP_ID_1)).thenReturn(TAB_ID_1);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TAB_GROUP_ID_1)))
+                .thenReturn(true);
 
         TabSwitcherUtils.focusTabGroup(
                 SYNC_GROUP_ID1,
@@ -161,7 +164,7 @@ public class TabSwitcherUtilsUnitTest {
                 mRequestOpenTabGroupDialog);
 
         verifyNoInteractions(mTabGroupUiActionHandler);
-        verify(mRequestOpenTabGroupDialog).onResult(TAB_ID_1);
+        verify(mRequestOpenTabGroupDialog).onResult(TAB_GROUP_ID_1);
     }
 
     @Test
@@ -216,7 +219,10 @@ public class TabSwitcherUtilsUnitTest {
         SavedTabGroup syncGroup = new SavedTabGroup();
         syncGroup.localId = new LocalTabGroupId(TAB_GROUP_ID_1);
         when(mTabGroupSyncService.getGroup(SYNC_GROUP_ID1)).thenReturn(syncGroup);
-        when(mTabModel.getGroupLastShownTabId(TAB_GROUP_ID_1)).thenReturn(TAB_ID_1);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TAB_GROUP_ID_1)))
+                .thenReturn(true);
+        when(mTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(TAB_GROUP_ID_1)))
+                .thenReturn(List.of(mTab));
         when(mTabModel.indexOf(mTab)).thenReturn(0);
 
         TabSwitcherUtils.focusTabGroup(

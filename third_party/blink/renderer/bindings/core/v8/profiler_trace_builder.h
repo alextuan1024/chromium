@@ -15,7 +15,6 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
-#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
@@ -73,12 +72,9 @@ class CORE_EXPORT ProfilerTraceBuilder final
  public:
   static ProfilerTrace* FromProfile(ScriptState*,
                                     const v8::CpuProfile* profile,
-                                    const SecurityOrigin* allowed_origin,
                                     base::TimeTicks time_origin);
 
-  explicit ProfilerTraceBuilder(ScriptState*,
-                                const SecurityOrigin* allowed_origin,
-                                base::TimeTicks time_origin);
+  explicit ProfilerTraceBuilder(ScriptState*, base::TimeTicks time_origin);
 
   ProfilerTraceBuilder(const ProfilerTraceBuilder&) = delete;
   ProfilerTraceBuilder& operator=(const ProfilerTraceBuilder&) = delete;
@@ -109,6 +105,17 @@ class CORE_EXPORT ProfilerTraceBuilder final
       case v8::JS:
       case v8::ATOMICS_WAIT:
         return V8ProfilerMarker(V8ProfilerMarker::Enum::kScript);
+      case v8::PARSER:
+      case v8::BYTECODE_COMPILER:
+      case v8::COMPILER:
+      case v8::OTHER:
+      case v8::EXTERNAL:
+        return V8ProfilerMarker(V8ProfilerMarker::Enum::kOther);
+      // V8 preserves LOGGING even when the sample's context is rejected.
+      case v8::LOGGING:
+      // V8 also uses idle states for samples rejected by the context filter.
+      case v8::IDLE:
+      case v8::IDLE_EXTERNAL:
       default:
         return std::optional<V8ProfilerMarker>();
     }
@@ -146,13 +153,13 @@ class CORE_EXPORT ProfilerTraceBuilder final
       const v8::StateTag fallback_state);
 
   // Discards metadata frames and performs an origin check on the given stack
-  // frame, returning true if it either has the same origin as the profiler, or
-  // if it should be shared cross origin.
+  // frame, returning true if its attributed script may be shared with the
+  // profiling context (i.e. its errors are not muted) and has a parseable
+  // resource name.
   bool ShouldIncludeStackFrame(const v8::CpuProfileNode* node);
 
   Member<ScriptState> script_state_;
 
-  const SecurityOrigin* allowed_origin_;
   const base::TimeTicks time_origin_;
   bool is_cross_origin_isolated_ = false;
 
@@ -168,12 +175,13 @@ class CORE_EXPORT ProfilerTraceBuilder final
   HashMap<const v8::CpuProfileNode*, wtf_size_t, ProfilerNodeFrameHashTraits>
       node_to_frame_map_;
 
-  // A mapping from a V8 internal script ID to whether or not it passes the
-  // same-origin policy for the ScriptState that the trace belongs to.
-  HashMap<int, bool> script_same_origin_cache_;
+  // A mapping from a V8 internal script ID to whether or not frames attributed
+  // to it may be included in the trace.
+  HashMap<int, bool> script_inclusion_cache_;
 
   FRIEND_TEST_ALL_PREFIXES(ProfilerTraceBuilderTest,
                            AddVMStateMarkerCrossOriginIsolated);
+  FRIEND_TEST_ALL_PREFIXES(ProfilerTraceBuilderTest, VMStateMarkerExposure);
   FRIEND_TEST_ALL_PREFIXES(ProfilerTraceBuilderTest,
                            AddEmbedderStateMarkerCrossOriginIsolated);
   FRIEND_TEST_ALL_PREFIXES(ProfilerTraceBuilderTest, AddVMStateMarker);

@@ -76,7 +76,7 @@ ArcPackageSyncDataTypeController::~ArcPackageSyncDataTypeController() {
 syncer::DataTypeController::PreconditionState
 ArcPackageSyncDataTypeController::GetPreconditionState(
     const PreconditionContext& context) const {
-  CHECK(CalledOnValidThread(), base::NotFatalUntil::M160);
+  CHECK(CalledOnValidSequence(), base::NotFatalUntil::M160);
   if (!arc::IsArcPlayStoreEnabledForProfile(profile_)) {
     return PreconditionState::kMustStopAndClearData;
   }
@@ -92,21 +92,29 @@ ArcPackageSyncDataTypeController::GetPreconditionState(
 
 void ArcPackageSyncDataTypeController::OnArcPlayStoreEnabledChanged(
     bool enabled) {
-  CHECK(CalledOnValidThread(), base::NotFatalUntil::M160);
+  CHECK(CalledOnValidSequence(), base::NotFatalUntil::M160);
   sync_service_->DataTypePreconditionChanged(type());
 }
 
 void ArcPackageSyncDataTypeController::OnArcInitialStart() {
-  CHECK(CalledOnValidThread(), base::NotFatalUntil::M160);
+  CHECK(CalledOnValidSequence(), base::NotFatalUntil::M160);
+  sync_service_->DataTypePreconditionChanged(type());
+}
+
+void ArcPackageSyncDataTypeController::OnAppConnectionClosed() {
+  CHECK(CalledOnValidSequence(), base::NotFatalUntil::M160);
+  // `ArcAppListPrefs` resets `package_list_initial_refreshed()` to false on
+  // disconnect. Notify Sync so the datatype stops and cancels any in-flight
+  // initial sync update before `MergeDataAndStartSyncing()` can run.
   sync_service_->DataTypePreconditionChanged(type());
 }
 
 void ArcPackageSyncDataTypeController::OnPackageListInitialRefreshed() {
-  CHECK(CalledOnValidThread(), base::NotFatalUntil::M160);
+  CHECK(CalledOnValidSequence(), base::NotFatalUntil::M160);
   sync_service_->DataTypePreconditionChanged(type());
 }
 
 void ArcPackageSyncDataTypeController::OnOsSyncFeaturePrefChanged() {
-  CHECK(CalledOnValidThread(), base::NotFatalUntil::M160);
+  CHECK(CalledOnValidSequence(), base::NotFatalUntil::M160);
   sync_service_->DataTypePreconditionChanged(type());
 }

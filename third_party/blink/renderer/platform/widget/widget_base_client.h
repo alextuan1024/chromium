@@ -86,6 +86,9 @@ class WidgetBaseClient {
   virtual void BeginUpdateLayers() {}
   virtual void EndUpdateLayers() {}
 
+  // Called before the compositor frame's commit state is snapshotted.
+  virtual void WillSnapshotCommitState() {}
+
   // Methods called to mark the beginning and end of a commit to the impl
   // thread for a frame. Only called when gathering main frame
   // UMA and UKM. That is, when RecordStartOfFrameMetrics has been called, and
@@ -190,9 +193,12 @@ class WidgetBaseClient {
   // Return the original (non-emulated) screen infos.
   virtual const display::ScreenInfos& GetOriginalScreenInfos() = 0;
 
-  // Indication that the surface and screen were updated.
+  // Indication that the surface and screen were updated. The first argument
+  // excludes emulation; the second is the effective value previously held by
+  // the widget.
   virtual void DidUpdateSurfaceAndScreen(
-      const display::ScreenInfos& previous_original_screen_infos) {}
+      const display::ScreenInfos& previous_original_screen_infos,
+      const display::ScreenInfos& previous_effective_screen_infos) {}
 
   // Return the viewport visible rect.
   virtual gfx::Rect ViewportVisibleRect() = 0;

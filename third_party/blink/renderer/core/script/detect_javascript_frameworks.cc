@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/script/detect_javascript_frameworks.h"
 
 #include "base/feature_list.h"
+#include "base/no_destructor.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/loader/javascript_framework_detection.h"
 #include "third_party/blink/public/common/loader/loading_behavior_flag.h"
@@ -21,8 +22,9 @@
 #include "third_party/blink/renderer/core/workers/worker_thread.h"
 #include "third_party/blink/renderer/platform/bindings/dom_data_store.h"
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
+#include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/ascii_ctype.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 #include "v8/include/v8.h"
@@ -63,12 +65,13 @@ bool IsFrameworkIDUsed(Document& document, const AtomicString& framework_id) {
 
 inline void CheckIdMatches(Document& document,
                            JavaScriptFrameworkDetectionResult& result) {
-  DEFINE_STATIC_LOCAL(AtomicString, kReactId, ("react-root"));
+  static base::NoDestructor<AtomicString> kReactId(
+      AtomicString::FromLiteral<"react-root">());
   if (IsFrameworkIDUsed(document, AtomicString(kGatsbyId))) {
     result.detected_versions[JavaScriptFramework::kGatsby] =
         kNoFrameworkVersionDetected;
   }
-  if (IsFrameworkIDUsed(document, kReactId)) {
+  if (IsFrameworkIDUsed(document, *kReactId)) {
     result.detected_versions[JavaScriptFramework::kReact] =
         kNoFrameworkVersionDetected;
   }
@@ -77,11 +80,12 @@ inline void CheckIdMatches(Document& document,
 inline void CheckAttributeMatches(const Element& element,
                                   JavaScriptFrameworkDetectionResult& result,
                                   AtomicString& detected_ng_version) {
-  DEFINE_STATIC_LOCAL(QualifiedName, ng_version, (AtomicString("ng-version")));
-  DEFINE_STATIC_LOCAL(QualifiedName, data_reactroot,
-                      (AtomicString("data-reactroot")));
+  static base::NoDestructor<QualifiedName> ng_version(
+      AtomicString("ng-version"));
+  static base::NoDestructor<QualifiedName> data_reactroot(
+      AtomicString("data-reactroot"));
   static constexpr char kSvelte[] = "svelte-";
-  if (element.FastHasAttribute(data_reactroot)) {
+  if (element.FastHasAttribute(*data_reactroot)) {
     result.detected_versions[JavaScriptFramework::kReact] =
         kNoFrameworkVersionDetected;
   }
@@ -89,10 +93,10 @@ inline void CheckAttributeMatches(const Element& element,
     result.detected_versions[JavaScriptFramework::kSvelte] =
         kNoFrameworkVersionDetected;
   }
-  if (element.FastHasAttribute(ng_version)) {
+  if (element.FastHasAttribute(*ng_version)) {
     result.detected_versions[JavaScriptFramework::kAngular] =
         kNoFrameworkVersionDetected;
-    detected_ng_version = element.FastGetAttribute(ng_version);
+    detected_ng_version = element.FastGetAttribute(*ng_version);
   }
 }
 
@@ -110,30 +114,35 @@ inline void CheckPropertyMatches(Element& element,
     return;
   }
 
-  DEFINE_STATIC_LOCAL(AtomicString, vue_string, ("__vue__"));
-  DEFINE_STATIC_LOCAL(AtomicString, vue_app_string, ("__vue_app__"));
-  DEFINE_STATIC_LOCAL(AtomicString, k_string, ("__k"));
-  DEFINE_STATIC_LOCAL(AtomicString, reactRootContainer_string,
-                      ("_reactRootContainer"));
-  DEFINE_STATIC_LOCAL(AtomicString, reactListening_string, ("_reactListening"));
-  DEFINE_STATIC_LOCAL(AtomicString, reactFiber_string, ("__reactFiber"));
+  static base::NoDestructor<AtomicString> vue_string(
+      AtomicString::FromLiteral<"__vue__">());
+  static base::NoDestructor<AtomicString> vue_app_string(
+      AtomicString::FromLiteral<"__vue_app__">());
+  static base::NoDestructor<AtomicString> k_string(
+      AtomicString::FromLiteral<"__k">());
+  static base::NoDestructor<AtomicString> reactRootContainer_string(
+      AtomicString::FromLiteral<"_reactRootContainer">());
+  static base::NoDestructor<AtomicString> reactListening_string(
+      AtomicString::FromLiteral<"_reactListening">());
+  static base::NoDestructor<AtomicString> reactFiber_string(
+      AtomicString::FromLiteral<"__reactFiber">());
   for (uint32_t i = 0; i < property_names->Length(); ++i) {
     v8::Local<v8::Value> key;
     if (!property_names->Get(context, i).ToLocal(&key) || !key->IsString()) {
       continue;
     }
     AtomicString key_value = ToCoreAtomicString(isolate, key.As<v8::String>());
-    if (key_value == vue_string || key_value == vue_app_string) {
+    if (key_value == *vue_string || key_value == *vue_app_string) {
       result.detected_versions[JavaScriptFramework::kVue] =
           kNoFrameworkVersionDetected;
-    } else if (key_value == k_string) {
+    } else if (key_value == *k_string) {
       result.detected_versions[JavaScriptFramework::kPreact] =
           kNoFrameworkVersionDetected;
-    } else if (key_value == reactRootContainer_string) {
+    } else if (key_value == *reactRootContainer_string) {
       result.detected_versions[JavaScriptFramework::kReact] =
           kNoFrameworkVersionDetected;
-    } else if (key_value.starts_with(reactListening_string) ||
-               key_value.starts_with(reactFiber_string)) {
+    } else if (key_value.starts_with(*reactListening_string) ||
+               key_value.starts_with(*reactFiber_string)) {
       result.detected_versions[JavaScriptFramework::kReact] =
           kNoFrameworkVersionDetected;
     }
@@ -168,7 +177,7 @@ inline void CheckGlobalPropertyMatches(
     result.detected_versions[JavaScriptFramework::kVue] =
         kNoFrameworkVersionDetected;
   }
-  // TODO(npm): Add check for window.React.Component, not just window.React.
+  // TODO: Add check for window.React.Component, not just window.React.
   if (IsFrameworkVariableUsed(context, kReactData)) {
     result.detected_versions[JavaScriptFramework::kReact] =
         kNoFrameworkVersionDetected;
@@ -199,6 +208,10 @@ inline void CheckGlobalStringMatches(
       v8::String::NewFromUtf8Literal(isolate, "transformers.js_config");
   v8::Local<v8::String> media_pipe_string = v8::String::NewFromUtf8Literal(
       isolate, "addStringVectorToInputSidePacket");
+  v8::Local<v8::String> litert_string =
+      v8::String::NewFromUtf8Literal(isolate, "litert_wasm_internal.js");
+  v8::Local<v8::String> litert_lm_string =
+      v8::String::NewFromUtf8Literal(isolate, "liteRtLmWasm");
   if (tfjs_string->IsInStringTable(isolate)) {
     result.detected_versions[JavaScriptFramework::kTFJS] =
         kNoFrameworkVersionDetected;
@@ -211,37 +224,44 @@ inline void CheckGlobalStringMatches(
     result.detected_versions[JavaScriptFramework::kMediaPipe] =
         kNoFrameworkVersionDetected;
   }
+  if (litert_string->IsInStringTable(isolate)) {
+    result.detected_versions[JavaScriptFramework::kLiteRT] =
+        kNoFrameworkVersionDetected;
+  }
+  if (litert_lm_string->IsInStringTable(isolate)) {
+    result.detected_versions[JavaScriptFramework::kLiteRTLM] =
+        kNoFrameworkVersionDetected;
+  }
 }
 
-int64_t ExtractVersion(v8::Local<v8::RegExp> regexp,
-                       v8::Local<v8::Context> context,
-                       v8::Local<v8::Value> version) {
-  v8::Local<v8::Object> groups;
-  v8::Local<v8::Value> major;
-  v8::Local<v8::Value> minor;
-  bool success =
-      regexp->Exec(context, version.As<v8::String>()).ToLocal(&groups);
-  if (!success || !groups->IsArray()) {
-    return kNoFrameworkVersionDetected;
+// Finds the first match of /([0-9]+)\.([0-9]+)/ in `version`, and returns the
+// major and minor versions, each clamped to 8 bits. This is implemented
+// natively rather than with a v8::RegExp, because executing a RegExp calls the
+// page-modifiable RegExp.prototype.exec, which would run page script.
+int64_t ExtractVersion(const String& version) {
+  const wtf_size_t length = version.length();
+  wtf_size_t i = 0;
+  while (i < length) {
+    if (!IsAsciiDigit(version[i])) {
+      ++i;
+      continue;
+    }
+    // Major & minor versions are clamped to 8bits to avoid using this as a
+    // vector to identify users. Accumulating modulo 256 gives the same result
+    // as clamping the full value.
+    int64_t major = 0;
+    for (; i < length && IsAsciiDigit(version[i]); ++i) {
+      major = (major * 10 + (version[i] - '0')) & 0xff;
+    }
+    if (i + 1 < length && version[i] == '.' && IsAsciiDigit(version[i + 1])) {
+      int64_t minor = 0;
+      for (++i; i < length && IsAsciiDigit(version[i]); ++i) {
+        minor = (minor * 10 + (version[i] - '0')) & 0xff;
+      }
+      return (major << 8) | minor;
+    }
   }
-  v8::Local<v8::Array> groups_array = groups.As<v8::Array>();
-  if (!groups_array->Get(context, 1).ToLocal(&major) ||
-      !groups_array->Get(context, 2).ToLocal(&minor) || !major->IsString() ||
-      !minor->IsString()) {
-    return kNoFrameworkVersionDetected;
-  }
-
-  v8::Local<v8::Value> major_number;
-  v8::Local<v8::Value> minor_number;
-  if (!major->ToNumber(context).ToLocal(&major_number) ||
-      !minor->ToNumber(context).ToLocal(&minor_number)) {
-    return kNoFrameworkVersionDetected;
-  }
-
-  // Major & minor versions are clamped to 8bits to avoid using this as a
-  // vector to identify users.
-  return ((major_number->IntegerValue(context).FromMaybe(0) & 0xff) << 8) |
-         (minor_number->IntegerValue(context).FromMaybe(0) & 0xff);
+  return kNoFrameworkVersionDetected;
 }
 
 void DetectFrameworkVersions(Document& document,
@@ -250,28 +270,29 @@ void DetectFrameworkVersions(Document& document,
                              JavaScriptFrameworkDetectionResult& result,
                              const AtomicString& detected_ng_version) {
   v8::Local<v8::Object> global = context->Global();
-  static constexpr char kVersionPattern[] = "([0-9]+)\\.([0-9]+)";
-  v8::Local<v8::RegExp> version_regexp;
 
-  if (!v8::RegExp::New(context, V8AtomicString(isolate, kVersionPattern),
-                       v8::RegExp::kNone)
-           .ToLocal(&version_regexp)) {
-    return;
-  }
-
+  // Returns the value of the own data property `prop_name` of `object`, or
+  // undefined. This must never run page script, so accessor properties
+  // (getters), interceptors, proxies and the prototype chain are all ignored.
   auto SafeGetProperty = [&](v8::Local<v8::Value> object,
                              const char* prop_name) -> v8::Local<v8::Value> {
-    if (object.IsEmpty() || !object->IsObject()) {
+    if (object.IsEmpty() || !object->IsObject() || object->IsProxy()) {
       return v8::Undefined(isolate);
     }
-
+    v8::Local<v8::Object> obj = object.As<v8::Object>();
+    v8::Local<v8::String> name = V8AtomicString(isolate, prop_name);
+    // HasRealNamedProperty() and HasRealNamedCallbackProperty() only look at
+    // own properties, skip interceptors, and never run script.
+    if (!obj->HasRealNamedProperty(context, name).FromMaybe(false) ||
+        obj->HasRealNamedCallbackProperty(context, name).FromMaybe(true)) {
+      return v8::Undefined(isolate);
+    }
+    // `name` is now known to be an own data property, so this does not run
+    // script.
     v8::Local<v8::Value> value;
-    if (!object.As<v8::Object>()
-             ->GetRealNamedProperty(context, V8AtomicString(isolate, prop_name))
-             .ToLocal(&value)) {
+    if (!obj->GetRealNamedProperty(context, name).ToLocal(&value)) {
       return v8::Undefined(isolate);
     }
-
     return value;
   };
 
@@ -282,18 +303,16 @@ void DetectFrameworkVersions(Document& document,
     v8::Local<v8::Value> version_string =
         SafeGetProperty(SafeGetProperty(global, kNext), kVersion);
     if (!version_string.IsEmpty() && version_string->IsString()) {
-      version = ExtractVersion(version_regexp, context, version_string);
+      version = ExtractVersion(
+          ToCoreString(isolate, version_string.As<v8::String>()));
     }
 
     result.detected_versions[JavaScriptFramework::kNext] = version;
   }
 
   if (!detected_ng_version.IsNull()) {
-    result.detected_versions[JavaScriptFramework::kAngular] = ExtractVersion(
-        version_regexp, context,
-        v8::String::NewFromUtf8(isolate,
-                                detected_ng_version.GetString().Utf8().c_str())
-            .FromMaybe(v8::String::Empty(isolate)));
+    result.detected_versions[JavaScriptFramework::kAngular] =
+        ExtractVersion(detected_ng_version.GetString());
   }
 
   if (result.detected_versions.contains(JavaScriptFramework::kVue)) {
@@ -304,8 +323,8 @@ void DetectFrameworkVersions(Document& document,
       v8::Local<v8::Value> version_string =
           SafeGetProperty(SafeGetProperty(global, kVue2), kVersion);
       if (!version_string.IsEmpty() && version_string->IsString()) {
-        result.detected_versions[JavaScriptFramework::kVue] =
-            ExtractVersion(version_regexp, context, version_string);
+        result.detected_versions[JavaScriptFramework::kVue] = ExtractVersion(
+            ToCoreString(isolate, version_string.As<v8::String>()));
       }
     } else {
       static constexpr char kVue3[] = "__VUE__";
@@ -331,7 +350,7 @@ void DetectFrameworkVersions(Document& document,
   }
 
   if (generator_meta) {
-    const AtomicString& content = generator_meta->Content();
+    const AtomicString content = generator_meta->Content();
     if (!content.empty()) {
       if (content.starts_with("Wix")) {
         result.detected_versions[JavaScriptFramework::kWix] =
@@ -339,31 +358,26 @@ void DetectFrameworkVersions(Document& document,
       } else if (content.starts_with("Joomla")) {
         result.detected_versions[JavaScriptFramework::kJoomla] =
             kNoFrameworkVersionDetected;
-      } else {
-        constexpr char kWordpressPrefix[] = "WordPress ";
+      } else if (constexpr char kWordpressPrefix[] = "WordPress ";
+                 content.starts_with(kWordpressPrefix)) {
         constexpr size_t kWordpressPrefixLength =
             std::char_traits<char>::length(kWordpressPrefix);
 
-        if (content.starts_with(kWordpressPrefix)) {
-          StringView version_string = content;
-          version_string.remove_prefix(kWordpressPrefixLength);
-          result.detected_versions[JavaScriptFramework::kWordPress] =
-              ExtractVersion(version_regexp, context,
-                             V8String(isolate, version_string));
-        }
-
-        constexpr char kDrupalPrefix[] = "Drupal ";
+        StringView version_string = content;
+        version_string.remove_prefix(kWordpressPrefixLength);
+        result.detected_versions[JavaScriptFramework::kWordPress] =
+            ExtractVersion(version_string.ToString());
+      } else if (constexpr char kDrupalPrefix[] = "Drupal ";
+                 content.starts_with(kDrupalPrefix)) {
         constexpr size_t kDrupalPrefixLength =
             std::char_traits<char>::length(kDrupalPrefix);
 
-        if (content.starts_with(kDrupalPrefix)) {
-          StringView version_string(content, kDrupalPrefixLength);
-          version_string = version_string.substr(0, version_string.find(' '));
-          std::optional<int> version = StringToIntLoose(version_string);
-          result.detected_versions[JavaScriptFramework::kDrupal] =
-              version.has_value() ? ((*version & 0xff) << 8)
-                                  : kNoFrameworkVersionDetected;
-        }
+        StringView version_string(content, kDrupalPrefixLength);
+        version_string = version_string.substr(0, version_string.find(' '));
+        std::optional<int> version = StringToIntLoose(version_string);
+        result.detected_versions[JavaScriptFramework::kDrupal] =
+            version.has_value() ? ((*version & 0xff) << 8)
+                                : kNoFrameworkVersionDetected;
       }
     }
   }
@@ -400,6 +414,13 @@ void DetectJavascriptFrameworksOnLoad(Document& document) {
   if (!frame || !frame->IsOutermostMainFrame() ||
       !document.Url().ProtocolIsInHttpFamily() ||
       !document.BaseURL().ProtocolIsInHttpFamily()) {
+    return;
+  }
+
+  // This can be reached synchronously from frame detach, e.g. during a
+  // rendering update. Detection should never run script, but don't even touch
+  // V8 objects when script is forbidden.
+  if (ScriptForbiddenScope::IsScriptForbidden()) {
     return;
   }
 

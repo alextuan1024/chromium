@@ -82,6 +82,7 @@ class WebContentsView {
   // Sets up the View that holds the rendered web page, receives messages for
   // it and contains page plugins. The host view should be sized to the current
   // size of the WebContents.
+  // Returns null if the view is synchronously destroyed while being created.
   virtual RenderWidgetHostViewBase* CreateViewForWidget(
       RenderWidgetHost* render_widget_host) = 0;
 
@@ -130,6 +131,9 @@ class WebContentsView {
 
   // Reset the above animation manager.
   virtual void DestroyBackForwardTransitionAnimationManager() = 0;
+
+  // Cancel any ongoing drag.
+  virtual void CancelDrag() = 0;
 };
 
 // Factory function to create `WebContentsView`s. Implemented in the platform

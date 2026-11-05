@@ -8,11 +8,21 @@
 #include <memory>
 #include <numeric>
 
+#include "base/auto_reset.h"
+#include "base/containers/adapters.h"
+#include "base/feature_list.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/time/time.h"
+#include "base/types/pass_key.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
+#include "chrome/browser/ui/views/infobars/batch_progress_tracker.h"
 #include "chrome/browser/ui/views/infobars/infobar_view.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/infobars/core/infobar_delegate.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -118,7 +128,7 @@ void InfoBarContainerView::Layout(PassKey) {
     child->SetBounds(0, top + add_separator_height, width(), height);
     return child->bounds().bottom();
   };
-  DCHECK_EQ(content_shadow_, children().back());
+  CHECK_EQ(content_shadow_, children().back(), base::NotFatalUntil::M162);
   const int top = std::accumulate(children().begin(),
                                   std::prev(children().end()), 0, set_bounds);
 
@@ -149,9 +159,25 @@ gfx::Size InfoBarContainerView::CalculatePreferredSize(
   // desirable.  On the other hand, it also means the browser doesn't know the
   // shadow is there and could lay out something atop it or size the window too
   // small for it; but these are unlikely.
-  DCHECK_EQ(content_shadow_, children().back());
+  CHECK_EQ(content_shadow_, children().back(), base::NotFatalUntil::M162);
   return std::accumulate(children().cbegin(), std::prev(children().cend()),
                          gfx::Size(), enlarge_size);
+}
+
+void InfoBarContainerView::ChangeInfoBarManager(
+    infobars::InfoBarManager* infobar_manager) {
+  if (infobar_manager &&
+      base::FeatureList::IsEnabled(features::kInfoBarQueuedCountPill)) {
+    // Subscribe the tab's tracker before `InfoBarContainerWithPriority`
+    // subscribes `this`, so `BatchProgressTracker` reconciles removals and
+    // replacements prior to the container's observer callbacks.
+    BatchProgressTracker::GetOrCreate(*infobar_manager);
+  }
+  {
+    base::AutoReset<bool> defer(&defer_indicator_updates_, true);
+    InfoBarContainerWithPriority::ChangeInfoBarManager(infobar_manager);
+  }
+  UpdateQueuedIndicator();
 }
 
 void InfoBarContainerView::PlatformSpecificAddInfoBar(
@@ -159,11 +185,25 @@ void InfoBarContainerView::PlatformSpecificAddInfoBar(
     size_t position) {
   AddChildViewAt(static_cast<InfoBarView*>(infobar),
                  static_cast<int>(position));
+  if (!defer_indicator_updates_) {
+    UpdateQueuedIndicator();
+  }
 }
 
 void InfoBarContainerView::PlatformSpecificRemoveInfoBar(
     infobars::InfoBar* infobar) {
-  RemoveChildView(static_cast<InfoBarView*>(infobar));
+  auto* infobar_view = static_cast<InfoBarView*>(infobar);
+  if (queued_indicator_host_ == infobar) {
+    queued_indicator_host_ = nullptr;
+    indicator_shown_on_host_at_ = base::TimeTicks();
+  }
+
+  infobar_view->SetQueuedInfoBarPosition(0, 0,
+                                         base::PassKey<InfoBarContainerView>());
+  RemoveChildView(infobar_view);
+  if (!defer_indicator_updates_) {
+    UpdateQueuedIndicator(infobar);
+  }
 }
 
 void InfoBarContainerView::PlatformSpecificWillRemoveInfoBar(
@@ -224,6 +264,129 @@ void InfoBarContainerView::PlatformSpecificInfoBarShown(
     GetFocusManager()->SetStoredFocusView(view_to_focus);
   } else {
     view_to_focus->RequestFocus();
+  }
+}
+
+void InfoBarContainerView::PlatformSpecificPendingInfoBarCountChanged(
+    size_t count) {
+  if (!defer_indicator_updates_) {
+    UpdateQueuedIndicator();
+  }
+}
+
+void InfoBarContainerView::OnInfoBarRemoved(infobars::InfoBar* infobar,
+                                            bool animate) {
+  if (infobar == queued_indicator_host_ &&
+      !indicator_shown_on_host_at_.is_null()) {
+    base::UmaHistogramLongTimes(
+        "InfoBar.PendingIndicator.HostResolveTime",
+        base::TimeTicks::Now() - indicator_shown_on_host_at_);
+    indicator_shown_on_host_at_ = base::TimeTicks();
+  }
+
+  {
+    base::AutoReset<bool> defer(&defer_indicator_updates_, true);
+    InfoBarContainerWithPriority::OnInfoBarRemoved(infobar, animate);
+  }
+  UpdateQueuedIndicator(infobar);
+}
+
+void InfoBarContainerView::OnInfoBarReplaced(infobars::InfoBar* old_infobar,
+                                             infobars::InfoBar* new_infobar) {
+  const bool was_indicator_host = (old_infobar == queued_indicator_host_);
+  const base::TimeTicks indicator_shown_at = indicator_shown_on_host_at_;
+  {
+    base::AutoReset<bool> defer(&defer_indicator_updates_, true);
+    InfoBarContainerWithPriority::OnInfoBarReplaced(old_infobar, new_infobar);
+  }
+  if (was_indicator_host) {
+    indicator_shown_on_host_at_ = indicator_shown_at;
+  }
+  UpdateQueuedIndicator(/*removing=*/nullptr,
+                        /*preserve_indicator_host=*/was_indicator_host);
+  if (was_indicator_host && indicator_shown_on_host_at_.is_null() &&
+      !indicator_shown_at.is_null()) {
+    base::UmaHistogramLongTimes("InfoBar.PendingIndicator.HostResolveTime",
+                                base::TimeTicks::Now() - indicator_shown_at);
+  }
+}
+
+void InfoBarContainerView::UpdateQueuedIndicator(
+    const infobars::InfoBar* removing,
+    bool preserve_indicator_host) {
+  if (defer_indicator_updates_ ||
+      !base::FeatureList::IsEnabled(features::kInfoBarQueuedCountPill)) {
+    return;
+  }
+
+  const size_t pending_count = PendingInfoBarCount();
+  bool checked_bottom_staying = false;
+  bool has_staying_eligible_bar = false;
+  InfoBarView* host = nullptr;
+
+  for (infobars::InfoBar* infobar : base::Reversed(infobars())) {
+    if (infobar == removing || !infobar->owner()) {
+      continue;
+    }
+
+    const bool eligible = BatchProgressTracker::IsEligibleInfoBar(infobar);
+    if (!checked_bottom_staying) {
+      checked_bottom_staying = true;
+      if (eligible) {
+        host = static_cast<InfoBarView*>(infobar);
+      }
+    }
+    if (eligible) {
+      has_staying_eligible_bar = true;
+      break;
+    }
+  }
+
+  BatchProgressTracker::Position position;
+  if (auto* tracker = BatchProgressTracker::Get(manager())) {
+    position =
+        tracker->ResolvePosition(host, has_staying_eligible_bar, pending_count);
+  }
+  if (!position.should_show()) {
+    host = nullptr;
+  }
+
+  // Only hide the previous host's label if that infobar is staying open (e.g.
+  // suppressed by a newly arrived critical-security bar). Leaving the label
+  // intact on a closing infobar avoids a horizontal layout jump during its
+  // exit animation.
+  if (queued_indicator_host_ && queued_indicator_host_ != host &&
+      queued_indicator_host_ != removing && queued_indicator_host_->owner()) {
+    queued_indicator_host_->SetQueuedInfoBarPosition(
+        0, 0, base::PassKey<InfoBarContainerView>());
+  }
+
+  const InfoBarView* previous_host = queued_indicator_host_;
+  queued_indicator_host_ = host;
+  if (!host) {
+    indicator_shown_on_host_at_ = base::TimeTicks();
+    return;
+  }
+
+  host->SetQueuedInfoBarPosition(position.index, position.total,
+                                 base::PassKey<InfoBarContainerView>());
+
+  if (pending_count == 0) {
+    indicator_shown_on_host_at_ = base::TimeTicks();
+    return;
+  }
+
+  const bool newly_shown_with_pending =
+      (host != previous_host && !preserve_indicator_host) ||
+      indicator_shown_on_host_at_.is_null();
+  if (newly_shown_with_pending) {
+    indicator_shown_on_host_at_ = base::TimeTicks::Now();
+    if (host->delegate()) {
+      base::UmaHistogramSparse("InfoBar.PendingIndicator.Shown",
+                               host->delegate()->GetIdentifier());
+    }
+    base::UmaHistogramExactLinear("InfoBar.PendingIndicator.CountAtShow",
+                                  base::saturated_cast<int>(pending_count), 10);
   }
 }
 

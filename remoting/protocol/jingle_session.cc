@@ -403,6 +403,8 @@ void JingleSession::Close(protocol::ErrorCode error,
         reason = SessionTerminate::Reason::kExpired;
         break;
       case ErrorCode::HOST_CONFIGURATION_ERROR:
+      case ErrorCode::LOCAL_SESSION_RUNNING:
+      case ErrorCode::UNCURTAINED_SESSION:
         reason = SessionTerminate::Reason::kFailedApplication;
         break;
       default:
@@ -775,6 +777,14 @@ void JingleSession::ProcessAuthenticationStep() {
     return;
   }
 
+  if (authenticator_->started()) {
+    base::WeakPtr<JingleSession> self = weak_factory_.GetWeakPtr();
+    SetState(AUTHENTICATING);
+    if (!self || !is_session_active()) {
+      return;
+    }
+  }
+
   if (authenticator_->state() == Authenticator::MESSAGE_READY) {
     auto message = std::make_unique<JingleMessage>(peer_address_, SessionInfo(),
                                                    session_id_);
@@ -784,14 +794,6 @@ void JingleSession::ProcessAuthenticationStep() {
     SendMessage(std::move(message));
   }
   DCHECK_NE(authenticator_->state(), Authenticator::MESSAGE_READY);
-
-  if (authenticator_->started()) {
-    base::WeakPtr<JingleSession> self = weak_factory_.GetWeakPtr();
-    SetState(AUTHENTICATING);
-    if (!self) {
-      return;
-    }
-  }
 
   if (authenticator_->state() == Authenticator::ACCEPTED) {
     OnAuthenticated();

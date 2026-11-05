@@ -4,19 +4,30 @@
 
 package org.chromium.chrome.browser.ntp.search;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.AnimatorSet;
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.view.View;
 import android.view.View.OnDragListener;
+import android.view.animation.Interpolator;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.StyleRes;
 import androidx.annotation.VisibleForTesting;
+import androidx.core.view.animation.PathInterpolatorCompat;
 
 import org.chromium.base.MathUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.composeplate.ComposeplateUtils;
 import org.chromium.chrome.browser.feed.FeedSurfaceScrollDelegate;
 import org.chromium.chrome.browser.lens.LensController;
@@ -28,25 +39,43 @@ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.DestroyObserver;
 import org.chromium.chrome.browser.ntp.NewTabPageManager;
 import org.chromium.chrome.browser.ntp.NewTabPageUtils;
-import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxFeatureUtils;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties.StatusIconResource;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
+import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.OmniboxCapabilities;
+import org.chromium.components.omnibox.OmniboxFocusReason;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.search_engines.TemplateUrlService.TemplateUrlServiceObserver;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.interpolators.Interpolators;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.modelutil.PropertyModelAnimatorFactory;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.url.GURL;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Supplier;
 
 @NullMarked
 class SearchBoxMediator implements DestroyObserver {
+    private static final long PLUS_ROTATION_DURATION_MS = 800;
+    private static final long INITIAL_HINT_DELAY_MS = 300;
+    private static final long HINT_HOLD_DURATION_MS = 2500;
+    private static final long FADE_DURATION_MS = 150;
+    private static final long TINT_IN_DURATION_MS = 150;
+    private static final long TINT_OUT_DURATION_MS = 100;
+    private static final long ALPHA_DIP_DURATION_MS = 40;
+    private static final long ALPHA_RECOVER_DURATION_MS = 440;
+    private static final long SCALE_UP_DURATION_MS = 160;
+    private static final long SCALE_DOWN_DURATION_MS = 520;
+    private static final float PLUS_MIN_ALPHA = 0.5f;
+    private static final float PLUS_PEAK_SCALE = 1.2f;
+
     private final Context mContext;
     private final PropertyModel mModel;
     private final SearchBoxContainerView mView;
@@ -57,9 +86,11 @@ class SearchBoxMediator implements DestroyObserver {
     private final float mTransitionEndOffset;
     private final ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     private final Profile mProfile;
+    private final boolean mIsNtpAuroraEnabled;
     private final TemplateUrlServiceObserver mTemplateUrlServiceObserver =
             this::onTemplateURLServiceChanged;
     private @Nullable StatusIconResource mSearchEngineIcon;
+    private @Nullable AnimatorSet mHintAnimator;
 
     SearchBoxMediator(
             Context context,
@@ -87,6 +118,7 @@ class SearchBoxMediator implements DestroyObserver {
                         ? context.getResources()
                                 .getDimensionPixelSize(R.dimen.ntp_search_box_transition_end_offset)
                         : 0;
+        mIsNtpAuroraEnabled = NewTabPageUtils.isNtpAuroraEnabled();
 
         mActivityLifecycleDispatcher = activityLifecycleDispatcher;
         mActivityLifecycleDispatcher.register(this);
@@ -97,6 +129,13 @@ class SearchBoxMediator implements DestroyObserver {
         mModel.set(SearchBoxProperties.LENS_CLICK_CALLBACK, this::onLensClick);
         mModel.set(SearchBoxProperties.AI_CHIP_CLICK_CALLBACK, this::onAiChipClick);
         mModel.set(SearchBoxProperties.APPLY_ELEVATION, OmniboxCapabilities.isDesktopPlatform());
+        mModel.set(SearchBoxProperties.PLUS_BUTTON_ALPHA, 1f);
+        mModel.set(SearchBoxProperties.PLUS_BUTTON_ROTATION, 0f);
+        mModel.set(SearchBoxProperties.PLUS_BUTTON_SCALE, 1f);
+        mModel.set(SearchBoxProperties.HINT_TEXT_ALPHA, 1f);
+        mModel.set(
+                SearchBoxProperties.PLUS_BUTTON_TINT,
+                context.getColorStateList(R.color.default_icon_color_tint_list));
 
         updateAiChip();
         updateStartIcon();
@@ -106,6 +145,7 @@ class SearchBoxMediator implements DestroyObserver {
     public void onDestroy() {
         mActivityLifecycleDispatcher.unregister(this);
 
+        cancelHintAnimation();
         mModel.set(SearchBoxProperties.AI_CHIP_CLICK_CALLBACK, null);
         mModel.set(SearchBoxProperties.LENS_CLICK_CALLBACK, null);
         mModel.set(SearchBoxProperties.VOICE_SEARCH_CLICK_CALLBACK, null);
@@ -124,7 +164,7 @@ class SearchBoxMediator implements DestroyObserver {
         mNewTabPageManager.focusSearchBox(
                 /* beginVoiceSearch= */ false,
                 AutocompleteRequestType.SEARCH,
-                /* showFuseboxPopup= */ false,
+                OmniboxFocusReason.FAKE_BOX_TAP,
                 /* pastedText= */ null);
     }
 
@@ -132,7 +172,7 @@ class SearchBoxMediator implements DestroyObserver {
         mNewTabPageManager.focusSearchBox(
                 /* beginVoiceSearch= */ true,
                 AutocompleteRequestType.SEARCH,
-                /* showFuseboxPopup= */ false,
+                OmniboxFocusReason.FAKE_BOX_TAP,
                 /* pastedText= */ null);
     }
 
@@ -140,7 +180,7 @@ class SearchBoxMediator implements DestroyObserver {
         mNewTabPageManager.focusSearchBox(
                 /* beginVoiceSearch= */ false,
                 AutocompleteRequestType.SEARCH,
-                /* showFuseboxPopup= */ true,
+                OmniboxFocusReason.FAKE_BOX_PLUS_BUTTON_TAP,
                 /* pastedText= */ null);
     }
 
@@ -203,6 +243,7 @@ class SearchBoxMediator implements DestroyObserver {
     }
 
     private void onTemplateURLServiceChanged() {
+        cancelHintAnimation();
         updateStartIcon();
         updateAiChip();
     }
@@ -221,6 +262,9 @@ class SearchBoxMediator implements DestroyObserver {
      * @return Whether the Lens is currently enabled.
      */
     boolean isLensEnabled(@LensEntryPoint int lensEntryPoint, boolean isIncognito, boolean isLff) {
+        if (BrowserUiUtils.isAndroidAutoProjected(mContext)) {
+            return false;
+        }
         return LensController.getInstance()
                 .isLensEnabled(
                         new LensQueryParams.Builder(lensEntryPoint, isIncognito, isLff).build());
@@ -247,13 +291,16 @@ class SearchBoxMediator implements DestroyObserver {
     }
 
     void setSearchBoxHintText(@Nullable String hint) {
+        cancelHintAnimation();
         mModel.set(SearchBoxProperties.SEARCH_BOX_HINT_TEXT, hint);
     }
 
     void applyWhiteBackground(boolean apply) {
+        cancelHintAnimation();
         ColorStateList colorStateList =
                 ComposeplateUtils.getSearchBoxIconColorTint(mContext, apply);
         mModel.set(SearchBoxProperties.VOICE_SEARCH_COLOR_STATE_LIST, colorStateList);
+        mModel.set(SearchBoxProperties.PLUS_BUTTON_TINT, colorStateList);
 
         mModel.set(SearchBoxProperties.APPLY_WHITE_BACKGROUND_AND_SHADOW, apply);
 
@@ -266,7 +313,8 @@ class SearchBoxMediator implements DestroyObserver {
      * Returns the text appearance style resource ID for the fake search box hint text.
      *
      * <p>When NTP Aurora is enabled ({@link NewTabPageUtils#isNtpAuroraEnabled()}), returns the new
-     * style TextAppearance_FakeSearchBoxTextNewStyle.
+     * style TextAppearance_FakeSearchBoxTextNewStyleDark if {@code apply} is true, otherwise
+     * TextAppearance_FakeSearchBoxTextNewStyle.
      *
      * <p>When NTP Aurora is disabled, falls back to legacy typography based on {@code apply}.
      *
@@ -274,9 +322,12 @@ class SearchBoxMediator implements DestroyObserver {
      * @return The text appearance style resource ID to apply to the fake search box.
      */
     @VisibleForTesting
-    static @StyleRes int getFakeSearchBoxTextStyle(boolean apply) {
-        if (NewTabPageUtils.isNtpAuroraEnabled()) {
-            return R.style.TextAppearance_FakeSearchBoxTextNewStyle;
+    @StyleRes
+    int getFakeSearchBoxTextStyle(boolean apply) {
+        if (mIsNtpAuroraEnabled) {
+            return apply
+                    ? R.style.TextAppearance_FakeSearchBoxTextNewStyleDark
+                    : R.style.TextAppearance_FakeSearchBoxTextNewStyle;
         }
         return apply
                 ? R.style.TextAppearance_FakeSearchBoxTextMediumDark
@@ -409,5 +460,165 @@ class SearchBoxMediator implements DestroyObserver {
         if (url != null) {
             mNewTabPageManager.loadUrl(new LoadUrlParams(url), /* incognito= */ false);
         }
+    }
+
+    void startHintAnimation() {
+        cancelHintAnimation();
+        mHintAnimator = createHintAnimation();
+        mHintAnimator.start();
+    }
+
+    void cancelHintAnimation() {
+        if (mHintAnimator != null) {
+            mHintAnimator.cancel();
+        }
+    }
+
+    private AnimatorSet createHintAnimation() {
+        String initialHint = mModel.get(SearchBoxProperties.SEARCH_BOX_HINT_TEXT);
+        ColorStateList initialTint =
+                assumeNonNull(mModel.get(SearchBoxProperties.PLUS_BUTTON_TINT));
+        @ColorInt int initialColor = initialTint.getDefaultColor();
+        @ColorInt
+        int accentColor =
+                mContext.getColor(
+                        mModel.get(SearchBoxProperties.APPLY_WHITE_BACKGROUND_AND_SHADOW)
+                                ? R.color.default_icon_color_blue_dark
+                                : R.color.default_icon_color_accent1_baseline);
+        String makeAPlanHint = mContext.getString(R.string.ntp_search_box_hint_make_a_plan);
+        String askAboutTabHint = mContext.getString(R.string.ntp_search_box_hint_ask_about_tab);
+
+        Interpolator plusSpinInterpolator = PathInterpolatorCompat.create(0f, 0f, 0.08f, 1f);
+        ObjectAnimator spin =
+                PropertyModelAnimatorFactory.ofFloat(
+                                mModel, SearchBoxProperties.PLUS_BUTTON_ROTATION, 90f)
+                        .setDuration(PLUS_ROTATION_DURATION_MS);
+        spin.setInterpolator(plusSpinInterpolator);
+
+        Animator scalePulse = createScalePulseAnimator();
+        Animator alphaPulse = createAlphaPulseAnimator();
+        Animator tintIn =
+                createTintAnimator(
+                        initialColor,
+                        accentColor,
+                        TINT_IN_DURATION_MS,
+                        Interpolators.EMPHASIZED_DECELERATE);
+        Animator tintOut =
+                createTintAnimator(
+                        accentColor,
+                        initialColor,
+                        TINT_OUT_DURATION_MS,
+                        Interpolators.LINEAR_INTERPOLATOR);
+
+        List<Animator> sequence = new ArrayList<>();
+        sequence.add(spin);
+        sequence.add(tintOut);
+        addHintCrossfade(sequence, makeAPlanHint, INITIAL_HINT_DELAY_MS);
+        addHintCrossfade(sequence, askAboutTabHint, HINT_HOLD_DURATION_MS);
+        addHintCrossfade(sequence, initialHint, HINT_HOLD_DURATION_MS);
+
+        AnimatorSet animator = new AnimatorSet();
+        animator.playSequentially(sequence);
+        animator.play(spin).with(alphaPulse);
+        animator.play(spin).with(tintIn);
+        animator.play(spin).with(scalePulse);
+        animator.addListener(
+                new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        mHintAnimator = null;
+                        mModel.set(SearchBoxProperties.PLUS_BUTTON_ALPHA, 1f);
+                        mModel.set(SearchBoxProperties.PLUS_BUTTON_ROTATION, 0f);
+                        mModel.set(SearchBoxProperties.PLUS_BUTTON_SCALE, 1f);
+                        mModel.set(SearchBoxProperties.PLUS_BUTTON_TINT, initialTint);
+                        mModel.set(SearchBoxProperties.HINT_TEXT_ALPHA, 1f);
+                        mModel.set(SearchBoxProperties.SEARCH_BOX_HINT_TEXT, initialHint);
+                    }
+                });
+        return animator;
+    }
+
+    private Animator createScalePulseAnimator() {
+        ObjectAnimator scaleUp =
+                PropertyModelAnimatorFactory.ofFloat(
+                                mModel, SearchBoxProperties.PLUS_BUTTON_SCALE, PLUS_PEAK_SCALE)
+                        .setDuration(SCALE_UP_DURATION_MS);
+        scaleUp.setInterpolator(Interpolators.DECELERATE_INTERPOLATOR);
+
+        Interpolator scaleDownInterpolator = PathInterpolatorCompat.create(0.3f, 0f, 0.7f, 1f);
+        ObjectAnimator scaleDown =
+                PropertyModelAnimatorFactory.ofFloat(
+                                mModel, SearchBoxProperties.PLUS_BUTTON_SCALE, 1f)
+                        .setDuration(SCALE_DOWN_DURATION_MS);
+        scaleDown.setInterpolator(scaleDownInterpolator);
+
+        AnimatorSet scalePulse = new AnimatorSet();
+        scalePulse.playSequentially(scaleUp, scaleDown);
+        return scalePulse;
+    }
+
+    private Animator createAlphaPulseAnimator() {
+        ObjectAnimator alphaDip =
+                PropertyModelAnimatorFactory.ofFloat(
+                                mModel, SearchBoxProperties.PLUS_BUTTON_ALPHA, PLUS_MIN_ALPHA)
+                        .setDuration(ALPHA_DIP_DURATION_MS);
+        alphaDip.setInterpolator(Interpolators.LINEAR_INTERPOLATOR);
+
+        ObjectAnimator alphaRecover =
+                PropertyModelAnimatorFactory.ofFloat(
+                                mModel, SearchBoxProperties.PLUS_BUTTON_ALPHA, 1f)
+                        .setDuration(ALPHA_RECOVER_DURATION_MS);
+        alphaRecover.setInterpolator(Interpolators.LINEAR_INTERPOLATOR);
+
+        AnimatorSet alphaPulse = new AnimatorSet();
+        alphaPulse.playSequentially(alphaDip, alphaRecover);
+        return alphaPulse;
+    }
+
+    private Animator createTintAnimator(
+            @ColorInt int fromColor,
+            @ColorInt int toColor,
+            long durationMs,
+            Interpolator interpolator) {
+        ValueAnimator animator = ValueAnimator.ofArgb(fromColor, toColor).setDuration(durationMs);
+        animator.setInterpolator(interpolator);
+        animator.addUpdateListener(
+                a ->
+                        mModel.set(
+                                SearchBoxProperties.PLUS_BUTTON_TINT,
+                                ColorStateList.valueOf((int) a.getAnimatedValue())));
+        return animator;
+    }
+
+    private void addHintCrossfade(
+            List<Animator> sequence, @Nullable String nextHint, long delayMs) {
+        ObjectAnimator fadeOut =
+                PropertyModelAnimatorFactory.ofFloat(
+                                mModel, SearchBoxProperties.HINT_TEXT_ALPHA, 0f)
+                        .setDuration(FADE_DURATION_MS);
+        fadeOut.setStartDelay(delayMs);
+
+        ObjectAnimator fadeIn =
+                PropertyModelAnimatorFactory.ofFloat(
+                                mModel, SearchBoxProperties.HINT_TEXT_ALPHA, 1f)
+                        .setDuration(FADE_DURATION_MS);
+        fadeIn.addListener(
+                new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationStart(Animator animation) {
+                        mModel.set(SearchBoxProperties.SEARCH_BOX_HINT_TEXT, nextHint);
+                    }
+                });
+
+        sequence.add(fadeOut);
+        sequence.add(fadeIn);
+    }
+
+    boolean isHintAnimatorActiveForTesting() {
+        return mHintAnimator != null;
+    }
+
+    void setHintAnimatorForTesting(@Nullable AnimatorSet animator) {
+        mHintAnimator = animator;
     }
 }

@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/web/model/image_fetch/image_fetch_tab_helper.h"
 
 #import "base/base64.h"
+#import "base/containers/span.h"
 #import "base/functional/bind.h"
 #import "base/json/string_escape.h"
 #import "base/metrics/histogram_macros.h"
@@ -111,7 +112,8 @@ void ImageFetchTabHelper::GetImageData(const GURL& url,
 
   if (frame->GetSecurityOrigin() != frame_origin) {
     // An origin mismatch implies that the request is untrusted and pass an
-    // opaque `url::Origin()` to ensure that `send_cookies` is false.
+    // opaque `url::Origin()` so that no origin is treated as same-origin for
+    // credentials.
     FetchImageDataWithFetcher(url, referrer, /*frame_origin=*/url::Origin(),
                               callback);
     return;
@@ -131,19 +133,19 @@ void ImageFetchTabHelper::FetchImageDataWithFetcher(
     const web::Referrer& referrer,
     const url::Origin& frame_origin,
     ImageDataCallback callback) {
-  const bool send_cookies = frame_origin.IsSameOriginWith(url);
   ImageFetcher::FromWebState(web_state_)
       ->FetchImageData(
           url,
-          base::BindOnce(^(const std::string& image_data,
+          base::BindOnce(^(image_fetcher::ImageData shared_image_data,
                            const image_fetcher::RequestMetadata& metadata) {
+            const auto image_data = base::span(*shared_image_data);
             NSData* nsdata = [NSData dataWithBytes:image_data.data()
                                             length:image_data.size()];
             callback(nsdata);
           }),
           web::ReferrerHeaderValueForNavigation(url, referrer),
           web::PolicyForNavigation(url, referrer), NO_TRAFFIC_ANNOTATION_YET,
-          send_cookies);
+          frame_origin);
 }
 
 void ImageFetchTabHelper::JsCallbackOfGetImageData(

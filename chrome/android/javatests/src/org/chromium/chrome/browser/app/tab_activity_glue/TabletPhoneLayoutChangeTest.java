@@ -7,9 +7,9 @@ package org.chromium.chrome.browser.app.tab_activity_glue;
 import android.content.res.Configuration;
 
 import androidx.test.filters.MediumTest;
+import androidx.test.runner.lifecycle.Stage;
 
 import org.hamcrest.Matchers;
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -17,14 +17,13 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.lifecycle.DestroyObserver;
 import org.chromium.chrome.browser.lifecycle.RecreateObserver;
@@ -42,7 +41,6 @@ import java.util.concurrent.TimeoutException;
 
 /** Test tablet / phone layout change. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DoNotBatch(reason = "This class tests activity restart behavior and thus cannot be batched.")
 public class TabletPhoneLayoutChangeTest {
     private static final long TIMEOUT_MS = 10000;
@@ -55,13 +53,6 @@ public class TabletPhoneLayoutChangeTest {
     public void setUp() {
         mActivityTestRule.startOnBlankPage();
         mActivityTestRule.waitForActivityCompletelyLoaded();
-    }
-
-    @After
-    public void tearDown() {
-        // TODO(crbug.com/483420501): Fix AssertionError: LayoutType is 2, expected BROWSING type on
-        // activity start.
-        mActivityTestRule.skipWindowAndTabStateCleanup();
     }
 
     @Test
@@ -140,7 +131,7 @@ public class TabletPhoneLayoutChangeTest {
 
     @Test
     @MediumTest
-    public void testTabSwitcherStateRetention() throws TimeoutException {
+    public void testTabSwitcherStateRetention_FlakeCheck() throws TimeoutException {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -178,21 +169,25 @@ public class TabletPhoneLayoutChangeTest {
         Configuration newConfig = new Configuration(config);
         config.smallestScreenWidthDp =
                 DeviceFormFactor.MINIMUM_TABLET_WIDTH_DP + (isTestOnTablet ? -1 : 1);
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mActivityTestRule
-                            .getActivity()
-                            .getLifecycleDispatcher()
-                            .register((DestroyObserver) helper::notifyCalled);
-                    Assert.assertTrue(
-                            "Activity should be ready for tablet mode change.",
-                            cta.getTabletMode().changed);
-                    cta.performOnConfigurationChanged(newConfig);
-                    Assert.assertTrue(
-                            "ChromeActivity#mIsRecreatingForTabletModeChange should be true.",
-                            cta.recreatingForTabletModeChangeForTesting());
-                });
-        mActivityTestRule.recreateActivity();
+        ChromeTabbedActivity newCta =
+                ApplicationTestUtils.waitForActivityWithClass(
+                        ChromeTabbedActivity.class,
+                        Stage.RESUMED,
+                        () -> {
+                            mActivityTestRule
+                                    .getActivity()
+                                    .getLifecycleDispatcher()
+                                    .register((DestroyObserver) helper::notifyCalled);
+                            Assert.assertTrue(
+                                    "Activity should be ready for tablet mode change.",
+                                    cta.getTabletMode().changed);
+                            cta.performOnConfigurationChanged(newConfig);
+                            Assert.assertTrue(
+                                    "ChromeActivity#mIsRecreatingForTabletModeChange should be"
+                                            + " true.",
+                                    cta.recreatingForTabletModeChangeForTesting());
+                        });
+        mActivityTestRule.getActivityTestRule().setActivity(newCta);
         helper.waitForOnly("Wait for old Activity being destroyed.");
     }
 }

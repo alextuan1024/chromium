@@ -96,6 +96,7 @@ struct RenderProcessPriority {
                         bool boost_for_pending_views,
                         bool boost_for_loading,
                         bool boost_for_discard,
+                        bool boost_for_background_execution,
 #if BUILDFLAG(IS_ANDROID)
                         bool is_spare_renderer,
                         ChildProcessImportance importance
@@ -142,6 +143,10 @@ struct RenderProcessPriority {
   // worker that may need to service timely events from other, possibly visible,
   // processes.
   bool has_foreground_service_worker;
+
+  // |boost_for_background_execution| is true when the process is executing in
+  // the background but requires OS foreground priority.
+  bool boost_for_background_execution;
 
   // |frame_depth| is the depth of the shallowest frame this process is
   // responsible for which has |visible| visibility. It only makes sense to
@@ -273,7 +278,9 @@ class CONTENT_EXPORT ChildProcessLauncher
       scoped_refptr<base::RefCountedData<base::ReadOnlySharedMemoryRegion>>
           trace_config_memory_region = nullptr,
       scoped_refptr<base::RefCountedData<base::UnsafeSharedMemoryRegion>>
-          trace_output_memory_region = nullptr);
+          trace_output_memory_region = nullptr,
+      base::ReadOnlySharedMemoryRegion renderer_process_security_state_region =
+          {});
 
   ChildProcessLauncher(const ChildProcessLauncher&) = delete;
   ChildProcessLauncher& operator=(const ChildProcessLauncher&) = delete;
@@ -289,6 +296,18 @@ class CONTENT_EXPORT ChildProcessLauncher
 
   // Getter for the process.  Only call after the process has started.
   const base::Process& GetProcess() const;
+
+  // Returns the time when `ChildProcessLauncherHelper` began initializing.
+  base::TimeTicks init_start_time() const { return helper_->init_start_time(); }
+
+  // Returns the time when `LaunchOnLauncherThread()` began executing on the
+  // process launcher thread.
+  base::TimeTicks launch_begin_time() const { return launch_begin_time_; }
+
+  // Returns the time when the process launcher thread finished launching the
+  // process (`PostLaunchOnLauncherThread()`). On Android the launch is
+  // asynchronous and this runs only after the child service has connected.
+  base::TimeTicks launch_complete_time() const { return launch_complete_time_; }
 
   // Call this when the child process exits to know what happened to it.
   // |known_dead| can be true if we already know the process is dead as it can
@@ -329,6 +348,10 @@ class CONTENT_EXPORT ChildProcessLauncher
   // Returns the highest binding state for the ChildProcessConnection.
   base::android::ChildBindingState GetEffectiveChildBindingState();
 
+  // Returns whether the child process runs under an isolated UID distinct from
+  // the browser process's UID.
+  bool HasIsolatedUid() const;
+
   // Dumps the stack of the child process without crashing it.
   void DumpProcessStack();
 #endif
@@ -337,6 +360,8 @@ class CONTENT_EXPORT ChildProcessLauncher
 
   // Notifies the client about the result of the operation.
   void Notify(internal::ChildProcessLauncherHelper::Process process,
+              base::TimeTicks launch_begin_time,
+              base::TimeTicks launch_complete_time,
 #if BUILDFLAG(IS_WIN)
               DWORD last_error,
 #endif
@@ -360,7 +385,11 @@ class CONTENT_EXPORT ChildProcessLauncher
   // The process associated with this ChildProcessLauncher. Set in Notify by
   // ChildProcessLauncherHelper once the process was started.
   internal::ChildProcessLauncherHelper::Process process_;
-  base::TimeTicks process_start_time_;
+
+  // Timestamps from the process launcher thread for when launching started and
+  // finished, set in `Notify()` once the process has started.
+  base::TimeTicks launch_begin_time_;
+  base::TimeTicks launch_complete_time_;
 
   ChildProcessTerminationInfo termination_info_;
   bool starting_;

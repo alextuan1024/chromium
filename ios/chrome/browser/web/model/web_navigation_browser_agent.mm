@@ -7,6 +7,8 @@
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
+#import "ios/chrome/browser/lens/model/lens_browser_agent.h"
 #import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -26,7 +28,8 @@ WebNavigationBrowserAgent::WebNavigationBrowserAgent(Browser* browser)
 WebNavigationBrowserAgent::~WebNavigationBrowserAgent() {}
 
 bool WebNavigationBrowserAgent::CanGoBack(const web::WebState* web_state) {
-  if (!web_state || !web_state->IsRealized()) {
+  if (!web_state || !web_state->IsRealized() ||
+      ActorTabHelper::IsActorControlled(web_state)) {
     return false;
   }
 
@@ -37,7 +40,13 @@ bool WebNavigationBrowserAgent::CanGoBack(const web::WebState* web_state) {
     return true;
   }
 
+  const LensBrowserAgent* lens_browser_agent =
+      LensBrowserAgent::FromBrowser(browser_);
+  if (!lens_browser_agent) {
     return false;
+  }
+
+  return lens_browser_agent->CanGoBackToLensViewFinder();
 }
 
 bool WebNavigationBrowserAgent::CanGoBack() {
@@ -46,7 +55,8 @@ bool WebNavigationBrowserAgent::CanGoBack() {
 }
 
 bool WebNavigationBrowserAgent::CanGoForward(const web::WebState* web_state) {
-  if (!web_state || !web_state->IsRealized()) {
+  if (!web_state || !web_state->IsRealized() ||
+      ActorTabHelper::IsActorControlled(web_state)) {
     return false;
   }
 
@@ -63,8 +73,7 @@ bool WebNavigationBrowserAgent::CanGoForward() {
 
 void WebNavigationBrowserAgent::GoBack() {
   web::WebState* active_web_state = web_state_list_->GetActiveWebState();
-  if (!active_web_state ||
-      !active_web_state->GetNavigationManager()->CanGoBack()) {
+  if (!CanGoBack(active_web_state)) {
     return;
   }
 
@@ -79,11 +88,18 @@ void WebNavigationBrowserAgent::GoBack() {
   }
 
   web_navigation_util::GoBack(active_web_state);
+
+  // If the previous page was an eligible Lens Web Page, then display the LVF.
+  const LensBrowserAgent* lens_browser_agent =
+      LensBrowserAgent::FromBrowser(browser_);
+  if (lens_browser_agent && lens_browser_agent->CanGoBackToLensViewFinder()) {
+    lens_browser_agent->GoBackToLensViewFinder();
+  }
 }
 
 void WebNavigationBrowserAgent::GoForward() {
   web::WebState* active_web_state = web_state_list_->GetActiveWebState();
-  if (active_web_state) {
+  if (CanGoForward(active_web_state)) {
     web_navigation_util::GoForward(active_web_state);
   }
 }

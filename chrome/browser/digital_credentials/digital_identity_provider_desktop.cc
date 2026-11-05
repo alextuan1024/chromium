@@ -8,6 +8,8 @@
 #include <variant>
 
 #include "base/containers/span.h"
+#include "base/feature_list.h"
+#include "base/functional/callback.h"
 #include "base/values.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/digital_credentials/digital_identity_low_risk_origins.h"
@@ -15,7 +17,6 @@
 #include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
 #include "chrome/browser/ui/views/digital_credentials/digital_identity_bluetooth_manual_dialog_controller.h"
 #include "chrome/browser/ui/views/digital_credentials/digital_identity_multi_step_dialog.h"
-#include "chrome/browser/ui/views/digital_credentials/digital_identity_safety_interstitial_controller_desktop.h"
 #include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
@@ -24,10 +25,14 @@
 #include "content/public/browser/cross_device_request_info.h"
 #include "content/public/browser/digital_credentials_cross_device.h"
 #include "content/public/browser/digital_identity_provider.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "crypto/random.h"
 #include "device/fido/cable/v2_constants.h"
 #include "device/fido/cable/v2_handshake.h"
+#include "device/fido/network_context_factory.h"
+#include "device/fido/public/features.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
@@ -47,8 +52,6 @@ namespace {
 constexpr int kQrCodeSize = 240;
 constexpr int kQrCodeMargin = 20;
 
-using DigitalIdentityInterstitialAbortCallback =
-    content::DigitalIdentityProvider::DigitalIdentityInterstitialAbortCallback;
 using RequestStatusForMetrics =
     content::DigitalIdentityProvider::RequestStatusForMetrics;
 using content::digital_credentials::cross_device::Error;
@@ -60,16 +63,6 @@ using content::digital_credentials::cross_device::Response;
 using content::digital_credentials::cross_device::SystemError;
 using content::digital_credentials::cross_device::SystemEvent;
 using content::digital_credentials::cross_device::Transaction;
-
-void RunDigitalIdentityCallback(
-    std::unique_ptr<DigitalIdentitySafetyInterstitialControllerDesktop>
-        controller,
-    content::DigitalIdentityProvider::DigitalIdentityInterstitialCallback
-        callback,
-    content::DigitalIdentityProvider::RequestStatusForMetrics
-        status_for_metrics) {
-  std::move(callback).Run(status_for_metrics);
-}
 
 std::unique_ptr<views::View> MakeQrCodeImageView(const std::string& qr_url) {
   auto qr_code = qr_code_generator::GenerateImage(
@@ -114,27 +107,13 @@ bool DigitalIdentityProviderDesktop::IsLastCommittedOriginLowRisk(
   return digital_credentials::IsLastCommittedOriginLowRisk(render_frame_host);
 }
 
-DigitalIdentityInterstitialAbortCallback
-DigitalIdentityProviderDesktop::ShowDigitalIdentityInterstitial(
-    content::WebContents& web_contents,
-    const url::Origin& origin,
-    content::DigitalIdentityInterstitialType interstitial_type,
-    DigitalIdentityInterstitialCallback callback) {
-  auto controller =
-      std::make_unique<DigitalIdentitySafetyInterstitialControllerDesktop>();
-  // Callback takes ownership of |controller|.
-  return controller->ShowInterstitial(
-      web_contents, origin, interstitial_type,
-      base::BindOnce(&RunDigitalIdentityCallback, std::move(controller),
-                     std::move(callback)));
-}
-
 void DigitalIdentityProviderDesktop::Get(content::WebContents* web_contents,
                                          const url::Origin& rp_origin,
                                          base::ValueView request,
+                                         UiWarningLevel warning_level,
                                          DigitalIdentityCallback callback) {
   Transact(web_contents, RequestInfo::RequestType::kGet, rp_origin, request,
-           std::move(callback));
+           warning_level, std::move(callback));
 }
 
 void DigitalIdentityProviderDesktop::Create(content::WebContents* web_contents,
@@ -142,7 +121,7 @@ void DigitalIdentityProviderDesktop::Create(content::WebContents* web_contents,
                                             base::ValueView request,
                                             DigitalIdentityCallback callback) {
   Transact(web_contents, RequestInfo::RequestType::kCreate, rp_origin, request,
-           std::move(callback));
+           UiWarningLevel::kHintNoIssues, std::move(callback));
 }
 
 void DigitalIdentityProviderDesktop::Transact(
@@ -150,6 +129,7 @@ void DigitalIdentityProviderDesktop::Transact(
     RequestInfo::RequestType request_type,
     const url::Origin& rp_origin,
     base::ValueView request,
+    UiWarningLevel warning_level,
     DigitalIdentityCallback callback) {
   web_contents_ = web_contents->GetWeakPtr();
   rp_origin_ = rp_origin;
@@ -164,13 +144,30 @@ void DigitalIdentityProviderDesktop::Transact(
       qr_generator_key,
       CrossDeviceRequestTypeToCredentialRequestType(request_type));
 
+  device::NetworkContextFactory network_context_factory;
+  if (base::FeatureList::IsEnabled(
+          device::kWebAuthnHybridUseFrameNetworkContext)) {
+    network_context_factory = base::BindRepeating(
+        [](base::WeakPtr<content::WebContents> web_contents)
+            -> network::mojom::NetworkContext* {
+          CHECK(web_contents);
+          return web_contents->GetPrimaryMainFrame()
+              ->GetStoragePartition()
+              ->GetNetworkContext();
+        },
+        web_contents_);
+  } else {
+    network_context_factory = base::BindRepeating([]() {
+      return SystemNetworkContextManager::GetInstance()->GetContext();
+    });
+  }
+
   transaction_ = Transaction::New(
-      std::move(request_info), qr_generator_key, base::BindRepeating([]() {
-        return SystemNetworkContextManager::GetInstance()->GetContext();
-      }),
+      std::move(request_info), qr_generator_key,
+      std::move(network_context_factory),
       base::BindRepeating(&DigitalIdentityProviderDesktop::OnEvent,
                           weak_ptr_factory_.GetWeakPtr(), std::move(qr_url),
-                          request_type),
+                          request_type, warning_level),
       base::BindOnce(&DigitalIdentityProviderDesktop::OnFinished,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -178,26 +175,28 @@ void DigitalIdentityProviderDesktop::Transact(
 void DigitalIdentityProviderDesktop::OnEvent(
     const std::string& qr_url,
     RequestInfo::RequestType request_type,
+    UiWarningLevel warning_level,
     Event event) {
-  std::visit(absl::Overload{
-                 [this, qr_url, request_type](SystemEvent event) {
-                   switch (event) {
-                     case SystemEvent::kBluetoothNotPowered:
-                       ShowBluetoothManualTurnOnDialog();
-                       break;
-                     case SystemEvent::kNeedPermission:
-                       // The user is being asked for Bluetooth permission by
-                       // the system. Nothing for Chrome UI to do.
-                       break;
-                     case SystemEvent::kReady:
-                       bluetooth_manual_dialog_controller_.reset();
-                       ShowQrCodeDialog(qr_url, request_type);
-                       break;
-                   }
-                 },
-                 [this](device::cablev2::Event event) { OnCableEvent(event); },
-             },
-             event);
+  std::visit(
+      absl::Overload{
+          [this, qr_url, request_type, warning_level](SystemEvent event) {
+            switch (event) {
+              case SystemEvent::kBluetoothNotPowered:
+                ShowBluetoothManualTurnOnDialog();
+                break;
+              case SystemEvent::kNeedPermission:
+                // The user is being asked for Bluetooth permission by
+                // the system. Nothing for Chrome UI to do.
+                break;
+              case SystemEvent::kReady:
+                bluetooth_manual_dialog_controller_.reset();
+                ShowQrCodeDialog(qr_url, request_type, warning_level);
+                break;
+            }
+          },
+          [this](device::cablev2::Event event) { OnCableEvent(event); },
+      },
+      event);
 }
 
 void DigitalIdentityProviderDesktop::OnCableEvent(
@@ -280,7 +279,10 @@ DigitalIdentityProviderDesktop::EnsureDialogCreated() {
 
 void DigitalIdentityProviderDesktop::ShowQrCodeDialog(
     const std::string& qr_url,
-    RequestInfo::RequestType request_type) {
+    RequestInfo::RequestType request_type,
+    UiWarningLevel warning_level) {
+  // TODO(crbug.com/409836575): Make use of `warning_level` to display UI
+  // warning.
   std::u16string dialog_title =
       l10n_util::GetStringUTF16(IDS_WEB_DIGITAL_CREDENTIALS_QR_TITLE);
 
@@ -338,16 +340,14 @@ void DigitalIdentityProviderDesktop::OnUserRequestedBluetoothPowerOn() {
 }
 
 void DigitalIdentityProviderDesktop::ShowConnectingToPhoneDialog() {
-  // Ensure the dialog is created to have access to GetBackgroundColor().
-  EnsureDialogCreated();
+  DigitalIdentityMultiStepDialog* dialog = EnsureDialogCreated();
   std::u16string title_text = l10n_util::GetStringUTF16(
       IDS_WEB_DIGITAL_CREDENTIALS_CABLEV2_CONNECTING_TITLE);
   auto illustration = std::make_unique<views::ThemeTrackingAnimatedImageView>(
       IDR_WEBAUTHN_HYBRID_CONNECTING_LIGHT, IDR_WEBAUTHN_HYBRID_CONNECTING_DARK,
-      base::BindRepeating(&DigitalIdentityMultiStepDialog::GetBackgroundColor,
-                          base::Unretained(dialog_.get())));
+      dialog->GetBackgroundColor());
 
-  EnsureDialogCreated()->TryShow(
+  dialog->TryShow(
       /*accept_button=*/std::nullopt, base::OnceClosure(),
       /*cancel_button=*/
       ui::DialogModel::Button::Params()
@@ -363,17 +363,15 @@ void DigitalIdentityProviderDesktop::ShowConnectingToPhoneDialog() {
 }
 
 void DigitalIdentityProviderDesktop::ShowContinueStepsOnThePhoneDialog() {
-  // Ensure the dialog is created to have access to GetBackgroundColor().
-  EnsureDialogCreated();
+  DigitalIdentityMultiStepDialog* dialog = EnsureDialogCreated();
   std::u16string title_text = l10n_util::GetStringUTF16(
       IDS_WEB_DIGITAL_CREDENTIALS_CABLEV2_CONNECTED_TITLE);
   auto illustration = std::make_unique<ThemeTrackingNonAccessibleImageView>(
       ui::ImageModel::FromVectorIcon(kPasskeyPhoneCustomIcon),
       ui::ImageModel::FromVectorIcon(kPasskeyPhoneDarkCustomIcon),
-      base::BindRepeating(&DigitalIdentityMultiStepDialog::GetBackgroundColor,
-                          base::Unretained(dialog_.get())));
+      dialog->GetBackgroundColor());
 
-  EnsureDialogCreated()->TryShow(
+  dialog->TryShow(
       /*accept_button=*/std::nullopt, base::OnceClosure(),
       /*cancel_button=*/
       ui::DialogModel::Button::Params()

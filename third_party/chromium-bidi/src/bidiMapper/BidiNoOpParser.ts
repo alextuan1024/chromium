@@ -16,10 +16,13 @@
  */
 
 import type {
+  Autofill,
   Browser,
   BrowsingContext,
-  Cdp,
+  GoogCdp,
+  GoogSession,
   Emulation,
+  GoogBrowsingContext,
   Input,
   Network,
   Script,
@@ -35,6 +38,13 @@ import type {
 import type {BidiCommandParameterParser} from './BidiParser.js';
 
 export class BidiNoOpParser implements BidiCommandParameterParser {
+  // Autofill module
+  // keep-sorted start block=yes
+  parseAutofillTriggerParams(params: unknown): Autofill.TriggerParameters {
+    return params as Autofill.TriggerParameters;
+  }
+  // keep-sorted end
+
   // Bluetooth module
   // keep-sorted start block=yes
   parseDisableSimulationParameters(
@@ -86,6 +96,11 @@ export class BidiNoOpParser implements BidiCommandParameterParser {
     params: unknown,
   ): Bluetooth.SimulateGattDisconnectionParameters {
     return params as Bluetooth.SimulateGattDisconnectionParameters;
+  }
+  parseSimulateGattMtuChangeParameters(
+    params: unknown,
+  ): Bluetooth.SimulateGattMtuChangeParameters {
+    return params as Bluetooth.SimulateGattMtuChangeParameters;
   }
   parseSimulatePreconnectedPeripheralParameters(
     params: unknown,
@@ -190,14 +205,23 @@ export class BidiNoOpParser implements BidiCommandParameterParser {
 
   // CDP module
   // keep-sorted start block=yes
-  parseGetSessionParams(params: unknown): Cdp.GetSessionParameters {
-    return params as Cdp.GetSessionParameters;
+  parseGetSessionParams(params: unknown): GoogCdp.GetSessionParameters {
+    return params as GoogCdp.GetSessionParameters;
   }
-  parseResolveRealmParams(params: unknown): Cdp.ResolveRealmParameters {
-    return params as Cdp.ResolveRealmParameters;
+  parseResolveRealmParams(params: unknown): GoogCdp.ResolveRealmParameters {
+    return params as GoogCdp.ResolveRealmParameters;
   }
-  parseSendCommandParams(params: unknown): Cdp.SendCommandParameters {
-    return params as Cdp.SendCommandParameters;
+  parseSendCommandParams(params: unknown): GoogCdp.SendCommandParameters {
+    return params as GoogCdp.SendCommandParameters;
+  }
+  // keep-sorted end
+
+  // Goog BrowsingContext module
+  // keep-sorted start block=yes
+  parseGetAccessibilityTreeParams(
+    params: unknown,
+  ): GoogBrowsingContext.GetAccessibilityTreeParameters {
+    return params as GoogBrowsingContext.GetAccessibilityTreeParameters;
   }
   // keep-sorted end
 
@@ -391,6 +415,9 @@ export class BidiNoOpParser implements BidiCommandParameterParser {
 
   // Session module
   // keep-sorted start block=yes
+  parseSetAclParams(params: unknown): GoogSession.SetAclParameters {
+    return params as GoogSession.SetAclParameters;
+  }
   parseSubscribeParams(params: unknown): Session.SubscribeParameters {
     return params as Session.SubscribeParameters;
   }

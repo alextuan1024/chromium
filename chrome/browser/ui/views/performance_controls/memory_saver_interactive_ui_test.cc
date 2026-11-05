@@ -59,6 +59,7 @@
 #include "ui/base/text/bytes_formatting.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -276,11 +277,6 @@ class MemorySaverChipInteractiveTest
     // Discard tabs unconditionally in Chip tests.
     unconditionally_discard_pages_ =
         std::make_unique<ScopedSetAllPagesDiscardableForTesting>();
-
-    // Tests quickly click chip to close bubble, so set suppression
-    // threshold to zero so the clicks aren't ignored.
-    page_actions::PageActionTestAccessor(browser(), kActionShowMemorySaverChip)
-        .SetSuppressionThreshold(base::TimeDelta());
   }
 
   void TearDownOnMainThread() override {
@@ -334,10 +330,17 @@ class MemorySaverChipInteractiveTest
     return steps;
   }
 
+  // Opens the bubble. Uses a keyboard-triggered invocation because the WebUI
+  // page action's reopen suppressor only debounces *pointer* clicks that land
+  // shortly after the bubble closed. Several tests dismiss the bubble and
+  // immediately press the chip again (faster than any real user could), which
+  // would otherwise be swallowed as a spurious reopen. The suppression window
+  // itself must stay at its production value so that late WebUI pointer events
+  // from MousePressPageActionButton() are still absorbed.
   auto PressPageActionButton() {
-    MultiStep steps =
-        Steps(WaitForPageActionButtonVisible(kActionShowMemorySaverChip),
-              PressButton(kMemorySaverChipElementId));
+    MultiStep steps = Steps(
+        WaitForPageActionButtonVisible(kActionShowMemorySaverChip),
+        InvokePageAction(kActionShowMemorySaverChip, InputType::kKeyboard));
     AddDescriptionPrefix(steps, "PressPageActionButton()");
     return steps;
   }
@@ -354,12 +357,19 @@ class MemorySaverChipInteractiveTest
     return steps;
   }
 
-  auto NameTab(size_t index, std::string name) {
+  auto NameTab(int index, std::string name) {
     return NameViewRelative(
-        kTabStripElementId, name,
-        base::BindOnce([](size_t index, TabStrip* tab_strip)
-                           -> views::View* { return tab_strip->tab_at(index); },
-                       index));
+        kBrowserViewElementId, name,
+        base::BindOnce(
+            [](int index, BrowserView* browser_view) -> views::View* {
+              auto* const model = browser_view->browser()->GetTabStripModel();
+              if (index < 0 || index >= model->count()) {
+                return nullptr;
+              }
+              return browser_view->tab_strip_view()->GetTabAnchorView(
+                  model->GetTabAtIndex(index)->GetHandle());
+            },
+            index));
   }
 
   // Sets discard usage on the active tab for deterministic UI testing.
@@ -429,7 +439,8 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
       DiscardAndReloadTab(0, kFirstTabContents), CheckChipIsExpandedState(true),
       DiscardAndReloadTab(1, kSecondTabContents),
       CheckChipIsExpandedState(true), SelectTab(kTabStripElementId, 0),
-      CheckChipIsExpandedState(false), SelectTab(kTabStripElementId, 1),
+      WaitForShow(kFirstTabContents), CheckChipIsExpandedState(false),
+      SelectTab(kTabStripElementId, 1), WaitForShow(kSecondTabContents),
       CheckChipIsExpandedState(false));
 }
 
@@ -649,7 +660,7 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
       // Second tab's cancel button should allow users to exclude the site
       // since this tab's site wasn't excluded yet
       SelectTab(kTabStripElementId, 1), WaitForShow(kSecondTabContents),
-      Do([=, this]() { content::WaitForLoadStop(GetWebContentsAt(1)); }),
+      Do([this]() { content::WaitForLoadStop(GetWebContentsAt(1)); }),
       WaitForPageActionChipVisible(), PressPageActionButton(),
       WaitForShow(MemorySaverBubbleView::kMemorySaverDialogBodyElementId),
       CheckViewProperty(
@@ -661,7 +672,9 @@ IN_PROC_BROWSER_TEST_P(MemorySaverChipInteractiveTest,
       WaitForHide(MemorySaverBubbleView::kMemorySaverDialogBodyElementId),
       // Ensure that the first tab's cancel button continues to allow users
       // to navigate to the settings page even after we selected another tab
-      SelectTab(kTabStripElementId, 0), PressPageActionButton(),
+      SelectTab(kTabStripElementId, 0), WaitForShow(kFirstTabContents),
+      Do([this]() { content::WaitForLoadStop(GetWebContentsAt(0)); }),
+      PressPageActionButton(),
       WaitForShow(MemorySaverBubbleView::kMemorySaverDialogBodyElementId),
       CheckViewProperty(
           MemorySaverBubbleView::kMemorySaverDialogCancelButton,

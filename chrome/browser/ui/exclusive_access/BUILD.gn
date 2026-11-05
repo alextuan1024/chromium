@@ -5,6 +5,7 @@
 import("//build/config/chromeos/args.gni")
 import("//build/config/ozone.gni")
 import("//extensions/buildflags/buildflags.gni")
+import("//media/media_options.gni")
 
 assert(is_win || is_mac || is_linux || is_chromeos || is_android)
 
@@ -56,6 +57,7 @@ source_set("exclusive_access") {
     "//components/safe_browsing/content/browser:safe_browsing_service",
     "//components/strings:components_strings",
     "//components/strings:components_strings_grit",
+    "//media:media_buildflags",
     "//services/metrics/public/cpp:gen_ukm_builders",
     "//services/metrics/public/cpp:metrics_cpp",
     "//services/metrics/public/cpp:ukm_builders",
@@ -69,10 +71,13 @@ source_set("exclusive_access") {
       "//extensions/common",
     ]
   }
+  if (enable_media_remoting) {
+    deps += [ "//chrome/browser/media" ]
+  }
   if (!is_android) {
-    public_deps += [ "//chrome/browser:browser_public_dependencies" ]
     deps += [
       "//chrome/browser:browser_process",
+      "//chrome/browser/ui:browser_command_controller",
       "//chrome/browser/ui/blocked_content",
       "//chrome/browser/ui/bookmarks",
     ]
@@ -80,6 +85,41 @@ source_set("exclusive_access") {
 }
 
 if (!is_android) {
+  # Keep the BrowserView adapter separate from the platform-independent
+  # exclusive access interfaces and controllers.
+  source_set("browser_view_exclusive_access_context") {
+    public = [ "browser_view_exclusive_access_context.h" ]
+    sources = [ "browser_view_exclusive_access_context.cc" ]
+    public_deps = [
+      ":exclusive_access",
+      "//base",
+      "//chrome/browser/ui/views/exclusive_access",
+      "//ui/base/unowned_user_data",
+    ]
+    deps = [
+      "//chrome/browser:primitives",
+      "//chrome/browser/app_mode",
+      "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/fullscreen",
+      "//chrome/browser/ui/immersive:immersive_mode_controller",
+      "//chrome/browser/ui/views/exclusive_access:impl",
+      "//chrome/browser/ui/views/frame:browser_frame_view",
+      "//chrome/browser/ui/views/frame:browser_view_header",
+      "//chrome/browser/ui/views/frame:top_container_view",
+      "//chrome/common:chrome_features",
+      "//ui/base:features",
+      "//ui/display",
+      "//ui/display/types",
+      "//ui/views",
+    ]
+    if (is_chromeos) {
+      deps += [
+        "//chrome/browser/ui/chromeos/locked_state",
+        "//chromeos/components/mgs",
+      ]
+    }
+  }
+
   source_set("test_support") {
     testonly = true
     sources = [
@@ -97,9 +137,11 @@ if (!is_android) {
       "//content/test:test_support",
     ]
     deps = [
-      "//chrome/browser/ui:browser_window_header",
+      ":browser_view_exclusive_access_context",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui/browser_web_contents_delegate",
       "//chrome/browser/ui/views/exclusive_access",
+      "//ui/gfx/animation",
     ]
     if (!is_chromeos) {
       public_deps += [ "//chrome/browser:fullscreen" ]
@@ -117,6 +159,7 @@ if (!is_android) {
     deps = [
       ":test_support",
       "//chrome/test/base:chrome_render_view_host_test_harness",
+      "//chrome/test/base:testing_browser_process",
       "//components/fullscreen_control",
     ]
   }
@@ -125,21 +168,31 @@ if (!is_android) {
     testonly = true
     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
     sources = [
+      "browser_view_exclusive_access_context_browsertest.cc",
       "exclusive_access_manager_browsertest.cc",
       "fullscreen_controller_browsertest.cc",
       "pointer_lock_controller_browsertest.cc",
     ]
 
     deps = [
+      ":browser_view_exclusive_access_context",
       ":test_support",
       "//chrome/browser/content_settings:content_settings_factory",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_tabstrip",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/browser_window:create_browser_window",
+      "//chrome/browser/ui/views/exclusive_access",
+      "//chrome/browser/ui/views/frame:browser_view_header",
+      "//chrome/common:chrome_features",
       "//chrome/test/base:chrome_test_path_utils",
       "//components/content_settings/core/browser",
       "//net:test_support",
+      "//ui/base",
       "//ui/base:ozone_buildflags",
+      "//ui/views",
     ]
     if (use_ozone) {
       deps += [ "//ui/ozone" ]
@@ -159,11 +212,14 @@ if (!is_android) {
         ":test_support",
         "//chrome/browser/content_settings:content_settings_factory",
         "//chrome/browser/preloading:test_support",
+        "//chrome/browser/ui:browser_commands",
+        "//chrome/browser/ui:browser_tabstrip",
         "//chrome/browser/ui:browser_window_header",
         "//chrome/browser/ui:test_support",
         "//chrome/browser/ui/browser_web_contents_delegate",
         "//chrome/browser/ui/browser_window",
         "//chrome/browser/ui/browser_window:create_browser_window",
+        "//chrome/browser/ui/dialogs:browser_dialogs",
         "//chrome/browser/ui/fullscreen",
         "//chrome/browser/ui/test:test_support",
         "//chrome/browser/ui/web_applications/test:test_support_ui",
@@ -173,6 +229,7 @@ if (!is_android) {
         "//chrome/test/base:interactive_test_utils",
         "//components/blocked_content",
         "//components/metrics:content",
+        "//components/permissions:permissions_common",
         "//components/permissions:test_support",
         "//net:test_support",
         "//ui/display:test_support",

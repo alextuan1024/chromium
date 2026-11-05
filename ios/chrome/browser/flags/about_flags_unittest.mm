@@ -58,7 +58,9 @@ TEST_F(AboutFlagsTest, ConvertFlagsToSwitches) {
 
   // Initially, sentinels are added, but no feature switches.
   base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
-  ConvertFlagsToSwitches(&flags_storage, &command_line);
+  GetGlobalFlagsState().ConvertFlagsToSwitches(
+      &flags_storage, &command_line, flags_ui::kAddSentinels,
+      switches::kEnableFeatures, switches::kDisableFeatures);
   EXPECT_TRUE(command_line.HasSwitch(switches::kFlagSwitchesBegin));
   EXPECT_TRUE(command_line.HasSwitch(switches::kFlagSwitchesEnd));
   EXPECT_FALSE(command_line.HasSwitch(switches::kEnableFeatures));
@@ -68,7 +70,9 @@ TEST_F(AboutFlagsTest, ConvertFlagsToSwitches) {
   SetFeatureEntryEnabled(&flags_storage, kFlagName, /*enable=*/true);
 
   base::CommandLine enabled_command_line(base::CommandLine::NO_PROGRAM);
-  ConvertFlagsToSwitches(&flags_storage, &enabled_command_line);
+  GetGlobalFlagsState().ConvertFlagsToSwitches(
+      &flags_storage, &enabled_command_line, flags_ui::kAddSentinels,
+      switches::kEnableFeatures, switches::kDisableFeatures);
   EXPECT_TRUE(enabled_command_line.HasSwitch(switches::kFlagSwitchesBegin));
   EXPECT_TRUE(enabled_command_line.HasSwitch(switches::kFlagSwitchesEnd));
   EXPECT_TRUE(enabled_command_line.HasSwitch(switches::kEnableFeatures));
@@ -78,6 +82,8 @@ TEST_F(AboutFlagsTest, ConvertFlagsToSwitches) {
   // Reset flags and verify feature switch is no longer present.
   ResetAllFlags(&flags_storage);
   base::CommandLine reset_command_line(base::CommandLine::NO_PROGRAM);
-  ConvertFlagsToSwitches(&flags_storage, &reset_command_line);
+  GetGlobalFlagsState().ConvertFlagsToSwitches(
+      &flags_storage, &reset_command_line, flags_ui::kAddSentinels,
+      switches::kEnableFeatures, switches::kDisableFeatures);
   EXPECT_FALSE(reset_command_line.HasSwitch(switches::kEnableFeatures));
 }

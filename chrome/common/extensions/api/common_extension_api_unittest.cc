@@ -244,7 +244,7 @@ TEST(ExtensionAPITest, APIFeatures) {
   });
 
   FeatureProvider api_feature_provider;
-  AddUnittestAPIFeatures(&api_feature_provider);
+  api_feature_provider.AddStaticFeatures(GetUnittestAPIFeatures().span());
 
   for (size_t i = 0; i < std::size(test_data); ++i) {
     TestExtensionAPI api;
@@ -269,7 +269,7 @@ TEST(ExtensionAPITest, APIFeatures) {
 
 TEST(ExtensionAPITest, APIFeaturesAlias) {
   FeatureProvider api_feature_provider;
-  AddUnittestAPIFeatures(&api_feature_provider);
+  api_feature_provider.AddStaticFeatures(GetUnittestAPIFeatures().span());
 
   TestExtensionAPI api;
   api.RegisterDependencyProvider("api", &api_feature_provider);
@@ -385,7 +385,7 @@ TEST(ExtensionAPITest, IsAnyFeatureAvailableToContext) {
   });
 
   FeatureProvider api_feature_provider;
-  AddUnittestAPIFeatures(&api_feature_provider);
+  api_feature_provider.AddStaticFeatures(GetUnittestAPIFeatures().span());
 
   for (size_t i = 0; i < std::size(test_data); ++i) {
     TestExtensionAPI api;
@@ -443,7 +443,7 @@ TEST(ExtensionAPITest, SessionTypeFeature) {
        {"test6.foo", true, mojom::FeatureSessionType::kUnknown}});
 
   FeatureProvider api_feature_provider;
-  AddUnittestAPIFeatures(&api_feature_provider);
+  api_feature_provider.AddStaticFeatures(GetUnittestAPIFeatures().span());
 
   for (const auto& test : kTestData) {
     TestExtensionAPI api;
@@ -1013,6 +1013,65 @@ TEST(ExtensionAPITest, NoPermissions) {
                                 kUnspecifiedContextId, TestContextData())
                   .is_available())
         << "Permission being tested: " << kTests[i].permission_name;
+  }
+}
+
+// Tests that the internal `events` namespace and its declarative rule functions
+// are only available to privileged contexts of extensions and platform apps.
+TEST(ExtensionAPITest, EventsRulesAvailabilityByContext) {
+  std::unique_ptr<ExtensionAPI> extension_api(
+      ExtensionAPI::CreateWithDefaultConfiguration());
+
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("Extension").SetManifestVersion(3).Build();
+  scoped_refptr<const Extension> platform_app =
+      ExtensionBuilder("Platform App", ExtensionBuilder::Type::PLATFORM_APP)
+          .Build();
+  scoped_refptr<const Extension> hosted_app =
+      ExtensionBuilder()
+          .SetManifest(
+              base::DictValue()
+                  .Set("name", "Hosted App")
+                  .Set("version", "1.0")
+                  .Set("manifest_version", 2)
+                  .Set("app",
+                       base::DictValue().Set(
+                           "launch", base::DictValue().Set(
+                                         "web_url", "https://example.com/"))))
+          .Build();
+  ASSERT_TRUE(hosted_app->is_hosted_app());
+
+  struct {
+    raw_ptr<const Extension> ext;
+    mojom::ContextType context;
+    const char* url;
+    bool expected_available;
+  } const kCases[] = {
+      {extension.get(), mojom::ContextType::kPrivilegedExtension, "", true},
+      {platform_app.get(), mojom::ContextType::kPrivilegedExtension, "", true},
+      {extension.get(), mojom::ContextType::kContentScript, "", false},
+      {extension.get(), mojom::ContextType::kUserScript, "", false},
+      {extension.get(), mojom::ContextType::kUnprivilegedExtension, "", false},
+      {extension.get(), mojom::ContextType::kOffscreenExtension, "", false},
+      {hosted_app.get(), mojom::ContextType::kPrivilegedExtension, "", false},
+      {hosted_app.get(), mojom::ContextType::kPrivilegedWebPage,
+       "https://example.com/", false},
+      {nullptr, mojom::ContextType::kWebPage, "https://example.com/", false},
+      {nullptr, mojom::ContextType::kWebUi, "chrome://extensions/", false},
+      {nullptr, mojom::ContextType::kUntrustedWebUi, "chrome-untrusted://test/",
+       false},
+  };
+
+  for (const char* api : {"events", "events.addRules"}) {
+    for (const auto& tc : kCases) {
+      EXPECT_EQ(tc.expected_available,
+                extension_api
+                    ->IsAvailable(api, tc.ext, tc.context, GURL(tc.url),
+                                  CheckAliasStatus::NOT_ALLOWED,
+                                  kUnspecifiedContextId, TestContextData())
+                    .is_available())
+          << api << " context=" << static_cast<int>(tc.context);
+    }
   }
 }
 

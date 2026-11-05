@@ -57,7 +57,7 @@ export class FeatureShowcaseAppElement extends CrLitElement {
   accessor activeStepIndex: number = 0;
   accessor steps: string[] = [];
   protected accessor areButtonsDisabled_: boolean = false;
-  protected accessor isDarkMode_: boolean = false;
+  private accessor isDarkMode_: boolean = false;
   private matchMedia_: MediaQueryList;
   private darkModeListener_: (e: MediaQueryListEvent) => void;
 
@@ -121,13 +121,13 @@ export class FeatureShowcaseAppElement extends CrLitElement {
     return this.steps.includes(stepId);
   }
 
-  protected onStepCompleted_() {
+  protected onStepCompleted_(e: Event) {
     assert(!this.areButtonsDisabled_, 'Buttons should not be disabled.');
     this.areButtonsDisabled_ = true;
     this.activeStepIndex++;
 
     if (this.activeStepIndex < this.steps.length) {
-      this.tryPlayingTransitionAnimations();
+      this.tryPlayingTransitionAnimations_();
       const step = this.steps[this.activeStepIndex]!;
       this.$.viewManager.switchView(step).then(() => {
         this.areButtonsDisabled_ = false;
@@ -136,14 +136,20 @@ export class FeatureShowcaseAppElement extends CrLitElement {
       return;
     }
 
-    browserProxyFactory.getInstance().handler.finishFeatureShowcase();
+    const stepper = (e.currentTarget as HTMLElement)
+                        .querySelector('feature-showcase-stepper');
+    assert(stepper);
+    this.updateComplete.then(() => stepper.waitForAnimationComplete())
+        .then(() => {
+          browserProxyFactory.getInstance().handler.finishFeatureShowcase();
+        });
   }
 
   private notifyStepShown_() {
     browserProxyFactory.getInstance().handler.nextStepShown();
   }
 
-  private tryPlayingTransitionAnimations() {
+  private tryPlayingTransitionAnimations_() {
     assert(this.activeStepIndex > 0, 'Step index should be greater than 0.');
     const startFrame = (this.activeStepIndex - 1) * 120;
     const endFrame = startFrame + 120;

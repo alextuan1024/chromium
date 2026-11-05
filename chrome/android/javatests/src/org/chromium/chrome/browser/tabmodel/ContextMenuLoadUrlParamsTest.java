@@ -32,7 +32,6 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
@@ -40,7 +39,6 @@ import org.chromium.chrome.browser.app.tabmodel.DefaultTabModelSelectorFactory;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
 import org.chromium.chrome.browser.flags.ActivityType;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
@@ -59,7 +57,6 @@ import java.util.regex.Pattern;
 
 /** Verifies URL load parameters set when triggering navigations from the context menu. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class ContextMenuLoadUrlParamsTest {
     @Rule
@@ -79,6 +76,7 @@ public class ContextMenuLoadUrlParamsTest {
 
     // Load parameters of the last call to openNewTab().
     private static LoadUrlParams sOpenNewTabLoadUrlParams;
+    private static AdditionalNavigationParams sOpenNewTabAdditionalNavigationParams;
 
     // Records parameters of calls to TabModelSelector methods and otherwise behaves like
     // TabModelSelectorImpl.
@@ -90,6 +88,7 @@ public class ContextMenuLoadUrlParamsTest {
                 Tab parent,
                 boolean incognito) {
             sOpenNewTabLoadUrlParams = loadUrlParams;
+            sOpenNewTabAdditionalNavigationParams = loadUrlParams.getAdditionalNavigationParams();
             return super.openNewTab(loadUrlParams, type, parent, incognito);
         }
 
@@ -186,9 +185,7 @@ public class ContextMenuLoadUrlParamsTest {
                 mActivityTestRule.getTestServer().getURL(HTML_PATH),
                 sOpenNewTabLoadUrlParams.getReferrer().getUrl());
 
-        AdditionalNavigationParams navigationParams =
-                sOpenNewTabLoadUrlParams.getAdditionalNavigationParams();
-        assertNotNull(navigationParams);
+        assertNotNull(sOpenNewTabAdditionalNavigationParams);
     }
 
     /**
@@ -209,9 +206,7 @@ public class ContextMenuLoadUrlParamsTest {
                 mActivityTestRule.getTestServer().getURL(HTML_PATH),
                 sOpenNewTabLoadUrlParams.getReferrer().getUrl());
 
-        AdditionalNavigationParams navigationParams =
-                sOpenNewTabLoadUrlParams.getAdditionalNavigationParams();
-        assertNotNull(navigationParams);
+        assertNotNull(sOpenNewTabAdditionalNavigationParams);
     }
 
     /**
@@ -232,9 +227,7 @@ public class ContextMenuLoadUrlParamsTest {
                 mActivityTestRule.getTestServer().getURL(HTML_PATH),
                 sOpenNewTabLoadUrlParams.getReferrer().getUrl());
 
-        AdditionalNavigationParams navigationParams =
-                sOpenNewTabLoadUrlParams.getAdditionalNavigationParams();
-        assertNotNull(navigationParams);
+        assertNotNull(sOpenNewTabAdditionalNavigationParams);
     }
 
     /**
@@ -265,7 +258,7 @@ public class ContextMenuLoadUrlParamsTest {
             } else {
                 assertNotNull(sOpenNewTabLoadUrlParams);
                 assertNull(sOpenNewTabLoadUrlParams.getReferrer());
-                assertNull(sOpenNewTabLoadUrlParams.getAdditionalNavigationParams());
+                assertNull(sOpenNewTabAdditionalNavigationParams);
             }
         } finally {
             Intents.release();
@@ -298,6 +291,7 @@ public class ContextMenuLoadUrlParamsTest {
         }
 
         sOpenNewTabLoadUrlParams = null;
+        sOpenNewTabAdditionalNavigationParams = null;
         ContextMenuUtils.selectContextMenuItem(
                 InstrumentationRegistry.getInstrumentation(),
                 activityToWaitFor,

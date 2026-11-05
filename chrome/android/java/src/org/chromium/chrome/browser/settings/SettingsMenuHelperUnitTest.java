@@ -18,7 +18,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
 
-import android.app.Activity;
 import android.graphics.drawable.Drawable;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -26,6 +25,7 @@ import android.view.View;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.widget.SearchView;
 import androidx.appcompat.widget.Toolbar;
 import androidx.core.view.AccessibilityDelegateCompat;
@@ -137,6 +137,19 @@ public class SettingsMenuHelperUnitTest {
         @Override
         public void onPrepareOptionsMenu(Menu menu) {
             mPrepareOptionsMenuCalled = true;
+        }
+    }
+
+    private static class TestOnBackPressedCallback extends OnBackPressedCallback {
+        boolean mBackPressed;
+
+        TestOnBackPressedCallback() {
+            super(/* enabled= */ true);
+        }
+
+        @Override
+        public void handleOnBackPressed() {
+            mBackPressed = true;
         }
     }
 
@@ -545,11 +558,12 @@ public class SettingsMenuHelperUnitTest {
 
     @Test
     public void testUpdateNavigationIcon_ShowSingleColumn() {
-        Activity activity = mock(Activity.class);
+        TestOnBackPressedCallback backPressedCallback = new TestOnBackPressedCallback();
+        mActivity.getOnBackPressedDispatcher().addCallback(backPressedCallback);
 
         SettingsMenuHelper.updateNavigationIcon(
                 mToolbar,
-                activity,
+                mActivity,
                 /* shownInTab= */ false,
                 /* show= */ true,
                 /* isMultiColumn= */ false,
@@ -564,7 +578,7 @@ public class SettingsMenuHelperUnitTest {
         assertTrue(navigationButton.hasOnClickListeners());
 
         navigationButton.performClick();
-        verify(activity).onBackPressed();
+        assertTrue(backPressedCallback.mBackPressed);
     }
 
     @Test
@@ -588,11 +602,12 @@ public class SettingsMenuHelperUnitTest {
 
     @Test
     public void testUpdateNavigationIcon_ShowSingleColumn_shownInTabDetailSettings() {
-        Activity activity = mock(Activity.class);
+        TestOnBackPressedCallback backPressedCallback = new TestOnBackPressedCallback();
+        mActivity.getOnBackPressedDispatcher().addCallback(backPressedCallback);
 
         SettingsMenuHelper.updateNavigationIcon(
                 mToolbar,
-                activity,
+                mActivity,
                 /* shownInTab= */ true,
                 /* show= */ true,
                 /* isMultiColumn= */ false,
@@ -608,7 +623,7 @@ public class SettingsMenuHelperUnitTest {
         assertNotNull(shadowOf(navigationButton).getOnClickListener());
 
         navigationButton.performClick();
-        verify(activity).onBackPressed();
+        assertTrue(backPressedCallback.mBackPressed);
     }
 
     @Test
@@ -651,13 +666,7 @@ public class SettingsMenuHelperUnitTest {
     @Test
     public void testUpdateNavigationIcon_BackButtonAccessibility() {
         // Update the navigation icon to be a back button.
-        SettingsMenuHelper.updateNavigationIcon(
-                mToolbar,
-                mActivity,
-                /* shownInTab= */ true,
-                /* show= */ true,
-                /* isMultiColumn= */ false,
-                /* isMainSettings= */ false);
+        updateBackButtonInTab();
 
         // The navigation button should be a clickable back button for screen readers.
         View navigationButton = getNavigationButton();
@@ -672,6 +681,66 @@ public class SettingsMenuHelperUnitTest {
     public void testUpdateNavigationIcon_BackButtonFocus_shownInTab() {
         mActivity.setContentView(mToolbar);
 
+        updateBackButtonInTab();
+
+        // requestFocus() and the accessibility focus action are sent together, so view focus
+        // stands in for screen reader focus in these tests.
+        View navigationButton = getNavigationButton();
+        assertNotNull(navigationButton);
+        assertTrue(navigationButton.isFocusable());
+        assertTrue(navigationButton.isFocused());
+    }
+
+    @Test
+    public void testUpdateNavigationIcon_BackButton_DoesNotFocusWhenAlreadyBackButton() {
+        mActivity.setContentView(mToolbar);
+
+        updateBackButtonInTab();
+
+        View navigationButton = getNavigationButton();
+        assertNotNull(navigationButton);
+        assertTrue(navigationButton.isFocused());
+
+        // Focus another view to simulate user moving focus elsewhere (e.g. a preference item).
+        View otherView = new View(mActivity);
+        otherView.setFocusable(true);
+        otherView.setFocusableInTouchMode(true);
+        mToolbar.addView(otherView);
+        otherView.requestFocus();
+        assertFalse(navigationButton.isFocused());
+
+        // Calling updateNavigationIcon again when already showing the back button should not
+        // steal focus back to the navigation button.
+        updateBackButtonInTab();
+
+        assertFalse(navigationButton.isFocused());
+    }
+
+    @Test
+    public void testUpdateNavigationIcon_BackButton_DoesNotFocusWhenToolbarNotOnScreen() {
+        // Regression test for crbug.com/556140901: the toolbar is built before it is attached to
+        // the window when the Activity is recreated (e.g. after a theme change). Showing the back
+        // button then must not force focus onto it, so the screen reader can decide where to go.
+        updateBackButtonInTab();
+
+        View navigationButton = getNavigationButton();
+        assertNotNull(navigationButton);
+        assertEquals(mActivity.getString(R.string.back), navigationButton.getContentDescription());
+        assertFalse(navigationButton.isFocused());
+
+        // Attaching the toolbar later and updating again must not focus it either, because the
+        // back button is already displayed.
+        mActivity.setContentView(mToolbar);
+        updateBackButtonInTab();
+
+        assertFalse(navigationButton.isFocused());
+    }
+
+    /**
+     * Shows the toolbar back button for settings in a tab, that is, single-column layout on a
+     * subpage rather than top-level main settings.
+     */
+    private void updateBackButtonInTab() {
         SettingsMenuHelper.updateNavigationIcon(
                 mToolbar,
                 mActivity,
@@ -679,18 +748,33 @@ public class SettingsMenuHelperUnitTest {
                 /* show= */ true,
                 /* isMultiColumn= */ false,
                 /* isMainSettings= */ false);
+    }
+
+    @Test
+    public void testUpdateNavigationIcon_withExtraImageButton_returnsNavButton() {
+        ImageButton extraButton = new ImageButton(mActivity);
+        mToolbar.addView(extraButton, 0);
+
+        SettingsMenuHelper.updateNavigationIcon(
+                mToolbar,
+                mActivity,
+                /* shownInTab= */ true,
+                /* show= */ true,
+                /* isMultiColumn= */ true,
+                /* isMainSettings= */ false);
 
         View navigationButton = getNavigationButton();
         assertNotNull(navigationButton);
-        assertTrue(navigationButton.isFocusable());
-        assertTrue(navigationButton.isFocused());
+        assertFalse(navigationButton.isClickable());
+        assertTrue(extraButton.isClickable());
     }
 
     /** Returns the navigation button on the toolbar. */
     private View getNavigationButton() {
         for (int i = 0; i < mToolbar.getChildCount(); i++) {
             View child = mToolbar.getChildAt(i);
-            if (child instanceof ImageButton) {
+            if (child instanceof ImageButton
+                    && ((ImageButton) child).getDrawable() == mToolbar.getNavigationIcon()) {
                 return child;
             }
         }

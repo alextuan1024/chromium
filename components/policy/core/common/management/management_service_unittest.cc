@@ -8,7 +8,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
-#include "components/policy/core/common/features.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "components/prefs/persistent_pref_store.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -31,6 +30,8 @@ class TestManagementStatusProvider : public ManagementStatusProvider {
                                         EnterpriseManagementAuthority authority)
       : ManagementStatusProvider(cache_pref_name), authority_(authority) {}
   ~TestManagementStatusProvider() override = default;
+
+  using ManagementStatusProvider::GetAuthorityOrFetchBlocking;
 
  protected:
   // Returns the authority responsible for the management.
@@ -250,6 +251,61 @@ TEST_F(ManagementServiceTests, RefreshCacheWeakPtrSafety) {
   management_service.reset();
 }
 
+TEST_F(ManagementServiceTests, GetAuthorityOrFetchBlockingUsesCache) {
+  prefs()->SetInteger(kPrefName, EnterpriseManagementAuthority::NONE);
+  TestManagementStatusProvider provider(kPrefName,
+                                        EnterpriseManagementAuthority::CLOUD);
+  provider.UsePrefStoreAsCache(user_prefs_store());
+
+  // The cached value is used, even if it is stale.
+  EXPECT_EQ(provider.GetAuthorityOrFetchBlocking(),
+            EnterpriseManagementAuthority::NONE);
+}
+
+TEST_F(ManagementServiceTests, GetAuthorityOrFetchBlockingUpdatesCache) {
+  TestManagementStatusProvider provider(kPrefName,
+                                        EnterpriseManagementAuthority::CLOUD);
+  provider.UsePrefServiceAsCache(prefs());
+
+  EXPECT_EQ(provider.GetAuthorityOrFetchBlocking(),
+            EnterpriseManagementAuthority::CLOUD);
+  EXPECT_EQ(prefs()->GetInteger(kPrefName),
+            EnterpriseManagementAuthority::CLOUD);
+}
+
+TEST_F(ManagementServiceTests,
+       GetAuthorityOrFetchBlockingUpdatesCacheOncePrefServiceIsSet) {
+  TestManagementStatusProvider provider(kPrefName,
+                                        EnterpriseManagementAuthority::CLOUD);
+
+  // Nothing is cached, e.g. on first run before Local State is created.
+  EXPECT_EQ(provider.GetAuthorityOrFetchBlocking(),
+            EnterpriseManagementAuthority::CLOUD);
+  EXPECT_FALSE(prefs()->HasPrefPath(kPrefName));
+
+  // The fetched authority is cached in memory until a `PrefService` is set.
+  EXPECT_EQ(provider.GetAuthority(), EnterpriseManagementAuthority::CLOUD);
+  EXPECT_EQ(provider.GetAuthorityOrFetchBlocking(),
+            EnterpriseManagementAuthority::CLOUD);
+
+  provider.UsePrefServiceAsCache(prefs());
+  EXPECT_EQ(prefs()->GetInteger(kPrefName),
+            EnterpriseManagementAuthority::CLOUD);
+}
+
+TEST_F(ManagementServiceTests, ManagementStatusProviderClearCacheWithoutPrefs) {
+  TestManagementStatusProvider provider(kPrefName,
+                                        EnterpriseManagementAuthority::CLOUD);
+
+  EXPECT_EQ(provider.GetAuthorityOrFetchBlocking(),
+            EnterpriseManagementAuthority::CLOUD);
+  EXPECT_EQ(provider.GetAuthority(), EnterpriseManagementAuthority::CLOUD);
+
+  // Detaching or clearing cache resets in-memory fetched authority.
+  provider.UsePrefServiceAsCache(nullptr);
+  EXPECT_EQ(provider.GetAuthority(), EnterpriseManagementAuthority::NONE);
+}
+
 #if BUILDFLAG(IS_WIN)
 class AzureActiveDirectoryManagementServiceTests
     : public ManagementServiceTests,
@@ -348,20 +404,50 @@ TEST_P(AzureActiveDirectoryManagementServiceTests,
   EXPECT_EQ(service->GetManagementAuthorityTrustworthinessForPolicyLoading(),
             expected_trustworthiness);
 
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndDisableFeature(
-        features::kFilterSensitivePoliciesOnWorkplaceJoinedDevices);
+  // Don't leave a dangling cache in the `PlatformManagementService` singleton.
+  service->UsePrefServiceAsCache(nullptr);
+}
 
-    base::test::TestFuture<ManagementAuthorityTrustworthiness,
-                           ManagementAuthorityTrustworthiness>
-        disabled_future;
-    service->RefreshCache(disabled_future.GetCallback());
-    ASSERT_TRUE(disabled_future.Wait());
+TEST_P(AzureActiveDirectoryManagementServiceTests,
+       PolicyLoadingTrustBlockingWithoutCache) {
+  base::win::ScopedAzureADJoinStateForTesting scoped_azure_ad_join_state(
+      GetParam());
 
-    EXPECT_EQ(service->GetManagementAuthorityTrustworthinessForPolicyLoading(),
-              ManagementAuthorityTrustworthiness::FULLY_TRUSTED);
-  }
+  std::vector<std::unique_ptr<ManagementStatusProvider>> providers;
+  providers.push_back(std::make_unique<AzureActiveDirectoryStatusProvider>());
+  providers.push_back(
+      std::make_unique<AzureActiveDirectoryDeviceStatusProvider>());
+  TestManagementService management_service(std::move(providers));
+
+  // Nothing is cached, e.g. on first run.
+  EXPECT_EQ(management_service
+                .GetManagementAuthorityTrustworthinessForPolicyLoading(),
+            ManagementAuthorityTrustworthiness::NONE);
+
+  // Only `AzureActiveDirectoryDeviceStatusProvider` is used for policy loading.
+  EXPECT_EQ(management_service
+                .GetOrFetchManagementAuthorityTrustworthinessForPolicyLoading(),
+            GetParam() == base::win::ScopedAzureADJoinStateForTesting::
+                              AzureADJoinType::kDevice
+                ? ManagementAuthorityTrustworthiness::FULLY_TRUSTED
+                : ManagementAuthorityTrustworthiness::NONE);
+}
+
+// The initial policy load happens before the `FeatureList` is initialized.
+TEST_P(AzureActiveDirectoryManagementServiceTests,
+       DeviceStatusProviderWithoutFeatureList) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithNullFeatureAndFieldTrialLists();
+  base::win::ScopedAzureADJoinStateForTesting scoped_azure_ad_join_state(
+      GetParam());
+
+  AzureActiveDirectoryDeviceStatusProvider device_status_provider;
+  ManagementStatusProvider& provider = device_status_provider;
+  EXPECT_EQ(provider.FetchAuthority(),
+            GetParam() == base::win::ScopedAzureADJoinStateForTesting::
+                              AzureADJoinType::kDevice
+                ? EnterpriseManagementAuthority::CLOUD_DOMAIN
+                : EnterpriseManagementAuthority::NONE);
 }
 #endif
 

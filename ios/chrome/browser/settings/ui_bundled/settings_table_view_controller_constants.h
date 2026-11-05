@@ -26,28 +26,17 @@ typedef NS_ENUM(NSInteger, SettingsSectionIdentifier) {
 // Item types used per Setting section.
 typedef NS_ENUM(NSInteger, SettingsItemType) {
   SettingsItemTypeSignInButton = kItemTypeEnumZero,
-  SettingsItemTypeSigninPromo,
   SettingsItemTypeAccount,
   SettingsItemTypeGoogleServices,
-  SettingsItemTypeHeader,
   SettingsItemTypeSearchEngine,
   SettingsItemTypeManagedDefaultSearchEngine,
-  SettingsItemTypePasswords,
-  SettingsItemTypeAutofillCreditCard,
-  SettingsItemTypeAutofillProfile,
-  SettingsItemTypeIdentityDocs,
-  SettingsItemTypeTravelInfo,
-  SettingsItemTypeShoppingInfo,
-  SettingsItemTypeSuggestionsFromGemini,
   SettingsItemTypeAutofillAndPasswords,
-  SettingsItemTypeAutofillSettings,
   SettingsItemTypeVoiceSearch,
   SettingsItemTypeAddressBar,
   SettingsItemTypeNotifications,
   SettingsItemTypePrivacy,
   SettingsItemTypeLanguageSettings,
   SettingsItemTypeContentSettings,
-  SettingsItemTypeSitePermissions,
   SettingsItemTypeSiteSettings,
   SettingsItemTypeDownloadsSettings,
   SettingsItemTypeSafariDataImport,
@@ -59,6 +48,7 @@ typedef NS_ENUM(NSInteger, SettingsItemType) {
   SettingsItemTypeButtonCatalog,
   SettingsItemTypeViewControllerCatalog,
   SettingsItemTypeViewCatalog,
+  SettingsItemTypeLottieCatalog,
   SettingsItemTypeArticlesForYou,
   SettingsItemTypeManagedArticlesForYou,
   SettingsItemTypeSafetyCheck,
@@ -109,32 +99,8 @@ extern NSString* const kSettingsBottomOmniboxCellId;
 // The accessibility identifier of the Google services cell.
 extern NSString* const kSettingsGoogleServicesCellId;
 
-// The accessibility identifier of the Passwords cell.
-extern NSString* const kSettingsPasswordsCellId;
-
-// The accessibility identifier of the Payment Methods cell.
-extern NSString* const kSettingsPaymentMethodsCellId;
-
-// The accessibility identifier of the Addresses and More cell.
-extern NSString* const kSettingsAddressesAndMoreCellId;
-
-// The accessibility identifier of the Identity Docs cell.
-extern NSString* const kSettingsIdentityDocsCellId;
-
-// The accessibility identifier of the Travel Info cell.
-extern NSString* const kSettingsTravelInfoCellId;
-
-// The accessibility identifier of the Shopping Info cell.
-extern NSString* const kSettingsShoppingInfoCellId;
-
-// The accessibility identifier of the Suggestions From Gemini cell.
-extern NSString* const kSettingsSuggestionsFromGeminiCellId;
-
 // The accessibility identifier of the Autofill and Passwords cell.
 extern NSString* const kSettingsAutofillAndPasswordsCellId;
-
-// The accessibility identifier of the Autofill Settings cell.
-extern NSString* const kSettingsAutofillSettingsCellId;
 
 // The accessibility identifier of the Privacy cell.
 extern NSString* const kSettingsPrivacyCellId;
@@ -180,9 +146,6 @@ extern NSString* const kSettingsBlockPopupsCellId;
 
 // The accessibility identifier of the Show Link Preview cell.
 extern NSString* const kSettingsShowLinkPreviewCellId;
-
-// The accessibility identifier of the Show Reading Mode Available cell.
-extern NSString* const kSettingsShowReadingModeAvailableCellId;
 
 // The accessibility identifier of the Detect Addresses cell.
 extern NSString* const kSettingsDetectAddressesCellId;
@@ -255,7 +218,5 @@ extern NSString* const kSettingsDetectUnitsCellId;
 // The accessibility identifier of the default browser passive promo cell.
 extern NSString* const kSettingsDefaultBrowserPassiveCellId;
 
-// The accessibility identifier of the site permissions cell.
-extern NSString* const kSettingsSitePermissionsCellId;
 
 #endif  // IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_SETTINGS_TABLE_VIEW_CONTROLLER_CONSTANTS_H_

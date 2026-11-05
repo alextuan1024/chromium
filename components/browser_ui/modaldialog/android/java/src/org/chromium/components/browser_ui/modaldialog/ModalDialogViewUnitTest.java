@@ -5,6 +5,7 @@
 package org.chromium.components.browser_ui.modaldialog;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.robolectric.Robolectric.buildActivity;
 
 import android.app.Activity;
@@ -12,7 +13,9 @@ import android.graphics.Rect;
 import android.util.DisplayMetrics;
 import android.view.ContextThemeWrapper;
 import android.view.LayoutInflater;
+import android.view.View;
 import android.view.View.MeasureSpec;
+import android.view.ViewGroup.MarginLayoutParams;
 import android.widget.FrameLayout;
 
 import org.junit.Before;
@@ -300,6 +303,42 @@ public class ModalDialogViewUnitTest {
     }
 
     @Test
+    public void testWrapCustomViewInScrollable_SetAfterBind() {
+        var customView = new FrameLayout(mActivity);
+        var model = mModelBuilder.with(ModalDialogProperties.CUSTOM_VIEW, customView).build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+        mActivity.setContentView(mDialogView);
+
+        // The initial bind order isn't defined, so set the key afterwards to cover the case where
+        // it's bound last.
+        model.set(ModalDialogProperties.WRAP_CUSTOM_VIEW_IN_SCROLLABLE, true);
+
+        assertTrue("The custom view should be shown.", customView.isShown());
+    }
+
+    @Test
+    public void testWrapCustomViewInScrollable_UnsetAfterBind() {
+        // Embedded permission prompts unset the wrap at runtime, which needs
+        // CHANGE_CUSTOM_VIEW_OR_BUTTONS.
+        var model =
+                mModelBuilder
+                        .with(ModalDialogProperties.CHANGE_CUSTOM_VIEW_OR_BUTTONS, true)
+                        .with(ModalDialogProperties.WRAP_CUSTOM_VIEW_IN_SCROLLABLE, true)
+                        .build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+        // Set the custom view after the initial bind, so the scroll view is shown before the
+        // change whatever the bind order.
+        model.set(ModalDialogProperties.CUSTOM_VIEW, new FrameLayout(mActivity));
+
+        model.set(ModalDialogProperties.WRAP_CUSTOM_VIEW_IN_SCROLLABLE, false);
+
+        assertEquals(
+                "The scroll view should be hidden once it no longer holds the custom view.",
+                View.GONE,
+                mDialogView.findViewById(R.id.modal_dialog_scroll_view).getVisibility());
+    }
+
+    @Test
     public void testButtonTapProtection_AttachedWithoutAnimation() {
         class TestController implements ModalDialogProperties.Controller {
             int mClickedButton = -1;
@@ -340,6 +379,95 @@ public class ModalDialogViewUnitTest {
         ShadowSystemClock.advanceBy(Duration.ofMillis(1100));
         positiveButton.performClick();
         assertEquals(ModalDialogProperties.ButtonType.POSITIVE, controller.mClickedButton);
+    }
+
+    @Test
+    public void testButtonTapProtection_Restarted() {
+        class TestController implements ModalDialogProperties.Controller {
+            int mClickedButton = -1;
+
+            @Override
+            public void onClick(PropertyModel model, int buttonType) {
+                mClickedButton = buttonType;
+            }
+
+            @Override
+            public void onDismiss(PropertyModel model, int dismissalCause) {}
+        }
+        var controller = new TestController();
+
+        var model =
+                mModelBuilder
+                        .with(ModalDialogProperties.CONTROLLER, controller)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, "OK")
+                        .with(ModalDialogProperties.BUTTON_TAP_PROTECTION_PERIOD_MS, 1000L)
+                        .build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+
+        // Restarting before the view is attached is a no-op; protection starts once attached.
+        mDialogView.replayButtonTapProtection();
+        ShadowSystemClock.advanceBy(Duration.ofMillis(1100));
+
+        // Attach to window.
+        mActivity.setContentView(mDialogView);
+        var positiveButton = mDialogView.findViewById(R.id.positive_button);
+
+        // Click right after attaching - should be blocked since protection starts on attach, not
+        // on the earlier replay call.
+        positiveButton.performClick();
+        assertEquals(-1, controller.mClickedButton);
+
+        // The protection period elapses while the dialog is not visible to the user yet (e.g.
+        // during the hosting activity's enter animation).
+        ShadowSystemClock.advanceBy(Duration.ofMillis(1100));
+
+        // The dialog becomes visible and the protection period is restarted.
+        mDialogView.replayButtonTapProtection();
+
+        // Click right after becoming visible - should be blocked.
+        ShadowSystemClock.advanceBy(Duration.ofMillis(10));
+        positiveButton.performClick();
+        assertEquals(-1, controller.mClickedButton);
+
+        // Advance time by 1100ms (more than 1000ms since last click).
+        ShadowSystemClock.advanceBy(Duration.ofMillis(1100));
+        positiveButton.performClick();
+        assertEquals(ModalDialogProperties.ButtonType.POSITIVE, controller.mClickedButton);
+    }
+
+    @Test
+    public void testButtonTapProtection_RestartDoesNotShortenScheduledPeriod() {
+        class TestController implements ModalDialogProperties.Controller {
+            int mClickedButton = -1;
+
+            @Override
+            public void onClick(PropertyModel model, int buttonType) {
+                mClickedButton = buttonType;
+            }
+
+            @Override
+            public void onDismiss(PropertyModel model, int dismissalCause) {}
+        }
+        var controller = new TestController();
+
+        var model =
+                mModelBuilder
+                        .with(ModalDialogProperties.CONTROLLER, controller)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, "OK")
+                        .with(ModalDialogProperties.BUTTON_TAP_PROTECTION_PERIOD_MS, 1000L)
+                        .build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+        mActivity.setContentView(mDialogView);
+        var positiveButton = mDialogView.findViewById(R.id.positive_button);
+
+        // Protection is scheduled to start 1000ms from now (in the middle of the animation).
+        mDialogView.onEnterAnimationStarted(2000);
+        mDialogView.replayButtonTapProtection();
+
+        // 1500ms from now is still within 1000ms of the scheduled start - should be blocked.
+        ShadowSystemClock.advanceBy(Duration.ofMillis(1500));
+        positiveButton.performClick();
+        assertEquals(-1, controller.mClickedButton);
     }
 
     @Test
@@ -524,5 +652,25 @@ public class ModalDialogViewUnitTest {
                     firstHeight,
                     mDialogView.getMeasuredHeight());
         }
+    }
+
+    @Test
+    public void testCloseButtonStaysAtEndWithoutTitle() {
+        var model =
+                mModelBuilder.with(ModalDialogProperties.TITLE_CLOSE_BUTTON_VISIBLE, true).build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+
+        mDialogView.measure(
+                MeasureSpec.makeMeasureSpec(MAX_DIALOG_WIDTH_LFF, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(MIN_DIALOG_HEIGHT, MeasureSpec.AT_MOST));
+        mDialogView.layout(0, 0, mDialogView.getMeasuredWidth(), mDialogView.getMeasuredHeight());
+
+        View titleRow = mDialogView.findViewById(R.id.title_container);
+        View closeButton = titleRow.findViewById(R.id.title_close_button);
+        MarginLayoutParams params = (MarginLayoutParams) closeButton.getLayoutParams();
+        assertEquals(
+                "The close button should be at the end of the title row.",
+                titleRow.getWidth() - titleRow.getPaddingRight() - params.rightMargin,
+                closeButton.getRight());
     }
 }

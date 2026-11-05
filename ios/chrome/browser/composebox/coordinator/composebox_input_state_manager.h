@@ -15,13 +15,13 @@
 #import <unordered_set>
 #import <vector>
 
-#import "base/memory/scoped_refptr.h"
 #import "components/contextual_search/input_state_model.h"
 #import "components/lens/lens_overlay_mime_type.h"
 #import "ios/chrome/browser/composebox/public/composebox_attachment_option.h"
 #import "ios/chrome/browser/composebox/public/composebox_entrypoint.h"
 #import "ios/chrome/browser/composebox/public/composebox_mode.h"
-#import "ios/chrome/browser/composebox/public/composebox_model_option.h"
+#import "ios/chrome/browser/composebox/shared/metrics/composebox_metrics_constants.h"
+#import "third_party/omnibox_proto/model_mode.pb.h"
 #import "third_party/omnibox_proto/searchbox_config.pb.h"
 #import "third_party/omnibox_proto/tool_mode.pb.h"
 
@@ -33,14 +33,6 @@ class TemplateURLService;
 namespace contextual_search {
 class ContextualSearchSessionHandle;
 }  // namespace contextual_search
-
-namespace drive_picker {
-class DriveDisclaimerController;
-}  // namespace drive_picker
-
-namespace network {
-class SharedURLLoaderFactory;
-}  // namespace network
 
 namespace signin {
 class IdentityManager;
@@ -54,7 +46,6 @@ class WebStateID;
 @class ComposeboxInputItem;
 @class ComposeboxUIInputState;
 @class UIImage;
-@class ComposeboxModeHolder;
 @class ComposeboxInputItemCollection;
 @class ComposeboxMetricsRecorder;
 
@@ -79,9 +70,15 @@ class WebStateID;
 // The delegate to be notified of state updates.
 @property(nonatomic, weak) id<ComposeboxInputStateManagerDelegate> delegate;
 
-// The current active model option. Use `setActiveModel:explicitUserAction:` to
-// set the model.
-@property(nonatomic, readonly) ComposeboxModelOption activeModel;
+// The current active tool mode: `TOOL_MODE_UNSPECIFIED` in regular search,
+// `TOOL_MODE_AIM` in plain AI Mode, or the active server tool. Use
+// `setActiveToolMode:` or `toggleToolMode:activationSource:` to update it.
+@property(nonatomic, readonly) omnibox::ToolMode activeToolMode;
+
+// The current active model, or `MODEL_MODE_UNSPECIFIED` when no model applies
+// (e.g. in regular search). Use `setActiveModel:explicitUserAction:` to set the
+// model.
+@property(nonatomic, readonly) omnibox::ModelMode activeModel;
 
 // The current input state.
 @property(nonatomic, readonly) std::optional<contextual_search::InputState>
@@ -94,12 +91,9 @@ class WebStateID;
 // The metrics recorder.
 @property(nonatomic, weak) ComposeboxMetricsRecorder* metricsRecorder;
 
-// Initializes the manager without a network URL loader factory.
-// Note: Drive disclaimer verification will be disabled if `urlLoaderFactory` is
-// not provided.
+// Initializes the manager.
 - (instancetype)
      initWithWebStateList:(WebStateList*)webStateList
-               modeHolder:(ComposeboxModeHolder*)modeHolder
               prefService:(PrefService*)prefService
     aimEligibilityService:(AimEligibilityService*)aimEligibilityService
           identityManager:(signin::IdentityManager*)identityManager
@@ -107,36 +101,26 @@ class WebStateID;
             sessionHandle:
                 (contextual_search::ContextualSearchSessionHandle*)sessionHandle
                entrypoint:(ComposeboxEntrypoint)entrypoint
-              isIncognito:(BOOL)isIncognito;
-
-// Initializes the manager with a network URL loader factory used for Drive
-// disclaimer verification.
-- (instancetype)
-     initWithWebStateList:(WebStateList*)webStateList
-               modeHolder:(ComposeboxModeHolder*)modeHolder
-              prefService:(PrefService*)prefService
-    aimEligibilityService:(AimEligibilityService*)aimEligibilityService
-          identityManager:(signin::IdentityManager*)identityManager
-       templateURLService:(TemplateURLService*)templateURLService
-            sessionHandle:
-                (contextual_search::ContextualSearchSessionHandle*)sessionHandle
-               entrypoint:(ComposeboxEntrypoint)entrypoint
-              isIncognito:(BOOL)isIncognito
-         urlLoaderFactory:
-             (scoped_refptr<network::SharedURLLoaderFactory>)urlLoaderFactory
-    NS_DESIGNATED_INITIALIZER;
+              isIncognito:(BOOL)isIncognito NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
-
-// Returns the drive disclaimer controller.
-- (drive_picker::DriveDisclaimerController*)driveDisclaimerController;
 
 // Disconnects the manager and cleans up resources.
 - (void)disconnect;
 
-// Sets the active model if eligible. If explicitUserAction is YES, records
-// metrics.
-- (void)setActiveModel:(ComposeboxModelOption)modelOption
+// Selects the given `toolMode` if eligible. `TOOL_MODE_AIM` enters plain AI
+// Mode, and `TOOL_MODE_UNSPECIFIED` returns to the default mode for the
+// entrypoint.
+- (void)setActiveToolMode:(omnibox::ToolMode)toolMode;
+
+// Selects `toolMode`, or toggles back to the entrypoint's default mode if
+// `toolMode` is already active, recording associated selection metrics.
+- (void)toggleToolMode:(omnibox::ToolMode)toolMode
+      activationSource:(AiModeActivationSource)activationSource;
+
+// Sets the active model if eligible. `MODEL_MODE_UNSPECIFIED` clears the
+// explicit selection. If `explicitUserAction` is `YES`, records metrics.
+- (void)setActiveModel:(omnibox::ModelMode)model
     explicitUserAction:(BOOL)explicitUserAction;
 
 // Retrieves additional query parameters for the current state.
@@ -164,11 +148,8 @@ class WebStateID;
 // Checks if the Default Search Engine is Google.
 - (BOOL)isDSEGoogle;
 
-// Whether the given tool mode can be selected.
-- (BOOL)canSelectTool:(ComposeboxMode)mode;
-
-// Whether the given model option can be selected.
-- (BOOL)canSelectModel:(ComposeboxModelOption)modelOption;
+// Whether the given `model` can be selected.
+- (BOOL)canSelectModel:(omnibox::ModelMode)model;
 
 // Whether more attachments can be added.
 - (BOOL)canAddMoreAttachments;

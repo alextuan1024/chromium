@@ -4,18 +4,25 @@
 
 #import "ios/chrome/browser/autofill/scan_save_and_fill/ui/payments_scan_save_and_fill_edit_view_controller.h"
 
+#import <string>
+
 #import "base/apple/foundation_util.h"
 #import "base/feature_list.h"
 #import "base/metrics/histogram_functions.h"
+#import "base/numerics/safe_conversions.h"
+#import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/timer/elapsed_timer.h"
 #import "build/branding_buildflags.h"
 #import "components/application_locale_storage/application_locale_storage.h"
+#import "components/autofill/core/browser/data_model/data_model_util.h"
 #import "components/autofill/core/browser/payments/payments_autofill_client.h"
+#import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/grit/components_scaled_resources.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/model/message/autofill_legal_message_line.h"
+#import "ios/chrome/browser/autofill/scan_save_and_fill/ui/scan_card_expiration_date_formatter.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_credit_card_ui_type.h"
 #import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/save_card_bottom_sheet_delegate.h"
 #import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/save_card_bottom_sheet_mutator.h"
@@ -95,10 +102,26 @@ void StyleButtonForConfirmation(UIButtonConfiguration* config) {
       [config.image imageWithTintColor:blueColor
                          renderingMode:UIImageRenderingModeAlwaysOriginal];
 }
+
+// Returns the scanned month zero-padded ("3" -> "03"), or as scanned if it
+// isn't a valid month.
+NSString* ScannedExpirationMonthForDisplay(NSString* month) {
+  int month_value = 0;
+  if (!base::StringToInt(base::SysNSStringToUTF8(month), &month_value)) {
+    return month;
+  }
+  std::u16string padded_month =
+      autofill::data_util::Expiration2DigitMonthAsString(month_value);
+  if (padded_month.empty()) {
+    return month;
+  }
+  return base::SysUTF16ToNSString(padded_month);
+}
 }  // namespace
 
 @interface PaymentsScanSaveAndFillEditViewController () <
     TableViewTextEditItemDelegate,
+    UITextFieldDelegate,
     UITextViewDelegate>
 @end
 
@@ -116,7 +139,7 @@ void StyleButtonForConfirmation(UIButtonConfiguration* config) {
   NSString* _cardCVC;
   NSString* _nickname;
 
-  // Initial scanned details.
+  // Initial scanned details as shown; the `IOS.ScannedCard.*Edited` baseline.
   NSString* _scannedCardNumber;
   NSString* _scannedExpirationMonth;
   NSString* _scannedExpirationYear;
@@ -378,19 +401,23 @@ void StyleButtonForConfirmation(UIButtonConfiguration* config) {
   base::UmaHistogramTimes("IOS.ScanCard.EndToEndLatency",
                           _sessionTimer.Elapsed());
 
+  NSString* displayMonth = ScannedExpirationMonthForDisplay(expirationMonth);
+
   _scannedCardNumber = cardNumber;
-  _scannedExpirationMonth = expirationMonth;
+  _scannedExpirationMonth = displayMonth;
   _scannedExpirationYear = expirationYear;
 
   _cardNumber = cardNumber;
   if (expirationMonth.length > 0 && expirationYear.length > 0) {
     _expirationDate =
-        [NSString stringWithFormat:@"%@%@%@", expirationMonth, kDateSeparator,
+        [NSString stringWithFormat:@"%@%@%@", displayMonth, kDateSeparator,
                                    expirationYear];
   }
 
-  std::string appLocale =
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get();
+  std::string appLocale(GetApplicationContext()
+                            ->GetApplicationLocaleStorage()
+                            ->GetTag()
+                            .tag_string());
 
   base::UmaHistogramBoolean(
       "IOS.ScanCardOfferToSave.ValidNumber",
@@ -557,6 +584,45 @@ void StyleButtonForConfirmation(UIButtonConfiguration* config) {
   return NO;
 }
 
+#pragma mark - UITextFieldDelegate
+
+// Only for `_expirationDateItem`; see `-loadItemsAndApplySnapshot`.
+- (BOOL)textField:(UITextField*)textField
+    shouldChangeCharactersInRange:(NSRange)range
+                replacementString:(NSString*)string {
+  // Reformatting mid-composition would commit the IME's marked text early.
+  if (textField.markedTextRange) {
+    return YES;
+  }
+
+  // Undo can replay a range from before reformatting.
+  if (NSMaxRange(range) > textField.text.length) {
+    return NO;
+  }
+
+  // `NSString` and `std::u16string` are both UTF-16, so offsets map 1:1.
+  ScanCardExpirationDateEditResult result = FormatScanCardExpirationDateEdit(
+      base::SysNSStringToUTF16(textField.text), range.location, range.length,
+      base::SysNSStringToUTF16(string));
+  NSString* formattedText = base::SysUTF16ToNSString(result.text);
+  textField.text = formattedText;
+  // Setting `text` from code does not send `UIControlEventEditingChanged`, so
+  // update the item directly; this notifies `-tableViewItemDidChange:`, which
+  // pushes the value to the mutator.
+  [_expirationDateItem updateTextFieldValue:formattedText];
+
+  // Validation reconfigures the cell, which resets the caret, so set it last.
+  UITextPosition* caret =
+      [textField positionFromPosition:textField.beginningOfDocument
+                               offset:base::checked_cast<NSInteger>(
+                                          result.cursor_position)];
+  if (caret) {
+    textField.selectedTextRange = [textField textRangeFromPosition:caret
+                                                        toPosition:caret];
+  }
+  return NO;
+}
+
 #pragma mark - UITextViewDelegate
 
 - (UIAction*)textView:(UITextView*)textView
@@ -704,8 +770,12 @@ void StyleButtonForConfirmation(UIButtonConfiguration* config) {
 - (UIImage*)aboveTitleImage {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   // Use the optimized high-resolution iOS symbol for branded builds.
+  Symbol symbol = base::FeatureList::IsEnabled(
+                      autofill::features::kAutofillEnableGradientGoogleLogos)
+                      ? SymbolGoogleWalletV2
+                      : SymbolGoogleWallet;
   return MakeSymbolMulticolor(
-      SymbolWithPointSize(SymbolGoogleWallet, kGoogleWalletLogoHeight));
+      SymbolWithPointSize(symbol, kGoogleWalletLogoHeight));
 #else
   // Fallback to the generic asset for unbranded builds.
   return NativeImage(IDR_AUTOFILL_GOOGLE_PAY);
@@ -748,6 +818,8 @@ void StyleButtonForConfirmation(UIButtonConfiguration* config) {
 - (void)loadItemsAndApplySnapshot {
   _cardNumberItem = [self cardNumberItem];
   _expirationDateItem = [self expirationDateItem];
+  // Pads the month and inserts "/" as the user types or pastes.
+  _expirationDateItem.textFieldDelegate = self;
   _cardholderNameItem = [self cardholderNameItem];
   _cardCVCItem = [self cardCVCItem];
   _nicknameItem = [self nicknameItem];

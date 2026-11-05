@@ -32,7 +32,7 @@
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/sync/model/mock_sync_service_utils.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
-#import "ios/chrome/common/ui/reauthentication/mock_reauthentication_module.h"
+#import "ios/chrome/common/ui/reauthentication/fake_reauthentication_module.h"
 #import "ios/chrome/test/scoped_key_window.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
@@ -53,7 +53,7 @@ class PasswordIssuesCoordinatorTest : public PlatformTest {
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
         base::BindOnce(&password_manager::BuildPasswordStore<
-                       ProfileIOS, password_manager::TestPasswordStore>));
+                       password_manager::TestPasswordStore>));
 
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindOnce(&CreateMockSyncService));
@@ -89,15 +89,15 @@ class PasswordIssuesCoordinatorTest : public PlatformTest {
     // Init navigation controller with a root vc.
     base_navigation_controller_ = [[UINavigationController alloc]
         initWithRootViewController:[[UIViewController alloc] init]];
-    mock_reauth_module_ =
-        base::apple::ObjCCastStrict<MockReauthenticationModule>(
+    fake_reauth_module_ =
+        base::apple::ObjCCastStrict<FakeReauthenticationModule>(
             ReauthenticationServiceFactory::GetForProfile(profile_.get())
                 ->GetReauthModule());
 
     // Delay auth result so auth doesn't pass right after starting coordinator.
     // Needed for verifying behavior when auth is required.
-    mock_reauth_module_.shouldSkipReAuth = NO;
-    mock_reauth_module_.expectedResult = ReauthenticationResult::kSuccess;
+    fake_reauth_module_.shouldSkipReAuth = NO;
+    fake_reauth_module_.expectedResult = ReauthenticationResult::kSuccess;
 
     coordinator_ = [[PasswordIssuesCoordinator alloc]
               initForWarningType:password_manager::WarningType::
@@ -157,16 +157,19 @@ class PasswordIssuesCoordinatorTest : public PlatformTest {
   SceneState* scene_state_;
   ScopedKeyWindow scoped_window_;
   UINavigationController* base_navigation_controller_ = nil;
-  MockReauthenticationModule* mock_reauth_module_ = nil;
+  FakeReauthenticationModule* fake_reauth_module_ = nil;
   id mocked_scene_handler_;
   base::HistogramTester histogram_tester_;
   PasswordIssuesCoordinator* coordinator_ = nil;
 };
 
-// Tests that Password Issues is presented only after passing authentication.
-// TODO(crbug.com/409972100): Deflake test.
-TEST_F(PasswordIssuesCoordinatorTest,
-       DISABLED_PasswordIssuesPresentedWithAuth) {
+// Tests that Password Issues is presented only after passing authentication
+// and notifies `delegate` via `passwordIssuesCoordinatorDidAuthenticate:`.
+TEST_F(PasswordIssuesCoordinatorTest, PasswordIssuesPresentedWithAuth) {
+  OCMockObject<PasswordIssuesCoordinatorDelegate>* mocked_delegate =
+      OCMProtocolMock(@protocol(PasswordIssuesCoordinatorDelegate));
+  coordinator_.delegate = mocked_delegate;
+
   StartCoordinatorSkippingAuth(/*skip_auth_on_start=*/NO);
 
   // Password Issues should be covered until auth is passed.
@@ -175,12 +178,34 @@ TEST_F(PasswordIssuesCoordinatorTest,
   // No visits logged until successful auth.
   CheckPasswordIssuesVisitMetricsCount(0);
 
-  [mock_reauth_module_ returnMockedReauthenticationResult];
+  OCMExpect(
+      [mocked_delegate passwordIssuesCoordinatorDidAuthenticate:coordinator_]);
+  [fake_reauth_module_ returnMockedReauthenticationResult];
 
   // Successful auth should leave Password Issues visible and record visit.
   CheckPasswordIssuesIsPresented();
-
   CheckPasswordIssuesVisitMetricsCount(1);
+  EXPECT_OCMOCK_VERIFY(mocked_delegate);
+}
+
+// Tests that failing authentication dismisses the Password Manager UI without
+// calling `passwordIssuesCoordinatorDidAuthenticate:` or recording a visit.
+TEST_F(PasswordIssuesCoordinatorTest,
+       PasswordIssuesFailedAuthDismissesUIWithoutAuthenticating) {
+  OCMockObject<PasswordIssuesCoordinatorDelegate>* mocked_delegate =
+      OCMStrictProtocolMock(@protocol(PasswordIssuesCoordinatorDelegate));
+  coordinator_.delegate = mocked_delegate;
+  fake_reauth_module_.expectedResult = ReauthenticationResult::kFailure;
+
+  StartCoordinatorSkippingAuth(/*skip_auth_on_start=*/NO);
+  CheckPasswordIssuesIsNotPresented();
+
+  OCMExpect(
+      [mocked_delegate dismissPasswordManagerAfterFailedReauthentication]);
+  [fake_reauth_module_ returnMockedReauthenticationResult];
+
+  CheckPasswordIssuesVisitMetricsCount(0);
+  EXPECT_OCMOCK_VERIFY(mocked_delegate);
 }
 
 // Tests that Password Issues visits are only logged once after the first
@@ -194,7 +219,7 @@ TEST_F(PasswordIssuesCoordinatorTest, PasswordIssuesVisitRecordedOnlyOnce) {
   // No visits logged until successful auth.
   CheckPasswordIssuesVisitMetricsCount(0);
 
-  [mock_reauth_module_ returnMockedReauthenticationResult];
+  [fake_reauth_module_ returnMockedReauthenticationResult];
   // Visit should be recorded after passing auth.
   CheckPasswordIssuesVisitMetricsCount(1);
 
@@ -205,7 +230,7 @@ TEST_F(PasswordIssuesCoordinatorTest, PasswordIssuesVisitRecordedOnlyOnce) {
   scene_state_.activationLevel = SceneActivationLevelForegroundInactive;
   scene_state_.activationLevel = SceneActivationLevelForegroundActive;
 
-  [mock_reauth_module_ returnMockedReauthenticationResult];
+  [fake_reauth_module_ returnMockedReauthenticationResult];
 
   // Validate no new visits were recorded.
   CheckPasswordIssuesVisitMetricsCount(1);

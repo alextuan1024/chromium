@@ -502,7 +502,7 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
     }
 
     // The z-index should be greater than the threshold.
-    if (box->StyleRef().EffectiveZIndex() < kPopupOverlayZIndexThreshold) {
+    if (box->Style().EffectiveZIndex() < kPopupOverlayZIndexThreshold) {
       return false;
     }
 
@@ -1190,15 +1190,12 @@ function main(metadata) {
         }
       }
 
-      String text_string = css_text.ToString();
       std::string text;
       if (charset.IsValid()) {
         TextEncoding text_encoding(charset);
-        text =
-            text_encoding.Encode(text_string, UnencodableHandling::kCssEscape);
+        text = text_encoding.Encode(css_text, UnencodableHandling::kCssEscape);
       } else {
-        text =
-            Utf8Encoding().Encode(text_string, UnencodableHandling::kCssEscape);
+        text = Utf8Encoding().Encode(css_text, UnencodableHandling::kCssEscape);
       }
 
       resource_serializer_->AddToResources(String("text/css"),
@@ -1254,9 +1251,6 @@ function main(metadata) {
         [[fallthrough]];
       case CSSRule::kMixinRule:
         static_assert(IsCSSGroupingRuleType(CSSRule::kMixinRule));
-        [[fallthrough]];
-      case CSSRule::kResultRule:
-        static_assert(IsCSSGroupingRuleType(CSSRule::kResultRule));
         [[fallthrough]];
       case CSSRule::kNavigationRule:
         static_assert(IsCSSGroupingRuleType(CSSRule::kNavigationRule));
@@ -1353,10 +1347,10 @@ function main(metadata) {
   void RetrieveResourcesForCSSValue(const CSSValue& css_value,
                                     Document& document) {
     if (const auto* image_value = DynamicTo<CSSImageValue>(css_value)) {
-      if (image_value->IsCachePending()) {
+      if (image_value->IsCachePending(document.Fetcher())) {
         return;
       }
-      StyleImage* style_image = image_value->CachedImage();
+      StyleImage* style_image = image_value->CachedImage(document.Fetcher());
       if (!style_image || !style_image->IsImageResource()) {
         return;
       }

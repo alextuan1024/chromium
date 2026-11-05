@@ -42,13 +42,12 @@ class ComposeboxQueryControllerBridge
       Profile* profile,
       content::WebContents* web_contents);
   ~ComposeboxQueryControllerBridge() override;
-  void Destroy();
   void NotifySessionStarted();
   void NotifySessionAbandoned();
   std::string AddFile(JNIEnv* env,
                       const std::string& file_name,
                       const std::string& file_type,
-                      const jni_zero::JavaRef<jobject>& file_data);
+                      const jni_zero::JavaRef<jbyteArray>& file_data);
   std::string AddDriveFile(const std::string& drive_id,
                            const std::optional<std::string>& resource_key,
                            const std::string& file_name,
@@ -93,6 +92,7 @@ class ComposeboxQueryControllerBridge
   void OnTaskChanged() override;
   void InitializeInputStateModel() override;
   void UpdateStateFromUrl(const GURL& url) override;
+  std::vector<int32_t> GetSelectedTabIds() const override;
 
   // contextual_tasks::QueryContextualizer::Delegate:
   GURL GetTabUrl(contextual_tasks::QueryContextualizer::TabId id) override;

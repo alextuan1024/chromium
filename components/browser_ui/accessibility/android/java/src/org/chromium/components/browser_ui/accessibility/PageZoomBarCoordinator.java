@@ -27,9 +27,9 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
 /**
- * Coordinator for the page zoom feature. Created by the |RootUiCoordinator| and acts as the public
- * API for the component. Classes outside the component wishing to interact with page zoom should be
- * calling methods in this class only.
+ * Coordinator for the page zoom feature. Created by the {@code RootUiCoordinator} and acts as the
+ * public API for the component. Classes outside the component wishing to interact with page zoom
+ * should be calling methods in this class only.
  */
 @NullMarked
 public class PageZoomBarCoordinator {
@@ -52,20 +52,15 @@ public class PageZoomBarCoordinator {
     /**
      * @param delegate Used to interact with the coordinator.
      * @param manager The manager used to interact with the zoom functionality.
-     * @param useSlider Whether the page zoom UI should use the material slider.
      * @param bottomSheetControllerSupplier Supplier for the BottomSheetController.
      */
     public PageZoomBarCoordinator(
             PageZoomBarCoordinatorDelegate delegate,
             PageZoomManager manager,
-            boolean useSlider,
             MonotonicObservableSupplier<BottomSheetController> bottomSheetControllerSupplier) {
         mDelegate = delegate;
         mManager = manager;
-        mModel =
-                new PropertyModel.Builder(PageZoomProperties.ALL_KEYS)
-                        .with(PageZoomProperties.USE_SLIDER, useSlider)
-                        .build();
+        mModel = new PropertyModel.Builder(PageZoomProperties.ALL_KEYS).build();
         mMediator = new PageZoomBarMediator(mModel, mManager, this::onViewInteraction);
         mDismissalCallback = () -> hide();
 

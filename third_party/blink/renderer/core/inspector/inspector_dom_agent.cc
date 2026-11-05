@@ -32,7 +32,9 @@
 
 #include <memory>
 
+#include "base/auto_reset.h"
 #include "base/notreached.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/binding_security.h"
@@ -66,6 +68,7 @@
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/range.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
+#include "third_party/blink/renderer/core/dom/slot_assignment_recalc_in_progress_scope.h"
 #include "third_party/blink/renderer/core/dom/static_node_list.h"
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/dom/xml_document.h"
@@ -75,11 +78,10 @@
 #include "third_party/blink/renderer/core/editing/serializers/serialization.h"
 #include "third_party/blink/renderer/core/fileapi/file.h"
 #include "third_party/blink/renderer/core/frame/frame.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/location.h"
 #include "third_party/blink/renderer/core/frame/remote_frame.h"
-#include "third_party/blink/renderer/core/html/fenced_frame/document_fenced_frames.h"
-#include "third_party/blink/renderer/core/html/fenced_frame/html_fenced_frame_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_button_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_control_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
@@ -329,13 +331,12 @@ protocol::DOM::PseudoType InspectorDOMAgent::ProtocolPseudoElementType(
       return protocol::DOM::PseudoTypeEnum::ViewTransitionOld;
     case kPseudoIdOverscrollAreaParent:
       return protocol::DOM::PseudoTypeEnum::OverscrollAreaParent;
-    case kPseudoIdOverscrollBackdrop:
-      return protocol::DOM::PseudoTypeEnum::OverscrollBackdrop;
     case kPseudoIdSkeleton:
       return protocol::DOM::PseudoTypeEnum::Skeleton;
     case kAfterLastInternalPseudoId:
     case kPseudoIdNone:
     case kPseudoIdInvalid:
+    case kPseudoIdPrecomputedHover:
       NOTREACHED();
   }
 }
@@ -465,9 +466,6 @@ PseudoId InspectorDOMAgent::ProtocolPseudoTypeToPseudoId(
   if (type == protocol::DOM::PseudoTypeEnum::InterestButton) {
     return kPseudoIdInterestButton;
   }
-  if (type == protocol::DOM::PseudoTypeEnum::OverscrollBackdrop) {
-    return kPseudoIdOverscrollBackdrop;
-  }
   NOTREACHED();
 }
 
@@ -478,6 +476,7 @@ InspectorDOMAgent::InspectorDOMAgent(v8::Isolate* isolate,
       document_node_to_id_map_(MakeGarbageCollected<NodeToIdMap>()),
       last_node_id_(1),
       suppress_attribute_modified_event_(false),
+      suppress_slot_assignment_recalc_(false),
       enabled_(&agent_state_, /*default_value=*/false),
       include_whitespace_(&agent_state_,
                           /*default_value=*/static_cast<int32_t>(
@@ -626,6 +625,24 @@ void InspectorDOMAgent::Unbind(Node* node) {
   cached_child_count_.erase(id);
 }
 
+Node* InspectorDOMAgent::NodeForBackendId(int backend_node_id) const {
+  Node* node = DOMNodeIds::NodeForId(backend_node_id);
+  if (!node) {
+    return nullptr;
+  }
+  // Backend node ids are renderer-process-global, so they can also resolve
+  // into documents of other targets sharing the process (e.g. same-site
+  // popups). Keep the session inside its target. Check the execution context
+  // rather than the document's frame, so that nodes of frameless documents
+  // owned by an inspected frame (e.g. <template> content) still resolve.
+  auto* window = DynamicTo<LocalDOMWindow>(node->GetExecutionContext());
+  if (!window || !window->GetFrame() ||
+      !inspected_frames_->Contains(window->GetFrame())) {
+    return nullptr;
+  }
+  return node;
+}
+
 protocol::Response InspectorDOMAgent::AssertNode(int node_id, Node*& node) {
   node = NodeForId(node_id);
   if (!node)
@@ -643,7 +660,7 @@ protocol::Response InspectorDOMAgent::AssertNode(
   }
 
   if (backend_node_id.has_value()) {
-    node = DOMNodeIds::NodeForId(backend_node_id.value());
+    node = NodeForBackendId(backend_node_id.value());
     return !node ? protocol::Response::ServerError(
                        "No node found for given backend id")
                  : protocol::Response::Success();
@@ -1049,11 +1066,28 @@ protocol::Response InspectorDOMAgent::getTopLayerElements(
     return protocol::Response::ServerError("DOM agent hasn't been enabled");
 
   *result = std::make_unique<protocol::Array<int>>();
-  for (const auto& document : Documents()) {
+  const HeapVector<Member<Document>> documents = Documents();
+  // Pushing a node to the frontend can serialize <slot> elements, which
+  // recalculates the slot assignment. That can remove elements from the top
+  // layer, e.g. the ::backdrop of a dialog that is no longer slotted. So push
+  // from a copy of each list, and do it for all documents before collecting
+  // any ids, since pushing a node in a subframe also serializes its ancestors
+  // in the parent document.
+  for (const auto& document : documents) {
+    const HeapVector<Member<Element>> elements = document->TopLayerElements();
+    for (const auto& element : elements) {
+      if (element->IsInTopLayer()) {
+        PushNodePathToFrontend(element);
+      }
+    }
+  }
+  // Report the elements that are in the top layer now. Looking up a bound id
+  // has no side effects, so the lists cannot change during this pass.
+  for (const auto& document : documents) {
     for (const auto& element : document->TopLayerElements()) {
-      int node_id = PushNodePathToFrontend(element);
-      if (node_id)
+      if (int node_id = BoundNodeId(element)) {
         (*result)->emplace_back(node_id);
+      }
     }
   }
 
@@ -1122,6 +1156,9 @@ int InspectorDOMAgent::PushNodePathToFrontend(Node* node_to_push) {
 }
 
 int InspectorDOMAgent::BoundNodeId(Node* node) const {
+  if (!node) {
+    return 0;
+  }
   auto it = document_node_to_id_map_->find(node);
   return it != document_node_to_id_map_->end() ? it->value : 0;
 }
@@ -1929,7 +1966,7 @@ protocol::Response InspectorDOMAgent::resolveNode(
   if (node_id.has_value()) {
     node = NodeForId(node_id.value());
   } else {
-    node = DOMNodeIds::NodeForId(backend_node_id.value());
+    node = NodeForBackendId(backend_node_id.value());
   }
 
   if (!node)
@@ -2758,7 +2795,16 @@ InspectorDOMAgent::BuildDistributedNodesForSlot(HTMLSlotElement* slot_element) {
   // is removed.
   auto distributed_nodes =
       std::make_unique<protocol::Array<protocol::DOM::BackendNode>>();
-  for (auto& node : slot_element->AssignedNodes()) {
+  // Avoid triggering slot assignment recalc inside DOM/lifecycle probes or
+  // while a slot assignment recalc is already running (e.g. a paused debugger
+  // session inspecting DOM). Synchronous protocol commands still recalc on
+  // demand, including for detached trees.
+  const bool skip_recalc = suppress_slot_assignment_recalc_ ||
+                           SlotAssignmentRecalcInProgressScope::IsActive();
+  const HeapVector<Member<Node>>& nodes =
+      skip_recalc ? slot_element->AssignedNodesNoRecalc()
+                  : slot_element->AssignedNodes();
+  for (auto& node : nodes) {
     if (ShouldSkipNode(node, IncludeWhitespace()))
       continue;
     distributed_nodes->emplace_back(BuildBackendNode(node));
@@ -2883,6 +2929,8 @@ void InspectorDOMAgent::InvalidateFrameOwnerElement(
   if (!frame_owner_id)
     return;
 
+  base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                        true);
   // Re-add frame owner element together with its new children.
   int parent_id = BoundNodeId(InnerParentNode(frame_owner));
   GetFrontend()->childNodeRemoved(parent_id, frame_owner_id);
@@ -2949,6 +2997,8 @@ void InspectorDOMAgent::DidInsertDOMNode(Node* node) {
     cached_child_count_.Set(parent_id, count);
     GetFrontend()->childNodeCountUpdated(parent_id, count);
   } else {
+    base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                          true);
     // Children have been requested -> return value of a new child.
     Node* prev_sibling = InnerPreviousSibling(node, include_whitespace);
     int prev_id = prev_sibling ? BoundNodeId(prev_sibling) : 0;
@@ -3112,6 +3162,8 @@ void InspectorDOMAgent::DidPushShadowRoot(Element* host, ShadowRoot* root) {
   if (!host_id)
     return;
 
+  base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                        true);
   PushChildNodesToFrontend(host_id, 1);
   GetFrontend()->shadowRootPushed(
       host_id,
@@ -3132,6 +3184,8 @@ void InspectorDOMAgent::DidPerformSlotDistribution(
     HTMLSlotElement* slot_element) {
   int insertion_point_id = BoundNodeId(slot_element);
   if (insertion_point_id) {
+    base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                          true);
     GetFrontend()->distributedNodesUpdated(
         insertion_point_id, BuildDistributedNodesForSlot(slot_element));
   }
@@ -3176,6 +3230,8 @@ void InspectorDOMAgent::PseudoElementCreated(PseudoElement* pseudo_element) {
   if (!parent_id)
     return;
 
+  base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                        true);
   PushChildNodesToFrontend(parent_id, 1);
   GetFrontend()->pseudoElementAdded(
       parent_id, BuildObjectForNode(pseudo_element, 0, false,
@@ -3369,11 +3425,11 @@ class InspectableNode final
   explicit InspectableNode(Node* node) : node_id_(node->GetDomNodeId()) {}
 
   v8::Local<v8::Value> get(v8::Local<v8::Context> context) override {
-    return NodeV8Value(context, DOMNodeIds::NodeForId(node_id_));
+    return NodeV8Value(context, DOMNodeIds::NodeForId(node_id_.value()));
   }
 
  private:
-  DOMNodeId node_id_;
+  DOMNodeIdType node_id_;
 };
 
 protocol::Response InspectorDOMAgent::setInspectedNode(int node_id) {
@@ -3482,18 +3538,6 @@ protocol::Response InspectorDOMAgent::getFrameOwner(
       break;
     }
 
-    if (IsA<LocalFrame>(frame)) {
-      if (auto* fenced_frames = DocumentFencedFrames::Get(
-              *To<LocalFrame>(frame)->GetDocument())) {
-        for (HTMLFencedFrameElement* ff : fenced_frames->GetFencedFrames()) {
-          Frame* ff_frame = ff->ContentFrame();
-          if (ff_frame && IdentifiersFactory::FrameId(ff_frame) == frame_id) {
-            found_frame = ff_frame;
-            break;
-          }
-        }
-      }
-    }
   }
 
   if (!found_frame) {
@@ -3545,7 +3589,7 @@ protocol::Response InspectorDOMAgent::getDetachedDomNodes(
   *detached_nodes =
       std::make_unique<protocol::Array<protocol::DOM::DetachedElementInfo>>();
   v8::HandleScope handles(isolate_);
-  std::map<DOMNodeId, size_t> seen_ids;
+  std::map<DOMNodeIdType, size_t> seen_ids;
 
   for (v8::Local<v8::Value> data :
        isolate_->GetHeapProfiler()->GetDetachedJSWrapperObjects()) {
@@ -3575,7 +3619,7 @@ protocol::Response InspectorDOMAgent::getDetachedDomNodes(
     // times. We don't want to return the same tree more than once, so we record
     // the ID and skip to avoid duplicate returns. We do want to return the ID
     // of the retained object `node`.
-    blink::DOMNodeId parent_id = parent->GetDomNodeId();
+    DOMNodeIdType parent_id(parent->GetDomNodeId());
     if (seen_ids.contains(parent_id)) {
       size_t parent_index = seen_ids[parent_id];
       (**detached_nodes)[parent_index]->getRetainedNodeIds()->emplace_back(
@@ -3585,7 +3629,7 @@ protocol::Response InspectorDOMAgent::getDetachedDomNodes(
     // Remember where the top-level node resides in the detached_nodes array
     seen_ids[parent_id] = (*detached_nodes)->size();
 
-    auto children = std::make_unique<protocol::Array<blink::DOMNodeId>>();
+    auto children = std::make_unique<protocol::Array<int>>();
     children->emplace_back(node->GetDomNodeId());
     std::unique_ptr<protocol::DOM::DetachedElementInfo> value =
         protocol::DOM::DetachedElementInfo::create()

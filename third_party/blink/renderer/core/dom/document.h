@@ -30,6 +30,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_DOM_DOCUMENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_DOM_DOCUMENT_H_
 
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 
@@ -38,6 +40,7 @@
 #include "base/containers/hashing_lru_cache.h"
 #include "base/dcheck_is_on.h"
 #include "base/gtest_prod_util.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/stack_allocated.h"
 #include "base/time/time.h"
@@ -57,7 +60,6 @@
 #include "third_party/blink/public/mojom/page/page.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink-forward.h"
-#include "third_party/blink/public/mojom/permissions_policy/document_policy_feature.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink-forward.h"
 #include "third_party/blink/public/web/web_form_related_change_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
@@ -79,6 +81,7 @@
 #include "third_party/blink/renderer/core/dom/live_node_list_registry.h"
 #include "third_party/blink/renderer/core/dom/node_list_invalidation_type.h"
 #include "third_party/blink/renderer/core/dom/qualified_name.h"
+#include "third_party/blink/renderer/core/dom/slot_assignment_recalc_in_progress_scope.h"
 #include "third_party/blink/renderer/core/dom/text_link_colors.h"
 #include "third_party/blink/renderer/core/dom/tree_scope.h"
 #include "third_party/blink/renderer/core/dom/user_action_element_set.h"
@@ -197,7 +200,6 @@ class DocumentType;
 class Element;
 class ElementDataCache;
 class ElementIntersectionObserverData;
-class ElementRegistrationOptions;
 class Event;
 class EventFactoryBase;
 class EventListener;
@@ -252,6 +254,7 @@ class Resource;
 class ResourceFetcher;
 class RootScrollerController;
 class SVGDocumentExtensions;
+class SVGTreeScopeResources;
 class SVGUseElement;
 class ScriptElementBase;
 class ScriptRegexp;
@@ -273,7 +276,6 @@ class StyleResolver;
 class Text;
 class TransformSource;
 class TreeWalker;
-class TrustedHTML;
 class TrustedHTMLParserOptions;
 class V8DocumentReadyState;
 class V8NodeFilter;
@@ -418,18 +420,26 @@ class CORE_EXPORT Document : public ContainerNode,
 
   network::mojom::ReferrerPolicy GetReferrerPolicy() const;
 
-  bool DocumentPolicyFeatureObserved(
-      mojom::blink::DocumentPolicyFeature feature);
-
   bool CanContainRangeEndPoint() const override { return true; }
 
   SelectorQueryCache& GetSelectorQueryCache();
 
-  void SetStatePreservingAtomicMoveInProgress(bool value) {
-    state_preserving_atomic_move_in_progress_ = value;
+  enum class AtomicMoveType : uint8_t {
+    // Atomic move not in progress
+    kNone,
+    // Atomic move of a node between parent nodes in the same TreeScope
+    kSameTree,
+    // Atomic move of a node between parent nodes in different TreeScopes
+    kBetweenTrees,
+  };
+  void SetStatePreservingAtomicMoveType(AtomicMoveType type) {
+    state_preserving_atomic_move_type_ = type;
   }
   bool StatePreservingAtomicMoveInProgress() const {
-    return state_preserving_atomic_move_in_progress_;
+    return state_preserving_atomic_move_type_ != AtomicMoveType::kNone;
+  }
+  bool StatePreservingAtomicMoveBetweenTrees() const {
+    return state_preserving_atomic_move_type_ == AtomicMoveType::kBetweenTrees;
   }
 
   // Focus Management.
@@ -442,6 +452,7 @@ class CORE_EXPORT Document : public ContainerNode,
   DEFINE_ATTRIBUTE_EVENT_LISTENER(beforecopy, kBeforecopy)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(beforecut, kBeforecut)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(beforepaste, kBeforepaste)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(focusreset, kFocusreset)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(freeze, kFreeze)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(pointerlockchange, kPointerlockchange)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(pointerlockerror, kPointerlockerror)
@@ -671,8 +682,6 @@ class CORE_EXPORT Document : public ContainerNode,
     return document_classes_.Has(DocumentClass::kText);
   }
 
-  bool HasSVGRootNode() const;
-
   bool IsFrameSet() const;
 
   bool IsSrcdocDocument() const { return is_srcdoc_document_; }
@@ -742,9 +751,13 @@ class CORE_EXPORT Document : public ContainerNode,
 
   void ScheduleUseShadowTreeUpdate(SVGUseElement&);
   void UnscheduleUseShadowTreeUpdate(SVGUseElement&);
+  void UpdateUseShadowTreesIfNeeded();
 
   void ScheduleSVGResourceInvalidation(LocalSVGResource&);
   void InvalidatePendingSVGResources();
+  void RegisterSVGTreeScopeResources(SVGTreeScopeResources&);
+  void UnregisterSVGTreeScopeResources(SVGTreeScopeResources&);
+  void NotifyDisplayLockChangedForSVGResources(const Element& element);
 
   void EvaluateMediaQueryList();
 
@@ -979,19 +992,11 @@ class CORE_EXPORT Document : public ContainerNode,
   void writeln(const String& text,
                LocalDOMWindow* entered_window = nullptr,
                ExceptionState& = ASSERT_NO_EXCEPTION);
-  void write(v8::Isolate*, const Vector<String>& text, ExceptionState&);
-  void writeln(v8::Isolate*, const Vector<String>& text, ExceptionState&);
-
-  // TrustedHTML variants of the above.
-  void write(v8::Isolate*, TrustedHTML*, ExceptionState&);
-  void writeln(v8::Isolate*, TrustedHTML*, ExceptionState&);
   void write(v8::Isolate*,
-             TrustedHTML*,
-             HeapVector<Member<V8UnionStringOrTrustedHTML>>,
+             const HeapVector<Member<V8UnionStringOrTrustedHTML>>& text,
              ExceptionState&);
   void writeln(v8::Isolate*,
-               TrustedHTML*,
-               HeapVector<Member<V8UnionStringOrTrustedHTML>>,
+               const HeapVector<Member<V8UnionStringOrTrustedHTML>>& text,
                ExceptionState&);
 
   // Corresponds to https://html.spec.whatwg.org/#document-write-steps
@@ -999,8 +1004,7 @@ class CORE_EXPORT Document : public ContainerNode,
   // This implements steps 1-5 of the algorithm, and calls
   // write(const String&, LocalDOMWindow*, ExceptionState&) for the remainder.
   void Write(v8::Isolate*,
-             TrustedHTML*,
-             HeapVector<Member<V8UnionStringOrTrustedHTML>>,
+             const HeapVector<Member<V8UnionStringOrTrustedHTML>>& text,
              bool line_feed,
              const char* sink,
              ExceptionState&);
@@ -1068,6 +1072,9 @@ class CORE_EXPORT Document : public ContainerNode,
   static bool ShouldInheritSecurityOriginFromOwner(const KURL&);
 
   CSSStyleSheet& ElementSheet();
+  // Called when the document's referrer policy changes (e.g. via
+  // <meta name="referrer">) to drop cached parser state that snapshots it.
+  void ReferrerPolicyChanged();
 
   virtual DocumentParser* CreateParser();
   DocumentParser* Parser() const { return parser_.Get(); }
@@ -1166,6 +1173,18 @@ class CORE_EXPORT Document : public ContainerNode,
   Element* FocusedElement() const { return focused_element_.Get(); }
   const FocusOptions* GetFocusOptions() const { return focus_options_.Get(); }
   void ClearFocusedElementIfNeeded();
+  // https://html.spec.whatwg.org/C/#has-pending-focus-reset
+  // Set when the focused element is removed from the document (synchronous
+  // focus fixup) while the document has focus, which also queues a mutation
+  // observer microtask to fire "focusreset". Cleared when focus is explicitly
+  // moved, or when the "focusreset" event is fired.
+  void SetHasPendingFocusReset();
+  void ClearHasPendingFocusReset() { has_pending_focus_reset_ = false; }
+  bool HasPendingFocusReset() const { return has_pending_focus_reset_; }
+  // Called from the mutation observer microtask. Fires "focusreset" at this
+  // document if its focused area is the viewport and a focus reset is still
+  // pending.
+  void FireFocusResetEventIfNeeded();
   void UpdateFocusgroupLastFocused(Element& focused_element);
   UserActionElementSet& UserActionElements() { return user_action_elements_; }
   const UserActionElementSet& UserActionElements() const {
@@ -1189,6 +1208,7 @@ class CORE_EXPORT Document : public ContainerNode,
   void FlushAutofocusCandidates();
   void FinalizeAutofocus();
   Element* GetAutofocusDelegate() const;
+  bool HasSequentialFocusNavigationStartingPoint() const;
   void SetSequentialFocusNavigationStartingPoint(Node*);
   Element* SequentialFocusNavigationStartingPoint(
       mojom::blink::FocusType) const;
@@ -1285,7 +1305,8 @@ class CORE_EXPORT Document : public ContainerNode,
     kTransitionCancelListener = 1 << 7,
     kScrollListener = 1 << 8,
     kLoadListenerAtCapturePhaseOrAtStyleElement = 1 << 9,
-    // 6 bits remaining
+    kDOMActivateListener = 1 << 10,
+    // 5 bits remaining
   };
 
   bool HasListenerType(ListenerType listener_type) const;
@@ -1303,6 +1324,15 @@ class CORE_EXPORT Document : public ContainerNode,
   bool MayHaveMutationObservers() const { return mutation_observer_types_; }
   void AddMutationObserverTypes(MutationType types) {
     mutation_observer_types_ |= types;
+  }
+  // The target of the outermost active ChildListMutationScope in this
+  // document that found no interested observer, if any. See
+  // ChildListMutationScope.
+  Node* UnobservedChildListMutationTarget() const {
+    return unobserved_child_list_mutation_target_.Get();
+  }
+  void SetUnobservedChildListMutationTarget(Node* target) {
+    unobserved_child_list_mutation_target_ = target;
   }
 
   IntersectionObserverController* GetIntersectionObserverController();
@@ -1513,6 +1543,11 @@ class CORE_EXPORT Document : public ContainerNode,
 
   void IncDOMTreeVersion() {
     DCHECK(lifecycle_.StateAllowsTreeMutations());
+    // Catch-all for DOM mutations during slot assignment recalc (rule R2 in
+    // slot_assignment.h). This runs after the mutation, but before control
+    // returns to the recalc.
+    SlotAssignmentRecalcInProgressScope::CheckNotActive(
+        SlotAssignmentInvariant::kNoDOMMutation);
     dom_tree_version_ = ++global_tree_version_;
   }
   uint64_t DomTreeVersion() const { return dom_tree_version_; }
@@ -1585,8 +1620,6 @@ class CORE_EXPORT Document : public ContainerNode,
                                const String& context_url,
                                const TextPosition& context_position);
 
-  void StatePopped(scoped_refptr<SerializedScriptValue>);
-
   enum LoadEventProgress {
     kLoadEventNotRun,
     kLoadEventInProgress,
@@ -1635,7 +1668,6 @@ class CORE_EXPORT Document : public ContainerNode,
   void EnqueueResizeEvent();
   void EnqueueScrollEventForNode(Node*);
   void EnqueueScrollEndEventForNode(Node*);
-  void EnqueueDisplayLockActivationTask(base::OnceClosure);
   void EnqueueAnimationFrameTask(base::OnceClosure);
   void EnqueueAnimationFrameEvent(Event*);
   // Only one event for a target/event type combination will be dispatched per
@@ -1664,7 +1696,10 @@ class CORE_EXPORT Document : public ContainerNode,
 
   // Used to allow element that loads data without going through a FrameLoader
   // to delay the 'load' event.
-  void IncrementLoadEventDelayCount() { ++load_event_delay_count_; }
+  void IncrementLoadEventDelayCount() {
+    CHECK_LT(load_event_delay_count_, std::numeric_limits<int>::max());
+    ++load_event_delay_count_;
+  }
   void DecrementLoadEventDelayCount();
   void CheckLoadEventSoon();
   bool IsDelayingLoadEvent();
@@ -1696,10 +1731,6 @@ class CORE_EXPORT Document : public ContainerNode,
   void InitDNSPrefetch();
 
   bool IsInDocumentWrite() const { return write_recursion_depth_ > 0; }
-  ScriptValue registerElement(ScriptState*,
-                              const AtomicString& name,
-                              const ElementRegistrationOptions*,
-                              ExceptionState&);
 
   void AdjustQuadsForScrollAndAbsoluteZoom(Vector<gfx::QuadF>&,
                                            const LayoutObject&) const;
@@ -1770,9 +1801,12 @@ class CORE_EXPORT Document : public ContainerNode,
   uint32_t PopoverHidingNestingCount() const {
     return popover_hiding_nesting_count_;
   }
-  void IncrementPopoverHidingNestingCount() { ++popover_hiding_nesting_count_; }
+  void IncrementPopoverHidingNestingCount() {
+    ++popover_hiding_nesting_count_;
+    CHECK_NE(popover_hiding_nesting_count_, 0u);
+  }
   void DecrementPopoverHidingNestingCount() {
-    CHECK(popover_hiding_nesting_count_);
+    CHECK_NE(popover_hiding_nesting_count_, 0u);
     --popover_hiding_nesting_count_;
   }
 
@@ -1782,9 +1816,6 @@ class CORE_EXPORT Document : public ContainerNode,
     return all_open_popovers_;
   }
   HTMLElement* TopmostPopoverOrHint() const;
-  HeapHashSet<Member<HTMLElement>>& PopoversWaitingToHide() {
-    return popovers_waiting_to_hide_;
-  }
   // PopoverPointerdownTarget is used by the popover light dismiss system, to
   // track pointer events that might light-dismiss popovers.
   const HTMLElement* PopoverPointerdownTarget() const {
@@ -1974,32 +2005,16 @@ class CORE_EXPORT Document : public ContainerNode,
 
   bool IsSlotAssignmentDirty() const;
 
-#if DCHECK_IS_ON()
   unsigned& SlotAssignmentRecalcForbiddenRecursionDepth() {
     return slot_assignment_recalc_forbidden_recursion_depth_;
   }
-  bool IsSlotAssignmentRecalcForbidden() {
+  bool IsSlotAssignmentRecalcForbidden() const {
     return slot_assignment_recalc_forbidden_recursion_depth_ > 0;
   }
-#endif
 
 #if EXPENSIVE_DCHECKS_ARE_ON()
   void AssertLayoutTreeUpdatedAfterLayout();
 #endif
-
-  unsigned& FlatTreeTraversalForbiddenRecursionDepth() {
-    return flat_tree_traversal_forbidden_recursion_depth_;
-  }
-  bool IsFlatTreeTraversalForbidden() {
-    return flat_tree_traversal_forbidden_recursion_depth_ > 0;
-  }
-
-  unsigned& SlotAssignmentRecalcDepth() {
-    return slot_assignment_recalc_depth_;
-  }
-  bool IsInSlotAssignmentRecalc() const {
-    return slot_assignment_recalc_depth_ > 0;
-  }
 
   bool IsVerticalScrollEnforced() const { return is_vertical_scroll_enforced_; }
   bool IsFocusAllowed(FocusTrigger trigger,
@@ -2060,6 +2075,9 @@ class CORE_EXPORT Document : public ContainerNode,
   // This flag is immutable once set.
   // https://drafts.csswg.org/css-sizing-4/#document-responsive-embedded-sizing-flag
   void SetResponsiveEmbeddedSizing() { responsive_embedded_sizing_ = true; }
+  bool HasResponsiveEmbeddedSizing() const {
+    return responsive_embedded_sizing_;
+  }
 
   // A META element with name=text-scale was added, removed, or
   // modified. Re-collect the META values.
@@ -2090,6 +2108,7 @@ class CORE_EXPORT Document : public ContainerNode,
   bool IsAnimatedPropertyCounted(CSSPropertyID property) const;
   void ClearUseCounterForTesting(mojom::WebFeature);
   void ClearWebDXFeatureCounterForTesting(mojom::blink::WebDXFeature);
+  bool UsingRustXmlParserForTesting() const;
 
   const ui::ColorProvider* GetColorProviderForPainting(
       mojom::blink::ColorScheme color_scheme) const;
@@ -2154,9 +2173,6 @@ class CORE_EXPORT Document : public ContainerNode,
     return rendering_had_begun_for_last_style_update_;
   }
 
-  void IncrementImmediateChildFrameCreationCount();
-  int GetImmediateChildFrameCreationCount() const;
-
   enum class DeclarativeShadowRootAllowState : uint8_t {
     kNotSet,
     kAllow,
@@ -2176,7 +2192,7 @@ class CORE_EXPORT Document : public ContainerNode,
 
   void AddPostPrerenderingActivationStep(base::OnceClosure callback);
 
-  class CORE_EXPORT PaintPreviewScope {
+  class CORE_EXPORT [[nodiscard]] PaintPreviewScope {
     STACK_ALLOCATED();
 
    public:
@@ -2396,6 +2412,13 @@ class CORE_EXPORT Document : public ContainerNode,
   void UpdateActiveState(bool is_active, bool update_active_chain, Element*);
   void UpdateHoverState(Element*);
 
+  // Called when the user edits a form text control (`DidHaveFormEdit`) or any
+  // editable element in the document (`DidHaveUserEdit`). Notifies the browser
+  // process on the first edit of each kind in this document, ignoring edits
+  // triggered by `document.execCommand()`.
+  void DidHaveFormEdit();
+  void DidHaveUserEdit();
+
  protected:
   void ClearXMLVersion() { xml_version_ = String(); }
 
@@ -2561,7 +2584,6 @@ class CORE_EXPORT Document : public ContainerNode,
   StyleAndLayoutTreeUpdate CalculateStyleAndLayoutTreeUpdateForParentFrame()
       const;
 
-  void UpdateUseShadowTreesIfNeeded();
   void EvaluateMediaQueryListIfNeeded();
 
   void UpdateStyleInvalidationIfNeeded();
@@ -2845,6 +2867,8 @@ class CORE_EXPORT Document : public ContainerNode,
   bool autofocus_processed_flag_ = false;
   mojom::blink::FocusType last_focus_type_;
   bool had_keyboard_event_ = false;
+  // https://html.spec.whatwg.org/C/#has-pending-focus-reset
+  bool has_pending_focus_reset_ = false;
   HeapTaskRunnerTimer<Document> clear_focused_element_timer_;
   // https://html.spec.whatwg.org/C/#autofocus-candidates
   // We implement this as a Vector because its maximum size is typically 1.
@@ -2881,6 +2905,7 @@ class CORE_EXPORT Document : public ContainerNode,
   uint32_t event_listener_counts_ = 0;
 
   MutationObserverOptions mutation_observer_types_ = 0;
+  Member<Node> unobserved_child_list_mutation_target_;
 
   Member<ElementIntersectionObserverData>
       document_explicit_root_intersection_observer_data_;
@@ -2993,21 +3018,26 @@ class CORE_EXPORT Document : public ContainerNode,
   // is acceptable not to trace it -- should a conservative GC occur,
   // the cache object's references will be traced by a stack walk.
   STACK_ALLOCATED_IGNORE("https://crbug.com/461878")
-  NthIndexCache* nth_index_cache_ = nullptr;
+  // RAW_PTR_EXCLUSION: References a STACK_ALLOCATED class.
+  RAW_PTR_EXCLUSION NthIndexCache* nth_index_cache_ = nullptr;
 
   // This is an untraced pointer to the cache-scoped object that is first
   // allocated on the stack. It is set upon the first object being allocated
   // on the stack, and cleared upon leaving its allocated scope. The object's
   // references will be traced by a stack walk.
   STACK_ALLOCATED_IGNORE("https://crbug.com/669058")
-  CheckPseudoHasCacheScope* check_pseudo_has_cache_scope_ = nullptr;
+  // RAW_PTR_EXCLUSION: References a STACK_ALLOCATED class.
+  RAW_PTR_EXCLUSION CheckPseudoHasCacheScope* check_pseudo_has_cache_scope_ =
+      nullptr;
 
   // This is an untraced pointer to the first stack-allocated scoping object
   // that defers invalidation of the node list caches. It is set upon the first
   // object being allocated on the stack, and cleared upon leaving its
   // allocated scope. The object's references will be traced by a stack walk.
   STACK_ALLOCATED_IGNORE("https://crbug.com/40874584")
-  InvalidateNodeListCachesScope* invalidate_node_list_caches_scope_ = nullptr;
+  // RAW_PTR_EXCLUSION: References a STACK_ALLOCATED class.
+  RAW_PTR_EXCLUSION InvalidateNodeListCachesScope*
+      invalidate_node_list_caches_scope_ = nullptr;
 
   bool in_pseudo_has_checking_ = false;
 
@@ -3072,9 +3102,6 @@ class CORE_EXPORT Document : public ContainerNode,
   Member<const HTMLDialogElement> dialog_pointerdown_target_;
   // The mouse target information for the event that opened the picker, if any.
   PopoverPickerPointerdownInfo popover_picker_pointerdown_info_;
-  // A set of popovers for which hidePopover() has been called, but animations
-  // are still running.
-  HeapHashSet<Member<HTMLElement>> popovers_waiting_to_hide_;
   // A set of all open popovers, of all types.
   HeapHashSet<Member<HTMLElement>> all_open_popovers_;
 
@@ -3144,6 +3171,10 @@ class CORE_EXPORT Document : public ContainerNode,
   // state. Should be populated during layout detach or style recalc, and be
   // empty before and after those operations.
   HeapHashSet<Member<LocalSVGResource>> svg_resources_needing_invalidation_;
+  // Per-TreeScope SVG resource maps belonging to this Document (including
+  // ShadowRoots), tracked so LocalSVGResource clients can be invalidated when
+  // display-lock state changes.
+  HeapHashSet<WeakMember<SVGTreeScopeResources>> svg_tree_scope_resources_;
 
   ParserSynchronizationPolicy parser_sync_policy_ = kAllowDeferredParsing;
 
@@ -3166,11 +3197,7 @@ class CORE_EXPORT Document : public ContainerNode,
   std::unique_ptr<ukm::UkmRecorder> ukm_recorder_;
   const int64_t ukm_source_id_;
 
-#if DCHECK_IS_ON()
   unsigned slot_assignment_recalc_forbidden_recursion_depth_ = 0;
-#endif
-  unsigned slot_assignment_recalc_depth_ = 0;
-  unsigned flat_tree_traversal_forbidden_recursion_depth_ = 0;
 
   Member<DOMFeaturePolicy> policy_;
 
@@ -3194,11 +3221,6 @@ class CORE_EXPORT Document : public ContainerNode,
   bool is_for_external_handler_;
 
   Member<LazyLoadMediaObserver> lazy_load_media_observer_;
-
-  // Tracks which document policies have already been parsed, so as not to
-  // count them multiple times. The size of this vector is 0 until
-  // `DocumentPolicyFeatureObserved` is called.
-  Vector<bool> parsed_document_policies_;
 
   AtomicString override_last_modified_;
 
@@ -3321,11 +3343,11 @@ class CORE_EXPORT Document : public ContainerNode,
   HeapVector<Member<HTMLInputElement>> elements_needing_shadow_tree_;
 
   // See https://github.com/whatwg/dom/issues/1255 and
-  // https://crbug.com/40150299. This flag is consulted via its getter, by any
+  // https://crbug.com/40150299. This state is consulted via its getters, by any
   // code in the Node insertion/removal path that's interested in NOT resetting
   // certain state, when the insertion is triggered via the state-preserving
   // atomic move API (so far, `Node#moveBefore()`).
-  bool state_preserving_atomic_move_in_progress_ = false;
+  AtomicMoveType state_preserving_atomic_move_type_ = AtomicMoveType::kNone;
 
   // See VisitedLinkPassKey class description.
   std::optional<net::SchemefulSite> cached_top_frame_site_for_visited_links_ =
@@ -3341,6 +3363,9 @@ class CORE_EXPORT Document : public ContainerNode,
 
   bool responsive_embedded_sizing_ = false;
   bool text_scale_meta_tag_present_ = false;
+
+  bool had_form_edit_ = false;
+  bool had_user_edit_ = false;
 
   // `overscroll_command_targets_` is a set of elements that are currently the
   // targets of command invokers that have `command=toggle-overscroll`.

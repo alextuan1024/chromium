@@ -56,15 +56,13 @@ class MEDIA_EXPORT AudioOutputDispatcherImpl
   void StreamVolumeSet(AudioOutputProxy* stream_proxy, double volume) override;
   void CloseStream(AudioOutputProxy* stream_proxy) override;
   void FlushStream(AudioOutputProxy* stream_proxy) override;
+  void CloseAllIdleStreams() override;
 
   // AudioDeviceListener implementation.
   void OnDeviceChange() override;
 
   // Returns true if there are any open AudioOutputProxy objects.
   bool HasOutputProxies() const;
-
-  // Closes all |idle_streams_|.
-  void CloseAllIdleStreams();
 
  private:
   // Creates a new physical output stream, opens it and pushes to
@@ -84,7 +82,7 @@ class MEDIA_EXPORT AudioOutputDispatcherImpl
   const std::string device_id_;
 
   size_t idle_proxies_;
-  std::vector<raw_ptr<AudioOutputStream, VectorExperimental>> idle_streams_;
+  std::vector<raw_ptr<AudioOutputStream, DanglingUntriaged>> idle_streams_;
 
   // When streams are stopped they're added to |idle_streams_|, if no stream is
   // reused before |close_delay_| elapses |close_timer_| will run
@@ -93,7 +91,7 @@ class MEDIA_EXPORT AudioOutputDispatcherImpl
 
   using AudioStreamMap =
       base::flat_map<AudioOutputProxy*,
-                     raw_ptr<AudioOutputStream, CtnExperimental>>;
+                     raw_ptr<AudioOutputStream, DanglingUntriaged>>;
   AudioStreamMap proxy_to_physical_map_;
 
   using AudioLogMap =

@@ -6,10 +6,12 @@
 
 #import <Foundation/Foundation.h>
 
+#import "base/check.h"
 #import "base/i18n/break_iterator.h"
 #import "base/i18n/string_search.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
+#import "components/prefs/pref_service.h"
 #import "components/sessions/core/tab_restore_service.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
@@ -30,21 +32,26 @@ using base::i18n::FixedPatternStringSearchIgnoringCaseAndAccents;
 
 TabsSearchService::TabsSearchService(
     bool is_off_the_record,
+    PrefService* pref_service,
     BrowserList* browser_list,
     signin::IdentityManager* identity_manager,
     syncer::SyncService* sync_service,
     sessions::TabRestoreService* restore_service,
     sync_sessions::SessionSyncService* session_sync_service,
     history::HistoryService* history_service,
-    WebHistoryServiceGetter web_history_service_getter)
+    history::WebHistoryService* web_history_service,
+    syncer::DeviceInfoTracker* device_info_tracker)
     : is_off_the_record_(is_off_the_record),
+      pref_service_(pref_service),
       browser_list_(browser_list),
       identity_manager_(identity_manager),
       sync_service_(sync_service),
       restore_service_(restore_service),
       session_sync_service_(session_sync_service),
       history_service_(history_service),
-      web_history_service_getter_(web_history_service_getter) {
+      web_history_service_(web_history_service),
+      device_info_tracker_(device_info_tracker) {
+  CHECK(pref_service_);
   DCHECK(browser_list_);
 
   // Those services are only used if not off-the-record, so allow them to
@@ -55,15 +62,17 @@ TabsSearchService::TabsSearchService(
     DCHECK(session_sync_service_);
     DCHECK(restore_service_);
     DCHECK(history_service_);
-    DCHECK(!web_history_service_getter_.is_null());
+    DCHECK(web_history_service_);
   }
 }
 
 TabsSearchService::TabsSearchBrowserResults::TabsSearchBrowserResults(
     Browser* browser,
-    const std::vector<web::WebState*> web_states,
-    const std::vector<const TabGroup*> tab_groups)
-    : browser(browser), web_states(web_states), tab_groups(tab_groups) {}
+    std::vector<raw_ptr<web::WebState>> web_states,
+    std::vector<raw_ptr<const TabGroup>> tab_groups)
+    : browser(browser),
+      web_states(std::move(web_states)),
+      tab_groups(std::move(tab_groups)) {}
 
 TabsSearchService::TabsSearchBrowserResults::~TabsSearchBrowserResults() =
     default;
@@ -167,12 +176,14 @@ void TabsSearchService::SearchHistory(
   DCHECK(completion);
 
   if (!browsing_history_service_) {
-    history_driver_ = std::make_unique<IOSBrowsingHistoryDriver>(
-        web_history_service_getter_, this);
+    history_driver_ =
+        std::make_unique<IOSBrowsingHistoryDriver>(pref_service_, this);
 
     browsing_history_service_ =
         std::make_unique<history::BrowsingHistoryService>(
-            history_driver_.get(), history_service_.get(), sync_service_.get());
+            history_driver_.get(), history_service_.get(),
+            web_history_service_.get(), sync_service_.get(),
+            device_info_tracker_.get(), /*critical_action_provider=*/nullptr);
   }
 
   ongoing_history_search_term_ = term;
@@ -209,7 +220,7 @@ void TabsSearchService::SearchWithinBrowsers(
   std::vector<TabsSearchBrowserResults> results;
 
   for (Browser* browser : browsers) {
-    std::vector<web::WebState*> matching_web_states;
+    std::vector<raw_ptr<web::WebState>> matching_web_states;
     WebStateList* webStateList = browser->GetWebStateList();
     for (int index = 0; index < webStateList->count(); ++index) {
       web::WebState* web_state = webStateList->GetWebStateAt(index);
@@ -223,7 +234,7 @@ void TabsSearchService::SearchWithinBrowsers(
       }
     }
 
-    std::vector<const TabGroup*> matching_tab_groups;
+    std::vector<raw_ptr<const TabGroup>> matching_tab_groups;
     for (const TabGroup* group : webStateList->GetGroups()) {
       std::u16string group_title = group->visual_data().title();
       if (query_search.Search(group_title, /*match_index=*/nullptr,
@@ -233,8 +244,9 @@ void TabsSearchService::SearchWithinBrowsers(
     }
 
     if (!matching_web_states.empty() || !matching_tab_groups.empty()) {
-      TabsSearchBrowserResults browser_results(browser, matching_web_states,
-                                               matching_tab_groups);
+      TabsSearchBrowserResults browser_results(browser,
+                                               std::move(matching_web_states),
+                                               std::move(matching_tab_groups));
       results.push_back(browser_results);
     }
   }

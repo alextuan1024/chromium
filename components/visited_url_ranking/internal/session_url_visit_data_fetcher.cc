@@ -116,9 +116,11 @@ void SessionURLVisitDataFetcher::FetchURLVisitData(
   std::map<URLMergeKey, URLVisitAggregate::TabData> url_visit_tab_data_map;
   const sync_sessions::SyncedSession* local_session = nullptr;
   open_tabs_ui_delegate->GetLocalSession(&local_session);
-  std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
+  std::vector<raw_ptr<const sync_sessions::SyncedSession, DanglingUntriaged>>
       sessions;
-  open_tabs_ui_delegate->GetAllForeignSessions(&sessions);
+  open_tabs_ui_delegate->GetAllForeignSessions(
+      &sessions,
+      sync_sessions::OpenTabsUIDelegate::ForeignSessionFilter::kPresentable);
   if (local_session) {
     sessions.push_back(local_session);
   }

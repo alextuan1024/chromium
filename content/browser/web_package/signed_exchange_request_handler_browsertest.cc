@@ -60,7 +60,6 @@
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_download_manager_delegate.h"
 #include "content/test/content_browser_test_utils_internal.h"
-#include "content/test/mock_reduce_accept_language_controller_delegate.h"
 #include "media/media_buildflags.h"
 #include "net/base/features.h"
 #include "net/cert/cert_verify_result.h"
@@ -84,6 +83,10 @@
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "third_party/blink/public/common/features.h"
+
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+#include "net/cert/key_pinning_state_chrome_test_util.h"
+#endif
 
 namespace content {
 
@@ -267,16 +270,6 @@ class SignedExchangeRequestHandlerBrowserTestBase
     partition->GetSubresourceProxyingURLLoaderService()
         ->prefetch_url_loader_service_context_for_testing()
         .SetAcceptLanguages(langs);
-    // Set the Accept-Language for delegate in order to get correct
-    // Accept-Language in navigation requests instead of always using the
-    // default shell Accept-Language.
-    MockReduceAcceptLanguageControllerDelegate* delegate =
-        static_cast<MockReduceAcceptLanguageControllerDelegate*>(
-            shell()
-                ->web_contents()
-                ->GetBrowserContext()
-                ->GetReduceAcceptLanguageControllerDelegate());
-    delegate->SetUserAcceptLanguages(langs);
   }
 
   std::unique_ptr<InactiveRenderFrameHostDeletionObserver>
@@ -1066,15 +1059,8 @@ IN_PROC_BROWSER_TEST_P(SignedExchangeRequestHandlerBrowserTest,
   EXPECT_EQ(title, title_watcher.WaitAndGetTitle());
 }
 
-// TODO(crbug.com/40890897): Re-enable this test when de-flaked.
-#if BUILDFLAG(IS_FUCHSIA)
-#define MAYBE_NotControlledByDistributorsSW \
-  DISABLED_NotControlledByDistributorsSW
-#else
-#define MAYBE_NotControlledByDistributorsSW NotControlledByDistributorsSW
-#endif
 IN_PROC_BROWSER_TEST_P(SignedExchangeRequestHandlerBrowserTest,
-                       MAYBE_NotControlledByDistributorsSW) {
+                       NotControlledByDistributorsSW) {
   // SW-scope: http://127.0.0.1:PORT/sxg/
   // SXG physical URL: http://127.0.0.1:PORT/sxg/test.example.org_test.sxg
   // SXG logical URL: https://test.example.org/test/
@@ -1412,9 +1398,6 @@ IN_PROC_BROWSER_TEST_F(SignedExchangeAcceptHeaderBrowserTest, ServiceWorker) {
   NavigateAndWaitForTitle(https_server_.GetURL("/sxg/service-worker.html"),
                           "Done");
 
-  const std::string frame_accept = FrameAcceptHeaderValue(
-      /*allow_sxg_responses=*/false,
-      shell()->web_contents()->GetBrowserContext());
   const std::string frame_accept_with_sxg = FrameAcceptHeaderValue(
       /*allow_sxg_responses=*/true,
       shell()->web_contents()->GetBrowserContext());
@@ -1643,6 +1626,7 @@ INSTANTIATE_TEST_SUITE_P(All,
 
 #endif  // BUILDFLAG(ENABLE_REPORTING)
 
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 class SignedExchangePKPBrowserTest
     : public SignedExchangeRequestHandlerBrowserTest {
  public:
@@ -1687,18 +1671,6 @@ class SignedExchangePKPBrowserTest
   }
 
   void EnableStaticPins(int reporting_port) {
-    StoragePartition* partition = shell()
-                                      ->web_contents()
-                                      ->GetBrowserContext()
-                                      ->GetDefaultStoragePartition();
-    {
-      base::test::TestFuture<void> future;
-      partition->GetNetworkContext()->EnableStaticKeyPinningForTesting(
-          future.GetCallback());
-      EXPECT_TRUE(future.Wait());
-    }
-    partition->FlushNetworkInterfaceForTesting();
-
     if (IsOutOfProcessNetworkService()) {
       mojo::Remote<network::mojom::NetworkServiceTest> network_service_test;
       GetNetworkService()->BindTestInterfaceForTesting(
@@ -1718,6 +1690,18 @@ class SignedExchangePKPBrowserTest
                              SetTransportSecurityStateSourceOnNetwork,
                          base::Unretained(this), reporting_port));
     }
+
+    StoragePartition* partition = shell()
+                                      ->web_contents()
+                                      ->GetBrowserContext()
+                                      ->GetDefaultStoragePartition();
+    {
+      base::test::TestFuture<void> future;
+      partition->GetNetworkContext()->ReinitializeKeyPinningForTesting(
+          future.GetCallback());
+      EXPECT_TRUE(future.Wait());
+    }
+    partition->FlushNetworkInterfaceForTesting();
   }
 
  private:
@@ -1729,15 +1713,26 @@ class SignedExchangePKPBrowserTest
   }
 
   void SetTransportSecurityStateSourceOnNetwork(int reporting_port) {
+    key_pinning_state_defaults_ =
+        std::make_unique<net::ScopedKeyPinningStateChromeDefaults>();
     transport_security_state_source_ =
         std::make_unique<net::ScopedTransportSecurityStateSource>();
   }
 
-  void CleanUpOnNetworkThread() { transport_security_state_source_.reset(); }
+  void CleanUpOnNetworkThread() {
+    transport_security_state_source_.reset();
+    key_pinning_state_defaults_.reset();
+  }
 
+  // TODO(crbug.com/497882860): once key pinning is done in the cert verifier,
+  // all this TransportSecurityState / KeyPinningState stuff can be removed and
+  // replaced with setting the MockCertVerifier to return a key pinning error.
+  //
   // Only used when NetworkService is disabled. Accessed on network thread.
   std::unique_ptr<net::ScopedTransportSecurityStateSource>
       transport_security_state_source_;
+  std::unique_ptr<net::ScopedKeyPinningStateChromeDefaults>
+      key_pinning_state_defaults_;
 
   base::test::ScopedFeatureList scoped_feature_list_;
 };
@@ -1759,5 +1754,6 @@ IN_PROC_BROWSER_TEST_P(SignedExchangePKPBrowserTest, PKPViolation) {
 }
 
 INSTANTIATE_TEST_SUITE_P(All, SignedExchangePKPBrowserTest, ::testing::Bool());
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 }  // namespace content

@@ -21,6 +21,7 @@
 #include "base/memory_coordinator/memory_coordinator_features.h"
 #include "base/memory_coordinator/traits.h"
 #include "base/memory_coordinator/utils.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/numerics/safe_math.h"
 #include "base/process/memory.h"
 #include "base/strings/string_number_conversions.h"
@@ -30,6 +31,7 @@
 #include "base/task/current_thread.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "base/time/time.h"
 #include "base/trace_event/memory_allocator_dump.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/process_memory_dump.h"
@@ -43,7 +45,6 @@
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/time/time.h"
 #endif
 
 namespace discardable_memory {
@@ -214,14 +215,19 @@ uint64_t GetDefaultMaxBytes() {
                   base::SysInfo::AmountOfTotalPhysicalMemory().InBytes() / 4);
 }
 
-const int kEnforceMemoryPolicyDelayMs = 1000;
+constexpr base::TimeDelta kEnforceMemoryPolicyDelay = base::Seconds(1);
 
 constexpr base::MemoryConsumerTraits kMemoryConsumerTraits(
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kLarge,
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     base::MemoryConsumerTraits::ExecutionType::kSynchronous,
     base::MemoryConsumerTraits::IsStateful::kYes);
+
+// The SuppressMemoryListeners experiment showed that reacting to memory
+// pressure is not beneficial on Mac and Windows.
+constexpr bool kRegisterMemoryConsumer =
+    !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN);
 
 // Global atomic to generate unique discardable shared memory IDs.
 base::AtomicSequenceNumber g_next_discardable_shared_memory_id;
@@ -247,13 +253,13 @@ DiscardableSharedMemoryManager::DiscardableSharedMemoryManager()
           base::SingleThreadTaskRunner::GetCurrentDefault()),
       enforce_memory_policy_pending_(false),
       mojo_thread_message_loop_(base::CurrentThread::GetNull()),
-      memory_consumer_registration_(
-          "DiscardableSharedMemoryManager",
-          kMemoryConsumerTraits,
-          this,
-          base::MemoryConsumerRegistration::CheckUnregister::kDisabled),
       memory_pressure_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
           {base::WithBaseSyncPrimitives()})) {
+  if (kRegisterMemoryConsumer) {
+    memory_consumer_registration_.emplace(
+        "DiscardableSharedMemoryManager", kMemoryConsumerTraits, this,
+        base::MemoryConsumerRegistration::CheckUnregister::kDisabled);
+  }
   DCHECK(!g_instance)
       << "A DiscardableSharedMemoryManager already exists in this process.";
   g_instance = this;
@@ -336,20 +342,23 @@ void DiscardableSharedMemoryManager::Bind(
 }
 
 std::unique_ptr<base::DiscardableMemory>
-DiscardableSharedMemoryManager::AllocateLockedDiscardableMemory(size_t size) {
-  DCHECK_NE(size, 0u);
+DiscardableSharedMemoryManager::AllocateLockedDiscardableMemory(
+    base::ByteSize size) {
+  DCHECK(!size.is_zero());
+  const size_t size_in_bytes = base::checked_cast<size_t>(size.InBytes());
 
   int32_t new_id = g_next_discardable_shared_memory_id.GetNext();
 
   // Note: Use DiscardableSharedMemoryHeap for in-process allocation
   // of discardable memory if the cost of each allocation is too high.
   base::UnsafeSharedMemoryRegion region;
-  AllocateLockedDiscardableSharedMemory(kInvalidUniqueClientID, size, new_id,
-                                        &region);
+  AllocateLockedDiscardableSharedMemory(kInvalidUniqueClientID, size_in_bytes,
+                                        new_id, &region);
   std::unique_ptr<base::DiscardableSharedMemory> memory(
       new base::DiscardableSharedMemory(std::move(region)));
-  if (!memory->Map(size))
-    base::TerminateBecauseOutOfMemory(size);
+  if (!memory->Map(size_in_bytes)) {
+    base::TerminateBecauseOutOfMemory(size_in_bytes);
+  }
   // Close file descriptor to avoid running out.
   memory->Close();
   return std::make_unique<DiscardableMemoryImpl>(
@@ -368,7 +377,7 @@ bool DiscardableSharedMemoryManager::OnMemoryDump(
         pmd->CreateAllocatorDump("discardable");
     total_dump->AddScalar(base::trace_event::MemoryAllocatorDump::kNameSize,
                           base::trace_event::MemoryAllocatorDump::kUnitsBytes,
-                          GetBytesAllocated());
+                          GetAllocatedSize().InBytes());
     return true;
   }
 
@@ -453,10 +462,10 @@ void DiscardableSharedMemoryManager::EnforceMemoryPolicy() {
   ReduceMemoryUsageUntilWithinMaxBytes();
 }
 
-size_t DiscardableSharedMemoryManager::GetBytesAllocated() const {
+base::ByteSize DiscardableSharedMemoryManager::GetAllocatedSize() const {
   base::AutoLock lock(lock_);
 
-  return bytes_allocated_;
+  return base::ByteSize(bytes_allocated_);
 }
 
 void DiscardableSharedMemoryManager::WillDestroyCurrentMessageLoop() {
@@ -657,8 +666,7 @@ void DiscardableSharedMemoryManager::ScheduleEnforceMemoryPolicy() {
   enforce_memory_policy_pending_ = true;
   DCHECK(enforce_memory_policy_task_runner_);
   enforce_memory_policy_task_runner_->PostDelayedTask(
-      FROM_HERE, enforce_memory_policy_callback_,
-      base::Milliseconds(kEnforceMemoryPolicyDelayMs));
+      FROM_HERE, enforce_memory_policy_callback_, kEnforceMemoryPolicyDelay);
 }
 
 void DiscardableSharedMemoryManager::InvalidateMojoThreadWeakPtrs(

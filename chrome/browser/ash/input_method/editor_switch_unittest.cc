@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/input_method/editor_switch.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -43,7 +44,6 @@ using ::testing::TestWithParam;
 
 const char kAllowedTestCountry[] = "au";
 const char kDeniedTestCountry[] = "hk";
-const char kUsEngineId[] = "xkb:us::eng";
 
 const char kAllowedTestUrl[] = "https://allowed.testurl.com/allowed/path";
 
@@ -150,8 +150,9 @@ TEST_P(EditorSwitchAvailabilityWithoutPolicyTest,
   FakeSystem system;
   FakeEditorContextObserver context_observer;
   FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider(test_case.country_code);
-  EditorContext context(&context_observer, &system, &geolocation_provider);
+  EditorContext context(
+      &context_observer, &system,
+      std::make_unique<EditorGeolocationMockProvider>(test_case.country_code));
   EditorSwitch editor_switch(/*observer=*/&switch_observer,
                              /*profile=*/&profile,
                              /*manta_service=*/nullptr,
@@ -219,8 +220,9 @@ TEST_P(EditorSwitchAvailabilityWithPolicyTest,
   FakeSystem system;
   FakeEditorContextObserver context_observer;
   FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider(test_case.country_code);
-  EditorContext context(&context_observer, &system, &geolocation_provider);
+  EditorContext context(
+      &context_observer, &system,
+      std::make_unique<EditorGeolocationMockProvider>(test_case.country_code));
   EditorSwitch editor_switch(/*observer=*/&switch_observer,
                              /*profile=*/&profile,
                              /*manta_service=*/nullptr,
@@ -588,8 +590,9 @@ TEST_P(EditorSwitchTriggerTest, TestEditorMode) {
   FakeSystem system;
   FakeEditorContextObserver context_observer;
   FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider(kAllowedTestCountry);
-  EditorContext context(&context_observer, &system, &geolocation_provider);
+  EditorContext context(
+      &context_observer, &system,
+      std::make_unique<EditorGeolocationMockProvider>(kAllowedTestCountry));
   EditorSwitch editor_switch(/*observer=*/&switch_observer,
                              /*profile=*/profile.get(),
                              /*manta_service=*/nullptr,
@@ -621,88 +624,6 @@ TEST_P(EditorSwitchTriggerTest, TestEditorMode) {
               testing::ElementsAreArray(test_case.expected_blocked_reasons));
 }
 
-using DenylistTestCase = std::pair<std::string, EditorMode>;
-
-using EditorSwitchDenylistTest = TestWithParam<DenylistTestCase>;
-
-INSTANTIATE_TEST_SUITE_P(
-    EditorSwitchDenylist,
-    EditorSwitchDenylistTest,
-    testing::ValuesIn<DenylistTestCase>({
-        {"https://calendar.google.com", EditorMode::kSoftBlocked},
-        {"https://calendar.google.com/c/1234", EditorMode::kSoftBlocked},
-        {"https://docs.google.com", EditorMode::kSoftBlocked},
-        {"https://docs.google.com/drawings/1234", EditorMode::kSoftBlocked},
-        {"https://docs.google.com/document/1234", EditorMode::kSoftBlocked},
-        {"https://docs.google.com/forms/1234", EditorMode::kSoftBlocked},
-        {"https://docs.google.com/presentation/1234", EditorMode::kSoftBlocked},
-        {"https://docs.google.com/spreadsheet/1234", EditorMode::kSoftBlocked},
-        {"https://docs.google.com/videos/1234", EditorMode::kSoftBlocked},
-        {"https://drive.google.com", EditorMode::kSoftBlocked},
-        {"https://drive.google.com/1234", EditorMode::kSoftBlocked},
-        {"https://keep.google.com", EditorMode::kSoftBlocked},
-        {"https://keep.google.com/1234", EditorMode::kSoftBlocked},
-        {"https://mail.google.com/chat", EditorMode::kSoftBlocked},
-        {"https://mail.google.com/mail", EditorMode::kSoftBlocked},
-        {"https://meet.google.com", EditorMode::kSoftBlocked},
-        {"https://meet.google.com/1234", EditorMode::kSoftBlocked},
-        {"https://script.google.com", EditorMode::kSoftBlocked},
-        {"https://script.google.com/1234", EditorMode::kSoftBlocked},
-        {"https://sites.google.com", EditorMode::kSoftBlocked},
-        {"https://sites.google.com/view/test-page", EditorMode::kSoftBlocked},
-        {"https://sites.google.com/1234", EditorMode::kSoftBlocked},
-        {"https://outlook.com", EditorMode::kRewrite},
-        {"https://whatsapp.com", EditorMode::kRewrite},
-        {"https://x.com", EditorMode::kRewrite},
-        {"https://linkedin.com", EditorMode::kRewrite},
-    }));
-
-TEST_P(EditorSwitchDenylistTest, IsBlockedWhenVisitingUrlInDenylist) {
-  const DenylistTestCase& test_case = GetParam();
-  const std::string& test_url = std::get<0>(test_case);
-  const EditorMode& expected_mode = std::get<1>(test_case);
-  content::BrowserTaskEnvironment task_environment;
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{chromeos::features::kFeatureManagementOrca},
-      /*disabled_features=*/{ash::features::kOrcaUseAccountCapabilities,
-                             ash::features::kOrcaOnWorkspace});
-  ScopedBrowserLocale browser_locale("en");
-
-  std::unique_ptr<TestingProfile> profile =
-      CreateTestingProfile("testuser@gmail.com");
-  FakeSystem system;
-  FakeEditorContextObserver context_observer;
-  FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider(kAllowedTestCountry);
-  EditorContext context(&context_observer, &system, &geolocation_provider);
-  EditorSwitch editor_switch(/*observer=*/&switch_observer,
-                             /*profile=*/profile.get(),
-                             /*manta_service=*/nullptr,
-                             /*context=*/&context);
-
-  auto mock_notifier = net::test::MockNetworkChangeNotifier::Create();
-  profile->GetProfilePolicyConnector()->OverrideIsManagedForTesting(false);
-  mock_notifier->SetConnectionType(net::NetworkChangeNotifier::CONNECTION_WIFI);
-
-  profile->GetPrefs()->SetBoolean(prefs::kOrcaEnabled, true);
-  profile->GetPrefs()->SetInteger(
-      prefs::kOrcaConsentStatus,
-      std::to_underlying(
-          chromeos::editor_menu::EditorConsentStatus::kApproved));
-  context.OnTabletModeUpdated(false);
-  context.OnActivateIme(kUsEngineId);
-  context.OnInputContextUpdated(
-      TextInputMethod::InputContext(ui::TEXT_INPUT_TYPE_TEXT),
-      CreateFakeTextFieldContextualInfo(chromeos::AppType::BROWSER, test_url,
-                                        ""));
-
-  context.OnTextSelectionChanged(EditorTextSelection(true, 100));
-
-  EXPECT_TRUE(editor_switch.IsAllowedForUse());
-  EXPECT_EQ(editor_switch.GetEditorMode(), expected_mode);
-}
-
 using InputMethodTestCase = std::pair<std::string, EditorMode>;
 
 class InternationalizeTestSuite : public TestWithParam<InputMethodTestCase> {
@@ -710,8 +631,10 @@ class InternationalizeTestSuite : public TestWithParam<InputMethodTestCase> {
   InternationalizeTestSuite()
       : browser_locale_("en"),
         profile_(CreateTestingProfile("testuser@gmail.com")),
-        geolocation_provider_(kAllowedTestCountry),
-        context_(&context_observer_, &system_, &geolocation_provider_) {
+        context_(&context_observer_,
+                 &system_,
+                 std::make_unique<EditorGeolocationMockProvider>(
+                     kAllowedTestCountry)) {
     auto mock_notifier = net::test::MockNetworkChangeNotifier::Create();
     profile_->GetProfilePolicyConnector()->OverrideIsManagedForTesting(false);
     mock_notifier->SetConnectionType(
@@ -731,7 +654,6 @@ class InternationalizeTestSuite : public TestWithParam<InputMethodTestCase> {
   FakeSystem system_;
   FakeEditorContextObserver context_observer_;
   FakeEditorSwitchObserver switch_observer_;
-  EditorGeolocationMockProvider geolocation_provider_;
   EditorContext context_;
 };
 
@@ -825,100 +747,6 @@ TEST_P(EditorSwitchDefaultFlagsTest, EditorModeHasCorrectState) {
   EXPECT_EQ(editor_switch.GetEditorMode(), expected_mode);
 }
 
-class EditorSwitchAllFlagsEnabledTest : public InternationalizeTestSuite {};
-
-INSTANTIATE_TEST_SUITE_P(EditorSwitchAllFlagsEnabled,
-                         EditorSwitchAllFlagsEnabledTest,
-                         testing::ValuesIn<InputMethodTestCase>({
-                             // English
-                             {"xkb:ca:eng:eng", EditorMode::kWrite},
-                             {"xkb:gb::eng", EditorMode::kWrite},
-                             {"xkb:gb:extd:eng", EditorMode::kWrite},
-                             {"xkb:gb:dvorak:eng", EditorMode::kWrite},
-                             {"xkb:in::eng", EditorMode::kWrite},
-                             {"xkb:pk::eng", EditorMode::kWrite},
-                             {"xkb:us:altgr-intl:eng", EditorMode::kWrite},
-                             {"xkb:us:colemak:eng", EditorMode::kWrite},
-                             {"xkb:us:dvorak:eng", EditorMode::kWrite},
-                             {"xkb:us:dvp:eng", EditorMode::kWrite},
-                             {"xkb:us:intl_pc:eng", EditorMode::kWrite},
-                             {"xkb:us:intl:eng", EditorMode::kWrite},
-                             {"xkb:us:workman-intl:eng", EditorMode::kWrite},
-                             {"xkb:us:workman:eng", EditorMode::kWrite},
-                             {"xkb:us::eng", EditorMode::kWrite},
-                             {"xkb:za:gb:eng", EditorMode::kWrite},
-                             // French
-                             {"xkb:be::fra", EditorMode::kWrite},
-                             {"xkb:ca::fra", EditorMode::kWrite},
-                             {"xkb:ca:multix:fra", EditorMode::kWrite},
-                             {"xkb:fr::fra", EditorMode::kWrite},
-                             {"xkb:fr:bepo:fra", EditorMode::kWrite},
-                             {"xkb:ch:fr:fra", EditorMode::kWrite},
-                             // German
-                             {"xkb:be::ger", EditorMode::kWrite},
-                             {"xkb:de::ger", EditorMode::kWrite},
-                             {"xkb:de:neo:ger", EditorMode::kWrite},
-                             {"xkb:ch::ger", EditorMode::kWrite},
-                             // Japanese
-                             {"xkb:jp::jpn", EditorMode::kWrite},
-                             {"nacl_mozc_us", EditorMode::kWrite},
-                             {"nacl_mozc_jp", EditorMode::kWrite},
-                             // Danish
-                             {"xkb:dk::dan", EditorMode::kWrite},
-                             // Dutch
-                             {"xkb:be::nld", EditorMode::kWrite},
-                             {"xkb:us:intl_pc:nld", EditorMode::kWrite},
-                             {"xkb:us:intl:nld", EditorMode::kWrite},
-                             // Finnish
-                             {"xkb:fi::fin", EditorMode::kWrite},
-                             // Italian
-                             {"xkb:it::ita", EditorMode::kWrite},
-                             // Norwegian
-                             {"xkb:no::nob", EditorMode::kWrite},
-                             // Polish
-                             {"xkb:pl::pol", EditorMode::kWrite},
-                             // Portugese
-                             {"xkb:br::por", EditorMode::kWrite},
-                             {"xkb:pt::por", EditorMode::kWrite},
-                             {"xkb:us:intl_pc:por", EditorMode::kWrite},
-                             {"xkb:us:intl:por", EditorMode::kWrite},
-                             // Spanish
-                             {"xkb:latam::spa", EditorMode::kWrite},
-                             {"xkb:es::spa", EditorMode::kWrite},
-                             // Swedish
-                             {"xkb:se::swe", EditorMode::kWrite},
-                             // Turkish (example case where always disabled)
-                             {"xkb:tr::tur", EditorMode::kSoftBlocked},
-                             {"xkb:tr:f:tur", EditorMode::kSoftBlocked},
-                         }));
-
-TEST_P(EditorSwitchAllFlagsEnabledTest, EditorModeHasCorrectState) {
-  const InputMethodTestCase& test_case = GetParam();
-  const std::string& engine_id = std::get<0>(test_case);
-  const EditorMode& expected_mode = std::get<1>(test_case);
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{chromeos::features::kFeatureManagementOrca,
-                            features::kOrcaDanish, features::kOrcaDutch,
-                            features::kOrcaFinnish, features::kOrcaItalian,
-                            features::kOrcaNorwegian, features::kOrcaPortugese,
-                            features::kOrcaSpanish, features::kOrcaSwedish},
-      /*disabled_features=*/{ash::features::kOrcaUseAccountCapabilities});
-
-  EditorSwitch editor_switch(&switch_observer_, profile_.get(),
-                             /*manta_service=*/nullptr, &context_);
-  context_.OnTabletModeUpdated(false);
-  context_.OnActivateIme(engine_id);
-  context_.OnInputContextUpdated(
-      TextInputMethod::InputContext(ui::TEXT_INPUT_TYPE_TEXT),
-      CreateFakeTextFieldContextualInfo(chromeos::AppType::BROWSER,
-                                        kAllowedTestUrl, ""));
-  context_.OnTextSelectionChanged(EditorTextSelection(true, 0));
-
-  EXPECT_TRUE(editor_switch.IsAllowedForUse());
-  EXPECT_EQ(editor_switch.GetEditorMode(), expected_mode);
-}
-
 TEST(EditorSwitchTest, AllowedForUseForGooglers) {
   content::BrowserTaskEnvironment task_environment;
   std::unique_ptr<TestingProfile> profile =
@@ -926,8 +754,9 @@ TEST(EditorSwitchTest, AllowedForUseForGooglers) {
   FakeSystem system;
   FakeEditorContextObserver context_observer;
   FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider("unknown_country");
-  EditorContext context(&context_observer, &system, &geolocation_provider);
+  EditorContext context(
+      &context_observer, &system,
+      std::make_unique<EditorGeolocationMockProvider>("unknown_country"));
   EditorSwitch editor_switch(/*observer=*/&switch_observer,
                              /*profile=*/profile.get(),
                              /*manta_service=*/nullptr,

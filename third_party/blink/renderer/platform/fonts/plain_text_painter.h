@@ -74,14 +74,25 @@ class PLATFORM_EXPORT PlainTextPainter
   // This function returns `false` if a web font `font` is not ready and
   // `action` is `kDoNotPaintIfFontNotReady`.
   bool DrawWithBidiReorder(const TextRun& run,
-                           unsigned from_index,
-                           unsigned to_index,
+                           wtf_size_t from_index,
+                           wtf_size_t to_index,
                            const Font& font,
                            Font::CustomFontNotReadyAction action,
                            cc::PaintCanvas& canvas,
                            const gfx::PointF& location,
                            const cc::PaintFlags& flags,
                            Font::DrawType = Font::DrawType::kGlyphsOnly);
+
+  // Draws the logical range [from_index, to_index) of an already-shaped node
+  // at location, coalescing contiguous same-direction items
+  void DrawNode(const PlainTextNode& node,
+                wtf_size_t from_index,
+                wtf_size_t to_index,
+                const Font& font,
+                cc::PaintCanvas& canvas,
+                const gfx::PointF& location,
+                const cc::PaintFlags& flags,
+                Font::DrawType = Font::DrawType::kGlyphsOnly) const;
 
   // Glyph bounds will be the minimum rect containing all glyph strokes, in
   // coordinates using (<text run x position>, <baseline position>) as the
@@ -91,8 +102,8 @@ class PLATFORM_EXPORT PlainTextPainter
                           const Font& font,
                           gfx::RectF* glyph_bounds = nullptr);
   float ComputeSubInlineSize(const TextRun&,
-                             unsigned from_index,
-                             unsigned to_index,
+                             wtf_size_t from_index,
+                             wtf_size_t to_index,
                              const Font& font,
                              gfx::RectF* glyph_bounds = nullptr);
   // This doesn't apply BiDi reorder for compatibility.

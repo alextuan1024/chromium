@@ -50,6 +50,9 @@ class ActionTarget {
   static ActionTarget FromProto(
       const optimization_guide::proto::ActionTarget& target);
 
+  // Converts this `ActionTarget` back to its protobuf representation.
+  optimization_guide::proto::ActionTarget ToProto() const;
+
   // Returns the coordinate target if present.
   const std::optional<CoordinateTarget>& coordinate() const {
     return coordinate_;
@@ -68,6 +71,9 @@ class ActionTarget {
 
   // Converts the target to a dictionary value for JavaScript execution.
   base::DictValue ToDictValue() const;
+
+  // Returns a human-readable string representation of the target for logging.
+  std::string DebugString() const;
 
   bool operator==(const ActionTarget& other) const = default;
 

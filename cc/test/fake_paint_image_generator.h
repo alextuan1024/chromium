@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/functional/callback.h"
 #include "cc/paint/paint_image_generator.h"
 #include "third_party/skia/include/core/SkYUVAPixmaps.h"
 
@@ -22,6 +23,8 @@ class FakePaintImageGenerator : public PaintImageGenerator {
       bool allocate_discardable_memory = true,
       std::vector<SkISize> supported_sizes = {},
       const gfx::HDRMetadata& hdr_metadata = {});
+  FakePaintImageGenerator(const SkImageInfo& info,
+                          base::RepeatingClosure decode_callback);
   // YUV decoding mode constructor.
   explicit FakePaintImageGenerator(
       const SkImageInfo& info,
@@ -40,13 +43,13 @@ class FakePaintImageGenerator : public PaintImageGenerator {
   bool GetPixels(SkPixmap pixmap,
                  size_t frame_index,
                  PaintImage::GeneratorClientId client_id,
-                 uint32_t lazy_pixel_ref) override;
+                 uint64_t lazy_pixel_ref) override;
   bool QueryYUVA(
       const SkYUVAPixmapInfo::SupportedDataTypes& supported_data_types,
       SkYUVAPixmapInfo* yuva_pixmap_info) const override;
   bool GetYUVAPlanes(const SkYUVAPixmaps& pixmaps,
                      size_t frame_index,
-                     uint32_t lazy_pixel_ref,
+                     uint64_t lazy_pixel_ref,
                      PaintImage::GeneratorClientId client_id) override;
   SkISize GetSupportedDecodeSize(const SkISize& requested_size) const override;
   const ImageHeaderMetadata* GetMetadataForDecodeAcceleration() const override;
@@ -93,6 +96,7 @@ class FakePaintImageGenerator : public PaintImageGenerator {
   // fallback.
   bool expect_fallback_to_rgb_ = false;
   bool force_fail_decode_ = false;
+  base::RepeatingClosure decode_callback_;
 };
 
 }  // namespace cc

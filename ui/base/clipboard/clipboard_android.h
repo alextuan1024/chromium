@@ -15,6 +15,7 @@
 
 #include "base/android/scoped_java_ref.h"
 #include "base/component_export.h"
+#include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
 #include "base/time/time.h"
 #include "ui/base/clipboard/clipboard.h"
@@ -43,6 +44,16 @@ class ClipboardAndroid : public Clipboard {
   // content of clipboard didn't change, when Chrome is back in foreground.
   void OnPrimaryClipTimestampInvalidated(JNIEnv* env,
                                          const int64_t j_timestamp_ms);
+
+  // Drops formats cached only in `ClipboardMap` (those without an Android
+  // clipboard representation, such as SVG or source URL) when a newer clip
+  // replaces the native clipboard's last write.
+  COMPONENT_EXPORT(UI_BASE_CLIPBOARD)
+  void ClearLocalOnlyFormats();
+
+  // Called by Java when an asynchronous `setImage` clip initiated by the native
+  // clipboard finishes writing to the Android clipboard.
+  void OnNativeImageClipWritten(int64_t j_timestamp_ms);
 
   // Called by Java side.
   int64_t GetLastModifiedTimeToJavaTime(JNIEnv* env);
@@ -131,7 +142,7 @@ class ClipboardAndroid : public Clipboard {
   void WriteSvg(std::string_view markup) override;
   void WriteRTF(std::string_view rtf) override;
   void WriteFilenames(std::vector<ui::FileInfo> filenames) override;
-  void WriteURL(const ClipboardUrlInfo& url_info) override;
+  void WriteURLs(base::span<const ClipboardUrlInfo> url_infos) override;
   void WriteWebSmartPaste() override;
   void WriteBitmap(const SkBitmap& bitmap) override;
   void WriteData(const ClipboardFormatType& format,

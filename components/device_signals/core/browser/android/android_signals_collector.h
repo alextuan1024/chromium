@@ -5,6 +5,11 @@
 #ifndef COMPONENTS_DEVICE_SIGNALS_CORE_BROWSER_ANDROID_ANDROID_SIGNALS_COLLECTOR_H_
 #define COMPONENTS_DEVICE_SIGNALS_CORE_BROWSER_ANDROID_ANDROID_SIGNALS_COLLECTOR_H_
 
+#include <memory>
+#include <string>
+
+#include "base/containers/flat_set.h"
+#include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "components/device_signals/core/browser/base_signals_collector.h"
@@ -22,12 +27,22 @@ enum class HasHarmfulAppsResultStatus;
 
 namespace device_signals {
 
+class OsSecurityInfoProvider;
 struct VerifyAppsSignalsResponse;
 
 class AndroidSignalsCollector : public BaseSignalsCollector {
  public:
-  explicit AndroidSignalsCollector(
-      policy::CloudPolicyManager* device_cloud_policy_manager);
+  // Returns the affiliation IDs of the organization managing the browser (e.g.
+  // via `ChromeBrowserPolicyConnector`, which `//components` cannot include).
+  // Run on every collection rather than reading `device_cloud_policy_manager`,
+  // since on Android that manager itself can be created after this collector.
+  using DeviceAffiliationIdsCallback =
+      base::RepeatingCallback<base::flat_set<std::string>()>;
+
+  AndroidSignalsCollector(
+      DeviceAffiliationIdsCallback device_affiliation_ids_callback,
+      policy::CloudPolicyManager* device_cloud_policy_manager,
+      std::unique_ptr<OsSecurityInfoProvider> os_security_info_provider);
 
   ~AndroidSignalsCollector() override;
 
@@ -59,7 +74,9 @@ class AndroidSignalsCollector : public BaseSignalsCollector {
       int num_of_apps,
       int status_code);
 
+  const DeviceAffiliationIdsCallback device_affiliation_ids_callback_;
   const raw_ptr<policy::CloudPolicyManager> device_cloud_policy_manager_;
+  const std::unique_ptr<OsSecurityInfoProvider> os_security_info_provider_;
   base::WeakPtrFactory<AndroidSignalsCollector> weak_factory_{this};
 };
 

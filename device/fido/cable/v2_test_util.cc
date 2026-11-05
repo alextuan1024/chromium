@@ -83,7 +83,8 @@ class TestNetworkContext : public network::TestNetworkContext {
       mojo::PendingRemote<network::mojom::TrustedHeaderClient> header_client,
       const std::optional<base::UnguessableToken>& throttling_profile_id,
       const base::UnguessableToken& network_restrictions_id,
-      network::mojom::IPAddressSpace target_address_space) override {
+      network::mojom::IPAddressSpace target_address_space,
+      std::optional<int64_t> target_network) override {
     CHECK(url.has_path());
 
     std::string_view path = url.path();
@@ -522,7 +523,7 @@ class LateLinkingDevice : public authenticator::Transaction {
 
     network_context_factory_.Run()->CreateWebSocket(
         target, {device::kCableWebSocketProtocol},
-        net::StorageAccessApiStatus::kNone, net::IsolationInfo(),
+        net::StorageAccessApiStatus::kNone, GetTunnelIsolationInfo(),
         /*additional_headers=*/{}, network::OriginatingProcessId::browser(),
         url::Origin::Create(target), network::mojom::ClientSecurityState::New(),
         network::mojom::kWebSocketOptionBlockAllCookies,
@@ -536,7 +537,8 @@ class LateLinkingDevice : public authenticator::Transaction {
         // tunnel. It does not belong to any webpage, so we bypass connection
         // allowlists.
         /*network_restrictions_id=*/network::GetNoOpNetworkRestrictionsId(),
-        /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown);
+        /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+        /*target_network=*/std::nullopt);
   }
 
  private:
@@ -747,7 +749,7 @@ class HandshakeErrorDevice : public authenticator::Transaction {
 
     network_context_factory_.Run()->CreateWebSocket(
         target, {device::kCableWebSocketProtocol},
-        net::StorageAccessApiStatus::kNone, net::IsolationInfo(),
+        net::StorageAccessApiStatus::kNone, GetTunnelIsolationInfo(),
         /*additional_headers=*/{}, network::OriginatingProcessId::browser(),
         url::Origin::Create(target), network::mojom::ClientSecurityState::New(),
         network::mojom::kWebSocketOptionBlockAllCookies,
@@ -761,7 +763,8 @@ class HandshakeErrorDevice : public authenticator::Transaction {
         // tunnel. It does not belong to any webpage, so we bypass connection
         // allowlists.
         /*network_restrictions_id=*/network::GetNoOpNetworkRestrictionsId(),
-        /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown);
+        /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+        /*target_network=*/std::nullopt);
   }
 
  private:

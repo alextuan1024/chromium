@@ -9,6 +9,7 @@
 #include <set>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
@@ -19,25 +20,33 @@
 #include "base/types/pass_key.h"
 #include "components/back_forward_cache/back_forward_cache_disable.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/content_features.h"
 #include "extensions/browser/api/messaging/channel_endpoint.h"
 #include "extensions/browser/extension_host.h"
+#include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_web_contents_observer.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/message_tracker.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_manager_observer.h"
+#include "extensions/browser/process_map.h"
+#include "extensions/browser/script_injection_tracker.h"
 #include "extensions/browser/service_worker/service_worker_host.h"
 #include "extensions/browser/service_worker/worker_id.h"
 #include "extensions/common/api/messaging/message.h"
 #include "extensions/common/api/messaging/messaging_endpoint.h"
+#include "extensions/common/extension.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/manifest_handlers/background_info.h"
+#include "extensions/common/mojom/context_type.mojom-shared.h"
 #include "extensions/common/mojom/message_port.mojom-shared.h"
 #include "ipc/constants.mojom.h"
 
@@ -61,6 +70,70 @@ const char kClosedWhileResponsePendingError[] =
 const char kClosedWhenPageEntersBFCache[] =
     "The page keeping the extension port is moved into back/forward cache, so "
     "the message channel is closed.";
+
+// Returns whether `render_frame_host` is a `<webview>` guest frame that shows
+// one of `extension_id`'s own pages, such as a Chrome App's webview-accessible
+// resource. These frames can listen for messages as unprivileged extension
+// contexts, but their process is deliberately left out of `ProcessMap`.
+//
+// Checking only that the guest belongs to the extension's `<webview>` isn't
+// enough, because the same `<webview>` can also show untrusted web pages. So
+// this also checks the frame's origin and the browser's record of its process.
+bool IsWebViewFrameShowingExtensionPage(
+    content::BrowserContext* browser_context,
+    content::RenderFrameHost& render_frame_host,
+    const ExtensionId& extension_id) {
+  const Extension* extension = ExtensionRegistry::Get(browser_context)
+                                   ->enabled_extensions()
+                                   .GetByID(extension_id);
+  // The extension can be disabled or unloaded while a channel is opening.
+  if (!extension) {
+    return false;
+  }
+
+  // The frame's process must be a guest process of the extension's
+  // `<webview>`.
+  content::RenderProcessHost& process = *render_frame_host.GetProcess();
+  if (!ProcessMap::Get(browser_context)
+           ->CanProcessHostContextType(
+               extension, process,
+               mojom::ContextType::kUnprivilegedExtension)) {
+    return false;
+  }
+
+  // The frame must have committed at the extension's origin.
+  const url::Origin extension_origin = extension->origin();
+  if (render_frame_host.GetLastCommittedOrigin() != extension_origin) {
+    return false;
+  }
+
+  // The browser must confirm that the process committed the extension's origin
+  // and isn't sandboxed. Only a process locked to the extension can commit that
+  // origin, so a process that shows web content never passes. Check this last,
+  // because a failed call records crash keys.
+  return content::ChildProcessSecurityPolicy::GetInstance()
+      ->CanAccessDataForOrigin(process.GetDeprecatedID(), extension_origin);
+}
+
+// Returns whether `render_frame_host` may host a receiver context for
+// `extension_id`. This is true if the frame's process is in `ProcessMap` for
+// `extension_id`, or has run a content script or user script from
+// `extension_id`. It is also true for the extension's own pages shown in its
+// `<webview>`.
+bool CanFrameReceiveMessagesForExtension(
+    content::BrowserContext* browser_context,
+    content::RenderFrameHost& render_frame_host,
+    const ExtensionId& extension_id) {
+  content::RenderProcessHost& process = *render_frame_host.GetProcess();
+  return ProcessMap::Get(browser_context)
+             ->Contains(extension_id, process.GetID()) ||
+         ScriptInjectionTracker::DidProcessRunContentScriptFromExtension(
+             process, extension_id) ||
+         ScriptInjectionTracker::DidProcessRunUserScriptFromExtension(
+             process, extension_id) ||
+         IsWebViewFrameShowingExtensionPage(browser_context, render_frame_host,
+                                            extension_id);
+}
 
 }  // namespace
 
@@ -432,7 +505,7 @@ void ExtensionMessagePort::DispatchOnConnect(
     const std::string& channel_name,
     std::optional<base::DictValue> source_tab,
     const ExtensionApiFrameIdMap::FrameData& source_frame,
-    int guest_process_id,
+    content::ChildProcessId guest_process_id,
     int guest_render_frame_routing_id,
     const MessagingEndpoint& source_endpoint,
     const std::string& target_extension_id,
@@ -442,7 +515,7 @@ void ExtensionMessagePort::DispatchOnConnect(
   mojom::TabConnectionInfoPtr source = mojom::TabConnectionInfo::New();
 
   if (source_tab) {
-    source->tab = source_tab->Clone();
+    source->tab = std::move(*source_tab);
   }
   if (!source_frame.document_id.is_empty()) {
     source->document_id = source_frame.document_id.ToString();
@@ -455,7 +528,7 @@ void ExtensionMessagePort::DispatchOnConnect(
   info->source_endpoint = source_endpoint;
   info->source_url = source_url;
   info->source_origin = std::move(source_origin);
-  info->guest_process_id = guest_process_id;
+  info->guest_process_id = guest_process_id.GetUnsafeValue();
   info->guest_render_frame_routing_id = guest_render_frame_routing_id;
 
   pending_open_channel_tracking_ids_ = std::move(open_channel_tracking_ids);
@@ -504,7 +577,7 @@ void ExtensionMessagePort::DispatchOnConnect(
         &ExtensionMessagePort::Prune, base::Unretained(this), port_context,
         open_channel_dispatch_for_frame_tracking_id));
     AddReceiver(message_port_host.InitWithNewEndpointAndPassReceiver(),
-                frame->GetProcess()->GetDeprecatedID(), port_context);
+                frame->GetProcess()->GetID(), port_context);
 
     pending_contexts_to_respond_.insert(port_context);
 
@@ -549,7 +622,7 @@ void ExtensionMessagePort::DispatchOnConnect(
           &ExtensionMessagePort::Prune, base::Unretained(this), port_context,
           open_channel_dispatch_for_worker_tracking_id));
       AddReceiver(message_port_host.InitWithNewEndpointAndPassReceiver(),
-                  worker.render_process_id.GetUnsafeValue(), port_context);
+                  worker.render_process_id, port_context);
 
       pending_contexts_to_respond_.insert(port_context);
 
@@ -697,18 +770,17 @@ void ExtensionMessagePort::NotifyResponsePending() {
   asynchronous_reply_pending_ = true;
 }
 
-void ExtensionMessagePort::OpenPort(int process_id,
-                                    const PortContext& port_context) {
+void ExtensionMessagePort::OpenPort(const PortContext& port_context) {
+  DCHECK(!for_all_extension_contexts_);
   DCHECK((port_context.is_for_render_frame() &&
           port_context.frame->routing_id != IPC::mojom::kRoutingIdNone) ||
          (port_context.is_for_service_worker() &&
-          port_context.worker->thread_id != kMainThreadId) ||
-         for_all_extension_contexts_);
+          port_context.worker->thread_id != kMainThreadId));
 
   port_was_created_ = true;
 }
 
-void ExtensionMessagePort::ClosePort(int process_id,
+void ExtensionMessagePort::ClosePort(content::ChildProcessId process_id,
                                      int routing_id,
                                      int worker_thread_id) {
   const bool is_for_service_worker = worker_thread_id != kMainThreadId;
@@ -744,9 +816,25 @@ void ExtensionMessagePort::RegisterFrame(
   // ensure that we are notified of frame destruction. Without this check,
   // `pending_frames_` can contain a stale token because RenderFrameDeleted
   // is not triggered for `render_frame_host`.
-  if (render_frame_host->IsRenderFrameLive()) {
-    pending_frames_.insert(render_frame_host->GetGlobalFrameToken());
+  if (!render_frame_host->IsRenderFrameLive()) {
+    return;
   }
+
+  // Only register frames in renderer processes that can host a receiver
+  // context for `extension_id_`. Without this check, frames in unrelated
+  // processes (e.g. cross-site subframes of a tab) would get
+  // `mojom::LocalFrame::DispatchOnConnect()` along with `mojom::MessagePort`
+  // and `mojom::MessagePortHost` endpoints, letting those processes read the
+  // channel's messages and post into the channel.
+  if (base::FeatureList::IsEnabled(
+          extensions_features::
+              kRestrictMessagingReceiverFramesToExtensionProcesses) &&
+      !CanFrameReceiveMessagesForExtension(browser_context_, *render_frame_host,
+                                           extension_id_)) {
+    return;
+  }
+
+  pending_frames_.insert(render_frame_host->GetGlobalFrameToken());
 }
 
 bool ExtensionMessagePort::UnregisterFrame(
@@ -802,15 +890,16 @@ bool ExtensionMessagePort::UnregisterWorker(const WorkerId& worker_id) {
   return false;
 }
 
-void ExtensionMessagePort::UnregisterWorker(int render_process_id,
-                                            int worker_thread_id) {
+void ExtensionMessagePort::UnregisterWorker(
+    content::ChildProcessId render_process_id,
+    int worker_thread_id) {
   DCHECK_NE(kMainThreadId, worker_thread_id);
 
   // Note: We iterate through *each* workers belonging to this port to find the
   // worker we are interested in. Since there will only be a handful of such
   // workers, this is OK.
   for (auto iter = service_workers_.begin(); iter != service_workers_.end();) {
-    if (iter->first.render_process_id.GetUnsafeValue() == render_process_id &&
+    if (iter->first.render_process_id == render_process_id &&
         iter->first.thread_id == worker_thread_id) {
       service_workers_.erase(iter);
       break;

@@ -120,6 +120,34 @@ public class IncognitoColors {
                 : SemanticColorUtils.getColorOnPrimary(context);
     }
 
+    /** {@link SemanticColorUtils#getDefaultTextColorLink} */
+    public static @ColorInt int getDefaultTextColorLink(Context context, boolean isIncognito) {
+        return isIncognito
+                ? context.getColor(R.color.default_text_color_link_light)
+                : SemanticColorUtils.getDefaultTextColorLink(context);
+    }
+
+    /** Returns the correct text appearance style res for primary colored headline text. */
+    public static @StyleRes int getHeadlinePrimary(boolean isIncognito) {
+        return isIncognito
+                ? R.style.TextAppearance_Headline_Primary_Baseline_Light
+                : R.style.TextAppearance_Headline_Primary;
+    }
+
+    /** Returns the correct text appearance style res for primary colored thick headline2 text. */
+    public static @StyleRes int getHeadline2ThickPrimary(boolean isIncognito) {
+        return isIncognito
+                ? R.style.TextAppearance_Headline2Thick_Primary_Baseline_Light
+                : R.style.TextAppearance_Headline2Thick_Primary;
+    }
+
+    /** Returns the correct text appearance style res for primary colored large text. */
+    public static @StyleRes int getTextLargePrimary(boolean isIncognito) {
+        return isIncognito
+                ? R.style.TextAppearance_TextLarge_Primary_Baseline_Light
+                : R.style.TextAppearance_TextLarge_Primary;
+    }
+
     /** Returns the correct text appearance style res for primary colored medium text. */
     public static @StyleRes int getTextMediumPrimary(boolean isIncognito) {
         return isIncognito

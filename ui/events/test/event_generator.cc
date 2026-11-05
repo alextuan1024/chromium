@@ -9,13 +9,14 @@
 
 #include <array>
 #include <memory>
+#include <ranges>
 #include <utility>
 
 #include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/tick_clock.h"
 #include "build/build_config.h"
@@ -56,7 +57,7 @@ class TestTickClock : public base::TickClock {
 
   // Advances the clock by `delta`. `delta` should be non-negative.
   void Advance(const base::TimeDelta& delta) {
-    DCHECK(delta >= base::TimeDelta());
+    CHECK(delta >= base::TimeDelta(), base::NotFatalUntil::M163);
     ticks_ += delta;
   }
 
@@ -84,8 +85,6 @@ ui::TouchEvent CreateTestTouchEvent(ui::EventType type,
 
 const int kAllButtonMask = ui::EF_LEFT_MOUSE_BUTTON | ui::EF_RIGHT_MOUSE_BUTTON;
 
-EventGeneratorDelegate::FactoryFunction g_event_generator_delegate_factory;
-
 bool g_event_generator_allowed = true;
 
 struct ModifierKey {
@@ -100,11 +99,16 @@ constexpr ModifierKey kModifierKeys[] = {
     {VKEY_LWIN, EF_COMMAND_DOWN},
 };
 
+EventGeneratorDelegate::FactoryFunction& GetEventGeneratorDelegateFactory() {
+  static base::NoDestructor<EventGeneratorDelegate::FactoryFunction> factory;
+  return *factory;
+}
+
 }  // namespace
 
 // static
 void EventGeneratorDelegate::SetFactoryFunction(FactoryFunction factory) {
-  g_event_generator_delegate_factory = std::move(factory);
+  GetEventGeneratorDelegateFactory() = std::move(factory);
 }
 
 // static
@@ -253,7 +257,7 @@ void EventGenerator::MoveMouseToInHost(const gfx::Point& point_in_host) {
 
 void EventGenerator::MoveMouseTo(const gfx::Point& point_in_screen,
                                  int count) {
-  DCHECK_GT(count, 0);
+  CHECK_GT(count, 0, base::NotFatalUntil::M163);
   const ui::EventType event_type = (flags_ & ui::EF_LEFT_MOUSE_BUTTON)
                                        ? ui::EventType::kMouseDragged
                                        : ui::EventType::kMouseMoved;
@@ -531,7 +535,7 @@ void EventGenerator::GestureMultiFingerScrollWithDelays(
         press_time_first + base::Milliseconds(delay_adding_finger_ms[i]);
     release_time[i] =
         press_time_first + base::Milliseconds(delay_releasing_finger_ms[i]);
-    DCHECK_LE(press_time[i], release_time[i]);
+    CHECK_LE(press_time[i], release_time[i], base::NotFatalUntil::M163);
   }
 
   for (int step = 0; step < steps; ++step) {
@@ -702,7 +706,7 @@ void EventGenerator::PressModifierKeys(int flags, int source_device_id) {
 
 void EventGenerator::ReleaseModifierKeys(int flags, int source_device_id) {
   EventFlags current_flags = flags;
-  for (const auto& modifier_key : base::Reversed(kModifierKeys)) {
+  for (const auto& modifier_key : std::views::reverse(kModifierKeys)) {
     if (flags & modifier_key.flag) {
       current_flags &= ~modifier_key.flag;
       ReleaseKey(modifier_key.key, current_flags, source_device_id);
@@ -768,8 +772,8 @@ void EventGenerator::Init(gfx::NativeWindow root_window,
   tick_clock_ = std::make_unique<TestTickClock>();
   ui::SetEventTickClockForTesting(tick_clock_.get());
   if (!delegate_) {
-    DCHECK(g_event_generator_delegate_factory);
-    delegate_ = g_event_generator_delegate_factory.Run(this, root_window,
+    CHECK(GetEventGeneratorDelegateFactory(), base::NotFatalUntil::M163);
+    delegate_ = GetEventGeneratorDelegateFactory().Run(this, root_window,
                                                        target_window);
   }
   if (target_window)

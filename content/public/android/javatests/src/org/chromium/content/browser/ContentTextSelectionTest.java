@@ -8,7 +8,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyChar;
 import static org.mockito.ArgumentMatchers.anyInt;
 
-import android.app.Activity;
 import android.app.PendingIntent;
 import android.app.RemoteAction;
 import android.content.ClipData;
@@ -44,6 +43,7 @@ import org.chromium.base.SelectionActionMenuClientWrapper.MenuType;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
@@ -79,6 +79,7 @@ import java.util.concurrent.Callable;
 
 /** Integration tests for text selection-related behavior. */
 @RunWith(ContentJUnit4ClassRunner.class)
+@Batch(Batch.PER_CLASS)
 public class ContentTextSelectionTest {
     @Rule
     public ContentShellActivityTestRule mActivityTestRule = new ContentShellActivityTestRule();
@@ -143,6 +144,7 @@ public class ContentTextSelectionTest {
     }
 
     private static class TestSelectionActionMenuDelegate implements SelectionActionMenuDelegate {
+
         @Override
         public List<SelectionMenuItem> getAdditionalMenuItems(
                 @MenuType int menuType,
@@ -394,15 +396,10 @@ public class ContentTextSelectionTest {
 
         List<ItemMatcher> matchers =
                 List.of(
-                        hasId(R.id.select_action_menu_cut),
-                        hasId(R.id.select_action_menu_copy),
                         hasId(android.R.id.paste),
-                        hasId(android.R.id.pasteAsPlainText),
                         hasId(R.id.select_action_menu_select_all),
                         isDivider(),
-                        hasTitle("testNonSelectionItem"),
-                        hasId(R.id.select_action_menu_web_search),
-                        hasId(R.id.select_action_menu_share));
+                        hasTitle("testNonSelectionItem"));
         TestSelectionDropdownMenuDelegate dropdownDelegate =
                 new TestSelectionDropdownMenuDelegate();
         MVCListAdapter.ModelList items = menu.getMenuAsDropdown(dropdownDelegate);
@@ -455,38 +452,34 @@ public class ContentTextSelectionTest {
         setUpTestCorrectSelectionMenuItemsAddedForInputSelection();
         PendingSelectionMenu menu =
                 mSelectionPopupController.getPendingSelectionMenu(MenuType.DROPDOWN);
+        boolean shareAllowed =
+                mSelectionPopupController.isSelectActionModeAllowed(
+                        ActionModeCallbackHelper.MENU_ITEM_SHARE);
+        boolean webSearchAllowed =
+                mSelectionPopupController.isSelectActionModeAllowed(
+                        ActionModeCallbackHelper.MENU_ITEM_WEB_SEARCH);
 
-        List<ItemMatcher> matchers = new ArrayList<>();
+        ArrayList<ItemMatcher> matchers = new ArrayList<>();
         matchers.add(hasTitle("Phone"));
         matchers.add(isDivider());
         matchers.add(hasId(R.id.select_action_menu_cut));
         matchers.add(hasId(R.id.select_action_menu_copy));
         matchers.add(hasId(android.R.id.paste));
-        matchers.add(hasId(android.R.id.pasteAsPlainText));
+        if (shareAllowed) matchers.add(hasId(R.id.select_action_menu_share));
         matchers.add(hasId(R.id.select_action_menu_select_all));
-        matchers.add(isDivider());
-        matchers.add(hasId(R.id.select_action_menu_web_search));
-        matchers.add(hasId(R.id.select_action_menu_share));
+        if (webSearchAllowed) matchers.add(hasId(R.id.select_action_menu_web_search));
         matchers.add(isDivider());
         matchers.add(hasTitle("testTextProcessingItem"));
-
         TestSelectionDropdownMenuDelegate dropdownDelegate =
                 new TestSelectionDropdownMenuDelegate();
         MVCListAdapter.ModelList items = menu.getMenuAsDropdown(dropdownDelegate);
         verifyMenu(items, matchers, dropdownDelegate);
         // Check correct processText intent state is sent to 3rd party apps.
-        Activity activityDropdown = mActivityTestRule.getActivity();
-        SelectionMenuItem textProcessingItemDropdown = null;
-        for (SelectionMenuItem item : menu.getMenuItemsForTesting()) {
-            if ("testTextProcessingItem".equals(item.getTitle(activityDropdown))) {
-                textProcessingItemDropdown = item;
-                break;
-            }
-        }
-        Assert.assertNotNull(textProcessingItemDropdown);
         Assert.assertFalse(
-                textProcessingItemDropdown.intent.getBooleanExtra(
-                        Intent.EXTRA_PROCESS_TEXT_READONLY, false));
+                menu.getMenuItemsForTesting()
+                        .get(menu.getMenuItemsForTesting().size() - 1)
+                        .intent
+                        .getBooleanExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, false));
     }
 
     @Test
@@ -559,8 +552,8 @@ public class ContentTextSelectionTest {
         matchers.add(hasTitle("Map"));
         matchers.add(isDivider());
         matchers.add(hasId(R.id.select_action_menu_copy));
-        if (webSearchAllowed) matchers.add(hasId(R.id.select_action_menu_web_search));
         if (shareAllowed) matchers.add(hasId(R.id.select_action_menu_share));
+        if (webSearchAllowed) matchers.add(hasId(R.id.select_action_menu_web_search));
         matchers.add(isDivider());
         // The text processing menu item we created is added to the menu.
         matchers.add(hasTitle("testTextProcessingItem"));
@@ -571,18 +564,11 @@ public class ContentTextSelectionTest {
         verifyMenu(items, matchers, dropdownDelegate);
 
         // Check correct processText intent state is sent to 3rd party apps.
-        Activity activityDropdown = mActivityTestRule.getActivity();
-        SelectionMenuItem textProcessingItemDropdown = null;
-        for (SelectionMenuItem item : menu.getMenuItemsForTesting()) {
-            if ("testTextProcessingItem".equals(item.getTitle(activityDropdown))) {
-                textProcessingItemDropdown = item;
-                break;
-            }
-        }
-        Assert.assertNotNull(textProcessingItemDropdown);
         Assert.assertTrue(
-                textProcessingItemDropdown.intent.getBooleanExtra(
-                        Intent.EXTRA_PROCESS_TEXT_READONLY, false));
+                menu.getMenuItemsForTesting()
+                        .get(menu.getMenuItemsForTesting().size() - 1)
+                        .intent
+                        .getBooleanExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, false));
     }
 
     @Test
@@ -607,9 +593,9 @@ public class ContentTextSelectionTest {
         ArrayList<ItemMatcher> matchers = new ArrayList<>();
         matchers.add(hasTitle("Map"));
         matchers.add(hasId(R.id.select_action_menu_copy));
+        if (shareAllowed) matchers.add(hasId(R.id.select_action_menu_share));
         matchers.add(hasId(R.id.select_action_menu_select_all));
         if (webSearchAllowed) matchers.add(hasId(R.id.select_action_menu_web_search));
-        if (shareAllowed) matchers.add(hasId(R.id.select_action_menu_share));
         // The text processing menu item we created is added to the menu.
         matchers.add(hasTitle("testTextProcessingItem"));
 
@@ -619,18 +605,11 @@ public class ContentTextSelectionTest {
         verifyMenu(actualItems, matchers);
 
         // Check correct processText intent state is sent to 3rd party apps.
-        Activity activityFloating = mActivityTestRule.getActivity();
-        SelectionMenuItem textProcessingItemFloating = null;
-        for (SelectionMenuItem item : menu.getMenuItemsForTesting()) {
-            if ("testTextProcessingItem".equals(item.getTitle(activityFloating))) {
-                textProcessingItemFloating = item;
-                break;
-            }
-        }
-        Assert.assertNotNull(textProcessingItemFloating);
         Assert.assertTrue(
-                textProcessingItemFloating.intent.getBooleanExtra(
-                        Intent.EXTRA_PROCESS_TEXT_READONLY, false));
+                menu.getMenuItemsForTesting()
+                        .get(menu.getMenuItemsForTesting().size() - 1)
+                        .intent
+                        .getBooleanExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, false));
     }
 
     @Test
@@ -905,7 +884,8 @@ public class ContentTextSelectionTest {
     @Test
     @SmallTest
     @Feature({"TextInput"})
-    public void testSelectActionBarPlainTextCopy() throws Exception {
+    public void testSelectActionBarPlainTextCopy() throws Throwable {
+        copyStringToClipboard("SampleTextToCopy");
         DOMUtils.longPressNode(mWebContents, "plain_text_1");
         waitForSelectActionBarVisible(true);
         Assert.assertTrue(mSelectionPopupController.hasSelection());
@@ -1414,10 +1394,12 @@ public class ContentTextSelectionTest {
             MVCListAdapter.ModelList actual,
             List<ItemMatcher> expected,
             TestSelectionDropdownMenuDelegate delegate) {
-        Assert.assertEquals(expected.size(), actual.size());
+        Assert.assertEquals(
+                "Menu items and matchers differed in size.", expected.size(), actual.size());
         for (int i = 0; i < expected.size(); i++) {
             SelectionMenuItem menuItem = delegate.getMinimalMenuItem(actual.get(i).model);
             Assert.assertTrue(
+                    "Menu item at position " + i + " failed its matcher.",
                     expected.get(i)
                             .check(
                                     actual.get(i).type
@@ -1429,13 +1411,16 @@ public class ContentTextSelectionTest {
     }
 
     private static void verifyMenu(List<MenuItem> menuItems, List<ItemMatcher> expected) {
-        Assert.assertEquals(expected.size(), menuItems.size());
+        Assert.assertEquals(
+                "Menu items and matchers differed in size.", expected.size(), menuItems.size());
         for (int i = 0; i < expected.size(); i++) {
             SelectionMenuItem menuItem =
                     new SelectionMenuItem.Builder(menuItems.get(i).getTitle())
                             .setId(menuItems.get(i).getItemId())
                             .build();
-            Assert.assertTrue(expected.get(i).check(menuItem));
+            Assert.assertTrue(
+                    "Menu item at position " + i + " failed its matcher.",
+                    expected.get(i).check(menuItem));
         }
     }
 

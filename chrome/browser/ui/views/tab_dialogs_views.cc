@@ -10,7 +10,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/ui/views/hung_renderer_view.h"
 #include "chrome/browser/ui/views/passwords/password_bubble_view_base.h"
-#include "chrome/browser/ui/views/site_data/page_specific_site_data_dialog_controller.h"
 #include "content/public/browser/web_contents.h"
 
 #if defined(TOOLKIT_VIEWS) && !BUILDFLAG(IS_CHROMEOS)
@@ -20,28 +19,22 @@
 #endif
 
 // static
-void TabDialogs::CreateForWebContents(content::WebContents* contents) {
-  DCHECK(contents);
-  if (!FromWebContents(contents)) {
-    contents->SetUserData(UserDataKey(),
-                          std::make_unique<TabDialogsViews>(contents));
-  }
+std::unique_ptr<TabDialogs> TabDialogs::Create(tabs::TabInterface& tab,
+                                               content::WebContents* contents) {
+  CHECK(contents, base::NotFatalUntil::M162);
+  return std::make_unique<TabDialogsViews>(tab, contents);
 }
 
-TabDialogsViews::TabDialogsViews(content::WebContents* contents)
-    : web_contents_(contents) {
-  DCHECK(contents);
+TabDialogsViews::TabDialogsViews(tabs::TabInterface& tab,
+                                 content::WebContents* contents)
+    : TabDialogs(tab), web_contents_(contents) {
+  CHECK(contents, base::NotFatalUntil::M162);
 }
 
 TabDialogsViews::~TabDialogsViews() = default;
 
 gfx::NativeView TabDialogsViews::GetDialogParentView() const {
   return web_contents_->GetNativeView();
-}
-
-void TabDialogsViews::ShowCollectedCookies() {
-  PageSpecificSiteDataDialogController::CreateAndShowForWebContents(
-      web_contents_);
 }
 
 void TabDialogsViews::ShowHungRendererDialog(

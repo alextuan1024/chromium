@@ -12,6 +12,7 @@
 #include "device/vr/android/cardboard/scoped_cardboard_objects.h"
 #include "device/vr/android/mailbox_to_surface_bridge.h"
 #include "device/vr/android/web_xr_presentation_state.h"
+#include "device/vr/public/cpp/xr_session_feature_set.h"
 #include "device/vr/public/mojom/isolated_xr_service.mojom.h"
 #include "device/vr/public/mojom/vr_service.mojom.h"
 #include "gpu/ipc/common/surface_handle.h"
@@ -24,6 +25,10 @@ namespace gl {
 class GLSurface;
 class GLContext;
 }  // namespace gl
+
+namespace gpu {
+class SharedImageFenceHelper;
+}  // namespace gpu
 
 namespace device {
 
@@ -131,6 +136,9 @@ class CardboardRenderLoop : public base::android::JavaHandlerThread,
   // Rendering Parameters
   gfx::Size texture_size_ = {0, 0};
   std::unique_ptr<CardboardImageTransport> cardboard_image_transport_;
+  // For each WebXR frame's GPU fence, on `cardboard_image_transport_`'s
+  // context.
+  std::unique_ptr<gpu::SharedImageFenceHelper> fence_helper_;
   std::unique_ptr<WebXrPresentationState> webxr_;
   scoped_refptr<gl::GLSurface> surface_;
   scoped_refptr<gl::GLContext> context_;
@@ -154,7 +162,7 @@ class CardboardRenderLoop : public base::android::JavaHandlerThread,
   // Stored Mojo data
   mojom::XRViewPtr left_eye_;
   mojom::XRViewPtr right_eye_;
-  std::unordered_set<device::mojom::XRSessionFeature> enabled_features_;
+  XRSessionFeatureSet enabled_features_;
 
   // Session State
   bool pending_shutdown_ = false;

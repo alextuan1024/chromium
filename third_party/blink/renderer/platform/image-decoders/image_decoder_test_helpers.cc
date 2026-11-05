@@ -5,6 +5,8 @@
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder_test_helpers.h"
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/numerics/byte_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -21,17 +23,17 @@ Vector<char> ReadFile(StringView file_name) {
   StringBuilder file_path;
   file_path.Append(test::BlinkWebTestsDir());
   file_path.Append(file_name);
-  std::optional<Vector<char>> data = test::ReadFromFile(file_path.ToString());
+  std::optional<Vector<char>> data = test::ReadFromFile(file_path);
   CHECK(data && data->size());
   return *data;
 }
 
-Vector<char> ReadFile(const char* dir, const char* file_name) {
+Vector<char> ReadFile(const StringView& dir, const char* file_name) {
   StringBuilder file_path;
-  if (UNSAFE_TODO(strncmp(dir, "web_tests/", 10)) == 0) {
+  if (dir.starts_with("web_tests/")) {
     file_path.Append(test::BlinkWebTestsDir());
     file_path.Append('/');
-    file_path.Append(UNSAFE_TODO(dir + 10));
+    file_path.Append(dir.substr(10));
   } else {
     file_path.Append(test::BlinkRootDir());
     file_path.Append('/');
@@ -39,7 +41,7 @@ Vector<char> ReadFile(const char* dir, const char* file_name) {
   }
   file_path.Append('/');
   file_path.Append(file_name);
-  std::optional<Vector<char>> data = test::ReadFromFile(file_path.ToString());
+  std::optional<Vector<char>> data = test::ReadFromFile(file_path);
   CHECK(data && data->size());
   return *data;
 }
@@ -51,6 +53,21 @@ scoped_refptr<SharedBuffer> ReadFileToSharedBuffer(StringView file_name) {
 scoped_refptr<SharedBuffer> ReadFileToSharedBuffer(const char* dir,
                                                    const char* file_name) {
   return SharedBuffer::Create(ReadFile(dir, file_name));
+}
+
+uint32_t IcoImageDataOffset(base::span<const char> data,
+                            wtf_size_t image_index) {
+  const auto bytes = base::as_byte_span(data);
+  CHECK_GE(bytes.size(), kIcoHeaderSize);
+  CHECK_LT(image_index,
+           base::U16FromLittleEndian(
+               bytes.subspan<kIcoImageCountOffset, sizeof(uint16_t)>()));
+  const wtf_size_t field_offset = kIcoHeaderSize +
+                                  image_index * kIcoDirectoryEntrySize +
+                                  kIcoEntryImageOffset;
+  CHECK_LE(field_offset + sizeof(uint32_t), bytes.size());
+  return base::U32FromLittleEndian(
+      bytes.subspan(field_offset).first<sizeof(uint32_t)>());
 }
 
 uint32_t HashBitmap(const SkBitmap& bitmap) {
@@ -495,11 +512,10 @@ static void VerifyFramesMatch(const char* file,
       if (!b->PremultiplyAlpha()) {
         color_b = PremultiplyColor(color_b, bitmap_b.colorType());
       }
-      uint8_t* pixel_a = reinterpret_cast<uint8_t*>(&color_a);
-      uint8_t* pixel_b = reinterpret_cast<uint8_t*>(&color_b);
+      auto pixel_a = base::byte_span_from_ref(color_a);
+      auto pixel_b = base::byte_span_from_ref(color_b);
       for (int channel = 0; channel < 4; ++channel) {
-        const int difference =
-            abs(UNSAFE_TODO(pixel_a[channel]) - UNSAFE_TODO(pixel_b[channel]));
+        const int difference = abs(pixel_a[channel] - pixel_b[channel]);
         if (difference > max_difference) {
           max_difference = difference;
         }

@@ -131,10 +131,8 @@ class AlphaVideoEncoderWrapperTest
     enforcer->location = loc.ToString();
     auto check_callback = base::BindLambdaForTesting(
         [enforcer{std::move(enforcer)}](EncoderStatus s) {
-          EXPECT_TRUE(s.is_ok())
-              << " Callback created: " << enforcer->location
-              << " Code: " << std::hex << static_cast<StatusCodeType>(s.code())
-              << " Error: " << s.message();
+          EXPECT_TRUE(s.is_ok()) << " Callback created: " << enforcer->location
+                                 << " Error: " << MediaSerializeForTesting(s);
           enforcer->called = true;
         });
 
@@ -214,8 +212,9 @@ TEST_P(AlphaVideoEncoderWrapperTest, OutputCountEqualsFrameCount) {
   options.bitrate = Bitrate::VariableBitrate(1000000u, 2000000u);
   options.framerate = 25;
   options.keyframe_interval = options.framerate.value() * 3;  // every 3s
+  constexpr int kEncodeDecodeClipDurationSeconds = 4;
   int total_frames_count =
-      options.framerate.value() * 10;  // total duration 20s
+      options.framerate.value() * kEncodeDecodeClipDurationSeconds;
   int outputs_count = 0;
 
   auto frame_duration = base::Seconds(1.0 / options.framerate.value());

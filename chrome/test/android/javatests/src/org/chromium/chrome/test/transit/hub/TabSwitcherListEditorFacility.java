@@ -9,8 +9,6 @@ import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withParent;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
-import static org.chromium.base.test.transit.ViewSpec.viewSpec;
-
 import android.view.View;
 
 import androidx.recyclerview.widget.RecyclerView;
@@ -55,10 +53,9 @@ public class TabSwitcherListEditorFacility<HostStationT extends TabSwitcherStati
                                 RecyclerView.class, withId(R.id.tab_list_recycler_view)));
         selectionTitleElement =
                 declareView(
-                        viewSpec(
-                                withText(getSelectionModeNumberText()),
-                                withId(R.id.down),
-                                withParent(withId(R.id.selection_mode_number))));
+                        withText(getSelectionModeNumberText()),
+                        withId(R.id.down),
+                        withParent(withId(R.id.selection_mode_number)));
         menuButtonElement = declareView(withId(R.id.list_menu_button));
     }
 
@@ -103,8 +100,7 @@ public class TabSwitcherListEditorFacility<HostStationT extends TabSwitcherStati
         List<Integer> newTabIdsSelected = new ArrayList<>(mTabIdsSelected);
         newTabIdsSelected.add(tabId);
         return clickTabAtCardIndexTo(index)
-                .exitFacilityAnd()
-                .enterFacility(
+                .replaceFacility(
                         new TabSwitcherListEditorFacility<>(newTabIdsSelected, mTabGroupsSelected));
     }
 
@@ -114,8 +110,7 @@ public class TabSwitcherListEditorFacility<HostStationT extends TabSwitcherStati
         List<List<Integer>> newTabGroupsSelected = new ArrayList<>(mTabGroupsSelected);
         newTabGroupsSelected.add(tabIds);
         return clickTabAtCardIndexTo(index)
-                .exitFacilityAnd()
-                .enterFacility(
+                .replaceFacility(
                         new TabSwitcherListEditorFacility<>(mTabIdsSelected, newTabGroupsSelected));
     }
 

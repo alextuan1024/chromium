@@ -127,6 +127,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
       AXPlatformTreeManagerDelegate* delegate);
 
   static BrowserAccessibilityManager* FromID(AXTreeID ax_tree_id);
+  static BrowserAccessibilityManager* FromAXTreeManager(AXTreeManager* manager);
+  static const BrowserAccessibilityManager* FromAXTreeManager(
+      const AXTreeManager* manager);
 
   BrowserAccessibilityManager(const BrowserAccessibilityManager&) = delete;
   BrowserAccessibilityManager& operator=(const BrowserAccessibilityManager&) =
@@ -158,6 +161,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
                                int action_request_id) {}
 
   // AXPlatformTreeManager overrides.
+  BrowserAccessibilityManager* AsBrowserAccessibilityManager() final;
+  const BrowserAccessibilityManager* AsBrowserAccessibilityManager()
+      const final;
   void FireGeneratedEvent(AXEventGenerator::Event event_type,
                           const AXNode* node) override;
 
@@ -170,8 +176,9 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
   bool CanFireEvents() const override;
 
   // Returns false for generated events that should not be exposed for this
-  // accessibility tree source.
-  bool ShouldFireGeneratedEvent(AXEventGenerator::Event event_type) const;
+  // accessibility tree source or platform.
+  virtual bool ShouldFireGeneratedEvent(
+      AXEventGenerator::Event event_type) const;
 
   // Return a pointer to the root of the tree.
   BrowserAccessibility* GetBrowserAccessibilityRoot() const;
@@ -252,7 +259,7 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
               ax::mojom::Action scroll_action);
   void ScrollToMakeVisible(
       const BrowserAccessibility& node,
-      gfx::Rect subfocus,
+      std::optional<gfx::Rect> subfocus = std::nullopt,
       ax::mojom::ScrollAlignment horizontal_scroll_alignment =
           ax::mojom::ScrollAlignment::kScrollAlignmentCenter,
       ax::mojom::ScrollAlignment vertical_scroll_alignment =
@@ -642,6 +649,8 @@ class COMPONENT_EXPORT(AX_PLATFORM) BrowserAccessibilityManager
 #endif  // DCHECK_IS_ON()
 
  private:
+  void ResetParentComputedHypertext();
+
   void BuildAXTreeHitTestCacheInternal(
       const BrowserAccessibility* node,
       std::vector<const BrowserAccessibility*>* storage);

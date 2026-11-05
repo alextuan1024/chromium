@@ -12,15 +12,18 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/process/process.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/timer/timer.h"
 #include "base/win/windows_types.h"
+#include "chrome/browser/default_browser/win/settings_row_locator_win.h"
 #include "chrome/browser/default_browser/win/settings_window_finder_win.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
 
@@ -39,6 +42,12 @@ class GuidedSetterOverlayWindowWin;
 class VisualGuidedSetterControllerWin : public views::WidgetObserver,
                                         public content::WebContentsObserver {
  public:
+  // Lets the Settings layout settle after a size change before measuring the
+  // row.
+  static constexpr base::TimeDelta kMeasureDebounce = base::Milliseconds(300);
+  // Before measuring again after a failed measurement, while budget remains.
+  static constexpr base::TimeDelta kMeasureRetryDelay = base::Seconds(1);
+
   // Specifies the behavior of the Settings window.
   enum class TopmostPolicy {
     // The Settings window drops its topmost state when Chrome loses focus.
@@ -72,7 +81,28 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
     // The user moved or resized the Settings window, taking over its
     // placement. The flow stops docking and leaves the window floating.
     kUserRepositioned = 7,
-    kMaxValue = kUserRepositioned,
+    // The width the Settings window would dock at puts the "Default apps" page
+    // in a layout whose rows we cannot place: the "Set default" button wraps
+    // below the name Chrome is registered under, or the width sits on the
+    // breakpoint where the navigation pane collapses. We degrade to floating
+    // rather than point the guidance arrow at the wrong row.
+    kSettingsLayoutUnstable = 8,
+    // The user moved or resized the Chrome window. Without continuous
+    // docking the Settings window cannot follow it, so the placement the
+    // guide arranged is stale.
+    kChromeWindowRepositioned = 9,
+    // Without continuous docking: the Chrome window was activated after the
+    // Settings window was placed, bringing it in front of the arrangement the
+    // guide set up.
+    kChromeWindowActivated = 10,
+    // Without continuous docking: the Chrome window was minimized or hidden,
+    // or the guide tab was hidden, after the Settings window was placed.
+    kChromeWindowHidden = 11,
+    // Without continuous docking: the user minimized, maximized, snapped, or
+    // otherwise changed the Settings window's placement after the guide
+    // placed it, other than by dragging it (see kUserRepositioned).
+    kSettingsWindowStateChanged = 12,
+    kMaxValue = kSettingsWindowStateChanged,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:DefaultBrowserVisualGuideOutcome)
 
@@ -107,9 +137,21 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   void OnVisibilityChanged(content::Visibility visibility) override;
   void PrimaryPageChanged(content::Page& page) override;
 
+  // views::WidgetObserver:
+  void OnWidgetBoundsChanged(views::Widget* widget,
+                             const gfx::Rect& new_bounds) override;
+  void OnWidgetDestroyed(views::Widget* widget) override;
+  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override;
+  void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
+  void OnWidgetShowStateChanged(views::Widget* widget) override;
+  void OnWidgetThemeChanged(views::Widget* widget) override;
+
   bool is_running() const { return is_running_; }
   bool has_anchor_rect() const { return has_anchor_rect_; }
   HWND settings_hwnd_for_testing() const { return settings_hwnd_; }
+  bool has_pending_row_measurement_for_testing() const {
+    return measure_debounce_timer_.IsRunning();
+  }
 
  protected:
   // Virtual for testing.
@@ -122,9 +164,13 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   virtual bool IsChromeWindowActive() const;
   virtual void LaunchSettings();
   virtual std::unique_ptr<SettingsWindowFinderWin> CreateSettingsWindowFinder();
+  virtual std::unique_ptr<SettingsRowLocatorWin> CreateSettingsRowLocator();
   virtual bool IsDpiCompatibleForDocking(HWND hwnd,
                                          const gfx::Rect& target_rect) const;
   virtual void CloseSettingsWindow();
+  // Whether `hwnd` belongs to the still-running process the Settings window was
+  // found in. Once a window is destroyed, its HWND value can be reused for
+  // another window.
   virtual bool IsValidSettingsProcess(HWND hwnd) const;
 
   // Low-level Win32 window probes backing the predicates above. Virtual for
@@ -133,6 +179,7 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   virtual bool IsWindowOnScreen(HWND hwnd) const;
   virtual bool IsWindowCloaked(HWND hwnd) const;
   virtual bool IsWindowMinimized(HWND hwnd) const;
+  virtual bool IsWindowMaximized(HWND hwnd) const;
   // Screen bounds of the latched Settings window, or nullopt when they are
   // unavailable or empty. Virtual for testing.
   virtual std::optional<gfx::Rect> GetSettingsWindowScreenRect() const;
@@ -149,24 +196,23 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   // Outcome::kSettingsLaunchFailed instead of waiting for the finder timeout.
   void OnLaunchSettingsResult(bool succeeded);
 
- protected:
+  // Starts measuring the row: opens the service's handle to the Settings
+  // process on the thread pool, then asks the locator. Run by the debounce
+  // timer; protected so tests can trigger it.
+  void MeasureRowNow();
+
   // Returns the rect to dock the Settings window to, in physical screen
   // pixels. Virtual for testing.
   virtual gfx::Rect ComputeDockedSettingsRect() const;
 
  private:
-  // views::WidgetObserver:
-  void OnWidgetBoundsChanged(views::Widget* widget,
-                             const gfx::Rect& new_bounds) override;
-  void OnWidgetDestroyed(views::Widget* widget) override;
-  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override;
-  void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
-  void OnWidgetShowStateChanged(views::Widget* widget) override;
-  void OnWidgetThemeChanged(views::Widget* widget) override;
+  // Failed measurements in a row before this flow stops measuring. More than
+  // one, since a new window can race its own first layout.
+  static constexpr int kMaxConsecutiveMeasurementFailures = 3;
 
   // Starts the polling and event-hooking logic to find the Settings window.
   void StartFindSettingsWindow();
-  void OnSettingsWindowFound(HWND hwnd);
+  void OnSettingsWindowFound(HWND hwnd, base::Process process);
   void OnFindSettingsTimeout();
 
   // Asynchronously spawns the OS Default Apps settings URI.
@@ -185,6 +231,25 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
 
   void UpdateOverlay();
   void UpdateOverlayColor();
+
+  // Drops the stale offset and schedules a measurement when the Settings
+  // window's size has changed. Called on every layout pass.
+  void MaybeScheduleRowMeasurement(const gfx::Size& settings_size);
+
+  // (Re)starts the timer that runs MeasureRowNow() after `delay`.
+  void ScheduleRowMeasurement(base::TimeDelta delay);
+
+  // `measured_size` is the Settings window's size when the request was made.
+  // Runs once the service's handle to the Settings process has been opened
+  // on the thread pool, and hands it to the locator.
+  void OnSettingsProcessOpened(gfx::Size measured_size,
+                               base::Process settings_process);
+  void OnRowMeasured(gfx::Size measured_size,
+                     SettingsRowLocatorWin::Result result);
+
+  // Stops measuring for the rest of this flow and drops the locator, which
+  // abandons any measurement in flight.
+  void StopRowMeasurement();
 
   gfx::Rect GetAnchorRectScreenDip() const;
 
@@ -210,6 +275,32 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   // window.
   void OnSettingsWindowMoveSize(bool in_progress);
 
+  // Whether a user disturbance of the arrangement should degrade the flow:
+  // only without continuous docking (with it, the Settings window follows
+  // Chrome and the arrangement survives), and only while a running, not yet
+  // degraded flow has placed the latched Settings window at least once.
+  bool ShouldDegradeOnUserDisturbance() const;
+
+  // Degrades with `reason` if ShouldDegradeOnUserDisturbance(). A Settings
+  // window that has already been closed instead ends the flow as
+  // kSettingsWindowClosed: closing it hands activation back to Chrome, which
+  // must not be mistaken for the user bringing Chrome to the front.
+  void MaybeDegradeOnUserDisturbance(Outcome reason);
+
+  // Degrades when the Chrome window is minimized or hidden, or moved or
+  // resized away from where the guide last arranged the Settings window
+  // against it.
+  void MaybeDegradeOnChromeWindowBoundsChanged(const gfx::Rect& new_bounds);
+
+  // Whether the latched Settings window has been minimized, maximized, or
+  // moved since it settled where the guide placed it. Only meaningful without
+  // continuous docking.
+  bool HasUserChangedSettingsWindow() const;
+
+  // Records the Settings window's bounds once the guide's last placement has
+  // landed, as the baseline HasUserChangedSettingsWindow() compares against.
+  void MaybeRecordSettledSettingsRect();
+
   ErrorCallback error_callback_;
   std::optional<bool> last_reported_error_;
 
@@ -225,7 +316,9 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   raw_ptr<views::Widget> parent_widget_ = nullptr;
   HWND chrome_hwnd_ = nullptr;
   HWND settings_hwnd_ = nullptr;
-  DWORD settings_pid_ = 0;
+  // Owner of `settings_hwnd_`, held with SYNCHRONIZE so its pid is not
+  // reissued and its exit can be polled. Invalid when no window is latched.
+  base::Process settings_process_;
 
   std::unique_ptr<GuidedSetterOverlayWindowWin> overlay_;
 
@@ -236,10 +329,34 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   base::TimeTicks find_settings_start_time_;
   base::RepeatingTimer dock_timer_;
 
+  // Created on first measurement; dropped when this flow stops measuring.
+  std::unique_ptr<SettingsRowLocatorWin> row_locator_;
+  base::OneShotTimer measure_debounce_timer_;
+  int consecutive_measurement_failures_ = 0;
+  bool stopped_measuring_ = false;
+
+  // Physical pixels from the Settings window's top to the row. Reset on each
+  // size change; no arrow is drawn while empty.
+  std::optional<int> measured_arrow_offset_px_;
+
+  // The Settings window's size at the last layout pass that scheduled a
+  // measurement. A different size schedules a new one.
+  std::optional<gfx::Size> last_seen_settings_size_;
+
   TopmostPolicy topmost_policy_ = TopmostPolicy::kRequiresFocus;
   bool is_running_ = false;
   bool is_degraded_ = false;
   bool last_known_chrome_active_ = true;
+  // The Chrome window's screen bounds as of the last layout the guide
+  // applied, i.e. what the Settings window was arranged against. Compared
+  // against to tell a real move from the redundant bounds changes Windows
+  // emits.
+  gfx::Rect last_known_chrome_bounds_;
+  // The Settings window's actual screen bounds once the last applied layout
+  // landed (its origin matches last_applied_settings_rect_). The actual
+  // rather than the requested bounds, since the app's minimum size can clamp
+  // the size. Reset whenever the guide applies a different rect.
+  std::optional<gfx::Rect> settled_settings_rect_;
 
   gfx::Rect anchor_rect_in_webui_;
   bool has_anchor_rect_ = false;

@@ -27,7 +27,6 @@
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/sync/base/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/base_window.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -155,7 +154,7 @@ void GlicInstanceTracker::Clear() {
     if (!instance) {
       return false;
     }
-    return instance->GetPanelState().kind == state;
+    return instance->GetPanelState()->kind == state;
   });
 }
 
@@ -254,10 +253,7 @@ void SetGlicCapability(Profile* profile, bool enabled) {
 }
 
 void SetGlicCapability(AccountCapabilitiesTestMutator& mutator, bool enabled) {
-  if (base::FeatureList::IsEnabled(
-          switches::kGlicEligibilitySeparateAccountCapability)) {
-    mutator.set_can_use_gemini_in_chrome(enabled);
-  }
+  mutator.set_can_use_gemini_in_chrome(enabled);
   mutator.set_can_use_model_execution_features(enabled);
 }
 
@@ -268,16 +264,9 @@ ScopedGlicCapability::ScopedGlicCapability(Profile* profile, bool enabled)
       identity_manager->FindExtendedAccountInfoByAccountId(
           identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin));
 
-  if (base::FeatureList::IsEnabled(
-          switches::kGlicEligibilitySeparateAccountCapability)) {
-    original_enabled_ =
-        primary_account.GetAccountCapabilities().can_use_gemini_in_chrome() ==
-        signin::Tribool::kTrue;
-  } else {
-    original_enabled_ =
-        glic::GlicEnabling::CanUseAdultFeatures(
-            primary_account.GetAccountCapabilities());
-  }
+  original_enabled_ =
+      primary_account.GetAccountCapabilities().can_use_gemini_in_chrome() ==
+      signin::Tribool::kTrue;
 
   SetGlicCapability(profile_, enabled);
 }
@@ -302,10 +291,6 @@ void InvalidateAccount(Profile* profile) {
       identity_manager->HasAccountWithRefreshTokenInPersistentErrorState(
           identity_manager->GetPrimaryAccountId(
               signin::ConsentLevel::kSignin)));
-  if (!syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    ASSERT_FALSE(
-        identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync));
-  }
   ASSERT_TRUE(
       identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin));
 }

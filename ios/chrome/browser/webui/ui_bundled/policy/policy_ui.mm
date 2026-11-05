@@ -81,6 +81,7 @@ web::WebUIIOSDataSource* CreatePolicyUIHtmlSource(ProfileIOS* profile) {
   static constexpr webui::LocalizedString kStrings[] = {
       // Localized strings (alphabetical order).
       {"clearSearch", IDS_CLEAR},
+      {"columns", IDS_POLICY_COLUMNS},
       {"copyPoliciesJSON", IDS_COPY_POLICIES_JSON},
       {"exportPoliciesJSON", IDS_EXPORT_POLICIES_JSON},
       {"filterPlaceholder", IDS_POLICY_FILTER_PLACEHOLDER},
@@ -319,6 +320,7 @@ void PolicyUI::CreateHandler(
   handler_ =
       std::make_unique<PolicyUIHandler>(std::move(handler), std::move(client),
                                         ProfileIOS::FromWebUIIOS(web_ui()));
+  handler_->SendInitialState();
 }
 
 PolicyUI::~PolicyUI() {

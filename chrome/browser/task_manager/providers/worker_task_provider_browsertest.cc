@@ -52,12 +52,12 @@ std::u16string ExpectedTaskTitle(const std::string& title) {
 }
 
 // Get the process id of the active WebContents for the passed |browser|.
-int GetChildProcessID(BrowserWindowInterface* browser) {
+content::ChildProcessId GetChildProcessID(BrowserWindowInterface* browser) {
   return browser->GetTabStripModel()
       ->GetActiveWebContents()
       ->GetPrimaryMainFrame()
       ->GetProcess()
-      ->GetDeprecatedID();
+      ->GetID();
 }
 
 }  // namespace
@@ -133,7 +133,7 @@ class WorkerTaskProviderBrowserTest : public InProcessBrowserTest,
     }
   }
 
-  const std::vector<raw_ptr<Task, VectorExperimental>>& tasks() const {
+  const std::vector<raw_ptr<Task, DanglingUntriaged>>& tasks() const {
     return tasks_;
   }
   TaskProvider* task_provider() const { return task_provider_.get(); }
@@ -156,7 +156,7 @@ class WorkerTaskProviderBrowserTest : public InProcessBrowserTest,
   std::unique_ptr<WorkerTaskProvider> task_provider_;
 
   // Tasks created by |task_provider_|.
-  std::vector<raw_ptr<Task, VectorExperimental>> tasks_;
+  std::vector<raw_ptr<Task, DanglingUntriaged>> tasks_;
 
   base::OnceClosure quit_closure_for_waiting_;
 

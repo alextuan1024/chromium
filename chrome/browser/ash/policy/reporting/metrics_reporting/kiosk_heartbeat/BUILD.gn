@@ -12,7 +12,7 @@ static_library("kiosk_heartbeat") {
 
   deps = [
     "//base",
-    "//components/reporting/metrics:metrics_data_collection",
+    "//chromeos/ash/components/metrics_reporting",
     "//components/reporting/proto:metric_data_proto",
   ]
 }
@@ -43,16 +43,14 @@ source_set("browser_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/browser",
-    "//chrome/browser:browser_process",
     "//chrome/browser/ash/login/test:test_support",
     "//chrome/browser/ash/policy/affiliation:test_support",
     "//chrome/browser/ash/policy/core:test_support",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/ash/settings",
     "//chrome/browser/ash/settings:test_support",
-    "//chrome/browser/chromeos/reporting",
     "//chrome/browser/profiles:profile",
-    "//chrome/test:test_support_ui",
+    "//chromeos/ash/components/metrics_reporting",
     "//chromeos/ash/components/settings",
     "//chromeos/constants",
     "//chromeos/dbus/missive:test_support",

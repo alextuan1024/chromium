@@ -32,10 +32,7 @@
 #include "third_party/blink/public/web/web_plugin_container.h"
 #include "third_party/blink/public/web/web_script_forbidden_scope.h"
 #include "third_party/blink/public/web/web_serialized_script_value.h"
-#include "third_party/blink/public/web/web_view.h"
-#include "third_party/blink/public/web/web_widget.h"
 #include "ui/accessibility/ax_features.mojom-features.h"
-#include "ui/display/screen_info.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect.h"
 #include "v8/include/v8-context.h"
@@ -150,9 +147,9 @@ void PdfViewWebPluginClient::ReportFindInPageTickmarks(
 float PdfViewWebPluginClient::DeviceScaleFactor() {
   // Do not rely on `blink::WebPluginContainer::DeviceScaleFactor()`, since it
   // doesn't always reflect the real screen's device scale. Instead, get the
-  // device scale from the top-level frame's `display::ScreenInfo`.
-  blink::WebWidget* widget = GetFrame()->LocalRoot()->FrameWidget();
-  return widget->GetOriginalScreenInfo().device_scale_factor;
+  // device scale from the top-level frame's `blink::WebFrameWidget`.
+  blink::WebFrameWidget* widget = GetFrame()->LocalRoot()->FrameWidget();
+  return widget->GetOriginalDeviceScaleFactor();
 }
 
 gfx::PointF PdfViewWebPluginClient::GetScrollPosition() {
@@ -193,14 +190,7 @@ void PdfViewWebPluginClient::TextSelectionChanged(
     const blink::WebString& selection_text,
     uint32_t offset,
     const gfx::Range& range) {
-  // Focus the plugin's containing frame before changing the text selection.
-  // TODO(crbug.com/40192026): Would it make more sense not to change the text
-  // selection at all in this case? Maybe we only have this problem because we
-  // support a "selectAll" message.
-  blink::WebLocalFrame* frame = GetFrame();
-  frame->View()->SetFocusedFrame(frame);
-
-  frame->TextSelectionChanged(selection_text, offset, range);
+  GetFrame()->TextSelectionChanged(selection_text, offset, range);
 }
 
 std::unique_ptr<blink::WebAssociatedURLLoader>
@@ -315,9 +305,10 @@ void PdfViewWebPluginClient::RecordComputedAction(const std::string& action) {
 std::unique_ptr<chrome_pdf::PdfAccessibilityDataHandler>
 PdfViewWebPluginClient::CreateAccessibilityDataHandler(
     chrome_pdf::PdfAccessibilityActionHandler* action_handler,
+    chrome_pdf::PdfAccessibilityImageFetcher* image_fetcher,
     blink::WebPluginContainer* plugin_container) {
-  return std::make_unique<PdfAccessibilityTree>(render_frame_, action_handler,
-                                                plugin_container);
+  return std::make_unique<PdfAccessibilityTree>(
+      render_frame_, action_handler, image_fetcher, plugin_container);
 }
 
 }  // namespace pdf

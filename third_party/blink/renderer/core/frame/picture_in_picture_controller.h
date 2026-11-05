@@ -8,7 +8,6 @@
 #include "services/media_session/public/mojom/media_session.mojom-blink.h"
 #include "third_party/blink/public/mojom/picture_in_picture/picture_in_picture.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
-#include "third_party/blink/renderer/core/buildflags.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
 
@@ -112,6 +111,14 @@ class CORE_EXPORT PictureInPictureController
   // Returns whether system allows Picture-in-Picture feature or not for
   // the associated document.
   virtual bool PictureInPictureEnabled() const = 0;
+
+  // Manages a transient request token that authorizes entering
+  // Picture-in-Picture when triggered by a browser action (such as
+  // the `MediaSession` `enterpictureinpicture` action) without granting broad
+  // user activation to the frame.
+  virtual bool IsPictureInPictureRequestTokenActive() const = 0;
+  virtual void ActivatePictureInPictureRequestToken() = 0;
+  virtual bool ConsumePictureInPictureRequestToken() = 0;
 
   void Trace(Visitor*) const override;
 

@@ -66,35 +66,50 @@ public class CppWrappedTestTracker implements Tracker {
     @CheckResult
     @CalledByNative
     @Override
+    @Deprecated
     public boolean shouldTriggerHelpUi(String feature) {
         return ourFeature(feature);
     }
 
     @CheckResult
     @Override
+    @SuppressWarnings("deprecation")
+    public boolean shouldTriggerHelpUi(String feature, FeatureProperties featureProperties) {
+        return shouldTriggerHelpUi(feature);
+    }
+
+    @CheckResult
+    @Override
+    @Deprecated
     public TriggerDetails shouldTriggerHelpUiWithSnooze(String feature) {
         return new TriggerDetails(ourFeature(feature), false);
     }
 
+    @CheckResult
+    @Override
+    @SuppressWarnings("deprecation")
+    public TriggerDetails shouldTriggerHelpUiWithSnooze(
+            String feature, FeatureProperties featureProperties) {
+        return shouldTriggerHelpUiWithSnooze(feature);
+    }
+
     @CalledByNative
     @Override
+    @Deprecated
     public boolean wouldTriggerHelpUi(String feature) {
         return ourFeature(feature);
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public boolean wouldTriggerHelpUi(String feature, FeatureProperties featureProperties) {
+        return wouldTriggerHelpUi(feature);
     }
 
     @CalledByNative
     @Override
     public boolean hasEverTriggered(String feature, boolean fromWindow) {
         return true;
-    }
-
-    @TriggerState
-    @CalledByNative
-    @Override
-    public int getTriggerState(String feature) {
-        return ourFeature(feature)
-                ? TriggerState.HAS_NOT_BEEN_DISPLAYED
-                : TriggerState.HAS_BEEN_DISPLAYED;
     }
 
     @CalledByNative

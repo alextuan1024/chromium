@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/strings/string_number_conversions.h"
+#include "content/browser/browser_context_impl.h"
 #include "content/browser/preloading/prefetch/prefetch_container.h"
 #include "content/browser/preloading/prefetch/prefetch_features.h"
 #include "content/browser/preloading/prefetch/prefetch_request.h"
@@ -35,23 +36,19 @@ class PrefetchDocumentManagerTest : public PrefetchingMetricsTestBase {
   void SetUp() override {
     PrefetchingMetricsTestBase::SetUp();
 
-    NavigateAndCommit(GetSameOriginUrl("/"));
+    // Set `TestPrefetchService` as the `PrefetchService` of
+    // `browser_context()` before anything (e.g. navigation) creates the
+    // default `PrefetchService`.
+    BrowserContextImpl::From(browser_context())
+        ->SetPrefetchServiceForTesting(
+            std::make_unique<TestPrefetchService>(browser_context()));
 
-    prefetch_service_ =
-        std::make_unique<TestPrefetchService>(browser_context());
-    PrefetchDocumentManager::SetPrefetchServiceForTesting(
-        prefetch_service_.get());
+    NavigateAndCommit(GetSameOriginUrl("/"));
   }
 
-  void TearDown() override {
-    // The PrefetchService we created for the test contains a
-    // PrefetchOriginProber, which holds a raw pointer to the BrowserContext.
-    // When tearing down, it's important to free our PrefetchService
-    // before freeing the BrowserContext, to avoid any chance of a use after
-    // free.
-    PrefetchDocumentManager::SetPrefetchServiceForTesting(nullptr);
-    prefetch_service_.reset();
-    PrefetchingMetricsTestBase::TearDown();
+  TestPrefetchService* GetPrefetchService() {
+    return static_cast<TestPrefetchService*>(
+        BrowserContextImpl::From(browser_context())->GetPrefetchService());
   }
 
   GURL GetSameOriginUrl(const std::string& path) {
@@ -74,7 +71,7 @@ class PrefetchDocumentManagerTest : public PrefetchingMetricsTestBase {
   }
 
   const std::vector<base::WeakPtr<PrefetchContainer>>& GetPrefetches() {
-    return prefetch_service_->prefetches_;
+    return GetPrefetchService()->prefetches_;
   }
 
   // Used to make sure that No-Vary-Search parsing error/warning message is sent
@@ -116,9 +113,6 @@ class PrefetchDocumentManagerTest : public PrefetchingMetricsTestBase {
     auto& test_rfh = static_cast<TestRenderFrameHost&>(*main_rfh());
     return test_rfh.GetConsoleMessages()[0];
   }
-
- private:
-  std::unique_ptr<TestPrefetchService> prefetch_service_;
 };
 
 TEST_F(PrefetchDocumentManagerTest, PopulateNoVarySearchHint) {
@@ -402,56 +396,14 @@ TEST_F(PrefetchDocumentManagerTest, ProcessSpeculationCandidates) {
       GetCrossOriginUrl("/candidate3.html")));
 }
 
-// Link speculationrules prefetch is not started in fenced frame.
-// `CanPrefetchNow()` check blocks speculationrules prefetch from fenced frames.
-TEST_F(PrefetchDocumentManagerTest, FencedFrameDoesNotStartPrefetch) {
-  // Create list of SpeculationCandidatePtrs.
-  std::vector<blink::mojom::SpeculationCandidatePtr> candidates;
-
-  auto referrer = blink::mojom::Referrer::New();
-  referrer->url = GetSameOriginUrl("/referrer");
-  const GURL cross_origin_url = GetCrossOriginUrl("/candidate.html");
-
-  // Create candidate for private cross-origin prefetch. This candidate should
-  // be added to the queue of |PrefetchDocumentManager|. However, it will not be
-  // prefetched because it is from a fenced frame.
-  auto candidate = blink::mojom::SpeculationCandidate::New();
-  candidate->tags = {std::nullopt};
-  candidate->action = blink::mojom::SpeculationAction::kPrefetch;
-  candidate->requires_anonymous_client_ip_when_cross_origin = true;
-  candidate->url = cross_origin_url;
-  candidate->referrer = referrer->Clone();
-  candidate->eagerness = blink::mojom::SpeculationEagerness::kImmediate;
-  candidates.push_back(std::move(candidate));
-
-  // Process the candidate with the |PrefetchDocumentManager| for the current
-  // document.
-  TestRenderFrameHost* fenced_frame_rfh =
-      static_cast<TestRenderFrameHost&>(*main_rfh()).AppendFencedFrame();
-  auto* prefetch_document_manager =
-      PrefetchDocumentManager::GetOrCreateForCurrentDocument(fenced_frame_rfh);
-  prefetch_document_manager->ProcessCandidates(candidates);
-
-  // Check that the candidate was sent to |PrefetchService|.
-  const auto& prefetch_urls = GetPrefetches();
-  ASSERT_EQ(prefetch_urls.size(), 1U);
-  EXPECT_EQ(prefetch_urls[0]->GetURL(), cross_origin_url);
-  EXPECT_EQ(prefetch_urls[0]->request().prefetch_type(),
-            PrefetchType(PreloadingTriggerType::kSpeculationRule,
-                         /*use_prefetch_proxy=*/true,
-                         blink::mojom::SpeculationEagerness::kImmediate));
-
-  // `CanPrefetchNow()` blocks the speculationrules prefetch from fenced frame.
-  EXPECT_THAT(prefetch_document_manager->CanPrefetchNow(prefetch_urls[0].get()),
-              FieldsAre(false, IsNull()));
-}
-
 TEST_F(PrefetchDocumentManagerTest, CanPrefetchNowLimits_Default) {
   auto* prefetch_document_manager =
       PrefetchDocumentManager::GetOrCreateForCurrentDocument(main_rfh());
 
-  // Create 2 completed non-immediate prefetches to reach the default limit.
-  for (int i = 0; i < 2; ++i) {
+  // Create completed non-immediate prefetches to reach the default limit.
+  const size_t default_limit =
+      features::kMaxNumberOfModeratePrefetchesPerPage.Get();
+  for (size_t i = 0; i < default_limit; ++i) {
     auto candidate = blink::mojom::SpeculationCandidate::New();
     candidate->tags = {std::nullopt};
     candidate->action = blink::mojom::SpeculationAction::kPrefetch;
@@ -465,14 +417,19 @@ TEST_F(PrefetchDocumentManagerTest, CanPrefetchNowLimits_Default) {
     prefetch_document_manager->ProcessCandidates(candidates);
 
     auto& prefetch = GetPrefetches().back();
+    auto [can_prefetch, to_evict] =
+        prefetch_document_manager->CanPrefetchNow(prefetch.get());
+    EXPECT_TRUE(can_prefetch);
+    EXPECT_FALSE(to_evict);
+
     MakeServableStreamingURLLoaderForTest(
         prefetch.get(), SuccessfulPrefetchResponseHeadForTesting(),
         "test body");
   }
 
-  ASSERT_EQ(GetPrefetches().size(), 2u);
+  ASSERT_EQ(GetPrefetches().size(), default_limit);
 
-  // Now we are at the default limit (2).
+  // Now we are at the default limit.
   // A new regular candidate should trigger eviction.
   {
     auto candidate = blink::mojom::SpeculationCandidate::New();

@@ -12,6 +12,7 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/session/session_controller.h"
 #include "ash/public/cpp/session/session_types.h"
+#include "base/check.h"
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -28,7 +29,6 @@
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/lifetime/termination_notification.h"
-#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profiles_state.h"
@@ -44,6 +44,7 @@
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/multi_user/multi_user_sign_in_policy.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_manager_pref_names.h"
 #include "components/user_manager/user_type.h"
@@ -89,10 +90,10 @@ uint32_t GetSessionId(const User& user) {
 // no user session started for the given user.
 std::unique_ptr<ash::UserSession> UserToUserSession(const User& user) {
   const uint32_t user_session_id = GetSessionId(user);
-  DCHECK_NE(0u, user_session_id);
+  CHECK_NE(0u, user_session_id, base::NotFatalUntil::M162);
 
   Profile* profile = ash::ProfileHelper::Get()->GetProfileByUser(&user);
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
 
   auto session = std::make_unique<ash::UserSession>();
   session->session_id = user_session_id;
@@ -107,8 +108,10 @@ std::unique_ptr<ash::UserSession> UserToUserSession(const User& user) {
   session->user_info.should_display_managed_ui =
       profile && ShouldDisplayManagedUi(profile);
   session->user_info.is_new_profile = profile->IsNewProfile();
-  session->user_info.is_managed =
-      profile->GetProfilePolicyConnector()->IsManaged();
+  // The user's policy status is known once its Profile has been added, which
+  // happened before the session started. If it isn't, report the user as
+  // unmanaged, matching ProfileUserManagerController's default.
+  session->user_info.is_managed = user.is_managed().value_or(false);
 
   session->user_info.avatar.image = user.GetImage();
   if (session->user_info.avatar.image.isNull()) {
@@ -142,7 +145,9 @@ void OnAcceptMultiprofilesIntroDialog(bool accept, bool never_show_again) {
 }  // namespace
 
 SessionControllerClientImpl::SessionControllerClientImpl(
-    PrefService& local_state) {
+    PrefService& local_state,
+    const variations::VariationsService* variations_service)
+    : variations_service_(CHECK_DEREF(variations_service)) {
   session_observation_.Observe(SessionManager::Get());
   user_manager_observation_.Observe(UserManager::Get());
   user_session_state_observation_.Observe(UserManager::Get());
@@ -162,12 +167,13 @@ SessionControllerClientImpl::SessionControllerClientImpl(
       ash::prefs::kSessionLengthLimit,
       base::BindRepeating(&SessionControllerClientImpl::SendSessionLengthLimit,
                           base::Unretained(this)));
-  DCHECK(!g_session_controller_client_instance);
+  CHECK(!g_session_controller_client_instance, base::NotFatalUntil::M162);
   g_session_controller_client_instance = this;
 }
 
 SessionControllerClientImpl::~SessionControllerClientImpl() {
-  DCHECK_EQ(this, g_session_controller_client_instance);
+  CHECK_EQ(this, g_session_controller_client_instance,
+           base::NotFatalUntil::M162);
   g_session_controller_client_instance = nullptr;
   if (session_controller_ &&
       session_controller_ == ash::SessionController::Get()) {
@@ -262,11 +268,13 @@ void SessionControllerClientImpl::ShowMultiProfileLogin() {
     return;
   }
 
-  DCHECK(UserManager::Get()->GetLoggedInUsers().size() <
-         session_manager::kMaximumNumberOfUserSessions);
+  CHECK(UserManager::Get()->GetLoggedInUsers().size() <
+            session_manager::kMaximumNumberOfUserSessions,
+        base::NotFatalUntil::M162);
 
   // Launch sign in screen to add another user to current session.
-  DCHECK(!UserManager::Get()->GetUsersAllowedForMultiUserSignIn().empty());
+  CHECK(!UserManager::Get()->GetUsersAllowedForMultiUserSignIn().empty(),
+        base::NotFatalUntil::M162);
 
   // Don't show the dialog if any logged-in user in the multi-profile session
   // dismissed it.
@@ -328,7 +336,8 @@ std::tuple<bool, bool> SessionControllerClientImpl::IsEligibleForSeaPen(
     return {false, false};
   }
 
-  return {ash::personalization_app::IsEligibleForSeaPen(user_profile),
+  return {ash::personalization_app::IsEligibleForSeaPen(
+              variations_service_.get(), user_profile),
           ash::personalization_app::IsManagedSeaPenVcBackgroundEnabled(
               user_profile)};
 }
@@ -524,9 +533,10 @@ void SessionControllerClientImpl::OnSessionStateChanged() {
   TRACE_EVENT0("ui", "SessionControllerClientImpl::OnSessionStateChanged");
   if (SessionManager::Get()->session_state() == SessionState::ACTIVE) {
     // The active user should not be pending when the session becomes active.
-    DCHECK(pending_users_.find(
-               UserManager::Get()->GetActiveUser()->GetAccountId()) ==
-           pending_users_.end());
+    CHECK(pending_users_.find(
+              UserManager::Get()->GetActiveUser()->GetAccountId()) ==
+              pending_users_.end(),
+          base::NotFatalUntil::M162);
   }
 
   SendSessionInfoIfChanged();
@@ -548,7 +558,7 @@ void SessionControllerClientImpl::OnAppTerminating() {
 
 void SessionControllerClientImpl::OnLoginUserProfilePrepared(Profile* profile) {
   const User* user = ash::ProfileHelper::Get()->GetUserByProfile(profile);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
 
   base::RepeatingClosure session_info_changed_closure = base::BindRepeating(
       &SessionControllerClientImpl::SendSessionInfoIfChanged,
@@ -591,7 +601,7 @@ void SessionControllerClientImpl::SendSessionInfoIfChanged() {
 
 void SessionControllerClientImpl::SendUserSession(const User& user) {
   // |user| must have a session, i.e. signed-in already.
-  DCHECK_NE(0u, GetSessionId(user));
+  CHECK_NE(0u, GetSessionId(user), base::NotFatalUntil::M162);
 
   // Check user profile via GetProfileByUser() instead of is_profile_created()
   // flag because many tests have only setup testing user profile in
@@ -624,7 +634,7 @@ void SessionControllerClientImpl::SendUserSessionOrder() {
   std::vector<uint32_t> user_session_ids;
   for (user_manager::User* user : user_manager->GetLRULoggedInUsers()) {
     const uint32_t user_session_id = GetSessionId(*user);
-    DCHECK_NE(0u, user_session_id);
+    CHECK_NE(0u, user_session_id, base::NotFatalUntil::M162);
     user_session_ids.push_back(user_session_id);
   }
 

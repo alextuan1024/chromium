@@ -5,6 +5,9 @@
 #include "components/password_manager/core/browser/password_store/login_database_async_helper.h"
 
 #include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -24,6 +27,22 @@
 #include "sql/transaction.h"
 
 namespace password_manager {
+
+namespace {
+
+// Aligns Desktop/iOS backend reads with Android's `DeserializeOpaqueLocalData`
+// while keeping `LoginDatabase` agnostic of password sharing: even if a
+// pre-existing SQLite row has `skip_zero_click = 0`, unnotified
+// `kReceivedViaSharing` credentials must enforce `skip_zero_click = true` until
+// `sharing_notification_displayed` is recorded.
+void EnforceSkipZeroClickForUnnotifiedSharedCredentials(
+    std::vector<StoredCredential>& credentials) {
+  for (StoredCredential& cred : credentials) {
+    cred.skip_zero_click = MergeLocalSkipZeroClick(cred, cred.skip_zero_click);
+  }
+}
+
+}  // namespace
 
 LoginDatabaseAsyncHelper::LoginDatabaseAsyncHelper(
     std::unique_ptr<LoginDatabase> login_db,
@@ -119,6 +138,7 @@ LoginDatabaseAsyncHelper::GetAllLogins() {
     return base::unexpected(PasswordStoreBackendError(
         PasswordStoreBackendErrorType::kUncategorized));
   }
+  EnforceSkipZeroClickForUnnotifiedSharedCredentials(credentials);
   return credentials;
 }
 
@@ -130,6 +150,7 @@ LoginDatabaseAsyncHelper::GetAutofillableLogins() {
     return base::unexpected(PasswordStoreBackendError(
         PasswordStoreBackendErrorType::kUncategorized));
   }
+  EnforceSkipZeroClickForUnnotifiedSharedCredentials(results);
   return results;
 }
 
@@ -157,6 +178,7 @@ LoginDatabaseAsyncHelper::FillMatchingLogins(
                    std::make_move_iterator(matched_credentials.begin()),
                    std::make_move_iterator(matched_credentials.end()));
   }
+  EnforceSkipZeroClickForUnnotifiedSharedCredentials(results);
   return results;
 }
 
@@ -354,7 +376,15 @@ PasswordStoreChangeList LoginDatabaseAsyncHelper::UpdateCredentialSync(
     const sync_pb::PasswordSpecificsData& password,
     UpdateCredentialError* error) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return UpdateLoginImpl(StoredCredentialFromSpecifics(password), error);
+  StoredCredential cred = StoredCredentialFromSpecifics(password);
+  if (login_db_) {
+    if (std::optional<bool> local_skip_zero_click =
+            login_db_->GetSkipZeroClick(cred)) {
+      cred.skip_zero_click =
+          MergeLocalSkipZeroClick(cred, *local_skip_zero_click);
+    }
+  }
+  return UpdateLoginImpl(cred, error);
 }
 
 void LoginDatabaseAsyncHelper::NotifyCredentialsChanged(
@@ -459,6 +489,11 @@ PasswordStoreChangeList LoginDatabaseAsyncHelper::AddLoginImpl(
     }
     return PasswordStoreChangeList();
   }
+  // Keep `LoginDatabase` agnostic of password sharing (matching
+  // `UpdateCredentialSync` and Android's `DeserializeOpaqueLocalData`) while
+  // ensuring local writes cannot persist `skip_zero_click = false` before the
+  // shared-password notification has been displayed.
+  cred.skip_zero_click = MergeLocalSkipZeroClick(cred, cred.skip_zero_click);
   return login_db_->AddLogin(std::move(cred), error);
 }
 
@@ -471,6 +506,18 @@ PasswordStoreChangeList LoginDatabaseAsyncHelper::UpdateLoginImpl(
       *error = UpdateCredentialError::kDbNotAvailable;
     }
     return PasswordStoreChangeList();
+  }
+  // Prevent callers from clearing `skip_zero_click` in storage while a shared
+  // credential's attribution notification has not yet been displayed
+  // (`UpdateCredentialSync` merges the stored local value before delegating
+  // here, so notified credentials still preserve their local `skip_zero_click`
+  // state).
+  const bool merged_skip_zero_click =
+      MergeLocalSkipZeroClick(cred, cred.skip_zero_click);
+  if (merged_skip_zero_click != cred.skip_zero_click) {
+    StoredCredential updated_cred = CloneStoredCredential(cred);
+    updated_cred.skip_zero_click = merged_skip_zero_click;
+    return login_db_->UpdateLogin(updated_cred, error);
   }
   return login_db_->UpdateLogin(cred, error);
 }

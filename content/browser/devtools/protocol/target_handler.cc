@@ -220,6 +220,10 @@ class BrowserToPageConnector {
       return permissions_.allow_unsafe_operations;
     }
 
+    PeerMetadata GetPeerMetadata() override {
+      return connector_->peer_metadata_;
+    }
+
    private:
     raw_ptr<BrowserToPageConnector> connector_;
     BrowserConnectorHostClientPermissions permissions_;
@@ -229,9 +233,11 @@ class BrowserToPageConnector {
       const std::string& binding_name,
       DevToolsAgentHost* page_host,
       BrowserConnectorHostClientPermissions permissions,
+      DevToolsAgentHostClient::PeerMetadata peer_metadata,
       std::unique_ptr<Target::Backend::ExposeDevToolsProtocolCallback> callback)
       : binding_name_(binding_name),
         page_host_(page_host),
+        peer_metadata_(std::move(peer_metadata)),
         pending_callback_(std::move(callback)) {
     browser_host_ = BrowserDevToolsAgentHost::CreateForDiscovery();
     browser_host_client_ = std::make_unique<BrowserConnectorHostClient>(
@@ -361,6 +367,7 @@ class BrowserToPageConnector {
   std::string binding_name_;
   scoped_refptr<DevToolsAgentHost> browser_host_;
   scoped_refptr<DevToolsAgentHost> page_host_;
+  DevToolsAgentHostClient::PeerMetadata peer_metadata_;
   std::unique_ptr<BrowserConnectorHostClient> browser_host_client_;
   std::unique_ptr<BrowserConnectorHostClient> page_host_client_;
   int page_message_id_ = 0;
@@ -520,12 +527,18 @@ class TargetHandler::Session : public DevToolsAgentHostClient {
     agent_host_->DetachClient(this);
   }
 
-  std::string GetTypeForMetrics() override { return "DevTools"; }
+  std::string GetTypeForMetrics() override {
+    return GetRootClient()->GetTypeForMetrics();
+  }
+  PeerMetadata GetPeerMetadata() override {
+    return GetRootClient()->GetPeerMetadata();
+  }
   std::optional<url::Origin> GetNavigationInitiatorOrigin() override {
     return GetRootClient()->GetNavigationInitiatorOrigin();
   }
 
   void Detach(bool host_closed) {
+    ResumeIfThrottled();
     handler_->frontend_->DetachedFromTarget(id_, agent_host_->GetId());
     if (flatten_protocol_) {
       handler_->root_session_->DetachChildSession(id_);
@@ -534,6 +547,7 @@ class TargetHandler::Session : public DevToolsAgentHostClient {
       agent_host_->DetachClient(this);
     }
     handler_->auto_attached_sessions_.erase(agent_host_.get());
+    handler_->UpdateAgentHostObserver();
     devtools_session_ = nullptr;
     agent_host_ = nullptr;
     handler_->attached_sessions_.erase(id_);
@@ -786,6 +800,7 @@ Response TargetHandler::Disable() {
   SetDiscoverTargets(false, {});
   hidden_target_manager_.Clear();
   auto_attached_sessions_.clear();
+  UpdateAgentHostObserver();
   // Destroying a session may synchronously close attached targets which can
   // try to detach sibling sessions, so move the map aside before releasing.
   auto attached_sessions = std::move(attached_sessions_);
@@ -832,7 +847,9 @@ void TargetHandler::MaybeCreateAndAddNavigationThrottle(
     return;
   }
   // If we got here for main frame, it must be either browser or tab target.
-  CHECK(auto_attacher == auto_attacher_, base::NotFatalUntil::M159);
+  // TODO(crbug.com/573156711): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(auto_attacher == auto_attacher_);
   DevToolsAgentHost* host =
       RenderFrameDevToolsAgentHost::GetFor(frame_tree_node);
   TargetHandler::Session* waiting_session = FindWaitingSession(host);
@@ -921,11 +938,25 @@ void TargetHandler::SetAutoAttachInternal(bool auto_attach,
   }
 }
 
+bool TargetHandler::HasAutoAttachedTab() const {
+  for (const auto& entry : auto_attached_sessions_) {
+    if (entry.first->GetType() == DevToolsAgentHost::kTypeTab) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void TargetHandler::UpdateAgentHostObserver() {
-  if (discover() == observing_agent_hosts_) {
+  // Observe agent hosts during target discovery, and also while a tab target
+  // is auto-attached. A tab target does not have an auto-attacher event for
+  // changes of its target info (for example, of the "unloaded" subtype), so
+  // the observer is the only source of these events.
+  const bool should_observe = discover() || HasAutoAttachedTab();
+  if (should_observe == observing_agent_hosts_) {
     return;
   }
-  observing_agent_hosts_ = discover();
+  observing_agent_hosts_ = should_observe;
   if (observing_agent_hosts_) {
     DevToolsAgentHost::AddObserver(this);
   } else {
@@ -956,6 +987,7 @@ bool TargetHandler::AutoAttach(TargetAutoAttacher* source,
   Session* session = attached_sessions_[*session_id].get();
   session->auto_attacher_id_ = reinterpret_cast<uintptr_t>(source);
   auto_attached_sessions_[host] = session;
+  UpdateAgentHostObserver();
   return true;
 }
 
@@ -1105,7 +1137,15 @@ Response TargetHandler::SetDiscoverTargets(
     return Response::Success();
   }
   UpdateAgentHostObserver();
-  if (!TargetHandler::discover()) {
+  if (TargetHandler::discover()) {
+    // The handler can already observe agent hosts, while a tab target is
+    // auto-attached. Then UpdateAgentHostObserver() does not call
+    // AddObserver(), which reports the existing hosts. `reported_hosts_`
+    // prevents duplicate events.
+    for (const auto& target : DevToolsAgentHost::GetOrCreateAll()) {
+      DevToolsAgentHostCreated(target.get());
+    }
+  } else {
     reported_hosts_.clear();
   }
   return Response::Success();
@@ -1347,8 +1387,9 @@ void TargetHandler::ExposeDevToolsProtocol(
         root_session_->GetClient()->AllowUnsafeOperations();
   }
 
-  new BrowserToPageConnector(binding_name.value_or("cdp"), agent_host.get(),
-                             permissions, std::move(callback));
+  new BrowserToPageConnector(
+      binding_name.value_or("cdp"), agent_host.get(), permissions,
+      root_session_->GetClient()->GetPeerMetadata(), std::move(callback));
 }
 
 Response TargetHandler::CreateTarget(
@@ -1460,14 +1501,12 @@ Response TargetHandler::GetTargets(
   *target_infos = std::make_unique<protocol::Array<Target::TargetInfo>>();
   for (const auto& host : DevToolsAgentHost::GetOrCreateAll()) {
     if (effective_filter->Match(*host)) {
-#if !BUILDFLAG(IS_ANDROID)
       // Do not return initial WebUI as the DevTools targets.
       // TODO(crbug.com/444358999): consider adding this into the `filter` when
       // we really need to get the initial WebUI target.
       if (GetContentClient()->browser()->IsInitialWebUIURL(host->GetURL())) {
         continue;
       }
-#endif  //  !BUILDFLAG(IS_ANDROID)
       (*target_infos)->emplace_back(BuildTargetInfo(host.get()));
     }
   }
@@ -1481,8 +1520,12 @@ bool TargetHandler::ShouldForceDevToolsAgentHostCreation() {
 }
 
 void TargetHandler::DevToolsAgentHostCreated(DevToolsAgentHost* host) {
-  CHECK(discover(), base::NotFatalUntil::M159);
   CHECK(host, base::NotFatalUntil::M159);
+  // The handler also observes agent hosts while a tab target is auto-attached.
+  // Report new targets only during target discovery.
+  if (!discover()) {
+    return;
+  }
   if (!discover_target_filter_->Match(*host)) {
     return;
   }
@@ -1495,6 +1538,12 @@ void TargetHandler::DevToolsAgentHostCreated(DevToolsAgentHost* host) {
 }
 
 void TargetHandler::DevToolsAgentHostNavigated(DevToolsAgentHost* host) {
+  // Without target discovery, the handler observes agent hosts only for
+  // auto-attached tab targets. Other auto-attached targets get
+  // Target.targetInfoChanged from their auto-attacher.
+  if (!discover() && host->GetType() != DevToolsAgentHost::kTypeTab) {
+    return;
+  }
   TargetInfoChanged(host);
 }
 
@@ -1507,10 +1556,16 @@ void TargetHandler::DevToolsAgentHostDestroyed(DevToolsAgentHost* host) {
 }
 
 void TargetHandler::DevToolsAgentHostAttached(DevToolsAgentHost* host) {
+  if (!discover()) {
+    return;
+  }
   TargetInfoChanged(host);
 }
 
 void TargetHandler::DevToolsAgentHostDetached(DevToolsAgentHost* host) {
+  if (!discover()) {
+    return;
+  }
   TargetInfoChanged(host);
 }
 

@@ -21,7 +21,6 @@
 #include "chrome/browser/chromeos/policy/dlp/clipboard_bubble.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_clipboard_bubble_constants.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_policy_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/clipboard/clipboard_data.h"
@@ -48,7 +47,7 @@ ui::DataTransferEndpoint CloneEndpoint(
 void SynthesizePaste() {
   auto* host = ash::GetWindowTreeHostForDisplay(
       display::Screen::Get()->GetDisplayForNewWindows().id());
-  DCHECK(host);
+  CHECK(host, base::NotFatalUntil::M161);
 
   ui::KeyEvent control_press(/*type=*/ui::EventType::kKeyPressed,
                              ui::VKEY_CONTROL,
@@ -109,8 +108,8 @@ DlpClipboardNotifier::~DlpClipboardNotifier() {
 void DlpClipboardNotifier::NotifyBlockedAction(
     base::optional_ref<const ui::DataTransferEndpoint> data_src,
     base::optional_ref<const ui::DataTransferEndpoint> data_dst) {
-  DCHECK(data_src.has_value());
-  DCHECK(data_src->GetURL());
+  CHECK(data_src.has_value(), base::NotFatalUntil::M161);
+  CHECK(data_src->GetURL(), base::NotFatalUntil::M161);
   const std::u16string host_name =
       base::UTF8ToUTF16(data_src->GetURL()->GetHost());
   if (data_dst.has_value()) {
@@ -148,8 +147,8 @@ void DlpClipboardNotifier::WarnOnPaste(
     base::optional_ref<const ui::DataTransferEndpoint> data_src,
     base::optional_ref<const ui::DataTransferEndpoint> data_dst,
     base::OnceCallback<void()> reporting_cb) {
-  DCHECK(data_src.has_value());
-  DCHECK(data_src->GetURL());
+  CHECK(data_src.has_value(), base::NotFatalUntil::M161);
+  CHECK(data_src->GetURL(), base::NotFatalUntil::M161);
 
   CloseWidget(widget_.get(), views::Widget::ClosedReason::kUnspecified);
 
@@ -209,8 +208,8 @@ void DlpClipboardNotifier::WarnOnBlinkPaste(
     base::optional_ref<const ui::DataTransferEndpoint> data_dst,
     content::WebContents* web_contents,
     base::OnceCallback<void(bool)> paste_cb) {
-  DCHECK(data_src.has_value());
-  DCHECK(data_src->GetURL());
+  CHECK(data_src.has_value(), base::NotFatalUntil::M161);
+  CHECK(data_src->GetURL(), base::NotFatalUntil::M161);
 
   CloseWidget(widget_.get(), views::Widget::ClosedReason::kUnspecified);
 
@@ -318,6 +317,7 @@ void DlpClipboardNotifier::OnClipboardDataChanged() {
     return;
   }
   ResetUserWarnSelection();
+  CloseWidget(widget_.get(), views::Widget::ClosedReason::kUnspecified);
 }
 
 void DlpClipboardNotifier::OnWidgetDestroying(views::Widget* widget) {

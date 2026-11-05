@@ -80,9 +80,9 @@ LongScreenshotsTabService::LongScreenshotsTabService(
       memory_consumer_registration_("LongScreenshotsTabService",
                                     kLongScreenshotsMemoryConsumerTraits,
                                     this) {
-  DCHECK(google_amp_cache_path_regex_.ok());
-  DCHECK(google_amp_viewer_path_regex_.ok());
-  DCHECK(google_news_path_regex_.ok());
+  CHECK(google_amp_cache_path_regex_.ok(), base::NotFatalUntil::M161);
+  CHECK(google_amp_viewer_path_regex_.ok(), base::NotFatalUntil::M161);
+  CHECK(google_news_path_regex_.ok(), base::NotFatalUntil::M161);
 
   JNIEnv* env = base::android::AttachCurrentThread();
 
@@ -114,20 +114,20 @@ void LongScreenshotsTabService::CaptureTab(
   base::UmaHistogramPercentage("Sharing.LongScreenshots.MemoryLimitOnCapture",
                                memory_limit().percent());
 
-  base::MemoryLimit memory_threshold =
-      base::FeatureList::IsEnabled(
-          chrome::android::kLongScreenshotsLenientMemoryCheck)
-          ? base::MemoryLimit::CriticalPressureThreshold()
-          : base::MemoryLimit::ModeratePressureThreshold();
-
   // If the system is under memory pressure don't try to capture.
-  bool skip_memory_check = base::FeatureList::IsEnabled(
-      chrome::android::kLongScreenshotsNoMemoryCheck);
-  if (!skip_memory_check && memory_limit() <= memory_threshold) {
-    JNIEnv* env = base::android::AttachCurrentThread();
-    Java_LongScreenshotsTabService_processCaptureTabStatus(
-        env, java_ref_, Status::kLowMemoryDetected);
-    return;
+  if (!base::FeatureList::IsEnabled(
+          chrome::android::kLongScreenshotsNoMemoryCheck)) {
+    const base::MemoryLimit memory_threshold =
+        base::FeatureList::IsEnabled(
+            chrome::android::kLongScreenshotsLenientMemoryCheck)
+            ? base::MemoryLimit::CriticalPressureThreshold()
+            : base::MemoryLimit::ModeratePressureThreshold();
+    if (memory_limit() <= memory_threshold) {
+      JNIEnv* env = base::android::AttachCurrentThread();
+      Java_LongScreenshotsTabService_processCaptureTabStatus(
+          env, java_ref_, Status::kLowMemoryDetected);
+      return;
+    }
   }
 
   // Mark |contents| as being captured so that the renderer doesn't go away
@@ -138,11 +138,13 @@ void LongScreenshotsTabService::CaptureTab(
       /*stay_awake=*/true, /*is_activity=*/true);
   content::RenderFrameHost* rfh =
       GetRootRenderFrameHost(contents->GetPrimaryMainFrame(), url);
-  if (in_memory) {
+  // Off-the-record services are constructed without a PaintPreviewFileMixin and
+  // always capture in memory.
+  if (in_memory || IsOffTheRecord()) {
     CaptureTabInternal(tab_id, rfh->GetFrameTreeNodeId(), rfh->GetGlobalId(),
-                       clip_x, clip_y, clip_width, clip_height, in_memory,
-                       clip_x_coord_override, clip_y_coord_override,
-                       std::nullopt);
+                       clip_x, clip_y, clip_width, clip_height,
+                       /*in_memory=*/true, clip_x_coord_override,
+                       clip_y_coord_override, std::nullopt);
     return;
   }
 
@@ -286,6 +288,9 @@ bool LongScreenshotsTabService::IsAmpUrl(const GURL& url) {
 }
 
 void LongScreenshotsTabService::DeleteAllLongScreenshotFiles() {
+  if (!GetFileMixin()) {
+    return;
+  }
   GetFileMixin()->GetTaskRunner()->PostTask(
       FROM_HERE, base::BindOnce(&FileManager::DeleteAll,
                                 GetFileMixin()->GetFileManager()));

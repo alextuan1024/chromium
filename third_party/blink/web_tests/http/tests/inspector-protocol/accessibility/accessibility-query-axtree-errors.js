@@ -30,5 +30,26 @@
     accessibleName: 'name',
   }));
 
+  // Expected: error because a frameless document is not active.
+  const {result: {result: inactiveDoc}} = await dp.Runtime.evaluate({
+    expression: `document.implementation.createHTMLDocument('')`,
+  });
+  testRunner.log(await dp.Accessibility.queryAXTree({
+    objectId: inactiveDoc.objectId,
+    accessibleName: 'name',
+  }));
+
+  // Expected: error because backendNodeId from the previous document no longer
+  // belongs to an inspected frame after reload.
+  await dp.Page.enable();
+  const {result: {root}} = await dp.DOM.getDocument({depth: 0});
+  const loadPromise = dp.Page.onceLoadEventFired();
+  await dp.Page.reload();
+  await loadPromise;
+  testRunner.log(await dp.Accessibility.queryAXTree({
+    backendNodeId: root.backendNodeId,
+    accessibleName: 'name',
+  }));
+
   testRunner.completeTest();
 });

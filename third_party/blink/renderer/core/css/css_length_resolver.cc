@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/core/css/css_length_resolver.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/css/css_resolution_units.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -144,10 +146,11 @@ double CSSLengthResolver::ContainerMaxPercent() const {
 
 DefaultAnchorData CSSLengthResolver::GetDefaultAnchorData() const {
   using Holder = DisallowNewWrapper<StylePositionAnchor>;
-  DEFINE_STATIC_LOCAL(Persistent<Holder>, empty,
-                      (MakeGarbageCollected<Holder>(StylePositionAnchor(
-                          StylePositionAnchor::Initial()))));
-  return DefaultAnchorData(empty->Value(), PositionArea());
+  static base::NoDestructor<Persistent<Holder>> empty(
+      MakeGarbageCollected<Holder>(
+          StylePositionAnchor(StylePositionAnchor::Initial())));
+  CHECK(IsMainThread());
+  return DefaultAnchorData((*empty)->Value(), PositionArea());
 }
 
 double CSSLengthResolver::ZoomedComputedPixels(

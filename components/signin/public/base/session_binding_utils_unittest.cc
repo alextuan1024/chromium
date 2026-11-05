@@ -58,27 +58,7 @@ base::Value Base64UrlEncodedJsonToValue(std::string_view input) {
   return std::move(*result);
 }
 
-std::string Base64UrlEncode(std::string_view input) {
-  std::string result;
-  base::Base64UrlEncode(input, base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &result);
-  return result;
-}
-
 }  // namespace
-
-TEST(SessionBindingUtilsTest, SignatureAlgorithmFromString) {
-  using enum crypto::sign::SignatureKind;
-  EXPECT_EQ(SignatureAlgorithmFromString("ES256"), ECDSA_SHA256);
-  EXPECT_EQ(SignatureAlgorithmFromString("es256"), ECDSA_SHA256);
-
-  EXPECT_EQ(SignatureAlgorithmFromString("RS256"), RSA_PKCS1_SHA256);
-  EXPECT_EQ(SignatureAlgorithmFromString("rs256"), RSA_PKCS1_SHA256);
-
-  EXPECT_EQ(SignatureAlgorithmFromString("ES256 blah"), std::nullopt);
-  EXPECT_EQ(SignatureAlgorithmFromString("AB512"), std::nullopt);
-  EXPECT_EQ(SignatureAlgorithmFromString(""), std::nullopt);
-}
 
 TEST(SessionBindingUtilsTest, ParseSignatureAlgorithmList) {
   using enum crypto::sign::SignatureKind;
@@ -93,6 +73,8 @@ TEST(SessionBindingUtilsTest, ParseSignatureAlgorithmList) {
   // Unknown algorithms are skipped.
   EXPECT_THAT(ParseSignatureAlgorithmList("WAT1 ES256 WAT2 RS256 WAT3"),
               ElementsAre(ECDSA_SHA256, RSA_PKCS1_SHA256));
+  // Algorithm names are case-sensitive.
+  EXPECT_THAT(ParseSignatureAlgorithmList("es256 rs256"), ElementsAre());
   EXPECT_THAT(ParseSignatureAlgorithmList(""), ElementsAre());
   // All unknown -- empty result.
   EXPECT_THAT(ParseSignatureAlgorithmList("WAT1 WAT2 WAT3"), ElementsAre());
@@ -294,7 +276,9 @@ TEST_P(SessionBindingUtilsEphemeralKeyParamTest,
                 "kty",
                 "type.googleapis.com/google.crypto.tink.EciesAeadHkdfPublicKey")
             .Set("TinkKeysetPublicKeyInfo",
-                 Base64UrlEncode(ephemeral_key->ExportPublicKey())));
+                 base::Base64UrlEncode(
+                     ephemeral_key->ExportPublicKey(),
+                     base::Base64UrlEncodePolicy::OMIT_PADDING)));
   }
 
   EXPECT_EQ(actual_header, expected_header);

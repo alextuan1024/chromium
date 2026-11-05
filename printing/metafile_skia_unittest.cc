@@ -62,8 +62,8 @@ TEST(MetafileSkiaTest, FrameContent) {
   flags.setColor(SK_ColorWHITE);
   const SkRect page_rect = SkRect::MakeXYWH(0, 0, kPageSideLen, kPageSideLen);
   buffer.push<cc::DrawRectOp>(page_rect, flags);
-  const uint32_t content_id = pic_holder->uniqueID();
-  buffer.push<cc::CustomDataOp>(content_id);
+  const PictureContentId content_id(1);
+  buffer.push<cc::CustomDataOp>(content_id.value());
   SkSize page_size = SkSize::Make(kPageSideLen, kPageSideLen);
 
   // Finish creating the entire metafile.
@@ -131,8 +131,8 @@ TEST(MetafileSkiaTest, GetPageBounds) {
   const SkRect page_rect =
       SkRect::MakeXYWH(0, 0, kPageSideWidth, kPageSideHeight);
   buffer.push<cc::DrawRectOp>(page_rect, flags);
-  const uint32_t content_id = pic_holder->uniqueID();
-  buffer.push<cc::CustomDataOp>(content_id);
+  const PictureContentId content_id(1);
+  buffer.push<cc::CustomDataOp>(content_id.value());
   SkSize page_size = SkSize::Make(kPageSideWidth, kPageSideHeight);
 
   // Finish creating the entire metafile.
@@ -161,7 +161,7 @@ TEST(MetafileSkiaTest, MultiPictureDocumentTypefaces) {
   constexpr int kNumDocumentPages = 2;
 
   // The content tracking for serialization/deserialization.
-  ContentProxySet serialize_typeface_ctx;
+  TypefaceSerializationContext serialize_typeface_ctx;
   PictureDeserializationContext subframes;
   TypefaceDeserializationContext typefaces;
   SkDeserialProcs procs = DeserializationProcs(&subframes, &typefaces, nullptr);
@@ -210,8 +210,8 @@ TEST(MetafileSkiaTest, MultiPictureDocumentTypefaces) {
     // Create the page for the text content.
     cc::PaintOpBuffer buffer;
     buffer.push<cc::DrawRectOp>(page_rect, flags);
-    const uint32_t content_id = pic_holder->uniqueID();
-    buffer.push<cc::CustomDataOp>(content_id);
+    const PictureContentId content_id(i + 1);
+    buffer.push<cc::CustomDataOp>(content_id.value());
 
     // Mark the page with some text using multiple fonts.
     // Use the first font.
@@ -270,14 +270,14 @@ TEST(MetafileSkiaTest, SerializeUnencodedRasterImageAsPNG) {
 
     auto encoded_data = procs.fImageProc(image.get(), procs.fImageCtx);
     ASSERT_TRUE(encoded_data);
-    EXPECT_GT(encoded_data->size(), sizeof(uint32_t));
+    EXPECT_GT(encoded_data->size(), sizeof(uint64_t));
 
     base::SpanReader reader{gfx::SkDataToSpan(encoded_data)};
 
-    uint32_t img_id;
-    ASSERT_TRUE(reader.ReadU32NativeEndian(img_id));
+    uint64_t img_id;
+    ASSERT_TRUE(reader.ReadU64NativeEndian(img_id));
     EXPECT_EQ(img_id, image->uniqueID());
-    ASSERT_TRUE(images.contains(img_id));
+    ASSERT_TRUE(images.contains(ImageContentId(img_id)));
 
     // We expect unencoded images to be encoded as PNG.
     auto encoded_image = reader.remaining_span();
@@ -314,14 +314,14 @@ TEST(MetafileSkiaTest, SkipEncodingAsPngWhenImageIsAlreadyEncoded) {
     SkSerialProcs procs = SerializationProcs(&subframes, nullptr, &images);
     auto encoded_data = procs.fImageProc(jpeg_img.get(), procs.fImageCtx);
     ASSERT_TRUE(encoded_data);
-    EXPECT_GT(encoded_data->size(), sizeof(uint32_t));
+    EXPECT_GT(encoded_data->size(), sizeof(uint64_t));
 
     base::SpanReader reader{gfx::SkDataToSpan(encoded_data)};
 
-    uint32_t img_id;
-    ASSERT_TRUE(reader.ReadU32NativeEndian(img_id));
+    uint64_t img_id;
+    ASSERT_TRUE(reader.ReadU64NativeEndian(img_id));
     EXPECT_EQ(img_id, jpeg_img->uniqueID());
-    ASSERT_TRUE(images.contains(img_id));
+    ASSERT_TRUE(images.contains(ImageContentId(img_id)));
 
     // Make sure the data is still encoded as JPEG
     auto encoded_image = reader.remaining_span();
@@ -352,14 +352,14 @@ TEST(MetafileSkiaTest, SerializeUniqueImages) {
 
   auto encoded_data1 = procs.fImageProc(unencoded_img.get(), procs.fImageCtx);
   ASSERT_TRUE(encoded_data1);
-  EXPECT_GT(encoded_data1->size(), sizeof(uint32_t));
+  EXPECT_GT(encoded_data1->size(), sizeof(uint64_t));
 
   {
     base::SpanReader reader{gfx::SkDataToSpan(encoded_data1)};
-    uint32_t img_id;
-    ASSERT_TRUE(reader.ReadU32NativeEndian(img_id));
+    uint64_t img_id;
+    ASSERT_TRUE(reader.ReadU64NativeEndian(img_id));
     EXPECT_EQ(img_id, unencoded_img->uniqueID());
-    ASSERT_TRUE(images.contains(img_id));
+    ASSERT_TRUE(images.contains(ImageContentId(img_id)));
 
     // The image is expected to be encoded as PNG.
     auto encoded_image = reader.remaining_span();
@@ -371,13 +371,13 @@ TEST(MetafileSkiaTest, SerializeUniqueImages) {
   // Call the serialization proc on the image for the second time.
   auto encoded_data2 = procs.fImageProc(unencoded_img.get(), procs.fImageCtx);
   ASSERT_TRUE(encoded_data2);
-  EXPECT_EQ(encoded_data2->size(), sizeof(uint32_t));
+  EXPECT_EQ(encoded_data2->size(), sizeof(uint64_t));
 
   {
     // The second serialization should only return image id.
     base::SpanReader reader{gfx::SkDataToSpan(encoded_data2)};
-    uint32_t img_id;
-    ASSERT_TRUE(reader.ReadU32NativeEndian(img_id));
+    uint64_t img_id;
+    ASSERT_TRUE(reader.ReadU64NativeEndian(img_id));
     EXPECT_EQ(img_id, unencoded_img->uniqueID());
     EXPECT_FALSE(reader.remaining());
   }

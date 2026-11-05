@@ -22,7 +22,6 @@ import androidx.test.espresso.Root;
 import androidx.test.espresso.ViewAction;
 import androidx.test.espresso.ViewAssertion;
 import androidx.test.espresso.ViewInteraction;
-import androidx.test.espresso.action.ViewActions;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.hamcrest.Matcher;
@@ -161,20 +160,12 @@ public class ViewElement<ViewT extends View> extends Element<ViewT> implements V
 
     @Override
     public TripBuilder clickTo() {
-        if (mOptions.mDisplayedPercentageRequired <= 90) {
-            return performViewActionTo(ForgivingClickAction.forgivingClick());
-        } else {
-            return performViewActionTo(ViewActions.click());
-        }
+        return performViewActionTo(ForgivingClickAction.forgivingClick());
     }
 
     @Override
     public TripBuilder longPressTo() {
-        if (mOptions.mDisplayedPercentageRequired <= 90) {
-            return performViewActionTo(ForgivingClickAction.forgivingLongClick());
-        } else {
-            return performViewActionTo(ViewActions.longClick());
-        }
+        return performViewActionTo(ForgivingClickAction.forgivingLongClick());
     }
 
     @Override
@@ -333,11 +324,6 @@ public class ViewElement<ViewT extends View> extends Element<ViewT> implements V
                 return this;
             }
 
-            /** Expect the View to be in a dialog root. */
-            public Builder inDialog() {
-                return rootSpec(RootSpec.dialogRoot());
-            }
-
             /**
              * Expect the View to be disabled instead of enabled.
              *
@@ -415,11 +401,6 @@ public class ViewElement<ViewT extends View> extends Element<ViewT> implements V
     /** Convenience {@link Options} setting unscoped(). */
     public static Options unscopedOption() {
         return newOptions().unscoped().build();
-    }
-
-    /** Convenience {@link Options} setting inDialog(). */
-    public static Options inDialogOption() {
-        return newOptions().inDialog().build();
     }
 
     /** Convenience {@link Options} setting expectDisabled(). */

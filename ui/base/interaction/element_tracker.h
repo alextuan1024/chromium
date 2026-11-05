@@ -125,7 +125,7 @@ class COMPONENT_EXPORT(UI_BASE_INTERACTION) ElementTracker
   using Contexts = std::set<ElementContext>;
 
   // Identifier that should be used by each framework to create a
-  // TrackedElement from an element that does not alreayd have an identifier.
+  // TrackedElement from an element that does not already have an identifier.
   //
   // Currently, the identifier is not removed when the code that needs the
   // element completes, but in the future we may implement a ref-counting
@@ -286,7 +286,7 @@ class COMPONENT_EXPORT(UI_BASE_INTERACTION) ElementTracker
   // notifications for; this allows us to zero out the reference in realtime if
   // the element is deleted. We use a list because the individual elements need
   // to be memory-stable.
-  std::list<raw_ptr<TrackedElement, CtnExperimental>> notification_elements_;
+  std::list<raw_ptr<TrackedElement, DanglingUntriaged>> notification_elements_;
   std::map<LookupKey, ElementData> element_data_;
   base::RepeatingCallbackList<void(TrackedElement*)>
       any_element_shown_callbacks_;

@@ -7,8 +7,8 @@
 #include <memory>
 #include <optional>
 #include <tuple>
-#include <vector>
 
+#include "base/i18n/language_tag.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
@@ -23,6 +23,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/scoped_browser_locale.h"
 #include "components/application_locale_storage/application_locale_storage.h"
+#include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/lens/lens_features.h"
 #include "components/prefs/pref_service.h"
@@ -58,6 +59,16 @@ class TestingAimEligibilityService : public ChromeAimEligibilityService {
 
   ~TestingAimEligibilityService() override = default;
 
+  void SetEligibility(bool is_locally_eligible,
+                      bool is_server_eligible,
+                      bool server_eligibility_enabled,
+                      bool is_csb_eligible) {
+    is_locally_eligible_ = is_locally_eligible;
+    is_server_eligible_ = is_server_eligible;
+    server_eligibility_enabled_ = server_eligibility_enabled;
+    is_csb_eligible_ = is_csb_eligible;
+  }
+
   bool IsAimLocallyEligible() const override { return is_locally_eligible_; }
   bool IsServerEligibilityEnabled() const override {
     return server_eligibility_enabled_;
@@ -92,26 +103,43 @@ class LensSearchFeatureFlagsUtilsBrowserTestBase : public InProcessBrowserTest {
     command_line->AppendSwitch("disable-field-trial-config");
   }
 
+  void SetUpInProcessBrowserTestFixture() override {
+    InProcessBrowserTest::SetUpInProcessBrowserTestFixture();
+    create_services_subscription_ =
+        BrowserContextDependencyManager::GetInstance()
+            ->RegisterCreateServicesCallbackForTesting(base::BindRepeating(
+                &LensSearchFeatureFlagsUtilsBrowserTestBase::
+                    OnWillCreateBrowserContextServices));
+  }
+
  protected:
+  static void OnWillCreateBrowserContextServices(
+      content::BrowserContext* context) {
+    AimEligibilityServiceFactory::GetInstance()->SetTestingFactory(
+        context, base::BindRepeating([](content::BrowserContext* context)
+                                         -> std::unique_ptr<KeyedService> {
+          Profile* profile = Profile::FromBrowserContext(context);
+          return std::make_unique<TestingAimEligibilityService>(
+              /*is_locally_eligible=*/false, /*is_server_eligible=*/false,
+              /*server_eligibility_enabled=*/false, /*is_csb_eligible=*/false,
+              *profile->GetPrefs(),
+              TemplateURLServiceFactory::GetForProfile(profile));
+        }));
+  }
+
   void SetUpAimEligibilityService(bool is_locally_eligible,
                                   bool is_server_eligible,
                                   bool server_eligibility_enabled,
                                   bool is_csb_eligible = false) {
-    AimEligibilityServiceFactory::GetInstance()->SetTestingFactory(
-        browser()->GetProfile(),
-        base::BindLambdaForTesting(
-            [is_locally_eligible, is_server_eligible,
-             server_eligibility_enabled,
-             is_csb_eligible](content::BrowserContext* context) {
-              Profile* profile = Profile::FromBrowserContext(context);
-              return static_cast<std::unique_ptr<KeyedService>>(
-                  std::make_unique<TestingAimEligibilityService>(
-                      is_locally_eligible, is_server_eligible,
-                      server_eligibility_enabled, is_csb_eligible,
-                      *profile->GetPrefs(),
-                      TemplateURLServiceFactory::GetForProfile(profile)));
-            }));
+    auto* service = static_cast<TestingAimEligibilityService*>(
+        AimEligibilityServiceFactory::GetForProfile(browser()->GetProfile()));
+    ASSERT_TRUE(service);
+    service->SetEligibility(is_locally_eligible, is_server_eligible,
+                            server_eligibility_enabled, is_csb_eligible);
   }
+
+ private:
+  base::CallbackListSubscription create_services_subscription_;
 };
 
 // Test fixture with kLensSearchAimM3 feature enabled.
@@ -192,7 +220,8 @@ IN_PROC_BROWSER_TEST_F(LensSearchFeatureFlagsUtilsAimM3EnUsEnabledTest,
   // Set locale to en-US.
   ScopedBrowserLocale scoped_locale{"en-US"};
   g_browser_process->variations_service()->OverrideStoredPermanentCountry("us");
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   // Returns true when server eligibility checking is disabled, the flag is
   // enabled, and locale is en-US.
@@ -281,71 +310,28 @@ IN_PROC_BROWSER_TEST_F(LensSearchFeatureFlagsUtilsAimM3EnUsUsesEligibilityTest,
   EXPECT_FALSE(lens::IsAimM3Enabled(browser()->GetProfile()));
 }
 
-// Test fixture for verifying that other users follow the
-// kLensSearchAimM3UseAimEligibility flag. This is parameterized on whether the
-// flag is enabled.
-class LensSearchFeatureFlagsUtilsAimM3FollowsUseEligibilityFlagTest
-    : public LensSearchFeatureFlagsUtilsBrowserTestBase,
-      public testing::WithParamInterface<bool> {
- public:
-  LensSearchFeatureFlagsUtilsAimM3FollowsUseEligibilityFlagTest() {
-    std::vector<base::test::FeatureRef> enabled_features;
-    if (ShouldUseAimEligibility()) {
-      enabled_features.push_back(
-          lens::features::kLensSearchAimM3UseAimEligibility);
-    }
-    // Also enable the main M3 feature, since that would be the state for users
-    // who would be using the eligibility service.
-    enabled_features.push_back(lens::features::kLensSearchAimM3);
-    feature_list_.InitWithFeatures(enabled_features, {});
-  }
-  ~LensSearchFeatureFlagsUtilsAimM3FollowsUseEligibilityFlagTest() override =
-      default;
-
-  bool ShouldUseAimEligibility() const { return GetParam(); }
-
- protected:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_P(
-    LensSearchFeatureFlagsUtilsAimM3FollowsUseEligibilityFlagTest,
-    TestIsAimM3Enabled_OtherUsersFollowUseAimEligibilityFlag) {
+IN_PROC_BROWSER_TEST_F(LensSearchFeatureFlagsUtilsAimM3EnabledTest,
+                       TestIsAimM3Enabled_OtherUsersUseAimEligibilityService) {
   // Set locale to something other than en-US.
   ScopedBrowserLocale scoped_locale{"en-GB"};
   g_browser_process->variations_service()->OverrideStoredPermanentCountry("gb");
 
-  if (ShouldUseAimEligibility()) {
-    // When the eligibility service returns eligible, IsAimM3Enabled should be
-    // true.
-    SetUpAimEligibilityService(/*is_locally_eligible=*/true,
-                               /*is_server_eligible=*/true,
-                               /*server_eligibility_enabled=*/true,
-                               /*is_csb_eligible=*/true);
-    EXPECT_TRUE(lens::IsAimM3Enabled(browser()->GetProfile()));
+  // When the eligibility service returns eligible, IsAimM3Enabled should be
+  // true.
+  SetUpAimEligibilityService(/*is_locally_eligible=*/true,
+                             /*is_server_eligible=*/true,
+                             /*server_eligibility_enabled=*/true,
+                             /*is_csb_eligible=*/true);
+  EXPECT_TRUE(lens::IsAimM3Enabled(browser()->GetProfile()));
 
-    // When the eligibility service returns ineligible, IsAimM3Enabled should be
-    // false.
-    SetUpAimEligibilityService(/*is_locally_eligible=*/false,
-                               /*is_server_eligible=*/false,
-                               /*server_eligibility_enabled=*/false,
-                               /*is_csb_eligible=*/true);
-    EXPECT_FALSE(lens::IsAimM3Enabled(browser()->GetProfile()));
-  } else {
-    // If not using the AIM service, the result depends on kLensSearchAimM3. In
-    // this test fixture, we have it enabled.
-    SetUpAimEligibilityService(/*is_locally_eligible=*/true,
-                               /*is_server_eligible=*/false,
-                               /*server_eligibility_enabled=*/false,
-                               /*is_csb_eligible=*/true);
-    EXPECT_TRUE(lens::IsAimM3Enabled(browser()->GetProfile()));
-  }
+  // When the eligibility service returns ineligible, IsAimM3Enabled should be
+  // false.
+  SetUpAimEligibilityService(/*is_locally_eligible=*/false,
+                             /*is_server_eligible=*/false,
+                             /*server_eligibility_enabled=*/false,
+                             /*is_csb_eligible=*/true);
+  EXPECT_FALSE(lens::IsAimM3Enabled(browser()->GetProfile()));
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    LensSearchFeatureFlagsUtilsAimM3FollowsUseEligibilityFlagTest,
-    testing::Bool());
 
 // Test action chip functionality with frequency capping enabled.
 class LensSearchFeatureFlagsUtilsFrequencyCapEnabledTest

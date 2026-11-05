@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <array>
 #include <utility>
 
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/gtest_util.h"
 #include "base/test/task_environment.h"
@@ -39,6 +41,7 @@
 #include "components/viz/common/view_transition_element_resource_id.h"
 #include "components/viz/test/begin_frame_args_test.h"
 #include "components/viz/test/compositor_frame_helpers.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "gpu/ipc/common/mailbox_mojom_traits.h"
 #include "gpu/ipc/common/sync_token_mojom_traits.h"
 #include "ipc/param_traits_utils.h"
@@ -87,6 +90,7 @@
 #include "third_party/fuzztest/src/fuzztest/fuzztest.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
+#include "third_party/skia/include/core/SkRect.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkString.h"
 #include "ui/gfx/geometry/mojom/geometry_mojom_traits.h"
@@ -399,6 +403,8 @@ TEST_F(CompositingStructTraitsTest, CopyOutputRequest_BitmapRequest) {
   EXPECT_TRUE(output->has_result_selection());
   EXPECT_EQ(result_rect, output->result_selection());
 
+  EXPECT_FALSE(output->is_secure());
+
   SkBitmap bitmap;
   bitmap.allocPixels(SkImageInfo::MakeN32Premul(
       result_rect.width(), result_rect.height(), SkColorSpace::MakeSRGB()));
@@ -407,6 +413,18 @@ TEST_F(CompositingStructTraitsTest, CopyOutputRequest_BitmapRequest) {
   // If the CopyOutputRequest callback is called, this ends. Otherwise, the test
   // will time out and fail.
   run_loop.Run();
+}
+
+TEST_F(CompositingStructTraitsTest, CopyOutputRequest_SecureRequest) {
+  auto input = std::make_unique<CopyOutputRequest>(
+      CopyOutputRequest::ResultFormat::RGBA,
+      CopyOutputRequest::ResultDestination::kSystemMemory, base::DoNothing());
+  input->set_is_secure(true);
+  EXPECT_TRUE(input->is_secure());
+
+  std::unique_ptr<CopyOutputRequest> output;
+  mojo::test::SerializeAndDeserialize<mojom::CopyOutputRequest>(input, output);
+  EXPECT_TRUE(output->is_secure());
 }
 
 TEST_F(CompositingStructTraitsTest, CopyOutputRequest_MessagePipeBroken) {
@@ -615,7 +633,7 @@ TEST_F(CompositingStructTraitsTest, CompositorFrame) {
   // TransferableResource constants.
   const ResourceId single_plane_id(1337);
   const ResourceId multi_plane_id(1338);
-  const SharedImageFormat single_plane_format = SinglePlaneFormat::kALPHA_8;
+  const SharedImageFormat single_plane_format = SinglePlaneFormat::kRGBA_8888;
   const SharedImageFormat multi_plane_format = MultiPlaneFormat::kNV12;
   const gfx::Size tr_size(1234, 5678);
   TransferableResource single_plane_resource = TransferableResource::Make(
@@ -629,7 +647,7 @@ TEST_F(CompositingStructTraitsTest, CompositorFrame) {
       gpu::ClientSharedImage::CreateForTesting(
           gpu::SharedImageMetadata{.format = multi_plane_format,
                                    .size = tr_size,
-                                   .alpha_type = kPremul_SkAlphaType}),
+                                   .alpha_type = kUnpremul_SkAlphaType}),
       TransferableResource::ResourceSource::kTest, gpu::SyncToken());
   multi_plane_resource.id = multi_plane_id;
 
@@ -840,6 +858,7 @@ TEST_F(CompositingStructTraitsTest, CompositorFrameMetadata) {
   const float device_scale_factor = 2.6f;
   const gfx::PointF root_scroll_offset(1234.5f, 6789.1f);
   const float page_scale_factor = 1337.5f;
+  const float surface_backing_size_scale_factor = 2.5f;
   const gfx::SizeF scrollable_viewport_size(1337.7f, 1234.5f);
   const bool may_contain_video = true;
   const SkColor4f root_background_color = {0.0f, 0.02f, 0.224f, 0.0f};
@@ -866,6 +885,7 @@ TEST_F(CompositingStructTraitsTest, CompositorFrameMetadata) {
   input.device_scale_factor = device_scale_factor;
   input.root_scroll_offset = root_scroll_offset;
   input.page_scale_factor = page_scale_factor;
+  input.surface_backing_size_scale_factor = surface_backing_size_scale_factor;
   input.scrollable_viewport_size = scrollable_viewport_size;
   input.may_contain_video = may_contain_video;
   input.root_background_color = root_background_color;
@@ -887,6 +907,8 @@ TEST_F(CompositingStructTraitsTest, CompositorFrameMetadata) {
   EXPECT_EQ(device_scale_factor, output.device_scale_factor);
   EXPECT_EQ(root_scroll_offset, output.root_scroll_offset);
   EXPECT_EQ(page_scale_factor, output.page_scale_factor);
+  EXPECT_EQ(surface_backing_size_scale_factor,
+            output.surface_backing_size_scale_factor);
   EXPECT_EQ(scrollable_viewport_size, output.scrollable_viewport_size);
   EXPECT_EQ(may_contain_video, output.may_contain_video);
   EXPECT_EQ(root_background_color, output.root_background_color);
@@ -981,8 +1003,6 @@ TEST_F(CompositingStructTraitsTest, RenderPass) {
   constexpr gfx::Transform kTransformToRoot =
       gfx::Transform::Affine(1.0, 0.5, 0.5, -0.5, -1.0, 0.0);
   constexpr gfx::Rect kDamageRect(56, 123, 19, 43);
-  const std::optional<SkPath> kBackdropFilterBounds = SkPath::RRect(
-      SkRRect(gfx::RRectF{10, 20, 130, 140, 1, 2, 3, 4, 5, 6, 7, 8}));
   constexpr SubtreeCaptureId kSubtreeCaptureId(base::Token(0u, 22u));
   constexpr bool kHasTransparentBackground = true;
   constexpr bool kCacheRenderPass = true;
@@ -990,17 +1010,8 @@ TEST_F(CompositingStructTraitsTest, RenderPass) {
   constexpr bool kGenerateMipmap = true;
   constexpr bool kHasPerQuadDamage = true;
 
-  cc::FilterOperations filters;
-  filters.Append(cc::FilterOperation::CreateBlurFilter(0.f));
-  filters.Append(cc::FilterOperation::CreateZoomFilter(2.0f, 1));
-  cc::FilterOperations backdrop_filters;
-  backdrop_filters.Append(cc::FilterOperation::CreateSaturateFilter(4.f));
-  backdrop_filters.Append(cc::FilterOperation::CreateZoomFilter(2.0f, 1));
-  backdrop_filters.Append(cc::FilterOperation::CreateSaturateFilter(2.f));
-
   auto input = CompositorRenderPass::Create();
   input->SetAll(kRenderPassId, kOutputRect, kDamageRect, kTransformToRoot,
-                filters, backdrop_filters, kBackdropFilterBounds,
                 kSubtreeCaptureId, kOutputRect.size(),
                 ViewTransitionElementResourceId(), kHasTransparentBackground,
                 kCacheRenderPass, kHasDamageFromContributingContent,
@@ -1031,7 +1042,7 @@ TEST_F(CompositingStructTraitsTest, RenderPass) {
       /*opacity_f=*/2, SkBlendMode::kSrcOver, /*sorting_context=*/1,
       /*layer_id=*/0u, /*fast_rounded_corner=*/false);
 
-  // This quad uses the first shared quad state. The next two quads use the
+  // This quad uses the first shared quad state. The next three quads use the
   // second shared quad state.
   DebugBorderDrawQuad* debug_quad =
       input->CreateAndAppendDrawQuad<DebugBorderDrawQuad>();
@@ -1059,6 +1070,37 @@ TEST_F(CompositingStructTraitsTest, RenderPass) {
   surface_quad->is_reflection = !surface_quad->is_reflection;
   surface_quad->allow_merge = !surface_quad->allow_merge;
 
+  // CompositorRenderPassDrawQuad with filters.
+  const gfx::Rect rpdq_rect(1234, 5678, 91012, 13141);
+  bool rpdq_needs_blending = false;
+  const CompositorRenderPassId rpdq_render_pass_id{1234u};
+  const ResourceId rpdq_resource_id(1337);
+  const gfx::RectF rpdq_mask_uv_rect(0, 0, 1337.1f, 1234.2f);
+  const gfx::Size rpdq_mask_texture_size(1234, 5678);
+  gfx::Vector2dF rpdq_filters_scale(1234.1f, 4321.2f);
+  gfx::PointF rpdq_filters_origin(8765.4f, 4567.8f);
+  bool rpdq_force_anti_aliasing_off = false;
+  const float rpdq_backdrop_filter_quality = 0.5;
+  bool rpdq_intersects_damage_under = false;
+  const cc::FilterOperations rpdq_filters(
+      {cc::FilterOperation::CreateBlurFilter(0.f),
+       cc::FilterOperation::CreateZoomFilter(2.0f, 1)});
+  const cc::FilterOperations rpdq_backdrop_filters(
+      {cc::FilterOperation::CreateSaturateFilter(4.f),
+       cc::FilterOperation::CreateZoomFilter(2.0f, 1),
+       cc::FilterOperation::CreateSaturateFilter(2.f)});
+  const std::optional<SkPath> rpdq_backdrop_filter_bounds = SkPath::RRect(
+      SkRRect(gfx::RRectF{10, 20, 130, 140, 1, 2, 3, 4, 5, 6, 7, 8}));
+
+  CompositorRenderPassDrawQuad* rpdq =
+      input->CreateAndAppendDrawQuad<CompositorRenderPassDrawQuad>();
+  rpdq->SetAll(shared_state_2, rpdq_rect, rpdq_rect, rpdq_needs_blending,
+               rpdq_render_pass_id, rpdq_resource_id, rpdq_mask_uv_rect,
+               rpdq_mask_texture_size, rpdq_filters_scale, rpdq_filters_origin,
+               rpdq_force_anti_aliasing_off, rpdq_backdrop_filter_quality,
+               rpdq_intersects_damage_under, rpdq_filters,
+               rpdq_backdrop_filters, rpdq_backdrop_filter_bounds);
+
   std::unique_ptr<CompositorRenderPass> output;
   mojo::test::SerializeAndDeserialize<mojom::CompositorRenderPass>(input,
                                                                    output);
@@ -1071,15 +1113,11 @@ TEST_F(CompositingStructTraitsTest, RenderPass) {
   EXPECT_EQ(kDamageRect, output->damage_rect);
   EXPECT_EQ(kTransformToRoot, output->transform_to_root_target);
   EXPECT_EQ(kHasTransparentBackground, output->has_transparent_background);
-  EXPECT_EQ(filters, output->filters);
-  EXPECT_EQ(backdrop_filters, output->backdrop_filters);
-  EXPECT_EQ(kBackdropFilterBounds, output->backdrop_filter_bounds);
   EXPECT_EQ(kSubtreeCaptureId, output->subtree_capture_id);
   EXPECT_EQ(kCacheRenderPass, output->cache_render_pass);
   EXPECT_EQ(kHasDamageFromContributingContent,
             output->has_damage_from_contributing_content);
   EXPECT_EQ(kHasPerQuadDamage, output->has_per_quad_damage);
-  EXPECT_EQ(kGenerateMipmap, output->generate_mipmap);
   ASSERT_EQ(1u, output->copy_requests.size());
   EXPECT_EQ(kCopyOutputArea, output->copy_requests.front()->area());
 
@@ -1140,6 +1178,26 @@ TEST_F(CompositingStructTraitsTest, RenderPass) {
             out_surface_quad->override_child_filter_quality);
   EXPECT_EQ(surface_quad->override_child_dynamic_range_limit,
             out_surface_quad->override_child_dynamic_range_limit);
+
+  const CompositorRenderPassDrawQuad* out_rpdq =
+      CompositorRenderPassDrawQuad::MaterialCast(
+          output->quad_list.ElementAt(3));
+  EXPECT_EQ(out_rpdq->shared_quad_state, out_sqs2);
+  EXPECT_EQ(rpdq->rect, out_rpdq->rect);
+  EXPECT_EQ(rpdq->visible_rect, out_rpdq->visible_rect);
+  EXPECT_EQ(rpdq->needs_blending, out_rpdq->needs_blending);
+  EXPECT_EQ(rpdq->render_pass_id, out_rpdq->render_pass_id);
+  EXPECT_EQ(rpdq->mask_resource_id(), out_rpdq->mask_resource_id());
+  EXPECT_EQ(rpdq->mask_uv_rect, out_rpdq->mask_uv_rect);
+  EXPECT_EQ(rpdq->mask_texture_size, out_rpdq->mask_texture_size);
+  EXPECT_EQ(rpdq->force_anti_aliasing_off, out_rpdq->force_anti_aliasing_off);
+  EXPECT_EQ(rpdq->intersects_damage_under, out_rpdq->intersects_damage_under);
+  EXPECT_EQ(rpdq->filters, out_rpdq->filters);
+  EXPECT_EQ(rpdq->backdrop_filters, out_rpdq->backdrop_filters);
+  EXPECT_EQ(rpdq->backdrop_filter_bounds, out_rpdq->backdrop_filter_bounds);
+  EXPECT_EQ(rpdq->filters_scale, out_rpdq->filters_scale);
+  EXPECT_EQ(rpdq->filters_origin, out_rpdq->filters_origin);
+  EXPECT_EQ(rpdq->backdrop_filter_quality, out_rpdq->backdrop_filter_quality);
 }
 
 TEST_F(CompositingStructTraitsTest, RenderPassWithEmptySharedQuadStateList) {
@@ -1148,7 +1206,6 @@ TEST_F(CompositingStructTraitsTest, RenderPassWithEmptySharedQuadStateList) {
   constexpr gfx::Rect kDamageRect(56, 123, 19, 43);
   constexpr gfx::Transform kTransformToRoot =
       gfx::Transform::Affine(1.0, 0.5, 0.5, -0.5, -1.0, 0.0);
-  const std::optional<SkPath> kBackdropFilterBounds;
   constexpr SubtreeCaptureId kEmptySubtreeCaptureId;
   constexpr bool kHasTransparentBackground = true;
   constexpr bool kCacheRenderPass = false;
@@ -1158,12 +1215,10 @@ TEST_F(CompositingStructTraitsTest, RenderPassWithEmptySharedQuadStateList) {
 
   auto input = CompositorRenderPass::Create();
   input->SetAll(kRenderPassId, kOutputRect, kDamageRect, kTransformToRoot,
-                cc::FilterOperations(), cc::FilterOperations(),
-                kBackdropFilterBounds, kEmptySubtreeCaptureId,
-                kOutputRect.size(), ViewTransitionElementResourceId(),
-                kHasTransparentBackground, kCacheRenderPass,
-                kHasDamageFromContributingContent, kGenerateMipmap,
-                kHasPerQuadDamage);
+                kEmptySubtreeCaptureId, kOutputRect.size(),
+                ViewTransitionElementResourceId(), kHasTransparentBackground,
+                kCacheRenderPass, kHasDamageFromContributingContent,
+                kGenerateMipmap, kHasPerQuadDamage);
 
   // Unlike the previous test, don't add any quads to the list; we need to
   // verify that the serialization code can deal with that.
@@ -1178,7 +1233,6 @@ TEST_F(CompositingStructTraitsTest, RenderPassWithEmptySharedQuadStateList) {
   EXPECT_EQ(kOutputRect, output->output_rect);
   EXPECT_EQ(kDamageRect, output->damage_rect);
   EXPECT_EQ(kTransformToRoot, output->transform_to_root_target);
-  EXPECT_EQ(kBackdropFilterBounds, output->backdrop_filter_bounds);
   EXPECT_EQ(kEmptySubtreeCaptureId, output->subtree_capture_id);
   EXPECT_EQ(kOutputRect.size(), output->subtree_size);
   EXPECT_FALSE(output->subtree_capture_id.is_valid());
@@ -1189,32 +1243,56 @@ TEST_F(CompositingStructTraitsTest, RenderPassWithEmptySharedQuadStateList) {
 // This ensures that null backdrop_filter_bounds means "don't apply bounds"
 // rather than "don't show any backdrop-filter".
 TEST_F(CompositingStructTraitsTest, BackdropFilterWithNullBounds) {
+  auto input = CompositorRenderPass::Create();
+  input->SetAll(CompositorRenderPassId{1u}, gfx::Rect(100, 100), gfx::Rect(),
+                gfx::Transform(), SubtreeCaptureId(), gfx::Size(100, 100),
+                ViewTransitionElementResourceId(), false, false, false, false,
+                false);
+
+  SharedQuadState* sqs = input->CreateAndAppendSharedQuadState();
+
+  const gfx::Rect rect(1234, 5678, 91012, 13141);
+  const bool needs_blending = true;
+  const ResourceId resource_id(1337);
+  const CompositorRenderPassId render_pass_id{1234u};
+  const gfx::RectF mask_uv_rect(0, 0, 1337.1f, 1234.2f);
+  const gfx::Size mask_texture_size(1234, 5678);
+  gfx::Vector2dF filters_scale(1234.1f, 4321.2f);
+  gfx::PointF filters_origin(8765.4f, 4567.8f);
+  bool force_anti_aliasing_off = false;
+  const float backdrop_filter_quality = 1.0f;
+  const bool intersects_damage_under = false;
+  const cc::FilterOperations backdrop_filters(
+      {cc::FilterOperation::CreateBlurFilter(5.0f)});
   // Create a null backdrop filter bounds
   const std::optional<SkPath> kBackdropFilterBounds;
 
-  cc::FilterOperations backdrop_filters;
-  backdrop_filters.Append(cc::FilterOperation::CreateBlurFilter(5.0f));
-
-  auto input = CompositorRenderPass::Create();
-  input->SetAll(CompositorRenderPassId{1u}, gfx::Rect(100, 100), gfx::Rect(),
-                gfx::Transform(), cc::FilterOperations(), backdrop_filters,
-                kBackdropFilterBounds, SubtreeCaptureId(), gfx::Size(100, 100),
-                ViewTransitionElementResourceId(), true, false, false, false,
-                false);
+  CompositorRenderPassDrawQuad* rpdq =
+      input->CreateAndAppendDrawQuad<CompositorRenderPassDrawQuad>();
+  rpdq->SetAll(sqs, rect, rect, needs_blending, render_pass_id, resource_id,
+               mask_uv_rect, mask_texture_size, filters_scale, filters_origin,
+               force_anti_aliasing_off, backdrop_filter_quality,
+               intersects_damage_under, cc::FilterOperations(),
+               backdrop_filters, kBackdropFilterBounds);
 
   std::unique_ptr<CompositorRenderPass> output;
   mojo::test::SerializeAndDeserialize<mojom::CompositorRenderPass>(input,
                                                                    output);
 
+  ASSERT_EQ(1u, output->quad_list.size());
+  const CompositorRenderPassDrawQuad* out_rpdq =
+      CompositorRenderPassDrawQuad::MaterialCast(
+          output->quad_list.ElementAt(0));
+
   // backdrop_filter_bounds should remain nullopt after serialization
-  EXPECT_EQ(kBackdropFilterBounds, output->backdrop_filter_bounds);
-  EXPECT_FALSE(output->backdrop_filter_bounds.has_value());
+  EXPECT_EQ(kBackdropFilterBounds, out_rpdq->backdrop_filter_bounds);
+  EXPECT_FALSE(out_rpdq->backdrop_filter_bounds.has_value());
 
   // Verify backdrop filters should still be present and valid
-  EXPECT_FALSE(output->backdrop_filters.IsEmpty());
-  EXPECT_EQ(1u, output->backdrop_filters.size());
-  EXPECT_EQ(cc::FilterOperation::BLUR, output->backdrop_filters.at(0).type());
-  EXPECT_EQ(5.0f, output->backdrop_filters.at(0).amount());
+  EXPECT_FALSE(out_rpdq->backdrop_filters.IsEmpty());
+  EXPECT_EQ(1u, out_rpdq->backdrop_filters.size());
+  EXPECT_EQ(cc::FilterOperation::BLUR, out_rpdq->backdrop_filters.at(0).type());
+  EXPECT_EQ(5.0f, out_rpdq->backdrop_filters.at(0).amount());
 }
 
 TEST_F(CompositingStructTraitsTest, QuadListBasic) {
@@ -1265,14 +1343,23 @@ TEST_F(CompositingStructTraitsTest, QuadListBasic) {
   gfx::PointF filters_origin(8765.4f, 4567.8f);
   const float backdrop_filter_quality = 1.0f;
   const bool intersects_damage_under = false;
+  const cc::FilterOperations filters(
+      {cc::FilterOperation::CreateBlurFilter(0.f),
+       cc::FilterOperation::CreateZoomFilter(2.0f, 1)});
+  const cc::FilterOperations backdrop_filters(
+      {cc::FilterOperation::CreateSaturateFilter(4.f),
+       cc::FilterOperation::CreateZoomFilter(2.0f, 1),
+       cc::FilterOperation::CreateSaturateFilter(2.f)});
+  const std::optional<SkPath> backdrop_filter_bounds = SkPath::RRect(
+      SkRRect(gfx::RRectF{10, 20, 130, 140, 1, 2, 3, 4, 5, 6, 7, 8}));
 
   CompositorRenderPassDrawQuad* render_pass_quad =
       render_pass->CreateAndAppendDrawQuad<CompositorRenderPassDrawQuad>();
-  render_pass_quad->SetAll(sqs, rect4, rect4, needs_blending, render_pass_id,
-                           resource_id4, mask_uv_rect, mask_texture_size,
-                           filters_scale, filters_origin,
-                           force_anti_aliasing_off, backdrop_filter_quality,
-                           intersects_damage_under);
+  render_pass_quad->SetAll(
+      sqs, rect4, rect4, needs_blending, render_pass_id, resource_id4,
+      mask_uv_rect, mask_texture_size, filters_scale, filters_origin,
+      force_anti_aliasing_off, backdrop_filter_quality, intersects_damage_under,
+      filters, backdrop_filters, backdrop_filter_bounds);
 
   const gfx::Rect rect5(123, 567, 91011, 13141);
   const ResourceId resource_id5(1337);
@@ -1368,6 +1455,10 @@ TEST_F(CompositingStructTraitsTest, QuadListBasic) {
             out_render_pass_draw_quad->backdrop_filter_quality);
   EXPECT_EQ(intersects_damage_under,
             out_render_pass_draw_quad->intersects_damage_under);
+  EXPECT_EQ(filters, out_render_pass_draw_quad->filters);
+  EXPECT_EQ(backdrop_filters, out_render_pass_draw_quad->backdrop_filters);
+  EXPECT_EQ(backdrop_filter_bounds,
+            out_render_pass_draw_quad->backdrop_filter_bounds);
 
   const TextureDrawQuad* out_texture_draw_quad =
       TextureDrawQuad::MaterialCast(output->quad_list.ElementAt(4));
@@ -1498,7 +1589,7 @@ TEST_F(CompositingStructTraitsTest, OffsetTagDefinition) {
 
 TEST_F(CompositingStructTraitsTest, TransferableResource) {
   const ResourceId id(1337);
-  const SharedImageFormat format = SinglePlaneFormat::kALPHA_8;
+  const SharedImageFormat format = SinglePlaneFormat::kRGBA_8888;
   const gfx::Size size(1234, 5678);
   const int8_t mailbox_name[GL_MAILBOX_SIZE_CHROMIUM] = {
       0, 9, 8, 7, 6, 5, 4, 3, 2, 1, 9, 7, 5, 3, 1, 2};
@@ -1660,6 +1751,46 @@ TEST_F(CompositingStructTraitsTest, CopyOutputResult_Bitmap) {
   EXPECT_EQ(output->GetTrackedElementRects(), tracked_element_rects);
 }
 
+TEST_F(CompositingStructTraitsTest, CopyOutputResult_BitmapWithPaddedRows) {
+  constexpr std::array<SkColor, 3> kRowColors = {SK_ColorRED, SK_ColorGREEN,
+                                                 SK_ColorBLUE};
+  const gfx::Rect result_rect(0, 0, 2, 3);
+  const SkImageInfo info =
+      SkImageInfo::MakeN32Premul(2, 3, SkColorSpace::MakeSRGB());
+  const size_t row_bytes = info.minRowBytes() + 8;
+  SkBitmap bitmap;
+  bitmap.allocPixels(info, row_bytes);
+  // Only the rows before the last one need padding in the source allocation.
+  ASSERT_EQ(bitmap.computeByteSize(), 2 * row_bytes + info.minRowBytes());
+  for (int y = 0; y < result_rect.height(); ++y) {
+    bitmap.eraseArea(SkIRect::MakeXYWH(0, y, result_rect.width(), 1),
+                     kRowColors[y]);
+  }
+
+  std::unique_ptr<CopyOutputResult> input =
+      std::make_unique<CopyOutputSkBitmapResult>(result_rect,
+                                                 std::move(bitmap));
+  std::unique_ptr<CopyOutputResult> output;
+  ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::CopyOutputResult>(
+      input, output));
+  input.reset();
+
+  ASSERT_TRUE(output);
+  ASSERT_FALSE(output->IsEmpty());
+  EXPECT_EQ(output->rect(), result_rect);
+  auto scoped_bitmap = output->ScopedAccessSkBitmap();
+  const SkBitmap out_bitmap = scoped_bitmap.bitmap();
+  ASSERT_TRUE(out_bitmap.readyToDraw());
+  ASSERT_EQ(out_bitmap.width(), result_rect.width());
+  ASSERT_EQ(out_bitmap.height(), result_rect.height());
+  EXPECT_EQ(out_bitmap.rowBytes(), info.minRowBytes());
+  for (int y = 0; y < result_rect.height(); ++y) {
+    for (int x = 0; x < result_rect.width(); ++x) {
+      EXPECT_EQ(out_bitmap.getColor(x, y), kRowColors[y]);
+    }
+  }
+}
+
 TEST_F(CompositingStructTraitsTest, TrackedElementRects) {
   TrackedElementRects input;
   const auto token1 = base::Token(1, 1);
@@ -1711,7 +1842,12 @@ TEST_F(CompositingStructTraitsTest, CopyOutputResult_Texture) {
       [](base::OnceClosure quit_closure,
          const gpu::SyncToken& expected_sync_token,
          const gpu::SyncToken& sync_token, bool is_lost) {
-        EXPECT_EQ(expected_sync_token, sync_token);
+        if (base::FeatureList::IsEnabled(
+                features::kUseAutomaticSyncTokenManagement)) {
+          EXPECT_FALSE(sync_token.HasData());
+        } else {
+          EXPECT_EQ(expected_sync_token, sync_token);
+        }
         EXPECT_TRUE(is_lost);
         std::move(quit_closure).Run();
       },
@@ -1735,14 +1871,23 @@ TEST_F(CompositingStructTraitsTest, CopyOutputResult_Texture) {
   EXPECT_EQ(output->GetSharedImage()->mailbox(), mailbox);
   EXPECT_EQ(output->GetSharedImage()->color_space(), result_color_space);
 
+  gpu::SyncToken release_sync_token = output->GetSharedImage()->EndExport(
+      gpu::SharedImageExportResult::CreateForTesting(sync_token));
   ReleaseCallback out_callback = output->TakeSharedImageOwnership();
 
   ASSERT_TRUE(out_callback);
-  std::move(out_callback).Run(sync_token, true /* is_lost */);
+  std::move(out_callback).Run(release_sync_token, true /* is_lost */);
 
   // If the CopyOutputResult callback is called (which is the intended
   // behaviour), this will exit. Otherwise, this test will time out and fail.
   run_loop.Run();
+
+  if (base::FeatureList::IsEnabled(
+          features::kUseAutomaticSyncTokenManagement)) {
+    EXPECT_EQ(input->GetSharedImage()->GetSyncTokensForDisplayCompositor(
+                  gpu::SyncToken()),
+              std::vector<gpu::SyncToken>{sync_token});
+  }
 }
 
 TEST_F(CompositingStructTraitsTest, TreesInVizTimingTest) {
@@ -1881,6 +2026,62 @@ TEST_F(CompositingStructTraitsTest, FrameIntervalInputs) {
             output.has_only_content_frame_interval_updates);
 }
 
+TEST_F(CompositingStructTraitsTest,
+       ContentFrameIntervalInfoRejectsNegativeInterval) {
+  auto round_trips = [](ContentFrameIntervalType type,
+                        base::TimeDelta interval) {
+    ContentFrameIntervalInfo input;
+    input.type = type;
+    input.frame_interval = interval;
+    ContentFrameIntervalInfo output;
+    const bool ok =
+        mojo::test::SerializeAndDeserialize<mojom::ContentFrameIntervalInfo>(
+            input, output);
+    if (ok) {
+      EXPECT_EQ(output.type, type);
+      EXPECT_EQ(output.frame_interval, interval);
+    }
+    return ok;
+  };
+  // Serializes the mojom struct directly, so a negative interval bypasses the
+  // sender-side CHECK, like it would from a misbehaving client.
+  auto deserializes_unchecked = [](ContentFrameIntervalType type,
+                                   base::TimeDelta interval) {
+    auto input = mojom::ContentFrameIntervalInfo::New(
+        mojo::EnumTraits<mojom::ContentFrameIntervalType,
+                         ContentFrameIntervalType>::ToMojom(type),
+        interval, /*duplicate_count=*/0u);
+    ContentFrameIntervalInfo output;
+    return mojo::test::SerializeAndDeserialize<mojom::ContentFrameIntervalInfo>(
+        input, output);
+  };
+
+  for (ContentFrameIntervalType type :
+       {ContentFrameIntervalType::kVideo,
+        ContentFrameIntervalType::kAnimatingImage,
+        ContentFrameIntervalType::kScrollBarFadeOutAnimation,
+        ContentFrameIntervalType::kCompositorScroll,
+        ContentFrameIntervalType::kSteppedCompositorAnimation}) {
+    SCOPED_TRACE(ContentFrameIntervalTypeToString(type));
+    // Zero and positive intervals are valid, however large.
+    EXPECT_TRUE(round_trips(type, base::TimeDelta()));
+    EXPECT_TRUE(round_trips(type, base::Microseconds(1)));
+    EXPECT_TRUE(round_trips(type, base::Milliseconds(100)));
+    EXPECT_TRUE(round_trips(type, base::TimeDelta::FiniteMax()));
+    EXPECT_TRUE(round_trips(type, base::TimeDelta::Max()));
+    EXPECT_TRUE(deserializes_unchecked(type, base::Milliseconds(100)));
+    // Negative intervals are rejected.
+    EXPECT_FALSE(deserializes_unchecked(type, base::Microseconds(-1)));
+    EXPECT_FALSE(deserializes_unchecked(type, base::Milliseconds(-100)));
+    EXPECT_FALSE(deserializes_unchecked(type, base::TimeDelta::FiniteMin()));
+    EXPECT_FALSE(deserializes_unchecked(type, base::TimeDelta::Min()));
+  }
+
+  // Sending a negative interval CHECKs.
+  EXPECT_CHECK_DEATH(
+      round_trips(ContentFrameIntervalType::kVideo, base::Microseconds(-1)));
+}
+
 TEST_F(CompositingStructTraitsTest, Thread) {
   Thread input{base::PlatformThreadId::ForTest(123), Thread::Type::kCompositor};
   Thread output;
@@ -1911,6 +2112,12 @@ auto AnyTimeDelta() {
   return fuzztest::Map(
       [](int64_t micros) { return base::Microseconds(micros); },
       fuzztest::Arbitrary<int64_t>());
+}
+
+auto AnyNonNegativeTimeDelta() {
+  return fuzztest::Map(
+      [](int64_t micros) { return base::Microseconds(micros); },
+      fuzztest::NonNegative<int64_t>());
 }
 
 class CompositingStructTraitsFuzzTest {
@@ -2662,7 +2869,8 @@ auto AnyContentFrameIntervalType() {
       {ContentFrameIntervalType::kVideo,
        ContentFrameIntervalType::kAnimatingImage,
        ContentFrameIntervalType::kScrollBarFadeOutAnimation,
-       ContentFrameIntervalType::kCompositorScroll});
+       ContentFrameIntervalType::kCompositorScroll,
+       ContentFrameIntervalType::kSteppedCompositorAnimation});
 }
 
 auto AnyContentFrameIntervalInfo() {
@@ -2675,7 +2883,8 @@ auto AnyContentFrameIntervalInfo() {
         info.duplicate_count = count;
         return info;
       },
-      AnyContentFrameIntervalType(), AnyTimeDelta(),
+      // Sending a negative frame interval CHECKs.
+      AnyContentFrameIntervalType(), AnyNonNegativeTimeDelta(),
       fuzztest::Arbitrary<uint32_t>());
 }
 

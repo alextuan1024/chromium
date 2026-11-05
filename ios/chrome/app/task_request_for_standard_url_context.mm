@@ -6,112 +6,144 @@
 
 #import <UIKit/UIKit.h>
 
-#import "base/check_deref.h"
+#import "base/check.h"
+#import "base/functional/bind.h"
+#import "base/functional/callback.h"
+#import "base/functional/callback_helpers.h"
+#import "base/ios/block_types.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
 #import "components/prefs/pref_service.h"
+#import "google_apis/gaia/gaia_id.h"
+#import "ios/chrome/app/app_switcher_params.h"
+#import "ios/chrome/app/custom_scheme_buildflags.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/app/startup/app_launch_metrics.h"
+#import "ios/chrome/app/startup/app_startup_utils.h"
+#import "ios/chrome/app/task_request_private.h"
 #import "ios/chrome/app/task_request_url_context_private.h"
+#import "ios/chrome/browser/default_browser/model/default_browser_interest_signals.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
-#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
+#import "ios/chrome/browser/google_one/shared/google_one_deep_link_util.h"
+#import "ios/chrome/browser/policy/model/policy_util.h"
+#import "ios/chrome/browser/shared/coordinator/default_browser_promo/non_modal_default_browser_promo_scheduler_scene_agent.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
-#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
+#import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/google_one_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/url_loading/model/url_loading_params.h"
 #import "net/base/apple/url_conversions.h"
-#import "net/base/url_util.h"
 #import "url/gurl.h"
+#import "url/url_constants.h"
 
 namespace {
 
-NSString* const kExternalActionURLHost = @"ChromeExternalAction";
-NSString* const kExternalActionDefaultBrowserSettings =
-    @"DefaultBrowserSettings";
-NSString* const kExternalActionOpenNTP = @"OpenNTP";
-NSString* const kExternalActionAppStoreGeminiPromo = @"appstoregeminipromo";
-NSString* const kExternalActionAppSwitcherTesting = @"appswitchertesting";
+constexpr std::string_view kSecureCustomScheme =
+    BUILDFLAG(SECURE_CUSTOM_SCHEME);
+constexpr std::string_view kInsecureCustomScheme =
+    BUILDFLAG(INSECURE_CUSTOM_SCHEME);
 
-// Returns the single path component of `url` if it has the format
-// "/<component>", or nil if the path is invalid or has multiple segments.
-NSString* ExtractSinglePathComponent(NSURL* url) {
-  NSArray<NSString*>* path_components = url.pathComponents;
-  if ([path_components count] != 2 ||
-      ![path_components[0] isEqualToString:@"/"]) {
-    return nil;
-  }
-  return path_components[1];
+// Returns whether `url` uses one of Chrome's custom schemes.
+bool IsCustomSchemeURL(const GURL& url) {
+  return url.SchemeIs(kSecureCustomScheme) ||
+         url.SchemeIs(kInsecureCustomScheme);
 }
 
-// Records metrics and user actions for external action URLs.
-void RecordExternalActionMetrics(NSURL* url) {
-  base::RecordAction(base::UserMetricsAction("MobileExternalActionURLOpened"));
-  UMA_HISTOGRAM_ENUMERATION(kUMAMobileSessionStartActionHistogram,
-                            START_EXTERNAL_ACTION,
-                            MOBILE_SESSION_START_ACTION_COUNT);
-  base::UmaHistogramEnumeration(kAppLaunchSource,
-                                AppLaunchSource::EXTERNAL_ACTION);
-
-  NSString* path = ExtractSinglePathComponent(url);
-  IOSExternalAction action = IOSExternalAction::ACTION_INVALID;
-  if ([path isEqualToString:kExternalActionOpenNTP]) {
-    base::RecordAction(
-        base::UserMetricsAction("MobileExternalActionURLOpenedWithOpenNTP"));
-    action = IOSExternalAction::ACTION_OPEN_NTP;
-  } else if ([path isEqualToString:kExternalActionDefaultBrowserSettings]) {
-    base::RecordAction(base::UserMetricsAction(
-        "MobileExternalActionURLOpenedWithDefaultBrowserSettings"));
-    if (IsChromeLikelyDefaultBrowser()) {
-      action =
-          IOSExternalAction::ACTION_SKIPPED_DEFAULT_BROWSER_SETTINGS_FOR_NTP;
-    } else {
-      action = IOSExternalAction::ACTION_DEFAULT_BROWSER_SETTINGS;
-    }
-  } else if ([path isEqualToString:kExternalActionAppStoreGeminiPromo]) {
-    base::RecordAction(base::UserMetricsAction(
-        "MobileExternalActionURLOpenedWithAppStoreGeminiPromo"));
-    action = IOSExternalAction::ACTION_APP_STORE_GEMINI_PROMO;
-  } else if (IsAppSwitcherAISummarizationEnabled() &&
-             [path isEqualToString:kExternalActionAppSwitcherTesting]) {
-    action = IOSExternalAction::ACTION_START_GEMINI_AI_SUMMARIZATION;
+// Returns `url` with Chrome's custom scheme replaced by https (secure scheme)
+// or http, or `url` unchanged if it doesn't use a custom scheme.
+GURL ReplaceCustomSchemeWithHTTP(const GURL& url) {
+  if (!IsCustomSchemeURL(url)) {
+    return url;
   }
-  base::UmaHistogramEnumeration(kExternalActionHistogram, action);
+  GURL::Replacements replacements;
+  replacements.SetSchemeStr(
+      url.SchemeIs(kSecureCustomScheme) ? url::kHttpsScheme : url::kHttpScheme);
+  return url.ReplaceComponents(replacements);
+}
+
+// If `url` is a handled Google One deep link URL and the feature is enabled,
+// populates `out_url` (if non-null) with the normalized HTTPS GURL and returns
+// true.
+bool GetGoogleOneDeepLinkURL(NSURL* url, GURL* out_url) {
+  if (!url) {
+    return false;
+  }
+  GURL external_gurl = net::GURLWithNSURL(url);
+  if (!external_gurl.SchemeIsHTTPOrHTTPS() &&
+      !IsCustomSchemeURL(external_gurl)) {
+    return false;
+  }
+  GURL candidate_url;
+  if (!IsGoogleOneDeepLinkURL(external_gurl, &candidate_url) ||
+      !IsGoogleOneDeepLinkEnabled()) {
+    return false;
+  }
+  if (out_url) {
+    *out_url = std::move(candidate_url);
+  }
+  return true;
+}
+
+// Presents the Google One screen for `url` on the current browser of
+// `scene_state`.
+void ShowGoogleOneForURL(SceneState* scene_state, const GURL& url) {
+  if (Browser* browser = scene_state.browserProviderInterface.currentBrowser) {
+    id<GoogleOneCommands> google_one_handler =
+        HandlerForProtocol(browser->GetCommandDispatcher(), GoogleOneCommands);
+    [google_one_handler showGoogleOneForURL:url];
+  }
+}
+
+// Returns whether the App Switcher parameters must be fetched for
+// `source_app_id` before opening the requested URL.
+// TODO(crbug.com/493816082): Also fetch for caller apps only allowlisted for
+// AI summarization once it is supported. Until then, they would wait for a
+// fetch whose result is ignored.
+BOOL ShouldFetchAppSwitcherParam(NSString* source_app_id, PrefService* prefs) {
+  return IsCallerAppAllowListedForApplicationMode(source_app_id) &&
+         ShouldFetchAppSwitcherParams(source_app_id,
+                                      IsIncognitoModeForced(prefs));
 }
 
 }  // namespace
 
-@implementation TaskRequestForStandardURLContext
+@implementation TaskRequestForStandardURLContext {
+  // Whether Gaia ID extraction has been attempted once ApplicationContext is
+  // available.
+  BOOL _gaiaIDExtracted;
+}
 
-- (void)recordStartupMetrics {
-  [super recordStartupMetrics];
+- (void)recordMetrics {
+  [super recordMetrics];
 
-  NSURL* url = self.URLContext.URL;
-  if (!url) {
+  const GURL url = net::GURLWithNSURL(self.URLContext.URL);
+  if (!url.is_valid()) {
     return;
   }
 
-  NSString* host = url.host;
-  NSString* scheme = url.scheme.lowercaseString;
-
-  if ([host isEqualToString:kExternalActionURLHost]) {
-    RecordExternalActionMetrics(url);
-  } else if ([scheme isEqualToString:@"file"]) {
+  if (url.SchemeIsFile()) {
     UMA_HISTOGRAM_ENUMERATION(kUMAMobileSessionStartActionHistogram,
                               START_ACTION_OPEN_FILE,
                               MOBILE_SESSION_START_ACTION_COUNT);
   } else {
     MobileSessionStartAction action = START_ACTION_OTHER;
-    if ([scheme isEqualToString:@"http"]) {
+    if (url.SchemeIs(url::kHttpScheme)) {
       action = START_ACTION_OPEN_HTTP_FROM_OS;
       base::RecordAction(
           base::UserMetricsAction("MobileDefaultBrowserViewIntent"));
-    } else if ([scheme isEqualToString:@"https"]) {
+    } else if (url.SchemeIs(url::kHttpsScheme)) {
       action = START_ACTION_OPEN_HTTPS_FROM_OS;
       base::RecordAction(
           base::UserMetricsAction("MobileDefaultBrowserViewIntent"));
     } else {
-      BOOL useHttps = [scheme hasSuffix:@"s"];
+      const bool useHttps = url.GetScheme().ends_with('s');
       action = useHttps ? START_ACTION_OPEN_HTTPS : START_ACTION_OPEN_HTTP;
       base::UmaHistogramEnumeration(kAppLaunchSource,
                                     AppLaunchSource::LINK_OPENED_FROM_APP);
@@ -130,58 +162,18 @@ void RecordExternalActionMetrics(NSURL* url) {
 }
 
 - (void)handleCommandWithSceneState:(SceneState*)sceneState {
-  NSURL* url = self.URLContext.URL;
-  if (!url) {
+  const GURL openedGURL = net::GURLWithNSURL(self.URLContext.URL);
+  const BOOL openedViaCustomScheme = IsCustomSchemeURL(openedGURL);
+  GURL externalGURL = ReplaceCustomSchemeWithHTTP(openedGURL);
+  if (!externalGURL.is_valid()) {
     return;
   }
-
-  GURL externalGURL = net::GURLWithNSURL(url);
   GURL virtualGURL;
-  TabOpeningPostOpeningAction postOpeningAction =
-      TabOpeningPostOpeningAction::NO_ACTION;
+  ProceduralBlock postOpeningCompletion = nil;
   ApplicationModeForTabOpening targetMode =
       ApplicationModeForTabOpening::UNDETERMINED;
 
-  NSString* host = url.host;
-
-  if ([host isEqualToString:kExternalActionURLHost]) {
-    NSString* path = ExtractSinglePathComponent(url);
-
-    if ([path isEqualToString:kExternalActionOpenNTP]) {
-      externalGURL = GURL(kChromeUINewTabURL);
-    } else if ([path isEqualToString:kExternalActionDefaultBrowserSettings]) {
-      // If Chrome is already set as default browser, just open the NTP.
-      if (IsChromeLikelyDefaultBrowser()) {
-        externalGURL = GURL(kChromeUINewTabURL);
-      } else {
-        externalGURL = GURL();
-        postOpeningAction =
-            TabOpeningPostOpeningAction::EXTERNAL_ACTION_SHOW_BROWSER_SETTINGS;
-      }
-    } else if ([path isEqualToString:kExternalActionAppStoreGeminiPromo]) {
-      externalGURL = GURL(kGeminiAppStorePromoURL);
-      postOpeningAction = TabOpeningPostOpeningAction::TRIGGER_GEMINI_PROMO;
-      ProfileIOS* profile = sceneState.profileState.profile;
-      CHECK_DEREF(profile).GetPrefs()->SetBoolean(
-          prefs::kAppStoreGeminiPromoTriggered, true);
-    } else if ([path isEqualToString:kExternalActionAppSwitcherTesting]) {
-      // TODO(crbug.com/527016607): Remove this entire testing path when the
-      // feature is enabled by default.
-      std::string queryUrlString;
-      net::GetValueForKeyInQuery(externalGURL, "url", &queryUrlString);
-      GURL queryUrl(queryUrlString);
-
-      externalGURL = queryUrl.SchemeIsHTTPOrHTTPS()
-                         ? queryUrl
-                         : GURL(kGeminiAppStorePromoURL);
-      postOpeningAction =
-          TabOpeningPostOpeningAction::START_GEMINI_AI_SUMMARIZATION;
-    } else {
-      // An unrecognized or invalid external action is discarded without opening
-      // a tab.
-      return;
-    }
-  } else if (externalGURL.SchemeIsFile()) {
+  if (externalGURL.SchemeIsFile()) {
     GURL::Replacements replacements;
     std::string filename = externalGURL.ExtractFileName();
     replacements.SetPathStr(filename);
@@ -193,16 +185,111 @@ void RecordExternalActionMetrics(NSURL* url) {
     }
     targetMode = ApplicationModeForTabOpening::NORMAL;
   } else {
-    // Other schemes.
-    // TODO(crbug.com/493816082): Add implementation.
+    if (!externalGURL.SchemeIsHTTPOrHTTPS()) {
+      return;
+    }
+    [self notifyURLOpenedWithSceneState:sceneState
+                  openedViaChromeScheme:openedViaCustomScheme];
+    GURL googleOneURL;
+    if (IsGoogleOneDeepLinkEnabled() &&
+        IsGoogleOneDeepLinkURL(externalGURL, &googleOneURL)) {
+      externalGURL = GURL();
+      __weak SceneState* weakSceneState = sceneState;
+      postOpeningCompletion = base::CallbackToBlock(
+          base::BindOnce(&ShowGoogleOneForURL, weakSceneState, googleOneURL));
+    } else {
+      ProfileIOS* profile = sceneState.profileState.profile;
+      CHECK(profile);
+      NSString* sourceAppID = self.URLContext.options.sourceApplication;
+      if (ShouldFetchAppSwitcherParam(sourceAppID, profile->GetPrefs())) {
+        // The block retains `self` because `TaskOrchestrator` releases the
+        // request as soon as `-execute` returns, while `sceneState` is captured
+        // weakly to avoid retaining a scene that disconnects before the fetch
+        // completes.
+        __weak SceneState* weakSceneState = sceneState;
+        GURL URL = externalGURL;
+        RequestAppSwitcherParams(
+            URL, sourceAppID,
+            base::BindOnce(^(const AppSwitcherParams& params) {
+              [self openURL:URL
+                  withAppSwitcherParams:params
+                             sceneState:weakSceneState];
+            }));
+        return;
+      }
+    }
   }
 
   [self openTabWithSceneState:sceneState
-                  externalURL:externalGURL
-                   virtualURL:virtualGURL
+                urlLoadParams:UrlLoadParams::InNewTab(externalGURL, virtualGURL)
                    targetMode:targetMode
-            postOpeningAction:postOpeningAction
-             fromWidgetOrSiri:NO];
+            postOpeningAction:TabOpeningPostOpeningAction::NO_ACTION
+        postOpeningCompletion:postOpeningCompletion];
+}
+
+- (NSString*)gaiaID {
+  if (!_gaiaIDExtracted && ![super gaiaID] && GetApplicationContext()) {
+    _gaiaIDExtracted = YES;
+    GURL googleOneURL;
+    if (GetGoogleOneDeepLinkURL(self.URLContext.URL, &googleOneURL)) {
+      NSString* accountParam = GoogleOneAccountFromURL(googleOneURL);
+      if (accountParam.length > 0) {
+        GaiaId gaiaID = FindGaiaIdForGoogleOneAccount(accountParam);
+        if (!gaiaID.empty()) {
+          self.gaiaID = gaiaID.ToNSString();
+        }
+      }
+    }
+  }
+  return [super gaiaID];
+}
+
+#pragma mark - Private
+
+// Notifies the Default Browser promo that Chrome is opened with an http(s) URL
+// in `sceneState`. `openedViaChromeScheme` is whether one of Chrome's own
+// schemes was used, which counts as a first-party signal only for first-party
+// caller apps.
+- (void)notifyURLOpenedWithSceneState:(SceneState*)sceneState
+                openedViaChromeScheme:(BOOL)openedViaChromeScheme {
+  if (openedViaChromeScheme && IsCallerAppFirstParty(self.callerApp)) {
+    [[NonModalDefaultBrowserPromoSchedulerSceneAgent agentFromScene:sceneState]
+        logUserEnteredAppViaFirstPartyScheme];
+  }
+  default_browser::NotifyStartWithURL(
+      feature_engagement::TrackerFactory::GetForProfile(
+          sceneState.profileState.profile));
+}
+
+// Opens `URL` in `sceneState`, in the application mode requested by the App
+// Switcher `params`. Does nothing if the scene or its profile went away.
+- (void)openURL:(const GURL&)URL
+    withAppSwitcherParams:(const AppSwitcherParams&)params
+               sceneState:(SceneState*)sceneState {
+  ProfileIOS* profile = sceneState.profileState.profile;
+  if (!profile) {
+    // The scene was disconnected or its profile unloaded during the fetch.
+    return;
+  }
+  // When incognito is forced or disabled by policy, the policy mode applied by
+  // `-openTabWithSceneState:...` wins, so the fetched mode is neither applied
+  // nor recorded. The policy is read again as it may have changed during the
+  // fetch.
+  PrefService* prefs = profile->GetPrefs();
+  ApplicationModeForTabOpening targetMode =
+      ApplicationModeForTabOpening::UNDETERMINED;
+  if (!IsIncognitoModeForced(prefs) && !IsIncognitoModeDisabled(prefs)) {
+    targetMode = ApplicationModeForAppSwitcherParams(params, targetMode);
+    RecordAppModeFetchingMetrics(params);
+  }
+  // TODO(crbug.com/493816082): Start the AI summarization requested by the App
+  // Switcher (`params.is_ai_summarization`) and pass `params.hashed_user_id`
+  // to `SceneController`.
+  [self openTabWithSceneState:sceneState
+                urlLoadParams:UrlLoadParams::InNewTab(URL)
+                   targetMode:targetMode
+            postOpeningAction:TabOpeningPostOpeningAction::NO_ACTION
+        postOpeningCompletion:nil];
 }
 
 @end

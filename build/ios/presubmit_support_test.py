@@ -97,6 +97,94 @@ class BundleDataPresubmit(unittest.TestCase):
         )
         self.assertEqual(1, len(results))
 
+    def testErrorMessage(self):
+        """
+        Checks that the error explains what changed and gives a fix command
+        with paths relative to the repository root.
+        """
+        results = presubmit_support.CheckBundleData(
+            self.mock_input_api, self.mock_output_api, 'test_data/missing', '.'
+        )
+        self.assertEqual(1, len(results))
+        message = results[0].message
+        self.assertIn(
+            'build/ios/test_data/missing.filelist is out of date', message
+        )
+        self.assertIn('File list does not match glob expansion', message)
+        self.assertIn('+ test_data/missing.globlist', message)
+        self.assertIn('generated from the .globlist next to it', message)
+        self.assertIn(
+            'python3 build/ios/update_bundle_filelist.py '
+            'build/ios/test_data/missing.filelist '
+            'build/ios/test_data/missing.globlist build/ios',
+            message,
+        )
+
+    def testUnexpectedHeaderMessage(self):
+        """
+        Checks that a bad header suggests regenerating the file list and does
+        not include absolute paths.
+        """
+        results = presubmit_support.CheckBundleData(
+            self.mock_input_api, self.mock_output_api, 'test_data/comment', '.'
+        )
+        self.assertEqual(1, len(results))
+        message = results[0].message
+        self.assertIn(
+            'Unexpected header for build/ios/test_data/comment.filelist',
+            message,
+        )
+        self.assertNotIn(os.path.abspath(os.path.dirname(__file__)), message)
+        self.assertIn('python3 build/ios/update_bundle_filelist.py', message)
+
+    def testUnreadableGloblistMessage(self):
+        """
+        Checks that a missing globlist asks to fix the globlist rather than to
+        regenerate the file list, and does not include absolute paths.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with open(os.path.join(temp_dir, 'noglob.filelist'), 'w') as f:
+                f.write(_TEMP_FILELIST_CONTENTS)
+            self.mock_input_api.change.RepositoryRoot = lambda: temp_dir
+            self.mock_input_api.PresubmitLocalPath = lambda: temp_dir
+            results = presubmit_support.CheckBundleData(
+                self.mock_input_api, self.mock_output_api, 'noglob'
+            )
+            self.assertEqual(1, len(results))
+            message = results[0].message
+            self.assertIn('noglob.globlist could not be read', message)
+            self.assertIn('Could not read glob list: noglob.globlist', message)
+            self.assertIn('Fix the .globlist', message)
+            self.assertNotIn(temp_dir, message)
+            self.assertNotIn('update_bundle_filelist.py', message)
+
+    def testErrorMessageIsTruncated(self):
+        """
+        Checks that a long list of differences is truncated.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with open(os.path.join(temp_dir, 'long.filelist'), 'w') as f:
+                f.write(_TEMP_FILELIST_CONTENTS)
+                for i in range(30):
+                    f.write('file%02d.txt\n' % i)
+            with open(os.path.join(temp_dir, 'long.globlist'), 'w') as f:
+                f.write(_TEMP_GLOBLIST_CONTENTS)
+            self.mock_input_api.change.RepositoryRoot = lambda: temp_dir
+            self.mock_input_api.PresubmitLocalPath = lambda: temp_dir
+            results = presubmit_support.CheckBundleData(
+                self.mock_input_api, self.mock_output_api, 'long'
+            )
+            self.assertEqual(1, len(results))
+            message = results[0].message
+            self.assertIn('- file00.txt', message)
+            self.assertNotIn('- file29.txt', message)
+            self.assertIn('(11 more lines)', message)
+            self.assertIn(
+                'python3 build/ios/update_bundle_filelist.py '
+                'long.filelist long.globlist .',
+                message,
+            )
+
     def testExtraFilesInFilelist(self):
         """
         Checks the case where extra files have been included in the file list.
@@ -136,7 +224,7 @@ class BundleDataPresubmit(unittest.TestCase):
                 f.write(_TEMP_GLOBLIST_CONTENTS)
             with open(os.path.join(temp_dir, 'untracked.txt'), 'w') as f:
                 f.write('Hello, World!')
-            path = os.path.join(temp_dir, 'untracked')
+            path = os.path.join(temp_dir, 'untracked')  # noqa: F841
             self.mock_input_api.change.RepositoryRoot = lambda: temp_dir
             self.mock_input_api.PresubmitLocalPath = lambda: temp_dir
             results = presubmit_support.CheckBundleData(
@@ -275,6 +363,14 @@ class NotFatalUntilAdoptionTest(unittest.TestCase):
         )
         self.assertEqual(len(errors), 0)
 
+    def testNotReachedIgnored(self):
+        file = MockFile('ios/web_view/test.cc', ['  NOTREACHED();'], action='A')
+        self.mock_input_api.InitFiles([file])
+        errors = presubmit_support.CheckNotFatalUntilAdoption(
+            self.mock_input_api, self.mock_output_api
+        )
+        self.assertEqual(len(errors), 0)
+
 
 class DiscourageCheckDerefTest(unittest.TestCase):
     """Test the CheckDiscourageCheckDeref presubmit check."""
@@ -302,6 +398,193 @@ class DiscourageCheckDerefTest(unittest.TestCase):
         self.assertTrue(
             file.LocalPath() + ':1: CHECK_DEREF(ptr);' in errors[0].message
         )
+
+
+class CheckTestExpectationsTest(unittest.TestCase):
+    """Tests `CheckTestExpectations`."""
+
+    def setUp(self):
+        self.mock_input = MockInputApi()
+        self.mock_output = MockOutputApi()
+        self.mock_input.change.RepositoryRoot = lambda: os.path.join(
+            os.path.dirname(__file__), '..', '..'
+        )
+        self.mock_input.PresubmitLocalPath = lambda: os.path.dirname(__file__)
+
+    def testValidExpectations(self):
+        """Tests that well-formed expectation lines are accepted."""
+        lines = [
+            '# Comment line should be ignored.',
+            '',
+            'crbug.com/123 [ ios18 simulator ] MyTestCase/testFoo [ Failure ]',
+            'http://crbug.com/789012 [ device ] MyTestSuite [ Pass Crash ]',
+            'https://crbug.com/345678 AnotherTest [ Skip ] # trailing comment',
+            'crbug.com/chromium/123456 AnotherTest [ Failure ]',
+        ]
+        self.mock_input.files = [
+            MockFile('ios/testing/test_expectations.txt', lines)
+        ]
+        results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(results), 0)
+
+    def testInvalidSyntaxMissingBug(self):
+        """Tests that a missing bug field is rejected."""
+        lines = [
+            'MyTestCase/testFoo [ Failure ]',
+        ]
+        self.mock_input.files = [
+            MockFile('ios/testing/test_expectations.txt', lines)
+        ]
+        results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual('error', results[0].type)
+        self.assertIn('Missing or invalid bug field', results[0].message)
+
+    def testInvalidSyntaxMalformed(self):
+        """Tests that malformed expectation lines are rejected."""
+        lines = [
+            'This line has no expectation brackets at all',
+        ]
+        self.mock_input.files = [
+            MockFile('ios/testing/test_expectations.txt', lines)
+        ]
+        results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual('error', results[0].type)
+        self.assertIn(
+            'Line does not respect prescribed syntax', results[0].message
+        )
+
+    def testInvalidExpectationWord(self):
+        """Tests that unknown expectation keywords are rejected."""
+        lines = [
+            'crbug.com/123456 [ ios ] MyTestCase/testFoo [ Bogus ]',
+        ]
+        self.mock_input.files = [
+            MockFile('ios/testing/test_expectations.txt', lines)
+        ]
+        results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual('error', results[0].type)
+        self.assertIn("Invalid expectation 'Bogus'", results[0].message)
+
+    def testInvalidBugUrlFormat(self):
+        """Tests that non-crbug URLs or incomplete bug URLs are rejected."""
+        lines = [
+            'crbug.com/ [ ios ] MyTestCase/testFoo [ Failure ]',
+            'http://google.com/123456 [ ios ] MyTestCase/testFoo [ Failure ]',
+            'notabug [ ios ] MyTestCase/testFoo [ Failure ]',
+        ]
+        self.mock_input.files = [
+            MockFile('ios/testing/test_expectations.txt', lines)
+        ]
+        results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(results), 3)
+        for res in results:
+            self.assertEqual('error', res.type)
+            self.assertIn('Missing or invalid bug field', res.message)
+
+    def testInvalidWildcardInTestName(self):
+        """Tests that wildcards in test names are rejected."""
+        lines = [
+            'crbug.com/123456 [ ios ] MyTestCase/* [ Failure ]',
+        ]
+        self.mock_input.files = [
+            MockFile('ios/testing/test_expectations.txt', lines)
+        ]
+        results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual('error', results[0].type)
+        self.assertIn(
+            "Wildcards ('*') are not supported in test names",
+            results[0].message,
+        )
+
+    def testValidCompatibleOtherTags(self):
+        """Tests that compatible "Other" tags are accepted."""
+        lines = [
+            'crbug.com/123 [ Chrome Simulator ] MyTestCase/testFoo [ Failure ]',
+            'crbug.com/234 [ Device Debug ] MyTestCase/testBar [ Skip ]',
+        ]
+        self.mock_input.files = [
+            MockFile('ios/testing/test_expectations.txt', lines)
+        ]
+        results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(results), 0)
+
+    def testMutuallyExclusiveOtherTags(self):
+        """Tests that mutually exclusive "Other" tag pairs are rejected."""
+        lines = [
+            'crbug.com/123 [ Chrome Chromium ] MyTestCase/testFoo [ Failure ]',
+            'crbug.com/234 [ Simulator Device ] MyTestCase/testBar [ Failure ]',
+            'crbug.com/345 [ debug RELEASE ] MyTestCase/testBaz [ Failure ]',
+        ]
+        self.mock_input.files = [
+            MockFile('ios/testing/test_expectations.txt', lines)
+        ]
+        results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(results), 3)
+        for res in results:
+            self.assertEqual('error', res.type)
+        self.assertIn(
+            "Mutually exclusive tags 'chrome' and 'chromium'",
+            results[0].message,
+        )
+        self.assertIn(
+            "Mutually exclusive tags 'simulator' and 'device'",
+            results[1].message,
+        )
+        self.assertIn(
+            "Mutually exclusive tags 'debug' and 'release'", results[2].message
+        )
+
+    def testCustomFileNamesParameter(self):
+        """Tests that custom `file_names` restricts checking to those names."""
+        lines = [
+            'MyTestCase/testFoo [ Failure ]',
+        ]
+        self.mock_input.files = [
+            MockFile('some/dir/custom_expectations.txt', lines)
+        ]
+        default_results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(default_results), 0)
+
+        custom_results = presubmit_support.CheckTestExpectations(
+            self.mock_input,
+            self.mock_output,
+            file_names=('custom_expectations.txt',),
+        )
+        self.assertEqual(len(custom_results), 1)
+        self.assertIn('Missing or invalid bug field', custom_results[0].message)
+
+    def testUnrelatedFileIsIgnored(self):
+        """Tests that files with other names are not checked."""
+        lines = [
+            'MyTestCase/testFoo [ Failure ]',
+        ]
+        self.mock_input.files = [MockFile('ios/testing/other.txt', lines)]
+        results = presubmit_support.CheckTestExpectations(
+            self.mock_input, self.mock_output
+        )
+        self.assertEqual(len(results), 0)
 
 
 if __name__ == '__main__':

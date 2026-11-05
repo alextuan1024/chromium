@@ -752,9 +752,7 @@ void FormStructureRationalizer::RationalizeFormatStrings(
         });
     base::UmaHistogramBoolean("Autofill.FormatString.IsCompatible",
                               is_format_string_compatible);
-    if (!is_format_string_compatible &&
-        base::FeatureList::IsEnabled(
-            features::kAutofillEnforceFormatStringCompatibility)) {
+    if (!is_format_string_compatible) {
       LOG_AF(log_manager) << LoggingScope::kRationalization
                           << LogMessage::kRationalization
                           << "Cleared incompatible format string of "
@@ -805,7 +803,6 @@ void FormStructureRationalizer::RationalizeDateFormatStrings(
         continue;
     }
 
-    std::u16string format;
     if (data_util::IsValidDateFormat(field.placeholder())) {
       set_format(field, field.placeholder());
       continue;
@@ -1187,7 +1184,11 @@ void FormStructureRationalizer::RationalizeByRationalizationEngine(
     const GeoIpCountryCode& client_country,
     const LanguageCode& language_code,
     LogManager* log_manager) {
-  ParsingContext context(fields_, client_country, language_code,
+  const LanguageCode& page_language =
+      base::FeatureList::IsEnabled(features::kAutofillPageLanguageDetection)
+          ? language_code
+          : LanguageCode();
+  ParsingContext context(fields_, client_country, page_language,
 #if BUILDFLAG(USE_INTERNAL_AUTOFILL_PATTERNS)
                          PatternFile::kDefault,
 #else

@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.toolbar.top;
 
+import static org.junit.Assert.assertEquals;
+
 import android.graphics.Color;
 import android.os.Build;
 import android.text.TextUtils;
@@ -11,7 +13,6 @@ import android.text.TextUtils;
 import androidx.test.filters.SmallTest;
 
 import org.hamcrest.Matchers;
-import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -21,22 +22,19 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabTestUtils;
 import org.chromium.chrome.browser.toolbar.ToolbarDataProvider;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -46,8 +44,6 @@ import org.chromium.ui.base.DeviceFormFactor;
 
 /** Contains tests for the brand color feature. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@Features.DisableFeatures({ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE})
 // TODO(crbug.com/428281587): Do not read color from system window bars on B+.
 @DisableIf.Build(
         sdk_is_greater_than = Build.VERSION_CODES.VANILLA_ICE_CREAM,
@@ -97,9 +93,19 @@ public class BrandColorTest {
             expectedStatusBarColor = brandColor == mDefaultColor ? mDefaultColor : brandColor;
             CriteriaHelper.pollUiThread(
                     () -> {
-                        Criteria.checkThat(
-                                mActivityTestRule.getActivity().getWindow().getStatusBarColor(),
-                                Matchers.is(expectedStatusBarColor));
+                        // TODO(crbug.com/571073808): Clean up E2E check
+                        int statusBarColor =
+                                EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled()
+                                        ? mActivityTestRule
+                                                .getActivity()
+                                                .getEdgeToEdgeManager()
+                                                .getEdgeToEdgeSystemBarColorHelper()
+                                                .getStatusBarColor()
+                                        : mActivityTestRule
+                                                .getActivity()
+                                                .getWindow()
+                                                .getStatusBarColor();
+                        Criteria.checkThat(statusBarColor, Matchers.is(expectedStatusBarColor));
                     });
         }
     }
@@ -153,7 +159,7 @@ public class BrandColorTest {
                             .onThemeColorChanged(mDefaultColor, false);
                     // Since the color should change instantly, there is no need to use the criteria
                     // helper.
-                    Assert.assertEquals(
+                    assertEquals(
                             mToolbarDataProvider.getPrimaryColor(),
                             mToolbar.getBackgroundDrawable().getColor());
                 });

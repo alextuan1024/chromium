@@ -4,15 +4,14 @@
 
 package org.chromium.chrome.browser.omnibox;
 
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
+
 import android.view.KeyEvent;
-import android.view.View;
 
 import androidx.test.espresso.matcher.ViewMatchers;
 import androidx.test.filters.LargeTest;
@@ -26,13 +25,12 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.ImportantFormFactors;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -45,7 +43,6 @@ import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.ui.base.DeviceFormFactor;
-import org.chromium.ui.test.util.ViewUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,7 +50,6 @@ import java.util.List;
 /** Instrumentation tests for site search on Android Large Form Factor. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures(OmniboxFeatureList.OMNIBOX_SITE_SEARCH)
 @ImportantFormFactors(DeviceFormFactor.TABLET_OR_DESKTOP)
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
@@ -85,6 +81,8 @@ public class SiteSearchTest {
                     service.load();
                     UserPrefs.get(ProfileManager.getLastUsedRegularProfile())
                             .setBoolean(KEYWORD_SPACE_TRIGGERING_ENABLED_PREF, true);
+                    UserPrefs.get(ProfileManager.getLastUsedRegularProfile())
+                            .setBoolean(Pref.SHOW_AI_MODE_OMNIBOX_BUTTON, false);
                 });
 
         CriteriaHelper.pollUiThread(
@@ -134,7 +132,7 @@ public class SiteSearchTest {
         mOmniboxUtils.checkSuggestionsShown();
 
         // Wait for the Site Search Action chip to be bound and displayed in the suggestion row
-        ViewUtils.onViewWaiting(withText("Search TestName")).check(matches(isDisplayed()));
+        waitForView(withText("Search TestName"));
     }
 
     @Test
@@ -146,14 +144,12 @@ public class SiteSearchTest {
         mOmniboxUtils.checkSuggestionsShown();
 
         // First row should be selected when typing
-        checkIsFirstSuggestionRowSelected();
+        mOmniboxUtils.checkSuggestionSelected(0);
 
         // Wait for the Site Search Action chip to be bound and displayed in the suggestion row
-        ViewUtils.onViewWaiting(
-                        Matchers.allOf(
-                                ViewMatchers.isAssignableFrom(ChipView.class),
-                                ViewMatchers.hasDescendant(withText("Search TestName"))))
-                .check(matches(isDisplayed()));
+        waitForView(
+                ViewMatchers.isAssignableFrom(ChipView.class),
+                ViewMatchers.hasDescendant(withText("Search TestName")));
 
         // Press <tab>
         mOmniboxUtils.sendKey(KeyEvent.KEYCODE_TAB);
@@ -200,20 +196,12 @@ public class SiteSearchTest {
                 });
     }
 
-    private void checkIsFirstSuggestionRowSelected() {
-        OmniboxTestUtils.SuggestionInfo<View> firstSuggestion =
-                mOmniboxUtils.findSuggestion(info -> true);
-        CriteriaHelper.pollUiThread(() -> firstSuggestion.view.isSelected());
-    }
-
     private void checkIsActionChipSelected(String chipText) {
         // Since action chips are dynamically created, we locate it by asserting the view
         // is a ChipView containing specific text, and then verify it has been selected.
-        ViewUtils.onViewWaiting(
-                        Matchers.allOf(
-                                ViewMatchers.isAssignableFrom(ChipView.class),
-                                ViewMatchers.hasDescendant(withText(chipText)),
-                                ViewMatchers.isSelected()))
-                .check(matches(isDisplayed()));
+        waitForView(
+                ViewMatchers.isAssignableFrom(ChipView.class),
+                ViewMatchers.hasDescendant(withText(chipText)),
+                ViewMatchers.isSelected());
     }
 }

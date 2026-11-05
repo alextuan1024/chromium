@@ -5,11 +5,11 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_PARKABLE_STRING_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_PARKABLE_STRING_H_
 
-#include <cstdint>
 #include <memory>
 #include <utility>
 #include <variant>
 
+#include "base/check.h"
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/dcheck_is_on.h"
@@ -33,9 +33,13 @@
 // |ToString()| method.
 // As a consequence, the inner pointer should never be cached, and only touched
 // through a string returned by the |ToString()| method.
-// It is safe to call `ToString()` and destroy ParkableStrings from any thread,
-// although the interactions with the ParkableStringManager must always be
-// performed on the main thread.
+// Non-parkable ParkableStrings (`!may_be_parked()`) never discard or replace
+// their underlying StringImpl and may be read and destroyed from any thread.
+// Parkable ones (`may_be_parked()`) are bound to the main thread for
+// `ToString()`, uncached access, destruction, and ParkableStringManager
+// interactions; only `Lock()`/`Unlock()` and copying handles
+// (`CreateNonParkableCopy()` when pinning for another thread) are safe across
+// threads.
 namespace blink {
 
 class Digestor;
@@ -199,14 +203,6 @@ class PLATFORM_EXPORT ParkableStringImpl
     return &metadata_->digest_;
   }
 
-  int lock_depth() const {
-    if (!may_be_parked()) {
-      return 0;
-    }
-    base::AutoLock locker_(metadata_->lock_);
-    return metadata_->lock_depth_;
-  }
-
   void Release() const LOCKS_EXCLUDED(metadata_->lock_) {
     if (!may_be_parked()) {
       if (RefCountedThreadSafeBase::Release()) {
@@ -272,12 +268,9 @@ class PLATFORM_EXPORT ParkableStringImpl
   // |params| is the same as the one passed to
   // |PostBackgroundCompressionTask()|,
   // |compressed| is the compressed data, nullptr if compression failed.
-  // |parking_thread_time| is the CPU time used by the background compression
-  // task.
   void OnParkingCompleteOnMainThread(
       std::unique_ptr<BackgroundTaskParams> params,
-      std::unique_ptr<Vector<uint8_t>> compressed,
-      base::TimeDelta parking_thread_time);
+      std::unique_ptr<Vector<uint8_t>> compressed);
 
   void PostBackgroundWritingTask(std::unique_ptr<ReservedChunk> reserved_chunk)
       EXCLUSIVE_LOCKS_REQUIRED(metadata_->lock_);
@@ -295,7 +288,10 @@ class PLATFORM_EXPORT ParkableStringImpl
   void DiscardUncompressedData() EXCLUSIVE_LOCKS_REQUIRED(metadata_->lock_);
   void DiscardCompressedData() EXCLUSIVE_LOCKS_REQUIRED(metadata_->lock_);
 
-  int lock_depth_for_testing() const { return lock_depth(); }
+  int lock_depth_for_testing() {
+    base::AutoLock locker_(metadata_->lock_);
+    return metadata_->lock_depth_;
+  }
 
   // Returns true if the string is parked. Doesn't take the lock inside but
   // expects it to be held before entering.
@@ -381,6 +377,12 @@ class PLATFORM_EXPORT ParkableString final {
   ParkableString(const ParkableString&) = default;
   ~ParkableString();
 
+  // Returns a non-parkable copy sharing the underlying StringImpl. If `this`
+  // string is parkable, must be called on the main thread (unparking first if
+  // needed); the shared StringImpl reference keeps the buffer pinned until all
+  // copies are released.
+  ParkableString CreateNonParkableCopy() const;
+
   // Locks a string. A string is unlocked when the number of Lock()/Unlock()
   // calls match. A locked string cannot be parked.
   // Can be called from any thread.
@@ -445,6 +447,8 @@ class PLATFORM_EXPORT ParkableString final {
   }
 
  private:
+  explicit ParkableString(scoped_refptr<ParkableStringImpl>&& impl);
+
   scoped_refptr<ParkableStringImpl> impl_;
 };
 

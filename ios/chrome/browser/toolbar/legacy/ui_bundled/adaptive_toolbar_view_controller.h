@@ -16,7 +16,6 @@
 @protocol AdaptiveToolbarMenusProvider;
 @class AdaptiveToolbarViewController;
 @protocol AdaptiveToolbarViewControllerDelegate;
-@protocol BrowserCommands;
 @protocol BrowserCoordinatorCommands;
 @class LayoutGuideCenter;
 @protocol PopupMenuCommands;
@@ -86,6 +85,9 @@
 - (void)IPHHighlightTabGridButton:(BOOL)highlight;
 // Used for any additional clean up on shutdown.
 - (void)disconnect;
+
+// Hides the composebox.
+- (void)hideComposebox;
 
 @end
 

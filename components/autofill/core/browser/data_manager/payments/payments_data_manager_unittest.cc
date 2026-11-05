@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "base/containers/to_vector.h"
+#include "base/i18n/language_tag.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
@@ -130,7 +131,8 @@ class PaymentsDataManagerHelper : public PaymentsDataManagerTestBase {
   PaymentsDataManagerHelper() = default;
 
   void ResetPaymentsDataManager(bool use_sync_transport_mode = false,
-                                std::string app_locale = "en-US",
+                                const base::i18n::LanguageTag& app_locale =
+                                    base::i18n::GetKnownLanguageTag("en-US"),
                                 std::string country_code = "US") {
     payments_data_manager_.reset();
     MakePrimaryAccountAvailable(use_sync_transport_mode, identity_test_env_,
@@ -340,6 +342,31 @@ INSTANTIATE_TEST_SUITE_P(,
                                              : "SyncFeatureEnabled";
                          });
 
+#if BUILDFLAG(IS_IOS)
+// Tests that IBANs are neither loaded, saved, nor logged on iOS.
+TEST_P(PaymentsDataManagerServerTest, IbansNotSupportedOnIos) {
+  payments_data_manager().SetSyncingForTest(true);
+
+  Iban local_iban = test::GetLocalIban();
+  ASSERT_TRUE(profile_autofill_table_->AddLocalIban(local_iban));
+  GetServerDataTable()->SetServerIbansForTesting({test::GetServerIban()});
+
+  Iban unsaved_iban;
+  unsaved_iban.set_value(std::u16string(test::kIbanValue16));
+  EXPECT_TRUE(payments_data_manager().AddAsLocalIban(unsaved_iban).empty());
+  EXPECT_FALSE(payments_data_manager().IsAutofillHasSeenIbanPrefEnabled());
+
+  base::HistogramTester histogram_tester;
+  ResetPaymentsDataManager(UseSyncTransportMode());
+
+  EXPECT_FALSE(test_api(payments_data_manager()).AreIbansSupported());
+  EXPECT_TRUE(payments_data_manager().GetLocalIbans().empty());
+  EXPECT_TRUE(payments_data_manager().GetServerIbans().empty());
+  EXPECT_TRUE(payments_data_manager().GetIbans().empty());
+  EXPECT_TRUE(payments_data_manager().GetOrderedIbansToSuggest().empty());
+  histogram_tester.ExpectTotalCount("Autofill.StoredIbanCount", 0);
+}
+#else
 // Test that server IBANs can be added and automatically loaded/cached.
 TEST_P(PaymentsDataManagerServerTest, AddAndReloadServerIbans) {
   Iban server_iban1 = test::GetServerIban();
@@ -353,10 +380,13 @@ TEST_P(PaymentsDataManagerServerTest, AddAndReloadServerIbans) {
 
   // Reset the PaymentsDataManager. This tests that the personal data was saved
   // to the web database, and that we can load the IBANs from the web database.
+  base::HistogramTester histogram_tester;
   ResetPaymentsDataManager(UseSyncTransportMode());
 
   // Verify that we've reloaded the IBANs from the web database.
+  EXPECT_TRUE(test_api(payments_data_manager()).AreIbansSupported());
   ExpectSameElements(expected_ibans, payments_data_manager().GetServerIbans());
+  histogram_tester.ExpectUniqueSample("Autofill.StoredIbanCount", 2, 1);
 }
 
 // Test that all (local and server) IBANs can be returned.
@@ -381,6 +411,7 @@ TEST_P(PaymentsDataManagerServerTest, GetIbans) {
                                         &server_iban1, &server_iban2};
   ExpectSameElements(all_ibans, payments_data_manager().GetIbans());
 }
+#endif  // BUILDFLAG(IS_IOS)
 
 // Tests that OnPaymentsDataLoaded is called after syncing.
 TEST_F(PaymentsDataManagerTest, OnPaymentsDataLoaded) {
@@ -420,10 +451,11 @@ TEST_F(PaymentsDataManagerTest,
 }
 
 // Verifies that a `syncer::AUTOFILL_VALUABLE` change triggers a `Refresh()`,
-// which reloads the offers written by the `ValuableSyncBridge`.
+// which reloads the offers written by the `ValuableSyncBridge`. The bridge
+// writes them into the profile database.
 TEST_F(PaymentsDataManagerTest, OnAutofillChangedBySync_AutofillValuable) {
   ASSERT_TRUE(payments_data_manager().GetAutofillOffers().empty());
-  GetServerDataTable()->SetAutofillOffers(
+  profile_autofill_table_->SetAutofillOffers(
       {test::GetPromoCodeOfferData(GURL("https://www.example.com"))});
 
   payments_data_manager().OnAutofillChangedBySync(syncer::AUTOFILL_VALUABLE);
@@ -432,6 +464,7 @@ TEST_F(PaymentsDataManagerTest, OnAutofillChangedBySync_AutofillValuable) {
   EXPECT_EQ(payments_data_manager().GetAutofillOffers().size(), 1u);
 }
 
+#if !BUILDFLAG(IS_IOS)
 // Test that a local IBAN is removed from suggestions when it has a matching
 // prefix and suffix (either equal or starting with) and the same length as a
 // server IBAN.
@@ -642,6 +675,7 @@ TEST_P(PaymentsDataManagerServerTest, RecordIbanUsage_ServerIban) {
   EXPECT_EQ(server_iban.usage_history().use_date(), kSomeLaterTime);
   EXPECT_EQ(server_iban.usage_history().modification_date(), kArbitraryTime);
 }
+#endif  // !BUILDFLAG(IS_IOS)
 
 TEST_F(PaymentsDataManagerTest, AddUpdateRemoveCreditCards) {
   CreditCard credit_card0(base::Uuid::GenerateRandomV4().AsLowercaseString());
@@ -1050,13 +1084,29 @@ TEST_F(PaymentsDataManagerTest, SetEmptyCreditCard) {
 
 // Tests that GetAutofillOffers returns all available offers.
 TEST_P(PaymentsDataManagerServerTest, GetAutofillOffers) {
-  // Add two card-linked offers and one promo code offer.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
-  AddOfferDataForTest(test::GetCardLinkedOfferData2());
+  // Add three offers.
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      GURL("http://www.example1.com"), /*is_expired=*/false, "111"));
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      GURL("http://www.example2.com"), /*is_expired=*/false, "222"));
   AddOfferDataForTest(test::GetPromoCodeOfferData());
 
   // Should return all three.
   EXPECT_EQ(payments_data_manager().GetAutofillOffers().size(), 3U);
+}
+
+// Tests that offers are loaded from the profile database, which is where the
+// `ValuableSyncBridge` persists them. This must hold in sync transport mode
+// too, where the other server data lives in the ephemeral account database.
+TEST_P(PaymentsDataManagerServerTest, OffersAreLoadedFromProfileDatabase) {
+  ASSERT_TRUE(payments_data_manager().GetAutofillOffers().empty());
+  profile_autofill_table_->SetAutofillOffers(
+      {test::GetPromoCodeOfferData(GURL("https://www.example.com"))});
+
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_EQ(payments_data_manager().GetAutofillOffers().size(), 1U);
 }
 
 // Tests that GetActiveAutofillPromoCodeOffersForOrigin returns only active and
@@ -1066,8 +1116,6 @@ TEST_P(PaymentsDataManagerServerTest,
   base::test::ScopedFeatureList scoped_feature_list(
       features::kAutofillEnableWalletDirectOffers);
 
-  // Card-linked offers should not be returned.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
   // Expired promo code offers should not be returned.
   AddOfferDataForTest(test::GetPromoCodeOfferData(
       /*origin=*/GURL("http://www.example.com"), /*is_expired=*/true));
@@ -1087,11 +1135,93 @@ TEST_P(PaymentsDataManagerServerTest,
             1U);
 }
 
+// Tests that GetActiveAutofillPromoCodeOffers returns active promo code offers
+// for all origins, in the order they were added.
+TEST_P(PaymentsDataManagerServerTest, GetActiveAutofillPromoCodeOffers) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableWalletDirectOffers);
+
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      /*origin=*/GURL("http://www.example.com"), /*is_expired=*/false,
+      /*offer_id=*/"active1"));
+  // Expired promo code offers should not be returned.
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      /*origin=*/GURL("http://www.example.com"), /*is_expired=*/true,
+      /*offer_id=*/"expired"));
+  // Active promo code offers for other sites should be returned.
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      /*origin=*/GURL("http://www.some-other-merchant.com"),
+      /*is_expired=*/false, /*offer_id=*/"active2"));
+  // Offers without a promo code should not be returned.
+  AutofillOfferData no_promo_code = test::GetPromoCodeOfferData(
+      /*origin=*/GURL("http://www.example.com"), /*is_expired=*/false,
+      /*offer_id=*/"no_promo_code");
+  AddOfferDataForTest(AutofillOfferData(
+      no_promo_code.GetOfferId(), no_promo_code.GetExpiry(),
+      no_promo_code.GetMerchantOrigins(), no_promo_code.GetOfferDetailsUrl(),
+      no_promo_code.GetDisplayStrings(), /*promo_code=*/"",
+      no_promo_code.GetOfferShortTitle(), no_promo_code.GetIssueTime(),
+      no_promo_code.issuer_name()));
+
+  std::vector<const AutofillOfferData*> offers =
+      payments_data_manager().GetActiveAutofillPromoCodeOffers();
+  ASSERT_EQ(offers.size(), 2U);
+  EXPECT_EQ(offers[0]->GetOfferId(), "active1");
+  EXPECT_EQ(offers[1]->GetOfferId(), "active2");
+}
+
+// Tests that GetActiveAutofillPromoCodeOffers does not return any offers if
+// `kAutofillEnableWalletDirectOffers` is disabled.
+TEST_P(PaymentsDataManagerServerTest,
+       GetActiveAutofillPromoCodeOffers_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableWalletDirectOffers);
+
+  AddOfferDataForTest(test::GetPromoCodeOfferData());
+
+  EXPECT_TRUE(
+      payments_data_manager().GetActiveAutofillPromoCodeOffers().empty());
+}
+
+// Tests that GetActiveAutofillPromoCodeOffers does not return any offers if
+// the locale and country are not supported.
+TEST_P(PaymentsDataManagerServerTest,
+       GetActiveAutofillPromoCodeOffers_LocaleAndCountryNotSupported) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableWalletDirectOffers);
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("fr-FR"), "FR");
+
+  AddOfferDataForTest(test::GetPromoCodeOfferData());
+
+  EXPECT_TRUE(
+      payments_data_manager().GetActiveAutofillPromoCodeOffers().empty());
+}
+
+// Tests that GetActiveAutofillPromoCodeOffers does not return any offers if
+// `IsAutofillPaymentMethodsEnabled()` returns `false`.
+TEST_P(PaymentsDataManagerServerTest,
+       GetActiveAutofillPromoCodeOffers_AutofillCreditCardDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableWalletDirectOffers);
+
+  AddOfferDataForTest(test::GetPromoCodeOfferData());
+  ASSERT_EQ(payments_data_manager().GetActiveAutofillPromoCodeOffers().size(),
+            1U);
+
+  prefs::SetAutofillPaymentMethodsEnabled(prefs_.get(), false);
+
+  EXPECT_TRUE(
+      payments_data_manager().GetActiveAutofillPromoCodeOffers().empty());
+}
+
 // Tests that GetAutofillOffers does not return any offers if
 // |IsAutofillWalletImportEnabled()| returns |false|.
 TEST_P(PaymentsDataManagerServerTest, GetAutofillOffers_WalletImportDisabled) {
-  // Add a card-linked offer and a promo code offer.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
+  // Add two offers.
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      GURL("http://www.example1.com"), /*is_expired=*/false, "111"));
   AddOfferDataForTest(test::GetPromoCodeOfferData());
 
   ASSERT_EQ(payments_data_manager().GetAutofillOffers().size(), 2U);
@@ -1107,8 +1237,9 @@ TEST_P(PaymentsDataManagerServerTest, GetAutofillOffers_WalletImportDisabled) {
 // `IsAutofillPaymentMethodsEnabled()` returns `false`.
 TEST_P(PaymentsDataManagerServerTest,
        GetAutofillOffers_AutofillCreditCardDisabled) {
-  // Add a card-linked offer and a promo code offer.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
+  // Add two offers.
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      GURL("http://www.example1.com"), /*is_expired=*/false, "111"));
   AddOfferDataForTest(test::GetPromoCodeOfferData());
 
   prefs::SetAutofillPaymentMethodsEnabled(prefs_.get(), false);
@@ -1166,6 +1297,24 @@ TEST_P(PaymentsDataManagerServerTest,
                   .empty());
 }
 
+// Tests that GetActiveAutofillPromoCodeOffersForOrigin does not return any
+// promo code offers if the locale and country are not supported.
+TEST_P(PaymentsDataManagerServerTest,
+       GetActiveAutofillPromoCodeOffersForOrigin_LocaleAndCountryNotSupported) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableWalletDirectOffers);
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("fr-FR"), "FR");
+
+  AddOfferDataForTest(test::GetPromoCodeOfferData(
+      /*origin=*/GURL("http://www.example.com")));
+
+  EXPECT_TRUE(payments_data_manager()
+                  .GetActiveAutofillPromoCodeOffersForOrigin(
+                      GURL("http://www.example.com"))
+                  .empty());
+}
+
 // Tests that GetActiveAutofillPromoCodeOffersForOrigin returns only active
 // and site-relevant wallet direct offers.
 TEST_P(PaymentsDataManagerServerTest,
@@ -1174,49 +1323,54 @@ TEST_P(PaymentsDataManagerServerTest,
   scoped_feature_list.InitAndEnableFeature(
       features::kAutofillEnableWalletDirectOffers);
 
-  // Card-linked offers should not be returned.
-  AddOfferDataForTest(test::GetCardLinkedOfferData1());
 
   DisplayStrings display_strings;
   display_strings.value_prop_text = "5% off on shoes";
 
   // Expired wallet direct offers should not be returned.
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/111, AutofillClock::Now() - base::Days(1),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"111", AutofillClock::Now() - base::Days(1),
       {GURL("http://www.example.com")}, GURL("https://pay.google.com"),
-      display_strings, "CODE111"));
+      display_strings, "CODE111", /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
   // Active wallet direct offers for a different site should not be returned.
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/222, AutofillClock::Now() + base::Days(35),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"222", AutofillClock::Now() + base::Days(35),
       {GURL("http://www.some-other-merchant.com")},
-      GURL("https://pay.google.com"), display_strings, "CODE222"));
+      GURL("https://pay.google.com"), display_strings, "CODE222",
+      /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
-  // Invalid wallet direct offers (empty value prop) should not be returned.
+  // Active wallet direct offers with empty value prop should still be returned.
   DisplayStrings empty_display_strings;
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/333, AutofillClock::Now() + base::Days(35),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"333", AutofillClock::Now() + base::Days(35),
       {GURL("http://www.example.com")}, GURL("https://pay.google.com"),
-      empty_display_strings, "CODE333"));
+      empty_display_strings, "CODE333", /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
   // Invalid wallet direct offers (empty promo code) should not be returned.
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/444, AutofillClock::Now() + base::Days(35),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"444", AutofillClock::Now() + base::Days(35),
       {GURL("http://www.example.com")}, GURL("https://pay.google.com"),
-      display_strings, ""));
+      display_strings, "", /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
   // Active wallet direct offers for example.com should be returned.
-  AddOfferDataForTest(AutofillOfferData::WalletDirectOffer(
-      /*offer_id=*/555, AutofillClock::Now() + base::Days(35),
+  AddOfferDataForTest(AutofillOfferData(
+      /*offer_id=*/"555", AutofillClock::Now() + base::Days(35),
       {GURL("http://www.example.com")}, GURL("https://pay.google.com"),
-      display_strings, "CODE555"));
+      display_strings, "CODE555", /*offer_short_title=*/"",
+      /*issue_time=*/base::Time(), /*issuer_name=*/"Merchant"));
 
-  // Only the valid, active, matching offer for example.com should be returned.
+  // Active matching offers for example.com should be returned.
   auto offers =
       payments_data_manager().GetActiveAutofillPromoCodeOffersForOrigin(
           GURL("http://www.example.com"));
-  ASSERT_EQ(offers.size(), 1U);
-  EXPECT_EQ(offers[0]->GetOfferId(), 555);
+  ASSERT_EQ(offers.size(), 2U);
+  EXPECT_EQ(offers[0]->GetOfferId(), "333");
+  EXPECT_EQ(offers[1]->GetOfferId(), "555");
 }
 
 // Tests that GetActiveAutofillPromoCodeOffersForOrigin does not return any
@@ -1611,6 +1765,54 @@ TEST_F(PaymentsDataManagerTest, LogStoredCreditCardMetrics) {
       "Autofill.StoredCreditCardCount.Server.WithVirtualCardMetadata", 1);
   histogram_tester.ExpectBucketCount(
       "Autofill.StoredCreditCardCount.Server.WithCardArtImage", 1, 1);
+}
+
+// Tests that the number of stored promo codes, in total and split by valid and
+// expired, is logged when payments data is loaded and Wallet direct offers are
+// enabled.
+TEST_F(PaymentsDataManagerTest,
+       LogStoredPaymentsDataMetrics_PromoCodes_WalletDirectOffersEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableWalletDirectOffers);
+  profile_autofill_table_->SetAutofillOffers(
+      {test::GetPromoCodeOfferData(GURL("https://www.example.com"),
+                                   /*is_expired=*/false, /*offer_id=*/"333"),
+       test::GetPromoCodeOfferData(GURL("https://www.example.com"),
+                                   /*is_expired=*/true, /*offer_id=*/"444")});
+
+  // Reload the database, which will log the stored promo code counts.
+  base::HistogramTester histogram_tester;
+  ResetPaymentsDataManager();
+
+  ASSERT_EQ(payments_data_manager().GetAutofillOffers().size(), 2U);
+  histogram_tester.ExpectUniqueSample("Autofill.StoredPromoCodeCount", 2, 1);
+  histogram_tester.ExpectUniqueSample("Autofill.StoredPromoCodeCount.ValidCode",
+                                      1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.StoredPromoCodeCount.ExpiredCode", 1, 1);
+}
+
+// Tests that the number of stored promo codes is not logged when Wallet direct
+// offers are disabled.
+TEST_F(PaymentsDataManagerTest,
+       LogStoredPaymentsDataMetrics_PromoCodes_WalletDirectOffersDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableWalletDirectOffers);
+  profile_autofill_table_->SetAutofillOffers(
+      {test::GetPromoCodeOfferData(GURL("https://www.example.com"))});
+
+  // Reload the database, which would log the stored promo code counts if Wallet
+  // direct offers were enabled.
+  base::HistogramTester histogram_tester;
+  ResetPaymentsDataManager();
+
+  ASSERT_EQ(payments_data_manager().GetAutofillOffers().size(), 1U);
+  histogram_tester.ExpectTotalCount("Autofill.StoredPromoCodeCount", 0);
+  histogram_tester.ExpectTotalCount("Autofill.StoredPromoCodeCount.ValidCode",
+                                    0);
+  histogram_tester.ExpectTotalCount("Autofill.StoredPromoCodeCount.ExpiredCode",
+                                    0);
 }
 
 // Test that setting a null sync service returns only local credit cards.
@@ -2791,6 +2993,33 @@ TEST_P(PaymentsDataManagerServerTest,
           DenseSet({PaymentInstrument::ActionRequired::kAcceptTos})));
 }
 
+// Tests that a linked BNPL issuer is not returned if the app locale is not
+// supported by the BNPL issuer.
+TEST_P(PaymentsDataManagerServerTest,
+       GetLinkedBnplIssuers_AppLocaleNotSupportedRejected) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillEnableBuyNowPayLaterSyncing,
+       features::kAutofillEnableBnplAffirmInternationalization,
+       features::kAutofillEnableBnplKlarnaInternationalization},
+      /*disabled_features=*/{});
+
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstruments(
+      {test::CreatePaymentInstrumentWithLinkedBnplIssuer(
+          /*instrument_id=*/1234L,
+          /*issuer_id=*/std::string(kBnplAffirmIssuerId), /*currency=*/"USD",
+          /*min_price_in_micros=*/5'000'000,
+          /*max_price_in_micros=*/35'000'000)}));
+
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("es-US"), "US");
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_TRUE(payments_data_manager().GetLinkedBnplIssuers().empty());
+}
+
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS)
 
@@ -3022,8 +3251,8 @@ TEST_F(PaymentsDataManagerTest,
       /*sync_service=*/nullptr,
       /*identity_manager=*/nullptr,
       /*variations_country_code=*/GeoIpCountryCode("US"),
-      /*app-locale=*/"en-US",
-      /*autofill_optimization_guide=*/nullptr);
+      /*app_locale=*/base::i18n::GetKnownLanguageTag("en-US"),
+      /*autofill_optimization_guide_decider=*/nullptr);
 
   histogram_tester.ExpectTotalCount(
       "Autofill.PaymentMethods.CardBenefitsIsEnabled.Startup", 0);
@@ -3268,13 +3497,13 @@ TEST_F(PaymentsDataManagerIsCardEligibleForBenefitsTest,
 class PaymentsDataManagerShouldBlockBenefitsTest
     : public PaymentsDataManagerHelper,
       public testing::Test,
-      public testing::WithParamInterface<std::string> {
+      public testing::WithParamInterface<base::i18n::LanguageTag> {
  public:
   PaymentsDataManagerShouldBlockBenefitsTest() {
     SetUpTest();
     ResetPaymentsDataManager(false, app_locale());
   }
-  const std::string& app_locale() { return GetParam(); }
+  const base::i18n::LanguageTag& app_locale() { return GetParam(); }
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_{
@@ -3286,14 +3515,16 @@ class PaymentsDataManagerShouldBlockBenefitsTest
 TEST_P(PaymentsDataManagerShouldBlockBenefitsTest, NonSupportedAppLocale) {
   EXPECT_NE(test_api(payments_data_manager())
                 .ShouldBlockCardBenefitSuggestionLabels(),
-            app_locale() == "en-US" || app_locale() == "en-GB");
+            app_locale() == base::i18n::GetKnownLanguageTag("en-US") ||
+                app_locale() == base::i18n::GetKnownLanguageTag("en-GB"));
 }
 
 // Tests that card flat rate benefits should be blocked when benefit suggestions
 // are disabled for the given url.
 TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
        BlockedUrlForFlateRateBenefit) {
-  if (app_locale() != "en-US" && app_locale() != "en-GB") {
+  if (app_locale() != base::i18n::GetKnownLanguageTag("en-US") &&
+      app_locale() != base::i18n::GetKnownLanguageTag("en-GB")) {
     GTEST_SKIP() << "This test should not run for unsupported app locales.";
   }
 
@@ -3345,7 +3576,8 @@ TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
 // disabled.
 TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
        BlockedUrlForFlateRateBenefit_BlocklistDisabled) {
-  if (app_locale() != "en-US" && app_locale() != "en-GB") {
+  if (app_locale() != base::i18n::GetKnownLanguageTag("en-US") &&
+      app_locale() != base::i18n::GetKnownLanguageTag("en-GB")) {
     GTEST_SKIP() << "This test should not run for unsupported app locales.";
   }
 
@@ -3386,7 +3618,8 @@ TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
 // precedence if both are available.
 TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
        ApplicableBenefitDescriptionForTravelSubcategoryFallback) {
-  if (app_locale() != "en-US" && app_locale() != "en-GB") {
+  if (app_locale() != base::i18n::GetKnownLanguageTag("en-US") &&
+      app_locale() != base::i18n::GetKnownLanguageTag("en-GB")) {
     GTEST_SKIP() << "This test should not run for unsupported app locales.";
   }
 
@@ -3460,7 +3693,8 @@ TEST_P(PaymentsDataManagerShouldBlockBenefitsTest,
 TEST_P(
     PaymentsDataManagerShouldBlockBenefitsTest,
     ApplicableBenefitDescriptionForTravelSubcategoryFallback_CurinosCategoryBenefitDisabled) {
-  if (app_locale() != "en-US" && app_locale() != "en-GB") {
+  if (app_locale() != base::i18n::GetKnownLanguageTag("en-US") &&
+      app_locale() != base::i18n::GetKnownLanguageTag("en-GB")) {
     GTEST_SKIP() << "This test should not run for unsupported app locales.";
   }
 
@@ -3504,7 +3738,12 @@ TEST_P(
 INSTANTIATE_TEST_SUITE_P(
     ,
     PaymentsDataManagerShouldBlockBenefitsTest,
-    testing::Values("en-US", "en-GB", "en-CA", "en-AU", "fr-CA", "de-DE"));
+    testing::Values(base::i18n::GetKnownLanguageTag("en-US"),
+                    base::i18n::GetKnownLanguageTag("en-GB"),
+                    base::i18n::GetKnownLanguageTag("en-CA"),
+                    base::i18n::GetKnownLanguageTag("en-AU"),
+                    base::i18n::GetKnownLanguageTag("fr-CA"),
+                    base::i18n::GetKnownLanguageTag("de-DE")));
 
 // Ensure that verified credit cards can be saved via
 // OnAcceptedLocalCreditCardSave.
@@ -3540,6 +3779,7 @@ TEST_F(PaymentsDataManagerTest, OnAcceptedLocalCreditCardSaveWithVerifiedData) {
   EXPECT_EQ(results[0]->GetRawInfo(CREDIT_CARD_NAME_FULL), u"B. Small");
 }
 
+#if !BUILDFLAG(IS_IOS)
 // Ensure that new IBANs can be updated and saved via
 // `OnAcceptedLocalIbanSave()`.
 TEST_F(PaymentsDataManagerTest, OnAcceptedLocalIbanSave) {
@@ -3604,6 +3844,7 @@ TEST_F(PaymentsDataManagerTest, OnAcceptedLocalIbanSave) {
   ResetPaymentsDataManager();
   ExpectSameElements(ibans, payments_data_manager().GetLocalIbans());
 }
+#endif  // !BUILDFLAG(IS_IOS)
 
 TEST_F(PaymentsDataManagerTest, IsKnownCard_MatchesMaskedServerCard) {
   // Add a masked server card.
@@ -4447,6 +4688,30 @@ TEST_P(PaymentsDataManagerServerTest,
   EXPECT_TRUE(payments_data_manager().GetUnlinkedBnplIssuers().empty());
 }
 
+// Tests that an unlinked BNPL issuer is not returned if the app locale is not
+// supported by the BNPL issuer.
+TEST_P(PaymentsDataManagerServerTest,
+       GetUnlinkedBnplIssuers_AppLocaleNotSupportedRejected) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillEnableBuyNowPayLaterSyncing,
+       features::kAutofillEnableBnplAffirmInternationalization,
+       features::kAutofillEnableBnplKlarnaInternationalization},
+      /*disabled_features=*/{});
+
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstrumentCreationOptions(
+      {test::CreatePaymentInstrumentCreationOptionWithBnplIssuer(
+          /*id=*/"test_id")}));
+
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("es-US"), "US");
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_TRUE(payments_data_manager().GetUnlinkedBnplIssuers().empty());
+}
+
 // Tests that `GetBnplIssuers` returns all linked and unlinked buy-now-pay-later
 // issuers.
 TEST_P(PaymentsDataManagerServerTest, GetBnplIssuers) {
@@ -4458,6 +4723,82 @@ TEST_P(PaymentsDataManagerServerTest, GetBnplIssuers) {
 
   EXPECT_THAT(payments_data_manager().GetBnplIssuers(),
               UnorderedElementsAreArray({linked_issuer, unlinked_issuer}));
+}
+
+// Tests that `GetBnplIssuers` returns all linked and unlinked buy-now-pay-later
+// issuers with supported app locale when internationalization flags are
+// enabled.
+TEST_P(PaymentsDataManagerServerTest,
+       GetBnplIssuers_InternationalizationEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillEnableBuyNowPayLaterSyncing,
+       features::kAutofillEnableBnplAffirmInternationalization,
+       features::kAutofillEnableBnplKlarnaInternationalization},
+      /*disabled_features=*/{});
+
+  // Add one linked issuer and one unlinked issuer.
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstruments(
+      {test::CreatePaymentInstrumentWithLinkedBnplIssuer(
+          /*instrument_id=*/1234L,
+          /*issuer_id=*/std::string(kBnplAffirmIssuerId), /*currency=*/"USD",
+          /*min_price_in_micros=*/5'000'000,
+          /*max_price_in_micros=*/35'000'000)}));
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstrumentCreationOptions(
+      {test::CreatePaymentInstrumentCreationOptionWithBnplIssuer(
+          /*id=*/"test_id")}));
+
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("en-GB"), "US");
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_EQ(payments_data_manager().GetBnplIssuers().size(), 2U);
+}
+
+// Tests that `GetBnplIssuers` enforces the `en-US` app locale fallback and
+// rejects unsupported locales when the internationalization feature flags are
+// disabled.
+TEST_P(PaymentsDataManagerServerTest,
+       GetBnplIssuers_InternationalizationDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillEnableBuyNowPayLaterSyncing},
+      /*disabled_features=*/
+      {features::kAutofillEnableBnplAffirmInternationalization,
+       features::kAutofillEnableBnplKlarnaInternationalization});
+
+  // Add one linked issuer and one unlinked issuer.
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstruments(
+      {test::CreatePaymentInstrumentWithLinkedBnplIssuer(
+          /*instrument_id=*/1234L,
+          /*issuer_id=*/std::string(kBnplAffirmIssuerId), /*currency=*/"USD",
+          /*min_price_in_micros=*/5'000'000,
+          /*max_price_in_micros=*/35'000'000)}));
+  ASSERT_TRUE(GetServerDataTable()->SetPaymentInstrumentCreationOptions(
+      {test::CreatePaymentInstrumentCreationOptionWithBnplIssuer(
+          /*id=*/"test_id")}));
+
+  // Verify that non-'en-US' locales (e.g. 'en-GB') are rejected when
+  // internationalization flags are disabled.
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("en-GB"), "US");
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_TRUE(payments_data_manager().GetBnplIssuers().empty());
+  EXPECT_TRUE(payments_data_manager().GetLinkedBnplIssuers().empty());
+  EXPECT_TRUE(payments_data_manager().GetUnlinkedBnplIssuers().empty());
+
+  // Verify that the fallback 'en-US' locale is accepted.
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("en-US"), "US");
+  payments_data_manager().Refresh();
+  WaitForOnPaymentsDataChanged();
+
+  EXPECT_EQ(payments_data_manager().GetBnplIssuers().size(), 2U);
 }
 
 // Tests that Buy-now-pay-later issuer getters does not return any issuers if
@@ -4524,7 +4865,8 @@ TEST_P(PaymentsDataManagerServerTest,
 
 // Tests that BNPL issuers are supported for "en-US" app locales.
 TEST_P(PaymentsDataManagerServerTest, AreBnplIssuersSupported_LocaleIsEnUS) {
-  ResetPaymentsDataManager(UseSyncTransportMode(), "en-US", "US");
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("en-US"), "US");
   EXPECT_TRUE(test_api(payments_data_manager()).AreBnplIssuersSupported());
 }
 
@@ -4539,7 +4881,8 @@ TEST_P(PaymentsDataManagerServerTest,
       /*disabled_features=*/{
           features::kAutofillEnableBnplAffirmInternationalization,
           features::kAutofillEnableBnplKlarnaInternationalization});
-  ResetPaymentsDataManager(UseSyncTransportMode(), "es-US", "US");
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("es-US"), "US");
   EXPECT_FALSE(test_api(payments_data_manager()).AreBnplIssuersSupported());
 }
 
@@ -4555,7 +4898,8 @@ TEST_P(
        features::kAutofillEnableBnplAffirmInternationalization,
        features::kAutofillEnableBnplKlarnaInternationalization},
       /*disabled_features=*/{});
-  ResetPaymentsDataManager(UseSyncTransportMode(), "es-US", "CA");
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("es-US"), "CA");
   EXPECT_TRUE(test_api(payments_data_manager()).AreBnplIssuersSupported());
 }
 
@@ -4581,7 +4925,8 @@ TEST_P(PaymentsDataManagerServerTest,
   ASSERT_EQ(payments_data_manager().GetUnlinkedBnplIssuers().size(), 1U);
   ASSERT_EQ(payments_data_manager().GetLinkedBnplIssuers().size(), 1U);
 
-  ResetPaymentsDataManager(UseSyncTransportMode(), "en-US", "CA");
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("en-US"), "CA");
 
   test_api(payments_data_manager())
       .AddBnplIssuer(test::GetTestLinkedBnplIssuer());
@@ -4602,7 +4947,8 @@ TEST_P(
   base::test::ScopedFeatureList scoped_feature_list{
       features::kAutofillDisableBnplCountryCheckForTesting};
 
-  ResetPaymentsDataManager(UseSyncTransportMode(), "en-US", "CA");
+  ResetPaymentsDataManager(UseSyncTransportMode(),
+                           base::i18n::GetKnownLanguageTag("en-US"), "CA");
 
   test_api(payments_data_manager())
       .AddBnplIssuer(test::GetTestLinkedBnplIssuer());

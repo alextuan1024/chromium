@@ -5,16 +5,21 @@
 package org.chromium.chrome.browser.keyboard_accessory;
 
 import static org.chromium.base.ThreadUtils.assertOnUiThread;
+import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.util.SparseArray;
 
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.AccessorySheetData;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData.Action;
@@ -35,23 +40,31 @@ import org.chromium.url.GURL;
 import java.util.HashMap;
 import java.util.function.Supplier;
 
+@NullMarked
 class ManualFillingComponentBridge {
-    private final SparseArray<Provider<AccessorySheetData>> mProviders = new SparseArray<>();
+    @JniType("::ManualFillingViewAndroid")
+    interface NativeManualFillingViewAndroid extends JniTypeToken {}
+
+    private final SparseArray<Provider<@Nullable AccessorySheetData>> mProviders =
+            new SparseArray<>();
     private final HashMap<Integer, Provider<Action[]>> mActionProviders = new HashMap<>();
     private final WindowAndroid mWindowAndroid;
     private final WebContents mWebContents;
-    private long mNativeView;
+    private @Nullable JniRawPtr<NativeManualFillingViewAndroid> mNativeView;
     private final ManualFillingComponent.Observer mDestructionObserver = this::onComponentDestroyed;
 
     private ManualFillingComponentBridge(
-            long nativeView, WindowAndroid windowAndroid, WebContents webContents) {
+            JniRawPtr<NativeManualFillingViewAndroid> nativeView,
+            WindowAndroid windowAndroid,
+            WebContents webContents) {
         mNativeView = nativeView;
         mWindowAndroid = windowAndroid;
         mWebContents = webContents;
     }
 
-    Provider<AccessorySheetData> getOrCreateProvider(@AccessoryTabType int tabType) {
-        Provider<AccessorySheetData> provider = mProviders.get(tabType);
+    @Nullable Provider<@Nullable AccessorySheetData> getOrCreateProvider(
+            @AccessoryTabType int tabType) {
+        Provider<@Nullable AccessorySheetData> provider = mProviders.get(tabType);
         if (provider != null) return provider;
         if (getManualFillingComponent() == null) return null;
         if (mWebContents.isDestroyed()) return null;
@@ -66,22 +79,25 @@ class ManualFillingComponentBridge {
     }
 
     @CalledByNative
-    private static ManualFillingComponentBridge create(
-            long nativeView, WindowAndroid windowAndroid, WebContents webContents) {
+    static ManualFillingComponentBridge create(
+            JniRawPtr<NativeManualFillingViewAndroid> nativeView,
+            @JniType("ui::WindowAndroid*") WindowAndroid windowAndroid,
+            @JniType("content::WebContents*") WebContents webContents) {
         return new ManualFillingComponentBridge(nativeView, windowAndroid, webContents);
     }
 
     @CalledByNative
     private void onItemsAvailable(AccessorySheetData accessorySheetData) {
         assertOnUiThread();
-        Provider<AccessorySheetData> provider =
+        Provider<@Nullable AccessorySheetData> provider =
                 getOrCreateProvider(accessorySheetData.getSheetType());
         if (provider != null) provider.notifyObservers(accessorySheetData);
     }
 
     @CalledByNative
     private void onAccessoryActionAvailabilityChanged(
-            boolean available, @AccessoryAction int actionType) {
+            boolean available,
+            @JniType("autofill::AccessoryAction") @AccessoryAction int actionType) {
         createOrClearAction(available, actionType);
     }
 
@@ -89,10 +105,10 @@ class ManualFillingComponentBridge {
     void show(
             boolean waitForKeyboard,
             boolean shouldShowOnLargeFormFactor,
-            boolean isContentEditable) {
+            boolean isUnstructuredField) {
         if (getManualFillingComponent() != null) {
             getManualFillingComponent()
-                    .show(waitForKeyboard, shouldShowOnLargeFormFactor, isContentEditable);
+                    .show(waitForKeyboard, shouldShowOnLargeFormFactor, isUnstructuredField);
         }
     }
 
@@ -125,19 +141,23 @@ class ManualFillingComponentBridge {
         for (int i = 0; i < mProviders.size(); ++i) {
             mProviders.valueAt(i).notifyObservers(null);
         }
-        mNativeView = 0;
+        if (mNativeView != null) {
+            mNativeView.release();
+            mNativeView = null;
+        }
     }
 
     @CalledByNative
     private static AccessorySheetData createAccessorySheetData(
-            @AccessoryTabType int type,
+            @JniType("autofill::AccessoryTabType") @AccessoryTabType int type,
             @JniType("std::u16string") String userInfoTitle,
             @JniType("std::u16string") String warning) {
         return new AccessorySheetData(type, userInfoTitle, warning);
     }
 
     @CalledByNative
-    private void showAccessorySheetTab(int tabType) {
+    private void showAccessorySheetTab(
+            @JniType("autofill::AccessoryTabType") @AccessoryTabType int tabType) {
         if (getManualFillingComponent() != null) {
             getManualFillingComponent().showAccessorySheetTab(tabType);
         }
@@ -145,7 +165,7 @@ class ManualFillingComponentBridge {
 
     @CalledByNative
     private void setSelectedSuggestion(
-            @JniType("std::optional<int>") @Nullable Integer suggestionIndex) {
+            @JniType("std::optional<int32_t>") @Nullable Integer suggestionIndex) {
         ManualFillingComponent component = getManualFillingComponent();
         if (component == null) {
             return;
@@ -154,13 +174,21 @@ class ManualFillingComponentBridge {
     }
 
     @CalledByNative
-    private boolean navigateSuggestions(
-            @JniType("autofill::NavigationDirection") @NavigationDirection int direction) {
+    private boolean navigate(@JniType("autofill::NavigationAction") @NavigationAction int action) {
         ManualFillingComponent component = getManualFillingComponent();
         if (component == null) {
             return false;
         }
-        return component.navigateSuggestions(direction);
+        return component.navigate(action);
+    }
+
+    @CalledByNative
+    private boolean acceptFallback() {
+        ManualFillingComponent component = getManualFillingComponent();
+        if (component == null) {
+            return false;
+        }
+        return component.acceptFallback();
     }
 
     @CalledByNative
@@ -168,17 +196,16 @@ class ManualFillingComponentBridge {
             AccessorySheetData accessorySheetData,
             @JniType("std::u16string") String displayText,
             boolean enabled,
-            @AccessoryAction int accessoryAction) {
+            @JniType("autofill::AccessoryAction") @AccessoryAction int accessoryAction) {
         accessorySheetData.setOptionToggle(
                 new OptionToggle(
                         displayText,
                         enabled,
                         accessoryAction,
                         on -> {
-                            assert mNativeView != 0
-                                    : "Controller was destroyed but the bridge wasn't!";
                             ManualFillingComponentBridgeJni.get()
-                                    .onToggleChanged(mNativeView, accessoryAction, on);
+                                    .onToggleChanged(
+                                            assumeNonNull(mNativeView), accessoryAction, on);
                         }));
     }
 
@@ -187,7 +214,7 @@ class ManualFillingComponentBridge {
             AccessorySheetData accessorySheetData,
             @JniType("std::string") String origin,
             boolean isExactMatch,
-            GURL iconUrl,
+            @JniType("GURL") GURL iconUrl,
             boolean isBackupCredential) {
         UserInfo userInfo = new UserInfo(origin, isExactMatch, iconUrl, isBackupCredential);
         accessorySheetData.getUserInfoList().add(userInfo);
@@ -197,8 +224,9 @@ class ManualFillingComponentBridge {
     @CalledByNative
     private void addFieldToUserInfo(
             UserInfo userInfo,
-            @AccessoryTabType int sheetType,
-            @AccessorySuggestionType int suggestionType,
+            @JniType("autofill::AccessoryTabType") @AccessoryTabType int sheetType,
+            @JniType("autofill::AccessorySuggestionType") @AccessorySuggestionType
+                    int suggestionType,
             @JniType("std::u16string") String displayText,
             @JniType("std::u16string") String textToFill,
             @JniType("std::u16string") String a11yDescription,
@@ -210,13 +238,12 @@ class ManualFillingComponentBridge {
         if (selectable) {
             callback =
                     (field) -> {
-                        assert mNativeView != 0 : "Controller was destroyed but the bridge wasn't!";
                         ManualFillingMetricsRecorder.recordActionSelected(
                                 AccessoryAction.AUTOFILL_SUGGESTION_FROM_ACCESSORY_SHEET);
                         ManualFillingMetricsRecorder.recordSuggestionSelected(
                                 sheetType, suggestionType);
                         ManualFillingComponentBridgeJni.get()
-                                .onFillingTriggered(mNativeView, sheetType, field);
+                                .onFillingTriggered(assumeNonNull(mNativeView), sheetType, field);
                     };
         }
         userInfo.getFields()
@@ -236,7 +263,7 @@ class ManualFillingComponentBridge {
     @CalledByNative
     private void addPasskeySectionToAccessorySheetData(
             AccessorySheetData accessorySheetData,
-            @AccessoryTabType int sheetType,
+            @JniType("autofill::AccessoryTabType") @AccessoryTabType int sheetType,
             @JniType("std::string") String displayName,
             @JniType("std::vector<uint8_t>") byte[] passkeyId) {
         accessorySheetData
@@ -245,18 +272,20 @@ class ManualFillingComponentBridge {
                         new PasskeySection(
                                 displayName,
                                 () -> {
-                                    assert mNativeView != 0
-                                            : "Controller was destroyed but the bridge wasn't!";
                                     ManualFillingComponentBridgeJni.get()
-                                            .onPasskeySelected(mNativeView, sheetType, passkeyId);
+                                            .onPasskeySelected(
+                                                    assumeNonNull(mNativeView),
+                                                    sheetType,
+                                                    passkeyId);
                                 }));
     }
 
     @CalledByNative
     private void addPromoCodeInfoToAccessorySheetData(
             AccessorySheetData accessorySheetData,
-            @AccessoryTabType int sheetType,
-            @AccessorySuggestionType int suggestionType,
+            @JniType("autofill::AccessoryTabType") @AccessoryTabType int sheetType,
+            @JniType("autofill::AccessorySuggestionType") @AccessorySuggestionType
+                    int suggestionType,
             @JniType("std::u16string") String displayText,
             @JniType("std::u16string") String textToFill,
             @JniType("std::u16string") String a11yDescription,
@@ -268,13 +297,12 @@ class ManualFillingComponentBridge {
 
         Callback<UserInfoField> callback =
                 (field) -> {
-                    assert mNativeView != 0 : "Controller was destroyed but the bridge wasn't!";
                     ManualFillingMetricsRecorder.recordActionSelected(
                             AccessoryAction.AUTOFILL_SUGGESTION_FROM_ACCESSORY_SHEET);
                     ManualFillingMetricsRecorder.recordSuggestionSelected(
                             sheetType, suggestionType);
                     ManualFillingComponentBridgeJni.get()
-                            .onFillingTriggered(mNativeView, sheetType, field);
+                            .onFillingTriggered(assumeNonNull(mNativeView), sheetType, field);
                 };
         promoCodeInfo.initialize(
                 /* promoCode= */ new UserInfoField.Builder()
@@ -292,20 +320,24 @@ class ManualFillingComponentBridge {
     @CalledByNative
     private void addIbanInfoToAccessorySheetData(
             AccessorySheetData accessorySheetData,
-            @AccessoryTabType int sheetType,
-            @AccessorySuggestionType int suggestionType,
+            @JniType("autofill::AccessoryTabType") @AccessoryTabType int sheetType,
+            @JniType("autofill::AccessorySuggestionType") @AccessorySuggestionType
+                    int suggestionType,
             @JniType("std::string") String guid,
             @JniType("std::u16string") String value,
-            @JniType("std::u16string") String textToFill) {
+            @JniType("std::u16string") String textToFill,
+            boolean selectable) {
         IbanInfo ibanInfo = new IbanInfo();
         accessorySheetData.getIbanInfoList().add(ibanInfo);
 
-        Callback<UserInfoField> callback =
-                (field) -> {
-                    assert mNativeView != 0 : "Controller was destroyed but the bridge wasn't!";
-                    ManualFillingComponentBridgeJni.get()
-                            .onFillingTriggered(mNativeView, sheetType, field);
-                };
+        Callback<UserInfoField> callback = null;
+        if (selectable) {
+            callback =
+                    (field) -> {
+                        ManualFillingComponentBridgeJni.get()
+                                .onFillingTriggered(assumeNonNull(mNativeView), sheetType, field);
+                    };
+        }
         ((IbanInfo) ibanInfo)
                 .setValue(
                         new UserInfoField.Builder()
@@ -322,20 +354,20 @@ class ManualFillingComponentBridge {
     @CalledByNative
     private void addLoyaltyCardInfoToAccessorySheetData(
             AccessorySheetData accessorySheetData,
-            @AccessoryTabType int sheetType,
-            @AccessorySuggestionType int suggestionType,
+            @JniType("autofill::AccessoryTabType") @AccessoryTabType int sheetType,
+            @JniType("autofill::AccessorySuggestionType") @AccessorySuggestionType
+                    int suggestionType,
             @JniType("std::string") String merchantName,
-            GURL programLogoUrl,
+            @JniType("GURL") GURL programLogoUrl,
             @JniType("std::u16string") String loyaltyCardNumber) {
         Callback<UserInfoField> callback =
                 (field) -> {
-                    assert mNativeView != 0 : "Controller was destroyed but the bridge wasn't!";
                     ManualFillingMetricsRecorder.recordActionSelected(
                             AccessoryAction.AUTOFILL_SUGGESTION_FROM_ACCESSORY_SHEET);
                     ManualFillingMetricsRecorder.recordSuggestionSelected(
                             sheetType, suggestionType);
                     ManualFillingComponentBridgeJni.get()
-                            .onFillingTriggered(mNativeView, sheetType, field);
+                            .onFillingTriggered(assumeNonNull(mNativeView), sheetType, field);
                 };
         accessorySheetData
                 .getLoyaltyCardInfoList()
@@ -358,17 +390,16 @@ class ManualFillingComponentBridge {
     private void addFooterCommandToAccessorySheetData(
             AccessorySheetData accessorySheetData,
             @JniType("std::u16string") String displayText,
-            int accessoryAction) {
+            @JniType("autofill::AccessoryAction") @AccessoryAction int accessoryAction) {
         accessorySheetData
                 .getFooterCommands()
                 .add(
                         new FooterCommand(
                                 displayText,
                                 (footerCommand) -> {
-                                    assert mNativeView != 0
-                                            : "Controller was destroyed but the bridge wasn't!";
                                     ManualFillingComponentBridgeJni.get()
-                                            .onOptionSelected(mNativeView, accessoryAction);
+                                            .onOptionSelected(
+                                                    assumeNonNull(mNativeView), accessoryAction);
                                 }));
     }
 
@@ -404,8 +435,8 @@ class ManualFillingComponentBridge {
         ManualFillingComponentBridgeJni.get().disableServerPredictionsForTesting();
     }
 
-    private ManualFillingComponent getManualFillingComponent() {
-        Supplier<ManualFillingComponent> manualFillingComponentSupplier =
+    private @Nullable ManualFillingComponent getManualFillingComponent() {
+        Supplier<@Nullable ManualFillingComponent> manualFillingComponentSupplier =
                 ManualFillingComponentSupplier.from(mWindowAndroid);
         if (manualFillingComponentSupplier == null) return null;
 
@@ -418,12 +449,15 @@ class ManualFillingComponentBridge {
     }
 
     private void onComponentDestroyed() {
-        if (mNativeView == 0) return; // Component was destroyed already.
-        ManualFillingComponentBridgeJni.get().onViewDestroyed(mNativeView);
+        if (mNativeView == null) return; // Component was destroyed already.
+        JniRawPtr<NativeManualFillingViewAndroid> nativeView = mNativeView;
+        mNativeView = null;
+        ManualFillingComponentBridgeJni.get().onViewDestroyed(nativeView);
+        nativeView.release();
     }
 
     private void requestSheet(int sheetType) {
-        if (mNativeView == 0) return; // Component was destroyed already.
+        if (mNativeView == null) return; // Component was destroyed already.
         ManualFillingComponentBridgeJni.get().requestAccessorySheet(mNativeView, sheetType);
     }
 
@@ -434,7 +468,8 @@ class ManualFillingComponentBridge {
     }
 
     private Action[] createSingleAction(@AccessoryAction int actionType) {
-        return new Action[] {new Action(actionType, () -> onActionSelected(actionType))};
+        // TODO: crbug.com/561395976 - Pass the `wasObscured` flag further.
+        return new Action[] {new Action(actionType, wasObscured -> onActionSelected(actionType))};
     }
 
     private Provider<Action[]> getOrCreateActionProvider(@AccessoryAction int actionType) {
@@ -450,7 +485,7 @@ class ManualFillingComponentBridge {
     }
 
     private void onActionSelected(@AccessoryAction int actionType) {
-        if (mNativeView == 0) return; // Component was destroyed already.
+        if (mNativeView == null) return; // Component was destroyed already.
         ManualFillingMetricsRecorder.recordActionSelected(actionType);
         ManualFillingComponentBridgeJni.get().onOptionSelected(mNativeView, actionType);
     }
@@ -467,39 +502,52 @@ class ManualFillingComponentBridge {
     @NativeMethods
     interface Natives {
         void onFillingTriggered(
-                long nativeManualFillingViewAndroid, int tabType, UserInfoField userInfoField);
+                JniPtr<NativeManualFillingViewAndroid> self,
+                @JniType("autofill::AccessoryTabType") @AccessoryTabType int tabType,
+                UserInfoField userInfoField);
 
         void onPasskeySelected(
-                long nativeManualFillingViewAndroid,
-                int tabType,
+                JniPtr<NativeManualFillingViewAndroid> self,
+                @JniType("autofill::AccessoryTabType") @AccessoryTabType int tabType,
                 @JniType("std::vector<uint8_t>") byte[] passkeyId);
 
-        void onOptionSelected(long nativeManualFillingViewAndroid, int accessoryAction);
+        void onOptionSelected(
+                JniPtr<NativeManualFillingViewAndroid> self,
+                @JniType("autofill::AccessoryAction") @AccessoryAction int accessoryAction);
 
-        void onOptionSelectedForWebContents(WebContents webContents, int accessoryAction);
+        void onOptionSelectedForWebContents(
+                @JniType("content::WebContents*") @Nullable WebContents webContents,
+                @JniType("autofill::AccessoryAction") @AccessoryAction int accessoryAction);
 
         void onToggleChanged(
-                long nativeManualFillingViewAndroid, int accessoryAction, boolean enabled);
+                JniPtr<NativeManualFillingViewAndroid> self,
+                @JniType("autofill::AccessoryAction") @AccessoryAction int accessoryAction,
+                boolean enabled);
 
-        void onViewDestroyed(long nativeManualFillingViewAndroid);
+        void onViewDestroyed(JniPtr<NativeManualFillingViewAndroid> self);
 
-        void requestAccessorySheet(long nativeManualFillingViewAndroid, int sheetType);
+        void requestAccessorySheet(
+                JniPtr<NativeManualFillingViewAndroid> self,
+                @JniType("autofill::AccessoryTabType") @AccessoryTabType int sheetType);
 
         void cachePasswordSheetDataForTesting(
-                WebContents webContents,
-                @JniType("std::vector<std::string>") String[] userNames,
-                @JniType("std::vector<std::string>") String[] passwords,
+                @JniType("content::WebContents*") WebContents webContents,
+                @JniType("std::vector<std::u16string>") String[] userNames,
+                @JniType("std::vector<std::u16string>") String[] passwords,
                 boolean originDenylisted);
 
         void notifyFocusedFieldTypeForTesting(
-                WebContents webContents, long focusedFieldId, int focusedFieldType);
+                @JniType("content::WebContents*") WebContents webContents,
+                long focusedFieldId,
+                @JniType("autofill::mojom::FocusedFieldType") int focusedFieldType);
 
-        void signalAutoGenerationStatusForTesting(WebContents webContents, boolean available);
+        void signalAutoGenerationStatusForTesting(
+                @JniType("content::WebContents*") WebContents webContents, boolean available);
 
         void disableServerPredictionsForTesting();
 
-        boolean isAtMemoryEnabled(WebContents webContents);
+        boolean isAtMemoryEnabled(@JniType("content::WebContents*") WebContents webContents);
 
-        void hideAtMemoryBottomSheet(WebContents webContents);
+        void hideAtMemoryBottomSheet(@JniType("content::WebContents*") WebContents webContents);
     }
 }

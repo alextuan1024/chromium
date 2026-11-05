@@ -4,28 +4,34 @@
 
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_input_accessory_view_controller.h"
 
+#import <optional>
+
 #import "base/apple/foundation_util.h"
 #import "base/i18n/rtl.h"
+#import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/timer/elapsed_timer.h"
 #import "components/autofill/core/browser/filling/filling_product.h"
+#import "components/autofill/core/browser/suggestions/suggestion_type.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
 #import "components/webauthn/ios/features.h"
+#import "ios/chrome/browser/autofill/branding/ui/branding_view_controller.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/public/autofill_suggestion_context_menu_handler.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_input_accessory_view_controller_delegate.h"
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_suggestion_view.h"
 #import "ios/chrome/browser/autofill/manual_fill/public/manual_fill_constants.h"
 #import "ios/chrome/browser/autofill/model/features.h"
 #import "ios/chrome/browser/autofill/model/form_suggestion_client.h"
-#import "ios/chrome/browser/autofill/ui_bundled/branding/branding_view_controller.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_utils.h"
+#import "ios/chrome/browser/toolbar/ui/toolbar_constants.h"
 #import "ios/chrome/common/ui/elements/form_input_accessory_view.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -33,15 +39,18 @@
 #import "ui/base/l10n/l10n_util.h"
 
 using autofill::FillingProduct;
+using autofill::SuggestionType;
+using base::ElapsedTimer;
 using manual_fill::ManualFillDataType;
 
 namespace {
 
-// The form suggestion view's layer mask gradient's start point.
-constexpr CGFloat kFormSuggestionViewLayerMaskGradientStartPoint = 0.96;
+// The form suggestion view's layer mask gradient's start point in compact mode.
+constexpr CGFloat kFormSuggestionViewLayerMaskGradientStartPointCompact = 0.96;
 
-// The form suggestion view's layer mask gradient's start point.
-constexpr CGFloat kFormSuggestionViewLayerMaskGradientStartPointForTablet =
+// The form suggestion view's layer mask gradient's start point in non-compact
+// mode.
+constexpr CGFloat kFormSuggestionViewLayerMaskGradientStartPointNonCompact =
     0.98;
 
 // The form suggestion view's layer mask gradient's end point.
@@ -151,7 +160,64 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
   return standard_suggestions;
 }
 
+// Returns true if `suggestions` contains a suggestion of type
+// `SuggestionType::kFetchingAmbientData`.
+bool ContainsFetchingAmbientDataSuggestion(
+    NSArray<FormSuggestion*>* suggestions) {
+  for (FormSuggestion* suggestion in suggestions) {
+    if (suggestion.type == SuggestionType::kFetchingAmbientData) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Returns the height of the transparent omnibox typing shield reserved at the
+// top of `FormInputAccessoryView` so the keyboard frame (and WebKit's
+// `visualViewport`) accounts for the collapsed bottom omnibox.
+CGFloat OmniboxTypingShieldHeight(bool is_bottom_omnibox,
+                                  UITraitCollection* trait_collection) {
+  if (!is_bottom_omnibox) {
+    return 0.0;
+  }
+  if (IsSplitToolbarMode(trait_collection)) {
+    CGFloat height =
+        ToolbarCollapsedHeight(trait_collection.preferredContentSizeCategory);
+    if (IsChromeNextIaEnabled()) {
+      height += kKeyboardAttachedOmniboxBottomPadding;
+    }
+    return height;
+  }
+  if (IsChromeNextIaEnabled() && IsIPhoneLandscape(trait_collection)) {
+    // In landscape, split toolbar mode is off, so this constant already
+    // accounts for the full collapsed bottom omnibox height above the keyboard.
+    return kKeyboardAttachedOmniboxBottomPaddingLandscape;
+  }
+  return 0.0;
+}
+
 }  // namespace
+
+// Keeps the form suggestion view's layer mask (the fade-out gradient) sized to
+// its bounds on every layout pass. Layout changes caused by sibling views
+// (e.g. the branding view collapsing or expanding next to it) would otherwise
+// leave the mask with a stale frame, hiding the suggestions.
+@interface FormSuggestionContainerView : UIStackView
+@end
+
+@implementation FormSuggestionContainerView
+
+- (void)layoutSubviews {
+  [super layoutSubviews];
+  // Disables implicit Core Animation transactions so the layer mask frame
+  // updates synchronously with the layout pass without visual lag or animation.
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  self.layer.mask.frame = self.bounds;
+  [CATransaction commit];
+}
+
+@end
 
 @interface FormInputAccessoryViewController () <FormSuggestionViewDelegate>
 
@@ -165,12 +231,6 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
 
 // The custom view that should be shown in the input accessory view.
 @property(nonatomic, strong) FormInputAccessoryView* formInputAccessoryView;
-
-// The view with the suggestions in FormInputAccessoryView.
-@property(nonatomic, strong) FormSuggestionView* formSuggestionView;
-
-// The view which contains `formSuggestionView` and its mask.
-@property(nonatomic, strong) UIStackView* formSuggestionContainerView;
 
 // The gradient used to fade out suggestions at the end of the form suggestion
 // view.
@@ -199,6 +259,20 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
 
   // Whether the keyboard was closed before the keyboard accessory appeared.
   BOOL _keyboardWasClosed;
+
+  // Whether the manual fill menu most recently used popover presentation.
+  std::optional<BOOL> _shouldUsePopover;
+
+  // Timer tracking how long a `SuggestionType::kFetchingAmbientData` suggestion
+  // was shown on the keyboard accessory bar. Reset once a batch of suggestions
+  // without it is shown or the view disappears.
+  std::optional<ElapsedTimer> _fetchingAmbientDataTimer;
+
+  // The view with the suggestions in `FormInputAccessoryView`.
+  FormSuggestionView* _formSuggestionView;
+
+  // The view which contains `_formSuggestionView` and its mask.
+  UIStackView* _formSuggestionContainerView;
 }
 
 @synthesize addressButtonHidden = _addressButtonHidden;
@@ -265,6 +339,8 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
 - (void)viewDidDisappear:(BOOL)animated {
   [super viewDidDisappear:animated];
 
+  [self recordFetchingAmbientDataDurationForSuggestions:@[]];
+
   // Exit the manual fill view, so that the next time the keyboard opens, it is
   // showing the keyboard and not the manual fill view.
   [self.formInputAccessoryViewControllerDelegate
@@ -284,7 +360,7 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
 }
 
 - (void)resetLoadingStates {
-  [self.formSuggestionView setActivityIndicatorEnabled:NO];
+  [_formSuggestionView setActivityIndicatorEnabled:NO];
 }
 
 #pragma mark - FormInputAccessoryConsumer
@@ -339,7 +415,7 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
   ManualFillDataType dataType =
       [ManualFillUtil manualFillDataTypeFromFillingProduct:_mainFillingProduct];
   LogManualFallbackEntryThroughExpandIcon(
-      dataType, self.formSuggestionView.suggestions.count);
+      dataType, _formSuggestionView.suggestions.count);
   [self manualFillButtonPressed:button forDataType:dataType];
 }
 
@@ -352,7 +428,7 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
 - (void)creditCardManualFillButtonPressed:(UIButton*)button {
   base::RecordAction(base::UserMetricsAction("ManualFallback_OpenCreditCard"));
   UMA_HISTOGRAM_COUNTS_100("ManualFallback.VisibleSuggestions.OpenCreditCards",
-                           self.formSuggestionView.suggestions.count);
+                           _formSuggestionView.suggestions.count);
   [self manualFillButtonPressed:button
                     forDataType:ManualFillDataType::kPaymentMethod];
 }
@@ -411,7 +487,7 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
   }
   return !(self.addressButtonHidden && self.creditCardButtonHidden &&
            self.passwordButtonHidden && self.atMemoryButtonHidden &&
-           self.formSuggestionView.suggestions.count == 0);
+           _formSuggestionView.suggestions.count == 0);
 }
 
 #pragma mark - Setters
@@ -459,9 +535,9 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
 // Updates the gradient mask layout for the form suggestion view container.
 - (void)updateFormSuggestionViewMaskLayout {
   CGFloat startPoint =
-      (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET)
-          ? kFormSuggestionViewLayerMaskGradientStartPointForTablet
-          : kFormSuggestionViewLayerMaskGradientStartPoint;
+      [self isCompact]
+          ? kFormSuggestionViewLayerMaskGradientStartPointCompact
+          : kFormSuggestionViewLayerMaskGradientStartPointNonCompact;
   if (base::i18n::IsRTL()) {
     // Create a gradient in the reverse direction from the non RTL case below.
     self.formSuggestionViewMask.startPoint =
@@ -476,7 +552,7 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
     self.formSuggestionViewMask.colors =
         @[ (id)[UIColor whiteColor].CGColor, (id)[UIColor clearColor].CGColor ];
   }
-  self.formSuggestionContainerView.layer.mask = self.formSuggestionViewMask;
+  _formSuggestionContainerView.layer.mask = self.formSuggestionViewMask;
 }
 
 // Returns whether to use the single manual fill button.
@@ -491,7 +567,7 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
                     forDataType:(manual_fill::ManualFillDataType)dataType {
   // Hide the keyboard accessory while the expanded view is visible and not
   // presented in a popover.
-  self.formInputAccessoryView.hidden = ![ManualFillUtil shouldUsePopover];
+  self.formInputAccessoryView.hidden = ![ManualFillUtil shouldUsePopover:self];
 
   [_formInputAccessoryViewControllerDelegate
       formInputAccessoryViewController:self
@@ -503,15 +579,15 @@ NSArray<FormSuggestion*>* TruncateSuggestionsIfNeeded(
 - (void)resetAnimated:(BOOL)animated {
   self.formInputAccessoryView.hidden = NO;
 
-  [self.formSuggestionView resetContentInsetAndDelegateAnimated:animated];
+  [_formSuggestionView resetContentInsetAndDelegateAnimated:animated];
   self.brandingViewController.keyboardAccessoryVisible =
       self.formAccessoryVisible;
 }
 
 // Returns the manual fill symbol used for the manual fill menu (input view VS
 // popover).
-UIImage* GetManualFillSymbol() {
-  if ([ManualFillUtil shouldUsePopover]) {
+UIImage* GetManualFillSymbol(id<UITraitEnvironment> trait_environment) {
+  if ([ManualFillUtil shouldUsePopover:trait_environment]) {
     return SymbolWithPointSize(SymbolListBullet, kManualFillSymbolPointSize);
   }
 
@@ -537,12 +613,17 @@ UIImage* GetManualFillSymbol() {
   [self.leadingView addArrangedSubview:self.brandingViewController.view];
   [self.brandingViewController didMoveToParentViewController:self];
 
-  [self.leadingView addArrangedSubview:self.formSuggestionContainerView];
-  [self.formSuggestionContainerView addArrangedSubview:self.formSuggestionView];
-  self.formSuggestionViewMask.frame = self.formSuggestionContainerView.bounds;
+  [self.leadingView addArrangedSubview:_formSuggestionContainerView];
+  [_formSuggestionContainerView addArrangedSubview:_formSuggestionView];
+  self.formSuggestionViewMask.frame = _formSuggestionContainerView.bounds;
 
   BOOL isTabletFormFactor =
       ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
+  BOOL isCompact = [self isCompact];
+  if (self.traitCollection.horizontalSizeClass !=
+      UIUserInterfaceSizeClassUnspecified) {
+    _shouldUsePopover = [ManualFillUtil shouldUsePopover:self];
+  }
 
   UIImage* closeButtonSymbol =
       SymbolWithPointSize(SymbolKeyboardDown, kSymbolActionPointSize);
@@ -553,7 +634,7 @@ UIImage* GetManualFillSymbol() {
   [formInputAccessoryView
             setUpWithLeadingView:self.leadingView
               navigationDelegate:self.navigationDelegate
-                manualFillSymbol:GetManualFillSymbol()
+                manualFillSymbol:GetManualFillSymbol(self)
         passwordManualFillSymbol:SymbolWithPointSize(SymbolPassword,
                                                      kSymbolActionPointSize)
       creditCardManualFillSymbol:SymbolWithPointSize(SymbolCreditCard,
@@ -562,15 +643,15 @@ UIImage* GetManualFillSymbol() {
                                                      kSymbolActionPointSize)
         atMemoryManualFillSymbol:atMemorySymbol
                closeButtonSymbol:closeButtonSymbol
-              isTabletFormFactor:isTabletFormFactor];
-  [formInputAccessoryView setIsCompact:[self isCompact]];
+              isTabletFormFactor:isTabletFormFactor
+                       isCompact:isCompact];
 
-  if (!isTabletFormFactor) {
+  if (isCompact) {
     [formInputAccessoryView
         showGroup:FormInputAccessoryViewSubitemGroup::kNavigationButtons];
   }
 
-  formInputAccessoryView.accessibilityViewIsModal = !isTabletFormFactor;
+  formInputAccessoryView.accessibilityViewIsModal = isCompact;
 
   self.brandingViewController.keyboardAccessoryVisible =
       self.formAccessoryVisible;
@@ -592,6 +673,7 @@ UIImage* GetManualFillSymbol() {
 
 // Populates `formSuggestionView` with the given suggestions.
 - (void)updateFormSuggestionView:(NSArray<FormSuggestion*>*)suggestions {
+  [self recordFetchingAmbientDataDurationForSuggestions:suggestions];
   [self createFormSuggestionViewIfNeeded];
   [self forceUserInterfaceStyle];
 
@@ -602,7 +684,7 @@ UIImage* GetManualFillSymbol() {
       weakSelf.showScrollHint = NO;
     }
   };
-  [self.formSuggestionView
+  [_formSuggestionView
           updateSuggestions:suggestions
              showScrollHint:self.showScrollHint
       accessoryTrailingView:self.formInputAccessoryView.trailingView
@@ -610,25 +692,43 @@ UIImage* GetManualFillSymbol() {
   // Check if the view is in the current hierarchy before performing the layout.
   if (self.formInputAccessoryView.window) {
     [self.formInputAccessoryView layoutIfNeeded];
-    self.formSuggestionViewMask.frame = self.formSuggestionContainerView.bounds;
+    self.formSuggestionViewMask.frame = _formSuggestionContainerView.bounds;
   }
   self.brandingViewController.keyboardAccessoryVisible =
       self.formAccessoryVisible;
   [self announceVoiceOverMessageIfNeeded:[suggestions count]];
 }
 
+// Tracks the duration `SuggestionType::kFetchingAmbientData` stays on the
+// keyboard accessory bar.
+- (void)recordFetchingAmbientDataDurationForSuggestions:
+    (NSArray<FormSuggestion*>*)suggestions {
+  if (ContainsFetchingAmbientDataSuggestion(suggestions)) {
+    if (!_fetchingAmbientDataTimer.has_value()) {
+      _fetchingAmbientDataTimer.emplace();
+    }
+    return;
+  }
+
+  if (_fetchingAmbientDataTimer.has_value()) {
+    base::UmaHistogramMediumTimes(kFetchingAmbientDataShownToRemovedHistogram,
+                                  _fetchingAmbientDataTimer->Elapsed());
+    _fetchingAmbientDataTimer.reset();
+  }
+}
+
 // Creates formSuggestionView if not done yet.
 - (void)createFormSuggestionViewIfNeeded {
-  if (!self.formSuggestionView) {
-    self.formSuggestionView = [[FormSuggestionView alloc] init];
-    self.formSuggestionView.isContextMenuEnabled = _isContextMenuEnabled;
-    self.formSuggestionView.formSuggestionViewDelegate = self;
-    self.formSuggestionView.layoutGuideCenter = self.layoutGuideCenter;
-    self.formSuggestionView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.formSuggestionView setIsCompact:[self isCompact]];
+  if (!_formSuggestionView) {
+    _formSuggestionView = [[FormSuggestionView alloc] init];
+    _formSuggestionView.isContextMenuEnabled = _isContextMenuEnabled;
+    _formSuggestionView.formSuggestionViewDelegate = self;
+    _formSuggestionView.layoutGuideCenter = self.layoutGuideCenter;
+    _formSuggestionView.translatesAutoresizingMaskIntoConstraints = NO;
+    [_formSuggestionView setIsCompact:[self isCompact]];
 
-    self.formSuggestionContainerView = [[UIStackView alloc] init];
-    self.formSuggestionContainerView.axis = UILayoutConstraintAxisHorizontal;
+    _formSuggestionContainerView = [[FormSuggestionContainerView alloc] init];
+    _formSuggestionContainerView.axis = UILayoutConstraintAxisHorizontal;
 
     // Put a mask on the formSuggestionView's container view so that the mask
     // doesn't move along with the scroll view.
@@ -721,14 +821,9 @@ UIImage* GetManualFillSymbol() {
   if (!self.formInputAccessoryView) {
     return;
   }
-  const BOOL shouldShowTypingShield =
-      _isBottomOmnibox && IsSplitToolbarMode(self.traitCollection);
-  const CGFloat typingShieldHeight =
-      shouldShowTypingShield
-          ? ToolbarCollapsedHeight(
-                self.traitCollection.preferredContentSizeCategory)
-          : 0.0;
-  [self.formInputAccessoryView setOmniboxTypingShieldHeight:typingShieldHeight];
+  [self.formInputAccessoryView
+      setOmniboxTypingShieldHeight:OmniboxTypingShieldHeight(
+                                       _isBottomOmnibox, self.traitCollection)];
 }
 
 // Moves the main view down by a certain offset (negative offsets move the view
@@ -739,10 +834,7 @@ UIImage* GetManualFillSymbol() {
 }
 
 - (BOOL)isCompact {
-  return self.traitCollection.horizontalSizeClass ==
-             UIUserInterfaceSizeClassCompact ||
-         self.traitCollection.verticalSizeClass ==
-             UIUserInterfaceSizeClassCompact;
+  return IsCompactWidth(self.traitCollection);
 }
 
 // Updates the UI when any UITrait changes on the device.
@@ -751,9 +843,25 @@ UIImage* GetManualFillSymbol() {
     [self updateOmniboxTypingShieldVisibility];
   }
 
-  BOOL isCompact = [self isCompact];
-  [self.formInputAccessoryView setIsCompact:isCompact];
-  [self.formSuggestionView setIsCompact:isCompact];
+  if (self.traitCollection.horizontalSizeClass !=
+      UIUserInterfaceSizeClassUnspecified) {
+    BOOL isCompact = [self isCompact];
+    [self.formInputAccessoryView setIsCompact:isCompact];
+    self.formInputAccessoryView.accessibilityViewIsModal = isCompact;
+    [_formSuggestionView setIsCompact:isCompact];
+    [self updateFormSuggestionViewMaskLayout];
+
+    BOOL shouldUsePopover = [ManualFillUtil shouldUsePopover:self];
+    if (_shouldUsePopover != shouldUsePopover) {
+      BOOL hadPreviousValue = _shouldUsePopover.has_value();
+      _shouldUsePopover = shouldUsePopover;
+      self.formInputAccessoryView.manualFillSymbol = GetManualFillSymbol(self);
+      if (hadPreviousValue) {
+        [self.formInputAccessoryViewControllerDelegate
+            formInputAccessoryViewControllerReset:self];
+      }
+    }
+  }
 
   [self forceUserInterfaceStyle];
 }
@@ -765,7 +873,7 @@ UIImage* GetManualFillSymbol() {
     // contrast. In this case, since a glass tint is used, the contrast is
     // maximized by forcing a user interface style which will contrast with the
     // tint color.
-    self.formSuggestionView.overrideUserInterfaceStyle =
+    _formSuggestionView.overrideUserInterfaceStyle =
         self.traitCollection.userInterfaceStyle;
     [self.formInputAccessoryView
         setSubviewsOverrideUserInterfaceStyle:self.traitCollection

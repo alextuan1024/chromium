@@ -15,6 +15,7 @@
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/rect_based_targeting_utils.h"
+#include "ui/views/view_class_properties.h"
 #include "ui/views/view_targeter.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget.h"
@@ -27,6 +28,9 @@ namespace views {
 NonClientView::NonClientView(views::ClientView* client_view)
     : client_view_(client_view) {
   SetEventTargeter(std::make_unique<views::ViewTargeter>(this));
+  if (client_view_) {
+    client_view_->SetProperty(kRetainsFocusWhenReparented, /*value=*/true);
+  }
 
   // TODO(crbug.com/40866857): Should this be pruned from the accessibility
   // tree?
@@ -42,17 +46,14 @@ NonClientView::~NonClientView() {
 void NonClientView::SetFrameView(std::unique_ptr<FrameView> frame_view) {
   // If there is an existing frame view, ensure that the ClientView remains
   // attached to the Widget by moving the ClientView to the new frame before
-  // removing the old frame from the view hierarchy. Also copy the focus state.
+  // removing the old frame from the view hierarchy. `client_view_` sets
+  // `kRetainsFocusWhenReparented` so focused descendants are not transiently
+  // blurred during the move.
   std::unique_ptr<FrameView> old_frame_view = std::move(frame_view_);
   frame_view_ = std::move(frame_view);
   if (parent()) {
-    views::View* focused_view =
-        old_frame_view->GetFocusManager()->GetFocusedView();
-    AddChildViewAt(frame_view_.get(), 0);
+    AddChildViewAt(frame_view_.get(), /*index=*/0);
     frame_view_->InsertClientView(client_view_);
-    if (focused_view) {
-      frame_view_->GetFocusManager()->SetFocusedView(focused_view);
-    }
   }
 
   if (old_frame_view) {
@@ -60,18 +61,19 @@ void NonClientView::SetFrameView(std::unique_ptr<FrameView> frame_view) {
   }
 }
 
-void NonClientView::SetOverlayView(View* view) {
+void NonClientView::SetOverlayViewInternal(std::unique_ptr<View> view) {
+  owned_overlay_view_.reset();
   if (overlay_view_) {
-    RemoveChildView(overlay_view_);
+    RemoveChildViewT(std::exchange(overlay_view_, nullptr));
   }
 
-  if (!view) {
+  if (!parent()) {
+    owned_overlay_view_ = std::move(view);
     return;
   }
 
-  overlay_view_ = view;
-  if (parent()) {
-    AddChildViewRaw(overlay_view_.get());
+  if (view) {
+    overlay_view_ = AddChildView(std::move(view));
   }
 }
 
@@ -179,8 +181,8 @@ void NonClientView::ViewHierarchyChanged(
   if (details.is_add && GetWidget() && details.child == this) {
     AddChildViewAt(frame_view_.get(), 0);
     frame_view_->InsertClientView(client_view_);
-    if (overlay_view_) {
-      AddChildViewRaw(overlay_view_.get());
+    if (owned_overlay_view_) {
+      overlay_view_ = AddChildView(std::move(owned_overlay_view_));
     }
   }
 }

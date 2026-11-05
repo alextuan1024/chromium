@@ -67,19 +67,18 @@ public class IncognitoStartup {
             tabbedModeTaskIds.add(pair.second.id);
         }
 
-        if (tabbedModeTaskIds.size() == 0) {
-            return true;
-        }
-
         for (Activity activity : ApplicationStatus.getRunningActivities()) {
             tabbedModeTaskIds.remove(activity.getTaskId());
         }
 
         // If all tabbed mode tasks listed in Android recents are alive, check to see if
-        // any incognito tabs exist and the current tab model isn't incognito. If so, we should
-        // destroy the incognito profile; otherwise it's not safe to do so yet.
-        if (tabbedModeTaskIds.size() == 0) {
-            return !(IncognitoTabHostUtils.doIncognitoTabsExist() || selectedTabModelIsIncognito);
+        // any incognito tabs exist, any incognito tab model is active or the current tab model is
+        // incognito. If not, we should destroy the incognito profile; otherwise it's not safe to
+        // do so yet.
+        if (tabbedModeTaskIds.isEmpty()) {
+            return !(IncognitoTabHostUtils.doIncognitoTabsExist()
+                    || IncognitoTabHostUtils.isIncognitoTabModelActive()
+                    || selectedTabModelIsIncognito);
         }
 
         // In this case, we have tabbed mode activities listed in recents that do not have an

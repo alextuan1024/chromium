@@ -7,17 +7,25 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
+#include "base/check.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "base/unguessable_token.h"
+#include "net/base/features.h"
 #include "net/base/isolation_info.h"
 #include "net/base/load_flags.h"
+#include "net/base/net_errors.h"
 #include "net/base/network_isolation_key.h"
+#include "net/cert/cert_status_flags.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
@@ -35,6 +43,7 @@
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/clear_data_filter.mojom.h"
 #include "services/network/public/mojom/devtools_observer.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
@@ -48,14 +57,6 @@
 namespace network::cors {
 
 namespace {
-
-// Returns true if
-// `request.trusted_params.is_ad_auction_trusted_signals_request` exists and is
-// true.
-bool IsAdAuctionTrustedSignalsRequest(const ResourceRequest& request) {
-  return request.trusted_params &&
-         request.trusted_params->is_ad_auction_trusted_signals_request;
-}
 
 int RetrieveCacheFlags(int load_flags) {
   return load_flags & (net::LOAD_VALIDATE_CACHE | net::LOAD_BYPASS_CACHE |
@@ -86,15 +87,13 @@ bool IsRevalidatingForHeadersCheck(const ResourceRequest& request) {
 //  - byte-lowercased
 std::string CreateAccessControlRequestHeadersHeader(
     const net::HttpRequestHeaders& headers,
-    bool is_revalidating,
-    bool is_ad_auction_trusted_signals_request) {
+    bool is_revalidating) {
   // Exclude the forbidden headers because they may be added by the user
   // agent. They must be checked separately and rejected for
   // JavaScript-initiated requests.
   std::vector<std::string> filtered_headers =
-      CorsUnsafeNotForbiddenRequestHeaderNames(
-          headers.GetHeaderVector(), is_revalidating,
-          is_ad_auction_trusted_signals_request);
+      CorsUnsafeNotForbiddenRequestHeaderNames(headers.GetHeaderVector(),
+                                               is_revalidating);
   if (filtered_headers.empty())
     return std::string();
 
@@ -137,8 +136,7 @@ std::unique_ptr<ResourceRequest> CreatePreflightRequest(
       header_names::kAccessControlRequestMethod, request.method);
 
   std::string request_headers = CreateAccessControlRequestHeadersHeader(
-      request.headers, IsRevalidatingForHeadersCheck(request),
-      IsAdAuctionTrustedSignalsRequest(request));
+      request.headers, IsRevalidatingForHeadersCheck(request));
   if (!request_headers.empty()) {
     preflight_request->headers.SetHeader(
         header_names::kAccessControlRequestHeaders, request_headers);
@@ -155,8 +153,7 @@ std::unique_ptr<ResourceRequest> CreatePreflightRequest(
     //
     // This is useful when the client security state is not specified through
     // the URL loader factory params, typically when a single URL loader factory
-    // is shared by a few different client contexts. This is the case for
-    // navigations and interest group auctions.
+    // is shared by multiple client contexts, as is the case for navigations.
     preflight_request->trusted_params->client_security_state =
         request.trusted_params->client_security_state.Clone();
 
@@ -187,12 +184,20 @@ std::unique_ptr<ResourceRequest> CreatePreflightRequest(
       net::HttpRequestHeaders::kOrigin,
       (tainted ? url::Origin() : *request.request_initiator).Serialize());
 
-  // We normally set User-Agent down in the network stack, but the DevTools
-  // emulation override is applied on a higher level (renderer or browser),
-  // so copy User-Agent from the original request, if present.
+  // DevTools and embedder User-Agent overrides are applied above the network
+  // stack, so the preflight carries them explicitly. With
+  // AllowUserAgentHeaderFromScript enabled, a User-Agent in `request.headers`
+  // may come from script and must not reach the preflight, so the override is
+  // taken from `request.content_user_agent` instead.
   // TODO(caseq, morlovich): do the same for client hints.
-  std::optional<std::string> user_agent =
-      request.headers.GetHeader(net::HttpRequestHeaders::kUserAgent);
+  std::optional<std::string_view> user_agent;
+  if (base::FeatureList::IsEnabled(
+          net::features::kAllowUserAgentHeaderFromScript)) {
+    user_agent = request.content_user_agent;
+  } else {
+    user_agent =
+        request.headers.GetHeaderView(net::HttpRequestHeaders::kUserAgent);
+  }
   if (user_agent) {
     preflight_request->headers.SetHeader(net::HttpRequestHeaders::kUserAgent,
                                          *user_agent);
@@ -328,8 +333,7 @@ std::optional<CorsErrorStatus> CheckPreflightResult(
 
   return result.EnsureAllowedCrossOriginHeaders(
       original_request.headers, IsRevalidatingForHeadersCheck(original_request),
-      non_wildcard_request_headers_support,
-      IsAdAuctionTrustedSignalsRequest(original_request));
+      non_wildcard_request_headers_support);
 }
 
 }  // namespace
@@ -391,6 +395,17 @@ class PreflightController::PreflightLoader final {
   PreflightLoader(const PreflightLoader&) = delete;
   PreflightLoader& operator=(const PreflightLoader&) = delete;
 
+  ~PreflightLoader() {
+    if (!completion_callback_.is_null() && devtools_observer_ &&
+        *devtools_observer_) {
+      CHECK(devtools_request_id_);
+      (*devtools_observer_)
+          ->OnCorsPreflightRequestCompleted(
+              *devtools_request_id_,
+              network::URLLoaderCompletionStatus(net::ERR_ABORTED));
+    }
+  }
+
   void Request(mojom::URLLoaderFactory* loader_factory) {
     DCHECK(loader_);
 
@@ -406,6 +421,14 @@ class PreflightController::PreflightLoader final {
         0);
   }
 
+  // Removes `this` instance from `controller_`. Once the method returns, `this`
+  // is already removed.
+  void RemoveFromController() { controller_->RemoveLoader(this); }
+
+  base::WeakPtr<PreflightLoader> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
+
  private:
   void HandleRedirect(const GURL& url_before_redirect,
                       const net::RedirectInfo& redirect_info,
@@ -419,6 +442,7 @@ class PreflightController::PreflightLoader final {
               network::URLLoaderCompletionStatus(net::ERR_INVALID_REDIRECT));
     }
 
+    weak_factory_.InvalidateWeakPtrs();
     std::move(completion_callback_)
         .Run(net::ERR_FAILED,
              CorsErrorStatus(mojom::CorsError::kPreflightDisallowedRedirect),
@@ -450,6 +474,7 @@ class PreflightController::PreflightLoader final {
                               devtools_observer_, &detected_error_status);
 
     if (!result) {
+      weak_factory_.InvalidateWeakPtrs();
       std::move(completion_callback_)
           .Run(net::ERR_FAILED, std::move(detected_error_status), false);
       return;
@@ -466,19 +491,11 @@ class PreflightController::PreflightLoader final {
 
     net::Error net_error =
         detected_error_status.has_value() ? net::ERR_FAILED : net::OK;
-    FinishHandleResponseHeader(net_error, std::move(detected_error_status),
-                               std::move(result));
-  }
-
-  void FinishHandleResponseHeader(
-      net::Error net_error,
-      std::optional<CorsErrorStatus> detected_error_status,
-      std::unique_ptr<PreflightResult> result) {
     bool has_authorization_covered_by_wildcard =
         result->HasAuthorizationCoveredByWildcard(original_request_.headers);
 
     if (!(original_request_.load_flags & net::LOAD_DISABLE_CACHE) &&
-        net_error == net::OK) {
+        net_error == net::OK && !net::IsCertStatusError(head.cert_status)) {
       if (!tainted_ || !base::FeatureList::IsEnabled(
                            features::kCorsPreflightCacheKeyTaintedOrigin)) {
         controller_->AppendToCache(*original_request_.request_initiator,
@@ -487,10 +504,9 @@ class PreflightController::PreflightLoader final {
       }
     }
 
-    CHECK(!detected_error_status.has_value() || net_error != net::OK);
-
+    weak_factory_.InvalidateWeakPtrs();
     std::move(completion_callback_)
-        .Run(net_error, detected_error_status,
+        .Run(net_error, std::move(detected_error_status),
              has_authorization_covered_by_wildcard);
   }
 
@@ -499,6 +515,7 @@ class PreflightController::PreflightLoader final {
     const std::optional<URLLoaderCompletionStatus>& status =
         loader_->CompletionStatus();
 
+    weak_factory_.InvalidateWeakPtrs();
     if (!completion_callback_.is_null()) {
       // As HandleResponseHeader() isn't called due to a request failure, such
       // as unknown hosts. unreachable remote, reset by peer, and so on, we
@@ -522,10 +539,6 @@ class PreflightController::PreflightLoader final {
     // `this` is deleted here.
   }
 
-  // Removes `this` instance from `controller_`. Once the method returns, `this`
-  // is already removed.
-  void RemoveFromController() { controller_->RemoveLoader(this); }
-
   // PreflightController owns all PreflightLoader instances, and should outlive.
   const raw_ptr<PreflightController> controller_;
 
@@ -545,7 +558,18 @@ class PreflightController::PreflightLoader final {
   const bool acam_preflight_spec_conformant_;
   mojo::Remote<mojom::URLLoaderNetworkServiceObserver>
       url_loader_network_service_observer_;
+  base::WeakPtrFactory<PreflightLoader> weak_factory_{this};
 };
+
+PreflightController::PreflightCheckHandle::PreflightCheckHandle(
+    base::WeakPtr<PreflightLoader> loader)
+    : loader_(std::move(loader)) {}
+
+PreflightController::PreflightCheckHandle::~PreflightCheckHandle() {
+  if (loader_) {
+    loader_->RemoveFromController();
+  }
+}
 
 // static
 std::unique_ptr<ResourceRequest>
@@ -593,7 +617,8 @@ PreflightController::PreflightController(NetworkService* network_service)
 
 PreflightController::~PreflightController() = default;
 
-void PreflightController::PerformPreflightCheck(
+std::unique_ptr<PreflightController::PreflightCheckHandle>
+PreflightController::PerformPreflightCheck(
     CompletionCallback callback,
     int32_t request_id,
     const ResourceRequest& request,
@@ -624,10 +649,9 @@ void PreflightController::PerformPreflightCheck(
           request.request_initiator.value(), request.url, network_isolation_key,
           request.credentials_mode, request.method, request.headers,
           IsRevalidatingForHeadersCheck(request), net_log,
-          acam_preflight_spec_conformant,
-          IsAdAuctionTrustedSignalsRequest(request))) {
+          acam_preflight_spec_conformant)) {
     std::move(callback).Run(net::OK, std::nullopt, false);
-    return;
+    return nullptr;
   }
 
   auto emplaced_pair = loaders_.emplace(std::make_unique<PreflightLoader>(
@@ -636,7 +660,11 @@ void PreflightController::PerformPreflightCheck(
       annotation_tag, network_isolation_key, devtools_observer, net_log,
       acam_preflight_spec_conformant,
       std::move(url_loader_network_service_observer)));
-  (*emplaced_pair.first)->Request(loader_factory);
+  PreflightLoader* loader = emplaced_pair.first->get();
+  auto handle =
+      base::WrapUnique(new PreflightCheckHandle(loader->GetWeakPtr()));
+  loader->Request(loader_factory);
+  return handle;
 }
 
 void PreflightController::ClearCorsPreflightCache(

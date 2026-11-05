@@ -125,14 +125,12 @@ class WTF_EXPORT StringView {
   // From a non-null StringImpl.
   StringView(const StringImpl& impl)
       : impl_(const_cast<StringImpl*>(&impl)),
-        bytes_(impl.RawByteSpan().data()),
+        bytes_(impl.Bytes()),
         length_(impl.length()) {}
 
   // From a non-null StringImpl, avoids the null check.
   StringView(StringImpl& impl)
-      : impl_(&impl),
-        bytes_(impl.RawByteSpan().data()),
-        length_(impl.length()) {}
+      : impl_(&impl), bytes_(impl.Bytes()), length_(impl.length()) {}
   StringView(StringImpl&, size_type offset);
   StringView(StringImpl&, size_type offset, size_type length);
 
@@ -153,20 +151,38 @@ class WTF_EXPORT StringView {
   // NOLINTNEXTLINE(google-explicit-constructor)
   inline StringView(const AtomicString& string LIFETIME_BOUND);
 
-  // From a literal string or LChar buffer:
+  // Creates a StringView from an LChar buffer.
   explicit StringView(base::span<const LChar> chars)
-      : impl_(StringImpl::empty_),
+      : impl_(const_cast<StringImpl*>(&StringImpl::g_global_empty)),
         bytes_(chars.data()),
         length_(base::checked_cast<size_type>(chars.size())) {}
+
+  // Creates a StringView from a string literal.
+  template <typename CharType,
+            size_t kLength,
+            typename = std::enable_if_t<std::is_same_v<CharType, const char>>>
   // NOLINTNEXTLINE(google-explicit-constructor)
-  StringView(const char* chars)
-      : impl_(StringImpl::empty_),
+  StringView(CharType (&chars)[kLength])
+      : impl_(const_cast<StringImpl*>(&StringImpl::g_global_empty)),
         bytes_(chars),
-        length_(chars ? base::checked_cast<size_type>(strlen(chars)) : 0) {}
+        length_(static_cast<size_type>(strlen(chars))) {
+    static_assert(kLength == 0 ||
+                  base::IsValueInRangeForNumericType<size_type>(kLength - 1));
+  }
+
+  // Creates a StringView from a c-style string.
+  template <typename T,
+            typename = std::enable_if_t<
+                std::is_convertible_v<const T&, const char*> &&
+                !(std::is_bounded_array_v<T> &&
+                  std::is_same_v<std::remove_extent_t<T>, const char>)>>
+  // NOLINTNEXTLINE(google-explicit-constructor)
+  ALWAYS_INLINE StringView(const T& chars)
+      : StringView(static_cast<const char*>(chars), FromCStringTag{}) {}
 
   // From a wide literal string or UChar buffer.
   explicit StringView(base::span<const UChar> chars)
-      : impl_(StringImpl::empty16_bit_),
+      : impl_(const_cast<StringImpl*>(&StringImpl::g_global_empty16_bit)),
         bytes_(chars.data()),
         length_(base::checked_cast<size_type>(chars.size())) {}
   template <size_t kLength>
@@ -235,8 +251,8 @@ class WTF_EXPORT StringView {
   // string. If the offset points an unpaired surrogate, this function returns
   // the surrogate code unit as is. If you'd like to check such surroagtes,
   // use U_IS_SURROGATE() defined in unicode/utf.h.
-  // PRECONDITIONS: `i` must be less than `length()`.
-  UNSAFE_BUFFER_USAGE UChar32 CodePointAt(size_type i) const;
+  // If `i` is out of bounds, it crashes by CHECK().
+  UChar32 CodePointAt(size_type i) const;
 
   // Returns i+2 if a pair of [i] and [i+1] is a valid surrogate pair.
   // Returns i+1 otherwise.
@@ -244,8 +260,8 @@ class WTF_EXPORT StringView {
 
   // Does `CodePointAt()`, and the specified `i` is updated by
   // `NextCodePointOffset()`.
-  // PRECONDITIONS: `i` must be less than `length()`.
-  UNSAFE_BUFFER_USAGE UChar32 CodePointAtAndNext(size_type& i) const;
+  // If `i` is out of bounds, it crashes by CHECK().
+  UChar32 CodePointAtAndNext(size_type& i) const;
 
   // [string.view.modifiers] ----------------------------------------
 
@@ -297,7 +313,7 @@ class WTF_EXPORT StringView {
     if (Is8Bit()) {
       return Span8();
     }
-    return base::as_byte_span(Span16());
+    return base::as_bytes(Span16());
   }
 
   // This is not named impl() like String because it has different semantics.
@@ -308,7 +324,7 @@ class WTF_EXPORT StringView {
     // If this StringView is backed by a StringImpl, and was constructed
     // with a zero offset and the same length we can just access the impl
     // directly since this == StringView(m_impl).
-    if (impl_->RawByteSpan().data() == Bytes() && length_ == impl_->length()) {
+    if (impl_->Bytes() == Bytes() && length_ == impl_->length()) {
       return GetPtr(impl_);
     }
     return nullptr;
@@ -318,7 +334,7 @@ class WTF_EXPORT StringView {
   // backing StringImpl (starts at the beginning of the impl's buffer but may be
   // shorter than the whole impl). Returns that StringImpl on success.
   StringImpl* SharedSubImpl() const {
-    if (impl_->RawByteSpan().data() == Bytes()) {
+    if (impl_->Bytes() == Bytes()) {
       return GetPtr(impl_);
     }
     return nullptr;
@@ -415,15 +431,6 @@ class WTF_EXPORT StringView {
 
   // Functions creating new string(s) from `this` string ------------
 
-  // This will return a StringView with a version of |this| that has all ASCII
-  // characters lowercased. The returned StringView is guarantee to be valid for
-  // as long as |backing_store| is valid.
-  //
-  // The odd lifetime of the returned object occurs because lowercasing may
-  // require allocation. When that happens, |backing_store| is used as the
-  // backing store and the returned StringView has the same lifetime.
-  StringView LowerAsciiMaybeUsingBuffer(StackBackingStore& backing_store) const;
-
   // Returns a substring removing leading and trailing white spaces.
   // This function removes spaces, \n, \t, \r, \f, \v, and unicode spaces such
   // as U+2000 and U+3000.
@@ -450,6 +457,9 @@ class WTF_EXPORT StringView {
   [[nodiscard]] String EncodeForDebugging() const;
 
  private:
+  struct FromCStringTag {};
+  NOINLINE StringView(const char* chars, FromCStringTag);
+
   void Set(const StringImpl&, size_type offset);
   void Set(const StringImpl&, size_type offset, size_type length);
 
@@ -501,7 +511,7 @@ inline StringView::StringView(const StringImpl* impl) {
   }
   impl_ = const_cast<StringImpl*>(impl);
   length_ = impl->length();
-  bytes_ = impl->RawByteSpan().data();
+  bytes_ = impl->Bytes();
 }
 
 inline StringView::StringView(const StringImpl* impl, size_type offset) {
@@ -527,7 +537,8 @@ inline StringView::StringView(StringImpl& impl,
 inline void StringView::Clear() {
   length_ = 0;
   bytes_ = nullptr;
-  impl_ = StringImpl::empty_;  // mark as 8 bit.
+  // Mark as 8 bit.
+  impl_ = const_cast<StringImpl*>(&StringImpl::g_global_empty);
 }
 
 inline void StringView::Set(const StringImpl& impl, size_type offset) {
@@ -618,8 +629,14 @@ inline bool StringView::IsAllSpecialCharacters() const {
   if (empty()) {
     return true;
   }
-  return Is8Bit() ? std::ranges::all_of(Span8(), is_special_character)
-                  : std::ranges::all_of(Span16(), is_special_character);
+  // Not `std::ranges::all_of()`: checking its constraints is expensive at
+  // compile time.
+  if (Is8Bit()) {
+    auto span = Span8();
+    return std::all_of(span.begin(), span.end(), is_special_character);
+  }
+  auto span = Span16();
+  return std::all_of(span.begin(), span.end(), is_special_character);
 }
 
 WTF_EXPORT std::ostream& operator<<(std::ostream&, const StringView&);

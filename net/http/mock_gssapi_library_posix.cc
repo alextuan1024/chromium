@@ -4,8 +4,11 @@
 
 #include "net/http/mock_gssapi_library_posix.h"
 
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/strings/string_util.h"
+#include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -16,6 +19,7 @@ namespace test {
 struct GssNameMockImpl {
   std::string name;
   gss_OID_desc name_type;
+  OM_uint32 display_status = GSS_S_COMPLETE;
 
   static GssNameMockImpl* FromGssName(gss_name_t name) {
     return reinterpret_cast<GssNameMockImpl*>(name);
@@ -59,52 +63,28 @@ void CopyOid(gss_OID dest, const gss_OID_desc* src) {
   SetOid(dest, src->elements, src->length);
 }
 
-// gss_buffer_t helpers.
-void ClearBuffer(gss_buffer_t dest) {
-  if (!dest)
-    return;
-  dest->length = 0;
-  if (dest->value) {
-    delete[] reinterpret_cast<char*>(dest->value);
-    dest->value = nullptr;
+// gss_buffer_desc helpers.
+base::span<char> GssBufferToSpan(const gss_buffer_desc& buffer) {
+  if (!buffer.value) {
+    CHECK_EQ(buffer.length, 0u);
+    return {};
   }
+  // SAFETY: `gss_buffer_desc` invariant is that `value` has `length` bytes.
+  return UNSAFE_BUFFERS(
+      base::span(static_cast<char*>(buffer.value), buffer.length));
 }
 
-void SetBuffer(gss_buffer_t dest, const void* src, size_t length) {
-  if (!dest)
+void SetGssBuffer(gss_buffer_desc* dest, base::span<const char> src) {
+  if (!dest) {
     return;
-  ClearBuffer(dest);
-  if (!src)
-    return;
-  dest->length = length;
-  if (length) {
-    dest->value = new char[length];
-    UNSAFE_TODO(memcpy(dest->value, src, length));
   }
-}
-
-void CopyBuffer(gss_buffer_t dest, const gss_buffer_t src) {
-  if (!dest)
+  test::ClearGssBuffer(dest);
+  if (src.empty()) {
     return;
-  ClearBuffer(dest);
-  if (!src)
-    return;
-  SetBuffer(dest, src->value, src->length);
-}
-
-std::string BufferToString(const gss_buffer_t src) {
-  std::string dest;
-  if (!src)
-    return dest;
-  const char* string = reinterpret_cast<char*>(src->value);
-  dest.assign(string, src->length);
-  return dest;
-}
-
-void BufferFromString(const std::string& src, gss_buffer_t dest) {
-  if (!dest)
-    return;
-  SetBuffer(dest, src.c_str(), src.length());
+  }
+  dest->length = src.size();
+  dest->value = new char[src.size()];
+  GssBufferToSpan(*dest).copy_from(src);
 }
 
 // gss_name_t helpers.
@@ -116,42 +96,56 @@ void ClearName(gss_name_t dest) {
   ClearOid(&name->name_type);
 }
 
-void SetName(gss_name_t dest, const void* src, size_t length) {
-  if (!dest)
-    return;
-  ClearName(dest);
-  if (!src)
-    return;
-  auto* name = test::GssNameMockImpl::FromGssName(dest);
-  name->name.assign(reinterpret_cast<const char*>(src), length);
-}
-
 gss_name_t NameFromString(const std::string& src) {
-  gss_name_t dest = test::GssNameMockImpl::ToGssName(
-      new test::GssNameMockImpl{"", {0, nullptr}});
-  SetName(dest, src.c_str(), src.length());
-  return dest;
+  return test::GssNameMockImpl::ToGssName(
+      new test::GssNameMockImpl{src, {0, nullptr}});
 }
 
 }  // namespace
 
 namespace test {
 
+void ClearGssBuffer(gss_buffer_desc* dest) {
+  if (!dest) {
+    return;
+  }
+  dest->length = 0;
+  delete[] static_cast<char*>(dest->value);
+  dest->value = nullptr;
+}
+
+void CopyGssBuffer(const gss_buffer_desc* src, gss_buffer_desc* dest) {
+  if (!dest) {
+    return;
+  }
+  CHECK_NE(src, dest);
+  ClearGssBuffer(dest);
+  if (!src) {
+    return;
+  }
+  SetGssBuffer(dest, GssBufferToSpan(*src));
+}
+
 GssContextMockImpl::GssContextMockImpl()
   : lifetime_rec(0),
     ctx_flags(0),
     locally_initiated(0),
     open(0) {
+  ClearOid(&targ_name_type);
   ClearOid(&mech_type);
 }
 
 GssContextMockImpl::GssContextMockImpl(const GssContextMockImpl& other)
-  : src_name(other.src_name),
-    targ_name(other.targ_name),
-    lifetime_rec(other.lifetime_rec),
-    ctx_flags(other.ctx_flags),
-    locally_initiated(other.locally_initiated),
-    open(other.open) {
+    : src_name(other.src_name),
+      targ_name(other.targ_name),
+      has_targ_name(other.has_targ_name),
+      inquire_context_status(other.inquire_context_status),
+      display_targ_name_status(other.display_targ_name_status),
+      lifetime_rec(other.lifetime_rec),
+      ctx_flags(other.ctx_flags),
+      locally_initiated(other.locally_initiated),
+      open(other.open) {
+  CopyOid(&targ_name_type, &other.targ_name_type);
   CopyOid(&mech_type, &other.mech_type);
 }
 
@@ -168,10 +162,12 @@ GssContextMockImpl::GssContextMockImpl(const char* src_name_in,
       ctx_flags(ctx_flags_in),
       locally_initiated(locally_initiated_in),
       open(open_in) {
+  ClearOid(&targ_name_type);
   CopyOid(&mech_type, &mech_type_in);
 }
 
 GssContextMockImpl::~GssContextMockImpl() {
+  ClearOid(&targ_name_type);
   ClearOid(&mech_type);
 }
 
@@ -181,6 +177,10 @@ void GssContextMockImpl::Assign(
     return;
   src_name = other.src_name;
   targ_name = other.targ_name;
+  has_targ_name = other.has_targ_name;
+  CopyOid(&targ_name_type, &other.targ_name_type);
+  inquire_context_status = other.inquire_context_status;
+  display_targ_name_status = other.display_targ_name_status;
   lifetime_rec = other.lifetime_rec;
   CopyOid(&mech_type, &other.mech_type);
   ctx_flags = other.ctx_flags;
@@ -278,7 +278,7 @@ OM_uint32 MockGSSAPILibrary::import_name(
   output->name_type.elements = nullptr;
 
   // Save the data.
-  output->name = BufferToString(input_name_buffer);
+  output->name = base::as_string_view(GssBufferToSpan(*input_name_buffer));
   CopyOid(&output->name_type, input_name_type);
   *output_name = test::GssNameMockImpl::ToGssName(output);
 
@@ -308,7 +308,7 @@ OM_uint32 MockGSSAPILibrary::release_buffer(
     *minor_status = 0;
   if (!buffer)
     return GSS_S_BAD_NAME;
-  ClearBuffer(buffer);
+  ClearGssBuffer(buffer);
   return GSS_S_COMPLETE;
 }
 
@@ -326,8 +326,11 @@ OM_uint32 MockGSSAPILibrary::display_name(
   if (!output_name_type)
     return GSS_S_CALL_BAD_STRUCTURE;
   GssNameMockImpl* internal_name = GssNameMockImpl::FromGssName(input_name);
+  if (internal_name->display_status != GSS_S_COMPLETE) {
+    return internal_name->display_status;
+  }
   std::string name = internal_name->name;
-  BufferFromString(name, output_name_buffer);
+  SetGssBuffer(output_name_buffer, name);
   if (output_name_type) {
     *output_name_type =
         internal_name ? &internal_name->name_type : GSS_C_NO_OID;
@@ -381,7 +384,7 @@ OM_uint32 MockGSSAPILibrary::display_status(
       msg = base::StringPrintf("Value: %u, Type %u", status_value, status_type);
       EXPECT_EQ(*message_context, 0u);
   }
-  BufferFromString(msg, status_string);
+  SetGssBuffer(status_string, msg);
   return rv;
 }
 
@@ -403,6 +406,7 @@ OM_uint32 MockGSSAPILibrary::init_sec_context(
     *minor_status = 0;
   if (!context_handle)
     return GSS_S_CALL_BAD_STRUCTURE;
+  init_sec_context_req_flags_.push_back(req_flags);
   GssContextMockImpl** internal_context_handle =
       reinterpret_cast<test::GssContextMockImpl**>(context_handle);
   // Create it if necessary.
@@ -420,24 +424,14 @@ OM_uint32 MockGSSAPILibrary::init_sec_context(
   OM_uint32 major_status = security_query.response_code;
   if (minor_status)
     *minor_status = security_query.minor_response_code;
-  context.src_name = security_query.context_info.src_name;
-  context.targ_name = security_query.context_info.targ_name;
-  context.lifetime_rec = security_query.context_info.lifetime_rec;
-  CopyOid(&context.mech_type, &security_query.context_info.mech_type);
-  context.ctx_flags = security_query.context_info.ctx_flags;
-  context.locally_initiated = security_query.context_info.locally_initiated;
-  context.open = security_query.context_info.open;
+  context.Assign(security_query.context_info);
   if (!input_token) {
     EXPECT_FALSE(security_query.expected_input_token.length);
   } else {
-    EXPECT_EQ(input_token->length, security_query.expected_input_token.length);
-    if (input_token->length) {
-      UNSAFE_TODO(EXPECT_EQ(0, memcmp(input_token->value,
-                                      security_query.expected_input_token.value,
-                                      input_token->length)));
-    }
+    EXPECT_EQ(GssBufferToSpan(*input_token),
+              GssBufferToSpan(security_query.expected_input_token));
   }
-  CopyBuffer(output_token, &security_query.output_token);
+  CopyGssBuffer(&security_query.output_token, output_token);
   if (actual_mech_type)
     CopyOid(*actual_mech_type, mech_type);
   if (ret_flags)
@@ -485,6 +479,7 @@ OM_uint32 MockGSSAPILibrary::inquire_context(
     OM_uint32* ctx_flags,
     int* locally_initiated,
     int* open) {
+  ++inquire_context_call_count_;
   if (minor_status)
     *minor_status = 0;
   if (!context_handle)
@@ -492,14 +487,32 @@ OM_uint32 MockGSSAPILibrary::inquire_context(
   GssContextMockImpl* internal_context_ptr =
       reinterpret_cast<GssContextMockImpl*>(context_handle);
   GssContextMockImpl& context = *internal_context_ptr;
+  if (context.inquire_context_status != GSS_S_COMPLETE) {
+    // Still report `open` so tests can model failures on both incomplete and
+    // established contexts.
+    if (open) {
+      *open = context.open;
+    }
+    return context.inquire_context_status;
+  }
   if (src_name)
     *src_name = NameFromString(context.src_name);
-  if (targ_name)
-    *targ_name = NameFromString(context.targ_name);
+  if (targ_name) {
+    if (context.has_targ_name) {
+      *targ_name = NameFromString(context.targ_name);
+      GssNameMockImpl* mock_targ_name =
+          GssNameMockImpl::FromGssName(*targ_name);
+      CopyOid(&mock_targ_name->name_type, &context.targ_name_type);
+      mock_targ_name->display_status = context.display_targ_name_status;
+    } else {
+      *targ_name = GSS_C_NO_NAME;
+    }
+  }
   if (lifetime_rec)
     *lifetime_rec = context.lifetime_rec;
-  if (mech_type)
-    CopyOid(*mech_type, &context.mech_type);
+  if (mech_type) {
+    *mech_type = context.mech_type.length ? &context.mech_type : GSS_C_NO_OID;
+  }
   if (ctx_flags)
     *ctx_flags = context.ctx_flags;
   if (locally_initiated)

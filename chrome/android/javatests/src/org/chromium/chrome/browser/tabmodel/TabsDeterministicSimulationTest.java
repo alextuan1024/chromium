@@ -25,6 +25,7 @@ import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -45,10 +46,7 @@ import java.util.Random;
  * "committed" mid-test. This also does not test multi-window.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    ChromeSwitches.DISABLE_STARTUP_PROMOS
-})
+@CommandLineFlags.Add(ChromeSwitches.DISABLE_STARTUP_PROMOS)
 @Batch(Batch.PER_CLASS)
 public class TabsDeterministicSimulationTest {
     private static final String TAG = "TDST";
@@ -207,16 +205,35 @@ public class TabsDeterministicSimulationTest {
                     int count = mCollectionModel.getCount();
                     if (count == 0 && !mGlobalRandom.nextBoolean()) return;
 
-                    int tabId;
-                    if (count > 0 && mGlobalRandom.nextBoolean()) {
-                        tabId = mCollectionModel.getTabAt(mGlobalRandom.nextInt(count)).getId();
-                    } else {
-                        tabId = Tab.INVALID_TAB_ID;
-                    }
+                    Tab tab =
+                            count > 0 && mGlobalRandom.nextBoolean()
+                                    ? mCollectionModel.getTabAt(mGlobalRandom.nextInt(count))
+                                    : null;
 
                     int newIndex = count > 0 ? mGlobalRandom.nextInt(count) : 0;
-                    Log.i(TAG, "moveTabOrGroup: moveRelatedTabs(" + tabId + ", " + newIndex + ")");
-                    mCollectionModel.moveRelatedTabs(tabId, newIndex);
+                    if (tab != null) {
+                        Token tabGroupId = tab.getTabGroupId();
+                        if (tabGroupId != null) {
+                            Log.i(
+                                    TAG,
+                                    "moveTabOrGroup: moveGroupToIndex("
+                                            + tabGroupId
+                                            + ", "
+                                            + newIndex
+                                            + ")");
+                            mCollectionModel.moveGroupToIndex(
+                                    TabGroupId.fromRawToken(tabGroupId), newIndex);
+                        } else {
+                            Log.i(
+                                    TAG,
+                                    "moveTabOrGroup: moveTab("
+                                            + tab.getId()
+                                            + ", "
+                                            + newIndex
+                                            + ")");
+                            mCollectionModel.moveTab(tab.getId(), newIndex);
+                        }
+                    }
                 });
     }
 
@@ -242,7 +259,7 @@ public class TabsDeterministicSimulationTest {
                     } else {
                         // This may ungroup the tab if it is in a group.
                         Log.i(TAG, "pinOrUnpin: pinTab(" + tabId + ")");
-                        mCollectionModel.pinTab(tabId, false, null);
+                        mCollectionModel.pinTab(tabId, /* showUngroupDialog= */ false);
                     }
                 });
     }
@@ -252,9 +269,7 @@ public class TabsDeterministicSimulationTest {
                 () -> {
                     int count = mCollectionModel.getCount();
                     if (count < 2 && mGlobalRandom.nextBoolean()) {
-                        // Not enough tabs to do anything meaningful, so 50% of the time try an
-                        // invalid operation.
-                        mCollectionModel.mergeTabsToGroup(Tab.INVALID_TAB_ID, Tab.INVALID_TAB_ID);
+                        // Not enough tabs to do anything meaningful, so 50% of the time skip.
                         return;
                     }
                     if (count < 2) return;
@@ -278,14 +293,26 @@ public class TabsDeterministicSimulationTest {
                         destinationTabId = Tab.INVALID_TAB_ID;
                     }
 
+                    Tab resolvedSourceTab = mCollectionModel.getTabById(sourceTabId);
+                    Tab resolvedDestinationTab = mCollectionModel.getTabById(destinationTabId);
+                    if (resolvedSourceTab == null || resolvedDestinationTab == null) return;
+                    Token sourceTabGroupId = resolvedSourceTab.getTabGroupId();
+                    List<Tab> tabsToMerge =
+                            sourceTabGroupId == null
+                                    ? Collections.singletonList(resolvedSourceTab)
+                                    : mCollectionModel.getTabsInGroup(
+                                            TabGroupId.fromOptionalToken(sourceTabGroupId));
                     Log.i(
                             TAG,
-                            "createOrAddTabToGroup: mergeTabsToGroup("
-                                    + sourceTabId
+                            "createOrAddTabToGroup: mergeListOfTabsToGroup("
+                                    + tabsToMerge
                                     + ", "
                                     + destinationTabId
                                     + ")");
-                    mCollectionModel.mergeTabsToGroup(sourceTabId, destinationTabId);
+                    mCollectionModel.mergeListOfTabsToGroup(
+                            tabsToMerge,
+                            resolvedDestinationTab,
+                            TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                 });
     }
 
@@ -293,14 +320,15 @@ public class TabsDeterministicSimulationTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     TabUngrouper ungrouper = mCollectionModel.getTabUngrouper();
-                    List<Token> groupIds = new ArrayList<>(mCollectionModel.getAllTabGroupIds());
+                    List<TabGroupId> groupIds =
+                            new ArrayList<>(mCollectionModel.getAllTabGroupIds());
                     if (groupIds.isEmpty() && !mGlobalRandom.nextBoolean()) return;
 
-                    Token groupId;
+                    TabGroupId groupId;
                     if (!groupIds.isEmpty() && mGlobalRandom.nextBoolean()) {
                         groupId = groupIds.get(mGlobalRandom.nextInt(groupIds.size()));
                     } else {
-                        groupId = Token.createRandom(); // Invalid group ID
+                        groupId = TabGroupId.generateNew(); // Invalid group ID
                     }
                     List<Tab> tabsInGroup = mCollectionModel.getTabsInGroup(groupId);
 
@@ -331,12 +359,13 @@ public class TabsDeterministicSimulationTest {
     private void updateGroupVisualData() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    List<Token> groupIds = new ArrayList<>(mCollectionModel.getAllTabGroupIds());
+                    List<TabGroupId> groupIds =
+                            new ArrayList<>(mCollectionModel.getAllTabGroupIds());
                     // TabCollectionTabModelImpl asserts or crashes if one of these operations
                     // happens on an invalid group ID.
                     if (groupIds.isEmpty()) return;
 
-                    Token groupId = groupIds.get(mGlobalRandom.nextInt(groupIds.size()));
+                    TabGroupId groupId = groupIds.get(mGlobalRandom.nextInt(groupIds.size()));
 
                     int choice = mGlobalRandom.nextInt(3);
                     if (choice == 0) {
@@ -397,9 +426,9 @@ public class TabsDeterministicSimulationTest {
                         remover.closeTabs(TabClosureParams.closeTabs(tabsToClose).build(), false);
                     } else if (choice == 2 && mCollectionModel.getTabGroupCount() > 0) {
                         // Close a group
-                        List<Token> groupIds =
+                        List<TabGroupId> groupIds =
                                 new ArrayList<>(mCollectionModel.getAllTabGroupIds());
-                        Token groupId = groupIds.get(mGlobalRandom.nextInt(groupIds.size()));
+                        TabGroupId groupId = groupIds.get(mGlobalRandom.nextInt(groupIds.size()));
                         Log.i(TAG, "closeTabs: closeTabGroup(" + groupId + ")");
                         var params = TabClosureParams.forCloseTabGroup(mCollectionModel, groupId);
                         if (params != null) {

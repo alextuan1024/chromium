@@ -73,7 +73,7 @@ constexpr web::ContentWorld kContentWorlds[] = {
 
 // Returns a `FakeTabGroupSyncService`.
 std::unique_ptr<KeyedService> CreateFakeTabGroupSyncService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   std::unique_ptr<tab_groups::TabGroupSyncService> tab_group_sync_service =
       std::make_unique<tab_groups::FakeTabGroupSyncService>();
 
@@ -93,6 +93,7 @@ std::unique_ptr<KeyedService> CreateFakeTabGroupSyncService(
 
   return std::move(tab_group_sync_service);
 }
+
 }  // namespace
 
 GridMediatorTestClass::GridMediatorTestClass() {
@@ -108,7 +109,7 @@ void GridMediatorTestClass::SetUp() {
   builder.AddTestingFactory(IOSChromeTabRestoreServiceFactory::GetInstance(),
                             FakeTabRestoreService::GetTestingFactory());
   builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                            base::BindRepeating(&CreateMockSyncService));
+                            base::BindOnce(&CreateMockSyncService));
   builder.AddTestingFactory(AuthenticationServiceFactory::GetInstance(),
                             AuthenticationServiceFactory::GetDefaultFactory());
   builder.AddTestingFactory(ios::HistoryServiceFactory::GetInstance(),

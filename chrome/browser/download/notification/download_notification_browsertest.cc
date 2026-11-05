@@ -4,11 +4,14 @@
 
 #include <stddef.h>
 
+#include <array>
 #include <memory>
 #include <utility>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -83,14 +86,14 @@ struct TestAccountInfo {
 };
 
 // Accounts for multi profile test.
-static const TestAccountInfo kTestAccounts[] = {
+constexpr auto kTestAccounts = std::to_array<TestAccountInfo>({
     {"__dummy__@invalid.domain", GaiaId::Literal("10000"), "hashdummy",
      "Dummy Account"},
     {"alice@invalid.domain", GaiaId::Literal("10001"), "hashalice", "Alice"},
     {"bob@invalid.domain", GaiaId::Literal("10002"), "hashbobbo", "Bob"},
     {"charlie@invalid.domain", GaiaId::Literal("10003"), "hashcharl",
      "Charlie"},
-};
+});
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 class TestChromeDownloadManagerDelegate : public ChromeDownloadManagerDelegate {
@@ -414,7 +417,7 @@ class DownloadNotificationTest : public DownloadNotificationTestBase {
     download_in_progress_observer.WaitForFinished();
 
     // Confirms that a download is started.
-    std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+    std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
     GetDownloadManager(browser)->GetAllDownloads(&downloads);
     EXPECT_EQ(1u, downloads.size());
     download_item_ = downloads[0].get();
@@ -447,7 +450,7 @@ class DownloadNotificationTest : public DownloadNotificationTestBase {
   }
 
   void VerifyDownloadState(download::DownloadItem::DownloadState state) {
-    std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+    std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
     GetDownloadManager(browser())->GetAllDownloads(&downloads);
     ASSERT_EQ(1u, downloads.size());
     EXPECT_EQ(state, downloads[0]->GetState());
@@ -610,7 +613,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest,
   // Checks there is neither any download nor any notification.
   EXPECT_FALSE(notification());
   EXPECT_EQ(0u, GetDownloadNotifications().size());
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   GetDownloadManager(browser())->GetAllDownloads(&downloads);
   EXPECT_EQ(0u, downloads.size());
 
@@ -688,7 +691,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest,
   CloseNotification();
 
   // Confirms that a download is still in progress.
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   content::DownloadManager* download_manager = GetDownloadManager(browser());
   download_manager->GetAllDownloads(&downloads);
   EXPECT_EQ(1u, downloads.size());
@@ -715,7 +718,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest, DownloadRemoved) {
   EXPECT_FALSE(notification());
 
   // Confirms that the download item is removed.
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   GetDownloadManager(browser())->GetAllDownloads(&downloads);
   EXPECT_EQ(0u, downloads.size());
 }
@@ -736,7 +739,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest,
   EXPECT_FALSE(notification_id1.empty());
 
   // Confirms that there is a download.
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   GetDownloadManager(browser())->GetAllDownloads(&downloads);
   ASSERT_EQ(1u, downloads.size());
   download::DownloadItem* download1 = downloads[0];
@@ -846,7 +849,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest,
   ASSERT_TRUE(GetNotification(second_notification_id));
 
   // Confirms that the second download is also started.
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   GetDownloadManager(browser())->GetAllDownloads(&downloads);
   EXPECT_EQ(2u, downloads.size());
   EXPECT_TRUE(first_download_item == downloads[0] ||
@@ -873,7 +876,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest, CancelDownload) {
   EXPECT_EQ(0u, GetDownloadNotifications().size());
 
   // Confirms that the download is cancelled.
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   GetDownloadManager(browser())->GetAllDownloads(&downloads);
   ASSERT_EQ(1u, downloads.size());
   EXPECT_EQ(download::DownloadItem::CANCELLED, downloads[0]->GetState());
@@ -889,7 +892,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest,
   EXPECT_EQ(0u, GetDownloadNotifications().size());
 
   // Confirms that the download is cancelled.
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   GetDownloadManager(browser())->GetAllDownloads(&downloads);
   EXPECT_EQ(1u, downloads.size());
   EXPECT_EQ(download::DownloadItem::CANCELLED, downloads[0]->GetState());
@@ -958,7 +961,7 @@ IN_PROC_BROWSER_TEST_F(DownloadNotificationTest,
   EXPECT_FALSE(notification_id1.empty());
 
   // Confirms that there is a download.
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   GetDownloadManager(browser())->GetAllDownloads(&downloads);
   EXPECT_EQ(0u, downloads.size());
   downloads.clear();
@@ -1070,15 +1073,15 @@ class MultiProfileDownloadNotificationTest
     DownloadNotificationTestBase::SetUpOnMainThread();
 
     // Add all users, except the first one, which is already logged in.
-    for (size_t i = 1; i < std::size(kTestAccounts); ++i) {
-      AddUser(UNSAFE_TODO(kTestAccounts[i]));
+    for (const auto& account : base::span(kTestAccounts).subspan(1u)) {
+      AddUser(account);
     }
   }
 
   Profile* GetProfileByIndex(int index) {
     return g_browser_process->profile_manager()->GetProfileByPath(
         ash::ProfileHelper::GetProfilePathByUserIdHash(
-            UNSAFE_TODO(kTestAccounts[index]).hash));
+            kTestAccounts[index].hash));
   }
 
   // Adds a new user for testing to the current session.
@@ -1128,7 +1131,7 @@ IN_PROC_BROWSER_TEST_F(MultiProfileDownloadNotificationTest,
   WaitForDownloadNotificationForDisplayService(display_service1_.get());
 
   // Confirms that the download is started.
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
   GetDownloadManager(browser1)->GetAllDownloads(&downloads);
   EXPECT_EQ(1u, downloads.size());
   download::DownloadItem* download1 = downloads[0];

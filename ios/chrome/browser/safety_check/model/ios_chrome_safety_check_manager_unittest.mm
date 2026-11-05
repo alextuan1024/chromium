@@ -56,12 +56,12 @@ class IOSChromeSafetyCheckManagerTest : public PlatformTest {
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
         base::BindOnce(&password_manager::BuildPasswordStore<
-                       ProfileIOS, password_manager::TestPasswordStore>));
+                       password_manager::TestPasswordStore>));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
 
     ProfileIOS* profile =
         profile_manager_.AddProfileWithBuilder(std::move(builder));
@@ -96,7 +96,7 @@ class IOSChromeSafetyCheckManagerTest : public PlatformTest {
 
   // Helper method to sign out.
   void SignOut() {
-    auth_service_->SignOut(signin_metrics::ProfileSignout::kTest, nil);
+    auth_service_->SignOut(signin_metrics::ProfileSignout::kTest);
   }
 
   web::WebTaskEnvironment task_environment_{

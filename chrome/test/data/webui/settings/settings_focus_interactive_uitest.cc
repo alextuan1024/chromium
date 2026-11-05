@@ -19,6 +19,14 @@ IN_PROC_BROWSER_TEST_F(SettingsFocusTest, ContactInfoPageFocus) {
   RunTest("settings/contact_info_page_focus_test.js", "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(SettingsFocusTest, CrFocusRowMixin) {
+  RunTest("settings/cr_focus_row_mixin_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsFocusTest, FocusListContainer) {
+  RunTest("settings/focus_list_container_test.js", "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(SettingsFocusTest, PaymentsPageInteractive) {
   RunTest("settings/payments_page_interactive_test.js", "mocha.run()");
 }
@@ -39,9 +47,11 @@ IN_PROC_BROWSER_TEST_F(SettingsFocusTest, SyncPage) {
   RunTest("settings/people_page_sync_page_interactive_test.js", "mocha.run()");
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(SettingsFocusTest, SecureDns) {
   RunTest("settings/security/secure_dns_interactive_test.js", "mocha.run()");
 }
+#endif
 
 IN_PROC_BROWSER_TEST_F(SettingsFocusTest, StartupUrlsPage) {
   RunTest("settings/startup_urls_page_focus_test.js", "mocha.run()");
@@ -77,6 +87,23 @@ IN_PROC_BROWSER_TEST_F(SettingsFocusTest, MAYBE_SettingsUISearch) {
 
 IN_PROC_BROWSER_TEST_F(SettingsFocusTest, Menu) {
   RunTest("settings/settings_menu_interactive_ui_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsFocusTest, AllSites) {
+  RunTest("settings/all_sites_test.js", "runMochaSuite('AllSitesFocus')");
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsFocusTest, ChooserExceptionListEntry) {
+  RunTest("settings/chooser_exception_list_entry_test.js",
+          "runMochaSuite('ChooserExceptionListEntryFocus')");
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsFocusTest, SiteList) {
+  RunTest("settings/site_list_test.js", "runMochaSuite('SiteListFocus')");
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsFocusTest, ZoomLevels) {
+  RunTest("settings/zoom_levels_test.js", "runMochaSuite('ZoomLevelsFocus')");
 }
 
 class SettingsGlicSubpageFocusTest : public SettingsFocusTest {

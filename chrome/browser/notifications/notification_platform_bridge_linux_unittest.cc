@@ -6,6 +6,7 @@
 
 #include <dbus/dbus-shared.h>
 
+#include <array>
 #include <map>
 #include <memory>
 #include <vector>
@@ -19,6 +20,7 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/nix/xdg_util.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
@@ -27,6 +29,8 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/dbus/xdg/portal.h"
+#include "components/vector_icons/vector_icons.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_utils.h"
 #include "dbus/mock_bus.h"
@@ -34,10 +38,20 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/re2/src/re2/re2.h"
+#include "ui/base/models/image_model.h"
+#include "ui/color/color_id.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_delegate.h"
+
+#if defined(USE_GSETTINGS)
+#define G_SETTINGS_ENABLE_BACKEND 1
+#include <gio/gio.h>
+#include <gio/gsettingsbackend.h>
+
+#include "ui/base/glib/scoped_gobject.h"
+#endif
 
 using message_center::ButtonInfo;
 using message_center::Notification;
@@ -52,6 +66,28 @@ const char kPortalDesktopName[] = "org.freedesktop.portal.Desktop";
 const char kPortalDesktopPath[] = "/org/freedesktop/portal/desktop";
 const char kPortalNotificationInterface[] =
     "org.freedesktop.portal.Notification";
+
+#if defined(USE_GSETTINGS)
+constexpr char kGnomeNotificationsSchema[] = "org.gnome.desktop.notifications";
+constexpr char kGnomeShowBannersKey[] = "show-banners";
+
+ScopedGObject<GSettings> CreateMemorySettings(const char* schema_id) {
+  GSettingsSchemaSource* source = g_settings_schema_source_get_default();
+  if (!source) {
+    return {};
+  }
+  std::unique_ptr<GSettingsSchema, decltype(&g_settings_schema_unref)> schema(
+      g_settings_schema_source_lookup(source, schema_id, /*recursive=*/true),
+      &g_settings_schema_unref);
+  if (!schema) {
+    return {};
+  }
+  ScopedGObject<GSettingsBackend> backend =
+      TakeGObject(g_memory_settings_backend_new());
+  return TakeGObject(
+      g_settings_new_full(schema.get(), backend.get(), /*path=*/nullptr));
+}
+#endif
 
 class NotificationBuilder {
  public:
@@ -127,6 +163,11 @@ class NotificationBuilder {
     return *this;
   }
 
+  NotificationBuilder& SetSystemPriority() {
+    notification_.SetSystemPriority();
+    return *this;
+  }
+
   NotificationBuilder& SetTitle(const std::u16string& title) {
     notification_.set_title(title);
     return *this;
@@ -154,12 +195,16 @@ struct NotificationRequest {
     std::string label;
   };
 
+  uint32_t replaces_id = 0;
   std::string summary;
   std::string body;
   std::string kde_origin_name;
   std::vector<Action> actions;
   int32_t expire_timeout = 0;
   bool silent = false;
+  std::string app_icon;
+  std::string image_path;
+  uint8_t urgency = 0;
 };
 
 struct TestParams {
@@ -233,12 +278,11 @@ NotificationRequest ParseRequest(dbus::MethodCall* method_call) {
 
   dbus::MessageReader reader(method_call);
   std::string str;
-  uint32_t replaces_id;
-  EXPECT_TRUE(reader.PopString(&str));              // app_name
-  EXPECT_TRUE(reader.PopUint32(&replaces_id));      // replaces_id
-  EXPECT_TRUE(reader.PopString(&str));              // app_icon
-  EXPECT_TRUE(reader.PopString(&request.summary));  // summary
-  EXPECT_TRUE(reader.PopString(&request.body));     // body
+  EXPECT_TRUE(reader.PopString(&str));                  // app_name
+  EXPECT_TRUE(reader.PopUint32(&request.replaces_id));  // replaces_id
+  EXPECT_TRUE(reader.PopString(&request.app_icon));     // app_icon
+  EXPECT_TRUE(reader.PopString(&request.summary));      // summary
+  EXPECT_TRUE(reader.PopString(&request.body));         // body
 
   {
     dbus::MessageReader actions_reader(nullptr);
@@ -265,10 +309,14 @@ NotificationRequest ParseRequest(dbus::MethodCall* method_call) {
         bool suppress_sound;
         EXPECT_TRUE(dict_entry_reader.PopVariantOfBool(&suppress_sound));
         request.silent = suppress_sound;
+      } else if (str == "urgency") {
+        EXPECT_TRUE(dict_entry_reader.PopVariantOfByte(&request.urgency));
       } else if (str == "x-kde-origin-name") {
         std::string x_kde_origin_name;
         EXPECT_TRUE(dict_entry_reader.PopVariantOfString(&x_kde_origin_name));
         request.kde_origin_name = x_kde_origin_name;
+      } else if (str == "image-path") {
+        EXPECT_TRUE(dict_entry_reader.PopVariantOfString(&request.image_path));
       } else {
         EXPECT_TRUE(dict_entry_reader.PopVariant(&variant_reader));
       }
@@ -492,21 +540,15 @@ class FakePortalNotificationProxy : public dbus::ObjectProxy {
       std::string iface, prop;
       if (reader.PopString(&iface) && reader.PopString(&prop)) {
         if (iface == kPortalNotificationInterface && prop == "version") {
-          if (version_read_should_fail_) {
-            method_call->SetSerial(1);
-            auto error_response = dbus::ErrorResponse::FromMethodCall(
-                method_call, "org.freedesktop.DBus.Error.UnknownProperty",
-                "Property not found");
-            std::move(callback).Run(nullptr, error_response.get());
-            return;
-          }
-          auto response = dbus::Response::CreateEmpty();
-          dbus::MessageWriter writer(response.get());
-          dbus::MessageWriter variant_writer(nullptr);
-          writer.OpenVariant("u", &variant_writer);
-          variant_writer.AppendUint32(portal_version_);
-          writer.CloseContainer(&variant_writer);
-          std::move(callback).Run(response.get(), nullptr);
+          // The version must be obtained through
+          // dbus_xdg::RequestXdgDesktopPortal(), which registers the app with
+          // the portal before the portal is first used.
+          ADD_FAILURE() << "Portal version queried directly";
+          method_call->SetSerial(1);
+          auto error_response = dbus::ErrorResponse::FromMethodCall(
+              method_call, "org.freedesktop.DBus.Error.UnknownProperty",
+              "Property not found");
+          std::move(callback).Run(nullptr, error_response.get());
           return;
         }
         if (iface == kPortalNotificationInterface &&
@@ -633,6 +675,12 @@ class FakePortalNotificationProxy : public dbus::ObjectProxy {
   void SetPortalVersion(uint32_t version) { portal_version_ = version; }
 
   void SetVersionReadShouldFail(bool fail) { version_read_should_fail_ = fail; }
+
+  // The version reported through the shared portal setup. 0 means the
+  // interface is unavailable.
+  uint32_t GetPortalVersionForRegistrar() const {
+    return version_read_should_fail_ ? 0 : portal_version_;
+  }
 
   void SetFailNextAddNotifications(int count) {
     fail_add_notification_count_ = count;
@@ -778,6 +826,20 @@ class FakeNotificationProxy : public dbus::ObjectProxy {
     notify_callback_ = callback;
   }
 
+  // When set, replies to "Notify" are held until RunDeferredNotifyReplies().
+  void SetDeferNotifyReplies(bool defer) { defer_notify_replies_ = defer; }
+
+  // Sends the held "Notify" replies in the order the calls were made.
+  void RunDeferredNotifyReplies() {
+    auto replies = std::move(deferred_notify_replies_);
+    deferred_notify_replies_.clear();
+    for (auto& [callback, id] : replies) {
+      auto response = GetIdResponse(id);
+      std::move(callback).Run(response.get(), nullptr);
+    }
+  }
+
+  const std::vector<NotificationRequest>& requests() const { return requests_; }
   int notify_calls() const { return notify_calls_; }
   int close_calls() const { return close_calls_; }
   uint32_t last_closed_id() const { return last_closed_id_; }
@@ -793,6 +855,12 @@ class FakeNotificationProxy : public dbus::ObjectProxy {
     uint32_t id = id_;
     if (notify_callback_) {
       id = notify_callback_.Run(request);
+    }
+    requests_.push_back(std::move(request));
+
+    if (defer_notify_replies_) {
+      deferred_notify_replies_.emplace_back(std::move(callback), id);
+      return;
     }
 
     auto response = GetIdResponse(id);
@@ -822,6 +890,10 @@ class FakeNotificationProxy : public dbus::ObjectProxy {
   bool connect_signals_ = true;
   uint32_t id_ = 1;
   NotifyCallback notify_callback_;
+  bool defer_notify_replies_ = false;
+  std::vector<std::pair<ResponseOrErrorCallback, uint32_t>>
+      deferred_notify_replies_;
+  std::vector<NotificationRequest> requests_;
   std::map<std::string, SignalCallback> signal_callbacks_;
 
   int notify_calls_ = 0;
@@ -864,7 +936,9 @@ class NotificationPlatformBridgeLinuxTest : public testing::Test {
   }
 
   void TearDown() override {
-    notification_bridge_linux_->CleanUp();
+    if (notification_bridge_linux_) {
+      notification_bridge_linux_->CleanUp();
+    }
     content::RunAllTasksUntilIdle();
     notification_bridge_linux_.reset();
     display_service_tester_.reset();
@@ -872,6 +946,7 @@ class NotificationPlatformBridgeLinuxTest : public testing::Test {
     fake_notification_proxy_ = nullptr;
     fake_portal_notification_proxy_ = nullptr;
     mock_bus_ = nullptr;
+    dbus_xdg::SetPortalStateForTesting(dbus_xdg::PortalRegistrarState::kIdle);
   }
 
   void HandleOperation(NotificationOperation operation,
@@ -888,7 +963,9 @@ class NotificationPlatformBridgeLinuxTest : public testing::Test {
   }
 
  protected:
-  void CreateNotificationBridgeLinux(const TestParams& test_params) {
+  void CreateNotificationBridgeLinux(
+      const TestParams& test_params,
+      GSettings* notification_settings = nullptr) {
     test_params_ = test_params;
 
     EXPECT_CALL(
@@ -915,13 +992,27 @@ class NotificationPlatformBridgeLinuxTest : public testing::Test {
     fake_portal_notification_proxy_->SetConnectSignals(
         test_params.connect_signals);
 
+    // The bridge sets up the portal through dbus_xdg::RequestXdgDesktopPortal,
+    // so emulate the result of that setup here.
+    if (test_params.portal_name_has_owner || test_params.portal_activatable) {
+      dbus_xdg::SetPortalStateForTesting(
+          dbus_xdg::PortalRegistrarState::kSuccess);
+      dbus_xdg::SetPortalInterfaceVersionForTesting(
+          kPortalNotificationInterface,
+          fake_portal_notification_proxy_->GetPortalVersionForRegistrar());
+    } else {
+      dbus_xdg::SetPortalStateForTesting(
+          dbus_xdg::PortalRegistrarState::kFailed);
+    }
+    EXPECT_CALL(*mock_bus_.get(), AssertOnOriginThread()).WillRepeatedly([] {});
+
     if (test_params.expect_init_success) {
       fake_notification_proxy_->SetServerName(test_params.server_name);
       fake_notification_proxy_->SetServerVersion(test_params.server_version);
     }
 
-    notification_bridge_linux_ =
-        base::WrapUnique(new NotificationPlatformBridgeLinux(mock_bus_));
+    notification_bridge_linux_ = base::WrapUnique(
+        new NotificationPlatformBridgeLinux(mock_bus_, notification_settings));
     notification_bridge_linux_->SetReadyCallback(
         base::BindOnce(&NotificationPlatformBridgeLinuxTest::
                            MockableNotificationBridgeReadyCallback,
@@ -961,6 +1052,12 @@ class NotificationPlatformBridgeLinuxTest : public testing::Test {
     writer.AppendUint32(reason);
     fake_notification_proxy_->FireSignal("NotificationClosed", &signal);
   }
+
+  void SetGnomeShowBanners(std::optional<bool> show_banners) {
+    notification_bridge_linux_->SetGnomeShowBannersForTesting(show_banners);
+  }
+
+  void CleanUpBridge() { notification_bridge_linux_->CleanUp(); }
 
   void MockableNotificationBridgeReadyCallback(bool success) {
     EXPECT_FALSE(ready_called_);
@@ -1004,6 +1101,91 @@ TEST_F(NotificationPlatformBridgeLinuxTest, NotifyAndCloseFormat) {
   content::RunAllTasksUntilIdle();
   EXPECT_EQ(1, fake_notification_proxy_->close_calls());
   EXPECT_EQ(1u, fake_notification_proxy_->last_closed_id());
+}
+
+// Updates for a notification that arrive before the server has replied to the
+// first "Notify" call must replace that notification rather than create a new
+// one. Only the latest update is sent.
+TEST_F(NotificationPlatformBridgeLinuxTest, UpdatesBeforeNotifyReplyReplace) {
+  fake_notification_proxy_->SetNotificationId(5);
+  fake_notification_proxy_->SetDeferNotifyReplies(true);
+
+  CreateNotificationBridgeLinux(TestParams());
+  for (const char16_t* message : {u"one", u"two", u"three"}) {
+    notification_bridge_linux_->Display(
+        NotificationHandler::Type::WEB_NON_PERSISTENT, profile(),
+        NotificationBuilder("1").SetMessage(message).GetResult(), nullptr);
+  }
+  content::RunAllTasksUntilIdle();
+  const auto& requests = fake_notification_proxy_->requests();
+  ASSERT_EQ(1u, requests.size());
+  EXPECT_EQ(0u, requests[0].replaces_id);
+  EXPECT_EQ("one", requests[0].body);
+
+  fake_notification_proxy_->RunDeferredNotifyReplies();
+  content::RunAllTasksUntilIdle();
+  ASSERT_EQ(2u, requests.size());
+  EXPECT_EQ(5u, requests[1].replaces_id);
+  EXPECT_EQ("three", requests[1].body);
+
+  fake_notification_proxy_->RunDeferredNotifyReplies();
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(2, fake_notification_proxy_->notify_calls());
+  EXPECT_EQ(0, fake_notification_proxy_->close_calls());
+
+  notification_bridge_linux_->Close(profile(), "1");
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(1, fake_notification_proxy_->close_calls());
+  EXPECT_EQ(5u, fake_notification_proxy_->last_closed_id());
+}
+
+// A notification closed before the server has replied to its "Notify" call
+// must be closed on the server once the reply arrives.
+TEST_F(NotificationPlatformBridgeLinuxTest, CloseBeforeNotifyReply) {
+  fake_notification_proxy_->SetNotificationId(7);
+  fake_notification_proxy_->SetDeferNotifyReplies(true);
+
+  CreateNotificationBridgeLinux(TestParams());
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_NON_PERSISTENT, profile(),
+      NotificationBuilder("1").SetMessage(u"one").GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  const auto& requests = fake_notification_proxy_->requests();
+  ASSERT_EQ(1u, requests.size());
+  EXPECT_EQ(0u, requests[0].replaces_id);
+  EXPECT_EQ("one", requests[0].body);
+
+  notification_bridge_linux_->Close(profile(), "1");
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(0, fake_notification_proxy_->close_calls());
+
+  // A new notification with the same ID is independent of the closed one.
+  fake_notification_proxy_->SetNotificationId(8);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_NON_PERSISTENT, profile(),
+      NotificationBuilder("1").SetMessage(u"two").GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  ASSERT_EQ(2u, requests.size());
+  EXPECT_EQ(0u, requests[1].replaces_id);
+  EXPECT_EQ("two", requests[1].body);
+
+  fake_notification_proxy_->RunDeferredNotifyReplies();
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(1, fake_notification_proxy_->close_calls());
+  EXPECT_EQ(7u, fake_notification_proxy_->last_closed_id());
+
+  std::set<std::string> displayed;
+  notification_bridge_linux_->GetDisplayed(
+      profile(), base::BindLambdaForTesting(
+                     [&](std::set<std::string> set, bool supports_sync) {
+                       displayed = std::move(set);
+                     }));
+  EXPECT_THAT(displayed, testing::UnorderedElementsAre("1"));
+
+  notification_bridge_linux_->Close(profile(), "1");
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(2, fake_notification_proxy_->close_calls());
+  EXPECT_EQ(8u, fake_notification_proxy_->last_closed_id());
 }
 
 TEST_F(NotificationPlatformBridgeLinuxTest, ProgressPercentageAddedToSummary) {
@@ -1071,6 +1253,287 @@ TEST_F(NotificationPlatformBridgeLinuxTest, NotificationTimeoutsNoPersistence) {
       NotificationBuilder("2").SetNeverTimeout(true).GetResult(), nullptr);
   content::RunAllTasksUntilIdle();
 }
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       NeverTimeoutUrgencyFollowsGnomeShowBanners) {
+  constexpr uint8_t kUrgencyNormal = 1;
+  constexpr uint8_t kUrgencyCritical = 2;
+  std::vector<uint8_t> urgencies;
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [&](const NotificationRequest& request) -> uint32_t {
+        urgencies.push_back(request.urgency);
+        return urgencies.size();
+      }));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("gnome-shell"));
+  auto display = [&](const std::string& id) {
+    notification_bridge_linux_->Display(
+        NotificationHandler::Type::WEB_PERSISTENT, profile(),
+        NotificationBuilder(id).SetNeverTimeout(true).GetResult(), nullptr);
+    content::RunAllTasksUntilIdle();
+  };
+
+  // Unknown show-banners (e.g. missing schema): keep the current behavior.
+  SetGnomeShowBanners(std::nullopt);
+  display("1");
+  // Banners enabled: critical, so GNOME Shell doesn't auto-hide it.
+  SetGnomeShowBanners(true);
+  display("2");
+  // Do Not Disturb: normal urgency, so GNOME Shell doesn't show a banner.
+  SetGnomeShowBanners(false);
+  display("3");
+  EXPECT_THAT(
+      urgencies,
+      testing::ElementsAre(kUrgencyCritical, kUrgencyCritical, kUrgencyNormal));
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       NeverTimeoutUrgencyIgnoresShowBannersOnOtherServers) {
+  constexpr uint8_t kUrgencyCritical = 2;
+  std::optional<uint8_t> urgency;
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [&](const NotificationRequest& request) -> uint32_t {
+        urgency = request.urgency;
+        return 1;
+      }));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("cinnamon"));
+  SetGnomeShowBanners(false);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("1").SetNeverTimeout(true).GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(kUrgencyCritical, urgency);
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       SystemAndHighPriorityStayCriticalWhileGnomeShowBannersDisabled) {
+  constexpr uint8_t kUrgencyNormal = 1;
+  constexpr uint8_t kUrgencyCritical = 2;
+  std::vector<uint8_t> urgencies;
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [&](const NotificationRequest& request) -> uint32_t {
+        urgencies.push_back(request.urgency);
+        return urgencies.size();
+      }));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("gnome-shell"));
+  SetGnomeShowBanners(false);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("1").SetSystemPriority().GetResult(), nullptr);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("2")
+          .SetNeverTimeout(true)
+          .SetPriority(message_center::HIGH_PRIORITY)
+          .GetResult(),
+      nullptr);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("3")
+          .SetNeverTimeout(true)
+          .SetPriority(message_center::MAX_PRIORITY)
+          .GetResult(),
+      nullptr);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("4").SetNeverTimeout(true).GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_THAT(urgencies,
+              testing::ElementsAre(kUrgencyCritical, kUrgencyCritical,
+                                   kUrgencyCritical, kUrgencyNormal));
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       SystemPriorityMapsToCriticalOnPlasma) {
+  constexpr uint8_t kUrgencyCritical = 2;
+  std::optional<uint8_t> urgency;
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [&](const NotificationRequest& request) -> uint32_t {
+        urgency = request.urgency;
+        return 1;
+      }));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("Plasma"));
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("1").SetSystemPriority().GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(kUrgencyCritical, urgency);
+}
+
+#if defined(USE_GSETTINGS)
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       WatchGnomeShowBannersFollowsGSettingsSignal) {
+  ScopedGObject<GSettings> settings =
+      CreateMemorySettings(kGnomeNotificationsSchema);
+  if (!settings) {
+    GTEST_SKIP() << kGnomeNotificationsSchema
+                 << " GSettings schema is not installed.";
+  }
+  ASSERT_TRUE(
+      g_settings_set_boolean(settings.get(), kGnomeShowBannersKey, TRUE));
+
+  constexpr uint8_t kUrgencyNormal = 1;
+  constexpr uint8_t kUrgencyCritical = 2;
+  std::vector<uint8_t> urgencies;
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [&](const NotificationRequest& request) -> uint32_t {
+        urgencies.push_back(request.urgency);
+        return urgencies.size();
+      }));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("gnome-shell"),
+                                settings.get());
+  auto display_persistent = [&](const std::string& id) {
+    notification_bridge_linux_->Display(
+        NotificationHandler::Type::WEB_PERSISTENT, profile(),
+        NotificationBuilder(id).SetNeverTimeout(true).GetResult(), nullptr);
+    content::RunAllTasksUntilIdle();
+  };
+
+  // Banners initially enabled: persistent notification is critical.
+  display_persistent("1");
+
+  // Disable banners dynamically via GSettings: persistent notification drops
+  // to normal, while SetSystemPriority() stays critical without NOTREACHED().
+  ASSERT_TRUE(
+      g_settings_set_boolean(settings.get(), kGnomeShowBannersKey, FALSE));
+  display_persistent("2");
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("3").SetSystemPriority().GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+
+  // Re-enable banners dynamically via GSettings: persistent notification
+  // returns to critical.
+  ASSERT_TRUE(
+      g_settings_set_boolean(settings.get(), kGnomeShowBannersKey, TRUE));
+  display_persistent("4");
+
+  EXPECT_THAT(urgencies,
+              testing::ElementsAre(kUrgencyCritical, kUrgencyNormal,
+                                   kUrgencyCritical, kUrgencyCritical));
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       WatchGnomeShowBannersReadsInitialFalseValue) {
+  ScopedGObject<GSettings> settings =
+      CreateMemorySettings(kGnomeNotificationsSchema);
+  if (!settings) {
+    GTEST_SKIP() << kGnomeNotificationsSchema
+                 << " GSettings schema is not installed.";
+  }
+  ASSERT_TRUE(
+      g_settings_set_boolean(settings.get(), kGnomeShowBannersKey, FALSE));
+
+  constexpr uint8_t kUrgencyNormal = 1;
+  std::optional<uint8_t> urgency;
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [&](const NotificationRequest& request) -> uint32_t {
+        urgency = request.urgency;
+        return 1;
+      }));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("gnome-shell"),
+                                settings.get());
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("1").SetNeverTimeout(true).GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(kUrgencyNormal, urgency);
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       WatchGnomeShowBannersIgnoresSchemaMissingKey) {
+  constexpr std::array kSchemasWithoutShowBanners = {
+      "org.gnome.desktop.interface",
+      "org.gnome.settings-daemon.plugins.xsettings",
+      "org.gtk.Settings.FileChooser",
+      "org.gnome.desktop.wm.preferences",
+  };
+  ScopedGObject<GSettings> other_settings;
+  for (const char* schema_id : kSchemasWithoutShowBanners) {
+    other_settings = CreateMemorySettings(schema_id);
+    if (other_settings) {
+      break;
+    }
+  }
+  if (!other_settings) {
+    GTEST_SKIP() << "Could not find a test schema without show-banners.";
+  }
+
+  constexpr uint8_t kUrgencyCritical = 2;
+  std::optional<uint8_t> urgency;
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [&](const NotificationRequest& request) -> uint32_t {
+        urgency = request.urgency;
+        return 1;
+      }));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("gnome-shell"),
+                                other_settings.get());
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("1").SetNeverTimeout(true).GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(kUrgencyCritical, urgency);
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       WatchGnomeShowBannersIgnoredOnOtherServers) {
+  ScopedGObject<GSettings> settings =
+      CreateMemorySettings(kGnomeNotificationsSchema);
+  if (!settings) {
+    GTEST_SKIP() << kGnomeNotificationsSchema
+                 << " GSettings schema is not installed.";
+  }
+  ASSERT_TRUE(
+      g_settings_set_boolean(settings.get(), kGnomeShowBannersKey, FALSE));
+
+  constexpr uint8_t kUrgencyCritical = 2;
+  std::optional<uint8_t> urgency;
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [&](const NotificationRequest& request) -> uint32_t {
+        urgency = request.urgency;
+        return 1;
+      }));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("cinnamon"),
+                                settings.get());
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("1").SetNeverTimeout(true).GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(kUrgencyCritical, urgency);
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       CleanUpDisconnectsShowBannersSignal) {
+  ScopedGObject<GSettings> settings =
+      CreateMemorySettings(kGnomeNotificationsSchema);
+  if (!settings) {
+    GTEST_SKIP() << kGnomeNotificationsSchema
+                 << " GSettings schema is not installed.";
+  }
+  ASSERT_TRUE(
+      g_settings_set_boolean(settings.get(), kGnomeShowBannersKey, TRUE));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("gnome-shell"),
+                                settings.get());
+  CleanUpBridge();
+  content::RunAllTasksUntilIdle();
+  notification_bridge_linux_.reset();
+
+  // Mutating GSettings after CleanUp() and destruction must not fire the
+  // disconnected signal handler.
+  ASSERT_TRUE(
+      g_settings_set_boolean(settings.get(), kGnomeShowBannersKey, FALSE));
+  ASSERT_TRUE(
+      g_settings_set_boolean(settings.get(), kGnomeShowBannersKey, TRUE));
+}
+#endif  // defined(USE_GSETTINGS)
 
 TEST_F(NotificationPlatformBridgeLinuxTest,
        NotificationTimeoutWithPersistence) {
@@ -1339,6 +1802,64 @@ TEST_F(NotificationPlatformBridgeLinuxTest,
   content::RunAllTasksUntilIdle();
 }
 
+TEST_F(NotificationPlatformBridgeLinuxTest, IconUsesAppIconAndImagePath) {
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [](const NotificationRequest& request) -> uint32_t {
+        EXPECT_TRUE(base::EndsWith(request.app_icon, "/logo.png"));
+        EXPECT_TRUE(base::EndsWith(request.image_path, "/icon.png"));
+        return 1;
+      }));
+
+  CreateNotificationBridgeLinux(TestParams());
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("")
+          .SetIcon(gfx::test::CreateImage(192, 192))
+          .GetResult(),
+      nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(1, fake_notification_proxy_->notify_calls());
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest, CinnamonIconOmitsAppIcon) {
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [](const NotificationRequest& request) -> uint32_t {
+        // Cinnamon would show `image-path` as a large body image if
+        // `app_icon` were also set.
+        EXPECT_EQ("", request.app_icon);
+        EXPECT_TRUE(base::EndsWith(request.image_path, "/icon.png"));
+        return 1;
+      }));
+
+  CreateNotificationBridgeLinux(
+      TestParams().SetServerName("cinnamon").SetServerVersion("6.6.0"));
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("")
+          .SetIcon(gfx::test::CreateImage(192, 192))
+          .GetResult(),
+      nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(1, fake_notification_proxy_->notify_calls());
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest, CinnamonWithoutIconUsesAppIcon) {
+  fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
+      [](const NotificationRequest& request) -> uint32_t {
+        EXPECT_TRUE(base::EndsWith(request.app_icon, "/logo.png"));
+        EXPECT_EQ("", request.image_path);
+        return 1;
+      }));
+
+  CreateNotificationBridgeLinux(
+      TestParams().SetServerName("cinnamon").SetServerVersion("6.6.0"));
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("").GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(1, fake_notification_proxy_->notify_calls());
+}
+
 TEST_F(NotificationPlatformBridgeLinuxTest, NoSettingsButton) {
   fake_notification_proxy_->SetNotifyCallback(base::BindLambdaForTesting(
       [](const NotificationRequest& request) -> uint32_t {
@@ -1450,6 +1971,62 @@ TEST_F(NotificationPlatformBridgeLinuxTest, CloseButtonForwards) {
   EXPECT_EQ(1u, fake_notification_proxy_->last_closed_id());
 }
 
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       CloseButtonWithSynchronousCloseInHandler) {
+  display_service_tester_->SetProcessNotificationOperationDelegate(
+      base::BindLambdaForTesting(
+          [&](NotificationOperation operation,
+              NotificationHandler::Type notification_type, const GURL& origin,
+              const std::string& notification_id,
+              const std::optional<int>& action_index,
+              const std::optional<std::u16string>& reply,
+              const std::optional<bool>& by_user,
+              const std::optional<bool>& is_suspicious) {
+            HandleOperation(operation, notification_type, origin,
+                            notification_id, action_index, reply, by_user,
+                            is_suspicious);
+            if (operation == NotificationOperation::kClose) {
+              notification_bridge_linux_->Close(profile(), notification_id);
+            }
+          }));
+
+  CreateNotificationBridgeLinux(TestParams().SetServerName("cinnamon"));
+
+  fake_notification_proxy_->SetNotificationId(1);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::NOTIFICATIONS_MUTED, profile(),
+      NotificationBuilder("1")
+          .SetOriginUrl(GURL("https://google.com"))
+          .GetResult(),
+      nullptr);
+  content::RunAllTasksUntilIdle();
+
+  fake_notification_proxy_->SetNotificationId(2);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("2")
+          .SetOriginUrl(GURL("https://google.com"))
+          .GetResult(),
+      nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(2, fake_notification_proxy_->notify_calls());
+
+  InvokeAction(1, "close");
+
+  EXPECT_EQ(NotificationOperation::kClose, last_operation_);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(1, fake_notification_proxy_->close_calls());
+  EXPECT_EQ(1u, fake_notification_proxy_->last_closed_id());
+
+  std::set<std::string> displayed;
+  notification_bridge_linux_->GetDisplayed(
+      profile(), base::BindLambdaForTesting(
+                     [&](std::set<std::string> set, bool supports_sync) {
+                       displayed = std::move(set);
+                     }));
+  EXPECT_THAT(displayed, testing::UnorderedElementsAre("2"));
+}
+
 TEST_F(NotificationPlatformBridgeLinuxTest, NotificationRepliedForwards) {
   fake_notification_proxy_->SetNotificationId(1);
 
@@ -1485,6 +2062,108 @@ TEST_F(NotificationPlatformBridgeLinuxTest, NotificationClosedForwards) {
   NotificationClosed(1, 3 /* closed by user */);
 
   EXPECT_EQ(NotificationOperation::kClose, last_operation_);
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       NotificationClosedWithSynchronousCloseInHandler) {
+  display_service_tester_->SetProcessNotificationOperationDelegate(
+      base::BindLambdaForTesting(
+          [&](NotificationOperation operation,
+              NotificationHandler::Type notification_type, const GURL& origin,
+              const std::string& notification_id,
+              const std::optional<int>& action_index,
+              const std::optional<std::u16string>& reply,
+              const std::optional<bool>& by_user,
+              const std::optional<bool>& is_suspicious) {
+            HandleOperation(operation, notification_type, origin,
+                            notification_id, action_index, reply, by_user,
+                            is_suspicious);
+            if (operation == NotificationOperation::kClose) {
+              notification_bridge_linux_->Close(profile(), notification_id);
+            }
+          }));
+
+  CreateNotificationBridgeLinux(TestParams());
+
+  fake_notification_proxy_->SetNotificationId(1);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::NOTIFICATIONS_MUTED, profile(),
+      NotificationBuilder("1").GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+
+  fake_notification_proxy_->SetNotificationId(2);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("2").GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(2, fake_notification_proxy_->notify_calls());
+
+  NotificationClosed(1, 3 /* closed by user */);
+
+  EXPECT_EQ(NotificationOperation::kClose, last_operation_);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(0, fake_notification_proxy_->close_calls());
+
+  std::set<std::string> displayed;
+  notification_bridge_linux_->GetDisplayed(
+      profile(), base::BindLambdaForTesting(
+                     [&](std::set<std::string> set, bool supports_sync) {
+                       displayed = std::move(set);
+                     }));
+  EXPECT_THAT(displayed, testing::UnorderedElementsAre("2"));
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest,
+       PortalCloseButtonWithSynchronousCloseInHandler) {
+  display_service_tester_->SetProcessNotificationOperationDelegate(
+      base::BindLambdaForTesting(
+          [&](NotificationOperation operation,
+              NotificationHandler::Type notification_type, const GURL& origin,
+              const std::string& notification_id,
+              const std::optional<int>& action_index,
+              const std::optional<std::u16string>& reply,
+              const std::optional<bool>& by_user,
+              const std::optional<bool>& is_suspicious) {
+            HandleOperation(operation, notification_type, origin,
+                            notification_id, action_index, reply, by_user,
+                            is_suspicious);
+            if (operation == NotificationOperation::kClose) {
+              notification_bridge_linux_->Close(profile(), notification_id);
+            }
+          }));
+
+  std::vector<std::string> portal_ids;
+  fake_portal_notification_proxy_->SetAddNotificationCallback(
+      base::BindLambdaForTesting([&](const PortalNotificationRequest& request) {
+        portal_ids.push_back(request.id);
+      }));
+
+  CreateNotificationBridgeLinux(
+      TestParams().SetFdoNameHasOwner(false).SetPortalNameHasOwner(true));
+
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::NOTIFICATIONS_MUTED, profile(),
+      NotificationBuilder("1").GetResult(), nullptr);
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("2").GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  ASSERT_EQ(2u, portal_ids.size());
+
+  fake_portal_notification_proxy_->FireActionInvoked(portal_ids[0], "close");
+
+  EXPECT_EQ(NotificationOperation::kClose, last_operation_);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(1, fake_portal_notification_proxy_->remove_notification_calls());
+  EXPECT_EQ(portal_ids[0], fake_portal_notification_proxy_->last_removed_id());
+
+  std::set<std::string> displayed;
+  notification_bridge_linux_->GetDisplayed(
+      profile(), base::BindLambdaForTesting(
+                     [&](std::set<std::string> set, bool supports_sync) {
+                       displayed = std::move(set);
+                     }));
+  EXPECT_THAT(displayed, testing::UnorderedElementsAre("2"));
 }
 
 TEST_F(NotificationPlatformBridgeLinuxTest, PortalFallbackWhenFdoUnavailable) {
@@ -1569,6 +2248,35 @@ TEST_F(NotificationPlatformBridgeLinuxTest, PortalV1Fallback) {
                                           .AddButton(reply_button)
                                           .GetResult(),
                                       nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_TRUE(add_notification_called);
+}
+
+// Regression test for https://crbug.com/573427860: a themed vector icon must be
+// rasterized with a ColorProvider instead of crashing.
+TEST_F(NotificationPlatformBridgeLinuxTest, VectorIconWithColorId) {
+  constexpr int kIconSize = 32;
+  fake_portal_notification_proxy_->SetPortalVersion(1);
+
+  bool add_notification_called = false;
+  fake_portal_notification_proxy_->SetAddNotificationCallback(
+      base::BindLambdaForTesting([&](const PortalNotificationRequest& request) {
+        add_notification_called = true;
+        ASSERT_FALSE(request.icon_bytes.empty());
+        gfx::Image image = gfx::Image::CreateFrom1xPNGBytes(request.icon_bytes);
+        EXPECT_EQ(kIconSize, image.Width());
+        EXPECT_EQ(kIconSize, image.Height());
+      }));
+
+  CreateNotificationBridgeLinux(
+      TestParams().SetFdoNameHasOwner(false).SetPortalNameHasOwner(true));
+
+  Notification notification = NotificationBuilder("1").GetResult();
+  notification.set_icon(ui::ImageModel::FromVectorIcon(
+      vector_icons::kSettingsIcon, ui::kColorAccent, kIconSize));
+  notification_bridge_linux_->Display(NotificationHandler::Type::WEB_PERSISTENT,
+                                      profile(), notification,
+                                      /*metadata=*/nullptr);
   content::RunAllTasksUntilIdle();
   EXPECT_TRUE(add_notification_called);
 }
@@ -1920,6 +2628,25 @@ TEST_F(NotificationPlatformBridgeLinuxTest, PortalFullSerialization) {
       nullptr);
   content::RunAllTasksUntilIdle();
   EXPECT_TRUE(add_notification_called);
+}
+
+TEST_F(NotificationPlatformBridgeLinuxTest, PortalSystemPriorityMapsToUrgent) {
+  fake_portal_notification_proxy_->SetPortalVersion(2);
+
+  std::optional<std::string> priority;
+  fake_portal_notification_proxy_->SetAddNotificationCallback(
+      base::BindLambdaForTesting([&](const PortalNotificationRequest& request) {
+        priority = request.priority;
+      }));
+
+  CreateNotificationBridgeLinux(
+      TestParams().SetFdoNameHasOwner(false).SetPortalNameHasOwner(true));
+
+  notification_bridge_linux_->Display(
+      NotificationHandler::Type::WEB_PERSISTENT, profile(),
+      NotificationBuilder("1").SetSystemPriority().GetResult(), nullptr);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ("urgent", priority);
 }
 
 TEST_F(NotificationPlatformBridgeLinuxTest,

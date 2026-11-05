@@ -3,9 +3,8 @@
 // found in the LICENSE file.
 
 import type {BrowserProxy, HistoryIdentityState} from 'chrome://history/history.js';
-import {HistorySignInState, SyncState} from 'chrome://history/history.js';
-import {OpenConversationResult, PageCallbackRouter, PageHandlerRemote} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
-import type {PageRemote} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+import {HistoryPageCallbackRouter, HistoryPageHandlerRemote, HistorySignInState, OpenConversationResult, SyncState} from 'chrome://history/history.js';
+import type {PageRemote, TimePeriodOption} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import {assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy as BaseTestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
@@ -14,37 +13,41 @@ import {createHistoryInfo} from './test_util.js';
 
 export class TestHistoryBrowserProxy extends BaseTestBrowserProxy implements
     BrowserProxy {
-  handler: TestMock<PageHandlerRemote>&PageHandlerRemote;
-  callbackRouter: PageCallbackRouter;
+  handler: TestMock<HistoryPageHandlerRemote>&HistoryPageHandlerRemote;
+  callbackRouter: HistoryPageCallbackRouter;
   pageRemote: PageRemote;
   histogramMap: {[key: string]: {[key: string]: number}} = {};
   actionMap: {[key: string]: number} = {};
-  private initialIdentityState_: HistoryIdentityState;
 
   constructor() {
     super([
-      'getInitialIdentityState',
-      'navigateToUrl',
-      'otherDevicesInitialized',
       'recordAction',
       'recordBooleanHistogram',
       'recordHistogram',
       'recordLongTime',
-      'recordSigninPendingOffered',
-      'startTurnOnSyncFlow',
+      'recordTime',
     ]);
 
-    this.handler = TestMock.fromClass(PageHandlerRemote);
-    this.callbackRouter = new PageCallbackRouter();
+    this.handler = TestMock.fromClass(HistoryPageHandlerRemote);
+    this.callbackRouter = new HistoryPageCallbackRouter();
     this.pageRemote = this.callbackRouter.$.bindNewPipeAndPassRemote();
 
-    this.initialIdentityState_ = {
-      signIn: HistorySignInState.SIGNED_OUT,
-      tabsSync: SyncState.TURNED_OFF,
-      historySync: SyncState.TURNED_OFF,
-    };
+    this.setInitialIdentityState({
+      signIn: HistorySignInState.kSignedOut,
+      tabsSync: SyncState.kTurnedOff,
+      historySync: SyncState.kTurnedOff,
+    });
 
     this.handler.setResultFor('queryHistory', Promise.resolve({
+      results: {
+        info: createHistoryInfo(''),
+        value: [],
+      },
+    }));
+
+    // Pages that don't fill the viewport request more results without
+    // scrolling, so provide a default empty, finished continuation.
+    this.handler.setResultFor('queryHistoryContinuation', Promise.resolve({
       results: {
         info: createHistoryInfo(''),
         value: [],
@@ -64,6 +67,13 @@ export class TestHistoryBrowserProxy extends BaseTestBrowserProxy implements
           result: OpenConversationResult.kSuccess,
         }));
 
+    this.handler.setResultFor('getSyncedDevicesForFiltering', Promise.resolve({
+      devices: [],
+    }));
+
+    this.handler.setResultFor(
+        'getTimePeriodOptions', Promise.resolve({options: []}));
+
     // <if expr="not is_chromeos">
     this.handler.setResultFor(
         'shouldShowHistoryPageHistorySyncPromo', Promise.resolve({
@@ -72,21 +82,9 @@ export class TestHistoryBrowserProxy extends BaseTestBrowserProxy implements
     // </if>
   }
 
-  getInitialIdentityState(): Promise<HistoryIdentityState> {
-    this.methodCalled('getInitialIdentityState');
-    return Promise.resolve(this.initialIdentityState_);
-  }
-
   setInitialIdentityState(identityState: HistoryIdentityState) {
-    this.initialIdentityState_ = identityState;
-  }
-
-  navigateToUrl(url: string, _target: string, _e: MouseEvent) {
-    this.methodCalled('navigateToUrl', url);
-  }
-
-  otherDevicesInitialized() {
-    this.methodCalled('otherDevicesInitialized');
+    this.handler.setResultFor(
+        'getInitialIdentityState', Promise.resolve({identityState}));
   }
 
   recordAction(action: string) {
@@ -118,17 +116,15 @@ export class TestHistoryBrowserProxy extends BaseTestBrowserProxy implements
     this.methodCalled('recordBooleanHistogram', [histogram, value]);
   }
 
-  recordTime() {}
+  recordTime(histogram: string, value: number) {
+    this.methodCalled('recordTime', [histogram, value]);
+  }
 
   recordLongTime(histogram: string, value: number) {
     this.methodCalled('recordLongTime', histogram, value);
   }
 
-  recordSigninPendingOffered() {
-    this.methodCalled('recordSigninPendingOffered');
-  }
-
-  startTurnOnSyncFlow() {
-    this.methodCalled('startTurnOnSyncFlow');
+  getTimePeriodOptions(): Promise<{options: TimePeriodOption[]}> {
+    return this.handler.getTimePeriodOptions();
   }
 }

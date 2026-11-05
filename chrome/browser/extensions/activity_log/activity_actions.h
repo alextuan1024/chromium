@@ -102,6 +102,17 @@ class Action : public base::RefCountedThreadSafe<Action> {
   bool arg_incognito() const { return arg_incognito_; }
   void set_arg_incognito(bool incognito) { arg_incognito_ = incognito; }
 
+  // Get or set a flag indicating whether the action ran in an Enterprise
+  // Isolated Mode profile, or targeted one of its tabs. The target tab is only
+  // used for the APIs whose tab ID the ActivityLog resolves. Unlike
+  // page_incognito and arg_incognito, the flag doesn't depend on the URLs, and
+  // it is only kept in memory.
+  // Code that creates an Action must set the flag: the ActivityLog uses it to
+  // choose the telemetry subscribers that receive the action, and an action
+  // without it goes to the regular profile's subscribers.
+  bool isolated_mode() const { return isolated_mode_; }
+  void set_isolated_mode(bool isolated_mode) { isolated_mode_ = isolated_mode; }
+
   // A dictionary where any additional data can be stored.
   const std::optional<base::DictValue>& other() const { return other_; }
   void set_other(std::optional<base::DictValue> other);
@@ -146,6 +157,7 @@ class Action : public base::RefCountedThreadSafe<Action> {
   bool page_incognito_{false};
   GURL arg_url_;
   bool arg_incognito_{false};
+  bool isolated_mode_{false};
   std::optional<base::DictValue> other_;
   int count_{0};
   int64_t action_id_;

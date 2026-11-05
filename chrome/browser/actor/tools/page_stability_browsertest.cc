@@ -2,19 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <utility>
-
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/test/test_timeouts.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
+#include "chrome/browser/actor/execution_engine.h"
+#include "chrome/browser/actor/tools/observation_delay_controller.h"
 #include "chrome/browser/actor/tools/page_stability_test_util.h"
+#include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/actor/core/actor_features.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/page_content_annotations/content/mojom/page_stability.mojom.h"
@@ -684,6 +688,146 @@ INSTANTIATE_TEST_SUITE_P(
     /* no prefix */,
     ActorPageStabilityMinWaitTest,
     testing::Bool());
+
+// Tests `ToolRequest::SetSkipObservationDelay()`, which lets a tool complete
+// without waiting for the page to settle.
+class ActorSkipObservationDelayTest : public ActorPageStabilityTestBase {
+ public:
+  ActorSkipObservationDelayTest() {
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        {{::features::kGlicActor, {}},
+         // Effectively disable the timeouts so that the only way a tool
+         // completes while a fetch is pending is if the delay is skipped. This
+         // includes the paint stability timeouts: paint stability races
+         // network idleness, and since nothing paints while the fetch is
+         // pending, the initial paint timeout would otherwise declare the
+         // page stable.
+         {kActorPageStability,
+          {{kActorPageStabilityTimeout.name, "300s"},
+           {kActorPaintStabilityInitialPaintTimeout.name, "300s"},
+           {kActorPaintStabilitySubsequentPaintTimeout.name, "300s"}}},
+         {kActorObservationDelay,
+          {{kActorObservationDelayTimeout.name, "300s"}}}},
+        {});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// By default, a click that kicks off a network fetch doesn't complete until the
+// fetch resolves.
+IN_PROC_BROWSER_TEST_F(ActorSkipObservationDelayTest, WaitsByDefault) {
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GetPageStabilityTestURL()));
+  ASSERT_EQ(GetOutputText(), "INITIAL");
+
+  std::optional<int> button_id = GetDOMNodeId(*main_frame(), "#btnFetch");
+  ASSERT_TRUE(button_id);
+  std::unique_ptr<ToolRequest> action =
+      MakeClickRequest(*main_frame(), button_id.value());
+  ActResultFuture result;
+  task().Act(ToRequestList(action), result.GetCallback());
+
+  fetch_response().WaitForRequest();
+  // The page stability monitor blocks on in-flight network requests, and the
+  // fetch isn't responded to until `Respond()` below, so the click can't have
+  // completed yet.
+  Sleep(TestTimeouts::tiny_timeout());
+  EXPECT_FALSE(result.IsReady());
+
+  Respond("NETWORK DONE");
+  ExpectOkResult(result);
+  EXPECT_EQ(GetOutputText(), "NETWORK DONE");
+}
+
+// When the request asks to skip the observation delay, the click completes
+// even though the fetch it started never resolves.
+IN_PROC_BROWSER_TEST_F(ActorSkipObservationDelayTest,
+                       CompletesWithoutWaitingWhenSkipped) {
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GetPageStabilityTestURL()));
+  ASSERT_EQ(GetOutputText(), "INITIAL");
+
+  std::optional<int> button_id = GetDOMNodeId(*main_frame(), "#btnFetch");
+  ASSERT_TRUE(button_id);
+  std::unique_ptr<ToolRequest> action =
+      MakeClickRequest(*main_frame(), button_id.value());
+  action->SetSkipObservationDelay(true);
+  ActResultFuture result;
+  task().Act(ToRequestList(action), result.GetCallback());
+
+  // The fetch is never responded to.
+  fetch_response().WaitForRequest();
+  ExpectOkResult(result);
+  EXPECT_EQ(GetOutputText(), "INITIAL");
+}
+
+class ActorStabilizeOncePerBundleBrowserTest
+    : public ActorPageStabilityTestBase {
+ public:
+  ActorStabilizeOncePerBundleBrowserTest() {
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        {{::features::kGlicActor, {}},
+         {kActorStabilizeOncePerBundle, {}},
+         {kActorPageStability,
+          {{kActorPageStabilityTimeout.name, "30000ms"},
+           {kActorPageStabilityMinWait.name, "0ms"},
+           {kActorPaintStabilityInitialPaintTimeout.name, "30000ms"},
+           {kActorPaintStabilitySubsequentPaintTimeout.name, "30000ms"}}},
+         {kActorTypeToolObservationStartDelay,
+          {{kActorTypeToolObservationStartDelayDuration.name, "30s"}}}},
+        {});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(ActorStabilizeOncePerBundleBrowserTest,
+                       FinalWaitCoversAsyncFetchAndSkipsNonFinalStartDelay) {
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GetPageStabilityTestURL()));
+  ASSERT_TRUE(ExecJs(web_contents(), R"(
+    const input = document.createElement('input');
+    input.id = 'testInput';
+    const btn = document.createElement('button');
+    btn.id = 'btnStatic';
+    btn.onclick = () => { window.secondClicked = true; };
+    document.body.append(input, btn);
+  )"));
+
+  std::optional<int> input_id = GetDOMNodeId(*main_frame(), "#testInput");
+  std::optional<int> fetch_btn_id =
+      GetDOMNodeId(*main_frame(), "#btnFetchAndWork");
+  std::optional<int> static_btn_id = GetDOMNodeId(*main_frame(), "#btnStatic");
+  ASSERT_TRUE(input_id && fetch_btn_id && static_btn_id);
+
+  base::ElapsedTimer timer;
+  ActResultFuture result;
+  task().Act(ToRequestList(MakeTypeRequest(*main_frame(), *input_id, "hello",
+                                           /*follow_by_enter=*/false),
+                           MakeClickRequest(*main_frame(), *fetch_btn_id),
+                           MakeClickRequest(*main_frame(), *static_btn_id)),
+             result.GetCallback());
+
+  fetch_response().WaitForRequest();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(web_contents(), "window.secondClicked === true")
+        .ExtractBool();
+  }));
+  Sleep(base::Milliseconds(100));
+  EXPECT_FALSE(result.IsReady());
+  EXPECT_EQ(GetOutputText(), "INITIAL");
+
+  Respond("FETCH FROM ACTION 1");
+  ExpectOkResult(result);
+  EXPECT_LT(timer.Elapsed(), kActorObservationDelayTimeout.Get());
+  EXPECT_EQ(content::EvalJs(web_contents(),
+                            "document.getElementById('testInput').value"),
+            "hello");
+  EXPECT_EQ(GetOutputText(), "WORK DONE");
+}
 
 }  // namespace
 

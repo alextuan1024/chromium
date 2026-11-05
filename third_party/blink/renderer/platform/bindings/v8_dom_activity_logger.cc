@@ -5,6 +5,8 @@
 #include "third_party/blink/renderer/platform/bindings/v8_dom_activity_logger.h"
 
 #include <memory>
+
+#include "base/no_destructor.h"
 #include "third_party/blink/public/common/scheme_registry.h"
 #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
@@ -14,6 +16,7 @@
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -26,15 +29,15 @@ typedef HashMap<int,
 
 static DOMActivityLoggerMapForMainWorld& DomActivityLoggersForMainWorld() {
   DCHECK(IsMainThread());
-  DEFINE_STATIC_LOCAL(DOMActivityLoggerMapForMainWorld, map, ());
-  return map;
+  static base::NoDestructor<DOMActivityLoggerMapForMainWorld> map;
+  return *map;
 }
 
 static DOMActivityLoggerMapForIsolatedWorld&
 DomActivityLoggersForIsolatedWorld() {
   DCHECK(IsMainThread());
-  DEFINE_STATIC_LOCAL(DOMActivityLoggerMapForIsolatedWorld, map, ());
-  return map;
+  static base::NoDestructor<DOMActivityLoggerMapForIsolatedWorld> map;
+  return *map;
 }
 
 void V8DOMActivityLogger::LogMethod(

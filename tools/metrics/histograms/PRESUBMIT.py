@@ -20,9 +20,8 @@ _NEW_HISTOGRAMS_THRESHOLD = 500
 
 # PRESUBMIT infrastructure doesn't guarantee that the cwd() will be on
 # path requiring manual path manipulation to call setup_modules.
-# TODO(crbug.com/488351821): Consider using subprocesses to run actual
-#                            test as recommended by presubmit docs:
-# https://www.chromium.org/developers/how-tos/depottools/presubmit-scripts/
+# CheckBooleansAreEnums and CheckHistogramsChanges run in-process: they read
+# the changed lines and the old file contents from input_api.
 sys.path.append('.')
 import setup_modules  # pylint: disable=unused-import
 
@@ -245,7 +244,7 @@ def ExecuteCheckHistogramFormatting(
   represents a production check rather then a test one. This is why we
   set allow_test_paths to False by default.
   """
-  results = []
+  results: list[Any] = []
   cwd = input_api.PresubmitLocalPath()
   xml_changed = False
 
@@ -313,7 +312,6 @@ def ExecuteCheckWebViewHistogramsAllowlistOnUpload(
   if xml_paths_override is not None:
     xml_files_paths = xml_paths_override
 
-  xml_files = [open(f, encoding='utf-8') for f in xml_files_paths]
   allowlist_path = os.path.join(
     path_util.CHROMIUM_SRC_PATH,
     histograms_allowlist_check.WellKnownAllowlistPath.ANDROID_WEBVIEW.relative_path(),
@@ -322,12 +320,9 @@ def ExecuteCheckWebViewHistogramsAllowlistOnUpload(
   if allowlist_path_override is not None:
     allowlist_path = allowlist_path_override
 
-  result = histograms_allowlist_check.check_histograms_allowlist(
-    output_api, allowlist_path, xml_files
+  return histograms_allowlist_check.check_histograms_allowlist(
+    output_api, allowlist_path, xml_files_paths
   )
-  for f in xml_files:
-    f.close()
-  return result
 
 
 def CheckBooleansAreEnums(

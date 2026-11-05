@@ -5,7 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_ENCODED_AUDIO_UNDERLYING_SOURCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_ENCODED_AUDIO_UNDERLYING_SOURCE_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 
@@ -52,6 +53,7 @@ class MODULES_EXPORT RTCEncodedAudioUnderlyingSource
   ScriptPromise<IDLUndefined> Cancel(ScriptState*,
                                      ScriptValue reason,
                                      ExceptionState&) override;
+  void ContextDestroyed() override;
 
   void OnFrameFromSource(
       std::unique_ptr<webrtc::TransformableAudioFrameInterface>);

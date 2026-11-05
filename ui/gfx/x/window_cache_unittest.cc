@@ -7,7 +7,6 @@
 #include "base/memory/raw_ptr.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/insets.h"
-#include "ui/gfx/x/atom_cache.h"
 #include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/event.h"
 #include "ui/gfx/x/future.h"
@@ -201,6 +200,26 @@ TEST_F(WindowCacheTest, MapAndUnmapNotify) {
   EXPECT_FALSE(info.mapped);
 }
 
+TEST_F(WindowCacheTest, UnmappedLocally) {
+  connection()->MapWindow(root());
+  Window window = CreateWindow(root());
+  connection()->MapWindow(window);
+  connection()->SetStringProperty(window, Atom::WM_NAME, Atom::STRING, "a");
+  cache()->SyncForTest();
+  EXPECT_EQ(cache()->GetWindowAtPoint({100, 100}, root()), window);
+
+  // The window is no longer hit without waiting for the UnmapNotify.
+  cache()->OnWindowUnmappedLocally(window);
+  EXPECT_FALSE(cache()->windows().at(window).mapped);
+  EXPECT_EQ(cache()->GetWindowAtPoint({100, 100}, root()), Window::None);
+
+  // A later MapNotify updates the state as usual.
+  connection()->UnmapWindow(window);
+  connection()->MapWindow(window);
+  cache()->SyncForTest();
+  EXPECT_EQ(cache()->GetWindowAtPoint({100, 100}, root()), window);
+}
+
 TEST_F(WindowCacheTest, ReparentNotify) {
   Window r = root();
   Window a = CreateWindow(r);
@@ -313,7 +332,7 @@ TEST_F(WindowCacheTest, GtkFrameExtents) {
   const WindowCache::WindowInfo& info = cache()->windows().at(root());
   EXPECT_EQ(info.gtk_frame_extents_px, gfx::Insets());
 
-  const Atom gtk_frame_extents = GetAtom("_GTK_FRAME_EXTENTS");
+  const Atom gtk_frame_extents = connection()->GetAtom("_GTK_FRAME_EXTENTS");
   connection()->SetArrayProperty(root(), gtk_frame_extents, Atom::CARDINAL,
                                  std::vector<uint32_t>{1, 2, 3, 4});
   cache()->SyncForTest();
@@ -397,7 +416,7 @@ TEST_F(WindowCacheTest, GetWindowAtPoint) {
 
   // GTK_FRAME_EXTENTS insets the window bounds.
   EXPECT_EQ(cache()->GetWindowAtPoint({125, 125}, root()), a);
-  const Atom gtk_frame_extents = GetAtom("_GTK_FRAME_EXTENTS");
+  const Atom gtk_frame_extents = connection()->GetAtom("_GTK_FRAME_EXTENTS");
   connection()->SetArrayProperty(a, gtk_frame_extents, Atom::CARDINAL,
                                  std::vector<uint32_t>{40, 40, 40, 40});
   cache()->SyncForTest();

@@ -18,6 +18,8 @@
 #if defined(USE_AURA)
 #include "ui/aura/window.h"
 #include "ui/aura/window_targeter.h"
+#else
+#include "ui/compositor/layer.h"
 #endif  // USE_AURA
 
 namespace {
@@ -67,10 +69,9 @@ TEST_F(FullWebUIOmniboxFrameTest, WindowTargeterInsets) {
   // bottom shadow insets remain active.
   frame->SetForwardMouseEvents(true);
   window->targeter()->GetHitTestRects(window, &mouse_rect, &touch_rect);
-  int top_inset =
-      frame->GetInsets().top() +
-      RoundedOmniboxResultsFrame::GetLocationBarAlignmentInsets().top() +
-      GetLayoutConstant(LayoutConstant::kLocationBarHeight);
+  int top_inset = frame->GetInsets().top() +
+                  FullWebUIOmniboxFrame::GetLocationBarAlignmentInsets().top() +
+                  GetLayoutConstant(LayoutConstant::kLocationBarHeight);
   gfx::Insets expected_forwarding_insets = gfx::Insets::TLBR(
       top_inset, frame->GetInsets().left(), frame->GetInsets().bottom(),
       frame->GetInsets().right());
@@ -83,6 +84,16 @@ TEST_F(FullWebUIOmniboxFrameTest, WindowTargeterInsets) {
   window->targeter()->GetHitTestRects(window, &mouse_rect, &touch_rect);
   expected_rect = window->bounds();
   expected_rect.Inset(frame->GetInsets());
+  EXPECT_EQ(mouse_rect, expected_rect);
+
+  // When collapsed, the bottom shadow margin is dropped so the window targeter
+  // includes the bottom of the widget instead of excluding a 28px bottom band.
+  gfx::Insets collapsed_margin = RoundedOmniboxResultsFrame::GetShadowInsets();
+  collapsed_margin.set_bottom(0);
+  frame->SetShadowMargin(collapsed_margin);
+  window->targeter()->GetHitTestRects(window, &mouse_rect, &touch_rect);
+  expected_rect = window->bounds();
+  expected_rect.Inset(collapsed_margin);
   EXPECT_EQ(mouse_rect, expected_rect);
 }
 
@@ -120,6 +131,59 @@ TEST_F(FullWebUIOmniboxFrameTest, UpdateWindowTargeterWithoutWidget) {
   unattached_frame->SetElevation(0);
   unattached_frame->SetForwardMouseEvents(true);
 }
+
+TEST_F(FullWebUIOmniboxFrameTest, RoundedOmniboxResultsFrameTargeterInsets) {
+  auto* frame =
+      widget_->SetContentsView(std::make_unique<RoundedOmniboxResultsFrame>(
+          new views::View(), &location_bar_, /*forward_mouse_events=*/true));
+  widget_->Show();
+
+  aura::Window* window = widget_->GetNativeWindow();
+  ASSERT_TRUE(window);
+  ASSERT_TRUE(window->targeter());
+
+  // When forward_mouse_events is true and cutout is visible, targeter insets
+  // should include both the shadow insets and the top cutout height.
+  gfx::Rect mouse_rect, touch_rect;
+  window->targeter()->GetHitTestRects(window, &mouse_rect, &touch_rect);
+  gfx::Insets expected_insets =
+      frame->GetInsets() +
+      gfx::Insets::TLBR(RoundedOmniboxResultsFrame::GetNonResultSectionHeight(
+                            /*include_cutout=*/true),
+                        0, 0, 0);
+  gfx::Rect expected_rect = window->bounds();
+  expected_rect.Inset(expected_insets);
+  EXPECT_EQ(mouse_rect, expected_rect);
+
+  // Hiding the cutout should update the targeter to exclude only the shadow
+  // insets.
+  frame->SetCutoutVisibility(false);
+  window->targeter()->GetHitTestRects(window, &mouse_rect, &touch_rect);
+  expected_rect = window->bounds();
+  expected_rect.Inset(frame->GetInsets());
+  EXPECT_EQ(mouse_rect, expected_rect);
+}
+
+TEST_F(FullWebUIOmniboxFrameTest,
+       DoesNotInstallWindowTargeterWhenNotClientContentsView) {
+  auto* container = widget_->SetContentsView(std::make_unique<views::View>());
+  auto* rounded_frame =
+      container->AddChildView(std::make_unique<RoundedOmniboxResultsFrame>(
+          new views::View(), &location_bar_, /*forward_mouse_events=*/true));
+  auto* full_frame =
+      container->AddChildView(std::make_unique<FullWebUIOmniboxFrame>(
+          new views::View(), &location_bar_, /*forward_mouse_events=*/true));
+  widget_->Show();
+
+  aura::Window* window = widget_->GetNativeWindow();
+  ASSERT_TRUE(window);
+  EXPECT_FALSE(window->targeter());
+
+  rounded_frame->SetCutoutVisibility(false);
+  full_frame->SetElevation(0);
+  full_frame->SetForwardMouseEvents(false);
+  EXPECT_FALSE(window->targeter());
+}
 #else  // !defined(USE_AURA)
 
 TEST_F(FullWebUIOmniboxFrameTest, ViewTargeterHitTesting) {
@@ -130,10 +194,9 @@ TEST_F(FullWebUIOmniboxFrameTest, ViewTargeterHitTesting) {
   widget_->SetBounds(gfx::Rect(0, 0, 500, 500));
   widget_->Show();
 
-  int top_inset =
-      frame->GetInsets().top() +
-      RoundedOmniboxResultsFrame::GetLocationBarAlignmentInsets().top() +
-      GetLayoutConstant(LayoutConstant::kLocationBarHeight);
+  int top_inset = frame->GetInsets().top() +
+                  FullWebUIOmniboxFrame::GetLocationBarAlignmentInsets().top() +
+                  GetLayoutConstant(LayoutConstant::kLocationBarHeight);
 
   // When forwarding is disabled (normal state), points in top area target
   // child contents rather than the frame itself.
@@ -156,6 +219,34 @@ TEST_F(FullWebUIOmniboxFrameTest, ViewTargeterHitTesting) {
   frame->SetForwardMouseEvents(false);
   EXPECT_NE(frame->GetEventHandlerForPoint(gfx::Point(50, top_inset - 1)),
             frame);
+
+  // With the full shadow margin (expanded state), points in the bottom shadow
+  // band target the frame so they are forwarded to the browser window beneath.
+  const gfx::Insets full_margin = RoundedOmniboxResultsFrame::GetShadowInsets();
+  EXPECT_EQ(frame->GetEventHandlerForPoint(
+                gfx::Point(50, 500 - full_margin.bottom() + 1)),
+            frame);
+
+  // When collapsed (bottom shadow margin dropped to 0), points at the bottom of
+  // the widget target the child contents (the bottom of the input) rather than
+  // being redirected to the frame.
+  gfx::Insets collapsed_margin = full_margin;
+  collapsed_margin.set_bottom(0);
+  frame->SetShadowMargin(collapsed_margin);
+  frame->SetElevation(0);
+  widget_->LayoutRootViewIfNecessary();
+  EXPECT_NE(frame->GetEventHandlerForPoint(gfx::Point(50, 500 - 2)), frame);
+
+  // When the widget layer is clipped (e.g. by the Organizer Tray or expanded
+  // vertical tab strip covering the left 200px), points in the clipped region
+  // target the frame so they are forwarded to the browser window beneath, while
+  // points in the unclipped interior still target the child contents.
+  widget_->GetLayer()->SetClipRect(gfx::Rect(200, 0, 300, 500));
+  EXPECT_EQ(frame->GetEventHandlerForPoint(gfx::Point(100, 250)), frame);
+  EXPECT_NE(frame->GetEventHandlerForPoint(gfx::Point(250, 250)), frame);
+
+  widget_->GetLayer()->SetClipRect(gfx::Rect());
+  EXPECT_NE(frame->GetEventHandlerForPoint(gfx::Point(100, 250)), frame);
 }
 
 TEST_F(FullWebUIOmniboxFrameTest, OnMouseEventMarksHandled) {

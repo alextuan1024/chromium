@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.provider.Browser;
 import android.text.TextUtils;
 
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
@@ -37,29 +38,6 @@ import org.chromium.ui.base.WindowAndroid;
 public class ReparentingTask implements UserData {
     public static final String TAG = "ReparentingTask";
 
-    /** Provides data to {@link ReparentingTask} facilitate reparenting tabs. */
-    public interface Delegate {
-        /**
-         * Gets a {@link CompositorViewHolder} which is passed on to {@link ReparentingTask}, used
-         * in the reparenting process.
-         *
-         * <p>Can be null if the CompositorViewHolder does not yet exist.
-         */
-        @Nullable CompositorViewHolder getCompositorViewHolder();
-
-        /**
-         * Gets a {@link WindowAndroid} which is passed on to {@link ReparentingTask}, used in the
-         * reparenting process.
-         */
-        WindowAndroid getWindowAndroid();
-
-        /**
-         * Gets a {@link TabDelegateFactory} which is passed on to {@link ReparentingTask}, used in
-         * the reparenting process.
-         */
-        @Nullable TabDelegateFactory getTabDelegateFactory();
-    }
-
     private static final Class<ReparentingTask> USER_DATA_KEY = ReparentingTask.class;
 
     private final Tab mTab;
@@ -69,16 +47,12 @@ public class ReparentingTask implements UserData {
      * @return {@link ReparentingTask} object for a given {@link Tab}. Creates one if not present.
      */
     public static ReparentingTask from(Tab tab) {
-        ReparentingTask reparentingTask = get(tab);
+        ReparentingTask reparentingTask = tab.getUserDataHost().getUserData(USER_DATA_KEY);
         if (reparentingTask == null) {
             reparentingTask =
                     tab.getUserDataHost().setUserData(USER_DATA_KEY, new ReparentingTask(tab));
         }
         return reparentingTask;
-    }
-
-    public static @Nullable ReparentingTask get(Tab tab) {
-        return tab.getUserDataHost().getUserData(USER_DATA_KEY);
     }
 
     private ReparentingTask(Tab tab) {
@@ -98,7 +72,7 @@ public class ReparentingTask implements UserData {
      *     may be null if no intent customization is needed.
      * @param startActivityOptions Options to pass to {@link Activity#startActivity(Intent, Bundle)}
      * @param finalizeCallback A callback that will be called after the tab is attached to the new
-     *     host activity in {@link #attachAndFinishReparenting}.
+     *     host activity in {@link #finish}.
      * @return {@code true}, if the intent was successfully launched; {@code false} otherwise.
      */
     public boolean begin(
@@ -126,7 +100,7 @@ public class ReparentingTask implements UserData {
      *     launching the new host activity. This intent's URI and action will be overridden. This
      *     may be null if no intent customization is needed.
      * @param finalizeCallback A callback that will be called after the tab is attached to the new
-     *     host activity in {@link #attachAndFinishReparenting}.
+     *     host activity in {@link #finish}.
      */
     public void setupIntent(Intent intent, @Nullable Runnable finalizeCallback) {
         if (intent == null) intent = new Intent();
@@ -137,7 +111,7 @@ public class ReparentingTask implements UserData {
         if (TextUtils.isEmpty(intent.getDataString())) {
             intent.setData(Uri.parse(mTab.getUrl().getSpec()));
         }
-        if (mTab.isIncognito()) {
+        if (isIncognitoOrPrimaryOtr(mTab)) {
             intent.putExtra(
                     Browser.EXTRA_APPLICATION_ID,
                     ContextUtils.getApplicationContext().getPackageName());
@@ -150,7 +124,13 @@ public class ReparentingTask implements UserData {
         IntentHandler.setTabId(intent, mTab.getId());
         IntentHandler.setPinnedState(intent, mTab.getIsPinned());
         AsyncTabParamsManagerSingleton.getInstance()
-                .add(mTab.getId(), new TabReparentingParams(mTab, finalizeCallback));
+                .add(
+                        mTab.getId(),
+                        new TabReparentingParams(
+                                mTab,
+                                /* sourceSelector= */ null,
+                                /* shouldReload= */ false,
+                                finalizeCallback));
 
         detach();
     }
@@ -158,14 +138,13 @@ public class ReparentingTask implements UserData {
     /**
      * Detaches a tab from its current activity if any.
      *
-     * In details, this function:
-     * - Removes the tab from its current {@link TabModelSelector}, effectively severing
-     *   the {@link Activity} to {@link Tab} link.
+     * <p>Removes the tab from its current {@link TabModelSelector}, effectively severing the {@link
+     * Activity} to {@link Tab} link.
      */
     public void detach() {
-        // TODO(yusufo): We can't call tab.updateWindowAndroid that sets |mWindowAndroid| to null
-        // because many code paths (including navigation) expect the tab to always be associated
-        // with an activity, and will crash. crbug.com/40489451
+        // TODO(crbug.com/40489451): We can't call tab.updateWindowAndroid that sets
+        // |mWindowAndroid| to null because many code paths (including navigation) expect the tab
+        // to always be associated with an activity, and will crash.
         WebContents webContents = mTab.getWebContents();
 
         // TODO(crbug.com/40067160): We shouldn't be detaching tabs with null WebContents as it can
@@ -187,14 +166,19 @@ public class ReparentingTask implements UserData {
      * tab and related objects to reference it. This updates many delegates inside the tab and
      * {@link WebContents} both on java and native sides.
      *
-     * @param delegate A delegate that provides dependencies.
+     * @param compositorViewHolder The {@link CompositorViewHolder} to prepare for tab reparenting.
+     * @param windowAndroid The new {@link WindowAndroid} to attach the tab to.
+     * @param tabDelegateFactory The new {@link TabDelegateFactory} this tab should be using, or
+     *     null to keep the current one.
      * @param finalizeCallback A Callback to be called after the Tab has been reparented.
      */
-    public void finish(Delegate delegate, @Nullable Runnable finalizeCallback) {
-        if (delegate.getCompositorViewHolder() != null) {
-            delegate.getCompositorViewHolder().prepareForTabReparenting();
-        }
-        attach(delegate.getWindowAndroid(), delegate.getTabDelegateFactory());
+    public void finish(
+            @Nullable CompositorViewHolder compositorViewHolder,
+            WindowAndroid windowAndroid,
+            @Nullable TabDelegateFactory tabDelegateFactory,
+            @Nullable Runnable finalizeCallback) {
+        if (compositorViewHolder != null) compositorViewHolder.prepareForTabReparenting();
+        attach(windowAndroid, tabDelegateFactory);
         if (finalizeCallback != null) finalizeCallback.run();
     }
 
@@ -218,23 +202,15 @@ public class ReparentingTask implements UserData {
     void finishAsNoOp(WindowAndroid originalWindow) {
         AsyncTabParamsManagerSingleton.getInstance().remove(mTab.getId());
         finish(
-                new Delegate() {
-                    @Override
-                    public @Nullable CompositorViewHolder getCompositorViewHolder() {
-                        return null;
-                    }
+                /* compositorViewHolder= */ null,
+                originalWindow,
+                /* tabDelegateFactory= */ null,
+                /* finalizeCallback= */ null);
+    }
 
-                    @Override
-                    public WindowAndroid getWindowAndroid() {
-                        return originalWindow;
-                    }
-
-                    @Override
-                    public @Nullable TabDelegateFactory getTabDelegateFactory() {
-                        return null;
-                    }
-                },
-                null);
+    static boolean isIncognitoOrPrimaryOtr(Tab tab) {
+        var profile = tab.getProfile();
+        return tab.isIncognitoBranded() || (profile != null && profile.isPrimaryOtrProfile());
     }
 
     public Tab getTabForTesting() {
@@ -243,6 +219,6 @@ public class ReparentingTask implements UserData {
 
     @NativeMethods
     interface Natives {
-        void attachTab(WebContents webContents);
+        void attachTab(@JniType("content::WebContents*") WebContents webContents);
     }
 }

@@ -8,6 +8,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import urllib.request
 
 import common
@@ -25,7 +26,7 @@ _POM_TEMPLATE = """\
       <groupId>{group_id}</groupId>
       <artifactId>{artifact_id}</artifactId>
       <version>{version}</version>
-      <scope>runtime</scope>
+      <scope>runtime</scope>{exclusions}
     </dependency>
   </dependencies>
   <build>
@@ -60,14 +61,22 @@ _POM_TEMPLATE = """\
 """
 
 
+def _fetch_metadata(maven_url, package, version=None):
+    """Returns the contents of maven-metadata.xml for |package|.
+
+    Do not parse the result with the Python included parser since it is
+    susceptible to maliciously crafted xmls. Only use regular expression parsing
+    to be safe. RE should be enough to handle what we need to extract.
+    """
+    url = maven_url + '/' + package.replace('.', '/').replace(':', '/')
+    if version:
+        url += '/' + version
+    url += '/maven-metadata.xml'
+    return urllib.request.urlopen(url).read().decode('utf-8')
+
+
 def _detect_latest(maven_url, package):
-    metadata_url = '{}/{}/maven-metadata.xml'.format(
-        maven_url, package.replace('.', '/').replace(':', '/')
-    )
-    metadata = urllib.request.urlopen(metadata_url).read().decode('utf-8')
-    # Do not parse xml with the Python included parser since it is susceptible
-    # to maliciously crafted xmls. Only use regular expression parsing to be
-    # safe. RE should be enough to handle what we need to extract.
+    metadata = _fetch_metadata(maven_url, package)
     # TODO(agrieve): Use 'if m := ..." once docker image updates from Python 3.6.
     m = re.search('<latest>([^<]+)</latest>', metadata)
     if m:
@@ -79,32 +88,83 @@ def _detect_latest(maven_url, package):
     return latest
 
 
-def _install(
-    output_prefix,
-    deps_prefix,
-    maven_url,
-    package,
-    version,
-    jar_name=None,
-    post_process_func=None,
-):
-    # Runs in a docker container.
-    group_id, artifact_id = package.split(':')
-    if not jar_name:
-        jar_name = f'{artifact_id}.jar'
+def latest_snapshot_version(maven_url, package):
+    """Returns the timestamped version of the latest snapshot of |package|.
 
-    pathlib.Path('pom.xml').write_text(
+    E.g. "1.2.3-20260101.123456-7" rather than "1.2.3-SNAPSHOT", so that the
+    version changes whenever a new snapshot is published. Maven resolves such
+    versions to that exact snapshot build.
+    """
+    snapshot_version = _detect_latest(maven_url, package)
+    if not snapshot_version.endswith('-SNAPSHOT'):
+        raise RuntimeError(
+            f'Expected a -SNAPSHOT version for {package}. '
+            f'Found: {snapshot_version}'
+        )
+    metadata = _fetch_metadata(maven_url, package, snapshot_version)
+    # Not using <snapshotVersions>, since it can contain stale entries for
+    # artifacts that are no longer published.
+    timestamp = re.search('<timestamp>([^<]+)</timestamp>', metadata)
+    build_number = re.search('<buildNumber>([^<]+)</buildNumber>', metadata)
+    if not timestamp or not build_number:
+        raise RuntimeError(
+            f'Failed to parse snapshot metadata for {package} '
+            f'{snapshot_version}:\n{metadata}'
+        )
+    base_version = snapshot_version[: -len('-SNAPSHOT')]
+    return f'{base_version}-{timestamp.group(1)}-{build_number.group(1)}'
+
+
+def _exclusions_xml(exclusions):
+    if not exclusions:
+        return ''
+    lines = ['', '      <exclusions>']
+    for exclusion in exclusions:
+        group_id, artifact_id = exclusion.split(':')
+        lines += [
+            '        <exclusion>',
+            f'          <groupId>{group_id}</groupId>',
+            f'          <artifactId>{artifact_id}</artifactId>',
+            '        </exclusion>',
+        ]
+    lines.append('      </exclusions>')
+    return '\n'.join(lines)
+
+
+def build_jar_with_dependencies(
+    maven_url, package, version, work_dir='.', exclusions=()
+):
+    """Builds a .jar containing |package| and its dependencies.
+
+    Must be called from within a 3pp checkout (it uses third_party/jdk).
+
+    Args:
+      exclusions: group:artifact of dependencies to leave out.
+
+    Returns:
+      Path to the built .jar.
+    """
+    group_id, artifact_id = package.split(':')
+    os.makedirs(work_dir, exist_ok=True)
+    pathlib.Path(work_dir, 'pom.xml').write_text(
         _POM_TEMPLATE.format(
             version=version,
             group_id=group_id,
             artifact_id=artifact_id,
             maven_url=maven_url,
+            exclusions=_exclusions_xml(exclusions),
         )
     )
 
     # Set up JAVA_HOME for the mvn command to find the JDK.
     env = os.environ.copy()
-    env['JAVA_HOME'] = common.path_within_checkout('third_party/jdk/current')
+    sys.path.append(common.path_within_checkout('build/android'))
+    import java_home
+
+    env['JAVA_HOME'] = java_home.JAVA_HOME
+    # Prevent mvn from sourcing /etc/mavenrc on Goobuntu workstations, which
+    # forces Corp Airlock proxy settings and breaks local-test.
+    env['MAVEN_SKIP_RC'] = '1'
 
     # Ensure that mvn works and the environment is set up correctly.
     subprocess.run(['mvn', '-v'], check=True, env=env)
@@ -114,9 +174,31 @@ def _install(
         ['mvn', 'clean', 'assembly:single', '-f', 'pom.xml'],
         check=True,
         env=env,
+        cwd=work_dir,
+    )
+    return os.path.join(
+        work_dir, 'target', 'artifact-1-jar-with-dependencies.jar'
     )
 
-    src_jar_path = 'target/artifact-1-jar-with-dependencies.jar'
+
+def _install(
+    output_prefix,
+    deps_prefix,
+    maven_url,
+    package,
+    version,
+    jar_name=None,
+    post_process_func=None,
+    exclusions=(),
+):
+    # Runs in a docker container.
+    artifact_id = package.split(':')[1]
+    if not jar_name:
+        jar_name = f'{artifact_id}.jar'
+
+    src_jar_path = build_jar_with_dependencies(
+        maven_url, package, version, exclusions=exclusions
+    )
     dst_jar_path = os.path.join(output_prefix, jar_name)
     if post_process_func:
         post_process_func(src_jar_path, dst_jar_path)
@@ -131,6 +213,10 @@ def main(
     maven_url='https://dl.google.com/android/maven2',
     post_process_func=None,
     version_override=None,
+    runtime_deps=(),
+    version_deps=None,
+    version_strings_func=None,
+    exclusions=(),
 ):
     """3pp entry point for fetch.py.
 
@@ -140,6 +226,12 @@ def main(
       maven_url: URL of Maven repository.
       post_process_func: Called to finish. Args: src_jar_path, dst_jar_path
       version_override: Use this version instead of the latest one.
+      runtime_deps: Extra paths to copy into the checkout for use by
+          post_process_func. See common.main().
+      version_deps: Extra paths to hash into the version. See common.main().
+      version_strings_func: See common.main().
+      exclusions: Dependencies of |package| to leave out of the .jar, as
+          group:artifact (e.g. some.group:unused-thing).
     """
 
     def do_latest():
@@ -154,10 +246,19 @@ def main(
             args.version,
             jar_name,
             post_process_func,
+            exclusions,
         )
 
     common.main(
         do_latest=do_latest,
         do_install=do_install,
-        runtime_deps=['//third_party/jdk/current'],
+        runtime_deps=[
+            '//third_party/jdk/current',
+            '//build/android/java_home.py',
+        ]
+        + list(runtime_deps),
+        # common.main() requires version_deps whenever runtime_deps is set
+        # (the JDK is always a runtime dep here, but is not part of the version).
+        version_deps=list(version_deps or []),
+        version_strings_func=version_strings_func,
     )

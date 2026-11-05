@@ -14,7 +14,7 @@
 #include "chrome/browser/ui/views/mahi/mahi_menu_constants.h"
 #include "chromeos/components/mahi/public/cpp/mahi_util.h"
 #include "chromeos/components/mahi/public/cpp/mahi_web_contents_manager.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "chromeos/ui/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -31,7 +31,7 @@
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/view.h"
-#include "ui/views/view_shadow.h"
+#include "ui/views/view_decoration.h"
 #include "ui/views/widget/widget.h"
 
 namespace chromeos::mahi {
@@ -110,10 +110,11 @@ END_METADATA
 }  // namespace
 
 MahiCondensedMenuView::MahiCondensedMenuView()
-    : view_shadow_(std::make_unique<views::ViewShadow>(this, /*elevation=*/2)) {
+    : view_shadow_(std::make_unique<views::ViewDecoration>(this)) {
   const int corner_radius = views::LayoutProvider::Get()->GetCornerRadiusMetric(
       views::ShapeContextTokens::kMenuRadius);
   view_shadow_->SetRoundedCornerRadius(corner_radius);
+  view_shadow_->SetShadow(/*elevation=*/2);
 
   SetUseDefaultFillLayout(true);
   SetBackground(

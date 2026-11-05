@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">কেমেৰা</translation>
 <translation id="162175252992296058">আমেৰিকা যুক্তৰাষ্ট্ৰৰ আন্তঃৰাষ্ট্ৰীয় কীব’ৰ্ডৰ সৈতে পৰ্টুগীজ</translation>
 <translation id="1629521517399325891">নেটৱৰ্কৰ বিশ্বাসযোগ্যতা প্ৰমাণীকৰণৰ বাবে ব্যৱহাৰকাৰীৰ প্ৰমাণপত্ৰ উপলব্ধ নহয়।</translation>
+<translation id="1639239467298939599">ল'ড কৰি থকা হৈছে</translation>
 <translation id="1641780993263690097">চীনা পিনয়িন</translation>
 <translation id="164969095109328410">Chrome ডিভাইচ</translation>
 <translation id="1661207570040737402">আপুনি আপোনাৰ শ্বেয়াৰ কৰা ড্ৰাইভৰ Google Workspaceৰ সমগ্ৰ ষ্ট’ৰেজ ব্যৱহাৰ কৰিছে।</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">ফাইল ছিংক কৰা সুবিধাটো অফ কৰা হৈছে</translation>
 <translation id="2820957248982571256">স্কেন কৰি থকা হৈছে...</translation>
 <translation id="2830077785865012357">চীনা জুয়িন</translation>
+<translation id="2838379631617906747">ইনষ্টল কৰি থকা হৈছে</translation>
 <translation id="2843806747483486897">ডিফ’ল্ট কার্য সলনি কৰক...</translation>
 <translation id="2873951654529031587">ট্ৰেশ্ব</translation>
 <translation id="2887314858867008269">ইউএছ ক’লমাক</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">ভুল পাছৱৰ্ড</translation>
 <translation id="5059127710849015030">নেপালী লিপ্যন্তৰণ</translation>
 <translation id="5068919226082848014">পিজ্জা</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" />এ প্ৰ’ক্সী অ’ভাৰৰাইডৰ নিয়ম ছেট কৰিছে</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> ফাইল মচা হ'ব</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> টা বস্তু <ph name="FOLDER_NAME" />লৈ স্থানান্তৰ কৰি থকা হৈছে</translation>
 <translation id="509429900233858213">কোনো আসোঁৱাহ হৈছে।</translation>
-<translation id="5102922915594634436">ছিংক কৰা ফ’ল্ডাৰ পৰিচালনা কৰক</translation>
 <translation id="5109254780565519649">কিবা আসোঁৱাহ হৈছে। কিছুমান বস্তু পুনঃস্থাপন কৰা নহ’ব পাৰে।</translation>
 <translation id="5110329002213341433">ইংৰাজী (কানাডা)</translation>
 <translation id="5119780910075847424">ছিংক পজ কৰা হৈছে</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">এটাও ইনষ্টল কৰা হোৱা নাই</translation>
 <translation id="5317780077021120954">ছেভ কৰক</translation>
 <translation id="5318819489018851358">Linuxৰ জৰিয়তে শ্বেয়াৰ কৰক</translation>
-<translation id="5330145655348521461">এই ফাইলসমূহ বেলেগ এটা ডেস্কটপত খোল খালে। ফাইলটো চাবলৈ <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />)লৈ নিয়ক।</translation>
 <translation id="5330512191124428349">তথ্য পাওক</translation>
 <translation id="535792325654997756">মেকুৰীৰ সৈতে ব্যক্তিৰ ছবি</translation>
 <translation id="5358764674931277">ফ্ৰেমৰ হাৰ</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">ডমেইন চাফিক্সৰ সৈতে মিলা মান অমান্য</translation>
 <translation id="6364301859968397756">প্ৰতিষ্ঠানৰ ষ্ট’ৰেজ পূৰ্ণ হৈছে</translation>
 <translation id="6367976544441405720">ভেন</translation>
-<translation id="637062427944097960">এই ফাইলটো বিভিন্ন ডেস্কটেপত খোলা হৈছে। ফাইলটো চাবলৈ <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) লৈ নিয়ক।</translation>
 <translation id="6394388407447716302">কেৱল পঢ়িব পৰা</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" />টা বস্তু</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> এনক্ৰিপ্ট কৰা হৈছে বাবে এইটো স্থানান্তৰ কৰিব পৰা নগ’ল।</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> - প’ৰ্ট</translation>
 <translation id="8656407365183407932">আপোনাৰ অফলাইন ফাইলসমূহ আঁতৰাবলগীয়া হ’ল</translation>
 <translation id="8656768832129462377">পৰীক্ষা নকৰিব</translation>
+<translation id="8662978096466608964">Chromeএ ৱালপেপাৰ ছেট কৰিব নোৱাৰে।</translation>
 <translation id="8688591111840995413">দুৰ্বল পাছৱৰ্ড</translation>
 <translation id="8698464937041809063">Google অংকন</translation>
 <translation id="8698877009525468705">এই ফাইলটো গোপনীয় আৰু প্ৰশাসকৰ নীতিয়ে আৰোপ কৰা সীমাবদ্ধতাৰ অধীন।</translation>

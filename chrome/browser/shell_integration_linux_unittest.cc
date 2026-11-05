@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/shell_integration_linux.h"
-#include "chrome/browser/shell_integration.h"
 
 #include <stddef.h>
 
@@ -12,6 +11,7 @@
 #include <cstdlib>
 #include <map>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include "base/base_paths.h"
@@ -21,17 +21,24 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/ptr_util.h"
+#include "base/nix/xdg_util.h"
 #include "base/path_service.h"
 #include "base/scoped_environment_variable_override.h"
 #include "base/strings/cstring_view.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_path_override.h"
 #include "build/branding_buildflags.h"
+#include "chrome/browser/shell_integration.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/web_applications/os_integration/web_app_shortcut.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_constants.h"
+#include "chrome/common/chrome_paths_internal.h"
 #include "components/services/app_service/public/cpp/file_handler.h"
 #include "components/version_info/channel.h"
 #include "components/webapps/common/web_app_id.h"
@@ -40,7 +47,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "url/gurl.h"
-#include "base/test/scoped_path_override.h"
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #include "chrome/test/base/scoped_channel_override.h"
@@ -85,6 +91,18 @@ class MockEnvironment : public base::Environment {
  private:
   std::map<std::string, std::string> variables_;
 };
+
+// Expects that "MimeType=" appears in `contents` only as the key at the start
+// of a line.
+void ExpectMimeTypeOnlyAsKey(const std::string& contents) {
+  constexpr std::string_view kKey = "MimeType=";
+  for (std::string_view line : base::SplitStringPiece(
+           contents, "\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL)) {
+    size_t offset = line.starts_with(kKey) ? kKey.size() : 0;
+    EXPECT_EQ(line.find(kKey, offset), std::string_view::npos)
+        << "Line: " << line;
+  }
+}
 
 }  // namespace
 
@@ -182,6 +200,136 @@ TEST(ShellIntegrationTest, GetExistingShortcutContents) {
   }
 }
 
+// In a snap, launchers are installed into the real home, which isn't one of the
+// XDG data directories, so it's searched first.
+TEST(ShellIntegrationTest, GetExistingShortcutContentsInSnap) {
+  const base::FilePath kFilename("shortcut-test.desktop");
+  content::BrowserTaskEnvironment task_environment;
+  base::nix::ScopedAppSandboxOverrideForTesting snap(
+      base::nix::AppSandbox::kSnap);
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath real_home = temp_dir.GetPath().Append("real-home");
+  base::FilePath snap_data_home = temp_dir.GetPath().Append("snap-data-home");
+
+  MockEnvironment env;
+  env.Set("XDG_DATA_HOME", snap_data_home.value());
+  env.Set("SNAP_REAL_HOME", real_home.value());
+  base::FilePath applications_dir =
+      real_home.Append(".local").Append("share").Append("applications");
+  ASSERT_TRUE(base::CreateDirectory(applications_dir));
+  ASSERT_TRUE(base::WriteFile(applications_dir.Append(kFilename), "real"));
+  ASSERT_TRUE(base::CreateDirectory(snap_data_home.Append("applications")));
+  ASSERT_TRUE(base::WriteFile(
+      snap_data_home.Append("applications").Append(kFilename), "snap"));
+
+  std::string contents;
+  ASSERT_TRUE(GetExistingShortcutContents(&env, kFilename, &contents));
+  EXPECT_EQ("real", contents);
+}
+
+TEST(ShellIntegrationTest, GetHostXDGDataWriteLocation) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath real_home = temp_dir.GetPath().Append("real-home");
+  base::FilePath data_home = temp_dir.GetPath().Append("data-home");
+
+  MockEnvironment env;
+  env.Set("XDG_DATA_HOME", data_home.value());
+  env.Set("SNAP_REAL_HOME", real_home.value());
+
+  {
+    base::nix::ScopedAppSandboxOverrideForTesting none(
+        base::nix::AppSandbox::kNone);
+    EXPECT_TRUE(GetSnapRealHome(&env).empty());
+    EXPECT_EQ(data_home, GetHostXDGDataWriteLocation(&env));
+  }
+  {
+    base::nix::ScopedAppSandboxOverrideForTesting flatpak(
+        base::nix::AppSandbox::kFlatpak);
+    EXPECT_TRUE(GetSnapRealHome(&env).empty());
+    EXPECT_EQ(data_home, GetHostXDGDataWriteLocation(&env));
+  }
+  {
+    base::nix::ScopedAppSandboxOverrideForTesting snap(
+        base::nix::AppSandbox::kSnap);
+    EXPECT_EQ(real_home, GetSnapRealHome(&env));
+    EXPECT_EQ(real_home.Append(".local").Append("share"),
+              GetHostXDGDataWriteLocation(&env));
+  }
+}
+
+// An unset, empty or relative SNAP_REAL_HOME falls back to XDG_DATA_HOME.
+TEST(ShellIntegrationTest, GetHostXDGDataWriteLocationInvalidSnapRealHome) {
+  base::nix::ScopedAppSandboxOverrideForTesting snap(
+      base::nix::AppSandbox::kSnap);
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath data_home = temp_dir.GetPath().Append("data-home");
+
+  {
+    MockEnvironment env;
+    env.Set("XDG_DATA_HOME", data_home.value());
+    EXPECT_TRUE(GetSnapRealHome(&env).empty());
+    EXPECT_EQ(data_home, GetHostXDGDataWriteLocation(&env));
+  }
+  for (const char* real_home : {"", "relative/home"}) {
+    SCOPED_TRACE(real_home);
+    MockEnvironment env;
+    env.Set("XDG_DATA_HOME", data_home.value());
+    env.Set("SNAP_REAL_HOME", real_home);
+    EXPECT_TRUE(GetSnapRealHome(&env).empty());
+    EXPECT_EQ(data_home, GetHostXDGDataWriteLocation(&env));
+  }
+}
+
+TEST(ShellIntegrationTest, GetHostDesktopDirectory) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath real_home = temp_dir.GetPath().Append("real-home");
+  base::FilePath desktop = temp_dir.GetPath().Append("desktop");
+  base::ScopedPathOverride desktop_override(base::DIR_USER_DESKTOP, desktop);
+
+  MockEnvironment env;
+  env.Set("SNAP_REAL_HOME", real_home.value());
+
+  {
+    base::nix::ScopedAppSandboxOverrideForTesting none(
+        base::nix::AppSandbox::kNone);
+    EXPECT_EQ(desktop, GetHostDesktopDirectory(&env));
+  }
+
+  base::nix::ScopedAppSandboxOverrideForTesting snap(
+      base::nix::AppSandbox::kSnap);
+  // Without user-dirs.dirs, the desktop is $SNAP_REAL_HOME/Desktop.
+  EXPECT_EQ(real_home.Append("Desktop"), GetHostDesktopDirectory(&env));
+
+  base::FilePath user_dirs =
+      real_home.Append(".config").Append("user-dirs.dirs");
+  ASSERT_TRUE(base::CreateDirectory(user_dirs.DirName()));
+  const struct {
+    std::string_view contents;
+    base::FilePath expected;
+  } kTestCases[] = {
+      {"# XDG_DESKTOP_DIR=\"$HOME/Commented\"\n"
+       "XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\n"
+       "XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\n",
+       real_home.Append("Schreibtisch")},
+      {"XDG_DESKTOP_DIR=\"$HOME/a/b\"", real_home.Append("a").Append("b")},
+      {"XDG_DESKTOP_DIR=\"/absolute/desktop\"",
+       base::FilePath("/absolute/desktop")},
+      {"XDG_DESKTOP_DIR=\"$HOME/\"", real_home},
+      {"XDG_DESKTOP_DIR=\"$HOMEDIR/x\"", real_home.Append("Desktop")},
+      {"XDG_DESKTOP_DIR=\"relative\"", real_home.Append("Desktop")},
+      {"XDG_DESKTOP_DIR=\"$HOME/unterminated", real_home.Append("Desktop")},
+  };
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.contents);
+    ASSERT_TRUE(base::WriteFile(user_dirs, test_case.contents));
+    EXPECT_EQ(test_case.expected, GetHostDesktopDirectory(&env));
+  }
+}
+
 TEST(ShellIntegrationTest, GetExistingProfileShortcutFilenames) {
   base::FilePath kProfilePath("a/b/c/Profile Name?");
   const char kApp1Filename[] = "chrome-extension1-Profile_Name_.desktop";
@@ -207,6 +355,8 @@ TEST(ShellIntegrationTest, GetExistingProfileShortcutFilenames) {
 }
 
 TEST(ShellIntegrationTest, GetUniqueWebShortcutFilenameFromUrl) {
+  base::ScopedTempDir desktop_dir;
+  ASSERT_TRUE(desktop_dir.CreateUniqueTempDir());
   std::vector<std::pair<std::string, GURL>> test_cases = {
       {"http___foo_.desktop", GURL("http://foo")},
       {"http___foo_bar_.desktop", GURL("http://foo/bar/")},
@@ -219,7 +369,7 @@ TEST(ShellIntegrationTest, GetUniqueWebShortcutFilenameFromUrl) {
   };
   for (const auto& [expected, gurl_input] : test_cases) {
     std::optional<base::SafeBaseName> file_base_name =
-        GetUniqueWebShortcutFilename(gurl_input.spec());
+        GetUniqueWebShortcutFilename(gurl_input.spec(), desktop_dir.GetPath());
     ASSERT_TRUE(file_base_name);
     EXPECT_EQ(
         base::StrCat({chrome::kBrowserProcessExecutableName, "-", expected}),
@@ -229,6 +379,8 @@ TEST(ShellIntegrationTest, GetUniqueWebShortcutFilenameFromUrl) {
 }
 
 TEST(ShellIntegrationTest, GetUniqueWebShortcutFilename) {
+  base::ScopedTempDir desktop_dir;
+  ASSERT_TRUE(desktop_dir.CreateUniqueTempDir());
   std::vector<std::pair<std::string, std::string>> test_cases = {
       {"Test_test.desktop", "Test test"},
       {"What_about__newlines.desktop", "What\nabout\n\rnewlines"},
@@ -236,7 +388,7 @@ TEST(ShellIntegrationTest, GetUniqueWebShortcutFilename) {
   };
   for (const auto& [expected, input] : test_cases) {
     std::optional<base::SafeBaseName> file_base_name =
-        GetUniqueWebShortcutFilename(input);
+        GetUniqueWebShortcutFilename(input, desktop_dir.GetPath());
     ASSERT_TRUE(file_base_name);
     EXPECT_EQ(
         base::StrCat({chrome::kBrowserProcessExecutableName, "-", expected}),
@@ -244,16 +396,21 @@ TEST(ShellIntegrationTest, GetUniqueWebShortcutFilename) {
         << " while testing " << input;
   }
 }
+
+TEST(ShellIntegrationTest, GetUniqueWebShortcutFilenameEmptyDesktopPath) {
+  EXPECT_FALSE(GetUniqueWebShortcutFilename("Test test", base::FilePath()));
+}
+
 TEST(ShellIntegrationTest, GetUniqueWebShortcutUnique) {
   const std::string kTestName = "Test test";
 
-  base::ScopedPathOverride profile_override(base::DIR_USER_DESKTOP);
-  base::FilePath desktop_dir =
-      base::PathService::CheckedGet(base::DIR_USER_DESKTOP);
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath& desktop_dir = temp_dir.GetPath();
 
   // Create the first file option.
   std::optional<base::SafeBaseName> file_base_name =
-      GetUniqueWebShortcutFilename(kTestName);
+      GetUniqueWebShortcutFilename(kTestName, desktop_dir);
   ASSERT_TRUE(file_base_name);
   std::string expected_name = base::StrCat(
       {chrome::kBrowserProcessExecutableName, "-Test_test.desktop"});
@@ -264,11 +421,38 @@ TEST(ShellIntegrationTest, GetUniqueWebShortcutUnique) {
   // The second call should guarantee uniqueness, and change the name without a
   // whitespace.
   std::optional<base::SafeBaseName> second_file_base_name =
-      GetUniqueWebShortcutFilename(kTestName);
+      GetUniqueWebShortcutFilename(kTestName, desktop_dir);
   ASSERT_TRUE(second_file_base_name);
   std::string expected_second_name = base::StrCat(
       {chrome::kBrowserProcessExecutableName, "-Test_test_1.desktop"});
   EXPECT_EQ(expected_second_name, second_file_base_name->path().value());
+}
+
+// Uniqueness is checked only in the given directory, e.g. in a snap, a file on
+// the host desktop doesn't affect a name chosen for the snap's own desktop.
+TEST(ShellIntegrationTest, GetUniqueWebShortcutUniqueInGivenDirectory) {
+  base::ScopedTempDir host_desktop_dir;
+  ASSERT_TRUE(host_desktop_dir.CreateUniqueTempDir());
+  base::ScopedTempDir snap_desktop_dir;
+  ASSERT_TRUE(snap_desktop_dir.CreateUniqueTempDir());
+  const std::string expected_name = base::StrCat(
+      {chrome::kBrowserProcessExecutableName, "-Test_test.desktop"});
+  ASSERT_TRUE(
+      base::WriteFile(host_desktop_dir.GetPath().Append(expected_name), ""));
+
+  std::optional<base::SafeBaseName> file_base_name =
+      GetUniqueWebShortcutFilename("Test test", snap_desktop_dir.GetPath());
+  ASSERT_TRUE(file_base_name);
+  EXPECT_EQ(expected_name, file_base_name->path().value());
+  ASSERT_TRUE(base::WriteFile(
+      snap_desktop_dir.GetPath().Append(file_base_name->path()), ""));
+
+  file_base_name =
+      GetUniqueWebShortcutFilename("Test test", snap_desktop_dir.GetPath());
+  ASSERT_TRUE(file_base_name);
+  EXPECT_EQ(base::StrCat({chrome::kBrowserProcessExecutableName,
+                          "-Test_test_1.desktop"}),
+            file_base_name->path().value());
 }
 
 TEST(ShellIntegrationTest, GetDesktopFileContents) {
@@ -434,6 +618,8 @@ TEST(ShellIntegrationTest, GetDesktopFileContents) {
 }
 
 TEST(ShellIntegrationTest, GetDesktopFileContentsForApps) {
+  base::ScopedEnvironmentVariableOverride scoped_override(
+      "CHROME_WEB_APP_DESKTOP_ID_PREFIX");
   const base::FilePath kChromeExePath("/opt/google/chrome/google-chrome");
   struct TestCases {
     const char* const url;
@@ -467,48 +653,53 @@ TEST(ShellIntegrationTest, GetDesktopFileContentsForApps) {
        "Terminal=false\n"
        "Type=Application\n"
        "Name=Lawful example\n"
-       "Exec=/opt/google/chrome/google-chrome --app-id=TestAppId\n"
+       "Exec=/opt/google/chrome/google-chrome --profile-directory=Default "
+       "--app-id=TestAppId\n"
        "Icon=IconName\n"
-       "StartupWMClass=example.app\n"
+       "StartupWMClass=chrome-TestAppId-Default\n"
        "Actions=action1;action2;action3;action4;action5\n\n"
        "[Desktop Action action1]\n"
        "Name=Action 1\n"
-       "Exec=/opt/google/chrome/google-chrome --app-id=TestAppId "
+       "Exec=/opt/google/chrome/google-chrome --profile-directory=Default "
+       "--app-id=TestAppId "
        "--app-launch-url-for-shortcuts-menu-item=https://example.com/"
        "action1\n\n"
        "[Desktop Action action2]\n"
        "Name=Action 2\n"
-       "Exec=/opt/google/chrome/google-chrome --app-id=TestAppId "
+       "Exec=/opt/google/chrome/google-chrome --profile-directory=Default "
+       "--app-id=TestAppId "
        "--app-launch-url-for-shortcuts-menu-item=https://example.com/"
        "action2\n\n"
        "[Desktop Action action3]\n"
        "Name=Action 3\n"
-       "Exec=/opt/google/chrome/google-chrome --app-id=TestAppId "
+       "Exec=/opt/google/chrome/google-chrome --profile-directory=Default "
+       "--app-id=TestAppId "
        "--app-launch-url-for-shortcuts-menu-item=https://example.com/"
        "action3\n\n"
        "[Desktop Action action4]\n"
        "Name=Action 4\n"
-       "Exec=/opt/google/chrome/google-chrome --app-id=TestAppId "
+       "Exec=/opt/google/chrome/google-chrome --profile-directory=Default "
+       "--app-id=TestAppId "
        "--app-launch-url-for-shortcuts-menu-item=https://example.com/"
        "action4\n\n"
        "[Desktop Action action5]\n"
        "Name=Action 5\n"
-       "Exec=/opt/google/chrome/google-chrome --app-id=TestAppId "
+       "Exec=/opt/google/chrome/google-chrome --profile-directory=Default "
+       "--app-id=TestAppId "
        "--app-launch-url-for-shortcuts-menu-item=https://example.com/"
        "action%%205\n"},
   });
 
   for (size_t i = 0; i < std::size(test_cases); i++) {
     SCOPED_TRACE(i);
-    EXPECT_EQ(
-        test_cases[i].expected_output,
-        GetDesktopFileContents(
-            kChromeExePath,
-            web_app::GenerateApplicationNameFromURL(GURL(test_cases[i].url)),
-            GURL(test_cases[i].url), "TestAppId",
-            base::ASCIIToUTF16(test_cases[i].title), test_cases[i].icon_name,
-            base::FilePath(), "", "", test_cases[i].nodisplay, "",
-            test_cases[i].action_info));
+    EXPECT_EQ(test_cases[i].expected_output,
+              GetDesktopFileContents(
+                  kChromeExePath,
+                  web_app::GenerateApplicationNameFromAppId("TestAppId"),
+                  GURL(test_cases[i].url), "TestAppId",
+                  base::ASCIIToUTF16(test_cases[i].title),
+                  test_cases[i].icon_name, base::FilePath("Default"), "", "",
+                  test_cases[i].nodisplay, "", test_cases[i].action_info));
   }
 }
 
@@ -668,6 +859,45 @@ TEST(ShellIntegrationTest,
     }
     {
       apps::FileHandler::AcceptEntry accept_entry;
+      // FreeDesktop pseudo-MIME types ("x-content/*", "x-directory/*",
+      // "x-special/*") and other "x-*" or non-IANA top-level MIME types must
+      // also be ignored.
+      accept_entry.mime_type = "x-content/image-dcf";
+      accept_entry.file_extensions.insert(".dcf");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      accept_entry.mime_type = "x-directory/normal";
+      accept_entry.file_extensions.insert(".dir");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      accept_entry.mime_type = "X-Directory/normal";
+      accept_entry.file_extensions.insert(".dir2");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      accept_entry.mime_type = "x-special/socket";
+      accept_entry.file_extensions.insert(".sock");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      accept_entry.mime_type = "x-custom/foo";
+      accept_entry.file_extensions.insert(".custom");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      accept_entry.mime_type = "inode/directory";
+      accept_entry.file_extensions.insert(".inode");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
       accept_entry.mime_type = "text/plain";
       accept_entry.file_extensions.insert(".txt");
       file_handler.accept.push_back(accept_entry);
@@ -715,6 +945,17 @@ TEST(ShellIntegrationTest, WmClass) {
             internal::GetProgramClassName(command_line, "foo.desktop"));
   CheckProgramClassClass(
       internal::GetProgramClassClass(command_line, "foo.desktop"));
+}
+
+TEST(ShellIntegrationTest, WmClassForDesktopId) {
+  base::CommandLine command_line((base::FilePath()));
+  EXPECT_EQ("chrome-abc-Default", internal::GetProgramClassClassForDesktopId(
+                                      command_line, "chrome-abc-Default"));
+
+  // An explicit --class takes precedence for all windows.
+  command_line.AppendSwitchASCII("class", "baR");
+  EXPECT_EQ("baR", internal::GetProgramClassClassForDesktopId(
+                       command_line, "chrome-abc-Default"));
 }
 
 TEST(ShellIntegrationTest, GetDesktopEntryStringValueFromFromDesktopFile) {
@@ -779,6 +1020,156 @@ TEST(ShellIntegrationTest, GetXdgAppIdForWebAppWithDesktopIdPrefix) {
                                  base::FilePath("/tmp/Profile 1")));
 }
 
+TEST(ShellIntegrationTest, UrlShortcutKeepsLegacyStartupWMClass) {
+  const std::string contents = GetDesktopFileContents(
+      base::FilePath("/opt/google/chrome/google-chrome"), "example.com_",
+      GURL("https://example.com"), "", u"Example", "",
+      base::FilePath("/tmp/Profile 1"), "", "", false, "", {});
+  EXPECT_EQ("example.com",
+            internal::GetDesktopEntryStringValueFromFromDesktopFileForTest(
+                "StartupWMClass", contents));
+}
+
+TEST(ShellIntegrationTest, WebAppDesktopFileMatchesWindowAppId) {
+  const base::FilePath profile_path("/tmp/Profile 1");
+  const std::string app_name = "_crx_extensionid";
+  const base::FilePath chrome_exe_path("/opt/google/chrome/google-chrome");
+
+  for (const char* prefix : {"", "org.example.Browser."}) {
+    base::ScopedEnvironmentVariableOverride scoped_override(
+        "CHROME_WEB_APP_DESKTOP_ID_PREFIX", prefix);
+    const std::string contents = GetDesktopFileContents(
+        chrome_exe_path, app_name, GURL("https://example.com"), "extensionid",
+        u"Example App", "chrome-extensionid-Profile_1", profile_path,
+        "Network;", "", false, "", {});
+    EXPECT_EQ(GetXdgAppIdForWebApp(app_name, profile_path),
+              internal::GetDesktopEntryStringValueFromFromDesktopFileForTest(
+                  "StartupWMClass", contents));
+  }
+}
+
+TEST(ShellIntegrationTest, GetPerProfileDesktopId) {
+  const base::FilePath kUserDataDir("/home/user/.config/google-chrome");
+
+  // The default profile keeps the browser's main identity.
+  EXPECT_EQ("", internal::GetPerProfileDesktopId(
+                    kUserDataDir.Append(chrome::kInitialProfile), kUserDataDir,
+                    "google-chrome.desktop"));
+
+  // Other profiles get a per-profile ID based on the desktop base name and
+  // the profile directory, with spaces replaced.
+  EXPECT_EQ(
+      "google-chrome-Profile_1",
+      internal::GetPerProfileDesktopId(kUserDataDir.Append("Profile 1"),
+                                       kUserDataDir, "google-chrome.desktop"));
+  EXPECT_EQ("google-chrome-beta-Profile_2",
+            internal::GetPerProfileDesktopId(kUserDataDir.Append("Profile 2"),
+                                             kUserDataDir,
+                                             "google-chrome-beta.desktop"));
+  EXPECT_EQ("com.google.Chrome-Profile_1",
+            internal::GetPerProfileDesktopId(kUserDataDir.Append("Profile 1"),
+                                             kUserDataDir,
+                                             "com.google.Chrome.desktop"));
+
+  // Profiles outside of the default user data directory, e.g. when
+  // --user-data-dir is used, keep the browser's main identity.
+  EXPECT_EQ("", internal::GetPerProfileDesktopId(
+                    base::FilePath("/tmp/udd/Profile 1"), kUserDataDir,
+                    "google-chrome.desktop"));
+  EXPECT_EQ("", internal::GetPerProfileDesktopId(base::FilePath(), kUserDataDir,
+                                                 "google-chrome.desktop"));
+
+  // Characters that aren't valid in D-Bus names are replaced, including each
+  // byte of non-ASCII UTF-8 characters.
+  EXPECT_EQ("google-chrome-Pr__file_1-x_y",
+            internal::GetPerProfileDesktopId(
+                kUserDataDir.Append("Pr\u00f6file 1-x.y"), kUserDataDir,
+                "google-chrome.desktop"));
+}
+
+TEST(ShellIntegrationTest, InstalledPerProfileDesktopId) {
+  content::BrowserTaskEnvironment task_environment;
+  base::test::ScopedFeatureList feature_list(features::kLinuxPerProfileAppId);
+  base::ScopedTempDir data_home;
+  ASSERT_TRUE(data_home.CreateUniqueTempDir());
+  base::ScopedEnvironmentVariableOverride data_home_override(
+      "XDG_DATA_HOME", data_home.GetPath().value());
+  base::ScopedEnvironmentVariableOverride data_dirs_override(
+      "XDG_DATA_DIRS", data_home.GetPath().Append("nonexistent").value());
+
+  base::FilePath user_data_dir;
+  ASSERT_TRUE(chrome::GetDefaultUserDataDirectory(&user_data_dir));
+  const base::FilePath default_profile =
+      user_data_dir.Append(chrome::kInitialProfile);
+  const base::FilePath profile_1 = user_data_dir.Append("Profile 1");
+  const base::FilePath profile_2 = user_data_dir.Append("Profile 2");
+  const std::string profile_1_id = GetPerProfileDesktopId(profile_1);
+  ASSERT_FALSE(profile_1_id.empty());
+
+  // Only Profile 1 has a desktop entry.
+  const base::FilePath applications =
+      data_home.GetPath().Append("applications");
+  ASSERT_TRUE(base::CreateDirectory(applications));
+  ASSERT_TRUE(base::WriteFile(applications.Append(profile_1_id + ".desktop"),
+                              "[Desktop Entry]\n"));
+
+  DetectInstalledPerProfileDesktopEntries(
+      {default_profile, profile_1, profile_2});
+  EXPECT_EQ("", GetInstalledPerProfileDesktopId(default_profile));
+  EXPECT_EQ(profile_1_id, GetInstalledPerProfileDesktopId(profile_1));
+  EXPECT_EQ("", GetInstalledPerProfileDesktopId(profile_2));
+
+  // Desktop entries can also be registered and unregistered directly.
+  SetPerProfileDesktopEntryInstalled(profile_2, true);
+  EXPECT_EQ(GetPerProfileDesktopId(profile_2),
+            GetInstalledPerProfileDesktopId(profile_2));
+  SetPerProfileDesktopEntryInstalled(profile_1, false);
+  EXPECT_EQ("", GetInstalledPerProfileDesktopId(profile_1));
+
+  // Removing the file is noticed on the next detection.
+  SetPerProfileDesktopEntryInstalled(profile_1, true);
+  ASSERT_TRUE(base::DeleteFile(applications.Append(profile_1_id + ".desktop")));
+  DetectInstalledPerProfileDesktopEntries({profile_1});
+  EXPECT_EQ("", GetInstalledPerProfileDesktopId(profile_1));
+
+  SetPerProfileDesktopEntryInstalled(profile_2, false);
+}
+
+TEST(ShellIntegrationTest, InstalledPerProfileDesktopIdFeatureDisabled) {
+  content::BrowserTaskEnvironment task_environment;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kLinuxPerProfileAppId);
+
+  base::FilePath user_data_dir;
+  ASSERT_TRUE(chrome::GetDefaultUserDataDirectory(&user_data_dir));
+  const base::FilePath profile_1 = user_data_dir.Append("Profile 1");
+
+  SetPerProfileDesktopEntryInstalled(profile_1, true);
+  EXPECT_EQ("", GetInstalledPerProfileDesktopId(profile_1));
+  SetPerProfileDesktopEntryInstalled(profile_1, false);
+}
+
+TEST(ShellIntegrationTest, PerProfileDesktopEntryChangedCallback) {
+  content::BrowserTaskEnvironment task_environment;
+  const base::FilePath profile_path("/tmp/udd/Profile 1");
+  std::vector<base::FilePath> notified;
+  base::CallbackListSubscription subscription =
+      RegisterPerProfileDesktopEntryChangedCallback(base::BindRepeating(
+          [](std::vector<base::FilePath>* notified,
+             const base::FilePath& path) { notified->push_back(path); },
+          &notified));
+
+  // Only actual changes are notified.
+  SetPerProfileDesktopEntryInstalled(profile_path, true);
+  EXPECT_THAT(notified, ElementsAre(profile_path));
+  SetPerProfileDesktopEntryInstalled(profile_path, true);
+  EXPECT_THAT(notified, ElementsAre(profile_path));
+  SetPerProfileDesktopEntryInstalled(profile_path, false);
+  EXPECT_THAT(notified, ElementsAre(profile_path, profile_path));
+  SetPerProfileDesktopEntryInstalled(profile_path, false);
+  EXPECT_THAT(notified, ElementsAre(profile_path, profile_path));
+}
+
 TEST(ShellIntegrationLinuxTest,
      GetDesktopFileContentsForUrlShortcutEscapesPercent) {
   std::string title = "A\" --gpu-launcher=\"xcalc\" \"B";
@@ -810,15 +1201,60 @@ TEST(ShellIntegrationLinuxTest, GetDesktopFileContentsEscapesPercent) {
       << "Contents: " << contents;
 }
 
+TEST(ShellIntegrationLinuxTest, GetDesktopFileContentsNeutralizesMimeType) {
+  base::ScopedEnvironmentVariableOverride scoped_override(
+      "CHROME_WEB_APP_DESKTOP_ID_PREFIX");
+  const base::FilePath kChromeExePath("/opt/google/chrome/google-chrome");
+  std::set<web_app::DesktopActionInfo> action_info = {
+      web_app::DesktopActionInfo("action1", "Name MimeType=text/html;",
+                                 GURL("https://example.com/a")),
+      web_app::DesktopActionInfo(
+          "action2", "Action 2",
+          GURL("https://example.com/MimeType=a/b?MimeType=x-scheme-handler/"
+               "https;inode/directory")),
+  };
+
+  std::string contents = GetDesktopFileContents(
+      kChromeExePath, web_app::GenerateApplicationNameFromAppId("TestAppId"),
+      GURL("https://example.com"), "TestAppId", u"App MimeType=text/plain;",
+      "IconName", base::FilePath("Default"), "", "image/png", false, "",
+      action_info);
+
+  ExpectMimeTypeOnlyAsKey(contents);
+  EXPECT_THAT(contents, testing::HasSubstr("\nMimeType=image/png;"));
+  EXPECT_THAT(contents,
+              testing::HasSubstr("\nName=App MimeType\u200B=text/plain;\n"));
+  EXPECT_THAT(contents,
+              testing::HasSubstr("\nName=Name MimeType\u200B=text/html;\n"));
+  // The launch URL is percent-encoded, which keeps it equivalent.
+  EXPECT_THAT(contents,
+              testing::HasSubstr("--app-launch-url-for-shortcuts-menu-item="
+                                 "https://example.com/%%4DimeType=a/"
+                                 "b?%%4DimeType=x-scheme-handler/"
+                                 "https;inode/directory\"\n"));
+}
+
+TEST(ShellIntegrationLinuxTest,
+     GetDesktopFileContentsForUrlShortcutNeutralizesMimeType) {
+  std::string contents = GetDesktopFileContentsForUrlShortcut(
+      "Title MimeType=text/html;",
+      GURL("https://evil.example/?MimeType=x-scheme-handler/https;"),
+      base::FilePath("/tmp/icon.png"), base::FilePath("/tmp/profile"));
+
+  ExpectMimeTypeOnlyAsKey(contents);
+  EXPECT_THAT(contents,
+              testing::HasSubstr("\nName=Title MimeType\u200B=text/html;\n"));
+  EXPECT_THAT(contents,
+              testing::HasSubstr(
+                  "https://evil.example/?%%4DimeType=x-scheme-handler/https;"));
+}
+
 }  // namespace shell_integration_linux
 
 namespace shell_integration {
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-// A test fixture that allows for overriding the channel on Linux.
-class ShellIntegrationLinuxTest : public testing::Test {};
-
-TEST_F(ShellIntegrationLinuxTest, GetDirectLaunchUrlScheme) {
+TEST(ShellIntegrationLinuxTest, GetDirectLaunchUrlScheme) {
   // Test each channel on Linux.
   {
     chrome::ScopedChannelOverride channel_override(
@@ -828,17 +1264,17 @@ TEST_F(ShellIntegrationLinuxTest, GetDirectLaunchUrlScheme) {
   {
     chrome::ScopedChannelOverride channel_override(
         chrome::ScopedChannelOverride::Channel::kBeta);
-    EXPECT_EQ("google-chrome-beta", GetDirectLaunchUrlScheme());
+    EXPECT_EQ("", GetDirectLaunchUrlScheme());
   }
   {
     chrome::ScopedChannelOverride channel_override(
         chrome::ScopedChannelOverride::Channel::kDev);
-    EXPECT_EQ("google-chrome-dev", GetDirectLaunchUrlScheme());
+    EXPECT_EQ("", GetDirectLaunchUrlScheme());
   }
   {
     chrome::ScopedChannelOverride channel_override(
         chrome::ScopedChannelOverride::Channel::kCanary);
-    EXPECT_EQ("google-chrome-canary", GetDirectLaunchUrlScheme());
+    EXPECT_EQ("", GetDirectLaunchUrlScheme());
   }
 }
 #else   // !BUILDFLAG(GOOGLE_CHROME_BRANDING)

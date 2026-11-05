@@ -7,6 +7,7 @@
 #import <utility>
 
 #import "base/check.h"
+#import "base/strings/stringprintf.h"
 #import "base/values.h"
 
 namespace actor {
@@ -37,6 +38,21 @@ ActionTarget ActionTarget::FromProto(
   return local_target;
 }
 
+optimization_guide::proto::ActionTarget ActionTarget::ToProto() const {
+  optimization_guide::proto::ActionTarget proto;
+  if (coordinate_.has_value()) {
+    optimization_guide::proto::Coordinate* coord = proto.mutable_coordinate();
+    coord->set_x(coordinate_->x);
+    coord->set_y(coordinate_->y);
+    coord->set_pixel_type(coordinate_->pixel_type);
+  } else if (node_id_.has_value()) {
+    proto.set_content_node_id(node_id_->content_node_id);
+    proto.mutable_document_identifier()->set_serialized_token(
+        node_id_->document_identifier);
+  }
+  return proto;
+}
+
 void ActionTarget::UpdateCoordinate(int x, int y) {
   CHECK(coordinate_);
   coordinate_->x = x;
@@ -55,6 +71,21 @@ base::DictValue ActionTarget::ToDictValue() const {
     dict.Set("contentNodeId", static_cast<int>(node_id_->content_node_id));
   }
   return dict;
+}
+
+std::string ActionTarget::DebugString() const {
+  if (coordinate_.has_value()) {
+    return base::StringPrintf(
+        "target(XY[%s]=%d,%d)",
+        optimization_guide::proto::Coordinate::PixelType_Name(
+            coordinate_->pixel_type)
+            .c_str(),
+        coordinate_->x, coordinate_->y);
+  }
+  if (node_id_.has_value()) {
+    return base::StringPrintf("target(ID=%d)", node_id_->content_node_id);
+  }
+  return "target(null)";
 }
 
 }  // namespace actor

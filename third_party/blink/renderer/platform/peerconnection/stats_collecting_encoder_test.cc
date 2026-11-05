@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 #include "third_party/blink/renderer/platform/peerconnection/stats_collecting_encoder.h"
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -139,10 +138,14 @@ class MockEncoder : public webrtc::VideoEncoder {
                int(const webrtc::VideoCodec* codec_settings,
                    const webrtc::VideoEncoder::Settings& settings));
   MOCK_METHOD1(SetRates, void(const RateControlParameters& parameters));
+  MOCK_METHOD(void,
+              SetComplexity,
+              (std::span<const webrtc::VideoCodecComplexity>  // nocheck
+                   complexity_by_spatial_layer,
+               ComplexityControlMode complexity_control_mode),
+              (override));
   MOCK_METHOD1(OnPacketLossRateUpdate, void(float packet_loss_rate));
   MOCK_METHOD1(OnRttUpdate, void(int64_t rtt_ms));
-  MOCK_METHOD1(OnLossNotification,
-               void(const LossNotification& loss_notification));
 
  private:
   int frame_counter_ = 0;
@@ -446,7 +449,7 @@ TEST_F(StatsCollectingEncoderTest, MethodCallsForwardedToInternalEncoder) {
 
   webrtc::VideoCodec* codec_settings_ptr =
       reinterpret_cast<webrtc::VideoCodec*>(0x123456);
-  webrtc::VideoEncoder::Capabilities capabilities(/*loss_notification=*/true);
+  webrtc::VideoEncoder::Capabilities capabilities(/*loss_notification=*/false);
   webrtc::VideoEncoder::Settings kSettings{capabilities, /*number_of_cores=*/2,
                                            /*max_payload_size=*/2400};
   constexpr int kExpectedInitReturnValue = 13;
@@ -455,8 +458,6 @@ TEST_F(StatsCollectingEncoderTest, MethodCallsForwardedToInternalEncoder) {
                     const webrtc::VideoCodec* codec_settings,
                     const webrtc::VideoEncoder::Settings& settings) {
         EXPECT_EQ(codec_settings_ptr, codec_settings);
-        EXPECT_EQ(kSettings.capabilities.loss_notification,
-                  settings.capabilities.loss_notification);
         EXPECT_EQ(kSettings.number_of_cores, settings.number_of_cores);
         EXPECT_EQ(kSettings.max_payload_size, settings.max_payload_size);
         return kExpectedInitReturnValue;
@@ -470,6 +471,18 @@ TEST_F(StatsCollectingEncoderTest, MethodCallsForwardedToInternalEncoder) {
   EXPECT_CALL(*internal_encoder_, SetRates(kParameters));
   stats_encoder_.SetRates(kParameters);
 
+  const webrtc::VideoCodecComplexity kComplexities[] = {
+      webrtc::VideoCodecComplexity::kComplexityLow,
+      webrtc::VideoCodecComplexity::kComplexityHigh};
+  EXPECT_CALL(
+      *internal_encoder_,
+      SetComplexity(
+          ::testing::ElementsAre(webrtc::VideoCodecComplexity::kComplexityLow,
+                                 webrtc::VideoCodecComplexity::kComplexityHigh),
+          webrtc::VideoEncoder::ComplexityControlMode::kVariable));
+  stats_encoder_.SetComplexity(
+      kComplexities, webrtc::VideoEncoder::ComplexityControlMode::kVariable);
+
   constexpr float kPacketLossRate = 0.012;
   EXPECT_CALL(*internal_encoder_, OnPacketLossRateUpdate(kPacketLossRate));
   stats_encoder_.OnPacketLossRateUpdate(kPacketLossRate);
@@ -477,19 +490,6 @@ TEST_F(StatsCollectingEncoderTest, MethodCallsForwardedToInternalEncoder) {
   constexpr int64_t kRttMs = 12345;
   EXPECT_CALL(*internal_encoder_, OnRttUpdate(kRttMs));
   stats_encoder_.OnRttUpdate(kRttMs);
-
-  const webrtc::VideoEncoder::LossNotification kLossNotification{
-      /*timestamp_of_last_decodable=*/7u, /*timestamp_of_last_received=*/9u};
-  EXPECT_CALL(*internal_encoder_, OnLossNotification)
-      .WillOnce(
-          [&kLossNotification](
-              const webrtc::VideoEncoder::LossNotification& loss_notification) {
-            EXPECT_EQ(loss_notification.timestamp_of_last_decodable,
-                      kLossNotification.timestamp_of_last_decodable);
-            EXPECT_EQ(loss_notification.timestamp_of_last_received,
-                      kLossNotification.timestamp_of_last_received);
-          });
-  stats_encoder_.OnLossNotification(kLossNotification);
 }
 
 TEST_F(StatsCollectingEncoderTest, ConcurrentOnEncodedImage) {

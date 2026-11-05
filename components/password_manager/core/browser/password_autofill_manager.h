@@ -76,6 +76,9 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
   GetWebauthnSignInWithAnotherDeviceSuggestion() const override;
   std::optional<autofill::Suggestion> GetWebauthnInlineQrCodeSuggestion()
       const override;
+  void OnWebauthnInlineQrCodeSuggestionShown() override;
+  std::optional<autofill::Suggestion> GetTrustedVaultUnlockSuggestion(
+      const autofill::FieldGlobalId& field_id) const override;
 
   // AutofillSuggestionDelegate implementation.
   void OnSuggestionsShown(base::span<const autofill::Suggestion> suggestions,
@@ -83,15 +86,25 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
   void OnSuggestionsHidden(autofill::SuggestionHidingReason reason) override;
   bool OnFilterChanged(const std::u16string& filter) override;
   bool OnSearchSubmitted(const std::u16string& filter) override;
-  void DidSelectSuggestion(const autofill::Suggestion& suggestion) override;
+  void DidSelectSuggestion(const autofill::Suggestion& suggestion,
+                           const autofill::FormGlobalId& form_id,
+                           const autofill::FieldGlobalId& field_id) override;
   void DidAcceptSuggestion(const autofill::Suggestion& suggestion,
-                           const SuggestionMetadata& metadata) override;
+                           const SuggestionMetadata& metadata,
+                           const autofill::FormGlobalId& form_id,
+                           const autofill::FieldGlobalId& field_id) override;
   bool RemoveSuggestion(const autofill::Suggestion& suggestion) override;
   void ClearPreviewedForm() override;
   autofill::FillingProduct GetMainFillingProduct() const override;
   void OnTabSelected(autofill::TabbedPaneTabType tab_type) override;
   bool IsSearching() const override;
   autofill::FieldGlobalId GetQueriedFieldId() const override;
+
+  // PasswordAutofillManager ignores the `form_id` and `field_id` in
+  // AutofillSuggestionDelegate::Did{Select,Accept}Suggestion().
+  void DidSelectSuggestion(const autofill::Suggestion& suggestion);
+  void DidAcceptSuggestion(const autofill::Suggestion& suggestion,
+                           const SuggestionMetadata& metadata);
 
   // Invoked when a password mapping is added.
   void OnAddPasswordFillData(const autofill::PasswordFormFillData& fill_data);
@@ -117,8 +130,11 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
       base::i18n::TextDirection text_direction,
       bool show_password_suggestions);
 
-  // Called when main frame navigates. Not called for in-page navigations.
-  void DidNavigateMainFrame();
+  // Called when a cross-document navigation commits in the frame of the
+  // driver. Resets the state that belongs to the previous document, including
+  // the suggestions shown by `this` and pending callbacks. Not called for
+  // in-page navigations.
+  void DidNavigateFrame();
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   PasswordManualFallbackMetricsRecorder&
@@ -209,12 +225,14 @@ class PasswordAutofillManager : public autofill::AutofillSuggestionDelegate,
       PasswordManagerClient::ReauthSucceeded reauth_succeeded);
 
   // Called when the biometric reauth that guards password filling completes.
-  // Runs `fill_suggestion_callback` if reauth  was successful
+  // Runs `fill_suggestion_callback` if reauth succeeded and the originating
+  // frame can still show Autofill UI (`CanShowAutofillUi()`).
   void OnBiometricReauthCompleted(base::OnceClosure fill_suggestion_callback,
                                   bool auth_succeded);
 
   // Fills the password credential suggestion by running
-  // `fill_suggestion_callback`. Triggers authentication if needed.
+  // `fill_suggestion_callback` if the originating frame can still show Autofill
+  // UI (`CanShowAutofillUi()`). Triggers authentication if needed.
   void OnPasswordCredentialSuggestionAccepted(
       base::OnceClosure fill_suggestion_callback);
 

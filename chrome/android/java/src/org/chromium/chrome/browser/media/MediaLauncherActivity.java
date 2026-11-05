@@ -19,7 +19,6 @@ import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 
 import java.util.Locale;
 
@@ -35,8 +34,7 @@ public class MediaLauncherActivity extends Activity {
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        boolean unparcelFds = ChromeFeatureList.sUnparcelIntentFileDescriptors.isEnabled();
-        Intent input = assumeNonNull(IntentUtils.sanitizeIntent(getIntent(), unparcelFds));
+        Intent input = assumeNonNull(IntentUtils.sanitizeIntent(getIntent()));
         Uri contentUri = input.getData();
         String mimeType = getMIMEType(contentUri);
 
@@ -57,6 +55,8 @@ public class MediaLauncherActivity extends Activity {
                         mimeType,
                         /* allowExternalAppHandlers= */ false,
                         allowShareAction,
+                        // Opened from another app, outside any incognito session.
+                        /* isIncognito= */ false,
                         this);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         intent.putExtra(
@@ -67,7 +67,7 @@ public class MediaLauncherActivity extends Activity {
             startActivity(intent);
             MediaViewerUtils.recordMediaLauncherActivityStarted();
         } catch (SecurityException e) {
-            Log.w(TAG, "Cannot open content URI: " + contentUri, e);
+            Log.w(TAG, "Cannot open content URI: %s", contentUri, e);
         }
 
         finish();

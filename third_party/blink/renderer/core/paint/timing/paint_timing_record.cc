@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/check_deref.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/paint/timing/lcp_objects.h"
@@ -19,7 +20,7 @@ PaintTimingRecord::PaintTimingRecord(Node* node,
                                      const gfx::Rect& frame_visual_rect,
                                      const gfx::RectF& root_visual_rect)
     : node_(node),
-      layout_object_(node->GetLayoutObject()),
+      node_layout_object_(node->GetLayoutObject()),
       root_visual_rect_(root_visual_rect),
       lcp_rect_info_(PaintTimingVisualizer::IsTracingEnabled()
                          ? std::make_optional<LCPRectInfo>(
@@ -31,16 +32,16 @@ PaintTimingRecord::PaintTimingRecord(Node* node,
 
 void PaintTimingRecord::Trace(Visitor* visitor) const {
   visitor->Trace(node_);
-  visitor->Trace(layout_object_);
+  visitor->Trace(node_layout_object_);
   visitor->Trace(soft_navigation_context_);
 }
 
 int PaintTimingRecord::NodeIdForTracing() const {
-  return node_ ? static_cast<int>(node_->GetDomNodeId()) : 0;
+  return static_cast<int>(node_->GetDomNodeId());
 }
 
 void PaintTimingRecord::PopulateTraceValue(TracedValue& value) const {
-  value.SetString("nodeName", node_ ? node_->DebugName() : "(null)");
+  value.SetString("nodeName", node_->DebugName());
   value.SetInteger("DOMNodeId", NodeIdForTracing());
   value.SetInteger("size", static_cast<int>(EffectiveVisualSize()));
   if (lcp_rect_info_) {
@@ -49,8 +50,8 @@ void PaintTimingRecord::PopulateTraceValue(TracedValue& value) const {
 }
 
 bool PaintTimingRecord::WasNodeRemoved() const {
-  return !node_ || !node_->GetLayoutObject() ||
-         node_->GetLayoutObject() != layout_object_;
+  return !node_->GetLayoutObject() ||
+         node_->GetLayoutObject() != node_layout_object_;
 }
 
 TextRecord::TextRecord(Node* node,
@@ -64,36 +65,32 @@ TextRecord::TextRecord(Node* node,
 
 ImageRecord::ImageRecord(
     Node* node,
-    const MediaTiming* new_media_timing,
+    const LayoutObject* image_generating_layout_object,
+    const MediaTiming* media_timing,
     const gfx::Rect& frame_visual_rect,
     const gfx::RectF& root_visual_rect,
     MediaRecordIdHash hash,
     const EffectiveVisualSizeResult& effective_visual_size_result)
     : PaintTimingRecord(node, frame_visual_rect, root_visual_rect),
-      media_timing_(new_media_timing),
+      image_generating_layout_object_(image_generating_layout_object),
+      media_timing_(&CHECK_DEREF(media_timing)),
       hash_(hash),
+      is_cors_same_origin_(media_timing_->IsCorsSameOrigin()),
       effective_visual_size_result_(effective_visual_size_result) {
   CHECK_GT(EffectiveVisualSize(), 0u);
 }
 
-std::optional<WebURLRequest::Priority> ImageRecord::RequestPriority() const {
-  if (!GetMediaTiming()) {
-    return std::nullopt;
-  }
-  return GetMediaTiming()->RequestPriority();
-}
-
 void ImageRecord::Trace(Visitor* visitor) const {
+  visitor->Trace(image_generating_layout_object_);
   visitor->Trace(media_timing_);
+  visitor->Trace(metrics_timestamp_override_);
   PaintTimingRecord::Trace(visitor);
 }
 
 void ImageRecord::PopulateTraceValue(TracedValue& value) const {
   PaintTimingRecord::PopulateTraceValue(value);
 
-  // The media_timing could have been deleted when this is called.
-  value.SetString("imageUrl", GetMediaTiming() ? String(GetMediaTiming()->Url())
-                                               : "(deleted)");
+  value.SetString("imageUrl", String(media_timing_->Url()));
 }
 
 }  // namespace blink

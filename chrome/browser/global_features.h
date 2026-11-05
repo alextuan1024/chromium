@@ -23,6 +23,12 @@ class BrowserInfoBarManager;
 
 class GlobalBrowserCollection;
 
+#if !BUILDFLAG(IS_ANDROID)
+namespace autofill {
+class CustomFormControlScriptIndex;
+}  // namespace autofill
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 namespace system_permission_settings {
 class PlatformHandle;
 }  // namespace system_permission_settings
@@ -88,6 +94,10 @@ class OnDeviceTranslationInstaller;
 }
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+namespace child_module {
+class ChildModuleManager;
+}  // namespace child_module
+
 namespace scheduled_restart {
 class ScheduledRestartBubbleController;
 class ScheduledRestartManager;
@@ -106,6 +116,9 @@ class TabDragSessionManager;
 #if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
 namespace request_header_integrity {
 class ChromeCompaneroHost;
+#if !BUILDFLAG(IS_ANDROID)
+class PlatformRuntimeHost;
+#endif
 }
 #endif
 
@@ -222,6 +235,14 @@ class GlobalFeatures {
     return global_browser_collection_.get();
   }
 
+#if !BUILDFLAG(IS_ANDROID)
+  // Null unless `autofill::features::kAutofillCustomFormControlScripts` is
+  // enabled. Desktop only.
+  autofill::CustomFormControlScriptIndex* custom_form_control_script_index() {
+    return custom_form_control_script_index_.get();
+  }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
   static ui::UserDataFactoryWithOwner<BrowserProcess>&
   GetUserDataFactoryForTesting();
 
@@ -234,6 +255,10 @@ class GlobalFeatures {
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  child_module::ChildModuleManager* child_module_manager() {
+    return child_module_manager_.get();
+  }
+
   scheduled_restart::ScheduledRestartBubbleController*
   scheduled_restart_bubble_controller() {
     return scheduled_restart_bubble_controller_.get();
@@ -252,6 +277,12 @@ class GlobalFeatures {
   request_header_integrity::ChromeCompaneroHost* chrome_companero_host() {
     return chrome_companero_host_.get();
   }
+
+#if !BUILDFLAG(IS_ANDROID)
+  request_header_integrity::PlatformRuntimeHost* platform_runtime_host() {
+    return platform_runtime_host_.get();
+  }
+#endif
 #endif
 
  protected:
@@ -275,6 +306,10 @@ class GlobalFeatures {
 #if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
   virtual std::unique_ptr<request_header_integrity::ChromeCompaneroHost>
   CreateChromeCompaneroHost();
+#if !BUILDFLAG(IS_ANDROID)
+  virtual std::unique_ptr<request_header_integrity::PlatformRuntimeHost>
+  CreatePlatformRuntimeHost();
+#endif
 #endif
 
  private:
@@ -284,6 +319,11 @@ class GlobalFeatures {
   // std::unique_ptr<FooFeature> foo_feature_;
 
   std::unique_ptr<GlobalBrowserCollection> global_browser_collection_;
+
+#if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<autofill::CustomFormControlScriptIndex>
+      custom_form_control_script_index_;
+#endif  // !BUILDFLAG(IS_ANDROID)
 
   std::unique_ptr<system_permission_settings::PlatformHandle>
       system_permissions_platform_handle_;
@@ -351,6 +391,7 @@ class GlobalFeatures {
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  std::unique_ptr<child_module::ChildModuleManager> child_module_manager_;
   std::unique_ptr<scheduled_restart::ScheduledRestartBubbleController>
       scheduled_restart_bubble_controller_;
   std::unique_ptr<scheduled_restart::ScheduledRestartManager>
@@ -364,6 +405,10 @@ class GlobalFeatures {
 #if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY)
   std::unique_ptr<request_header_integrity::ChromeCompaneroHost>
       chrome_companero_host_;
+#if !BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<request_header_integrity::PlatformRuntimeHost>
+      platform_runtime_host_;
+#endif
 #endif
 };
 

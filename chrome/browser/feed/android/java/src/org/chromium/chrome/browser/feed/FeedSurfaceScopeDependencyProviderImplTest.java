@@ -14,17 +14,17 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.xsurface.PersistentKeyValueCache;
+import org.chromium.chrome.browser.xsurface.feed.ResourceFetcher;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Tests for FeedSurfaceScopeDependencyProviderImpl. Uses ChromeTabbedActivityTestRule to test
@@ -32,7 +32,6 @@ import java.util.ArrayList;
  */
 @Batch(Batch.PER_CLASS)
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class FeedSurfaceScopeDependencyProviderImplTest {
     static final byte[] VALUE_1 = "one".getBytes();
     static final byte[] VALUE_2 = "two".getBytes();
@@ -57,7 +56,10 @@ public class FeedSurfaceScopeDependencyProviderImplTest {
     public void testPersistentKeyValueCachePutAndLookup() {
         FeedSurfaceScopeDependencyProviderImpl dependencyProvider =
                 new FeedSurfaceScopeDependencyProviderImpl(
-                        /* activity= */ null, /* activityContext= */ null, /* darkMode= */ false);
+                        /* activity= */ null,
+                        /* activityContext= */ null,
+                        /* darkMode= */ false,
+                        mActivityTestRule.getProfile(/* incognito= */ false));
         ArrayList<String> calls = new ArrayList<>();
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -82,7 +84,10 @@ public class FeedSurfaceScopeDependencyProviderImplTest {
     public void testPersistentKeyValueCacheEvict() {
         FeedSurfaceScopeDependencyProviderImpl dependencyProvider =
                 new FeedSurfaceScopeDependencyProviderImpl(
-                        /* activity= */ null, /* activityContext= */ null, /* darkMode= */ false);
+                        /* activity= */ null,
+                        /* activityContext= */ null,
+                        /* darkMode= */ false,
+                        mActivityTestRule.getProfile(/* incognito= */ false));
         ArrayList<String> calls = new ArrayList<>();
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -107,7 +112,10 @@ public class FeedSurfaceScopeDependencyProviderImplTest {
         // Verify put() and evict() accept null runnables.
         FeedSurfaceScopeDependencyProviderImpl dependencyProvider =
                 new FeedSurfaceScopeDependencyProviderImpl(
-                        /* activity= */ null, /* activityContext= */ null, /* darkMode= */ false);
+                        /* activity= */ null,
+                        /* activityContext= */ null,
+                        /* darkMode= */ false,
+                        mActivityTestRule.getProfile(/* incognito= */ false));
         ArrayList<String> calls = new ArrayList<>();
 
         ThreadUtils.runOnUiThreadBlocking(
@@ -121,6 +129,41 @@ public class FeedSurfaceScopeDependencyProviderImplTest {
         CriteriaHelper.pollUiThread(
                 () -> {
                     Criteria.checkThat("Calls match", calls, Matchers.contains("put"));
+                });
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"Feed"})
+    public void testAsyncDataFetcherWithNoFeedServiceInvokesCallbackWithFailure() {
+        FeedSurfaceScopeDependencyProviderImpl dependencyProvider =
+                new FeedSurfaceScopeDependencyProviderImpl(
+                        /* activity= */ null,
+                        /* activityContext= */ null,
+                        /* darkMode= */ false,
+                        mActivityTestRule.getProfile(/* incognito= */ true));
+        ArrayList<String> calls = new ArrayList<>();
+        ResourceFetcher.Request request = new ResourceFetcher.Request();
+        request.uri = "https://example.com/feed";
+        request.method = "GET";
+        request.headers = List.of();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    dependencyProvider
+                            .getAsyncDataFetcher()
+                            .fetch(
+                                    request,
+                                    (ResourceFetcher.Response response) ->
+                                            calls.add(
+                                                    response.getSuccess()
+                                                            + ":"
+                                                            + response.getStatusCode()));
+                });
+
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat("Calls match", calls, Matchers.contains("false:0"));
                 });
     }
 }

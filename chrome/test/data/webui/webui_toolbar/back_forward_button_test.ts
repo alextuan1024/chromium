@@ -2,17 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {BrowserProxy} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {BackForwardButtonElement} from 'chrome://webui-toolbar.top-chrome/back_forward_button.js';
+import {AnimationTracker} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {BrowserProxyImpl} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {BackForwardButtonElement, BrowserProxy} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
+import {simulatePointerPress} from './test_util.js';
 
 class TestBrowserControlsHandler extends TestBrowserProxy {
   constructor() {
@@ -75,14 +76,17 @@ suite('BackForwardButtonTest', function() {
     await microtasksFinished();
   });
 
+  teardown(function() {
+    AnimationTracker.resetForTesting();
+  });
+
   test('Window State Margin', async function() {
     // Explicitly set --toolbar-interior-margin-start so the test assumption
     // holds across platforms regardless of touch UI mode (where interior margin
     // defaults to 0px on ChromeOS Ash).
     backForwardButton.style.setProperty(
         '--toolbar-interior-margin-start', '6px');
-    const buttonWrapper =
-        backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+    const buttonWrapper = backForwardButton.$.buttonWrapper;
 
     // Default: not maximized/fullscreen, attribute not present.
     assertFalse(
@@ -113,8 +117,7 @@ suite('BackForwardButtonTest', function() {
     backForwardButton.windowIsMaximizedOrFullscreen = true;
     await microtasksFinished();
 
-    const buttonWrapper =
-        backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+    const buttonWrapper = backForwardButton.$.buttonWrapper;
     const button =
         backForwardButton.shadowRoot.querySelector('cr-icon-button')!;
     const rect = backForwardButton.getBoundingClientRect();
@@ -178,8 +181,7 @@ suite('BackForwardButtonTest', function() {
     backForwardButton.windowIsMaximizedOrFullscreen = true;
     await microtasksFinished();
 
-    const buttonWrapper =
-        backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+    const buttonWrapper = backForwardButton.$.buttonWrapper;
     const button =
         backForwardButton.shadowRoot.querySelector('cr-icon-button')!;
 
@@ -224,8 +226,7 @@ suite('BackForwardButtonTest', function() {
         backForwardButton.direction = 'back';
         await microtasksFinished();
 
-        const buttonWrapper =
-            backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+        const buttonWrapper = backForwardButton.$.buttonWrapper;
         const button =
             backForwardButton.shadowRoot.querySelector('cr-icon-button')!;
 
@@ -278,29 +279,8 @@ suite('BackForwardButtonTest', function() {
     const button = backForwardButton.shadowRoot.querySelector('cr-icon-button');
     assertTrue(!!button);
 
-    const rect = button.getBoundingClientRect();
-    const clientX = rect.left + rect.width / 2;
-    const clientY = rect.top + rect.height / 2;
-
     // Click on the internal button
-    button.dispatchEvent(new PointerEvent('pointerdown', {
-      button: 0,
-      pointerType: 'mouse',
-      detail: 1,
-      clientX: clientX,
-      clientY: clientY,
-      bubbles: true,
-      composed: true,
-    }));
-    button.dispatchEvent(new PointerEvent('pointerup', {
-      button: 0,
-      pointerType: 'mouse',
-      detail: 1,
-      clientX: clientX,
-      clientY: clientY,
-      bubbles: true,
-      composed: true,
-    }));
+    simulatePointerPress(button, {detail: 1});
 
     // Verify the back action was triggered
     assertEquals(1, browserControlsHandler.getCallCount('back'));
@@ -314,8 +294,7 @@ suite('BackForwardButtonTest', function() {
     document.body.appendChild(forwardButton);
     await microtasksFinished();
 
-    const buttonWrapper =
-        forwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+    const buttonWrapper = forwardButton.$.buttonWrapper;
     const style = window.getComputedStyle(buttonWrapper);
     assertEquals('flex', style.display);
     assertEquals('0px', style.paddingLeft);
@@ -332,28 +311,55 @@ suite('BackForwardButtonTest', function() {
         backForwardButton.direction = 'back';
         await microtasksFinished();
 
-        const buttonWrapper =
-            backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
-        buttonWrapper.dispatchEvent(new PointerEvent('pointerdown', {
-          button: 0,
-          pointerType: 'mouse',
-          detail: 1,
-          clientX: 5,
-          clientY: 5,
-          bubbles: true,
-          composed: true,
-        }));
-        buttonWrapper.dispatchEvent(new PointerEvent('pointerup', {
-          button: 0,
-          pointerType: 'mouse',
-          detail: 1,
-          clientX: 5,
-          clientY: 5,
-          bubbles: true,
-          composed: true,
-        }));
+        const buttonWrapper = backForwardButton.$.buttonWrapper;
+        simulatePointerPress(
+            buttonWrapper, {detail: 1, clientX: 5, clientY: 5});
 
         assertEquals(0, browserControlsHandler.getCallCount('back'));
+      });
+
+  test(
+      'Disabled Button Uses Inactive Icon Color Without Extra Opacity',
+      async function() {
+        const rootStyle = document.documentElement.style;
+        rootStyle.setProperty('--color-toolbar-button-icon', 'rgb(1, 2, 3)');
+        rootStyle.setProperty(
+            '--color-toolbar-button-icon-inactive', 'rgb(4, 5, 6)');
+        try {
+          for (const direction of ['back', 'forward'] as const) {
+            backForwardButton.direction = direction;
+            backForwardButton.state = {
+              enabled: false,
+              shouldBeShown: true,
+              isContextMenuVisible: false,
+            };
+            await microtasksFinished();
+
+            let style = getComputedStyle(backForwardButton.$.button);
+            assertEquals(
+                'rgb(4, 5, 6)',
+                style.getPropertyValue('--cr-icon-button-fill-color').trim());
+            assertEquals('none', style.forcedColorAdjust);
+            assertEquals('1', style.opacity);
+
+            backForwardButton.state = {
+              enabled: true,
+              shouldBeShown: true,
+              isContextMenuVisible: false,
+            };
+            await microtasksFinished();
+
+            style = getComputedStyle(backForwardButton.$.button);
+            assertEquals(
+                'rgb(1, 2, 3)',
+                style.getPropertyValue('--cr-icon-button-fill-color').trim());
+            assertEquals('auto', style.forcedColorAdjust);
+            assertEquals('1', style.opacity);
+          }
+        } finally {
+          rootStyle.removeProperty('--color-toolbar-button-icon');
+          rootStyle.removeProperty('--color-toolbar-button-icon-inactive');
+        }
       });
 
   // Tests the Glow Up animation lifecycle for back/forward buttons:
@@ -362,6 +368,7 @@ suite('BackForwardButtonTest', function() {
   // 3. Once the animation finishes (simulated by dispatching 'endEvent'),
   //    reverts back to the static fallback icon.
   test('GlowUp Animation Flow', async function() {
+    AnimationTracker.showAnimations = true;
     backForwardButton.glowUpEnabled = true;
     backForwardButton.state = {
       enabled: true,
@@ -377,25 +384,7 @@ suite('BackForwardButtonTest', function() {
     assertEquals('webui-toolbar:arrow_back', button.getAttribute('iron-icon'));
 
     // Trigger click
-    const rect = button.getBoundingClientRect();
-    const clientX = rect.left + rect.width / 2;
-    const clientY = rect.top + rect.height / 2;
-    button.dispatchEvent(new PointerEvent('pointerdown', {
-      button: 0,
-      pointerType: 'mouse',
-      clientX: clientX,
-      clientY: clientY,
-      bubbles: true,
-      composed: true,
-    }));
-    button.dispatchEvent(new PointerEvent('pointerup', {
-      button: 0,
-      pointerType: 'mouse',
-      clientX: clientX,
-      clientY: clientY,
-      bubbles: true,
-      composed: true,
-    }));
+    simulatePointerPress(button);
 
     await browserControlsHandler.whenCalled('back');
     // We need to wait for:
@@ -448,25 +437,7 @@ suite('BackForwardButtonTest', function() {
     assertEquals('webui-toolbar:arrow_back', button.getAttribute('iron-icon'));
 
     // Trigger click (pointerup with mouse left click)
-    const rect = button.getBoundingClientRect();
-    const clientX = rect.left + rect.width / 2;
-    const clientY = rect.top + rect.height / 2;
-    button.dispatchEvent(new PointerEvent('pointerdown', {
-      button: 0,
-      pointerType: 'mouse',
-      clientX: clientX,
-      clientY: clientY,
-      bubbles: true,
-      composed: true,
-    }));
-    button.dispatchEvent(new PointerEvent('pointerup', {
-      button: 0,
-      pointerType: 'mouse',
-      clientX: clientX,
-      clientY: clientY,
-      bubbles: true,
-      composed: true,
-    }));
+    simulatePointerPress(button);
 
     await browserControlsHandler.whenCalled('back');
     await backForwardButton.updateComplete;
@@ -492,25 +463,7 @@ suite('BackForwardButtonTest', function() {
     assertEquals('webui-toolbar:arrow_back', button.getAttribute('iron-icon'));
 
     // Trigger middle click (pointerup with button 1)
-    const rect = button.getBoundingClientRect();
-    const clientX = rect.left + rect.width / 2;
-    const clientY = rect.top + rect.height / 2;
-    button.dispatchEvent(new PointerEvent('pointerdown', {
-      button: 1,
-      pointerType: 'mouse',
-      clientX: clientX,
-      clientY: clientY,
-      bubbles: true,
-      composed: true,
-    }));
-    button.dispatchEvent(new PointerEvent('pointerup', {
-      button: 1,
-      pointerType: 'mouse',
-      clientX: clientX,
-      clientY: clientY,
-      bubbles: true,
-      composed: true,
-    }));
+    simulatePointerPress(button, {button: 1});
 
     await browserControlsHandler.whenCalled('back');
     await backForwardButton.updateComplete;
@@ -549,5 +502,87 @@ suite('BackForwardButtonTest', function() {
     // Should NOT be animating.
     assertFalse((backForwardButton as any).animating_);
     assertEquals('webui-toolbar:arrow_back', button.getAttribute('iron-icon'));
+  });
+
+  test('GlowUp Respects Reduced Motion and AnimationTracker', async function() {
+    const prefersReducedMotion =
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    assertEquals(!prefersReducedMotion, AnimationTracker.showAnimations);
+
+    let beginElementCalls = 0;
+    const prevBeginElement = SVGAnimationElement.prototype.beginElement;
+    SVGAnimationElement.prototype.beginElement = () => {
+      ++beginElementCalls;
+    };
+    try {
+      backForwardButton.glowUpEnabled = true;
+      backForwardButton.state = {
+        enabled: true,
+        shouldBeShown: true,
+        isContextMenuVisible: false,
+      };
+      backForwardButton.direction = 'back';
+      await backForwardButton.updateComplete;
+
+      const button =
+          backForwardButton.shadowRoot.querySelector('cr-icon-button')!;
+
+      // Default behavior follows @media (prefers-reduced-motion).
+      simulatePointerPress(button);
+      await browserControlsHandler.whenCalled('back');
+      await backForwardButton.updateComplete;
+      await button.updateComplete;
+      if (prefersReducedMotion) {
+        assertFalse((backForwardButton as any).animating_);
+        assertEquals(
+            'webui-toolbar:arrow_back', button.getAttribute('iron-icon'));
+        assertEquals(0, beginElementCalls);
+      } else {
+        const crIcon = button.shadowRoot.querySelector('cr-icon')!;
+        await (crIcon as any).updateComplete;
+        assertTrue((backForwardButton as any).animating_);
+        assertEquals(
+            'webui-toolbar:back_arrow_glow_up',
+            button.getAttribute('iron-icon'));
+        assertTrue(beginElementCalls > 0);
+        const animate = crIcon.shadowRoot.querySelector(
+            'animate[begin="indefinite"], ' +
+            'animateTransform[begin="indefinite"]')!;
+        animate.dispatchEvent(new CustomEvent('endEvent'));
+        await backForwardButton.updateComplete;
+        assertFalse((backForwardButton as any).animating_);
+      }
+
+      // Disabling animations via AnimationTracker suppresses glow-up.
+      AnimationTracker.showAnimations = false;
+      beginElementCalls = 0;
+      browserControlsHandler.resetResolver('back');
+      simulatePointerPress(button);
+      await browserControlsHandler.whenCalled('back');
+      await backForwardButton.updateComplete;
+      await button.updateComplete;
+      assertFalse((backForwardButton as any).animating_);
+      assertEquals(
+          'webui-toolbar:arrow_back', button.getAttribute('iron-icon'));
+      assertEquals(0, beginElementCalls);
+
+      // Enabling animations via AnimationTracker forces glow-up on even
+      // when prefers-reduced-motion: reduce is active.
+      AnimationTracker.showAnimations = true;
+      browserControlsHandler.resetResolver('back');
+      simulatePointerPress(button);
+      await browserControlsHandler.whenCalled('back');
+      await backForwardButton.updateComplete;
+      await button.updateComplete;
+      const crIcon = button.shadowRoot.querySelector('cr-icon')!;
+      await (crIcon as any).updateComplete;
+
+      assertTrue((backForwardButton as any).animating_);
+      assertEquals(
+          'webui-toolbar:back_arrow_glow_up', button.getAttribute('iron-icon'));
+      assertTrue(beginElementCalls > 0);
+    } finally {
+      SVGAnimationElement.prototype.beginElement = prevBeginElement;
+    }
   });
 });

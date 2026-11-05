@@ -25,6 +25,7 @@ import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.Set;
 
@@ -176,14 +177,17 @@ public class TabMultiSelectHelperUnitTest {
     @Test
     public void testHandleShiftClick_AutoExpandsGroup() {
         when(mTab2.getTabGroupId()).thenReturn(GROUP_ID);
-        when(mTabModel.getTabGroupCollapsed(GROUP_ID)).thenReturn(true);
+        when(mTabModel.getTabGroupCollapsed(TabGroupId.fromRawToken(GROUP_ID))).thenReturn(true);
 
         mHelper.setAnchorTabIdForTesting(TAB1_ID);
         mHelper.handleTabClick(TAB3_ID, KeyEvent.META_SHIFT_ON);
 
         verify(mSelectTabCallback).onResult(TAB3_ID);
         verify(mTabModel)
-                .setTabGroupCollapsed(GROUP_ID, /* isCollapsed= */ false, /* animate= */ true);
+                .setTabGroupCollapsed(
+                        TabGroupId.fromRawToken(GROUP_ID),
+                        /* isCollapsed= */ false,
+                        /* animate= */ true);
         verify(mTabModel).clearMultiSelection(/* notifyObservers= */ false);
         verify(mTabModel)
                 .setTabsMultiSelected(Set.of(TAB1_ID, TAB2_ID, TAB3_ID), /* isSelected= */ true);
@@ -199,7 +203,10 @@ public class TabMultiSelectHelperUnitTest {
 
         verify(mSelectTabCallback).onResult(TAB3_ID);
         verify(mTabModel)
-                .setTabGroupCollapsed(GROUP_ID, /* isCollapsed= */ false, /* animate= */ true);
+                .setTabGroupCollapsed(
+                        TabGroupId.fromRawToken(GROUP_ID),
+                        /* isCollapsed= */ false,
+                        /* animate= */ true);
         verify(mTabModel).clearMultiSelection(/* notifyObservers= */ false);
         verify(mTabModel)
                 .setTabsMultiSelected(Set.of(TAB1_ID, TAB2_ID, TAB3_ID), /* isSelected= */ true);

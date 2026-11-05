@@ -31,8 +31,13 @@
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "chromeos/ui/frame/frame_utils.h"
+#include "components/live_caption/views/caption_bubble.h"  // nogncheck
 #include "ui/aura/client/aura_constants.h"
 #include "ui/views/widget/widget_delegate.h"
+#endif
+
+#if BUILDFLAG(IS_LINUX)
+#include "chrome/browser/shell_integration_linux.h"
 #endif
 
 // Helpers --------------------------------------------------------------------
@@ -79,7 +84,7 @@ ChromeViewsDelegate::ChromeViewsDelegate() {
 }
 
 ChromeViewsDelegate::~ChromeViewsDelegate() {
-  DCHECK_EQ(0u, ref_count_);
+  CHECK_EQ(0u, ref_count_, base::NotFatalUntil::M162);
 }
 
 void ChromeViewsDelegate::SaveWindowPlacement(
@@ -122,7 +127,7 @@ bool ChromeViewsDelegate::GetSavedWindowPlacement(
     return false;
   }
 
-  DCHECK(prefs->FindPreference(window_name));
+  CHECK(prefs->FindPreference(window_name), base::NotFatalUntil::M162);
   const base::DictValue& dictionary = prefs->GetDict(window_name);
   std::optional<int> left = dictionary.FindInt("left");
   std::optional<int> top = dictionary.FindInt("top");
@@ -163,7 +168,7 @@ void ChromeViewsDelegate::AddRef() {
   // way, we pick up any new profiles that have become loaded since the last
   // call to AddRef().
   ProfileManager* profile_manager = g_browser_process->profile_manager();
-  DCHECK(profile_manager);
+  CHECK(profile_manager, base::NotFatalUntil::M162);
   for (Profile* profile : profile_manager->GetLoadedProfiles()) {
     profile_keep_alives_[profile] = std::make_unique<ScopedProfileKeepAlive>(
         profile, ProfileKeepAliveOrigin::kChromeViewsDelegate);
@@ -173,7 +178,7 @@ void ChromeViewsDelegate::AddRef() {
 }
 
 void ChromeViewsDelegate::ReleaseRef() {
-  DCHECK_NE(0u, ref_count_);
+  CHECK_NE(0u, ref_count_, base::NotFatalUntil::M162);
 
   if (--ref_count_ == 0u) {
     keep_alive_.reset();
@@ -190,12 +195,35 @@ void ChromeViewsDelegate::OnBeforeWidgetInit(
   // type should be used.
   // `delegate->IsDialogBox()` does not work because the underlying Widget
   // does not have its widget delegate set before `OnBeforeWidgetInit`.
+  // The Live Caption bubble is not an app window. It lives in its own
+  // container and is shown and hidden by its controller.
   if (params->delegate && params->delegate->AsDialogDelegate() &&
-      !params->parent) {
+      !params->parent &&
+      !params->init_properties_container.GetProperty(
+          captions::kIsCaptionBubbleKey)) {
     params->init_properties_container.SetProperty(
         chromeos::kAppTypeKey, chromeos::AppType::SYSTEM_APP);
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_LINUX)
+  // Give top-level windows the browser's WM_CLASS and Wayland app ID for any
+  // of these that they don't set themselves (e.g. the video
+  // Picture-in-Picture window and the Live Caption bubble set none), so that
+  // taskbars group them with the browser windows instead of showing them as
+  // a separate application.
+  if (!params->child) {
+    if (params->wm_class_name.empty()) {
+      params->wm_class_name = shell_integration_linux::GetProgramClassName();
+    }
+    if (params->wm_class_class.empty()) {
+      params->wm_class_class = shell_integration_linux::GetProgramClassClass();
+    }
+    if (params->wayland_app_id.empty()) {
+      params->wayland_app_id = shell_integration_linux::GetProgramClassClass();
+    }
+  }
+#endif  // BUILDFLAG(IS_LINUX)
 
   // We need to determine opacity if it's not already specified.
   if (params->opacity == views::Widget::InitParams::WindowOpacity::kInferred) {

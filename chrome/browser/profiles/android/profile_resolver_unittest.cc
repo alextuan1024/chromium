@@ -6,6 +6,7 @@
 
 #include "base/files/file_path.h"
 #include "base/path_service.h"
+#include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "chrome/browser/android/proto/profile_token.pb.h"
 #include "chrome/browser/profiles/profile.h"
@@ -42,17 +43,6 @@ class ProfileResolverTest : public testing::Test {
     return profile;
   }
 
-  ProfileKey* ResolveProfileKeySync(std::string token) {
-    ProfileKey* profile_key;
-    base::RunLoop run_loop;
-    ResolveProfileKey(token, base::BindLambdaForTesting([&](ProfileKey* pk) {
-                        profile_key = pk;
-                        run_loop.Quit();
-                      }));
-    run_loop.Run();
-    return profile_key;
-  }
-
  private:
   content::BrowserTaskEnvironment task_environment_;
   TestingProfileManager manager_;
@@ -66,6 +56,29 @@ TEST_F(ProfileResolverTest, TestTokenizeResolve) {
 
   std::string another_token = TokenizeProfile(profile);
   ASSERT_EQ(token, another_token);
+}
+
+// Tokens are persisted (see ProfileToken), so the serialized token of an
+// existing regular profile must not change.
+TEST_F(ProfileResolverTest, TestTokenizeProfileFormatIsStable) {
+  TestingProfile* profile = manager()->CreateTestingProfile("Default");
+  EXPECT_EQ(std::string("\n\x07") + "Default", TokenizeProfile(profile));
+}
+
+TEST_F(ProfileResolverTest, TestResolveNonAsciiAndLongProfilePaths) {
+  // A field length >= 128 encodes as a multi-byte protobuf varint whose
+  // leading byte has the high bit set and is not valid UTF-8 on its own.
+  TestingProfile* long_profile =
+      manager()->CreateTestingProfile(std::string(130, 'a'));
+  Profile* non_ascii_otr_profile = long_profile->GetOffTheRecordProfile(
+      Profile::OTRProfileID::CreateUnique("Test:\xc3\xa9"),
+      /*create_if_needed=*/true);
+
+  std::string long_token = TokenizeProfile(long_profile);
+  EXPECT_FALSE(base::IsStringUTF8(long_token));
+  EXPECT_EQ(long_profile, ResolveProfileSync(long_token));
+  EXPECT_EQ(non_ascii_otr_profile,
+            ResolveProfileSync(TokenizeProfile(non_ascii_otr_profile)));
 }
 
 TEST_F(ProfileResolverTest, TestResolveDifferentProfiles) {
@@ -104,23 +117,6 @@ TEST_F(ProfileResolverTest, TestResolveOtrProfiles) {
   ASSERT_EQ(anotherOtrProfile, another_primary_otr_profile);
 }
 
-TEST_F(ProfileResolverTest, TestResolveProfileKeys) {
-  ProfileKey* profile_key1 =
-      manager()->CreateTestingProfile("foo")->GetProfileKey();
-  ProfileKey* profile_key2 =
-      manager()->CreateTestingProfile("bar")->GetProfileKey();
-
-  std::string token1 = TokenizeProfileKey(profile_key1);
-  std::string token2 = TokenizeProfileKey(profile_key2);
-  ASSERT_NE(token1, token2);
-
-  ProfileKey* resolved_profile_key1 = ResolveProfileKeySync(token1);
-  ProfileKey* resolved_profile_key2 = ResolveProfileKeySync(token2);
-  ASSERT_EQ(profile_key1, resolved_profile_key1);
-  ASSERT_EQ(profile_key2, resolved_profile_key2);
-  ASSERT_NE(resolved_profile_key1, resolved_profile_key2);
-}
-
 TEST_F(ProfileResolverTest, TestResolveBadToken) {
   ProfileToken token_proto;
   token_proto.set_relative_path("foo");
@@ -128,7 +124,6 @@ TEST_F(ProfileResolverTest, TestResolveBadToken) {
   token_proto.SerializeToString(&token_string);
 
   ASSERT_EQ(nullptr, ResolveProfileSync(token_string));
-  ASSERT_EQ(nullptr, ResolveProfileKeySync(token_string));
 }
 
 TEST_F(ProfileResolverTest, TestResolveBadOtrToken) {
@@ -140,17 +135,14 @@ TEST_F(ProfileResolverTest, TestResolveBadOtrToken) {
   otr_token_proto.SerializeToString(&otr_token_string);
 
   ASSERT_EQ(nullptr, ResolveProfileSync(otr_token_string));
-  ASSERT_EQ(nullptr, ResolveProfileKeySync(otr_token_string));
 }
 
 TEST_F(ProfileResolverTest, TestResolveUnloadedProfile) {
   TestingProfile* profile = manager()->CreateTestingProfile("foo");
-  ProfileKey* profile_key = profile->GetProfileKey();
   Profile* primary_otr_profile =
       profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
 
   std::string profile_token = TokenizeProfile(profile);
-  std::string profile_key_token = TokenizeProfileKey(profile_key);
   std::string primary_otr_profile_token = TokenizeProfile(primary_otr_profile);
 
   // TODO(alexilin): Call some sort of UnloadProfile() mechanism on
@@ -159,15 +151,12 @@ TEST_F(ProfileResolverTest, TestResolveUnloadedProfile) {
 
   // Our old raw pointers are all now invalid and should not be used again.
   profile = nullptr;
-  profile_key = nullptr;
   primary_otr_profile = nullptr;
 
   Profile* resolved_profile = ResolveProfileSync(profile_token);
-  ProfileKey* resolved_profile_key = ResolveProfileKeySync(profile_key_token);
   Profile* resolved_primary_otr_profile =
       ResolveProfileSync(primary_otr_profile_token);
   ASSERT_NE(nullptr, resolved_profile);
-  ASSERT_NE(nullptr, resolved_profile_key);
   ASSERT_NE(nullptr, resolved_primary_otr_profile);
 }
 

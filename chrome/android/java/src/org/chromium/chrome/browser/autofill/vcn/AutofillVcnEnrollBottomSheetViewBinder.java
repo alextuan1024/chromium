@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.autofill.vcn;
 
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
@@ -17,14 +16,11 @@ import android.widget.TextView;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.Description;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.IssuerIcon;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.LegalMessages;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -53,26 +49,14 @@ import java.util.function.Function;
                     getDescriptionSpan(
                             model.get(AutofillVcnEnrollBottomSheetProperties.DESCRIPTION)));
             view.mVirtualCardDescription.setMovementMethod(LinkMovementMethod.getInstance());
-        } else if (AutofillVcnEnrollBottomSheetProperties.IS_GPAY_LOGO_VISIBLE == propertyKey) {
-            view.mGpayIcon.setVisibility(
-                    model.get(AutofillVcnEnrollBottomSheetProperties.IS_GPAY_LOGO_VISIBLE)
-                            ? View.VISIBLE
-                            : View.GONE);
         } else if (AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON == propertyKey
                 || AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON_FETCH_CALLBACK
                         == propertyKey) {
-            if (ChromeFeatureList.isEnabled(
-                    AutofillFeatures.AUTOFILL_ENABLE_VIRTUAL_CARD_JAVA_PAYMENTS_DATA_MANAGER)) {
-                Function<IssuerIcon, Drawable> iconFetcher =
-                        model.get(
-                                AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON_FETCH_CALLBACK);
-                view.mIssuerIcon.setImageDrawable(
-                        iconFetcher.apply(
-                                model.get(AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON)));
-            } else if (AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON == propertyKey) {
-                view.mIssuerIcon.setImageBitmap(
-                        scaleBitmap(model.get(AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON)));
-            }
+            Function<IssuerIcon, Drawable> iconFetcher =
+                    model.get(AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON_FETCH_CALLBACK);
+            view.mIssuerIcon.setImageDrawable(
+                    iconFetcher.apply(
+                            model.get(AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON)));
         } else if (AutofillVcnEnrollBottomSheetProperties.CARD_LABEL == propertyKey) {
             view.mCardLabel.setText(model.get(AutofillVcnEnrollBottomSheetProperties.CARD_LABEL));
             view.mCardContainer.setContentDescription(
@@ -98,6 +82,21 @@ import java.util.function.Function;
         } else if (AutofillVcnEnrollBottomSheetProperties.CANCEL_BUTTON_LABEL == propertyKey) {
             view.mCancelButton.setText(
                     model.get(AutofillVcnEnrollBottomSheetProperties.CANCEL_BUTTON_LABEL));
+
+        } else if (AutofillVcnEnrollBottomSheetProperties.ON_ACCEPT_BUTTON_CLICK_ACTION
+                == propertyKey) {
+            Runnable action =
+                    model.get(AutofillVcnEnrollBottomSheetProperties.ON_ACCEPT_BUTTON_CLICK_ACTION);
+            assert action != null;
+            view.mAcceptButton.setOnClickListener(_ -> action.run());
+
+        } else if (AutofillVcnEnrollBottomSheetProperties.ON_CANCEL_BUTTON_CLICK_ACTION
+                == propertyKey) {
+            Runnable action =
+                    model.get(AutofillVcnEnrollBottomSheetProperties.ON_CANCEL_BUTTON_CLICK_ACTION);
+            assert action != null;
+            view.mCancelButton.setOnClickListener(_ -> action.run());
+
         } else if (AutofillVcnEnrollBottomSheetProperties.SHOW_LOADING_STATE == propertyKey) {
             if (model.get(AutofillVcnEnrollBottomSheetProperties.SHOW_LOADING_STATE)) {
                 view.mAcceptButton.setVisibility(View.GONE);
@@ -144,20 +143,6 @@ import java.util.function.Function;
                 learnMoreEnd,
                 Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
         return result;
-    }
-
-    // Returns a scaled bitmap.
-    private static @Nullable Bitmap scaleBitmap(IssuerIcon issuerIcon) {
-        return issuerIcon != null
-                        && issuerIcon.mBitmap != null
-                        && issuerIcon.mWidth > 0
-                        && issuerIcon.mHeight > 0
-                ? Bitmap.createScaledBitmap(
-                        issuerIcon.mBitmap,
-                        issuerIcon.mWidth,
-                        issuerIcon.mHeight,
-                        /* filter= */ true)
-                : null;
     }
 
     // Returns the legal message text formatted with links.

@@ -529,8 +529,6 @@ class HostContentSettingsMap : public content_settings::Observer,
   void MigrateSingleSettingPrecedingPermissionDelegationActivation(
       const content_settings::WebsiteSettingsInfo* info);
 
-  void DeleteStorageAccessRwsGrantsIfFeatureDisabled();
-
   // Verifies that this secondary pattern is allowed.
   bool IsSecondaryPatternAllowed(
       const ContentSettingsPattern& primary_pattern,
@@ -585,7 +583,7 @@ class HostContentSettingsMap : public content_settings::Observer,
   // modified by the user. Members are owned by the
   // |content_settings_providers_| map above.
   std::vector<
-      raw_ptr<content_settings::UserModifiableProvider, VectorExperimental>>
+      raw_ptr<content_settings::UserModifiableProvider, DanglingUntriaged>>
       user_modifiable_providers_;
 
   // content_settings_providers_[PREF_PROVIDER] but specialized.

@@ -13,9 +13,9 @@
 
 #include "ash/constants/ash_features.h"
 #include "base/compiler_specific.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/no_destructor.h"
 #include "base/posix/safe_strerror.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -61,36 +61,31 @@ constexpr char kLibcameraStillCaptureMFNR[] = "org.libcamera.stillCaptureMFNR";
 constexpr uint8_t kIntelPowerModeLowPower = 0;
 constexpr uint8_t kIntelPowerModeHighQuality = 1;
 
-using AwbModeTemperatureMap = std::map<uint8_t, int32_t>;
-
-const AwbModeTemperatureMap& GetAwbModeTemperatureMap() {
-  // https://source.android.com/devices/camera/camera3_3Amodes#auto-wb
-  static const base::NoDestructor<AwbModeTemperatureMap> kAwbModeTemperatureMap(
-      {
-          {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
-                                    ANDROID_CONTROL_AWB_MODE_INCANDESCENT),
-           2700},
-          {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
-                                    ANDROID_CONTROL_AWB_MODE_FLUORESCENT),
-           5000},
-          {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
-                                    ANDROID_CONTROL_AWB_MODE_WARM_FLUORESCENT),
-           3000},
-          {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
-                                    ANDROID_CONTROL_AWB_MODE_DAYLIGHT),
-           5500},
-          {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
-                                    ANDROID_CONTROL_AWB_MODE_CLOUDY_DAYLIGHT),
-           6500},
-          {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
-                                    ANDROID_CONTROL_AWB_MODE_TWILIGHT),
-           15000},
-          {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
-                                    ANDROID_CONTROL_AWB_MODE_SHADE),
-           7500},
-      });
-  return *kAwbModeTemperatureMap;
-}
+// https://source.android.com/devices/camera/camera3_3Amodes#auto-wb
+constexpr auto kAwbModeTemperatureMap = base::MakeFixedFlatMap<uint8_t,
+                                                               int32_t>({
+    {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
+                              ANDROID_CONTROL_AWB_MODE_INCANDESCENT),
+     2700},
+    {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
+                              ANDROID_CONTROL_AWB_MODE_FLUORESCENT),
+     5000},
+    {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
+                              ANDROID_CONTROL_AWB_MODE_WARM_FLUORESCENT),
+     3000},
+    {static_cast<uint8_t>(
+         cros::mojom::AndroidControlAwbMode::ANDROID_CONTROL_AWB_MODE_DAYLIGHT),
+     5500},
+    {static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
+                              ANDROID_CONTROL_AWB_MODE_CLOUDY_DAYLIGHT),
+     6500},
+    {static_cast<uint8_t>(
+         cros::mojom::AndroidControlAwbMode::ANDROID_CONTROL_AWB_MODE_TWILIGHT),
+     15000},
+    {static_cast<uint8_t>(
+         cros::mojom::AndroidControlAwbMode::ANDROID_CONTROL_AWB_MODE_SHADE),
+     7500},
+});
 
 std::pair<int32_t, int32_t> GetTargetFrameRateRange(
     const cros::mojom::CameraMetadataPtr& static_metadata,
@@ -125,49 +120,6 @@ std::pair<int32_t, int32_t> GetTargetFrameRateRange(
     }
   }
   return std::make_pair(result_min, result_max);
-}
-
-// The result of max_width and max_height could be zero if the stream
-// is not in the pre-defined configuration.
-void GetStreamResolutions(const cros::mojom::CameraMetadataPtr& static_metadata,
-                          cros::mojom::Camera3StreamType stream_type,
-                          cros::mojom::HalPixelFormat stream_format,
-                          std::vector<gfx::Size>* resolutions) {
-  const cros::mojom::CameraMetadataEntryPtr* stream_configurations =
-      GetMetadataEntry(static_metadata,
-                       cros::mojom::CameraMetadataTag::
-                           ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS);
-  DCHECK(stream_configurations);
-  // The available stream configurations are stored as tuples of four int32s:
-  // (hal_pixel_format, width, height, type) x n
-  const size_t kStreamFormatOffset = 0;
-  const size_t kStreamWidthOffset = 1;
-  const size_t kStreamHeightOffset = 2;
-  const size_t kStreamTypeOffset = 3;
-  const size_t kStreamConfigurationSize = 4;
-  int32_t* iter = UNSAFE_TODO(
-      reinterpret_cast<int32_t*>((*stream_configurations)->data.data()));
-  for (size_t i = 0; i < (*stream_configurations)->count;
-       i += kStreamConfigurationSize) {
-    auto format = static_cast<cros::mojom::HalPixelFormat>(
-        UNSAFE_TODO(iter[kStreamFormatOffset]));
-    int32_t width = UNSAFE_TODO(iter[kStreamWidthOffset]);
-    int32_t height = UNSAFE_TODO(iter[kStreamHeightOffset]);
-    auto type = static_cast<cros::mojom::Camera3StreamType>(
-        UNSAFE_TODO(iter[kStreamTypeOffset]));
-    UNSAFE_TODO(iter += kStreamConfigurationSize);
-
-    if (type != stream_type || format != stream_format) {
-      continue;
-    }
-
-    resolutions->emplace_back(width, height);
-  }
-
-  std::sort(resolutions->begin(), resolutions->end(),
-            [](const gfx::Size& a, const gfx::Size& b) -> bool {
-              return a.width() * a.height() < b.width() * b.height();
-            });
 }
 
 // VideoCaptureDevice::TakePhotoCallback is given by the application and is used
@@ -583,7 +535,6 @@ void CameraDeviceDelegate::SetPhotoOptions(
   if (settings->has_white_balance_mode &&
       settings->white_balance_mode == mojom::MeteringMode::MANUAL &&
       settings->has_color_temperature) {
-    const AwbModeTemperatureMap& map = GetAwbModeTemperatureMap();
     cros::mojom::AndroidControlAwbMode awb_mode =
         cros::mojom::AndroidControlAwbMode::ANDROID_CONTROL_AWB_MODE_AUTO;
     auto awb_available_modes = GetMetadataEntryAsSpan<uint8_t>(
@@ -591,8 +542,8 @@ void CameraDeviceDelegate::SetPhotoOptions(
         cros::mojom::CameraMetadataTag::ANDROID_CONTROL_AWB_AVAILABLE_MODES);
     int32_t min_diff = std::numeric_limits<int32_t>::max();
     for (const auto& mode : awb_available_modes) {
-      auto it = map.find(mode);
-      if (it == map.end()) {
+      auto it = kAwbModeTemperatureMap.find(mode);
+      if (it == kAwbModeTemperatureMap.end()) {
         continue;
       }
       // Find the nearest awb mode
@@ -1294,14 +1245,52 @@ void CameraDeviceDelegate::OnConstructedDefaultPortraitModeRequestSettings(
   }
 }
 
+// static
+std::vector<gfx::Size> CameraDeviceDelegate::GetStreamResolutions(
+    const cros::mojom::CameraMetadataPtr& static_metadata,
+    cros::mojom::Camera3StreamType stream_type,
+    cros::mojom::HalPixelFormat stream_format) {
+  std::vector<gfx::Size> resolutions;
+  auto stream_configurations = GetMetadataEntryAsSpan<int32_t>(
+      static_metadata, cros::mojom::CameraMetadataTag::
+                           ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS);
+  // The available stream configurations are stored as tuples of four int32s:
+  // (hal_pixel_format, width, height, type) x n
+  constexpr size_t kStreamFormatOffset = 0;
+  constexpr size_t kStreamWidthOffset = 1;
+  constexpr size_t kStreamHeightOffset = 2;
+  constexpr size_t kStreamTypeOffset = 3;
+  constexpr size_t kStreamConfigurationSize = 4;
+  while (stream_configurations.size() >= kStreamConfigurationSize) {
+    auto config = stream_configurations.take_first<kStreamConfigurationSize>();
+    auto format =
+        static_cast<cros::mojom::HalPixelFormat>(config[kStreamFormatOffset]);
+    int32_t width = config[kStreamWidthOffset];
+    int32_t height = config[kStreamHeightOffset];
+    auto type =
+        static_cast<cros::mojom::Camera3StreamType>(config[kStreamTypeOffset]);
+
+    if (type != stream_type || format != stream_format) {
+      continue;
+    }
+
+    resolutions.emplace_back(width, height);
+  }
+
+  std::sort(resolutions.begin(), resolutions.end(),
+            [](const gfx::Size& a, const gfx::Size& b) -> bool {
+              return a.width() * a.height() < b.width() * b.height();
+            });
+  return resolutions;
+}
+
 gfx::Size CameraDeviceDelegate::GetBlobResolution(
     std::optional<gfx::Size> new_blob_resolution) {
   DCHECK(ipc_task_runner_->BelongsToCurrentThread());
 
-  std::vector<gfx::Size> blob_resolutions;
-  GetStreamResolutions(
+  std::vector<gfx::Size> blob_resolutions = GetStreamResolutions(
       static_metadata_, cros::mojom::Camera3StreamType::CAMERA3_STREAM_OUTPUT,
-      cros::mojom::HalPixelFormat::HAL_PIXEL_FORMAT_BLOB, &blob_resolutions);
+      cros::mojom::HalPixelFormat::HAL_PIXEL_FORMAT_BLOB);
   if (blob_resolutions.empty()) {
     return {};
   }
@@ -1670,10 +1659,9 @@ void CameraDeviceDelegate::DoGetPhotoState(
     return;
   }
 
-  std::vector<gfx::Size> blob_resolutions;
-  GetStreamResolutions(
+  std::vector<gfx::Size> blob_resolutions = GetStreamResolutions(
       static_metadata_, cros::mojom::Camera3StreamType::CAMERA3_STREAM_OUTPUT,
-      cros::mojom::HalPixelFormat::HAL_PIXEL_FORMAT_BLOB, &blob_resolutions);
+      cros::mojom::HalPixelFormat::HAL_PIXEL_FORMAT_BLOB);
   if (blob_resolutions.empty()) {
     std::move(callback).Run(std::move(photo_state));
     return;
@@ -1761,17 +1749,16 @@ void CameraDeviceDelegate::DoGetPhotoState(
         mojom::MeteringMode::MANUAL);
     photo_state->supported_white_balance_modes.push_back(
         mojom::MeteringMode::CONTINUOUS);
-    const AwbModeTemperatureMap& map = GetAwbModeTemperatureMap();
     int32_t current_temperature = 0;
     if (result_metadata_.awb_mode ==
-        static_cast<uint8_t>(
-            cros::mojom::AndroidControlAwbMode::ANDROID_CONTROL_AWB_MODE_AUTO))
+        static_cast<uint8_t>(cros::mojom::AndroidControlAwbMode::
+                                 ANDROID_CONTROL_AWB_MODE_AUTO)) {
       photo_state->current_white_balance_mode = mojom::MeteringMode::CONTINUOUS;
-    else {
+    } else {
       // Need to find current color temperature.
       photo_state->current_white_balance_mode = mojom::MeteringMode::MANUAL;
-      auto it = map.find(result_metadata_.awb_mode.value());
-      if (it != map.end()) {
+      auto it = kAwbModeTemperatureMap.find(result_metadata_.awb_mode.value());
+      if (it != kAwbModeTemperatureMap.end()) {
         current_temperature = it->second;
       }
     }
@@ -1779,13 +1766,15 @@ void CameraDeviceDelegate::DoGetPhotoState(
     int32_t min = std::numeric_limits<int32_t>::max();
     int32_t max = std::numeric_limits<int32_t>::min();
     for (const auto& mode : awb_available_modes) {
-      auto it = map.find(mode);
-      if (it == map.end())
+      auto it = kAwbModeTemperatureMap.find(mode);
+      if (it == kAwbModeTemperatureMap.end()) {
         continue;
-      if (it->second < min)
+      }
+      if (it->second < min) {
         min = it->second;
-      else if (it->second > max)
+      } else if (it->second > max) {
         max = it->second;
+      }
     }
     photo_state->color_temperature->min = min;
     photo_state->color_temperature->max = max;

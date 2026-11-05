@@ -15,6 +15,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.FileUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
@@ -46,6 +47,7 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 /** Fetches the variations seed before the actual first run of Chrome. */
 @NullMarked
@@ -83,11 +85,16 @@ public class VariationsSeedFetcher {
                     }\
                     """);
 
-    @IntDef({VariationsPlatform.ANDROID, VariationsPlatform.ANDROID_WEBVIEW})
+    @IntDef({
+        VariationsPlatform.ANDROID,
+        VariationsPlatform.ANDROID_WEBVIEW,
+        VariationsPlatform.ANDROID_DESKTOP
+    })
     @Retention(RetentionPolicy.SOURCE)
     public @interface VariationsPlatform {
         int ANDROID = 0;
         int ANDROID_WEBVIEW = 1;
+        int ANDROID_DESKTOP = 2;
     }
 
     private static final String DEFAULT_VARIATIONS_SERVER_URL =
@@ -95,6 +102,26 @@ public class VariationsSeedFetcher {
 
     private static final String DEFAULT_FAST_VARIATIONS_SERVER_URL =
             "https://clientservices.googleapis.com/chrome-variations/fastfinch/seed";
+
+    // Request header advertising the pinned PQ signing key IDs supported by this client
+    // (matching the C++ side's initial key IDs 1,2,3 plus legacy marker 0).
+    @VisibleForTesting public static final String SEED_KEY_IDS_HEADER = "X-Seed-Key-Ids";
+    // LINT.IfChange(VariationsSeedKeyIds)
+    @VisibleForTesting public static final String SEED_KEY_IDS_VALUE = "1,2,3,0";
+    @VisibleForTesting public static final String SEED_KEY_IDS_VALUE_WITHOUT_LEGACY = "1,2,3";
+
+    /**
+     * Returns whether {@code signature} starts with a pinned hybrid key ID ({@code "1:"}, {@code
+     * "2:"}, or {@code "3:"}) rather than a legacy bare base64 ECDSA signature.
+     */
+    public static boolean isHybridSeedSignature(@Nullable String signature) {
+        return signature != null
+                && signature.length() >= 2
+                && signature.charAt(1) == ':'
+                && signature.charAt(0) >= '1'
+                && signature.charAt(0) <= '3';
+    }
+    // LINT.ThenChange(//components/variations/variations_url_constants.h:VariationsSeedKeyIds)
 
     private static final int READ_TIMEOUT = 3000; // time in ms
     private static final int REQUEST_TIMEOUT = 1000; // time in ms
@@ -105,6 +132,7 @@ public class VariationsSeedFetcher {
     // Values for the "Variations.FirstRun.SeedFetchResult" sparse histogram, which also logs
     // HTTP result codes. These are negative so that they don't conflict with the HTTP codes.
     // These values should not be renumbered or reused since they are logged to UMA.
+    @VisibleForTesting public static final int SEED_FETCH_RESULT_MISSING_HYBRID_SIGNATURE = -7;
     @VisibleForTesting public static final int SEED_FETCH_RESULT_DELTA_PATCH_EXCEPTION = -6;
     @VisibleForTesting public static final int SEED_FETCH_RESULT_INVALID_IM_HEADER = -5;
     // private static final int SEED_FETCH_RESULT_INVALID_DATE_HEADER = -4;
@@ -117,6 +145,9 @@ public class VariationsSeedFetcher {
     @VisibleForTesting
     public static final String SEED_FETCH_DELTA_COMPRESSION =
             "Variations.FirstRun.DeltaCompression";
+
+    public static final String SEED_DATE_MISSING_HISTOGRAM = "Variations.SeedDateMissing";
+    public static final String SEED_DATE_CLOCK_SKEW_HISTOGRAM = "Variations.SeedDateClockSkew";
 
     // UMA constant for logging the request and response status of delta compression when requesting
     // a finch seed.
@@ -246,6 +277,9 @@ public class VariationsSeedFetcher {
         if (params.mChannel != null && !params.mChannel.isEmpty()) {
             urlString += "&channel=" + params.mChannel;
         }
+        if (params.mCorpus != null && !params.mCorpus.isEmpty()) {
+            urlString += "&corpus=" + params.mCorpus;
+        }
 
         return urlString;
     }
@@ -261,6 +295,7 @@ public class VariationsSeedFetcher {
         if (forcedPlatform != null) {
             if (Arrays.asList(
                             "android",
+                            "android_desktop",
                             "android_webview",
                             "chromeos",
                             "fuchsia",
@@ -278,6 +313,8 @@ public class VariationsSeedFetcher {
                 return "android";
             case VariationsPlatform.ANDROID_WEBVIEW:
                 return "android_webview";
+            case VariationsPlatform.ANDROID_DESKTOP:
+                return "android_desktop";
             default:
                 assert false;
                 return "";
@@ -291,6 +328,7 @@ public class VariationsSeedFetcher {
         private final @Nullable String mMilestone;
         private @Nullable String mChannel;
         private final boolean mIsFastFetchMode;
+        private final @Nullable String mCorpus;
 
         // This is added as a convenience for using Mockito.
         @Override
@@ -302,12 +340,14 @@ public class VariationsSeedFetcher {
                     && getIsFastFetchMode() == castObj.getIsFastFetchMode()
                     && Objects.equals(getMilestone(), castObj.getMilestone())
                     && Objects.equals(getRestrictMode(), castObj.getRestrictMode())
-                    && Objects.equals(getChannel(), castObj.getChannel());
+                    && Objects.equals(getChannel(), castObj.getChannel())
+                    && Objects.equals(getCorpus(), castObj.getCorpus());
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(mPlatform, mRestrictMode, mMilestone, mChannel, mIsFastFetchMode);
+            return Objects.hash(
+                    mPlatform, mRestrictMode, mMilestone, mChannel, mIsFastFetchMode, mCorpus);
         }
 
         private SeedFetchParameters(
@@ -315,12 +355,14 @@ public class VariationsSeedFetcher {
                 @Nullable String restrictMode,
                 @Nullable String milestone,
                 @Nullable String channel,
-                boolean isFastFetchMode) {
+                boolean isFastFetchMode,
+                @Nullable String corpus) {
             this.mPlatform = platform;
             this.mRestrictMode = restrictMode;
             this.mMilestone = milestone;
             this.mChannel = channel;
             this.mIsFastFetchMode = isFastFetchMode;
+            this.mCorpus = corpus;
         }
 
         /** Builder class for {@link SeedFetchParameters}. */
@@ -330,6 +372,7 @@ public class VariationsSeedFetcher {
             private @Nullable String mMilestone;
             private @Nullable String mChannel;
             private boolean mIsFastFetchMode;
+            private @Nullable String mCorpus;
 
             private Builder() {
                 this.mPlatform = VariationsPlatform.ANDROID;
@@ -338,7 +381,7 @@ public class VariationsSeedFetcher {
 
             public SeedFetchParameters build() {
                 return new SeedFetchParameters(
-                        mPlatform, mRestrictMode, mMilestone, mChannel, mIsFastFetchMode);
+                        mPlatform, mRestrictMode, mMilestone, mChannel, mIsFastFetchMode, mCorpus);
             }
 
             public static Builder newBuilder() {
@@ -369,6 +412,11 @@ public class VariationsSeedFetcher {
                 this.mIsFastFetchMode = isFastFetchMode;
                 return this;
             }
+
+            public Builder setCorpus(@Nullable String corpus) {
+                this.mCorpus = corpus;
+                return this;
+            }
         }
 
         // Getters
@@ -391,6 +439,10 @@ public class VariationsSeedFetcher {
         public boolean getIsFastFetchMode() {
             return mIsFastFetchMode;
         }
+
+        public @Nullable String getCorpus() {
+            return mCorpus;
+        }
     }
 
     /** Object holding information about the status of a seed download attempt. */
@@ -410,6 +462,9 @@ public class VariationsSeedFetcher {
         // If you add fields, see VariationsTestUtils.
         public @Nullable String signature;
         public @Nullable String country;
+        // TODO(crbug.com/576284821): Plumb geoLevel1 through WebView (AwVariationsSeed,
+        // VariationsUtils, and AwFeatureListCreator::SetUpFieldTrials).
+        public @Nullable String geoLevel1;
         // Date according to the Variations server in milliseconds since UNIX epoch GMT.
         public long date;
         public boolean isGzipCompressed;
@@ -479,6 +534,8 @@ public class VariationsSeedFetcher {
                         + signature
                         + "\" country=\""
                         + country
+                        + "\" geoLevel1=\""
+                        + geoLevel1
                         + "\" date=\""
                         + date
                         + "\" isGzipCompressed="
@@ -516,9 +573,17 @@ public class VariationsSeedFetcher {
                 return;
             }
 
+            // Use DeviceInfo.isDesktop() to determine the platform to fetch a seed for, since the
+            // variations platform is a device-level OS property rather than a dynamic UI
+            // affordance (crbug.com/567605929).
+            @VariationsPlatform
+            int platform =
+                    DeviceInfo.isDesktop() // nocheck
+                            ? VariationsPlatform.ANDROID_DESKTOP
+                            : VariationsPlatform.ANDROID;
             SeedFetchParameters params =
                     SeedFetchParameters.Builder.newBuilder()
-                            .setPlatform(VariationsSeedFetcher.VariationsPlatform.ANDROID)
+                            .setPlatform(platform)
                             .setRestrictMode(null)
                             .setMilestone(milestone)
                             .setChannel(channel)
@@ -530,6 +595,7 @@ public class VariationsSeedFetcher {
                         info.seedData,
                         info.signature,
                         info.country,
+                        info.geoLevel1,
                         info.date,
                         info.isGzipCompressed);
             }
@@ -579,6 +645,20 @@ public class VariationsSeedFetcher {
                 "Variations.FirstRun.SeedConnectTime", timeDeltaMillis);
     }
 
+    private void recordSeedDateMetrics(long seedDateMillis) {
+        boolean isDateMissing = (seedDateMillis == 0);
+        RecordHistogram.recordBooleanHistogram(SEED_DATE_MISSING_HISTOGRAM, isDateMissing);
+        if (!isDateMissing) {
+            long diffMillis = Math.abs(System.currentTimeMillis() - seedDateMillis);
+            RecordHistogram.recordCustomCountHistogram(
+                    SEED_DATE_CLOCK_SKEW_HISTOGRAM,
+                    (int) Math.min(TimeUnit.MILLISECONDS.toSeconds(diffMillis), Integer.MAX_VALUE),
+                    /* min= */ 1,
+                    /* max= */ (int) TimeUnit.DAYS.toSeconds(30),
+                    /* numBuckets= */ 50);
+        }
+    }
+
     /**
      * Download the variations seed data with platform and restrictMode.
      *
@@ -606,6 +686,10 @@ public class VariationsSeedFetcher {
             }
             List<String> requestedInstanceManipulations = getAvailableInstanceManipulations();
             connection.setRequestProperty("A-IM", String.join(",", requestedInstanceManipulations));
+            boolean usePqOnly = currInfo != null && isHybridSeedSignature(currInfo.signature);
+            connection.setRequestProperty(
+                    SEED_KEY_IDS_HEADER,
+                    usePqOnly ? SEED_KEY_IDS_VALUE_WITHOUT_LEGACY : SEED_KEY_IDS_VALUE);
             connection.connect();
             int responseCode = connection.getResponseCode();
             fetchInfo.seedFetchResult = responseCode;
@@ -614,8 +698,18 @@ public class VariationsSeedFetcher {
 
                 SeedInfo seedInfo = new SeedInfo();
                 seedInfo.signature = getHeaderFieldOrEmpty(connection, "X-Seed-Signature");
+                if (usePqOnly && !isHybridSeedSignature(seedInfo.signature)) {
+                    Log.w(
+                            TAG,
+                            "Ignoring fetched seed without a hybrid signature because the current"
+                                    + " seed already has one.");
+                    fetchInfo.seedFetchResult = SEED_FETCH_RESULT_MISSING_HYBRID_SIGNATURE;
+                    return fetchInfo;
+                }
                 seedInfo.country = getHeaderFieldOrEmpty(connection, "X-Country");
+                seedInfo.geoLevel1 = getHeaderFieldOrEmpty(connection, "X-Geo-Level-1");
                 seedInfo.date = connection.getHeaderFieldDate("Date", 0);
+                recordSeedDateMetrics(seedInfo.date);
 
                 InstanceManipulations receivedIm =
                         VariationsCompressionUtils.getInstanceManipulations(
@@ -656,6 +750,7 @@ public class VariationsSeedFetcher {
                 // seed, so it's appropriate to always modify the latest seed's date.
                 fetchInfo.seedInfo = assumeNonNull(currInfo);
                 fetchInfo.seedInfo.date = connection.getHeaderFieldDate("Date", 0);
+                recordSeedDateMetrics(fetchInfo.seedInfo.date);
             } else {
                 String errorMsg = "Non-OK response code = " + responseCode;
                 Log.w(TAG, errorMsg);

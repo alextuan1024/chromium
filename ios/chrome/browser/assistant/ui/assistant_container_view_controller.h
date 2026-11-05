@@ -7,6 +7,7 @@
 
 #import <UIKit/UIKit.h>
 
+#import <optional>
 #import <vector>
 
 #import "ios/chrome/browser/assistant/ui/assistant_container_animatable.h"
@@ -18,6 +19,10 @@ enum class AssistantContainerDetent : NSInteger;
 @class BrowserLayoutState;
 @class LayoutGuideCenter;
 @class SceneLayoutState;
+@class TabGridState;
+
+using AccessibilityNotificationPoster =
+    void (^)(UIAccessibilityNotifications notification, id argument);
 
 // View Controller for the Assistant Container.
 @interface AssistantContainerViewController
@@ -25,6 +30,11 @@ enum class AssistantContainerDetent : NSInteger;
 
 // The available detents for the container. Can't be empty.
 @property(nonatomic, assign) std::vector<AssistantContainerDetent> detents;
+
+// The largest detent that doesn't dim the view underneath the sheet.
+// Detents larger than this detent dim the background and prevent interaction
+// with the view underneath. Defaults to `kDefaultLargestUndimmedDetent`.
+@property(nonatomic, assign) AssistantContainerDetent largestUndimmedDetent;
 
 // The presentation context of the container.
 @property(nonatomic, assign) AssistantPresentationContext presentationContext;
@@ -40,6 +50,15 @@ enum class AssistantContainerDetent : NSInteger;
 // kAssistantContainerMinimizedDetentHeight.
 @property(nonatomic, assign) NSInteger minimizedDetentHeight;
 
+// An optional height to use for the medium detent.
+// If specified, `computeMediumDetentHeight` will return this value.
+@property(nonatomic, assign) std::optional<NSInteger> mediumDetentHeight;
+
+// An optional percentage to use for the medium detent height.
+// Used when `mediumDetentHeight` is not specified. Defaults to 50% when
+// `std::nullopt`.
+@property(nonatomic, assign) std::optional<NSInteger> mediumDetentPercentage;
+
 // The delegate for the container events.
 @property(nonatomic, weak) id<AssistantContainerDelegate> delegate;
 
@@ -49,9 +68,18 @@ enum class AssistantContainerDetent : NSInteger;
 // The scene layout state.
 @property(nonatomic, weak) SceneLayoutState* sceneLayoutState;
 
+// The tab grid state.
+@property(nonatomic, weak) TabGridState* tabGridState;
+
 // Accessibility property. Whether to only announce the arrival of the assistant
 // instead of moving VoiceOver focus to it.
 @property(nonatomic, assign) BOOL announceArrivalOnly;
+
+// Block used to post accessibility notifications. Defaults to calling
+// `UIAccessibilityPostNotification`. Setting to nil resets to the default
+// implementation.
+@property(nonatomic, copy)
+    AccessibilityNotificationPoster accessibilityNotificationPoster;
 
 // Sets whether the grabber button is hidden with optional animation.
 - (void)setGrabberHidden:(BOOL)hidden animated:(BOOL)animated;
@@ -77,6 +105,10 @@ enum class AssistantContainerDetent : NSInteger;
 // `presented` indicates whether the transition is a presentation or a
 // dismissal.
 - (void)animateAlongsideTransitionPresented:(BOOL)presented;
+
+// Completes the container presentation animation and updates accessibility
+// focus.
+- (void)completePresentationAnimation;
 
 // Default initializer.
 - (instancetype)initWithViewController:(UIViewController*)viewController

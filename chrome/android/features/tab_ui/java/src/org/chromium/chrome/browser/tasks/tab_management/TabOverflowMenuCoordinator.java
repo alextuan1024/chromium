@@ -6,6 +6,8 @@ package org.chromium.chrome.browser.tasks.tab_management;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.multiwindow.UiUtils.getItemTitle;
+import static org.chromium.ui.listmenu.ListMenuItemProperties.IS_IPH_HIGHLIGHTED;
+import static org.chromium.ui.listmenu.ListMenuItemProperties.MENU_ITEM_ID;
 
 import android.app.Activity;
 import android.content.Context;
@@ -42,6 +44,7 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
+import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter;
 import org.chromium.components.browser_ui.widget.list_view.ListViewTouchTracker;
 import org.chromium.components.collaboration.CollaborationService;
 import org.chromium.components.data_sharing.member_role.MemberRole;
@@ -233,7 +236,14 @@ public abstract class TabOverflowMenuCoordinator<T>
         // LINT.ThenChange(//components/browser_ui/widget/android/java/res/values/dimens.xml|//components/browser_ui/widget/android/java/res/values-night/dimens.xml)
     }
 
-    private static void offsetPopupRect(Context context, boolean isIncognito, Rect rect) {
+    /**
+     * Offsets the popup anchor {@link Rect} to account for the menu background shadow padding.
+     *
+     * @param context The {@link Context} used to load resources and background drawable.
+     * @param isIncognito Whether the menu is shown in incognito mode.
+     * @param rect The anchor {@link Rect} to offset in-place.
+     */
+    public static void offsetPopupRect(Context context, boolean isIncognito, Rect rect) {
         if (isIncognito) return;
         Resources resources = context.getResources();
         rect.offset(0, -resources.getDimensionPixelSize(R.dimen.popup_menu_shadow_length));
@@ -431,9 +441,7 @@ public abstract class TabOverflowMenuCoordinator<T>
         return mTabModelSupplier.get();
     }
 
-    /**
-     * @return The DP measure {@code dimenRes}, converted to px.
-     */
+    /** Returns the DP measure {@code dimenRes}, converted to px. */
     protected int getDimensionPixelSize(@DimenRes int dimenRes) {
         assert mActivity != null : "Activity needs to be non-null to get pixel size";
         return mActivity.getResources().getDimensionPixelSize(dimenRes);
@@ -441,6 +449,23 @@ public abstract class TabOverflowMenuCoordinator<T>
 
     protected @Nullable TabOverflowMenuHolder<T> getMenuHolder() {
         return mMenuHolder;
+    }
+
+    /**
+     * Highlights the menu item with the given ID using {@link ViewHighlighter}.
+     *
+     * @param menuItemId The ID of the menu item to highlight.
+     */
+    protected void highlightMenuItem(@IdRes int menuItemId) {
+        if (mMenuHolder == null) return;
+        ModelList modelList = mMenuHolder.getModelList();
+        for (ListItem item : modelList) {
+            if (item.model.containsKey(MENU_ITEM_ID)
+                    && item.model.get(MENU_ITEM_ID) == menuItemId) {
+                item.model.set(IS_IPH_HIGHLIGHTED, true);
+                return;
+            }
+        }
     }
 
     private void onDismiss(TabOverflowMenuHolder<T> menuHolder) {
@@ -505,6 +530,17 @@ public abstract class TabOverflowMenuCoordinator<T>
         }
     }
 
+    /**
+     * Sets the soft input mode for the popup window.
+     *
+     * @param mode See {@link android.widget.PopupWindow#setSoftInputMode(int)}.
+     */
+    protected void setMenuSoftInputMode(int mode) {
+        if (mMenuHolder != null) {
+            mMenuHolder.setSoftInputMode(mode);
+        }
+    }
+
     /** Forces the underlying main menu popup window to update its layout position. */
     protected void updateMenuLayout() {
         FlyoutController<TabOverflowMenuHolder<T>> controller =
@@ -515,6 +551,10 @@ public abstract class TabOverflowMenuCoordinator<T>
                 menuWindow.onRectChanged();
             }
         }
+    }
+
+    public @Nullable AnchoredPopupWindow getMenuWindowForTesting() {
+        return mMenuHolder != null ? mMenuHolder.getMenuWindow() : null;
     }
 
     public @Nullable ModelList getModelListForTesting() {

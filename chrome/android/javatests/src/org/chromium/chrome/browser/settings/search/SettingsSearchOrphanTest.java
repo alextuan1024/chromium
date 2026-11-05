@@ -26,9 +26,7 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.MainSettings;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
-import org.chromium.components.browser_ui.settings.search.PreferenceParser;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
-import org.chromium.components.browser_ui.site_settings.CookieSettings;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 
@@ -45,11 +43,8 @@ import java.util.Set;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @EnableFeatures({
-    ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
     ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
     ChromeFeatureList.AUTOFILL_ENABLE_NEW_CARD_BENEFITS_TOGGLE_TEXT,
-    ChromeFeatureList.AUTOFILL_ENABLE_SEPARATE_PIX_PREFERENCE_ITEM,
-    ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT,
     ChromeFeatureList.AUTOFILL_SYNC_EWALLET_ACCOUNTS,
     ChromeFeatureList.DETAILED_LANGUAGE_SETTINGS
 })
@@ -58,10 +53,7 @@ public class SettingsSearchOrphanTest {
     @Rule public final SigninTestRule mSigninTestRule = new SigninTestRule();
 
     // Pre-existing orphan bugs tracked in Buganizer that are pending dedicated fixes.
-    private static final Set<String> KNOWN_ORPHAN_KEYS =
-            Set.of(
-                    // TODO(crbug.com/555170486): Fix CookieSettings orphan preference.
-                    PreferenceParser.createUniqueId(CookieSettings.class.getName(), "allow_rws"));
+    private static final Set<String> KNOWN_ORPHAN_KEYS = Set.of();
 
     private Context mContext;
     private Profile mProfile;

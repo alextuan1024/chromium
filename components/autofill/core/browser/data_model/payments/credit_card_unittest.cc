@@ -11,12 +11,10 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/data_model/payments/payments_metadata.h"
 #include "components/autofill/core/browser/data_quality/validation.h"
 #include "components/autofill/core/browser/studies/autofill_experiments.h"
@@ -24,7 +22,6 @@
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/grit/components_scaled_resources.h"
@@ -1140,6 +1137,8 @@ TEST(CreditCardTest, CompareCardCreationSource) {
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 // Test we get the correct icon for each card type.
 TEST(CreditCardTest, IconResourceId) {
+  EXPECT_EQ(CreditCard::IconResourceId(Suggestion::Icon::kCardAmericanExpress),
+            IDR_AUTOFILL_METADATA_CC_AMEX_NEW);
   EXPECT_EQ(CreditCard::IconResourceId(Suggestion::Icon::kCardDiners),
             IDR_AUTOFILL_METADATA_CC_DINERS);
   EXPECT_EQ(CreditCard::IconResourceId(Suggestion::Icon::kCardDiscover),
@@ -1162,30 +1161,10 @@ TEST(CreditCardTest, IconResourceId) {
             IDR_AUTOFILL_METADATA_CC_VISA);
 }
 
-// Test we get the correct icon for Amex card type when the new Amex network art
-// is enabled.
-// TODO(crbug.com/485691023): Move this check back into `IconResourceId` after
-// `kAutofillEnableNewAmexNetworkArt` is cleaned up.
-TEST(CreditCardTest, IconResourceId_NewAmexNetworkArtEnabled) {
-  base::test::ScopedFeatureList feature_list(
-      features::kAutofillEnableNewAmexNetworkArt);
-
-  EXPECT_EQ(CreditCard::IconResourceId(Suggestion::Icon::kCardAmericanExpress),
-            IDR_AUTOFILL_METADATA_CC_AMEX_NEW);
-}
-
-// Test we get the correct icon for Amex card type when the new Amex network art
-// is disabled.
-TEST(CreditCardTest, IconResourceId_NewAmexNetworkArtDisabled) {
-  base::test::ScopedFeatureList features;
-  features.InitAndDisableFeature(features::kAutofillEnableNewAmexNetworkArt);
-
-  EXPECT_EQ(CreditCard::IconResourceId(Suggestion::Icon::kCardAmericanExpress),
-            IDR_AUTOFILL_METADATA_CC_AMEX);
-}
-
 // Test we get the correct icon for each card type.
 TEST(CreditCardTest, IconResourceIdFromString) {
+  EXPECT_EQ(CreditCard::IconResourceId(kAmericanExpressCard),
+            IDR_AUTOFILL_METADATA_CC_AMEX_NEW);
   EXPECT_EQ(CreditCard::IconResourceId(kDinersCard),
             IDR_AUTOFILL_METADATA_CC_DINERS);
   EXPECT_EQ(CreditCard::IconResourceId(kDiscoverCard),
@@ -1203,29 +1182,6 @@ TEST(CreditCardTest, IconResourceIdFromString) {
             IDR_AUTOFILL_METADATA_CC_VERVE);
   EXPECT_EQ(CreditCard::IconResourceId(kVisaCard),
             IDR_AUTOFILL_METADATA_CC_VISA);
-}
-
-// Test we get the correct icon for Amex card type when the new Amex network art
-// is enabled.
-// TODO(crbug.com/485691023): Move this check back into
-// `IconResourceIdFromString` after `kAutofillEnableNewAmexNetworkArt` is
-// cleaned up.
-TEST(CreditCardTest, IconResourceIdFromString_NewAmexNetworkArtEnabled) {
-  base::test::ScopedFeatureList feature_list(
-      features::kAutofillEnableNewAmexNetworkArt);
-
-  EXPECT_EQ(CreditCard::IconResourceId(kAmericanExpressCard),
-            IDR_AUTOFILL_METADATA_CC_AMEX_NEW);
-}
-
-// Test we get the correct icon for Amex card type when the new Amex network art
-// is disabled.
-TEST(CreditCardTest, IconResourceIdFromString_NewAmexNetworkArtDisabled) {
-  base::test::ScopedFeatureList features;
-  features.InitAndDisableFeature(features::kAutofillEnableNewAmexNetworkArt);
-
-  EXPECT_EQ(CreditCard::IconResourceId(kAmericanExpressCard),
-            IDR_AUTOFILL_METADATA_CC_AMEX);
 }
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
@@ -1718,6 +1674,15 @@ TEST(CreditCardTest, SetExpirationMonth) {
   card.SetInfo(CREDIT_CARD_EXP_MONTH, u"FÉVRIER", "fr-FR");
   EXPECT_EQ(card.GetRawInfo(CREDIT_CARD_EXP_MONTH), u"02");
   EXPECT_EQ(card.expiration_month(), 2);
+
+  // Substring matches inside words should fail and preserve the previous value.
+  card.SetInfo(CREDIT_CARD_EXP_MONTH, u"MayTheForceBeWithYou", "en-US");
+  EXPECT_EQ(card.GetRawInfo(CREDIT_CARD_EXP_MONTH), u"02");
+  EXPECT_EQ(card.expiration_month(), 2);
+
+  card.SetInfo(CREDIT_CARD_EXP_MONTH, u"SecretMay2026!", "en-US");
+  EXPECT_EQ(card.GetRawInfo(CREDIT_CARD_EXP_MONTH), u"02");
+  EXPECT_EQ(card.expiration_month(), 2);
 }
 
 // Verify that we set nickname with the processed string. We replace all tabs
@@ -1926,12 +1891,23 @@ const CreditCardMatchingTypesCase kCreditCardMatchingTypesTestCases[] = {
     // Matching the expiration month.
     {"01", "01", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}},
     {"1", "01", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}},
+    {"January", "01", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "US"},
     {"jan", "01", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "US"},
+    {"May", "05", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "US"},
+    {"may", "05", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "US"},
+    // Substring collisions inside words must not match the expiration month.
+    {"MayTheForceBeWithYou", "05", "2020", LOCAL_CARD, FieldTypeSet(), "US"},
+    {"SecretMay2026!", "05", "2020", LOCAL_CARD, FieldTypeSet(), "US"},
+    {"SmartCookie!", "03", "2020", LOCAL_CARD, FieldTypeSet(), "US"},
+    {"Janice", "01", "2020", LOCAL_CARD, FieldTypeSet(), "US"},
+    {"Augment", "08", "2020", LOCAL_CARD, FieldTypeSet(), "US"},
     // Locale-specific interpretations.
     {"janv", "01", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "FR"},
     {"janv.", "01", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "FR"},
     {"janvier", "01", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "FR"},
+    {"FÉVRIER", "02", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "FR"},
     {"février", "02", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "FR"},
+    {"fevrier", "02", "2020", LOCAL_CARD, {CREDIT_CARD_EXP_MONTH}, "FR"},
     {"mars", "01", "2020", LOCAL_CARD, FieldTypeSet(), "FR"},
 
     // Matching the expiration year.

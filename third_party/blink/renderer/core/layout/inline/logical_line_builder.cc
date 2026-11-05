@@ -5,8 +5,8 @@
 #include "third_party/blink/renderer/core/layout/inline/logical_line_builder.h"
 
 #include <algorithm>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "third_party/blink/renderer/core/layout/disable_layout_side_effects_scope.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_box_state.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_child_layout_context.h"
@@ -21,6 +21,7 @@
 #include "third_party/blink/renderer/core/layout/inline/text_fit_scale.h"
 #include "third_party/blink/renderer/core/layout/layout_text_combine.h"
 #include "third_party/blink/renderer/core/layout/logical_box_fragment.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/stable_sort.h"
 #include "third_party/blink/renderer/platform/text/bidi_paragraph.h"
 
 namespace blink {
@@ -59,7 +60,7 @@ const LayoutObject& LayoutObjectForLineClampEllipsis(
     const InlineNode& node,
     const InlineItemResults& line_items,
     const InlineItemTextIndex& line_start) {
-  for (const auto& item_result : base::Reversed(line_items)) {
+  for (const auto& item_result : std::views::reverse(line_items)) {
     const auto& item = *item_result.item;
     if (!CanUseItemForNeedsPaint(item)) {
       continue;
@@ -79,7 +80,7 @@ const LayoutObject& LayoutObjectForLineClampEllipsis(
   auto items_prefix =
       base::span<const Member<InlineItem>>(node.ItemsData(false).items)
           .first(line_start.item_index);
-  for (const auto& item : base::Reversed(items_prefix)) {
+  for (const auto& item : std::views::reverse(items_prefix)) {
     if (CanUseItemForNeedsPaint(*item)) {
       return *item->GetLayoutObject();
     }
@@ -166,7 +167,7 @@ void LogicalLineBuilder::CreateLine(LineInfo* line_info,
   box_states_->OnEndPlaceItems(constraint_space_, line_box, baseline_type_);
 
   if (has_line_clamp_ellipsis) {
-    DCHECK(RuntimeEnabledFeatures::CSSLineClampLineBreakingEllipsisEnabled());
+    DCHECK(RuntimeEnabledFeatures::CSSLineClampEnabled());
     const auto& ellipsis_data = *main_line_helper->GetLineClampEllipsis();
     const ShapeResultView* shape_result_view =
         ShapeResultView::Create(ellipsis_data.shape_result);
@@ -319,7 +320,7 @@ InlineBoxState* LogicalLineBuilder::HandleItemResults(
       // block-level OOF child positions itself based on the direction of its
       // block-level container.
       WritingDirectionMode writing_direction =
-          item.GetLayoutObject()->StyleRef().IsOriginalDisplayInlineType()
+          item.GetLayoutObject()->Style().IsOriginalDisplayInlineType()
               ? WritingDirectionMode(constraint_space_.GetWritingMode(),
                                      item.Direction())
               : constraint_space_.GetWritingDirection();
@@ -330,7 +331,8 @@ InlineBoxState* LogicalLineBuilder::HandleItemResults(
       if (item_result.positioned_float) {
         if (!item_result.positioned_float->break_before_token) {
           line_box->AddChild(LogicalLineItem::PositionedFloat(
-              item, item_result.positioned_float));
+              item, item_result.positioned_float,
+              constraint_space_.GetWritingDirection()));
         }
       } else {
         line_box->AddChild(
@@ -489,7 +491,7 @@ InlineBoxState* LogicalLineBuilder::PlaceAtomicInline(
                       box->margins.inline_start + item_result->spacing_before);
   } else {
     // The metrics should be as text instead of atomic inline box.
-    const auto& style = layout_object->Parent()->StyleRef();
+    const auto& style = layout_object->Parent()->Style();
     // TextCombine items are not scaled.
     box->ComputeTextMetrics(style, *style.GetFont(), baseline_type_,
                             TextFitBlockScale::kFixed);
@@ -498,8 +500,10 @@ InlineBoxState* LogicalLineBuilder::PlaceAtomicInline(
     // See "text-combine-justify.html".
     const LayoutUnit inline_offset =
         box->margins.inline_start + item_result->spacing_before;
+    const PhysicalBoxStrut margins = box->margins.ConvertToPhysical(
+        {constraint_space_.GetWritingMode(), TextDirection::kLtr});
     line_box->AddChild(std::move(item_result->layout_result),
-                       LogicalOffset{inline_offset, box->text_top},
+                       LogicalOffset{inline_offset, box->text_top}, margins,
                        item_result->inline_size, /* children_count */ 0,
                        item.BidiLevel());
   }
@@ -526,8 +530,10 @@ void LogicalLineBuilder::PlaceLayoutResult(InlineItemResult* item_result,
   }
 
   LayoutUnit line_top = item_result->margins.line_over - metrics.ascent;
+  const PhysicalBoxStrut margins = item_result->margins.ConvertToPhysical(
+      {constraint_space_.GetWritingMode(), TextDirection::kLtr});
   line_box->AddChild(std::move(item_result->layout_result),
-                     LogicalOffset{inline_offset, line_top},
+                     LogicalOffset{inline_offset, line_top}, margins,
                      item_result->inline_size, /* children_count */ 0,
                      item.BidiLevel());
 }
@@ -546,9 +552,11 @@ void LogicalLineBuilder::PlaceInitialLetterBox(const InlineItem& item,
   // Note: `item.Style()` which holds style of `<::first-letter>` should not be
   // include in `InlineBoxState::font_metrics` and `metrics`, because they
   // don't affect baseline of surrounding text.
+  const PhysicalBoxStrut margins = item_result->margins.ConvertToPhysical(
+      {constraint_space_.GetWritingMode(), TextDirection::kLtr});
   line_box->AddChild(
       std::move(item_result->layout_result),
-      LogicalOffset{item_result->margins.inline_start, LayoutUnit()},
+      LogicalOffset{item_result->margins.inline_start, LayoutUnit()}, margins,
       item_result->inline_size, /* children_count */ 0, item.BidiLevel());
 }
 
@@ -740,7 +748,7 @@ void LogicalLineBuilder::BidiReorder(
   if (has_opaque_items) {
     // Use the paragraph level for trailing opaque items.
     UBiDiLevel last_level = base_direction_level;
-    for (UBiDiLevel& level : base::Reversed(levels)) {
+    for (UBiDiLevel& level : std::views::reverse(levels)) {
       if (level == kOpaqueBidiLevel) {
         level = last_level;
       } else {
@@ -783,12 +791,10 @@ void LogicalLineBuilder::BidiReorder(
               .subspan(column->start_index, column->size));
     }
     // The order is important for RubyBlockPositionCalculator::HandleRubyLine().
-    std::stable_sort(
-        column_list.begin(), column_list.end(),
-        [](const auto& column1, const auto& column2) {
-          int32_t diff = column2->start_index - column1->start_index;
-          return diff != 0 ? (diff > 0) : (column1->size > column2->size);
-        });
+    StableSort(column_list, [](const auto& column1, const auto& column2) {
+      int32_t diff = column2->start_index - column1->start_index;
+      return diff != 0 ? (diff > 0) : (column1->size > column2->size);
+    });
   }
 }
 

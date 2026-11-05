@@ -34,7 +34,7 @@ chromium-metrics-reviews@google.com.
 <enum name="ComposeEntryPoint">
   <int value="0" label="Context Menu"/>
   <int value="1" label="Proactive Nudge"/>
-  <int value="2" label="Selection Nudge"/>
+  <int value="2" label="(Obsolete) Selection Nudge"/>
   <int value="3" label="Resume Nudge">
     Shown on field focus when a sessions exists
   </int>
@@ -69,11 +69,6 @@ chromium-metrics-reviews@google.com.
     lifetime, and was replaced by a new session. The FRE/MSBB wasn't
     acknowledged/accepted.
   </int>
-</enum>
-
-<enum name="ComposeInnerTextNodeOffset">
-  <int value="0" label="Inner Text Node Offset not found"/>
-  <int value="1" label="Inner Text Node Offset found"/>
 </enum>
 
 <enum name="ComposeNudgeCtrEvent">
@@ -132,13 +127,6 @@ chromium-metrics-reviews@google.com.
   </int>
   <int value="17" label="The user is offline"/>
   <int value="18" label="The request timed out"/>
-</enum>
-
-<enum name="ComposeSelectAllStatus">
-  <int value="0" label="Selection unchanged">
-    Did not select all text for the user
-  </int>
-  <int value="1" label="Selected all">Selected all text for the user</int>
 </enum>
 
 <enum name="ComposeSessionCloseReasonType">
@@ -237,7 +225,7 @@ chromium-metrics-reviews@google.com.
   <int value="11" label="Field in fenced frame">
     Blocked for element appearing inside a fenced frame
   </int>
-  <int value="12" label="Compose feature disabled"/>
+  <int value="12" label="DEPRECATED: Compose feature disabled"/>
   <int value="13" label="Unsupported ChromeOS device">
     Blocked for unsupported ChromeOS device
   </int>

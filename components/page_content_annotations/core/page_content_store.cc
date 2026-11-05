@@ -4,14 +4,18 @@
 
 #include "components/page_content_annotations/core/page_content_store.h"
 
+#include <stdint.h>
+
 #include <set>
 
+#include "base/check_op.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
 #include "base/timer/elapsed_timer.h"
 #include "components/database_utils/url_converter.h"
+#include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/os_crypt/async/common/encryptor.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
@@ -44,8 +48,7 @@ void PageContentStore::OnDatabaseError(int extended_error,
 
     // Signal the test-expectation framework that the error was handled.
     std::ignore = sql::Database::IsExpectedSqliteError(extended_error);
-
-    db_initialized_ = InitializeDb();
+    db_initialized_ = false;
     return;
   }
 
@@ -54,7 +57,7 @@ void PageContentStore::OnDatabaseError(int extended_error,
   }
 
   // Close the db.
-  db_.Close();
+  db_.Poison();
   db_initialized_ = false;
 }
 
@@ -243,6 +246,8 @@ std::optional<proto::PageContext> PageContentStore::GetPageContentForTab(
 
 std::optional<proto::PageContext> PageContentStore::GetPageContentFromStatement(
     sql::Statement* statement) {
+  // TODO(crbug.com/583953337): Record a histogram for read and validation
+  // failures.
   if (!statement->Step()) {
     return std::nullopt;
   }
@@ -259,6 +264,14 @@ std::optional<proto::PageContext> PageContentStore::GetPageContentFromStatement(
       decrypt_timer.Elapsed());
   proto::PageContext page_context;
   if (!page_context.ParseFromString(serialized_page_context)) {
+    return std::nullopt;
+  }
+  if (page_context.has_annotated_page_content() &&
+      page_context.annotated_page_content().version() !=
+          kAnnotatedPageContentVersion) {
+    // TODO(crbug.com/583953337): Consider deleting incompatible entries (on
+    // read or in the daily cleanup pass) to avoid repeatedly reading and
+    // decrypting them.
     return std::nullopt;
   }
   return page_context;
@@ -334,6 +347,16 @@ bool PageContentStore::DeletePageContentForTab(int64_t tab_id) {
   if (!transaction.Begin()) {
     return false;
   }
+  if (!DeletePageContentForTabInternal(tab_id)) {
+    return false;
+  }
+  return transaction.Commit();
+}
+
+bool PageContentStore::DeletePageContentForTabInternal(int64_t tab_id) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(db_initialized_);
+  CHECK(db_.HasActiveTransactions());
 
   static const char kDeleteContentSql[] =
       "DELETE FROM page_content WHERE id IN "
@@ -350,7 +373,41 @@ bool PageContentStore::DeletePageContentForTab(int64_t tab_id) {
   sql::Statement delete_metadata_statement(
       db_.GetCachedStatement(SQL_FROM_HERE, kDeleteMetadataSql));
   delete_metadata_statement.BindInt64(0, tab_id);
-  if (!delete_metadata_statement.Run()) {
+  return delete_metadata_statement.Run();
+}
+
+bool PageContentStore::UpdateTabId(int64_t old_tab_id, int64_t new_tab_id) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK_GT(old_tab_id, 0);
+  CHECK_GT(new_tab_id, 0);
+  CHECK_NE(old_tab_id, new_tab_id);
+  if (!db_initialized_) {
+    return false;
+  }
+  base::ElapsedTimer update_timer;
+  absl::Cleanup record_latency = [&]() {
+    base::UmaHistogramTimes(
+        "OptimizationGuide.PageContentStore.UpdateTabIdLatency",
+        update_timer.Elapsed());
+  };
+
+  sql::Transaction transaction(&db_);
+  if (!transaction.Begin()) {
+    return false;
+  }
+
+  // Delete existing contents, else the update call would fail since `tab_id` is
+  // marked unique.
+  if (!DeletePageContentForTabInternal(new_tab_id)) {
+    return false;
+  }
+
+  static constexpr char kUpdateSql[] =
+      "UPDATE page_metadata SET tab_id = ? WHERE tab_id = ?";
+  sql::Statement statement(db_.GetCachedStatement(SQL_FROM_HERE, kUpdateSql));
+  statement.BindInt64(0, new_tab_id);
+  statement.BindInt64(1, old_tab_id);
+  if (!statement.Run()) {
     return false;
   }
   return transaction.Commit();

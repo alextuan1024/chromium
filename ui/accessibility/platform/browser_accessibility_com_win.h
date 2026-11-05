@@ -78,8 +78,10 @@ BrowserAccessibilityComWin : public AXPlatformNodeWin,
   COMPONENT_EXPORT(AX_PLATFORM) ~BrowserAccessibilityComWin() override;
 
   // AXPlatformNodeWin methods.
+  COMPONENT_EXPORT(AX_PLATFORM) void Destroy() override;
   COMPONENT_EXPORT(AX_PLATFORM) void OnReferenced() override;
   COMPONENT_EXPORT(AX_PLATFORM) void OnDereferenced() override;
+  COMPONENT_EXPORT(AX_PLATFORM) void ResetComputedHypertext() override;
 
   struct WinAttributes {
     WinAttributes();
@@ -425,7 +427,8 @@ BrowserAccessibilityComWin : public AXPlatformNodeWin,
   std::unique_ptr<WinAttributes> win_attributes_;
 
   // Only valid during the scope of a IA2_EVENT_TEXT_REMOVED or
-  // IA2_EVENT_TEXT_INSERTED event.
+  // IA2_EVENT_TEXT_INSERTED event. Cleared if the node is destroyed while
+  // firing events.
   raw_ptr<UpdateState> update_state_ = nullptr;
 
   // The previous scroll position, so we can tell if this object scrolled.

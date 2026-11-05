@@ -59,6 +59,19 @@ BASE_FEATURE(kAndroidDesktopStyleScrollbars, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kAndroidDownloadableFontsMatching,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+#if BUILDFLAG(IS_ANDROID)
+// Restarts input before showing the keyboard when a previous restartInput()
+// was skipped while the keyboard was hidden. Kill switch for b/500230096.
+BASE_FEATURE(kAndroidRestartInputAfterHiddenStateUpdate,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Captures microphone audio in-process via AudioRecord and pipes it to
+// Android's SpeechRecognizer via EXTRA_AUDIO_SOURCE so foreground Chrome
+// retains microphone priority when other processes record concurrently.
+BASE_FEATURE(kAndroidSpeechRecognitionInProcessAudio,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
+
 #if BUILDFLAG(IS_WIN)
 // Flag guard for Windows Arabic Indic digit input solution.
 // crbug.com/440381284
@@ -74,6 +87,15 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    &kAsyncBeforeUnload,
                    "AsyncBeforeUnloadTimeout",
                    base::Milliseconds(500));
+
+// Uses drag session IDs to prevent stale Aura drag callbacks and cleanup from
+// modifying a newer drag.
+BASE_FEATURE(kAuraDragDropSessionId,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // Synchronously continuing with navigation can lead to trying to start another
 // navigation synchronously while the first navigation is still being processed
@@ -125,15 +147,8 @@ BASE_FEATURE(kBackForwardCacheTimeToLiveControl,
 
 // When enabled, the browser will schedule before unload tasks that continue
 // navigation network responses in a kHigh priority queue.
-// TODO(b/281094330): Run experiment on ChromeOS. Experiment was not run on
-// ChromeOS due to try bot issue.
 BASE_FEATURE(kBeforeUnloadBrowserResponseQueue,
-#if BUILDFLAG(IS_CHROMEOS)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif
-);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_ANDROID)
 // Whether to hide paste popup on GestureScrollBegin or GestureScrollUpdate.
@@ -151,10 +166,27 @@ BASE_FEATURE(kCancelCompositionWhenWindowLosesFocus,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_MAC)
 
+// When enabled, forces opaque CacheStorage responses to be treated as
+// credentialed for the Cross-Origin-Resource-Policy (CORP) check.
+// TODO(crbug.com/568759904): Update the Fetch and Service Worker specs and
+// corresponding WPTs.
+BASE_FEATURE(kCacheStorageOpaqueResponseCredentialedForCorp,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // When enabled, CDP method Page.captureScreenshot will increment
 // the LocalSurfaceId instead of waiting for ForceRedraw to complete.
 // This should avoid a possible stall due to frames not being presented.
 BASE_FEATURE(kCDPScreenshotNewSurface, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Killswitch for clamping the size of renderer-supplied popup bounds to a
+// fixed maximum. See https://crbug.com/544041106.
+BASE_FEATURE(kClampPopupBounds, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Killswitch for treating a visually non-empty CompositorFrame in an initial
+// empty document as an access to that document, which stops the omnibox from
+// showing a renderer-initiated pending URL. See https://crbug.com/40055319.
+BASE_FEATURE(kClearPendingUrlOnNonEmptyCompositorFrame,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, code cache does not use a browsing_data filter for deletions.
 BASE_FEATURE(kCodeCacheDeletionWithoutFilter, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -215,8 +247,10 @@ BASE_FEATURE(kDocumentPolicyNegotiation, base::FEATURE_DISABLED_BY_DEFAULT);
 // When enabled, sandboxed renderer processes (except spare renderers) are
 // initially bound with a strong (BIND_IMPORTANT) binding right at creation
 // time, putting them immediately in the top-app cpuset group on Android.
+// Owner: khokhlov@google.com
+// TODO(crbug.com/536874828): Remove after the feature reaches 100% Stable.
 BASE_FEATURE(kEarlyTopAppForSandboxedRenderer,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
 // When enabled `EditContext::updateSelection` calls from async selectionchange
@@ -255,8 +289,12 @@ BASE_FEATURE(kEnforceGamepadPermissionsPolicy,
 //
 // Note: This feature remains disabled if
 // blink::features::kTreatMhtmlInitialDocumentLoadsAsCrossDocument is disabled.
+//
+// TODO(crbug.com/40580002): Insecure request policy and insecure navigations
+// set mismatches currently use DumpWithoutCrashing to collect additional
+// diagnostics. Restore renderer termination after validating the fixes.
 BASE_FEATURE(kEnforceSameDocumentOriginInvariants,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Content counterpart of ExperimentalContentSecurityPolicyFeatures in
 // third_party/blink/renderer/platform/runtime_enabled_features.json5. Enables
@@ -310,7 +348,7 @@ BASE_FEATURE_ENUM_PARAM(FontDataServiceTypefaceType,
                         FontDataServiceTypefaceType::kFontations,
                         &font_data_service_typeface);
 #else
-BASE_FEATURE(kFontDataServiceChromeOS, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kFontDataServiceChromeOS, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE_ENUM_PARAM(FontDataServiceTypefaceType,
                         kFontDataServiceTypefaceType,
                         &kFontDataServiceChromeOS,
@@ -371,7 +409,7 @@ BASE_FEATURE(kRemoveRendererProcessLimit, base::FEATURE_ENABLED_BY_DEFAULT);
 // https://crbug.com/329027914
 BASE_FEATURE(
     kPartitionAllocSchedulerLoopQuarantineTaskObserverForBrowserUIThread,
-    base::FEATURE_ENABLED_BY_DEFAULT);
+    base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Killswitch for prefetch devtools UA override (crbug.com/422193319).
 BASE_FEATURE(kPrefetchDevtoolsUserAgentOverride,
@@ -381,9 +419,6 @@ BASE_FEATURE(kPrefetchDevtoolsUserAgentOverride,
 // with a user gesture.
 BASE_FEATURE(kIgnoreDuplicateNavsOnlyWithUserGesture,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-// A feature flag for the memory-backed code cache.
-BASE_FEATURE(kInMemoryCodeCache, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables the ability to use the updateIfOlderThanMs field in the trusted
 // bidding response to trigger a post-auction update if the group has been
@@ -404,13 +439,24 @@ BASE_FEATURE(kIsSuitableForUrlInfoEarlyReturnHoldback,
 // When enabled, child process will not terminate itself when IPC is reset.
 BASE_FEATURE(kKeepChildProcessAfterIPCReset, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Kill switch. When enabled, an Aura view keeps its LocalSurfaceId across its
+// first navigation while it has shown no content, so that a surface the
+// browser already embeds is the one the renderer draws into.
+BASE_FEATURE(kKeepLocalSurfaceIdOnFirstNavigation,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When navigating away from a previously committed unassigned NavigationEntry
+// (e.g., chrome-native://newtab/ on Android), only replace its SiteInstance if
+// the new navigation stayed in that same SiteInstance, keeping it in its
+// original BrowsingInstance if the navigation swapped SiteInstances.
+// TODO(crbug.com/493236843): Remove this killswitch once the change has made it
+// through a stable channel revision.
+BASE_FEATURE(kKeepUnassignedSiteInstanceInOriginalBrowsingInstance,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // When enabled, the renderer process will be killed if it provides
 // invalid (non-allowlisted) headers in a navigation request.
 BASE_FEATURE(kKillOnInvalidNavigationHeaders, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Kill switch for crbug.com/424995036. When enabled, the top of a
-// PopupWidgetHost is constrained to be at or below the line of death.
-BASE_FEATURE(kLimitPopupWidgetHostPosition, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables Local Network Access checks for all types of web workers.
 //
@@ -490,6 +536,10 @@ BASE_FEATURE(kLocalNetworkAccessForFencedFrameNavigations,
 BASE_FEATURE(kLocalNetworkAccessForFencedFrameNavigationsWarningOnly,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Schedules worker GPU streams (kGpuStreamIdWorker) at
+// gpu::SchedulingPriority::kLow instead of kGpuStreamPriorityWorker (kNormal).
+BASE_FEATURE(kLowPriorityGpuWorkerStream, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // When enabled, allows the ReusePrerenderingProcessForMainFrames feature
 // and the ProcessPerSiteUpToMainFrameThreshold feature to reuse processes
 // even when DevTools was ever attached.
@@ -563,6 +613,21 @@ BASE_FEATURE(kPermissionsPolicyVerificationInContent,
 // pen/touch pointer type is not clobbered.
 BASE_FEATURE(kMouseEventPreservePointerType, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Captures the cursor's screen position before emulated Aura pointer lock and
+// restores it on unlock, even if the cursor was outside the view or the window
+// moved while locked. See https://crbug.com/525729332.
+// TODO(crbug.com/525729332): ChromeOS could have issues restoring the pointer
+// to the same location it was in if the cursor was in a second display with
+// different DPI. Validate that the current solution works for ChromeOS, and add
+// a fix if it doesn't before enabling by default.
+BASE_FEATURE(kPointerLockRestoreScreenPosition,
+#if BUILDFLAG(IS_CHROMEOS)
+             base::FEATURE_DISABLED_BY_DEFAULT
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT
+#endif
+);
+
 // If enabled, responses with an operative Cookie-Indices will not be used
 // if the relevant cookie values have changed.
 BASE_FEATURE(kPrefetchCookieIndices, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -580,7 +645,16 @@ BASE_FEATURE(kPreloadActivationReportWithExtensionInterception,
 // feature.
 BASE_FEATURE(kPreloadingConfig, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kPrioritizeCompositorTaskRunnerOnStartup,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kPrioritizeResizeTaskRunnerOnStartup,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Binds the navigation `WebUIURLLoaderFactory` receiver onto the navigation
+// network response task runner so WebUI navigation requests are dispatched
+// ahead of default UI thread tasks.
+BASE_FEATURE(kPrioritizeWebUINavigationURLLoader,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // A misunderstanding when fixing crbug.com/40076091 meant that non-speculative
@@ -606,10 +680,6 @@ BASE_FEATURE(kPrivacySandboxAdsAPIsM1Override,
 // chrome window, when we start interacting with another window.
 BASE_FEATURE(kContinueGestureOnLosingFocus, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
-
-// Make sendBeacon throw for a Blob with a non simple type.
-BASE_FEATURE(kSendBeaconThrowForBlobWithNonSimpleType,
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, try to reuse an unlocked renderer process when COOP swap is
 // happening on prerender initial navigation. Please see crbug.com/41492112 for
@@ -661,12 +731,6 @@ BASE_FEATURE(kReloadHiddenTabsWithCrashedSubframes,
 BASE_FEATURE(kRendererCancellationThrottleImprovements,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, allows a navigation to resume even if the renderer process for
-// its speculative RFH is killed. This only works for navigations that have not
-// yet received the response and picked the final RFH to commit in.
-BASE_FEATURE(kResumeNavigationWithSpeculativeRFHProcessGone,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // When enabled, the browser will try to swap to a new SiteInstance if there is
 // an existing warm (pending, committed, or delayed shutdown) renderer process
 // locked to the destination site and when the current process is an empty
@@ -704,6 +768,13 @@ BASE_FEATURE(kSandboxedProcessServiceLimitOnAndroid,
 
 BASE_FEATURE(kScrollAfterOSKViewportShrinkFix,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Keeps re-scrolling the focused editable node into view when the on-screen
+// keyboard shrinks the viewport again after the initial show (e.g. Gboard
+// Translate bar, re-docking a floating keyboard). Kill switch for
+// crbug.com/565609019.
+BASE_FEATURE(kScrollFocusedNodeOnOSKViewportReshrink,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
 // Controls whether redirect Location headers are sanitized during navigation
@@ -739,6 +810,10 @@ const base::FeatureParam<std::string>
     kServiceWorkerBypassFetchHandlerBypassedHashStrings{
         &kServiceWorkerBypassFetchHandlerHashStrings,
         "script_checksum_to_bypass", ""};
+
+// Killswitch for crbug.com/563194341
+BASE_FEATURE(kServiceWorkerDropHandleForCSPSandboxedWorker,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // (crbug.com/41411856): When enabled, the srcdoc iframes are controlled by the
 // same service worker that controls their parent.
@@ -810,17 +885,21 @@ BASE_FEATURE(kServiceWorkerSoftUpdateOnFunctionalEvent,
 BASE_FEATURE(kServiceWorkerStrictContextValidation,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// When enabled, NavigationControllerImpl reads a frame's FrameNavigationEntry
+// from its own last_committed_frame_entry() instead of from
+// GetLastCommittedEntry(), when updating session history. The two differ while
+// a multi-frame history navigation is partially committed. This acts as a kill
+// switch for https://crbug.com/560754831.
+// Owner: arthursonzogni@chromium.org
+// TODO(crbug.com/560754831): Expires after the M163 branch cut. Remove it then.
+BASE_FEATURE(kSessionHistoryUseFrameCommittedEntry,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // If enabled, the browser process will derive the secure context state of a
 // SharedWorker connection from its own authoritative ground truth
 // (PolicyContainerHost) instead of trusting the renderer-supplied parameter.
 BASE_FEATURE(kSharedWorkerSecureContextDerivationFromBrowser,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, SharedWorkers in a third-party context (e.g. created via the
-// Storage Access API) will correctly restrict SameSite cookies on WebSocket
-// connections.
-BASE_FEATURE(kRestrictSharedWorkerWebSocketCrossSiteCookies,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables skipping the early call to CommitPending when navigating away from a
 // crashed frame.
@@ -833,12 +912,42 @@ BASE_FEATURE(kSkipEarlyCommitPendingForCrashedFrame,
 BASE_FEATURE(kSkipRendererCancellationThrottle,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// When enabled, main-frame same-document commits that replace the current
+// entry without changing its URL or virtual URL (e.g.
+// `history.replaceState()` with the current URL) do not include
+// INVALIDATE_TYPE_URL in the resulting NavigationStateChanged() notification,
+// so that embedders can skip URL-dependent UI updates.
+BASE_FEATURE(kSkipUrlInvalidationForUnchangedSameDocumentReplacement,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 #if BUILDFLAG(IS_ANDROID)
 // When enabled, ensure high-rank processes are on the LRU list while app is in
 // background or the effective binding state is in conflict with low rank
 // processes.
 BASE_FEATURE(kStrictHighRankProcessLRU, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
+
+// When enabled, UI thread proxies of a main frame document's network
+// subresource URLLoaderFactory (e.g. the extensions WebRequest proxy) bind
+// their receivers to a kHigh priority task queue instead of the UI thread's
+// default task queue, so that starting a subresource request isn't delayed by
+// unrelated default-queue work.
+BASE_FEATURE(kSubresourceLoaderProxyTaskQueue,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+// When true, only documents that commit while their WebContents is visible use
+// the kHigh priority task queue.
+BASE_FEATURE_PARAM(bool,
+                   kSubresourceLoaderProxyTaskQueueVisibleOnly,
+                   &kSubresourceLoaderProxyTaskQueue,
+                   true);
+// When true, prerendered main frames also use the kHigh priority task queue
+// (subject to `kSubresourceLoaderProxyTaskQueueVisibleOnly`). False by default
+// so background prerenders do not preempt default-queue UI work for the primary
+// page.
+BASE_FEATURE_PARAM(bool,
+                   kSubresourceLoaderProxyTaskQueueIncludePrerendering,
+                   &kSubresourceLoaderProxyTaskQueue,
+                   false);
 
 // Allows swipe left/right from touchpad change browser navigation.
 // On platforms that don't have this enabled by default, the overscroll gesture
@@ -862,6 +971,11 @@ BASE_FEATURE(kTrustedTypesFromLiteral, base::FEATURE_DISABLED_BY_DEFAULT);
 #if BUILDFLAG(IS_WIN)
 BASE_FEATURE(kUpdateDirectManipulationHelperOnParentChange,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Exercises event-based I/O in ordinary Win32 renderers independently of Basic
+// Process activation. Other process types retain the IOCP backend.
+BASE_FEATURE(kUseEventBasedMessagePumpForIOInRenderer,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
 // Validate the code signing identity of the network process before establishing
@@ -880,21 +994,21 @@ BASE_FEATURE(kWarmUpNetworkProcess, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kWebAssemblyDynamicTiering, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables in-process resource loading for WebUI renderer processes.
-BASE_FEATURE(kWebUIInProcessResourceLoading,
-#if BUILDFLAG(IS_ANDROID)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif
-);
+BASE_FEATURE(kWebUIInProcessResourceLoading, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Optimizes WebUI `LocalResourceLoaderConfig` generation and avoids redundant
+// deep-clones during navigation commit.
+BASE_FEATURE(kWebUIOptimizeLocalResourceLoaderConfig,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Writes WebUI resource bytes synchronously into a payload-sized Mojo data
+// pipe when they fit in the pipe capacity, instead of streaming them through
+// `mojo::DataPipeProducer` on the `ThreadPool`.
+BASE_FEATURE(kWebUISyncDataPipeWrite, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables WebOTP calls in cross-origin iframes if allowed by Permissions
 // Policy.
 BASE_FEATURE(kWebOTPAssertionFeaturePolicy, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Flag guard for fix for crbug.com/40942531.
-BASE_FEATURE(kLimitCrossOriginNonActivatedPaintHolding,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Please keep features in alphabetical order.
 

@@ -23,10 +23,13 @@
 #include "build/build_config.h"
 #include "components/enterprise/browser/controller/chrome_browser_cloud_management_controller.h"
 #include "components/policy/core/common/policy_logger.h"
+#include "components/policy/core/common/policy_switches.h"
 
 namespace policy {
 
 namespace {
+
+constexpr char kFakeEnrollmentToken[] = "fake-enrollment-token";
 
 constexpr char kInvalidTokenValue[] = "INVALID_DM_TOKEN";
 
@@ -50,8 +53,9 @@ DMToken CreateEmptyToken() {
 BrowserDMTokenStorage* BrowserDMTokenStorage::storage_for_testing_ = nullptr;
 
 BrowserDMTokenStorage* BrowserDMTokenStorage::Get() {
-  if (storage_for_testing_)
+  if (storage_for_testing_) {
     return storage_for_testing_;
+  }
 
   static base::NoDestructor<BrowserDMTokenStorage> storage;
   return storage.get();
@@ -94,6 +98,16 @@ std::string BrowserDMTokenStorage::RetrieveEnrollmentToken() {
   return enrollment_token_;
 }
 
+void BrowserDMTokenStorage::RefreshEnrollmentToken() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  // Force `InitIfNeeded()` to read the enrollment token again by marking it as
+  // skipped, which takes its retry path. If the storage isn't initialized yet,
+  // `InitIfNeeded()` initializes everything instead.
+  is_init_enrollment_token_skipped_ = true;
+  InitIfNeeded();
+}
+
 void BrowserDMTokenStorage::StoreDMToken(const std::string& dm_token,
                                          StoreCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -133,8 +147,9 @@ void BrowserDMTokenStorage::OnDMTokenStored(bool success) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(store_callback_);
 
-  if (!store_callback_.is_null())
+  if (!store_callback_.is_null()) {
     std::move(store_callback_).Run(success);
+  }
 }
 
 bool BrowserDMTokenStorage::ShouldDisplayErrorMessageOnFailure() {
@@ -157,7 +172,7 @@ void BrowserDMTokenStorage::InitIfNeeded() {
     // a better solution in the future.
     if (is_init_enrollment_token_skipped_) {
       is_init_enrollment_token_skipped_ = !delegate_->CanInitEnrollmentToken();
-      enrollment_token_ = delegate_->InitEnrollmentToken();
+      enrollment_token_ = InitEnrollmentToken();
     }
     return;
   }
@@ -209,7 +224,7 @@ void BrowserDMTokenStorage::InitIfNeeded() {
     return;
   }
 
-  enrollment_token_ = delegate_->InitEnrollmentToken();
+  enrollment_token_ = InitEnrollmentToken();
   DVLOG(1) << "Enrollment token = " << enrollment_token_;
 
   std::string init_dm_token = delegate_->InitDMToken();
@@ -221,13 +236,22 @@ void BrowserDMTokenStorage::InitIfNeeded() {
     DVLOG(1) << "DM Token = invalid";
   } else {
     dm_token_ = CreateValidToken(init_dm_token);
-    DVLOG(1) << "DM Token = " << dm_token_.value();
+    DVLOG(1) << "DM Token = valid";
   }
 
   should_display_error_message_on_failure_ =
       delegate_->InitEnrollmentErrorOption();
 
   delegate_->OnTokenInitialized();
+}
+
+std::string BrowserDMTokenStorage::InitEnrollmentToken() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  std::string enrollment_token = delegate_->InitEnrollmentToken();
+  if (enrollment_token.empty() && policy::FakeDmserverAlwaysEnrolls()) {
+    return kFakeEnrollmentToken;
+  }
+  return enrollment_token;
 }
 
 void BrowserDMTokenStorage::SaveDMToken(const std::string& token) {

@@ -16,7 +16,6 @@ source_set("ui") {
       "//base",
       "//chrome/browser/multistep_filter/core",
       "//chrome/browser/profiles:profile",
-      "//chrome/browser/ui/tabs",
       "//chrome/browser/ui/tabs:tabs_public",
       "//components/multistep_filter/core",
       "//ui/base/unowned_user_data",
@@ -64,7 +63,7 @@ source_set("test_support") {
 source_set("unit_tests") {
   testonly = true
   sources = []
-  deps = []
+  deps = [ "//chrome/test/base:chrome_render_view_host_test_harness" ]
 
   if (!is_android) {
     sources += [ "filter_ui_controller_unittest.cc" ]

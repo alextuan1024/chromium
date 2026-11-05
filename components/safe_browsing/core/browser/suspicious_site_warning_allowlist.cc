@@ -6,8 +6,13 @@
 
 #include <utility>
 
+#include "base/notreached.h"
 #include "base/values.h"
+#include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_constraints.h"
+#include "components/content_settings/core/common/content_settings_pattern.h"
+#include "components/content_settings/core/common/content_settings_types.h"
+#include "components/history/core/browser/history_types.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -25,6 +30,21 @@ GURL GetHostNameWithHTTPScheme(const std::string& host) {
 }
 
 }  // namespace
+
+const char* SuspiciousSiteWarningUserChoiceToString(
+    SuspiciousSiteWarningUserChoice choice) {
+  switch (choice) {
+    case SuspiciousSiteWarningUserChoice::kMarkAsSafe:
+      return "mark_as_safe";
+    case SuspiciousSiteWarningUserChoice::kBackToSafety:
+      return "back_to_safety";
+    case SuspiciousSiteWarningUserChoice::kDismiss:
+      return "dismiss";
+    case SuspiciousSiteWarningUserChoice::kManualNavigation:
+      return "manual_navigation";
+  }
+  NOTREACHED();
+}
 
 SuspiciousSiteWarningAllowlist::SuspiciousSiteWarningAllowlist(
     scoped_refptr<HostContentSettingsMap> host_content_settings_map)
@@ -94,6 +114,54 @@ void SuspiciousSiteWarningAllowlist::Clear(base::Time delete_begin,
                                            base::Time delete_end) {
   Clear(delete_begin, delete_end,
         HostContentSettingsMap::PatternSourcePredicate());
+}
+
+void SuspiciousSiteWarningAllowlist::OnHistoryDeletions(
+    const history::DeletionInfo& deletion_info) {
+  if (!host_content_settings_map_) {
+    // `host_content_settings_map_` may be null in tests or profiles without
+    // content settings.
+    return;
+  }
+
+  if (deletion_info.IsAllHistory()) {
+    Clear(base::Time(), base::Time::Max());
+    return;
+  }
+
+  if (deletion_info.deleted_urls_origin_map().empty()) {
+    return;
+  }
+
+  ContentSettingsForOneType allowlist_entries =
+      host_content_settings_map_->GetSettingsForOneType(
+          ContentSettingsType::SUSPICIOUS_SITE_WARNING_DATA);
+  for (const auto& entry : allowlist_entries) {
+    if (entry.IsExpired() || !entry.setting_value.is_dict()) {
+      continue;
+    }
+    const std::string& host = entry.primary_pattern.GetHost();
+    if (host.empty()) {
+      continue;
+    }
+
+    bool host_was_deleted = false;
+    bool has_remaining_visits = false;
+    for (const auto& [origin_gurl, count_and_time] :
+         deletion_info.deleted_urls_origin_map()) {
+      if (origin_gurl.host() == host) {
+        host_was_deleted = true;
+        if (count_and_time.first > 0) {
+          has_remaining_visits = true;
+          break;
+        }
+      }
+    }
+
+    if (host_was_deleted && !has_remaining_visits) {
+      RevokeUserAllowException(host);
+    }
+  }
 }
 
 }  // namespace safe_browsing

@@ -15,9 +15,11 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import traceback
+import urllib.parse
 import xml.etree.ElementTree as ElementTree
 
 from dataclasses import dataclass
@@ -670,6 +672,70 @@ class Annotation:
       ]
     return []
 
+  def check_api_service_name_format(self) -> List[AuditorError]:
+    """If api_service_name field is populated and does not match
+    servicename[.(pa|corp)].googleapis.com, return INVALID_API_SERVICE_NAME
+    error."""
+    api_service_name = self.proto.semantics.api_service_name
+    if api_service_name and not re.fullmatch(
+      r"[a-zA-Z0-9_-]+(\.(pa|corp))?\.googleapis\.com", api_service_name
+    ):
+      return [
+        AuditorError(
+          ErrorType.INVALID_API_SERVICE_NAME,
+          api_service_name,
+          self.file,
+          self.line,
+        )
+      ]
+    return []
+
+  def check_legacy_api_url_format(self) -> List[AuditorError]:
+    """If legacy_api_url field is populated, checks that it is a valid URL and
+    not in a googleapis.com domain (which should use api_service_name
+    instead)."""
+    legacy_api_url = self.proto.semantics.legacy_api_url
+    if not legacy_api_url:
+      return []
+
+    try:
+      parsed = urllib.parse.urlparse(legacy_api_url)
+    except ValueError:
+      parsed = None
+
+    if (
+      parsed is None
+      or parsed.scheme not in ("http", "https")
+      or not parsed.hostname
+      or any(c.isspace() for c in legacy_api_url)
+      or not re.match(r"^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$", parsed.hostname)
+    ):
+      return [
+        AuditorError(
+          ErrorType.INVALID_LEGACY_API_URL,
+          "'{}' is not a valid URL.".format(legacy_api_url),
+          self.file,
+          self.line,
+        )
+      ]
+
+    if parsed.hostname == "googleapis.com" or parsed.hostname.endswith(
+      ".googleapis.com"
+    ):
+      return [
+        AuditorError(
+          ErrorType.INVALID_LEGACY_API_URL,
+          (
+            "'{}' uses a googleapis.com domain; "
+            "use api_service_name instead.".format(legacy_api_url)
+          ),
+          self.file,
+          self.line,
+        )
+      ]
+
+    return []
+
   def has_policy(self) -> bool:
     """Return true if any policy field is set"""
     return (
@@ -732,6 +798,76 @@ class ExceptionType(Enum):
 # Rules from safe_list.txt, extracted and pre-processed.
 SafeList = Dict[ExceptionType, List[re.Pattern]]
 
+SimplePathFilter = NewType("SimplePathFilter", str)
+GitPathSpec = NewType("GitPathSpec", str)
+
+
+def is_cog() -> bool:
+  """Returns true if the script is running inside a Cog workspace."""
+  return SRC_DIR.as_posix().startswith('/google/cog/cloud')
+
+
+# How Auditor.run_extractor() parallelizes reading and parsing source files:
+# several worker processes (for the CPU-bound parsing), with a few threads in
+# each (to wait on reads in parallel). Files are sent to the workers in small
+# chunks, so that the work is spread evenly.
+#
+# The threads matter most on Cog, where reading a file takes much longer than
+# on a local disk. On a local disk, they help when the files aren't in the page
+# cache, and cost some CPU time when they are.
+MAX_EXTRACTOR_PROCESSES = 16
+EXTRACTOR_THREADS_PER_PROCESS = 4
+EXTRACTOR_CHUNK_SIZE = 50
+
+# A thread pool for the files of each chunk, in the worker processes of
+# Auditor.run_extractor(). It's created once per worker process, by
+# _init_extractor_worker(), rather than once per chunk.
+_extractor_thread_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
+
+
+def _init_extractor_worker(num_threads: int) -> None:
+  """Initializes a worker process of Auditor.run_extractor()."""
+  global _extractor_thread_pool
+  _extractor_thread_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=num_threads
+  )
+
+
+def _extract_annotations_from_file(
+  absolute_path: Path, no_filtering: bool
+) -> Optional[List[extractor.Annotation]]:
+  """Reads a source file, and returns the annotations it contains."""
+  # Pre-filter files based on their content, using a fast regex. When files
+  # are already in memory from the disk cache, this saves ~10 seconds.
+  file_contents = absolute_path.read_text(encoding="utf-8")
+  if not no_filtering and not extractor.may_contain_annotations(file_contents):
+    return None
+
+  return extractor.extract_annotations(absolute_path, file_contents)
+
+
+def _extract_annotations_from_files(
+  absolute_paths: List[Path], no_filtering: bool
+) -> List[extractor.Annotation]:
+  """Returns the annotations in a chunk of source files.
+
+  This runs in the worker processes of Auditor.run_extractor(), which read the
+  files of a chunk in parallel, with the thread pool that
+  _init_extractor_worker() created. It's a module-level function that only
+  takes absolute paths and scalars, so that nothing large gets pickled for the
+  workers, and so that it doesn't depend on module globals like SRC_DIR (which
+  the workers don't inherit under the "spawn" and "forkserver" start
+  methods)."""
+  assert _extractor_thread_pool is not None
+  all_annotations = []
+  for annotations in _extractor_thread_pool.map(
+    partial(_extract_annotations_from_file, no_filtering=no_filtering),
+    absolute_paths,
+  ):
+    if annotations:
+      all_annotations.extend(annotations)
+  return all_annotations
+
 
 class FileFilter:
   """Provides the list of files to scan via extractor.py.
@@ -744,6 +880,7 @@ class FileFilter:
   def __init__(self):
     self.git_files: List[Path] = []
     self.git_file_for_testing: Optional[Path] = None
+    self._initialized: bool = False
 
   def get_filtered_files(
     self, accepted_suffixes: List[str], safe_list: SafeList, prefix: str
@@ -751,13 +888,13 @@ class FileFilter:
     """Returns a filtered list of files in the prefix directory.
 
     Relevant files:
-      - Are tracked by git.
+      - Are tracked by git (or non-ignored in a Cog/non-git worktree).
       - Have an accepted suffix (see _is_accepted_file()).
       - Do not match any of the regexen in the ALL category of safe_list.
       - Are inside the prefix directory."""
     file_paths = []
 
-    if not self.git_files:
+    if not self.git_files and not self._initialized:
       raise RuntimeError(
         'get_filtered_files() called before get_files_from_git()'
       )
@@ -791,29 +928,178 @@ class FileFilter:
 
     return True
 
-  def get_files_from_git(self) -> None:
+  def _build_worktree_excludes(
+    self, git_cmd: str, extra_excludes: Optional[List[str]] = None
+  ) -> List[str]:
+    """Builds `$GIT_DIR/info/exclude` rules for submodules.
+
+    In a real Git checkout, submodules are `160000` gitlinks in `.git/index` and
+    have nested `.git` directories, so `git ls-files` skips them without needing
+    `.gitignore` entries. When using an empty throwaway `--git-dir` (e.g. on
+    Cog), we populate `info/exclude` from `.gitmodules` so that
+    `git ls-files --others --exclude-standard` skips subrepos as well. Other
+    DEPS-managed directories (CIPD/GCS) are covered by .gitignore already."""
+    excludes: Set[str] = set(extra_excludes or [])
+
+    gitmodules = SRC_DIR / ".gitmodules"
+    if gitmodules.is_file():
+      # List the path of every submodule declared in .gitmodules.
+      res = subprocess.run(
+        [
+          git_cmd,
+          "config",
+          "--file",
+          str(gitmodules),
+          "--get-regexp",
+          r"^submodule\..*\.path$",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+      )
+      if res.returncode not in (0, 1):
+        raise RuntimeError(
+          "Failed to read submodule paths from {} (git config exited with "
+          "{}): {}".format(gitmodules, res.returncode, res.stderr.strip())
+        )
+      for line in res.stdout.splitlines():
+        # Output format is `submodule.<name>.path <path>`.
+        _, _, sub_path = line.partition(" ")
+        excludes.add(f"/{sub_path.strip('/')}/")
+
+    return sorted(excludes)
+
+  def _path_filters_to_pathspecs(
+    self, path_filters: List[SimplePathFilter]
+  ) -> Optional[List[GitPathSpec]]:
+    """Converts `path_filters` to Git pathspecs for scoping `git ls-files`.
+
+    Returns None when no scoping should be applied (scan full worktree), or a
+    (possibly empty) list of pathspecs matching `_path_filters_match()`."""
+    if not path_filters or len(path_filters) > 100:
+      return None
+
+    pathspecs: List[GitPathSpec] = []
+    for f in path_filters:
+      f_clean = f.lstrip("/")
+      if not f_clean:
+        return None
+      dir_candidate = f_clean.rstrip("/")
+      if f_clean.endswith("/") or (
+        "." in f_clean and (SRC_DIR / dir_candidate).is_dir()
+      ):
+        # An explicit directory (trailing slash), or a directory whose name
+        # contains a "." (e.g. "ui/v1.0/"). Check this before the "." test
+        # below, which would otherwise mistake it for a (missing) file.
+        if (SRC_DIR / dir_candidate).is_dir():
+          pathspecs.append(GitPathSpec(dir_candidate))
+      elif "." in f_clean:
+        # `_path_filters_match()` checks exact equality when "." is in the
+        # filter; deleted files do not exist on disk and can be skipped here.
+        if (SRC_DIR / f_clean).is_file():
+          pathspecs.append(GitPathSpec(f_clean))
+      else:
+        # `_path_filters_match()` checks `posix_path.startswith(f)`.
+        pathspecs.append(GitPathSpec(f"{f_clean}*"))
+
+    return pathspecs
+
+  def _run_git_ls_files(
+    self,
+    git_cmd: str,
+    git_options: Optional[List[str]] = None,
+    ls_files_args: Optional[List[str]] = None,
+  ) -> List[str]:
+    """Runs `git [git_options] ls-files -z [ls_files_args]` in SRC_DIR.
+
+    Returns the listed paths, relative to SRC_DIR."""
+    command_line = [
+      git_cmd,
+      *(git_options or []),
+      "ls-files",
+      "-z",
+      *(ls_files_args or []),
+    ]
+    # `git ls-files` only lists files below the cwd, so run it from SRC_DIR.
+    process = subprocess.run(
+      command_line, cwd=SRC_DIR, capture_output=True, check=True
+    )
+    return [f for f in process.stdout.decode("utf-8").split("\0") if f]
+
+  def _get_files_without_git_repo(
+    self,
+    git_cmd: str,
+    path_filters: Optional[List[SimplePathFilter]] = None,
+    extra_excludes: Optional[List[str]] = None,
+  ) -> List[str]:
+    """Lists non-ignored worktree files using a throwaway `--git-dir`.
+
+    With an empty index, every non-ignored file is "other", so
+    `git ls-files --others --exclude-standard` yields the tracked set while
+    honoring every nested .gitignore (plus the excludes from
+    _build_worktree_excludes())."""
+    # Without an index to read, `git ls-files` has to walk the worktree, which
+    # takes a long time for all of Chromium on Cog. Only walk the paths in
+    # path_filters instead, when there are any.
+    pathspecs: Optional[List[GitPathSpec]] = None
+    if path_filters:
+      pathspecs = self._path_filters_to_pathspecs(path_filters)
+      if pathspecs is not None and not pathspecs:
+        # None of the path_filters exist, e.g. they're all deleted files.
+        return []
+
+    with tempfile.TemporaryDirectory() as tmp_git_dir:
+      subprocess.run(
+        [git_cmd, "init", "--bare", "--quiet", tmp_git_dir],
+        capture_output=True,
+        check=True,
+      )
+      excludes = self._build_worktree_excludes(git_cmd, extra_excludes)
+      if excludes:
+        info_dir = Path(tmp_git_dir) / "info"
+        info_dir.mkdir(exist_ok=True)
+        (info_dir / "exclude").write_text(
+          "\n".join(excludes) + "\n", encoding="utf-8"
+        )
+
+      ls_files_args = ["--others", "--exclude-standard"]
+      if pathspecs:
+        ls_files_args.append("--")
+        ls_files_args.extend(pathspecs)
+      return self._run_git_ls_files(
+        git_cmd,
+        git_options=[
+          "-c",
+          "core.excludesFile=",
+          "-c",
+          "core.ignoreCase=false",
+          f"--git-dir={tmp_git_dir}",
+          f"--work-tree={SRC_DIR}",
+        ],
+        ls_files_args=ls_files_args,
+      )
+
+  def get_files_from_git(
+    self,
+    path_filters: Optional[List[SimplePathFilter]] = None,
+    extra_excludes: Optional[List[str]] = None,
+  ) -> None:
     """Populates self.git_files with the output of `git ls-files`."""
     start_time = time.perf_counter()
-    # Change directory to source path to access git and check files.
-    original_cwd = os.getcwd()
-    os.chdir(SRC_DIR)
+    git_cmd = "git.bat" if platform.system() == "Windows" else "git"
 
     if self.git_file_for_testing is not None:
       # Get list of files from git_list.txt (or similar).
       lines = self.git_file_for_testing.read_text(encoding="utf-8").splitlines()
+    elif is_cog() or not (SRC_DIR / ".git").exists():
+      lines = self._get_files_without_git_repo(
+        git_cmd, path_filters=path_filters, extra_excludes=extra_excludes
+      )
     else:
-      # Get list of files from git.
-      if platform.system() == "Windows":
-        command_line = ["git.bat", "ls-files"]
-      else:
-        command_line = ["git", "ls-files"]
-      process = subprocess.run(command_line, capture_output=True)
-      lines = process.stdout.decode("utf-8").split("\n")
+      lines = self._run_git_ls_files(git_cmd)
 
     self.git_files = [Path(f) for f in lines if f]
-
-    # Now that we're done, undo the chdir().
-    os.chdir(original_cwd)
+    self._initialized = True
     logger.debug(
       "get_files_from_git() took %.3f seconds", time.perf_counter() - start_time
     )
@@ -1587,6 +1873,7 @@ class Auditor:
     self.completing_annotations: List[Annotation] = []
 
     self._safe_list: SafeList = {}
+    self._safe_list_all_git_excludes: List[str] = []
 
     self.exporter = Exporter(current_platform)
 
@@ -1602,6 +1889,7 @@ class Auditor:
       return self._safe_list
 
     self._safe_list = dict((t, []) for t in ExceptionType)
+    self._safe_list_all_git_excludes = []
 
     # Ignore safe_list.txt while testing.
     if self.file_filter.git_file_for_testing is not None:
@@ -1633,6 +1921,11 @@ class Auditor:
         assert re.match(r'^[0-9a-zA-Z_.*/:@]+$', token), (
           "Unexpected character in safe_list.txt token: '{}'".format(token)
         )
+        if exception_type == ExceptionType.ALL:
+          if "/" not in token:
+            self._safe_list_all_git_excludes.append(token)
+          elif token.endswith("/*") and "*" not in token[:-2]:
+            self._safe_list_all_git_excludes.append(f"/{token[:-2]}/")
         token = token.replace(".", "\\.")
         token = token.replace("*", ".*")
         self._safe_list[exception_type].append(re.compile(token))
@@ -1650,41 +1943,59 @@ class Auditor:
       return True
     return any(r.match(posix_path) for r in safe_list[exception_type])
 
-  def process_file(
-    self, relative_path: Path, compdb_files: Set[str], path_filters: List[str]
-  ) -> Optional[List[extractor.Annotation]]:
-    absolute_path = SRC_DIR / relative_path
+  def _get_path_to_read(
+    self,
+    relative_path: Path,
+    compdb_files: Optional[Set[str]],
+    path_filters: List[SimplePathFilter],
+  ) -> Optional[Path]:
+    """Returns the absolute path of a file to extract annotations from, or None
+    if compdb or path_filters rule it out. This doesn't read the file."""
+    # Check path_filters first, since it doesn't need the absolute path.
+    if path_filters and not self._path_filters_match(
+      path_filters, relative_path
+    ):
+      return None
 
-    # Skip files based on compdb and path_filters. Java and header files aren't
-    # in compile_commands.json, so don't check those.
+    # Skip files based on compdb. Java and header files aren't in
+    # compile_commands.json, so don't check those.
+    absolute_path = SRC_DIR / relative_path
     if (
       absolute_path.suffix not in [".java", ".h"]
       and compdb_files is not None
       and str(absolute_path) not in compdb_files
     ):
       return None
-    if path_filters and not self._path_filters_match(
-      path_filters, relative_path
-    ):
-      return None
+    return absolute_path
 
-    # Pre-filter files based on their content, using a fast regex. When files
-    # are already in memory from the disk cache, this saves ~10 seconds.
-    file_contents = absolute_path.read_text(encoding="utf-8")
-    if not self.no_filtering and not extractor.may_contain_annotations(
-      file_contents
-    ):
-      return None
+  def _get_gn_file_mtime_max(self, build_path: Path) -> float:
+    """Returns the maximum mtime of the files that `gn gen` read.
 
-    return extractor.extract_annotations(absolute_path, file_contents)
-
-  def _get_gn_file_mtime_max(self) -> float:
-    """Returns the maximum mtime of all BUILD.gn and *.gni files."""
+    GN lists them in build.ninja.d, so that Ninja knows when to regenerate
+    build.ninja. Don't stat every .gn/.gni file in the checkout instead: on
+    Cog, files get their mtime when they're first accessed, so the ones that
+    this build doesn't use would look newer than compile_commands.json."""
     start_time = time.perf_counter()
-    gn_files = self.file_filter.get_filtered_files(['.gn', '.gni'], {}, '')
+    ninja_deps_path = build_path / "build.ninja.d"
+    if not ninja_deps_path.is_file():
+      raise FileNotFoundError(
+        "{} not found. Is {} a GN build directory?".format(
+          ninja_deps_path, build_path
+        )
+      )
+
+    # The format is `<output>: <input> <input> ...`, with paths relative to
+    # build_path, and their spaces escaped as `\ `.
+    _, _, inputs = ninja_deps_path.read_text(encoding="utf-8").partition(":")
+    gn_files = [
+      build_path / p.replace("\\ ", " ")
+      for p in re.split(r"(?<!\\)\s+", inputs.strip())
+      if p
+    ]
+    # Ignore files that were deleted since the last `gn gen`.
     # For some reason, os.path.getmtime() is faster than
     # pathlib.Path.stat().st_mtime
-    max_mtime = max(os.path.getmtime(SRC_DIR / f) for f in gn_files)
+    max_mtime = max(os.path.getmtime(f) for f in gn_files if os.path.exists(f))
     logger.debug(
       "_get_gn_file_mtime_max() took %.3f seconds",
       time.perf_counter() - start_time,
@@ -1692,7 +2003,10 @@ class Auditor:
     return max_mtime
 
   def run_extractor(
-    self, build_path: Path, path_filters: List[str], skip_compdb: bool
+    self,
+    build_path: Path,
+    path_filters: List[SimplePathFilter],
+    skip_compdb: bool,
   ) -> List[extractor.Annotation]:
     """Run the extractor on the codebase.
 
@@ -1702,7 +2016,7 @@ class Auditor:
     Args:
       build_path: Path
         Path to a directory where Chrome was built (e.g., out/Release)
-      path_filters: List[str]
+      path_filters: List[SimplePathFilter]
         If this list is empty, parse all .cc/.mm/.java files in the repository.
 
     Returns:
@@ -1714,7 +2028,10 @@ class Auditor:
     # TODO(nicolaso): Move FileFilter and `git ls-files` logic to
     # extractor.py, or maybe a separate file?
     logger.info("Getting list of files from git.")
-    self.file_filter.get_files_from_git()
+    self.file_filter.get_files_from_git(
+      path_filters=path_filters,
+      extra_excludes=self._safe_list_all_git_excludes,
+    )
     files = self.file_filter.get_filtered_files(
       self.accepted_suffixes, safe_list, ""
     )
@@ -1733,7 +2050,7 @@ class Auditor:
         should_generate = True
       else:
         # Only generate compile_commands.json if it's stale.
-        gn_mtime_max = self._get_gn_file_mtime_max()
+        gn_mtime_max = self._get_gn_file_mtime_max(build_path)
         should_generate = compdb_path.stat().st_mtime < gn_mtime_max
         if not should_generate:
           logger.info(
@@ -1764,24 +2081,41 @@ class Auditor:
       )
 
     all_annotations = []
-    num_workers = 5
-    chunksize = len(files) // num_workers if len(files) > num_workers else 1
     start_time = time.perf_counter()
-    with concurrent.futures.ProcessPoolExecutor(
-      max_workers=num_workers
-    ) as executor:
-      process_files_with_args = partial(
-        self.process_file, compdb_files=compdb_files, path_filters=path_filters
-      )
 
-      for annotations in executor.map(
-        process_files_with_args, files, chunksize=chunksize
-      ):
-        if annotations:
+    # Filter the files here rather than in the workers, so that the workers
+    # only need to be sent paths (not compdb_files), and so that a short list
+    # of files doesn't start more workers than it has chunks.
+    files_to_read = []
+    for relative_path in files:
+      absolute_path = self._get_path_to_read(
+        relative_path, compdb_files, path_filters
+      )
+      if absolute_path is not None:
+        files_to_read.append(absolute_path)
+    chunks = [
+      files_to_read[i : i + EXTRACTOR_CHUNK_SIZE]
+      for i in range(0, len(files_to_read), EXTRACTOR_CHUNK_SIZE)
+    ]
+
+    if chunks:
+      num_processes = min(MAX_EXTRACTOR_PROCESSES, os.cpu_count() or 1)
+      with concurrent.futures.ProcessPoolExecutor(
+        max_workers=min(num_processes, len(chunks)),
+        initializer=_init_extractor_worker,
+        initargs=(EXTRACTOR_THREADS_PER_PROCESS,),
+      ) as executor:
+        for annotations in executor.map(
+          partial(
+            _extract_annotations_from_files, no_filtering=self.no_filtering
+          ),
+          chunks,
+        ):
           all_annotations.extend(annotations)
 
     logger.debug(
-      "Parsing %d %s files took %.3f seconds",
+      "Parsing %d of %d %s files took %.3f seconds",
+      len(files_to_read),
       len(files),
       suffixes,
       time.perf_counter() - start_time,
@@ -1844,6 +2178,12 @@ class Auditor:
 
     if not errors:
       errors = annotation.check_last_reviewed_date_format()
+
+    if not errors:
+      errors = annotation.check_api_service_name_format()
+
+    if not errors:
+      errors = annotation.check_legacy_api_url_format()
 
     return errors
 
@@ -1961,7 +2301,9 @@ class Auditor:
 
     return errors
 
-  def _path_filters_match(self, path_filters: List[str], file_path: Path):
+  def _path_filters_match(
+    self, path_filters: List[SimplePathFilter], file_path: Path
+  ):
     """Checks if path_filters include the given file_path, or there are path
     filters which are folders (no "." in their name) and match the file
     name."""
@@ -1970,7 +2312,7 @@ class Auditor:
       "." not in f and posix_path.startswith(f) for f in path_filters
     )
 
-  def _add_missing_annotations(self, path_filters: List[str]):
+  def _add_missing_annotations(self, path_filters: List[SimplePathFilter]):
     """Adds all archived annotations (from annotations.xml) that match the
     following features, to self.extracted_annotations:
 
@@ -1988,7 +2330,10 @@ class Auditor:
         )
 
   def run_all_checks(
-    self, path_filters: List[str], report_xml_updates: bool, grouping_path: Path
+    self,
+    path_filters: List[SimplePathFilter],
+    report_xml_updates: bool,
+    grouping_path: Path,
   ) -> List[AuditorError]:
     """Performs all checks on extracted annotations, and writes annotations.xml.
 
@@ -2068,7 +2413,9 @@ class AuditorUI:
   ):
     self.build_path = build_path
     # Convert backslashes to slashes on Windows.
-    self.path_filters = [Path(f).as_posix() for f in path_filters]
+    self.path_filters: List[SimplePathFilter] = [
+      SimplePathFilter(Path(f).as_posix()) for f in path_filters
+    ]
     self.no_filtering = no_filtering
     self.test_only = test_only
     self.error_limit = error_limit
@@ -2172,11 +2519,6 @@ class AuditorUI:
     return src_proto_mtime > build_proto_mtime
 
 
-def is_cog() -> bool:
-  """Returns true if the script is running inside a Cog workspace."""
-  return SRC_DIR.as_posix().startswith('/google/cog/cloud')
-
-
 if __name__ == "__main__":
   args_parser = argparse.ArgumentParser(
     description="Traffic Annotation Auditor: Extracts network traffic"
@@ -2261,12 +2603,6 @@ if __name__ == "__main__":
   build_path = Path(args.build_path)
   if args.verbose:
     logger.setLevel(level=logging.DEBUG)
-
-  # Check if in cog - if so, fail early.
-  if is_cog():
-    print("This script must not be run from cog workspaces.")
-    print("Note that running this script from Cider-G is not supported.")
-    sys.exit(1)
 
   print("Starting traffic annotation auditor. This may take a few minutes.")
   print(

@@ -1,0 +1,20 @@
+Name: DataStore Guava
+Short Name: datastore-guava
+URL: https://androidx.dev/snapshots/builds/16985262/artifacts/repository/androidx/datastore/datastore-guava/1.4.0-SNAPSHOT/datastore-guava-1.4.0-20261119.211745-1.aar
+Version: 1.4.0-SNAPSHOT
+Update Mechanism: Autoroll
+License: Apache-2.0
+License File: LICENSE
+CPEPrefix: unknown
+Security Critical: yes
+Shipped: yes
+License Android Compatible: yes
+
+Description:
+Android DataStore Guava - contains wrappers for using DataStore using ListenableFuture
+
+See also: https://developer.android.com/jetpack/androidx/releases/datastore#1.4.0-SNAPSHOT
+
+
+Local Modifications:
+No modifications.

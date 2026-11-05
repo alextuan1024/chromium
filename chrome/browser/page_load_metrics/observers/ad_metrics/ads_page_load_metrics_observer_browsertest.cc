@@ -71,16 +71,12 @@
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/test/widget_activation_waiter.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
-
-#if BUILDFLAG(ENABLE_PDF)
-#include "pdf/pdf_features.h"
-#endif  // BUILDFLAG(ENABLE_PDF)
 
 namespace {
 
@@ -464,7 +460,7 @@ IN_PROC_BROWSER_TEST_F(
   // Open a new tab, which backgrounds the original web_contents.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(url::kAboutBlankURL),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Verify the original tab is hidden.
@@ -543,7 +539,7 @@ IN_PROC_BROWSER_TEST_F(
   // Open a new tab, which backgrounds the original web_contents.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(url::kAboutBlankURL),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Verify the original tab is hidden.
@@ -654,7 +650,7 @@ IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverBrowserTest,
   // Open a new tab, which backgrounds the original web_contents.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(url::kAboutBlankURL),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Verify the original tab is hidden.
@@ -1314,10 +1310,12 @@ IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverBrowserTest,
       page_load_metrics::UserActivationStatus::kReceivedActivation, 2);
 }
 
+// TODO(crbug.com/567716811, crbug.com/559786964, crbug.com/40286659): Fix
+// flakiness and re-enable.
 // Test that a subframe that aborts (due to doc.write) doesn't cause a crash
 // if it continues to load resources.
 IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverBrowserTest,
-                       DocOverwritesNavigation) {
+                       DISABLED_DocOverwritesNavigation) {
   // Ensure that the previous page won't be stored in the back/forward cache, so
   // that the histogram will be recorded when the previous page is unloaded.
   // TODO(https://crbug.com/40189815): Investigate if this needs further fix.
@@ -1979,11 +1977,11 @@ IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverResourceBrowserTest,
 
   auto waiter = CreateAdsPageLoadMetricsTestWaiter();
 
-  browser()->OpenURL(
-      content::OpenURLParams::CreateBrowserInitiated(
-          embedded_test_server()->GetURL("/mock_page.html"),
-          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED),
-      /*navigation_handle_callback=*/{});
+  browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                         embedded_test_server()->GetURL("/mock_page.html"),
+                         ui::mojom::WindowOpenDisposition::kCurrentTab,
+                         ui::PAGE_TRANSITION_TYPED),
+                     /*navigation_handle_callback=*/{});
 
   waiter->AddMinimumNetworkBytesExpectation(base::ByteSize(5000));
 
@@ -2045,11 +2043,11 @@ IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverResourceBrowserTest,
 
   auto waiter = CreateAdsPageLoadMetricsTestWaiter();
 
-  browser()->OpenURL(
-      content::OpenURLParams::CreateBrowserInitiated(
-          embedded_test_server()->GetURL("/mock_page.html"),
-          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED),
-      /*navigation_handle_callback=*/{});
+  browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                         embedded_test_server()->GetURL("/mock_page.html"),
+                         ui::mojom::WindowOpenDisposition::kCurrentTab,
+                         ui::PAGE_TRANSITION_TYPED),
+                     /*navigation_handle_callback=*/{});
 
   main_html_response->WaitForRequest();
   main_html_response->Send(page_load_metrics::kHttpOkResponseHeader);
@@ -2112,12 +2110,12 @@ IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverResourceBrowserTest,
 
   auto waiter = CreateAdsPageLoadMetricsTestWaiter();
 
-  browser()->OpenURL(
-      content::OpenURLParams::CreateBrowserInitiated(
-          embedded_test_server()->GetURL(
-              "/ads_observer/ad_with_incomplete_resource.html"),
-          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED),
-      /*navigation_handle_callback=*/{});
+  browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                         embedded_test_server()->GetURL(
+                             "/ads_observer/ad_with_incomplete_resource.html"),
+                         ui::mojom::WindowOpenDisposition::kCurrentTab,
+                         ui::PAGE_TRANSITION_TYPED),
+                     /*navigation_handle_callback=*/{});
 
   waiter->AddMinimumCompleteResourcesExpectation(3);
   waiter->Wait();
@@ -2712,38 +2710,8 @@ IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverResourceBrowserTest,
 
 #if BUILDFLAG(ENABLE_PDF)
 
-class AdsPageLoadMetricsObserverRecordedUKMMetricsTest
-    : public AdsPageLoadMetricsObserverResourceBrowserTest,
-      public ::testing::WithParamInterface<bool> {
- public:
-  static std::string DescribeParams(const testing::TestParamInfo<bool>& info) {
-    return info.param ? "OopifPdf" : "GuestViewPdf";
-  }
-
-  bool UseOopif() const { return GetParam(); }
-
-  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
-      const override {
-    auto enabled =
-        AdsPageLoadMetricsObserverResourceBrowserTest::GetEnabledFeatures();
-    if (UseOopif()) {
-      enabled.push_back({chrome_pdf::features::kPdfOopif, {}});
-    }
-    return enabled;
-  }
-
-  std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
-    auto disabled =
-        AdsPageLoadMetricsObserverResourceBrowserTest::GetDisabledFeatures();
-    if (!UseOopif()) {
-      disabled.push_back(chrome_pdf::features::kPdfOopif);
-    }
-    return disabled;
-  }
-};
-
 // Verify that UKM metrics are recorded correctly.
-IN_PROC_BROWSER_TEST_P(AdsPageLoadMetricsObserverRecordedUKMMetricsTest,
+IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverResourceBrowserTest,
                        RecordedUKMMetrics) {
   base::HistogramTester histogram_tester;
   ukm::TestAutoSetUkmRecorder ukm_recorder;
@@ -2759,8 +2727,7 @@ IN_PROC_BROWSER_TEST_P(AdsPageLoadMetricsObserverRecordedUKMMetricsTest,
   contents->GetPrimaryMainFrame()->ExecuteJavaScriptForTests(
       u"createAdFrame('multiple_mimes.html', 'test');", base::NullCallback(),
       content::ISOLATED_WORLD_ID_GLOBAL);
-  const int kExpectedNumAdResources = UseOopif() ? 9 : 8;
-  waiter->AddMinimumAdResourceExpectation(kExpectedNumAdResources);
+  waiter->AddMinimumAdResourceExpectation(9);
   waiter->Wait();
 
   // Close all tabs to report metrics.
@@ -2786,14 +2753,6 @@ IN_PROC_BROWSER_TEST_P(AdsPageLoadMetricsObserverRecordedUKMMetricsTest,
                 entries.front(), ukm::builders::AdPageLoad::kAdVideoBytesName),
             0);
 }
-
-// TODO(crbug.com/324635792): Stop testing GuestView PDF viewer after OOPIF PDF
-// viewer launches.
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    AdsPageLoadMetricsObserverRecordedUKMMetricsTest,
-    testing::Bool(),
-    &AdsPageLoadMetricsObserverRecordedUKMMetricsTest::DescribeParams);
 
 #endif  // BUILDFLAG(ENABLE_PDF)
 
@@ -2850,17 +2809,11 @@ IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverBrowserTest,
 }
 
 // Test that rAF events are measured as part of the cpu metrics.
-// TODO(crbug.com/40826975): Flaky on multiple platforms.
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_TwoRAFFramesTriggerCpuUpdates \
-  DISABLED_TwoRAFFramesTriggerCpuUpdates
-#else
-#define MAYBE_TwoRAFFramesTriggerCpuUpdates TwoRAFFramesTriggerCpuUpdates
-#endif
 IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverBrowserTest,
-                       MAYBE_TwoRAFFramesTriggerCpuUpdates) {
+                       TwoRAFFramesTriggerCpuUpdates) {
   base::HistogramTester histogram_tester;
   auto waiter = CreatePageLoadMetricsTestWaiter();
+  waiter->AddMinimumAggregateCpuTimeExpectation(base::Milliseconds(300));
 
   // Navigate to the page and set up the waiter.
   content::DOMMessageQueue message_queue(web_contents());
@@ -2871,9 +2824,10 @@ IN_PROC_BROWSER_TEST_F(AdsPageLoadMetricsObserverBrowserTest,
       browser(),
       embedded_test_server()->GetURL("/ads_observer/two_raf_frames.html")));
 
-  // Wait for both RAF calls to finish
+  // Wait for both RAF calls to finish and for the CPU timing update to arrive.
   WaitForRAF(&message_queue);
   WaitForRAF(&message_queue);
+  waiter->Wait();
   ASSERT_TRUE(
       ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
 
@@ -3115,11 +3069,11 @@ IN_PROC_BROWSER_TEST_P(AdsPageLoadMetricsObserverSurfaceBrowserTest,
 
   auto waiter = CreateAdsPageLoadMetricsTestWaiter();
 
-  browser()->OpenURL(
-      content::OpenURLParams::CreateBrowserInitiated(
-          embedded_test_server()->GetURL("/mock_page.html"),
-          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED),
-      /*navigation_handle_callback=*/{});
+  browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                         embedded_test_server()->GetURL("/mock_page.html"),
+                         ui::mojom::WindowOpenDisposition::kCurrentTab,
+                         ui::PAGE_TRANSITION_TYPED),
+                     /*navigation_handle_callback=*/{});
 
   main_html_response->WaitForRequest();
   main_html_response->Send(page_load_metrics::kHttpOkResponseHeader);

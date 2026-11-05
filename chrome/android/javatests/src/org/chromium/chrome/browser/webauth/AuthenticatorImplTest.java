@@ -41,7 +41,6 @@ import org.chromium.blink.mojom.MakeCredentialAuthenticatorResponse;
 import org.chromium.blink.mojom.Mediation;
 import org.chromium.blink.mojom.PrfValues;
 import org.chromium.blink.mojom.PublicKeyCredentialCreationOptions;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -74,9 +73,8 @@ import java.util.Arrays;
 /** Unit tests for {@link AuthenticatorImpl} and {@link InternalAuthenticator}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
-    "ignore-certificate-errors",
+    "ignore-certificate-errors"
 })
 @Batch(Batch.PER_CLASS)
 @Restriction({
@@ -98,7 +96,7 @@ public class AuthenticatorImplTest {
     private EmbeddedTestServer mTestServer;
     private WebauthnTestUtils.MockAuthenticatorRenderFrameHost mFrameHost;
     private MockWebContents mWebContents;
-    private WebauthnTestUtils.MockFido2ApiCallHelper mFido2ApiCallHelper;
+    private MockFido2ApiCallHelper mFido2ApiCallHelper;
     private Origin mOrigin;
     private WebauthnTestUtils.TestAuthenticatorImplJni mTestAuthenticatorImplJni;
     private PublicKeyCredentialCreationOptions mCreationOptions;
@@ -110,7 +108,6 @@ public class AuthenticatorImplTest {
     public void setUp() throws Exception {
         mActivityTestRule.startOnBlankPage();
         mContext = ContextUtils.getApplicationContext();
-        WebauthnTestUtils.applyFidoOverride(mContext);
         mIntentSender = new WebauthnTestUtils.MockIntentSender();
         mTestServer = mActivityTestRule.getTestServer();
         mCallback = Fido2ApiTestHelper.getAuthenticatorCallback();
@@ -140,7 +137,7 @@ public class AuthenticatorImplTest {
         // Ensure AuthenticatorImpl doesn't hold onto a stale request override from another test.
         AuthenticatorImpl.overrideFido2CredentialRequestForTesting(null);
 
-        mFido2ApiCallHelper = new WebauthnTestUtils.MockFido2ApiCallHelper();
+        mFido2ApiCallHelper = new MockFido2ApiCallHelper();
         mFido2ApiCallHelper.setReturnedCredentialDetails(
                 Arrays.asList(Fido2ApiTestHelper.getCredentialDetails()));
         Fido2ApiCallHelper.overrideInstanceForTesting(mFido2ApiCallHelper);

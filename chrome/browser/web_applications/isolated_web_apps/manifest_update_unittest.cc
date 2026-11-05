@@ -28,7 +28,7 @@
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "components/webapps/common/web_app_id.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/test_support/fake_iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/test_support/signing_keys.h"
 #include "components/webapps/isolated_web_apps/types/iwa_version.h"
@@ -112,8 +112,8 @@ class ManifestUpdateTest : public IsolatedWebAppTest {
   void SetUp() override {
     resetter_ = IwaRuntimeDataProvider::SetInstanceForTesting(&data_provider_);
     IsolatedWebAppTest::SetUp();
-    provider().SetEnableAutomaticIwaUpdates(
-        FakeWebAppProvider::AutomaticIwaUpdateStrategy::kForceEnabled);
+    IsolatedWebAppUpdateManager::From(provider())
+        .SetEnableAutomaticUpdatesForTesting(true);
     test::AwaitStartWebAppProviderAndSubsystems(profile());
   }
 
@@ -157,8 +157,7 @@ class ManifestUpdateTest : public IsolatedWebAppTest {
         CreateBundle(CHECK_DEREF(profile()), manifest.SetVersion("2.0.0")),
         {{StableChannel()}});
 
-    base::TimeTicks update_time = provider()
-                                      .isolated_web_app_update_manager()
+    base::TimeTicks update_time = IsolatedWebAppUpdateManager::From(provider())
                                       .GetNextUpdateDiscoveryTimeForTesting()
                                       .value();
     task_environment().FastForwardBy(update_time - base::TimeTicks::Now());

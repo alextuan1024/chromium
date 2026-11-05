@@ -12,11 +12,15 @@
 #include "chrome/browser/ui/views/toolbar/webui_and_views_toolbar_interactive_uitest_base.h"
 #include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/test/accessibility_notification_waiter.h"
+#include "content/public/test/browser_test_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/webview/webview.h"
+#include "ui/views/widget/widget.h"
 #include "ui/webui/tracked_element/tracked_element_handler.h"
 #include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
@@ -135,20 +139,62 @@ ToolbarAccessibilityTest::MultiStep
 ToolbarAccessibilityTest::WaitForElementNonzeroSize(ui::ElementIdentifier id) {
   DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(
       ui::test::PollingElementStateObserver<bool>, kElementSizeGreaterThanOne);
-  return Steps(PollElement(kElementSizeGreaterThanOne, id,
-                           [](const ui::TrackedElement* el) {
-                             auto size = el->GetScreenBounds();
-                             return size.width() > 1 && size.height() > 1;
+  return Steps(
+      PollElement(kElementSizeGreaterThanOne, id,
+                  [](const ui::TrackedElement* el) {
+                    const gfx::Rect bounds = el->GetScreenBounds();
+                    if (bounds.width() <= 1 || bounds.height() <= 1) {
+                      return false;
+                    }
+                    if (const auto* webui_el =
+                            el->AsA<ui::TrackedElementWebUI>()) {
+                      views::WebView* web_view = webui_el->GetWebView();
+                      if (!web_view || !web_view->GetWidget()) {
+                        return false;
+                      }
+                      web_view->GetWidget()->LayoutRootViewIfNecessary();
+                      return web_view->GetBoundsInScreen().Contains(bounds);
+                    }
+                    return true;
+                  }),
+      WaitForState(kElementSizeGreaterThanOne, true),
+      StopObservingState(kElementSizeGreaterThanOne),
+      IfElement(
+          id,
+          [](const ui::TrackedElement* el) {
+            return !!el->AsA<ui::TrackedElementWebUI>();
+          },
+          Then(WithElement(id,
+                           [](ui::TrackedElement* el) {
+                             auto* const webui_el =
+                                 el->AsA<ui::TrackedElementWebUI>();
+                             base::RunLoop run_loop(
+                                 base::RunLoop::Type::kNestableTasksAllowed);
+                             content::NotifyCopyableViewInWebContents(
+                                 webui_el->handler()->web_contents(),
+                                 run_loop.QuitClosure());
+                             run_loop.Run();
                            }),
-               WaitForState(kElementSizeGreaterThanOne, true),
-               StopObservingState(kElementSizeGreaterThanOne));
+               DoWaitForLayout())));
 }
 
-ui::InteractionSequence::StepBuilder
+ToolbarAccessibilityTest::MultiStep
 ToolbarAccessibilityTest::MoveMouseToElement(ui::ElementIdentifier id) {
-  return MoveMouseTo(id, base::BindOnce([](ui::TrackedElement* el) {
-                       return el->GetScreenBounds().CenterPoint();
-                     }));
+  return Steps(CheckElement(id,
+                            [](ui::TrackedElement* el) {
+                              if (auto* const webui_el =
+                                      el->AsA<ui::TrackedElementWebUI>()) {
+                                const auto result = FlushWebUIToolbarPipes(
+                                    webui::GetBrowserWindowInterface(
+                                        webui_el->handler()->web_contents()));
+                                EXPECT_TRUE(result);
+                                return static_cast<bool>(result);
+                              }
+                              return true;
+                            }),
+               MoveMouseTo(id, base::BindOnce([](ui::TrackedElement* el) {
+                             return el->GetScreenBounds().CenterPoint();
+                           })));
 }
 
 ToolbarAccessibilityTest::MultiStep

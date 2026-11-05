@@ -8,10 +8,12 @@
 #include <string>
 #include <vector>
 
+#include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_expected_support.h"
+#include "base/test/run_until.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -22,6 +24,8 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
+#include "chrome/browser/ui/content_settings/fake_owner.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
@@ -41,7 +45,6 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
@@ -200,13 +203,6 @@ class ChromeRegisterProtocolHandlerBrowserTest : public InProcessBrowserTest {
     ASSERT_FALSE(registry->IsHandledProtocol(protocol));
   }
 
- protected:
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
 };
 
 IN_PROC_BROWSER_TEST_F(ChromeRegisterProtocolHandlerBrowserTest,
@@ -300,36 +296,150 @@ IN_PROC_BROWSER_TEST_F(ChromeRegisterProtocolHandlerBrowserTest,
   ASSERT_TRUE(content_settings->pending_protocol_handler().IsValid());
 }
 
-// FencedFrames can not register to handle any protocols.
-IN_PROC_BROWSER_TEST_F(ChromeRegisterProtocolHandlerBrowserTest, FencedFrame) {
+// A registration made without a user gesture is parked on the page as a
+// pending handler. Removing the scheme's default handler while that request is
+// still pending must survive the user disposing of the bubble: neither denying
+// the request nor dismissing the bubble may bring the removed handler back.
+IN_PROC_BROWSER_TEST_F(ChromeRegisterProtocolHandlerBrowserTest,
+                       DenyingPendingRegistrationDoesNotRestoreRemovedHandler) {
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("/title1.html")));
 
-  // Create a FencedFrame.
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          browser()
-              ->tab_strip_model()
-              ->GetActiveWebContents()
-              ->GetPrimaryMainFrame(),
-          embedded_test_server()->GetURL("/fenced_frames/title1.html"));
-  ASSERT_TRUE(fenced_frame_host);
+  // The accepted handler is registered from a different origin than the page
+  // below, so the page's registration is not silently replaced.
+  const std::string protocol = "web+search";
+  AddProtocolHandler(protocol, GURL("https://accepted.example/?q=%s"));
 
-  // Ensure the registry is currently empty.
-  GURL url("web+search:testing");
+  WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto* content_settings =
+      PageSpecificContentSettingsDelegate::FromWebContents(web_contents);
+
+  ASSERT_TRUE(content::ExecJs(web_contents,
+                              "navigator.registerProtocolHandler('web+"
+                              "search', 'test.html?%s', 'test');",
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  ASSERT_TRUE(content_settings->pending_protocol_handler().IsValid());
+
+  // The user removes the accepted handler while the request is pending.
   ProtocolHandlerRegistry* registry = GetRegistry();
-  ASSERT_EQ(0u, registry->GetHandlersFor(url.GetScheme()).size());
+  registry->RemoveDefaultHandler(protocol);
+  ASSERT_FALSE(registry->IsHandledProtocol(protocol));
 
-  // Attempt to add an entry.
-  ProtocolHandlerChangeWaiter waiter(registry);
-  ASSERT_TRUE(content::ExecJs(fenced_frame_host,
+  // The user denies the pending registration in the bubble.
+  ContentSettingRPHBubbleModel bubble_model(
+      nullptr, web_contents->GetPrimaryPage(), registry);
+  std::unique_ptr<FakeOwner> owner = FakeOwner::Create(bubble_model, 0);
+  // "1" is the "Deny" radio button.
+  owner->SetSelectedRadioOptionAndCommit(1);
+
+  const ProtocolHandler& handler = registry->GetHandlerFor(protocol);
+  EXPECT_TRUE(handler.IsEmpty()) << "handler left behind: " << handler.url();
+  EXPECT_FALSE(registry->IsHandledProtocol(protocol));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    ChromeRegisterProtocolHandlerBrowserTest,
+    DismissingPendingRegistrationDoesNotRestoreRemovedHandler) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
+
+  const std::string protocol = "web+search";
+  AddProtocolHandler(protocol, GURL("https://accepted.example/?q=%s"));
+
+  WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto* content_settings =
+      PageSpecificContentSettingsDelegate::FromWebContents(web_contents);
+
+  ASSERT_TRUE(content::ExecJs(web_contents,
+                              "navigator.registerProtocolHandler('web+"
+                              "search', 'test.html?%s', 'test');",
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  ASSERT_TRUE(content_settings->pending_protocol_handler().IsValid());
+
+  ProtocolHandlerRegistry* registry = GetRegistry();
+  registry->RemoveDefaultHandler(protocol);
+  ASSERT_FALSE(registry->IsHandledProtocol(protocol));
+
+  // Dismissing the bubble commits its default radio button, as
+  // ContentSettingBubbleContents::WindowClosing() does.
+  ContentSettingRPHBubbleModel bubble_model(
+      nullptr, web_contents->GetPrimaryPage(), registry);
+  std::unique_ptr<FakeOwner> owner = FakeOwner::Create(
+      bubble_model, bubble_model.bubble_content().radio_group.default_item);
+  bubble_model.CommitChanges();
+
+  const ProtocolHandler& handler = registry->GetHandlerFor(protocol);
+  EXPECT_TRUE(handler.IsEmpty()) << "handler left behind: " << handler.url();
+  EXPECT_FALSE(registry->IsHandledProtocol(protocol));
+}
+
+// A registration made without a user gesture must not replace a handler, not
+// even the page's own: it waits for the user's decision in the bubble.
+IN_PROC_BROWSER_TEST_F(ChromeRegisterProtocolHandlerBrowserTest,
+                       UngesturedSameOriginRegistrationIsPending) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
+
+  const std::string protocol = "web+search";
+  const GURL old_handler_url = embedded_test_server()->GetURL("/old.html?%s");
+  AddProtocolHandler(protocol, old_handler_url);
+
+  WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto* content_settings =
+      PageSpecificContentSettingsDelegate::FromWebContents(web_contents);
+
+  ASSERT_TRUE(content::ExecJs(web_contents,
+                              "navigator.registerProtocolHandler('web+"
+                              "search', 'test.html?%s', 'test');",
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+
+  ProtocolHandlerRegistry* registry = GetRegistry();
+  EXPECT_EQ(1u, registry->GetHandlersFor(protocol).size());
+  EXPECT_EQ(old_handler_url, registry->GetHandlerFor(protocol).url());
+  EXPECT_EQ(embedded_test_server()->GetURL("/test.html?%s"),
+            content_settings->pending_protocol_handler().url());
+}
+
+// A request with a user gesture supersedes the one an earlier request without a
+// gesture left pending, also when it ends in a silent replacement: otherwise
+// the bubble would keep offering a handler that is already registered, and
+// dismissing it, which commits "Deny", would remove that handler.
+IN_PROC_BROWSER_TEST_F(ChromeRegisterProtocolHandlerBrowserTest,
+                       GesturedReplacementClearsPendingRegistration) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
+
+  const std::string protocol = "web+search";
+  AddProtocolHandler(protocol, embedded_test_server()->GetURL("/old.html?%s"));
+
+  WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto* content_settings =
+      PageSpecificContentSettingsDelegate::FromWebContents(web_contents);
+  const GURL new_handler_url = embedded_test_server()->GetURL("/test.html?%s");
+
+  ASSERT_TRUE(content::ExecJs(web_contents,
+                              "navigator.registerProtocolHandler('web+"
+                              "search', 'test.html?%s', 'test');",
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  ASSERT_EQ(new_handler_url,
+            content_settings->pending_protocol_handler().url());
+
+  ASSERT_TRUE(content::ExecJs(web_contents,
                               "navigator.registerProtocolHandler('web+"
                               "search', 'test.html?%s', 'test');"));
-  waiter.Wait();
 
-  // Ensure the registry is still empty.
-  ASSERT_EQ(0u, registry->GetHandlersFor(url.GetScheme()).size());
+  ProtocolHandlerRegistry* registry = GetRegistry();
+  EXPECT_EQ(1u, registry->GetHandlersFor(protocol).size());
+  EXPECT_EQ(new_handler_url, registry->GetHandlerFor(protocol).url());
+  EXPECT_TRUE(content_settings->pending_protocol_handler().IsEmpty());
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeRegisterProtocolHandlerBrowserTest,
@@ -525,6 +635,26 @@ class PermissionPromptWaiter
   bool prompt_added_ = false;
 };
 
+// Asks the page in `web_contents` to register `handler_url` for `protocol`,
+// then waits until a permission prompt is showing.
+void RegisterAndWaitForPrompt(WebContents* web_contents,
+                              permissions::PermissionRequestManager* manager,
+                              const std::string& protocol,
+                              const std::string& handler_url) {
+  ASSERT_TRUE(content::ExecJs(
+      web_contents,
+      content::JsReplace("navigator.registerProtocolHandler($1, $2);", protocol,
+                         handler_url)));
+  // Requests() lists only the requests of the prompt being shown. It can be
+  // empty for a moment, because the manager shows prompts from a posted task:
+  // - The first request's prompt is not shown yet.
+  // - A new request that is not a duplicate of the prompt being shown may
+  //   replace that prompt. The old request goes back in the queue.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !manager->Requests().empty();
+  })) << "No permission prompt was shown";
+}
+
 // Verify that when an extension registers a custom protocol handler pointing
 // to a cross-origin HTTP(S) URL as a new registration, the permission prompt UI
 // attributes the request to the extension's own origin and displays the target
@@ -631,6 +761,108 @@ IN_PROC_BROWSER_TEST_F(RegisterProtocolHandlerExtensionBrowserTest,
               testing::HasSubstr(
                   "Open geo links through example.com instead of old.com"));
 }
+
+// Two handlers an extension page asks to register for the same scheme, and
+// whether they are different handlers that each need their own prompt.
+struct HandlerPair {
+  const char* name;
+  // Resolved against the extension page's URL.
+  const char* first_url;
+  const char* second_url;
+  bool expect_separate_prompts;
+};
+
+// The permission request manager merges duplicate requests into one prompt,
+// and the decision on that prompt applies to every merged request. Only
+// requests for the same handler may be merged. Different handlers must each
+// get their own prompt, whether they are on the page's origin or, as
+// extensions may register, on other origins.
+class RegisterProtocolHandlerSameSchemeBrowserTest
+    : public RegisterProtocolHandlerExtensionBrowserTest,
+      public testing::WithParamInterface<HandlerPair> {};
+
+IN_PROC_BROWSER_TEST_P(RegisterProtocolHandlerSameSchemeBrowserTest,
+                       OnePromptPerHandler) {
+#if BUILDFLAG(IS_MAC)
+  ASSERT_TRUE(test::RegisterAppWithLaunchServices());
+#endif
+
+  const extensions::Extension* extension =
+      LoadExtension(test_data_dir_.AppendASCII("protocol_handler"));
+  ASSERT_NE(nullptr, extension);
+  const GURL page_url = extension->GetResourceURL("test.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), page_url));
+  WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  permissions::PermissionRequestManager* permission_request_manager =
+      permissions::PermissionRequestManager::FromWebContents(web_contents);
+  ASSERT_NE(nullptr, permission_request_manager);
+  ProtocolHandlerRegistry* registry =
+      ProtocolHandlerRegistryFactory::GetForBrowserContext(
+          browser()->GetProfile());
+
+  const std::string protocol = "geo";
+  const ProtocolHandler first = ProtocolHandler::CreateProtocolHandler(
+      protocol, page_url.Resolve(GetParam().first_url));
+  const ProtocolHandler second = ProtocolHandler::CreateProtocolHandler(
+      protocol, page_url.Resolve(GetParam().second_url));
+
+  ASSERT_NO_FATAL_FAILURE(
+      RegisterAndWaitForPrompt(web_contents, permission_request_manager,
+                               protocol, GetParam().first_url));
+  ASSERT_NO_FATAL_FAILURE(
+      RegisterAndWaitForPrompt(web_contents, permission_request_manager,
+                               protocol, GetParam().second_url));
+  // `Requests()` holds only the prompt being shown, which covers a single
+  // handler.
+  ASSERT_EQ(1u, permission_request_manager->Requests().size());
+  // A duplicate is merged into the prompt being shown. A different handler
+  // waits in the queue for a prompt of its own.
+  ASSERT_EQ(GetParam().expect_separate_prompts,
+            permission_request_manager->has_pending_requests());
+
+  // Accept whichever request is being shown: exactly that handler must be
+  // registered.
+  PermissionPromptWaiter next_prompt_waiter(permission_request_manager);
+  permission_request_manager->Accept(/*prompt_options=*/std::monostate());
+  ASSERT_EQ(1u, registry->GetHandlersFor(protocol).size())
+      << "Accepting one prompt registered both handlers";
+  const ProtocolHandler accepted = registry->GetHandlerFor(protocol);
+  const bool first_accepted = accepted.IsEquivalent(first);
+  ASSERT_TRUE(first_accepted || accepted.IsEquivalent(second));
+
+  if (!GetParam().expect_separate_prompts) {
+    // Nothing was queued, so no other prompt can follow.
+    return;
+  }
+
+  // The other handler is then prompted for on its own, and denying it leaves
+  // the accepted handler as the only, default one.
+  const ProtocolHandler& other = first_accepted ? second : first;
+  EXPECT_FALSE(registry->IsIgnored(other));
+  next_prompt_waiter.Wait();
+  ASSERT_EQ(1u, permission_request_manager->Requests().size());
+  permission_request_manager->Deny(/*prompt_options=*/std::monostate());
+  EXPECT_TRUE(registry->IsIgnored(other));
+  EXPECT_EQ(1u, registry->GetHandlersFor(protocol).size());
+  EXPECT_TRUE(registry->GetHandlerFor(protocol).IsEquivalent(accepted));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    RegisterProtocolHandlerSameSchemeBrowserTest,
+    testing::Values(
+        // The very same handler twice is a genuine duplicate.
+        HandlerPair{"SameHandler", "handler.html?%s", "handler.html?%s",
+                    /*expect_separate_prompts=*/false},
+        HandlerPair{"SameOrigin", "first.html?%s", "second.html?%s",
+                    /*expect_separate_prompts=*/true},
+        HandlerPair{"CrossOrigin", "https://first.example/?q=%s",
+                    "https://second.example/?q=%s",
+                    /*expect_separate_prompts=*/true}),
+    [](const testing::TestParamInfo<HandlerPair>& info) {
+      return info.param.name;
+    });
 
 IN_PROC_BROWSER_TEST_F(RegisterProtocolHandlerExtensionBrowserTest, Basic) {
 #if BUILDFLAG(IS_MAC)

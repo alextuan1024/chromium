@@ -251,8 +251,7 @@ class RecordActiveViewsObserver {
   RecordActiveViewsObserver& operator=(const RecordActiveViewsObserver&) =
       delete;
 
-  const std::vector<
-      raw_ptr<const content::RenderWidgetHostView, VectorExperimental>>*
+  const std::vector<raw_ptr<const content::RenderWidgetHostView>>*
   active_views() const {
     return &active_views_;
   }
@@ -265,8 +264,7 @@ class RecordActiveViewsObserver {
   }
 
   std::unique_ptr<content::TextInputManagerTester> tester_;
-  std::vector<raw_ptr<const content::RenderWidgetHostView, VectorExperimental>>
-      active_views_;
+  std::vector<raw_ptr<const content::RenderWidgetHostView>> active_views_;
 };
 
 }  // namespace
@@ -1424,5 +1422,42 @@ IN_PROC_BROWSER_TEST_F(
   test_complete_waiter.Run();
 }
 #endif  //  defined(MAC_OSX)
+
+// Test that an unfocused child frame cannot become the active view.
+IN_PROC_BROWSER_TEST_F(SitePerProcessTextInputManagerTest,
+                       UnfocusedChildFrameCannotBecomeActive) {
+  CreateIframePage("a(b)");
+  content::RenderFrameHost* main_frame = GetFrame(IndexVector{});
+  content::RenderFrameHost* child_frame = GetFrame(IndexVector{0});
+
+  AddInputFieldToFrame(main_frame, "password", "secret", true);
+  AddInputFieldToFrame(child_frame, "text", "child", true);
+
+  // Focus the input in the main frame.
+  content::TextInputManagerTypeObserver main_type_observer(
+      active_contents(), ui::TEXT_INPUT_TYPE_PASSWORD);
+  content::SimulateCharTyped(active_contents(), '\t');
+  main_type_observer.Wait();
+
+  EXPECT_EQ(main_frame->GetView(),
+            content::GetActiveViewFromWebContents(active_contents()));
+  EXPECT_EQ(ui::TEXT_INPUT_TYPE_PASSWORD,
+            content::GetTextInputTypeFromWebContents(active_contents()));
+
+  // Send a TextInputStateChanged update with a non-NONE type from the unfocused
+  // child frame.
+  auto modified_state = ui::mojom::TextInputState::New();
+  modified_state->type = ui::TEXT_INPUT_TYPE_TEXT;
+  modified_state->mode = ui::TEXT_INPUT_MODE_DEFAULT;
+  content::SendTextInputStateChangedToWidget(child_frame->GetRenderWidgetHost(),
+                                             std::move(modified_state));
+
+  // The active view must remain the main frame view since the child frame is
+  // not focused.
+  EXPECT_EQ(main_frame->GetView(),
+            content::GetActiveViewFromWebContents(active_contents()));
+  EXPECT_EQ(ui::TEXT_INPUT_TYPE_PASSWORD,
+            content::GetTextInputTypeFromWebContents(active_contents()));
+}
 
 #endif  // !BUILDFLAG(IS_ANDROID)

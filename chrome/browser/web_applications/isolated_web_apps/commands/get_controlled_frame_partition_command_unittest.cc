@@ -12,17 +12,17 @@
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
+#include "chrome/browser/web_applications/isolated_web_apps/controlled_frame_partitions_manager.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/iwa_command_scheduler.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
+#include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
-#include "chrome/browser/web_applications/web_app_provider.h"
-#include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/common/chrome_features.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/common/content_features.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "url/gurl.h"
 
 using ::testing::UnorderedElementsAre;
@@ -48,12 +48,9 @@ class GetControlledFramePartitionCommandTest : public WebAppTest {
       const base::Location location = FROM_HERE) {
     base::test::TestFuture<std::optional<content::StoragePartitionConfig>>
         future;
-    provider().scheduler().ScheduleCallbackWithResult(
-        "GetControlledFramePartition", AppLockDescription(url_info.app_id()),
-        base::BindOnce(&GetControlledFramePartitionWithLock, profile(),
-                       url_info, partition_name, in_memory),
-        future.GetCallback(), /*arg_for_shutdown=*/
-        std::optional<content::StoragePartitionConfig>(std::nullopt), location);
+    IwaCommandScheduler::From(fake_provider())
+        .GetControlledFramePartition(url_info, partition_name, in_memory,
+                                     future.GetCallback(), location);
     return future.Get().value();
   }
 
@@ -66,14 +63,13 @@ class GetControlledFramePartitionCommandTest : public WebAppTest {
     return bundle->InstallChecked(profile());
   }
 
-  WebAppProvider& provider() { return *WebAppProvider::GetForTest(profile()); }
-
-  WebAppRegistrar& registrar() { return provider().registrar_unsafe(); }
+  std::vector<content::StoragePartitionConfig> GetStoragePartitions(
+      const webapps::AppId& app_id) {
+    return GetIsolatedWebAppStoragePartitionConfigs(fake_provider(), app_id);
+  }
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-  // isolated web app builder uses json parser from the decoder
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
 };
 
 TEST_F(GetControlledFramePartitionCommandTest, CanRegisterPartition) {
@@ -87,7 +83,7 @@ TEST_F(GetControlledFramePartitionCommandTest, CanRegisterPartition) {
   EXPECT_EQ(config, expected_config);
 
   std::vector<content::StoragePartitionConfig> storage_partitions =
-      registrar().GetIsolatedWebAppStoragePartitionConfigs(url_info.app_id());
+      GetStoragePartitions(url_info.app_id());
   EXPECT_THAT(storage_partitions,
               UnorderedElementsAre(url_info.storage_partition_config(profile()),
                                    expected_config));
@@ -109,7 +105,7 @@ TEST_F(GetControlledFramePartitionCommandTest, CanRegisterMultiplePartitions) {
   EXPECT_EQ(config2, expected_config2);
 
   std::vector<content::StoragePartitionConfig> storage_partitions =
-      registrar().GetIsolatedWebAppStoragePartitionConfigs(url_info.app_id());
+      GetStoragePartitions(url_info.app_id());
   EXPECT_THAT(storage_partitions,
               UnorderedElementsAre(url_info.storage_partition_config(profile()),
                                    expected_config1, expected_config2));
@@ -127,7 +123,7 @@ TEST_F(GetControlledFramePartitionCommandTest, DuplicatePartitionsIgnored) {
   EXPECT_EQ(config1, expected_config);
 
   std::vector<content::StoragePartitionConfig> storage_partitions =
-      registrar().GetIsolatedWebAppStoragePartitionConfigs(url_info.app_id());
+      GetStoragePartitions(url_info.app_id());
   EXPECT_THAT(storage_partitions,
               UnorderedElementsAre(url_info.storage_partition_config(profile()),
                                    expected_config));
@@ -145,7 +141,7 @@ TEST_F(GetControlledFramePartitionCommandTest, InMemoryPartitionsIsSaved) {
   EXPECT_EQ(config, expected_config);
 
   std::vector<content::StoragePartitionConfig> storage_partitions =
-      registrar().GetIsolatedWebAppStoragePartitionConfigs(url_info.app_id());
+      GetStoragePartitions(url_info.app_id());
 
   EXPECT_EQ(2UL, storage_partitions.size());
   EXPECT_THAT(
@@ -203,16 +199,14 @@ TEST_F(GetControlledFramePartitionCommandTest, CorrectWithDifferentApps) {
 
   // Check partitions
   std::vector<content::StoragePartitionConfig> iwa_1_sps =
-      registrar().GetIsolatedWebAppStoragePartitionConfigs(
-          iwa_1_url_info.app_id());
+      GetStoragePartitions(iwa_1_url_info.app_id());
   ASSERT_EQ(3UL, iwa_1_sps.size());
   EXPECT_THAT(iwa_1_sps, testing::UnorderedElementsAre(expected_iwa_1_sp_base,
                                                        expected_iwa_1_sp_1,
                                                        expected_iwa_1_sp_2));
 
   std::vector<content::StoragePartitionConfig> iwa_2_sps =
-      registrar().GetIsolatedWebAppStoragePartitionConfigs(
-          iwa_2_url_info.app_id());
+      GetStoragePartitions(iwa_2_url_info.app_id());
   ASSERT_EQ(3UL, iwa_2_sps.size());
   EXPECT_THAT(iwa_2_sps, testing::UnorderedElementsAre(expected_iwa_2_sp_base,
                                                        expected_iwa_2_sp_1,

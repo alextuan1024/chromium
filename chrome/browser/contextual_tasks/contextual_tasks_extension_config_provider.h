@@ -22,9 +22,11 @@ class ContextualTasksExtensionConfigProvider
   ContextualTasksExtensionConfigProvider();
   ~ContextualTasksExtensionConfigProvider() override;
 
+  bool ShouldReplaceI18nTemplates() const override;
   base::DictValue GetLoadTimeData(content::BrowserContext& context) override;
   bool IsJsErrorReportingEnabled() const override;
   bool ShouldCrashOnJsErrorInDevelopmentBuild() const override;
+  bool IsUnboundedElementAllowed() const override;
 };
 
 }  // namespace contextual_tasks

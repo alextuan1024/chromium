@@ -3,11 +3,13 @@
 // found in the LICENSE file.
 
 #include "components/messages/android/message_wrapper.h"
+
 #include <string>
 
 #include "base/android/jni_string.h"
 #include "base/logging.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/gfx/android/java_bitmap.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -27,9 +29,8 @@ MessageWrapper::MessageWrapper(MessageIdentifier message_identifier,
       dismiss_callback_(std::move(dismiss_callback)),
       is_in_queue_(false) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  java_message_wrapper_ =
-      Java_MessageWrapper_create(env, reinterpret_cast<int64_t>(this),
-                                 static_cast<int>(message_identifier));
+  java_message_wrapper_ = Java_MessageWrapper_create(
+      env, jni_zero::MakeRaw(this), static_cast<int>(message_identifier));
 }
 
 MessageWrapper::~MessageWrapper() {
@@ -113,6 +114,20 @@ void MessageWrapper::SetPrimaryButtonTextMaxLines(int max_lines) {
   JNIEnv* env = base::android::AttachCurrentThread();
   Java_MessageWrapper_setPrimaryButtonTextMaxLines(env, java_message_wrapper_,
                                                    max_lines);
+}
+
+PrimaryWidgetAppearance MessageWrapper::GetPrimaryWidgetAppearance() {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  return static_cast<PrimaryWidgetAppearance>(
+      Java_MessageWrapper_getPrimaryWidgetAppearance(env,
+                                                     java_message_wrapper_));
+}
+
+void MessageWrapper::SetPrimaryWidgetAppearance(
+    PrimaryWidgetAppearance appearance) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_MessageWrapper_setPrimaryWidgetAppearance(env, java_message_wrapper_,
+                                                 static_cast<int>(appearance));
 }
 
 std::u16string MessageWrapper::GetSecondaryButtonMenuText() {

@@ -14,6 +14,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
@@ -26,6 +27,8 @@
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_controller.h"
 #include "chrome/browser/ash/app_mode/load_profile.h"
+#include "chrome/browser/ash/app_mode/scoped_accelerator_disabler.h"
+#include "chrome/browser/ash/app_mode/watchdog/kiosk_app_launch_watchdog.h"
 #include "chrome/browser/ash/login/app_mode/force_install_observer.h"
 #include "chrome/browser/ash/login/app_mode/network_ui_controller.h"
 #include "chrome/browser/ash/login/screens/app_launch_splash_screen.h"
@@ -36,8 +39,12 @@ namespace app_mode {
 class ForceInstallObserver;
 }  // namespace app_mode
 
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
+
 namespace policy {
-class PolicyService;
+class BrowserPolicyConnectorAsh;
 }  // namespace policy
 
 namespace ash {
@@ -88,12 +95,7 @@ extern const base::TimeDelta kDefaultKioskSplashScreenMinTime;
 class KioskLaunchController : public KioskAppLauncher::Observer,
                               public NetworkUiController::Observer {
  public:
-  class AcceleratorController {
-   public:
-    virtual ~AcceleratorController() = default;
-    virtual void EnableAccelerators() = 0;
-    virtual void DisableAccelerators() = 0;
-  };
+  using AcceleratorController = kiosk::AcceleratorController;
 
   // Factory class that constructs a `KioskAppLauncher`.
   // The default implementation constructs the correct implementation of
@@ -122,20 +124,25 @@ class KioskLaunchController : public KioskAppLauncher::Observer,
   using LaunchCompleteCallback =
       base::OnceCallback<void(KioskAppLaunchError::Error error)>;
 
-  // `local_state` and `policy_service` must be non-null, and must outlive
-  // `this`.
-  KioskLaunchController(PrefService* local_state,
-                        const policy::PolicyService* policy_service,
-                        LoginDisplayHost* host,
-                        AppLaunchedCallback app_launched_callback,
-                        AppLaunchSplashScreen* splash_screen,
-                        LaunchCompleteCallback done_callback);
-
-  // `local_state` and `policy_service` must be non-null, and must outlive
-  // `this`.
+  // `local_state` and `browser_policy_connector_ash` must be non-null, and must
+  // outlive `this`.
+  // `shared_url_loader_factory` must be non-null.
   KioskLaunchController(
       PrefService* local_state,
-      const policy::PolicyService* policy_service,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+      LoginDisplayHost* host,
+      AppLaunchedCallback app_launched_callback,
+      AppLaunchSplashScreen* splash_screen,
+      LaunchCompleteCallback done_callback);
+
+  // `local_state` and `browser_policy_connector_ash` must be non-null, and must
+  // outlive `this`.
+  // `shared_url_loader_factory` must be non-null.
+  KioskLaunchController(
+      PrefService* local_state,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
       LoginDisplayHost* host,
       AppLaunchSplashScreen* splash_screen,
       kiosk::LoadProfileCallback profile_loader,
@@ -189,7 +196,7 @@ class KioskLaunchController : public KioskAppLauncher::Observer,
  private:
   friend class KioskLaunchControllerTest;
 
-  class ScopedAcceleratorDisabler;
+  using ScopedAcceleratorDisabler = kiosk::ScopedAcceleratorDisabler;
 
   enum AppState {
     kCreatingProfile = 0,   // Profile is being created.
@@ -236,6 +243,16 @@ class KioskLaunchController : public KioskAppLauncher::Observer,
   void OnNetworkOnline();
   void OnNetworkOffline();
   void OnTimerFire();
+
+  // Arms a watchdog that monitors the app's window creation. Gated by
+  // `kKioskAppLaunchWatchdog` experiment (default off). Reboots the device
+  // if the app does not load its window in the configured timeout.
+  void ArmAppLaunchWatchdog();
+
+  // Disarms the watchdog and clears the current reboot counter. The app
+  // launch is assumed to be a success when this is called.
+  void DisarmAppLaunchWatchdogOnSuccess();
+
   void CloseSplashScreen();
   void CleanUp();
   void LaunchApp();
@@ -247,7 +264,10 @@ class KioskLaunchController : public KioskAppLauncher::Observer,
   const KioskAppId& kiosk_app_id() const;
 
   const raw_ref<PrefService> local_state_;
-  const raw_ref<const policy::PolicyService> policy_service_;
+  const scoped_refptr<network::SharedURLLoaderFactory>
+      shared_url_loader_factory_;
+  const raw_ref<policy::BrowserPolicyConnectorAsh>
+      browser_policy_connector_ash_;
 
   bool auto_launch_ = false;  // Whether current app is being auto-launched.
 
@@ -296,6 +316,11 @@ class KioskLaunchController : public KioskAppLauncher::Observer,
 
   // A timer to ensure the app splash is shown for a minimum amount of time.
   base::OneShotTimer splash_wait_timer_;
+
+  // Bounds the wait between `LaunchApp()` and `OnAppWindowCreated()`.
+  // Armed in `LaunchApp()` when `ash::features::kKioskAppLaunchWatchdog` is
+  // enabled.
+  std::unique_ptr<KioskAppLaunchWatchdog> app_launch_watchdog_;
 
   // Used to prepare and launch the actual kiosk app, is created after
   // profile initialization.

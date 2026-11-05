@@ -5,7 +5,7 @@
 import type {ComposeboxFile} from 'chrome://resources/cr_components/composebox/common.js';
 import type {ComposeboxInputElement} from 'chrome://resources/cr_components/composebox/composebox_input.js';
 import type {ComposeboxVoiceSearchElement, VoiceSearchError, VoiceSearchMetricType} from 'chrome://resources/cr_components/composebox/composebox_voice_search.js';
-import type {InputState} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
+import type {InputState, ToolConfig} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import {ContextUploadStatus, InputType, ModelMode, ToolMode} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {UnguessableToken} from 'chrome://resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
@@ -13,6 +13,24 @@ import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import type {TestComposeboxMixinElement} from './test_composebox_mixin.js';
+
+export function createToolConfig(
+    tool: ToolMode,
+    override: Partial<Omit<ToolConfig, 'tool'>> = {}): ToolConfig {
+  return Object.assign(
+      {
+        tool,
+        disableActiveModelSelection: false,
+        menuLabel: '',
+        chipLabel: '',
+        hintText: '',
+        aimUrlParams: [],
+        menuTooltip: '',
+        chipA11yLabel: '',
+        icon: 0,
+      },
+      override);
+}
 
 // TODO(crbug.com/452983498): This is a copy of MockInputState from
 // searchbox_test_utils.ts to decouple composebox test builds from searchbox
@@ -28,6 +46,7 @@ export class MockInputState implements InputState {
       hintText: 'Research anything',
       menuLabel: '',
       chipLabel: '',
+      chipA11yLabel: '',
       disableActiveModelSelection: false,
       aimUrlParams: [],
       menuTooltip: '',
@@ -38,6 +57,7 @@ export class MockInputState implements InputState {
       hintText: 'Describe your image',
       menuLabel: '',
       chipLabel: '',
+      chipA11yLabel: '',
       disableActiveModelSelection: false,
       aimUrlParams: [],
       menuTooltip: '',
@@ -48,6 +68,7 @@ export class MockInputState implements InputState {
       hintText: 'Create anything',
       menuLabel: '',
       chipLabel: '',
+      chipA11yLabel: '',
       disableActiveModelSelection: false,
       aimUrlParams: [],
       menuTooltip: '',
@@ -68,6 +89,7 @@ export class MockInputState implements InputState {
   maxInputsByType: {[key: number]: number} = {};
   maxTotalInputs: number = 0;
   isCanvasQuerySubmitted: boolean = false;
+  willFulfillInAim: boolean = true;
 
   hintText: string = '';
 
@@ -76,7 +98,6 @@ export class MockInputState implements InputState {
   }
 }
 // LINT.ThenChange(//chrome/test/data/webui/cr_components/searchbox/searchbox_test_utils.ts)
-export type {InputState};
 
 const THOUSANDTHS = 0.001;
 
@@ -170,6 +191,7 @@ export function createValidInputState(): InputState {
         tool: ToolMode.kDeepSearch,
         menuLabel: 'Deep Search',
         chipLabel: 'Deep Search',
+        chipA11yLabel: '',
         hintText: 'Deep Search hint',
         disableActiveModelSelection: false,
         aimUrlParams: [],
@@ -210,7 +232,8 @@ export type MockComposeboxVoiceSearch = Omit<
     ComposeboxVoiceSearchElement,
     'state_'|'voiceRecognition_'|'onFinalResult_'|'onCloseClick_'|'onEnd_'|
     'onTryAgainClick_'|'onLinkClick_'|'errorMessage_'|'voiceModeEndCleanup_'|
-    'detailedError'|'onStopClick_'|'recordMetric_'>&{
+    'detailedError'|'onStopClick_'|'recordMetric_'|'onIdleTimeout_'|
+    'onVoicePermissionPromptChanged'>&{
   state_: number,
   metricSource_: string,
   voiceRecognition_: MockSpeechRecognition,
@@ -220,10 +243,15 @@ export type MockComposeboxVoiceSearch = Omit<
   onFinalResult_: (result: string, forceSubmit?: boolean) => void,
   onCloseClick_: () => void,
   onEnd_: () => void,
+  onIdleTimeout_: () => void,
   onTryAgainClick_: (e: Event) => void,
   onLinkClick_: (e: Event) => void,
   onStopClick_: () => void,
-  recordMetric_: (type: VoiceSearchMetricType, metricEnumValue: number, max: number) => void,
+  onVoicePermissionPromptChanged:
+      (isOpened: boolean, promptSize: {width: number, height: number}) => void,
+  recordMetric_:
+      (type: VoiceSearchMetricType, metricEnumValue: number, max: number) =>
+          void,
 };
 
 export function disableTransitionsRecursively(

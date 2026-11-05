@@ -468,7 +468,12 @@ void ConfigBase::SetDesktop(Desktop desktop) {
 }
 
 void ConfigBase::SetFilterEnvironment(bool filter) {
+// Sanitizer runtimes are configured through environment variables (e.g.
+// ASAN_OPTIONS, UBSAN_OPTIONS), so the environment is never filtered in
+// sanitizer builds.
+#if !defined(ADDRESS_SANITIZER) && !defined(UNDEFINED_SANITIZER)
   filter_environment_ = filter;
+#endif  // !defined(ADDRESS_SANITIZER) && !defined(UNDEFINED_SANITIZER)
 }
 
 bool ConfigBase::GetEnvironmentFiltered() {
@@ -491,7 +496,6 @@ TargetTokens::~TargetTokens() = default;
 PolicyBase::PolicyBase(std::string_view tag)
     : tag_(tag),
       config_(),
-      config_ptr_(nullptr),
       stdout_handle_(nullptr),
       stderr_handle_(nullptr),
       delegate_data_(nullptr),
@@ -509,30 +513,21 @@ TargetConfig* PolicyBase::GetConfig() {
 }
 
 ConfigBase* PolicyBase::config() {
-  if (config_ptr_) {
-    DCHECK(!config_);
-    // Should have a tag if we are sharing backing configuration.
-    DCHECK(!tag_.empty());
-    return config_ptr_;
-  }
   if (!config_) {
     DCHECK(tag_.empty());
-    config_ = std::make_unique<ConfigBase>();
+    config_ = base::MakeRefCounted<ConfigBase>();
   }
   return config_.get();
 }
 
-bool PolicyBase::SetConfig(TargetConfig* config) {
-  // Cannot call this method if we already own our memory.
+void PolicyBase::SetConfig(scoped_refptr<ConfigBase> config) {
+  // Cannot call this method if a configuration has already been assigned.
   DCHECK(!config_);
-  // Cannot call this method twice.
-  DCHECK(!config_ptr_);
   // Must provide valid shared data region.
   DCHECK(config);
   // Should have a tag.
   DCHECK(!tag_.empty());
-  config_ptr_ = static_cast<ConfigBase*>(config);
-  return true;
+  config_ = std::move(config);
 }
 
 ResultCode PolicyBase::SetStdoutHandle(HANDLE handle) {

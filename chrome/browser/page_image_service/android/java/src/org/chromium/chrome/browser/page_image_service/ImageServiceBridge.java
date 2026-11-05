@@ -8,7 +8,10 @@ import android.graphics.Bitmap;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
@@ -18,6 +21,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.page_image_service.ImageServiceMetrics.SalientImageUrlFetchResult;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.image_fetcher.ImageFetcher;
+import org.chromium.net.NetworkTrafficAnnotationTag;
 import org.chromium.page_image_service.mojom.ClientId;
 import org.chromium.url.GURL;
 
@@ -27,34 +31,44 @@ import java.util.Map;
 /** Allows java access to the native ImageService. */
 @NullMarked
 public class ImageServiceBridge {
+    @JniType("::ImageServiceBridge")
+    public interface NativeImageServiceBridge extends JniTypeToken {}
+
     private final @ClientId.EnumType int mClientId;
     private final String mImageFetcherClientName;
     // Cache the results for repeated queries to avoid extra calls through the JNI/network.
     private final Map<GURL, GURL> mSalientImageUrlCache = new HashMap<>();
     private final CallbackController mCallbackController = new CallbackController();
     private final ImageFetcher mImageFetcher;
+    private final NetworkTrafficAnnotationTag mTrafficAnnotation;
 
-    private final long mNativeImageServiceBridge;
+    private @Nullable JniUniquePtr<NativeImageServiceBridge> mNativeImageServiceBridge;
 
     /**
      * @param clientId The ImageService client the salient image url is being fetched for.
      * @param imageFetcherClientName The string name of the ImageFetcher client.
+     * @param trafficAnnotation Describes the caller's image request.
      * @param profile Used to acquire dependencies in native.
      * @param imageFetcher The fetcher to fetch the image.
      */
     public ImageServiceBridge(
             @ClientId.EnumType int clientId,
             String imageFetcherClientName,
+            NetworkTrafficAnnotationTag trafficAnnotation,
             Profile profile,
             ImageFetcher imageFetcher) {
         mClientId = clientId;
         mImageFetcherClientName = imageFetcherClientName;
+        mTrafficAnnotation = trafficAnnotation;
         mNativeImageServiceBridge = ImageServiceBridgeJni.get().init(profile);
         mImageFetcher = imageFetcher;
     }
 
     public void destroy() {
-        ImageServiceBridgeJni.get().destroy(mNativeImageServiceBridge);
+        if (mNativeImageServiceBridge != null) {
+            mNativeImageServiceBridge.destroy();
+            mNativeImageServiceBridge = null;
+        }
         mSalientImageUrlCache.clear();
         mCallbackController.destroy();
         mImageFetcher.destroy();
@@ -91,6 +105,7 @@ public class ImageServiceBridge {
                                     ImageFetcher.Params.create(
                                             imageUrl,
                                             mImageFetcherClientName,
+                                            mTrafficAnnotation,
                                             imageSize,
                                             imageSize),
                                     callback);
@@ -115,6 +130,7 @@ public class ImageServiceBridge {
             return;
         }
 
+        if (mNativeImageServiceBridge == null) return;
         ImageServiceBridgeJni.get()
                 .fetchImageUrlFor(
                         mNativeImageServiceBridge,
@@ -150,16 +166,14 @@ public class ImageServiceBridge {
     @NativeMethods
     public interface Natives {
         // Static methods.
-        long init(@JniType("Profile*") Profile profile);
+        JniUniquePtr<NativeImageServiceBridge> init(@JniType("Profile*") Profile profile);
 
         @JniType("std::string")
         String clientIdToString(@ClientId.EnumType int clientId);
 
         // Instance methods.
-        void destroy(long nativeImageServiceBridge);
-
         void fetchImageUrlFor(
-                long nativeImageServiceBridge,
+                JniPtr<NativeImageServiceBridge> self,
                 boolean isAccountData,
                 @ClientId.EnumType int clientId,
                 @JniType("GURL") GURL pageUrl,

@@ -19,12 +19,11 @@ import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.components.browser_ui.site_settings.ContentSettingsResources;
-import org.chromium.components.browser_ui.site_settings.SingleCategorySettings;
-import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory;
 
 @NullMarked
 public abstract class SafetyHubBaseFragment extends ChromeBaseSettingsFragment {
+    static final String HELP_CENTER_URL = "https://support.google.com/chrome?p=safety_check";
+
     private OneshotSupplier<SnackbarManager> mSnackbarManagerSupplier;
 
     @Override
@@ -86,18 +85,5 @@ public abstract class SafetyHubBaseFragment extends ChromeBaseSettingsFragment {
                         fragment,
                         /* fragmentArgs= */ null,
                         /* addToBackStack= */ true);
-    }
-
-    protected void launchSiteSettingsActivity(@SiteSettingsCategory.Type int category) {
-        Bundle extras = new Bundle();
-        extras.putString(
-                SingleCategorySettings.EXTRA_CATEGORY,
-                SiteSettingsCategory.preferenceKey(category));
-        extras.putString(
-                SingleCategorySettings.EXTRA_TITLE,
-                getContext().getString(ContentSettingsResources.getTitleForCategory(category)));
-
-        SettingsNavigationFactory.createSettingsNavigation(getContext())
-                .startSettings(getContext(), SingleCategorySettings.class, extras);
     }
 }

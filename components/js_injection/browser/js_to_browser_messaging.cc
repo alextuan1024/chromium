@@ -5,9 +5,12 @@
 #include "components/js_injection/browser/js_to_browser_messaging.h"
 
 #include <algorithm>
+#include <optional>
+#include <variant>
 
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
+#include "build/build_config.h"
 #include "components/back_forward_cache/back_forward_cache_disable.h"
 #include "components/js_injection/browser/web_message.h"
 #include "components/js_injection/browser/web_message_host.h"
@@ -20,6 +23,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/messaging/message_port_descriptor.h"
@@ -135,6 +139,12 @@ class JsToBrowserMessaging::ReplyProxyImpl : public WebMessageReplyProxy {
       return;
     }
     EnsureBrowserToJsMessaging();
+    if (wants_result) {
+      callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+          std::move(callback),
+          base::unexpected(
+              js_injection::mojom::JavaScriptExecutionError::kFrameDestroyed));
+    }
     java_to_js_messaging_->OnExecuteJavaScript(java_script, wants_result,
                                                std::move(callback));
   }
@@ -151,6 +161,15 @@ class JsToBrowserMessaging::ReplyProxyImpl : public WebMessageReplyProxy {
     // of this function must ensure to not call this if we're in that state.
     CHECK(document_.AsRenderFrameHostIfValid());
     return document_.AsRenderFrameHostIfValid()->GetPage();
+  }
+
+  std::optional<bool> IsCrossOriginIsolated() override {
+    content::RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
+    if (!rfh) {
+      return std::nullopt;
+    }
+    return rfh->GetWebExposedIsolationLevel() !=
+           content::WebExposedIsolationLevel::kNotIsolated;
   }
 
  private:
@@ -176,7 +195,7 @@ JsToBrowserMessaging::JsToBrowserMessaging(
     mojo::PendingAssociatedReceiver<mojom::JsToBrowserMessaging> receiver,
     mojo::PendingAssociatedRemote<mojom::BrowserToJsMessagingFactory>
         browser_to_js_factory,
-    WebMessageHostFactory* factory,
+    base::WeakPtr<WebMessageHostFactory> factory,
     const origin_matcher::OriginMatcher& origin_matcher,
     const std::u16string& name,
     int32_t world_id)
@@ -203,6 +222,11 @@ void JsToBrowserMessaging::OnRenderFrameHostActivated() {
     return;
   }
 
+  // Listener removed while prerendering; the queue dies with the document.
+  if (!connection_factory_) {
+    return;
+  }
+
   std::vector<std::unique_ptr<WebMessage>> queued_messages =
       data->TakeQueuedMessages(name_, world_id_);
   for (auto& message : queued_messages) {
@@ -214,6 +238,18 @@ void JsToBrowserMessaging::PostMessage(
     blink::WebMessagePayload message,
     std::vector<blink::MessagePortDescriptor> ports) {
   DCHECK(render_frame_host_);
+
+#if BUILDFLAG(IS_ANDROID)
+  // `JsWebMessage` is shared by both directions, but SharedArrayBuffers are
+  // only supported from the browser to the renderer. The renderer never sends
+  // one, so receiving it means the renderer is compromised. Reject it here
+  // rather than letting it reach the embedder, which cannot handle it.
+  if (std::holds_alternative<base::UnsafeSharedMemoryRegion>(message)) {
+    mojo::ReportBadMessage(
+        "SharedArrayBuffer cannot be sent from the renderer.");
+    return;
+  }
+#endif
 
   // For prerendering, messages will be queued until activation.
   if (!render_frame_host_->IsInLifecycleState(
@@ -243,6 +279,13 @@ void JsToBrowserMessaging::PostMessage(
   // SetBrowserToJsMessaging must be called before this.
   DCHECK(reply_proxy_);
   reply_proxy_->EnsureBrowserToJsMessaging();
+
+  if (!connection_factory_) {
+    // The listener was removed, but this frame outlived the removal, e.g. a
+    // navigation that was in flight at the time. Dropping the message is safe:
+    // the app removed the listener and does not expect further messages.
+    return;
+  }
 
   if (!host_) {
     const std::string top_level_origin_string =

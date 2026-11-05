@@ -18,16 +18,14 @@ static_library("cellular_setup") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ui/webui/ash/system_web_dialog",
     "//ui/web_dialogs",
   ]
 
   deps = [
     "//ash/constants",
-    "//chrome/app:generated_resources",
+    "//ash/strings",
     "//chrome/browser:resources",
-    "//chrome/browser/profiles:profile",
     "//chrome/browser/ui:simple_message_box_headers",
     "//chromeos/ash/components/network",
     "//components/application_locale_storage",

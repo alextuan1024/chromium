@@ -4,30 +4,39 @@
 
 #include "chrome/browser/webauthn/passkey_unlock_manager.h"
 
+#include <memory>
+#include <optional>
 #include <string>
+#include <utility>
+#include <variant>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/rand_util.h"
 #include "base/scoped_observation.h"
+#include "base/test/gmock_move_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/webauthn/enclave_manager.h"
 #include "chrome/browser/webauthn/enclave_manager_interface.h"
 #include "chrome/browser/webauthn/mock_enclave_manager.h"
 #include "chrome/browser/webauthn/passkey_unlock_manager_factory.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/sync/base/pref_names.h"
+#include "components/sync/service/sync_service.h"
 #include "components/sync/test/test_sync_service.h"
+#include "components/trusted_vault/trusted_vault_connection.h"
 #include "components/webauthn/core/browser/passkey_model.h"
 #include "components/webauthn/core/browser/test_passkey_model.h"
 #include "content/public/test/browser_task_environment.h"
 #include "crypto/scoped_fake_unexportable_key_provider.h"
 #include "crypto/scoped_fake_user_verifying_key_provider.h"
 #include "device/fido/public/features.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/l10n/l10n_util.h"
 
 namespace webauthn {
 
@@ -54,10 +63,28 @@ class MockPasskeyUnlockManagerObserver : public PasskeyUnlockManager::Observer {
 };
 
 using ::testing::_;
+using ::testing::Eq;
+using ::testing::Field;
+using ::testing::Mock;
+using ::testing::Optional;
+using ::testing::Return;
+using ::testing::StrictMock;
+using ::testing::TestParamInfo;
+using ::testing::ValuesIn;
+using ::testing::WithParamInterface;
 
 enum EnclaveManagerStatus { kEnclaveReady, kEnclaveNotReady };
 enum PasskeyModelStatus { kPasskeyModelReady, kPasskeyModelNotReady };
 using GpmPinStatus = EnclaveManager::GpmPinAvailability;
+using AccountState =
+    trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult;
+
+AccountState MakeAccountState(
+    AccountState::State state = AccountState::State::kRecoverable) {
+  AccountState account_state;
+  account_state.state = state;
+  return account_state;
+}
 
 class PasskeyUnlockManagerTest : public testing::Test {
  protected:
@@ -102,18 +129,23 @@ class PasskeyUnlockManagerTest : public testing::Test {
     std::unique_ptr<MockEnclaveManager> enclave_manager_mock =
         std::make_unique<MockEnclaveManager>();
     ON_CALL(*enclave_manager_mock, IsLoaded())
-        .WillByDefault(testing::Return(is_enclave_manager_loaded));
+        .WillByDefault(Return(is_enclave_manager_loaded));
     ON_CALL(*enclave_manager_mock, IsReady())
-        .WillByDefault(testing::Return(is_enclave_manager_ready));
-    ON_CALL(*enclave_manager_mock, CheckGpmPinAvailability(_))
+        .WillByDefault(Return(is_enclave_manager_ready));
+    ON_CALL(*enclave_manager_mock, DownloadAccountState(_))
         .WillByDefault(
-            [gpm_pin_status](
-                EnclaveManager::GpmPinAvailabilityCallback callback) {
-              std::move(callback).Run(gpm_pin_status);
+            [](EnclaveManagerInterface::DownloadAccountStateCallback callback) {
+              std::move(callback).Run(MakeAccountState(), GaiaId("gaia"));
               return std::make_unique<
                   trusted_vault::TrustedVaultConnection::Request>();
             });
-    EXPECT_CALL(*enclave_manager_mock, CheckGpmPinAvailability(_));
+    ON_CALL(*enclave_manager_mock, CheckGpmPinAvailability(_))
+        .WillByDefault(Return(gpm_pin_status));
+    if (is_enclave_manager_loaded) {
+      // The security domain state is downloaded once, as soon as the enclave
+      // manager has loaded.
+      EXPECT_CALL(*enclave_manager_mock, DownloadAccountState(_)).Times(1);
+    }
     return enclave_manager_mock;
   }
 
@@ -135,6 +167,88 @@ class PasskeyUnlockManagerTest : public testing::Test {
     return passkey_unlock_manager_.get();
   }
 
+  MockEnclaveManager* enclave_manager_mock() {
+    return static_cast<MockEnclaveManager*>(test_enclave_manager_.get());
+  }
+
+  void PrepareDependencies(bool is_enclave_manager_loaded,
+                           EnclaveManagerStatus enclave_manager_status,
+                           PasskeyModelStatus passkey_model_status,
+                           GpmPinStatus gpm_pin_status) {
+    test_enclave_manager_ = CreateMockEnclaveManager(
+        is_enclave_manager_loaded, enclave_manager_status == kEnclaveReady,
+        gpm_pin_status);
+    test_passkey_model_ =
+        CreateMockPasskeyModel(passkey_model_status == kPasskeyModelReady);
+    test_sync_service_ = CreateTestSyncService();
+    test_sync_service()->GetUserSettings()->SetPassphraseType(
+        syncer::PassphraseType::kKeystorePassphrase);
+    test_sync_service()->GetUserSettings()->SetTrustedVaultKeyRequired(false);
+
+    CoreAccountInfo account_info;
+    account_info.email = kTestAccount;
+    account_info.gaia = GaiaId("gaia");
+    account_info.account_id = CoreAccountId::FromGaiaId(account_info.gaia);
+    test_sync_service()->SetSignedIn(signin::ConsentLevel::kSignin,
+                                     account_info);
+    test_sync_service()->GetUserSettings()->SetSelectedTypes(
+        /*sync_everything=*/true,
+        /*types=*/{});
+  }
+
+  void CreatePasskeyUnlockManager() {
+    passkey_unlock_manager_ = std::make_unique<PasskeyUnlockManager>(
+        test_enclave_manager_.get(), test_passkey_model_.get(),
+        test_sync_service_.get());
+  }
+
+  // Creates the `PasskeyUnlockManager` before the enclave manager has loaded.
+  // Requires `PrepareDependencies()` with `is_enclave_manager_loaded` set to
+  // false. `LoadEnclaveManager()` then simulates the delayed load.
+  void CreatePasskeyUnlockManagerBeforeEnclaveManagerLoads() {
+    EXPECT_CALL(*enclave_manager_mock(), LoadAfterDelay(_, _))
+        .WillOnce([this](base::TimeDelta, base::OnceClosure on_loaded) {
+          on_enclave_manager_loaded_ = std::move(on_loaded);
+        });
+    CreatePasskeyUnlockManager();
+  }
+
+  void LoadEnclaveManager() {
+    ON_CALL(*enclave_manager_mock(), IsLoaded()).WillByDefault(Return(true));
+    std::move(on_enclave_manager_loaded_).Run();
+    NotifyEnclaveStateUpdated();
+  }
+
+  void RunDelayedEnclaveManagerLoadCallback() {
+    std::move(on_enclave_manager_loaded_).Run();
+  }
+
+  // Expects `DownloadAccountState()` to be called once and captures its
+  // callback into `download_callback`, which must outlive the expected call.
+  void ExpectAccountStateDownload(
+      EnclaveManagerInterface::DownloadAccountStateCallback&
+          download_callback) {
+    EXPECT_CALL(*enclave_manager_mock(), DownloadAccountState(_))
+        .Times(1)
+        .WillOnce(MoveArgAndReturn<0>(
+            &download_callback,
+            std::make_unique<
+                trusted_vault::TrustedVaultConnection::Request>()));
+  }
+
+  void NotifyEnclaveStateUpdated() {
+    static_cast<EnclaveManager::Observer*>(passkey_unlock_manager())
+        ->OnStateUpdated();
+  }
+
+  // Fires state-change notifications from Sync, `PasskeyModel`, and
+  // `EnclaveManager` to verify stage transitions and idempotence.
+  void TriggerDependencyUpdates() {
+    test_sync_service()->FireStateChanged();
+    passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+    NotifyEnclaveStateUpdated();
+  }
+
   TestPasskeyModel* passkey_model() {
     return static_cast<TestPasskeyModel*>(test_passkey_model_.get());
   }
@@ -151,22 +265,15 @@ class PasskeyUnlockManagerTest : public testing::Test {
     task_environment_.FastForwardBy(delta);
   }
 
-  void EnableUiExperimentArm(std::string arm_name) {
-    feature_params_[device::kPasskeyUnlockErrorUiExperimentArm.name] = arm_name;
-    feature_list_.Reset();
-    feature_list_.InitAndEnableFeatureWithParameters(
-        device::kPasskeyUnlockErrorUi, feature_params_);
-  }
-
  private:
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  base::test::ScopedFeatureList feature_list_;
-  std::map<std::string, std::string> feature_params_;
   std::unique_ptr<EnclaveManagerInterface> test_enclave_manager_;
   std::unique_ptr<PasskeyModel> test_passkey_model_;
   std::unique_ptr<syncer::SyncService> test_sync_service_;
   std::unique_ptr<PasskeyUnlockManager> passkey_unlock_manager_;
+  // Simulates the enclave manager finishing its delayed load.
+  base::OnceClosure on_enclave_manager_loaded_;
   std::variant<crypto::ScopedFakeUserVerifyingKeyProvider,
                crypto::ScopedNullUserVerifyingKeyProvider,
                crypto::ScopedFailingUserVerifyingKeyProvider>
@@ -196,8 +303,7 @@ struct PasskeyUnlockManagerErrorUiTestParams {
 
 class PasskeyUnlockManagerErrorUiTest
     : public PasskeyUnlockManagerTest,
-      public testing::WithParamInterface<
-          PasskeyUnlockManagerErrorUiTestParams> {};
+      public WithParamInterface<PasskeyUnlockManagerErrorUiTestParams> {};
 
 TEST_P(PasskeyUnlockManagerErrorUiTest, ShouldDisplayErrorUi) {
   const auto& param = GetParam();
@@ -217,7 +323,7 @@ TEST_P(PasskeyUnlockManagerErrorUiTest, ShouldDisplayErrorUi) {
         /*types=*/{syncer::UserSelectableType::kPreferences});
   }
   test_sync_service()->FireStateChanged();
-  testing::StrictMock<MockPasskeyUnlockManagerObserver> observer;
+  StrictMock<MockPasskeyUnlockManagerObserver> observer;
   base::ScopedObservation<PasskeyUnlockManager, PasskeyUnlockManager::Observer>
       observation(&observer);
   observation.Observe(passkey_unlock_manager());
@@ -307,9 +413,10 @@ const PasskeyUnlockManagerErrorUiTestParams kErrorUiTestParams[] = {
 INSTANTIATE_TEST_SUITE_P(
     All,
     PasskeyUnlockManagerErrorUiTest,
-    testing::ValuesIn(kErrorUiTestParams),
-    [](const testing::TestParamInfo<PasskeyUnlockManagerErrorUiTestParams>&
-           info) { return info.param.name; });
+    ValuesIn(kErrorUiTestParams),
+    [](const TestParamInfo<PasskeyUnlockManagerErrorUiTestParams>& info) {
+      return info.param.name;
+    });
 
 struct PasskeyUnlockManagerHistogramTestParams {
   std::string name;
@@ -331,8 +438,7 @@ struct PasskeyUnlockManagerHistogramTestParams {
 
 class PasskeyUnlockManagerHistogramTest
     : public PasskeyUnlockManagerTest,
-      public testing::WithParamInterface<
-          PasskeyUnlockManagerHistogramTestParams> {};
+      public WithParamInterface<PasskeyUnlockManagerHistogramTestParams> {};
 
 TEST_P(PasskeyUnlockManagerHistogramTest, LogsHistograms) {
   const auto& param = GetParam();
@@ -407,9 +513,10 @@ const PasskeyUnlockManagerHistogramTestParams kHistogramTestParams[] = {
 INSTANTIATE_TEST_SUITE_P(
     All,
     PasskeyUnlockManagerHistogramTest,
-    testing::ValuesIn(kHistogramTestParams),
-    [](const testing::TestParamInfo<PasskeyUnlockManagerHistogramTestParams>&
-           info) { return info.param.name; });
+    ValuesIn(kHistogramTestParams),
+    [](const TestParamInfo<PasskeyUnlockManagerHistogramTestParams>& info) {
+      return info.param.name;
+    });
 
 TEST_F(PasskeyUnlockManagerTest, IsCreated) {
   ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
@@ -421,7 +528,7 @@ TEST_F(PasskeyUnlockManagerTest, IsCreated) {
 TEST_F(PasskeyUnlockManagerTest, NotifyOnPasskeysChangedWhenPasskeyAdded) {
   ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
                                  GpmPinStatus::kGpmPinUnset);
-  testing::StrictMock<MockPasskeyUnlockManagerObserver> observer;
+  StrictMock<MockPasskeyUnlockManagerObserver> observer;
   base::ScopedObservation<PasskeyUnlockManager, PasskeyUnlockManager::Observer>
       observation(&observer);
   observation.Observe(passkey_unlock_manager());
@@ -429,41 +536,6 @@ TEST_F(PasskeyUnlockManagerTest, NotifyOnPasskeysChangedWhenPasskeyAdded) {
   EXPECT_CALL(observer, OnPasskeyErrorUiStateChanged());
   sync_pb::WebauthnCredentialSpecifics passkey = CreatePasskey();
   passkey_model()->AddNewPasskeyForTesting(passkey);
-}
-
-TEST_F(PasskeyUnlockManagerTest, TextLablesForDifferentUiExperimentArms) {
-  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
-                                 GpmPinStatus::kGpmPinUnset);
-
-  EnableUiExperimentArm("text_with_verify_wording");
-  EXPECT_EQ(passkey_unlock_manager()->GetPasskeyErrorProfilePillTitle(),
-            l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_PASSKEYS_ERROR_VERIFY));
-  EXPECT_EQ(passkey_unlock_manager()->GetPasskeyErrorProfileMenuDetails(),
-            l10n_util::GetStringUTF16(
-                IDS_PROFILE_MENU_PASSKEYS_ERROR_DESCRIPTION_VERIFY));
-  EXPECT_EQ(
-      passkey_unlock_manager()->GetPasskeyErrorProfileMenuButtonLabel(),
-      l10n_util::GetStringUTF16(IDS_PROFILE_MENU_PASSKEYS_ERROR_BUTTON_VERIFY));
-
-  EnableUiExperimentArm("text_with_get_wording");
-  EXPECT_EQ(passkey_unlock_manager()->GetPasskeyErrorProfilePillTitle(),
-            l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_PASSKEYS_ERROR_GET));
-  EXPECT_EQ(passkey_unlock_manager()->GetPasskeyErrorProfileMenuDetails(),
-            l10n_util::GetStringUTF16(
-                IDS_PROFILE_MENU_PASSKEYS_ERROR_DESCRIPTION_GET));
-  EXPECT_EQ(
-      passkey_unlock_manager()->GetPasskeyErrorProfileMenuButtonLabel(),
-      l10n_util::GetStringUTF16(IDS_PROFILE_MENU_PASSKEYS_ERROR_BUTTON_GET));
-
-  EnableUiExperimentArm("text_with_unlock_wording");
-  EXPECT_EQ(passkey_unlock_manager()->GetPasskeyErrorProfilePillTitle(),
-            l10n_util::GetStringUTF16(IDS_AVATAR_BUTTON_PASSKEYS_ERROR_UNLOCK));
-  EXPECT_EQ(passkey_unlock_manager()->GetPasskeyErrorProfileMenuDetails(),
-            l10n_util::GetStringUTF16(
-                IDS_PROFILE_MENU_PASSKEYS_ERROR_DESCRIPTION_UNLOCK));
-  EXPECT_EQ(
-      passkey_unlock_manager()->GetPasskeyErrorProfileMenuButtonLabel(),
-      l10n_util::GetStringUTF16(IDS_PROFILE_MENU_PASSKEYS_ERROR_BUTTON_UNLOCK));
 }
 
 TEST_F(PasskeyUnlockManagerTest,
@@ -546,6 +618,639 @@ TEST_F(PasskeyUnlockManagerTest,
       /*sample=*/true,
       /*expected_bucket_count=*/1);
 }
+
+TEST_F(PasskeyUnlockManagerTest, IsPasskeyUnlockErrorUiEnabled) {
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatures(
+        /*enabled_features=*/{device::kPasskeyUnlockErrorUi},
+        /*disabled_features=*/{device::kPasskeyUnlockIdentityErrorUi});
+    EXPECT_TRUE(PasskeyUnlockManager::IsPasskeyUnlockErrorUiEnabled());
+  }
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatures(
+        /*enabled_features=*/{device::kPasskeyUnlockErrorUi,
+                              device::kPasskeyUnlockIdentityErrorUi},
+        /*disabled_features=*/{});
+    EXPECT_FALSE(PasskeyUnlockManager::IsPasskeyUnlockErrorUiEnabled());
+  }
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{device::kPasskeyUnlockErrorUi,
+                               device::kPasskeyUnlockIdentityErrorUi});
+    EXPECT_FALSE(PasskeyUnlockManager::IsPasskeyUnlockErrorUiEnabled());
+  }
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatures(
+        /*enabled_features=*/{device::kPasskeyUnlockIdentityErrorUi},
+        /*disabled_features=*/{device::kPasskeyUnlockErrorUi});
+    EXPECT_FALSE(PasskeyUnlockManager::IsPasskeyUnlockErrorUiEnabled());
+  }
+}
+
+TEST_F(PasskeyUnlockManagerTest, DoesNotReportPasskeysLockedWhenFlagOff) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      device::kPasskeyUnlockIdentityErrorUi);
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       SetPasskeysLockedReflectsLockAndUnlockableState) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockIdentityErrorUi};
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+
+  // Reports passkeys locked when passkeys are present, locked, and unlockable.
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+
+  // Remains true when Sync reports an actionable error or when passkey sync
+  // becomes inactive, because the state pushed to
+  // `SyncService::SetPasskeysLocked()` does not depend on Sync state
+  // (`SyncService` gates on `WEBAUTHN_CREDENTIAL` itself).
+  test_sync_service()->GetUserSettings()->SetTrustedVaultRecoverabilityDegraded(
+      true);
+  test_sync_service()->FireStateChanged();
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+
+  test_sync_service()->SetFailedDataTypes({syncer::WEBAUTHN_CREDENTIAL});
+  test_sync_service()->FireStateChanged();
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+
+  // Clears passkeys locked when the enclave becomes ready.
+  ON_CALL(*enclave_manager_mock(), IsReady()).WillByDefault(Return(true));
+  static_cast<EnclaveManager::Observer*>(passkey_unlock_manager())
+      ->OnStateUpdated();
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       SetPasskeysLockedTrueWhenPasskeySyncInactiveAndSyncErrorPresent) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockIdentityErrorUi};
+  ConfigureProfileAndSyncService(
+      kEnclaveNotReady, kPasskeyModelReady, GpmPinStatus::kGpmPinUnset,
+      syncer::PassphraseType::kTrustedVaultPassphrase,
+      /*trusted_vault_key_required=*/true,
+      /*inactive_sync_data_types=*/{syncer::WEBAUTHN_CREDENTIAL});
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+}
+
+#if !BUILDFLAG(IS_CHROMEOS)
+TEST_F(PasskeyUnlockManagerTest, DoesNotReportPasskeysLockedWhenNotUnlockable) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockIdentityErrorUi};
+  DisableUVKeySupport();
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+TEST_F(PasskeyUnlockManagerTest,
+       ReportedPasskeysLockedIgnoresSyncStateChanges) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockIdentityErrorUi};
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+
+  // Updates that keep the Sync-facing state true (including Sync state changes
+  // that flip `ShouldDisplayErrorUi()` to false and back to true, or change
+  // Sync's actionable error) keep `passkeys_locked()` true.
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+  test_sync_service()->GetUserSettings()->SetTrustedVaultRecoverabilityDegraded(
+      true);
+  test_sync_service()->FireStateChanged();
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+  test_sync_service()->SetFailedDataTypes({syncer::WEBAUTHN_CREDENTIAL});
+  test_sync_service()->FireStateChanged();
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  test_sync_service()->SetFailedDataTypes({});
+  test_sync_service()->FireStateChanged();
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+
+  // Becoming ready clears `passkeys_locked()`.
+  ON_CALL(*enclave_manager_mock(), IsReady()).WillByDefault(Return(true));
+  static_cast<EnclaveManager::Observer*>(passkey_unlock_manager())
+      ->OnStateUpdated();
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       PasskeysLockedStateStaysTrueWhenSyncReportsPasskeysLocked) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockIdentityErrorUi};
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+  ASSERT_EQ(test_sync_service()->GetUserActionableError(),
+            syncer::SyncService::UserActionableError::kPasskeysLocked);
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+
+  // Subsequent `OnStateChanged()` notifications while Sync still reports
+  // `kPasskeysLocked` must keep `passkeys_locked()` and
+  // `ShouldDisplayErrorUi()` true.
+  test_sync_service()->FireStateChanged();
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+}
+
+TEST_F(PasskeyUnlockManagerTest, ShutdownKeepsReportedPasskeysLocked) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockIdentityErrorUi};
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  ASSERT_TRUE(test_sync_service()->passkeys_locked());
+
+  static_cast<KeyedService*>(passkey_unlock_manager())->Shutdown();
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       AccountStateDownloadedOnceAfterEnclaveManagerLoads) {
+  PrepareDependencies(/*is_enclave_manager_loaded=*/false, kEnclaveNotReady,
+                      kPasskeyModelReady, GpmPinStatus::kGpmPinUnset);
+  // Notifications before the enclave manager loads must not start a download.
+  EXPECT_CALL(*enclave_manager_mock(), DownloadAccountState(_)).Times(0);
+  CreatePasskeyUnlockManagerBeforeEnclaveManagerLoads();
+  TriggerDependencyUpdates();
+  Mock::VerifyAndClearExpectations(enclave_manager_mock());
+
+  EnclaveManagerInterface::DownloadAccountStateCallback download_callback;
+  ExpectAccountStateDownload(download_callback);
+  LoadEnclaveManager();
+  ASSERT_FALSE(download_callback.is_null());
+
+  // State updates while the download is in flight or after it completes must
+  // not start another download.
+  TriggerDependencyUpdates();
+  std::move(download_callback).Run(MakeAccountState(), GaiaId("gaia"));
+  TriggerDependencyUpdates();
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       AccountStateDownloadedWhenEnclaveManagerLoadsEarly) {
+  PrepareDependencies(/*is_enclave_manager_loaded=*/false, kEnclaveNotReady,
+                      kPasskeyModelReady, GpmPinStatus::kGpmPinUnset);
+  EXPECT_CALL(*enclave_manager_mock(), DownloadAccountState(_)).Times(0);
+  CreatePasskeyUnlockManagerBeforeEnclaveManagerLoads();
+  Mock::VerifyAndClearExpectations(enclave_manager_mock());
+
+  // Another caller loads the enclave manager before the `LoadAfterDelay()`
+  // callback runs, notifying observers via `OnStateUpdated()`.
+  EXPECT_CALL(*enclave_manager_mock(), DownloadAccountState(_)).Times(1);
+  ON_CALL(*enclave_manager_mock(), IsLoaded()).WillByDefault(Return(true));
+  NotifyEnclaveStateUpdated();
+  Mock::VerifyAndClearExpectations(enclave_manager_mock());
+
+  // Running the `LoadAfterDelay()` callback afterwards does not download again.
+  EXPECT_CALL(*enclave_manager_mock(), DownloadAccountState(_)).Times(0);
+  RunDelayedEnclaveManagerLoadCallback();
+}
+
+TEST_F(PasskeyUnlockManagerTest, GpmPinStatusRecordedAfterEnclaveManagerLoads) {
+  base::HistogramTester histogram_tester;
+  PrepareDependencies(/*is_enclave_manager_loaded=*/false, kEnclaveNotReady,
+                      kPasskeyModelReady, GpmPinStatus::kGpmPinSetButNotUsable);
+  CreatePasskeyUnlockManagerBeforeEnclaveManagerLoads();
+
+  AdvanceClock(base::Seconds(31));
+  histogram_tester.ExpectTotalCount("WebAuthentication.GpmPinStatus", 0);
+
+  // The status is recorded 30 seconds after the security domain state has been
+  // downloaded, which happens once the enclave manager has loaded.
+  LoadEnclaveManager();
+  AdvanceClock(base::Seconds(31));
+  histogram_tester.ExpectUniqueSample("WebAuthentication.GpmPinStatus",
+                                      GpmPinStatus::kGpmPinSetButNotUsable, 1);
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       ErrorUiAndObserversSuppressedUntilDownloadFinishes) {
+  base::test::ScopedFeatureList scoped_feature_list;
+#if BUILDFLAG(IS_MAC)
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{device::kPasskeyUnlockIdentityErrorUi},
+      /*disabled_features=*/{device::kPasskeyUnlockICloudRecovery});
+#else
+  scoped_feature_list.InitAndEnableFeature(
+      device::kPasskeyUnlockIdentityErrorUi);
+#endif
+  PrepareDependencies(/*is_enclave_manager_loaded=*/false, kEnclaveNotReady,
+                      kPasskeyModelReady, GpmPinStatus::kGpmPinUnset);
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EnclaveManagerInterface::DownloadAccountStateCallback download_callback;
+  ExpectAccountStateDownload(download_callback);
+  CreatePasskeyUnlockManagerBeforeEnclaveManagerLoads();
+  StrictMock<MockPasskeyUnlockManagerObserver> observer;
+  base::ScopedObservation<PasskeyUnlockManager, PasskeyUnlockManager::Observer>
+      observation(&observer);
+  observation.Observe(passkey_unlock_manager());
+
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+
+  // Even with system UV available and passkeys locked once the enclave manager
+  // loads, the error UI, observer notifications, and Sync lock state are
+  // suppressed until the download finishes.
+  LoadEnclaveManager();
+  ASSERT_FALSE(download_callback.is_null());
+  TriggerDependencyUpdates();
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+
+  EXPECT_CALL(observer, OnPasskeyErrorUiStateChanged()).Times(1);
+  std::move(download_callback).Run(MakeAccountState(), GaiaId("gaia"));
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+}
+
+// On ChromeOS, system UV is always available, so whether passkeys can be
+// unlocked doesn't depend on the GPM PIN.
+#if !BUILDFLAG(IS_CHROMEOS)
+TEST_F(PasskeyUnlockManagerTest,
+       ErrorUiWaitsForGpmPinFromDownloadedAccountState) {
+  DisableUVKeySupport();
+  PrepareDependencies(/*is_enclave_manager_loaded=*/false, kEnclaveNotReady,
+                      kPasskeyModelReady, GpmPinStatus::kGpmPinSetAndUsable);
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EnclaveManagerInterface::DownloadAccountStateCallback download_callback;
+  ExpectAccountStateDownload(download_callback);
+  CreatePasskeyUnlockManagerBeforeEnclaveManagerLoads();
+  StrictMock<MockPasskeyUnlockManagerObserver> observer;
+  base::ScopedObservation<PasskeyUnlockManager, PasskeyUnlockManager::Observer>
+      observation(&observer);
+  observation.Observe(passkey_unlock_manager());
+
+  // Passkeys are locked once the enclave manager has loaded. Without system UV,
+  // whether they can be unlocked depends on the GPM PIN, which isn't known
+  // until the security domain state has been downloaded.
+  LoadEnclaveManager();
+  ASSERT_FALSE(download_callback.is_null());
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+
+  EXPECT_CALL(*enclave_manager_mock(),
+              CheckGpmPinAvailability(Field(&AccountState::state,
+                                            AccountState::State::kRecoverable)))
+      .WillOnce(Return(GpmPinStatus::kGpmPinSetAndUsable));
+  EXPECT_CALL(observer, OnPasskeyErrorUiStateChanged());
+  std::move(download_callback).Run(MakeAccountState(), GaiaId("gaia"));
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_MAC)
+TEST_F(PasskeyUnlockManagerTest, ICloudRecoveryNotCalledWhenFeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      device::kPasskeyUnlockICloudRecovery);
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .Times(0);
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+}
+
+struct ICloudRecoverySkippedTestCase {
+  std::string name;
+  bool identity_error_ui_enabled = true;
+  EnclaveManagerStatus enclave_status = kEnclaveNotReady;
+  bool has_passkeys = true;
+  bool passkey_sync_active = true;
+  bool sync_error_present = false;
+};
+
+class PasskeyUnlockManagerICloudRecoverySkippedTest
+    : public PasskeyUnlockManagerTest,
+      public WithParamInterface<ICloudRecoverySkippedTestCase> {};
+
+TEST_P(PasskeyUnlockManagerICloudRecoverySkippedTest,
+       DoesNotStartICloudRecovery) {
+  const ICloudRecoverySkippedTestCase& param = GetParam();
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatureStates(
+      {{device::kPasskeyUnlockICloudRecovery, true},
+       {device::kPasskeyUnlockIdentityErrorUi,
+        param.identity_error_ui_enabled}});
+  PrepareDependencies(/*is_enclave_manager_loaded=*/true, param.enclave_status,
+                      kPasskeyModelReady, GpmPinStatus::kGpmPinSetAndUsable);
+  if (param.has_passkeys) {
+    passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  }
+  if (!param.passkey_sync_active) {
+    test_sync_service()->SetFailedDataTypes({syncer::WEBAUTHN_CREDENTIAL});
+  }
+  if (param.sync_error_present) {
+    test_sync_service()
+        ->GetUserSettings()
+        ->SetTrustedVaultRecoverabilityDegraded(true);
+  }
+
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .Times(0);
+  CreatePasskeyUnlockManager();
+  StrictMock<MockPasskeyUnlockManagerObserver> observer;
+  base::ScopedObservation<PasskeyUnlockManager, PasskeyUnlockManager::Observer>
+      observation(&observer);
+  observation.Observe(passkey_unlock_manager());
+
+  test_sync_service()->FireStateChanged();
+  NotifyEnclaveStateUpdated();
+  // While awaiting iCloud Keychain recovery (or when passkeys aren't locked),
+  // neither the error UI nor Sync's passkeys-locked state is reported.
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+}
+
+const ICloudRecoverySkippedTestCase kICloudRecoverySkippedTestCases[] = {
+    {.name = "WithoutPasskeys", .has_passkeys = false},
+    {.name = "WhenPasskeySyncInactive", .passkey_sync_active = false},
+    {.name = "WhenEnclaveReady", .enclave_status = kEnclaveReady},
+    {.name = "WhenSyncErrorPresentAndIdentityErrorUiDisabled",
+     .identity_error_ui_enabled = false,
+     .sync_error_present = true},
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    PasskeyUnlockManagerICloudRecoverySkippedTest,
+    ValuesIn(kICloudRecoverySkippedTestCases),
+    [](const TestParamInfo<ICloudRecoverySkippedTestCase>& info) {
+      return info.param.name;
+    });
+
+TEST_F(PasskeyUnlockManagerTest,
+       ICloudRecoveryLifecycleWhenPasskeysLockedAtDownload) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{device::kPasskeyUnlockICloudRecovery,
+                            device::kPasskeyUnlockIdentityErrorUi},
+      /*disabled_features=*/{});
+  PrepareDependencies(/*is_enclave_manager_loaded=*/false, kEnclaveNotReady,
+                      kPasskeyModelReady, GpmPinStatus::kGpmPinSetAndUsable);
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EnclaveManagerInterface::DownloadAccountStateCallback download_callback;
+  ExpectAccountStateDownload(download_callback);
+  CreatePasskeyUnlockManagerBeforeEnclaveManagerLoads();
+  StrictMock<MockPasskeyUnlockManagerObserver> observer;
+  base::ScopedObservation<PasskeyUnlockManager, PasskeyUnlockManager::Observer>
+      observation(&observer);
+  observation.Observe(passkey_unlock_manager());
+
+  // While the security domain download is in flight, recovery waits and UI /
+  // Sync notifications remain suppressed.
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .Times(0);
+  LoadEnclaveManager();
+  ASSERT_FALSE(download_callback.is_null());
+  TriggerDependencyUpdates();
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+  Mock::VerifyAndClearExpectations(enclave_manager_mock());
+
+  // Once downloaded, recovery starts once with the downloaded state and
+  // `GaiaId`; updates while recovery is in flight keep UI / Sync suppressed and
+  // do not re-trigger recovery.
+  EnclaveManagerInterface::Callback recovery_callback;
+  EXPECT_CALL(*enclave_manager_mock(),
+              RecoverWithICloudKeychain(
+                  Optional(Field(&AccountState::state,
+                                 AccountState::State::kRecoverable)),
+                  Optional(GaiaId("gaia2")), _))
+      .Times(1)
+      .WillOnce(MoveArg<2>(&recovery_callback));
+  std::move(download_callback).Run(MakeAccountState(), GaiaId("gaia2"));
+  ASSERT_FALSE(recovery_callback.is_null());
+  Mock::VerifyAndClearExpectations(enclave_manager_mock());
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .Times(0);
+
+  TriggerDependencyUpdates();
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+
+  // When recovery fails, the error UI and Sync lock state are reported once,
+  // and later updates do not re-trigger recovery.
+  EXPECT_CALL(observer, OnPasskeyErrorUiStateChanged()).Times(1);
+  std::move(recovery_callback).Run(false);
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+
+  TriggerDependencyUpdates();
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       ICloudRecoveryStartsWhenEnclaveManagerLoadsEarly) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockICloudRecovery};
+  PrepareDependencies(/*is_enclave_manager_loaded=*/false, kEnclaveNotReady,
+                      kPasskeyModelReady, GpmPinStatus::kGpmPinSetAndUsable);
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .Times(0);
+  CreatePasskeyUnlockManagerBeforeEnclaveManagerLoads();
+  Mock::VerifyAndClearExpectations(enclave_manager_mock());
+
+  // Another caller loads the enclave manager before `LoadAfterDelay()` fires;
+  // recovery starts right after the download with the downloaded state.
+  EXPECT_CALL(*enclave_manager_mock(), DownloadAccountState(_)).Times(1);
+  EXPECT_CALL(*enclave_manager_mock(),
+              RecoverWithICloudKeychain(
+                  Optional(Field(&AccountState::state,
+                                 AccountState::State::kRecoverable)),
+                  Optional(GaiaId("gaia")), _));
+  ON_CALL(*enclave_manager_mock(), IsLoaded()).WillByDefault(Return(true));
+  NotifyEnclaveStateUpdated();
+  Mock::VerifyAndClearExpectations(enclave_manager_mock());
+
+  EXPECT_CALL(*enclave_manager_mock(), DownloadAccountState(_)).Times(0);
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .Times(0);
+  RunDelayedEnclaveManagerLoadCallback();
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       ICloudRecoveryRunsOnceWhenPasskeysSyncInLater) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{device::kPasskeyUnlockICloudRecovery,
+                            device::kPasskeyUnlockIdentityErrorUi},
+      /*disabled_features=*/{});
+  PrepareDependencies(/*is_enclave_manager_loaded=*/true, kEnclaveNotReady,
+                      kPasskeyModelNotReady, GpmPinStatus::kGpmPinSetAndUsable);
+
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .Times(0);
+  CreatePasskeyUnlockManager();
+  Mock::VerifyAndClearExpectations(enclave_manager_mock());
+
+  StrictMock<MockPasskeyUnlockManagerObserver> observer;
+  base::ScopedObservation<PasskeyUnlockManager, PasskeyUnlockManager::Observer>
+      observation(&observer);
+  observation.Observe(passkey_unlock_manager());
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+
+  // Passkeys weren't locked at download time, so recovery starts once with
+  // `std::nullopt` when passkeys sync in later.
+  EnclaveManagerInterface::Callback recovery_callback;
+  EXPECT_CALL(*enclave_manager_mock(),
+              RecoverWithICloudKeychain(Eq(std::nullopt), Eq(std::nullopt), _))
+      .Times(1)
+      .WillOnce(MoveArg<2>(&recovery_callback));
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  passkey_model()->SetReady(true);
+  ASSERT_FALSE(recovery_callback.is_null());
+  Mock::VerifyAndClearExpectations(enclave_manager_mock());
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .Times(0);
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+
+  TriggerDependencyUpdates();
+  EXPECT_CALL(observer, OnPasskeyErrorUiStateChanged()).Times(1);
+  std::move(recovery_callback).Run(false);
+  EXPECT_TRUE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+
+  TriggerDependencyUpdates();
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       ICloudRecoveryPassesNulloptWhenDownloadFailed) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockICloudRecovery};
+  PrepareDependencies(/*is_enclave_manager_loaded=*/true, kEnclaveNotReady,
+                      kPasskeyModelReady, GpmPinStatus::kGpmPinUnset);
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  ON_CALL(*enclave_manager_mock(), DownloadAccountState(_))
+      .WillByDefault(
+          [](EnclaveManagerInterface::DownloadAccountStateCallback callback) {
+            std::move(callback).Run(
+                MakeAccountState(AccountState::State::kError), GaiaId("gaia"));
+            return std::make_unique<
+                trusted_vault::TrustedVaultConnection::Request>();
+          });
+
+  EXPECT_CALL(*enclave_manager_mock(),
+              CheckGpmPinAvailability(
+                  Field(&AccountState::state, AccountState::State::kError)))
+      .WillOnce(Return(GpmPinStatus::kGpmPinUnset));
+  EXPECT_CALL(*enclave_manager_mock(),
+              RecoverWithICloudKeychain(Eq(std::nullopt), Eq(std::nullopt), _));
+  CreatePasskeyUnlockManager();
+}
+
+TEST_F(PasskeyUnlockManagerTest, ICloudRecoverySucceedsHidesErrorUi) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockICloudRecovery};
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+  StrictMock<MockPasskeyUnlockManagerObserver> observer;
+  base::ScopedObservation<PasskeyUnlockManager, PasskeyUnlockManager::Observer>
+      observation(&observer);
+  observation.Observe(passkey_unlock_manager());
+
+  EnclaveManagerInterface::Callback recovery_callback;
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .WillOnce(MoveArg<2>(&recovery_callback));
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  ASSERT_FALSE(recovery_callback.is_null());
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+
+  ON_CALL(*enclave_manager_mock(), IsReady()).WillByDefault(Return(true));
+  std::move(recovery_callback).Run(true);
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       ICloudRecoveryFailureAndSystemIsNotUnlockable) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      device::kPasskeyUnlockICloudRecovery};
+  DisableUVKeySupport();
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+  StrictMock<MockPasskeyUnlockManagerObserver> observer;
+  base::ScopedObservation<PasskeyUnlockManager, PasskeyUnlockManager::Observer>
+      observation(&observer);
+  observation.Observe(passkey_unlock_manager());
+
+  EnclaveManagerInterface::Callback recovery_callback;
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .WillOnce(MoveArg<2>(&recovery_callback));
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  ASSERT_FALSE(recovery_callback.is_null());
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+
+  std::move(recovery_callback).Run(false);
+  EXPECT_FALSE(passkey_unlock_manager()->ShouldDisplayErrorUi());
+}
+
+TEST_F(PasskeyUnlockManagerTest,
+       ICloudRecoveryRunsWhenRecoverabilityDegradedAndReportsLockedOnFailure) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{device::kPasskeyUnlockICloudRecovery,
+                            device::kPasskeyUnlockIdentityErrorUi},
+      /*disabled_features=*/{});
+  ConfigureProfileAndSyncService(kEnclaveNotReady, kPasskeyModelReady,
+                                 GpmPinStatus::kGpmPinUnset);
+  test_sync_service()->GetUserSettings()->SetTrustedVaultRecoverabilityDegraded(
+      true);
+  test_sync_service()->FireStateChanged();
+  ASSERT_EQ(test_sync_service()->GetUserActionableError(),
+            syncer::SyncService::UserActionableError::
+                kTrustedVaultRecoverabilityDegradedForPasswords);
+
+  EnclaveManagerInterface::Callback recovery_callback;
+  EXPECT_CALL(*enclave_manager_mock(), RecoverWithICloudKeychain(_, _, _))
+      .WillOnce(MoveArg<2>(&recovery_callback));
+
+  passkey_model()->AddNewPasskeyForTesting(CreatePasskey());
+  ASSERT_FALSE(recovery_callback.is_null());
+  EXPECT_FALSE(test_sync_service()->passkeys_locked());
+
+  std::move(recovery_callback).Run(false);
+  EXPECT_TRUE(test_sync_service()->passkeys_locked());
+}
+#endif  // BUILDFLAG(IS_MAC)
 
 }  // namespace
 

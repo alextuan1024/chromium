@@ -13,6 +13,7 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
   onImageDownloaded = new FakeChromeEvent();
   onMainFrameSameDocumentNavigation = new FakeChromeEvent();
   onRenderedTextMappingReady = new FakeChromeEvent();
+  onTranslationStateChanged = new FakeChromeEvent();
   showEmpty = new FakeChromeEvent();
   showLoading = new FakeChromeEvent();
   updateImages = new FakeChromeEvent();
@@ -25,8 +26,13 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
   endNodeId: number = -1;
   endOffset: number = -1;
   hasValidSelectionVal: boolean = true;
+  transientUserActivation: boolean = true;
+  focused: boolean = true;
   readabilityEnabled: boolean = true;
-  isReadabilitySelectTextEnabledFlag: boolean = false;
+  contentTranslated: boolean = false;
+  translationState: number = 0;
+  translatePdfEnabled: boolean = false;
+  sendFeedbackEnabled: boolean = false;
   textContentMap: {[key: number]: string} = {2: 'some text content'};
   prefixText: string = '';
   rootId: number = 1;
@@ -45,6 +51,8 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
   languageMap: {[key: number]: string} = {};
   childrenMap: {[key: number]: number[]} = {1: [2]};
   isOverlineMap: {[key: number]: boolean} = {};
+  isSuperscriptMap: {[key: number]: boolean} = {};
+  isSubscriptMap: {[key: number]: boolean} = {};
   shouldBoldMap: {[key: number]: boolean} = {};
   imageBitmap: SkiaImageBitmap|null = null;
   axTreeAnchorsVal: Record<string, AxTreeAnchorMetadata[]> = {};
@@ -60,8 +68,13 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
       'getEndNodeId',
       'getEndOffset',
       'hasValidSelection',
+      'hasTransientUserActivation',
+      'hasFocus',
       'isReadabilityEnabled',
-      'isReadabilitySelectTextEnabled',
+      'isContentTranslated',
+      'getTranslationState',
+      'isTranslatePdfEnabled',
+      'isReadAnythingSendFeedbackEnabled',
       'getActiveDistillationMethod',
       'getDistillationTypeReadability',
       'getDistillationTypeScreen2x',
@@ -88,6 +101,8 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
       'getLanguage',
       'getChildren',
       'isOverline',
+      'isSuperscript',
+      'isSubscript',
       'shouldBold',
       'getImageBitmap',
       'getAxTreeAnchors',
@@ -97,6 +112,7 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
       'onDistilled',
       'onLinkClicked',
       'onRenderedTextBlocksAvailable',
+      'onSendFeedback',
     ]);
   }
 
@@ -125,14 +141,39 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
     return this.hasValidSelectionVal;
   }
 
+  hasTransientUserActivation(): boolean {
+    this.methodCalled('hasTransientUserActivation');
+    return this.transientUserActivation;
+  }
+
+  hasFocus(): boolean {
+    this.methodCalled('hasFocus');
+    return this.focused;
+  }
+
   isReadabilityEnabled(): boolean {
     this.methodCalled('isReadabilityEnabled');
     return this.readabilityEnabled;
   }
 
-  isReadabilitySelectTextEnabled(): boolean {
-    this.methodCalled('isReadabilitySelectTextEnabled');
-    return this.isReadabilitySelectTextEnabledFlag;
+  isContentTranslated(): boolean {
+    this.methodCalled('isContentTranslated');
+    return this.contentTranslated;
+  }
+
+  getTranslationState(): number {
+    this.methodCalled('getTranslationState');
+    return this.translationState;
+  }
+
+  isTranslatePdfEnabled(): boolean {
+    this.methodCalled('isTranslatePdfEnabled');
+    return this.translatePdfEnabled;
+  }
+
+  isReadAnythingSendFeedbackEnabled(): boolean {
+    this.methodCalled('isReadAnythingSendFeedbackEnabled');
+    return this.sendFeedbackEnabled;
   }
 
   onConnected(): void {
@@ -249,6 +290,16 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
     return this.isOverlineMap[nodeId] || false;
   }
 
+  isSuperscript(nodeId: number): boolean {
+    this.methodCalled('isSuperscript', nodeId);
+    return this.isSuperscriptMap[nodeId] || false;
+  }
+
+  isSubscript(nodeId: number): boolean {
+    this.methodCalled('isSubscript', nodeId);
+    return this.isSubscriptMap[nodeId] || false;
+  }
+
   shouldBold(nodeId: number): boolean {
     this.methodCalled('shouldBold', nodeId);
     return this.shouldBoldMap[nodeId] || false;
@@ -302,5 +353,9 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
 
   onDistilled(wordCount: number): void {
     this.methodCalled('onDistilled', wordCount);
+  }
+
+  onSendFeedback(): void {
+    this.methodCalled('onSendFeedback');
   }
 }

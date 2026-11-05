@@ -25,6 +25,9 @@ inline constexpr char kAccountsPrefUsers[] = "cros.accounts.users";
 inline constexpr char kAccountsPrefEphemeralUsersEnabled[] =
     "cros.accounts.ephemeralUsersEnabled";
 
+inline constexpr char kAccountsPrefDeviceMaxUserProfiles[] =
+    "cros.accounts.deviceMaxUserProfiles";
+
 inline constexpr char kAccountsPrefDeviceLocalAccounts[] =
     "cros.accounts.deviceLocalAccounts";
 
@@ -130,9 +133,11 @@ inline constexpr char kDeviceChannelDowngradeBehavior[] =
 inline constexpr char kDeviceExtendedAutoUpdateEnabled[] =
     "cros.system.device_extended_auto_update_enabled";
 
-// This setting is used to enforce usage of system audio echo cancellation.
-inline constexpr char kDeviceSystemAecEnabled[] =
-    "cros.audio.device_system_aec_enabled";
+// An integer pref that specifies whether the device is allowed to migrate to
+// the Next OS, and after what date it is forced to migrate. Please see
+// DeviceOsMigrationTargetDate policy for details.
+inline constexpr char kDeviceOsMigrationTargetDate[] =
+    "cros.system.device_os_migration_target_date";
 
 // A boolean pref that indicates whether OS & firmware version info should be
 // reported along with device policy requests.

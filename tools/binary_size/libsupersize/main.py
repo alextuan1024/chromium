@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env vpython3
 # Copyright 2017 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -6,20 +6,21 @@
 
 import argparse
 import atexit
+import gc
 import logging
-import pathlib
+import os
 import platform
 import resource
 import sys
 
 import archive
 import console
-import diff
 import dex_disassembly
+import diff
 import file_format
 import models
 import native_disassembly
-import os
+import path_util
 
 
 def _LogPeakRamUsage():
@@ -36,26 +37,11 @@ def _AddCommonArguments(parser):
     action='count',
     help='Verbose level (multiple times for more)',
   )
-
-
-class _PathResolver:
-  def __init__(self, parent_path):
-    self._parent_path = pathlib.Path(parent_path)
-
-  def __call__(self, subpath):
-    # Use dict to de-dupe while keeping order.
-    candidates = list(
-      {
-        self._parent_path / subpath: 0,
-        self._parent_path / pathlib.PosixPath(subpath).name: 0,
-      }
-    )
-    for p in candidates:
-      if p.exists():
-        return p
-    raise Exception(
-      'Paths do not exist: ' + ', '.join(str(t) for t in candidates)
-    )
+  parser.add_argument(
+    '--no-disable-gc',
+    action='store_true',
+    help='Do not disable cyclic garbage collection.',
+  )
 
 
 class _DiffAction:
@@ -123,9 +109,9 @@ class _SaveDiffAction:
       on_config_error('Output must end with ".sizediff"')
     if args.save_disassembly:
       if not args.before_directory:
-        args.before_directory = os.path.dirname(args.before)
+        args.before_directory = os.path.dirname(args.before) or '.'
       if not args.after_directory:
-        args.after_directory = os.path.dirname(args.after)
+        args.after_directory = os.path.dirname(args.after) or '.'
     before_size_info = archive.LoadAndPostProcessSizeInfo(args.before)
     after_size_info = archive.LoadAndPostProcessSizeInfo(args.after)
     # If a URL or title exists, we only want to add it to the build config of
@@ -136,13 +122,21 @@ class _SaveDiffAction:
       after_size_info.build_config[models.BUILD_CONFIG_URL] = args.url
     delta_size_info = diff.Diff(before_size_info, after_size_info)
     if args.save_disassembly:
-      before_path_resolver = _PathResolver(args.before_directory)
-      after_path_resolver = _PathResolver(args.after_directory)
+      after_output_dir = (
+        args.after_directory
+        if os.path.exists(os.path.join(args.after_directory, 'build.ninja'))
+        else None
+      )
+      before_path_resolver = path_util.PathResolver(args.before_directory)
+      after_path_resolver = path_util.PathResolver(args.after_directory)
       dex_disassembly.AddDisassembly(
         delta_size_info, before_path_resolver, after_path_resolver
       )
       native_disassembly.AddDisassembly(
-        delta_size_info, before_path_resolver, after_path_resolver
+        delta_size_info,
+        before_path_resolver,
+        after_path_resolver,
+        output_directory=after_output_dir,
       )
 
     file_format.SaveDeltaSizeInfo(delta_size_info, args.output_file)
@@ -186,6 +180,12 @@ def main():
     level=logging.WARNING - args.verbose * 10,
     format='%(levelname).1s %(relativeCreated)6d %(message)s',
   )
+
+  if not args.no_disable_gc:
+    # SuperSize allocates millions of short-lived objects with almost no
+    # reference cycles; disabling cyclic GC avoids multi-second Gen-2 heap
+    # scans (~8-9% speedup on archive).
+    gc.disable()
 
   if logging.getLogger().isEnabledFor(logging.DEBUG):
     atexit.register(_LogPeakRamUsage)

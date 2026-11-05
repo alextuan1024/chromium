@@ -4,84 +4,230 @@
 
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_coordinator.h"
 
+#import <set>
+#import <utility>
+#import <vector>
+
+#import "base/barrier_closure.h"
+#import "base/cancelable_callback.h"
+#import "base/check.h"
+#import "base/functional/bind.h"
+#import "base/functional/callback.h"
+#import "base/functional/callback_helpers.h"
+#import "base/memory/weak_ptr.h"
+#import "base/not_fatal_until.h"
 #import "ios/chrome/browser/assistant/coordinator/assistant_container_commands.h"
 #import "ios/chrome/browser/assistant/ui/assistant_container_detent.h"
+#import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
 #import "ios/chrome/browser/intelligence/actor/coordinator/actuation_worklog_coordinator.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_service.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_mediator.h"
+#import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_mediator_delegate.h"
+#import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_web_modal_coordinator.h"
+#import "ios/chrome/browser/intelligence/bwg/metrics/gemini_session_metrics_manager.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_browser_agent.h"
-#import "ios/chrome/browser/intelligence/bwg/model/gemini_configuration.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_gateway_manager.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_page_state_change_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_session_handler.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_startup_configuration.h"
 #import "ios/chrome/browser/intelligence/bwg/ui/gemini_container_view_controller.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/intelligence/zero_state_suggestions/ui/gemini_zero_state_view_controller.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/browser/browser_list.h"
+#import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
-#import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 
-@interface GeminiContainerCoordinator ()
+@interface GeminiContainerCoordinator () <GeminiContainerMediatorDelegate,
+                                          GeminiWebModalCoordinatorDelegate>
 @end
 
 @implementation GeminiContainerCoordinator {
-  // Startup state used to initialize the Gemini content.
-  GeminiStartupState* _startupState;
   // The view controller displaying the Gemini content.
   GeminiContainerViewController* _viewController;
   // Command dispatcher handler to manage the assistant container.
   __weak id<AssistantContainerCommands> _containerHandler;
   // Mediator for the Gemini container.
   GeminiContainerMediator* _mediator;
+  // Manager for tracking and recording Gemini session metrics.
+  GeminiSessionMetricsManager* _sessionMetricsManager;
   // The zero-state suggestions view controller.
   GeminiZeroStateViewController* _geminiZeroStateViewController;
   // Child coordinator managing the actuation worklog.
   ActuationWorklogCoordinator* _actuationWorklogCoordinator;
+  // Child coordinator presenting a URL in a web modal over the container.
+  GeminiWebModalCoordinator* _webModalCoordinator;
+  // Cancelable callback for starting the container once other windows dismiss
+  // their Gemini sessions.
+  base::CancelableOnceClosure _pendingStartContainer;
 }
 
-- (instancetype)initWithBaseViewController:(UIViewController*)viewController
-                                   browser:(Browser*)browser
-                              startupState:(GeminiStartupState*)startupState {
-  self = [super initWithBaseViewController:viewController browser:browser];
-  if (self) {
-    _startupState = startupState;
-  }
-  return self;
-}
-
+// Starts the Gemini session. When presenting a new container, the async
+// presentation flow is:
+// `start` -> `[_mediator prepareForPresentation]` (waits for page context when
+// auto-submitting) -> `geminiContainerMediatorReadyForPresentation:` ->
+// `dismissGeminiFromOtherWindowsWithCompletion:` -> `startContainer` ->
+// `[_mediator didPresentContainer]`.
 - (void)start {
+  CHECK(_startupState, base::NotFatalUntil::M160);
+  if (!_sessionMetricsManager) {
+    _sessionMetricsManager = [[GeminiSessionMetricsManager alloc] init];
+  }
+  [_sessionMetricsManager geminiWillStart];
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(self.browser);
+  // TODO(crbug.com/571095367): Move source of truth back to coordinator.
+  if (geminiBrowserAgent && geminiBrowserAgent->is_floaty_invoked()) {
+    CHECK(_mediator, base::NotFatalUntil::M160);
+    [_mediator updateWithStartupState:_startupState];
+    // TODO(crbug.com/573609932): Consider recording a separate metrics for
+    // Gemini invoked case.
+    [_sessionMetricsManager geminiStarted:_startupState.isFirstSession];
+    return;
+  }
+
+  // `start` may be called again while a previous presentation is still pending
+  // (in `prepareForPresentation` or waiting for other windows to dismiss). In
+  // that case, cancel any pending container presentation, reuse `_mediator`,
+  // update its `startupState`, and let `prepareForPresentation` cancel any
+  // ongoing preparation.
+  _pendingStartContainer.Cancel();
+  if (!_mediator) {
+    [self createMediator];
+  }
+
+  _mediator.startupState = _startupState;
+  [_mediator prepareForPresentation];
+}
+
+- (void)dismissWithCompletion:(void (^)(void))completion {
+  _pendingStartContainer.Cancel();
+  [_containerHandler dismissAssistantContainerAnimated:YES
+                                            completion:completion];
+}
+
+- (void)minimize {
+  [self dismissWebModal];
+  [_containerHandler
+      animateAssistantContainerToDetent:AssistantContainerDetent::kMinimized];
+}
+
+- (void)stop {
+  _pendingStartContainer.Cancel();
+  if (self.browser) {
+    if (GeminiBrowserAgent* geminiBrowserAgent =
+            GeminiBrowserAgent::FromBrowser(self.browser)) {
+      geminiBrowserAgent->SetContainerInvoked(false);
+    }
+  }
+  if (IsGeminiActorEnabled()) {
+    [_containerHandler setAssistantContainerMinimizedDetentHeight:
+                           kAssistantContainerMinimizedDetentHeight];
+    [_actuationWorklogCoordinator stop];
+    _actuationWorklogCoordinator = nil;
+  }
+  [self dismissWebModal];
+  [_mediator disconnect];
+  _mediator = nil;
+  _sessionMetricsManager = nil;
+  _viewController = nil;
+  _containerHandler = nil;
+  _geminiZeroStateViewController = nil;
+  _startupState = nil;
+}
+
+- (void)showWebModalForURL:(const GURL&)URL {
+  if (_webModalCoordinator) {
+    return;
+  }
+  _webModalCoordinator = [[GeminiWebModalCoordinator alloc]
+      initWithBaseViewController:self.baseViewController
+                         browser:self.browser
+                             URL:URL];
+  _webModalCoordinator.delegate = self;
+  [_webModalCoordinator start];
+}
+
+#pragma mark - GeminiWebModalCoordinatorDelegate
+
+- (void)geminiWebModalCoordinatorDidDismiss:
+    (GeminiWebModalCoordinator*)coordinator {
+  CHECK_EQ(_webModalCoordinator, coordinator);
+  [self dismissWebModal];
+}
+
+#pragma mark - GeminiContainerMediatorDelegate
+
+- (void)geminiContainerMediatorReadyForPresentation:
+    (GeminiContainerMediator*)mediator {
+  __weak __typeof(self) weakSelf = self;
+  _pendingStartContainer.Reset(base::BindOnce(
+      [](__typeof(self) strongSelf) { [strongSelf startContainer]; },
+      weakSelf));
+  [self dismissGeminiFromOtherWindowsWithCompletion:_pendingStartContainer
+                                                        .callback()];
+}
+
+- (void)geminiContainerMediator:(GeminiContainerMediator*)mediator
+    didStartActuationTaskWithDataSource:(id<ActorTaskDataSource>)dataSource
+                          actionHandler:
+                              (id<ActorTaskActionHandler>)actionHandler {
+  [_actuationWorklogCoordinator startObservingDataSource:dataSource
+                                           actionHandler:actionHandler];
+}
+
+- (void)geminiContainerMediatorDidStopActuationTask:
+    (GeminiContainerMediator*)mediator {
+  [_actuationWorklogCoordinator stopObservingDataSource];
+}
+
+#pragma mark - Private
+
+// Creates and configures `_mediator`.
+- (void)createMediator {
   actor::ActorService* actorService = nullptr;
   if (IsGeminiActorEnabled()) {
     actorService =
         actor::ActorServiceFactory::GetForProfile(self.browser->GetProfile());
   }
 
+  GeminiBrowserAgent* geminiBrowserAgent =
+      GeminiBrowserAgent::FromBrowser(self.browser);
   // TODO(crbug.com/535579970): After bottom sheet migration, the startup state
   // can be added to the init params.
+  // TODO(crbug.com/571295640): Don't pass the browser instance to mediator.
   _mediator = [[GeminiContainerMediator alloc]
-      initWithBrowser:self.browser
-         actorService:actorService
-         eventHandler:GeminiBrowserAgent::FromBrowser(self.browser)];
-  [_mediator connect];
-  _containerHandler = HandlerForProtocol(self.browser->GetCommandDispatcher(),
-                                         AssistantContainerCommands);
-  _mediator.containerHandler = _containerHandler;
+            initWithBrowser:self.browser
+               actorService:actorService
+      authenticationService:AuthenticationServiceFactory::GetForProfile(
+                                self.browser->GetProfile())
+               eventHandler:geminiBrowserAgent
+          sharedTabsManager:geminiBrowserAgent
+                                ? geminiBrowserAgent->GetSharedTabsManager()
+                                : nullptr
+      sessionMetricsManager:_sessionMetricsManager];
+  _mediator.delegate = self;
+  // TODO(crbug.com/537730178): Delegate the permission prompt request up to
+  // a delegate protocol implemented by GeminiContainerCoordinator, which will
+  // present the UIAlertController using its own baseViewController.
+  [_mediator.gatewayManager.pageStateChangeHandler
+      setBaseViewController:self.baseViewController];
 
   [self setSessionCommandHandlers];
+}
 
-  GeminiConfiguration* config = [_mediator
-      createGeminiConfigurationForActiveWebState:_startupState
-                              baseViewController:self.baseViewController];
-
-  // TODO(crbug.com/522834798): Add all the applicable logic from
-  // StartGeminiFlow, PresentFloaty and InvokeFloaty before presenting the
-  // container view.
-  // TODO(crbug.com/535968300): Move floaty request to the mediator.
-  UIViewController* geminiViewController =
-      ios::provider::GetFloatyViewControllerWithConfiguration(config);
-
+// Starts and presents the Gemini container.
+- (void)startContainer {
   ActuationWorklogViewController* worklogViewController = nil;
   if (IsGeminiActorEnabled()) {
     _actuationWorklogCoordinator = [[ActuationWorklogCoordinator alloc]
@@ -92,8 +238,7 @@
   }
 
   _viewController = [[GeminiContainerViewController alloc]
-      initWithGeminiViewController:geminiViewController
-             worklogViewController:worklogViewController];
+      initWithWorklogViewController:worklogViewController];
   _viewController.mutator = _mediator;
   _mediator.consumer = _viewController;
 
@@ -105,38 +250,18 @@
 
   [_containerHandler showAssistantContainerWithContent:_viewController
                                               delegate:_mediator];
-
-  // Calling connect will result in setting the initial detent
-  // which only works after assistant container is presenting.
-  [_mediator connect];
-}
-
-- (void)dismissWithCompletion:(void (^)(void))completion {
-  [_containerHandler dismissAssistantContainerAnimated:YES
-                                            completion:completion];
-}
-
-- (void)minimize {
-  [_containerHandler
-      animateAssistantContainerToDetent:AssistantContainerDetent::kMinimized];
-}
-
-- (void)stop {
-  if (IsGeminiActorEnabled()) {
-    [_containerHandler setAssistantContainerMinimizedDetentHeight:
-                           kAssistantContainerMinimizedDetentHeight];
-    [_actuationWorklogCoordinator stop];
-    _actuationWorklogCoordinator = nil;
+  if (GeminiBrowserAgent* geminiBrowserAgent =
+          GeminiBrowserAgent::FromBrowser(self.browser)) {
+    geminiBrowserAgent->SetContainerInvoked(true);
   }
-  [_mediator disconnect];
-  _mediator = nil;
-  _viewController = nil;
-  _containerHandler = nil;
-  _geminiZeroStateViewController = nil;
+
+  // After container is presenting mediator will proceed to set properties such
+  // as detent which only work after the assistant container is presenting.
+  [_mediator didPresentContainer];
+  [_sessionMetricsManager geminiStarted:_startupState.isFirstSession];
 }
 
-#pragma mark - Private
-
+// Configures the command handlers on `_mediator` and its session handler.
 - (void)setSessionCommandHandlers {
   CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
   _mediator.gatewayManager.sessionHandler.settingsHandler =
@@ -145,6 +270,69 @@
       HandlerForProtocol(dispatcher, GeminiCommands);
   _mediator.gatewayManager.sessionHandler.geminiHandler = geminiHandler;
   _mediator.geminiHandler = geminiHandler;
+
+  _containerHandler = HandlerForProtocol(self.browser->GetCommandDispatcher(),
+                                         AssistantContainerCommands);
+  _mediator.containerHandler = _containerHandler;
+
+  if (IsFullscreenRefactoringEnabled()) {
+    _mediator.fullscreenHandler =
+        HandlerForProtocol(dispatcher, FullscreenCommands);
+  } else {
+    _mediator.fullscreenController =
+        FullscreenController::FromBrowser(self.browser);
+  }
+  id<SnackbarCommands> snackbarHandler =
+      HandlerForProtocol(dispatcher, SnackbarCommands);
+  _mediator.gatewayManager.sessionHandler.snackbarHandler = snackbarHandler;
+  _mediator.snackbarHandler = snackbarHandler;
+}
+
+// Dismisses Gemini from all other windows and executes `completion`.
+- (void)dismissGeminiFromOtherWindowsWithCompletion:
+    (base::OnceClosure)completion {
+  // Collect all browsers (excluding the current one) for all profiles.
+  std::vector<base::WeakPtr<Browser>> otherBrowsers;
+  for (ProfileIOS* profile :
+       GetApplicationContext()->GetProfileManager()->GetLoadedProfiles()) {
+    BrowserList* browserList = BrowserListFactory::GetForProfile(profile);
+    const std::set<Browser*>& browsers =
+        browserList->BrowsersOfType(BrowserList::BrowserType::kRegular);
+    for (Browser* browser : browsers) {
+      if (browser == self.browser) {
+        continue;
+      }
+      otherBrowsers.push_back(browser->AsWeakPtr());
+    }
+  }
+
+  if (otherBrowsers.empty()) {
+    std::move(completion).Run();
+    return;
+  }
+
+  // Gate the completion behind this barrier closure which executes it when all
+  // other browsers have dismissed their Gemini sessions.
+  base::RepeatingClosure barrier =
+      base::BarrierClosure(otherBrowsers.size(), std::move(completion));
+
+  // Dismiss Gemini in all the other browsers for all profiles.
+  for (base::WeakPtr<Browser> browser : otherBrowsers) {
+    if (!browser) {
+      barrier.Run();
+      continue;
+    }
+    id<GeminiCommands> geminiHandler =
+        HandlerForProtocol(browser->GetCommandDispatcher(), GeminiCommands);
+    [geminiHandler
+        dismissGeminiFlowWithCompletion:base::CallbackToBlock(barrier)];
+  }
+}
+
+// Stops and releases the web modal coordinator, if any.
+- (void)dismissWebModal {
+  [_webModalCoordinator stop];
+  _webModalCoordinator = nil;
 }
 
 @end

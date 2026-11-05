@@ -97,7 +97,7 @@ class AutocompleteControllerAndroid : public AutocompleteController::Observer,
 
   // Pass an instance of the ComposeboxQueryControllerBridge to improve Suggest.
   void SetComposeboxQueryControllerBridge(
-      uintptr_t composebox_controller_bridge_ptr);
+      ComposeboxQueryControllerBridge* composebox_controller_bridge);
 
   // Pass detected voice matches down to VoiceSuggestionsProvider.
   void SetVoiceMatches(const std::vector<std::u16string>& voice_matches,
@@ -166,9 +166,6 @@ class AutocompleteControllerAndroid : public AutocompleteController::Observer,
   // Omnibox - these requests are deduplicated down the call chain.
   void WarmUpRenderProcess() const;
 
-  // Post-processes the result to apply any Android-specific display logic.
-  void PostProcessResult(AutocompleteResult& result);
-
   // Whether the current device is a low-memory device.
   const bool is_low_memory_device_{};
 
@@ -208,6 +205,10 @@ class AutocompleteControllerAndroid : public AutocompleteController::Observer,
 
   // WebContents associated with the most recent request.
   base::WeakPtr<content::WebContents> contextual_tasks_web_contents_;
+
+  // Number of matches that fit in the visible section of the screen while the
+  // software keyboard is active (including the default match).
+  size_t num_visible_matches_{6};
 
   // Factory used to create asynchronously invoked callbacks.
   // Retained throughout the lifetime of the AutocompleteControllerAndroid.

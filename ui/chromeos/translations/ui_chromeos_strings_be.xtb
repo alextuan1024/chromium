@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Камера</translation>
 <translation id="162175252992296058">Партугальская з міжнароднай клавіятурай ЗША</translation>
 <translation id="1629521517399325891">Гэты сертыфікат карыстальніка нельга выкарыстаць для аўтэнтыфікацыі сеткі.</translation>
+<translation id="1639239467298939599">Ідзе загрузка</translation>
 <translation id="1641780993263690097">Кітайская (піньінь)</translation>
 <translation id="164969095109328410">Прылада Chrome</translation>
 <translation id="1661207570040737402">Вы выкарысталі ўвесь даступны вам аб’ём сховішча абагуленага дыска Google Workspace.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Сінхранізацыя файлаў выключана</translation>
 <translation id="2820957248982571256">Ідзе пошук...</translation>
 <translation id="2830077785865012357">Кітайская (чжуінь)</translation>
+<translation id="2838379631617906747">Ідзе ўсталяванне</translation>
 <translation id="2843806747483486897">Змяніць стандартнае дзеянне...</translation>
 <translation id="2873951654529031587">Сметніца</translation>
 <translation id="2887314858867008269">ЗША (Colemak)</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Няправільны пароль</translation>
 <translation id="5059127710849015030">Непальская (транслітарацыя)</translation>
 <translation id="5068919226082848014">Піца</translation>
+<translation id="5075336522277785691">Пашырэнне "<ph name="EXTENSION_NAME" />" наладзіла правілы перавызначэння проксі-сервера</translation>
 <translation id="5081517858322016911">Будуць выдалены файлы агульным памерам <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Ідзе перамяшчэнне элементаў (<ph name="NUMBER_OF_ITEMS" />) у папку "<ph name="FOLDER_NAME" />"</translation>
 <translation id="509429900233858213">Адбылася памылка.</translation>
-<translation id="5102922915594634436">Кіраваць сінхранізаванымі папкамі</translation>
 <translation id="5109254780565519649">Адбылася памылка. Некаторыя элементы маглі не аднавіцца.</translation>
 <translation id="5110329002213341433">Англійская (Канада)</translation>
 <translation id="5119780910075847424">Сінхранізацыя прыпынена</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Нічога не ўсталявана</translation>
 <translation id="5317780077021120954">Захаваць</translation>
 <translation id="5318819489018851358">Абагуліць з Linux</translation>
-<translation id="5330145655348521461">Гэтыя файлы адкрыты на іншым працоўным стале. Каб бачыць яго, перайдзіце на профіль <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="5330512191124428349">Атрымаць інфармацыю</translation>
 <translation id="535792325654997756">Чалавек з катамі</translation>
 <translation id="5358764674931277">Частата кадраў</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Несапраўднае значэнне супадзення па суфіксе дамена</translation>
 <translation id="6364301859968397756">Сховішча арганізацыі запоўнена</translation>
 <translation id="6367976544441405720">Мікрааўтобус</translation>
-<translation id="637062427944097960">Гэты файл адкрыты на іншым працоўным стале. Каб праглядзець яго, перайдзіце на профіль <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="6394388407447716302">Толькі чытанне</translation>
 <translation id="6395575651121294044">Элементаў: <ph name="NUMBER_OF_FILES" /></translation>
 <translation id="6407769893376380348">Не ўдалося перамясціць файл "<ph name="FILE_NAME" />", бо ён зашыфраваны.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – порт</translation>
 <translation id="8656407365183407932">Пазасеткавыя файлы былі выдалены</translation>
 <translation id="8656768832129462377">Не правяраць</translation>
+<translation id="8662978096466608964">Не ўдалося ўсталяваць шпалеры ў Chrome.</translation>
 <translation id="8688591111840995413">Няправільны пароль</translation>
 <translation id="8698464937041809063">Рысунак Google</translation>
 <translation id="8698877009525468705">Гэты файл з’яўляецца канфідэнцыяльным, і на яго распаўсюджваюцца абмежаванні зададзенай адміністратарам палітыкі.</translation>

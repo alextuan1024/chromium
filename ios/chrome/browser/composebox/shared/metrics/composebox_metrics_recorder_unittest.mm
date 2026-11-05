@@ -298,14 +298,14 @@ TEST_F(ComposeboxMetricsRecorderTest, AttachmentCountAtSubmission) {
 }
 
 TEST_F(ComposeboxMetricsRecorderTest, ToolSelected) {
-  [recorder_ recordToolSelected:ComposeboxMode::kCanvas];
+  [recorder_ recordToolSelected:omnibox::ToolMode::TOOL_MODE_CANVAS];
   histogram_tester_.ExpectBucketCount(
       "ContextualSearch.Tools.Selected.Unknown",
       static_cast<int>(omnibox::ToolMode::TOOL_MODE_CANVAS), 1);
 }
 
 TEST_F(ComposeboxMetricsRecorderTest, ModelSelected) {
-  [recorder_ recordModelSelected:ComposeboxModelOption::kThinking];
+  [recorder_ recordModelSelected:omnibox::ModelMode::MODEL_MODE_GEMINI_PRO];
   histogram_tester_.ExpectBucketCount(
       "ContextualSearch.Models.Selected.Unknown",
       static_cast<int>(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO), 1);

@@ -7,6 +7,7 @@
 
 #include "components/omnibox/browser/aim_eligibility_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/omnibox_proto/aim_eligibility_response.pb.h"
 
 class MockAimEligibilityService : public AimEligibilityService {
  public:
@@ -61,12 +62,17 @@ class MockAimEligibilityService : public AimEligibilityService {
               GetSearchboxConfig,
               (),
               (const, override));
+  MOCK_METHOD(const omnibox::LhsRailConfig*,
+              GetLhsRailConfig,
+              (),
+              (const, override));
 
   omnibox::SearchboxConfig& config() { return mock_config; }
 
  private:
   // Mock searchbox config object.
   mutable omnibox::SearchboxConfig mock_config;
+  omnibox::AimEligibilityResponse mock_response_;
 };
 
 #endif  // COMPONENTS_OMNIBOX_BROWSER_MOCK_AIM_ELIGIBILITY_SERVICE_H_

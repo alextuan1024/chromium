@@ -4,10 +4,11 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import org.jni_zero.JniPtr;
+
 import org.chromium.base.Callback;
 import org.chromium.base.ObserverList;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.Token;
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
@@ -23,8 +24,15 @@ import org.chromium.chrome.browser.tab.TabDestroyStatus;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tabmodel.NextTabPolicy.NextTabPolicySupplier;
+import org.chromium.chrome.browser.tabmodel.undo.UndoClosureSnapshot;
+import org.chromium.components.split_tabs.SplitTabId;
+import org.chromium.components.split_tabs.SplitTabVisualData;
+import org.chromium.components.tab_group_sync.TabGroupUiActionHandler;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.components.tabs.TabStripCollection;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -55,8 +63,6 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     private final ObserverList<IncognitoTabModelObserver> mIncognitoObservers =
             new ObserverList<>();
     private final ObserverList<TabGroupObserver> mTabGroupObservers = new ObserverList<>();
-    private final ObserverList<Callback<TabModelInternal>> mDelegateModelObservers =
-            new ObserverList<>();
     private final Callback<@Nullable Tab> mDelegateModelCurrentTabSupplierObserver;
     private final SettableNullableObservableSupplier<Tab> mCurrentTabSupplier =
             ObservableSuppliers.createNullable();
@@ -123,6 +129,7 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
         if (mNativeAndroidBrowserWindow != 0) {
             mDelegateModel.associateWithBrowserWindow(mNativeAndroidBrowserWindow);
         }
+        mDelegateModel.setActive(mActive);
         mDelegateModel
                 .getCurrentTabSupplier()
                 .addSyncObserverAndPostIfNonNull(mDelegateModelCurrentTabSupplierObserver);
@@ -134,9 +141,6 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
         }
         for (TabGroupObserver observer : mTabGroupObservers) {
             mDelegateModel.addTabGroupObserver(observer);
-        }
-        for (Callback<TabModelInternal> delegateModelObserver : mDelegateModelObservers) {
-            delegateModelObserver.onResult(mDelegateModel);
         }
         for (IncognitoTabModelObserver observer : mIncognitoObservers) {
             observer.onIncognitoModelCreated();
@@ -168,9 +172,6 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
         mTabCountSupplier.set(0);
 
         mDelegateModel = EmptyTabModel.getInstance(true);
-        for (Callback<TabModelInternal> delegateModelObserver : mDelegateModelObservers) {
-            delegateModelObserver.onResult(mDelegateModel);
-        }
     }
 
     private boolean isEmpty() {
@@ -304,11 +305,8 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public void pinTab(
-            int tabId,
-            boolean showUngroupDialog,
-            @Nullable TabModelActionListener tabModelActionListener) {
-        mDelegateModel.pinTab(tabId, showUngroupDialog, tabModelActionListener);
+    public void pinTab(int tabId, boolean showUngroupDialog) {
+        mDelegateModel.pinTab(tabId, showUngroupDialog);
     }
 
     @Override
@@ -357,6 +355,16 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
+    public int[] restoreClosedTabsForUndo(
+            UndoClosureSnapshot snapshot,
+            boolean reselect,
+            @Nullable TabGroupUiActionHandler tabGroupUiActionHandler) {
+        int[] result = new int[snapshot.tabs.size()];
+        Arrays.fill(result, Tab.INVALID_TAB_ID);
+        return result;
+    }
+
+    @Override
     public NonNullObservableSupplier<Integer> getTabCountSupplier() {
         return mTabCountSupplier;
     }
@@ -390,14 +398,6 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public void addDelegateModelObserver(Callback<TabModelInternal> delegateModelObserver) {
-        mDelegateModelObservers.addObserver(delegateModelObserver);
-        if (mDelegateModel != null) {
-            delegateModelObserver.onResult(mDelegateModel);
-        }
-    }
-
-    @Override
     public void addIncognitoObserver(IncognitoTabModelObserver observer) {
         mIncognitoObservers.addObserver(observer);
     }
@@ -415,6 +415,12 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
         // Call destroyIncognitoIfNecessary() in case the last incognito tab in this model is
         // reparented to a different activity. See crbug.com/40469243.
         destroyIncognitoIfNecessary();
+    }
+
+    @Override
+    public void detachTabForReparenting(Tab tab) {
+        ThreadUtils.assertOnUiThread();
+        mDelegateModel.detachTabForReparenting(tab);
     }
 
     @Override
@@ -446,6 +452,11 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     @Override
     public void notifyDidActiveStateChange(boolean active) {
         mDelegateModel.notifyDidActiveStateChange(active);
+    }
+
+    @Override
+    public void notifyWillRemoveTabGroup(TabGroupId tabGroupId) {
+        mDelegateModel.notifyWillRemoveTabGroup(tabGroupId);
     }
 
     @Override
@@ -492,8 +503,8 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public @Nullable Integer getNativeSessionIdForTesting() {
-        return mDelegateModel.getNativeSessionIdForTesting();
+    public @Nullable Integer getNativeSessionId() {
+        return mDelegateModel.getNativeSessionId();
     }
 
     @Override
@@ -507,18 +518,13 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public @Nullable TabStripCollection getTabStripCollection() {
+    public @Nullable JniPtr<TabStripCollection> getTabStripCollection() {
         return mDelegateModel.getTabStripCollection();
     }
 
     @Override
     public @Nullable Tab duplicateTab(Tab tab) {
         return mDelegateModel.duplicateTab(tab);
-    }
-
-    @Override
-    public boolean isClosingAllTabs() {
-        return mDelegateModel.isClosingAllTabs();
     }
 
     @Override
@@ -544,16 +550,6 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public int getCurrentRepresentativeTabIndex() {
-        return mDelegateModel.getCurrentRepresentativeTabIndex();
-    }
-
-    @Override
-    public @Nullable Tab getCurrentRepresentativeTab() {
-        return mDelegateModel.getCurrentRepresentativeTab();
-    }
-
-    @Override
     public @Nullable Tab getRepresentativeTabAt(int index) {
         return mDelegateModel.getRepresentativeTabAt(index);
     }
@@ -569,13 +565,13 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public int getTabCountForGroup(@Nullable Token tabGroupId) {
+    public int getTabCountForGroup(@Nullable TabGroupId tabGroupId) {
         return mDelegateModel.getTabCountForGroup(tabGroupId);
     }
 
     @Override
-    public boolean tabGroupExists(@Nullable Token tabGroupId) {
-        return mDelegateModel.tabGroupExists(tabGroupId);
+    public boolean containsTabGroup(@Nullable TabGroupId tabGroupId) {
+        return mDelegateModel.containsTabGroup(tabGroupId);
     }
 
     @Override
@@ -584,7 +580,7 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public List<Tab> getTabsInGroup(@Nullable Token tabGroupId) {
+    public List<Tab> getTabsInGroup(@Nullable TabGroupId tabGroupId) {
         return mDelegateModel.getTabsInGroup(tabGroupId);
     }
 
@@ -599,18 +595,13 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public int getGroupLastShownTabId(@Nullable Token tabGroupId) {
+    public int getGroupLastShownTabId(@Nullable TabGroupId tabGroupId) {
         return mDelegateModel.getGroupLastShownTabId(tabGroupId);
     }
 
     @Override
-    public void moveRelatedTabs(int id, int newIndex) {
-        mDelegateModel.moveRelatedTabs(id, newIndex);
-    }
-
-    @Override
-    public boolean willMergingCreateNewGroup(List<Tab> tabsToMerge) {
-        return mDelegateModel.willMergingCreateNewGroup(tabsToMerge);
+    public void moveGroupToIndex(TabGroupId tabGroupId, int newIndex) {
+        mDelegateModel.moveGroupToIndex(tabGroupId, newIndex);
     }
 
     @Override
@@ -619,20 +610,24 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public void createTabGroupForTabGroupSync(List<Tab> tabs, Token tabGroupId) {
+    public void createTabGroupForTabGroupSync(List<Tab> tabs, TabGroupId tabGroupId) {
         mDelegateModel.createTabGroupForTabGroupSync(tabs, tabGroupId);
-    }
-
-    @Override
-    public void mergeTabsToGroup(
-            int sourceTabId, int destinationTabId, boolean skipUpdateTabModel) {
-        mDelegateModel.mergeTabsToGroup(sourceTabId, destinationTabId, skipUpdateTabModel);
     }
 
     @Override
     public void mergeListOfTabsToGroup(
             List<Tab> tabs, Tab destinationTab, @Nullable Integer indexInGroup, int notify) {
         mDelegateModel.mergeListOfTabsToGroup(tabs, destinationTab, indexInGroup, notify);
+    }
+
+    @Override
+    public void mergeListOfTabsToExistingGroup(
+            List<Tab> tabs,
+            TabGroupId destinationGroupId,
+            @Nullable Integer indexInGroup,
+            @TabGroupMergeNotificationType int notify) {
+        mDelegateModel.mergeListOfTabsToExistingGroup(
+                tabs, destinationGroupId, indexInGroup, notify);
     }
 
     @Override
@@ -649,7 +644,7 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
 
             @Override
             public void ungroupTabGroup(
-                    Token tabGroupId,
+                    TabGroupId tabGroupId,
                     boolean trailing,
                     boolean allowDialog,
                     @Nullable TabModelActionListener listener) {
@@ -671,93 +666,86 @@ class IncognitoTabModelImpl implements IncognitoTabModelInternal {
     }
 
     @Override
-    public Set<Token> getAllTabGroupIds() {
+    public Set<TabGroupId> getAllTabGroupIds() {
         return mDelegateModel.getAllTabGroupIds();
     }
 
     @Override
-    public int getValidPosition(Tab tab, int proposedPosition) {
-        return mDelegateModel.getValidPosition(tab, proposedPosition);
+    public boolean isTabStateInitialized() {
+        return mDelegateModel.isTabStateInitialized();
     }
 
     @Override
-    public boolean isTabModelRestored() {
-        return mDelegateModel.isTabModelRestored();
-    }
-
-    @Override
-    public boolean isTabGroupHiding(@Nullable Token tabGroupId) {
+    public boolean isTabGroupHiding(@Nullable TabGroupId tabGroupId) {
         return mDelegateModel.isTabGroupHiding(tabGroupId);
     }
 
     @Override
-    public LazyOneshotSupplier<Set<Token>> getLazyAllTabGroupIds(
+    public LazyOneshotSupplier<Set<TabGroupId>> getLazyAllTabGroupIds(
             List<Tab> tabsToExclude, boolean includePendingClosures) {
         return mDelegateModel.getLazyAllTabGroupIds(tabsToExclude, includePendingClosures);
     }
 
     @Override
-    public String getTabGroupTitle(Token tabGroupId) {
+    public String getTabGroupTitle(TabGroupId tabGroupId) {
         return mDelegateModel.getTabGroupTitle(tabGroupId);
     }
 
     @Override
-    public String getTabGroupTitle(Tab groupedTab) {
-        return mDelegateModel.getTabGroupTitle(groupedTab);
-    }
-
-    @Override
-    public void setTabGroupTitle(Token tabGroupId, String title) {
+    public void setTabGroupTitle(TabGroupId tabGroupId, String title) {
         mDelegateModel.setTabGroupTitle(tabGroupId, title);
     }
 
     @Override
-    public void deleteTabGroupTitle(Token tabGroupId) {
+    public void deleteTabGroupTitle(TabGroupId tabGroupId) {
         mDelegateModel.deleteTabGroupTitle(tabGroupId);
     }
 
     @Override
-    public int getTabGroupColor(Token tabGroupId) {
+    public int getTabGroupColor(TabGroupId tabGroupId) {
         return mDelegateModel.getTabGroupColor(tabGroupId);
     }
 
     @Override
-    public int getTabGroupColorWithFallback(Token tabGroupId) {
+    public int getTabGroupColorWithFallback(TabGroupId tabGroupId) {
         return mDelegateModel.getTabGroupColorWithFallback(tabGroupId);
     }
 
     @Override
-    public int getTabGroupColorWithFallback(Tab groupedTab) {
-        return mDelegateModel.getTabGroupColorWithFallback(groupedTab);
-    }
-
-    @Override
-    public void setTabGroupColor(Token tabGroupId, int color) {
+    public void setTabGroupColor(TabGroupId tabGroupId, int color) {
         mDelegateModel.setTabGroupColor(tabGroupId, color);
     }
 
     @Override
-    public void deleteTabGroupColor(Token tabGroupId) {
-        mDelegateModel.deleteTabGroupColor(tabGroupId);
-    }
-
-    @Override
-    public boolean getTabGroupCollapsed(Token tabGroupId) {
+    public boolean getTabGroupCollapsed(TabGroupId tabGroupId) {
         return mDelegateModel.getTabGroupCollapsed(tabGroupId);
     }
 
     @Override
-    public void setTabGroupCollapsed(Token tabGroupId, boolean isCollapsed, boolean animate) {
+    public void setTabGroupCollapsed(TabGroupId tabGroupId, boolean isCollapsed, boolean animate) {
         mDelegateModel.setTabGroupCollapsed(tabGroupId, isCollapsed, animate);
-    }
-
-    @Override
-    public void deleteTabGroupCollapsed(Token tabGroupId) {
-        mDelegateModel.deleteTabGroupCollapsed(tabGroupId);
     }
 
     @Override
     public void moveTabOutOfGroupInDirection(int sourceTabId, boolean trailing) {
         mDelegateModel.moveTabOutOfGroupInDirection(sourceTabId, trailing);
+    }
+
+    @Override
+    public @Nullable SplitTabId createSplit(List<Tab> tabs, SplitTabVisualData visualData) {
+        // TODO(crbug.com/585322243): Implement this.
+        return null;
+    }
+
+    @Override
+    public @Nullable SplitTabData getSplitTabData(SplitTabId splitTabId) {
+        // TODO(crbug.com/585322243): Implement this.
+        return null;
+    }
+
+    @Override
+    public Set<SplitTabId> listSplits() {
+        // TODO(crbug.com/585322243): Implement this.
+        return Collections.emptySet();
     }
 }

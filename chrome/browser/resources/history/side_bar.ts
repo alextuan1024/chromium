@@ -17,6 +17,7 @@ import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {BrowserProxyImpl} from './browser_proxy.js';
+import {eventToClickModifiers} from './mouse_event_util.js';
 import {Page, TABBED_PAGES} from './router.js';
 import {getCss} from './side_bar.css.js';
 import {getHtml} from './side_bar.html.js';
@@ -71,8 +72,6 @@ export class HistorySideBarElement extends CrLitElement {
         notify: true,
       },
 
-      guestSession_: {type: Boolean},
-
       /**
        * Used to display notices for profile sign-in status and managed status.
        */
@@ -111,13 +110,15 @@ export class HistorySideBarElement extends CrLitElement {
   accessor historyClustersVisible: boolean = false;
   accessor selectedPage: string = '';
   accessor selectedTab: number = -1;
-  protected accessor guestSession_ = loadTimeData.getBoolean('isGuestSession');
   protected accessor showFooter_: boolean = false;
   protected accessor showGoogleAccountFooter_: boolean = false;
   protected accessor showGMAOnly_: boolean = false;
   protected accessor showGAAOnly_: boolean = false;
   protected accessor showGMAAndGAA_: boolean = false;
   private accessor showHistoryClusters_: boolean = false;
+
+  protected readonly guestSession_: boolean =
+      loadTimeData.getBoolean('isGuestSession');
 
   override connectedCallback() {
     super.connectedCallback();
@@ -157,7 +158,7 @@ export class HistorySideBarElement extends CrLitElement {
     this.showFooter_ = this.footerInfo.managed || this.showGoogleAccountFooter_;
   }
 
-  protected onGoogleAccountFooterClick_(e: Event) {
+  protected onGoogleAccountFooterClick_(e: MouseEvent) {
     if ((e.target as HTMLElement).tagName !== 'A') {
       // Do nothing if a link is not clicked.
       return;
@@ -170,18 +171,17 @@ export class HistorySideBarElement extends CrLitElement {
     // to open real URLs.
 
     const browserProxy = BrowserProxyImpl.getInstance();
+    const modifiers = eventToClickModifiers(e);
     switch ((e.target as HTMLElement).id) {
       case 'footerGoogleMyActivityLink':
         browserProxy.recordAction('SideBarFooterGoogleMyActivityClick');
-        browserProxy.navigateToUrl(
-            loadTimeData.getString('sidebarFooterGMALink'), '_blank',
-            e as MouseEvent);
+        browserProxy.handler.navigateToUrl(
+            loadTimeData.getString('sidebarFooterGMALink'), true, modifiers);
         break;
       case 'footerGeminiAppsActivityLink':
         browserProxy.recordAction('SideBarFooterGeminiAppsActivityClick');
-        browserProxy.navigateToUrl(
-            loadTimeData.getString('sidebarFooterGAALink'), '_blank',
-            e as MouseEvent);
+        browserProxy.handler.navigateToUrl(
+            loadTimeData.getString('sidebarFooterGAALink'), true, modifiers);
         break;
       default:
         break;

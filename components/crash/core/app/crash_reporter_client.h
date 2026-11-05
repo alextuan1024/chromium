@@ -13,6 +13,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
@@ -83,8 +84,9 @@ class CrashReporterClient {
   // |client_guid| may either be a full GUID or a GUID that was already stripped
   // from its dashes.
   //
-  // On macOS, Windows, and Android this is the responsibility of Crashpad, and
-  // can not be set directly by the client.
+  // When using Crashpad (all platforms except CastOS, which uses Breakpad),
+  // this is the responsibility of Crashpad and cannot be set directly by the
+  // client.
   virtual void SetCrashReporterClientIdFromGUID(const std::string& client_guid);
 #endif
 
@@ -225,7 +227,8 @@ class CrashReporterClient {
   // The default implementation returns false.
   virtual bool ShouldMonitorCrashHandlerExpensively();
 
-  // Returns true if breakpad should run in the given process type.
+  // Returns true if Breakpad should run in the given process type (used only on
+  // CastOS).
   virtual bool EnableBreakpadForProcess(const std::string& process_type);
 
   // Returns a list of read-only shared memory regions containing user streams.
@@ -240,6 +243,14 @@ class CrashReporterClient {
   // managed and written via `SharedMemoryUserStreamWriter`).
   virtual std::vector<base::ReadOnlySharedMemoryRegion>
   GetUserStreamSharedMemoryRegions();
+
+  // Writes `data` into one of the streams returned by
+  // `GetUserStreamSharedMemoryRegions()`. `data` must not exceed the stream's
+  // capacity. Returns true if the write succeeded, or false if this client has
+  // no stream of `user_stream_type`. The default implementation does nothing
+  // and returns false.
+  virtual bool WriteUserStreamData(uint32_t user_stream_type,
+                                   base::span<const uint8_t> data);
 };
 
 }  // namespace crash_reporter

@@ -12,7 +12,6 @@
 #include "components/autofill/core/browser/payments/legal_message_line.h"
 #include "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
 #include "components/autofill/core/browser/ui/payments/virtual_card_enroll_bubble_controller.h"
-#include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents_user_data.h"
 
 namespace autofill {
@@ -89,12 +88,9 @@ class VirtualCardEnrollBubbleControllerImpl
   explicit VirtualCardEnrollBubbleControllerImpl(
       content::WebContents* web_contents);
 
-  // AutofillBubbleControllerBase::
-  void OnVisibilityChanged(content::Visibility visibility) override;
-  void DoShowBubble() override;
 #if !BUILDFLAG(IS_ANDROID)
+  // AutofillBubbleControllerBase:
   bool ShouldShowPageAction() override;
-  std::optional<actions::ActionId> GetActionIdForPageAction() override;
 #endif  // !BUILDFLAG(IS_ANDROID)
 
  private:
@@ -102,6 +98,9 @@ class VirtualCardEnrollBubbleControllerImpl
 
   friend class content::WebContentsUserData<
       VirtualCardEnrollBubbleControllerImpl>;
+
+  // AutofillBubbleControllerBase:
+  AutofillBubbleBase* DoShowBubble() override;
 
   // Initializes the controller for showing the virtual card enrollment bubble.
   // Sets up the UI model with enrollment fields and stores the callbacks for
@@ -134,8 +133,8 @@ class VirtualCardEnrollBubbleControllerImpl
   // Represents the current status of virtual card enrollment.
   EnrollmentStatus enrollment_status_ = EnrollmentStatus::kNone;
 
-  // Represents the current state of icon and bubble.
-  BubbleState bubble_state_ = BubbleState::kHidden;
+  // Whether the omnibox icon for the bubble should be visible.
+  bool is_icon_visible_ = false;
 #endif
 
   // Denotes whether the bubble is shown due to user gesture. If this is true,

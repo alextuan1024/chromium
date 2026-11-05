@@ -4,12 +4,18 @@
 
 #include "components/optimization_guide/core/model_execution/on_device_context.h"
 
+#include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/to_string.h"
+#include "base/types/expected.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
+#include "components/optimization_guide/core/model_execution/substitution.h"
+#include "components/optimization_guide/core/optimization_guide_common.mojom.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
+#include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
 #include "services/on_device_model/ml/chrome_ml_audio_buffer.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
@@ -100,8 +106,8 @@ OnDeviceOptions::~OnDeviceOptions() = default;
 OnDeviceOptions::OnDeviceOptions(const OnDeviceOptions& orig)
     : model_client(orig.model_client->Clone()),
       model_versions(orig.model_versions),
+      base_model(orig.base_model),
       adapter(orig.adapter),
-      safety_checker(std::make_unique<SafetyChecker>(*orig.safety_checker)),
       token_limits(orig.token_limits),
       session_params(orig.session_params),
       logger(orig.logger) {}
@@ -114,6 +120,8 @@ OnDeviceContext::OnDeviceContext(OnDeviceOptions opts,
                                  mojom::OnDeviceFeature feature)
     : opts_(std::move(opts)), feature_(feature) {
   CHECK(opts_.session_params.sampling_params.has_value());
+  clients_.set_disconnect_handler(base::BindRepeating(
+      &OnDeviceContext::OnDisconnect, base::Unretained(this)));
 }
 OnDeviceContext::~OnDeviceContext() = default;
 
@@ -163,11 +171,14 @@ OnDeviceContext::GetOrCreateSession() {
   params->temperature = opts_.session_params.sampling_params->temperature;
   opts_.model_client->StartSession(session_.BindNewPipeAndPassReceiver(),
                                    std::move(params));
-  session_.reset_on_disconnect();
+  session_.set_disconnect_handler(
+      base::BindOnce(&OnDeviceContext::OnDisconnect, base::Unretained(this)));
   session_->SetPriority(priority_);
   tokens_processed_ = 0;
   if (input_->pieces.size() > 0) {
     Append(input_->Clone());
+  } else if (callback_) {
+    std::move(callback_).Run(0);
   }
   return session_;
 }
@@ -179,6 +190,9 @@ void OnDeviceContext::CloneSession(
   auto& session = GetOrCreateSession();
   if (input_ && !ignore_context && logged_request) {
     logged_request->set_input_context_string(OnDeviceInputToString(*input_));
+    // TODO(crbug.com/406585895): This does not account for tokens in
+    // outstanding Append() calls.
+    logged_request->set_input_context_num_tokens_processed(tokens_processed_);
   }
   session->Clone(std::move(clone));
 }
@@ -192,7 +206,8 @@ std::unique_ptr<OnDeviceContext> OnDeviceContext::Clone() {
   CloneSession(context->session_.BindNewPipeAndPassReceiver(),
                /*logged_request=*/nullptr, /*ignore_context=*/false);
   context->SetPriority(priority_);
-  context->session_.reset_on_disconnect();
+  context->session_.set_disconnect_handler(base::BindOnce(
+      &OnDeviceContext::OnDisconnect, base::Unretained(context.get())));
   return context;
 }
 
@@ -221,21 +236,44 @@ void OnDeviceContext::Append(on_device_model::mojom::InputPtr input) {
   session_->Append(std::move(options), std::move(pending));
 }
 
+void OnDeviceContext::OnDisconnect() {
+  session_.reset();
+  clients_.Clear();
+  tokens_processed_ = 0;
+  if (callback_) {
+    std::move(callback_).Run(base::unexpected(OnDeviceError::kGenericFailure));
+  }
+}
+
 void OnDeviceContext::OnComplete(uint32_t tokens_processed) {
   tokens_processed_ += tokens_processed;
   clients_.Remove(clients_.current_receiver());
-  if (clients_.empty() && callback_) {
-    // TODO(crbug.com/406585895): tokens_processed_ will not include tokens that
-    // were processed when this OnDeviceContext was created by calling Clone().
-    // Ideally, OnComplete would receive the size of the remaining buffer
-    // instead.
-    std::move(callback_).Run(tokens_processed_);
-  }
   base::UmaHistogramCounts10000(
       base::StrCat({"OptimizationGuide.ModelExecution."
                     "OnDeviceContextTokensProcessed.",
                     base::ToString(feature_)}),
       tokens_processed);
+  if (clients_.empty()) {
+    // Log once all pending Append() calls have completed, so that prefill (e.g.
+    // from SetInput() at session creation) is visible in
+    // chrome://on-device-internals separately from later executions.
+    if (opts_.logger && opts_.logger->ShouldEnableDebugLogs()) {
+      OPTIMIZATION_GUIDE_LOGGER(
+          optimization_guide_common::mojom::LogSource::MODEL_EXECUTION,
+          opts_.logger.get())
+          << "Processed input context of "
+          << base::NumberToString(tokens_processed_) << " tokens for "
+          << base::ToString(feature_) << ":\n"
+          << OnDeviceInputToString(*input_);
+    }
+    if (callback_) {
+      // TODO(crbug.com/406585895): tokens_processed_ will not include tokens
+      // that were processed when this OnDeviceContext was created by calling
+      // Clone(). Ideally, OnComplete would receive the size of the remaining
+      // buffer instead.
+      std::move(callback_).Run(tokens_processed_);
+    }
+  }
 }
 
 }  // namespace optimization_guide

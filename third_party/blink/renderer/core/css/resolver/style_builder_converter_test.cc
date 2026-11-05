@@ -4,9 +4,13 @@
 
 #include "third_party/blink/renderer/core/css/resolver/style_builder_converter.h"
 
+#include <optional>
+#include <utility>
+
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/frame/color_scheme.mojom-blink.h"
 #include "third_party/blink/renderer/core/css/css_alpha_color_value.h"
+#include "third_party/blink/renderer/core/css/css_color.h"
 #include "third_party/blink/renderer/core/css/css_color_mix_value.h"
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/css_relative_color_value.h"
@@ -15,8 +19,39 @@
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/fonts/font_palette.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
+
+namespace {
+
+// Creates a two-color `color-mix()` value.
+const cssvalue::CSSColorMixValue* MakeCSSColorMix(
+    const CSSValue* color1,
+    const CSSValue* color2,
+    const CSSPrimitiveValue* percentage1,
+    const CSSPrimitiveValue* percentage2,
+    Color::ColorSpace color_interpolation_space,
+    Color::HueInterpolationMethod hue_interpolation_method) {
+  return MakeGarbageCollected<cssvalue::CSSColorMixValue>(
+      cssvalue::CSSColorMixValue::ItemVector{{color1, percentage1},
+                                             {color2, percentage2}},
+      color_interpolation_space, hue_interpolation_method);
+}
+
+// Creates the unresolved form of an equal mix of two colors.
+StyleColor::UnresolvedColorMix* MakeEqualUnresolvedColorMix(
+    Color::ColorSpace color_interpolation_space,
+    Color::HueInterpolationMethod hue_interpolation_method,
+    const StyleColor& color1,
+    const StyleColor& color2) {
+  return MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
+      color_interpolation_space, hue_interpolation_method,
+      StyleColor::UnresolvedColorMix::ItemVector{{color1, 0.5}, {color2, 0.5}},
+      /*alpha_multiplier=*/1.0);
+}
+
+}  // namespace
 
 class StyleBuilderConverterPageTest : public PageTestBase {};
 
@@ -31,26 +66,80 @@ TEST(StyleBuilderConverterTest,
       50, CSSPrimitiveValue::UnitType::kPercentage);
 
   const cssvalue::CSSColorMixValue* color_mix_sub_value =
-      MakeGarbageCollected<cssvalue::CSSColorMixValue>(
-          red, blue, percent, percent, Color::ColorSpace::kSRGB,
-          Color::HueInterpolationMethod::kShorter);
+      MakeCSSColorMix(red, blue, percent, percent, Color::ColorSpace::kSRGB,
+                      Color::HueInterpolationMethod::kShorter);
 
-  const cssvalue::CSSColorMixValue* color_mix_value =
-      MakeGarbageCollected<cssvalue::CSSColorMixValue>(
-          color_mix_sub_value, currentcolor, percent, percent,
-          Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter);
+  const cssvalue::CSSColorMixValue* color_mix_value = MakeCSSColorMix(
+      color_mix_sub_value, currentcolor, percent, percent,
+      Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter);
 
-  const StyleColor expected(
-      MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
-          Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
-          StyleColor(Color::FromColorSpace(Color::ColorSpace::kSRGB, 0.5f, 0.0f,
-                                           0.5f)),
-          StyleColor(), 0.5f, 1.));
+  const StyleColor expected(MakeEqualUnresolvedColorMix(
+      Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
+      StyleColor(
+          Color::FromColorSpace(Color::ColorSpace::kSRGB, 0.5f, 0.0f, 0.5f)),
+      StyleColor()));
 
   const ResolveColorValueContext context{
       .length_resolver = CSSToLengthConversionData(/*element=*/nullptr),
       .text_link_colors = TextLinkColors()};
   EXPECT_EQ(ResolveColorValue(*color_mix_value, context), expected);
+}
+
+TEST(StyleBuilderConverterTest, ResolveColorValue_SingleColorMix) {
+  const ResolveColorValueContext context{
+      .length_resolver = CSSToLengthConversionData(/*element=*/nullptr),
+      .text_link_colors = TextLinkColors()};
+  auto make_mix = [](const Color& color) {
+    return MakeGarbageCollected<cssvalue::CSSColorMixValue>(
+        cssvalue::CSSColorMixValue::ItemVector{
+            {cssvalue::CSSColor::Create(color), nullptr}},
+        Color::ColorSpace::kHSL, Color::HueInterpolationMethod::kShorter);
+  };
+
+  // color-mix(in hsl, hsl(0 50% 50%)) is converted to hsl, then serialized
+  // in sRGB since it has no missing components.
+  const Color color =
+      ResolveColorValue(*make_mix(Color::FromHSLA(0.0f, 0.5f, 0.5f, 1.0f)),
+                        context)
+          .GetColor();
+  EXPECT_EQ(color.GetColorSpace(), Color::ColorSpace::kSRGB);
+  EXPECT_NEAR(color.Param0(), 0.75f, 1e-6);
+  EXPECT_NEAR(color.Param1(), 0.25f, 1e-6);
+  EXPECT_NEAR(color.Param2(), 0.25f, 1e-6);
+
+  // color-mix(in hsl, hsl(none 50% 50%)) keeps its missing hue.
+  const Color color_with_none =
+      ResolveColorValue(
+          *make_mix(Color::FromHSLA(std::nullopt, 0.5f, 0.5f, 1.0f)), context)
+          .GetColor();
+  EXPECT_EQ(color_with_none.GetColorSpace(), Color::ColorSpace::kHSL);
+  EXPECT_TRUE(color_with_none.Param0IsNone());
+}
+
+TEST(StyleBuilderConverterTest, ResolveColorValue_MultipleColorsMix) {
+  const auto* color_mix_value =
+      MakeGarbageCollected<cssvalue::CSSColorMixValue>(
+          cssvalue::CSSColorMixValue::ItemVector{
+              {CSSIdentifierValue::Create(CSSValueID::kCurrentcolor), nullptr},
+              {CSSIdentifierValue::Create(CSSValueID::kRed), nullptr},
+              {CSSIdentifierValue::Create(CSSValueID::kBlue), nullptr}},
+          Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter);
+
+  const ResolveColorValueContext context{
+      .length_resolver = CSSToLengthConversionData(/*element=*/nullptr),
+      .text_link_colors = TextLinkColors()};
+  const StyleColor result = ResolveColorValue(*color_mix_value, context);
+  ASSERT_TRUE(result.IsUnresolvedColorFunction());
+  EXPECT_EQ(result.ToCSSValue()->CssText(),
+            "color-mix(in srgb, currentcolor, rgb(255, 0, 0), rgb(0, 0, 255))");
+
+  // With a white current color: (1, 1, 1), then (1, 0.5, 0.5), then
+  // (2/3, 1/3, 2/3).
+  const Color resolved = result.Resolve(Color::FromRGB(255, 255, 255),
+                                        mojom::blink::ColorScheme::kLight);
+  EXPECT_NEAR(resolved.Param0(), 2.0f / 3, 1e-6);
+  EXPECT_NEAR(resolved.Param1(), 1.0f / 3, 1e-6);
+  EXPECT_NEAR(resolved.Param2(), 2.0f / 3, 1e-6);
 }
 
 TEST(StyleBuilderConverterTest, ResolveColorValue_ZeroCombinedPercentage) {
@@ -60,10 +149,9 @@ TEST(StyleBuilderConverterTest, ResolveColorValue_ZeroCombinedPercentage) {
   const CSSNumericLiteralValue* zero_percent = CSSNumericLiteralValue::Create(
       0, CSSPrimitiveValue::UnitType::kPercentage);
 
-  const cssvalue::CSSColorMixValue* color_mix_value =
-      MakeGarbageCollected<cssvalue::CSSColorMixValue>(
-          red, blue, zero_percent, zero_percent, Color::ColorSpace::kSRGB,
-          Color::HueInterpolationMethod::kShorter);
+  const cssvalue::CSSColorMixValue* color_mix_value = MakeCSSColorMix(
+      red, blue, zero_percent, zero_percent, Color::ColorSpace::kSRGB,
+      Color::HueInterpolationMethod::kShorter);
 
   const ResolveColorValueContext context{
       .length_resolver = CSSToLengthConversionData(/*element=*/nullptr),
@@ -73,6 +161,47 @@ TEST(StyleBuilderConverterTest, ResolveColorValue_ZeroCombinedPercentage) {
                                              0.0f, 0.5f, 0.0f)));
 }
 
+// currentcolor keeps the mix unresolved, and serializes the same way in the
+// declared and computed values.
+TEST(StyleBuilderConverterTest,
+     ResolveColorValue_ColorMixPercentageSerialization) {
+  using Percentages = Vector<std::optional<double>>;
+  const Percentages tests[] = {
+      // 100 * (1 / 3) isn't exactly 100 / 3.
+      {std::nullopt, std::nullopt, std::nullopt},
+      // Ten times 0.1 adds up to just below 1, so the alpha multiplier isn't
+      // exactly 1.
+      Percentages(10, 10.0),
+      {30, 30},
+      {20, std::nullopt, std::nullopt},
+  };
+  const CSSIdentifierValue* currentcolor =
+      CSSIdentifierValue::Create(CSSValueID::kCurrentcolor);
+  const ResolveColorValueContext context{
+      .length_resolver = CSSToLengthConversionData(/*element=*/nullptr),
+      .text_link_colors = TextLinkColors()};
+
+  for (const Percentages& percentages : tests) {
+    cssvalue::CSSColorMixValue::ItemVector items;
+    for (const std::optional<double>& percentage : percentages) {
+      items.push_back(cssvalue::CSSColorMixItem{
+          currentcolor,
+          percentage
+              ? CSSNumericLiteralValue::Create(
+                    *percentage, CSSPrimitiveValue::UnitType::kPercentage)
+              : nullptr});
+    }
+    const auto* color_mix_value =
+        MakeGarbageCollected<cssvalue::CSSColorMixValue>(
+            std::move(items), Color::ColorSpace::kSRGB,
+            Color::HueInterpolationMethod::kShorter);
+
+    const StyleColor computed = ResolveColorValue(*color_mix_value, context);
+    ASSERT_TRUE(computed.IsUnresolvedColorFunction());
+    EXPECT_EQ(computed.ToCSSValue()->CssText(), color_mix_value->CssText());
+  }
+}
+
 TEST_F(StyleBuilderConverterPageTest, PaletteMix_ZeroCombinedPercentage) {
   SetBodyInnerHTML(R"HTML(
     <div id="target" style="font-palette:
@@ -80,7 +209,7 @@ TEST_F(StyleBuilderConverterPageTest, PaletteMix_ZeroCombinedPercentage) {
   )HTML");
   UpdateAllLifecyclePhasesForTest();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   const FontPalette* palette =
       target->ComputedStyleRef().GetFontDescription().GetFontPalette();
@@ -103,17 +232,15 @@ TEST(StyleBuilderConverterTest,
       MakeGarbageCollected<cssvalue::CSSRelativeColorValue>(
           *red, Color::ColorSpace::kSRGB, *r, *r, *r, nullptr);
 
-  const cssvalue::CSSColorMixValue* color_mix_value =
-      MakeGarbageCollected<cssvalue::CSSColorMixValue>(
-          relative_color_value, currentcolor, percent, percent,
-          Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter);
+  const cssvalue::CSSColorMixValue* color_mix_value = MakeCSSColorMix(
+      relative_color_value, currentcolor, percent, percent,
+      Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter);
 
-  const StyleColor expected(
-      MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
-          Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
-          StyleColor(Color::FromColorSpace(Color::ColorSpace::kSRGB, 1.0f, 1.0f,
-                                           1.0f)),
-          StyleColor(), 0.5f, 1.));
+  const StyleColor expected(MakeEqualUnresolvedColorMix(
+      Color::ColorSpace::kSRGB, Color::HueInterpolationMethod::kShorter,
+      StyleColor(
+          Color::FromColorSpace(Color::ColorSpace::kSRGB, 1.0f, 1.0f, 1.0f)),
+      StyleColor()));
 
   const ResolveColorValueContext context{
       .length_resolver = CSSToLengthConversionData(/*element=*/nullptr),
@@ -135,10 +262,10 @@ TEST(StyleBuilderConverterTest, ResolveColorValue_ResolveAlphaColor) {
 
   const StyleColor result = ResolveColorValue(*alpha_color_value, context);
   ASSERT_TRUE(result.IsAbsoluteColor());
-  EXPECT_EQ(result.GetColor().SerializeAsCSSColor(),
-            Color::FromColorSpace(Color::ColorSpace::kSRGBLegacy, 255.0f, 0.0f,
-                                  0.0f, 0.5f)
-                .SerializeAsCSSColor());
+  EXPECT_EQ(
+      result.GetColor().SerializeAsCSSColor(),
+      Color::FromColorSpace(Color::ColorSpace::kSRGB, 1.0f, 0.0f, 0.0f, 0.5f)
+          .SerializeAsCSSColor());
 }
 
 TEST(StyleBuilderConverterTest,

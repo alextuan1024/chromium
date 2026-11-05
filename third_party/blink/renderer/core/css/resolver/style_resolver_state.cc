@@ -22,6 +22,7 @@
 
 #include "third_party/blink/renderer/core/css/resolver/style_resolver_state.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
 #include "third_party/blink/renderer/core/animation/css/css_animations.h"
 #include "third_party/blink/renderer/core/css/css_crossfade_value.h"
@@ -32,10 +33,12 @@
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/css_uri_value.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
+#include "third_party/blink/renderer/core/css/style_color.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
+#include "third_party/blink/renderer/core/html/html_area_element.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 
 namespace blink {
@@ -81,11 +84,11 @@ Element* ComputeStyledElement(const StyleRequest& style_request,
 // values per CSS Color 5.
 // https://drafts.csswg.org/css-color-5/#valdef-light-dark-none
 cssvalue::CSSColorImageValue& TransparentImage() {
-  DEFINE_STATIC_LOCAL(
-      Persistent<cssvalue::CSSColorImageValue>, image,
-      (MakeGarbageCollected<cssvalue::CSSColorImageValue>(
-          CSSIdentifierValue::Create(CSSValueID::kTransparent))));
-  return *image;
+  static base::NoDestructor<Persistent<cssvalue::CSSColorImageValue>> image(
+      MakeGarbageCollected<cssvalue::CSSColorImageValue>(
+          CSSIdentifierValue::Create(CSSValueID::kTransparent)));
+  CHECK(IsMainThread());
+  return **image;
 }
 
 bool IsNoneValue(const CSSValue& value) {
@@ -144,6 +147,21 @@ StyleResolverState::~StyleResolverState() {
   animation_update_.Clear();
 }
 
+bool StyleResolverState::CanExposeSystemAccentColor() const {
+  return GetDocument().IsInWebAppScope() && GetDocument().IsInitialProfile();
+}
+
+ColorThemeInfo StyleResolverState::GetColorThemeInfo() const {
+  const mojom::blink::ColorScheme color_scheme =
+      StyleBuilder().UsedColorScheme();
+  return {
+      .color_provider = GetDocument().GetColorProviderForPainting(color_scheme),
+      .color_scheme = color_scheme,
+      .in_forced_colors = GetDocument().InForcedColorsMode(),
+      .accent_color = StyleBuilder().ResolveMirroredAccentColor(color_scheme),
+      .can_expose_system_accent_color = CanExposeSystemAccentColor()};
+}
+
 bool StyleResolverState::IsInheritedForUnset(
     const CSSProperty& property) const {
   return property.IsInherited() || IsForHighlight();
@@ -196,6 +214,12 @@ const ComputedStyle* StyleResolverState::CloneStyle() const {
 }
 
 void StyleResolverState::UpdateLengthConversionData() const {
+  if (!style_builder_) [[unlikely]] {
+    css_to_length_conversion_data_dirty_ = false;
+    element_style_resources_.UpdateLengthConversionData(
+        &css_to_length_conversion_data_);
+    return;
+  }
   css_to_length_conversion_data_ = CSSToLengthConversionData(
       *style_builder_, ParentStyle(), RootElementStyle(),
       GetDocument().GetStyleEngine().GetViewportSize(),
@@ -247,13 +271,16 @@ CSSToLengthConversionData StyleResolverState::UnzoomedLengthConversionData() {
 }
 
 Element* StyleResolverState::ContainerUnitContext() const {
-  // TODO(crbug.com/396016391): Always provide a StyleRecalcContext.
+  // StyleRecalcContext caches the closest ancestor size_container candidate.
+  // If that is not available, use the closest flat tree ancestor as the start
+  // candidate to search from.
   return style_recalc_context_ ? style_recalc_context_->size_container
                                : FlatTreeTraversal::ParentElement(GetElement());
 }
 
 AnchorEvaluator* StyleResolverState::GetAnchorEvaluator() const {
-  // TODO(crbug.com/396016391): Always provide a StyleRecalcContext.
+  // We only have a non-null AnchorEvaluator when we are in an interleaved style
+  // recalc for anchor positioning.
   return style_recalc_context_ ? style_recalc_context_->anchor_evaluator
                                : nullptr;
 }
@@ -279,6 +306,9 @@ void StyleResolverState::SetLayoutParentStyle(
 }
 
 void StyleResolverState::LoadPendingResources() {
+  if (!element_style_resources_.HasPendingResources()) {
+    return;
+  }
   if (pseudo_request_type_ == StyleRequest::kForComputedStyle ||
       (ParentStyle() && ParentStyle()->IsEnsuredInDisplayNone())) {
     return;
@@ -292,6 +322,13 @@ void StyleResolverState::LoadPendingResources() {
     Element* animating_element = GetAnimatingElement();
     if (!animating_element || !CSSAnimations::IsAnimatingDisplayProperty(
                                   animating_element->GetElementAnimations())) {
+      // A default-styled <area> has no box, but its cursor applies while
+      // hovering the region of the <img> that uses its <map>. Its other
+      // resources are never rendered.
+      if (IsA<HTMLAreaElement>(GetStyledElement())) {
+        element_style_resources_.LoadPendingCursorImages(
+            StyleBuilder(), CssToLengthConversionData());
+      }
       return;
     }
   }
@@ -539,8 +576,10 @@ void StyleResolverState::UpdateLineHeight() {
 }
 
 bool StyleResolverState::CanAffectAnimations() const {
+  const Element* animating_element = GetAnimatingElement();
   return conditionally_affects_animations_ ||
-         StyleBuilder().CanAffectAnimations();
+         StyleBuilder().CanAffectAnimations() ||
+         (animating_element && animating_element->HasAnimations());
 }
 
 void StyleResolverState::SetComputedStyleFlagsFromAuthorFlags(

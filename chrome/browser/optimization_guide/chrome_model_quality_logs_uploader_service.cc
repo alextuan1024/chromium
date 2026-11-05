@@ -15,11 +15,10 @@
 #include "components/metrics/persistent_system_profile.h"
 #include "components/metrics/version_utils.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/mqls_feature_registry.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features_controller.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/optimization_guide_buildflags.h"
@@ -122,11 +121,14 @@ void ChromeModelQualityLogsUploaderService::SetSystemMetadata(
         g_browser_process->GetApplicationLocale(), metrics::GetAppPackageName(),
         logging_metadata->mutable_system_profile());
   }
-  // Remove identifiers for privacy reasons.
+  // Remove identifiers for privacy reasons. The persistent system profile is
+  // copied from UMA, so it also includes the UMA session identifiers.
   logging_metadata->mutable_system_profile()->clear_client_uuid();
   logging_metadata->mutable_system_profile()
       ->mutable_cloned_install_info()
       ->clear_cloned_from_client_id();
+  metrics::MetricsLog::ClearSessionIdentifiers(
+      logging_metadata->mutable_system_profile());
 
   auto* variations_service = g_browser_process->variations_service();
   if (variations_service) {

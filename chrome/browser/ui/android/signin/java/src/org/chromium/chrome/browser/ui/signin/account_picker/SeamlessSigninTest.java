@@ -4,10 +4,15 @@
 
 package org.chromium.chrome.browser.ui.signin.account_picker;
 
-import static androidx.test.espresso.action.ViewActions.click;
+import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.swipeDown;
+import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
+import static androidx.test.espresso.intent.Intents.intended;
+import static androidx.test.espresso.intent.Intents.intending;
+import static androidx.test.espresso.intent.matcher.IntentMatchers.hasAction;
+import static androidx.test.espresso.intent.matcher.IntentMatchers.hasExtraWithKey;
+import static androidx.test.espresso.intent.matcher.IntentMatchers.hasPackage;
 import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
@@ -25,15 +30,23 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.base.test.transit.MoreViewMatchers.isDescendantOf;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.ui.test.util.MockitoHelper.doCallback;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
-import static org.chromium.ui.test.util.ViewUtils.waitForView;
+import static org.chromium.ui.test.util.ViewUtils.clickOnClickableSpan;
 
-import android.view.ViewGroup;
+import android.app.Activity;
+import android.app.Instrumentation;
+import android.content.Intent;
+import android.view.View;
 
+import androidx.annotation.IdRes;
+import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.test.espresso.Espresso;
+import androidx.test.espresso.intent.Intents;
 import androidx.test.filters.MediumTest;
 
+import org.hamcrest.Matcher;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -45,40 +58,59 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
+import org.chromium.base.FeatureOverrides;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.params.ParameterAnnotations.ClassParameter;
+import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
+import org.chromium.base.test.params.ParameterSet;
+import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.signin.services.AccountPreviewDataService;
 import org.chromium.chrome.browser.signin.services.SigninFlowTimestampsLogger.Event;
 import org.chromium.chrome.browser.signin.services.SigninFlowTimestampsLogger.FlowVariant;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.ui.signin.R;
-import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
 import org.chromium.chrome.test.util.browser.signin.SigninTestUtil;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.metrics.AccountConsistencyPromoAction;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.signin.metrics.SignoutReason;
 import org.chromium.components.signin.test.util.FakeIdentityManager;
 import org.chromium.components.signin.test.util.TestAccounts;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Tests for the seamless sign-in coordinator. */
-@RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+/**
+ * Tests for the seamless sign-in coordinator.
+ *
+ * <p>TODO(crbug.com/493130564): Revert to regular runner after
+ * MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS_PART2 launch.
+ */
+@RunWith(ParameterizedRunner.class)
+@UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
+@EnableFeatures(SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS)
 @DisableFeatures(ChromeFeatureList.ACCOUNT_PICKER_DIALOG)
 @Batch(Batch.PER_CLASS)
 public class SeamlessSigninTest {
+    @ClassParameter
+    private static final List<ParameterSet> sClassParameters =
+            Arrays.asList(
+                    new ParameterSet().value(false).name("withAccountManagerFacadeSource"),
+                    new ParameterSet().value(true).name("withIdentityManagerSource"));
+
     private static final String TEST_DOMAIN = "test.com";
     private static final String TIMESTAMP_MANAGEMENT_STATUS_LOADED =
             "Signin.SignIn.Timestamps." + FlowVariant.OTHER + "." + Event.MANAGEMENT_STATUS_LOADED;
@@ -102,7 +134,9 @@ public class SeamlessSigninTest {
     @Mock private SigninManager mSigninManagerMock;
     @Mock private AccountPreviewDataService mAccountPreviewDataServiceMock;
 
-    private final FakeIdentityManager mIdentityManager = new FakeIdentityManager();
+    private final FakeIdentityManager mIdentityManager =
+            mAccountManagerTestRule.getIdentityManager();
+    private final boolean mIsIdentityManagerSourceOfAccounts;
     private final AtomicReference<Boolean> mIsNextSigninSuccessful = new AtomicReference<>(true);
 
     private BottomSheetController mBottomSheetController;
@@ -110,11 +144,17 @@ public class SeamlessSigninTest {
     private SigninTestUtil.CustomDeviceLockActivityLauncher mDeviceLockActivityLauncher;
     private boolean mIsAccountManaged;
 
+    public SeamlessSigninTest(boolean isIdentityManagerSourceOfAccounts) {
+        mIsIdentityManagerSourceOfAccounts = isIdentityManagerSourceOfAccounts;
+    }
+
     @Before
     public void setUp() {
+        FeatureOverrides.overrideFlag(
+                SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS_PART2,
+                mIsIdentityManagerSourceOfAccounts);
         mActivityTestRule.startOnBlankPage();
         mAccountManagerTestRule.addAccount(TestAccounts.ACCOUNT1);
-        mIdentityManager.addOrUpdateExtendedAccountInfo(TestAccounts.ACCOUNT1);
         mAutoTestRule.setIsAutomotive(false);
 
         doCallback(
@@ -289,10 +329,34 @@ public class SeamlessSigninTest {
         createCoordinatorAndLaunchSigninFlow();
         waitForManagementNoticeSheet();
 
-        onViewWaiting(withId(R.id.account_picker_state_confirm_management)).perform(swipeDown());
+        waitForView(withId(R.id.account_picker_state_confirm_management))
+                .performViewAction(swipeDown());
 
         CriteriaHelper.pollUiThread(() -> !mBottomSheetController.isSheetOpen());
         verifySignInNeverStarted();
+        verify(mAccountPickerDelegateMock).onSignInCancel();
+        accountConsistencyHistogram.assertExpected();
+    }
+
+    @Test
+    @MediumTest
+    public void testManagedAccount_signInByAnotherFlow_dismissesBottomSheet() {
+        var accountConsistencyHistogram =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecords(
+                                "Signin.AccountConsistencyPromoAction",
+                                AccountConsistencyPromoAction.SHOWN,
+                                AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_SHOWN)
+                        .build();
+        mIsAccountManaged = true;
+        createCoordinatorAndLaunchSigninFlow();
+        waitForManagementNoticeSheet();
+
+        mIdentityManager.setPrimaryAccount(TestAccounts.ACCOUNT1);
+
+        CriteriaHelper.pollUiThread(() -> !mBottomSheetController.isSheetOpen());
+        verifySignInNeverStarted();
+        verify(mSigninManagerMock, never()).signOut(anyInt());
         verify(mAccountPickerDelegateMock).onSignInCancel();
         accountConsistencyHistogram.assertExpected();
     }
@@ -462,7 +526,7 @@ public class SeamlessSigninTest {
         createCoordinatorAndLaunchSigninFlow();
         waitForErrorSheet();
 
-        onViewWaiting(withId(R.id.account_picker_state_general_error)).perform(swipeDown());
+        waitForView(withId(R.id.account_picker_state_general_error)).performViewAction(swipeDown());
 
         CriteriaHelper.pollUiThread(() -> !mBottomSheetController.isSheetOpen());
         verifySigninFailed();
@@ -747,6 +811,111 @@ public class SeamlessSigninTest {
         verify(mAccountPickerDelegateMock).onAccountPickerDestroy();
     }
 
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testNewManagementNotice_acceptStartsSignin() {
+        var accountConsistencyHistogram =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecords(
+                                "Signin.AccountConsistencyPromoAction",
+                                AccountConsistencyPromoAction.SHOWN,
+                                AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_SHOWN,
+                                AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_ACCEPTED,
+                                AccountConsistencyPromoAction.SIGNED_IN_WITH_DEFAULT_ACCOUNT)
+                        .expectNoRecords(TIMESTAMP_SIGNIN_ABORTED)
+                        .build();
+        mIsAccountManaged = true;
+        createCoordinatorAndLaunchSigninFlow();
+        waitForNewManagementNotice();
+
+        clickDisclaimerButton(R.id.disclaimer_accept_button);
+
+        verifySignInCompleted();
+        accountConsistencyHistogram.assertExpected();
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testNewManagementNotice_cancelDismissesBottomSheet() {
+        var accountConsistencyHistogram =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecords(
+                                "Signin.AccountConsistencyPromoAction",
+                                AccountConsistencyPromoAction.SHOWN,
+                                AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_SHOWN,
+                                AccountConsistencyPromoAction.DISMISSED_BUTTON)
+                        .build();
+        mIsAccountManaged = true;
+        createCoordinatorAndLaunchSigninFlow();
+        waitForNewManagementNotice();
+
+        clickDisclaimerButton(R.id.disclaimer_cancel_button);
+
+        CriteriaHelper.pollUiThread(() -> !mBottomSheetController.isSheetOpen());
+        verifySignInNeverStarted();
+        verify(mAccountPickerDelegateMock).onSignInCancel();
+        accountConsistencyHistogram.assertExpected();
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testNewManagementNotice_backPressDismissesBottomSheet() {
+        var accountConsistencyHistogram =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecords(
+                                "Signin.AccountConsistencyPromoAction",
+                                AccountConsistencyPromoAction.SHOWN,
+                                AccountConsistencyPromoAction.CONFIRM_MANAGEMENT_SHOWN,
+                                AccountConsistencyPromoAction.DISMISSED_BACK)
+                        .build();
+        mIsAccountManaged = true;
+        createCoordinatorAndLaunchSigninFlow();
+        waitForNewManagementNotice();
+
+        Espresso.pressBack();
+
+        CriteriaHelper.pollUiThread(() -> !mBottomSheetController.isSheetOpen());
+        verifySignInNeverStarted();
+        verify(mAccountPickerDelegateMock).onSignInCancel();
+        accountConsistencyHistogram.assertExpected();
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testNewManagementNotice_learnMoreOpensInfoPage() {
+        mIsAccountManaged = true;
+        createCoordinatorAndLaunchSigninFlow();
+        waitForNewManagementNotice();
+
+        Intents.init();
+        try {
+            // Stub the intent so that no custom tab is actually opened on top of the test
+            // activity.
+            Matcher<Intent> customTabIntentMatcher =
+                    allOf(
+                            hasAction(Intent.ACTION_VIEW),
+                            hasPackage(mActivityTestRule.getActivity().getPackageName()),
+                            hasExtraWithKey(CustomTabsIntent.EXTRA_SESSION));
+            intending(customTabIntentMatcher)
+                    .respondWith(new Instrumentation.ActivityResult(Activity.RESULT_OK, null));
+
+            onView(withId(R.id.disclaimer_description)).perform(clickOnClickableSpan(0));
+
+            intended(customTabIntentMatcher);
+        } finally {
+            Intents.release();
+        }
+        // The management notice is still displayed, so the user can proceed after reading the
+        // info page.
+        waitForNewManagementNotice();
+        verifySignInNeverStarted();
+        verify(mAccountPickerDelegateMock, never()).onSignInCancel();
+    }
+
     private void assertBottomSheetNeverShown() {
         // View should never have been initialized
         assertNull(mCoordinator.getBottomSheetViewForTesting());
@@ -778,8 +947,7 @@ public class SeamlessSigninTest {
     }
 
     private void waitForManagementNoticeSheet() {
-        waitForView(
-                (ViewGroup) mCoordinator.getBottomSheetViewForTesting(),
+        waitForBottomSheetView(
                 allOf(
                         withId(R.id.account_picker_continue_as_button),
                         isDescendantOfA(withId(R.id.account_picker_state_confirm_management))));
@@ -789,51 +957,54 @@ public class SeamlessSigninTest {
                         .getActivity()
                         .getString(R.string.managed_signin_with_user_policy_subtitle, TEST_DOMAIN);
 
-        waitForView(
-                (ViewGroup) mCoordinator.getBottomSheetViewForTesting(),
+        waitForBottomSheetView(
                 allOf(
                         withId(R.id.account_picker_confirm_management_description),
-                        isDisplayed(),
                         withText(expectedPolicyText)));
     }
 
+    private void waitForNewManagementNotice() {
+        waitForBottomSheetView(withId(R.id.disclaimer_title));
+        waitForView(withId(R.id.disclaimer_accept_button));
+        waitForView(withId(R.id.disclaimer_cancel_button));
+        onView(withId(R.id.account_picker_confirm_management_description)).check(doesNotExist());
+    }
+
+    private void clickDisclaimerButton(@IdRes int buttonId) {
+        waitForView(withId(buttonId)).click();
+    }
+
     private void waitForSignInInProgressSheet() {
-        waitForView(
-                (ViewGroup) mCoordinator.getBottomSheetViewForTesting(),
+        waitForBottomSheetView(
                 allOf(
                         withId(R.id.account_picker_signin_spinner_view),
-                        isDescendantOfA(withId(R.id.account_picker_state_signin_in_progress)),
-                        isDisplayed()));
+                        isDescendantOfA(withId(R.id.account_picker_state_signin_in_progress))));
     }
 
     private void waitForErrorSheet() {
-        waitForView(
-                (ViewGroup) mCoordinator.getBottomSheetViewForTesting(),
-                allOf(withId(R.id.account_picker_general_error_title), isDisplayed()));
+        waitForBottomSheetView(withId(R.id.account_picker_general_error_title));
+    }
+
+    private void waitForBottomSheetView(Matcher<View> matcher) {
+        waitForView(matcher, isDescendantOf(mCoordinator.getBottomSheetViewForTesting()));
     }
 
     private void clickContinueButtonManagementNotice() {
-        onViewWaiting(
-                        allOf(
-                                withId(R.id.account_picker_continue_as_button),
-                                isDescendantOfA(
-                                        withId(R.id.account_picker_state_confirm_management)),
-                                isDisplayed()))
-                .perform(click());
+        waitForView(
+                        withId(R.id.account_picker_continue_as_button),
+                        isDescendantOfA(withId(R.id.account_picker_state_confirm_management)))
+                .click();
     }
 
     private void clickContinueButtonToTryAgainGeneralError() {
-        onViewWaiting(
-                        allOf(
-                                withId(R.id.account_picker_continue_as_button),
-                                isDescendantOfA(withId(R.id.account_picker_state_general_error)),
-                                isDisplayed()))
-                .perform(click());
+        waitForView(
+                        withId(R.id.account_picker_continue_as_button),
+                        isDescendantOfA(withId(R.id.account_picker_state_general_error)))
+                .click();
     }
 
     private void clickCancelButtonManagementNotice() {
-        onViewWaiting(allOf(withId(R.id.confirm_management_cancel_button), isDisplayed()))
-                .perform(click());
+        waitForView(withId(R.id.confirm_management_cancel_button)).click();
     }
 
     private void verifySignInCompleted() {

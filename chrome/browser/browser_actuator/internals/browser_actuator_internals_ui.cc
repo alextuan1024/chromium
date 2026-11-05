@@ -8,9 +8,11 @@
 
 #include "base/feature_list.h"
 #include "chrome/browser/browser_actuator/internals/browser_actuator_internals_ui_mojo_impl.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/browser_actuator_internals_resources.h"
 #include "chrome/grit/browser_actuator_internals_resources_map.h"
 #include "components/browser_actuator/public/features.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -25,7 +27,8 @@ BrowserActuatorInternalsUIConfig::~BrowserActuatorInternalsUIConfig() = default;
 
 bool BrowserActuatorInternalsUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
-  return base::FeatureList::IsEnabled(browser_actuator::kBrowserActuator) &&
+  return browser_context && !browser_context->IsOffTheRecord() &&
+         base::FeatureList::IsEnabled(browser_actuator::kBrowserActuator) &&
          base::FeatureList::IsEnabled(
              browser_actuator::kBrowserActuatorInternals);
 }
@@ -58,7 +61,7 @@ void BrowserActuatorInternalsUI::CreateUI(
     mojo::PendingReceiver<
         browser_actuator_internals::mojom::BrowserActuatorInternalsUI> ui) {
   mojo_impl_ = std::make_unique<BrowserActuatorInternalsUIMojoImpl>(
-      std::move(ui), std::move(page));
+      std::move(ui), std::move(page), Profile::FromWebUI(web_ui()));
 }
 
 }  // namespace browser_actuator

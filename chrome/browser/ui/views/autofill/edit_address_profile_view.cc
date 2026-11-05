@@ -15,7 +15,6 @@
 #include "chrome/browser/ui/autofill/edit_address_profile_dialog_controller.h"
 #include "chrome/browser/ui/autofill/edit_address_profile_view.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/views/autofill/address_editor_view.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "components/constrained_window/constrained_window_views.h"
@@ -91,8 +90,7 @@ std::unique_ptr<AutofillBubbleBase> ShowEditAddressProfileDialogView(
   tabs::TabInterface* tab_interface =
       tabs::TabInterface::GetFromContents(web_contents);
   auto widget =
-      tab_interface->GetTabFeatures()
-          ->tab_dialog_manager()
+      tabs::TabDialogManager::From(tab_interface)
           ->CreateAndShowDialog(
               dialog, std::make_unique<tabs::TabDialogManager::Params>());
   dialog->RequestFocus();
@@ -102,7 +100,7 @@ std::unique_ptr<AutofillBubbleBase> ShowEditAddressProfileDialogView(
 EditAddressProfileView::EditAddressProfileView(
     EditAddressProfileDialogController* controller)
     : controller_(controller) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
 
   // TODO(crbug.com/338254375): Remove the following line once this is the
   // default state for widgets.
@@ -140,7 +138,7 @@ EditAddressProfileView::~EditAddressProfileView() = default;
 
 void EditAddressProfileView::ShowForWebContents(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   auto address_editor_controller = std::make_unique<AddressEditorController>(
       controller_->GetProfileToEdit(),
       PersonalDataManagerFactory::GetForBrowserContext(

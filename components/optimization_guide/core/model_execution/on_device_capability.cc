@@ -69,11 +69,13 @@ std::optional<mojom::ModelUnavailableReason> AvailabilityFromEligibilityReason(
     case OnDeviceModelEligibilityReason::kFeatureExecutionNotEnabled:
     case OnDeviceModelEligibilityReason::kValidationFailed:
     case OnDeviceModelEligibilityReason::kModelNotEligible:
-    case OnDeviceModelEligibilityReason::kInsufficientDiskSpace:
-    case OnDeviceModelEligibilityReason::kInsufficientDiskSpaceForCaches:
     // This is returned if the device will never support a capability.
     case OnDeviceModelEligibilityReason::kModelAdaptationNotAvailable:
       return mojom::ModelUnavailableReason::kNotSupported;
+    // Transient errors.
+    case OnDeviceModelEligibilityReason::kInsufficientDiskSpace:
+    case OnDeviceModelEligibilityReason::kInsufficientDiskSpaceForCaches:
+      return mojom::ModelUnavailableReason::kTransientError;
     // Errors solved by request.
     case OnDeviceModelEligibilityReason::kNoOnDeviceFeatureUsed:
       return mojom::ModelUnavailableReason::kPendingUsage;
@@ -129,6 +131,8 @@ NotSupportedDetailedReasonFromEligibilityReason(
     case OnDeviceModelEligibilityReason::kModelToBeInstalled:
       CHECK_NE(AvailabilityFromEligibilityReason(reason).value(),
                mojom::ModelUnavailableReason::kNotSupported);
+      CHECK_NE(AvailabilityFromEligibilityReason(reason).value(),
+               mojom::ModelUnavailableReason::kTransientError);
       return std::nullopt;
   };
 }
@@ -152,6 +156,16 @@ OptimizationGuideModelStreamingExecutionResult::
     OptimizationGuideModelStreamingExecutionResult(
         OptimizationGuideModelStreamingExecutionResult&& src) = default;
 
+OnDeviceBaseModel OnDeviceSession::GetBaseModel() const {
+  return OnDeviceBaseModel::kUnknown;
+}
+
+void OnDeviceModelControl::Observer::OnModelInstalled(
+    OnDeviceBaseModel base_model) {}
+
+void OnDeviceModelControl::Observer::OnModelUninstalled(
+    OnDeviceBaseModel base_model) {}
+
 OnDeviceCapability::OnDeviceCapability() = default;
 OnDeviceCapability::~OnDeviceCapability() = default;
 
@@ -160,6 +174,10 @@ OnDeviceCapability::BindAndPassRemoteBroker() {
   mojo::PendingRemote<mojom::ModelBroker> remote;
   BindModelBroker(remote.InitWithNewPipeAndPassReceiver());
   return remote;
+}
+
+OnDeviceModelControl* OnDeviceCapability::GetModelControl() {
+  return nullptr;
 }
 
 std::unique_ptr<OnDeviceSession> OnDeviceCapability::StartSession(

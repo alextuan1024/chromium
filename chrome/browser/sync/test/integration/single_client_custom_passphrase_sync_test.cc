@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <string_view>
+
 #include "base/base64.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
@@ -42,6 +44,7 @@ using syncer::DataTypeSet;
 using syncer::GetEncryptedBookmarkEntitySpecifics;
 using syncer::InitCustomPassphraseCryptographerFromNigori;
 using syncer::KeyParamsForTesting;
+using syncer::KeystoreKeyParamsForTesting;
 using syncer::LoopbackServerEntity;
 using syncer::PassphraseType;
 using syncer::Pbkdf2PassphraseKeyParamsForTesting;
@@ -62,7 +65,8 @@ class CommittedBookmarkEntityNameObserver : public FakeServer::Observer {
     fake_server_->RemoveObserver(this);
   }
 
-  void OnCommit(DataTypeSet committed_data_types) override {
+  void OnCommit(std::string_view committer_cache_guid,
+                DataTypeSet committed_data_types) override {
     sync_pb::ClientToServerMessage message;
     fake_server_->GetLastCommitMessage(&message);
     for (const sync_pb::SyncEntity& entity : message.commit().entries()) {
@@ -95,10 +99,8 @@ class SingleClientCustomPassphraseSyncTest
  public:
   SingleClientCustomPassphraseSyncTest() : SyncTest(SINGLE_CLIENT) {
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitWithFeatures(
-          {syncer::kReplaceSyncPromosWithSignInPromos,
-           switches::kSyncEnableBookmarksInTransportMode},
-          {});
+      scoped_feature_list_.InitAndEnableFeature(
+          switches::kSyncEnableBookmarksInTransportMode);
     }
   }
 
@@ -383,7 +385,10 @@ IN_PROC_BROWSER_TEST_P(
   ASSERT_TRUE(SetupSync());
   const KeyParamsForTesting kKeyParams =
       ScryptPassphraseKeyParamsForTesting("hunter2");
-  SetNigoriInFakeServer(BuildCustomPassphraseNigoriSpecifics(kKeyParams),
+  SetNigoriInFakeServer(BuildCustomPassphraseNigoriSpecifics(
+                            kKeyParams,
+                            /*old_key_params=*/KeystoreKeyParamsForTesting(
+                                GetFakeServer()->GetKeystoreKeys().back())),
                         GetFakeServer());
   ASSERT_TRUE(WaitForPassphraseRequired());
   ASSERT_TRUE(GetSyncService()->GetUserSettings()->SetDecryptionPassphrase(

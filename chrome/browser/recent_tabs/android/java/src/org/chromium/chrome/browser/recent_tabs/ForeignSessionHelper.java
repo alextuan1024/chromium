@@ -7,13 +7,17 @@ package org.chromium.chrome.browser.recent_tabs;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.components.sync_device_info.FormFactor;
@@ -22,6 +26,7 @@ import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -31,7 +36,10 @@ import java.util.List;
  */
 @NullMarked
 public class ForeignSessionHelper {
-    private long mNativeForeignSessionHelper;
+    @JniType("::ForeignSessionHelper")
+    interface NativeForeignSessionHelper extends JniTypeToken {}
+
+    private final JniUniquePtr<NativeForeignSessionHelper> mNativeForeignSessionHelper;
 
     /** Callback interface for getting notified when foreign session sync is updated. */
     public interface ForeignSessionCallback {
@@ -105,15 +113,28 @@ public class ForeignSessionHelper {
         public final long timestamp;
         public final long lastActiveTime;
         public final int id;
+        public final boolean pinned;
 
         @VisibleForTesting
         public ForeignSessionTab(
                 GURL url, String title, long timestamp, long lastActiveTime, int id) {
+            this(url, title, timestamp, lastActiveTime, id, /* pinned= */ false);
+        }
+
+        @VisibleForTesting
+        public ForeignSessionTab(
+                GURL url,
+                String title,
+                long timestamp,
+                long lastActiveTime,
+                int id,
+                boolean pinned) {
             this.url = url;
             this.title = title;
             this.timestamp = timestamp;
             this.lastActiveTime = lastActiveTime;
             this.id = id;
+            this.pinned = pinned;
         }
     }
 
@@ -144,9 +165,10 @@ public class ForeignSessionHelper {
             @JniType("std::u16string") String title,
             long timestamp,
             long lastActiveTime,
-            int sessionId) {
+            int sessionId,
+            boolean pinned) {
         ForeignSessionTab tab =
-                new ForeignSessionTab(url, title, timestamp, lastActiveTime, sessionId);
+                new ForeignSessionTab(url, title, timestamp, lastActiveTime, sessionId, pinned);
         window.tabs.add(tab);
     }
 
@@ -162,9 +184,7 @@ public class ForeignSessionHelper {
      * Clean up the C++ side of this class. After the call, this class instance shouldn't be used.
      */
     public void destroy() {
-        assert mNativeForeignSessionHelper != 0;
-        ForeignSessionHelperJni.get().destroy(mNativeForeignSessionHelper);
-        mNativeForeignSessionHelper = 0;
+        mNativeForeignSessionHelper.destroy();
     }
 
     /**
@@ -190,12 +210,9 @@ public class ForeignSessionHelper {
 
     /**
      * @return The list of synced foreign sessions. If it fails to get them for some reason will
-     * return an empty list.
+     *     return an empty list.
      */
     public List<ForeignSession> getForeignSessions() {
-        if (!isTabSyncEnabled()) {
-            return Collections.emptyList();
-        }
         List<ForeignSession> result = new ArrayList<>();
         boolean received =
                 ForeignSessionHelperJni.get()
@@ -209,12 +226,9 @@ public class ForeignSessionHelper {
 
     /**
      * @return The list of synced foreign sessions that are from a mobile or tablet device. If it
-     * fails to get them for some reason will return an empty list.
+     *     fails to get them for some reason will return an empty list.
      */
     public List<ForeignSession> getMobileAndTabletForeignSessions() {
-        if (!isTabSyncEnabled()) {
-            return Collections.emptyList();
-        }
         List<ForeignSession> result = new ArrayList<>();
         boolean received =
                 ForeignSessionHelperJni.get()
@@ -280,19 +294,22 @@ public class ForeignSessionHelper {
 
     /**
      * Lazily instantiate a list of tabs as background tabs.
+     *
      * @param sessionTabs List of target tabs to open.
      * @param session Foreign session that holds the list of target tabs to open.
      * @param tabCreatorManager Tab creator manager to create a new foreground tab for tab restore.
-     * @return The number of tabs that were successfully restored.
+     * @return One entry per tab in {@code sessionTabs}, in the same order: the ID of the restored
+     *     local tab, or {@link Tab#INVALID_TAB_ID} if that tab was not restored.
      */
-    public int openForeignSessionTabsAsBackgroundTabs(
+    public @TabId int[] openForeignSessionTabsAsBackgroundTabs(
             List<ForeignSessionTab> sessionTabs,
             ForeignSession session,
             TabCreatorManager tabCreatorManager) {
+        @TabId int[] restoredTabIds = new int[sessionTabs.size()];
+        Arrays.fill(restoredTabIds, Tab.INVALID_TAB_ID);
         if (sessionTabs.isEmpty()) {
-            return 0;
+            return restoredTabIds;
         }
-        int[] tabIds = new int[sessionTabs.size()];
         Tab newForegroundTab =
                 tabCreatorManager
                         .getTabCreator(/* incognito= */ false)
@@ -300,54 +317,90 @@ public class ForeignSessionHelper {
                                 new LoadUrlParams(ContentUrlConstants.ABOUT_BLANK_URL),
                                 TabLaunchType.FROM_RESTORE_TABS_UI,
                                 /* parent= */ null);
-        if (newForegroundTab == null) return 0;
+        if (newForegroundTab == null) return restoredTabIds;
 
+        return restoreTabs(sessionTabs, session, newForegroundTab, /* allInBackground= */ false);
+    }
+
+    /**
+     * Restores a list of tabs as background tabs without a renderer and without changing the
+     * selected tab.
+     *
+     * @param sessionTabs List of target tabs to open.
+     * @param session Foreign session that holds the list of target tabs to open.
+     * @param anchorTab Existing tab whose tab model receives the restored tabs. The restored tabs
+     *     use it as their parent. It stays open; the caller owns it.
+     * @return One entry per tab in {@code sessionTabs}, in the same order: the ID of the restored
+     *     local tab, or {@link Tab#INVALID_TAB_ID} if that tab was not restored.
+     */
+    public @TabId int[] openForeignSessionTabsInBackground(
+            List<ForeignSessionTab> sessionTabs, ForeignSession session, Tab anchorTab) {
+        return restoreTabs(sessionTabs, session, anchorTab, /* allInBackground= */ true);
+    }
+
+    private @TabId int[] restoreTabs(
+            List<ForeignSessionTab> sessionTabs,
+            ForeignSession session,
+            Tab anchorTab,
+            boolean allInBackground) {
+        int[] sessionTabIds = new int[sessionTabs.size()];
         for (int i = 0; i < sessionTabs.size(); i++) {
-            ForeignSessionTab tab = sessionTabs.get(i);
-            tabIds[i] = tab.id;
-            RecordUserAction.record("MobileCrossDeviceTabJourney");
+            sessionTabIds[i] = sessionTabs.get(i).id;
         }
 
-        return ForeignSessionHelperJni.get()
-                .openForeignSessionTabsAsBackgroundTabs(
-                        mNativeForeignSessionHelper, newForegroundTab, tabIds, session.tag);
+        @TabId
+        int[] restoredTabIds =
+                ForeignSessionHelperJni.get()
+                        .openForeignSessionTabsAsBackgroundTabs(
+                                mNativeForeignSessionHelper,
+                                anchorTab,
+                                sessionTabIds,
+                                session.tag,
+                                allInBackground);
+        for (@TabId int tabId : restoredTabIds) {
+            if (tabId != Tab.INVALID_TAB_ID) {
+                RecordUserAction.record("MobileCrossDeviceTabJourney");
+            }
+        }
+        return restoredTabIds;
     }
 
     @NativeMethods
     interface Natives {
-        long init(@JniType("Profile*") Profile profile);
+        JniUniquePtr<NativeForeignSessionHelper> init(@JniType("Profile*") Profile profile);
 
-        void destroy(long nativeForeignSessionHelper);
+        boolean isTabSyncEnabled(JniPtr<NativeForeignSessionHelper> self);
 
-        boolean isTabSyncEnabled(long nativeForeignSessionHelper);
-
-        void triggerSessionSync(long nativeForeignSessionHelper);
+        void triggerSessionSync(JniPtr<NativeForeignSessionHelper> self);
 
         void setOnForeignSessionCallback(
-                long nativeForeignSessionHelper, ForeignSessionCallback callback);
+                JniPtr<NativeForeignSessionHelper> self, ForeignSessionCallback callback);
 
         boolean getForeignSessions(
-                long nativeForeignSessionHelper, List<ForeignSession> resultSessions);
+                JniPtr<NativeForeignSessionHelper> self, List<ForeignSession> resultSessions);
 
         boolean getMobileAndTabletForeignSessions(
-                long nativeForeignSessionHelper, List<ForeignSession> resultSessions);
+                JniPtr<NativeForeignSessionHelper> self, List<ForeignSession> resultSessions);
 
         boolean openForeignSessionTab(
-                long nativeForeignSessionHelper,
+                JniPtr<NativeForeignSessionHelper> self,
                 @JniType("TabAndroid*") Tab tab,
                 @JniType("std::string") String sessionTag,
                 int tabId,
                 int disposition);
 
         void deleteForeignSession(
-                long nativeForeignSessionHelper, @JniType("std::string") String sessionTag);
+                JniPtr<NativeForeignSessionHelper> self, @JniType("std::string") String sessionTag);
 
-        void setInvalidationsForSessionsEnabled(long nativeForeignSessionHelper, boolean enabled);
+        void setInvalidationsForSessionsEnabled(
+                JniPtr<NativeForeignSessionHelper> self, boolean enabled);
 
-        int openForeignSessionTabsAsBackgroundTabs(
-                long nativeForeignSessionHelper,
+        @JniType("std::vector<int32_t>")
+        int[] openForeignSessionTabsAsBackgroundTabs(
+                JniPtr<NativeForeignSessionHelper> self,
                 @JniType("TabAndroid*") Tab tab,
                 @JniType("std::vector<int32_t>") int[] tabIds,
-                @JniType("std::string") String sessionTag);
+                @JniType("std::string") String sessionTag,
+                boolean allInBackground);
     }
 }

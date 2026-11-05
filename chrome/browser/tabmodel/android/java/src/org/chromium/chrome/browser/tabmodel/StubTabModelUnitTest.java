@@ -4,16 +4,28 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.Mockito.mock;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.components.split_tabs.SplitTabId;
+import org.chromium.components.split_tabs.SplitTabLayout;
+import org.chromium.components.split_tabs.SplitTabVisualData;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /** Tests for {@link StubTabModel} to ensure all mutating methods are overridden. */
@@ -48,20 +60,17 @@ public class StubTabModelUnitTest {
                             "getOrderedMultiSelectedTabs",
                             "findFirstNonPinnedTabIndex",
                             "getPinnedTabsCount",
-                            "getNativeSessionIdForTesting",
+                            "getNativeSessionId",
                             "isMuted",
                             "getTabStripCollection",
-                            "isClosingAllTabs",
                             "getTabModel",
                             "getRepresentativeTabList",
                             "getIndividualTabAndGroupCount",
-                            "getCurrentRepresentativeTabIndex",
-                            "getCurrentRepresentativeTab",
                             "getRepresentativeTabAt",
                             "representativeIndexOf",
                             "getTabGroupCount",
                             "getTabCountForGroup",
-                            "tabGroupExists",
+                            "containsTabGroup",
                             "getRelatedTabList",
                             "getTabsInGroup",
                             "isTabInTabGroup",
@@ -73,20 +82,19 @@ public class StubTabModelUnitTest {
                             "getTabGroupColor",
                             "getTabGroupColorWithFallback",
                             "getTabGroupCollapsed",
+                            "getSplitTabData",
+                            "listSplits",
                             "isTabGroupHiding",
-                            "isTabModelRestored",
+                            "isTabStateInitialized",
                             "associateWithBrowserWindow",
                             "dissociateWithBrowserWindow",
-                            "addDelegateModelObserver",
                             "addIncognitoObserver",
                             "removeIncognitoObserver",
                             "addObserver",
                             "removeObserver",
                             "addTabGroupObserver",
                             "removeTabGroupObserver",
-                            "getCurrentTabSupplier",
                             "getNextTabPolicySupplier",
-                            "getTabCountSupplier",
                             "getTabByIdChecked",
                             "getNextTabIfClosed",
                             "commitAllTabClosures",
@@ -100,24 +108,17 @@ public class StubTabModelUnitTest {
                             "recordPinnedDuration",
                             "getActivityTypeForTesting",
                             "setTabGroupCollapsed",
-                            "willMergingCreateNewGroup",
                             "performUndoGroupOperation",
                             "undoGroupOperationExpired",
-                            "getValidPosition",
                             "setTabGroupTitle",
                             "deleteTabGroupTitle",
                             "setTabGroupColor",
-                            "deleteTabGroupColor",
-                            "deleteTabGroupCollapsed",
                             "getTabAtChecked",
                             "spliterator",
                             "forEach",
                             "destroy",
                             // Default methods in interface that delegate to throwing methods.
                             // They are safe to inherit because they will eventually throw.
-                            "pinTab",
-                            "createSingleTabGroup",
-                            "mergeTabsToGroup",
                             "mergeListOfTabsToGroup"));
 
     @Test
@@ -149,5 +150,81 @@ public class StubTabModelUnitTest {
                             + "Please override them to throw error(), or add them to the safe"
                             + " read allowlist in this test.");
         }
+    }
+
+    @Test
+    public void testSuppliers() {
+        StubTabModel stubTabModel = new StubTabModel(/* isIncognito= */ false, /* profile= */ null);
+        assertNull(stubTabModel.getCurrentTabSupplier().get());
+        assertEquals(Integer.valueOf(0), stubTabModel.getTabCountSupplier().get());
+    }
+
+    @Test
+    public void testCloseAllTabsIsNoOp() {
+        StubTabModel stubTabModel = new StubTabModel(/* isIncognito= */ false, /* profile= */ null);
+        TabClosureParams closeAllParams = TabClosureParams.closeAllTabs().build();
+
+        assertFalse(stubTabModel.closeTabs(closeAllParams));
+        stubTabModel.getTabRemover().closeTabs(closeAllParams, /* allowDialog= */ false);
+        stubTabModel
+                .getTabRemover()
+                .prepareCloseTabs(
+                        closeAllParams,
+                        /* allowDialog= */ false,
+                        /* listener= */ null,
+                        params -> fail("onPreparedCallback should not be invoked on StubTabModel"));
+        stubTabModel.getTabRemover().forceCloseTabs(closeAllParams);
+    }
+
+    @Test
+    public void testCloseNonAllTabsThrows() {
+        StubTabModel stubTabModel = new StubTabModel(/* isIncognito= */ true, /* profile= */ null);
+        Tab mockTab = mock(Tab.class);
+        TabClosureParams singleParams = TabClosureParams.closeTab(mockTab).build();
+        TabClosureParams multipleParams =
+                TabClosureParams.closeTabs(Collections.singletonList(mockTab)).build();
+
+        assertThrows(
+                UnsupportedOperationException.class, () -> stubTabModel.closeTabs(singleParams));
+        assertThrows(
+                UnsupportedOperationException.class, () -> stubTabModel.closeTabs(multipleParams));
+
+        TabRemover remover = stubTabModel.getTabRemover();
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> remover.closeTabs(singleParams, /* allowDialog= */ false));
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> remover.closeTabs(multipleParams, /* allowDialog= */ false));
+        assertThrows(
+                UnsupportedOperationException.class,
+                () ->
+                        remover.prepareCloseTabs(
+                                singleParams,
+                                /* allowDialog= */ false,
+                                /* listener= */ null,
+                                params -> {}));
+        assertThrows(
+                UnsupportedOperationException.class, () -> remover.forceCloseTabs(singleParams));
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> remover.removeTab(mockTab, /* allowDialog= */ false));
+    }
+
+    @Test
+    public void testSplitViewMethods() {
+        var stubTabModel = new StubTabModel(/* isIncognito= */ false, /* profile= */ null);
+        var firstTab = mock(Tab.class);
+        var secondTab = mock(Tab.class);
+        var tabs = List.of(firstTab, secondTab);
+        var splitTabVisualData =
+                new SplitTabVisualData(
+                        SplitTabLayout.SIDE_BY_SIDE, SplitTabVisualData.DEFAULT_SPLIT_RATIO);
+
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> stubTabModel.createSplit(tabs, splitTabVisualData));
+        assertNull(stubTabModel.getSplitTabData(SplitTabId.generateNew()));
+        assertTrue(stubTabModel.listSplits().isEmpty());
     }
 }

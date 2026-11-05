@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 
+#include "base/memory/raw_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
@@ -16,7 +17,7 @@
 #include "chrome/browser/bookmarks/bookmark_test_helpers.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
-#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
+#include "chrome/browser/page_load_metrics/chrome_navigation_initiator.h"
 #include "chrome/browser/preloading/bookmarkbar_preload/bookmarkbar_preload_pipeline_manager.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
@@ -28,15 +29,18 @@
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view_test_helper.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_context_menu.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/undo/bookmark_undo_service_factory.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/bookmarks/browser/bookmark_model.h"
+#include "components/bookmarks/common/bookmark_metrics.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
-#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
 #include "components/prefs/pref_service.h"
+#include "components/undo/bookmark_undo_service.h"
+#include "components/undo/undo_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
@@ -52,6 +56,7 @@
 #include "services/network/public/cpp/features.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/base/clipboard/test/test_clipboard.h"
+#include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/test/test_event.h"
@@ -195,17 +200,18 @@ class BookmarkBarNavigationTestBase : public BookmarkBarTestBase,
 
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override {
-    auto* navigation_userdata =
-        page_load_metrics::NavigationHandleUserData::GetForNavigationHandle(
+    // Note: The holder is consulted directly, not via
+    // `GetNavigationInitiator()`, so that only the navigations that a trigger
+    // attached an initiator to are collected.
+    auto* holder =
+        page_load_metrics::NavigationInitiatorHolder::GetForNavigationHandle(
             *navigation_handle);
-    if (navigation_userdata) {
-      bookmark_navigation_list_.push_back(
-          navigation_userdata->navigation_type());
+    if (holder) {
+      bookmark_navigation_list_.push_back(holder->initiator());
     }
   }
 
-  const std::vector<
-      page_load_metrics::NavigationHandleUserData::InitiatorLocation>&
+  const std::vector<page_load_metrics::NavigationInitiator>&
   bookmark_navigation_list() {
     return bookmark_navigation_list_;
   }
@@ -221,8 +227,7 @@ class BookmarkBarNavigationTestBase : public BookmarkBarTestBase,
   net::EmbeddedTestServer https_test_server_;
   net::EmbeddedTestServer http_test_server_;
   base::test::ScopedFeatureList scoped_feature_list_;
-  std::vector<page_load_metrics::NavigationHandleUserData::InitiatorLocation>
-      bookmark_navigation_list_;
+  std::vector<page_load_metrics::NavigationInitiator> bookmark_navigation_list_;
 };
 
 class BookmarkBarNavigationTest : public BookmarkBarNavigationTestBase {
@@ -497,11 +502,8 @@ class PreloadBookmarkBarNavigationTestBase
   }
 
   BookmarkBarPreloadPipelineManager* GetBookmarkBarPreloadPipelineManager() {
-    return browser()
-        ->GetTabStripModel()
-        ->GetActiveTab()
-        ->GetTabFeatures()
-        ->bookmarkbar_preload_pipeline_manager();
+    return BookmarkBarPreloadPipelineManager::From(
+        browser()->GetTabStripModel()->GetActiveTab());
   }
 
   void WaitForPrefetchCompleteOrFailed() {
@@ -632,7 +634,7 @@ IN_PROC_BROWSER_TEST_F(
         ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
     auto ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
+        content::test::GetPreloadingAttemptUkmMetrics());
     EXPECT_EQ(ukm_entries.size(), 1u);
 
     std::vector<UkmEntry> expected_entries = {
@@ -665,8 +667,7 @@ IN_PROC_BROWSER_TEST_F(
         test_ukm_recorder()->ExpectEntryMetric(
             entry,
             ukm::builders::PrerenderPageLoad::kNavigation_InitiatorLocationName,
-            static_cast<int>(
-                GetInitiatorLocation(ChromeInitiatorLocation::kBookmarkBar)));
+            chrome_navigation_initiator::kBookmarkBar.id());
         witness_bookmarkbar_ukm = true;
       }
     }
@@ -686,7 +687,7 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_EQ(bookmark_navigation_list().size(), 2u);
   for (int i = 0; i < 2; ++i) {
     EXPECT_EQ(bookmark_navigation_list()[i],
-              GetInitiatorLocation(ChromeInitiatorLocation::kBookmarkBar));
+              chrome_navigation_initiator::kBookmarkBar);
   }
   histogram_tester.ExpectTotalCount(
       "Bookmarks.BookmarkBar.PrerenderNavigationToActivation", 1);
@@ -715,7 +716,7 @@ IN_PROC_BROWSER_TEST_F(PrerenderBookmarkBarOnPressedNavigationTest,
         browser(), http_test_server()->GetURL("/empty.html")));
     auto attempt_ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
+        content::test::GetPreloadingAttemptUkmMetrics());
     EXPECT_EQ(attempt_ukm_entries.size(), 1u);
 
     UkmEntry expected_entry = ukm_entry_builder().BuildEntry(
@@ -824,7 +825,7 @@ IN_PROC_BROWSER_TEST_F(PrerenderBookmarkBarDisabledNavigationTest,
   ASSERT_EQ(bookmark_navigation_list().size(), 1u);
   for (int i = 0; i < 1; ++i) {
     EXPECT_EQ(bookmark_navigation_list()[i],
-              GetInitiatorLocation(ChromeInitiatorLocation::kBookmarkBar));
+              chrome_navigation_initiator::kBookmarkBar);
   }
   histogram_tester.ExpectTotalCount(
       "Bookmarks.BookmarkBar.PrerenderNavigationToActivation", 0);
@@ -1164,6 +1165,96 @@ IN_PROC_BROWSER_TEST_F(BookmarkBarTest, BookmarkFolderButtonHighlight) {
 
 IN_PROC_BROWSER_TEST_F(BookmarkBarTest, AppsPageShortcutHighlight) {
   TestContextMenuHighlight(GetAppsPageShortCut());
+}
+
+namespace {
+
+// A TestClipboard that holds on to ReadText() requests until the test
+// explicitly completes them, so tests can make changes while an async
+// clipboard read is pending.
+class DeferredReadTextClipboard : public ui::TestClipboard {
+ public:
+  bool HasPendingReadText() const { return !pending_callback_.is_null(); }
+
+  void CompletePendingReadText() {
+    CHECK(HasPendingReadText());
+    ui::TestClipboard::ReadText(pending_buffer_, pending_data_dst_,
+                                std::move(pending_callback_));
+  }
+
+  // ui::TestClipboard:
+  void ReadText(ui::ClipboardBuffer buffer,
+                const std::optional<ui::DataTransferEndpoint>& data_dst,
+                ReadTextCallback callback) const override {
+    pending_buffer_ = buffer;
+    pending_data_dst_ = data_dst;
+    pending_callback_ = std::move(callback);
+  }
+
+ private:
+  mutable ui::ClipboardBuffer pending_buffer_ = ui::ClipboardBuffer::kCopyPaste;
+  mutable std::optional<ui::DataTransferEndpoint> pending_data_dst_;
+  mutable ReadTextCallback pending_callback_;
+};
+
+class BookmarkBarContextMenuPasteCheckTest : public BookmarkBarTest {
+ public:
+  void SetUpOnMainThread() override {
+    BookmarkBarTest::SetUpOnMainThread();
+    // Replace the default TestClipboard with one that defers reads.
+    ui::Clipboard::DestroyClipboardForCurrentThread();
+    auto clipboard = std::make_unique<DeferredReadTextClipboard>();
+    clipboard_ = clipboard.get();
+    ui::Clipboard::SetClipboardForCurrentThread(std::move(clipboard));
+  }
+
+  void TearDownOnMainThread() override {
+    clipboard_ = nullptr;
+    BookmarkBarTest::TearDownOnMainThread();
+  }
+
+ protected:
+  raw_ptr<DeferredReadTextClipboard> clipboard_ = nullptr;
+};
+
+}  // namespace
+
+// Verifies that removing a bookmark folder while the context menu's async
+// paste check is pending does not show a menu for the removed folder.
+IN_PROC_BROWSER_TEST_F(BookmarkBarContextMenuPasteCheckTest,
+                       FolderRemovedDuringPasteCheck) {
+  CreateBookmarkFolder();
+  views::View* button = GetBookmarkButton(0);
+  ASSERT_TRUE(button);
+
+  gfx::Point point;
+  views::View::ConvertPointToScreen(button, &point);
+  bookmark_bar()->ShowContextMenuForViewImpl(button, point,
+                                             ui::mojom::MenuSourceType::kMouse);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return clipboard_->HasPendingReadText();
+  })) << "The context menu paste check did not reach the clipboard read.";
+
+  bookmarks::BookmarkModel* model =
+      BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
+  const bookmarks::BookmarkNode* folder =
+      model->bookmark_bar_node()->children()[0].get();
+  ASSERT_TRUE(folder->is_folder());
+
+  // Suspend undo tracking so the removed node is deleted immediately rather
+  // than kept alive by the undo stack.
+  UndoManager* undo_manager =
+      BookmarkUndoServiceFactory::GetForProfile(browser()->GetProfile())
+          ->undo_manager();
+  undo_manager->SuspendUndoTracking();
+  model->Remove(folder, bookmarks::metrics::BookmarkEditSource::kOther,
+                FROM_HERE);
+  undo_manager->ResumeUndoTracking();
+  RunScheduledLayouts();
+
+  clipboard_->CompletePendingReadText();
+
+  EXPECT_FALSE(views::MenuController::GetActiveInstance());
 }
 
 namespace {

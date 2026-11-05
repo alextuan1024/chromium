@@ -63,7 +63,6 @@
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 
 namespace blink {
 
@@ -240,6 +239,9 @@ void Notification::close() {
   }
 
   state_ = State::kClosed;
+  if (notification_id_.empty()) {
+    return;
+  }
 
   NotificationManager::From(GetExecutionContext())
       ->ClosePersistentNotification(notification_id_);

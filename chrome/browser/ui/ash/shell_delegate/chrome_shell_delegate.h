@@ -39,7 +39,6 @@ class ChromeShellDelegate : public ash::ShellDelegate,
   ~ChromeShellDelegate() override;
 
   // ash::ShellDelegate:
-  bool CanShowWindowForUser(const aura::Window* window) const override;
   std::unique_ptr<ash::CaptureModeDelegate> CreateCaptureModeDelegate(
       PrefService* local_state) const override;
   std::unique_ptr<ash::ClipboardHistoryControllerDelegate>
@@ -72,7 +71,7 @@ class ChromeShellDelegate : public ash::ShellDelegate,
       const override;
   std::unique_ptr<ash::ScannerDelegate> CreateScannerDelegate() const override;
   scoped_refptr<network::SharedURLLoaderFactory>
-  GetBrowserProcessUrlLoaderFactory() const override;
+  GetBrowserProcessUrlLoaderFactory() override;
   void OpenKeyboardShortcutHelpPage() const override;
   bool CanGoBack(gfx::NativeWindow window) const override;
   void SetTabScrubberEnabled(bool enabled) override;
@@ -93,6 +92,7 @@ class ChromeShellDelegate : public ash::ShellDelegate,
   int GetUiDevToolsPort() const override;
   bool IsLoggingRedirectDisabled() const override;
   base::FilePath GetPrimaryUserDownloadsFolder() const override;
+  base::FilePath CrackFileSystemUrl(const GURL& file_system_url) const override;
   void OpenFeedbackDialog(ShellDelegate::FeedbackSource source,
                           const std::string& description_template,
                           const std::string& category_tag) override;
@@ -108,7 +108,7 @@ class ChromeShellDelegate : public ash::ShellDelegate,
   const GURL& GetLastCommittedURLForWindowIfAny(aura::Window* window) override;
   version_info::Channel GetChannel() override;
   void ForceSkipWarningUserOnClose(
-      const std::vector<raw_ptr<aura::Window, VectorExperimental>>& windows)
+      const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>& windows)
       override;
   std::string GetVersionString() override;
   void OpenMultitaskingSettings() override;

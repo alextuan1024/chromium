@@ -153,6 +153,22 @@ public class TabGroupsPaneUnitTest {
     }
 
     @Test
+    public void testNotifyLoadHint_preview_showsList() {
+        mTabGroupsPane.notifyLoadHint(LoadHint.PREVIEW);
+
+        assertNotEquals(0, mTabGroupsPane.getRootView().getChildCount());
+    }
+
+    @Test
+    public void testNotifyLoadHint_previewThenHot_keepsOneList() {
+        mTabGroupsPane.notifyLoadHint(LoadHint.PREVIEW);
+
+        mTabGroupsPane.notifyLoadHint(LoadHint.HOT);
+
+        assertEquals(1, mTabGroupsPane.getRootView().getChildCount());
+    }
+
+    @Test
     public void testDestroy_WhileHot() {
         mTabGroupsPane.notifyLoadHint(LoadHint.HOT);
         mTabGroupsPane.destroy();
@@ -223,8 +239,8 @@ public class TabGroupsPaneUnitTest {
         assertNotNull(actionButtonData);
 
         assertTrue(actionButtonData.canPress());
-        View mockView = mock(View.class);
-        actionButtonData.onPress(mockView);
+        View view = new View(ApplicationProvider.getApplicationContext());
+        actionButtonData.onPress(view);
 
         verify(mTabCreator).createNewTab(any(), anyInt(), any());
         verify(mTabModel).createSingleTabGroup(mTab);

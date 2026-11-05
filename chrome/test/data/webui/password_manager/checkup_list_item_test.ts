@@ -8,8 +8,7 @@ import type {CheckupListItemElement} from 'chrome://password-manager/password_ma
 import {PasswordAutomaticChangeState, PasswordManagerImpl} from 'chrome://password-manager/password_manager.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
-import {isVisible} from 'chrome://webui-test/test_util.js';
+import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
 import {createCredentialGroup, makeInsecureCredential} from './test_util.js';
@@ -21,7 +20,7 @@ suite('CheckupListItemTest', function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     passwordManager = new TestPasswordManagerProxy();
     PasswordManagerImpl.setInstance(passwordManager);
-    return flushTasks();
+    return microtasksFinished();
   });
 
   async function createCheckupListItem(
@@ -44,7 +43,7 @@ suite('CheckupListItemTest', function() {
     element.group = group;
     element.passwordChangeState = passwordChangeState;
     document.body.appendChild(element);
-    await flushTasks();
+    await microtasksFinished();
     return element;
   }
 
@@ -54,13 +53,13 @@ suite('CheckupListItemTest', function() {
 
     // When inactive, the button should be visible/idle and no status text
     // should be shown.
-    const autoChangeButton = element.shadowRoot!.querySelector<HTMLElement>(
+    const autoChangeButton = element.shadowRoot.querySelector<HTMLElement>(
         '#autoChangePasswordButton');
     assertTrue(!!autoChangeButton);
     assertTrue(isVisible(autoChangeButton));
 
-    const statusTextSpan = element.shadowRoot!.querySelector<HTMLElement>(
-        'span.cr-secondary-text');
+    const statusTextSpan =
+        element.shadowRoot.querySelector<HTMLElement>('span.cr-secondary-text');
     assertFalse(isVisible(statusTextSpan));
   });
 
@@ -71,12 +70,12 @@ suite('CheckupListItemTest', function() {
             PasswordAutomaticChangeState.kChangingPassword);
 
         // Button should be hidden/not rendered since it's not idle.
-        const autoChangeButton = element.shadowRoot!.querySelector<HTMLElement>(
+        const autoChangeButton = element.shadowRoot.querySelector<HTMLElement>(
             '#autoChangePasswordButton');
         assertFalse(isVisible(autoChangeButton));
 
         // Status text should be shown.
-        const statusTextSpan = element.shadowRoot!.querySelector<HTMLElement>(
+        const statusTextSpan = element.shadowRoot.querySelector<HTMLElement>(
             'span.cr-secondary-text');
         assertTrue(!!statusTextSpan);
         assertTrue(isVisible(statusTextSpan));
@@ -95,12 +94,12 @@ suite('CheckupListItemTest', function() {
     const element = await createCheckupListItem(
         PasswordAutomaticChangeState.kPasswordChangedSuccessfully);
 
-    const autoChangeButton = element.shadowRoot!.querySelector<HTMLElement>(
+    const autoChangeButton = element.shadowRoot.querySelector<HTMLElement>(
         '#autoChangePasswordButton');
     assertFalse(isVisible(autoChangeButton));
 
-    const statusTextSpan = element.shadowRoot!.querySelector<HTMLElement>(
-        'span.cr-secondary-text');
+    const statusTextSpan =
+        element.shadowRoot.querySelector<HTMLElement>('span.cr-secondary-text');
     assertTrue(!!statusTextSpan);
     assertTrue(isVisible(statusTextSpan));
 
@@ -117,12 +116,12 @@ suite('CheckupListItemTest', function() {
     const element =
         await createCheckupListItem(PasswordAutomaticChangeState.kError);
 
-    const autoChangeButton = element.shadowRoot!.querySelector<HTMLElement>(
+    const autoChangeButton = element.shadowRoot.querySelector<HTMLElement>(
         '#autoChangePasswordButton');
     assertFalse(isVisible(autoChangeButton));
 
-    const statusTextSpan = element.shadowRoot!.querySelector<HTMLElement>(
-        'span.cr-secondary-text');
+    const statusTextSpan =
+        element.shadowRoot.querySelector<HTMLElement>('span.cr-secondary-text');
     assertTrue(!!statusTextSpan);
     assertTrue(isVisible(statusTextSpan));
 
@@ -145,13 +144,8 @@ suite('CheckupListItemTest', function() {
         ]) {
           const element = await createCheckupListItem(state);
 
-          const openInNew =
-              element.shadowRoot!.querySelector<HTMLElement>('#openInNew');
-          assertTrue(!!openInNew);
-          assertTrue(isVisible(openInNew));
-
-          const more = element.shadowRoot!.querySelector<HTMLElement>('#more');
-          assertFalse(isVisible(more));
+          assertTrue(isVisible(element.$.openInNew));
+          assertFalse(isVisible(element.$.more));
         }
       });
 
@@ -161,10 +155,7 @@ suite('CheckupListItemTest', function() {
         const element =
             await createCheckupListItem(PasswordAutomaticChangeState.kError);
 
-        const openInNew =
-            element.shadowRoot!.querySelector<HTMLElement>('#openInNew');
-        assertTrue(!!openInNew);
-        openInNew.click();
+        element.$.openInNew.click();
         assertEquals(1, passwordManager.getCallCount('openPasswordChangeTab'));
         const credentialId =
             passwordManager.getArgs('openPasswordChangeTab')[0];
@@ -180,13 +171,8 @@ suite('CheckupListItemTest', function() {
         ]) {
           const element = await createCheckupListItem(state);
 
-          const openInNew =
-              element.shadowRoot!.querySelector<HTMLElement>('#openInNew');
-          assertFalse(isVisible(openInNew));
-
-          const more = element.shadowRoot!.querySelector<HTMLElement>('#more');
-          assertTrue(!!more);
-          assertTrue(isVisible(more));
+          assertFalse(isVisible(element.$.openInNew));
+          assertTrue(isVisible(element.$.more));
         }
       });
 
@@ -197,7 +183,7 @@ suite('CheckupListItemTest', function() {
             PasswordAutomaticChangeState.kChangingPassword);
 
         const cancelButton =
-            element.shadowRoot!.querySelector<HTMLButtonElement>(
+            element.shadowRoot.querySelector<HTMLButtonElement>(
                 '#cancelAutoChangeButton');
         assertTrue(!!cancelButton);
         assertTrue(isVisible(cancelButton));
@@ -208,7 +194,7 @@ suite('CheckupListItemTest', function() {
         const credentialId = passwordManager.getArgs('stopPasswordChange')[0];
         assertEquals(element.item.id, credentialId);
 
-        await flushTasks();
+        await microtasksFinished();
         assertTrue(cancelButton.disabled);
       });
 
@@ -219,17 +205,17 @@ suite('CheckupListItemTest', function() {
             PasswordAutomaticChangeState.kChangingPassword);
 
         const cancelButton =
-            element.shadowRoot!.querySelector<HTMLButtonElement>(
+            element.shadowRoot.querySelector<HTMLButtonElement>(
                 '#cancelAutoChangeButton');
         assertTrue(!!cancelButton);
         cancelButton.click();
-        await flushTasks();
+        await microtasksFinished();
         assertTrue(cancelButton.disabled);
 
         // State changes to another active state.
         element.passwordChangeState =
             PasswordAutomaticChangeState.kConfirmingChangedPassword;
-        await flushTasks();
+        await microtasksFinished();
         assertFalse(cancelButton.disabled);
       });
 });

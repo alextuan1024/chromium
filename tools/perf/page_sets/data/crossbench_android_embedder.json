@@ -1,7 +1,7 @@
 {
     "archives": {
         "file://index.html": {
-            "DEFAULT": "crossbench_android_embedder_000.wprgo"
+            "DEFAULT": "crossbench_android_embedder_002.wprgo"
         }
     },
     "description": "Describes the Web Page Replay archives for the cb embedder benchmark.",

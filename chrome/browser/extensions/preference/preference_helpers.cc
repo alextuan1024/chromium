@@ -7,9 +7,11 @@
 #include <memory>
 #include <utility>
 
+#include "base/check.h"
 #include "base/json/json_writer.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_util.h"
+#include "chrome/browser/extensions/pref_mapping.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/prefs/pref_service.h"
 #include "extensions/browser/event_router.h"
@@ -17,6 +19,7 @@
 #include "extensions/browser/extension_prefs_helper.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/pref_transformer_interface.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
@@ -69,6 +72,13 @@ const char* GetLevelOfControl(Profile* profile,
   if (!pref->IsExtensionModifiable())
     return kNotControllable;
 
+  PrefTransformerInterface* transformer =
+      PrefMapping::GetInstance()->FindTransformerForBrowserPref(browser_pref);
+  CHECK(transformer);
+  if (!transformer->IsExtensionModifiable(profile)) {
+    return kNotControllable;
+  }
+
   if (ExtensionPrefsHelper::Get(profile)->DoesExtensionControlPref(
           extension_id, browser_pref, from_incognito_ptr)) {
     return kControlledByThisExtension;
@@ -101,8 +111,8 @@ void DispatchEventToExtensionsImpl(Profile* profile,
         extension->permissions_data()->HasAPIPermission(permission) &&
         (!incognito || util::IsIncognitoEnabled(extension->id(), profile))) {
       // Inject level of control key-value.
-      DCHECK(!args.empty());
-      DCHECK(args[0].is_dict());
+      CHECK(!args.empty(), base::NotFatalUntil::M161);
+      CHECK(args[0].is_dict(), base::NotFatalUntil::M161);
 
       std::string level_of_control =
           level_getter.Run(profile, extension->id(), browser_pref, incognito);
@@ -137,10 +147,10 @@ void DispatchEventToExtensionsImpl(Profile* profile,
         }
       }
 
-      base::ListValue args_copy = args.Clone();
+      auto event_args = base::MakeRefCounted<EventArgs>(args.Clone());
       auto event =
           std::make_unique<Event>(histogram_value, event_name,
-                                  std::move(args_copy), restrict_to_profile);
+                                  std::move(event_args), restrict_to_profile);
       router->DispatchEventToExtension(extension->id(), std::move(event));
     }
   }

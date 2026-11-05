@@ -9,6 +9,7 @@ import android.content.Context;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.CommandLine;
@@ -25,6 +26,9 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.policy.PolicyServiceFactory;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.prefs.LocalStatePrefs;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.minidump_uploader.util.NetworkPermissionUtil;
 import org.chromium.components.policy.PolicyMap;
 import org.chromium.components.policy.PolicyService;
@@ -223,7 +227,7 @@ public class PrivacyPreferencesManagerImpl implements PrivacyPreferencesManager 
 
     @Override
     public void setMetricsReportingEnabled(boolean enabled) {
-        PrivacyPreferencesManagerImplJni.get().setMetricsReportingEnabled(enabled);
+        LocalStatePrefs.get().setBoolean(Pref.METRICS_REPORTING_ENABLED, enabled);
         getCrashUploadPermittedSupplier().set(enabled);
     }
 
@@ -251,14 +255,24 @@ public class PrivacyPreferencesManagerImpl implements PrivacyPreferencesManager 
         mNativeInitialized = initialized;
     }
 
+    /**
+     * Returns whether {@code profile} is eligible for Universal Opt-Out, as determined by the
+     * native {@code UniversalOptOutService}. For signed-in users this uses the account capability
+     * signal (falling back to location history if the capability is unknown); for signed-out users
+     * this is based on recorded location history. Returns false if the service is unavailable.
+     */
+    public boolean isUniversalOptOutEligible(Profile profile) {
+        return PrivacyPreferencesManagerImplJni.get().isUniversalOptOutEligible(profile);
+    }
+
     @NativeMethods
     public interface Natives {
         boolean isMetricsReportingEnabled();
 
-        void setMetricsReportingEnabled(boolean enabled);
-
         boolean isMetricsReportingDisabledByPolicy();
 
         boolean shouldUseMetricsChoiceRestructure();
+
+        boolean isUniversalOptOutEligible(@JniType("Profile*") Profile profile);
     }
 }

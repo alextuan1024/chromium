@@ -5,6 +5,7 @@
 #include "chrome/browser/notifications/mac/notification_platform_bridge_mac.h"
 
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/number_formatting.h"
 #include "base/mac/mac_util.h"
 #include "base/memory/raw_ptr.h"
@@ -12,6 +13,7 @@
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/notifications/mac/notification_utils.h"
@@ -40,6 +42,10 @@ namespace {
 class MockNotificationDispatcherMac : public StubNotificationDispatcherMac {
  public:
   MOCK_METHOD(void, CloseAllNotifications, (), (override));
+  MOCK_METHOD(void,
+              CloseNotificationWithId,
+              (const MacNotificationIdentifier&),
+              (override));
 };
 
 }  // namespace
@@ -563,8 +569,7 @@ class NotificationPlatformBridgeMacTestWithNotificationAttribution
  public:
   NotificationPlatformBridgeMacTestWithNotificationAttribution() {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kAppShimNotificationAttribution,
-                              features::kUseAdHocSigningForWebAppShims},
+        /*enabled_features=*/{features::kAppShimNotificationAttribution},
         /*disabled_features=*/{});
   }
 
@@ -577,10 +582,13 @@ class NotificationPlatformBridgeMacTestWithNotificationAttribution
     // happens safely by default.
     AppShimRegistry::Get()->OnAppInstalledForProfile(installed_app_id_,
                                                      profile()->GetPath());
+    uninstalled_app_id_ = web_app::test::InstallDummyWebApp(
+        profile(), "Uninstalled Web App Name", GURL("https://uninstalled.com"));
   }
 
  protected:
   webapps::AppId installed_app_id_;
+  webapps::AppId uninstalled_app_id_;
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -588,6 +596,7 @@ class NotificationPlatformBridgeMacTestWithNotificationAttribution
 
 TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
        BannersAndAlertsAreAttributed) {
+  base::HistogramTester histogram_tester;
   std::unique_ptr<Notification> alert =
       CreateAlert("Title", "Context", "https://gmail.com", "Button 1", nullptr,
                   installed_app_id_);
@@ -606,6 +615,195 @@ TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
   auto* app_dispatcher = dispatcher_for_web_app(installed_app_id_);
   ASSERT_TRUE(app_dispatcher);
   EXPECT_EQ(2u, app_dispatcher->notifications().size());
+  histogram_tester.ExpectUniqueSample(
+      "Notifications.macOS.AttributionOutcome",
+      MacNotificationAttributionOutcome::kAttributedPermissionGranted, 2);
+}
+
+struct AttributionResultTestCase {
+  std::string test_name;
+  mac_notifications::mojom::DisplayNotificationResult display_result;
+  std::optional<AppShimRegistry::NotificationPermissionStatus>
+      cached_permission;
+  bool expect_fallback;
+  MacNotificationAttributionOutcome expected_outcome;
+};
+
+class NotificationPlatformBridgeMacAttributionResultTest
+    : public NotificationPlatformBridgeMacTestWithNotificationAttribution,
+      public testing::WithParamInterface<AttributionResultTestCase> {};
+
+TEST_P(NotificationPlatformBridgeMacAttributionResultTest,
+       DisplayHandlesNonSuccessResult) {
+  const AttributionResultTestCase& test_case = GetParam();
+  if (test_case.cached_permission.has_value()) {
+    AppShimRegistry::Get()->SaveNotificationPermissionStatusForApp(
+        installed_app_id_, *test_case.cached_permission);
+  }
+  base::HistogramTester histogram_tester;
+  std::unique_ptr<Notification> alert =
+      CreateAlert("Title", "Context", "https://gmail.com", "Button 1", nullptr,
+                  installed_app_id_);
+  std::unique_ptr<Notification> banner =
+      CreateBanner("Title", "Context", "https://gmail.com", "Button 1", nullptr,
+                   installed_app_id_);
+  std::unique_ptr<Notification> unattributed_banner = CreateBanner(
+      "Title", "Context", "https://gmail.com", "Button 1", nullptr);
+  auto bridge = std::make_unique<NotificationPlatformBridgeMac>(
+      CreateBannerDispatcher(), CreateAlertDispatcher(),
+      base::BindLambdaForTesting(
+          [&](const webapps::AppId& web_app_id)
+              -> std::unique_ptr<NotificationDispatcherMac> {
+            // CloseNotificationWithId must never be called on the web app
+            // dispatcher during Display() or fallback, as that could relaunch a
+            // disconnected AppShim.
+            auto dispatcher = std::make_unique<
+                testing::StrictMock<MockNotificationDispatcherMac>>();
+            dispatcher->set_display_result(test_case.display_result);
+            EXPECT_CALL(*dispatcher, CloseNotificationWithId).Times(0);
+            web_app_dispatchers_[web_app_id] = dispatcher->AsWeakPtr();
+            return dispatcher;
+          }));
+
+  // Seed an existing Chrome banner notification with `notification_id1` to
+  // verify it is replaced (on fallback) or closed (when not falling back).
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id1", *unattributed_banner),
+                  nullptr);
+  ASSERT_EQ(1u, banner_dispatcher()->notifications().size());
+
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id1", *banner), nullptr);
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id2", *alert), nullptr);
+
+  EXPECT_EQ(test_case.expect_fallback ? 1u : 0u,
+            banner_dispatcher()->notifications().size());
+  EXPECT_EQ(test_case.expect_fallback ? 1u : 0u,
+            alert_dispatcher()->notifications().size());
+  auto* app_dispatcher = dispatcher_for_web_app(installed_app_id_);
+  ASSERT_TRUE(app_dispatcher);
+  EXPECT_TRUE(app_dispatcher->notifications().empty());
+  histogram_tester.ExpectUniqueSample("Notifications.macOS.AttributionOutcome",
+                                      test_case.expected_outcome, 2);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    NotificationPlatformBridgeMacAttributionResultTest,
+    testing::Values(
+        AttributionResultTestCase{
+            "PermissionNotDetermined",
+            mac_notifications::mojom::DisplayNotificationResult::
+                kPermissionNotDetermined,
+            std::nullopt,
+            /*expect_fallback=*/true,
+            MacNotificationAttributionOutcome::kFallbackPermissionNotDetermined,
+        },
+        AttributionResultTestCase{
+            "PermissionPromptPending",
+            mac_notifications::mojom::DisplayNotificationResult::
+                kPermissionPromptPending,
+            std::nullopt,
+            /*expect_fallback=*/true,
+            MacNotificationAttributionOutcome::kFallbackPermissionPromptPending,
+        },
+        AttributionResultTestCase{
+            "PermissionImplicitlyDenied",
+            mac_notifications::mojom::DisplayNotificationResult::
+                kPermissionDenied,
+            AppShimRegistry::NotificationPermissionStatus::kImplicitlyDenied,
+            /*expect_fallback=*/true,
+            MacNotificationAttributionOutcome::
+                kFallbackPermissionImplicitlyDenied,
+        },
+        AttributionResultTestCase{
+            "PermissionExplicitlyDenied",
+            mac_notifications::mojom::DisplayNotificationResult::
+                kPermissionDenied,
+            AppShimRegistry::NotificationPermissionStatus::kExplicitlyDenied,
+            /*expect_fallback=*/false,
+            MacNotificationAttributionOutcome::kAttributedPermissionDenied,
+        },
+        AttributionResultTestCase{
+            "PermissionRevokedBeforeSync",
+            mac_notifications::mojom::DisplayNotificationResult::
+                kPermissionDenied,
+            AppShimRegistry::NotificationPermissionStatus::kGranted,
+            /*expect_fallback=*/false,
+            MacNotificationAttributionOutcome::kAttributedPermissionDenied,
+        },
+        AttributionResultTestCase{
+            "DeliveryFailed",
+            mac_notifications::mojom::DisplayNotificationResult::
+                kDeliveryFailed,
+            std::nullopt,
+            /*expect_fallback=*/false,
+            MacNotificationAttributionOutcome::kAttributedDeliveryFailed,
+        },
+        AttributionResultTestCase{
+            "ConnectionFailed",
+            mac_notifications::mojom::DisplayNotificationResult::
+                kConnectionFailed,
+            std::nullopt,
+            /*expect_fallback=*/true,
+            MacNotificationAttributionOutcome::kFallbackAppShimConnectionFailed,
+        },
+        AttributionResultTestCase{
+            "ConnectionFailedCachedGranted",
+            mac_notifications::mojom::DisplayNotificationResult::
+                kConnectionFailed,
+            AppShimRegistry::NotificationPermissionStatus::kGranted,
+            /*expect_fallback=*/true,
+            MacNotificationAttributionOutcome::kFallbackAppShimConnectionFailed,
+        },
+        AttributionResultTestCase{
+            "ConnectionFailedCachedExplicitlyDenied",
+            mac_notifications::mojom::DisplayNotificationResult::
+                kConnectionFailed,
+            AppShimRegistry::NotificationPermissionStatus::kExplicitlyDenied,
+            /*expect_fallback=*/false,
+            MacNotificationAttributionOutcome::
+                kAppShimConnectionFailedPermissionDenied,
+        }),
+    [](const testing::TestParamInfo<AttributionResultTestCase>& info) {
+      return info.param.test_name;
+    });
+
+TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
+       FallbackCancelledWhenClosedBeforeReply) {
+  NotificationDispatcherMac::DisplayNotificationCallback display_callback;
+  base::HistogramTester histogram_tester;
+  std::unique_ptr<Notification> banner =
+      CreateBanner("Title", "Context", "https://gmail.com", "Button 1", nullptr,
+                   installed_app_id_);
+  auto bridge = std::make_unique<NotificationPlatformBridgeMac>(
+      CreateBannerDispatcher(), CreateAlertDispatcher(),
+      base::BindLambdaForTesting(
+          [&](const webapps::AppId&)
+              -> std::unique_ptr<NotificationDispatcherMac> {
+            auto dispatcher = std::make_unique<StubNotificationDispatcherMac>();
+            dispatcher->set_on_display_callback(base::BindLambdaForTesting(
+                [&](NotificationDispatcherMac::DisplayNotificationCallback cb) {
+                  display_callback = std::move(cb);
+                }));
+            return dispatcher;
+          }));
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id1", *banner), nullptr);
+  ASSERT_TRUE(display_callback);
+
+  // Close the notification before the app shim replies.
+  bridge->Close(profile(), "notification_id1");
+  std::move(display_callback)
+      .Run(mac_notifications::mojom::DisplayNotificationResult::
+               kPermissionNotDetermined);
+
+  EXPECT_TRUE(banner_dispatcher()->notifications().empty());
+  EXPECT_TRUE(alert_dispatcher()->notifications().empty());
+  histogram_tester.ExpectUniqueSample(
+      "Notifications.macOS.AttributionOutcome",
+      MacNotificationAttributionOutcome::kFallbackPermissionNotDetermined, 1);
 }
 
 TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
@@ -691,6 +889,72 @@ TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
     EXPECT_TRUE(notifications.empty());
     EXPECT_TRUE(supports_synchronization);
   }
+  {
+    // If one dispatcher arm does not support synchronization (e.g. a dead app
+    // shim service), GetDisplayedForOrigin should still return live arms'
+    // notifications while reporting supports_synchronization = false.
+    alert_dispatcher()->set_supports_synchronization(false);
+    base::test::TestFuture<std::set<std::string>, bool> future;
+    bridge->GetDisplayedForOrigin(profile(), GURL("https://gmail.com"),
+                                  future.GetCallback());
+    auto [notifications, supports_synchronization] = future.Get();
+    EXPECT_EQ(1u, notifications.size());
+    EXPECT_FALSE(supports_synchronization);
+  }
+}
+
+TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
+       GetDisplayedForOriginIncludesPendingDisplay) {
+  NotificationDispatcherMac::DisplayNotificationCallback display_callback;
+  std::unique_ptr<Notification> banner =
+      CreateBanner("Title", "Context", "https://gmail.com", "Button 1", nullptr,
+                   installed_app_id_);
+  auto bridge = std::make_unique<NotificationPlatformBridgeMac>(
+      CreateBannerDispatcher(), CreateAlertDispatcher(),
+      base::BindLambdaForTesting(
+          [&](const webapps::AppId&)
+              -> std::unique_ptr<NotificationDispatcherMac> {
+            auto dispatcher = std::make_unique<StubNotificationDispatcherMac>();
+            dispatcher->set_on_display_callback(base::BindLambdaForTesting(
+                [&](NotificationDispatcherMac::DisplayNotificationCallback cb) {
+                  display_callback = std::move(cb);
+                }));
+            return dispatcher;
+          }));
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id1", *banner), nullptr);
+  ASSERT_TRUE(display_callback);
+
+  // While the attributed display is still in flight (neither in the app shim's
+  // delivered set nor yet fallen back to Chrome), GetDisplayedForOrigin for the
+  // matching origin should still include it.
+  {
+    base::test::TestFuture<std::set<std::string>, bool> future;
+    bridge->GetDisplayedForOrigin(profile(), GURL("https://gmail.com"),
+                                  future.GetCallback());
+    auto [notifications, supports_synchronization] = future.Get();
+    EXPECT_THAT(notifications, testing::ElementsAre("notification_id1"));
+    EXPECT_TRUE(supports_synchronization);
+  }
+  {
+    base::test::TestFuture<std::set<std::string>, bool> future;
+    bridge->GetDisplayedForOrigin(profile(), GURL("https://example.com"),
+                                  future.GetCallback());
+    auto [notifications, supports_synchronization] = future.Get();
+    EXPECT_TRUE(notifications.empty());
+    EXPECT_TRUE(supports_synchronization);
+  }
+
+  // Closing the in-flight notification removes it immediately.
+  bridge->Close(profile(), "notification_id1");
+  {
+    base::test::TestFuture<std::set<std::string>, bool> future;
+    bridge->GetDisplayedForOrigin(profile(), GURL("https://gmail.com"),
+                                  future.GetCallback());
+    auto [notifications, supports_synchronization] = future.Get();
+    EXPECT_TRUE(notifications.empty());
+    EXPECT_TRUE(supports_synchronization);
+  }
 }
 
 TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
@@ -713,4 +977,209 @@ TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
   }
 
   EXPECT_TRUE(dispatcher_for_web_app(installed_app_id_));
+}
+
+TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
+       GetDisplayedWithoutInstalledShim) {
+  auto bridge = std::make_unique<NotificationPlatformBridgeMac>(
+      CreateBannerDispatcher(), CreateAlertDispatcher(),
+      CreateWebAppDispatcherFactory());
+  EXPECT_FALSE(dispatcher_for_web_app(uninstalled_app_id_));
+
+  {
+    base::test::TestFuture<std::set<std::string>, bool> future;
+    bridge->GetDisplayedForOrigin(profile(), GURL("https://uninstalled.com"),
+                                  future.GetCallback());
+    auto [notifications, supports_synchronization] = future.Get();
+    EXPECT_EQ(0u, notifications.size());
+    EXPECT_TRUE(supports_synchronization);
+  }
+
+  EXPECT_FALSE(dispatcher_for_web_app(uninstalled_app_id_));
+}
+
+TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
+       CloseSkipsIncognitoAndEvictsUninstalledApp) {
+  TestingProfile* profile2 = profile_manager_.CreateTestingProfile("Profile2");
+  TestingProfile::Builder incognito_builder;
+  incognito_builder.SetPath(profile()->GetPath());
+  incognito_builder.SetProfileName(profile()->GetProfileUserName());
+  Profile* incognito_profile = incognito_builder.BuildIncognito(profile());
+
+  AppShimRegistry::Get()->OnAppInstalledForProfile(installed_app_id_,
+                                                   profile2->GetPath());
+  AppShimRegistry::Get()->OnAppInstalledForProfile(uninstalled_app_id_,
+                                                   profile()->GetPath());
+
+  std::map<webapps::AppId, MockNotificationDispatcherMac*> mock_dispatchers;
+  auto bridge = std::make_unique<NotificationPlatformBridgeMac>(
+      CreateBannerDispatcher(), CreateAlertDispatcher(),
+      base::BindLambdaForTesting(
+          [&](const webapps::AppId& web_app_id)
+              -> std::unique_ptr<NotificationDispatcherMac> {
+            auto dispatcher = std::make_unique<
+                testing::StrictMock<MockNotificationDispatcherMac>>();
+            mock_dispatchers[web_app_id] = dispatcher.get();
+            web_app_dispatchers_[web_app_id] = dispatcher->AsWeakPtr();
+            return dispatcher;
+          }));
+
+  std::unique_ptr<Notification> banner1 =
+      CreateBanner("Title", "Context", "https://gmail.com", "Button 1", nullptr,
+                   installed_app_id_);
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id1", *banner1), nullptr);
+  ASSERT_TRUE(dispatcher_for_web_app(installed_app_id_));
+
+  EXPECT_CALL(*mock_dispatchers[installed_app_id_], CloseNotificationWithId);
+  std::unique_ptr<Notification> banner2 =
+      CreateBanner("Title", "Context", "https://uninstalled.com", "Button 1",
+                   nullptr, uninstalled_app_id_);
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id2", *banner2), nullptr);
+  ASSERT_TRUE(dispatcher_for_web_app(uninstalled_app_id_));
+  testing::Mock::VerifyAndClearExpectations(
+      mock_dispatchers[installed_app_id_]);
+
+  // Incognito Display/Close must not touch either app dispatcher while keeping
+  // them alive.
+  EXPECT_CALL(*mock_dispatchers[installed_app_id_], CloseNotificationWithId)
+      .Times(0);
+  EXPECT_CALL(*mock_dispatchers[uninstalled_app_id_], CloseNotificationWithId)
+      .Times(0);
+  std::unique_ptr<Notification> incognito_banner =
+      CreateBanner("Title", "Context", "https://example.com", nullptr, nullptr);
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, incognito_profile,
+                  Notification("notification_id1", *incognito_banner), nullptr);
+  bridge->Close(incognito_profile, "notification_id1");
+  EXPECT_TRUE(dispatcher_for_web_app(installed_app_id_));
+  EXPECT_TRUE(dispatcher_for_web_app(uninstalled_app_id_));
+  testing::Mock::VerifyAndClearExpectations(
+      mock_dispatchers[installed_app_id_]);
+  testing::Mock::VerifyAndClearExpectations(
+      mock_dispatchers[uninstalled_app_id_]);
+
+  // Uninstalling `installed_app_id_` from `profile()` while it remains
+  // installed in loaded `profile2` must still allow `profile()` to close its
+  // prior notification in the shared shim.
+  AppShimRegistry::Get()->OnAppUninstalledForProfile(installed_app_id_,
+                                                     profile()->GetPath());
+  EXPECT_CALL(*mock_dispatchers[installed_app_id_], CloseNotificationWithId);
+  EXPECT_CALL(*mock_dispatchers[uninstalled_app_id_], CloseNotificationWithId);
+  bridge->Close(profile(), "notification_id1");
+  EXPECT_TRUE(dispatcher_for_web_app(installed_app_id_));
+  testing::Mock::VerifyAndClearExpectations(
+      mock_dispatchers[installed_app_id_]);
+  testing::Mock::VerifyAndClearExpectations(
+      mock_dispatchers[uninstalled_app_id_]);
+
+  // Once `installed_app_id_` is only registered in an unloaded profile path
+  // (no loaded regular profile left), Close() skips and evicts it while still
+  // closing on the surviving installed app (`uninstalled_app_id_`).
+  const base::FilePath unloaded_profile_path =
+      profile()->GetPath().DirName().AppendASCII("UnloadedProfile");
+  AppShimRegistry::Get()->OnAppInstalledForProfile(installed_app_id_,
+                                                   unloaded_profile_path);
+  AppShimRegistry::Get()->OnAppUninstalledForProfile(installed_app_id_,
+                                                     profile2->GetPath());
+  EXPECT_CALL(*mock_dispatchers[installed_app_id_], CloseNotificationWithId)
+      .Times(0);
+  EXPECT_CALL(*mock_dispatchers[uninstalled_app_id_], CloseNotificationWithId);
+  bridge->Close(profile(), "other_id");
+  EXPECT_FALSE(dispatcher_for_web_app(installed_app_id_));
+  EXPECT_TRUE(dispatcher_for_web_app(uninstalled_app_id_));
+}
+
+TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
+       CloseDefersEvictionWhileDisplayInFlight) {
+  NotificationDispatcherMac::DisplayNotificationCallback display_callback;
+  auto bridge = std::make_unique<NotificationPlatformBridgeMac>(
+      CreateBannerDispatcher(), CreateAlertDispatcher(),
+      base::BindLambdaForTesting(
+          [&](const webapps::AppId& web_app_id)
+              -> std::unique_ptr<NotificationDispatcherMac> {
+            auto dispatcher = std::make_unique<
+                testing::StrictMock<MockNotificationDispatcherMac>>();
+            dispatcher->set_on_display_callback(base::BindLambdaForTesting(
+                [&](NotificationDispatcherMac::DisplayNotificationCallback cb) {
+                  display_callback = std::move(cb);
+                }));
+            EXPECT_CALL(*dispatcher, CloseNotificationWithId).Times(0);
+            web_app_dispatchers_[web_app_id] = dispatcher->AsWeakPtr();
+            return dispatcher;
+          }));
+
+  std::unique_ptr<Notification> banner =
+      CreateBanner("Title", "Context", "https://gmail.com", "Button 1", nullptr,
+                   installed_app_id_);
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id1", *banner), nullptr);
+  ASSERT_TRUE(display_callback);
+
+  // Uninstall the app while its display IPC is still in flight; an unrelated
+  // close must defer eviction until the pending display completes.
+  AppShimRegistry::Get()->OnAppUninstalledForProfile(installed_app_id_,
+                                                     profile()->GetPath());
+  bridge->Close(profile(), "unrelated_id");
+  EXPECT_TRUE(dispatcher_for_web_app(installed_app_id_));
+
+  // Once the in-flight display fails to connect, it falls back to Chrome and a
+  // subsequent close evicts the now-idle dispatcher.
+  std::move(display_callback)
+      .Run(mac_notifications::mojom::DisplayNotificationResult::
+               kConnectionFailed);
+  EXPECT_EQ(1u, banner_dispatcher()->notifications().size());
+
+  bridge->Close(profile(), "another_unrelated_id");
+  EXPECT_FALSE(dispatcher_for_web_app(installed_app_id_));
+}
+
+TEST_F(NotificationPlatformBridgeMacTestWithNotificationAttribution,
+       DisplayServiceShutDownEvictsStaleAppDispatchers) {
+  TestingProfile* profile2 = profile_manager_.CreateTestingProfile("Profile2");
+  AppShimRegistry::Get()->OnAppInstalledForProfile(installed_app_id_,
+                                                   profile2->GetPath());
+  TestingProfile::Builder incognito_builder;
+  incognito_builder.SetPath(profile()->GetPath());
+  incognito_builder.SetProfileName(profile()->GetProfileUserName());
+  Profile* incognito_profile = incognito_builder.BuildIncognito(profile());
+
+  auto bridge = std::make_unique<NotificationPlatformBridgeMac>(
+      CreateBannerDispatcher(), CreateAlertDispatcher(),
+      CreateWebAppDispatcherFactory());
+  std::unique_ptr<Notification> banner =
+      CreateBanner("Title", "Context", "https://gmail.com", "Button 1", nullptr,
+                   installed_app_id_);
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id1", *banner), nullptr);
+  ASSERT_TRUE(dispatcher_for_web_app(installed_app_id_));
+
+  // During browser shutdown (`IsShuttingDown()`), Close() skips app
+  // dispatchers and DisplayServiceShutDown() clears them even when another
+  // loaded profile still has the app installed or an OTR profile shuts down.
+  TestingBrowserProcess::GetGlobal()->SetShuttingDown(true);
+  {
+    base::ScopedClosureRunner reset_shutting_down(base::BindOnce(
+        [] { TestingBrowserProcess::GetGlobal()->SetShuttingDown(false); }));
+    bridge->Close(profile(), "notification_id1");
+    EXPECT_EQ(
+        1u, dispatcher_for_web_app(installed_app_id_)->notifications().size());
+    bridge->DisplayServiceShutDown(incognito_profile);
+    EXPECT_FALSE(dispatcher_for_web_app(installed_app_id_));
+  }
+
+  // Outside browser shutdown, shutting down incognito or `profile2` keeps the
+  // dispatcher while `profile()` is still loaded with the app installed.
+  bridge->Display(NotificationHandler::Type::WEB_PERSISTENT, profile(),
+                  Notification("notification_id2", *banner), nullptr);
+  ASSERT_TRUE(dispatcher_for_web_app(installed_app_id_));
+  bridge->DisplayServiceShutDown(incognito_profile);
+  bridge->DisplayServiceShutDown(profile2);
+  ASSERT_TRUE(dispatcher_for_web_app(installed_app_id_));
+
+  // Once `profile2` is unloaded and `profile()` shuts down, no loaded regular
+  // profile has the app installed so the dispatcher is evicted.
+  profile_manager_.DeleteTestingProfile("Profile2");
+  bridge->DisplayServiceShutDown(profile());
+  EXPECT_FALSE(dispatcher_for_web_app(installed_app_id_));
 }

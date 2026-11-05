@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/color/native_chrome_color_mixer.h"
 
+#include <utility>
+
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "chrome/browser/themes/theme_properties.h"
@@ -64,6 +66,72 @@ ui::ColorTransform GetToolbarTopSeparatorColorTransform(
                        : base::BindRepeating(generator, std::move(transform));
 }
 
+// Lightens the native toolbar color until it contrasts with both the active
+// and inactive frame colors. The active tab uses the toolbar color, so this
+// keeps it distinguishable from the tab strip background. Many dark GTK themes
+// (e.g. Adwaita-dark, Yaru-dark) use nearly the same color for the headerbar
+// and the window background, and exactly the same color for an unfocused
+// headerbar. Light frames are left alone, since the toolbar usually can't get
+// any lighter than them.
+ui::ColorTransform EnsureToolbarContrastsWithFrame() {
+  const auto generator = [](SkColor input_color, const ui::ColorMixer& mixer) {
+    const SkColor toolbar =
+        mixer.GetResultColor(ui::kColorNativeToolbarBackground);
+    const SkColor frame_active = mixer.GetResultColor(ui::kColorFrameActive);
+    const SkColor frame_inactive =
+        mixer.GetResultColor(ui::kColorFrameInactive);
+    const SkColor lighter_frame =
+        color_utils::GetRelativeLuminance(frame_active) >
+                color_utils::GetRelativeLuminance(frame_inactive)
+            ? frame_active
+            : frame_inactive;
+    SkColor result_color = toolbar;
+    if (color_utils::IsDark(lighter_frame)) {
+      result_color = color_utils::BlendForMinContrast(
+                         toolbar, lighter_frame, SK_ColorWHITE,
+                         kMinimumActiveTabContrastRatio)
+                         .color;
+    }
+    DVLOG(2) << "ColorTransform EnsureToolbarContrastsWithFrame:"
+             << " Toolbar: " << ui::SkColorName(toolbar)
+             << " Lighter Frame: " << ui::SkColorName(lighter_frame)
+             << " Result Color: " << ui::SkColorName(result_color);
+    return result_color;
+  };
+  return base::BindRepeating(generator);
+}
+
+// If the GTK/Qt menu colors and Chrome's light/dark setting agree (both dark
+// or both light), keep Chrome's designated colors. If they are different,
+// use a color based on the GTK/Qt theme instead.
+//
+// When Chrome uses the GTK or Qt themes, the menu's background and text
+// colors come from that theme. However, other colors (cards, buttons, chips)
+// come from Chrome's light/dark settings. These colors usually match, but it
+// is not always the case.
+//
+// For example, a user can pick a dark GTK theme while having no light/dark
+// preference set in their settings. Chrome will treat this as light
+// (crrev.com/c/8429688). The menu would then show light cards with light text.
+ui::ColorTransform UseNativeIfPaletteMismatch(ui::ColorTransform native,
+                                              bool dark_mode) {
+  const auto generator = [](ui::ColorTransform native, bool dark_mode,
+                            SkColor input_color, const ui::ColorMixer& mixer) {
+    const bool toolkit_is_dark =
+        color_utils::IsDark(mixer.GetResultColor(ui::kColorMenuBackground));
+    const SkColor result_color = toolkit_is_dark == dark_mode
+                                     ? input_color
+                                     : native.Run(input_color, mixer);
+    DVLOG(2) << "ColorTransform UseNativeIfPaletteMismatch:"
+             << " Input Color: " << ui::SkColorName(input_color)
+             << " Toolkit Is Dark: " << toolkit_is_dark
+             << " Dark Mode: " << dark_mode
+             << " Result Color: " << ui::SkColorName(result_color);
+    return result_color;
+  };
+  return base::BindRepeating(generator, std::move(native), dark_mode);
+}
+
 }  // namespace
 
 void AddNativeChromeColorMixer(ui::ColorProvider* provider,
@@ -113,7 +181,12 @@ void AddNativeChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorTabStrokeFrameActive] = {kColorToolbarTopSeparatorFrameActive};
   mixer[kColorTabStrokeFrameInactive] = {
       kColorToolbarTopSeparatorFrameInactive};
-  mixer[kColorToolbar] = {ui::kColorNativeToolbarBackground};
+  mixer[kColorToolbar] = EnsureToolbarContrastsWithFrame();
+  // The active tab blends into the toolbar. The GTK/Qt theme suppliers also
+  // provide an active tab color, which is overridden here so it can't diverge
+  // from the adjusted toolbar color.
+  mixer[kColorTabBackgroundActiveFrameActive] = {kColorToolbar};
+  mixer[kColorTabBackgroundActiveFrameInactive] = {kColorToolbar};
   mixer[kColorToolbarButtonIcon] = {kColorToolbarText};
   mixer[kColorToolbarButtonIconHovered] = {kColorToolbarButtonIcon};
   mixer[kColorToolbarContentAreaSeparator] = {kColorToolbarSeparator};
@@ -124,8 +197,74 @@ void AddNativeChromeColorMixer(ui::ColorProvider* provider,
   const bool high_contrast =
       key.contrast_mode == ui::ColorProviderKey::ContrastMode::kHigh;
   mixer[kColorToolbarTopSeparatorFrameActive] =
-      GetToolbarTopSeparatorColorTransform(ui::kColorNativeToolbarBackground,
-                                           high_contrast);
+      GetToolbarTopSeparatorColorTransform(kColorToolbar, high_contrast);
   mixer[kColorToolbarTopSeparatorFrameInactive] = {
       kColorToolbarTopSeparatorFrameActive};
+
+  // App menu surfaces. Keep the upstream (Material) colors when the toolkit
+  // palette matches color_mode; otherwise derive them from the toolkit's
+  // menu colors. This way they stay legible with toolkit-provided menu text.
+  const bool dark_mode =
+      key.color_mode == ui::ColorProviderKey::ColorMode::kDark;
+  const auto native_if_mismatch = [dark_mode](ui::ColorTransform native) {
+    return UseNativeIfPaletteMismatch(std::move(native), dark_mode);
+  };
+  const ui::ColorTransform card_background = ui::AlphaBlend(
+      ui::kColorMenuItemForeground, ui::kColorMenuBackground, /*alpha=*/0x14);
+  const ui::ColorTransform subtle_hover =
+      ui::SetAlpha(ui::kColorMenuItemForeground, /*alpha=*/0x1F);
+
+  // Cards, rows and pills that sit on the menu background.
+  mixer[kColorAppMenuYourChromeBackground] =
+      native_if_mismatch(card_background);
+  mixer[kColorAppMenuYourChromeForeground] =
+      native_if_mismatch(ui::kColorMenuItemForeground);
+  mixer[kColorAppMenuToolsAndActionsBackground] =
+      native_if_mismatch(card_background);
+  mixer[kColorAppMenuToolsAndActionsForeground] =
+      native_if_mismatch(ui::kColorMenuItemForeground);
+  mixer[kColorAppMenuZoomButtonBackground] =
+      native_if_mismatch(card_background);
+  mixer[kColorAppMenuZoomButtonHover] = native_if_mismatch(subtle_hover);
+  mixer[kColorAppMenuZoomSeparator] =
+      native_if_mismatch(ui::kColorMenuSeparator);
+  mixer[ui::kColorAppMenuProfileRowBackground] =
+      native_if_mismatch(card_background);
+  mixer[ui::kColorMenuButtonBackground] = native_if_mismatch(card_background);
+  mixer[ui::kColorAppMenuUpgradeRowBackground] =
+      native_if_mismatch(card_background);
+  mixer[ui::kColorAppMenuUpgradeRowSubstringForeground] =
+      native_if_mismatch(ui::kColorMenuItemForeground);
+  // Hover for items inside cards and rows, in both the GlowUp and classic app
+  // menus. Matches the block and footer button hover.
+  mixer[ui::kColorAppMenuRowBackgroundHovered] =
+      native_if_mismatch(subtle_hover);
+
+  // Block buttons (New tab / New window / Incognito).
+  mixer[kColorAppMenuBlockButtonBackground] =
+      native_if_mismatch(ui::kColorMenuBackground);
+  mixer[kColorAppMenuBlockButtonBackgroundHovered] =
+      native_if_mismatch(subtle_hover);
+  mixer[kColorAppMenuBlockButtonBorder] =
+      native_if_mismatch(ui::kColorMenuSeparator);
+  mixer[kColorAppMenuBlockButtonForeground] =
+      native_if_mismatch(ui::kColorMenuItemForeground);
+
+  // Footer buttons (Settings / About / Exit).
+  mixer[kColorAppMenuFooterButtonForeground] =
+      native_if_mismatch(ui::kColorMenuItemForeground);
+  mixer[kColorAppMenuFooterButtonForegroundHovered] =
+      native_if_mismatch(ui::kColorMenuItemForeground);
+  mixer[kColorAppMenuFooterButtonBackgroundHovered] =
+      native_if_mismatch(subtle_hover);
+
+  // Chips use the toolkit's prominent (accent) pair, which the toolkit mixers
+  // already compute with a contrast guarantee. The hovered variants are
+  // derived from these IDs upstream, so they follow automatically.
+  mixer[kColorAppMenuChipBackground] =
+      native_if_mismatch(ui::kColorButtonBackgroundProminent);
+  mixer[kColorAppMenuChipForeground] =
+      native_if_mismatch(ui::kColorButtonForegroundProminent);
+  mixer[ui::kColorAppMenuProfileRowChipBackground] =
+      native_if_mismatch(ui::kColorButtonBackgroundProminent);
 }

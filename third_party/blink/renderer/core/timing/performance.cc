@@ -37,6 +37,8 @@
 #include "base/check_op.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
+#include "base/not_fatal_until.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/default_clock.h"
 #include "base/time/time.h"
@@ -160,11 +162,11 @@ PerformanceEntry::EntryType kDroppableEntryTypes[] = {
     PerformanceEntry::kEvent,
     PerformanceEntry::kLayoutShift,
     PerformanceEntry::kLargestContentfulPaint,
-    PerformanceEntry::kPaint,
     PerformanceEntry::kBackForwardCacheRestoration,
     PerformanceEntry::kSoftNavigation,
     PerformanceEntry::kInteractionContentfulPaint,
     PerformanceEntry::kScroll,
+    PerformanceEntry::kContainer,
 };
 
 void SwapEntries(PerformanceEntryVector& entries,
@@ -195,13 +197,8 @@ void NotifyParserResume(Document* document, bool is_resumed_by_user_timing) {
 PerformanceEntryVector MergePerformanceEntryVectors(
     const PerformanceEntryVector& first_entry_vector,
     const PerformanceEntryVector& second_entry_vector,
-    const AtomicString& maybe_name) {
-  PerformanceEntryVector merged_entries;
-  merged_entries.reserve(first_entry_vector.size() +
-                         second_entry_vector.size());
-
-  auto first_it = first_entry_vector.CheckedBegin();
-  auto first_end = first_entry_vector.CheckedEnd();
+    const AtomicString& maybe_name,
+    ExecutionContext* context) {
   auto second_it = second_entry_vector.CheckedBegin();
   auto second_end = second_entry_vector.CheckedEnd();
 
@@ -209,6 +206,23 @@ PerformanceEntryVector MergePerformanceEntryVectors(
   while (second_it != second_end && !CheckName(*second_it, maybe_name)) {
     ++second_it;
   }
+  if (second_it == second_end) {
+    return first_entry_vector;
+  }
+  if (context) {
+    if (const auto* counters = PerformanceEntry::GetUseCountersForType(
+            static_cast<PerformanceEntry::EntryType>(
+                (*second_it)->EntryTypeEnum()))) {
+      UseCounter::Count(context, counters->potentially_observed);
+    }
+  }
+
+  PerformanceEntryVector merged_entries;
+  merged_entries.reserve(first_entry_vector.size() +
+                         second_entry_vector.size());
+
+  auto first_it = first_entry_vector.CheckedBegin();
+  auto first_end = first_entry_vector.CheckedEnd();
 
   auto PushBackSecondIteratorAndAdvance = [&]() {
     DCHECK(CheckName(*second_it, maybe_name));
@@ -265,11 +279,6 @@ constexpr size_t kDefaultLongTaskBufferSize = 200;
 constexpr size_t kDefaultLongAnimationFrameBufferSize = 200;
 constexpr size_t kDefaultBackForwardCacheRestorationBufferSize = 200;
 constexpr size_t kDefaultSoftNavigationBufferSize = 50;
-// Paint timing entries is more than twice as much as the soft navigation buffer
-// size, as there can be 2 paint entries for each soft navigation, plus 2
-// entries for the initial navigation.
-constexpr size_t kDefaultPaintEntriesBufferSize =
-    kDefaultSoftNavigationBufferSize * 2 + 2;
 
 Performance::Performance(
     base::TimeTicks time_origin,
@@ -362,42 +371,48 @@ PerformanceEntryVector Performance::getEntries() {
 
 PerformanceEntryVector Performance::GetEntriesForCurrentFrame(
     const AtomicString& maybe_name) {
+  ExecutionContext* context = GetExecutionContext();
+  UseCounter::Count(context, WebFeature::kPerformanceGetEntriesWithoutType);
   PerformanceEntryVector entries;
 
   entries = MergePerformanceEntryVectors(entries, resource_timing_buffer_,
-                                         maybe_name);
-  if (first_input_timing_ && CheckName(first_input_timing_, maybe_name)) {
-    InsertEntryIntoSortedBuffer(entries, *first_input_timing_);
+                                         maybe_name, context);
+  if (first_input_timing_) {
+    entries = MergePerformanceEntryVectors(entries, {first_input_timing_},
+                                           maybe_name, context);
   }
   // This extra checking is needed when WorkerPerformance
   // calls this method.
-  if (navigation_timing_ && CheckName(navigation_timing_, maybe_name)) {
-    InsertEntryIntoSortedBuffer(entries, *navigation_timing_);
+  if (navigation_timing_) {
+    entries = MergePerformanceEntryVectors(entries, {navigation_timing_},
+                                           maybe_name, context);
   }
 
-  if (paint_entries_timing_.size()) {
-    entries = MergePerformanceEntryVectors(entries, paint_entries_timing_,
-                                           maybe_name);
+  if (first_paint_timing_) {
+    entries = MergePerformanceEntryVectors(entries, {first_paint_timing_},
+                                           maybe_name, context);
+  }
+  if (first_contentful_paint_timing_) {
+    entries = MergePerformanceEntryVectors(
+        entries, {first_contentful_paint_timing_}, maybe_name, context);
   }
 
   entries = MergePerformanceEntryVectors(
-      entries, back_forward_cache_restoration_buffer_, maybe_name);
+      entries, back_forward_cache_restoration_buffer_, maybe_name, context);
 
   if (soft_navigation_buffer_.size()) {
-    UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kSoftNavigationHeuristics);
     entries = MergePerformanceEntryVectors(entries, soft_navigation_buffer_,
-                                           maybe_name);
+                                           maybe_name, context);
   }
 
   if (long_animation_frame_buffer_.size()) {
     entries = MergePerformanceEntryVectors(
-        entries, long_animation_frame_buffer_, maybe_name);
+        entries, long_animation_frame_buffer_, maybe_name, context);
   }
 
   if (visibility_state_buffer_.size()) {
     entries = MergePerformanceEntryVectors(entries, visibility_state_buffer_,
-                                           maybe_name);
+                                           maybe_name, context);
   }
 
   // `user_timing_` is the largest in size, in order to keep
@@ -409,14 +424,14 @@ PerformanceEntryVector Performance::GetEntriesForCurrentFrame(
       // requesting them directly is much more efficient than getting the full
       // lists of marks and measures and then filtering during the merge.
       entries = MergePerformanceEntryVectors(
-          entries, user_timing_->GetMarks(maybe_name), g_null_atom);
+          entries, user_timing_->GetMarks(maybe_name), g_null_atom, context);
       entries = MergePerformanceEntryVectors(
-          entries, user_timing_->GetMeasures(maybe_name), g_null_atom);
+          entries, user_timing_->GetMeasures(maybe_name), g_null_atom, context);
     } else {
       entries = MergePerformanceEntryVectors(entries, user_timing_->GetMarks(),
-                                             g_null_atom);
+                                             g_null_atom, context);
       entries = MergePerformanceEntryVectors(
-          entries, user_timing_->GetMeasures(), g_null_atom);
+          entries, user_timing_->GetMeasures(), g_null_atom, context);
     }
   }
 
@@ -438,6 +453,8 @@ PerformanceEntryVector Performance::getEntriesByType(
 PerformanceEntryVector Performance::GetEntriesByTypeForCurrentFrame(
     const AtomicString& entry_type,
     const AtomicString& maybe_name) {
+  UseCounter::Count(GetExecutionContext(),
+                    WebFeature::kPerformanceGetEntriesWithType);
   PerformanceEntry::EntryType type =
       PerformanceEntry::ToEntryTypeEnum(entry_type);
   if (!PerformanceEntry::IsValidTimelineEntryType(type)) {
@@ -450,7 +467,14 @@ PerformanceEntryVector Performance::GetEntriesByTypeForCurrentFrame(
     }
     return empty_entries;
   }
-  return getEntriesByTypeInternal(type, maybe_name);
+  PerformanceEntryVector entries = getEntriesByTypeInternal(type, maybe_name);
+  if (const auto* counters = PerformanceEntry::GetUseCountersForType(type)) {
+    UseCounter::Count(GetExecutionContext(), counters->explicitly_requested);
+    if (!entries.empty()) {
+      UseCounter::Count(GetExecutionContext(), counters->observed);
+    }
+  }
+  return entries;
 }
 
 PerformanceEntryVector Performance::getEntriesByTypeInternal(
@@ -464,41 +488,31 @@ PerformanceEntryVector Performance::getEntriesByTypeInternal(
   bool already_filtered_by_name = false;
   switch (type) {
     case PerformanceEntry::kResource:
-      UseCounter::Count(GetExecutionContext(), WebFeature::kResourceTiming);
       entries = &resource_timing_buffer_;
       break;
 
     case PerformanceEntry::kContainer:
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kContainerTimingExplicitlyRequested);
       entries = &container_timing_buffer_;
       break;
 
     case PerformanceEntry::kElement:
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kElementTimingExplicitlyRequested);
       entries = &element_timing_buffer_;
       break;
 
     case PerformanceEntry::kEvent:
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kEventTimingExplicitlyRequested);
       entries = &event_timing_buffer_;
       break;
 
     case PerformanceEntry::kFirstInput:
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kEventTimingExplicitlyRequested);
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kEventTimingFirstInputExplicitlyRequested);
-      if (first_input_timing_)
+      if (first_input_timing_) {
         entries_storage = {first_input_timing_};
+      }
       break;
 
     case PerformanceEntry::kNavigation:
-      UseCounter::Count(GetExecutionContext(), WebFeature::kNavigationTimingL2);
-      if (navigation_timing_)
+      if (navigation_timing_) {
         entries_storage = {navigation_timing_};
+      }
       break;
 
     case PerformanceEntry::kMark:
@@ -524,9 +538,15 @@ PerformanceEntryVector Performance::getEntriesByTypeInternal(
       break;
 
     case PerformanceEntry::kPaint: {
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kPaintTimingRequested);
-      entries = &paint_entries_timing_;
+      // TODO(crbug.com/576982828): Ensure FP and FCP presentation callbacks
+      // cannot produce FP.startTime > FCP.startTime, so that returning FP
+      // before FCP preserves startTime order.
+      if (first_paint_timing_) {
+        entries_storage.push_back(first_paint_timing_);
+      }
+      if (first_contentful_paint_timing_) {
+        entries_storage.push_back(first_contentful_paint_timing_);
+      }
       break;
     }
 
@@ -566,17 +586,11 @@ PerformanceEntryVector Performance::getEntriesByTypeInternal(
       break;
 
     case PerformanceEntry::kSoftNavigation:
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kSoftNavigationHeuristics);
-      UseCounter::Count(GetExecutionContext(),
-                        WebFeature::kSoftNavigationExplicitlyRequested);
       entries = &soft_navigation_buffer_;
       break;
 
     case PerformanceEntry::kLongAnimationFrame:
-        UseCounter::Count(GetExecutionContext(),
-                          WebFeature::kLongAnimationFrameRequested);
-        entries = &long_animation_frame_buffer_;
+      entries = &long_animation_frame_buffer_;
       break;
 
     // Conditional user timing entries are included in other relevant
@@ -667,8 +681,9 @@ void Performance::AddResourceTiming(mojom::blink::ResourceTimingInfoPtr info,
 
 // Called after loadEventEnd happens.
 void Performance::NotifyNavigationTimingToObservers() {
-  if (navigation_timing_)
+  if (navigation_timing_) {
     NotifyObserversOfEntry(*navigation_timing_);
+  }
 }
 
 bool Performance::IsContainerTimingBufferFull() const {
@@ -872,8 +887,9 @@ void Performance::AddBackForwardCacheRestoration(
 }
 
 UserTiming& Performance::GetUserTiming() {
-  if (!user_timing_)
+  if (!user_timing_) {
     user_timing_ = MakeGarbageCollected<UserTiming>(*this);
+  }
   return *user_timing_;
 }
 
@@ -881,20 +897,18 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
                                    const AtomicString& mark_name,
                                    PerformanceMarkOptions* mark_options,
                                    ExceptionState& exception_state) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_fully_loaded,
-                                  ("mark_fully_loaded"));
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_fully_visible,
-                                  ("mark_fully_visible"));
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_interactive,
-                                  ("mark_interactive"));
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_feature_usage,
-                                  ("mark_feature_usage"));
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      const AtomicString, mark_parser_blocking,
-      (blink::features::kHTMLParserYieldEventNameForPause.Get().c_str()));
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      const AtomicString, mark_parser_restart,
-      (features::kHTMLParserYieldEventNameForResume.Get().c_str()));
+  static const base::NoDestructor<AtomicString> mark_fully_loaded(
+      AtomicString::FromLiteral<"mark_fully_loaded">());
+  static const base::NoDestructor<AtomicString> mark_fully_visible(
+      AtomicString::FromLiteral<"mark_fully_visible">());
+  static const base::NoDestructor<AtomicString> mark_interactive(
+      AtomicString::FromLiteral<"mark_interactive">());
+  static const base::NoDestructor<AtomicString> mark_feature_usage(
+      AtomicString::FromLiteral<"mark_feature_usage">());
+  static const base::NoDestructor<AtomicString> mark_parser_blocking(
+      blink::features::kHTMLParserYieldEventNameForPause.Get().c_str());
+  static const base::NoDestructor<AtomicString> mark_parser_restart(
+      features::kHTMLParserYieldEventNameForResume.Get().c_str());
   bool has_start_time = mark_options && mark_options->hasStartTime();
   if (has_start_time || (mark_options && mark_options->hasDetail())) {
     UseCounter::Count(GetExecutionContext(), WebFeature::kUserTimingL3);
@@ -906,7 +920,7 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
         *performance_mark);
     GetUserTiming().AddMarkToPerformanceTimeline(*performance_mark,
                                                  mark_options);
-    if (mark_name == mark_fully_loaded) {
+    if (mark_name == *mark_fully_loaded) {
       if (LocalDOMWindow* window = LocalDOMWindow::From(script_state)) {
         window->GetFrame()
             ->Loader()
@@ -915,7 +929,7 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
             .SetUserTimingMarkFullyLoaded(
                 base::Milliseconds(performance_mark->startTime()));
       }
-    } else if (mark_name == mark_fully_visible) {
+    } else if (mark_name == *mark_fully_visible) {
       if (LocalDOMWindow* window = LocalDOMWindow::From(script_state)) {
         window->GetFrame()
             ->Loader()
@@ -924,7 +938,7 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
             .SetUserTimingMarkFullyVisible(
                 base::Milliseconds(performance_mark->startTime()));
       }
-    } else if (mark_name == mark_interactive) {
+    } else if (mark_name == *mark_interactive) {
       if (LocalDOMWindow* window = LocalDOMWindow::From(script_state)) {
         window->GetFrame()
             ->Loader()
@@ -933,7 +947,7 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
             .SetUserTimingMarkInteractive(
                 base::Milliseconds(performance_mark->startTime()));
       }
-    } else if (mark_name == mark_feature_usage && mark_options->hasDetail()) {
+    } else if (mark_name == *mark_feature_usage && mark_options->hasDetail()) {
       if (RuntimeEnabledFeatures::PerformanceMarkFeatureUsageEnabled()) {
         ProcessUserFeatureMark(mark_options);
       }
@@ -974,16 +988,16 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
     }
 
     if (RuntimeEnabledFeatures::HTMLParserYieldByUserTimingEnabled() &&
-        !mark_parser_blocking.empty() && !mark_parser_restart.empty()) {
-      DCHECK_NE(mark_parser_blocking, "");
-      DCHECK_NE(mark_parser_restart, "");
+        !mark_parser_blocking->empty() && !mark_parser_restart->empty()) {
+      DCHECK_NE(*mark_parser_blocking, "");
+      DCHECK_NE(*mark_parser_restart, "");
       static const size_t timeout =
           blink::features::kHTMLParserYieldTimeoutInMs.Get();
       LocalDOMWindow* window = LocalDOMWindow::From(script_state);
       if (window && window->GetFrame() &&
           window->GetFrame()->IsOutermostMainFrame()) {
         Document* document = window->GetFrame()->GetDocument();
-        if (mark_name == mark_parser_blocking) {
+        if (mark_name == *mark_parser_blocking) {
           base::UmaHistogramBoolean(
               kParserPausingCalledAfterResumimg,
               parser_yield_state_ == ParserYieldState::kResumed);
@@ -1002,7 +1016,7 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
                 BindOnce(&NotifyParserResume, WrapPersistent(document), false),
                 base::Milliseconds(timeout));
           }
-        } else if (mark_name == mark_parser_restart) {
+        } else if (mark_name == *mark_parser_restart) {
           base::UmaHistogramBoolean(
               kParserResumingCalledBeforePausing,
               parser_yield_state_ != ParserYieldState::kPaused);
@@ -1079,7 +1093,7 @@ PerformanceMeasure* Performance::measure(ScriptState* script_state,
                                          ExceptionState& exception_state) {
   // When |startOrOptions| is not provided, it's assumed to be an empty
   // dictionary.
-  return MeasureInternal(script_state, measure_name, nullptr, std::nullopt,
+  return MeasureInternal(script_state, measure_name, nullptr, String(),
                          exception_state);
 }
 
@@ -1088,8 +1102,8 @@ PerformanceMeasure* Performance::measure(
     const AtomicString& measure_name,
     const V8UnionPerformanceMeasureOptionsOrString* start_or_options,
     ExceptionState& exception_state) {
-  return MeasureInternal(script_state, measure_name, start_or_options,
-                         std::nullopt, exception_state);
+  return MeasureInternal(script_state, measure_name, start_or_options, String(),
+                         exception_state);
 }
 
 PerformanceMeasure* Performance::measure(
@@ -1098,8 +1112,8 @@ PerformanceMeasure* Performance::measure(
     const V8UnionPerformanceMeasureOptionsOrString* start_or_options,
     const String& end,
     ExceptionState& exception_state) {
-  return MeasureInternal(script_state, measure_name, start_or_options,
-                         std::optional<String>(end), exception_state);
+  return MeasureInternal(script_state, measure_name, start_or_options, end,
+                         exception_state);
 }
 
 // |MeasureInternal| exists to unify the arguments from different
@@ -1116,13 +1130,13 @@ PerformanceMeasure* Performance::measure(
 //  - If an options dictionary contains neither a 'start' nor an 'end' field.
 //  - If an options dictionary contains all of 'start', 'duration' and 'end'.
 //
-// |end_mark| will be std::nullopt unless the `performance.measure()` overload
+// |end_mark| will be a null string unless the `performance.measure()` overload
 // specified an end mark.
 PerformanceMeasure* Performance::MeasureInternal(
     ScriptState* script_state,
     const AtomicString& measure_name,
     const V8UnionPerformanceMeasureOptionsOrString* start_or_options,
-    std::optional<String> end_mark,
+    const String& end_mark,
     ExceptionState& exception_state) {
   // An empty option is treated with no difference as null, undefined.
   if (start_or_options && start_or_options->IsPerformanceMeasureOptions() &&
@@ -1130,7 +1144,7 @@ PerformanceMeasure* Performance::MeasureInternal(
           *start_or_options->GetAsPerformanceMeasureOptions())) {
     UseCounter::Count(GetExecutionContext(), WebFeature::kUserTimingL3);
     // measure("name", { start, end }, *)
-    if (end_mark) {
+    if (!end_mark.IsNull()) {
       exception_state.ThrowTypeError(
           "If a non-empty PerformanceMeasureOptions object was passed, "
           "|end_mark| must not be passed.");
@@ -1175,8 +1189,8 @@ PerformanceMeasure* Performance::MeasureInternal(
   // We let |end_mark| behave the same whether it's empty, undefined or null
   // in JS, as long as |end_mark| is null in C++.
   V8UnionDoubleOrString* end = nullptr;
-  if (end_mark) {
-    end = MakeGarbageCollected<V8UnionDoubleOrString>(*end_mark);
+  if (!end_mark.IsNull()) {
+    end = MakeGarbageCollected<V8UnionDoubleOrString>(end_mark);
   }
   return MeasureWithDetail(script_state, measure_name, start,
                            /* duration = */ std::nullopt, end, ScriptValue(),
@@ -1194,8 +1208,9 @@ PerformanceMeasure* Performance::MeasureWithDetail(
   PerformanceMeasure* performance_measure = GetUserTiming().Measure(
       script_state, measure_name, start, duration, end, detail, exception_state,
       LocalDOMWindow::From(script_state), NavigationId().web_exposed_id);
-  if (performance_measure)
+  if (performance_measure) {
     NotifyObserversOfEntry(*performance_measure);
+  }
   return performance_measure;
 }
 
@@ -1230,39 +1245,20 @@ void Performance::UpdatePerformanceObserverFilterOptions() {
 }
 
 void Performance::NotifyObserversOfEntry(PerformanceEntry& entry) const {
-  bool observer_found = false;
+  CHECK(entry.IsReadyForReporting());
+  auto entry_type =
+      static_cast<PerformanceEntry::EntryType>(entry.EntryTypeEnum());
+  if (const auto* counters =
+          PerformanceEntry::GetUseCountersForType(entry_type)) {
+    UseCounter::Count(GetExecutionContext(), counters->emitted);
+  }
+  if (!HasObserverFor(entry_type)) {
+    return;
+  }
   for (auto& observer : observers_) {
     if (observer->FilterOptions() & entry.EntryTypeEnum() &&
         observer->CanObserve(entry)) {
       observer->EnqueuePerformanceEntry(entry);
-      observer_found = true;
-    }
-  }
-  if (observer_found && entry.EntryTypeEnum() == PerformanceEntry::kPaint)
-    UseCounter::Count(GetExecutionContext(), WebFeature::kPaintTimingObserved);
-}
-
-void Performance::NotifyObserversOfContainerEntry(
-    PerformanceEntry& entry) const {
-  bool observer_found = false;
-  CHECK(entry.EntryTypeEnum() == PerformanceEntry::kContainer);
-  for (auto& observer : observers_) {
-    if (observer->FilterOptions() & entry.EntryTypeEnum() &&
-        observer->CanObserve(entry)) {
-      observer->EnqueuePerformanceEntry(entry);
-      observer_found = true;
-    }
-  }
-  if (observer_found) {
-    UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kContainerTimingObserved);
-  }
-}
-
-void Performance::NotifyObserversOfContainerTiming() {
-  for (auto& observer : observers_) {
-    if (observer->FilterOptions() & PerformanceEntry::EntryType::kContainer) {
-      ActivateObserver(*observer);
     }
   }
 }
@@ -1273,8 +1269,9 @@ bool Performance::HasObserverFor(
 }
 
 void Performance::ActivateObserver(PerformanceObserver& observer) {
-  if (active_observers_.empty())
+  if (active_observers_.empty()) {
     deliver_observations_timer_.StartOneShot(base::TimeDelta(), FROM_HERE);
+  }
 
   // erase() is a no-op when the observer isn't present, so no guard is needed.
   suspended_observers_.erase(&observer);
@@ -1286,16 +1283,14 @@ void Performance::SuspendObserver(PerformanceObserver& observer) {
     return;
   }
   auto it = active_observers_.find(&observer);
-  if (it == active_observers_.end())
+  if (it == active_observers_.end()) {
     return;
+  }
   active_observers_.erase(it);
   suspended_observers_.insert(&observer);
 }
 
 void Performance::DeliverObservationsTimerFired(TimerBase*) {
-  if (HasObserverFor(PerformanceEntry::kContainer)) {
-    PopulateContainerTimingEntries();
-  }
   decltype(active_observers_) observers;
   active_observers_.Swap(observers);
   for (const auto& observer : observers) {
@@ -1309,8 +1304,9 @@ void Performance::DeliverObservationsTimerFired(TimerBase*) {
 int Performance::GetDroppedEntriesForTypes(PerformanceEntryTypeMask types) {
   int dropped_count = 0;
   for (const auto type : kDroppableEntryTypes) {
-    if (types & type)
+    if (types & type) {
       dropped_count += dropped_entries_count_map_.at(type);
+    }
   }
   return dropped_count;
 }
@@ -1331,16 +1327,18 @@ DOMHighResTimeStamp Performance::MonotonicTimeToDOMHighResTimeStamp(
     bool allow_negative_value,
     bool cross_origin_isolated_capability) {
   // Avoid exposing raw platform timestamps.
-  if (monotonic_time.is_null() || time_origin.is_null())
+  if (monotonic_time.is_null() || time_origin.is_null()) {
     return 0.0;
+  }
 
   DOMHighResTimeStamp clamped_time =
       ClampTimeResolution(monotonic_time.since_origin(),
                           cross_origin_isolated_capability) -
       ClampTimeResolution(time_origin.since_origin(),
                           cross_origin_isolated_capability);
-  if (clamped_time < 0 && !allow_negative_value)
+  if (clamped_time < 0 && !allow_negative_value) {
     return 0.0;
+  }
   return clamped_time;
 }
 
@@ -1356,14 +1354,19 @@ DOMHighResTimeStamp Performance::now() const {
 }
 
 // static
-bool Performance::CanExposeNode(Node* node) {
-  if (!node || !node->isConnected() || node->IsInShadowTree())
+bool Performance::CanExposeNode(Node* node, const DOMWindow* source) {
+  if (!node || !node->isConnected() || node->IsInShadowTree() ||
+      node->IsPseudoElement()) {
     return false;
+  }
 
-  // Do not expose |node| when the document is not 'fully active'.
+  // Do not expose |node| when the document is not 'fully active', or when
+  // |node| does not belong to the source window's active document.
   const Document& document = node->GetDocument();
-  if (!document.IsActive() || !document.GetFrame())
+  if (!document.IsActive() || !document.GetFrame() ||
+      document.domWindow() != source) {
     return false;
+  }
 
   return true;
 }
@@ -1373,13 +1376,15 @@ void Performance::AddPaintTiming(PerformancePaintTiming::PaintType type,
   PerformancePaintTiming* entry = MakeGarbageCollected<PerformancePaintTiming>(
       type, paint_timing_info, DynamicTo<LocalDOMWindow>(GetExecutionContext()),
       NavigationId().web_exposed_id);
-  DCHECK((type == PerformancePaintTiming::PaintType::kFirstPaint) ||
-         (type == PerformancePaintTiming::PaintType::kFirstContentfulPaint));
-
-  if (paint_entries_timing_.size() < kDefaultPaintEntriesBufferSize) {
-    InsertEntryIntoSortedBuffer(paint_entries_timing_, *entry);
-  } else {
-    ++(dropped_entries_count_map_.find(PerformanceEntry::kPaint)->value);
+  switch (type) {
+    case PerformancePaintTiming::PaintType::kFirstPaint:
+      CHECK(!first_paint_timing_, base::NotFatalUntil::M162);
+      first_paint_timing_ = entry;
+      break;
+    case PerformancePaintTiming::PaintType::kFirstContentfulPaint:
+      CHECK(!first_contentful_paint_timing_, base::NotFatalUntil::M162);
+      first_contentful_paint_timing_ = entry;
+      break;
   }
   NotifyObserversOfEntry(*entry);
 }
@@ -1400,6 +1405,7 @@ void Performance::BuildJSONValue(V8ObjectBuilder& builder) const {
 // the order of the StartTime, hence the sort beginning from the tail-end.
 void Performance::InsertEntryIntoSortedBuffer(PerformanceEntryVector& entries,
                                               PerformanceEntry& entry) {
+  CHECK(entry.IsReadyForReporting());
   entries.push_back(&entry);
 
   if (entries.size() > 1) {
@@ -1432,7 +1438,8 @@ void Performance::Trace(Visitor* visitor) const {
   visitor->Trace(long_animation_frame_buffer_);
   visitor->Trace(navigation_timing_);
   visitor->Trace(user_timing_);
-  visitor->Trace(paint_entries_timing_);
+  visitor->Trace(first_paint_timing_);
+  visitor->Trace(first_contentful_paint_timing_);
   visitor->Trace(first_input_timing_);
   visitor->Trace(observers_);
   visitor->Trace(active_observers_);
@@ -1540,6 +1547,15 @@ void Performance::FlushPerformanceEntries() {
 
 void Performance::ResetTimeOriginForTesting(base::TimeTicks time_origin) {
   time_origin_ = time_origin;
+}
+
+void Performance::ClearForWindowReuse() {
+  first_paint_timing_ = nullptr;
+  first_contentful_paint_timing_ = nullptr;
+  largest_contentful_paint_buffer_.clear();
+  first_input_timing_ = nullptr;
+  navigation_timing_ = nullptr;
+  scroll_timing_buffer_.clear();
 }
 
 void Performance::OnDeclarativePerformanceObserverHostDisconnected() {

@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_INFOBARS_INFOBAR_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_INFOBARS_INFOBAR_VIEW_H_
 
+#include <stddef.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -13,6 +15,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/types/pass_key.h"
 #include "components/infobars/core/infobar.h"
 #include "components/infobars/core/infobar_container.h"
 #include "third_party/skia/include/core/SkPath.h"
@@ -34,6 +37,8 @@ class MenuRunner;
 class StyledLabel;
 }  // namespace views
 
+class InfoBarContainerView;
+
 class InfoBarView : public infobars::InfoBar,
                     public views::View,
                     public views::ExternalFocusTracker {
@@ -44,6 +49,7 @@ class InfoBarView : public infobars::InfoBar,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kDismissButtonElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kLeftBalancerElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kRightSpacerElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kQueuedIndicatorElementId);
 
   explicit InfoBarView(std::unique_ptr<infobars::InfoBarDelegate> delegate);
   InfoBarView(const InfoBarView&) = delete;
@@ -62,7 +68,13 @@ class InfoBarView : public infobars::InfoBar,
   views::ImageView* icon() { return icon_; }
   views::View* close_button() { return close_button_.get(); }
 
-  void SetInteriorMargin(const gfx::Insets& margin);
+  // Shows a passive "X of Y" sequence label next to the close button, or hides
+  // it when `index` is 0 or `total` <= 1. PassKey-restricted to
+  // InfoBarContainerView, which owns host selection and batch tracking (never a
+  // kCriticalSecurity or non-closeable bar).
+  void SetQueuedInfoBarPosition(size_t index,
+                                size_t total,
+                                base::PassKey<InfoBarContainerView> key);
 
  protected:
   using Labels = std::vector<views::Label*>;
@@ -80,6 +92,9 @@ class InfoBarView : public infobars::InfoBar,
   std::unique_ptr<views::Link> CreateLink(
       const std::u16string& text,
       const std::optional<std::u16string>& accessible_text = std::nullopt);
+
+  // Creates the "X of Y" sequence label shown by SetQueuedInfoBarPosition().
+  std::unique_ptr<views::Label> CreateQueuedIndicatorLabel() const;
 
   // Given |views| and the total |available_width| to display them in, sets
   // each view's size so that the longest view shrinks until it reaches the
@@ -163,6 +178,10 @@ class InfoBarView : public infobars::InfoBar,
 
   // The close button at the right edge of the InfoBar.
   raw_ptr<views::ImageButton> close_button_ = nullptr;
+
+  // Lazily created by SetQueuedInfoBarPosition(), placed before
+  // `close_button_`.
+  raw_ptr<views::Label> queued_indicator_label_ = nullptr;
 
   // Used to run the menu.
   std::unique_ptr<views::MenuRunner> menu_runner_;

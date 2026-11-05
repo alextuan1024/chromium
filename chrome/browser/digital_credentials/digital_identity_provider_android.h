@@ -43,14 +43,10 @@ class DigitalIdentityProviderAndroid : public content::DigitalIdentityProvider {
 
   bool IsLastCommittedOriginLowRisk(
       content::RenderFrameHost& render_frame_host) const override;
-  DigitalIdentityInterstitialAbortCallback ShowDigitalIdentityInterstitial(
-      content::WebContents& web_contents,
-      const url::Origin& origin,
-      content::DigitalIdentityInterstitialType interstitial_type,
-      DigitalIdentityInterstitialCallback callback) override;
   void Get(content::WebContents* web_contents,
            const url::Origin& origin,
            base::ValueView request,
+           UiWarningLevel warning_level,
            DigitalIdentityCallback callback) override;
   void Create(content::WebContents* web_contents,
               const url::Origin& origin,

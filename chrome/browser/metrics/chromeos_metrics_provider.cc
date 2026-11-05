@@ -10,8 +10,8 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
-#include "ash/constants/ash_pref_names.h"
 #include "base/barrier_closure.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -34,7 +34,6 @@
 #include "chrome/browser/metrics/cached_metrics_profile.h"
 #include "chrome/browser/metrics/chromeos_system_profile_provider.h"
 #include "chrome/browser/metrics/enrollment_status.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "chromeos/ash/experiences/arc/arc_features_parser.h"
@@ -46,6 +45,8 @@
 #include "components/metrics/structured/recorder.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_type.h"
@@ -72,7 +73,7 @@ inline constexpr char kFeatureManagementScopeFlag[] =
 
 void IncrementPrefValue(const char* path, int num_samples) {
   PrefService* pref = g_browser_process->local_state();
-  DCHECK(pref);
+  CHECK(pref, base::NotFatalUntil::M161);
   int value = pref->GetInteger(path);
   pref->SetInteger(path, value + num_samples);
 }
@@ -83,7 +84,7 @@ ChromeOSMetricsProvider::ChromeOSMetricsProvider(
     metrics::MetricsLogUploader::MetricServiceType service_type,
     ChromeOSSystemProfileProvider* cros_system_profile_provider)
     : cros_system_profile_provider_(cros_system_profile_provider) {
-  DCHECK(cros_system_profile_provider_);
+  CHECK(cros_system_profile_provider_, base::NotFatalUntil::M161);
   if (service_type == metrics::MetricsLogUploader::UMA)
     profile_provider_ = std::make_unique<metrics::ProfileProvider>();
 }
@@ -158,13 +159,6 @@ void ChromeOSMetricsProvider::ProvideSystemProfileMetrics(
       system_profile_proto);
 }
 
-void ChromeOSMetricsProvider::ProvideSuggestedContentMetrics() {
-  UMA_HISTOGRAM_BOOLEAN(
-      "Apps.AppList.SuggestedContent.Enabled",
-      ProfileManager::GetActiveUserProfile()->GetPrefs()->GetBoolean(
-          ash::prefs::kSuggestedContentEnabled));
-}
-
 void ChromeOSMetricsProvider::ProvideMetrics(
     metrics::SystemProfileProto* system_profile_proto,
     bool should_include_arc_metrics) {
@@ -208,7 +202,6 @@ void ChromeOSMetricsProvider::ProvideStabilityMetrics(
 
 void ChromeOSMetricsProvider::ProvideCurrentSessionData(
     metrics::ChromeUserMetricsExtension* uma_proto) {
-  ProvideSuggestedContentMetrics();
   ProvideMetrics(uma_proto->mutable_system_profile(),
                  /*should_include_arc_metrics=*/!emitted_);
   std::vector<SampledProfile> sampled_profiles;
@@ -235,12 +228,16 @@ bool ChromeOSMetricsProvider::UpdateUserTypeUMA() {
   if (!user_manager::UserManager::IsInitialized()) {
     return false;
   }
-  const user_manager::User* primary_user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
-  if (!primary_user) {
+  // TODO(crbug.com/278643115): Take the AccountId from the caller.
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  if (!primary_session) {
     return false;
   }
-  user_manager::UserType user_type = primary_user->GetType();
+  user_manager::UserType user_type =
+      CHECK_DEREF(user_manager::UserManager::Get()->FindUser(
+                      primary_session->account_id()))
+          .GetType();
   base::UmaHistogramEnumeration("UMA.PrimaryUserType", user_type);
   return true;
 }

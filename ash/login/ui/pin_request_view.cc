@@ -13,7 +13,7 @@
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/icon_button.h"
 #include "ash/style/style_util.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "ash/wallpaper/wallpaper_controller_impl.h"
 #include "base/functional/bind.h"
 #include "base/strings/strcat.h"
@@ -37,7 +37,6 @@
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/vector_icons.h"
@@ -206,12 +205,10 @@ PinRequestView::PinRequestView(PinRequest request, Delegate* delegate)
   SetBackground(views::CreateRoundedRectBackground(
       background_color_id, kPinRequestViewRoundedCornerRadiusDp));
 
-  SetBorder(std::make_unique<views::HighlightBorder>(
-      kPinRequestViewRoundedCornerRadiusDp,
-      views::HighlightBorder::Type::kHighlightBorderOnShadow));
-  shadow_ = SystemShadow::CreateShadowOnNinePatchLayerForView(
-      this, SystemShadow::Type::kElevation12);
-  shadow_->SetRoundedCorners(
+  decoration_ = SystemDecoration::CreateForView(
+      this, SystemDecoration::ShadowType::kElevation12,
+      SystemDecoration::HighlightBorderMode::kHighlightBorder);
+  decoration_->SetRoundedCorners(
       gfx::RoundedCornersF(kPinRequestViewRoundedCornerRadiusDp));
 
   const int child_view_width =

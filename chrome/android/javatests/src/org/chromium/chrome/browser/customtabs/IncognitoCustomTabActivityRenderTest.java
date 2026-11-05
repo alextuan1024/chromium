@@ -5,13 +5,14 @@
 package org.chromium.chrome.browser.customtabs;
 
 import android.content.Intent;
-import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.view.View;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.MediumTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -27,6 +28,7 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoDataTestUtils;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
+import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.net.test.EmbeddedTestServerRule;
 import org.chromium.ui.test.util.RenderTestRule;
 
@@ -76,6 +78,13 @@ public class IncognitoCustomTabActivityRenderTest {
         IncognitoDataTestUtils.fireAndWaitForCctWarmup();
     }
 
+    @After
+    public void tearDown() {
+        if (mCustomTabActivityTestRule.getActivity() != null) {
+            ActivityTestUtils.clearActivityOrientation(mCustomTabActivityTestRule.getActivity());
+        }
+    }
+
     public IncognitoCustomTabActivityRenderTest(boolean runWithHttps) {
         mRunWithHttps = runWithHttps;
     }
@@ -87,16 +96,19 @@ public class IncognitoCustomTabActivityRenderTest {
                         ApplicationProvider.getApplicationContext(), url);
     }
 
-    private void startActivity(String renderTestId, int screenOrientation) throws IOException {
+    private void startActivity(String renderTestId, int orientation) throws IOException {
         mCustomTabActivityTestRule.startCustomTabActivityWithIntent(mIntent);
-        mCustomTabActivityTestRule.getActivity().setRequestedOrientation(screenOrientation);
+        if (orientation != Configuration.ORIENTATION_UNDEFINED) {
+            ActivityTestUtils.rotateActivityToOrientation(
+                    mCustomTabActivityTestRule.getActivity(), orientation);
+        }
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         View toolbarView = mCustomTabActivityTestRule.getActivity().findViewById(R.id.toolbar);
         mRenderTestRule.render(toolbarView, renderTestId);
     }
 
     private void startActivity(String renderTestId) throws IOException {
-        startActivity(renderTestId, ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        startActivity(renderTestId, Configuration.ORIENTATION_UNDEFINED);
     }
 
     private String testIdSuffix() {
@@ -116,6 +128,6 @@ public class IncognitoCustomTabActivityRenderTest {
     public void testCctToolbarInLandscapeMode() throws IOException {
         startActivity(
                 "default_incognito_cct_toolbar_in_landscape_with_https" + testIdSuffix(),
-                ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                Configuration.ORIENTATION_LANDSCAPE);
     }
 }

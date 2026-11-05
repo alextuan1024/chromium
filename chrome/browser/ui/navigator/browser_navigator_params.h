@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
@@ -30,8 +31,8 @@
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/navigation/was_activated_option.mojom.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -42,6 +43,7 @@ class BrowserWindowInterface;
 class Profile;
 
 namespace content {
+class NavigationHandle;
 class RenderFrameHost;
 class WebContents;
 struct OpenURLParams;
@@ -205,7 +207,8 @@ struct NavigateParams {
   //                        & no matching tab
   // CURRENT_TAB          no params.browser                 DCHECK FAILURE
   //                        & no params.source_contents
-  WindowOpenDisposition disposition = WindowOpenDisposition::CURRENT_TAB;
+  ui::mojom::WindowOpenDisposition disposition =
+      ui::mojom::WindowOpenDisposition::kCurrentTab;
 
   // Allows setting the opener for the case when new WebContents are created
   // (i.e. when |disposition| asks for a new tab or window).
@@ -306,6 +309,21 @@ struct NavigateParams {
   // navigation.
   bool navigation_initiated_from_sync = false;
 #endif
+
+#if BUILDFLAG(IS_ANDROID)
+  // Called with the navigation's handle as soon as the navigation starts, while
+  // callers can still change it (e.g. its NavigationUIData). Unlike the
+  // asynchronous Navigate() callback, this doesn't wait for a new window to be
+  // ready, by which time the navigation may have finished. Not called if no
+  // navigation starts.
+  base::OnceCallback<void(content::NavigationHandle&)>
+      navigation_handle_callback;
+#endif
+
+  // If true, opening a new window for this navigation can trigger session
+  // restore (if no browser windows were open and session restore is enabled).
+  // If false, the new window will not trigger session restore.
+  bool should_trigger_session_restore = true;
 
   // The profile that is initiating the navigation. If there is a non-NULL
   // browser passed in via |browser|, it's profile will be used instead.

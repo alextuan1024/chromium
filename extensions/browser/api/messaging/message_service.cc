@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -26,7 +27,6 @@
 #include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/child_process_host.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -35,6 +35,7 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/child_process_id.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/api/messaging/channel_endpoint.h"
 #include "extensions/browser/api/messaging/extension_message_port.h"
@@ -59,6 +60,7 @@
 #include "extensions/common/api/messaging/messaging_endpoint.h"
 #include "extensions/common/api/messaging/messaging_util.h"
 #include "extensions/common/api/messaging/port_context.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
@@ -72,6 +74,7 @@
 #include "ipc/constants.mojom.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(ENABLE_GUEST_VIEW)
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
@@ -114,12 +117,23 @@ constexpr auto kAndroidNativeMessagingAllowedExtensionIds =
         "ckcendljdlmgnhghiaomidhiiclmapok",
         // gnubbyd-v3 prod
         "lfboplenmmjcmpbkeemecobbadnmpfhi",
+        // Chrome Remote Desktop dev
+        "pbnaomcgbfiofkfobmlhmdobjchjkphi",
+        // Chrome Remote Desktop prod
+        "inomeogfingihgjfjlpeplalcfajhgai",
     });
 #endif
 
 LazyContextId LazyContextIdFor(content::BrowserContext* browser_context,
                                const Extension* extension) {
   return LazyContextId::ForExtension(browser_context, extension);
+}
+
+BrowserContext* GetContextToUseForExtension(BrowserContext* context,
+                                            const Extension* extension) {
+  return IncognitoInfo::IsSplitMode(extension)
+             ? context
+             : ExtensionsBrowserClient::Get()->GetOriginalContext(context);
 }
 
 const Extension* GetExtensionForNativeAppChannel(
@@ -169,39 +183,64 @@ void MaybeDisableBackForwardCacheForMessaging(content::RenderFrameHost* host) {
 // ExtensionExtendedBackgroundLifetimeForPortConnectionsToUrls policy. They
 // are chosen as defaults because they are known apps that offer SDKs and do not
 // offer the possibility to restart a closed connection to a previous state.
-constexpr const char* kDefaultSWExtendedLifetimeList[] = {
-    // Smart Card Connector
-    "chrome-extension://khpfeaanjngmcnplbdlpegiifgpfgdco/",  // stable
-    "chrome-extension://mockcojkppdndnhgonljagclgpkjbkek/",  // beta
+constexpr auto kDefaultSWExtendedLifetimeExtensionIds =
+    base::MakeFixedFlatSet<std::string_view>({
+        // Smart Card Connector
+        "khpfeaanjngmcnplbdlpegiifgpfgdco",  // stable
+        "mockcojkppdndnhgonljagclgpkjbkek",  // beta
 
-    // Citrix Receiver
-    "chrome-extension://haiffjcadagjlijoggckpgfnoeiflnem/",  // stable
-    "chrome-extension://lbfgjakkeeccemhonnolnmglmfmccaag/",  // beta
-    "chrome-extension://anjihnbmjbbpofafpmklejenkgnjfcdi/",  // back-up
+        // Citrix Receiver
+        "haiffjcadagjlijoggckpgfnoeiflnem",  // stable
+        "lbfgjakkeeccemhonnolnmglmfmccaag",  // beta
+        "anjihnbmjbbpofafpmklejenkgnjfcdi",  // back-up
 
-    // VMware Horizon
-    "chrome-extension://ppkfnjlimknmjoaemnpidmdlfchhehel/",  // stable
-    "chrome-extension://kenkpdjcfppbccchillfdjkjnejjgand/",  // beta
-};
+        // VMware Horizon
+        "ppkfnjlimknmjoaemnpidmdlfchhehel",  // stable
+        "kenkpdjcfppbccchillfdjkjnejjgand",  // beta
+    });
 
-std::vector<url::Origin> GetServiceWorkerExtendedLifetimeOrigins(
-    content::BrowserContext* browser_context) {
-  std::vector<url::Origin> origins;
+void ApplyServiceWorkerExtendedLifetimeIfConfigured(
+    content::BrowserContext* browser_context,
+    const GURL& source_url,
+    const std::string& target_extension_id,
+    MessagePort* opener,
+    MessagePort* receiver) {
+  if (source_url.is_valid()) {
+    if (source_url.SchemeIs(kExtensionScheme)) {
+      if (kDefaultSWExtendedLifetimeExtensionIds.contains(source_url.host())) {
+        // Opener found in allowlist, keep receiver SW alive.
+        receiver->set_should_have_strong_keepalive(true);
+      }
+    } else if (source_url.SchemeIsBlob() || source_url.SchemeIsFileSystem()) {
+      const url::Origin origin = url::Origin::Create(source_url);
+      if (origin.scheme() == kExtensionScheme &&
+          kDefaultSWExtendedLifetimeExtensionIds.contains(origin.host())) {
+        // Opener found in allowlist, keep receiver SW alive.
+        receiver->set_should_have_strong_keepalive(true);
+      }
+    }
+  }
+  if (!target_extension_id.empty() &&
+      kDefaultSWExtendedLifetimeExtensionIds.contains(target_extension_id)) {
+    // Receiver found in allowlist, keep opener SW alive.
+    opener->set_should_have_strong_keepalive(true);
+  }
+
   const base::ListValue& extended_lifetime_urls =
       ExtensionPrefs::Get(browser_context)
           ->pref_service()
           ->GetList(
               pref_names::kExtendedBackgroundLifetimeForPortConnectionsToUrls);
-  origins.reserve(std::size(kDefaultSWExtendedLifetimeList) +
-                  extended_lifetime_urls.size());
-
-  // Add default values.
-  for (const char* default_value : kDefaultSWExtendedLifetimeList) {
-    url::Origin origin = url::Origin::Create(GURL(default_value));
-    origins.push_back(std::move(origin));
+  if (extended_lifetime_urls.empty()) {
+    return;
   }
 
-  // Add policy values.
+  const url::Origin source_origin = url::Origin::Create(source_url);
+  const std::optional<url::Origin> target_origin =
+      target_extension_id.empty()
+          ? std::nullopt
+          : std::make_optional(
+                Extension::CreateOriginFromExtensionId(target_extension_id));
   for (const base::Value& value : extended_lifetime_urls) {
     GURL url(value.GetString());
     if (!url.is_valid()) {
@@ -211,10 +250,13 @@ std::vector<url::Origin> GetServiceWorkerExtendedLifetimeOrigins(
     if (origin.opaque()) {
       continue;
     }
-    origins.push_back(std::move(origin));
+    if (origin == source_origin) {
+      receiver->set_should_have_strong_keepalive(true);
+    }
+    if (target_origin && origin == *target_origin) {
+      opener->set_should_have_strong_keepalive(true);
+    }
   }
-
-  return origins;
 }
 
 // Verifies (via CHECK()) that the lazy context for the given `extension` is
@@ -226,15 +268,9 @@ void VerifyLazyContextActive(
   ProcessManager* process_manager =
       ProcessManager::Get(context_info.browser_context);
   if (BackgroundInfo::IsServiceWorkerBased(extension)) {
-    std::vector<WorkerId> service_workers =
-        process_manager->GetServiceWorkersForExtension(extension->id());
-    CHECK(!service_workers.empty());
-    CHECK(std::ranges::find_if(
-              service_workers, [&context_info](const WorkerId& worker_id) {
-                return worker_id.version_id ==
-                           context_info.service_worker_version_id &&
-                       worker_id.thread_id == context_info.worker_thread_id;
-              }) != service_workers.end());
+    CHECK(process_manager->HasServiceWorkerForExtension(
+        extension->id(), context_info.service_worker_version_id,
+        context_info.worker_thread_id));
   } else {
     CHECK(BackgroundInfo::HasLazyBackgroundPage(extension));
     CHECK(process_manager->GetBackgroundHostForExtension(extension->id()));
@@ -412,7 +448,7 @@ class MessageServiceFactory
         absl::Overload{
             [&](const WorkerId& worker) {
               return ChannelEndpoint(
-                  context, worker.render_process_id.GetUnsafeValue(),
+                  context, worker.render_process_id,
                   PortContext::ForWorker(
                       worker.thread_id, worker.version_id,
                       worker.render_process_id.GetUnsafeValue(),
@@ -420,7 +456,7 @@ class MessageServiceFactory
             },
             [&](const content::RenderFrameHost* render_frame_host) {
               return ChannelEndpoint(
-                  context, render_frame_host->GetProcess()->GetDeprecatedID(),
+                  context, render_frame_host->GetProcess()->GetID(),
                   PortContext::ForFrame(render_frame_host->GetRoutingID()));
             }},
         source);
@@ -470,8 +506,8 @@ void MessageService::OpenChannelToExtension(
          source_endpoint.type == MessagingEndpoint::Type::kNativeApp);
   DCHECK_EQ(source_endpoint.native_app_name.has_value(),
             source_endpoint.type == MessagingEndpoint::Type::kNativeApp);
-  int source_process_id = source.render_process_id();
-  DCHECK_EQ(source_process_id == content::ChildProcessHost::kInvalidUniqueID,
+  content::ChildProcessId source_process_id = source.render_process_id();
+  DCHECK_EQ(source_process_id.is_null(),
             source_endpoint.type == MessagingEndpoint::Type::kNativeApp);
   content::RenderFrameHost* source_render_frame_host =
       source.is_for_render_frame() ? source.GetRenderFrameHost() : nullptr;
@@ -513,9 +549,8 @@ void MessageService::OpenChannelToExtension(
   // Worker specific open channel metrics tracking.
   std::string worker_status_metric_suffix;
   if (BackgroundInfo::IsServiceWorkerBased(target_extension)) {
-    if (!ProcessManager::Get(context)
-             ->GetServiceWorkersForExtension(target_extension_id)
-             .empty()) {
+    if (ProcessManager::Get(context)->HasServiceWorkerForExtension(
+            target_extension_id)) {
       worker_status_metric_suffix = "WithActiveWorker";
     } else {
       worker_status_metric_suffix = "WithIdleWorker";
@@ -767,7 +802,7 @@ void MessageService::OpenChannelToNativeAppImpl(
 
   std::unique_ptr<MessageChannel> channel = std::make_unique<MessageChannel>();
   channel->opener = std::move(opener_port);
-  channel->opener->OpenPort(source.render_process_id(), source.port_context());
+  channel->opener->OpenPort(source.port_context());
 
   content::RenderFrameHost* source_render_frame_host =
       source.is_for_render_frame() ? source.GetRenderFrameHost() : nullptr;
@@ -1008,7 +1043,7 @@ void MessageService::OpenChannelImpl(BrowserContext* browser_context,
   }
 
   const PortContext& port_context = source.port_context();
-  params->opener_port->OpenPort(source.render_process_id(), port_context);
+  params->opener_port->OpenPort(port_context);
   params->opener_port->RevalidatePort();
   // TODO(richardzh) Move this property setting to port creation, or params
   // creation, to have cleaner code here.
@@ -1035,7 +1070,7 @@ void MessageService::OpenChannelImpl(BrowserContext* browser_context,
   channel->receiver = std::move(params->receiver);
   AddChannel(std::move(channel_ptr), params->receiver_port_id);
 
-  int guest_process_id = content::ChildProcessHost::kInvalidUniqueID;
+  content::ChildProcessId guest_process_id;
   int guest_render_frame_routing_id = IPC::mojom::kRoutingIdNone;
 #if BUILDFLAG(ENABLE_GUEST_VIEW)
   if (params->include_guest_process_info &&
@@ -1090,22 +1125,9 @@ void MessageService::OpenChannelImpl(BrowserContext* browser_context,
   // Check source and target of the connection and grant extended lifetime if
   // one of the ends is configured in the
   // ExtendedBackgroundLifetimeForPortConnectionsToUrls policy.
-  std::vector<url::Origin> extended_lifetime_origins =
-      GetServiceWorkerExtendedLifetimeOrigins(browser_context);
-  url::Origin source_origin = url::Origin::Create(params->source_url);
-  url::Origin target_origin =
-      Extension::CreateOriginFromExtensionId(params->target_extension_id);
-
-  for (const url::Origin& origin : extended_lifetime_origins) {
-    if (origin == source_origin) {
-      // Opener found in allowlist, keep receiver SW alive.
-      channel->receiver->set_should_have_strong_keepalive(true);
-    }
-    if (origin == target_origin) {
-      // Receiver found in allowlist, keep opener SW alive.
-      channel->opener->set_should_have_strong_keepalive(true);
-    }
-  }
+  ApplyServiceWorkerExtendedLifetimeIfConfigured(
+      browser_context, params->source_url, params->target_extension_id,
+      channel->opener.get(), channel->receiver.get());
 
   // Keep both ends of the channel alive until the channel is closed.
   channel->opener->IncrementLazyKeepaliveCount(Activity::MESSAGE_PORT);
@@ -1122,28 +1144,15 @@ void MessageService::AddChannel(std::unique_ptr<MessageChannel> channel,
   pending_lazy_context_channels_.erase(channel_id);
 }
 
-void MessageService::OpenPortImpl(const PortId& port_id,
-                                  int process_id,
-                                  const PortContext& port_context) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(!port_id.is_opener);
-
-  ChannelId channel_id = port_id.GetChannelId();
-  auto it = channels_.find(channel_id);
-  if (it == channels_.end())
-    return;
-
-  it->second->receiver->OpenPort(process_id, port_context);
-}
 void MessageService::CloseChannel(const PortId& port_id,
                                   const std::string& error_message) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  ClosePortImpl(port_id, content::ChildProcessHost::kInvalidUniqueID,
-                IPC::mojom::kRoutingIdNone, kMainThreadId, true, error_message);
+  ClosePortImpl(port_id, content::ChildProcessId(), IPC::mojom::kRoutingIdNone,
+                kMainThreadId, true, error_message);
 }
 
 void MessageService::ClosePort(const PortId& port_id,
-                               int process_id,
+                               content::ChildProcessId process_id,
                                const PortContext& port_context,
                                bool close_channel,
                                const std::string& error_message) {
@@ -1156,7 +1165,7 @@ void MessageService::ClosePort(const PortId& port_id,
 }
 
 void MessageService::ClosePortImpl(const PortId& port_id,
-                                   int process_id,
+                                   content::ChildProcessId process_id,
                                    int routing_id,
                                    int worker_thread_id,
                                    bool close_channel,
@@ -1304,6 +1313,20 @@ void MessageService::NotifyResponsePending(const PortId& port_id) {
   it->second->receiver->NotifyResponsePending();
 }
 
+bool MessageService::HasStrongKeepaliveOnReceiverForTest(
+    const ChannelId& channel_id) const {
+  auto it = channels_.find(channel_id);
+  return it != channels_.end() &&
+         it->second->receiver->should_have_strong_keepalive();
+}
+
+bool MessageService::HasStrongKeepaliveOnOpenerForTest(
+    const ChannelId& channel_id) const {
+  auto it = channels_.find(channel_id);
+  return it != channels_.end() &&
+         it->second->opener->should_have_strong_keepalive();
+}
+
 bool MessageService::HasPendingLazyContextChannelsForExtension(
     const ExtensionId& extension_id) const {
   return std::ranges::any_of(
@@ -1429,19 +1452,19 @@ void MessageService::OnOpenChannelAllowed(
     return;
   }
 
-  BrowserContext* context_to_use_for_extension =
-      IncognitoInfo::IsSplitMode(target_extension)
-          ? context
-          : ExtensionsBrowserClient::Get()->GetOriginalContext(context);
-  params->receiver = ExtensionMessagePort::CreateForExtension(
-      weak_factory_.GetWeakPtr(), params->receiver_port_id,
-      params->target_extension_id, context_to_use_for_extension);
-
   // The target might be a lazy background page or a Service Worker. In that
   // case, we have to check if it is loaded and ready, and if not, queue up the
-  // task and load the page.
+  // task and load the page. Defer creating `params->receiver` until we know the
+  // channel will not be queued: eager creation before queuing both wasted port
+  // allocation/observer registration on every lazy channel open and risked a
+  // spurious `PendingLazyContextClosePort` if another extension frame closed
+  // while the lazy context was waking.
   if (!MaybeAddPendingLazyContextOpenChannelTask(context, target_extension,
                                                  &params, pending_messages)) {
+    params->receiver = ExtensionMessagePort::CreateForExtension(
+        weak_factory_.GetWeakPtr(), params->receiver_port_id,
+        params->target_extension_id,
+        GetContextToUseForExtension(context, target_extension));
     OpenChannelImpl(context, std::move(params), target_extension,
                     /*did_enqueue=*/false);
     DispatchPendingMessages(std::move(pending_messages), channel_id);
@@ -1464,9 +1487,25 @@ void MessageService::PendingLazyContextOpenChannel(
           open_channel_wakeup_context_tracking_id,
           MessageTracker::OpenChannelMessagePipelineResult::kNoReceivers);
     }
-    // `OpenChannelImpl` will handle the cleanup and notify the opener.
-    // We use `context_` as a fallback `BrowserContext`.
-    OpenChannelImpl(context_, std::move(params), /*target_extension=*/nullptr,
+    // If the target extension is still enabled and the source endpoint is still
+    // valid, create a receiver port so `OpenChannelImpl` can still connect to
+    // any remaining live extension frames (e.g. popup, tab, or offscreen
+    // document). Use `params->source.browser_context()` so split-mode incognito
+    // openers only match frames in their own incognito `BrowserContext`.
+    const Extension* target_extension =
+        ExtensionRegistry::Get(context_)->enabled_extensions().GetByID(
+            params->target_extension_id);
+    if (target_extension && params->source.IsValid()) {
+      params->receiver = ExtensionMessagePort::CreateForExtension(
+          weak_factory_.GetWeakPtr(), params->receiver_port_id,
+          params->target_extension_id,
+          GetContextToUseForExtension(params->source.browser_context(),
+                                      target_extension));
+    }
+    // `OpenChannelImpl` will connect to live frames if available, or clean up
+    // and notify the opener otherwise. We use `context_` as a fallback
+    // `BrowserContext`.
+    OpenChannelImpl(context_, std::move(params), target_extension,
                     /*did_enqueue=*/true);
     return;
   }

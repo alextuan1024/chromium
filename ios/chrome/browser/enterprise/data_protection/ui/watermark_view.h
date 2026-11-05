@@ -7,10 +7,10 @@
 
 #import <UIKit/UIKit.h>
 
-#import "ios/chrome/browser/enterprise/data_protection/ui/watermark_consumer.h"
+#import "ios/chrome/browser/enterprise/data_protection/ui/watermark_view_utils.h"
 
 // View containing a watermark text overlaid on top of the other content.
-@interface WatermarkView : UIView <WatermarkConsumer>
+@interface WatermarkView : UIView
 
 // The watermark text to display.
 @property(nonatomic, copy) NSString* text;
@@ -25,6 +25,9 @@
 
 // The font size of the watermark text.
 @property(nonatomic, assign) CGFloat fontSize;
+
+// Updates the watermark with `text` and `style`.
+- (void)updateWithText:(NSString*)text style:(WatermarkStyle)style;
 
 @end
 

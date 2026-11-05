@@ -11,13 +11,14 @@
 #include <array>
 #include <deque>
 #include <functional>
-#include <map>
 #include <ostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
-#include "third_party/jsoncpp/source/include/json/json.h"
+#include "third_party/abseil-cpp/absl/container/inlined_vector.h"
+#include "third_party/jsoncpp/src/include/json/json.h"
 #include "tools/binary_size/libsupersize/viewer/caspian/grouped_path.h"
 
 // Copied from representation in tools/binary_size/libsupersize/models.py
@@ -58,6 +59,10 @@ enum class DiffStatus : uint8_t {
   kRemoved = 3,
 };
 
+inline bool IsUnifiedDiff(std::string_view text) {
+  return text.starts_with("--- ");
+}
+
 class SymbolFlag {
  public:
   static const int32_t kAnonymous = 1;
@@ -96,6 +101,7 @@ class BaseSymbol {
   virtual int32_t Padding() const = 0;
   virtual int32_t Address() const = 0;
   virtual int32_t Flags() const = 0;
+  virtual int32_t RelocationCount() const = 0;
 
   virtual std::string_view FullName() const = 0;
   // Derived from |full_name|. Generated lazily and cached.
@@ -115,7 +121,7 @@ class BaseSymbol {
   virtual float Pss() const = 0;
   virtual float PssWithoutPadding() const = 0;
   virtual float PaddingPss() const = 0;
-  virtual float BeforePss() const = 0;
+  virtual float RelocationPss() const = 0;
 
   virtual DiffStatus GetDiffStatus() const = 0;
 
@@ -189,6 +195,7 @@ class Symbol : public BaseSymbol {
   int32_t Padding() const override;
   int32_t Address() const override;
   int32_t Flags() const override;
+  int32_t RelocationCount() const override;
 
   std::string_view FullName() const override;
   // Derived from |full_name|. Generated lazily and cached.
@@ -208,7 +215,7 @@ class Symbol : public BaseSymbol {
   float Pss() const override;
   float PssWithoutPadding() const override;
   float PaddingPss() const override;
-  float BeforePss() const override;
+  float RelocationPss() const override;
 
   DiffStatus GetDiffStatus() const override;
 
@@ -216,6 +223,7 @@ class Symbol : public BaseSymbol {
   int32_t size_ = 0;
   int32_t flags_ = 0;
   int32_t padding_ = 0;
+  int32_t relocation_count_ = 0;
   SectionId section_id_ = SectionId::kNone;
   std::string_view full_name_;
   // Derived lazily
@@ -249,6 +257,7 @@ class DeltaSymbol : public BaseSymbol {
   int32_t Padding() const override;
   int32_t Address() const override;
   int32_t Flags() const override;
+  int32_t RelocationCount() const override;
 
   std::string_view FullName() const override;
   // Derived from |full_name|. Generated lazily and cached.
@@ -268,12 +277,14 @@ class DeltaSymbol : public BaseSymbol {
   float Pss() const override;
   float PssWithoutPadding() const override;
   float PaddingPss() const override;
-  float BeforePss() const override;
+  float RelocationPss() const override;
 
   DiffStatus GetDiffStatus() const override;
 
   const Symbol* Before() const { return before_; }
   const Symbol* After() const { return after_; }
+
+  std::string* disassembly_ = nullptr;
 
  private:
   const Symbol* before_ = nullptr;
@@ -284,13 +295,35 @@ std::ostream& operator<<(std::ostream& os, const Symbol& sym);
 
 struct BaseSizeInfo {
   BaseSizeInfo();
-  BaseSizeInfo(const BaseSizeInfo&);
+  BaseSizeInfo(const BaseSizeInfo&) = delete;
+  BaseSizeInfo& operator=(const BaseSizeInfo&) = delete;
+  BaseSizeInfo(BaseSizeInfo&&);
+  BaseSizeInfo& operator=(BaseSizeInfo&&);
   virtual ~BaseSizeInfo();
   virtual bool IsSparse() const = 0;
 
   Json::Value fields;
   std::deque<std::string> owned_strings;
+  // Per-thread alternatives to |owned_strings|, used by Symbol::DeriveNames()
+  // while a ScopedOwnedStringsArena is active (|owned_strings| is not
+  // thread-safe).
+  mutable std::deque<std::deque<std::string>> thread_owned_strings;
   SectionId ShortSectionName(const char* section_name);
+};
+
+// While in scope, Symbol::DeriveNames() on the current thread stores derived
+// names in |size_info_->thread_owned_strings[slot]| rather than in
+// |size_info_->owned_strings|. This lets multiple threads derive names
+// concurrently, as long as each uses a distinct |slot|.
+class ScopedOwnedStringsArena {
+ public:
+  explicit ScopedOwnedStringsArena(size_t slot);
+  ~ScopedOwnedStringsArena();
+  ScopedOwnedStringsArena(const ScopedOwnedStringsArena&) = delete;
+  ScopedOwnedStringsArena& operator=(const ScopedOwnedStringsArena&) = delete;
+
+ private:
+  size_t prev_slot_;
 };
 
 struct SizeInfo : BaseSizeInfo {
@@ -322,8 +355,10 @@ struct DeltaSizeInfo : BaseSizeInfo {
                 const std::vector<std::string>* removed_sources_in,
                 const std::vector<std::string>* added_sources_in);
   ~DeltaSizeInfo() override;
-  DeltaSizeInfo(const DeltaSizeInfo&);
-  DeltaSizeInfo& operator=(const DeltaSizeInfo&);
+  DeltaSizeInfo(const DeltaSizeInfo&) = delete;
+  DeltaSizeInfo& operator=(const DeltaSizeInfo&) = delete;
+  DeltaSizeInfo(DeltaSizeInfo&&);
+  DeltaSizeInfo& operator=(DeltaSizeInfo&&);
   bool IsSparse() const override;
 
   using Results = std::array<int32_t, 4>;
@@ -368,8 +403,13 @@ struct Stat {
 
 struct NodeStats {
   NodeStats();
+  NodeStats(const NodeStats&);
+  NodeStats& operator=(const NodeStats&);
+  NodeStats(NodeStats&&);
+  NodeStats& operator=(NodeStats&&);
   ~NodeStats();
-  explicit NodeStats(const BaseSymbol& symbol);
+  void AddSymbol(const BaseSymbol& symbol, bool relocations_mode);
+  bool HasSection(SectionId section) const;
   void WriteIntoJson(const JsonWriteOptions& opts, Json::Value* out) const;
   NodeStats& operator+=(const NodeStats& other);
   SectionId ComputeBiggestSection() const;
@@ -378,7 +418,7 @@ struct NodeStats {
   int32_t SumRemoved() const;
   DiffStatus GetGlobalDiffStatus() const;
 
-  std::map<SectionId, Stat> child_stats;
+  absl::InlinedVector<std::pair<SectionId, Stat>, 2> child_stats;
   DiffStatus imposed_diff_status = DiffStatus::kUnchanged;
 };
 
@@ -390,6 +430,7 @@ struct TreeNode {
   friend TreeNodeFactory;
 
  public:
+  TreeNode(TreeNode&&);
   ~TreeNode();
 
   using CompareFunc =
@@ -429,6 +470,7 @@ class TreeNodeFactory {
 
  private:
   int32_t next_id = 0;
+  std::deque<TreeNode> nodes_;
 };
 
 }  // namespace caspian

@@ -83,7 +83,6 @@
 #include "third_party/blink/public/common/subresource_load_metrics.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/common/unique_name/unique_name_helper.h"
-#include "third_party/blink/public/mojom/autoplay/autoplay.mojom.h"
 #include "third_party/blink/public/mojom/browser_interface_broker.mojom.h"
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
 #include "third_party/blink/public/mojom/commit_result/commit_result.mojom.h"
@@ -146,7 +145,6 @@ class WebMediaStreamDeviceObserver;
 class WebString;
 class WebURL;
 struct FramePolicy;
-struct JavaScriptFrameworkDetectionResult;
 }  // namespace blink
 
 namespace network {
@@ -182,7 +180,6 @@ class RenderFrameObserver;
 class CONTENT_EXPORT RenderFrameImpl
     : public RenderFrame,
       public blink::mojom::ResourceLoadInfoNotifier,
-      blink::mojom::AutoplayConfigurationClient,
       public mojom::Frame,
       mojom::FrameBindingsControl,
       mojom::MhtmlFileWriter,
@@ -345,8 +342,6 @@ class CONTENT_EXPORT RenderFrameImpl
   // RenderFrame implementation:
   RenderFrame* GetMainRenderFrame() override;
   RenderAccessibility* GetRenderAccessibility() override;
-  std::unique_ptr<AXTreeSnapshotter> CreateAXTreeSnapshotter(
-      ui::AXMode ax_mode) override;
   blink::WebLocalFrame* GetWebFrame() override;
   const blink::WebLocalFrame* GetWebFrame() const override;
   blink::WebView* GetWebView() override;
@@ -386,10 +381,6 @@ class CONTENT_EXPORT RenderFrameImpl
       const gfx::Rect& rect) override;
   float GetDeviceScaleFactor() override;
   blink::scheduler::WebAgentGroupScheduler& GetAgentGroupScheduler() override;
-
-  // blink::mojom::AutoplayConfigurationClient implementation:
-  void AddAutoplayFlags(const url::Origin& origin,
-                        const int32_t flags) override;
 
   // blink::mojom::ResourceLoadInfoNotifier implementation:
 #if BUILDFLAG(IS_ANDROID)
@@ -517,8 +508,6 @@ class CONTENT_EXPORT RenderFrameImpl
       blink::WebPolicyContainerBindParams policy_container_bind_params,
       ukm::SourceId document_ukm_source_id,
       FinishChildFrameCreationFn finish_creation) override;
-  void DidCreateFencedFrame(
-      const blink::RemoteFrameToken& frame_token) override;
   blink::WebFrame* FindFrame(const blink::WebString& name) override;
   void WillDetach(blink::DetachReason detach_reason) override;
   void FrameDetached(blink::DetachReason detach_reason) override;
@@ -526,13 +515,6 @@ class CONTENT_EXPORT RenderFrameImpl
   void DidMatchCSS(
       const std::vector<blink::WebString>& newly_matching_selectors,
       const std::vector<blink::WebString>& stopped_matching_selectors) override;
-  bool ShouldReportDetailedMessageForSourceAndSeverity(
-      blink::mojom::ConsoleMessageLevel log_level,
-      const blink::WebString& source) override;
-  void DidAddMessageToConsole(const blink::WebConsoleMessage& message,
-                              const blink::WebString& source_name,
-                              unsigned source_line,
-                              const blink::WebString& stack_trace) override;
   void BeginNavigation(std::unique_ptr<blink::WebNavigationInfo> info) override;
   void DidCreateDocumentLoader(
       blink::WebDocumentLoader* document_loader) override;
@@ -565,9 +547,6 @@ class CONTENT_EXPORT RenderFrameImpl
       bool caused_by_ad) override;
   void DidFailAsyncSameDocumentCommit() override;
   void WillFreezePage() override;
-  void DidOpenDocumentInputStream(const blink::WebURL& url) override;
-  void DidSetPageLifecycleState(
-      blink::BFCacheStateChange bfcache_change) override;
   void NotifyCurrentHistoryItemChanged() override;
   void DidUpdateCurrentHistoryItem() override;
   base::UnguessableToken GetDevToolsFrameToken() override;
@@ -578,8 +557,6 @@ class CONTENT_EXPORT RenderFrameImpl
   void OnMainFrameRectangleChanged(const gfx::Rect& main_frame_rect) override;
   void OnMainFrameViewportRectangleChanged(
       const gfx::Rect& main_frame_viewport_rect) override;
-  void OnMainFrameAdRectangleChanged(int element_id,
-                                     const gfx::Rect& ad_rect) override;
   void FinalizeRequest(blink::WebURLRequest& request) override;
   std::optional<blink::WebURL> WillSendRequest(
       const blink::WebURL& target,
@@ -592,34 +569,6 @@ class CONTENT_EXPORT RenderFrameImpl
   void DidLoadResourceFromMemoryCache(
       const blink::WebURLRequest& request,
       const blink::WebURLResponse& response) override;
-  void DidChangePerformanceTiming() override;
-  void DidObserveUserInteraction(
-      base::TimeTicks max_event_start,
-      base::TimeTicks max_event_queued_main_thread,
-      base::TimeTicks max_event_processing_start,
-      base::TimeTicks max_event_commit_finish,
-      base::TimeTicks max_event_end,
-      uint64_t interaction_offset,
-      uint64_t performance_timeline_navigation_id) override;
-  void DidChangeCpuTiming(base::TimeDelta time) override;
-  void DidObserveLoadingBehavior(blink::LoadingBehaviorFlag behavior) override;
-  void DidObserveJavaScriptFrameworks(
-      const blink::JavaScriptFrameworkDetectionResult&) override;
-  void DidObserveSubresourceLoad(
-      const blink::SubresourceLoadMetrics& subresource_load_metrics) override;
-  void DidObserveNewFeatureUsage(
-      const blink::UseCounterFeature& feature) override;
-  void DidObserveSoftNavigation(
-      blink::SoftNavigationMetricsForReporting metrics) override;
-  void DidObserveSoftNavigationFirstContentfulPaint(
-      uint64_t performance_timeline_navigation_id,
-      base::TimeDelta first_contentful_paint) override;
-  void DidObserveSoftLargestContentfulPaint(
-      const blink::LargestContentfulPaintDetailsForReporting& lcp) override;
-  void DidObserveLayoutShift(
-      double score,
-      bool after_input_or_scroll,
-      uint64_t performance_timeline_navigation_id) override;
   void DidCreateScriptContext(v8::Local<v8::Context> context,
                               int world_id) override;
   void WillReleaseScriptContext(v8::Local<v8::Context> context,
@@ -681,8 +630,6 @@ class CONTENT_EXPORT RenderFrameImpl
       const base::UnguessableToken& input_stream_id,
       const std::string& output_device_id) override;
   void DidMeaningfulLayout(blink::WebMeaningfulLayout layout_type) override;
-  void WasHidden() override;
-  void WasShown() override;
 
   blink::WebURL LastCommittedUrlForUKM() override;
   void ScriptedPrint() override;
@@ -711,11 +658,6 @@ class CONTENT_EXPORT RenderFrameImpl
   void BindGinJavaBridge(
       mojo::PendingAssociatedReceiver<mojom::GinJavaBridge> receiver);
 #endif
-
-  // Binds to the autoplay configuration service in the browser.
-  void BindAutoplayConfiguration(
-      mojo::PendingAssociatedReceiver<blink::mojom::AutoplayConfigurationClient>
-          receiver);
 
   void BindFrameBindingsControl(
       mojo::PendingAssociatedReceiver<mojom::FrameBindingsControl> receiver);
@@ -795,8 +737,6 @@ class CONTENT_EXPORT RenderFrameImpl
   // document) it may be inherited from the parent or opener.
   blink::ChildURLLoaderFactoryBundle* GetLoaderFactoryBundle() override;
 
-  void SetNewFeatureUsageCallback(NewFeatureUsageCallback callback) override;
-  void SetSubresourceLoadCallback(SubresourceLoadCallback callback) override;
   void SetLoadFromMemoryCacheCallback(
       LoadFromMemoryCacheCallback callback) override;
   void SetDidStartResponseCallback(DidStartResponseCallback callback) override;
@@ -813,13 +753,13 @@ class CONTENT_EXPORT RenderFrameImpl
     navigation_client_impl_ = std::move(client);
   }
 
+  base::WeakPtr<RenderFrameImpl> GetWeakPtr();
+
  protected:
   explicit RenderFrameImpl(CreateParams params);
 
   bool IsLocalRoot() const;
   const RenderFrameImpl* GetLocalRoot() const;
-
-  base::WeakPtr<RenderFrameImpl> GetWeakPtr();
 
  private:
   friend class RenderFrameImplTest;
@@ -848,7 +788,7 @@ class CONTENT_EXPORT RenderFrameImpl
   class AutoResetMember {
    public:
     AutoResetMember(RenderFrameImpl* frame,
-                    T RenderFrameImpl::*member,
+                    T RenderFrameImpl::* member,
                     T new_value)
         : weak_frame_(frame->weak_factory_.GetWeakPtr()),
           scoped_variable_(&(frame->*member)),
@@ -857,8 +797,9 @@ class CONTENT_EXPORT RenderFrameImpl
     }
 
     ~AutoResetMember() {
-      if (weak_frame_)
+      if (weak_frame_) {
         *scoped_variable_ = original_value_;
+      }
     }
 
    private:
@@ -893,7 +834,6 @@ class CONTENT_EXPORT RenderFrameImpl
   void UpdateSubresourceLoaderFactories(
       std::unique_ptr<blink::PendingURLLoaderFactoryBundle>
           subresource_loader_factories) override;
-  void SetWantErrorMessageStackTrace() override;
   void Unload(
       bool is_loading,
       blink::mojom::FrameReplicationStatePtr replicated_frame_state,
@@ -906,9 +846,6 @@ class CONTENT_EXPORT RenderFrameImpl
   void GetInterfaceProvider(
       mojo::PendingReceiver<service_manager::mojom::InterfaceProvider> receiver)
       override;
-  void SnapshotAccessibilityTree(
-      mojom::SnapshotAccessibilityTreeParamsPtr params,
-      SnapshotAccessibilityTreeCallback callback) override;
   void GetSerializedHtmlWithLocalLinks(
       const base::flat_map<GURL, base::FilePath>& url_map,
       const base::flat_map<blink::FrameToken, base::FilePath>& frame_token_map,
@@ -948,21 +885,6 @@ class CONTENT_EXPORT RenderFrameImpl
           keep_alive_loader_factory,
       mojo::PendingAssociatedRemote<blink::mojom::FetchLaterLoaderFactory>
           fetch_later_loader_factory);
-
-  // Update current main frame's encoding and send it to browser window.
-  // Since we want to let users see the right encoding info from menu
-  // before finishing loading, we call the UpdateEncoding in
-  // a) function:DidCommitLoadForFrame. When this function is called,
-  // that means we have got first data. In here we try to get encoding
-  // of page if it has been specified in http header.
-  // b) function:DidReceiveTitle. When this function is called,
-  // that means we have got specified title. Because in most of webpages,
-  // title tags will follow meta tags. In here we try to get encoding of
-  // page if it has been specified in meta tag.
-  // c) function:DidDispatchDOMContentLoadedEvent. When this function is
-  // called, that means we have got whole html page. In here we should
-  // finally get right encoding of page.
-  void UpdateEncoding(blink::WebFrame* frame, const std::string& encoding_name);
 
   void InitializeMediaStreamDeviceObserver();
 
@@ -1276,12 +1198,6 @@ class CONTENT_EXPORT RenderFrameImpl
       base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked
       observers_;
 
-  // The callback to send the feature usage to the browser process through
-  // PageLoadMetrics.
-  NewFeatureUsageCallback new_feature_usage_callback_;
-  // The callback to send the loaded subresource info to the browser process
-  // through PageLoadMetrics.
-  SubresourceLoadCallback subresource_load_callback_;
   // The callback to send the loaded resource info from memory cache to the
   // browser process through PageLoadMetrics.
   LoadFromMemoryCacheCallback load_from_memory_cache_callback_;
@@ -1302,6 +1218,7 @@ class CONTENT_EXPORT RenderFrameImpl
   // Range over the document corresponding to the actual selected text (which
   // could correspond to a substring of |selection_text_|; see above).
   gfx::Range selection_range_;
+  bool has_selection_ = false;
 
   // Implements getUserMedia() and related functionality.
   std::unique_ptr<blink::WebMediaStreamDeviceObserver>
@@ -1332,11 +1249,6 @@ class CONTENT_EXPORT RenderFrameImpl
   base::SequenceBound<content::LocalResourceURLLoaderFactory>
       local_resource_loader_;
 
-  using AutoplayOriginAndFlags = std::pair<url::Origin, int32_t>;
-  AutoplayOriginAndFlags autoplay_flags_;
-
-  mojo::AssociatedReceiver<blink::mojom::AutoplayConfigurationClient>
-      autoplay_configuration_receiver_{this};
   // The mojom::Frame can not be bound at construction because it needs the
   // WebFrame to get a TaskRunner from so it is stashed here.
   mojo::PendingAssociatedReceiver<mojom::Frame> pending_frame_receiver_;
@@ -1507,10 +1419,6 @@ class CONTENT_EXPORT RenderFrameImpl
   // |devtools_frame_token_| is only defined by the browser and is never
   // sent back from the renderer in the control calls.
   base::UnguessableToken devtools_frame_token_;
-
-  // True if the frame host wants stack traces on JavaScript console messages of
-  // kError severity.
-  bool want_error_message_stack_trace_ = false;
 
   // Used for tracking a frame's main frame document rectangle and replicating
   // it to the browser when it changes.

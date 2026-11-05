@@ -22,6 +22,7 @@ namespace extensions {
 class ChromeAutomationInternalApiDelegate;
 class ChromeMetricsPrivateDelegate;
 class ClipboardExtensionHelper;
+class CookiesApiDelegate;
 class NativeMessageHost;
 class NativeMessagePort;
 class NativeMessagePortDispatcher;
@@ -43,7 +44,7 @@ class ChromeExtensionsAPIClient : public ExtensionsAPIClient {
       const scoped_refptr<value_store::ValueStoreFactory>& factory,
       SettingsChangedCallback observer,
       std::map<settings_namespace::Namespace,
-               raw_ptr<ValueStoreCache, CtnExperimental>>* caches) override;
+               raw_ptr<ValueStoreCache, DanglingUntriaged>>* caches) override;
   void AttachWebContentsHelpers(
       content::WebContents* web_contents) const override;
   bool ShouldHideResponseHeader(const GURL& url,
@@ -107,6 +108,7 @@ class ChromeExtensionsAPIClient : public ExtensionsAPIClient {
       const override;
   MetricsPrivateDelegate* GetMetricsPrivateDelegate() override;
   MessagingDelegate* GetMessagingDelegate() override;
+  CookiesApiDelegate* GetCookiesApiDelegate() override;
 
 #if !BUILDFLAG(IS_ANDROID)
   FileSystemDelegate* GetFileSystemDelegate() override;
@@ -139,6 +141,7 @@ class ChromeExtensionsAPIClient : public ExtensionsAPIClient {
  private:
   std::unique_ptr<ChromeMetricsPrivateDelegate> metrics_private_delegate_;
   std::unique_ptr<MessagingDelegate> messaging_delegate_;
+  std::unique_ptr<CookiesApiDelegate> cookies_api_delegate_;
   std::unique_ptr<WebstorePrivateAPIDelegate> webstore_private_api_delegate_;
 
 #if !BUILDFLAG(IS_ANDROID)

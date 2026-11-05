@@ -4,6 +4,7 @@
 
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
@@ -19,6 +20,7 @@
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_bubble_view.h"
+#include "chrome/browser/ui/views/test/tab_strip_interactive_test_mixin.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_interactive_test_mixin.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -48,7 +50,8 @@ const int kShift = ui::EF_LEFT_MOUSE_BUTTON | ui::EF_SHIFT_DOWN;
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 
 class TabStripCollectionControllerInteractiveUiTest
-    : public VerticalTabsInteractiveTestMixin<InteractiveBrowserTest>,
+    : public TabStripInteractiveTestMixin<
+          VerticalTabsInteractiveTestMixin<InteractiveBrowserTest>>,
       public testing::WithParamInterface<TabStripOrientation> {
  public:
   TabStripCollectionControllerInteractiveUiTest() = default;
@@ -60,8 +63,8 @@ class TabStripCollectionControllerInteractiveUiTest
   }
 
   void SetUpOnMainThread() override {
-    VerticalTabsInteractiveTestMixin<
-        InteractiveBrowserTest>::SetUpOnMainThread();
+    TabStripInteractiveTestMixin<VerticalTabsInteractiveTestMixin<
+        InteractiveBrowserTest>>::SetUpOnMainThread();
     if (is_horizontal()) {
       ExitVerticalTabsMode();
     }
@@ -69,8 +72,9 @@ class TabStripCollectionControllerInteractiveUiTest
 
   const std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
       override {
-    auto enabled = VerticalTabsInteractiveTestMixin<
-        InteractiveBrowserTest>::GetEnabledFeatures();
+    auto enabled =
+        TabStripInteractiveTestMixin<VerticalTabsInteractiveTestMixin<
+            InteractiveBrowserTest>>::GetEnabledFeatures();
     enabled.push_back({tabs::kTabStripUnification, {}});
     return enabled;
   }
@@ -133,6 +137,7 @@ IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerInteractiveUiTest,
       EnsurePresent(kNewTabButtonElementId),
       PressButton(kNewTabButtonElementId,
                   ui::test::InteractionTestUtil::InputType::kDontCare),
+      FinishTabstripAnimations(),
       // Name views so we can interact with them.
       NameDescendantViewByType<TabView>(kBrowserViewElementId, kFirstTabName,
                                         0),
@@ -158,6 +163,7 @@ IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerInteractiveUiTest,
       EnsurePresent(kNewTabButtonElementId),
       PressButton(kNewTabButtonElementId,
                   ui::test::InteractionTestUtil::InputType::kDontCare),
+      FinishTabstripAnimations(),
       CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
                   2),
       // Name views so we can interact with them.
@@ -195,6 +201,7 @@ IN_PROC_BROWSER_TEST_P(
       EnsurePresent(kNewTabButtonElementId),
       PressButton(kNewTabButtonElementId,
                   ui::test::InteractionTestUtil::InputType::kDontCare),
+      FinishTabstripAnimations(),
       CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
                   2),
       // Name views so we can interact with them.
@@ -287,6 +294,7 @@ IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerInteractiveUiTest,
       EnsurePresent(kNewTabButtonElementId),
       PressButton(kNewTabButtonElementId,
                   ui::test::InteractionTestUtil::InputType::kDontCare),
+      FinishTabstripAnimations(),
       // Name views so we can interact with them.
       NameDescendantViewByType<TabView>(kBrowserViewElementId, kFirstTabName,
                                         0),
@@ -460,6 +468,7 @@ IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerInteractiveUiTest,
       WaitForShow(kNewTabButtonElementId),
       // Add a second tab and open its context menu.
       AddInstrumentedTab(kSecondTabId, GURL("https://www.example.com/")),
+      FinishTabstripAnimations(),
       NameDescendantViewByType<TabView>(kBrowserViewElementId, kSecondTabName,
                                         1),
       MoveMouseTo(kSecondTabName), ClickMouse(ui_controls::RIGHT),
@@ -532,22 +541,22 @@ IN_PROC_BROWSER_TEST_F(
         EXPECT_TRUE(group.has_value());
 
         // Focus on the group, which should override the tab strip color.
-        browser()->GetTabStripModel()->SetFocusedGroup(group.value());
+        browser()->GetTabStripModel()->EnterFocusMode(group.value());
         EXPECT_TRUE(CheckBrowserHasColorOverride());
 
         // Unset focused group, which should remove the override.
-        browser()->GetTabStripModel()->SetFocusedGroup(std::nullopt);
+        browser()->GetTabStripModel()->ExitFocusMode();
         EXPECT_FALSE(CheckBrowserHasColorOverride());
 
         // Focus on the group again, which should override the tab strip color.
-        browser()->GetTabStripModel()->SetFocusedGroup(group.value());
+        browser()->GetTabStripModel()->EnterFocusMode(group.value());
         EXPECT_TRUE(CheckBrowserHasColorOverride());
       }));
 }
 
 IN_PROC_BROWSER_TEST_F(
     TabStripCollectionControllerTabGroupFocusingInteractiveUiTest,
-    TemporaryGroupDoesNotUpdateTheme) {
+    EphemeralGroupDoesNotUpdateTheme) {
   RunTestSequence(
       // Verify Vertical Tabs is showing.
       WaitForShow(kNewTabButtonElementId),
@@ -557,16 +566,12 @@ IN_PROC_BROWSER_TEST_F(
                   ui::test::InteractionTestUtil::InputType::kDontCare),
       Do([this]() {
         EXPECT_FALSE(CheckBrowserHasColorOverride());
-        const tab_groups::TabGroupId temp_group =
-            browser()->GetTabStripModel()->AddToNewGroup({0, 1},
-                                                         /*is_temporary=*/true);
-
-        // Focus on the temporary group, which should not override the color.
-        browser()->GetTabStripModel()->SetFocusedGroup(temp_group);
+        // Focus on an ephemeral group, which should not override the color.
+        browser()->GetTabStripModel()->EnterFocusMode({0, 1});
         EXPECT_FALSE(CheckBrowserHasColorOverride());
 
         // Unset focused group, which should remain without color override.
-        browser()->GetTabStripModel()->SetFocusedGroup(std::nullopt);
+        browser()->GetTabStripModel()->ExitFocusMode();
         EXPECT_FALSE(CheckBrowserHasColorOverride());
       }));
 }
@@ -574,6 +579,7 @@ IN_PROC_BROWSER_TEST_F(
 IN_PROC_BROWSER_TEST_F(
     TabStripCollectionControllerTabGroupFocusingInteractiveUiTest,
     UnfocusButtonShowsWhenGroupFocused) {
+  base::HistogramTester histogram_tester;
   RunTestSequence(
       // Verify Vertical Tabs is showing.
       WaitForShow(kNewTabButtonElementId),
@@ -588,13 +594,18 @@ IN_PROC_BROWSER_TEST_F(
         EXPECT_TRUE(group.has_value());
 
         // Focus on the group, which should show the unfocus button.
-        browser()->GetTabStripModel()->SetFocusedGroup(group.value());
+        browser()->GetTabStripModel()->EnterFocusMode(group.value());
       }),
-      WaitForShow(kUnfocusTabGroupButtonElementId), Do([this]() {
-        // Unset focused group, which should hide the button.
-        browser()->GetTabStripModel()->SetFocusedGroup(std::nullopt);
-      }),
-      WaitForHide(kUnfocusTabGroupButtonElementId));
+      WaitForShow(kUnfocusTabGroupButtonElementId),
+      PressButton(kUnfocusTabGroupButtonElementId),
+      WaitForHide(kUnfocusTabGroupButtonElementId),
+      Do([this, &histogram_tester]() {
+        EXPECT_EQ(browser()->GetTabStripModel()->GetFocusedGroup(),
+                  std::nullopt);
+        histogram_tester.ExpectUniqueSample(
+            "TabGroups.Focus.ExitReason",
+            TabGroupFocusExitReason::kHeaderUnfocusButton, 1);
+      }));
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -635,7 +646,7 @@ IN_PROC_BROWSER_TEST_F(
                     EXPECT_EQ(model->active_index(), 0);
 
                     // 2. Enter Focus Mode on group 1.
-                    model->SetFocusedGroup(group1);
+                    model->EnterFocusMode(group1);
                     EXPECT_EQ(model->GetFocusedGroup(), group1);
 
                     // FocusNextTabGroup should cycle focus.
@@ -662,22 +673,21 @@ IN_PROC_BROWSER_TEST_F(
 
 IN_PROC_BROWSER_TEST_F(
     TabStripCollectionControllerTabGroupFocusingInteractiveUiTest,
-    FocusNextAndPreviousTabGroup_TemporaryGroup) {
+    FocusNextAndPreviousTabGroup_EphemeralGroup) {
   RunTestSequence(WaitForShow(kNewTabButtonElementId),
                   PressButton(kNewTabButtonElementId), Do([&]() {
                     TabStripModel* model = browser()->GetTabStripModel();
                     ASSERT_EQ(model->count(), 2);
                     model->AddToNewGroup({0});
-                    tab_groups::TabGroupId temp_group =
-                        model->AddToNewGroup({1}, /*is_temporary=*/true);
-                    model->SetFocusedGroup(temp_group);
-                    EXPECT_EQ(model->GetFocusedGroup(), temp_group);
+                    tab_groups::TabGroupId ephemeral_group =
+                        model->EnterFocusMode({1});
+                    EXPECT_EQ(model->GetFocusedGroup(), ephemeral_group);
 
                     chrome::FocusNextTabGroup(browser());
-                    EXPECT_EQ(model->GetFocusedGroup(), temp_group);
+                    EXPECT_EQ(model->GetFocusedGroup(), ephemeral_group);
 
                     chrome::FocusPreviousTabGroup(browser());
-                    EXPECT_EQ(model->GetFocusedGroup(), temp_group);
+                    EXPECT_EQ(model->GetFocusedGroup(), ephemeral_group);
                   }));
 }
 

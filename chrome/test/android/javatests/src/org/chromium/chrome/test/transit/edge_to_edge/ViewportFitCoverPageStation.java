@@ -29,9 +29,10 @@ public class ViewportFitCoverPageStation extends WebPageStation {
     public static final String PATH_VIEWPORT_FIT_COVER_SUB_FRAMES =
             "/chrome/test/data/android/edge_to_edge/viewport-fit-cover-sub-frames-main.html";
 
-    public static final HtmlElementSpec AVOID_BOTTOM_DIV = new HtmlElementSpec("positioned-bottom");
+    public static final HtmlElementSpec AVOID_BOTTOM_DIV =
+            new HtmlElementSpec("#positioned-bottom");
     public static final HtmlElementSpec FULLSCREEN_MAIN_BUTTON =
-            new HtmlElementSpec("fullscreen-main");
+            new HtmlElementSpec("#fullscreen-main");
 
     public final HtmlElement avoidBottomElement;
     public final HtmlElement fullScreenButtonElement;
@@ -41,9 +42,18 @@ public class ViewportFitCoverPageStation extends WebPageStation {
         super(config);
 
         // Ensure the web page elements are drawn and visible.
-        avoidBottomElement = declareElement(new HtmlElement(AVOID_BOTTOM_DIV, webContentsElement));
+        avoidBottomElement =
+                declareElement(
+                        new HtmlElement(
+                                AVOID_BOTTOM_DIV,
+                                webContentsElement,
+                                HtmlElement.inViewportOption()));
         fullScreenButtonElement =
-                declareElement(new HtmlElement(FULLSCREEN_MAIN_BUTTON, webContentsElement));
+                declareElement(
+                        new HtmlElement(
+                                FULLSCREEN_MAIN_BUTTON,
+                                webContentsElement,
+                                HtmlElement.inViewportOption()));
 
         // Declare requiring EdgeToEdgeController, meaning #setDecorFitsSystemWindows(false)
         declareEnterCondition(new EdgeToEdgeControllerCondition(mActivityElement));

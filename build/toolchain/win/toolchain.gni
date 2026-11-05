@@ -52,30 +52,17 @@ template("msvc_toolchain") {
       toolchain_is_clang = is_clang
     }
 
-    # When the invoker has explicitly overridden use_reclient or cc_wrapper in
-    # the toolchain args, use those values, otherwise default to the global one.
+    # When the invoker has explicitly overridden cc_wrapper in the
+    # toolchain args, use those values, otherwise default to the global one.
     # This works because the only reasonable override that toolchains might
     # supply for these values are to force-disable them.
-    if (defined(toolchain_args.use_reclient)) {
-      toolchain_uses_reclient = toolchain_args.use_reclient
-    } else {
-      toolchain_uses_reclient = use_reclient
-    }
     if (defined(toolchain_args.cc_wrapper)) {
       toolchain_cc_wrapper = toolchain_args.cc_wrapper
     } else {
       toolchain_cc_wrapper = cc_wrapper
     }
-    assert(!(toolchain_cc_wrapper != "" && toolchain_uses_reclient),
-           "re-client and cc_wrapper can't be used together.")
 
-    if (toolchain_uses_reclient) {
-      if (toolchain_is_clang) {
-        cl_prefix = "${reclient_bin_dir}/rewrapper -cfg=${reclient_cc_cfg_file}${rbe_bug_326584510_missing_inputs} -exec_root=${rbe_exec_root} -labels=type=compile,compiler=clang-cl,lang=cpp "
-      } else {
-        cl_prefix = ""
-      }
-    } else if (toolchain_cc_wrapper != "" && toolchain_is_clang) {
+    if (toolchain_cc_wrapper != "" && toolchain_is_clang) {
       cl_prefix = toolchain_cc_wrapper + " "
     } else {
       cl_prefix = ""
@@ -197,7 +184,11 @@ template("msvc_toolchain") {
             rebase_path(toolchain_coverage_instrumentation_input_file,
                         root_build_dir)
       }
-      coverage_wrapper = "$python_path " + coverage_wrapper + " "
+
+      # LINT.IfChange(coverage_wrapper)
+      coverage_wrapper = "$python_path -ES " + coverage_wrapper + " "
+
+      # LINT.ThenChange(//build/config/siso/platform.star:python_bin)
     } else {
       coverage_wrapper = ""
     }
@@ -399,11 +390,11 @@ template("msvc_toolchain") {
         # We must always prefix with `lib` even if the library already starts
         # with that prefix or else our stdlib is unable to find libc.rlib (or
         # actually liblibc.rlib).
+        rmetaname = "{{output_dir}}/lib{{target_output_name}}.rmeta"
         rlibname =
             "{{output_dir}}/lib{{target_output_name}}{{output_extension}}"
         rspfile = rustc_rsp_path
         depfile = "$rlibname.d"
-        rmetaname = "{{output_dir}}/lib{{target_output_name}}.rmeta"
 
         default_output_extension = ".rlib"
 
@@ -499,13 +490,13 @@ template("msvc_toolchain") {
 
       tool("rust_dylib") {
         # E.g. "foo.dll":
+        rmetaname = "{{output_dir}}/lib{{target_output_name}}.rmeta"
         dllname = "{{output_dir}}/{{target_output_name}}{{output_extension}}"
         libname = "$dllname.lib"  # e.g. foo.dll.lib
         pdbname = "$dllname.pdb"
         rspfile = rustc_rsp_path
         depfile = "$dllname.d"
         pool = "//build/toolchain:link_pool($default_toolchain)"
-        rmetaname = "{{output_dir}}/lib{{target_output_name}}.rmeta"
 
         default_output_extension = ".dll"
         default_output_dir = "{{root_out_dir}}"

@@ -10,7 +10,6 @@
 #include "ash/webui/boca_ui/url_constants.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_session_window_tracker.h"
 #include "chrome/browser/login_detection/login_detection_util.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/boca/boca_role_util.h"
 #include "chromeos/ash/components/boca/on_task/on_task_blocklist.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -55,10 +54,16 @@ bool DoAllQueryParamsExist(const std::set<std::string>& request_params,
 }
 
 // Returns whether the url is the start of an Oauth login.
+// TODO(b/541544177): Harden `login_detection_util` to offer all indicators
+// needed to reliably detect an OAuth login start.
 bool IsOauthLoginStart(const GURL& url) {
-  return url.SchemeIsHTTPOrHTTPS() &&
-         DoAllQueryParamsExist(login_detection::GetOAuthLoginStartQueryParams(),
-                               url);
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return false;
+  }
+  std::set<std::string> params =
+      login_detection::GetOAuthLoginStartQueryParams();
+  params.insert("response_type");
+  return DoAllQueryParamsExist(params, url);
 }
 
 // Returns whether the url is the completion of an Oauth login.
@@ -87,6 +92,14 @@ content::WebContents* GetWebContentsForTabId(BrowserDelegate* browser,
   return nullptr;
 }
 
+bool IsTabInBrowser(BrowserDelegate* browser, content::WebContents* tab) {
+  if (!browser || !tab) {
+    return false;
+  }
+  return GetWebContentsForTabId(
+             browser, sessions::SessionTabHelper::IdForTab(tab)) != nullptr;
+}
+
 bool IsBocaAppHostURL(const GURL& url) {
   return (url.SchemeIs(content::kChromeUIUntrustedScheme) &&
           url.GetHost() == boca::kChromeBocaAppHost);
@@ -99,15 +112,22 @@ content::WebContents* GetParentTab(content::NavigationHandle* navigation_handle,
                                    OnTaskBlocklist* on_task_blocklist,
                                    LockedSessionWindowTracker* window_tracker) {
   content::WebContents* navigating_tab = navigation_handle->GetWebContents();
+  if (on_task_blocklist->IsParentTab(navigating_tab)) {
+    return nullptr;
+  }
+  BrowserDelegate* const tracked_browser = window_tracker->browser();
   content::WebContents* parent_tab =
       navigating_tab->GetFirstWebContentsInLiveOriginalOpenerChain();
+  if (!IsTabInBrowser(tracked_browser, parent_tab) ||
+      parent_tab == navigating_tab) {
+    parent_tab = nullptr;
+  }
   if (!parent_tab) {
     // Normally happens when the site uses noopener on links. We fall back to
     // the one tracked by the blocklist if there is one instead.
     const SessionID parent_tab_id =
         on_task_blocklist->GetParentTabId(navigating_tab);
     if (parent_tab_id.is_valid()) {
-      BrowserDelegate* const tracked_browser = window_tracker->browser();
       parent_tab = GetWebContentsForTabId(tracked_browser, parent_tab_id);
     }
 
@@ -123,9 +143,26 @@ content::WebContents* GetParentTab(content::NavigationHandle* navigation_handle,
                   navigation_handle->GetInitiatorFrameToken().value()));
       if (initiator_rfh) {
         parent_tab = content::WebContents::FromRenderFrameHost(initiator_rfh);
-        if (parent_tab == navigating_tab) {
+        if (!IsTabInBrowser(tracked_browser, parent_tab) ||
+            parent_tab == navigating_tab) {
           parent_tab = nullptr;
         }
+      }
+    }
+
+    // Fall back to the active tab for new tabs spawned without an in-app opener
+    // or initiator (e.g. `chrome.tabs.create` from an extension popup/service
+    // worker or browser context-menu actions like "Search Google for...") so
+    // they inherit the active tab's restriction instead of `OPEN_NAVIGATION`.
+    const SessionID navigating_tab_id =
+        sessions::SessionTabHelper::IdForTab(navigating_tab);
+    if (!parent_tab && tracked_browser &&
+        !on_task_blocklist->child_tab_to_nav_filters().contains(
+            navigating_tab_id)) {
+      content::WebContents* const active_tab =
+          tracked_browser->GetActiveWebContents();
+      if (active_tab != navigating_tab) {
+        parent_tab = active_tab;
       }
     }
   }
@@ -335,17 +372,26 @@ OnTaskLockedSessionNavigationThrottle::CheckRestrictions() {
     return PROCEED;
   }
 
-  // Checks if the query is the end of an OAuth login. If so, then we want
-  // to let these pass.
-  if (IsOauthLoginComplete(url)) {
+  // Checks if the query is the end of an OAuth login. Only allow completion
+  // URLs to bypass restrictions when an OAuth login flow is actively tracked.
+  if (window_tracker->oauth_in_progress() && IsOauthLoginComplete(url)) {
     should_redirects_pass_ = true;
     return PROCEED;
   }
 
+  const bool is_popup_navigation =
+      content_browser && content_browser->GetType() == BrowserType::kAppPopup;
+  const bool is_valid_content_tab =
+      navigating_tab->GetLastCommittedURL().is_valid() &&
+      !IsBocaAppHostURL(navigating_tab->GetLastCommittedURL());
+
   // Checks if the query is the start of an OAuth login. If so, then we want
-  // to let these pass.
-  if (IsOauthLoginStart(url)) {
-    window_tracker->set_oauth_in_progress(true, content_browser);
+  // to let these pass when triggered in an OAuth popup or an already-committed
+  // content tab.
+  if (IsOauthLoginStart(url) && (is_popup_navigation || is_valid_content_tab)) {
+    if (is_popup_navigation) {
+      window_tracker->set_oauth_in_progress(true, content_browser);
+    }
     // Set `should_redirects_pass_` to true in case the Oauth login flow happens
     // in the main tab and not in a popup window. This ensures that we are still
     // letting Oauth login flows to proceed.

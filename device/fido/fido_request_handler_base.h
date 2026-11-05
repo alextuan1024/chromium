@@ -48,9 +48,8 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoRequestHandlerBase
  public:
   using RequestCallback = base::RepeatingCallback<void(const std::string&)>;
 
-  using AuthenticatorMap = std::map<std::string,
-                                    raw_ptr<FidoAuthenticator, CtnExperimental>,
-                                    std::less<>>;
+  using AuthenticatorMap =
+      std::map<std::string, raw_ptr<FidoAuthenticator>, std::less<>>;
 
   // BLE adapter status.
   enum class BleStatus {
@@ -96,7 +95,7 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoRequestHandlerBase
 
     // The intersection of transports supported by the client and allowed by the
     // relying party.
-    base::flat_set<FidoTransportProtocol> available_transports;
+    FidoTransportProtocolSet available_transports;
 
     // Whether the platform authenticator has a matching credential for the
     // request. This is only set for a GetAssertion request.
@@ -188,7 +187,6 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoRequestHandlerBase
     // makeCredential requests. See also `request_is_internal_only`, which isn't
     // specific to makeCredential requests.
     std::optional<AuthenticatorAttachment> make_credential_attachment;
-
   };
 
   class COMPONENT_EXPORT(DEVICE_FIDO) Observer {
@@ -282,14 +280,13 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoRequestHandlerBase
 
   // The |available_transports| should be the intersection of transports
   // supported by the client and allowed by the relying party.
-  FidoRequestHandlerBase(
-      FidoDiscoveryFactory* fido_discovery_factory,
-      const base::flat_set<FidoTransportProtocol>& available_transports);
+  FidoRequestHandlerBase(FidoDiscoveryFactory* fido_discovery_factory,
+                         FidoTransportProtocolSet available_transports);
 
   FidoRequestHandlerBase(
       FidoDiscoveryFactory* fido_discovery_factory,
       std::vector<std::unique_ptr<FidoDiscoveryBase>> additional_discoveries,
-      const base::flat_set<FidoTransportProtocol>& available_transports);
+      FidoTransportProtocolSet available_transports);
 
   FidoRequestHandlerBase(const FidoRequestHandlerBase&) = delete;
   FidoRequestHandlerBase& operator=(const FidoRequestHandlerBase&) = delete;
@@ -364,8 +361,7 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoRequestHandlerBase
   void InitDiscoveries(
       FidoDiscoveryFactory* fido_discovery_factory,
       std::vector<std::unique_ptr<FidoDiscoveryBase>> additional_discoveries,
-      base::flat_set<FidoTransportProtocol> available_transports,
-      bool consider_enclave);
+      FidoTransportProtocolSet available_transports);
 
   void Start();
 

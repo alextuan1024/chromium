@@ -21,7 +21,7 @@
 #include "components/tab_groups/tab_group_id.h"     // nogncheck
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/mojom/context_type.mojom-forward.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -72,6 +72,8 @@ class ExtensionTabUtil {
       "You cannot create new tabs while in locked fullscreen mode.";
   static constexpr char kCannotNavigateToChromeUntrusted[] =
       "Cannot navigate to a chrome-untrusted:// page.";
+  static constexpr char kCannotNavigateToInternalPage[] =
+      "Cannot navigate to internal page.";
   static constexpr char kFileUrlsNotAllowedInExtensionNavigations[] =
       "Cannot navigate to a file URL without local file access.";
 
@@ -192,7 +194,7 @@ class ExtensionTabUtil {
 
   // Returns true if the `browser` supports tab groups in its tab strip. For
   // example, tab groups are not supported by many app types (PWAs, WebApks,
-  // Chrome Apps, etc.).
+  // Chrome Apps, etc.). Returns false if `browser` is null.
   static bool SupportsTabGroups(BrowserWindowInterface* browser);
 
   // Gets the metadata for the group with ID `group_id`. Sets the `error` if not
@@ -255,7 +257,7 @@ class ExtensionTabUtil {
   // Navigates to a URL, triggered by a given `source_contents`. Navigation may
   // be asynchronous and `done_callback` is invoked when the navigate has been
   // fully initiated.
-  static void NavigateToURL(WindowOpenDisposition disposition,
+  static void NavigateToURL(ui::mojom::WindowOpenDisposition disposition,
                             content::WebContents* source_contents,
                             const GURL& url,
                             base::OnceClosure done_callback);
@@ -287,6 +289,11 @@ class ExtensionTabUtil {
       const Extension* extension,
       content::WebContents* web_contents);
 
+  // Returns the WindowController associated with the given `web_contents`, or
+  // nullptr if none exists. First checks if `web_contents` belongs to a
+  // BrowserWindowInterface; otherwise falls back to looking up the
+  // WindowController by the window SessionID recorded on `web_contents` (e.g.
+  // for standalone WindowControllers or transiently detached tabs).
   static WindowController* GetWindowControllerOfTab(
       content::WebContents* web_contents);
 

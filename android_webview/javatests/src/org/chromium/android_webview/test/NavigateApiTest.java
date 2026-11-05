@@ -29,6 +29,7 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.NavigationHistory;
 import org.chromium.content_public.browser.test.util.NavigationControllerUtil;
@@ -40,6 +41,7 @@ import org.chromium.net.test.util.WebServer.HTTPRequest;
 import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -103,6 +105,95 @@ public class NavigateApiTest extends AwParameterizedTest {
         // ... results in a page load.
         mOnPageLoadFinished.waitForCallback(currentCallCount);
         Assert.assertEquals(1, mWebServer.getRequestCount(PAGE1_PATH));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add({"enable-features=WebViewNavigate"})
+    public void navigate_failure_invalidUrl() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    IllegalArgumentException thrown =
+                            Assert.assertThrows(
+                                    IllegalArgumentException.class,
+                                    () -> mAwContents.navigate("http://\u0000badurl.com"));
+                    Assert.assertTrue(
+                            "Message should mention invalid URL: " + thrown.getMessage(),
+                            thrown.getMessage().contains("Invalid URL"));
+                });
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add({"enable-features=WebViewNavigate"})
+    @RequiresRestart("crbug.com/579453055: chrome://hang hangs the shared WebView renderer process")
+    public void navigate_failure_rendererDebugUrl() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    IllegalArgumentException thrown =
+                            Assert.assertThrows(
+                                    IllegalArgumentException.class,
+                                    () -> mAwContents.navigate("chrome://hang"));
+                    Assert.assertTrue(
+                            "Message should mention debug URL: " + thrown.getMessage(),
+                            thrown.getMessage().contains("URL does not result in a navigation"));
+                });
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add(
+            "enable-features=WebViewNavigate,IgnoreDuplicateNavs,"
+                    + "WebViewIgnoreDuplicateNavs:duplicate_nav_threshold/3s")
+    public void navigate_duplicateReturnsOngoingNavigation() throws Throwable {
+        // Load an empty page to exit the initial empty document state. Without this, the initial
+        // navigation would have 'should_replace_current_entry' set to true, causing a mismatch with
+        // the second navigation's flag and making those navs non-duplicate.
+        final String emptyUrl = mWebServer.setResponse("/empty.html", "empty", null);
+        mActivityTestRule.loadUrlSync(
+                mAwContents, mContentsClient.getOnPageFinishedHelper(), emptyUrl);
+
+        final String htmlPath = "/testDuplicateNav.html";
+        final CountDownLatch latch1 = new CountDownLatch(1);
+        final CountDownLatch latch2 = new CountDownLatch(1);
+        final String url =
+                mWebServer.setResponseWithRunnableAction(
+                        htmlPath,
+                        "response",
+                        null,
+                        () -> {
+                            latch1.countDown();
+                            try {
+                                latch2.await();
+                            } catch (InterruptedException e) {
+                            }
+                        });
+
+        AtomicReference<AwNavigation> nav1Ref = new AtomicReference<>();
+        AtomicReference<AwNavigation> nav2Ref = new AtomicReference<>();
+
+        int currentCallCount = mOnPageLoadFinished.getCallCount();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    nav1Ref.set(mAwContents.navigate(url));
+                });
+        latch1.await();
+
+        // Second navigation to the same URL within threshold should return the ongoing navigation.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    nav2Ref.set(mAwContents.navigate(url));
+                });
+        latch2.countDown();
+
+        mOnPageLoadFinished.waitForCallback(currentCallCount);
+
+        Assert.assertNotNull(nav1Ref.get());
+        Assert.assertSame(nav1Ref.get(), nav2Ref.get());
+        Assert.assertEquals(1, mWebServer.getRequestCount(htmlPath));
     }
 
     @Test
@@ -593,6 +684,122 @@ public class NavigateApiTest extends AwParameterizedTest {
         }
     }
 
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add({"enable-features=WebViewNavigate"})
+    public void referrer() throws Exception {
+        AwActivityTestRule.enableJavaScriptOnUiThread(mAwContents);
+        int currentCallCount = mOnPageLoadFinished.getCallCount();
+        final String referrer = "http://www.example.com/";
+
+        // Test that calling navigate with a referrer...
+        AwNavigationParams params = paramsWithReferrer(mPage1Url, referrer);
+        ThreadUtils.runOnUiThreadBlocking(() -> mAwContents.navigate(params));
+
+        mOnPageLoadFinished.waitForCallback(currentCallCount);
+        Assert.assertEquals(1, mWebServer.getRequestCount(PAGE1_PATH));
+
+        // ... sends it to the server...
+        Assert.assertEquals(referrer, getHeader(mWebServer.getLastRequest(PAGE1_PATH), "Referer"));
+
+        // ... and exposes it to the page.
+        Assert.assertEquals(
+                "\"" + referrer + "\"",
+                mActivityTestRule.executeJavaScriptAndWaitForResult(
+                        mAwContents, mContentsClient, "document.referrer"));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add({"enable-features=WebViewNavigate"})
+    public void referrer_reducedToOriginWhenCrossOrigin() throws Exception {
+        int currentCallCount = mOnPageLoadFinished.getCallCount();
+
+        // Test that a cross-origin referrer with a path and query...
+        AwNavigationParams params =
+                paramsWithReferrer(mPage1Url, "http://www.example.com/path?query");
+        ThreadUtils.runOnUiThreadBlocking(() -> mAwContents.navigate(params));
+
+        mOnPageLoadFinished.waitForCallback(currentCallCount);
+        Assert.assertEquals(1, mWebServer.getRequestCount(PAGE1_PATH));
+
+        // ... is reduced to its origin, per the default strict-origin-when-cross-origin policy.
+        Assert.assertEquals(
+                "http://www.example.com/",
+                getHeader(mWebServer.getLastRequest(PAGE1_PATH), "Referer"));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add({"enable-features=WebViewNavigate"})
+    public void referrer_sentInFullWhenSameOrigin() throws Exception {
+        int currentCallCount = mOnPageLoadFinished.getCallCount();
+        final String referrer = mPage2Url + "?query";
+
+        // Test that a same-origin referrer...
+        AwNavigationParams params = paramsWithReferrer(mPage1Url, referrer);
+        ThreadUtils.runOnUiThreadBlocking(() -> mAwContents.navigate(params));
+
+        mOnPageLoadFinished.waitForCallback(currentCallCount);
+        Assert.assertEquals(1, mWebServer.getRequestCount(PAGE1_PATH));
+
+        // ... is sent in full.
+        Assert.assertEquals(referrer, getHeader(mWebServer.getLastRequest(PAGE1_PATH), "Referer"));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add({"enable-features=WebViewNavigate"})
+    public void referrer_takesPrecedenceOverRefererHeader() throws Exception {
+        int currentCallCount = mOnPageLoadFinished.getCallCount();
+        final String referrer = "http://www.example.com/";
+
+        // Test that when navigate is called with both a referrer and a Referer header...
+        AwNavigationParams params =
+                new AwNavigationParams(
+                        mPage1Url,
+                        /* shouldReplaceCurrentEntry= */ false,
+                        Map.of("Referer", "http://www.other.com/"),
+                        referrer);
+        ThreadUtils.runOnUiThreadBlocking(() -> mAwContents.navigate(params));
+
+        mOnPageLoadFinished.waitForCallback(currentCallCount);
+        Assert.assertEquals(1, mWebServer.getRequestCount(PAGE1_PATH));
+
+        // ... the referrer is used.
+        Assert.assertEquals(referrer, getHeader(mWebServer.getLastRequest(PAGE1_PATH), "Referer"));
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    @CommandLineFlags.Add({"enable-features=WebViewNavigate"})
+    public void referrer_failure_invalidReferrer() {
+        AwNavigationParams invalidReferrer = paramsWithReferrer(mPage1Url, "not a url");
+        AwNavigationParams nonHttpReferrer =
+                paramsWithReferrer(mPage1Url, "android-app://com.example.app/");
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    // Test that navigate throws for a referrer that isn't a valid URL...
+                    Assert.assertThrows(
+                            IllegalArgumentException.class,
+                            () -> mAwContents.navigate(invalidReferrer));
+
+                    // ... or that isn't an http(s) URL, as it couldn't be sent...
+                    Assert.assertThrows(
+                            IllegalArgumentException.class,
+                            () -> mAwContents.navigate(nonHttpReferrer));
+                });
+
+        // ... without starting a navigation.
+        Assert.assertEquals(0, mWebServer.getRequestCount(PAGE1_PATH));
+    }
+
     @Nullable
     private static String getHeader(HTTPRequest request, String key) {
         HTTPHeader[] headers = request.getHeaders();
@@ -621,13 +828,18 @@ public class NavigateApiTest extends AwParameterizedTest {
 
     private static AwNavigationParams paramsWithReplaceCurrentEntry(String url) {
         boolean shouldReplaceCurrentEntry = true;
-        return new AwNavigationParams(url, shouldReplaceCurrentEntry, null);
+        return new AwNavigationParams(url, shouldReplaceCurrentEntry, null, /* referrer= */ null);
     }
 
     private static AwNavigationParams paramsWithExtraHeader(
             String url, String header, String headerValue) {
         boolean replace = false;
         Map<String, String> headers = Map.of(header, headerValue);
-        return new AwNavigationParams(url, replace, headers);
+        return new AwNavigationParams(url, replace, headers, /* referrer= */ null);
+    }
+
+    private static AwNavigationParams paramsWithReferrer(String url, String referrer) {
+        boolean replace = false;
+        return new AwNavigationParams(url, replace, /* extraHeaders= */ null, referrer);
     }
 }

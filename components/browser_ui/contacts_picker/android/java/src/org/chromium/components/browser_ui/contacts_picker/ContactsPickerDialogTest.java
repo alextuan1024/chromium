@@ -31,7 +31,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
@@ -87,7 +86,8 @@ public class ContactsPickerDialogTest
     public RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.BLINK_CONTACTS)
-                    .setRevision(1)
+                    .setRevision(2)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .build();
 
     // The dialog we are testing.
@@ -146,9 +146,7 @@ public class ContactsPickerDialogTest
 
     @Before
     public void setupTest() throws Exception {
-        FakeAconfigFlaggedApiDelegate fakeDelegate = new FakeAconfigFlaggedApiDelegate();
-        fakeDelegate.setSystemContactsPickerEnabled(false);
-        AconfigFlaggedApiDelegate.setInstanceForTesting(fakeDelegate);
+        ContactsPickerFeatureMap.setSystemContactsPickerEnabledForTesting(false);
 
         mWindowAndroid =
                 ThreadUtils.runOnUiThreadBlocking(
@@ -382,9 +380,8 @@ public class ContactsPickerDialogTest
         mLastActionRecorded = ContactsPickerAction.NUM_ENTRIES;
 
         PickerCategoryView categoryView = mDialog.getCategoryViewForTesting();
-        View cancel = new View(mActivity);
         int callCount = onActionCallback.getCallCount();
-        categoryView.onClick(cancel);
+        ThreadUtils.runOnUiThreadBlocking(() -> categoryView.onClick(new View(mActivity)));
         onActionCallback.waitForCallback(callCount, 1);
         Assert.assertEquals(ContactsPickerAction.CANCEL, mLastActionRecorded);
 

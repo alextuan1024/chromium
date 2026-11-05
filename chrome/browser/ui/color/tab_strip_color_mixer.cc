@@ -146,6 +146,10 @@ void AddTabStripColorMixer(ui::ColorProvider* provider,
       ui::AlphaBlend(kColorTabBackgroundActiveFrameInactive,
                      kColorTabBackgroundInactiveFrameInactive,
                      /* 40% opacity */ 0.4 * SK_AlphaOPAQUE)};
+  mixer[kColorTabForegroundInactiveHoverFrameActive] = {
+      kColorTabForegroundInactiveFrameActive};
+  mixer[kColorTabForegroundInactiveHoverFrameInactive] = {
+      kColorTabForegroundInactiveFrameInactive};
   mixer[kColorTabBackgroundSelectedFrameActive] = {
       ui::AlphaBlend(kColorTabBackgroundActiveFrameActive,
                      kColorTabBackgroundInactiveFrameActive,
@@ -207,11 +211,31 @@ void AddTabStripColorMixer(ui::ColorProvider* provider,
       kColorNewTabButtonCRForegroundFrameActive};
   mixer[kColorTabSearchButtonCRForegroundFrameInactive] = {
       kColorNewTabButtonCRForegroundFrameInactive};
+  mixer[kColorTabGroupEphemeralHeaderBackgroundFrameActive] = {
+      kColorTabBackgroundInactiveFrameActive};
+  mixer[kColorTabGroupEphemeralHeaderBackgroundFrameInactive] = {
+      kColorTabBackgroundInactiveFrameInactive};
+  mixer[kColorTabGroupEphemeralHeaderForegroundFrameActive] =
+      ui::BlendForMinContrast(
+          kColorTabForegroundInactiveFrameActive,
+          kColorTabGroupEphemeralHeaderBackgroundFrameActive,
+          ui::GetColorWithMaxContrast(
+              kColorTabGroupEphemeralHeaderBackgroundFrameActive));
+  mixer[kColorTabGroupEphemeralHeaderForegroundFrameInactive] =
+      ui::BlendForMinContrast(
+          kColorTabForegroundInactiveFrameInactive,
+          kColorTabGroupEphemeralHeaderBackgroundFrameInactive,
+          ui::GetColorWithMaxContrast(
+              kColorTabGroupEphemeralHeaderBackgroundFrameInactive));
   mixer[kColorTabStripComboButtonSeparator] = {ui::kColorSeparator};
   mixer[kColorTabStripControlButtonInkDrop] = ui::SetAlpha(
       kColorNewTabButtonInkDropFrameActive, std::ceil(0.16f * 255.0f));
+  mixer[kColorTabStripControlButtonInkDropFrameInactive] = ui::SetAlpha(
+      kColorNewTabButtonInkDropFrameInactive, std::ceil(0.16f * 255.0f));
   mixer[kColorTabStripControlButtonInkDropRipple] = ui::SetAlpha(
       kColorNewTabButtonInkDropFrameActive, std::ceil(0.14f * 255.0f));
+  mixer[kColorTabStripControlButtonInkDropRippleFrameInactive] = ui::SetAlpha(
+      kColorNewTabButtonInkDropFrameInactive, std::ceil(0.14f * 255.0f));
 
   /* Vertical Tab Strip colors. */
   mixer[kColorVerticalTabStripShadow] =

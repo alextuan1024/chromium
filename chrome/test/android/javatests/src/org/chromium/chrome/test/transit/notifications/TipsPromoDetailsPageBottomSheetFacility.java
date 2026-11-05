@@ -58,23 +58,11 @@ public class TipsPromoDetailsPageBottomSheetFacility<
     public TipsPromoMainPageBottomSheetFacility<HostStationT> clickBackButton() {
         return backButtonElement
                 .clickTo()
-                .exitFacilityAnd()
-                .enterFacility(new TipsPromoMainPageBottomSheetFacility<>());
+                .replaceFacility(new TipsPromoMainPageBottomSheetFacility<>());
     }
 
     /** Use the system backpress to navigate back to the main page. */
     public TipsPromoMainPageBottomSheetFacility<HostStationT> pressBack() {
-        recheckActiveConditions();
-        return pressBackTo()
-                .exitFacilityAnd()
-                .enterFacility(new TipsPromoMainPageBottomSheetFacility<>());
-    }
-
-    /** Performs the positive button click action for a given feature type. */
-    @SuppressWarnings("unchecked")
-    public <T> T clickPositiveButton(int featureType, Object... extraArgs) {
-        return (T)
-                NotificationsTestUtils.clickPositiveButton(
-                        settingsButtonElement, featureType, mHostStation, extraArgs);
+        return pressBackTo().replaceFacility(new TipsPromoMainPageBottomSheetFacility<>());
     }
 }

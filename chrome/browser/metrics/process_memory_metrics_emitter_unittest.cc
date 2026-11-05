@@ -190,6 +190,8 @@ void PopulateBrowserMetrics(GlobalMemoryDumpPtr& global_dump,
   pmd->process_type = ProcessType::BROWSER;
   SetAllocatorDumpMetric(pmd, "malloc", "effective_size",
                          metrics_mb["Malloc"] * 1024 * 1024);
+  SetAllocatorDumpMetric(pmd, "site_storage/blob_storage", "effective_size",
+                         metrics_mb["SiteStorage.BlobStorage"] * 1024 * 1024);
   // These three categories are required for total gpu memory, but do not
   // have a UKM value set for them, so don't appear in metrics_mb.
   SetAllocatorDumpMetric(pmd, "gpu/gl", "effective_size",
@@ -210,6 +212,7 @@ MetricMap GetExpectedBrowserMetrics() {
       {"Malloc", 20},
       {"PrivateMemoryFootprint", 30},
       {"SharedMemoryFootprint", 35},
+      {"SiteStorage.BlobStorage", 15},
       {"Uptime", 42},
       {"GpuMemory", kGpuTotalMemory * 1024 * 1024},
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
@@ -366,7 +369,6 @@ constexpr int kTestRendererBlinkGCFragmentation = 10;
 constexpr int kTestRendererSharedMemoryFootprint = 135;
 constexpr int kNativeLibraryResidentMemoryFootprint = 27560;
 constexpr int kNativeLibraryResidentNotOrderedCodeFootprint = 12345;
-constexpr int kNativeLibraryNotResidentOrderedCodeFootprint = 23456;
 constexpr int kTestRendererResidentSet = 110;
 constexpr base::ProcessId kTestRendererPid201 = 201;
 constexpr base::ProcessId kTestRendererPid202 = 202;
@@ -669,9 +671,9 @@ class ProcessMemoryMetricsEmitterTest
       auto frame_node =
           CreateFrameNodeAutoId(process_node.get(), page_node.get());
 
-      nodes.push_back(std::move(process_node));
-      nodes.push_back(std::move(page_node));
       nodes.push_back(std::move(frame_node));
+      nodes.push_back(std::move(page_node));
+      nodes.push_back(std::move(process_node));
     }
 
     // Process kTestRendererPid202 always has 2 URL
@@ -695,11 +697,11 @@ class ProcessMemoryMetricsEmitterTest
       auto frame_node2 =
           CreateFrameNodeAutoId(process_node.get(), page_node2.get());
 
-      nodes.push_back(std::move(process_node));
-      nodes.push_back(std::move(page_node1));
       nodes.push_back(std::move(frame_node1));
-      nodes.push_back(std::move(page_node2));
+      nodes.push_back(std::move(page_node1));
       nodes.push_back(std::move(frame_node2));
+      nodes.push_back(std::move(page_node2));
+      nodes.push_back(std::move(process_node));
     }
 
     return nodes;
@@ -1127,8 +1129,6 @@ TEST_F(ProcessMemoryMetricsEmitterTest, RendererAndTotalHistogramsAreRecorded) {
 
   global_dump->aggregated_metrics->native_library_resident_kb =
       kNativeLibraryResidentMemoryFootprint;
-  global_dump->aggregated_metrics->native_library_not_resident_ordered_kb =
-      kNativeLibraryNotResidentOrderedCodeFootprint;
   global_dump->aggregated_metrics->native_library_resident_not_ordered_kb =
       kNativeLibraryResidentNotOrderedCodeFootprint;
 
@@ -1147,8 +1147,6 @@ TEST_F(ProcessMemoryMetricsEmitterTest, RendererAndTotalHistogramsAreRecorded) {
   histograms.ExpectTotalCount("Memory.Total.ResidentSet", 0);
   histograms.ExpectTotalCount(
       "Memory.NativeLibrary.MappedAndResidentMemoryFootprint3", 0);
-  histograms.ExpectTotalCount(
-      "Memory.NativeLibrary.NotResidentOrderedCodeMemoryFootprint", 0);
   histograms.ExpectTotalCount(
       "Memory.NativeLibrary.ResidentNotOrderedCodeMemoryFootprint", 0);
 #if BUILDFLAG(IS_ANDROID)
@@ -1219,9 +1217,6 @@ TEST_F(ProcessMemoryMetricsEmitterTest, RendererAndTotalHistogramsAreRecorded) {
   histograms.ExpectUniqueSample(
       "Memory.NativeLibrary.MappedAndResidentMemoryFootprint3",
       kNativeLibraryResidentMemoryFootprint, 1);
-  histograms.ExpectUniqueSample(
-      "Memory.NativeLibrary.NotResidentOrderedCodeMemoryFootprint",
-      kNativeLibraryNotResidentOrderedCodeFootprint, 1);
   histograms.ExpectUniqueSample(
       "Memory.NativeLibrary.ResidentNotOrderedCodeMemoryFootprint",
       kNativeLibraryResidentNotOrderedCodeFootprint, 1);

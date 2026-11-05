@@ -3,4 +3,5 @@ include_rules = [
   "+components/browser_actuator/internal/browser_actuator_service_impl.h",
   "+components/browser_actuator/internal/proto",
   "+components/sharing_message/proto",
+  "+components/stream_transport/internal/proto",
 ]

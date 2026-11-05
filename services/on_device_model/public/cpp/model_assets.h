@@ -6,6 +6,7 @@
 #define SERVICES_ON_DEVICE_MODEL_PUBLIC_CPP_MODEL_ASSETS_H_
 
 #include <optional>
+#include <string>
 #include <variant>
 
 #include "base/component_export.h"
@@ -31,7 +32,23 @@ struct COMPONENT_EXPORT(ON_DEVICE_MODEL_CPP) ModelAssetPaths {
   base::FilePath program_cache;
   base::FilePath encoder_program_cache;
   base::FilePath adapter_program_cache;
+  base::FilePath mtp_drafter_cache;
+  base::FilePath mtp_drafter_program_cache;
+
+  // Identifies the configuration (e.g. backend type) that will read and write
+  // the weight caches (`cache`, `encoder_cache`, `adapter_cache` and
+  // `mtp_drafter_cache`). If non-empty, each weight cache is truncated when its
+  // stored fingerprint differs, so a cache written by one configuration is
+  // never reused by another. If empty, weight caches are opened as is.
+  std::string weight_cache_fingerprint;
 };
+
+// Returns the path of the file which stores the fingerprint for the cache at
+// `cache_path`. Used to invalidate caches when their configuration or external
+// dependencies change (e.g. backend type for weight caches, or Dawn version for
+// program caches).
+COMPONENT_EXPORT(ON_DEVICE_MODEL_CPP)
+base::FilePath GetCacheFingerprintPath(const base::FilePath& cache_path);
 
 class COMPONENT_EXPORT(ON_DEVICE_MODEL_CPP) ModelFile {
  public:
@@ -82,6 +99,8 @@ struct COMPONENT_EXPORT(ON_DEVICE_MODEL_CPP) ModelAssets {
   base::File program_cache;
   base::File encoder_program_cache;
   base::File adapter_program_cache;
+  base::File mtp_drafter_cache;
+  base::File mtp_drafter_program_cache;
 };
 
 // Helper to open files for ModelAssets given their containing paths.

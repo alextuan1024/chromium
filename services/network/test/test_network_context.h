@@ -79,7 +79,13 @@ class TestNetworkContext : public mojom::NetworkContext {
       const net::CookieSettingOverrides& cookie_setting_overrides,
       const net::CookieSettingOverrides& devtools_cookie_setting_overrides,
       bool prefer_bound_cookie_context,
+      bool is_storage_access_potentially_allowed,
       mojo::PendingRemote<mojom::CookieAccessObserver> observer) override {}
+  void GetRestrictedDeviceBoundSessionManager(
+      mojo::PendingReceiver<mojom::RestrictedDeviceBoundSessionManager>
+          receiver,
+      const url::Origin& origin,
+      const net::IsolationInfo& isolation_info) override {}
   void GetTrustTokenQueryAnswerer(
       mojo::PendingReceiver<mojom::TrustTokenQueryAnswerer> receiver,
       const url::Origin& top_frame_origin) override {}
@@ -168,6 +174,16 @@ class TestNetworkContext : public mojom::NetworkContext {
       const base::UnguessableToken& throttling_profile_id,
       const base::UnguessableToken& throttling_client_id,
       std::vector<mojom::MatchedNetworkConditionsPtr>) override {}
+  void SetSocketLayerNetworkConditions(
+      const base::UnguessableToken& throttling_profile_id,
+      const base::UnguessableToken& throttling_client_id,
+      uint64_t client_order,
+      base::TimeDelta latency,
+      double download_throughput_bytes_per_second,
+      double upload_throughput_bytes_per_second) override {}
+  void ClearSocketLayerNetworkConditions(
+      const base::UnguessableToken& throttling_profile_id,
+      const base::UnguessableToken& throttling_client_id) override {}
   void SetAcceptLanguage(const std::string& new_accept_language) override {}
   void SetEnableReferrers(bool enable_referrers) override {}
 #if BUILDFLAG(IS_CT_SUPPORTED)
@@ -228,7 +244,8 @@ class TestNetworkContext : public mojom::NetworkContext {
       mojo::PendingRemote<mojom::TrustedHeaderClient> header_client,
       const std::optional<base::UnguessableToken>& throttling_profile_id,
       const base::UnguessableToken& network_restrictions_id,
-      mojom::IPAddressSpace target_address_space) override {}
+      mojom::IPAddressSpace target_address_space,
+      std::optional<int64_t> target_network) override {}
   void CreateWebTransport(
       const GURL& url,
       const url::Origin& origin,
@@ -242,6 +259,7 @@ class TestNetworkContext : public mojom::NetworkContext {
           anticipated_concurrent_incoming_bidirectional_streams,
       std::vector<net::HttpRequestHeaders::HeaderKeyValuePair>
           additional_headers,
+      const std::optional<base::UnguessableToken>& throttling_profile_id,
       mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client,
       mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>
           url_loader_network_observer,
@@ -300,8 +318,8 @@ class TestNetworkContext : public mojom::NetworkContext {
                AddHSTSCallback callback) override {}
   void GetHSTSState(const std::string& domain,
                     GetHSTSStateCallback callback) override {}
-  void EnableStaticKeyPinningForTesting(
-      EnableStaticKeyPinningForTestingCallback callback) override {}
+  void ReinitializeKeyPinningForTesting(
+      ReinitializeKeyPinningForTestingCallback callback) override {}
   void VerifyCertificateForTesting(
       const scoped_refptr<net::X509Certificate>& certificate,
       const std::string& hostname,
@@ -339,6 +357,7 @@ class TestNetworkContext : public mojom::NetworkContext {
   void ForceReloadProxyConfig(
       ForceReloadProxyConfigCallback callback) override {}
   void ClearBadProxiesCache(ClearBadProxiesCacheCallback callback) override {}
+  void GetProxySettings(GetProxySettingsCallback callback) override {}
   void DeleteDynamicDataForHost(
       const std::string& host,
       DeleteDynamicDataForHostCallback callback) override {}
@@ -380,6 +399,8 @@ class TestNetworkContext : public mojom::NetworkContext {
       ClearSharedDictionaryCacheForIsolationKeyCallback callback) override {}
   void ClearSharedDictionarySessionOnlyData(
       ClearSharedDictionarySessionOnlyDataCallback callback) override {}
+  void ClearDeviceBoundSessionsSessionOnlyData(
+      ClearDeviceBoundSessionsSessionOnlyDataCallback callback) override {}
 #if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
   void RegisterHttpCacheClient(
       const net::NetworkIsolationKey& key,
@@ -424,8 +445,12 @@ class TestNetworkContext : public mojom::NetworkContext {
   void AddQuicHints(
       const std::vector<url::SchemeHostPort>& origins,
       const net::NetworkAnonymizationKey& network_anonymization_key) override {}
+  void AddWildcardQuicHints(
+      std::vector<mojom::WildcardQuicHintPtr> hints) override {}
+  void SetTryQuicByDefault(bool enable) override {}
   void SetVariationsHeaders(
       variations::mojom::VariationsHeadersPtr variations_headers) override {}
+  void Clone(mojo::PendingReceiver<mojom::NetworkContext> receiver) override {}
 };
 
 }  // namespace network

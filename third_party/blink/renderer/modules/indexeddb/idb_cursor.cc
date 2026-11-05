@@ -31,7 +31,7 @@
 #include <utility>
 
 #include "base/check.h"
-#include "base/containers/adapters.h"
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_binding_for_modules.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_idb_request.h"
@@ -64,12 +64,13 @@ namespace {
 using CursorSet = GCedHeapHashSet<WeakMember<IDBCursor>>;
 
 CursorSet& GetGlobalCursorSet() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<CursorSet>>,
-                                  thread_specific_instance, ());
-  if (!*thread_specific_instance) {
-    *thread_specific_instance = MakeGarbageCollected<CursorSet>();
+  static base::NoDestructor<ThreadSpecific<Persistent<CursorSet>>>
+      thread_specific_instance;
+  Persistent<CursorSet>& cursor_set = **thread_specific_instance;
+  if (!cursor_set) {
+    cursor_set = MakeGarbageCollected<CursorSet>();
   }
-  return **thread_specific_instance;
+  return *cursor_set;
 }
 
 void RegisterCursor(IDBCursor* cursor) {
@@ -366,7 +367,7 @@ ScriptValue IDBCursor::value(ScriptState* script_state) {
 #endif  // DCHECK_IS_ON()
 
   } else {
-    value = MakeGarbageCollected<IDBAny>(IDBAny::kUndefinedType);
+    value = MakeGarbageCollected<IDBAny>();
   }
 
   value_dirty_ = false;
@@ -593,10 +594,11 @@ void IDBCursor::SetPrefetchData(Vector<std::unique_ptr<IDBKey>> keys,
                                 Vector<std::unique_ptr<IDBValue>> values) {
   // Keys and values are stored in reverse order so that a cache'd continue can
   // pop a value off of the back and prevent new memory allocations.
-  prefetch_keys_.append_range(base::Reversed(std::views::as_rvalue(keys)));
+  prefetch_keys_.append_range(std::views::reverse(std::views::as_rvalue(keys)));
   prefetch_primary_keys_.append_range(
-      base::Reversed(std::views::as_rvalue(primary_keys)));
-  prefetch_values_.append_range(base::Reversed(std::views::as_rvalue(values)));
+      std::views::reverse(std::views::as_rvalue(primary_keys)));
+  prefetch_values_.append_range(
+      std::views::reverse(std::views::as_rvalue(values)));
 
   used_prefetches_ = 0;
   pending_onsuccess_callbacks_ = 0;

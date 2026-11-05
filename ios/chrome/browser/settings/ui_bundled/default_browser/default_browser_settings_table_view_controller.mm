@@ -9,7 +9,6 @@
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/strcat.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
-#import "ios/chrome/browser/default_browser/promo/public/features.h"
 #import "ios/chrome/browser/default_browser/promo/ui/default_browser_instructions_view_controller.h"
 #import "ios/chrome/browser/intents/model/intents_donation_helper.h"
 #import "ios/chrome/browser/ntp/model/set_up_list_item_type.h"
@@ -51,9 +50,6 @@ enum class DefaultBrowserSettingsPageUsage {
   // Whether the user visited the iOS Default Browser settings page.
   BOOL _defaultBrowserSettingsVisited;
 
-  // Whether to use the new Default Apps destination when going to iOS settings.
-  BOOL _useDefaultAppsDestination;
-
   // The view controller for default browser instructions.
   DefaultBrowserInstructionsViewController* _instructionsViewController;
 }
@@ -71,8 +67,6 @@ enum class DefaultBrowserSettingsPageUsage {
   self.title = l10n_util::GetNSString(IDS_IOS_SETTINGS_SET_DEFAULT_BROWSER);
   self.shouldHideDoneButton = YES;
   self.tableView.accessibilityIdentifier = kDefaultBrowserSettingsTableViewId;
-
-  _useDefaultAppsDestination = [self shouldUseDefaultAppsDestination];
 
   [self addDefaultBrowserVideoInstructionsView];
 
@@ -111,20 +105,6 @@ enum class DefaultBrowserSettingsPageUsage {
 
 #pragma mark Private
 
-// Returns whether the Default Apps destination should be used.
-- (BOOL)shouldUseDefaultAppsDestination {
-  if (IsDefaultBrowserPictureInPictureEnabled()) {
-    return IsDefaultAppsPictureInPictureVariant();
-  }
-
-  BOOL isFromOneTimeDefaultBrowserNotification =
-      self.source == DefaultBrowserSettingsPageSource::kTipsNotification &&
-      base::FeatureList::IsEnabled(kIOSOneTimeDefaultBrowserNotification);
-  return IsDefaultAppsDestinationAvailable() &&
-         (isFromOneTimeDefaultBrowserNotification ||
-          IsUseDefaultAppsDestinationForPromosEnabled());
-}
-
 // Responds to user action to go to default browser iOS settings.
 - (void)openSettingsButtonPressed {
   // Record iOS settings opened only once per app settings display. As
@@ -135,7 +115,8 @@ enum class DefaultBrowserSettingsPageUsage {
   }
 
   RecordDefaultBrowserPromoLastAction(
-      IOSDefaultBrowserPromoAction::kActionButton);
+      IOSDefaultBrowserPromoAction::kActionButton,
+      IOSDefaultBrowserPromoSurface::kSettings);
   base::RecordAction(base::UserMetricsAction("Settings.DefaultBrowser"));
   base::UmaHistogramEnumeration("Settings.DefaultBrowserFromSource",
                                 self.source);
@@ -150,10 +131,10 @@ enum class DefaultBrowserSettingsPageUsage {
                                         SetUpListItemType::kDefaultBrowser);
   }
 
-  if (IsDefaultBrowserPictureInPictureEnabled()) {
+  if (IsDefaultAppsDestinationAvailable()) {
     [self.sceneHandler closePresentedViews];
   }
-  OpenIOSDefaultBrowserSettingsPage(_useDefaultAppsDestination,
+  OpenIOSDefaultBrowserSettingsPage(/*force_default_apps_if_available=*/true,
                                     /*ui_application_to_use=*/nil,
                                     self.PIPHandler);
 }
@@ -164,10 +145,10 @@ enum class DefaultBrowserSettingsPageUsage {
       [[DefaultBrowserInstructionsViewController alloc]
               initWithDismissButton:NO
                    hasRemindMeLater:NO
-          useDefaultAppsDestination:_useDefaultAppsDestination
+          useDefaultAppsDestination:IsDefaultAppsDestinationAvailable()
                            hasSteps:YES
                           titleText:nil];
-  _instructionsViewController.actionHandler = self;
+  _instructionsViewController.actionDelegate = self;
   [self addChildViewController:_instructionsViewController];
 
   self.tableView.backgroundView = [[UIView alloc] init];
@@ -192,10 +173,22 @@ enum class DefaultBrowserSettingsPageUsage {
   base::UmaHistogramEnumeration(perSourceHistogram, usage);
 }
 
-#pragma mark - ConfirmationAlertActionHandler
+#pragma mark - ButtonStackActionDelegate
 
-- (void)confirmationAlertPrimaryAction {
+- (void)didTapPrimaryActionButton {
   [self openSettingsButtonPressed];
+}
+
+- (void)didTapSecondaryActionButton {
+  NOTREACHED();
+}
+
+- (void)didTapTertiaryActionButton {
+  NOTREACHED();
+}
+
+- (void)didDismissButtonStackViewController {
+  // No-op.
 }
 
 @end

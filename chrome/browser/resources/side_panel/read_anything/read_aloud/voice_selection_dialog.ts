@@ -12,20 +12,19 @@ import '../app/icons.html.js';
 import type {CrDialogElement} from '//resources/cr_elements/cr_dialog/cr_dialog.js';
 import type {CrRadioGroupElement} from '//resources/cr_elements/cr_radio_group/cr_radio_group.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
-import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import {CrLitElement, nothing} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {ToolbarEvent} from '../content/read_anything_types.js';
 import {spinnerDebounceTimeout} from '../shared/common.js';
-import {ReadAloudSettingsChange} from '../shared/metrics_browser_proxy.js';
-import {ReadAnythingLogger} from '../shared/read_anything_logger.js';
+import {isBackwardArrow, isForwardArrow, isHorizontalArrow} from '../shared/keyboard_util.js';
 
 import type {AudioBrowserProxy} from './audio_browser_proxy.js';
 import {AudioBrowserProxyImpl} from './audio_browser_proxy.js';
 import {areVoicesEqual} from './voice_language_conversions.js';
 import type {NotificationType} from './voice_language_conversions.js';
 import type {VoiceDropdownGroup, VoiceDropdownItem} from './voice_menu_display.js';
-import {computeDownloadingMessages, computeErrorMessages, computeVoiceDropdown, isVoicePreviewSpinning} from './voice_menu_display.js';
+import {computeDownloadingMessages, computeErrorMessages, computeVoiceDropdown, getVoiceDisplayName, isVoicePreviewSpinning} from './voice_menu_display.js';
 import type {VoiceNotificationListener} from './voice_notification_manager.js';
 import {VoiceNotificationManager} from './voice_notification_manager.js';
 import {getCss} from './voice_selection_dialog.css.js';
@@ -72,8 +71,8 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
   accessor previewVoicePlaying: SpeechSynthesisVoice|null = null;
 
   protected accessor candidateVoice_: SpeechSynthesisVoice|null = null;
-  protected accessor previewVoiceInitiated_: SpeechSynthesisVoice|null = null;
-  protected accessor currentNotifications_:
+  private accessor previewVoiceInitiated_: SpeechSynthesisVoice|null = null;
+  private accessor currentNotifications_:
       {[language: string]: NotificationType} = {};
 
   protected errorMessages_: string[] = [];
@@ -84,7 +83,6 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
       AudioBrowserProxyImpl.getInstance();
   private notificationManager_: VoiceNotificationManager =
       VoiceNotificationManager.getInstance();
-  private logger_: ReadAnythingLogger = ReadAnythingLogger.getInstance();
 
   private previewTimer_: number|null = null;
   private previewRequestId_: number = 0;
@@ -166,6 +164,45 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
     this.fire('close');
   }
 
+  protected onKeydown_(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key !== 'Tab' || e.ctrlKey || e.altKey || e.metaKey) {
+      return;
+    }
+
+    const cancelButton =
+        this.$.voiceSelectionDialog.querySelector<HTMLElement>('#cancelButton');
+    const saveButton =
+        this.$.voiceSelectionDialog.querySelector<HTMLElement>('#saveButton');
+    if (!cancelButton || !saveButton) {
+      return;
+    }
+
+    const firstFocusable =
+        this.$.voiceSelectionDialog.querySelector<HTMLElement>(
+            '#preview-icon[tabindex="0"]') ??
+        cancelButton;
+    const activeElement = this.shadowRoot.activeElement;
+    const isPreviewFocused = activeElement?.id === 'preview-icon';
+
+    if (e.shiftKey) {
+      if (isPreviewFocused || activeElement === firstFocusable ||
+          activeElement === this.$.voiceSelectionDialog) {
+        e.preventDefault();
+        saveButton.focus();
+      }
+    } else if (isPreviewFocused && activeElement !== firstFocusable) {
+      e.preventDefault();
+      (this.$.voiceRadioGroup.querySelector<HTMLElement>(
+           'cr-radio-button[checked]') ??
+       this.$.voiceRadioGroup.querySelector<HTMLElement>('cr-radio-button'))
+          ?.focus();
+    } else if (activeElement === saveButton) {
+      e.preventDefault();
+      firstFocusable.focus();
+    }
+  }
+
   private computeVoiceDropdown_(): VoiceDropdownGroup[] {
     const {groups, hasSelectedVoice} = computeVoiceDropdown({
       availableVoices: this.availableVoices,
@@ -198,6 +235,51 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
                                                                              -1;
   }
 
+  protected onVoiceRowKeydown_(e: KeyboardEvent) {
+    // Let tab and vertical arrow key events pass through since those events
+    // don't affect navigation within a voice row.
+    if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey ||
+        !(e.target instanceof HTMLElement) || !isHorizontalArrow(e.key)) {
+      return;
+    }
+
+    // Only handle key events from the row's focusable controls (preview icon
+    // button or radio button).
+    const isPreview = e.target.id === 'preview-icon';
+    const isRadio = e.target.tagName === 'CR-RADIO-BUTTON';
+    if (!isPreview && !isRadio) {
+      return;
+    }
+
+    // Stop cr-radio-group from using horizontal arrows to cycle rows.
+    e.preventDefault();
+    e.stopPropagation();
+    const row = e.currentTarget as HTMLElement;
+    if (isPreview && isForwardArrow(e.key)) {
+      // Return focus to this row's radio button so screen readers announce the
+      // voice option. If focus started on an unselected row's preview button
+      // (e.g. via mouse), stage that voice so radio selection and roving
+      // tabindex stay in sync.
+      const voice = this.getVoiceItemForPreview_(e.target)?.voice;
+      if (voice && !areVoicesEqual(this.candidateVoice_, voice)) {
+        this.candidateVoice_ = voice;
+      }
+      row.querySelector<HTMLElement>('cr-radio-button')?.focus();
+    } else if (isRadio && isBackwardArrow(e.key)) {
+      // Unselected preview buttons use tabindex="-1" to keep Tab concise, so
+      // focus #preview-icon explicitly to let keyboard and screen-reader users
+      // reach this voice's preview button and hear its voice-specific label.
+      row.querySelector<HTMLElement>('#preview-icon')?.focus();
+    }
+  }
+
+  private getVoiceItemForPreview_(previewButton: HTMLElement): VoiceDropdownItem
+      |undefined {
+    const groupIndex = Number(previewButton.dataset['groupIndex']);
+    const voiceIndex = Number(previewButton.dataset['voiceIndex']);
+    return this.voiceGroups_[groupIndex]?.voices[voiceIndex];
+  }
+
   protected onVoiceRadioGroupSelectedChanged_(e: CustomEvent<{value: string}>) {
     const selectedVoiceName = e.detail.value;
     if (!selectedVoiceName) {
@@ -215,10 +297,8 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
   protected onVoicePreviewClick_(e: Event) {
     e.stopImmediatePropagation();
 
-    const currentTarget = e.currentTarget as HTMLElement;
-    const groupIndex = Number(currentTarget.dataset['groupIndex']);
-    const voiceIndex = Number(currentTarget.dataset['voiceIndex']);
-    const voiceItem = this.voiceGroups_[groupIndex]?.voices[voiceIndex];
+    const voiceItem =
+        this.getVoiceItemForPreview_(e.currentTarget as HTMLElement);
     if (!voiceItem) {
       return;
     }
@@ -267,8 +347,6 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
   protected onSaveClick_() {
     if (this.candidateVoice_ &&
         !areVoicesEqual(this.candidateVoice_, this.selectedVoice)) {
-      this.logger_.logSpeechSettingsChange(
-          ReadAloudSettingsChange.VOICE_NAME_CHANGE);
       this.fire(ToolbarEvent.VOICE, {selectedVoice: this.candidateVoice_});
       this.selectedVoice = this.candidateVoice_;
     }
@@ -280,13 +358,23 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
         previewPlaying ? 'stopLabel' : 'previewTooltip');
   }
 
+  protected previewAriaLabel_(voiceItem: VoiceDropdownItem): string {
+    return voiceItem.previewInitiated ?
+        loadTimeData.getString('stopLabel') :
+        loadTimeData.getStringF(
+            'previewVoiceLabel', this.voiceDisplayName_(voiceItem));
+  }
+
   protected hideSpinner_(voiceDropdown: VoiceDropdownItem): boolean {
     return !isVoicePreviewSpinning(voiceDropdown);
   }
 
-  protected voiceLabel_(voiceName: string): string {
-    return loadTimeData.getStringF(
-        'readingModeLanguageMenuItemLabel', voiceName);
+  protected voiceDisplayName_(voiceItem: VoiceDropdownItem): string {
+    return getVoiceDisplayName(voiceItem);
+  }
+
+  protected voiceLang_(voiceItem: VoiceDropdownItem): string|typeof nothing {
+    return voiceItem.natureNaming ? voiceItem.voice.lang : nothing;
   }
 
   protected previewIcon_(previewInitiated: boolean): string {

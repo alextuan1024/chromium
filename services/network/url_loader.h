@@ -307,6 +307,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
     return permissions_policy_;
   }
 
+  bool is_storage_access_potentially_allowed() const {
+    return is_storage_access_potentially_allowed_;
+  }
+
  private:
   // This class is used to set the URLLoader as user data on a URLRequest. This
   // is used instead of URLLoader directly because SetUserData requires a
@@ -380,6 +384,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
   void DidRead(int num_bytes,
                bool completed_synchronously,
                bool into_slop_bucket);
+  void MaybeNotifyHeaderClientOfFailure(int net_error);
   void NotifyCompleted(int error_code);
   void OnMojoDisconnect();
   void OnResponseBodyStreamConsumerClosed(MojoResult result);
@@ -496,6 +501,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
   // The following also belong to URLLoaderFactory and outlives this loader.
   const raw_ptr<mojom::CrossOriginEmbedderPolicyReporter> coep_reporter_;
   const raw_ptr<mojom::DocumentIsolationPolicyReporter> dip_reporter_;
+  const raw_ptr<mojom::TrustedURLLoaderHeaderClient> url_loader_header_client_;
 
   const int32_t request_id_;
   const int keepalive_request_size_;
@@ -709,6 +715,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
 
   // Permissions policy of the request.
   const std::optional<network::PermissionsPolicy> permissions_policy_;
+
+  // Whether the requesting context could potentially be allowed to receive
+  // access to unpartitioned storage, according to the factory params and
+  // resource request.
+  const bool is_storage_access_potentially_allowed_;
 
   const scoped_refptr<net::HttpResponseHeaders>
       expected_response_headers_for_synthetic_response;

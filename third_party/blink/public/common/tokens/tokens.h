@@ -5,7 +5,14 @@
 #ifndef THIRD_PARTY_BLINK_PUBLIC_COMMON_TOKENS_TOKENS_H_
 #define THIRD_PARTY_BLINK_PUBLIC_COMMON_TOKENS_TOKENS_H_
 
+#include <cstdint>
+#include <limits>
+#include <string>
+
+#include "base/types/strong_alias.h"
 #include "base/types/token_type.h"
+#include "base/unguessable_token.h"
+#include "base/uuid.h"
 #include "third_party/blink/public/common/tokens/multi_token.h"
 #include "ui/base/clipboard/clipboard_sequence_number_token.h"
 
@@ -18,6 +25,13 @@ namespace blink {
 // methods on the interface bound to the object itself. They are fine to use
 // for informational messages that cross over other interfaces, in both
 // directions.
+//
+// A token should NEVER be sent to a renderer that is not supposed to be aware
+// of it, because that could give a compromised renderer an actual token from a
+// different process that it could potentially use to spoof browser-side
+// checks. For example, don't send a LocalFrameToken to a renderer for which
+// that frame is remote, and don't send a RemoteFrameToken to the wrong
+// renderer (see below).
 //
 // See README.md for more details.
 
@@ -40,9 +54,17 @@ using LocalFrameToken = base::TokenType<class LocalFrameTokenTypeMarker>;
 
 // Uniquely identifies a blink::RemoteFrame / blink::WebRemoteFrame /
 // content::RenderFrameProxy in a renderer process, and its
-// content::RenderFrameProxyHost counterpart in the browser. There can be
-// multiple RemoteFrames corresponding to a single LocalFrame, and each token
-// will be distinct.
+// content::RenderFrameProxyHost counterpart in the browser.
+//
+// RemoteFrameToken is the token that a specific renderer process knows for a
+// frame that is in a different process. There can be multiple RemoteFrames
+// corresponding to a single LocalFrame, and each renderer that is aware of
+// that frame has a different RemoteFrameToken for it.
+//
+// In the browser process, RemoteFrameToken must always be paired with a
+// process ID to keep track of which renderer knows that token. Always send a
+// renderer the correct RemoteFrameToken for its process, to prevent
+// information leaks.
 using RemoteFrameToken = base::TokenType<class RemoteFrameTokenTypeMarker>;
 
 // Can represent either type of FrameToken.
@@ -84,16 +106,11 @@ using LayoutWorkletToken = base::TokenType<class LayoutWorkletTokenTypeMarker>;
 // Identifies a paint worklet.
 using PaintWorkletToken = base::TokenType<class PaintWorkletTokenTypeMarker>;
 
-// Identifies a shared storage worklet.
-using SharedStorageWorkletToken =
-    base::TokenType<class SharedStorageWorkletTokenTypeMarker>;
-
 // Can represent any type of WorkletToken.
 using WorkletToken = MultiToken<AnimationWorkletToken,
                                 AudioWorkletToken,
                                 LayoutWorkletToken,
-                                PaintWorkletToken,
-                                SharedStorageWorkletToken>;
+                                PaintWorkletToken>;
 
 ////////////////////////////////////////////////////////////////////////////////
 // SHADOW REALM TOKENS
@@ -111,6 +128,22 @@ using ShadowRealmToken = base::TokenType<class ShadowRealmTokenTypeMarker>;
 // Identifies a unique clipboard state.
 using ClipboardSequenceNumberToken = ui::ClipboardSequenceNumberToken;
 
+// Identifies a continuation token for a WebMCP script tool execution.
+using ContinuationToken =
+    base::StrongAlias<class ContinuationTokenTag, base::Uuid>;
+
+// Returns true if `token` holds a valid continuation token.
+//
+// Continuation tokens are valid RFC 4122 v4 UUIDs, of the form
+// `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`, where `y` is one of `8`, `9`, `a`, or
+// `b`.
+inline bool IsValidContinuationToken(const ContinuationToken& token) {
+  const std::string& lowercase = token.value().AsLowercaseString();
+  return token.value().is_valid() && lowercase[14] == '4' &&
+         (lowercase[19] == '8' || lowercase[19] == '9' ||
+          lowercase[19] == 'a' || lowercase[19] == 'b');
+}
+
 // Identifies an arbitrary ExecutionContext. Each concrete implementation of an
 // ExecutionContext has a distinct token type that can be represented here.
 using ExecutionContextToken = MultiToken<LocalFrameToken,
@@ -121,12 +154,19 @@ using ExecutionContextToken = MultiToken<LocalFrameToken,
                                          AudioWorkletToken,
                                          LayoutWorkletToken,
                                          PaintWorkletToken,
-                                         SharedStorageWorkletToken,
                                          ShadowRealmToken>;
 
 // Identifies the destination of a screenshot for a same-document navigation.
 using SameDocNavigationScreenshotDestinationToken = base::TokenType<
     class SameDocNavigationScreenshotDestinationTokenTypeMarker>;
+
+// Identifies a WebMCP tool registered by a document, in the registering
+// renderer and in the browser. Minted by the registering renderer.
+using ScriptToolToken = base::TokenType<class ScriptToolTokenTypeMarker>;
+
+// Identifies an invocation of a WebMCP script tool.
+using ToolInvocationToken =
+    base::TokenType<class ToolInvocationTokenTypeMarker>;
 
 // Identifies a v8::Context / blink::ScriptState.
 using V8ContextToken = base::TokenType<class V8ContextTokenTypeMarker>;
@@ -150,6 +190,16 @@ using WebNNPendingConstantToken =
     base::TokenType<class WebNNPendingConstantTokenTypeMarker>;
 using WebNNTensorToken = base::TokenType<class WebNNTensorTokenTypeMarker>;
 using WebNNGraphToken = base::TokenType<class WebNNGraphTokenTypeMarker>;
+
+// Returns the all-ones `base::UnguessableToken` value reserved by
+// `blink::HashTraits<base::UnguessableToken>::DeletedValue()` for deleted hash
+// table buckets.
+inline base::UnguessableToken DeletedUnguessableTokenSentinel() {
+  return base::UnguessableToken::Deserialize(
+             std::numeric_limits<uint64_t>::max(),
+             std::numeric_limits<uint64_t>::max())
+      .value();
+}
 
 }  // namespace blink
 

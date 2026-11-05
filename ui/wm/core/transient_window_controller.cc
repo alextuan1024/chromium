@@ -15,12 +15,12 @@ namespace wm {
 TransientWindowController* TransientWindowController::instance_ = nullptr;
 
 TransientWindowController::TransientWindowController() {
-  DCHECK(!instance_);
+  CHECK(!instance_, base::NotFatalUntil::M163);
   instance_ = this;
 }
 
 TransientWindowController::~TransientWindowController() {
-  DCHECK_EQ(instance_, this);
+  CHECK_EQ(instance_, this, base::NotFatalUntil::M163);
   instance_ = nullptr;
 }
 
@@ -47,7 +47,7 @@ const aura::Window* TransientWindowController::GetTransientParent(
   return window_manager ? window_manager->transient_parent() : nullptr;
 }
 
-std::vector<raw_ptr<aura::Window, VectorExperimental>>
+std::vector<raw_ptr<aura::Window, DanglingUntriaged>>
 TransientWindowController::GetTransientChildren(const aura::Window* parent) {
   const TransientWindowManager* window_manager =
       TransientWindowManager::GetIfExists(parent);

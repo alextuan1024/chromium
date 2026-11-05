@@ -11,7 +11,7 @@ namespace activity_reporter {
 
 namespace {
 
-class ActivityReporterNoImpl : public ActivityReporter {
+class ActivityReporterNoImpl final : public ActivityReporter {
  public:
   ActivityReporterNoImpl() = default;
   void ReportActive() override {
@@ -25,7 +25,6 @@ class ActivityReporterNoImpl : public ActivityReporter {
 
 }  // namespace
 
-// Must be called on a SequencedTaskRunner.
 std::unique_ptr<ActivityReporter> CreateActivityReporterDisabled() {
   return std::make_unique<ActivityReporterNoImpl>();
 }

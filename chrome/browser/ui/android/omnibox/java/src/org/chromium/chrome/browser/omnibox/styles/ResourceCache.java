@@ -36,6 +36,7 @@ class ResourceCache {
     private final Context mContext;
     private final SparseArray<String> mStrings = new SparseArray<>();
     private final SparseIntArray mInts = new SparseIntArray();
+    private final SparseArray<Float> mFloats = new SparseArray<>();
     private final SparseArray<ColorStateList> mColorStateLists = new SparseArray<>();
     private final SparseArray<ConstantState> mDrawables = new SparseArray<>();
 
@@ -43,13 +44,12 @@ class ResourceCache {
         mContext = context;
     }
 
-    /** Resolves a string resource, replaces $ placeholder arguments, and caches the result. */
+    /** Resolves a string resource, converts grit placeholders, and caches the result. */
     String getString(@StringRes int resId) {
         ThreadUtils.assertOnUiThread();
         String string = mStrings.get(resId);
         if (string == null) {
-            string = mContext.getString(resId);
-            string = string.replaceAll("\\$(\\d+)", "%$1\\$s");
+            string = OmniboxResourceProvider.convertGritPlaceholders(mContext.getString(resId));
             mStrings.put(resId, string);
         }
         return string;
@@ -66,6 +66,17 @@ class ResourceCache {
         int size = mContext.getResources().getDimensionPixelSize(resId);
         mInts.put(resId, size);
         return size;
+    }
+
+    /** Resolves a float dimension (format="float" type="dimen") and caches the result. */
+    float getFloat(@DimenRes int resId) {
+        ThreadUtils.assertOnUiThread();
+        Float value = mFloats.get(resId);
+        if (value == null) {
+            value = mContext.getResources().getFloat(resId);
+            mFloats.put(resId, value);
+        }
+        return value;
     }
 
     /** Resolves a color resource and caches the result. */
@@ -101,7 +112,7 @@ class ResourceCache {
         ThreadUtils.assertOnUiThread();
         ColorStateList list = mColorStateLists.get(resId);
         if (list == null) {
-            list = AppCompatResources.getColorStateList(mContext, resId);
+            list = mContext.getColorStateList(resId);
             mColorStateLists.put(resId, list);
         }
         return list;

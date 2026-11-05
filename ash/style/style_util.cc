@@ -9,7 +9,7 @@
 #include "ash/style/color_palette_controller.h"
 #include "ash/style/color_util.h"
 #include "ash/style/dark_light_mode_controller_impl.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "ash/style/typography.h"
 #include "base/check_is_test.h"
 #include "ui/color/color_id.h"
@@ -263,27 +263,31 @@ StyleUtil::CreateAshStyleTooltipView() {
 }
 
 // static
-ui::Shadow::ElevationToColorsMap StyleUtil::CreateShadowElevationToColorsMap(
+ui::decoration::Shadow::ElevationToColorsMap
+StyleUtil::CreateShadowElevationToColorsMap(
     const ui::ColorProvider* color_provider) {
-  ui::Shadow::ElevationToColorsMap colors_map;
-  colors_map[SystemShadow::GetElevationFromType(
-      SystemShadow::Type::kElevation4)] = ui::Shadow::ElevationColors{
-      .key_color =
-          color_provider->GetColor(ui::kColorShadowValueKeyShadowElevationFour),
-      .ambient_color = color_provider->GetColor(
-          ui::kColorShadowValueAmbientShadowElevationFour)};
-  colors_map[SystemShadow::GetElevationFromType(
-      SystemShadow::Type::kElevation12)] = ui::Shadow::ElevationColors{
-      .key_color = color_provider->GetColor(
-          ui::kColorShadowValueKeyShadowElevationTwelve),
-      .ambient_color = color_provider->GetColor(
-          ui::kColorShadowValueAmbientShadowElevationTwelve)};
-  colors_map[SystemShadow::GetElevationFromType(
-      SystemShadow::Type::kElevation24)] = ui::Shadow::ElevationColors{
-      .key_color = color_provider->GetColor(
-          ui::kColorShadowValueKeyShadowElevationTwentyFour),
-      .ambient_color = color_provider->GetColor(
-          ui::kColorShadowValueAmbientShadowElevationTwentyFour)};
+  ui::decoration::Shadow::ElevationToColorsMap colors_map;
+  colors_map[SystemDecoration::GetElevationFromType(
+      SystemDecoration::ShadowType::kElevation4)] =
+      ui::decoration::Shadow::ElevationColors{
+          .key_color = color_provider->GetColor(
+              ui::kColorShadowValueKeyShadowElevationFour),
+          .ambient_color = color_provider->GetColor(
+              ui::kColorShadowValueAmbientShadowElevationFour)};
+  colors_map[SystemDecoration::GetElevationFromType(
+      SystemDecoration::ShadowType::kElevation12)] =
+      ui::decoration::Shadow::ElevationColors{
+          .key_color = color_provider->GetColor(
+              ui::kColorShadowValueKeyShadowElevationTwelve),
+          .ambient_color = color_provider->GetColor(
+              ui::kColorShadowValueAmbientShadowElevationTwelve)};
+  colors_map[SystemDecoration::GetElevationFromType(
+      SystemDecoration::ShadowType::kElevation24)] =
+      ui::decoration::Shadow::ElevationColors{
+          .key_color = color_provider->GetColor(
+              ui::kColorShadowValueKeyShadowElevationTwentyFour),
+          .ambient_color = color_provider->GetColor(
+              ui::kColorShadowValueAmbientShadowElevationTwentyFour)};
   return colors_map;
 }
 

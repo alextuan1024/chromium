@@ -18,19 +18,19 @@
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
 #include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/reporting/metric_default_utils.h"
 #include "chrome/browser/policy/messaging_layer/public/report_client_test_util.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/dbus/debug_daemon/debug_daemon_client.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
+#include "chromeos/ash/components/metrics_reporting/fakes/fake_metric_report_queue.h"
+#include "chromeos/ash/components/metrics_reporting/metric_default_utils.h"
 #include "chromeos/ash/components/mojo_service_manager/fake_mojo_service_manager.h"
 #include "chromeos/ash/components/network/network_handler_test_helper.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/services/cros_healthd/public/cpp/fake_cros_healthd.h"
 #include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd.mojom.h"
-#include "components/reporting/metrics/fakes/fake_metric_report_queue.h"
 #include "components/reporting/proto/synced/metric_data.pb.h"
 #include "components/reporting/proto/synced/record_constants.pb.h"
 #include "components/reporting/util/test_support_callbacks.h"
@@ -217,7 +217,6 @@ TEST_F(HttpsLatencyEventsTest, RoutineVerdictProblem) {
   auto init_delay = delegate->GetInitDelay();
 
   auto metric_reporting_manager = test::MetricReportingManagerForTest::Create(
-      TestingBrowserProcess::GetGlobal()->local_state(),
       TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
       std::move(delegate), nullptr);
 
@@ -326,7 +325,6 @@ TEST_F(HttpsLatencyEventsTest, ReportDeviceNetworkStatusDisabled) {
           &diagnostics);
 
   auto metric_reporting_manager = test::MetricReportingManagerForTest::Create(
-      TestingBrowserProcess::GetGlobal()->local_state(),
       TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
       std::move(delegate), nullptr);
   metric_reporting_manager->OnLogin(profile_.get());
@@ -349,7 +347,6 @@ TEST_F(HttpsLatencyEventsTest, ReportDeviceNetworkStatusUnaffiliatedUser) {
       std::make_unique<::testing::NiceMock<FakeMetricReportingManagerDelegate>>(
           &diagnostics);
   auto metric_reporting_manager = test::MetricReportingManagerForTest::Create(
-      TestingBrowserProcess::GetGlobal()->local_state(),
       TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
       std::move(delegate), nullptr);
   metric_reporting_manager->OnLogin(profile_.get());
@@ -382,7 +379,6 @@ TEST_F(HttpsLatencyEventsTest, EventCheckingRateSet) {
           &diagnostics);
   auto init_delay = delegate->GetInitDelay();
   auto metric_reporting_manager = test::MetricReportingManagerForTest::Create(
-      TestingBrowserProcess::GetGlobal()->local_state(),
       TestingBrowserProcess::GetGlobal()->network_quality_tracker(),
       std::move(delegate), nullptr);
   metric_reporting_manager->OnLogin(profile_.get());

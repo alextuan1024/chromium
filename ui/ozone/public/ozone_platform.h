@@ -106,13 +106,6 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     PlatformProperties& operator=(const PlatformProperties& other) = delete;
     ~PlatformProperties();
 
-    // Values to override the value of a property in tests.
-    enum class SupportsForTest {
-      kNotSet,  // The property is not overridden.
-      kYes,     // The platform should return true.
-      kNo,      // The platform should return false.
-    };
-
     // Determines whether we should default to native decorations or the custom
     // frame based on the currently-running window manager.
     bool custom_frame_pref_default = false;
@@ -137,12 +130,6 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     // should be given parents explicitly.
     bool set_parent_for_non_top_level_windows = false;
 
-    // Allows overriding whether `set_parent_for_non_top_level_windows` is
-    // enabled in tests. This value must be reset at the end of each test to
-    // avoid affecting subsequent tests.
-    static SupportsForTest
-        override_set_parent_for_non_top_level_windows_for_test;
-
     // If true, the platform shows and updates the drag image.
     bool platform_shows_drag_image = true;
 
@@ -154,11 +141,24 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     // global screen coordinates. Wayland, for example, disallow it by design.
     bool supports_global_screen_coordinates = true;
 
+    // Indicates that windows shown inactive (e.g. via
+    // `PlatformWindow::Show(/*inactive=*/true)`) stay inactive. Wayland, for
+    // example, lets the compositor focus newly mapped toplevels regardless.
+    bool supports_inactive_window_show = true;
+
     // Indicates that the platform exposes webgpu via interop gl interop with
     // vulkan.
     // TODO(https://crbug.com/500609035): Remove when active gpu device info is
     // passed to media.
     bool webgpu_on_vulkan_via_gl_interop = false;
+
+    // Whether the browser must wait synchronously for the GPU/Viz root
+    // CompositorFrameSink (and its viz::Display) to be destroyed before
+    // destroying the PlatformWindow. Platforms with surfaceless DMA-BUF
+    // presentation (such as Ozone-DRM) do not bind an OS window to an
+    // EGL/Vulkan surface and handle asynchronous window removal on the GPU
+    // side.
+    bool wait_for_root_compositor_frame_sink_destruction = true;
   };
 
   // Groups platform properties that can only be known at run time.
@@ -192,6 +192,14 @@ class COMPONENT_EXPORT(OZONE) OzonePlatform {
     // Wayland only: determines whether single pixel buffer protocol is
     // supported.
     bool supports_single_pixel_buffer = false;
+
+    // Whether the system compositor tone maps HDR surfaces using the
+    // client-provided content light level information (CLLI) and mastering
+    // display color volume (MDCV), respectively. Used to decide whether HDR
+    // content can be passed through with its metadata instead of being tone
+    // mapped by Chromium.
+    bool compositor_tone_maps_using_clli = false;
+    bool compositor_tone_maps_using_mdcv = false;
 
     // Indicates whether the platform supports native pixmaps.
     bool supports_native_pixmaps = false;

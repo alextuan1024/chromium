@@ -129,9 +129,9 @@ class SetContentDecryptionModuleResult final
     }
 
     DVLOG(EME_LOG_LEVEL) << __func__ << ": promise rejected with code " << code
-                         << " and message: " << result.ToString();
+                         << " and message: " << StringView(result);
 
-    std::move(failure_callback_).Run(code, result.ToString());
+    std::move(failure_callback_).Run(code, result.ReleaseString());
   }
 
  private:
@@ -162,7 +162,7 @@ SetMediaKeysHandler::SetMediaKeysHandler(
       made_reservation_(false),
       keep_alive_({}, this),
       timer_(ExecutionContext::From(script_state)
-                 ->GetTaskRunner(TaskType::kMiscPlatformAPI),
+                 ->GetTaskRunner(TaskType::kMediaElementEvent),
              this,
              &SetMediaKeysHandler::TimerFired) {
   DVLOG(EME_LOG_LEVEL) << __func__;

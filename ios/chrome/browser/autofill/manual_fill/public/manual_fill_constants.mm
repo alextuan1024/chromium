@@ -7,7 +7,7 @@
 #import "base/feature_list.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/webauthn/ios/features.h"
-#import "ui/base/device_form_factor.h"
+#import "ios/chrome/common/ui/util/ui_util.h"
 
 namespace manual_fill {
 
@@ -82,12 +82,34 @@ NSString* const kExpandedManualFillAutofillFormButtonID =
 NSString* const kAccessoryKeyboardAccessibilityIdentifier =
     @"ManualFillAccessoryKeyboardAccessibilityIdentifier";
 
+NSString* const kExpandedManualFillSummaryCellID =
+    @"ExpandedManualFillSummaryCellID";
+
 }  // namespace manual_fill
 
 @implementation ManualFillUtil
 
-+ (BOOL)shouldUsePopover {
-  return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
++ (BOOL)shouldUsePopover:(id<UITraitEnvironment>)traitEnvironment {
+  if ([traitEnvironment isKindOfClass:[UIViewController class]]) {
+    UIViewController* viewController =
+        static_cast<UIViewController*>(traitEnvironment);
+    // When presented inside a `UIPopoverPresentationController`, UIKit
+    // overrides the presented view controller's `horizontalSizeClass` to
+    // `UIUserInterfaceSizeClassCompact`. Check `modalPresentationStyle` only
+    // when actually presented so unpresented view controllers (whose default
+    // style is `UIModalPresentationAutomatic`) avoid UIKit's visual style
+    // provider resolution.
+    if (viewController.presentingViewController) {
+      UIModalPresentationStyle modalPresentationStyle =
+          viewController.parentViewController
+              ? viewController.parentViewController.modalPresentationStyle
+              : viewController.modalPresentationStyle;
+      if (modalPresentationStyle == UIModalPresentationPopover) {
+        return YES;
+      }
+    }
+  }
+  return IsRegularXRegularSizeClass(traitEnvironment);
 }
 
 + (manual_fill::ManualFillDataType)manualFillDataTypeFromFillingProduct:

@@ -5,9 +5,12 @@
 #include "chrome/browser/ui/views/profiles/dice_web_signin_interception_bubble_view.h"
 
 #include <optional>
+#include <utility>
 
+#include "base/functional/callback_helpers.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
+#include "base/test/test_future.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/new_tab_page/chrome_colors/selected_colors_info.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
@@ -91,16 +94,31 @@ class DiceWebSigninInterceptionBubbleBrowserTest
     return ::GetAvatarButton(browser());
   }
 
-  views::BubbleAnchor GetAvatarAnchor(
+  std::pair<views::BubbleAnchor, base::ScopedClosureRunner> ResolveAvatarAnchor(
       BrowserWindowInterface* browser_arg = nullptr) {
     if (!browser_arg) {
       browser_arg = browser();
     }
     BrowserView* browser_view =
         BrowserView::GetBrowserViewForBrowser(browser_arg);
-    return browser_view->toolbar_button_provider()
+    base::test::TestFuture<views::BubbleAnchor, base::ScopedClosureRunner>
+        anchor_future;
+    browser_view->toolbar_button_provider()
         ->GetAvatarToolbarButtonInterface()
-        ->GetBubbleAnchor(*browser_arg);
+        ->RunWhenVisible(anchor_future.GetCallback());
+    return anchor_future.Take();
+  }
+
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> CreateTestBubble(
+      const WebSigninInterceptor::Delegate::BubbleParameters&
+          bubble_parameters) {
+    auto [anchor, keep_visible] = ResolveAvatarAnchor();
+    return DiceWebSigninInterceptionBubbleView::CreateBubble(
+        browser(), anchor, bubble_parameters,
+        base::BindOnce(
+            &DiceWebSigninInterceptionBubbleBrowserTest::OnInterceptionComplete,
+            base::Unretained(this)),
+        std::move(keep_visible));
   }
 
   // Completion callback for the interception bubble.
@@ -119,7 +137,9 @@ class DiceWebSigninInterceptionBubbleBrowserTest
             .Build();
     AccountInfo primary_account;
     if (intercept_type !=
-        WebSigninInterceptor::SigninInterceptionType::kChromeSignin) {
+            WebSigninInterceptor::SigninInterceptionType::kChromeSignin &&
+        intercept_type != WebSigninInterceptor::SigninInterceptionType::
+                              kChromeSigninNonIntercept) {
       primary_account =
           AccountInfo::Builder(GaiaId("ID2"), "test2@example.com")
               .SetAccountId(CoreAccountId::FromGaiaId(GaiaId("ID2")))
@@ -163,7 +183,6 @@ class DiceWebSigninInterceptionBubbleBrowserTest
   }
 
   std::optional<SigninInterceptionResult> callback_result_;
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> bubble_handle_;
 
  private:
   gfx::ScopedAnimationDurationScaleMode zero_duration_mode_ =
@@ -175,12 +194,14 @@ class DiceWebSigninInterceptionBubbleBrowserTest
 IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
                        BubbleIgnored) {
   base::HistogramTester histogram_tester;
+  auto [anchor, keep_visible] = ResolveAvatarAnchor();
   views::Widget* widget = views::BubbleDialogDelegateView::CreateBubble(
       new DiceWebSigninInterceptionBubbleView(
-          browser(), GetAvatarAnchor(), GetTestBubbleParameters(),
+          browser(), anchor, GetTestBubbleParameters(),
           base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
                              OnInterceptionComplete,
-                         base::Unretained(this))));
+                         base::Unretained(this)),
+          std::move(keep_visible)));
   widget->Show();
   EXPECT_FALSE(callback_result_.has_value());
 
@@ -199,6 +220,7 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   base::HistogramTester::CountsMap expected_histogram_total_count = {
       {"Signin.InterceptResult.MultiUser", 1},
       {"Signin.InterceptResult.MultiUser.NoSync", 1},
+      {"Signin.InterceptResult.MultiUser.NotPersonalized", 1},
   };
   EXPECT_THAT(
       histogram_tester.GetTotalCountsForPrefix("Signin.InterceptResult."),
@@ -210,18 +232,9 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
                        BubbleDismissedByEscapeKey) {
   base::HistogramTester histogram_tester;
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(), GetTestBubbleParameters(),
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
-
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble =
+      CreateTestBubble(GetTestBubbleParameters());
 
   views::Widget* widget = bubble->GetWidget();
   views::test::WidgetVisibleWaiter visible_waiter(widget);
@@ -244,6 +257,7 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   base::HistogramTester::CountsMap expected_histogram_total_count = {
       {"Signin.InterceptResult.MultiUser", 1},
       {"Signin.InterceptResult.MultiUser.NoSync", 1},
+      {"Signin.InterceptResult.MultiUser.NotPersonalized", 1},
   };
   EXPECT_THAT(
       histogram_tester.GetTotalCountsForPrefix("Signin.InterceptResult."),
@@ -263,18 +277,9 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
                        BubbleDismissedByEscapeKeyTwice) {
   base::HistogramTester histogram_tester;
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(), GetTestBubbleParameters(),
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
-
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble =
+      CreateTestBubble(GetTestBubbleParameters());
 
   views::Widget* widget = bubble->GetWidget();
   views::test::WidgetVisibleWaiter visible_waiter(widget);
@@ -313,6 +318,7 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   base::HistogramTester::CountsMap expected_histogram_total_count = {
       {"Signin.InterceptResult.MultiUser", 1},
       {"Signin.InterceptResult.MultiUser.NoSync", 1},
+      {"Signin.InterceptResult.MultiUser.NotPersonalized", 1},
   };
   EXPECT_THAT(
       histogram_tester.GetTotalCountsForPrefix("Signin.InterceptResult."),
@@ -333,18 +339,9 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
                        BubbleDismissedByPressingAvatarButton) {
   base::HistogramTester histogram_tester;
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(), GetTestBubbleParameters(),
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
-
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble =
+      CreateTestBubble(GetTestBubbleParameters());
 
   views::Widget* widget = bubble->GetWidget();
   views::test::WidgetVisibleWaiter visible_waiter(widget);
@@ -367,6 +364,7 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   base::HistogramTester::CountsMap expected_histogram_total_count = {
       {"Signin.InterceptResult.MultiUser", 1},
       {"Signin.InterceptResult.MultiUser.NoSync", 1},
+      {"Signin.InterceptResult.MultiUser.NotPersonalized", 1},
   };
   EXPECT_THAT(
       histogram_tester.GetTotalCountsForPrefix("Signin.InterceptResult."),
@@ -385,13 +383,15 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
 IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
                        BubbleDeclined) {
   base::HistogramTester histogram_tester;
+  auto [anchor, keep_visible] = ResolveAvatarAnchor();
   // `bubble` is owned by the view hierarchy.
   DiceWebSigninInterceptionBubbleView* bubble =
       new DiceWebSigninInterceptionBubbleView(
-          browser(), GetAvatarAnchor(), GetTestBubbleParameters(),
+          browser(), anchor, GetTestBubbleParameters(),
           base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
                              OnInterceptionComplete,
-                         base::Unretained(this)));
+                         base::Unretained(this)),
+          std::move(keep_visible));
   views::Widget* widget = views::BubbleDialogDelegateView::CreateBubble(bubble);
   widget->Show();
   EXPECT_FALSE(callback_result_.has_value());
@@ -412,6 +412,7 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   base::HistogramTester::CountsMap expected_histogram_total_count = {
       {"Signin.InterceptResult.MultiUser", 1},
       {"Signin.InterceptResult.MultiUser.NoSync", 1},
+      {"Signin.InterceptResult.MultiUser.NotPersonalized", 1},
   };
   EXPECT_THAT(
       histogram_tester.GetTotalCountsForPrefix("Signin.InterceptResult."),
@@ -423,19 +424,25 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
 IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
                        BubbleAccepted) {
   base::HistogramTester histogram_tester;
+  auto [anchor, keep_visible] = ResolveAvatarAnchor();
+  bool keep_visible_released = false;
+  base::ScopedClosureRunner tracked_keep_visible(base::BindOnce(
+      [](base::ScopedClosureRunner inner, bool* released) {
+        inner.RunAndReset();
+        *released = true;
+      },
+      std::move(keep_visible), &keep_visible_released));
   // `bubble` is owned by the view hierarchy.
   DiceWebSigninInterceptionBubbleView* bubble =
       new DiceWebSigninInterceptionBubbleView(
-          browser(), GetAvatarAnchor(), GetTestBubbleParameters(),
+          browser(), anchor, GetTestBubbleParameters(),
           base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
                              OnInterceptionComplete,
-                         base::Unretained(this)));
+                         base::Unretained(this)),
+          std::move(tracked_keep_visible));
   views::Widget* widget = views::BubbleDialogDelegateView::CreateBubble(bubble);
   widget->Show();
   EXPECT_FALSE(callback_result_.has_value());
-
-  // Take a handle on the bubble, to close it later.
-  bubble_handle_ = bubble->GetHandle();
 
   views::test::WidgetDestroyedWaiter closing_observer(widget);
   EXPECT_FALSE(bubble->GetAccepted());
@@ -445,12 +452,15 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   EXPECT_EQ(callback_result_, SigninInterceptionResult::kAccepted);
   EXPECT_TRUE(bubble->GetAccepted());
 
-  // Widget was not closed yet.
+  // Widget was not closed yet, and `keep_visible` remains active while the
+  // spinner stays open.
   ASSERT_FALSE(widget->IsClosed());
+  EXPECT_FALSE(keep_visible_released);
   // Simulate completion of the interception process.
-  bubble_handle_.reset();
+  bubble->Close();
   // Widget will close now.
   closing_observer.Wait();
+  EXPECT_TRUE(keep_visible_released);
 
   // Check that histograms are recorded.
   histogram_tester.ExpectUniqueSample("Signin.InterceptResult.MultiUser",
@@ -461,6 +471,7 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   base::HistogramTester::CountsMap expected_histogram_total_count = {
       {"Signin.InterceptResult.MultiUser", 1},
       {"Signin.InterceptResult.MultiUser.NoSync", 1},
+      {"Signin.InterceptResult.MultiUser.NotPersonalized", 1},
   };
   EXPECT_THAT(
       histogram_tester.GetTotalCountsForPrefix("Signin.InterceptResult."),
@@ -490,12 +501,18 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
 
   // Create a bubble using the temporary profile, but not attached to its view
   // hierarchy. This bubble won't be destroyed when the new browser is closed,
-  // and will outlive it.
-  auto* bubble = new DiceWebSigninInterceptionBubbleView(
-      new_browser, GetAvatarAnchor(new_browser), GetTestBubbleParameters(),
-      base::BindOnce(
-          &DiceWebSigninInterceptionBubbleBrowserTest::OnInterceptionComplete,
-          base::Unretained(this)));
+  // and will outlive it. Scope `anchor` to bubble creation so its raw_ptr does
+  // not outlive `new_browser`.
+  DiceWebSigninInterceptionBubbleView* bubble = nullptr;
+  {
+    auto [anchor, keep_visible] = ResolveAvatarAnchor(new_browser);
+    bubble = new DiceWebSigninInterceptionBubbleView(
+        new_browser, anchor, GetTestBubbleParameters(),
+        base::BindOnce(
+            &DiceWebSigninInterceptionBubbleBrowserTest::OnInterceptionComplete,
+            base::Unretained(this)),
+        std::move(keep_visible));
+  }
   bubble->set_has_parent(false);
   views::Widget* widget = views::BubbleDialogDelegateView::CreateBubble(bubble);
   widget->Show();
@@ -529,6 +546,7 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   base::HistogramTester::CountsMap expected_histogram_total_count = {
       {"Signin.InterceptResult.MultiUser", 1},
       {"Signin.InterceptResult.MultiUser.NoSync", 1},
+      {"Signin.InterceptResult.MultiUser.NotPersonalized", 1},
   };
   EXPECT_THAT(
       histogram_tester.GetTotalCountsForPrefix("Signin.InterceptResult."),
@@ -543,14 +561,15 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   const GURL learn_more_url = google_util::AppendGoogleLocaleParam(
       GURL(chrome::kSigninInterceptManagedDisclaimerLearnMoreURL),
       g_browser_process->GetApplicationLocale());
+  auto [anchor, keep_visible] = ResolveAvatarAnchor();
   // `bubble` is owned by the view hierarchy.
   DiceWebSigninInterceptionBubbleView* bubble =
       new DiceWebSigninInterceptionBubbleView(
-          browser(), GetAvatarAnchor(),
-          GetTestBubbleParametersForManagedProfile(),
+          browser(), anchor, GetTestBubbleParametersForManagedProfile(),
           base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
                              OnInterceptionComplete,
-                         base::Unretained(this)));
+                         base::Unretained(this)),
+          std::move(keep_visible));
   views::Widget* widget = views::BubbleDialogDelegateView::CreateBubble(bubble);
   widget->Show();
 
@@ -582,25 +601,14 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   base::UserActionTester user_action_tester;
 
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(), GetTestChromeSigninBubbleParameters(),
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble =
+      CreateTestBubble(GetTestChromeSigninBubbleParameters());
 
   views::Widget* widget = bubble->GetWidget();
   // Equivalent to `kInterceptionBubbleBaseHeight` default.
   bubble->SetHeightAndShowWidget(/*height=*/500);
   EXPECT_FALSE(callback_result_.has_value());
-
-  // Take a handle on the bubble, to close it later.
-  bubble_handle_ = bubble->GetHandle();
 
   views::test::WidgetDestroyedWaiter closing_observer(widget);
   EXPECT_FALSE(bubble->GetAccepted());
@@ -614,7 +622,7 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   // handle.
   ASSERT_FALSE(widget->IsClosed());
   // Simulate completion of the interception process.
-  bubble_handle_.reset();
+  bubble->Close();
   // Widget will close now.
   closing_observer.Wait();
 
@@ -642,17 +650,9 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
 
   ASSERT_TRUE(AvatarToolbarButtonTestAccessor(browser()).GetEnabled());
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(), GetTestChromeSigninBubbleParameters(),
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble =
+      CreateTestBubble(GetTestChromeSigninBubbleParameters());
 
   views::Widget* widget = bubble->GetWidget();
   // Equivalent to `kInterceptionBubbleBaseHeight` default.
@@ -699,17 +699,9 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   bubble_paramerers.intercepted_account = account_info;
 
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(), bubble_paramerers,
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble =
+      CreateTestBubble(bubble_paramerers);
 
   views::Widget* widget = bubble->GetWidget();
   // Equivalent to `kInterceptionBubbleBaseHeight` default.
@@ -747,17 +739,9 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   bubble_parameters.primary_account = AccountInfo();
 
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(), bubble_parameters,
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble =
+      CreateTestBubble(bubble_parameters);
 
   views::Widget* widget = bubble->GetWidget();
   views::test::WidgetVisibleWaiter visible_waiter(widget);
@@ -786,17 +770,9 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   bubble_paramerers.intercepted_account = account_info;
 
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(), bubble_paramerers,
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble =
+      CreateTestBubble(bubble_paramerers);
 
   views::Widget* widget = bubble->GetWidget();
   // Equivalent to `kInterceptionBubbleBaseHeight` default.
@@ -835,17 +811,9 @@ IN_PROC_BROWSER_TEST_F(DiceWebSigninInterceptionBubbleBrowserTest,
   bubble_paramerers.intercepted_account = account_info;
 
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(), bubble_paramerers,
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble =
+      CreateTestBubble(bubble_paramerers);
 
   views::Widget* widget = bubble->GetWidget();
   // Equivalent to `kInterceptionBubbleBaseHeight` default.
@@ -894,6 +862,10 @@ const InterceptTypesParam kInterceptTypesTestParams[] = {
          WebSigninInterceptor::SigninInterceptionType::kChromeSignin,
      .expected_avatar_text_id =
          IDS_AVATAR_BUTTON_INTERCEPT_BUBBLE_CHROME_SIGNIN_TEXT},
+    {.intercept_type = WebSigninInterceptor::SigninInterceptionType::
+         kChromeSigninNonIntercept,
+     .expected_avatar_text_id =
+         IDS_AVATAR_BUTTON_INTERCEPT_BUBBLE_CHROME_SIGNIN_TEXT},
 };
 
 class DiceWebSigninInterceptionBubbleWithParamBrowserTest
@@ -911,30 +883,21 @@ class DiceWebSigninInterceptionBubbleWithParamBrowserTest
 
 IN_PROC_BROWSER_TEST_P(DiceWebSigninInterceptionBubbleWithParamBrowserTest,
                        AvatarEffectWithInterceptType) {
+  AvatarToolbarButtonTestAccessor(browser()).WaitForAvatarButton();
   AvatarToolbarButtonInterface* avatar_button = GetAvatarButton();
   ASSERT_FALSE(avatar_button->HasExplicitButtonState());
   ASSERT_TRUE(AvatarToolbarButtonTestAccessor(browser()).GetText().empty());
 
   // Creating the bubble through the static function.
-  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle> handle =
-      DiceWebSigninInterceptionBubbleView::CreateBubble(
-          browser(), GetAvatarAnchor(),
-          GetTestBubbleParametersWithInterceptType(intercept_type()),
-          base::BindOnce(&DiceWebSigninInterceptionBubbleBrowserTest::
-                             OnInterceptionComplete,
-                         base::Unretained(this)));
-
   // `bubble` is owned by the view hierarchy.
-  DiceWebSigninInterceptionBubbleView* bubble =
-      static_cast<DiceWebSigninInterceptionBubbleView::ScopedHandle*>(
-          handle.get())
-          ->GetBubbleViewForTesting();
+  base::WeakPtr<DiceWebSigninInterceptionBubbleView> bubble = CreateTestBubble(
+      GetTestBubbleParametersWithInterceptType(intercept_type()));
   // Equivalent to `kInterceptionBubbleBaseHeight` default.
   bubble->SetHeightAndShowWidget(/*height=*/500);
 
   EXPECT_TRUE(avatar_button->HasExplicitButtonState());
-  EXPECT_EQ(AvatarToolbarButtonTestAccessor(browser()).GetText(),
-            expected_avatar_text());
+  EXPECT_TRUE(AvatarToolbarButtonTestAccessor(browser()).WaitForText(
+      expected_avatar_text()));
 
   views::Widget* widget = bubble->GetWidget();
 
@@ -947,7 +910,7 @@ IN_PROC_BROWSER_TEST_P(DiceWebSigninInterceptionBubbleWithParamBrowserTest,
   closing_observer.Wait();
 
   EXPECT_FALSE(avatar_button->HasExplicitButtonState());
-  EXPECT_TRUE(AvatarToolbarButtonTestAccessor(browser()).GetText().empty());
+  EXPECT_TRUE(AvatarToolbarButtonTestAccessor(browser()).WaitForText(u""));
 }
 
 INSTANTIATE_TEST_SUITE_P(,

@@ -232,11 +232,7 @@ void ProfileOAuth2TokenServiceDelegateAndroid::OnAccessTokenInvalidated(
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jstring> j_access_token =
       ConvertUTF8ToJavaString(env, access_token);
-  // CHECK added to investigate crbug.com/366403142.
-  // Sometimes access_token is unexpectedly empty (for example,
-  // when visiting corp sites), and a previous attempt to throw an exception
-  // still causing crashes (see crbug.com/443111285).
-  CHECK(!access_token.empty(), base::NotFatalUntil::M145);
+  CHECK(!access_token.empty());
   signin::Java_ProfileOAuth2TokenServiceDelegate_invalidateAccessToken(
       env, java_ref_, j_access_token);
 }
@@ -301,6 +297,9 @@ void ProfileOAuth2TokenServiceDelegateAndroid::UpdateAccountList(
   // FireRefreshToken* methods.
   SetAccounts(curr_ids);
 
+  // Note: `AccountFetcherService` refreshes stale account info in response to
+  // these notifications (or to `FireRefreshTokensLoaded()` below on the first
+  // load).
   for (const CoreAccountId& refreshed_id : refreshed_ids) {
     FireRefreshTokenAvailable(refreshed_id);
   }
@@ -357,32 +356,16 @@ void ProfileOAuth2TokenServiceDelegateAndroid::FireRefreshTokensLoaded() {
   ProfileOAuth2TokenServiceDelegate::FireRefreshTokensLoaded();
 }
 
+void ProfileOAuth2TokenServiceDelegateAndroid::RevokeCredentialsInternal(
+    const CoreAccountId& account_id) {
+  // Revoking credentials on Android is not allowed.
+  NOTREACHED(base::NotFatalUntil::M163);
+}
+
 void ProfileOAuth2TokenServiceDelegateAndroid::RevokeAllCredentialsInternal(
     signin_metrics::SourceForRefreshTokenOperation source) {
   // Revoking credentials on Android is not allowed.
-  NOTREACHED(base::NotFatalUntil::M153);
-
-  // TODO(crbug.com/512831931): Cleanup after M153 is rolled out.
-  DVLOG(1) << "ProfileOAuth2TokenServiceDelegateAndroid::RevokeAllCredentials";
-  ScopedBatchChange batch(this);
-  std::vector<CoreAccountId> accounts_to_revoke = GetAccounts();
-
-  // Clear accounts in the token service before calling
-  // |FireRefreshTokenRevoked|.
-  SetAccounts(std::vector<CoreAccountId>());
-
-  for (const CoreAccountId& account : accounts_to_revoke) {
-    FireRefreshTokenRevoked(account);
-  }
-
-  // We don't expose the list of accounts if the user is signed out, so it is
-  // safe to assume that the account list is empty here.
-  // TODO(crbug.com/40287987): Once we expose the list of accounts all the
-  // time, this assumption should be re-evaluated.
-  const std::vector<AccountInfo> empty_accounts_list =
-      std::vector<AccountInfo>();
-  SeedAccountsThenReloadAllAccountsWithPrimaryAccount(
-      std::vector<AccountInfo>(), std::nullopt);
+  NOTREACHED();
 }
 
 void ProfileOAuth2TokenServiceDelegateAndroid::LoadCredentialsInternal(

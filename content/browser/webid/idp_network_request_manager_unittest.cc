@@ -1304,6 +1304,29 @@ TEST_F(IdpNetworkRequestManagerTest, ParseConfigBrandingMinSize) {
   }
 }
 
+// Icon URLs without a file extension (e.g. from image CDNs) are accepted.
+TEST_F(IdpNetworkRequestManagerTest, ParseConfigBrandingIconWithoutExtension) {
+  const char test_json[] = R"({
+  "branding" : {
+    "icons": [
+      {
+        "url": "https://cdn.example.com/abc123=s32",
+        "size": 32
+      }
+    ]
+  }
+  })";
+
+  FetchStatus fetch_status;
+  IdentityProviderMetadata idp_metadata;
+  std::tie(fetch_status, idp_metadata) =
+      SendConfigRequestAndWaitForResponse(test_json);
+
+  EXPECT_EQ(ParseStatus::kSuccess, fetch_status.parse_status);
+  EXPECT_EQ("https://cdn.example.com/abc123=s32",
+            idp_metadata.brand_icon_url.spec());
+}
+
 // Tests various scenarios on resolving branding icon's url for given config
 // url.
 TEST_F(IdpNetworkRequestManagerTest, ParseConfigBrandingIconReltivePath) {
@@ -1442,6 +1465,67 @@ TEST_F(IdpNetworkRequestManagerTest, ParseConfigRequestedLabel) {
   EXPECT_EQ(ParseStatus::kSuccess, fetch_status.parse_status);
   EXPECT_EQ(net::HTTP_OK, fetch_status.response_code);
   EXPECT_EQ("l1", idp_metadata.requested_label);
+}
+
+// Tests that the identity provider's account management page, privacy policy
+// and terms of service are passed on from the well-known file as written, for
+// `ConfigFetcher` to validate, including relative and non-HTTP(S) values.
+TEST_F(IdpNetworkRequestManagerTest, ParseWellKnownIdpLinks) {
+  auto [fetch_status, well_known] = SendWellKnownRequestAndWaitForResponse(R"({
+    "provider_urls": ["https://idp.test/fedcm.json"],
+    "account_management_url": "https://idp.test/account",
+    "privacy_policy_url": "/privacy",
+    "terms_of_service_url": "javascript:void 0"
+  })");
+
+  EXPECT_EQ(ParseStatus::kSuccess, fetch_status.parse_status);
+  EXPECT_EQ("https://idp.test/account", well_known.account_management_url);
+  EXPECT_EQ("/privacy", well_known.privacy_policy_url);
+  EXPECT_EQ("javascript:void 0", well_known.terms_of_service_url);
+}
+
+// Tests that the identity provider's links are also parsed from a well-known
+// file that has an accounts endpoint and a login URL instead of provider URLs.
+TEST_F(IdpNetworkRequestManagerTest,
+       ParseWellKnownIdpLinksWithoutProviderUrls) {
+  auto [fetch_status, well_known] = SendWellKnownRequestAndWaitForResponse(R"({
+    "accounts_endpoint": "/accounts",
+    "login_url": "/login",
+    "privacy_policy_url": "https://idp.test/privacy"
+  })");
+
+  EXPECT_EQ(ParseStatus::kSuccess, fetch_status.parse_status);
+  EXPECT_EQ("https://idp.test/privacy", well_known.privacy_policy_url);
+}
+
+// Tests that a well-known file with only the identity provider's links is
+// invalid, since it has no provider URLs, but still passes the links on, so
+// that they can be used when the well-known check is skipped.
+TEST_F(IdpNetworkRequestManagerTest, ParseWellKnownWithOnlyIdpLinks) {
+  auto [fetch_status, well_known] = SendWellKnownRequestAndWaitForResponse(R"({
+    "privacy_policy_url": "https://idp.test/privacy"
+  })");
+
+  EXPECT_EQ(ParseStatus::kInvalidResponseError, fetch_status.parse_status);
+  EXPECT_EQ("https://idp.test/privacy", well_known.privacy_policy_url);
+}
+
+// Tests that the identity provider's links are not parsed from the config file,
+// since they come from the well-known file.
+TEST_F(IdpNetworkRequestManagerTest, ParseConfigIgnoresIdpLinks) {
+  const char test_json[] = R"({
+    "account_management_url": "https://idp.test/account",
+    "privacy_policy_url": "/privacy",
+    "terms_of_service_url": "terms"
+  })";
+
+  auto [fetch_status, idp_metadata] =
+      SendConfigRequestAndWaitForResponse(test_json);
+
+  EXPECT_EQ(ParseStatus::kSuccess, fetch_status.parse_status);
+  EXPECT_TRUE(idp_metadata.account_management_url.is_empty());
+  EXPECT_TRUE(idp_metadata.privacy_policy_url.is_empty());
+  EXPECT_TRUE(idp_metadata.terms_of_service_url.is_empty());
 }
 
 // Tests that we send the correct origin for account requests.
@@ -2205,6 +2289,21 @@ TEST_F(IdpNetworkRequestManagerTest, FetchClientMetadataInvalidUrls) {
   ASSERT_EQ(GURL(), data.privacy_policy_url);
   ASSERT_EQ(GURL(), data.terms_of_service_url);
   ASSERT_EQ(GURL(), data.brand_icon_url);
+}
+
+// Icon URLs without a file extension (e.g. from image CDNs) are accepted.
+TEST_F(IdpNetworkRequestManagerTest, FetchClientMetadataIconWithoutExtension) {
+  const std::string brand_icon_url = "https://cdn.rp.example/abc123=s40";
+
+  IdpClientMetadata data = SendClientMetadataRequestAndWaitForResponse(
+      /*client_id=*/"123", R"({"icons": [
+      {
+        "url":  ")" + brand_icon_url +
+                               R"(",
+        "size": 40
+      }
+    ]})");
+  EXPECT_EQ(GURL(brand_icon_url), data.brand_icon_url);
 }
 
 TEST_F(IdpNetworkRequestManagerTest, WellKnownWrongMimeType) {

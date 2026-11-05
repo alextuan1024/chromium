@@ -57,6 +57,7 @@
 #include "content/public/common/zygote/zygote_buildflags.h"
 #include "content/public/gpu/content_gpu_client.h"
 #include "gpu/command_buffer/service/gpu_switches.h"
+#include "gpu/command_buffer/service/gpu_task_priority.h"
 #include "gpu/config/gpu_driver_bug_list.h"
 #include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "gpu/config/gpu_finch_features.h"
@@ -83,7 +84,6 @@
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_surface.h"
 #include "ui/gl/gl_switches.h"
-#include "ui/gl/gpu_switching_manager.h"
 #include "ui/gl/init/gl_factory.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -93,14 +93,25 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
+#include <android/hardware_buffer.h>
+#include <dlfcn.h>
+#include <media/NdkImageReader.h>
+#include <vulkan/vulkan_core.h>
+
+#include "base/android/android_info.h"
 #include "base/android/meminfo_dump_provider.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "components/tracing/common/graphics_memory_dump_provider_android.h"
+#include "media/base/android/media_codec_bridge_impl.h"
+#include "sandbox/linux/seccomp-bpf-helpers/seccomp_starter_android.h"
 #include "sandbox/linux/services/thread_helpers.h"  // nogncheck
 #include "sandbox/policy/features.h"
+#include "sandbox/policy/linux/bpf_gpu_policy_android.h"
 #include "sandbox/policy/linux/landlock_gpu_policy_android.h"
 #include "sandbox/policy/sandbox_type.h"
+#include "sandbox/policy/switches.h"
+#include "sandbox/sandbox_buildflags.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -110,10 +121,6 @@
 #include "media/base/win/mf_initializer.h"
 #include "sandbox/policy/win/sandbox_warmup.h"
 #include "sandbox/win/src/sandbox.h"
-#endif
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
-#include "services/webnn/public/cpp/webnn_sandbox_init.h"
 #endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -143,6 +150,10 @@ bool StartSandboxLinux(gpu::GpuWatchdogThread*,
                        const gpu::GpuPreferences&);
 #elif BUILDFLAG(IS_ANDROID)
 bool StartSandboxAndroid(gpu::GpuWatchdogThread*);
+#if BUILDFLAG(USE_SECCOMP_BPF)
+void WarmUpSeccompSandbox();
+bool StartSeccompSandboxAndroid();
+#endif
 #elif BUILDFLAG(IS_WIN)
 bool StartSandboxWindows(const sandbox::SandboxInterfaceInfo*);
 #endif
@@ -194,9 +205,6 @@ class ContentSandboxHelper : public gpu::GpuSandboxHelper {
 #if BUILDFLAG(IS_WIN)
     media::PreSandboxMediaFoundationInitialization();
 #endif
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
-    webnn::PreSandboxWebNNInitialization(/*is_gpu_process=*/true);
-#endif
 
     // On Linux, reading system memory doesn't work through the GPU sandbox.
     // This value is cached, so access it here to populate the cache.
@@ -214,11 +222,33 @@ class ContentSandboxHelper : public gpu::GpuSandboxHelper {
 #elif BUILDFLAG(IS_MAC)
     return sandbox::Seatbelt::IsSandboxed();
 #elif BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(USE_SECCOMP_BPF)
+    const base::CommandLine& command_line =
+        *base::CommandLine::ForCurrentProcess();
+    const bool seccomp_enabled =
+        !command_line.HasSwitch(sandbox::policy::switches::kNoSandbox) &&
+        !command_line.HasSwitch(
+            sandbox::policy::switches::kDisableSeccompFilterSandbox) &&
+        base::FeatureList::IsEnabled(
+            sandbox::policy::features::kSeccompFilterGpuSandbox);
+    if (seccomp_enabled) {
+      // Warm up dynamic libraries before Landlock restricts filesystem access
+      // to /system or /apex, and before Seccomp-BPF blocks PROT_EXEC mappings.
+      WarmUpSeccompSandbox();
+    }
+#endif
+    bool landlock_res = true;
     if (base::FeatureList::IsEnabled(
             sandbox::policy::features::kAndroidGpuSandbox)) {
-      return StartSandboxAndroid(watchdog_thread);
+      landlock_res = StartSandboxAndroid(watchdog_thread);
     }
-    return false;
+    bool seccomp_res = true;
+#if BUILDFLAG(USE_SECCOMP_BPF)
+    if (seccomp_enabled) {
+      seccomp_res = StartSeccompSandboxAndroid();
+    }
+#endif
+    return landlock_res && seccomp_res;
 #else
     return false;
 #endif
@@ -294,56 +324,39 @@ int GpuMain(MainFunctionParams parameters) {
   // this.
   // TODO(ericrk): Revisit this once we assess its impact on crbug.com/662802
   // and crbug.com/609252.
-  std::unique_ptr<base::SingleThreadTaskExecutor> main_thread_task_executor;
   std::unique_ptr<ui::PlatformEventSource> event_source;
-  if (command_line.HasSwitch(switches::kHeadless)) {
 #if BUILDFLAG(IS_MAC)
-    // CADisplayLink (Mac HW VSync) callback only works with NS_RUNLOOP.
-    main_thread_task_executor =
-        std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::NS_RUNLOOP, /*is_main_thread=*/true);
-    main_thread_task_executor->SetWorkBatchSize(2);
+  // Cross-process CoreAnimation requires a CFRunLoop to function at all, and
+  // requires a NSRunLoop to not starve under heavy load. See:
+  // https://crbug.com/312462#c51 and https://crbug.com/783298
+  // CADisplayLink (Mac HW VSync) callback only works with NS_RUNLOOP (even in
+  // headless mode). DEFAULT type does not support NSObject.
+  base::MessagePumpType message_pump_type = base::MessagePumpType::NS_RUNLOOP;
 #else
-    main_thread_task_executor =
-        std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::DEFAULT, /*is_main_thread=*/true);
-#endif
-  } else {
-#if BUILDFLAG(IS_WIN)
-    // The GpuMain thread should not be pumping Windows messages because no UI
-    // is expected to run on this thread.
-    main_thread_task_executor =
-        std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::DEFAULT, /*is_main_thread=*/true);
-#elif BUILDFLAG(IS_OZONE)
+  // On Windows, the GpuMain thread should not be pumping Windows messages
+  // because no UI is expected to run on this thread.
+  base::MessagePumpType message_pump_type = base::MessagePumpType::DEFAULT;
+  if (!command_line.HasSwitch(switches::kHeadless)) {
+#if BUILDFLAG(IS_OZONE)
     // The MessagePump type required depends on the Ozone platform selected at
     // runtime.
-    if (!main_thread_task_executor) {
-      main_thread_task_executor =
-          std::make_unique<base::SingleThreadTaskExecutor>(
-              gpu_preferences.message_pump_type, /*is_main_thread=*/true);
-    }
+    message_pump_type = gpu_preferences.message_pump_type;
 #elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #error "Unsupported Linux platform."
-#elif BUILDFLAG(IS_MAC)
-    // Cross-process CoreAnimation requires a CFRunLoop to function at all, and
-    // requires a NSRunLoop to not starve under heavy load. See:
-    // https://crbug.com/312462#c51 and https://crbug.com/783298
-    // CADisplayLink (Mac HW VSync) callback only works with NS_RUNLOOP. DEFAULT
-    // type does not support NSObject.
-    main_thread_task_executor =
-        std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::NS_RUNLOOP, /*is_main_thread=*/true);
-    // As part of the migration to DoWork(), this policy is required to keep
-    // previous behavior and avoid regressions.
-    // TODO(crbug.com/40668161): Consider updating the policy.
-    main_thread_task_executor->SetWorkBatchSize(2);
-#else
-    main_thread_task_executor =
-        std::make_unique<base::SingleThreadTaskExecutor>(
-            base::MessagePumpType::DEFAULT, /*is_main_thread=*/true);
 #endif
   }
+#endif
+
+  auto main_thread_task_executor =
+      std::make_unique<base::SingleThreadTaskExecutor>(
+          message_pump_type, /*is_main_thread=*/true,
+          gpu::CreateGpuPrioritySettings());
+#if BUILDFLAG(IS_MAC)
+  // As part of the migration to DoWork(), this policy is required to keep
+  // previous behavior and avoid regressions.
+  // TODO(crbug.com/40668161): Consider updating the policy.
+  main_thread_task_executor->SetWorkBatchSize(2);
+#endif
 
   base::PlatformThread::SetName("CrGpuMain");
   mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics("GpuMain");
@@ -362,7 +375,9 @@ int GpuMain(MainFunctionParams parameters) {
 
   base::PlatformThread::SetDefaultThreadType(base::ThreadType::kPresentation);
 
-  auto gpu_init = std::make_unique<gpu::GpuInit>();
+  // Picks GpuInitLegacy or GpuInit2 based on features::kGpuInitOptimization.
+  auto gpu_init = gpu::GpuInit::Create();
+
   ContentSandboxHelper sandbox_helper;
 #if BUILDFLAG(IS_WIN)
   sandbox_helper.set_sandbox_info(parameters.sandbox_info);
@@ -602,6 +617,89 @@ bool StartSandboxAndroid(gpu::GpuWatchdogThread* watchdog_thread) {
 
   return res;
 }
+
+#if BUILDFLAG(USE_SECCOMP_BPF)
+// Once the Seccomp-BPF sandbox is installed, mprotect() and mmap() with
+// PROT_EXEC are disallowed, so dynamic libraries can no longer be loaded.
+// Warm up any Android libraries that are lazily loaded via dlopen() at
+// runtime.
+void WarmUpSeccompSandbox() {
+  // 1. Allocate and release a 1x1 AHardwareBuffer to ensure the Gralloc
+  //    passthrough HAL library is loaded by libui.so / libvndksupport.so.
+  AHardwareBuffer_Desc ahb_desc = {};
+  ahb_desc.width = 1;
+  ahb_desc.height = 1;
+  ahb_desc.layers = 1;
+  ahb_desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+  ahb_desc.usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
+  AHardwareBuffer* ahb = nullptr;
+  if (AHardwareBuffer_allocate(&ahb_desc, &ahb) == 0 && ahb) {
+    AHardwareBuffer_release(ahb);
+  }
+
+  // 2. Load the ApexCodecs library and create/release a dummy MediaCodec video
+  //    decoder to ensure libcodec2_client.so and Codec2 client stores are
+  //    initialized.
+  dlopen("libcom.android.media.swcodec.apexcodecs.so", RTLD_NOW);
+  media::VideoCodecConfig codec_config;
+  codec_config.codec = media::VideoCodec::kVP8;
+  codec_config.profile = media::VP8PROFILE_ANY;
+  codec_config.initial_expected_coded_size = gfx::Size(64, 64);
+  std::ignore = media::MediaCodecBridgeImpl::CreateVideoDecoder(codec_config);
+
+  // 3. Load libmediandk.so and create/delete a minimal 1x1 AImageReader so
+  //    libgui.so loads any lazy vendor BufferQueue/mapper plugins before
+  //    PROT_EXEC mappings are blocked.
+  if (void* mediandk_lib = dlopen("libmediandk.so", RTLD_NOW)) {
+    using PFN_AImageReader_newWithUsage = decltype(&AImageReader_newWithUsage);
+    using PFN_AImageReader_delete = decltype(&AImageReader_delete);
+    auto new_with_usage = reinterpret_cast<PFN_AImageReader_newWithUsage>(
+        dlsym(mediandk_lib, "AImageReader_newWithUsage"));
+    auto delete_reader = reinterpret_cast<PFN_AImageReader_delete>(
+        dlsym(mediandk_lib, "AImageReader_delete"));
+    if (new_with_usage && delete_reader) {
+      AImageReader* reader = nullptr;
+      if (new_with_usage(/*width=*/1, /*height=*/1, AIMAGE_FORMAT_PRIVATE,
+                         AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
+                         /*maxImages=*/1, &reader) == AMEDIA_OK &&
+          reader) {
+        delete_reader(reader);
+      }
+    }
+  }
+
+  // 4. Conservatively probe libvulkan.so and invoke a single global extension
+  //    count query to trigger the Android Vulkan loader's one-time
+  //    initialization (loading the vendor Vulkan ICD via libvndksupport.so) on
+  //    devices that support Vulkan.
+  if (void* vulkan_lib = dlopen("libvulkan.so", RTLD_NOW)) {
+    auto get_instance_proc_addr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        dlsym(vulkan_lib, "vkGetInstanceProcAddr"));
+    auto enumerate_exts =
+        get_instance_proc_addr
+            ? reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+                  get_instance_proc_addr(
+                      nullptr, "vkEnumerateInstanceExtensionProperties"))
+            : nullptr;
+    if (enumerate_exts) {
+      uint32_t count = 0;
+      enumerate_exts(nullptr, &count, nullptr);
+    }
+  }
+}
+
+bool StartSeccompSandboxAndroid() {
+  sandbox::SeccompStarterAndroid starter(
+      base::android::android_info::sdk_int());
+  starter.set_policy(
+      std::make_unique<sandbox::policy::GpuProcessPolicyAndroid>());
+  if (starter.StartSandbox()) {
+    LOG(WARNING) << "Seccomp-BPF sandbox enabled for Android GPU process.";
+    return true;
+  }
+  return false;
+}
+#endif  // BUILDFLAG(USE_SECCOMP_BPF)
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN)

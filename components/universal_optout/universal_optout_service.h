@@ -34,6 +34,8 @@ inline constexpr char kEligibilitySystemStartupHistogram[] =
     "Privacy.UniversalOptOut.EligibilitySystem.Startup";
 inline constexpr char kEligibilityChangedHistogram[] =
     "Privacy.UniversalOptOut.EligibilityChanged";
+inline constexpr char kToggleStateStartupHistogram[] =
+    "Privacy.UniversalOptOut.ToggleState.Startup";
 
 // Identifies which system determined eligibility and the result.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -66,8 +68,6 @@ enum class EligibilityTransition {
 class UniversalOptOutService : public KeyedService,
                                public variations::VariationsService::Observer {
  public:
-  static constexpr double kEligibilityThresholdRatio = 0.5;
-
   using OptOutChangedCallback = base::RepeatingCallback<void(bool)>;
 
   explicit UniversalOptOutService(
@@ -93,6 +93,7 @@ class UniversalOptOutService : public KeyedService,
 
   // variations::VariationsService::Observer:
   void OnSeedFetched() override;
+  void OnCountryOrAdminAreaChanged() override;
   void OnVariationsServiceDestroyed() override;
 
   // Returns whether the profile is eligible for Universal Opt Out.
@@ -108,6 +109,10 @@ class UniversalOptOutService : public KeyedService,
   // Records the current location for today if not already recorded, prunes
   // history older than the retention window, and updates eligibility.
   void RecordLocationAndUpdateEligibility();
+
+  // Overrides `kUniversalOptOutEligibilityHistory` from the JSON file specified
+  // by `switches::kUniversalOptOutHistoryJsonPath` if present.
+  void MaybeOverrideHistoryFromCommandLine();
 
   // Records location for `current_day` in `kUniversalOptOutEligibilityHistory`.
   void RecordLocation(base::Time current_day,

@@ -40,12 +40,12 @@ class AXAuraObjWrapper;
 class AXVirtualView;
 class View;
 
-using AuraAXTreeSerializer = ui::AXTreeSerializer<
-    views::AXAuraObjWrapper*,
-    std::vector<raw_ptr<views::AXAuraObjWrapper, VectorExperimental>>,
-    ui::AXTreeUpdate*,
-    ui::AXTreeData*,
-    ui::AXNodeData>;
+using AuraAXTreeSerializer =
+    ui::AXTreeSerializer<views::AXAuraObjWrapper*,
+                         std::vector<raw_ptr<views::AXAuraObjWrapper>>,
+                         ui::AXTreeUpdate*,
+                         ui::AXTreeData*,
+                         ui::AXNodeData>;
 
 // This class manages a tree of AXNodes for all Chromium Views, serializing
 // updates, handling accessibility events, performing hit tests, etc.
@@ -154,8 +154,10 @@ class VIEWS_EXPORT ViewsAXManager : public ui::AXActionHandler,
     bool from_user;
   };
   std::vector<Event> pending_events_;
+  std::vector<Event> processing_events_;
 
   absl::flat_hash_set<ui::AXNodeID> pending_data_updates_;
+  absl::flat_hash_set<ui::AXNodeID> processing_data_updates_;
 };
 }  // namespace views
 

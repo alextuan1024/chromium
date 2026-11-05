@@ -4,7 +4,6 @@
 
 #include "gpu/command_buffer/service/memory_cache.h"
 
-#include "base/feature_list.h"
 #include "base/memory_coordinator/memory_coordinator_features.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/memory_dump_request_args.h"
@@ -131,9 +130,10 @@ scoped_refptr<MemoryCacheEntry> MemoryCache::Store(
   return entry;
 }
 
-void MemoryCache::OnUpdateMemoryLimit(int memory_limit) {
+void MemoryCache::OnUpdateMemoryLimit(base::MemoryLimit memory_limit) {
   base::AutoLock lock(mutex_);
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (base::ShouldUseStatefulMemoryPressure(
+          kGpuChannelManagerMemoryConsumerName)) {
     size_t target_limit =
         gpu::UpdateShaderCacheSizeOnMemoryLimit(max_size_, memory_limit);
     // Ensure no memory is released during OnUpdateMemoryLimit.
@@ -141,9 +141,10 @@ void MemoryCache::OnUpdateMemoryLimit(int memory_limit) {
   }
 }
 
-void MemoryCache::OnReleaseMemory(int memory_limit) {
+void MemoryCache::OnReleaseMemory(base::MemoryLimit memory_limit) {
   base::AutoLock lock(mutex_);
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (base::ShouldUseStatefulMemoryPressure(
+          kGpuChannelManagerMemoryConsumerName)) {
     // In OnUpdateMemoryLimit(), size_limit_ is clamped to current_size_
     // to avoid unexpected eviction during subsequent Store() calls.
     // When OnReleaseMemory() is called to explicitly free memory, we must

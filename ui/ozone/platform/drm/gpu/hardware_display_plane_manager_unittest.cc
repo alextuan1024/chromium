@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <xf86drmMode.h>
 
+#include <array>
 #include <memory>
 #include <utility>
 
@@ -47,11 +48,6 @@ using testing::_;
 using testing::IsEmpty;
 using testing::Return;
 using testing::SizeIs;
-
-// TODO(crbug.com/40945652): These tests should not use a single-point
-// curve as the non-empty value (it is arguably not a valid input).
-const display::GammaCurve kNonemptyGammaCurve({{0, 0, 0}});
-const display::GammaCurve kEmptyGammaCurve;
 
 const gfx::Size kDefaultBufferSize(2, 2);
 // Create a basic mode for a 6x4 screen.
@@ -112,6 +108,7 @@ class HardwareDisplayPlaneManagerTest
   }
 
  protected:
+  base::test::SingleThreadTaskEnvironment task_environment_;
   HardwareDisplayPlaneList state_;
   scoped_refptr<DrmFramebuffer> fake_buffer_;
   scoped_refptr<FakeDrmDevice> fake_drm_;
@@ -123,7 +120,7 @@ void HardwareDisplayPlaneManagerTest::SetUp() {
   use_atomic_ = GetParam();
 
   auto gbm_device = std::make_unique<MockGbmDevice>();
-  fake_drm_ = new FakeDrmDevice(std::move(gbm_device));
+  fake_drm_ = base::MakeRefCounted<FakeDrmDevice>(std::move(gbm_device));
 
   fake_buffer_ = CreateBuffer(kDefaultBufferSize);
 }
@@ -1118,7 +1115,7 @@ TEST_P(HardwareDisplayPlaneManagerTest,
 
   {
     constexpr float kEpsilon = 0.001f;
-    float rgb[3] = {0.4f, 0.5f, 0.6f};
+    std::array<float, 3> rgb = {0.4f, 0.5f, 0.6f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.1f * 0.4f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.2f * 0.5f, kEpsilon);
@@ -1154,7 +1151,7 @@ TEST_P(HardwareDisplayPlaneManagerTest, CtmColorManagement_GammaAdjustment) {
 
   {
     constexpr float kEpsilon = 0.001f;
-    float rgb[3] = {0.6f, 0.5f, 0.4f};
+    std::array<float, 3> rgb = {0.6f, 0.5f, 0.4f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.9f * 0.6f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.8f * 0.5f, kEpsilon);
@@ -1207,7 +1204,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest,
   // srgb-linear using https://colorjs.io/apps/convert/.
   {
     constexpr float kEpsilon = 0.001f;
-    float rgb[3] = {0.1937649f, 0.51051424f, 0.77947779f};
+    std::array<float, 3> rgb = {0.1937649f, 0.51051424f, 0.77947779f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.25f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.5f, kEpsilon);
@@ -1252,8 +1249,9 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
   // Constants for a test color value in P3 and sRGB. This is the conversion of
   // color(--display-p3-linear 0.25 0.5 0.75) to srgb-linear using
   // https://colorjs.io/apps/convert/.
-  const float kColorP3[3] = {0.25, 0.5, 0.75};
-  const float kColorSRGB[3] = {0.1937649f, 0.51051424f, 0.77947779f};
+  constexpr std::array<float, 3> kColorP3 = {0.25f, 0.5f, 0.75f};
+  constexpr std::array<float, 3> kColorSRGB = {0.1937649f, 0.51051424f,
+                                               0.77947779f};
 
   // Commit a plane that is P3. Color conversion should be a no-op.
   {
@@ -1265,7 +1263,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
     EXPECT_EQ(1, fake_drm_->get_commit_count());
     EXPECT_NE(0u, GetCrtcPropertyValue(crtc_id, "CTM"));
 
-    float rgb[3] = {kColorP3[0], kColorP3[1], kColorP3[2]};
+    std::array<float, 3> rgb = kColorP3;
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], kColorP3[0], kEpsilon);
     EXPECT_NEAR(rgb[1], kColorP3[1], kEpsilon);
@@ -1283,7 +1281,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
 
     // This is the conversion of color(--display-p3-linear 0.25 0.5 0.75) to
     // srgb-linear using https://colorjs.io/apps/convert/.
-    float rgb[3] = {kColorSRGB[0], kColorSRGB[1], kColorSRGB[2]};
+    std::array<float, 3> rgb = kColorSRGB;
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], kColorP3[0], kEpsilon);
     EXPECT_NEAR(rgb[1], kColorP3[1], kEpsilon);
@@ -1300,7 +1298,8 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
     fake_drm_->plane_manager()->SetColorTemperatureAdjustment(
         fake_drm_->crtc_property(0).id, cta);
 
-    float rgb[3] = {2.f * kColorSRGB[0], kColorSRGB[1], kColorSRGB[2]};
+    std::array<float, 3> rgb = {2.f * kColorSRGB[0], kColorSRGB[1],
+                                kColorSRGB[2]};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], kColorP3[0], kEpsilon);
     EXPECT_NEAR(rgb[1], kColorP3[1], kEpsilon);
@@ -1312,7 +1311,8 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
     fake_drm_->plane_manager()->SetOutputColorSpace(crtc_id,
                                                     SkNamedPrimariesExt::kSRGB);
 
-    float rgb[3] = {2.f * kColorSRGB[0], kColorSRGB[1], kColorSRGB[2]};
+    std::array<float, 3> rgb = {2.f * kColorSRGB[0], kColorSRGB[1],
+                                kColorSRGB[2]};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], kColorP3[0], kEpsilon);
     EXPECT_NEAR(rgb[1], kColorP3[1], kEpsilon);
@@ -1331,7 +1331,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
     PerformPageFlip(/*crtc_idx=*/0, &state, planes);
     EXPECT_NE(0u, GetCrtcPropertyValue(crtc_id, "CTM"));
 
-    float rgb[3] = {1.0f, 0.75f, 0.25f};
+    std::array<float, 3> rgb = {1.0f, 0.75f, 0.25f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.5f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.75f, kEpsilon);
@@ -1345,7 +1345,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
         display::GammaCurve::MakeScale(0.5, 0.25 / 0.75, 0.1 / 0.25);
     fake_drm_->plane_manager()->SetGammaAdjustment(crtc_id, gamma_adjustment);
 
-    float rgb[3] = {1.0f, 0.75f, 0.25f};
+    std::array<float, 3> rgb = {1.0f, 0.75f, 0.25f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.25f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.25f, kEpsilon);
@@ -1682,7 +1682,7 @@ class HardwareDisplayPlaneManagerPlanesReadyTest : public testing::Test {
 
   void SetUp() override {
     auto gbm_device = std::make_unique<MockGbmDevice>();
-    fake_drm_ = new FakeDrmDevice(std::move(gbm_device));
+    fake_drm_ = base::MakeRefCounted<FakeDrmDevice>(std::move(gbm_device));
     drm_framebuffer_ = CreateBuffer(kDefaultBufferSize);
     planes_without_fences_ = CreatePlanesWithoutFences();
     planes_with_fences_ = CreatePlanesWithFences();
@@ -1718,12 +1718,12 @@ class HardwareDisplayPlaneManagerPlanesReadyTest : public testing::Test {
     return planes;
   }
 
-  scoped_refptr<FakeDrmDevice> fake_drm_;
-  std::unique_ptr<HardwareDisplayPlaneManager> plane_manager_;
-  bool callback_called = false;
   base::test::TaskEnvironment task_env_{
       base::test::TaskEnvironment::MainThreadType::DEFAULT,
       base::test::TaskEnvironment::ThreadPoolExecutionMode::QUEUED};
+  scoped_refptr<FakeDrmDevice> fake_drm_;
+  std::unique_ptr<HardwareDisplayPlaneManager> plane_manager_;
+  bool callback_called = false;
   scoped_refptr<DrmFramebuffer> drm_framebuffer_;
   const FakeFenceFD fake_fence_fd1_;
   const FakeFenceFD fake_fence_fd2_;
@@ -2142,12 +2142,10 @@ class HardwareDisplayPlaneAtomicMock : public HardwareDisplayPlaneAtomic {
   HardwareDisplayPlaneAtomicMock() : HardwareDisplayPlaneAtomic(1) {}
   ~HardwareDisplayPlaneAtomicMock() override = default;
 
-  bool AssignPlaneProps(DrmDevice* drm,
-                        uint32_t crtc_id,
+  bool AssignPlaneProps(uint32_t crtc_id,
                         uint32_t framebuffer,
                         const gfx::Rect& crtc_rect,
                         const gfx::Rect& src_rect,
-                        const gfx::Rect& damage_rect,
                         const gfx::OverlayTransform transform,
                         const gfx::ColorSpace& color_space,
                         int in_fence_fd,
@@ -2163,6 +2161,7 @@ class HardwareDisplayPlaneAtomicMock : public HardwareDisplayPlaneAtomic {
 };
 
 TEST(HardwareDisplayPlaneManagerAtomic, EnableBlend) {
+  base::test::SingleThreadTaskEnvironment task_environment;
   auto gbm_device = std::make_unique<MockGbmDevice>();
   auto drm_device = base::MakeRefCounted<FakeDrmDevice>(std::move(gbm_device));
   auto plane_manager =
@@ -2210,6 +2209,7 @@ class HardwareDisplayPlaneManagerSeamlessModeTest : public testing::Test {
     CHECK(plane_manager_->Initialize());
   }
 
+  base::test::SingleThreadTaskEnvironment task_environment_;
   int64_t crtc_id_;
   scoped_refptr<MockDrmDevice> drm_device_;
   std::unique_ptr<HardwareDisplayPlaneManagerAtomic> plane_manager_;
@@ -2247,8 +2247,9 @@ TEST_F(HardwareDisplayPlaneManagerSeamlessModeTest,
   // Invalid crtc will result in a DCHECK.
   int32_t wrong_crtc_id = 9999;
   EXPECT_NE(wrong_crtc_id, crtc_id_);
-  EXPECT_DCHECK_DEATH(
-      plane_manager_->TestSeamlessMode(wrong_crtc_id, arbitrary_mode));
+  EXPECT_CHECK_DEATH(
+      plane_manager_->TestSeamlessMode(wrong_crtc_id, arbitrary_mode),
+      base::NotFatalUntil::M163);
 }
 
 TEST_P(HardwareDisplayPlaneManagerAtomicTest, CrtcOffsetPageFlip) {

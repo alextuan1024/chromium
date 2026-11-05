@@ -38,13 +38,6 @@ export interface SettingsSyncAccountControlElement {
 }
 // </if>
 
-// Helper enum to determine which promo type the app should display. Used in the
-// CSS styling, where the string literals are used for attributes matching.
-enum PromoType {
-  SIGNIN = 'signin',
-  SYNC = 'sync',
-}
-
 const SettingsSyncAccountControlElementBase = WebUiListenerMixinLit(
     PrefServiceObserverMixinLit(RouteObserverMixinLit(CrLitElement)));
 
@@ -107,19 +100,13 @@ export class SettingsSyncAccountControlElement extends
       },
 
       shouldShowAvatarRow_: {type: Boolean},
-      subLabel_: {type: String},
       showSetupButtons_: {type: Boolean},
-
-      // Reflected as `promo-type_` to be used in the CSS styling with
-      // attributes matching.
-      promoType_: {
-        type: String,
-        reflect: true,
-      },
 
       signinAllowedOnNextStartupPref_: {type: Object},
 
       // <if expr="not is_chromeos">
+      subLabel_: {type: String},
+
       /**
        * Proxy variable for syncStatus.signedInState to shield observer from
        * being triggered multiple times whenever syncStatus changes.
@@ -141,9 +128,12 @@ export class SettingsSyncAccountControlElement extends
   accessor promoSecondaryLabelWithAccount: string = '';
   accessor promoSecondaryLabelWithNoAccount: string = '';
   // <if expr="not is_chromeos">
-  protected accessor syncing_: boolean = false;
-  // </if>
+  private accessor syncing_: boolean = false;
   protected accessor storedAccounts_: StoredAccount[] = [];
+  // </if>
+  // <if expr="is_chromeos">
+  private accessor storedAccounts_: StoredAccount[] = [];
+  // </if>
   protected accessor profileAvatarURL_: string = '';
   protected accessor shownAccount_: StoredAccount|null = null;
   accessor embeddedInSubpage: boolean = false;
@@ -151,19 +141,23 @@ export class SettingsSyncAccountControlElement extends
   accessor accessPoint: ChromeSigninAccessPoint =
       ChromeSigninAccessPoint.SETTINGS;
   protected accessor shouldShowAvatarRow_: boolean = false;
+  // <if expr="not is_chromeos">
   protected accessor subLabel_: string = '';
   protected accessor showSetupButtons_: boolean = false;
-  protected accessor signinAllowedOnNextStartupPref_:
+  // </if>
+  // <if expr="is_chromeos">
+  private accessor showSetupButtons_: boolean = false;
+  // </if>
+  private accessor signinAllowedOnNextStartupPref_:
       chrome.settingsPrivate.PrefObject<boolean>|undefined;
   // <if expr="not is_chromeos">
   protected accessor shouldShowSigninPausedButtons_: boolean = false;
   private signinPausedImpressionRecorded_: boolean = false;
-  protected accessor shouldShowSignInPromo_: boolean = false;
+  private accessor shouldShowSignInPromo_: boolean = false;
   private signinOfferedImpressionRecorded_: boolean = false;
   // </if>
   private syncBrowserProxy_: SyncBrowserProxy =
       SyncBrowserProxyImpl.getInstance();
-  protected accessor promoType_: PromoType = PromoType.SIGNIN;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -181,13 +175,6 @@ export class SettingsSyncAccountControlElement extends
         'stored-accounts-updated', this.handleStoredAccounts_.bind(this));
     this.addWebUiListener(
         'profile-avatar-changed', this.handleUpdateAvatar_.bind(this));
-
-    // <if expr="is_chromeos">
-    this.promoType_ =
-        loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos') ?
-        PromoType.SIGNIN :
-        PromoType.SYNC;
-    // </if>
   }
 
   override willUpdate(changedProperties: PropertyValues<this>) {
@@ -230,13 +217,13 @@ export class SettingsSyncAccountControlElement extends
         this.maybeRecordSignInOffered_();
       }
     }
-    // </if>
 
     if (changedProperties.has('promoSecondaryLabelWithAccount') ||
         changedProperties.has('promoSecondaryLabelWithNoAccount') ||
         changedPrivateProperties.has('shownAccount_')) {
       this.subLabel_ = this.computeSubLabel_();
     }
+    // </if>
 
     if (changedProperties.has('syncStatus')) {
       this.showSetupButtons_ = this.computeShowSetupButtons_();
@@ -282,7 +269,6 @@ export class SettingsSyncAccountControlElement extends
       this.recordImpressionUserActions_();
     }
   }
-  // </if>
 
   protected getLabel_(labelWithAccount: string, labelWithNoAccount: string):
       string {
@@ -294,6 +280,7 @@ export class SettingsSyncAccountControlElement extends
         this.promoSecondaryLabelWithAccount,
         this.promoSecondaryLabelWithNoAccount);
   }
+  // </if>
 
   protected getAccountLabel_(): string {
     if (!this.shownAccount_) {
@@ -315,11 +302,7 @@ export class SettingsSyncAccountControlElement extends
           loadTimeData.getString('syncingTo'), email);
     }
 
-    return (this.shownAccount_.isPrimaryAccount &&
-            this.promoType_ === PromoType.SYNC) ?
-        loadTimeData.substituteString(
-            loadTimeData.getString('signedInTo'), email) :
-        email;
+    return email;
   }
 
   // Determines whether the subtitle should show account specific information or
@@ -369,11 +352,13 @@ export class SettingsSyncAccountControlElement extends
     return '';
   }
 
+  // <if expr="not is_chromeos">
   protected getAccountAwareSigninButtonLabel_(): string {
     return loadTimeData.substituteString(
         loadTimeData.getString('accountAwareSigninButtonLabel'),
         this.shownAccount_?.givenName || '');
   }
+  // </if>
 
   protected getProfileImageSrc_(image: string|null, profileAvatarURL: string):
       string {
@@ -385,12 +370,12 @@ export class SettingsSyncAccountControlElement extends
     return image || 'chrome://theme/IDR_PROFILE_AVATAR_PLACEHOLDER_LARGE';
   }
 
+  // <if expr="not is_chromeos">
   protected getAccountImageSrc_(image: string|null): string {
     // image can be undefined if the account has not set an avatar photo.
     return image || 'chrome://theme/IDR_PROFILE_AVATAR_PLACEHOLDER_LARGE';
   }
 
-  // <if expr="not is_chromeos">
   /**
    * @return The CSS class of the sync icon.
    */
@@ -431,8 +416,7 @@ export class SettingsSyncAccountControlElement extends
       return loadTimeData.getString('accountAwareRowTitle');
     }
 
-    if (this.promoType_ === PromoType.SIGNIN &&
-        this.syncStatus.signedInState === SignedInState.SIGNED_IN) {
+    if (this.syncStatus.signedInState === SignedInState.SIGNED_IN) {
       return this.shownAccount_?.fullName || '';
     }
 
@@ -849,11 +833,15 @@ export class SettingsSyncAccountControlElement extends
     this.syncBrowserProxy_.recordSigninPendingOffered();
     this.signinPausedImpressionRecorded_ = true;
   }
-  // </if>
-
   protected isSyncing_(): boolean {
     return this.syncStatus.signedInState === SignedInState.SYNCING;
   }
+  // </if>
+  // <if expr="is_chromeos">
+  private isSyncing_(): boolean {
+    return this.syncStatus.signedInState === SignedInState.SYNCING;
+  }
+  // </if>
 }
 
 declare global {

@@ -7,8 +7,11 @@
 #include <utility>
 
 #include "base/base64.h"
+#include "base/check.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -212,6 +215,29 @@ bool SyncServiceCrypto::IsEncryptEverythingEnabled() const {
   return state_.encrypt_everything;
 }
 
+void SyncServiceCrypto::IsTrustedVaultEnrollmentPossible(
+    base::OnceCallback<void(bool)> callback) const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(state_.engine);
+
+  switch (state_.required_user_action) {
+    case RequiredUserAction::kNone:
+      break;
+    case RequiredUserAction::kUnknownDuringInitialization:
+    case RequiredUserAction::kPassphraseRequired:
+    case RequiredUserAction::kFetchingTrustedVaultKeys:
+    case RequiredUserAction::kTrustedVaultKeyRequired:
+    case RequiredUserAction::kTrustedVaultKeyRequiredButFetching:
+    case RequiredUserAction::kTrustedVaultRecoverabilityDegraded:
+    case RequiredUserAction::kKeystoreKeysRequired:
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(callback), false));
+      return;
+  }
+
+  trusted_vault_client_->CanEnroll(state_.account_info, std::move(callback));
+}
+
 void SyncServiceCrypto::SetEncryptionPassphrase(const std::string& passphrase) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // This should only be called when the engine has been initialized.
@@ -230,11 +256,10 @@ void SyncServiceCrypto::SetEncryptionPassphrase(const std::string& passphrase) {
     case RequiredUserAction::kTrustedVaultKeyRequiredButFetching:
     case RequiredUserAction::kKeystoreKeysRequired:
       // Cryptographer has pending keys.
-      // TODO(crbug.com/40904402): verify this is not reachable anymore and
-      // remove NotFatalUntil.
-      NOTREACHED(base::NotFatalUntil::M140)
+      // TODO(crbug.com/40904402): This still fails at a low crash rate (1-5
+      // crashes per milestone): http://shortn/_07INk7Gzht
+      NOTREACHED()
           << "Can not set explicit passphrase when decryption is needed.";
-      return;
   }
 
   DVLOG(1) << "Setting explicit passphrase for encryption.";

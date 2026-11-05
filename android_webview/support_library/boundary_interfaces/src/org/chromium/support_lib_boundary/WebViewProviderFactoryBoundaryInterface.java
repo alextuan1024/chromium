@@ -30,9 +30,6 @@ public interface WebViewProviderFactoryBoundaryInterface {
 
     /* WebViewBuilderBoundaryInterface */ InvocationHandler getWebViewBuilder();
 
-    /* WebContentBoundaryInterface */ InvocationHandler buildWebContent(
-            /* Config= */ Consumer<BiConsumer<@WebContentConfig Integer, Object>> buildConfig);
-
     /* SupportLibraryWebViewChromium */ InvocationHandler createWebView(WebView webview);
 
     /* SupportLibWebkitToCompatConverter */ InvocationHandler getWebkitToCompatConverter();
@@ -107,4 +104,17 @@ public interface WebViewProviderFactoryBoundaryInterface {
     void startUpWebView(
             /* WebViewStartUpConfig */ InvocationHandler config,
             /* WebViewStartUpCallback */ InvocationHandler callback);
+
+    long WEBGPU_ERROR_WEBVIEW_TOO_OLD = 0L;
+    long WEBGPU_ERROR_APP_TOO_OLD = -1L;
+
+    /**
+     * Returns the native address of Dawn's {@code GetStableProcAddress} if compatible with the
+     * requested exact major version and minimum minor version, {@link
+     * #WEBGPU_ERROR_WEBVIEW_TOO_OLD} if WebView's version is too old, or {@link
+     * #WEBGPU_ERROR_APP_TOO_OLD} if the app's version is no longer supported. The returned pointer
+     * is valid for the lifetime of the process. Covered by {@link
+     * org.chromium.support_lib_boundary.util.Features#WEBGPU}.
+     */
+    long getWGPUProcGetProcAddress(int majorVersion, long minorVersion);
 }

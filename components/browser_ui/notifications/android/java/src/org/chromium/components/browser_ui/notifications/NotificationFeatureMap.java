@@ -30,7 +30,7 @@ public final class NotificationFeatureMap extends FeatureMap {
             new CachedFlag(
                     sInstance,
                     ANDROID_RESIZE_LARGE_NOTIFICATION_BITMAPS,
-                    /* defaultValue= */ false,
+                    /* defaultValue= */ true,
                     /* defaultValueInTests= */ true);
     public static final CachedFlag sCacheNotificationsEnabled =
             new CachedFlag(
@@ -42,9 +42,7 @@ public final class NotificationFeatureMap extends FeatureMap {
     public static final List<CachedFlag> sCachedFlags =
             List.of(sAndroidResizeLargeNotificationBitmaps, sCacheNotificationsEnabled);
 
-    /**
-     * @return the singleton NotificationFeatureMap.
-     */
+    /** Returns the singleton NotificationFeatureMap. */
     public static NotificationFeatureMap getInstance() {
         return sInstance;
     }

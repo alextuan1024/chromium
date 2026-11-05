@@ -5,7 +5,6 @@
 #include "chrome/browser/save_to_drive/save_to_drive_event_dispatcher.h"
 
 #include "base/memory/raw_ptr.h"
-#include "base/test/with_feature_override.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/pdf/pdf_extension_test_base.h"
 #include "chrome/browser/pdf/pdf_extension_test_util.h"
@@ -17,11 +16,11 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
-#include "extensions/browser/api/extensions_api_client.h"
+#include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/test_event_router_observer.h"
 #include "extensions/common/constants.h"
-#include "pdf/pdf_features.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -51,12 +50,9 @@ class MockTimeRemainingCalculator : public TimeRemainingCalculator {
               (override));
 };
 
-class SaveToDriveEventDispatcherBrowserTest
-    : public base::test::WithFeatureOverride,
-      public PDFExtensionTestBase {
+class SaveToDriveEventDispatcherBrowserTest : public PDFExtensionTestBase {
  public:
-  SaveToDriveEventDispatcherBrowserTest()
-      : base::test::WithFeatureOverride(chrome_pdf::features::kPdfOopif) {}
+  SaveToDriveEventDispatcherBrowserTest() = default;
 
   SaveToDriveEventDispatcherBrowserTest(
       const SaveToDriveEventDispatcherBrowserTest&) = delete;
@@ -64,8 +60,6 @@ class SaveToDriveEventDispatcherBrowserTest
       const SaveToDriveEventDispatcherBrowserTest&) = delete;
 
   ~SaveToDriveEventDispatcherBrowserTest() override = default;
-
-  bool UseOopif() const override { return GetParam(); }
 
   void SetUpOnMainThread() override {
     PDFExtensionTestBase::SetUpOnMainThread();
@@ -92,7 +86,19 @@ class SaveToDriveEventDispatcherBrowserTest
 
   void TearDownOnMainThread() override {
     // At the end of a Save to Drive upload test, send a completed progress to
-    // disable the beforeunload dialog in the UI.
+    // disable the beforeunload dialog in the UI. The viewer applies it
+    // asynchronously, so listen for the progress event before sending it.
+    content::RenderFrameHost* extension_frame =
+        pdf_extension_test_util::GetOnlyPdfExtensionHost(
+            GetActiveWebContents());
+    // Don't return the promise, since `ExecJs()` would wait for it.
+    EXPECT_TRUE(content::ExecJs(extension_frame, R"(
+      window.saveToDriveProgressReceived = new Promise(resolve => {
+        chrome.pdfViewerPrivate.onSaveToDriveProgress.addListener(resolve);
+      });
+      true;
+    )"));
+
     pdf_api::SaveToDriveProgress progress;
     progress.status = pdf_api::SaveToDriveStatus::kUploadCompleted;
     progress.error_type = pdf_api::SaveToDriveErrorType::kNoError;
@@ -100,6 +106,17 @@ class SaveToDriveEventDispatcherBrowserTest
     progress.file_size_bytes = 100;
     EXPECT_CALL(*save_to_drive_recorder_, Record);
     dispatcher_->Notify(std::move(progress));
+
+    // Wait for the viewer to handle the progress and update its beforeunload
+    // state. Otherwise, the beforeunload dialog may still be enabled when the
+    // browser closes, which blocks closing it.
+    static constexpr char kWaitForBeforeUnloadUpdate[] = R"(
+      (async () => {
+        await window.saveToDriveProgressReceived;
+        await document.querySelector('pdf-viewer').updateComplete;
+      })();
+    )";
+    EXPECT_TRUE(content::ExecJs(extension_frame, kWaitForBeforeUnloadUpdate));
 
     save_to_drive_recorder_ = nullptr;
     time_remaining_calculator_ = nullptr;
@@ -113,7 +130,7 @@ class SaveToDriveEventDispatcherBrowserTest
   raw_ptr<StrictMock<MockSaveToDriveRecorder>> save_to_drive_recorder_;
 };
 
-IN_PROC_BROWSER_TEST_P(SaveToDriveEventDispatcherBrowserTest, Notify) {
+IN_PROC_BROWSER_TEST_F(SaveToDriveEventDispatcherBrowserTest, Notify) {
   EXPECT_CALL(*time_remaining_calculator_, CalculateTimeRemainingText);
   EXPECT_CALL(*save_to_drive_recorder_, Record);
 
@@ -153,7 +170,7 @@ IN_PROC_BROWSER_TEST_P(SaveToDriveEventDispatcherBrowserTest, Notify) {
   EXPECT_EQ(captured_event->args()[1], expected_progress.ToValue());
 }
 
-IN_PROC_BROWSER_TEST_P(SaveToDriveEventDispatcherBrowserTest,
+IN_PROC_BROWSER_TEST_F(SaveToDriveEventDispatcherBrowserTest,
                        GetFileMetadataStringForUploadInProgress) {
   EXPECT_CALL(*time_remaining_calculator_, CalculateTimeRemainingText)
       .WillOnce(testing::Return(u"PLACEHOLDER"));
@@ -177,7 +194,7 @@ IN_PROC_BROWSER_TEST_P(SaveToDriveEventDispatcherBrowserTest,
   EXPECT_EQ(*captured_progress->file_metadata, "50.0/100 MB • PLACEHOLDER");
 }
 
-IN_PROC_BROWSER_TEST_P(SaveToDriveEventDispatcherBrowserTest,
+IN_PROC_BROWSER_TEST_F(SaveToDriveEventDispatcherBrowserTest,
                        GetFileMetadataStringForUploadCompleted) {
   EXPECT_CALL(*save_to_drive_recorder_, Record);
   pdf_api::SaveToDriveProgress progress;
@@ -199,7 +216,7 @@ IN_PROC_BROWSER_TEST_P(SaveToDriveEventDispatcherBrowserTest,
   EXPECT_EQ(*captured_progress->file_metadata, "100 MB • Done");
 }
 
-IN_PROC_BROWSER_TEST_P(SaveToDriveEventDispatcherBrowserTest,
+IN_PROC_BROWSER_TEST_F(SaveToDriveEventDispatcherBrowserTest,
                        GetFileMetadataStringForUploadNotStarted) {
   EXPECT_CALL(*save_to_drive_recorder_, Record);
   pdf_api::SaveToDriveProgress progress;
@@ -218,7 +235,5 @@ IN_PROC_BROWSER_TEST_P(SaveToDriveEventDispatcherBrowserTest,
   ASSERT_TRUE(captured_progress.has_value());
   EXPECT_FALSE(captured_progress->file_metadata.has_value());
 }
-
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(SaveToDriveEventDispatcherBrowserTest);
 
 }  // namespace save_to_drive

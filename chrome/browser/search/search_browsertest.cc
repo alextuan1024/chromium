@@ -9,9 +9,11 @@
 #include <array>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/search/instant_service.h"
@@ -116,8 +118,8 @@ class SearchTest : public MixinBasedInProcessBrowserTest {
     data.SetShortName(u"foo.com");
     data.SetURL("http://foo.com/url?bar={searchTerms}");
     if (set_ntp_url) {
-      data.new_tab_url = (insecure_ntp_url ? "http" : "https") +
-                         std::string("://foo.com/newtab");
+      data.new_tab_url = base::StrCat(
+          {insecure_ntp_url ? "http" : "https", "://foo.com/newtab"});
     }
     data.alternate_urls.push_back("http://foo.com/alt#quux={searchTerms}");
 
@@ -456,6 +458,11 @@ IN_PROC_BROWSER_TEST_F(SearchTest, IsNTPURL) {
       {"chrome://new-tab-page", true, "WebUI NTP"},
       {"chrome://new-tab-page/path?params", true,
        "WebUI NTP with path and params"},
+      {"chrome://new-tab-page-third-party", true, "3P WebUI NTP"},
+      {"chrome://newtab", false, "chrome://newtab is not an NTP URL"},
+      {"chrome-untrusted://new-tab-page", false, "Untrusted NTP host"},
+      {"filesystem:chrome://new-tab-page/temporary/a.html", false,
+       "filesystem: inner URL is not unwrapped"},
       {"invalid-scheme://remote-ntp", false, "Invalid Remote NTP URL"},
       {"chrome-search://most-visited/", false, "Most visited URL"},
       {"", false, "Invalid URL"},
@@ -493,6 +500,40 @@ IN_PROC_BROWSER_TEST_F(SearchTest, SearchProviderWithPort) {
                                       profile()));
   EXPECT_FALSE(ShouldAssignURLToInstantRenderer(
       GURL("https://[::1]:1993/unregistered-path"), profile()));
+}
+
+IN_PROC_BROWSER_TEST_F(SearchTest, NewTabPageSecurityPrincipals) {
+  auto make_principal = [&](std::string_view spec) {
+    return content::SecurityPrincipal::CreateForTesting(profile(), GURL(spec));
+  };
+
+  EXPECT_TRUE(IsNewTabSecurityPrincipal(*make_principal("chrome://newtab/")));
+  EXPECT_FALSE(
+      IsNewTabSecurityPrincipal(*make_principal("chrome://new-tab-page/")));
+  EXPECT_FALSE(IsNewTabSecurityPrincipal(
+      *make_principal("chrome://new-tab-page-third-party/")));
+  EXPECT_FALSE(
+      IsNewTabSecurityPrincipal(*make_principal("chrome-search://remote-ntp")));
+
+  EXPECT_TRUE(
+      IsNewTabPageSecurityPrincipal(*make_principal("chrome://new-tab-page/")));
+  EXPECT_FALSE(IsNewTabPageSecurityPrincipal(
+      *make_principal("chrome://new-tab-page-third-party/")));
+  EXPECT_FALSE(
+      IsNewTabPageSecurityPrincipal(*make_principal("chrome://newtab/")));
+  EXPECT_FALSE(IsNewTabPageSecurityPrincipal(
+      *make_principal("chrome-search://remote-ntp")));
+  EXPECT_FALSE(
+      IsNewTabPageSecurityPrincipal(*make_principal("https://foo.com/newtab")));
+
+  EXPECT_TRUE(IsThirdPartyNewTabPageSecurityPrincipal(
+      *make_principal("chrome://new-tab-page-third-party/")));
+  EXPECT_FALSE(IsThirdPartyNewTabPageSecurityPrincipal(
+      *make_principal("chrome://new-tab-page/")));
+  EXPECT_FALSE(IsThirdPartyNewTabPageSecurityPrincipal(
+      *make_principal("chrome://newtab/")));
+  EXPECT_FALSE(IsThirdPartyNewTabPageSecurityPrincipal(
+      *make_principal("chrome-search://remote-ntp")));
 }
 
 }  // namespace search

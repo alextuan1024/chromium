@@ -19,7 +19,6 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/to_vector.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
@@ -55,11 +54,10 @@
 #include "components/autofill/core/browser/studies/hats_surveys_util.h"
 #include "components/autofill/core/browser/suggestions/suggestion_util.h"
 #include "components/autofill/core/common/autofill_constants.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/language_code.h"
 #include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service.h"
+#include "components/one_time_tokens/core/browser/sms_otp_service.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 
 namespace autofill {
@@ -194,7 +192,7 @@ void VotesUploader::OnAutofillDriverStateChanged(
   }
 
   if (old_state == kPendingReset) {
-    // Case (3): The was reset.
+    // Case (3): The driver was reset.
     FlushPendingVotesForFrame(driver.GetFrameToken());
   }
 }
@@ -233,10 +231,9 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
   }
 
   std::vector<OneTimeToken> otps;
-  one_time_tokens::OneTimeTokenService* token_service =
-      client_->GetOneTimeTokenService();
-  if (token_service) {
-    otps = token_service->GetCachedOneTimeTokens();
+  one_time_tokens::SmsOtpService* sms_otp_service = client_->GetSmsOtpService();
+  if (sms_otp_service) {
+    otps = sms_otp_service->GetCachedOneTimeTokens();
   }
 
   VoteData vote_data = {
@@ -251,10 +248,7 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
         return OneTimeToken::IsPotentialOtp(field->value());
       });
 
-  if (vote_data.empty() &&
-      (!has_potential_otp_field ||
-       !base::FeatureList::IsEnabled(
-           features::kAutofillSmsOtpCrowdsourcingFetchFromGmscore))) {
+  if (vote_data.empty() && !has_potential_otp_field) {
     return false;
   }
 
@@ -275,11 +269,10 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
   // |form| with the help of |AlternativeStateNameMap|.
   // |AlternativeStateNameMap| can only be accessed on the main UI thread.
   std::set<FieldGlobalId> fields_that_match_state =
-      PreProcessStateMatchingTypes(profiles, *form, client_->GetAppLocale());
+      PreProcessStateMatchingTypes(
+          profiles, *form, std::string(client_->GetAppLocale().tag_string()));
 
-  if (token_service && vote_data.otps.empty() && has_potential_otp_field &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillSmsOtpCrowdsourcingFetchFromGmscore)) {
+  if (sms_otp_service && vote_data.otps.empty() && has_potential_otp_field) {
     // This is the 80 percentile latency of the otp success retrieval flow. The
     // longer the timeout, the more risk we have of losing votes because the
     // tab might be closed before we submit the votes.
@@ -287,7 +280,7 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
     // The rest of the upload process is continued in `StartVoteUploadProcess`,
     // which will be called after a timeout, or when RequestOneTimeToken
     // returns.
-    token_service->RequestOneTimeToken(
+    sms_otp_service->RequestOneTimeToken(
         kOtpSubscriptionTimeout,
         base::BindOnce(
             [](base::WeakPtr<VotesUploader> weak_ptr,
@@ -381,7 +374,8 @@ void VotesUploader::StartVoteUploadProcess(
             return std::pair(std::move(form), std::move(upload_contents));
           },
           std::move(vote_data), last_unlocked_credit_card_cvc,
-          client_->GetAppLocale(), observed_submission, std::move(form),
+          std::string(client_->GetAppLocale().tag_string()),
+          observed_submission, std::move(form),
           RandomizedEncoder::Create(client_->GetPrefs()),
           std::move(current_page_language), std::move(form_associations),
           std::move(fields_that_match_state)),
@@ -422,8 +416,8 @@ void VotesUploader::OnFieldTypesDetermined(
 void VotesUploader::FlushOldestPendingVotesIfNecessary() {
   // Entries in pending_votes_ are submitted after navigations or form
   // submissions. To reduce the risk of collecting too much data that is not
-  // send, we allow only `kMaxEntriesInQueue` entries. Anything in excess will
-  // be sent when the queue becomes to long.
+  // sent, we allow only `kMaxEntriesInQueue` entries. Anything in excess will
+  // be sent when the queue becomes too long.
   constexpr int kMaxEntriesInQueue = 10;
   while (pending_votes_.size() >= kMaxEntriesInQueue) {
     base::OnceCallback oldest_callback =
@@ -444,18 +438,21 @@ void VotesUploader::UploadVote(
 
   // If the form is submitted, we don't need to send pending votes from blur
   // (un-focus) events.
-  if (ShouldRunHeuristics(
+  const DenseSet<FormParsingPermission> parsing_permissions =
+      GetFormParsingPermissions(
           *submitted_form,
-          /*ignore_small_forms=*/!client_->IsTabInActorMode()) ||
-      ShouldRunHeuristicsForSingleFields(*submitted_form) ||
-      ShouldBeQueried(*submitted_form)) {
+          /*ignore_small_forms=*/!client_->IsTabInActorMode());
+  if (parsing_permissions.contains_any(
+          {FormParsingPermission::kHeuristics,
+           FormParsingPermission::kSingleFieldHeuristics,
+           FormParsingPermission::kServerQuery})) {
     autofill_metrics::LogQualityMetrics(
         *submitted_form, submitted_form->form_parsed_timestamp(),
         initial_interaction_timestamp, submission_timestamp,
         client_->GetFormInteractionsUkmLogger(), ukm_source_id,
         observed_submission, GetAcUnrecognizedBehavior(*client_));
   }
-  if (!ShouldBeUploaded(*submitted_form)) {
+  if (!parsing_permissions.contains(FormParsingPermission::kServerUpload)) {
     return;
   }
   if (autofill_metrics::ShouldRecordUkm() &&

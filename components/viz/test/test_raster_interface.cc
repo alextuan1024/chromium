@@ -12,6 +12,8 @@
 #include "base/time/time.h"
 #include "gpu/GLES2/gl2extchromium.h"
 #include "gpu/command_buffer/common/constants.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkPixmap.h"
 
 namespace viz {
 
@@ -127,6 +129,10 @@ void TestRasterInterface::WaitSyncTokenCHROMIUM(const GLbyte* sync_token) {
   if (sync_token)
     UNSAFE_TODO(memcpy(&sync_token_data, sync_token, sizeof(sync_token_data)));
 
+  if (sync_token_data.HasData()) {
+    waited_sync_tokens_.push_back(sync_token_data);
+  }
+
   if (sync_token_data.release_count() >
       last_waited_sync_token_.release_count()) {
     last_waited_sync_token_ = sync_token_data;
@@ -140,14 +146,12 @@ void TestRasterInterface::ShallowFlushCHROMIUM() {
 
 bool TestRasterInterface::ReadbackImagePixels(
     const gpu::Mailbox& source_mailbox,
-    const SkImageInfo& dst_info,
-    GLuint dst_row_bytes,
+    const gfx::Size& source_size,
     int src_x,
     int src_y,
     int plane_index,
-    void* dst_pixels) {
-  auto size = dst_info.computeByteSize(dst_row_bytes);
-  UNSAFE_TODO(memset(dst_pixels, 0, size));
+    const SkPixmap& dst_pixmap) {
+  dst_pixmap.erase(SK_ColorTRANSPARENT);
   return true;
 }
 }  // namespace viz

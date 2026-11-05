@@ -24,11 +24,15 @@ import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Restriction;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ChromeTriggers;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
+import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.chrome.test.transit.tabmodel.TabClosingCondition;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.LocationSettingsTestUtil;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridgeJni;
@@ -52,27 +56,24 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
 /** Tests for the permission update message. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    ContentSwitches.USE_FAKE_DEVICE_FOR_MEDIA_STREAM
-})
+@CommandLineFlags.Add(ContentSwitches.USE_FAKE_DEVICE_FOR_MEDIA_STREAM)
 public class PermissionUpdateMessageTest {
     private static final String GEOLOCATION_PAGE = "/chrome/test/data/geolocation/geolocation.html";
     private static final String MEDIASTREAM_PAGE = "/content/test/data/media/getusermedia.html";
 
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.autoResetCtaActivityRule();
-    public PermissionTestRule mPermissionRule =
-            new PermissionTestRule(mActivityTestRule.getActivityTestRule());
+    public PermissionTestRule mPermissionRule = new PermissionTestRule(mActivityTestRule);
 
     @Rule
     public RuleChain mRuleChain = RuleChain.outerRule(mActivityTestRule).around(mPermissionRule);
+
+    private CtaPageStation mPage;
 
     /**
      * Utility delegate to provide the permissions to be requested for triggering a permission
@@ -128,7 +129,7 @@ public class PermissionUpdateMessageTest {
 
     @Before
     public void setUp() throws Exception {
-        mPermissionRule.setUpActivity();
+        mPage = mActivityTestRule.startOnBlankPage();
     }
 
     /**
@@ -221,8 +222,7 @@ public class PermissionUpdateMessageTest {
             final int contentSettingsType,
             final boolean switchContent)
             throws IllegalArgumentException, TimeoutException, ExecutionException {
-        ChromeTabUtils.newTabFromMenu(
-                InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
+        mPage = mPage.openNewTabFast();
 
         WindowAndroid windowAndroid = mActivityTestRule.getActivity().getWindowAndroid();
         windowAndroid.setAndroidPermissionDelegate(
@@ -230,10 +230,10 @@ public class PermissionUpdateMessageTest {
         final String url = mPermissionRule.getURL(testPage);
         try {
             setNativeContentSetting(contentSettingsType, url, ContentSetting.ALLOW);
-            mPermissionRule.loadUrl(mPermissionRule.getURL(testPage));
+            mPage = mPage.loadWebPageProgrammatically(mPermissionRule.getURL(testPage));
 
             if (javascriptToExecute != null && !javascriptToExecute.isEmpty()) {
-                mPermissionRule.runJavaScriptCodeWithUserGestureInCurrentTab(javascriptToExecute);
+                mActivityTestRule.runJavaScriptCodeWithUserGestureInCurrentTab(javascriptToExecute);
             }
 
             expectMessagesCount(windowAndroid, 1);
@@ -259,14 +259,15 @@ public class PermissionUpdateMessageTest {
                         mActivityTestRule.getActivity(),
                         "about:blank",
                         /* incognito= */ false);
-                ChromeTabUtils.switchTabInCurrentTabModel(mActivityTestRule.getActivity(), 1);
+                ChromeTriggers.selectTabProgrammatically(mActivityTestRule.getActivity(), 1);
                 expectMessagesCount(windowAndroid, 1);
             }
 
             // Ensure destroying the permission update message UI does not crash
             // when handling permissions.
-            ChromeTabUtils.closeCurrentTab(
-                    InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
+            ChromeTabbedActivity activity = mActivityTestRule.getActivity();
+            ChromeTriggers.closeCurrentTabTo(activity)
+                    .waitFor(new TabClosingCondition(activity::getCurrentTabModel));
             CriteriaHelper.pollUiThread(() -> webContents.isDestroyed());
 
             final int countTabs = switchContent ? 2 : 1;
@@ -349,8 +350,7 @@ public class PermissionUpdateMessageTest {
     @MediumTest
     public void testMessageShutsDownCleanlyForGeolocation()
             throws IllegalArgumentException, TimeoutException {
-        ChromeTabUtils.newTabFromMenu(
-                InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
+        mPage = mPage.openNewTabFast();
 
         final var windowAndroid = mActivityTestRule.getActivity().getWindowAndroid();
         final String locationUrl = mPermissionRule.getURL(GEOLOCATION_PAGE);
@@ -367,8 +367,9 @@ public class PermissionUpdateMessageTest {
 
         try {
             setNativeContentSetting(getGeolocationType(), locationUrl, ContentSetting.ALLOW);
-            mPermissionRule.loadUrl(mPermissionRule.getURL(GEOLOCATION_PAGE));
-            mPermissionRule.runJavaScriptCodeWithUserGestureInCurrentTab("initiate_geolocation()");
+            mPage = mPage.loadWebPageProgrammatically(mPermissionRule.getURL(GEOLOCATION_PAGE));
+            mActivityTestRule.runJavaScriptCodeWithUserGestureInCurrentTab(
+                    "initiate_geolocation()");
             CriteriaHelper.pollUiThread(
                     () -> {
                         Criteria.checkThat(
@@ -383,21 +384,10 @@ public class PermissionUpdateMessageTest {
                         Assert.assertEquals(1, MessagesTestHelper.getMessageCount(windowAndroid));
                     });
 
-            final WebContents webContents =
-                    ThreadUtils.runOnUiThreadBlocking(
-                            new Callable<>() {
-                                @Override
-                                public WebContents call() {
-                                    return mActivityTestRule
-                                            .getActivity()
-                                            .getActivityTab()
-                                            .getWebContents();
-                                }
-                            });
+            final WebContents webContents = mPage.getTab().getWebContents();
             Assert.assertFalse(webContents.isDestroyed());
 
-            ChromeTabUtils.closeCurrentTab(
-                    InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
+            mPage = mPage.closeCurrentTabFast(WebPageStation.newBuilder());
             CriteriaHelper.pollUiThread(() -> webContents.isDestroyed());
 
             CriteriaHelper.pollUiThread(

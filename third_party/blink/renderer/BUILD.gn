@@ -120,6 +120,14 @@ config("config") {
       "blink-gc-plugin",
     ]
 
+    # TODO(crbug.com/350256130): Remove once enabled by default in the plugin.
+    cflags += [
+      "-Xclang",
+      "-plugin-arg-blink-gc-plugin",
+      "-Xclang",
+      "enable-off-heap-collections-of-stack-allocated-check",
+    ]
+
     # Add arguments for enabled GC plugin options:
     if (blink_gc_plugin_option_do_dump_graph) {
       cflags += [
@@ -135,8 +143,5 @@ config("config") {
 # The follow configs apply to all targets except for unit tests, which rely on
 # static initializers.
 config("non_test_config") {
-  configs = [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs = [ "//build/config/compiler:wglobal_constructors" ]
 }

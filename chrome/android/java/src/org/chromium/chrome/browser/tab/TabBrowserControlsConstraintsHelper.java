@@ -77,7 +77,7 @@ public class TabBrowserControlsConstraintsHelper implements UserData {
             getObservableConstraints(Tab tab) {
         TabBrowserControlsConstraintsHelper helper = safeGet(tab);
         if (helper == null) return null;
-        return helper.mVisibilityDelegate;
+        return helper.getObservableConstraints();
     }
 
     /**
@@ -127,7 +127,7 @@ public class TabBrowserControlsConstraintsHelper implements UserData {
         mTab.addObserver(
                 new TabObserver() {
                     @Override
-                    public void onInitialized(Tab tab, @Nullable String appId) {
+                    public void onInitialized(Tab tab) {
                         updateVisibilityDelegate();
                     }
 
@@ -239,6 +239,12 @@ public class TabBrowserControlsConstraintsHelper implements UserData {
         } else if (mOffsetTagsInfo.hasTags() && isNewStateForced) {
             updateOffsetTags(new BrowserControlsOffsetTagsInfo(null, null, null), constraints);
         }
+    }
+
+    /** Returns the observable browser controls constraints supplier for this tab. */
+    public @Nullable MonotonicObservableSupplier<@BrowserControlsState Integer>
+            getObservableConstraints() {
+        return mVisibilityDelegate;
     }
 
     /**

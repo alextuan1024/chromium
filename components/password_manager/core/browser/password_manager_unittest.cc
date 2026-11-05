@@ -23,6 +23,7 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/types/expected.h"
 #include "build/build_config.h"
@@ -53,7 +54,7 @@
 #include "components/password_manager/core/browser/mock_webauthn_credentials_delegate.h"
 #include "components/password_manager/core/browser/password_autofill_manager.h"
 #include "components/password_manager/core/browser/password_bubble_experiment.h"
-#include "components/password_manager/core/browser/password_change_service_interface.h"
+#include "components/password_manager/core/browser/password_change/password_change_service_interface.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_form_manager.h"
 #include "components/password_manager/core/browser/password_form_manager_for_ui.h"
@@ -63,6 +64,7 @@
 #include "components/password_manager/core/browser/password_manager_driver.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
+#include "components/password_manager/core/browser/password_store/actionable_error.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
@@ -91,6 +93,8 @@
 #include "url/origin.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
+#include "base/strings/string_number_conversions.h"
 #include "components/password_manager/core/browser/first_cct_page_load_passwords_ukm_recorder.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "components/webauthn/android/cred_man_support.h"
@@ -194,16 +198,20 @@ class MockStoreResultFilter : public StubCredentialsFilter {
 
 class MockPasswordChangeService : public PasswordChangeServiceInterface {
  public:
-  MOCK_METHOD(bool, IsPasswordChangeAvailable, (), (const override));
+  MOCK_METHOD(bool, IsPasswordChangeAvailable, (), (const, override));
   MOCK_METHOD(bool,
               IsPasswordChangeSupported,
-              (const PasswordForm&, bool),
-              (const override));
+              (const LeakedPasswordDetails&, bool),
+              (const, override));
   MOCK_METHOD(void,
               RecordLoginAttemptQuality,
               (password_manager::LogInWithChangedPasswordOutcome, const GURL&),
-              (const override));
+              (const, override));
   MOCK_METHOD(void, AddChangePasswordUrlOverride, (const GURL&), (override));
+  MOCK_METHOD(PasswordChangeCredentialsProvider*,
+              GetCredentialsProviderForActorSurface,
+              (int32_t),
+              (override));
 };
 
 class MockPasswordManagerClient : public StubPasswordManagerClient {
@@ -288,7 +296,7 @@ class MockPasswordManagerClient : public StubPasswordManagerClient {
   MOCK_METHOD(void, UpdateFormManagers, (), (override));
   MOCK_METHOD(void,
               OnPasswordFilled,
-              (PasswordManagerDriver*, const GURL&),
+              (PasswordManagerDriver*),
               (override));
   MOCK_METHOD(void,
               AutomaticPasswordSave,
@@ -309,8 +317,8 @@ class MockPasswordManagerClient : public StubPasswordManagerClient {
               (),
               (const, override));
   MOCK_METHOD(void,
-              TriggerUserPerceptionOfPasswordManagerSurvey,
-              (const std::string&),
+              TriggerPersonalizationAndTrustSurvey,
+              (std::string_view),
               (override));
   MOCK_METHOD(PasswordManagerMetricsRecorder*,
               GetMetricsRecorder,
@@ -327,7 +335,7 @@ class MockPasswordManagerClient : public StubPasswordManagerClient {
               GetProfileType,
               (),
               (const, override));
-  MOCK_METHOD(version_info::Channel, GetChannel, (), (const override));
+  MOCK_METHOD(version_info::Channel, GetChannel, (), (const, override));
   MOCK_METHOD(void,
               RefreshPasswordManagerSettingsIfNeeded,
               (),
@@ -405,7 +413,7 @@ class MockPasswordManagerDriver : public StubPasswordManagerDriver {
               (const, override));
   MOCK_METHOD(void,
               GeneratedPasswordAccepted,
-              (const std::u16string& password),
+              (const PasswordString& password),
               (override));
   MOCK_METHOD(PasswordGenerationFrameHelper*,
               GetPasswordGenerationHelper,
@@ -442,7 +450,7 @@ void SanitizeFormData(FormData* form) {
 const ukm::mojom::UkmEntry* GetMetricEntry(
     const ukm::TestUkmRecorder& test_ukm_recorder,
     std::string_view entry) {
-  std::vector<raw_ptr<const ukm::mojom::UkmEntry, VectorExperimental>>
+  std::vector<raw_ptr<const ukm::mojom::UkmEntry, DanglingUntriaged>>
       ukm_entries = test_ukm_recorder.GetEntriesByName(entry);
   EXPECT_EQ(1u, ukm_entries.size());
   return ukm_entries[0];
@@ -473,6 +481,12 @@ class FailingPasswordStoreBackend : public FakePasswordStoreBackend {
 class PasswordManagerTestBase : public testing::Test {
  protected:
   void SetUp() override {
+#if BUILDFLAG(IS_ANDROID)
+    base::android::device_info::set_gms_version_code_for_test(
+        base::NumberToString(
+            password_manager::features::
+                kPasswordSaveInContextErrorResolutionMinGmsVersion.Get()));
+#endif
     store_ = base::MakeRefCounted<TestPasswordStore>();
     owning_mock_match_helper_ =
         std::make_unique<testing::NiceMock<MockAffiliatedMatchHelper>>(
@@ -564,6 +578,11 @@ class PasswordManagerTestBase : public testing::Test {
   }
 
   void TearDown() override {
+#if BUILDFLAG(IS_ANDROID)
+    base::android::device_info::set_gms_version_code_for_test(
+        base::NumberToString(
+            password_manager::features::kMinGmsVersionForInFlowZuulRecovery));
+#endif
     // The PasswordManager may own objects that keep raw pointers for the
     // password store - therefore reset it first.
     ResetManager();
@@ -1707,7 +1726,7 @@ TEST_P(PasswordManagerTest, OnInformAboutUserInput_ActorFilledPassword) {
       autofill::FieldPropertiesFlags::kAutofilledActorLogin);
 
   // Expect client_->OnPasswordFilled to be called.
-  EXPECT_CALL(client_, OnPasswordFilled(&driver_, form_data.url())).Times(1);
+  EXPECT_CALL(client_, OnPasswordFilled(&driver_)).Times(1);
 
   manager()->OnInformAboutUserInput(&driver_, form_data);
   Mock::VerifyAndClearExpectations(&client_);
@@ -2130,6 +2149,55 @@ TEST_P(
   ResetManager();
   store->ShutdownOnUIThread();
 }
+
+TEST_P(
+    PasswordManagerTest,
+    FormSubmitWhenPasswordsCannotBeSavedToAccountStoreBecauseOfTrustedVaultKey_GmsVersionTooLow) {
+  base::test::ScopedFeatureList feature_list{
+      password_manager::features::kPasswordSaveInContextErrorResolution};
+  base::android::device_info::set_gms_version_code_for_test(
+      base::NumberToString(
+          password_manager::features::
+              kPasswordSaveInContextErrorResolutionMinGmsVersion.Get() - 1));
+
+  // Set up the sync service to sync passwords such that the account store would
+  // be used.
+  syncer::TestSyncService sync_service;
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false, {syncer::UserSelectableType::kPasswords});
+  ON_CALL(client_, GetSyncService()).WillByDefault(Return(&sync_service));
+
+  auto backend = std::make_unique<FakePasswordStoreBackend>();
+  backend->ReturnErrorOnRequest(PasswordStoreBackendError(
+      PasswordStoreBackendErrorType::kIrretrievableSecurityDomain));
+  auto store = base::MakeRefCounted<PasswordStore>(std::move(backend));
+  store->Init();
+  ON_CALL(client_, GetAccountPasswordStore())
+      .WillByDefault(Return(store.get()));
+
+  FormData form_data(MakeSimpleFormData());
+  std::vector<FormData> observed = {form_data};
+  manager()->OnPasswordFormsParsed(&driver_, observed);
+  manager()->OnPasswordFormsRendered(&driver_, observed);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return manager()->HaveFormManagersReceivedData(&driver_); }));
+
+  EXPECT_CALL(client_, IsSavingAndFillingEnabled(
+                           url::Origin::Create(form_data.url()),
+                           base::optional_ref<const GURL>(form_data.url())))
+      .WillRepeatedly(Return(true));
+  OnPasswordFormSubmitted(form_data);
+
+  // The user should not be prompted to save the password because the GMS Core
+  // version is below the minimum required for in-flow recovery.
+  EXPECT_CALL(client_, PromptUserToSaveOrUpdatePassword).Times(0);
+
+  observed.clear();
+  manager()->OnPasswordFormsParsed(&driver_, observed);
+  manager()->OnPasswordFormsRendered(&driver_, observed);
+  ResetManager();
+  store->ShutdownOnUIThread();
+}
 #endif  // BUILDFLAG(IS_ANDROID)
 
 TEST_P(PasswordManagerTest,
@@ -2220,7 +2288,140 @@ TEST_P(PasswordManagerTest, SavingBlockedByTrustedVaultErrorMetric) {
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.SavingBlockedByTrustedVaultErrorOnSuccessfulLogin",
       expected_saving_blocked_by_trusted_vault_error, 1);
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.SavingBlockedByPassphraseErrorOnSuccessfulLogin", false,
+      1);
+#else
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.SavingBlockedByPassphraseErrorOnSuccessfulLogin", 0);
+#endif
 }
+
+TEST_P(PasswordManagerTest, SavingBlockedByPassphraseErrorMetric) {
+  base::test::ScopedFeatureList feature_list{
+      password_manager::features::
+          kPasswordSaveInContextPassphraseErrorResolution};
+
+  syncer::TestSyncService sync_service;
+  ON_CALL(client_, GetSyncService()).WillByDefault(Return(&sync_service));
+
+  if (ShouldEnableAccountStorage()) {
+    ON_CALL(*client_.GetPasswordFeatureManager(), IsAccountStorageActive())
+        .WillByDefault(Return(true));
+    account_store_->SetError(ActionableError::kNeedsPassphrase);
+  } else {
+    store_->SetError(ActionableError::kNeedsPassphrase);
+  }
+
+  FormData observed_form = MakeSimpleFormData();
+  manager()->OnPasswordFormsParsed(&driver_, {observed_form});
+  manager()->OnPasswordFormsRendered(&driver_, {observed_form});
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return manager()->HaveFormManagersReceivedData(&driver_); }));
+
+  manager()->OnPasswordFormSubmitted(&driver_, observed_form);
+
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(client_, IsSavingAndFillingEnabled).WillRepeatedly(Return(true));
+  manager()->OnPasswordFormsRendered(&driver_, {});
+
+  // On platforms other than Android, `IsAbleToSavePasswords()` currently only
+  // checks the profile store.
+  bool expected_able_to_save = ShouldEnableAccountStorage();
+#if BUILDFLAG(IS_ANDROID)
+  expected_able_to_save = false;
+#endif
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.AbleToSavePasswordsOnSuccessfulLogin",
+      expected_able_to_save, 1);
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.SavingBlockedByPassphraseErrorOnSuccessfulLogin", true,
+      1);
+#else
+  // Passphrase error resolution in context is desktop-only.
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.SavingBlockedByPassphraseErrorOnSuccessfulLogin", 0);
+#endif
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.SavingBlockedByTrustedVaultErrorOnSuccessfulLogin",
+      false, 1);
+}
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+TEST_P(PasswordManagerTest,
+       SavingBlockedByPassphraseErrorWhenFeatureEnabledPromptsToSave) {
+  base::test::ScopedFeatureList feature_list{
+      password_manager::features::
+          kPasswordSaveInContextPassphraseErrorResolution};
+
+  syncer::TestSyncService sync_service;
+  ON_CALL(client_, GetSyncService()).WillByDefault(Return(&sync_service));
+  store_->SetError(ActionableError::kNeedsPassphrase);
+  if (ShouldEnableAccountStorage()) {
+    ON_CALL(*client_.GetPasswordFeatureManager(), IsAccountStorageActive())
+        .WillByDefault(Return(true));
+    account_store_->SetError(ActionableError::kNeedsPassphrase);
+  }
+
+  FormData observed_form = MakeSimpleFormData();
+  manager()->OnPasswordFormsParsed(&driver_, {observed_form});
+  manager()->OnPasswordFormsRendered(&driver_, {observed_form});
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return manager()->HaveFormManagersReceivedData(&driver_); }));
+
+  EXPECT_CALL(client_, IsSavingAndFillingEnabled).WillRepeatedly(Return(true));
+  manager()->OnPasswordFormSubmitted(&driver_, observed_form);
+
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(client_, PromptUserToSaveOrUpdatePassword);
+  manager()->OnPasswordFormsRendered(&driver_, {});
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.AbleToSavePasswordsOnSuccessfulLogin", false, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.SavingBlockedByPassphraseErrorOnSuccessfulLogin", true,
+      1);
+}
+
+TEST_P(PasswordManagerTest,
+       SavingBlockedByPassphraseErrorWhenFeatureDisabledDoesNotPrompt) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      password_manager::features::
+          kPasswordSaveInContextPassphraseErrorResolution);
+
+  syncer::TestSyncService sync_service;
+  ON_CALL(client_, GetSyncService()).WillByDefault(Return(&sync_service));
+  store_->SetError(ActionableError::kNeedsPassphrase);
+  if (ShouldEnableAccountStorage()) {
+    ON_CALL(*client_.GetPasswordFeatureManager(), IsAccountStorageActive())
+        .WillByDefault(Return(true));
+    account_store_->SetError(ActionableError::kNeedsPassphrase);
+  }
+
+  FormData observed_form = MakeSimpleFormData();
+  manager()->OnPasswordFormsParsed(&driver_, {observed_form});
+  manager()->OnPasswordFormsRendered(&driver_, {observed_form});
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return manager()->HaveFormManagersReceivedData(&driver_); }));
+
+  EXPECT_CALL(client_, IsSavingAndFillingEnabled).WillRepeatedly(Return(true));
+  manager()->OnPasswordFormSubmitted(&driver_, observed_form);
+
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(client_, PromptUserToSaveOrUpdatePassword).Times(0);
+  manager()->OnPasswordFormsRendered(&driver_, {});
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.AbleToSavePasswordsOnSuccessfulLogin", false, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.SavingBlockedByPassphraseErrorOnSuccessfulLogin", false,
+      1);
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 TEST_P(PasswordManagerTest,
        MetricsReportedLogInFailedWithPrimaryPasswordChangeSubmission) {
@@ -3645,8 +3846,6 @@ TEST_P(PasswordManagerTest, PasswordGenerationPresavePassword) {
                FormFetcher::State::NOT_WAITING;
   }));
 
-  base::HistogramTester histogram_tester;
-
   // The user accepts a generated password.
   form.password_value = PasswordString(u"password");
   manager()->OnPresaveGeneratedPassword(&driver_, form.form_data,
@@ -3672,8 +3871,6 @@ TEST_P(PasswordManagerTest, PasswordGenerationPresavePassword) {
       GetAllLoginsSync(store_.get()),
       ElementsAre(Pair(sanitized_updated_form.signon_realm,
                        ElementsAre(FormMatches(sanitized_updated_form)))));
-  histogram_tester.ExpectUniqueSample(
-      "PasswordManager.GeneratedFormHasNoFormManager", false, 2);
 
   // The user removes the generated password.
   manager()->OnPasswordNoLongerGenerated(&driver_, updated_form.form_data);
@@ -3682,15 +3879,12 @@ TEST_P(PasswordManagerTest, PasswordGenerationPresavePassword) {
 }
 
 TEST_P(PasswordManagerTest, PasswordGenerationPresavePassword_NoFormManager) {
-  // Checks that GeneratedFormHasNoFormManager metric is sent if there is no
-  // corresponding PasswordFormManager for the given form. It should be uncommon
-  // case.
+  // Checks that nothing is presaved if there is no corresponding
+  // `PasswordFormManager` for the given form. It should be an uncommon case.
   std::vector<FormData> observed;
   manager()->OnPasswordFormsParsed(&driver_, observed);
   manager()->OnPasswordFormsRendered(&driver_, observed);
   task_environment_.RunUntilIdle();
-
-  base::HistogramTester histogram_tester;
 
   // The user accepts a generated password.
   FormData form_data(MakeSignUpFormData());
@@ -3702,8 +3896,6 @@ TEST_P(PasswordManagerTest, PasswordGenerationPresavePassword_NoFormManager) {
                                         form_data.fields()[1].value());
   task_environment_.RunUntilIdle();
   EXPECT_TRUE(GetAllLoginsSync(store_.get()).empty());
-  histogram_tester.ExpectUniqueSample(
-      "PasswordManager.GeneratedFormHasNoFormManager", true, 1);
 }
 
 TEST_P(PasswordManagerTest, PasswordGenerationPresavePasswordAndLogin) {
@@ -3797,31 +3989,88 @@ TEST_P(PasswordManagerTest, GenerationTriggersFormManagerCreation) {
   FormData form(MakeSimpleFormData());
   ASSERT_THAT(form.fields(), SizeIs(2));
   EXPECT_TRUE(form.fields()[1].IsPasswordInputElement());
-  std::u16string generated_password;
+  PasswordString generated_password;
 
   EXPECT_CALL(driver_, GeneratedPasswordAccepted)
       .WillOnce(SaveArg<0>(&generated_password));
-  manager()->OnGeneratedPasswordAccepted(
-      &driver_, form, form.fields()[1].renderer_id(), u"generated_password");
+  manager()->OnGeneratedPasswordAccepted(&driver_, form,
+                                         form.fields()[1].renderer_id(),
+                                         PasswordString(u"generated_password"));
 
   EXPECT_THAT(manager()->form_managers(), SizeIs(1));
   EXPECT_EQ(generated_password, u"generated_password");
 }
 
 TEST_P(PasswordManagerTest, UpdateFormManagers) {
-  // Seeing a form should result in creating PasswordFormManager and
-  // PasswordFormManager and querying PasswordStore. Calling
-  // UpdateFormManagers should result in querying the store again.
+  // Seeing a form should result in creating a PasswordFormManager and querying
+  // the PasswordStore. Calling UpdateFormManagers should result in querying
+  // the store again.
   PasswordForm form(MakeSimpleForm());
   manager()->OnPasswordFormsParsed(&driver_, {form.form_data});
-  task_environment_.RunUntilIdle();
+  ASSERT_FALSE(manager()->form_managers().empty());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return manager()->HaveFormManagersReceivedData(&driver_); }));
 
   store_->AddLogin(password_manager::FromPasswordForm(form));
-  autofill::PasswordFormFillData form_data;
+  base::test::TestFuture<autofill::PasswordFormFillData> form_data_future;
   EXPECT_CALL(driver_, PropagateFillDataOnParsingCompletion)
-      .WillOnce(SaveArg<0>(&form_data));
+      .WillOnce([&](const autofill::PasswordFormFillData& fill_data) {
+        form_data_future.SetValue(fill_data);
+      });
   manager()->UpdateFormManagers();
-  task_environment_.RunUntilIdle();
+  const autofill::PasswordFormFillData& form_data = form_data_future.Get();
+
+  EXPECT_EQ(form.username_value, form_data.preferred_login.username_value);
+  EXPECT_EQ(form.password_value, form_data.preferred_login.password_value);
+}
+
+TEST_P(PasswordManagerTest,
+       UpdateFormManagersOnProfileStoreSyncEnabledOrDisabled) {
+  // Seeing a form should result in creating PasswordFormManager and
+  // querying PasswordStore. Triggering sync callback on profile store should
+  // result in querying the store again and updating form managers.
+  PasswordForm form(MakeSimpleForm());
+  manager()->OnPasswordFormsParsed(&driver_, {form.form_data});
+  ASSERT_FALSE(manager()->form_managers().empty());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return manager()->HaveFormManagersReceivedData(&driver_); }));
+
+  store_->AddLogin(password_manager::FromPasswordForm(form));
+  base::test::TestFuture<autofill::PasswordFormFillData> form_data_future;
+  EXPECT_CALL(driver_, PropagateFillDataOnParsingCompletion)
+      .WillOnce([&](const autofill::PasswordFormFillData& fill_data) {
+        form_data_future.SetValue(fill_data);
+      });
+  store_->CallSyncEnabledOrDisabledCallbacks();
+  const autofill::PasswordFormFillData& form_data = form_data_future.Get();
+
+  EXPECT_EQ(form.username_value, form_data.preferred_login.username_value);
+  EXPECT_EQ(form.password_value, form_data.preferred_login.password_value);
+}
+
+TEST_P(PasswordManagerTest,
+       UpdateFormManagersOnAccountStoreSyncEnabledOrDisabled) {
+  if (!ShouldEnableAccountStorage()) {
+    GTEST_SKIP() << "Account storage is disabled";
+  }
+  // Seeing a form should result in creating PasswordFormManager and
+  // querying PasswordStore. Triggering sync callback on account store should
+  // result in querying the store again and updating form managers.
+  PasswordForm form(MakeSimpleForm());
+  form.in_store = PasswordForm::Store::kAccountStore;
+  manager()->OnPasswordFormsParsed(&driver_, {form.form_data});
+  ASSERT_FALSE(manager()->form_managers().empty());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return manager()->HaveFormManagersReceivedData(&driver_); }));
+
+  account_store_->AddLogin(password_manager::FromPasswordForm(form));
+  base::test::TestFuture<autofill::PasswordFormFillData> form_data_future;
+  EXPECT_CALL(driver_, PropagateFillDataOnParsingCompletion)
+      .WillOnce([&](const autofill::PasswordFormFillData& fill_data) {
+        form_data_future.SetValue(fill_data);
+      });
+  account_store_->CallSyncEnabledOrDisabledCallbacks();
+  const autofill::PasswordFormFillData& form_data = form_data_future.Get();
 
   EXPECT_EQ(form.username_value, form_data.preferred_login.username_value);
   EXPECT_EQ(form.password_value, form_data.preferred_login.password_value);
@@ -6228,9 +6477,6 @@ TEST_P(PasswordManagerTest,
 #if !BUILDFLAG(IS_IOS)
 // Expect no automatic save prompt when user fills grouped match credentials.
 TEST_P(PasswordManagerTest, NoAutomaticPromptOnGroupedMatchSave) {
-  base::test::ScopedFeatureList feature_list{
-      password_manager::features::kPasswordFormGroupedAffiliations};
-
   PasswordForm saved_match(MakeSavedForm());
   saved_match.signon_realm = "https://affiliated.example.com/";
   saved_match.url = GURL(saved_match.signon_realm);
@@ -7062,12 +7308,12 @@ TEST_P(PasswordManagerTest, ModelPredictionsEmptyMetric_NonEmpty) {
       false);
 }
 
-#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 // Check that a happiness surney is triggered after the user has submitted
 // a manually filled form and logged in.
 TEST_P(PasswordManagerTest, HatsSurveyTriggeredOnSuccessfulLogin) {
   base::test::ScopedFeatureList feature_list{
-      password_manager::features::kAutofillPasswordUserPerceptionSurvey};
+      password_manager::features::
+          kAutofillPersonalizationAndTrustPasswordSurvey};
   EXPECT_CALL(client_, IsSavingAndFillingEnabled).WillRepeatedly(Return(true));
 
   // Simulate adding a credential that the user will fill.
@@ -7094,7 +7340,7 @@ TEST_P(PasswordManagerTest, HatsSurveyTriggeredOnSuccessfulLogin) {
           autofill::FieldPropertiesFlags::kAutofilledOnUserTrigger);
   manager()->OnPasswordFormSubmitted(&driver_, observed_form);
 
-  EXPECT_CALL(client_, TriggerUserPerceptionOfPasswordManagerSurvey(
+  EXPECT_CALL(client_, TriggerPersonalizationAndTrustSurvey(
                            "Password was filled (automatically or manually), "
                            "known username was typed"));
   manager()->OnPasswordFormsRendered(&driver_, {});
@@ -7104,7 +7350,8 @@ TEST_P(PasswordManagerTest, HatsSurveyTriggeredOnSuccessfulLogin) {
 // a manually filled form, but failed to log in.
 TEST_P(PasswordManagerTest, HatsSurveyTriggeredOnFailedLogin) {
   base::test::ScopedFeatureList feature_list{
-      password_manager::features::kAutofillPasswordUserPerceptionSurvey};
+      password_manager::features::
+          kAutofillPersonalizationAndTrustPasswordSurvey};
   EXPECT_CALL(client_, IsSavingAndFillingEnabled).WillRepeatedly(Return(true));
 
   // Simulate adding a credential that the user will fill.
@@ -7131,7 +7378,7 @@ TEST_P(PasswordManagerTest, HatsSurveyTriggeredOnFailedLogin) {
           autofill::FieldPropertiesFlags::kAutofilledOnUserTrigger);
   manager()->OnPasswordFormSubmitted(&driver_, observed_form);
 
-  EXPECT_CALL(client_, TriggerUserPerceptionOfPasswordManagerSurvey(
+  EXPECT_CALL(client_, TriggerPersonalizationAndTrustSurvey(
                            "Credentials were filled manually, without typing"));
   manager()->OnPasswordFormsRendered(&driver_, {MakeSimpleFormData()});
 }
@@ -7140,7 +7387,8 @@ TEST_P(PasswordManagerTest, HatsSurveyTriggeredOnFailedLogin) {
 // a form filled on a page load and logged in.
 TEST_P(PasswordManagerTest, HatsSurveyNotTriggeredAfterAutomaticFilling) {
   base::test::ScopedFeatureList feature_list{
-      password_manager::features::kAutofillPasswordUserPerceptionSurvey};
+      password_manager::features::
+          kAutofillPersonalizationAndTrustPasswordSurvey};
   EXPECT_CALL(client_, IsSavingAndFillingEnabled).WillRepeatedly(Return(true));
 
   // Simulate adding a credential that the user will fill.
@@ -7168,16 +7416,16 @@ TEST_P(PasswordManagerTest, HatsSurveyNotTriggeredAfterAutomaticFilling) {
           autofill::FieldPropertiesFlags::kAutofilledOnPageLoad);
   manager()->OnPasswordFormSubmitted(&driver_, observed_form);
 
-  EXPECT_CALL(client_, TriggerUserPerceptionOfPasswordManagerSurvey).Times(0);
+  EXPECT_CALL(client_, TriggerPersonalizationAndTrustSurvey).Times(0);
   manager()->OnPasswordFormsRendered(&driver_, {});
 }
-#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_ANDROID)
 TEST_P(PasswordManagerTest, MarksHasPasswordFormForFirstCctPageLoad) {
   ukm::TestAutoSetUkmRecorder test_ukm_recorder;
   auto first_cct_page_recorder =
-      std::make_unique<FirstCctPageLoadPasswordsUkmRecorder>(ukm::SourceId(1));
+      std::make_unique<FirstCctPageLoadPasswordsUkmRecorder>(
+          static_cast<ukm::SourceId>(1));
 
   ON_CALL(client_, GetFirstCctPageLoadUkmRecorder)
       .WillByDefault(Return(first_cct_page_recorder.get()));

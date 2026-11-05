@@ -20,6 +20,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
+#include "components/omnibox/browser/on_device_tail_model_executor_constants.h"
 #include "components/optimization_guide/core/delivery/model_util.h"
 #include "components/optimization_guide/core/tflite_op_resolver.h"
 #include "third_party/tflite/src/tensorflow/lite/c/c_api_types.h"
@@ -47,10 +48,6 @@ static constexpr std::string_view kRnnStepCStateOutputNamePrefix = "c_out_";
 static constexpr std::string_view kRnnStepMStateOutputNamePrefix = "m_out_";
 
 static constexpr char kRnnStepOutputProbsNodeName[] = "probs";
-
-// Some default values of params needed to run the model.
-static constexpr size_t kDefaultMaxNumSteps = 20;
-static constexpr float kDefaultProbabilityThreshold = 0.01;
 
 // The sizes of the caches.
 static constexpr size_t kPreQueryEncodingCacheSize = 10;
@@ -218,7 +215,7 @@ bool OnDeviceTailModelExecutor::Init() {
   return true;
 }
 
-bool OnDeviceTailModelExecutor::Init(
+bool OnDeviceTailModelExecutor::SetModelFiles(
     const base::FilePath& model_filepath,
     const std::vector<base::FilePath>& additional_files,
     const ModelMetadata& metadata) {
@@ -247,16 +244,8 @@ bool OnDeviceTailModelExecutor::Init(
   badword_hashes_filepath_ = badword_hashes_filepath;
   bad_substrings_filepath_ = bad_substrings_filepath;
   metadata_ = metadata;
-
-  if (Init()) {
-    return true;
-  }
-
-  model_filepath_.clear();
-  vocab_filepath_.clear();
-  badword_hashes_filepath_.clear();
-  bad_substrings_filepath_.clear();
-  return false;
+  Reset();
+  return true;
 }
 
 bool OnDeviceTailModelExecutor::InitModelInterpreter(
@@ -453,6 +442,14 @@ void OnDeviceTailModelExecutor::Reset() {
   prev_query_encoder_ = nullptr;
   rnn_step_ = nullptr;
   interpreter_ = nullptr;
+}
+
+void OnDeviceTailModelExecutor::ClearModelFiles() {
+  Reset();
+  model_filepath_.clear();
+  vocab_filepath_.clear();
+  badword_hashes_filepath_.clear();
+  bad_substrings_filepath_.clear();
 }
 
 bool OnDeviceTailModelExecutor::RunRnnStep(

@@ -81,7 +81,8 @@ namespace proto = media::fuzzing::video_encode_accelerator::proto;
 // path the service unittest uses. `will_succeed` is bound to true so the
 // service's Initialize() reaches the kOk path and Encode() can flow into the
 // real VideoFrame deserialize.
-media::EncoderStatus::Or<std::unique_ptr<media::VideoEncodeAccelerator>>
+base::expected<std::unique_ptr<media::VideoEncodeAccelerator>,
+               media::EncoderStatus>
 CreateAndInitializeFakeVEA(
     bool will_succeed,
     const media::VideoEncodeAccelerator::Config& config,
@@ -92,7 +93,8 @@ CreateAndInitializeFakeVEA(
     std::unique_ptr<media::MediaLog> media_log,
     media::MojoVideoEncodeAcceleratorService::GetCommandBufferHelperCB
     /*get_command_buffer_helper_cb*/,
-    scoped_refptr<base::SingleThreadTaskRunner> /*gpu_task_runner*/) {
+    scoped_refptr<base::SingleThreadTaskRunner> /*gpu_task_runner*/,
+    gpu::Scheduler* /*gpu_scheduler*/) {
   auto vea = std::make_unique<media::FakeVideoEncodeAccelerator>(
       base::SingleThreadTaskRunner::GetCurrentDefault());
   vea->SetWillInitializationSucceed(will_succeed);
@@ -101,7 +103,7 @@ CreateAndInitializeFakeVEA(
   if (result.is_ok()) {
     return base::WrapUnique<media::VideoEncodeAccelerator>(vea.release());
   }
-  return std::move(result);
+  return base::unexpected(std::move(result));
 }
 
 scoped_refptr<base::SequencedTaskRunner> GetFuzzerTaskRunner() {

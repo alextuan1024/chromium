@@ -9,7 +9,6 @@
 #include <ostream>
 
 #include "base/barrier_callback.h"
-#include "base/cancelable_callback.h"
 #include "base/containers/map_util.h"
 #include "base/feature_list.h"
 #include "base/no_destructor.h"
@@ -20,9 +19,15 @@
 #include "chrome/browser/actor/action_tracker_for_metrics.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_metrics.h"
+#include "chrome/browser/actor/actor_surface.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
+#include "chrome/browser/actor/actor_surface_registry.h"
+#include "chrome/browser/actor/actor_util.h"
 #include "chrome/browser/actor/enterprise_policy_checker.h"
 #include "chrome/browser/actor/execution_engine.h"
+#include "chrome/browser/actor/javascript_dialog_interceptor.h"
 #include "chrome/browser/actor/tab_observation_strategy.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/actor/ui/event_dispatcher.h"
 #include "chrome/browser/glic/public/glic_perf_traits_tracker.h"
 #include "chrome/browser/profiles/profile.h"
@@ -34,9 +39,12 @@
 #include "components/actor/core/actor_ui_mode.h"
 #include "components/actor/core/journal_details_builder.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
+#include "components/actor/transport/proto/actuation_transport.pb.h"
 #include "components/performance_manager/public/decorators/page_live_state_decorator.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -103,6 +111,33 @@ void SetFocusState(content::WebContents* contents,
   }
 }
 
+// Returns the tabs backing `actor_surface_handles`.
+// TODO(b/567721071): Remove once callers of the TabHandle wrappers use the
+// surface API.
+ActorTask::TabHandleSet ToTabHandles(
+    const ActorTask::ActorSurfaceHandleSet& actor_surface_handles) {
+  ActorTask::TabHandleSet tabs;
+  for (ActorSurfaceHandle actor_surface_handle : actor_surface_handles) {
+    if (tabs::TabHandle tab = actor_surface_handle.GetTabHandle();
+        tab != tabs::TabHandle::Null()) {
+      tabs.insert(tab);
+    }
+  }
+  return tabs;
+}
+
+// Drops pre-existing main-frame navigations so they cannot commit ungated once
+// the surface enters actor control or transient observation.
+void StopPendingMainFrameNavigation(content::WebContents* contents) {
+  if (contents && contents->HasUncommittedNavigationInPrimaryMainFrame()) {
+    content::NavigationEntry* pending_entry =
+        contents->GetController().GetPendingEntry();
+    if (!pending_entry || !pending_entry->GetURL().IsAboutBlank()) {
+      contents->Stop();
+    }
+  }
+}
+
 }  // namespace
 
 ActorTask::ActorControlledTabState::ActorControlledTabState(
@@ -141,16 +176,13 @@ void ActorTask::ActorControlledTabState::OnVisibilityChanged(
   task->RecomputeHasVisibleTab();
 }
 
-ActorTask::ActorTask(
-    base::PassKey<ActorKeyedService, ActorTask>,
-    ActorKeyedService& service,
-    TaskId id,
-    std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher,
-    webui::mojom::TaskOptionsPtr options,
-    const TaskSourceInfo& source_info,
-    const EnterprisePolicyChecker* policy_checker,
-    base::WeakPtr<ActorTaskDelegate> delegate,
-    std::optional<glic::mojom::InvocationSource> initial_invocation_source)
+ActorTask::ActorTask(base::PassKey<ActorKeyedService, ActorTask>,
+                     ActorKeyedService& service,
+                     TaskId id,
+                     std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher,
+                     const TaskSourceInfo& source_info,
+                     const EnterprisePolicyChecker* policy_checker,
+                     const ActorTaskOptions& options)
     : service_(service),
       id_(id),
       source_info_(source_info),
@@ -158,29 +190,33 @@ ActorTask::ActorTask(
       action_tracker_for_metrics_(std::make_unique<ActionTrackerForMetrics>()),
       ui_event_dispatcher_(std::move(ui_event_dispatcher)),
       journal_(service_->GetJournal().GetSafeRef()),
-      title_(options && options->title.has_value() ? options->title.value()
-                                                   : ""),
-      duration_(options && options->duration.has_value() &&
-                        options->duration.value() ==
+      title_(options.webui_task_options
+                 ? options.webui_task_options->title.value_or("")
+                 : ""),
+      duration_(options.webui_task_options &&
+                        options.webui_task_options->duration ==
                             actor::webui::mojom::TaskDuration::kTransient
                     ? TaskDuration::kTransient
                     : TaskDuration::kDefault),
-      feature_mode_(options && options->feature_mode.has_value()
-                        ? options->feature_mode.value()
+      feature_mode_(options.webui_task_options
+                        ? options.webui_task_options->feature_mode.value_or(
+                              glic::mojom::FeatureMode::kUnspecified)
                         : glic::mojom::FeatureMode::kUnspecified),
-      initial_invocation_source_(initial_invocation_source),
+      skip_history_recording_(options.skip_history_recording),
+      glic_initial_invocation_source_(options.glic_initial_invocation_source),
       policy_checker_(*policy_checker),
-      delegate_(std::move(delegate)),
+      delegate_(options.delegate),
       ui_weak_ptr_factory_(ui_event_dispatcher_.get()) {
   CHECK(policy_checker);
   CHECK(!id_.is_null());
-  execution_engine_ = ExecutionEngine::Create(*this);
+  execution_engine_ = ExecutionEngine::Create(*this, options.allowed_schemes);
 }
 
 ActorTask::~ActorTask() {
   // The owner of the ActorTasks (ActorKeyedService) should have stopped all
   // tasks already.
   CHECK(IsCompleted());
+  ClearAllUserData();
 }
 
 // static
@@ -188,15 +224,18 @@ std::unique_ptr<ActorTask> ActorTask::CreateForTesting(
     ActorKeyedService& service,
     TaskId id,
     std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher,
-    webui::mojom::TaskOptionsPtr options,
     const TaskSourceInfo& source_info,
     const EnterprisePolicyChecker* policy_checker,
-    base::WeakPtr<ActorTaskDelegate> delegate,
-    std::optional<glic::mojom::InvocationSource> initial_invocation_source) {
-  return std::make_unique<ActorTask>(
-      base::PassKey<ActorTask>(), service, id, std::move(ui_event_dispatcher),
-      std::move(options), source_info, policy_checker, std::move(delegate),
-      initial_invocation_source);
+    const ActorTaskOptions& options) {
+  // Service-level creation options are handled by ActorKeyedService and are
+  // ignored when constructing an ActorTask directly.
+  CHECK(options.execution_mode == proto::TargetSurface::HEADED);
+  CHECK(!options.agent_container_config.has_value());
+  CHECK(!options.webui_task_options ||
+        !options.webui_task_options->actuation_tab_id.has_value());
+  return std::make_unique<ActorTask>(base::PassKey<ActorTask>(), service, id,
+                                     std::move(ui_event_dispatcher),
+                                     source_info, policy_checker, options);
 }
 
 ExecutionEngine& ActorTask::GetExecutionEngine() const {
@@ -206,6 +245,13 @@ ExecutionEngine& ActorTask::GetExecutionEngine() const {
 
 ActorTask::State ActorTask::GetState() const {
   return state_;
+}
+
+bool ActorTask::IsExperimentalTriggering() const {
+  return glic_initial_invocation_source_ ==
+             glic::mojom::InvocationSource::kExperimentalTriggering ||
+         feature_mode_ == glic::mojom::FeatureMode::kExperimentalTriggering ||
+         source_info_.type == TaskSourceInfo::Client::kExperimentalActor;
 }
 
 base::WeakPtr<ActorTask> ActorTask::GetWeakPtr() {
@@ -218,13 +264,13 @@ Profile* ActorTask::GetProfile() const {
 
 #if BUILDFLAG(IS_ANDROID)
 void ActorTask::SetIsInPip(bool is_in_pip) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   is_in_pip_ = is_in_pip;
 }
 #endif
 
 ActorUiMode ActorTask::GetUiMode() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (is_in_pip_) {
     return ActorUiMode::kPip;
   }
@@ -291,16 +337,16 @@ void ActorTask::SetState(State new_state) {
   // visibility metrics and prepare each tab for actuation.
   if (IsStateActorControlled(new_state) && !IsStateActorControlled(old_state)) {
     visibility_timer_ = base::ElapsedTimer();
-    for (const auto& [tab, _] : controlled_tabs_) {
-      DidTabEnterActorControl(tab);
+    for (const auto& [actor_surface_handle, _] : controlled_tabs_) {
+      DidTabEnterActorControl(actor_surface_handle);
     }
     // When transitioning out of an actor-controlled state, record the final
     // visibility duration and clean up each tab.
   } else if (!IsStateActorControlled(new_state) &&
              IsStateActorControlled(old_state)) {
     UpdateVisibilityTimes();
-    for (const auto& [tab, _] : controlled_tabs_) {
-      DidTabExitActorControl(tab);
+    for (const auto& [actor_surface_handle, _] : controlled_tabs_) {
+      DidTabExitActorControl(actor_surface_handle);
     }
     ResetToObserveTabsSet();
     ResetAdditionalTabObservations();
@@ -315,8 +361,7 @@ void ActorTask::SetState(State new_state) {
     ActorTask::State ui_task_state = new_state;
     // TODO(crbug.com/484367299): Implement a proper actor task state for
     // interrupt-with-user-control.
-    if (base::FeatureList::IsEnabled(kActorFormScriptToolInterrupt) &&
-        new_state == kWaitingOnUser && interrupted_task_needs_user_control_) {
+    if (new_state == kWaitingOnUser && interrupted_task_needs_user_control_) {
       ui_task_state = kPausedByActor;
     }
     ui_event_dispatcher_->OnActorTaskSyncChange(
@@ -334,11 +379,18 @@ void ActorTask::SetState(State new_state) {
     RecordActorTaskCompletion(
         stopped_reason_.value(), base::TimeTicks::Now() - create_time_,
         total_actor_controlled_active_time_, total_number_of_interruptions_,
-        total_number_of_actions_, initial_invocation_source_);
+        total_number_of_actions_, glic_initial_invocation_source_);
   }
 }
 
 void ActorTask::Act(std::vector<std::unique_ptr<ToolRequest>>&& actions,
+                    ActCallback callback) {
+  Act(std::move(actions), /*on_actions_accepted=*/base::OnceClosure(),
+      std::move(callback));
+}
+
+void ActorTask::Act(std::vector<std::unique_ptr<ToolRequest>>&& actions,
+                    base::OnceClosure on_actions_accepted,
                     ActCallback callback) {
   if (IsUnderUserControl()) {
     journal_->Log(GURL(), id(), "ActorTask::Act",
@@ -376,44 +428,34 @@ void ActorTask::Act(std::vector<std::unique_ptr<ToolRequest>>&& actions,
   callback_for_act_ = std::move(callback);
 
   // TODO(b/474410401): ActorTask tabs should be explicitly added by the client.
-  if (base::FeatureList::IsEnabled(kGlicEarlyAddTaskTabs)) {
-    absl::flat_hash_set<tabs::TabHandle> tabs_to_add;
-    for (const std::unique_ptr<ToolRequest>& request : actions) {
-      CHECK(request);
-      tabs::TabHandle tab = request->GetTabHandle();
-      if (tab != tabs::TabHandle::Null()) {
-        tabs_to_add.insert(tab);
-      }
+  ActorSurfaceHandleSet actor_surfaces_to_add;
+  for (const std::unique_ptr<ToolRequest>& request : actions) {
+    if (request->GetActorSurfaceHandle() != ActorSurfaceHandle::Null()) {
+      actor_surfaces_to_add.insert(request->GetActorSurfaceHandle());
     }
+  }
 
-    did_add_tabs_callback_.Reset(base::BindOnce(
-        &ActorTask::DidEarlyAddTabs, GetWeakPtr(), std::move(actions)));
-    auto add_tabs_barrier = base::BarrierCallback<mojom::ActionResultPtr>(
-        tabs_to_add.size(), did_add_tabs_callback_.callback());
-    for (const tabs::TabHandle& tab : tabs_to_add) {
-      AddTab(tab, /*stop_task_on_detach=*/true, add_tabs_barrier);
-    }
-  } else {
-    SetState(State::kActing);
-
-    actions_in_current_state_ += actions.size();
-    total_number_of_actions_ += actions.size();
-
-    action_tracker_for_metrics_->WillAct(actions);
-
-    execution_engine_->Act(std::move(actions),
-                           base::BindOnce(&ActorTask::OnFinishedAct,
-                                          weak_ptr_factory_.GetWeakPtr()));
+  // Resetting `did_add_tabs_callback_` cancels the tab-adding step of an
+  // earlier call that hasn't started its actions yet, so that call's
+  // `on_actions_accepted` never runs.
+  did_add_tabs_callback_.Reset(base::BindOnce(&ActorTask::DidEarlyAddTabs,
+                                              GetWeakPtr(), std::move(actions),
+                                              std::move(on_actions_accepted)));
+  auto add_tabs_barrier = base::BarrierCallback<mojom::ActionResultPtr>(
+      actor_surfaces_to_add.size(), did_add_tabs_callback_.callback());
+  for (const ActorSurfaceHandle& actor_surface_handle : actor_surfaces_to_add) {
+    AddActorSurface(actor_surface_handle, /*stop_task_on_detach=*/true,
+                    add_tabs_barrier);
   }
 }
 
 void ActorTask::OnFinishedAct(
-    std::vector<ActionResultWithLatencyInfo> action_results,
+    std::vector<ToolResultWithLatencyInfo> action_results,
     TabObservationStrategy observation_strategy) {
   mojom::ActionResultPtr result = MakeOkResult();
   for (const auto& action_result : action_results) {
-    if (!IsOk(action_result.result->code)) {
-      result = action_result.result->Clone();
+    if (!action_result.tool_result.Ok()) {
+      result = action_result.tool_result.deprecated_action_result()->Clone();
       break;
     }
   }
@@ -424,7 +466,7 @@ void ActorTask::OnFinishedAct(
     // purposes.
     journal_->Log(GURL(), id(), "ActorTask::OnFinishedAct",
                   JournalDetailsBuilder()
-                      .Add("result", result ? ToDebugString(*result) : "null")
+                      .Add("result", ToDebugString(*result))
                       .Add("Not in kActing state", base::ToString(state_))
                       .Build());
   }
@@ -441,22 +483,21 @@ void ActorTask::OnFinishedAct(
 
   // The callback may already have been called, if the task was stopped or
   // paused.
-  const bool is_paused_result =
-      result && result->code == mojom::ActionResultCode::kTaskPaused;
   if (callback_for_act_) {
-    // Interruption (WaitingOnUser) can happen while acting, but in that case
-    // the tool is the source and must not finish before uninterrupting.
+    // A task can finish while still in `kCreated` or `kReflecting` if early tab
+    // addition fails before transitioning to `kActing`. Interruption
+    // (`kWaitingOnUser`) can happen while acting, but completion is deferred
+    // until the task is uninterrupted back to `kActing`.
+    // TODO(crbug.com/584658141): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(state_ == State::kCreated || state_ == State::kActing ||
-           IsUnderUserControl());
-    if (result) {
-      action_tracker_for_metrics_->OnFinishedAct(*result);
-    }
+           state_ == State::kReflecting);
+    action_tracker_for_metrics_->OnFinishedAct(*result);
     std::move(callback_for_act_)
         .Run(std::move(action_results), std::move(observation_strategy));
   }
 
-  if (state_ == State::kActing ||
-      (state_ == State::kPausedByActor && !is_paused_result)) {
+  if (state_ == State::kActing) {
     SetState(State::kReflecting);
   }
 }
@@ -470,7 +511,12 @@ void ActorTask::Stop(StoppedReason stop_reason) {
   }
 
   if (callback_for_act_) {
-    DCHECK(state_ == State::kActing || state_ == State::kWaitingOnUser);
+    // A task can be stopped while still in `kCreated` or `kReflecting` if an
+    // Act request is waiting on asynchronous tab addition before transitioning
+    // to `kActing`.
+    CHECK(state_ == State::kActing || state_ == State::kWaitingOnUser ||
+              state_ == State::kCreated || state_ == State::kReflecting,
+          base::NotFatalUntil::M161);
     mojom::ActionResultPtr result = MakeResult(result_code);
     action_tracker_for_metrics_->OnFinishedAct(*result);
     std::move(callback_for_act_)
@@ -483,10 +529,10 @@ void ActorTask::Stop(StoppedReason stop_reason) {
   State final_state = GetTaskStateFromStoppedReason(stop_reason);
   stopped_reason_ = stop_reason;
   // Remove all the tabs from the task.
-  tabs::TabHandle last_tab_handle;
+  ActorSurfaceHandle last_actor_surface_handle;
   while (!controlled_tabs_.empty()) {
-    last_tab_handle = controlled_tabs_.begin()->first;
-    RemoveTab(controlled_tabs_.begin()->first);
+    last_actor_surface_handle = controlled_tabs_.begin()->first;
+    RemoveActorSurface(last_actor_surface_handle);
   }
 
   SetState(final_state);
@@ -495,21 +541,25 @@ void ActorTask::Stop(StoppedReason stop_reason) {
       .task_id = id_,
       .final_state = final_state,
       .title = title_,
-      .last_acted_on_tab_handle = last_tab_handle,
+      .last_acted_on_tab_handle = last_actor_surface_handle.GetTabHandle(),
       .duration = duration_,
       .feature_mode = feature_mode_});
 }
 
-void ActorTask::Pause(bool from_actor, bool cancel_existing_action) {
+void ActorTask::Pause(bool from_actor) {
   if (IsCompleted()) {
     return;
   }
 
   // Invoke the callback before changing states so that the client sees the Act
   // result before seeing the state transition.
-  if (callback_for_act_ && cancel_existing_action) {
-    DCHECK(state_ == State::kActing || state_ == State::kWaitingOnUser ||
-           state_ == State::kCreated);
+  if (callback_for_act_) {
+    // A task can be paused while still in `kCreated` or `kReflecting` if an Act
+    // request is waiting on asynchronous tab addition before transitioning to
+    // `kActing`.
+    CHECK(state_ == State::kActing || state_ == State::kWaitingOnUser ||
+              state_ == State::kCreated || state_ == State::kReflecting,
+          base::NotFatalUntil::M161);
     mojom::ActionResultPtr result =
         MakeResult(mojom::ActionResultCode::kTaskPaused);
     action_tracker_for_metrics_->OnFinishedAct(*result);
@@ -517,11 +567,7 @@ void ActorTask::Pause(bool from_actor, bool cancel_existing_action) {
         .Run(MakeResultVector(std::move(result)), TabObservationStrategy());
   }
 
-  if (cancel_existing_action) {
-    CancelOngoingActions(mojom::ActionResultCode::kTaskPaused);
-  } else {
-    execution_engine_->PauseOngoingActions();
-  }
+  CancelOngoingActions(mojom::ActionResultCode::kTaskPaused);
   if (from_actor) {
     SetState(State::kPausedByActor);
   } else {
@@ -543,6 +589,8 @@ void ActorTask::Interrupt(bool retain_user_control,
   if (GetState() != State::kReflecting && GetState() != State::kActing) {
     return;
   }
+  // TODO(crbug.com/484367299): Implement a proper actor task state for
+  // interrupt-with-user-control.
   interrupted_task_needs_user_control_ = retain_user_control;
   execution_engine_->PauseOngoingActions();
   interrupt_reason_ = interrupt_reason;
@@ -553,9 +601,27 @@ void ActorTask::Uninterrupt(State resumed_state) {
   if (GetState() != State::kWaitingOnUser) {
     return;
   }
+  const bool was_under_user_control = interrupted_task_needs_user_control_;
   interrupt_reason_ = std::nullopt;
   interrupted_task_needs_user_control_ = false;
   SetState(resumed_state);
+  if (was_under_user_control && IsUnderActorControl()) {
+    for (const auto& [actor_surface_handle, controlled_state] :
+         controlled_tabs_) {
+      content::WebContents* contents = controlled_state->web_contents();
+      if (!contents) {
+        // If the user navigated while interrupted with user control,
+        // PrimaryPageChanged() detached `controlled_state` from its
+        // WebContents. Resolve the current contents from the surface handle so
+        // any modal dialog opened on the post-navigation page is still
+        // dismissed.
+        contents = GetWebContentsIfSurfaceAlive(actor_surface_handle.Get());
+      }
+      if (contents) {
+        JavaScriptDialogInterceptor::DismissExistingTabModalDialog(*contents);
+      }
+    }
+  }
   execution_engine_->DidUninterruptTask();
 }
 
@@ -612,6 +678,13 @@ base::Time ActorTask::GetEndTime() const {
 void ActorTask::AddTab(tabs::TabHandle tab_handle,
                        bool stop_task_on_detach,
                        AddTabCallback callback) {
+  AddActorSurface(ActorSurfaceHandle::From(tab_handle), stop_task_on_detach,
+                  std::move(callback));
+}
+
+void ActorTask::AddActorSurface(ActorSurfaceHandle actor_surface_handle,
+                                bool stop_task_on_detach,
+                                AddTabCallback callback) {
   if (!IsUnderActorControl()) {
     journal_->Log(
         GURL(), id(), "ActorTask::AddTab",
@@ -625,42 +698,68 @@ void ActorTask::AddTab(tabs::TabHandle tab_handle,
                            : mojom::ActionResultCode::kTaskWentAway)));
     return;
   }
-  tabs::TabInterface* tab = tab_handle.Get();
-  if (CheckCrossProfileAndLog(tab, tab_handle, "ActorTask::AddTab")) {
+  ActorSurface* actor_surface = actor_surface_handle.Get();
+  if (CheckCrossProfileAndLog(actor_surface, actor_surface_handle,
+                              "ActorTask::AddTab")) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(
             std::move(callback),
-            MakeResult(tab ? mojom::ActionResultCode::kActionTargetCrossProfile
+            MakeResult(actor_surface
+                           ? mojom::ActionResultCode::kActionTargetCrossProfile
                            : mojom::ActionResultCode::kTabWentAway)));
     return;
   }
 
-  if (controlled_tabs_.contains(tab_handle)) {
-    last_actuated_tab_ = tab_handle;
+  if (controlled_tabs_.contains(actor_surface_handle)) {
+    last_actuated_tab_ = actor_surface_handle;
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), MakeOkResult()));
     return;
   }
 
+  const tabs::TabHandle tab_handle = actor_surface_handle.GetTabHandle();
+  if (const ActorTask* controlling_task =
+          service_->GetTaskFromActorSurface(actor_surface_handle)) {
+    journal_->Log(GURL(), id(), "ActorTask::AddTab",
+                  JournalDetailsBuilder()
+                      .Add("tab_id", tab_handle.raw_value())
+                      .Add("existing_task_id", controlling_task->id().value())
+                      .AddError("Tab already controlled by another task")
+                      .Build());
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            std::move(callback),
+            MakeResult(mojom::ActionResultCode::kTabOwnedByAnotherTask,
+                       /*requires_page_stabilization=*/false,
+                       "The tab is already controlled by another task.")));
+    return;
+  }
+
   journal_->Log(
       GURL(), id(), "ActorTask::AddTab",
-      JournalDetailsBuilder().Add("tab_id", tab_handle.raw_value()).Build());
+      JournalDetailsBuilder()
+          .AddActorSurface(actor_surface_handle.raw_value(),
+                           actor_surface_handle.GetTabHandle().raw_value())
+          .Build());
 
   controlled_tabs_.emplace(
-      tab_handle,
+      actor_surface_handle,
       std::make_unique<ActorControlledTabState>(this, stop_task_on_detach));
-  last_actuated_tab_ = tab_handle;
+  last_actuated_tab_ = actor_surface_handle;
 
-  DidTabEnterActorControl(tab_handle);
+  StopPendingMainFrameNavigation(actor_surface->GetWebContents());
+  DidTabEnterActorControl(actor_surface_handle);
 
-  // Notify the UI of the new tab.
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(&ui::UiEventDispatcher::OnActorTaskAsyncChange,
-                                ui_weak_ptr_factory_.GetWeakPtr(),
-                                ui::UiEventDispatcher::AddTab{
-                                    .task_id = id_, .handle = tab_handle},
-                                std::move(callback)));
+  // TODO(b/567721071): UI actually cares about visible tabs - determine how UI
+  // events should be sent when in headless.
+  if (actor_surface->IsTab()) {
+    NotifyUiOfAddedTab(tab_handle, std::move(callback));
+  } else {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), MakeOkResult()));
+  }
 
   // Post-task this delegate call to avoid any performance issues.
   if (delegate_) {
@@ -670,34 +769,96 @@ void ActorTask::AddTab(tabs::TabHandle tab_handle,
   }
 }
 
+void ActorTask::OnActorSurfacePromoted(
+    ActorSurfaceHandle actor_surface_handle) {
+  ActorControlledTabState* state =
+      base::FindPtrOrNull(controlled_tabs_, actor_surface_handle);
+  if (!state) {
+    return;
+  }
+  ActorSurface* actor_surface = actor_surface_handle.Get();
+  CHECK(actor_surface && actor_surface->IsTab());
+  tabs::TabInterface* tab = actor_surface->GetTabHandle()->Get();
+  CHECK(tab);
+  const tabs::TabHandle tab_handle = tab->GetHandle();
+  journal_->Log(
+      GURL(), id(), "ActorTask::OnActorSurfacePromoted",
+      JournalDetailsBuilder()
+          .AddActorSurface(actor_surface_handle.raw_value(),
+                           actor_surface_handle.GetTabHandle().raw_value())
+          .Build());
+
+  // Outside actor control, `DidTabEnterActorControl()` does this on resume.
+  if (IsActingOnActorSurface(actor_surface_handle)) {
+    ObserveTabDiscard(*state, *tab);
+  }
+  NotifyUiOfAddedTab(tab_handle, base::DoNothing());
+  // The delegate already got `OnTabAddedToTask()` when the surface was added,
+  // and hears about the new visible tab through
+  // `OnTaskTabsVisibilityChanged()`.
+  RecomputeHasVisibleTab();
+}
+
+void ActorTask::NotifyUiOfAddedTab(tabs::TabHandle tab_handle,
+                                   AddTabCallback callback) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&ui::UiEventDispatcher::OnActorTaskAsyncChange,
+                                ui_weak_ptr_factory_.GetWeakPtr(),
+                                ui::UiEventDispatcher::AddTab{
+                                    .task_id = id_, .handle = tab_handle},
+                                std::move(callback)));
+}
+
 // TODO(crbug.com/450524344): Add a test for this. Note that at this point the
 // tab is not yet associated with the new_contents.
 void ActorTask::HandleDiscardContents(tabs::TabInterface* tab,
                                       content::WebContents* old_contents,
                                       content::WebContents* new_contents) {
-  CHECK(controlled_tabs_.contains(tab->GetHandle()));
+  const ActorSurfaceHandle actor_surface_handle =
+      ActorSurfaceHandle::From(tab->GetHandle());
+  CHECK(controlled_tabs_.contains(actor_surface_handle));
   if (!IsUnderActorControl()) {
     // The observer should only be attached when we're under actor control.
-    NOTREACHED(base::NotFatalUntil::M145);
-    return;
+    NOTREACHED();
   }
-  ActorControlledTabState* state = controlled_tabs_[tab->GetHandle()].get();
+  ActorControlledTabState* state = controlled_tabs_[actor_surface_handle].get();
   DidContentsEnterActorControl(state, new_contents);
 }
 
 void ActorTask::RemoveTab(tabs::TabHandle tab_handle) {
-  if (IsActingOnTab(tab_handle)) {
+  RemoveActorSurface(ActorSurfaceHandle::From(tab_handle));
+}
+
+void ActorTask::RemoveActorSurface(ActorSurfaceHandle actor_surface_handle) {
+  if (IsActingOnActorSurface(actor_surface_handle)) {
     // Record the tab visibility duration.
     UpdateVisibilityTimes();
-    DidTabExitActorControl(tab_handle);
+    DidTabExitActorControl(actor_surface_handle);
+  } else if (auto it = controlled_tabs_.find(actor_surface_handle);
+             it != controlled_tabs_.end() && IsStateActorControlled(state_)) {
+    // When interrupted with user control, `state_` is still `kWaitingOnUser`
+    // (so `DidTabExitActorControl()` did not run on `Interrupt()`), while
+    // `IsActingOnActorSurface()` is false. Ensure any attached interceptor
+    // UserData is removed before dropping the surface from `controlled_tabs_`.
+    content::WebContents* contents = it->second->web_contents();
+    if (!contents) {
+      contents = GetWebContentsIfSurfaceAlive(actor_surface_handle.Get());
+    }
+    if (contents) {
+      MaybeRemoveJavaScriptDialogInterceptor(actor_surface_handle, *contents);
+    }
   }
-  auto num_removed = controlled_tabs_.erase(tab_handle);
+  auto num_removed = controlled_tabs_.erase(actor_surface_handle);
   RecomputeHasVisibleTab();
 
   if (num_removed > 0) {
+    const tabs::TabHandle tab_handle = actor_surface_handle.GetTabHandle();
     journal_->Log(
         GURL(), id(), "ActorTask::RemoveTab",
-        JournalDetailsBuilder().Add("tab_id", tab_handle.raw_value()).Build());
+        JournalDetailsBuilder()
+            .AddActorSurface(actor_surface_handle.raw_value(),
+                             actor_surface_handle.GetTabHandle().raw_value())
+            .Build());
 
     // Notify the UI of the tab removal.
     // We call this synchronously since a Stop will destroy the ActorTask
@@ -709,44 +870,57 @@ void ActorTask::RemoveTab(tabs::TabHandle tab_handle) {
 }
 
 void ActorTask::ObserveTabOnce(tabs::TabHandle tab_handle) {
+  ObserveActorSurfaceOnce(ActorSurfaceHandle::From(tab_handle));
+}
+
+void ActorTask::ObserveActorSurfaceOnce(
+    ActorSurfaceHandle actor_surface_handle) {
   CHECK(IsUnderActorControl());
 
-  if (to_observe_tabs_.contains(tab_handle) ||
-      controlled_tabs_.contains(tab_handle)) {
+  if (to_observe_tabs_.contains(actor_surface_handle) ||
+      controlled_tabs_.contains(actor_surface_handle)) {
     return;
   }
 
-  tabs::TabInterface* tab = tab_handle.Get();
-  if (CheckCrossProfileAndLog(tab, tab_handle, "ObserveTabOnce")) {
+  ActorSurface* actor_surface = actor_surface_handle.Get();
+  if (CheckCrossProfileAndLog(actor_surface, actor_surface_handle,
+                              "ObserveTabOnce")) {
     return;
   }
 
   journal_->Log(
       GURL(), id(), "ObserveTabOnce",
-      JournalDetailsBuilder().Add("tab_id", tab_handle.raw_value()).Build());
+      JournalDetailsBuilder()
+          .AddActorSurface(actor_surface_handle.raw_value(),
+                           actor_surface_handle.GetTabHandle().raw_value())
+          .Build());
 
   auto itr = to_observe_tabs_
-                 .emplace(tab_handle, std::make_unique<ActorControlledTabState>(
-                                          this, /*stop_task_on_detach=*/true))
+                 .emplace(actor_surface_handle,
+                          std::make_unique<ActorControlledTabState>(
+                              this, /*stop_task_on_detach=*/true))
                  .first;
   ActorControlledTabState* state = itr->second.get();
 
-  DidContentsEnterActorControl(state, tab->GetContents());
+  content::WebContents* contents = actor_surface->GetWebContents();
+  StopPendingMainFrameNavigation(contents);
+  DidContentsEnterActorControl(state, contents);
 }
 
-void ActorTask::OnTabWillDetach(tabs::TabHandle handle) {
-  to_observe_tabs_.erase(handle);
+void ActorTask::OnActorSurfaceWillDetach(
+    ActorSurfaceHandle actor_surface_handle) {
+  to_observe_tabs_.erase(actor_surface_handle);
 
   // If the removed tab is only being observed, we can just remove it without
   // disrupting the task. If the task hasn't gotten the observation it wanted
   // for this tab, then won't be able to get it and will need to do something
   // else.
-  if (!HasTab(handle)) {
+  if (!HasActorSurface(actor_surface_handle)) {
     return;
   }
 
   const auto* controlled_tab_state =
-      base::FindPtrOrNull(controlled_tabs_, handle);
+      base::FindPtrOrNull(controlled_tabs_, actor_surface_handle);
   if (!controlled_tab_state || !controlled_tab_state->stop_task_on_detach) {
     return;
   }
@@ -756,16 +930,18 @@ void ActorTask::OnTabWillDetach(tabs::TabHandle handle) {
 
   journal_->Log(
       GURL(), id(), "Acting Tab Deleted",
-      JournalDetailsBuilder().Add("tab_id", handle.raw_value()).Build());
+      JournalDetailsBuilder()
+          .AddActorSurface(actor_surface_handle.raw_value(),
+                           actor_surface_handle.GetTabHandle().raw_value())
+          .Build());
 
   service_->StopTask(id(), StoppedReason::kTabDetached);
 }
 
 void ActorTask::DidEarlyAddTabs(
     std::vector<std::unique_ptr<ToolRequest>>&& actions,
+    base::OnceClosure on_actions_accepted,
     std::vector<mojom::ActionResultPtr> add_tab_results) {
-  CHECK(base::FeatureList::IsEnabled(kGlicEarlyAddTaskTabs));
-
   // If any tabs failed to be added, return the first failing result and respond
   // with failure.
   for (mojom::ActionResultPtr& result : add_tab_results) {
@@ -783,7 +959,7 @@ void ActorTask::DidEarlyAddTabs(
 
   action_tracker_for_metrics_->WillAct(actions);
 
-  execution_engine_->Act(std::move(actions),
+  execution_engine_->Act(std::move(actions), std::move(on_actions_accepted),
                          base::BindOnce(&ActorTask::OnFinishedAct,
                                         weak_ptr_factory_.GetWeakPtr()));
 }
@@ -802,6 +978,11 @@ void ActorTask::RecomputeHasVisibleTab() {
   // window occlusion in addition to WebContents visibility.
   bool has_any_visible_tab = false;
   for (const auto& [handle, controlled_state] : controlled_tabs_) {
+    // We don't want to show a surface without a tab to the user.
+    if (ActorSurface* actor_surface = handle.Get();
+        actor_surface && !actor_surface->IsTab()) {
+      continue;
+    }
     if (controlled_state->web_contents() &&
         controlled_state->web_contents()->GetVisibility() ==
             content::Visibility::VISIBLE) {
@@ -821,13 +1002,11 @@ void ActorTask::RecomputeHasVisibleTab() {
 }
 
 void ActorTask::ResetToObserveTabsSet() {
-  for (const auto& [tab_handle, state] : to_observe_tabs_) {
-    tabs::TabInterface* tab = tab_handle.Get();
-    if (!tab) {
-      continue;
+  for (const auto& [handle, state] : to_observe_tabs_) {
+    // The surface may already be gone, so use the page `state` observes.
+    if (content::WebContents* contents = state->web_contents()) {
+      DidContentsExitActorControl(state.get(), contents);
     }
-
-    DidContentsExitActorControl(state.get(), tab->GetContents());
   }
   to_observe_tabs_.clear();
 }
@@ -837,69 +1016,100 @@ void ActorTask::ResetAdditionalTabObservations() {
 }
 
 bool ActorTask::HasTab(tabs::TabHandle tab) const {
-  return controlled_tabs_.contains(tab);
+  return HasActorSurface(ActorSurfaceHandle::From(tab));
+}
+
+bool ActorTask::HasActorSurface(ActorSurfaceHandle actor_surface_handle) const {
+  return controlled_tabs_.contains(actor_surface_handle);
 }
 
 bool ActorTask::IsActingOnTab(tabs::TabHandle tab) const {
+  return IsActingOnActorSurface(ActorSurfaceHandle::From(tab));
+}
+
+bool ActorTask::IsActingOnActorSurface(
+    ActorSurfaceHandle actor_surface_handle) const {
   if (!IsUnderActorControl()) {
     return false;
   }
 
-  return HasTab(tab);
+  return HasActorSurface(actor_surface_handle);
 }
 
-absl::flat_hash_set<tabs::TabHandle> ActorTask::GetLastActedTabs() const {
+ActorTask::ActorSurfaceHandleSet ActorTask::GetActorSurfaces() const {
+  ActorSurfaceHandleSet actor_surface_handles;
+  for (const auto& [actor_surface_handle, _] : controlled_tabs_) {
+    actor_surface_handles.insert(actor_surface_handle);
+  }
+  return actor_surface_handles;
+}
+
+ActorTask::ActorSurfaceHandleSet ActorTask::GetLastActedActorSurfaces() const {
   // TODO(crbug.com/420669167): Currently the client only acts on a single tab
   // so we can return the full set but with multi-tab this will need to be
   // smarter about which tabs are relevant to the last/current action.
-  absl::flat_hash_set<tabs::TabHandle> last_acted_tabs = GetTabs();
-
-  for (const auto& [handle, _] : to_observe_tabs_) {
-    last_acted_tabs.insert(handle);
+  ActorSurfaceHandleSet actor_surface_handles = GetActorSurfaces();
+  for (const auto& [actor_surface_handle, _] : to_observe_tabs_) {
+    actor_surface_handles.insert(actor_surface_handle);
   }
-
-  return last_acted_tabs;
+  return actor_surface_handles;
 }
 
-tabs::TabInterface* ActorTask::GetLastActuatedTab() const {
-  return last_actuated_tab_.Get();
-}
-
-tabs::TabHandle ActorTask::GetLastActuatedTabHandle() const {
+ActorSurfaceHandle ActorTask::GetLastActuatedActorSurface() const {
   return last_actuated_tab_;
 }
 
-absl::flat_hash_set<tabs::TabHandle> ActorTask::GetTabs() const {
-  absl::flat_hash_set<tabs::TabHandle> handles;
-  for (const auto& [handle, _] : controlled_tabs_) {
-    handles.insert(handle);
-  }
-  return handles;
+ActorTask::TabHandleSet ActorTask::GetTabs() const {
+  return ToTabHandles(GetActorSurfaces());
 }
 
-void ActorTask::DidTabEnterActorControl(tabs::TabHandle handle) {
-  DCHECK(IsActingOnTab(handle));
-  tabs::TabInterface* tab = handle.Get();
-  if (!tab) {
-    // This happens in unittests.
-    return;
-  }
-  ActorControlledTabState* state = controlled_tabs_[handle].get();
+ActorTask::TabHandleSet ActorTask::GetLastActedTabs() const {
+  return ToTabHandles(GetLastActedActorSurfaces());
+}
 
-  // TODO(b/454107412): This is assuming the tab isn't discarded but nothing
-  // guarantees that.
-  content::WebContents* contents = tab->GetContents();
+tabs::TabInterface* ActorTask::GetLastActuatedTab() const {
+  return GetLastActuatedTabHandle().Get();
+}
+
+tabs::TabHandle ActorTask::GetLastActuatedTabHandle() const {
+  return GetLastActuatedActorSurface().GetTabHandle();
+}
+
+void ActorTask::DidTabEnterActorControl(
+    ActorSurfaceHandle actor_surface_handle) {
+  CHECK(IsActingOnActorSurface(actor_surface_handle),
+        base::NotFatalUntil::M161);
+  tabs::TabInterface* tab = nullptr;
+  content::WebContents* contents = nullptr;
+  if (ActorSurface* actor_surface = actor_surface_handle.Get()) {
+    std::optional<tabs::TabHandle> surface_tab = actor_surface->GetTabHandle();
+    tab = surface_tab ? surface_tab->Get() : nullptr;
+    // TODO(b/454107412): This is assuming the tab isn't discarded but nothing
+    // guarantees that.
+    contents = actor_surface->GetWebContents();
+  }
   if (!contents) {
+    // Missing contents happens in unittests.
     return;
   }
+  ActorControlledTabState* state = controlled_tabs_[actor_surface_handle].get();
 
-  // TODO(crbug.com/450524344)): Add a test for discarded content.
-  state->content_discarded_subscription =
-      tab->RegisterWillDiscardContents(base::BindRepeating(
-          &ActorTask::HandleDiscardContents, weak_ptr_factory_.GetWeakPtr()));
+  // Only tabs discard their contents.
+  if (tab) {
+    ObserveTabDiscard(*state, *tab);
+  }
+  JavaScriptDialogInterceptor::DismissExistingTabModalDialog(*contents);
   DidContentsEnterActorControl(state, contents);
 
   RecomputeHasVisibleTab();
+}
+
+void ActorTask::ObserveTabDiscard(ActorControlledTabState& state,
+                                  tabs::TabInterface& tab) {
+  // TODO(crbug.com/450524344): Add a test for discarded content.
+  state.content_discarded_subscription =
+      tab.RegisterWillDiscardContents(base::BindRepeating(
+          &ActorTask::HandleDiscardContents, weak_ptr_factory_.GetWeakPtr()));
 }
 
 void ActorTask::DidContentsEnterActorControl(
@@ -925,26 +1135,46 @@ void ActorTask::DidContentsEnterActorControl(
 #endif  // BUILDFLAG(IS_MAC) && BUILDFLAG(USE_EXTERNAL_POPUP_MENU)
 }
 
-void ActorTask::DidTabExitActorControl(tabs::TabHandle handle) {
+void ActorTask::DidTabExitActorControl(
+    ActorSurfaceHandle actor_surface_handle) {
   // Note that the state_ may still be in an actor controlled state if we are
   // just removing this tab (e.g. close the tab).
-  DCHECK(controlled_tabs_.contains(handle));
-  tabs::TabInterface* tab = handle.Get();
-  if (!tab) {
-    // This happens in unittests.
-    return;
-  }
-  ActorControlledTabState* state = controlled_tabs_[handle].get();
-  content::WebContents* contents = tab->GetContents();
+  CHECK(controlled_tabs_.contains(actor_surface_handle),
+        base::NotFatalUntil::M161);
+  ActorControlledTabState* state = controlled_tabs_[actor_surface_handle].get();
+  // The surface may already be gone (e.g. the tab is closing), so use the page
+  // the state observes. It follows the tab's contents across discards.
+  content::WebContents* contents = state->web_contents();
   if (!contents) {
+    // If `state` stopped observing its WebContents during an interruption with
+    // user control and was later reused after Uninterrupt(), still detach any
+    // interceptor attached to the surface's current WebContents.
+    if (content::WebContents* surface_contents =
+            GetWebContentsIfSurfaceAlive(actor_surface_handle.Get())) {
+      MaybeRemoveJavaScriptDialogInterceptor(actor_surface_handle,
+                                             *surface_contents);
+    }
     return;
   }
 
   // Reset focus and remove observers.
+  MaybeRemoveJavaScriptDialogInterceptor(actor_surface_handle, *contents);
   SetFocusState(contents, std::nullopt);
   state->SetContents(nullptr);
   state->content_discarded_subscription = {};
   DidContentsExitActorControl(state, contents);
+}
+
+void ActorTask::MaybeRemoveJavaScriptDialogInterceptor(
+    ActorSurfaceHandle actor_surface_handle,
+    content::WebContents& contents) {
+  for (const auto& [task_id, actor_task] : service_->GetActiveTasks()) {
+    if (actor_task != this &&
+        actor_task->IsActingOnActorSurface(actor_surface_handle)) {
+      return;
+    }
+  }
+  JavaScriptDialogInterceptor::RemoveForWebContents(contents);
 }
 
 void ActorTask::DidContentsExitActorControl(
@@ -963,16 +1193,19 @@ void ActorTask::DidContentsExitActorControl(
 #endif  // BUILDFLAG(IS_MAC) && BUILDFLAG(USE_EXTERNAL_POPUP_MENU)
 }
 
-bool ActorTask::CheckCrossProfileAndLog(tabs::TabInterface* tab,
-                                        tabs::TabHandle tab_handle,
+bool ActorTask::CheckCrossProfileAndLog(ActorSurface* actor_surface,
+                                        ActorSurfaceHandle actor_surface_handle,
                                         std::string_view method_name) {
-  if (!tab || tab->GetProfile() != GetProfile()) {
-    journal_->Log(GURL(), id(), method_name,
-                  JournalDetailsBuilder()
-                      .Add("tab_id", tab_handle.raw_value())
-                      .AddError(!tab ? "Tab does not exist"
+  if (!actor_surface ||
+      !actor_keyed_service().GetSurfaceRegistry().Get(actor_surface_handle)) {
+    journal_->Log(
+        GURL(), id(), method_name,
+        JournalDetailsBuilder()
+            .AddActorSurface(actor_surface_handle.raw_value(),
+                             actor_surface_handle.GetTabHandle().raw_value())
+            .AddError(!actor_surface ? "Tab does not exist"
                                      : "Cross-profile access denied")
-                      .Build());
+            .Build());
     return true;
   }
   return false;
@@ -1016,11 +1249,22 @@ std::ostream& operator<<(std::ostream& os, const ActorTask::State& state) {
 }
 
 void ActorTask::SetStepProgress(std::string step_progress) {
-  if (step_progress_ == step_progress) {
-    return;
-  }
+  const bool changed = step_progress_ != step_progress;
   step_progress_ = std::move(step_progress);
-  service_->NotifyTaskStepProgressChanged(*this, step_progress_);
+  // The UI gets every update, even a repeat, because the cursor chip
+  // clears after each action and the next one may reuse the same text.
+  // Observers get changes only.
+  ui_event_dispatcher_->OnActorTaskSyncChange(
+      ui::UiEventDispatcher::UpdateTaskStepProgress{
+          .task_id = id_, .step_progress = step_progress_});
+  if (changed) {
+    service_->NotifyTaskStepProgressChanged(*this, step_progress_);
+  }
+}
+
+void ActorTask::OnActRequested() {
+  ui_event_dispatcher_->OnActorTaskSyncChange(
+      ui::UiEventDispatcher::ActRequested{.task_id = id_});
 }
 
 // static
@@ -1042,6 +1286,7 @@ ActorTask::State ActorTask::GetTaskStateFromStoppedReason(
       break;
     case StoppedReason::kModelError:
     case StoppedReason::kChromeFailure:
+    case StoppedReason::kAbortedByPolicy:
       final_state = State::kFailed;
       break;
   }

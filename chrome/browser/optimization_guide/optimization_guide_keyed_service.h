@@ -18,10 +18,8 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decider.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
-#include "components/optimization_guide/core/model_execution/model_broker_client.h"
-#include "components/optimization_guide/core/model_execution/model_execution_features_controller.h"
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/proto/hints.pb.h"
@@ -51,7 +49,9 @@ class PageHandler;
 
 namespace optimization_guide {
 class ChromeHintsManager;
+class ModelBrokerClient;
 class ModelExecutionEnabledBrowserTest;
+class ModelExecutionFeaturesController;
 class ModelExecutionLiveTest;
 class ModelExecutionManager;
 class ModelQualityLogsUploaderService;
@@ -63,6 +63,7 @@ class PredictionManagerBrowserTestBase;
 class PredictionModelDownloadClient;
 class PredictionModelStoreBrowserTestBase;
 class PushNotificationManager;
+class SettingsEnabledObserver;
 class TabUrlProvider;
 class TopHostProvider;
 
@@ -116,8 +117,7 @@ class OptimizationGuideKeyedService
 
   // optimization_guide::OptimizationGuideDecider implementation:
   void RegisterOptimizationTypes(
-      const std::vector<optimization_guide::proto::OptimizationType>&
-          optimization_types) override;
+      optimization_guide::OptimizationTypeSet optimization_types) override;
   void CanApplyOptimization(
       const GURL& url,
       optimization_guide::proto::OptimizationType optimization_type,
@@ -150,6 +150,8 @@ class OptimizationGuideKeyedService
       const optimization_guide::StreamingModelExecutionOptions& options,
       optimization_guide::OptimizationGuideModelExecutionStreamingCallback
           callback) override;
+  void PrewarmModelExecution(
+      optimization_guide::ModelBasedCapabilityKey feature) override;
 
   // optimization_guide::OnDeviceCapability
   // implementation:
@@ -226,8 +228,7 @@ class OptimizationGuideKeyedService
   // were registered, this will just add the hint for later use.
   void AddHintWithMultipleOptimizationsForTesting(
       const GURL& url,
-      const std::vector<optimization_guide::proto::OptimizationType>&
-          optimization_types);
+      optimization_guide::OptimizationTypeSet optimization_types);
 
   // Adds hints for a URL with provided optimization types and metadata to the
   // optimization guide. For testing purposes only. This will flush any
@@ -261,7 +262,7 @@ class OptimizationGuideKeyedService
   // testing purposes only.
   void OverrideTargetModelForTesting(
       optimization_guide::proto::OptimizationTarget optimization_target,
-      std::optional<optimization_guide::ModelInfo> model_info);
+      std::optional<optimization_guide::ModelInfo> model_info) override;
 
   void SetModelQualityLogsUploaderServiceForTesting(
       std::unique_ptr<optimization_guide::ModelQualityLogsUploaderService>
@@ -363,8 +364,7 @@ class OptimizationGuideKeyedService
   // optimization_guide::NewOptimizationGuideDecider implementation:
   void CanApplyOptimizationOnDemand(
       const std::vector<GURL>& urls,
-      const base::flat_set<optimization_guide::proto::OptimizationType>&
-          optimization_types,
+      optimization_guide::OptimizationTypeSet optimization_types,
       optimization_guide::proto::RequestContext request_context,
       optimization_guide::OnDemandOptimizationGuideDecisionRepeatingCallback
           callback,
@@ -372,12 +372,6 @@ class OptimizationGuideKeyedService
           request_context_metadata = std::nullopt) override;
 
   bool ComponentUpdatesEnabledProvider() const;
-
-  // Records synthetic field trial for `feature` with trial name appended with
-  // `feature_name`.
-  void RecordModelExecutionFeatureSyntheticFieldTrial(
-      optimization_guide::UserVisibleFeatureKey feature,
-      std::string_view feature_name);
 
   raw_ptr<content::BrowserContext> browser_context_;
 

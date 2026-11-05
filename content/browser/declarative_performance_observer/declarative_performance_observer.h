@@ -6,7 +6,10 @@
 #define CONTENT_BROWSER_DECLARATIVE_PERFORMANCE_OBSERVER_DECLARATIVE_PERFORMANCE_OBSERVER_H_
 
 #include <optional>
+#include <string>
 
+#include "base/containers/enum_set.h"
+#include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -20,6 +23,7 @@
 #include "services/network/public/mojom/declarative_performance_observer.mojom.h"
 #include "third_party/blink/public/mojom/timing/declarative_performance_observer.mojom.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace content {
 
@@ -63,6 +67,17 @@ class CONTENT_EXPORT DeclarativePerformanceObserver
                                            StoragePartition* partition,
                                            int net_error);
 
+  // Queues and dispatches a single-session report using a transient reporting
+  // source when a primary main-frame navigation with cryptographic non-opaque
+  // commit `origin` is aborted after receiving response headers and before
+  // committing a document.
+  static void FlushAbortedPostHeaderNavigation(
+      NavigationHandle* handle,
+      const url::Origin& origin,
+      StoragePartition* partition,
+      const std::optional<base::flat_map<std::string, std::string>>&
+          reporting_endpoints);
+
   static void Bind(
       RenderFrameHost* rfh,
       mojo::PendingReceiver<blink::mojom::DeclarativePerformanceObserverHost>
@@ -85,6 +100,11 @@ class CONTENT_EXPORT DeclarativePerformanceObserver
           receiver);
 
   StoragePartition* GetStoragePartition() const;
+  // Queues `body` as a `performance-observer` report for `url` under
+  // `reporting_source_` and immediately triggers `SendReportsForSource()` so
+  // each report is dispatched without waiting for the periodic Reporting API
+  // delivery timer or being batched with subsequent lifecycle flushes.
+  void QueueAndSendReport(const GURL& url, base::DictValue body);
   void AddEntryToBuffer(base::DictValue entry);
   void FlushMetrics();
   void AppendSessionEndEntry();
@@ -92,7 +112,7 @@ class CONTENT_EXPORT DeclarativePerformanceObserver
   void OnEarlyFailureReportsTaken(base::ListValue reports);
 
   std::string reporting_endpoint_;
-  base::flat_set<network::mojom::PerformanceEntryType> enabled_types_;
+  base::EnumSet<network::mojom::PerformanceEntryType> enabled_types_;
   std::optional<base::flat_set<std::string>> include_user_timing_;
 
   static constexpr size_t kMaxDocumentBufferBytes = 640 * 1024;

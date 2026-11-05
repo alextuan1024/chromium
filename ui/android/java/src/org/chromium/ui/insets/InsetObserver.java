@@ -16,6 +16,7 @@ import static androidx.core.view.WindowInsetsCompat.Type.tappableElement;
 
 import android.content.Context;
 import android.graphics.Rect;
+import android.os.Build;
 import android.view.View;
 
 import androidx.annotation.IntDef;
@@ -40,6 +41,7 @@ import org.chromium.base.ui.KeyboardUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.base.ImmutableWeakReference;
+import org.chromium.ui.base.UiAndroidFeatureList;
 import org.chromium.ui.insets.InsetObserver.WindowInsetsConsumer.InsetConsumerSource;
 
 import java.lang.annotation.Retention;
@@ -60,6 +62,8 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
     protected final ObserverList<WindowInsetObserver> mObservers;
     private final SettableNonNullObservableSupplier<Integer> mKeyboardInsetSupplier =
             ObservableSuppliers.createNonNull(0);
+    private final SettableNonNullObservableSupplier<Boolean> mImeVisibilitySupplier =
+            ObservableSuppliers.createNonNull(false);
     private final WindowInsetsAnimationCompat.Callback mWindowInsetsAnimationProxyCallback;
     private final ObserverList<WindowInsetsAnimationListener> mWindowInsetsAnimationListeners =
             new ObserverList<>();
@@ -68,8 +72,8 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
 
     private final ImmutableWeakReference<View> mRootViewReference;
     private final ImmutableWeakReference<Context> mContextReference;
-    // Insets to be added to the current safe area.
-    private int mBottomInsetsForEdgeToEdge;
+    // Total unpadded edge-to-edge safe area insets from each window edge.
+    private Insets mSafeAreaInsetsForEdgeToEdge = Insets.NONE;
     private final Rect mDisplayCutoutRect;
 
     private final boolean mEnableKeyboardOverlayMode;
@@ -81,6 +85,10 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
 
     // Cached state
     private @Nullable WindowInsetsCompat mLastSeenRawWindowInset;
+    // The last raw insets after status bar preservation was applied (see
+    // #onApplyWindowInsets). These are the insets forwarded to consumers and used for the safe
+    // area.
+    private @Nullable WindowInsetsCompat mLastAdjustedWindowInsets;
     private static @Nullable WindowInsetsCompat sInitialRawWindowInsetsForTesting;
 
     // Edge-to-edge investigations
@@ -95,6 +103,11 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
     // Set to true when navbar insets are missing for the first time after non-zero navbar insets
     // were seen, indicating a regression in navbar insets being provided.
     private boolean mObservedNonZeroNavBarRegression;
+
+    // Whether the status bar was visible when the window last had focus. Used to ignore transient
+    // status bar hiding caused by translucent overlay activities (e.g. Samsung's ChooserActivity)
+    // taking window focus and hiding statusBars while Chrome remains visible underneath.
+    private boolean mStatusBarsVisibleWhenFocused = true;
 
     /** Allows observing changes to the window insets from Android system UI. */
     public interface WindowInsetObserver {
@@ -246,8 +259,8 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
      * @param contextWeakRef A weak reference to the context.
      * @param enableKeyboardOverlayMode Whether the keyboard can be considered to be in "overlay"
      *     mode, where its inset shouldn't affect the size of the viewport.
-     * @param enableExtraEdgeToEdgeLogging Whether extra logs should be emitted related to
-           insets and edge-to-edge state.
+     * @param enableExtraEdgeToEdgeLogging Whether extra logs should be emitted related to insets
+     *     and edge-to-edge state.
      */
     public InsetObserver(
             ImmutableWeakReference<View> rootViewWeakRef,
@@ -317,6 +330,12 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
         } else if (sInitialRawWindowInsetsForTesting != null) {
             mLastSeenRawWindowInset = sInitialRawWindowInsetsForTesting;
         }
+        mLastAdjustedWindowInsets = mLastSeenRawWindowInset;
+        WindowInsetsCompat initialRawInsets = mLastSeenRawWindowInset;
+        if (initialRawInsets != null) {
+            updateKeyboardInset();
+            mImeVisibilitySupplier.set(initialRawInsets.isVisible(WindowInsetsCompat.Type.ime()));
+        }
         ViewCompat.setWindowInsetsAnimationCallback(rootView, mWindowInsetsAnimationProxyCallback);
         ViewCompat.setOnApplyWindowInsetsListener(rootView, this);
     }
@@ -327,6 +346,11 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
      */
     public NonNullObservableSupplier<Integer> getSupplierForKeyboardInset() {
         return mKeyboardInsetSupplier;
+    }
+
+    /** Returns a supplier providing changes to whether the raw IME is visible on screen. */
+    public NonNullObservableSupplier<Boolean> getSupplierForImeVisibility() {
+        return mImeVisibilitySupplier;
     }
 
     /**
@@ -542,6 +566,27 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
         Log.i(TAG, "-----");
     }
 
+    /**
+     * Returns whether the status bars are hidden, i.e. they have no visible insets but would have
+     * non-zero insets if shown. Always false below R, where status bar visibility is not reliably
+     * reported.
+     */
+    private static boolean areStatusBarsHidden(WindowInsetsCompat insets) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false;
+        Insets statusBarInsetsIgnoringVisibility = insets.getInsetsIgnoringVisibility(statusBars());
+        return Insets.NONE.equals(insets.getInsets(statusBars()))
+                && statusBarInsetsIgnoringVisibility != null
+                && !Insets.NONE.equals(statusBarInsetsIgnoringVisibility);
+    }
+
+    /** Returns a copy of {@code insets} with the status bars marked visible at full size. */
+    private static WindowInsetsCompat withStatusBarsVisible(WindowInsetsCompat insets) {
+        return new WindowInsetsCompat.Builder(insets)
+                .setInsets(statusBars(), insets.getInsetsIgnoringVisibility(statusBars()))
+                .setVisible(statusBars(), /* visible= */ true)
+                .build();
+    }
+
     @Override
     public WindowInsetsCompat onApplyWindowInsets(View view, WindowInsetsCompat insets) {
         mLastSeenRawWindowInset = insets;
@@ -550,9 +595,22 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
 
         verifyInsetsForEdgeToEdge(insets);
 
+        // A translucent overlay activity (e.g. Samsung's ChooserActivity) can take window focus and
+        // hide the status bars while Chrome is still visible underneath. Keep the status bars
+        // visible for Chrome's layout unless they were already hidden while Chrome had focus
+        // (e.g. fullscreen).
+        boolean statusBarsHidden = areStatusBarsHidden(insets);
+        if (view.hasWindowFocus() || !statusBarsHidden) {
+            mStatusBarsVisibleWhenFocused = !statusBarsHidden;
+        } else if (mStatusBarsVisibleWhenFocused
+                && UiAndroidFeatureList.sAndroidPreserveStatusBarInsetsWhenUnfocused.isEnabled()) {
+            insets = withStatusBarsVisible(insets);
+        }
+        mLastAdjustedWindowInsets = insets;
+
         updateDisplayCutoutRect(insets);
+        boolean isImeVisible = insets.isVisible(WindowInsetsCompat.Type.ime());
         insets = forwardToInsetConsumers(insets);
-        updateKeyboardInset();
 
         Insets systemInsets = insets.getInsets(WindowInsetsCompat.Type.systemBars());
         onInsetChanged(
@@ -566,6 +624,17 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
         insets =
                 WindowInsetsCompat.toWindowInsetsCompat(
                         view.onApplyWindowInsets(insets.toWindowInsets()));
+        // Clear IME visibility before updating the keyboard inset so observers notified when
+        // the inset drops to 0 already see the IME as hidden (avoiding an intermediate
+        // obscuring=false, visible=true transition). When showing, update the inset first so
+        // obscuring and visibility changes fire together.
+        if (!isImeVisible) {
+            mImeVisibilitySupplier.set(false);
+        }
+        updateKeyboardInset();
+        if (isImeVisible) {
+            mImeVisibilitySupplier.set(true);
+        }
         return insets;
     }
 
@@ -636,26 +705,40 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
     /** Get the safe area from the WindowInsets, store it and notify any observers. */
     private void updateCurrentSafeArea() {
         // When display cutout already included in the system bar insets, do not consider it as safe
-        // area.
+        // area. Use the adjusted insets so that status bars hidden by an overlay activity while
+        // Chrome is unfocused are still considered to cover the display cutout.
         Insets extraInsets = Insets.NONE;
         Context context = mContextReference.get();
-        if (getLastRawWindowInsets() != null && context != null) {
+        WindowInsetsCompat insets = mLastAdjustedWindowInsets;
+        if (insets != null && context != null) {
             boolean shouldPadDisplayCutout =
-                    WindowInsetsUtils.shouldPadDisplayCutout(getLastRawWindowInsets(), context);
+                    WindowInsetsUtils.shouldPadDisplayCutout(insets, context);
+            // When display cutout is not padded, only the unconsumed portion of systemBars()
+            // pads the content view away from the cutout; subtract mSafeAreaInsetsForEdgeToEdge
+            // so cutouts deeper than the consumed system bar are not under-reported.
             extraInsets =
-                    getLastRawWindowInsets()
-                            .getInsets(
-                                    shouldPadDisplayCutout
-                                            ? systemBars() + displayCutout()
-                                            : systemBars());
+                    shouldPadDisplayCutout
+                            ? insets.getInsets(systemBars() + displayCutout())
+                            : Insets.max(
+                                    Insets.subtract(
+                                            insets.getInsets(systemBars()),
+                                            mSafeAreaInsetsForEdgeToEdge),
+                                    Insets.NONE);
         }
         Rect newSafeArea =
                 new Rect(
-                        Math.max(0, mDisplayCutoutRect.left - extraInsets.left),
-                        Math.max(0, mDisplayCutoutRect.top - extraInsets.top),
-                        Math.max(0, mDisplayCutoutRect.right - extraInsets.right),
-                        Math.max(0, mDisplayCutoutRect.bottom - extraInsets.bottom));
-        newSafeArea.bottom += mBottomInsetsForEdgeToEdge;
+                        Math.max(
+                                mDisplayCutoutRect.left - extraInsets.left,
+                                mSafeAreaInsetsForEdgeToEdge.left),
+                        Math.max(
+                                mDisplayCutoutRect.top - extraInsets.top,
+                                mSafeAreaInsetsForEdgeToEdge.top),
+                        Math.max(
+                                mDisplayCutoutRect.right - extraInsets.right,
+                                mSafeAreaInsetsForEdgeToEdge.right),
+                        Math.max(
+                                mDisplayCutoutRect.bottom - extraInsets.bottom,
+                                mSafeAreaInsetsForEdgeToEdge.bottom));
         // If the safe area has not changed then we should stop now.
         if (newSafeArea.equals(mCurrentSafeArea)) {
             return;
@@ -704,14 +787,16 @@ public class InsetObserver implements OnApplyWindowInsetsListener {
     }
 
     /**
-     * @param bottomInset The bottom system insets tracked in edge to edge.
+     * Updates the safe area insets tracked in edge-to-edge (the total unpadded obstruction from
+     * each window edge).
+     *
+     * @param insets Non-negative safe area insets from each window edge.
      */
-    public void updateBottomInsetForEdgeToEdge(int bottomInset) {
-        // When updating toEdge with bottom insets, meaning we should update the safe area
-        // accordingly.
-        if (mBottomInsetsForEdgeToEdge == bottomInset) return;
+    public void updateSafeAreaInsetsForEdgeToEdge(Insets insets) {
+        assert insets.left >= 0 && insets.top >= 0 && insets.right >= 0 && insets.bottom >= 0;
+        if (mSafeAreaInsetsForEdgeToEdge.equals(insets)) return;
 
-        mBottomInsetsForEdgeToEdge = bottomInset;
+        mSafeAreaInsetsForEdgeToEdge = insets;
         updateCurrentSafeArea();
     }
 

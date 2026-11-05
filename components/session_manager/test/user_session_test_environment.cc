@@ -17,16 +17,26 @@
 
 namespace ash::test {
 
-UserSessionTestEnvironment::UserSessionTestEnvironment(PrefService* local_state)
-    : user_manager_(std::make_unique<user_manager::UserManagerImpl>(
+UserSessionTestEnvironment::UserSessionTestEnvironment(
+    PrefService* local_state,
+    std::unique_ptr<Delegate> delegate)
+    : delegate_(std::move(delegate)),
+      user_manager_(std::make_unique<user_manager::UserManagerImpl>(
           std::make_unique<user_manager::FakeUserManagerDelegate>(),
           local_state)),
       session_manager_(std::make_unique<session_manager::SessionManager>(
           std::make_unique<session_manager::FakeSessionManagerDelegate>())) {
   session_manager_->OnUserManagerCreated(user_manager_.Get());
+  if (delegate_) {
+    delegate_->CreateProfileManager();
+  }
 }
 
-UserSessionTestEnvironment::~UserSessionTestEnvironment() = default;
+UserSessionTestEnvironment::~UserSessionTestEnvironment() {
+  if (delegate_) {
+    delegate_->DestroyProfileManager();
+  }
+}
 
 void UserSessionTestEnvironment::RegisterLocalStatePrefs(
     PrefRegistrySimple* registry) {
@@ -85,6 +95,9 @@ void UserSessionTestEnvironment::LogIn(const AccountId& account_id,
       account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id),
       new_user,
       /*has_active_session=*/false);
+  if (delegate_) {
+    delegate_->CreateProfile(account_id);
+  }
   session_manager_->SessionStarted();
 }
 

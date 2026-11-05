@@ -12,6 +12,7 @@
 namespace trusted_vault {
 
 enum class LocalRecoveryFactorType;
+enum class TrustedVaultKeyRotationStatus;
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -19,7 +20,8 @@ enum class LocalRecoveryFactorType;
 enum class TrustedVaultHintDegradedRecoverabilityChangedReasonForUMA {
   kRecoveryMethodAdded = 0,
   kPersistentAuthErrorResolved = 1,
-  kMaxValue = kPersistentAuthErrorResolved,
+  kEnrolled = 2,
+  kMaxValue = kEnrolled,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/trusted_vault/enums.xml:TrustedVaultHintDegradedRecoverabilityChangedReason)
 
@@ -68,7 +70,9 @@ enum class TrustedVaultURLFetchReasonForUMA {
   kDownloadAuthenticationFactorsRegistrationState,
   kRegisterGpmPin,
   kRegisterICloudKeychain,
+  kRegisterGaiaPassword,
   kDownloadGaiaPasswordPublicKey,
+  kDownloadRecoveryFactorsForKeyRotation,
   kRotateSharedKey,
 };
 
@@ -139,9 +143,35 @@ enum class TrustedVaultFileReadStatusForUMA {
   kFileProtoDeserializationFailed = 4,
   kDataProtoDeserializationFailed = 5,
   kSHA256DigestMismatch = 6,
-  kMaxValue = kSHA256DigestMismatch
+  kUnsupportedVersion = 7,
+  kDecryptionFailed = 8,
+  kMaxValue = kDecryptionFailed
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/trusted_vault/enums.xml:TrustedVaultFileReadStatus)
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(TrustedVaultFileWriteStatus)
+enum class TrustedVaultFileWriteStatusForUMA {
+  kSuccess = 0,
+  kEncryptionFailed = 1,
+  kFileWriteFailed = 2,
+  kMaxValue = kFileWriteFailed
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/trusted_vault/enums.xml:TrustedVaultFileWriteStatus)
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(TrustedVaultLocalDomainsMigrationStatus)
+enum class TrustedVaultLocalDomainsMigrationStatusForUMA {
+  kMigrated = 0,
+  kNoLegacyFile = 1,
+  kLegacyFileEmpty = 2,
+  kLegacyFileReadFailed = 3,
+  kNewFileWriteFailed = 4,
+  kMaxValue = kNewFileWriteFailed
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/trusted_vault/enums.xml:TrustedVaultLocalDomainsMigrationStatus)
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -164,10 +194,48 @@ enum class TrustedVaultRecoveryFlowEndpoint {
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/trusted_vault/enums.xml:TrustedVaultRecoveryFlowEndpoint)
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(TrustedVaultCanEnrollOutcome)
+enum class TrustedVaultCanEnrollOutcomeForUMA {
+  kEligible = 0,
+  kUnsupportedSecurityDomain = 1,
+  kNoPrimaryAccount = 2,
+  kPersistentAuthError = 3,
+  kAlreadyEnrolled = 4,
+  kNoLocalKeys = 5,
+  kNoEligibleGaiaPassword = 6,
+  kGaiaPasswordFetchFailed = 7,
+  kMaxValue = kGaiaPasswordFetchFailed,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/trusted_vault/enums.xml:TrustedVaultCanEnrollOutcome)
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(TrustedVaultEnrollOutcome)
+enum class TrustedVaultEnrollOutcomeForUMA {
+  kSuccess = 0,
+  kSuccessAfterRetry = 1,
+  kUnsupportedSecurityDomain = 2,
+  kNoPrimaryAccount = 3,
+  kPersistentAuthError = 4,
+  kAlreadyEnrolled = 5,
+  kNoLocalKeys = 6,
+  kAlreadyInProgress = 7,
+  kNoEligibleGaiaPassword = 8,
+  kGaiaPasswordFetchFailed = 9,
+  kLocalDataObsolete = 10,
+  kGaiaPasswordRegistrationFailed = 11,
+  kKeyRotationFailed = 12,
+  kMaxValue = kKeyRotationFailed,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/trusted_vault/enums.xml:TrustedVaultEnrollOutcome)
+
 void RecordTrustedVaultRecoveryFlowTriggeredEndpoint(
     TrustedVaultRecoveryFlowEndpoint endpoint);
 
 void RecordTrustedVaultHintDegradedRecoverabilityChangedReason(
+    SecurityDomainId security_domain_id,
     TrustedVaultHintDegradedRecoverabilityChangedReasonForUMA
         hint_degraded_recoverability_changed_reason);
 
@@ -182,13 +250,16 @@ void RecordTrustedVaultRecoveryFactorRegistrationOutcome(
     TrustedVaultRecoveryFactorRegistrationOutcomeForUMA registration_outcome);
 
 // Records url fetch response status (combined http and net error code) for
-// requests to security domain service. If |http_response_code| is non-zero, it
+// requests to security domain service. If |security_domain_id| is nullopt, the
+// request is generic (not tied to a specific security domain) and is recorded
+// using the "NoSecurityDomain" variant. If |http_response_code| is non-zero, it
 // will be recorded, otherwise |net_error| will be recorded. Either
 // |http_status| or |net_error| must be non zero.
-void RecordTrustedVaultURLFetchResponse(SecurityDomainId security_domain_id,
-                                        TrustedVaultURLFetchReasonForUMA reason,
-                                        int http_response_code,
-                                        int net_error);
+void RecordTrustedVaultURLFetchResponse(
+    std::optional<SecurityDomainId> security_domain_id,
+    TrustedVaultURLFetchReasonForUMA reason,
+    int http_response_code,
+    int net_error);
 
 // Records url fetch response status (combined http and net error code) for
 // requests to vault service. If |http_response_code| is non-zero, it
@@ -214,12 +285,36 @@ void RecordTrustedVaultDownloadKeysStatus(
 void RecordTrustedVaultDownloadKeysStatus(
     TrustedVaultDownloadKeysStatusForUMA status);
 
+// Records the outcome of rotating the shared key for `security_domain_id`.
+void RecordTrustedVaultKeyRotationStatus(SecurityDomainId security_domain_id,
+                                         TrustedVaultKeyRotationStatus status);
+
+// Records the outcome of checking non-interactive enrollment eligibility for
+// `security_domain_id`.
+void RecordTrustedVaultCanEnrollOutcome(
+    SecurityDomainId security_domain_id,
+    TrustedVaultCanEnrollOutcomeForUMA outcome);
+
+// Records the outcome of enrolling into `security_domain_id`.
+void RecordTrustedVaultEnrollOutcome(SecurityDomainId security_domain_id,
+                                     TrustedVaultEnrollOutcomeForUMA outcome);
+
 void RecordTrustedVaultRecoverKeysOutcome(
     SecurityDomainId security_domain_id,
     TrustedVaultRecoverKeysOutcomeForUMA status);
 
-void RecordTrustedVaultFileReadStatus(SecurityDomainId security_domain_id,
-                                      TrustedVaultFileReadStatusForUMA status);
+void RecordTrustedVaultFileReadStatusForSecurityDomain(
+    SecurityDomainId security_domain_id,
+    TrustedVaultFileReadStatusForUMA status);
+void RecordTrustedVaultFileReadStatus(TrustedVaultFileReadStatusForUMA status);
+void RecordTrustedVaultFileWriteSuccessForSecurityDomain(
+    SecurityDomainId security_domain_id,
+    bool success);
+void RecordTrustedVaultFileWriteSuccess(bool success);
+void RecordTrustedVaultFileWriteStatus(
+    TrustedVaultFileWriteStatusForUMA status);
+void RecordTrustedVaultLocalDomainsMigrationStatus(
+    TrustedVaultLocalDomainsMigrationStatusForUMA status);
 
 enum class IsOffTheRecord { kNo, kYes };
 

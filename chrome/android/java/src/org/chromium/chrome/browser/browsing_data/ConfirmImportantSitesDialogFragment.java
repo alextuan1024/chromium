@@ -6,12 +6,10 @@ package org.chromium.chrome.browser.browsing_data;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
-import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.DialogInterface;
-import android.content.Intent;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
@@ -36,7 +34,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.profiles.ProfileManager;
+import org.chromium.chrome.browser.settings.ProfileDependentSetting;
 import org.chromium.chrome.browser.ui.favicon.FaviconUtils;
 import org.chromium.chrome.browser.webapps.WebappRegistry;
 import org.chromium.components.browser_ui.util.ConversionUtils;
@@ -55,12 +53,13 @@ import java.util.Set;
 
 /**
  * Modal dialog that shows a list of important domains to the user which they can uncheck. Used to
- * allow the user to exclude domains from being cleared by the clear browsing data function.
- * We use proper bundle construction (through the {@link #newInstance(String[], int[], String[])}
- * method) and onActivityResult return conventions.
+ * allow the user to exclude domains from being cleared by the clear browsing data function. We use
+ * proper bundle construction (through the {@link #newInstance(String[], String[])} method), and
+ * report the user's confirmation as a fragment result under {@link #REQUEST_KEY}.
  */
 @NullMarked
-public class ConfirmImportantSitesDialogFragment extends DialogFragment {
+public class ConfirmImportantSitesDialogFragment extends DialogFragment
+        implements ProfileDependentSetting {
     private class ClearBrowsingDataAdapter extends ArrayAdapter<String>
             implements AdapterView.OnItemClickListener {
         private final String[] mDomains;
@@ -160,20 +159,17 @@ public class ConfirmImportantSitesDialogFragment extends DialogFragment {
 
     /**
      * Constructs a new instance of the important sites dialog fragment.
+     *
      * @param importantDomains The list of important domains to display.
-     * @param importantDomainReasons The reasons for choosing each important domain.
      * @param faviconURLs The list of favicon urls that correspond to each importantDomains.
      * @return An instance of ConfirmImportantSitesDialogFragment with the bundle arguments set.
      */
     public static ConfirmImportantSitesDialogFragment newInstance(
-            String @Nullable [] importantDomains,
-            int @Nullable [] importantDomainReasons,
-            String @Nullable [] faviconURLs) {
+            String @Nullable [] importantDomains, String @Nullable [] faviconURLs) {
         ConfirmImportantSitesDialogFragment dialogFragment =
                 new ConfirmImportantSitesDialogFragment();
         Bundle bundle = new Bundle();
         bundle.putStringArray(IMPORTANT_DOMAINS_TAG, importantDomains);
-        bundle.putIntArray(IMPORTANT_DOMAIN_REASONS_TAG, importantDomainReasons);
         bundle.putStringArray(FAVICON_URLS_TAG, faviconURLs);
         dialogFragment.setArguments(bundle);
         return dialogFragment;
@@ -184,6 +180,13 @@ public class ConfirmImportantSitesDialogFragment extends DialogFragment {
 
     /** The tag used when showing the clear browsing fragment. */
     public static final String FRAGMENT_TAG = "ConfirmImportantSitesDialogFragment";
+
+    /**
+     * The key under which the user's confirmation is posted as a fragment result to the {@link
+     * androidx.fragment.app.FragmentManager} showing this dialog. The result holds {@link
+     * #DESELECTED_DOMAINS_TAG} and {@link #IGNORED_DOMAINS_TAG}. Nothing is posted on cancel.
+     */
+    public static final String REQUEST_KEY = "ConfirmImportantSitesDialogFragment.RequestKey";
 
     /** The tag for the string array of deselected domains. These are meant to NOT be cleared. */
     public static final String DESELECTED_DOMAINS_TAG = "DeselectedDomains";
@@ -197,17 +200,11 @@ public class ConfirmImportantSitesDialogFragment extends DialogFragment {
     /** The tag used to store the important domains in the bundle. */
     private static final String IMPORTANT_DOMAINS_TAG = "ImportantDomains";
 
-    /** The tag used to store the important domain reasons in the bundle. */
-    private static final String IMPORTANT_DOMAIN_REASONS_TAG = "ImportantDomainReasons";
-
     /** The tag used to store the favicon urls corresponding to each important domain. */
     private static final String FAVICON_URLS_TAG = "FaviconURLs";
 
     /** Array of important registerable domains we're showing to the user. */
     private String[] mImportantDomains;
-
-    /** Map of the reasons the above important domains were chosen. */
-    private final Map<String, Integer> mImportantDomainsReasons;
 
     /** Array of favicon urls to use for each important domain above. */
     private String @Nullable [] mFaviconURLs;
@@ -229,8 +226,12 @@ public class ConfirmImportantSitesDialogFragment extends DialogFragment {
     private @Nullable ListView mSitesListView;
 
     public ConfirmImportantSitesDialogFragment() {
-        mImportantDomainsReasons = new HashMap<>();
         mCheckedState = new HashMap<>();
+    }
+
+    @Override
+    public void setProfile(Profile profile) {
+        mProfile = profile;
     }
 
     @Initializer
@@ -240,10 +241,7 @@ public class ConfirmImportantSitesDialogFragment extends DialogFragment {
         super.setArguments(args);
         mImportantDomains = assumeNonNull(args.getStringArray(IMPORTANT_DOMAINS_TAG));
         mFaviconURLs = args.getStringArray(FAVICON_URLS_TAG);
-        int[] importantDomainReasons = args.getIntArray(IMPORTANT_DOMAIN_REASONS_TAG);
         for (int i = 0; i < mImportantDomains.length; ++i) {
-            assert importantDomainReasons != null;
-            mImportantDomainsReasons.put(mImportantDomains[i], importantDomainReasons[i]);
             mCheckedState.put(mImportantDomains[i], true);
         }
     }
@@ -283,48 +281,44 @@ public class ConfirmImportantSitesDialogFragment extends DialogFragment {
             mImportantDomains = new String[0];
             mFaviconURLs = new String[0];
             dismiss();
+        } else {
+            assert mProfile != null;
+            mLargeIconBridge = new LargeIconBridge(mProfile);
+            ActivityManager activityManager =
+                    ((ActivityManager)
+                            ContextUtils.getApplicationContext()
+                                    .getSystemService(Context.ACTIVITY_SERVICE));
+            int maxSize =
+                    Math.min(
+                            activityManager.getMemoryClass()
+                                    / 16
+                                    * 25
+                                    * ConversionUtils.BYTES_PER_KILOBYTE,
+                            FAVICON_MAX_CACHE_SIZE_BYTES);
+            mLargeIconBridge.createCache(maxSize);
         }
-        mProfile = ProfileManager.getLastUsedRegularProfile();
-        mLargeIconBridge = new LargeIconBridge(mProfile);
-        ActivityManager activityManager =
-                ((ActivityManager)
-                        ContextUtils.getApplicationContext()
-                                .getSystemService(Context.ACTIVITY_SERVICE));
-        int maxSize =
-                Math.min(
-                        activityManager.getMemoryClass()
-                                / 16
-                                * 25
-                                * ConversionUtils.BYTES_PER_KILOBYTE,
-                        FAVICON_MAX_CACHE_SIZE_BYTES);
-        mLargeIconBridge.createCache(maxSize);
 
         mAdapter = new ClearBrowsingDataAdapter(mImportantDomains, mFaviconURLs, getResources());
         DialogInterface.OnClickListener listener =
                 (DialogInterface _, int which) -> {
-                    if (which == AlertDialog.BUTTON_POSITIVE) {
-                        Intent data = new Intent();
-                        List<String> deselectedDomains = new ArrayList<>();
-                        List<String> ignoredDomains = new ArrayList<>();
-                        for (Entry<String, Boolean> entry : mCheckedState.entrySet()) {
-                            if (entry.getValue()) {
-                                ignoredDomains.add(entry.getKey());
-                            } else {
-                                deselectedDomains.add(entry.getKey());
-                            }
+                    // Cancelling deletes nothing, so only a confirmation is reported.
+                    if (which != AlertDialog.BUTTON_POSITIVE) return;
+
+                    List<String> deselectedDomains = new ArrayList<>();
+                    List<String> ignoredDomains = new ArrayList<>();
+                    for (Entry<String, Boolean> entry : mCheckedState.entrySet()) {
+                        if (entry.getValue()) {
+                            ignoredDomains.add(entry.getKey());
+                        } else {
+                            deselectedDomains.add(entry.getKey());
                         }
-                        data.putExtra(
-                                DESELECTED_DOMAINS_TAG, deselectedDomains.toArray(new String[0]));
-                        data.putExtra(IGNORED_DOMAINS_TAG, ignoredDomains.toArray(new String[0]));
-                        assumeNonNull(getTargetFragment())
-                                .onActivityResult(getTargetRequestCode(), Activity.RESULT_OK, data);
-                    } else {
-                        assumeNonNull(getTargetFragment())
-                                .onActivityResult(
-                                        getTargetRequestCode(),
-                                        Activity.RESULT_CANCELED,
-                                        getActivity().getIntent());
                     }
+                    Bundle result = new Bundle();
+                    result.putStringArray(
+                            DESELECTED_DOMAINS_TAG, deselectedDomains.toArray(new String[0]));
+                    result.putStringArray(
+                            IGNORED_DOMAINS_TAG, ignoredDomains.toArray(new String[0]));
+                    getParentFragmentManager().setFragmentResult(REQUEST_KEY, result);
                 };
 
         Set<String> originsWithApps = WebappRegistry.getInstance().getOriginsWithInstalledApp();

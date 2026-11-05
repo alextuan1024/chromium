@@ -4,33 +4,40 @@
 
 #ifndef IOS_CHROME_BROWSER_NTP_UI_BUNDLED_NEW_TAB_PAGE_QUICK_ACTIONS_VIEW_CONTROLLER_H_
 #define IOS_CHROME_BROWSER_NTP_UI_BUNDLED_NEW_TAB_PAGE_QUICK_ACTIONS_VIEW_CONTROLLER_H_
+
 #import <UIKit/UIKit.h>
 
 @class LayoutGuideCenter;
 @protocol NewTabPageShortcutsHandler;
 
 // The user interface for the quick actions on NTP, displayed just below the
-// header view, for certain variations when MIA takes over the available
-// fakebox real estate
+// NTP omnibox if eligible.
 @interface NewTabPageQuickActionsViewController : UIViewController
-
-// The button to open a new incognito tab.
-@property(nonatomic, readonly) UIButton* incognitoButton;
-
-// The button to open Lens.
-@property(nonatomic, readonly) UIButton* lensButton;
-
-// The button to open voice search.
-@property(nonatomic, readonly) UIButton* voiceSearchButton;
-
-// The button to open AIM.
-@property(nonatomic, readonly) UIButton* aimButton;
 
 // The layout guide center for referencing views.
 @property(nonatomic, weak) LayoutGuideCenter* layoutGuideCenter;
 
 // Handles the actions for the NTP shortcuts, like Lens or voice search.
 @property(nonatomic, weak) id<NewTabPageShortcutsHandler> NTPShortcutsHandler;
+
+- (instancetype)init NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)initWithNibName:(NSString*)name
+                         bundle:(NSBundle*)bundle NS_UNAVAILABLE;
+- (instancetype)initWithCoder:(NSCoder*)coder NS_UNAVAILABLE;
+
+// Sets icon, title, and accessibility label for the AIM button.
+- (void)setAIMTitle:(NSString*)title
+                  icon:(UIImage*)icon
+    accessibilityLabel:(NSString*)accessibilityLabel;
+
+// Sets whether AIM image generation and attaching images are allowed.
+- (void)setAIMImageGenerationAllowed:(BOOL)imageGenerationAllowed
+                 attachImagesAllowed:(BOOL)attachmentsAllowed;
+
+// Sets whether incognito mode is allowed (e.g. not disabled by enterprise
+// policy or parental controls).
+- (void)setIncognitoAllowed:(BOOL)allowed;
 
 @end
 

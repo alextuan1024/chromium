@@ -32,6 +32,7 @@ import org.chromium.chrome.browser.app.usb.UsbNotificationService;
 import org.chromium.chrome.browser.bluetooth.BluetoothNotificationManager;
 import org.chromium.chrome.browser.display_cutout.DisplayCutoutTabHelper;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherImpl;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.media.MediaCaptureNotificationServiceImpl;
 import org.chromium.chrome.browser.pdf.PdfUtils;
 import org.chromium.chrome.browser.policy.PolicyAuditor;
@@ -63,13 +64,12 @@ public class TabWebContentsObserver extends TabWebContentsUserData {
     private final TabImpl mTab;
     private final ObserverList<Callback<WebContents>> mInitObservers = new ObserverList<>();
     private @Nullable Observer mObserver;
-    private @Nullable GURL mLastUrl;
+    private @Nullable GURL mLastCommittedUrl;
 
     public static TabWebContentsObserver from(Tab tab) {
         TabWebContentsObserver observer = get(tab);
         if (observer == null) {
-            observer = new TabWebContentsObserver(tab);
-            tab.getUserDataHost().setUserData(USER_DATA_KEY, observer);
+            observer = attachToTab(USER_DATA_KEY, new TabWebContentsObserver(tab));
         }
         return observer;
     }
@@ -85,10 +85,12 @@ public class TabWebContentsObserver extends TabWebContentsUserData {
     }
 
     /**
-     * Adds an observer triggered when |initWebContents| is invoked.
-     * <p>A newly created tab adding this observer misses the event because
-     * |TabObserver.onContentChanged| -&gt; |TabWebContentsObserver.initWebContents|
-     * occurs before the observer is added. Manually trigger it here.
+     * Adds an observer triggered when {@code initWebContents} is invoked.
+     *
+     * <p>A newly created tab adding this observer misses the event because {@code
+     * TabObserver.onContentChanged} -&gt; {@code TabWebContentsObserver.initWebContents} occurs
+     * before the observer is added. Manually trigger it here.
+     *
      * @param observer Observer to add.
      */
     public void addInitWebContentsObserver(Callback<WebContents> observer) {
@@ -116,6 +118,14 @@ public class TabWebContentsObserver extends TabWebContentsUserData {
 
     @Override
     public void cleanupWebContents(WebContents webContents) {
+        // Destroying the tab will destroy the webContents - don't unregister
+        // the observer before that happens as we need to continue observing
+        // events until the webContents is destroyed (eg page loads failing).
+        if (mTab.isDestroyed()) return;
+        stopObservingWebContents();
+    }
+
+    public void stopObservingWebContents() {
         if (mObserver != null) {
             mObserver.updateNotificationsForTab();
             mObserver.observe(null);
@@ -324,9 +334,22 @@ public class TabWebContentsObserver extends TabWebContentsUserData {
             if (navigation.errorCode() != NetError.OK) {
                 mTab.didFailPageLoad(navigation.errorCode());
             }
-            mLastUrl = navigation.getUrl();
-
-            if (!navigation.hasCommitted()) return;
+            if (navigation.hasCommitted()) {
+                // Only committed documents can hold device access, so only they may be named in
+                // the device-usage notifications sent from updateNotificationsForTab().
+                mLastCommittedUrl = navigation.getUrl();
+            } else {
+                // A navigation that started but never committed (e.g. a same-document
+                // traversal cancelled from the Navigation API's 'navigate' event) must
+                // still tell observers the navigation is over. Otherwise
+                // LocationBarModel's same-document debounce stays latched and silently
+                // drops later URL and security state updates.
+                observers.rewind();
+                while (observers.hasNext()) {
+                    observers.next().onDidFinishNavigationEnd();
+                }
+                return;
+            }
 
             mTab.updateTitle();
             mTab.handleDidFinishNavigation(
@@ -339,9 +362,11 @@ public class TabWebContentsObserver extends TabWebContentsUserData {
 
             // TODO(crbug.com/40264745) remove this call. onUrlUpdated should have been called
             // by NotifyNavigationStateChanged, which is always called before didFinishNavigation
-            observers.rewind();
-            while (observers.hasNext()) {
-                observers.next().onUrlUpdated(mTab);
+            if (!ChromeFeatureList.sSkipDuplicateOnUrlUpdated.isEnabled()) {
+                observers.rewind();
+                while (observers.hasNext()) {
+                    observers.next().onUrlUpdated(mTab);
+                }
             }
 
             // Stop swipe-to-refresh animation.
@@ -396,6 +421,7 @@ public class TabWebContentsObserver extends TabWebContentsUserData {
 
         @Override
         public void viewportFitChanged(@WebContentsObserver.ViewportFitType int value) {
+            if (mTab.isDestroyed()) return;
             DisplayCutoutTabHelper.from(mTab).setViewportFit(value);
             DisplayCutoutTabHelper.from(mTab).setSafeAreaConstraint(value == ViewportFit.CONTAIN);
         }
@@ -418,29 +444,29 @@ public class TabWebContentsObserver extends TabWebContentsUserData {
         }
 
         void updateNotificationsForTab() {
-            assumeNonNull(mLastUrl);
+            assumeNonNull(mLastCommittedUrl);
             MediaCaptureNotificationServiceImpl.updateMediaNotificationForTab(
-                    ContextUtils.getApplicationContext(), mTab.getId(), null, mLastUrl);
+                    ContextUtils.getApplicationContext(), mTab.getId(), null, mLastCommittedUrl);
             BluetoothNotificationManager.updateBluetoothNotificationForTab(
                     ContextUtils.getApplicationContext(),
                     BluetoothNotificationService.class,
                     mTab.getId(),
                     null,
-                    mLastUrl,
+                    mLastCommittedUrl,
                     mTab.isIncognito());
             UsbNotificationManager.updateUsbNotificationForTab(
                     ContextUtils.getApplicationContext(),
                     UsbNotificationService.class,
                     mTab.getId(),
                     null,
-                    mLastUrl,
+                    mLastCommittedUrl,
                     mTab.isIncognito());
             SerialNotificationManager.updateSerialNotificationForTab(
                     ContextUtils.getApplicationContext(),
                     SerialNotificationService.class,
                     mTab.getId(),
                     null,
-                    mLastUrl,
+                    mLastCommittedUrl,
                     mTab.isIncognito());
         }
     }

@@ -26,6 +26,7 @@
 
 #include "third_party/blink/renderer/core/page/drag_controller.h"
 
+#include <cmath>
 #include <memory>
 
 #include "base/memory/scoped_refptr.h"
@@ -108,7 +109,6 @@ using ui::mojom::blink::DragOperation;
 namespace {
 
 constexpr int kMaxOriginalImageArea = 1500 * 1500;
-constexpr int kLinkDragBorderInset = 2;
 #if BUILDFLAG(IS_ANDROID)
 // Android handles drag image transparency at the browser level
 constexpr float kDragImageAlpha = 1.00f;
@@ -988,7 +988,7 @@ Node* DragController::DraggableNode(const LocalFrame* src,
       return nullptr;
     }
     if (node->IsElementNode()) {
-      const EUserDrag drag_mode = layout_object->StyleRef().UserDrag();
+      const EUserDrag drag_mode = layout_object->Style().UserDrag();
       if (drag_mode == EUserDrag::kNone) {
         continue;
       }
@@ -1139,10 +1139,8 @@ std::unique_ptr<DragImage> DragImageForImage(
   }
 
   InterpolationQuality interpolation_quality = GetDefaultInterpolationQuality();
-  if (layout_image->StyleRef().ImageRendering() ==
-          EImageRendering::kPixelated ||
-      layout_image->StyleRef().ImageRendering() ==
-          EImageRendering::kCrispEdges) {
+  if (layout_image->Style().ImageRendering() == EImageRendering::kPixelated ||
+      layout_image->Style().ImageRendering() == EImageRendering::kCrispEdges) {
     interpolation_quality = kInterpolationNone;
   }
 
@@ -1192,15 +1190,23 @@ gfx::Rect DragRectForLink(const DragImage* link_image,
   }
 
   const gfx::Size image_size = link_image->Size();
-  // Offset the image so that the cursor is horizontally centered.
-  gfx::PointF image_offset(-image_size.width() / 2.f, -kLinkDragBorderInset);
-  // |origin| is in the coordinate space of the frame's contents whereas the
-  // size of |link_image| is in physical pixels. Adjust the image offset to be
-  // scaled in the frame's contents.
+  // Offset the image so that the cursor is horizontally centered and as far
+  // below its top edge as the label padding. The image is drawn in DIPs on a
+  // canvas scaled by the device scale factor (see DragImage::Create()), so
+  // scale the inset the same way. Round it up so that it isn't smaller than
+  // the padding once the cursor offset is floored to DIPs, e.g. with a device
+  // scale factor of 1.2. This is exact only with a page scale factor of 1, see
+  // the TODO in DoSystemDrag().
+  gfx::PointF image_offset(
+      -image_size.width() / 2.f,
+      -std::ceil(DragImage::kDragLabelBorderY * device_scale_factor));
+  // |origin| is in the coordinate space of the frame's contents, which is
+  // already in physical pixels, like the size of |link_image|. Only the page
+  // scale factor needs to be undone, as DoSystemDrag() maps the origin of the
+  // drag rect, but not its size, to the viewport.
   // TODO(crbug.com/331670940): Unify this calculation with the
   // `DragImageForImage` scaling code.
-  const float scale = 1.f / (device_scale_factor * page_scale_factor);
-  image_offset.Scale(scale);
+  image_offset.Scale(1.f / page_scale_factor);
   image_offset += origin.OffsetFromOrigin();
   return gfx::Rect(gfx::ToRoundedPoint(image_offset), image_size);
 }
@@ -1367,12 +1373,10 @@ bool DragController::PopulateDragDataTransfer(
     return false;
   }
 
-  if (RuntimeEnabledFeatures::GenerateDragOverlayBeforeDragStartEnabled()) {
-    // Reset these variables in case the drag is canceled by means different
-    // than `DragEnded()`.
-    drag_origin_hit_test_result_ = HitTestResult();
-    drag_overlay_ = DragOverlay();
-  }
+  // Reset these variables in case the drag is canceled by means different
+  // than `DragEnded()`.
+  drag_origin_hit_test_result_ = HitTestResult();
+  drag_overlay_ = DragOverlay();
 
   const HitTestResult hit_test_result =
       src->GetEventHandler().HitTestResultAtLocation(
@@ -1411,9 +1415,7 @@ bool DragController::PopulateDragDataTransfer(
     data_transfer->WriteSelection(src->Selection());
   } else if (state.drag_type_ == kDragSourceActionImage) {
     auto* element = DynamicTo<Element>(node);
-    if (image_url.IsEmpty() || !element ||
-        (RuntimeEnabledFeatures::GenerateDragOverlayBeforeDragStartEnabled() &&
-         !CanDragImage(*element))) {
+    if (image_url.IsEmpty() || !element || !CanDragImage(*element)) {
       return false;
     }
     PrepareDataTransferForImageDrag(src, data_transfer, element, link_url,
@@ -1446,15 +1448,12 @@ bool DragController::PopulateDragDataTransfer(
   // Document goes away.
   SetExecutionContext(src->DomWindow());
 
-  if (RuntimeEnabledFeatures::GenerateDragOverlayBeforeDragStartEnabled()) {
-    drag_origin_hit_test_result_ = hit_test_result;
-    if (state.drag_type_ == kDragSourceActionLink) {
-      SelectEnclosingAnchorIfContentEditable(src);
-    }
-    drag_overlay_ =
-        DetermineDragOverlay(src, state, drag_origin_hit_test_result_,
-                             drag_origin, mouse_dragged_point);
+  drag_origin_hit_test_result_ = hit_test_result;
+  if (state.drag_type_ == kDragSourceActionLink) {
+    SelectEnclosingAnchorIfContentEditable(src);
   }
+  drag_overlay_ = DetermineDragOverlay(src, state, drag_origin_hit_test_result_,
+                                       drag_origin, mouse_dragged_point);
 
   return true;
 }
@@ -1470,53 +1469,18 @@ bool DragController::StartDrag(LocalFrame* frame,
 
   const gfx::Point mouse_dragged_point = frame->View()->ConvertFromRootFrame(
       gfx::ToFlooredPoint(drag_event.PositionInRootFrame()));
-  if (RuntimeEnabledFeatures::GenerateDragOverlayBeforeDragStartEnabled()) {
-    // `drag_origin_hit_test_result_` is set in `PopulateDragDataTransfer()`,
-    // which must be called before `StartDrag()`.
-    CHECK(drag_origin_hit_test_result_.InnerNode());
-    // The member `drag_overlay_` was created before the `dragstart` event was
-    // fired. A listener for the event could have changed the drag image on the
-    // `dataTransfer` object.
-    auto data_transfer_overlay = DragOverlayForDataTransferImage(
-        frame, state, drag_origin_hit_test_result_, drag_initiation_location,
-        mouse_dragged_point);
-    if (data_transfer_overlay.drag_image) {
-      drag_overlay_.drag_image = std::move(data_transfer_overlay.drag_image);
-      drag_overlay_.overlay_rect = data_transfer_overlay.overlay_rect;
-    }
-  } else {
-    const HitTestResult hit_test_result =
-        frame->GetEventHandler().HitTestResultAtLocation(
-            HitTestLocation(drag_initiation_location));
-    Node* hit_inner_node = hit_test_result.InnerNode();
-    if (!hit_inner_node ||
-        !state.drag_src_->IsShadowIncludingInclusiveAncestorOf(
-            *hit_inner_node)) {
-      // The original node being dragged isn't under the drag origin anymore...
-      // maybe it was hidden or moved out from under the cursor. Regardless, we
-      // don't want to start a drag on something that's not actually under the
-      // drag origin.
-      return false;
-    }
-    // Validate that the drag source has the data required to start a drag of
-    // their type.
-    if (state.drag_type_ == kDragSourceActionImage) {
-      const KURL& image_url = hit_test_result.AbsoluteImageURL();
-      auto* element = DynamicTo<Element>(state.drag_src_.Get());
-      if (image_url.IsEmpty() || !element || !CanDragImage(*element)) {
-        return false;
-      }
-    } else if (state.drag_type_ == kDragSourceActionLink) {
-      if (hit_test_result.AbsoluteLinkURL().IsEmpty()) {
-        return false;
-      }
-    }
-    if (state.drag_type_ == kDragSourceActionLink) {
-      SelectEnclosingAnchorIfContentEditable(frame);
-    }
-    drag_overlay_ =
-        DetermineDragOverlay(frame, state, hit_test_result,
-                             drag_initiation_location, mouse_dragged_point);
+  // `drag_origin_hit_test_result_` is set in `PopulateDragDataTransfer()`,
+  // which must be called before `StartDrag()`.
+  CHECK(drag_origin_hit_test_result_.InnerNode());
+  // The member `drag_overlay_` was created before the `dragstart` event was
+  // fired. A listener for the event could have changed the drag image on the
+  // `dataTransfer` object.
+  auto data_transfer_overlay = DragOverlayForDataTransferImage(
+      frame, state, drag_origin_hit_test_result_, drag_initiation_location,
+      mouse_dragged_point);
+  if (data_transfer_overlay.drag_image) {
+    drag_overlay_.drag_image = std::move(data_transfer_overlay.drag_image);
+    drag_overlay_.overlay_rect = data_transfer_overlay.overlay_rect;
   }
 
   const gfx::Point effective_drag_initiation_location =

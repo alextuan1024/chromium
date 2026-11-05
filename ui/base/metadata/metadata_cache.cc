@@ -25,13 +25,13 @@ MetaDataCache* MetaDataCache::GetInstance() {
 
 void MetaDataCache::AddClassMetaData(
     std::unique_ptr<ClassMetaData> class_data) {
-  DCHECK(!std::ranges::contains(class_data_cache_, class_data->GetUniqueName(),
-                                &ClassMetaData::GetUniqueName));
+  CHECK(!std::ranges::contains(class_data_cache_, class_data->GetUniqueName(),
+                               &ClassMetaData::GetUniqueName),
+        base::NotFatalUntil::M163);
   class_data_cache_.push_back(class_data.release());
 }
 
-std::vector<raw_ptr<ClassMetaData, VectorExperimental>>&
-MetaDataCache::GetCachedTypes() {
+std::vector<raw_ptr<ClassMetaData>>& MetaDataCache::GetCachedTypes() {
   return class_data_cache_;
 }
 

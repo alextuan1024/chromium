@@ -15,6 +15,7 @@
 #include "components/prefs/pref_change_registrar.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 class MetricsReporter;
 class OmniboxEverywhereService;
@@ -44,10 +45,11 @@ class OmniboxEverywhereHandler : public ContextualSearchboxHandler,
   ~OmniboxEverywhereHandler() override;
 
   // searchbox::mojom::PageHandler:
-  void ActivateKeyword(uint8_t line,
-                       const GURL& url,
-                       base::TimeTicks match_selection_timestamp,
-                       bool is_mouse_event) override;
+  void ActivateKeyword(
+      uint8_t line,
+      const GURL& url,
+      base::TimeTicks match_selection_timestamp,
+      searchbox::mojom::KeywordActivationMethod activation_method) override;
   void OnThumbnailRemoved() override {}
   void SubmitQuery(const std::string& query_text,
                    uint8_t mouse_button,
@@ -57,7 +59,9 @@ class OmniboxEverywhereHandler : public ContextualSearchboxHandler,
                    bool shift_key,
                    bool is_voice_search) override;
   void DismissFre(searchbox::mojom::FreStage stage) override;
-  void ShowHotkeyDropdown(const gfx::Rect& anchor_bounds) override;
+  void RecordFreImpression(searchbox::mojom::FreStage stage) override;
+  void ShowHotkeyDropdown(const gfx::Rect& anchor_bounds,
+                          ShowHotkeyDropdownCallback callback) override;
   void OpenHotkeySettings() override;
   void SetHotkey(const std::string& hotkey_spec);
   void StartScreenshare(bool prefer_entire_screen,
@@ -76,8 +80,11 @@ class OmniboxEverywhereHandler : public ContextualSearchboxHandler,
   void OpenProfilePicker() override;
 
   // ContextualSearchboxHandler:
+  void AddFileContextToPage(
+      const base::UnguessableToken& token,
+      searchbox::mojom::SelectedFileInfoPtr file_info) override;
   void OpenUrl(GURL url,
-               const WindowOpenDisposition disposition,
+               const ui::mojom::WindowOpenDisposition disposition,
                base::OnceCallback<void(content::NavigationHandle&)>
                    navigation_handle_callback) override;
 
@@ -107,14 +114,14 @@ class OmniboxEverywhereHandler : public ContextualSearchboxHandler,
 
  private:
   void OnAiModeEligibilityOrPrefChanged();
-  void OnHotkeyDropdownClosed();
+  void OnHotkeyDropdownClosed(ShowHotkeyDropdownCallback callback);
   void PushFreState();
   void PushProfileInfo();
 
   raw_ptr<OmniboxEverywhereService> service_;
   base::CallbackListSubscription aim_eligibility_subscription_;
+  base::CallbackListSubscription fre_state_subscription_;
   PrefChangeRegistrar pref_change_registrar_;
-  PrefChangeRegistrar local_state_pref_change_registrar_;
   base::ScopedObservation<ProfileAttributesStorage,
                           ProfileAttributesStorage::Observer>
       profile_attributes_storage_observation_{this};

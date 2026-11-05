@@ -48,6 +48,10 @@ class COMPONENT_EXPORT(UI_BASE_IME_TYPES) CharacterComposer {
 
   void Reset();
 
+  // Returns true if `event` is the Ctrl+Shift+U press that switches an idle
+  // composer to hexadecimal input mode.
+  static bool IsHexModeStartKey(const ui::KeyEvent& event);
+
   // Filters keypress.
   // Returns true if the keypress is recognized as a part of composition
   // sequence.
@@ -62,6 +66,13 @@ class COMPONENT_EXPORT(UI_BASE_IME_TYPES) CharacterComposer {
 
   // Returns the preedit string.
   const std::u16string& preedit_string() const { return preedit_string_; }
+
+  // When enabled, Dead<acute> followed by c/C composes U+00E7/U+00C7 (c with
+  // cedilla) instead of U+0107/U+0106 (c with acute), matching the pt_BR
+  // Compose table and GTK's "cedilla" input method.
+  void set_dead_acute_c_produces_cedilla(bool enabled) {
+    dead_acute_c_produces_cedilla_ = enabled;
+  }
 
  private:
   // An enum to describe composition mode.
@@ -104,6 +115,8 @@ class COMPONENT_EXPORT(UI_BASE_IME_TYPES) CharacterComposer {
   CompositionMode composition_mode_ = KEY_SEQUENCE_MODE;
 
   const PreeditStringMode preedit_string_mode_;
+
+  bool dead_acute_c_produces_cedilla_ = false;
 };
 
 // Abstract class for determining whether a ComposeBuffer forms a valid
@@ -133,9 +146,17 @@ class ComposeChecker {
 // Implementation of |ComposeChecker| using a compact generated tree.
 class TreeComposeChecker : public ComposeChecker {
  public:
+  // An element of the generated tree: either a key-value pair of a lookup
+  // table, or the sizes of the internal and leaf tables that follow it. See
+  // generate_character_composer_data.py for the format.
+  struct TreeEntry {
+    uint16_t key;
+    uint16_t value;
+  };
+
   struct CompositionData {
     size_t maximum_sequence_length;
-    base::raw_span<const uint16_t> tree;
+    base::raw_span<const TreeEntry> tree;
   };
 
   explicit TreeComposeChecker(const CompositionData& data) : data_(data) {}
@@ -144,7 +165,6 @@ class TreeComposeChecker : public ComposeChecker {
       uint32_t* composed_character) const override;
 
  private:
-  bool Find(uint16_t index, uint16_t size, uint16_t key, uint16_t* value) const;
   const raw_ref<const CompositionData> data_;
 };
 

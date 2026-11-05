@@ -9,6 +9,7 @@
 #include <optional>
 
 #include "ash/capture_mode/fake_video_source_provider.h"
+#include "ash/constants/ash_paths.h"
 #include "ash/public/cpp/default_user_image.h"
 #include "ash/webui/personalization_app/mojom/personalization_app.mojom.h"
 #include "base/containers/span.h"
@@ -21,6 +22,8 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_path_override.h"
+#include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/login/users/avatar/fake_user_image_file_selector.h"
 #include "chrome/browser/ash/login/users/avatar/user_image_manager_impl.h"
 #include "chrome/browser/ash/login/users/avatar/user_image_manager_registry.h"
@@ -329,6 +332,7 @@ class PersonalizationAppUserProviderImplTest : public testing::Test {
       TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
       user_manager_.Get()};
   TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
+  base::ScopedPathOverride user_data_dir_override_{ash::DIR_USER_DATA};
   data_decoder::test::InProcessDataDecoder data_decoder_;
   content::TestWebUI web_ui_;
   std::unique_ptr<content::WebContents> web_contents_;
@@ -647,6 +651,7 @@ TEST_F(PersonalizationAppUserProviderImplTest, SelectImageFromDisk) {
   auto fake_file_selector =
       std::make_unique<ash::FakeUserImageFileSelector>(web_ui());
   fake_file_selector->SetFilePath(file_path);
+  auto* fake_file_selector_ptr = fake_file_selector.get();
   user_provider()->SetUserImageFileSelectorForTesting(
       std::move(fake_file_selector));
   user_provider_remote()->get()->SelectImageFromDisk();
@@ -655,6 +660,9 @@ TEST_F(PersonalizationAppUserProviderImplTest, SelectImageFromDisk) {
                 ->FindUser(GetAccountId(profile()))
                 ->image_index(),
             user_manager::UserImage::Type::kExternal);
+  // The file selection dialog should initially show the Downloads folder.
+  EXPECT_EQ(file_manager::util::GetDownloadsFolderForProfile(profile()),
+            fake_file_selector_ptr->downloads_path());
 }
 
 TEST_F(PersonalizationAppUserProviderImplTest,

@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/format_macros.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -24,12 +25,14 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/fuzztest_support.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/connection_endpoint_metadata.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/ip_address.h"
 #include "net/base/ip_endpoint.h"
+#include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/base/schemeful_site.h"
 #include "net/dns/host_resolver_internal_result.h"
@@ -59,12 +62,13 @@ namespace {
 
 const int kMaxCacheEntries = 10;
 
-// Builds a key for |hostname|, defaulting the query type to unspecified.
-HostCache::Key Key(const std::string& hostname) {
+// Builds a key for `hostname`, defaulting the query type to unspecified.
+HostCache::Key Key(
+    std::string_view hostname,
+    const NetworkAnonymizationKey& nak = NetworkAnonymizationKey()) {
   return HostCache::Key(url::SchemeHostPort(url::kHttpsScheme, hostname, 443),
                         DnsQueryType::UNSPECIFIED, 0, HostResolverSource::ANY,
-                        NetworkAnonymizationKey(),
-                        handles::kInvalidNetworkHandle);
+                        nak, handles::kInvalidNetworkHandle);
 }
 
 bool FoobarIndexIsOdd(const std::string& foobarx_com) {
@@ -768,6 +772,17 @@ TEST(HostCacheTest, NoCache) {
   EXPECT_FALSE(cache.Lookup(Key("foobar.com"), now));
 
   EXPECT_EQ(0U, cache.size());
+
+  // Disabling via `max_partitions == 0` should also disable caching.
+  HostCache cache_zero_partitions(kMaxCacheEntries, /*max_partitions=*/0);
+  EXPECT_TRUE(cache_zero_partitions.caching_is_disabled());
+  EXPECT_FALSE(cache_zero_partitions.Lookup(Key("foobar.com"), now));
+  EXPECT_FALSE(
+      cache_zero_partitions.LookupStale(Key("foobar.com"), now, nullptr));
+  cache_zero_partitions.Set(Key("foobar.com"), entry, now, kTTL);
+  EXPECT_FALSE(cache_zero_partitions.Lookup(Key("foobar.com"), now));
+  EXPECT_TRUE(cache_zero_partitions.RestoreFromListValue(base::ListValue()));
+  EXPECT_EQ(0U, cache_zero_partitions.size());
 }
 
 TEST(HostCacheTest, Clear) {
@@ -1844,7 +1859,7 @@ TEST(HostCacheTest, SerializeAndDeserializeEndpointResult) {
   std::string other_alias = "other_alias.test";
   std::vector<IPEndPoint> ip_endpoints = {ipv6_endpoint, ipv4_endpoint1,
                                           ipv4_endpoint2, other_ipv4_endpoint};
-  std::set<std::string> aliases = {ipv6_alias, ipv4_alias, other_alias};
+  base::flat_set<std::string> aliases = {ipv6_alias, ipv4_alias, other_alias};
   HostCache::Entry entry(OK, ip_endpoints, aliases,
                          HostCache::Entry::SOURCE_DNS, ttl);
 
@@ -2067,6 +2082,67 @@ TEST(HostCacheTest, DeserializeInvalidQueryTypeHttpsExperimental) {
   EXPECT_FALSE(restored_cache.RestoreFromListValue(dict->GetList()));
 
   ASSERT_EQ(0u, restored_cache.size());
+}
+
+// An entry with a NetworkAnonymizationKey that can't be deserialized (e.g.,
+// because it uses a NetworkIsolationPartition value that's no longer
+// supported) should be skipped, without preventing other entries from being
+// restored.
+TEST(HostCacheTest, DeserializeSkipsEntryWithInvalidNetworkAnonymizationKey) {
+  base::TimeDelta ttl = base::Seconds(99);
+  std::string expiration_time_str = base::NumberToString(
+      (base::Time::Now() + ttl).since_origin().InMicroseconds());
+
+  auto dict = base::JSONReader::Read(
+      base::StringPrintf(
+          R"(
+            [{
+              "addresses": ["1.2.3.4"],
+              "dns_query_type": 1,
+              "expiration": "%s",
+              "flags": 0,
+              "host_resolver_source": 2,
+              "hostname": "invalid-nak.test",
+              "network_anonymization_key": ["This is not valid"],
+              "port": 443,
+              "scheme": "https",
+              "secure": false
+            }, {
+              "addresses": ["5.6.7.8"],
+              "dns_query_type": 1,
+              "expiration": "%s",
+              "flags": 0,
+              "host_resolver_source": 2,
+              "hostname": "valid-nak.test",
+              "network_anonymization_key": [],
+              "port": 443,
+              "scheme": "https",
+              "secure": false
+            }]
+          )",
+          expiration_time_str.c_str(), expiration_time_str.c_str()),
+      base::JSON_PARSE_RFC);
+  ASSERT_TRUE(dict);
+
+  HostCache restored_cache(kMaxCacheEntries);
+  ASSERT_TRUE(dict->is_list());
+  EXPECT_TRUE(restored_cache.RestoreFromListValue(dict->GetList()));
+
+  // Only the entry with the valid NetworkAnonymizationKey should be restored.
+  ASSERT_EQ(restored_cache.size(), 1u);
+
+  HostCache::Key key(
+      url::SchemeHostPort(url::kHttpsScheme, "valid-nak.test", 443),
+      DnsQueryType::A, 0, HostResolverSource::DNS, NetworkAnonymizationKey(),
+      handles::kInvalidNetworkHandle);
+
+  HostCache::EntryStaleness stale;
+  const std::pair<const HostCache::Key, HostCache::Entry>* result =
+      restored_cache.LookupStale(key, base::TimeTicks::Now(), &stale);
+
+  ASSERT_TRUE(result);
+  EXPECT_THAT(result->second.ip_endpoints(),
+              ElementsAreArray(MakeEndpoints({"5.6.7.8"})));
 }
 
 TEST(HostCacheTest, PersistenceDelegate) {
@@ -2438,7 +2514,7 @@ TEST(HostCacheTest, MergeEntries_bothEmpty) {
 
 TEST(HostCacheTest, MergeEntries_frontWithAliasesNoAddressesBackWithBoth) {
   HostCache::Entry front(ERR_NAME_NOT_RESOLVED, HostCache::Entry::SOURCE_DNS);
-  std::set<std::string> aliases_front({"alias0", "alias1", "alias2"});
+  base::flat_set<std::string> aliases_front({"alias0", "alias1", "alias2"});
   front.set_aliases(aliases_front);
 
   const IPAddress kAddressBack(0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -2463,7 +2539,7 @@ TEST(HostCacheTest, MergeEntries_frontWithAliasesNoAddressesBackWithBoth) {
 
 TEST(HostCacheTest, MergeEntries_backWithAliasesNoAddressesFrontWithBoth) {
   HostCache::Entry back(ERR_NAME_NOT_RESOLVED, HostCache::Entry::SOURCE_DNS);
-  std::set<std::string> aliases_back({"alias1", "alias2", "alias3"});
+  base::flat_set<std::string> aliases_back({"alias1", "alias2", "alias3"});
   back.set_aliases(aliases_back);
 
   const IPAddress kAddressFront(0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -3240,7 +3316,7 @@ TEST(HostCacheTest, DeserializeWithIndexChangedAcrossReload) {
 void CheckHostCacheSerialization(const base::ListValue& list) {
   // Parse the HostCache.
   constexpr size_t kMaxEntries = 1000;
-  HostCache host_cache(kMaxEntries);
+  HostCache host_cache(kMaxEntries, kMaxEntries);
   if (!host_cache.RestoreFromListValue(list)) {
     return;
   }
@@ -3256,5 +3332,633 @@ void CheckHostCacheSerialization(const base::ListValue& list) {
 
 FUZZ_TEST(HostCacheTest, CheckHostCacheSerialization)
     .WithDomains(fuzztest::Arbitrary<base::ListValue>());
+
+TEST(HostCacheTest, LookupPopulatesAgeAndOriginalTtl) {
+  base::TimeTicks now;
+  const base::TimeDelta kTtl = base::Seconds(10);
+
+  HostCache cache(kMaxCacheEntries);
+  HostCache::Key key = Key("foobar.com");
+  HostCache::Entry entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
+                         HostCache::Entry::SOURCE_DNS, kTtl);
+  cache.Set(key, entry, now, kTtl);
+
+  // Advance 4 seconds: entry is still valid in HostCache.
+  now += base::Seconds(4);
+  HostCache::EntryStaleness staleness;
+  ASSERT_TRUE(cache.Lookup(key, now, /*ignore_secure=*/false,
+                           /*record_metrics=*/true, &staleness));
+  EXPECT_FALSE(staleness.is_stale());
+  EXPECT_EQ(staleness.age, base::Seconds(4));
+  EXPECT_EQ(staleness.original_ttl, kTtl);
+  EXPECT_EQ(staleness.expired_by, base::Seconds(-6));
+  EXPECT_FALSE(staleness.is_expired_by_wire_ttl());
+
+  // Advance another 9 seconds (total 13s): entry is expired by 3s.
+  now += base::Seconds(9);
+  EXPECT_FALSE(cache.Lookup(key, now));
+  ASSERT_TRUE(cache.LookupStale(key, now, &staleness));
+  EXPECT_TRUE(staleness.is_stale());
+  EXPECT_EQ(staleness.age, base::Seconds(13));
+  EXPECT_EQ(staleness.original_ttl, kTtl);
+  EXPECT_EQ(staleness.expired_by, base::Seconds(3));
+  EXPECT_TRUE(staleness.is_expired_by_wire_ttl());
+}
+
+TEST(HostCacheTest, LookupClampedTtlIsExpiredByWireTtl) {
+  base::TimeTicks now;
+  const base::TimeDelta kWireTtl = base::Seconds(10);
+  const base::TimeDelta kClampedCacheTtl = base::Seconds(60);
+
+  HostCache cache(kMaxCacheEntries);
+  HostCache::Key key = Key("clamped.com");
+  HostCache::Entry entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
+                         HostCache::Entry::SOURCE_DNS, kWireTtl);
+  cache.Set(key, entry, now, kClampedCacheTtl);
+
+  // At t = 25s, the entry is valid in HostCache (remaining TTL = 35s), but its
+  // age (25s) exceeds its wire TTL (10s).
+  now += base::Seconds(25);
+  HostCache::EntryStaleness staleness;
+  ASSERT_TRUE(cache.Lookup(key, now, /*ignore_secure=*/false,
+                           /*record_metrics=*/true, &staleness));
+  EXPECT_FALSE(staleness.is_stale());
+  EXPECT_EQ(staleness.age, base::Seconds(25));
+  EXPECT_EQ(staleness.original_ttl, kWireTtl);
+  EXPECT_EQ(staleness.expired_by, base::Seconds(-35));
+  EXPECT_TRUE(staleness.is_expired_by_wire_ttl());
+}
+
+TEST(HostCacheTest, LookupRestoredAndUnknownTtlStaleness) {
+  base::TimeTicks now;
+  const base::TimeDelta kTtl = base::Seconds(60);
+
+  // 1. Entry without known wire TTL (e.g. from system resolver).
+  HostCache cache(kMaxCacheEntries);
+  HostCache::Key unknown_ttl_key = Key("unknown-ttl.com");
+  HostCache::Entry unknown_ttl_entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
+                                     HostCache::Entry::SOURCE_UNKNOWN);
+  cache.Set(unknown_ttl_key, unknown_ttl_entry, now, kTtl);
+
+  now += base::Seconds(15);
+  HostCache::EntryStaleness staleness;
+  ASSERT_TRUE(cache.Lookup(unknown_ttl_key, now, /*ignore_secure=*/false,
+                           /*record_metrics=*/true, &staleness));
+  EXPECT_EQ(staleness.age, base::Seconds(15));
+  EXPECT_EQ(staleness.original_ttl, std::nullopt);
+  EXPECT_FALSE(staleness.is_expired_by_wire_ttl());
+
+  // 2. Entry restored from disk (`created_time_` and `original_ttl` unknown).
+  HostCache::Key restorable_key(
+      url::SchemeHostPort(url::kHttpsScheme, "restored.com", 443),
+      DnsQueryType::A, 0, HostResolverSource::DNS, NetworkAnonymizationKey(),
+      handles::kInvalidNetworkHandle);
+  IPEndPoint endpoint(IPAddress(192, 0, 2, 1), 443);
+  HostCache::Entry restorable_entry(OK, {endpoint}, /*aliases=*/{},
+                                    HostCache::Entry::SOURCE_DNS, kTtl);
+  cache.Set(restorable_key, restorable_entry, now, kTtl);
+
+  base::ListValue serialized_cache;
+  cache.GetList(serialized_cache, /*include_staleness=*/false,
+                HostCache::SerializationType::kRestorable);
+  HostCache restored_cache(kMaxCacheEntries);
+  ASSERT_TRUE(restored_cache.RestoreFromListValue(serialized_cache));
+
+  HostCache::EntryStaleness restored_staleness;
+  ASSERT_TRUE(
+      restored_cache.LookupStale(restorable_key, now, &restored_staleness));
+  EXPECT_EQ(restored_staleness.age, std::nullopt);
+  EXPECT_EQ(restored_staleness.original_ttl, std::nullopt);
+  EXPECT_FALSE(restored_staleness.is_expired_by_wire_ttl());
+}
+
+TEST(HostCacheTest, RecordUsedAnswerMetrics_FreshFromNetwork) {
+  base::HistogramTester histogram_tester;
+  HostCache::RecordUsedAnswerMetrics(
+      HostCache::UsedAnswerProtocol::kTcp,
+      HostCache::UsedAnswerFreshnessStatus::kFreshFromNetwork, std::nullopt);
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.UsedAnswer.Tcp.FreshnessStatus",
+      HostCache::UsedAnswerFreshnessStatus::kFreshFromNetwork, 1);
+  histogram_tester.ExpectUniqueTimeSample("Net.DNS.UsedAnswer.Tcp.Age",
+                                          base::TimeDelta(), 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.UsedAnswer.Tcp.IsExpiredByWireTtl", false, 1);
+}
+
+// Valid cache hit where age > original_ttl (clamped upward).
+TEST(HostCacheTest, RecordUsedAnswerMetrics_ValidCacheExpiredByWireTtl) {
+  base::HistogramTester histogram_tester;
+  HostCache::EntryStaleness staleness;
+  staleness.age = base::Seconds(25);
+  staleness.original_ttl = base::Seconds(10);
+  staleness.expired_by = base::Seconds(-35);
+  HostCache::RecordUsedAnswerMetrics(
+      HostCache::UsedAnswerProtocol::kTcp,
+      HostCache::UsedAnswerFreshnessStatus::kValidFromCache, staleness);
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.UsedAnswer.Tcp.FreshnessStatus",
+      HostCache::UsedAnswerFreshnessStatus::kValidFromCache, 1);
+  histogram_tester.ExpectUniqueTimeSample("Net.DNS.UsedAnswer.Tcp.Age",
+                                          base::Seconds(25), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Tcp.Age.ValidCache", base::Seconds(25), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Tcp.ValidCache.RemainingTtl", base::Seconds(35), 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.UsedAnswer.Tcp.IsExpiredByWireTtl", true, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Tcp.ExpiredByWireTtl.OverdueBy", base::Seconds(15),
+      1);
+}
+
+// Valid cache hit where age <= original_ttl (not expired by wire TTL) and
+// another where age/original_ttl are nullopt.
+TEST(HostCacheTest,
+     RecordUsedAnswerMetrics_ValidCacheNotExpiredByWireTtlAndUnknownAge) {
+  base::HistogramTester histogram_tester;
+  HostCache::EntryStaleness staleness;
+  staleness.age = base::Seconds(10);
+  staleness.original_ttl = base::Seconds(60);
+  staleness.expired_by = base::Seconds(-50);
+  HostCache::RecordUsedAnswerMetrics(
+      HostCache::UsedAnswerProtocol::kSsl,
+      HostCache::UsedAnswerFreshnessStatus::kValidFromCache, staleness);
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.UsedAnswer.Ssl.IsExpiredByWireTtl", false, 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.DNS.UsedAnswer.Ssl.ExpiredByWireTtl.OverdueBy", 0);
+
+  // Unknown age (e.g. disk-restored) and unknown original_ttl:
+  HostCache::EntryStaleness restored_staleness;
+  restored_staleness.expired_by = base::Seconds(-20);
+  HostCache::RecordUsedAnswerMetrics(
+      HostCache::UsedAnswerProtocol::kSsl,
+      HostCache::UsedAnswerFreshnessStatus::kValidFromCache,
+      restored_staleness);
+  // IsExpiredByWireTtl and Age are not recorded when age/original_ttl are
+  // nullopt.
+  histogram_tester.ExpectTotalCount("Net.DNS.UsedAnswer.Ssl.IsExpiredByWireTtl",
+                                    1);
+  histogram_tester.ExpectTotalCount("Net.DNS.UsedAnswer.Ssl.Age", 1);
+}
+
+TEST(HostCacheTest, RecordUsedAnswerMetrics_ExpiredCacheConfirmedByFreshDns) {
+  base::HistogramTester histogram_tester;
+  HostCache::EntryStaleness staleness;
+  staleness.age = base::Seconds(70);
+  staleness.original_ttl = base::Seconds(60);
+  staleness.expired_by = base::Seconds(10);
+  staleness.network_changes = 2;
+  HostCache::RecordUsedAnswerMetrics(
+      HostCache::UsedAnswerProtocol::kQuic,
+      HostCache::UsedAnswerFreshnessStatus::kExpiredCacheConfirmedByFreshDns,
+      staleness);
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.UsedAnswer.Quic.FreshnessStatus",
+      HostCache::UsedAnswerFreshnessStatus::kExpiredCacheConfirmedByFreshDns,
+      1);
+  histogram_tester.ExpectUniqueTimeSample("Net.DNS.UsedAnswer.Quic.Age",
+                                          base::Seconds(70), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Quic.Age.ExpiredCacheConfirmedByFreshDns",
+      base::Seconds(70), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Quic.ExpiredCache.ExpiredBy", base::Seconds(10), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Quic.ExpiredCache.ExpiredBy.ConfirmedByFreshDns",
+      base::Seconds(10), 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.UsedAnswer.Quic.ExpiredCache.NetworkChanges", 2, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.UsedAnswer.Quic.IsExpiredByWireTtl", true, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Quic.ExpiredByWireTtl.OverdueBy", base::Seconds(10),
+      1);
+}
+
+// Remaining expired-cache enum arms: FinishedBeforeFreshDns,
+// AfterFreshDnsFailed, and DivergedFromFreshDns.
+TEST(HostCacheTest, RecordUsedAnswerMetrics_ExpiredCacheOtherStatuses) {
+  base::HistogramTester histogram_tester;
+  HostCache::EntryStaleness staleness;
+  staleness.age = base::Hours(2);
+  staleness.original_ttl = base::Minutes(5);
+  staleness.expired_by = base::Minutes(115);
+
+  HostCache::RecordUsedAnswerMetrics(
+      HostCache::UsedAnswerProtocol::kTcp,
+      HostCache::UsedAnswerFreshnessStatus::kExpiredCacheFinishedBeforeFreshDns,
+      staleness);
+  HostCache::RecordUsedAnswerMetrics(
+      HostCache::UsedAnswerProtocol::kTcp,
+      HostCache::UsedAnswerFreshnessStatus::kExpiredCacheAfterFreshDnsFailed,
+      staleness);
+  HostCache::RecordUsedAnswerMetrics(
+      HostCache::UsedAnswerProtocol::kTcp,
+      HostCache::UsedAnswerFreshnessStatus::kExpiredCacheDivergedFromFreshDns,
+      staleness);
+
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Tcp.Age.ExpiredCacheFinishedBeforeFreshDns",
+      base::Hours(2), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Tcp.ExpiredCache.ExpiredBy.FinishedBeforeFreshDns",
+      base::Minutes(115), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Tcp.Age.ExpiredCacheAfterFreshDnsFailed",
+      base::Hours(2), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Tcp.ExpiredCache.ExpiredBy.AfterFreshDnsFailed",
+      base::Minutes(115), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Tcp.Age.ExpiredCacheDivergedFromFreshDns",
+      base::Hours(2), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.UsedAnswer.Tcp.ExpiredCache.ExpiredBy.DivergedFromFreshDns",
+      base::Minutes(115), 1);
+}
+
+TEST(HostCacheTest, RecordOptimisticDnsDiagnosticsMetrics) {
+  base::HistogramTester histogram_tester;
+  HostCache::EntryStaleness staleness;
+  staleness.age = base::Seconds(90);
+  staleness.original_ttl = base::Seconds(60);
+  staleness.expired_by = base::Seconds(30);
+
+  HostCache::RecordOptimisticDnsStaleIpMatchMetrics(
+      HostCache::OptimisticDnsProtocol::kTcp, /*matched=*/true, staleness);
+  HostCache::RecordOptimisticDnsStaleIpMatchMetrics(
+      HostCache::OptimisticDnsProtocol::kQuic, /*matched=*/false, staleness);
+  HostCache::RecordOptimisticDnsSslConnectionOutcomeMetrics(
+      HostCache::OptimisticDnsSslConnectionOutcome::
+          kFailedAndRetriedWithFreshDns,
+      staleness);
+  HostCache::RecordOptimisticDnsSslConnectionOutcomeMetrics(
+      HostCache::OptimisticDnsSslConnectionOutcome::kSucceeded, staleness);
+
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.OptimisticDns.Tcp.StaleIpMatchFreshDns.Age.Matched",
+      base::Seconds(90), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.OptimisticDns.Tcp.StaleIpMatchFreshDns.ExpiredBy.Matched",
+      base::Seconds(30), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.OptimisticDns.Quic.StaleIpMatchFreshDns.Age.Diverged",
+      base::Seconds(90), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.OptimisticDns.Quic.StaleIpMatchFreshDns.ExpiredBy.Diverged",
+      base::Seconds(30), 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.DNS.OptimisticDns.SSLConnect.Outcome",
+      HostCache::OptimisticDnsSslConnectionOutcome::
+          kFailedAndRetriedWithFreshDns,
+      1);
+  histogram_tester.ExpectBucketCount(
+      "Net.DNS.OptimisticDns.SSLConnect.Outcome",
+      HostCache::OptimisticDnsSslConnectionOutcome::kSucceeded, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.OptimisticDns.SSLConnect.Age.FailedAndRetriedWithFreshDns",
+      base::Seconds(90), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.OptimisticDns.SSLConnect.ExpiredBy.FailedAndRetriedWithFreshDns",
+      base::Seconds(30), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.OptimisticDns.SSLConnect.Age.Succeeded", base::Seconds(90), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.DNS.OptimisticDns.SSLConnect.ExpiredBy.Succeeded", base::Seconds(30),
+      1);
+}
+
+// Filling one `NetworkAnonymizationKey` partition must only evict entries
+// within that same partition and never evict entries belonging to another
+// `NetworkAnonymizationKey`, even if the other partition's entries are stale
+// or expire sooner.
+TEST(HostCacheTest, EvictIsolatedByNetworkAnonymizationKey) {
+  HostCache cache(/*max_entries=*/2, /*max_partitions=*/2);
+  base::TimeTicks now;
+
+  const auto nak1 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site1.test/")));
+  const auto nak2 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site2.test/")));
+
+  HostCache::Key key1_a = Key("a.site1.test", nak1);
+  HostCache::Key key1_b = Key("b.site1.test", nak1);
+  HostCache::Key key2_a = Key("a.site2.test", nak2);
+  HostCache::Key key2_b = Key("b.site2.test", nak2);
+  HostCache::Key key2_c = Key("c.site2.test", nak2);
+  HostCache::Entry entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
+                         HostCache::Entry::SOURCE_UNKNOWN);
+
+  // Populate `nak1` with two entries that have low TTLs.
+  cache.Set(key1_a, entry, now, base::Seconds(2));
+  cache.Set(key1_b, entry, now, base::Seconds(5));
+
+  // Advance time by 3s so `key1_a` is expired (stale) and `key1_b` has 2s left.
+  now += base::Seconds(3);
+  EXPECT_FALSE(cache.Lookup(key1_a, now));
+  EXPECT_TRUE(cache.LookupStale(key1_a, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key1_b, now));
+
+  // Populate `nak2` to capacity with longer TTLs.
+  cache.Set(key2_a, entry, now, base::Seconds(20));
+  cache.Set(key2_b, entry, now, base::Seconds(10));
+  EXPECT_EQ(4u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+
+  // Inserting a third entry into `nak2` must evict `key2_b` (earliest-expiring
+  // in `nak2`) and leave both `key1_a` and `key1_b` in `nak1` untouched.
+  cache.Set(key2_c, entry, now, base::Seconds(30));
+  EXPECT_EQ(4u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+  EXPECT_TRUE(cache.LookupStale(key1_a, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key1_b, now));
+  EXPECT_TRUE(cache.Lookup(key2_a, now));
+  EXPECT_FALSE(cache.LookupStale(key2_b, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key2_c, now));
+}
+
+// Exceeding `max_partitions` evicts the least-recently-used
+// `NetworkAnonymizationKey` partition, while cache hits via `Lookup()`,
+// `LookupStale()`, and `Set()` promote the accessed partition.
+TEST(HostCacheTest, EvictLeastRecentlyUsedPartition) {
+  HostCache cache(/*max_entries=*/2, /*max_partitions=*/2);
+  base::TimeTicks now;
+
+  const auto nak1 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site1.test/")));
+  const auto nak2 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site2.test/")));
+  const auto nak3 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site3.test/")));
+  const auto nak4 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site4.test/")));
+
+  HostCache::Key key1 = Key("host.test", nak1);
+  HostCache::Key key1_extra = Key("extra.test", nak1);
+  HostCache::Key key2_a = Key("a.test", nak2);
+  HostCache::Key key2_b = Key("b.test", nak2);
+  HostCache::Key key2_miss = Key("missing.test", nak2);
+  HostCache::Key key3 = Key("host.test", nak3);
+  HostCache::Key key4 = Key("host.test", nak4);
+  HostCache::Entry entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
+                         HostCache::Entry::SOURCE_UNKNOWN);
+
+  cache.Set(key1, entry, now, base::Seconds(100));
+  cache.Set(key2_a, entry, now, base::Seconds(10));
+  cache.Set(key2_b, entry, now, base::Seconds(10));
+  EXPECT_EQ(3u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+
+  HostCache::Entry::Source matched_source = HostCache::Entry::SOURCE_DNS;
+  HostCache::EntryStaleness matched_stale;
+  const HostCache::Key* matched_key =
+      cache.GetMatchingKeyForTesting("b.test", &matched_source, &matched_stale);
+  ASSERT_TRUE(matched_key);
+  EXPECT_EQ(key2_b, *matched_key);
+  EXPECT_EQ(HostCache::Entry::SOURCE_UNKNOWN, matched_source);
+  EXPECT_EQ(0, matched_stale.network_changes);
+  EXPECT_FALSE(cache.GetMatchingKeyForTesting("nonexistent.test"));
+
+  // Valid lookup on `key1` promotes `nak1` to MRU; a miss on `nak2` does not
+  // promote `nak2`.
+  EXPECT_TRUE(cache.Lookup(key1, now));
+  EXPECT_FALSE(cache.Lookup(key2_miss, now));
+
+  // Inserting `key3` under `nak3` evicts `nak2` (the LRU partition, which held
+  // 2 entries), reducing `size()` from 3 + 1 - 2 = 2.
+  cache.Set(key3, entry, now, base::Seconds(5));
+  EXPECT_EQ(2u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+  EXPECT_TRUE(cache.Lookup(key1, now));
+  EXPECT_FALSE(cache.LookupStale(key2_a, now, nullptr));
+  EXPECT_FALSE(cache.LookupStale(key2_b, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key3, now));
+
+  // `nak3` is MRU and `nak1` is LRU. Calling `Set()` on existing partition
+  // `nak1` promotes `nak1` to MRU.
+  cache.Set(key1_extra, entry, now, base::Seconds(100));
+  EXPECT_EQ(3u, cache.size());
+
+  // Advance time by 10s so `key3` is expired, while `key1` / `key1_extra`
+  // remain valid (`nak1` is MRU, `nak3` is LRU).
+  now += base::Seconds(10);
+
+  // A stale miss in `Lookup(key3)` must NOT promote `nak3`. Verify by
+  // immediately inserting `key4` under `nak4` and checking that `nak3` (not
+  // `nak1`) was evicted.
+  EXPECT_FALSE(cache.Lookup(key3, now));
+  cache.Set(key4, entry, now, base::Seconds(50));
+  EXPECT_EQ(3u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+  EXPECT_TRUE(cache.Lookup(key1, now));
+  EXPECT_TRUE(cache.Lookup(key1_extra, now));
+  EXPECT_FALSE(cache.LookupStale(key3, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key4, now));
+
+  // Advance time by 100s so `nak1` entries are expired (`nak4` is MRU, `nak1`
+  // is LRU). Calling `LookupStale(key1)` must promote `nak1` to MRU so
+  // inserting `key2_a` under `nak2` evicts `nak4` rather than `nak1`.
+  now += base::Seconds(100);
+  EXPECT_TRUE(cache.LookupStale(key1, now, nullptr));
+  cache.Set(key2_a, entry, now, base::Seconds(10));
+  EXPECT_EQ(3u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+  EXPECT_TRUE(cache.LookupStale(key1, now, nullptr));
+  EXPECT_TRUE(cache.LookupStale(key1_extra, now, nullptr));
+  EXPECT_FALSE(cache.LookupStale(key4, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key2_a, now));
+}
+
+// Partitions containing an active pinned entry must not be evicted when
+// `max_partitions` is exceeded, until the pin is invalidated by a network
+// change.
+TEST(HostCacheTest, NoEvictPinnedPartition) {
+  HostCache cache(/*max_entries=*/2, /*max_partitions=*/2);
+  base::TimeTicks now;
+
+  const auto nak1 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site1.test/")));
+  const auto nak2 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site2.test/")));
+  const auto nak3 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site3.test/")));
+  const auto nak4 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site4.test/")));
+
+  HostCache::Key key1_unpinned = Key("a.test", nak1);
+  HostCache::Key key1 = Key("host.test", nak1);
+  HostCache::Key key2 = Key("host.test", nak2);
+  HostCache::Key key3 = Key("host.test", nak3);
+  HostCache::Key key4 = Key("host.test", nak4);
+  HostCache::Key key4_extra = Key("extra.test", nak4);
+
+  HostCache::Entry pinned_entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
+                                HostCache::Entry::SOURCE_UNKNOWN);
+  pinned_entry.set_pinning(true);
+  HostCache::Entry unpinned_entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
+                                  HostCache::Entry::SOURCE_UNKNOWN);
+
+  // `nak1` is LRU with an unpinned first entry and a pinned second entry;
+  // `nak2` is MRU and unpinned.
+  cache.Set(key1_unpinned, unpinned_entry, now, base::Seconds(5));
+  cache.Set(key1, pinned_entry, now, base::Seconds(5));
+  cache.Set(key2, unpinned_entry, now, base::Seconds(5));
+  EXPECT_EQ(3u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+
+  // Inserting `key3` (also pinned) must scan past `key1_unpinned` to find
+  // `key1`'s active pin, skip `nak1`, and evict `nak2`.
+  cache.Set(key3, pinned_entry, now, base::Seconds(5));
+  EXPECT_EQ(3u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+  EXPECT_TRUE(cache.Lookup(key1_unpinned, now));
+  EXPECT_TRUE(cache.Lookup(key1, now));
+  EXPECT_FALSE(cache.LookupStale(key2, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key3, now));
+
+  // When all existing partitions have active pins, `Set()` allows exceeding
+  // `max_partitions` rather than evicting a pinned partition.
+  cache.Set(key4, unpinned_entry, now, base::Seconds(5));
+  EXPECT_EQ(4u, cache.size());
+  EXPECT_EQ(3u, cache.partition_count_for_testing());
+
+  // Writing again to the unpinned partition (`nak4`) while `partitions_` is
+  // over `max_partitions` due to active pins in `nak1` and `nak3` must not
+  // evict `nak4` out from under `Set()`.
+  cache.Set(key4_extra, unpinned_entry, now, base::Seconds(5));
+  EXPECT_EQ(5u, cache.size());
+  EXPECT_EQ(3u, cache.partition_count_for_testing());
+  EXPECT_TRUE(cache.Lookup(key4, now));
+  EXPECT_TRUE(cache.Lookup(key4_extra, now));
+
+  // After `Invalidate()`, obsolete pinned partitions are reclaimed even when
+  // `Set()` is called on an existing partition (`nak4`), and subsequent new
+  // partitions can evict the remaining formerly-pinned partition (`nak3`).
+  cache.Invalidate();
+  cache.Set(key4_extra, unpinned_entry, now, base::Seconds(5));
+  EXPECT_EQ(3u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+  EXPECT_FALSE(cache.LookupStale(key1_unpinned, now, nullptr));
+  EXPECT_FALSE(cache.LookupStale(key1, now, nullptr));
+  EXPECT_TRUE(cache.LookupStale(key3, now, nullptr));
+  EXPECT_TRUE(cache.LookupStale(key4, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key4_extra, now));
+
+  cache.Set(key2, unpinned_entry, now, base::Seconds(5));
+  EXPECT_EQ(3u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+  EXPECT_FALSE(cache.LookupStale(key3, now, nullptr));
+  EXPECT_TRUE(cache.LookupStale(key4, now, nullptr));
+  EXPECT_TRUE(cache.Lookup(key4_extra, now));
+  EXPECT_TRUE(cache.Lookup(key2, now));
+}
+
+TEST(HostCacheTest, ClearForHostsPrunesEmptyPartitions) {
+  HostCache cache(/*max_entries=*/2, /*max_partitions=*/2);
+  base::TimeTicks now;
+
+  const auto nak1 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site1.test/")));
+  const auto nak2 = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://site2.test/")));
+
+  HostCache::Key key1 = Key("foobar1.com", nak1);
+  HostCache::Key key2 = Key("foobar2.com", nak2);
+  HostCache::Entry entry(OK, /*ip_endpoints=*/{}, /*aliases=*/{},
+                         HostCache::Entry::SOURCE_UNKNOWN);
+
+  cache.Set(key1, entry, now, base::Seconds(10));
+  cache.Set(key2, entry, now, base::Seconds(10));
+  EXPECT_EQ(2u, cache.size());
+  EXPECT_EQ(2u, cache.partition_count_for_testing());
+
+  cache.ClearForHosts(base::BindRepeating(&FoobarIndexIsOdd));
+  EXPECT_EQ(1u, cache.size());
+  EXPECT_EQ(1u, cache.partition_count_for_testing());
+  EXPECT_FALSE(cache.Lookup(key1, now));
+  EXPECT_TRUE(cache.Lookup(key2, now));
+}
+
+// `GetList()` must serialize entries in deterministic `Key` order rather than
+// outer LRU recency order, and `RestoreFromListValue()` must enforce both
+// per-partition `max_entries` and `max_partitions` limits.
+TEST(HostCacheTest, SerializeAndDeserializeMultiplePartitionsAndCaps) {
+  HostCache cache(/*max_entries=*/3, /*max_partitions=*/3);
+  base::TimeTicks now;
+
+  const auto nak_a = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://a.test/")));
+  const auto nak_b = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://b.test/")));
+  const auto nak_c = NetworkAnonymizationKey::CreateSameSite(
+      SchemefulSite(GURL("https://c.test/")));
+
+  HostCache::Key key_a0 = Key("host0.test", nak_a);
+  HostCache::Key key_a1 = Key("host1.test", nak_a);
+  HostCache::Key key_a2 = Key("host2.test", nak_a);
+  HostCache::Key key_b1 = Key("host1.test", nak_b);
+  HostCache::Key key_b2 = Key("host3.test", nak_b);
+  HostCache::Key key_c1 = Key("host1.test", nak_c);
+
+  IPEndPoint endpoint(IPAddress(1, 2, 3, 4), 0);
+  HostCache::Entry entry(OK, {endpoint}, /*aliases=*/{},
+                         HostCache::Entry::SOURCE_UNKNOWN);
+
+  // Insert in order `nak_a`, `nak_b`, `nak_c`, then promote `nak_c` and `nak_b`
+  // so LRU recency order (`nak_b`, `nak_c`, `nak_a`) differs from `Key` order.
+  cache.Set(key_a1, entry, now, base::Seconds(10));
+  cache.Set(key_a2, entry, now, base::Seconds(10));
+  cache.Set(key_b1, entry, now, base::Seconds(10));
+  cache.Set(key_b2, entry, now, base::Seconds(10));
+  cache.Set(key_c1, entry, now, base::Seconds(10));
+  EXPECT_TRUE(cache.Lookup(key_c1, now));
+  EXPECT_TRUE(cache.Lookup(key_b1, now));
+
+  base::ListValue serialized;
+  cache.GetList(serialized, /*include_staleness=*/false,
+                HostCache::SerializationType::kRestorable);
+  ASSERT_EQ(5u, serialized.size());
+  // In `Key` order (`host` is compared before `network_anonymization_key`), the
+  // three `host1.test` entries come in `nak_a`, `nak_b`, `nak_c` order,
+  // followed by `host2.test` (`key_a2`) and `host3.test` (`key_b2`).
+  base::Value expected_nak_a;
+  base::Value expected_nak_b;
+  base::Value expected_nak_c;
+  ASSERT_TRUE(nak_a.ToValue(&expected_nak_a));
+  ASSERT_TRUE(nak_b.ToValue(&expected_nak_b));
+  ASSERT_TRUE(nak_c.ToValue(&expected_nak_c));
+  EXPECT_THAT(serialized[0].GetDict().Find("network_anonymization_key"),
+              Pointee(testing::Eq(std::cref(expected_nak_a))));
+  EXPECT_THAT(serialized[1].GetDict().Find("network_anonymization_key"),
+              Pointee(testing::Eq(std::cref(expected_nak_b))));
+  EXPECT_THAT(serialized[2].GetDict().Find("network_anonymization_key"),
+              Pointee(testing::Eq(std::cref(expected_nak_c))));
+  EXPECT_THAT(serialized[3].GetDict().Find("network_anonymization_key"),
+              Pointee(testing::Eq(std::cref(expected_nak_a))));
+  EXPECT_THAT(serialized[4].GetDict().Find("network_anonymization_key"),
+              Pointee(testing::Eq(std::cref(expected_nak_b))));
+
+  // Restore into a cache capped at `max_entries=2` per partition and
+  // `max_partitions=2` (`max_total_entries=4`) with `key_a0` pre-populated in
+  // `nak_a`. After admitting `key_a1` (filling `nak_a` to 2) and `key_b1`
+  // (filling `partitions_` to 2), `size()` is 3 (< `max_total_entries`), so
+  // `key_c1` exercises the `partitions_.size() >= max_partitions_` skip,
+  // `key_a2` exercises the `entries.size() >= max_entries_` skip, and `key_b2`
+  // is still admitted into `nak_b` afterward.
+  HostCache capped_cache(/*max_entries=*/2, /*max_partitions=*/2);
+  capped_cache.Set(key_a0, entry, now, base::Seconds(10));
+  EXPECT_TRUE(capped_cache.RestoreFromListValue(serialized));
+  EXPECT_EQ(4u, capped_cache.size());
+  EXPECT_EQ(3u, capped_cache.last_restore_size());
+  EXPECT_EQ(2u, capped_cache.partition_count_for_testing());
+  EXPECT_TRUE(capped_cache.Lookup(key_a0, now));
+  EXPECT_TRUE(capped_cache.LookupStale(key_a1, now, nullptr));
+  EXPECT_FALSE(capped_cache.LookupStale(key_a2, now, nullptr));
+  EXPECT_TRUE(capped_cache.LookupStale(key_b1, now, nullptr));
+  EXPECT_TRUE(capped_cache.LookupStale(key_b2, now, nullptr));
+  EXPECT_FALSE(capped_cache.LookupStale(key_c1, now, nullptr));
+}
 
 }  // namespace net

@@ -20,6 +20,7 @@
 
 #include "third_party/blink/renderer/core/html/html_meter_element.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
@@ -214,12 +215,12 @@ void HTMLMeterElement::DidAddUserAgentShadowRoot(ShadowRoot& root) {
 }
 
 void HTMLMeterElement::UpdateValueAppearance(double percentage) {
-  DEFINE_STATIC_LOCAL(AtomicString, optimum_pseudo_id,
-                      ("-webkit-meter-optimum-value"));
-  DEFINE_STATIC_LOCAL(AtomicString, suboptimum_pseudo_id,
-                      ("-webkit-meter-suboptimum-value"));
-  DEFINE_STATIC_LOCAL(AtomicString, even_less_good_pseudo_id,
-                      ("-webkit-meter-even-less-good-value"));
+  static base::NoDestructor<AtomicString> optimum_pseudo_id(
+      AtomicString::FromLiteral<"-webkit-meter-optimum-value">());
+  static base::NoDestructor<AtomicString> suboptimum_pseudo_id(
+      AtomicString::FromLiteral<"-webkit-meter-suboptimum-value">());
+  static base::NoDestructor<AtomicString> even_less_good_pseudo_id(
+      AtomicString::FromLiteral<"-webkit-meter-even-less-good-value">());
 
   value_->SetInlineStyleProperty(CSSPropertyID::kInlineSize, percentage,
                                  CSSPrimitiveValue::UnitType::kPercentage);
@@ -227,13 +228,13 @@ void HTMLMeterElement::UpdateValueAppearance(double percentage) {
                                  CSSPrimitiveValue::UnitType::kPercentage);
   switch (GetGaugeRegion()) {
     case kGaugeRegionOptimum:
-      value_->SetShadowPseudoId(optimum_pseudo_id);
+      value_->SetShadowPseudoId(*optimum_pseudo_id);
       break;
     case kGaugeRegionSuboptimal:
-      value_->SetShadowPseudoId(suboptimum_pseudo_id);
+      value_->SetShadowPseudoId(*suboptimum_pseudo_id);
       break;
     case kGaugeRegionEvenLessGood:
-      value_->SetShadowPseudoId(even_less_good_pseudo_id);
+      value_->SetShadowPseudoId(*even_less_good_pseudo_id);
       break;
   }
 }
@@ -270,6 +271,14 @@ void HTMLMeterElement::AdjustStyle(ComputedStyleBuilder& builder) {
 void HTMLMeterElement::Trace(Visitor* visitor) const {
   visitor->Trace(value_);
   HTMLElement::Trace(visitor);
+}
+
+bool HTMLMeterElement::SupportsBaseAppearanceInternal(
+    BaseAppearanceValue value) const {
+  if (!RuntimeEnabledFeatures::AppearanceBaseEnabled()) {
+    return false;
+  }
+  return value == Element::BaseAppearanceValue::kBase;
 }
 
 }  // namespace blink

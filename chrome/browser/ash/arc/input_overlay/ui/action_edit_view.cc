@@ -17,7 +17,7 @@
 #include "chrome/browser/ash/arc/input_overlay/ui/edit_labels.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/name_tag.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/ui_utils.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
@@ -202,7 +202,7 @@ std::u16string ActionEditView::CalculateAccessibleLabel() const {
   // "Selected key is w. Tap on the button to edit the control" or
   // "Selected keys are w, a, s, d. Tap on the button to edit the control".
   return l10n_util::GetStringFUTF16(
-      keys_string.find(',') == std::string::npos
+      labels_view_->GetKeyCount() <= 1u
           ? IDS_INPUT_OVERLAY_EDITING_LIST_ITEM_BUTTON_CONTAINER_A11Y_TPL
           : IDS_INPUT_OVERLAY_EDITING_LIST_ITEM_JOYSTICK_CONTAINER_A11Y_TPL,
       keys_string);

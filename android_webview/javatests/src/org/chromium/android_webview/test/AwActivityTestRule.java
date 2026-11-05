@@ -23,7 +23,6 @@ import org.junit.runner.Description;
 import org.junit.runners.model.Statement;
 
 import org.chromium.android_webview.AwBrowserContext;
-import org.chromium.android_webview.AwBrowserProcess;
 import org.chromium.android_webview.AwContents;
 import org.chromium.android_webview.AwContents.DependencyFactory;
 import org.chromium.android_webview.AwContents.InternalAccessDelegate;
@@ -144,6 +143,9 @@ public class AwActivityTestRule extends BaseActivityTestRule<AwTestRunnerActivit
     @Override
     protected void before() throws Throwable {
         super.before();
+        // The cached flags are reset after every test, while the browser process is only started
+        // once per batch, so they need to be set up again before each test.
+        WebViewCachedFlags.initForTesting(new InMemorySharedPreferences());
         if (needsNativeInitialized()) {
             // The Activity must be launched in order to load native code
             launchActivity();
@@ -158,6 +160,13 @@ public class AwActivityTestRule extends BaseActivityTestRule<AwTestRunnerActivit
 
     @Override
     protected void after() {
+        for (WeakReference<Activity> activityRef : mReparentedActivities) {
+            CriteriaHelper.pollUiThread(
+                    () -> GarbageCollectionTestUtils.canBeGarbageCollected(activityRef),
+                    "Reparented Activity context should be garbage collected.");
+        }
+        mReparentedActivities.clear();
+
         if (needsAwContentsCleanup()) {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
@@ -182,13 +191,6 @@ public class AwActivityTestRule extends BaseActivityTestRule<AwTestRunnerActivit
             }
         }
         mActivitiesCreatedInTests.clear();
-
-        for (WeakReference<Activity> activityRef : mReparentedActivities) {
-            CriteriaHelper.pollUiThread(
-                    () -> GarbageCollectionTestUtils.canBeGarbageCollected(activityRef),
-                    "Reparented Activity context should be garbage collected.");
-        }
-        mReparentedActivities.clear();
 
         super.after();
     }
@@ -265,10 +267,7 @@ public class AwActivityTestRule extends BaseActivityTestRule<AwTestRunnerActivit
         if (sBrowserContext == null) {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
-                        AwTestContainerView.installDrawFnFunctionTable(useVulkan);
-                        AwBrowserProcess.configureChildProcessLauncherForTesting();
-                        WebViewCachedFlags.initForTesting(new InMemorySharedPreferences());
-                        AwBrowserProcess.startForTesting();
+                        TestStartupUtils.startForTesting(useVulkan);
                         sBrowserContext = AwBrowserContext.getDefault();
                     });
         }

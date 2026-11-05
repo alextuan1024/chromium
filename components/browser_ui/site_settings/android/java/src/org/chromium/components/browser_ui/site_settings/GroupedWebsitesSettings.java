@@ -28,7 +28,6 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.settings.CustomDividerFragment;
 import org.chromium.components.browser_ui.settings.EmbeddableSettingsPage;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
-import org.chromium.components.browser_ui.settings.TextMessagePreference;
 import org.chromium.components.browser_ui.settings.search.BaseSearchIndexProvider;
 import org.chromium.components.browsing_data.DeleteBrowsingDataAction;
 
@@ -44,7 +43,6 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
     public static final String PREF_SITE_TITLE = "site_title";
     public static final String PREF_CLEAR_DATA = "clear_data";
     public static final String PREF_USAGE = "site_usage";
-    public static final String PREF_RELATED_SITES = "related_sites";
     public static final String PREF_SITES_IN_GROUP = "sites_in_group";
     public static final String PREF_RESET_GROUP = "reset_group_button";
 
@@ -99,13 +97,25 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
                     getActivity().getString(R.string.domain_settings_title, domainAndRegistry));
             WebsitePermissionsFetcher fetcher =
                     new WebsitePermissionsFetcher(getSiteSettingsDelegate());
-            fetcher.fetchPreferencesForCategoryAndPopulateRwsInfo(
+            fetcher.fetchPreferencesForCategory(
                     SiteSettingsCategory.createFromType(
                             getSiteSettingsDelegate().getBrowserContextHandle(),
                             SiteSettingsCategory.Type.ALL_SITES),
                     sites -> {
                         if (getActivity() == null) return;
-                        mSiteGroup = WebsiteGroup.createForDomain(domainAndRegistry, sites);
+                        WebsiteGroup group = WebsiteGroup.createForDomain(domainAndRegistry, sites);
+
+                        // The Url named a group that no longer has any sites, e.g. because its
+                        // data was deleted after the entry was created. There is nothing to show,
+                        // so leave for the page that lists all groups.
+                        if (group.getWebsites().isEmpty()) {
+                            assumeNonNull(getSettingsNavigation())
+                                    .finishCurrentSettings(
+                                            this, AllSiteSettings.class, /* parentArgs= */ null);
+                            return;
+                        }
+
+                        mSiteGroup = group;
                         displayGroupPreferences(mSiteGroup);
                     });
         }
@@ -128,7 +138,6 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
 
         setUpClearDataPreference(siteGroup);
         setUpResetGroupPreference(siteGroup);
-        setUpRelatedSitesPreferences(siteGroup);
         updateSitesInGroup(siteGroup);
     }
 
@@ -152,6 +161,15 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
     public void onPause() {
         super.onPause();
         sPausedInstance = this;
+    }
+
+    @Override
+    public void onDestroyView() {
+        super.onDestroyView();
+        if (mConfirmationDialog != null) {
+            mConfirmationDialog.dismiss();
+            mConfirmationDialog = null;
+        }
     }
 
     @Override
@@ -198,6 +216,7 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
                                 })
                         .setNegativeButton(
                                 R.string.cancel, (dialog, which) -> mConfirmationDialog = null)
+                        .setOnDismissListener(dialog -> mConfirmationDialog = null)
                         .show();
         return true;
     }
@@ -247,7 +266,12 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
                 // place for a slightly smoother user experience. However, due to the complexity
                 // involved in refreshing the already fetched data and a very marginal benefit, it
                 // may not be worth it.
-                assumeNonNull(getSettingsNavigation()).finishCurrentSettings(this);
+                //
+                // "All sites" is named explicitly because under Url navigation there is no
+                // fragment back stack to pop: this page occupies a navigation entry, and the
+                // entry it occupies is no longer worth returning to now the group is gone.
+                assumeNonNull(getSettingsNavigation())
+                        .finishCurrentSettings(this, AllSiteSettings.class, /* parentArgs= */ null);
             };
 
     @VisibleForTesting
@@ -296,46 +320,6 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
             preference.setEnabled(false);
         }
         preference.setOnPreferenceClickListener(this);
-    }
-
-    private void setUpRelatedSitesPreferences(WebsiteGroup siteGroup) {
-        PreferenceCategory relatedSitesSection = findPreference(PREF_RELATED_SITES);
-        TextMessagePreference relatedSitesText = new TextMessagePreference(getContext(), null);
-        var rwsInfo = siteGroup.getRwsInfo();
-        boolean shouldRelatedSitesPrefBeVisible =
-                getSiteSettingsDelegate().isRelatedWebsiteSetsDataAccessEnabled()
-                        && rwsInfo != null;
-        relatedSitesText.setVisible(shouldRelatedSitesPrefBeVisible);
-        relatedSitesSection.setVisible(shouldRelatedSitesPrefBeVisible);
-
-        if (shouldRelatedSitesPrefBeVisible) {
-            assumeNonNull(rwsInfo);
-            relatedSitesText.setManagedPreferenceDelegate(
-                    new ForwardingManagedPreferenceDelegate(
-                            getSiteSettingsDelegate().getManagedPreferenceDelegate()) {
-                        @Override
-                        public boolean isPreferenceControlledByPolicy(Preference preference) {
-                            for (var site : siteGroup.getWebsites()) {
-                                if (getSiteSettingsDelegate()
-                                        .isPartOfManagedRelatedWebsiteSet(
-                                                site.getAddress().getOrigin())) {
-                                    return true;
-                                }
-                            }
-                            return false;
-                        }
-                    });
-
-            relatedSitesText.setTitle(
-                    getContext()
-                            .getResources()
-                            .getQuantityString(
-                                    R.plurals.allsites_rws_summary,
-                                    rwsInfo.getMembersCount(),
-                                    Integer.toString(rwsInfo.getMembersCount()),
-                                    rwsInfo.getOwner()));
-            relatedSitesSection.addPreference(relatedSitesText);
-        }
     }
 
     private void updateSitesInGroup(WebsiteGroup siteGroup) {

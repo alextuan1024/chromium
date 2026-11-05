@@ -25,8 +25,6 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/webui/signin/inline_login_handler_impl.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
 #include "chrome/browser/ui/webui/signin/login_ui_test_utils.h"
 #include "chrome/browser/ui/webui/signin/signin_utils_desktop.h"
 #include "chrome/common/chrome_switches.h"
@@ -34,7 +32,6 @@
 #include "chrome/credential_provider/common/gcp_strings.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/test_chrome_web_ui_controller_factory.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -70,11 +67,10 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 using ::testing::_;
 using ::testing::AtLeast;
-using ::testing::InvokeWithoutArgs;
 using ::testing::Return;
 
 using guest_view::GuestViewManager;
@@ -99,7 +95,7 @@ struct ContentInfo {
 
 ContentInfo NavigateAndGetInfo(BrowserWindowInterface* browser,
                                const GURL& url,
-                               WindowOpenDisposition disposition) {
+                               ui::mojom::WindowOpenDisposition disposition) {
   ui_test_utils::NavigateToURLWithDisposition(
       browser, url, disposition,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
@@ -197,8 +193,9 @@ class InlineLoginUIBrowserTest : public InProcessBrowserTest {};
 
 // crbug.com/41136981
 IN_PROC_BROWSER_TEST_F(InlineLoginUIBrowserTest, DSABLED_DifferentStorageId) {
-  ContentInfo info = NavigateAndGetInfo(browser(), GetSigninPromoURL(),
-                                        WindowOpenDisposition::CURRENT_TAB);
+  ContentInfo info =
+      NavigateAndGetInfo(browser(), GetSigninPromoURL(),
+                         ui::mojom::WindowOpenDisposition::kCurrentTab);
   WaitUntilUIReady(browser());
 
   // Make sure storage partition of embedded webview is different from
@@ -232,12 +229,13 @@ IN_PROC_BROWSER_TEST_F(InlineLoginUIBrowserTest, OneProcessLimit) {
   // still be given its own process and storage partition.
   content::RenderProcessHost::SetMaxRendererProcessCount(1);
 
-  ContentInfo info1 = NavigateAndGetInfo(browser(), test_url_1,
-                                         WindowOpenDisposition::CURRENT_TAB);
-  ContentInfo info2 = NavigateAndGetInfo(browser(), test_url_2,
-                                         WindowOpenDisposition::CURRENT_TAB);
-  ContentInfo info3 = NavigateAndGetInfo(browser(), GetSigninPromoURL(),
-                                         WindowOpenDisposition::CURRENT_TAB);
+  ContentInfo info1 = NavigateAndGetInfo(
+      browser(), test_url_1, ui::mojom::WindowOpenDisposition::kCurrentTab);
+  ContentInfo info2 = NavigateAndGetInfo(
+      browser(), test_url_2, ui::mojom::WindowOpenDisposition::kCurrentTab);
+  ContentInfo info3 =
+      NavigateAndGetInfo(browser(), GetSigninPromoURL(),
+                         ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   ASSERT_EQ(info1.pid, info2.pid);
   ASSERT_NE(info1.pid, info3.pid);
@@ -358,8 +356,9 @@ IN_PROC_BROWSER_TEST_F(InlineLoginHelperBrowserTest, WithAuthCode) {
       "foo@gmail.com", GaiaId("gaiaid-12345"), "password", "auth_code",
       /*signin_scoped_device_id=*/std::string());
   base::RunLoop run_loop;
-  EXPECT_CALL(helper, OnClientOAuthSuccess(_))
-      .WillOnce(testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+  EXPECT_CALL(helper, OnClientOAuthSuccess(_)).WillOnce([&run_loop]() {
+    run_loop.Quit();
+  });
 
   SimulateStartAuthCodeForOAuth2TokenExchangeSuccess(
       R"({
@@ -572,7 +571,7 @@ IN_PROC_BROWSER_TEST_F(InlineLoginCorrectGaiaUrlBrowserTest,
       signin_metrics::AccessPoint::kMachineLogon;
   signin_metrics::Reason reason = signin_metrics::Reason::kFetchLstOnly;
 
-  static const std::string email = "foo@gmail.com";
+  const std::string email = "foo@gmail.com";
   auto signin_url =
       signin::GetEmbeddedReauthURLWithEmail(access_point, reason, email);
 

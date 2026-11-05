@@ -4,6 +4,8 @@
 
 #include "components/autofill/core/browser/actor/actor_test_util.h"
 
+#include <utility>
+
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
@@ -39,6 +41,7 @@ TestCreditCardAccessManager::~TestCreditCardAccessManager() = default;
 
 void TestCreditCardAccessManager::FetchCreditCard(
     const CreditCard*,
+    bool,
     OnCreditCardFetchedCallback callback) {
   callback_ = std::move(callback);
 }
@@ -72,13 +75,15 @@ void TestBrowserAutofillManagerWithTestCCAM::FillOrPreviewForm(
     mojom::ActionPersistence action_persistence,
     const FormGlobalId& form_id,
     const FieldGlobalId& field_id,
+    FillingProduct filling_product,
     const FillingPayload& filling_payload,
     AutofillTriggerSource trigger_source,
+    bool require_user_confirmation,
     const base::flat_set<FieldGlobalId>& blocked_fields) {
   last_trigger_field_id_ = field_id;
-  TestBrowserAutofillManager::FillOrPreviewForm(action_persistence, form_id,
-                                                field_id, filling_payload,
-                                                trigger_source, blocked_fields);
+  TestBrowserAutofillManager::FillOrPreviewForm(
+      action_persistence, form_id, field_id, filling_product, filling_payload,
+      trigger_source, require_user_confirmation, blocked_fields);
 }
 
 TestActorAutofillClient::TestActorAutofillClient() {
@@ -87,14 +92,6 @@ TestActorAutofillClient::TestActorAutofillClient() {
 }
 
 TestActorAutofillClient::~TestActorAutofillClient() = default;
-
-AutofillManager*
-TestActorAutofillClient::GetAutofillManagerForPrimaryMainFrame() {
-  if (GetAutofillDriverFactory().GetExistingDrivers().empty()) {
-    return nullptr;
-  }
-  return &GetAutofillDriverFactory().driver(0)->GetAutofillManager();
-}
 
 ActorAutofillManager* TestActorAutofillClient::GetActorAutofillManager() {
   return actor_autofill_manager_.get();
@@ -114,6 +111,7 @@ ActorTestBase::~ActorTestBase() = default;
 void ActorTestBase::SetUp() {
   InitAutofillClient();
   CreateAutofillDriver();
+  ActivateAutofillDriver(autofill_driver());
   client().GetPersonalDataManager().address_data_manager().AddProfile(
       test::GetFullProfile());
 
@@ -156,6 +154,20 @@ TestCreditCardAccessManager& ActorTestBase::credit_card_access_manager() {
 
 PaymentsDataManager& ActorTestBase::payments_data_manager() {
   return client().GetPersonalDataManager().payments_data_manager();
+}
+
+void ActorTestBase::FillForm(int form_index,
+                             ActorFormFillingSelection selection) {
+  service().FillForm(client(), form_index, std::move(selection));
+  test_api(autofill_manager()).RunPendingPostFillTasks();
+}
+
+bool ActorTestBase::CompleteCreditCardFetch(const CreditCard& card) {
+  if (!credit_card_access_manager().RunCreditCardFetchedCallback(card)) {
+    return false;
+  }
+  test_api(autofill_manager()).RunPendingPostFillTasks();
+  return true;
 }
 
 }  // namespace autofill

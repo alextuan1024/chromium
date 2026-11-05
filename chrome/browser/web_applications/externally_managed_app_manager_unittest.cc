@@ -17,12 +17,14 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/test/gtest_util.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/publishers/app_publisher.h"
 #include "chrome/browser/web_applications/external_install_options.h"
 #include "chrome/browser/web_applications/externally_managed_app_manager.h"
+#include "chrome/browser/web_applications/model/management_data.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
@@ -44,14 +46,25 @@
 #include "components/webapps/common/web_page_metadata.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom-shared.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 namespace web_app {
 
 namespace {
+
+ManagementData MakePolicyManagementData(bool is_placeholder,
+                                        base::flat_set<GURL> install_urls) {
+  ManagementData data;
+  data.AddSource(WebAppManagement::kPolicy);
+  data.SetIsPlaceholder(WebAppManagement::kPolicy, is_placeholder);
+  for (const GURL& url : install_urls) {
+    data.AddInstallUrl(WebAppManagement::kPolicy, url);
+  }
+  return data;
+}
 
 int GetInstallCountsFromResult(
     const std::map<GURL, ExternallyManagedAppManager::InstallResult>&
@@ -703,12 +716,8 @@ TEST_F(ExternallyAppManagerTest, MAYBE_PlaceholderAppWindowsClosed) {
   const WebApp* app = fake_provider().registrar_unsafe().GetAppById(app_id);
 
   ASSERT_TRUE(app);
-  EXPECT_THAT(app->management_to_external_config_map(),
-              ElementsAre(std::make_pair(WebAppManagement::kPolicy,
-                                         WebApp::ExternalManagementConfig(
-                                             /*is_placeholder=*/true,
-                                             /*install_urls=*/{kInstallUrl},
-                                             /*additional_policy_ids=*/{}))));
+  EXPECT_EQ(app->management_data(),
+            MakePolicyManagementData(/*is_placeholder=*/true, {kInstallUrl}));
 }
 
 TEST_F(ExternallyAppManagerTest, TwoInstallUrlsSameApp) {
@@ -753,13 +762,9 @@ TEST_F(ExternallyAppManagerTest, TwoInstallUrlsSameApp) {
   EXPECT_EQ(app_registrar().GetAppIds().size(), 1ul);
   const WebApp* app = app_registrar().GetAppById(app_id);
   ASSERT_TRUE(app);
-  EXPECT_THAT(app->management_to_external_config_map(),
-              ElementsAre(std::make_pair(
-                  WebAppManagement::kPolicy,
-                  WebApp::ExternalManagementConfig(
-                      /*is_placeholder=*/false,
-                      /*install_urls=*/{kInstallUrl1, kInstallUrl2},
-                      /*additional_policy_ids=*/{}))));
+  EXPECT_EQ(app->management_data(),
+            MakePolicyManagementData(/*is_placeholder=*/false,
+                                     {kInstallUrl1, kInstallUrl2}));
 }
 
 TEST_F(ExternallyAppManagerTest, RemovingInstallUrlsFromSource) {
@@ -805,13 +810,9 @@ TEST_F(ExternallyAppManagerTest, RemovingInstallUrlsFromSource) {
     EXPECT_EQ(app_registrar().GetAppIds().size(), 1ul);
     const WebApp* app = app_registrar().GetAppById(app_id);
     ASSERT_TRUE(app);
-    EXPECT_THAT(app->management_to_external_config_map(),
-                ElementsAre(std::make_pair(
-                    WebAppManagement::kPolicy,
-                    WebApp::ExternalManagementConfig(
-                        /*is_placeholder=*/false,
-                        /*install_urls=*/{kInstallUrl1, kInstallUrl2},
-                        /*additional_policy_ids=*/{}))));
+    EXPECT_EQ(app->management_data(),
+              MakePolicyManagementData(/*is_placeholder=*/false,
+                                       {kInstallUrl1, kInstallUrl2}));
   }
 
   // Synchronize with 1 install URL.
@@ -840,12 +841,9 @@ TEST_F(ExternallyAppManagerTest, RemovingInstallUrlsFromSource) {
     EXPECT_EQ(app_registrar().GetAppIds().size(), 1ul);
     const WebApp* app = app_registrar().GetAppById(app_id);
     ASSERT_TRUE(app);
-    EXPECT_THAT(app->management_to_external_config_map(),
-                ElementsAre(std::make_pair(WebAppManagement::kPolicy,
-                                           WebApp::ExternalManagementConfig(
-                                               /*is_placeholder=*/false,
-                                               /*install_urls=*/{kInstallUrl1},
-                                               /*additional_policy_ids=*/{}))));
+    EXPECT_EQ(
+        app->management_data(),
+        MakePolicyManagementData(/*is_placeholder=*/false, {kInstallUrl1}));
   }
 
   // Synchronize with 0 install URLs.
@@ -930,12 +928,8 @@ TEST_F(ExternallyAppManagerTest, InstallUrlChanges) {
 
   const WebApp* app = fake_provider().registrar_unsafe().GetAppById(app_id);
   ASSERT_TRUE(app);
-  EXPECT_THAT(app->management_to_external_config_map(),
-              ElementsAre(std::make_pair(WebAppManagement::kPolicy,
-                                         WebApp::ExternalManagementConfig(
-                                             /*is_placeholder=*/false,
-                                             /*install_urls=*/{kInstallUrl2},
-                                             /*additional_policy_ids=*/{}))));
+  EXPECT_EQ(app->management_data(),
+            MakePolicyManagementData(/*is_placeholder=*/false, {kInstallUrl2}));
 }
 
 TEST_F(ExternallyAppManagerTest, PolicyAppOverridesUserInstalledApp) {
@@ -951,8 +945,11 @@ TEST_F(ExternallyAppManagerTest, PolicyAppOverridesUserInstalledApp) {
     // Install user app
     auto& install_page_state =
         web_contents_manager().GetOrCreatePageState(kInstallUrl);
-    install_page_state.manifest_before_default_processing->short_name =
-        u"Test user app";
+    CHECK(install_page_state.opt_manifest.has_value());
+    install_page_state.opt_manifest =
+        install_page_state.opt_manifest->ToBuilder()
+            .SetShortName(u"Test user app")
+            .BuildChecked();
 
     auto install_info =
         WebAppInstallInfo::CreateWithStartUrlForTesting(kStartUrl);
@@ -964,20 +961,24 @@ TEST_F(ExternallyAppManagerTest, PolicyAppOverridesUserInstalledApp) {
     ASSERT_EQ(user_app_id.value(), app_id);
     ASSERT_TRUE(
         app_registrar().AppMatches(app_id, WebAppFilter::InstalledByUser()));
-    ASSERT_TRUE(app_registrar()
-                    .GetAppById(app_id)
-                    ->management_to_external_config_map()
-                    .empty());
+    ASSERT_TRUE((WebAppManagementTypes{WebAppManagement::kSync,
+                                       WebAppManagement::kUserInstalled})
+                    .HasAll(app_registrar()
+                                .GetAppById(app_id)
+                                ->management_data()
+                                .GetSources()));
     ASSERT_EQ("Test user app", app_registrar().GetAppShortName(app_id));
   }
   {
     // Install policy app
     auto& install_page_state =
         web_contents_manager().GetOrCreatePageState(kInstallUrl);
-    install_page_state.manifest_before_default_processing->name =
-        u"Test policy app";
-    install_page_state.manifest_before_default_processing->short_name =
-        u"Test policy app";
+    CHECK(install_page_state.opt_manifest.has_value());
+    install_page_state.opt_manifest =
+        install_page_state.opt_manifest->ToBuilder()
+            .SetName(u"Test policy app")
+            .SetShortName(u"Test policy app")
+            .BuildChecked();
 
     SynchronizeFuture result;
     fake_provider().externally_managed_app_manager().SynchronizeInstalledApps(
@@ -1029,12 +1030,8 @@ TEST_F(ExternallyAppManagerTest, NoNetworkWithPlaceholder) {
   const WebApp* app = fake_provider().registrar_unsafe().GetAppById(app_id);
 
   ASSERT_TRUE(app);
-  EXPECT_THAT(app->management_to_external_config_map(),
-              ElementsAre(std::make_pair(WebAppManagement::kPolicy,
-                                         WebApp::ExternalManagementConfig(
-                                             /*is_placeholder=*/true,
-                                             /*install_urls=*/{kInstallUrl},
-                                             /*additional_policy_ids=*/{}))));
+  EXPECT_EQ(app->management_data(),
+            MakePolicyManagementData(/*is_placeholder=*/true, {kInstallUrl}));
 }
 
 TEST_F(ExternallyAppManagerTest, RedirectInstallUrlPlaceholder) {
@@ -1075,12 +1072,8 @@ TEST_F(ExternallyAppManagerTest, RedirectInstallUrlPlaceholder) {
 
   const WebApp* app = fake_provider().registrar_unsafe().GetAppById(app_id);
   ASSERT_TRUE(app);
-  EXPECT_THAT(app->management_to_external_config_map(),
-              ElementsAre(std::make_pair(WebAppManagement::kPolicy,
-                                         WebApp::ExternalManagementConfig(
-                                             /*is_placeholder=*/true,
-                                             /*install_urls=*/{kInstallUrl},
-                                             /*additional_policy_ids=*/{}))));
+  EXPECT_EQ(app->management_data(),
+            MakePolicyManagementData(/*is_placeholder=*/true, {kInstallUrl}));
 }
 
 TEST_F(ExternallyAppManagerTest, PlaceholderResolvedFromSynchronize) {
@@ -1208,8 +1201,8 @@ TEST_F(ExternallyAppManagerTest, TwoAppsSameInstallUrlSameSourceInstallNow) {
   auto app_ids = fake_provider().registrar_unsafe().GetAppIds();
   EXPECT_THAT(app_ids, ElementsAre(app_id1));
 
-  webapps::AppId app_id2 = web_contents_manager().CreateBasicInstallPageState(
-      kInstallUrl, kManifestUrl2, kStartUrl2);
+  web_contents_manager().CreateBasicInstallPageState(kInstallUrl, kManifestUrl2,
+                                                     kStartUrl2);
 
   {
     ExternalInstallOptions options = template_options;
@@ -1254,8 +1247,8 @@ TEST_F(ExternallyAppManagerTest, TwoAppsSameInstallUrlTwoSourcesInstallNow) {
   auto app_ids = fake_provider().registrar_unsafe().GetAppIds();
   EXPECT_THAT(app_ids, ElementsAre(app_id1));
 
-  webapps::AppId app_id2 = web_contents_manager().CreateBasicInstallPageState(
-      kInstallUrl, kManifestUrl2, kStartUrl2);
+  web_contents_manager().CreateBasicInstallPageState(kInstallUrl, kManifestUrl2,
+                                                     kStartUrl2);
 
   {
     ExternalInstallOptions options = template_options;
@@ -1300,8 +1293,8 @@ TEST_F(ExternallyAppManagerTest, TwoAppsSameInstallUrlTwoSourcesSynchronize) {
   auto app_ids = fake_provider().registrar_unsafe().GetAppIds();
   EXPECT_THAT(app_ids, ElementsAre(app_id1));
 
-  webapps::AppId app_id2 = web_contents_manager().CreateBasicInstallPageState(
-      kInstallUrl, kManifestUrl2, kStartUrl2);
+  web_contents_manager().CreateBasicInstallPageState(kInstallUrl, kManifestUrl2,
+                                                     kStartUrl2);
 
   {
     SynchronizeFuture result;
@@ -1383,13 +1376,9 @@ TEST_F(ExternallyAppManagerTest, PlaceholderFixedBySecondInstallUrlInstallNow) {
   const WebApp* app =
       fake_provider().registrar_unsafe().GetAppById(app_at_install_url);
   ASSERT_TRUE(app);
-  EXPECT_THAT(app->management_to_external_config_map(),
-              ElementsAre(std::make_pair(
-                  WebAppManagement::kPolicy,
-                  WebApp::ExternalManagementConfig(
-                      /*is_placeholder=*/false,
-                      /*install_urls=*/{kInstallUrl1, kInstallUrl2},
-                      /*additional_policy_ids=*/{}))));
+  EXPECT_EQ(app->management_data(),
+            MakePolicyManagementData(/*is_placeholder=*/false,
+                                     {kInstallUrl1, kInstallUrl2}));
 }
 
 TEST_F(ExternallyAppManagerTest,
@@ -1445,13 +1434,9 @@ TEST_F(ExternallyAppManagerTest,
   const WebApp* app =
       fake_provider().registrar_unsafe().GetAppById(app_at_install_url);
   ASSERT_TRUE(app);
-  EXPECT_THAT(app->management_to_external_config_map(),
-              ElementsAre(std::make_pair(
-                  WebAppManagement::kPolicy,
-                  WebApp::ExternalManagementConfig(
-                      /*is_placeholder=*/false,
-                      /*install_urls=*/{kInstallUrl1, kInstallUrl2},
-                      /*additional_policy_ids=*/{}))));
+  EXPECT_EQ(app->management_data(),
+            MakePolicyManagementData(/*is_placeholder=*/false,
+                                     {kInstallUrl1, kInstallUrl2}));
 }
 
 TEST_F(ExternallyAppManagerTest, PlaceholderFullInstallConflictCanUpdate) {
@@ -1527,18 +1512,12 @@ TEST_F(ExternallyAppManagerTest, PlaceholderFullInstallConflictCanUpdate) {
   const WebApp* app =
       fake_provider().registrar_unsafe().GetAppById(app_at_install_url);
   ASSERT_TRUE(app);
-  EXPECT_THAT(
-      app->management_to_external_config_map(),
-      UnorderedElementsAre(std::make_pair(WebAppManagement::kPolicy,
-                                          WebApp::ExternalManagementConfig(
-                                              /*is_placeholder=*/true,
-                                              /*install_urls=*/{kInstallUrl1},
-                                              /*additional_policy_ids=*/{})),
-                           std::make_pair(WebAppManagement::kDefault,
-                                          WebApp::ExternalManagementConfig(
-                                              /*is_placeholder=*/false,
-                                              /*install_urls=*/{kInstallUrl2},
-                                              /*additional_policy_ids=*/{}))));
+  ManagementData expected_management_data =
+      MakePolicyManagementData(/*is_placeholder=*/true, {kInstallUrl1});
+  expected_management_data.AddSource(WebAppManagement::kDefault);
+  expected_management_data.AddInstallUrl(WebAppManagement::kDefault,
+                                         kInstallUrl2);
+  EXPECT_EQ(app->management_data(), expected_management_data);
   // Phase 2 - undo the redirection, and point to start url.
   webapps::AppId app_at_start_url =
       web_contents_manager().CreateBasicInstallPageState(
@@ -1567,6 +1546,22 @@ TEST_F(ExternallyAppManagerTest, PlaceholderFullInstallConflictCanUpdate) {
   auto app_ids = fake_provider().registrar_unsafe().GetAppIds();
   EXPECT_THAT(app_ids,
               UnorderedElementsAre(app_at_install_url, app_at_start_url));
+}
+
+TEST(ExternallyManagedAppManagerDeathTest,
+     InstallPlaceholderDisallowedSourceChecks) {
+  ExternallyManagedAppManager manager(/*profile=*/nullptr);
+  manager.Shutdown();
+
+  ExternalInstallOptions options(GURL("https://example.com/install"),
+                                 mojom::UserDisplayMode::kStandalone,
+                                 ExternalInstallSource::kInternalDefault);
+  options.install_placeholder = true;
+
+  EXPECT_CHECK_DEATH(manager.InstallNow(options, base::DoNothing()));
+  EXPECT_CHECK_DEATH(manager.Install(options, base::DoNothing()));
+  EXPECT_CHECK_DEATH(manager.SynchronizeInstalledApps(
+      {options}, ExternalInstallSource::kInternalDefault, base::DoNothing()));
 }
 
 }  // namespace

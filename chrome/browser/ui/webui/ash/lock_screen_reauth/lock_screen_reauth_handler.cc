@@ -20,12 +20,11 @@
 #include "chrome/browser/ash/login/signin_partition_manager.h"
 #include "chrome/browser/ash/login/signin_partition_manager_factory.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/enterprise/util/managed_browser_utils.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_display_host_webui.h"
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/lock_screen_reauth_dialogs.h"
 #include "chrome/browser/ui/webui/ash/login/online_login_utils.h"
-#include "chrome/installer/util/google_update_settings.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/login/auth/challenge_response/cert_utils.h"
 #include "chromeos/ash/components/login/auth/public/auth_types.h"
 #include "chromeos/ash/components/login/auth/public/challenge_response_key.h"
@@ -34,7 +33,11 @@
 #include "components/account_id/account_id.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/known_user.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/storage_partition.h"
 #include "google_apis/gaia/gaia_auth_util.h"
@@ -54,8 +57,13 @@ bool ShouldDoSamlRedirect(const std::string& email) {
   // have to skip any user verification notice page. For SAML this is currently
   // only possible with redirect endpoint. Once reauth endpoint enables this,
   // remove auto_start_reauth from this function.
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  CHECK(primary_session);
   const PrefService* prefs =
-      user_manager::UserManager::Get()->GetPrimaryUser()->GetProfilePrefs();
+      CHECK_DEREF(user_manager::UserManager::Get()->FindUser(
+                      primary_session->account_id()))
+          .GetProfilePrefs();
   bool auto_start_reauth =
       prefs && prefs->GetBoolean(ash::prefs::kLockScreenAutoStartOnlineReauth);
   if (!auto_start_reauth) {
@@ -82,11 +90,11 @@ bool ShouldDoSamlRedirect(const std::string& email) {
 }
 
 std::string GetDeviceId(const user_manager::KnownUser& known_user) {
-  const user_manager::User* user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
-  CHECK(user) << "Could not find an active user for lock screen";
+  const auto* session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  CHECK(session) << "Could not find a primary session for lock screen";
 
-  std::string device_id = known_user.GetDeviceId(user->GetAccountId());
+  std::string device_id = known_user.GetDeviceId(session->account_id());
   if (device_id.empty()) {
     // TODO(http://b/311342008): Unify the error handling for missing device ids
     // post login. We should ideally CHECK() here.
@@ -162,10 +170,10 @@ void LockScreenReauthHandler::LoadAuthenticatorParam(
   authenticator_state_ = AuthenticatorState::LOADING;
   login::GaiaContext context;
   context.email = email_;
-  context.gaia_id = user_manager::UserManager::Get()
-                        ->GetPrimaryUser()
-                        ->GetAccountId()
-                        .GetGaiaId();
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  CHECK(primary_session);
+  context.gaia_id = primary_session->account_id().GetGaiaId();
 
   user_manager::KnownUser known_user(&local_state_.get());
   if (!context.email.empty()) {
@@ -179,7 +187,8 @@ void LockScreenReauthHandler::LoadAuthenticatorParam(
 void LockScreenReauthHandler::LoadGaia(const login::GaiaContext& context,
                                        const bool force_reauth_gaia_page) {
   LOG_ASSERT(Profile::FromWebUI(web_ui()) ==
-             ProfileHelper::Get()->GetLockScreenProfile());
+             Profile::FromBrowserContext(
+                 BrowserContextHelper::Get()->GetLockScreenBrowserContext()));
   // Start a new session with SigninPartitionManager, generating a unique
   // StoragePartition.
   login::SigninPartitionManager* signin_partition_manager =
@@ -238,20 +247,23 @@ void LockScreenReauthHandler::OnSetCookieForLoadGaiaWithPartition(
   params.Set("doSamlRedirect", do_saml_redirect);
 
   // Path without the leading slash, as expected by authenticator.js.
-  const std::string default_gaia_path =
-      gaia_urls.embedded_setup_chromeos_url().GetPath().substr(1);
+  std::string_view default_gaia_path =
+      gaia_urls.embedded_setup_chromeos_url().path().substr(1);
   params.Set("fallbackGaiaPath", default_gaia_path);
   if (do_saml_redirect) {
     params.Set("gaiaPath",
-               gaia_urls.saml_redirect_chromeos_url().GetPath().substr(1));
+               gaia_urls.saml_redirect_chromeos_url().path().substr(1));
   } else if (!context.email.empty()) {
     params.Set("gaiaPath",
-               gaia_urls.embedded_reauth_chromeos_url().GetPath().substr(1));
+               gaia_urls.embedded_reauth_chromeos_url().path().substr(1));
   } else {
     params.Set("gaiaPath", default_gaia_path);
   }
 
-  const std::string domain = enterprise_util::GetDomainFromEmail(context.email);
+  // ExtractDomainName() expects an email, so skip it when there is none.
+  const std::string domain = context.email.empty()
+                                 ? std::string()
+                                 : gaia::ExtractDomainName(context.email);
   if (!domain.empty()) {
     params.Set("enterpriseEnrollmentDomain", domain);
   } else {
@@ -265,8 +277,9 @@ void LockScreenReauthHandler::OnSetCookieForLoadGaiaWithPartition(
     params.Set("ssoProfile", sso_profile);
   }
 
-  const std::string& app_locale = application_locale_storage_->Get();
-  DCHECK(!app_locale.empty());
+  std::string_view app_locale =
+      application_locale_storage_->GetTag().tag_string();
+  CHECK(!app_locale.empty(), base::NotFatalUntil::M162);
   params.Set("hl", app_locale);
   params.Set("email", context.email);
   params.Set("gaiaId", context.gaia_id.ToString());
@@ -324,8 +337,8 @@ void LockScreenReauthHandler::HandleCompleteAuthentication(
     return;
   }
 
-  DCHECK(!email.empty());
-  DCHECK(!gaia_id.empty());
+  CHECK(!email.empty(), base::NotFatalUntil::M162);
+  CHECK(!gaia_id.empty(), base::NotFatalUntil::M162);
 
   // Retrieve ChallengeResponseKey from client certificates.
   std::optional<ChallengeResponseKey> challenge_response_key;
@@ -395,8 +408,9 @@ void LockScreenReauthHandler::OnReauthDialogReadyForTesting() {
 
 void LockScreenReauthHandler::CheckCredentials(
     std::unique_ptr<UserContext> user_context) {
-  Profile* profile =
-      ProfileHelper::Get()->GetProfileByAccountId(user_context->GetAccountId());
+  Profile* profile = Profile::FromBrowserContext(
+      BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          user_context->GetAccountId()));
   if (!profile) {
     LOG(ERROR) << "Invalid account id";
     return;
@@ -413,7 +427,7 @@ void LockScreenReauthHandler::CheckCredentials(
 
 void LockScreenReauthHandler::HandleUpdateUserPassword(
     const base::ListValue& value) {
-  DCHECK(!value.empty());
+  CHECK(!value.empty(), base::NotFatalUntil::M162);
   const std::string& old_password = value[0].GetString();
   lock_screen_reauth_manager_->UpdateUserPassword(old_password);
 }

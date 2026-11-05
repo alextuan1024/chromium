@@ -11,6 +11,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/state_transitions.h"
 #include "base/strings/escape.h"
+#include "base/strings/stringprintf.h"
 #include "base/types/expected.h"
 #include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/glic_pref_names.h"
@@ -243,7 +244,7 @@ void GlicAnnotationManager::ScrollTo(mojom::ScrollToParamsPtr params,
     }
   }
 
-  if (host_->instance().GetPanelState().kind ==
+  if (host_->instance().GetPanelState()->kind ==
       mojom::PanelStateKind::kHidden) {
     std::move(wrapped_callback).Run(mojom::ScrollToErrorReason::kNoFocusedTab);
     return;
@@ -353,7 +354,9 @@ GlicAnnotationManager::AnnotationTask::AnnotationTask(
       &AnnotationTask::RemoteDisconnected, base::Unretained(this)));
 
   // Listens to the panel-closing notification.
-  host_->instance().AddStateObserver(this);
+  panel_state_subscription_ =
+      host_->instance().GetPanelState().AddObserver(base::BindRepeating(
+          &AnnotationTask::PanelStateChanged, base::Unretained(this)));
 
   if (base::FeatureList::IsEnabled(features::kGlicDefaultTabContextSetting)) {
     host_->AddObserver(this);
@@ -373,7 +376,6 @@ GlicAnnotationManager::AnnotationTask::~AnnotationTask() {
     std::move(scroll_to_callback_)
         .Run(mojom::ScrollToErrorReason::kNotSupported);
   }
-  host_->instance().RemoveStateObserver(this);
   if (base::FeatureList::IsEnabled(features::kGlicDefaultTabContextSetting)) {
     host_->RemoveObserver(this);
   }
@@ -461,8 +463,8 @@ void GlicAnnotationManager::AnnotationTask::ResetConnections() {
   annotation_agent_.reset();
   annotation_agent_host_receiver_.reset();
   tab_change_subscription_ = base::CallbackListSubscription();
+  panel_state_subscription_ = base::CallbackListSubscription();
   content::WebContentsObserver::Observe(nullptr);
-  host_->instance().RemoveStateObserver(this);
   if (base::FeatureList::IsEnabled(features::kGlicDefaultTabContextSetting)) {
     host_->RemoveObserver(this);
   }

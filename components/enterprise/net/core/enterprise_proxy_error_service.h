@@ -13,6 +13,8 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
+#include "base/observer_list_types.h"
 #include "base/values.h"
 #include "components/enterprise/net/core/enterprise_proxy_error_data.h"
 #include "components/enterprise/net/core/enterprise_proxy_service.h"
@@ -28,12 +30,59 @@ namespace enterprise_net {
 // Authentication challenges for managed Provisioning Domain dynamic routes.
 class EnterpriseProxyErrorService : public KeyedService {
  public:
+  using ProxyAuthCredentialsCallback =
+      base::OnceCallback<void(const std::optional<net::AuthCredentials>&)>;
+
+  class Observer : public base::CheckedObserver {
+   public:
+    virtual void OnDisguisedErrorRecorded(
+        int64_t navigation_id,
+        const EnterpriseProxyErrorData& error_data) {}
+    virtual void OnEnterpriseProxyErrorServiceShuttingDown() {}
+  };
+
+  // A 407 challenge that this service has committed to handling.
+  //
+  // Move-only, and only this service can mint one, so an interception can be
+  // resolved at most once.
+  class PendingInterception {
+   public:
+    PendingInterception(PendingInterception&&);
+    PendingInterception& operator=(PendingInterception&&);
+    PendingInterception(const PendingInterception&) = delete;
+    PendingInterception& operator=(const PendingInterception&) = delete;
+    ~PendingInterception();
+
+   private:
+    friend class EnterpriseProxyErrorService;
+
+    PendingInterception(EnterpriseProxyService::ProxyAuthChallengeMatch match,
+                        int64_t navigation_id,
+                        GURL destination_url,
+                        GURL proxy_url,
+                        int error_code,
+                        std::optional<GURL> redirect_url);
+
+    EnterpriseProxyService::ProxyAuthChallengeMatch match_;
+    int64_t navigation_id_;
+    GURL destination_url_;
+    GURL proxy_url_;
+    int error_code_;
+    std::optional<GURL> redirect_url_;
+  };
+
   explicit EnterpriseProxyErrorService(
       EnterpriseProxyService* enterprise_proxy_service);
   EnterpriseProxyErrorService(const EnterpriseProxyErrorService&) = delete;
   EnterpriseProxyErrorService& operator=(const EnterpriseProxyErrorService&) =
       delete;
   ~EnterpriseProxyErrorService() override;
+
+  // KeyedService:
+  void Shutdown() override;
+
+  void AddObserver(Observer* observer);
+  void RemoveObserver(Observer* observer);
 
   // Records a disguised proxy error for the specified navigation ID.
   void RecordDisguisedError(int64_t navigation_id,
@@ -53,17 +102,32 @@ class EnterpriseProxyErrorService : public KeyedService {
   base::DictValue GetErrorPageParams(
       const EnterpriseProxyErrorData& error_data) const;
 
-  // Intercepts a 407 Proxy Authentication Required challenge.
-  // Returns true if this challenge is handled by EnterpriseProxyErrorService
-  // (either canceled due to a disguised error or credentials fetched).
-  // Returns false if the challenge is not applicable to dynamic routes.
-  bool InterceptProxyAuthChallenge(
+  // Evaluates a 407 Proxy Authentication Required challenge.
+  //
+  // Returns std::nullopt if the challenge is not applicable to managed dynamic
+  // routes, in which case the caller should fall back to its default auth
+  // handling.
+  //
+  // Otherwise returns a handle that the caller must pass to
+  // `ResolveProxyAuthChallenge()` to resolve the challenge.
+  [[nodiscard]] std::optional<PendingInterception> EvaluateProxyAuthChallenge(
       const net::AuthChallengeInfo& auth_info,
       const GURL& destination_url,
       const scoped_refptr<net::HttpResponseHeaders>& response_headers,
-      int64_t navigation_id,
-      base::OnceCallback<void(const std::optional<net::AuthCredentials>&)>
-          callback);
+      int64_t navigation_id);
+
+  // Resolves an interception, running `callback` exactly once -- immediately
+  // for the fail-closed decisions, or later once an access token has been
+  // fetched.
+  //
+  // `callback` still runs if the underlying EnterpriseProxyService is shut down
+  // or destroyed mid-fetch. It is dropped only if *this* service is destroyed
+  // first, which KeyedService teardown ordering prevents; see
+  // OnProxyAuthCredentialsFetched().
+  //
+  // A null `callback` is a no-op: `interception` is discarded.
+  void ResolveProxyAuthChallenge(PendingInterception interception,
+                                 ProxyAuthCredentialsCallback callback);
 
  private:
   void RecordErrorCodeHistogram(int error_code) const;
@@ -74,22 +138,23 @@ class EnterpriseProxyErrorService : public KeyedService {
       const GURL& proxy_url,
       int error_code,
       EnterpriseProxyErrorData::ErrorCategory category,
+      std::optional<GURL> redirect_url,
       const net::NetLogWithSource& net_log);
 
-  void OnProxyAuthChallengeResult(
-      bool* handled_flag,
+  // Continuation for the asynchronous credential fetch.
+  void OnProxyAuthCredentialsFetched(
       int64_t navigation_id,
       const GURL& destination_url,
       const GURL& proxy_url,
       int error_code,
-      base::OnceCallback<void(const std::optional<net::AuthCredentials>&)>
-          coord_callback,
-      EnterpriseProxyService::ProxyAuthChallengeResult result,
+      ProxyAuthCredentialsCallback callback,
+      EnterpriseProxyService::CredentialFetchOutcome outcome,
       const std::optional<net::AuthCredentials>& credentials,
       const net::NetLogWithSource& net_log);
 
   raw_ptr<EnterpriseProxyService> enterprise_proxy_service_ = nullptr;
   base::flat_map<int64_t, EnterpriseProxyErrorData> disguised_errors_;
+  base::ObserverList<Observer> observers_;
   base::WeakPtrFactory<EnterpriseProxyErrorService> weak_ptr_factory_{this};
 };
 

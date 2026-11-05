@@ -46,6 +46,7 @@ import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.SavedTabGroupTab;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
@@ -91,7 +92,8 @@ public class PinnedTabStripItemContextMenuCoordinatorTest {
         when(mTabBookmarkerSupplier.get()).thenReturn(mTabBookmarker);
 
         when(mTabModel.getTabGroupCount()).thenReturn(1);
-        when(mTabModel.tabGroupExists(mTabGroupId)).thenReturn(true);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(mTabGroupId)))
+                .thenReturn(true);
         SavedTabGroup savedGroup = new SavedTabGroup();
         savedGroup.syncId = "sync_group_id";
         savedGroup.localId = new LocalTabGroupId(mTabGroupId);
@@ -173,7 +175,7 @@ public class PinnedTabStripItemContextMenuCoordinatorTest {
                 TAB_ID,
                 /* collaborationId= */ null,
                 /* listViewTouchTracker= */ null);
-        verify(mTabBookmarker).addOrEditBookmark(mTab);
+        verify(mTabBookmarker).addOrEditBookmark(mTab, /* anchorView= */ null);
     }
 
     @Test
@@ -190,7 +192,7 @@ public class PinnedTabStripItemContextMenuCoordinatorTest {
                 TAB_ID,
                 /* collaborationId= */ null,
                 /* listViewTouchTracker= */ null);
-        verify(mTabBookmarker).addOrEditBookmark(mTab);
+        verify(mTabBookmarker).addOrEditBookmark(mTab, /* anchorView= */ null);
     }
 
     @Test
@@ -299,7 +301,7 @@ public class PinnedTabStripItemContextMenuCoordinatorTest {
         mUrl = new GURL(LOCALHOST_URL);
         when(mTab.getUrl()).thenReturn(mUrl);
         when(mTabModel.getTabGroupCount()).thenReturn(0);
-        when(mTabModel.tabGroupExists(any())).thenReturn(false);
+        when(mTabModel.containsTabGroup(any())).thenReturn(false);
         when(mTabGroupSyncService.getAllGroupIds()).thenReturn(new String[0]);
         mCoordinator.buildMenuActionItems(mMenuItemList, TAB_ID);
 
@@ -317,7 +319,7 @@ public class PinnedTabStripItemContextMenuCoordinatorTest {
         mUrl = new GURL(LOCALHOST_URL);
         when(mTab.getUrl()).thenReturn(mUrl);
         when(mTabModel.getTabGroupCount()).thenReturn(0);
-        when(mTabModel.tabGroupExists(any())).thenReturn(false);
+        when(mTabModel.containsTabGroup(any())).thenReturn(false);
         when(mTabGroupSyncService.getAllGroupIds()).thenReturn(new String[0]);
         mCoordinator.buildMenuActionItems(mMenuItemList, TAB_ID);
 

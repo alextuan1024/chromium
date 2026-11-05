@@ -53,6 +53,7 @@
 #include "third_party/blink/renderer/core/workers/worker_reporting_proxy.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_client_settings_object_snapshot.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
 
@@ -63,16 +64,23 @@ SharedWorkerGlobalScope::SharedWorkerGlobalScope(
     SharedWorkerThread* thread,
     base::TimeTicks time_origin,
     const SharedWorkerToken& token,
-    bool require_cross_site_request_for_cookies)
+    bool require_cross_site_request_for_cookies,
+    net::StorageAccessApiStatus storage_access_api_status)
     : WorkerGlobalScope(std::move(creation_params),
                         thread,
                         time_origin,
                         /*is_service_worker_global_scope=*/false),
       token_(token),
       require_cross_site_request_for_cookies_(
-          require_cross_site_request_for_cookies) {}
+          require_cross_site_request_for_cookies),
+      storage_access_api_status_(storage_access_api_status) {}
 
 SharedWorkerGlobalScope::~SharedWorkerGlobalScope() = default;
+
+net::StorageAccessApiStatus SharedWorkerGlobalScope::GetStorageAccessApiStatus()
+    const {
+  return storage_access_api_status_;
+}
 
 const AtomicString& SharedWorkerGlobalScope::InterfaceName() const {
   return event_target_names::kSharedWorkerGlobalScope;
@@ -186,20 +194,41 @@ void SharedWorkerGlobalScope::Connect(MessagePortChannel channel) {
   DCHECK(!IsContextPaused());
   auto* port = MakeGarbageCollected<MessagePort>(*this);
   port->Entangle(std::move(channel));
-  MessageEvent* event =
-      MessageEvent::Create(MakeGarbageCollected<GCedMessagePortArray>(1, port),
-                           /*origin=*/nullptr, String(), port);
-  event->initEvent(event_type_names::kConnect, false, false);
+  MessageEvent* event;
+  if (RuntimeEnabledFeatures::
+          SharedWorkerConnectEventEmptyStringDataEnabled()) {
+    // https://html.spec.whatwg.org/multipage/workers.html#run-a-worker
+    // ... fire an event named 'connect' at worker global scope, using
+    // MessageEvent, with the data attribute initialized to the empty string,
+    // the ports attribute initialized to a new frozen array containing inside
+    // port, and the source attribute initialized to inside port.
+    event = MessageEvent::Create();
+    event->initMessageEvent(
+        event_type_names::kConnect, /*bubbles=*/false,
+        /*cancelable=*/false, /*data=*/g_empty_string,
+        /*origin=*/nullptr, /*last_event_id=*/String(), port,
+        MakeGarbageCollected<GCedMessagePortArray>(1, port));
+  } else {
+    // TODO(crbug.com/583449815): When removing the flag, also remove
+    // MessageEvent::Create(ports, origin, last_event_id, source) and its
+    // constructor, since this is the only caller of them.
+    event = MessageEvent::Create(
+        MakeGarbageCollected<GCedMessagePortArray>(1, port),
+        /*origin=*/nullptr, String(), port);
+    event->initEvent(event_type_names::kConnect, false, false);
+  }
   DispatchEvent(*event);
 }
 
-void SharedWorkerGlobalScope::ExceptionThrown(ErrorEvent* event) {
-  WorkerGlobalScope::ExceptionThrown(event);
+void SharedWorkerGlobalScope::ExceptionThrown(
+    ErrorEvent* event,
+    SanitizeScriptErrors sanitize_script_errors) {
+  WorkerGlobalScope::ExceptionThrown(event, sanitize_script_errors);
   if (WorkerThreadDebugger* debugger =
-          WorkerThreadDebugger::From(GetThread()->GetIsolate()))
+          WorkerThreadDebugger::From(GetThread()->GetIsolate())) {
     debugger->ExceptionThrown(GetThread(), event);
+  }
 }
-
 void SharedWorkerGlobalScope::Trace(Visitor* visitor) const {
   WorkerGlobalScope::Trace(visitor);
 }
@@ -209,7 +238,10 @@ bool SharedWorkerGlobalScope::CrossOriginIsolatedCapability() const {
 }
 
 bool SharedWorkerGlobalScope::IsIsolatedContext() const {
-  return Agent::IsIsolatedContext();
+  // See `LocalDOMWindow::IsIsolatedContext()`. E.g., a data: URL shared worker
+  // created by an isolated context has an opaque origin, and is not one.
+  const SecurityOrigin* origin = GetSecurityOrigin();
+  return Agent::IsIsolatedContext() && origin && !origin->IsOpaque();
 }
 
 }  // namespace blink

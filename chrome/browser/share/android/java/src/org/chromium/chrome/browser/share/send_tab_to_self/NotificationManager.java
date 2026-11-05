@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.share.send_tab_to_self;
 
 import static org.chromium.build.NullUtil.assertNonNull;
-import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.AlarmManager;
 import android.app.Notification;
@@ -20,8 +19,6 @@ import android.net.Uri;
 import android.provider.Browser;
 
 import androidx.annotation.VisibleForTesting;
-
-import java.util.Collections;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
@@ -43,6 +40,7 @@ import org.chromium.chrome.browser.notifications.NotificationWrapperBuilderFacto
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
+import org.chromium.chrome.browser.profiles.ProfileTokenUtils;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxy;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.NotificationMetadata;
@@ -50,6 +48,8 @@ import org.chromium.components.browser_ui.notifications.NotificationWrapper;
 import org.chromium.components.browser_ui.notifications.NotificationWrapperBuilder;
 import org.chromium.components.browser_ui.notifications.PendingIntentProvider;
 import org.chromium.components.external_intents.ExternalNavigationHandler;
+
+import java.util.Collections;
 
 /**
  * Manages all SendTabToSelf related notifications for Android. This includes displaying, handling
@@ -128,9 +128,11 @@ public class NotificationManager {
      * Opens the URI in the matching native app, if there is one.
      *
      * @param uri The URI to open.
+     * @param entryPoint The UI entry point that triggered the native app launch.
      * @return true if the native app was launched, false otherwise.
      */
-    public static boolean openInNativeAppIfPossible(@Nullable Uri uri) {
+    public static boolean openInNativeAppIfPossible(
+            @Nullable Uri uri, @NativeAppOpenEntryPoint int entryPoint) {
         if (!canOpenInNativeApp(uri)) {
             return false;
         }
@@ -138,7 +140,11 @@ public class NotificationManager {
         Intent intent = new Intent(Intent.ACTION_VIEW, uri);
         ExternalNavigationHandler.sanitizeQueryIntentActivitiesIntent(intent);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        return IntentUtils.safeStartActivity(context, intent);
+        if (!IntentUtils.safeStartActivity(context, intent)) {
+            return false;
+        }
+        SendTabToSelfMetricsRecorder.recordOpenedInNativeApp(entryPoint);
+        return true;
     }
 
     /**
@@ -152,12 +158,14 @@ public class NotificationManager {
      *     restoration and is expected to be set only for trusted navigations.
      * @param pageContext The serialized PageContext proto bytes for form field propagation, or
      *     null.
+     * @param profile The {@link Profile} the notification was shown for.
      */
     private static void openUrl(
             @Nullable Uri uri,
             @Nullable String scrollToTextFragment,
-            byte @Nullable [] pageContext) {
-        if (openInNativeAppIfPossible(uri)) {
+            byte @Nullable [] pageContext,
+            Profile profile) {
+        if (openInNativeAppIfPossible(uri, NativeAppOpenEntryPoint.MOBILE_NOTIFICATION)) {
             return;
         }
 
@@ -173,18 +181,17 @@ public class NotificationManager {
                         .putExtra(WebappConstants.REUSE_URL_MATCHING_TAB_ELSE_NEW_TAB, true)
                         .putExtra(IntentHandler.EXTRA_FROM_SEND_TAB_TO_SELF, true);
 
-        if (scrollToTextFragment != null
-                && ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)) {
+        if (scrollToTextFragment != null) {
             intent.putExtra(IntentHandler.EXTRA_SCROLL_TO_TEXT_FRAGMENT, scrollToTextFragment);
         }
 
-        if (pageContext != null
-                && ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)) {
+        if (pageContext != null) {
             intent.putExtra(IntentHandler.EXTRA_SEND_TAB_TO_SELF_PAGE_CONTEXT, pageContext);
         }
 
+        // TODO(crbug.com/40254448): Route to a window for this Profile once
+        // ChromeLauncherActivity/IntentHandler honor profile tokens.
+        ProfileTokenUtils.addProfileToIntent(profile, intent);
         IntentUtils.addTrustedIntentExtras(intent);
         context.startActivity(intent);
     }
@@ -200,10 +207,30 @@ public class NotificationManager {
         final String action = assertNonNull(intent.getAction());
         final String guid = IntentUtils.safeGetStringExtra(intent, NOTIFICATION_GUID_EXTRA);
         assertNonNull(guid);
-        // If this feature ever supports incognito mode, we need to modify
-        // this method to obtain the current profile, rather than the last-used
-        // regular profile.
-        final Profile profile = ProfileManager.getLastUsedRegularProfile();
+        if (!ProfileTokenUtils.hasProfileToken(intent)) {
+            // TODO(crbug.com/585922618): Remove this fallback in M163 once notifications posted
+            // before profile tokens were added have expired.
+            handleIntentForProfile(
+                    intent, action, guid, ProfileManager.getLastUsedRegularProfile());
+            return;
+        }
+        ProfileTokenUtils.retrieveProfileFromIntent(
+                intent, (profile) -> handleIntentForProfile(intent, action, guid, profile));
+    }
+
+    /**
+     * Handles a notification action once the associated {@link Profile} has been resolved. If the
+     * Profile could not be resolved (e.g. it was deleted), only hides the notification without
+     * opening the URL, calling native bridge methods, or recording status metrics.
+     */
+    private static void handleIntentForProfile(
+            Intent intent, String action, String guid, @Nullable Profile profile) {
+        if (profile == null) {
+            // TODO(crbug.com/587107842): Show an error message when the notification's Profile no
+            // longer exists.
+            hideNotification(guid);
+            return;
+        }
         switch (action) {
             case NOTIFICATION_ACTION_TAP:
                 String scrollToTextFragment =
@@ -212,7 +239,7 @@ public class NotificationManager {
                 byte[] pageContext =
                         IntentUtils.safeGetByteArrayExtra(
                                 intent, IntentHandler.EXTRA_SEND_TAB_TO_SELF_PAGE_CONTEXT);
-                openUrl(intent.getData(), scrollToTextFragment, pageContext);
+                openUrl(intent.getData(), scrollToTextFragment, pageContext, profile);
                 hideNotification(guid);
                 SendTabToSelfAndroidBridge.markEntryOpened(profile, guid);
                 SendTabToSelfAndroidBridge.markEntryActivated(
@@ -222,13 +249,12 @@ public class NotificationManager {
             case NOTIFICATION_ACTION_DISMISS:
                 hideNotification(guid);
                 SendTabToSelfAndroidBridge.dismissEntry(profile, guid);
-                SendTabToSelfMetricsRecorder.recordNotificationStatus(
-                        NotificationStatus.DISMISSED);
+                SendTabToSelfMetricsRecorder.recordNotificationStatus(NotificationStatus.DISMISSED);
                 break;
             case NOTIFICATION_ACTION_TIMEOUT:
+                hideNotification(guid);
                 SendTabToSelfAndroidBridge.dismissEntry(profile, guid);
-                SendTabToSelfMetricsRecorder.recordNotificationStatus(
-                        NotificationStatus.TIMED_OUT);
+                SendTabToSelfMetricsRecorder.recordNotificationStatus(NotificationStatus.TIMED_OUT);
                 break;
         }
     }
@@ -238,13 +264,14 @@ public class NotificationManager {
      *
      * @param guid The GUID of the notification to hide.
      * @return whether the notification was hidden. False if there is corresponding notification to
-     * hide.
+     *     hide.
      */
     @CalledByNative
     private static boolean hideNotification(@JniType("std::string") @Nullable String guid) {
         NotificationSharedPrefManager.ActiveNotification activeNotification =
-                assumeNonNull(NotificationSharedPrefManager.findActiveNotification(guid));
-        if (!NotificationSharedPrefManager.removeActiveNotification(guid)) {
+                NotificationSharedPrefManager.findActiveNotification(guid);
+        if (activeNotification == null
+                || !NotificationSharedPrefManager.removeActiveNotification(guid)) {
             return false;
         }
         BaseNotificationManagerProxy manager = BaseNotificationManagerProxyFactory.create();
@@ -256,6 +283,7 @@ public class NotificationManager {
     /**
      * Displays a notification.
      *
+     * @param profile Profile associated with the notification.
      * @param guid GUID of the SendTabToSelf entry.
      * @param url URL to open when the user taps on the notification.
      * @param title Title to display within the notification.
@@ -271,6 +299,7 @@ public class NotificationManager {
     @CalledByNative
     @VisibleForTesting
     static boolean showNotification(
+            @JniType("Profile*") Profile profile,
             @JniType("std::string") String guid,
             @JniType("std::string") String url,
             @JniType("std::string") String title,
@@ -296,28 +325,28 @@ public class NotificationManager {
                         .setData(uri)
                         .setAction(NOTIFICATION_ACTION_TAP)
                         .putExtra(NOTIFICATION_GUID_EXTRA, guid);
-        if (scrollToTextFragment != null
-                && ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)) {
+        ProfileTokenUtils.addProfileToIntent(profile, tapIntent);
+        if (scrollToTextFragment != null) {
             tapIntent.putExtra(IntentHandler.EXTRA_SCROLL_TO_TEXT_FRAGMENT, scrollToTextFragment);
         }
-        if (pageContext != null
-                && ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)) {
+        if (pageContext != null) {
             tapIntent.putExtra(IntentHandler.EXTRA_SEND_TAB_TO_SELF_PAGE_CONTEXT, pageContext);
         }
 
         PendingIntentProvider contentIntent =
                 PendingIntentProvider.getBroadcast(context, nextId, tapIntent, 0);
+        Intent dismissIntent =
+                new Intent(context, broadcastReceiver)
+                        .setData(uri)
+                        .setAction(NOTIFICATION_ACTION_DISMISS)
+                        .putExtra(NOTIFICATION_GUID_EXTRA, guid);
+        ProfileTokenUtils.addProfileToIntent(profile, dismissIntent);
+        // For nextId == 0, the interceptor wrapper for this intent has the same identity as the
+        // builder's default delete wrapper (which wraps nothing), so without FLAG_UPDATE_CURRENT
+        // Android would return that one and the dismiss intent would be dropped.
         PendingIntentProvider deleteIntent =
                 PendingIntentProvider.getBroadcast(
-                        context,
-                        nextId,
-                        new Intent(context, broadcastReceiver)
-                                .setData(uri)
-                                .setAction(NOTIFICATION_ACTION_DISMISS)
-                                .putExtra(NOTIFICATION_GUID_EXTRA, guid),
-                        0);
+                        context, nextId, dismissIntent, PendingIntent.FLAG_UPDATE_CURRENT);
 
         Resources res = context.getResources();
         ResolveInfo resolveInfo = getMatchingNativeAppResolveInfo(uri);
@@ -373,6 +402,7 @@ public class NotificationManager {
                             .setData(uri)
                             .setAction(NOTIFICATION_ACTION_TIMEOUT)
                             .putExtra(NOTIFICATION_GUID_EXTRA, guid);
+            ProfileTokenUtils.addProfileToIntent(profile, timeoutIntent);
             alarmManager.set(
                     AlarmManager.RTC,
                     timeoutAtMillis,

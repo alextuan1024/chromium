@@ -9,8 +9,10 @@ import android.text.TextUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ActorTask;
 import org.chromium.chrome.browser.actor.ActorTaskState;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.glic.GlicMetrics;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_bottom_sheet.CoBrowseComponentProvider.TabSelectionDelegate;
@@ -40,7 +42,6 @@ public class ActorControlCoordinator implements PeekViewManager, ActorControlSta
      * @param stateTracker The tracker for the UI state.
      * @param tabSelectionDelegate The delegate to handle tab selection.
      */
-    // TODO(crbug.com/491895203): Add render test for peek view.
     public ActorControlCoordinator(
             TabBottomSheetManager tabBottomSheetManager,
             ActorControlStateTracker stateTracker,
@@ -51,7 +52,13 @@ public class ActorControlCoordinator implements PeekViewManager, ActorControlSta
 
         mModel =
                 new PropertyModel.Builder(TabBottomSheetPeekProperties.ALL_KEYS)
+                        .with(
+                                TabBottomSheetPeekProperties.PEEK_ICON_ID,
+                                R.drawable.ic_spark_4c_16dp)
                         .with(TabBottomSheetPeekProperties.TITLE_TEXT, "")
+                        .with(
+                                TabBottomSheetPeekProperties.TITLE_TEXT_APPEARANCE_ID,
+                                R.style.TextAppearance_TextAccentMediumThick_Primary)
                         .with(
                                 TabBottomSheetPeekProperties.ON_ACTION_BUTTON_CLICKED,
                                 this::onActorControlClicked)
@@ -86,9 +93,18 @@ public class ActorControlCoordinator implements PeekViewManager, ActorControlSta
                     break;
                 case ActorTaskState.ACTING:
                 case ActorTaskState.REFLECTING:
-                    setPeekViewContent(activeTaskTitle, PeekViewUiState.ACTING);
-                    mHasAutoExpanded = false;
-                    break;
+                    {
+                        ActorTask activeTask =
+                                mStateTracker.getActiveTaskAssociatedWithCurrentConversation();
+                        String stepProgress = null;
+                        if (activeTask != null
+                                && ChromeFeatureList.sActorStepProgressNotification.isEnabled()) {
+                            stepProgress = activeTask.getCurrentActionName();
+                        }
+                        setPeekViewContent(activeTaskTitle, PeekViewUiState.ACTING, stepProgress);
+                        mHasAutoExpanded = false;
+                        break;
+                    }
                 case ActorTaskState.PAUSED_BY_USER:
                     setPeekViewContent(activeTaskTitle, PeekViewUiState.PAUSED);
                     mHasAutoExpanded = false;
@@ -124,8 +140,13 @@ public class ActorControlCoordinator implements PeekViewManager, ActorControlSta
     }
 
     private void setPeekViewContent(String title, PeekViewUiState state) {
+        setPeekViewContent(title, state, /* stepProgress= */ null);
+    }
+
+    private void setPeekViewContent(
+            String title, PeekViewUiState state, @Nullable String stepProgress) {
         mPeekViewUiState = state;
-        mMediator.setContent(title, state);
+        mMediator.setContent(title, state, stepProgress);
     }
 
     private void clearPeekViewContent() {
@@ -203,13 +224,6 @@ public class ActorControlCoordinator implements PeekViewManager, ActorControlSta
     @Override
     public void destroy() {
         mStateTracker.removeObserver(this);
-    }
-
-    /**
-     * @return The {@link PropertyModel} for this component.
-     */
-    /* package */ PropertyModel getModelForTesting() {
-        return mModel;
     }
 
     /**

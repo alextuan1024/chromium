@@ -11,6 +11,9 @@
 #import <string>
 #import <vector>
 
+#import "base/callback_list.h"
+#import "base/functional/bind.h"
+#import "base/task/thread_pool/thread_pool_instance.h"
 #import "base/test/run_until.h"
 #import "base/test/task_environment.h"
 #import "ios/web/public/browser_state.h"
@@ -103,14 +106,44 @@ ProxyRule ProxyRuleFor(
   return rule;
 }
 
+// Records the runs of a callback registered with
+// `RegisterProxyConfigurationsAppliedCallback()`.
+class AppliedCallbackRecorder {
+ public:
+  using Callback = ProxyConfigurationProvider::
+      ProxyConfigurationsAppliedCallbackList::CallbackType;
+
+  // Returns a callback recording its runs. It must not outlive `this`.
+  Callback GetCallback() {
+    return base::BindRepeating(&AppliedCallbackRecorder::Record,
+                               base::Unretained(this));
+  }
+
+  int run_count() const { return run_count_; }
+  ProxyConfigurationProvider::RequestId last_request_id() const {
+    return last_request_id_;
+  }
+  size_t last_config_count() const { return last_config_count_; }
+
+ private:
+  void Record(ProxyConfigurationProvider::RequestId request_id,
+              size_t config_count) {
+    ++run_count_;
+    last_request_id_ = request_id;
+    last_config_count_ = config_count;
+  }
+
+  int run_count_ = 0;
+  ProxyConfigurationProvider::RequestId last_request_id_;
+  size_t last_config_count_ = 0;
+};
+
 }  // namespace
 
 class ProxyConfigurationProviderTest : public PlatformTest {
  public:
   ProxyConfigurationProviderTest()
-      : web_client_(std::make_unique<FakeWebClient>()) {
-    browser_state_.SetWebKitStorageID(base::Uuid::GenerateRandomV4());
-  }
+      : web_client_(std::make_unique<FakeWebClient>()) {}
   ~ProxyConfigurationProviderTest() override = default;
 
   void SetUp() override {
@@ -118,6 +151,19 @@ class ProxyConfigurationProviderTest : public PlatformTest {
     if (!@available(iOS 17.0, *)) {
       GTEST_SKIP() << "ProxyConfigurationProvider requires iOS 17.0+";
     }
+  }
+
+  void TearDown() override {
+    // Ensure no proxyConfigurations outlive these tests to avoid flake of
+    // unrelated tests.
+    if (@available(iOS 17.0, *)) {
+      WKWebViewConfigurationProvider& config_provider =
+          WKWebViewConfigurationProvider::FromBrowserState(&browser_state_);
+      WKWebsiteDataStore* data_store = config_provider.GetWebsiteDataStore();
+      data_store.proxyConfigurations = @[];
+    }
+
+    PlatformTest::TearDown();
   }
 
  protected:
@@ -277,18 +323,110 @@ TEST_F(ProxyConfigurationProviderTest, HttpsProxyConfigurationSupported) {
 // will break traffic steering for Enterprise Secure Gateway, causing
 // corporate requests to bypass the gateway or fail to connect.
 TEST_F(ProxyConfigurationProviderTest, UndocumentedNativeMatcherBehaviors) {
-  ProxyConfigurationProvider& provider =
-      ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
 
-  provider.UpdateProxyConfiguration({
-      ProxyRuleFor("secure-proxy.corp.com", 443,
-                   {"*.apple.com", "apple.com", "192.168.1.1", "[2001:db8::1]"},
-                   net::ProxyServer::SCHEME_HTTPS),
-  });
+    provider.UpdateProxyConfiguration({
+        ProxyRuleFor(
+            "secure-proxy.corp.com", 443,
+            {"*.apple.com", "apple.com", "192.168.1.1", "[2001:db8::1]"},
+            net::ProxyServer::SCHEME_HTTPS),
+    });
 
-  VerifyNativeProxyConfigurations(
-      &browser_state_, {{.match_domains = {"*.apple.com", "apple.com",
-                                           "192.168.1.1", "[2001:db8::1]"}}});
+    VerifyNativeProxyConfigurations(
+        &browser_state_, {{.match_domains = {"*.apple.com", "apple.com",
+                                             "192.168.1.1", "[2001:db8::1]"}}});
+  }
+}
+
+// Tests that the registered callbacks run once the configurations are set on
+// the `WKWebsiteDataStore`, with the ID of the call and the number of
+// configurations, which doesn't include the direct rules nor the rules with an
+// unsupported proxy scheme.
+TEST_F(ProxyConfigurationProviderTest, RunsAppliedCallbacksOnceApplied) {
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+    AppliedCallbackRecorder recorder;
+    base::CallbackListSubscription subscription =
+        provider.RegisterProxyConfigurationsAppliedCallback(
+            recorder.GetCallback());
+
+    const ProxyConfigurationProvider::RequestId request_id =
+        provider.UpdateProxyConfiguration({
+            DirectRule({"direct.example.com"}),
+            ProxyRuleFor("socks.example.com", 1080, {"*.socks.com"},
+                         net::ProxyServer::SCHEME_SOCKS5),
+            ProxyRuleFor("proxy.example.com", 8080, {"*.example.com"}),
+        });
+
+    ASSERT_TRUE(
+        base::test::RunUntil([&]() { return recorder.run_count() == 1; }));
+    EXPECT_EQ(request_id, recorder.last_request_id());
+    EXPECT_EQ(1u, recorder.last_config_count());
+    VerifyNativeProxyConfigurations(
+        &browser_state_, {{.match_domains = {"*.example.com"},
+                           .excluded_domains = {"direct.example.com"}}});
+  }
+}
+
+// Tests that the registered callbacks run without configurations once an empty
+// configuration clears them from the `WKWebsiteDataStore`.
+TEST_F(ProxyConfigurationProviderTest, RunsAppliedCallbacksOnceCleared) {
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+    AppliedCallbackRecorder recorder;
+    base::CallbackListSubscription subscription =
+        provider.RegisterProxyConfigurationsAppliedCallback(
+            recorder.GetCallback());
+
+    const ProxyConfigurationProvider::RequestId request_id =
+        provider.UpdateProxyConfiguration({});
+
+    ASSERT_TRUE(
+        base::test::RunUntil([&]() { return recorder.run_count() == 1; }));
+    EXPECT_EQ(request_id, recorder.last_request_id());
+    EXPECT_EQ(0u, recorder.last_config_count());
+    VerifyNativeProxyConfigurations(&browser_state_, {});
+  }
+}
+
+// Tests that the registered callbacks don't run for a call whose mapping is
+// canceled by a newer call.
+TEST_F(ProxyConfigurationProviderTest,
+       DoesNotRunAppliedCallbacksForCanceledUpdate) {
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+    AppliedCallbackRecorder recorder;
+    base::CallbackListSubscription subscription =
+        provider.RegisterProxyConfigurationsAppliedCallback(
+            recorder.GetCallback());
+
+    const ProxyConfigurationProvider::RequestId initial_request_id =
+        provider.UpdateProxyConfiguration({
+            ProxyRuleFor("initial-proxy.example.com", 8081, {"*.initial.com"}),
+        });
+    const ProxyConfigurationProvider::RequestId latest_request_id =
+        provider.UpdateProxyConfiguration({
+            ProxyRuleFor("latest-proxy.example.com", 8082, {"*.latest.com"}),
+        });
+    // Once both mappings complete, both replies are pending on the main thread.
+    // `RunUntil()` only checks its condition when the main thread is idle, i.e.
+    // after both replies ran.
+    base::ThreadPoolInstance::Get()->FlushForTesting();
+    ASSERT_TRUE(
+        base::test::RunUntil([&]() { return recorder.run_count() > 0; }));
+
+    EXPECT_NE(initial_request_id, latest_request_id);
+    EXPECT_EQ(1, recorder.run_count());
+    EXPECT_EQ(latest_request_id, recorder.last_request_id());
+    EXPECT_EQ(1u, recorder.last_config_count());
+    VerifyNativeProxyConfigurations(&browser_state_,
+                                    {{.match_domains = {"*.latest.com"}}});
+  }
 }
 
 }  // namespace web

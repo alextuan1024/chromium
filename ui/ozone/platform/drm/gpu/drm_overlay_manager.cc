@@ -145,6 +145,8 @@ void DrmOverlayManager::CheckOverlaySupport(
 
     // CanHandleCandidate() should never return false if the candidate is
     // the primary plane.
+    // TODO(crbug.com/583407770): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(can_handle || candidate.plane_z_order != 0);
 
     // Also verify if hardware supports required buffer format. It can happen,
@@ -166,20 +168,17 @@ void DrmOverlayManager::CheckOverlaySupport(
     std::vector<OverlayStatus> status =
         SendOverlayValidationRequestSync(result_candidates, widget);
     size_t size = candidates->size();
-    DCHECK_EQ(size, status.size());
+    CHECK_EQ(size, status.size(), base::NotFatalUntil::M163);
     for (size_t i = 0; i < size; i++) {
-      DCHECK(status[i] == OVERLAY_STATUS_ABLE ||
-             status[i] == OVERLAY_STATUS_NOT);
+      CHECK(status[i] == OVERLAY_STATUS_ABLE || status[i] == OVERLAY_STATUS_NOT,
+            base::NotFatalUntil::M163);
       candidates->at(i).overlay_handled = status[i] == OVERLAY_STATUS_ABLE;
     }
     return;
   }
 
-  auto widget_cache_map_it = widget_cache_map_.find(widget);
-  if (widget_cache_map_it == widget_cache_map_.end()) {
-    widget_cache_map_it =
-        widget_cache_map_.emplace(widget, kMaxCacheSize).first;
-  }
+  auto widget_cache_map_it =
+      widget_cache_map_.try_emplace(widget, kMaxCacheSize).first;
   OverlayCandidatesListCache& cache = widget_cache_map_it->second;
   std::vector<OverlaySurfaceCandidate> cache_key =
       ToCacheKey(result_candidates);
@@ -206,10 +205,10 @@ void DrmOverlayManager::CheckOverlaySupport(
   } else if (value.status.back() != OVERLAY_STATUS_PENDING) {
     size_t size = candidates->size();
     const std::vector<OverlayStatus>& status = value.status;
-    DCHECK_EQ(size, status.size());
+    CHECK_EQ(size, status.size(), base::NotFatalUntil::M163);
     for (size_t i = 0; i < size; i++) {
-      DCHECK(status[i] == OVERLAY_STATUS_ABLE ||
-             status[i] == OVERLAY_STATUS_NOT);
+      CHECK(status[i] == OVERLAY_STATUS_ABLE || status[i] == OVERLAY_STATUS_NOT,
+            base::NotFatalUntil::M163);
       candidates->at(i).overlay_handled = status[i] == OVERLAY_STATUS_ABLE;
     }
   }
@@ -225,7 +224,7 @@ void DrmOverlayManager::RegisterOverlayRequirement(
 }
 
 void DrmOverlayManager::OnSwapBuffersComplete(gfx::SwapResult swap_result) {
-  DCHECK(!in_flight_overlay_types_.empty());
+  CHECK(!in_flight_overlay_types_.empty(), base::NotFatalUntil::M163);
   auto committed_overlay_types = std::move(in_flight_overlay_types_.front());
   in_flight_overlay_types_.pop_front();
 }

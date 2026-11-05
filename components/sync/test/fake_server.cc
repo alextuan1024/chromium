@@ -20,6 +20,8 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/test/test_file_util.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
@@ -50,7 +52,9 @@ FakeServer::FakeServer(const base::FilePath& loopback_server_dir)
   // Needed by syncer::LoopbackServer.
   base::ScopedAllowBlockingForTesting allow_blocking;
   loopback_server_ = std::make_unique<syncer::LoopbackServer>(
-      loopback_server_dir.AppendASCII("profile.pb"));
+      loopback_server_dir.AppendASCII("profile.pb"),
+      base::ThreadPool::CreateSequencedTaskRunner(
+          {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN}));
   loopback_server_->set_observer_for_tests(this);
 
   SetUpdateMode(syncer::AUTOFILL_VALUABLE, UpdateMode::kFull);
@@ -96,9 +100,9 @@ void FakeServer::WriteFakeStateToDisk() const {
   }
 
   std::string json_string;
-  if (base::JSONWriter::Write(dict, &json_string)) {
-    base::WriteFile(fake_state_file_path_, json_string);
-  }
+  CHECK(base::JSONWriter::Write(dict, &json_string));
+  CHECK(base::CreateDirectory(fake_state_file_path_.DirName()));
+  CHECK(base::WriteFile(fake_state_file_path_, json_string));
 }
 
 namespace {
@@ -395,7 +399,7 @@ void FakeServer::InjectEntity(std::unique_ptr<LoopbackServerEntity> entity) {
   }
 
   // Notify observers so invalidations are mimic-ed.
-  OnCommit(/*committed_data_types=*/{data_type});
+  OnCommit(/*committer_cache_guid=*/"", /*committed_data_types=*/{data_type});
 }
 
 
@@ -416,6 +420,7 @@ bool FakeServer::ModifyEntitySpecifics(
 
   // Notify observers so invalidations are mimic-ed.
   OnCommit(
+      /*committer_cache_guid=*/"",
       /*committed_data_types=*/{GetDataTypeFromSpecifics(updated_specifics)});
 
   return true;
@@ -435,7 +440,8 @@ bool FakeServer::ModifyBookmarkEntity(
   }
 
   // Notify observers so invalidations are mimic-ed.
-  OnCommit(/*committed_data_types=*/{syncer::BOOKMARKS});
+  OnCommit(/*committer_cache_guid=*/"",
+           /*committed_data_types=*/{syncer::BOOKMARKS});
 
   return true;
 }
@@ -450,7 +456,8 @@ void FakeServer::ClearServerData() {
   }
 
   // Notify observers so invalidations are mimic-ed.
-  OnCommit(/*committed_data_types=*/{syncer::NIGORI});
+  OnCommit(/*committer_cache_guid=*/"",
+           /*committed_data_types=*/{syncer::NIGORI});
 }
 
 void FakeServer::DeleteAllEntitiesForDataType(DataType data_type) {
@@ -573,9 +580,10 @@ void FakeServer::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-void FakeServer::OnCommit(syncer::DataTypeSet committed_data_types) {
+void FakeServer::OnCommit(std::string_view committer_cache_guid,
+                          syncer::DataTypeSet committed_data_types) {
   for (Observer& observer : observers_) {
-    observer.OnCommit(committed_data_types);
+    observer.OnCommit(committer_cache_guid, committed_data_types);
   }
 }
 
@@ -635,6 +643,13 @@ void FakeServer::RemoveCollaboration(
 
 std::string FakeServer::GetStoreBirthday() const {
   return loopback_server_->GetStoreBirthday();
+}
+
+bool FakeServer::AreProgressMarkersUpToDate(
+    const syncer::ProgressMarkerMap& progress_markers) const {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  return loopback_server_->AreProgressMarkersUpToDateForTesting(  // IN-TEST
+      progress_markers);
 }
 
 const std::vector<sync_pb::DeletionOrigin>&

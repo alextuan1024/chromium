@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_AUTOFILL_CONTENT_RENDERER_AUTOFILL_AGENT_H_
 #define COMPONENTS_AUTOFILL_CONTENT_RENDERER_AUTOFILL_AGENT_H_
 
+#include <cstdint>
 #include <list>
 #include <memory>
 #include <optional>
@@ -15,6 +16,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
+#include "base/functional/function_ref.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
@@ -24,7 +26,6 @@
 #include "base/types/strong_alias.h"
 #include "components/autofill/content/common/mojom/autofill_agent.mojom.h"
 #include "components/autofill/content/common/mojom/autofill_driver.mojom.h"
-#include "components/autofill/content/renderer/at_memory_handler.h"
 #include "components/autofill/content/renderer/email_verification_handler.h"
 #include "components/autofill/content/renderer/form_autofill_util.h"
 #include "components/autofill/content/renderer/form_cache.h"
@@ -53,8 +54,12 @@
 
 namespace autofill {
 
+struct CustomFormControl;
+class CustomFormControlAgent;
+class CustomFormControlScriptExecutor;
 class PasswordAutofillAgent;
 class PasswordGenerationAgent;
+class SynchronousFormCache;
 
 // AutofillAgent deals with Autofill related communications between Blink and
 // the browser.
@@ -100,6 +105,8 @@ class AutofillAgent : public content::RenderFrameObserver,
       base::StrongAlias<class UserGestureRequiredTag, bool>;
   using UsesKeyboardAccessoryForSuggestions =
       base::StrongAlias<class UsesKeyboardAccessoryForSuggestionsTag, bool>;
+  using KeyboardAccessoryUsesDynamicPositioning =
+      base::StrongAlias<class KeyboardAccessoryUsesDynamicPositioningTag, bool>;
 
   struct Config {
     // Controls whether or not all datalists shall be extracted into
@@ -131,6 +138,11 @@ class AutofillAgent : public content::RenderFrameObserver,
     // information in or near the keyboard instead.
     UsesKeyboardAccessoryForSuggestions uses_keyboard_accessory_for_suggestions{
         BUILDFLAG(IS_ANDROID)};
+
+    // Controls whether the keyboard accessory is dynamically positioned near
+    // the focused field rather than docked at the bottom of the screen.
+    KeyboardAccessoryUsesDynamicPositioning
+        keyboard_accessory_uses_dynamic_positioning{false};
   };
 
   // `PasswordAutofillAgent` and `PasswordGenerationAgent` may be `nullptr`. If
@@ -148,6 +160,13 @@ class AutofillAgent : public content::RenderFrameObserver,
 
   void BindPendingReceiver(
       mojo::PendingAssociatedReceiver<mojom::AutofillAgent> pending_receiver);
+
+  // Lets the browser run custom form control scripts in this frame's main
+  // world through `mojom::CustomFormControlAgent`, which this registers in
+  // `registry`. Requires `features::kAutofillCustomFormControlScripts`. Call at
+  // most once.
+  void EnableCustomFormControlScripts(
+      blink::AssociatedInterfaceRegistry& registry);
 
   blink::WebDocument GetDocument() const;
 
@@ -177,10 +196,10 @@ class AutofillAgent : public content::RenderFrameObserver,
 
   // mojom::AutofillAgent:
   void ScrollFieldIntoView(FieldRendererId field_id) override;
-  void TriggerFormExtraction() override;
+  void TriggerFormExtraction(bool force) override;
   void TriggerFormExtractionWithResponse(
+      bool force,
       base::OnceCallback<void(bool)> callback) override;
-  void ClearFormCache() override;
   void ApplyFieldsAction(mojom::FormActionType action_type,
                          mojom::ActionPersistence action_persistence,
                          const std::vector<FormFieldData::FillData>& fields,
@@ -271,10 +290,10 @@ class AutofillAgent : public content::RenderFrameObserver,
 
   // TODO(crbug.com/376628389): Remove.
   void OnTextFieldValueChanged(const blink::WebFormControlElement& element,
-                               const SynchronousFormCache& form_cache);
+                               SynchronousFormCache& form_cache);
   void OnSelectControlSelectionChanged(
       const blink::WebFormControlElement& element,
-      const SynchronousFormCache& form_cache);
+      SynchronousFormCache& form_cache);
 
   bool IsPrerendering() const;
 
@@ -290,15 +309,26 @@ class AutofillAgent : public content::RenderFrameObserver,
     return &button_titles_cache_;
   }
 
+  CustomFormControlScriptExecutor* custom_form_control_script_executor();
+
+  // Extracts the `FormData` for the form with `form_id` (or the unowned form if
+  // `form_id.is_null()`) in `document`, including any custom form controls
+  // detected by `custom_form_control_script_executor()`.
+  std::optional<FormData> ExtractFormData(const blink::WebDocument& document,
+                                          FormRendererId form_id,
+                                          CallTimerState::CallSite call_site);
+
  protected:
   // blink::WebAutofillClient:
 
   // Signals from blink that a form related element changed dynamically,
-  // passing the changed element as well as the type of the change.
+  // passing the type of the change, the element's FormControlTypeForAutofill()
+  // if it is a form control, and a getter for the changed element.
   // TODO(crbug.com/40281981): Fire the signal for elements that become hidden.
   void DidChangeFormRelatedElementDynamically(
-      const blink::WebElement&,
-      blink::WebFormRelatedChangeType) override;
+      blink::WebFormRelatedChangeType,
+      std::optional<blink::mojom::FormControlType> form_control_type,
+      base::FunctionRef<blink::WebElement()> element) override;
 
   // content::RenderFrameObserver:
 
@@ -342,8 +372,9 @@ class AutofillAgent : public content::RenderFrameObserver,
   void TextFieldValueChanged(
       const blink::WebFormControlElement& element) override;
   void ContentEditableDidChange(const blink::WebElement& element) override;
-  bool DidReceiveKeyDown(const blink::WebElement& element,
-                         const blink::WebKeyboardEvent& event) override;
+  void TextFieldDidReceiveKeyDown(
+      const blink::WebInputElement& input_element,
+      const blink::WebKeyboardEvent& event) override;
   void OpenTextDataListChooser(const blink::WebInputElement& element) override;
   void DataListOptionsChanged(const blink::WebInputElement& element) override;
   void UserGestureObserved() override;
@@ -437,8 +468,22 @@ class AutofillAgent : public content::RenderFrameObserver,
   void ExtractFormsUnthrottled(base::OnceCallback<void(bool)> callback,
                                const CallTimerState& timer_state);
 
+  // Wrapper around `form_util::FindFormAndFieldForFormControlElement()`.
+  std::optional<form_util::FormAndField> FindFormAndFieldForFormControlElement(
+      const blink::WebFormControlElement& element,
+      CallTimerState::CallSite call_site,
+      base::optional_ref<const SynchronousFormCache> form_cache);
+
+  // Extracts custom form controls in the current document and returns those
+  // belonging to `form_id` (or the unowned form if `form_id.is_null()`).
+  std::vector<CustomFormControl> ExtractCustomFormControlsForForm(
+      const blink::WebDocument& document,
+      FormRendererId form_id);
+
   // Hides any currently showing Autofill popup.
   void HidePopup();
+
+  gfx::Rect GetCaretBounds() const;
 
   // Helpers for SelectFieldOptionsChanged() and
   // DataListOptionsChanged(), which get called after a timer that is restarted
@@ -483,6 +528,11 @@ class AutofillAgent : public content::RenderFrameObserver,
   std::unique_ptr<FormSubmissionTracker> form_tracker_;
 
   mojo::AssociatedReceiver<mojom::AutofillAgent> receiver_{this};
+
+  // Runs the custom form control script of the current document, which the
+  // browser loads through it. Only exists if custom form control scripts are
+  // enabled (see `EnableCustomFormControlScripts()`).
+  std::unique_ptr<CustomFormControlAgent> custom_form_control_agent_;
 
   mojo::AssociatedRemote<mojom::AutofillDriver> autofill_driver_;
 
@@ -593,8 +643,6 @@ class AutofillAgent : public content::RenderFrameObserver,
     int tokens = 0;
     base::TimeTicks last_replenish_time;
   } ask_for_values_to_fill_throttle_;
-
-  AtMemoryHandler at_memory_handler_{this};
 
   struct {
     bool has_warned = false;

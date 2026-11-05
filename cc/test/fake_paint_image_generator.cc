@@ -27,6 +27,13 @@ FakePaintImageGenerator::FakePaintImageGenerator(
 
 FakePaintImageGenerator::FakePaintImageGenerator(
     const SkImageInfo& info,
+    base::RepeatingClosure decode_callback)
+    : FakePaintImageGenerator(info) {
+  decode_callback_ = std::move(decode_callback);
+}
+
+FakePaintImageGenerator::FakePaintImageGenerator(
+    const SkImageInfo& info,
     const SkYUVAPixmapInfo& yuva_pixmap_info,
     std::vector<FrameMetadata> frames,
     bool allocate_discardable_memory,
@@ -50,7 +57,7 @@ sk_sp<const SkData> FakePaintImageGenerator::GetEncodedData() const {
 bool FakePaintImageGenerator::GetPixels(SkPixmap dst_pixmap,
                                         size_t frame_index,
                                         PaintImage::GeneratorClientId client_id,
-                                        uint32_t lazy_pixel_ref) {
+                                        uint64_t lazy_pixel_ref) {
   base::AutoLock lock(lock_);
 
   if (force_fail_decode_) {
@@ -75,6 +82,9 @@ bool FakePaintImageGenerator::GetPixels(SkPixmap dst_pixmap,
   CHECK(image_pixmap_.scalePixels(
       dst_pixmap, {SkFilterMode::kLinear, SkMipmapMode::kNearest}));
   decode_infos_.push_back(dst_info);
+  if (decode_callback_) {
+    decode_callback_.Run();
+  }
   return true;
 }
 
@@ -92,7 +102,7 @@ bool FakePaintImageGenerator::QueryYUVA(
 bool FakePaintImageGenerator::GetYUVAPlanes(
     const SkYUVAPixmaps& pixmaps,
     size_t frame_index,
-    uint32_t lazy_pixel_ref,
+    uint64_t lazy_pixel_ref,
     PaintImage::GeneratorClientId client_id) {
   base::AutoLock lock(lock_);
 

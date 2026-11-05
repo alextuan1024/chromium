@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.site_settings;
 
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -12,7 +11,7 @@ import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.emptyIterable;
 import static org.junit.Assert.assertNotNull;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.app.Activity;
 
@@ -53,6 +52,7 @@ import org.chromium.components.content_settings.CookieControlsMode;
 import org.chromium.components.content_settings.ProviderType;
 import org.chromium.components.embedder_support.util.Origin;
 import org.chromium.content_public.browser.BrowserContextHandle;
+import org.chromium.url.GURL;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -68,8 +68,7 @@ public class SiteSettingsTestHelper {
             new String[] {"binary_radio_button", "os_permissions_warning_extra"};
     public static final String[] BINARY_RADIO_BUTTON_WITH_OS_WARNING_EXTRA_AND_INFO_TEXT =
             new String[] {"info_text", "binary_radio_button", "os_permissions_warning_extra"};
-    public static final String[] CLEAR_BROWSING_DATA_LINK =
-            new String[] {"clear_browsing_data_link", "clear_browsing_divider"};
+    public static final String[] CLEAR_BROWSING_DATA_LINK = {"clear_browsing_data_link"};
 
     public static BrowserContextHandle getBrowserContextHandle() {
         return ProfileManager.getLastUsedRegularProfile();
@@ -200,6 +199,19 @@ public class SiteSettingsTestHelper {
         return helper.getOnlyPayloadBlocking();
     }
 
+    public static void setContentSettingForOrigin(
+            @ContentSettingsType.EnumType int type, String origin, int setting) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    WebsitePreferenceBridge.setContentSettingDefaultScope(
+                            getBrowserContextHandle(),
+                            type,
+                            new GURL(origin),
+                            GURL.emptyGURL(),
+                            setting);
+                });
+    }
+
     public static void setGlobalTriStateToggleForCategory(
             final @SiteSettingsCategory.Type int type, final int newValue) {
         final SettingsActivity settingsActivity =
@@ -213,7 +225,7 @@ public class SiteSettingsTestHelper {
                             preferences.findPreference(SingleCategorySettings.TRI_STATE_TOGGLE_KEY);
                     preferences.onPreferenceChange(triStateToggle, newValue);
                 });
-        settingsActivity.finish();
+        ApplicationTestUtils.finishActivity(settingsActivity);
     }
 
     /**
@@ -233,7 +245,7 @@ public class SiteSettingsTestHelper {
         }
 
         checkPreferencesForSettingsActivity(settingsActivity, expectedKeys);
-        settingsActivity.finish();
+        ApplicationTestUtils.finishActivity(settingsActivity);
     }
 
     public static void checkPreferencesForSettingsActivity(
@@ -320,7 +332,7 @@ public class SiteSettingsTestHelper {
 
                         doTest(singleCategorySettings);
                     });
-            mSettingsActivity.finish();
+            ApplicationTestUtils.finishActivity(mSettingsActivity);
         }
 
         protected void doTest(SingleCategorySettings singleCategorySettings) {
@@ -445,9 +457,9 @@ public class SiteSettingsTestHelper {
                 });
         if (type == SiteSettingsCategory.Type.SITE_DATA && !enabled) {
             int id = R.string.website_settings_site_data_page_block_confirm_dialog_confirm_button;
-            onViewWaiting(withText(id)).perform(click());
+            waitForView(withText(id)).click();
         }
-        settingsActivity.finish();
+        ApplicationTestUtils.finishActivity(settingsActivity);
     }
 
     public static final String[] BINARY_RADIO_BUTTON_AND_INFO_TEXT =

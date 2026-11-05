@@ -5,7 +5,10 @@
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
 
 #include <memory>
+#include <string>
 
+#include "base/strings/string_number_conversions.h"
+#include "base/time/time.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager_test_api.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
@@ -74,10 +77,12 @@ MockCreditCardAccessManager::MockCreditCardAccessManager(
     BrowserAutofillManager* bam)
     : CreditCardAccessManager(bam) {
   ON_CALL(*this, FetchCreditCard)
-      .WillByDefault(
-          [this](const CreditCard* card, OnCreditCardFetchedCallback cb) {
-            CreditCardAccessManager::FetchCreditCard(card, std::move(cb));
-          });
+      .WillByDefault([this](const CreditCard* card,
+                            bool require_user_confirmation,
+                            OnCreditCardFetchedCallback cb) {
+        CreditCardAccessManager::FetchCreditCard(
+            card, require_user_confirmation, std::move(cb));
+      });
 }
 
 MockCreditCardAccessManager::~MockCreditCardAccessManager() = default;
@@ -98,7 +103,12 @@ MockAutofillDriver::MockAutofillDriver(TestAutofillClient* client)
           });
 }
 
-MockAutofillDriver::~MockAutofillDriver() = default;
+MockAutofillDriver::~MockAutofillDriver() {
+  // Normally, ~AutofillManager() would be run by ~TestAutofillDriver().
+  // That's too late because ~AutofillManager() calls a virtual function of
+  // MockAutofillDriver.
+  set_autofill_manager(nullptr);
+}
 
 TestBrowserAutofillManager::TestBrowserAutofillManager(AutofillDriver* driver)
     : autofill::TestBrowserAutofillManager(driver) {
@@ -134,7 +144,7 @@ void AutofillMetricsBaseTest::InitAutofillClient() {
 void AutofillMetricsBaseTest::SetUpHelper() {
   // Advance the mock clock to a fixed, arbitrary, somewhat recent date.
   base::Time year2020;
-  ASSERT_TRUE(base::Time::FromString("01/01/20", &year2020));
+  ASSERT_TRUE(base::Time::FromUTCString("01/01/20", &year2020));
   task_environment_.FastForwardBy(year2020 - base::Time::Now());
 
   std::unique_ptr<ValuablesTable> valuables_table =
@@ -167,7 +177,8 @@ void AutofillMetricsBaseTest::SetUpHelper() {
       std::make_unique<AutofillOfferManager>(&paydm()));
 
   CreateAutofillDriver();
-  autofill_driver().SetLocalFrameToken(test::MakeLocalFrameToken());
+  ActivateAutofillDriver(autofill_driver());
+  autofill_driver().set_frame_token(test::MakeLocalFrameToken());
 
 #if !BUILDFLAG(IS_IOS)
   test_api(*autofill_manager().GetCreditCardAccessManager())
@@ -283,6 +294,7 @@ void AutofillMetricsBaseTest::OnDidGetRealPan(
           ? payments::PaymentsAutofillClient::PaymentsRpcCardType::kVirtualCard
           : payments::PaymentsAutofillClient::PaymentsRpcCardType::kServerCard;
   full_card_request->OnDidGetRealPan(result, response.with_real_pan(real_pan));
+  test_api(autofill_manager()).RunPendingPostFillTasks();
 }
 
 void AutofillMetricsBaseTest::OnDidGetRealPanWithNonHttpOkResponse() {
@@ -383,40 +395,6 @@ void AutofillMetricsBaseTest::CreateLocalAndDuplicateServerCreditCard() {
   masked_server_credit_card.SetNumber(u"5454");
   personal_data().test_payments_data_manager().AddServerCreditCard(
       masked_server_credit_card);
-}
-
-void AutofillMetricsBaseTest::AddMaskedServerCreditCardWithOffer(
-    std::string guid,
-    std::string offer_reward_amount,
-    GURL url,
-    int64_t id,
-    bool offer_expired) {
-  CreditCard masked_server_credit_card(
-      CreditCard::RecordType::kMaskedServerCard, "server_id_offer");
-  masked_server_credit_card.set_guid(guid);
-  masked_server_credit_card.set_instrument_id(id);
-  masked_server_credit_card.SetNetworkForMaskedCard(kDiscoverCard);
-  masked_server_credit_card.SetNumber(u"9424");
-  personal_data().test_payments_data_manager().AddServerCreditCard(
-      masked_server_credit_card);
-
-  int64_t offer_id = id;
-  base::Time expiry = offer_expired ? AutofillClock::Now() - base::Days(2)
-                                    : AutofillClock::Now() + base::Days(2);
-  std::vector<GURL> merchant_origins = {GURL{url}};
-  GURL offer_details_url = GURL(url);
-  DisplayStrings display_strings;
-  display_strings.value_prop_text = "Get 5% off your purchase";
-  display_strings.see_details_text = "See details";
-  display_strings.usage_instructions_text =
-      "Check out with this card to activate";
-  std::vector<int64_t> eligible_instrument_id = {
-      masked_server_credit_card.instrument_id()};
-
-  AutofillOfferData offer_data = AutofillOfferData::GPayCardLinkedOffer(
-      offer_id, expiry, merchant_origins, offer_details_url, display_strings,
-      eligible_instrument_id, offer_reward_amount);
-  personal_data().test_payments_data_manager().AddAutofillOfferData(offer_data);
 }
 
 void AutofillMetricsBaseTest::CreateTestAutofillProfiles() {

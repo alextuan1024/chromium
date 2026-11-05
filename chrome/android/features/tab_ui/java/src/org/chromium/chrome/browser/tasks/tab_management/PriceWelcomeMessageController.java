@@ -47,16 +47,6 @@ public class PriceWelcomeMessageController {
     private final TabModelObserver mTabModelObserver =
             new TabModelObserver() {
                 @Override
-                public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                    TabModel tabModel = mCurrentTabModelSupplier.get();
-                    assumeNonNull(tabModel);
-                    assert mPriceMessageService != null;
-                    if (mPriceMessageService.getBindingTabId() == tab.getId()) {
-                        removePriceWelcomeMessage();
-                    }
-                }
-
-                @Override
                 public void willCloseTabs(
                         List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                     TabModel tabModel = mCurrentTabModelSupplier.get();
@@ -128,6 +118,7 @@ public class PriceWelcomeMessageController {
     }
 
     /**
+     * @param context The Android {@link Context}.
      * @param tabSwitcherMessageManager Manages messages for the tab switcher.
      * @param currentTabModelSupplier Supplies the current {@link TabModel}.
      * @param messageCardProvider To build message cards.
@@ -211,9 +202,14 @@ public class PriceWelcomeMessageController {
             // To make the message card in view when user enters tab switcher, we should scroll to
             // current tab with 0 offset. See {@link
             // TabSwitcherMediator#setInitialScrollIndexOffset} for more details.
-            TabModel tabModel = mCurrentTabModelSupplier.get();
-            assumeNonNull(tabModel);
-            actionProvider.scrollToTab(tabModel.getCurrentRepresentativeTabIndex());
+            TabModel tabModel = assumeNonNull(mCurrentTabModelSupplier.get());
+            Tab currentTab = tabModel.getCurrentTabSupplier().get();
+            TabListCoordinator tabListCoordinator =
+                    assumeNonNull(mTabListCoordinatorSupplier.get());
+            actionProvider.scrollToTab(
+                    currentTab != null
+                            ? tabListCoordinator.getIndexFromTabId(currentTab.getId())
+                            : TabModel.INVALID_TAB_INDEX);
         }
         for (PriceMessageUpdateObserver observer : mObservers) {
             observer.onShowPriceWelcomeMessage();

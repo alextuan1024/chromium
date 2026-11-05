@@ -7,6 +7,7 @@
 #include <inttypes.h>
 
 #include "base/compiler_specific.h"
+#include "base/containers/to_vector.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
@@ -111,7 +112,7 @@ struct GraphicsEventsContext {
   // To keep in correct order of creation. This converts pair of 'B' and 'E'
   // events to the completed event, 'X'.
   ArcTracingModel::TracingEvents converted_events;
-  std::map<uint32_t, std::vector<raw_ptr<ArcTracingEvent, VectorExperimental>>>
+  std::map<uint32_t, std::vector<raw_ptr<ArcTracingEvent>>>
       per_thread_pending_events_stack;
 
   std::map<std::pair<char, std::string>, std::unique_ptr<ArcTracingEvent>>
@@ -404,7 +405,16 @@ bool ArcTracingModel::Build(const std::string& data) {
 }
 
 ArcTracingModel::TracingEventPtrs ArcTracingModel::GetRoots() const {
+  size_t roots_count = nongroup_events_.size();
+  for (const auto& gr : group_events_) {
+    roots_count += gr.second.size();
+  }
+  for (const auto& gr : per_thread_events_) {
+    roots_count += gr.second.size();
+  }
   ArcTracingModel::TracingEventPtrs result;
+
+  result.reserve(roots_count);
   for (auto& gr : group_events_) {
     for (const auto& event : gr.second) {
       result.emplace_back(event.get());
@@ -448,15 +458,12 @@ ArcTracingModel::TracingEventPtrs ArcTracingModel::Select(
 
 ArcTracingModel::TracingEventPtrs ArcTracingModel::GetGroupEvents(
     const std::string& id) const {
-  TracingEventPtrs result;
   const auto& it = group_events_.find(id);
   if (it == group_events_.end()) {
-    return result;
+    return {};
   }
-  for (const auto& group_event : it->second) {
-    result.emplace_back(group_event.get());
-  }
-  return result;
+  return base::ToVector<const ArcTracingEvent*>(
+      it->second, &std::unique_ptr<ArcTracingEvent>::get);
 }
 
 bool ArcTracingModel::ProcessEvent(base::ListValue* events) {

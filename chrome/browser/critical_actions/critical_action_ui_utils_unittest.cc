@@ -4,7 +4,12 @@
 
 #include "chrome/browser/critical_actions/critical_action_ui_utils.h"
 
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include "base/strings/strcat.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/critical_actions/core/browser/critical_action_types.h"
@@ -14,6 +19,15 @@
 
 namespace critical_actions {
 namespace {
+
+// Android settings has no /contactInfo route, so it links to /addresses.
+#if BUILDFLAG(IS_ANDROID)
+constexpr std::string_view kExpectedContactInfoSubPage =
+    chrome::kAddressesSubPage;
+#else
+constexpr std::string_view kExpectedContactInfoSubPage =
+    chrome::kContactInfoSubPage;
+#endif
 
 TEST(CriticalActionUiUtilsTest, PasswordManagerLinkoutDomainExtraction) {
   EXPECT_EQ(
@@ -40,7 +54,19 @@ TEST(CriticalActionUiUtilsTest, LinkoutsForActionTypes) {
   EXPECT_EQ(
       GetCriticalActionLinkoutUrl(ActionType::kFormFill,
                                   GURL("https://www.example.com/checkout")),
-      base::StrCat({chrome::kChromeUISettingsURL, chrome::kAddressesSubPage}));
+      base::StrCat(
+          {chrome::kChromeUISettingsURL, kExpectedContactInfoSubPage}));
+
+  EXPECT_EQ(
+      GetCriticalActionLinkoutUrl(ActionType::kFormFillContactInfo,
+                                  GURL("https://www.example.com/checkout")),
+      base::StrCat(
+          {chrome::kChromeUISettingsURL, kExpectedContactInfoSubPage}));
+
+  EXPECT_EQ(
+      GetCriticalActionLinkoutUrl(ActionType::kFormFillPayments,
+                                  GURL("https://www.example.com/checkout")),
+      base::StrCat({chrome::kChromeUISettingsURL, chrome::kPaymentsSubPage}));
 
   EXPECT_EQ(GetCriticalActionLinkoutUrl(ActionType::kDownload,
                                         GURL("https://www.example.com/file")),
@@ -70,6 +96,10 @@ TEST(CriticalActionUiUtilsTest, LinkoutsForActionTypes) {
                                   GURL("https://www.example.com/otp")),
       base::StrCat({GetGooglePasswordManagerSubPageURLStr(), "/example.com"}));
 
+  EXPECT_EQ(GetCriticalActionLinkoutUrl(ActionType::kWebMcpTool,
+                                        GURL("https://www.example.com/tool")),
+            std::nullopt);
+
   EXPECT_EQ(GetCriticalActionLinkoutUrl(ActionType::kUnknown,
                                         GURL("https://www.example.com/")),
             chrome::kChromeUISettingsURL);
@@ -79,7 +109,7 @@ TEST(CriticalActionUiUtilsTest, LinkoutsForActionTypes) {
 // the literal string "null". Without a guard this produces a site details page
 // for a site that does not exist.
 TEST(CriticalActionUiUtilsTest, SettingChangeWithEmptyUrlDoesNotLinkToNull) {
-  const std::string linkout =
+  const std::optional<std::string> linkout =
       GetCriticalActionLinkoutUrl(ActionType::kSettingChange, GURL());
 
   EXPECT_EQ(linkout, chrome::kChromeUISettingsURL);

@@ -16,6 +16,8 @@
 #include "components/tab_groups/tab_group_id.h"
 #include "ui/android/resources/resource_manager.h"
 
+class Profile;
+
 namespace cc::slim {
 class Layer;
 class NinePatchLayer;
@@ -28,6 +30,7 @@ namespace android {
 class GroupIndicatorLayer;
 class LayerTitleCache;
 class TabHandleLayer;
+class TabStripNtbWebUiHost;
 
 // A scene layer to draw one or more tab strips. Note that content tree can be
 // added as a subtree.
@@ -40,32 +43,35 @@ class TabStripSceneLayer : public SceneLayer {
 
   ~TabStripSceneLayer() override;
 
-  void SetConstants(JNIEnv* env,
-                    int32_t reorder_background_top_margin,
+  void SetConstants(int32_t reorder_background_top_margin,
                     int32_t reorder_background_bottom_margin,
                     int32_t reorder_background_padding_short,
                     int32_t reorder_background_padding_long,
                     int32_t reorder_background_corner_radius,
                     float tab_underline_thickness,
                     float tab_underline_corner_radius,
-                    float tab_underline_bottom_margin);
+                    float tab_underline_bottom_margin,
+                    int64_t activity_creation_uptime_ms);
+
+  // Registers this window with the per-profile window count used to partition
+  // the new tab button first-paint metric. Only called when the native new tab
+  // button is used.
+  void SetProfile(Profile* profile);
 
   void SetContentTree(JNIEnv* env,
                       const base::android::JavaRef<jobject>& jcontent_tree);
 
   void BeginBuildingFrame(
-      JNIEnv* env,
       bool visible,
       const base::android::JavaRef<jobject>& jresource_manager,
       const base::android::JavaRef<jobject>& jlayer_title_cache);
 
-  void FinishBuildingFrame(JNIEnv* env);
+  void FinishBuildingFrame();
 
   void UpdateOffsetTag(JNIEnv* env,
                        const base::android::JavaRef<jobject>& joffset_tag);
 
-  void UpdateTabStripLayer(JNIEnv* env,
-                           int32_t width,
+  void UpdateTabStripLayer(int32_t width,
                            int32_t height,
                            float y_offset,
                            int32_t background_color,
@@ -75,8 +81,7 @@ class TabStripSceneLayer : public SceneLayer {
                            float right_padding,
                            float top_padding);
 
-  void UpdateNewTabButton(JNIEnv* env,
-                          int32_t resource_id,
+  void UpdateNewTabButton(int32_t resource_id,
                           int32_t bg_resource_id,
                           float x,
                           float y,
@@ -90,14 +95,22 @@ class TabStripSceneLayer : public SceneLayer {
                           int32_t keyboard_focus_ring_resource_id,
                           int32_t keyboard_focus_ring_color);
 
-  void UpdateGlicButton(JNIEnv* env,
-                        int32_t resource_id,
+  // Positions the layer of the WebUI new tab button (owned by |host|) inside
+  // the tab strip. Used instead of the native new tab button when
+  // AndroidNewTabButtonTabstripWebUI is on. The region is hidden until the
+  // host's layer is available (i.e. during startup).
+  void UpdateNtbWebUi(TabStripNtbWebUiHost* host,
+                      float x,
+                      float y,
+                      float width,
+                      float height);
+
+  void UpdateGlicButton(int32_t resource_id,
                         float x,
                         float y,
                         float button_width,
                         float button_height,
                         bool visible,
-                        bool should_apply_hover_highlight,
                         int32_t tint,
                         bool should_tint,
                         int32_t background_tint,
@@ -120,14 +133,12 @@ class TabStripSceneLayer : public SceneLayer {
                         int32_t dismiss_keyboard_focus_ring_resource_id,
                         int32_t dismiss_keyboard_focus_ring_color);
 
-  void UpdateGlicActorButton(JNIEnv* env,
-                             int32_t resource_id,
+  void UpdateGlicActorButton(int32_t resource_id,
                              float x,
                              float y,
                              float button_width,
                              float button_height,
                              bool visible,
-                             bool should_apply_hover_highlight,
                              int32_t tint,
                              bool should_tint,
                              int32_t background_tint,
@@ -142,8 +153,7 @@ class TabStripSceneLayer : public SceneLayer {
                              float corner_radius_outer,
                              float corner_radius_inner);
 
-  void UpdateModelSelectorButton(JNIEnv* env,
-                                 int32_t resource_id,
+  void UpdateModelSelectorButton(int32_t resource_id,
                                  int32_t bg_resource_id,
                                  float x,
                                  float y,
@@ -156,8 +166,7 @@ class TabStripSceneLayer : public SceneLayer {
                                  int32_t keyboard_focus_ring_resource_id,
                                  int32_t keyboard_focus_ring_color);
 
-  void UpdateTabSearchButton(JNIEnv* env,
-                             int32_t resource_id,
+  void UpdateTabSearchButton(int32_t resource_id,
                              int32_t bg_resource_id,
                              float x,
                              float y,
@@ -170,16 +179,21 @@ class TabStripSceneLayer : public SceneLayer {
                              int32_t keyboard_focus_ring_resource_id,
                              int32_t keyboard_focus_ring_color);
 
-  void UpdateTabStripFade(JNIEnv* env,
-                          bool is_left,
+  // Shows the link drop indicator centered at |center_x_px| at the top of the
+  // tab strip, or hides it if |visible| is false.
+  void UpdateLinkDropIndicator(int32_t resource_id,
+                               float center_x_px,
+                               bool visible,
+                               int32_t tint);
+
+  void UpdateTabStripFade(bool is_left,
                           int32_t fade_color,
                           float opacity,
                           float gradient_width,
                           float opaque_width,
                           float padding);
 
-  void PutStripTabLayer(JNIEnv* env,
-                        int32_t id,
+  void PutStripTabLayer(int32_t id,
                         int32_t close_resource_id,
                         int32_t close_hover_bg_resource_id,
                         bool is_close_keyboard_focused,
@@ -329,6 +343,8 @@ class TabStripSceneLayer : public SceneLayer {
   scoped_refptr<cc::slim::UIResourceLayer> new_tab_button_;
   scoped_refptr<cc::slim::UIResourceLayer> new_tab_button_background_;
   scoped_refptr<cc::slim::UIResourceLayer> new_tab_button_keyboard_focus_ring_;
+  // Parent of the WebUI new tab button WebContents layer.
+  scoped_refptr<cc::slim::Layer> ntb_webui_container_;
   scoped_refptr<cc::slim::SolidColorLayer> left_fade_;
   scoped_refptr<cc::slim::SolidColorLayer> right_fade_;
 
@@ -362,6 +378,8 @@ class TabStripSceneLayer : public SceneLayer {
   scoped_refptr<cc::slim::UIResourceLayer> tab_search_button_background_;
   scoped_refptr<cc::slim::UIResourceLayer>
       tab_search_button_keyboard_focus_ring_;
+  // Arrow showing where a link dragged over the tab strip will be dropped.
+  scoped_refptr<cc::slim::UIResourceLayer> link_drop_indicator_;
   scoped_refptr<cc::slim::SolidColorLayer> scrim_layer_;
 
   unsigned write_index_ = 0;

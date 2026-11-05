@@ -6,6 +6,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/notifier_catalogs.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
@@ -19,7 +20,6 @@
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -41,12 +41,13 @@ std::string GetNotificationIdForApp(const webapps::AppId& app_id) {
 }  // namespace
 
 IsolatedWebAppUpdateNotificationService::
-    IsolatedWebAppUpdateNotificationService(Profile& profile,
-                                            WebAppProvider& provider)
+    IsolatedWebAppUpdateNotificationService(
+        Profile& profile,
+        WebAppProvider& provider,
+        IsolatedWebAppUpdateManager& update_manager)
     : profile_(profile), provider_(provider) {
   install_manager_observation_.Observe(&provider_->install_manager());
-  update_manager_observation_.Observe(
-      &provider_->isolated_web_app_update_manager());
+  update_manager_observation_.Observe(&update_manager);
 }
 
 IsolatedWebAppUpdateNotificationService::

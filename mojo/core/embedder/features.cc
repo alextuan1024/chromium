@@ -4,6 +4,8 @@
 
 #include "mojo/core/embedder/features.h"
 
+#include <array>
+
 #include "build/build_config.h"
 
 namespace mojo {
@@ -25,10 +27,30 @@ const char kSuppressEventfdUpgradeForWebview[] =
 
 BASE_FEATURE(kMojoIpczMemV2, base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kMojoIpczParcelCapacityPolicy, base::FEATURE_DISABLED_BY_DEFAULT);
+
+namespace {
+
+constexpr auto kMojoIpczParcelCapacityPolicyOptions =
+    std::to_array<base::FeatureParam<MojoIpczParcelCapacityPolicy>::Option>({
+        {MojoIpczParcelCapacityPolicy::kFixed, "fixed"},
+        {MojoIpczParcelCapacityPolicy::kNoCapacity, "no-capacity"},
+        {MojoIpczParcelCapacityPolicy::kExpandOnce, "expand-once"},
+        {MojoIpczParcelCapacityPolicy::kRestrictedDynamic,
+         "restricted-dynamic"},
+        {MojoIpczParcelCapacityPolicy::kDynamic, "dynamic"},
+    });
+
+}  // namespace
+
+constinit const base::FeatureParam<MojoIpczParcelCapacityPolicy>
+    kMojoIpczParcelCapacityPolicyParam{&kMojoIpczParcelCapacityPolicy, "policy",
+                                       MojoIpczParcelCapacityPolicy::kFixed,
+                                       kMojoIpczParcelCapacityPolicyOptions};
+
 BASE_FEATURE(kMojoFixGeometricBufferGrowth, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kMojoDirectSharedMemoryAllocation,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kMojoFixGeometricBufferGrowth2, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_WIN)
 // If enabled, then only handles of types Section, File, Directory and

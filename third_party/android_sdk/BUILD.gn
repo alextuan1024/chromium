@@ -7,10 +7,13 @@ import("//build/config/android/rules.gni")
 if (enable_java_templates) {
   android_system_java_prebuilt("public_framework_system_java") {
     jar_path = "//third_party/android_system_sdk/cipd/android_system.jar"
+    api_versions_xml_path =
+        "//third_party/android_system_sdk/cipd/api-versions_system.xml"
   }
 
   android_system_java_prebuilt("android_sdk_java") {
     jar_path = android_sdk_jar
+    api_versions_xml_path = "$android_sdk_platform_root/data/api-versions.xml"
   }
 
   template("android_sdk_optional_library") {
@@ -69,7 +72,7 @@ if (enable_java_templates) {
 
   android_sdk_optional_library("android_xr_extensions_java") {
     runtime_library_name = "com.android.extensions.xr"
-    input_jars_paths = [ "//third_party/android_deps/autorolled/cipd/libs/com_android_extensions_xr_extensions_xr/extensions-xr.jar" ]
+    input_jars_paths = [ "//third_party/android_deps/cipd/libs/com_android_extensions_xr_extensions_xr/extensions-xr.jar" ]
     required = false
   }
   if (!limit_android_deps) {

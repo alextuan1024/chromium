@@ -15,8 +15,8 @@ import static org.hamcrest.CoreMatchers.allOf;
 import static org.hamcrest.CoreMatchers.not;
 
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
-import static org.chromium.base.test.transit.ViewElement.inDialogOption;
-import static org.chromium.base.test.transit.ViewElement.newOptions;
+import static org.chromium.base.test.transit.ViewElement.displayingAtLeastOption;
+import static org.chromium.base.test.transit.ViewElement.unscopedOption;
 import static org.chromium.base.test.transit.ViewSpec.viewSpec;
 
 import android.content.Context;
@@ -27,7 +27,6 @@ import androidx.annotation.Nullable;
 
 import org.hamcrest.Matcher;
 
-import org.chromium.base.Token;
 import org.chromium.base.test.transit.Element;
 import org.chromium.base.test.transit.Facility;
 import org.chromium.base.test.transit.ViewElement;
@@ -45,6 +44,7 @@ import org.chromium.chrome.test.transit.tabmodel.TabGroupUtil;
 import org.chromium.chrome.test.util.TabBinningUtil;
 import org.chromium.components.tab_groups.TabGroupColorId;
 import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.List;
 
@@ -100,18 +100,15 @@ public class NewTabGroupDialogFacility<
         if (mTabIdsToGroup == null) {
             initTabGroupCreatedCondition();
         } else {
-            titleInputElement = declareView(createTitleViewSpec(), inDialogOption());
+            titleInputElement = declareView(createTitleViewSpec());
             declareEnterCondition(
                     new TabGroupExistsCondition(getHostStation().tabModelElement, mTabIdsToGroup));
         }
 
         dialogElement =
-                declareView(
-                        withId(R.id.visual_data_dialog_layout),
-                        newOptions().inDialog().displayingAtLeast(80).build());
+                declareView(withId(R.id.visual_data_dialog_layout), displayingAtLeastOption(80));
         declareView(
-                viewSpec(allOf(withId(R.id.visual_data_dialog_title), withText("New tab group"))),
-                inDialogOption());
+                viewSpec(allOf(withId(R.id.visual_data_dialog_title), withText("New tab group"))));
 
         // TODO(crbug.com/346377124): Partially cut off in android_30_google_apis_x86.textpb
         colorPickerElement = declareView(withId(R.id.color_picker_container));
@@ -125,10 +122,10 @@ public class NewTabGroupDialogFacility<
                             colorPickerIconSpec(
                                     color,
                                     mSelectedColor != null ? color.equals(mSelectedColor) : null),
-                            ViewElement.newOptions().inDialog().unscoped().build());
+                            unscopedOption());
         }
 
-        doneButtonElement = declareView(withId(R.id.positive_button), inDialogOption());
+        doneButtonElement = declareView(withId(R.id.positive_button));
     }
 
     private ViewSpec<View> createTitleViewSpec() {
@@ -137,7 +134,7 @@ public class NewTabGroupDialogFacility<
     }
 
     private void initTabGroupCreatedCondition() {
-        Element<Token> tabGroupIdElement =
+        Element<TabGroupId> tabGroupIdElement =
                 declareEnterConditionAsElement(
                         new TabGroupCreatedCondition(mHostStation.tabModelElement));
 
@@ -150,8 +147,7 @@ public class NewTabGroupDialogFacility<
                                     () -> tabModel.getTabsInGroup(tabGroupIdElement.value()));
                     mTabIdsToGroup = TabModelUtils.getTabIds(tabsInGroup);
                     mTitle = TabGroupUtil.getNumberOfTabsString(mTabIdsToGroup.size());
-                    titleInputElement =
-                            delayedElements.declareView(createTitleViewSpec(), inDialogOption());
+                    titleInputElement = delayedElements.declareView(createTitleViewSpec());
                 });
     }
 
@@ -179,18 +175,19 @@ public class NewTabGroupDialogFacility<
 
         return titleInputElement
                 .performViewActionTo(replaceText(newTabGroupName))
-                .exitFacilityAnd()
-                .enterFacility(
+                .replaceFacility(
                         new NewTabGroupDialogFacility<>(
                                 mTabIdsToGroup, newTabGroupName, mSelectedColor, mSoftKeyboard));
     }
 
     /** Select a color. */
     public NewTabGroupDialogFacility<HostStationT> pickColor(@TabGroupColorId int newColor) {
+        // The dialog opens with the title input focused, which raises the soft keyboard and can
+        // obscure the color picker icons on smaller or landscape screens.
+        ensureSoftKeyboardClosed();
         return colorElements[newColor]
                 .clickTo()
-                .exitFacilityAnd()
-                .enterFacility(
+                .replaceFacility(
                         new NewTabGroupDialogFacility<>(
                                 mTabIdsToGroup, mTitle, newColor, mSoftKeyboard));
     }
@@ -198,19 +195,7 @@ public class NewTabGroupDialogFacility<
     /** Press "Done" to confirm the tab group name and color. */
     public TabSwitcherGroupCardFacility pressDone() {
         ensureSoftKeyboardClosed();
-
-        // The reason we can pass an expected card index is because the tab group has already been
-        // created.
-        TabModel currentModel = mHostStation.getTabModel();
-        int expectedCardIndex =
-                runOnUiThreadBlocking(
-                        () -> TabBinningUtil.getBinIndex(currentModel, mTabIdsToGroup));
-        return doneButtonElement
-                .clickTo()
-                .exitFacilityAnd()
-                .enterFacility(
-                        new TabSwitcherGroupCardFacility(
-                                expectedCardIndex, mTabIdsToGroup, mTitle));
+        return doneButtonElement.clickTo().replaceFacility(createGroupCard());
     }
 
     /**
@@ -224,8 +209,7 @@ public class NewTabGroupDialogFacility<
         // created.
         return doneButtonElement
                 .clickTo()
-                .exitFacilityAnd()
-                .enterFacility(new TabGroupDialogFacility<>(mTabIdsToGroup));
+                .replaceFacility(new TabGroupDialogFacility<>(mTabIdsToGroup));
     }
 
     /**
@@ -243,9 +227,8 @@ public class NewTabGroupDialogFacility<
 
         return doneButtonElement
                 .clickTo()
-                .exitFacilityAnd()
                 .withPossiblyAlreadyFulfilled()
-                .enterFacility(
+                .replaceFacility(
                         new NewTabGroupDialogFacility<>(
                                 mTabIdsToGroup, mTitle, mSelectedColor, mSoftKeyboard));
     }
@@ -253,18 +236,18 @@ public class NewTabGroupDialogFacility<
     /** Press the system backpress to confirm the tab group name and color. */
     public TabSwitcherGroupCardFacility pressBack() {
         ensureSoftKeyboardClosed();
+        return pressBackTo().replaceFacility(createGroupCard());
+    }
 
+    /** The card of the group created, shown once the dialog closes. */
+    private TabSwitcherGroupCardFacility createGroupCard() {
         // The reason we can pass an expected card index is because the tab group has already been
         // created.
         TabModel currentModel = mHostStation.getTabModel();
         int expectedCardIndex =
                 runOnUiThreadBlocking(
                         () -> TabBinningUtil.getBinIndex(currentModel, mTabIdsToGroup));
-        return pressBackTo()
-                .exitFacilityAnd()
-                .enterFacility(
-                        new TabSwitcherGroupCardFacility(
-                                expectedCardIndex, mTabIdsToGroup, mTitle));
+        return new TabSwitcherGroupCardFacility(expectedCardIndex, mTabIdsToGroup, mTitle);
     }
 
     private void ensureSoftKeyboardClosed() {

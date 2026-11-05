@@ -27,7 +27,7 @@ import {getHtml} from './app.html.js';
 import {browserProxyFactory, FullscreenContext, SecurityIcon} from './browser.mojom-webui.js';
 import type {ContentRegionElement} from './content_region.js';
 import type {SidePanelElement} from './side_panel.js';
-import type {TabActivated, TabAdded, TabClosed, TabUpdated} from './tab_strip/events.js';
+import type {TabAdded, TabClosed, TabUpdated} from './tab_strip/events.js';
 import {TabStripElement} from './tab_strip/tab_strip.js';
 import type {WebuiBrowserSearchboxElement} from './webui_browser_searchbox.js';
 
@@ -172,6 +172,7 @@ export class WebuiBrowserAppElement extends CrLitElement {
     browserProxyFactory.getInstance().handler.openProfileMenu();
   }
 
+  // <if expr="not is_macosx">
   protected onMinimizeClick_(_: Event) {
     browserProxyFactory.getInstance().handler.minimize();
   }
@@ -180,13 +181,10 @@ export class WebuiBrowserAppElement extends CrLitElement {
     browserProxyFactory.getInstance().handler.maximize();
   }
 
-  protected onRestoreClick_(_: Event) {
-    browserProxyFactory.getInstance().handler.restore();
-  }
-
   protected onCloseClick_(_: Event) {
     browserProxyFactory.getInstance().handler.close();
   }
+  // </if>
 
   protected onBackClick_(_: Event) {
     if (this.$.contentRegion.activeWebview) {
@@ -261,19 +259,13 @@ export class WebuiBrowserAppElement extends CrLitElement {
     this.refreshLayout();
   }
 
-  protected onTabActivated_(event: CustomEvent<TabActivated>) {
-    // TODO(crbug.com/537801193): store and restore focus on tab switch.
-    this.$.contentRegion.activateTab(event.detail.id);
-    this.updateUrlForActiveTab_(event.detail);
-    this.refreshLayout();
-  }
-
   protected onTabUpdated_(event: CustomEvent<TabUpdated>) {
     const tabData = event.detail;
     if (!tabData.isActive) {
       return;
     }
 
+    // TODO(crbug.com/537801193): store and restore focus on tab switch.
     this.$.contentRegion.activateTab(tabData.id);
     this.updateUrlForActiveTab_(tabData);
     this.refreshLayout();
@@ -341,7 +333,7 @@ export class WebuiBrowserAppElement extends CrLitElement {
     }
   }
 
-  protected setFocusToLocationBar(isUserInitiated: boolean) {
+  private setFocusToLocationBar(isUserInitiated: boolean) {
     this.$.address.focusInput();
 
     // If the user initiated the selection (e.g. by pressing Ctrl-L) we want to
@@ -355,18 +347,18 @@ export class WebuiBrowserAppElement extends CrLitElement {
     }
   }
 
-  protected setReloadStopState(isLoading: boolean) {
+  private setReloadStopState(isLoading: boolean) {
     this.reloadOrStopIcon_ = isLoading ? 'icon-clear' : 'icon-refresh';
     this.updateToolbarButtons_();
   }
 
 
-  protected showSidePanel_(guestContentsId: string, title: string) {
+  private showSidePanel_(guestContentsId: string, title: string) {
     this.showingSidePanel_ = true;
     this.$.sidePanel.show(guestContentsId, title);
   }
 
-  protected closeSidePanel_() {
+  private closeSidePanel_() {
     this.$.sidePanel.close();
     this.showingSidePanel_ = false;
   }
@@ -377,7 +369,7 @@ export class WebuiBrowserAppElement extends CrLitElement {
     this.showingSidePanel_ = false;
   }
 
-  protected onFullscreenModeChanged_(
+  private onFullscreenModeChanged_(
       isFullscreen: boolean, context: FullscreenContext|null) {
     if (!isFullscreen) {
       this.fullscreenMode_ = '';

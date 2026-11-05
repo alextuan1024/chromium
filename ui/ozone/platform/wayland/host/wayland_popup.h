@@ -28,7 +28,7 @@ class WaylandPopup final : public WaylandWindow {
 
   // Configure related:
   void HandleSurfaceConfigure(uint32_t serial) override;
-  void HandlePopupConfigure(const gfx::Rect& bounds) override;
+  void HandlePopupConfigure(const gfx::Rect& geometry_dip) override;
   void OnSequencePoint(int64_t seq) override;
   bool IsSurfaceConfigured() override;
   void AckConfigure(uint32_t serial) override;
@@ -51,11 +51,19 @@ class WaylandPopup final : public WaylandWindow {
   // Creates a popup window, which is visible as a menu window.
   bool CreateShellPopup();
 
+  // Changes the parent of a menu that would be placed outside its parent to
+  // an open descendant menu of the parent that it overlaps or touches.
+  void MaybeReparentMenu();
+
   // Decorates the surface, which requires custom extensions based on exo.
   void UpdateDecoration();
 
   // Returns bounds with origin relative to parent window's origin.
   gfx::Rect AdjustPopupWindowPosition();
+
+  // Translates and scales `anchor_rect_dip` from top-level UI DIP coordinates
+  // into parent-relative Wayland surface coordinates.
+  gfx::Rect TranslateAnchorRect(const gfx::Rect& anchor_rect_dip);
 
   std::unique_ptr<XdgPopup> xdg_popup_;
 
@@ -65,6 +73,10 @@ class WaylandPopup final : public WaylandWindow {
   // Ozone/Wayland may not do so. Otherwise, a new state (if bounds has been
   // changed) won't be applied.
   bool schedule_redraw_ = false;
+
+  // The parent requested at creation when MaybeReparentMenu() changed it.
+  // Restored on Hide().
+  base::WeakPtr<WaylandWindow> requested_parent_;
 
   base::WeakPtrFactory<WaylandPopup> weak_ptr_factory_{this};
 };

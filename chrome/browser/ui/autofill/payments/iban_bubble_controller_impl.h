@@ -19,11 +19,9 @@
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/ui/payments/payments_ui_closed_reasons.h"
 #include "content/public/browser/web_contents_user_data.h"
-#include "ui/actions/action_id.h"
 
 namespace autofill {
 
-class AutofillBubbleHandler;
 enum class IbanBubbleType;
 
 // Implementation of per-tab class to control the IBAN save bubble, manage saved
@@ -95,12 +93,8 @@ class IbanBubbleControllerImpl
 
   // SavePaymentIconController:
   std::u16string GetSavePaymentIconTooltipText() const override;
-  bool ShouldShowSavingPaymentAnimation() const override;
-  bool ShouldShowPaymentSavedLabelAnimation() const override;
-  void OnAnimationEnded() override;
   bool IsIconVisible() const override;
   AutofillBubbleBase* GetPaymentBubbleView() const override;
-  int GetSaveSuccessAnimationStringId() const override;
   const SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams&
   GetConfirmationUiParams() const override;
 
@@ -119,20 +113,18 @@ class IbanBubbleControllerImpl
   explicit IbanBubbleControllerImpl(content::WebContents* web_contents);
 
   // AutofillBubbleControllerBase:
-  void DoShowBubble() override;
   using AutofillBubbleControllerBase::HideBubble;
-  std::optional<PageActionIconType> GetPageActionIconType() override;
 #if !BUILDFLAG(IS_ANDROID)
-  std::optional<actions::ActionId> GetActionIdForPageAction() override;
   std::optional<std::u16string> GetPageActionTooltipText() override;
 #endif  // !BUILDFLAG(IS_ANDROID)
 
  private:
   friend class content::WebContentsUserData<IbanBubbleControllerImpl>;
 
-  Profile* GetProfile();
+  // AutofillBubbleControllerBase:
+  AutofillBubbleBase* DoShowBubble() override;
 
-  AutofillBubbleHandler* GetAutofillBubbleHandler();
+  Profile* GetProfile();
 
   // Sets up the controller's state for a local IBAN save prompt.
   void SetupLocalSave(Iban iban,
@@ -157,14 +149,15 @@ class IbanBubbleControllerImpl
   // Logs metrics when the bubble is closed.
   void LogBubbleCloseMetrics(PaymentsUiClosedReason reason);
 
+  // Resets confirmation bubble state, updates the page action icon, and stops
+  // the auto-close timer.
+  void ResetConfirmationState();
+
   // Observer for when a bubble is created. Initialized only during tests.
   raw_ptr<ObserverForTest> observer_for_testing_ = nullptr;
 
   // Note: Below fields are set when IBAN save is offered.
   //
-  // Is true only if the [IBAN saved] label animation should be shown.
-  bool should_show_iban_saved_label_animation_ = false;
-
   // The type of bubble that is either currently being shown or would
   // be shown when the IBAN save icon is clicked.
   IbanBubbleType current_bubble_type_ = IbanBubbleType::kInactive;

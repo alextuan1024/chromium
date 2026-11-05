@@ -217,6 +217,16 @@ void MultiUserWindowManager::ShowWindowForUser(aura::Window* window,
   Shell::Get()->session_controller()->SwitchActiveUser(account_id);
 }
 
+void MultiUserWindowManager::ShowWindowForCurrentUser(aura::Window* window) {
+  DCHECK(window);
+  if (!current_account_id_.has_value()) {
+    return;
+  }
+  if (!IsWindowOnDesktopOfUser(window, *current_account_id_)) {
+    ShowWindowForUser(window, *current_account_id_);
+  }
+}
+
 const AccountId& MultiUserWindowManager::GetWindowOwner(
     const aura::Window* window) const {
   WindowToEntryMap::const_iterator it =
@@ -248,6 +258,27 @@ const AccountId& MultiUserWindowManager::GetUserPresentingWindow(
   // return the empty string.
   return (iter == window_to_entry_.end()) ? EmptyAccountId()
                                           : iter->second->show_for_user();
+}
+
+bool MultiUserWindowManager::CanShowWindowForCurrentUser(
+    const aura::Window* window) const {
+  CHECK(window);
+  // `current_account_id_` is set when the first (primary) user session becomes
+  // active, and is never reset after that. So it is unset only before any
+  // user session starts, e.g. on the login screen or in OOBE. No window is
+  // hidden for another user in that state, so treat every window as showable.
+  if (!current_account_id_.has_value()) {
+    return true;
+  }
+
+  const AccountId& owner = GetWindowOwner(window);
+  if (!owner.is_valid() || owner == *current_account_id_) {
+    return true;
+  }
+
+  // The window is owned by another user. It can be shown only if it is
+  // presented on the current user's desktop (i.e. teleported).
+  return GetUserPresentingWindow(window) == *current_account_id_;
 }
 
 const AccountId& MultiUserWindowManager::CurrentAccountId() const {
@@ -565,7 +596,10 @@ void MultiUserWindowManager::RemoveTransientOwnerRecursive(
 
   bool unowned_view_state = visibility_item->second;
   transient_window_to_visibility_.erase(visibility_item);
-  if (unowned_view_state && !window->IsVisible() &&
+  // Don't restore the visibility of a window that is being destroyed, e.g. a
+  // hidden transient window that gets removed from its transient parent as part
+  // of its own destruction. `aura::Window::Show()` must not be called on it.
+  if (unowned_view_state && !window->is_destroying() && !window->IsVisible() &&
       desks_util::BelongsToActiveDesk(window)) {
     // To prevent these commands from being recorded as any other commands, we
     // are suppressing any window entry changes while this is going on.

@@ -24,13 +24,13 @@
 
 #include <array>
 #include <limits>
+#include <string_view>
 #include <type_traits>
 
 #include "base/check_op.h"
 #include "base/containers/span.h"
 #include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
@@ -63,8 +63,12 @@ class IntegerToStringConverter {
     }
 
     size_t pos = buffer_.size();
-    auto digits = is_uppercase ? base::span_from_cstring("0123456789ABCDEF")
-                               : base::span_from_cstring("0123456789abcdef");
+    // Not base::span_from_cstring(): a call of a constexpr function template
+    // that doesn't depend on a template parameter gets instantiated in every
+    // file that includes this header, and this one is included by all of
+    // blink. std::string_view's operator[] is bounds-checked as well.
+    constexpr std::string_view digits =
+        is_uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
 
     do {
       --pos;

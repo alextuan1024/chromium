@@ -24,7 +24,9 @@
 #include "cc/trees/viewport_property_ids.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/skia/include/core/SkBlendMode.h"
 #include "ui/gfx/geometry/linear_gradient.h"
+#include "ui/gfx/geometry/mask_filter_info.h"
 #include "ui/gfx/geometry/rrect_f.h"
 #include "ui/gfx/geometry/test/geometry_util.h"
 
@@ -492,6 +494,89 @@ TEST(PropertyTreeTest, TransformsWithFlattening) {
   EXPECT_TRANSFORM_EQ(rotation_about_x, grand_child_to_child);
 }
 
+class HitTestMayBeAffectedByMaskTest : public testing::Test {
+ protected:
+  // Builds contents root -> parent -> child, plus a sibling of the parent.
+  void SetUp() override {
+    contents_root_id_ = tree().Insert(EffectNode(), kRootPropertyNodeId);
+    ASSERT_EQ(kContentsRootPropertyNodeId, contents_root_id_);
+    parent_id_ = tree().Insert(EffectNode(), contents_root_id_);
+    child_id_ = tree().Insert(EffectNode(), parent_id_);
+    sibling_id_ = tree().Insert(EffectNode(), contents_root_id_);
+  }
+
+  EffectTree& tree() { return property_trees_.effect_tree_mutable(); }
+
+  PropertyTrees property_trees_;
+  int contents_root_id_ = kInvalidPropertyNodeId;
+  int parent_id_ = kInvalidPropertyNodeId;
+  int child_id_ = kInvalidPropertyNodeId;
+  int sibling_id_ = kInvalidPropertyNodeId;
+};
+
+TEST_F(HitTestMayBeAffectedByMaskTest, UnmaskedNodesAndBoundaryIds) {
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(kInvalidPropertyNodeId));
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(kRootPropertyNodeId));
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(contents_root_id_));
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(parent_id_));
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(child_id_));
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(sibling_id_));
+}
+
+TEST_F(HitTestMayBeAffectedByMaskTest, FastRoundedCornerOnParent) {
+  tree().MutableNode(parent_id_).is_fast_rounded_corner = true;
+  tree().MutableNode(parent_id_).mask_filter_info =
+      gfx::MaskFilterInfo(gfx::RRectF(0, 0, 100, 100, 5));
+
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(contents_root_id_));
+  EXPECT_TRUE(tree().HitTestMayBeAffectedByMask(parent_id_));
+  EXPECT_TRUE(tree().HitTestMayBeAffectedByMask(child_id_));
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(sibling_id_));
+}
+
+TEST_F(HitTestMayBeAffectedByMaskTest,
+       FastRoundedCornerOnChildDoesNotAffectParent) {
+  tree().MutableNode(child_id_).is_fast_rounded_corner = true;
+  tree().MutableNode(child_id_).mask_filter_info =
+      gfx::MaskFilterInfo(gfx::RRectF(0, 0, 100, 100, 5));
+
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(parent_id_));
+  EXPECT_TRUE(tree().HitTestMayBeAffectedByMask(child_id_));
+}
+
+TEST_F(HitTestMayBeAffectedByMaskTest, FastRoundedCornerOnContentsRoot) {
+  tree().MutableNode(contents_root_id_).is_fast_rounded_corner = true;
+  tree().MutableNode(contents_root_id_).mask_filter_info =
+      gfx::MaskFilterInfo(gfx::RRectF(0, 0, 100, 100, 5));
+
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(kRootPropertyNodeId));
+  EXPECT_TRUE(tree().HitTestMayBeAffectedByMask(contents_root_id_));
+  EXPECT_TRUE(tree().HitTestMayBeAffectedByMask(parent_id_));
+  EXPECT_TRUE(tree().HitTestMayBeAffectedByMask(child_id_));
+  EXPECT_TRUE(tree().HitTestMayBeAffectedByMask(sibling_id_));
+}
+
+TEST_F(HitTestMayBeAffectedByMaskTest, MaskingChildAndRemoval) {
+  int mask_id = tree().Insert(EffectNode(), parent_id_);
+  tree().MutableNode(mask_id).blend_mode = SkBlendMode::kDstIn;
+  tree().set_needs_update(true);
+  draw_property_utils::ComputeEffects(&tree(), 1.f);
+
+  EXPECT_TRUE(tree().Node(parent_id_).has_masking_child);
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(contents_root_id_));
+  EXPECT_TRUE(tree().HitTestMayBeAffectedByMask(parent_id_));
+  EXPECT_TRUE(tree().HitTestMayBeAffectedByMask(child_id_));
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(sibling_id_));
+
+  tree().MutableNode(mask_id).blend_mode = SkBlendMode::kSrcOver;
+  tree().set_needs_update(true);
+  draw_property_utils::ComputeEffects(&tree(), 1.f);
+
+  EXPECT_FALSE(tree().Node(parent_id_).has_masking_child);
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(parent_id_));
+  EXPECT_FALSE(tree().HitTestMayBeAffectedByMask(child_id_));
+}
+
 TEST(PropertyTreeTest, UnboundedRenderSurfaceReason) {
   PropertyTrees property_trees;
   EffectTree& effect_tree = property_trees.effect_tree_mutable();
@@ -659,12 +744,12 @@ TEST(PropertyTreeTest, ScreenSpaceOpacityUpdateTest) {
   EXPECT_EQ(tree.MutableNode(child).screen_space_opacity, 1.f);
   tree.MutableNode(parent).opacity = 0.5f;
   tree.set_needs_update(true);
-  draw_property_utils::ComputeEffects(&tree);
+  draw_property_utils::ComputeEffects(&tree, 1.f);
   EXPECT_EQ(tree.MutableNode(child).screen_space_opacity, 0.5f);
 
   tree.MutableNode(child).opacity = 0.5f;
   tree.set_needs_update(true);
-  draw_property_utils::ComputeEffects(&tree);
+  draw_property_utils::ComputeEffects(&tree, 1.f);
   EXPECT_EQ(tree.MutableNode(child).screen_space_opacity, 0.25f);
 }
 
@@ -732,7 +817,7 @@ TEST(EffectTreeTest, CopyOutputRequestsAreTransformed) {
   effect_node.render_surface_reason = RenderSurfaceReason::kTest;
   effect_node.transform_id = contents_root.id;
   effect_node.id = effect_tree.Insert(effect_node, 0);
-  effect_tree.UpdateEffects(effect_node.id);
+  effect_tree.UpdateEffects(effect_node.id, 1.f);
 
   // A CopyOutputRequest with only its area set should be transformed into one
   // that is scaled by two. In this case, by specifying no result selection, the
@@ -829,7 +914,7 @@ TEST(EffectTreeTest, CopyOutputRequestsThatBecomeIllegalAreDropped) {
   effect_node.render_surface_reason = RenderSurfaceReason::kTest;
   effect_node.transform_id = contents_root.id;
   effect_node.id = effect_tree.Insert(effect_node, 0);
-  effect_tree.UpdateEffects(effect_node.id);
+  effect_tree.UpdateEffects(effect_node.id, 1.f);
 
   auto request_in = CopyOutputRequest::CreateStubForTesting();
   request_in->set_area(gfx::Rect(10, 20, 30, 40));
@@ -1334,7 +1419,7 @@ TEST(EffectTreeTest, GetRoundedCornersForHitTestRoundedCornerWithMaskingChild) {
   mask_layer.blend_mode = SkBlendMode::kDstIn;
   const int mask_layer_id =
       helper.InsertEffectNode(rounded_frame_id, mask_layer);
-  helper.effect_tree().UpdateEffects(mask_layer_id);
+  helper.effect_tree().UpdateEffects(mask_layer_id, 1.f);
   ASSERT_TRUE(helper.effect_tree().Node(rounded_frame_id).has_masking_child);
 
   const int current_effect_id = helper.InsertEffectNode(rounded_frame_id);
@@ -1390,6 +1475,91 @@ TEST(EffectTreeTest, GetRoundedCornersForHitTestAncestorGradientMask) {
       gfx::RectF(0, 0, 100, 100));
   EXPECT_TRUE(result.requires_async_hit_test);
   EXPECT_FALSE(result.corner_radii);
+}
+
+TEST(EffectTreeTest, AnimationDamageTracking) {
+  PropertyTrees property_trees;
+  EffectTree& tree = property_trees.effect_tree_mutable();
+
+  EffectNode root_node;
+  root_node.id = tree.Insert(root_node, kInvalidPropertyNodeId);
+  EXPECT_EQ(root_node.id, kContentsRootPropertyNodeId);
+
+  EffectNode child_node;
+  child_node.element_id = ElementId(2);
+  child_node.opacity = 1.0f;
+  child_node.id = tree.Insert(child_node, root_node.id);
+  tree.SetElementIdForNodeId(child_node.id, child_node.element_id);
+
+  EffectNode grand_child_node;
+  grand_child_node.element_id = ElementId(3);
+  grand_child_node.opacity = 1.0f;
+  grand_child_node.id = tree.Insert(grand_child_node, child_node.id);
+  tree.SetElementIdForNodeId(grand_child_node.id, grand_child_node.element_id);
+
+  tree.ResetChangeTracking();
+  EXPECT_FALSE(tree.Node(child_node.id).effect_changed());
+  EXPECT_TRUE(tree.Node(child_node.id).damage_reasons().empty());
+
+  // 1. OnOpacityAnimated sets effect_changed and damage_reasons to
+  // kCompositorAnimation.
+  EXPECT_TRUE(tree.OnOpacityAnimated(child_node.element_id, 0.5f));
+  EXPECT_TRUE(tree.Node(child_node.id).effect_changed());
+  EXPECT_EQ(tree.Node(child_node.id).damage_reasons(),
+            DamageReasonSet{DamageReason::kCompositorAnimation});
+  EXPECT_EQ(tree.Node(child_node.id).opacity, 0.5f);
+
+  // Updating effects propagates kCompositorAnimation down the subtree.
+  draw_property_utils::ComputeEffects(&tree, 1.f);
+  EXPECT_TRUE(tree.Node(grand_child_node.id).effect_changed());
+  EXPECT_EQ(tree.Node(grand_child_node.id).damage_reasons(),
+            DamageReasonSet{DamageReason::kCompositorAnimation});
+
+  tree.ResetChangeTracking();
+  EXPECT_FALSE(tree.Node(child_node.id).effect_changed());
+  EXPECT_TRUE(tree.Node(child_node.id).damage_reasons().empty());
+  EXPECT_FALSE(tree.Node(grand_child_node.id).effect_changed());
+  EXPECT_TRUE(tree.Node(grand_child_node.id).damage_reasons().empty());
+
+  // 2. OnFilterAnimated sets effect_changed and kCompositorAnimation.
+  FilterOperations filters;
+  filters.Append(FilterOperation::CreateBlurFilter(2.f));
+  EXPECT_TRUE(tree.OnFilterAnimated(child_node.element_id, filters));
+  EXPECT_TRUE(tree.Node(child_node.id).effect_changed());
+  EXPECT_EQ(tree.Node(child_node.id).damage_reasons(),
+            DamageReasonSet{DamageReason::kCompositorAnimation});
+
+  tree.ResetChangeTracking();
+  EXPECT_FALSE(tree.Node(child_node.id).effect_changed());
+  EXPECT_TRUE(tree.Node(child_node.id).damage_reasons().empty());
+
+  // 3. OnBackdropFilterAnimated sets effect_changed and kCompositorAnimation.
+  EXPECT_TRUE(tree.OnBackdropFilterAnimated(child_node.element_id, filters));
+  EXPECT_TRUE(tree.Node(child_node.id).effect_changed());
+  EXPECT_EQ(tree.Node(child_node.id).damage_reasons(),
+            DamageReasonSet{DamageReason::kCompositorAnimation});
+
+  // 4. Subtree propagation unions parent reasons with child's existing reasons.
+  tree.ResetChangeTracking();
+  tree.MutableNode(child_node.id)
+      .SetEffectChanged(DamageReason::kCompositorAnimation);
+  tree.MutableNode(grand_child_node.id)
+      .SetEffectChanged(DamageReason::kUntracked);
+  tree.set_needs_update(true);
+  draw_property_utils::ComputeEffects(&tree, 1.f);
+  EXPECT_TRUE(tree.Node(grand_child_node.id).effect_changed());
+  DamageReasonSet expected_union;
+  expected_union.Put(DamageReason::kUntracked);
+  expected_union.Put(DamageReason::kCompositorAnimation);
+  EXPECT_EQ(tree.Node(grand_child_node.id).damage_reasons(), expected_union);
+
+  // 5. Mixed damage on a single node: animation tick + non-animation change
+  // records both reasons in damage_reasons_.
+  tree.ResetChangeTracking();
+  EXPECT_TRUE(tree.OnOpacityAnimated(child_node.element_id, 0.8f));
+  tree.MutableNode(child_node.id).SetEffectChanged(DamageReason::kUntracked);
+  EXPECT_TRUE(tree.Node(child_node.id).effect_changed());
+  EXPECT_EQ(tree.Node(child_node.id).damage_reasons(), expected_union);
 }
 
 }  // namespace

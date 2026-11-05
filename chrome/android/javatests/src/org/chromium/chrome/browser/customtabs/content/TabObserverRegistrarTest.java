@@ -16,6 +16,7 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule;
 import org.chromium.chrome.browser.customtabs.CustomTabsIntentTestUtils;
@@ -28,6 +29,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.net.test.EmbeddedTestServer;
 
@@ -99,19 +101,27 @@ public class TabObserverRegistrarTest {
                                         }
                                     });
                 });
-        DOMUtils.clickNode(mCustomTabActivityTestRule.getWebContents(), "new_window");
+        DOMUtils.clickNodeWithJavaScript(mCustomTabActivityTestRule.getWebContents(), "new_window");
         openTabHelper.waitForCallback(0, 1);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    assertEquals(2, tabSelector.getModel(false).getCount());
-                    Tab activeTab = tabSelector.getCurrentTab();
-                    initialActiveTab.loadUrl(new LoadUrlParams(url1));
-                    activeTab.loadUrl(new LoadUrlParams(url2));
-                });
+        List<WebContents> webContents =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            assertEquals(2, tabSelector.getModel(false).getCount());
+                            Tab activeTab = tabSelector.getCurrentTab();
+                            initialActiveTab.loadUrl(new LoadUrlParams(url1));
+                            activeTab.loadUrl(new LoadUrlParams(url2));
+                            return List.of(
+                                    initialActiveTab.getWebContents(), activeTab.getWebContents());
+                        });
 
         List<String> urlRequests = loadUrlTabObserver.getLoadUrlRequests();
         assertEquals(1, urlRequests.size());
         assertEquals(url2, urlRequests.get(0));
+
+        // Popup shares the renderer process, deferring WebContents teardown to
+        // TabWebContentsDestroyer.
+        mCustomTabActivityTestRule.finishActivity();
+        CriteriaHelper.pollUiThread(() -> webContents.stream().allMatch(WebContents::isDestroyed));
     }
 }

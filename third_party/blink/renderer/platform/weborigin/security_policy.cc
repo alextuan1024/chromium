@@ -29,7 +29,6 @@
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
 
 #include <memory>
-#include <optional>
 
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
@@ -47,7 +46,7 @@
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/parsing_utilities.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
@@ -57,14 +56,13 @@
 namespace blink {
 
 static base::Lock& GetLock() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(base::Lock, lock, ());
-  return lock;
+  static base::NoDestructor<base::Lock> lock;
+  return *lock;
 }
 
 static network::cors::OriginAccessList& GetOriginAccessList() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(network::cors::OriginAccessList,
-                                  origin_access_list, ());
-  return origin_access_list;
+  static base::NoDestructor<network::cors::OriginAccessList> origin_access_list;
+  return *origin_access_list;
 }
 
 bool SecurityPolicy::ShouldHideReferrer(const KURL& url, const KURL& referrer) {
@@ -118,14 +116,14 @@ Referrer SecurityPolicy::GenerateReferrer(
   // a referrer, with the origin-only flag set to true.
   // Creating referrerOrigin can be an expensive operation so we use a lambda
   // to create it dynamically only for the cases where it is used.
-  std::optional<KURL> referrer_origin;
+  KURL referrer_origin;
   auto get_referrer_origin = [&]() -> const KURL& {
-    if (!referrer_origin) {
-      referrer_origin.emplace(referrer_url);
-      referrer_origin->SetPath(String());
-      referrer_origin->SetQuery(String());
+    if (referrer_origin.IsNull()) {
+      referrer_origin = referrer_url;
+      referrer_origin.SetPath(String());
+      referrer_origin.SetQuery(String());
     }
-    return *referrer_origin;
+    return referrer_origin;
   };
 
   // 6. If the result of serializing referrerURL is a string whose length is
@@ -327,6 +325,11 @@ inline bool IsAsciiAlphaOrHyphen(CharType c) {
   return IsAsciiAlpha(c) || c == '-';
 }
 
+inline bool IsHTTPTabOrSpace(UChar c) {
+  // https://fetch.spec.whatwg.org/#http-tab-or-space
+  return c == uchar::kSpace || c == uchar::kTab;
+}
+
 }  // namespace
 
 bool SecurityPolicy::ReferrerPolicyFromHeaderValue(
@@ -339,7 +342,7 @@ bool SecurityPolicy::ReferrerPolicyFromHeaderValue(
   Vector<StringView> tokens = StringView(header_value).Split(',');
   for (const auto& token : tokens) {
     network::mojom::ReferrerPolicy current_result;
-    auto stripped_token = token.StripWhiteSpace();
+    auto stripped_token = token.StripWhiteSpace(IsHTTPTabOrSpace);
     if (SecurityPolicy::ReferrerPolicyFromString(
             stripped_token, legacy_keywords_support, &current_result)) {
       referrer_policy = current_result;

@@ -39,7 +39,8 @@ void PerformRemoveDeskMiniViewAnimation(DeskMiniView* removed_mini_view);
 // * Notes:
 // - It assumes that the new_mini_views have already been created, and all
 //   mini_views have already been laid out in their final positions.
-void PerformAddDeskMiniViewAnimation(std::vector<DeskMiniView*> new_mini_views);
+void PerformAddDeskMiniViewAnimation(
+    std::vector<raw_ptr<DeskMiniView, DanglingUntriaged>> new_mini_views);
 
 // Performs individual animation for views that belong to `bar_view` during
 // desk adding/removing. On both overview and desk button bar, on desk
@@ -82,7 +83,7 @@ void PerformDeskBarRemoveDeskAnimation(DeskBarViewBase* bar_view,
 void PerformReorderDeskMiniViewAnimation(
     int old_index,
     int new_index,
-    const std::vector<raw_ptr<DeskMiniView, VectorExperimental>>& mini_views);
+    const std::vector<raw_ptr<DeskMiniView, DanglingUntriaged>>& mini_views);
 
 // Performs the animation which happens when the saved desk library button is
 // shown or hidden. Shifts all the mini views and the new desk button to the
@@ -91,7 +92,7 @@ void PerformReorderDeskMiniViewAnimation(
 // - It assumes all the `mini_views` and new desk button have been laid out in
 //   their final positions.
 void PerformLibraryButtonVisibilityAnimation(
-    const std::vector<raw_ptr<DeskMiniView, VectorExperimental>>& mini_views,
+    const std::vector<raw_ptr<DeskMiniView, DanglingUntriaged>>& mini_views,
     views::View* new_desk_button,
     int shift_x);
 

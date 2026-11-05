@@ -4,6 +4,8 @@
 
 #include "chrome/updater/win/ui/progress_wnd.h"
 
+#include <stddef.h>
+
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -115,16 +117,13 @@ class ProgressWndTest : public ui::ProgressWndEvents, public ::testing::Test {
 TEST_F(ProgressWndTest, ClickedButton) {
   // Calls ProgressWnd::OnComplete then simulates a button push on the dialog.
   auto button_tester = [&](CompletionCodes code, int button_to_push) {
-    AppCompletionInfo app_completion_info;
-    app_completion_info.post_install_url = GURL("http://some-test-url");
-    app_completion_info.completion_code = code;
-    ObserverCompletionInfo observer_completion_info;
-    observer_completion_info.completion_text = u"some text";
-    observer_completion_info.apps_info.push_back(app_completion_info);
     MessageLoop ui_message_loop;
     std::unique_ptr<ProgressWnd> progress_wnd =
         MakeProgressWindow(&ui_message_loop);
-    progress_wnd->OnComplete(observer_completion_info);
+    progress_wnd->OnComplete(
+        {.completion_text = u"some text",
+         .apps_info = {{.completion_code = code,
+                        .post_install_url = GURL("http://some-test-url")}}});
     const HWND button = ::GetDlgItem(progress_wnd->hwnd(), button_to_push);
     ::SendMessageW(progress_wnd->hwnd(), WM_COMMAND,
                    MAKEWPARAM(button_to_push, BN_CLICKED),
@@ -221,55 +220,6 @@ TEST_F(ProgressWndTest, MaybeCloseWindow) {
   progress_wnd->DestroyWindow();
 }
 
-TEST_F(ProgressWndTest, GetBundleCompletionCode) {
-  {
-    for (CompletionCodes completion_code :
-         {CompletionCodes::COMPLETION_CODE_ERROR,
-          CompletionCodes::COMPLETION_CODE_INSTALL_FINISHED_BEFORE_CANCEL}) {
-      ObserverCompletionInfo info;
-      info.completion_code = completion_code;
-      EXPECT_EQ(ProgressWnd::GetBundleCompletionCode(info), completion_code);
-    }
-  }
-  {
-    ObserverCompletionInfo info;
-    EXPECT_EQ(ProgressWnd::GetBundleCompletionCode(info),
-              CompletionCodes::COMPLETION_CODE_EXIT_SILENTLY);
-  }
-  {
-    for (CompletionCodes completion_code :
-         {CompletionCodes::COMPLETION_CODE_SUCCESS,
-          CompletionCodes::COMPLETION_CODE_EXIT_SILENTLY,
-          CompletionCodes::COMPLETION_CODE_RESTART_ALL_BROWSERS,
-          CompletionCodes::COMPLETION_CODE_REBOOT,
-          CompletionCodes::COMPLETION_CODE_RESTART_BROWSER,
-          CompletionCodes::COMPLETION_CODE_RESTART_ALL_BROWSERS_NOTICE_ONLY,
-          CompletionCodes::COMPLETION_CODE_REBOOT_NOTICE_ONLY,
-          CompletionCodes::COMPLETION_CODE_RESTART_BROWSER_NOTICE_ONLY,
-          CompletionCodes::COMPLETION_CODE_LAUNCH_COMMAND,
-          CompletionCodes::COMPLETION_CODE_INSTALL_FINISHED_BEFORE_CANCEL}) {
-      ObserverCompletionInfo info;
-      AppCompletionInfo app_info;
-      app_info.completion_code = completion_code;
-      info.apps_info.push_back(app_info);
-      EXPECT_EQ(ProgressWnd::GetBundleCompletionCode(info), completion_code);
-    }
-  }
-  {
-    ObserverCompletionInfo info;
-
-    for (CompletionCodes code : {CompletionCodes::COMPLETION_CODE_SUCCESS,
-                                 CompletionCodes::COMPLETION_CODE_EXIT_SILENTLY,
-                                 CompletionCodes::COMPLETION_CODE_REBOOT}) {
-      AppCompletionInfo app_info;
-      app_info.completion_code = code;
-      info.apps_info.push_back(app_info);
-    }
-    EXPECT_EQ(ProgressWnd::GetBundleCompletionCode(info),
-              CompletionCodes::COMPLETION_CODE_REBOOT);
-  }
-}
-
 TEST_F(ProgressWndTest, DeterminePostInstallUrls) {
   for (CompletionCodes code :
        {CompletionCodes::COMPLETION_CODE_RESTART_ALL_BROWSERS,
@@ -277,12 +227,9 @@ TEST_F(ProgressWndTest, DeterminePostInstallUrls) {
     MessageLoop message_loop;
     std::unique_ptr<ProgressWnd> progress_wnd =
         MakeProgressWindow(&message_loop);
-    ObserverCompletionInfo observer_completion_info;
-    AppCompletionInfo app_completion_info;
-    app_completion_info.completion_code = code;
-    app_completion_info.post_install_url = GURL("http://some-test-url");
-    observer_completion_info.apps_info.push_back(app_completion_info);
-    progress_wnd->DeterminePostInstallUrls(observer_completion_info);
+    progress_wnd->DeterminePostInstallUrls(
+        {.apps_info = {{.completion_code = code,
+                        .post_install_url = GURL("http://some-test-url")}}});
     EXPECT_EQ(progress_wnd->post_install_urls_,
               std::vector<GURL>{GURL("http://some-test-url")});
     progress_wnd->DestroyWindow();
@@ -386,13 +333,10 @@ TEST_F(ProgressWndTest, OnComplete) {
   {
     std::unique_ptr<ProgressWnd> progress_wnd =
         MakeProgressWindow(&ui_message_loop);
-    AppCompletionInfo app_completion_info;
-    app_completion_info.completion_code =
-        CompletionCodes::COMPLETION_CODE_SUCCESS;
-    ObserverCompletionInfo observer_completion_info;
-    observer_completion_info.completion_text = u"text";
-    observer_completion_info.apps_info.push_back(app_completion_info);
-    progress_wnd->OnComplete(observer_completion_info);
+    progress_wnd->OnComplete(
+        {.completion_text = u"text",
+         .apps_info = {
+             {.completion_code = CompletionCodes::COMPLETION_CODE_SUCCESS}}});
     wchar_t completion_text[kMaxStringLen] = {};
     ::GetDlgItemTextW(progress_wnd->hwnd(), IDC_COMPLETE_TEXT, completion_text,
                       std::size(completion_text));
@@ -427,14 +371,13 @@ TEST_F(ProgressWndTest, LaunchCmdLine) {
   MessageLoop ui_message_loop;
   std::unique_ptr<ProgressWnd> progress_wnd =
       MakeProgressWindow(&ui_message_loop);
-  AppCompletionInfo app_completion_info;
-  app_completion_info.completion_code =
-      CompletionCodes::COMPLETION_CODE_EXIT_SILENTLY_ON_LAUNCH_COMMAND;
-  app_completion_info.post_install_launch_command_line =
-      base::WideToUTF8(test_process_cmd_line.GetCommandLineString());
-  ObserverCompletionInfo observer_completion_info;
-  observer_completion_info.completion_text = u"text";
-  observer_completion_info.apps_info.push_back(app_completion_info);
+  const ObserverCompletionInfo observer_completion_info = {
+      .completion_text = u"text",
+      .apps_info = {
+          {.completion_code =
+               CompletionCodes::COMPLETION_CODE_EXIT_SILENTLY_ON_LAUNCH_COMMAND,
+           .post_install_launch_command_line = base::WideToUTF8(
+               test_process_cmd_line.GetCommandLineString())}}};
   progress_wnd->OnComplete(observer_completion_info);
 
   EXPECT_TRUE(event_holder.event.TimedWait(TestTimeouts::action_max_timeout()));
@@ -489,12 +432,11 @@ TEST_F(ProgressWndTest, SetAppLogoDynamicSizing) {
 
   RECT ctl_rect = progress_wnd->GetControlClientRect(app_bitmap_ctl);
   const int initial_bottom = ctl_rect.bottom;
-  const int dpi = ::GetDpiForWindow(progress_wnd->hwnd());
-  const int effective_dpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+  const UINT dpi = GetWindowDpi(progress_wnd->hwnd());
   EXPECT_EQ(ctl_rect.right - ctl_rect.left,
-            ::MulDiv(48, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(48, dpi, USER_DEFAULT_SCREEN_DPI));
   EXPECT_EQ(ctl_rect.bottom - ctl_rect.top,
-            ::MulDiv(48, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(48, dpi, USER_DEFAULT_SCREEN_DPI));
 
   // Test with a 92x24 rectangular logo.
   base::win::ScopedGDIObject<HBITMAP> rect_bitmap = CreateTestDIB24(dc, 92, 24);
@@ -507,9 +449,9 @@ TEST_F(ProgressWndTest, SetAppLogoDynamicSizing) {
   // the bottom coordinate remains locked to the original baseline.
   ctl_rect = progress_wnd->GetControlClientRect(app_bitmap_ctl);
   EXPECT_EQ(ctl_rect.right - ctl_rect.left,
-            ::MulDiv(92, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(92, dpi, USER_DEFAULT_SCREEN_DPI));
   EXPECT_EQ(ctl_rect.bottom - ctl_rect.top,
-            ::MulDiv(24, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(24, dpi, USER_DEFAULT_SCREEN_DPI));
   EXPECT_EQ(ctl_rect.bottom, initial_bottom);
 
   progress_wnd->DestroyWindow();
@@ -571,14 +513,13 @@ TEST_F(ProgressWndTest, SetAppLogoThemeSwitching) {
   EXPECT_EQ(progress_wnd->dark_app_logo_bmp_.get(), dark_hbitmap);
   EXPECT_EQ(progress_wnd->GetCurrentAppLogoBitmap(), light_hbitmap);
 
-  const int dpi = ::GetDpiForWindow(progress_wnd->hwnd());
-  const int effective_dpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+  const UINT dpi = GetWindowDpi(progress_wnd->hwnd());
 
   RECT ctl_rect = progress_wnd->GetControlClientRect(app_bitmap_ctl);
   EXPECT_EQ(ctl_rect.right - ctl_rect.left,
-            ::MulDiv(32, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(32, dpi, USER_DEFAULT_SCREEN_DPI));
   EXPECT_EQ(ctl_rect.bottom - ctl_rect.top,
-            ::MulDiv(32, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(32, dpi, USER_DEFAULT_SCREEN_DPI));
 
   // Switch to dark mode and notify the window via WM_SETTINGCHANGE.
   SetDarkMode(true);
@@ -592,9 +533,9 @@ TEST_F(ProgressWndTest, SetAppLogoThemeSwitching) {
   EXPECT_NE(dark_big_icon, custom_big_icon);
   ctl_rect = progress_wnd->GetControlClientRect(app_bitmap_ctl);
   EXPECT_EQ(ctl_rect.right - ctl_rect.left,
-            ::MulDiv(48, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(48, dpi, USER_DEFAULT_SCREEN_DPI));
   EXPECT_EQ(ctl_rect.bottom - ctl_rect.top,
-            ::MulDiv(48, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(48, dpi, USER_DEFAULT_SCREEN_DPI));
 
   // Switch back to light mode and notify via WM_SYSCOLORCHANGE.
   SetDarkMode(false);
@@ -607,9 +548,9 @@ TEST_F(ProgressWndTest, SetAppLogoThemeSwitching) {
   EXPECT_NE(light_big_icon, dark_big_icon);
   ctl_rect = progress_wnd->GetControlClientRect(app_bitmap_ctl);
   EXPECT_EQ(ctl_rect.right - ctl_rect.left,
-            ::MulDiv(32, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(32, dpi, USER_DEFAULT_SCREEN_DPI));
   EXPECT_EQ(ctl_rect.bottom - ctl_rect.top,
-            ::MulDiv(32, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(32, dpi, USER_DEFAULT_SCREEN_DPI));
 
   // Test with only a single fallback logo (light provided, dark is null).
   base::win::ScopedGDIObject<HBITMAP> fallback_bitmap =
@@ -634,9 +575,9 @@ TEST_F(ProgressWndTest, SetAppLogoThemeSwitching) {
   EXPECT_EQ(progress_wnd->GetCurrentAppLogoBitmap(), fallback_hbitmap);
   ctl_rect = progress_wnd->GetControlClientRect(app_bitmap_ctl);
   EXPECT_EQ(ctl_rect.right - ctl_rect.left,
-            ::MulDiv(64, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(64, dpi, USER_DEFAULT_SCREEN_DPI));
   EXPECT_EQ(ctl_rect.bottom - ctl_rect.top,
-            ::MulDiv(64, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(64, dpi, USER_DEFAULT_SCREEN_DPI));
 
   // In dark mode with no dark logo provided, falls back to light logo.
   SetDarkMode(true);
@@ -645,9 +586,9 @@ TEST_F(ProgressWndTest, SetAppLogoThemeSwitching) {
   EXPECT_EQ(progress_wnd->GetCurrentAppLogoBitmap(), fallback_hbitmap);
   ctl_rect = progress_wnd->GetControlClientRect(app_bitmap_ctl);
   EXPECT_EQ(ctl_rect.right - ctl_rect.left,
-            ::MulDiv(64, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(64, dpi, USER_DEFAULT_SCREEN_DPI));
   EXPECT_EQ(ctl_rect.bottom - ctl_rect.top,
-            ::MulDiv(64, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(64, dpi, USER_DEFAULT_SCREEN_DPI));
 
   // Switch back to light mode and verify fallback logo persists.
   SetDarkMode(false);
@@ -655,9 +596,9 @@ TEST_F(ProgressWndTest, SetAppLogoThemeSwitching) {
   EXPECT_EQ(progress_wnd->GetCurrentAppLogoBitmap(), fallback_hbitmap);
   ctl_rect = progress_wnd->GetControlClientRect(app_bitmap_ctl);
   EXPECT_EQ(ctl_rect.right - ctl_rect.left,
-            ::MulDiv(64, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(64, dpi, USER_DEFAULT_SCREEN_DPI));
   EXPECT_EQ(ctl_rect.bottom - ctl_rect.top,
-            ::MulDiv(64, effective_dpi, USER_DEFAULT_SCREEN_DPI));
+            ::MulDiv(64, dpi, USER_DEFAULT_SCREEN_DPI));
 
   // Test window icon re-scaling across dynamic DPI changes (WM_DPICHANGED).
   RECT suggested_rect = {0, 0, 600, 400};
@@ -791,7 +732,7 @@ TEST_F(ProgressWndTest, DpiChangedWithoutSuggestedRect) {
   ::SendMessage(hwnd, WM_SET_APP_LOGO, reinterpret_cast<WPARAM>(logo.release()),
                 0);
 
-  const UINT window_dpi = ::GetDpiForWindow(hwnd);
+  const UINT window_dpi = GetWindowDpi(hwnd);
   const UINT target_dpi = (window_dpi == 192) ? 96 : 192;
   ASSERT_NE(target_dpi, window_dpi);
 
@@ -815,8 +756,10 @@ TEST_F(ProgressWndTest, DpiChangedWithoutSuggestedRect) {
   base::win::ScopedGDIObject<HBITMAP> big_mask(big_info.hbmMask);
   BITMAP bm_big = {};
   ASSERT_NE(::GetObject(big_color.get(), sizeof(bm_big), &bm_big), 0);
-  EXPECT_EQ(bm_big.bmWidth, ::GetSystemMetricsForDpi(SM_CXICON, target_dpi));
-  EXPECT_NE(bm_big.bmWidth, ::GetSystemMetricsForDpi(SM_CXICON, window_dpi));
+  EXPECT_EQ(bm_big.bmWidth,
+            GetSystemMetricsForDpiCompat(SM_CXICON, target_dpi));
+  EXPECT_NE(bm_big.bmWidth,
+            GetSystemMetricsForDpiCompat(SM_CXICON, window_dpi));
 
   progress_wnd->DestroyWindow();
 }
@@ -903,7 +846,7 @@ TEST_F(ProgressWndTest, ApplyDpiScalingIconMetrics) {
   // Choose a target DPI that strictly differs from the window's current DPI
   // (e.g. 192 vs 96) to simulate WM_DPICHANGED arriving before window rect
   // adjustment finishes.
-  const UINT window_dpi = ::GetDpiForWindow(progress_wnd->hwnd());
+  const UINT window_dpi = GetWindowDpi(progress_wnd->hwnd());
   const UINT target_dpi = (window_dpi == 192) ? 96 : 192;
   ASSERT_NE(target_dpi, window_dpi);
   progress_wnd->ApplyDpiScaling(target_dpi);
@@ -929,18 +872,21 @@ TEST_F(ProgressWndTest, ApplyDpiScalingIconMetrics) {
   BITMAP bm_small = {};
   ASSERT_NE(::GetObject(small_color.get(), sizeof(bm_small), &bm_small), 0);
 
-  const int expected_cx_big = ::GetSystemMetricsForDpi(SM_CXICON, target_dpi);
-  const int expected_cy_big = ::GetSystemMetricsForDpi(SM_CYICON, target_dpi);
+  const int expected_cx_big =
+      GetSystemMetricsForDpiCompat(SM_CXICON, target_dpi);
+  const int expected_cy_big =
+      GetSystemMetricsForDpiCompat(SM_CYICON, target_dpi);
   const int expected_cx_small =
-      ::GetSystemMetricsForDpi(SM_CXSMICON, target_dpi);
+      GetSystemMetricsForDpiCompat(SM_CXSMICON, target_dpi);
   const int expected_cy_small =
-      ::GetSystemMetricsForDpi(SM_CYSMICON, target_dpi);
+      GetSystemMetricsForDpiCompat(SM_CYSMICON, target_dpi);
 
-  const int stale_cx_big = ::GetSystemMetricsForDpi(SM_CXICON, window_dpi);
-  const int stale_cx_small = ::GetSystemMetricsForDpi(SM_CXSMICON, window_dpi);
+  const int stale_cx_big = GetSystemMetricsForDpiCompat(SM_CXICON, window_dpi);
+  const int stale_cx_small =
+      GetSystemMetricsForDpiCompat(SM_CXSMICON, window_dpi);
 
   // Assert icons match the target DPI, proving they were not overwritten by
-  // a stale GetDpiForWindow() call.
+  // a stale GetWindowDpi() call.
   EXPECT_EQ(bm_big.bmWidth, expected_cx_big);
   EXPECT_EQ(std::abs(bm_big.bmHeight), expected_cy_big);
   EXPECT_NE(bm_big.bmWidth, stale_cx_big);
@@ -1118,13 +1064,11 @@ TEST_F(ProgressWndTest, WindowIconsPersistAcrossCompletion) {
 
   // Complete the installation and verify window icons remain active across
   // completion.
-  ObserverCompletionInfo info;
-  info.completion_code = CompletionCodes::COMPLETION_CODE_SUCCESS;
-  info.completion_text = u"Install successful!";
-  AppCompletionInfo app_info;
-  app_info.completion_code = CompletionCodes::COMPLETION_CODE_SUCCESS;
-  info.apps_info.push_back(app_info);
-  progress_wnd->OnComplete(info);
+  progress_wnd->OnComplete(
+      {.completion_code = CompletionCodes::COMPLETION_CODE_SUCCESS,
+       .completion_text = u"Install successful!",
+       .apps_info = {
+           {.completion_code = CompletionCodes::COMPLETION_CODE_SUCCESS}}});
 
   const HICON completed_big_icon = reinterpret_cast<HICON>(
       ::SendMessage(progress_wnd->hwnd(), WM_GETICON, ICON_BIG, 0));
@@ -1176,7 +1120,7 @@ TEST_F(ProgressWndTest, WindowIconOnLogoAndDpiChange) {
 
   // Trigger DPI change back to original: exercises updating icons for
   // previously visited DPI.
-  const UINT original_dpi = ::GetDpiForWindow(progress_wnd->hwnd());
+  const UINT original_dpi = GetWindowDpi(progress_wnd->hwnd());
   ::SendMessage(progress_wnd->hwnd(), WM_DPICHANGED,
                 MAKELONG(original_dpi, original_dpi),
                 reinterpret_cast<LPARAM>(&new_rect));

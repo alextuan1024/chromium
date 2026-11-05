@@ -7,21 +7,14 @@
 #include <tuple>
 #include <utility>
 
-#include "base/containers/circular_deque.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/platform_shared_memory_region.h"
 #include "base/memory/shared_memory_hooks.h"
 #include "base/memory/shared_memory_mapping.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/memory/writable_shared_memory_region.h"
-#include "base/process/process.h"
 #include "build/build_config.h"
-#include "mojo/core/broker.h"
-#include "mojo/core/broker_host.h"
-#include "mojo/core/configuration.h"
-#include "mojo/core/connection_params.h"
 #include "mojo/core/ipcz_api.h"
 #include "mojo/core/ipcz_driver/transport.h"
 #include "mojo/core/scoped_ipcz_handle.h"
@@ -29,8 +22,16 @@
 #include "mojo/public/cpp/platform/platform_channel_endpoint.h"
 #include "third_party/ipcz/include/ipcz/ipcz.h"
 
+// Keep in sync with the condition guarding the broker sources in
+// mojo/core/BUILD.gn.
 #define SHARED_MEMORY_SERVICE_REQUIRED() \
   BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_ANDROID)
+
+#if SHARED_MEMORY_SERVICE_REQUIRED()
+#include "base/files/scoped_file.h"
+#include "mojo/core/broker.h"
+#include "mojo/core/broker_host.h"
+#endif
 
 namespace mojo::core::ipcz_driver {
 
@@ -38,13 +39,9 @@ namespace {
 
 #if SHARED_MEMORY_SERVICE_REQUIRED()
 
-void CreateBrokerHostOnIOThread(PlatformChannelEndpoint endpoint) {
-  // Self-owned. Note that a valid remote process handle is only needed by
-  // BrokerHost on Windows, but MojoIpcz doesn't yet support any version of
-  // Windows which requires use of the shared memory service (i.e., Windows
-  // versions older than 8.1).
-  new BrokerHost(base::Process(), ConnectionParams(std::move(endpoint)),
-                 base::NullCallback());
+void CreateBrokerHostOnIOThread(base::ScopedFD socket) {
+  // Self-owned.
+  new BrokerHost(std::move(socket));
 }
 
 void CreateServiceFromNextParcel(ScopedIpczHandle portal) {
@@ -69,7 +66,8 @@ void CreateServiceFromNextParcel(ScopedIpczHandle portal) {
   std::ignore = box.release();
   Transport::GetIOTaskRunner()->PostTask(
       FROM_HERE,
-      base::BindOnce(&CreateBrokerHostOnIOThread, transport->TakeEndpoint()));
+      base::BindOnce(&CreateBrokerHostOnIOThread,
+                     transport->TakeEndpoint().TakePlatformHandle().TakeFD()));
 }
 
 void WaitForClientConnection(ScopedIpczHandle portal) {
@@ -132,21 +130,17 @@ base::MappedReadOnlyRegion CreateReadOnlySharedMemoryRegion(
 
 base::UnsafeSharedMemoryRegion CreateUnsafeSharedMemoryRegion(size_t size) {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-  // An unsafe region never needs a read-only descriptor, and a memfd-backed
-  // one needs no filesystem access to create, so allocate it in-process when
-  // the embedder says this process's sandbox allows it (and the kernel
-  // supports memfd) instead of paying for a synchronous round trip to the
-  // broker.
-  if (GetConfiguration().direct_unsafe_shared_memory_allocation) {
-    auto anonymous_region =
-        base::subtle::PlatformSharedMemoryRegion::CreateUnsafeAnonymous(size);
-    if (anonymous_region.IsValid()) {
-      return base::UnsafeSharedMemoryRegion::Deserialize(
-          std::move(anonymous_region));
-    }
-    // In-process creation failed (no memfd support in the kernel, or out of
-    // descriptors or memory); fall back to asking the broker.
+  // An unsafe region never needs a readonly FD. Create a memfd-backed region
+  // in-process.
+  auto anonymous_region =
+      base::subtle::PlatformSharedMemoryRegion::CreateUnsafeAnonymous(size);
+  if (anonymous_region.IsValid()) {
+    return base::UnsafeSharedMemoryRegion::Deserialize(
+        std::move(anonymous_region));
   }
+  // In-process creation failed (no memfd support in the kernel, or out of
+  // descriptors or memory, or the sandbox denies one of the syscalls); fall
+  // back to asking the broker.
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
   auto writable_region = CreateWritableSharedMemoryRegion(size);
@@ -180,8 +174,8 @@ void BaseSharedMemoryService::CreateClient(ScopedIpczHandle portal) {
   if (result == IPCZ_RESULT_OK) {
     // On success, ownership of the box is passed into the portal.
     std::ignore = box.release();
-    g_client = new Broker(channel.TakeLocalEndpoint().TakePlatformHandle(),
-                          /*wait_for_channel_handle=*/false);
+    g_client =
+        new Broker(channel.TakeLocalEndpoint().TakePlatformHandle().TakeFD());
   }
 #endif
 }

@@ -22,7 +22,6 @@
 #include "chrome/grit/signin_resources.h"
 #include "components/regional_capabilities/regional_capabilities_service.h"
 #include "components/signin/public/base/signin_switches.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
@@ -62,11 +61,6 @@ history_sync_optin::mojom::LaunchContext HistorySyncOptinLaunchContextToMojom(
 
 }  // namespace
 
-bool HistorySyncOptinUIConfig::IsWebUIEnabled(
-    content::BrowserContext* browser_context) {
-  return syncer::IsReplaceSyncPromosWithSignInPromosEnabled();
-}
-
 // static
 GURL HistorySyncOptinUI::AppendHistorySyncOptinQueryParams(
     const GURL& url,
@@ -100,6 +94,9 @@ HistorySyncOptinUI::HistorySyncOptinUI(content::WebUI* web_ui)
       is_first_run_desktop_refresh_enabled
           ? IDR_SIGNIN_HISTORY_SYNC_OPTIN_HISTORY_SYNC_OPTIN_REFRESH_HTML
           : IDR_SIGNIN_HISTORY_SYNC_OPTIN_HISTORY_SYNC_OPTIN_HTML);
+  source->AddResourcePath(
+      chrome::kChromeUIHistorySyncOptinLoadingPath,
+      IDR_SIGNIN_HISTORY_SYNC_OPTIN_SYNC_LOADING_CONFIRMATION_HTML);
 
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
       {"historySyncOptInTitle", IDS_HISTORY_SYNC_OPT_IN_TITLE},
@@ -109,6 +106,7 @@ HistorySyncOptinUI::HistorySyncOptinUI(content::WebUI* web_ui)
       {"historySyncOptInRejectButtonLabel",
        IDS_HISTORY_SYNC_OPT_IN_REJECT_BUTTON},
       {"historySyncOptInDescription", IDS_HISTORY_SYNC_OPT_IN_DESCRIPTION},
+      {"syncLoadingConfirmationTitle", IDS_SYNC_LOADING_CONFIRMATION_TITLE},
   };
 
   // Refreshed UI doesn't need the background illustrations.

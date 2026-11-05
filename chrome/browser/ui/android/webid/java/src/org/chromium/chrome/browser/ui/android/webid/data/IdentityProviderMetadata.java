@@ -19,9 +19,15 @@ import org.chromium.url.GURL;
 public class IdentityProviderMetadata {
     private final @Nullable Integer mBrandTextColor;
     private final @Nullable Integer mBrandBackgroundColor;
-    private final Bitmap mBrandIconBitmap;
+    private final @Nullable Bitmap mBrandIconBitmap;
     private final GURL mConfigUrl;
     private final GURL mLoginUrl;
+    // The identity provider's account management page, privacy policy and terms of service, parsed
+    // from its well-known file. Each is empty if it's missing, isn't an absolute HTTP(S) URL or
+    // isn't same-site with the config URL.
+    private final GURL mAccountManagementUrl;
+    private final GURL mPrivacyPolicyUrl;
+    private final GURL mTermsOfServiceUrl;
     // Whether use a different account button needs to be shown, whether due to the IDP requesting
     // it or due to filtered out accounts being shown.
     private final boolean mShowUseDifferentAccountButton;
@@ -30,9 +36,12 @@ public class IdentityProviderMetadata {
     public IdentityProviderMetadata(
             long brandTextColor,
             long brandBackgroundColor,
-            Bitmap brandIconBitmap,
+            @JniType("SkBitmap") @Nullable Bitmap brandIconBitmap,
             @JniType("GURL") GURL configUrl,
             @JniType("GURL") GURL loginUrl,
+            @JniType("GURL") GURL accountManagementUrl,
+            @JniType("GURL") GURL privacyPolicyUrl,
+            @JniType("GURL") GURL termsOfServiceUrl,
             boolean showUseDifferentAccountButton) {
         // Parameters are longs because ColorUtils.INVALID_COLOR does not fit in an int.
         mBrandTextColor =
@@ -44,6 +53,9 @@ public class IdentityProviderMetadata {
         mBrandIconBitmap = brandIconBitmap;
         mConfigUrl = configUrl;
         mLoginUrl = loginUrl;
+        mAccountManagementUrl = accountManagementUrl;
+        mPrivacyPolicyUrl = privacyPolicyUrl;
+        mTermsOfServiceUrl = termsOfServiceUrl;
         mShowUseDifferentAccountButton = showUseDifferentAccountButton;
     }
 
@@ -55,7 +67,7 @@ public class IdentityProviderMetadata {
         return mBrandBackgroundColor;
     }
 
-    public Bitmap getBrandIconBitmap() {
+    public @Nullable Bitmap getBrandIconBitmap() {
         return mBrandIconBitmap;
     }
 
@@ -65,6 +77,18 @@ public class IdentityProviderMetadata {
 
     public GURL getLoginUrl() {
         return mLoginUrl;
+    }
+
+    public GURL getAccountManagementUrl() {
+        return mAccountManagementUrl;
+    }
+
+    public GURL getPrivacyPolicyUrl() {
+        return mPrivacyPolicyUrl;
+    }
+
+    public GURL getTermsOfServiceUrl() {
+        return mTermsOfServiceUrl;
     }
 
     public boolean showUseDifferentAccountButton() {

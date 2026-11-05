@@ -1,0 +1,26 @@
+caption: <ph name="ANDROID_NAME">Android</ph> applications to launch automatically on sign-in
+desc: |-
+  Setting the policy specifies a list of <ph name="ANDROID_NAME">Android</ph> application package names (e.g. <ph name="EXAMPLE_PACKAGE_NAME">com.example.app</ph>) that will automatically launch when the user signs in to <ph name="PRODUCT_OS_NAME">$2<ex>Google ChromeOS</ex></ph>.
+
+  Listed applications are launched if they are installed on the device. If an application is not installed yet at sign-in, it launches automatically once its installation completes. To ensure the applications are available, they should be force-installed through <ph name="ARC_POLICY_NAME">ArcPolicy</ph>.
+
+  Currently, only the first application in the list is launched.
+
+  If this policy is left unset or empty, no <ph name="ANDROID_NAME">Android</ph> applications will automatically launch at sign-in.
+example_value:
+- com.example.app
+features:
+  can_be_recommended: false
+  dynamic_refresh: true
+  per_profile: true
+owners:
+- arc-commercial@google.com
+- fahadmansoor@google.com
+schema:
+  items:
+    type: string
+  type: array
+supported_on:
+- chrome_os:160-
+tags: []
+type: list

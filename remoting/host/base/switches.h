@@ -79,10 +79,10 @@ extern const char kOutputSwitchName[];
 // processes.
 extern const char kMojoPipeToken[];
 
-// A server pipe handle used by the child process to initialize crash reporting.
-extern const char kCrashServerPipeHandle[];
-
 #if BUILDFLAG(IS_WIN)
+// Used to pass the Crashpad handler IPC pipe name to child processes.
+extern const char kCrashpadHandlerPipe[];
+
 // TODO(crbug.com/502281489): Remove this switch once the PC process is enabled
 // by default.
 // Specifies whether to use the dedicated Peer Connection process.
@@ -103,6 +103,16 @@ extern const char kCheckScreenRecordingPermissionSwitchName[];
 // Command line switch to list all audio devices and their UID.
 extern const char kListAudioDevicesSwitchName[];
 #endif  // BUILDFLAG(IS_APPLE)
+
+// Reports the AI agent state to the running host via Mojo IPC.
+extern const char kAgentStatusSwitchName[];
+
+// Specifies the terminal ID associated with `--agent-status` or
+// `--terminal-title`.
+extern const char kTerminalIdSwitchName[];
+
+// Sets the title of the terminal tab via Mojo IPC.
+extern const char kTerminalTitleSwitchName[];
 
 }  // namespace remoting
 

@@ -44,9 +44,13 @@ export const defaultConfig = [
 
       '@webui-eslint/lit-element-invalid-interface': 'error',
       '@webui-eslint/lit-element-structure': 'error',
+      '@webui-eslint/lit-member-visibility': 'error',
       '@webui-eslint/lit-property-accessor': 'error',
+      '@webui-eslint/lit-use-dollar-sign': 'error',
+      '@webui-eslint/lit-use-fire-helper': 'error',
       '@webui-eslint/no-assert-equals-boolean': 'error',
       '@webui-eslint/no-mixed-type-and-value-imports': 'error',
+      '@webui-eslint/no-re-exports': 'error',
       '@webui-eslint/polymer-property-declare': 'error',
       '@webui-eslint/polymer-property-class-member': 'error',
     },
@@ -61,7 +65,6 @@ export const defaultConfig = [
       'eslint-plugin-lit/no-duplicate-template-bindings': 'error',
       'eslint-plugin-lit/no-invalid-escape-sequences': 'error',
       'eslint-plugin-lit/no-invalid-html': 'error',
-      'eslint-plugin-lit/no-private-properties': ['error', {'private': '_$'}],
       // https://chromium.googlesource.com/chromium/src/+/HEAD/docs/webui/webui_lit_style_guide.md#Inline-Lambdas
       '@webui-eslint/inline-event-handler': 'error',
       '@webui-eslint/lit-element-expressions': 'error',

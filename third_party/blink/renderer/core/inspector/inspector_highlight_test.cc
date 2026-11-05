@@ -10,7 +10,9 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/accessibility/ax_context.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+#include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
+#include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
@@ -130,6 +132,61 @@ TEST_F(InspectorHighlightTest, BuildSnapContainerInfoSnapAreas) {
           "path":["M",18,123,"L",113,123,"L",113,218,"L",18,218,"Z"],
           "borderBox":["M",18,123,"L",113,123,"L",113,218,"L",18,218,"Z"],
           "alignBlock":"center"
+        }
+      ]
+    }
+  )JSON";
+  AssertValueEqualsJSON(protocol::ValueConversions<protocol::Value>::fromValue(
+                            info.get(), &errors),
+                        expected_container);
+}
+
+TEST_F(InspectorHighlightTest, BuildSnapContainerInfoPairSnapAreas) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      #snap {
+        background-color: white;
+        scroll-snap-type: pair mandatory;
+        overflow: scroll;
+        width: 150px;
+        height: 150px;
+      }
+      #snap > div {
+        width: 75px;
+        height: 75px;
+        margin: 10px;
+        padding: 10px;
+      }
+      .both {
+        scroll-snap-align: center;
+      }
+      .block-only {
+        scroll-snap-align: center none;
+      }
+    </style>
+    <div id="snap"><div class="both">A</div><div class="block-only">B</div></div>
+  )HTML");
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  Element* container = GetDocument().getElementById(AtomicString("snap"));
+  auto info = BuildSnapContainerInfo(container);
+  EXPECT_TRUE(info);
+
+  EXPECT_EQ(2u, info->getArray("snapAreas")->size());
+  protocol::ErrorSupport errors;
+  std::string expected_container = R"JSON(
+    {
+      "snapport":["M",8,8,"L",158,8,"L",158,158,"L",8,158,"Z"],
+      "paddingBox":["M",8,8,"L",158,8,"L",158,158,"L",8,158,"Z"],
+      "snapAreas": [
+        {
+          "path":["M",18,18,"L",113,18,"L",113,113,"L",18,113,"Z"],
+          "borderBox":["M",18,18,"L",113,18,"L",113,113,"L",18,113,"Z"],
+          "alignBlock":"center",
+          "alignInline":"center"
+        },
+        {
+          "path":["M",18,123,"L",113,123,"L",113,218,"L",18,218,"Z"],
+          "borderBox":["M",18,123,"L",113,123,"L",113,218,"L",18,218,"Z"]
         }
       ]
     }
@@ -963,7 +1020,7 @@ TEST_F(InspectorHighlightTest, ShapeOutsideHighlightScalesAfterTranslation) {
 
 TEST_F(InspectorHighlightTest, CanvasInlineChildHighlight) {
   ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
-  ScopedElementCanvasTransformForTest forced_canvas_transform_feature(true);
+  GetDocument().GetSettings()->SetScriptEnabled(true);
 
   PageTestBase::LoadAhem(*GetDocument().GetFrame());
 
@@ -1035,6 +1092,8 @@ TEST_F(InspectorHighlightTest, ImcbInfoStandardAbspos) {
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
   Element* target = GetDocument().getElementById(AtomicString("target"));
   EXPECT_TRUE(target);
+  target->GetLayoutBox()->SetNeedsDevtoolsInfo();
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   InspectorHighlightConfig config = InspectorHighlight::DefaultConfig();
   config.imcb_highlight_config =
@@ -1098,6 +1157,8 @@ TEST_F(InspectorHighlightTest, ImcbInfoAnchorPositionArea) {
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
   Element* anchored = GetDocument().getElementById(AtomicString("anchored"));
   EXPECT_TRUE(anchored);
+  anchored->GetLayoutBox()->SetNeedsDevtoolsInfo();
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   InspectorHighlightConfig config = InspectorHighlight::DefaultConfig();
   config.imcb_highlight_config =
@@ -1183,6 +1244,8 @@ TEST_F(InspectorHighlightTest, ImcbInfoAnchorFunctions) {
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
   Element* anchored = GetDocument().getElementById(AtomicString("anchored"));
   EXPECT_TRUE(anchored);
+  anchored->GetLayoutBox()->SetNeedsDevtoolsInfo();
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   InspectorHighlightConfig config = InspectorHighlight::DefaultConfig();
   config.imcb_highlight_config =
@@ -1247,6 +1310,8 @@ TEST_F(InspectorHighlightTest, ImcbInfoImplicitAnchor) {
 
   Element* popover = GetDocument().getElementById(AtomicString("popover"));
   ASSERT_TRUE(popover);
+  popover->GetLayoutBox()->SetNeedsDevtoolsInfo();
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   InspectorHighlightConfig config = InspectorHighlight::DefaultConfig();
   config.imcb_highlight_config =

@@ -52,13 +52,10 @@ public class MediaRouteControllerDialogManager extends BaseMediaRouteDialogManag
         private MediaRouter.@Nullable Callback mCallback;
 
         public Fragment() {
-            mHandler.post(
-                    new Runnable() {
-                        @Override
-                        public void run() {
-                            Fragment.this.dismiss();
-                        }
-                    });
+            // Android uses this constructor to restore the fragment after process death. Make sure
+            // MediaRouter is created with MediaRouterContext before the dialog gets it.
+            BrowserMediaRouter.getAndroidMediaRouter();
+            mHandler.post(Fragment.this::dismiss);
         }
 
         public Fragment(BaseMediaRouteDialogManager manager, MediaRouter.Callback callback) {

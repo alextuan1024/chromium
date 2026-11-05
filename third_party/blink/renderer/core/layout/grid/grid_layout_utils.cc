@@ -662,6 +662,7 @@ LayoutUnit CalculateIntrinsicMinimumContribution(
   switch (main_length.GetType()) {
     case Length::kAuto:
     case Length::kFitContent:
+    case Length::kShrinkContent:
     case Length::kStretch:
     case Length::kPercent:
     case Length::kCalculated: {
@@ -757,6 +758,82 @@ LayoutUnit ClampIntrinsicMinSize(LayoutUnit min_content_contribution,
   return std::min(min_content_contribution, spanned_tracks_definite_max_size);
 }
 
+LayoutUnit ContributionSizeForVirtualItem(
+    const GridLayoutTrackCollection& track_collection,
+    LayoutUnit track_baseline,
+    GridItemContributionType contribution_type,
+    GridItemData* virtual_item) {
+  DCHECK(virtual_item);
+  DCHECK(virtual_item->contribution_sizes);
+
+  const GridTrackSizingDirection track_direction = track_collection.Direction();
+
+  LayoutUnit baseline_shim;
+  if (track_baseline != LayoutUnit::Min()) {
+    baseline_shim = track_baseline -
+                    virtual_item->contribution_sizes->group_shared_baseline;
+  }
+
+  switch (contribution_type) {
+    case GridItemContributionType::kForContentBasedMinimums:
+    case GridItemContributionType::kForIntrinsicMaximums:
+      return virtual_item->contribution_sizes->min_max_contribution.min_size +
+             baseline_shim;
+    case GridItemContributionType::kForIntrinsicMinimums: {
+      // See https://drafts.csswg.org/css-grid/#min-size-auto for more details
+      // on the special logic applied for intrinsic minimums.
+      if (!virtual_item->IsSpanningAutoMinimumTrack(track_direction) ||
+          (virtual_item->IsSpanningFlexibleTrack(track_direction) &&
+           virtual_item->SpanSize(track_direction) > 1)) {
+        // Per the spec, we apply the automatic min when:
+        // - it spans at least one track in that axis whose min track sizing
+        // function is auto.
+        // - if it spans more than one track in that axis, none of those tracks
+        // are flexible.
+        return virtual_item->contribution_sizes
+                   ->intrinsic_min_assuming_track_placement +
+               baseline_shim;
+      } else {
+        // When we aren't spanning tracks that force all items to their
+        // automatic minimum, we end up with some items that use the automatic
+        // min, and some that use the content minimum. Those that use a content
+        // min need to be further clamped by the total track sizes it spans, if
+        // those tracks are definite. After clamping, use the max of these two
+        // values as the final contribution size.
+        const LayoutUnit contribution_unclamped =
+            virtual_item->contribution_sizes
+                ->intrinsic_min_ignoring_track_placement_unclamped;
+
+        LayoutUnit contribution_to_clamp =
+            virtual_item->contribution_sizes
+                ->intrinsic_min_ignoring_track_placement;
+
+        const auto& [begin_set_index, end_set_index] =
+            virtual_item->SetIndices(track_direction);
+        auto spanned_tracks_definite_max_size =
+            track_collection.CalculateSetSpanSize(begin_set_index,
+                                                  end_set_index);
+        if (spanned_tracks_definite_max_size != kIndefiniteSize) {
+          contribution_to_clamp = ClampIntrinsicMinSize(
+              contribution_to_clamp,
+              virtual_item->contribution_sizes->min_clamp_size,
+              spanned_tracks_definite_max_size);
+        }
+
+        return max(contribution_to_clamp, contribution_unclamped) +
+               baseline_shim;
+      }
+    }
+    case GridItemContributionType::kForMaxContentMaximums:
+    case GridItemContributionType::kForMaxContentMinimums:
+      return virtual_item->contribution_sizes->min_max_contribution.max_size +
+             baseline_shim;
+    case GridItemContributionType::kForFreeSpace:
+      NOTREACHED() << "`kForFreeSpace` should only be used to distribute extra "
+                      "space in maximize tracks and stretch auto tracks steps.";
+  }
+}
+
 namespace {
 
 GridArea SubgriddedAreaInParent(const SubgriddedItemData& opt_subgrid_data) {
@@ -778,6 +855,128 @@ GridArea SubgriddedAreaInParent(const SubgriddedItemData& opt_subgrid_data) {
               subgridded_area_in_parent.rows);
   }
   return subgridded_area_in_parent;
+}
+
+void CollectAndPrepareGridLanesSubgridItems(
+    const GridLineResolver& parent_line_resolver,
+    const GridItemData& parent_subgrid_item,
+    GridItems* subgridded_items,
+    GridLanesSubgriddedItemGroupMap& column_group_map,
+    GridLanesSubgriddedItemGroupMap& row_group_map) {
+  CHECK(subgridded_items);
+  for (const auto direction : {kForColumns, kForRows}) {
+    const auto& bounds = parent_subgrid_item.Span(direction);
+    if (!parent_line_resolver.HasStandaloneAxis(direction) ||
+        !parent_subgrid_item.MustConsiderGridItemsForSizing(direction) ||
+        !bounds.IsTranslatedDefinite()) {
+      continue;
+    }
+
+    auto& group_map =
+        direction == kForColumns ? column_group_map : row_group_map;
+    for (auto& subgridded_item : *subgridded_items) {
+      auto item_span = subgridded_item.Span(direction);
+      if (item_span.IsIndefinite()) {
+        // Indefinite span lengths are clamped to the parent span size,
+        // preserving auto-placement for grouping.
+        const auto span_size =
+            std::min(item_span.IndefiniteSpanSize(), bounds.SpanSize());
+        CHECK_GT(span_size, 0u);
+        item_span = GridSpan::IndefiniteGridSpan(span_size);
+      } else {
+        // Definite spans were already translated into the parent grid's tracks.
+        CHECK(item_span.IsTranslatedDefinite());
+      }
+
+      if (subgridded_item.IsConsideredForSizing(direction)) {
+        const GridLanesSubgriddedItemGroupProperties properties(
+            item_span, bounds, direction, subgridded_item);
+        auto result =
+            group_map.insert(properties, GridItems::GridItemDataVector());
+        result.stored_value->value.push_back(&subgridded_item);
+        // Let virtual items contribute in this axis instead of real members.
+        // Keep members in their groups for measurement on each sizing pass.
+        if (direction == kForColumns) {
+          subgridded_item.is_considered_for_column_sizing = false;
+        } else {
+          subgridded_item.is_considered_for_row_sizing = false;
+        }
+      }
+
+      // Items excluded from grouping still need a definite span to size nested
+      // subgrids. Use the start of the parent bounds as a temporary position;
+      // final placement is resolved later.
+      if (item_span.IsIndefinite()) {
+        subgridded_item.resolved_position.SetSpan(
+            GridSpan::TranslatedDefiniteGridSpan(
+                bounds.StartLine(), bounds.StartLine() + item_span.SpanSize()),
+            direction);
+      }
+    }
+  }
+}
+
+VirtualItems* BuildGridLanesSubgridVirtualItems(
+    GridLanesSubgriddedItemGroupMap&& column_group_map,
+    GridLanesSubgriddedItemGroupMap&& row_group_map) {
+  const auto group_count = column_group_map.size() + row_group_map.size();
+  if (!group_count) {
+    return nullptr;
+  }
+
+  auto* virtual_items = MakeGarbageCollected<VirtualItems>();
+  virtual_items->subgridded_item_groups =
+      MakeGarbageCollected<GridLanesSubgriddedItemGroups>();
+  virtual_items->subgridded_item_groups->ReserveInitialCapacity(group_count);
+  virtual_items->items->ReserveInitialCapacity(group_count);
+  for (const auto direction : {kForColumns, kForRows}) {
+    auto& group_map =
+        direction == kForColumns ? column_group_map : row_group_map;
+    for (auto& [properties, members] : group_map) {
+      auto* group = MakeGarbageCollected<GridLanesSubgriddedItemGroup>(
+          std::move(members), direction);
+      virtual_items->subgridded_item_groups->push_back(group);
+      const auto& item_span = properties.Span();
+      const auto& bounds =
+          item_span.IsIndefinite() ? properties.CandidateBounds() : item_span;
+      const auto span_size = item_span.SpanSize();
+      const auto& representative = *group->items.front();
+
+      auto* base_virtual_item = MakeGarbageCollected<GridItemData>();
+      // Virtual sizing only needs effective alignment and the baseline group.
+      if (direction == kForColumns) {
+        base_virtual_item->column_alignment =
+            representative.Alignment(direction);
+        base_virtual_item->column_baseline_group =
+            representative.BaselineGroup(direction);
+      } else {
+        base_virtual_item->row_alignment = representative.Alignment(direction);
+        base_virtual_item->row_baseline_group =
+            representative.BaselineGroup(direction);
+      }
+      base_virtual_item->is_considered_for_column_sizing =
+          direction == kForColumns;
+      base_virtual_item->is_considered_for_row_sizing = direction == kForRows;
+      base_virtual_item->contribution_sizes = group->contribution_sizes;
+
+      // For items with an automatic grid position, place hypothetical copies of
+      // the virtual grid item in every position within the tracks spanned by
+      // the grid-lanes subgrid. Items with a definite grid position contribute
+      // only to their actual parent grid tracks. All copies share the item
+      // group's intrinsic size contributions.
+      for (auto start = bounds.StartLine(), end = start + span_size;
+           end <= bounds.EndLine(); ++start, ++end) {
+        auto* entry =
+            start == bounds.StartLine()
+                ? base_virtual_item
+                : MakeGarbageCollected<GridItemData>(*base_virtual_item);
+        entry->resolved_position.SetSpan(
+            GridSpan::TranslatedDefiniteGridSpan(start, end), direction);
+        virtual_items->items->Append(entry);
+      }
+    }
+  }
+  return virtual_items;
 }
 
 }  // namespace
@@ -888,9 +1087,6 @@ void BuildGridSizingSubtree(const LayoutAlgorithmType& algorithm,
         !(style.IsDisplayGridLanes() && grid_item.is_auto_placed);
 
     auto build_subgrid_sizing_tree = [&](const auto& subgrid_algorithm) {
-      // TODO(yanlingwang): Store the filtered line resolver for grid-lanes
-      // subgrids without caching incomplete placement data, so their inherited
-      // line names remain available after sizing-tree construction.
       const auto subgrid_line_resolver =
           subgrid_algorithm.BuildGridLineResolver(
               SubgriddedAreaInParent(subgridded_item), &line_resolver,
@@ -919,7 +1115,31 @@ void BuildGridSizingSubtree(const LayoutAlgorithmType& algorithm,
     grid_item.ResetPlacementIndices();
   }
 
-  AppendSubgriddedItems(node, grid_items);
+  // A regular grid sizes its grid-lanes subgrids' children using virtual item
+  // groups. Grid-lanes containers already build virtual items through their own
+  // sizing path.
+  if (node.IsGrid()) {
+    GridLanesSubgriddedItemGroupMap column_group_map;
+    GridLanesSubgriddedItemGroupMap row_group_map;
+    // Process children of grid-lanes subgrids while their parent's resolved
+    // placement is available.
+    AppendSubgriddedItems(node, grid_items,
+                          [&](const GridItemData& parent_subgrid_item,
+                              GridItems* subgridded_items) {
+                            if (!parent_subgrid_item.node.IsGridLanes()) {
+                              return;
+                            }
+                            CollectAndPrepareGridLanesSubgridItems(
+                                line_resolver, parent_subgrid_item,
+                                subgridded_items, column_group_map,
+                                row_group_map);
+                          });
+    virtual_items = BuildGridLanesSubgridVirtualItems(
+        std::move(column_group_map), std::move(row_group_map));
+  } else {
+    AppendSubgriddedItems(node, grid_items,
+                          [](const GridItemData&, GridItems*) {});
+  }
 
   // We need to recreate the track builder collections to ensure track coverage
   // for subgridded items; it would be ideal to have them accounted for already,
@@ -1169,6 +1389,45 @@ bool HasBlockSizeDependentGridItem(const GridItems& grid_items) {
   return false;
 }
 
+LayoutUnit ComputeBlockSizeForSubgrid(const GridSizingSubtree& sizing_subtree,
+                                      const GridItemData& subgrid_data,
+                                      const ConstraintSpace& space,
+                                      SizingConstraint sizing_constraint) {
+  CHECK(sizing_subtree);
+  CHECK(subgrid_data.IsSubgrid());
+  const auto& node = subgrid_data.node;
+  LayoutUnit intrinsic_block_size;
+  if (node.IsGrid()) {
+    intrinsic_block_size = To<GridNode>(node).ComputeSubgridIntrinsicBlockSize(
+        sizing_subtree, space, sizing_constraint);
+  } else {
+    CHECK(node.IsGridLanes());
+    const auto geometry = CalculateInitialFragmentGeometry(
+        space, node, /*break_token=*/nullptr, /*is_intrinsic=*/true);
+    intrinsic_block_size = GridLanesLayoutAlgorithm({node, geometry, space})
+                               .ComputeSubgridIntrinsicBlockSize(
+                                   sizing_subtree, sizing_constraint);
+  }
+  return ComputeBlockSizeForFragment(
+      space, node,
+      ComputeBorders(space, node) + ComputePadding(space, node.Style()),
+      intrinsic_block_size, space.AvailableSize().inline_size);
+}
+
+MinMaxSizesResult ComputeMinMaxSizesForSubgrid(
+    const BlockNode& node,
+    const GridSizingSubtree& sizing_subtree,
+    const ConstraintSpace& space) {
+  if (node.IsGrid()) {
+    return To<GridNode>(node).ComputeSubgridMinMaxSizes(sizing_subtree, space);
+  }
+  CHECK(node.IsGridLanes());
+  const auto geometry = CalculateInitialFragmentGeometry(
+      space, node, /*break_token=*/nullptr, /*is_intrinsic=*/true);
+  return GridLanesLayoutAlgorithm({node, geometry, space})
+      .ComputeSubgridMinMaxSizes(sizing_subtree);
+}
+
 bool ValidateMinMaxSizesCache(const BlockNode& node,
                               const GridSizingSubtree& sizing_subtree,
                               GridTrackSizingDirection track_direction) {
@@ -1377,6 +1636,83 @@ void AccommodateSubgridExtraMargins(const GridSizingSubtree& sizing_subtree,
                              set_indices.begin);
     }
   }
+}
+
+LayoutUnit CalculateRowExpansionForFragmentation(
+    LayoutUnit fragmentainer_space,
+    LayoutUnit grid_area_block_end,
+    LayoutUnit item_block_end,
+    bool needs_growth_past_fragmentainer) {
+  if (needs_growth_past_fragmentainer) {
+    // We don't know how large subsequent fragments will be. Expand the row
+    // past the fragmentainer boundary so its children continue in the next
+    // fragmentainer instead of dropping those subsequent fragments.
+    return (fragmentainer_space - grid_area_block_end).AddEpsilon();
+  }
+  return item_block_end - grid_area_block_end;
+}
+
+// The following roughly comes from:
+// https://drafts.csswg.org/css-grid-1/#fragmentation-alg
+bool MinBlockSizeShouldEncompassIntrinsicSize(
+    const GridItemData& grid_item,
+    const ComputedStyle& container_style,
+    bool has_descendant_that_depends_on_percentage_block_size,
+    const GridLayoutTrackCollection* opt_row_track_collection) {
+  // If this item has (any) descendant that is percentage based, we can end
+  // up in a situation where we'll constantly try and expand the row. E.g.
+  // <div style="display: grid;">
+  //   <div style="min-height: 100px;">
+  //     <div style="height: 200%;"></div>
+  //   </div>
+  // </div>
+  if (has_descendant_that_depends_on_percentage_block_size) {
+    return false;
+  }
+
+  if (grid_item.node.IsMonolithic()) {
+    return false;
+  }
+
+  const auto& item_style = grid_item.node.Style();
+
+  // NOTE: We currently assume that writing-mode roots are monolithic, but
+  // this may change in the future.
+  DCHECK_EQ(container_style.GetWritingMode(), item_style.GetWritingMode());
+
+  // Only allow growth on "auto" block-size items, unless box decorations are
+  // to be cloned. Even a fixed block-size item can grow if box decorations
+  // are cloned (as long as box-sizing is content-box).
+  if (!item_style.LogicalHeight().HasAutoOrContentOrIntrinsic() &&
+      item_style.BoxDecorationBreak() != EBoxDecorationBreak::kClone) {
+    return false;
+  }
+
+  if (!opt_row_track_collection) {
+    return true;
+  }
+  DCHECK_EQ(opt_row_track_collection->Direction(), kForRows);
+
+  // Only allow growth on items which only span a single row.
+  if (grid_item.SpanSize(kForRows) > 1) {
+    return false;
+  }
+
+  const auto row_span_properties = opt_row_track_collection->RangeProperties(
+      grid_item.row_range_indices.begin);
+
+  // If we have a fixed maximum track, we assume that we've hit this maximum,
+  // and as such shouldn't grow.
+  if (row_span_properties.HasProperty(
+          TrackSpanProperties::kHasFixedMaximumTrack) &&
+      !row_span_properties.HasProperty(
+          TrackSpanProperties::kHasIntrinsicTrack)) {
+    return false;
+  }
+
+  return !row_span_properties.HasProperty(
+             TrackSpanProperties::kHasFixedMinimumTrack) ||
+         container_style.LogicalHeight().HasAutoOrContentOrIntrinsic();
 }
 
 }  // namespace blink

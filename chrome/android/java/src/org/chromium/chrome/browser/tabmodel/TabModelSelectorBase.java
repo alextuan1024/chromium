@@ -8,10 +8,11 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
 
+import org.jni_zero.JniPtr;
+
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ObserverList;
-import org.chromium.base.ResettersForTesting;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
@@ -19,15 +20,18 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedBridge;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabDestroyStatus;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabRestoreEntryId;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tabmodel.undo.UndoClosureSnapshot.ClosedTab;
 import org.chromium.components.tabs.TabStripCollection;
 import org.chromium.content_public.browser.LoadUrlParams;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -36,8 +40,6 @@ import java.util.Objects;
 public abstract class TabModelSelectorBase
         implements TabModelSelector, IncognitoTabModelObserver, TabModelDelegate {
     private static final int MODEL_NOT_FOUND = -1;
-
-    private static @Nullable TabModelSelectorObserver sObserverForTesting;
 
     /**
      * Elements in {@link mTabModels} should be kept in sync with elements in {@link
@@ -66,6 +68,7 @@ public abstract class TabModelSelectorBase
     private final ArrayList<TabModelObserver> mPendingObservers = new ArrayList<>();
 
     protected @Nullable IncognitoReauthDialogDelegate mIncognitoReauthDialogDelegate;
+    protected @Nullable RecentlyClosedBridge mRecentlyClosedBridge;
 
     private boolean mTabStateInitialized;
     private boolean mStartIncognito;
@@ -110,33 +113,18 @@ public abstract class TabModelSelectorBase
         mPendingObservers.clear();
         mPendingObservers.trimToSize();
 
-        TabModelObserver tabModelObserver =
-                new TabModelObserver() {
-                    @Override
-                    public void didAddTab(
-                            Tab tab,
-                            @TabLaunchType int type,
-                            @TabCreationState int creationState,
-                            boolean markedForSelection) {
-                        notifyNewTabCreated(tab, creationState);
-                    }
-                };
-
-        addObserverToAllModels(tabModelObserver);
-
-        if (sObserverForTesting != null) {
-            addObserver(sObserverForTesting);
-        }
         mIncognitoTabModel.addIncognitoObserver(this);
 
-        incognitoModel.setActive(mStartIncognito);
-        normalModel.setActive(!mStartIncognito);
+        if (shouldActivateModelOnInit()) {
+            incognitoModel.setActive(mStartIncognito);
+            normalModel.setActive(!mStartIncognito);
+        }
         mTabModelSupplier.set(mTabModelInternals.get(activeModelIndex));
     }
 
-    public static void setObserverForTests(@Nullable TabModelSelectorObserver observer) {
-        sObserverForTesting = observer;
-        ResettersForTesting.register(() -> sObserverForTesting = null);
+    /** Returns whether {@link #initialize} should mark the starting {@link TabModel} active. */
+    protected boolean shouldActivateModelOnInit() {
+        return true;
     }
 
     /**
@@ -146,9 +134,6 @@ public abstract class TabModelSelectorBase
      * @param tabContentProvider A {@link TabContentManager} instance.
      */
     public void onNativeLibraryReady(TabContentManager tabContentProvider) {}
-
-    @Override
-    public void onTabsViewShown() {}
 
     @Override
     public void selectModel(boolean incognito) {
@@ -273,12 +258,12 @@ public abstract class TabModelSelectorBase
     }
 
     @Override
-    public boolean tryCloseTab(TabClosureParams tabClosureParams, boolean allowDialog) {
+    public void closeTab(TabClosureParams tabClosureParams) {
         if (tabClosureParams.tabs == null
                 || tabClosureParams.tabs.size() != 1
                 || tabClosureParams.tabCloseType != TabCloseType.SINGLE) {
-            assert false : "Invalid tab closure params received for tryCloseTab.";
-            return false;
+            assert false : "Invalid tab closure params received for closeTab.";
+            return;
         }
         Tab tab = tabClosureParams.tabs.get(0);
         boolean isClosing = tab.isClosing() && !tab.isDestroyed();
@@ -290,11 +275,11 @@ public abstract class TabModelSelectorBase
                 TabList comprehensiveModel = model.getComprehensiveModel();
                 if (comprehensiveModel.indexOf(tab) > TabList.INVALID_TAB_INDEX) {
                     model.commitTabClosure(tab.getId());
-                    return true;
+                    return;
                 }
             } else if (model.indexOf(tab) > TabList.INVALID_TAB_INDEX) {
-                model.getTabRemover().closeTabs(tabClosureParams, allowDialog);
-                return true;
+                model.getTabRemover().closeTabs(tabClosureParams, /* allowDialog= */ false);
+                return;
             }
         }
 
@@ -302,13 +287,13 @@ public abstract class TabModelSelectorBase
         // the case for navigations progressing while the tab is being moved between web clients.
         if (tab.isDetachedFromActivity()) {
             tab.setDidCloseWhileDetached();
-            return true;
+            return;
         }
 
         if (getModels().isEmpty()) {
             // Tab may be destroyed here via Tab#destroy(). It is skipped for now
             // to examine its potential side effect on crbug.com/325558929.
-            return true;
+            return;
         } else {
             assert false
                     : "Tried to close a tab that is not in any model!"
@@ -320,7 +305,6 @@ public abstract class TabModelSelectorBase
                             + tab.isDestroyed()
                             + " Is detached "
                             + tab.isDetachedFromActivity();
-            return false;
         }
     }
 
@@ -388,12 +372,55 @@ public abstract class TabModelSelectorBase
     }
 
     @Override
+    public int[] restoreForUndo(
+            TabModel tabModel, @TabRestoreEntryId int entryId, List<ClosedTab> tabs) {
+        assert tabModel == getModel(/* incognito= */ false)
+                : "Trying to restore a tab from an off-the-record tab model.";
+        assumeNonNull(mRecentlyClosedBridge);
+
+        int tabCount = tabs.size();
+        int[] tabIds = new int[tabCount];
+        int[] indices = new int[tabCount];
+        boolean[] pinned = new boolean[tabCount];
+        for (int i = 0; i < tabCount; i++) {
+            ClosedTab tab = tabs.get(i);
+            tabIds[i] = tab.id;
+            indices[i] = tab.modelIndex;
+            pinned[i] = tab.pinned;
+        }
+        int[] restoredIds =
+                mRecentlyClosedBridge.restoreForUndo(tabModel, entryId, tabIds, indices, pinned);
+        // An empty result means the entry no longer exists or the service is unavailable.
+        if (restoredIds.length != tabCount) {
+            int[] invalidTabIds = new int[tabCount];
+            Arrays.fill(invalidTabIds, Tab.INVALID_TAB_ID);
+            return invalidTabIds;
+        }
+        return restoredIds;
+    }
+
+    /**
+     * Sets the {@link RecentlyClosedBridge} used to restore closed tabs, which is otherwise created
+     * in {@link #onNativeLibraryReady}.
+     *
+     * @param recentlyClosedBridge The bridge to use.
+     */
+    void setRecentlyClosedBridgeForTesting(RecentlyClosedBridge recentlyClosedBridge) {
+        assert mRecentlyClosedBridge == null;
+        mRecentlyClosedBridge = recentlyClosedBridge;
+    }
+
+    @Override
     public @TabDestroyStatus int destroy() {
         for (TabModelSelectorObserver listener : mObservers) listener.onDestroyed();
         mTabModelSupplier.removeObserver(mIncognitoReauthDialogDelegateCallback);
 
         mPendingObservers.clear();
 
+        if (mRecentlyClosedBridge != null) {
+            mRecentlyClosedBridge.destroy();
+            mRecentlyClosedBridge = null;
+        }
         if (mIncognitoTabModel != null) {
             mIncognitoTabModel.removeIncognitoObserver(this);
         }
@@ -412,28 +439,6 @@ public abstract class TabModelSelectorBase
         return status;
     }
 
-    /**
-     * Notifies all the listeners that a new tab has been created.
-     * @param tab The tab that has been created.
-     * @param creationState How the tab was created.
-     */
-    private void notifyNewTabCreated(Tab tab, @TabCreationState int creationState) {
-        for (TabModelSelectorObserver listener : mObservers) {
-            listener.onNewTabCreated(tab, creationState);
-        }
-    }
-
-    /**
-     * Notifies all the listeners that a tab has been hidden to switch to another.
-     *
-     * @param tab The tab that has been hidden.
-     */
-    protected void notifyTabHidden(Tab tab) {
-        for (TabModelSelectorObserver listener : mObservers) {
-            listener.onTabHidden(tab);
-        }
-    }
-
     @Override
     public void enterReparentingMode() {
         mReparentingInProgress = true;
@@ -442,6 +447,14 @@ public abstract class TabModelSelectorBase
     @Override
     public boolean isReparentingInProgress() {
         return mReparentingInProgress;
+    }
+
+    @Override
+    public void detachTabForReparenting(Tab tab) {
+        assert mReparentingInProgress;
+        int index = getModelIndex(tab.isIncognito());
+        if (index == MODEL_NOT_FOUND) return;
+        mTabModelInternals.get(index).detachTabForReparenting(tab);
     }
 
     @Override
@@ -476,9 +489,9 @@ public abstract class TabModelSelectorBase
 
     @Override
     public @Nullable TabModel getTabModelForTabStripCollection(
-            TabStripCollection tabStripCollection) {
+            JniPtr<TabStripCollection> tabStripCollection) {
         for (TabModel tabModel : getModels()) {
-            TabStripCollection modelCollection = tabModel.getTabStripCollection();
+            JniPtr<TabStripCollection> modelCollection = tabModel.getTabStripCollection();
             if (!Objects.equals(modelCollection, tabStripCollection)) continue;
             return tabModel;
         }
@@ -507,10 +520,5 @@ public abstract class TabModelSelectorBase
         for (TabModelInternal tabModel : mTabModelInternals) {
             tabModel.removeObserver(observer);
         }
-    }
-
-    @Override
-    public void resetTabModelListForTesting() {
-        mTabModelInternals.clear();
     }
 }

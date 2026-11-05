@@ -13,7 +13,6 @@
 #import "ios/chrome/browser/default_browser/model/features.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
 #import "ios/chrome/browser/default_browser/promo/generic/public/default_browser_generic_promo_commands.h"
-#import "ios/chrome/browser/default_browser/promo/public/features.h"
 #import "ios/chrome/browser/default_browser/promo/ui/default_browser_instructions_view_controller.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/promos_manager/coordinator/promos_manager_ui_handler.h"
@@ -24,21 +23,13 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/picture_in_picture_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_action_delegate.h"
 
 using base::RecordAction;
 using base::UserMetricsAction;
 
-namespace {
-// The video name for the settings destination.
-NSString* kDefaultBrowserPromoSettingsDestinationVideo =
-    @"app_specific_settings_instructions_video";
-NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
-    @"default_apps_settings_instructions_video";
-}  // namespace
-
 @interface DefaultBrowserGenericPromoCoordinator () <
-    ConfirmationAlertActionHandler,
+    ButtonStackActionDelegate,
     UIAdaptivePresentationControllerDelegate>
 @end
 
@@ -84,22 +75,23 @@ NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
   [super stop];
 }
 
-#pragma mark - ConfirmationAlertActionHandler
+#pragma mark - ButtonStackActionDelegate
 
-- (void)confirmationAlertPrimaryAction {
-    RecordDefaultBrowserPromoLastAction(
-        IOSDefaultBrowserPromoAction::kActionButton);
-    base::UmaHistogramEnumeration(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen",
-        IOSDefaultBrowserVideoPromoAction::kPrimaryActionTapped);
-    RecordAction(UserMetricsAction(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen.OpenSettingsTapped"));
+- (void)didTapPrimaryActionButton {
+  RecordDefaultBrowserPromoLastAction(
+      IOSDefaultBrowserPromoAction::kActionButton,
+      IOSDefaultBrowserPromoSurface::kFullscreenGeneric);
+  base::UmaHistogramEnumeration(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen",
+      IOSDefaultBrowserVideoPromoAction::kPrimaryActionTapped);
+  RecordAction(UserMetricsAction(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.OpenSettingsTapped"));
 
-  if (IsDefaultBrowserPictureInPictureEnabled()) {
+  if (IsDefaultAppsDestinationAvailable()) {
     [_handler hidePromo];
     id<PictureInPictureCommands> PIPHandler = HandlerForProtocol(
         self.browser->GetCommandDispatcher(), PictureInPictureCommands);
-    OpenIOSDefaultBrowserSettingsPage(IsDefaultAppsPictureInPictureVariant(),
+    OpenIOSDefaultBrowserSettingsPage(/*force_default_apps_if_available=*/true,
                                       /*ui_application_to_use=*/nil,
                                       PIPHandler);
     return;
@@ -110,24 +102,24 @@ NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
   [_handler hidePromo];
 }
 
-- (void)confirmationAlertSecondaryAction {
-    RecordDefaultBrowserPromoLastAction(IOSDefaultBrowserPromoAction::kCancel);
-    base::UmaHistogramEnumeration(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen",
-        IOSDefaultBrowserVideoPromoAction::kSecondaryActionTapped);
-    RecordAction(
-        UserMetricsAction("IOS.DefaultBrowserVideoPromo.Fullscreen.Dismiss"));
-    [_handler hidePromo];
+- (void)didTapSecondaryActionButton {
+  RecordDefaultBrowserPromoLastAction(IOSDefaultBrowserPromoAction::kCancel);
+  base::UmaHistogramEnumeration(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen",
+      IOSDefaultBrowserVideoPromoAction::kSecondaryActionTapped);
+  RecordAction(
+      UserMetricsAction("IOS.DefaultBrowserVideoPromo.Fullscreen.Dismiss"));
+  [_handler hidePromo];
 }
 
-- (void)confirmationAlertTertiaryAction {
-    RecordDefaultBrowserPromoLastAction(
-        IOSDefaultBrowserPromoAction::kRemindMeLater);
-    base::UmaHistogramEnumeration(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen",
-        IOSDefaultBrowserVideoPromoAction::kTertiaryActionTapped);
-    RecordAction(UserMetricsAction(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen.RemindMeLater"));
+- (void)didTapTertiaryActionButton {
+  RecordDefaultBrowserPromoLastAction(
+      IOSDefaultBrowserPromoAction::kRemindMeLater);
+  base::UmaHistogramEnumeration(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen",
+      IOSDefaultBrowserVideoPromoAction::kTertiaryActionTapped);
+  RecordAction(UserMetricsAction(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.RemindMeLater"));
   if (_tracker) {
     _tracker->NotifyEvent(
         feature_engagement::events::kDefaultBrowserPromoRemindMeLater);
@@ -137,6 +129,10 @@ NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
   promosManager->RegisterPromoForSingleDisplay(
       promos_manager::Promo::DefaultBrowserRemindMeLater);
 
+  [_handler hidePromo];
+}
+
+- (void)didDismissButtonStackViewController {
   [_handler hidePromo];
 }
 
@@ -172,12 +168,11 @@ NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
   _viewController = [[DefaultBrowserInstructionsViewController alloc]
           initWithDismissButton:YES
                hasRemindMeLater:hasRemindMeLater
-      useDefaultAppsDestination:IsDefaultBrowserPictureInPictureEnabled()
-                                    ? IsDefaultAppsPictureInPictureVariant()
-                                    : _promoWasFromOffCycleTrigger
+      useDefaultAppsDestination:IsDefaultAppsDestinationAvailable() ||
+                                _promoWasFromOffCycleTrigger
                        hasSteps:NO
                       titleText:nil];
-  _viewController.actionHandler = self;
+  _viewController.actionDelegate = self;
 
   CHECK(_viewController);
   RecordAction(

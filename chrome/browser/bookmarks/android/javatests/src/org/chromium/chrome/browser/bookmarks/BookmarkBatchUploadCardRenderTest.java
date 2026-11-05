@@ -8,6 +8,7 @@ import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.app.Activity;
 import android.view.View;
@@ -20,13 +21,11 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.sync.SyncTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -35,11 +34,9 @@ import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.util.BookmarkTestRule;
 import org.chromium.chrome.test.util.BookmarkTestUtil;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.ui.test.util.ViewUtils;
 import org.chromium.url.GURL;
 
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DoNotBatch(reason = "SyncTestRule doesn't support batching.")
 @DisableFeatures({
     ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
@@ -93,7 +90,7 @@ public class BookmarkBatchUploadCardRenderTest {
         mBookmarkTestRule.showBookmarkManager(mSyncTestRule.getActivity());
         onView(withId(R.id.selectable_list_recycler_view))
                 .perform(RecyclerViewActions.scrollToLastPosition());
-        ViewUtils.waitForVisibleView(withId(R.id.signin_settings_card));
+        waitForView(withId(R.id.signin_settings_card));
         View view =
                 runOnUiThreadBlocking(
                         () -> getBookmarkHostActivity().findViewById(R.id.signin_settings_card));
@@ -114,7 +111,7 @@ public class BookmarkBatchUploadCardRenderTest {
         mBookmarkTestRule.showBookmarkManager(mSyncTestRule.getActivity());
         onView(withId(R.id.selectable_list_recycler_view))
                 .perform(RecyclerViewActions.scrollToLastPosition());
-        ViewUtils.waitForVisibleView(withId(R.id.signin_settings_card));
+        waitForView(withId(R.id.signin_settings_card));
         View view =
                 runOnUiThreadBlocking(
                         () -> getBookmarkHostActivity().findViewById(R.id.signin_settings_card));
@@ -143,7 +140,7 @@ public class BookmarkBatchUploadCardRenderTest {
         mBookmarkTestRule.showBookmarkManager(mSyncTestRule.getActivity());
         onView(withId(R.id.selectable_list_recycler_view))
                 .perform(RecyclerViewActions.scrollToLastPosition());
-        ViewUtils.waitForVisibleView(withId(R.id.signin_settings_card));
+        waitForView(withId(R.id.signin_settings_card));
         View view =
                 runOnUiThreadBlocking(
                         () -> getBookmarkHostActivity().findViewById(R.id.signin_settings_card));

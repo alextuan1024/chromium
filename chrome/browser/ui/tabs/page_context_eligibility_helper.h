@@ -16,6 +16,7 @@
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 namespace content {
+class Page;
 class WebContents;
 }  // namespace content
 
@@ -29,7 +30,7 @@ class TabInterface;
 
 // Tab-scoped helper class that wraps the PageContextEligibilityObserver.
 // Provides a unified, easy-to-use API for other tab features to query and
-// observe page context eligibility of active tabs.
+// observe page context eligibility of open tabs.
 class PageContextEligibilityHelper : public tabs::ContentsObservingTabFeature {
  public:
   explicit PageContextEligibilityHelper(tabs::TabInterface& tab);
@@ -42,10 +43,16 @@ class PageContextEligibilityHelper : public tabs::ContentsObservingTabFeature {
 
   static PageContextEligibilityHelper* From(tabs::TabInterface* tab);
 
-  // Returns the current page context eligibility status of the active tab.
-  // Returns kUnknown until loaded, or if the tab is inactive.
+  // Returns the current page context eligibility status of the tab.
+  // Returns kUnknown until loaded.
   virtual optimization_guide::PageContextEligibilityStatus
   IsPageContextEligible() const;
+
+  // Returns the tab's most recent `kEligible` or `kNotEligible` result, which
+  // stays in place while a new page is `kUnknown` (for example during a
+  // reload). Returns `kUnknown` only if the tab has never resolved.
+  virtual optimization_guide::PageContextEligibilityStatus
+  GetLastKnownPageContextEligibility() const;
 
   using EligibilityChangeCallback = base::RepeatingCallback<void(
       optimization_guide::PageContextEligibilityStatus)>;
@@ -57,6 +64,9 @@ class PageContextEligibilityHelper : public tabs::ContentsObservingTabFeature {
   friend class PageContextEligibilityHelperTest;
 
  protected:
+  // content::WebContentsObserver:
+  void PrimaryPageChanged(content::Page& page) override;
+
   // tabs::ContentsObservingTabFeature:
   void OnDiscardContents(tabs::TabInterface* tab,
                          content::WebContents* old_contents,
@@ -85,6 +95,8 @@ class PageContextEligibilityHelper : public tabs::ContentsObservingTabFeature {
   std::unique_ptr<optimization_guide::PageContextEligibilityObserver> observer_;
 
   optimization_guide::PageContextEligibilityStatus last_eligibility_ =
+      optimization_guide::PageContextEligibilityStatus::kUnknown;
+  optimization_guide::PageContextEligibilityStatus last_known_eligibility_ =
       optimization_guide::PageContextEligibilityStatus::kUnknown;
 
   ui::ScopedUnownedUserData<PageContextEligibilityHelper>

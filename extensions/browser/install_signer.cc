@@ -25,9 +25,9 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "crypto/hash.h"
+#include "crypto/keypair.h"
 #include "crypto/random.h"
 #include "crypto/sign.h"
-#include "crypto/signature_verifier.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/switches.h"
@@ -225,15 +225,16 @@ bool InstallSigner::VerifySignature(const InstallSignature& signature) {
   if (!Extension::ParsePEMKeyBytes(kPublicKeyPEM, &public_key))
     return false;
 
-  crypto::SignatureVerifier verifier;
-  if (!verifier.VerifyInit(crypto::sign::RSA_PKCS1_SHA1,
-                           base::as_byte_span(signature.signature),
-                           base::as_byte_span(public_key))) {
+  std::optional<crypto::keypair::PublicKey> parsed_key =
+      crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(
+          base::as_byte_span(public_key));
+  if (!parsed_key || !parsed_key->IsRsa()) {
     return false;
   }
 
-  verifier.VerifyUpdate(base::as_byte_span(signed_data));
-  return verifier.VerifyFinal();
+  return crypto::sign::Verify(crypto::sign::RSA_PKCS1_SHA1, *parsed_key,
+                              base::as_byte_span(signed_data),
+                              base::as_byte_span(signature.signature));
 }
 
 // static
@@ -291,6 +292,7 @@ void InstallSigner::GetSignature(SignatureCallback callback) {
             "RLZ library, which varies between different installs. This id is "
             "only used to verify the validity of the response."
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "chromewebstore.googleapis.com"
           internal {
             contacts {
               owners: "//extensions/OWNERS"

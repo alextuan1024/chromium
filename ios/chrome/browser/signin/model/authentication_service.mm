@@ -6,21 +6,17 @@
 
 #import "base/auto_reset.h"
 #import "base/check_is_test.h"
-#import "base/containers/to_vector.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
 #import "base/location.h"
 #import "base/logging.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
-#import "base/strings/sys_string_conversions.h"
 #import "base/task/single_thread_task_runner.h"
-#import "components/policy/core/common/management/platform_management_service.h"
+#import "components/device_signals/core/browser/pref_names.h"
 #import "components/pref_registry/pref_registry_syncable.h"
 #import "components/prefs/pref_service.h"
-#import "components/signin/ios/browser/features.h"
 #import "components/signin/public/base/consent_level.h"
-#import "components/signin/public/base/gaia_id_hash.h"
 #import "components/signin/public/base/signin_pref_names.h"
 #import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/account_info.h"
@@ -28,10 +24,8 @@
 #import "components/signin/public/identity_manager/primary_account_mutator.h"
 #import "components/signin/public/identity_manager/signin_constants.h"
 #import "components/signin/public/identity_manager/tribool.h"
-#import "components/sync/base/account_pref_utils.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_user_settings.h"
-#import "google_apis/gaia/gaia_auth_util.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 #import "ios/chrome/browser/bookmarks/model/bookmarks_utils.h"
@@ -39,13 +33,10 @@
 #import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios_util.h"
 #import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer.h"
 #import "ios/chrome/browser/signin/model/refresh_access_token_error.h"
 #import "ios/chrome/browser/signin/model/signin_util.h"
@@ -122,8 +113,7 @@ void AuthenticationService::Initialize() {
   initialized_ = true;
 
   identity_manager_observation_.Observe(identity_manager_.get());
-  HandleForgottenIdentity(nil,
-                          device_restore_session == signin::Tribool::kTrue);
+  HandleForgottenIdentity(device_restore_session == signin::Tribool::kTrue);
 
   // Clean up account-scoped settings, in case any accounts were removed from
   // the device while Chrome wasn't running.
@@ -226,6 +216,8 @@ void AuthenticationService::Initialize() {
       PerformProfileInitializationIfNecessary();
   base::UmaHistogramEnumeration(
       "Signin.IOSAuthenticationServiceInitializationOutcome", outcome);
+
+  SyncDeviceSignalsConsentWithManagementState();
 }
 
 void AuthenticationService::Shutdown() {
@@ -333,16 +325,6 @@ bool AuthenticationService::HasPrimaryIdentityManaged() const {
              .IsManaged() == signin::Tribool::kTrue;
 }
 
-bool AuthenticationService::ShouldClearDataForSignedInPeriodOnSignOut() const {
-  // Data on the device should be cleared on signout when all conditions are
-  // met:
-  // 1. The user is signed in with a managed account.
-  // 2. The app management configuration key is present.
-  // Note: data will be cleared from the time of sign-in in this case.
-  return HasPrimaryIdentityManaged() &&
-         !policy::PlatformManagementService::GetInstance()->IsManaged();
-}
-
 id<SystemIdentity> AuthenticationService::GetPrimaryIdentity() const {
   return GetPrimarySystemIdentity(identity_manager_, account_manager_service_);
 }
@@ -407,8 +389,7 @@ void AuthenticationService::SignIn(id<SystemIdentity> identity,
 }
 
 void AuthenticationService::SignOut(
-    signin_metrics::ProfileSignout signout_source,
-    ProceduralBlock completion) {
+    signin_metrics::ProfileSignout signout_source) {
   ProfileManagerIOS* profile_manager =
       GetApplicationContext()->GetProfileManager();
   if (!profile_manager) {
@@ -418,13 +399,9 @@ void AuthenticationService::SignOut(
     // sign-out the window is switch to the personal profile, and then the
     // sign-out can be done.
     // Please signin::MultiProfileSignOutForProfile().
-    CHECK(IsPersonalProfile(), base::NotFatalUntil::M150);
+    CHECK(IsPersonalProfile());
   }
   if (!identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
-    if (completion) {
-      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-          FROM_HERE, base::BindOnce(completion));
-    }
     return;
   }
 
@@ -443,13 +420,6 @@ void AuthenticationService::SignOut(
   // ClearPrimaryAccount() removed all the accounts from IdentityManager.
   // Populate them again.
   ReloadCredentialsFromIdentities();
-
-  // TODO(crbug.com/407498240): Remove the `completion` param since SignOut() is
-  // always synchronous.
-  if (completion) {
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(completion));
-  }
 }
 
 AuthenticationService::ProfileInitializationOutcome
@@ -600,9 +570,7 @@ base::WeakPtr<AuthenticationService> AuthenticationService::GetWeakPtr() {
 
 void AuthenticationService::OnPrimaryAccountChanged(
     const signin::PrimaryAccountChangeEvent& event_details) {
-  for (auto& observer : observer_list_) {
-    observer.OnPrimaryIdentityChanged();
-  }
+  SyncDeviceSignalsConsentWithManagementState();
 }
 
 void AuthenticationService::OnIdentitiesInProfileChanged() {
@@ -610,12 +578,12 @@ void AuthenticationService::OnIdentitiesInProfileChanged() {
   ReloadCredentialsFromIdentities();
 }
 
-bool AuthenticationService::HandleMDMError(id<SystemIdentity> identity,
+void AuthenticationService::HandleMDMError(id<SystemIdentity> identity,
                                            id<RefreshAccessTokenError> error) {
   id<RefreshAccessTokenError> cached_error = GetCachedMDMError(identity);
   if (cached_error && [cached_error isEqualToError:error]) {
     // Same status as the last error, ignore it to avoid spamming users.
-    return false;
+    return;
   }
 
   SystemIdentityManager* system_identity_manager =
@@ -625,7 +593,7 @@ bool AuthenticationService::HandleMDMError(id<SystemIdentity> identity,
   base::UmaHistogramBoolean("Signin.ScopeLimitedErrorSuppressed",
                             scope_limited_error_suppressed);
   if (scope_limited_error_suppressed) {
-    return false;
+    return;
   }
 
   // Stop displaying the MDM error dialog on the NTP when
@@ -646,10 +614,7 @@ bool AuthenticationService::HandleMDMError(id<SystemIdentity> identity,
         << identity.gaiaId.ToNSString()
         << "; userEmail = " << identity.userEmail << "]";
     cached_mdm_errors_[account_id] = error;
-    return true;
   }
-
-  return false;
 }
 
 void AuthenticationService::MDMErrorHandled(id<SystemIdentity> identity,
@@ -688,37 +653,10 @@ void AuthenticationService::OnAccessTokenRefreshFailed(
     return;
   }
 
-  if (HandleMDMError(identity, error)) {
-    return;
-  }
-
-  if (base::FeatureList::IsEnabled(switches::kIgnoreInvalidGrantError)) {
-    // `InvalidGrantError` is the iOS naming for the persistent auth error, it
-    // shouldn't trigger a sign-out.
-    return;
-  }
-
-  if (!error.isInvalidGrantError) {
-    // If the failure is not due to an invalid grant, the identity is not
-    // invalid and there is nothing to do.
-    return;
-  }
-
-  // Handle the failure of access token refresh on the next message loop cycle.
-  // `identity` is now invalid and the authentication service might need to
-  // react to this loss of identity.
-  // Note that no reload of the credentials is necessary here, as `identity`
-  // might still be accessible in SSO, and `OnIdentityListChanged` will handle
-  // this when `identity` will actually disappear from SSO.
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(&AuthenticationService::HandleForgottenIdentity,
-                                GetWeakPtr(), identity,
-                                /*device_restore=*/false));
+  HandleMDMError(identity, error);
 }
 
-void AuthenticationService::HandleForgottenIdentity(
-    id<SystemIdentity> invalid_identity,
-    bool device_restore) {
+void AuthenticationService::HandleForgottenIdentity(bool device_restore) {
   if (!identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
     // User is not signed in. Nothing to do here.
     return;
@@ -726,10 +664,8 @@ void AuthenticationService::HandleForgottenIdentity(
 
   // Tests if the primary identity still exists.
   id<SystemIdentity> authenticated_identity = GetPrimaryIdentity();
-  if (authenticated_identity &&
-      ![authenticated_identity isEqual:invalid_identity]) {
-    // `authenticated_identity` exists and is a valid identity. Nothing to do
-    // here.
+  if (authenticated_identity) {
+    // `authenticated_identity` exists. Nothing to do here.
     return;
   }
 
@@ -748,8 +684,7 @@ void AuthenticationService::HandleForgottenIdentity(
     signout_source = signin_metrics::ProfileSignout::
         kIosAccountRemovedFromDeviceAfterRestore;
   } else {
-    // Account removed from the device by another app or the token being
-    // invalid.
+    // Account removed from the device by another app.
     signout_source = signin_metrics::ProfileSignout::kAccountRemovedFromDevice;
   }
 
@@ -803,7 +738,7 @@ void AuthenticationService::ReloadCredentialsFromIdentities() {
 
   base::AutoReset<bool> auto_reset(&is_reloading_credentials_, true);
 
-  HandleForgottenIdentity(nil, /*device_restore=*/false);
+  HandleForgottenIdentity(/*device_restore=*/false);
 
   identity_manager_->GetDeviceAccountsSynchronizer()
       ->ReloadAllAccountsFromSystemWithPrimaryAccount(
@@ -855,9 +790,6 @@ void AuthenticationService::ClearAccountSettingsPrefsOfRemovedAccounts() {
   }
   sync_service_->GetUserSettings()->KeepAccountSettingsPrefsOnlyForUsers(
       available_gaia_ids);
-  syncer::KeepAccountKeyedPrefValuesOnlyForUsers(
-      pref_service_, prefs::kSigninHasAcceptedManagementDialog,
-      base::ToVector(available_gaia_ids, &signin::GaiaIdHash::FromGaiaId));
 }
 
 bool AuthenticationService::IsPersonalProfile() {
@@ -867,4 +799,47 @@ bool AuthenticationService::IsPersonalProfile() {
 NSArray<id<SystemIdentity>>* AuthenticationService::ActiveIdentities() {
   return GetPrimaryIdentity() ? account_manager_service_->GetAllIdentities()
                               : @[];
+}
+
+void AuthenticationService::OnExtendedAccountInfoUpdated(
+    const AccountInfo& info) {
+  if (info.GetAccountId() ==
+      identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin)) {
+    SyncDeviceSignalsConsentWithManagementState();
+  }
+}
+
+void AuthenticationService::SyncDeviceSignalsConsentWithManagementState() {
+  ProfileManagerIOS* profile_manager =
+      GetApplicationContext()->GetProfileManager();
+
+  if (!profile_manager) {
+    // profile_manager can be null in unit_tests.
+    CHECK_IS_TEST();
+    return;
+  }
+
+  if (!IsPersonalProfile() || HasPrimaryIdentityManaged()) {
+    pref_service_->SetBoolean(
+        device_signals::prefs::kDeviceSignalsConsentReceived, true);
+    pref_service_->SetBoolean(
+        device_signals::prefs::kDeviceSignalsPermanentConsentReceived, true);
+    return;
+  }
+
+  if (HasPrimaryIdentity()) {
+    AccountInfo info = identity_manager_->FindExtendedAccountInfo(
+        identity_manager_->GetPrimaryAccountInfo(
+            signin::ConsentLevel::kSignin));
+    if (info.IsManaged() == signin::Tribool::kUnknown) {
+      // Early exit if the extended account info has not yet been received to
+      // avoid flipping the consent bit unnecessarily.
+      return;
+    }
+  }
+
+  pref_service_->ClearPref(
+      device_signals::prefs::kDeviceSignalsConsentReceived);
+  pref_service_->ClearPref(
+      device_signals::prefs::kDeviceSignalsPermanentConsentReceived);
 }

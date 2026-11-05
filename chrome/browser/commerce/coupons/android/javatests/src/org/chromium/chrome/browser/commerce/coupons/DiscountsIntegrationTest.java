@@ -4,17 +4,15 @@
 
 package org.chromium.chrome.browser.commerce.coupons;
 
-import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
-import static org.hamcrest.Matchers.allOf;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.ui.test.util.RenderTestRule.Component.UI_BROWSER_SHOPPING_DEALS;
 
 import androidx.test.filters.SmallTest;
@@ -28,14 +26,12 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
@@ -47,7 +43,6 @@ import org.chromium.components.commerce.core.DiscountInfo;
 import org.chromium.components.commerce.core.ShoppingService;
 import org.chromium.components.commerce.core.ShoppingService.DiscountInfoCallback;
 import org.chromium.net.test.EmbeddedTestServer;
-import org.chromium.ui.test.util.ViewUtils;
 import org.chromium.url.GURL;
 
 import java.io.IOException;
@@ -55,7 +50,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures({ChromeFeatureList.ENABLE_DISCOUNT_INFO_API})
 @Batch(Batch.PER_CLASS)
 public class DiscountsIntegrationTest {
@@ -114,10 +108,9 @@ public class DiscountsIntegrationTest {
 
     private void navigateAndWaitForDiscountsContextualPageActionIcon() {
         mActivityTestRule.loadUrl(mTestPageWithDiscounts);
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        withContentDescription(R.string.discount_container_title)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(R.string.discount_container_title));
     }
 
     @Test
@@ -148,15 +141,10 @@ public class DiscountsIntegrationTest {
     // TODO(402808581): Fix test and add integration tests for price tracking and price insights.
     public void testDiscountsContextualPageActionOnClickOpenBottomSheet() {
         mActivityTestRule.loadUrl(mTestPageWithDiscounts);
-        ViewUtils.waitForVisibleView(
-                allOf(
+        waitForView(
                         withId(R.id.optional_toolbar_button),
-                        withContentDescription(R.string.discount_container_title)));
-        onView(
-                        allOf(
-                                withId(R.id.optional_toolbar_button),
-                                withContentDescription(R.string.discount_container_title)))
-                .perform(click());
-        ViewUtils.waitForVisibleView(withId(R.id.commerce_bottom_sheet_content_container));
+                        withContentDescription(R.string.discount_container_title))
+                .click();
+        waitForView(withId(R.id.commerce_bottom_sheet_content_container));
     }
 }

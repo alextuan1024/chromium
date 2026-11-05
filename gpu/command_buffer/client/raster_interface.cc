@@ -51,8 +51,7 @@ SyncToken RasterInterface::WritePixels(
     const SkPixmap& src_sk_pixmap) {
   CHECK(dest);
   auto access = dest->BeginRasterAccess(this, sync_token, /*readonly=*/false);
-  WritePixels(dest->mailbox(), dst_x_offset, dst_y_offset,
-              dest->GetTextureTarget(), src_sk_pixmap);
+  WritePixels(dest->mailbox(), dst_x_offset, dst_y_offset, src_sk_pixmap);
   auto new_token = RasterScopedAccess::EndAccess(std::move(access));
   dest->UpdateDestructionSyncToken(new_token);
   return new_token;
@@ -88,17 +87,16 @@ SyncToken RasterInterface::RasterSharedImage(
   const bool can_use_lcd_text = dest->alpha_type() == kOpaque_SkAlphaType;
   const auto& caps = GetCapabilities();
   bool use_msaa = !caps.msaa_is_slow && !caps.avoid_stencil_buffers;
-  BeginRasterCHROMIUM(
-      background_color, needs_clear,
-      /*msaa_sample_count=*/use_msaa ? 1 : 0,
-      use_msaa ? MsaaMode::kDMSAA : MsaaMode::kNoMSAA, can_use_lcd_text,
-      /*visible=*/true, dest->color_space(),
-      /*hdr_headroom=*/0.f, dest->mailbox().name);
+  BeginRasterCHROMIUM(background_color, needs_clear,
+                      /*msaa_sample_count=*/use_msaa ? 1 : 0,
+                      use_msaa ? MsaaMode::kDMSAA : MsaaMode::kNoMSAA,
+                      can_use_lcd_text, dest->color_space(),
+                      /*hdr_headroom=*/0.f, dest->mailbox().name);
 
   RasterCHROMIUM(list.get(), image_provider, size, full_raster_rect,
                  playback_rect, post_translate, post_scale,
                  /*requires_clear=*/false,
-                 /*raster_inducing_scroll_offsets=*/nullptr, &max_op_size_hint,
+                 /*raster_inducing_values=*/nullptr, &max_op_size_hint,
                  std::move(custom_callback));
 
   EndRasterCHROMIUM();

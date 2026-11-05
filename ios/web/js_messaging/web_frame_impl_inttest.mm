@@ -4,10 +4,12 @@
 
 #import <WebKit/WebKit.h>
 
+#import "base/apple/foundation_util.h"
 #import "base/functional/bind.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "ios/web/js_messaging/java_script_content_world.h"
+#import "ios/web/js_messaging/java_script_content_world_util.h"
 #import "ios/web/js_messaging/page_script_util.h"
 #import "ios/web/js_messaging/web_frame_impl.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
@@ -243,6 +245,17 @@ TEST_F(WebFrameImplIntTest, CallJavaScriptFunctionTimeout) {
     base::RunLoop().RunUntilIdle();
     return called;
   }));
+
+  // This test creates an unresponsive WebProcess via `while(true) {}`. Force
+  // close `WKWebView` via a private API so the `WebPageProxy` and its
+  // `WebProcess` are terminated immediately instead of remaining hung while the
+  // in-flight JavaScript evaluation callback retains the `WKWebView`.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundeclared-selector"
+  WKWebView* web_view = base::apple::ObjCCast<WKWebView>(
+      web::test::GetWebController(web_state()).webViewNavigationProxy);
+  [web_view performSelector:@selector(_close)];
+#pragma clang diagnostic pop
 }
 
 // Tests that the expected result is received from executing a JavaScript
@@ -292,14 +305,7 @@ class WebFrameImplContentWorldIntTest
   // Returns the `WKContentWorld` in which `WebFrameImpl` should execute
   // scripts.
   WKContentWorld* GetWKContentWorld() {
-    switch (GetParam()) {
-      case ContentWorld::kIsolatedWorld:
-        return WKContentWorld.defaultClientWorld;
-      case ContentWorld::kPageContentWorld:
-        return WKContentWorld.pageWorld;
-      case ContentWorld::kAllContentWorlds:
-        NOTREACHED();
-    }
+    return WKContentWorldForContentWorldIdentifier(GetParam());
   }
 
   // Executes `script` in the WKWebView associated to the current WebState in

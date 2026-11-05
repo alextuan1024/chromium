@@ -5,20 +5,22 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_PEERCONNECTION_RTC_RTP_SENDER_PLATFORM_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_PEERCONNECTION_RTC_RTP_SENDER_PLATFORM_H_
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_stats.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/webrtc/api/dtls_transport_interface.h"
 #include "third_party/webrtc/api/encoded_audio_frame_injector_interface.h"
 #include "third_party/webrtc/api/encoded_video_frame_injector_interface.h"
+#include "third_party/webrtc/api/rtc_error.h"
 #include "third_party/webrtc/api/rtp_parameters.h"
 #include "third_party/webrtc/api/scoped_refptr.h"
+#include "third_party/webrtc/api/sframe/sframe_encryptor_interface.h"
 
 namespace blink {
 
@@ -74,6 +76,23 @@ class PLATFORM_EXPORT RTCRtpSenderPlatform {
   virtual scoped_refptr<webrtc::EncodedAudioFrameInjectorInterface>
   CreateEncodedAudioFrameInjector(
       webrtc::TargetBitrateCallback bitrate_callback) = 0;
+  // Creates the WebRTC-layer Sframe encryptor for this sender and returns a
+  // handle used for key management, or an error if it could not be created.
+  virtual webrtc::RTCErrorOr<scoped_refptr<webrtc::SframeEncryptorInterface>>
+  CreateSframeEncryptor(const webrtc::SframeEncryptorInit& init) = 0;
+
+  // Asynchronously selects active encoding layers matching `rid` (or all active
+  // layers if `rid` is null) on the WebRTC signaling thread via
+  // `GetParametersReadOnly()`, invokes `on_layers_selected` (on the signaling
+  // thread) with the selected rids BEFORE calling
+  // `webrtc::RtpSenderInterface::GenerateKeyFrame()`, and — if at least one
+  // layer matched — requests key frames from WebRTC, invoking
+  // `on_encoder_error` (on the signaling thread) only if WebRTC returns an
+  // error.
+  virtual void GenerateKeyFrame(
+      const String& rid,
+      CrossThreadOnceFunction<void(Vector<String>)> on_layers_selected,
+      CrossThreadOnceFunction<void(webrtc::RTCError)> on_encoder_error) = 0;
 };
 
 }  // namespace blink

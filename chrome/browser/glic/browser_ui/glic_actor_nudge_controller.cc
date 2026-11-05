@@ -7,15 +7,12 @@
 #include "base/functional/bind.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
-#include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/actor/ui/actor_ui_metrics.h"
 #include "chrome/browser/actor/ui/actor_ui_state_manager.h"
-#include "chrome/browser/actor/ui/task_list_bubble/actor_task_list_bubble_controller.h"
-#include "chrome/browser/glic/browser_ui/glic_actor_task_icon_manager.h"
-#include "chrome/browser/glic/browser_ui/glic_actor_task_icon_manager_factory.h"
 #include "chrome/browser/glic/browser_ui/glic_split_button_controller.h"
-#include "chrome/browser/glic/browser_ui/glic_split_button_view_delegate.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/glic/public/service/legacy_glic_activity_manager.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/common/buildflags.h"
@@ -43,17 +40,6 @@ GlicActorNudgeController::GlicActorNudgeController(
   if (base::FeatureList::IsEnabled(features::kGlicActorUi)) {
     RegisterActorNudgeStateCallback();
   }
-
-  if (auto* bubble_controller = ActorTaskListBubbleController::From(browser_)) {
-    bubble_visibility_change_subscription_.push_back(
-        bubble_controller->RegisterBubbleShownCallback(base::BindRepeating(
-            &GlicActorNudgeController::OnBubbleVisibilityChange,
-            weak_ptr_factory_.GetWeakPtr(), /*is_bubble_open=*/true)));
-    bubble_visibility_change_subscription_.push_back(
-        bubble_controller->RegisterBubbleDestroyedCallback(base::BindRepeating(
-            &GlicActorNudgeController::OnBubbleVisibilityChange,
-            weak_ptr_factory_.GetWeakPtr(), /*is_bubble_open=*/false)));
-  }
 }
 
 GlicActorNudgeController::~GlicActorNudgeController() = default;
@@ -65,12 +51,12 @@ GlicActorNudgeController* GlicActorNudgeController::From(
 }
 
 void GlicActorNudgeController::SetHorizontalTabsDelegate(
-    GlicSplitButtonViewDelegate* delegate) {
+    GlicSplitButtonDelegate* delegate) {
   split_button_controller_->SetHorizontalTabsDelegate(delegate);
 }
 
 void GlicActorNudgeController::SetVerticalTabsDelegate(
-    GlicSplitButtonViewDelegate* delegate) {
+    GlicSplitButtonDelegate* delegate) {
   split_button_controller_->SetVerticalTabsDelegate(delegate);
 }
 
@@ -81,13 +67,9 @@ base::WeakPtr<GlicActorNudgeController> GlicActorNudgeController::GetWeakPtr() {
 void GlicActorNudgeController::OnStateUpdate(
     bool show_bubble,
     ActorTaskNudgeState actor_task_nudge_state) {
-  // If the task icon is inactive, hide it and perform no additional style
-  // changes.
-  GlicActorTaskIconManager* manager =
-      GlicActorTaskIconManagerFactory::GetForProfile(profile_);
-  DCHECK(manager);
-  if (manager->actor_task_list_bubble_rows().empty()) {
-    HideGlicActorTaskIcon();
+  auto* manager = LegacyGlicActivityManager::Get(profile_);
+  if (!manager || manager->actor_task_list_bubble_rows().empty()) {
+    HideGlicSecondaryButton();
     CloseBubble();
     return;
   }
@@ -95,7 +77,7 @@ void GlicActorNudgeController::OnStateUpdate(
   size_t num_tasks_need_processing = manager->GetNumActorTasksNeedProcessing();
   switch (actor_task_nudge_state.text) {
     case ActorTaskNudgeState::Text::kDefault:
-      ShowGlicActorTaskIcon();
+      ShowGlicSecondaryButton();
       if (show_bubble) {
         ShowBubble();
       } else {
@@ -132,9 +114,9 @@ void GlicActorNudgeController::UpdateNudgeLabelOrRetrigger(
     std::u16string nudge_label,
     bool show_bubble) {
   if (IsShowingNudge()) {
-    SetGlicActorNudgeLabel(nudge_label);
+    SetGlicSecondaryNudgeLabel(nudge_label);
   } else {
-    TriggerGlicActorNudge(nudge_label);
+    TriggerGlicSecondaryNudge(nudge_label);
   }
 
   if (show_bubble) {
@@ -143,8 +125,7 @@ void GlicActorNudgeController::UpdateNudgeLabelOrRetrigger(
 }
 
 void GlicActorNudgeController::RegisterActorNudgeStateCallback() {
-  if (auto* manager =
-          GlicActorTaskIconManagerFactory::GetForProfile(profile_)) {
+  if (auto* manager = LegacyGlicActivityManager::Get(profile_)) {
     actor_nudge_state_change_callback_subscription_.push_back(
         manager->RegisterTaskNudgeStateChange(base::BindRepeating(
             &GlicActorNudgeController::OnStateUpdate, base::Unretained(this))));
@@ -152,8 +133,7 @@ void GlicActorNudgeController::RegisterActorNudgeStateCallback() {
 }
 
 void GlicActorNudgeController::UpdateCurrentActorNudgeState() {
-  if (auto* manager =
-          GlicActorTaskIconManagerFactory::GetForProfile(profile_)) {
+  if (auto* manager = LegacyGlicActivityManager::Get(profile_)) {
     // This will "sync" a new window's state to the current nudge state. Do not
     // show the bubble in the new window as the user navigated away from the
     // bubble that was previously shown.
@@ -162,67 +142,53 @@ void GlicActorNudgeController::UpdateCurrentActorNudgeState() {
   }
 }
 
-void GlicActorNudgeController::ShowGlicActorTaskIcon() {
-  CallOnBoth(base::BindRepeating([](GlicSplitButtonViewDelegate& delegate) {
-    delegate.ShowGlicActorTaskIcon();
+void GlicActorNudgeController::ShowGlicSecondaryButton() {
+  CallOnBoth(base::BindRepeating([](GlicSplitButtonDelegate& delegate) {
+    delegate.ShowGlicSecondaryButton();
   }));
 }
 
-void GlicActorNudgeController::HideGlicActorTaskIcon() {
-  CallOnBoth(base::BindRepeating([](GlicSplitButtonViewDelegate& delegate) {
-    delegate.HideGlicActorTaskIcon();
+void GlicActorNudgeController::HideGlicSecondaryButton() {
+  CallOnBoth(base::BindRepeating([](GlicSplitButtonDelegate& delegate) {
+    delegate.HideGlicSecondaryButton();
   }));
 }
 
-void GlicActorNudgeController::SetGlicActorNudgeLabel(
+void GlicActorNudgeController::SetGlicSecondaryNudgeLabel(
     const std::u16string& nudge_label) {
   CallOnBoth(base::BindRepeating(
-      [](const std::u16string& nudge_label,
-         GlicSplitButtonViewDelegate& delegate) {
-        delegate.SetGlicActorNudgeLabel(nudge_label);
+      [](const std::u16string& nudge_label, GlicSplitButtonDelegate& delegate) {
+        delegate.SetGlicSecondaryNudgeLabel(nudge_label);
       },
       nudge_label));
 }
 
-void GlicActorNudgeController::TriggerGlicActorNudge(
+void GlicActorNudgeController::TriggerGlicSecondaryNudge(
     const std::u16string& nudge_label) {
   CallOnBoth(base::BindRepeating(
-      [](const std::u16string& nudge_label,
-         GlicSplitButtonViewDelegate& delegate) {
-        delegate.TriggerGlicActorNudge(nudge_label);
+      [](const std::u16string& nudge_label, GlicSplitButtonDelegate& delegate) {
+        delegate.TriggerGlicSecondaryNudge(nudge_label);
       },
       nudge_label));
 }
 
 void GlicActorNudgeController::ShowBubble() {
-  if (auto* bubble_controller = ActorTaskListBubbleController::From(browser_)) {
-    bubble_controller->ShowBubble();
-  }
+  split_button_controller_->ShowBubble();
 }
 
 void GlicActorNudgeController::CloseBubble() {
-  if (auto* bubble_controller = ActorTaskListBubbleController::From(browser_)) {
-    bubble_controller->CloseBubble();
-  }
+  split_button_controller_->CloseBubble();
 }
 
 bool GlicActorNudgeController::IsShowingNudge() {
-  if (auto* view_delegate = split_button_controller_->GetActiveViewDelegate()) {
-    return view_delegate->GetIsShowingGlicActorTaskIconNudge();
+  if (auto* delegate = split_button_controller_->GetActiveDelegate()) {
+    return delegate->GetIsShowingGlicSecondaryNudge();
   }
   return false;
 }
 
-void GlicActorNudgeController::OnBubbleVisibilityChange(bool is_bubble_open) {
-  CallOnBoth(base::BindRepeating(
-      [](bool is_bubble_open, GlicSplitButtonViewDelegate& delegate) {
-        delegate.SetGlicActorNudgePressedState(is_bubble_open);
-      },
-      is_bubble_open));
-}
-
 void GlicActorNudgeController::CallOnBoth(
-    base::RepeatingCallback<void(GlicSplitButtonViewDelegate&)> fn) {
+    base::RepeatingCallback<void(GlicSplitButtonDelegate&)> fn) {
   split_button_controller_->CallOnBoth(fn);
 }
 

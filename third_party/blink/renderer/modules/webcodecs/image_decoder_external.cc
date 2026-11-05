@@ -6,9 +6,11 @@
 
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/thread_pool.h"
 #include "third_party/blink/public/common/mime_util/mime_util.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
+#include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybufferallowshared_arraybufferviewallowshared_readablestream.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_image_decode_options.h"
@@ -16,7 +18,6 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_image_decoder_init.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/fetch/readable_stream_bytes_consumer.h"
-#include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
 #include "third_party/blink/renderer/modules/webcodecs/image_track.h"
 #include "third_party/blink/renderer/modules/webcodecs/image_track_list.h"
 #include "third_party/blink/renderer/modules/webcodecs/video_frame.h"
@@ -29,10 +30,8 @@
 #include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
 #include "third_party/blink/renderer/platform/image-decoders/segment_reader.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_skia.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/text/format.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
@@ -174,9 +173,10 @@ ImageDecoderExternal::ImageDecoderExternal(ScriptState* script_state,
     color_behavior = ColorBehavior::kIgnore;
   }
 
-  auto desired_size = SkISize::MakeEmpty();
-  if (init->hasDesiredWidth() && init->hasDesiredHeight())
-    desired_size = SkISize::Make(init->desiredWidth(), init->desiredHeight());
+  gfx::Size desired_size;
+  if (init->hasDesiredWidth() && init->hasDesiredHeight()) {
+    desired_size = gfx::Size(init->desiredWidth(), init->desiredHeight());
+  }
 
   mime_type_ = init->type().ToAsciiLower();
   if (!IsTypeSupportedInternal(mime_type_)) {
@@ -192,6 +192,8 @@ ImageDecoderExternal::ImageDecoderExternal(ScriptState* script_state,
   decode_task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
       {base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
+  main_task_runner_ =
+      GetExecutionContext()->GetTaskRunner(TaskType::kInternalMedia);
 
   if (init->data()->IsReadableStream()) {
     if (init->data()->GetAsReadableStream()->IsLocked() ||
@@ -219,35 +221,15 @@ ImageDecoderExternal::ImageDecoderExternal(ScriptState* script_state,
     return;
   }
 
-  base::span<const uint8_t> array_span;
-  switch (init->data()->GetContentType()) {
-    case V8ImageBufferSource::ContentType::kArrayBufferAllowShared:
-      if (auto* buffer = init->data()->GetAsArrayBufferAllowShared()) {
-        if (!buffer->IsDetached()) {
-          array_span = buffer->ByteSpanMaybeShared();
-        }
-      }
-      break;
-    case V8ImageBufferSource::ContentType::kArrayBufferViewAllowShared:
-      if (auto* view = init->data()->GetAsArrayBufferViewAllowShared().Get()) {
-        if (!view->IsDetached()) {
-          array_span = view->ByteSpanMaybeShared();
-        }
-      }
-      break;
-    case V8ImageBufferSource::ContentType::kReadableStream:
-      NOTREACHED();
-  }
-
-  auto buffer_contents =
-      TransferArrayBufferForSpan(init->transfer(), array_span, exception_state,
-                                 script_state_->GetIsolate());
-  if (exception_state.HadException()) {
+  DOMArrayBufferView* data = CoerceToArrayBufferView(*init->data());
+  if (data->byteLength() == 0) {
+    exception_state.ThrowTypeError("No image data provided");
     return;
   }
 
-  if (array_span.empty()) {
-    exception_state.ThrowTypeError("No image data provided");
+  auto [buffer_contents, array_span] = TransferArrayBuffers(
+      script_state_->GetIsolate(), init->transfer(), data, exception_state);
+  if (exception_state.HadException()) {
     return;
   }
 
@@ -518,24 +500,38 @@ void ImageDecoderExternal::MaybeSatisfyPendingDecodes() {
     request->bytes_read_index = bytes_read_;
 
     ++num_submitted_decodes_;
-    decoder_->AsyncCall(&ImageDecoderCore::Decode)
-        .WithArgs(request->frame_index, request->complete_frames_only,
-                  CrossThreadUnretained(request->abort_flag.get()))
-        .Then(CrossThreadBindOnce(&ImageDecoderExternal::OnDecodeReady,
-                                  MakeUnwrappingCrossThreadHandle(
-                                      decode_weak_factory_.GetWeakCell())));
+    // We'd like to use `AsyncCall()` here, but `AsyncCall().Then()` replies via
+    // `SequencedTaskRunner::GetCurrentDefault()`, which is not paused or frozen
+    // with the ExecutionContext (and wrapping `Then()` with `BindPostTask()`
+    // would add an extra task hop).
+    decoder_->PostTaskWithThisObject(CrossThreadBindOnce(
+        [](uint32_t frame_index, bool complete_frames_only,
+           const base::AtomicFlag* abort_flag,
+           base::OnceCallback<void(
+               std::unique_ptr<ImageDecoderCore::ImageDecodeResult>)> done_cb,
+           ImageDecoderCore* core) {
+          std::move(done_cb).Run(
+              core->Decode(frame_index, complete_frames_only, abort_flag));
+        },
+        request->frame_index, request->complete_frames_only,
+        CrossThreadUnretained(request->abort_flag.get()),
+        base::BindPostTask(main_task_runner_,
+                           ConvertToBaseOnceCallback(CrossThreadBindOnce(
+                               &ImageDecoderExternal::OnDecodeReady,
+                               MakeUnwrappingCrossThreadHandle(
+                                   decode_weak_factory_.GetWeakCell()))))));
   }
 
-  auto new_end = std::stable_partition(
-      pending_decodes_.begin(), pending_decodes_.end(),
-      [](const auto& request) { return !request->IsFinal(); });
-
-  // Copy completed requests to a new local vector to avoid reentrancy issues
+  // Move completed requests to a new local vector to avoid reentrancy issues
   // when resolving and rejecting the promises.
   HeapVector<Member<DecodeRequest>> completed_decodes;
-  completed_decodes.Append(new_end, pending_decodes_.end());
-  pending_decodes_.Shrink(
-      static_cast<wtf_size_t>(new_end - pending_decodes_.begin()));
+  EraseIf(pending_decodes_, [&completed_decodes](const auto& request) {
+    if (!request->IsFinal()) {
+      return false;
+    }
+    completed_decodes.push_back(request);
+    return true;
+  });
 
   // Note: Promise resolution may invoke calls into this class.
   for (auto& request : completed_decodes) {
@@ -621,10 +617,18 @@ void ImageDecoderExternal::DecodeMetadata() {
   ++pending_metadata_requests_;
   DCHECK_GE(pending_metadata_requests_, 1);
 
-  decoder_->AsyncCall(&ImageDecoderCore::DecodeMetadata)
-      .Then(CrossThreadBindOnce(
-          &ImageDecoderExternal::OnMetadata,
-          MakeUnwrappingCrossThreadHandle(weak_factory_.GetWeakCell())));
+  // See comment in `MaybeSatisfyPendingDecodes()` for why we avoid
+  // `AsyncCall().Then()` here.
+  decoder_->PostTaskWithThisObject(CrossThreadBindOnce(
+      [](base::OnceCallback<void(ImageDecoderCore::ImageMetadata)> done_cb,
+         ImageDecoderCore* core) {
+        std::move(done_cb).Run(core->DecodeMetadata());
+      },
+      base::BindPostTask(
+          main_task_runner_,
+          ConvertToBaseOnceCallback(CrossThreadBindOnce(
+              &ImageDecoderExternal::OnMetadata,
+              MakeUnwrappingCrossThreadHandle(weak_factory_.GetWeakCell()))))));
 }
 
 void ImageDecoderExternal::OnMetadata(

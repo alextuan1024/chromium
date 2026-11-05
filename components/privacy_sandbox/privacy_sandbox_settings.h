@@ -22,10 +22,8 @@ namespace privacy_sandbox {
 enum class PrivacySandboxAttestationsGatedAPI {
   kTopics,
   kProtectedAudience,
-  kPrivateAggregation,
-  kSharedStorage,
 
-  kMaxValue = kSharedStorage,
+  kMaxValue = kProtectedAudience,
 };
 
 // The possible operations performable by parties related to the Interest
@@ -48,28 +46,13 @@ enum class InterestGroupApiOperation {
 // though the underlying preferences and content settings separately.
 class PrivacySandboxSettings : public KeyedService {
  public:
-  class Observer {
-   public:
-    // Fired when the Related Website Sets changes to being `enabled` as a
-    // result of the kPrivacySandboxRelatedWebsiteSets preference changing.
-    virtual void OnRelatedWebsiteSetsEnabledChanged(bool enabled) {}
-  };
-
   // Determine whether |destination_origin| is allowed to receive events
-  // (reportEvent(), automatic beacons) reported by an API like Protected
-  // Audience or Shared Storage. This does not check if the API itself is
-  // allowed by the calling context, since the corresponding registerAdBeacon
-  // and selectUrl caller sites were also checked for attestation.
+  // (reportEvent(), automatic beacons) reported by Protected Audience. This
+  // does not check if the API itself is allowed by the calling context, since
+  // the corresponding registerAdBeacon caller site was also checked for
+  // attestation.
   virtual bool IsEventReportingDestinationAttested(
-      const url::Origin& destination_origin,
-      privacy_sandbox::PrivacySandboxAttestationsGatedAPI invoking_api)
-      const = 0;
-
-  virtual void AddObserver(Observer* observer) = 0;
-  virtual void RemoveObserver(Observer* observer) = 0;
-
-  // Source of truth for whether related website sets are enabled.
-  virtual bool AreRelatedWebsiteSetsEnabled() const = 0;
+      const url::Origin& destination_origin) const = 0;
 };
 
 }  // namespace privacy_sandbox

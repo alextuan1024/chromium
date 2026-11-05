@@ -13,7 +13,9 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/time/time.h"
 #include "device/vr/openxr/exit_xr_present_reason.h"
+#include "device/vr/openxr/fb/openxr_frame_rate_handler_fb.h"
 #include "device/vr/openxr/openxr_anchor_manager.h"
 #include "device/vr/openxr/openxr_depth_sensor.h"
 #include "device/vr/openxr/openxr_graphics_binding.h"
@@ -25,6 +27,7 @@
 #include "device/vr/openxr/openxr_unbounded_space_provider.h"
 #include "device/vr/openxr/openxr_view_configuration.h"
 #include "device/vr/openxr/openxr_visibility_mask_handler.h"
+#include "device/vr/public/cpp/xr_session_feature_set.h"
 #include "device/vr/public/mojom/vr_service.mojom.h"
 #include "device/vr/public/mojom/xr_session.mojom.h"
 #include "device/vr/vr_export.h"
@@ -70,10 +73,10 @@ class OpenXrApiWrapper {
   OpenXrApiWrapper(const OpenXrApiWrapper&) = delete;
   OpenXrApiWrapper& operator=(const OpenXrApiWrapper&) = delete;
 
-  ~OpenXrApiWrapper();
-  bool IsInitialized() const;
+  DEVICE_VR_EXPORT ~OpenXrApiWrapper();
+  DEVICE_VR_EXPORT bool IsInitialized() const;
 
-  static std::unique_ptr<OpenXrApiWrapper> Create(
+  DEVICE_VR_EXPORT static std::unique_ptr<OpenXrApiWrapper> Create(
       XrInstance instance,
       OpenXrGraphicsBinding* graphics_binding);
 
@@ -83,15 +86,23 @@ class OpenXrApiWrapper {
       XrInstance instance,
       XrSystemId system);
 
+  // Converts |time| to base::TimeTicks. Returns nullopt if the runtime cannot
+  // convert its time to the clock that base::TimeTicks uses.
+  DEVICE_VR_EXPORT static std::optional<base::TimeTicks> XrTimeToTimeTicks(
+      XrInstance instance,
+      const OpenXrExtensionHelper& extension_helper,
+      XrTime time);
+
   bool UpdateAndGetSessionEnded();
 
   // The supplied graphics_binding is guaranteed by the caller to exist until
   // this object is destroyed.
-  XrResult InitSession(mojom::XRRuntimeSessionOptionsPtr options,
-                       const OpenXrExtensionHelper& extension_helper,
-                       SessionStartedCallback on_session_started_callback,
-                       SessionEndedCallback on_session_ended_callback,
-                       VisibilityChangedCallback visibility_changed_callback);
+  DEVICE_VR_EXPORT XrResult
+  InitSession(mojom::XRRuntimeSessionOptionsPtr options,
+              const OpenXrExtensionHelper& extension_helper,
+              SessionStartedCallback on_session_started_callback,
+              SessionEndedCallback on_session_ended_callback,
+              VisibilityChangedCallback visibility_changed_callback);
 
   XrSpace GetReferenceSpace(mojom::XRReferenceSpaceType type) const;
   std::optional<XrLocation> GetXrLocationFromNativeOriginInformation(
@@ -102,13 +113,19 @@ class OpenXrApiWrapper {
   XrSession session() const { return session_; }
   XrSystemId system() const { return system_; }
 
-  XrResult BeginFrame();
+  DEVICE_VR_EXPORT XrResult BeginFrame();
   XrResult EndFrame();
   bool HasPendingFrame() const;
   bool HasFrameState() const;
+  // False before the session begins and while the runtime has stopped it.
+  bool IsSessionRunning() const { return session_running_; }
+  // Called when the session runs again after the runtime stopped it.
+  void SetOnSessionResumedCallback(base::RepeatingClosure callback) {
+    on_session_resumed_callback_ = std::move(callback);
+  }
   bool IsFeatureEnabled(device::mojom::XRSessionFeature feature) const;
 
-  const std::unordered_set<mojom::XRSessionFeature>& GetEnabledFeatures() const;
+  XRSessionFeatureSet GetEnabledFeatures() const;
   std::vector<mojom::XRViewPtr> GetViews() const;
   mojom::VRPosePtr GetViewerPose() const;
   std::vector<mojom::XRInputSourceStatePtr> GetInputState();
@@ -131,6 +148,7 @@ class OpenXrApiWrapper {
   OpenXrHitTestManager* GetHitTestManager();
   OpenXrLightEstimator* GetLightEstimator();
   OpenXrDepthSensor* GetDepthSensor();
+  OpenXrFrameRateHandlerFb* GetFrameRateHandler();
 
   void OnContextProviderCreated(
       scoped_refptr<viz::ContextProvider> context_provider);
@@ -174,6 +192,12 @@ class OpenXrApiWrapper {
   XrResult CreateSpace(XrReferenceSpaceType type, XrSpace* space);
 
   XrResult BeginSession();
+  // Ends the running OpenXR session with xrEndSession() after the runtime
+  // moved it to STOPPING, e.g. because the app was paused. Unlike EXITING,
+  // STOPPING doesn't end the WebXR session: the runtime may make the session
+  // READY again, e.g. when the app is resumed, and BeginSession() then runs it
+  // again.
+  XrResult StopSession();
   XrResult UpdateSecondaryViewConfigStates(
       const std::vector<XrSecondaryViewConfigurationStateMSFT>& states);
   XrResult UpdateViewConfigurations();
@@ -211,6 +235,9 @@ class OpenXrApiWrapper {
   // It is not considered running after creation but before xrBeginSession.
   bool session_running_;
   bool pending_frame_;
+  // Whether the runtime asked to stop the session while a frame was pending.
+  bool stop_pending_ = false;
+  base::RepeatingClosure on_session_resumed_callback_;
 
   SessionStartedCallback on_session_started_callback_;
   SessionEndedCallback on_session_ended_callback_;
@@ -240,7 +267,7 @@ class OpenXrApiWrapper {
   XrSpace unbounded_space_ = XR_NULL_HANDLE;
   bool emulated_local_floor_ = false;
   bool try_recreate_local_floor_ = false;
-  std::unordered_set<mojom::XRSessionFeature> enabled_features_;
+  XRSessionFeatureSet enabled_features_;
   raw_ptr<OpenXrGraphicsBinding> graphics_binding_ = nullptr;
 
   bool received_initial_valid_primary_views_ = false;
@@ -267,6 +294,7 @@ class OpenXrApiWrapper {
   std::unique_ptr<OpenXrMeshManager> mesh_manager_;
   std::unique_ptr<OpenXrUnboundedSpaceProvider> unbounded_space_provider_;
   std::unique_ptr<OpenXrVisibilityMaskHandler> visibility_mask_handler_;
+  std::unique_ptr<OpenXrFrameRateHandlerFb> frame_rate_handler_;
 
   // The context provider is owned by the OpenXrRenderLoop, and may change when
   // there is a context lost.

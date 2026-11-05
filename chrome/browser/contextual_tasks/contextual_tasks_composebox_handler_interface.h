@@ -42,6 +42,14 @@ class ContextualTasksComposeboxHandlerInterface {
   // Dispatches the fetched restored tabs from the database to the WebUI.
   virtual void SetAimThreadRestoredTabs(
       std::vector<searchbox::mojom::TabInfoPtr> tabs) {}
+
+  // Attaches a file/image context from in-memory bytes to the composebox.
+  virtual void AddFileContextFromBytes(std::string file_name,
+                                       std::string mime_type,
+                                       std::string bytes) {}
+
+  // Returns the tab IDs currently selected/attached in the composebox.
+  virtual std::vector<int32_t> GetSelectedTabIds() const = 0;
 };
 
 }  // namespace contextual_tasks

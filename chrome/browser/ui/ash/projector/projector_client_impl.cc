@@ -26,18 +26,24 @@
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/speech/speech_recognition_recognizer_client_impl.h"
 #include "chrome/browser/ui/ash/projector/projector_utils.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/web_applications/locks/app_lock.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
+#include "components/account_id/account_id.h"
 #include "components/application_locale_storage/application_locale_storage.h"
+#include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
 #include "components/soda/soda_installer.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
@@ -69,7 +75,8 @@ ash::OnDeviceToServerSpeechRecognitionFallbackReason GetFallbackReason(
         kEnforcedByFlag;
   }
 
-  DCHECK_NE(availability, ash::OnDeviceRecognitionAvailability::kAvailable);
+  CHECK_NE(availability, ash::OnDeviceRecognitionAvailability::kAvailable,
+           base::NotFatalUntil::M162);
   switch (availability) {
     case ash::OnDeviceRecognitionAvailability::kSodaNotAvailable:
       return ash::OnDeviceToServerSpeechRecognitionFallbackReason::
@@ -95,6 +102,14 @@ ash::OnDeviceToServerSpeechRecognitionFallbackReason GetFallbackReason(
       break;
   }
   NOTREACHED();
+}
+
+void CloseProjectorAppForProfile(Profile* profile) {
+  auto* browser = ash::FindSystemWebAppBrowser(
+      profile, ash::SystemWebAppType::PROJECTOR, ash::BrowserType::kApp);
+  if (browser) {
+    browser->Close();
+  }
 }
 
 }  // namespace
@@ -136,12 +151,12 @@ ProjectorClientImpl::GetSpeechRecognitionAvailability() const {
   availability.use_on_device = true;
   availability.on_device_availability = SpeechRecognitionRecognizerClientImpl::
       GetOnDeviceSpeechRecognitionAvailability(
-          application_locale_storage_->Get());
+          std::string(application_locale_storage_->GetTag().tag_string()));
   availability.server_based_availability =
       SpeechRecognitionRecognizerClientImpl::
           GetServerBasedRecognitionAvailability(
-              GetLocaleOrLanguageForServerSideRecognition(
-                  application_locale_storage_->Get()));
+              GetLocaleOrLanguageForServerSideRecognition(std::string(
+                  application_locale_storage_->GetTag().tag_string())));
 
   if (ash::features::ShouldForceEnableServerSideSpeechRecognition() ||
       (availability.on_device_availability !=
@@ -156,17 +171,27 @@ ProjectorClientImpl::GetSpeechRecognitionAvailability() const {
 
 void ProjectorClientImpl::StartSpeechRecognition() {
   const auto availability = GetSpeechRecognitionAvailability();
-  DCHECK(availability.IsAvailable());
-  DCHECK_EQ(speech_recognizer_.get(), nullptr);
+  CHECK(availability.IsAvailable(), base::NotFatalUntil::M162);
+  CHECK_EQ(speech_recognizer_.get(), nullptr, base::NotFatalUntil::M162);
   recognizer_status_ = SPEECH_RECOGNIZER_OFF;
-  const std::string& app_locale = application_locale_storage_->Get();
+  const std::string app_locale(
+      application_locale_storage_->GetTag().tag_string());
   const std::string locale =
       availability.use_on_device
           ? app_locale
           : GetLocaleOrLanguageForServerSideRecognition(app_locale);
 
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          active_session->account_id());
+  CHECK(browser_context);
   speech_recognizer_ = std::make_unique<SpeechRecognitionRecognizerClientImpl>(
-      weak_ptr_factory_.GetWeakPtr(), ProfileManager::GetActiveUserProfile(),
+      weak_ptr_factory_.GetWeakPtr(),
+      Profile::FromBrowserContext(browser_context),
       media::AudioDeviceDescription::kDefaultDeviceId,
       media::mojom::SpeechRecognitionOptions::New(
           media::mojom::SpeechRecognitionMode::kCaption,
@@ -199,16 +224,22 @@ bool ProjectorClientImpl::GetBaseStoragePath(base::FilePath* result) const {
   }
 
   if (ash::ProjectorController::AreExtendedProjectorFeaturesDisabled()) {
-    auto* profile = ProfileManager::GetActiveUserProfile();
-    DCHECK(profile);
+    // TODO(crbug.com/278643115): Take `account_id` from the callers.
+    const session_manager::Session* active_session =
+        session_manager::SessionManager::Get()->GetActiveSession();
+    CHECK(active_session, base::NotFatalUntil::M162);
+    content::BrowserContext* browser_context =
+        ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+            active_session->account_id());
+    CHECK(browser_context, base::NotFatalUntil::M162);
 
-    DownloadPrefs* download_prefs = DownloadPrefs::FromBrowserContext(
-        ProfileManager::GetActiveUserProfile());
+    DownloadPrefs* download_prefs =
+        DownloadPrefs::FromBrowserContext(browser_context);
     *result = download_prefs->GetDefaultDownloadDirectoryForProfile();
     return true;
   }
 
-  *result = ProjectorDriveFsProvider::GetDriveFsMountPointPath();
+  *result = ProjectorDriveFsProvider::GetDriveFsMountPointPath(account_id_);
   return true;
 }
 
@@ -222,34 +253,53 @@ bool ProjectorClientImpl::IsDriveFsMounted() const {
     // folder for Projector storage.
     return true;
   }
-  return ProjectorDriveFsProvider::IsDriveFsMounted();
+  return ProjectorDriveFsProvider::IsDriveFsMounted(account_id_);
 }
 
 bool ProjectorClientImpl::IsDriveFsMountFailed() const {
-  return ProjectorDriveFsProvider::IsDriveFsMountFailed();
+  return ProjectorDriveFsProvider::IsDriveFsMountFailed(account_id_);
 }
 
 void ProjectorClientImpl::OpenProjectorApp() const {
-  auto* profile = ProfileManager::GetActiveUserProfile();
-  ash::LaunchSystemWebAppAsync(profile, ash::SystemWebAppType::PROJECTOR);
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          active_session->account_id());
+  CHECK(browser_context);
+  ash::LaunchSystemWebAppAsync(Profile::FromBrowserContext(browser_context),
+                               ash::SystemWebAppType::PROJECTOR);
 }
 
 void ProjectorClientImpl::MinimizeProjectorApp() const {
-  auto* profile = ProfileManager::GetActiveUserProfile();
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          active_session->account_id());
+  CHECK(browser_context);
   auto* browser = ash::FindSystemWebAppBrowser(
-      profile, ash::SystemWebAppType::PROJECTOR, ash::BrowserType::kApp);
+      Profile::FromBrowserContext(browser_context),
+      ash::SystemWebAppType::PROJECTOR, ash::BrowserType::kApp);
   if (browser) {
     browser->Minimize();
   }
 }
 
 void ProjectorClientImpl::CloseProjectorApp() const {
-  auto* profile = ProfileManager::GetActiveUserProfile();
-  auto* browser = ash::FindSystemWebAppBrowser(
-      profile, ash::SystemWebAppType::PROJECTOR, ash::BrowserType::kApp);
-  if (browser) {
-    browser->Close();
-  }
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          active_session->account_id());
+  CHECK(browser_context);
+  CloseProjectorAppForProfile(Profile::FromBrowserContext(browser_context));
 }
 
 void ProjectorClientImpl::OnNewScreencastPreconditionChanged(
@@ -273,7 +323,7 @@ void ProjectorClientImpl::OnSpeechResult(
     const std::u16string& text,
     bool is_final,
     const std::optional<media::SpeechRecognitionResult>& full_result) {
-  DCHECK(full_result.has_value());
+  CHECK(full_result.has_value(), base::NotFatalUntil::M162);
   controller_->OnTranscription(full_result.value());
 }
 
@@ -326,29 +376,45 @@ void ProjectorClientImpl::OnUserSessionStarted(bool is_primary_user) {
   if (!is_primary_user || !pref_change_registrar_.IsEmpty()) {
     return;
   }
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  pref_change_registrar_.Init(profile->GetPrefs());
+  const AccountId& account_id =
+      CHECK_DEREF(session_manager::SessionManager::Get()->GetPrimarySession())
+          .account_id();
+  PrefService* prefs =
+      CHECK_DEREF(
+          user_manager::UserManager::Get()->FindUserAndModify(account_id))
+          .GetProfilePrefs();
+  CHECK(prefs);
+  pref_change_registrar_.Init(prefs);
   // TOOD(b/232043809): Consider using the disabled system feature policy
   // instead.
   pref_change_registrar_.Add(
       ash::prefs::kProjectorAllowByPolicy,
       base::BindRepeating(&ProjectorClientImpl::OnEnablementPolicyChanged,
-                          base::Unretained(this)));
+                          base::Unretained(this), account_id));
   pref_change_registrar_.Add(
       ash::prefs::kProjectorDogfoodForFamilyLinkEnabled,
       base::BindRepeating(&ProjectorClientImpl::OnEnablementPolicyChanged,
-                          base::Unretained(this)));
+                          base::Unretained(this), account_id));
 }
 
-void ProjectorClientImpl::MaybeSwitchDriveIntegrationServiceObservation() {
+void ProjectorClientImpl::MaybeSwitchDriveIntegrationServiceObservation(
+    const AccountId& account_id) {
   drive::DriveIntegrationService* const service =
-      ProjectorDriveFsProvider::GetActiveDriveIntegrationService();
-  if (!service || service == drive_observation_.GetSource()) {
+      account_id.is_valid()
+          ? ProjectorDriveFsProvider::GetDriveIntegrationService(account_id)
+          : nullptr;
+  if (account_id_ == account_id && service == drive_observation_.GetSource()) {
     return;
   }
 
+  // The ash::ProjectorClient methods below are called from //ash with no
+  // account, so remember whose DriveFS this is.
+  account_id_ = account_id;
+
   drive_observation_.Reset();
-  drive_observation_.Observe(service);
+  if (service) {
+    drive_observation_.Observe(service);
+  }
 }
 
 void ProjectorClientImpl::SpeechRecognitionEnded(bool forced) {
@@ -357,8 +423,13 @@ void ProjectorClientImpl::SpeechRecognitionEnded(bool forced) {
   controller_->OnSpeechRecognitionStopped(forced);
 }
 
-void ProjectorClientImpl::OnEnablementPolicyChanged() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
+void ProjectorClientImpl::OnEnablementPolicyChanged(
+    const AccountId& account_id) {
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          account_id);
+  CHECK(browser_context);
+  Profile* profile = Profile::FromBrowserContext(browser_context);
   ash::SystemWebAppManager* swa_manager =
       ash::SystemWebAppManager::Get(profile);
   CHECK(swa_manager);
@@ -374,20 +445,28 @@ void ProjectorClientImpl::OnEnablementPolicyChanged() {
   // uninstall the Projector SWA until the user signs out and back in, we should
   // close and disable the app for this current session.
   if (!is_enabled) {
-    CloseProjectorApp();
+    CloseProjectorAppForProfile(profile);
   }
 
   auto* web_app_provider = ash::SystemWebAppManager::GetWebAppProvider(profile);
   CHECK(web_app_provider);
   web_app_provider->on_registry_ready().Post(
-      FROM_HERE, base::BindOnce(&ProjectorClientImpl::SetAppIsDisabled,
-                                weak_ptr_factory_.GetWeakPtr(), !is_enabled));
+      FROM_HERE,
+      base::BindOnce(&ProjectorClientImpl::SetAppIsDisabled,
+                     weak_ptr_factory_.GetWeakPtr(), account_id, !is_enabled));
 }
 
-void ProjectorClientImpl::SetAppIsDisabled(bool disabled) {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
+void ProjectorClientImpl::SetAppIsDisabled(const AccountId& account_id,
+                                           bool disabled) {
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          account_id);
+  if (!browser_context) {
+    return;
+  }
 
-  auto* web_app_provider = ash::SystemWebAppManager::GetWebAppProvider(profile);
+  auto* web_app_provider = ash::SystemWebAppManager::GetWebAppProvider(
+      Profile::FromBrowserContext(browser_context));
   CHECK(web_app_provider);
 
   web_app_provider->scheduler().SetAppIsDisabled(

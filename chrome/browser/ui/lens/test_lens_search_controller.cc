@@ -20,6 +20,7 @@
 #include "components/tabs/public/mock_tab_interface.h"
 #include "components/variations/variations_client.h"
 #include "content/public/browser/navigation_controller.h"
+#include "third_party/lens_server_proto/lens_overlay_server.pb.h"
 
 namespace lens {
 
@@ -97,6 +98,7 @@ MockLensSearchController::MockLensSearchController(tabs::TabInterface* tab)
       .WillByDefault([this](lens::LensOverlayDismissalSource dismissal_source) {
         LensSearchController::CloseLensSync(dismissal_source);
       });
+  ON_CALL(*this, IsCurrentTabSameOrigin()).WillByDefault(testing::Return(true));
 }
 
 MockLensSearchController::~MockLensSearchController() = default;
@@ -163,15 +165,47 @@ FakeLensQueryFlowRouter::FakeLensQueryFlowRouter(
       std::make_unique<contextual_search::MockContextualSearchSessionHandle>();
   mock_context_controller_ = std::make_unique<
       contextual_search::MockContextualSearchContextController>();
+  mock_context_controller_weak_factory_ = std::make_unique<base::WeakPtrFactory<
+      contextual_search::ContextualSearchContextController>>(
+      mock_context_controller_.get());
+  ON_CALL(*mock_context_controller_, AsWeakPtr()).WillByDefault([this]() {
+    return mock_context_controller_weak_factory_->GetWeakPtr();
+  });
+  ON_CALL(*mock_context_controller_, AddObserver(::testing::_))
+      .WillByDefault(
+          [this](contextual_search::ContextualSearchContextController::
+                     ContextUploadStatusObserver* obs) {
+            context_upload_status_observers_.AddObserver(obs);
+          });
+  ON_CALL(*mock_context_controller_, RemoveObserver(::testing::_))
+      .WillByDefault(
+          [this](contextual_search::ContextualSearchContextController::
+                     ContextUploadStatusObserver* obs) {
+            context_upload_status_observers_.RemoveObserver(obs);
+          });
   ON_CALL(*mock_handle_, CreateSearchUrl(::testing::_, ::testing::_))
       .WillByDefault(
           ::testing::WithArg<1>([](base::OnceCallback<void(GURL)> callback) {
-            std::move(callback).Run(GURL("http://dummy-search-url.com"));
+            std::move(callback).Run(
+                GURL("https://www.google.com/search?lns_mode=un"));
           }));
   ON_CALL(*mock_handle_, GetController())
       .WillByDefault(::testing::Return(mock_context_controller_.get()));
 
   mock_file_info_ = std::make_unique<contextual_search::FileInfo>();
+  // Populate fake OCR text in the uploaded file's response bodies to match
+  // `TestLensOverlayQueryController`.
+  lens::LensOverlayServerResponse server_response;
+  server_response.mutable_objects_response()->mutable_text()->CopyFrom(
+      CreateTestText({"This", "is", "test", "text."}));
+  server_response.mutable_objects_response()
+      ->mutable_cluster_info()
+      ->set_server_session_id(kTestServerSessionId);
+  server_response.mutable_objects_response()
+      ->mutable_cluster_info()
+      ->set_search_session_id(kTestSearchSessionId);
+  mock_file_info_->response_bodies.push_back(
+      server_response.SerializeAsString());
 
   ON_CALL(*mock_handle_, CreateContextToken())
       .WillByDefault(::testing::Return(base::UnguessableToken::Create()));
@@ -184,6 +218,14 @@ FakeLensQueryFlowRouter::FakeLensQueryFlowRouter(
                 token, lens::MimeType::kImage,
                 contextual_search::ContextUploadStatus::kUploadSuccessful,
                 std::nullopt);
+            for (auto& observer : context_upload_status_observers_) {
+              if (&observer != this) {
+                observer.OnContextUploadStatusChanged(
+                    token, lens::MimeType::kImage,
+                    contextual_search::ContextUploadStatus::kUploadSuccessful,
+                    std::nullopt);
+              }
+            }
           }));
 
   ON_CALL(*mock_context_controller_, GetFileInfo(::testing::_))
@@ -195,7 +237,13 @@ FakeLensQueryFlowRouter::FakeLensQueryFlowRouter(
           fake_tab_interface_.get());
 }
 
-FakeLensQueryFlowRouter::~FakeLensQueryFlowRouter() = default;
+FakeLensQueryFlowRouter::~FakeLensQueryFlowRouter() {
+  reset_context_upload_status_observation();
+  for (auto& observer : context_upload_status_observers_) {
+    observer.OnControllerDestroyed();
+  }
+  mock_context_controller_weak_factory_.reset();
+}
 
 bool FakeLensQueryFlowRouter::IsActiveTabContextEligible() const {
   return true;

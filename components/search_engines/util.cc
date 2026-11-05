@@ -107,7 +107,8 @@ GURL GetBaseSearchUrl(TemplateURLService* turl_service,
                       bool is_aim_search,
                       const base::Time& query_start_time,
                       const std::u16string& query_text,
-                      std::map<std::string, std::string> additional_params) {
+                      std::map<std::string, std::string> additional_params,
+                      bool append_multimodal_udm_if_not_aim = true) {
   const TemplateURLRef& url_ref =
       turl_service->GetDefaultSearchProvider()->url_ref();
   TemplateURLRef::SearchTermsArgs search_term_args =
@@ -131,7 +132,7 @@ GURL GetBaseSearchUrl(TemplateURLService* turl_service,
                                                     param.second);
   }
 
-  if (!is_aim_search) {
+  if (!is_aim_search && append_multimodal_udm_if_not_aim) {
     std::string udm_value = query_text.empty()
                                 ? kUnimodalUdmQueryParameterValue
                                 : kMultimodalUdmQueryParameterValue;
@@ -160,6 +161,23 @@ GURL GetBaseSearchUrl(TemplateURLService* turl_service,
             query_submission_time.InMillisecondsSinceUnixEpoch()));
   }
   return result_url;
+}
+
+GURL AppendContextualInputsParams(
+    const GURL& url,
+    const std::string& search_session_id,
+    const lens::LensOverlayContextualInputs& contextual_inputs,
+    const std::string& lns_surface) {
+  std::string serialized_contextual_inputs;
+  CHECK(contextual_inputs.SerializeToString(&serialized_contextual_inputs));
+  GURL result_url = net::AppendOrReplaceQueryParameter(
+      url, kContextualInputsParameterKey,
+      base::Base64UrlEncode(serialized_contextual_inputs,
+                            base::Base64UrlEncodePolicy::OMIT_PADDING));
+  result_url = net::AppendOrReplaceQueryParameter(
+      result_url, kSearchSessionIdParameterKey, search_session_id);
+  return net::AppendOrReplaceQueryParameter(result_url, kLnsSurfaceParameterKey,
+                                            lns_surface);
 }
 
 std::string StringifyDuplicates(
@@ -509,7 +527,7 @@ void RemoveDuplicatePrepopulateIDs(
 // If not found, returns NULL.
 TemplateURL* GetTemplateURLByID(
     const TemplateURLService::TemplateURLVector& template_urls,
-    int64_t id) {
+    TemplateURLID id) {
   for (auto i(template_urls.begin()); i != template_urls.end(); ++i) {
     if ((*i)->id() == id) {
       return *i;
@@ -1074,6 +1092,8 @@ void GetSearchProvidersUsingKeywordResult(
   GetSearchProvidersUsingLoadedEngines(
       service, prefs, template_url_data_resolver, template_urls,
       default_search_provider, search_terms_data, out_updated_keywords_metadata,
+      keyword_result.had_prepopulated_decryption_failure,
+      keyword_result.had_starter_pack_decryption_failure,
       removed_keyword_guids);
 
   // If a data change happened, it should not cause a version downgrade.
@@ -1092,6 +1112,8 @@ void GetSearchProvidersUsingLoadedEngines(
     TemplateURL* default_search_provider,
     const SearchTermsData& search_terms_data,
     WDKeywordsResult::Metadata& in_out_keywords_metadata,
+    bool had_prepopulated_decryption_failure,
+    bool had_starter_pack_decryption_failure,
     std::set<std::string>* removed_keyword_guids) {
   DCHECK(template_urls);
   std::vector<std::unique_ptr<TemplateURLData>> prepopulated_urls =
@@ -1104,13 +1126,17 @@ void GetSearchProvidersUsingLoadedEngines(
       ComputeMergeEnginesRequirements(template_url_data_resolver,
                                       in_out_keywords_metadata);
 
-  if (required_metadata.HasBuiltinKeywordData()) {
+  // A prepopulated row discarded after a decryption failure requires regional
+  // reconciliation independently of any version or country update.
+  if (required_metadata.HasBuiltinKeywordData() ||
+      had_prepopulated_decryption_failure) {
     MergeEnginesFromPrepopulateData(
         service, &prepopulated_urls, template_urls, default_search_provider,
         template_url_data_resolver, removed_keyword_guids);
   }
 
-  if (required_metadata.HasStarterPackData()) {
+  if (required_metadata.HasStarterPackData() ||
+      had_starter_pack_decryption_failure) {
     bool overwrite_user_edits =
         (in_out_keywords_metadata.starter_pack_version <
          template_url_starter_pack_data::GetFirstCompatibleDataVersion());
@@ -1203,18 +1229,17 @@ GURL GetUrlForMultimodalSearch(
     const std::string& lns_surface,
     const std::u16string& query_text,
     std::map<std::string, std::string> additional_params) {
-  GURL result_url =
-      GetBaseSearchUrl(turl_service, aim_entrypoint, is_aim_search,
-                       query_start_time, query_text, additional_params);
+  GURL result_url = GetBaseSearchUrl(
+      turl_service, aim_entrypoint, is_aim_search, query_start_time, query_text,
+      additional_params,
+      /*append_multimodal_udm_if_not_aim=*/request_id != nullptr);
   if (request_id) {
     std::string serialized_request_id;
     CHECK(request_id->SerializeToString(&serialized_request_id));
-    std::string encoded_request_id;
-    base::Base64UrlEncode(serialized_request_id,
-                          base::Base64UrlEncodePolicy::OMIT_PADDING,
-                          &encoded_request_id);
     result_url = net::AppendOrReplaceQueryParameter(
-        result_url, kVisualRequestIdQueryParameter, encoded_request_id);
+        result_url, kVisualRequestIdQueryParameter,
+        base::Base64UrlEncode(serialized_request_id,
+                              base::Base64UrlEncodePolicy::OMIT_PADDING));
   }
 
   if (invocation_source.has_value()) {
@@ -1245,12 +1270,6 @@ GURL GetUrlForMultimodalSearch(
   GURL result_url =
       GetBaseSearchUrl(turl_service, aim_entrypoint, is_aim_search,
                        query_start_time, query_text, additional_params);
-  std::string serialized_contextual_inputs;
-  CHECK(contextual_inputs->SerializeToString(&serialized_contextual_inputs));
-  std::string encoded_contextual_inputs;
-  base::Base64UrlEncode(serialized_contextual_inputs,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &encoded_contextual_inputs);
   if (invocation_source.has_value()) {
     // If the invocation source is set, this is a Lens query that is migrated
     // to the common ContextualSearchSessionHandle, which is only used for the
@@ -1258,11 +1277,31 @@ GURL GetUrlForMultimodalSearch(
     result_url = lens::AppendInvocationSourceParamToURL(
         result_url, *invocation_source, /*is_contextual_tasks=*/true);
   }
-  result_url = net::AppendOrReplaceQueryParameter(
-      result_url, kContextualInputsParameterKey, encoded_contextual_inputs);
-  result_url = net::AppendOrReplaceQueryParameter(
-      result_url, kSearchSessionIdParameterKey, search_session_id);
-  result_url = net::AppendOrReplaceQueryParameter(
-      result_url, kLnsSurfaceParameterKey, lns_surface);
+  return AppendContextualInputsParams(result_url, search_session_id,
+                                      *contextual_inputs, lns_surface);
+}
+
+GURL GetUrlForContextualSrp(
+    TemplateURLService* turl_service,
+    omnibox::ChromeAimEntryPoint aim_entrypoint,
+    const base::Time& query_start_time,
+    const std::u16string& query_text,
+    const std::optional<lens::LensOverlayInvocationSource> invocation_source,
+    std::map<std::string, std::string> additional_params,
+    const std::string& search_session_id,
+    const lens::LensOverlayContextualInputs* contextual_inputs,
+    const std::string& lns_surface) {
+  GURL result_url = GetBaseSearchUrl(
+      turl_service, aim_entrypoint, /*is_aim_search=*/false, query_start_time,
+      query_text, std::move(additional_params),
+      /*append_multimodal_udm_if_not_aim=*/false);
+  if (invocation_source.has_value()) {
+    result_url = lens::AppendInvocationSourceParamToURL(
+        result_url, *invocation_source, /*is_contextual_tasks=*/true);
+  }
+  if (contextual_inputs && contextual_inputs->inputs_size() > 0) {
+    result_url = AppendContextualInputsParams(result_url, search_session_id,
+                                              *contextual_inputs, lns_surface);
+  }
   return result_url;
 }

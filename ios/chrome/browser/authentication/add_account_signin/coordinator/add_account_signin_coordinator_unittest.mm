@@ -6,7 +6,6 @@
 
 #import <UIKit/UIKit.h>
 
-#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/browser/authentication/add_account_signin/coordinator/add_account_signin_manager.h"
 #import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
@@ -36,7 +35,7 @@ class AddAccountSigninCoordinatorTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get(), scene_state_);
     base_view_controller_ = [[FakeUIViewController alloc] init];
@@ -95,11 +94,10 @@ TEST_F(AddAccountSigninCoordinatorTest, StopCoordinatorWhileShowingErrorAlert) {
   OCMExpect([add_account_signin_manager_mock_
       showSigninWithIntent:AddAccountSigninIntent::kAddAccount]);
   __block BOOL signinCompletionCalled = NO;
-  coordinator_.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
-        signinCompletionCalled = YES;
-      };
+  coordinator_.signinCompletion = ^(SigninCoordinator* coordinator,
+                                    SigninCoordinatorResultOrIdentity result) {
+    signinCompletionCalled = YES;
+  };
   [coordinator_ start];
   // Generate an error from AddAccountSigninManager.
   base::RunLoop run_loop1;

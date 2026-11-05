@@ -138,6 +138,9 @@ class BLINK_EXPORT WebSecurityPolicy {
   // Registers an URL scheme as trusted browser UI.
   static void RegisterURLSchemeAsWebUI(const WebString&);
 
+  // Registers an URL scheme as untrusted browser UI.
+  static void RegisterURLSchemeAsWebUIUntrusted(const WebString&);
+
   // Registers an URL scheme as an Isolated Web App.
   static void RegisterURLSchemeAsIsolatedApp(const WebString&);
 
@@ -157,6 +160,10 @@ class BLINK_EXPORT WebSecurityPolicy {
   // Navigations to direct launch schemes from web contexts are disallowed in
   // Blink and will fail to load.
   static void RegisterURLSchemeAsDirectLaunch(const WebString&);
+
+  // Sets a flag to prevent future calls to RegisterURLScheme* and
+  // AddSchemeToSecureContextSafelist from succeeding.
+  static void LockSchemeRegistries();
 
  private:
   WebSecurityPolicy() = delete;

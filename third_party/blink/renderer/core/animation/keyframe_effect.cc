@@ -46,9 +46,12 @@
 #include "third_party/blink/renderer/core/css/properties/css_property_ref.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
+#include "third_party/blink/renderer/core/execution_context/agent.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
@@ -57,7 +60,10 @@
 #include "third_party/blink/renderer/platform/animation/compositor_animation.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
 namespace blink {
@@ -93,13 +99,24 @@ bool ValidatePseudoElement(String& pseudo, ExceptionState& exception_state) {
       // platforms, though handled inconsistently. Failure to animate
       // ::placeholder seems like a bug rather than a technical limitation.
 
-    default:
+    default: {
       // Convert to canonical form.
       if (!pseudo.starts_with("::")) {
         pseudo = StrCat({":", pseudo});
       }
-      pseudo = pseudo.ToAsciiLower();
+      // Pseudo-element names are ASCII case-insensitive, but functional
+      // pseudo-element arguments (such as <custom-ident> view-transition-name
+      // or highlight-name) are case-sensitive. Only lowercase the
+      // pseudo-element name prior to any '(' token.
+      wtf_size_t paren_index = pseudo.find('(');
+      if (paren_index == kNotFound) {
+        pseudo = pseudo.ToAsciiLower();
+      } else {
+        pseudo = StrCat({pseudo.substr(0, paren_index).ToAsciiLower(),
+                         pseudo.subview(paren_index)});
+      }
       return true;
+    }
   }
 }
 
@@ -387,14 +404,21 @@ HeapVector<ScriptObject> KeyframeEffect::getKeyframes(
   if (!model_->HasFrames() || !script_state->ContextIsValid())
     return computed_keyframes;
 
-  KeyframeVector keyframes = ignore_css_keyframes_
-                                 ? model_->GetFrames()
-                                 : model_->GetComputedKeyframes(EffectTarget());
+  // Per CSS Animations 2, getKeyframes() returns computed keyframes only when
+  // the effect is associated with a CSSAnimation and its keyframes have not
+  // been replaced by a successful call to setKeyframes().
+  // https://drafts.csswg.org/css-animations-2/#keyframes
+  const bool use_css_computed_keyframes =
+      !ignore_css_keyframes_ && model_->IsCssKeyframeEffectModel() &&
+      GetAnimation() && GetAnimation()->IsCSSAnimation();
+
+  KeyframeVector keyframes = use_css_computed_keyframes
+                                 ? model_->GetComputedKeyframes(EffectTarget())
+                                 : model_->GetFrames();
 
   KeyframeOrderStrategy strategy =
-      ignore_css_keyframes_ || !model_->IsCssKeyframeEffectModel()
-          ? KeyframeOrderStrategy::kSpecifiedOrdering
-          : KeyframeOrderStrategy::kCssKeyframeOrdering;
+      use_css_computed_keyframes ? KeyframeOrderStrategy::kCssKeyframeOrdering
+                                 : KeyframeOrderStrategy::kSpecifiedOrdering;
   Vector<int> indices = CalculateKeyframeOrdering(keyframes, strategy);
 
   Vector<double> computed_offsets =
@@ -738,7 +762,7 @@ void KeyframeEffect::ApplyEffects() {
   }
 
   if (changed) {
-    effect_target_->SetNeedsAnimationStyleRecalc();
+    InvalidateEffectTargetStyle();
   }
 }
 
@@ -750,10 +774,65 @@ void KeyframeEffect::ClearEffects() {
   sampled_effect_ = nullptr;
   if (GetAnimation())
     GetAnimation()->RestartAnimationOnCompositor();
-  if (!effect_target_->GetDocument().Lifecycle().InDetach()) {
-    effect_target_->SetNeedsAnimationStyleRecalc();
-  }
+  InvalidateEffectTargetStyle();
   Invalidate();
+}
+
+void KeyframeEffect::InvalidateEffectTargetStyle() {
+  if (!effect_target_) {
+    return;
+  }
+  Document& target_document = effect_target_->GetDocument();
+  if (target_document.Lifecycle().InDetach()) {
+    return;
+  }
+  if (!RuntimeEnabledFeatures::SyncCrossDocumentAnimationTimingEnabled()) {
+    effect_target_->SetNeedsAnimationStyleRecalc();
+    return;
+  }
+
+  // Guard against a change in a cross-document animation synchronously
+  // invalidating the style of a document that has already completed style
+  // recalculation, as it would create a lifecycle violation. If the target
+  // document is already marked as having a clean style (or is rebuilding its
+  // layout tree), defer dirtying the style bit until the next update cycle.
+  bool should_defer = target_document.GetStyleEngine().InRebuildLayoutTree();
+  if (!should_defer && target_document.Lifecycle().GetState() >=
+                           DocumentLifecycle::kStyleClean) {
+    auto should_defer_for_doc = [&target_document](const Document* doc) {
+      if (!doc || doc == &target_document) {
+        return false;
+      }
+      if (doc->Lifecycle().InDetach() || doc->InStyleRecalc() ||
+          !doc->Lifecycle().StateAllowsTreeMutations() ||
+          !doc->GetStyleEngine().MarkStyleDirtyAllowed()) {
+        return true;
+      }
+      return doc->GetFrame() && target_document.GetFrame() &&
+             doc->GetFrame()->Tree().IsDescendantOf(target_document.GetFrame());
+    };
+    Animation* animation = GetAnimation();
+    const Document* animation_document =
+        animation ? animation->GetDocument() : nullptr;
+    const Document* owning_document =
+        (animation && animation->OwningElement())
+            ? &animation->OwningElement()->GetDocument()
+            : nullptr;
+    const Document* timeline_document =
+        (animation && animation->TimelineInternal())
+            ? animation->TimelineInternal()->GetDocument()
+            : nullptr;
+    should_defer = should_defer_for_doc(animation_document) ||
+                   should_defer_for_doc(owning_document) ||
+                   should_defer_for_doc(timeline_document);
+  }
+  if (should_defer) {
+    target_document.GetAgent().event_loop()->EnqueueMicrotask(
+        BindOnce(&Element::SetNeedsAnimationStyleRecalc,
+                 WrapWeakPersistent(effect_target_.Get())));
+    return;
+  }
+  effect_target_->SetNeedsAnimationStyleRecalc();
 }
 
 void KeyframeEffect::UpdateChildrenAndEffects() const {
@@ -782,12 +861,22 @@ void KeyframeEffect::AttachTarget(Animation* animation) {
   if (!effect_target_ || !animation)
     return;
   effect_target_->EnsureElementAnimations().Animations().insert(animation);
-  effect_target_->SetNeedsAnimationStyleRecalc();
+  InvalidateEffectTargetStyle();
 }
 
 void KeyframeEffect::DetachTarget(Animation* animation) {
-  if (effect_target_ && animation)
-    effect_target_->GetElementAnimations()->Animations().erase(animation);
+  if (effect_target_ && animation) {
+    ElementAnimations* element_animations =
+        effect_target_->GetElementAnimations();
+    element_animations->Animations().erase(animation);
+    if (RuntimeEnabledFeatures::SyncCrossDocumentAnimationTimingEnabled() &&
+        animation->GetNativePaintWorkletReasons() !=
+            Animation::kNoPaintWorklet) {
+      element_animations->RecalcCompositedStatus(
+          effect_target_,
+          Animation::CompositorPendingReason::kPendingEffectChange);
+    }
+  }
   // If we have sampled this effect previously, we need to purge that state.
   // ClearEffects takes care of clearing the cached sampled effect, informing
   // the target that it needs to refresh its style, and doing any necessary
@@ -909,17 +998,19 @@ bool KeyframeEffect::AffectsImportantProperty() const {
 ActiveInterpolationsMap KeyframeEffect::InterpolationsForCommitStyles() {
   // If the associated animation has been removed, it needs to be temporarily
   // reintroduced to the effect stack in order to be including in the
-  // interpolations map.
-  bool removed = owner_->ReplaceStateRemoved();
-  if (removed)
+  // interpolations map. We also check to see if progress is available, as we
+  // cannot commit styles if the animation was canceled after being removed.
+  bool reapply_effects = owner_->ReplaceStateRemoved() && !!Progress();
+  if (reapply_effects) {
     ApplyEffects();
+  }
 
   ActiveInterpolationsMap results = EffectStack::ActiveInterpolations(
       &target()->GetElementAnimations()->GetEffectStack(),
       /*new_animations=*/nullptr,
       /*suppressed_animations=*/nullptr, kDefaultPriority, this);
 
-  if (removed) {
+  if (reapply_effects) {
     ClearEffects();
   }
 

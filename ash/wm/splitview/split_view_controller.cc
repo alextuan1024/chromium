@@ -92,7 +92,7 @@
 #include "ui/views/animation/compositor_animation_runner.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/coordinate_conversion.h"
-#include "ui/wm/core/shadow_controller.h"
+#include "ui/wm/core/decoration_controller.h"
 #include "ui/wm/core/window_util.h"
 #include "ui/wm/public/activation_client.h"
 
@@ -1807,7 +1807,7 @@ aura::Window* SplitViewController::GetPhysicallyRightOrBottomWindow() {
 
 void SplitViewController::StartObserving(aura::Window* window) {
   if (window && !window->HasObserver(this)) {
-    Shell::Get()->shadow_controller()->UpdateShadowForWindow(window);
+    Shell::Get()->decoration_controller()->UpdateDecorationForWindow(window);
     window->AddObserver(this);
     WindowState::Get(window)->AddObserver(this);
   }
@@ -1831,7 +1831,7 @@ void SplitViewController::StopObserving(SnapPosition snap_position) {
     WindowState::Get(window)->RemoveObserver(this);
     // Must be called after we reset `primary_window_|secondary_window_`.
     split_view_divider_.MaybeRemoveObservedWindow(window);
-    Shell::Get()->shadow_controller()->UpdateShadowForWindow(window);
+    Shell::Get()->decoration_controller()->UpdateDecorationForWindow(window);
 
     // It's possible that when we try to snap an ARC app window, while we are
     // waiting for its state/bounds to the expected state/bounds, another window
@@ -1916,6 +1916,7 @@ void SplitViewController::UpdateBlackScrim(
   if (!black_scrim_layer_) {
     // Create an invisible black scrim layer.
     black_scrim_layer_ = std::make_unique<ui::LayerSolidColor>();
+    black_scrim_layer_->SetName("SplitView:BlackScrim");
     const SkColor default_color =
         StyleUtil::GetColorProviderForNativeTheme()->GetColor(
             kColorAshShieldAndBaseOpaque);
@@ -1968,6 +1969,7 @@ void SplitViewController::UpdateResizeBackdrop() {
   // Creates a backdrop layer. It is stacked below the snapped window.
   auto create_backdrop = [](aura::Window* window) {
     auto resize_backdrop_layer = std::make_unique<ui::LayerSolidColor>();
+    resize_backdrop_layer->SetName("SplitView:ResizeBackdrop");
 
     ui::Layer* parent = window->layer()->parent();
     ui::Layer* stacking_target = window->layer();

@@ -9,8 +9,11 @@
 
 namespace external_intents {
 
+BASE_DECLARE_FEATURE(kExternalIntentFilter);
 BASE_DECLARE_FEATURE(kExternalNavigationDebugLogs);
 BASE_DECLARE_FEATURE(kDontClobberTabsWithChromeAppId);
+BASE_DECLARE_FEATURE(kMakeRedirectsRendererInitiated);
+BASE_DECLARE_FEATURE(kWebApkSelfOwnedRendererNavLaunch);
 
 }  // namespace external_intents
 

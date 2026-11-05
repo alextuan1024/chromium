@@ -12,13 +12,13 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/compiler_specific.h"
-#include "base/containers/adapters.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
@@ -77,9 +77,7 @@ BASE_FEATURE(kReportingStorageDegradationFeature,
              "ReportingStorageDegradation",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEraseLegacyQueueOnDataLoss,
-             "EraseLegacyQueueOnDataLoss",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kEraseLegacyQueueOnDataLoss, base::FEATURE_DISABLED_BY_DEFAULT);
 
 namespace {
 
@@ -908,7 +906,7 @@ Status StorageQueue::RestoreMetadata(
   // latest to earilest) and use generation from there (last record digest is
   // useless in that case).
   for (const auto& [sequencing_id, path_and_size] :
-       base::Reversed(meta_files)) {
+       std::views::reverse(meta_files)) {
     const auto& [path, size] = path_and_size;
     const auto status = ReadMetadata(path, size, sequencing_id, used_files_set);
     if (status.ok()) {
@@ -1729,18 +1727,6 @@ class StorageQueue::WriteContext : public TaskRunnerContext<Status> {
 
   void ProcessWrappedRecord(WrappedRecord wrapped_record,
                             ScopedReservation scoped_reservation) {
-    // UTC time of 2122-01-01T00:00:00Z since Unix epoch 1970-01-01T00:00:00Z in
-    // microseconds
-    static constexpr int64_t kTime2122 = 4'796'668'800'000'000;
-    // Log an error if the timestamp is larger than 2122-01-01T00:00:00Z. This
-    // is the latest spot in the code before a record is compressed or
-    // encrypted.
-    // TODO(b/254270304): Remove this log after M111 is released and no error is
-    // reported for 3 months.
-    LOG_IF(ERROR, wrapped_record.record().timestamp_us() > kTime2122)
-        << "Unusually large timestamp (in milliseconds): "
-        << wrapped_record.record().timestamp_us();
-
     // Serialize wrapped record into a string.
     std::string buffer;
     if (!wrapped_record.SerializeToString(&buffer)) {

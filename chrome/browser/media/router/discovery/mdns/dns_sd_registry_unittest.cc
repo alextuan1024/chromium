@@ -63,7 +63,7 @@ class TestDnsSdRegistry : public DnsSdRegistry {
   }
 
  private:
-  std::map<std::string, raw_ptr<MockDnsSdDeviceLister, CtnExperimental>>
+  std::map<std::string, raw_ptr<MockDnsSdDeviceLister, DanglingUntriaged>>
       listers_;
   // The last delegate used or NULL.
   raw_ptr<DnsSdDelegate> delegate_;
@@ -168,8 +168,6 @@ TEST_F(DnsSdRegistryTest, AddServiceWithInvalidIPAddress) {
 
   DnsSdService service;
   service.service_name = "_myDevice." + service_type;
-
-  DnsSdRegistry::DnsSdServiceList service_list;
 
   EXPECT_CALL(observer_, OnDnsSdEvent(_, _)).Times(1);
   registry_->RegisterDnsSdListener(service_type);

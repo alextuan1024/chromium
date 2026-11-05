@@ -43,7 +43,6 @@ import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.OtrProfileId;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
@@ -60,10 +59,7 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 import java.util.concurrent.atomic.AtomicReference;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures({
-    ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES,
-    ChromeFeatureList.SHOW_BLOCKED_SENSITIVE_DOWNLOAD
-})
+@EnableFeatures({ChromeFeatureList.SHOW_BLOCKED_SENSITIVE_DOWNLOAD})
 public class DownloadPageUnitTest {
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -73,11 +69,11 @@ public class DownloadPageUnitTest {
             new ActivityScenarioRule<>(TestActivity.class);
 
     // Arguments for DownloadPage constructor.
-    @Mock private Activity mActivity;
     @Mock private SnackbarManager mSnackbarManager;
     @Mock private ModalDialogManager mModalDialogManager;
     @Mock private OtrProfileId mOtrProfileId;
     @Mock private NativePageHost mNativePageHost;
+    private Activity mActivity;
 
     // Dependencies for DownloadManagerCoordinatorFactory.create.
     @Mock private Profile mProfile;
@@ -103,8 +99,7 @@ public class DownloadPageUnitTest {
         mActivityScenarios.getScenario().onActivity(activity -> mActivity = activity);
         when(mNativePageHost.getContext()).thenReturn(mActivity);
         when(mNativePageHost.createDefaultMarginAdapter(any())).thenReturn(mMarginAdapter);
-        ProfileManager.setLastUsedProfileForTesting(mProfile);
-        when(mProfile.getOffTheRecordProfile(mOtrProfileId, true)).thenReturn(mProfile);
+        when(mProfile.getOtrProfileId()).thenReturn(mOtrProfileId);
         TrackerFactory.setTrackerForTests(mTracker);
         FaviconHelperJni.setInstanceForTesting(mFaviconHelperJni);
         when(mFaviconHelperJni.init()).thenReturn(1L); // Can't be 0 otherwise assertion fails.
@@ -122,14 +117,14 @@ public class DownloadPageUnitTest {
                         mActivity,
                         mSnackbarManager,
                         mModalDialogManager,
-                        mOtrProfileId,
+                        mProfile,
                         mNativePageHost,
                         mMockBackPressManager);
     }
 
     @Test
     public void testEdgeToEdge() {
-        assertTrue("Download page should support E2E.", mDownloadPage.supportsEdgeToEdge());
+        assertTrue("Download page should support E2E.", mDownloadPage.supportsEdgeToEdgeOnBottom());
 
         // This should call SimpleEdgeToEdgePadAdjuster#mControllerChangedCallback.
         mEdgeToEdgeSupplier.set(mEdgeToEdgeController);

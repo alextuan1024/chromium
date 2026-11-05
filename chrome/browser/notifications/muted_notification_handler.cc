@@ -6,18 +6,16 @@
 
 #include <utility>
 
-#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/notreached.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 
 MutedNotificationHandler::MutedNotificationHandler(Delegate* delegate)
     : delegate_(delegate) {
-  DCHECK(delegate_);
+  CHECK(delegate_, base::NotFatalUntil::M161);
 }
 
 MutedNotificationHandler::~MutedNotificationHandler() = default;
@@ -39,15 +37,6 @@ void MutedNotificationHandler::OnClick(
   // Indices of actions on the "Notifications Muted" notification must match the
   // order in which we add the action buttons to the notification in
   // ScreenCaptureNotificationBlocker::DisplayMuteNotification().
-
-  if (base::FeatureList::IsEnabled(features::kMuteNotificationSnoozeAction)) {
-    if (*action_index == 0)
-      delegate_->OnAction(Action::kSnoozeClick);
-    else if (*action_index == 1)
-      delegate_->OnAction(Action::kShowClick);
-    return;
-  }
-
   if (*action_index == 0)
     delegate_->OnAction(Action::kShowClick);
 }

@@ -61,6 +61,10 @@ class AutofillCrowdsourcingManager {
   // Names of UMA metrics recorded in this class.
   static constexpr char kUmaGetUrlLength[] = "Autofill.Query.GetUrlLength";
   static constexpr char kUmaMethod[] = "Autofill.Query.Method";
+  static constexpr char kUmaUniqueFormSignaturesCount[] =
+      "Autofill.Query.UniqueFormSignaturesCount";
+  static constexpr char kUmaUniqueStructuralSignaturesCount[] =
+      "Autofill.Query.UniqueStructuralSignaturesCount";
   static constexpr char kUmaWasInCache[] = "Autofill.Query.WasInCache";
 
   // `client` owns (and hence survives) this AutofillCrowdsourcingManager.
@@ -128,8 +132,12 @@ class AutofillCrowdsourcingManager {
   friend struct ScopedActiveAutofillExperiments;
 
   struct FormRequestData;
-  using QueryRequestCache =
-      std::list<std::pair<std::vector<FormSignature>, std::string>>;
+  // A cached query response, keyed by the serialized request payload.
+  struct CachedQuery {
+    std::string payload;
+    std::string response;
+  };
+  using QueryRequestCache = std::list<CachedQuery>;
 
   // Returns the URL and request method to use when issuing the request
   // described by |request_data|. If the returned method is GET, the URL
@@ -144,18 +152,13 @@ class AutofillCrowdsourcingManager {
   // Note: |request_data| takes ownership of request_data, call with std::move.
   bool StartRequest(FormRequestData request_data);
 
-  // Caches query request. |forms_in_query| is a vector of form signatures in
-  // the query. |query_data| is the successful data returned over the wire.
-  void CacheQueryRequest(const std::vector<FormSignature>& forms_in_query,
-                         const std::string& query_data);
-  // Returns true if query is in the cache, while filling |query_data|, false
-  // otherwise. |forms_in_query| is a vector of form signatures in the query.
-  bool CheckCacheForQueryRequest(
-      const std::vector<FormSignature>& forms_in_query,
-      std::string* query_data) const;
-  // Concatenates |forms_in_query| into one signature.
-  std::string GetCombinedSignature(
-      const std::vector<std::string>& forms_in_query) const;
+  // Caches query request. `payload` is the serialized query request payload.
+  // `query_data` is the successful data returned over the wire.
+  void CacheQueryRequest(std::string payload, std::string_view query_data);
+  // Returns the cached response if `payload` is in the cache, or `std::nullopt`
+  // otherwise. `payload` is the serialized query request payload.
+  std::optional<std::string> CheckCacheForQueryRequest(
+      std::string_view payload) const;
 
   void OnSimpleLoaderComplete(
       std::list<std::unique_ptr<network::SimpleURLLoader>>::iterator it,

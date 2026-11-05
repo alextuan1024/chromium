@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Kamera</translation>
 <translation id="162175252992296058">portugali, Yhdysvaltain kansainvälinen näppäimistö</translation>
 <translation id="1629521517399325891">Käyttäjävarmenne ei ole saatavilla verkon todennukseen.</translation>
+<translation id="1639239467298939599">Ladataan</translation>
 <translation id="1641780993263690097">kiina (pinyin)</translation>
 <translation id="164969095109328410">Chrome-laite</translation>
 <translation id="1661207570040737402">Olet käyttänyt jaetun Google Workspace ‐tallennustilasi kokonaan.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Tiedostojen synkronointi on pois päältä</translation>
 <translation id="2820957248982571256">Etsitään…</translation>
 <translation id="2830077785865012357">kiina (zhuyin)</translation>
+<translation id="2838379631617906747">Asennetaan</translation>
 <translation id="2843806747483486897">Muuta oletusta...</translation>
 <translation id="2873951654529031587">Roskakori</translation>
 <translation id="2887314858867008269">Yhdysvallat, Colemak</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Väärä salasana</translation>
 <translation id="5059127710849015030">translitteroitu nepali</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> on määrittänyt välityspalvelimen ohitussäännöt</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> tiedostoja poistetaan</translation>
 <translation id="508423945471810158">Siirretään <ph name="NUMBER_OF_ITEMS" /> kohdetta kansioon <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Tapahtui virhe.</translation>
-<translation id="5102922915594634436">Ylläpidä synkronoituja kansioita</translation>
 <translation id="5109254780565519649">Tapahtui virhe. Kaikkia kohteita ei välttämättä palautettu.</translation>
 <translation id="5110329002213341433">englanti (Kanada)</translation>
 <translation id="5119780910075847424">Synkronointi keskeytetty</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Yhtään ei ole asennettu</translation>
 <translation id="5317780077021120954">Tallenna</translation>
 <translation id="5318819489018851358">Jaa Linuxilla</translation>
-<translation id="5330145655348521461">Nämä tiedostot avattiin toisella työpöydällä. Näet tiedostot siirtymällä profiiliin <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="5330512191124428349">Näytä tiedot</translation>
 <translation id="535792325654997756">Henkilö ja kissoja</translation>
 <translation id="5358764674931277">Kuvanopeus</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Virheellinen verkkotunnuksen päätteen vastaavuusarvo</translation>
 <translation id="6364301859968397756">Organisaation tallennustila täynnä</translation>
 <translation id="6367976544441405720">Pakettiauto</translation>
-<translation id="637062427944097960">Tämä tiedosto avattiin toisella työpöydällä. Näet tiedoston siirtymällä profiiliin <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="6394388407447716302">Vain luku</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> kohdetta</translation>
 <translation id="6407769893376380348">Tiedostoa <ph name="FILE_NAME" /> ei voitu siirtää, koska se on salattu.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> – portti</translation>
 <translation id="8656407365183407932">Offline-tiedostot oli poistettava</translation>
 <translation id="8656768832129462377">Älä tarkista</translation>
+<translation id="8662978096466608964">Chrome ei voi asettaa tätä taustakuvaa.</translation>
 <translation id="8688591111840995413">Virheellinen salasana</translation>
 <translation id="8698464937041809063">Google-piirros</translation>
 <translation id="8698877009525468705">Tiedosto on luottamuksellinen, ja siihen sovelletaan järjestelmänvalvojakäytännön rajoituksia.</translation>

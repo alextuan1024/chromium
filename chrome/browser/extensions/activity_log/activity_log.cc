@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/json/json_string_value_serializer.h"
@@ -34,6 +35,7 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/activity_log_policy_util.h"
 #include "chrome/common/pref_names.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_manager.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -268,18 +270,27 @@ class ApiInfoDatabase {
   // The map is keyed by API name only, since API names aren't be repeated
   // across multiple action types in kApiInfoTable.  However, the action type
   // should still be checked before returning a positive match.
-  std::map<std::string, raw_ptr<const ApiInfo, CtnExperimental>> api_database_;
+  std::map<std::string, raw_ptr<const ApiInfo>> api_database_;
 
   friend struct base::DefaultSingletonTraits<ApiInfoDatabase>;
 };
 
+// Returns true if `context` is an Enterprise Isolated Mode profile.
+bool IsIsolatedModeContext(content::BrowserContext* context) {
+  return Profile::FromBrowserContext(context)
+      ->IsEnterpriseIsolatedModeProfile();
+}
+
 // Gets the URL for a given tab ID.  Helper method for ExtractUrls.  Returns
 // true if able to perform the lookup.  The URL is stored to *url, and
 // *is_incognito is set to indicate whether the URL is for an incognito tab.
+// *is_isolated_mode is set to true if the tab belongs to an Enterprise
+// Isolated Mode profile, and is left unchanged otherwise.
 bool GetUrlForTabId(int tab_id,
                     Profile* profile,
                     GURL* url,
-                    bool* is_incognito) {
+                    bool* is_incognito,
+                    bool* is_isolated_mode) {
   content::WebContents* contents = nullptr;
   WindowController* window = nullptr;
   bool found =
@@ -290,6 +301,9 @@ bool GetUrlForTabId(int tab_id,
   if (found && window) {
     *url = contents->GetURL();
     *is_incognito = window->profile()->IsOffTheRecord();
+    if (window->profile()->IsEnterpriseIsolatedModeProfile()) {
+      *is_isolated_mode = true;
+    }
     return true;
   } else {
     return false;
@@ -339,6 +353,10 @@ void ExtractUrls(scoped_refptr<Action> action, Profile* profile) {
 
   GURL arg_url;
   bool arg_incognito = action->page_incognito();
+  // Whether a target tab belongs to an Enterprise Isolated Mode profile. A tab
+  // that no longer exists can't be looked up, so the action then only has the
+  // flag of its source profile.
+  bool arg_isolated_mode = false;
 
   switch (api_info->arg_url_transform) {
     case Transformation::kNone: {
@@ -381,7 +399,8 @@ void ExtractUrls(scoped_refptr<Action> action, Profile* profile) {
       if (args_list[url_index].is_int()) {
         tab_id = args_list[url_index].GetInt();
         // Single tab ID to translate.
-        GetUrlForTabId(tab_id, profile, &arg_url, &arg_incognito);
+        GetUrlForTabId(tab_id, profile, &arg_url, &arg_incognito,
+                       &arg_isolated_mode);
         if (arg_url.is_valid())
           args_list[url_index] = base::Value(kArgUrlPlaceholder);
       } else if (args_list[url_index].is_list()) {
@@ -393,8 +412,10 @@ void ExtractUrls(scoped_refptr<Action> action, Profile* profile) {
           if (!tab_list[i].is_int())
             continue;
           tab_id = tab_list[i].GetInt();
-          if (!GetUrlForTabId(tab_id, profile, &arg_url, &arg_incognito))
+          if (!GetUrlForTabId(tab_id, profile, &arg_url, &arg_incognito,
+                              &arg_isolated_mode)) {
             continue;
+          }
           if (!arg_incognito)
             tab_list[i] = base::Value(arg_url.spec());
           extracted_index = i;
@@ -412,8 +433,8 @@ void ExtractUrls(scoped_refptr<Action> action, Profile* profile) {
         std::optional<int> tab_id =
             args_list[url_index].GetDict().FindIntByDottedPath(
                 api_info->arg_url_dict_path);
-        if (tab_id &&
-            GetUrlForTabId(*tab_id, profile, &arg_url, &arg_incognito)) {
+        if (tab_id && GetUrlForTabId(*tab_id, profile, &arg_url, &arg_incognito,
+                                     &arg_isolated_mode)) {
           args_list[url_index].GetDict().SetByDottedPath(
               api_info->arg_url_dict_path, kArgUrlPlaceholder);
         }
@@ -428,6 +449,9 @@ void ExtractUrls(scoped_refptr<Action> action, Profile* profile) {
   if (arg_url.is_valid()) {
     action->set_arg_incognito(arg_incognito);
     action->set_arg_url(arg_url);
+  }
+  if (arg_isolated_mode) {
+    action->set_isolated_mode(true);
   }
 }
 
@@ -458,7 +482,7 @@ void LogApiActivity(content::BrowserContext* browser_context,
                     const std::string& activity_name,
                     const base::ListValue& args,
                     Action::ActionType type) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (IsExtensionAllowlisted(extension_id))
     return;
 
@@ -471,6 +495,7 @@ void LogApiActivity(content::BrowserContext* browser_context,
   auto action = base::MakeRefCounted<Action>(extension_id, base::Time::Now(),
                                              type, activity_name);
   action->set_args(args.Clone());
+  action->set_isolated_mode(IsIsolatedModeContext(browser_context));
   activity_log->LogAction(action);
 }
 
@@ -499,7 +524,7 @@ void LogWebRequestActivity(content::BrowserContext* browser_context,
                            bool is_incognito,
                            const std::string& api_call,
                            base::DictValue details) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (IsExtensionAllowlisted(extension_id))
     return;
 
@@ -514,6 +539,7 @@ void LogWebRequestActivity(content::BrowserContext* browser_context,
       extension_id, base::Time::Now(), Action::ACTION_WEB_REQUEST, api_call);
   action->set_page_url(url);
   action->set_page_incognito(is_incognito);
+  action->set_isolated_mode(IsIsolatedModeContext(browser_context));
   action->mutable_other().Set(activity_log_constants::kActionWebRequest,
                               std::move(details));
   activity_log->LogAction(action);
@@ -525,23 +551,41 @@ void SetActivityHandlers() {
   // in the monitor methods.
   activity_monitor::Monitor current_function_monitor =
       activity_monitor::GetApiFunctionMonitor();
-  DCHECK(!current_function_monitor ||
-         current_function_monitor == &LogApiFunction);
+  CHECK(
+      !current_function_monitor || current_function_monitor == &LogApiFunction,
+      base::NotFatalUntil::M161);
   if (!current_function_monitor)
     activity_monitor::SetApiFunctionMonitor(&LogApiFunction);
 
   activity_monitor::Monitor current_event_monitor =
       activity_monitor::GetApiEventMonitor();
-  DCHECK(!current_event_monitor || current_event_monitor == &LogApiEvent);
+  CHECK(!current_event_monitor || current_event_monitor == &LogApiEvent,
+        base::NotFatalUntil::M161);
   if (!current_event_monitor)
     activity_monitor::SetApiEventMonitor(&LogApiEvent);
 
   activity_monitor::WebRequestMonitor current_web_request_monitor =
       activity_monitor::GetWebRequestMonitor();
-  DCHECK(!current_web_request_monitor ||
-         current_web_request_monitor == &LogWebRequestActivity);
+  CHECK(!current_web_request_monitor ||
+            current_web_request_monitor == &LogWebRequestActivity,
+        base::NotFatalUntil::M161);
   if (!current_web_request_monitor)
     activity_monitor::SetWebRequestMonitor(&LogWebRequestActivity);
+}
+
+// Returns true if `profile` has telemetry separate from its original profile.
+bool UsesIsolatedModeTelemetry(const Profile& profile) {
+  return enterprise_isolated_mode::
+             IsExtensionTelemetryEnabledInIsolatedMode() &&
+         profile.IsEnterpriseIsolatedModeProfile();
+}
+
+// Returns true if `action` should only go to Isolated Mode subscribers. It
+// reaches no telemetry subscriber if the Isolated Mode profile has none.
+bool IsIsolatedModeAction(const Action& action) {
+  return enterprise_isolated_mode::
+             IsExtensionTelemetryEnabledInIsolatedMode() &&
+         action.isolated_mode();
 }
 
 }  // namespace
@@ -584,6 +628,15 @@ ActivityLog::ActivityLog(content::BrowserContext* context)
       profile_->GetPrefs()->GetInteger(prefs::kWatchdogExtensionActive);
 
   observers_ = base::MakeRefCounted<base::ObserverListThreadSafe<Observer>>();
+
+  // Unretained is safe: the removal callbacks are owned by the subscriber
+  // lists, which are members of `this`.
+  telemetry_subscribers_.set_removal_callback(
+      base::BindRepeating(&ActivityLog::OnTelemetrySubscriberRemoved,
+                          base::Unretained(this), /*isolated=*/false));
+  isolated_telemetry_subscribers_.set_removal_callback(
+      base::BindRepeating(&ActivityLog::OnTelemetrySubscriberRemoved,
+                          base::Unretained(this), /*isolated=*/true));
 
   extension_registry_observation_.Observe(ExtensionRegistry::Get(profile_));
   CheckActive(true);  // use cached
@@ -715,29 +768,50 @@ void ActivityLog::RemoveObserver(ActivityLog::Observer* observer) {
   observers_->RemoveObserver(observer);
 }
 
-void ActivityLog::SetTelemetryLoggingEnabled(bool enabled,
-                                             TelemetryCallback callback) {
-  if (enabled) {
-    CHECK(!callback.is_null());
-  }
-
-  bool was_active = IsTelemetryLoggingActive();
-
-  if (enabled &&
-      base::FeatureList::IsEnabled(
+base::CallbackListSubscription ActivityLog::AddTelemetrySubscriber(
+    content::BrowserContext* context,
+    TelemetryCallback callback) {
+  CHECK(!callback.is_null());
+  Profile* subscriber_profile = Profile::FromBrowserContext(context);
+  CHECK(profile_->IsSameOrParent(subscriber_profile));
+  if (!base::FeatureList::IsEnabled(
           extensions_features::kEnterpriseExtensionDOMActivityTelemetry)) {
-    telemetry_callback_ = std::move(callback);
-  } else {
-    telemetry_callback_.Reset();
+    return {};
   }
 
-  if (was_active != IsTelemetryLoggingActive()) {
-    NotifyRenderersOfTelemetryLogging();
+  bool isolated = UsesIsolatedModeTelemetry(*subscriber_profile);
+  TelemetryCallbackList& subscribers =
+      isolated ? isolated_telemetry_subscribers_ : telemetry_subscribers_;
+  bool was_active = !subscribers.empty();
+  base::CallbackListSubscription subscription =
+      subscribers.Add(std::move(callback));
+  if (!was_active) {
+    NotifyRenderersOfTelemetryLogging(isolated);
   }
+  return subscription;
 }
 
 bool ActivityLog::IsTelemetryLoggingActive() const {
-  return !telemetry_callback_.is_null();
+  return !telemetry_subscribers_.empty() ||
+         !isolated_telemetry_subscribers_.empty();
+}
+
+bool ActivityLog::IsTelemetryLoggingActiveForContext(
+    content::BrowserContext* context) const {
+  Profile* profile = Profile::FromBrowserContext(context);
+  CHECK(profile_->IsSameOrParent(profile));
+  if (UsesIsolatedModeTelemetry(*profile)) {
+    return !isolated_telemetry_subscribers_.empty();
+  }
+  return !telemetry_subscribers_.empty();
+}
+
+void ActivityLog::OnTelemetrySubscriberRemoved(bool isolated) {
+  const TelemetryCallbackList& subscribers =
+      isolated ? isolated_telemetry_subscribers_ : telemetry_subscribers_;
+  if (subscribers.empty()) {
+    NotifyRenderersOfTelemetryLogging(isolated);
+  }
 }
 
 // static
@@ -749,8 +823,9 @@ void ActivityLog::RegisterProfilePrefs(
 // LOG ACTIONS. ----------------------------------------------------------------
 
 void ActivityLog::LogAction(scoped_refptr<Action> action) {
-  DCHECK(ShouldLog(action->extension_id(), action->action_type(),
-                   action->api_name()));
+  CHECK(ShouldLog(action->extension_id(), action->action_type(),
+                  action->api_name()),
+        base::NotFatalUntil::M161);
 
   // Perform some preprocessing of the Action data: convert tab IDs to URLs and
   // mask out incognito URLs if appropriate.
@@ -770,8 +845,10 @@ void ActivityLog::LogAction(scoped_refptr<Action> action) {
     database_policy_->ProcessAction(action);
   if (has_listeners_)
     observers_->Notify(FROM_HERE, &Observer::OnExtensionActivity, action);
-  if (!telemetry_callback_.is_null()) {
-    telemetry_callback_.Run(action);
+  if (IsIsolatedModeAction(*action)) {
+    isolated_telemetry_subscribers_.Notify(action);
+  } else {
+    telemetry_subscribers_.Notify(action);
   }
   if (testing_mode_)
     VLOG(1) << action->PrintForDebug();
@@ -849,6 +926,8 @@ void ActivityLog::OnScriptsExecuted(content::WebContents* web_contents,
       action->set_page_title(base::UTF16ToUTF8(web_contents->GetTitle()));
       action->set_page_incognito(
           web_contents->GetBrowserContext()->IsOffTheRecord());
+      action->set_isolated_mode(
+          IsIsolatedModeContext(web_contents->GetBrowserContext()));
 
       const prerender::NoStatePrefetchManager* no_state_prefetch_manager =
           prerender::NoStatePrefetchManagerFactory::GetForBrowserContext(
@@ -977,7 +1056,7 @@ void ActivityLog::OnExtensionSystemReady() {
   }
 }
 
-void ActivityLog::NotifyRenderersOfTelemetryLogging() {
+void ActivityLog::NotifyRenderersOfTelemetryLogging(bool isolated) {
   for (content::RenderProcessHost::iterator iter(
            content::RenderProcessHost::AllHostsIterator());
        !iter.IsAtEnd(); iter.Advance()) {
@@ -985,15 +1064,21 @@ void ActivityLog::NotifyRenderersOfTelemetryLogging() {
     if (host->IsInitializedAndNotDead()) {
       Profile* host_profile =
           Profile::FromBrowserContext(host->GetBrowserContext());
-      // Don't gather telemetry from incognito profiles.
-      if (!host_profile->IsOffTheRecord() &&
-          profile_->IsSameOrParent(host_profile)) {
+      // Only renderers whose state may have changed are updated. Other running
+      // Off-The-Record renderers aren't updated, and those started later get
+      // the regular profile's state from IsTelemetryLoggingEnabled().
+      // TODO(crbug.com/575331296): Make both paths agree for Off-The-Record
+      // renderers.
+      bool notify = isolated ? UsesIsolatedModeTelemetry(*host_profile)
+                             : !host_profile->IsOffTheRecord();
+      if (notify && profile_->IsSameOrParent(host_profile)) {
         mojom::Renderer* renderer =
             RendererStartupHelperFactory::GetForBrowserContext(
                 host->GetBrowserContext())
                 ->GetRenderer(host);
         if (renderer) {
-          renderer->SetPolicyActivityLoggingEnabled(IsTelemetryLoggingActive());
+          renderer->SetPolicyActivityLoggingEnabled(
+              IsTelemetryLoggingActiveForContext(host_profile));
         }
       }
     }

@@ -35,6 +35,9 @@ template("ash_generated_grit") {
       "grit/ash_${target_name}_map.h",
     ]
     output_dir = "$ash_webui_grit_output_dir"
+
+    # TODO(crbug.com/584115494): Remove once grit() adds this dependency.
+    public_deps = [ "//ui/base:webui_resource_path" ]
   }
 }
 
@@ -57,6 +60,9 @@ grit("boca_app_bundle_resources") {
     "chromeos_boca_app_bundle_resources.pak",
   ]
   output_dir = "$root_gen_dir/chromeos"
+
+  # TODO(crbug.com/584115494): Remove once grit() adds this dependency.
+  public_deps = [ "//ui/base:webui_resource_path" ]
 }
 
 ash_generated_grit("boca_receiver_app_bundle_resources") {
@@ -97,6 +103,9 @@ grit("help_app_resources") {
     "//ash/webui/help_app_ui/resources:browser_proxy_rollup",
     "//ash/webui/help_app_ui/resources:receiver_rollup",
   ]
+
+  # TODO(crbug.com/584115494): Remove once grit() adds this dependency.
+  public_deps = [ "//ui/base:webui_resource_path" ]
 }
 
 # Resources automatically served by the chrome://help-app bundle, obtained via
@@ -120,6 +129,9 @@ grit("help_app_bundle_resources") {
     "chromeos_help_app_bundle_resources.pak",
   ]
   output_dir = "$root_gen_dir/chromeos"
+
+  # TODO(crbug.com/584115494): Remove once grit() adds this dependency.
+  public_deps = [ "//ui/base:webui_resource_path" ]
 }
 
 grit("help_app_kids_magazine_bundle_resources") {
@@ -138,6 +150,9 @@ grit("help_app_kids_magazine_bundle_resources") {
     "chromeos_help_app_kids_magazine_bundle_resources.pak",
   ]
   output_dir = "$root_gen_dir/chromeos"
+
+  # TODO(crbug.com/584115494): Remove once grit() adds this dependency.
+  public_deps = [ "//ui/base:webui_resource_path" ]
 }
 
 # Resources used by chrome://media-app, and parts of the sandboxed app it hosts
@@ -200,6 +215,9 @@ grit("media_app_bundle_resources") {
     "chromeos_media_app_bundle_resources.pak",
   ]
   output_dir = "$root_gen_dir/chromeos"
+
+  # TODO(crbug.com/584115494): Remove once grit() adds this dependency.
+  public_deps = [ "//ui/base:webui_resource_path" ]
 }
 
 # Resources automatically served by the chrome-untrusted://projector bundle,
@@ -221,6 +239,9 @@ grit("projector_app_bundle_resources") {
     "chromeos_projector_app_bundle_resources.pak",
   ]
   output_dir = "$root_gen_dir/chromeos"
+
+  # TODO(crbug.com/584115494): Remove once grit() adds this dependency.
+  public_deps = [ "//ui/base:webui_resource_path" ]
 }
 
 # Resources used by chrome://projector and chrome://projector-annotator SWA.
@@ -256,6 +277,9 @@ grit("eche_bundle_resources") {
     "ash_eche_bundle_resources.pak",
   ]
   output_dir = "$ash_webui_grit_output_dir"
+
+  # TODO(crbug.com/584115494): Remove once grit() adds this dependency.
+  public_deps = [ "//ui/base:webui_resource_path" ]
 }
 
 grit("multidevice_debug_resources") {
@@ -270,4 +294,7 @@ grit("multidevice_debug_resources") {
   ]
 
   output_dir = "$ash_webui_grit_output_dir"
+
+  # TODO(crbug.com/584115494): Remove once grit() adds this dependency.
+  public_deps = [ "//ui/base:webui_resource_path" ]
 }

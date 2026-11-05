@@ -5,7 +5,6 @@
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/icons.html.js';
 
-import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
@@ -23,9 +22,6 @@ export interface ComboboxOption {
 export interface IwaDevComboboxElement {
   $: {
     input: HTMLInputElement,
-    clearButton?: CrIconButtonElement,
-    dropdownButton?: CrIconButtonElement,
-    suggestions?: HTMLElement,
   };
 }
 
@@ -72,9 +68,9 @@ export class IwaDevComboboxElement extends CrLitElement {
   accessor options: ComboboxOption[] = [];
   accessor matchStrategy: ComboboxMatchStrategy = 'prefix';
 
-  protected accessor showSuggestions_: boolean = false;
+  private accessor showSuggestions_: boolean = false;
   protected accessor highlightedIndex_: number = -1;
-  protected accessor filterQuery_: string = '';
+  private accessor filterQuery_: string = '';
   private wasDropdownOpen_: boolean = false;
 
   // Exposes the underlying <input> element, matching cr-input.

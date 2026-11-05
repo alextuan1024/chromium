@@ -40,13 +40,13 @@
 #include "third_party/blink/renderer/core/html/forms/html_form_element.h"
 #include "third_party/blink/renderer/core/html/html_br_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
+#include "third_party/blink/renderer/core/html/html_heading_element.h"
 #include "third_party/blink/renderer/core/html/html_hr_element.h"
+#include "third_party/blink/renderer/core/html/html_paragraph_element.h"
 #include "third_party/blink/renderer/core/html/html_quote_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
-#include "third_party/blink/renderer/core/mathml_names.h"
-#include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
@@ -54,42 +54,9 @@ namespace blink {
 
 namespace {
 
-// 3.2.5.2.5 Phrasing content
-// https://html.spec.whatwg.org/multipage/dom.html#phrasing-content
 bool IsPhrasingContent(const Node* node) {
-  DEFINE_STATIC_LOCAL(HashSet<QualifiedName>, phrasing_content_names,
-                      ({
-                          html_names::kATag,        html_names::kAbbrTag,
-                          html_names::kAreaTag,     html_names::kAudioTag,
-                          html_names::kBTag,        html_names::kBdiTag,
-                          html_names::kBdoTag,      html_names::kBrTag,
-                          html_names::kButtonTag,   html_names::kCanvasTag,
-                          html_names::kCiteTag,     html_names::kCodeTag,
-                          html_names::kDataTag,     html_names::kDatalistTag,
-                          html_names::kDelTag,      html_names::kDfnTag,
-                          html_names::kEmTag,       html_names::kEmbedTag,
-                          html_names::kITag,        html_names::kIFrameTag,
-                          html_names::kImgTag,      html_names::kInputTag,
-                          html_names::kInsTag,      html_names::kKbdTag,
-                          html_names::kLabelTag,    html_names::kLinkTag,
-                          html_names::kMapTag,      html_names::kMarkTag,
-                          mathml_names::kMathTag,   html_names::kMetaTag,
-                          html_names::kMeterTag,    html_names::kNoscriptTag,
-                          html_names::kObjectTag,   html_names::kOutputTag,
-                          html_names::kPictureTag,  html_names::kProgressTag,
-                          html_names::kQTag,        html_names::kRubyTag,
-                          html_names::kSTag,        html_names::kSampTag,
-                          html_names::kScriptTag,   html_names::kSelectTag,
-                          html_names::kSlotTag,     html_names::kSmallTag,
-                          html_names::kSpanTag,     html_names::kStrongTag,
-                          html_names::kSubTag,      html_names::kSupTag,
-                          svg_names::kSVGTag,       html_names::kTemplateTag,
-                          html_names::kTextareaTag, html_names::kTimeTag,
-                          html_names::kUTag,        html_names::kVarTag,
-                          html_names::kVideoTag,    html_names::kWbrTag,
-                      }));
   if (const auto* element = DynamicTo<Element>(node)) {
-    return phrasing_content_names.Contains(element->TagQName());
+    return element->IsPhrasingContent();
   }
   return false;
 }
@@ -101,6 +68,40 @@ bool IsEditableRootPhrasingContent(const Position& position) {
   }
   return EnclosingNodeOfType(FirstPositionInOrBeforeNode(*editable_root),
                              IsPhrasingContent);
+}
+
+// Returns true if element cannot have the new paragraph element as a child.
+// CreateDefaultParagraphElement() creates the new paragraph element: a <div>
+// by default, or a <p> if "defaultParagraphSeparator" is set to "p". Neither
+// is allowed in <p>, <h1>-<h6>, or phrasing content elements such as <span>,
+// because those elements can contain only phrasing content.
+// https://html.spec.whatwg.org/multipage/grouping-content.html#the-p-element
+// https://html.spec.whatwg.org/multipage/sections.html#the-h1,-h2,-h3,-h4,-h5,-and-h6-elements
+// https://html.spec.whatwg.org/multipage/dom.html#phrasing-content
+bool CannotHaveDivElementChild(const Element& element) {
+  return IsPhrasingContent(&element) || IsA<HTMLParagraphElement>(element) ||
+         IsA<HTMLHeadingElement>(element);
+}
+
+// Returns true if `start_block`, the enclosing block of `position`, is an
+// editing host which cannot have a new paragraph, e.g.,
+// `<span contenteditable style="display:block">` or `<p contenteditable>`.
+// DoApply() would nest a new paragraph into such a host, so a line break should
+// be inserted instead. If `start_block` is a block inside the editing host,
+// e.g., `<span contenteditable><div>a|b</div></span>`, `start_block` should be
+// split as usual.
+bool ShouldInsertLineBreakInEditingHost(const Position& position,
+                                        const Element& start_block) {
+  if (!RuntimeEnabledFeatures::
+          InsertParagraphInEditingHostCannotHaveDivEnabled()) {
+    // TODO(editing-dev): Remove this and IsEditableRootPhrasingContent() with
+    // the InsertParagraphInEditingHostCannotHaveDiv flag.
+    return IsEditableRootPhrasingContent(position);
+  }
+  // Don't use HighestEditableRoot() here. It differs from the editing host if
+  // the editing host is in a non-editable element in another editing host.
+  return IsRootEditableElement(start_block) &&
+         CannotHaveDivElementChild(start_block);
 }
 
 bool IsDisplayInlineType(const HTMLElement* element) {
@@ -279,7 +280,7 @@ void InsertParagraphSeparatorCommand::DoApply(EditingState* editing_state) {
   Position canonical_pos =
       CreateVisiblePosition(insertion_position).DeepEquivalent();
   if (!start_block || !start_block->NonShadowBoundaryParentNode() ||
-      IsEditableRootPhrasingContent(insertion_position) ||
+      ShouldInsertLineBreakInEditingHost(insertion_position, *start_block) ||
       IsDisplayInlineType(list_child) || IsTableCell(start_block) ||
       IsA<HTMLFormElement>(*start_block) ||
       start_block->HasTagName(html_names::kPreTag) ||
@@ -566,9 +567,8 @@ void InsertParagraphSeparatorCommand::DoApply(EditingState* editing_state) {
   // causing the newline to be turned into a nbsp.
   if (leading_whitespace.IsNotNull()) {
     if (auto* text_node = DynamicTo<Text>(leading_whitespace.AnchorNode())) {
-      DCHECK(
-          !text_node->GetLayoutObject() ||
-          text_node->GetLayoutObject()->StyleRef().ShouldCollapseWhiteSpaces())
+      DCHECK(!text_node->GetLayoutObject() ||
+             text_node->GetLayoutObject()->Style().ShouldCollapseWhiteSpaces())
           << text_node;
       ReplaceTextInNode(text_node,
                         leading_whitespace.ComputeOffsetInContainerNode(), 1,
@@ -671,7 +671,7 @@ void InsertParagraphSeparatorCommand::DoApply(EditingState* editing_state) {
       DCHECK(!position_after_split.ComputeContainerNode()->GetLayoutObject() ||
              position_after_split.ComputeContainerNode()
                  ->GetLayoutObject()
-                 ->StyleRef()
+                 ->Style()
                  .ShouldCollapseWhiteSpaces())
           << position_after_split;
       DeleteInsignificantTextDownstream(position_after_split);

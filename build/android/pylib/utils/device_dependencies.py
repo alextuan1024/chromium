@@ -45,15 +45,14 @@ _EXCLUSIONS = [
     # Required for java deobfuscation on the host:
     r'.*build/android/stacktrace/.*',
     r'.*third_party/jdk/.*',
-    r'.*third_party/proguard/.*',
+    r'.*third_party/r8/.*',
     # Our tests don't need these.
-    r'.*/devtools-frontend/.*front_end/.*',
-    r'.*/devtools-frontend/.*inspector_overlay/.*',
+    r'.*/devtools(?:-frontend)?/.*front_end/.*',
+    r'.*/devtools(?:-frontend)?/.*inspector_overlay/.*',
     # Build artifacts:
     r'.*\.stamp',
     r'.*\.pak\.info',
     r'.*\.build_config.json',
-    r'.*\.incremental\.json',
 ]
 
 
@@ -110,7 +109,7 @@ def GetDataDependencies(runtime_deps_path, device_data_filters=None):
 
     with open(runtime_deps_path, 'r') as runtime_deps_file:
         # .runtime_deps can contain duplicates.
-        rel_host_files = sorted({l.strip() for l in runtime_deps_file if l})
+        rel_host_files = sorted({l.strip() for l in runtime_deps_file if l})  # noqa: E741
 
     output_directory = constants.GetOutDirectory()
     abs_host_files = [

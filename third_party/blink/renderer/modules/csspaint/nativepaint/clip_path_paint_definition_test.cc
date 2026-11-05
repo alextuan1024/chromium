@@ -162,7 +162,7 @@ class ClipPathPaintDefinitionTest : public PageTestBase {
     if (status != CompositedPaintStatus::kNoAnimation &&
         status != CompositedPaintStatus::kNotComposited) {
       // PaintLayer is required to paint a mask clip path.
-      EXPECT_TRUE(lo->StyleRef().HasCurrentClipPathAnimation());
+      EXPECT_TRUE(lo->Style().HasCurrentClipPathAnimation());
       EXPECT_TRUE(lo->HasLayer() || lo->IsSVG());
     }
 
@@ -449,8 +449,6 @@ class ClipPathPaintDefinitionTest : public PageTestBase {
   void SetUp() override {
     scoped_composite_clip_path_animation =
         std::make_unique<ScopedCompositeClipPathAnimationForTest>(true);
-    scoped_composite_bgcolor_animation =
-        std::make_unique<ScopedCompositeBGColorAnimationForTest>(false);
 
     layer_tree_ = std::make_unique<LayerTreeHostEmbedder>();
     chrome_client_ = MakeGarbageCollected<MockChromeClientWithAnimationHost>();
@@ -467,8 +465,6 @@ class ClipPathPaintDefinitionTest : public PageTestBase {
  private:
   std::unique_ptr<ScopedCompositeClipPathAnimationForTest>
       scoped_composite_clip_path_animation;
-  std::unique_ptr<ScopedCompositeBGColorAnimationForTest>
-      scoped_composite_bgcolor_animation;
 
   Persistent<MockChromeClientWithAnimationHost> chrome_client_;
   std::unique_ptr<LayerTreeHostEmbedder> layer_tree_;
@@ -756,6 +752,31 @@ TEST_F(ClipPathPaintDefinitionTest, FallbackForClipPathInital) {
   element->setAttribute(html_names::kClassAttr, AtomicString("animation"));
 
   StartAndVerifyNonEligibleClipPathAnimation(element, 2000);
+}
+
+// Neutral keyframes depend on the underlying clip-path value, so they must run
+// on the main thread to reflect changes to that value.
+TEST_F(ClipPathPaintDefinitionTest, FallbackForNeutralKeyframe) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+        @keyframes clippath {
+            100% {
+                clip-path: circle(50% at 50% 50%);
+            }
+        }
+        .animation {
+            clip-path: circle(10% at 50% 50%);
+            animation: clippath 4s steps(4, jump-end);
+        }
+    </style>
+    <div id="target" style="width: 100px; height: 100px">
+    </div>
+  )HTML");
+
+  Element* element = GetElementById("target");
+  element->setAttribute(html_names::kClassAttr, AtomicString("animation"));
+
+  StartAndVerifyNonEligibleClipPathAnimation(element, 1000);
 }
 
 // <br> cannot be composited due to it not supporting paint properties, so we
@@ -1638,6 +1659,46 @@ TEST_F(ClipPathPaintDefinitionTest, ClipPathAnimationCancel) {
           UpdatesNeededForNextFrame::kPaintStatusReset |
           UpdatesNeededForNextFrame::kNeedsPaintPropertyUpdate |
           UpdatesNeededForNextFrame::kPaintInvalidated));
+}
+
+TEST_F(ClipPathPaintDefinitionTest, ClipPathAnimationFinishOffscreen) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+        @keyframes clippath {
+            0% {
+                clip-path: circle(50% at 50% 50%);
+            }
+            100% {
+                clip-path: circle(30% at 30% 30%);
+            }
+        }
+        .animation {
+            animation: clippath 4s steps(4, jump-end) forwards;
+        }
+        #spacer {
+            height: 10000px;
+        }
+    </style>
+    <div id="target" style="width: 100px; height: 100px"></div>
+    <div id="spacer"></div>
+  )HTML");
+
+  Element* element = GetElementById("target");
+  element->setAttribute(html_names::kClassAttr, AtomicString("animation"));
+
+  Animation* animation = StartAndVerifyEligibleClipPathAnimation(element, 1000);
+
+  // Scroll the animation far off-screen and finish it.
+  GetDocument().scrollingElement()->setScrollTop(10000);
+  UpdateAllLifecyclePhasesForTest();
+  animation->finish(ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_EQ(element->GetElementAnimations()->CompositedClipPathStatus(),
+            CompositedPaintStatus::kNotComposited);
+  EXPECT_EQ(ClipPathClipper::GetClipPathAnimation(*element->GetLayoutObject()),
+            nullptr);
+  EXPECT_FALSE(animation->HasActiveAnimationsOnCompositor());
 }
 
 // Test the case where a 2nd composited clip path animation causes a fallback to

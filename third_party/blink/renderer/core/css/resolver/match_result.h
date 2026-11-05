@@ -24,6 +24,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_RESOLVER_MATCH_RESULT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_RESOLVER_MATCH_RESULT_H_
 
+#include <type_traits>
+
 #include "base/compiler_specific.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/cascade_layer_map.h"
@@ -41,6 +43,7 @@
 
 namespace blink {
 
+class CSSPrivateBindings;
 class CSSPropertyValueSet;
 
 struct CORE_EXPORT MatchedProperties {
@@ -70,10 +73,16 @@ struct CORE_EXPORT MatchedProperties {
     uint16_t layer_order = CascadeLayerMap::kImplicitOuterLayerOrder;
     // Try-tactics style come from <try-tactic>.
     // https://drafts.csswg.org/css-anchor-position-1/#typedef-position-try-fallbacks-try-tactic
-    bool is_try_tactics_style = false;
-    // 15 free bits after this, but since the MPC hashes and compares
+    uint16_t is_try_tactics_style : 1 = false;
+    // With SVG reuse enabled, distinguishes SVG hints from HTML hints in the
+    // MPC key to isolate cached cascade-loss flags.
+    uint16_t is_svg_presentation_hint : 1 = false;
+    // Set to true if these MatchedProperties is included for precomputing
+    // :hover styles.
+    uint16_t precompute_hover : 1 = false;
+    // 14 free bits after this, but since the MPC hashes and compares
     // this as raw bytes, we cannot have undefined padding.
-    uint8_t padding = 0;
+    uint16_t padding : 13 = 0;
 
     bool operator==(const Data& other) const {
       return UNSAFE_BUFFERS(memcmp(this, &other, sizeof(*this))) == 0;
@@ -82,21 +91,28 @@ struct CORE_EXPORT MatchedProperties {
 
   MatchedProperties(CSSPropertyValueSet* properties_arg,
                     const MixinParameterBindings* mixin_parameter_bindings_arg,
+                    const CSSPrivateBindings* css_private_bindings_arg,
                     const Data& data_arg)
       : properties(properties_arg),
         mixin_parameter_bindings(mixin_parameter_bindings_arg),
+        css_private_bindings(css_private_bindings_arg),
         data_(data_arg) {}
 
   void Trace(Visitor*) const;
 
   Member<CSSPropertyValueSet> properties;
   Member<const MixinParameterBindings> mixin_parameter_bindings;
+  Member<const CSSPrivateBindings> css_private_bindings;
   Data data_;
 };
+
+static_assert(std::has_unique_object_representations_v<MatchedProperties::Data>,
+              "MPC requires Data to have a unique object representation");
 
 struct SameSizeAsMatchedProperties {
   Member<void*> properties;
   Member<void*> mixin_parameter_bindings;
+  Member<void*> css_private_bindings;
   uint8_t data_[8];
 };
 
@@ -133,7 +149,15 @@ class CORE_EXPORT MatchResult {
   void AddMatchedProperties(
       const CSSPropertyValueSet* properties,
       const MixinParameterBindings* mixin_parameter_bindings,
+      const CSSPrivateBindings* css_private_bindings,
       MatchedProperties::Data types);
+  void AddMatchedProperties(
+      const CSSPropertyValueSet* properties,
+      const MixinParameterBindings* mixin_parameter_bindings,
+      MatchedProperties::Data types) {
+    AddMatchedProperties(properties, mixin_parameter_bindings,
+                         /*css_private_bindings=*/nullptr, types);
+  }
   bool HasMatchedProperties() const { return matched_properties_.size(); }
 
   void BeginAddingAuthorRulesForTreeScope(const TreeScope&);
@@ -230,6 +254,11 @@ class CORE_EXPORT MatchResult {
     return flags_ & static_cast<MatchFlags>(flag);
   }
   void AddFlags(MatchFlags flags) { flags_ |= flags; }
+
+  bool MayPrecomputeHover() const {
+    return (flags_ & kPrecomputedHoverMask) ==
+           static_cast<MatchFlags>(MatchFlag::kPrecomputedHoverMatch);
+  }
 
   void SetHasPseudoElementStyle(PseudoId pseudo) {
     DCHECK(pseudo >= kFirstPublicPseudoId);

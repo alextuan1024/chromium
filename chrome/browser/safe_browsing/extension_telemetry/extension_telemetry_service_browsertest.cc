@@ -4,12 +4,29 @@
 
 #include "chrome/browser/safe_browsing/extension_telemetry/extension_telemetry_service.h"
 
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "base/callback_list.h"
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/path_service.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/test/protobuf_matchers.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
+#include "base/values.h"
+#include "chrome/browser/enterprise/connectors/reporting/extension_telemetry_event_router.h"
+#include "chrome/browser/enterprise/connectors/reporting/extension_telemetry_event_router_factory.h"
+#include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client.h"
+#include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client_factory.h"
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
@@ -22,9 +39,16 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/scoped_isolated_mode_override_for_testing.h"
+#include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/omnibox/browser/autocomplete_match.h"
+#include "components/policy/core/common/cloud/cloud_policy_client.h"
+#include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
 #include "components/safe_browsing/content/browser/web_ui/safe_browsing_ui.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
@@ -34,14 +58,20 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/extensions_test.h"
 #include "extensions/common/api/declarative_net_request/test_utils.h"
+#include "extensions/common/extension.h"
 #include "extensions/common/extension_features.h"
+#include "extensions/common/extension_id.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace safe_browsing {
 
@@ -132,15 +162,13 @@ class ExtensionTelemetryServiceBrowserTest
   }
 
   bool IsTelemetryServiceEnabledForESB() {
-    return telemetry_service()->esb_enabled_ &&
+    return IsEnabledForESB(*telemetry_service()) &&
            !telemetry_service()->signal_processors_.empty() &&
            telemetry_service()->timer_.IsRunning();
   }
 
   bool IsTelemetryServiceEnabledForEnterprise() {
-    return telemetry_service()->enterprise_enabled_ &&
-           !telemetry_service()->enterprise_signal_processors_.empty() &&
-           telemetry_service()->enterprise_timer_.IsRunning();
+    return IsTelemetryServiceEnabledForEnterprise(*telemetry_service());
   }
 
   bool IsExtensionStoreEmpty() {
@@ -149,6 +177,164 @@ class ExtensionTelemetryServiceBrowserTest
 
   bool IsEnterpriseExtensionStoreEmpty() {
     return telemetry_service()->enterprise_extension_store_.empty();
+  }
+
+  static bool IsEnabledForESB(const ExtensionTelemetryService& service) {
+    return service.esb_enabled_;
+  }
+
+  static bool IsTelemetryServiceEnabledForEnterprise(
+      const ExtensionTelemetryService& service) {
+    return service.enterprise_enabled_ &&
+           !service.enterprise_signal_processors_.empty() &&
+           service.enterprise_timer_.IsRunning();
+  }
+
+  // Returns whether `service` holds enterprise signals from `extension_id`.
+  static bool HasEnterpriseSignals(
+      const ExtensionTelemetryService& service,
+      const extensions::ExtensionId& extension_id) {
+    return service.enterprise_extension_store_.contains(extension_id);
+  }
+
+  // Returns whether `service` holds ESB signals from `extension_id`.
+  static bool HasEsbSignals(const ExtensionTelemetryService& service,
+                            const extensions::ExtensionId& extension_id) {
+    return service.extension_store_.contains(extension_id);
+  }
+
+  static void SendEnterpriseReport(ExtensionTelemetryService& service) {
+    service.CreateAndSendEnterpriseReport();
+  }
+
+  // Makes the reporting client of `profile` upload through `client` until the
+  // returned runner is destroyed.
+  [[nodiscard]] static base::ScopedClosureRunner UseCloudPolicyClient(
+      Profile* profile,
+      policy::CloudPolicyClient* client) {
+    auto* reporting_client =
+        enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
+            profile);
+    // Detach the client set by `event_report_validator_helper_`, if any.
+    reporting_client->SetBrowserCloudPolicyClientForTesting(nullptr);
+    reporting_client->SetBrowserCloudPolicyClientForTesting(client);
+    return base::ScopedClosureRunner(
+        base::BindOnce(&enterprise_connectors::RealtimeReportingClient::
+                           SetBrowserCloudPolicyClientForTesting,
+                       base::Unretained(reporting_client), nullptr));
+  }
+
+  // Loads an extension with `incognito_mode` ("spanning" or "split") as its
+  // "incognito" manifest key, enabled in Off-The-Record profiles. The
+  // background of each of its instances sends "ready" to the test when it
+  // starts, and then only runs the scripts sent by the tests. With
+  // `with_content_script`, the extension also has a content script that
+  // fetches a file from the page's origin and then sends "fetched" to the
+  // test.
+  extensions::ExtensionId LoadTestExtension(std::string_view incognito_mode,
+                                            bool with_content_script = false) {
+    extensions::TestExtensionDir& extension_dir =
+        extension_dirs_.emplace_back();
+    static constexpr char kManifest[] =
+        R"({
+           "name": "Test Extension",
+           "version": "0.1",
+           "manifest_version": 3,
+           "incognito": "$1",
+           "background": { "service_worker": "background.js" },
+           "content_scripts": [$2],
+           "permissions": ["cookies", "scripting", "tabs"],
+           "host_permissions": ["<all_urls>"]
+         })";
+    std::string content_script;
+    if (with_content_script) {
+      content_script =
+          R"({"matches": ["<all_urls>"], "js": ["content_script.js"]})";
+      extension_dir.WriteFile(
+          FILE_PATH_LITERAL("content_script.js"),
+          "fetch('/extensions/test_file.txt')"
+          ".then(() => chrome.test.sendMessage('fetched'));");
+    }
+    extension_dir.WriteManifest(base::ReplaceStringPlaceholders(
+        kManifest, {std::string(incognito_mode), content_script},
+        /*offsets=*/nullptr));
+    extension_dir.WriteFile(FILE_PATH_LITERAL("background.js"),
+                            "chrome.test.sendMessage('ready');");
+    ExtensionTestMessageListener ready_listener("ready");
+    const extensions::Extension* extension = LoadExtension(
+        extension_dir.UnpackedPath(), {.allow_in_incognito = true});
+    CHECK(extension);
+    CHECK(ready_listener.WaitUntilSatisfied());
+    return extension->id();
+  }
+
+  // Navigates the active tab of `browser` to a page on `host` and waits for
+  // the content script of `LoadTestExtension()` to finish its fetch. Returns
+  // whether both succeed.
+  [[nodiscard]] bool NavigateAndWaitForContentScriptFetch(
+      BrowserWindowInterface* browser,
+      std::string_view host) {
+    ExtensionTestMessageListener fetched_listener("fetched");
+    return ui_test_utils::NavigateToURL(
+               browser, embedded_test_server()->GetURL(host, "/empty.html")) &&
+           fetched_listener.WaitUntilSatisfied();
+  }
+
+  // Enables the reporting of DOM activity signals, such as script injections,
+  // on top of the extension telemetry signals.
+  void EnableDomActivityReporting() {
+    enterprise_connectors::test::SetOnSecurityEventReporting(
+        /*prefs=*/prefs(),
+        /*enabled=*/true,
+        /*enabled_event_names=*/{},
+        /*enabled_opt_in_events=*/
+        {{enterprise_connectors::kExtensionTelemetryEvent, {"*"}},
+         {enterprise_connectors::kExtensionDOMActivityEvent, {"*"}}});
+  }
+
+  // Returns the ID that extensions use for the active tab of `browser`.
+  int ActiveTabId(BrowserWindowInterface* browser) const {
+    return extensions::ExtensionTabUtil::GetTabId(web_contents(browser));
+  }
+
+  // Runs `call`, a promise-returning extension API call, in the background of
+  // the extension's instance in `profile` and waits for it to finish.
+  void RunInExtensionBackground(Profile* profile,
+                                const extensions::ExtensionId& extension_id,
+                                std::string_view call) {
+    EXPECT_EQ(
+        extensions::BackgroundScriptExecutor::ExecuteScript(
+            profile, extension_id,
+            base::StrCat(
+                {call, ".then(() => chrome.test.sendScriptResult('done'))",
+                 ".catch(e => chrome.test.sendScriptResult(String(e)));"}),
+            extensions::BackgroundScriptExecutor::ResultCapture::
+                kSendScriptResult),
+        base::Value("done"));
+  }
+
+  // Navigates the tab with `tab_id` to `url` through chrome.tabs.update(),
+  // called by the extension's instance in the regular profile.
+  void UpdateTabFromExtension(const extensions::ExtensionId& extension_id,
+                              int tab_id,
+                              const GURL& url) {
+    RunInExtensionBackground(
+        browser()->GetProfile(), extension_id,
+        content::JsReplace("chrome.tabs.update($1, {url: $2})", tab_id, url));
+  }
+
+  // Reads the "test" cookie of https://example.com/ from the cookie store
+  // with `store_id` through chrome.cookies.`method`() ("get" or "getAll"),
+  // called by the extension's instance in the regular profile.
+  void GetCookiesFromExtension(const extensions::ExtensionId& extension_id,
+                               std::string_view method,
+                               std::string_view store_id) {
+    RunInExtensionBackground(
+        browser()->GetProfile(), extension_id,
+        base::StrCat(
+            {"chrome.cookies.", method,
+             content::JsReplace("({url: $1, name: 'test', storeId: $2})",
+                                "https://example.com/", store_id)}));
   }
 
   using ExtensionInfo = ExtensionTelemetryReportRequest_ExtensionInfo;
@@ -167,13 +353,64 @@ class ExtensionTelemetryServiceBrowserTest
   }
 
   std::unique_ptr<TelemetryReport> GetTelemetryReportForEnterprise() {
-    return telemetry_service()->CreateReportForEnterprise();
+    return GetTelemetryReportForEnterprise(*telemetry_service());
+  }
+
+  static std::unique_ptr<TelemetryReport> GetTelemetryReportForEnterprise(
+      ExtensionTelemetryService& service) {
+    return service.CreateReportForEnterprise();
+  }
+
+  // Returns whether a signal of `extension_id` in `report` mentions `text`,
+  // such as a URL, a host or a cookie name. The reports store them verbatim.
+  static bool ReportMentions(const TelemetryReport& report,
+                             const extensions::ExtensionId& extension_id,
+                             std::string_view text) {
+    for (const auto& extension_report : report.reports()) {
+      if (extension_report.extension().id() != extension_id) {
+        continue;
+      }
+      for (const auto& signal : extension_report.signals()) {
+        if (signal.SerializeAsString().find(text) != std::string::npos) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Returns whether the signals of `extension_id` in `report` mention
+  // `reported` and not `unreported`.
+  [[nodiscard]] static testing::AssertionResult ReportOnlyMentions(
+      const TelemetryReport* report,
+      const extensions::ExtensionId& extension_id,
+      std::string_view reported,
+      std::string_view unreported) {
+    if (!report) {
+      return testing::AssertionFailure() << "there is no report";
+    }
+    const bool mentions_reported =
+        ReportMentions(*report, extension_id, reported);
+    const bool mentions_unreported =
+        ReportMentions(*report, extension_id, unreported);
+    if (mentions_reported && !mentions_unreported) {
+      return testing::AssertionSuccess();
+    }
+    return testing::AssertionFailure()
+           << "the signals of " << extension_id
+           << (mentions_reported ? " mention " : " do not mention ") << reported
+           << " and" << (mentions_unreported ? " mention " : " do not mention ")
+           << unreported;
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
   base::FilePath test_extension_dir_;
   std::unique_ptr<enterprise_connectors::test::EventReportValidatorHelper>
       event_report_validator_helper_;
+
+ private:
+  // The directories of the extensions loaded by `LoadTestExtension()`.
+  std::vector<extensions::TestExtensionDir> extension_dirs_;
 };
 
 IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
@@ -604,15 +841,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
   EXPECT_EQ(action_detail.redirect_url(), "http://google.com/pages/");
 }
 
-// TODO(crbug.com/444383306): Deflake this test on mac.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_DetectsAndReportsTabsApiSignal \
-  DISABLED_DetectsAndReportsTabsApiSignal
-#else
-#define MAYBE_DetectsAndReportsTabsApiSignal DetectsAndReportsTabsApiSignal
-#endif
 IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
-                       MAYBE_DetectsAndReportsTabsApiSignal) {
+                       DetectsAndReportsTabsApiSignal) {
   SetSafeBrowsingState(browser()->GetProfile()->GetPrefs(),
                        SafeBrowsingState::ENHANCED_PROTECTION);
   ASSERT_TRUE(StartEmbeddedTestServer());
@@ -987,16 +1217,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
   }
 }
 
-// TODO(crbug.com/444572871) Fix test
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_DetectsAndReportsSearchHijackingSignal \
-  DISABLED_DetectsAndReportsSearchHijackingSignal
-#else
-#define MAYBE_DetectsAndReportsSearchHijackingSignal \
-  DetectsAndReportsSearchHijackingSignal
-#endif
 IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
-                       MAYBE_DetectsAndReportsSearchHijackingSignal) {
+                       DetectsAndReportsSearchHijackingSignal) {
   SetSafeBrowsingState(browser()->GetProfile()->GetPrefs(),
                        SafeBrowsingState::ENHANCED_PROTECTION);
   ASSERT_TRUE(StartEmbeddedTestServer());
@@ -1019,6 +1241,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
   // Set up DSE.
   TemplateURLService* template_url_service =
       TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
+  ASSERT_TRUE(template_url_service);
+  search_test_utils::WaitForTemplateURLServiceToLoad(template_url_service);
   TemplateURLData data;
   data.SetShortName(u"Test");
   data.SetKeyword(u"test");
@@ -1205,5 +1429,619 @@ IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
   }
   EXPECT_TRUE(found_script_injection_signal);
 }
+
+// Enables Milestone 2 so that `GetForSignal()` checks the target's profile
+// type, but without Isolated Mode replacing Incognito.
+class ExtensionTelemetryServiceIncognitoBrowserTest
+    : public ExtensionTelemetryServiceBrowserTest {
+ public:
+  ExtensionTelemetryServiceIncognitoBrowserTest() {
+    milestone2_feature_list_.InitAndEnableFeature(
+        enterprise_isolated_mode::kEnterpriseIsolatedModeMilestone2);
+  }
+
+ private:
+  base::test::ScopedFeatureList milestone2_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceIncognitoBrowserTest,
+                       GetForSignalKeepsIncognitoSignalsInCaller) {
+  Profile* incognito_profile = CreateIncognitoBrowser()->GetProfile();
+  ASSERT_TRUE(incognito_profile->IsIncognitoProfile());
+  EXPECT_EQ(ExtensionTelemetryService::GetForSignal(browser()->GetProfile(),
+                                                    incognito_profile),
+            telemetry_service());
+}
+
+IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceIncognitoBrowserTest,
+                       DoesNotCreateServiceForIncognitoProfile) {
+  ASSERT_NE(telemetry_service(), nullptr);
+
+  Profile* incognito_profile = CreateIncognitoBrowser()->GetProfile();
+
+  ASSERT_TRUE(incognito_profile->IsIncognitoProfile());
+  EXPECT_EQ(ExtensionTelemetryServiceFactory::GetForProfile(incognito_profile),
+            nullptr);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    ExtensionTelemetryServiceIncognitoBrowserTest,
+    ReportsSpanningTabsSignalOnIncognitoTabToRegularService) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  BrowserWindowInterface* incognito_browser = CreateIncognitoBrowser();
+  ASSERT_TRUE(incognito_browser->GetProfile()->IsIncognitoProfile());
+
+  UpdateTabFromExtension(extension_id, ActiveTabId(incognito_browser),
+                         embedded_test_server()->GetURL("/title1.html"));
+
+  EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    ExtensionTelemetryServiceIncognitoBrowserTest,
+    ReportsSpanningCookiesSignalForIncognitoStoreToRegularService) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  ASSERT_TRUE(CreateIncognitoBrowser()->GetProfile()->IsIncognitoProfile());
+
+  GetCookiesFromExtension(extension_id, "getAll", /*store_id=*/"1");
+
+  EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+class ExtensionTelemetryServiceIsolatedModeBrowserTest
+    : public ExtensionTelemetryServiceBrowserTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  ExtensionTelemetryServiceIsolatedModeBrowserTest() {
+    isolated_mode_feature_list_.InitWithFeatureState(
+        enterprise_isolated_mode::kEnterpriseIsolatedModeMilestone2,
+        IsIsolatedModeTelemetryEnabled());
+  }
+
+  bool IsIsolatedModeTelemetryEnabled() const { return GetParam(); }
+
+ protected:
+  // Opens an Isolated Mode window and returns it.
+  BrowserWindowInterface* OpenIsolatedWindow() {
+    BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+    CHECK(isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+    return isolated_browser;
+  }
+
+  // Returns the Isolated Mode profile opened by `OpenIsolatedWindow()`.
+  Profile* isolated_profile() {
+    return browser()->GetProfile()->GetPrimaryOTRProfile(
+        /*create_if_needed=*/false);
+  }
+
+  // Returns the Isolated Mode profile's service. It only exists when
+  // Isolated Mode profiles have their own telemetry service.
+  ExtensionTelemetryService* isolated_service() {
+    return ExtensionTelemetryServiceFactory::GetForProfile(isolated_profile());
+  }
+
+  // Returns the service that reports what an extension's instance in the
+  // regular profile does to Isolated Mode tabs and cookie stores. When
+  // Isolated Mode profiles have their own telemetry service, it is that
+  // service. Otherwise, such signals resolve from the caller's profile, so it
+  // is the regular profile's service.
+  ExtensionTelemetryService* ServiceForIsolatedActivity() {
+    return IsIsolatedModeTelemetryEnabled() ? isolated_service()
+                                            : telemetry_service();
+  }
+
+  // Returns whether the Isolated Mode profile has a service that holds
+  // enterprise signals from `extension_id`.
+  bool IsolatedServiceHasEnterpriseSignals(
+      const extensions::ExtensionId& extension_id) {
+    ExtensionTelemetryService* service = isolated_service();
+    return service && HasEnterpriseSignals(*service, extension_id);
+  }
+
+  // Makes the profiles created while the returned subscription is alive get no
+  // `ExtensionTelemetryEventRouter`. A null testing factory makes the service
+  // null.
+  [[nodiscard]] static base::CallbackListSubscription
+  DisableEventRouterForNewProfiles() {
+    return BrowserContextDependencyManager::GetInstance()
+        ->RegisterCreateServicesCallbackForTesting(
+            base::BindRepeating([](content::BrowserContext* context) {
+              enterprise_connectors::ExtensionTelemetryEventRouterFactory::
+                  GetInstance()
+                      ->SetTestingFactory(
+                          context,
+                          BrowserContextKeyedServiceFactory::TestingFactory());
+            }));
+  }
+
+ private:
+  base::test::ScopedFeatureList isolated_mode_feature_list_;
+  enterprise_isolated_mode::ScopedIsolatedModeOverrideForTesting
+      scoped_isolated_mode_;
+};
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       CreatesServiceForIsolatedProfile) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  OpenIsolatedWindow();
+
+  if (!IsIsolatedModeTelemetryEnabled()) {
+    EXPECT_EQ(isolated_service(), nullptr);
+    return;
+  }
+  ASSERT_NE(isolated_service(), nullptr);
+  EXPECT_NE(isolated_service(), telemetry_service());
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       IsolatedServiceOnlyReportsToEnterprise) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  OpenIsolatedWindow();
+
+  if (!IsIsolatedModeTelemetryEnabled()) {
+    EXPECT_EQ(isolated_service(), nullptr);
+    return;
+  }
+  ASSERT_NE(isolated_service(), nullptr);
+  // The regular profile has ESB enabled and, from `SetUpOnMainThread()`, the
+  // reporting policy. The Isolated Mode profile inherits both through its
+  // prefs, but its service only reports to the enterprise pipeline.
+  EXPECT_FALSE(IsEnabledForESB(*isolated_service()));
+  EXPECT_TRUE(IsTelemetryServiceEnabledForEnterprise(*isolated_service()));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       GetForSignal) {
+  Profile* regular_profile = browser()->GetProfile();
+  OpenIsolatedWindow();
+  ExtensionTelemetryService* regular_service = telemetry_service();
+
+  // Signals not involving the Isolated Mode profile are unchanged.
+  EXPECT_EQ(
+      ExtensionTelemetryService::GetForSignal(regular_profile, regular_profile),
+      regular_service);
+  EXPECT_EQ(ExtensionTelemetryService::GetForSignal(regular_profile,
+                                                    /*target=*/nullptr),
+            regular_service);
+
+  if (!IsIsolatedModeTelemetryEnabled()) {
+    // Signals resolve from the caller, as before.
+    EXPECT_EQ(ExtensionTelemetryService::GetForSignal(regular_profile,
+                                                      isolated_profile()),
+              regular_service);
+    EXPECT_EQ(ExtensionTelemetryService::GetForSignal(isolated_profile(),
+                                                      /*target=*/nullptr),
+              nullptr);
+    return;
+  }
+
+  ASSERT_NE(isolated_service(), nullptr);
+  EXPECT_EQ(ExtensionTelemetryService::GetForSignal(regular_profile,
+                                                    isolated_profile()),
+            isolated_service());
+  EXPECT_EQ(ExtensionTelemetryService::GetForSignal(isolated_profile(),
+                                                    /*target=*/nullptr),
+            isolated_service());
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       ReportsSpanningTabsSignalOnRegularTab) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  const int regular_tab_id = ActiveTabId(browser());
+
+  UpdateTabFromExtension(extension_id, regular_tab_id,
+                         embedded_test_server()->GetURL("/title1.html"));
+
+  EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesSpanningTabsSignalOnIsolatedTab) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  BrowserWindowInterface* isolated_browser = OpenIsolatedWindow();
+  const int isolated_tab_id = ActiveTabId(isolated_browser);
+
+  UpdateTabFromExtension(extension_id, isolated_tab_id,
+                         embedded_test_server()->GetURL("/title1.html"));
+
+  if (!IsIsolatedModeTelemetryEnabled()) {
+    // The signal goes to the caller's service, as before.
+    EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+    EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+    return;
+  }
+  ASSERT_NE(isolated_service(), nullptr);
+  EXPECT_TRUE(HasEnterpriseSignals(*isolated_service(), extension_id));
+  EXPECT_FALSE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_FALSE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       ReportsSpanningCookiesSignalForRegularStore) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+
+  GetCookiesFromExtension(extension_id, "getAll", /*store_id=*/"0");
+
+  EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesSpanningCookiesSignalForIsolatedStore) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  OpenIsolatedWindow();
+
+  GetCookiesFromExtension(extension_id, "getAll", /*store_id=*/"1");
+
+  if (!IsIsolatedModeTelemetryEnabled()) {
+    // The signal goes to the caller's service, as before.
+    EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+    EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+    return;
+  }
+  ASSERT_NE(isolated_service(), nullptr);
+  EXPECT_TRUE(HasEnterpriseSignals(*isolated_service(), extension_id));
+  EXPECT_FALSE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_FALSE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       ReportsSpanningCookiesGetSignalForRegularStore) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+
+  GetCookiesFromExtension(extension_id, "get", /*store_id=*/"0");
+
+  EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesSpanningCookiesGetSignalForIsolatedStore) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  OpenIsolatedWindow();
+
+  GetCookiesFromExtension(extension_id, "get", /*store_id=*/"1");
+
+  if (!IsIsolatedModeTelemetryEnabled()) {
+    // The signal goes to the caller's service, as before.
+    EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+    EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+    return;
+  }
+  ASSERT_NE(isolated_service(), nullptr);
+  EXPECT_TRUE(HasEnterpriseSignals(*isolated_service(), extension_id));
+  EXPECT_FALSE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_FALSE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesIsolatedModeDomActivityToIsolatedService) {
+  enterprise_connectors::test::SetOnSecurityEventReporting(
+      /*prefs=*/prefs(),
+      /*enabled=*/true,
+      /*enabled_event_names=*/{},
+      /*enabled_opt_in_events=*/
+      {{enterprise_connectors::kExtensionTelemetryEvent, {"*"}},
+       {enterprise_connectors::kExtensionDOMActivityEvent, {"*"}}});
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  static constexpr char kManifest[] =
+      R"({
+        "name": "DOM Access Extension",
+        "version": "0.1",
+        "manifest_version": 3,
+        "content_scripts": [
+          {
+            "matches": ["<all_urls>"],
+            "js": ["content_script.js"],
+            "run_at": "document_start"
+          }
+        ]
+      })";
+  static constexpr char kContentScript[] =
+      R"(
+        console.log(document.cookie);
+        chrome.test.notifyPass();
+      )";
+  extensions::TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("content_script.js"), kContentScript);
+  const extensions::Extension* extension =
+      LoadExtension(test_dir.UnpackedPath(), {.allow_in_incognito = true});
+  ASSERT_TRUE(extension);
+  const extensions::ExtensionId extension_id = extension->id();
+
+  BrowserWindowInterface* isolated_browser = OpenIsolatedWindow();
+
+  extensions::ResultCatcher result_catcher;
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      isolated_browser,
+      embedded_test_server()->GetURL("example.com", "/empty.html")));
+  ASSERT_TRUE(result_catcher.GetNextResult());
+
+  if (!IsIsolatedModeTelemetryEnabled()) {
+    // With Milestone 2 off, Isolated Mode activity is handled like other
+    // Off-The-Record activity.
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return HasEnterpriseSignals(*telemetry_service(), extension_id);
+    }));
+    return;
+  }
+
+  ASSERT_NE(isolated_service(), nullptr);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return HasEnterpriseSignals(*isolated_service(), extension_id); }));
+  EXPECT_FALSE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+
+  // DOM activity in a regular tab is reported by the regular profile's
+  // service.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("example.com", "/empty.html")));
+  ASSERT_TRUE(result_catcher.GetNextResult());
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return HasEnterpriseSignals(*telemetry_service(), extension_id);
+  }));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       DoesNotReportRegularTabSignalToIsolatedService) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  OpenIsolatedWindow();
+
+  UpdateTabFromExtension(extension_id, ActiveTabId(browser()),
+                         embedded_test_server()->GetURL("/title1.html"));
+
+  ASSERT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_FALSE(IsolatedServiceHasEnterpriseSignals(extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesSpanningTabsCreateSignalInIsolatedWindow) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  BrowserWindowInterface* isolated_browser = OpenIsolatedWindow();
+
+  RunInExtensionBackground(
+      browser()->GetProfile(), extension_id,
+      content::JsReplace(
+          "chrome.tabs.create({windowId: $1, url: $2})",
+          extensions::ExtensionTabUtil::GetWindowId(isolated_browser),
+          embedded_test_server()->GetURL("/title1.html")));
+
+  ASSERT_NE(ServiceForIsolatedActivity(), nullptr);
+  ASSERT_TRUE(
+      HasEnterpriseSignals(*ServiceForIsolatedActivity(), extension_id));
+  EXPECT_EQ(HasEnterpriseSignals(*telemetry_service(), extension_id),
+            !IsIsolatedModeTelemetryEnabled());
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       DoesNotCreateServiceWithoutEventRouter) {
+  ASSERT_NE(telemetry_service(), nullptr);
+  base::CallbackListSubscription subscription =
+      DisableEventRouterForNewProfiles();
+
+  OpenIsolatedWindow();
+
+  ASSERT_EQ(enterprise_connectors::ExtensionTelemetryEventRouter::Get(
+                isolated_profile()),
+            nullptr);
+  EXPECT_EQ(isolated_service(), nullptr);
+  // When Isolated Mode profiles have their own telemetry service, signals
+  // targeting an Isolated Mode profile that has none are dropped instead of
+  // falling back to the caller's service. Otherwise, they resolve from the
+  // caller.
+  EXPECT_EQ(ExtensionTelemetryService::GetForSignal(browser()->GetProfile(),
+                                                    isolated_profile()),
+            IsIsolatedModeTelemetryEnabled() ? nullptr : telemetry_service());
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesSplitExtensionTabsSignalToIsolatedService) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadTestExtension("split");
+  ExtensionTestMessageListener ready_listener("ready");
+  BrowserWindowInterface* isolated_browser = OpenIsolatedWindow();
+  ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
+
+  RunInExtensionBackground(
+      isolated_profile(), extension_id,
+      content::JsReplace(
+          "chrome.tabs.update($1, {url: $2})", ActiveTabId(isolated_browser),
+          embedded_test_server()->GetURL("example.com", "/title1.html")));
+  UpdateTabFromExtension(
+      extension_id, ActiveTabId(browser()),
+      embedded_test_server()->GetURL("google.com", "/title1.html"));
+
+  // The extension's instance in the Isolated Mode profile navigated to
+  // example.com. Only that profile's service reports it. When Isolated Mode
+  // profiles don't have their own telemetry service, the signal is dropped.
+  EXPECT_TRUE(ReportOnlyMentions(GetTelemetryReportForEnterprise().get(),
+                                 extension_id, "google.com", "example.com"));
+  EXPECT_TRUE(ReportOnlyMentions(GetTelemetryReport().get(), extension_id,
+                                 "google.com", "example.com"));
+  ASSERT_EQ(IsolatedServiceHasEnterpriseSignals(extension_id),
+            IsIsolatedModeTelemetryEnabled());
+  if (IsIsolatedModeTelemetryEnabled()) {
+    EXPECT_TRUE(ReportOnlyMentions(
+        GetTelemetryReportForEnterprise(*isolated_service()).get(),
+        extension_id, "example.com", "google.com"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesSplitExtensionCookiesSignalToIsolatedService) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadTestExtension("split");
+  ExtensionTestMessageListener ready_listener("ready");
+  OpenIsolatedWindow();
+  ASSERT_TRUE(ready_listener.WaitUntilSatisfied());
+
+  RunInExtensionBackground(isolated_profile(), extension_id,
+                           "chrome.cookies.getAll({name: 'isolated-cookie'})");
+  RunInExtensionBackground(browser()->GetProfile(), extension_id,
+                           "chrome.cookies.getAll({name: 'regular-cookie'})");
+
+  // The extension's instance in the Isolated Mode profile read
+  // isolated-cookie. Only that profile's service reports it. When Isolated
+  // Mode profiles don't have their own telemetry service, the signal is
+  // dropped.
+  EXPECT_TRUE(ReportOnlyMentions(GetTelemetryReportForEnterprise().get(),
+                                 extension_id, "regular-cookie",
+                                 "isolated-cookie"));
+  EXPECT_TRUE(ReportOnlyMentions(GetTelemetryReport().get(), extension_id,
+                                 "regular-cookie", "isolated-cookie"));
+  ASSERT_EQ(IsolatedServiceHasEnterpriseSignals(extension_id),
+            IsIsolatedModeTelemetryEnabled());
+  if (IsIsolatedModeTelemetryEnabled()) {
+    EXPECT_TRUE(ReportOnlyMentions(
+        GetTelemetryReportForEnterprise(*isolated_service()).get(),
+        extension_id, "isolated-cookie", "regular-cookie"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesContentScriptWebRequestToIsolatedService) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id =
+      LoadTestExtension("spanning", /*with_content_script=*/true);
+  BrowserWindowInterface* isolated_browser = OpenIsolatedWindow();
+
+  ASSERT_TRUE(
+      NavigateAndWaitForContentScriptFetch(isolated_browser, "example.com"));
+  ASSERT_TRUE(NavigateAndWaitForContentScriptFetch(browser(), "google.com"));
+
+  // The Isolated Mode profile's renderer made the request to example.com,
+  // which is sent well before the regular tab's request to google.com. Only
+  // the Isolated Mode profile's service reports it. When Isolated Mode
+  // profiles don't have their own telemetry service, the signal is dropped.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return HasEnterpriseSignals(*telemetry_service(), extension_id) &&
+           HasEsbSignals(*telemetry_service(), extension_id) &&
+           IsolatedServiceHasEnterpriseSignals(extension_id) ==
+               IsIsolatedModeTelemetryEnabled();
+  }));
+  EXPECT_TRUE(ReportOnlyMentions(GetTelemetryReportForEnterprise().get(),
+                                 extension_id, "google.com", "example.com"));
+  EXPECT_TRUE(ReportOnlyMentions(GetTelemetryReport().get(), extension_id,
+                                 "google.com", "example.com"));
+  if (IsIsolatedModeTelemetryEnabled()) {
+    EXPECT_TRUE(ReportOnlyMentions(
+        GetTelemetryReportForEnterprise(*isolated_service()).get(),
+        extension_id, "example.com", "google.com"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesScriptInjectionOnIsolatedTabToIsolatedService) {
+  EnableDomActivityReporting();
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  BrowserWindowInterface* isolated_browser = OpenIsolatedWindow();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      isolated_browser,
+      embedded_test_server()->GetURL("example.com", "/empty.html")));
+
+  RunInExtensionBackground(
+      browser()->GetProfile(), extension_id,
+      content::JsReplace("chrome.scripting.executeScript("
+                         "{target: {tabId: $1}, func: () => {}})",
+                         ActiveTabId(isolated_browser)));
+
+  ASSERT_NE(ServiceForIsolatedActivity(), nullptr);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return HasEnterpriseSignals(*ServiceForIsolatedActivity(), extension_id);
+  }));
+  EXPECT_EQ(HasEnterpriseSignals(*telemetry_service(), extension_id),
+            !IsIsolatedModeTelemetryEnabled());
+}
+
+IN_PROC_BROWSER_TEST_P(
+    ExtensionTelemetryServiceIsolatedModeBrowserTest,
+    UploadsIsolatedActivityThroughOwnProfileReportingClient) {
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  OpenIsolatedWindow();
+  policy::MockCloudPolicyClient regular_client;
+  regular_client.SetDMToken("dm_token");
+  policy::MockCloudPolicyClient isolated_client;
+  isolated_client.SetDMToken("dm_token");
+  base::ScopedClosureRunner reset_regular_client =
+      UseCloudPolicyClient(browser()->GetProfile(), &regular_client);
+  base::ScopedClosureRunner reset_isolated_client =
+      UseCloudPolicyClient(isolated_profile(), &isolated_client);
+  // The service that reports the Isolated Mode activity uploads the report
+  // through the reporting client of its own profile.
+  policy::MockCloudPolicyClient& uploading_client =
+      IsIsolatedModeTelemetryEnabled() ? isolated_client : regular_client;
+  policy::MockCloudPolicyClient& idle_client =
+      IsIsolatedModeTelemetryEnabled() ? regular_client : isolated_client;
+  base::test::TestFuture<void> uploaded;
+  EXPECT_CALL(uploading_client, UploadSecurityEvent)
+      .WillOnce(base::test::InvokeFuture(uploaded));
+  EXPECT_CALL(idle_client, UploadSecurityEvent).Times(0);
+  GetCookiesFromExtension(extension_id, "getAll", /*store_id=*/"1");
+  ASSERT_NE(ServiceForIsolatedActivity(), nullptr);
+  ASSERT_TRUE(
+      HasEnterpriseSignals(*ServiceForIsolatedActivity(), extension_id));
+
+  SendEnterpriseReport(*ServiceForIsolatedActivity());
+
+  EXPECT_TRUE(uploaded.Wait());
+}
+
+IN_PROC_BROWSER_TEST_P(
+    ExtensionTelemetryServiceIsolatedModeBrowserTest,
+    DoesNotReportIsolatedActivityToEnterpriseWithConnectorOff) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  enterprise_connectors::test::SetOnSecurityEventReporting(
+      /*prefs=*/prefs(), /*enabled=*/false, /*enabled_event_names=*/{},
+      /*enabled_opt_in_events=*/{});
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadTestExtension("spanning");
+  BrowserWindowInterface* isolated_browser = OpenIsolatedWindow();
+
+  UpdateTabFromExtension(
+      extension_id, ActiveTabId(isolated_browser),
+      embedded_test_server()->GetURL("example.com", "/title1.html"));
+  UpdateTabFromExtension(
+      extension_id, ActiveTabId(browser()),
+      embedded_test_server()->GetURL("google.com", "/title1.html"));
+
+  // When Isolated Mode profiles have their own telemetry service, the signal
+  // about the Isolated Mode tab is dropped. Otherwise, it goes to the caller's
+  // service, which only reports to ESB.
+  std::unique_ptr<TelemetryReport> esb_report = GetTelemetryReport();
+  ASSERT_TRUE(esb_report);
+  ASSERT_TRUE(ReportMentions(*esb_report, extension_id, "google.com"));
+  EXPECT_EQ(ReportMentions(*esb_report, extension_id, "example.com"),
+            !IsIsolatedModeTelemetryEnabled());
+  EXPECT_FALSE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_FALSE(IsolatedServiceHasEnterpriseSignals(extension_id));
+}
+
+INSTANTIATE_TEST_SUITE_P(,
+                         ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "IsolatedModeTelemetryEnabled"
+                                             : "IsolatedModeTelemetryDisabled";
+                         });
 
 }  // namespace safe_browsing

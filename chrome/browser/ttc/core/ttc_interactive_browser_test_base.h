@@ -10,8 +10,13 @@
 
 class Profile;
 
+namespace content {
+class BrowserContext;
+}
+
 namespace ttc {
 
+class SessionController;
 class TtcKeyedService;
 
 class TtcInteractiveBrowserTestBase : public InteractiveBrowserTest {
@@ -19,9 +24,14 @@ class TtcInteractiveBrowserTestBase : public InteractiveBrowserTest {
   TtcInteractiveBrowserTestBase();
   ~TtcInteractiveBrowserTestBase() override;
 
+  // InteractiveBrowserTest:
+  void SetUpBrowserContextKeyedServices(
+      content::BrowserContext* context) override;
+
  protected:
   Profile* profile();
   TtcKeyedService& ttc_service();
+  SessionController& session_controller();
   StepBuilder CheckHasSession(bool expected_has_session);
 
  private:

@@ -6,7 +6,7 @@
 #define ASH_PUBLIC_CPP_HOLDING_SPACE_HOLDING_SPACE_UTIL_H_
 
 #include <string>
-#include <vector>
+#include <string_view>
 
 #include "ash/public/cpp/ash_public_export.h"
 #include "ash/public/cpp/holding_space/holding_space_file.h"
@@ -14,27 +14,9 @@
 #include "base/containers/flat_set.h"
 #include "ui/gfx/geometry/size.h"
 
-namespace base {
-class FilePath;
-}  // namespace base
-
-namespace ui {
-class OSExchangeData;
-}  // namespace ui
-
 namespace ash {
 
 namespace holding_space_util {
-
-// Returns the file paths extracted from the specified `data` at one of two
-// possible storage locations, either:
-// (a) the file system sources storage location used by the Files app, or
-// (b) the filenames storage location if and only if:
-//     * no file paths were extracted from (a), and
-//     * `fallback_to_filenames` is `true`.
-ASH_PUBLIC_EXPORT std::vector<base::FilePath> ExtractFilePaths(
-    const ui::OSExchangeData& data,
-    bool fallback_to_filenames);
 
 // Returns the set of all defined holding space file system types. This differs
 // from `base::EnumSet<HoldingSpaceFile::FileSystemType, ...>::All()` which
@@ -71,10 +53,11 @@ ASH_PUBLIC_EXPORT bool ExecuteInProgressCommand(
     HoldingSpaceCommandId command_id);
 
 // Returns the string representation of the specified file system `type`.
-ASH_PUBLIC_EXPORT std::string ToString(HoldingSpaceFile::FileSystemType type);
+ASH_PUBLIC_EXPORT std::string_view ToString(
+    HoldingSpaceFile::FileSystemType type);
 
 // Returns the string representation of the specified holding space item `type`.
-ASH_PUBLIC_EXPORT std::string ToString(HoldingSpaceItem::Type type);
+ASH_PUBLIC_EXPORT std::string_view ToString(HoldingSpaceItem::Type type);
 
 }  // namespace holding_space_util
 }  // namespace ash

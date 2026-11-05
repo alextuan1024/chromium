@@ -4,6 +4,8 @@
 
 #include "ash/quick_pair/repository/fast_pair_repository_impl.h"
 
+#include <string_view>
+
 #include "ash/quick_pair/common/fast_pair/fast_pair_metrics.h"
 #include "ash/quick_pair/proto/fastpair.pb.h"
 #include "ash/quick_pair/proto/fastpair_data.pb.h"
@@ -41,7 +43,7 @@ constexpr base::TimeDelta kCacheInvalidationTime = base::Minutes(30);
 // string of bytes defined below, which is used as the prefix for the sha256
 // field of the device. This should be kept in sync with those values.
 // http://google3/java/com/google/location/nearby/common/fastpair/footprints/FootprintsDeviceManager.java;l=65-75;rcl=482615113
-const std::string kForgetPattern = "\xf0\xf0\xf0\xf0";
+constexpr std::string_view kForgetPattern = "\xf0\xf0\xf0\xf0";
 
 // For all intents and purposes, a device that has the "Forget pattern" is no
 // longer associated to the user's account, and should be treated as removed.
@@ -83,13 +85,14 @@ bool IsDeviceSha256Matched(const nearby::fastpair::FastPairDevice& device,
 namespace ash {
 namespace quick_pair {
 
-FastPairRepositoryImpl::FastPairRepositoryImpl()
+FastPairRepositoryImpl::FastPairRepositoryImpl(PrefService* local_state)
     : device_metadata_fetcher_(std::make_unique<DeviceMetadataFetcher>()),
       footprints_fetcher_(std::make_unique<FootprintsFetcherImpl>()),
       image_decoder_(std::make_unique<FastPairImageDecoderImpl>()),
-      device_address_map_(std::make_unique<DeviceAddressMap>()),
+      device_address_map_(std::make_unique<DeviceAddressMap>(local_state)),
       device_image_store_(
-          std::make_unique<DeviceImageStore>(image_decoder_.get())),
+          std::make_unique<DeviceImageStore>(image_decoder_.get(),
+                                             local_state)),
       footprints_last_updated_(base::Time::UnixEpoch()) {
   device::BluetoothAdapterFactory::Get()->GetAdapter(base::BindOnce(
       &FastPairRepositoryImpl::OnGetAdapter, weak_ptr_factory_.GetWeakPtr()));
@@ -140,10 +143,11 @@ void FastPairRepositoryImpl::GetDeviceMetadata(
     const std::string& hex_model_id,
     DeviceMetadataCallback callback) {
   std::string normalized_id = base::ToUpperASCII(hex_model_id);
-  if (metadata_cache_.contains(normalized_id)) {
+  auto it = metadata_cache_.Get(normalized_id);
+  if (it != metadata_cache_.end()) {
     CD_LOG(VERBOSE, Feature::FP) << __func__ << ": Data already in cache.";
     RecordFastPairRepositoryCacheResult(/*success=*/true);
-    std::move(callback).Run(metadata_cache_[normalized_id].get(),
+    std::move(callback).Run(it->second.get(),
                             /*has_retryable_error=*/false);
     return;
   }
@@ -166,22 +170,26 @@ void FastPairRepositoryImpl::OnMetadataFetched(
     return;
   }
   if (response->image().empty()) {
-    metadata_cache_[normalized_model_id] =
-        std::make_unique<DeviceMetadata>(std::move(*response), gfx::Image());
-    std::move(callback).Run(metadata_cache_[normalized_model_id].get(),
+    auto it = metadata_cache_.Put(
+        normalized_model_id,
+        std::make_unique<DeviceMetadata>(std::move(*response), gfx::Image()));
+    std::move(callback).Run(it->second.get(),
                             /*has_retryable_error=*/false);
     return;
   }
 
   const std::string& string_data = response->image();
   std::vector<uint8_t> binary_data(string_data.begin(), string_data.end());
+  // Release the raw encoded image bytes from the proto once copied for
+  // decoding; callers read the decoded `DeviceMetadata::image()`.
+  response->clear_image();
 
   image_decoder_->DecodeImage(
       binary_data,
       /*resize_to_notification_size=*/true,
       base::BindOnce(&FastPairRepositoryImpl::OnImageDecoded,
                      weak_ptr_factory_.GetWeakPtr(), normalized_model_id,
-                     std::move(callback), *response));
+                     std::move(callback), std::move(*response)));
 }
 
 void FastPairRepositoryImpl::OnImageDecoded(
@@ -189,9 +197,10 @@ void FastPairRepositoryImpl::OnImageDecoded(
     DeviceMetadataCallback callback,
     nearby::fastpair::GetObservedDeviceResponse response,
     gfx::Image image) {
-  metadata_cache_[normalized_model_id] =
-      std::make_unique<DeviceMetadata>(response, std::move(image));
-  std::move(callback).Run(metadata_cache_[normalized_model_id].get(),
+  auto it = metadata_cache_.Put(
+      normalized_model_id,
+      std::make_unique<DeviceMetadata>(std::move(response), std::move(image)));
+  std::move(callback).Run(it->second.get(),
                           /*has_retryable_error=*/false);
 }
 

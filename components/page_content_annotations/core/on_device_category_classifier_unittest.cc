@@ -19,7 +19,6 @@
 #include "components/passage_embeddings/core/passage_embeddings_types.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "url/gurl.h"
 
 namespace page_content_annotations {
 
@@ -66,30 +65,6 @@ class FakeOptimizationGuideModelProvider
       observers_;
 };
 
-class TestObserver : public OnDeviceCategoryClassifier::Observer {
- public:
-  void OnCategoriesClassified(
-      const GURL& url,
-      ukm::SourceId source_id,
-      const std::vector<Category>& categories) override {
-    last_url_ = url;
-    last_categories_ = categories;
-    future_.SetValue();
-  }
-
-  void Wait() { ASSERT_TRUE(future_.Wait()); }
-
-  const GURL& last_url() const { return last_url_; }
-  const std::vector<Category>& last_categories() const {
-    return last_categories_;
-  }
-
- private:
-  GURL last_url_;
-  std::vector<Category> last_categories_;
-  base::test::TestFuture<void> future_;
-};
-
 class OnDeviceCategoryClassifierTest : public testing::Test {
  public:
   OnDeviceCategoryClassifierTest() = default;
@@ -115,24 +90,21 @@ class OnDeviceCategoryClassifierTest : public testing::Test {
 
 TEST_F(OnDeviceCategoryClassifierTest, SkipsIfEmbedderVersionMissing) {
   // Model version is not set yet.
-  TestObserver observer;
-  classifier_->AddObserver(&observer);
-
   std::vector<float> data(768, 0.0f);
   data[0] = 1.0f;
   passage_embeddings::Embedding embedding(std::move(data));
-  classifier_->OnPageEmbeddingAvailable(GURL("https://example.com"),
-                                        /*source_id=*/0, embedding, {});
 
-  observer.Wait();
-  EXPECT_TRUE(observer.last_categories().empty());
-  classifier_->RemoveObserver(&observer);
+  base::test::TestFuture<std::vector<Category>> future;
+  classifier_->ClassifyTextEmbeddings(embedding, {}, future.GetCallback());
+
+  ASSERT_TRUE(future.Wait());
+  EXPECT_TRUE(future.Get().empty());
 }
 
 TEST_F(OnDeviceCategoryClassifierTest, ExecutesIfVersionsMatch) {
   base::HistogramTester histogram_tester;
   classifier_->EmbedderMetadataUpdated(passage_embeddings::EmbedderMetadata(
-      /*model_version=*/1, /*output_size=*/768));
+      /*model_version=*/1, /*output_size=*/768, /*input_window_size=*/512));
 
   // Update model with metadata.
   optimization_guide::proto::CategoryClassifierMetadata metadata;
@@ -156,30 +128,26 @@ TEST_F(OnDeviceCategoryClassifierTest, ExecutesIfVersionsMatch) {
       optimization_guide::proto::OPTIMIZATION_TARGET_SHOPPING_CLASSIFIER,
       model_info);
 
-  TestObserver observer;
-  classifier_->AddObserver(&observer);
-
   std::vector<float> data(768, 0.0f);
   data[0] = 1.0f;
   passage_embeddings::Embedding embedding(std::move(data));
-  classifier_->OnPageEmbeddingAvailable(GURL("https://example.com"),
-                                        /*source_id=*/0, embedding, {});
 
-  observer.Wait();
+  base::test::TestFuture<std::vector<Category>> future;
+  classifier_->ClassifyTextEmbeddings(embedding, {}, future.GetCallback());
+
+  ASSERT_TRUE(future.Wait());
 
   histogram_tester.ExpectTotalCount(
       "OptimizationGuide.ModelExecutor.TaskExecutionLatency.EduClassifier", 1);
   histogram_tester.ExpectTotalCount(
       "OptimizationGuide.ModelExecutor.TaskExecutionLatency.ShoppingClassifier",
       1);
-
-  classifier_->RemoveObserver(&observer);
 }
 
 TEST_F(OnDeviceCategoryClassifierTest, NoTitleUrlEmbedding) {
   base::HistogramTester histogram_tester;
   classifier_->EmbedderMetadataUpdated(passage_embeddings::EmbedderMetadata(
-      /*model_version=*/1, /*output_size=*/768));
+      /*model_version=*/1, /*output_size=*/768, /*input_window_size=*/512));
 
   // Update model with metadata.
   optimization_guide::proto::CategoryClassifierMetadata metadata;
@@ -203,26 +171,22 @@ TEST_F(OnDeviceCategoryClassifierTest, NoTitleUrlEmbedding) {
       optimization_guide::proto::OPTIMIZATION_TARGET_SHOPPING_CLASSIFIER,
       model_info);
 
-  TestObserver observer;
-  classifier_->AddObserver(&observer);
+  base::test::TestFuture<std::vector<Category>> future;
+  classifier_->ClassifyTextEmbeddings(std::nullopt, {}, future.GetCallback());
 
-  classifier_->OnPageEmbeddingAvailable(GURL("https://example.com"),
-                                        /*source_id=*/0, std::nullopt, {});
-
-  observer.Wait();
+  ASSERT_TRUE(future.Wait());
+  EXPECT_TRUE(future.Get().empty());
 
   histogram_tester.ExpectTotalCount(
       "OptimizationGuide.ModelExecutor.TaskExecutionLatency.EduClassifier", 0);
   histogram_tester.ExpectTotalCount(
       "OptimizationGuide.ModelExecutor.TaskExecutionLatency.ShoppingClassifier",
       0);
-
-  classifier_->RemoveObserver(&observer);
 }
 
 TEST_F(OnDeviceCategoryClassifierTest, SkipsIfVersionsMismatch) {
   classifier_->EmbedderMetadataUpdated(passage_embeddings::EmbedderMetadata(
-      /*model_version=*/2, /*output_size=*/768));
+      /*model_version=*/2, /*output_size=*/768, /*input_window_size=*/512));
 
   // Update model with metadata for version 1.
   optimization_guide::proto::CategoryClassifierMetadata metadata;
@@ -242,23 +206,20 @@ TEST_F(OnDeviceCategoryClassifierTest, SkipsIfVersionsMismatch) {
       optimization_guide::proto::OPTIMIZATION_TARGET_EDU_CLASSIFIER,
       model_info);
 
-  TestObserver observer;
-  classifier_->AddObserver(&observer);
-
   std::vector<float> data(768, 0.0f);
   data[0] = 1.0f;
   passage_embeddings::Embedding embedding(std::move(data));
-  classifier_->OnPageEmbeddingAvailable(GURL("https://example.com"),
-                                        /*source_id=*/0, embedding, {});
 
-  observer.Wait();
-  EXPECT_TRUE(observer.last_categories().empty());
-  classifier_->RemoveObserver(&observer);
+  base::test::TestFuture<std::vector<Category>> future;
+  classifier_->ClassifyTextEmbeddings(embedding, {}, future.GetCallback());
+
+  ASSERT_TRUE(future.Wait());
+  EXPECT_TRUE(future.Get().empty());
 }
 
 TEST_F(OnDeviceCategoryClassifierTest, SkipsIfModelMetadataMissing) {
   classifier_->EmbedderMetadataUpdated(passage_embeddings::EmbedderMetadata(
-      /*model_version=*/1, /*output_size=*/768));
+      /*model_version=*/1, /*output_size=*/768, /*input_window_size=*/512));
 
   // Update model without metadata.
   optimization_guide::ModelInfo model_info = {
@@ -269,18 +230,15 @@ TEST_F(OnDeviceCategoryClassifierTest, SkipsIfModelMetadataMissing) {
       optimization_guide::proto::OPTIMIZATION_TARGET_EDU_CLASSIFIER,
       model_info);
 
-  TestObserver observer;
-  classifier_->AddObserver(&observer);
-
   std::vector<float> data(768, 0.0f);
   data[0] = 1.0f;
   passage_embeddings::Embedding embedding(std::move(data));
-  classifier_->OnPageEmbeddingAvailable(GURL("https://example.com"),
-                                        /*source_id=*/0, embedding, {});
 
-  observer.Wait();
-  EXPECT_TRUE(observer.last_categories().empty());
-  classifier_->RemoveObserver(&observer);
+  base::test::TestFuture<std::vector<Category>> future;
+  classifier_->ClassifyTextEmbeddings(embedding, {}, future.GetCallback());
+
+  ASSERT_TRUE(future.Wait());
+  EXPECT_TRUE(future.Get().empty());
 }
 
 }  // namespace

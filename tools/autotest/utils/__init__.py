@@ -5,13 +5,23 @@
 import os
 
 
-def IsGeminiCli():
-  return os.getenv("GEMINI_CLI") not in (None, '', '0')
+_AI_AGENT_ENV_VARS = (
+  'CLAUDECODE',
+  'ANTIGRAVITY_AGENT',
+  'CODEX_SANDBOX',
+  'CURSOR_AGENT',
+  'COPILOT_CLI',
+  'AI_AGENT',
+)
+
+
+def _IsEnvVarEnabled(name: str) -> bool:
+  return (os.getenv(name) or '').lower() not in ('', '0', 'false')
 
 
 def IsAntigravity():
-  return os.getenv("ANTIGRAVITY_AGENT") not in (None, '', '0')
+  return _IsEnvVarEnabled('ANTIGRAVITY_AGENT')
 
 
 def IsLlm():
-  return IsGeminiCli() or IsAntigravity()
+  return any(_IsEnvVarEnabled(var) for var in _AI_AGENT_ENV_VARS)

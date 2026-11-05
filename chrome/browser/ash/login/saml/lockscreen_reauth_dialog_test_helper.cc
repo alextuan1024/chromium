@@ -14,8 +14,6 @@
 #include "chrome/browser/ash/login/test/gaia_page_event_waiter.h"
 #include "chrome/browser/ash/login/test/js_checker.h"
 #include "chrome/browser/ash/login/test/test_condition_waiter.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/lock_screen_captive_portal_dialog.h"
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/lock_screen_network_dialog.h"
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/lock_screen_network_ui.h"
@@ -158,11 +156,6 @@ void LockScreenReauthDialogTestHelper::WaitForPrimaryGaiaButtonToBeEnabled() {
   DialogJS().CreateEnabledWaiter(/*enabled=*/true, kGaiaPrimaryButton)->Wait();
 }
 
-void LockScreenReauthDialogTestHelper::ExpectGaiaButtonsVisible() {
-  ExpectSigninWebviewVisible();
-  DialogJS().ExpectVisiblePath(kGaiaButtons);
-}
-
 void LockScreenReauthDialogTestHelper::ExpectGaiaButtonsHidden() {
   DialogJS().ExpectHiddenPath(kGaiaButtons);
 }
@@ -193,10 +186,6 @@ void LockScreenReauthDialogTestHelper::ExpectSigninWebviewVisible() {
 
 void LockScreenReauthDialogTestHelper::ExpectSigninWebviewHidden() {
   DialogJS().ExpectHiddenPath(kWebviewContainer);
-}
-
-void LockScreenReauthDialogTestHelper::ExpectGaiaScreenVisible() {
-  DialogJS().ExpectAttributeEQ("isDefaultSsoProvider", {"main-element"}, false);
 }
 
 void LockScreenReauthDialogTestHelper::ExpectSamlConfirmPasswordVisible() {
@@ -237,10 +226,6 @@ test::UIPath LockScreenReauthDialogTestHelper::SamlNoticeMessage() const {
 
 void LockScreenReauthDialogTestHelper::ExpectSamlNoticeMessageVisible() {
   DialogJS().ExpectVisiblePath(kSamlNoticeMessage);
-}
-
-void LockScreenReauthDialogTestHelper::ExpectSamlNoticeMessageHidden() {
-  DialogJS().ExpectHiddenPath(kSamlNoticeMessage);
 }
 
 std::unique_ptr<test::TestConditionWaiter>
@@ -348,10 +333,6 @@ void LockScreenReauthDialogTestHelper::WaitForNetworkDialogAndSetHandlers() {
 void LockScreenReauthDialogTestHelper::ShowNetworkScreenAndWait() {
   reauth_dialog_->ShowLockScreenNetworkDialog();
   WaitForNetworkDialogAndSetHandlers();
-}
-
-void LockScreenReauthDialogTestHelper::CloseNetworkScreen() {
-  reauth_dialog_->DismissLockScreenNetworkDialog();
 }
 
 void LockScreenReauthDialogTestHelper::ExpectNetworkDialogVisible() {

@@ -155,7 +155,7 @@ TEST_F(ScreensaverImagesPolicyHandlerTest, FactoryFunctionTestSignin) {
 }
 TEST_F(ScreensaverImagesPolicyHandlerTest, FactoryFunctionTestUser) {
   // User
-  SimulateUserLogin({kUserEmail});
+  SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
   auto handler = ScreensaverImagesPolicyHandler::Create(active_prefs());
   // Verify that the policy handler detected the new user and created a new
   // image downloader instance.
@@ -166,7 +166,8 @@ TEST_F(ScreensaverImagesPolicyHandlerTest, FactoryFunctionTestUser) {
 TEST_F(ScreensaverImagesPolicyHandlerTest, FactoryFunctionTestManagedGuest) {
   // Managed Guest
   GetSessionControllerClient()->RequestSignOut();
-  SimulateUserLogin({kUserEmail, user_manager::UserType::kPublicAccount});
+  SimulateUserLogin({.account_id = AccountId::FromUserEmail(kUserEmail),
+                     .user_type = user_manager::UserType::kPublicAccount});
   auto handler = ScreensaverImagesPolicyHandler::Create(
       Shell::Get()->session_controller()->GetActivePrefService());
   // Verify that the policy handler detected the new user and created a new
@@ -194,12 +195,14 @@ class ScreensaverImagesPolicyHandlerForAnySessionTest
     ScreensaverImagesPolicyHandlerTestCase test_case = GetParam();
     switch (test_case.handle_type) {
       case ScreensaverImagesPolicyHandler::HandlerType::kUser:
-        SimulateUserLogin({kUserEmail});
+        SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
         break;
       case ScreensaverImagesPolicyHandler::HandlerType::kSignin: {
       } break;
       case ScreensaverImagesPolicyHandler::HandlerType::kManagedGuest:
-        SimulateUserLogin({kUserEmail, user_manager::UserType::kPublicAccount});
+        SimulateUserLogin(
+            {.account_id = AccountId::FromUserEmail(kUserEmail),
+             .user_type = user_manager::UserType::kPublicAccount});
         break;
     }
   }
@@ -390,7 +393,6 @@ TEST_P(ScreensaverImagesPolicyHandlerForAnySessionTest,
   // Expectation: The unset image list pref should not cause a cache cleanup.
   {
     CreateScreensaverImagesPolicyHandler();
-    task_environment()->RunUntilIdle();
     EXPECT_TRUE(base::PathExists(GetExpectedFilePath(kImageUrl1)));
     EXPECT_TRUE(base::PathExists(GetExpectedFilePath(kImageUrl2)));
   }
@@ -404,7 +406,6 @@ TEST_P(ScreensaverImagesPolicyHandlerForAnySessionTest,
         base::Value(true));
 
     CreateScreensaverImagesPolicyHandler();
-    task_environment()->RunUntilIdle();
 
     EXPECT_TRUE(base::PathExists(GetExpectedFilePath(kImageUrl1)));
     EXPECT_TRUE(base::PathExists(GetExpectedFilePath(kImageUrl2)));

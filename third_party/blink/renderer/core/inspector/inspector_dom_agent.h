@@ -34,6 +34,7 @@
 #include <utility>
 
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/events/event_listener_map.h"
 #include "third_party/blink/renderer/core/editing/markers/document_marker.h"
@@ -380,6 +381,9 @@ class CORE_EXPORT InspectorDOMAgent final
       std::unique_ptr<protocol::Array<int>>* node_ids) override;
 
  private:
+  // Returns the node with `backend_node_id` if it belongs to a frame inspected
+  // by this agent, nullptr otherwise.
+  Node* NodeForBackendId(int backend_node_id) const;
   void SetDocument(Document*);
   // Unconditionally enables the agent, even if |enabled_.Get()==true|.
   // For idempotence, call enable().
@@ -444,7 +448,8 @@ class CORE_EXPORT InspectorDOMAgent final
   bool isNodeScrollable(Node*);
   bool AffectedByStartingStyles(Node*);
 
-  v8::Isolate* isolate_;  // null after Dispose().
+  raw_ptr<v8::Isolate, UnprotectedInRelease | DanglingUntriaged>
+      isolate_;  // null after Dispose().
   Member<InspectedFrames> inspected_frames_;
   HeapHashSet<Member<DOMListener>> dom_listeners_;
   Member<NodeToIdMap> document_node_to_id_map_;
@@ -470,6 +475,7 @@ class CORE_EXPORT InspectorDOMAgent final
   Member<InspectorHistory> history_;
   Member<DOMEditor> dom_editor_;
   bool suppress_attribute_modified_event_;
+  bool suppress_slot_assignment_recalc_;
   InspectorAgentState::Boolean enabled_;
   InspectorAgentState::Integer include_whitespace_;
   InspectorAgentState::Boolean capture_node_stack_traces_;

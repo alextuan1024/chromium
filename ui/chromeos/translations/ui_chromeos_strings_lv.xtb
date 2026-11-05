@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">Kamera</translation>
 <translation id="162175252992296058">Portugāļu, ar ASV starptautisko tastatūru</translation>
 <translation id="1629521517399325891">Lietotāja sertifikāts nav pieejams tīkla autorizācijai.</translation>
+<translation id="1639239467298939599">Notiek ielāde</translation>
 <translation id="1641780993263690097">Ķīniešu, piņjiņs</translation>
 <translation id="164969095109328410">Chrome ierīce</translation>
 <translation id="1661207570040737402">Jūs esat izmantojis visu savu kopīgā diska Google Workspace krātuvi.</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">Failu sinhronizācija ir izslēgta</translation>
 <translation id="2820957248982571256">Notiek meklēšana...</translation>
 <translation id="2830077785865012357">Ķīniešu, Zhuyin</translation>
+<translation id="2838379631617906747">Notiek instalēšana</translation>
 <translation id="2843806747483486897">Mainīt noklusējumu...</translation>
 <translation id="2873951654529031587">Atkritne</translation>
 <translation id="2887314858867008269">Colemak (ASV)</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">Nepareiza parole</translation>
 <translation id="5059127710849015030">Nepāliešu, transliterācija</translation>
 <translation id="5068919226082848014">Pica</translation>
+<translation id="5075336522277785691">Paplašinājums <ph name="EXTENSION_NAME" /> iestatīja starpniekservera ignorēšanas kārtulas</translation>
 <translation id="5081517858322016911">Tiks dzēsti <ph name="TOTAL_FILE_SIZE" /> failu.</translation>
 <translation id="508423945471810158">Notiek pārvietošana uz mapi <ph name="FOLDER_NAME" />. Pārvietojamo vienumu skaits: <ph name="NUMBER_OF_ITEMS" />.</translation>
 <translation id="509429900233858213">Radās kļūda.</translation>
-<translation id="5102922915594634436">Pārvaldīt sinhronizētās mapes</translation>
 <translation id="5109254780565519649">Radās kļūda. Iespējams, daži vienumi netika atjaunoti.</translation>
 <translation id="5110329002213341433">Angļu (Kanāda)</translation>
 <translation id="5119780910075847424">Sinhronizācija ir pārtraukta</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">Nav instalēts</translation>
 <translation id="5317780077021120954">Saglabāt</translation>
 <translation id="5318819489018851358">Kopīgot pakalpojumā Linux</translation>
-<translation id="5330145655348521461">Šie faili tika atvērti citā darbvirsmā. Lai skatītu šo darbvirsmu, izmantojiet profilu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="5330512191124428349">Iegūt informāciju</translation>
 <translation id="535792325654997756">Persona ar kaķiem</translation>
 <translation id="5358764674931277">Kadri sekundē</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">Nederīga domēna sufiksa atbilstības vērtība.</translation>
 <translation id="6364301859968397756">Organizācijas krātuve ir pilna</translation>
 <translation id="6367976544441405720">Furgons</translation>
-<translation id="637062427944097960">Šis fails tika atvērts citā darbvirsmā. Lai skatītu šo darbvirsmu, izmantojiet profilu <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />).</translation>
 <translation id="6394388407447716302">Tikai lasāma</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> vienumi</translation>
 <translation id="6407769893376380348">Failu “<ph name="FILE_NAME" />” nevarēja pārvietot, jo tas ir šifrēts.</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> — ports</translation>
 <translation id="8656407365183407932">Bija jānoņem jūsu bezsaistes faili</translation>
 <translation id="8656768832129462377">Nepārbaudīt</translation>
+<translation id="8662978096466608964">Chrome nevar iestatīt fona tapeti.</translation>
 <translation id="8688591111840995413">Nepareiza parole</translation>
 <translation id="8698464937041809063">Google zīmējums</translation>
 <translation id="8698877009525468705">Šis fails ir konfidenciāls, un uz to attiecas administratora politikā noteikti ierobežojumi.</translation>

@@ -15,16 +15,23 @@
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/containers/flat_map.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
+#include "base/synchronization/lock.h"
 #include "base/system/system_monitor.h"
+#include "base/thread_annotations.h"
 #include "media/audio/android/aaudio_bluetooth_output.h"
 #include "media/audio/android/aaudio_input.h"
 #include "media/audio/android/aaudio_output.h"
@@ -97,18 +104,39 @@ enum class DeviceChangeKind {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:DeviceChangeKind)
 
+struct InstanceHolder {
+  base::Lock lock;
+  raw_ptr<AudioManagerAndroid> instance GUARDED_BY(lock) = nullptr;
+};
+
+InstanceHolder& GetInstanceHolder() {
+  static base::NoDestructor<InstanceHolder> holder;
+  return *holder;
+}
+
 class JniDelegateImpl : public AudioManagerAndroid::JniDelegate {
  public:
   explicit JniDelegateImpl(AudioManagerAndroid* audio_manager)
-      : j_audio_manager_(Java_AudioManagerAndroid_createAudioManagerAndroid(
-            AttachCurrentThread(),
-            reinterpret_cast<int64_t>(audio_manager))) {
-    Java_AudioManagerAndroid_init(AttachCurrentThread(), j_audio_manager_);
+      : audio_manager_(raw_ref<AudioManagerAndroid>::from_ptr(audio_manager)) {
+    {
+      auto& holder = GetInstanceHolder();
+      base::AutoLock auto_lock(holder.lock);
+      CHECK(!holder.instance);
+      holder.instance = &*audio_manager_;
+    }
+    JNIEnv* env = AttachCurrentThread();
+    j_audio_manager_.Reset(
+        Java_AudioManagerAndroid_createAudioManagerAndroid(env));
+    Java_AudioManagerAndroid_init(env, j_audio_manager_);
   }
 
   ~JniDelegateImpl() override {
     Java_AudioManagerAndroid_close(AttachCurrentThread(), j_audio_manager_);
     j_audio_manager_.Reset();
+    auto& holder = GetInstanceHolder();
+    base::AutoLock auto_lock(holder.lock);
+    CHECK_EQ(holder.instance, &*audio_manager_);
+    holder.instance = nullptr;
   }
 
   void InitDeviceListener() override {
@@ -230,6 +258,7 @@ class JniDelegateImpl : public AudioManagerAndroid::JniDelegate {
   }
 
  private:
+  const raw_ref<AudioManagerAndroid> audio_manager_;
   base::android::ScopedJavaGlobalRef<jobject> j_audio_manager_;
 };
 
@@ -367,6 +396,31 @@ static void JNI_AudioManagerAndroid_OnDevicesChanged(JNIEnv* env, bool added) {
   }
 }
 
+void JNI_AudioManagerAndroid_SetMute(JNIEnv* env, bool muted) {
+  auto& holder = GetInstanceHolder();
+  base::AutoLock auto_lock(holder.lock);
+  if (holder.instance) {
+    holder.instance->SetMute(env, muted);
+  }
+}
+
+void JNI_AudioManagerAndroid_OnScoStateChanged(JNIEnv* env, bool state) {
+  auto& holder = GetInstanceHolder();
+  base::AutoLock auto_lock(holder.lock);
+  if (holder.instance) {
+    holder.instance->OnScoStateChanged(env, state);
+  }
+}
+
+void JNI_AudioManagerAndroid_OnMicrophoneMuteStateChanged(JNIEnv* env,
+                                                          bool muted) {
+  auto& holder = GetInstanceHolder();
+  base::AutoLock auto_lock(holder.lock);
+  if (holder.instance) {
+    holder.instance->OnMicrophoneMuteStateChanged(env, muted);
+  }
+}
+
 static bool JNI_AudioManagerAndroid_IsAudioPlaybackCaptureAllowedFeatureEnabled(
     JNIEnv* env) {
   return base::FeatureList::IsEnabled(media::kAllowAudioPlaybackCapture);
@@ -403,9 +457,7 @@ AudioManagerAndroid::AudioManagerAndroid(
     std::unique_ptr<AudioThread> audio_thread,
     AudioLogFactory* audio_log_factory)
     : AudioManagerBase(std::move(audio_thread), audio_log_factory),
-      communication_mode_is_on_(false),
-      output_volume_override_set_(false),
-      output_volume_override_(0) {
+      communication_mode_is_on_(false) {
   const int max_output_streams = base::android::device_info::is_desktop()
                                      ? kDesktopMaxOutputStreams
                                      : kMaxOutputStreams;
@@ -1038,19 +1090,6 @@ AudioManagerAndroid::AddInputMuteStateChangeCallback(
   return microphone_mute_state_change_callbacks_.Add(std::move(callback));
 }
 
-void AudioManagerAndroid::SetOutputVolumeOverride(double volume) {
-  GetTaskRunner()->PostTask(
-      FROM_HERE, base::BindOnce(&AudioManagerAndroid::DoSetVolumeOnAudioThread,
-                                base::Unretained(this), volume));
-}
-
-bool AudioManagerAndroid::HasOutputVolumeOverride(double* out_volume) const {
-  if (output_volume_override_set_) {
-    *out_volume = output_volume_override_;
-  }
-  return output_volume_override_set_;
-}
-
 base::TimeDelta AudioManagerAndroid::GetOutputLatency() {
   DCHECK(GetTaskRunner()->BelongsToCurrentThread());
   return GetJniDelegate().GetOutputLatency();
@@ -1059,6 +1098,11 @@ base::TimeDelta AudioManagerAndroid::GetOutputLatency() {
 bool AudioManagerAndroid::IsMicrophoneMuted() {
   DCHECK(GetTaskRunner()->BelongsToCurrentThread());
   return is_microphone_muted_;
+}
+
+bool AudioManagerAndroid::IsBluetoothScoEnabledForTesting() {
+  CHECK(GetTaskRunner()->BelongsToCurrentThread());
+  return is_bluetooth_sco_enabled_;
 }
 
 AudioParameters AudioManagerAndroid::GetPreferredOutputStreamParameters(
@@ -1264,16 +1308,6 @@ void AudioManagerAndroid::DoSetMuteOnAudioThread(bool muted) {
   DCHECK(GetTaskRunner()->BelongsToCurrentThread());
   for (auto stream : output_streams_) {
     stream->SetMute(muted);
-  }
-}
-
-void AudioManagerAndroid::DoSetVolumeOnAudioThread(double volume) {
-  output_volume_override_set_ = true;
-  output_volume_override_ = volume;
-
-  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
-  for (auto stream : output_streams_) {
-    stream->SetVolume(volume);
   }
 }
 

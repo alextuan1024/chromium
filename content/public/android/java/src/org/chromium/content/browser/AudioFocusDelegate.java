@@ -14,6 +14,10 @@ import androidx.annotation.IntDef;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
@@ -22,8 +26,6 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.content_public.browser.ContentFeatureList;
-import org.chromium.content_public.browser.ContentFeatureMap;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -41,6 +43,9 @@ import java.lang.annotation.RetentionPolicy;
 @NullMarked
 public class AudioFocusDelegate implements AudioManager.OnAudioFocusChangeListener {
     private static final String TAG = "MediaSession";
+
+    @JniType("::content::AudioFocusDelegateAndroid")
+    interface NativeAudioFocusDelegateAndroid extends JniTypeToken {}
 
     // AudioFocusRequestResult defined in tools/metrics/histograms/metadata/media/enums.xml
     @IntDef({
@@ -61,20 +66,20 @@ public class AudioFocusDelegate implements AudioManager.OnAudioFocusChangeListen
     private boolean mIsDucking;
     private @Nullable AudioFocusRequest mFocusRequest;
 
-    // Native pointer to C++ content::AudioFocusDelegateAndroid.
-    // It will be set to 0 when the native AudioFocusDelegateAndroid object is destroyed.
-    private long mNativeAudioFocusDelegateAndroid;
+    private @Nullable JniRawPtr<NativeAudioFocusDelegateAndroid> mNativeAudioFocusDelegateAndroid;
 
     // Handle to the UI thread to ensure callbacks are on the correct thread.
     private final Handler mHandler;
 
-    private AudioFocusDelegate(long nativeAudioFocusDelegateAndroid) {
+    private AudioFocusDelegate(
+            JniRawPtr<NativeAudioFocusDelegateAndroid> nativeAudioFocusDelegateAndroid) {
         mNativeAudioFocusDelegateAndroid = nativeAudioFocusDelegateAndroid;
         mHandler = new Handler(ThreadUtils.getUiThreadLooper());
     }
 
     @CalledByNative
-    private static AudioFocusDelegate create(long nativeAudioFocusDelegateAndroid) {
+    static AudioFocusDelegate create(
+            JniRawPtr<NativeAudioFocusDelegateAndroid> nativeAudioFocusDelegateAndroid) {
         return new AudioFocusDelegate(nativeAudioFocusDelegateAndroid);
     }
 
@@ -82,7 +87,10 @@ public class AudioFocusDelegate implements AudioManager.OnAudioFocusChangeListen
     private void tearDown() {
         assert ThreadUtils.runningOnUiThread();
         abandonAudioFocus();
-        mNativeAudioFocusDelegateAndroid = 0;
+        if (mNativeAudioFocusDelegateAndroid != null) {
+            mNativeAudioFocusDelegateAndroid.release();
+            mNativeAudioFocusDelegateAndroid = null;
+        }
     }
 
     @CalledByNative
@@ -126,14 +134,10 @@ public class AudioFocusDelegate implements AudioManager.OnAudioFocusChangeListen
                         .setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
                         .build();
 
-        boolean allowDelayedFocus =
-                ContentFeatureMap.isEnabled(
-                        ContentFeatureList.ALLOW_DELAYED_AUDIO_FOCUS_GAIN_ANDROID);
-
         mFocusRequest =
                 new AudioFocusRequest.Builder(mFocusType)
                         .setAudioAttributes(playbackAttributes)
-                        .setAcceptsDelayedFocusGain(allowDelayedFocus)
+                        .setAcceptsDelayedFocusGain(true)
                         .setWillPauseWhenDucked(false)
                         .setOnAudioFocusChangeListener(this, mHandler)
                         .build();
@@ -152,17 +156,13 @@ public class AudioFocusDelegate implements AudioManager.OnAudioFocusChangeListen
                 getAudioFocusRequestResult(result),
                 AudioFocusRequestResult.COUNT);
 
-        if (allowDelayedFocus) {
-            // If the request returns AUDIOFOCUS_REQUEST_DELAYED, the system has registered our
-            // request but hasn't granted focus yet (e.g. during a phone call). We return true
-            // to treat this as a successful acquisition, allowing playback to proceed immediately
-            // despite the delay. This differs from AudioFocusDelegate::AudioFocusResult::kDelayed
-            // which indicates the browser itself is deferring the request.
-            return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-                    || result == AudioManager.AUDIOFOCUS_REQUEST_DELAYED;
-        }
-
-        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        // If the request returns AUDIOFOCUS_REQUEST_DELAYED, the system has registered our
+        // request but hasn't granted focus yet (e.g. during a phone call). We return true
+        // to treat this as a successful acquisition, allowing playback to proceed immediately
+        // despite the delay. This differs from AudioFocusDelegate::AudioFocusResult::kDelayed
+        // which indicates the browser itself is deferring the request.
+        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+                || result == AudioManager.AUDIOFOCUS_REQUEST_DELAYED;
     }
 
     private @AudioFocusRequestResult int getAudioFocusRequestResult(int result) {
@@ -180,7 +180,7 @@ public class AudioFocusDelegate implements AudioManager.OnAudioFocusChangeListen
     @Override
     public void onAudioFocusChange(int focusChange) {
         assert ThreadUtils.runningOnUiThread();
-        if (mNativeAudioFocusDelegateAndroid == 0) return;
+        if (mNativeAudioFocusDelegateAndroid == null) return;
 
         switch (focusChange) {
             case AudioManager.AUDIOFOCUS_GAIN:
@@ -210,12 +210,12 @@ public class AudioFocusDelegate implements AudioManager.OnAudioFocusChangeListen
 
     @NativeMethods
     interface Natives {
-        void onSuspend(long nativeAudioFocusDelegateAndroid);
+        void onSuspend(JniPtr<NativeAudioFocusDelegateAndroid> self);
 
-        void onResume(long nativeAudioFocusDelegateAndroid);
+        void onResume(JniPtr<NativeAudioFocusDelegateAndroid> self);
 
-        void onStartDucking(long nativeAudioFocusDelegateAndroid);
+        void onStartDucking(JniPtr<NativeAudioFocusDelegateAndroid> self);
 
-        void onStopDucking(long nativeAudioFocusDelegateAndroid);
+        void onStopDucking(JniPtr<NativeAudioFocusDelegateAndroid> self);
     }
 }

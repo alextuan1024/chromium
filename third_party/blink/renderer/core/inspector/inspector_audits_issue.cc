@@ -197,6 +197,10 @@ AuditsIssue::GenericIssueErrorTypeToProtocol(
         kFormModelContextParameterMissingName:
       return protocol::Audits::GenericIssueErrorTypeEnum::
           FormModelContextParameterMissingName;
+    case mojom::blink::GenericIssueErrorType::
+        kGeolocationPromptWithoutUserGesture:
+      return protocol::Audits::GenericIssueErrorTypeEnum::
+          GeolocationPromptWithoutUserGesture;
   }
 }
 
@@ -802,6 +806,15 @@ ElementAccessibilityIssueReasonToProtocol(
     case ElementAccessibilityIssueReason::kInteractiveContentSummaryDescendant:
       return protocol::Audits::ElementAccessibilityIssueReasonEnum::
           InteractiveContentSummaryDescendant;
+    case ElementAccessibilityIssueReason::kAnchorMenuDescendant:
+      return protocol::Audits::ElementAccessibilityIssueReasonEnum::
+          AnchorMenuDescendant;
+    case ElementAccessibilityIssueReason::kInteractiveContentMenuDescendant:
+      return protocol::Audits::ElementAccessibilityIssueReasonEnum::
+          InteractiveContentMenuDescendant;
+    case ElementAccessibilityIssueReason::kTextMenuDescendant:
+      return protocol::Audits::ElementAccessibilityIssueReasonEnum::
+          TextMenuDescendant;
     case ElementAccessibilityIssueReason::kValidChild:
       NOTREACHED();
   }

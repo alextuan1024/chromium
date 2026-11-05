@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/memory/discardable_memory.h"
 #include "base/task/single_thread_task_runner.h"
@@ -444,7 +445,7 @@ mojom::PrintCompositor::Status PrintCompositorImpl::CompositePages(
     return mojom::PrintCompositor::Status::kHandleMapError;
   }
 
-  wstream.copyToAndReset(region_mapping.mapping.memory());
+  wstream.copyToAndReset(region_mapping.mapping.data());
   *region = std::move(region_mapping.region);
   return mojom::PrintCompositor::Status::kSuccess;
 }
@@ -464,7 +465,7 @@ void PrintCompositorImpl::CompositeSubframe(FrameInfo* frame_info) {
   frame_info->content = SkPicture::MakeFromStream(&stream, &procs);
 }
 
-PrintCompositorImpl::PictureDeserializationContext
+PictureDeserializationContext
 PrintCompositorImpl::GetPictureDeserializationContext(
     const ContentToFrameMap& subframe_content_map) {
   PictureDeserializationContext subframes;
@@ -478,7 +479,7 @@ PrintCompositorImpl::GetPictureDeserializationContext(
     FrameInfo* frame_info = iter->second.get();
     if (!frame_info->composited)
       CompositeSubframe(frame_info);
-    subframes[content_id] = frame_info->content;
+    subframes[PictureContentId(content_id)] = frame_info->content;
   }
   return subframes;
 }
@@ -537,8 +538,7 @@ void PrintCompositorImpl::FinishDocumentRequest(
       base::ReadOnlySharedMemoryRegion::Create(
           doc_info_->compositor_stream.bytesWritten());
   if (region_mapping.IsValid()) {
-    doc_info_->compositor_stream.copyToAndReset(
-        region_mapping.mapping.memory());
+    doc_info_->compositor_stream.copyToAndReset(region_mapping.mapping.data());
     region = std::move(region_mapping.region);
     status = mojom::PrintCompositor::Status::kSuccess;
   } else {

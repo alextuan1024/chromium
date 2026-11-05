@@ -4,11 +4,11 @@
 
 #include "ui/message_center/notification_list.h"
 
+#include <ranges>
 #include <string>
 #include <utility>
 
 #include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/functional/bind.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -100,7 +100,8 @@ std::vector<std::string> NotificationList::GetTopKRemovableNotificationIds(
 
   std::vector<std::string> found_ids;
   const base::Time current_time = base::Time::NowFromSystemTime();
-  for (const auto& state_by_notification : base::Reversed(notifications_)) {
+  for (const auto& state_by_notification :
+       std::views::reverse(notifications_)) {
     const Notification& notification = *state_by_notification.first;
 
     // Skip the following notifications:
@@ -165,7 +166,8 @@ void NotificationList::UpdateNotificationMessage(
   notifications_.erase(iter);
 
   // We really don't want duplicate IDs.
-  DCHECK(GetNotification(new_notification->id()) == notifications_.end());
+  CHECK(GetNotification(new_notification->id()) == notifications_.end(),
+        base::NotFatalUntil::M163);
   notifications_.emplace(std::move(new_notification), state);
 }
 
@@ -270,7 +272,7 @@ NotificationList::PopupNotifications NotificationList::GetPopupNotifications(
   size_t default_priority_popup_count = 0;
 
   // Collect notifications that should be shown as popups. Start from oldest.
-  for (auto& [notification, state] : base::Reversed(notifications_)) {
+  for (auto& [notification, state] : std::views::reverse(notifications_)) {
     if (state.shown_as_popup) {
       continue;
     }

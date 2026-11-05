@@ -192,8 +192,26 @@ final class JavaUrlRequest extends ExperimentalUrlRequest {
     }
 
     /**
+     * @param engine The engine that created this request.
+     * @param callback The callback to invoke on request events.
      * @param executor The executor used for reading and writing from sockets
      * @param userExecutor The executor used to dispatch to {@code callback}
+     * @param url The URL for the request.
+     * @param userAgent The User-Agent to send with the request.
+     * @param allowDirectExecutor Whether executors used by this request are permitted to execute
+     *     submitted tasks inline.
+     * @param trafficStatsTagSet {@code true} if {@code trafficStatsTag} represents a TrafficStats
+     *     tag to apply to sockets used to perform this request.
+     * @param trafficStatsTag TrafficStats tag to apply to sockets used to perform this request.
+     * @param trafficStatsUidSet {@code true} if {@code trafficStatsUid} represents a UID to
+     *     attribute traffic used to perform this request.
+     * @param trafficStatsUid UID to attribute traffic used to perform this request.
+     * @param networkHandle The handle of the network to bind this request to.
+     * @param method The HTTP method to use for the request.
+     * @param requestHeaders The list of request headers.
+     * @param uploadDataProvider The provider of the request body, or {@code null} if none.
+     * @param uploadDataProviderExecutor The executor on which {@code uploadDataProvider} is
+     *     invoked.
      */
     JavaUrlRequest(
             JavaCronetEngine engine,
@@ -478,9 +496,11 @@ final class JavaUrlRequest extends ExperimentalUrlRequest {
     }
 
     /**
-     * Atomically swaps from the expected state to a new state. If the swap fails, and it's not
-     * due to an earlier error or cancellation, throws an exception.
+     * Atomically swaps from the expected state to a new state. If the swap fails, and it's not due
+     * to an earlier error or cancellation, throws an exception.
      *
+     * @param expected The state the request is expected to be in.
+     * @param newState The state to transition to.
      * @param afterTransition Callback to run after transition completes successfully.
      */
     private void transitionStates(
@@ -958,46 +978,36 @@ final class JavaUrlRequest extends ExperimentalUrlRequest {
             final Map<String, List<String>> responseHeaders;
             final String negotiatedProtocol;
             final int httpStatusCode;
-            final boolean wasCached;
+            final CronetTrafficInfo.CacheState cacheState;
             if (mUrlResponseInfo != null) {
                 responseHeaders = mUrlResponseInfo.getAllHeaders();
                 negotiatedProtocol = mUrlResponseInfo.getNegotiatedProtocol();
                 httpStatusCode = mUrlResponseInfo.getHttpStatusCode();
-                wasCached = mUrlResponseInfo.wasCached();
+                cacheState =
+                        mUrlResponseInfo.wasCached()
+                                ? CronetTrafficInfo.CacheState.CACHE_HIT
+                                : CronetTrafficInfo.CacheState.NOT_CACHED;
             } else {
                 responseHeaders = Collections.emptyMap();
                 negotiatedProtocol = "";
                 httpStatusCode = 0;
-                wasCached = false;
+                cacheState = CronetTrafficInfo.CacheState.UNSPECIFIED;
             }
 
-            final long requestHeaderSizeInBytes;
-            final long requestBodySizeInBytes;
-            if (wasCached) {
-                requestHeaderSizeInBytes = 0;
-                requestBodySizeInBytes = 0;
-            } else {
-                requestHeaderSizeInBytes = estimateHeadersSizeInBytes(mRequestHeaders);
-                // TODO(stefanoduo): Add logic to keep track of request body size.
-                requestBodySizeInBytes = -1;
-            }
+            final long requestHeaderSizeInBytes = estimateHeadersSizeInBytes(mRequestHeaders);
+            // TODO(stefanoduo): Add logic to keep track of request body size.
+            final long requestBodySizeInBytes = -1;
 
+            final long responseHeaderSizeInBytes = estimateHeadersSizeInBytesList(responseHeaders);
             final long responseBodySizeInBytes;
-            final long responseHeaderSizeInBytes;
-            if (wasCached) {
-                responseHeaderSizeInBytes = 0;
-                responseBodySizeInBytes = 0;
+            // Content-Length is not mandatory, if missing report a non-valid response body size
+            // for the time being.
+            if (responseHeaders.containsKey("Content-Length")) {
+                responseBodySizeInBytes =
+                        parseContentLengthString(responseHeaders.get("Content-Length").get(0));
             } else {
-                responseHeaderSizeInBytes = estimateHeadersSizeInBytesList(responseHeaders);
-                // Content-Length is not mandatory, if missing report a non-valid response body size
-                // for the time being.
-                if (responseHeaders.containsKey("Content-Length")) {
-                    responseBodySizeInBytes =
-                            parseContentLengthString(responseHeaders.get("Content-Length").get(0));
-                } else {
-                    // TODO(stefanoduo): Add logic to keep track of response body size.
-                    responseBodySizeInBytes = -1;
-                }
+                // TODO(stefanoduo): Add logic to keep track of response body size.
+                responseBodySizeInBytes = -1;
             }
 
             final Duration totalLatency = Duration.ofSeconds(0);
@@ -1052,7 +1062,10 @@ final class JavaUrlRequest extends ExperimentalUrlRequest {
                     /* timeToSendFirstByteMicros= */ -1,
                     /* timeToReceiveHeaderLastByteMicros= */ -1,
                     /* isProxied= */ null,
-                    /* isAdaptiveNetworkStream= */ false);
+                    /* isAdaptiveNetworkStream= */ false,
+                    cacheState,
+                    /* uploadGoodputBytesPerSec= */ -1,
+                    /* downloadGoodputBytesPerSec= */ -1);
         }
 
         // Maybe report metrics. This method should only be called on Callback's executor thread and

@@ -4,9 +4,12 @@
 
 #include "chrome/browser/ui/page_action/page_action_properties_provider.h"
 
+#include <array>
+
 #include "base/containers/fixed_flat_map.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/page_action/action_ids.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "ui/actions/action_id.h"
@@ -24,7 +27,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .type = PageActionIconType::kAiMode,
             .element_identifier = kAiModePageActionIconElementId,
             .priority =
-                page_actions::PageActionPriorityCategory::kCoreSiteUtility,
+                page_actions::PageActionPriorityCategory::kStrategicPromotion,
         },
     },
     {
@@ -34,7 +37,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .type = PageActionIconType::kIndigo,
             .element_identifier = kIndigoPageActionIconElementId,
             .priority =
-                page_actions::PageActionPriorityCategory::kContextualCue,
+                page_actions::PageActionPriorityCategory::kProactiveSuggestion,
         },
     },
     {
@@ -44,7 +47,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .type = PageActionIconType::kMultistepFilter,
             .element_identifier = kMultistepFilterPageActionIconElementId,
             .priority =
-                page_actions::PageActionPriorityCategory::kContextualCue,
+                page_actions::PageActionPriorityCategory::kProactiveSuggestion,
         },
     },
 
@@ -53,8 +56,9 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
         {
             .histogram_name = "LensOverlay",
             .type = PageActionIconType::kLensOverlay,
+            .element_identifier = kLensOverlayPageActionIconElementId,
             .priority =
-                page_actions::PageActionPriorityCategory::kDiscoveryNudge,
+                page_actions::PageActionPriorityCategory::kStrategicPromotion,
         },
     },
     {
@@ -64,7 +68,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .type = PageActionIconType::kLensOverlayHomework,
             .element_identifier = kLensOverlayHomeworkPageActionIconElementId,
             .priority =
-                page_actions::PageActionPriorityCategory::kDiscoveryNudge,
+                page_actions::PageActionPriorityCategory::kStrategicPromotion,
         },
     },
     {
@@ -82,7 +86,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .type = PageActionIconType::kMemorySaver,
             .element_identifier = kMemorySaverChipElementId,
             .priority =
-                page_actions::PageActionPriorityCategory::kPrivacySecurity,
+                page_actions::PageActionPriorityCategory::kStrategicPromotion,
         },
     },
     {
@@ -107,8 +111,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .histogram_name = "IntentPicker",
             .type = PageActionIconType::kIntentPicker,
             .element_identifier = kIntentPickerPageActionElementId,
-            .priority =
-                page_actions::PageActionPriorityCategory::kCoreSiteUtility,
+            .priority = page_actions::PageActionPriorityCategory::kQuietUtility,
         },
     },
     {
@@ -125,8 +128,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .histogram_name = "ReadingMode",
             .type = PageActionIconType::kReadingMode,
             .element_identifier = kReadAnythingPageActionElementId,
-            .priority =
-                page_actions::PageActionPriorityCategory::kCoreSiteUtility,
+            .priority = page_actions::PageActionPriorityCategory::kQuietUtility,
         },
     },
     {
@@ -151,8 +153,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .histogram_name = "PwaInstall",
             .type = PageActionIconType::kPwaInstall,
             .element_identifier = kInstallPwaElementId,
-            .priority =
-                page_actions::PageActionPriorityCategory::kCoreSiteUtility,
+            .priority = page_actions::PageActionPriorityCategory::kQuietUtility,
         },
     },
     {
@@ -170,8 +171,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .histogram_name = "Discounts",
             .type = PageActionIconType::kDiscounts,
             .element_identifier = kDiscountsChipElementId,
-            .priority =
-                page_actions::PageActionPriorityCategory::kDiscoveryNudge,
+            .priority = page_actions::PageActionPriorityCategory::kQuietUtility,
         },
     },
     {
@@ -189,8 +189,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .type = PageActionIconType::kCollaborationMessaging,
             .element_identifier =
                 kCollaborationMessagingPageActionIconElementId,
-            .priority =
-                page_actions::PageActionPriorityCategory::kDiscoveryNudge,
+            .priority = page_actions::PageActionPriorityCategory::kQuietUtility,
         },
     },
     {
@@ -215,8 +214,8 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .histogram_name = "CookieControls",
             .type = PageActionIconType::kCookieControls,
             .element_identifier = kCookieControlsIconElementId,
-            .priority =
-                page_actions::PageActionPriorityCategory::kPrivacySecurity,
+            .priority = page_actions::PageActionPriorityCategory::
+                kSecurityTrustAndPermissions,
         },
     },
     {
@@ -246,12 +245,10 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
         kActionShowPaymentsBubbleOrPage,
         {
             .histogram_name = "SavePayments",
-            // This action id corresponds to both `kSaveCard` and
-            // `kSaveIban` page action icon types. Since the framework only
-            // supports 1:1 mapping of `ActionId`<->`PageActionIconType`,
-            // and since `PageActionIconType` will be removed as an
-            // identifier for page actions post migration, we choose to only
-            // represent `kSaveCard` as the corresponding
+            // This action id is shared by both Save Card and Save IBAN flows.
+            // Since the framework only supports a 1:1 mapping of
+            // `ActionId`<->`PageActionIconType` (and `kSaveIban` is
+            // deprecated), we represent `kSaveCard` as the corresponding
             // `PageActionIconType` for `kActionShowPaymentsBubbleOrPage`.
             //
             // This peculiarity is handled well in all flows that rely on
@@ -286,8 +283,8 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .histogram_name = "Federation",
             .type = PageActionIconType::kFederation,
             .element_identifier = kFederationElementId,
-            .priority =
-                page_actions::PageActionPriorityCategory::kPrivacySecurity,
+            .priority = page_actions::PageActionPriorityCategory::
+                kSecurityTrustAndPermissions,
         },
     },
     {
@@ -295,6 +292,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
         {
             .histogram_name = "Glic",
             .type = PageActionIconType::kGlic,
+            .element_identifier = kGlicContextualCueingPageActionIconElementId,
         },
     },
     {
@@ -302,14 +300,7 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
         {
             .histogram_name = "ContextualCueing",
             .type = PageActionIconType::kAnchoredContextualCue,
-        },
-    },
-    {
-        kActionWebAuthnAmbientSignin,
-        {
-            .histogram_name = "WebAuthnAmbientSignin",
-            .type = PageActionIconType::kWebAuthnAmbientSignin,
-            .element_identifier = kWebAuthnAmbientSigninIconElementId,
+            .element_identifier = kAnchoredContextualCuePageActionIconElementId,
         },
     },
     {
@@ -318,8 +309,8 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .histogram_name = "AutofillPayment",
             .type = PageActionIconType::kAutofillPayment,
             .element_identifier = kAutofillPaymentIconElementId,
-            .priority =
-                page_actions::PageActionPriorityCategory::kContextualCue,
+            .priority = page_actions::PageActionPriorityCategory::
+                kSecurityTrustAndPermissions,
         },
     },
     {
@@ -335,8 +326,9 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
         {
             .histogram_name = "FakePageActionForDebug",
             .type = PageActionIconType::kFakePageActionForDebug,
-            .priority =
-                page_actions::PageActionPriorityCategory::kPrivacySecurity,
+            .element_identifier = kFakePageActionForDebugElementId,
+            .priority = page_actions::PageActionPriorityCategory::
+                kSecurityTrustAndPermissions,
         },
     },
     {
@@ -347,8 +339,24 @@ constexpr auto kPageActionProperties = base::MakeFixedFlatMap<
             .element_identifier = kPageActionWalletReminderNoticeElementId,
         },
     },
+    {
+        kActionGmailOtpOptIn,
+        {
+            .histogram_name = "GmailOtpOptIn",
+            .type = PageActionIconType::kGmailOtpOptIn,
+            .element_identifier = kPageActionGmailOtpOptInElementId,
+        },
+    },
+    {
+        kActionOnDeviceAi,
+        {
+            .histogram_name = "OnDeviceAi",
+            .type = PageActionIconType::kOnDeviceAi,
+            .element_identifier = kPageActionOnDeviceAiElementId,
+        },
+    },
 });
-// LINT.ThenChange(//components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom:PageActionId,//chrome/browser/ui/page_action/action_ids.h:kActionIds)
+// LINT.ThenChange(//components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom:PageActionId,//chrome/browser/ui/page_action/action_ids.h:kActionIds,//tools/metrics/histograms/metadata/page/histograms.xml:PageActionType)
 
 constexpr bool CheckIgnoreFlagUsage() {
   for (const auto& [action_id, properties] : kPageActionProperties) {
@@ -380,6 +388,49 @@ static_assert(
     CheckNoUserInteractionDefaultPriority(),
     "kUserInteraction priority should not be the default for any page action");
 
+constexpr bool CheckAllActionIdsHaveProperties() {
+  for (actions::ActionId action_id : page_actions::kActionIds) {
+    if (!kPageActionProperties.contains(action_id)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static_assert(
+    CheckAllActionIdsHaveProperties(),
+    "Every ActionId in kActionIds must have an entry in kPageActionProperties");
+
+constexpr bool CheckElementIdentifiersDefined() {
+  for (const auto& [action_id, properties] : kPageActionProperties) {
+    if (!properties.element_identifier) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static_assert(CheckElementIdentifiersDefined(),
+              "Every page action must define an element_identifier");
+
+constexpr bool CheckElementIdentifiersUnique() {
+  // TODO(crbug.com/587994323): This is O(n^2)...use std::set once Chromium
+  // migrates to C++26.
+  for (auto it1 = kPageActionProperties.begin();
+       it1 != kPageActionProperties.end(); ++it1) {
+    auto it2 = it1;
+    for (++it2; it2 != kPageActionProperties.end(); ++it2) {
+      if (it1->second.element_identifier == it2->second.element_identifier) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static_assert(CheckElementIdentifiersUnique(),
+              "Each page action must have a unique element_identifier");
+
 }  // namespace
 
 namespace page_actions {
@@ -392,15 +443,17 @@ bool PageActionPropertiesProvider::Contains(actions::ActionId action_id) const {
 }
 
 // static
-std::vector<ui::ElementIdentifier>
+base::span<const ui::ElementIdentifier>
 PageActionPropertiesProvider::GetAllElementIdentifiers() {
-  std::vector<ui::ElementIdentifier> result;
-  for (const auto& [action_id, properties] : kPageActionProperties) {
-    if (properties.element_identifier) {
-      result.push_back(properties.element_identifier);
+  static constexpr auto kElementIdentifiers = []() consteval {
+    std::array<ui::ElementIdentifier, kPageActionProperties.size()> result;
+    size_t index = 0;
+    for (const auto& [action_id, properties] : kPageActionProperties) {
+      result[index++] = properties.element_identifier;
     }
-  }
-  return result;
+    return result;
+  }();
+  return kElementIdentifiers;
 }
 
 const PageActionProperties& PageActionPropertiesProvider::GetProperties(

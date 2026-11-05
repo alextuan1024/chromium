@@ -4,6 +4,8 @@
 
 #include "components/policy/core/common/policy_switches.h"
 
+#include "base/command_line.h"
+
 namespace policy {
 namespace switches {
 
@@ -42,5 +44,30 @@ const char kSecureConnectApiUrl[] = "secure-connect-api-url";
 #if BUILDFLAG(IS_ANDROID)
 const char kForceDeviceOwnership[] = "force-device-ownership";
 #endif
+
+#if BUILDFLAG(ALLOW_FAKE_DMSERVER)
+const char kUseFakeDmserver[] = "use-fake-dmserver";
+#endif
 }  // namespace switches
+
+#if BUILDFLAG(ALLOW_FAKE_DMSERVER)
+bool IsFakeDmserverEnabled() {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kUseFakeDmserver);
+}
+
+bool FakeDmserverAlwaysEnrolls() {
+  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+             switches::kUseFakeDmserver) == "always-enroll";
+}
+#else
+bool IsFakeDmserverEnabled() {
+  return false;
+}
+
+bool FakeDmserverAlwaysEnrolls() {
+  return false;
+}
+#endif
+
 }  // namespace policy

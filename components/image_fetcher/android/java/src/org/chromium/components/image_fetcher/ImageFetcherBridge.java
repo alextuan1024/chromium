@@ -17,6 +17,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.embedder_support.simple_factory_key.SimpleFactoryKeyHandle;
+import org.chromium.net.NetError;
 
 /** Provides access to native implementations of ImageFetcher for the given browser context. */
 @JNINamespace("image_fetcher")
@@ -77,7 +78,9 @@ public class ImageFetcherBridge {
                         config,
                         params.url,
                         params.clientName,
+                        params.getTrafficAnnotationHash(),
                         params.expirationIntervalMinutes,
+                        params.isTrustedSource,
                         (ImageDataFetchResult dataFetchResult) -> {
                             callback.onResult(dataFetchResult);
                         });
@@ -101,6 +104,7 @@ public class ImageFetcherBridge {
                         config,
                         params.url,
                         params.clientName,
+                        params.getTrafficAnnotationHash(),
                         params.width,
                         params.height,
                         params.expirationIntervalMinutes,
@@ -135,6 +139,7 @@ public class ImageFetcherBridge {
                         config,
                         params.url,
                         params.clientName,
+                        params.getTrafficAnnotationHash(),
                         params.width,
                         params.height,
                         params.expirationIntervalMinutes,
@@ -186,9 +191,13 @@ public class ImageFetcherBridge {
     }
 
     @CalledByNative
-    private static RequestMetadata createRequestMetadata(
-            String mimeType, int httpResponseCode, String contentLocationHeader) {
-        return new RequestMetadata(mimeType, httpResponseCode, contentLocationHeader);
+    @VisibleForTesting
+    static RequestMetadata createRequestMetadata(
+            String mimeType,
+            int httpResponseCode,
+            @NetError int netError,
+            String contentLocationHeader) {
+        return new RequestMetadata(mimeType, httpResponseCode, netError, contentLocationHeader);
     }
 
     @CalledByNative
@@ -213,7 +222,9 @@ public class ImageFetcherBridge {
                 @ImageFetcherConfig int config,
                 String url,
                 String clientName,
+                int trafficAnnotationHash,
                 int expirationIntervalMinutes,
+                boolean isTrustedSource,
                 Callback<ImageDataFetchResult> callback);
 
         void fetchImage(
@@ -221,6 +232,7 @@ public class ImageFetcherBridge {
                 @ImageFetcherConfig int config,
                 String url,
                 String clientName,
+                int trafficAnnotationHash,
                 int frameWidth,
                 int frameHeight,
                 int expirationIntervalMinutes,

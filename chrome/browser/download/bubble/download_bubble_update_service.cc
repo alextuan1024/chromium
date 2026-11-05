@@ -1288,6 +1288,11 @@ void DownloadBubbleUpdateService::StartInitializeOfflineItemsCache() {
     return;
   }
   offline_items_initializing_ = true;
+  if (DownloadCoreService* service =
+          DownloadCoreServiceFactory::GetForBrowserContext(profile_)) {
+    service->InitializeHistory(
+        DownloadCoreService::DownloadHistoryLoadTrigger::kDownloadBubble);
+  }
   offline_items_collection::OfflineContentProvider* provider =
       OfflineContentAggregatorFactory::GetForKey(profile_->GetProfileKey());
   provider->GetAllItems(
@@ -1321,9 +1326,9 @@ void DownloadBubbleUpdateService::InitializeOfflineItemsCache(
   offline_item_callbacks_.clear();
 }
 
-std::vector<raw_ptr<download::DownloadItem, VectorExperimental>>
+std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>>
 DownloadBubbleUpdateService::GetAllDownloadItems() {
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> all_items;
+  std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> all_items;
   if (download_item_notifier_) {
     download_item_notifier_->GetManager()->GetAllDownloads(&all_items);
   }

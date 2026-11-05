@@ -38,8 +38,7 @@ class WriteCallbacksObserver;
 // A writable PrefStore implementation that is used for user preferences.
 class COMPONENTS_PREFS_EXPORT JsonPrefStore final
     : public PersistentPrefStore,
-      public base::ImportantFileWriter::DataSerializer,
-      public base::ImportantFileWriter::BackgroundDataSerializer {
+      private base::ImportantFileWriter::BackgroundDataSerializer {
  public:
   struct ReadResult;
 
@@ -94,7 +93,7 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore final
   bool ReadOnly() const override;
   PrefReadError GetReadError() const override;
   bool HasReadErrorDelegate() const override;
-  PrefFilter* GetFilter() override;
+  PrefFilter* GetFilter() LIFETIME_BOUND override;
   // Note this method may be asynchronous if this instance has a |pref_filter_|
   // in which case it will return PREF_READ_ERROR_ASYNCHRONOUS_TASK_INCOMPLETE.
   // See details in pref_filter.h.
@@ -129,7 +128,7 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore final
   }
 
 #if defined(UNIT_TEST)
-  base::ImportantFileWriter& get_writer() { return writer_; }
+  base::ImportantFileWriter& get_writer() LIFETIME_BOUND { return writer_; }
 #endif
 
  private:
@@ -138,10 +137,6 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore final
   friend class base::WriteCallbacksObserver;
 
   ~JsonPrefStore() override;
-
-  // Perform pre-serialization bookkeeping common to either serialization flow
-  // (main thread or background thread).
-  void PerformPreserializationTasks();
 
   // If |write_success| is true, runs |on_next_successful_write_|.
   // Otherwise, re-registers |on_next_successful_write_|.
@@ -169,8 +164,6 @@ class COMPONENTS_PREFS_EXPORT JsonPrefStore final
   // is invoked directly.
   void OnFileRead(std::unique_ptr<ReadResult> read_result);
 
-  // ImportantFileWriter::DataSerializer overrides:
-  std::optional<std::string> SerializeData() override;
   // ImportantFileWriter::BackgroundDataSerializer implementation.
   base::ImportantFileWriter::BackgroundDataProducerCallback
   GetSerializedDataProducerForBackgroundSequence() override;

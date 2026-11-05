@@ -568,17 +568,15 @@ bool MP4StreamParser::ParseMoov(BoxReader* reader) {
         }
 
         codec = AudioCodec::kIAMF;
-        profile = entry.iacb.profile == 0 ? AudioCodecProfile::kIAMF_SIMPLE
-                                          : AudioCodecProfile::kIAMF_BASE;
+        profile = entry.iacb.profile;
         extra_data = entry.iacb.ia_descriptors;
 
-        // The correct values for the channel layout and sample rate can
-        // be parsed from the descriptor bitstream in `extra_data`.
-        // They are set to the following values here to create a valid
-        // AudioDecoderConfig.
-        // TODO (crbug.com/1513779): Parse the bitstream to set the correct
-        // values here.
-        channel_layout_config = ChannelLayoutConfig::Stereo();
+        channel_layout_config =
+            entry.iacb.channel_layout.value_or(ChannelLayoutConfig::Stereo());
+
+        // The correct value for the sample rate can be parsed from the
+        // descriptor bitstream in `extra_data`. IAMF requires Opus to always
+        // have a sample rate of 48kHz.
         sample_per_second = 48000;
 #endif  // BUILDFLAG(ENABLE_PLATFORM_IAMF_AUDIO) || ...
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
@@ -820,13 +818,15 @@ bool MP4StreamParser::ParseMoov(BoxReader* reader) {
                  "SourceBuffer.";
         }
       }
+      CHECK(video_codec == VideoCodec::kAV2 || entry.extra_data.empty());
       video_config.Initialize(video_codec, video_codec_profile,
                               entry.alpha_mode, VideoColorSpace::REC709(),
                               CalculateRotation(track->header, moov_->header),
                               coded_size, visible_rect, natural_size,
-                              // No decoder-specific buffer needed for AVC;
-                              // SPS/PPS are embedded in the video stream
-                              EmptyExtraData(), scheme);
+                              // VideoSampleEntry::extra_data is only populated
+                              // for AV2 out-of-band config OBUs ('av2C') and is
+                              // empty for all other video codecs.
+                              entry.extra_data, scheme);
       DVLOG(3) << __func__ << " video_track_id=" << video_track_id
                << " is_encrypted=" << is_track_encrypted;
 
@@ -841,9 +841,7 @@ bool MP4StreamParser::ParseMoov(BoxReader* reader) {
         video_config.set_color_space_info(entry.dv_info->color_space);
       }
 
-      if (!entry.hdr_metadata.IsEmpty() && entry.hdr_metadata.IsValid()) {
-        video_config.set_hdr_metadata(entry.hdr_metadata);
-      }
+      video_config.set_hdr_metadata(entry.hdr_metadata);
 
       video_config.set_spatial_format(entry.video_spatial_format);
 

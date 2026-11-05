@@ -336,6 +336,84 @@ class SymbolizeTraceTestCase(unittest.TestCase):
     shutil.rmtree(dump_syms_dir)
     shutil.rmtree(self.options.breakpad_output_dir)
 
+  def testLocalBuildDirWithSecondaryAbi(self):
+    # A trace can contain 32-bit and 64-bit copies of the same library. Both
+    # must be extracted, from the primary and the secondary-ABI build dirs.
+    breakpad_file_extractor.ExtractBreakpadFiles = self.ExtractBreakpadFiles
+    self.options.breakpad_output_dir = tempfile.mkdtemp()
+    self.options.local_build_dir = tempfile.mkdtemp()
+    lib_name = 'libwebviewchromium.so'
+    module_ids = {
+      os.path.join(
+        self.options.local_build_dir, 'lib.unstripped', lib_name
+      ): '0A07AB57',
+      os.path.join(
+        self.options.local_build_dir,
+        'android_clang_arm',
+        'lib.unstripped',
+        lib_name,
+      ): '892E74C4',
+    }
+    for path in module_ids:
+      os.makedirs(os.path.dirname(path))
+      open(path, 'w').close()
+
+    def fake_dump_syms(_, input_file_path, output_file_path, **__):
+      with open(output_file_path, 'w') as f:
+        f.write(
+          'MODULE Linux arm %s %s\n' % (module_ids[input_file_path], lib_name)
+        )
+      return True
+
+    trace_metadata = metadata_extractor.MetadataExtractor.return_value
+    trace_metadata.GetModuleIds.return_value = set(module_ids.values())
+    with mock.patch.object(
+      breakpad_file_extractor, '_RunDumpSyms', side_effect=fake_dump_syms
+    ):
+      symbolize_trace.SymbolizeTrace(self.trace_file, self.options)
+
+    self.assertEqual(
+      sorted(os.listdir(self.options.breakpad_output_dir)),
+      ['0A07AB57.breakpad', '892E74C4.breakpad'],
+    )
+    os.remove(self.options.output_file)
+    shutil.rmtree(self.options.local_build_dir)
+    shutil.rmtree(self.options.breakpad_output_dir)
+
+  def testSymbolizerSeesPerfettoBreakpadNames(self):
+    # Perfetto must find each breakpad file under its standard name and, for
+    # 33-char Chrome module IDs, under the hex encoding of the ID text. The
+    # breakpad dir must not change.
+    self.options.local_breakpad_dir = tempfile.mkdtemp()
+    chrome_name = '892E74C4A50E94B357E39FD6A360C84D0.breakpad'
+    perfetto_name = (
+      '383932453734433441353045393442333537453339464436413336304338344430'
+      '.breakpad'
+    )
+    other_name = '34984AB4EF948D.breakpad'
+    for name in (chrome_name, other_name):
+      open(os.path.join(self.options.local_breakpad_dir, name), 'w').close()
+    symbol_dirs = []
+
+    def run_symbolizer(cmd, env, stdout):
+      symbol_dirs.append(env['BREAKPAD_SYMBOL_DIR'])
+      self.assertCountEqual(
+        os.listdir(symbol_dirs[0]), [chrome_name, perfetto_name, other_name]
+      )
+      self.side_effect(cmd, env, stdout)
+
+    symbolize_trace._RunSymbolizer = mock.MagicMock(side_effect=run_symbolizer)
+    symbolize_trace.SymbolizeTrace(self.trace_file, self.options)
+
+    # The temp dir is deleted and the breakpad dir is unchanged.
+    self.assertFalse(os.path.exists(symbol_dirs[0]))
+    self.assertCountEqual(
+      os.listdir(self.options.local_breakpad_dir), [chrome_name, other_name]
+    )
+
+    os.remove(self.options.output_file)
+    shutil.rmtree(self.options.local_breakpad_dir)
+
 
 if __name__ == '__main__':
   unittest.main()

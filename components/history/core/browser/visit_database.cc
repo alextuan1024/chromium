@@ -12,28 +12,42 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/containers/span.h"
-#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "components/google/core/common/google_util.h"
-#include "components/history/core/browser/features.h"
 #include "components/history/core/browser/history_backend.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/url_database.h"
 #include "sql/statement.h"
 #include "sql/transaction.h"
 #include "ui/base/page_transition_types.h"
+#include "url/gurl.h"
 #include "url/url_constants.h"
 
 namespace history {
 
 namespace {
+
+// Escapes SQL `LIKE` wildcards (`%` and `_`) and the escape character (`\`) in
+// `str` so user-supplied hostname suffixes are matched literally by `LIKE`.
+std::string EscapeForLike(std::string_view str) {
+  std::string escaped;
+  escaped.reserve(str.size());
+  for (char c : str) {
+    if (c == '%' || c == '_' || c == '\\') {
+      escaped.push_back('\\');
+    }
+    escaped.push_back(c);
+  }
+  return escaped;
+}
 
 // Returns [lower, upper) bounds for matching a URL against `origin`.
 std::pair<std::string, std::string> GetOriginSearchBounds(const GURL& origin) {
@@ -294,9 +308,6 @@ void VisitDatabase::FillVisitRow(sql::Statement& statement, VisitRow* visit) {
   if (!app_id_view.empty()) {
     visit->app_id = std::string(app_id_view);
   }
-  if (statement.ColumnCount() > 18) {
-    visit->source = VisitSourceFromInt(statement.ColumnInt(18));
-  }
 }
 
 // static
@@ -325,13 +336,25 @@ bool VisitDatabase::FillVisitVectorWithOptions(sql::Statement& statement,
   // to handle removing per-day duplicates.
   base::Time found_urls_midnight;
 
+  const std::string hostname_suffix =
+      base::ToLowerASCII(options.hostname_suffix);
+
   while (statement.Step()) {
     VisitRow visit;
     FillVisitRow(statement, &visit);
+    // Keep in sync with column 18 in `PrepareVisibleVisitsQuery()`.
+    visit.source = VisitSourceFromInt(statement.ColumnInt(18));
 
     // Skip transitions that aren't user-visible.
     if (!TransitionIsVisible(visit.transition)) {
       continue;
+    }
+
+    if (!hostname_suffix.empty()) {
+      const GURL url(statement.ColumnStringView(19));
+      if (!url.DomainIs(hostname_suffix)) {
+        continue;
+      }
     }
 
     if (options.duplicate_policy != QueryOptions::KEEP_ALL_DUPLICATES) {
@@ -341,10 +364,7 @@ bool VisitDatabase::FillVisitVectorWithOptions(sql::Statement& statement,
         found_urls_midnight = visit.visit_time.LocalMidnight();
       }
 
-      bool is_actor_visit = false;
-#if !BUILDFLAG(IS_IOS)
-      is_actor_visit = visit.source == SOURCE_ACTOR;
-#endif
+      bool is_actor_visit = visit.source == SOURCE_ACTOR;
 
       // Make sure the (URLID, is_actor_visit) is unique.
       DedupeKey key = std::make_pair(visit.url_id, is_actor_visit);
@@ -606,29 +626,19 @@ bool VisitDatabase::PrepareVisibleVisitsQuery(
   std::vector<std::string> where_clauses;
   std::vector<int64_t> binding_values;
 
-// TODO(crbug.com/457641486) Clean up preprocessor statements once feature is
-// rolled out.
-#if !BUILDFLAG(IS_IOS)
   sql += ", IFNULL(visit_source.source, 1)";
   joins += " LEFT JOIN visit_source ON visits.id = visit_source.id";
 
-  if (history::IsBrowsingHistoryActorIntegrationM3Enabled()) {
-    CHECK(options.include_user_visits || options.include_actor_visits);
+  CHECK(options.include_user_visits || options.include_actor_visits);
 
-    if (options.include_user_visits && !options.include_actor_visits) {
-      where_clauses.push_back(
-          "(visit_source.source IS NULL OR visit_source.source != ?)");
-      binding_values.push_back(SOURCE_ACTOR);
-    } else if (!options.include_user_visits && options.include_actor_visits) {
-      where_clauses.push_back("visit_source.source = ?");
-      binding_values.push_back(SOURCE_ACTOR);
-    }
-  } else if (!options.include_actor_visits) {
+  if (options.include_user_visits && !options.include_actor_visits) {
     where_clauses.push_back(
         "(visit_source.source IS NULL OR visit_source.source != ?)");
     binding_values.push_back(SOURCE_ACTOR);
+  } else if (!options.include_user_visits && options.include_actor_visits) {
+    where_clauses.push_back("visit_source.source = ?");
+    binding_values.push_back(SOURCE_ACTOR);
   }
-#endif
 
   if (options.policy_for_404_visits == VisitQuery404sPolicy::kExclude404s) {
     joins +=
@@ -637,6 +647,11 @@ bool VisitDatabase::PrepareVisibleVisitsQuery(
     where_clauses.push_back(
         "(context_annotations.response_code IS NULL OR "
         "context_annotations.response_code != 404)");
+  }
+
+  if (!options.hostname_suffix.empty()) {
+    sql += ", urls.url";
+    joins += " JOIN urls ON visits.url = urls.id";
   }
 
   sql += " FROM visits" + joins;
@@ -681,10 +696,14 @@ bool VisitDatabase::PrepareVisibleVisitsQuery(
     }
   }
 
-  // String parameters (client_ids, app_id) are bound after integer values in
-  // `binding_values`.
+  // String parameters (client_ids, app_id, hostname_suffix) are bound after
+  // integer values in `binding_values`.
   if (options.app_id) {
     where_clauses.push_back("visits.app_id = ?");
+  }
+
+  if (!options.hostname_suffix.empty()) {
+    where_clauses.push_back("urls.url LIKE ? ESCAPE '\\'");
   }
 
   if (!where_clauses.empty()) {
@@ -717,6 +736,15 @@ bool VisitDatabase::PrepareVisibleVisitsQuery(
 
   if (options.app_id) {
     out_statement.BindString(bind_index++, *options.app_id);
+  }
+
+  if (!options.hostname_suffix.empty()) {
+    // Pre-filter URLs in SQL using LIKE. This pattern can match irrelevant URLs
+    // (e.g. when the suffix appears in the path or as a substring of another
+    // hostname), which will be filtered out during C++ post-processing in
+    // FillVisitVectorWithOptions().
+    out_statement.BindString(
+        bind_index++, "%://%" + EscapeForLike(options.hostname_suffix) + "%");
   }
 
   CHECK_EQ(static_cast<size_t>(bind_index),
@@ -1320,18 +1348,6 @@ DailyVisitsResult VisitDatabase::GetDailyVisitsToOrigin(
   result.success = true;
 
   return result;
-}
-
-bool VisitDatabase::GetStartDate(base::Time* first_visit) {
-  sql::Statement statement(GetDB().GetCachedStatement(
-      SQL_FROM_HERE,
-      "SELECT MIN(visit_time) FROM visits WHERE visit_time != 0"));
-  if (!statement.Step() || statement.ColumnInt64(0) == 0) {
-    *first_visit = base::Time::Now();
-    return false;
-  }
-  *first_visit = statement.ColumnTime(0);
-  return true;
 }
 
 VisitID VisitDatabase::GetMaxVisitIDInUse() {

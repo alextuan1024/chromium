@@ -6,11 +6,14 @@ package org.chromium.chrome.browser.customtabs;
 
 import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
+import android.os.Bundle;
 import android.util.SparseBooleanArray;
 
 import androidx.annotation.NonNull;
@@ -25,6 +28,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mockito;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
@@ -44,6 +48,7 @@ import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.app.tabmodel.CustomTabsTabModelOrchestrator;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.crypto.CipherFactory;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.CustomTabProfileType;
@@ -121,6 +126,7 @@ public class CustomTabTabPersistencePolicyTest {
                             ApplicationStatus.onStateChangeForTesting(
                                     activity, ActivityState.DESTROYED));
         }
+        CustomTabTabPersistencePolicy.resetSavedActivityIdsForTesting();
     }
 
     /** Test to ensure that an existing metadata files are deleted if no restore is requested. */
@@ -187,6 +193,45 @@ public class CustomTabTabPersistencePolicyTest {
         CustomTabTabPersistencePolicy.getAllLiveTabAndTaskIds(tabIds, taskIds);
         assertThat(tabIds, Matchers.containsInAnyOrder(4, 8, 9, 458, 9878));
         assertThat(taskIds, Matchers.containsInAnyOrder(1, 5));
+
+        tabIds.clear();
+        Set<String> activityIds = new HashSet<>();
+        CustomTabTabPersistencePolicy.getAllLiveTabAndActivityIds(tabIds, activityIds);
+        assertThat(tabIds, Matchers.containsInAnyOrder(4, 8, 9, 458, 9878));
+        assertThat(
+                activityIds,
+                Matchers.containsInAnyOrder(
+                        "1",
+                        "5",
+                        cct1.getCustomTabTabPersistencePolicy().getActivityId(),
+                        cct2.getCustomTabTabPersistencePolicy().getActivityId()));
+
+        // Simulate cct1 being saved and destroyed in the background under memory pressure;
+        // its saved activity ID should still be reported as live until recreated.
+        Bundle savedState = new Bundle();
+        cct1.getCustomTabTabPersistencePolicy().saveToBundle(savedState);
+        String savedCct1ActivityId = cct1.getCustomTabTabPersistencePolicy().getActivityId();
+        ApplicationStatus.onStateChangeForTesting(cct1, ActivityState.DESTROYED);
+
+        tabIds.clear();
+        activityIds.clear();
+        CustomTabTabPersistencePolicy.getAllLiveTabAndActivityIds(tabIds, activityIds);
+        assertThat(
+                activityIds,
+                Matchers.containsInAnyOrder(
+                        "5",
+                        savedCct1ActivityId,
+                        cct2.getCustomTabTabPersistencePolicy().getActivityId()));
+
+        // Recreating cct1 from savedState clears it from sSavedActivityIds.
+        new CustomTabTabPersistencePolicy(cct1, savedState, /* intentDataProvider= */ null);
+        tabIds.clear();
+        activityIds.clear();
+        CustomTabTabPersistencePolicy.getAllLiveTabAndActivityIds(tabIds, activityIds);
+        assertThat(
+                activityIds,
+                Matchers.containsInAnyOrder(
+                        "5", cct2.getCustomTabTabPersistencePolicy().getActivityId()));
     }
 
     /** Test the full cleanup task path that determines what files are eligible for deletion. */
@@ -285,6 +330,34 @@ public class CustomTabTabPersistencePolicyTest {
         assertThat(
                 tabDataToDelete.get().getMetadataFiles(),
                 Matchers.containsInAnyOrder(metadataFile.getName()));
+        assertTrue(metadataFile.delete());
+        assertTrue(tab111File.delete());
+        assertTrue(tab222File.delete());
+        assertTrue(tab333File.delete());
+
+        // Ensure the canonical per-app metadata file (tab_state_app) and its referenced tab state
+        // files are never marked for deletion even when expired.
+        TabModelSelectorMetadata appData =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            TabModelSelectorImpl selectorImpl =
+                                    buildTestTabModelSelector(new int[] {444}, null);
+                            return TabPersistentStoreImpl.extractTabMetadataFromSelector(
+                                    selectorImpl, null, /* isRecreating= */ false);
+                        });
+        File appMetadataFile =
+                new File(stateDirectory, CustomTabTabPersistencePolicy.APP_METADATA_FILE_NAME);
+        assertTrue(TabMetadataFileManager.saveListToFile(appMetadataFile, appData));
+        assertTrue(appMetadataFile.setLastModified(1234));
+        File tab444File =
+                TabStateFileManager.getTabStateFile(
+                        stateDirectory, 444, false, /* isFlatbuffer= */ false);
+        assertTrue(tab444File.createNewFile());
+
+        policy.cleanupUnusedFiles(tabDataToDeleteCallback);
+        callbackSignal.waitForCallback(5);
+        assertThat(tabDataToDelete.get().getMetadataFiles(), Matchers.emptyIterable());
+        assertThat(tabDataToDelete.get().getTabStateFileInfos(), Matchers.emptyIterable());
     }
 
     /** Ensure that the metadata file's last modified timestamp is updated on initialization. */
@@ -310,6 +383,140 @@ public class CustomTabTabPersistencePolicyTest {
         policy.waitForInitializationToFinish();
 
         assertTrue(metadataFile.lastModified() > previousTimestamp);
+    }
+
+    /** Ensure per-activity UUID metadata filename is preserved across Bundle save/restore. */
+    @Test
+    @Feature("TabPersistentStore")
+    @SmallTest
+    @UiThreadTest
+    public void testActivityUuidSavedAndRestoredFromBundle() {
+        CustomTabActivity cct1 = buildTestCustomTabActivity(7, new int[] {10}, null);
+        CustomTabTabPersistencePolicy policy1 =
+                new CustomTabTabPersistencePolicy(cct1, null, /* intentDataProvider= */ null);
+
+        CustomTabActivity cct2 = buildTestCustomTabActivity(7, new int[] {20}, null);
+        CustomTabTabPersistencePolicy policy2 =
+                new CustomTabTabPersistencePolicy(cct2, null, /* intentDataProvider= */ null);
+
+        // Two CustomTabActivities sharing the same taskId (7) must get distinct metadata files.
+        assertTrue(
+                policy1.getMetadataFileName()
+                        .startsWith(TabMetadataFileManager.SAVED_METADATA_FILE_PREFIX + "7_"));
+        assertNotEquals(policy1.getMetadataFileName(), policy2.getMetadataFileName());
+
+        Bundle savedInstanceState = new Bundle();
+        policy1.saveToBundle(savedInstanceState);
+
+        CustomTabTabPersistencePolicy restoredPolicy1 =
+                new CustomTabTabPersistencePolicy(
+                        cct1, savedInstanceState, /* intentDataProvider= */ null);
+        assertEquals(policy1.getMetadataFileName(), restoredPolicy1.getMetadataFileName());
+    }
+
+    /**
+     * Ensure Tabbed CCT uses custom_tabs_app/app_<pkg>/acct_<sha256_16(accountId)> and renames
+     * tab_state_active_<taskId>_<uuid> to tab_state_retired_<taskId>_<uuid>_<timestamp> on finish.
+     */
+    @Test
+    @Feature("TabPersistentStore")
+    @MediumTest
+    public void testTabbedCctDirectoryAndRetireMetadataFile() throws Exception {
+        CustomTabActivity cct =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> buildTestCustomTabActivity(99, new int[] {10}, null));
+        BrowserServicesIntentDataProvider intentDataProvider =
+                Mockito.mock(BrowserServicesIntentDataProvider.class);
+        Mockito.when(intentDataProvider.isTabbedCctEnabled()).thenReturn(true);
+        Mockito.when(intentDataProvider.getClientPackageNameIdentitySharing())
+                .thenReturn("com.google.android.googlequicksearchbox");
+        Mockito.when(intentDataProvider.getTabbedCctAccountId()).thenReturn("user_account_123");
+
+        CustomTabTabPersistencePolicy policy =
+                new CustomTabTabPersistencePolicy(cct, null, intentDataProvider);
+        policy.setTaskRunner(mSequencedTaskRunner);
+
+        File stateDir = policy.getOrCreateStateDirectory();
+        String hashedAccountId = TabStateDirectory.hashAccountId("user_account_123");
+        assertEquals(16, hashedAccountId.length());
+        String expectedAccountDir = "acct_" + hashedAccountId;
+        assertEquals(expectedAccountDir, stateDir.getName());
+        assertEquals(
+                "app_com.google.android.googlequicksearchbox", stateDir.getParentFile().getName());
+        assertEquals(
+                TabStateDirectory.CUSTOM_TABS_APP_DIRECTORY,
+                stateDir.getParentFile().getParentFile().getName());
+
+        File activeFile = new File(stateDir, policy.getMetadataFileName());
+        assertTrue(
+                activeFile
+                        .getName()
+                        .startsWith(
+                                CustomTabTabPersistencePolicy.ACTIVE_METADATA_FILE_PREFIX + "99_"));
+        assertTrue(activeFile.createNewFile());
+
+        String expectedRetiredPrefix =
+                CustomTabTabPersistencePolicy.RETIRED_METADATA_FILE_PREFIX
+                        + policy.getActivityId()
+                                .substring(
+                                        CustomTabTabPersistencePolicy.ACTIVE_METADATA_TAG_PREFIX
+                                                .length())
+                        + "_";
+        policy.retireMetadataStateFileAsync();
+
+        final CallbackHelper helper = new CallbackHelper();
+        mSequencedTaskRunner.execute(helper::notifyCalled);
+        helper.waitForCallback(0);
+
+        assertFalse(activeFile.exists());
+        File[] files = stateDir.listFiles();
+        assertNotNull(files);
+        assertEquals(1, files.length);
+        assertTrue(files[0].getName().startsWith(expectedRetiredPrefix));
+        files[0].delete();
+
+        // When account ID is omitted (null), the directory falls back to "acct_default".
+        Mockito.when(intentDataProvider.getTabbedCctAccountId()).thenReturn(null);
+        CustomTabTabPersistencePolicy defaultAcctPolicy =
+                new CustomTabTabPersistencePolicy(cct, null, intentDataProvider);
+        File defaultStateDir = defaultAcctPolicy.getOrCreateStateDirectory();
+        assertEquals("acct_default", defaultStateDir.getName());
+        assertEquals(
+                "app_com.google.android.googlequicksearchbox",
+                defaultStateDir.getParentFile().getName());
+    }
+
+    /**
+     * Ensure that if an activity is recreated after an app update with a Bundle from the old
+     * version (missing KEY_CUSTOM_TAB_ACTIVITY_ID) and a legacy taskId-based metadata file on disk,
+     * performInitialization migrates the legacy file to the new UUID metadata filename.
+     */
+    @Test
+    @Feature("TabPersistentStore")
+    @MediumTest
+    public void testLegacyTaskIdMetadataFileMigratedOnUpgradeRestore() throws Exception {
+        CustomTabActivity cct =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> buildTestCustomTabActivity(42, new int[] {10}, null));
+        Bundle legacySavedInstanceState = new Bundle();
+        CustomTabTabPersistencePolicy policy =
+                new CustomTabTabPersistencePolicy(
+                        cct, legacySavedInstanceState, /* intentDataProvider= */ null);
+
+        File stateDirectory = policy.getOrCreateStateDirectory();
+        File legacyMetadataFile =
+                new File(stateDirectory, TabMetadataFileManager.getMetadataFileName("42"));
+        assertTrue(legacyMetadataFile.createNewFile());
+
+        File newMetadataFile = new File(stateDirectory, policy.getMetadataFileName());
+        assertFalse(newMetadataFile.exists());
+
+        policy.performInitialization(mSequencedTaskRunner);
+        policy.waitForInitializationToFinish();
+
+        assertFalse(legacyMetadataFile.exists());
+        assertTrue(newMetadataFile.exists());
+        newMetadataFile.delete();
     }
 
     private CustomTabActivity buildTestCustomTabActivity(

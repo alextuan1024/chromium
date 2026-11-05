@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -71,7 +72,7 @@ std::string AXTreeFormatterAuraLinux::EvaluateScript(
       continue;
     }
 
-    DCHECK(instructions[index].IsScript());
+    CHECK(instructions[index].IsScript(), base::NotFatalUntil::M163);
     const AXPropertyNode& property_node = instructions[index].AsScript();
 
     AXOptionalObject value = invoker.Invoke(property_node);
@@ -93,10 +94,10 @@ std::string AXTreeFormatterAuraLinux::EvaluateScript(
 }
 
 AtkObject* GetAtkObject(AXPlatformNodeDelegate* node) {
-  DCHECK(node);
+  CHECK(node, base::NotFatalUntil::M163);
 
   AtkObject* atk_node = node->GetNativeViewAccessible();
-  DCHECK(atk_node);
+  CHECK(atk_node, base::NotFatalUntil::M163);
 
   return atk_node;
 }
@@ -127,7 +128,7 @@ void AXTreeFormatterAuraLinux::RecursiveBuildTree(AtkObject* atk_node,
 
   AXPlatformNodeAuraLinux* platform_node =
       AXPlatformNodeAuraLinux::FromAtkObject(atk_node);
-  DCHECK(platform_node);
+  CHECK(platform_node, base::NotFatalUntil::M163);
 
   AXPlatformNodeDelegate* node = platform_node->GetDelegate();
 
@@ -235,9 +236,9 @@ void AXTreeFormatterAuraLinux::AddHypertextProperties(
 
 #if DCHECK_IS_ON()
       AtkObject* link_obj = atk_hyperlink_get_object(link, 0);
-      DCHECK(link_obj);
+      CHECK(link_obj, base::NotFatalUntil::M163);
       int index_in_parent = atk_object_get_index_in_parent(link_obj);
-      DCHECK_GE(index_in_parent, 0);
+      CHECK_GE(index_in_parent, 0, base::NotFatalUntil::M163);
 #endif
 
       int utf8_offset = atk_hyperlink_get_start_index(link);
@@ -338,7 +339,7 @@ void AXTreeFormatterAuraLinux::AddRelationProperties(
     if (atk_relation_set_contains(relation_set, relation_type)) {
       AtkRelation* relation =
           atk_relation_set_get_relation_by_type(relation_set, relation_type);
-      DCHECK(relation);
+      CHECK(relation, base::NotFatalUntil::M163);
 
       relations.Append(ToString(relation));
     }
@@ -352,16 +353,20 @@ std::string AXTreeFormatterAuraLinux::ToString(AtkRelation* relation) {
   std::string relation_name =
       atk_relation_type_get_name(relation->relationship);
   GPtrArray* relation_targets = atk_relation_get_target(relation);
-  DCHECK(relation_targets);
+  CHECK(relation_targets, base::NotFatalUntil::M163);
 
-  std::vector<std::string> target_roles(relation_targets->len);
-  for (guint i = 0; i < relation_targets->len; i++) {
-    AtkObject* atk_target = static_cast<AtkObject*>(
-        UNSAFE_TODO(g_ptr_array_index(relation_targets, i)));
-    DCHECK(atk_target);
-    // Use the same stable mapping as the per-node role output.
-    target_roles[i] = AtkRoleToString(atk_object_get_role(atk_target));
-  }
+  std::vector<std::string> target_roles;
+  target_roles.reserve(relation_targets->len);
+  g_ptr_array_foreach(
+      relation_targets,
+      [](gpointer target, gpointer roles) {
+        AtkObject* atk_target = static_cast<AtkObject*>(target);
+        CHECK(atk_target, base::NotFatalUntil::M163);
+        // Use the same stable mapping as the per-node role output.
+        static_cast<std::vector<std::string>*>(roles)->push_back(
+            AtkRoleToString(atk_object_get_role(atk_target)));
+      },
+      &target_roles);
 
   // We need to alphabetically sort the roles so tests don't flake from the
   // order of `relation_targets`.
@@ -512,7 +517,7 @@ void AXTreeFormatterAuraLinux::AddProperties(AtkObject* atk_object,
                                              base::DictValue* dict) const {
   AXPlatformNodeAuraLinux* platform_node =
       AXPlatformNodeAuraLinux::FromAtkObject(atk_object);
-  DCHECK(platform_node);
+  CHECK(platform_node, base::NotFatalUntil::M163);
 
   AXPlatformNodeDelegate* node = platform_node->GetDelegate();
 
@@ -597,9 +602,12 @@ void AXTreeFormatterAuraLinux::AddProperties(AtspiAccessible* node,
   AtspiStateSet* atspi_states = atspi_accessible_get_state_set(node);
   GArray* state_array = atspi_state_set_get_states(atspi_states);
   base::ListValue states;
-  for (unsigned i = 0; i < state_array->len; i++) {
-    AtspiStateType state_type =
-        UNSAFE_TODO(g_array_index(state_array, AtspiStateType, i));
+  // SAFETY: `atspi_state_set_get_states()` returns a GArray of `AtspiStateType`
+  // whose `data` GLib guarantees holds `len` elements (no safe accessor).
+  base::span<const AtspiStateType> state_types = UNSAFE_BUFFERS(
+      base::span(reinterpret_cast<const AtspiStateType*>(state_array->data),
+                 state_array->len));
+  for (AtspiStateType state_type : state_types) {
     states.Append(ATSPIStateToString(state_type));
   }
   dict->Set("states", std::move(states));

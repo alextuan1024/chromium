@@ -4,6 +4,7 @@
 
 #include "content/browser/worker_host/mock_shared_worker.h"
 
+#include "base/functional/bind.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "services/network/public/mojom/content_security_policy.mojom-forward.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -100,7 +101,8 @@ bool MockSharedWorkerFactory::CheckReceivedCreateSharedWorker(
     const std::vector<network::mojom::ContentSecurityPolicyPtr>&
         expected_content_security_policies,
     mojo::Remote<blink::mojom::SharedWorkerHost>* host,
-    mojo::PendingReceiver<blink::mojom::SharedWorker>* receiver) {
+    mojo::PendingReceiver<blink::mojom::SharedWorker>* receiver,
+    blink::mojom::WorkerMainScriptLoadParamsPtr* main_script_load_params) {
   std::unique_ptr<CreateParams> create_params = std::move(create_params_);
   if (!create_params)
     return false;
@@ -118,6 +120,10 @@ bool MockSharedWorkerFactory::CheckReceivedCreateSharedWorker(
   }
   host->Bind(std::move(create_params->host));
   *receiver = std::move(create_params->receiver);
+  if (main_script_load_params) {
+    *main_script_load_params =
+        std::move(create_params->main_script_load_params);
+  }
   return true;
 }
 
@@ -158,6 +164,7 @@ void MockSharedWorkerFactory::CreateSharedWorker(
         browser_interface_broker,
     ukm::SourceId ukm_source_id,
     bool require_cross_site_request_for_cookies,
+    net::StorageAccessApiStatus storage_access_api_status,
     mojo::PendingReceiver<blink::mojom::ReportingObserver>
         coep_reporting_observer,
     mojo::PendingReceiver<blink::mojom::ReportingObserver>
@@ -168,11 +175,13 @@ void MockSharedWorkerFactory::CreateSharedWorker(
   create_params_->info = std::move(info);
   create_params_->pause_on_start = pause_on_start;
   create_params_->content_settings = std::move(content_settings);
+  create_params_->main_script_load_params = std::move(main_script_load_params);
   create_params_->host = std::move(host);
   create_params_->receiver = std::move(receiver);
   create_params_->ukm_source_id = ukm_source_id;
   create_params_->require_cross_site_request_for_cookies =
       require_cross_site_request_for_cookies;
+  last_storage_access_api_status_ = storage_access_api_status;
   if (create_worker_callback_) {
     std::move(create_worker_callback_).Run();
   }
@@ -188,7 +197,10 @@ MockSharedWorkerClient::~MockSharedWorkerClient() = default;
 
 void MockSharedWorkerClient::Bind(
     mojo::PendingReceiver<blink::mojom::SharedWorkerClient> receiver) {
+  is_disconnected_ = false;
   receiver_.Bind(std::move(receiver));
+  receiver_.set_disconnect_handler(base::BindOnce(
+      &MockSharedWorkerClient::OnDisconnect, base::Unretained(this)));
 }
 
 void MockSharedWorkerClient::Close() {
@@ -286,6 +298,10 @@ void MockSharedWorkerClient::OnReportException(
   if (on_report_exception_callback_) {
     std::move(on_report_exception_callback_).Run();
   }
+}
+
+void MockSharedWorkerClient::OnDisconnect() {
+  is_disconnected_ = true;
 }
 
 }  // namespace content

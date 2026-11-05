@@ -11,6 +11,7 @@
 
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
@@ -127,7 +128,9 @@ class TabTest : public ChromeViewsTestBase {
       }
       EXPECT_FALSE(tab.title_->GetVisible());
       EXPECT_FALSE(tab.showing_close_button_);
-    } else if (tab.IsActive()) {
+    } else if (tab.IsActive() &&
+               !(features::IsTabStripDeclutterEnabled() &&
+                 features::kTabStripDeclutterActiveTabCloseHideEnabled.Get())) {
       EXPECT_TRUE(tab.showing_close_button_);
       switch (VisibleIconCount(tab)) {
         case 1:
@@ -148,7 +151,7 @@ class TabTest : public ChromeViewsTestBase {
           EXPECT_TRUE(tab.data_.alert_state.has_value());
           break;
       }
-    } else {  // Tab not active and not pinned tab.
+    } else {
       switch (VisibleIconCount(tab)) {
         case 1:
           EXPECT_FALSE(tab.showing_close_button_);
@@ -164,13 +167,16 @@ class TabTest : public ChromeViewsTestBase {
           EXPECT_TRUE(tab.showing_icon_);
           if (tab.data_.alert_state.has_value()) {
             EXPECT_TRUE(tab.showing_alert_indicator_);
+            EXPECT_FALSE(tab.showing_close_button_);
           } else {
             EXPECT_FALSE(tab.showing_alert_indicator_);
+            EXPECT_TRUE(tab.showing_close_button_);
           }
           break;
         default:
           EXPECT_EQ(3, VisibleIconCount(tab));
           EXPECT_TRUE(tab.data_.alert_state.has_value());
+          break;
       }
     }
 
@@ -184,7 +190,9 @@ class TabTest : public ChromeViewsTestBase {
       gfx::Rect icon_bounds = tab.icon_->bounds();
       icon_bounds.Inset(tab.icon_->GetInsets());
       if (tab.center_icon_) {
-        EXPECT_LE(icon_bounds.x(), contents_bounds.x());
+        EXPECT_LE(std::abs(icon_bounds.CenterPoint().x() -
+                           tab.GetLocalBounds().CenterPoint().x()),
+                  1);
       } else {
         EXPECT_LE(contents_bounds.x(), icon_bounds.x());
       }
@@ -211,8 +219,9 @@ class TabTest : public ChromeViewsTestBase {
                   GetAlertIndicatorBounds(tab).x());
       }
       if (tab.center_icon_) {
-        EXPECT_LE(contents_bounds.right(),
-                  GetAlertIndicatorBounds(tab).right());
+        EXPECT_LE(std::abs(GetAlertIndicatorBounds(tab).CenterPoint().x() -
+                           tab.GetLocalBounds().CenterPoint().x()),
+                  1);
       } else {
         EXPECT_LE(GetAlertIndicatorBounds(tab).right(),
                   contents_bounds.right());
@@ -241,7 +250,8 @@ class TabTest : public ChromeViewsTestBase {
       }
 
       // The close button has a larger hit target than the content bounds.
-      const gfx::Rect close_bounds = tab.close_button_->GetContentsBounds();
+      const gfx::Rect close_bounds = tab.close_button_->ConvertRectToParent(
+          tab.close_button_->GetContentsBounds());
       EXPECT_LE(close_bounds.right(), tab.GetLocalBounds().right());
       EXPECT_LE(close_bounds.y(), contents_bounds.y());
       EXPECT_LE(contents_bounds.bottom(), close_bounds.bottom());
@@ -623,12 +633,11 @@ TEST_F(TabTest, LayeredThrobber) {
 
 TEST_F(TabTest, EmptyBoundsDeferPaintToLayer) {
   TabIcon icon;
-  icon.SetCanPaintToLayer(true);
   ASSERT_TRUE(icon.GetContentsBounds().IsEmpty());
 
   tabs::TabData data;
   data.network_state = tabs::TabNetworkState::kWaiting;
-  icon.SetData(data);
+  icon.SetData(data, /*can_paint_to_layer=*/true);
   EXPECT_FALSE(icon.layer());
 
   icon.SetBounds(0, 0, gfx::kFaviconSize, gfx::kFaviconSize);
@@ -639,11 +648,29 @@ TEST_F(TabTest, EmptyBoundsDeferPaintToLayer) {
   EXPECT_TRUE(icon.layer());
 
   data.network_state = tabs::TabNetworkState::kNone;
-  icon.SetData(data);
+  icon.SetData(data, /*can_paint_to_layer=*/true);
   EXPECT_FALSE(icon.layer());
 
   icon.SetBounds(0, 0, gfx::kFaviconSize, gfx::kFaviconSize);
   EXPECT_FALSE(icon.layer());
+}
+
+TEST_F(TabTest, SetDataUpdatesCanPaintToLayerBeforeUpdateThrobber) {
+  TabIcon icon;
+  icon.SetBounds(0, 0, 100, 100);
+  ASSERT_FALSE(icon.GetContentsBounds().IsEmpty());
+
+  tabs::TabData data;
+  data.network_state = tabs::TabNetworkState::kNone;
+  icon.SetData(data, /*can_paint_to_layer=*/true);
+  ASSERT_FALSE(icon.layer());
+
+  base::HistogramTester histogram_tester;
+  data.network_state = tabs::TabNetworkState::kWaiting;
+  icon.SetData(data, /*can_paint_to_layer=*/false);
+  EXPECT_FALSE(icon.layer());
+  histogram_tester.ExpectTotalCount("Tab.Icon.UpdateThrobber.Time.NotCached",
+                                    0);
 }
 
 TEST_F(TabTest, TitleHiddenWhenSmall) {
@@ -681,8 +708,15 @@ TEST_F(TabTest, SmallTabsHideCloseButton) {
       CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
   Tab* tab = widget->SetContentsView(
       std::make_unique<Tab>(tabs::TabHandle(1), controller.get()));
-  const int width = tab->tab_style_views()->GetContentsInsets().width() +
-                    Tab::kMinimumContentsWidthForCloseButtons;
+  const bool use_declutter_threshold =
+      features::IsTabStripDeclutterEnabled() &&
+      features::kTabStripDeclutterInactiveTabCloseHideEnabled.Get();
+  const int width =
+      tab->tab_style_views()->GetContentsInsets().width() +
+      (use_declutter_threshold
+           ? gfx::kFaviconSize +
+                 features::kTabStripDeclutterMaxTabWidthForCloseHide.Get() + 1
+           : Tab::kMinimumContentsWidthForCloseButtons);
   tab->SetBounds(0, 0, width, 50);
   const views::View* close = GetCloseButton(tab);
   EXPECT_TRUE(close->GetVisible());
@@ -828,6 +862,108 @@ TEST_F(TabTest, ActiveTabFaviconSwapWithCloseOnHover) {
   EXPECT_TRUE(icon->GetVisible());
 }
 
+TEST_F(TabTest, ActiveTabCloseHideDisabledByParam) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kTabStripDeclutter,
+      {{features::kTabStripDeclutterActiveTabCloseHideEnabled.name, "false"}});
+
+  auto controller = std::make_unique<FakeTabSlotController>();
+  std::unique_ptr<views::Widget> widget =
+      CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  Tab* tab = widget->SetContentsView(
+      std::make_unique<Tab>(tabs::TabHandle(1), controller.get()));
+  controller->set_active_tab(tab);
+
+  tabs::TabData data;
+  data.should_display_favicon = true;
+  tab->SetDataForTesting(data);
+
+  const int close_button_width =
+      GetLayoutConstant(LayoutConstant::kTabCloseButtonSize) +
+      GetLayoutConstant(LayoutConstant::kTabAfterTitlePadding);
+  const int favicon_width = gfx::kFaviconSize;
+
+  // Set width such that it can fit favicon OR close button, but not both.
+  const int insets_width = tab->tab_style_views()->GetContentsInsets().width();
+  const int available_width = favicon_width + close_button_width - 1;
+  const int total_width = available_width + insets_width;
+
+  widget->SetBounds(gfx::Rect(0, 0, total_width, 50));
+  tab->InvalidateLayout();
+  LayoutTab(tab);
+
+  const views::View* close = GetCloseButton(tab);
+  const views::View* icon = GetTabIcon(tab);
+
+  // With active_tab_close_hide disabled, the active tab should always show the
+  // close button and hide the favicon when space is limited, even unhovered.
+  EXPECT_TRUE(close->GetVisible());
+  EXPECT_FALSE(icon->GetVisible());
+}
+
+TEST_F(TabTest, CloseButtonVisibilityCustomMaxTabWidthParam) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kTabStripDeclutter,
+      {{features::kTabStripDeclutterMaxTabWidthForCloseHide.name, "120"}});
+
+  auto controller = std::make_unique<FakeTabSlotController>();
+  std::unique_ptr<views::Widget> widget =
+      CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  Tab* tab = widget->SetContentsView(
+      std::make_unique<Tab>(tabs::TabHandle(1), controller.get()));
+
+  const int insets_width = tab->tab_style_views()->GetContentsInsets().width();
+  const views::View* close = GetCloseButton(tab);
+
+  widget->Show();
+  widget->Activate();
+  tab->GetFocusManager()->ClearFocus();
+
+  // At available width 110 (above the default 100, but <= custom 120), close
+  // button should be hidden for an inactive, unhovered tab.
+  tab->parent()->SetBounds(0, 0, insets_width + 110 + gfx::kFaviconSize, 50);
+  tab->InvalidateLayout();
+  LayoutTab(tab);
+  EXPECT_FALSE(close->GetVisible());
+
+  // At available width 130 (> custom 120), close button should be visible.
+  tab->parent()->SetBounds(0, 0, insets_width + 130 + gfx::kFaviconSize, 50);
+  tab->InvalidateLayout();
+  LayoutTab(tab);
+  EXPECT_TRUE(close->GetVisible());
+}
+
+TEST_F(TabTest, InactiveTabCloseHideDisabledByParam) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kTabStripDeclutter,
+      {{features::kTabStripDeclutterInactiveTabCloseHideEnabled.name,
+        "false"}});
+
+  auto controller = std::make_unique<FakeTabSlotController>();
+  std::unique_ptr<views::Widget> widget =
+      CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  Tab* tab = widget->SetContentsView(
+      std::make_unique<Tab>(tabs::TabHandle(1), controller.get()));
+
+  const int insets_width = tab->tab_style_views()->GetContentsInsets().width();
+  const views::View* close = GetCloseButton(tab);
+
+  widget->Show();
+  widget->Activate();
+  tab->GetFocusManager()->ClearFocus();
+
+  // At available width 80 (<= default 100, but >= minimum width for close
+  // buttons), close button should remain visible when inactive_tab_close_hide
+  // is false.
+  tab->parent()->SetBounds(0, 0, insets_width + 80 + gfx::kFaviconSize, 50);
+  tab->InvalidateLayout();
+  LayoutTab(tab);
+  EXPECT_TRUE(close->GetVisible());
+}
+
 TEST_F(TabTest, CloseButtonOnlyIconShowingOnHoverAndCentered) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(features::kTabStripDeclutter);
@@ -909,19 +1045,40 @@ TEST_F(TabTest, ExtraAlertPaddingNotShownOnSmallActiveTab) {
   const views::View* alert = GetAlertIndicator(tab);
   const int original_spacing = close->x() - alert->bounds().right();
 
-  tab->SetBounds(0, 0, 90, 50);
-  EXPECT_FALSE(GetTabIcon(tab)->GetVisible());
+  if (features::IsTabStripDeclutterEnabled() &&
+      features::kTabStripDeclutterActiveTabCloseHideEnabled.Get()) {
+    tab->SetBounds(0, 0, 90, 50);
+    EXPECT_TRUE(GetTabIcon(tab)->GetVisible());
+    EXPECT_TRUE(close->GetVisible());
+    EXPECT_TRUE(alert->GetVisible());
 
-  tab->SetBounds(0, 0, 76, 50);
-  EXPECT_TRUE(close->GetVisible());
-  EXPECT_TRUE(alert->GetVisible());
+    // The alert indicator moves closer because the extra padding is gone.
+    EXPECT_LT(close->x() - alert->bounds().right(), original_spacing);
 
-  // The alert indicator moves closer because the extra padding is gone.
-  EXPECT_LT(close->x() - alert->bounds().right(), original_spacing);
+    tab->SetBounds(0, 0, 89, 50);
+    EXPECT_TRUE(GetTabIcon(tab)->GetVisible());
+    EXPECT_FALSE(close->GetVisible());
+    EXPECT_TRUE(alert->GetVisible());
 
-  tab->SetBounds(0, 0, 75, 50);
-  EXPECT_TRUE(close->GetVisible());
-  EXPECT_FALSE(alert->GetVisible());
+    tab->SetBounds(0, 0, 71, 50);
+    EXPECT_FALSE(GetTabIcon(tab)->GetVisible());
+    EXPECT_FALSE(close->GetVisible());
+    EXPECT_TRUE(alert->GetVisible());
+  } else {
+    tab->SetBounds(0, 0, 90, 50);
+    EXPECT_FALSE(GetTabIcon(tab)->GetVisible());
+
+    tab->SetBounds(0, 0, 76, 50);
+    EXPECT_TRUE(close->GetVisible());
+    EXPECT_TRUE(alert->GetVisible());
+
+    // The alert indicator moves closer because the extra padding is gone.
+    EXPECT_LT(close->x() - alert->bounds().right(), original_spacing);
+
+    tab->SetBounds(0, 0, 75, 50);
+    EXPECT_TRUE(close->GetVisible());
+    EXPECT_FALSE(alert->GetVisible());
+  }
 }
 
 TEST_F(TabTest, TitleTextHasSufficientContrast) {
@@ -993,11 +1150,42 @@ TEST_F(TabTest, TitleTextHasSufficientContrast) {
   }
 }
 
+TEST_F(TabTest, GlassFrameTabBackgroundColors) {
+  std::unique_ptr<views::Widget> widget =
+      CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  const ui::ColorProvider* color_provider = widget->GetColorProvider();
+
+  // In a glass frame, selected tabs should have 80% opacity, and hovering a
+  // selected tab should blend the hover state over the translucent color.
+  constexpr SkAlpha kExpectedSelectedAlpha = 0.80 * SK_AlphaOPAQUE;
+  for (bool frame_active : {false, true}) {
+    const SkColor selected_bg = TabStyle::Get()->GetTabBackgroundColor(
+        TabStyle::TabSelectionState::kSelected, /*hovered=*/false, frame_active,
+        /*frame_glass=*/true, color_provider);
+    EXPECT_EQ(SkColorGetA(selected_bg), kExpectedSelectedAlpha);
+
+    const SkColor selected_hovered_bg = TabStyle::Get()->GetTabBackgroundColor(
+        TabStyle::TabSelectionState::kSelected, /*hovered=*/true, frame_active,
+        /*frame_glass=*/true, color_provider);
+    EXPECT_NE(selected_hovered_bg, selected_bg);
+    EXPECT_LT(SkColorGetA(selected_hovered_bg), SK_AlphaOPAQUE);
+  }
+
+  // Unhovered inactive tabs in a glass frame should be fully transparent.
+  for (bool frame_active : {false, true}) {
+    const SkColor inactive_bg = TabStyle::Get()->GetTabBackgroundColor(
+        TabStyle::TabSelectionState::kInactive, /*hovered=*/false, frame_active,
+        /*frame_glass=*/true, color_provider);
+    EXPECT_EQ(SkColorGetA(inactive_bg), 0u);
+  }
+}
+
 // This test verifies that the tab has its icon state updated when the alert
 // animation fade-out finishes.
 TEST_F(TabContentsTest, ShowsAndHidesAlertIndicator) {
   controller_->AddTab(0, TabActive::kInactive, TabPinned::kPinned);
   controller_->AddTab(1, TabActive::kActive);
+  views::test::RunScheduledLayout(tab_strip_);
   Tab* media_tab = tab_strip_->tab_at(0);
 
   // Pinned inactive tab only has an icon.
@@ -1040,6 +1228,7 @@ TEST_F(TabContentsTest, MinHoldDurationTest) {
   base::test::ScopedFeatureList scoped_feature_list_;
 
   controller_->AddTab(0, TabActive::kActive);
+  views::test::RunScheduledLayout(tab_strip_);
   Tab* media_tab = tab_strip_->tab_at(0);
 
   EXPECT_FALSE(showing_alert_indicator(media_tab));
@@ -1071,6 +1260,7 @@ TEST_F(TabContentsTest, 1SecondFadeoutAnimationTest) {
   base::test::ScopedFeatureList scoped_feature_list_;
 
   controller_->AddTab(0, TabActive::kActive);
+  views::test::RunScheduledLayout(tab_strip_);
   Tab* media_tab = tab_strip_->tab_at(0);
 
   EXPECT_FALSE(showing_alert_indicator(media_tab));
@@ -1344,7 +1534,7 @@ TEST_F(TabTest, SingleElementCentering) {
 namespace {
 class SeparatorTestTabSlotController : public FakeTabSlotController {
  public:
-  void SetTabs(std::vector<Tab*> tabs) { tabs_ = std::move(tabs); }
+  void SetTabs(std::vector<raw_ptr<Tab>> tabs) { tabs_ = std::move(tabs); }
 
   Tab* GetAdjacentTab(const Tab* tab, int offset) override {
     auto it = std::find(tabs_.begin(), tabs_.end(), tab);
@@ -1361,7 +1551,7 @@ class SeparatorTestTabSlotController : public FakeTabSlotController {
   int GetTabCount() const override { return static_cast<int>(tabs_.size()); }
 
  private:
-  std::vector<Tab*> tabs_;
+  std::vector<raw_ptr<Tab>> tabs_;
 };
 }  // namespace
 
@@ -1397,6 +1587,8 @@ TEST_F(TabTest, HorizontalSeparators) {
   auto opacities2 = tab2->tab_style_views()->GetSeparatorOpacitiesForTesting();
   EXPECT_EQ(opacities2.left, 1.0f);
   EXPECT_EQ(opacities2.right, 1.0f);
+
+  controller->SetTabs({});
 }
 
 #if BUILDFLAG(IS_MAC)

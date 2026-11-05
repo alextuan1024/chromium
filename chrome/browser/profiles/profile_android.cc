@@ -9,10 +9,12 @@
 #include "base/memory/ptr_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "chrome/browser/profiles/profile_impl.h"
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/profiles/profile_key_android.h"
 #include "chrome/common/chrome_constants.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -31,37 +33,49 @@ Profile* Profile::FromJavaObject(const JavaRef<jobject>& obj) {
       Java_Profile_getNativePointer(AttachCurrentThread(), obj));
 }
 
-void Profile::InitJavaObject() {
-  // Java side assumes |this| can also be used as a BrowserContext*.
-  CHECK(
-      reinterpret_cast<intptr_t>(this) ==
-      reinterpret_cast<intptr_t>(static_cast<content::BrowserContext*>(this)));
-  JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jobject> j_otr_profile_id =
-      otr_profile_id_.has_value()
-          ? otr_profile_id_->ConvertToJavaOTRProfileID(env)
-          : nullptr;
-  j_obj_ = Java_Profile_Constructor(env, reinterpret_cast<intptr_t>(this),
-                                    j_otr_profile_id);
-}
-
 void Profile::NotifyJavaOnProfileWillBeDestroyed() {
-  Java_Profile_onProfileWillBeDestroyed(AttachCurrentThread(), j_obj_);
+  notified_java_will_be_destroyed_ = true;
+  if (j_obj_) {
+    Java_Profile_onProfileWillBeDestroyed(AttachCurrentThread(), j_obj_);
+  }
 }
 
 void Profile::DestroyJavaObject() {
-  Java_Profile_onNativeDestroyed(AttachCurrentThread(), j_obj_);
+  if (j_obj_) {
+    Java_Profile_onNativeDestroyed(AttachCurrentThread(), j_obj_);
+  }
 }
 
 ScopedJavaLocalRef<jobject> Profile::GetJavaObject() const {
-  return ScopedJavaLocalRef<jobject>(AttachCurrentThread(), j_obj_);
+  JNIEnv* env = AttachCurrentThread();
+  if (!j_obj_) {
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    // Java side assumes |this| can also be used as a BrowserContext*.
+    extern ProfileImpl kUnusedProfile;
+    static_assert(
+        static_cast<const void*>(
+            static_cast<const Profile*>(&kUnusedProfile)) ==
+        static_cast<const void*>(static_cast<const content::BrowserContext*>(
+            static_cast<const Profile*>(&kUnusedProfile))));
+    ScopedJavaLocalRef<jobject> j_otr_profile_id =
+        otr_profile_id_.has_value()
+            ? otr_profile_id_->ConvertToJavaOTRProfileID(env)
+            : nullptr;
+    j_obj_ = Java_Profile_Constructor(env, reinterpret_cast<intptr_t>(this),
+                                      j_otr_profile_id, IsIncognitoBranded(),
+                                      GetBaseName().value());
+    if (notified_java_will_be_destroyed_) {
+      Java_Profile_onProfileWillBeDestroyed(env, j_obj_);
+    }
+  }
+  return ScopedJavaLocalRef<jobject>(env, j_obj_);
 }
 
 static ScopedJavaLocalRef<jobject> JNI_Profile_GetOriginalProfile(JNIEnv* env,
                                                                   int64_t ptr) {
   Profile* self = reinterpret_cast<Profile*>(ptr);
   Profile* original_profile = self->GetOriginalProfile();
-  DCHECK(original_profile);
+  CHECK(original_profile, base::NotFatalUntil::M162);
   return original_profile->GetJavaObject();
 }
 
@@ -88,7 +102,7 @@ static ScopedJavaLocalRef<jobject> JNI_Profile_GetOffTheRecordProfile(
   if (!j_create_if_needed && !otr_profile) {
     return nullptr;
   }
-  DCHECK(otr_profile);
+  CHECK(otr_profile, base::NotFatalUntil::M162);
   return otr_profile->GetJavaObject();
 }
 
@@ -101,7 +115,7 @@ static ScopedJavaLocalRef<jobject> JNI_Profile_GetPrimaryOtrProfile(
   if (!j_create_if_needed && !otr_profile) {
     return nullptr;
   }
-  DCHECK(otr_profile);
+  CHECK(otr_profile, base::NotFatalUntil::M162);
   return otr_profile->GetJavaObject();
 }
 
@@ -125,7 +139,7 @@ static ScopedJavaLocalRef<jobject> JNI_Profile_GetProfileKey(JNIEnv* env,
   Profile* self = reinterpret_cast<Profile*>(ptr);
   ProfileKeyAndroid* profile_key =
       self->GetProfileKey()->GetProfileKeyAndroid();
-  DCHECK(profile_key);
+  CHECK(profile_key, base::NotFatalUntil::M162);
   return profile_key->GetJavaObject();
 }
 

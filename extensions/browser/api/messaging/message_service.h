@@ -15,6 +15,7 @@
 #include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "content/public/common/child_process_id.h"
 #include "extensions/browser/api/messaging/message_port.h"
 #include "extensions/browser/api/messaging/native_message_host.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
@@ -85,7 +86,7 @@ class MessageService : public BrowserContextKeyedAPI,
   void CloseChannel(const PortId& port_id,
                     const std::string& error_message) override;
   void ClosePort(const PortId& port_id,
-                 int process_id,
+                 content::ChildProcessId process_id,
                  const PortContext& port_context,
                  bool close_channel,
                  const std::string& error_message) override;
@@ -138,27 +139,10 @@ class MessageService : public BrowserContextKeyedAPI,
       mojo::PendingAssociatedReceiver<extensions::mojom::MessagePortHost>
           port_host);
 
-  // Marks the given port as opened by `port_context` in the render process
-  // with id `process_id`.
-  void OpenPort(content::RenderProcessHost* process,
-                const PortId& port_id,
-                const PortContext& port_context);
-
-  // Closes the given port in the given `port_context`. If this was the last
-  // context or if `force_close` is true, then the other side is closed as well.
-  void ClosePort(content::RenderProcessHost* process,
-                 const PortId& port_id,
-                 const PortContext& port_context,
-                 bool force_close);
-
-  // Notifies the port that one of the receivers of a message indicated that
-  // they plan to respond to the message later.
-  void NotifyResponsePending(content::RenderProcessHost* process,
-                             const PortId& port_id,
-                             const PortContext& port_context);
-
   // Returns the number of open channels for test.
   size_t GetChannelCountForTest() { return channels_.size(); }
+  bool HasStrongKeepaliveOnReceiverForTest(const ChannelId& channel_id) const;
+  bool HasStrongKeepaliveOnOpenerForTest(const ChannelId& channel_id) const;
 
   bool HasPendingLazyContextChannelsForExtension(
       const ExtensionId& extension_id) const;
@@ -205,9 +189,6 @@ class MessageService : public BrowserContextKeyedAPI,
       mojo::PendingAssociatedRemote<extensions::mojom::MessagePort> port,
       mojo::PendingAssociatedReceiver<extensions::mojom::MessagePortHost>
           port_host);
-  void OpenPortImpl(const PortId& port_id,
-                    int process_id,
-                    const PortContext& port_context);
 
   // A map of channel ID to its channel object.
   using MessageChannelMap =
@@ -242,7 +223,7 @@ class MessageService : public BrowserContextKeyedAPI,
                        bool did_enqueue);
 
   void ClosePortImpl(const PortId& port_id,
-                     int process_id,
+                     content::ChildProcessId process_id,
                      int routing_id,
                      int worker_thread_id,
                      bool force_close,
@@ -296,7 +277,7 @@ class MessageService : public BrowserContextKeyedAPI,
       std::unique_ptr<LazyContextTaskQueue::ContextInfo> context_info);
   void PendingLazyContextClosePort(
       const PortId& port_id,
-      int process_id,
+      content::ChildProcessId process_id,
       int routing_id,
       int worker_thread_id,
       bool force_close,

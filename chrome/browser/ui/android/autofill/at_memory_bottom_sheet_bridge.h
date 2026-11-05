@@ -8,6 +8,8 @@
 #include <jni.h>
 
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "base/android/scoped_java_ref.h"
 #include "base/memory/raw_ref.h"
@@ -42,22 +44,22 @@ class AtMemoryBottomSheetBridge {
 
  public:
   // Requests to show the bottom sheet.
-  virtual void RequestShowContent(base::span<const Suggestion> suggestions);
+  virtual void RequestShowContent(
+      base::span<const Suggestion> suggestions,
+      std::optional<std::u16string> search_bar_initial_value);
 
   // Requests to hide the bottom sheet.
   void Hide();
 
   // -- JNI calls bridged to AtMemorySuggestionController --
-  void OnDismissed(JNIEnv* env);
-  void OnQuerySubmitted(JNIEnv* env, const std::u16string& query);
-  void OnQueryTextChanged(JNIEnv* env, const std::u16string& query);
-  void OnSuggestionAccepted(JNIEnv* env, int position);
-  void OnSuggestionDismissed(JNIEnv* env, int position);
-  void OnChildSuggestionsShown(JNIEnv* env, int parent_position);
-  void OnChildSuggestionSelected(JNIEnv* env,
-                                 int parent_position,
-                                 int child_position);
-  bool IsSearching(JNIEnv* env);
+  void OnDismissed();
+  void OnQuerySubmitted(const std::u16string& query);
+  void OnQueryTextChanged(const std::u16string& query);
+  void OnSuggestionAccepted(int position);
+  void OnSuggestionDismissed(int position);
+  void OnChildSuggestionsShown(int parent_position);
+  void OnChildSuggestionAccepted(int parent_position, int child_position);
+  bool IsSearching() const;
 
  private:
   base::android::ScopedJavaGlobalRef<jobject> java_object_;

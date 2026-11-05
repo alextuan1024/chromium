@@ -5,6 +5,7 @@
 #include "ash/display/cursor_window_controller.h"
 
 #include <cmath>
+#include <optional>
 #include <utility>
 
 #include "ash/accessibility/accessibility_controller.h"
@@ -22,7 +23,6 @@
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/prefs/pref_service.h"
-#include "ui/accessibility/accessibility_features.h"
 #include "ui/aura/client/cursor_shape_client.h"
 #include "ui/aura/test/aura_test_utils.h"
 #include "ui/aura/window.h"
@@ -141,7 +141,7 @@ class CursorWindowControllerTest : public AshTestBase {
 // Test that the composited cursor moves to another display when the real cursor
 // moves to another display.
 TEST_F(CursorWindowControllerTest, MoveToDifferentDisplay) {
-  UpdateDisplay("300x200,300x200*2/r");
+  UpdateDisplay("320x200,640x400*2/r");
 
   WindowTreeHostManager* window_tree_host_manager =
       Shell::Get()->window_tree_host_manager();
@@ -172,7 +172,7 @@ TEST_F(CursorWindowControllerTest, MoveToDifferentDisplay) {
   auto* secondary_wth = secondary_ash_wth->AsWindowTreeHost();
   auto* secondary_root = secondary_wth->window();
 
-  MoveCursorTo(secondary_ash_wth, gfx::Point(299, 50), true);
+  MoveCursorTo(secondary_ash_wth, {319, 50}, true);
 
   // Chrome relies on WindowTreeHost::MoveCursorToInternal() dispatching a mouse
   // move asynchronously. This is implemented in a platform specific way.
@@ -187,7 +187,7 @@ TEST_F(CursorWindowControllerTest, MoveToDifferentDisplay) {
   hot_point = GetCursorHotPoint();
   EXPECT_EQ(gfx::Point(6, 4), hot_point);
   cursor_bounds = GetCursorBounds();
-  EXPECT_EQ(300, cursor_bounds.x() + hot_point.x());
+  EXPECT_EQ(320, cursor_bounds.x() + hot_point.x());
   EXPECT_EQ(50, cursor_bounds.y() + hot_point.y());
 }
 
@@ -291,15 +291,15 @@ TEST_F(CursorWindowControllerTest, DSF) {
   for (const float device_scale_factor : {1.0f, 1.5f, 2.0f, 2.5f}) {
     for (const float zoom : {0.8f, 1.0f, 1.25f}) {
       UpdateDisplay(
-          base::StringPrintf("1000x500*%f@%f", device_scale_factor, zoom));
+          base::StringPrintf("1000x700*%f@%f", device_scale_factor, zoom));
       const float dsf =
           display::Screen::Get()->GetPrimaryDisplay().device_scale_factor();
 
       for (const int large_cursor_size_in_dip : {0, 32, 64, 128}) {
-        cursor_manager->SetCursorSize(large_cursor_size_in_dip == 0
-                                          ? ui::CursorSize::kNormal
-                                          : ui::CursorSize::kLarge);
-        Shell::Get()->SetLargeCursorSizeInDip(large_cursor_size_in_dip);
+        cursor_manager->SetCustomCursorSize(
+            large_cursor_size_in_dip == 0
+                ? std::nullopt
+                : std::make_optional(large_cursor_size_in_dip));
 
         // Default cursor.
         cursor_test(CursorType::kPointer, large_cursor_size_in_dip);
@@ -346,26 +346,24 @@ TEST_F(CursorWindowControllerTest, ShouldEnableCursorCompositing) {
   prefs->SetBoolean(prefs::kDockedMagnifierEnabled, false);
   EXPECT_FALSE(cursor_window_controller()->is_cursor_compositing_enabled());
 
-  // Enable large cursor, cursor compositing should be enabled only if
-  // the target large cursor size is larger than current display's maximum
-  // cursor size.
+  // Set a custom cursor size. Cursor compositing should be enabled only if the
+  // target custom cursor size exceeds the current display's maximum cursor
+  // size.
+  const int max_cursor_height =
+      static_cast<int>(display_maximum_cursor_size_in_dip.height());
+  ::wm::CursorManager* cursor_manager = Shell::Get()->cursor_manager();
   cursor_window_controller()->SetDisplay(display);
-  cursor_window_controller()->SetLargeCursorSizeInDip(
-      display_maximum_cursor_size_in_dip.height() + 1);
-  prefs->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
+  cursor_manager->SetCustomCursorSize(max_cursor_height + 1);
+  Shell::Get()->UpdateCursorCompositingEnabled();
   EXPECT_TRUE(cursor_window_controller()->is_cursor_compositing_enabled());
 
-  // Disable large cursor, cursor compositing should be disabled.
-  prefs->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, false);
+  cursor_manager->SetCustomCursorSize(std::nullopt);
+  Shell::Get()->UpdateCursorCompositingEnabled();
   EXPECT_FALSE(cursor_window_controller()->is_cursor_compositing_enabled());
 
-  // Re-enable large cursor, since large cursor size is smaller than display's
-  // maximum cursor size, cursor should use hardware compositing instead of
-  // software compositing.
+  cursor_manager->SetCustomCursorSize(max_cursor_height);
   cursor_window_controller()->SetDisplay(display);
-  cursor_window_controller()->SetLargeCursorSizeInDip(
-      display_maximum_cursor_size_in_dip.height() - 1);
-  prefs->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
+  Shell::Get()->UpdateCursorCompositingEnabled();
   EXPECT_FALSE(cursor_window_controller()->is_cursor_compositing_enabled());
 }
 
@@ -469,17 +467,7 @@ TEST_F(CursorWindowControllerTest, RefreshRateChangeUpdatesMaxUpdateRates) {
   EXPECT_NEAR(cursor_window_controller()->max_update_rate_ms(), 22.22, 0.01f);
 }
 
-class InvertedCursorWindowControllerTest : public CursorWindowControllerTest {
- public:
-  InvertedCursorWindowControllerTest() {
-    feature_list_.InitAndEnableFeature(
-        ::features::kAccessibilityInvertedMouseCursor);
-  }
-  ~InvertedCursorWindowControllerTest() override = default;
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
+using InvertedCursorWindowControllerTest = CursorWindowControllerTest;
 
 TEST_F(InvertedCursorWindowControllerTest, InvertedCursorLayers) {
   SetCursorCompositionEnabled(true);

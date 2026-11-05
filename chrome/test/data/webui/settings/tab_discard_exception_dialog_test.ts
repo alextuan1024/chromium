@@ -4,7 +4,6 @@
 
 import 'chrome://settings/settings.js';
 
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {convertDateToWindowsEpoch, ExceptionAddDialogTabs, MAX_TAB_DISCARD_EXCEPTION_RULE_LENGTH, MemorySaverModeExceptionListAction, PerformanceBrowserProxyImpl, PerformanceMetricsProxyImpl, PrefsBrowserProxy, PrefService, TAB_DISCARD_EXCEPTIONS_OVERFLOW_SIZE, TAB_DISCARD_EXCEPTIONS_PREF} from 'chrome://settings/settings.js';
 import type {ExceptionEditDialogElement, ExceptionTabbedAddDialogElement} from 'chrome://settings/settings.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertLT, assertTrue} from 'chrome://webui-test/chai_assert.js';
@@ -53,17 +52,11 @@ suite('TabDiscardExceptionsDialog', function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
   });
 
-  function setupDialog(
-      dialog: ExceptionTabbedAddDialogElement|ExceptionEditDialogElement) {
-    document.body.appendChild(dialog);
-    flush();
-  }
-
   async function setupTabbedAddDialog():
       Promise<ExceptionTabbedAddDialogElement> {
     const addDialog: ExceptionTabbedAddDialogElement =
         document.createElement('tab-discard-exception-tabbed-add-dialog');
-    setupDialog(addDialog);
+    document.body.appendChild(addDialog);
     await performanceBrowserProxy.whenCalled('getCurrentOpenSites');
     performanceBrowserProxy.resetResolver('getCurrentOpenSites');
     await microtasksFinished();
@@ -73,7 +66,7 @@ suite('TabDiscardExceptionsDialog', function() {
   async function setupEditDialog(): Promise<ExceptionEditDialogElement> {
     const editDialog: ExceptionEditDialogElement =
         document.createElement('tab-discard-exception-edit-dialog');
-    setupDialog(editDialog);
+    document.body.appendChild(editDialog);
     editDialog.setRuleToEditForTesting(EXISTING_RULE);
     await microtasksFinished();
     return editDialog;
@@ -84,14 +77,14 @@ suite('TabDiscardExceptionsDialog', function() {
     const trimmedRule = rule.trim();
     dialog.$.input.$.input.value = rule;
     await dialog.$.input.$.input.updateComplete;
-    dialog.$.input.$.input.dispatchEvent(
-        new CustomEvent('input', {bubbles: true, composed: true}));
+    dialog.$.input.$.input.fire('input');
     if (trimmedRule &&
         trimmedRule.length <= MAX_TAB_DISCARD_EXCEPTION_RULE_LENGTH) {
       const validatedRule = await performanceBrowserProxy.whenCalled(
           'validateTabDiscardExceptionRule');
       assertEquals(trimmedRule, validatedRule);
     }
+    await microtasksFinished();
   }
 
   async function testValidation() {
@@ -134,7 +127,6 @@ suite('TabDiscardExceptionsDialog', function() {
 
   function assertCancel() {
     dialog.$.cancelButton.click();
-    flush();
 
     assertFalse(dialog.$.dialog.open);
     assertDeepEquals(
@@ -159,7 +151,6 @@ suite('TabDiscardExceptionsDialog', function() {
 
   function assertSubmit(expectedRules: string[]) {
     dialog.$.actionButton.click();
-    flush();
 
     assertFalse(dialog.$.dialog.open);
     assertDeepEquals(
@@ -299,8 +290,7 @@ suite('TabDiscardExceptionsDialog', function() {
     return flushTasks();
   }
 
-  // Flaky on all OSes. TODO(crbug.com/356848453): Fix and enable the test.
-  test.skip('testExceptionTabbedAddDialogSwitchTabs', async function() {
+  test('testExceptionTabbedAddDialogSwitchTabs', async function() {
     performanceBrowserProxy.setCurrentOpenSites([VALID_RULE]);
     dialog = await setupTabbedAddDialog();
     await microtasksFinished();
@@ -316,18 +306,16 @@ suite('TabDiscardExceptionsDialog', function() {
 
     checkbox.click();
     await microtasksFinished();
-    switchAddDialogTab(dialog, ExceptionAddDialogTabs.MANUAL);
+    await switchAddDialogTab(dialog, ExceptionAddDialogTabs.MANUAL);
     await assertUserInputValidated(VALID_RULE);
     assertFalse(dialog.$.actionButton.disabled);
     await switchAddDialogTab(dialog, ExceptionAddDialogTabs.CURRENT_SITES);
     assertTrue(dialog.$.actionButton.disabled);
-    switchAddDialogTab(dialog, ExceptionAddDialogTabs.MANUAL);
-    await performanceBrowserProxy.whenCalled('validateTabDiscardExceptionRule');
+    await switchAddDialogTab(dialog, ExceptionAddDialogTabs.MANUAL);
     assertFalse(dialog.$.actionButton.disabled);
   });
 
-  // Flaky on all OSes. TODO(charlesmeng): Fix and enable the test.
-  test.skip('testExceptionTabbedAddDialogLiveUpdate', async function() {
+  test('testExceptionTabbedAddDialogLiveUpdate', async function() {
     const UPDATE_INTERVAL_MS = 3;
     const INITIAL_SITE = 'siteA';
     const CHANGED_SITE = 'siteB';
@@ -343,11 +331,11 @@ suite('TabDiscardExceptionsDialog', function() {
     assertRulesListEquals(dialog, [INITIAL_SITE]);
     performanceBrowserProxy.setCurrentOpenSites([CHANGED_SITE]);
     await new Promise((resolve) => setTimeout(resolve, UPDATE_INTERVAL_MS));
+    await microtasksFinished();
     assertRulesListEquals(dialog, [CHANGED_SITE]);
 
     // after switching to the manual tab, list should no longer update
-    switchAddDialogTab(dialog, ExceptionAddDialogTabs.MANUAL);
-    await performanceBrowserProxy.whenCalled('getCurrentOpenSites');
+    await switchAddDialogTab(dialog, ExceptionAddDialogTabs.MANUAL);
     assertFalse(dialog.$.list.getIsUpdatingForTesting());
     await new Promise((resolve) => setTimeout(resolve, UPDATE_INTERVAL_MS));
     performanceBrowserProxy.setCurrentOpenSites([CHANGED_SITE_SWITCH_TAB]);
@@ -355,19 +343,19 @@ suite('TabDiscardExceptionsDialog', function() {
 
     // after switching back to the list tab, list should start updating again
     performanceBrowserProxy.resetResolver('getCurrentOpenSites');
-    switchAddDialogTab(dialog, ExceptionAddDialogTabs.CURRENT_SITES);
+    await switchAddDialogTab(dialog, ExceptionAddDialogTabs.CURRENT_SITES);
     await performanceBrowserProxy.whenCalled('getCurrentOpenSites');
     await microtasksFinished();
     assertTrue(dialog.$.list.getIsUpdatingForTesting());
     await new Promise((resolve) => setTimeout(resolve, UPDATE_INTERVAL_MS));
+    await microtasksFinished();
     assertRulesListEquals(dialog, [CHANGED_SITE_SWITCH_TAB]);
 
     // after document is hidden, list should no longer update
     Object.defineProperty(
         document, 'visibilityState', {value: 'hidden', writable: true});
-    performanceBrowserProxy.resetResolver('getCurrentOpenSites');
     document.dispatchEvent(new Event('visibilitychange'));
-    await performanceBrowserProxy.whenCalled('getCurrentOpenSites');
+    await microtasksFinished();
     assertFalse(dialog.$.list.getIsUpdatingForTesting());
     await new Promise((resolve) => setTimeout(resolve, UPDATE_INTERVAL_MS));
     performanceBrowserProxy.setCurrentOpenSites([CHANGED_SITE_DOCUMENT_HIDDEN]);
@@ -382,6 +370,7 @@ suite('TabDiscardExceptionsDialog', function() {
     await microtasksFinished();
     assertTrue(dialog.$.list.getIsUpdatingForTesting());
     await new Promise((resolve) => setTimeout(resolve, UPDATE_INTERVAL_MS));
+    await microtasksFinished();
     assertRulesListEquals(dialog, [CHANGED_SITE_DOCUMENT_HIDDEN]);
   });
 });

@@ -17,6 +17,7 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "base/time/time.h"
 #include "build/branding_buildflags.h"
 #include "components/dbus/utils/call_method.h"
 #include "components/dbus/utils/check_for_service_and_start.h"
@@ -35,33 +36,6 @@ namespace os_crypt_async {
 // D-Bus services fails, this class will fallback to using PosixKeyProvider.
 class FreedesktopSecretKeyProvider : public KeyProvider {
  public:
-  enum class InitStatus {
-    // These values are persisted to logs. Do not renumber or reuse.
-    kSuccess = 0,
-    kCreateCollectionFailed = 1,
-    kCreateItemFailed = 2,
-    kEmptySecret = 3,
-    kGetSecretFailed = 4,
-    kGnomeKeyringDeadlock = 5,
-    kNoService = 6,
-    kReadAliasFailed = 7,
-    kSearchItemsFailed = 8,
-    kSessionFailure = 9,
-    kUnlockFailed = 10,
-    kDisabled = 11,
-    kKWalletNoService = 12,
-    kKWalletDisabled = 13,
-    kKWalletNoNetworkWallet = 14,
-    kKWalletOpenFailed = 15,
-    kKWalletNoSecret = 16,
-    kKWalletFolderCheckFailed = 17,
-    kKWalletFolderCreationFailed = 18,
-    kKWalletEntryCheckFailed = 19,
-    kKWalletReadFailed = 20,
-    kKWalletWriteFailed = 21,
-    kMaxValue = kKWalletWriteFailed,
-  };
-
   FreedesktopSecretKeyProvider(const std::string& password_store,
                                const std::string& product_name,
                                scoped_refptr<dbus::Bus> bus);
@@ -80,10 +54,22 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
                            KWalletCreateFolderAndPassword);
   FRIEND_TEST_ALL_PREFIXES(FreedesktopSecretKeyProviderTest,
                            SearchItemsWithItemUnlockPrompt);
+  FRIEND_TEST_ALL_PREFIXES(FreedesktopSecretKeyProviderTest,
+                           ReadAliasNoReplyIsTemporary);
+  FRIEND_TEST_ALL_PREFIXES(FreedesktopSecretKeyProviderTest,
+                           UnlockNoReplyIsTemporary);
+  FRIEND_TEST_ALL_PREFIXES(FreedesktopSecretKeyProviderTest,
+                           KWalletNoReplyIsTemporary);
   friend class FreedesktopSecretKeyProviderCompatTest;
 
   template <typename T>
   class Prompter;
+
+  // Timeout for replies to method calls. None of the methods called wait for
+  // user input (unlocking happens through Prompt objects whose Completed
+  // signal is waited for without a timeout, or through KWallet's openAsync), so
+  // a backend that doesn't reply within this time is considered unresponsive.
+  static constexpr base::TimeDelta kMethodCallTimeout = base::Seconds(3);
 
   static constexpr char kSecretServiceName[] = "org.freedesktop.secrets";
   static constexpr char kSecretServicePath[] = "/org/freedesktop/secrets";
@@ -209,8 +195,30 @@ class FreedesktopSecretKeyProvider : public KeyProvider {
                     std::optional<dbus::ObjectPath> created_item);
   void DeriveKeyFromSecret(base::span<const uint8_t> secret);
   void FinalizeSuccess(Encryptor::Key key);
-  void FinalizeFailure(InitStatus status);
+  void FinalizeFailure(KeyError error = KeyError::kPermanentlyUnavailable);
   void CloseSession();
+
+  // Calls a method with `kMethodCallTimeout`. If the backend doesn't reply in
+  // time, initialization fails with `KeyError::kTemporarilyUnavailable` and
+  // `callback` is not run.
+  template <dbus_utils::SignatureLiteral ArgsSignature,
+            dbus_utils::SignatureLiteral RetsSignature>
+  void CallMethod(
+      dbus::ObjectProxy* proxy,
+      const std::string& interface,
+      const std::string& method,
+      base::OnceCallback<void(dbus_utils::CallMethodResultSig<RetsSignature>)>
+          callback,
+      const auto&... args);
+  template <dbus_utils::SignatureLiteral RetsSignature>
+  void OnMethodReply(
+      base::OnceCallback<void(dbus_utils::CallMethodResultSig<RetsSignature>)>
+          callback,
+      dbus_utils::CallMethodResultSig<RetsSignature> result);
+
+  // Returns a callback for `Prompter` to run when the backend doesn't reply to
+  // a method call.
+  base::OnceClosure GetBackendUnresponsiveCallback();
 
   raw_ptr<dbus::ObjectProxy> default_collection_proxy_ = nullptr;
   raw_ptr<dbus::ObjectProxy> session_proxy_ = nullptr;

@@ -175,14 +175,19 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
     virtual void DevicePairedChanged(BluetoothAdapter* adapter,
                                      BluetoothDevice* device,
                                      bool new_paired_status) {}
+#endif
 
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_CHROMEOS) || \
+    BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
     // Called when the MTU |mtu| (Bluetooth Spec Vol 3, Part F, 3.4.2) used in
     // ATT communication with device |device| known to the adapter |adapter|
     // changed.
     virtual void DeviceMTUChanged(BluetoothAdapter* adapter,
                                   BluetoothDevice* device,
                                   uint16_t mtu) {}
+#endif
 
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
     // Called when advertisement is received from |device|. |eir| is the
     // extended inquiry response specified in Bluetooth Core Spec, Vol 3,
     // Part C, Section 11.
@@ -390,7 +395,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
       base::OnceCallback<void(std::unique_ptr<BluetoothDiscoverySession>)>;
   using DeviceList = std::vector<BluetoothDevice*>;
   using ConstDeviceList =
-      std::vector<raw_ptr<const BluetoothDevice, VectorExperimental>>;
+      std::vector<raw_ptr<const BluetoothDevice, DanglingUntriaged>>;
   using UUIDList = std::vector<BluetoothUUID>;
   using CreateServiceCallback =
       base::OnceCallback<void(scoped_refptr<BluetoothSocket>)>;
@@ -722,6 +727,12 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   void NotifyGattNeedsDiscovery(BluetoothDevice* device);
 #endif
 
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_CHROMEOS) || \
+    BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+  // Announces to observers that the ATT MTU for |device| changed.
+  void NotifyDeviceMTUChanged(BluetoothDevice* device, uint16_t mtu);
+#endif
+
   void NotifyGattServiceAdded(BluetoothRemoteGattService* service);
   void NotifyGattServiceRemoved(BluetoothRemoteGattService* service);
   void NotifyGattServiceChanged(BluetoothRemoteGattService* service);
@@ -969,7 +980,7 @@ class DEVICE_BLUETOOTH_EXPORT BluetoothAdapter
   // will remove itself from this list when it gets destroyed or becomes
   // inactive by calling DiscoverySessionBecameInactive(), hence no pointers to
   // deallocated sessions are kept.
-  std::set<raw_ptr<BluetoothDiscoverySession, SetExperimental>>
+  std::set<raw_ptr<BluetoothDiscoverySession, DanglingUntriaged>>
       discovery_sessions_;
 
  private:

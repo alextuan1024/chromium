@@ -14,10 +14,10 @@ import org.chromium.chrome.browser.app.tabmodel.TabStateStore;
 import org.chromium.chrome.browser.complex_tasks.TaskTabHelper;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchTabHelper;
 import org.chromium.chrome.browser.display_cutout.DisplayCutoutTabHelper;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeManager;
-import org.chromium.chrome.browser.dom_distiller.TabDistillabilityProvider;
 import org.chromium.chrome.browser.media.ui.MediaSessionTabHelper;
 import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
+import org.chromium.chrome.browser.reader_mode.ReaderModeManager;
+import org.chromium.chrome.browser.reader_mode.TabDistillabilityProvider;
 import org.chromium.chrome.browser.tab.state.ShoppingPersistedTabData;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStoreImpl;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
@@ -52,7 +52,6 @@ public final class TabHelpers {
                 && PriceTrackingFeatures.isPriceAnnotationsEligible(tab.getProfile())) {
             ShoppingPersistedTabData.initialize(tab);
         }
-        RedirectHandlerTabHelper.getOrCreateHandlerFor(tab);
     }
 
     /**
@@ -62,16 +61,12 @@ public final class TabHelpers {
      * @param tab {@link Tab} to create helpers for.
      */
     static void initWebContentsHelpers(Tab tab) {
-
         TabWebContentsObserver.from(tab);
-        SwipeRefreshHandler.from(tab);
         AccessibilityTabHelper.from(tab);
         ContextualSearchTabHelper.from(tab);
         MediaSessionTabHelper.from(tab);
         TabDistillabilityProvider.from(tab);
         TabFavicon.from(tab);
-        TrustedCdn.from(tab);
-        TabAssociatedApp.from(tab);
         TabGestureStateListener.from(tab);
 
         // Initialize the display cutout helper if the tab is eligible for drawing edge to edge.
@@ -79,9 +74,20 @@ public final class TabHelpers {
                 && tab.getWindowAndroid() != null
                 && tab.getWindowAndroid().getActivity().get() != null) {
             Activity activity = tab.getWindowAndroid().getActivity().get();
-            if (EdgeToEdgeUtils.isEdgeToEdgeBottomChinEnabled(activity)) {
+            if (EdgeToEdgeUtils.isEdgeToEdgeBottomChinSupportedByDevice(activity)) {
                 DisplayCutoutTabHelper.from(tab);
             }
         }
+    }
+
+    /**
+     * Ensures helpers needed for a visible {@link Tab} are attached. Invoked on every
+     * hidden-to-shown transition in {@link TabImpl#show}, so all helpers registered here must be
+     * idempotent (e.g., {@code Helper.from(tab)}).
+     *
+     * @param tab {@link Tab} to ensure helpers for.
+     */
+    static void ensureShownTabHelpers(Tab tab) {
+        SwipeRefreshHandler.from(tab);
     }
 }

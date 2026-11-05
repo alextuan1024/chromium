@@ -4,8 +4,10 @@
 
 #include "chrome/browser/ash/arc/input_overlay/ui/edit_labels.h"
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check_op.h"
-#include "base/strings/string_util.h"
+#include "base/i18n/icubridge/icu_bridge.h"
+#include "base/i18n/icubridge/list_formatter.h"
 #include "chrome/browser/ash/arc/input_overlay/actions/action.h"
 #include "chrome/browser/ash/arc/input_overlay/display_overlay_controller.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/button_options_menu.h"
@@ -13,8 +15,7 @@
 #include "chrome/browser/ash/arc/input_overlay/ui/editing_list.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/name_tag.h"
 #include "chrome/browser/ash/arc/input_overlay/ui/ui_utils.h"
-#include "chrome/grit/generated_resources.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/layout/table_layout.h"
@@ -140,7 +141,9 @@ std::u16string EditLabels::CalculateKeyListForA11yLabel() const {
         GetDisplayTextAccessibleName(std::u16string(label->GetText())));
   }
 
-  return base::JoinString(keys, u", ");
+  return base::i18n::IcuBridge::GetInstance()
+      .list_formatter()
+      ->FormatNarrowList(keys);
 }
 
 bool EditLabels::IsFirstLabelUnassigned() const {

@@ -24,7 +24,6 @@
 #include "net/base/isolation_info.h"
 #include "net/cookies/cookie_partition_key_collection.h"
 #include "net/cookies/cookie_setting_override.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
 #include "net/storage_access_api/status.h"
 #include "services/network/public/mojom/cookie_access_observer.mojom.h"
 #include "services/network/public/mojom/restricted_cookie_manager.mojom.h"
@@ -96,9 +95,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) RestrictedCookieManager
   // authoritative cookie context the renderer cannot compute (e.g., a frame
   // whose effective top frame for partitioning differs from the actual top).
   //
-  // `first_party_set_metadata` should have been previously computed by
-  // `ComputeFirstPartySetMetadata` using the same `origin`, `cookie_store` and
-  // `isolation_info` as were passed in here.
+  // `is_storage_access_potentially_allowed` indicates whether the execution
+  // context could potentially be allowed to use the Storage Access API. When
+  // false, any call with a non-kNone `storage_access_api_status` is rejected
+  // via ReportBadMessage() and Storage Access API cookie setting overrides are
+  // not applied.
   //
   // `metrics_updater` if not null will be used to record metrics about IPCs
   // serviced.
@@ -111,8 +112,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) RestrictedCookieManager
       const net::CookieSettingOverrides& cookie_setting_overrides,
       const net::CookieSettingOverrides& devtools_cookie_setting_overrides,
       bool prefer_bound_cookie_context,
+      bool is_storage_access_potentially_allowed,
       mojo::PendingRemote<mojom::CookieAccessObserver> cookie_observer,
-      net::FirstPartySetMetadata first_party_set_metadata,
       UmaMetricsUpdater* metrics_updater = nullptr);
 
   RestrictedCookieManager(const RestrictedCookieManager&) = delete;
@@ -188,13 +189,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) RestrictedCookieManager
       mojo::PendingReceiver<mojom::RestrictedCookieManager> pending_receiver,
       base::OnceClosure on_disconnect_callback);
 
-  // Computes the First-Party Set metadata corresponding to the given `origin`,
-  // `cookie_store`, and `isolation_info`.
-  static net::FirstPartySetMetadata ComputeFirstPartySetMetadata(
-      const url::Origin& origin,
-      const net::CookieStore* cookie_store,
-      const net::IsolationInfo& isolation_info);
-
   // The owner of this class has context into cookie settings changes. Calling
   // this function makes sure the appropriate state is updated internally to
   // reflect that.
@@ -266,7 +260,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) RestrictedCookieManager
   // Called when the Mojo pipe associated with a listener is closed.
   void RemoveChangeListener(Listener* listener);
 
-  // Ensures that this instance may access the cookies for a given URL.
+  // Ensures that this instance may access the cookies for a given URL and
+  // parameters.
   //
   // Returns true if the access should be allowed, or false if it should be
   // blocked.
@@ -275,10 +270,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) RestrictedCookieManager
   // mojo::ReportBadMessage(), which closes the pipe.
   //
   // If `record_metrics` is true, this helper may emit UMA metrics.
-  bool ValidateAccessToCookiesAt(const GURL& url,
-                                 const net::SiteForCookies& site_for_cookies,
-                                 const url::Origin& top_frame_origin,
-                                 bool record_metrics = true);
+  bool ValidateAccessToCookiesAt(
+      const GURL& url,
+      const net::SiteForCookies& site_for_cookies,
+      const url::Origin& top_frame_origin,
+      net::StorageAccessApiStatus storage_access_api_status,
+      bool record_metrics = true);
 
   const net::SiteForCookies& BoundSiteForCookies() const {
     return isolation_info_.site_for_cookies();
@@ -352,15 +349,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) RestrictedCookieManager
   // instead of the renderer-provided per-call values.
   const bool prefer_bound_cookie_context_;
 
+  // Whether this context could potentially be allowed to use the Storage
+  // Access API.
+  const bool is_storage_access_potentially_allowed_;
+
   mojo::Remote<mojom::CookieAccessObserver> cookie_observer_;
 
-  base::LinkedList<Listener> listeners_;
+  base::UnsafeLinkedList<Listener> listeners_;
 
   SEQUENCE_CHECKER(sequence_checker_);
-
-  // The First-Party Set metadata for the context this RestrictedCookieManager
-  // is associated with.
-  net::FirstPartySetMetadata first_party_set_metadata_;
 
   // Cookie partition key that the instance of RestrictedCookieManager will have
   // access to. Must be set only in the constructor or in *ForTesting methods.

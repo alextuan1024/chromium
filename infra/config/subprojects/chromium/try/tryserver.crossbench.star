@@ -18,10 +18,12 @@ try_.defaults.set(
     builderless = True,
     cores = 8,
     os = os.LINUX_DEFAULT,
+    ssd = True,
     execution_timeout = try_constants.DEFAULT_EXECUTION_TIMEOUT,
     experiments = {
         "chromium_tests.resultdb_module": 100,
-        "luci.buildbucket.run_in_turboci": 50,
+        "luci.buildbucket.run_in_turboci.grpc_client": 50,
+        "luci.buildbucket.run_in_turboci": 100,
     },
     service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
     siso_project = siso.project.DEFAULT_UNTRUSTED,
@@ -35,7 +37,6 @@ consoles.list_view(
 
 try_.builder(
     name = "linux-crossbench",
-    description_html = "Run Crossbench Smoke tests on Linux.",
     mirrors = ["ci/linux-crossbench"],
     gn_args = gn_args.config(
         configs = [
@@ -46,7 +47,7 @@ try_.builder(
     cq_settings = try_.cq_settings(
         location_filters = [
             # Inclusion filters.
-            cq.location_filter(path_regexp = "third_party/crossbench/.+"),
+            cq.location_filter(path_regexp = "third_party/crossbench"),
             cq.location_filter(path_regexp = "third_party/speedometer/.+"),
         ],
     ),

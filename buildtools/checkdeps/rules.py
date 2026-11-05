@@ -4,7 +4,6 @@
 
 """Base classes to represent dependency rules, used by checkdeps.py"""
 
-
 import os
 import re
 
@@ -72,13 +71,15 @@ def ParseRuleString(rule_string, source):
   is, and a string holding the path the rule applies to.
   """
   if not rule_string:
-    raise Exception('The rule string "%s" is empty\nin %s' %
-                    (rule_string, source))
-
-  if not rule_string[0] in [Rule.ALLOW, Rule.DISALLOW, Rule.TEMP_ALLOW]:
     raise Exception(
-      'The rule string "%s" does not begin with a "+", "-" or "!".' %
-      rule_string)
+      'The rule string "%s" is empty\nin %s' % (rule_string, source)
+    )
+
+  if rule_string[0] not in [Rule.ALLOW, Rule.DISALLOW, Rule.TEMP_ALLOW]:
+    raise Exception(
+      'The rule string "%s" does not begin with a "+", "-" or "!".'
+      % rule_string
+    )
 
   # If a directory is specified in a DEPS file with a trailing slash, then it
   # will not match as a parent directory in Rule's [Parent|Child]OrMatch above.
@@ -86,7 +87,8 @@ def ParseRuleString(rule_string, source):
   if rule_string[-1] == '/':
     raise Exception(
       'The rule string "%s" ends with a "/" which is not allowed.'
-      ' Please remove the trailing "/".' % rule_string)
+      ' Please remove the trailing "/".' % rule_string
+    )
 
   return rule_string[0], rule_string[1:]
 
@@ -110,7 +112,7 @@ class Rules(object):
     self._general_rules = []
 
     # Keys are regular expression strings, values are arrays of rules
-    # that apply to dependee files whose basename matches the regular
+    # that apply to dependee files whose entire basename matches the regular
     # expression.  These are applied before the general rules, but
     # their internal order is arbitrary.
     self._specific_rules = {}
@@ -119,11 +121,15 @@ class Rules(object):
     self._deps_builder_index = deps_builder_index
 
   def __str__(self):
-    result = ['Rules = {\n    (apply to all files): [\n%s\n    ],' % '\n'.join(
-        '      %s' % x for x in self._general_rules)]
+    result = [
+      'Rules = {\n    (apply to all files): [\n%s\n    ],'
+      % '\n'.join('      %s' % x for x in self._general_rules)
+    ]
     for regexp, rules in list(self._specific_rules.items()):
-      result.append('    (limited to files matching %s): [\n%s\n    ]' % (
-          regexp, '\n'.join('      %s' % x for x in rules)))
+      result.append(
+        '    (limited to files matching %s): [\n%s\n    ]'
+        % (regexp, '\n'.join('      %s' % x for x in rules))
+      )
     result.append('  }')
     return '\n'.join(result)
 
@@ -135,6 +141,7 @@ class Rules(object):
     """Returns a list of tuples (allow, dependent dir, dependee dir) for the
     specified rules (general/specific). Currently only general rules are
     supported."""
+
     def AddDependencyTuplesImpl(deps, rules, extra_dependent_suffix=""):
       for rule in rules:
         (allow, dependent, dependee) = rule.AsDependencyTuple()
@@ -188,7 +195,7 @@ class Rules(object):
 
     dependee_filename = os.path.basename(dependee_path)
     for regexp, specific_rules in list(self._specific_rules.items()):
-      if re.match(regexp, dependee_filename):
+      if re.fullmatch(regexp, dependee_filename):
         for rule in specific_rules:
           if rule.ChildOrMatch(include_path):
             if review_parent is None:
@@ -204,6 +211,8 @@ class Rules(object):
           return rule
         almost_match = rule
     if almost_match:
-      return MessageRule(f'no rule applying for directory "{review_parent}", '
-                         'which is marked as new_usages_require_review=True.')
+      return MessageRule(
+        f'no rule applying for directory "{review_parent}", '
+        'which is marked as new_usages_require_review=True.'
+      )
     return MessageRule('no rule applying.')

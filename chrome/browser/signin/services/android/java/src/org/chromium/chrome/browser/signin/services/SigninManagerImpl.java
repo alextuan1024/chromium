@@ -41,6 +41,7 @@ import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.AccountManagedStatusFinder;
 import org.chromium.components.signin.identitymanager.AccountManagedStatusFinderOutcome;
 import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.components.signin.identitymanager.IdentityManager.RefreshTokensLoadingState;
 import org.chromium.components.signin.identitymanager.IdentityMutator;
 import org.chromium.components.signin.identitymanager.PrimaryAccountError;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
@@ -165,7 +166,16 @@ class SigninManagerImpl implements SigninManager, AccountsChangeObserver {
         List<AccountInfo> accounts = accountsPromise.getResult();
         if (!didAccountsFetchSucceed() && accounts.isEmpty()) {
             // If the account fetch did not succeed, the AccountManagerFacade falls back to an empty
-            // list. Do nothing when this is the case.
+            // list.
+            if (SigninFeatureMap.isEnabled(SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS)
+                    && mIdentityManager.getRefreshTokensLoadingState()
+                            == RefreshTokensLoadingState.IN_PROGRESS) {
+                // TODO(crbug.com/572579970): This is a temporary solution to unblock the
+                // launch of the feature. Currently, the failed state is handled by the Java layer.
+                // That logic has to be moved to the native layer. That can affect on how the API
+                // works here.
+                mIdentityMutator.setRefreshTokensLoadingFailed();
+            }
             return;
         }
 
@@ -324,25 +334,6 @@ class SigninManagerImpl implements SigninManager, AccountsChangeObserver {
         // started until this one completes (see {@link isOperationInProgress()}).
         mSignInState = signInState;
 
-        if (!SigninFeatureMap.isEnabled(SigninFeatures.SKIP_CHECK_FOR_ACCOUNT_MANAGEMENT_ON_SIGNIN)
-                && !getUserAcceptedAccountManagement()) {
-            isAccountManaged(
-                    mSignInState.mCoreAccountInfo,
-                    (Boolean isAccountManaged) -> {
-                        if (isAccountManaged) {
-                            throw new IllegalStateException(
-                                    "User must accept Account Management before "
-                                            + "signing into a Managed account.");
-                        } else {
-                            signinInternalAfterCheckingManagedState();
-                        }
-                    });
-        } else {
-            signinInternalAfterCheckingManagedState();
-        }
-    }
-
-    private void signinInternalAfterCheckingManagedState() {
         // Retrieve the primary account and use it to seed and reload all accounts.
         if (!mAccountManagerFacade.getAccounts().isFulfilled()) {
             throw new IllegalStateException("Account information should be available on signin");
@@ -559,8 +550,6 @@ class SigninManagerImpl implements SigninManager, AccountsChangeObserver {
         }
         mIdentityMutator.seedAccountsThenReloadAllAccountsWithPrimaryAccount(
                 accounts, primaryAccountId);
-        // TODO(crbug.com/365057341): move this logic to the native seed and reload method.
-        mIdentityManager.refreshAccountInfoIfStale();
         // Should be called after re-seeding accounts to make sure that we get the new email.
         maybeUpdateLegacyPrimaryAccountEmail();
     }

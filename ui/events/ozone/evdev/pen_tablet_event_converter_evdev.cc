@@ -8,7 +8,8 @@
 #include <linux/input.h>
 #include <stddef.h>
 
-#include "base/compiler_specific.h"
+#include <array>
+
 #include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/trace_event/trace_event.h"
@@ -29,8 +30,8 @@ float ScaleTilt(int value, int min_value, int num_values) {
 }
 
 uint8_t ToolMaskFromButtonTool(int button_tool) {
-  DCHECK_GE(button_tool, BTN_TOOL_PEN);
-  DCHECK_LE(button_tool, BTN_TOOL_LENS);
+  CHECK_GE(button_tool, BTN_TOOL_PEN, base::NotFatalUntil::M163);
+  CHECK_LE(button_tool, BTN_TOOL_LENS, base::NotFatalUntil::M163);
   return 1 << (button_tool - BTN_TOOL_PEN);
 }
 
@@ -85,8 +86,8 @@ void PenTabletEventConverterEvdev::OnFileCanReadWithoutBlocking(int fd) {
                "PenTabletEventConverterEvdev::OnFileCanReadWithoutBlocking",
                "fd", fd);
 
-  input_event inputs[4];
-  ssize_t read_size = read(fd, inputs, sizeof(inputs));
+  std::array<input_event, 4> inputs;
+  ssize_t read_size = read(fd, inputs.data(), sizeof(inputs));
   if (read_size < 0) {
     if (errno == EINTR || errno == EAGAIN) {
       return;
@@ -102,11 +103,8 @@ void PenTabletEventConverterEvdev::OnFileCanReadWithoutBlocking(int fd) {
     return;
   }
 
-  DCHECK_EQ(read_size % sizeof(inputs[0]), 0u);
-  // SAFETY: `read_size` is the number of bytes read from the file descriptor.
-  // It is capped by `sizeof(inputs)`, so it cannot overflow the buffer.
-  ProcessEvents(
-      UNSAFE_BUFFERS(base::span(inputs, read_size / sizeof(inputs[0]))));
+  CHECK_EQ(read_size % sizeof(input_event), 0u, base::NotFatalUntil::M163);
+  ProcessEvents(base::span(inputs).first(read_size / sizeof(input_event)));
 }
 
 bool PenTabletEventConverterEvdev::HasGraphicsTablet() const {

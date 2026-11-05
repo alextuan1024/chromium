@@ -37,6 +37,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/numerics/checked_math.h"
 #include "base/strings/stringprintf.h"
@@ -61,8 +62,8 @@
 #include "gpu/config/gpu_feature_info.h"
 #include "media/base/format_utils.h"
 #include "media/base/video_frame.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
-#include "media/renderers/video_frame_shared_image_cache.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
+#include "media/gfx/video_frame_shared_image_cache.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/gpu/gpu.mojom-blink.h"
@@ -140,7 +141,6 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_non_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
@@ -160,8 +160,10 @@
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
+#include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/leak_annotations.h"
 #include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
@@ -206,17 +208,13 @@ unsigned WebGLRenderingContextBase::max_active_webgl_contexts_on_worker_ = 0;
 
 namespace {
 
+// LINT.IfChange(WebGLANGLEImplementation)
 enum class WebGLANGLEImplementation {
   // These values are persisted to logs. Entries should not be renumbered and
   // numeric values should never be reused.
 
-  // vWebGL = 0 (for WebGL1) or 2 (for WebGL2).
-  // vWebGLANGLEImplementation = vWebGL * 10 + vANGLEImplementation
-  // where vANGLEImplementation is aligned with ANGLEImplementation enum
-  // values defined in ui/gl/gl_implementation.h.
-
   kWebGL1_None = 0,
-  kWebGL1_D3D9 = 1,
+  kWebGL1_D3D9 = 1,  // Deprecated
   kWebGL1_D3D11 = 2,
   kWebGL1_OpenGL = 3,
   kWebGL1_OpenGLES = 4,
@@ -244,6 +242,44 @@ enum class WebGLANGLEImplementation {
 
   kMaxValue = kWebGL2_D3D11Warp,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/blink/enums.xml:WebGLANGLEImplementation)
+
+WebGLANGLEImplementation ToWebGLANGLEImplementation(
+    gl::ANGLEImplementation angle_impl,
+    bool is_webgl2) {
+  using Impl = gl::ANGLEImplementation;
+  using Uma = WebGLANGLEImplementation;
+  // clang-format off
+  if (is_webgl2) {
+    switch (angle_impl) {
+      case Impl::kNone:        return Uma::kWebGL2_None;
+      case Impl::kD3D11:       return Uma::kWebGL2_D3D11;
+      case Impl::kOpenGL:      return Uma::kWebGL2_OpenGL;
+      case Impl::kOpenGLES:    return Uma::kWebGL2_OpenGLES;
+      case Impl::kNull:        return Uma::kWebGL2_Null;
+      case Impl::kVulkan:      return Uma::kWebGL2_Vulkan;
+      case Impl::kSwiftShader: return Uma::kWebGL2_SwiftShader;
+      case Impl::kMetal:       return Uma::kWebGL2_Metal;
+      case Impl::kDefault:     return Uma::kWebGL2_Default;
+      case Impl::kD3D11Warp:   return Uma::kWebGL2_D3D11Warp;
+    }
+  } else {
+    switch (angle_impl) {
+      case Impl::kNone:        return Uma::kWebGL1_None;
+      case Impl::kD3D11:       return Uma::kWebGL1_D3D11;
+      case Impl::kOpenGL:      return Uma::kWebGL1_OpenGL;
+      case Impl::kOpenGLES:    return Uma::kWebGL1_OpenGLES;
+      case Impl::kNull:        return Uma::kWebGL1_Null;
+      case Impl::kVulkan:      return Uma::kWebGL1_Vulkan;
+      case Impl::kSwiftShader: return Uma::kWebGL1_SwiftShader;
+      case Impl::kMetal:       return Uma::kWebGL1_Metal;
+      case Impl::kDefault:     return Uma::kWebGL1_Default;
+      case Impl::kD3D11Warp:   return Uma::kWebGL1_D3D11Warp;
+    }
+  }
+  // clang-format on
+  NOTREACHED();
+}
 
 bool CopyVideoFrameTexturesToGLTextureViaIntermediateSI(
     viz::RasterContextProvider* raster_context_provider,
@@ -329,43 +365,58 @@ constexpr base::TimeDelta kDurationBetweenRestoreAttempts = base::Seconds(1);
 const int kMaxGLErrorsAllowedToConsole = 256;
 
 base::Lock& WebGLContextLimitLock() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(base::Lock, lock, ());
-  return lock;
+  static base::NoDestructor<base::Lock> lock;
+  return *lock;
 }
 
 using WebGLRenderingContextBaseSet =
     HeapHashSet<WeakMember<WebGLRenderingContextBase>>;
-WebGLRenderingContextBaseSet& ActiveContexts() {
+WebGLRenderingContextBaseSet* TryActiveContexts(bool create_if_absent = false) {
   using WebGLRenderingContextBaseSetHolder =
       DisallowNewWrapper<WebGLRenderingContextBaseSet>;
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      ThreadSpecific<Persistent<WebGLRenderingContextBaseSetHolder>>,
-      active_contexts, ());
+  static base::NoDestructor<
+      ThreadSpecific<Persistent<WebGLRenderingContextBaseSetHolder>>>
+      active_contexts;
   Persistent<WebGLRenderingContextBaseSetHolder>& active_contexts_persistent =
-      *active_contexts;
+      **active_contexts;
   if (!active_contexts_persistent) {
+    if (!create_if_absent) {
+      return nullptr;
+    }
     active_contexts_persistent =
         MakeGarbageCollected<WebGLRenderingContextBaseSetHolder>();
     LEAK_SANITIZER_IGNORE_OBJECT(&active_contexts_persistent);
   }
-  return active_contexts_persistent->Value();
+  return &active_contexts_persistent->Value();
+}
+
+WebGLRenderingContextBaseSet& ActiveContexts() {
+  return *TryActiveContexts(/*create_if_absent=*/true);
 }
 
 using WebGLRenderingContextBaseMap =
     HeapHashMap<WeakMember<WebGLRenderingContextBase>, int>;
-WebGLRenderingContextBaseMap& ForciblyEvictedContexts() {
+WebGLRenderingContextBaseMap* TryForciblyEvictedContexts(
+    bool create_if_absent = false) {
   using WebGLRenderingContextBaseMapHolder =
       DisallowNewWrapper<WebGLRenderingContextBaseMap>;
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      ThreadSpecific<Persistent<WebGLRenderingContextBaseMapHolder>>, holder,
-      ());
-  Persistent<WebGLRenderingContextBaseMapHolder>& holder_persistent = *holder;
+  static base::NoDestructor<
+      ThreadSpecific<Persistent<WebGLRenderingContextBaseMapHolder>>>
+      holder;
+  Persistent<WebGLRenderingContextBaseMapHolder>& holder_persistent = **holder;
   if (!holder_persistent) {
+    if (!create_if_absent) {
+      return nullptr;
+    }
     holder_persistent =
         MakeGarbageCollected<WebGLRenderingContextBaseMapHolder>();
     LEAK_SANITIZER_IGNORE_OBJECT(&holder_persistent);
   }
-  return holder_persistent->Value();
+  return &holder_persistent->Value();
+}
+
+WebGLRenderingContextBaseMap& ForciblyEvictedContexts() {
+  return *TryForciblyEvictedContexts(/*create_if_absent=*/true);
 }
 
 }  // namespace
@@ -463,12 +514,14 @@ void WebGLRenderingContextBase::ForciblyLoseOldestContext(
 }
 
 WebGLRenderingContextBase* WebGLRenderingContextBase::OldestContext() {
-  if (ActiveContexts().empty())
+  auto* active_contexts = TryActiveContexts();
+  if (!active_contexts || active_contexts->empty()) {
     return nullptr;
+  }
 
-  WebGLRenderingContextBase* candidate = *(ActiveContexts().begin());
+  WebGLRenderingContextBase* candidate = *(active_contexts->begin());
   DCHECK(!candidate->isContextLost());
-  for (WebGLRenderingContextBase* context : ActiveContexts()) {
+  for (WebGLRenderingContextBase* context : *active_contexts) {
     DCHECK(!context->isContextLost());
     if (context->ContextGL()->GetLastFlushIdCHROMIUM() <
         candidate->ContextGL()->GetLastFlushIdCHROMIUM()) {
@@ -480,15 +533,17 @@ WebGLRenderingContextBase* WebGLRenderingContextBase::OldestContext() {
 }
 
 WebGLRenderingContextBase* WebGLRenderingContextBase::OldestEvictedContext() {
-  if (ForciblyEvictedContexts().empty())
+  auto* evicted_contexts = TryForciblyEvictedContexts();
+  if (!evicted_contexts || evicted_contexts->empty()) {
     return nullptr;
+  }
 
   WebGLRenderingContextBase* candidate = nullptr;
   int generation = -1;
-  for (WebGLRenderingContextBase* context : ForciblyEvictedContexts().Keys()) {
-    if (!candidate || ForciblyEvictedContexts().at(context) < generation) {
-      candidate = context;
-      generation = ForciblyEvictedContexts().at(context);
+  for (const auto& entry : *evicted_contexts) {
+    if (!candidate || entry.value < generation) {
+      candidate = entry.key.Get();
+      generation = entry.value;
     }
   }
 
@@ -508,12 +563,15 @@ void WebGLRenderingContextBase::ActivateContext(
   }
 
   DCHECK(!context->isContextLost());
+  context->was_activated_ = true;
   ActiveContexts().insert(context);
 }
 
 void WebGLRenderingContextBase::DeactivateContext(
     WebGLRenderingContextBase* context) {
-  ActiveContexts().erase(context);
+  if (auto* active_contexts = TryActiveContexts()) {
+    active_contexts->erase(context);
+  }
 }
 
 void WebGLRenderingContextBase::AddToEvictedList(
@@ -524,23 +582,31 @@ void WebGLRenderingContextBase::AddToEvictedList(
 
 void WebGLRenderingContextBase::RemoveFromEvictedList(
     WebGLRenderingContextBase* context) {
-  ForciblyEvictedContexts().erase(context);
+  if (auto* evicted_contexts = TryForciblyEvictedContexts()) {
+    evicted_contexts->erase(context);
+  }
 }
 
 void WebGLRenderingContextBase::RestoreEvictedContext(
     WebGLRenderingContextBase* context) {
+  auto* evicted_contexts = TryForciblyEvictedContexts();
+  auto* active_contexts = TryActiveContexts();
   // These two sets keep weak references to their contexts;
-  // verify that the GC already removed the |context| entries.
-  DCHECK(!ForciblyEvictedContexts().Contains(context));
-  DCHECK(!ActiveContexts().Contains(context));
+  // verify that GC or Dispose() already removed the |context| entries.
+  DCHECK(!evicted_contexts || !evicted_contexts->Contains(context));
+  DCHECK(!active_contexts || !active_contexts->Contains(context));
+  if (!evicted_contexts || evicted_contexts->empty()) {
+    return;
+  }
 
   unsigned max_gl_contexts = CurrentMaxGLContexts();
   // Try to re-enable the oldest inactive contexts.
-  while (ActiveContexts().size() < max_gl_contexts &&
-         ForciblyEvictedContexts().size()) {
+  while (((active_contexts ? active_contexts->size() : 0u) < max_gl_contexts) &&
+         !evicted_contexts->empty()) {
     WebGLRenderingContextBase* evicted_context = OldestEvictedContext();
-    if (!evicted_context->restore_allowed_) {
-      ForciblyEvictedContexts().erase(evicted_context);
+    if (!evicted_context->isContextLost() ||
+        !evicted_context->restore_allowed_ || !evicted_context->Host()) {
+      evicted_contexts->erase(evicted_context);
       continue;
     }
 
@@ -550,7 +616,7 @@ void WebGLRenderingContextBase::RestoreEvictedContext(
 
     // If there's room in the pixel budget for this context, restore it.
     if (!desired_size.IsEmpty()) {
-      ForciblyEvictedContexts().erase(evicted_context);
+      evicted_contexts->erase(evicted_context);
       evicted_context->ForceRestoreContext();
     }
     break;
@@ -944,36 +1010,88 @@ scoped_refptr<StaticBitmapImage> WebGLRenderingContextBase::GetImage() {
   // the drawing buffer being smaller than the canvas size.
   // See https://crbug.com/845742.
   gfx::Size size = GetDrawingBuffer()->Size();
-  // We are grabbing a snapshot that is generally not for compositing, so use a
-  // custom resource provider to specify only the minimal required set of
-  // usages, resulting in as lightweight a backing of the created SharedImage
-  // as possible. This SharedImage will be the destination of a copy of the
-  // drawing buffer's contents made via the raster interface. It also may be
-  // read back via the raster interface. In addition, we tag the SharedImage
-  // with display usage since there are uncommon paths which may use this
-  // snapshot for compositing.
-  auto shared_image_usages = gpu::SHARED_IMAGE_USAGE_RASTER_READ |
-                             gpu::SHARED_IMAGE_USAGE_RASTER_WRITE |
-                             gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
 
-  std::unique_ptr<CanvasNon2DResourceProvider> resource_provider;
   if (SharedGpuContext::IsGpuCompositingEnabled()) {
-    // Create an accelerated CRP in order to produce an accelerated snapshot.
-    resource_provider = CanvasNon2DResourceProvider::Create(
-        size, GetSharedImageFormat(), GetAlphaType(), GetColorSpace(),
+    base::WeakPtr<WebGraphicsContext3DProviderWrapper> shared_context_wrapper =
+        SharedGpuContext::ContextProviderWrapper();
+
+    if (!shared_context_wrapper ||
+        !shared_context_wrapper->ContextProvider().RasterInterface() ||
+        shared_context_wrapper->ContextProvider().IsContextLost()) {
+      return nullptr;
+    }
+
+    const auto& capabilities =
+        shared_context_wrapper->ContextProvider().GetCapabilities();
+    if ((size.width() < 1 || size.height() < 1 ||
+         size.width() > capabilities.max_texture_size ||
+         size.height() > capabilities.max_texture_size)) {
+      return nullptr;
+    }
+
+    // TODO(crbug.com/40767377): Pass in info as is for all cases.
+    // Overriding the info to use RGBA instead of N32 is needed because code
+    // elsewhere assumes RGBA. OTOH the software path seems to be assuming N32
+    // somewhere in the later pipeline but for offscreen canvas only.
+    viz::SharedImageFormat format = GetSharedImageFormat();
+    if (format != viz::SinglePlaneFormat::kRGBA_F16) {
+      format = viz::SinglePlaneFormat::kRGBA_8888;
+    }
+
+    // This SharedImage will be the destination of a copy of the drawing
+    // buffer's contents made via the raster interface. It may subsequently be
+    // read via the raster interface, copied into a GL texture by WebGL (via
+    // AcceleratedStaticBitmapImage::CopyToTexture()), or used for display
+    // compositing.
+    gpu::SharedImageUsageSet shared_image_usages =
+        gpu::SHARED_IMAGE_USAGE_RASTER_READ |
+        gpu::SHARED_IMAGE_USAGE_RASTER_WRITE |
+        gpu::SHARED_IMAGE_USAGE_GLES2_READ |
+        gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
+    // Add WEBGPU_READ usage to allow importing into WebGPU without a copy.
+    if (base::FeatureList::IsEnabled(kCanvasResourceIsWebGPUCompatible)) {
+      shared_image_usages |= gpu::SHARED_IMAGE_USAGE_WEBGPU_READ;
+    }
+
+    gpu::raster::RasterInterface* raster_interface =
+        shared_context_wrapper->ContextProvider().RasterInterface();
+    auto client_si =
+        shared_context_wrapper->ContextProvider()
+            .SharedImageInterface()
+            ->CreateSharedImage(
+                {format, size, GetColorSpace(), kTopLeft_GrSurfaceOrigin,
+                 GetAlphaType(), shared_image_usages, "CanvasResourceRaster"},
+                gpu::kNullSurfaceHandle);
+    // TODO(xlai): Flush should not be necessary if the synchronization in
+    // CopyToPlatformTexture is done correctly. See crbug.com/794706.
+    raster_interface->Flush();
+
+    std::optional<gpu::SyncToken> sync_token =
+        GetDrawingBuffer()->CopyToPlatformSharedImage(
+            raster_interface, client_si, client_si->creation_sync_token(),
+            kBackBuffer);
+    if (!sync_token) {
+      return nullptr;
+    }
+    if (shared_context_wrapper->ContextProvider().IsContextLost()) {
+      return nullptr;
+    }
+
+    auto release_callback = blink::BindOnce(
+        [](scoped_refptr<gpu::ClientSharedImage> shared_image,
+           const gpu::SyncToken& sync_token, bool is_lost) {
+          if (sync_token.HasData()) {
+            shared_image->UpdateDestructionSyncToken(sync_token);
+          }
+        },
+        client_si);
+
+    return AcceleratedStaticBitmapImage::CreateFromCanvasSharedImage(
+        std::move(client_si), sync_token.value(), GetAlphaType(),
         drawing_buffer_tone_mapping_hdr_metadata_,
-        SharedGpuContext::ContextProviderWrapper(), shared_image_usages);
-
-    if (!resource_provider || !resource_provider->IsValid()) {
-      return nullptr;
-    }
-
-    bool copy_succeeded = CopyRenderingResultsFromDrawingBufferAccelerated(
-        resource_provider.get(), kBackBuffer);
-    if (!copy_succeeded) {
-      return nullptr;
-    }
-    return resource_provider->Snapshot();
+        std::move(shared_context_wrapper), base::PlatformThread::CurrentRef(),
+        ThreadScheduler::Current()->CleanupTaskRunner(),
+        std::move(release_callback));
   } else {
     // Match the SBI configuration to that produced when using GPU compositing:
     // N32 and premul (as set by
@@ -1438,7 +1556,7 @@ void WebGLRenderingContextBase::InitializeNewContext() {
   DCHECK(GetDrawingBuffer());
 
   marked_canvas_dirty_ = false;
-  must_paint_to_canvas_ = false;
+  copied_contents_are_stale_ = false;
   active_texture_unit_ = 0;
   pack_alignment_ = 4;
   unpack_alignment_ = 4;
@@ -1606,31 +1724,13 @@ unsigned WebGLRenderingContextBase::GetWebGLVersion(
 }
 
 WebGLRenderingContextBase::~WebGLRenderingContextBase() {
-  // It's forbidden to refer to other GC'd objects in a GC'd object's
-  // destructor. It's useful for DrawingBuffer to guarantee that it
-  // calls its DrawingBufferClient during its own destruction, but if
-  // the WebGL context is also being destroyed, then it's essential
-  // that the DrawingBufferClient methods not try to touch other
-  // objects like WebGLTextures that were previously hooked into the
-  // context state.
+  // Dispose() normally tears down the underlying context and triggers evicted
+  // context restoration during Oilpan pre-finalization before sweeping begins
+  // (touching other GC'd objects in a destructor is forbidden). Keep an
+  // idempotent off-heap fallback here in case an object is destroyed without
+  // Dispose().
   destruction_in_progress_ = true;
-
-  // Now that the context and context group no longer hold on to the
-  // objects they create, and now that the objects are eagerly finalized
-  // rather than the context, there is very little useful work that this
-  // destructor can do, since it's not allowed to touch other on-heap
-  // objects. All it can do is destroy its underlying context, which, if
-  // there are no other contexts in the same share group, will cause all of
-  // the underlying graphics resources to be deleted. (Currently, it's
-  // always the case that there are no other contexts in the same share
-  // group -- resource sharing between WebGL contexts is not yet
-  // implemented, and due to its complex semantics, it's doubtful that it
-  // ever will be.)
   DestroyContext();
-
-  // Now that this context is destroyed, see if there's a
-  // previously-evicted one that should be restored.
-  RestoreEvictedContext(this);
 }
 
 HTMLCanvasElement* WebGLRenderingContextBase::canvas() const {
@@ -1681,10 +1781,10 @@ void WebGLRenderingContextBase::MarkContextChanged(
     return;
   }
 
-  // Regardless of whether dirty propagations are optimized away, the back
-  // buffer is now out of sync with respect to the canvas's internal backing
-  // store -- which is only used for certain purposes, like printing.
-  must_paint_to_canvas_ = true;
+  // Regardless of whether dirty propagations are optimized away, any contents
+  // previously copied into `resource_provider_` or `cached_snapshot_` are now
+  // stale.
+  copied_contents_are_stale_ = true;
 
   if (!GetDrawingBuffer()->MarkContentsChanged() && marked_canvas_dirty_) {
     return;
@@ -1707,7 +1807,7 @@ void WebGLRenderingContextBase::MarkContextChanged(
   }
 }
 
-scoped_refptr<CanvasResource>
+scoped_refptr<ExportedCanvasResource>
 WebGLRenderingContextBase::GetResourceForPushFrame(
     bool& should_call_push_frame) {
   should_call_push_frame = false;
@@ -1741,7 +1841,7 @@ WebGLRenderingContextBase::GetResourceForPushFrame(
     Host()->DiscardResources();
   }
 
-  scoped_refptr<CanvasResource> resource =
+  scoped_refptr<ExportedCanvasResource> resource =
       CopyRenderingResultsFromDrawingBufferToResource(kBackBuffer);
   if (resource) {
     should_call_push_frame = true;
@@ -1752,6 +1852,32 @@ WebGLRenderingContextBase::GetResourceForPushFrame(
 
 void WebGLRenderingContextBase::Dispose() {
   TRACE_EVENT("gpu", __PRETTY_FUNCTION__);
+  if (!destruction_in_progress_) {
+    // Tear down the DrawingBuffer and detach its cc::TextureLayer during Oilpan
+    // pre-finalization before sweeping begins, while avoiding access to dead
+    // on-heap WebGL child objects.
+    destruction_in_progress_ = true;
+    if (!isContextLost()) {
+      context_lost_mode_ = kCanvasDisposed;
+    }
+    restore_allowed_ = false;
+    auto_recovery_method_ = kManual;
+    dispatch_context_lost_event_timer_.Stop();
+    restore_timer_.Stop();
+    DeactivateContext(this);
+    RemoveFromEvictedList(this);
+    DestroyContext();
+    // Only restore an evicted context if this context was previously activated
+    // by ActivateContext(). If CreateDrawingBuffer() fails in the constructor,
+    // WebGLContextFactory::CreateInternal() immediately calls Dispose() before
+    // InitializeNewContext() and ActivateContext() are reached; such a context
+    // never occupied a slot in ActiveContexts() and should not trigger
+    // restoration of a previously evicted context.
+    if (was_activated_) {
+      RestoreEvictedContext(this);
+    }
+  }
+
   base::trace_event::MemoryDumpManager::GetInstance()->UnregisterDumpProvider(
       this);
   resource_provider_.reset();
@@ -1787,7 +1913,9 @@ WebGLRenderingContextBase::ClearIfComposited(
     //
     // Note: we don't call MarkContentsChanged(), because it hasn't (there is
     // no new content to present yet).
-    GetDrawingBuffer()->EnsureBuffers();
+    if (!GetDrawingBuffer()->EnsureBuffers()) {
+      return kSkipped;
+    }
   }
 
   if (!GetDrawingBuffer()->BufferClearNeeded() ||
@@ -1847,16 +1975,21 @@ WebGLRenderingContextBase::ClearIfComposited(
         true, true, true,
         !GetDrawingBuffer()->DefaultBufferRequiresAlphaChannelToBePreserved());
   }
+  bool cleared = false;
   {
     ScopedDisableRasterizerDiscard scoped_disable(this,
                                                   rasterizer_discard_enabled_);
-    GetDrawingBuffer()->ClearFramebuffers(clear_mask);
+    cleared = GetDrawingBuffer()->ClearFramebuffers(clear_mask);
   }
 
   // Call the DrawingBufferClient method to restore scissor test, mask, and
   // clear values, because we dirtied them above.
   DrawingBufferClientRestoreScissorTest();
   DrawingBufferClientRestoreMaskAndClearValues();
+
+  if (!cleared) {
+    return kSkipped;
+  }
 
   GetDrawingBuffer()->SetBufferClearNeeded(false);
 
@@ -2004,30 +2137,6 @@ void WebGLRenderingContextBase::PageVisibilityChanged() {
     GetDrawingBuffer()->SetIsInHiddenPage(!Host()->IsPageVisible());
 }
 
-void WebGLRenderingContextBase::SizeChanged() {
-  did_fail_to_create_resource_provider_ = false;
-  resource_provider_.reset();
-  cached_snapshot_.reset();
-}
-
-scoped_refptr<ExternalCanvasResource>
-WebGLRenderingContextBase::ExportLowLatencyCanvasResource(
-    SourceDrawingBuffer source_buffer) {
-  CHECK(Host()->LowLatencyEnabled());
-  CHECK(GetDrawingBuffer());
-  CHECK(!isContextLost());
-
-  ClearIfComposited(kClearCallerOther);
-
-  // Given that we are in low-latency mode and directly writing to the
-  // SharedImage that we will export below, at this point we have successfully
-  // painted the canvas' contents by doing any necessary clearing in the above
-  // call.
-  must_paint_to_canvas_ = false;
-
-  return GetDrawingBuffer()->ExportLowLatencyCanvasResource();
-}
-
 scoped_refptr<StaticBitmapImage>
 WebGLRenderingContextBase::PaintRenderingResultsToSnapshot(
     SourceDrawingBuffer source_buffer) {
@@ -2035,13 +2144,12 @@ WebGLRenderingContextBase::PaintRenderingResultsToSnapshot(
     return nullptr;
   }
 
+  bool cleared_content = ClearIfComposited(kClearCallerOther) != kSkipped;
+
   if (Host()->LowLatencyEnabled() &&
       GetDrawingBuffer()->SupportsNoCopyExportForLowLatency()) {
-    auto resource = ExportLowLatencyCanvasResource(source_buffer);
-    return resource ? resource->Bitmap() : nullptr;
+    return GetDrawingBuffer()->ExportLowLatencyBitmap();
   }
-
-  bool cleared_content = ClearIfComposited(kClearCallerOther) != kSkipped;
 
   if (resource_provider_.get() &&
       resource_provider_.get()->Size() != GetDrawingBuffer()->Size()) {
@@ -2058,7 +2166,7 @@ WebGLRenderingContextBase::PaintRenderingResultsToSnapshot(
   // The host's ResourceProvider is purged to save memory when the tab
   // is backgrounded.
 
-  if (!must_paint_to_canvas_ && !cleared_content) {
+  if (!copied_contents_are_stale_ && !cleared_content) {
     if (resource_provider_.get()) {
       // `resource_provider_` already has the current contents.
       return resource_provider_->Snapshot();
@@ -2079,15 +2187,13 @@ WebGLRenderingContextBase::PaintRenderingResultsToSnapshot(
     // top-left origin (the orientation that is used by
     // `CanvasNon2DResourceProvider::Snapshot()` when it is not passed an
     // orientation explicitly).
-    if (!cached_snapshot_) {
-      cached_snapshot_ = CopyRenderingResultsToUnacceleratedStaticBitmapImage(
-          source_buffer, viz::SharedImageFormat::N32Format(),
-          kPremul_SkAlphaType, kTopLeft_GrSurfaceOrigin);
-    }
+    cached_snapshot_ = CopyRenderingResultsToUnacceleratedStaticBitmapImage(
+        source_buffer, viz::SharedImageFormat::N32Format(), kPremul_SkAlphaType,
+        kTopLeft_GrSurfaceOrigin);
 
     if (cached_snapshot_) {
       // We successfully painted the canvas' contents.
-      must_paint_to_canvas_ = false;
+      copied_contents_are_stale_ = false;
     }
 
     // Whether the snapshot was successfully created or not, there is nothing
@@ -2126,8 +2232,7 @@ WebGLRenderingContextBase::PaintRenderingResultsToSnapshot(
       snapshot = resource_provider->DoExternalOverdrawAndSnapshot(
           [&image](cc::PaintCanvas& canvas) {
             DrawImageToCanvas(image.get(), canvas);
-          },
-          ImageOrientationEnum::kDefault);
+          });
       copy_succeeded = true;
     }
   }
@@ -2137,11 +2242,11 @@ WebGLRenderingContextBase::PaintRenderingResultsToSnapshot(
   }
 
   // We successfully painted the canvas' contents.
-  must_paint_to_canvas_ = false;
+  copied_contents_are_stale_ = false;
   return snapshot;
 }
 
-scoped_refptr<CanvasResource>
+scoped_refptr<ExportedCanvasResource>
 WebGLRenderingContextBase::PaintRenderingResultsToResource(
     SourceDrawingBuffer source_buffer,
     FlushReason reason) {
@@ -2149,12 +2254,13 @@ WebGLRenderingContextBase::PaintRenderingResultsToResource(
     return nullptr;
   }
 
+  bool cleared_content = ClearIfComposited(kClearCallerOther) != kSkipped;
+
   if (Host()->LowLatencyEnabled() &&
       GetDrawingBuffer()->SupportsNoCopyExportForLowLatency()) {
-    return ExportLowLatencyCanvasResource(source_buffer);
+    return GetDrawingBuffer()->ExportLowLatencyCanvasResource();
   }
 
-  bool cleared_content = ClearIfComposited(kClearCallerOther) != kSkipped;
 
   if (resource_provider_.get() &&
       resource_provider_.get()->Size() != GetDrawingBuffer()->Size()) {
@@ -2162,7 +2268,8 @@ WebGLRenderingContextBase::PaintRenderingResultsToResource(
     Host()->DiscardResources();
   }
 
-  if (!must_paint_to_canvas_ && !cleared_content && resource_provider_.get()) {
+  if (!copied_contents_are_stale_ && !cleared_content &&
+      resource_provider_.get()) {
     // `resource_provider_` already has the current contents.
     return resource_provider_->ProduceCanvasResource();
   }
@@ -2213,12 +2320,15 @@ WebGLRenderingContextBase::GetSharedImageResourceProvider() {
     resource_provider_ = CanvasNon2DResourceProvider::Create(
         size, format, alpha_type, color_space, hdr_metadata,
         SharedGpuContext::ContextProviderWrapper(), shared_image_usage_flags,
-        Host());
+        blink::BindOnce(&CanvasRenderingContextHost::NotifyGpuContextLost,
+                        WrapWeakPersistent(Host())));
   } else {
     resource_provider_ =
         CanvasNon2DResourceProvider::CreateForSoftwareCompositor(
             size, format, alpha_type, color_space, hdr_metadata,
-            SharedGpuContext::SharedImageInterfaceProvider(), Host());
+            SharedGpuContext::SharedImageInterfaceProvider(),
+            blink::BindOnce(&CanvasRenderingContextHost::NotifyGpuContextLost,
+                            WrapWeakPersistent(Host())));
   }
   Host()->UpdateMemoryUsage();
 
@@ -2227,15 +2337,13 @@ WebGLRenderingContextBase::GetSharedImageResourceProvider() {
     return nullptr;
   }
 
-  base::UmaHistogramBoolean("Blink.Canvas.ResourceProviderIsAccelerated",
-                            !resource_provider_->IsSoftware());
   base::UmaHistogramEnumeration("Blink.Canvas.ResourceProviderType",
                                 CanvasResourceProviderType::kSharedImage);
 
   return resource_provider_.get();
 }
 
-scoped_refptr<CanvasResource>
+scoped_refptr<ExportedCanvasResource>
 WebGLRenderingContextBase::CopyRenderingResultsFromDrawingBufferToResource(
     SourceDrawingBuffer source_buffer) {
   TRACE_EVENT0("blink",
@@ -2261,7 +2369,7 @@ WebGLRenderingContextBase::CopyRenderingResultsFromDrawingBufferToResource(
   }
 
   bool copy_succeeded = false;
-  scoped_refptr<CanvasResource> resource;
+  scoped_refptr<ExportedCanvasResource> resource;
   if (!resource_provider->IsSoftware()) {
     copy_succeeded = CopyRenderingResultsFromDrawingBufferAccelerated(
         resource_provider, source_buffer);
@@ -2289,7 +2397,7 @@ WebGLRenderingContextBase::CopyRenderingResultsFromDrawingBufferToResource(
   }
 
   // We successfully painted the contents to the resource provider.
-  must_paint_to_canvas_ = false;
+  copied_contents_are_stale_ = false;
   return resource;
 }
 
@@ -2298,7 +2406,6 @@ bool WebGLRenderingContextBase::
         CanvasNon2DResourceProvider* resource_provider,
         SourceDrawingBuffer source_buffer) {
   DCHECK(resource_provider);
-  DCHECK(!resource_provider->IsSingleBuffered());
   CHECK(!resource_provider->IsSoftware());
 
   // Early-out if the context has been lost.
@@ -2405,9 +2512,31 @@ WebGLRenderingContextBase::GetRGBAUnacceleratedStaticBitmapImage(
       source_buffer);
 }
 
-void WebGLRenderingContextBase::Reshape(int width, int height) {
+void WebGLRenderingContextBase::Reshape(gfx::Size old_size,
+                                        gfx::Size new_size) {
+  if (Host()->IsOffscreenCanvas()) {
+    if (old_size == new_size) {
+      return;
+    }
+    if (isContextLost()) {
+      DidDraw(CanvasPerformanceMonitor::DrawType::kOther);
+      return;
+    }
+  } else {
+    did_fail_to_create_resource_provider_ = false;
+    resource_provider_.reset();
+    cached_snapshot_.reset();
+    Host()->UpdateMemoryUsage();
+    if (old_size == new_size) {
+      return;
+    }
+  }
+
   if (isContextLost())
     return;
+
+  int width = new_size.width();
+  int height = new_size.height();
 
   GLint buffer = 0;
   if (IsWebGL2()) {
@@ -2461,6 +2590,10 @@ void WebGLRenderingContextBase::Reshape(int width, int height) {
   if (buffer) {
     ContextGL()->BindBuffer(GL_PIXEL_UNPACK_BUFFER,
                             static_cast<GLuint>(buffer));
+  }
+
+  if (Host()->IsOffscreenCanvas()) {
+    DidDraw(CanvasPerformanceMonitor::DrawType::kOther);
   }
 }
 
@@ -3992,15 +4125,10 @@ void WebGLRenderingContextBase::RecordANGLEImplementation() {
   DCHECK(drawing_buffer_.get());
   const Platform::WebGLContextInfo& context_info =
       drawing_buffer_->ContextInfo();
-  // For mapping mathematics, see WebGLANGLEImplementation definition above.
-  int webgl_version_multiplier =
-      (context_type_ == Platform::kWebGL2ContextType ? 2 : 0);
-  WebGLANGLEImplementation webgl_angle_implementation =
-      static_cast<WebGLANGLEImplementation>(
-          webgl_version_multiplier * 10 +
-          static_cast<int>(context_info.angle_implementation));
-  UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.WebGLANGLEImplementation",
-                            webgl_angle_implementation);
+  UMA_HISTOGRAM_ENUMERATION("Blink.Canvas.WebGLANGLEImplementation2",
+                            ToWebGLANGLEImplementation(
+                                context_info.angle_implementation,
+                                context_type_ == Platform::kWebGL2ContextType));
 }
 
 ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
@@ -4533,7 +4661,8 @@ WebGLShaderPrecisionFormat* WebGLRenderingContextBase::getShaderPrecisionFormat(
 String WebGLRenderingContextBase::getShaderSource(WebGLShader* shader) {
   if (!ValidateWebGLProgramOrShader("getShaderSource", shader))
     return String();
-  return EnsureNotNull(shader->Source());
+  // A null String would become JS null, which WebGL reserves for errors.
+  return shader->Source().IsNull() ? g_empty_string : shader->Source();
 }
 
 std::optional<Vector<String>>
@@ -5345,8 +5474,9 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
   }
   ClearIfComposited(kClearCallerOther);
 
-  uint8_t* data = static_cast<uint8_t*>(pixels->BaseAddressMaybeShared()) +
-                  offset_in_bytes.ValueOrDie();
+  uint8_t* data =
+      UNSAFE_TODO(static_cast<uint8_t*>(pixels->BaseAddressMaybeShared()) +
+                  offset_in_bytes.ValueOrDie());
 
   // We add special handling here if the 'ArrayBufferView' is size '0' and the
   // backing store is 'nullptr'. 'ReadPixels' creates an error if the provided
@@ -5881,19 +6011,16 @@ bool WebGLRenderingContextBase::ValidateValueFitNonNegInt32(
     const char* function_name,
     const char* param_name,
     int64_t value) {
-  if (value < 0) {
-    String error_msg = StrCat({param_name, " < 0"});
-    SynthesizeGLError(GL_INVALID_VALUE, function_name,
-                      error_msg.Ascii().c_str());
-    return false;
+  if (value >= 0 &&
+      value <= static_cast<int64_t>(std::numeric_limits<int>::max())) {
+    return true;
   }
-  if (value > static_cast<int64_t>(std::numeric_limits<int>::max())) {
-    String error_msg = StrCat({param_name, " more than 32-bit"});
-    SynthesizeGLError(GL_INVALID_OPERATION, function_name,
-                      error_msg.Ascii().c_str());
-    return false;
-  }
-  return true;
+  StringBuilder builder;
+  builder.Append(param_name);
+  builder.Append(value < 0 ? " < 0" : " more than 32-bit");
+  SynthesizeGLError(value < 0 ? GL_INVALID_VALUE : GL_INVALID_OPERATION,
+                    function_name, builder);
+  return false;
 }
 
 // TODO(fmalita): figure why ImageExtractor can't handle
@@ -5984,7 +6111,18 @@ gfx::Rect WebGLRenderingContextBase::SafeGetImageSize(Image* image) {
 }
 
 bool WebGLRenderingContextBase::IsOpaque() const {
-  return !CreationAttributes().alpha;
+  if (CreationAttributes().alpha) {
+    return false;
+  }
+  if (isContextLost() || !GetDrawingBuffer()) {
+    return false;
+  }
+  const CanvasRenderingContextHost* host = Host();
+  if (!host || drawingBufferWidth() != host->Size().width() ||
+      drawingBufferHeight() != host->Size().height()) {
+    return false;
+  }
+  return true;
 }
 
 SkAlphaType WebGLRenderingContextBase::GetAlphaType() const {
@@ -6338,7 +6476,12 @@ void WebGLRenderingContextBase::TexImageViaGPU(
               params.GetDestinationAlphaType(), params.GetDestinationOrigin(),
               gfx::Point(params.xoffset, params.yoffset), source_sub_rectangle,
               kBackBuffer)) {
-        NOTREACHED();
+        // Copy failure, source context is lost. Make sure to not leak the
+        // texture.
+        if (!possible_direct_copy) {
+          ContextGL()->DeleteTextures(1, &target_texture);
+        }
+        return;
       }
     }
   }
@@ -6743,7 +6886,7 @@ void WebGLRenderingContextBase::TexImageHelperMediaVideoFrame(
       *media_video_frame, dest_rect.size(), color_space_interpretation,
       VideoOrientationBehavior::kHardFlip);
 
-  CanvasNon2DResourceProvider* provider = nullptr;
+  VideoFrameAcceleratedSnapshotPool* pool = nullptr;
   if (can_upload_via_gpu) {
     viz::RasterContextProvider* raster_context_provider = nullptr;
     if (auto wrapper = SharedGpuContext::ContextProviderWrapper()) {
@@ -6751,8 +6894,8 @@ void WebGLRenderingContextBase::TexImageHelperMediaVideoFrame(
           wrapper->ContextProvider().RasterContextProvider();
     }
     if (ShouldCreateAcceleratedImages(raster_context_provider)) {
-      provider = generated_video_cache_.GetCanvasNon2DResourceProvider(info);
-      if (!provider) {
+      pool = generated_video_cache_.GetVideoFrameAcceleratedSnapshotPool(info);
+      if (!pool) {
         return;
       }
     }
@@ -6761,13 +6904,13 @@ void WebGLRenderingContextBase::TexImageHelperMediaVideoFrame(
   // Since TexImageStaticBitmapImage() and TexImageGPU() don't know how to
   // handle tagged orientation, we use VideoOrientationBehavior::kHardFlip.
   scoped_refptr<StaticBitmapImage> image;
-  if (!provider) {
+  if (!pool) {
     image = CreateUnacceleratedImageFromVideoFrame(
         std::move(media_video_frame), info, video_renderer,
         VideoOrientationBehavior::kHardFlip, color_space_interpretation);
   } else {
     image = CreateAcceleratedImageFromVideoFrame(
-        std::move(media_video_frame), provider, video_renderer,
+        std::move(media_video_frame), pool, video_renderer,
         VideoOrientationBehavior::kHardFlip, color_space_interpretation);
   }
 
@@ -6960,64 +7103,6 @@ void WebGLRenderingContextBase::texParameteri(GLenum target,
   TexParameter(target, pname, 0, param, false);
 }
 
-void WebGLRenderingContextBase::texElementImage2D(
-    GLenum target,
-    GLenum internalformat,
-    const V8UnionElementOrElementImage* element,
-    const WebGLCopyElementImageConfig* config,
-    ExceptionState& exception_state) {
-  std::optional<GLfloat> sx;
-  std::optional<GLfloat> sy;
-  std::optional<GLfloat> swidth;
-  std::optional<GLfloat> sheight;
-  std::optional<GLsizei> width;
-  std::optional<GLsizei> height;
-
-  size_t explicit_param_count = 0;
-  if (config) {
-    if (config->hasSx()) {
-      sx = config->sx();
-      explicit_param_count++;
-    }
-    if (config->hasSy()) {
-      sy = config->sy();
-      explicit_param_count++;
-    }
-    if (config->hasSwidth()) {
-      swidth = config->swidth();
-      explicit_param_count++;
-    }
-    if (config->hasSheight()) {
-      sheight = config->sheight();
-      explicit_param_count++;
-    }
-    if (explicit_param_count % 4 != 0) {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kOperationError,
-          "Must specify all or none of (sx,sy,swidth,sheight).");
-      return;
-    }
-    if (config->hasWidth()) {
-      width = config->width();
-      explicit_param_count++;
-    }
-    if (config->hasHeight()) {
-      height = config->height();
-      explicit_param_count++;
-    }
-    if (explicit_param_count % 2 != 0) {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kOperationError,
-          "Must specify neither or both of (width,height).");
-      return;
-    }
-  }
-
-  TexElementImage2DInternal(target, internalformat, /*level*/ 0, /*xoffset*/ 0,
-                            /*yoffset*/ 0, sx, sy, swidth, sheight, width,
-                            height, element, exception_state);
-}
-
 void WebGLRenderingContextBase::texElementSubImage2D(
     GLenum target,
     GLint level,
@@ -7073,12 +7158,12 @@ void WebGLRenderingContextBase::texElementSubImage2D(
     }
   }
 
-  TexElementImage2DInternal(target, /*internalformat*/ std::nullopt, level,
-                            xoffset, yoffset, sx, sy, swidth, sheight, width,
-                            height, element, exception_state);
+  TexElementSubImage2DInternal(target, /*internalformat*/ std::nullopt, level,
+                               xoffset, yoffset, sx, sy, swidth, sheight, width,
+                               height, element, exception_state);
 }
 
-void WebGLRenderingContextBase::TexElementImage2DInternal(
+void WebGLRenderingContextBase::TexElementSubImage2DInternal(
     GLenum target,
     std::optional<GLenum> internalformat,
     GLint level,
@@ -7118,10 +7203,13 @@ void WebGLRenderingContextBase::TexElementImage2DInternal(
     return;
   }
 
-  scoped_refptr<StaticBitmapImage> image =
-      GetElementImage(element, sx, sy, swidth, sheight, width, height,
-                      gpu::SHARED_IMAGE_USAGE_GLES2_READ,
-                      "texElementSubImage2D()", exception_state);
+  // TexImageStaticBitmapImage() may read the returned image via the raster
+  // interface (for GPU color-space conversion or CPU readback fallback) in
+  // addition to reading via the GL interface.
+  scoped_refptr<StaticBitmapImage> image = GetElementImage(
+      element, sx, sy, swidth, sheight, width, height,
+      gpu::SHARED_IMAGE_USAGE_GLES2_READ | gpu::SHARED_IMAGE_USAGE_RASTER_READ,
+      "texElementSubImage2D()", exception_state);
   if (!image) {
     return;
   }
@@ -7804,7 +7892,9 @@ void WebGLRenderingContextBase::ForceRestoreContext() {
 }
 
 cc::Layer* WebGLRenderingContextBase::CcLayer() const {
-  return isContextLost() ? nullptr : GetDrawingBuffer()->CcLayer();
+  return (isContextLost() || !GetDrawingBuffer())
+             ? nullptr
+             : GetDrawingBuffer()->CcLayer();
 }
 
 void WebGLRenderingContextBase::SetHdrMetadata(
@@ -7967,11 +8057,29 @@ bool WebGLRenderingContextBase::
 
 void WebGLRenderingContextBase::
     DrawingBufferClientForceLostContextWithAutoRecovery(const char* reason) {
-  ForceLostContext(WebGLRenderingContextBase::kSyntheticLostContext,
-                   WebGLRenderingContextBase::kAuto);
+  if (isContextLost() || !drawing_buffer_) {
+    return;
+  }
   if (reason) {
     PrintWarningToConsole(reason);
   }
+  // Post context loss asynchronously rather than running ForceLostContext
+  // re-entrantly while DrawingBuffer / WebGLRenderingContextBase frames are
+  // still on the stack, matching CommandBufferProxyImpl's lost-context
+  // callback behavior.
+  GetContextTaskRunner()->PostTask(
+      FROM_HERE,
+      blink::BindOnce(
+          &WebGLRenderingContextBase::ForceLostContextFromDrawingBuffer,
+          WrapWeakPersistent(this), blink::RetainedRef(drawing_buffer_)));
+}
+
+void WebGLRenderingContextBase::ForceLostContextFromDrawingBuffer(
+    DrawingBuffer* failed_drawing_buffer) {
+  if (isContextLost() || drawing_buffer_.get() != failed_drawing_buffer) {
+    return;
+  }
+  ForceLostContext(kRealLostContext, kAuto);
 }
 
 void WebGLRenderingContextBase::DrawingBufferClientInitializeLayer(
@@ -8183,8 +8291,7 @@ bool WebGLRenderingContextBase::ValidateLocationLength(
     StringBuilder builder;
     builder.Append("location length > ");
     builder.AppendNumber(max_web_gl_location_length);
-    SynthesizeGLError(GL_INVALID_VALUE, function_name,
-                      builder.ToString().Ascii().c_str());
+    SynthesizeGLError(GL_INVALID_VALUE, function_name, builder);
     return false;
   }
   return true;
@@ -9187,54 +9294,48 @@ void WebGLRenderingContextBase::MaybeRestoreContext(TimerBase*) {
   }
 }
 
-String WebGLRenderingContextBase::EnsureNotNull(const String& text) const {
-  if (text.IsNull())
-    return g_empty_string;
-  return text;
-}
+WebGLRenderingContextBase::LRUVideoFrameAcceleratedSnapshotPoolCache::
+    LRUVideoFrameAcceleratedSnapshotPoolCache(wtf_size_t capacity)
+    : capacity_(capacity), pools_(capacity) {}
 
-WebGLRenderingContextBase::LRUCanvasNon2DResourceProviderCache::
-    LRUCanvasNon2DResourceProviderCache(wtf_size_t capacity)
-    : capacity_(capacity), providers_(capacity) {}
+WebGLRenderingContextBase::LRUVideoFrameAcceleratedSnapshotPoolCache::
+    ~LRUVideoFrameAcceleratedSnapshotPoolCache() = default;
 
-CanvasNon2DResourceProvider* WebGLRenderingContextBase::
-    LRUCanvasNon2DResourceProviderCache::GetCanvasNon2DResourceProvider(
-        const CanvasSnapshotInfo& info) {
+VideoFrameAcceleratedSnapshotPool*
+WebGLRenderingContextBase::LRUVideoFrameAcceleratedSnapshotPoolCache::
+    GetVideoFrameAcceleratedSnapshotPool(const CanvasSnapshotInfo& info) {
   wtf_size_t i;
   for (i = 0; i < capacity_; ++i) {
-    CanvasNon2DResourceProvider* provider = providers_[i].get();
-    if (!provider) {
+    VideoFrameAcceleratedSnapshotPool* pool = pools_[i].get();
+    if (!pool) {
       break;
     }
-    if (!provider->IsValid() || !info.Matches(provider->GetInfo())) {
+    if (!pool->IsValid() || !info.Matches(pool->GetInfo())) {
       continue;
     }
     BubbleToFront(i);
-    return provider;
+    return pool;
   }
 
-  std::unique_ptr<CanvasNon2DResourceProvider> temp =
-      CanvasNon2DResourceProvider::Create(
-          info.size, info.format, info.alpha_type, info.color_space,
-          info.hdr_metadata, SharedGpuContext::ContextProviderWrapper(),
-          gpu::SHARED_IMAGE_USAGE_DISPLAY_READ);
+  std::unique_ptr<VideoFrameAcceleratedSnapshotPool> temp =
+      VideoFrameAcceleratedSnapshotPool::Create(info);
 
   if (!temp) {
     return nullptr;
   }
 
   i = std::min(capacity_ - 1, i);
-  providers_[i] = std::move(temp);
+  pools_[i] = std::move(temp);
 
-  CanvasNon2DResourceProvider* provider = providers_[i].get();
+  VideoFrameAcceleratedSnapshotPool* pool = pools_[i].get();
   BubbleToFront(i);
-  return provider;
+  return pool;
 }
 
-void WebGLRenderingContextBase::LRUCanvasNon2DResourceProviderCache::
+void WebGLRenderingContextBase::LRUVideoFrameAcceleratedSnapshotPoolCache::
     BubbleToFront(wtf_size_t idx) {
   for (wtf_size_t i = idx; i > 0; --i) {
-    providers_[i].swap(providers_[i - 1]);
+    pools_[i].swap(pools_[i - 1]);
   }
 }
 
@@ -9261,10 +9362,18 @@ String GetErrorString(GLenum error) {
 
 }  // namespace
 
-void WebGLRenderingContextBase::SynthesizeGLError(
+NOINLINE void WebGLRenderingContextBase::SynthesizeGLError(
     GLenum error,
     const char* function_name,
     const char* description,
+    ConsoleDisplayPreference display) {
+  SynthesizeGLError(error, function_name, StringView(description), display);
+}
+
+void WebGLRenderingContextBase::SynthesizeGLError(
+    GLenum error,
+    const char* function_name,
+    const StringView& description,
     ConsoleDisplayPreference display) {
   String error_type = GetErrorString(error);
   if (synthesized_errors_to_console_ && display == kDisplayInConsole) {

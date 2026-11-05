@@ -78,6 +78,7 @@
 <translation id="1620510694547887537">کیمرا</translation>
 <translation id="162175252992296058">امریکی بین الاقوامی کی بورڈ کے ساتھ پرتگالی</translation>
 <translation id="1629521517399325891">صارف کا سرٹیفیکیٹ نیٹ ورک کی تصدیق کے لئے دستیاب نہیں ہے۔</translation>
+<translation id="1639239467298939599">لوڈ ہو رہی ہے</translation>
 <translation id="1641780993263690097">‏چینی Pinyin</translation>
 <translation id="164969095109328410">‏Chrome آلہ</translation>
 <translation id="1661207570040737402">‏آپ نے مشترکہ ڈرائیو کیGoogle Workspace کی اپنی تمام اسٹوریج استعمال کر لی ہے۔</translation>
@@ -240,6 +241,7 @@
 <translation id="2819519502129272135">فائل کی مطابقت پذیری آف کی گئی</translation>
 <translation id="2820957248982571256">اسکین ہو رہا ہے…</translation>
 <translation id="2830077785865012357">‏چینی Zhuyin</translation>
+<translation id="2838379631617906747">انسٹال کی جا رہی ہے</translation>
 <translation id="2843806747483486897">ڈیفالٹ کو تبدیل کریں…</translation>
 <translation id="2873951654529031587">کوڑے دان</translation>
 <translation id="2887314858867008269">‏‫US کولمیک</translation>
@@ -519,10 +521,10 @@
 <translation id="5045550434625856497">غلط پاس ورڈ</translation>
 <translation id="5059127710849015030">نیپالی نقل حرفی</translation>
 <translation id="5068919226082848014">پزّا</translation>
+<translation id="5075336522277785691">‫<ph name="EXTENSION_NAME" /> نے پراکسی اوور رائیڈ کے اصول سیٹ کیے ہیں</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> فائلیں حذف کر دی جائیں گی</translation>
 <translation id="508423945471810158">‫<ph name="NUMBER_OF_ITEMS" /> آئٹمز کو <ph name="FOLDER_NAME" /> میں منتقل کیا جا رہا ہے</translation>
 <translation id="509429900233858213">ایک خرابی پیش آگئی۔</translation>
-<translation id="5102922915594634436">سِنک کردہ فولڈرز کا نظم کریں</translation>
 <translation id="5109254780565519649">ایک خرابی پیش آ گئی۔ ہو سکتا ہے کچھ آئٹمز بحال نہ ہوئے ہوں۔</translation>
 <translation id="5110329002213341433">انگریزی (کینیڈا)</translation>
 <translation id="5119780910075847424">مطابقت پذیری موقوف کر دی گئی</translation>
@@ -558,7 +560,6 @@
 <translation id="5305688511332277257">کوئی بھی انسٹال نہیں ہے</translation>
 <translation id="5317780077021120954">محفوظ کریں</translation>
 <translation id="5318819489018851358">‏Linux کے ساتھ اشتراک کریں</translation>
-<translation id="5330145655348521461">یہ فائلیں ایک مختلف ڈیسک ٹاپ پر کھولی گئیں۔ اسے دیکھنے کیلئے <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) پر جائیں۔</translation>
 <translation id="5330512191124428349">معلومات حاصل کریں</translation>
 <translation id="535792325654997756">بلیوں کے ساتھ شخص</translation>
 <translation id="5358764674931277">فریم ریٹ</translation>
@@ -699,7 +700,6 @@
 <translation id="636254897931573416">ڈومین لاحقہ سے مماثل قدر غلط ہے</translation>
 <translation id="6364301859968397756">تنظیم کی اسٹوریج بھری ہوئی ہے</translation>
 <translation id="6367976544441405720">وین</translation>
-<translation id="637062427944097960">یہ فائل ایک مختلف ڈیسک ٹاپ پر کھولی گئی ہے۔ اسے دیکھنے کیلئے <ph name="USER_NAME" /> (<ph name="MAIL_ADDRESS" />) پر منتقل ہوں۔</translation>
 <translation id="6394388407447716302">صرف پڑھنے کے لیے</translation>
 <translation id="6395575651121294044"><ph name="NUMBER_OF_FILES" /> آئٹمز</translation>
 <translation id="6407769893376380348"><ph name="FILE_NAME" /> کو منتقل نہیں کیا جا سکا کیونکہ یہ مرموز کردہ ہے</translation>
@@ -1021,6 +1021,7 @@
 <translation id="8639391553632924850"><ph name="INPUT_LABEL" /> - پورٹ</translation>
 <translation id="8656407365183407932">آپ کی آف لائن فائلز کو ہٹانا پڑا</translation>
 <translation id="8656768832129462377">چیک نہ کریں</translation>
+<translation id="8662978096466608964">‏Chrome وال پیپر کو سیٹ نہیں کر سکتا ہے۔</translation>
 <translation id="8688591111840995413">غلط پاس ورڈ</translation>
 <translation id="8698464937041809063">‏Google ڈرائنگ</translation>
 <translation id="8698877009525468705">یہ فائل رازدارانہ ہے اور منتظم کی پالیسی کی طرف سے پابندیوں کے ساتھ مشروط ہے۔</translation>

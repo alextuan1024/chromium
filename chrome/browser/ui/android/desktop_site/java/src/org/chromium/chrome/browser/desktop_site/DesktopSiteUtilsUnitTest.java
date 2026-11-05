@@ -16,13 +16,9 @@ import static org.mockito.Mockito.when;
 import android.app.Activity;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
-import android.os.Build;
 import android.util.DisplayMetrics;
 import android.view.Display;
-import android.view.Window;
 import android.view.WindowManager;
-
-import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -33,17 +29,14 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
 import org.robolectric.shadows.ShadowPackageManager;
-import org.robolectric.util.ReflectionHelpers;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.SysUtils;
-import org.chromium.base.TriState;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -78,9 +71,6 @@ public class DesktopSiteUtilsUnitTest {
             new OverrideContextWrapperTestRule();
 
     @Mock private WebsitePreferenceBridge.Natives mWebsitePreferenceBridgeJniMock;
-    @Mock private Activity mActivity;
-    @Mock private Window mWindow;
-    @Mock private WindowManager.LayoutParams mLayoutParams;
     @Mock private DisplayMetrics mDisplayMetrics;
     @Mock private Profile mProfile;
     @Mock private DisplayAndroid mDisplayAndroid;
@@ -88,6 +78,8 @@ public class DesktopSiteUtilsUnitTest {
     @Mock private UserPrefs.Natives mUserPrefsJni;
     @Mock private PrefService mPrefService;
 
+    private Activity mActivity;
+    private WindowManager.LayoutParams mLayoutParams;
     private @ContentSetting int mRdsDefaultValue;
     private boolean mWindowSetting;
     private SharedPreferencesManager mSharedPreferencesManager;
@@ -143,9 +135,9 @@ public class DesktopSiteUtilsUnitTest {
 
         mSharedPreferencesManager = ChromeSharedPreferences.getInstance();
 
-        mResources = ApplicationProvider.getApplicationContext().getResources();
+        mActivity = Robolectric.buildActivity(Activity.class).get();
+        mResources = mActivity.getResources();
         mResources.getConfiguration().smallestScreenWidthDp = 600;
-        when(mActivity.getResources()).thenReturn(mResources);
 
         SysUtils.setAmountOfPhysicalMemoryKbForTesting(
                 7000 * ConversionUtils.KILOBYTES_PER_MEGABYTE);
@@ -179,8 +171,7 @@ public class DesktopSiteUtilsUnitTest {
                 .when(mWebsitePreferenceBridgeJniMock)
                 .getContentSetting(
                         mProfile, ContentSettingsType.REQUEST_DESKTOP_SITE, mGoogleUrl, mGoogleUrl);
-        when(mActivity.getWindow()).thenReturn(mWindow);
-        when(mWindow.getAttributes()).thenReturn(mLayoutParams);
+        mLayoutParams = mActivity.getWindow().getAttributes();
         mLayoutParams.width = -1;
         mDisplayMetrics.density = 1.0f;
         mDisplayMetrics.widthPixels = 800;
@@ -735,44 +726,24 @@ public class DesktopSiteUtilsUnitTest {
     }
 
     @Test
-    @EnableFeatures(
-            ChromeFeatureList.DESKTOP_UA_ON_CONNECTED_DISPLAY
-                    + ":ext_display_desktop_ua_oem_allowlist/samsung")
     public void testShouldOverrideDesktopSite_onEligibleExternalDisplay() {
         when(mDisplay.getDisplayId()).thenReturn(/*non built-in display*/ 2);
-        String originalManufacturer = Build.MANUFACTURER;
-        try {
-            ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", "samsung");
-            boolean shouldOverride =
-                    DesktopSiteUtils.shouldOverrideDesktopSite(mProfile, mGoogleUrl, mActivity);
-            Assert.assertTrue("Desktop site should be overridden.", shouldOverride);
-        } finally {
-            ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", originalManufacturer);
-            DesktopSiteUtils.sDesktopUAAllowedOnExternalDisplayForOem = TriState.NOT_SET;
-        }
+        boolean shouldOverride =
+                DesktopSiteUtils.shouldOverrideDesktopSite(mProfile, mGoogleUrl, mActivity);
+        Assert.assertTrue("Desktop site should be overridden.", shouldOverride);
     }
 
     @Test
-    @EnableFeatures(
-            ChromeFeatureList.DESKTOP_UA_ON_CONNECTED_DISPLAY
-                    + ":ext_display_desktop_ua_oem_allowlist/samsung")
     public void
             testShouldOverrideDesktopSite_onEligibleExternalDisplay_userPreviouslyUpdatedSetting() {
         when(mDisplay.getDisplayId()).thenReturn(/*non built-in display*/ 2);
-        String originalManufacturer = Build.MANUFACTURER;
-        try {
-            ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", "samsung");
-            mSharedPreferencesManager.writeBoolean(
-                    SingleCategorySettingsConstants
-                            .USER_ENABLED_DESKTOP_SITE_GLOBAL_SETTING_PREFERENCE_KEY,
-                    true);
-            boolean shouldOverride =
-                    DesktopSiteUtils.shouldOverrideDesktopSite(mProfile, mGoogleUrl, mActivity);
-            Assert.assertFalse("Desktop site should not be overridden.", shouldOverride);
-        } finally {
-            ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", originalManufacturer);
-            DesktopSiteUtils.sDesktopUAAllowedOnExternalDisplayForOem = TriState.NOT_SET;
-        }
+        mSharedPreferencesManager.writeBoolean(
+                SingleCategorySettingsConstants
+                        .USER_ENABLED_DESKTOP_SITE_GLOBAL_SETTING_PREFERENCE_KEY,
+                true);
+        boolean shouldOverride =
+                DesktopSiteUtils.shouldOverrideDesktopSite(mProfile, mGoogleUrl, mActivity);
+        Assert.assertFalse("Desktop site should not be overridden.", shouldOverride);
     }
 
     @Test
@@ -781,39 +752,5 @@ public class DesktopSiteUtilsUnitTest {
         boolean shouldOverride =
                 DesktopSiteUtils.shouldOverrideDesktopSite(mProfile, mGoogleUrl, mActivity);
         Assert.assertFalse("Desktop site should not be overridden.", shouldOverride);
-    }
-
-    @Test
-    @EnableFeatures(
-            ChromeFeatureList.DESKTOP_UA_ON_CONNECTED_DISPLAY
-                    + ":ext_display_desktop_ua_oem_allowlist/samsung")
-    public void testShouldOverrideDesktopSite_OEMNotAllowlisted_shouldNotOverride() {
-        when(mDisplay.getDisplayId()).thenReturn(/*non built-in display*/ 2);
-        String originalManufacturer = Build.MANUFACTURER;
-        try {
-            ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", "something_else");
-            boolean shouldOverride =
-                    DesktopSiteUtils.shouldOverrideDesktopSite(mProfile, mGoogleUrl, mActivity);
-            Assert.assertFalse("Desktop site should not be overridden.", shouldOverride);
-        } finally {
-            ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", originalManufacturer);
-            DesktopSiteUtils.sDesktopUAAllowedOnExternalDisplayForOem = TriState.NOT_SET;
-        }
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.DESKTOP_UA_ON_CONNECTED_DISPLAY)
-    public void testShouldOverrideDesktopSite_OEMAllowlistNotSet_shouldOverride() {
-        when(mDisplay.getDisplayId()).thenReturn(/*non built-in display*/ 2);
-        String originalManufacturer = Build.MANUFACTURER;
-        try {
-            ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", "samsung");
-            boolean shouldOverride =
-                    DesktopSiteUtils.shouldOverrideDesktopSite(mProfile, mGoogleUrl, mActivity);
-            Assert.assertTrue("Desktop site should be overridden.", shouldOverride);
-        } finally {
-            ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", originalManufacturer);
-            DesktopSiteUtils.sDesktopUAAllowedOnExternalDisplayForOem = TriState.NOT_SET;
-        }
     }
 }

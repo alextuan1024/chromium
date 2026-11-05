@@ -25,6 +25,7 @@
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "components/crx_file/id_util.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -57,6 +58,7 @@
 #include "extensions/common/features/feature.h"
 #include "extensions/common/features/feature_provider.h"
 #include "extensions/common/manifest_handlers/background_info.h"
+#include "extensions/common/manifest_handlers/incognito_info.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/mojom/event_dispatcher.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
@@ -74,6 +76,9 @@ namespace extensions {
 base::TimeDelta kEventAckMetricTimeLimit = base::Minutes(5);
 
 namespace {
+
+using ListenerSet = ListenerRegistrationPhaseMap::ListenerSet;
+using PhaseState = ListenerRegistrationPhaseMap::State;
 
 // A message when mojom::EventRouter::AddListenerForMainThread() or
 // RemoveListenerForMainThread() is called with an invalid param.
@@ -170,6 +175,36 @@ bool HasFilteredWebRequestEvents(const base::DictValue& filtered_events) {
   return std::ranges::any_of(filtered_events, [](const auto& entry) {
     return entry.first.starts_with(kWebRequestEventPrefix);
   });
+}
+
+// For a split-mode extension with incognito access, returns the counterpart
+// BrowserContext (incognito if `browser_context` is regular and an OTR context
+// exists, or regular if `browser_context` is incognito). Returns nullptr
+// otherwise.
+//
+// Split-mode regular and incognito workers have separate registration phases
+// but still share lazy listeners (which are keyed by extension ID). This is
+// similar to `EventDispatchHelper::GetIncognitoContextIfAccessible()`, except
+// it works in both directions.
+// TODO(crbug.com/509627729): Remove once regular and incognito workers stop
+// sharing lazy listeners.
+content::BrowserContext* GetOtherWorkerContext(
+    const ExtensionId& extension_id,
+    content::BrowserContext& browser_context) {
+  const Extension* extension = ExtensionRegistry::Get(&browser_context)
+                                   ->enabled_extensions()
+                                   .GetByID(extension_id);
+  if (!extension || !IncognitoInfo::IsSplitMode(extension) ||
+      !util::IsIncognitoEnabled(extension, &browser_context)) {
+    return nullptr;
+  }
+  ExtensionsBrowserClient* browser_client = ExtensionsBrowserClient::Get();
+  if (browser_context.IsOffTheRecord()) {
+    return browser_client->GetOriginalContext(&browser_context);
+  }
+  return browser_client->HasOffTheRecordContext(&browser_context)
+             ? browser_client->GetOffTheRecordContext(&browser_context)
+             : nullptr;
 }
 
 }  // namespace
@@ -381,9 +416,6 @@ void EventRouter::BindForRenderer(
 void EventRouter::SwapReceiverForTesting(
     content::ChildProcessId render_process_id,
     mojom::EventRouter* new_impl) {
-  std::map<mojo::ReceiverId, content::ChildProcessId*> receiver_contexts =
-      receivers_.GetAllContexts();
-
   // We don't have the ReceiverId for the receiver stored anywhere, so loop
   // through existing receivers to find the ReceiverId and use it to find the
   // correct receiver to swap for testing.
@@ -405,7 +437,10 @@ EventRouter::EventRouter(BrowserContext* browser_context,
                          ExtensionPrefs* extension_prefs)
     : browser_context_(browser_context),
       extension_prefs_(extension_prefs),
-      lazy_event_dispatch_util_(browser_context_) {
+      lazy_event_dispatch_util_(browser_context_),
+      listener_registration_phases_(
+          base::BindRepeating(&EventRouter::OnListenerRegistrationPhaseFinished,
+                              base::Unretained(this))) {
   extension_registry_observation_.Observe(
       ExtensionRegistry::Get(browser_context_));
   process_manager_observation_.Observe(ProcessManager::Get(browser_context_));
@@ -473,8 +508,20 @@ bool EventRouter::CanProcessAccessOrigin(RenderProcessHost& process,
 
 void EventRouter::ReportUnauthorizedExtensionProcess(
     const ExtensionId& extension_id,
+    std::string_view event_name,
     RenderProcessHost& process) {
+  // TODO(crbug.com/531900625): Remove these crash keys (and the `event_name`
+  // plumbing) once the cause of these renderer kills is understood.
   SCOPED_CRASH_KEY_STRING64("EventRouter", "extension_id", extension_id);
+  SCOPED_CRASH_KEY_STRING64("EventRouter", "event_name", event_name);
+
+  // How many extensions ScriptInjectionTracker believes have run content
+  // scripts in `process`.
+  SCOPED_CRASH_KEY_NUMBER(
+      "EventRouter", "cs_ext_count",
+      ScriptInjectionTracker::GetExtensionsThatRanContentScriptsInProcess(
+          process)
+          .size());
 
   SCOPED_CRASH_KEY_BOOL(
       "EventRouter", "cpsp_allows_origin",
@@ -491,20 +538,40 @@ void EventRouter::ReportUnauthorizedExtensionProcess(
 
   // Whether ProcessManager tracks a worker for this extension in `process`.
   ProcessManager* process_manager = ProcessManager::Get(browser_context_);
+  const std::vector<WorkerId> workers =
+      process_manager
+          ? process_manager->GetServiceWorkersForExtension(extension_id)
+          : std::vector<WorkerId>();
   const bool worker_known =
-      process_manager &&
-      std::ranges::any_of(
-          process_manager->GetServiceWorkersForExtension(extension_id),
-          [&process](const WorkerId& worker_id) {
-            return worker_id.render_process_id == process.GetID();
-          });
+      std::ranges::any_of(workers, [&process](const WorkerId& worker_id) {
+        return worker_id.render_process_id == process.GetID();
+      });
   SCOPED_CRASH_KEY_BOOL("EventRouter", "worker_known", worker_known);
+
+  // How many workers ProcessManager tracks for this extension, in any process.
+  SCOPED_CRASH_KEY_NUMBER("EventRouter", "worker_count", workers.size());
+
+  // Whether ProcessMap associates this extension with any process. Unlike
+  // `worker_count`, this includes processes whose worker hasn't finished
+  // starting yet, since ProcessMap is updated when a process is assigned.
+  SCOPED_CRASH_KEY_BOOL(
+      "EventRouter", "ext_has_any_process",
+      process_map && process_map->ExtensionHasProcess(extension_id));
+
+  // Time since `process` was last (re)initialized.
+  const base::TimeTicks last_init_time = process.GetLastInitTime();
+  SCOPED_CRASH_KEY_NUMBER(
+      "EventRouter", "process_age_ms",
+      last_init_time.is_null()
+          ? -1
+          : (base::TimeTicks::Now() - last_init_time).InMilliseconds());
 
   receivers_.ReportBadMessage(kEventListenerWithUnauthorizedExtensionID);
 }
 
 bool EventRouter::ValidateMainThreadListenerOwner(
     const mojom::EventListenerOwner& listener_owner,
+    std::string_view event_name,
     RenderProcessHost& process,
     bool require_extension_process) {
   if (listener_owner.is_extension_id()) {
@@ -525,7 +592,7 @@ bool EventRouter::ValidateMainThreadListenerOwner(
             : IsProcessAuthorizedForMainThreadExtensionListener(extension_id,
                                                                 process);
     if (!is_authorized) {
-      ReportUnauthorizedExtensionProcess(extension_id, process);
+      ReportUnauthorizedExtensionProcess(extension_id, event_name, process);
       return false;
     }
     return true;
@@ -547,6 +614,7 @@ bool EventRouter::ValidateMainThreadListenerOwner(
 
 bool EventRouter::ValidateServiceWorkerListenerForExtension(
     const ExtensionId& extension_id,
+    std::string_view event_name,
     const GURL& worker_scope_url,
     RenderProcessHost& process) {
   if (!worker_scope_url.is_valid()) {
@@ -568,7 +636,7 @@ bool EventRouter::ValidateServiceWorkerListenerForExtension(
   // state. A process that merely ran an extension content or user script is not
   // authorized to mutate that state.
   if (!IsProcessAuthorizedForExtensionProcessListener(extension_id, process)) {
-    ReportUnauthorizedExtensionProcess(extension_id, process);
+    ReportUnauthorizedExtensionProcess(extension_id, event_name, process);
     return false;
   }
 
@@ -589,7 +657,8 @@ void EventRouter::AddListenerForMainThread(
 
   const mojom::EventListenerOwner& listener_owner =
       *event_listener->listener_owner;
-  if (!ValidateMainThreadListenerOwner(listener_owner, *process,
+  if (!ValidateMainThreadListenerOwner(listener_owner,
+                                       event_listener->event_name, *process,
                                        /*require_extension_process=*/false)) {
     return;
   }
@@ -621,7 +690,8 @@ void EventRouter::AddListenerForServiceWorker(
 
   const ExtensionId& extension_id = listener_owner.get_extension_id();
   if (!ValidateServiceWorkerListenerForExtension(
-          extension_id, service_worker_context->scope_url, *process)) {
+          extension_id, event_listener->event_name,
+          service_worker_context->scope_url, *process)) {
     return;
   }
 
@@ -641,7 +711,7 @@ void EventRouter::AddLazyListenerForMainThread(const ExtensionId& extension_id,
   }
 
   if (!IsProcessAuthorizedForExtensionProcessListener(extension_id, *process)) {
-    ReportUnauthorizedExtensionProcess(extension_id, *process);
+    ReportUnauthorizedExtensionProcess(extension_id, event_name, *process);
     return;
   }
 
@@ -655,7 +725,7 @@ void EventRouter::AddLazyListenerForMainThreadImpl(
 
   std::unique_ptr<EventListener> listener = EventListener::CreateLazyListener(
       event_name, extension_id, browser_context_, false, GURL(), std::nullopt);
-  AddLazyEventListenerImpl(std::move(listener), RegisteredEventType::kLazy);
+  AddLazyEventListenerImpl(*browser_context_, std::move(listener));
 }
 
 void EventRouter::AddLazyListenerForServiceWorker(
@@ -667,16 +737,18 @@ void EventRouter::AddLazyListenerForServiceWorker(
     return;
   }
 
-  if (!ValidateServiceWorkerListenerForExtension(extension_id, worker_scope_url,
-                                                 *process)) {
+  if (!ValidateServiceWorkerListenerForExtension(extension_id, event_name,
+                                                 worker_scope_url, *process)) {
     return;
   }
 
-  AddLazyListenerForServiceWorkerImpl(extension_id, worker_scope_url,
+  AddLazyListenerForServiceWorkerImpl(*process->GetBrowserContext(),
+                                      extension_id, worker_scope_url,
                                       event_name);
 }
 
 void EventRouter::AddLazyListenerForServiceWorkerImpl(
+    content::BrowserContext& browser_context,
     const ExtensionId& extension_id,
     const GURL& worker_scope_url,
     const std::string& event_name) {
@@ -690,8 +762,7 @@ void EventRouter::AddLazyListenerForServiceWorkerImpl(
       event_name, extension_id, browser_context_,
       /*is_for_service_worker=*/true, worker_scope_url,
       /*filter=*/std::nullopt);
-  AddLazyEventListenerImpl(std::move(listener),
-                           RegisteredEventType::kServiceWorker);
+  AddLazyEventListenerImpl(browser_context, std::move(listener));
 }
 
 void EventRouter::AddFilteredListenerForMainThread(
@@ -705,7 +776,7 @@ void EventRouter::AddFilteredListenerForMainThread(
   }
 
   if (!ValidateMainThreadListenerOwner(
-          *listener_owner, *process,
+          *listener_owner, event_name, *process,
           /*require_extension_process=*/add_lazy_listener)) {
     return;
   }
@@ -726,7 +797,8 @@ void EventRouter::AddFilteredListenerForServiceWorker(
   }
 
   if (!ValidateServiceWorkerListenerForExtension(
-          extension_id, service_worker_context->scope_url, *process)) {
+          extension_id, event_name, service_worker_context->scope_url,
+          *process)) {
     return;
   }
 
@@ -745,7 +817,8 @@ void EventRouter::RemoveListenerForMainThread(
 
   const mojom::EventListenerOwner& listener_owner =
       *event_listener->listener_owner;
-  if (!ValidateMainThreadListenerOwner(listener_owner, *process,
+  if (!ValidateMainThreadListenerOwner(listener_owner,
+                                       event_listener->event_name, *process,
                                        /*require_extension_process=*/false)) {
     return;
   }
@@ -777,7 +850,8 @@ void EventRouter::RemoveListenerForServiceWorker(
 
   const ExtensionId& extension_id = listener_owner.get_extension_id();
   if (!ValidateServiceWorkerListenerForExtension(
-          extension_id, service_worker_context->scope_url, *process)) {
+          extension_id, event_listener->event_name,
+          service_worker_context->scope_url, *process)) {
     return;
   }
 
@@ -798,7 +872,7 @@ void EventRouter::RemoveLazyListenerForMainThread(
   }
 
   if (!IsProcessAuthorizedForExtensionProcessListener(extension_id, *process)) {
-    ReportUnauthorizedExtensionProcess(extension_id, *process);
+    ReportUnauthorizedExtensionProcess(extension_id, event_name, *process);
     return;
   }
 
@@ -812,7 +886,7 @@ void EventRouter::RemoveLazyListenerForMainThreadImpl(
 
   std::unique_ptr<EventListener> listener = EventListener::CreateLazyListener(
       event_name, extension_id, browser_context_, false, GURL(), std::nullopt);
-  RemoveLazyEventListenerImpl(std::move(listener), RegisteredEventType::kLazy);
+  RemoveLazyEventListenerImpl(*browser_context_, std::move(listener));
 }
 
 void EventRouter::RemoveLazyListenerForServiceWorker(
@@ -824,16 +898,18 @@ void EventRouter::RemoveLazyListenerForServiceWorker(
     return;
   }
 
-  if (!ValidateServiceWorkerListenerForExtension(extension_id, worker_scope_url,
-                                                 *process)) {
+  if (!ValidateServiceWorkerListenerForExtension(extension_id, event_name,
+                                                 worker_scope_url, *process)) {
     return;
   }
 
-  RemoveLazyListenerForServiceWorkerImpl(extension_id, worker_scope_url,
+  RemoveLazyListenerForServiceWorkerImpl(*process->GetBrowserContext(),
+                                         extension_id, worker_scope_url,
                                          event_name);
 }
 
 void EventRouter::RemoveLazyListenerForServiceWorkerImpl(
+    content::BrowserContext& browser_context,
     const ExtensionId& extension_id,
     const GURL& worker_scope_url,
     const std::string& event_name) {
@@ -847,8 +923,7 @@ void EventRouter::RemoveLazyListenerForServiceWorkerImpl(
       event_name, extension_id, browser_context_,
       /*is_for_service_worker=*/true, worker_scope_url,
       /*filter=*/std::nullopt);
-  RemoveLazyEventListenerImpl(std::move(listener),
-                              RegisteredEventType::kServiceWorker);
+  RemoveLazyEventListenerImpl(browser_context, std::move(listener));
 }
 
 void EventRouter::RemoveFilteredListenerForMainThread(
@@ -862,7 +937,7 @@ void EventRouter::RemoveFilteredListenerForMainThread(
   }
 
   if (!ValidateMainThreadListenerOwner(
-          *listener_owner, *process,
+          *listener_owner, event_name, *process,
           /*require_extension_process=*/remove_lazy_listener)) {
     return;
   }
@@ -883,7 +958,8 @@ void EventRouter::RemoveFilteredListenerForServiceWorker(
   }
 
   if (!ValidateServiceWorkerListenerForExtension(
-          extension_id, service_worker_context->scope_url, *process)) {
+          extension_id, event_name, service_worker_context->scope_url,
+          *process)) {
     return;
   }
 
@@ -1123,27 +1199,8 @@ void EventRouter::AddFilteredEventListener(
 
   DCHECK_EQ(add_lazy_listener, !!lazy_listener);
   if (lazy_listener) {
-    // Only add the lazy listener if the extension is not unloaded.
-    bool is_new = !listeners_.HasListener(lazy_listener.get());
-    if (should_add_listener) {
-      // Sub-event-named listeners encode identity in the name itself, so the
-      // map holds at most one lazy listener per (event_name, extension_id,
-      // is_for_service_worker). If one is already registered, update its
-      // filter rather than accumulating a stale entry alongside the new one;
-      // this mirrors the prefs-side overwrite in `AddFilterToEvent`.
-      const bool updated_in_place =
-          IsSubEventName(event_name) && listeners_.UpdateFilter(*lazy_listener);
-      if (!updated_in_place) {
-        listeners_.AddListener(std::move(lazy_listener));
-      }
-    }
-    // We persist the lazy listener because, even if the context was shutting
-    // down, we still want a record of the events for which to wake up the
-    // extension.
-    if (is_new) {
-      AddFilterToEvent(event_name, listener_owner->get_extension_id(),
-                       is_for_service_worker, filter);
-    }
+    AddLazyEventListenerImpl(*process->GetBrowserContext(),
+                             std::move(lazy_listener));
   }
 }
 
@@ -1180,12 +1237,8 @@ void EventRouter::RemoveFilteredEventListener(
 
   if (remove_lazy_listener) {
     listener->MakeLazy();
-    bool removed = listeners_.RemoveListener(listener.get());
-
-    if (removed) {
-      RemoveFilterFromEvent(event_name, listener_owner->get_extension_id(),
-                            is_for_service_worker, filter);
-    }
+    RemoveLazyEventListenerImpl(*process->GetBrowserContext(),
+                                std::move(listener));
   }
 }
 
@@ -1255,7 +1308,7 @@ void EventRouter::ClearRegisteredEventsForTest(
 
 bool EventRouter::HasLazyEventListenerForTesting(
     const std::string& event_name) {
-  const EventListenerMap::ListenerList& listeners =
+  EventListenerMap::ListenerSpan listeners =
       listeners_.GetEventListenersByName(event_name);
   return std::ranges::any_of(
       listeners, [](const std::unique_ptr<EventListener>& listener) {
@@ -1265,7 +1318,7 @@ bool EventRouter::HasLazyEventListenerForTesting(
 
 bool EventRouter::HasNonLazyEventListenerForTesting(
     const std::string& event_name) {
-  const EventListenerMap::ListenerList& listeners =
+  EventListenerMap::ListenerSpan listeners =
       listeners_.GetEventListenersByName(event_name);
   return std::ranges::any_of(
       listeners, [](const std::unique_ptr<EventListener>& listener) {
@@ -1276,7 +1329,7 @@ bool EventRouter::HasNonLazyEventListenerForTesting(
 bool EventRouter::HasLazyEventListenerWithFilterForTesting(
     const std::string& event_name,
     const base::DictValue& filter) {
-  const EventListenerMap::ListenerList& listeners =
+  EventListenerMap::ListenerSpan listeners =
       listeners_.GetEventListenersByName(event_name);
   return std::ranges::any_of(
       listeners, [&filter](const std::unique_ptr<EventListener>& listener) {
@@ -1343,8 +1396,6 @@ void EventRouter::DispatchEventToURL(const GURL& url,
 
 void EventRouter::DispatchEventWithLazyListener(const ExtensionId& extension_id,
                                                 std::unique_ptr<Event> event) {
-  // This method calls multiple mojom::EventRouter implementations. Ensure the
-  // id is valid before we proceed.
   CHECK(crx_file::id_util::IdIsValid(extension_id));
   const Extension* extension = ExtensionRegistry::Get(browser_context_)
                                    ->enabled_extensions()
@@ -1352,32 +1403,24 @@ void EventRouter::DispatchEventWithLazyListener(const ExtensionId& extension_id,
   if (!extension) {
     return;
   }
-  const bool is_service_worker_based_background =
+
+  if (ExtensionHasEventListener(extension_id, event->event_name)) {
+    DispatchEventToExtension(extension_id, std::move(event));
+    return;
+  }
+
+  // Add a temporary lazy listener so the event wakes the extension. The
+  // extension didn't register it, so don't persist it or record it in a
+  // registration phase.
+  const bool is_for_service_worker =
       BackgroundInfo::IsServiceWorkerBased(extension);
-
-  std::string event_name = event->event_name;
-  const bool has_listener = ExtensionHasEventListener(extension_id, event_name);
-  if (!has_listener) {
-    if (is_service_worker_based_background) {
-      AddLazyListenerForServiceWorkerImpl(
-          extension_id, Extension::GetBaseURLFromExtensionId(extension_id),
-          event_name);
-    } else {
-      AddLazyListenerForMainThreadImpl(extension_id, event_name);
-    }
-  }
-
+  std::unique_ptr<EventListener> listener = EventListener::CreateLazyListener(
+      event->event_name, extension_id, browser_context_, is_for_service_worker,
+      is_for_service_worker ? extension->url() : GURL(),
+      /*filter=*/std::nullopt);
+  listeners_.AddListener(listener->Copy());
   DispatchEventToExtension(extension_id, std::move(event));
-
-  if (!has_listener) {
-    if (is_service_worker_based_background) {
-      RemoveLazyListenerForServiceWorkerImpl(
-          extension_id, Extension::GetBaseURLFromExtensionId(extension_id),
-          event_name);
-    } else {
-      RemoveLazyListenerForMainThreadImpl(extension_id, event_name);
-    }
-  }
+  listeners_.RemoveListener(listener.get());
 }
 
 void EventRouter::DispatchEventImpl(const std::string& restrict_to_extension_id,
@@ -1946,39 +1989,258 @@ void EventRouter::OnStoppedTrackingServiceWorkerInstance(
 }
 
 void EventRouter::AddLazyEventListenerImpl(
-    std::unique_ptr<EventListener> listener,
-    RegisteredEventType type) {
-  const ExtensionId extension_id = listener->extension_id();
-  const std::string event_name = listener->event_name();
+    content::BrowserContext& browser_context,
+    std::unique_ptr<EventListener> listener) {
+  CHECK(listener->IsLazy());
+  const ExtensionId& extension_id = listener->extension_id();
+  const std::string& event_name = listener->event_name();
+  const base::DictValue* filter = listener->filter();
+  // `phase_listeners` is null for non-SW listeners, for extensions that don't
+  // use `background.async_listener_registration`, or when no phase is currently
+  // tracked for this context.
+  ListenerSet* phase_listeners =
+      listener->is_for_service_worker()
+          ? listener_registration_phases_.GetListeners(extension_id,
+                                                       browser_context)
+          : nullptr;
 
-  // Only add the lazy listener if the extension is not unloaded.
-  bool is_new = !listeners_.HasListener(listener.get());
-  if (extension_id.empty() || IsExtensionEnabled(extension_id)) {
-    listeners_.AddListener(std::move(listener));
+  if (phase_listeners) {
+    const std::optional<PhaseState> phase_state =
+        listener_registration_phases_.GetState(extension_id, browser_context);
+    // Ignore late additions from a worker whose phase aborted (e.g. it was
+    // stopped while registering). Its listeners were already dropped, and the
+    // next worker registers its own.
+    if (phase_state == PhaseState::kAborted) {
+      return;
+    }
+    // Record the listener in the phase. While the phase is still in progress,
+    // prefs are left untouched; once committed, recompute the persisted set to
+    // account for split-mode workers sharing lazy listeners.
+    // TODO(crbug.com/509627729): Update just this listener in prefs once
+    // regular and incognito workers stop sharing lazy listeners.
+    phase_listeners->Add(event_name, filter);
+    if (phase_state == PhaseState::kCommitted) {
+      PersistCommittedListeners(extension_id, browser_context);
+    }
+  } else if (!listeners_.HasListener(listener.get())) {
+    AddLazyListenerToPrefs(*listener);
   }
 
-  // But persist the lazy listener to the prefs regardless of that.
-  if (is_new) {
-    std::set<std::string> events = GetRegisteredEvents(extension_id, type);
-    bool prefs_is_new = events.insert(event_name).second;
-    if (prefs_is_new) {
-      SetRegisteredEvents(extension_id, events, type);
+  // Don't add in-memory listeners for unloaded extensions. Note that prefs may
+  // still have been updated above so we remember which events should wake the
+  // extension if this arrived while the context was shutting down.
+  if (extension_id.empty() || IsExtensionEnabled(extension_id)) {
+    // Sub-event-named listeners encode identity in the name itself, so the
+    // map holds at most one lazy listener per (event_name, extension_id,
+    // is_for_service_worker). If one is already registered, update its
+    // filter in place instead of keeping a stale entry alongside the new one,
+    // matching the prefs overwrite in `AddFilterToEvent()`.
+    //
+    // Skip this for unfiltered listeners (`UpdateFilter()` requires a filter)
+    // and when `phase_listeners` is set (async listener registration doesn't
+    // support sub-event names, and `ListenerSet` doesn't enforce the
+    // single-filter invariant `UpdateFilter()` expects).
+    const bool updated_in_place = !phase_listeners && filter &&
+                                  IsSubEventName(event_name) &&
+                                  listeners_.UpdateFilter(*listener);
+    if (!updated_in_place) {
+      listeners_.AddListener(std::move(listener));
     }
   }
 }
 
 void EventRouter::RemoveLazyEventListenerImpl(
-    std::unique_ptr<EventListener> listener,
-    RegisteredEventType type) {
-  const ExtensionId extension_id = listener->extension_id();
-  const std::string event_name = listener->event_name();
-  bool did_exist = listeners_.RemoveListener(listener.get());
-  if (did_exist) {
-    std::set<std::string> events = GetRegisteredEvents(extension_id, type);
-    bool prefs_did_exist = events.erase(event_name) > 0;
-    DCHECK(prefs_did_exist);
+    content::BrowserContext& browser_context,
+    std::unique_ptr<EventListener> listener) {
+  CHECK(listener->IsLazy());
+  const ExtensionId& extension_id = listener->extension_id();
+  ListenerSet* phase_listeners =
+      listener->is_for_service_worker()
+          ? listener_registration_phases_.GetListeners(extension_id,
+                                                       browser_context)
+          : nullptr;
+
+  if (phase_listeners) {
+    // Only rewrite prefs once the phase has committed; see
+    // `AddLazyEventListenerImpl()`.
+    phase_listeners->Remove(listener->event_name(), listener->filter());
+    if (listener_registration_phases_.GetState(extension_id, browser_context) ==
+        PhaseState::kCommitted) {
+      PersistCommittedListeners(extension_id, browser_context);
+    }
+    // Keep the in-memory listener if it's still in prefs (e.g. before commit,
+    // or for the other split-mode worker) or in the other worker's in-progress
+    // phase.
+    if (IsLazyListenerPersistedOrPending(browser_context, *listener)) {
+      return;
+    }
+  } else if (listeners_.HasListener(listener.get())) {
+    RemoveLazyListenerFromPrefs(*listener);
+  }
+
+  listeners_.RemoveListener(listener.get());
+}
+
+void EventRouter::AddLazyListenerToPrefs(const EventListener& listener) {
+  const ExtensionId& extension_id = listener.extension_id();
+  const std::string& event_name = listener.event_name();
+  const bool is_for_service_worker = listener.is_for_service_worker();
+  if (const base::DictValue* filter = listener.filter()) {
+    AddFilterToEvent(event_name, extension_id, is_for_service_worker, *filter);
+    return;
+  }
+
+  const RegisteredEventType type = is_for_service_worker
+                                       ? RegisteredEventType::kServiceWorker
+                                       : RegisteredEventType::kLazy;
+  std::set<std::string> events = GetRegisteredEvents(extension_id, type);
+  bool prefs_is_new = events.insert(event_name).second;
+  if (prefs_is_new) {
     SetRegisteredEvents(extension_id, events, type);
   }
+}
+
+void EventRouter::RemoveLazyListenerFromPrefs(const EventListener& listener) {
+  const ExtensionId& extension_id = listener.extension_id();
+  const std::string& event_name = listener.event_name();
+  const bool is_for_service_worker = listener.is_for_service_worker();
+  if (const base::DictValue* filter = listener.filter()) {
+    RemoveFilterFromEvent(event_name, extension_id, is_for_service_worker,
+                          *filter);
+    return;
+  }
+
+  const RegisteredEventType type = is_for_service_worker
+                                       ? RegisteredEventType::kServiceWorker
+                                       : RegisteredEventType::kLazy;
+  std::set<std::string> events = GetRegisteredEvents(extension_id, type);
+  bool prefs_did_exist = events.erase(event_name) > 0;
+  DCHECK(prefs_did_exist);
+  SetRegisteredEvents(extension_id, events, type);
+}
+
+void EventRouter::OnListenerRegistrationPhaseFinished(
+    const ExtensionId& extension_id,
+    content::BrowserContext& browser_context,
+    PhaseState state) {
+  if (state == PhaseState::kCommitted) {
+    PersistCommittedListeners(extension_id, browser_context);
+  }
+  // Reconcile in-memory lazy listeners now that the phase has finished (e.g.
+  // dropping previous listeners that weren't re-registered on commit, or
+  // listeners added during an aborted phase).
+  ResetLazyServiceWorkerListeners(extension_id, browser_context);
+}
+
+bool EventRouter::IsLazyListenerPersistedOrPending(
+    content::BrowserContext& browser_context,
+    const EventListener& listener) {
+  const ExtensionId& extension_id = listener.extension_id();
+  const std::string& event_name = listener.event_name();
+  const base::DictValue* filter = listener.filter();
+
+  // Check if the other split-mode worker has an in-progress phase that
+  // registered this listener.
+  content::BrowserContext* other_context =
+      GetOtherWorkerContext(extension_id, browser_context);
+  if (other_context &&
+      listener_registration_phases_.IsStarted(extension_id, *other_context) &&
+      listener_registration_phases_.GetListeners(extension_id, *other_context)
+          ->Has(event_name, filter)) {
+    return true;
+  }
+
+  // Otherwise, check whether it's still stored in prefs.
+  if (!filter) {
+    const base::ListValue* events = extension_prefs_->ReadPrefAsList(
+        extension_id, kRegisteredServiceWorkerEvents);
+    return events && events->contains(event_name);
+  }
+  const base::DictValue* filtered_events =
+      GetFilteredEvents(extension_id, RegisteredEventType::kServiceWorker);
+  const base::ListValue* filters =
+      filtered_events ? filtered_events->FindList(event_name) : nullptr;
+  return filters && filters->contains(*filter);
+}
+
+void EventRouter::PersistCommittedListeners(
+    const ExtensionId& extension_id,
+    content::BrowserContext& browser_context) {
+  const ListenerSet persisted = GetPersistedListeners(extension_id);
+  ListenerSet to_persist =
+      listener_registration_phases_.GetListeners(extension_id, browser_context)
+          ->Clone();
+
+  // In split mode, regular and incognito workers share the persisted listener
+  // prefs, so while the other worker's context exists we persist the union of
+  // both sets. If the other worker hasn't committed yet, we don't know its set,
+  // so keep all currently persisted listeners (including any this worker
+  // dropped or removed) until it commits. At worst, a stale entry wakes a
+  // worker for an event it has no listener for, and the event is dropped.
+  if (content::BrowserContext* other_context =
+          GetOtherWorkerContext(extension_id, browser_context)) {
+    if (listener_registration_phases_.GetState(extension_id, *other_context) ==
+        PhaseState::kCommitted) {
+      to_persist.AddAll(*listener_registration_phases_.GetListeners(
+          extension_id, *other_context));
+    } else {
+      to_persist.AddAll(persisted);
+    }
+  }
+
+  // Most worker runs re-register the same listeners; only write the prefs that
+  // actually changed.
+  if (to_persist.events != persisted.events) {
+    SetRegisteredEvents(extension_id, to_persist.events,
+                        RegisteredEventType::kServiceWorker);
+  }
+  if (to_persist.filtered_events != persisted.filtered_events) {
+    extension_prefs_->UpdateExtensionPref(
+        extension_id, kFilteredServiceWorkerEvents,
+        base::Value(std::move(to_persist.filtered_events)));
+  }
+}
+
+ListenerSet EventRouter::GetPersistedListeners(
+    const ExtensionId& extension_id) {
+  ListenerSet persisted;
+  persisted.events =
+      GetRegisteredEvents(extension_id, RegisteredEventType::kServiceWorker);
+  if (const base::DictValue* filtered_events = GetFilteredEvents(
+          extension_id, RegisteredEventType::kServiceWorker)) {
+    persisted.filtered_events = filtered_events->Clone();
+  }
+  return persisted;
+}
+
+void EventRouter::ResetLazyServiceWorkerListeners(
+    const ExtensionId& extension_id,
+    content::BrowserContext& browser_context) {
+  // Don't populate in-memory listeners if the extension is unloaded (e.g. if
+  // stopping the worker during unload aborts its phase).
+  if (!IsExtensionEnabled(extension_id)) {
+    return;
+  }
+
+  ListenerSet to_keep = GetPersistedListeners(extension_id);
+
+  // Include listeners from any in-progress registration phase so events keep
+  // routing to that worker until it finishes.
+  content::BrowserContext* other_context =
+      GetOtherWorkerContext(extension_id, browser_context);
+  for (content::BrowserContext* context : {&browser_context, other_context}) {
+    if (context &&
+        listener_registration_phases_.IsStarted(extension_id, *context)) {
+      to_keep.AddAll(
+          *listener_registration_phases_.GetListeners(extension_id, *context));
+    }
+  }
+
+  // Filter `filtered_events` by active dispatch mode, matching
+  // `OnExtensionLoaded()`.
+  listeners_.ReplaceLazyServiceWorkerListeners(
+      browser_context_, extension_id, to_keep.events,
+      GetFilteredEventsMatchingDispatchMode(to_keep.filtered_events));
 }
 
 void EventRouter::BindServiceWorkerEventDispatcher(
@@ -2007,46 +2269,6 @@ void EventRouter::UnbindServiceWorkerEventDispatcher(RenderProcessHost* host,
   }
   map->second.erase(worker_thread_id);
 }
-
-Event::Event(events::HistogramValue histogram_value,
-             std::string_view event_name,
-             base::ListValue event_args)
-    : Event(histogram_value, event_name, std::move(event_args), nullptr) {}
-
-Event::Event(events::HistogramValue histogram_value,
-             std::string_view event_name,
-             base::ListValue event_args,
-             content::BrowserContext* restrict_to_browser_context,
-             std::optional<mojom::ContextType> restrict_to_context_type)
-    : Event(histogram_value,
-            event_name,
-            std::move(event_args),
-            restrict_to_browser_context,
-            restrict_to_context_type,
-            GURL(),
-            EventRouter::UserGestureState::kUnknown,
-            mojom::EventFilteringInfo::New()) {}
-
-Event::Event(events::HistogramValue histogram_value,
-             std::string_view event_name,
-             base::ListValue event_args,
-             content::BrowserContext* restrict_to_browser_context,
-             std::optional<mojom::ContextType> restrict_to_context_type,
-             const GURL& event_url,
-             EventRouter::UserGestureState user_gesture,
-             mojom::EventFilteringInfoPtr info,
-             bool lazy_background_active_on_dispatch,
-             base::TimeTicks dispatch_start_time)
-    : Event(histogram_value,
-            event_name,
-            base::MakeRefCounted<EventArgs>(std::move(event_args)),
-            restrict_to_browser_context,
-            restrict_to_context_type,
-            event_url,
-            user_gesture,
-            std::move(info),
-            lazy_background_active_on_dispatch,
-            dispatch_start_time) {}
 
 Event::Event(events::HistogramValue histogram_value,
              std::string_view event_name,

@@ -21,6 +21,7 @@
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -169,7 +170,9 @@ TEST_F(EndpointFetcherTest, FetchResponse) {
               Run(Pointee(AllOf(
                   Field(&EndpointResponse::response, kExpectedResponse),
                   Field(&EndpointResponse::http_status_code, net::HTTP_OK),
-                  Field(&EndpointResponse::error_type, std::nullopt)))))
+                  Field(&EndpointResponse::error_type, std::nullopt),
+                  Field(&EndpointResponse::net_error_code,
+                        std::optional<int>(net::OK))))))
       .WillOnce([&run_loop](std::unique_ptr<EndpointResponse> ignored) {
         run_loop.Quit();
       });
@@ -185,10 +188,12 @@ TEST_F(EndpointFetcherTest, FetchEndpointResponseError) {
   base::RunLoop run_loop;
   EXPECT_CALL(
       endpoint_fetcher_callback(),
-      Run(Pointee(AllOf(
-          Field(&EndpointResponse::response, kExpectedResponseError),
-          Field(&EndpointResponse::http_status_code, -1),
-          Field(&EndpointResponse::error_type, FetchErrorType::kNetError)))))
+      Run(Pointee(
+          AllOf(Field(&EndpointResponse::response, kExpectedResponseError),
+                Field(&EndpointResponse::http_status_code, -1),
+                Field(&EndpointResponse::error_type, FetchErrorType::kNetError),
+                Field(&EndpointResponse::net_error_code,
+                      std::optional<int>(net::ERR_FAILED))))))
       .WillOnce([&run_loop](std::unique_ptr<EndpointResponse> ignored) {
         run_loop.Quit();
       });
@@ -206,7 +211,9 @@ TEST_F(EndpointFetcherTest, FetchRedirectionResponse) {
               Run(Pointee(AllOf(
                   Field(&EndpointResponse::response, kExpectedResponse),
                   Field(&EndpointResponse::http_status_code, net::HTTP_FOUND),
-                  Field(&EndpointResponse::error_type, std::nullopt)))))
+                  Field(&EndpointResponse::error_type, std::nullopt),
+                  Field(&EndpointResponse::net_error_code,
+                        std::optional<int>(net::OK))))))
       .WillOnce([&run_loop](std::unique_ptr<EndpointResponse> ignored) {
         run_loop.Quit();
       });
@@ -224,7 +231,9 @@ TEST_F(EndpointFetcherTest, FetchOAuthError) {
       Run(Pointee(AllOf(
           Field(&EndpointResponse::response, kExpectedAuthError),
           Field(&EndpointResponse::http_status_code, -1),
-          Field(&EndpointResponse::error_type, FetchErrorType::kAuthError)))))
+          Field(&EndpointResponse::error_type, FetchErrorType::kAuthError),
+          // No network request was made, so there is no net error code.
+          Field(&EndpointResponse::net_error_code, std::nullopt)))))
       .WillOnce([&run_loop](std::unique_ptr<EndpointResponse> ignored) {
         run_loop.Quit();
       });
@@ -241,7 +250,9 @@ TEST_F(EndpointFetcherTest, FetchOAuthNoPrimaryAccount) {
       Run(Pointee(AllOf(
           Field(&EndpointResponse::response, kExpectedPrimaryAccountError),
           Field(&EndpointResponse::http_status_code, -1),
-          Field(&EndpointResponse::error_type, FetchErrorType::kAuthError)))))
+          Field(&EndpointResponse::error_type, FetchErrorType::kAuthError),
+          // No network request was made, so there is no net error code.
+          Field(&EndpointResponse::net_error_code, std::nullopt)))))
       .WillOnce([&run_loop](std::unique_ptr<EndpointResponse> ignored) {
         run_loop.Quit();
       });
@@ -441,6 +452,8 @@ TEST_F(EndpointFetcherTest, NoAuthFetchWithParams) {
   EXPECT_FALSE(pending_request->request.headers.HasHeader(
       google_apis::internal::kApiKeyHeaderName));
   EXPECT_FALSE(pending_request->request.headers.HasHeader("Authorization"));
+  EXPECT_EQ(pending_request->request.redirect_mode,
+            network::mojom::RedirectMode::kFollow);
 
   SetMockResponse(kUrl, kExpectedResponse, kJsonMimeType, net::HTTP_OK,
                   net::OK);
@@ -481,6 +494,34 @@ TEST_F(EndpointFetcherTest, CustomHeadersAreAdded) {
   SetMockResponse(kUrl, kExpectedResponse, kJsonMimeType, net::HTTP_OK,
                   net::OK);
 
+  run_loop.Run();
+}
+
+TEST_F(EndpointFetcherTest, RedirectModeIsAppliedToResourceRequest) {
+  const GURL kUrl(kEndpoint);
+  auto fetcher = GetNonOAuthEndpointFetcherWithParams(
+      EndpointFetcher::RequestParams::Builder(HttpMethod::kPost,
+                                              TRAFFIC_ANNOTATION_FOR_TESTS)
+          .SetUrl(kUrl)
+          .SetAuthType(AuthType::NO_AUTH)
+          .SetRedirectMode(network::mojom::RedirectMode::kError)
+          .Build());
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(endpoint_fetcher_callback(), Run(testing::_)).WillOnce([&](auto) {
+    run_loop.Quit();
+  });
+
+  fetcher.Fetch(endpoint_fetcher_callback().Get());
+
+  network::TestURLLoaderFactory::PendingRequest* pending_request =
+      test_url_loader_factory()->GetPendingRequest(0);
+  ASSERT_NE(pending_request, nullptr);
+  EXPECT_EQ(pending_request->request.redirect_mode,
+            network::mojom::RedirectMode::kError);
+
+  SetMockResponse(kUrl, kExpectedResponse, kJsonMimeType, net::HTTP_OK,
+                  net::OK);
   run_loop.Run();
 }
 

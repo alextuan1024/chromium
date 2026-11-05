@@ -24,6 +24,7 @@
 @class LayoutGuideCenter;
 @protocol LensCommands;
 @protocol LensOverlayCommands;
+@protocol LocationBarContentSizeDelegate;
 @protocol LocationBarMutator;
 @protocol LocationBarOffsetProvider;
 @class LocationBarViewController;
@@ -88,6 +89,9 @@ class Tracker;
 // Notifies the delegate that the "Send to your device" context menu item was
 // tapped.
 - (void)locationBarSendTabToSelfTapped;
+
+// Notifies the delegate that the plus button was pressed.
+- (void)locationBarDidTapPlusButton;
 
 @end
 
@@ -172,6 +176,11 @@ enum class CustomLeadingViewType;
 // only.
 @property(nonatomic, readonly) UILayoutGuide* steadyViewLayoutGuide;
 
+// Delegate notified when the content displayed by this location bar changed, as
+// this changes the width the location bar needs.
+@property(nonatomic, weak) id<LocationBarContentSizeDelegate>
+    contentSizeDelegate;
+
 // Initializes the view controller, optionally configured as text-only with
 // icons.
 - (instancetype)initWithTextOnly:(BOOL)textOnly NS_DESIGNATED_INITIALIZER;
@@ -198,6 +207,11 @@ enum class CustomLeadingViewType;
 // UIs. This must be called only once and set before the view of this view
 // controller is initialized.
 - (void)setContextualPanelEntrypointView:(UIView*)contextualPanelEntrypointView;
+
+// Sets the Location Bar Badge view (`locationBarBadgeView`). This must be
+// called only once and set before the view of this view controller is
+// initialized.
+- (void)setLocationBarBadgeView:(UIView*)locationBarBadgeView;
 
 // Sets the Reader Mode Chip view. This must be called only once and set before
 // the view of this view controller is initialized.
@@ -263,6 +277,9 @@ enum class CustomLeadingViewType;
 
 // Sets the type of custom leading view to display in the steady view.
 - (void)setCustomLeadingViewType:(CustomLeadingViewType)type;
+
+// Sets the menu to be shown by the plus button.
+- (void)setPlusButtonMenu:(UIMenu*)menu;
 
 @end
 

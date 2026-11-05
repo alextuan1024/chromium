@@ -506,7 +506,7 @@ TEST_F(PageSpecificSiteDataDialogUnitTest, RemoveBrowsingData) {
   BrowsingDataModel::DataKey thirdPartyDataKey =
       blink::StorageKey::CreateFirstParty(thirdPartyUrlOrigin);
   blocked_browsing_data_model->AddBrowsingData(
-      thirdPartyDataKey, BrowsingDataModel::StorageType::kSharedStorage,
+      thirdPartyDataKey, BrowsingDataModel::StorageType::kLocalStorage,
       /*storage_size=*/0);
 
   auto delegate =
@@ -537,6 +537,18 @@ TEST_F(PageSpecificSiteDataDialogUnitTest, RemoveBrowsingData) {
 
     EXPECT_THAT(sites, testing::UnorderedElementsAreArray(expected_sites));
   }
+}
+
+TEST_F(PageSpecificSiteDataDialogUnitTest, HandlesDestroyedWebContents) {
+  auto delegate =
+      std::make_unique<test::PageSpecificSiteDataDialogTestApi>(web_contents());
+  DeleteContents();
+
+  EXPECT_TRUE(delegate->GetAllSites().empty());
+  EXPECT_TRUE(delegate->GetInstalledRelatedApps().empty());
+  delegate->DeleteStoredObjects(url::Origin::Create(GURL(kCurrentUrl)));
+  delegate->OnManageOnDeviceSiteDataClicked();
+  delegate->OnRelatedApplicationLinkToAppSettings("dummy_app_id");
 }
 
 class PageSpecificSiteDataDialogWithWebAppsUnitTest

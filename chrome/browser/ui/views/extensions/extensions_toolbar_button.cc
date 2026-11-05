@@ -132,19 +132,15 @@ void ExtensionsToolbarButton::UpdateState(
       extensions_features::kExtensionsMenuAccessControl));
 
   SetVectorIcon(ExtensionsToolbarViewModel::GetToolbarButtonIcon(state));
+  UpdateCachedTooltipText(state);
   GetViewAccessibility().SetName(
       ExtensionsToolbarViewModel::GetToolbarButtonAccessibleText(state));
-  UpdateCachedTooltipText(state);
 }
 
 void ExtensionsToolbarButton::OnWidgetDestroying(views::Widget* widget) {
   extension_menu_observation_.Reset();
   pressed_lock_.reset();
   extensions_toolbar_->OnMenuClosed();
-}
-
-bool ExtensionsToolbarButton::ShouldShowInkdropAfterIphInteraction() {
-  return false;
 }
 
 void ExtensionsToolbarButton::ToggleExtensionsMenu() {
@@ -155,6 +151,10 @@ void ExtensionsToolbarButton::ToggleExtensionsMenu() {
   } else if (ExtensionsMenuView::IsShowing()) {
     ExtensionsMenuView::Hide();
     return;
+  }
+
+  if (extensions_menu_widget_) {
+    extensions_menu_widget_->CloseNow();
   }
 
   pressed_lock_ = menu_button_controller_->TakeLock();

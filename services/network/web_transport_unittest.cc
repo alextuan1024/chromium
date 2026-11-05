@@ -33,8 +33,10 @@
 #include "net/log/net_log_event_type.h"
 #include "net/log/test_net_log.h"
 #include "net/quic/quic_context.h"
+#include "net/quic/web_transport_client.h"
 #include "net/test/test_data_directory.h"
 #include "net/third_party/quiche/src/quiche/quic/core/crypto/proof_source_x509.h"
+#include "net/third_party/quiche/src/quiche/quic/core/web_transport_interface.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/crypto_test_utils.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/quic_test_backend.h"
 #include "net/tools/quic/quic_simple_server.h"
@@ -182,6 +184,18 @@ AcceptedBidirectionalStream AcceptBidirectionalStream(
           std::move(writable_for_outgoing)};
 }
 
+std::optional<net::WebTransportSendStreamStats> GetSendStreamStats(
+    mojo::Remote<mojom::WebTransport>& transport_remote,
+    uint32_t stream_id) {
+  base::test::TestFuture<
+      const std::vector<std::optional<net::WebTransportSendStreamStats>>&>
+      stats_future;
+  transport_remote->GetSendStreamStats({stream_id}, stats_future.GetCallback());
+  auto stats = stats_future.Take();
+  CHECK_EQ(stats.size(), 1u);
+  return stats.front();
+}
+
 class TestHandshakeClient final : public mojom::WebTransportHandshakeClient {
  public:
   TestHandshakeClient(mojo::PendingReceiver<mojom::WebTransportHandshakeClient>
@@ -293,14 +307,27 @@ class TestClient final : public mojom::WebTransportClient {
       std::move(quit_closure_for_incoming_stream_closure_).Run();
     }
   }
-  void OnOutgoingStreamClosed(uint32_t stream_id) override {
+  void OnOutgoingStreamClosed(
+      uint32_t stream_id,
+      std::optional<net::WebTransportSendStreamStats> final_stats) override {
     closed_outgoing_streams_.insert(stream_id);
+    final_send_stream_stats_.insert_or_assign(stream_id, final_stats);
     if (quit_closure_for_outgoing_stream_closure_) {
       std::move(quit_closure_for_outgoing_stream_closure_).Run();
     }
   }
+  void OnOutgoingStreamStatsFinalized(
+      uint32_t stream_id,
+      std::optional<net::WebTransportSendStreamStats> final_stats) override {
+    final_send_stream_stats_.insert_or_assign(stream_id, final_stats);
+  }
   void OnReceivedResetStream(uint32_t stream_id, uint32_t, uint64_t) override {}
-  void OnReceivedStopSending(uint32_t stream_id, uint32_t) override {}
+  void OnReceivedStopSending(
+      uint32_t stream_id,
+      uint32_t,
+      std::optional<net::WebTransportSendStreamStats> final_stats) override {
+    final_send_stream_stats_.insert_or_assign(stream_id, final_stats);
+  }
   void OnDraining() override {
     has_seen_draining_ = true;
     if (quit_closure_for_draining_) {
@@ -357,6 +384,13 @@ class TestClient final : public mojom::WebTransportClient {
     return closed_outgoing_streams_.find(stream_id) !=
            closed_outgoing_streams_.end();
   }
+  const std::optional<net::WebTransportSendStreamStats>&
+  final_send_stream_stats_for(uint32_t stream_id) const {
+    return final_send_stream_stats_.at(stream_id);
+  }
+  bool has_final_send_stream_stats_for(uint32_t stream_id) const {
+    return final_send_stream_stats_.contains(stream_id);
+  }
   bool has_seen_mojo_connection_error() const {
     return has_seen_mojo_connection_error_;
   }
@@ -393,6 +427,8 @@ class TestClient final : public mojom::WebTransportClient {
   std::map<uint32_t, bool> closed_incoming_streams_;
   absl::flat_hash_map<uint32_t, uint64_t> final_bytes_received_;
   std::set<uint32_t> closed_outgoing_streams_;
+  absl::flat_hash_map<uint32_t, std::optional<net::WebTransportSendStreamStats>>
+      final_send_stream_stats_;
   bool has_seen_mojo_connection_error_ = false;
   bool has_seen_draining_ = false;
   bool has_seen_closed_ = false;
@@ -464,6 +500,17 @@ class WebTransportTestPeer {
   static void ExpireNextDatagram(WebTransport* transport, size_t index) {
     transport->ExpireNextDatagramForTesting(index);
   }
+
+  static void ReceiveStopSending(WebTransport* transport,
+                                 uint32_t stream_id,
+                                 quic::WebTransportStreamError error) {
+    quic::WebTransportSession* session = transport->transport_->session();
+    CHECK(session);
+    quic::WebTransportStream* stream = session->GetStreamById(stream_id);
+    CHECK(stream);
+    CHECK(stream->visitor());
+    stream->visitor()->OnStopSendingReceived(error);
+  }
 };
 
 namespace {
@@ -516,14 +563,16 @@ class WebTransportTest : public testing::TestWithParam<std::string_view> {
       mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client,
       mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>
           url_loader_network_observer,
-      mojom::ClientSecurityStatePtr client_security_state) {
+      mojom::ClientSecurityStatePtr client_security_state,
+      std::optional<base::UnguessableToken> throttling_profile_id =
+          std::nullopt) {
     network_context_->CreateWebTransport(
         url, origin, key, std::move(fingerprints), application_protocols,
         mojom::WebTransportCongestionControl::kDefault,
         /*anticipated_concurrent_incoming_unidirectional_streams=*/std::nullopt,
         /*anticipated_concurrent_incoming_bidirectional_streams=*/std::nullopt,
-        /*additional_headers=*/{}, std::move(handshake_client),
-        std::move(url_loader_network_observer),
+        /*additional_headers=*/{}, throttling_profile_id,
+        std::move(handshake_client), std::move(url_loader_network_observer),
         std::move(client_security_state),
         network::GetTestNetworkRestrictionsId());
   }
@@ -565,6 +614,18 @@ class WebTransportTest : public testing::TestWithParam<std::string_view> {
   void CreateWebTransport(
       const GURL& url,
       const url::Origin& origin,
+      mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client,
+      const base::UnguessableToken& throttling_profile_id) {
+    CreateWebTransport(
+        url, origin, net::NetworkAnonymizationKey(), /*fingerprints=*/{},
+        /*application_protocols=*/{}, std::move(handshake_client),
+        url_loader_network_observer_.Bind(), mojom::ClientSecurityState::New(),
+        throttling_profile_id);
+  }
+
+  void CreateWebTransport(
+      const GURL& url,
+      const url::Origin& origin,
       std::vector<mojom::WebTransportCertificateFingerprintPtr> fingerprints,
       mojo::PendingRemote<mojom::WebTransportHandshakeClient>
           handshake_client) {
@@ -585,8 +646,9 @@ class WebTransportTest : public testing::TestWithParam<std::string_view> {
         mojom::WebTransportCongestionControl::kDefault,
         /*anticipated_concurrent_incoming_unidirectional_streams=*/std::nullopt,
         /*anticipated_concurrent_incoming_bidirectional_streams=*/std::nullopt,
-        std::move(additional_headers), std::move(handshake_client),
-        url_loader_network_observer_.Bind(), mojom::ClientSecurityState::New(),
+        std::move(additional_headers), /*throttling_profile_id=*/std::nullopt,
+        std::move(handshake_client), url_loader_network_observer_.Bind(),
+        mojom::ClientSecurityState::New(),
         /*network_restrictions_id=*/network::GetTestNetworkRestrictionsId());
   }
 
@@ -606,6 +668,21 @@ class WebTransportTest : public testing::TestWithParam<std::string_view> {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, run_loop.QuitClosure());
     run_loop.Run();
+  }
+
+  void SetNetworkConditions(const base::UnguessableToken& profile_id,
+                            bool offline,
+                            std::string pattern = std::string()) {
+    std::vector<mojom::MatchedNetworkConditionsPtr> conditions;
+    conditions.push_back(mojom::MatchedNetworkConditions::New(
+        std::move(pattern),
+        mojom::NetworkConditions::New(
+            offline, base::TimeDelta(), /*download_throughput=*/0,
+            /*upload_throughput=*/0, /*packet_loss=*/0,
+            /*packet_queue_length=*/0, /*packet_reordering=*/false,
+            /*rule_id=*/std::nullopt)));
+    network_context_->SetNetworkConditions(
+        profile_id, base::UnguessableToken::Create(), std::move(conditions));
   }
 
   // Creates a Datagram writable on `transport_remote` and returns its bound
@@ -678,6 +755,134 @@ TEST_F(WebTransportTest, ConnectSuccessfully) {
   ASSERT_TRUE(test_handshake_client.max_datagram_size().has_value());
   EXPECT_GT(*test_handshake_client.max_datagram_size(), 0u);
   EXPECT_EQ(1u, network_context().NumOpenWebTransports());
+}
+
+TEST_F(WebTransportTest, OfflineNetworkConditionsRejectNewConnection) {
+  const base::UnguessableToken profile_id = base::UnguessableToken::Create();
+  SetNetworkConditions(profile_id, /*offline=*/true);
+
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client),
+                     profile_id);
+  run_loop_for_handshake.Run();
+
+  EXPECT_FALSE(test_handshake_client.has_seen_connection_establishment());
+  EXPECT_TRUE(test_handshake_client.has_seen_handshake_failure());
+  ASSERT_TRUE(test_handshake_client.handshake_error());
+  EXPECT_EQ(net::ERR_INTERNET_DISCONNECTED,
+            test_handshake_client.handshake_error()->net_error);
+  EXPECT_EQ(0u, network_context().NumOpenWebTransports());
+}
+
+TEST_F(WebTransportTest, OfflineNetworkConditionsFailPendingHandshake) {
+  const base::UnguessableToken profile_id = base::UnguessableToken::Create();
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client),
+                     profile_id);
+
+  // Do not pump the event loop before applying the condition. This keeps the
+  // transport in its opening handshake and exercises the dedicated failure
+  // path rather than the established-session path.
+  ASSERT_EQ(1u, network_context().NumOpenWebTransports());
+  SetNetworkConditions(profile_id, /*offline=*/true);
+  run_loop_for_handshake.Run();
+
+  EXPECT_FALSE(test_handshake_client.has_seen_connection_establishment());
+  EXPECT_TRUE(test_handshake_client.has_seen_handshake_failure());
+  ASSERT_TRUE(test_handshake_client.handshake_error());
+  EXPECT_EQ(net::ERR_INTERNET_DISCONNECTED,
+            test_handshake_client.handshake_error()->net_error);
+  EXPECT_EQ(0u, network_context().NumOpenWebTransports());
+}
+
+TEST_F(WebTransportTest, OfflineNetworkConditionsFailEstablishedConnection) {
+  const base::UnguessableToken profile_id = base::UnguessableToken::Create();
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client),
+                     profile_id);
+  run_loop_for_handshake.Run();
+  ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+
+  mojo::Remote<mojom::WebTransport> transport(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  SetNetworkConditions(profile_id, /*offline=*/true);
+  if (!client.has_seen_mojo_connection_error()) {
+    client.WaitUntilMojoConnectionError();
+  }
+  RunPendingTasks();
+
+  EXPECT_TRUE(client.has_seen_mojo_connection_error());
+  EXPECT_FALSE(client.has_seen_closed());
+  EXPECT_EQ(0u, network_context().NumOpenWebTransports());
+}
+
+TEST_F(WebTransportTest, OfflineNetworkConditionsKeepOtherProfileConnection) {
+  const base::UnguessableToken connection_profile_id =
+      base::UnguessableToken::Create();
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client),
+                     connection_profile_id);
+  run_loop_for_handshake.Run();
+  ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+
+  mojo::Remote<mojom::WebTransport> transport(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  SetNetworkConditions(base::UnguessableToken::Create(), /*offline=*/true);
+  RunPendingTasks();
+
+  EXPECT_FALSE(client.has_seen_mojo_connection_error());
+  EXPECT_EQ(1u, network_context().NumOpenWebTransports());
+  transport.reset();
+  RunPendingTasks();
+  EXPECT_EQ(0u, network_context().NumOpenWebTransports());
+}
+
+TEST_F(WebTransportTest, OfflineNetworkConditionsKeepNonMatchingConnection) {
+  const base::UnguessableToken profile_id = base::UnguessableToken::Create();
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client),
+                     profile_id);
+  run_loop_for_handshake.Run();
+  ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+
+  mojo::Remote<mojom::WebTransport> transport(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  SetNetworkConditions(profile_id, /*offline=*/true, "https://other.example/*");
+  RunPendingTasks();
+
+  EXPECT_FALSE(client.has_seen_mojo_connection_error());
+  EXPECT_EQ(1u, network_context().NumOpenWebTransports());
+  transport.reset();
+  RunPendingTasks();
+  EXPECT_EQ(0u, network_context().NumOpenWebTransports());
 }
 
 TEST_F(WebTransportTest, ConnectWithCustomProtocol) {
@@ -1448,6 +1653,87 @@ TEST_F(WebTransportTest, SessionCloseClosesDatagramWritables) {
             disconnect_reason);
 }
 
+TEST_F(WebTransportTest, ExportKeyingMaterial) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"),
+                     url::Origin::Create(GURL("https://example.org/")),
+                     std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+
+  const auto export_keying_material = [&transport_remote](
+                                          std::vector<uint8_t> label,
+                                          std::vector<uint8_t> context,
+                                          uint32_t output_length) {
+    std::optional<std::vector<uint8_t>> result;
+    base::RunLoop run_loop;
+    WebTransportKeyingMaterialParams params{std::move(label),
+                                            std::move(context), output_length};
+    transport_remote->ExportKeyingMaterial(
+        params,
+        base::BindOnce(
+            [](std::optional<std::vector<uint8_t>>* result,
+               base::RunLoop* run_loop,
+               const std::optional<std::vector<uint8_t>>& keying_material) {
+              *result = keying_material;
+              run_loop->Quit();
+            },
+            &result, &run_loop));
+    run_loop.Run();
+    return result;
+  };
+
+  auto result = export_keying_material(std::vector<uint8_t>{1, 2, 3},
+                                       std::vector<uint8_t>{4, 5}, 32);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->size(), 32u);
+}
+
+TEST_F(WebTransportTest, ExportKeyingMaterialRejectsInvalidParameters) {
+  const auto expect_bad_message = [this](std::vector<uint8_t> label,
+                                         std::vector<uint8_t> context,
+                                         uint32_t output_length) {
+    mojo::FakeMessageDispatchContext dispatch_context;
+    mojo::test::BadMessageObserver bad_message_observer;
+    base::RunLoop run_loop_for_handshake;
+    mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+    TestHandshakeClient test_handshake_client(
+        handshake_client.InitWithNewPipeAndPassReceiver(),
+        run_loop_for_handshake.QuitClosure());
+
+    CreateWebTransport(GetURL("/echo"),
+                       url::Origin::Create(GURL("https://example.org/")),
+                       std::move(handshake_client));
+    run_loop_for_handshake.Run();
+
+    ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+    mojo::Remote<mojom::WebTransport> transport_remote(
+        test_handshake_client.PassTransport());
+    WebTransportKeyingMaterialParams params{std::move(label),
+                                            std::move(context), output_length};
+    transport_remote->ExportKeyingMaterial(params, base::DoNothing());
+    EXPECT_FALSE(bad_message_observer.WaitForBadMessage().empty());
+  };
+
+  expect_bad_message(std::vector<uint8_t>{1}, std::vector<uint8_t>{2}, 0);
+  expect_bad_message(
+      std::vector<uint8_t>(mojom::kWebTransportExporterMaxInputLength + 1),
+      std::vector<uint8_t>{2}, 1);
+  expect_bad_message(
+      std::vector<uint8_t>{1},
+      std::vector<uint8_t>(mojom::kWebTransportExporterMaxInputLength + 1), 1);
+  expect_bad_message(std::vector<uint8_t>{1}, std::vector<uint8_t>{2},
+                     mojom::kWebTransportExporterMaxOutputLength + 1);
+}
+
 TEST_F(WebTransportTest, SendToolargeDatagram) {
   base::RunLoop run_loop_for_handshake;
   mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
@@ -1529,6 +1815,11 @@ TEST_F(WebTransportTest, EchoOnUnidirectionalStreams) {
 
   client.WaitUntilOutgoingStreamIsClosed(stream_id);
 
+  EXPECT_EQ(client.final_send_stream_stats_for(stream_id),
+            (net::WebTransportSendStreamStats{.bytes_sent = 5,
+                                              .bytes_acknowledged = 5}));
+  EXPECT_FALSE(GetSendStreamStats(transport_remote, stream_id).has_value());
+
   mojo::ScopedDataPipeConsumerHandle readable_for_incoming;
   uint32_t incoming_stream_id = stream_id;
   base::RunLoop run_loop_for_incoming_stream;
@@ -1556,6 +1847,108 @@ TEST_F(WebTransportTest, EchoOnUnidirectionalStreams) {
       net_log_observer().GetEntriesWithType(
           net::NetLogEventType::QUIC_SESSION_RST_STREAM_FRAME_SENT);
   EXPECT_EQ(0u, resets_sent.size());
+}
+
+TEST_F(WebTransportTest, SendStreamStatsUnavailableAfterLocalAbort) {
+  base::test::TestFuture<void> handshake_future;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      handshake_future.GetCallback());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+
+  ASSERT_TRUE(handshake_future.Wait());
+  ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+
+  TestClient client(test_handshake_client.PassClientReceiver());
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+
+  mojo::ScopedDataPipeConsumerHandle readable;
+  mojo::ScopedDataPipeProducerHandle writable;
+  ASSERT_EQ(MOJO_RESULT_OK,
+            mojo::CreateDataPipe(/*options=*/nullptr, writable, readable));
+
+  base::test::TestFuture<bool, uint32_t> stream_creation_future;
+  transport_remote->CreateStream(std::move(readable), /*writable=*/{},
+                                 /*priority=*/nullptr,
+                                 stream_creation_future.GetCallback());
+  auto [stream_created, stream_id] = stream_creation_future.Take();
+  ASSERT_TRUE(stream_created);
+
+  constexpr std::string_view kData = "hello";
+  ASSERT_EQ(MOJO_RESULT_OK, writable->WriteAllData(base::as_byte_span(kData)));
+
+  std::optional<net::WebTransportSendStreamStats> stats;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    stats = GetSendStreamStats(transport_remote, stream_id);
+    return stats && stats->bytes_sent == kData.size() &&
+           stats->bytes_acknowledged == kData.size();
+  }));
+  EXPECT_EQ(stats->bytes_sent, kData.size());
+  EXPECT_EQ(stats->bytes_acknowledged, kData.size());
+
+  base::test::TestFuture<std::optional<net::WebTransportSendStreamStats>>
+      abort_future;
+  transport_remote->AbortStream(stream_id, /*code=*/0,
+                                abort_future.GetCallback());
+  auto final_stats = abort_future.Take();
+  ASSERT_TRUE(final_stats);
+  EXPECT_EQ(final_stats->bytes_sent, kData.size());
+  EXPECT_EQ(final_stats->bytes_acknowledged, kData.size());
+
+  EXPECT_FALSE(GetSendStreamStats(transport_remote, stream_id).has_value());
+
+  base::test::TestFuture<std::optional<net::WebTransportSendStreamStats>>
+      second_abort_future;
+  transport_remote->AbortStream(stream_id, /*code=*/0,
+                                second_abort_future.GetCallback());
+  EXPECT_FALSE(second_abort_future.Take().has_value());
+}
+
+TEST_F(WebTransportTest, StopSendingDeliversFinalSendStreamStats) {
+  base::test::TestFuture<void> handshake_future;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      handshake_future.GetCallback());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  ASSERT_TRUE(handshake_future.Wait());
+
+  TestClient client(test_handshake_client.PassClientReceiver());
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+
+  mojo::ScopedDataPipeConsumerHandle readable;
+  mojo::ScopedDataPipeProducerHandle writable;
+  ASSERT_EQ(MOJO_RESULT_OK,
+            mojo::CreateDataPipe(/*options=*/nullptr, writable, readable));
+
+  base::test::TestFuture<bool, uint32_t> stream_creation_future;
+  transport_remote->CreateStream(std::move(readable), /*writable=*/{},
+                                 /*priority=*/nullptr,
+                                 stream_creation_future.GetCallback());
+  auto [stream_created, stream_id] = stream_creation_future.Take();
+  ASSERT_TRUE(stream_created);
+
+  constexpr std::string_view kData = "hello";
+  ASSERT_EQ(MOJO_RESULT_OK, writable->WriteAllData(base::as_byte_span(kData)));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    auto stats = GetSendStreamStats(transport_remote, stream_id);
+    return stats && stats->bytes_sent == kData.size() &&
+           stats->bytes_acknowledged == kData.size();
+  }));
+  WebTransportTestPeer::ReceiveStopSending(
+      mutable_network_context().GetWebTransportForTesting(), stream_id,
+      /*error=*/0);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return client.has_final_send_stream_stats_for(stream_id); }));
+  const auto& final_stats = client.final_send_stream_stats_for(stream_id);
+  ASSERT_TRUE(final_stats);
+  EXPECT_EQ(final_stats->bytes_sent, kData.size());
+  EXPECT_EQ(final_stats->bytes_acknowledged, kData.size());
 }
 
 TEST_F(WebTransportTest, SetStreamPriority) {

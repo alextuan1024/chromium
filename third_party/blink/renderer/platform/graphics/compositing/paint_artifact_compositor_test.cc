@@ -6,19 +6,25 @@
 
 #include <array>
 #include <memory>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_simple_task_runner.h"
 #include "build/build_config.h"
+#include "cc/input/hit_test_opaqueness.h"
 #include "cc/input/main_thread_scrolling_reason.h"
 #include "cc/layers/layer.h"
+#include "cc/layers/layer_impl.h"
+#include "cc/layers/painted_scrollbar_layer.h"
 #include "cc/test/fake_impl_task_runner_provider.h"
 #include "cc/test/fake_layer_tree_frame_sink.h"
 #include "cc/test/fake_layer_tree_host_delegate.h"
 #include "cc/test/fake_layer_tree_host_impl.h"
+#include "cc/test/fake_scrollbar.h"
+#include "cc/test/test_task_graph_runner.h"
 #include "cc/trees/clip_node.h"
 #include "cc/trees/effect_node.h"
 #include "cc/trees/layer_tree_host.h"
@@ -30,9 +36,11 @@
 #include "cc/view_transition/view_transition_request.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/platform/graphics/paint/clip_paint_property_node.h"
 #include "third_party/blink/renderer/platform/graphics/paint/effect_paint_property_node.h"
 #include "third_party/blink/renderer/platform/graphics/paint/geometry_mapper.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_artifact.h"
+#include "third_party/blink/renderer/platform/graphics/paint/property_tree_state.h"
 #include "third_party/blink/renderer/platform/graphics/paint/scroll_paint_property_node.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/json/json_values.h"
@@ -44,6 +52,8 @@
 #include "third_party/blink/renderer/platform/testing/test_paint_artifact.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/skia/include/core/SkBlendMode.h"
+#include "ui/gfx/geometry/rrect_f.h"
 #include "ui/gfx/geometry/test/geometry_util.h"
 
 namespace blink {
@@ -109,6 +119,23 @@ class PaintArtifactCompositorTest : public testing::Test,
 
   cc::PropertyTrees& GetPropertyTrees() {
     return *layer_tree_->layer_tree_host()->property_trees();
+  }
+
+  // Evaluates `cc::LayerImpl::OpaqueToHitTest()` against a copy of
+  // `GetPropertyTrees()` with `effect_tree_index` and `hit_test_opaqueness`
+  // synced from `layer`.
+  bool OpaqueToHitTest(const cc::Layer* layer) {
+    cc::FakeImplTaskRunnerProvider task_runner_provider;
+    cc::TestTaskGraphRunner task_graph_runner;
+    cc::FakeLayerTreeHostImpl host_impl(&task_runner_provider,
+                                        &task_graph_runner);
+    cc::LayerTreeImpl* impl_tree = host_impl.active_tree();
+    *impl_tree->property_trees() = GetPropertyTrees();
+    std::unique_ptr<cc::LayerImpl> impl_layer =
+        layer->CreateLayerImpl(impl_tree);
+    impl_layer->SetEffectTreeIndex(layer->effect_tree_index());
+    impl_layer->SetHitTestOpaqueness(layer->hit_test_opaqueness());
+    return impl_layer->OpaqueToHitTest();
   }
 
   const cc::TransformNode& GetTransformNode(const cc::Layer* layer) {
@@ -893,7 +920,7 @@ TEST_P(PaintArtifactCompositorTest, DeeplyNestedClips) {
   // Check the clip nodes.
   const cc::ClipNode* clip_node =
       &GetPropertyTrees().clip_tree().Node(drawing_layer->clip_tree_index());
-  for (const auto& paint_clip_node : base::Reversed(clips)) {
+  for (const auto& paint_clip_node : std::views::reverse(clips)) {
     EXPECT_TRUE(clip_node->AppliesLocalClip());
     EXPECT_EQ(paint_clip_node->PaintClipRect().Rect(), clip_node->clip);
     clip_node = &GetPropertyTrees().clip_tree().Node(clip_node->parent_id);
@@ -3344,6 +3371,12 @@ TEST_P(PaintArtifactCompositorTest, SynthesizedClipIsNotDrawable) {
       GetPropertyTrees().effect_tree().Node(mask_isolation_0_id);
   ASSERT_EQ(e0_id, mask_isolation_0.parent_id);
   EXPECT_EQ(SkBlendMode::kSrcOver, mask_isolation_0.blend_mode);
+  EXPECT_TRUE(mask_isolation_0.is_fast_rounded_corner);
+  EXPECT_EQ(gfx::RRectF(50, 50, 300, 200, 5),
+            mask_isolation_0.mask_filter_info.rounded_corner_bounds());
+  EXPECT_FALSE(mask_isolation_0.has_masking_child);
+  EXPECT_TRUE(GetPropertyTrees().effect_tree().HitTestMayBeAffectedByMask(
+      mask_isolation_0_id));
 }
 
 TEST_P(PaintArtifactCompositorTest, GetLayersAsJSONSynthesizedClipMaskLayer) {
@@ -5117,12 +5150,12 @@ TEST_P(PaintArtifactCompositorTest, EffectChange) {
   // TODO(wangxianzhu): Probably avoid setting this flag on Effect change.
   EXPECT_TRUE(layer->subtree_property_changed());
   // This is set by cc when propagating ancestor change flag to descendants.
-  EXPECT_TRUE(GetEffectNode(layer).effect_changed);
+  EXPECT_TRUE(GetEffectNode(layer).effect_changed());
   // This is set by PropertyTreeManager.
   EXPECT_TRUE(GetPropertyTrees()
                   .effect_tree()
                   .Node(GetEffectNode(layer).parent_id)
-                  .effect_changed);
+                  .effect_changed());
 
   // Change e2 but not e1.
   layer->ClearSubtreePropertyChangedForTesting();
@@ -5144,11 +5177,11 @@ TEST_P(PaintArtifactCompositorTest, EffectChange) {
   ASSERT_EQ(layer, LayerAt(0));
   // TODO(wangxianzhu): Probably avoid setting this flag on Effect change.
   EXPECT_TRUE(layer->subtree_property_changed());
-  EXPECT_TRUE(GetEffectNode(layer).effect_changed);
+  EXPECT_TRUE(GetEffectNode(layer).effect_changed());
   EXPECT_FALSE(GetPropertyTrees()
                    .effect_tree()
                    .Node(GetEffectNode(layer).parent_id)
-                   .effect_changed);
+                   .effect_changed());
 }
 
 TEST_P(PaintArtifactCompositorTest, DirectlySetScrollOffset) {
@@ -5213,6 +5246,62 @@ TEST_P(PaintArtifactCompositorTest, NoCommitRequestForUnchangedScroll) {
   Update(TestPaintArtifact().ScrollHitTestChunk(*client, scroll_state).Build());
   // This update should not SetNeedsCommit().
   EXPECT_FALSE(host.CommitRequested());
+}
+
+TEST_P(PaintArtifactCompositorTest,
+       CommitRequestForChangedNonCompositedScroll) {
+  auto& host = GetLayerTreeHost();
+  auto scroll_state = ScrollState1(PropertyTreeState::Root(), {}, {});
+  auto& scroll_node = const_cast<ScrollPaintPropertyNode&>(
+      *scroll_state.Transform().ScrollNode());
+  StackTransformPaintPropertyNodeVector scroll_translation_nodes = {
+      &scroll_state.Transform()};
+  EXPECT_EQ(PaintPropertyChangeType::kNodeAddedOrRemoved,
+            scroll_node.NodeChanged());
+
+  auto* hit_test_client =
+      MakeGarbageCollected<FakeDisplayItemClient>("hit_test");
+  auto* contents_client =
+      MakeGarbageCollected<FakeDisplayItemClient>("contents");
+  auto build_artifact = [&]() -> const PaintArtifact& {
+    return TestPaintArtifact()
+        .ScrollHitTestChunk(*hit_test_client, scroll_state)
+        .ScrollingContentsChunk(*contents_client, scroll_state)
+        .Build();
+  };
+
+  Update(build_artifact(), ViewportProperties(), scroll_translation_nodes);
+  EXPECT_EQ(PaintPropertyChangeType::kUnchanged, scroll_node.NodeChanged());
+  EXPECT_TRUE(host.CommitRequested());
+
+  host.CompositeForTest(base::TimeTicks::Now(), true, base::OnceClosure());
+  EXPECT_FALSE(host.CommitRequested());
+
+  // Updating with an unchanged non-composited scroll node should not request a
+  // commit.
+  Update(build_artifact(), ViewportProperties(), scroll_translation_nodes);
+  EXPECT_FALSE(host.CommitRequested());
+
+  // Updating snap_container_data on a non-composited scroll node should clear
+  // its changed flag and request a commit.
+  ScrollPaintPropertyNode::State new_state;
+  new_state.container_rect = scroll_node.ContainerRect();
+  new_state.contents_rect = scroll_node.ContentsRect();
+  new_state.overflow_clip_node = scroll_node.OverflowClipNode();
+  new_state.compositor_element_id = scroll_node.GetCompositorElementId();
+  new_state.user_scrollable_horizontal = scroll_node.UserScrollableHorizontal();
+  new_state.user_scrollable_vertical = scroll_node.UserScrollableVertical();
+  cc::SnapContainerData snap_data;
+  snap_data.SetTargetSnapAreaElementIds(cc::TargetSnapAreaElementIds(
+      CompositorElementId(10), CompositorElementId(20)));
+  new_state.snap_container_data = snap_data;
+  scroll_node.Update(*scroll_node.Parent(), std::move(new_state));
+  EXPECT_EQ(PaintPropertyChangeType::kChangedOnlyValues,
+            scroll_node.NodeChanged());
+
+  Update(build_artifact(), ViewportProperties(), scroll_translation_nodes);
+  EXPECT_EQ(PaintPropertyChangeType::kUnchanged, scroll_node.NodeChanged());
+  EXPECT_TRUE(host.CommitRequested());
 }
 
 TEST_P(PaintArtifactCompositorTest, AddIndirectlyCompositedScrollNodes) {
@@ -5348,6 +5437,137 @@ TEST_P(PaintArtifactCompositorTest, AddUnpaintedNonCompositedScrollNodes) {
   EXPECT_FALSE(scroll_tree.CanRealizeScrollsOnActiveTree(*scroll_node));
   EXPECT_FALSE(scroll_tree.CanRealizeScrollsOnPendingTree(*scroll_node));
   EXPECT_FALSE(scroll_tree.ShouldRealizeScrollsOnMain(*scroll_node));
+}
+
+TEST_P(PaintArtifactCompositorTest, ClipMaskHitTestNonDrawingAndRemoval) {
+  ClipPaintPropertyNode* clip =
+      CreateClipPathClip(c0(), t0(), FloatRoundedRect(0, 0, 100, 100));
+  ClipPaintPropertyNode* inner_clip =
+      CreateClip(*clip, t0(), FloatRoundedRect(0, 0, 80, 80));
+  PropertyTreeState state =
+      ScrollState1(PropertyTreeState(t0(), *inner_clip, e0()));
+  auto* client = MakeGarbageCollected<FakeDisplayItemClient>();
+  Update(TestPaintArtifact().ScrollHitTestChunk(*client, state).Build());
+
+  ASSERT_EQ(1u, LayerCount());
+  ASSERT_EQ(1u, SynthesizedClipLayerCount());
+  EXPECT_FALSE(SynthesizedClipLayerAt(0));
+  cc::Layer* scroll_layer = ScrollHitTestLayerAt(0);
+  ASSERT_TRUE(scroll_layer);
+  EXPECT_FALSE(scroll_layer->draws_content());
+  EXPECT_EQ(cc::HitTestOpaqueness::kOpaque,
+            scroll_layer->hit_test_opaqueness());
+  EXPECT_FALSE(OpaqueToHitTest(scroll_layer));
+  EXPECT_TRUE(GetEffectNode(scroll_layer).has_masking_child);
+  EXPECT_TRUE(GetPropertyTrees().effect_tree().HitTestMayBeAffectedByMask(
+      scroll_layer->effect_tree_index()));
+
+  Update(TestPaintArtifact()
+             .ScrollHitTestChunk(*client, state)
+             .Properties(t0(), c0(), e0())
+             .Build());
+
+  EXPECT_EQ(scroll_layer, ScrollHitTestLayerAt(0));
+  EXPECT_TRUE(OpaqueToHitTest(scroll_layer));
+  EXPECT_FALSE(GetPropertyTrees().effect_tree().HitTestMayBeAffectedByMask(
+      scroll_layer->effect_tree_index()));
+  EXPECT_THAT(GetPropertyTrees().effect_tree().nodes(),
+              testing::Each(testing::Field(&cc::EffectNode::blend_mode,
+                                           testing::Ne(SkBlendMode::kDstIn))));
+}
+
+TEST_P(PaintArtifactCompositorTest, ClipMaskHitTestOmittedThenEmitted) {
+  ClipPaintPropertyNode* clip =
+      CreateClipPathClip(c0(), t0(), FloatRoundedRect(0, 0, 100, 100));
+  ClipPaintPropertyNode* inner_clip =
+      CreateClip(*clip, t0(), FloatRoundedRect(0, 0, 80, 80));
+  PropertyTreeState state =
+      ScrollState1(PropertyTreeState(t0(), *inner_clip, e0()));
+  auto* client = MakeGarbageCollected<FakeDisplayItemClient>();
+  Update(TestPaintArtifact().ScrollHitTestChunk(*client, state).Build());
+
+  cc::Layer* scroll_layer = ScrollHitTestLayerAt(0);
+  ASSERT_TRUE(scroll_layer);
+  EXPECT_FALSE(OpaqueToHitTest(scroll_layer));
+  EXPECT_TRUE(GetEffectNode(scroll_layer).has_masking_child);
+  ASSERT_EQ(1u, SynthesizedClipLayerCount());
+  EXPECT_FALSE(SynthesizedClipLayerAt(0));
+
+  Update(TestPaintArtifact()
+             .ScrollHitTestChunk(*client, state)
+             .Chunk(t0(), *clip, e0())
+             .HitTestOpaqueness(cc::HitTestOpaqueness::kOpaque)
+             .RectDrawing(gfx::Rect(0, 0, 100, 100), Color::kBlack)
+             .Build());
+
+  scroll_layer = ScrollHitTestLayerAt(0);
+  ASSERT_TRUE(scroll_layer);
+  EXPECT_FALSE(OpaqueToHitTest(scroll_layer));
+  EXPECT_FALSE(OpaqueToHitTest(LayerAt(1)));
+  EXPECT_TRUE(GetEffectNode(scroll_layer).has_masking_child);
+  ASSERT_EQ(1u, SynthesizedClipLayerCount());
+  const cc::Layer* mask_layer = SynthesizedClipLayerAt(0);
+  ASSERT_TRUE(mask_layer);
+  EXPECT_EQ(cc::HitTestOpaqueness::kMixed, mask_layer->hit_test_opaqueness());
+  ASSERT_NE(-1, LayerIndex(mask_layer));
+  ASSERT_NE(-1, LayerIndex(scroll_layer));
+  EXPECT_GT(LayerIndex(mask_layer), LayerIndex(scroll_layer));
+  EXPECT_NE(scroll_layer->scroll_tree_index(), mask_layer->scroll_tree_index());
+}
+
+TEST_P(PaintArtifactCompositorTest, ClipMaskHitTestEmittedThenOmitted) {
+  ClipPaintPropertyNode* clip =
+      CreateClipPathClip(c0(), t0(), FloatRoundedRect(0, 0, 100, 100));
+  ClipPaintPropertyNode* inner_clip =
+      CreateClip(*clip, t0(), FloatRoundedRect(0, 0, 80, 80));
+  PropertyTreeState state =
+      ScrollState1(PropertyTreeState(t0(), *inner_clip, e0()));
+  auto* client = MakeGarbageCollected<FakeDisplayItemClient>();
+  Update(TestPaintArtifact()
+             .ScrollHitTestChunk(*client, state)
+             .Chunk(t0(), *clip, e0())
+             .HitTestOpaqueness(cc::HitTestOpaqueness::kOpaque)
+             .RectDrawing(gfx::Rect(0, 0, 100, 100), Color::kBlack)
+             .Build());
+
+  cc::Layer* scroll_layer = ScrollHitTestLayerAt(0);
+  ASSERT_TRUE(scroll_layer);
+  EXPECT_FALSE(OpaqueToHitTest(scroll_layer));
+  EXPECT_FALSE(OpaqueToHitTest(LayerAt(1)));
+  EXPECT_TRUE(GetEffectNode(scroll_layer).has_masking_child);
+  ASSERT_EQ(1u, SynthesizedClipLayerCount());
+  scoped_refptr<const cc::Layer> mask_layer = SynthesizedClipLayerAt(0);
+  ASSERT_TRUE(mask_layer);
+  EXPECT_NE(-1, LayerIndex(mask_layer.get()));
+
+  Update(TestPaintArtifact().ScrollHitTestChunk(*client, state).Build());
+
+  scroll_layer = ScrollHitTestLayerAt(0);
+  ASSERT_TRUE(scroll_layer);
+  EXPECT_FALSE(OpaqueToHitTest(scroll_layer));
+  EXPECT_TRUE(GetEffectNode(scroll_layer).has_masking_child);
+  EXPECT_EQ(-1, LayerIndex(mask_layer.get()));
+}
+
+TEST_P(PaintArtifactCompositorTest, ClipMaskHitTestForeignLayer) {
+  ClipPaintPropertyNode* clip =
+      CreateClipPathClip(c0(), t0(), FloatRoundedRect(0, 0, 100, 100));
+  scoped_refptr<cc::Layer> layer = cc::Layer::Create();
+  layer->SetBounds(gfx::Size(100, 100));
+  layer->SetHitTestOpaqueness(cc::HitTestOpaqueness::kOpaque);
+  Update(TestPaintArtifact()
+             .ForeignLayerChunk(layer, gfx::Point())
+             .Properties(t0(), *clip, e0())
+             .Build());
+
+  ASSERT_EQ(1u, LayerCount());
+  EXPECT_EQ(layer.get(), LayerAt(0));
+  EXPECT_EQ(cc::HitTestOpaqueness::kOpaque, layer->hit_test_opaqueness());
+  EXPECT_FALSE(OpaqueToHitTest(layer.get()));
+
+  Update(TestPaintArtifact().ForeignLayerChunk(layer, gfx::Point()).Build());
+
+  EXPECT_TRUE(OpaqueToHitTest(layer.get()));
 }
 
 TEST_P(PaintArtifactCompositorTest, RepaintIndirectScrollHitTest) {
@@ -5523,6 +5743,223 @@ TEST_P(PaintArtifactCompositorTest,
                   .Node(layer->effect_tree_index())
                   .render_surface_reason,
               cc::RenderSurfaceReason::kNone);
+  }
+}
+
+TEST_P(PaintArtifactCompositorTest,
+       ScrollbarApplyingMaskFilterUnderRoundedCornerClipGetsOwnRenderSurface) {
+  FloatRoundedRect rrect(gfx::RectF(50, 50, 300, 200), 10);
+  auto* c1 = CreateClip(c0(), t0(), rrect);
+
+  auto create_scrollbar_layer = [](bool uses_solid_color_thumb, bool is_overlay,
+                                   CompositorElementId element_id) {
+    auto scrollbar = base::MakeRefCounted<cc::FakeScrollbar>();
+    scrollbar->set_has_thumb(true);
+    scrollbar->set_uses_solid_color_thumb(uses_solid_color_thumb);
+    scrollbar->set_is_overlay(is_overlay);
+    scrollbar->set_is_web_test(false);
+    auto layer = cc::PaintedScrollbarLayer::Create(std::move(scrollbar));
+    layer->SetIsDrawable(true);
+    layer->SetBounds(gfx::Size(15, 200));
+    layer->SetElementId(element_id);
+    return layer;
+  };
+
+  const CompositorElementId scrollbar_element_id =
+      CompositorElementIdFromUniqueObjectId(
+          12345, CompositorElementIdNamespace::kVerticalScrollbar);
+
+  // Case 1: Non-overlay scrollbar that applies its own mask filter
+  // (uses_solid_color_thumb = true) under a rounded-corner clip with no
+  // dedicated Blink scrollbar effect node. The sibling content layer stays
+  // directly on the fast rounded-corner synthetic effect without a render
+  // surface, while the scrollbar layer is isolated into its own leaf render
+  // surface with an empty mask_filter_info.
+  {
+    auto scrollbar_layer = create_scrollbar_layer(
+        /*uses_solid_color_thumb=*/true, /*is_overlay=*/false,
+        scrollbar_element_id);
+    EXPECT_TRUE(scrollbar_layer->AppliesMaskFilterInfo());
+
+    TestPaintArtifact artifact;
+    artifact.Chunk(t0(), *c1, e0())
+        .RectDrawing(gfx::Rect(50, 50, 285, 200), Color::kWhite);
+    artifact.ForeignLayerChunk(scrollbar_layer, gfx::Point(335, 50))
+        .Properties(t0(), *c1, e0());
+    Update(artifact.Build());
+
+    ASSERT_EQ(2u, LayerCount());
+    const cc::Layer* content_layer = LayerAt(0);
+    const cc::Layer* composited_scrollbar = LayerAt(1);
+    EXPECT_EQ(scrollbar_layer.get(), composited_scrollbar);
+
+    const auto& effect_tree = GetPropertyTrees().effect_tree();
+    const cc::EffectNode& rounded_clip_effect =
+        effect_tree.Node(content_layer->effect_tree_index());
+    EXPECT_FALSE(rounded_clip_effect.mask_filter_info.IsEmpty());
+    EXPECT_FALSE(rounded_clip_effect.HasRenderSurface());
+
+    EXPECT_NE(composited_scrollbar->effect_tree_index(),
+              content_layer->effect_tree_index());
+    const cc::EffectNode& scrollbar_effect =
+        effect_tree.Node(composited_scrollbar->effect_tree_index());
+    EXPECT_EQ(rounded_clip_effect.id, scrollbar_effect.parent_id);
+    EXPECT_TRUE(scrollbar_effect.HasRenderSurface());
+    EXPECT_EQ(cc::RenderSurfaceReason::kRoundedCorner,
+              scrollbar_effect.render_surface_reason);
+    EXPECT_TRUE(scrollbar_effect.mask_filter_info.IsEmpty());
+    EXPECT_EQ(scrollbar_element_id, scrollbar_effect.element_id);
+  }
+
+  // Case 2: Overlay scrollbar with its own scrollbar effect node
+  // (kActiveOpacityAnimation) under a rounded-corner clip. Its existing effect
+  // node is upgraded to have an unconditional render surface so that overlay
+  // opacity animations still target the layer's effect node.
+  {
+    EffectPaintPropertyNode::State overlay_effect_state;
+    overlay_effect_state.local_transform_space = &t0();
+    overlay_effect_state.output_clip = c1;
+    overlay_effect_state.compositor_element_id = scrollbar_element_id;
+    overlay_effect_state.direct_compositing_reasons = {
+        CompositingReason::kActiveOpacityAnimation};
+    auto* overlay_effect =
+        EffectPaintPropertyNode::Create(e0(), std::move(overlay_effect_state));
+
+    auto scrollbar_layer = create_scrollbar_layer(
+        /*uses_solid_color_thumb=*/true, /*is_overlay=*/true,
+        scrollbar_element_id);
+
+    TestPaintArtifact artifact;
+    artifact.Chunk(t0(), *c1, e0())
+        .RectDrawing(gfx::Rect(50, 50, 300, 200), Color::kWhite);
+    artifact.ForeignLayerChunk(scrollbar_layer, gfx::Point(335, 50))
+        .Properties(t0(), *c1, *overlay_effect);
+    Update(artifact.Build());
+
+    ASSERT_EQ(2u, LayerCount());
+    const cc::Layer* content_layer = LayerAt(0);
+    const cc::Layer* composited_scrollbar = LayerAt(1);
+
+    const auto& effect_tree = GetPropertyTrees().effect_tree();
+    const cc::EffectNode& rounded_clip_effect =
+        effect_tree.Node(content_layer->effect_tree_index());
+    EXPECT_FALSE(rounded_clip_effect.mask_filter_info.IsEmpty());
+    EXPECT_FALSE(rounded_clip_effect.HasRenderSurface());
+
+    const cc::EffectNode& scrollbar_effect =
+        effect_tree.Node(composited_scrollbar->effect_tree_index());
+    EXPECT_EQ(rounded_clip_effect.id, scrollbar_effect.parent_id);
+    EXPECT_EQ(scrollbar_element_id, scrollbar_effect.element_id);
+    EXPECT_TRUE(scrollbar_effect.HasRenderSurface());
+    EXPECT_EQ(cc::RenderSurfaceReason::kRoundedCorner,
+              scrollbar_effect.render_surface_reason);
+    EXPECT_TRUE(scrollbar_effect.mask_filter_info.IsEmpty());
+  }
+
+  // Case 3: A scrollbar that does not apply its own mask filter
+  // (uses_solid_color_thumb = false) under a rounded-corner clip shares the
+  // rounded-corner effect node without creating an extra render surface.
+  {
+    auto scrollbar_layer = create_scrollbar_layer(
+        /*uses_solid_color_thumb=*/false, /*is_overlay=*/false,
+        scrollbar_element_id);
+    EXPECT_FALSE(scrollbar_layer->AppliesMaskFilterInfo());
+
+    TestPaintArtifact artifact;
+    artifact.Chunk(t0(), *c1, e0())
+        .RectDrawing(gfx::Rect(50, 50, 285, 200), Color::kWhite);
+    artifact.ForeignLayerChunk(scrollbar_layer, gfx::Point(335, 50))
+        .Properties(t0(), *c1, e0());
+    Update(artifact.Build());
+
+    ASSERT_EQ(2u, LayerCount());
+    const cc::Layer* content_layer = LayerAt(0);
+    const cc::Layer* composited_scrollbar = LayerAt(1);
+    EXPECT_EQ(content_layer->effect_tree_index(),
+              composited_scrollbar->effect_tree_index());
+    const cc::EffectNode& rounded_clip_effect =
+        GetPropertyTrees().effect_tree().Node(
+            composited_scrollbar->effect_tree_index());
+    EXPECT_FALSE(rounded_clip_effect.HasRenderSurface());
+  }
+
+  // Case 4: Non-overlay scrollbar under a backdrop-filter effect that is also
+  // clipped by a fast rounded-corner clip. PropertyTreeManager moves the
+  // backdrop-filter onto the synthetic rounded-corner clip effect (which has
+  // both a render surface and mask_filter_info) and emits a dummy child effect
+  // node without a render surface. Because cc::draw_property_utils::
+  // GetMaskFilterInfoPair() walks up to the enclosing render target and finds
+  // its mask_filter_info, the scrollbar layer must still get its own render
+  // surface.
+  {
+    CompositorFilterOperations backdrop_filter;
+    backdrop_filter.AppendBlurFilter(5);
+    auto* backdrop_effect =
+        CreateBackdropFilterEffect(e0(), t0(), c1, backdrop_filter);
+
+    auto scrollbar_layer = create_scrollbar_layer(
+        /*uses_solid_color_thumb=*/true, /*is_overlay=*/false,
+        scrollbar_element_id);
+
+    TestPaintArtifact artifact;
+    artifact.Chunk(t0(), *c1, *backdrop_effect)
+        .RectDrawing(gfx::Rect(50, 50, 285, 200), Color::kWhite);
+    artifact.ForeignLayerChunk(scrollbar_layer, gfx::Point(335, 50))
+        .Properties(t0(), *c1, *backdrop_effect);
+    Update(artifact.Build());
+
+    ASSERT_EQ(2u, LayerCount());
+    const cc::Layer* content_layer = LayerAt(0);
+    const cc::Layer* composited_scrollbar = LayerAt(1);
+    const auto& effect_tree = GetPropertyTrees().effect_tree();
+
+    const cc::EffectNode& dummy_effect =
+        effect_tree.Node(content_layer->effect_tree_index());
+    EXPECT_FALSE(dummy_effect.HasRenderSurface());
+    const cc::EffectNode& backdrop_clip_effect =
+        effect_tree.Node(dummy_effect.parent_id);
+    EXPECT_TRUE(backdrop_clip_effect.HasRenderSurface());
+    EXPECT_FALSE(backdrop_clip_effect.mask_filter_info.IsEmpty());
+
+    const cc::EffectNode& scrollbar_effect =
+        effect_tree.Node(composited_scrollbar->effect_tree_index());
+    EXPECT_EQ(dummy_effect.id, scrollbar_effect.parent_id);
+    EXPECT_TRUE(scrollbar_effect.HasRenderSurface());
+    EXPECT_EQ(cc::RenderSurfaceReason::kRoundedCorner,
+              scrollbar_effect.render_surface_reason);
+    EXPECT_TRUE(scrollbar_effect.mask_filter_info.IsEmpty());
+  }
+
+  // Case 5: Non-overlay scrollbar under an intermediate unconditional render
+  // surface with an empty mask_filter_info (e.g. a filter effect) inside a
+  // rounded-corner clip does not need an extra render surface.
+  {
+    CompositorFilterOperations filter;
+    filter.AppendBlurFilter(5);
+    auto* filter_effect = CreateFilterEffect(e0(), t0(), c1, filter);
+
+    auto scrollbar_layer = create_scrollbar_layer(
+        /*uses_solid_color_thumb=*/true, /*is_overlay=*/false,
+        scrollbar_element_id);
+
+    TestPaintArtifact artifact;
+    artifact.Chunk(t0(), *c1, *filter_effect)
+        .RectDrawing(gfx::Rect(50, 50, 285, 200), Color::kWhite);
+    artifact.ForeignLayerChunk(scrollbar_layer, gfx::Point(335, 50))
+        .Properties(t0(), *c1, *filter_effect);
+    Update(artifact.Build());
+
+    ASSERT_EQ(2u, LayerCount());
+    const cc::Layer* content_layer = LayerAt(0);
+    const cc::Layer* composited_scrollbar = LayerAt(1);
+    EXPECT_EQ(content_layer->effect_tree_index(),
+              composited_scrollbar->effect_tree_index());
+    const cc::EffectNode& cc_filter_effect =
+        GetPropertyTrees().effect_tree().Node(
+            composited_scrollbar->effect_tree_index());
+    EXPECT_EQ(cc::RenderSurfaceReason::kFilter,
+              cc_filter_effect.render_surface_reason);
+    EXPECT_TRUE(cc_filter_effect.mask_filter_info.IsEmpty());
   }
 }
 

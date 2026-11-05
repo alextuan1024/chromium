@@ -35,10 +35,6 @@ AuthenticatorMakeCredentialResponse::CreateFromU2fRegisterResponse(
   if (!attested_credential_data)
     return std::nullopt;
 
-  // Extract the credential_id for packing into the response data.
-  std::vector<uint8_t> credential_id =
-      attested_credential_data->credential_id();
-
   // The counter is zeroed out for Register requests.
   std::array<uint8_t, 4> counter = {};
   constexpr uint8_t flags =
@@ -79,7 +75,7 @@ AuthenticatorMakeCredentialResponse::~AuthenticatorMakeCredentialResponse() =
 
 std::vector<uint8_t>
 AuthenticatorMakeCredentialResponse::GetCBOREncodedAttestationObject() const {
-  return cbor::Writer::Write(AsCBOR(attestation_object))
+  return cbor::Writer::Write(attestation_object.AsCBOR())
       .value_or(std::vector<uint8_t>());
 }
 
@@ -138,7 +134,7 @@ std::vector<uint8_t> AsCTAPStyleCBORBytes(
   if (!unsigned_extension_outputs.empty()) {
     map.emplace(6, std::move(unsigned_extension_outputs));
   }
-  auto encoded_bytes = cbor::Writer::Write(cbor::Value(std::move(map)));
+  auto encoded_bytes = cbor::Writer::Write(map);
   DCHECK(encoded_bytes);
   return std::move(*encoded_bytes);
 }

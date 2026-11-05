@@ -4,10 +4,16 @@
 
 #include "chrome/browser/ttc/core/ttc_keyed_service.h"
 
+#include <optional>
+
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
+#include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ttc/core/features.h"
 #include "chrome/browser/ttc/core/ttc_keyed_service_factory.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "content/public/test/browser_test.h"
@@ -18,8 +24,13 @@ class TtcKeyedServiceBrowserTest : public PlatformBrowserTest {
  public:
   TtcKeyedServiceBrowserTest() {
     scoped_feature_list_.InitAndEnableFeature(kTtc);
+    // ChromeOS creates `TtcKeyedService` only where Glic's system requirements
+    // are met.
+    glic::GlicEnabling::SetSystemRequirementMetForTesting(true);
   }
-  ~TtcKeyedServiceBrowserTest() override = default;
+  ~TtcKeyedServiceBrowserTest() override {
+    glic::GlicEnabling::SetSystemRequirementMetForTesting(std::nullopt);
+  }
 
   Profile* profile() { return chrome_test_utils::GetProfile(this); }
 
@@ -52,5 +63,41 @@ IN_PROC_BROWSER_TEST_F(TtcKeyedServiceDisabledBrowserTest,
                        NotCreatedWhenDisabled) {
   EXPECT_EQ(TtcKeyedService::Get(profile()), nullptr);
 }
+
+// TTC requires the actor service, which isn't created when the actor is
+// disabled.
+class TtcKeyedServiceActorDisabledBrowserTest
+    : public TtcKeyedServiceBrowserTest {
+ public:
+  TtcKeyedServiceActorDisabledBrowserTest() {
+    scoped_feature_list_.InitAndDisableFeature(features::kGlicActor);
+  }
+  ~TtcKeyedServiceActorDisabledBrowserTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(TtcKeyedServiceActorDisabledBrowserTest,
+                       NotCreatedWhenActorDisabled) {
+  ASSERT_EQ(actor::ActorKeyedService::Get(profile()), nullptr);
+  EXPECT_EQ(TtcKeyedService::Get(profile()), nullptr);
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+class TtcKeyedServiceSystemRequirementNotMetBrowserTest
+    : public TtcKeyedServiceBrowserTest {
+ public:
+  TtcKeyedServiceSystemRequirementNotMetBrowserTest() {
+    glic::GlicEnabling::SetSystemRequirementMetForTesting(false);
+  }
+  ~TtcKeyedServiceSystemRequirementNotMetBrowserTest() override = default;
+};
+
+IN_PROC_BROWSER_TEST_F(TtcKeyedServiceSystemRequirementNotMetBrowserTest,
+                       NotCreatedWhenSystemRequirementNotMet) {
+  EXPECT_EQ(TtcKeyedService::Get(profile()), nullptr);
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace ttc

@@ -67,6 +67,11 @@ class GpuProcessHost final : public BrowserChildProcessHostDelegate,
       GpuProcessKind kind = GPU_PROCESS_KIND_SANDBOXED,
       bool force_create = true);
 
+  // Returns true while the OS is ending the user session (Windows logoff,
+  // shutdown, or restart). During session teardown, Windows kills child
+  // processes and refuses to start new ones, which says nothing about the GPU.
+  CONTENT_EXPORT static bool IsSessionEnding();
+
   GpuProcessHost(const GpuProcessHost&) = delete;
   GpuProcessHost& operator=(const GpuProcessHost&) = delete;
 
@@ -121,8 +126,6 @@ class GpuProcessHost final : public BrowserChildProcessHostDelegate,
   CONTENT_EXPORT viz::mojom::InfoCollectionGpuService*
   info_collection_gpu_service();
 #endif
-
-  CONTENT_EXPORT int GetIDForTesting() const;
 
   viz::GpuHostImpl* gpu_host() { return gpu_host_.get(); }
 
@@ -210,6 +213,10 @@ class GpuProcessHost final : public BrowserChildProcessHostDelegate,
 
   void RunServiceImpl(mojo::GenericPendingReceiver receiver);
 
+#if BUILDFLAG(IS_ANDROID)
+  bool IsAndroidIsolated();
+#endif
+
   // The serial number of the GpuProcessHost.
   int host_id_;
 
@@ -241,6 +248,12 @@ class GpuProcessHost final : public BrowserChildProcessHostDelegate,
 
   // The GPU process reported failure to initialize.
   bool did_fail_initialize_ = false;
+
+#if BUILDFLAG(IS_ANDROID)
+  // Whether the out-of-process GPU process runs under an isolated UID distinct
+  // from the browser process's UID.
+  bool is_gpu_uid_isolated_ = false;
+#endif
 
   // The total number of GPU process crashes.
   static base::subtle::Atomic32 gpu_crash_count_;

@@ -11,18 +11,20 @@
 @protocol GeminiPageStateChangeDelegate;
 @protocol GeminiCameraDelegate;
 @protocol GeminiConsentProviderDelegate;
+@protocol GeminiCustomUIDelegate;
 @protocol GeminiSessionDelegate;
 @protocol GeminiSuggestionDelegate;
 @protocol GeminiTabPickerDelegate;
 
 // Protocol for the BWG gateway, exposing what's needed upstream.
-@protocol BWGGatewayProtocol
+@protocol BWGGatewayProtocol <NSObject>
 
 // Handlers for BWG protocols.
 @property(nonatomic, weak) id<GeminiActuationDelegate> actuationHandler;
 @property(nonatomic, weak) id<GeminiCameraDelegate> cameraHandler;
 @property(nonatomic, weak) id<GeminiConsentProviderDelegate>
     consentProviderHandler;
+@property(nonatomic, weak) id<GeminiCustomUIDelegate> customUIHandler;
 @property(nonatomic, weak) id<GeminiPageStateChangeDelegate>
     pageStateChangeHandler;
 @property(nonatomic, weak) id<GeminiSessionDelegate> sessionHandler;

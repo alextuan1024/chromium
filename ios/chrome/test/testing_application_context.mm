@@ -6,6 +6,7 @@
 
 #import "base/check_op.h"
 #import "base/feature_list.h"
+#import "base/i18n/language_tag.h"
 #import "base/memory/ptr_util.h"
 #import "base/notreached.h"
 #import "base/time/default_clock.h"
@@ -20,6 +21,7 @@
 #import "components/update_client/net/network_chromium.h"
 #import "components/variations/service/variations_service.h"
 #import "ios/chrome/browser/download/model/auto_deletion/auto_deletion_service.h"
+#import "ios/chrome/browser/omaha/model/omaha_service.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_global_state.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/policy/model/configuration_policy_handler_list_factory.h"
@@ -53,7 +55,7 @@ TestingApplicationContext::TestingApplicationContext()
           std::make_unique<ApplicationLocaleStorage>()) {
   DCHECK(!GetApplicationContext());
   SetApplicationContext(this);
-  application_locale_storage_->Set("en-US");
+  application_locale_storage_->SetTag(base::i18n::GetKnownLanguageTag("en-US"));
 }
 
 TestingApplicationContext::~TestingApplicationContext() {
@@ -81,6 +83,7 @@ void TestingApplicationContext::SetLocalState(PrefService* local_state) {
     network_time_tracker_.reset();
     push_notification_service_.reset();
     optimization_guide_global_state_.reset();
+    auto_deletion_service_.reset();
   }
   local_state_ = local_state;
 }
@@ -97,6 +100,7 @@ void TestingApplicationContext::SetProfileManagerAndAccountProfileMapper(
   DCHECK(!default_account_profile_mapper_);
   DCHECK(!custom_account_profile_mapper_ || !mapper);
   DCHECK(!!manager == !!mapper);
+  push_notification_service_.reset();
   profile_manager_ = manager;
   custom_account_profile_mapper_ = mapper;
 }
@@ -131,6 +135,12 @@ void TestingApplicationContext::SetSharedURLLoaderFactory(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   test_url_loader_factory_ = std::move(url_loader_factory);
+}
+
+void TestingApplicationContext::SetSafeBrowsingService(
+    SafeBrowsingService* safe_browsing_service) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  fake_safe_browsing_service_ = safe_browsing_service;
 }
 
 void TestingApplicationContext::OnAppEnterForeground() {
@@ -422,4 +432,12 @@ TestingApplicationContext::GetDeviceParentalControls() {
         std::make_unique<supervised_user::DeviceParentalControlsNoOpImpl>();
   }
   return *device_parental_controls_;
+}
+
+OmahaService& TestingApplicationContext::GetOmahaService() {
+  if (!omaha_service_) {
+    // Create a dummy OmahaService that is not enabled.
+    omaha_service_ = std::make_unique<OmahaService>();
+  }
+  return *omaha_service_;
 }

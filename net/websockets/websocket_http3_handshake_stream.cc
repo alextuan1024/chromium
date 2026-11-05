@@ -9,6 +9,7 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
@@ -55,7 +56,7 @@ WebSocketHttp3HandshakeStream::WebSocketHttp3HandshakeStream(
     std::vector<std::string> requested_sub_protocols,
     std::vector<std::string> requested_extensions,
     WebSocketStreamRequestAPI* request,
-    std::set<std::string> dns_aliases)
+    base::flat_set<std::string> dns_aliases)
     : session_(std::move(session)),
       connect_delegate_(connect_delegate),
       requested_sub_protocols_(std::move(requested_sub_protocols)),
@@ -141,16 +142,15 @@ int WebSocketHttp3HandshakeStream::SendRequest(
 
   connect_delegate_->OnStartOpeningHandshake(std::move(request));
 
-  callback_ = std::move(callback);
-
   std::unique_ptr<WebSocketQuicStreamAdapter> stream_adapter =
       session_->CreateWebSocketQuicStreamAdapter(
           this,
           base::BindOnce(
               &WebSocketHttp3HandshakeStream::ReceiveAdapterAndStartRequest,
-              base::Unretained(this)),
+              weak_ptr_factory_.GetWeakPtr()),
           NetworkTrafficAnnotationTag(request_info_->traffic_annotation));
   if (!stream_adapter) {
+    callback_ = std::move(callback);
     return ERR_IO_PENDING;
   }
   ReceiveAdapterAndStartRequest(std::move(stream_adapter));
@@ -282,8 +282,8 @@ WebSocketHttp3HandshakeStream::RenewStreamForAuth() {
   return nullptr;
 }
 
-const std::set<std::string>& WebSocketHttp3HandshakeStream::GetDnsAliases()
-    const {
+const base::flat_set<std::string>&
+WebSocketHttp3HandshakeStream::GetDnsAliases() const {
   return dns_aliases_;
 }
 
@@ -387,6 +387,9 @@ void WebSocketHttp3HandshakeStream::ReceiveAdapterAndStartRequest(
   ApplyPriorityToStream();
   // WriteHeaders returns synchronously.
   stream_adapter_->WriteHeaders(std::move(http3_request_headers_), false);
+  if (callback_) {
+    OnHeadersSent();
+  }
 }
 
 int WebSocketHttp3HandshakeStream::ValidateResponse() {

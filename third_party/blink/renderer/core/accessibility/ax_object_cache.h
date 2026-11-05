@@ -49,7 +49,6 @@ struct AXTreeUpdate;
 
 namespace blink {
 
-class AbstractInlineTextBox;
 class AriaNotifications;
 class AriaNotificationOptions;
 class AXObject;
@@ -66,6 +65,14 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
 
   static AXObjectCache* Create(Document&, const ui::AXMode&);
   static AXObjectCache* CreateSnapshotter(Document&, const ui::AXMode&);
+
+  // Takes a one-time snapshot of `document`'s accessibility tree (recording
+  // request and error UMA histograms) without changing its accessibility mode.
+  static void SnapshotAccessibilityTree(Document* document,
+                                        size_t max_nodes,
+                                        base::TimeDelta timeout,
+                                        ui::AXTreeUpdate* response,
+                                        const ui::AXMode& ax_mode);
 
   AXObjectCache(const AXObjectCache&) = delete;
   AXObjectCache& operator=(const AXObjectCache&) = delete;
@@ -108,11 +115,12 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   virtual void Remove(Node*) = 0;
   virtual void RemoveSubtree(const Node*) = 0;
   virtual void RemoveSubtree(const Node*, bool remove_root) = 0;
+  virtual void RemoveSubtree(const Node*,
+                             bool remove_root,
+                             bool notify_parent,
+                             bool dom_children_already_removed) = 0;
   virtual void RemoveAXObjectsInLayoutSubtree(LayoutObject*) = 0;
   virtual void RemovePopup(Document*) = 0;
-  virtual void Remove(AbstractInlineTextBox*) = 0;
-
-  virtual const Element* RootAXEditableElement(const Node*) = 0;
 
   // Called when aspects of the style (e.g. color, alignment) change.
   virtual void StyleChanged(const LayoutObject*,
@@ -166,6 +174,7 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
   virtual bool CommitAXUpdates(Document&, bool force) = 0;
 
   // Serializes updates applied by CommitAXUpdates().
+  // If layout is dirty, leave the updates pending and request a retry.
   virtual void SerializeAXUpdatesIfNeeded(Document&) = 0;
 
   // Handles a notification from the `ariaNotify` API.
@@ -240,7 +249,7 @@ class CORE_EXPORT AXObjectCache : public GarbageCollected<AXObjectCache> {
       size_t max_nodes,
       base::TimeDelta timeout,
       ui::AXTreeUpdate*,
-      std::set<ui::AXSerializationErrorFlag>* out_error) = 0;
+      ui::AXSerializationErrorFlagSet* out_error) = 0;
 
   // Recompute the entire tree and reserialize it.
   // This method is useful when something that potentially affects most of the

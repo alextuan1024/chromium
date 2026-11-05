@@ -293,8 +293,20 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
     }
 
     /**
+     * Replays the button tap protection period from now. This should be called when the dialog
+     * becomes visible to the user later than when it was presented, e.g. when the hosting
+     * activity's enter animation completes.
+     */
+    void replayButtonTapProtection() {
+        if (mStartProtectingButtonTimestamp < 0) return;
+
+        mStartProtectingButtonTimestamp =
+                Math.max(mStartProtectingButtonTimestamp, TimeUtils.elapsedRealtimeMillis());
+    }
+
+    /**
      * @param callback The {@link Callback<Integer>} when a button on the dialog button bar is
-     *                 clicked. The {@link Integer} indicates the button type.
+     *     clicked. The {@link Integer} indicates the button type.
      */
     void setOnButtonClickedCallback(Callback<Integer> callback) {
         mOnButtonClickedCallback = callback;
@@ -480,6 +492,7 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
             mCustomViewContainer.addView(view);
         }
         mCustomViewContainer.setVisibility(wasVisible);
+        updateContentVisibility();
     }
 
     /**
@@ -863,7 +876,10 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
                 mTitleContainer.getPaddingTop(),
                 mTitleContainer.getPaddingEnd(),
                 mTitleContainer.getPaddingBottom());
-        mTitleView.setVisibility(titleVisible ? View.VISIBLE : View.GONE);
+        // The title is the row's only weighted view. Keep it INVISIBLE while the row is shown, so
+        // views after it, like the close button, stay at the end.
+        mTitleView.setVisibility(
+                titleVisible ? View.VISIBLE : (titleContainerVisible ? View.INVISIBLE : View.GONE));
         mTitleIcon.setVisibility(titleIconVisible ? View.VISIBLE : View.GONE);
         mTitleEndIcon.setVisibility(titleEndIconVisible ? View.VISIBLE : View.GONE);
         mTitleContainer.setVisibility(titleContainerVisible ? View.VISIBLE : View.GONE);
@@ -923,8 +939,9 @@ public class ModalDialogView extends BoundedLinearLayout implements View.OnClick
     }
 
     public static void disableButtonTapProtectionForTesting() {
+        boolean oldValue = sDisableButtonTapProtectionForTesting;
         sDisableButtonTapProtectionForTesting = true;
-        ResettersForTesting.register(() -> sDisableButtonTapProtectionForTesting = false);
+        ResettersForTesting.register(() -> sDisableButtonTapProtectionForTesting = oldValue);
     }
 
     @Override

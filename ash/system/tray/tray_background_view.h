@@ -6,6 +6,7 @@
 #define ASH_SYSTEM_TRAY_TRAY_BACKGROUND_VIEW_H_
 
 #include <memory>
+#include <vector>
 
 #include "ash/ash_export.h"
 #include "ash/constants/tray_background_view_catalog.h"
@@ -37,6 +38,7 @@ class View;
 
 namespace ash {
 class Shelf;
+class SystemDecoration;
 class TrayContainer;
 
 // Base class for some children of StatusAreaWidget. This class handles setting
@@ -124,6 +126,11 @@ class ASH_EXPORT TrayBackgroundView : public views::Button,
   // Returns the associated tray bubble widget, if a bubble exists. Otherwise
   // returns nullptr.
   virtual views::Widget* GetBubbleWidget() const;
+
+  // Keeps the closed widget of a destroyed or closing `TrayBubbleWrapper` and
+  // frees it from a posted task: its window goes away asynchronously and its
+  // views may still be on the call stack.
+  void TakeClosedBubbleWidget(std::unique_ptr<views::Widget> widget);
 
   // Returns a lock that prevents window activation from closing bubbles.
   [[nodiscard]] static base::ScopedClosureRunner
@@ -245,6 +252,9 @@ class ASH_EXPORT TrayBackgroundView : public views::Button,
   TrayContainer* tray_container() const { return tray_container_; }
   Shelf* shelf() { return shelf_; }
   TrayBackgroundViewCatalogName catalog_name() const { return catalog_name_; }
+  SystemDecoration* highlight_border_for_testing() {
+    return highlight_border_.get();
+  }
 
   // Updates the visibility of this tray's separator.
   void set_separator_visibility(bool visible) { separator_visible_ = visible; }
@@ -313,6 +323,9 @@ class ASH_EXPORT TrayBackgroundView : public views::Button,
   // `LogVisiblePodCountMetric()`.
   void UpdateStatusArea(bool should_log_visible_pod_count);
 
+  // Frees the widgets kept by `TakeClosedBubbleWidget()`.
+  void DeleteClosedBubbleWidgets();
+
   // views::ContextMenuController:
   void ShowContextMenuForViewImpl(
       views::View* source,
@@ -348,6 +361,10 @@ class ASH_EXPORT TrayBackgroundView : public views::Button,
   // For Material Next: Updates the background color based on active state.
   void UpdateBackgroundColor(bool active);
 
+  // Updates `highlight_border_` visibility, bounds, and rounded corners.
+  void UpdateHighlightBorder(const gfx::Rect& background_bounds,
+                             const gfx::RoundedCornersF& rounded_corners);
+
   // Add and remove ripple_layer_ from parent.
   void AddRippleLayer();
   void RemoveRippleLayer();
@@ -365,6 +382,8 @@ class ASH_EXPORT TrayBackgroundView : public views::Button,
 
   // Convenience pointer to the contents view.
   raw_ptr<TrayContainer> tray_container_;
+
+  std::unique_ptr<SystemDecoration> highlight_border_;
 
   // A separate layer for ripple aimation.
   std::unique_ptr<ui::LayerSolidColor> ripple_layer_;
@@ -415,6 +434,9 @@ class ASH_EXPORT TrayBackgroundView : public views::Button,
   bool should_close_bubble_on_lock_state_change_;
 
   base::ObserverList<Observer> observers_;
+
+  // Closed bubble widgets waiting for `DeleteClosedBubbleWidgets()`.
+  std::vector<std::unique_ptr<views::Widget>> closed_bubble_widgets_;
 
   base::WeakPtrFactory<TrayBackgroundView> weak_factory_{this};
 };

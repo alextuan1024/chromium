@@ -51,21 +51,34 @@ class PseudoElementData final : public GarbageCollected<PseudoElementData>,
     }
     DCHECK(column_pseudo_elements_->Find(column_pseudo_element) == kNotFound);
     column_pseudo_elements_->push_back(column_pseudo_element);
+    DCHECK(HasPseudoElements());
   }
   void ClearColumnPseudoElements(wtf_size_t to_keep) {
-    if (!column_pseudo_elements_) {
+    if (!column_pseudo_elements_ ||
+        to_keep >= column_pseudo_elements_->size()) {
       return;
     }
+    // Remove the elements from the vector before disposing them, since
+    // disposing can re-enter and modify the vector.
+    HeapVector<Member<ColumnPseudoElement>> to_dispose;
     for (wtf_size_t i = to_keep; i < column_pseudo_elements_->size(); ++i) {
-      column_pseudo_elements_->at(i)->Dispose();
+      to_dispose.push_back(column_pseudo_elements_->at(i));
     }
     if (to_keep) {
       column_pseudo_elements_->Shrink(to_keep);
     } else {
       column_pseudo_elements_->clear();
     }
+    for (ColumnPseudoElement* column_pseudo_element : to_dispose) {
+      column_pseudo_element->Dispose();
+    }
   }
 
+  // Must return true if any of the pseudo-element members below is set: layout
+  // tree attachment, detachment and rebuilding skip all pseudo-element work for
+  // elements where this returns false, so any new member must be added here
+  // (enforced by DCHECKs in SetPseudoElement(), AddColumnPseudoElement(), and
+  // GetPseudoElements()).
   bool HasPseudoElements() const;
   void ClearPseudoElements();
   void Trace(Visitor* visitor) const override {
@@ -86,7 +99,6 @@ class PseudoElementData final : public GarbageCollected<PseudoElementData>,
     visitor->Trace(generated_scroll_button_inline_end_);
     visitor->Trace(generated_scroll_button_block_end_);
     visitor->Trace(backdrop_);
-    visitor->Trace(overscroll_backdrop_);
     visitor->Trace(skeleton_);
     visitor->Trace(transition_data_);
     visitor->Trace(column_pseudo_elements_);
@@ -111,7 +123,6 @@ class PseudoElementData final : public GarbageCollected<PseudoElementData>,
   Member<PseudoElement> generated_scroll_button_inline_end_;
   Member<PseudoElement> generated_scroll_button_block_end_;
   Member<PseudoElement> backdrop_;
-  Member<PseudoElement> overscroll_backdrop_;
   Member<PseudoElement> skeleton_;
 
   Member<TransitionPseudoElementData> transition_data_;
@@ -127,8 +138,8 @@ inline bool PseudoElementData::HasPseudoElements() const {
   return generated_check_ || generated_before_ || generated_after_ ||
          generated_expand_icon_ || generated_picker_icon_ ||
          generated_interest_button_ || generated_marker_ || backdrop_ ||
-         overscroll_backdrop_ || skeleton_ || generated_first_letter_ ||
-         transition_data_ || generated_overscroll_area_parent_ ||
+         skeleton_ || generated_first_letter_ || transition_data_ ||
+         generated_overscroll_area_parent_ ||
          generated_scroll_marker_group_before_ ||
          generated_scroll_marker_group_after_ || generated_scroll_marker_ ||
          generated_scroll_button_block_start_ ||
@@ -147,7 +158,6 @@ inline void PseudoElementData::ClearPseudoElements() {
   SetPseudoElement(kPseudoIdInterestButton, nullptr);
   SetPseudoElement(kPseudoIdMarker, nullptr);
   SetPseudoElement(kPseudoIdBackdrop, nullptr);
-  SetPseudoElement(kPseudoIdOverscrollBackdrop, nullptr);
   SetPseudoElement(kPseudoIdFirstLetter, nullptr);
   SetPseudoElement(kPseudoIdScrollMarkerGroupBefore, nullptr);
   SetPseudoElement(kPseudoIdScrollMarkerGroupAfter, nullptr);
@@ -157,15 +167,15 @@ inline void PseudoElementData::ClearPseudoElements() {
   SetPseudoElement(kPseudoIdScrollButtonInlineEnd, nullptr);
   SetPseudoElement(kPseudoIdScrollButtonBlockEnd, nullptr);
   SetPseudoElement(kPseudoIdOverscrollAreaParent, nullptr);
-  if (column_pseudo_elements_) {
-    for (ColumnPseudoElement* column_pseudo_element : *column_pseudo_elements_) {
+  if (ColumnPseudoElementsVector* columns = column_pseudo_elements_.Release()) {
+    for (ColumnPseudoElement* column_pseudo_element : *columns) {
       column_pseudo_element->Dispose();
     }
-    column_pseudo_elements_->clear();
+    columns->clear();
   }
-  if (transition_data_) {
-    transition_data_->ClearPseudoElements();
-    transition_data_ = nullptr;
+  if (TransitionPseudoElementData* transition_data =
+          transition_data_.Release()) {
+    transition_data->ClearPseudoElements();
   }
 }
 
@@ -239,10 +249,6 @@ inline void PseudoElementData::SetPseudoElement(
       previous_element = backdrop_;
       backdrop_ = element;
       break;
-    case kPseudoIdOverscrollBackdrop:
-      previous_element = overscroll_backdrop_;
-      overscroll_backdrop_ = element;
-      break;
     case kPseudoIdSkeleton:
       previous_element = skeleton_;
       skeleton_ = element;
@@ -271,6 +277,7 @@ inline void PseudoElementData::SetPseudoElement(
 
   if (previous_element)
     previous_element->Dispose();
+  DCHECK(!element || HasPseudoElements());
 }
 
 inline PseudoElement* PseudoElementData::GetPseudoElement(
@@ -329,9 +336,6 @@ inline PseudoElement* PseudoElementData::GetPseudoElement(
   if (kPseudoIdBackdrop == pseudo_id) {
     return backdrop_.Get();
   }
-  if (kPseudoIdOverscrollBackdrop == pseudo_id) {
-    return overscroll_backdrop_.Get();
-  }
   if (kPseudoIdSkeleton == pseudo_id) {
     return backdrop_.Get();
   }
@@ -379,9 +383,6 @@ PseudoElementData::GetPseudoElements() const {
     result.push_back(generated_first_letter_);
   if (backdrop_)
     result.push_back(backdrop_);
-  if (overscroll_backdrop_) {
-    result.push_back(overscroll_backdrop_);
-  }
   if (skeleton_) {
     result.push_back(skeleton_);
   }
@@ -411,6 +412,7 @@ PseudoElementData::GetPseudoElements() const {
   if (column_pseudo_elements_) {
     result.append_range(*column_pseudo_elements_);
   }
+  DCHECK(result.empty() || HasPseudoElements());
   return result;
 }
 

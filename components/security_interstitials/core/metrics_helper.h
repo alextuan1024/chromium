@@ -22,8 +22,10 @@ namespace security_interstitials {
 // MetricsHelper records user warning interactions in a common way via METRICS
 // histograms. The class will generate the following histograms:
 //   METRICS: interstitial.<metric_prefix>.decision[.repeat_visit]
+//   METRICS: interstitial.<metric_prefix>.decision[.profile_mode_suffix]
 //   METRICS: interstitial.<metric_prefix>.interaction[.repeat_visit]
-// wherein |metric_prefix| is specified via ReportDetails.
+// wherein |metric_prefix| and optional |profile_mode_suffix| are specified via
+// ReportDetails.
 // repeat_visit is also generated if the user has seen the page before.
 //
 // If |extra_suffix| is not empty, MetricsHelper will append ".<extra_suffix>"
@@ -42,6 +44,7 @@ class MetricsHelper {
     PROCEEDING_DISABLED,
     MAX_DECISION
   };
+  // LINT.IfChange(SecurityInterstitialInteraction)
   enum Interaction {
     TOTAL_VISITS,
     SHOW_ADVANCED,
@@ -62,12 +65,18 @@ class MetricsHelper {
     VIEW_CERTIFICATE,
     MAX_INTERACTION
   };
+  // LINT.ThenChange(//tools/metrics/histograms/enums.xml:SecurityInterstitialInteraction)
 
   // metric_prefix: Histogram prefix for UMA.
   //                examples: "phishing", "ssl_overridable"
   // extra_suffix: If not-empty, will generate second set of metrics by
   //               placing at the end of the metric name.  Examples:
   //               "from_datasaver", "from_device"
+  // profile_mode_suffix: Optional suffix indicating the profile mode (e.g.,
+  //               "regular", "incognito", or "guest") used to record
+  //               interstitial.<metric_prefix>.decision.<profile_mode_suffix>.
+  //               Empty when profile-mode-specific decision metrics should not
+  //               be recorded.
   // blocked_page_shown_timestamp: If not null, will generate a suffix
   //               indicating whether the interstitial is triggered after the
   //               blocked page is shown. Examples: "after_page_shown",
@@ -79,6 +88,7 @@ class MetricsHelper {
     std::string metric_prefix;
     std::string extra_suffix;
     std::string extra_extra_suffix;
+    std::string profile_mode_suffix;
     std::optional<base::TimeTicks> blocked_page_shown_timestamp;
   };
 

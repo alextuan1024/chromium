@@ -30,7 +30,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "third_party/blink/public/common/switches.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/views/views_switches.h"
 
 using content::DownloadManager;
@@ -216,7 +216,7 @@ void DownloadTestBase::CheckDownloadStatesForBrowser(
     BrowserWindowInterface* browser,
     size_t num,
     DownloadItem::DownloadState state) {
-  std::vector<raw_ptr<DownloadItem, VectorExperimental>> download_items;
+  std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> download_items;
   GetDownloads(browser, &download_items);
 
   EXPECT_EQ(num, download_items.size());
@@ -240,7 +240,7 @@ bool DownloadTestBase::VerifyNoDownloads() const {
 void DownloadTestBase::DownloadAndWaitWithDisposition(
     BrowserWindowInterface* browser,
     const GURL& url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     int browser_test_flags,
     bool prompt_for_download) {
   // Setup notification, navigate, and block.
@@ -262,7 +262,7 @@ void DownloadTestBase::DownloadAndWait(BrowserWindowInterface* browser,
                                        const GURL& url,
                                        bool prompt_for_download) {
   DownloadAndWaitWithDisposition(
-      browser, url, WindowOpenDisposition::CURRENT_TAB,
+      browser, url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP, prompt_for_download);
 }
 
@@ -377,10 +377,6 @@ bool DownloadTestBase::RunSizeTest(BrowserWindowInterface* browser,
   // TODO(ahendrickson) -- |expected_title_in_progress| and
   // |expected_title_finished| need to be checked.
   base::FilePath filename = base::FilePath::FromUTF8Unsafe(url.GetPath());
-  std::u16string expected_title_in_progress(
-      base::ASCIIToUTF16(partial_indication) + filename.LossyDisplayName());
-  std::u16string expected_title_finished(base::ASCIIToUTF16(total_indication) +
-                                         filename.LossyDisplayName());
 
   // Download a partial web page in a background tab and wait.
   // The mock system will not complete until it gets a special URL.
@@ -402,7 +398,7 @@ bool DownloadTestBase::RunSizeTest(BrowserWindowInterface* browser,
   // separate tab.
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser, finish_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser, finish_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   observer->WaitForFinished();
   EXPECT_EQ(1u, observer->NumDownloadsSeenInState(DownloadItem::COMPLETE));
@@ -436,7 +432,7 @@ bool DownloadTestBase::RunSizeTest(BrowserWindowInterface* browser,
 
 void DownloadTestBase::GetDownloads(
     BrowserWindowInterface* browser,
-    std::vector<raw_ptr<DownloadItem, VectorExperimental>>* downloads) const {
+    std::vector<raw_ptr<DownloadItem, DanglingUntriaged>>* downloads) const {
   DCHECK(downloads);
   DownloadManager* manager = DownloadManagerForBrowser(browser);
   manager->GetAllDownloads(downloads);
@@ -494,7 +490,7 @@ bool DownloadTestBase::VerifyFile(const base::FilePath& path,
 void DownloadTestBase::DownloadFilesCheckErrorsSetup() {
   embedded_test_server()->ServeFilesFromDirectory(GetTestDataDirectory());
   ASSERT_TRUE(embedded_test_server()->Start());
-  std::vector<raw_ptr<DownloadItem, VectorExperimental>> download_items;
+  std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> download_items;
   GetDownloads(browser(), &download_items);
   ASSERT_TRUE(download_items.empty());
 
@@ -518,7 +514,7 @@ void DownloadTestBase::DownloadFilesCheckErrorsLoopBody(
                << " reason = "
                << DownloadInterruptReasonToString(download_info.reason));
 
-  std::vector<raw_ptr<DownloadItem, VectorExperimental>> download_items;
+  std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> download_items;
   GetDownloads(browser(), &download_items);
   size_t downloads_expected = download_items.size();
 

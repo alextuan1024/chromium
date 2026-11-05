@@ -37,6 +37,24 @@ VP9 video with alpha channel and yuv 444 subsampling.
 ffmpeg -c:v libvpx-vp9 -i bear-vp9a.webm -pix_fmt yuva444p -strict experimental bear-vp9a-444.webm
 ```
 
+#### bear-vp9a-420-10bit.webm
+VP9 10-bit video with alpha channel and yuv 420 subsampling.
+```
+ffmpeg -c:v libvpx-vp9 -i bear-vp9a.webm -pix_fmt yuva420p10le -strict experimental bear-vp9a-420-10bit.webm
+```
+
+#### bear-vp9a-422-10bit.webm
+VP9 10-bit video with alpha channel and yuv 422 subsampling.
+```
+ffmpeg -c:v libvpx-vp9 -i bear-vp9a.webm -pix_fmt yuva422p10le -strict experimental bear-vp9a-422-10bit.webm
+```
+
+#### bear-vp9a-444-10bit.webm
+VP9 10-bit video with alpha channel and yuv 444 subsampling.
+```
+ffmpeg -c:v libvpx-vp9 -i bear-vp9a.webm -pix_fmt yuva444p10le -strict experimental bear-vp9a-444-10bit.webm
+```
+
 #### bear-vp9-opus.webm
 VP9 Video with Opus Audio.
 
@@ -143,7 +161,18 @@ ffmpeg -i sfx.flac -map 0:0 -acodec copy -strict -2 -movflags frag_keyframe+empt
 #### with_mask.flac
 A 4-channel FLAC file with a `WAVEFORMATEXTENSIBLE_CHANNEL_MASK` tag. Used to verify that `AudioFileReader` can handle files where FFmpeg refines the channel layout during decoding without failing due to "unsupported midstream configuration change".
 
+#### sine-s32-stereo.flac
+0.3 second, 44.1kHz, 32-bit stereo FLAC file containing near full-scale sine waves of different frequencies in each channel. The encoder selects Right/Side and Mid/Side stereo decorrelation for most frames, which require a 33-bit Side channel. Used to verify that 32-bit FLAC stereo decorrelation decodes correctly (https://crbug.com/572363272). Created using:
+```
+sox -n -b 32 -e signed -r 44100 -c 2 s32src.wav synth 0.3 sine 440 sine 557 gain -0.05
+flac -8 --lax --no-padding -o sine-s32-stereo.flac s32src.wav
+```
+
 ### MP3
+
+#### repro-minimal.mp3
+MP3 file containing independent channel block_type switching in joint stereo (e.g. from Zoom H1n recorder). Used to verify that Symphonia decodes frames with per-channel block_type differences without error.
+Source: Repro file from https://issues.chromium.org/issues/563087658
 
 #### silent-section.mp3
 MP3 file containing silent sections filled with 0xff bytes, causing Symphonia decoder to trigger out-of-bounds error on bit reservoir. Used to verify the fix for this regression.
@@ -152,6 +181,7 @@ Source: https://abfiles.s3.amazonaws.com/jds/silent-section.mp3
 #### synth-bad.mp3
 Truncated MP3 test file (~2.6 KB, 4 complete frames followed by a truncated 5th frame). Used to verify that SymphoniaAudioDecoder gracefully drops undecodeable trailing frames and reaches end-of-stream (firing the 'ended' event) without a fatal decode error.
 Source: Repro file from https://issues.chromium.org/issues/558966895, trimmed to the first 2650 bytes.
+
 
 ### VVC
 
@@ -418,7 +448,7 @@ The video license is [libaom LICENSE].
 
 #### av1-svc-L2T2.ivf
 AV1 data that has spatial and temporal layers.
-This is the same as av1-1-b8-22-svc-L2T2.ivf in [libaom test vectors].
+This is the same as av1-1-b8-22-svc-L2T2-2.ivf in [libaom test vectors].
 The video license is [libaom LICENSE].
 
 #### av1-show_existing_frame.ivf
@@ -1035,6 +1065,21 @@ Fragmented mp4 samples with SMPTE ST 2094-50 timed metadata track.
 
 #### agtm-metadata-track-frag.mp4
 Fragmented mp4 header with SMPTE ST 2094-50 timed metadata track.
+
+#### agtm-metadata-cdsc-track.mp4
+MP4 file with SMPTE ST 2094-50 timed metadata track using cdsc track reference.
+
+#### agtm-metadata-rndr-track.mp4
+MP4 file with SMPTE ST 2094-50 timed metadata track using rndr track reference.
+
+#### staircase-pq-av1-st-2094-50-rndr.mp4
+A PQ AV1 video of a staircase gradient with 8 steps. A black box moves across
+the otherwise unchanging background at 1 step per second. A SMPTE ST 2094-50
+timed metadata track (using an rndr track reference) changes the metadata each
+second so that the step that the black box is currently on is white (by
+changing the HDR reference white, with tone mapping done by clamping). The
+samples of the timed metadata track are at the start of the file, before all
+of the video samples.
 
 #### av1-I-frame-320x240-agtm
 Same as av1-I-frame-320x240 but with an AGTM ITU_T35 metadata OBU added.
@@ -1878,6 +1923,14 @@ ffmpeg -f lavfi -i "sine=frequency=500:sample_rate=48000" -t 5 -c:v libvpx a500h
 ffmpeg -i red.webm -i green.webm -i blue.webm -i a300hz.webm -i a500hz.webm -map 0 -map 1 -map 2 -map 3 -map 4  multitrack-3video-2audio.webm
 ```
 
+#### multitrack-2audio.webm
+
+The two audio tracks of `multitrack-3video-2audio.webm`, without the video
+tracks. Generated using:
+```
+ffmpeg -i multitrack-3video-2audio.webm -map 0:a -c copy multitrack-2audio.webm
+```
+
 ### Spherical metadata WebM files
 
 #### bear-spherical-metadata.webm
@@ -2043,3 +2096,9 @@ Spherical video in fragmented MP4, generated with bento4 by the following comman
 ```
 mp4fragment spherical.mp4 spherical_frag.mp4
 ```
+
+#### trun_overflow.mp4
+Fragmented MP4 whose trun sample count exceeds index entries, from https://crbug.com/573128234.
+
+#### eme_player.html
+Encrypted Media Extensions browser test harness page used by `EncryptedMediaTest`, `MseEncryptedMediaTest`, `ECKEncryptedMediaTest`, and `EncryptedMediaVisibilityRatioReportTest`.

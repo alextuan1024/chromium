@@ -8,7 +8,6 @@
 #include <ranges>
 #include <string>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/ash_view_ids.h"
 #include "ash/public/cpp/message_center/arc_notification_constants.h"
 #include "ash/public/cpp/metrics_util.h"
@@ -96,18 +95,10 @@ NotificationListView::NotificationListView(
       animation_(std::make_unique<gfx::LinearAnimation>(this)),
       message_view_width_(kNotificationInMessageCenterWidth) {
   SetID(VIEW_ID_NOTIFICATION_BUBBLE_NOTIFICATION_LIST);
-  if (!features::IsNotificationCenterControllerEnabled()) {
-    message_center_observation_.Observe(MessageCenter::Get());
-  }
   animation_->SetCurrentValue(1.0);
 }
 
 NotificationListView::~NotificationListView() = default;
-
-void NotificationListView::Init() {
-  CHECK(!features::IsNotificationCenterControllerEnabled());
-  Init(message_center_utils::GetSortedNotificationsWithOwnView());
-}
 
 void NotificationListView::Init(
     const std::vector<message_center::Notification*>& notifications) {
@@ -192,9 +183,9 @@ std::vector<std::string> NotificationListView::GetAllNotificationIds() const {
   return notifications;
 }
 
-std::vector<raw_ptr<message_center::Notification, VectorExperimental>>
+std::vector<raw_ptr<message_center::Notification, DanglingUntriaged>>
 NotificationListView::GetNotificationsAboveY(int y_offset) const {
-  std::vector<raw_ptr<message_center::Notification, VectorExperimental>>
+  std::vector<raw_ptr<message_center::Notification, DanglingUntriaged>>
       notifications;
   for (views::View* view : children()) {
     const int bottom_limit =
@@ -210,9 +201,9 @@ NotificationListView::GetNotificationsAboveY(int y_offset) const {
   return notifications;
 }
 
-std::vector<raw_ptr<message_center::Notification, VectorExperimental>>
+std::vector<raw_ptr<message_center::Notification, DanglingUntriaged>>
 NotificationListView::GetNotificationsBelowY(int y_offset) const {
-  std::vector<raw_ptr<message_center::Notification, VectorExperimental>>
+  std::vector<raw_ptr<message_center::Notification, DanglingUntriaged>>
       notifications;
   for (views::View* view : children()) {
     const int bottom_limit =
@@ -692,7 +683,7 @@ void NotificationListView::ConfigureMessageView(
   }
 }
 
-std::vector<raw_ptr<message_center::Notification, VectorExperimental>>
+std::vector<raw_ptr<message_center::Notification, DanglingUntriaged>>
 NotificationListView::GetStackedNotifications() const {
   return message_center_view_->GetStackedNotifications();
 }

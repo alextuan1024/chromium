@@ -6,13 +6,12 @@ package org.chromium.chrome.browser.permissions;
 
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.Espresso.pressBack;
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import androidx.test.filters.MediumTest;
 
@@ -54,16 +53,12 @@ import org.chromium.ui.test.util.DeviceRestriction;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     ChromeSwitches.DISABLE_STARTUP_PROMOS,
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
     "ignore-certificate-errors",
     "enable-features=PermissionsGestureGatedPrompts:mute_notifications/true/mute_geolocation/true"
 })
-@DisableFeatures({
-    ChromeFeatureList.SETTINGS_MULTI_COLUMN,
-    ChromeFeatureList.CHROME_SURVEY_NEXT_ANDROID
-})
+@DisableFeatures({ChromeFeatureList.CHROME_SURVEY_NEXT_ANDROID})
 @EnableFeatures({
     PermissionsAndroidFeatureList.APPROXIMATE_GEOLOCATION_PERMISSION,
     PermissionsAndroidFeatureList.PERMISSIONS_ANDROID_CLAPPER_LOUD,
@@ -74,8 +69,7 @@ public class PermissionGestureGatedTest {
 
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.autoResetCtaActivityRule();
-    public PermissionTestRule mPermissionRule =
-            new PermissionTestRule(mActivityTestRule.getActivityTestRule());
+    public PermissionTestRule mPermissionRule = new PermissionTestRule(mActivityTestRule);
 
     @Rule
     public RuleChain mRuleChain = RuleChain.outerRule(mActivityTestRule).around(mPermissionRule);
@@ -84,7 +78,7 @@ public class PermissionGestureGatedTest {
 
     @Before
     public void setUp() throws Exception {
-        mPermissionRule.setUpActivity();
+        mActivityTestRule.startOnBlankPage();
         mPermissionRule.resetNotificationsSettingsForTest(/* enableQuietUi= */ false);
         mPermissionRule.setUpUrl(PAGE_URL);
         injectPermissionDelegate(
@@ -101,7 +95,7 @@ public class PermissionGestureGatedTest {
             String[] permissions, RuntimePermissionTestUtils.RuntimePromptResponse response) {
         RuntimePermissionTestUtils.TestAndroidPermissionDelegate testDelegate =
                 new RuntimePermissionTestUtils.TestAndroidPermissionDelegate(permissions, response);
-        WindowAndroid windowAndroid = mPermissionRule.getActivity().getWindowAndroid();
+        WindowAndroid windowAndroid = mActivityTestRule.getActivity().getWindowAndroid();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     windowAndroid.setAndroidPermissionDelegate(testDelegate);
@@ -130,27 +124,27 @@ public class PermissionGestureGatedTest {
     private void triggerNotificationPermissionRequest(boolean withGesture) throws Exception {
         if (withGesture) {
             // Inject click handler.
-            mPermissionRule.runJavaScriptCodeInCurrentTab(
+            mActivityTestRule.runJavaScriptCodeInCurrentTab(
                     "window.onclick = function() { if (window.functionToRun) {"
                             + " eval(window.functionToRun); } };");
-            mPermissionRule.runJavaScriptCodeWithUserGestureInCurrentTab(
+            mActivityTestRule.runJavaScriptCodeWithUserGestureInCurrentTab(
                     "Notification.requestPermission()");
         } else {
-            mPermissionRule.runJavaScriptCodeInCurrentTab("Notification.requestPermission()");
+            mActivityTestRule.runJavaScriptCodeInCurrentTab("Notification.requestPermission()");
         }
     }
 
     private void triggerGeolocationPermissionRequest(boolean withGesture) throws Exception {
         if (withGesture) {
             // Inject click handler.
-            mPermissionRule.runJavaScriptCodeInCurrentTab(
+            mActivityTestRule.runJavaScriptCodeInCurrentTab(
                     "window.onclick = function() { if (window.functionToRun) {"
                             + " eval(window.functionToRun); } };");
-            mPermissionRule.runJavaScriptCodeWithUserGestureInCurrentTab(
+            mActivityTestRule.runJavaScriptCodeWithUserGestureInCurrentTab(
                     "navigator.geolocation.getCurrentPosition(function(){})");
         } else {
             // Use setTimeout to ensure any transient user gesture from the test runner is lost.
-            mPermissionRule.runJavaScriptCodeInCurrentTab(
+            mActivityTestRule.runJavaScriptCodeInCurrentTab(
                     "setTimeout(function() { navigator.geolocation.getCurrentPosition(function(){})"
                             + " }, 0)");
         }
@@ -167,9 +161,9 @@ public class PermissionGestureGatedTest {
         // No gesture -> Quiet UI (MessageUI).
         mPermissionRule.waitForMessageShownState(true);
 
-        onViewWaiting(withText("Location blocked")).check(matches(isDisplayed()));
+        waitForView(withText("Location blocked"));
 
-        onViewWaiting(withText("OK")).perform(click());
+        waitForView(withText("OK")).click();
         mPermissionRule.waitForGeolocationSettingForOrigin(
                 /* usePrecise= */ true, ContentSetting.BLOCK, PAGE_URL);
     }
@@ -186,7 +180,7 @@ public class PermissionGestureGatedTest {
         mPermissionRule.waitForDialogShownState(true);
 
         PermissionTestRule.replyToDialog(
-                PermissionTestRule.PromptDecision.ALLOW, mPermissionRule.getActivity());
+                PermissionTestRule.PromptDecision.ALLOW, mActivityTestRule.getActivity());
         mPermissionRule.waitForDialogShownState(false);
         mPermissionRule.waitForGeolocationSettingForOrigin(
                 /* usePrecise= */ true, ContentSetting.ALLOW, PAGE_URL);
@@ -204,8 +198,8 @@ public class PermissionGestureGatedTest {
         mPermissionRule.waitForMessageShownState(false);
 
         clickClapperQuietIcon();
-        onViewWaiting(withText(PermissionTestRule.CLAPPER_PAGE_INFO_SUBSCRIBE_BUTTON_TEXT_ID))
-                .perform(click());
+        waitForView(withText(PermissionTestRule.CLAPPER_PAGE_INFO_SUBSCRIBE_BUTTON_TEXT_ID))
+                .click();
         pressBack();
         mPermissionRule.waitForPermissionSettingForOrigin(
                 ContentSettingsType.NOTIFICATIONS, ContentSetting.ALLOW, PAGE_URL);
@@ -221,9 +215,9 @@ public class PermissionGestureGatedTest {
         // With gesture -> Loud UI (MessageUI with ClapperQuiet).
         mPermissionRule.waitForMessageShownState(true);
 
-        onViewWaiting(withText("Get notifications?")).check(matches(isDisplayed()));
+        waitForView(withText("Get notifications?"));
         // Verify Allow. Clapper Loud uses a message UI.
-        onViewWaiting(withId(PermissionTestRule.CLAPPER_LOUD_ALLOW_BUTTON_ID)).perform(click());
+        waitForView(withId(PermissionTestRule.CLAPPER_LOUD_ALLOW_BUTTON_ID)).click();
         mPermissionRule.waitForPermissionSettingForOrigin(
                 ContentSettingsType.NOTIFICATIONS, ContentSetting.ALLOW, PAGE_URL);
     }

@@ -17,6 +17,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_map.h"
+#include "base/containers/map_util.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
@@ -54,6 +56,7 @@
 #include "components/sync/test/mock_nudge_handler.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace syncer {
 
@@ -151,10 +154,10 @@ class SyncerTestBase : public SyncCycle::Delegate,
   }
 
   void OnReceivedCustomNudgeDelays(
-      const std::map<DataType, base::TimeDelta>& delay_map) override {
-    auto iter = delay_map.find(BOOKMARKS);
-    if (iter != delay_map.end() && iter->second.is_positive()) {
-      last_bookmarks_commit_delay_ = iter->second;
+      const base::flat_map<DataType, base::TimeDelta>& delay_map) override {
+    const base::TimeDelta* delay = base::FindOrNull(delay_map, BOOKMARKS);
+    if (delay && delay->is_positive()) {
+      last_bookmarks_commit_delay_ = *delay;
     }
   }
 
@@ -798,6 +801,39 @@ TEST_P(SyncerTest, TestClientCommandDuringCommit) {
   EXPECT_EQ(base::Milliseconds(1050), last_bookmarks_commit_delay_);
 }
 
+TEST_P(SyncerTest, CommitManyItemsInOneGo_MaxCommitBatchBytes) {
+  using sync_pb::ClientCommand;
+
+  sync_pb::EntitySpecifics specifics = MakeSpecifics(PREFERENCES);
+  specifics.mutable_preference()->set_value(std::string(400, 'x'));
+  const size_t single_item_bytes = specifics.ByteSizeLong();
+  ASSERT_GT(single_item_bytes, 400u);
+
+  // Configure `max_target_commit_batch_specifics_bytes` via `ClientCommand` so
+  // that at most 2 items fit in a single commit batch.
+  auto command = std::make_unique<ClientCommand>();
+  command->set_max_target_commit_batch_specifics_bytes(single_item_bytes * 2);
+  mock_server_->SetGUClientCommand(std::move(command));
+
+  for (int i = 0; i < 5; ++i) {
+    GetProcessor(PREFERENCES)
+        ->AppendCommitRequest(
+            ClientTagHash::FromHashed(base::StringPrintf("tag%d", i)),
+            specifics);
+  }
+
+  EXPECT_TRUE(SyncShareNudge());
+  EXPECT_EQ(single_item_bytes * 2,
+            context_->max_target_commit_batch_specifics_bytes());
+
+  // 5 items with a batch limit of 2 items' worth of bytes should be split into
+  // 3 commit messages (2 + 2 + 1).
+  ASSERT_EQ(3u, mock_server_->commit_messages().size());
+  EXPECT_EQ(2, mock_server_->commit_messages()[0]->entries_size());
+  EXPECT_EQ(2, mock_server_->commit_messages()[1]->entries_size());
+  EXPECT_EQ(1, mock_server_->commit_messages()[2]->entries_size());
+}
+
 TEST_P(SyncerTest, ShouldPopulateSingleClientFlag) {
   GetProcessor(BOOKMARKS)->AppendCommitRequest(
       ClientTagHash::FromHashed("tag1"), MakeBookmarkSpecificsToCommit(),
@@ -933,7 +969,8 @@ TEST_P(SyncerTest, ShouldPopulateFcmRegistrationTokensForInterestedTypesOnly) {
 }
 
 TEST_P(SyncerTest, ShouldNotPopulateTooManyFcmRegistrationTokens) {
-  std::map<std::string, DataTypeSet> fcm_token_and_interested_data_types;
+  absl::flat_hash_map<std::string, DataTypeSet>
+      fcm_token_and_interested_data_types;
   for (size_t i = 0; i < 7; ++i) {
     fcm_token_and_interested_data_types["token_" + base::NumberToString(i)] = {
         BOOKMARKS};

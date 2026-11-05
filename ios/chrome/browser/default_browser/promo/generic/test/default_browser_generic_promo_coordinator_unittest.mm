@@ -14,42 +14,18 @@
 #import "components/feature_engagement/test/mock_tracker.h"
 #import "ios/chrome/browser/default_browser/model/features.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
-#import "ios/chrome/browser/default_browser/promo/public/features.h"
 #import "ios/chrome/browser/default_browser/promo/ui/default_browser_instructions_view_controller.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/common/ui/button_stack/button_stack_constants.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/scoped_key_window.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
-
-namespace {
-
-// Finds a subview with a given accessibility id.
-UIView* FindByID(UIView* view, NSString* accessibility_id) {
-  if (view.accessibilityIdentifier == accessibility_id) {
-    return view;
-  }
-  for (UIView* subview in view.subviews) {
-    UIView* foundView = FindByID(subview, accessibility_id);
-    if (foundView) {
-      return foundView;
-    }
-  }
-  return nil;
-}
-
-// Create the Feature Engagement Mock Tracker.
-std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
-    ProfileIOS* profile) {
-  return std::make_unique<feature_engagement::test::MockTracker>();
-}
-
-}  // namespace
 
 #pragma mark - Fixture.
 
@@ -62,7 +38,8 @@ class DefaultBrowserGenericPromoCoordinatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         feature_engagement::TrackerFactory::GetInstance(),
-        base::BindRepeating(&BuildFeatureEngagementMockTracker));
+        base::BindOnce(
+            &std::make_unique<feature_engagement::test::MockTracker>));
 
     profile_ = std::move(builder).Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
@@ -117,14 +94,10 @@ TEST_F(DefaultBrowserGenericPromoCoordinatorTest, TestRemindMeLater) {
       base::apple::ObjCCastStrict<DefaultBrowserInstructionsViewController>(
           view_controller_.presentedViewController);
 
-  UIView* tertiary_button_view =
-      FindByID(promo_view_controller.view,
-               kButtonStackTertiaryActionAccessibilityIdentifier);
-  EXPECT_NSNE(nil, tertiary_button_view);
-  ASSERT_TRUE([tertiary_button_view isKindOfClass:[UIButton class]]);
-
-  UIButton* tertiary_button =
-      base::apple::ObjCCastStrict<UIButton>(tertiary_button_view);
+  UIButton* tertiary_button = chrome_test_util::FindViewById<UIButton>(
+      promo_view_controller.view,
+      kButtonStackTertiaryActionAccessibilityIdentifier);
+  EXPECT_NSNE(nil, tertiary_button);
 
   // Prepare to tap tertiary action.
   EXPECT_CALL(

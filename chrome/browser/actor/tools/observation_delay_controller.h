@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_ACTOR_TOOLS_OBSERVATION_DELAY_CONTROLLER_H_
 
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string_view>
 
@@ -18,16 +19,18 @@
 #include "components/actor/core/task_id.h"
 #include "components/page_content_annotations/content/browser/page_settled_monitor.h"
 #include "components/page_content_annotations/content/mojom/page_stability.mojom.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents_observer.h"
 
 namespace content {
 class RenderFrameHost;
+class WebContents;
 }  // namespace content
 
 namespace actor {
 
+class ActorSurface;
 class ObservationDelayMetrics;
 class PageSettledMonitorDelegate;
 
@@ -64,13 +67,13 @@ class ObservationDelayController : public content::WebContentsObserver {
 
   // Note: Callback will always be executed asynchronously. It may be run after
   // this object is deleted so must manage its own lifetime.
-  // Note: If a RenderFrame was provided in the constructor, `target_tab` should
-  // contain it.
+  // Note: If a RenderFrameHost was passed to the constructor, it must belong to
+  // `target_actor_surface`'s WebContents.
   //
-  // `target_tab`: The tab on which to wait. The WebContents of this tab will be
-  // observed by this controller, overwriting any previously observed
+  // `target_actor_surface`: The surface on which to wait. Its WebContents will
+  // be observed by this controller, overwriting any previously observed
   // WebContents.
-  void Wait(tabs::TabInterface& target_tab, ReadyCallback callback);
+  void Wait(ActorSurface& target_actor_surface, ReadyCallback callback);
 
   // content::WebContentsObserver:
   void DidStartNavigation(
@@ -82,6 +85,34 @@ class ObservationDelayController : public content::WebContentsObserver {
   size_t NavigationCount() const;
   void SetNavigationCount(size_t);
 
+  // Tracks primary main frame navigations that start before `Wait()` is called.
+  // Recorded on `DidStartNavigation()`, even if the navigation later aborts
+  // before committing. If both types occur before `Wait()`, `kCrossDocument`
+  // takes precedence over `kSameDocument`.
+  enum class PreWaitNavigationType {
+    kNone,
+    kSameDocument,
+    kCrossDocument,
+  };
+
+  // Returns the strongest primary main frame navigation type started before
+  // `Wait()` (`kCrossDocument` > `kSameDocument` > `kNone`).
+  PreWaitNavigationType GetPreWaitNavigationType() const;
+
+  // Returns true if any primary main frame navigation started before `Wait()`.
+  bool DidPrimaryMainFrameNavigateBeforeWait() const;
+
+  // Overrides the `start_delay` from the `PageStabilityConfig` passed at
+  // construction. Must be called before `Wait()` (CHECKs `State::kInitial`).
+  void SetStartDelay(base::TimeDelta start_delay);
+
+  // Returns true if this controller is monitoring the document currently hosted
+  // in `frame`. Note that this reflects only the currently committed document;
+  // callers that also want to treat an in-flight (not-yet-committed) primary
+  // main frame navigation as a boundary should check
+  // `DidPrimaryMainFrameNavigateBeforeWait()` or `GetPreWaitNavigationType()`.
+  bool IsMonitoringDocumentOf(const content::RenderFrameHost& frame) const;
+
   // Internal states of the controller, including both generic page settling
   // states and Actor-specific wait states.
   // LINT.IfChange(State)
@@ -91,6 +122,7 @@ class ObservationDelayController : public content::WebContentsObserver {
     kPageStabilityMonitorDisconnected,
     kWaitForFederatedLogin,
     kWaitForLoadCompletion,
+    kWaitForScriptTools,
     kWaitForPdfLoadCompletion,
     kWaitForVisualStateUpdate,
     kMaybeDelayForLcp,
@@ -118,6 +150,8 @@ class ObservationDelayController : public content::WebContentsObserver {
 
   friend class PageSettledMonitorDelegate;
 
+  void WaitOnWebContents(content::WebContents* web_contents,
+                         ReadyCallback callback);
   void OnFederatedLoginRequestComplete(base::OnceClosure resume_callback);
   void OnAutofillPredictionsFinished(base::OnceClosure resume_callback);
   void DCheckStateTransition(State old_state, State new_state);
@@ -139,7 +173,11 @@ class ObservationDelayController : public content::WebContentsObserver {
   Result result_ = Result::kOk;
   base::raw_ref<AggregatedJournal> journal_;
   TaskId task_id_;
+  content::WeakDocumentPtr target_document_;
   size_t navigation_count_ = 0;
+  PreWaitNavigationType pre_wait_navigation_type_ =
+      PreWaitNavigationType::kNone;
+  std::optional<base::TimeDelta> start_delay_override_;
 
   // Async entry for entire duration after Wait is called.
   std::unique_ptr<AggregatedJournal::PendingAsyncEntry> wait_journal_entry_;

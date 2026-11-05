@@ -17,6 +17,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/bookmarks/bookmark_bar_utils.h"
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service_factory.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
@@ -55,7 +56,7 @@
 #include "components/undo/bookmark_undo_service.h"
 #include "content/public/browser/page_navigator.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 using base::UserMetricsAction;
 using bookmarks::BookmarkNode;
@@ -156,7 +157,7 @@ const UserMetricsAction* GetActionForLocationAndDisposition(
 
 // Check selection is not empty, nodes are not null nor repeated.
 void CheckSelectionIsValid(
-    const std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>&
+    const std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>&
         selection) {
   CHECK(!selection.empty());
   // Nodes must be not null.
@@ -176,7 +177,7 @@ BookmarkContextMenuController::BookmarkContextMenuController(
     BrowserWindowInterface* browser,
     Profile* profile,
     BookmarkLaunchLocation opened_from,
-    const std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>&
+    const std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>&
         selection,
     bool can_paste)
     : parent_window_(parent_window),
@@ -189,8 +190,8 @@ BookmarkContextMenuController::BookmarkContextMenuController(
           BookmarkMergedSurfaceServiceFactory::GetForProfile(profile)),
       new_nodes_parent_(GetParentForNewNodes(selection)),
       can_paste_(can_paste) {
-  DCHECK(profile_);
-  DCHECK(bookmark_service_->loaded());
+  CHECK(profile_, base::NotFatalUntil::M162);
+  CHECK(bookmark_service_->loaded(), base::NotFatalUntil::M162);
   CheckSelectionIsValid(selection);
   CHECK(new_nodes_parent_);
   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
@@ -207,7 +208,7 @@ BookmarkContextMenuController::~BookmarkContextMenuController() {
 // static
 std::unique_ptr<BookmarkParentFolder>
 BookmarkContextMenuController::GetParentForNewNodes(
-    const std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>&
+    const std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>&
         selection) {
   if (selection.empty()) {
     return nullptr;
@@ -386,15 +387,16 @@ void BookmarkContextMenuController::ExecuteCommand(int id, int event_flags) {
     case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP:
     case IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW:
     case IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW: {
-      WindowOpenDisposition initial_disposition;
+      ui::mojom::WindowOpenDisposition initial_disposition;
       if (id == IDC_BOOKMARK_BAR_OPEN_ALL ||
           id == IDC_BOOKMARK_BAR_OPEN_ALL_NEW_TAB_GROUP ||
           id == IDC_BOOKMARK_BAR_OPEN_SPLIT_VIEW) {
-        initial_disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+        initial_disposition =
+            ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
       } else if (id == IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW) {
-        initial_disposition = WindowOpenDisposition::NEW_WINDOW;
+        initial_disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
       } else {
-        initial_disposition = WindowOpenDisposition::OFF_THE_RECORD;
+        initial_disposition = ui::mojom::WindowOpenDisposition::kOffTheRecord;
       }
       const UserMetricsAction* const action =
           GetActionForLocationAndDisposition(id, opened_from_);
@@ -688,7 +690,8 @@ bool BookmarkContextMenuController::IsCommandIdChecked(int command_id) const {
                bookmarks::BookmarkBarVisibilityState::kOnlyShowOnNtp);
   }
 
-  DCHECK_EQ(IDC_BOOKMARK_BAR_SHOW_APPS_SHORTCUT, command_id);
+  CHECK_EQ(IDC_BOOKMARK_BAR_SHOW_APPS_SHORTCUT, command_id,
+           base::NotFatalUntil::M162);
   return prefs->GetBoolean(bookmarks::prefs::kShowAppsShortcutInBookmarkBar);
 }
 
@@ -886,7 +889,7 @@ void BookmarkContextMenuController::AddSubmenuItems() {
 }
 
 bool IsSelectionPermanentBookmarkFolder(
-    const std::vector<raw_ptr<const BookmarkNode, VectorExperimental>>&
+    const std::vector<raw_ptr<const BookmarkNode, DanglingUntriaged>>&
         selection) {
   if (selection.size() == 1) {
     return selection[0]->is_permanent_node();

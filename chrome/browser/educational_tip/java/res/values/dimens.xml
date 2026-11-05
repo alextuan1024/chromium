@@ -11,7 +11,6 @@ found in the LICENSE file.
   <!-- go/keep-sorted start -->
   <dimen name="educational_tip_module_button_height">48dp</dimen>
   <dimen name="educational_tip_module_button_padding_start">14dp</dimen>
-  <dimen name="educational_tip_module_content_image_radius">12dp</dimen>
   <dimen name="educational_tip_module_content_image_size">72dp</dimen>
   <dimen name="educational_tip_module_content_info_padding_start">16dp</dimen>
   <!-- go/keep-sorted end -->
@@ -40,10 +39,6 @@ found in the LICENSE file.
   <dimen name="default_browser_bottom_sheet_steps_container_margin_top">16dp</dimen>
   <dimen name="default_browser_bottom_sheet_title_margin_top">16dp</dimen>
   <!-- go/keep-sorted end -->
-
-  <!-- Educational tip instructional bottom sheet dimens -->
-  <dimen name="save_passwords_instructional_bottom_sheet_animation_height">250dp</dimen>
-  <dimen name="save_passwords_instructional_bottom_sheet_step_vertical_padding">12dp</dimen>
 
   <!-- Educational tip setup list "See more" bottom sheet -->
   <!-- go/keep-sorted start -->

@@ -128,12 +128,16 @@ enum class IOSGeminiLiveFREOutcome {
   kDismissedOnConsent = 1,
   kDeniedOSMicPermission = 2,
   kDeniedChromeMicPermission = 3,
-  kMaxValue = kDeniedChromeMicPermission,
+  kLinkClick = 4,
+  kMaxValue = kLinkClick,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:IOSGeminiLiveFREOutcome)
 
 // Records the final outcome of the Gemini Live FRE flow.
 void RecordLiveFREOutcome(IOSGeminiLiveFREOutcome outcome);
+
+// Records that the user clicked a link on the Gemini Live FRE consent screen.
+void RecordLiveFREConsentLinkClick();
 
 // Records that the user tapped the Live button to switch to Live mode.
 void RecordLiveButtonTapped();
@@ -295,7 +299,8 @@ enum class IOSGeminiFirstPromptSubmissionMethod {
   kOnboardingNoIAmDone = 25,
   kOnboardingKeepLearning = 26,
   kAppSwitcherSummarize = 27,
-  kMaxValue = kAppSwitcherSummarize,
+  kLivePrompt = 28,
+  kMaxValue = kLivePrompt,
 };
 // LINT.ThenChange(
 //   /tools/metrics/histograms/metadata/ios/enums.xml:IOSGeminiFirstPromptSubmissionMethod,
@@ -683,6 +688,12 @@ void RecordFloatyHiddenFromSource(gemini::FloatyUpdateSource source);
 // Records that the user clicked a URL in a Gemini session.
 void RecordURLOpened();
 
+// Records that the Gemini web modal was opened for an immersive learning card.
+void RecordGeminiImmersiveLearningCardWebModalOpened();
+
+// Records that a navigation closed the Gemini web modal and opened a new tab.
+void RecordGeminiWebModalNavigatedToNewTab();
+
 // Records entry point metrics with context about whether FRE is shown.
 void RecordGeminiEntryPointClick(gemini::EntryPoint entry_point,
                                  bool is_fre_flow);
@@ -773,5 +784,23 @@ void RecordBlockQuerySubmissionWhileLoading(bool block_submission);
 // Records whether to display the page loading snackbar on the opening
 // invocation while page context is loading.
 void RecordShowPageLoadingSnackbarOnOpeningInvocation(bool show_snackbar);
+
+// Enum representing the account alignment status when entering via the App
+// Switcher AI Summarization intent.
+// LINT.IfChange(GeminiAppSwitcherAccountStatus)
+enum class GeminiAppSwitcherAccountStatus {
+  kMatching = 0,
+  kMismatched = 1,
+  kExternalAppOnlySignedIn = 2,
+  kClientAppOnlySignedIn = 3,
+  kBothSignedOut = 4,
+  kMaxValue = kBothSignedOut,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/ios/enums.xml:GeminiAppSwitcherAccountStatus)
+
+// Records the account alignment status of a user entering via the App Switcher
+// AI Summarization intent.
+void RecordGeminiAppSwitcherAccountStatus(
+    GeminiAppSwitcherAccountStatus status);
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_BWG_METRICS_GEMINI_METRICS_H_

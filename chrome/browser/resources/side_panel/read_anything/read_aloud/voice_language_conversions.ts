@@ -454,6 +454,15 @@ export function doesLanguageHaveNaturalVoices(language: string): boolean {
   return NATURAL_VOICES_SUPPORTED_LANGS_AND_LOCALES.has(voicePackLanguage);
 }
 
+export function isLanguageLocallyAvailable(
+    lang: string, voices: SpeechSynthesisVoice[]): boolean {
+  // Some languages may require a download from the tts engine
+  // but may not have associated natural voices.
+  const languageHasNaturalVoices = doesLanguageHaveNaturalVoices(lang);
+  return voices.some(
+      voice => hasNaturalIdentifier(voice) || !languageHasNaturalVoices);
+}
+
 export function getVoicePackConvertedLangIfExists(lang: string): string {
   const voicePackLanguage = convertLangOrLocaleForVoicePackManager(lang);
 
@@ -497,6 +506,7 @@ const NATURAL_VOICES_SUPPORTED_LANGS_AND_LOCALES = new Set([
 // the locale format, as in AVAILABLE_GOOGLE_TTS_LOCALES, which means the
 // previously toggled language item won't match the language item associated
 // with the downloaded pack.
+// LINT.IfChange(AVAILABLE_GOOGLE_TTS_LOCALES)
 export const AVAILABLE_GOOGLE_TTS_LOCALES = new Set([
   'bn-bd', 'cs-cz', 'da-dk', 'de-de', 'el-gr',  'en-au',  'en-gb',
   'en-us', 'es-es', 'es-us', 'fi-fi', 'fil-ph', 'fr-fr',  'hi-in',
@@ -504,6 +514,7 @@ export const AVAILABLE_GOOGLE_TTS_LOCALES = new Set([
   'ne-np', 'nl-nl', 'pl-pl', 'pt-br', 'pt-pt',  'si-lk',  'sk-sk',
   'sv-se', 'th-th', 'tr-tr', 'uk-ua', 'vi-vn',  'yue-hk',
 ]);
+// LINT.ThenChange(voice_nature_naming.ts:VOICE_NATURE_NAMING_BY_LOCALE)
 
 export function areVoicesEqual(
     voice1?: SpeechSynthesisVoice|null,

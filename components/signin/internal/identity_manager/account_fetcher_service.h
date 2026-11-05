@@ -7,18 +7,15 @@
 
 #include <stdint.h>
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
-#include "base/timer/timer.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_observer.h"
@@ -104,11 +101,6 @@ class AccountFetcherService : public ProfileOAuth2TokenServiceObserver {
   // method is optional.
   void PrepareForFetchingAccountCapabilities();
 
-#if BUILDFLAG(IS_ANDROID)
-  // Refresh the AccountInfo if the existing one is stale
-  void RefreshAccountInfoIfStale(const CoreAccountId& account_id);
-#endif
-
   // Destroy any fetchers created for the specified account.
   void DestroyFetchers(const CoreAccountId& account_id);
 
@@ -119,6 +111,10 @@ class AccountFetcherService : public ProfileOAuth2TokenServiceObserver {
 
  private:
   void RefreshAllAccountInfo(bool only_fetch_if_invalid);
+
+  // Unconditionally fetches the Account Capabilities (but not the UserInfo) of
+  // all accounts with a refresh token.
+  void RefreshAllAccountCapabilities();
 
   void MaybeEnableNetworkFetches();
 
@@ -164,22 +160,24 @@ class AccountFetcherService : public ProfileOAuth2TokenServiceObserver {
   bool network_initialized_ = false;
   bool refresh_tokens_loaded_ = false;
   bool enable_account_removal_for_test_ = false;
-  // Used when switches::kFetchAccountInfoOnRestart is disabled.
   std::unique_ptr<signin::PersistentRepeatingTimer> persistent_repeating_timer_;
-  // Used when switches::kFetchAccountInfoOnRestart is enabled.
-  std::unique_ptr<base::RepeatingTimer> repeating_timer_;
 
-  // Holds references to account info fetchers keyed by account_id.
-  std::unordered_map<CoreAccountId, std::unique_ptr<AccountInfoFetcher>>
-      user_info_requests_;
+  struct AccountFetchState {
+    AccountFetchState();
+    AccountFetchState(AccountFetchState&&);
+    AccountFetchState& operator=(AccountFetchState&&);
+    ~AccountFetchState();
+
+    std::unique_ptr<AccountInfoFetcher> user_info_request;
+    std::unique_ptr<AccountCapabilitiesFetcher> capabilities_request;
+    base::TimeTicks user_info_fetch_start_time;
+  };
 
   std::unique_ptr<AccountFetcherFactory> account_fetcher_factory_;
-  std::map<CoreAccountId, std::unique_ptr<AccountCapabilitiesFetcher>>
-      account_capabilities_requests_;
 
-  // CoreAccountId and the corresponding fetch start time. These two member
-  // variables are only used to record account information fetch duration.
-  base::flat_map<CoreAccountId, base::TimeTicks> user_info_fetch_start_times_;
+  // Holds per-account info/capabilities fetchers and user info fetch start
+  // time keyed by account_id.
+  base::flat_map<CoreAccountId, AccountFetchState> account_fetches_;
 
   // Used for fetching the account images.
   std::unique_ptr<image_fetcher::ImageFetcherImpl> image_fetcher_;

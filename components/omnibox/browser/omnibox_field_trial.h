@@ -113,7 +113,7 @@ namespace OmniboxFieldTrial {
 // A mapping that contains multipliers indicating that matches of the
 // specified type should have their relevance score multiplied by the
 // given number.  Omitted types are assumed to have multipliers of 1.0.
-typedef std::map<AutocompleteMatchType::Type, float> DemotionMultipliers;
+typedef std::map<omnibox::AutocompleteMatchType, float> DemotionMultipliers;
 
 // A vector that maps from the number of matching pages to the document
 // specificity score used in HistoryQuick provider / ScoredHistoryMatch
@@ -353,9 +353,6 @@ extern int kDefaultMinimumTimeBetweenSuggestQueriesMs;
 // Parameter names used by omnibox experiments that hide the path (and
 // optionally subdomains) in the steady state.
 extern const char kOmniboxUIUnelideURLOnHoverThresholdMsParam[];
-
-// Parameter names used by MIA experiments.
-extern const char kSuppressPsuggestBackfillWithMIAParam[];
 
 // `FeatureParam`s
 

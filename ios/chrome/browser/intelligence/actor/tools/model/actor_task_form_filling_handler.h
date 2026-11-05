@@ -19,6 +19,11 @@
 #import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
 #import "url/origin.h"
 
+@class ActorFormSuggestion;
+@class ActorFormSuggestionFaviconLoader;
+@protocol ActorTaskInterventionDelegate;
+class FaviconLoader;
+
 namespace actor_login {
 class ActorLoginService;
 }  // namespace actor_login
@@ -29,13 +34,10 @@ struct ActorFormFillingRequest;
 struct ActorSuggestion;
 }  // namespace autofill
 
-@class ActorFormSuggestion;
-@protocol ActorTaskInterventionDelegate;
-@class FormSuggestion;
-
 namespace actor {
 
 class ActorEngine;
+class ActorTask;
 class AggregatedJournal;
 
 // Combines a `credential` and a user choice in the account picker, and
@@ -51,14 +53,16 @@ class ActorTaskFormFillingHandler {
   static std::unique_ptr<ActorTaskFormFillingHandler> Create(
       base::PassKey<ActorEngine> pass_key,
       AggregatedJournal& journal,
-      ActorTaskId task_id);
+      ActorTaskId task_id,
+      FaviconLoader* favicon_loader);
 
   // Static constructor for testing purposes; this allows tests to override the
   // services.
   static std::unique_ptr<ActorTaskFormFillingHandler> CreateForTesting(
       ActorTaskId task_id,
       std::unique_ptr<actor_login::ActorLoginService> login_service,
-      std::unique_ptr<autofill::ActorFormFillingService> form_filling_service);
+      std::unique_ptr<autofill::ActorFormFillingService> form_filling_service,
+      FaviconLoader* favicon_loader);
 
   ~ActorTaskFormFillingHandler();
 
@@ -78,7 +82,7 @@ class ActorTaskFormFillingHandler {
 
   // Sets the intervention delegate.
   void SetInterventionDelegate(
-      base::PassKey<ActorEngine> pass_key,
+      base::PassKey<ActorTask> pass_key,
       id<ActorTaskInterventionDelegate> intervention_delegate) {
     intervention_delegate_ = intervention_delegate;
   }
@@ -115,6 +119,12 @@ class ActorTaskFormFillingHandler {
   // without making a selection.
   void PromptToSelectAutofillSuggestion(size_t index);
 
+  // Drops the registered callbacks and suggestions without running the
+  // callbacks and, if a selection prompt is pending, asks the intervention
+  // delegate to dismiss it. Called by the tool that opened the prompt when it
+  // is cancelled or finishes.
+  void CancelPendingPrompt();
+
   // Retrieves the credential that the user has chosen to allow the
   // actor to use. The selected credential can be used for multi-step login
   // within the same task.
@@ -125,7 +135,8 @@ class ActorTaskFormFillingHandler {
   ActorTaskFormFillingHandler(
       ActorTaskId task_id,
       std::unique_ptr<actor_login::ActorLoginService> login_service,
-      std::unique_ptr<autofill::ActorFormFillingService> form_filling_service);
+      std::unique_ptr<autofill::ActorFormFillingService> form_filling_service,
+      FaviconLoader* favicon_loader);
 
   // TODO(crbug.com/472291829): Implement affiliation service related logic to
   // fetch affiliated domains so we can reuse the permission.
@@ -140,12 +151,16 @@ class ActorTaskFormFillingHandler {
 
   // Handles the user selection of an autofill suggestion.
   void OnAutofillSuggestionSelectedByUser(
-      ActorFormSuggestion* selected_suggestion,
-      size_t form_index);
+      size_t form_index,
+      ActorFormSuggestion* selected_suggestion);
 
   ActorTaskId task_id_;
   std::unique_ptr<actor_login::ActorLoginService> login_service_;
   std::unique_ptr<autofill::ActorFormFillingService> form_filling_service_;
+
+  // Data source for loading website favicons on prompted credential
+  // `ActorFormSuggestion`s.
+  ActorFormSuggestionFaviconLoader* favicon_loader_ = nil;
 
   // For multi-step login, these are the credentials that the user has chosen to
   // allow the actor to use in this task, as well as whether the user has given
@@ -165,6 +180,9 @@ class ActorTaskFormFillingHandler {
   CredentialSelectedCallback credential_selected_callback_;
   // Success callback for autofill suggestion selection other than credentials.
   AutofillSuggestionSelectedCallback autofill_suggestion_selected_callback_;
+
+  // Whether a selection prompt is shown and awaiting the user's answer.
+  bool has_pending_prompt_ = false;
 
   base::WeakPtrFactory<ActorTaskFormFillingHandler> weak_ptr_factory_{this};
 };

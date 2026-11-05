@@ -159,16 +159,8 @@ class TranslateBubbleViewUITest
 
  protected:
   explicit TranslateBubbleViewUITest(bool enable_search_ui) {
-    if (enable_search_ui) {
-      scoped_feature_list_.InitWithFeatures(
-          {language::kTranslateOpenSettings,
-           translate::kTranslateLanguageSearchUI},
-          {});
-    } else {
-      scoped_feature_list_.InitWithFeatures(
-          {language::kTranslateOpenSettings},
-          {translate::kTranslateLanguageSearchUI});
-    }
+    scoped_feature_list_.InitWithFeatureState(
+        translate::kTranslateLanguageSearchUI, enable_search_ui);
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -238,7 +230,7 @@ class TranslateBubbleViewUITest
   }
 
   TranslateBubbleView* GetCurrentTranslateBubble() {
-    return TranslateBubbleController::From(browser())->GetTranslateBubble();
+    return TranslateController::From(browser())->GetTranslateBubble();
   }
 
   base::HistogramTester& histograms_tester() { return histograms_tester_; }
@@ -505,7 +497,7 @@ IN_PROC_BROWSER_TEST_P(TranslateBubbleViewPdfUITest, PdfTranslationTrigger) {
           browser()->tab_strip_model()->GetActiveWebContents());
   ASSERT_TRUE(chrome_translate_client);
 
-  chrome_translate_client->TriggerPdfTranslation();
+  chrome_translate_client->OnPdfTranslationRequested();
 
   SidePanelUI* side_panel_ui = SidePanelUI::From(browser());
   ASSERT_TRUE(side_panel_ui);

@@ -14,7 +14,6 @@ import 'chrome://resources/ash/common/cr_elements/cr_link_row/cr_link_row.js';
 import 'chrome://resources/ash/common/cr_elements/cr_shared_vars.css.js';
 import 'chrome://resources/polymer/v3_0/iron-flex-layout/iron-flex-layout-classes.js';
 import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
-import 'chrome://resources/polymer/v3_0/paper-spinner/paper-spinner-lite.js';
 import './add_input_methods_dialog.js';
 import './add_spellcheck_languages_dialog.js';
 import './os_edit_dictionary_page.js';
@@ -25,7 +24,6 @@ import '../os_search_page/magic_boost_review_terms_banner.js';
 import '../os_settings_page/os_settings_animated_pages.js';
 import 'chrome://resources/ash/common/shortcut_input_ui/shortcut_input_key.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import type {CrButtonElement} from 'chrome://resources/ash/common/cr_elements/cr_button/cr_button.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import type {ShortcutLabelProperties} from 'chrome://resources/ash/common/shortcut_input_ui/shortcut_utils.js';
@@ -46,7 +44,8 @@ import type {AcceleratorFetcherInterface} from '../mojom-webui/accelerator_fetch
 import {AcceleratorFetcher, AcceleratorFetcherObserverReceiver} from '../mojom-webui/accelerator_fetcher.mojom-webui.js';
 import type {StandardAcceleratorProperties} from '../mojom-webui/accelerator_info.mojom-webui.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
+import {PrefsMixin} from '../prefs/prefs_mixin.js';
 import {Router, routes} from '../router.js';
 
 import {hasOptionsPageInSettings} from './input_method_util.js';
@@ -137,8 +136,6 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
         },
       },
 
-      languagePacksInSettingsEnabled_: Boolean,
-
       acceleratorFetcher: Object,
 
       isShortcutCustomizationEnabled_: Boolean,
@@ -156,8 +153,6 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
     this.isShortcutCustomizationEnabled_ =
         loadTimeData.getBoolean('isShortcutCustomizationEnabled');
     this.metaKey_ = MetaKey.kSearch;
-    this.languagePacksInSettingsEnabled_ =
-        loadTimeData.getBoolean('languagePacksInSettingsEnabled');
   }
 
   // Public API: Bidirectional data flow.
@@ -190,13 +185,12 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
   declare private isShortcutCustomizationEnabled_: boolean;
   declare private lastUsedImeAccelerator_?: StandardAcceleratorProperties;
   declare private nextImeAccelerator_?: StandardAcceleratorProperties;
-  declare private acceleratorFetcherObserverReceiver_:
-      AcceleratorFetcherObserverReceiver;
+  private acceleratorFetcherObserverReceiver_:
+      AcceleratorFetcherObserverReceiver|null = null;
   declare private metaKey_: MetaKey;
 
   // loadTimeData flags.
   declare private onDeviceGrammarCheckEnabled_: boolean;
-  declare private languagePacksInSettingsEnabled_: boolean;
 
   // Computed properties.
   declare private spellCheckLanguages_: SpellCheckLanguageState[]|undefined;
@@ -296,16 +290,17 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
         allowedInputMethodsPref.value.length > 0;
   }
 
-  private inputMethodsEnabledByPolicy_(): boolean {
+  private inputMethodsForceEnabledByPolicy_(): boolean {
     const allowedInputMethodsForceEnabled = this.getPref<boolean>(
         'settings.language.allowed_input_methods_force_enabled');
     return !!allowedInputMethodsForceEnabled &&
-        allowedInputMethodsForceEnabled.value;
+        allowedInputMethodsForceEnabled.value &&
+        this.inputMethodsLimitedByPolicy_();
   }
 
   private addInputMethodButtonDisabled_(): boolean {
     // Disable if all input methods are enabled by policy.
-    if (this.inputMethodsEnabledByPolicy_()) {
+    if (this.inputMethodsForceEnabledByPolicy_()) {
       return true;
     }
     // Disable if all allowed input methods are already enabled.
@@ -460,7 +455,7 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
 
   private disableRemoveInputMethod_(
       targetInputMethod: chrome.languageSettingsPrivate.InputMethod): boolean {
-    if (this.inputMethodsEnabledByPolicy_()) {
+    if (this.inputMethodsForceEnabledByPolicy_()) {
       return true;
     }
 
@@ -722,42 +717,6 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
     }
     if (this.showNextImeShortcutReminder_) {
       this.setPrefValue('ash.shortcut_reminders.next_ime_dismissed', true);
-    }
-  }
-
-  private shouldShowSpinner_(imeId: string): boolean {
-    return this.languagePacksInSettingsEnabled_ &&
-        this.languageHelper.getImeLanguagePackStatus(imeId) ===
-        chrome.inputMethodPrivate.LanguagePackStatus.IN_PROGRESS;
-  }
-
-  private shouldShowLanguagePackError_(imeId: string): boolean {
-    if (!this.languagePacksInSettingsEnabled_) {
-      return false;
-    }
-    const status = this.languageHelper.getImeLanguagePackStatus(imeId);
-    return status ===
-        chrome.inputMethodPrivate.LanguagePackStatus.ERROR_OTHER ||
-        status ===
-        chrome.inputMethodPrivate.LanguagePackStatus.ERROR_NEEDS_REBOOT;
-  }
-
-  private getLanguagePacksErrorMessage_(imeId: string): string {
-    const status = this.languageHelper.getImeLanguagePackStatus(imeId);
-    switch (status) {
-      case chrome.inputMethodPrivate.LanguagePackStatus.ERROR_NEEDS_REBOOT:
-      // We currently have a string - `inputMethodLanguagePacksNeedsRebootError`
-      // in WebUI,
-      // `IDS_OS_SETTINGS_INPUT_METHOD_LANGUAGE_PACKS_NEEDS_REBOOT_ERROR` in the
-      // GRD file - to special case the `ERROR_NEEDS_REBOOT` case. However, the
-      // string is not finalised, and therefore should not be shown to the user.
-      // TODO: b/315725816 - Either finalise the string and add it here, or
-      // remove the string altogether.
-      case chrome.inputMethodPrivate.LanguagePackStatus.ERROR_OTHER:
-        return this.i18n('inputMethodLanguagePacksGeneralError');
-      default:
-        console.error('Invalid status:', status);
-        return '';
     }
   }
 }

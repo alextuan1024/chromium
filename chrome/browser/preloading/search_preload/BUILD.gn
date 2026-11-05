@@ -35,7 +35,6 @@ source_set("search_preload") {
     "//components/pref_registry",
     "//components/search_engines",
   ]
-  check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
 }
 
 source_set("feature") {
@@ -78,5 +77,5 @@ source_set("browser_tests") {
     "//components/page_load_metrics/browser:test_support",
   ]
 
-  data = [ "//chrome/test/data/" ]
+  data = [ "//chrome/test/data/empty.html" ]
 }

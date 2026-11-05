@@ -16,7 +16,6 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_backing.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
 #include "gpu/command_buffer/service/shared_image/wrapped_graphite_texture_holder.h"
-#include "skia/buildflags.h"
 #include "third_party/skia/include/core/SkAlphaType.h"
 #include "third_party/skia/include/core/SkColorType.h"
 #include "third_party/skia/include/gpu/graphite/BackendTexture.h"
@@ -73,36 +72,23 @@ class WrappedGraphiteTextureBacking : public ClearTrackingSharedImageBacking {
       MemoryTypeTracker* tracker,
       scoped_refptr<SharedContextState> context_state) override;
 
-  // Only used for testing 1-copy path where CopySharedImageToGLTexture is
-  // called via passthrough command decoder with GL context. This happens on
-  // test scenarios with Graphite-Swiftshader-Vulkan backend whereas in
-  // production IOSurfaceImageBacking would be used.
-  std::unique_ptr<SkiaGaneshImageRepresentation> ProduceSkiaGanesh(
-      SharedImageManager* manager,
-      MemoryTypeTracker* tracker,
-      scoped_refptr<SharedContextState> context_state) override;
-
-#if BUILDFLAG(SKIA_USE_DAWN)
-  std::unique_ptr<GLTexturePassthroughImageRepresentation>
-  ProduceGLTexturePassthrough(SharedImageManager* manager,
-                              MemoryTypeTracker* tracker) override;
-
-  std::unique_ptr<DawnImageRepresentation> ProduceDawn(
-      SharedImageManager* manager,
-      MemoryTypeTracker* tracker,
-      const wgpu::Device& device,
-      wgpu::BackendType backend_type,
-      std::vector<wgpu::TextureFormat> view_formats,
-      scoped_refptr<SharedContextState> context_state) override;
-#endif  // BUILDFLAG(SKIA_USE_DAWN)
-
  private:
   class SkiaGraphiteImageRepresentationImpl;
 
   const std::vector<
       scoped_refptr<SkiaImageRepresentation::GraphiteTextureHolder>>&
   GetWrappedGraphiteTextureHolders();
-  bool InsertRecordingAndSubmit();
+  bool InsertRecordingAndSubmit(SharedContextState* context_state);
+
+  // Called by representations from begin access functions. Returns true if
+  // access is allowed or false if access must fail. A corresponding EndAccess()
+  // call must be made if BeginAccess() returns true.
+  bool BeginAccess(bool readonly);
+  void EndAccess(bool readonly);
+
+  // Returns the SharedContextState to use for accessing the backing on the
+  // current thread, or nullptr if there is none.
+  SharedContextState* GetContextStateForCurrentThread() const;
 
   skgpu::graphite::Recorder* recorder() const {
     return context_state_->gpu_main_graphite_recorder();
@@ -111,6 +97,9 @@ class WrappedGraphiteTextureBacking : public ClearTrackingSharedImageBacking {
   scoped_refptr<SharedContextState> context_state_;
   std::vector<scoped_refptr<SkiaImageRepresentation::GraphiteTextureHolder>>
       texture_holders_;
+  const bool enforce_exclusive_access_;
+  bool is_write_in_progress_ GUARDED_BY(lock_) = false;
+  uint32_t reads_in_progress_ GUARDED_BY(lock_) = 0;
 
   // Only stored for thread safe backings.
   scoped_refptr<base::SingleThreadTaskRunner> created_task_runner_;

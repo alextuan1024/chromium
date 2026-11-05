@@ -9,6 +9,7 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/no_destructor.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/rand_util.h"
 #include "base/strings/strcat.h"
@@ -94,8 +95,9 @@ BackgroundTracingHelper::BackgroundTracingHelper(ExecutionContext* context) {
 
   // Only support http and https origins to actual remote servers.
   auto* origin = context->GetSecurityOrigin();
-  if (origin->IsLocal() || origin->IsOpaque() || origin->IsLocalhost())
+  if (origin->IsLocal() || origin->IsOpaque() || origin->IsLocalhost()) {
     return;
+  }
   if (!CommonSchemeRegistry::IsExtensionScheme(origin->Protocol().Ascii()) &&
       origin->Protocol() != url::kHttpScheme &&
       origin->Protocol() != url::kHttpsScheme) {
@@ -180,9 +182,8 @@ const BackgroundTracingHelper::SiteHashSet&
 BackgroundTracingHelper::GetSiteHashSet() {
   // This needs to be thread-safe because performance.mark is supported by both
   // windows and workers.
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(SiteHashSet, site_hash_set_,
-                                  (MakeSiteHashSet()));
-  return site_hash_set_;
+  static base::NoDestructor<SiteHashSet> site_hash_set_(MakeSiteHashSet());
+  return *site_hash_set_;
 }
 
 // static
@@ -205,8 +206,9 @@ wtf_size_t BackgroundTracingHelper::GetIdSuffixPos(StringView string) {
 
   // A valid suffix must be preceded by an underscore and at least one prefix
   // character.
-  if (cursor < 2)
+  if (cursor < 2) {
     return 0;
+  }
 
   // A valid suffix must be preceded by an underscore.
   // SAFETY: cursor is 2 or more and not EOS per checks above.

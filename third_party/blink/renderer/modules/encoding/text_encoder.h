@@ -32,8 +32,11 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_ENCODING_TEXT_ENCODER_H_
 
 #include <memory>
+
+#include "base/feature_list.h"
 #include "third_party/blink/renderer/core/typed_arrays/array_buffer_view_helpers.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_typed_array.h"
+#include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_codec.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding.h"
@@ -41,11 +44,27 @@
 
 namespace blink {
 
+MODULES_EXPORT BASE_DECLARE_FEATURE(kTextEncoderFastPath);
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(TextEncoderFastPathResult)
+enum class TextEncoderFastPathResult {
+  kEmpty = 0,
+  kAscii8Bit = 1,
+  kShortNonAscii = 2,
+  kLongString = 3,
+  kDisabled = 4,
+  kMaxValue = kDisabled,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/blink/enums.xml:TextEncoderFastPathResult)
+
 class ExecutionContext;
 class ExceptionState;
+class ScriptState;
 class TextEncoderEncodeIntoResult;
 
-class TextEncoder final : public ScriptWrappable {
+class MODULES_EXPORT TextEncoder final : public ScriptWrappable {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -56,7 +75,9 @@ class TextEncoder final : public ScriptWrappable {
 
   // Implement the IDL
   String encoding() const;
-  NotShared<DOMUint8Array> encode(const String&, ExceptionState&);
+  v8::MaybeLocal<v8::Uint8Array> encode(ScriptState*,
+                                        const String&,
+                                        ExceptionState&);
   TextEncoderEncodeIntoResult* encodeInto(const String&,
                                           NotShared<DOMUint8Array>&);
 

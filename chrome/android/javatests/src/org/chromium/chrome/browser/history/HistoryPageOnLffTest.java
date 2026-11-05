@@ -11,6 +11,8 @@ import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalHistoryUrl;
 
+import android.view.View;
+
 import androidx.test.filters.MediumTest;
 
 import org.junit.Rule;
@@ -19,12 +21,11 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
@@ -36,11 +37,9 @@ import org.chromium.ui.base.DeviceInput;
 
 /** Tests for the History page on large form factor device. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 @Restriction({DeviceFormFactor.TABLET_OR_DESKTOP})
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
+@DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
 public class HistoryPageOnLffTest {
     @Rule
     public AutoResetCtaTransitTestRule mCtaTestRule =
@@ -55,8 +54,11 @@ public class HistoryPageOnLffTest {
         // 1. Start on a Blank PageStation provided by the test rule.
         WebPageStation blankPage = mCtaTestRule.startOnBlankPage();
 
-        // 2. Load an example URL in the initial tab.
-        String exampleUrl = "https://www.example.com/";
+        // 2. Load a local test server URL in the initial tab.
+        String exampleUrl =
+                mCtaTestRule
+                        .getTestServer()
+                        .getURL("/chrome/test/data/android/navigate/simple.html");
         WebPageStation tab1Page = blankPage.loadWebPageProgrammatically(exampleUrl);
         Tab tab1 = tab1Page.getTab();
 
@@ -83,19 +85,28 @@ public class HistoryPageOnLffTest {
     public void testAutoFocusOnHistoryPageByTabSwitching() {
         DeviceInput.setSupportsKeyboardForTesting(true);
 
-        // Pre-check: The test is for devices w/ keyboard
-        boolean isKeyboardAttached =
+        // Pre-check: The test is for large form factor devices with a hardware keyboard.
+        boolean shouldAutoFocusSearchBox =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
-                            return DeviceInput.supportsKeyboard(mCtaTestRule.getActivity());
+                            return DeviceFormFactor.isNonMultiDisplayContextOnTablet(
+                                            mCtaTestRule.getActivity())
+                                    && DeviceInput.supportsKeyboard(mCtaTestRule.getActivity());
                         });
-        if (!isKeyboardAttached) return;
+        if (!shouldAutoFocusSearchBox) return;
 
         performNavigationToHistoryTab();
 
-        // Now that we've arrived at the historyPage Station,
-        // use Espresso to assert that the search box is focused.
-        // Public Transit ensures all page loads and tab switches are complete before this.
+        // SelectableListLayout.onWindowVisibilityChanged(View.VISIBLE) requests search focus via
+        // InlineSearchBox.requestSearchFocus(true), which posts a Runnable to mInlineSearchEditText
+        // after tab selection completes. Wait for the posted focus request and view layout pass.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    View searchText = mCtaTestRule.getActivity().findViewById(R.id.search_text);
+                    return searchText != null && searchText.isFocused();
+                },
+                "History search box did not acquire focus after tab switch");
+
         onView(withId(R.id.search_text)).check(matches(isFocused()));
     }
 }

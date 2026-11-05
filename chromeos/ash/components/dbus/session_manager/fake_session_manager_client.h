@@ -5,11 +5,14 @@
 #ifndef CHROMEOS_ASH_COMPONENTS_DBUS_SESSION_MANAGER_FAKE_SESSION_MANAGER_CLIENT_H_
 #define CHROMEOS_ASH_COMPONENTS_DBUS_SESSION_MANAGER_FAKE_SESSION_MANAGER_CLIENT_H_
 
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/component_export.h"
 #include "base/containers/flat_map.h"
@@ -19,9 +22,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/time/time.h"
-#include "chromeos/ash/components/dbus/arc/arc.pb.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
-#include "components/policy/proto/device_management_backend.pb.h"
 
 namespace ash {
 
@@ -141,14 +142,6 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
   void GetPsmDeviceActiveSecret(
       PsmDeviceActiveSecretCallback callback) override;
 
-  void StartArcMiniContainer(
-      const arc::StartArcMiniInstanceRequest& request,
-      chromeos::VoidDBusMethodCallback callback) override;
-  void UpgradeArcContainer(const arc::UpgradeArcContainerRequest& request,
-                           chromeos::VoidDBusMethodCallback callback) override;
-  void StopArcInstance(const std::string& account_id,
-                       bool should_backup_log,
-                       chromeos::VoidDBusMethodCallback callback) override;
   void SetArcCpuRestriction(
       login_manager::ContainerCpuRestrictionState restriction_state,
       chromeos::VoidDBusMethodCallback callback) override;
@@ -158,9 +151,6 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
       chromeos::DBusMethodCallback<base::TimeTicks> callback) override;
   void EnableAdbSideload(EnableAdbSideloadCallback callback) override;
   void QueryAdbSideload(QueryAdbSideloadCallback callback) override;
-
-  // Notifies observers as if ArcInstanceStopped signal is received.
-  void NotifyArcInstanceStopped(login_manager::ArcContainerStopReason reason);
 
   // Returns true if flags for |cryptohome_id| have been set. If the return
   // value is |true|, |*out_flags_for_user| is filled with the flags passed to
@@ -197,6 +187,21 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
     return restart_job_reason_;
   }
 
+  // Returns how many times RestartJob() was called.
+  int restart_job_call_count() const { return restart_job_call_count_; }
+
+  // If set to true, RestartJob() holds its reply until
+  // SendDeferredRestartJobReplies() is called, instead of replying
+  // immediately. Note that on success the real session_manager kills Chrome
+  // before replying. Must not be called while any reply is held.
+  void set_defer_restart_job_reply(bool defer_restart_job_reply) {
+    CHECK(deferred_restart_job_replies_.empty());
+    defer_restart_job_reply_ = defer_restart_job_reply;
+  }
+
+  // Replies with `result` to the RestartJob() calls whose replies are held.
+  void SendDeferredRestartJobReplies(bool result);
+
   void set_stop_session_callback(base::OnceClosure callback) {
     stop_session_callback_ = std::move(callback);
   }
@@ -231,14 +236,6 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
       const std::string& account_id) const;
   void set_device_local_account_policy(const std::string& account_id,
                                        const std::string& policy_blob);
-
-  const arc::UpgradeArcContainerRequest& last_upgrade_arc_request() const {
-    return last_upgrade_arc_request_;
-  }
-  const arc::StartArcMiniInstanceRequest last_start_arc_mini_container_request()
-      const {
-    return last_start_arc_mini_container_request_;
-  }
 
   // Notify observers about a property change completion.
   void OnPropertyChangeComplete(bool success);
@@ -322,9 +319,6 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
   }
 
   void set_arc_available(bool available) { arc_available_ = available; }
-  void set_force_upgrade_failure(bool force_upgrade_failure) {
-    force_upgrade_failure_ = force_upgrade_failure;
-  }
   void set_arc_start_time(base::TimeTicks arc_start_time) {
     arc_start_time_ = arc_start_time;
   }
@@ -382,6 +376,14 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
   // requested restart reason.
   std::optional<RestartJobReason> restart_job_reason_;
 
+  int restart_job_call_count_ = 0;
+
+  // If set to true, RestartJob() replies are held in
+  // `deferred_restart_job_replies_` until SendDeferredRestartJobReplies() is
+  // called.
+  bool defer_restart_job_reply_ = false;
+  std::vector<chromeos::VoidDBusMethodCallback> deferred_restart_job_replies_;
+
   // Callback that will be run, if set, when StopSession() is called.
   base::OnceClosure stop_session_callback_;
 
@@ -431,20 +433,11 @@ class COMPONENT_EXPORT(SESSION_MANAGER) FakeSessionManagerClient
   base::RepeatingClosure on_request_lock_screen_callback_;
 
   bool arc_available_ = false;
-  bool force_upgrade_failure_ = false;
   base::TimeTicks arc_start_time_;
-
-  bool container_running_ = false;
 
   bool adb_sideload_enabled_ = false;
 
   std::string login_password_;
-
-  // Contains last request passed to StartArcMiniContainer
-  arc::StartArcMiniInstanceRequest last_start_arc_mini_container_request_;
-
-  // Contains last request passed to StartArcInstance
-  arc::UpgradeArcContainerRequest last_upgrade_arc_request_;
 
   bool session_stopped_ = false;
 

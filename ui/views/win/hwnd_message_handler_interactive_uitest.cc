@@ -2,17 +2,35 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <algorithm>
-#include <memory>
+#include "ui/views/win/hwnd_message_handler.h"
 
+#include <windows.h>
+
+#include <algorithm>
+#include <iterator>
+#include <memory>
+#include <utility>
+
+#include "base/functional/callback.h"
+#include "base/location.h"
+#include "base/logging.h"
+#include "base/process/process_handle.h"
+#include "base/run_loop.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/ime/mock_input_method.h"
+#include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/win/foreground_helper.h"
 #include "ui/base/win/window_event_target.h"
 #include "ui/events/event_constants.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/win/hwnd_util.h"
 #include "ui/views/test/widget_test.h"
-#include "ui/views/win/hwnd_message_handler.h"
+#include "ui/views/views_features.h"
 #include "ui/views/win/hwnd_message_handler_delegate.h"
 
 namespace views {
@@ -109,8 +127,17 @@ class TestHWNDMessageHandlerDelegate : public HWNDMessageHandlerDelegate {
   void HandleFrameChanged() override {}
   void HandleNativeFocus(HWND last_focused_window) override {}
   void HandleNativeBlur(HWND focused_window) override {}
-  bool HandleMouseEvent(ui::MouseEvent* event) override { return false; }
-  void HandleKeyEvent(ui::KeyEvent* event) override {}
+  bool HandleMouseEvent(ui::MouseEvent* event) override {
+    if (mouse_event_callback_) {
+      std::move(mouse_event_callback_).Run();
+    }
+    return false;
+  }
+  void set_mouse_event_callback(base::OnceClosure callback) {
+    mouse_event_callback_ = std::move(callback);
+  }
+  void HandleKeyEvent(ui::KeyEvent* event) override { ++key_event_count_; }
+  int key_event_count() const { return key_event_count_; }
   void HandleTouchEvent(ui::TouchEvent* event) override {}
   bool HandleIMEMessage(UINT message,
                         WPARAM w_param,
@@ -130,7 +157,17 @@ class TestHWNDMessageHandlerDelegate : public HWNDMessageHandlerDelegate {
   }
   void PostHandleMSG(UINT message, WPARAM w_param, LPARAM l_param) override {}
   bool HandleScrollEvent(ui::ScrollEvent* event) override { return false; }
-  bool HandleGestureEvent(ui::GestureEvent* event) override { return false; }
+  bool HandleGestureEvent(ui::GestureEvent* event) override {
+    ++gesture_event_count_;
+    if (gesture_event_callback_) {
+      std::move(gesture_event_callback_).Run();
+    }
+    return false;
+  }
+  int gesture_event_count() const { return gesture_event_count_; }
+  void set_gesture_event_callback(base::OnceClosure callback) {
+    gesture_event_callback_ = std::move(callback);
+  }
   void HandleWindowScaleFactorChanged(float window_scale_factor) override {}
   void HandleHeadlessWindowBoundsChanged(const gfx::Rect& bounds) override {}
   HBRUSH GetBackgroundPaintBrush() override { return nullptr; }
@@ -139,7 +176,68 @@ class TestHWNDMessageHandlerDelegate : public HWNDMessageHandlerDelegate {
   std::unique_ptr<ui::MockInputMethod> mock_input_method_;
   int accelerator_handled_count_ = 0;
   ui::Accelerator last_accelerator_;
+  int key_event_count_ = 0;
+  int gesture_event_count_ = 0;
+  base::OnceClosure mouse_event_callback_;
+  base::OnceClosure gesture_event_callback_;
 };
+
+class ActivatableHWNDMessageHandlerDelegate
+    : public TestHWNDMessageHandlerDelegate {
+ public:
+  // TestHWNDMessageHandlerDelegate:
+  bool CanActivate() const override { return true; }
+};
+
+// Brings `hwnd` to the foreground. ::SetForegroundWindow() fails if a window of
+// another process is in the foreground and this process didn't receive the last
+// input event, so use ForegroundHelper to send input and close stray foreign
+// foreground windows (see ui_test_utils::ShowAndFocusNativeWindow()).
+void EnsureForeground(HWND hwnd) {
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    if (::GetForegroundWindow() == hwnd) {
+      return;
+    }
+    ui::ForegroundHelper::SetForeground(hwnd);
+
+    HWND foreground = ::GetForegroundWindow();
+    if (foreground == hwnd) {
+      return;
+    }
+
+    // Describe the window that holds the foreground, to help diagnose failures.
+    wchar_t title[256] = {};
+    ::GetWindowText(foreground, title, std::size(title));
+    DWORD process_id = 0;
+    ::GetWindowThreadProcessId(foreground, &process_id);
+    LOG(ERROR)
+        << "Failed to bring window to the foreground. Foreground window: "
+        << foreground << ", class: " << gfx::GetClassName(foreground)
+        << ", title: " << title << ", process id: " << process_id;
+
+    if (!foreground || process_id == base::GetCurrentProcId()) {
+      break;
+    }
+
+    // Attempt to close a stray window left behind by a previous test/task.
+    ::PostMessage(foreground, WM_CLOSE, 0, 0);
+    if (!base::test::RunUntil(
+            [&]() { return ::GetForegroundWindow() != foreground; })) {
+      break;
+    }
+  }
+}
+
+// Returns true if `above` is higher than `below` in the z-order.
+bool IsWindowAbove(HWND above, HWND below) {
+  for (HWND w = ::GetWindow(below, GW_HWNDPREV); w;
+       w = ::GetWindow(w, GW_HWNDPREV)) {
+    if (w == above) {
+      return true;
+    }
+  }
+  return false;
+}
 
 }  // namespace
 
@@ -354,6 +452,283 @@ TEST_F(HWNDMessageHandlerTest, DeferredDestruction) {
   EXPECT_TRUE(base::test::RunUntil([&]() { return !weak_handler; }));
 
   EXPECT_FALSE(weak_handler);
+}
+
+TEST_F(HWNDMessageHandlerTest, DeferredDestructionInWindowEventTarget) {
+  TestHWNDMessageHandlerDelegate delegate;
+  HWNDMessageHandler* handler =
+      HWNDMessageHandler::Create(&delegate, "test").release();
+  ASSERT_TRUE(handler);
+  handler->Init(nullptr, gfx::Rect(0, 0, 100, 100));
+  ASSERT_TRUE(handler->hwnd());
+
+  base::WeakPtr<HWNDMessageHandler> weak_handler = handler->GetWeakPtr();
+  ASSERT_TRUE(weak_handler);
+
+  ui::WindowEventTarget* target = handler;
+  bool callback_ran = false;
+  bool nested_task_ran = false;
+  delegate.set_mouse_event_callback(base::BindLambdaForTesting([&]() {
+    callback_ran = true;
+    handler->DestroyHandler();
+    base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindLambdaForTesting([&]() {
+          nested_task_ran = true;
+          ASSERT_TRUE(weak_handler);
+          EXPECT_TRUE(weak_handler->delete_pending_);
+
+          bool key_handled = true;
+          target->HandleKeyboardMessage(WM_KEYDOWN, VK_RETURN, 0, &key_handled);
+          EXPECT_FALSE(key_handled);
+          EXPECT_EQ(0, delegate.key_event_count());
+        }));
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+    EXPECT_TRUE(weak_handler);
+    EXPECT_TRUE(weak_handler->delete_pending_);
+  }));
+
+  bool handled = false;
+  target->HandleMouseMessage(WM_MOUSEMOVE, 0, 0, &handled);
+  EXPECT_TRUE(callback_ran);
+  EXPECT_TRUE(nested_task_ran);
+  EXPECT_TRUE(handled);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !weak_handler; }));
+
+  EXPECT_FALSE(weak_handler);
+}
+
+TEST_F(HWNDMessageHandlerTest, DeferredDestructionInWindowEventTargetGesture) {
+  TestHWNDMessageHandlerDelegate delegate;
+  HWNDMessageHandler* handler =
+      HWNDMessageHandler::Create(&delegate, "test").release();
+  ASSERT_TRUE(handler);
+  handler->Init(nullptr, gfx::Rect(0, 0, 100, 100));
+  ASSERT_TRUE(handler->hwnd());
+
+  base::WeakPtr<HWNDMessageHandler> weak_handler = handler->GetWeakPtr();
+  ASSERT_TRUE(weak_handler);
+
+  ui::WindowEventTarget* target = handler;
+  bool callback_ran = false;
+  bool nested_task_ran = false;
+  delegate.set_gesture_event_callback(base::BindLambdaForTesting([&]() {
+    callback_ran = true;
+    handler->DestroyHandler();
+    base::RunLoop run_loop(base::RunLoop::Type::kNestableTasksAllowed);
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindLambdaForTesting([&]() {
+          nested_task_ran = true;
+          ASSERT_TRUE(weak_handler);
+          EXPECT_TRUE(weak_handler->delete_pending_);
+
+          target->ApplyPinchZoomScale(2.0f);
+          EXPECT_EQ(1, delegate.gesture_event_count());
+        }));
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+    EXPECT_TRUE(weak_handler);
+    EXPECT_TRUE(weak_handler->delete_pending_);
+  }));
+
+  target->ApplyPinchZoomScale(1.5f);
+  EXPECT_TRUE(callback_ran);
+  EXPECT_TRUE(nested_task_ran);
+  EXPECT_EQ(1, delegate.gesture_event_count());
+
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !weak_handler; }));
+
+  EXPECT_FALSE(weak_handler);
+}
+
+class HWNDMessageHandlerSkipRedundantWindowActivationTest
+    : public HWNDMessageHandlerTest,
+      public testing::WithParamInterface<bool> {
+ protected:
+  HWNDMessageHandlerSkipRedundantWindowActivationTest() {
+    feature_list_.InitWithFeatureState(features::kSkipRedundantWindowActivation,
+                                       skip_redundant_window_activation());
+  }
+
+  static bool skip_redundant_window_activation() { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(,
+                         HWNDMessageHandlerSkipRedundantWindowActivationTest,
+                         testing::Bool(),
+                         [](const auto& info) {
+                           return info.param ? "Enabled" : "Disabled";
+                         });
+
+// Verifies that Activate() on an active owned window raises its owner, when
+// another window is between them in the z-order.
+TEST_P(HWNDMessageHandlerSkipRedundantWindowActivationTest,
+       ActivateOwnedWindowRaisesOwner) {
+  ActivatableHWNDMessageHandlerDelegate owner_delegate;
+  std::unique_ptr<HWNDMessageHandler> owner(
+      HWNDMessageHandler::Create(&owner_delegate, "owner"));
+  owner->Init(nullptr, gfx::Rect(0, 0, 100, 100));
+  owner->Show(ui::mojom::WindowShowState::kNormal, gfx::Rect());
+
+  ActivatableHWNDMessageHandlerDelegate owned_delegate;
+  std::unique_ptr<HWNDMessageHandler> owned(
+      HWNDMessageHandler::Create(&owned_delegate, "owned"));
+  owned->set_window_style(WS_POPUP);
+  owned->Init(owner->hwnd(), gfx::Rect(0, 0, 50, 50));
+  owned->Show(ui::mojom::WindowShowState::kNormal, gfx::Rect());
+  EnsureForeground(owned->hwnd());
+  ASSERT_TRUE(owned->IsActive());
+  ASSERT_EQ(::GetForegroundWindow(), owned->hwnd());
+
+  // Insert an unrelated window between the owned window and its owner.
+  ActivatableHWNDMessageHandlerDelegate other_delegate;
+  std::unique_ptr<HWNDMessageHandler> other(
+      HWNDMessageHandler::Create(&other_delegate, "other"));
+  other->Init(nullptr, gfx::Rect(0, 0, 100, 100));
+  ::ShowWindow(other->hwnd(), SW_SHOWNOACTIVATE);
+  ::SetWindowPos(other->hwnd(), owned->hwnd(), 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  ASSERT_TRUE(owned->IsActive());
+  ASSERT_EQ(::GetForegroundWindow(), owned->hwnd());
+  ASSERT_TRUE(IsWindowAbove(owned->hwnd(), other->hwnd()));
+  ASSERT_TRUE(IsWindowAbove(other->hwnd(), owner->hwnd()));
+
+  // Activate the owned window. Expect it to stay active and its owner to be
+  // raised above the other window, while staying below the owned window.
+  owned->Activate();
+  EXPECT_TRUE(owned->IsActive());
+  EXPECT_TRUE(IsWindowAbove(owned->hwnd(), owner->hwnd()));
+  EXPECT_TRUE(IsWindowAbove(owner->hwnd(), other->hwnd()));
+
+  other->CloseNow();
+  owned->CloseNow();
+  owner->CloseNow();
+}
+
+// Verifies that Activate() skips SetWindowPos() when the unminimized, unowned
+// window is already the active foreground window at the top of its z-order
+// band, and still calls SetWindowPos() otherwise.
+TEST_P(HWNDMessageHandlerSkipRedundantWindowActivationTest,
+       SkipRedundantWindowActivation) {
+  class WindowPosChangingCountingDelegate
+      : public ActivatableHWNDMessageHandlerDelegate {
+   public:
+    // ActivatableHWNDMessageHandlerDelegate:
+    bool PreHandleMSG(UINT message,
+                      WPARAM w_param,
+                      LPARAM l_param,
+                      LRESULT* result) override {
+      if (message == WM_WINDOWPOSCHANGING) {
+        ++window_pos_changing_count_;
+      }
+      return false;
+    }
+
+    int window_pos_changing_count() const { return window_pos_changing_count_; }
+    void reset_window_pos_changing_count() { window_pos_changing_count_ = 0; }
+
+   private:
+    int window_pos_changing_count_ = 0;
+  };
+
+  // Create and show `handler` as the active foreground window.
+  WindowPosChangingCountingDelegate delegate;
+  std::unique_ptr<HWNDMessageHandler> handler(
+      HWNDMessageHandler::Create(&delegate, "test"));
+  ASSERT_TRUE(handler);
+  handler->Init(nullptr, gfx::Rect(0, 0, 100, 100));
+  ASSERT_TRUE(handler->hwnd());
+  handler->Show(ui::mojom::WindowShowState::kNormal, gfx::Rect());
+  EnsureForeground(handler->hwnd());
+  ASSERT_FALSE(handler->IsMinimized());
+  ASSERT_TRUE(handler->IsActive());
+  ASSERT_EQ(::GetForegroundWindow(), handler->hwnd());
+
+  // Activate() on an already active, unminimized foreground window calls
+  // SetWindowPos(), which sends WM_WINDOWPOSCHANGING, unless the feature is
+  // enabled.
+  delegate.reset_window_pos_changing_count();
+  handler->Activate();
+  EXPECT_EQ(delegate.window_pos_changing_count(),
+            skip_redundant_window_activation() ? 0 : 1);
+
+  // Create and activate `other_handler` in the foreground.
+  ActivatableHWNDMessageHandlerDelegate other_delegate;
+  std::unique_ptr<HWNDMessageHandler> other_handler(
+      HWNDMessageHandler::Create(&other_delegate, "other"));
+  ASSERT_TRUE(other_handler);
+  other_handler->Init(nullptr, gfx::Rect(0, 0, 100, 100));
+  other_handler->Show(ui::mojom::WindowShowState::kNormal, gfx::Rect());
+  EnsureForeground(other_handler->hwnd());
+  ASSERT_FALSE(handler->IsActive());
+  ASSERT_EQ(::GetForegroundWindow(), other_handler->hwnd());
+
+  // When another window is active in the foreground, Activate() must call
+  // SetWindowPos() and bring `handler` to the foreground.
+  delegate.reset_window_pos_changing_count();
+  handler->Activate();
+  EXPECT_GT(delegate.window_pos_changing_count(), 0);
+  EXPECT_TRUE(handler->IsActive());
+  EXPECT_EQ(::GetForegroundWindow(), handler->hwnd());
+  other_handler->CloseNow();
+
+  // Raise `inactive_handler` above `handler` without taking activation.
+  ActivatableHWNDMessageHandlerDelegate inactive_delegate;
+  std::unique_ptr<HWNDMessageHandler> inactive_handler(
+      HWNDMessageHandler::Create(&inactive_delegate, "inactive"));
+  ASSERT_TRUE(inactive_handler);
+  inactive_handler->Init(nullptr, gfx::Rect(0, 0, 100, 100));
+  ::ShowWindow(inactive_handler->hwnd(), SW_SHOWNOACTIVATE);
+  ::SetWindowPos(inactive_handler->hwnd(), HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  ASSERT_TRUE(handler->IsActive());
+  ASSERT_EQ(::GetForegroundWindow(), handler->hwnd());
+  ASSERT_TRUE(IsWindowAbove(inactive_handler->hwnd(), handler->hwnd()));
+
+  // When another visible window is above `handler`, Activate() must call
+  // SetWindowPos() to raise `handler` back on top.
+  delegate.reset_window_pos_changing_count();
+  handler->Activate();
+  EXPECT_GT(delegate.window_pos_changing_count(), 0);
+  EXPECT_TRUE(IsWindowAbove(handler->hwnd(), inactive_handler->hwnd()));
+  inactive_handler->CloseNow();
+
+  // Show a popup owned by `handler` above it without taking activation.
+  TestHWNDMessageHandlerDelegate owned_delegate;
+  std::unique_ptr<HWNDMessageHandler> owned_handler(
+      HWNDMessageHandler::Create(&owned_delegate, "owned"));
+  ASSERT_TRUE(owned_handler);
+  owned_handler->set_window_style(WS_POPUP);
+  owned_handler->Init(handler->hwnd(), gfx::Rect(0, 0, 50, 50));
+  ::ShowWindow(owned_handler->hwnd(), SW_SHOWNOACTIVATE);
+  ASSERT_TRUE(handler->IsActive());
+  ASSERT_TRUE(IsWindowAbove(owned_handler->hwnd(), handler->hwnd()));
+
+  // Visible windows owned by `handler` stay above it, so they don't prevent
+  // skipping SetWindowPos().
+  delegate.reset_window_pos_changing_count();
+  handler->Activate();
+  EXPECT_EQ(delegate.window_pos_changing_count(),
+            skip_redundant_window_activation() ? 0 : 1);
+  owned_handler->CloseNow();
+
+  // When minimized, Activate() must restore and activate `handler`.
+  handler->Minimize();
+  ASSERT_TRUE(handler->IsMinimized());
+  delegate.reset_window_pos_changing_count();
+  handler->Activate();
+  EXPECT_GT(delegate.window_pos_changing_count(), 0);
+  EXPECT_FALSE(handler->IsMinimized());
+  EXPECT_TRUE(handler->IsActive());
+
+  handler->CloseNow();
 }
 
 }  // namespace views

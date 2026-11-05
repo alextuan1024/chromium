@@ -20,8 +20,12 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/language_tag.h"
+#include "base/location.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "build/buildflag.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_manager/addresses/account_name_email_store.h"
@@ -100,17 +104,16 @@ void OrderProfiles(std::vector<const AutofillProfile*>& profiles,
 AddressDataManager::AddressDataManager(
     scoped_refptr<AutofillWebDataService> webdata_service,
     PrefService* pref_service,
-    PrefService* local_state,
     syncer::SyncService* sync_service,
     signin::IdentityManager* identity_manager,
     strike_database::StrikeDatabaseBase* strike_database,
     GeoIpCountryCode variation_country_code,
-    std::string app_locale)
+    const base::i18n::LanguageTag& app_locale)
     : variation_country_code_(std::move(variation_country_code)),
       webdata_service_(webdata_service),
       identity_manager_(identity_manager),
       sync_service_(sync_service),
-      app_locale_(std::move(app_locale)) {
+      app_locale_(app_locale) {
   if (webdata_service_) {
     // The `webdata_service_` is null when the TestPDM is used.
     webdata_service_observer_.Observe(webdata_service_.get());
@@ -288,7 +291,7 @@ void AddressDataManager::AddProfile(const AutofillProfile& profile) {
   if (!webdata_service_ || !IsAutofillProfileEnabled()) {
     return;
   }
-  if (profile.IsEmpty(app_locale_)) {
+  if (profile.IsEmpty(app_locale_.tag_string())) {
     // TODO(crbug.com/40100455): This call is only used to notify tests to stop
     // waiting. Since no profile is added, this case shouldn't trigger
     // `OnAddressDataChanged()`.
@@ -383,7 +386,7 @@ void AddressDataManager::RecordUseOf(const AutofillProfile& profile) {
 AddressCountryCode AddressDataManager::GetDefaultCountryCodeForNewAddress()
     const {
   return AutofillCountry::GetDefaultCountryCodeForNewAddress(
-      variation_country_code_, app_locale_);
+      variation_country_code_, app_locale_.tag_string());
 }
 
 bool AddressDataManager::IsProfileMigrationBlocked(
@@ -788,6 +791,14 @@ void AddressDataManager::LogStoredDataMetrics() const {
   autofill_metrics::LogStoredProfileMetrics(profile_pointers);
   autofill_metrics::LogStoredProfileTokenQualityMetrics(profile_pointers);
   autofill_metrics::LogStoredProfileCountWithAlternativeName(profile_pointers);
+  if (!profiles_.empty() &&
+      base::FeatureList::IsEnabled(
+          features::kAutofillLogStoredProfileScriptMetrics)) {
+    base::ThreadPool::PostTask(
+        FROM_HERE, {base::TaskPriority::BEST_EFFORT},
+        base::BindOnce(&autofill_metrics::LogStoredProfileScriptTypeMetrics,
+                       profiles_));
+  }
 }
 
 void AddressDataManager::RemoveProfileImpl(

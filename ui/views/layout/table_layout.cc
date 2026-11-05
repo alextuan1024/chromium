@@ -113,8 +113,8 @@ void DistributeDelta(int delta, std::vector<T>& elements) {
 // `start` + `length`.
 template <class T>
 int TotalSize(size_t start, size_t length, const std::vector<T>& elements) {
-  DCHECK_GT(length, 0u);
-  DCHECK_LE(start + length, elements.size());
+  CHECK_GT(length, 0u, base::NotFatalUntil::M163);
+  CHECK_LE(start + length, elements.size(), base::NotFatalUntil::M163);
   const auto begin = elements.cbegin() + static_cast<ptrdiff_t>(start);
   return std::accumulate(
       begin, begin + static_cast<ptrdiff_t>(length), 0,
@@ -215,7 +215,7 @@ class TableLayout::Column : public LayoutElement {
   }
 
   void set_linked_columns(
-      const std::vector<raw_ptr<Column, VectorExperimental>>& linked_columns) {
+      const std::vector<raw_ptr<Column, DanglingUntriaged>>& linked_columns) {
     DCHECK(linked_columns_.empty()) << "Cannot link a column twice";
     linked_columns_ = linked_columns;
   }
@@ -233,7 +233,7 @@ class TableLayout::Column : public LayoutElement {
   int fixed_width_;
   int min_width_;
   bool is_padding_;
-  std::vector<raw_ptr<Column, VectorExperimental>> linked_columns_;
+  std::vector<raw_ptr<Column, DanglingUntriaged>> linked_columns_;
 };
 
 class TableLayout::Row : public LayoutElement {
@@ -288,9 +288,9 @@ struct TableLayout::ViewState {
         row_span(row_span),
         h_align(h_align),
         v_align(v_align) {
-    DCHECK(view);
-    DCHECK_GT(col_span, 0u);
-    DCHECK_GT(row_span, 0u);
+    CHECK(view, base::NotFatalUntil::M163);
+    CHECK_GT(col_span, 0u, base::NotFatalUntil::M163);
+    CHECK_GT(row_span, 0u, base::NotFatalUntil::M163);
   }
 
   raw_ptr<View, DanglingUntriaged> view = nullptr;
@@ -378,7 +378,7 @@ TableLayout& TableLayout::LinkColumnSizes(std::vector<size_t> columns) {
     DCHECK_LT(columns.back(), columns_.size())
         << "Cannot link an unspecified column";
 
-    std::vector<raw_ptr<Column, VectorExperimental>> linked_columns;
+    std::vector<raw_ptr<Column, DanglingUntriaged>> linked_columns;
     std::ranges::transform(columns, std::back_inserter(linked_columns),
                            [&](size_t index) { return &columns_[index]; });
 
@@ -417,7 +417,7 @@ ProposedLayout TableLayout::CalculateProposedLayout(
   // Size each view.
   for (const auto& view_state : view_states_by_row_span_) {
     View* view = view_state->view;
-    DCHECK(view);
+    CHECK(view, base::NotFatalUntil::M163);
     const gfx::Insets& insets = host_view()->GetInsets();
     int x = columns_[view_state->start_col].location() + insets.left();
     int width =
@@ -437,7 +437,7 @@ ProposedLayout TableLayout::CalculateProposedLayout(
 
     auto it =
         std::ranges::find(layout.child_layouts, view, &ChildLayout::child_view);
-    DCHECK(it != layout.child_layouts.cend());
+    CHECK(it != layout.child_layouts.cend(), base::NotFatalUntil::M163);
     it->bounds = gfx::Rect(x, y, width, height);
     it->available_size = SizeBounds(width, height);
   }
@@ -727,7 +727,7 @@ int TableLayout::LayoutWidth() const {
 
 void TableLayout::CalculateSize(
     SizeCalculationType type,
-    const std::vector<raw_ptr<ViewState, VectorExperimental>>& view_states)
+    const std::vector<raw_ptr<ViewState, DanglingUntriaged>>& view_states)
     const {
   // Reset the size and remaining sizes.
   for (views::TableLayout::ViewState* view_state : view_states) {
@@ -809,7 +809,7 @@ void TableLayout::ResizeUsingMin(int total_delta) const {
     int delta = 0;
   };
 
-  DCHECK_LE(total_delta, 0);
+  CHECK_LE(total_delta, 0, base::NotFatalUntil::M163);
 
   // |total_delta| is negative, but easier to do operations when positive.
   total_delta = std::abs(total_delta);
@@ -824,7 +824,7 @@ void TableLayout::ResizeUsingMin(int total_delta) const {
   // modifications to them aren't reflected in the members.
   const size_t num_states = view_states_by_col_span_.size();
   std::vector<ViewState> view_states(num_states);
-  std::vector<raw_ptr<ViewState, VectorExperimental>> view_state_ptrs(
+  std::vector<raw_ptr<ViewState, DanglingUntriaged>> view_state_ptrs(
       num_states);
   for (size_t i = 0; i < num_states; ++i) {
     view_states[i] = *view_states_by_col_span_[i];
@@ -841,7 +841,7 @@ void TableLayout::ResizeUsingMin(int total_delta) const {
     const int available =
         std::max(0, preferred_column_sizes[i] -
                         std::max(column.min_width(), column.size()));
-    DCHECK_GE(available, 0);
+    CHECK_GE(available, 0, base::NotFatalUntil::M163);
     // Set the size back to preferred. We'll reset the size if necessary later.
     column.set_size(preferred_column_sizes[i]);
     if (!column.resizable() || available == 0) {
@@ -881,7 +881,7 @@ void TableLayout::ResizeUsingMin(int total_delta) const {
         resize_data.erase(resize_data.begin() + static_cast<ptrdiff_t>(i - 1));
       }
     }
-    DCHECK_LT(next_iteration_delta, total_delta);
+    CHECK_LT(next_iteration_delta, total_delta, base::NotFatalUntil::M163);
     total_delta = next_iteration_delta;
     total_resize = next_iteration_total_resize;
   }

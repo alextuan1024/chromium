@@ -36,6 +36,12 @@ import Combine
   /// The optional user avatar image for signed-in state, the image needs to be 40x40.
   @Published public var image: UIImage? = nil
 
+  /// Whether the AI tier ring should be displayed around the avatar image.
+  @Published public var showsAITierRing = false
+
+  /// An optional custom accessibility label for the action row.
+  @Published public var customAccessibilityLabel: String? = nil
+
   /// The uniquely-identifying `overflow_menu::ActionType` of the action,
   /// stored as an int because Swift does not yet support C++ enum variables.
   public var actionType = 0

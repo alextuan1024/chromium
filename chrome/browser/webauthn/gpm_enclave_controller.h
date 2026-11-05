@@ -28,6 +28,10 @@
 #include "content/public/browser/global_routing_id.h"
 #include "google_apis/gaia/gaia_id.h"
 
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/webauthn/icloud_recovery.h"
+#endif  // BUILDFLAG(IS_MAC)
+
 namespace base {
 class TickClock;
 class SequencedTaskRunner;
@@ -39,7 +43,6 @@ class WebContents;
 }  // namespace content
 
 namespace device {
-class FidoDiscoveryFactory;
 enum class FidoRequestType : uint8_t;
 enum class UserVerificationRequirement;
 namespace enclave {
@@ -157,13 +160,17 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
     kReady,
   };
 
+  using EnclaveRequestCallback = base::RepeatingCallback<void(
+      std::unique_ptr<device::enclave::CredentialRequest>)>;
+
   explicit GPMEnclaveController(
       content::RenderFrameHost* render_frame_host,
       AuthenticatorRequestDialogModel* model,
       const std::string& rp_id,
       device::FidoRequestType request_type,
       device::UserVerificationRequirement user_verification_requirement,
-      bool cmtg_key_requested);
+      bool cmtg_key_requested,
+      EnclaveRequestCallback enclave_request_callback);
   GPMEnclaveController(const GPMEnclaveController&) = delete;
   GPMEnclaveController& operator=(const GPMEnclaveController&) = delete;
   GPMEnclaveController(GPMEnclaveController&&) = delete;
@@ -185,14 +192,13 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
   // on the model when ready.
   bool ready_for_ui() const;
 
-  // Configures an WebAuthn enclave authenticator discovery and provides it with
-  // synced passkeys.
-  void ConfigureDiscoveries(device::FidoDiscoveryFactory* discovery_factory);
-
   // Fetch the set of GPM passkeys for this request.
   const std::vector<sync_pb::WebauthnCredentialSpecifics>& creds() const;
 
   AccountState account_state_for_testing() const;
+
+  // Returns true if a transaction is blocked waiting for CMTG device keys.
+  bool is_waiting_for_cmtg_keys_for_testing() const;
 
   // Returns the ready state of the account.
   AccountReadyState account_ready_state() const;
@@ -272,11 +278,9 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
   void EnrollICloudRecoveryKey(
       std::unique_ptr<trusted_vault::ICloudRecoveryKey> key);
 
-  // Called when Chrome has retrieved the iCloud recovery keys present in the
-  // current device.
-  void OnICloudKeysRetrievedForRecovery(
-      std::vector<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
-          local_icloud_keys);
+  // Called when Chrome has attempted recovery using the iCloud recovery keys
+  // present in the current device.
+  void OnICloudKeychainRecoveryComplete(webauthn::ICloudRecoveryResult result);
 #endif  // BUILDFLAG(IS_MAC)
 
   // Called when the enclave enrollment is complete.
@@ -384,6 +388,10 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
   // The list of iCloud recovery key members known to the security domain
   // service.
   std::vector<trusted_vault::VaultMember> security_domain_icloud_recovery_keys_;
+
+#if BUILDFLAG(IS_MAC)
+  std::unique_ptr<webauthn::ICloudRecovery> icloud_recovery_;
+#endif  // BUILDFLAG(IS_MAC)
 
   // |recovered_with_icloud_keychain_| is true if this controller performed a
   // successful recovery from iCloud keychain. This is reset on OnKeysStored().

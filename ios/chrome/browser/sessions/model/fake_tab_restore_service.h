@@ -10,14 +10,15 @@
 #include "base/functional/callback_forward.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/split_tabs/split_tab_id.h"
-#include "ios/chrome/browser/shared/model/profile/profile_keyed_service_factory_ios.h"
+#include "ios/chrome/browser/shared/model/profile/test/testing_factories.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 // A Fake restore service that just store and returns tabs.
 class FakeTabRestoreService : public sessions::TabRestoreService {
  public:
   // Type of the factory returned by GetTestingFactory(). Can be registered
   // with TestProfileIOS::Builder::AddTestingFactory().
-  using TestingFactory = ProfileKeyedServiceFactoryIOS::TestingFactory;
+  using TestingFactory = KeyedServiceTestingFactoryIOS;
 
   explicit FakeTabRestoreService();
   ~FakeTabRestoreService() override;
@@ -30,14 +31,21 @@ class FakeTabRestoreService : public sessions::TabRestoreService {
   void RemoveObserver(sessions::TabRestoreServiceObserver* observer) override;
   std::optional<SessionID> CreateHistoricalTab(sessions::LiveTab* live_tab,
                                                int index) override;
-  void BrowserClosing(sessions::LiveTabContext* context) override;
+  std::optional<SessionID> BrowserClosing(
+      sessions::LiveTabContext* context) override;
   void BrowserClosed(sessions::LiveTabContext* context) override;
-  void CreateHistoricalGroup(sessions::LiveTabContext* context,
-                             const tab_groups::TabGroupId& group) override;
+  std::optional<SessionID> CreateHistoricalGroup(
+      sessions::LiveTabContext* context,
+      const tab_groups::TabGroupId& group) override;
   void CreateHistoricalSplit(sessions::LiveTabContext* context,
                              const split_tabs::SplitTabId& id) override;
   void GroupClosed(const tab_groups::TabGroupId& group) override;
   void GroupCloseStopped(const tab_groups::TabGroupId& group) override;
+  void PromoteEphemeralTabGroup(
+      const tab_groups::TabGroupId& group_id,
+      const tab_groups::TabGroupVisualData& visual_data) override;
+  void UpdateSavedTabGroupId(const tab_groups::TabGroupId& group_id,
+                             const base::Uuid& saved_group_id) override;
   void SplitClosed(const split_tabs::SplitTabId& id) override;
   void SplitCloseStopped(const split_tabs::SplitTabId& id) override;
   void ClearEntries() override;
@@ -50,7 +58,7 @@ class FakeTabRestoreService : public sessions::TabRestoreService {
   std::optional<std::vector<sessions::LiveTab*>> RestoreEntryById(
       sessions::LiveTabContext* context,
       SessionID session_id,
-      WindowOpenDisposition disposition) override;
+      ui::mojom::WindowOpenDisposition disposition) override;
   void LoadTabsFromLastSession() override;
   bool IsLoaded() const override;
   void DeleteLastSession() override;

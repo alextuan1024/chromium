@@ -20,6 +20,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.extensions.ExtensionActionButtonProperties.ListItemType;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
 import org.chromium.chrome.browser.ui.extensions.ExtensionsToolbarBridge;
@@ -62,11 +63,13 @@ public class ExtensionActionListCoordinator implements Destroyable {
             Profile profile,
             NullableObservableSupplier<Tab> currentTabSupplier,
             ExtensionsToolbarBridge extensionsToolbarBridge,
+            ThemeColorProvider themeColorProvider,
             ViewGroup rootView,
             @Nullable ContextMenuPopulatorFactory contextMenuPopulatorFactory,
             @Nullable SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
             TabModelSelector tabModelSelector,
-            ModalDialogManager modalDialogManager) {
+            ModalDialogManager modalDialogManager,
+            Runnable clearOmniboxFocus) {
         mContext = context;
         mContainer = container;
 
@@ -81,10 +84,12 @@ public class ExtensionActionListCoordinator implements Destroyable {
                         currentTabSupplier,
                         mRecyclerViewDelegate,
                         extensionsToolbarBridge,
+                        themeColorProvider,
                         contextMenuPopulatorFactory,
                         selectionDropdownMenuDelegate,
                         tabModelSelector,
-                        modalDialogManager);
+                        modalDialogManager,
+                        clearOmniboxFocus);
 
         ExtensionsToolbarDragTouchHandler dragTouchHandler =
                 new ExtensionsToolbarDragTouchHandler(context, mModels);

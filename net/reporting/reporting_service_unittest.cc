@@ -130,7 +130,7 @@ TEST_P(ReportingServiceTest, QueueReport) {
                          ReportingTargetType::kDeveloper);
   FinishLoading(true /* load_success */);
 
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   ASSERT_EQ(1u, reports.size());
   EXPECT_EQ(kUrl_, reports[0]->url);
@@ -147,7 +147,7 @@ TEST_P(ReportingServiceTest, QueueEnterpriseReport) {
                          ReportingTargetType::kEnterprise);
   FinishLoading(true /* load_success */);
 
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   ASSERT_EQ(1u, reports.size());
   EXPECT_EQ(kUrl_, reports[0]->url);
@@ -166,7 +166,7 @@ TEST_P(ReportingServiceTest, QueueReportSanitizeUrl) {
                          ReportingTargetType::kDeveloper);
   FinishLoading(true /* load_success */);
 
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   ASSERT_EQ(1u, reports.size());
   EXPECT_EQ(kUrl_, reports[0]->url);
@@ -184,7 +184,7 @@ TEST_P(ReportingServiceTest, DontQueueReportInvalidUrl) {
                          kType_, base::DictValue(), 0,
                          ReportingTargetType::kDeveloper);
 
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   ASSERT_EQ(0u, reports.size());
 }
@@ -201,7 +201,7 @@ TEST_P(ReportingServiceTest, QueueReportNetworkIsolationKeyDisabled) {
                          ReportingTargetType::kDeveloper);
   FinishLoading(true /* load_success */);
 
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   ASSERT_EQ(1u, reports.size());
 
@@ -292,7 +292,7 @@ TEST_P(ReportingServiceTest, SendReportsAndRemoveSource) {
 
   FinishLoading(true /* load_success */);
 
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   ASSERT_EQ(1u, reports.size());
   EXPECT_EQ(0u, context()->cache()->GetReportCountWithStatusForTesting(
@@ -326,7 +326,7 @@ TEST_P(ReportingServiceTest, SendReportsForSource) {
                          ReportingTargetType::kDeveloper);
   FinishLoading(true /* load_success */);
 
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   ASSERT_EQ(1u, reports.size());
   EXPECT_EQ(0u, context()->cache()->GetReportCountWithStatusForTesting(
@@ -368,6 +368,22 @@ TEST_P(ReportingServiceTest, SendReportsForSource) {
                     ReportingReport::Status::PENDING));
   context()->cache()->GetReports(&reports);
   EXPECT_EQ(3u, reports.size());
+
+  // Flushing `kReportingSource_` while the 1st report for `kGroup_` is still
+  // uploading defers the 3rd report until the 1st upload finishes, then
+  // immediately starts uploading the 3rd report without waiting for the timer.
+  service()->SendReportsForSource(*kReportingSource_);
+  EXPECT_EQ(1u, context()->cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(2u, context()->cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
+
+  context()->test_uploader()->pending_uploads()[0]->Complete(
+      ReportingUploader::Outcome::SUCCESS);
+  EXPECT_EQ(0u, context()->cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(2u, context()->cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
 }
 
 TEST_P(ReportingServiceTest,
@@ -393,7 +409,7 @@ TEST_P(ReportingServiceTest,
   service()->SendReportsForSource(*kReportingSource_);
 
   // Verify neither operation has been processed yet.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   EXPECT_EQ(0u, reports.size());
   EXPECT_FALSE(
@@ -433,7 +449,7 @@ TEST_P(ReportingServiceTest,
   service()->SendReportsAndRemoveSource(*kReportingSource_);
 
   // Verify neither operation has been processed yet.
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   EXPECT_EQ(0u, reports.size());
   EXPECT_FALSE(
@@ -473,7 +489,7 @@ TEST_P(ReportingServiceTest,
 
   FinishLoading(true /* load_success */);
 
-  std::vector<raw_ptr<const ReportingReport, VectorExperimental>> reports;
+  std::vector<raw_ptr<const ReportingReport, DanglingUntriaged>> reports;
   context()->cache()->GetReports(&reports);
   ASSERT_EQ(1u, reports.size());
   EXPECT_EQ(0u, context()->cache()->GetReportCountWithStatusForTesting(
@@ -501,6 +517,16 @@ TEST_P(ReportingServiceTest,
                     ReportingReport::Status::PENDING));
   ASSERT_TRUE(
       context()->cache()->GetExpiredSources().contains(kReportingSource_));
+
+  // Once the first upload completes, the deferred source flush must immediately
+  // transition the second report to pending without waiting for the delivery
+  // timer.
+  context()->test_uploader()->pending_uploads()[0]->Complete(
+      ReportingUploader::Outcome::SUCCESS);
+  EXPECT_EQ(0u, context()->cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::QUEUED));
+  EXPECT_EQ(1u, context()->cache()->GetReportCountWithStatusForTesting(
+                    ReportingReport::Status::PENDING));
 }
 
 TEST_P(ReportingServiceTest, ProcessReportingEndpointsHeaderPathAbsolute) {

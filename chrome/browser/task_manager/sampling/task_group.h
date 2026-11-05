@@ -24,7 +24,7 @@
 #include "chrome/browser/task_manager/task_manager_observer.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/task_manager/sampling/arc_shared_sampler.h"
+#include "chrome/browser/task_manager/sampling/vm_memory_sampler.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace gpu {
@@ -83,13 +83,13 @@ class TaskGroup {
   bool AreBackgroundCalculationsDone() const;
 
 #if BUILDFLAG(IS_CHROMEOS)
-  void SetArcSampler(ArcSharedSampler* sampler);
+  void SetArcSampler(VmMemorySampler* sampler);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   const base::ProcessHandle& process_handle() const { return process_handle_; }
   const base::ProcessId& process_id() const { return process_id_; }
 
-  const std::vector<raw_ptr<Task, VectorExperimental>>& tasks() const {
+  const std::vector<raw_ptr<Task, DanglingUntriaged>>& tasks() const {
     return tasks_;
   }
   size_t num_tasks() const { return tasks().size(); }
@@ -168,7 +168,7 @@ class TaskGroup {
 
 #if BUILDFLAG(IS_CHROMEOS)
   void OnArcSamplerRefreshDone(
-      std::optional<ArcSharedSampler::MemoryFootprintBytes> results);
+      std::optional<VmMemorySampler::MemoryFootprintBytes> results);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   void OnBackgroundRefreshTypeFinished(int64_t finished_refresh_type);
@@ -187,12 +187,12 @@ class TaskGroup {
   scoped_refptr<SharedSampler> shared_sampler_;
 #if BUILDFLAG(IS_CHROMEOS)
   // Shared sampler that retrieves memory footprint for all ARC processes.
-  raw_ptr<ArcSharedSampler> arc_shared_sampler_ = nullptr;  // Not owned
+  raw_ptr<VmMemorySampler> arc_shared_sampler_ = nullptr;  // Not owned
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   // Lists the Tasks in this TaskGroup.
   // Tasks are not owned by the TaskGroup. They're owned by the TaskProviders.
-  std::vector<raw_ptr<Task, VectorExperimental>> tasks_;
+  std::vector<raw_ptr<Task, DanglingUntriaged>> tasks_;
 
   // Flags will be used to determine when the background calculations has
   // completed for the enabled refresh types for this TaskGroup.

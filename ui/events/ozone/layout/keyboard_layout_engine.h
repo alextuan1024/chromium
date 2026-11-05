@@ -5,6 +5,9 @@
 #ifndef UI_EVENTS_OZONE_LAYOUT_KEYBOARD_LAYOUT_ENGINE_H_
 #define UI_EVENTS_OZONE_LAYOUT_KEYBOARD_LAYOUT_ENGINE_H_
 
+#include <stdint.h>
+
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -45,11 +48,9 @@ class COMPONENT_EXPORT(EVENTS_OZONE_LAYOUT) KeyboardLayoutEngine {
       const std::string& layout_name,
       base::OnceCallback<void(bool success)> callback) = 0;
 
-  // Sets the current layout given a memory location and the buffer size in
-  // bytes, that represent keyboard mapping description; returns true on
-  // success.
-  virtual bool SetCurrentLayoutFromBuffer(const char* keymap_string,
-                                          size_t size) = 0;
+  // Sets the current layout given a buffer that represents a keyboard mapping
+  // description; returns true on success.
+  virtual bool SetCurrentLayoutFromBuffer(std::string_view keymap_string) = 0;
 
   // Returns true if the current layout makes use of the ISO Level 5 Shift key.
   // Drop-in replacement for ImeKeyboard::IsISOLevel5ShiftAvailable().
@@ -79,6 +80,24 @@ class COMPONENT_EXPORT(EVENTS_OZONE_LAYOUT) KeyboardLayoutEngine {
                       int event_flags,
                       DomKey* dom_key,
                       KeyboardCode* key_code) const = 0;
+
+  // Like Lookup(), but for a platform-native keycode (an XKB keycode for
+  // XKB-based engines) instead of a DomCode. This allows looking up keys that
+  // the current layout maps but that have no DomCode.
+  //
+  // Returns false if the engine does not support native keycodes, or if the
+  // key has no meaning in the current layout; in this case it does not set any
+  // of the output parameters.
+  virtual bool LookupNativeKeycode(uint32_t native_keycode,
+                                   int event_flags,
+                                   DomKey* dom_key,
+                                   KeyboardCode* key_code) const;
+
+  // Returns the platform keysym (e.g. xkb_keysym_t) for `dom_code` and
+  // `event_flags`, or std::nullopt when keysym lookup is unsupported or no
+  // keymap is active.
+  virtual std::optional<uint32_t> LookupKeysym(DomCode dom_code,
+                                               int event_flags) const;
 
   // Tests may need to wait for the keyboard layout to be fully initialised.
   // The implementation should run |closure| when it is ready to handle calls to

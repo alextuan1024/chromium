@@ -30,12 +30,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/isolated_web_apps/commands/isolated_web_app_prepare_and_store_update_command.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/iwa_command_scheduler.h"
 #include "chrome/browser/web_applications/isolated_web_apps/key_rotation_util.h"
 #include "chrome/browser/web_applications/isolated_web_apps/update/version_change_validator.h"
 #include "chrome/browser/web_applications/isolated_web_apps/update_manifest/update_manifest.h"
 #include "chrome/browser/web_applications/isolated_web_apps/update_manifest/update_manifest_fetcher.h"
 #include "chrome/browser/web_applications/web_app.h"
-#include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
@@ -153,7 +153,7 @@ std::string IsolatedWebAppUpdateCheckAndPrepareTask::ErrorToString(
 IsolatedWebAppUpdateCheckAndPrepareTask::
     IsolatedWebAppUpdateCheckAndPrepareTask(
         IwaUpdateCheckAndPrepareTaskParams task_params,
-        WebAppCommandScheduler& command_scheduler,
+        IwaCommandScheduler& command_scheduler,
         WebAppRegistrar& registrar,
         scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
         Profile& profile)
@@ -213,9 +213,10 @@ void IsolatedWebAppUpdateCheckAndPrepareTask::Start(
 }
 
 void IsolatedWebAppUpdateCheckAndPrepareTask::OnUpdateManifestFetched(
-    base::expected<UpdateManifest, UpdateManifestFetcher::Error> fetch_result) {
-  ASSIGN_OR_RETURN(UpdateManifest update_manifest, fetch_result,
-                   [&](UpdateManifestFetcher::Error error) {
+    base::expected<UpdateManifestWithAddressSpace, UpdateManifestFetcher::Error>
+        fetch_result) {
+  ASSIGN_OR_RETURN(UpdateManifestWithAddressSpace update_manifest_with_space,
+                   fetch_result, [&](UpdateManifestFetcher::Error error) {
                      switch (error) {
                        case UpdateManifestFetcher::Error::kDownloadFailed:
                          FailWith(Error::kUpdateManifestDownloadFailed);
@@ -228,6 +229,9 @@ void IsolatedWebAppUpdateCheckAndPrepareTask::OnUpdateManifestFetched(
                          break;
                      }
                    });
+  network::mojom::IPAddressSpace update_manifest_address_space =
+      update_manifest_with_space.address_space;
+  const UpdateManifest& update_manifest = update_manifest_with_space.manifest;
 
   std::optional<UpdateManifest::VersionEntry> version_entry;
   if (task_params_.pinned_version().has_value()) {
@@ -333,23 +337,23 @@ void IsolatedWebAppUpdateCheckAndPrepareTask::OnUpdateManifestFetched(
     return;
   }
 
-  bundle_downloader_ = IsolatedWebAppDownloader::Create(
-      url_loader_factory_,
-      profile_->GetDefaultStoragePartition()->GetNetworkContext());
+  bundle_downloader_ = IsolatedWebAppDownloader::Create(url_loader_factory_);
   if (!rotated_key) {
-    CreateTempFile(std::move(*version_entry));
+    CreateTempFile(std::move(*version_entry), update_manifest_address_space);
     return;
   }
   bundle_downloader_->DownloadInitialBytes(
       version_entry->src(), kWebBundleDownloadTrafficAnnotation,
+      update_manifest_address_space,
       base::BindOnce(&IsolatedWebAppUpdateCheckAndPrepareTask::
                          CheckIntegrityBundleForRotatedKey,
                      weak_factory_.GetWeakPtr(), std::move(*version_entry),
-                     std::move(*rotated_key)));
+                     update_manifest_address_space, std::move(*rotated_key)));
 }
 
 void IsolatedWebAppUpdateCheckAndPrepareTask::CheckIntegrityBundleForRotatedKey(
     UpdateManifest::VersionEntry version_entry,
+    network::mojom::IPAddressSpace update_manifest_address_space,
     std::vector<uint8_t> rotated_key,
     std::optional<std::string> initial_bytes) {
   // If it contains at least 2 of "📦", it means that both the beginning of the
@@ -363,18 +367,21 @@ void IsolatedWebAppUpdateCheckAndPrepareTask::CheckIntegrityBundleForRotatedKey(
     FailWith(Error::kUpdateManifestNoApplicableVersion);
     return;
   }
-  CreateTempFile(version_entry);
+  CreateTempFile(std::move(version_entry), update_manifest_address_space);
 }
 
 void IsolatedWebAppUpdateCheckAndPrepareTask::CreateTempFile(
-    UpdateManifest::VersionEntry version_entry) {
+    UpdateManifest::VersionEntry version_entry,
+    network::mojom::IPAddressSpace update_manifest_address_space) {
   ScopedTempWebBundleFile::Create(base::BindOnce(
       &IsolatedWebAppUpdateCheckAndPrepareTask::OnTempFileCreated,
-      weak_factory_.GetWeakPtr(), std::move(version_entry)));
+      weak_factory_.GetWeakPtr(), std::move(version_entry),
+      update_manifest_address_space));
 }
 
 void IsolatedWebAppUpdateCheckAndPrepareTask::OnTempFileCreated(
     UpdateManifest::VersionEntry version_entry,
+    network::mojom::IPAddressSpace update_manifest_address_space,
     ScopedTempWebBundleFile bundle) {
   if (!bundle) {
     FailWith(Error::kDownloadPathCreationFailed);
@@ -387,6 +394,7 @@ void IsolatedWebAppUpdateCheckAndPrepareTask::OnTempFileCreated(
   CHECK(bundle_downloader_);
   bundle_downloader_->DownloadSignedWebBundle(
       version_entry.src(), bundle_.path(), kWebBundleDownloadTrafficAnnotation,
+      update_manifest_address_space,
       base::BindOnce(
           &IsolatedWebAppUpdateCheckAndPrepareTask::OnWebBundleDownloaded,
           weak_factory_.GetWeakPtr(), version_entry.version()));

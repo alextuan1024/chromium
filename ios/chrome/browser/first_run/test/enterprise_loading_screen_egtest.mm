@@ -34,7 +34,6 @@ constexpr char kEnrollmentToken[] = "enrollment_token";
 @implementation EnterpriseLoadingScreenTestCase
 
 - (void)setUp {
-  [[self class] testForStartup];
   [super setUp];
 
   _policyTestServer = std::make_unique<policy::EmbeddedPolicyTestServer>();
@@ -117,8 +116,7 @@ constexpr char kEnrollmentToken[] = "enrollment_token";
 
 // Ensures that the loading screen is dismissed when registration and policy
 // fetch succeed.
-// TODO(crbug.com/40255277): Flaky.
-- (void)FLAKY_testLoadingScreenDismissedByPolicyFetchSuccess {
+- (void)testLoadingScreenDismissedByPolicyFetchSuccess {
   [self configureAppWithEnrollmentTokenValid:YES];
   [self verifyLoadingScreenIsDismissed];
   GREYAssertTrue([PolicyAppInterface isCloudPolicyClientRegistered],
@@ -126,8 +124,7 @@ constexpr char kEnrollmentToken[] = "enrollment_token";
 }
 
 // Ensures that the loading screen is dismissed when registration fails.
-// TODO(crbug.com/40255277): Flaky.
-- (void)FLAKY_testLoadingScreenDismissedByRegisterFail {
+- (void)testLoadingScreenDismissedByRegisterFail {
   [self configureAppWithEnrollmentTokenValid:NO];
   [self verifyLoadingScreenIsDismissed];
   GREYAssertFalse(
@@ -137,8 +134,7 @@ constexpr char kEnrollmentToken[] = "enrollment_token";
 
 // Ensures that the loading screen is dismissed when registration succeeds and
 // policy fetch fails.
-// TODO(crbug.com/40255277): Flaky.
-- (void)FLAKY_testLoadingScreenDismissedByPolicyFetchError {
+- (void)testLoadingScreenDismissedByPolicyFetchError {
   _policyTestServer->ConfigureRequestError(
       policy::dm_protocol::kValueRequestPolicy, net::HTTP_METHOD_NOT_ALLOWED);
 

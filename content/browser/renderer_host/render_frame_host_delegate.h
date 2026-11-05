@@ -51,7 +51,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/base/clipboard/clipboard_metadata.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "ui/gfx/native_ui_types.h"
@@ -110,6 +110,7 @@ struct AXLocationAndScrollUpdates;
 namespace content {
 class BackForwardCacheImpl;
 class FrameTreeNode;
+class InitiatorNavigationState;
 class Page;
 class PrerenderHostRegistry;
 class RenderWidgetHostImpl;
@@ -164,6 +165,7 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
       const GURL& blocked_url,
       const GURL& initiator_url,
       const url::Origin& initiator_origin,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       blink::mojom::NavigationBlockedReason reason) {}
 
   // Called when blink.mojom.LocalFrameHost::DidFinishLoad() is invoked.
@@ -266,6 +268,10 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
 
   // The DOMContentLoaded handler in the frame has completed.
   virtual void DOMContentLoaded(RenderFrameHostImpl* render_frame_host) {}
+
+  // The script tool ready status for this frame has changed.
+  virtual void ScriptToolsReadyStateChanged(
+      RenderFrameHostImpl* render_frame_host) {}
 
   // The onload handler in the frame has completed. Only called for the main
   // frames.
@@ -480,7 +486,7 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
   virtual WebContents* ShowCreatedWindow(
       RenderFrameHostImpl* opener,
       int main_frame_widget_route_id,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture);
 
@@ -538,7 +544,7 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
 
   // Returns the light, dark and forced color maps for the ColorProvider
   // associated with this RenderFrameHost's WebContents.
-  virtual blink::ColorProviderColorMaps GetColorProviderColorMaps() const = 0;
+  virtual blink::ColorProviderColorMaps GetColorProviderColorMaps() = 0;
 
   // Returns the visibility of the delegate.
   virtual Visibility GetVisibility();

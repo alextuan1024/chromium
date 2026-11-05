@@ -12,12 +12,12 @@
 #include "ash/constants/url_constants.h"
 #include "ash/public/cpp/new_window_delegate.h"
 #include "ash/public/cpp/system_notification_builder.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/system/extended_updates/extended_updates_metrics.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ash/extended_updates/extended_updates_controller.h"
 #include "chrome/browser/ui/webui/ash/extended_updates/extended_updates_dialog.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/devicetype_utils.h"
@@ -36,7 +36,8 @@ using IndexedButton = ExtendedUpdatesNotification::IndexedButton;
 void AddButton(message_center::RichNotificationData& data,
                IndexedButton button,
                int title_id) {
-  DCHECK_EQ(data.buttons.size(), static_cast<size_t>(button));
+  CHECK_EQ(data.buttons.size(), static_cast<size_t>(button),
+           base::NotFatalUntil::M161);
   data.buttons.emplace_back(l10n_util::GetStringUTF16(title_id));
 }
 

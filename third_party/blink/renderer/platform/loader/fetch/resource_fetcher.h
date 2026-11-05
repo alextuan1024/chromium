@@ -32,7 +32,6 @@
 #include <string_view>
 #include <utility>
 
-#include "base/memory/memory_pressure_listener.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
@@ -64,6 +63,8 @@
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/timer.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 
 namespace network {
@@ -78,6 +79,7 @@ class CodeCacheHost;
 class DetachableConsoleLogger;
 class DetachableUseCounter;
 class DetachableResourceFetcherProperties;
+class DOMWrapperWorld;
 class FetchContext;
 class FrameOrWorkerScheduler;
 class MHTMLArchive;
@@ -145,10 +147,6 @@ class PLATFORM_EXPORT ResourceFetcher
   const DetachableResourceFetcherProperties& GetProperties() const {
     return *properties_;
   }
-
-  // Returns true if optimizations for loading 1x1 transparent placeholder
-  // images is enabled.
-  bool IsSimplifyLoadingTransparentPlaceholderImageEnabled();
 
   // Returns whether this fetcher is detached from the associated context.
   bool IsDetached() const;
@@ -284,9 +282,14 @@ class PLATFORM_EXPORT ResourceFetcher
   // API. `crossorigin` is the reflected crossorigin attribute value.
   // Preconnects are deduped by (origin, crossorigin); a duplicate that arrives
   // via Early Hints upgrades the existing entry's `early_hints` flag to true.
+  // `initiator_world` is the world that triggered the preconnect (nullptr is
+  // treated as the main world). Preconnects triggered by isolated worlds (e.g.
+  // by extension content scripts) are not recorded, as they must not be
+  // exposed to the page.
   void RecordPreconnect(const KURL& url,
                         CrossOriginAttributeValue crossorigin,
-                        bool early_hints);
+                        bool early_hints,
+                        const DOMWrapperWorld* initiator_world);
 
   // Returns a map keyed by (origin, crossorigin) to PreconnectInfo for all
   // developer-initiated preconnects.
@@ -334,8 +337,6 @@ class PLATFORM_EXPORT ResourceFetcher
   std::optional<base::UnguessableToken> GetSubresourceBundleToken(
       const KURL& url) const;
 
-  std::optional<KURL> GetSubresourceBundleSourceUrl(const KURL& url) const;
-
   enum IsImageSet { kImageNotImageSet, kImageIsImageSet };
 
   [[nodiscard]] static mojom::blink::RequestContextType DetermineRequestContext(
@@ -348,9 +349,17 @@ class PLATFORM_EXPORT ResourceFetcher
   void UpdateImagePrioritiesAndSpeculativeDecodes();
 
   // Returns whether the given resource is contained as a preloaded resource.
-  bool ContainsAsPreload(Resource*) const;
+  bool ContainsAsPreloadForTesting(Resource*) const;
 
   void RemovePreload(Resource*);
+
+  // Called when a CSS font face is resolved from a local font source (via
+  // src: local()). Deduplicates loads per document by font name and updates
+  // SubresourceLoadMetrics.
+  void DidLoadResourceFromFontCache(const AtomicString& font_name);
+  const SubresourceLoadMetrics& GetSubresourceLoadMetricsForTesting() const {
+    return subresource_load_metrics_;
+  }
 
   void LoosenLoadThrottlingPolicy() { scheduler_->LoosenThrottlingPolicy(); }
 
@@ -527,6 +536,12 @@ class PLATFORM_EXPORT ResourceFetcher
   void InsertAsPreloadIfNecessary(Resource*,
                                   const FetchParameters& params,
                                   ResourceType);
+  // Records a <link rel=preload> of `url` in `preload_records_` for the
+  // SpeculationMeasurement API, unless `params` was initiated by an isolated
+  // world.
+  void RecordLinkPreload(const KURL& url,
+                         ResourceType,
+                         const FetchParameters& params);
 
   bool IsImageResourceDisallowedToBeReused(const Resource&) const;
 
@@ -585,9 +600,8 @@ class PLATFORM_EXPORT ResourceFetcher
   void RemoveResourceLoader(ResourceLoader*);
 
   void DidLoadResourceFromMemoryCache(Resource*,
-                                      const ResourceRequest&,
-                                      bool is_static_data,
-                                      RenderBlockingBehavior);
+                                      const FetchParameters&,
+                                      bool is_static_data);
 
   DeferPolicy GetDeferPolicy(ResourceType, const FetchParameters& params) const;
 
@@ -601,8 +615,7 @@ class PLATFORM_EXPORT ResourceFetcher
                                                             Resource*,
                                                             DeferPolicy);
 
-  void UpdateMemoryCacheStats(Resource*,
-                              RevalidationPolicyForMetrics,
+  void UpdateMemoryCacheStats(RevalidationPolicyForMetrics,
                               const FetchParameters&,
                               const ResourceFactory&,
                               bool is_static_data) const;
@@ -613,11 +626,7 @@ class PLATFORM_EXPORT ResourceFetcher
   void WarnUnusedPreloads(
       base::OnceCallback<void(Vector<KURL> unused_preloads)> callback);
 
-  void RemoveResourceStrongReference(Resource* resource);
-
   KURL PrepareRequestForWebBundle(ResourceRequest& resource_request) const;
-
-  void AttachWebBundleTokenIfNeeded(ResourceRequest&) const;
 
   // Information about a resource fetch that had started but not completed yet.
   // Would be added to the response data when the response arrives.
@@ -755,6 +764,7 @@ class PLATFORM_EXPORT ResourceFetcher
   std::unique_ptr<ukm::MojoUkmRecorder> ukm_recorder_;
 
   SubresourceLoadMetrics subresource_load_metrics_;
+  HashSet<AtomicString> loaded_local_fonts_;
 
   // Number of images that have had their priority boosted by heuristics.
   uint32_t boosted_image_count_ = 0;

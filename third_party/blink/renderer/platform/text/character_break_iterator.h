@@ -24,6 +24,9 @@
 
 #include <unicode/brkiter.h>
 
+#include <optional>
+
+#include "base/containers/span.h"
 #include "base/gtest_prod_util.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/text/character.h"
@@ -34,7 +37,7 @@
 
 namespace blink {
 
-typedef icu::BreakIterator TextBreakIterator;
+using TextBreakIterator = icu::BreakIterator;
 
 const int kTextBreakDone = -1;
 
@@ -52,14 +55,15 @@ class PLATFORM_EXPORT CharacterBreakIterator final {
   CharacterBreakIterator(const CharacterBreakIterator&) = delete;
   CharacterBreakIterator& operator=(const CharacterBreakIterator&) = delete;
 
+  // `Next()` and `Current()` iterate from the start. The other functions take
+  // an offset, and return the same values as `icu::BreakIterator`, but don't
+  // change `Current()`.
   int Next();
   int Current();
 
   bool IsBreak(int offset) const;
   int Preceding(int offset) const;
   int Following(int offset) const;
-
-  bool operator!() const { return !is_8bit_ && !iterator_; }
 
  private:
   struct PLATFORM_EXPORT ReturnToPool {
@@ -69,52 +73,40 @@ class PLATFORM_EXPORT CharacterBreakIterator final {
   class Pool;
   FRIEND_TEST_ALL_PREFIXES(TextBreakIteratorTest, PooledCharacterBreakIterator);
 
-  void CreateIteratorForBuffer(base::span<const UChar>);
+  // Returns whether there is a break before `offset`, which must be in
+  // [0, length_), if the code units around it are Latin-1.
+  std::optional<bool> IsLatin1Break(int offset) const;
+  // Returns `Following(offset)`, for `offset` in [0, length_), if
+  // `IsLatin1Break()` decides it.
+  std::optional<int> Latin1Following(int offset) const;
 
-  unsigned ClusterLengthStartingAt(unsigned offset) const {
-    DCHECK(is_8bit_);
-    // The only Latin-1 Extended Grapheme Cluster is CR LF
-    return IsCrBeforeLf(offset) ? 2 : 1;
-  }
+  // Only 16-bit text can need the ICU iterator, which is created on demand.
+  // The caller may move it, so this clears `icu_at_offset_`.
+  icu::BreakIterator& GetIterator() const;
 
-  bool IsCrBeforeLf(unsigned offset) const {
-    DCHECK(is_8bit_);
-    // SAFTEY: second indexing is safe because of length check, but
-    // the first is not. Could be made safe by re-ordering.
-    return UNSAFE_TODO(charaters8_[offset]) == '\r' && offset + 1 < length_ &&
-           UNSAFE_BUFFERS(charaters8_[offset + 1]) == '\n';
-  }
-
-  bool IsLfAfterCr(unsigned offset) const {
-    DCHECK(is_8bit_);
-    return UNSAFE_TODO(charaters8_[offset]) == '\n' && offset >= 1 &&
-           UNSAFE_TODO(charaters8_[offset - 1]) == '\r';
-  }
-
-  bool is_8bit_ = false;
-
-  // For 8 bit strings, we implement the iterator ourselves.
-  const LChar* charaters8_ = nullptr;
-  unsigned offset_ = 0;
-  unsigned length_ = 0;
-
-  // For 16 bit strings, we use a TextBreakIterator.
-  PooledIterator iterator_;
+  bool is_8bit_ = true;
+  // Whether `iterator_` is at `offset_`, so that `Next()` can use its `next()`.
+  mutable bool icu_at_offset_ = false;
+  base::span<const LChar> characters8_;
+  base::span<const UChar> characters16_;
+  int length_ = 0;
+  int offset_ = 0;
+  mutable PooledIterator iterator_;
 };
 
 // Counts the number of grapheme clusters. A surrogate pair or a sequence
 // of a non-combining character and following combining characters is
 // counted as 1 grapheme cluster.
-PLATFORM_EXPORT unsigned NumGraphemeClusters(const StringView&);
+PLATFORM_EXPORT wtf_size_t NumGraphemeClusters(const StringView&);
 
 // Returns the number of code units that the next grapheme cluster is made of.
-PLATFORM_EXPORT unsigned LengthOfGraphemeCluster(const StringView&,
-                                                 unsigned = 0);
+PLATFORM_EXPORT wtf_size_t LengthOfGraphemeCluster(const StringView&,
+                                                   wtf_size_t = 0);
 
 // Returns a list of graphemes cluster at each character using character break
 // rules. The `graphemes` and `text` must have the same size.
 PLATFORM_EXPORT void GraphemesClusterList(const StringView& text,
-                                          base::span<unsigned> graphemes);
+                                          base::span<wtf_size_t> graphemes);
 
 }  // namespace blink
 

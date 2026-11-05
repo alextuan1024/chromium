@@ -142,7 +142,7 @@ class CONTENT_EXPORT BrowsingDataRemoverImpl
     kTrustTokens = 12,
     // Deprecated: kConversions = 13,
     // Deprecated: kDeferredCookies = 14,
-    kSharedStorage = 15,
+    // Deprecated: kSharedStorage = 15,
     kPreflightCache = 16,
     kSharedDictionary = 17,
     kPrefetchCache = 18,
@@ -178,7 +178,7 @@ class CONTENT_EXPORT BrowsingDataRemoverImpl
     uint64_t remove_mask;
     uint64_t origin_type_mask;
     std::unique_ptr<BrowsingDataFilterBuilder> filter_builder;
-    std::vector<raw_ptr<Observer, VectorExperimental>> observers;
+    std::vector<raw_ptr<Observer, DanglingUntriaged>> observers;
     base::TimeTicks task_started;
   };
 

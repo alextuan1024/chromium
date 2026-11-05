@@ -92,6 +92,10 @@ class CORE_EXPORT LayoutCustomScrollbarPart final : public LayoutReplaced {
                             bool suppress_use_counters);
 
  private:
+  bool RespectsCSSOverflow() const override {
+    NOT_DESTROYED();
+    return false;
+  }
   bool ShouldBeHandledAsInline(const ComputedStyle&) const override {
     NOT_DESTROYED();
     return false;
@@ -107,13 +111,6 @@ class CORE_EXPORT LayoutCustomScrollbarPart final : public LayoutReplaced {
                       const StyleChangeContext&) override;
   void ImageChanged(WrappedImagePtr, CanDeferInvalidation) override;
 
-  // A scrollbar part's PhysicalLocation() is relative to the scrollbar
-  // (instead of relative to any LayoutBox ancestor), so it doesn't have a
-  // meaningful location container as a LayoutBox.
-  LayoutBox* LocationContainer() const override {
-    NOT_DESTROYED();
-    return nullptr;
-  }
 
   // Have our padding resolve to zero. The important point here is to avoid
   // resolving percents against the containing block, since scroll bar corners

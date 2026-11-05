@@ -44,6 +44,12 @@ extern const CGFloat kQuickActionsTopPaddingControl;
 extern const CGFloat kMostVisitedTopPaddingControl;
 extern const CGFloat kReducedModuleSpacingControl;
 
+// Regular x Regular (iPad) Padding.
+extern const CGFloat kLogoTopPaddingRegularXRegular;
+extern const CGFloat kDoodleTopPaddingRegularXRegular;
+extern const CGFloat kLogoToFakeboxPaddingRegularXRegular;
+extern const CGFloat kQuickActionsTopPaddingRegularXRegular;
+
 // Shared spacing constants.
 extern const CGFloat kQuickActionsTopPadding;
 extern const CGFloat kReducedModuleSpacing;
@@ -66,7 +72,8 @@ CGFloat HeaderSeparatorHeight();
 // to the bottom of the doodle for the search field.
 // TODO(crbug.com/542594099): Remove legacy helpers once
 // `kNewTabPageUICleanup` is launched.
-CGFloat SearchFieldTopMargin(SearchEngineLogoState logo_state);
+CGFloat SearchFieldTopMargin(SearchEngineLogoState logo_state,
+                             UITraitCollection* trait_collection);
 // Returns the height of the Fake Omnibox on Home when it is not scrolled.
 CGFloat FakeOmniboxHeight();
 // Returns the height of the Fake Omnibox on Home when it is pinned / scrolled.
@@ -84,19 +91,30 @@ CGFloat HeightForLogoHeader(SearchEngineLogoState logo_state,
 // between the fake omnibox and the content suggestions tiles.
 CGFloat HeaderBottomPadding(UITraitCollection* trait_collection);
 
-// Spacing helper methods for kNewTabPageUICleanup experiment arms.
+// Spacing helper methods for `kNewTabPageUICleanup` and `kAimButtonRefactor`
+// experiment arms.
 // Returns padding above the Google logo/doodle based on the enabled arm and
-// size class.
+// size class. Accounts for header space redistribution when Quick Actions is
+// removed.
 CGFloat LogoTopPadding(SearchEngineLogoState logo_state,
                        UITraitCollection* trait_collection);
 // Returns padding between the Google logo/doodle and fakebox based on the
 // enabled arm and size class.
 CGFloat LogoToFakeboxPadding(SearchEngineLogoState logo_state,
                              UITraitCollection* trait_collection);
-// Returns top padding for Quick Actions based on the enabled arm.
-CGFloat QuickActionsTopPadding();
-// Returns top padding for Most Visited Tiles based on the
-// enabled arm and size class.
+// Returns top padding for Quick Actions based on the enabled arm and size
+// class.
+CGFloat QuickActionsTopPadding(UITraitCollection* trait_collection);
+// Returns whether the vertical space above the logo and below the fakebox
+// should be redistributed for `kAimButtonRefactor` arms where the Quick Actions
+// row is removed.
+bool ShouldRedistributeHeaderSpace();
+
+// Returns the bottom spacing below the header (above the first module) when
+// Quick Actions is removed by `kAimButtonRefactor`.
+CGFloat RedistributedHeaderBottomSpacing(UITraitCollection* trait_collection);
+// Returns top padding for Most Visited Tiles based on the enabled arm and size
+// class.
 CGFloat MostVisitedTopPadding(UITraitCollection* trait_collection);
 // Returns reduced spacing used between the MVT, Magic Stack, and Discover Feed
 // based on the enabled arm.

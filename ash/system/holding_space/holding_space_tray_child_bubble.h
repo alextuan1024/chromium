@@ -102,11 +102,10 @@ class ASH_EXPORT HoldingSpaceTrayChildBubble
   void OnAnimateInCompleted(bool aborted);
   void OnAnimateOutCompleted(bool aborted);
 
-  const raw_ptr<HoldingSpaceViewDelegate, DanglingUntriaged> delegate_;
+  raw_ptr<HoldingSpaceViewDelegate> delegate_ = nullptr;
 
   // Views owned by view hierarchy.
-  std::vector<raw_ptr<HoldingSpaceItemViewsSection, VectorExperimental>>
-      sections_;
+  std::vector<raw_ptr<HoldingSpaceItemViewsSection>> sections_;
   raw_ptr<views::View> placeholder_ = nullptr;
 
   // Whether or not to ignore `ChildVisibilityChanged()` events. This is used

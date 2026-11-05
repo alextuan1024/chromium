@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/containers/flat_map.h"
@@ -224,43 +225,68 @@ class DeviceStatisticsTracker {
     const bool history_opt_in;
   };
 
+  class RequestFailed {};
+
+  using OtherDevicesByGaia =
+      base::flat_map<GaiaId,
+                     base::expected<std::vector<DeviceData>, RequestFailed>>;
+
   void RequestDoneForGaiaId(const GaiaId& gaia);
   void AllRequestsDone();
 
-  void RecordOverallDevicesOutcome() const;
+  static void RecordDevicesOutcomeMetrics(
+      const OtherDevicesByGaia& other_devices_by_gaia,
+      const CoreAccountInfo& primary_account,
+      bool primary_account_history_opt_in,
+      std::string_view histogram_version);
+  void RecordPlatformsOutcomeMetrics() const;
+
+  static void RecordOverallDevicesOutcome(
+      const OtherDevicesByGaia& other_devices_by_gaia,
+      const CoreAccountInfo& primary_account,
+      std::string_view histogram_version);
   void RecordOverallPlatformsOutcome() const;
 
   // Records `MultiDeviceReadiness`/`MultiPlatformReadiness` for the primary
   // account (including for the case when there is no primary account).
-  void RecordPrimaryAccountMultiDeviceReadiness(
+  static void RecordPrimaryAccountMultiDeviceReadiness(
+      bool has_primary_account,
+      bool primary_account_history_opt_in,
       size_t other_devices,
-      size_t other_devices_with_history_opt_in) const;
+      size_t other_devices_with_history_opt_in,
+      std::string_view histogram_version);
   void RecordPrimaryAccountMultiPlatformReadiness(
       size_t other_platforms,
       size_t other_platforms_with_history_opt_in) const;
 
   RequestsCompletedSuccess GetOverallSuccess() const;
 
-  AccountsHaveOtherDevicesSummary GetOverallDevicesOutcome() const;
+  static AccountsHaveOtherDevicesSummary GetOverallDevicesOutcome(
+      const OtherDevicesByGaia& other_devices_by_gaia,
+      const CoreAccountInfo& primary_account);
   AccountsHaveOtherPlatformsSummary GetOverallPlatformsOutcome() const;
 
-  MultiDeviceReadiness GetPrimaryAccountMultiDeviceReadiness(
+  static MultiDeviceReadiness GetPrimaryAccountMultiDeviceReadiness(
+      bool has_primary_account,
+      bool primary_account_history_opt_in,
       size_t other_devices,
-      size_t other_devices_with_history_opt_in) const;
+      size_t other_devices_with_history_opt_in);
   MultiPlatformReadiness GetPrimaryAccountMultiPlatformReadiness(
       size_t other_platforms,
       size_t other_platforms_with_history_opt_in) const;
 
-  HistoryOptInDevicesSummary GetHistoryOptInDevicesSummary(
+  static HistoryOptInDevicesSummary GetHistoryOptInDevicesSummary(
+      bool primary_account_history_opt_in,
       size_t other_devices,
-      size_t other_devices_with_history_opt_in) const;
+      size_t other_devices_with_history_opt_in);
   HistoryOptInPlatformsSummary GetHistoryOptInPlatformsSummary(
       size_t other_platforms,
       size_t other_platforms_with_history_opt_in) const;
 
-  std::vector<DeviceData> DeduplicateEntities(
+  static std::vector<DeviceData> DeduplicateEntities(
       const std::vector<sync_pb::SyncEntity>& entities,
-      const base::flat_set<std::string>& current_device_cache_guids);
+      const base::flat_set<std::string>& current_device_cache_guids,
+      bool use_legacy_early_exclusion_of_current_device);
 
   void RunCallback(base::OnceClosure callback);
 
@@ -289,14 +315,17 @@ class DeviceStatisticsTracker {
   // Ongoing requests.
   base::flat_map<GaiaId, std::unique_ptr<DeviceStatisticsRequest>> requests_;
 
-  class RequestFailed {};
   const RequestFailed kRequestFailed;
 
-  // Results. This will have exactly one entry for every request that completed,
-  // successfully or not. On success, the value is the list of all valid other
-  // devices (which may be empty).
-  base::flat_map<GaiaId, base::expected<std::vector<DeviceData>, RequestFailed>>
-      other_devices_by_gaia_;
+  // Results. These will have exactly one entry for every request that
+  // completed, successfully or not. On success, the value is the list of all
+  // valid other devices (which may be empty).
+  OtherDevicesByGaia other_devices_by_gaia_;
+  // Legacy results where the current device was excluded before deduplication
+  // (used to continue recording the *2 histograms for comparison/continuity).
+  // TODO(crbug.com/465716865): Remove once the *2 histograms are no longer
+  // needed.
+  OtherDevicesByGaia other_devices_by_gaia_legacy_;
 
   base::WeakPtrFactory<DeviceStatisticsTracker> weak_ptr_factory_{this};
 };

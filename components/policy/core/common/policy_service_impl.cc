@@ -52,28 +52,21 @@ namespace policy {
 
 namespace {
 
+#if !BUILDFLAG(IS_CHROMEOS)
 // Metrics should not be enforced so if this policy is set as mandatory
 // downgrade it to a recommended level policy.
 void DowngradeMetricsReportingToRecommendedPolicy(PolicyMap* policies) {
-  // Capture both the Chrome-only and device-level policies on Chrome OS.
-  const std::vector<const char*> metrics_keys = {
-#if BUILDFLAG(IS_CHROMEOS)
-      policy::key::kDeviceMetricsReportingEnabled,
-#else
-      policy::key::kMetricsReportingEnabled,
-#endif
-  };
-  for (const char* policy_key : metrics_keys) {
-    PolicyMap::Entry* policy = policies->GetMutable(policy_key);
-    if (policy && policy->level != POLICY_LEVEL_RECOMMENDED &&
-        policy->value(base::Value::Type::BOOLEAN) &&
-        policy->value(base::Value::Type::BOOLEAN)->GetBool()) {
-      policy->level = POLICY_LEVEL_RECOMMENDED;
-      policy->AddMessage(PolicyMap::MessageType::kInfo,
-                         IDS_POLICY_IGNORED_MANDATORY_REPORTING_POLICY);
-    }
+  PolicyMap::Entry* policy =
+      policies->GetMutable(policy::key::kMetricsReportingEnabled);
+  if (policy && policy->level != POLICY_LEVEL_RECOMMENDED &&
+      policy->value(base::Value::Type::BOOLEAN) &&
+      policy->value(base::Value::Type::BOOLEAN)->GetBool()) {
+    policy->level = POLICY_LEVEL_RECOMMENDED;
+    policy->AddMessage(PolicyMap::MessageType::kInfo,
+                       IDS_POLICY_IGNORED_MANDATORY_REPORTING_POLICY);
   }
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 // Returns the string values of |policy|. Returns an empty set if the values are
 // not strings.
@@ -445,6 +438,10 @@ void PolicyServiceImpl::MergeAndTriggerUpdates() {
   // Swap first, so that observers that call GetPolicies() see the current
   // values.
   std::swap(policy_bundle_, bundle);
+
+  // Record before notifying, as an observer might destroy `this`.
+  RecordNonChromeNamespaceMergeMetrics(bundle);
+
   NotifyPoliciesUpdated(bundle);
 }
 
@@ -472,10 +469,11 @@ PolicyBundle PolicyServiceImpl::MergePolicyBundles(
     // Clone only the chrome-namespace PolicyMap for pre-merge mutations.
     PolicyMap chrome_clone = policy_bundle->Get(chrome_namespace).Clone();
     IgnoreUserCloudPrecedencePolicies(&chrome_clone);
+#if !BUILDFLAG(IS_CHROMEOS)
     DowngradeMetricsReportingToRecommendedPolicy(&chrome_clone);
-#if BUILDFLAG(IS_CHROMEOS)
+#else
     chrome_apps_migrator.Migrate(&chrome_clone);
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS)
     bundle.Get(chrome_namespace).MergeFrom(std::move(chrome_clone));
   }
 
@@ -532,6 +530,49 @@ PolicyBundle PolicyServiceImpl::MergePolicyBundles(
   }
 
   return bundle;
+}
+
+void PolicyServiceImpl::RecordNonChromeNamespaceMergeMetrics(
+    const PolicyBundle& old_bundle) {
+  // Extension policy is read from the profile's PolicyService, and recording
+  // from the browser-level service as well would double count machine-level
+  // merges that both services perform.
+  if (scope_for_metrics_ != ScopeForMetrics::kUser) {
+    return;
+  }
+
+  for (const auto& [ns, policies] : policy_bundle_) {
+    if (ns.domain == POLICY_DOMAIN_CHROME) {
+      continue;
+    }
+    const PolicyMap& old_policies = old_bundle.Get(ns);
+
+    for (const auto& [policy_name, entry] : policies) {
+      if (entry.source != POLICY_SOURCE_MERGED || entry.ignored()) {
+        continue;
+      }
+
+      // Skip entries whose merge result is unchanged since the last update.
+      const PolicyMap::Entry* old_entry = old_policies.Get(policy_name);
+      if (old_entry && old_entry->Equals(entry)) {
+        continue;
+      }
+
+      // DoMerge() appends the pre-merge winner as the last conflict.
+      if (entry.conflicts.empty()) {
+        continue;
+      }
+
+      const base::Value* previous_value =
+          entry.conflicts.back().entry().value_unsafe();
+      const base::Value* merged_value = entry.value_unsafe();
+      const bool value_changed = *previous_value != *merged_value;
+      const std::string histogram = base::StrCat(
+          {"Enterprise.PolicyMerge.NonChromeNamespace.ValueChanged.",
+           entry.value(base::Value::Type::LIST) ? "List" : "Dictionary"});
+      base::UmaHistogramBoolean(histogram, value_changed);
+    }
+  }
 }
 
 std::vector<PolicyDomain> PolicyServiceImpl::UpdatePolicyDomainStatus() {

@@ -29,6 +29,7 @@
 
 #include <memory>
 
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "cc/layers/layer.h"
 #include "cc/trees/layer_tree_host.h"
@@ -48,9 +49,9 @@
 namespace blink {
 
 ChromeClient& GetStaticEmptyChromeClientInstance() {
-  DEFINE_STATIC_LOCAL(Persistent<ChromeClient>, chrome_client,
-                      (MakeGarbageCollected<EmptyChromeClient>()));
-  return *chrome_client;
+  static base::NoDestructor<Persistent<ChromeClient>> chrome_client(
+      MakeGarbageCollected<EmptyChromeClient>());
+  return **chrome_client;
 }
 
 class EmptyPopupMenu : public PopupMenu {
@@ -130,19 +131,13 @@ void EmptyLocalFrameClient::BeginNavigation(
     bool is_container_initiated,
     bool has_rel_opener,
     mojo::PendingReceiver<mojom::blink::NavigationResumeDeferredCommitListener>,
-    std::optional<base::UnguessableToken> script_tool_invocation_id,
+    std::optional<ToolInvocationToken> script_tool_invocation_id,
     const String&) {}
 
 void EmptyLocalFrameClient::DispatchWillSendSubmitEvent(HTMLFormElement*) {}
 
 LocalFrame* EmptyLocalFrameClient::CreateFrame(const AtomicString&,
                                                HTMLFrameOwnerElement*) {
-  return nullptr;
-}
-
-RemoteFrame* EmptyLocalFrameClient::CreateFencedFrame(
-    HTMLFencedFrameElement*,
-    mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>) {
   return nullptr;
 }
 

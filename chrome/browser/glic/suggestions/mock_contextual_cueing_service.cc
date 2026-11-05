@@ -4,14 +4,16 @@
 
 #include "chrome/browser/glic/suggestions/mock_contextual_cueing_service.h"
 
+#include "chrome/browser/glic/suggestions/contextual_cueing_features.h"
+
 namespace glic {
 
 MockContextualCueingService::MockContextualCueingService()
     : ContextualCueingService(
+          IsZeroStateSuggestionsEnabled(/*context=*/nullptr),
           /*page_content_extraction_service=*/nullptr,
           /*optimization_guide_keyed_service=*/nullptr,
           /*loading_predictor=*/nullptr,
-          /*identity_manager=*/nullptr,
           /*pref_service=*/nullptr,
           /*template_url_service=*/nullptr) {}
 

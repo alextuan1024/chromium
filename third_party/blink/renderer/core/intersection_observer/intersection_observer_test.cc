@@ -7,11 +7,14 @@
 #include "build/build_config.h"
 #include "third_party/blink/renderer/bindings/core/v8/sanitize_script_errors.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_gc_controller.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_intersection_observer_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_document_element.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_double_doublesequence.h"
 #include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/dom/pseudo_element.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
@@ -20,14 +23,20 @@
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer_controller.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer_delegate.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer_entry.h"
+#include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
+#include "third_party/blink/renderer/core/resize_observer/resize_observer.h"
+#include "third_party/blink/renderer/core/resize_observer/resize_observer_entry.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/core/testing/intersection_observer_test_helper.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_compositor.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
+#include "third_party/blink/renderer/core/view_transition/scoped_view_transition.h"
+#include "third_party/blink/renderer/core/view_transition/view_transition_test_utils.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "ui/gfx/geometry/test/geometry_util.h"
 
@@ -60,7 +69,7 @@ class IntersectionObserverTest : public SimTest {
 
     Compositor().BeginFrame();
 
-    Element* target = GetDocument().getElementById(AtomicString("target"));
+    Element* target = GetElementById("target");
     ASSERT_TRUE(target);
 
     TestIntersectionObserverDelegate* scroll_margin_delegate =
@@ -119,7 +128,7 @@ class IntersectionObserverTest : public SimTest {
 
     Compositor().BeginFrame();
 
-    Element* target = GetDocument().getElementById(AtomicString("target"));
+    Element* target = GetElementById("target");
     ASSERT_TRUE(target);
 
     TestIntersectionObserverDelegate* scroll_margin_delegate =
@@ -189,7 +198,7 @@ TEST_F(IntersectionObserverTest, ObserveSchedulesFrame) {
   EXPECT_TRUE(observer->takeRecords(exception_state).empty());
   EXPECT_EQ(observer_delegate->CallCount(), 0);
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target, exception_state);
   EXPECT_TRUE(Compositor().NeedsBeginFrame());
@@ -211,7 +220,7 @@ TEST_F(IntersectionObserverTest, NotificationSentWhenRootRemoved) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
+  Element* root = GetElementById("root");
   ASSERT_TRUE(root);
   IntersectionObserverInit* observer_init = IntersectionObserverInit::Create();
   observer_init->setRoot(MakeGarbageCollected<V8UnionDocumentOrElement>(root));
@@ -223,7 +232,7 @@ TEST_F(IntersectionObserverTest, NotificationSentWhenRootRemoved) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target, exception_state);
 
@@ -308,7 +317,7 @@ TEST_F(IntersectionObserverTest, ReportsFractionOfTargetOrRoot) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
 
   // 100% of the target element's area intersects with the frame.
@@ -389,7 +398,7 @@ TEST_F(IntersectionObserverTest, TargetRectIsEmptyAfterMapping) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
 
   TestIntersectionObserverDelegate* target_observer_delegate =
@@ -441,7 +450,7 @@ TEST_F(IntersectionObserverTest, DirectlyUpdateTransform) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
 
   TestIntersectionObserverDelegate* target_observer_delegate =
@@ -467,7 +476,7 @@ TEST_F(IntersectionObserverTest, DirectlyUpdateTransform) {
   EXPECT_EQ(target_observer_delegate->EntryCount(), 1);
   EXPECT_TRUE(target_observer_delegate->LastEntry()->isIntersecting());
 
-  Element* container = GetDocument().getElementById(AtomicString("container"));
+  Element* container = GetElementById("container");
   container->SetInlineStyleProperty(CSSPropertyID::kTransform,
                                     "translateX(300px)");
   GetDocument().View()->UpdateLifecycleToLayoutClean(
@@ -523,7 +532,7 @@ TEST_F(IntersectionObserverTest, VisibilityHiddenChangeSize) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
 
   TestIntersectionObserverDelegate* target_observer_delegate =
@@ -579,7 +588,7 @@ TEST_F(IntersectionObserverTest, ResumePostsTask) {
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target, exception_state);
 
@@ -641,7 +650,7 @@ TEST_F(IntersectionObserverTest, HitTestAfterMutation) {
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target, exception_state);
 
@@ -691,7 +700,7 @@ TEST_F(IntersectionObserverTest, DisconnectClearsNotifications) {
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   IntersectionObserverController& controller =
       GetDocument().EnsureIntersectionObserverController();
@@ -750,7 +759,7 @@ TEST_F(IntersectionObserverTest, RootIntersectionWithForceZeroLayoutHeight) {
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target, exception_state);
 
@@ -787,7 +796,7 @@ TEST_F(IntersectionObserverTest, TrackedTargetBookkeeping) {
     <div id='target'></div>
   )HTML");
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   IntersectionObserverInit* observer_init = IntersectionObserverInit::Create();
   TestIntersectionObserverDelegate* observer_delegate =
@@ -837,9 +846,8 @@ TEST_F(IntersectionObserverTest, TrackedRootBookkeeping) {
   EXPECT_EQ(controller.GetTrackedObserverCountForTesting(), 0u);
   EXPECT_EQ(controller.GetTrackedObservationCountForTesting(), 0u);
 
-  Persistent<Element> root = GetDocument().getElementById(AtomicString("root"));
-  Persistent<Element> target =
-      GetDocument().getElementById(AtomicString("target1"));
+  Persistent<Element> root = GetElementById("root");
+  Persistent<Element> target = GetElementById("target1");
   Persistent<IntersectionObserverInit> observer_init =
       IntersectionObserverInit::Create();
   observer_init->setRoot(MakeGarbageCollected<V8UnionDocumentOrElement>(root));
@@ -913,7 +921,7 @@ TEST_F(IntersectionObserverTest, TrackedRootBookkeeping) {
   ThreadState::Current()->CollectAllGarbageForTesting();
   EXPECT_TRUE(root_data->IsEmpty());
 
-  target = GetDocument().getElementById(AtomicString("target2"));
+  target = GetElementById("target2");
   observer = IntersectionObserver::Create(
       observer_init, *observer_delegate,
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver);
@@ -953,8 +961,7 @@ TEST_F(IntersectionObserverTest, InaccessibleTarget) {
       IntersectionObserverInit::Create(), *observer_delegate,
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver);
 
-  Persistent<Element> target =
-      GetDocument().getElementById(AtomicString("target"));
+  Persistent<Element> target = GetElementById("target");
   ASSERT_EQ(observer_delegate->CallCount(), 0);
   ASSERT_FALSE(observer->HasPendingActivity());
 
@@ -1006,8 +1013,7 @@ TEST_F(IntersectionObserverTest, InaccessibleTargetBeforeDelivery) {
       IntersectionObserverInit::Create(), *observer_delegate,
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver);
 
-  Persistent<Element> target =
-      GetDocument().getElementById(AtomicString("target"));
+  Persistent<Element> target = GetElementById("target");
   ASSERT_EQ(observer_delegate->CallCount(), 0);
   ASSERT_FALSE(observer->HasPendingActivity());
 
@@ -1068,7 +1074,7 @@ TEST_F(IntersectionObserverTest, RootMarginDevicePixelRatio) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target, exception_state);
   ASSERT_FALSE(exception_state.HadException());
@@ -1109,10 +1115,10 @@ TEST_F(IntersectionObserverTest, CachedRectsWithScrollers) {
     </div>
   )HTML");
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* target1 = GetDocument().getElementById(AtomicString("target1"));
-  Element* target2 = GetDocument().getElementById(AtomicString("target2"));
-  Element* target3 = GetDocument().getElementById(AtomicString("target3"));
+  Element* root = GetElementById("root");
+  Element* target1 = GetElementById("target1");
+  Element* target2 = GetElementById("target2");
+  Element* target3 = GetElementById("target3");
   // Ensure target3's ScrollTranslation node.
   target3->parentElement()->scrollToForTesting(0, 10);
 
@@ -1230,10 +1236,10 @@ TEST_F(IntersectionObserverTest, CachedRectsWithOverflowHidden) {
     </div>
   )HTML");
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* target1 = GetDocument().getElementById(AtomicString("target1"));
-  Element* target2 = GetDocument().getElementById(AtomicString("target2"));
-  Element* target3 = GetDocument().getElementById(AtomicString("target3"));
+  Element* root = GetElementById("root");
+  Element* target1 = GetElementById("target1");
+  Element* target2 = GetElementById("target2");
+  Element* target3 = GetElementById("target3");
 
   IntersectionObserverInit* observer_init = IntersectionObserverInit::Create();
   observer_init->setRoot(MakeGarbageCollected<V8UnionDocumentOrElement>(root));
@@ -1353,11 +1359,11 @@ TEST_F(IntersectionObserverTest, CachedRectsWithoutIntermediateScrollable) {
     </div>
   )HTML");
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* target1 = GetDocument().getElementById(AtomicString("target1"));
-  Element* target2 = GetDocument().getElementById(AtomicString("target2"));
-  Element* target3 = GetDocument().getElementById(AtomicString("target3"));
-  Element* target4 = GetDocument().getElementById(AtomicString("target4"));
+  Element* root = GetElementById("root");
+  Element* target1 = GetElementById("target1");
+  Element* target2 = GetElementById("target2");
+  Element* target3 = GetElementById("target3");
+  Element* target4 = GetElementById("target4");
 
   IntersectionObserverInit* observer_init = IntersectionObserverInit::Create();
   observer_init->setRoot(MakeGarbageCollected<V8UnionDocumentOrElement>(root));
@@ -1419,9 +1425,9 @@ TEST_F(IntersectionObserverTest, CachedRectsWithPaintPropertyChange) {
   </div>
   )HTML");
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* container = GetDocument().getElementById(AtomicString("container"));
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* root = GetElementById("root");
+  Element* container = GetElementById("container");
+  Element* target = GetElementById("target");
 
   IntersectionObserverInit* observer_init = IntersectionObserverInit::Create();
   observer_init->setRoot(MakeGarbageCollected<V8UnionDocumentOrElement>(root));
@@ -1469,8 +1475,8 @@ TEST_F(IntersectionObserverTest, CachedRectsDisplayNone) {
     </div>
   )HTML");
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* root = GetElementById("root");
+  Element* target = GetElementById("target");
 
   IntersectionObserverInit* observer_init = IntersectionObserverInit::Create();
   observer_init->setRoot(MakeGarbageCollected<V8UnionDocumentOrElement>(root));
@@ -1508,8 +1514,8 @@ TEST_F(IntersectionObserverTest, CachedRectsWithFixedPosition) {
     </div>
   )HTML");
 
-  Element* fixed = GetDocument().getElementById(AtomicString("fixed"));
-  Element* child = GetDocument().getElementById(AtomicString("child"));
+  Element* fixed = GetElementById("fixed");
+  Element* child = GetElementById("child");
 
   IntersectionObserverInit* observer_init = IntersectionObserverInit::Create();
   DummyExceptionStateForTesting exception_state;
@@ -1624,8 +1630,8 @@ TEST_F(IntersectionObserverV2Test, BasicOcclusion) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* occluder = GetDocument().getElementById(AtomicString("occluder"));
+  Element* target = GetElementById("target");
+  Element* occluder = GetElementById("occluder");
   ASSERT_TRUE(target);
   observer->observe(target);
 
@@ -1673,8 +1679,8 @@ TEST_F(IntersectionObserverV2Test, PartialOcclusion) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* occluder = GetDocument().getElementById(AtomicString("occluder"));
+  Element* target = GetElementById("target");
+  Element* occluder = GetElementById("occluder");
   ASSERT_TRUE(target);
   ASSERT_TRUE(occluder);
 
@@ -1781,7 +1787,7 @@ TEST_F(IntersectionObserverV2Test, TableRowOcclusion) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target);
 
@@ -1846,7 +1852,7 @@ TEST_F(IntersectionObserverV2Test, Preserve3DOcclusion) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target);
 
@@ -1907,7 +1913,7 @@ TEST_F(IntersectionObserverV2Test, TableCellOcclusion) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target);
 
@@ -1970,7 +1976,7 @@ TEST_F(IntersectionObserverV2Test, TableHeaderGroupOcclusion) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target);
 
@@ -2030,7 +2036,7 @@ TEST_F(IntersectionObserverV2Test, TableOcclusion) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target);
 
@@ -2072,9 +2078,8 @@ TEST_F(IntersectionObserverV2Test, BasicOpacity) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* transparent =
-      GetDocument().getElementById(AtomicString("transparent"));
+  Element* target = GetElementById("target");
+  Element* transparent = GetElementById("transparent");
   ASSERT_TRUE(target);
   ASSERT_TRUE(transparent);
   observer->observe(target);
@@ -2125,9 +2130,8 @@ TEST_F(IntersectionObserverV2Test, BasicTransform) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
-  Element* transformed =
-      GetDocument().getElementById(AtomicString("transformed"));
+  Element* target = GetElementById("target");
+  Element* transformed = GetElementById("transformed");
   ASSERT_TRUE(target);
   ASSERT_TRUE(transformed);
   observer->observe(target);
@@ -2161,6 +2165,125 @@ TEST_F(IntersectionObserverV2Test, BasicTransform) {
   EXPECT_FALSE(observer_delegate->LastEntry()->isVisible());
 }
 
+TEST_F(IntersectionObserverV2Test,
+       ScopedViewTransitionOnZeroOpacityScopeOcclusion) {
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  SimRequest main_resource("https://example.com/", "text/html");
+  LoadURL("https://example.com/");
+  main_resource.Complete(R"HTML(
+    <style>
+      body {
+        margin: 0;
+      }
+      #target {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100px;
+        height: 100px;
+        background: green;
+        z-index: 1;
+      }
+      #scope {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100px;
+        height: 100px;
+        z-index: 2;
+        opacity: 0;
+        will-change: opacity;
+        pointer-events: none;
+        contain: layout;
+      }
+      #box {
+        width: 100px;
+        height: 100px;
+        background: black;
+        view-transition-name: box;
+      }
+      #scope::view-transition-group(*),
+      #scope::view-transition-old(*),
+      #scope::view-transition-new(*) {
+        animation-play-state: paused;
+      }
+    </style>
+    <style id='vt_style'></style>
+    <div id='target'></div>
+    <div id='scope'>
+      <div id='box'></div>
+    </div>
+  )HTML");
+  Compositor().BeginFrame();
+
+  IntersectionObserverInit* observer_init = IntersectionObserverInit::Create();
+  observer_init->setTrackVisibility(true);
+  observer_init->setDelay(100);
+  DummyExceptionStateForTesting exception_state;
+  TestIntersectionObserverDelegate* observer_delegate =
+      MakeGarbageCollected<TestIntersectionObserverDelegate>(GetDocument());
+  IntersectionObserver* observer = IntersectionObserver::Create(
+      observer_init, *observer_delegate,
+      LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
+      exception_state);
+  ASSERT_FALSE(exception_state.HadException());
+  Element* target = GetElementById("target");
+  Element* scope = GetElementById("scope");
+  Element* vt_style = GetElementById("vt_style");
+  ASSERT_TRUE(target);
+  ASSERT_TRUE(scope);
+  ASSERT_TRUE(vt_style);
+  observer->observe(target);
+
+  // Before starting the transition, #scope has opacity: 0, so #target is not
+  // occluded.
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_EQ(observer_delegate->CallCount(), 1);
+  EXPECT_EQ(observer_delegate->EntryCount(), 1);
+  EXPECT_TRUE(observer_delegate->LastEntry()->isIntersecting());
+  EXPECT_TRUE(observer_delegate->LastEntry()->isVisible());
+
+  // Start a scoped view transition on the zero-opacity #scope.
+  ScriptState* script_state = ToScriptStateForMainWorld(MainFrame().GetFrame());
+  ScriptState::Scope script_state_scope(script_state);
+  ScopedViewTransition::startViewTransition(script_state, *scope,
+                                            ASSERT_NO_EXCEPTION);
+
+  // Advance through capture to the animating phase.
+  Compositor().BeginFrame();
+  ViewTransitionTestUtils::ProcessPendingDirectives(
+      GetDocument(), Compositor().LayerTreeHost());
+  test::RunPendingTasks();
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  PseudoElement* vt_pseudo = scope->GetPseudoElement(kPseudoIdViewTransition);
+  ASSERT_TRUE(vt_pseudo);
+
+  // #scope::view-transition is painted under ViewTransitionScopeRootEffect
+  // above #scope's own zero-opacity Effect node, so it visually occludes
+  // #target.
+  HitTestResult occlusion_result =
+      target->GetLayoutObject()->HitTestForOcclusion(
+          PhysicalRect(0, 0, 100, 100));
+  EXPECT_EQ(occlusion_result.InnerNode(), scope);
+  EXPECT_EQ(observer_delegate->CallCount(), 2);
+  EXPECT_EQ(observer_delegate->EntryCount(), 2);
+  EXPECT_TRUE(observer_delegate->LastEntry()->isIntersecting());
+  EXPECT_FALSE(observer_delegate->LastEntry()->isVisible());
+
+  // When #scope::view-transition itself has opacity: 0, the transition pseudo
+  // tree is also transparent and does not occlude #target.
+  vt_style->setTextContent("#scope::view-transition { opacity: 0; }");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_EQ(observer_delegate->CallCount(), 3);
+  EXPECT_EQ(observer_delegate->EntryCount(), 3);
+  EXPECT_TRUE(observer_delegate->LastEntry()->isIntersecting());
+  EXPECT_TRUE(observer_delegate->LastEntry()->isVisible());
+}
+
 TEST_F(IntersectionObserverTest, ApplyMarginToTarget) {
   WebView().MainFrameViewWidget()->Resize(gfx::Size(200, 200));
   SimRequest main_resource("https://example.com/", "text/html");
@@ -2178,7 +2301,7 @@ TEST_F(IntersectionObserverTest, ApplyMarginToTarget) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
 
   TestIntersectionObserverDelegate* root_margin_delegate =
@@ -2247,7 +2370,7 @@ TEST_F(IntersectionObserverTest, TargetMarginPercentResolvesAgainstRoot) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
 
   TestIntersectionObserverDelegate* target_margin_delegate =
@@ -2346,10 +2469,10 @@ TEST_F(IntersectionObserverTest, ScrollMarginIntersectingNonScrollingRoot) {
 
   Compositor().BeginFrame();
 
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
+  Element* root = GetElementById("root");
   ASSERT_TRUE(root);
 
   TestIntersectionObserverDelegate* scroll_margin_delegate =
@@ -2390,7 +2513,7 @@ TEST_F(IntersectionObserverTest, InlineRoot) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* root = GetDocument().getElementById(AtomicString("root"));
+  Element* root = GetElementById("root");
   ASSERT_TRUE(root);
   IntersectionObserverInit* observer_init = IntersectionObserverInit::Create();
   observer_init->setRoot(MakeGarbageCollected<V8UnionDocumentOrElement>(root));
@@ -2402,7 +2525,7 @@ TEST_F(IntersectionObserverTest, InlineRoot) {
       LocalFrameMetricsAggregator::kJavascriptIntersectionObserver,
       exception_state);
   ASSERT_FALSE(exception_state.HadException());
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target, exception_state);
 
@@ -2568,7 +2691,7 @@ TEST_F(IntersectionObserverTest, DelayedIntersection) {
       *observer_delegate, std::nullopt,
       IntersectionObserver::Params{.thresholds = {0},
                                    .delay = base::Seconds(1)});
-  Element* target = GetDocument().getElementById(AtomicString("target"));
+  Element* target = GetElementById("target");
   ASSERT_TRUE(target);
   observer->observe(target);
   const IntersectionObservation* observation = observer->Observations().front();
@@ -2638,6 +2761,43 @@ TEST_F(IntersectionObserverTest, DelayedIntersection) {
             frame_view->GetIntersectionObservationStateForTesting());
 }
 
+TEST_F(IntersectionObserverTest, DelayedIntersectionAfterFrameDetach) {
+  SimRequest main_resource("https://example.com/", "text/html");
+  LoadURL("https://example.com/");
+  main_resource.Complete(
+      "<div id=target style='position: absolute'>Hello world!</div>");
+  Compositor().BeginFrame();
+
+  auto* observer_delegate =
+      MakeGarbageCollected<TestIntersectionObserverDelegate>(GetDocument());
+  auto* observer = MakeGarbageCollected<IntersectionObserver>(
+      *observer_delegate, std::nullopt,
+      IntersectionObserver::Params{.thresholds = {0},
+                                   .delay = base::Seconds(1)});
+  Element* target = GetElementById("target");
+  ASSERT_TRUE(target);
+  observer->observe(target);
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  ASSERT_EQ(observer_delegate->CallCount(), 1);
+
+  target->SetInlineStyleProperty(CSSPropertyID::kTop, "2000px");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  // Keep the old view alive so GC cannot cancel its pending timer.
+  Persistent<LocalFrameView> frame_view = GetDocument().View();
+  ASSERT_TRUE(frame_view->HasScheduledDelayedIntersectionForTesting());
+  ASSERT_FALSE(frame_view->NeedsUpdateDelayedIntersectionForTesting());
+
+  WebViewHelper().Reset();
+  ASSERT_TRUE(frame_view->GetFrame().IsDetached());
+  EXPECT_FALSE(frame_view->HasScheduledDelayedIntersectionForTesting());
+
+  task_environment().FastForwardBy(base::Seconds(1));
+  EXPECT_FALSE(frame_view->NeedsUpdateDelayedIntersectionForTesting());
+}
+
 TEST_F(IntersectionObserverTest, DelayedAndNonDelayedIntersections) {
   WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
   SimRequest main_resource("https://example.com/", "text/html");
@@ -2667,7 +2827,7 @@ TEST_F(IntersectionObserverTest, DelayedAndNonDelayedIntersections) {
           *non_delayed_observer_delegate, std::nullopt,
           IntersectionObserver::Params{.thresholds = {0}});
 
-  Element* delayed = GetDocument().getElementById(AtomicString("delayed"));
+  Element* delayed = GetElementById("delayed");
   ASSERT_TRUE(delayed);
   delayed_observer1->observe(delayed);
   const IntersectionObservation* delayed_observation1 =
@@ -2675,8 +2835,7 @@ TEST_F(IntersectionObserverTest, DelayedAndNonDelayedIntersections) {
   delayed_observer2->observe(delayed);
   const IntersectionObservation* delayed_observation2 =
       delayed_observer2->Observations().front();
-  Element* non_delayed =
-      GetDocument().getElementById(AtomicString("non-delayed"));
+  Element* non_delayed = GetElementById("non-delayed");
   ASSERT_TRUE(non_delayed);
   non_delayed_observer->observe(non_delayed);
   const IntersectionObservation* non_delayed_observation =
@@ -2781,6 +2940,7 @@ TEST_F(IntersectionObserverTest, DelayedAndNonDelayedIntersections) {
 }
 
 TEST_F(IntersectionObserverTest, IntersectionWithMarginInThrottledFrame) {
+  ScopedStaleIntersectionGeometryForThrottledFramesForTest scoped_feature(true);
   WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
   SimRequest main_resource("https://example.com/", "text/html");
   SimRequest iframe_resource("https://example.com/iframe.html", "text/html");
@@ -2791,6 +2951,9 @@ TEST_F(IntersectionObserverTest, IntersectionWithMarginInThrottledFrame) {
   )HTML");
   iframe_resource.Complete("<div id='target'>Hello, world!</div>");
   Compositor().BeginFrame();
+
+  uint32_t expected_call_count = 0;
+  uint32_t expected_entry_count = 0;
 
   Document* iframe_document = To<WebLocalFrameImpl>(MainFrame().FirstChild())
                                   ->GetFrame()
@@ -2809,55 +2972,104 @@ TEST_F(IntersectionObserverTest, IntersectionWithMarginInThrottledFrame) {
   Compositor().BeginFrame();
   test::RunPendingTasks();
   EXPECT_FALSE(iframe_document->View()->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 1);
-  EXPECT_EQ(observer_delegate->EntryCount(), 1);
+  EXPECT_EQ(observer_delegate->CallCount(), ++expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), ++expected_entry_count);
   EXPECT_TRUE(observer_delegate->LastEntry()->isIntersecting());
 
   // Move the iframe out of view, but the target is still in the margin.
-  GetDocument()
-      .getElementById(AtomicString("iframe"))
-      ->SetInlineStyleProperty(CSSPropertyID::kTop, "600px");
+  GetElementById("iframe")->SetInlineStyleProperty(CSSPropertyID::kTop,
+                                                   "600px");
   Compositor().BeginFrame();
   test::RunPendingTasks();
+  // The iframe was not throttled during BeginFrame so the iframe updated its
+  // rendering and we did not send a "not intersecting" notification due to
+  // throttling.
   EXPECT_TRUE(iframe_document->View()->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 1);
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
 
-  // Move the iframe further down, to move the target out of the margin.
-  GetDocument()
-      .getElementById(AtomicString("iframe"))
-      ->SetInlineStyleProperty(CSSPropertyID::kTop, "1000px");
+  // The iframe is now throttled and will not update its rendering on the next
+  // BeginFrame. It should queue a "not intersecting" notification if
+  // StaleIntersectionGeometryForThrottledFrames is enabled.
+  if (RuntimeEnabledFeatures::
+          StaleIntersectionGeometryForThrottledFramesEnabled()) {
+    expected_call_count++;
+    expected_entry_count++;
+  }
+  iframe_document->View()->ScheduleAnimation();
   Compositor().BeginFrame();
   test::RunPendingTasks();
   EXPECT_TRUE(iframe_document->View()->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 2);
-  EXPECT_EQ(observer_delegate->EntryCount(), 2);
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
+  EXPECT_EQ(!RuntimeEnabledFeatures::
+                StaleIntersectionGeometryForThrottledFramesEnabled(),
+            observer_delegate->LastEntry()->isIntersecting());
+
+  // Move the iframe outside the margin. If we have not already, we should
+  // generate a "not intersecting" notification now.
+  GetElementById("iframe")->SetInlineStyleProperty(CSSPropertyID::kTop,
+                                                   "1000px");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  if (!RuntimeEnabledFeatures::
+          StaleIntersectionGeometryForThrottledFramesEnabled()) {
+    expected_call_count++;
+    expected_entry_count++;
+  }
+  EXPECT_TRUE(iframe_document->View()->IsHiddenForThrottling());
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
   EXPECT_FALSE(observer_delegate->LastEntry()->isIntersecting());
 
-  // Move the iframe up, still out of view, but the target will be in the
-  // margin.
-  GetDocument()
-      .getElementById(AtomicString("iframe"))
-      ->SetInlineStyleProperty(CSSPropertyID::kTop, "600px");
+  // Move the iframe into the margin but still outside the viewport. We should
+  // report it as intersecting if StaleIntersectionGeometryForThrottledFrames
+  // is disabled.
+  GetElementById("iframe")->SetInlineStyleProperty(CSSPropertyID::kTop,
+                                                   "600px");
   Compositor().BeginFrame();
   test::RunPendingTasks();
+  if (!RuntimeEnabledFeatures::
+          StaleIntersectionGeometryForThrottledFramesEnabled()) {
+    expected_call_count++;
+    expected_entry_count++;
+  }
   EXPECT_TRUE(iframe_document->View()->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 3);
-  EXPECT_EQ(observer_delegate->EntryCount(), 3);
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
+  EXPECT_EQ(!RuntimeEnabledFeatures::
+                StaleIntersectionGeometryForThrottledFramesEnabled(),
+            observer_delegate->LastEntry()->isIntersecting());
+
+  // Move the iframe into the viewport.
+  GetElementById("iframe")->SetInlineStyleProperty(CSSPropertyID::kTop,
+                                                   "500px");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  // Despite being in the viewport, the iframe was throttled during BeginFrame
+  // so it will not queue an "intersecting" notification on this pass if
+  // StaleIntersectionGeometryForThrottledFrames is enabled.
+  EXPECT_FALSE(iframe_document->View()->IsHiddenForThrottling());
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
+  EXPECT_EQ(!RuntimeEnabledFeatures::
+                StaleIntersectionGeometryForThrottledFramesEnabled(),
+            observer_delegate->LastEntry()->isIntersecting());
+
+  // On the next update the iframe will not be throttled and we should issue an
+  // "intersecting" notification if StaleIntersectionGeometryForThrottledFrames
+  // is enabled.
+  iframe_document->View()->ScheduleAnimation();
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  if (RuntimeEnabledFeatures::
+          StaleIntersectionGeometryForThrottledFramesEnabled()) {
+    expected_call_count++;
+    expected_entry_count++;
+  }
+  EXPECT_FALSE(iframe_document->View()->IsHiddenForThrottling());
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
   EXPECT_TRUE(observer_delegate->LastEntry()->isIntersecting());
-
-  // Move the iframe down a bit. Though the target may still in the margin,
-  // the iframe's view is marked needing layout somehow, and we will create a
-  // degenerate "not intersecting" notification.
-  GetDocument()
-      .getElementById(AtomicString("iframe"))
-      ->SetInlineStyleProperty(CSSPropertyID::kTop, "610px");
-  iframe_document->View()->SetNeedsLayout();
-  Compositor().BeginFrame();
-  test::RunPendingTasks();
-  EXPECT_TRUE(iframe_document->View()->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 4);
-  EXPECT_EQ(observer_delegate->EntryCount(), 4);
-  EXPECT_FALSE(observer_delegate->LastEntry()->isIntersecting());
 }
 
 TEST_F(IntersectionObserverTest,
@@ -2872,6 +3084,9 @@ TEST_F(IntersectionObserverTest,
   )HTML");
   iframe_resource.Complete("<div id='target'>Hello, world!</div>");
   Compositor().BeginFrame();
+
+  uint32_t expected_call_count = 0;
+  uint32_t expected_entry_count = 0;
 
   Document* iframe_document = To<WebLocalFrameImpl>(MainFrame().FirstChild())
                                   ->GetFrame()
@@ -2894,23 +3109,33 @@ TEST_F(IntersectionObserverTest,
   Compositor().BeginFrame();
   test::RunPendingTasks();
   EXPECT_FALSE(iframe_view->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 1);
-  EXPECT_EQ(observer_delegate->EntryCount(), 1);
+  EXPECT_EQ(observer_delegate->CallCount(), ++expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), ++expected_entry_count);
   EXPECT_TRUE(observer_delegate->LastEntry()->isIntersecting());
   EXPECT_FALSE(observation->HasPendingUpdateForTesting());
 
   // Move the iframe out of view, but the target is still in the margin.
-  GetDocument()
-      .getElementById(AtomicString("iframe"))
-      ->SetInlineStyleProperty(CSSPropertyID::kTop, "600px");
+  GetElementById("iframe")->SetInlineStyleProperty(CSSPropertyID::kTop,
+                                                   "600px");
   Compositor().BeginFrame();
   test::RunPendingTasks();
+  // Because the notification delay has not elapsed, the observation is
+  // scheduled for a delayed update and the iframe becomes throttled at the end
+  // of BeginFrame.
   EXPECT_TRUE(iframe_view->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 1);
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
   EXPECT_TRUE(observation->HasPendingUpdateForTesting());
   EXPECT_TRUE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
   EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
 
+  // When the delay expires, the iframe is throttled and will not update its
+  // rendering on the next BeginFrame. It should queue a "not intersecting"
+  // notification if StaleIntersectionGeometryForThrottledFrames is enabled.
+  if (RuntimeEnabledFeatures::
+          StaleIntersectionGeometryForThrottledFramesEnabled()) {
+    expected_call_count++;
+    expected_entry_count++;
+  }
   task_environment().FastForwardBy(base::Seconds(1));
   EXPECT_TRUE(observation->HasPendingUpdateForTesting());
   EXPECT_FALSE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
@@ -2918,20 +3143,23 @@ TEST_F(IntersectionObserverTest,
   Compositor().BeginFrame();
   test::RunPendingTasks();
   EXPECT_TRUE(iframe_view->IsHiddenForThrottling());
-  // `target` is still in the intersection margin.
-  EXPECT_EQ(observer_delegate->CallCount(), 1);
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
+  EXPECT_EQ(!RuntimeEnabledFeatures::
+                StaleIntersectionGeometryForThrottledFramesEnabled(),
+            observer_delegate->LastEntry()->isIntersecting());
   EXPECT_FALSE(observation->HasPendingUpdateForTesting());
   EXPECT_FALSE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
   EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
 
-  // Move the iframe further down, to move the target out of the margin.
-  GetDocument()
-      .getElementById(AtomicString("iframe"))
-      ->SetInlineStyleProperty(CSSPropertyID::kTop, "1000px");
+  // Move the iframe outside the margin. If we have not already, we should
+  // generate a "not intersecting" notification after the delay.
+  GetElementById("iframe")->SetInlineStyleProperty(CSSPropertyID::kTop,
+                                                   "1000px");
   Compositor().BeginFrame();
   test::RunPendingTasks();
   EXPECT_TRUE(iframe_view->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 1);
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
   EXPECT_TRUE(observation->HasPendingUpdateForTesting());
   EXPECT_TRUE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
   EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
@@ -2942,23 +3170,28 @@ TEST_F(IntersectionObserverTest,
   EXPECT_TRUE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
   Compositor().BeginFrame();
   test::RunPendingTasks();
+  if (!RuntimeEnabledFeatures::
+          StaleIntersectionGeometryForThrottledFramesEnabled()) {
+    expected_call_count++;
+    expected_entry_count++;
+  }
   EXPECT_TRUE(iframe_view->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 2);
-  EXPECT_EQ(observer_delegate->EntryCount(), 2);
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
   EXPECT_FALSE(observer_delegate->LastEntry()->isIntersecting());
   EXPECT_FALSE(observation->HasPendingUpdateForTesting());
   EXPECT_FALSE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
   EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
 
-  // Move the iframe up, still out of view, but the target will be in the
-  // margin.
-  GetDocument()
-      .getElementById(AtomicString("iframe"))
-      ->SetInlineStyleProperty(CSSPropertyID::kTop, "600px");
+  // Move the iframe into the margin but still outside the viewport. We should
+  // report it as intersecting after the delay if
+  // StaleIntersectionGeometryForThrottledFrames is disabled.
+  GetElementById("iframe")->SetInlineStyleProperty(CSSPropertyID::kTop,
+                                                   "600px");
   Compositor().BeginFrame();
   test::RunPendingTasks();
   EXPECT_TRUE(iframe_view->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 2);
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
   EXPECT_TRUE(observation->HasPendingUpdateForTesting());
   EXPECT_TRUE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
   EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
@@ -2969,40 +3202,233 @@ TEST_F(IntersectionObserverTest,
   EXPECT_TRUE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
   Compositor().BeginFrame();
   test::RunPendingTasks();
+  if (!RuntimeEnabledFeatures::
+          StaleIntersectionGeometryForThrottledFramesEnabled()) {
+    expected_call_count++;
+    expected_entry_count++;
+  }
   EXPECT_TRUE(iframe_view->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 3);
-  EXPECT_EQ(observer_delegate->EntryCount(), 3);
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
+  EXPECT_EQ(!RuntimeEnabledFeatures::
+                StaleIntersectionGeometryForThrottledFramesEnabled(),
+            observer_delegate->LastEntry()->isIntersecting());
+  EXPECT_FALSE(observation->HasPendingUpdateForTesting());
+  EXPECT_FALSE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
+  EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
+
+  // Move the iframe into the viewport.
+  GetElementById("iframe")->SetInlineStyleProperty(CSSPropertyID::kTop,
+                                                   "500px");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  // Despite being in the viewport, the delayed observation is rescheduled and
+  // the iframe was throttled during BeginFrame, so no notification is queued on
+  // this pass.
+  EXPECT_FALSE(iframe_view->IsHiddenForThrottling());
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
+  EXPECT_EQ(!RuntimeEnabledFeatures::
+                StaleIntersectionGeometryForThrottledFramesEnabled(),
+            observer_delegate->LastEntry()->isIntersecting());
+  EXPECT_TRUE(observation->HasPendingUpdateForTesting());
+  EXPECT_TRUE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
+  EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
+
+  // When the delay expires, the iframe is no longer throttled and we should
+  // issue an "intersecting" notification if
+  // StaleIntersectionGeometryForThrottledFrames is enabled.
+  task_environment().FastForwardBy(base::Seconds(1));
+  EXPECT_TRUE(observation->HasPendingUpdateForTesting());
+  EXPECT_FALSE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
+  EXPECT_TRUE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  if (RuntimeEnabledFeatures::
+          StaleIntersectionGeometryForThrottledFramesEnabled()) {
+    expected_call_count++;
+    expected_entry_count++;
+  }
+  EXPECT_FALSE(iframe_view->IsHiddenForThrottling());
+  EXPECT_EQ(observer_delegate->CallCount(), expected_call_count);
+  EXPECT_EQ(observer_delegate->EntryCount(), expected_entry_count);
   EXPECT_TRUE(observer_delegate->LastEntry()->isIntersecting());
   EXPECT_FALSE(observation->HasPendingUpdateForTesting());
   EXPECT_FALSE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
   EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
+}
 
-  // Move the iframe down again and mark the iframe's view needs layout.
+// Regression test for https://crbug.com/570703733.
+TEST_F(IntersectionObserverTest, DirtySlotAssignmentInThrottledFrame) {
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  SimRequest main_resource("https://example.com/", "text/html");
+  SimRequest iframe_resource("https://example.com/iframe.html", "text/html");
+  LoadURL("https://example.com/");
+  main_resource.Complete(R"HTML(
+    <iframe id="iframe" src="iframe.html" sandbox style="position: absolute">
+    </iframe>
+  )HTML");
+  iframe_resource.Complete(R"HTML(
+    <div id="kick">Kick</div>
+    <div id="host">
+      <template shadowrootmode="open">
+        <slot></slot>
+      </template>
+      <div id="target">Hello, world!</div>
+      <div id="wrap">
+        <div style="overflow: scroll; width: 50px; height: 50px">
+          <div style="anchor-name: --a; width: 10px; height: 10px"></div>
+          <div style="position: absolute; position-anchor: --a"></div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+  Compositor().BeginFrame();
+
+  Document* iframe_document = To<WebLocalFrameImpl>(MainFrame().FirstChild())
+                                  ->GetFrame()
+                                  ->GetDocument();
+  TestIntersectionObserverDelegate* observer_delegate =
+      MakeGarbageCollected<TestIntersectionObserverDelegate>(*iframe_document);
+  IntersectionObserver* observer = MakeGarbageCollected<IntersectionObserver>(
+      *observer_delegate, std::nullopt,
+      IntersectionObserver::Params{.root = iframe_document, .thresholds = {0}});
+  Element* target = iframe_document->getElementById(AtomicString("target"));
+  ASSERT_TRUE(target);
+  observer->observe(target);
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_FALSE(iframe_document->View()->IsHiddenForThrottling());
+  EXPECT_EQ(observer_delegate->CallCount(), 1);
+  EXPECT_EQ(observer_delegate->EntryCount(), 1);
+  EXPECT_TRUE(observer_delegate->LastEntry()->isIntersecting());
+
+  // Move the iframe out of view so that it becomes render-throttled.
   GetDocument()
       .getElementById(AtomicString("iframe"))
       ->SetInlineStyleProperty(CSSPropertyID::kTop, "1000px");
-  iframe_view->SetNeedsLayout();
   Compositor().BeginFrame();
   test::RunPendingTasks();
-  EXPECT_TRUE(iframe_view->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 3);
-  EXPECT_TRUE(observation->HasPendingUpdateForTesting());
-  EXPECT_TRUE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
-  EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
+  EXPECT_TRUE(iframe_document->View()->IsHiddenForThrottling());
 
-  task_environment().FastForwardBy(base::Seconds(1));
-  EXPECT_TRUE(observation->HasPendingUpdateForTesting());
-  EXPECT_FALSE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
-  EXPECT_TRUE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
+  Element* host = iframe_document->getElementById(AtomicString("host"));
+  ASSERT_TRUE(host);
+  ShadowRoot* shadow_root = host->OpenShadowRoot();
+  ASSERT_TRUE(shadow_root);
+  EXPECT_FALSE(shadow_root->NeedsSlotAssignmentRecalc());
+
+  // Remove `#kick` to set IntersectionObservationState::kDesired on the
+  // throttled frame, and change `#wrap`'s slot attribute so that slot
+  // assignment is dirty when ComputeIntersections runs.
+  Element* kick = iframe_document->getElementById(AtomicString("kick"));
+  ASSERT_TRUE(kick);
+  kick->remove();
+  Element* wrap = iframe_document->getElementById(AtomicString("wrap"));
+  ASSERT_TRUE(wrap);
+  wrap->setAttribute(html_names::kSlotAttr, AtomicString("x"));
+  EXPECT_TRUE(shadow_root->NeedsSlotAssignmentRecalc());
+
   Compositor().BeginFrame();
   test::RunPendingTasks();
-  EXPECT_TRUE(iframe_view->IsHiddenForThrottling());
-  EXPECT_EQ(observer_delegate->CallCount(), 4);
-  EXPECT_EQ(observer_delegate->EntryCount(), 4);
+  EXPECT_TRUE(iframe_document->View()->IsHiddenForThrottling());
+  // Computing intersections in a throttled frame must not force slot
+  // assignment recalculation during post-lifecycle steps.
+  EXPECT_TRUE(shadow_root->NeedsSlotAssignmentRecalc());
+  EXPECT_EQ(observer_delegate->CallCount(), 2);
+  EXPECT_EQ(observer_delegate->EntryCount(), 2);
   EXPECT_FALSE(observer_delegate->LastEntry()->isIntersecting());
-  EXPECT_FALSE(observation->HasPendingUpdateForTesting());
-  EXPECT_FALSE(root_frame_view->HasScheduledDelayedIntersectionForTesting());
-  EXPECT_FALSE(root_frame_view->NeedsUpdateDelayedIntersectionForTesting());
+}
+
+// A frame whose ancestor frame is display locked does not get lifecycle
+// updates, even if it is itself not display locked (e.g. because its own owner
+// element is display:none) and requires an intersection update. Computing
+// intersections in it must not force slot assignment recalculation during
+// post-lifecycle steps.
+TEST_F(IntersectionObserverTest,
+       DirtySlotAssignmentInFrameWithDisplayLockedAncestorFrame) {
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  SimRequest main_resource("https://example.com/", "text/html");
+  SimRequest middle_resource("https://example.com/middle.html", "text/html");
+  SimRequest inner_resource("https://example.com/inner.html", "text/html");
+  LoadURL("https://example.com/");
+  main_resource.Complete(R"HTML(
+    <div id="lock">
+      <iframe id="middle" src="middle.html"></iframe>
+    </div>
+  )HTML");
+  middle_resource.Complete(R"HTML(
+    <iframe id="inner" src="inner.html"></iframe>
+  )HTML");
+  inner_resource.Complete(R"HTML(
+    <div id="host">
+      <template shadowrootmode="open">
+        <slot></slot>
+      </template>
+      <div id="target">Hello, world!</div>
+      <div id="wrap">
+        <div style="overflow: scroll; width: 50px; height: 50px">
+          <div style="anchor-name: --a; width: 10px; height: 10px"></div>
+          <div style="position: absolute; position-anchor: --a"></div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  auto* middle_frame = To<WebLocalFrameImpl>(MainFrame().FirstChild());
+  ASSERT_TRUE(middle_frame);
+  auto* inner_frame = To<WebLocalFrameImpl>(middle_frame->FirstChild());
+  ASSERT_TRUE(inner_frame);
+  LocalFrameView* middle_view = middle_frame->GetFrame()->View();
+  Document* inner_document = inner_frame->GetFrame()->GetDocument();
+  LocalFrameView* inner_view = inner_document->View();
+  Element* target = inner_document->getElementById(AtomicString("target"));
+  ASSERT_TRUE(target);
+  EXPECT_TRUE(target->GetLayoutObject());
+
+  // Display lock the middle frame, and remove the inner frame's owner box so
+  // that the display lock is not propagated through the owner's layout object.
+  middle_frame->GetFrame()
+      ->GetDocument()
+      ->getElementById(AtomicString("inner"))
+      ->SetInlineStyleProperty(CSSPropertyID::kDisplay, "none");
+  GetDocument()
+      .getElementById(AtomicString("lock"))
+      ->SetInlineStyleProperty(CSSPropertyID::kContentVisibility, "hidden");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_TRUE(middle_view->IsDisplayLockThrottled());
+  EXPECT_TRUE(inner_view->CanThrottleRendering());
+
+  Element* host = inner_document->getElementById(AtomicString("host"));
+  ASSERT_TRUE(host);
+  ShadowRoot* shadow_root = host->OpenShadowRoot();
+  ASSERT_TRUE(shadow_root);
+  EXPECT_FALSE(shadow_root->NeedsSlotAssignmentRecalc());
+
+  // Dirty slot assignment and observe a target, which requires an intersection
+  // update in the inner frame.
+  Element* wrap = inner_document->getElementById(AtomicString("wrap"));
+  ASSERT_TRUE(wrap);
+  wrap->setAttribute(html_names::kSlotAttr, AtomicString("x"));
+  EXPECT_TRUE(shadow_root->NeedsSlotAssignmentRecalc());
+
+  TestIntersectionObserverDelegate* observer_delegate =
+      MakeGarbageCollected<TestIntersectionObserverDelegate>(*inner_document);
+  IntersectionObserver* observer = MakeGarbageCollected<IntersectionObserver>(
+      *observer_delegate, std::nullopt,
+      IntersectionObserver::Params{.root = inner_document, .thresholds = {0}});
+  observer->observe(target);
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_TRUE(middle_view->IsDisplayLockThrottled());
+  EXPECT_TRUE(shadow_root->NeedsSlotAssignmentRecalc());
+  EXPECT_EQ(observer_delegate->CallCount(), 1);
+  EXPECT_EQ(observer_delegate->EntryCount(), 1);
+  EXPECT_FALSE(observer_delegate->LastEntry()->isIntersecting());
 }
 
 TEST_F(IntersectionObserverTest, RootMarginPercentOverflow) {
@@ -3021,6 +3447,278 @@ TEST_F(IntersectionObserverTest, RootMarginPercentOverflow) {
   ASSERT_FALSE(exception_state.HadException());
   EXPECT_EQ(observer->rootMargin(),
             "3.00000e+9% 3.00000e+9% 3.00000e+9% 3.00000e+9%");
+}
+
+// Regression test for https://crbug.com/583238769 (vulnerability 1):
+// A newly-created iframe inside an already display-locked ancestor frame must
+// initialize its FrameView with IsDisplayLockThrottled() == true so that
+// ComputeIntersections short-circuits before doing a flat-tree walk in a
+// document with pending slot assignment recalc.
+TEST_F(IntersectionObserverTest,
+       DirtySlotAssignmentInNewlyCreatedFrameUnderDisplayLock) {
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  SimRequest main_resource("https://example.com/", "text/html");
+  SimRequest outer_resource("https://example.com/outer.html", "text/html");
+  LoadURL("https://example.com/");
+  main_resource.Complete(R"HTML(
+    <div id="lock">
+      <iframe id="outer" src="outer.html"></iframe>
+    </div>
+  )HTML");
+  outer_resource.Complete("<!doctype html><body></body>");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  // Lock `#lock` so that `outer` becomes display-locked.
+  GetDocument()
+      .getElementById(AtomicString("lock"))
+      ->SetInlineStyleProperty(CSSPropertyID::kContentVisibility, "hidden");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  auto* outer_frame = To<WebLocalFrameImpl>(MainFrame().FirstChild());
+  ASSERT_TRUE(outer_frame);
+  Document* outer_document = outer_frame->GetFrame()->GetDocument();
+  EXPECT_TRUE(outer_document->View()->IsDisplayLockThrottled());
+
+  // Append a new iframe inside the already display-locked `outer` frame.
+  Element* inner_iframe =
+      outer_document->CreateRawElement(html_names::kIFrameTag);
+  outer_document->body()->AppendChild(inner_iframe);
+  test::RunPendingTasks();
+  auto* inner_frame = To<WebLocalFrameImpl>(outer_frame->FirstChild());
+  ASSERT_TRUE(inner_frame);
+  Document* inner_document = inner_frame->GetFrame()->GetDocument();
+  EXPECT_TRUE(inner_document->View()->IsDisplayLockThrottled());
+
+  inner_document->body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <div id="host">
+      <div id="target">Hello, world!</div>
+      <div id="wrap"></div>
+    </div>
+  )HTML");
+  Element* host = inner_document->getElementById(AtomicString("host"));
+  ASSERT_TRUE(host);
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes("<slot></slot>");
+
+  // Force layout via script in the inner frame so `target` gets a LayoutObject.
+  inner_document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  Element* target = inner_document->getElementById(AtomicString("target"));
+  ASSERT_TRUE(target);
+  EXPECT_TRUE(target->GetLayoutObject());
+
+  // Dirty slot assignment in the inner frame and require an intersection
+  // observation on the next frame.
+  Element* wrap = inner_document->getElementById(AtomicString("wrap"));
+  ASSERT_TRUE(wrap);
+  wrap->setAttribute(html_names::kSlotAttr, AtomicString("x"));
+  EXPECT_TRUE(shadow_root.NeedsSlotAssignmentRecalc());
+
+  TestIntersectionObserverDelegate* observer_delegate =
+      MakeGarbageCollected<TestIntersectionObserverDelegate>(*inner_document);
+  IntersectionObserver* observer = MakeGarbageCollected<IntersectionObserver>(
+      *observer_delegate, std::nullopt,
+      IntersectionObserver::Params{.root = inner_document, .thresholds = {0}});
+  observer->observe(target);
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_TRUE(inner_document->View()->IsDisplayLockThrottled());
+  EXPECT_TRUE(shadow_root.NeedsSlotAssignmentRecalc());
+  EXPECT_EQ(observer_delegate->CallCount(), 1);
+  EXPECT_EQ(observer_delegate->EntryCount(), 1);
+  EXPECT_FALSE(observer_delegate->LastEntry()->isIntersecting());
+}
+
+namespace {
+
+class ObserveAndDirtySlotResizeObserverDelegate final
+    : public ResizeObserver::Delegate {
+ public:
+  ObserveAndDirtySlotResizeObserverDelegate(IntersectionObserver& observer,
+                                            Element& target,
+                                            Element& slot_child)
+      : observer_(observer), target_(target), slot_child_(slot_child) {}
+
+  void OnResize(
+      const HeapVector<Member<ResizeObserverEntry>>& entries) override {
+    if (did_run_) {
+      return;
+    }
+    did_run_ = true;
+    observer_->observe(target_.Get());
+    slot_child_->setAttribute(html_names::kSlotAttr, AtomicString("x"));
+  }
+
+  void Trace(Visitor* visitor) const override {
+    ResizeObserver::Delegate::Trace(visitor);
+    visitor->Trace(observer_);
+    visitor->Trace(target_);
+    visitor->Trace(slot_child_);
+  }
+
+ private:
+  Member<IntersectionObserver> observer_;
+  Member<Element> target_;
+  Member<Element> slot_child_;
+  bool did_run_ = false;
+};
+
+}  // namespace
+
+// Regression test for https://crbug.com/583238769 (vulnerability 2):
+// When a ResizeObserver callback calls IntersectionObserver::observe() on a
+// target in a nested throttled frame that is already at kPrePaintClean, the
+// repeated lifecycle pass must rewind the throttled frame and its ancestors to
+// kVisualUpdatePending so that pending slot assignments are recalculated before
+// ComputeIntersections runs.
+TEST_F(IntersectionObserverTest,
+       DirtySlotAssignmentInThrottledFrameObservedFromResizeObserver) {
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  SimRequest main_resource("https://example.com/", "text/html");
+  SimRequest middle_resource("https://example.com/middle.html", "text/html");
+  SimRequest inner_resource("https://example.com/inner.html", "text/html");
+  LoadURL("https://example.com/");
+  main_resource.Complete(R"HTML(
+    <iframe id="middle" src="middle.html" sandbox
+            style="position: absolute; top: 1000px"></iframe>
+  )HTML");
+  middle_resource.Complete(R"HTML(
+    <iframe id="inner" src="inner.html"></iframe>
+  )HTML");
+  inner_resource.Complete(R"HTML(
+    <div id="host">
+      <template shadowrootmode="open">
+        <slot></slot>
+      </template>
+      <div id="t1">1</div>
+      <div id="t2">2</div>
+      <div id="wrap"></div>
+    </div>
+  )HTML");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  auto* middle_frame = To<WebLocalFrameImpl>(MainFrame().FirstChild());
+  ASSERT_TRUE(middle_frame);
+  auto* inner_frame = To<WebLocalFrameImpl>(middle_frame->FirstChild());
+  ASSERT_TRUE(inner_frame);
+  LocalFrameView* middle_view = middle_frame->GetFrame()->View();
+  Document* inner_document = inner_frame->GetFrame()->GetDocument();
+  LocalFrameView* inner_view = inner_document->View();
+  EXPECT_TRUE(middle_view->CanThrottleRendering());
+  EXPECT_TRUE(inner_view->CanThrottleRendering());
+
+  Element* t1 = inner_document->getElementById(AtomicString("t1"));
+  Element* t2 = inner_document->getElementById(AtomicString("t2"));
+  Element* wrap = inner_document->getElementById(AtomicString("wrap"));
+  Element* host = inner_document->getElementById(AtomicString("host"));
+  ASSERT_TRUE(t1);
+  ASSERT_TRUE(t2);
+  ASSERT_TRUE(wrap);
+  ASSERT_TRUE(host);
+  ShadowRoot* shadow_root = host->OpenShadowRoot();
+  ASSERT_TRUE(shadow_root);
+
+  TestIntersectionObserverDelegate* observer_delegate =
+      MakeGarbageCollected<TestIntersectionObserverDelegate>(*inner_document);
+  IntersectionObserver* observer = MakeGarbageCollected<IntersectionObserver>(
+      *observer_delegate, std::nullopt,
+      IntersectionObserver::Params{.root = inner_document, .thresholds = {0}});
+
+  // Observe `t1` from a normal task so that the next BeginFrame advances
+  // `middle` and `inner` to kPrePaintClean while keeping them throttled.
+  observer->observe(t1);
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_EQ(DocumentLifecycle::kPrePaintClean,
+            middle_frame->GetFrame()->GetDocument()->Lifecycle().GetState());
+  EXPECT_EQ(DocumentLifecycle::kPrePaintClean,
+            inner_document->Lifecycle().GetState());
+  EXPECT_EQ(observer_delegate->EntryCount(), 1);
+
+  // Now register a ResizeObserver on the main document that will fire during
+  // the lifecycle update, call `observer->observe(t2)`, and dirty slot
+  // assignment in `inner`.
+  auto* resize_delegate =
+      MakeGarbageCollected<ObserveAndDirtySlotResizeObserverDelegate>(
+          *observer, *t2, *wrap);
+  ResizeObserver* resize_observer =
+      ResizeObserver::Create(GetDocument().domWindow(), resize_delegate);
+  resize_observer->observe(GetDocument().body());
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_FALSE(shadow_root->NeedsSlotAssignmentRecalc());
+  EXPECT_EQ(observer_delegate->EntryCount(), 2);
+}
+
+// Regression test for https://crbug.com/583238769 (vulnerability 3):
+// An explicit-root IntersectionObserver whose root is in an unthrottled
+// document and whose target is in a throttled frame must reject the cross-frame
+// root/target relationship before inspecting the target's layout or flat tree.
+TEST_F(IntersectionObserverTest,
+       DirtySlotAssignmentWithCrossDocumentExplicitRoot) {
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  SimRequest main_resource("https://example.com/", "text/html");
+  SimRequest iframe_resource("https://example.com/iframe.html", "text/html");
+  LoadURL("https://example.com/");
+  main_resource.Complete(R"HTML(
+    <iframe id="iframe" src="iframe.html" sandbox
+            style="position: absolute; top: 1000px"></iframe>
+  )HTML");
+  iframe_resource.Complete(R"HTML(
+    <div id="host">
+      <template shadowrootmode="open">
+        <slot></slot>
+      </template>
+      <div id="target">Hello, world!</div>
+      <div id="wrap"></div>
+    </div>
+  )HTML");
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+
+  auto* iframe = To<WebLocalFrameImpl>(MainFrame().FirstChild());
+  ASSERT_TRUE(iframe);
+  Document* iframe_document = iframe->GetFrame()->GetDocument();
+  EXPECT_TRUE(iframe_document->View()->CanThrottleRendering());
+
+  Element* target = iframe_document->getElementById(AtomicString("target"));
+  Element* wrap = iframe_document->getElementById(AtomicString("wrap"));
+  Element* host = iframe_document->getElementById(AtomicString("host"));
+  ASSERT_TRUE(target);
+  ASSERT_TRUE(wrap);
+  ASSERT_TRUE(host);
+  ShadowRoot* shadow_root = host->OpenShadowRoot();
+  ASSERT_TRUE(shadow_root);
+
+  // Create an observer whose explicit root is the main document, observing a
+  // target in the throttled subframe.
+  TestIntersectionObserverDelegate* observer_delegate =
+      MakeGarbageCollected<TestIntersectionObserverDelegate>(GetDocument());
+  IntersectionObserver* observer = MakeGarbageCollected<IntersectionObserver>(
+      *observer_delegate, std::nullopt,
+      IntersectionObserver::Params{.root = &GetDocument(), .thresholds = {0}});
+  observer->observe(target);
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_EQ(observer_delegate->EntryCount(), 1);
+  EXPECT_FALSE(observer_delegate->LastEntry()->isIntersecting());
+
+  // Now dirty slot assignment in the throttled subframe and trigger a main
+  // frame intersection update while the subframe remains throttled.
+  wrap->setAttribute(html_names::kSlotAttr, AtomicString("x"));
+  EXPECT_TRUE(shadow_root->NeedsSlotAssignmentRecalc());
+  GetDocument().View()->SetIntersectionObservationState(
+      LocalFrameView::kRequired);
+  GetDocument().View()->ScheduleAnimation();
+
+  Compositor().BeginFrame();
+  test::RunPendingTasks();
+  EXPECT_TRUE(shadow_root->NeedsSlotAssignmentRecalc());
 }
 
 }  // namespace blink

@@ -11,11 +11,17 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/supports_user_data.h"
 #include "base/types/pass_key.h"
-#include "chrome/browser/ttc/core/ttc_state.h"
+#include "chrome/browser/ttc/app/public/audio_controller.h"
+#include "chrome/browser/ttc/core/states.h"
 #include "components/keyed_service/core/keyed_service.h"
 
 class Profile;
+
+namespace actor {
+class EnterprisePolicyChecker;
+}
 
 namespace content {
 class BrowserContext;
@@ -24,14 +30,21 @@ class BrowserContext;
 namespace ttc {
 
 class Conversation;
+class PointerTracker;
 class SessionController;
 class SessionControllerImpl;
+class SessionView;
+class SessionViewDelegate;
+class TtcActorUiStateManager;
+class TtcEvalHarness;
 
-class TtcKeyedService : public KeyedService {
+// SupportsUserData lets platform-specific bridges (e.g. the Android JNI
+// bridge) attach themselves to the service so they share its lifetime.
+class TtcKeyedService : public KeyedService, public base::SupportsUserData {
  public:
   // Creates the Conversation used by a session.
-  using ConversationFactory =
-      base::RepeatingCallback<std::unique_ptr<Conversation>(Profile*)>;
+  using ConversationFactory = base::RepeatingCallback<std::unique_ptr<
+      Conversation>(SessionController&, std::unique_ptr<AudioController>)>;
 
   static TtcKeyedService* Get(content::BrowserContext* context);
 
@@ -49,16 +62,20 @@ class TtcKeyedService : public KeyedService {
 
   bool IsEnabled() const;
 
-  TtcState GetState() const;
+  ServiceState GetState() const;
 
-  void StartSession();
+  // Starts a new session. Caller must ensure IsEnabled() is true and no session
+  // is currently active. If `audio_controller` is provided, it is used instead
+  // of the default production AudioControllerImpl.
+  void StartSession(
+      std::unique_ptr<AudioController> audio_controller = nullptr);
 
   // Ends the active session. After this call, session_controller() is nullptr.
   // This is a no-op if no session is currently in progress.
   void EndSession();
 
   base::CallbackListSubscription RegisterStateChangedCallback(
-      base::RepeatingCallback<void(TtcState)> callback);
+      base::RepeatingCallback<void(ServiceState)> callback);
 
   bool is_session_active() const { return session_controller_ != nullptr; }
 
@@ -67,18 +84,53 @@ class TtcKeyedService : public KeyedService {
   // Creates the Conversation for a session. Never returns null.
   std::unique_ptr<Conversation> MakeConversation(
       base::PassKey<SessionControllerImpl>,
-      SessionController& session_controller);
+      SessionController& session_controller,
+      std::unique_ptr<AudioController> audio_controller = nullptr);
 
-  SessionController* session_controller() { return session_controller_.get(); }
+  // Creates the SessionView for a session. Never returns null.
+  std::unique_ptr<SessionView> MakeSessionView(
+      base::PassKey<SessionControllerImpl>,
+      SessionViewDelegate& delegate);
+
+  // The active session's controller, or null if there's none.
+  SessionController* session_controller();
+
+  // The active session's pointer tracker, for the eval harness to simulate a
+  // pointer. Null if there's no session or it does not track the pointer.
+  PointerTracker* GetPointerTracker(base::PassKey<TtcEvalHarness>);
+
+  // Mutes or unmutes the active session's microphone. Returns whether the state
+  // changed: false if there's no live session, or the microphone already was in
+  // that state.
+  bool SetMicMuted(bool muted);
+  // Whether the user muted the active session's microphone. False if there's no
+  // session.
+  bool IsMicMuted() const;
+  // The party currently speaking in the active session. kIdle if there's no
+  // session.
+  Speaker GetSpeaker() const;
+
+  // The ActorUiStateManagerInterface implementation used by actor tasks created
+  // for TTC sessions.
+  TtcActorUiStateManager& actor_ui_state_manager();
+
+  // The EnterprisePolicyChecker used for policy gating in TTC sessions.
+  const actor::EnterprisePolicyChecker* enterprise_policy_checker() const;
+  void SetEnterprisePolicyCheckerForTesting(
+      std::unique_ptr<actor::EnterprisePolicyChecker> checker);
 
   base::WeakPtr<TtcKeyedService> GetWeakPtr();
 
  private:
   raw_ptr<Profile> profile_;
   ConversationFactory conversation_factory_;
-  std::unique_ptr<SessionController> session_controller_;
+  std::unique_ptr<actor::EnterprisePolicyChecker> enterprise_policy_checker_;
+  // Must outlive `session_controller_`, which indirectly holds a reference to
+  // it, as do the actor tasks created during a session.
+  std::unique_ptr<TtcActorUiStateManager> actor_ui_state_manager_;
+  std::unique_ptr<SessionControllerImpl> session_controller_;
 
-  base::RepeatingCallbackList<void(TtcState)> state_changed_callbacks_;
+  base::RepeatingCallbackList<void(ServiceState)> state_changed_callbacks_;
 
   base::WeakPtrFactory<TtcKeyedService> weak_ptr_factory_{this};
 };

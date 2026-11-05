@@ -265,12 +265,33 @@ suite('WebviewLoadCommitTest', () => {
     assertEquals(false, lastCommittedIsApiAllowed);
   });
 
-  test('unauthorized page committed reports loadError', () => {
+  test('unauthorized page committed reports regular, api not allowed', () => {
     controller.onGuestNavigated(
         'https://unknown.com/', false, GuestPageType.kRegular, false);
 
-    assertEquals(GuestPageType.kLoadError, lastCommittedPageType);
+    assertEquals(GuestPageType.kRegular, lastCommittedPageType);
     assertEquals(false, lastCommittedIsApiAllowed);
+  });
+
+  test('blocked navigation reports originBlocked', () => {
+    controller.onGuestNavigated('', false, GuestPageType.kOriginBlocked, false);
+
+    assertEquals(GuestPageType.kOriginBlocked, lastCommittedPageType);
+    assertEquals(false, lastCommittedIsApiAllowed);
+  });
+
+  test('offline and HTTP error page types are forwarded', () => {
+    for (const pageType
+             of [GuestPageType.kOffline,
+                 GuestPageType.kLoadError,
+                 GuestPageType.kHttpClientError,
+                 GuestPageType.kHttpServerError,
+    ]) {
+      controller.onGuestNavigated(
+          'https://cat.fun/party', true, pageType, true);
+      assertEquals(pageType, lastCommittedPageType);
+      assertEquals(true, lastCommittedIsApiAllowed);
+    }
   });
 
   test('authorized regular page committed reports regular', () => {

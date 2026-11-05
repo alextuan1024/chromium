@@ -6,20 +6,29 @@ package org.chromium.chrome.browser.glic;
 
 import android.app.Activity;
 import android.content.pm.ActivityInfo;
+import android.view.View;
+import android.view.ViewGroup;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 
 /** Java wrapper for C++ GlicTestEnvironment. */
 @JNINamespace("glic")
+@NullMarked
 public class GlicTestEnvironmentAndroid {
-    private final long mNativeGlicTestEnvironmentAndroid;
+    private static final String EXTERNAL_FOCUS_PROBE_TAG = "glic_external_focus_probe";
+
+    private final JniRawPtr<NativeGlicTestEnvironmentAndroid> mNativeGlicTestEnvironmentAndroid;
 
     public GlicTestEnvironmentAndroid() {
         mNativeGlicTestEnvironmentAndroid = GlicTestEnvironmentAndroidJni.get().init();
@@ -41,8 +50,32 @@ public class GlicTestEnvironmentAndroid {
                         : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
     }
 
+    @CalledByNative
+    public static boolean focusExternalAndroidView(
+            @JniType("content::WebContents*") @Nullable WebContents webContents) {
+        if (webContents == null) return false;
+        WindowAndroid window = webContents.getTopLevelNativeWindow();
+        if (window == null) return false;
+        var weakActivity = window.getActivity();
+        if (weakActivity == null) return false;
+        Activity activity = weakActivity.get();
+        if (activity == null) return false;
+        ViewGroup content = activity.findViewById(android.R.id.content);
+        if (content == null) return false;
+        View probe = content.findViewWithTag(EXTERNAL_FOCUS_PROBE_TAG);
+        if (probe == null) {
+            probe = new View(activity);
+            probe.setTag(EXTERNAL_FOCUS_PROBE_TAG);
+            probe.setFocusable(true);
+            probe.setFocusableInTouchMode(true);
+            content.addView(probe, new ViewGroup.LayoutParams(1, 1));
+        }
+        return probe.requestFocus() && probe.hasFocus();
+    }
+
     public void destroy() {
         GlicTestEnvironmentAndroidJni.get().destroy(mNativeGlicTestEnvironmentAndroid);
+        mNativeGlicTestEnvironmentAndroid.release();
     }
 
     public String getURL(String path) {
@@ -54,23 +87,27 @@ public class GlicTestEnvironmentAndroid {
                 .isWebClientConnected(mNativeGlicTestEnvironmentAndroid);
     }
 
-    public WebContents getGuestWebContents() {
+    public @Nullable WebContents getGuestWebContents() {
         return GlicTestEnvironmentAndroidJni.get()
                 .getGuestWebContents(mNativeGlicTestEnvironmentAndroid);
     }
 
+    @JniType("::glic::GlicTestEnvironmentAndroid")
+    interface NativeGlicTestEnvironmentAndroid extends JniTypeToken {}
+
     @NativeMethods
     interface Natives {
-        long init();
+        JniRawPtr<NativeGlicTestEnvironmentAndroid> init();
 
-        void destroy(long nativeGlicTestEnvironmentAndroid);
+        void destroy(JniPtr<NativeGlicTestEnvironmentAndroid> self);
 
         @JniType("std::string")
-        String getURL(long nativeGlicTestEnvironmentAndroid, @JniType("std::string") String path);
+        String getURL(
+                JniPtr<NativeGlicTestEnvironmentAndroid> self, @JniType("std::string") String path);
 
-        boolean isWebClientConnected(long nativeGlicTestEnvironmentAndroid);
+        boolean isWebClientConnected(JniPtr<NativeGlicTestEnvironmentAndroid> self);
 
         @JniType("content::WebContents*")
-        WebContents getGuestWebContents(long nativeGlicTestEnvironmentAndroid);
+        @Nullable WebContents getGuestWebContents(JniPtr<NativeGlicTestEnvironmentAndroid> self);
     }
 }

@@ -25,7 +25,7 @@ namespace ui {
 
 using BasicAXTreeSerializer =
     AXTreeSerializer<const AXNode*,
-                     std::vector<raw_ptr<const AXNode, VectorExperimental>>,
+                     std::vector<raw_ptr<const AXNode, DanglingUntriaged>>,
                      AXTreeUpdate*,
                      AXTreeData*,
                      AXNodeData>;
@@ -408,7 +408,11 @@ TEST_F(AXTreeSerializerTest, MaximumSerializedNodeCount) {
   serializer_ = std::make_unique<BasicAXTreeSerializer>(tree0_source_.get());
   serializer_->set_max_node_count(4);
   AXTreeUpdate update;
-  ASSERT_TRUE(serializer_->SerializeChanges(tree0_->root(), &update));
+  AXSerializationErrorFlagSet out_error;
+  ASSERT_TRUE(
+      serializer_->SerializeChanges(tree0_->root(), &update, &out_error));
+  EXPECT_EQ(out_error, AXSerializationErrorFlagSet(
+                           {AXSerializationErrorFlag::kMaxNodesReached}));
   // It actually serializes 5 nodes, not 4 - to be consistent.
   // It skips the children of node 5.
   ASSERT_EQ(5u, update.nodes.size());
@@ -449,7 +453,7 @@ TEST_F(AXTreeSerializerTest, DuplicateIdsCrashes) {
   // This could not happen with an AXTree, but could happen with
   // another AXTreeSource if the structure it wraps is buggy. We want to
   // fail but not crash when that happens.
-  std::vector<raw_ptr<AXNode, VectorExperimental>> node2_children;
+  std::vector<raw_ptr<AXNode, DanglingUntriaged>> node2_children;
   node2_children.push_back(tree1_->GetFromId(7));
   node2_children.push_back(tree1_->GetFromId(6));
   tree1_->GetFromId(2)->SwapChildren(&node2_children);

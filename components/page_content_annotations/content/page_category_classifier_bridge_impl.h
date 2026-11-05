@@ -5,58 +5,65 @@
 #ifndef COMPONENTS_PAGE_CONTENT_ANNOTATIONS_CONTENT_PAGE_CATEGORY_CLASSIFIER_BRIDGE_IMPL_H_
 #define COMPONENTS_PAGE_CONTENT_ANNOTATIONS_CONTENT_PAGE_CATEGORY_CLASSIFIER_BRIDGE_IMPL_H_
 
+#include <optional>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ref.h"
-#include "base/scoped_observation.h"
-#include "components/page_content_annotations/content/page_embeddings_service.h"
-#include "components/page_content_annotations/core/on_device_category_classifier.h"
+#include "base/memory/weak_ptr.h"
+#include "components/page_content_annotations/content/producer.h"
 #include "components/page_content_annotations/core/page_category_classifier_bridge.h"
-#include "components/page_content_annotations/core/page_content_annotation_type.h"
+#include "components/page_content_annotations/core/page_embeddings_common.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "url/gurl.h"
 
-class OptimizationGuideLogger;
+namespace content {
+class Page;
+}  // namespace content
 
 namespace page_content_annotations {
 
-// A bridge that observes the PageEmbeddingsService and forwards available
-// embeddings to the OnDeviceCategoryClassifier.
-class PageCategoryClassifierBridgeImpl
-    : public PageCategoryClassifierBridge,
-      public PageEmbeddingsService::Observer,
-      public OnDeviceCategoryClassifier::Observer {
+class OnDeviceCategoryClassifier;
+
+// A bridge that subscribes to a passage-embeddings producer, classifies
+// available embeddings via `OnDeviceCategoryClassifier`, and delivers the
+// resulting categories to subscribers when demand is active.
+class PageCategoryClassifierBridgeImpl : public PageCategoryClassifierBridge {
  public:
   PageCategoryClassifierBridgeImpl(
-      PageEmbeddingsService& page_embeddings_service,
-      OnDeviceCategoryClassifier& category_classifier,
-      OptimizationGuideLogger* optimization_guide_logger);
+      Producer<std::vector<PassageEmbedding>>& page_embeddings_producer,
+      OnDeviceCategoryClassifier& category_classifier);
   ~PageCategoryClassifierBridgeImpl() override;
   PageCategoryClassifierBridgeImpl(const PageCategoryClassifierBridgeImpl&) =
       delete;
   PageCategoryClassifierBridgeImpl& operator=(
       const PageCategoryClassifierBridgeImpl&) = delete;
 
-  // PageEmbeddingsService::Observer:
-  PageEmbeddingsService::UsageMode GetUsageMode() const override;
-  void OnPageEmbeddingsAvailable(content::Page& page) override;
-
-  // OnDeviceCategoryClassifier::Observer:
-  void OnCategoriesClassified(const GURL& url,
-                              ukm::SourceId source_id,
-                              const std::vector<Category>& categories) override;
+  // PageCategoryClassifierBridge:
+  base::CallbackListSubscription Subscribe(
+      ClassificationCallback callback) override;
 
  private:
-  const raw_ref<PageEmbeddingsService> page_embeddings_service_;
+  void UpdateDemand();
+  void OnPageEmbeddingsAvailable(
+      content::Page& page,
+      const std::vector<PassageEmbedding>& embeddings);
+  void OnCategoriesClassified(base::WeakPtr<content::Page> page,
+                              const GURL& url,
+                              ukm::SourceId source_id,
+                              std::vector<Category> categories);
+
+  const raw_ref<Producer<std::vector<PassageEmbedding>>>
+      page_embeddings_producer_;
   const raw_ref<OnDeviceCategoryClassifier> category_classifier_;
-  raw_ptr<OptimizationGuideLogger> optimization_guide_logger_;
 
-  base::ScopedObservation<PageEmbeddingsService,
-                          PageEmbeddingsService::Observer>
-      scoped_observation_{this};
+  base::RepeatingCallbackList<
+      void(const GURL&, ukm::SourceId, const std::vector<Category>&)>
+      callbacks_;
+  std::optional<base::CallbackListSubscription> embeddings_subscription_;
 
-  base::ScopedObservation<OnDeviceCategoryClassifier,
-                          OnDeviceCategoryClassifier::Observer>
-      category_classifier_observation_{this};
+  base::WeakPtrFactory<PageCategoryClassifierBridgeImpl> weak_ptr_factory_{
+      this};
 };
 
 }  // namespace page_content_annotations

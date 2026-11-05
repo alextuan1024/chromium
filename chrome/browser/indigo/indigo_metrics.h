@@ -7,6 +7,7 @@
 
 #include <optional>
 
+#include "base/auto_reset.h"
 #include "base/time/time.h"
 #include "google_apis/common/api_error_codes.h"
 
@@ -44,7 +45,9 @@ enum class IndigoTransformationResult {
   kPrimaryImageTooSmall = 17,
   kNoPrimaryImageFound = 18,
   kPrimaryImageReplacementCreationFailed = 19,
-  kMaxValue = kPrimaryImageReplacementCreationFailed,
+  kCountryNotAllowed = 20,
+  kLocaleNotAllowed = 21,
+  kMaxValue = kLocaleNotAllowed,
 };
 
 // LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoTransformationResult)
@@ -71,7 +74,8 @@ enum class IndigoPageActionEntryPoint {
   kProactiveAnchoredMessage = 1,
   kReactiveAnchoredMessage = 2,
   kErrorToast = 3,
-  kMaxValue = kErrorToast,
+  kContextMenu = 4,
+  kMaxValue = kContextMenu,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoPageActionEntryPoint)
 
@@ -84,14 +88,44 @@ enum class IndigoTransformationTriggerSource {
   kErrorToastRetry = 1,
   kRegenerate = 2,
   kReplacePhoto = 3,
-  kMaxValue = kReplacePhoto,
+  kContextMenu = 4,
+  kMaxValue = kContextMenu,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoTransformationTriggerSource)
+
+// Target type for the Indigo context menu item when executed.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(IndigoContextMenuTargetType)
+enum class IndigoContextMenuTargetType {
+  kPage = 0,
+  kImage = 1,
+  kMaxValue = kImage,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoContextMenuTargetType)
+
+// State of the context menu snooze IPH when a user who hasn't onboarded uses
+// an Indigo entry point.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(IndigoSnoozeIphStateOnFirstUse)
+enum class IndigoSnoozeIphStateOnFirstUse {
+  // The IPH can't be shown to this user.
+  kNotEligible = 0,
+  // The IPH is enabled for this user but hasn't been shown yet.
+  kEligibleNeverShown = 1,
+  // The IPH is showing now or was shown before, even if the user is no longer
+  // eligible. `Indigo.PageAction.TimeSinceSnoozeIphLastShown` breaks this down.
+  kShown = 2,
+  kMaxValue = kShown,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoSnoozeIphStateOnFirstUse)
 
 enum class EntryPoint {
   kSuggestionChip = 0,
   kAnchoredMessage = 1,
   kErrorToast = 2,
+  kContextMenu = 3,
 };
 
 inline constexpr char kShownEntryPointHistogram[] =
@@ -109,6 +143,7 @@ inline constexpr char kProactiveAnchoredMessageShowAction[] =
     "Indigo.PageAction.AnchoredMessage.Proactive.Show";
 inline constexpr char kReactiveAnchoredMessageShowAction[] =
     "Indigo.PageAction.AnchoredMessage.Reactive.Show";
+inline constexpr char kContextMenuShowAction[] = "Indigo.ContextMenu.Show";
 
 inline constexpr char kSuggestionChipClickAction[] =
     "Indigo.PageAction.SuggestionChip.Click";
@@ -116,6 +151,13 @@ inline constexpr char kAnchoredMessageClickAction[] =
     "Indigo.PageAction.AnchoredMessage.Click";
 inline constexpr char kErrorToastRetryClickAction[] =
     "Indigo.ErrorToast.Retry.Click";
+inline constexpr char kContextMenuClickAction[] = "Indigo.ContextMenu.Click";
+inline constexpr char kContextMenuTargetTypeHistogram[] =
+    "Indigo.ContextMenu.TargetType";
+inline constexpr char kSnoozeIphStateOnFirstUseHistogram[] =
+    "Indigo.PageAction.SnoozeIphStateOnFirstUse";
+inline constexpr char kTimeSinceSnoozeIphLastShownHistogram[] =
+    "Indigo.PageAction.TimeSinceSnoozeIphLastShown";
 
 inline constexpr char kTransformationTriggerAction[] =
     "Indigo.Transformation.Trigger";
@@ -170,7 +212,40 @@ enum class IndigoMaybeInvokeGlicResult {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoMaybeInvokeGlicResult)
 
+// Whether the client's region allows Indigo. If neither the country nor the
+// locale is allowed, the country takes precedence.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(IndigoRegionFilterResult)
+enum class IndigoRegionFilterResult {
+  kAllowed = 0,
+  kCountryNotAllowed = 1,
+  kLocaleNotAllowed = 2,
+  kMaxValue = kLocaleNotAllowed,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoRegionFilterResult)
+
 IndigoApiStatus MapApiErrorCodeToStatus(google_apis::ApiErrorCode code);
+
+// Records whether the client's region allows Indigo, at most once per browser
+// session.
+void RecordRegionFilterResultOncePerSession(IndigoRegionFilterResult result);
+
+// While an instance exists, the region filter result can be recorded again, as
+// though no result had yet been recorded this session. The previous state is
+// restored on destruction.
+class ScopedRegionFilterResultForTesting {
+ public:
+  ScopedRegionFilterResultForTesting();
+  ScopedRegionFilterResultForTesting(
+      const ScopedRegionFilterResultForTesting&) = delete;
+  ScopedRegionFilterResultForTesting& operator=(
+      const ScopedRegionFilterResultForTesting&) = delete;
+  ~ScopedRegionFilterResultForTesting();
+
+ private:
+  base::AutoReset<bool> auto_reset_;
+};
 
 // Records UMA histogram and UserAction for shown entry points.
 void RecordShownEntryPoint(IndigoPageActionEntryPoint entry_point);
@@ -180,6 +255,17 @@ void RecordClickedEntryPoint(
     EntryPoint entry_point,
     std::optional<page_actions::PageActionPriorityCategory>
         last_anchored_message_priority);
+
+// Records UMA histogram for the context menu target type when executed.
+void RecordContextMenuTargetType(IndigoContextMenuTargetType target_type);
+
+// Records UMA histogram for the snooze IPH state on an entry point click by a
+// user who hasn't onboarded.
+void RecordSnoozeIphStateOnFirstUse(IndigoSnoozeIphStateOnFirstUse state);
+
+// Records UMA histogram for the time since the snooze IPH was last shown, with
+// zero if it's showing or the last show time is in the future.
+void RecordTimeSinceSnoozeIphLastShown(base::TimeDelta time_since_last_show);
 
 // Records UMA histogram for the raw HTTP response code.
 void RecordApiHttpResponse(IndigoApiEndpoint endpoint,

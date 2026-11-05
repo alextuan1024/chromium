@@ -4,20 +4,22 @@
 
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_messaging_proxy.h"
 
+#include <tuple>
 #include <utility>
 
 #include "base/feature_list.h"
+#include "base/time/time.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/bindings/core/v8/serialization/serialized_script_value.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/messaging/message_port.h"
+#include "third_party/blink/renderer/core/timing/performance.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_context.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_global_scope.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_node.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_object_proxy.h"
-#include "third_party/blink/renderer/modules/webaudio/audio_worklet_processor.h"
 #include "third_party/blink/renderer/modules/webaudio/cross_thread_audio_worklet_processor_info.h"
 #include "third_party/blink/renderer/modules/webaudio/deferred_task_handler.h"
 #include "third_party/blink/renderer/modules/webaudio/offline_audio_worklet_thread.h"
@@ -25,8 +27,7 @@
 #include "third_party/blink/renderer/modules/webaudio/semi_realtime_audio_worklet_thread.h"
 #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_public.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -58,8 +59,7 @@ void AudioWorkletMessagingProxy::CreateProcessor(
       *GetWorkerThread()->GetTaskRunner(TaskType::kMiscPlatformAPI), FROM_HERE,
       CrossThreadBindOnce(
           &AudioWorkletMessagingProxy::CreateProcessorOnRenderingThread,
-          MakeCrossThreadWeakHandle(this),
-          std::move(main_thread_task_runner),
+          MakeCrossThreadWeakHandle(this), std::move(main_thread_task_runner),
           CrossThreadUnretained(GetWorkerThread()), std::move(handler),
           std::move(name), std::move(message_port_channel),
           std::move(node_options)));
@@ -76,9 +76,8 @@ void AudioWorkletMessagingProxy::CreateProcessorOnRenderingThread(
   DCHECK(worker_thread->IsCurrentThread());
   AudioWorkletGlobalScope* global_scope =
       To<AudioWorkletGlobalScope>(worker_thread->GlobalScope());
-  AudioWorkletProcessor* processor = global_scope->CreateProcessor(
-      name, message_port_channel, std::move(node_options));
-  handler->SetProcessorOnRenderThread(processor);
+  handler->SetProcessorOnRenderThread(global_scope->CreateProcessor(
+      name, message_port_channel, std::move(node_options)));
 
   // Transfer the handler reference back to the main thread in the completion
   // task. This guarantees that if this was the last reference, destruction
@@ -167,6 +166,15 @@ AudioWorkletMessagingProxy::CreateObjectProxy(
     ParentExecutionContextTaskRunners* parent_execution_context_task_runners,
     scoped_refptr<base::SingleThreadTaskRunner>
         parent_agent_group_task_runner) {
+  if (RuntimeEnabledFeatures::AudioWorkletPerformanceEnabled()) {
+    // Performance::ClampTimeResolution() lazily constructs a process-wide
+    // TimeClamper (base::RandUint64() under a static-init guard) on first use,
+    // on whichever thread gets there first. Trigger that one-time
+    // initialization here on the main thread so the first performance.now() on
+    // the AudioWorklet thread doesn't perform it. The arguments don't matter.
+    std::ignore = Performance::ClampTimeResolution(
+        base::TimeDelta(), /*cross_origin_isolated_capability=*/false);
+  }
   return std::make_unique<AudioWorkletObjectProxy>(
       static_cast<AudioWorkletMessagingProxy*>(messaging_proxy),
       parent_execution_context_task_runners,

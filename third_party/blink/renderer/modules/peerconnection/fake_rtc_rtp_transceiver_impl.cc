@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/fake_rtc_rtp_transceiver_impl.h"
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -30,6 +29,7 @@
 #include "third_party/webrtc/api/rtp_parameters.h"
 #include "third_party/webrtc/api/rtp_transceiver_direction.h"
 #include "third_party/webrtc/api/scoped_refptr.h"
+#include "third_party/webrtc/api/sframe/sframe_encryptor_interface.h"
 
 namespace blink {
 
@@ -144,6 +144,20 @@ FakeRTCRtpSenderImpl::CreateEncodedAudioFrameInjector(
     webrtc::TargetBitrateCallback bitrate_callback) {
   NOTIMPLEMENTED();
   return nullptr;
+}
+
+webrtc::RTCErrorOr<scoped_refptr<webrtc::SframeEncryptorInterface>>
+FakeRTCRtpSenderImpl::CreateSframeEncryptor(
+    const webrtc::SframeEncryptorInit& init) {
+  return webrtc::RTCError::UnsupportedOperation();
+}
+
+void FakeRTCRtpSenderImpl::GenerateKeyFrame(
+    const String& rid,
+    CrossThreadOnceFunction<void(Vector<String>)> on_layers_selected,
+    CrossThreadOnceFunction<void(webrtc::RTCError)> on_encoder_error) {
+  NOTIMPLEMENTED();
+  std::move(on_layers_selected).Run({});
 }
 
 FakeRTCRtpReceiverImpl::FakeRTCRtpReceiverImpl(

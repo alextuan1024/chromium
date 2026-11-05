@@ -29,6 +29,7 @@ class ActionItem;
 
 namespace page_actions {
 
+struct PageActionVisibilityConfig;
 struct SuggestionChipConfig;
 class PageActionModelObserver;
 enum class PageActionColorSource;
@@ -50,6 +51,9 @@ class PageActionModelInterface {
       PageActionPassKey pass_key,
       const actions::ActionItem* action_item) = 0;
   virtual void SetShowRequested(PageActionPassKey pass_key, bool requested) = 0;
+  virtual void SetVisibilityConfig(
+      PageActionPassKey pass_key,
+      const PageActionVisibilityConfig& config) = 0;
   virtual void SetShouldShowSuggestionChip(PageActionPassKey pass_key,
                                            bool show) = 0;
   virtual void SetSuggestionChipConfig(PageActionPassKey pass_key,
@@ -78,6 +82,9 @@ class PageActionModelInterface {
   virtual void SetOverrideBackgroundColorId(
       PageActionPassKey pass_key,
       std::optional<ui::ColorId> override_background_color_id) = 0;
+  virtual void SetOverrideForegroundColorId(
+      PageActionPassKey pass_key,
+      std::optional<ui::ColorId> override_foreground_color_id) = 0;
   virtual void SetAnchoredMessageText(
       PageActionPassKey pass_key,
       const std::u16string& anchored_message) = 0;
@@ -96,9 +103,12 @@ class PageActionModelInterface {
                                         bool is_suppressed) = 0;
   virtual void SetExemptFromOmniboxSuppression(PageActionPassKey pass_key,
                                                bool is_exempt) = 0;
+  // True if omnibox suppression is active and not exempted.
+  virtual bool IsAffectedByOmniboxSuppression() const = 0;
   virtual void SetIsChipShowing(PageActionPassKey pass_key,
                                 bool is_chip_showing) = 0;
   virtual void SetDidAnimateImage(PageActionPassKey pass_key) = 0;
+  virtual void SetDidAnimateVisibility(PageActionPassKey pass_key) = 0;
   virtual void SetIsAnchoredMessageShowing(
       PageActionPassKey pass_key,
       bool is_anchored_message_showing) = 0;
@@ -109,6 +119,8 @@ class PageActionModelInterface {
   virtual void SetShowTrailingIcon(PageActionPassKey pass_key, bool show) = 0;
 
   virtual bool GetVisible() const = 0;
+  virtual bool GetShouldAnimateVisibilityOut() const = 0;
+  virtual bool GetShouldAnimateVisibilityIn() const = 0;
   virtual bool IsChipShowing() const = 0;
   virtual bool ShouldShowSuggestionChip() const = 0;
   virtual bool GetShouldAnimateChipOut() const = 0;
@@ -138,6 +150,7 @@ class PageActionModelInterface {
   virtual std::optional<ui::ImageModel> GetTrailingImage() const = 0;
   virtual bool GetShowTrailingIcon() const = 0;
   virtual std::optional<ui::ColorId> GetOverrideBackgroundColorId() const = 0;
+  virtual std::optional<ui::ColorId> GetOverrideForegroundColorId() const = 0;
 
   virtual bool IsEphemeral() const = 0;
 };
@@ -161,6 +174,8 @@ class PageActionModel : public PageActionModelInterface {
   void SetActionItemProperties(PageActionPassKey pass_key,
                                const actions::ActionItem* action_item) override;
   void SetShowRequested(PageActionPassKey pass_key, bool requested) override;
+  void SetVisibilityConfig(PageActionPassKey pass_key,
+                           const PageActionVisibilityConfig& config) override;
   void SetShouldShowSuggestionChip(PageActionPassKey pass_key,
                                    bool show) override;
   void SetSuggestionChipConfig(PageActionPassKey pass_key,
@@ -190,6 +205,9 @@ class PageActionModel : public PageActionModelInterface {
   void SetOverrideBackgroundColorId(
       PageActionPassKey pass_key,
       std::optional<ui::ColorId> override_background_color_id) override;
+  void SetOverrideForegroundColorId(
+      PageActionPassKey pass_key,
+      std::optional<ui::ColorId> override_foreground_color_id) override;
 
   void SetAnchoredMessageText(PageActionPassKey pass_key,
                               const std::u16string& anchored_message) override;
@@ -215,11 +233,13 @@ class PageActionModel : public PageActionModelInterface {
 
   void SetExemptFromOmniboxSuppression(PageActionPassKey pass_key,
                                        bool is_exempt) override;
+  bool IsAffectedByOmniboxSuppression() const override;
 
   void SetIsChipShowing(PageActionPassKey pass_key,
                         bool is_chip_showing) override;
 
   void SetDidAnimateImage(PageActionPassKey pass_key) override;
+  void SetDidAnimateVisibility(PageActionPassKey pass_key) override;
 
   void SetIsAnchoredMessageShowing(PageActionPassKey pass_key,
                                    bool is_anchored_message_showing) override;
@@ -231,6 +251,8 @@ class PageActionModel : public PageActionModelInterface {
 
   // The model distills all visibility properties into a single result.
   bool GetVisible() const override;
+  bool GetShouldAnimateVisibilityOut() const override;
+  bool GetShouldAnimateVisibilityIn() const override;
   bool IsChipShowing() const override;
   bool ShouldShowSuggestionChip() const override;
   bool GetShouldAnimateChipOut() const override;
@@ -260,6 +282,7 @@ class PageActionModel : public PageActionModelInterface {
   std::optional<ui::ImageModel> GetTrailingImage() const override;
   bool GetShowTrailingIcon() const override;
   std::optional<ui::ColorId> GetOverrideBackgroundColorId() const override;
+  std::optional<ui::ColorId> GetOverrideForegroundColorId() const override;
 
   bool IsEphemeral() const override;
 
@@ -268,6 +291,7 @@ class PageActionModel : public PageActionModelInterface {
   // per-property reentrancy checks.
   enum class Property {
     kShowRequested,
+    kVisibilityConfig,
     kShouldShowSuggestionChip,
     kSuggestionChipConfig,
     kTabActive,
@@ -291,10 +315,13 @@ class PageActionModel : public PageActionModelInterface {
     kTrailingImage,
     kShowTrailingIcon,
     kOverrideBackgroundColor,
-    kMaxValue = kOverrideBackgroundColor,
+    kOverrideForegroundColor,
+    kMaxValue = kOverrideForegroundColor,
   };
   using PropertySet =
       base::EnumSet<Property, Property::kShowRequested, Property::kMaxValue>;
+
+  bool IsRequestedVisible() const;
 
   // Notifies observers of a model change. `property` identifies the property
   // that was modified, used for reentrancy checks. Re-entrant modifications to
@@ -316,12 +343,17 @@ class PageActionModel : public PageActionModelInterface {
   // Represents whether a feature requested to show this page action.
   bool show_requested_ = false;
 
+  bool should_animate_visibility_ = true;
+
+  // Whether the current visible stint has already animated in.
+  bool did_animate_visibility_ = false;
+
   // Represents whether the page action associated with this model should show
   // as suggestion chip.
   bool should_show_suggestion_chip_ = false;
 
   // Represents whether suggestion chips should animate in/out.
-  bool should_animate_ = true;
+  bool should_animate_chip_ = true;
 
   // Represents whether the suggestion chip is fully expanded or not (in/out
   // animation is completed). Therefore, it should not be animating.
@@ -390,6 +422,7 @@ class PageActionModel : public PageActionModelInterface {
   std::optional<ui::ImageModel> trailing_image_;
   bool show_trailing_icon_ = false;
   std::optional<ui::ColorId> override_background_color_id_;
+  std::optional<ui::ColorId> override_foreground_color_id_;
 
   // Flag used while notifying observers.
   bool is_notifying_observers_ = false;
@@ -403,7 +436,8 @@ class PageActionModel : public PageActionModelInterface {
   // again during notification, we CHECK-fail.
   PropertySet notified_properties_;
 
-  base::ObserverList<PageActionModelObserver> observer_list_;
+  base::ObserverList<PageActionModelObserver> observer_list_{
+      base::ObserverListPolicy::EXISTING_ONLY};
 };
 
 class PageActionModelFactory {

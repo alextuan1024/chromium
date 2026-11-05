@@ -8,25 +8,23 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/version_info/channel.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/webauthn/core/browser/device_authorization/device_authorization_client.h"
 #include "components/webauthn/core/browser/device_authorization/device_authorization_keys_fetcher.h"
 #include "components/webauthn/core/browser/device_authorization/device_authorization_service.h"
-
-class GaiaId;
+#include "google_apis/gaia/gaia_id.h"
 
 namespace network {
 class SharedURLLoaderFactory;
 }  // namespace network
-
-namespace signin {
-class IdentityManager;
-}  // namespace signin
 
 namespace sync_pb {
 class GetDeviceAuthorizationKeyRequest;
@@ -34,13 +32,18 @@ class GetDeviceAuthorizationKeyRequest;
 
 namespace webauthn {
 
+class PasskeyModel;
+
 // Coordinates the process of retrieving the device authorization keys,
 // including communication with the server, validation of the retrieved keys
 // and delegating platform-specific logic to DeviceAuthorizationClient.
-class DeviceAuthorizationServiceImpl : public DeviceAuthorizationService {
+class DeviceAuthorizationServiceImpl
+    : public DeviceAuthorizationService,
+      public signin::IdentityManager::Observer {
  public:
   DeviceAuthorizationServiceImpl(
       signin::IdentityManager* identity_manager,
+      PasskeyModel* passkey_model,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       std::unique_ptr<DeviceAuthorizationClient> client,
       version_info::Channel channel);
@@ -58,9 +61,20 @@ class DeviceAuthorizationServiceImpl : public DeviceAuthorizationService {
   void FetchKeysWithReAuthToken(std::string reauth_proof_token,
                                 FetchDeviceAuthKeysCallback callback) override;
 
+  // signin::IdentityManager::Observer:
+  void OnPrimaryAccountChanged(
+      const signin::PrimaryAccountChangeEvent& event_details) override;
+  void OnIdentityManagerShutdown(
+      signin::IdentityManager* identity_manager) override;
+
  private:
   void FetchKeysImpl(std::optional<std::string> reauth_proof_token,
                      FetchDeviceAuthKeysCallback callback);
+
+  // Callback invoked when local cached keys have been retrieved.
+  void OnCachedKeysFetched(
+      const GaiaId& gaia_id,
+      std::optional<CachedDeviceAuthorizationKeys> cached_keys);
 
   // Callback invoked when the client finishes populating platform data.
   void OnPlatformDataPopulated(
@@ -73,8 +87,20 @@ class DeviceAuthorizationServiceImpl : public DeviceAuthorizationService {
       base::expected<sync_pb::GetDeviceAuthorizationKeyResponse,
                      DeviceAuthorizationKeysFetcher::Error> response);
 
+  // Callback invoked when keys have been stored in the local cache.
+  void OnKeysStored(DeviceAuthorizationKeys keys, bool success);
+
+  // Aborts the pending fetch, if any, and fails its callbacks.
+  void CancelPendingFetch();
+
+  // Invokes all pending callbacks with `result` and clears them.
+  void NotifyPendingCallbacks(const DeviceAuthFetchResult& result);
+
   // Used to obtain the primary account and authenticate requests.
   raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
+
+  // Used to obtain the key versions required by stored passkeys.
+  raw_ptr<PasskeyModel> passkey_model_ = nullptr;
 
   // Factory used to create loaders for network requests.
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
@@ -85,13 +111,20 @@ class DeviceAuthorizationServiceImpl : public DeviceAuthorizationService {
   // Executes network requests to retrieve the keys from the server.
   std::unique_ptr<DeviceAuthorizationKeysFetcher> fetcher_;
 
-  // True if a network fetch is currently in flight.
-  bool is_fetching_ = false;
+  // The primary account for which a fetch is in flight, if any.
+  std::optional<GaiaId> pending_gaia_id_;
 
-  // Callback to invoke when the in-flight fetch completes.
-  FetchDeviceAuthKeysCallback pending_callback_;
+  // Callbacks waiting for the fetch for `pending_gaia_id_`.
+  std::vector<FetchDeviceAuthKeysCallback> pending_callbacks_;
+
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
 
   SEQUENCE_CHECKER(sequence_checker_);
+
+  // Only for the pending fetch. Invalidated whenever the pending fetch is
+  // cancelled or the service shuts down.
   base::WeakPtrFactory<DeviceAuthorizationServiceImpl> weak_ptr_factory_{this};
 };
 

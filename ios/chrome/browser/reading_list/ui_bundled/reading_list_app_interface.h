@@ -13,19 +13,25 @@
 // the app binary and can be called from either app or test code.
 @interface ReadingListAppInterface : NSObject
 
-// Removes all entries in the ReadingListModel.
+// Removes all entries in the ReadingListModel. Returns nil on success, or an
+// NSError on failure.
 + (NSError*)clearEntries [[nodiscard]];
 
-// Adds an entry in the ReadingListModel.
+// Adds an entry with `url`, `title`, and `read` status in the ReadingListModel.
+// Returns nil on success, or an NSError on failure.
 + (NSError*)addEntryWithURL:(NSURL*)url
                       title:(NSString*)title
                        read:(BOOL)read [[nodiscard]];
 
-// The number of read entries in the ReadingListModel.
+// Returns the number of read entries in the ReadingListModel.
 + (NSInteger)readEntriesCount;
 
-// The number of unread entries in the ReadingListModel.
+// Returns the number of unread entries in the ReadingListModel.
 + (NSInteger)unreadEntriesCount;
+
+// Returns YES if a single Reading List entity with `url` and matching `read`
+// status exists on the fake sync server.
++ (BOOL)hasSyncServerEntryWithURL:(NSURL*)url read:(BOOL)read;
 
 // Simulate that the current connection is WiFI.
 + (void)forceConnectionToWifi;

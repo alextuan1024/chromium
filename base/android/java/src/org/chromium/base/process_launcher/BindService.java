@@ -6,7 +6,6 @@ package org.chromium.base.process_launcher;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
-import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.Build;
@@ -16,10 +15,9 @@ import android.os.UserHandle;
 
 import androidx.annotation.RequiresApi;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
-import org.chromium.base.BindingRequestQueue;
+import org.chromium.base.BaseFeatureList;
 import org.chromium.base.ContextUtils;
-import org.chromium.build.BuildConfig;
+import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -29,6 +27,8 @@ import java.util.concurrent.Executor;
 /** Class of static helper methods to call Context.bindService variants. */
 @NullMarked
 public final class BindService {
+    private static final String TAG = "BindService";
+
     private static @Nullable Method sBindServiceAsUserMethod;
     private static @Nullable BinderCallCounter sBinderCallCounter;
 
@@ -39,13 +39,10 @@ public final class BindService {
         public int mUpdateServiceGroupCount;
     }
 
-    static boolean supportVariableConnections() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                && !BuildConfig.IS_INCREMENTAL_INSTALL;
-    }
-
     // Note that handler is not guaranteed to be used, and client still need to correctly handle
     // callbacks on the UI thread.
+    // If |allowBindFailure| is true, any RuntimeException thrown when binding the service is
+    // caught, logged, and treated as a failure (returning false).
     static boolean doBindService(
             Context context,
             Intent intent,
@@ -53,7 +50,8 @@ public final class BindService {
             int flags,
             Handler handler,
             Executor executor,
-            @Nullable String instanceName) {
+            @Nullable String instanceName,
+            boolean allowBindFailure) {
         if (ScopedServiceBindingBatch.shouldBatchUpdate()) {
             BindingRequestQueue queue = ScopedServiceBindingBatch.getBindingRequestQueue();
             // This should never be null because shouldBatchUpdate() checks that the feature is
@@ -69,7 +67,27 @@ public final class BindService {
         if (sBinderCallCounter != null) {
             sBinderCallCounter.mBindServiceCount++;
         }
-        if (supportVariableConnections() && instanceName != null) {
+        try {
+            return doBindServiceInternal(
+                    context, intent, connection, flags, handler, executor, instanceName);
+        } catch (RuntimeException e) {
+            if (allowBindFailure) {
+                Log.e(TAG, "Failed to bind service.", e);
+                return false;
+            }
+            throw e;
+        }
+    }
+
+    private static boolean doBindServiceInternal(
+            Context context,
+            Intent intent,
+            ServiceConnection connection,
+            int flags,
+            Handler handler,
+            Executor executor,
+            @Nullable String instanceName) {
+        if (instanceName != null) {
             return context.bindIsolatedService(intent, flags, instanceName, executor, connection);
         }
 
@@ -122,8 +140,21 @@ public final class BindService {
         return longFlags;
     }
 
+    /**
+     * Calls or enqueues a `Context.rebindService()` for {@code connection}.
+     *
+     * @param context The context used to bind the service.
+     * @param connection The connection to rebind.
+     * @param flags The flags to use for the rebind.
+     * @param urgent Whether the updated flags must reach the system as soon as possible. A rebind
+     *     which raises the priority of a process is latency sensitive: the process is already
+     *     expected to produce visible content, so it must not keep its previous (lower) binding
+     *     flags until the enclosing {@link ScopedServiceBindingBatch} is closed. See
+     *     crbug.com/465607095.
+     */
     @SuppressWarnings("NewApi")
-    static void doRebindService(Context context, ServiceConnection connection, int flags) {
+    static void doRebindService(
+            Context context, ServiceConnection connection, int flags, boolean urgent) {
         if (sBinderCallCounter != null) {
             sBinderCallCounter.mRebindServiceCount++;
         }
@@ -135,12 +166,24 @@ public final class BindService {
             // This should never be null because shouldBatchUpdate() checks that the feature is
             // enabled.
             assert queue != null;
+            // Enqueue even when the request is urgent. The queue is keyed by ServiceConnection, so
+            // sending the request directly instead would leave an already enqueued request for the
+            // same connection in the queue, and that stale request would overwrite these flags when
+            // the queue is flushed later.
             queue.rebind(connection, bindServiceFlags);
+            if (urgent && BaseFeatureList.sRebindServiceBatchApiFlushOnUpgrade.getValue()) {
+                queue.flush();
+            }
             return;
         }
-        final AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
-        if (delegate != null) {
-            delegate.rebindService(context, connection, bindServiceFlags);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+            try {
+                context.rebindService(connection, bindServiceFlags);
+            } catch (IllegalArgumentException e) {
+                // There is an unavoidable race here where the binding might be removed in AMS
+                // (for example due to a crash) before onServiceDisconnected is processed on the
+                // launcher thread. Ignore these. See crbug.com/1026626 for context.
+            }
         }
     }
 
@@ -222,11 +265,7 @@ public final class BindService {
                             Handler.class,
                             UserHandle.class);
         }
-        // No need for null checks or worry about infinite looping here. Otherwise a regular calls
-        // into the ContextWrapper would lead to problems as well.
-        while (context instanceof ContextWrapper) {
-            context = ((ContextWrapper) context).getBaseContext();
-        }
+        context = ContextUtils.getBaseContext(context);
         return (Boolean)
                 sBindServiceAsUserMethod.invoke(
                         context, intent, connection, flags, handler, Process.myUserHandle());

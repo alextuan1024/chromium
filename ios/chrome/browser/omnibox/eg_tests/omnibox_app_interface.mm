@@ -93,7 +93,7 @@ const base::FilePath& GetTestDataDir() {
 + (void)setUpFakeSuggestionsService:(NSString*)filename {
   RemoteSuggestionsService* remoteSuggestionsService =
       RemoteSuggestionsServiceFactory::GetForProfile(
-          chrome_test_util::GetOriginalProfile(), YES);
+          chrome_test_util::GetOriginalProfile());
 
   TemplateURLService* templateURLService =
       ios::TemplateURLServiceFactory::GetForProfile(
@@ -108,7 +108,7 @@ const base::FilePath& GetTestDataDir() {
 + (void)tearDownFakeSuggestionsService {
   RemoteSuggestionsService* remoteSuggestionsService =
       RemoteSuggestionsServiceFactory::GetForProfile(
-          chrome_test_util::GetOriginalProfile(), YES);
+          chrome_test_util::GetOriginalProfile());
 
   network::mojom::URLLoaderFactory* urlLoaderFactory =
       chrome_test_util::GetOriginalProfile()->GetURLLoaderFactory();
@@ -119,12 +119,27 @@ const base::FilePath& GetTestDataDir() {
 
 + (BOOL)shortcutsBackendInitialized {
   scoped_refptr<ShortcutsBackend> shortcuts_backend =
-      ios::ShortcutsBackendFactory::GetForProfileIfExists(
+      ios::ShortcutsBackendFactory::GetForProfile(
           chrome_test_util::GetOriginalProfile());
   if (shortcuts_backend) {
     return shortcuts_backend->initialized();
   }
   return NO;
+}
+
++ (void)clearShortcutsDatabase {
+  scoped_refptr<ShortcutsBackend> shortcuts_backend =
+      ios::ShortcutsBackendFactory::GetForProfileIfExists(
+          chrome_test_util::GetOriginalProfile());
+  if (!shortcuts_backend || !shortcuts_backend->initialized()) {
+    return;
+  }
+  while (!shortcuts_backend->shortcuts_map().empty()) {
+    GURL url = shortcuts_backend->shortcuts_map()
+                   .begin()
+                   ->second.match_core.destination_url;
+    shortcuts_backend->DeleteShortcutsWithURL(url);
+  }
 }
 
 + (NSInteger)numberOfShortcutsInDatabase {
@@ -135,22 +150,6 @@ const base::FilePath& GetTestDataDir() {
     return static_cast<NSInteger>(shortcuts_backend->shortcuts_map().size());
   }
   return 0;
-}
-
-+ (BOOL)isElementURL:(id)element {
-  NSString* string = nil;
-  if ([element isKindOfClass:[NSString class]]) {
-    string = reinterpret_cast<NSString*>(element);
-  } else if ([element respondsToSelector:@selector(text)]) {
-    string = base::apple::ObjCCast<NSString>(
-        [element performSelector:@selector(text)]);
-  }
-  if (!string) {
-    return NO;
-  }
-
-  std::string UTFString = base::SysNSStringToUTF8(string);
-  return GURL(UTFString).is_valid() || GURL("http://" + UTFString).is_valid();
 }
 
 + (id<GREYAssertion>)displaysInlineAutocompleteText:

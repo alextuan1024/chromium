@@ -15,6 +15,7 @@
 #include "components/cast_streaming/common/public/features.h"
 #include "media/base/media_util.h"
 #include "media/mojo/common/media_type_converters.h"
+#include "third_party/openscreen/src/platform/api/time.h"
 #include "third_party/openscreen/src/platform/base/span.h"
 
 namespace cast_streaming {
@@ -33,8 +34,8 @@ StreamConsumer::StreamConsumer(
                     base::SequencedTaskRunner::GetCurrentDefault()),
       on_new_frame_(std::move(on_new_frame)),
       decoder_buffer_factory_(std::move(decoder_buffer_factory)) {
-  DCHECK(receiver_);
-  DCHECK(decoder_buffer_factory_);
+  CHECK(receiver_, base::NotFatalUntil::M163);
+  CHECK(decoder_buffer_factory_, base::NotFatalUntil::M163);
 
   receiver_->SetConsumer(this);
   MojoResult result =
@@ -52,8 +53,8 @@ StreamConsumer::StreamConsumer(
 StreamConsumer::~StreamConsumer() = default;
 
 void StreamConsumer::ReadFrame(base::OnceClosure no_frames_available_cb) {
-  DCHECK(!is_read_pending_);
-  DCHECK(!no_frames_available_cb_);
+  CHECK(!is_read_pending_, base::NotFatalUntil::M163);
+  CHECK(!no_frames_available_cb_, base::NotFatalUntil::M163);
   is_read_pending_ = true;
   no_frames_available_cb_ = std::move(no_frames_available_cb);
   MaybeSendNextFrame();
@@ -67,14 +68,14 @@ void StreamConsumer::CloseDataPipeOnError() {
 }
 
 void StreamConsumer::OnPipeWritable(MojoResult result) {
-  DCHECK(data_pipe_);
+  CHECK(data_pipe_, base::NotFatalUntil::M163);
 
   if (result != MOJO_RESULT_OK) {
     CloseDataPipeOnError();
     return;
   }
 
-  DCHECK(pending_buffer_);
+  CHECK(pending_buffer_, base::NotFatalUntil::M163);
   size_t bytes_written = 0;
   base::span<const uint8_t> remaining_data =
       base::span<const uint8_t>(*pending_buffer_)
@@ -218,6 +219,9 @@ void StreamConsumer::MaybeSendNextFrame() {
 
   // Return the frame.
   is_read_pending_ = false;
+  receiver_->ReportPlayoutEvent(encoded_frame.frame_id,
+                                encoded_frame.rtp_timestamp,
+                                openscreen::Clock::now());
   frame_received_cb_.Run(media::mojom::DecoderBuffer::From(*pending_buffer_));
 
   // Wait for the mojo pipe to be writable if there is still pending data to

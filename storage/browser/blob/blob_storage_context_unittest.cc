@@ -12,6 +12,7 @@
 #include <string>
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/compiler_specific.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
@@ -20,10 +21,13 @@
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
+#include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
+#include "base/trace_event/process_memory_dump.h"
 #include "net/base/io_buffer.h"
 #include "net/base/test_completion_callback.h"
 #include "storage/browser/blob/blob_data_builder.h"
@@ -32,7 +36,7 @@
 #include "storage/browser/blob/blob_data_snapshot.h"
 #include "storage/browser/blob/blob_impl.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
-#include "storage/browser/test/fake_blob_data_handle.h"
+#include "storage/browser/test/blob_test_utils.h"
 #include "storage/browser/test/test_file_system_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -111,12 +115,12 @@ class BlobStorageContextTest : public testing::Test {
     context_->mutable_memory_controller()->set_limits_for_testing(limits);
   }
 
-  void IncrementRefCount(const std::string& uuid) {
-    context_->IncrementBlobRefCount(uuid);
+  void IncrementHandleCount(const std::string& uuid) {
+    context_->IncrementBlobHandleCount(uuid);
   }
 
-  void DecrementRefCount(const std::string& uuid) {
-    context_->DecrementBlobRefCount(uuid);
+  void DecrementHandleCount(const std::string& uuid) {
+    context_->DecrementBlobHandleCount(uuid);
   }
 
   std::string UUIDFromBlob(blink::mojom::Blob* blob) {
@@ -298,16 +302,16 @@ TEST_F(BlobStorageContextTest, IncrementDecrementRef) {
   std::unique_ptr<BlobDataHandle> blob_data_handle = SetupBasicBlob(kId);
 
   // Do an extra increment to keep it around after we kill the handle.
-  IncrementRefCount(kId);
-  IncrementRefCount(kId);
-  DecrementRefCount(kId);
+  IncrementHandleCount(kId);
+  IncrementHandleCount(kId);
+  DecrementHandleCount(kId);
   blob_data_handle = context_->GetBlobDataFromUUID(kId);
   EXPECT_TRUE(blob_data_handle);
   blob_data_handle.reset();
   base::RunLoop().RunUntilIdle();
 
   EXPECT_TRUE(context_->registry().HasEntry(kId));
-  DecrementRefCount(kId);
+  DecrementHandleCount(kId);
   EXPECT_FALSE(context_->registry().HasEntry(kId));
 
   // Make sure it goes away in the end.
@@ -483,36 +487,6 @@ TEST_F(BlobStorageContextTest, AddFinishedBlob_LargeOffset) {
   base::RunLoop().RunUntilIdle();
 }
 
-TEST_F(BlobStorageContextTest, BuildReadableDataHandleBlob) {
-  const std::string kTestBlobData = "Test Blob Data";
-  auto data_handle =
-      base::MakeRefCounted<FakeBlobDataHandle>(kTestBlobData, "");
-
-  {
-    BlobStorageContext context;
-
-    const std::string kId1Prime("id1.prime");
-    BlobDataBuilder canonicalized_blob_data(kId1Prime);
-    canonicalized_blob_data.AppendData(kTestBlobData.c_str());
-
-    const std::string kId1("id1");
-    auto builder = std::make_unique<BlobDataBuilder>(kId1);
-
-    builder->AppendReadableDataHandle(data_handle);
-
-    std::unique_ptr<BlobDataSnapshot> builder_data = builder->CreateSnapshot();
-    std::unique_ptr<BlobDataHandle> blob_data_handle =
-        context.AddFinishedBlob(std::move(builder));
-    std::unique_ptr<BlobDataSnapshot> data = blob_data_handle->CreateSnapshot();
-    EXPECT_EQ(*data, *builder_data);
-    EXPECT_FALSE(data_handle->HasOneRef())
-        << "Data handle was destructed while context and builder still exist.";
-  }
-  EXPECT_TRUE(data_handle->HasOneRef())
-      << "Data handle was not destructed along with blob storage context.";
-  base::RunLoop().RunUntilIdle();
-}
-
 TEST_F(BlobStorageContextTest, BuildFutureFileOnlyBlob) {
   const std::string kId1("id1");
   context_ = std::make_unique<BlobStorageContext>(
@@ -602,8 +576,7 @@ TEST_F(BlobStorageContextTest, CompoundBlobs) {
 
   auto blob_data3_builder = std::make_unique<BlobDataBuilder>(kId3);
   blob_data3_builder->AppendData("Data4");
-  auto data_handle = base::MakeRefCounted<FakeBlobDataHandle>("Data5", "");
-  blob_data3_builder->AppendReadableDataHandle(std::move(data_handle));
+  blob_data3_builder->AppendMojoDataItem(CreateBlobDataItemFromString("Data5"));
   std::unique_ptr<BlobDataSnapshot> blob_data3 =
       blob_data3_builder->CreateSnapshot();
 
@@ -640,7 +613,7 @@ TEST_F(BlobStorageContextTest, TestUnknownBrokenAndBuildingBlobReference) {
 
   // Create a broken blob.
   std::unique_ptr<BlobDataHandle> broken_handle =
-      context_->AddBrokenBlob(kBrokenId, "", "", BlobStatus::ERR_OUT_OF_MEMORY);
+      context_->AddBrokenBlob(kBrokenId, "", BlobStatus::ERR_OUT_OF_MEMORY);
   EXPECT_TRUE(broken_handle->GetBlobStatus() == BlobStatus::ERR_OUT_OF_MEMORY);
   EXPECT_TRUE(context_->registry().HasEntry(kBrokenId));
 
@@ -691,8 +664,7 @@ size_t AppendDataInBuilder(
     BlobDataBuilder* builder,
     std::vector<BlobDataBuilder::FutureData>* future_datas,
     std::vector<BlobDataBuilder::FutureFile>* future_files,
-    size_t index,
-    scoped_refptr<BlobDataItem::DataHandle> data_handle) {
+    size_t index) {
   size_t size = 0;
   // We can't have both future data and future files, so split those up.
   if (index % 2 != 0) {
@@ -717,7 +689,8 @@ size_t AppendDataInBuilder(
     size += 20u;
   }
   if (index % 3 != 0) {
-    builder->AppendReadableDataHandle(data_handle);
+    builder->AppendMojoDataItem(
+        CreateBlobDataItemFromString(kTestDataHandleData));
     size += strlen(kTestDataHandleData);
   }
   return size;
@@ -751,15 +724,10 @@ void PopulateDataInBuilder(
 }  // namespace
 
 TEST_F(BlobStorageContextTest, BuildBlobCombinations) {
-  const std::string kId("id");
-
   context_ = std::make_unique<BlobStorageContext>(
       temp_dir_.GetPath(), temp_dir_.GetPath(), file_runner_);
 
   SetTestMemoryLimits();
-  auto data_handle =
-      base::MakeRefCounted<FakeBlobDataHandle>(kTestDataHandleData, "");
-
   // This tests mixed blob content with both synchronous and asynchronous
   // construction. Blobs should also be paged to disk during execution.
   std::vector<std::unique_ptr<BlobDataBuilder>> builders;
@@ -772,7 +740,7 @@ TEST_F(BlobStorageContextTest, BuildBlobCombinations) {
     future_files.emplace_back();
     auto& builder = *builders.back();
     size_t size = AppendDataInBuilder(&builder, &future_datas.back(),
-                                      &future_files.back(), i, data_handle);
+                                      &future_files.back(), i);
     EXPECT_NE(0u, size);
     sizes.push_back(size);
   }
@@ -878,6 +846,236 @@ TEST_F(BlobStorageContextTest, NegativeSlice) {
   EXPECT_TRUE(handle2->IsBroken());
   EXPECT_EQ(BlobStatus::ERR_INVALID_CONSTRUCTION_ARGUMENTS,
             handle2->GetBlobStatus());
+}
+
+TEST_F(BlobStorageContextTest, MemoryUsageByCreatorIdentity) {
+  auto creator1 =
+      base::MakeRefCounted<base::RefCountedString>("https://example.com/");
+  auto builder1 = std::make_unique<BlobDataBuilder>("blob1");
+  builder1->set_creator_identity(creator1);
+  builder1->AppendData("0123456789");  // 10 bytes
+  std::unique_ptr<BlobDataHandle> handle1 =
+      context_->AddFinishedBlob(std::move(builder1));
+
+  // Distinct RefCountedString instance with the same internal string value.
+  auto creator1_dup =
+      base::MakeRefCounted<base::RefCountedString>("https://example.com/");
+  auto builder1_dup = std::make_unique<BlobDataBuilder>("blob1_dup");
+  builder1_dup->set_creator_identity(creator1_dup);
+  builder1_dup->AppendData("abcde");  // 5 bytes
+  std::unique_ptr<BlobDataHandle> handle1_dup =
+      context_->AddFinishedBlob(std::move(builder1_dup));
+
+  auto creator2 =
+      base::MakeRefCounted<base::RefCountedString>("https://google.com/");
+  auto builder2 = std::make_unique<BlobDataBuilder>("blob2");
+  builder2->set_creator_identity(creator2);
+  builder2->AppendData("0123456789abcdef");  // 16 bytes
+  std::unique_ptr<BlobDataHandle> handle2 =
+      context_->AddFinishedBlob(std::move(builder2));
+
+  auto builder3 = std::make_unique<BlobDataBuilder>("blob3");
+  // Null creator identity (Unknown Creator)
+  builder3->AppendData("0123");  // 4 bytes
+  std::unique_ptr<BlobDataHandle> handle3 =
+      context_->AddFinishedBlob(std::move(builder3));
+
+  const auto& by_creator =
+      context_->memory_controller().memory_usage_by_creator_identity();
+  EXPECT_EQ(3u, by_creator.size());
+  EXPECT_EQ(base::ByteSize(15u), by_creator.at(creator1));
+  EXPECT_EQ(base::ByteSize(15u), by_creator.at(creator1_dup));
+  EXPECT_EQ(base::ByteSize(16u), by_creator.at(creator2));
+  EXPECT_EQ(base::ByteSize(4u), by_creator.at(nullptr));
+
+  base::trace_event::MemoryDumpArgs dump_args = {
+      base::trace_event::MemoryDumpLevelOfDetail::kBackground};
+  base::trace_event::ProcessMemoryDump pmd(dump_args);
+  EXPECT_TRUE(
+      static_cast<base::trace_event::MemoryDumpProvider*>(context_.get())
+          ->OnMemoryDump(dump_args, &pmd));
+
+  std::string dump_name =
+      base::StringPrintf("site_storage/blob_storage/0x%" PRIXPTR,
+                         reinterpret_cast<uintptr_t>(context_.get()));
+  auto* mad = pmd.GetAllocatorDump(dump_name);
+  ASSERT_NE(nullptr, mad);
+
+  bool found_example = false;
+  bool found_google = false;
+  bool found_unknown = false;
+  for (const auto& entry : mad->entries()) {
+    if (entry.name == "creator_identity:https://example.com/") {
+      EXPECT_EQ(15u, entry.value_uint64);
+      found_example = true;
+    } else if (entry.name == "creator_identity:https://google.com/") {
+      EXPECT_EQ(16u, entry.value_uint64);
+      found_google = true;
+    } else if (entry.name == "creator_identity:Unknown Creator") {
+      EXPECT_EQ(4u, entry.value_uint64);
+      found_unknown = true;
+    }
+  }
+  EXPECT_TRUE(found_example);
+  EXPECT_TRUE(found_google);
+  EXPECT_TRUE(found_unknown);
+
+  handle1.reset();
+  EXPECT_EQ(base::ByteSize(5u), by_creator.at(creator1));
+  handle1_dup.reset();
+  EXPECT_EQ(
+      2u,
+      context_->memory_controller().memory_usage_by_creator_identity().size());
+  EXPECT_FALSE(
+      context_->memory_controller().memory_usage_by_creator_identity().contains(
+          creator1));
+
+  handle2.reset();
+  handle3.reset();
+  EXPECT_TRUE(
+      context_->memory_controller().memory_usage_by_creator_identity().empty());
+  EXPECT_EQ(0u, context_->memory_controller().memory_usage());
+}
+
+// Regression test for crbug.com/572193211
+TEST_F(BlobStorageContextTest, FinishBuildingWontUafEntry) {
+  context_ = std::make_unique<BlobStorageContext>(
+      temp_dir_.GetPath(), temp_dir_.GetPath(), file_runner_);
+  SetTestMemoryLimits();
+
+  const std::string kIdB("id_b");
+  const std::string kIdA("id_a");
+  const std::string kIdC("id_c");
+
+  const size_t a_future_size = kTestBlobStorageMaxBlobMemorySize / 10;
+  const size_t b_future_size = kTestBlobStorageMaxBlobMemorySize * 3 / 4;
+  const size_t c_future_size = kTestBlobStorageMaxBlobMemorySize / 2;
+
+  // 1. Start building Blob B with 300 bytes of future data. Because B is not
+  //    yet populated, its 300 bytes count toward `memory_usage()` (via
+  //    `blob_memory_used_`) without being eligible for eviction to disk
+  //    (`in_flight_memory_used_` stays 0).
+  auto builder_b = std::make_unique<BlobDataBuilder>(kIdB);
+  BlobDataBuilder::FutureData future_data_b =
+      builder_b->AppendFutureData(b_future_size);
+  BlobStatus status_b = BlobStatus::ERR_INVALID_CONSTRUCTION_ARGUMENTS;
+  std::unique_ptr<BlobDataHandle> handle_b = context_->BuildBlob(
+      std::move(builder_b),
+      base::BindOnce(&SaveBlobStatusAndFiles, &status_b, &files_));
+  EXPECT_EQ(BlobStatus::PENDING_TRANSPORT, status_b);
+  EXPECT_EQ(300u, context_->memory_controller().memory_usage());
+
+  // 2. Start building Blob A, which slices from B, so A's
+  // `building_state_->dependent_blobs` holds a handle to B.
+  auto builder_a = std::make_unique<BlobDataBuilder>(kIdA);
+  builder_a->AppendBlob(kIdB, 0, 10, context_->registry());
+  BlobDataBuilder::FutureData future_data_a =
+      builder_a->AppendFutureData(a_future_size);
+  BlobStatus status_a = BlobStatus::ERR_INVALID_CONSTRUCTION_ARGUMENTS;
+  std::unique_ptr<BlobDataHandle> handle_a = context_->BuildBlob(
+      std::move(builder_a),
+      base::BindOnce(&SaveBlobStatusAndFiles, &status_a, &files_));
+  EXPECT_EQ(BlobStatus::PENDING_TRANSPORT, status_a);
+
+  // Drop external handle to B; now ONLY A's `building_state_->dependent_blobs`
+  // keeps B (and its 300-byte MemoryAllocation) alive.
+  handle_b.reset();
+
+  // 3. Start building Blob C, which depends on A and requests 200 bytes of
+  //    transport quota. Because 300 + 20 + 200 > 400, C's quota request is
+  //    queued in `pending_memory_quota_tasks_`.
+  auto builder_c = std::make_unique<BlobDataBuilder>(kIdC);
+  builder_c->AppendBlob(kIdA, 0, 10, context_->registry());
+  builder_c->AppendFutureData(c_future_size);
+  std::unique_ptr<BlobDataHandle> handle_c = context_->BuildBlob(
+      std::move(builder_c),
+      base::BindLambdaForTesting(
+          [&](BlobStatus status, std::vector<FileCreationInfo> /*files*/) {
+            if (status == BlobStatus::PENDING_TRANSPORT) {
+              // Simulate transport setup failure (e.g. data pipe creation OOM).
+              // Canceling C resets C's `building_state_`, dropping the last
+              // handle to A synchronously while A is inside `FinishBuilding`.
+              context_->CancelBuildingBlob(kIdC, BlobStatus::ERR_OUT_OF_MEMORY);
+            }
+          }));
+  EXPECT_EQ(BlobStatus::PENDING_QUOTA, handle_c->GetBlobStatus());
+
+  // Drop external handle to A; now ONLY C's `building_state_->dependent_blobs`
+  // keeps A alive. Keep `handle_c` alive so C stays in the registry while
+  // waiting for quota.
+  handle_a.reset();
+  EXPECT_TRUE(context_->registry().HasEntry(kIdA));
+
+  // 4. Cancel A. Inside `FinishBuilding(A)`:
+  //    - `A->building_state_.reset()` drops A's handle to B.
+  //    - B is deleted, freeing its 300-byte allocation and synchronously
+  //      granting C's 200-byte quota request.
+  //    - C's `transport_allowed_callback` runs and cancels C.
+  //    - C's `building_state_.reset()` drops the last handle to A, deleting A!
+  context_->CancelBuildingBlob(kIdA, BlobStatus::ERR_OUT_OF_MEMORY);
+  EXPECT_FALSE(context_->registry().HasEntry(kIdA));
+}
+
+// Regression test for crbug.com/572193211
+TEST_F(BlobStorageContextTest, CancelBuildingBlobWontUafEntry) {
+  context_ = std::make_unique<BlobStorageContext>(
+      temp_dir_.GetPath(), temp_dir_.GetPath(), file_runner_);
+  SetTestMemoryLimits();
+
+  const std::string kIdA("id_a");
+  const std::string kIdC("id_c");
+
+  const size_t a_future_size = kTestBlobStorageMaxBlobMemorySize * 3 / 4;
+  const size_t c_future_size = kTestBlobStorageMaxBlobMemorySize / 2;
+
+  // 1. Start building Blob A with two future data items: 300 bytes and 10
+  //    bytes.
+  auto builder_a = std::make_unique<BlobDataBuilder>(kIdA);
+  BlobDataBuilder::FutureData future_data_a1 =
+      builder_a->AppendFutureData(a_future_size);
+  BlobDataBuilder::FutureData future_data_a2 = builder_a->AppendFutureData(10);
+  BlobStatus status_a = BlobStatus::ERR_INVALID_CONSTRUCTION_ARGUMENTS;
+  auto handle_a = context_->BuildBlob(
+      std::move(builder_a),
+      base::BindOnce(&SaveBlobStatusAndFiles, &status_a, &files_));
+  EXPECT_EQ(BlobStatus::PENDING_TRANSPORT, status_a);
+  EXPECT_EQ(310u, context_->memory_controller().memory_usage());
+
+  // 2. Start building Blob C, which references only the second 10-byte item of
+  //    A (offset=300, length=10) so C's `items_` does not hold a reference to
+  //    A's 300-byte item, while C's `building_state_->dependent_blobs` holds a
+  //    handle to A. C also requests 200 bytes of transport quota, which is
+  //    queued in `pending_memory_quota_tasks_` (310 + 200 > 400).
+  auto builder_c = std::make_unique<BlobDataBuilder>(kIdC);
+  builder_c->AppendBlob(kIdA, a_future_size, 10, context_->registry());
+  builder_c->AppendFutureData(c_future_size);
+  std::unique_ptr<BlobDataHandle> handle_c = context_->BuildBlob(
+      std::move(builder_c),
+      base::BindLambdaForTesting(
+          [&](BlobStatus status, std::vector<FileCreationInfo> /*files*/) {
+            if (status == BlobStatus::PENDING_TRANSPORT) {
+              // Canceling C resets C's `building_state_`, dropping the last
+              // handle to A synchronously while A is inside
+              // `CancelBuildingBlobInternal` -> `ClearAndFreeMemory`.
+              context_->CancelBuildingBlob(kIdC, BlobStatus::ERR_OUT_OF_MEMORY);
+            }
+          }));
+  EXPECT_EQ(BlobStatus::PENDING_QUOTA, handle_c->GetBlobStatus());
+
+  // Drop external handle to A; now ONLY C's `building_state_->dependent_blobs`
+  // keeps A alive.
+  handle_a.reset();
+  EXPECT_TRUE(context_->registry().HasEntry(kIdA));
+
+  // 3. Cancel A. Inside `CancelBuildingBlobInternal(A)`:
+  //    - `ClearAndFreeMemory(A)` calls `A->ClearItems()`, destroying A's
+  //      300-byte item and revoking its memory allocation.
+  //    - `MaybeGrantPendingMemoryRequests()` synchronously grants C's quota.
+  //    - C's `transport_allowed_callback` cancels C, whose `~BuildingState()`
+  //      drops the last handle to A, deleting A before `ClearAndFreeMemory(A)`
+  //      even returns!
+  context_->CancelBuildingBlob(kIdA, BlobStatus::ERR_OUT_OF_MEMORY);
+  EXPECT_FALSE(context_->registry().HasEntry(kIdA));
 }
 
 // TODO(michaeln): tests for the deprecated url stuff

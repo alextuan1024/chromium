@@ -5,12 +5,14 @@
 #ifndef UI_COLOR_COLOR_PROVIDER_H_
 #define UI_COLOR_COLOR_PROVIDER_H_
 
+#include <stdint.h>
+
 #include <forward_list>
-#include <map>
 #include <memory>
 #include <optional>
 
 #include "base/component_export.h"
+#include "base/containers/flat_map.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_mixer.h"
@@ -25,7 +27,7 @@ namespace ui {
 // TODO(pkasting): Figure out ownership model and lifetime.
 class COMPONENT_EXPORT(COLOR) ColorProvider {
  public:
-  using ColorMap = std::map<ColorId, SkColor>;
+  using ColorMap = base::flat_map<ColorId, SkColor>;
 
   ColorProvider();
   ColorProvider(const ColorProvider&) = delete;
@@ -47,6 +49,15 @@ class COMPONENT_EXPORT(COLOR) ColorProvider {
   // |id|.
   SkColor GetColor(ColorId id) const;
 
+  // Returns an id that identifies this provider among all ColorProviders
+  // created in this process, including ones that have since been destroyed.
+  // Clients can use the id to cache data derived from a provider's colors. This
+  // relies on the provider's mixers not being modified once the provider is in
+  // use (see above): adding mixers or changing their recipes does not change
+  // the id. SetColorForTesting() does assign a new id, since tests call it on
+  // providers that are already in use.
+  uint64_t unique_id() const { return unique_id_; }
+
   void SetColorForTesting(ColorId id, SkColor color);
   void GenerateColorMapForTesting();
   const ColorMap& color_map_for_testing() { return color_map_; }
@@ -58,15 +69,23 @@ class COMPONENT_EXPORT(COLOR) ColorProvider {
   // or nullptr.
   const ColorMixer* GetLastNonPostprocessingMixer() const;
 
+  // A cached map of ColorId => SkColor mappings for this provider.
+  mutable ColorMap color_map_;
+
+  // Caches pre-postprocessing result colors for the head regular mixer when
+  // postprocessing mixers are present.
+  mutable ColorMap unprocessed_color_map_;
+
   // The entire color pipeline, in reverse order (that is, the "last" mixer is
-  // at the front).
+  // at the front). Declared after the maps above so `mixers_` is destroyed
+  // before any map referenced by a mixer's `result_colors_`.
   Mixers mixers_;
 
   // The first mixer in the chain that is a "postprocessing" mixer.
   Mixers::iterator first_postprocessing_mixer_ = mixers_.before_begin();
 
-  // A cached map of ColorId => SkColor mappings for this provider.
-  mutable ColorMap color_map_;
+  // See unique_id().
+  uint64_t unique_id_;
 };
 
 }  // namespace ui

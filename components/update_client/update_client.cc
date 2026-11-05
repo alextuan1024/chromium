@@ -28,6 +28,7 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/prefs/pref_registry_simple.h"
+#include "components/update_client/cancellation.h"
 #include "components/update_client/configurator.h"
 #include "components/update_client/crx_update_item.h"
 #include "components/update_client/persisted_data.h"
@@ -46,24 +47,6 @@
 #include "url/gurl.h"
 
 namespace update_client {
-
-CrxInstaller::InstallParams::InstallParams(
-    const std::string& run,
-    const std::string& arguments,
-    const std::string& server_install_data)
-    : run(run),
-      arguments(arguments),
-      server_install_data(server_install_data) {}
-
-CrxUpdateItem::CrxUpdateItem() : state(ComponentState::kNew) {}
-CrxUpdateItem::CrxUpdateItem(const CrxUpdateItem& other) = default;
-CrxUpdateItem& CrxUpdateItem::operator=(const CrxUpdateItem& other) = default;
-CrxUpdateItem::~CrxUpdateItem() = default;
-
-CrxComponent::CrxComponent() = default;
-CrxComponent::CrxComponent(const CrxComponent& other) = default;
-CrxComponent& CrxComponent::operator=(const CrxComponent& other) = default;
-CrxComponent::~CrxComponent() = default;
 
 // It is important that an instance of the UpdateClient binds an unretained
 // pointer to itself. Otherwise, a life time circular dependency between this
@@ -171,8 +154,8 @@ void UpdateClientImpl::StartTask(scoped_refptr<Task> task) {
   if (it == pending_cancellations_.end()) {
     return;
   }
-  for (const auto& id : it->second) {
-    update_engine_->Cancel(id);
+  for (const auto& [id, mode] : it->second) {
+    update_engine_->Cancel(id, mode);
   }
   pending_cancellations_.erase(it);
 }
@@ -277,7 +260,7 @@ void UpdateClientImpl::Stop() {
   }
 }
 
-bool UpdateClientImpl::Cancel(const std::string& id) {
+bool UpdateClientImpl::Cancel(const std::string& id, CancelMode mode) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Tasks are never cancelled as a whole here: a task may carry other CRXs,
@@ -289,18 +272,18 @@ bool UpdateClientImpl::Cancel(const std::string& id) {
   bool found = false;
   for (const auto& task : task_queue_) {
     if (std::ranges::contains(task->ids(), id)) {
-      pending_cancellations_[task].insert(id);
+      pending_cancellations_[task].try_emplace(id, mode);
       found = true;
     }
   }
   for (const auto& task : tasks_) {
     if (std::ranges::contains(task->ids(), id)) {
-      pending_cancellations_[task].insert(id);
+      pending_cancellations_[task].try_emplace(id, mode);
       found = true;
     }
   }
   if (found) {
-    update_engine_->Cancel(id);
+    update_engine_->Cancel(id, mode);
   }
   return found;
 }

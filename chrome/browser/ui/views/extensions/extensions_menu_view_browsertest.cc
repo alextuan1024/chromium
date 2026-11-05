@@ -31,6 +31,7 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_action_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
@@ -56,8 +57,8 @@ class ExtensionsMenuViewBrowserTest : public InProcessBrowserTest {
             ExtensionsMenuView::AllowInstancesForTesting()) {
     scoped_feature_list_.InitWithFeatures(
         {}, {extensions_features::kExtensionsMenuAccessControl,
-             extensions_features::kExtensionDisableUnsupportedDeveloper,
-             features::kExtensionsPinnedByDefault});
+             features::kExtensionsPinnedByDefault,
+             features::kWebUIExtensionsContainer});
   }
 
   ExtensionsMenuViewBrowserTest(const ExtensionsMenuViewBrowserTest&) = delete;
@@ -99,7 +100,7 @@ class ExtensionsMenuViewBrowserTest : public InProcessBrowserTest {
   ExtensionsToolbarDesktop* extensions_container() {
     return BrowserView::GetBrowserViewForBrowser(browser())
         ->toolbar()
-        ->extensions_container();
+        ->extensions_container_for_testing();
   }
 
   scoped_refptr<const extensions::Extension> InstallExtension(
@@ -175,8 +176,8 @@ class ExtensionsMenuViewBrowserTest : public InProcessBrowserTest {
 
   // Asserts there is exactly 1 menu item and then returns it.
   ExtensionMenuItemView* GetOnlyMenuItem() {
-    base::flat_set<raw_ptr<ExtensionMenuItemView, CtnExperimental>> menu_items =
-        extensions_menu()->extensions_menu_items_for_testing();
+    base::flat_set<raw_ptr<ExtensionMenuItemView, DanglingUntriaged>>
+        menu_items = extensions_menu()->extensions_menu_items_for_testing();
     if (menu_items.size() != 1u) {
       ADD_FAILURE() << "Not exactly one item; size is: " << menu_items.size();
       return nullptr;
@@ -230,8 +231,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewBrowserTest,
   InstallExtension(kExtensionName);
 
   {
-    base::flat_set<raw_ptr<ExtensionMenuItemView, CtnExperimental>> menu_items =
-        extensions_menu()->extensions_menu_items_for_testing();
+    base::flat_set<raw_ptr<ExtensionMenuItemView, DanglingUntriaged>>
+        menu_items = extensions_menu()->extensions_menu_items_for_testing();
     ASSERT_EQ(1u, menu_items.size());
     EXPECT_EQ(kExtensionName,
               base::UTF16ToUTF8((*menu_items.begin())
@@ -301,7 +302,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewBrowserTest,
       [&extension_id](BrowserWindowInterface* browser) {
         return BrowserView::GetBrowserViewForBrowser(browser)
             ->toolbar()
-            ->extensions_container()
+            ->extensions_container_for_testing()
             ->IsActionVisibleOnToolbar(extension_id);
       };
 
@@ -309,7 +310,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewBrowserTest,
   views::test::ReduceAnimationDuration(
       BrowserView::GetBrowserViewForBrowser(browser2)
           ->toolbar()
-          ->extensions_container());
+          ->extensions_container_for_testing());
 
   ExtensionMenuItemView* menu_item = GetOnlyMenuItem();
   ASSERT_TRUE(menu_item);
@@ -319,7 +320,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewBrowserTest,
   views::test::WaitForAnimatingLayoutManager(
       BrowserView::GetBrowserViewForBrowser(browser2)
           ->toolbar()
-          ->extensions_container());
+          ->extensions_container_for_testing());
 #endif
 
   // Window that was already open gets the pinned extension.
@@ -329,12 +330,12 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewBrowserTest,
   views::test::ReduceAnimationDuration(
       BrowserView::GetBrowserViewForBrowser(browser3)
           ->toolbar()
-          ->extensions_container());
+          ->extensions_container_for_testing());
 #if !BUILDFLAG(IS_MAC)
   views::test::WaitForAnimatingLayoutManager(
       BrowserView::GetBrowserViewForBrowser(browser3)
           ->toolbar()
-          ->extensions_container());
+          ->extensions_container_for_testing());
 #endif
 
   // Brand-new window also gets the pinned extension.

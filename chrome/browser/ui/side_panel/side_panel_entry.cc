@@ -14,7 +14,10 @@
 #include "chrome/browser/ui/side_panel/side_panel_metrics.h"
 
 #if BUILDFLAG(IS_ANDROID)
+DEFINE_UI_CLASS_PROPERTY_TYPE(ui::ImageModel*)
+
 DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(std::u16string, kSidePanelTitleKey)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(ui::ImageModel, kSidePanelIconKey)
 #else
 DEFINE_UI_CLASS_PROPERTY_KEY(bool, kShouldShowTitleInSidePanelHeaderKey, true)
 #endif
@@ -33,7 +36,7 @@ SidePanelEntry::SidePanelEntry(
       more_info_callback_(std::move(more_info_callback)),
       default_content_width_callback_(
           std::move(default_content_width_callback)) {
-  DCHECK(create_content_callback_);
+  CHECK(create_content_callback_, base::NotFatalUntil::M162);
 }
 
 SidePanelEntry::SidePanelEntry(
@@ -48,7 +51,7 @@ SidePanelEntry::SidePanelEntry(
       more_info_callback_(base::NullCallback()),
       default_content_width_callback_(
           std::move(default_content_width_callback)) {
-  DCHECK(create_content_callback_);
+  CHECK(create_content_callback_, base::NotFatalUntil::M162);
 }
 
 SidePanelEntry::SidePanelEntry(

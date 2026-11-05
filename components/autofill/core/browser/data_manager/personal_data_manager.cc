@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "base/i18n/language_tag.h"
 #include "base/memory/scoped_refptr.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/crowdsourcing/autofill_crowdsourcing_manager.h"
@@ -30,25 +31,23 @@ PersonalDataManager::PersonalDataManager(
     scoped_refptr<AutofillWebDataService> profile_database,
     scoped_refptr<AutofillWebDataService> account_database,
     PrefService* pref_service,
-    PrefService* local_state,
     signin::IdentityManager* identity_manager,
     history::HistoryService* history_service,
     syncer::SyncService* sync_service,
     strike_database::StrikeDatabaseBase* strike_database,
     AutofillImageFetcherBase* image_fetcher,
-    std::string app_locale,
+    const base::i18n::LanguageTag& app_locale,
     std::string variations_country_code,
     AutofillOptimizationGuideDecider* autofill_optimization_guide_decider)
     : pref_service_(pref_service) {
   address_data_manager_ = std::make_unique<AddressDataManager>(
-      profile_database, pref_service, local_state, sync_service,
-      identity_manager, strike_database,
-      GeoIpCountryCode(variations_country_code), app_locale);
+      profile_database, pref_service, sync_service, identity_manager,
+      strike_database, GeoIpCountryCode(variations_country_code), app_locale);
   payments_data_manager_ = std::make_unique<PaymentsDataManager>(
       profile_database, account_database, image_fetcher, pref_service,
       sync_service, identity_manager,
-      GeoIpCountryCode(std::move(variations_country_code)),
-      std::move(app_locale), autofill_optimization_guide_decider);
+      GeoIpCountryCode(std::move(variations_country_code)), app_locale,
+      autofill_optimization_guide_decider);
   address_data_manager_observation_.Observe(address_data_manager_.get());
   payments_data_manager_observation_.Observe(payments_data_manager_.get());
 

@@ -20,13 +20,12 @@ static_library("personalization") {
 
   deps = [
     "//ash/constants",
-    "//chrome/app:generated_resources",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/browser/ui/webui/ash/settings/pages/multitasking",
     "//chrome/browser/ui/webui/ash/settings/search",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/experiences/settings_ui/resources:strings",
     "//content/public/browser",
   ]
 }
@@ -46,6 +45,7 @@ source_set("unit_tests") {
     "//chrome/browser/ui/webui/ash/settings/search",
     "//chrome/common",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/browser_context_helper",
     "//components/account_id:test_support",
     "//components/prefs:test_support",

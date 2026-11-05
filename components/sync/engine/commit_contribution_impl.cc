@@ -8,7 +8,6 @@
 #include <string>
 #include <utility>
 
-#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/uuid.h"
 #include "components/sync/base/data_type_histogram.h"
@@ -27,11 +26,6 @@ namespace syncer {
 
 namespace {
 
-// When enabled, all the fields for SyncEntity are populated for commit-only
-// data types (otherwise, only `specifics` and `id_string` were populated).
-BASE_FEATURE(kSyncPopulateAllFieldsForCommitOnlyTypes,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 CommitResponseData BuildCommitResponseData(
     const CommitRequestData& commit_request,
     const sync_pb::CommitResponse_EntryResponse& entry_response) {
@@ -41,6 +35,10 @@ CommitResponseData BuildCommitResponseData(
   response_data.client_tag_hash = commit_request.entity->client_tag_hash;
   response_data.sequence_number = commit_request.sequence_number;
   response_data.specifics_hash = commit_request.specifics_hash;
+  if (entry_response.has_attachment_modification_time_unix_epoch_millis()) {
+    response_data.attachment_modification_time = ProtoTimeToTime(
+        entry_response.attachment_modification_time_unix_epoch_millis());
+  }
   return response_data;
 }
 
@@ -65,14 +63,16 @@ CommitContributionImpl::CommitContributionImpl(
                             const FailedCommitResponseDataList&)>
         on_commit_response_callback,
     base::OnceCallback<void(SyncCommitError)> on_full_commit_failure_callback,
-    PassphraseType passphrase_type)
+    PassphraseType passphrase_type,
+    bool has_more_local_changes)
     : type_(type),
       on_commit_response_callback_(std::move(on_commit_response_callback)),
       on_full_commit_failure_callback_(
           std::move(on_full_commit_failure_callback)),
       passphrase_type_(passphrase_type),
       context_(context),
-      commit_requests_(std::move(commit_requests)) {}
+      commit_requests_(std::move(commit_requests)),
+      has_more_local_changes_(has_more_local_changes) {}
 
 CommitContributionImpl::~CommitContributionImpl() = default;
 
@@ -94,21 +94,8 @@ void CommitContributionImpl::AddToCommitMessage(
       CHECK(!commit_request->entity->is_deleted());
     }
 
-    if (CommitOnlyTypes().Has(type_) &&
-        !base::FeatureList::IsEnabled(
-            kSyncPopulateAllFieldsForCommitOnlyTypes)) {
-      // Only send specifics to server for commit-only types.
-      sync_entity->mutable_specifics()->CopyFrom(
-          commit_request->entity->specifics);
-
-      // Populate randomly-generated ID string similar to an uncommitted version
-      // of normal data types.
-      sync_entity->set_id_string(
-          base::Uuid::GenerateRandomV4().AsLowercaseString());
-    } else {
-      PopulateCommitProto(type_, *commit_request, sync_entity);
-      AdjustCommitProto(sync_entity);
-    }
+    PopulateCommitProto(type_, *commit_request, sync_entity);
+    AdjustCommitProto(sync_entity);
 
     // Purposefully crash if we have client only data, as this could result in
     // sending password in plain text.
@@ -120,6 +107,7 @@ void CommitContributionImpl::AddToCommitMessage(
     CHECK(!sync_entity->specifics()
                .incoming_password_sharing_invitation()
                .has_client_only_unencrypted_data());
+    CHECK(!sync_entity->specifics().send_tab_to_self().has_page_context());
 
     // Purposefully crash since no metadata should be uploaded if a custom
     // passphrase is set.
@@ -185,7 +173,6 @@ SyncerError CommitContributionImpl::ProcessCommitResponse(
         has_conflicting_commits = true;
         break;
       case sync_pb::CommitResponse::OVER_QUOTA:
-      case sync_pb::CommitResponse::RETRY:
       case sync_pb::CommitResponse::TRANSIENT_ERROR:
         DLOG(WARNING) << "Entity commit blocked by transient error.";
         has_transient_error_commits = true;
@@ -224,6 +211,19 @@ void CommitContributionImpl::ProcessCommitFailure(
 
 size_t CommitContributionImpl::GetNumEntries() const {
   return commit_requests_.size();
+}
+
+size_t CommitContributionImpl::GetPostEncryptionSpecificsByteSize() const {
+  size_t byte_size = 0;
+  for (const std::unique_ptr<CommitRequestData>& commit_request :
+       commit_requests_) {
+    byte_size += commit_request->entity->specifics.ByteSizeLong();
+  }
+  return byte_size;
+}
+
+bool CommitContributionImpl::HasMoreLocalChanges() const {
+  return has_more_local_changes_;
 }
 
 // static
@@ -279,6 +279,10 @@ void CommitContributionImpl::PopulateCommitProto(
     }
     commit_proto->set_ctime(TimeToProtoTime(entity_data.creation_time));
     commit_proto->mutable_specifics()->CopyFrom(entity_data.specifics);
+    if (entity_data.attachment_metadata.has_value()) {
+      *commit_proto->mutable_attachment() =
+          entity_data.attachment_metadata->ToProto();
+    }
   }
 }
 

@@ -7,39 +7,51 @@ package org.chromium.chrome.browser.history;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.ImageView.ScaleType;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import androidx.annotation.VisibleForTesting;
 import androidx.core.view.ViewCompat;
 import androidx.core.widget.ImageViewCompat;
 import androidx.vectordrawable.graphics.drawable.VectorDrawableCompat;
 
+import org.chromium.base.Callback;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.history.AppFilterCoordinator.AppInfo;
+import org.chromium.chrome.browser.history.FilterSheetCoordinator.FilterItem;
 import org.chromium.chrome.browser.history.HistoryContentManager.AppInfoCache;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper.DefaultFaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconUtils;
 import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
 import org.chromium.components.browser_ui.widget.RoundedIconGenerator;
 import org.chromium.components.browser_ui.widget.chips.ChipView;
-import org.chromium.components.browser_ui.widget.selectable_list.SelectableItemView;
+import org.chromium.components.browser_ui.widget.selectable_list.CheckableSelectableItemView;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectableListUtils;
+import org.chromium.components.favicon.LargeIconBridge;
 
 import java.util.List;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
-/** The SelectableItemView for items displayed in the browsing history UI. */
+/** The CheckableSelectableItemView for items displayed in the browsing history UI. */
 @NullMarked
-public class HistoryItemView extends SelectableItemView<HistoryItem> {
+public class HistoryItemView extends CheckableSelectableItemView<HistoryItem> {
+    private LinearLayout mContentView;
+    private ImageView mStartIconView;
+    private TextView mTitleView;
+    private TextView mDescriptionView;
     private ImageButton mRemoveButton;
     private @Nullable VectorDrawableCompat mBlockedVisitDrawable;
     private AppInfoCache mAppInfoCache;
@@ -48,6 +60,8 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
     private final RoundedIconGenerator mIconGenerator;
     private DefaultFaviconHelper mFaviconHelper;
 
+    private final int mDefaultLevel;
+    private final int mSelectedLevel;
     private final int mMinIconSize;
     private final int mDisplayedIconSize;
     private final int mEndPadding;
@@ -55,12 +69,20 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
 
     private boolean mIsItemRemoved;
     private BooleanSupplier mShowSourceApp;
+    private Callback<HistoryItem> mOnItemClicked;
+    private Callback<HistoryItem> mOnItemRemoved;
+    private Supplier<@Nullable LargeIconBridge> mLargeIconBridgeSupplier;
     private ChipView mChipView;
     private View mSparkContainer;
+
+    private ImageView mCriticalActionsExpandIcon;
+    private ViewGroup mCriticalActionsContainer;
 
     public HistoryItemView(Context context, AttributeSet attrs) {
         super(context, attrs);
 
+        mDefaultLevel = getResources().getInteger(R.integer.list_item_level_default);
+        mSelectedLevel = getResources().getInteger(R.integer.list_item_level_selected);
         mMinIconSize = FaviconUtils.getDefaultFaviconSize(context);
         mDisplayedIconSize = getResources().getDimensionPixelSize(R.dimen.default_favicon_size);
         mIconGenerator = FaviconUtils.createCircularIconGenerator(context);
@@ -70,11 +92,36 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
     }
 
     @Override
+    protected ImageView getIconView() {
+        return mStartIconView;
+    }
+
+    @Override
+    protected @Nullable ColorStateList getDefaultIconTint() {
+        return null;
+    }
+
+    @Override
+    protected int getDefaultLevel() {
+        return mDefaultLevel;
+    }
+
+    @Override
+    protected int getSelectedLevel() {
+        return mSelectedLevel;
+    }
+
+    @Override
     protected void onFinishInflate() {
         super.onFinishInflate();
+        mContentView = findViewById(R.id.content);
+        mStartIconView = findViewById(R.id.start_icon);
+        mTitleView = findViewById(R.id.title);
+        mDescriptionView = findViewById(R.id.description);
+        ImageViewCompat.setImageTintList(mStartIconView, getDefaultIconTint());
         mStartIconView.setImageResource(R.drawable.default_favicon);
 
-        mRemoveButton = mEndButtonView;
+        mRemoveButton = findViewById(R.id.end_button);
         mRemoveButton.setImageResource(R.drawable.btn_delete_24dp);
         mRemoveButton.setContentDescription(getContext().getString(R.string.remove));
         ImageViewCompat.setImageTintList(
@@ -90,14 +137,12 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
                         .getDimensionPixelSize(R.dimen.history_item_remove_button_lateral_padding),
                 getPaddingBottom());
 
+        mCriticalActionsExpandIcon = findViewById(R.id.critical_actions_expand_icon);
+        mCriticalActionsContainer = findViewById(R.id.critical_actions_container);
         mChipView = findViewById(R.id.chip);
         mChipView.getPrimaryTextView().setEllipsize(TextUtils.TruncateAt.END);
 
         mSparkContainer = findViewById(R.id.spark_container);
-        // Ensure the spark is drawn on top of the favicon and its background. This is needed
-        // because the content of xml is added first, then the content from code is added next (on
-        // top of the xml children).
-        mSparkContainer.bringToFront();
     }
 
     @Override
@@ -126,10 +171,10 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
                                 R.drawable.ic_block_red,
                                 getContext().getTheme());
             }
-            setStartIconDrawable(mBlockedVisitDrawable);
+            setIconDrawable(mBlockedVisitDrawable);
             mTitleView.setTextColor(getContext().getColor(R.color.default_red));
         } else {
-            setStartIconDrawable(
+            setIconDrawable(
                     mFaviconHelper.getDefaultFaviconDrawable(getContext(), item.getUrl(), true));
             requestIcon();
 
@@ -185,12 +230,30 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
         mSparkContainer.setVisibility(showSpark ? View.VISIBLE : View.GONE);
     }
 
+    /** Returns the chevron that CriticalActionsCoordinator binds. */
+    ImageView getCriticalActionsExpandIcon() {
+        return mCriticalActionsExpandIcon;
+    }
+
+    /** Returns the container below the row that hosts the critical actions panel. */
+    ViewGroup getCriticalActionsContainer() {
+        return mCriticalActionsContainer;
+    }
+
     @Initializer
-    void initialize(AppInfoCache appInfoCache, BooleanSupplier showSourceApp) {
+    void initialize(
+            AppInfoCache appInfoCache,
+            BooleanSupplier showSourceApp,
+            Callback<HistoryItem> onItemClicked,
+            Callback<HistoryItem> onItemRemoved,
+            Supplier<@Nullable LargeIconBridge> largeIconBridgeSupplier) {
         mAppInfoCache = appInfoCache;
         // ItemView can be reused every time a new query is made. Use a supplier to
         // check the condition that changes dynamically.
         mShowSourceApp = showSourceApp;
+        mOnItemClicked = onItemClicked;
+        mOnItemRemoved = onItemRemoved;
+        mLargeIconBridgeSupplier = largeIconBridgeSupplier;
     }
 
     private void updateChipView(HistoryItem item) {
@@ -198,8 +261,8 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
         if (mShowSourceApp.getAsBoolean()) {
             String appId = item.getAppId();
             if (appId != null) {
-                AppInfo appInfo = mAppInfoCache.get(appId);
-                if (appInfo.isValid()) {
+                FilterItem<String> appInfo = mAppInfoCache.get(appId);
+                if (appInfo != null) {
                     var sourceApp =
                             getResources()
                                     .getString(R.string.history_app_attribution, appInfo.label);
@@ -235,10 +298,11 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
     /** Removes the item associated with this view. */
     public void remove() {
         // If the remove button is double tapped, this method may be called twice.
-        if (getItem() == null || mIsItemRemoved) return;
+        HistoryItem item = getItem();
+        if (item == null || mIsItemRemoved) return;
 
         mIsItemRemoved = true;
-        getItem().onItemRemoved();
+        mOnItemRemoved.onResult(item);
     }
 
     /**
@@ -246,24 +310,38 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
      */
     public void setRemoveButtonVisiblity(int visibility) {
         mRemoveButton.setVisibility(visibility);
-        int endPadding = visibility == View.GONE ? mEndPadding : 0;
+        updateContentEndPadding();
+    }
+
+    /**
+     * Adds end padding to the row only when it has no end button, so that its text doesn't touch
+     * the edge.
+     */
+    void updateContentEndPadding() {
+        boolean hasEndButton =
+                mRemoveButton.getVisibility() != View.GONE
+                        || mCriticalActionsExpandIcon.getVisibility() != View.GONE;
         mContentView.setPaddingRelative(
                 ViewCompat.getPaddingStart(mContentView),
                 mContentView.getPaddingTop(),
-                endPadding,
+                hasEndButton ? 0 : mEndPadding,
                 mContentView.getPaddingBottom());
     }
 
     @Override
     @VisibleForTesting(otherwise = VisibleForTesting.PROTECTED)
     public void handleNonSelectionClick() {
-        if (getItem() != null) getItem().onItemClicked();
+        HistoryItem item = getItem();
+        if (item != null) mOnItemClicked.onResult(item);
     }
 
     private void requestIcon() {
         HistoryItem item = getItem();
         if (item == null || item.wasBlockedVisit()) return;
-        item.getLargeIconForUrl(
+        LargeIconBridge largeIconBridge = mLargeIconBridgeSupplier.get();
+        if (largeIconBridge == null) return;
+        largeIconBridge.getLargeIconForUrl(
+                item.getUrl(),
                 mMinIconSize,
                 (@Nullable Bitmap icon, int fallbackColor, boolean _, int _) -> {
                     // Prevent stale icons from making it through to the UI.
@@ -272,12 +350,12 @@ public class HistoryItemView extends SelectableItemView<HistoryItem> {
                     Drawable drawable =
                             FaviconUtils.getIconDrawableWithoutFilter(
                                     icon,
-                                    getItem().getUrl(),
+                                    item.getUrl(),
                                     fallbackColor,
                                     mIconGenerator,
                                     getResources(),
                                     mDisplayedIconSize);
-                    setStartIconDrawable(drawable);
+                    setIconDrawable(drawable);
                 });
     }
 

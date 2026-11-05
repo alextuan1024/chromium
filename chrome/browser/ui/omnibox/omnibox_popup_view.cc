@@ -13,7 +13,7 @@ OmniboxPopupView::OmniboxPopupView(OmniboxController* controller)
 
 OmniboxPopupView::~OmniboxPopupView() = default;
 
-OmniboxPopupPresenterBase* OmniboxPopupView::presenter() {
+OmniboxPopupHost* OmniboxPopupView::popup_host() const {
   return nullptr;
 }
 
@@ -31,10 +31,6 @@ std::u16string_view OmniboxPopupView::GetAccessibleButtonTextForResult(
   return {};
 }
 
-OmniboxPopupViewBrowserView* OmniboxPopupView::AsOmniboxPopupViewBrowserView() {
-  return nullptr;
-}
-
 bool OmniboxPopupView::IsPopupHandlerReady() const {
   return false;
 }
@@ -44,3 +40,9 @@ bool OmniboxPopupView::IsReverting() const {
 }
 
 void OmniboxPopupView::SetIsReverting(bool reverting) {}
+
+bool OmniboxPopupView::RequestWebUIContextMenu(
+    const gfx::Point& screen_point,
+    ui::mojom::MenuSourceType source_type) {
+  return false;
+}

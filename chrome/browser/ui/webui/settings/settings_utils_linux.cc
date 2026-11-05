@@ -24,8 +24,8 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 using content::BrowserThread;
 using content::OpenURLParams;
@@ -61,7 +61,7 @@ constexpr char kLinuxProxyConfigUrl[] = "chrome://linux-proxy-config";
 // Show the proxy config URL in the given tab.
 void ShowLinuxProxyConfigUrl(base::WeakPtr<content::WebContents> web_contents,
                              bool launched) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (launched) {
     return;
   }
@@ -71,7 +71,8 @@ void ShowLinuxProxyConfigUrl(base::WeakPtr<content::WebContents> web_contents,
     LOG(ERROR) << "Could not find " << name << " network settings in $PATH";
   }
   OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
-      GURL(kLinuxProxyConfigUrl), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      GURL(kLinuxProxyConfigUrl),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui::PAGE_TRANSITION_LINK);
 
   if (web_contents) {

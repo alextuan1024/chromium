@@ -20,7 +20,6 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelType;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.url.GURL;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -78,16 +77,17 @@ public class HeadlessTabCreator implements TabCreator, NeedsTabModel {
     }
 
     @Override
-    public @Nullable Tab createFrozenTab(TabState state, int id, int index) {
+    public @Nullable Tab createFrozenTab(
+            TabState state, int id, int index, @TabLaunchType int type) {
         checkNotIncognito();
         Tab tab =
                 TabBuilder.createFromFrozenState(mProfile)
                         .setId(id)
+                        .setLaunchType(type)
                         .setDelegateFactory(new HeadlessTabDelegateFactory(TabModelType.HEADLESS))
                         .setTabState(state)
                         .build();
-        mTabModel.addTab(
-                tab, index, TabLaunchType.FROM_RESTORE, TabCreationState.FROZEN_ON_RESTORE);
+        mTabModel.addTab(tab, index, type, TabCreationState.FROZEN_ON_RESTORE);
         return tab;
     }
 
@@ -113,7 +113,6 @@ public class HeadlessTabCreator implements TabCreator, NeedsTabModel {
             boolean shouldPin,
             WebContents webContents,
             @TabLaunchType int type,
-            GURL url,
             int index,
             CompletableFuture<Boolean> addTabToModel) {
         throw new UnsupportedOperationException("Headless does not support live web contents.");

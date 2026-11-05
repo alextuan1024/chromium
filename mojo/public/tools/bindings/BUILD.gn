@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/python.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 import("//third_party/jinja2/jinja2.gni")
 
@@ -25,6 +26,8 @@ _cpp_template_sources = [
   "$mojom_generator_root/generators/cpp_templates/module-features.h.tmpl",
   "$mojom_generator_root/generators/cpp_templates/module-forward.h.tmpl",
   "$mojom_generator_root/generators/cpp_templates/module-import-headers.h.tmpl",
+  "$mojom_generator_root/generators/cpp_templates/module-jni.cc.tmpl",
+  "$mojom_generator_root/generators/cpp_templates/module-jni.h.tmpl",
   "$mojom_generator_root/generators/cpp_templates/module-params-data.h.tmpl",
   "$mojom_generator_root/generators/cpp_templates/module-send-validation.h.tmpl",
   "$mojom_generator_root/generators/cpp_templates/module-shared-internal.h.tmpl",
@@ -62,6 +65,20 @@ _cpp_template_sources = [
   "$mojom_generator_root/generators/cpp_templates/wrapper_union_class_template_definition.tmpl",
 ]
 
+_fuzzilli_template_sources = [
+  "$mojom_generator_root/generators/fuzzilli_templates/arrays.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/enumerations.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/fuzzilli_profile.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/generators.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/interfaces.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/macros.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/maps.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/mojo_scripts_page.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/profile_definition.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/structs.tmpl",
+  "$mojom_generator_root/generators/fuzzilli_templates/unions.tmpl",
+]
+
 _java_template_sources = [
   "$mojom_generator_root/generators/java_templates/constant_definition.tmpl",
   "$mojom_generator_root/generators/java_templates/constants.java.tmpl",
@@ -70,6 +87,7 @@ _java_template_sources = [
   "$mojom_generator_root/generators/java_templates/enum_definition.tmpl",
   "$mojom_generator_root/generators/java_templates/header.java.tmpl",
   "$mojom_generator_root/generators/java_templates/interface.java.tmpl",
+  "$mojom_generator_root/generators/java_templates/interface_bridge.java.tmpl",
   "$mojom_generator_root/generators/java_templates/interface_definition.tmpl",
   "$mojom_generator_root/generators/java_templates/interface_internal.java.tmpl",
   "$mojom_generator_root/generators/java_templates/struct.java.tmpl",
@@ -125,10 +143,19 @@ _ts_template_sources = [
   "$mojom_generator_root/generators/ts_templates/webui_browser_proxy_definition.tmpl",
 ]
 
-action("precompile_cpp_templates") {
-  script = mojom_generator_script
-  sources = mojom_generator_sources + _cpp_template_sources
-  inputs = jinja2_sources
+python_binary("mojom_bindings_generator") {
+  script = "mojom_bindings_generator.py"
+  inputs = mojom_generator_sources + jinja2_sources
+}
+
+python_binary("generate_type_mappings") {
+  script = "generate_type_mappings.py"
+  inputs = mojom_parser_sources
+}
+
+python_action("precompile_cpp_templates") {
+  python_binary = ":mojom_bindings_generator"
+  sources = _cpp_template_sources
   outputs = [ "$target_gen_dir/cpp_templates.zip" ]
   args = [
     "-o",
@@ -140,10 +167,9 @@ action("precompile_cpp_templates") {
   ]
 }
 
-action("precompile_java_templates") {
-  script = mojom_generator_script
-  sources = mojom_generator_sources + _java_template_sources
-  inputs = jinja2_sources
+python_action("precompile_java_templates") {
+  python_binary = ":mojom_bindings_generator"
+  sources = _java_template_sources
   outputs = [ "$target_gen_dir/java_templates.zip" ]
   args = [
     "-o",
@@ -155,10 +181,9 @@ action("precompile_java_templates") {
   ]
 }
 
-action("precompile_js_templates") {
-  script = mojom_generator_script
-  sources = mojom_generator_sources + _js_template_sources
-  inputs = jinja2_sources
+python_action("precompile_js_templates") {
+  python_binary = ":mojom_bindings_generator"
+  sources = _js_template_sources
   outputs = [ "$target_gen_dir/js_templates.zip" ]
   args = [
     "-o",
@@ -170,10 +195,9 @@ action("precompile_js_templates") {
   ]
 }
 
-action("precompile_ts_templates") {
-  script = mojom_generator_script
-  sources = mojom_generator_sources + _ts_template_sources
-  inputs = jinja2_sources
+python_action("precompile_ts_templates") {
+  python_binary = ":mojom_bindings_generator"
+  sources = _ts_template_sources
   outputs = [ "$target_gen_dir/ts_templates.zip" ]
   args = [
     "-o",
@@ -185,10 +209,9 @@ action("precompile_ts_templates") {
   ]
 }
 
-action("precompile_rust_templates") {
-  script = mojom_generator_script
-  sources = mojom_generator_sources + _rust_template_sources
-  inputs = jinja2_sources
+python_action("precompile_rust_templates") {
+  python_binary = ":mojom_bindings_generator"
+  sources = _rust_template_sources
   outputs = [ "$target_gen_dir/rust_templates.zip" ]
   args = [
     "-o",
@@ -200,10 +223,9 @@ action("precompile_rust_templates") {
   ]
 }
 
-action("precompile_mojolpm_templates") {
-  script = mojom_generator_script
-  sources = mojom_generator_sources + _mojolpm_template_sources
-  inputs = jinja2_sources
+python_action("precompile_mojolpm_templates") {
+  python_binary = ":mojom_bindings_generator"
+  sources = _mojolpm_template_sources
   outputs = [ "$target_gen_dir/mojolpm_templates.zip" ]
   args = [
     "-o",
@@ -215,6 +237,20 @@ action("precompile_mojolpm_templates") {
   ]
 }
 
+python_action("precompile_fuzzilli_templates") {
+  python_binary = ":mojom_bindings_generator"
+  sources = _fuzzilli_template_sources
+  outputs = [ "$target_gen_dir/fuzzilli_templates.zip" ]
+  args = [
+    "-o",
+    rebase_path(target_gen_dir, root_build_dir),
+    "--use_bundled_pylibs",
+    "precompile",
+    "-g",
+    "fuzzilli",
+  ]
+}
+
 # Compat alias so the public label still resolves. mojom.gni and mojom_rust.gni
 # are part of the public SDK and may be consumed by other repos on the old
 # label. Anyone still pointing at :precompile_templates keeps the old
@@ -223,6 +259,7 @@ action("precompile_mojolpm_templates") {
 group("precompile_templates") {
   public_deps = [
     ":precompile_cpp_templates",
+    ":precompile_fuzzilli_templates",
     ":precompile_java_templates",
     ":precompile_js_templates",
     ":precompile_mojolpm_templates",
@@ -238,9 +275,21 @@ group("tests") {
     "checks/mojom_interface_feature_check_unittest.py",
     "checks/mojom_restrictions_checks_unittest.py",
     "generators/mojom_rust_generator_unittest.py",
+    "generators/mojom_ts_generator_unittest.py",
     "mojom_bindings_generator_unittest.py",
+    "mojom_message_id_scrambling.gni",
     "//third_party/markupsafe/",
   ]
   data += mojom_generator_sources
   data += jinja2_sources
+  if (current_toolchain == host_toolchain) {
+    # `buildtools` names the Linux directory `linux64`, not `$host_os`.
+    _gn_dir = host_os
+    if (_gn_dir == "linux") {
+      _gn_dir = "linux64"
+    }
+    if (path_exists("//buildtools/$_gn_dir")) {
+      data += [ "//buildtools/$_gn_dir/" ]
+    }
+  }
 }

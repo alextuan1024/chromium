@@ -42,8 +42,8 @@
 #include "media/base/win/mf_feature_checks.h"
 #endif  // BUILDFLAG(IS_WIN)
 
-static const double kDefaultPlaybackRate = 0.0;
-static const float kDefaultVolume = 1.0f;
+static constexpr double kDefaultPlaybackRate = 0.0;
+static constexpr float kDefaultVolume = 1.0f;
 
 namespace media {
 
@@ -739,6 +739,8 @@ void PipelineImpl::RendererWrapper::CreateRendererInternal(
   if (!default_renderer_ ||
       (renderer_type &&
        default_renderer_->GetRendererType() != renderer_type.value())) {
+    default_renderer_.reset();
+
     // Create the Renderer asynchronously on the main task runner. Use
     // base::BindPostTaskToCurrentDefault to call OnRendererCreated() on the
     // media task runner.
@@ -912,6 +914,10 @@ void PipelineImpl::RendererWrapper::OnDemuxerCompletedTrackChange(
     return;
   }
 
+  if (stream) {
+    renderer_ended_ = false;
+  }
+
   shared_state_.media().renderer->OnTracksChanged(
       stream_type, stream, std::move(change_completed_cb));
 }
@@ -1080,11 +1086,12 @@ void PipelineImpl::RendererWrapper::OnPipelineError(PipelineStatus error) {
     return;
   }
 
-  // PIPELINE_ERROR_HARDWARE_CONTEXT_RESET and DEMUXER_ERROR_DETECTED_HLS are
-  // not fatal errors. They are just signals to restart or reconfig the
-  // pipeline.
+  // PIPELINE_ERROR_HARDWARE_CONTEXT_RESET, DEMUXER_ERROR_DETECTED_HLS and
+  // DEMUXER_ERROR_SYMPHONIA_UNSUPPORTED are not fatal errors. They are just
+  // signals to restart or reconfig the pipeline.
   if (error != PIPELINE_ERROR_HARDWARE_CONTEXT_RESET &&
-      error != DEMUXER_ERROR_DETECTED_HLS) {
+      error != DEMUXER_ERROR_DETECTED_HLS &&
+      error != DEMUXER_ERROR_SYMPHONIA_UNSUPPORTED) {
     status_ = error;
   }
 
@@ -1274,6 +1281,8 @@ void PipelineImpl::RendererWrapper::InitializeRenderer(
 
 void PipelineImpl::RendererWrapper::DestroyRenderer() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(shared_state_.media_sequence_checker);
+
+  default_renderer_.reset();
 
   // Destroy the renderer outside the lock scope to avoid holding the lock
   // while renderer is being destroyed (in case Renderer destructor is costly).

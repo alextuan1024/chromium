@@ -29,6 +29,7 @@ import {focusWithoutInk} from 'chrome://resources/js/focus_without_ink.js';
 import {isWindows} from 'chrome://resources/js/platform.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
+import {loadTimeData} from '../i18n_setup.js';
 import {RelaunchMixinLit, RestartType} from '../relaunch_mixin_lit.js';
 import {routes} from '../route.js';
 import {RouteObserverMixinLit} from '../router.js';
@@ -79,7 +80,9 @@ export class SettingsLanguagesPageElement extends
       enabledLanguages_: {type: Array},
       translateTarget_: {type: String},
       canEnableSomeSupportedLanguage_: {type: Boolean},
+      // <if expr="is_win">
       prospectiveUILanguage_: {type: String},
+      // </if>
 
       /**
        * The language to display the details for.
@@ -91,21 +94,26 @@ export class SettingsLanguagesPageElement extends
 
       showManagedLanguageDialog_: {type: Boolean},
       restartTypeEnum: {type: Object},
+      settingsRefresh2026Enabled_: {type: Boolean},
     };
   }
 
-  protected accessor supportedLanguages_:
+  private accessor supportedLanguages_:
       chrome.languageSettingsPrivate.Language[] = [];
   protected accessor enabledLanguages_: LanguageState[] = [];
   protected accessor translateTarget_: string = '';
   protected accessor canEnableSomeSupportedLanguage_: boolean = false;
+  // <if expr="is_win">
   protected accessor prospectiveUILanguage_: string = '';
+  // </if>
   protected accessor detailLanguage_: LanguageState|undefined = undefined;
   protected accessor showAddLanguagesDialog_: boolean = false;
   protected accessor addLanguagesDialogLanguages_:
       chrome.languageSettingsPrivate.Language[] = [];
   protected accessor showManagedLanguageDialog_: boolean = false;
   protected accessor restartTypeEnum = RestartType;
+  protected accessor settingsRefresh2026Enabled_: boolean =
+      loadTimeData.getString('settingsRefresh2026') !== '';
 
   private languageHelper_: LanguageHelper;
   private boundOnLanguagesChanged_: ((e: Event) => void)|null = null;
@@ -175,9 +183,7 @@ export class SettingsLanguagesPageElement extends
   protected onAddLanguagesDialogClose_() {
     this.showAddLanguagesDialog_ = false;
     this.addLanguagesDialogLanguages_ = [];
-    const toFocus = this.shadowRoot.querySelector<HTMLElement>('#addLanguages');
-    assert(toFocus);
-    focusWithoutInk(toFocus);
+    focusWithoutInk(this.$.addLanguages);
   }
 
   /**
@@ -423,12 +429,19 @@ export class SettingsLanguagesPageElement extends
    * @param languageCode The language code identifying a language.
    * @return The class name for the language item.
    */
+  // <if expr="is_win">
   protected getLanguageItemClass_(languageCode: string): string {
-    if (isWindows && languageCode === this.prospectiveUILanguage_) {
+    if (languageCode === this.prospectiveUILanguage_) {
       return 'selected';
     }
     return '';
   }
+  // </if>
+  // <if expr="not is_win">
+  protected getLanguageItemClass_(_languageCode: string): string {
+    return '';
+  }
+  // </if>
 
   protected onDotsClick_(e: Event) {
     const target = e.currentTarget as HTMLElement;

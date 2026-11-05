@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/arc/input_overlay/actions/action_move.h"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <string_view>
 
@@ -448,7 +449,7 @@ bool ActionMove::RewriteMouseEvent(
   CHECK(mouse_event, base::NotFatalUntil::M160);
 
   const auto type = mouse_event->type();
-  if (!current_input_->mouse_types().contains(type) ||
+  if (!current_input_->mouse_types().Has(type) ||
       current_input_->mouse_flags() != mouse_event->flags()) {
     return false;
   }
@@ -499,8 +500,8 @@ void ActionMove::CalculateMoveVector(gfx::PointF& touch_press_pos,
                                      const gfx::RectF& content_bounds,
                                      const gfx::Transform* rotation_transform) {
   CHECK_LT(direction_index, kActionMoveKeysSize, base::NotFatalUntil::M160);
-  auto new_move = gfx::Vector2dF(UNSAFE_TODO(kDirection[direction_index])[0],
-                                 UNSAFE_TODO(kDirection[direction_index])[1]);
+  auto new_move = gfx::Vector2dF(kDirection[direction_index][0],
+                                 kDirection[direction_index][1]);
   const float display_scale_factor =
       touch_injector_->window()->GetHost()->device_scale_factor();
   const float scale = display_scale_factor * move_distance_;

@@ -421,6 +421,14 @@ class MenuManager : public ProfileObserver,
   // items in the same group (i.e. that are adjacent in the list).
   void RadioItemSelected(MenuItem* item);
 
+  // Dispatches the events for a click on the menu item with `menu_item_id`
+  // (helper for `ExecuteCommand`).  `properties` describe the click.
+  void DispatchClickEvents(content::BrowserContext* context,
+                           content::WebContents* web_contents,
+                           content::RenderFrameHost* render_frame_host,
+                           base::DictValue properties,
+                           const MenuItem::Id& menu_item_id);
+
   // Make sure that there is only one radio item selected at once in any run.
   // If there are no radio items selected, then the first item in the run
   // will get selected. If there are multiple radio items selected, then only
@@ -438,7 +446,7 @@ class MenuManager : public ProfileObserver,
   // This lets us make lookup by id fast. It maps id to MenuItem* for
   // all items the menu manager knows about, including all children of top-level
   // items.
-  std::map<MenuItem::Id, raw_ptr<MenuItem, CtnExperimental>> items_by_id_;
+  std::map<MenuItem::Id, raw_ptr<MenuItem, DanglingUntriaged>> items_by_id_;
 
   // The scheduled tasks to write the menu items to storage.
   std::map<MenuItem::ExtensionKey, base::OneShotTimer> write_tasks_;

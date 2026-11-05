@@ -42,6 +42,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "cc/test/fake_layer_tree_frame_sink.h"
 #include "cc/trees/layer_tree_host.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
@@ -63,11 +64,13 @@
 #include "third_party/blink/public/web/web_local_frame_client.h"
 #include "third_party/blink/public/web/web_settings.h"
 #include "third_party/blink/public/web/web_view_client.h"
+#include "third_party/blink/renderer/bindings/core/v8/sanitize_script_errors.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"  // IWYU pragma: export
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme.h"
 #include "third_party/blink/renderer/core/testing/scoped_mock_overlay_scrollbars.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "ui/display/screen_info.h"
@@ -78,8 +81,10 @@ class TickClock;
 
 namespace blink {
 class AgentGroupScheduler;
+class ScriptState;
 class WebFrame;
 class WebLocalFrameImpl;
+struct WebConsoleMessage;
 struct WebNavigationParams;
 class WebRemoteFrameImpl;
 class WebSettings;
@@ -89,6 +94,13 @@ namespace frame_test_helpers {
 class TestWebFrameClient;
 class TestWidgetInputHandlerHost;
 class WebViewHelper;
+
+void RunInScriptStack(
+    ScriptState* script_state,
+    const KURL& script_url,
+    base::FunctionRef<void()> callback,
+    SanitizeScriptErrors sanitize = SanitizeScriptErrors::kDoNotSanitize,
+    const String& source_suffix = g_empty_string);
 
 cc::LayerTreeSettings GetSynchronousSingleThreadLayerTreeSettings();
 
@@ -157,6 +169,11 @@ WebRemoteFrameImpl* CreateRemoteChild(WebRemoteFrame& parent,
                                       const WebString& name = WebString(),
                                       scoped_refptr<SecurityOrigin> = nullptr);
 
+// Helper that wraps WebFrame::Swap(WebLocalFrame*) in a FrameSwapScope with
+// LocalFrame::AttachViewToOwner, as would normally occur in the course of
+// FrameLoader::CommitNavigation.
+bool SwapLocalFrame(WebFrame* old_frame, WebLocalFrame* new_local_frame);
+
 // Call Swap with a `new_remote_frame` stubbing out the mojo channels if
 // necessary.
 void SwapRemoteFrame(
@@ -171,6 +188,14 @@ class TestWebFrameWidgetHost : public mojom::blink::WidgetHost,
   size_t CursorSetCount() const { return cursor_set_count_; }
   size_t VirtualKeyboardRequestCount() const {
     return virtual_keyboard_request_count_;
+  }
+  size_t TextInputStateChangedCount() const {
+    return text_input_state_changed_count_;
+  }
+  // The most recent state received via TextInputStateChanged(), or null if
+  // none has been received.
+  const ui::mojom::blink::TextInputStatePtr& LastTextInputState() const {
+    return last_text_input_state_;
   }
 
   // mojom::blink::WidgetHost overrides:
@@ -228,6 +253,8 @@ class TestWebFrameWidgetHost : public mojom::blink::WidgetHost,
  private:
   size_t cursor_set_count_ = 0;
   size_t virtual_keyboard_request_count_ = 0;
+  size_t text_input_state_changed_count_ = 0;
+  ui::mojom::blink::TextInputStatePtr last_text_input_state_;
   mojo::Remote<mojom::blink::RenderInputRouterClient> client_remote_;
   mojo::AssociatedReceiver<mojom::blink::WidgetHost> receiver_{this};
   mojo::AssociatedReceiver<mojom::blink::FrameWidgetHost> frame_receiver_{this};
@@ -285,8 +312,6 @@ class TestWebFrameWidget : public WebFrameWidgetImpl {
   void RequestDecode(const cc::DrawImage&,
                      base::OnceCallback<void(bool)>,
                      bool speculative) override;
-
-  using WebFrameWidgetImpl::GetOriginalScreenInfo;
 
  protected:
   // Allow subclasses to provide their own input handler host.
@@ -390,8 +415,10 @@ class WebViewHelper : public ScopedMockOverlayScrollbars {
   WebViewImpl* InitializePlaceholderRemote();
 
   // Same as InitializeRemoteWithOpener(), but always sets the opener to null.
-  WebViewImpl* InitializeRemote(scoped_refptr<SecurityOrigin> = nullptr,
-                                WebViewClient* = nullptr);
+  WebViewImpl* InitializeRemote(
+      scoped_refptr<SecurityOrigin> = nullptr,
+      WebViewClient* = nullptr,
+      void (*update_settings_func)(WebSettings*) = nullptr);
 
   // Same as InitializeRemoteWithOpenerAndAssociatedRemoteAndReceivers(), but
   // always sets the opener to null and sets the associated remote & receivers
@@ -400,7 +427,8 @@ class WebViewHelper : public ScopedMockOverlayScrollbars {
   WebViewImpl* InitializeRemoteWithOpener(
       WebFrame* opener,
       scoped_refptr<SecurityOrigin> = nullptr,
-      WebViewClient* = nullptr);
+      WebViewClient* = nullptr,
+      void (*update_settings_func)(WebSettings*) = nullptr);
 
   // Creates and initializes the WebView with a main WebRemoteFrame. Passing
   // nullptr as the SecurityOrigin results in a frame with a unique security
@@ -411,7 +439,8 @@ class WebViewHelper : public ScopedMockOverlayScrollbars {
       WebViewClient*,
       mojo::PendingAssociatedRemote<mojom::blink::RemoteFrameHost>
           remote_frame_host,
-      mojo::PendingAssociatedReceiver<mojom::blink::RemoteFrame> receiver);
+      mojo::PendingAssociatedReceiver<mojom::blink::RemoteFrame> receiver,
+      void (*update_settings_func)(WebSettings*) = nullptr);
 
   // Creates a new uninitialized WebView.
   WebViewImpl* CreateWebView(WebViewClient*, bool compositing_enabled);
@@ -523,11 +552,14 @@ class TestWebFrameClient : public WebLocalFrameClient {
   static bool IsLoading() { return loads_in_progress_ > 0; }
   Vector<String>& ConsoleMessages() { return console_messages_; }
 
-  WebNavigationControl* Frame() const { return frame_; }
+  WebLocalFrameImpl* Frame() const { return frame_.Get(); }
   // Pass ownership of the TestWebFrameClient to |self_owned| here if the
   // TestWebFrameClient should delete itself on frame detach.
   void Bind(WebLocalFrame*,
             std::unique_ptr<TestWebFrameClient> self_owned = nullptr);
+  // Starts observing console messages once the bound frame's core LocalFrame
+  // has been initialized.
+  void ObserveConsoleMessages();
 
   // WebLocalFrameClient:
   void FrameDetached(DetachReason detach_reason) override;
@@ -549,10 +581,6 @@ class TestWebFrameClient : public WebLocalFrameClient {
   WebEffectiveConnectionType GetEffectiveConnectionType() override;
   void SetEffectiveConnectionTypeForTesting(
       WebEffectiveConnectionType) override;
-  void DidAddMessageToConsole(const WebConsoleMessage&,
-                              const WebString& source_name,
-                              unsigned source_line,
-                              const WebString& stack_trace) override;
   WebPlugin* CreatePlugin(const WebPluginParams& params) override;
   AssociatedInterfaceProvider* GetRemoteNavigationAssociatedInterfaces()
       override;
@@ -594,7 +622,15 @@ class TestWebFrameClient : public WebLocalFrameClient {
 
   void SetFrameDetachedCallback(base::OnceClosure callback);
 
+  // Called when a message is added to the console of the bound frame.
+  virtual void DidAddMessageToConsole(const WebConsoleMessage&,
+                                      const WebString& source_name,
+                                      unsigned source_line,
+                                      const WebString& stack_trace);
+
  private:
+  class ConsoleMessageObserver;
+
   void CommitNavigation(std::unique_ptr<WebNavigationInfo>);
 
   static int loads_in_progress_;
@@ -604,10 +640,8 @@ class TestWebFrameClient : public WebLocalFrameClient {
 
   std::unique_ptr<AssociatedInterfaceProvider> associated_interface_provider_;
 
-  // This is null from when the client is created until it is initialized with
-  // Bind().
-  raw_ptr<WebNavigationControl, UnprotectedInRelease | DanglingUntriaged>
-      frame_ = nullptr;
+  // This is null until the client is initialized with Bind().
+  WeakPersistent<WebLocalFrameImpl> frame_;
 
   base::CancelableOnceCallback<void()> navigation_callback_;
   WebEffectiveConnectionType effective_connection_type_;
@@ -624,6 +658,7 @@ class TestWebFrameClient : public WebLocalFrameClient {
   base::OnceClosure frame_detached_callback_ = base::DoNothing();
 
   Vector<std::unique_ptr<WebViewHelper>> child_web_views_;
+  std::unique_ptr<ConsoleMessageObserver> console_message_observer_;
   base::WeakPtrFactory<TestWebFrameClient> weak_factory_{this};
 };
 

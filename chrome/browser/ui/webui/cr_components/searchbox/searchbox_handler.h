@@ -33,6 +33,7 @@
 #include "third_party/omnibox_proto/chrome_searchbox_stats.pb.h"
 #include "third_party/omnibox_proto/model_mode.pb.h"
 #include "third_party/omnibox_proto/tool_mode.pb.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 
@@ -50,8 +51,16 @@ class WebContents;
 namespace searchbox_internal {
 // Internal constants for icon resource paths shared by SearchboxHandler and its
 // subclasses.
-extern const char* kSearchSparkIconResourceName;
-extern const char* kReplyRotated180IconResourceName;
+inline constexpr char kSearchSparkIconResourceName[] =
+    "//resources/cr_components/searchbox/icons/search_spark.svg";
+inline constexpr char kReplyRotated180IconResourceName[] =
+    "//resources/cr_components/searchbox/icons/reply_rotated180.svg";
+// Side panel icons. Following Chrome's naming, "dock_to_right" shows the side
+// panel on the left and "dock_to_left" shows it on the right.
+inline constexpr char kDockToLeftIconResourceName[] =
+    "//resources/cr_components/searchbox/icons/dock_to_left.svg";
+inline constexpr char kDockToRightIconResourceName[] =
+    "//resources/cr_components/searchbox/icons/dock_to_right.svg";
 }  // namespace searchbox_internal
 
 namespace gfx {
@@ -103,16 +112,56 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
     bool is_lens = false;
   };
 
+  // The options of WebUIDataSourceOptions that
+  // GetProfileIndependentWebUIDataSourceDict() uses.
+  struct ProfileIndependentWebUIDataSourceOptions {
+    bool enable_voice_search = false;
+    bool enable_lens_search = false;
+  };
+
+  // The options of WebUIDataSourceOptions that
+  // GetProfileDependentWebUIDataSourceDict() uses.
+  struct ProfileDependentWebUIDataSourceOptions {
+    bool session_allows_drag_and_drop = false;
+    bool is_lens = false;
+  };
+
   static bool GetAllVoiceSearchCoherenceComposeboxesEnabled();
   static bool GetVoiceSearchCoherenceAnySearchboxExperimentEnabled();
   static bool GetVoiceSearchCoherenceCobrowsingComposeboxEnabled();
 
+  // Returns the values for the WebUIDataSource of a WebUI that uses the
+  // searchbox, i.e. both GetProfileIndependentWebUIDataSourceDict() and
+  // GetProfileDependentWebUIDataSourceDict().
   static base::DictValue GetWebUIDataSourceDict(Profile* profile);
   static base::DictValue GetWebUIDataSourceDict(Profile* profile,
                                                 WebUIDataSourceOptions options);
 
+  // Returns the values of GetWebUIDataSourceDict() that don't depend on the
+  // profile.
+  static base::DictValue GetProfileIndependentWebUIDataSourceDict(
+      ProfileIndependentWebUIDataSourceOptions options);
+
+  // Returns the values of GetWebUIDataSourceDict() that depend on `profile`,
+  // e.g. on its prefs.
+  static base::DictValue GetProfileDependentWebUIDataSourceDict(
+      Profile* profile,
+      ProfileDependentWebUIDataSourceOptions options);
+
+  // Computes URL emphasis metadata for the given `text`.
+  // Based on `OmniboxView::UpdateTextStyle()` (for URL component parsing and
+  // deemphasis mode determination) and `OmniboxViewViews::UpdateSchemeStyle()`
+  // (for security-related scheme styling when `include_security_style` is
+  // true).
+  static searchbox::mojom::UrlEmphasisPtr ComputeUrlEmphasis(
+      const std::u16string& text,
+      bool text_is_url,
+      bool include_security_style,
+      const OmniboxClient* client);
+
   // Maps all icons returned from either `AutocompleteMatch::GetVectorIcon()` or
   // `OmniboxAction::GetIconImage()` to svg resource strings.
+  static std::string VectorIconToResourceName(const gfx::VectorIcon& icon);
   virtual std::string AutocompleteIconToResourceName(
       const gfx::VectorIcon& icon) const;
 
@@ -167,18 +216,24 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
       searchbox::mojom::SmartComposeStatsPtr smart_compose_stats) override {}
   void SetPopupSelection(
       searchbox::mojom::OmniboxPopupSelectionPtr selection) override;
-  void OpenPopupSelection(uint32_t result_sequence_id,
-                          searchbox::mojom::OmniboxPopupSelectionPtr selection,
-                          WindowOpenDisposition disposition) override;
+  void OpenPopupSelection(
+      uint32_t result_sequence_id,
+      searchbox::mojom::OmniboxPopupSelectionPtr selection,
+      searchbox::mojom::ActionModifiersPtr modifiers) override;
+  void OpenPopupSelectionWithDisposition(
+      uint32_t result_sequence_id,
+      searchbox::mojom::OmniboxPopupSelectionPtr selection,
+      ui::mojom::WindowOpenDisposition disposition) override;
   void OnNavigationLikely(
       uint8_t line,
       const GURL& url,
       omnibox::mojom::NavigationPredictor navigation_predictor) override;
   void DeleteAutocompleteMatch(uint8_t line, const GURL& url) override;
-  void ActivateKeyword(uint8_t line,
-                       const GURL& url,
-                       base::TimeTicks match_selection_timestamp,
-                       bool is_mouse_event) override;
+  void ActivateKeyword(
+      uint8_t line,
+      const GURL& url,
+      base::TimeTicks match_selection_timestamp,
+      searchbox::mojom::KeywordActivationMethod activation_method) override;
   void ExecuteAction(uint8_t line,
                      uint8_t action_index,
                      const GURL& url,
@@ -238,9 +293,12 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
   void SetSmartTabSharingActive(bool active) override;
   void GetSmartTabSharingActive(
       GetSmartTabSharingActiveCallback callback) override;
+  void ResetSmartTabSharing(ResetSmartTabSharingCallback callback) override;
 #endif
   void DismissFre(searchbox::mojom::FreStage stage) override {}
-  void ShowHotkeyDropdown(const gfx::Rect& anchor_bounds) override {}
+  void RecordFreImpression(searchbox::mojom::FreStage stage) override {}
+  void ShowHotkeyDropdown(const gfx::Rect& anchor_bounds,
+                          ShowHotkeyDropdownCallback callback) override;
   void OpenHotkeySettings() override {}
   void OnEscapePressed() override {}
   void set_delegate(Delegate* delegate) { omnibox_delegate_ = delegate; }
@@ -281,6 +339,7 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
 
   void SetAutocompleteControllerForTesting(
       std::unique_ptr<AutocompleteController> controller);
+  void SendAvailableKeywordModels();
 
   raw_ptr<Profile> profile_;
   raw_ptr<content::WebContents> web_contents_;
@@ -320,19 +379,18 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
   base::WeakPtrFactory<SearchboxHandler> weak_ptr_factory_{this};
 
   TemplateURLService* GetTemplateURLService() const;
-  void SendAvailableKeywordModels();
   void OnKeywordSpaceTriggeringPrefChanged();
 
   void OpenMatch(OmniboxPopupSelection selection,
                  AutocompleteMatch match,
-                 WindowOpenDisposition disposition,
+                 ui::mojom::WindowOpenDisposition disposition,
                  base::TimeTicks match_selection_timestamp,
-                 const searchbox::AutocompleteSnapshot* snapshot = nullptr);
+                 const searchbox::AutocompleteSnapshot& snapshot);
 
   void OnDefaultSearchExtensionDialogDone(
       OmniboxPopupSelection selection,
       AutocompleteMatch match,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       base::TimeTicks match_selection_timestamp,
       OmniboxClient::ExtensionControlledDialogResult dialog_result);
 
@@ -360,11 +418,18 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
       searchbox::mojom::AutocompleteMatch* mojom_match) const;
   std::optional<searchbox::mojom::AutocompleteMatchPtr> CreateAutocompleteMatch(
       const AutocompleteMatch& match,
-      size_t line,
       bookmarks::BookmarkModel* bookmark_model,
       const omnibox::GroupConfigMap& suggestion_groups_map,
       const TemplateURLService* turl_service) const;
-  virtual WindowOpenDisposition ComputeWindowOpenDisposition(
+  // Populates the screen reader labels of `mojom_match`, which was created
+  // from the match at `line` in `result`. Uses the same logic as the omnibox
+  // edit model so all omnibox UIs announce the same text.
+  void PopulateAccessibilityLabels(
+      const AutocompleteResult& result,
+      size_t line,
+      const TemplateURLService* turl_service,
+      searchbox::mojom::AutocompleteMatch* mojom_match) const;
+  virtual ui::mojom::WindowOpenDisposition ComputeWindowOpenDisposition(
       uint8_t mouse_button,
       bool alt_key,
       bool ctrl_key,

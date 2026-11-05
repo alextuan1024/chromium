@@ -56,6 +56,10 @@
 #include "third_party/blink/public/common/permissions_policy/policy_helper_public.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/media/webrtc/system_media_capture_permissions_mac.h"
+#endif  // BUILDFLAG(IS_MAC)
+
 #if BUILDFLAG(IS_WIN)
 #include "base/process/process.h"
 #include "base/test/bind.h"
@@ -290,11 +294,14 @@ TEST_F(DisplayMediaAccessHandlerTest, PermissionGiven) {
                  &result, devices, false /* request_audio */);
 // TODO(crbug.com/40802122): Fix screen-capture tests on macOS.
 #if BUILDFLAG(IS_MAC)
-  // On macOS, screen capture requires system permissions that are disabled by
-  // default.
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
-            result);
-  return;
+  // On macOS versions without SCContentSharingPicker, screen capture requires
+  // system permissions that are disabled by default.
+  if (system_media_permissions::ScreenCaptureNeedsSystemLevelPermissions()) {
+    EXPECT_EQ(
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
+        result);
+    return;
+  }
 #endif
 
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::OK, result);
@@ -332,11 +339,14 @@ TEST_F(DisplayMediaAccessHandlerTest, PermissionGivenToRequestWithAudio) {
   ProcessRequest(fake_media_id, &result, devices, true /* request_audio */);
 // TODO(crbug.com/40802122): Fix screen-capture tests on macOS.
 #if BUILDFLAG(IS_MAC)
-  // On macOS, screen capture requires system permissions that are disabled by
-  // default.
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
-            result);
-  return;
+  // On macOS versions without SCContentSharingPicker, screen capture requires
+  // system permissions that are disabled by default.
+  if (system_media_permissions::ScreenCaptureNeedsSystemLevelPermissions()) {
+    EXPECT_EQ(
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
+        result);
+    return;
+  }
 #endif
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::OK, result);
   EXPECT_EQ(2u, blink::CountDevices(devices));
@@ -481,6 +491,60 @@ TEST_F(DisplayMediaAccessHandlerTest, DlpRestricted) {
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::DLP_PERMISSION_DENIED,
             result);
   EXPECT_EQ(0u, blink::CountDevices(devices));
+}
+
+TEST_F(DisplayMediaAccessHandlerTest, DlpRestrictedWithQueuedRequest) {
+  const content::DesktopMediaID media_id(content::DesktopMediaID::TYPE_SCREEN,
+                                         content::DesktopMediaID::kFakeId);
+  SetTestFlags({{.expect_screens = true,
+                 .expect_windows = true,
+                 .expect_tabs = true,
+                 .expect_current_tab = false,
+                 .expect_audio = false,
+                 .picker_result = media_id},
+                {.expect_screens = true,
+                 .expect_windows = true,
+                 .expect_tabs = true,
+                 .expect_current_tab = false,
+                 .expect_audio = false,
+                 .picker_result =
+                     base::unexpected(blink::mojom::MediaStreamRequestResult::
+                                          PERMISSION_DENIED_BY_USER)}});
+
+  policy::MockDlpContentManager mock_dlp_content_manager;
+  policy::ScopedDlpContentObserverForTesting scoped_dlp_content_observer(
+      &mock_dlp_content_manager);
+  EXPECT_CALL(mock_dlp_content_manager, CheckScreenShareRestriction)
+      .WillOnce([](const content::DesktopMediaID& media_id,
+                   const std::u16string& application_title,
+                   base::OnceCallback<void(bool)> callback) {
+        std::move(callback).Run(/*should_proceed=*/false);
+      });
+
+  base::RunLoop wait_loop1;
+  base::RunLoop wait_loop2;
+  blink::mojom::MediaStreamRequestResult result1 =
+      blink::mojom::MediaStreamRequestResult::NOT_SUPPORTED;
+  blink::mojom::MediaStreamRequestResult result2 =
+      blink::mojom::MediaStreamRequestResult::NOT_SUPPORTED;
+  blink::mojom::StreamDevices devices1;
+  blink::mojom::StreamDevices devices2;
+
+  HandleRequest(MakeRequest(/*request_audio=*/false), &wait_loop1, &result1,
+                devices1);
+  HandleRequest(MakeRequest(/*request_audio=*/false), &wait_loop2, &result2,
+                devices2);
+
+  wait_loop1.Run();
+  wait_loop2.Run();
+
+  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::DLP_PERMISSION_DENIED,
+            result1);
+  EXPECT_EQ(0u, blink::CountDevices(devices1));
+
+  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_USER,
+            result2);
+  EXPECT_EQ(0u, blink::CountDevices(devices2));
 }
 
 TEST_F(DisplayMediaAccessHandlerTest, DlpNotRestricted) {
@@ -819,11 +883,14 @@ TEST_F(DisplayMediaAccessHandlerTest, MultipleRequests) {
   EXPECT_TRUE(test_flags_[0].picker_deleted);
 // TODO(crbug.com/40802122): Fix screen-capture tests on macOS.
 #if BUILDFLAG(IS_MAC)
-  // On macOS, screen capture requires system permissions that are disabled by
-  // default.
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
-            result);
-  return;
+  // On macOS versions without SCContentSharingPicker, screen capture requires
+  // system permissions that are disabled by default.
+  if (system_media_permissions::ScreenCaptureNeedsSystemLevelPermissions()) {
+    EXPECT_EQ(
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
+        result);
+    return;
+  }
 #endif
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::OK, result);
   EXPECT_EQ(1u, devices.size());
@@ -918,8 +985,13 @@ TEST_F(DisplayMediaAccessHandlerTest, QueuedRequestRejectedIfRfhNavigates) {
   wait_loop1.Run();
 
 #if BUILDFLAG(IS_MAC)
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
-            result1);
+  if (system_media_permissions::ScreenCaptureNeedsSystemLevelPermissions()) {
+    EXPECT_EQ(
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
+        result1);
+  } else {
+    EXPECT_EQ(blink::mojom::MediaStreamRequestResult::OK, result1);
+  }
 #else
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::OK, result1);
 #endif
@@ -949,7 +1021,6 @@ TEST_F(DisplayMediaAccessHandlerTest,
 
 TEST_F(DisplayMediaAccessHandlerTest,
        ChangeSourceWithAudioRequestPermissionGiven) {
-  blink::MediaStreamDevices devices;
   ChangeSourceRequestTest(
       /*with_audio=*/true,
       /*expected_result=*/blink::mojom::MediaStreamRequestResult::OK,
@@ -1022,11 +1093,14 @@ TEST_F(DisplayMediaAccessHandlerTest, ChangeSourceWithPendingPickerRequest) {
   EXPECT_TRUE(test_flags_[0].picker_deleted);
 // TODO(crbug.com/40802122): Fix screen-capture tests on macOS.
 #if BUILDFLAG(IS_MAC)
-  // On macOS, screen capture requires system permissions that are disabled by
-  // default.
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
-            results[0]);
-  return;
+  // On macOS versions without SCContentSharingPicker, screen capture requires
+  // system permissions that are disabled by default.
+  if (system_media_permissions::ScreenCaptureNeedsSystemLevelPermissions()) {
+    EXPECT_EQ(
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
+        results[0]);
+    return;
+  }
 #endif
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::OK, results[0]);
   EXPECT_FALSE(test_flags_[1].picker_created);
@@ -1057,11 +1131,14 @@ TEST_F(DisplayMediaAccessHandlerTest,
   wait_loop[0].Run();
 // TODO(crbug.com/40802122): Fix screen-capture tests on macOS.
 #if BUILDFLAG(IS_MAC)
-  // On macOS, screen capture requires system permissions that are disabled by
-  // default.
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
-            results[0]);
-  return;
+  // On macOS versions without SCContentSharingPicker, screen capture requires
+  // system permissions that are disabled by default.
+  if (system_media_permissions::ScreenCaptureNeedsSystemLevelPermissions()) {
+    EXPECT_EQ(
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
+        results[0]);
+    return;
+  }
 #endif
   EXPECT_FALSE(test_flags_[1].picker_created);
   EXPECT_FALSE(test_flags_[1].picker_deleted);
@@ -1094,11 +1171,14 @@ TEST_F(DisplayMediaAccessHandlerTest,
   EXPECT_TRUE(test_flags_[0].picker_deleted);
 // TODO(crbug.com/40802122): Fix screen-capture tests on macOS.
 #if BUILDFLAG(IS_MAC)
-  // On macOS, screen capture requires system permissions that are disabled by
-  // default.
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
-            results[0]);
-  return;
+  // On macOS versions without SCContentSharingPicker, screen capture requires
+  // system permissions that are disabled by default.
+  if (system_media_permissions::ScreenCaptureNeedsSystemLevelPermissions()) {
+    EXPECT_EQ(
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
+        results[0]);
+    return;
+  }
 #endif
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::OK, results[0]);
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::INVALID_VIDEO_DEVICE_ID,
@@ -1117,11 +1197,14 @@ TEST_F(DisplayMediaAccessHandlerTest, ScreenWithAudioDefaultsToSystemAudio) {
 
 // TODO(crbug.com/40802122): Fix screen-capture tests on macOS.
 #if BUILDFLAG(IS_MAC)
-  // On macOS, screen capture requires system permissions that are disabled by
-  // default.
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
-            result);
-  return;
+  // On macOS versions without SCContentSharingPicker, screen capture requires
+  // system permissions that are disabled by default.
+  if (system_media_permissions::ScreenCaptureNeedsSystemLevelPermissions()) {
+    EXPECT_EQ(
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
+        result);
+    return;
+  }
 #endif
 
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::OK, result);
@@ -1148,11 +1231,14 @@ TEST_F(DisplayMediaAccessHandlerTest, WindowWithAudioDefaultsToSystemAudio) {
 
 // TODO(crbug.com/40802122): Fix screen-capture tests on macOS.
 #if BUILDFLAG(IS_MAC)
-  // On macOS, screen capture requires system permissions that are disabled by
-  // default.
-  EXPECT_EQ(blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
-            result);
-  return;
+  // On macOS versions without SCContentSharingPicker, screen capture requires
+  // system permissions that are disabled by default.
+  if (system_media_permissions::ScreenCaptureNeedsSystemLevelPermissions()) {
+    EXPECT_EQ(
+        blink::mojom::MediaStreamRequestResult::PERMISSION_DENIED_BY_SYSTEM,
+        result);
+    return;
+  }
 #endif
 
   EXPECT_EQ(blink::mojom::MediaStreamRequestResult::OK, result);

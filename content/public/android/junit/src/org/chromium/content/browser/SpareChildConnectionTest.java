@@ -48,7 +48,6 @@ public class SpareChildConnectionTest {
                     "org.chromium.test",
                     "TestServiceName",
                     /* serviceCount= */ 3,
-                    /* bindToCaller= */ false,
                     /* bindAsExternalService= */ false,
                     /* fallbackToNextSlot= */ false,
                     /* isSandboxedForHistograms= */ false);
@@ -65,27 +64,22 @@ public class SpareChildConnectionTest {
                 Context context,
                 ComponentName serviceName,
                 ComponentName fallbackServiceName,
-                boolean bindToCaller,
                 boolean bindAsExternalService,
                 Bundle serviceBundle,
                 String instanceName,
                 boolean independentFallback,
+                boolean allowBindFailure,
                 boolean isSandboxedForHistograms) {
             // We expect to create only one connection after calling reset().
             assertThat(mConnection).isNull();
             mConnection =
                     new TestChildProcessConnection(
-                            serviceName, bindToCaller, bindAsExternalService, serviceBundle);
+                            serviceName, bindAsExternalService, serviceBundle);
             return mConnection;
         }
 
         public void simulateConnectionBindingSuccessfully() {
             mConnection.getServiceCallback().onChildStarted();
-            RobolectricUtil.runAllBackgroundAndUi();
-        }
-
-        public void simulateConnectionFailingToBind() {
-            mConnection.getServiceCallback().onChildStartFailed(mConnection);
             RobolectricUtil.runAllBackgroundAndUi();
         }
 
@@ -118,7 +112,6 @@ public class SpareChildConnectionTest {
                         "org.chromium.test.spare_connection",
                         "TestServiceName",
                         /* serviceCount= */ 5,
-                        /* bindToCaller= */ false,
                         /* bindAsExternalService= */ false,
                         /* fallbackToNextSlot= */ false,
                         /* isSandboxedForHistograms= */ false);
@@ -168,7 +161,6 @@ public class SpareChildConnectionTest {
         assertNull(connection);
         RobolectricUtil.runAllBackgroundAndUi();
         verify(mServiceCallback, times(0)).onChildStarted();
-        verify(mServiceCallback, times(0)).onChildStartFailed(any());
         verify(mServiceCallback, times(0)).onChildProcessDied(any());
     }
 
@@ -190,7 +182,6 @@ public class SpareChildConnectionTest {
 
         RobolectricUtil.runAllBackgroundAndUi();
         verify(mServiceCallback, times(1)).onChildStarted();
-        verify(mServiceCallback, times(0)).onChildStartFailed(any());
     }
 
     @Test
@@ -206,7 +197,6 @@ public class SpareChildConnectionTest {
         RobolectricUtil.runAllBackgroundAndUi();
         // No callbacks are called.
         verify(mServiceCallback, times(0)).onChildStarted();
-        verify(mServiceCallback, times(0)).onChildStartFailed(any());
 
         // No more connections are available.
         assertTrue(mSpareConnection.isEmpty());
@@ -214,35 +204,6 @@ public class SpareChildConnectionTest {
         // Simulate the connection getting bound, it should trigger the callback.
         mTestConnectionFactory.simulateConnectionBindingSuccessfully();
         verify(mServiceCallback, times(1)).onChildStarted();
-        verify(mServiceCallback, times(0)).onChildStartFailed(any());
-    }
-
-    @Test
-    @Feature({"ProcessManagement"})
-    public void testUnretrievedConnectionFailsToBind() {
-        mTestConnectionFactory.simulateConnectionFailingToBind();
-
-        // We should not have a spare connection.
-        ChildProcessConnection connection =
-                mSpareConnection.getConnection(
-                        mConnectionAllocator, mServiceCallback, ChildBindingState.VISIBLE);
-        assertNull(connection);
-    }
-
-    @Test
-    @Feature({"ProcessManagement"})
-    public void testRetrievedConnectionFailsToBind() {
-        // Retrieve the spare connection before it's bound.
-        ChildProcessConnection connection =
-                mSpareConnection.getConnection(
-                        mConnectionAllocator, mServiceCallback, ChildBindingState.VISIBLE);
-        assertNotNull(connection);
-
-        mTestConnectionFactory.simulateConnectionFailingToBind();
-
-        // We should get a failure callback.
-        verify(mServiceCallback, times(0)).onChildStarted();
-        verify(mServiceCallback, times(1)).onChildStartFailed(connection);
     }
 
     @Test
@@ -258,7 +219,6 @@ public class SpareChildConnectionTest {
 
         // We should get a failure callback.
         verify(mServiceCallback, times(0)).onChildStarted();
-        verify(mServiceCallback, times(0)).onChildStartFailed(any());
         verify(mServiceCallback, times(1)).onChildProcessDied(connection);
     }
 
@@ -297,22 +257,28 @@ public class SpareChildConnectionTest {
             assertNotNull(connection);
             mTestConnectionFactory.simulateConnectionBindingSuccessfully();
             assertEquals(testBindingState, connection.bindingStateCurrent());
-            if (testBindingState == ChildBindingState.WAIVED) {
-                assertEquals(0, connection.getStrongBindingCount());
-                assertEquals(0, connection.getVisibleBindingCount());
-                assertEquals(0, connection.getNotPerceptibleBindingCount());
-            } else if (testBindingState == ChildBindingState.NOT_PERCEPTIBLE) {
-                assertEquals(0, connection.getStrongBindingCount());
-                assertEquals(0, connection.getVisibleBindingCount());
-                assertEquals(1, connection.getNotPerceptibleBindingCount());
-            } else if (testBindingState == ChildBindingState.VISIBLE) {
-                assertEquals(0, connection.getStrongBindingCount());
-                assertEquals(1, connection.getVisibleBindingCount());
-                assertEquals(0, connection.getNotPerceptibleBindingCount());
-            } else if (testBindingState == ChildBindingState.STRONG) {
-                assertEquals(1, connection.getStrongBindingCount());
-                assertEquals(0, connection.getVisibleBindingCount());
-                assertEquals(0, connection.getNotPerceptibleBindingCount());
+            switch (testBindingState) {
+                case ChildBindingState.WAIVED -> {
+                    assertEquals(0, connection.getStrongBindingCount());
+                    assertEquals(0, connection.getVisibleBindingCount());
+                    assertEquals(0, connection.getNotPerceptibleBindingCount());
+                }
+                case ChildBindingState.NOT_PERCEPTIBLE -> {
+                    assertEquals(0, connection.getStrongBindingCount());
+                    assertEquals(0, connection.getVisibleBindingCount());
+                    assertEquals(1, connection.getNotPerceptibleBindingCount());
+                }
+                case ChildBindingState.VISIBLE -> {
+                    assertEquals(0, connection.getStrongBindingCount());
+                    assertEquals(1, connection.getVisibleBindingCount());
+                    assertEquals(0, connection.getNotPerceptibleBindingCount());
+                }
+                case ChildBindingState.STRONG -> {
+                    assertEquals(1, connection.getStrongBindingCount());
+                    assertEquals(0, connection.getVisibleBindingCount());
+                    assertEquals(0, connection.getNotPerceptibleBindingCount());
+                }
+                default -> {}
             }
         }
     }

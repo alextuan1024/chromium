@@ -125,7 +125,9 @@ mojom::ChromeAccountType GetAccountType(const Profile* profile) {
     // demo mode is an exception, as it is expected to work purely offline, with
     // a (fake) robot account not known to auth service - this means that it has
     // to go through different, offline provisioning flow.
-    CHECK(IsRobotOrOfflineDemoAccountMode(), base::NotFatalUntil::M160);
+    // TODO(crbug.com/572959315): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(IsRobotOrOfflineDemoAccountMode());
     return mojom::ChromeAccountType::ROBOT_ACCOUNT;
   }
 
@@ -244,9 +246,6 @@ void CompleteFetchSecondaryAccountInfoWithMetrics(
 }
 
 }  // namespace
-
-// static
-const char ArcAuthService::kArcServiceName[] = "arc::ArcAuthService";
 
 // static
 ArcAuthService* ArcAuthService::GetForBrowserContext(
@@ -516,8 +515,9 @@ void ArcAuthService::FetchPrimaryAccountInfo(
     // Optionally retrieve auth code in silent mode. Use the "unconsented"
     // primary account because this class doesn't care about browser sync
     // consent.
-    CHECK(identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin),
-          base::NotFatalUntil::M160);
+    // TODO(crbug.com/576431869): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin));
     auth_code_fetcher = CreateArcBackgroundAuthCodeFetcher(
         identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
         initial_signin);
@@ -817,7 +817,9 @@ ArcAuthService::CreateArcBackgroundAuthCodeFetcher(
     bool initial_signin) {
   const AccountInfo account_info =
       identity_manager_->FindExtendedAccountInfoByAccountId(core_account_id);
-  CHECK(!account_info.IsEmpty(), base::NotFatalUntil::M160);
+  // TODO(crbug.com/576420395): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!account_info.IsEmpty());
   auto fetcher = std::make_unique<ArcBackgroundAuthCodeFetcher>(
       &local_state_.get(), url_loader_factory_,
       CHECK_DEREF(ash::AnnotatedAccountId::Get(profile_.get())),

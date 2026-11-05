@@ -27,8 +27,9 @@ ProxyServiceFactory::CreateProxyConfigService(PrefProxyConfigTracker* tracker,
   // The linux gsettings-based proxy settings getter relies on being initialized
   // from the UI thread. The system proxy config service could also get created
   // without full browser process by launching service manager alone.
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
-         !BrowserThread::IsThreadInitialized(BrowserThread::UI));
+  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
+            !BrowserThread::IsThreadInitialized(BrowserThread::UI),
+        base::NotFatalUntil::M161);
 
   std::unique_ptr<net::ProxyConfigService> base_service;
 
@@ -54,14 +55,15 @@ ProxyServiceFactory::CreatePrefProxyConfigTrackerOfProfile(
     PrefService* profile_prefs,
     PrefService* local_state_prefs,
     policy::PolicyService* policy_service,
-    enterprise_net::EnterpriseProxyService* enterprise_proxy_service) {
+    enterprise_net::EnterpriseProxyService* enterprise_proxy_service,
+    bool record_affiliation_metrics) {
 #if BUILDFLAG(IS_CHROMEOS)
   return std::make_unique<ash::ProxyConfigServiceImpl>(
       profile_prefs, local_state_prefs, nullptr);
 #else
   return std::make_unique<PrefProxyConfigTrackerImpl>(
       profile_prefs, /*proxy_config_service_task_runner=*/nullptr,
-      policy_service, enterprise_proxy_service);
+      policy_service, enterprise_proxy_service, record_affiliation_metrics);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 }
 

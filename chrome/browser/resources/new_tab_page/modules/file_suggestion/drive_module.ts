@@ -43,26 +43,16 @@ export class DriveModuleElement extends DriveModuleElementBase {
     return {
       files: {type: Array},
       showInfoDialog_: {type: Boolean},
-      showDriveModuleSeeMoreLink_: {type: Boolean},
     };
   }
 
   accessor files: File[] = [];
   protected accessor showInfoDialog_: boolean = false;
-  protected accessor showDriveModuleSeeMoreLink_: boolean =
+  protected readonly showDriveModuleSeeMoreLink_: boolean =
       loadTimeData.getBoolean('showDriveModuleSeeMoreLink');
 
   protected getMenuItems_(): MenuItem[] {
     return [
-      {
-        action: 'dismiss',
-        icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-            'modules:visibility-off' :
-            'modules:visibility_off-old',
-        text: this.i18nRecursive(
-            '', 'modulesDismissForHoursButtonText',
-            'fileSuggestionDismissHours'),
-      },
       {
         action: 'disable',
         icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
@@ -93,16 +83,6 @@ export class DriveModuleElement extends DriveModuleElementBase {
     this.dispatchEvent(disableEvent);
   }
 
-  protected onDismissButtonClick_() {
-    FileProxy.getHandler().dismissModule();
-    this.fire('dismiss-module-instance', {
-      message: loadTimeData.getStringF(
-          'dismissModuleToastMessage',
-          loadTimeData.getString('modulesFilesSentence')),
-      restoreCallback: () => FileProxy.getHandler().restoreModule(),
-    });
-  }
-
   protected onInfoButtonClick_() {
     this.showInfoDialog_ = true;
   }
@@ -125,7 +105,7 @@ async function createDriveElement(): Promise<DriveModuleElement|null> {
   if (files.length === 0) {
     return null;
   }
-  const element = new DriveModuleElement();
+  const element = document.createElement('ntp-drive-module');
   element.files = files;
   return element;
 }

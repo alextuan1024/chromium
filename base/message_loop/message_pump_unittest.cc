@@ -4,9 +4,13 @@
 
 #include "base/message_loop/message_pump.h"
 
+#include <memory>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/message_loop/message_pump_for_io.h"
@@ -15,7 +19,9 @@
 #include "base/message_loop/message_pump_wakeup_counter.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
+#include "base/task/current_thread.h"
 #include "base/task/single_thread_task_executor.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -28,6 +34,7 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/input_hint_checker.h"
 #include "base/android/yield_to_looper_checker.h"
+#include "base/test/simple_test_tick_clock.h"
 #include "base/test/test_support_android.h"
 #endif
 
@@ -37,6 +44,12 @@
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
+
+#include "base/message_loop/message_pump_for_io_event_win.h"
+#include "base/message_loop/message_pump_win.h"
+#include "base/test/gtest_util.h"
+#include "base/test/scoped_message_pump_for_io_factory_win.h"
+#include "base/win/scoped_handle.h"
 #endif
 
 using ::testing::_;
@@ -200,7 +213,256 @@ class MessagePumpTest : public ::testing::TestWithParam<MessagePumpType> {
   std::unique_ptr<MessagePump> message_pump_;
 };
 
+#if BUILDFLAG(IS_WIN)
+class MockNativeWorkMessagePumpForIO
+    : public MessagePumpForIOCompletionPortImpl {
+ public:
+  MOCK_METHOD(bool, ScheduleNativeWork, (), (override));
+};
+
+win::ScopedHandle CreateIOEventForTesting() {
+  win::ScopedHandle event(::CreateEventW(nullptr, FALSE, FALSE, nullptr));
+  PCHECK(event.is_valid());
+  return event;
+}
+
+class CallbackIOEventHandler : public MessagePumpForIO::IOEventHandler {
+ public:
+  explicit CallbackIOEventHandler(RepeatingClosure callback,
+                                  bool stop_watching = true)
+      : IOEventHandler(FROM_HERE),
+        callback_(std::move(callback)),
+        stop_watching_(stop_watching) {}
+
+  void OnIOEventSignaled(
+      MessagePumpForIO::IOEventWatchController* controller) override {
+    if (stop_watching_) {
+      controller->StopWatching();
+    }
+    callback_.Run();
+  }
+
+ private:
+  RepeatingClosure callback_;
+  const bool stop_watching_;
+};
+#endif
+
 }  // namespace
+
+#if BUILDFLAG(IS_WIN)
+TEST(MessagePumpForIOTest, FailedWakeupAllowsRetry) {
+  testing::StrictMock<MockNativeWorkMessagePumpForIO> pump;
+  testing::InSequence sequence;
+  EXPECT_CALL(pump, ScheduleNativeWork()).WillOnce(testing::Return(false));
+  EXPECT_CALL(pump, ScheduleNativeWork()).WillOnce(testing::Return(true));
+
+  pump.ScheduleWork();
+  pump.ScheduleWork();
+  pump.ScheduleWork();
+}
+
+TEST(MessagePumpForIOEventTest, ScopedOverrideRestoresProductionBackend) {
+  EXPECT_FALSE(MessagePumpForIO::Create()->SupportsIOEvents());
+  {
+    test::ScopedMessagePumpForIOEventFactoryForTesting factory;
+    EXPECT_TRUE(MessagePumpForIO::Create()->SupportsIOEvents());
+  }
+  EXPECT_FALSE(MessagePumpForIO::Create()->SupportsIOEvents());
+}
+
+TEST(MessagePumpForIOEventTest, NestedScopedOverridesRestorePreviousValue) {
+  {
+    test::ScopedMessagePumpForIOEventFactoryForTesting outer;
+    {
+      test::ScopedMessagePumpForIOEventFactoryForTesting inner;
+      EXPECT_TRUE(MessagePumpForIO::Create()->SupportsIOEvents());
+    }
+    EXPECT_TRUE(MessagePumpForIO::Create()->SupportsIOEvents());
+  }
+  EXPECT_FALSE(MessagePumpForIO::Create()->SupportsIOEvents());
+}
+
+TEST(MessagePumpForIOEventTest, DispatchesAndStopsWatch) {
+  test::ScopedMessagePumpForIOEventFactoryForTesting factory;
+  SingleThreadTaskExecutor executor(MessagePumpType::IO);
+  ASSERT_TRUE(CurrentIOThread::Get()->SupportsIOEvents());
+  RunLoop run_loop;
+  int notifications = 0;
+  CallbackIOEventHandler handler(BindLambdaForTesting([&] {
+    ++notifications;
+    run_loop.Quit();
+  }));
+  auto event = CreateIOEventForTesting();
+  const HANDLE event_handle = event.get();
+  MessagePumpForIO::IOEventWatchController controller(std::move(event));
+  EXPECT_FALSE(event.is_valid());
+  ASSERT_EQ(controller.event_handle(), event_handle);
+  ASSERT_TRUE(CurrentIOThread::Get()->WatchIOEvent(&controller, &handler));
+  ASSERT_TRUE(::SetEvent(event_handle));
+  run_loop.Run();
+  controller.StopWatching();
+
+  // An unwatched signaled event must not dispatch again. A later-registered
+  // watched event quits the loop only after native I/O has been polled.
+  RunLoop poll_loop;
+  CallbackIOEventHandler poll_handler(poll_loop.QuitClosure());
+  MessagePumpForIO::IOEventWatchController poll_controller(
+      CreateIOEventForTesting());
+  ASSERT_TRUE(
+      CurrentIOThread::Get()->WatchIOEvent(&poll_controller, &poll_handler));
+  ASSERT_TRUE(::SetEvent(controller.event_handle()));
+  ASSERT_TRUE(::SetEvent(poll_controller.event_handle()));
+  poll_loop.Run();
+  EXPECT_EQ(notifications, 1);
+}
+
+TEST(MessagePumpForIOEventTest, PumpTeardownDetachesController) {
+  CallbackIOEventHandler handler(BindRepeating([] { ADD_FAILURE(); }));
+  MessagePumpForIO::IOEventWatchController controller(
+      CreateIOEventForTesting());
+  {
+    MessagePumpForIOEventImpl pump;
+    ASSERT_TRUE(pump.WatchIOEvent(&controller, &handler));
+  }
+  EXPECT_TRUE(::SetEvent(controller.event_handle()));
+  controller.StopWatching();
+}
+
+TEST(MessagePumpForIOEventTest, WatchCapacityIsReleasedOnDestruction) {
+  MessagePumpForIOEventImpl pump;
+  CallbackIOEventHandler handler(BindRepeating([] { ADD_FAILURE(); }));
+  std::vector<std::unique_ptr<MessagePumpForIO::IOEventWatchController>>
+      watches;
+  watches.reserve(MAXIMUM_WAIT_OBJECTS - 1);
+  for (size_t i = 0; i < MAXIMUM_WAIT_OBJECTS - 1; ++i) {
+    auto controller =
+        std::make_unique<MessagePumpForIO::IOEventWatchController>(
+            CreateIOEventForTesting());
+    ASSERT_TRUE(pump.WatchIOEvent(controller.get(), &handler));
+    watches.push_back(std::move(controller));
+  }
+  MessagePumpForIO::IOEventWatchController extra(CreateIOEventForTesting());
+  EXPECT_FALSE(pump.WatchIOEvent(&extra, &handler));
+  watches.pop_back();
+  EXPECT_TRUE(pump.WatchIOEvent(&extra, &handler));
+}
+
+TEST(MessagePumpForIOEventTest, RejectsLegacyIOCPRegistration) {
+  MessagePumpForIOEventImpl pump;
+  EXPECT_NOTREACHED_DEATH(pump.RegisterIOHandler(nullptr, nullptr));
+  EXPECT_NOTREACHED_DEATH(pump.RegisterJobObject(nullptr, nullptr));
+}
+
+TEST(MessagePumpForIOEventTest, CompletionPortRemainsDefault) {
+  SingleThreadTaskExecutor executor(MessagePumpType::IO);
+  EXPECT_FALSE(CurrentIOThread::Get()->SupportsIOEvents());
+}
+
+TEST(MessagePumpForIOEventTest, WakesForCrossThreadTasks) {
+  test::ScopedMessagePumpForIOEventFactoryForTesting factory;
+  SingleThreadTaskExecutor executor(MessagePumpType::IO);
+  RunLoop run_loop;
+  Thread worker("Event pump wakeup");
+  ASSERT_TRUE(worker.Start());
+  ASSERT_TRUE(worker.task_runner()->PostTask(
+      FROM_HERE,
+      BindOnce(
+          [](scoped_refptr<SingleThreadTaskRunner> origin, OnceClosure quit) {
+            EXPECT_TRUE(origin->PostTask(FROM_HERE, std::move(quit)));
+          },
+          executor.task_runner(), run_loop.QuitClosure())));
+  run_loop.Run();
+}
+
+TEST(MessagePumpForIOEventTest, RepeatedWakeupsAreConsumedOnlyWhenWaiting) {
+  MessagePumpForIOEventImpl pump;
+  testing::NiceMock<MockMessagePumpDelegate> delegate(MessagePumpType::IO);
+  testing::InSequence sequence;
+  EXPECT_CALL(delegate, DoWork).WillOnce([] {
+    return MessagePump::Delegate::NextWorkInfo{TimeTicks::Max()};
+  });
+  EXPECT_CALL(delegate, DoIdleWork);
+  EXPECT_CALL(delegate, DoWork).WillOnce([&] {
+    pump.ScheduleWork();
+    pump.ScheduleWork();
+    return MessagePump::Delegate::NextWorkInfo{TimeTicks::Max()};
+  });
+  EXPECT_CALL(delegate, DoIdleWork);
+  EXPECT_CALL(delegate, DoWork).WillOnce([&] {
+    pump.Quit();
+    return MessagePump::Delegate::NextWorkInfo{TimeTicks::Max()};
+  });
+
+  pump.ScheduleWork();
+  pump.ScheduleWork();
+  pump.Run(&delegate);
+}
+
+TEST(MessagePumpForIOEventTest, WorkScheduledImmediatelyBeforeWaitWakesPump) {
+  MessagePumpForIOEventImpl pump;
+  class Delegate : public testing::NiceMock<MockMessagePumpDelegate> {
+   public:
+    explicit Delegate(MessagePumpForIOEventImpl& pump)
+        : testing::NiceMock<MockMessagePumpDelegate>(MessagePumpType::IO),
+          pump_(&pump) {}
+
+    void BeforeWait() override { pump_->ScheduleWork(); }
+
+   private:
+    const raw_ptr<MessagePumpForIOEventImpl> pump_;
+  } delegate(pump);
+  testing::InSequence sequence;
+  EXPECT_CALL(delegate, DoWork).WillOnce([] {
+    return MessagePump::Delegate::NextWorkInfo{TimeTicks::Max()};
+  });
+  EXPECT_CALL(delegate, DoIdleWork);
+  EXPECT_CALL(delegate, DoWork).WillOnce([&] {
+    pump.Quit();
+    return MessagePump::Delegate::NextWorkInfo{TimeTicks::Max()};
+  });
+  pump.Run(&delegate);
+}
+
+TEST(MessagePumpForIOEventTest, RotationAndCallbackRemovalPreserveWatchOrder) {
+  test::ScopedMessagePumpForIOEventFactoryForTesting factory;
+  SingleThreadTaskExecutor executor(MessagePumpType::IO);
+  RunLoop run_loop;
+  std::vector<int> order;
+  MessagePumpForIO::IOEventWatchController first(CreateIOEventForTesting());
+  MessagePumpForIO::IOEventWatchController middle(CreateIOEventForTesting());
+  MessagePumpForIO::IOEventWatchController last(CreateIOEventForTesting());
+  CallbackIOEventHandler first_handler(
+      BindLambdaForTesting([&] {
+        order.push_back(1);
+        middle.StopWatching();
+        EXPECT_TRUE(::SetEvent(first.event_handle()));
+        if (order.size() == 3) {
+          run_loop.Quit();
+        }
+      }),
+      /*stop_watching=*/false);
+  CallbackIOEventHandler middle_handler(BindLambdaForTesting([&] {
+    ADD_FAILURE() << "An unwatched event was dispatched";
+    run_loop.Quit();
+  }));
+  CallbackIOEventHandler last_handler(
+      BindLambdaForTesting([&] { order.push_back(3); }));
+  ScopedClosureRunner stop_watches(BindLambdaForTesting([&] {
+    first.StopWatching();
+    middle.StopWatching();
+    last.StopWatching();
+  }));
+  ASSERT_TRUE(CurrentIOThread::Get()->WatchIOEvent(&first, &first_handler));
+  ASSERT_TRUE(CurrentIOThread::Get()->WatchIOEvent(&middle, &middle_handler));
+  ASSERT_TRUE(CurrentIOThread::Get()->WatchIOEvent(&last, &last_handler));
+  ASSERT_TRUE(::SetEvent(first.event_handle()));
+  ASSERT_TRUE(::SetEvent(middle.event_handle()));
+  ASSERT_TRUE(::SetEvent(last.event_handle()));
+  run_loop.Run();
+  EXPECT_THAT(order, testing::ElementsAre(1, 3, 1));
+}
+#endif
 
 TEST(MessagePumpTest, NextWorkInfoRemainingDelay) {
   MessagePump::Delegate::NextWorkInfo info;
@@ -346,6 +608,74 @@ TEST_P(MessagePumpTest, YieldDuringStartup) {
   // after YieldDuringStartup() returns true. For non-UI MessagePumpType the
   // MessagePump::Create() does not intercept entering DoNonDelayedLooperWork(),
   // so it remains 0 instead of 1.
+  uint32_t work_loop_entered = (pump_type == MessagePumpType::UI) ? 2 : 0;
+  EXPECT_EQ(initial_work_enters + work_loop_entered,
+            GetAndroidNonDelayedWorkEnterCount());
+}
+
+TEST_P(MessagePumpTest, PeriodicYieldToLooper) {
+  testing::InSequence sequence;
+  MessagePumpType pump_type = GetParam();
+  testing::StrictMock<MockMessagePumpDelegate> delegate(pump_type);
+
+  SimpleTestTickClock test_clock;
+  test_clock.Advance(Seconds(1));
+  auto& yield_checker = android::YieldToLooperChecker::GetInstance();
+  yield_checker.SetTickClockForTesting(&test_clock);
+  ScopedClosureRunner reset_checker(BindLambdaForTesting([&yield_checker] {
+    yield_checker.SetTickClockForTesting(nullptr);
+    yield_checker.InitializeFeatures();
+  }));
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      android::kYieldToLooperPeriodically,
+      {{android::kYieldToLooperPeriod.name, "20ms"}});
+  yield_checker.InitializeFeatures();
+
+  uint32_t initial_work_enters = GetAndroidNonDelayedWorkEnterCount();
+  constexpr MessagePump::Delegate::NextWorkInfo kImmediateWork;
+  ASSERT_TRUE(kImmediateWork.is_immediate());
+
+  // First DoWork() advances by 10ms (under the 20ms period) and has immediate
+  // follow-up work, so DoNonDelayedLooperWork() should not yield yet.
+  EXPECT_CALL(delegate, DoWork).WillOnce([&test_clock, kImmediateWork] {
+    test_clock.Advance(Milliseconds(10));
+    return kImmediateWork;
+  });
+
+  // Second DoWork() runs in the same DoNonDelayedLooperWork() batch and
+  // advances by another 10ms (reaching `kYieldToLooperPeriod`), triggering a
+  // yield to the Looper on UI pumps.
+  EXPECT_CALL(delegate, DoWork)
+      .WillOnce([&test_clock, pump_type, initial_work_enters, kImmediateWork] {
+        uint32_t expected_enters = (pump_type == MessagePumpType::UI) ? 1 : 0;
+        EXPECT_EQ(initial_work_enters + expected_enters,
+                  GetAndroidNonDelayedWorkEnterCount());
+        test_clock.Advance(Milliseconds(10));
+        return kImmediateWork;
+      });
+
+  // Third DoWork() runs after resetting `batch_start_`. Returning immediate
+  // work without advancing past 20ms does not trigger another yield.
+  EXPECT_CALL(delegate, DoWork)
+      .WillOnce([pump_type, initial_work_enters, kImmediateWork] {
+        uint32_t expected_enters = (pump_type == MessagePumpType::UI) ? 2 : 0;
+        EXPECT_EQ(initial_work_enters + expected_enters,
+                  GetAndroidNonDelayedWorkEnterCount());
+        return kImmediateWork;
+      });
+
+  // Fourth DoWork() still runs in the 2nd batch on UI pumps and quits the loop.
+  EXPECT_CALL(delegate, DoWork).WillOnce([this] {
+    message_pump_->Quit();
+    return MessagePump::Delegate::NextWorkInfo{.delayed_run_time =
+                                                   TimeTicks::Max()};
+  });
+
+  EXPECT_CALL(delegate, DoIdleWork()).Times(0);
+
+  message_pump_->Run(&delegate);
+
   uint32_t work_loop_entered = (pump_type == MessagePumpType::UI) ? 2 : 0;
   EXPECT_EQ(initial_work_enters + work_loop_entered,
             GetAndroidNonDelayedWorkEnterCount());
@@ -714,5 +1044,44 @@ TEST_F(MessagePumpWakeupCounterTest, BusyLoopSkipsRecordingSample) {
       "Scheduling.MessagePump.WakeupCount2.BusyLoopThread", 1, 0);
 }
 #endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_FUCHSIA) && !BUILDFLAG(IS_APPLE)
+
+#if BUILDFLAG(IS_WIN)
+// Regression test: if a native nested loop goes idle with a delayed task
+// pending, HandleWorkMessage() installs MessagePumpForUI's native timer. If the
+// RunLoop is later quit from that native loop, the timer must not leak past it.
+TEST(MessagePumpTest, NativeTimerDoesNotLeakPastRunLoopQuit) {
+  SingleThreadTaskExecutor executor(MessagePumpType::UI);
+  constexpr TimeDelta kPumpTimerDelay = Milliseconds(20);
+
+  // Makes the native nested loop install the pump's native timer when idle.
+  executor.task_runner()->PostDelayedTask(FROM_HERE, DoNothing(),
+                                          kPumpTimerDelay);
+
+  RunLoop run_loop;
+  executor.task_runner()->PostTask(
+      FROM_HERE, BindLambdaForTesting([&] {
+        CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop allow;
+        // Runs in the native loop's first pass. WM_APP is then retrieved
+        // after that pass has gone idle and installed the timer.
+        SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+            FROM_HERE, BindOnce([] { ::PostMessage(nullptr, WM_APP, 0, 0); }));
+        MSG msg;
+        while (::GetMessage(&msg, nullptr, 0, 0)) {
+          if (msg.message == WM_APP) {
+            run_loop.Quit();
+            break;
+          }
+          ::DispatchMessage(&msg);
+        }
+      }));
+  run_loop.Run();
+
+  // A leaked native timer would deliver a WM_TIMER.
+  EXPECT_EQ(static_cast<DWORD>(WAIT_TIMEOUT),
+            ::MsgWaitForMultipleObjectsEx(
+                0, nullptr, TestTimeouts::tiny_timeout().InMilliseconds(),
+                QS_TIMER, MWMO_INPUTAVAILABLE));
+}
+#endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace base

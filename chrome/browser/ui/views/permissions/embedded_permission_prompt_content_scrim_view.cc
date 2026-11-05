@@ -36,19 +36,38 @@ bool EmbeddedPermissionPromptContentScrimView::IsOmniboxEverywhere(
 }
 
 // static
+// When adding support for a new privileged WebUI surface, also ensure the WebUI
+// handles `@voice-permission-changed` and applies
+// `--cr_composebox_minimum_height` and `--cr_composebox_minimum_width` in CSS.
+// LINT.IfChange(PrivilegedPepcSurfaces)
 gfx::Rect EmbeddedPermissionPromptContentScrimView::GetScrimBounds(
     content::WebContents& web_contents) {
   gfx::Rect bounds = web_contents.GetContainerBounds();
-  // Inset top and left by 24px to align with the WebUI card inside the body.
-  // Right and bottom are not inset because `GetContainerBounds()` is only
-  // 24px larger than the card, so insetting all four sides would shrink
-  // width and height by 48px and leave a 24px gap.
+  // Account for padding (24px each side) that only exists on everywhere
+  // omnibox's parent view when voice search permission prompt shows. Do so
+  // by shrinking scrim by same amount.
   if (IsOmniboxEverywhere(web_contents)) {
-    bounds.Inset(gfx::Insets::TLBR(kOmniboxEverywherePadding,
-                                   kOmniboxEverywherePadding, 0, 0));
+    bounds.Inset(gfx::Insets(kOmniboxEverywherePadding));
+    return bounds;
+  }
+
+  if (views::Widget* widget = views::Widget::GetTopLevelWidgetForNativeView(
+          web_contents.GetContentNativeView())) {
+    if (auto* rounded_frame = views::AsViewClass<RoundedOmniboxResultsFrame>(
+            widget->GetClientContentsView())) {
+      auto* omnibox_content = rounded_frame->GetOmniboxPopupWebUIBaseContent();
+      // When the WebUI omnibox popup paints its own drop shadow, the WebView
+      // spans the entire widget including the transparent shadow margin
+      // reserved as `body` padding (16px top/left/right, 28px bottom). Inset
+      // the scrim by the shadow insets so it only covers the popup surface.
+      if (omnibox_content && omnibox_content->ShouldDrawShadowInWebUI()) {
+        bounds.Inset(RoundedOmniboxResultsFrame::GetShadowInsets());
+      }
+    }
   }
   return bounds;
 }
+// LINT.ThenChange(//chrome/browser/permissions/chrome_permissions_client.cc:PrivilegedPepcSurfaces)
 
 // Only require web contents instance to be passed in and not widget instance
 // (for window sizing) since web contents knows which widget it belongs to.

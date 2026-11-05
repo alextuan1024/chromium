@@ -8,7 +8,7 @@
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
@@ -48,6 +48,11 @@ CommentsSidePanelCoordinator::CommentsSidePanelCoordinator(
           tab_groups::TabGroupSyncServiceFactory::GetForProfile(
               browser_->GetProfile())),
       scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this) {
+  SidePanelRegistry::From(browser)->Register(std::make_unique<SidePanelEntry>(
+      SidePanelEntry::Key(SidePanelEntry::Id::kComments),
+      base::BindRepeating(&CommentsSidePanelCoordinator::CreateCommentsWebView,
+                          base::Unretained(this)),
+      /*default_content_width_callback=*/base::NullCallback()));
   browser_->GetTabStripModel()->AddObserver(this);
   tab_groups::TabGroupSyncServiceFactory::GetForProfile(browser_->GetProfile())
       ->AddObserver(this);
@@ -75,14 +80,15 @@ void CommentsSidePanelCoordinator::TabGroupedStateChanged(
     TabStripModel* tab_strip_model,
     std::optional<tab_groups::TabGroupId> old_group,
     std::optional<tab_groups::TabGroupId> new_group,
-    tabs::TabInterface* tab,
-    int index) {
+    tabs::TabHandle tab) {
+  tabs::TabInterface* tab_interface = tab.Get();
   // Only handle group changes to the active tab.
-  if (!tab->IsActivated() || old_group == new_group) {
+  if (!tab_interface || !tab_interface->IsActivated() ||
+      old_group == new_group) {
     return;
   }
 
-  UpdateVisuals(tab);
+  UpdateVisuals(tab_interface);
 }
 
 void CommentsSidePanelCoordinator::OnTabGroupUpdated(
@@ -133,8 +139,11 @@ bool CommentsSidePanelCoordinator::ShouldShowCommentsAction(
 
 void CommentsSidePanelCoordinator::UpdateCommentsActionVisibility(
     bool should_show_comments_action) {
+  // Driven by a tab-group observer, which fires as tabs are removed during
+  // window teardown.
+  BrowserWindow* const browser_window = BrowserWindow::FromBrowser(browser_);
   PinnedToolbarActions* controller =
-      browser_->GetFeatures().pinned_toolbar_actions();
+      browser_window ? browser_window->GetPinnedToolbarActions() : nullptr;
   if (!controller) {
     return;
   }
@@ -228,15 +237,6 @@ bool CommentsSidePanelCoordinator::IsSupported() {
 CommentsSidePanelCoordinator* CommentsSidePanelCoordinator::From(
     BrowserWindowInterface* interface) {
   return Get(interface->GetUnownedUserDataHost());
-}
-
-void CommentsSidePanelCoordinator::CreateAndRegisterEntry(
-    SidePanelRegistry* global_registry) {
-  global_registry->Register(std::make_unique<SidePanelEntry>(
-      SidePanelEntry::Key(SidePanelEntry::Id::kComments),
-      base::BindRepeating(&CommentsSidePanelCoordinator::CreateCommentsWebView,
-                          base::Unretained(this)),
-      /*default_content_width_callback=*/base::NullCallback()));
 }
 
 std::unique_ptr<views::View>

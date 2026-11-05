@@ -174,8 +174,6 @@ class SearchController {
 
   void OnBurnInPeriodElapsed();
 
-  void OnResultsChangedWithType(ResultType result_type);
-
   // The query associated with the most recent search.
   std::u16string last_query_;
 
@@ -205,6 +203,9 @@ class SearchController {
   CategoriesList categories_;
 
   bool disable_ranking_for_test_ = false;
+
+  // Whether search providers have been initialized.
+  bool providers_initialized_ = false;
 
   std::vector<ControlCategory> toggleable_categories_;
 

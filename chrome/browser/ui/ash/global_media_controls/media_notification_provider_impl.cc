@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/ash/global_media_controls/media_notification_provider_impl.h"
 
+#include <utility>
+
 #include "ash/shell.h"
 #include "ash/system/cast/media_cast_audio_selector_view.h"
 #include "ash/system/media/media_color_theme.h"
@@ -11,9 +13,12 @@
 #include "ash/system/media/media_notification_provider_observer.h"
 #include "ash/system/media/media_tray.h"
 #include "ash/system/status_area_widget.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/location.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/global_media_controls/cast_media_notification_producer_keyed_service.h"
 #include "chrome/browser/ui/ash/global_media_controls/cast_media_notification_producer_keyed_service_factory.h"
@@ -21,6 +26,7 @@
 #include "chrome/browser/ui/global_media_controls/media_notification_service_factory.h"
 #include "chrome/browser/ui/views/global_media_controls/media_item_ui_device_selector_view.h"
 #include "chrome/browser/ui/views/global_media_controls/media_item_ui_helper.h"
+#include "chrome/browser/ui/views/global_media_controls/media_session_route_observer.h"
 #include "components/global_media_controls/public/media_item_manager.h"
 #include "components/global_media_controls/public/media_session_item_producer.h"
 #include "components/global_media_controls/public/mojom/device_service.mojom.h"
@@ -28,6 +34,7 @@
 #include "components/global_media_controls/public/views/media_item_ui_detailed_view.h"
 #include "components/global_media_controls/public/views/media_item_ui_list_view.h"
 #include "components/global_media_controls/public/views/media_item_ui_view.h"
+#include "components/media_message_center/media_notification_item.h"
 #include "content/public/browser/media_session.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/media_session/public/cpp/media_session_service.h"
@@ -116,6 +123,9 @@ MediaNotificationProviderImpl::GetMediaNotificationListView(
   media_item_ui_list_view_ = media_item_ui_list_view->GetWeakPtr();
   entry_point_ = entry_point;
   show_devices_for_item_id_ = show_devices_for_item_id;
+  // Restart route observation, since the active profile may have changed.
+  StopObservingRoutes();
+  StartObservingRoutes();
   item_manager_->SetDialogDelegate(this);
   base::UmaHistogramEnumeration("Media.GlobalMediaControls.EntryPoint",
                                 entry_point_);
@@ -123,6 +133,7 @@ MediaNotificationProviderImpl::GetMediaNotificationListView(
 }
 
 void MediaNotificationProviderImpl::OnBubbleClosing() {
+  StopObservingRoutes();
   item_manager_->SetDialogDelegate(nullptr);
 }
 
@@ -222,6 +233,9 @@ MediaNotificationProviderImpl::ShowMediaItem(
   item_ui_observer_set_.Observe(id, item_ui_ptr);
 
   media_item_ui_list_view_->ShowItem(id, std::move(item_ui));
+  if (route_observer_) {
+    route_observer_->OnItemShown(id, item);
+  }
   for (auto& observer : observers_) {
     observer.OnNotificationListViewSizeChanged();
   }
@@ -229,6 +243,9 @@ MediaNotificationProviderImpl::ShowMediaItem(
 }
 
 void MediaNotificationProviderImpl::HideMediaItem(const std::string& id) {
+  if (route_observer_) {
+    route_observer_->OnItemHidden(id);
+  }
   if (!media_item_ui_list_view_) {
     return;
   }
@@ -251,6 +268,9 @@ void MediaNotificationProviderImpl::RefreshMediaItem(
   media_item_ui->UpdateFooterView(BuildFooterView(id, item));
   media_item_ui->UpdateDeviceSelector(
       BuildDeviceSelectorView(id, item, entry_point_, show_devices));
+  if (route_observer_) {
+    route_observer_->OnItemShown(id, item);
+  }
 
   for (auto& observer : observers_) {
     observer.OnNotificationListViewSizeChanged();
@@ -273,6 +293,21 @@ void MediaNotificationProviderImpl::OnMediaItemUISizeChanged() {
   for (auto& observer : observers_) {
     observer.OnNotificationListViewSizeChanged();
   }
+}
+
+void MediaNotificationProviderImpl::OnMediaItemUIDestroyed(
+    const std::string& id) {
+  if (!route_observer_) {
+    return;
+  }
+  route_observer_->OnItemHidden(id);
+  // The list view can be destroyed without OnBubbleClosing(), e.g. when the
+  // media tray is destroyed with its bubble open.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &MediaNotificationProviderImpl::StopObservingRoutesIfNoListView,
+          weak_factory_.GetWeakPtr()));
 }
 
 global_media_controls::mojom::DeviceService*
@@ -300,6 +335,41 @@ MediaNotificationProviderImpl::GetDeviceService(
 Profile* MediaNotificationProviderImpl::GetProfile() {
   return profile_for_testing_ ? profile_for_testing_.get()
                               : ProfileManager::GetActiveUserProfile();
+}
+
+void MediaNotificationProviderImpl::StartObservingRoutes() {
+  route_observer_ = MediaSessionRouteObserver::Create(
+      GetProfile(),
+      base::BindRepeating(&MediaNotificationProviderImpl::OnSessionRouteChanged,
+                          weak_factory_.GetWeakPtr()));
+}
+
+void MediaNotificationProviderImpl::StopObservingRoutes() {
+  route_observer_.reset();
+}
+
+void MediaNotificationProviderImpl::OnSessionRouteChanged(
+    const std::string& id,
+    base::WeakPtr<media_message_center::MediaNotificationItem> item) {
+  if (!media_item_ui_list_view_) {
+    // The list view can go away without OnBubbleClosing(), e.g. when the
+    // media tray is destroyed with its bubble open. Stop observing routes
+    // asynchronously, since observers may not modify the Media Router's
+    // observer list while it is being notified.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            &MediaNotificationProviderImpl::StopObservingRoutesIfNoListView,
+            weak_factory_.GetWeakPtr()));
+    return;
+  }
+  RefreshMediaItem(id, item);
+}
+
+void MediaNotificationProviderImpl::StopObservingRoutesIfNoListView() {
+  if (!media_item_ui_list_view_) {
+    StopObservingRoutes();
+  }
 }
 
 }  // namespace ash

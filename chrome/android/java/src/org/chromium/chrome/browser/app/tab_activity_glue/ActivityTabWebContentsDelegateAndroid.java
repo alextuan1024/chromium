@@ -7,20 +7,21 @@ package org.chromium.chrome.browser.app.tab_activity_glue;
 import static android.view.Display.INVALID_DISPLAY;
 
 import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.graphics.Rect;
 import android.media.AudioManager;
+import android.os.Build;
 import android.view.KeyEvent;
 import android.view.View;
 
+import androidx.annotation.ChecksSdkIntAtLeast;
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.ApplicationStatus;
@@ -50,6 +51,8 @@ import org.chromium.chrome.browser.policy.PolicyAuditor;
 import org.chromium.chrome.browser.policy.PolicyAuditor.AuditEvent;
 import org.chromium.chrome.browser.tab.InterceptNavigationDelegateTabHelper;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabAttributeKeys;
+import org.chromium.chrome.browser.tab.TabAttributes;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabUtils;
@@ -60,14 +63,17 @@ import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.ui.ExclusiveAccessManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.util.AndroidTaskUtils;
 import org.chromium.chrome.browser.util.PictureInPictureWindowOptions;
 import org.chromium.chrome.browser.util.WindowFeatures;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuUtils;
 import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid.ImmersivePlaybackConfirmationCallback;
 import org.chromium.components.messages.MessageDispatcherProvider;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.content_public.browser.ImmersivePlaybackConfirmationStatus;
 import org.chromium.content_public.browser.ImmersiveProjectionType;
 import org.chromium.content_public.browser.ImmersiveStereoMode;
@@ -104,7 +110,7 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
     private final BrowserControlsStateProvider mBrowserControlsStateProvider;
     private final FullscreenManager mFullscreenManager;
     private final TabCreatorManager mTabCreatorManager;
-    private final Supplier<TabModelSelector> mTabModelSelectorSupplier;
+    private final Supplier<@Nullable TabModelSelector> mTabModelSelectorSupplier;
     private final Supplier<@Nullable CompositorViewHolder> mCompositorViewHolderSupplier;
     private final Supplier<@Nullable ModalDialogManager> mModalDialogManagerSupplier;
     private final TabObserver mTabObserver;
@@ -119,7 +125,7 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
             BrowserControlsStateProvider browserControlsStateProvider,
             FullscreenManager fullscreenManager,
             TabCreatorManager tabCreatorManager,
-            Supplier<TabModelSelector> tabModelSelectorSupplier,
+            Supplier<@Nullable TabModelSelector> tabModelSelectorSupplier,
             Supplier<@Nullable CompositorViewHolder> compositorViewHolderSupplier,
             Supplier<@Nullable ModalDialogManager> modalDialogManagerSupplier,
             Supplier<SnackbarManager> snackbarManagerSupplier,
@@ -181,31 +187,27 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
     }
 
     @Override
-    public void showRepostFormWarningDialog() {
+    public boolean showRepostFormWarningDialog() {
         // When the dialog is visible, keeping the refresh animation active
         // in the background is distracting and unnecessary (and likely to
         // jank when the dialog is shown).
         SwipeRefreshHandler handler = SwipeRefreshHandler.get(mTab);
         if (handler != null) handler.reset();
 
+        // If the dialog cannot show, this cancels the pending reload.
         showRepostFormWarningTabModalDialog();
+        return true;
     }
 
     @Override
     public boolean isFullscreenForTabOrPending() {
-        if (ChromeFeatureList.sEnableExclusiveAccessManager.isEnabled()) {
-            // It may happen that the tab does not have valid WebContents object. In Android
-            // the New Tab Page is not the actual web but the native views.
-            if (mTab.getWebContents() == null) {
-                return false;
-            }
-            return mExclusiveAccessManager != null
-                    && mExclusiveAccessManager.isFullscreenForTabOrPending(mTab.getWebContents());
-        } else {
-            return mFullscreenManager != null
-                    ? mFullscreenManager.getPersistentFullscreenMode()
-                    : false;
+        // It may happen that the tab does not have valid WebContents object. In Android
+        // the New Tab Page is not the actual web but the native views.
+        if (mTab.getWebContents() == null) {
+            return false;
         }
+        return mExclusiveAccessManager != null
+                && mExclusiveAccessManager.isFullscreenForTabOrPending(mTab.getWebContents());
     }
 
     /**
@@ -218,20 +220,18 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
 
     @Override
     public long getFullscreenTargetDisplay() {
-        if (ChromeFeatureList.isEnabled(
+        if (!ChromeFeatureList.isEnabled(
                 ChromeFeatureList.ENABLE_FULLSCREEN_TO_ANY_SCREEN_ANDROID)) {
-            if (mFullscreenManager != null) {
-                return mFullscreenManager.getFullscreenTargetDisplay();
-            }
+            return INVALID_DISPLAY;
         }
-        return INVALID_DISPLAY;
+        if (mTab.isDestroyed()) return INVALID_DISPLAY;
+        FullscreenOptions options =
+                TabAttributes.from(mTab).get(TabAttributeKeys.FULLSCREEN_OPTIONS);
+        return options != null ? options.displayId : INVALID_DISPLAY;
     }
 
     @Override
     public void requestKeyboardLock(boolean escKeyLocked) {
-        if (!ChromeFeatureList.sEnableExclusiveAccessManager.isEnabled()) {
-            return;
-        }
         // It may happen that the tab does not have valid WebContents object. In Android
         // the New Tab Page is not the actual web but the native views.
         if (mTab.getWebContents() == null) {
@@ -245,9 +245,6 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
 
     @Override
     public void cancelKeyboardLockRequest() {
-        if (!ChromeFeatureList.sEnableExclusiveAccessManager.isEnabled()) {
-            return;
-        }
         // It may happen that the tab does not have valid WebContents object. In Android
         // the New Tab Page is not the actual web but the native views.
         if (mTab.getWebContents() == null) {
@@ -310,12 +307,7 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
         final CompletableFuture<Boolean> addTabToModel = new CompletableFuture<>();
         final Tab tab =
                 tabCreator.createTabWithWebContents(
-                        mTab,
-                        /* shouldPin= */ false,
-                        webContents,
-                        tabLaunchType,
-                        targetUrl,
-                        addTabToModel);
+                        mTab, /* shouldPin= */ false, webContents, tabLaunchType, addTabToModel);
         if (tab == null) return false;
 
         if (disposition == WindowOpenDisposition.NEW_POPUP) {
@@ -372,15 +364,19 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
             if (tabModel != null
                     && tabModel.isTabInTabGroup(sourceTab)
                     && !Objects.equals(newTab.getTabGroupId(), sourceTab.getTabGroupId())
-                    && tabModel.isTabModelRestored()) {
+                    && tabModel.isTabStateInitialized()) {
                 tabModel.mergeListOfTabsToGroup(
                         Collections.singletonList(newTab),
                         sourceTab,
                         /* notify= */ TabGroupMergeNotificationType.DONT_NOTIFY);
                 if (mChromeActivityNativeDelegate != null) {
                     assert Objects.equals(newTab.getTabGroupId(), sourceTab.getTabGroupId());
-                    assert tabModel.getTabsInGroup(newTab.getTabGroupId()).contains(sourceTab);
-                    assert tabModel.getTabsInGroup(sourceTab.getTabGroupId()).contains(newTab);
+                    assert tabModel.getTabsInGroup(
+                                    TabGroupId.fromOptionalToken(newTab.getTabGroupId()))
+                            .contains(sourceTab);
+                    assert tabModel.getTabsInGroup(
+                                    TabGroupId.fromOptionalToken(sourceTab.getTabGroupId()))
+                            .contains(newTab);
                 }
             }
         }
@@ -419,7 +415,8 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
             return;
         }
 
-        TabModel model = mTabModelSelectorSupplier.get().getModel(mTab.isIncognito());
+        TabModel model =
+                assumeNonNull(mTabModelSelectorSupplier.get()).getModel(mTab.isIncognito());
         int index = model.indexOf(mTab);
         if (index == TabModel.INVALID_TAB_INDEX) return;
         TabModelUtils.setIndex(model, index);
@@ -451,6 +448,15 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
         if (mActivity == null) return;
         if (ChromeFeatureList.isEnabled(
                 ChromeFeatureList.USE_ACTIVITY_MANAGER_FOR_TAB_ACTIVATION)) {
+            int windowId = TabWindowManagerSingleton.getInstance().getIdForWindow(mActivity);
+            if (windowId != TabWindowManager.INVALID_WINDOW_ID) {
+                Intent newIntent =
+                        IntentHandler.createTrustedBringTabToFrontIntent(
+                                mTab.getId(), IntentHandler.BringToFrontSource.ACTIVATE_TAB);
+                if (MultiWindowUtils.launchIntentInInstance(newIntent, windowId)) {
+                    return;
+                }
+            }
             ApiCompatibilityUtils.moveTaskToFront(mActivity, mActivity.getTaskId(), 0);
         } else {
             // This intent is sent in order to get the activity back to the foreground if it was
@@ -511,12 +517,8 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
 
     @Override
     public boolean preHandleKeyboardEvent(long nativeKeyEvent) {
-        if (ChromeFeatureList.sEnableExclusiveAccessManager.isEnabled()) {
-            return mExclusiveAccessManager != null
-                    && mExclusiveAccessManager.preHandleKeyboardEvent(nativeKeyEvent);
-        } else {
-            return false;
-        }
+        return mExclusiveAccessManager != null
+                && mExclusiveAccessManager.preHandleKeyboardEvent(nativeKeyEvent);
     }
 
     @Override
@@ -631,10 +633,8 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
 
     @Override
     public boolean canEnterFullscreenModeForTab(RenderFrameHost renderFrameHost) {
-        if (ChromeFeatureList.sEnableExclusiveAccessManager.isEnabled()) {
-            if (mExclusiveAccessManager != null) {
-                return mExclusiveAccessManager.canEnterFullscreenModeForTab(renderFrameHost);
-            }
+        if (mExclusiveAccessManager != null) {
+            return mExclusiveAccessManager.canEnterFullscreenModeForTab(renderFrameHost);
         }
         return super.canEnterFullscreenModeForTab(renderFrameHost);
     }
@@ -649,18 +649,10 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
                 ChromeFeatureList.ENABLE_FULLSCREEN_TO_ANY_SCREEN_ANDROID)) {
             displayId = INVALID_DISPLAY;
         }
-        if (ChromeFeatureList.sEnableExclusiveAccessManager.isEnabled()) {
-            if (mExclusiveAccessManager != null) {
-                mExclusiveAccessManager.enterFullscreenModeForTab(
-                        renderFrameHost,
-                        new FullscreenOptions(prefersNavigationBar, prefersStatusBar, displayId));
-            }
-        } else {
-            if (mFullscreenManager != null) {
-                mFullscreenManager.onEnterFullscreen(
-                        mTab,
-                        new FullscreenOptions(prefersNavigationBar, prefersStatusBar, displayId));
-            }
+        if (mExclusiveAccessManager != null) {
+            mExclusiveAccessManager.enterFullscreenModeForTab(
+                    renderFrameHost,
+                    new FullscreenOptions(prefersNavigationBar, prefersStatusBar, displayId));
         }
     }
 
@@ -683,53 +675,34 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
             boolean prefersNavigationBar,
             boolean prefersStatusBar,
             long displayId) {
-        if (ChromeFeatureList.sEnableExclusiveAccessManager.isEnabled()) {
-            if (mExclusiveAccessManager != null) {
-                mExclusiveAccessManager.enterFullscreenModeForTab(
-                        renderFrameHost,
-                        new FullscreenOptions(prefersNavigationBar, prefersStatusBar, displayId));
-            }
-        } else {
-            // State-only changes are useful for recursive fullscreen activation. Early out if
-            // fullscreen mode is not on.
-            if (mFullscreenManager == null || !mFullscreenManager.getPersistentFullscreenMode()) {
-                return;
-            }
-            mFullscreenManager.onEnterFullscreen(
-                    mTab, new FullscreenOptions(prefersNavigationBar, prefersStatusBar, displayId));
+        if (mExclusiveAccessManager != null) {
+            mExclusiveAccessManager.enterFullscreenModeForTab(
+                    renderFrameHost,
+                    new FullscreenOptions(prefersNavigationBar, prefersStatusBar, displayId));
         }
     }
 
     @Override
     public void exitFullscreenModeForTab() {
-        if (ChromeFeatureList.sEnableExclusiveAccessManager.isEnabled()) {
-            if (mExclusiveAccessManager != null) {
-                mExclusiveAccessManager.exitFullscreenModeForTab(mTab.getWebContents());
-            }
-        } else {
-            if (mFullscreenManager != null) {
-                mFullscreenManager.onExitFullscreen(mTab);
-            }
+        if (mExclusiveAccessManager != null) {
+            mExclusiveAccessManager.exitFullscreenModeForTab(mTab.getWebContents());
         }
     }
 
     @Override
     protected boolean isPictureInPictureEnabled() {
-        return mActivity != null
-                ? PictureInPicture.isEnabled(mActivity.getApplicationContext())
-                : false;
-    }
-
-    private boolean hasRepositionWindowsPermission() {
-        // Query if the system has granted us the permission to reposition and resize windows, which
-        // is required to create a movable task for Document Picture-in-Picture. This permission is
-        // granted automatically to the app currently set as the system's default web browser.
-        return ApiCompatibilityUtils.checkPermission(
-                        ContextUtils.getApplicationContext(),
-                        android.Manifest.permission.REPOSITION_SELF_WINDOWS,
-                        android.os.Process.myPid(),
-                        android.os.Process.myUid())
-                == PackageManager.PERMISSION_GRANTED;
+        // Web Picture-in-Picture requires Android R, since some versions of Android crash when the
+        // activity enters Picture-in-Picture immediately after it exits Picture-in-Picture. See
+        // b/143784148. This check lives here rather than in PictureInPicture#isEnabled because
+        // fullscreen video Picture-in-Picture is still supported on Android Q.
+        // TODO(crbug.com/568761242): Remove once the minimum SDK is Android R or above.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return false;
+        }
+        // Pass mActivity rather than mActivity.getApplicationContext() because the Activity
+        // context is tied to the specific display's UI mode, whereas the global Application
+        // context is shared across all displays.
+        return mActivity != null && PictureInPicture.isEnabled(mActivity);
     }
 
     /**
@@ -746,7 +719,7 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
      */
     @Override
     protected boolean isDocumentPictureInPictureBlockedBySystem() {
-        if (!hasRepositionWindowsPermission()) {
+        if (!AndroidTaskUtils.canRepositionSelfWindows()) {
             Log.w(
                     TAG,
                     "isDocumentPictureInPictureBlockedBySystem: Blocked because the current browser"
@@ -779,15 +752,11 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
      * Checks if Document Picture-in-Picture is enabled. This is true if we both have the permission
      * to enter Picture-in-Picture mode and the Android API to go into pinned mode is supported.
      */
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.CINNAMON_BUN)
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
     protected boolean isDocumentPictureInPictureEnabled() {
-        final AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
-        if (delegate == null) {
-            Log.w(TAG, "isDocumentPictureInPictureEnabled: AconfigFlaggedApiDelegate is null");
-            return false;
-        }
-
-        return isPictureInPictureEnabled() && delegate.isRequestPinnedWindowingLayerSupported();
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN
+                && isPictureInPictureEnabled();
     }
 
     @Override
@@ -867,7 +836,7 @@ public class ActivityTabWebContentsDelegateAndroid extends TabWebContentsDelegat
     @Override
     protected boolean isDynamicSafeAreaInsetsEnabled() {
         if (mActivity == null) return false;
-        return EdgeToEdgeUtils.isEdgeToEdgeBottomChinEnabled(mActivity);
+        return EdgeToEdgeUtils.isEdgeToEdgeBottomChinSupportedByDevice(mActivity);
     }
 
     @Override

@@ -4,7 +4,19 @@
 
 #include "chrome/browser/ui/hats/survey_config.h"
 
+#include <vector>
+
+#include "base/feature_list.h"
+#include "base/test/scoped_feature_list.h"
+#include "chrome/browser/ui/hats/hats_service_desktop.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+namespace {
+
+BASE_FEATURE(kTestSurveyFeature, base::FEATURE_ENABLED_BY_DEFAULT);
+
+}  // namespace
 
 class SurveyConfigTest : public testing::Test {
  public:
@@ -31,4 +43,59 @@ TEST_F(SurveyConfigTest, ValidateHatsSurveyUkmId) {
 
   EXPECT_EQ(std::make_optional<uint64_t>(1),
             hats::SurveyConfig::ValidateHatsSurveyUkmId(1));
+}
+
+// HaTS on Desktop and Android adds the Chrome channel and version to every
+// survey's Product Specific Data, so surveys must not declare fields with the
+// same keys.
+TEST_F(SurveyConfigTest, NoSurveyDeclaresDefaultProductSpecificDataKeys) {
+  const auto is_default_key =
+      testing::AnyOf(testing::Eq(HatsServiceDesktop::kChromeChannelPsdKey),
+                     testing::Eq(HatsServiceDesktop::kChromeVersionPsdKey));
+
+  const std::vector<hats::SurveyConfig> configs =
+      hats::GetAllSurveyConfigsForTesting();
+  ASSERT_FALSE(configs.empty());
+  for (const hats::SurveyConfig& config : configs) {
+    EXPECT_THAT(config.product_specific_bits_data_fields,
+                testing::Not(testing::Contains(is_default_key)))
+        << "Survey with trigger " << config.trigger;
+    EXPECT_THAT(config.product_specific_string_data_fields,
+                testing::Not(testing::Contains(is_default_key)))
+        << "Survey with trigger " << config.trigger;
+  }
+}
+
+TEST_F(SurveyConfigTest, ProbabilityDefaultsToZero) {
+  const hats::SurveyConfig config(&kTestSurveyFeature, "test_trigger");
+
+  EXPECT_TRUE(config.enabled);
+  EXPECT_DOUBLE_EQ(config.probability, 0.0);
+}
+
+TEST_F(SurveyConfigTest, PermanentSurveyConfigUsesDefaultProbability) {
+  const hats::SurveyConfig config =
+      hats::PermanentSurveyConfig(&kTestSurveyFeature, "test_trigger",
+                                  /*presupplied_trigger_id=*/"site_id",
+                                  /*default_probability=*/0.25);
+
+  EXPECT_TRUE(config.enabled);
+  EXPECT_EQ(config.trigger_id, "site_id");
+  EXPECT_DOUBLE_EQ(config.probability, 0.25);
+}
+
+TEST_F(SurveyConfigTest,
+       PermanentSurveyConfigFieldTrialProbabilityOverridesDefault) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      kTestSurveyFeature, {{"probability", "0.75"}});
+
+  const hats::SurveyConfig config =
+      hats::PermanentSurveyConfig(&kTestSurveyFeature, "test_trigger",
+                                  /*presupplied_trigger_id=*/"site_id",
+                                  /*default_probability=*/0.25);
+
+  EXPECT_TRUE(config.enabled);
+  EXPECT_EQ(config.trigger_id, "site_id");
+  EXPECT_DOUBLE_EQ(config.probability, 0.75);
 }

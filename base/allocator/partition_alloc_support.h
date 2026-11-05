@@ -6,6 +6,7 @@
 #define BASE_ALLOCATOR_PARTITION_ALLOC_SUPPORT_H_
 
 #include <map>
+#include <memory>
 #include <string>
 
 #include "base/allocator/scheduler_loop_quarantine_config.h"
@@ -13,10 +14,16 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/partition_alloc_config.h"
+
+#if PA_BUILDFLAG(HAS_64_BIT_POINTERS) && BUILDFLAG(IS_POSIX)
+#include "base/memory/weak_ptr.h"
+#endif
 
 #if PA_CONFIG(THREAD_CACHE_SUPPORTED) && \
     PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
@@ -47,6 +54,21 @@ BASE_EXPORT std::map<std::string, std::string> ProposeSyntheticFinchTrials();
 // `enable_dangling_raw_ptr_checks` build flag.
 BASE_EXPORT void InstallDanglingRawPtrChecks();
 BASE_EXPORT void InstallUnretainedDanglingRawPtrChecks();
+
+// Sets a process-wide callback returning whether a dangling raw_ptr release on
+// the current thread should be skipped without reporting. Called on every
+// dangling release from any thread, so it must be thread-safe and return false
+// on threads where the exemption does not apply (e.g. threads without an
+// Oilpan heap).
+//
+// Used by Oilpan during GC finalization (weak callbacks, pre-finalizers, and
+// destructors of dead objects), where a dead object may free a native
+// allocation before another dead object destroys its raw_ptr to it.
+using DanglingRawPtrReleaseExemptFn = bool();
+BASE_EXPORT void SetDanglingRawPtrReleaseExemptFn(
+    DanglingRawPtrReleaseExemptFn* is_release_exempt);
+// Used by tests to save and restore the previous handler.
+BASE_EXPORT DanglingRawPtrReleaseExemptFn* GetDanglingRawPtrReleaseExemptFn();
 
 // Once called, makes `free()` do nothing. This is done to reduce
 // shutdown hangs on CrOS.
@@ -148,6 +170,26 @@ class BASE_EXPORT PartitionAllocSupport {
   static bool ShouldEnablePartitionAllocWithAdvancedChecks(
       std::string_view process_type);
 
+#if PA_BUILDFLAG(HAS_64_BIT_POINTERS)
+  enum class MemoryPressureLevel {
+    kNoPressure,
+    kCriticalPressure,
+  };
+
+  using AsyncSafeMemoryPressureNotification = void (*)();
+
+  // Provide a callback to notify of a memory pressure event, which can be
+  // queried with `GetMemoryPressureLevel()`. The callback *must* be async-safe,
+  // as it's typically invoked from within malloc(), so any memory allocation
+  // performed within will deadlock. Notifications do not block allocations, so
+  // crashing due to memory pressure is still possible, though the
+  // implementation tries to dispatch it early enough.
+  static void SetAsyncSafeMemoryPressureNotification(
+      AsyncSafeMemoryPressureNotification notification);
+  // Returns the current memory pressure level.
+  static MemoryPressureLevel GetMemoryPressureLevel();
+#endif  // PA_BUILDFLAG(HAS_64_BIT_POINTERS)
+
  private:
   PartitionAllocSupport();
 
@@ -165,6 +207,41 @@ class BASE_EXPORT PartitionAllocSupport {
       ::partition_alloc::kThreadCacheDefaultSizeThreshold;
 #endif
 };
+
+#if PA_BUILDFLAG(HAS_64_BIT_POINTERS) && BUILDFLAG(IS_POSIX)
+// Visible in header for testing.
+class BASE_EXPORT PartitionAllocMemoryPressureMonitor {
+ public:
+  static PartitionAllocMemoryPressureMonitor& Instance();
+  PartitionAllocMemoryPressureMonitor();
+  ~PartitionAllocMemoryPressureMonitor();
+
+  void Start(scoped_refptr<SingleThreadTaskRunner> main_thread_task_runner);
+  void ResetForTesting();
+
+ private:
+  struct WatcherState;
+
+  static void OnPartitionAllocPressureFromMalloc();
+  void MaybeNotifyMemoryPressureOnMainThread();
+
+  static void StartWatchingOnThreadPool(
+      WatcherState* state,
+      scoped_refptr<SingleThreadTaskRunner> main_thread_task_runner,
+      base::WeakPtr<PartitionAllocMemoryPressureMonitor> weak_this);
+  static void OnPipeReadable(
+      int read_fd,
+      scoped_refptr<SingleThreadTaskRunner> main_thread_task_runner,
+      base::WeakPtr<PartitionAllocMemoryPressureMonitor> weak_this);
+
+  scoped_refptr<SequencedTaskRunner> watcher_task_runner_;
+  std::unique_ptr<WatcherState> watcher_state_;
+
+  PartitionAllocSupport::MemoryPressureLevel last_notified_level_ =
+      PartitionAllocSupport::MemoryPressureLevel::kNoPressure;
+  base::WeakPtrFactory<PartitionAllocMemoryPressureMonitor> weak_factory_{this};
+};
+#endif  // PA_BUILDFLAG(HAS_64_BIT_POINTERS) && BUILDFLAG(IS_POSIX)
 
 // Visible in header for testing.
 class BASE_EXPORT MemoryReclaimerSupport {

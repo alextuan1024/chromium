@@ -9,9 +9,12 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import org.jni_zero.JniUniquePtr;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -25,6 +28,7 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionBridge.NativeNtpThemeCollectionBridge;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
@@ -35,8 +39,6 @@ import java.util.List;
 /** Unit tests for {@link NtpThemeCollectionBridge}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class NtpThemeCollectionBridgeUnitTest {
-    public static final long NATIVE_NTP_THEME_COLLECTION_BRIDGE = 1L;
-
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private NtpThemeCollectionBridge.Natives mNatives;
@@ -48,19 +50,31 @@ public class NtpThemeCollectionBridgeUnitTest {
     @Captor private ArgumentCaptor<Callback<Object[]>> mObjectArrayCallbackCaptor;
 
     private NtpThemeCollectionBridge mNtpThemeCollectionBridge;
+    private JniUniquePtr<NativeNtpThemeCollectionBridge> mNativeNtpThemeCollectionBridge;
 
     @Before
     public void setUp() {
         NtpThemeCollectionBridgeJni.setInstanceForTesting(mNatives);
-        when(mNatives.init(any(), any())).thenReturn(NATIVE_NTP_THEME_COLLECTION_BRIDGE);
+        mNativeNtpThemeCollectionBridge = JniUniquePtr.createForTesting(1L);
+        when(mNatives.init(any(), any())).thenReturn(mNativeNtpThemeCollectionBridge);
         mNtpThemeCollectionBridge = new NtpThemeCollectionBridge(mProfile, mOnThemeUpdatedCallback);
+    }
+
+    @After
+    public void tearDown() {
+        if (mNativeNtpThemeCollectionBridge != null) {
+            mNativeNtpThemeCollectionBridge.destroy();
+        }
     }
 
     @Test
     public void testInitAndDestroy() {
         verify(mNatives).init(eq(mProfile), any(NtpThemeCollectionBridge.class));
         mNtpThemeCollectionBridge.destroy();
-        verify(mNatives).destroy(NATIVE_NTP_THEME_COLLECTION_BRIDGE);
+        mNativeNtpThemeCollectionBridge = null;
+
+        mNtpThemeCollectionBridge.getBackgroundCollections(mBackgroundCollectionsCallback);
+        verify(mNatives, never()).getBackgroundCollections(any(), any());
     }
 
     @Test
@@ -68,8 +82,7 @@ public class NtpThemeCollectionBridgeUnitTest {
         mNtpThemeCollectionBridge.getBackgroundCollections(mBackgroundCollectionsCallback);
         verify(mNatives)
                 .getBackgroundCollections(
-                        eq(NATIVE_NTP_THEME_COLLECTION_BRIDGE),
-                        mObjectArrayCallbackCaptor.capture());
+                        eq(mNativeNtpThemeCollectionBridge), mObjectArrayCallbackCaptor.capture());
 
         // Test with null response.
         mObjectArrayCallbackCaptor.getValue().onResult(null);
@@ -96,7 +109,7 @@ public class NtpThemeCollectionBridgeUnitTest {
         mNtpThemeCollectionBridge.getBackgroundImages(collectionId, mCollectionImagesCallback);
         verify(mNatives)
                 .getBackgroundImages(
-                        eq(NATIVE_NTP_THEME_COLLECTION_BRIDGE),
+                        eq(mNativeNtpThemeCollectionBridge),
                         eq(collectionId),
                         mObjectArrayCallbackCaptor.capture());
 
@@ -147,7 +160,7 @@ public class NtpThemeCollectionBridgeUnitTest {
         String collectionId = "collectionId";
         GURL imageUrl = JUnitTestGURLs.URL_1;
         GURL previewImageUrl = JUnitTestGURLs.URL_2;
-        String[] attribution = new String[] {"foo", "bar"};
+        List<String> attribution = List.of("foo", "bar");
         GURL attributionUrl = JUnitTestGURLs.URL_3;
         CollectionImage image =
                 NtpThemeCollectionBridge.createImage(
@@ -171,7 +184,7 @@ public class NtpThemeCollectionBridgeUnitTest {
         mNtpThemeCollectionBridge.setThemeCollectionImage(image);
         verify(mNatives)
                 .setThemeCollectionImage(
-                        NATIVE_NTP_THEME_COLLECTION_BRIDGE,
+                        mNativeNtpThemeCollectionBridge,
                         "collectionId",
                         JUnitTestGURLs.URL_1,
                         JUnitTestGURLs.URL_2,
@@ -188,7 +201,7 @@ public class NtpThemeCollectionBridgeUnitTest {
                         "collection_id",
                         /* isUploadedImage= */ false,
                         /* isDailyRefreshEnabled= */ true);
-        when(mNatives.getCustomBackgroundInfo(NATIVE_NTP_THEME_COLLECTION_BRIDGE)).thenReturn(info);
+        when(mNatives.getCustomBackgroundInfo(mNativeNtpThemeCollectionBridge)).thenReturn(info);
 
         mNtpThemeCollectionBridge.onCustomBackgroundImageUpdated();
 
@@ -197,7 +210,7 @@ public class NtpThemeCollectionBridgeUnitTest {
 
     @Test
     public void testOnCustomBackgroundImageUpdated_nullInfo() {
-        when(mNatives.getCustomBackgroundInfo(NATIVE_NTP_THEME_COLLECTION_BRIDGE)).thenReturn(null);
+        when(mNatives.getCustomBackgroundInfo(mNativeNtpThemeCollectionBridge)).thenReturn(null);
         mNtpThemeCollectionBridge.onCustomBackgroundImageUpdated();
         verify(mOnThemeUpdatedCallback).onResult(null);
     }
@@ -208,26 +221,30 @@ public class NtpThemeCollectionBridgeUnitTest {
         mNtpThemeCollectionBridge.setThemeCollectionDailyRefreshed(collectionId);
         verify(mNatives)
                 .setThemeCollectionDailyRefreshed(
-                        eq(NATIVE_NTP_THEME_COLLECTION_BRIDGE), eq(collectionId));
+                        eq(mNativeNtpThemeCollectionBridge), eq(collectionId));
     }
 
     @Test
     public void testFetchNextThemeCollectionImage() {
         mNtpThemeCollectionBridge.fetchNextThemeCollectionImage();
-        verify(mNatives).fetchNextThemeCollectionImage(NATIVE_NTP_THEME_COLLECTION_BRIDGE);
+        verify(mNatives).fetchNextThemeCollectionImage(mNativeNtpThemeCollectionBridge);
     }
 
     @Test
     public void testCreateCustomBackgroundInfo() {
-        testCreateCustomBackgroundInfoImpl("Attribution 1,Attribution 2");
+        testCreateCustomBackgroundInfoImpl("Attribution 1", "Attribution 2", JUnitTestGURLs.URL_2);
     }
 
     @Test
     public void testCreateCustomBackgroundInfo_nullAttribution() {
-        testCreateCustomBackgroundInfoImpl(null);
+        testCreateCustomBackgroundInfoImpl(
+                /* attributionLine1= */ null, /* attributionLine2= */ null, GURL.emptyGURL());
     }
 
-    private void testCreateCustomBackgroundInfoImpl(@Nullable String attribution) {
+    private void testCreateCustomBackgroundInfoImpl(
+            @Nullable String attributionLine1,
+            @Nullable String attributionLine2,
+            GURL attributionActionUrl) {
         String collectionId = "collection_id";
         CustomBackgroundInfo info =
                 NtpThemeCollectionBridge.createCustomBackgroundInfo(
@@ -235,11 +252,15 @@ public class NtpThemeCollectionBridgeUnitTest {
                         collectionId,
                         /* isUploadedImage= */ false,
                         /* isDailyRefreshEnabled= */ true,
-                        attribution);
+                        attributionLine1,
+                        attributionLine2,
+                        attributionActionUrl);
         assertEquals(JUnitTestGURLs.URL_1, info.backgroundUrl);
         assertEquals(collectionId, info.collectionId);
         assertFalse(info.isUploadedImage);
         assertTrue(info.isDailyRefreshEnabled);
-        assertEquals(attribution, info.attribution);
+        assertEquals(attributionLine1, info.attributionLine1);
+        assertEquals(attributionLine2, info.attributionLine2);
+        assertEquals(attributionActionUrl, info.attributionActionUrl);
     }
 }

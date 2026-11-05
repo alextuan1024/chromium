@@ -28,8 +28,6 @@ class ExclusiveAccessManagerAndroid {
       const jni_zero::JavaRef<jobject>& j_activity_tab_provider);
   ~ExclusiveAccessManagerAndroid();
 
-  void Destroy(JNIEnv* env);
-
   bool CanEnterFullscreenModeForTab(
       JNIEnv* env,
       const jni_zero::JavaRef<jobject>& jrender_frame_host_android);
@@ -44,6 +42,8 @@ class ExclusiveAccessManagerAndroid {
   void ExitFullscreenModeForTab(
       JNIEnv* env,
       const jni_zero::JavaRef<jobject>& jweb_contents);
+
+  void ToggleBrowserFullscreenMode(JNIEnv* env, bool user_initiated);
 
   bool IsFullscreenForTabOrPending(
       JNIEnv* env,
@@ -71,6 +71,8 @@ class ExclusiveAccessManagerAndroid {
   bool IsPointerLocked(JNIEnv* env);
 
   void ExitExclusiveAccess(JNIEnv* env);
+
+  void ExitAllExclusiveAccess(JNIEnv* env);
 
   bool HasExclusiveAccess(JNIEnv* env);
 

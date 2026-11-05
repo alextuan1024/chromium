@@ -29,14 +29,18 @@ required.
 1.  **Shared caching**: PCES maintains an in-memory and on-disk cache for HTML
     pages. Bypassing PCES risks triggering duplicate extractions, which could
     lead to unnecessary performance costs if multiple features query the same
-    page.
+    page. Note that while the on-disk cache checks the `AnnotatedPageContent`
+    version, cached entries may still have been written by an older or newer
+    version of Chrome (or modified on disk), so callers that rely on specific
+    fields must validate them directly.
 2.  **Page stability detection**: PCES automatically defers extractions until
     the page has finished loading and page stability is established (using
     `PageSettledMonitor`), ensuring you capture a complete, high-quality
     representation of the page.
 3.  **Tab lifecycle integration**: Automatically cleans up cached data when
-    tabs are closed or discarded, and, if 'on hidden' triggering is enabled,
-    schedules extractions when visible tabs transition to the background.
+    tabs are closed, preserves on-disk cached data across tab discards, and, if
+    'on hidden' triggering is enabled, schedules extractions when visible tabs
+    transition to the background.
 
 ## API comparison: PCES vs. `GetAIPageContent()`
 
@@ -51,8 +55,11 @@ required.
 
 ### 1. Registering an observer
 
-Use this pattern to automatically listen for page content extractions as they
-happen (e.g. for background processing or history indexing).
+Use this pattern to listen for page content extractions as they happen (e.g.
+for background processing or history indexing). `OnPageContentExtracted` is
+invoked for both automatic extractions (such as on page settle, eligible
+same-document navigations, or tab hide) and on-demand extractions/refreshes, so
+it may be called multiple times for the same `content::Page`.
 
 > **Note:** Changes to automatic observer extractions are being considered
 > given the potential overhead of automatic extractions across all loaded

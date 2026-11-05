@@ -122,6 +122,8 @@ source_set("gbm") {
     "ozone_platform_drm.h",
   ]
 
+  public_deps = [ "//ui/ozone:platform_headers" ]
+
   deps = [
     "//base",
     "//build/config/linux/libdrm",
@@ -187,10 +189,6 @@ source_set("gbm") {
     # Enable VLOG(1) so that they are included in field feedbacks.
     "ENABLED_VLOG_LEVEL=1",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("gbm_unittests") {
@@ -198,6 +196,7 @@ source_set("gbm_unittests") {
   sources = [
     "common/drm_util_unittest.cc",
     "common/hardware_display_controller_info_unittest.cc",
+    "gpu/drm_device_unittest.cc",
     "gpu/drm_display_unittest.cc",
     "gpu/drm_gpu_display_manager_unittest.cc",
     "gpu/drm_gpu_util_unittest.cc",
@@ -209,6 +208,7 @@ source_set("gbm_unittests") {
     "gpu/fake_drm_device.h",
     "gpu/fake_drm_device_generator.cc",
     "gpu/fake_drm_device_generator.h",
+    "gpu/gbm_pixmap_unittest.cc",
     "gpu/gbm_surface_factory_unittest.cc",
     "gpu/hardware_display_controller_unittest.cc",
     "gpu/hardware_display_plane_manager_unittest.cc",
@@ -240,10 +240,6 @@ source_set("gbm_unittests") {
     "//ui/ozone:platform",
     "//ui/ozone/common",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("drm_integration_tests") {
@@ -284,8 +280,5 @@ source_set("ui_controls") {
     "//ui/ozone/common",
   ]
 
-  visibility += [
-    "//chrome/test:test_support",
-    "//chrome/test/base/chromeos/crosier:test_support",
-  ]
+  visibility += [ "//chrome/test/base/chromeos/crosier:test_support" ]
 }

@@ -121,17 +121,6 @@ class PrivacySandboxSettingsTest : public testing::Test {
   std::unique_ptr<PrivacySandboxSettingsImpl> privacy_sandbox_settings_;
 };
 
-TEST_F(PrivacySandboxSettingsTest, OnRelatedWebsiteSetsEnabledChanged) {
-  // OnRelatedWebsiteSetsEnabledChanged() should only call observers when the
-  // pref changes.
-  privacy_sandbox_test_util::MockPrivacySandboxObserver observer;
-  privacy_sandbox_settings()->AddObserver(&observer);
-  EXPECT_CALL(observer, OnRelatedWebsiteSetsEnabledChanged(/*enabled=*/true));
-
-  prefs()->SetBoolean(prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, true);
-  testing::Mock::VerifyAndClearExpectations(&observer);
-}
-
 // Tests class for the PrivacySandboxSettings4 / M1 launch.
 class PrivacySandboxSettingsM1Test : public PrivacySandboxSettingsTest {
  protected:
@@ -167,9 +156,6 @@ class PrivacySandboxSettingsM1Test : public PrivacySandboxSettingsTest {
   // std::variant for the test outputs, the types must exactly match.
   bool kTrue_ = true;
   bool kFalse_ = false;
-
-  bool actual_out_shared_storage_block_is_site_setting_specific_ = false;
-  bool actual_out_select_url_block_is_site_setting_specific_ = false;
 
  private:
   bool test_case_run_ = false;

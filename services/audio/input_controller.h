@@ -30,6 +30,7 @@
 namespace media {
 class AecdumpRecordingManager;
 class AudioBus;
+class AudioDebugRecordingManager;
 class AudioInputStream;
 class AudioManager;
 struct AudioGlitchInfo;
@@ -191,8 +192,6 @@ class InputController final {
 
   ~InputController();
 
-  media::AudioInputStream* stream_for_testing() { return stream_; }
-
   static std::unique_ptr<InputController> Create(
       media::AudioManager* audio_manager,
       EventHandler* event_handler,
@@ -236,6 +235,7 @@ class InputController final {
   // and there are also other histograms such as
   // Media.Audio.InputStartupSuccessMac to cover issues similar
   // to the ones the NO_DATA_CALLBACK was intended for.
+  // LINT.IfChange(CaptureStartupResult)
   enum CaptureStartupResult {
     CAPTURE_STARTUP_OK = 0,
     CAPTURE_STARTUP_CREATE_STREAM_FAILED = 1,
@@ -245,6 +245,7 @@ class InputController final {
     CAPTURE_STARTUP_VOICE_ISOLATION_ERROR = 5,
     CAPTURE_STARTUP_RESULT_MAX = CAPTURE_STARTUP_VOICE_ISOLATION_ERROR,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:AudioCaptureStartupResult)
 
   static void LogCaptureStartupResult(StreamType type,
                                       CaptureStartupResult result);
@@ -264,6 +265,9 @@ class InputController final {
       std::unique_ptr<ReferenceSignalProvider> reference_signal_provider,
       media::AecdumpRecordingManager* aecdump_recording_manager,
       raw_ptr<MlModelManager> ml_model_manager);
+  // Forwards `error_code` to the EventHandler at most once. Subsequent calls
+  // (e.g. second runtime errors, or errors arriving after DoCreate() failure
+  // or Close()) are ignored.
   void DoReportError(ErrorCode error_code);
   void DoLogAudioLevels(float level_dbfs, int microphone_volume_percent);
 
@@ -336,6 +340,7 @@ class InputController final {
   // `deliver_processed_audio_callback` should be consumed.
   std::unique_ptr<VoiceIsolationHandler> MaybeCreateVoiceIsolationHandler(
       raw_ptr<MlModelManager> ml_model_manager,
+      media::AudioDebugRecordingManager* debug_recording_manager,
       const media::AudioParameters& processing_output_params,
       DeliverProcessedAudioCallback deliver_processed_audio_callback);
 
@@ -394,6 +399,10 @@ class InputController final {
   base::TimeTicks stream_create_time_;
 
   bool is_muted_ = false;
+
+  // Cleared once an error has been reported to the EventHandler or Close() has
+  // been called, so that at most one error is ever dispatched.
+  bool can_report_error_ = true;
 
   // Mute state changes are monitored by either a platform subscription or,
   // when subscriptions are not supported, the polling timer.

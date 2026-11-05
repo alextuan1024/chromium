@@ -21,7 +21,6 @@
 #include "base/containers/to_value_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -358,74 +357,75 @@ void WebApp::AddSource(WebAppManagement::Type source) {
         << "Synced apps should not have an install state suggested from "
            "migration";
   }
-  sources_.Put(source);
+  management_data_.AddSource(source);
 }
 
 void WebApp::RemoveSource(WebAppManagement::Type source) {
-  sources_.Remove(source);
-  management_to_external_config_map_.erase(source);
+  management_data_.RemoveSource(source);
 }
 
 bool WebApp::HasAnySources() const {
-  return !sources_.empty();
+  return management_data_.HasAnySources();
 }
 
 bool WebApp::HasOnlySource(WebAppManagement::Type source) const {
   WebAppManagementTypes specified_sources;
   specified_sources.Put(source);
-  return HasAnySpecifiedSourcesAndNoOtherSources(sources_, specified_sources);
+  return HasAnySpecifiedSourcesAndNoOtherSources(management_data_.GetSources(),
+                                                 specified_sources);
 }
 
 WebAppManagementTypes WebApp::GetSources() const {
-  return sources_;
+  return management_data_.GetSources();
 }
 
 bool WebApp::IsSynced() const {
-  return sources_.Has(WebAppManagement::kSync);
+  return management_data_.HasSource(WebAppManagement::kSync);
 }
 
 bool WebApp::IsPreinstalledApp() const {
-  return sources_.Has(WebAppManagement::kDefault);
+  return management_data_.HasSource(WebAppManagement::kDefault);
 }
 
 bool WebApp::IsPolicyInstalledApp() const {
-  return sources_.Has(WebAppManagement::kPolicy);
+  return management_data_.HasSource(WebAppManagement::kPolicy);
 }
 
 bool WebApp::IsIwaPolicyInstalledApp() const {
-  return sources_.Has(WebAppManagement::kIwaPolicy);
+  return management_data_.HasSource(WebAppManagement::kIwaPolicy);
 }
 
 bool WebApp::IsIwaShimlessRmaApp() const {
-  return sources_.Has(WebAppManagement::kIwaShimlessRma);
+  return management_data_.HasSource(WebAppManagement::kIwaShimlessRma);
 }
 
 bool WebApp::IsSystemApp() const {
-  return sources_.Has(WebAppManagement::kSystem);
+  return management_data_.HasSource(WebAppManagement::kSystem);
 }
 
 bool WebApp::IsWebAppStoreInstalledApp() const {
-  return sources_.Has(WebAppManagement::kWebAppStore);
+  return management_data_.HasSource(WebAppManagement::kWebAppStore);
 }
 
 bool WebApp::IsSubAppInstalledApp() const {
-  return sources_.Has(WebAppManagement::kSubApp);
+  return management_data_.HasSource(WebAppManagement::kSubApp);
 }
 
 bool WebApp::IsKioskInstalledApp() const {
-  return sources_.Has(WebAppManagement::kKiosk);
+  return management_data_.HasSource(WebAppManagement::kKiosk);
 }
 
 bool WebApp::CanUserUninstallWebApp() const {
-  return web_app::CanUserUninstallWebApp(app_id_, sources_);
+  return web_app::CanUserUninstallWebApp(app_id_,
+                                         management_data_.GetSources());
 }
 
 bool WebApp::WasInstalledByUser() const {
-  return sources_.Has(WebAppManagement::kSync) ||
-         sources_.Has(WebAppManagement::kUserInstalled) ||
-         sources_.Has(WebAppManagement::kWebAppStore) ||
-         sources_.Has(WebAppManagement::kOneDriveIntegration) ||
-         sources_.Has(WebAppManagement::kIwaUserInstalled);
+  return management_data_.HasSource(WebAppManagement::kSync) ||
+         management_data_.HasSource(WebAppManagement::kUserInstalled) ||
+         management_data_.HasSource(WebAppManagement::kWebAppStore) ||
+         management_data_.HasSource(WebAppManagement::kOneDriveIntegration) ||
+         management_data_.HasSource(WebAppManagement::kIwaUserInstalled);
 }
 
 bool WebApp::WasInstalledByTrustedSources() const {
@@ -434,18 +434,18 @@ bool WebApp::WasInstalledByTrustedSources() const {
   // WebAppChromeOsData::oem_installed separate.
   // WebAppChromeOsData::oem_installed will be migrated to
   // WebAppManagement::kOem eventually.
-  return sources_.Has(WebAppManagement::kDefault) ||
-         sources_.Has(WebAppManagement::kPolicy) ||
-         sources_.Has(WebAppManagement::kKiosk) ||
-         sources_.Has(WebAppManagement::kOem) ||
-         sources_.Has(WebAppManagement::kApsDefault);
+  return management_data_.HasSource(WebAppManagement::kDefault) ||
+         management_data_.HasSource(WebAppManagement::kPolicy) ||
+         management_data_.HasSource(WebAppManagement::kKiosk) ||
+         management_data_.HasSource(WebAppManagement::kOem) ||
+         management_data_.HasSource(WebAppManagement::kApsDefault);
 }
 
 WebAppManagement::Type WebApp::GetHighestPrioritySource() const {
   // `WebAppManagementTypes` is iterated in order of priority.
   // Top priority sources are iterated first.
   for (WebAppManagement::Type source : WebAppManagementTypes::All()) {
-    if (sources_.Has(source)) {
+    if (management_data_.HasSource(source)) {
       return source;
     }
   }
@@ -517,7 +517,7 @@ void WebApp::SetDarkModeBackgroundColor(
 }
 
 void WebApp::SetDisplayMode(DisplayMode display_mode) {
-  DCHECK_NE(DisplayMode::kUndefined, display_mode);
+  CHECK_NE(DisplayMode::kUndefined, display_mode, base::NotFatalUntil::M162);
   display_mode_ = display_mode;
 }
 
@@ -632,13 +632,15 @@ void WebApp::SetOriginAssociationLastValidationCheckTime(
 }
 
 void WebApp::SetLockScreenStartUrl(const GURL& lock_screen_start_url) {
-  DCHECK(lock_screen_start_url.is_empty() || lock_screen_start_url.is_valid());
+  CHECK(lock_screen_start_url.is_empty() || lock_screen_start_url.is_valid(),
+        base::NotFatalUntil::M162);
   lock_screen_start_url_ = lock_screen_start_url;
 }
 
 void WebApp::SetNoteTakingNewNoteUrl(const GURL& note_taking_new_note_url) {
-  DCHECK(note_taking_new_note_url.is_empty() ||
-         note_taking_new_note_url.is_valid());
+  CHECK(note_taking_new_note_url.is_empty() ||
+            note_taking_new_note_url.is_valid(),
+        base::NotFatalUntil::M162);
   note_taking_new_note_url_ = note_taking_new_note_url;
 }
 
@@ -678,8 +680,7 @@ void WebApp::SetLaunchQueryParams(
 }
 
 void WebApp::SetManifestUrl(const GURL& manifest_url) {
-  CHECK(manifest_url.is_valid() || manifest_url.is_empty(),
-        base::NotFatalUntil::M138);
+  CHECK(manifest_url.is_valid() || manifest_url.is_empty());
   manifest_url_ = manifest_url;
 }
 
@@ -709,10 +710,13 @@ void WebApp::SetDataSizeInBytes(std::optional<int64_t> data_size_in_bytes) {
   data_size_in_bytes_ = data_size_in_bytes;
 }
 
-void WebApp::SetWebAppManagementExternalConfigMap(
-    ExternalConfigMap management_to_external_config_map) {
-  management_to_external_config_map_ =
-      std::move(management_to_external_config_map);
+void WebApp::SetManagementData(ManagementData management_data) {
+  if (management_data.HasSource(WebAppManagement::kSync)) {
+    CHECK_NE(proto::SUGGESTED_FROM_MIGRATION, install_state_)
+        << "Synced apps should not have an install state suggested from "
+           "migration";
+  }
+  management_data_ = std::move(management_data);
 }
 
 void WebApp::SetTabStrip(std::optional<blink::Manifest::TabStrip> tab_strip) {
@@ -772,56 +776,22 @@ void WebApp::SetRelatedApplications(
   related_applications_ = std::move(related_applications);
 }
 
-void WebApp::AddPlaceholderInfoToManagementExternalConfigMap(
-    WebAppManagement::Type type,
-    bool is_placeholder) {
-  DCHECK_NE(type, WebAppManagement::Type::kSync);
-  DCHECK_NE(type, WebAppManagement::Type::kUserInstalled);
-  CHECK(!WebAppManagement::IsIwaType(type)) << type;
-  management_to_external_config_map_[type].is_placeholder = is_placeholder;
+void WebApp::SetIsPlaceholder(WebAppManagement::Type source_type,
+                              bool is_placeholder) {
+  management_data_.SetIsPlaceholder(source_type, is_placeholder);
 }
 
-void WebApp::AddInstallURLToManagementExternalConfigMap(
-    WebAppManagement::Type type,
-    GURL install_url) {
-  DCHECK_NE(type, WebAppManagement::Type::kSync);
-  DCHECK_NE(type, WebAppManagement::Type::kUserInstalled);
-  CHECK(!WebAppManagement::IsIwaType(type)) << type;
-  DCHECK(install_url.is_valid());
-  management_to_external_config_map_[type].install_urls.emplace(
-      std::move(install_url));
+void WebApp::AddInstallUrl(WebAppManagement::Type type, GURL install_url) {
+  management_data_.AddInstallUrl(type, std::move(install_url));
 }
 
-void WebApp::AddPolicyIdToManagementExternalConfigMap(
-    WebAppManagement::Type type,
-    std::string policy_id) {
-  DCHECK_NE(type, WebAppManagement::Type::kSync);
-  DCHECK_NE(type, WebAppManagement::Type::kUserInstalled);
-  CHECK(!WebAppManagement::IsIwaType(type)) << type;
-  DCHECK(!policy_id.empty());
-  management_to_external_config_map_[type].additional_policy_ids.emplace(
-      std::move(policy_id));
+bool WebApp::RemoveInstallUrl(WebAppManagement::Type type,
+                              const GURL& install_url) {
+  return management_data_.RemoveInstallUrl(type, install_url);
 }
 
-void WebApp::AddExternalSourceInformation(WebAppManagement::Type type,
-                                          GURL install_url,
-                                          bool is_placeholder) {
-  AddInstallURLToManagementExternalConfigMap(type, std::move(install_url));
-  AddPlaceholderInfoToManagementExternalConfigMap(type, is_placeholder);
-}
-
-bool WebApp::RemoveInstallUrlForSource(WebAppManagement::Type type,
-                                       const GURL& install_url) {
-  if (!management_to_external_config_map_.count(type)) {
-    return false;
-  }
-
-  bool removed =
-      management_to_external_config_map_[type].install_urls.erase(install_url);
-  if (management_to_external_config_map_[type].install_urls.empty()) {
-    management_to_external_config_map_.erase(type);
-  }
-  return removed;
+void WebApp::AddAdditionalPolicyId(std::string policy_id) {
+  management_data_.AddAdditionalPolicyId(std::move(policy_id));
 }
 
 void WebApp::SetAlwaysShowToolbarInFullscreen(bool show) {
@@ -1017,6 +987,11 @@ void WebApp::MergeDataFromSyncSystem(
         sync_proto_.migrated_from_manifest_id());
   }
 
+  // `WebAppSyncBridge::PrepareLocalUpdateFromSyncChange()` relies on
+  // `IsEntityDataValid()` to guarantee a parseable `start_url` and then
+  // populates a non-empty name on `modified_sync_proto` before merging.
+  CHECK(!modified_sync_proto.name().empty(), base::NotFatalUntil::M162);
+
   sync_proto_ = std::move(modified_sync_proto);
   CHECK(HasCurrentPlatformUserDisplayMode(sync_proto_));
 }
@@ -1033,40 +1008,6 @@ base::Value WebApp::ClientData::AsDebugValue() const {
   root.Set("system_web_app_data", OptionalAsDebugValue(system_web_app_data));
 #endif
   return base::Value(std::move(root));
-}
-
-WebApp::ExternalManagementConfig::ExternalManagementConfig() = default;
-WebApp::ExternalManagementConfig::ExternalManagementConfig(
-    bool is_placeholder,
-    const base::flat_set<GURL>& install_urls,
-    const base::flat_set<std::string>& additional_policy_ids)
-    : is_placeholder(is_placeholder),
-      install_urls(install_urls),
-      additional_policy_ids(additional_policy_ids) {}
-
-WebApp::ExternalManagementConfig::~ExternalManagementConfig() = default;
-
-WebApp::ExternalManagementConfig::ExternalManagementConfig(
-    const ExternalManagementConfig& external_management_config) = default;
-WebApp::ExternalManagementConfig& WebApp::ExternalManagementConfig::operator=(
-    const ExternalManagementConfig& external_management_config) = default;
-WebApp::ExternalManagementConfig& WebApp::ExternalManagementConfig::operator=(
-    ExternalManagementConfig&& external_management_config) = default;
-
-base::DictValue WebApp::ExternalManagementConfig::AsDebugValue() const {
-  base::DictValue root;
-  base::ListValue urls;
-  for (const auto& install_url : install_urls) {
-    urls.Append(install_url.spec());
-  }
-  base::ListValue policy_ids;
-  for (const auto& policy_id : additional_policy_ids) {
-    policy_ids.Append(policy_id);
-  }
-  root.Set("install_urls", std::move(urls));
-  root.Set("additional_policy_ids", std::move(policy_ids));
-  root.Set("is_placeholder", is_placeholder);
-  return root;
 }
 
 const std::vector<UrlPatternWithRegexMatcher>& WebApp::GetTabbedModeHomeScope()
@@ -1099,7 +1040,6 @@ bool WebApp::operator==(const WebApp& other) const {
         // Disable clang-format so diffs are clearer when fields are added.
         // clang-format off
         app.app_id_,
-        app.sources_,
         app.name_,
         app.description_,
         app.start_url_,
@@ -1150,7 +1090,7 @@ bool WebApp::operator==(const WebApp& other) const {
         app.latest_install_source_,
         app.app_size_in_bytes_,
         app.data_size_in_bytes_,
-        app.management_to_external_config_map_,
+        app.management_data_,
         app.tab_strip_,
         app.always_show_toolbar_in_fullscreen_,
         app.current_os_integration_states_,
@@ -1252,13 +1192,7 @@ base::Value WebApp::AsDebugValueWithOnlyPlatformAgnosticFields() const {
   root.Set("latest_install_source",
            OptionalToStringValue(latest_install_source_));
 
-  base::DictValue external_map;
-  for (const auto& it : management_to_external_config_map_) {
-    external_map.Set(base::ToString(it.first), it.second.AsDebugValue());
-  }
-
-  root.Set("management_type_to_external_configuration_map",
-           std::move(external_map));
+  root.Set("management_data", management_data_.AsDebugValue());
 
   root.Set("first_install_time", base::ToString(first_install_time_));
 
@@ -1313,14 +1247,6 @@ base::Value WebApp::AsDebugValueWithOnlyPlatformAgnosticFields() const {
 
   root.Set("shortcuts_menu_item_infos",
            ConvertDebugValueList(shortcuts_menu_item_infos_));
-
-  base::ListValue sources;
-  for (WebAppManagement::Type source : WebAppManagementTypes::All()) {
-    if (sources_.Has(source)) {
-      sources.Append(base::ToString(source));
-    }
-  }
-  root.Set("sources", std::move(sources));
 
   root.Set("start_url", base::ToString(start_url_));
 
@@ -1441,12 +1367,6 @@ void WebApp::SetManifestId(const webapps::ManifestId& manifest_id) {
 
 std::ostream& operator<<(std::ostream& out, const WebApp& app) {
   return out << app.AsDebugValue();
-}
-
-std::ostream& operator<<(
-    std::ostream& out,
-    const WebApp::ExternalManagementConfig& management_config) {
-  return out << management_config.AsDebugValue().DebugString();
 }
 
 }  // namespace web_app

@@ -5,6 +5,7 @@
 #include "components/autofill/core/browser/suggestions/payments/iban_suggestion_generator.h"
 
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -30,8 +31,13 @@ namespace {
 
 using ::testing::_;
 using ::testing::AllOf;
+using ::testing::ElementsAre;
 using ::testing::Field;
+using ::testing::IsEmpty;
 using ::testing::Matcher;
+using ::testing::Pair;
+using ::testing::Return;
+using ::testing::UnorderedElementsAre;
 
 constexpr char16_t kNickname_0[] = u"Nickname 0";
 constexpr char16_t kNickname_1[] = u"Nickname 1";
@@ -70,6 +76,19 @@ Matcher<Suggestion> EqualsIbanSuggestion(
                                      {Suggestion::Text(identifier_string)}}));
 }
 
+class MockPaymentsAutofillClient : public payments::TestPaymentsAutofillClient {
+ public:
+  explicit MockPaymentsAutofillClient(AutofillClient* client)
+      : payments::TestPaymentsAutofillClient(client) {
+    ON_CALL(*this, GetIbanManager).WillByDefault([this] {
+      return payments::TestPaymentsAutofillClient::GetIbanManager();
+    });
+  }
+  ~MockPaymentsAutofillClient() override = default;
+
+  MOCK_METHOD(MockIbanManager*, GetIbanManager, (), (override));
+};
+
 class IbanSuggestionGeneratorTest : public testing::Test {
  protected:
   IbanSuggestionGeneratorTest() {
@@ -78,7 +97,7 @@ class IbanSuggestionGeneratorTest : public testing::Test {
     prefs_ = test::PrefServiceForTesting();
     payments_data_manager().SetAutofillPaymentMethodsEnabled(true);
     autofill_client_.set_payments_autofill_client(
-        std::make_unique<payments::TestPaymentsAutofillClient>(
+        std::make_unique<testing::NiceMock<MockPaymentsAutofillClient>>(
             &autofill_client_));
     payments_data_manager().SetAutofillWalletImportEnabled(true);
 
@@ -88,10 +107,14 @@ class IbanSuggestionGeneratorTest : public testing::Test {
 
     ON_CALL(*autofill_client_.GetAutofillOptimizationGuideDecider(),
             ShouldBlockSingleFieldSuggestions)
-        .WillByDefault(testing::Return(false));
+        .WillByDefault(Return(false));
   }
 
   TestAutofillClient& client() { return autofill_client_; }
+  MockPaymentsAutofillClient& payments_autofill_client() {
+    return *static_cast<MockPaymentsAutofillClient*>(
+        autofill_client_.GetPaymentsAutofillClient());
+  }
   FormStructure& form() { return *form_structure_; }
   AutofillField& field() { return *form_structure_->fields().front(); }
   PersonalDataManager& personal_data_manager() {
@@ -215,16 +238,16 @@ TEST_F(IbanSuggestionGeneratorTest, GeneratesIbanSuggestions) {
       suggestions_generated_callback;
 
   IbanSuggestionGenerator generator;
-  EXPECT_CALL(suggestions_generated_callback,
-              Run(testing::Pair(
-                  SuggestionGenerator::SuggestionDataSource::kIban,
-                  testing::UnorderedElementsAre(
-                      MatchesTextAndSuggestionType(local_iban_suggestion_0),
-                      MatchesTextAndSuggestionType(local_iban_suggestion_1),
-                      MatchesTextAndSuggestionType(server_iban_suggestion_0),
-                      MatchesTextAndSuggestionType(server_iban_suggestion_1),
-                      MatchesTextAndSuggestionType(separator_suggestion),
-                      MatchesTextAndSuggestionType(footer_suggestion)))));
+  EXPECT_CALL(
+      suggestions_generated_callback,
+      Run(Pair(SuggestionGenerator::SuggestionDataSource::kIban,
+               UnorderedElementsAre(
+                   MatchesTextAndSuggestionType(local_iban_suggestion_0),
+                   MatchesTextAndSuggestionType(local_iban_suggestion_1),
+                   MatchesTextAndSuggestionType(server_iban_suggestion_0),
+                   MatchesTextAndSuggestionType(server_iban_suggestion_1),
+                   MatchesTextAndSuggestionType(separator_suggestion),
+                   MatchesTextAndSuggestionType(footer_suggestion)))));
   generator.GenerateSuggestions(form().ToFormData(), field(), &form(), &field(),
                                 client(), suggestions_generated_callback.Get());
   task_environment().RunUntilIdle();
@@ -241,17 +264,12 @@ TEST_F(IbanSuggestionGeneratorTest, GetLocalIbanSuggestions) {
 
   std::vector<Suggestion> iban_suggestions = GetSuggestionsForIbans();
 
-  // There are 6 suggestions, 4 for IBAN suggestions, followed by a separator,
-  // and followed by "Manage payment methods..." which redirects to the Chrome
-  // payment methods settings page.
-  ASSERT_EQ(iban_suggestions.size(), 6u);
-
   Suggestion separator_suggestion(SuggestionType::kSeparator);
   Suggestion footer_suggestion = SetUpFooterManagePaymentMethods();
 
   EXPECT_THAT(
       iban_suggestions,
-      testing::UnorderedElementsAre(
+      UnorderedElementsAre(
           EqualsIbanSuggestion(iban0.GetIdentifierStringForAutofillDisplay(),
                                Suggestion::Guid(iban0.guid()),
                                iban0.nickname()),
@@ -281,16 +299,11 @@ TEST_F(IbanSuggestionGeneratorTest, GetServerIbanSuggestions) {
 
   std::vector<Suggestion> iban_suggestions = GetSuggestionsForIbans();
 
-  // There are 5 suggestions, 3 for IBAN suggestions, followed by a separator,
-  // and followed by "Manage payment methods..." which redirects to the Chrome
-  // payment methods settings page.
-  ASSERT_EQ(iban_suggestions.size(), 5u);
-
   Suggestion separator_suggestion(SuggestionType::kSeparator);
   Suggestion footer_suggestion = SetUpFooterManagePaymentMethods();
 
   EXPECT_THAT(iban_suggestions,
-              testing::UnorderedElementsAre(
+              UnorderedElementsAre(
                   EqualsIbanSuggestion(
                       server_iban1.GetIdentifierStringForAutofillDisplay(),
                       Suggestion::InstrumentId(server_iban1.instrument_id()),
@@ -319,17 +332,12 @@ TEST_F(IbanSuggestionGeneratorTest, GetLocalAndServerIbanSuggestions) {
 
   std::vector<Suggestion> iban_suggestions = GetSuggestionsForIbans();
 
-  // There are 5 suggestions, 3 for IBAN suggestions, followed by a separator,
-  // and followed by "Manage payment methods..." which redirects to the Chrome
-  // payment methods settings page.
-  ASSERT_EQ(iban_suggestions.size(), 5u);
-
   Suggestion separator_suggestion(SuggestionType::kSeparator);
   Suggestion footer_suggestion = SetUpFooterManagePaymentMethods();
 
   EXPECT_THAT(
       iban_suggestions,
-      testing::UnorderedElementsAre(
+      UnorderedElementsAre(
           EqualsIbanSuggestion(
               server_iban1.GetIdentifierStringForAutofillDisplay(),
               Suggestion::InstrumentId(server_iban1.instrument_id()),
@@ -370,7 +378,7 @@ TEST_F(IbanSuggestionGeneratorTest, ShowsWarningForNonSecureContext) {
 
   EXPECT_THAT(
       iban_suggestions,
-      testing::ElementsAre(AllOf(
+      ElementsAre(AllOf(
           Field(&Suggestion::type,
                 SuggestionType::kInsecureContextPaymentDisabledMessage),
           Field(&Suggestion::main_text,
@@ -385,7 +393,34 @@ TEST_F(IbanSuggestionGeneratorTest, NoWarningForNonSecureContextWithoutIbans) {
   client().set_last_committed_primary_main_frame_url(
       GURL("http://example.test"));
 
-  EXPECT_THAT(GetSuggestionsForIbans(), testing::IsEmpty());
+  EXPECT_THAT(GetSuggestionsForIbans(), IsEmpty());
+}
+
+// Tests that IBAN suggestions are not generated and blocklist metrics are not
+// logged when `PaymentsAutofillClient` or `IbanManager` is unavailable (e.g.
+// on iOS).
+TEST_F(IbanSuggestionGeneratorTest, UnsupportedClientDoesNotGenerateIbans) {
+  SetUpLocalIban(test::GetLocalIban().value(), test::GetLocalIban().nickname());
+  Iban server_iban = test::GetServerIban();
+  SetUpServerIban(server_iban.instrument_id(), server_iban.prefix(),
+                  server_iban.suffix(), server_iban.nickname());
+
+  {
+    base::HistogramTester histogram_tester;
+    ON_CALL(payments_autofill_client(), GetIbanManager)
+        .WillByDefault(Return(nullptr));
+    EXPECT_THAT(GetSuggestionsForIbans(), IsEmpty());
+    histogram_tester.ExpectTotalCount(
+        "Autofill.Iban.SuggestionsBlockListStatus", 0);
+  }
+
+  {
+    base::HistogramTester histogram_tester;
+    client().set_payments_autofill_client(nullptr);
+    EXPECT_THAT(GetSuggestionsForIbans(), IsEmpty());
+    histogram_tester.ExpectTotalCount(
+        "Autofill.Iban.SuggestionsBlockListStatus", 0);
+  }
 }
 
 }  // namespace

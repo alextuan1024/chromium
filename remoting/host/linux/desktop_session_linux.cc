@@ -33,6 +33,7 @@
 #include "remoting/host/ipc_constants.h"
 #include "remoting/host/linux/linux_process_launcher_delegate.h"
 #include "remoting/host/linux/login_session_manager.h"
+#include "remoting/host/linux/user_session_eligibility.h"
 #include "remoting/host/mojom/desktop_session.mojom.h"
 #include "remoting/host/pam_utils.h"
 #include "remoting/host/worker_process_launcher.h"
@@ -67,33 +68,36 @@ base::FilePath GetSessionCgroupProcsPath(uid_t uid,
 DesktopSessionLinux::DesktopSessionLinux(
     DaemonProcess* daemon_process,
     int id,
-    std::string_view required_username,
-    std::string_view client_id,
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
     DestroyedCallback on_destroyed,
-    bool is_greeter_allowed)
+    const Options& options)
     : DesktopSession(daemon_process, id),
-      required_username_(required_username),
-      client_id_(client_id),
+      required_username_(options.required_username),
+      client_id_(options.client_id),
       io_task_runner_(io_task_runner),
       on_destroyed_(std::move(on_destroyed)),
-      is_greeter_allowed_(is_greeter_allowed) {}
+      curtain_required_(options.curtain_required),
+      is_greeter_allowed_(options.is_greeter_allowed) {}
 
 DesktopSessionLinux::~DesktopSessionLinux() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (on_destroyed_) {
-    std::move(on_destroyed_).Run();
+    std::move(on_destroyed_).Run(destruction_reason_);
   }
 }
 
-void DesktopSessionLinux::SetSessionInfo(
+// static
+bool DesktopSessionLinux::IsSessionCompatibleWithCurtainMode(
+    const LoginSessionManager::SessionInfo& session_info) {
+  return session_info.is_remote ||
+         session_info.service == "chrome-remote-desktop";
+}
+
+bool DesktopSessionLinux::ValidateSessionAccess(
     const LoginSessionManager::SessionInfo& session_info,
     const PasswdUserInfo& user_info) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  current_session_id_ = session_info.session_id;
-  current_uid_ = user_info.uid;
 
   if (session_info.uid != user_info.uid) {
     TerminateSession(
@@ -101,7 +105,7 @@ void DesktopSessionLinux::SetSessionInfo(
         base::StringPrintf("Session UID (%u) does not match user UID (%u).",
                            session_info.uid, user_info.uid),
         FROM_HERE);
-    return;
+    return false;
   }
 
   if (!IsSessionUsernameAllowed(session_info, user_info)) {
@@ -110,21 +114,19 @@ void DesktopSessionLinux::SetSessionInfo(
         base::StringPrintf("User %s does not match the required username.",
                            user_info.username.c_str()),
         FROM_HERE);
-    return;
+    return false;
   }
 
-  // Root (UID 0) is unconditionally forbidden. System accounts (UID < 1000 or
-  // nobody: 65534) are not allowed for user sessions.
-  if (user_info.uid == 0 ||
-      (session_info.session_class != "greeter" &&
-       (user_info.uid < 1000 || user_info.uid == 65534))) {
+  if (!IsUidAllowedForDesktopSession(
+          user_info.uid,
+          /*is_greeter=*/session_info.session_class == "greeter")) {
     TerminateSession(
         ErrorCode::SESSION_REJECTED,
         base::StringPrintf(
             "User %s (UID %u) is not allowed for desktop sessions.",
             user_info.username.c_str(), user_info.uid),
         FROM_HERE);
-    return;
+    return false;
   }
 
   if (!IsLocalLoginAllowed(user_info.username)) {
@@ -133,6 +135,26 @@ void DesktopSessionLinux::SetSessionInfo(
         base::StringPrintf("Local login for user %s is disallowed by PAM.",
                            user_info.username.c_str()),
         FROM_HERE);
+    return false;
+  }
+
+  return true;
+}
+
+void DesktopSessionLinux::SetSessionInfo(
+    const LoginSessionManager::SessionInfo& session_info,
+    const PasswdUserInfo& user_info) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (!ValidateSessionAccess(session_info, user_info)) {
+    return;
+  }
+
+  current_session_id_ = session_info.session_id;
+  current_uid_ = user_info.uid;
+  is_local_session_ = !IsSessionCompatibleWithCurtainMode(session_info);
+
+  if (!ValidateCurtainMode()) {
     return;
   }
 
@@ -181,6 +203,7 @@ void DesktopSessionLinux::ClearSessionInfo() {
   desktop_process_control_.reset();
   current_session_id_.clear();
   current_uid_.reset();
+  is_local_session_ = false;
 }
 
 void DesktopSessionLinux::TerminateSession(
@@ -224,6 +247,17 @@ void DesktopSessionLinux::ReconnectNetworkChannel(
     return;
   }
 
+  // `curtain_required` may change between connections when session policies
+  // change. If `curtain_required` flips from false to true mid-session while
+  // attached to a local session (rare), ValidateCurtainMode() terminates the
+  // session with UNCURTAINED_SESSION leaving no stale state, and a fresh
+  // reconnect runs the backend's normal flow (`LOCAL_SESSION_RUNNING` /
+  // `Terminate-Local-Session`).
+  curtain_required_ = options.curtain_required;
+  if (!ValidateCurtainMode()) {
+    return;
+  }
+
   if (desktop_process_control_.is_bound()) {
     desktop_process_control_->ReconnectNetworkChannel();
   }
@@ -247,7 +281,12 @@ void DesktopSessionLinux::OnChannelConnected(int32_t peer_pid) {
 void DesktopSessionLinux::OnPermanentError(int exit_code) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  TerminateSession();
+  destruction_reason_ = DestructionReason::kPermanentWorkerError;
+  TerminateSession(
+      ErrorCode::HOST_CONFIGURATION_ERROR,
+      base::StringPrintf("Desktop process exited with permanent error %d.",
+                         exit_code),
+      FROM_HERE);
 }
 
 void DesktopSessionLinux::OnWorkerProcessStopped() {
@@ -372,6 +411,22 @@ bool DesktopSessionLinux::IsSessionUsernameAllowed(
   LOG(ERROR) << "User " << user_info.username
              << " does not match the required username: " << required_username_;
   return false;
+}
+
+bool DesktopSessionLinux::ValidateCurtainMode() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (curtain_required_ && is_local_session_) {
+    LOG(ERROR) << "Curtain mode is not supported for local session "
+               << current_session_id_;
+    TerminateSession(
+        ErrorCode::UNCURTAINED_SESSION,
+        "A local graphical session is already running while curtain mode is "
+        "required.",
+        FROM_HERE);
+    return false;
+  }
+  return true;
 }
 
 }  // namespace remoting

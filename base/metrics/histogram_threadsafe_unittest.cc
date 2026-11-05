@@ -17,6 +17,7 @@
 #include "base/metrics/sparse_histogram.h"
 #include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/rand_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/simple_thread.h"
@@ -68,11 +69,8 @@ class SnapshotDeltaThread : public SimpleThread {
   void Run() override {
     for (size_t i = 0; i < num_emissions_; ++i) {
       for (HistogramBase* histogram : histograms_) {
-        // Emit a random sample. rand() is used here to generate such a sample,
-        // but the randomness does not really matter as thread-safety is what is
-        // being tested here and there is already a lot of non-determinism
-        // surrounding scheduling.
-        Histogram::Sample32 sample = rand() % histogram_max_;
+        Histogram::Sample32 sample =
+            base::RandIntInclusive(0, histogram_max_ - 1);
         histogram->Add(sample);
 
         // Take a snapshot of the histogram. Because of the multithreading
@@ -203,15 +201,16 @@ class HistogramThreadsafeTest : public testing::Test {
     // because these histograms are owned by the StatisticsRecorder.
     std::string numeric_histogram_name =
         StringPrintf("NumericHistogram%zu", suffix);
-    Histogram* numeric_histogram = static_cast<Histogram*>(
-        Histogram::FactoryGet(numeric_histogram_name, /*minimum=*/1, max,
-                              bucket_count, /*flags=*/HistogramBase::kNoFlags));
+    Histogram* numeric_histogram =
+        static_cast<Histogram*>(Histogram::FactoryGet(
+            numeric_histogram_name, /*minimum=*/1, max, bucket_count,
+            /*flags=*/HistogramBase::kUmaTargetedHistogramFlag));
     histograms.push_back(numeric_histogram);
     std::string sparse_histogram_name =
         StringPrintf("SparseHistogram%zu", suffix);
-    HistogramBase* sparse_histogram =
-        SparseHistogram::FactoryGet(sparse_histogram_name,
-                                    /*flags=*/HistogramBase::kNoFlags);
+    HistogramBase* sparse_histogram = SparseHistogram::FactoryGet(
+        sparse_histogram_name,
+        /*flags=*/HistogramBase::kUmaTargetedHistogramFlag);
     histograms.push_back(sparse_histogram);
 
     // Create histograms on the "local heap" (i.e., are not instantiated using

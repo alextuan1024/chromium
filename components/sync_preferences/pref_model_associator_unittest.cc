@@ -20,13 +20,13 @@
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_store.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/sync/base/features.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 #include "components/sync/protocol/preference_specifics.pb.h"
 #include "components/sync/test/fake_sync_change_processor.h"
 #include "components/sync/test/sync_change_processor_wrapper_for_test.h"
 #include "components/sync/test/test_sync_service.h"
+#include "components/sync_preferences/features.h"
 #include "components/sync_preferences/pref_model_associator_client.h"
 #include "components/sync_preferences/pref_service_mock_factory.h"
 #include "components/sync_preferences/pref_service_syncable.h"
@@ -766,12 +766,10 @@ TEST_F(SyncablePrefsDatabaseDeathTest,
 #endif
 }
 
-class PrefModelAssociatorWithPreferencesAccountStorageTest
-    : public testing::Test {
+class PrefModelAssociatorDualLayerTest : public testing::Test {
  protected:
-  PrefModelAssociatorWithPreferencesAccountStorageTest()
-      : feature_list_(switches::kEnablePreferencesAccountStorage),
-        client_(base::MakeRefCounted<TestPrefModelAssociatorClient>()),
+  PrefModelAssociatorDualLayerTest()
+      : client_(base::MakeRefCounted<TestPrefModelAssociatorClient>()),
         pref_registry_(
             base::MakeRefCounted<user_prefs::PrefRegistrySyncable>()),
         local_pref_store_(base::MakeRefCounted<TestingPrefStore>()),
@@ -782,6 +780,10 @@ class PrefModelAssociatorWithPreferencesAccountStorageTest
     pref_registry_->RegisterStringPref(
         kStringPrefName, std::string(),
         user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+    pref_registry_->RegisterListPref(
+        kListPrefName, user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+    pref_registry_->RegisterDictionaryPref(
+        kDictionaryPrefName, user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
     pref_registry_->RegisterBooleanPref(
         kCustomMergePrefName, false,
         user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
@@ -803,9 +805,7 @@ class PrefModelAssociatorWithPreferencesAccountStorageTest
         syncer::UserSelectableType::kPreferences, true);
   }
 
-  ~PrefModelAssociatorWithPreferencesAccountStorageTest() override {
-    sync_service_.Shutdown();
-  }
+  ~PrefModelAssociatorDualLayerTest() override { sync_service_.Shutdown(); }
 
   void MergeDataAndStartSyncing(const syncer::SyncDataList& initial_data) {
     auto error = pref_model_associator_->MergeDataAndStartSyncing(
@@ -814,8 +814,6 @@ class PrefModelAssociatorWithPreferencesAccountStorageTest
             sync_change_processor_.get()));
     EXPECT_FALSE(error.has_value());
   }
-
-  base::test::ScopedFeatureList feature_list_;
 
   scoped_refptr<TestPrefModelAssociatorClient> client_;
   scoped_refptr<user_prefs::PrefRegistrySyncable> pref_registry_;
@@ -829,7 +827,7 @@ class PrefModelAssociatorWithPreferencesAccountStorageTest
 
 // Tests that no notification is issued if the effective value is unchanged upon
 // initial merge.
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldNotNotifyUponInitIfSameValueExistsInLocalStoreOnly) {
   // Load value to local store before initial merge.
   local_pref_store_->SetValue(kStringPrefName, base::Value("value"), 0);
@@ -856,7 +854,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
 
 // Tests that no notification is issued if the effective value is unchanged upon
 // initial merge.
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldNotNotifyUponInitIfSameValueExistsInAccountStoreOnly) {
   // Load value to account store before initial merge.
   account_pref_store_->SetValue(kStringPrefName, base::Value("value"), 0);
@@ -883,7 +881,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
 
 // Tests that notification is issued if the effective value changes upon
 // initial merge.
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldNotifyUponInitIfDifferentValueExistsInLocalStoreOnly) {
   // Load value to local store before initial merge.
   local_pref_store_->SetValue(kStringPrefName, base::Value("value"), 0);
@@ -915,7 +913,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
 // The local store is pre-populated and the remote sync data contains different
 // values. One pref remains unchanged when GetValue is called, due to the merge
 // logic, while the other adopts the remote value.
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
+TEST_F(PrefModelAssociatorDualLayerTest,
        InitialMerge_OnStartedSyncingReceivesRemoteValue) {
   testing::StrictMock<MockSyncedPrefObserver> mock_synced_pref_observer;
   pref_model_associator_->AddSyncedPrefObserver(kCustomMergePrefName,
@@ -967,7 +965,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
                                                    &mock_synced_pref_observer);
 }
 
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldRecordHistogramOnPrefChangeBeforeTypeActive) {
   base::HistogramTester histogram_tester;
 
@@ -982,7 +980,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
                                     0);
 }
 
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldRecordHistogramOnPrefChangeAfterTypeActive) {
   base::HistogramTester histogram_tester;
   MergeDataAndStartSyncing(syncer::SyncDataList());
@@ -1002,7 +1000,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
       /*expected_bucket_count=*/1);
 }
 
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldRemoveAccountValuesUponStayStoppedAndMaybeClearData) {
   // Load pre-existing values in the local and the account stores.
   local_pref_store_->SetValue(kStringPrefName, base::Value("local value"), 0);
@@ -1028,7 +1026,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
   EXPECT_TRUE(account_pref_store_->GetValues().empty());
 }
 
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldBeNoOpUponStayStoppedAndMaybeClearDataIfNoAccountValue) {
   // Load pre-existing value in the local store.
   local_pref_store_->SetValue(kStringPrefName, base::Value("local value"), 0);
@@ -1054,88 +1052,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTest,
   EXPECT_TRUE(account_pref_store_->GetValues().empty());
 }
 
-class PrefModelAssociatorWithPreferencesAccountStorageTestWithoutSelectedTypes
-    : public PrefModelAssociatorWithPreferencesAccountStorageTest {
- public:
-  PrefModelAssociatorWithPreferencesAccountStorageTestWithoutSelectedTypes() {
-    feature_list_.InitAndDisableFeature(
-        syncer::kSyncPreferencesUseSelectedTypes);
-  }
-
- protected:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTestWithoutSelectedTypes,
-       DoesNotCommitPrefAddedBeforeMergeDataAndStartSyncing) {
-  pref_service_->SetString(kStringPrefName, "value");
-
-  // Value is not written to the account store because the data types are not
-  // active yet.
-  EXPECT_FALSE(account_pref_store_->GetValue(kStringPrefName, nullptr));
-  ASSERT_TRUE(local_pref_store_->GetValue(kStringPrefName, nullptr));
-
-  MergeDataAndStartSyncing(/*initial_data=*/{});
-
-  // No changes are committed to sync.
-  EXPECT_TRUE(sync_change_processor_->changes().empty());
-}
-
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTestWithoutSelectedTypes,
-       OverridesPrefUpdatedBeforeMergeDataAndStartSyncing) {
-  pref_service_->SetString(kStringPrefName, "new_value");
-
-  // Value is not written to the account store.
-  ASSERT_FALSE(account_pref_store_->GetValue(kStringPrefName, nullptr));
-  ASSERT_TRUE(local_pref_store_->GetValue(kStringPrefName, nullptr));
-
-  syncer::SyncDataList initial_data;
-  initial_data.push_back(
-      CreateRemoteSyncData(kStringPrefName, base::Value("old_value")));
-  MergeDataAndStartSyncing(initial_data);
-
-  // Updated value is hidden by the stale remote value. The remote value is
-  // considered stale because the local value, written before sync init, is more
-  // recent but is still hidden by the account value. See crbug.com/464008640
-  // for more details.
-  EXPECT_EQ(pref_service_->GetString(kStringPrefName), "old_value");
-}
-
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTestWithoutSelectedTypes,
-       OverwritesAccountPrefValueUponMergeDataAndStartSyncing) {
-  // Pre-existing value in the account store.
-  account_pref_store_->SetValue(kStringPrefName, base::Value("new_value"), 0);
-  ASSERT_EQ(pref_service_->GetString(kStringPrefName), "new_value");
-
-  // Listen to pref changes.
-  MockPrefChangeCallback observer(pref_service_.get());
-  PrefChangeRegistrar registrar;
-  registrar.Init(pref_service_.get());
-  registrar.Add(kStringPrefName, observer.GetCallback());
-
-  // Observer should get notified since the effective value changes.
-  EXPECT_CALL(observer, OnPreferenceChanged);
-
-  syncer::SyncDataList initial_data;
-  initial_data.push_back(
-      CreateRemoteSyncData(kStringPrefName, base::Value("old_value")));
-  MergeDataAndStartSyncing(initial_data);
-
-  // Updated value is overwritten by the stale remote value.
-  ASSERT_EQ(pref_service_->GetString(kStringPrefName), "old_value");
-  const base::Value* value = nullptr;
-  account_pref_store_->GetValue(kStringPrefName, &value);
-  EXPECT_THAT(value, Pointee(Eq("old_value")));
-}
-
-class PrefModelAssociatorWithPreferencesAccountStorageTestWithSelectedTypes
-    : public PrefModelAssociatorWithPreferencesAccountStorageTest {
- protected:
-  base::test::ScopedFeatureList feature_list_{
-      syncer::kSyncPreferencesUseSelectedTypes};
-};
-
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTestWithSelectedTypes,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldCommitPrefAddedBeforeMergeDataAndStartSyncing) {
   pref_service_->SetString(kStringPrefName, "value");
 
@@ -1155,7 +1072,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTestWithSelectedTypes,
       CreateLocalSyncData(kStringPrefName, base::Value("value")).ToString());
 }
 
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTestWithSelectedTypes,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldCommitPrefUpdatedBeforeMergeDataAndStartSyncing) {
   pref_service_->SetString(kStringPrefName, "new_value");
 
@@ -1183,7 +1100,7 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTestWithSelectedTypes,
                 .ToString());
 }
 
-TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTestWithSelectedTypes,
+TEST_F(PrefModelAssociatorDualLayerTest,
        ShouldCommitPreExistingAccountValueUponMergeDataAndStartSyncing) {
   // Load value to account store before initial merge.
   account_pref_store_->SetValue(kStringPrefName, base::Value("new_value"), 0);
@@ -1217,6 +1134,76 @@ TEST_F(PrefModelAssociatorWithPreferencesAccountStorageTestWithSelectedTypes,
   EXPECT_EQ(changes[0].sync_data().ToString(),
             CreateLocalSyncData(kStringPrefName, base::Value("new_value"))
                 .ToString());
+}
+
+class PrefModelAssociatorRemoteRemovalsTest
+    : public PrefModelAssociatorDualLayerTest {
+ private:
+  base::test::ScopedFeatureList unmerge_remote_removals_feature_list_{
+      features::kSyncUnmergeRemotePrefRemovals};
+};
+
+TEST_F(PrefModelAssociatorRemoteRemovalsTest,
+       ShouldRemoveDeletedListEntryOnProcessSyncChangesUpdate) {
+  local_pref_store_->SetValueSilently(kListPrefName,
+                                      base::Value(base::ListValue()
+                                                      .Append("local_only")
+                                                      .Append("item1")
+                                                      .Append("item2")),
+                                      0);
+
+  syncer::SyncDataList initial_data;
+  initial_data.push_back(CreateRemoteSyncData(
+      kListPrefName, base::ListValue().Append("item1").Append("item2")));
+  MergeDataAndStartSyncing(initial_data);
+
+  syncer::SyncChangeList changes;
+  changes.push_back(syncer::SyncChange(
+      FROM_HERE, syncer::SyncChange::ACTION_UPDATE,
+      CreateRemoteSyncData(kListPrefName, base::ListValue().Append("item1"))));
+  EXPECT_FALSE(pref_model_associator_->ProcessSyncChanges(FROM_HERE, changes)
+                   .has_value());
+
+  EXPECT_EQ(pref_service_->GetList(kListPrefName),
+            base::ListValue().Append("item1").Append("local_only"));
+
+  // Stop syncing so only `local_pref_store_` remains; the deleted item must not
+  // resurrect, while the local-only item is preserved.
+  pref_model_associator_->StopSyncing(syncer::PREFERENCES);
+  EXPECT_EQ(pref_service_->GetList(kListPrefName),
+            base::ListValue().Append("local_only").Append("item1"));
+}
+
+TEST_F(PrefModelAssociatorRemoteRemovalsTest,
+       ShouldRemoveDeletedDictEntryOnProcessSyncChangesUpdate) {
+  local_pref_store_->SetValueSilently(kDictionaryPrefName,
+                                      base::Value(base::DictValue()
+                                                      .Set("local_only", "v0")
+                                                      .Set("k1", "v1")
+                                                      .Set("k2", "v2")),
+                                      0);
+
+  syncer::SyncDataList initial_data;
+  initial_data.push_back(CreateRemoteSyncData(
+      kDictionaryPrefName, base::DictValue().Set("k1", "v1").Set("k2", "v2")));
+  MergeDataAndStartSyncing(initial_data);
+
+  syncer::SyncChangeList changes;
+  changes.push_back(syncer::SyncChange(
+      FROM_HERE, syncer::SyncChange::ACTION_UPDATE,
+      CreateRemoteSyncData(kDictionaryPrefName,
+                           base::DictValue().Set("k1", "v1"))));
+  EXPECT_FALSE(pref_model_associator_->ProcessSyncChanges(FROM_HERE, changes)
+                   .has_value());
+
+  base::DictValue expected_dict =
+      base::DictValue().Set("local_only", "v0").Set("k1", "v1");
+  EXPECT_EQ(pref_service_->GetDict(kDictionaryPrefName), expected_dict);
+
+  // Stop syncing so only `local_pref_store_` remains; the deleted key must not
+  // resurrect, while the local-only key is preserved.
+  pref_model_associator_->StopSyncing(syncer::PREFERENCES);
+  EXPECT_EQ(pref_service_->GetDict(kDictionaryPrefName), expected_dict);
 }
 }  // namespace
 

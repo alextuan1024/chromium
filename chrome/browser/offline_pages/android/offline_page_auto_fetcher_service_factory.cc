@@ -11,18 +11,21 @@
 #include "chrome/browser/offline_pages/android/offline_page_auto_fetcher_service.h"
 #include "chrome/browser/offline_pages/offline_page_model_factory.h"
 #include "chrome/browser/offline_pages/request_coordinator_factory.h"
+#include "chrome/browser/profiles/profile.h"
 
 namespace offline_pages {
 
 class OfflinePageAutoFetcherServiceFactory::ServiceDelegate final
     : public OfflinePageAutoFetcherService::Delegate {
-  void ShowAutoFetchCompleteNotification(const std::u16string& pageTitle,
+  void ShowAutoFetchCompleteNotification(Profile* profile,
+                                         const std::u16string& pageTitle,
                                          const std::string& original_url,
                                          const std::string& final_url,
                                          int android_tab_id,
                                          int64_t offline_id) override {
     offline_pages::ShowAutoFetchCompleteNotification(
-        pageTitle, original_url, final_url, android_tab_id, offline_id);
+        profile, pageTitle, original_url, final_url, android_tab_id,
+        offline_id);
   }
 };
 
@@ -71,7 +74,8 @@ OfflinePageAutoFetcherServiceFactory::BuildServiceInstanceForBrowserContext(
   OfflinePageModel* model =
       OfflinePageModelFactory::GetForBrowserContext(context);
   return std::make_unique<OfflinePageAutoFetcherService>(
-      coordinator, model, service_delegate_.get());
+      Profile::FromBrowserContext(context), coordinator, model,
+      service_delegate_.get());
 }
 
 }  // namespace offline_pages

@@ -26,6 +26,7 @@
 
 #include "third_party/blink/renderer/core/editing/commands/replace_selection_command.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
 #include "third_party/blink/renderer/core/css/css_style_declaration.h"
@@ -78,7 +79,6 @@
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
@@ -133,13 +133,12 @@ class ReplacementFragment final {
 };
 
 static bool IsInterchangeHTMLBRElement(const Node* node) {
-  DEFINE_STATIC_LOCAL(String, interchange_newline_class_string,
-                      (AppleInterchangeNewline));
   auto* html_br_element = DynamicTo<HTMLBRElement>(node);
   if (!html_br_element ||
       html_br_element->getAttribute(html_names::kClassAttr) !=
-          interchange_newline_class_string)
+          String::FromLiteral<AppleInterchangeNewline>()) {
     return false;
+  }
   UseCounter::Count(node->GetDocument(),
                     WebFeature::kEditingAppleInterchangeNewline);
   return true;
@@ -937,59 +936,57 @@ void ReplaceSelectionCommand::RemoveRedundantStylesAndKeepStyleSpanInline(
 
 static bool IsProhibitedParagraphChild(const AtomicString& name) {
   // https://dvcs.w3.org/hg/editing/raw-file/57abe6d3cb60/editing.html#prohibited-paragraph-child
-  DEFINE_STATIC_LOCAL(
-      HashSet<AtomicString>, elements,
-      ({
-          html_names::kAddressTag.LocalName(),
-          html_names::kArticleTag.LocalName(),
-          html_names::kAsideTag.LocalName(),
-          html_names::kBlockquoteTag.LocalName(),
-          html_names::kCaptionTag.LocalName(),
-          html_names::kCenterTag.LocalName(),
-          html_names::kColTag.LocalName(),
-          html_names::kColgroupTag.LocalName(),
-          html_names::kDdTag.LocalName(),
-          html_names::kDetailsTag.LocalName(),
-          html_names::kDirTag.LocalName(),
-          html_names::kDivTag.LocalName(),
-          html_names::kDlTag.LocalName(),
-          html_names::kDtTag.LocalName(),
-          html_names::kFieldsetTag.LocalName(),
-          html_names::kFigcaptionTag.LocalName(),
-          html_names::kFigureTag.LocalName(),
-          html_names::kFooterTag.LocalName(),
-          html_names::kFormTag.LocalName(),
-          html_names::kH1Tag.LocalName(),
-          html_names::kH2Tag.LocalName(),
-          html_names::kH3Tag.LocalName(),
-          html_names::kH4Tag.LocalName(),
-          html_names::kH5Tag.LocalName(),
-          html_names::kH6Tag.LocalName(),
-          html_names::kHeaderTag.LocalName(),
-          html_names::kHgroupTag.LocalName(),
-          html_names::kHrTag.LocalName(),
-          html_names::kLiTag.LocalName(),
-          html_names::kListingTag.LocalName(),
-          html_names::kMainTag.LocalName(),  // Missing in the specification.
-          html_names::kMenuTag.LocalName(),
-          html_names::kNavTag.LocalName(),
-          html_names::kOlTag.LocalName(),
-          html_names::kPTag.LocalName(),
-          html_names::kPlaintextTag.LocalName(),
-          html_names::kPreTag.LocalName(),
-          html_names::kSectionTag.LocalName(),
-          html_names::kSummaryTag.LocalName(),
-          html_names::kTableTag.LocalName(),
-          html_names::kTbodyTag.LocalName(),
-          html_names::kTdTag.LocalName(),
-          html_names::kTfootTag.LocalName(),
-          html_names::kThTag.LocalName(),
-          html_names::kTheadTag.LocalName(),
-          html_names::kTrTag.LocalName(),
-          html_names::kUlTag.LocalName(),
-          html_names::kXmpTag.LocalName(),
-      }));
-  return elements.Contains(name);
+  static base::NoDestructor<HashSet<AtomicString>> elements({
+      html_names::kAddressTag.LocalName(),
+      html_names::kArticleTag.LocalName(),
+      html_names::kAsideTag.LocalName(),
+      html_names::kBlockquoteTag.LocalName(),
+      html_names::kCaptionTag.LocalName(),
+      html_names::kCenterTag.LocalName(),
+      html_names::kColTag.LocalName(),
+      html_names::kColgroupTag.LocalName(),
+      html_names::kDdTag.LocalName(),
+      html_names::kDetailsTag.LocalName(),
+      html_names::kDirTag.LocalName(),
+      html_names::kDivTag.LocalName(),
+      html_names::kDlTag.LocalName(),
+      html_names::kDtTag.LocalName(),
+      html_names::kFieldsetTag.LocalName(),
+      html_names::kFigcaptionTag.LocalName(),
+      html_names::kFigureTag.LocalName(),
+      html_names::kFooterTag.LocalName(),
+      html_names::kFormTag.LocalName(),
+      html_names::kH1Tag.LocalName(),
+      html_names::kH2Tag.LocalName(),
+      html_names::kH3Tag.LocalName(),
+      html_names::kH4Tag.LocalName(),
+      html_names::kH5Tag.LocalName(),
+      html_names::kH6Tag.LocalName(),
+      html_names::kHeaderTag.LocalName(),
+      html_names::kHgroupTag.LocalName(),
+      html_names::kHrTag.LocalName(),
+      html_names::kLiTag.LocalName(),
+      html_names::kListingTag.LocalName(),
+      html_names::kMainTag.LocalName(),  // Missing in the specification.
+      html_names::kMenuTag.LocalName(),
+      html_names::kNavTag.LocalName(),
+      html_names::kOlTag.LocalName(),
+      html_names::kPTag.LocalName(),
+      html_names::kPlaintextTag.LocalName(),
+      html_names::kPreTag.LocalName(),
+      html_names::kSectionTag.LocalName(),
+      html_names::kSummaryTag.LocalName(),
+      html_names::kTableTag.LocalName(),
+      html_names::kTbodyTag.LocalName(),
+      html_names::kTdTag.LocalName(),
+      html_names::kTfootTag.LocalName(),
+      html_names::kThTag.LocalName(),
+      html_names::kTheadTag.LocalName(),
+      html_names::kTrTag.LocalName(),
+      html_names::kUlTag.LocalName(),
+      html_names::kXmpTag.LocalName(),
+  });
+  return elements->Contains(name);
 }
 
 bool ReplacementFragment::HasBlockLevelContent() const {
@@ -1357,6 +1354,38 @@ ElementToSplitToAvoidPastingIntoInlineElementsWithStyle(
       containing_block));
 }
 
+// Returns the sole list item within |node|, which is either a list item or a
+// chain of single-child lists ending in exactly one list item. Returns null
+// if |node| contains no list item or more than one.
+static HTMLElement* SoleListItemOf(Node* node) {
+  while (IsHtmlListElement(node)) {
+    auto* list = DynamicTo<ContainerNode>(node);
+    node = (list && list->HasOneChild()) ? node->firstChild() : nullptr;
+  }
+  return IsListItemTag(node) ? To<HTMLElement>(node) : nullptr;
+}
+
+// A list item that is itself the editable root cannot gain sibling items in
+// its parent list, so a pasted single-item list must merge into such an empty
+// item instead of nesting inside it. crbug.com/41103797.
+static HTMLElement* SoleListItemToMergeIntoRootListItem(Node* inserted,
+                                                        Element* block_start) {
+  if (!RuntimeEnabledFeatures::EditingPasteListIntoRootListItemEnabled()) {
+    return nullptr;
+  }
+  if (!IsListItemTag(block_start) || !block_start->parentNode() ||
+      IsEditable(*block_start->parentNode())) {
+    return nullptr;
+  }
+  if (block_start->firstChild() &&
+      !(block_start->firstChild() == block_start->lastChild() &&
+        IsA<HTMLBRElement>(block_start->firstChild()))) {
+    return nullptr;
+  }
+  HTMLElement* item = SoleListItemOf(inserted);
+  return item && item->firstChild() ? item : nullptr;
+}
+
 void ReplaceSelectionCommand::SetUpStyle(const VisibleSelection& selection) {
   // We can skip matching the style if the selection is plain text.
   // TODO(editing-dev): Use IsEditablePosition instead of using UsedUserModify
@@ -1365,13 +1394,13 @@ void ReplaceSelectionCommand::SetUpStyle(const VisibleSelection& selection) {
        selection.Start()
                .AnchorNode()
                ->GetLayoutObject()
-               ->StyleRef()
+               ->Style()
                .UsedUserModify() == EUserModify::kReadWritePlaintextOnly) &&
       (selection.End().AnchorNode()->GetLayoutObject() &&
        selection.End()
                .AnchorNode()
                ->GetLayoutObject()
-               ->StyleRef()
+               ->Style()
                .UsedUserModify() == EUserModify::kReadWritePlaintextOnly)) {
     match_style_ = false;
   }
@@ -1540,6 +1569,8 @@ void ReplaceSelectionCommand::DoApply(EditingState* editing_state) {
 
   ReplacementFragment fragment(&GetDocument(), document_fragment_.Get(),
                                selection);
+  ABORT_EDITING_COMMAND_IF(!selection.IsValidFor(GetDocument()) ||
+                           !EndingSelection().IsValidFor(GetDocument()));
 
   bool trivial_replace_result =
       PerformTrivialReplace(fragment, editing_state, password_echo_behavior_);
@@ -1731,6 +1762,17 @@ void ReplaceSelectionCommand::DoApply(EditingState* editing_state) {
   // 5) Add spaces for smart replace.
   // 6) Select the replacement if requested, and match style if requested.
 
+  Element* block_start = EnclosingBlock(insertion_pos.AnchorNode());
+
+  if (HTMLElement* sole_item = SoleListItemToMergeIntoRootListItem(
+          fragment.FirstChild(), block_start)) {
+    while (fragment.FirstChild() != sole_item) {
+      fragment.RemoveNodePreservingChildren(
+          To<ContainerNode>(fragment.FirstChild()));
+    }
+    fragment.RemoveNodePreservingChildren(sole_item);
+  }
+
   InsertedNodes inserted_nodes;
   inserted_nodes.SetRefNode(fragment.FirstChild());
   DCHECK(inserted_nodes.RefNode());
@@ -1738,7 +1780,6 @@ void ReplaceSelectionCommand::DoApply(EditingState* editing_state) {
 
   fragment.RemoveNode(inserted_nodes.RefNode());
 
-  Element* block_start = EnclosingBlock(insertion_pos.AnchorNode());
   if ((IsHtmlListElement(inserted_nodes.RefNode()) ||
        IsListItemTag(inserted_nodes.RefNode()) ||
        (IsHtmlListElement(inserted_nodes.RefNode()->firstChild()))) &&
@@ -2157,7 +2198,7 @@ void ReplaceSelectionCommand::AddSpacesForSmartReplace(
   if (needs_trailing_space && end_node) {
     bool collapse_white_space =
         !end_node->GetLayoutObject() ||
-        end_node->GetLayoutObject()->StyleRef().ShouldCollapseWhiteSpaces();
+        end_node->GetLayoutObject()->Style().ShouldCollapseWhiteSpaces();
     end_text_node = DynamicTo<Text>(end_node);
     if (end_text_node) {
       InsertTextIntoNode(end_text_node, end_offset,
@@ -2199,7 +2240,7 @@ void ReplaceSelectionCommand::AddSpacesForSmartReplace(
   if (needs_leading_space && start_node) {
     bool collapse_white_space =
         !start_node->GetLayoutObject() ||
-        start_node->GetLayoutObject()->StyleRef().ShouldCollapseWhiteSpaces();
+        start_node->GetLayoutObject()->Style().ShouldCollapseWhiteSpaces();
     if (auto* start_text_node = DynamicTo<Text>(start_node)) {
       InsertTextIntoNode(start_text_node, start_offset,
                          collapse_white_space ? NonBreakingSpaceString() : " ",
@@ -2405,10 +2446,6 @@ UChar NextCharacterForOffset(Text& text, wtf_size_t offset) {
 
 bool ReplaceSelectionCommand::ShouldNormalizeNbspInInsertedContent(
     EditingState* editing_state) const {
-  if (!RuntimeEnabledFeatures::NormalizeNbspForPasteAndDropEnabled()) {
-    return false;
-  }
-
   if (editing_state->IsAborted()) {
     return false;
   }
@@ -2419,13 +2456,7 @@ bool ReplaceSelectionCommand::ShouldNormalizeNbspInInsertedContent(
   }
 
   Node* node = EndingSelection().Anchor().AnchorNode();
-  if (!node) {
-    return false;
-  }
-
-  return RuntimeEnabledFeatures::NormalizeNbspRichTextOnlyEnabled()
-             ? IsRichlyEditable(*node)
-             : IsEditable(*node);
+  return node && IsRichlyEditable(*node);
 }
 
 // Converts U+00A0 (&nbsp;) to a regular space where it is surrounded by
@@ -2456,7 +2487,7 @@ void ReplaceSelectionCommand::NormalizeNbspInInsertedContent(
     if (!layout_object) {
       continue;
     }
-    const ComputedStyle& style = layout_object->StyleRef();
+    const ComputedStyle& style = layout_object->Style();
     if (style.ShouldPreserveWhiteSpaces() &&
         style.UsedUserModify() != EUserModify::kReadWritePlaintextOnly) {
       continue;
@@ -2643,7 +2674,8 @@ bool ReplaceSelectionCommand::PerformTrivialReplace(
 
   GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kEditing);
 
-  if (node_after_insertion_pos && node_after_insertion_pos->parentNode() &&
+  if (node_after_insertion_pos && node_after_insertion_pos->isConnected() &&
+      node_after_insertion_pos->GetDocument() == GetDocument() &&
       IsA<HTMLBRElement>(*node_after_insertion_pos) &&
       ShouldRemoveEndBR(
           To<HTMLBRElement>(node_after_insertion_pos),
@@ -2663,6 +2695,12 @@ bool ReplaceSelectionCommand::PerformTrivialReplace(
     }
   }
 
+  if (!start.IsValidFor(GetDocument()) || !end.IsValidFor(GetDocument()) ||
+      (start.IsNotNull() && start > end)) {
+    editing_state->Abort();
+    return false;
+  }
+
   SetEndingSelection(SelectionForUndoStep::From(
       SelectionInDomTree::Builder()
           .SetBaseAndExtentDeprecated(select_replacement_ ? start : end, end)
@@ -2674,10 +2712,6 @@ bool ReplaceSelectionCommand::PerformTrivialReplace(
             .Build()));
   }
 
-  return true;
-}
-
-bool ReplaceSelectionCommand::IsReplaceSelectionCommand() const {
   return true;
 }
 

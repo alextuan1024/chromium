@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/rtc_transport/rtc_received_packet.h"
 
-#include <cstdint>
 #include <utility>
 
 #include "testing/gtest/include/gtest/gtest.h"
@@ -73,7 +72,7 @@ TEST_F(RtcReceivedPacketTest, CopyPayloadToDetachedDestination) {
 
   auto* destination =
       DOMArrayBuffer::Create(/*num_elements=*/6, /*element_byte_size=*/1);
-  destination->Detach();
+  destination->DetachForTesting();
   DummyExceptionStateForTesting exception_state;
   packet->copyPayloadTo(
       MakeGarbageCollected<

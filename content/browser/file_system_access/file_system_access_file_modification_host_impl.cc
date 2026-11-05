@@ -5,7 +5,7 @@
 #include "content/browser/file_system_access/file_system_access_file_modification_host_impl.h"
 
 #include "base/memory/weak_ptr.h"
-#include "base/task/sequenced_task_runner.h"
+#include "base/numerics/checked_math.h"
 #include "base/time/time.h"
 #include "base/types/pass_key.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -78,47 +78,67 @@ void FileSystemAccessFileModificationHostImpl::RequestCapacityChange(
     RequestCapacityChangeCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (capacity_delta < 0) {
-    int64_t new_granted_capacity;
-    bool usage_within_bounds = base::CheckAdd(granted_capacity_, capacity_delta)
-                                   .AssignIfValid(&new_granted_capacity);
-    if (!usage_within_bounds || new_granted_capacity < 0) {
-      mojo::ReportBadMessage(
-          "A file's size cannot be negative or out of bounds");
-      std::move(callback).Run(0);
-      return;
-    }
-  }
-
-  quota_manager_proxy()->GetUsageAndQuota(
-      url_.storage_key(), base::SequencedTaskRunner::GetCurrentDefault(),
-      base::BindOnce(
-          &FileSystemAccessFileModificationHostImpl::DidGetUsageAndQuota,
-          weak_factory_.GetWeakPtr(), capacity_delta, std::move(callback)));
-}
-
-void FileSystemAccessFileModificationHostImpl::DidGetUsageAndQuota(
-    int64_t capacity_delta,
-    RequestCapacityChangeCallback callback,
-    blink::mojom::QuotaStatusCode status,
-    int64_t usage,
-    int64_t quota) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  int64_t new_usage;
-  bool usage_within_bounds =
-      base::CheckAdd(usage, capacity_delta).AssignIfValid(&new_usage);
-
-  if (status != blink::mojom::QuotaStatusCode::kOk || !usage_within_bounds ||
-      new_usage > quota) {
+  if (capacity_delta == 0) {
     std::move(callback).Run(0);
     return;
   }
-  granted_capacity_ += capacity_delta;
+
+  int64_t new_granted_capacity;
+  bool capacity_within_bounds =
+      base::CheckAdd(granted_capacity_, capacity_delta)
+          .AssignIfValid(&new_granted_capacity);
+  if (!capacity_within_bounds || new_granted_capacity < 0) {
+    mojo::ReportBadMessage("A file's size cannot be negative or out of bounds");
+    std::move(callback).Run(0);
+    return;
+  }
+
+  if (capacity_delta < 0) {
+    // Releases never need a quota check. Applying them here, before the next
+    // message is dispatched, means each release is checked against capacity
+    // that already reflects earlier ones.
+    granted_capacity_ = new_granted_capacity;
+    quota_manager_proxy()->NotifyBucketModified(
+        storage::QuotaClientType::kFileSystem, *url_.bucket(), capacity_delta,
+        base::Time::Now(), base::DoNothing());
+    std::move(callback).Run(capacity_delta);
+    return;
+  }
+
+  quota_manager_proxy()->GetBucketSpaceRemaining(
+      *url_.bucket(),
+      base::BindOnce(
+          &FileSystemAccessFileModificationHostImpl::DidGetBucketSpaceRemaining,
+          weak_factory_.GetWeakPtr(), capacity_delta, std::move(callback)));
+}
+
+void FileSystemAccessFileModificationHostImpl::DidGetBucketSpaceRemaining(
+    int64_t capacity_delta,
+    RequestCapacityChangeCallback callback,
+    storage::QuotaErrorOr<int64_t> space_remaining) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (!space_remaining.has_value() ||
+      capacity_delta > space_remaining.value()) {
+    std::move(callback).Run(0);
+    return;
+  }
+
+  // `granted_capacity_` may have changed since `RequestCapacityChange()`
+  // validated `capacity_delta`, since other requests may have completed while
+  // the quota lookup was in flight. Re-validate against the current value.
+  int64_t new_granted_capacity;
+  bool capacity_within_bounds =
+      base::CheckAdd(granted_capacity_, capacity_delta)
+          .AssignIfValid(&new_granted_capacity);
+  if (!capacity_within_bounds) {
+    std::move(callback).Run(0);
+    return;
+  }
+  granted_capacity_ = new_granted_capacity;
   quota_manager_proxy()->NotifyBucketModified(
       storage::QuotaClientType::kFileSystem, *url_.bucket(), capacity_delta,
-      base::Time::Now(), base::SequencedTaskRunner::GetCurrentDefault(),
-      base::DoNothing());
+      base::Time::Now(), base::DoNothing());
   std::move(callback).Run(capacity_delta);
 }
 

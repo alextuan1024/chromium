@@ -100,7 +100,8 @@ shared_gpu.ci.linux_builder(
     gn_args = gn_args.config(
         configs = [
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -150,7 +151,8 @@ shared_gpu.ci.linux_builder(
     gn_args = gn_args.config(
         configs = [
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -189,7 +191,8 @@ shared_gpu.ci.linux_builder(
     gn_args = gn_args.config(
         configs = [
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -236,7 +239,8 @@ shared_gpu.ci.linux_builder(
         configs = [
             "android_builder",
             "android_fastbuild",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -277,7 +281,8 @@ shared_gpu.ci.linux_builder(
             "android_builder",
             "android_fastbuild",
             "arm64",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -559,7 +564,7 @@ ci.thin_tester(
     ),
     targets = targets.bundle(
         targets = [
-            "dawn_chromium_isolated_scripts",
+            "dawn_chromium_isolated_scripts_hardware",
             "gpu_common_gtests_passthrough",
             "gpu_dawn_compat_telemetry_tests",
         ],
@@ -587,10 +592,6 @@ ci.thin_tester(
             ),
             # ci_only for bots where capacity is constrained.
             "webgpu_cts_with_validation_tests": targets.mixin(
-                ci_only = True,
-            ),
-            # ci_only for bots where capacity is constrained.
-            "webgpu_swiftshader_web_platform_cts_with_validation_tests": targets.mixin(
                 ci_only = True,
             ),
         },
@@ -629,13 +630,21 @@ ci.thin_tester(
     ),
     targets = targets.bundle(
         targets = [
-            "dawn_chromium_isolated_scripts",
+            "dawn_chromium_isolated_scripts_hardware",
             "gpu_common_gtests_passthrough",
             "gpu_dawn_compat_telemetry_tests",
         ],
         mixins = [
             "linux_nvidia_gtx_1660_stable",
         ],
+        per_test_modifications = {
+            "webgpu_cts_tests": targets.mixin(
+                # Mostly equivalent test coverage is provided by the version
+                # with backend validation enabled and the GTX 1660 fleet is
+                # overloaded. See crbug.com/559526702.
+                ci_only = True,
+            ),
+        },
     ),
     targets_settings = targets.settings(
         browser_config = targets.browser_config.RELEASE,
@@ -644,6 +653,47 @@ ci.thin_tester(
     console_view_entry = consoles.console_view_entry(
         category = "DEPS|Linux|Nvidia",
         short_name = "x64",
+    ),
+    cq_mirrors_console_view = "mirrors",
+)
+
+ci.thin_tester(
+    name = "Dawn Linux x64 DEPS Release (Software)",
+    branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Runs DEPS-ed in Dawn tests on Linux with software renderers",
+    parent = "ci/Dawn Linux x64 DEPS Builder",
+    builder_spec = builder_config.builder_spec(
+        execution_mode = builder_config.execution_mode.TEST,
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+            ],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.LINUX,
+        ),
+        run_tests_serially = True,
+    ),
+    targets = targets.bundle(
+        targets = [
+            "dawn_chromium_isolated_scripts_software",
+            "gpu_dawn_web_platform_webgpu_cts_force_swiftshader",
+        ],
+        mixins = [
+            "gpu_linux_gce_stable",
+        ],
+    ),
+    targets_settings = targets.settings(
+        browser_config = targets.browser_config.RELEASE,
+        os_type = targets.os_type.LINUX,
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "DEPS|Linux",
+        short_name = "sw",
     ),
     cq_mirrors_console_view = "mirrors",
 )
@@ -676,7 +726,8 @@ shared_gpu.ci.linux_builder(
         configs = [
             "android_builder",
             "android_fastbuild",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -718,7 +769,8 @@ shared_gpu.ci.linux_builder(
             "android_builder",
             "android_fastbuild",
             "arm64",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -1183,10 +1235,6 @@ ci.thin_tester(
             # "webgpu_cts_with_validation_tests": targets.mixin(
             #     ci_only = True,
             # ),
-            # # ci_only for bots where capacity is constrained.
-            # "webgpu_swiftshader_web_platform_cts_with_validation_tests": targets.mixin(
-            #     ci_only = True,
-            # ),
         },
     ),
     targets_settings = targets.settings(
@@ -1227,9 +1275,7 @@ ci.thin_tester(
         # should be running the same tests as 'Dawn Linux x64 Release (NVIDIA
         # GTX 1660)'.
         targets = [
-            "dawn_chromium_isolated_scripts",
-            "gpu_common_gtests_passthrough",
-            "gpu_dawn_compat_telemetry_tests",
+            "gpu_noop_sleep_telemetry_test",
         ],
         mixins = [
             "linux_nvidia_gtx_1660_experimental",
@@ -1241,10 +1287,10 @@ ci.thin_tester(
         os_type = targets.os_type.LINUX,
     ),
     # Uncomment this entry when this experimental tester is actually in use.
-    console_view_entry = consoles.console_view_entry(
-        category = "ToT|Linux|Nvidia",
-        short_name = "exp",
-    ),
+    # console_view_entry = consoles.console_view_entry(
+    #     category = "ToT|Linux|Nvidia",
+    #     short_name = "exp",
+    # ),
     list_view = "chromium.gpu.experimental",
 )
 
@@ -1270,7 +1316,7 @@ ci.thin_tester(
     ),
     targets = targets.bundle(
         targets = [
-            "dawn_chromium_isolated_scripts",
+            "dawn_chromium_isolated_scripts_hardware",
             "gpu_common_gtests_passthrough",
             "gpu_dawn_compat_telemetry_tests",
             "gpu_dawn_webgpu_cts_default_features",
@@ -1302,10 +1348,6 @@ ci.thin_tester(
             ),
             # ci_only for bots where capacity is constrained.
             "webgpu_cts_with_validation_tests": targets.mixin(
-                ci_only = True,
-            ),
-            # ci_only for bots where capacity is constrained.
-            "webgpu_swiftshader_web_platform_cts_with_validation_tests": targets.mixin(
                 ci_only = True,
             ),
         },
@@ -1342,7 +1384,7 @@ ci.thin_tester(
     ),
     targets = targets.bundle(
         targets = [
-            "dawn_chromium_isolated_scripts",
+            "dawn_chromium_isolated_scripts_hardware",
             "gpu_common_gtests_passthrough",
             "gpu_dawn_compat_telemetry_tests",
         ],
@@ -1392,13 +1434,21 @@ ci.thin_tester(
     ),
     targets = targets.bundle(
         targets = [
-            "dawn_chromium_isolated_scripts",
+            "dawn_chromium_isolated_scripts_hardware",
             "gpu_common_gtests_passthrough",
             "gpu_dawn_compat_telemetry_tests",
         ],
         mixins = [
             "linux_nvidia_gtx_1660_stable",
         ],
+        per_test_modifications = {
+            "webgpu_cts_tests": targets.mixin(
+                # Mostly equivalent test coverage is provided by the version
+                # with backend validation enabled and the GTX 1660 fleet is
+                # overloaded. See crbug.com/559526702.
+                ci_only = True,
+            ),
+        },
     ),
     targets_settings = targets.settings(
         browser_config = targets.browser_config.RELEASE,
@@ -1407,6 +1457,45 @@ ci.thin_tester(
     console_view_entry = consoles.console_view_entry(
         category = "ToT|Linux|Nvidia",
         short_name = "x64",
+    ),
+)
+
+ci.thin_tester(
+    name = "Dawn Linux x64 Release (Software)",
+    description_html = "Runs ToT Dawn tests on Linux with software renderers",
+    parent = "Dawn Linux x64 Builder",
+    builder_spec = builder_config.builder_spec(
+        execution_mode = builder_config.execution_mode.TEST,
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+            ],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.LINUX,
+        ),
+        run_tests_serially = True,
+    ),
+    targets = targets.bundle(
+        targets = [
+            "dawn_chromium_isolated_scripts_software",
+            "gpu_dawn_web_platform_webgpu_cts_force_swiftshader",
+        ],
+        mixins = [
+            "gpu_linux_gce_stable",
+        ],
+    ),
+    targets_settings = targets.settings(
+        browser_config = targets.browser_config.RELEASE,
+        os_type = targets.os_type.LINUX,
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "ToT|Linux",
+        short_name = "sw",
     ),
 )
 
@@ -1434,7 +1523,8 @@ shared_gpu.ci.mac_builder(
     gn_args = gn_args.config(
         configs = [
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "arm64",
@@ -1471,7 +1561,8 @@ shared_gpu.ci.mac_builder(
     gn_args = gn_args.config(
         configs = [
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "arm64",
@@ -1660,7 +1751,8 @@ shared_gpu.ci.mac_builder(
     gn_args = gn_args.config(
         configs = [
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "x64",
@@ -1698,7 +1790,8 @@ shared_gpu.ci.mac_builder(
     gn_args = gn_args.config(
         configs = [
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "x64",
@@ -1755,11 +1848,31 @@ ci.thin_tester(
             "webgpu_cts_dedicated_worker_tests": targets.remove(
                 reason = "We only need coverage on one GPU per OS, so remove from lower capacity configs.",
             ),
+            "webgpu_cts_tests": targets.mixin(
+                # The vast majority of coverage is already provided by
+                # webgpu_cts_with_validation_tests, so mark as CI-only to
+                # maintain some amount of coverage of what we ship without
+                # wasting as many resources on a low capacity config. See
+                # crbug.com/578581697.
+                ci_only = True,
+            ),
             "webgpu_cts_service_worker_tests": targets.remove(
                 reason = "We only need coverage on one GPU per OS, so remove from lower capacity configs.",
             ),
             "webgpu_cts_shared_worker_tests": targets.remove(
                 reason = "We only need coverage on one GPU per OS, so remove from lower capacity configs.",
+            ),
+            "webgpu_swiftshader_blink_web_tests": targets.remove(
+                reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
+            ),
+            "webgpu_swiftshader_blink_web_tests_with_backend_validation": targets.remove(
+                reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
+            ),
+            "webgpu_swiftshader_web_platform_cts_tests": targets.remove(
+                reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
+            ),
+            "webgpu_swiftshader_web_platform_cts_with_validation_tests": targets.remove(
+                reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
             ),
         },
     ),
@@ -1864,11 +1977,31 @@ ci.thin_tester(
         #     "webgpu_cts_dedicated_worker_tests": targets.remove(
         #         reason = "We only need coverage on one GPU per OS, so remove from lower capacity configs.",
         #     ),
+        #     "webgpu_cts_tests": targets.mixin(
+        #        # The vast majority of coverage is already provided by
+        #        # webgpu_cts_with_validation_tests, so mark as CI-only to
+        #        # maintain some amount of coverage of what we ship without
+        #        # wasting as many resources on a low capacity config. See
+        #        # crbug.com/578581697.
+        #        ci_only = True,
+        #    ),
         #     "webgpu_cts_service_worker_tests": targets.remove(
         #         reason = "We only need coverage on one GPU per OS, so remove from lower capacity configs.",
         #     ),
         #     "webgpu_cts_shared_worker_tests": targets.remove(
         #         reason = "We only need coverage on one GPU per OS, so remove from lower capacity configs.",
+        #     ),
+        #     "webgpu_swiftshader_blink_web_tests": targets.remove(
+        #         reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
+        #     ),
+        #     "webgpu_swiftshader_blink_web_tests_with_backend_validation": targets.remove(
+        #         reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
+        #     ),
+        #     "webgpu_swiftshader_web_platform_cts_tests": targets.remove(
+        #         reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
+        #     ),
+        #     "webgpu_swiftshader_web_platform_cts_with_validation_tests": targets.remove(
+        #         reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
         #     ),
         # },
     ),
@@ -2032,11 +2165,31 @@ ci.thin_tester(
             "webgpu_cts_dedicated_worker_tests": targets.remove(
                 reason = "We only need coverage on one GPU per OS, so remove from lower capacity configs.",
             ),
+            "webgpu_cts_tests": targets.mixin(
+                # The vast majority of coverage is already provided by
+                # webgpu_cts_with_validation_tests, so mark as CI-only to
+                # maintain some amount of coverage of what we ship without
+                # wasting as many resources on a low capacity config. See
+                # crbug.com/578581697.
+                ci_only = True,
+            ),
             "webgpu_cts_service_worker_tests": targets.remove(
                 reason = "We only need coverage on one GPU per OS, so remove from lower capacity configs.",
             ),
             "webgpu_cts_shared_worker_tests": targets.remove(
                 reason = "We only need coverage on one GPU per OS, so remove from lower capacity configs.",
+            ),
+            "webgpu_swiftshader_blink_web_tests": targets.remove(
+                reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
+            ),
+            "webgpu_swiftshader_blink_web_tests_with_backend_validation": targets.remove(
+                reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
+            ),
+            "webgpu_swiftshader_web_platform_cts_tests": targets.remove(
+                reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
+            ),
+            "webgpu_swiftshader_web_platform_cts_with_validation_tests": targets.remove(
+                reason = "SwiftShader coverage is provided by the Intel config which has more capacity. See crbug.com/578581697",
             ),
         },
     ),
@@ -2134,7 +2287,8 @@ shared_gpu.ci.windows_builder(
             "dawn_use_built_dxc",
             "dawn_enable_opengles",
             "asan",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -2262,6 +2416,13 @@ ci.thin_tester(
         mixins = [
             "win10_nvidia_gtx_1660_stable",
         ],
+        per_test_modifications = {
+            "webgpu_cts_tests": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 24,
+                ),
+            ),
+        },
     ),
     targets_settings = targets.settings(
         browser_config = targets.browser_config.RELEASE_X64,
@@ -2304,7 +2465,8 @@ shared_gpu.ci.windows_builder(
         configs = [
             "dawn_use_built_dxc",
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -2343,7 +2505,8 @@ shared_gpu.ci.windows_builder(
         configs = [
             "dawn_use_built_dxc",
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -2390,7 +2553,8 @@ shared_gpu.ci.windows_builder(
             "arm64",
             "dawn_use_built_dxc",
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -2441,7 +2605,8 @@ shared_gpu.ci.windows_builder(
             "arm64",
             "dawn_use_built_dxc",
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "gpu_tests",
@@ -2679,6 +2844,14 @@ ci.thin_tester(
         mixins = [
             "win10_nvidia_gtx_1660_stable",
         ],
+        per_test_modifications = {
+            "webgpu_cts_tests": targets.mixin(
+                # Mostly equivalent test coverage is provided by the version
+                # with backend validation enabled and the GTX 1660 fleet is
+                # overloaded. See crbug.com/559526702.
+                ci_only = True,
+            ),
+        },
     ),
     targets_settings = targets.settings(
         browser_config = targets.browser_config.RELEASE_X64,
@@ -2691,6 +2864,44 @@ ci.thin_tester(
     cq_mirrors_console_view = "mirrors",
     # Can hit the default build timeout if no tasks end up being deduped.
     execution_timeout = 4 * time.hour,
+)
+
+ci.thin_tester(
+    name = "Dawn Win x64 DEPS Release (Software)",
+    branch_selector = branches.selector.WINDOWS_BRANCHES,
+    description_html = "Runs DEPS-ed in Dawn tests on Windows with software renderers",
+    parent = "ci/Dawn Win10 x64 DEPS Builder",
+    builder_spec = builder_config.builder_spec(
+        execution_mode = builder_config.execution_mode.TEST,
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+            ],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.WIN,
+        ),
+        run_tests_serially = True,
+    ),
+    targets = targets.bundle(
+        targets = [],
+        mixins = [
+            "gpu_win_gce_stable",
+        ],
+    ),
+    targets_settings = targets.settings(
+        browser_config = targets.browser_config.RELEASE_X64,
+        os_type = targets.os_type.WINDOWS,
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "DEPS|Windows|x64",
+        short_name = "sw",
+    ),
+    cq_mirrors_console_view = "mirrors",
 )
 
 ci.thin_tester(
@@ -2860,12 +3071,12 @@ ci.thin_tester(
             # unexpectedly slow compared to UHD 630. Fix this and remove these modifications.
             "dawn_end2end_validation_layers_tests": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 8,
+                    shards = 16,
                 ),
             ),
             "dawn_end2end_no_dxc_validation_layers_tests": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 8,
+                    shards = 16,
                 ),
             ),
         },
@@ -2908,31 +3119,22 @@ ci.thin_tester(
         # should be running the same test_suites as
         # 'Dawn Win10 x64 Release (NVIDIA)'
         targets = [
-            "dawn_chromium_isolated_scripts",
-            "gpu_common_gtests_passthrough",
-            "gpu_dawn_telemetry_win_x64_tests",
+            "gpu_noop_sleep_telemetry_test",
         ],
         mixins = [
             "limited_capacity_bot",
             "win10_nvidia_gtx_1660_experimental",
         ],
-        per_test_modifications = {
-            "gl_unittests": targets.mixin(
-                args = [
-                    "--test-launcher-filter-file=../../testing/buildbot/filters/win.nvidia.gtx.1660.gl_unittests.filter",
-                ],
-            ),
-        },
     ),
     targets_settings = targets.settings(
         browser_config = targets.browser_config.RELEASE_X64,
         os_type = targets.os_type.WINDOWS,
     ),
     # Uncomment this entry when this experimental tester is actually in use.
-    console_view_entry = consoles.console_view_entry(
-        category = "ToT|Windows|x64|Nvidia",
-        short_name = "exp",
-    ),
+    # console_view_entry = consoles.console_view_entry(
+    #     category = "ToT|Windows|x64|Nvidia",
+    #     short_name = "exp",
+    # ),
     list_view = "chromium.gpu.experimental",
     execution_timeout = 6 * time.hour,
 )
@@ -2961,14 +3163,31 @@ ci.thin_tester(
         targets = [
             "dawn_chromium_isolated_scripts",
             "gpu_common_gtests_passthrough",
-            "gpu_dawn_telemetry_win_x64_tests",
             "gpu_dawn_webgpu_cts_default_features",
+            targets.bundle(
+                targets = "gpu_dawn_telemetry_win_x64_tests",
+                mixins = [
+                    targets.mixin(
+                        args = [
+                            # TODO(crbug.com/574658973): Remove this once the
+                            # driver shader cache slowdown is resolved.
+                            "--clear-system-shader-cache",
+                        ],
+                    ),
+                ],
+            ),
         ],
         mixins = [
             "win10_nvidia_gtx_1660_stable",
         ],
         per_test_modifications = {
             "webgpu_cts_default_features_tests": targets.mixin(
+                ci_only = True,
+            ),
+            "webgpu_cts_tests": targets.mixin(
+                # Mostly equivalent test coverage is provided by the version
+                # with backend validation enabled and the GTX 1660 fleet is
+                # overloaded. See crbug.com/559526702.
                 ci_only = True,
             ),
         },
@@ -2983,6 +3202,42 @@ ci.thin_tester(
     ),
     # Can hit the default build timeout if no tasks end up being deduped.
     execution_timeout = 4 * time.hour,
+)
+
+ci.thin_tester(
+    name = "Dawn Win x64 Release (Software)",
+    description_html = "Runs ToT Dawn tests on Windows with software renderers",
+    parent = "Dawn Win10 x64 Builder",
+    builder_spec = builder_config.builder_spec(
+        execution_mode = builder_config.execution_mode.TEST,
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+            ],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.WIN,
+        ),
+        run_tests_serially = True,
+    ),
+    targets = targets.bundle(
+        targets = [],
+        mixins = [
+            "gpu_win_gce_stable",
+        ],
+    ),
+    targets_settings = targets.settings(
+        browser_config = targets.browser_config.RELEASE_X64,
+        os_type = targets.os_type.WINDOWS,
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "ToT|Windows|x64",
+        short_name = "sw",
+    ),
 )
 
 shared_gpu.ci.windows_builder(
@@ -3009,7 +3264,8 @@ shared_gpu.ci.windows_builder(
     gn_args = gn_args.config(
         configs = [
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "x86",
@@ -3047,7 +3303,8 @@ shared_gpu.ci.windows_builder(
     gn_args = gn_args.config(
         configs = [
             "dawn_enable_opengles",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "x86",
@@ -3154,11 +3411,23 @@ ci.thin_tester(
             "win10_nvidia_gtx_1660_stable",
         ],
         per_test_modifications = {
+            "webgpu_blink_web_tests": targets.remove(
+                reason = "crbug.com/570690123",
+            ),
+            "webgpu_blink_web_tests_with_backend_validation": targets.remove(
+                reason = "crbug.com/570690123",
+            ),
             "webgpu_cts_fxc_with_validation_tests": targets.remove(
                 reason = [
                     "Disable testing with validation on x86 where they frequently OOM.",
                     "See crbug.com/1444815.",
                 ],
+            ),
+            "webgpu_swiftshader_blink_web_tests": targets.remove(
+                reason = "crbug.com/570690123",
+            ),
+            "webgpu_swiftshader_blink_web_tests_with_backend_validation": targets.remove(
+                reason = "crbug.com/570690123",
             ),
         },
     ),
@@ -3169,6 +3438,44 @@ ci.thin_tester(
     console_view_entry = consoles.console_view_entry(
         category = "DEPS|Windows|x86|Nvidia",
         short_name = "1660",
+    ),
+    cq_mirrors_console_view = "mirrors",
+)
+
+ci.thin_tester(
+    name = "Dawn Win x86 DEPS Release (Software)",
+    branch_selector = branches.selector.WINDOWS_BRANCHES,
+    description_html = "Runs DEPS-ed in Dawn tests on Windows with software renderers",
+    parent = "ci/Dawn Win10 x86 DEPS Builder",
+    builder_spec = builder_config.builder_spec(
+        execution_mode = builder_config.execution_mode.TEST,
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+            ],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 32,
+            target_platform = builder_config.target_platform.WIN,
+        ),
+        run_tests_serially = True,
+    ),
+    targets = targets.bundle(
+        targets = [],
+        mixins = [
+            "gpu_win_gce_stable",
+        ],
+    ),
+    targets_settings = targets.settings(
+        browser_config = targets.browser_config.RELEASE,
+        os_type = targets.os_type.WINDOWS,
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "DEPS|Windows|x86",
+        short_name = "sw",
     ),
     cq_mirrors_console_view = "mirrors",
 )
@@ -3264,7 +3571,18 @@ ci.thin_tester(
         # should be running the same test_suites as 'Dawn Win10 x86 Release
         # (NVIDIA)'.
         targets = [
-            "gpu_dawn_telemetry_tests_fxc",
+            targets.bundle(
+                targets = "gpu_dawn_telemetry_tests_fxc",
+                mixins = [
+                    targets.mixin(
+                        args = [
+                            # TODO(crbug.com/574658973): Remove this once the
+                            # driver shader cache slowdown is resolved.
+                            "--clear-system-shader-cache",
+                        ],
+                    ),
+                ],
+            ),
             "gpu_dawn_integration_gtests_passthrough",
             "gpu_dawn_isolated_scripts",
         ],
@@ -3377,11 +3695,23 @@ ci.thin_tester(
             "win10_nvidia_gtx_1660_stable",
         ],
         per_test_modifications = {
+            "webgpu_blink_web_tests": targets.remove(
+                reason = "crbug.com/570690123",
+            ),
+            "webgpu_blink_web_tests_with_backend_validation": targets.remove(
+                reason = "crbug.com/570690123",
+            ),
             "webgpu_cts_fxc_with_validation_tests": targets.remove(
                 reason = [
                     "Disable testing with validation on x86 where they frequently OOM.",
                     "See crbug.com/1444815.",
                 ],
+            ),
+            "webgpu_swiftshader_blink_web_tests": targets.remove(
+                reason = "crbug.com/570690123",
+            ),
+            "webgpu_swiftshader_blink_web_tests_with_backend_validation": targets.remove(
+                reason = "crbug.com/570690123",
             ),
         },
     ),
@@ -3392,5 +3722,41 @@ ci.thin_tester(
     console_view_entry = consoles.console_view_entry(
         category = "ToT|Windows|x86|Nvidia",
         short_name = "1660",
+    ),
+)
+
+ci.thin_tester(
+    name = "Dawn Win x86 Release (Software)",
+    description_html = "Runs ToT Dawn tests on Windows with software renderers",
+    parent = "Dawn Win10 x86 Builder",
+    builder_spec = builder_config.builder_spec(
+        execution_mode = builder_config.execution_mode.TEST,
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+            ],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 32,
+            target_platform = builder_config.target_platform.WIN,
+        ),
+        run_tests_serially = True,
+    ),
+    targets = targets.bundle(
+        targets = [],
+        mixins = [
+            "gpu_win_gce_stable",
+        ],
+    ),
+    targets_settings = targets.settings(
+        browser_config = targets.browser_config.RELEASE,
+        os_type = targets.os_type.WINDOWS,
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "ToT|Windows|x86",
+        short_name = "sw",
     ),
 )

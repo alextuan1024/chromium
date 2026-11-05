@@ -226,6 +226,7 @@ declare global {
         incognitoAccess: AccessModifier;
         userScriptsAccess: AccessModifier;
         incognitoAccessPendingChange: boolean;
+        isolatedModeAccessControlledByPolicy: boolean;
         installWarnings: string[];
         isCommandRegistrationHandledExternally: boolean;
         launchUrl?: string;
@@ -256,6 +257,7 @@ declare global {
         pinnedToToolbar?: boolean;
         isAffectedByMV2Deprecation: boolean;
         canUploadAsAccountExtension: boolean;
+        canShowReviewPrompt: boolean;
       }
 
       export interface ProfileInfo {

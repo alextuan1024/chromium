@@ -27,8 +27,8 @@
 #include "content/public/browser/authenticator_request_client_delegate.h"
 #include "content/public/browser/global_routing_id.h"
 #include "device/fido/cable/v2_constants.h"
+#include "device/fido/public/fido_transport_protocol.h"
 #include "third_party/blink/public/mojom/credentialmanagement/credential_type_flags.mojom.h"
-#include "url/gurl.h"
 
 class PasskeyUpgradeRequestController;
 class Profile;
@@ -285,7 +285,7 @@ class AuthenticatorRequestDialogController
     return ephemeral_state_.saved_authenticators_;
   }
 
-  const base::flat_set<AuthenticatorTransport>& available_transports() {
+  device::FidoTransportProtocolSet available_transports() {
     return transport_availability_.available_transports;
   }
 
@@ -323,7 +323,7 @@ class AuthenticatorRequestDialogController
   void RecordMacOsSuccessHistogram(device::FidoRequestType,
                                    device::AuthenticatorType);
   void set_is_active_profile_authenticator_user(bool);
-  void set_has_icloud_drive_enabled(bool);
+  void set_is_icloud_keychain_configured(bool);
 #endif
 
   void SetCredentialTypes(int types);
@@ -334,7 +334,8 @@ class AuthenticatorRequestDialogController
       content::AuthenticatorRequestClientDelegate::UIPresentation modality);
 
   void ConfigureEnclaveForUpgrade(
-      device::FidoDiscoveryFactory* discovery_factory,
+      PasskeyUpgradeRequestController::EnclaveRequestCallback
+          enclave_request_callback,
       bool cmtg_key_requested);
 
   base::WeakPtr<AuthenticatorRequestDialogController> GetWeakPtr();
@@ -522,10 +523,10 @@ class AuthenticatorRequestDialogController
   // only be recorded if a start event was recorded first.
   bool did_record_macos_start_histogram_ = false;
 
-  // has_icloud_drive_enabled_ is true if the current system has iCloud Drive
-  // enabled. This is used as an approximation for whether iCloud Keychain
-  // syncing is enabled.
-  bool has_icloud_drive_enabled_ = false;
+  // is_icloud_keychain_configured_ is true if iCloud Keychain is configured for
+  // passkeys on the current system (or, as a fallback on older macOS versions,
+  // if iCloud Drive is enabled).
+  bool is_icloud_keychain_configured_ = false;
 #endif
 
   // The credential types that are being asked for.

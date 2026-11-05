@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 #include "base/base64.h"
 #include "base/feature_list.h"
@@ -45,14 +46,16 @@ sk_sp<SkData> MakeData(const std::string& str) {
 constexpr base::MemoryConsumerTraits kGrShaderCacheTraits(
     // Default capacity is small; footprint under 10MB.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    // Eviction requires map and LRU list updates.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // Eviction reads the LRU list and the entries being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     // Shaders are recoverable from disk or source recompilation.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Asynchronous since AsyncMemoryConsumerRegistration is used.
     base::MemoryConsumerTraits::ExecutionType::kAsynchronous,
     // Recompiling shaders is slow and causes jank during rendering.
     base::MemoryConsumerTraits::RecreateMemoryCost::kExpensive);
+
+constexpr std::string_view kMemoryConsumerName = "GrShaderCache";
 
 }  // namespace
 
@@ -63,7 +66,7 @@ GrShaderCache::GrShaderCache(size_t max_cache_size_bytes, Client* client)
       store_(Store::NO_AUTO_EVICT),
       client_(client),
       memory_consumer_registration_(
-          "GrShaderCache",
+          kMemoryConsumerName,
           kGrShaderCacheTraits,
           this,
           base::AsyncMemoryConsumerRegistration::CheckUnregister::kEnabled) {
@@ -214,8 +217,8 @@ bool GrShaderCache::OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
 
 void GrShaderCache::OnUpdateMemoryLimit() {
   base::AutoLock auto_lock(lock_);
-  if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
-    int clamped_memory_limit =
+  if (base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
+    base::MemoryLimit clamped_memory_limit =
         std::clamp(memory_limit(), base::kCriticalMemoryPressureThreshold,
                    base::kNoMemoryPressureThreshold);
     size_t target_limit = gpu::UpdateShaderCacheSizeOnMemoryLimit(
@@ -227,7 +230,7 @@ void GrShaderCache::OnUpdateMemoryLimit() {
 void GrShaderCache::OnReleaseMemory() {
   base::AutoLock auto_lock(lock_);
 
-  int clamped_memory_limit =
+  base::MemoryLimit clamped_memory_limit =
       std::clamp(memory_limit(), base::kCriticalMemoryPressureThreshold,
                  base::kNoMemoryPressureThreshold);
   size_t target_limit = gpu::UpdateShaderCacheSizeOnMemoryLimit(
@@ -235,7 +238,7 @@ void GrShaderCache::OnReleaseMemory() {
   current_max_size_bytes_ = target_limit;
   EnforceLimits(0u);
 
-  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+  if (!base::ShouldUseStatefulMemoryPressure(kMemoryConsumerName)) {
     current_max_size_bytes_ = cache_size_limit_;
   }
 }

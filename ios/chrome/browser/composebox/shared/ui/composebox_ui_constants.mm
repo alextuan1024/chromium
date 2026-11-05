@@ -7,6 +7,7 @@
 const CGFloat kOmniboxMinHeight = 44.0;
 const CGFloat kOmniboxCobrowseMinHeight = 56.0;
 const CGFloat kOmniboxIPadMinHeight = 56.0;
+const CGFloat kOmniboxIPadMinWidthPercentage = 0.6;
 
 const CGFloat kInputPlateMargin = 10.0f;
 const CGFloat kInputPlateIpadMargin = 12.0f;
@@ -32,10 +33,14 @@ NSString* const kComposeboxAIMButtonAccessibilityIdentifier =
     @"kComposeboxAIMButtonAccessibilityIdentifier";
 NSString* const kComposeboxImageGenerationButtonAccessibilityIdentifier =
     @"kComposeboxImageGenerationButtonAccessibilityIdentifier";
+NSString* const kComposeboxPTMButtonAccessibilityIdentifier =
+    @"kComposeboxPTMButtonAccessibilityIdentifier";
 NSString* const kComposeboxAIMActionAccessibilityIdentifier =
     @"kComposeboxAIMActionAccessibilityIdentifier";
 NSString* const kComposeboxImageGenerationActionAccessibilityIdentifier =
     @"kComposeboxImageGenerationActionAccessibilityIdentifier";
+NSString* const kComposeboxPTMActionAccessibilityIdentifier =
+    @"kComposeboxPTMActionAccessibilityIdentifier";
 NSString* const kComposeboxAttachFileActionAccessibilityIdentifier =
     @"kComposeboxAttachFileActionAccessibilityIdentifier";
 NSString* const kComposeboxGalleryActionAccessibilityIdentifier =
@@ -56,3 +61,7 @@ NSString* const kComposeboxInputItemCellCloseButtonAccessibilityIdentifier =
     @"kComposeboxInputItemCellCloseButtonAccessibilityIdentifier";
 NSString* const kComposeboxTabsAccordionAccessibilityIdentifier =
     @"kComposeboxTabsAccordionAccessibilityIdentifier";
+NSString* const kComposeboxSharedTabsDisclaimerAccessibilityIdentifier =
+    @"kComposeboxSharedTabsDisclaimerAccessibilityIdentifier";
+NSString* const kComposeboxSharedTabsCloseButtonAccessibilityIdentifier =
+    @"kComposeboxSharedTabsCloseButtonAccessibilityIdentifier";

@@ -11,6 +11,7 @@
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/check_op.h"
+#include "base/containers/flat_set.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -49,8 +50,6 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/profiles/profile_management_types.h"
 #include "chrome/browser/ui/webui/profile_helper.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
 #include "chrome/browser/ui/webui/signin/signin_error_ui.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/browser/ui/webui/theme_source.h"
@@ -66,17 +65,17 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/tribool.h"
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
-#include "components/sync/base/features.h"
+#include "components/subscription_eligibility/ai_subscription_tier_names.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/themes.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/webui/web_ui_util.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/color_utils.h"
@@ -167,10 +166,10 @@ std::pair<std::string, bool> GetAvatarIconUrlAndAvatarRingStatus(
     const ui::ColorProvider* color_provider,
     float scale) {
   int avatar_icon_size = avatar_icon_size_dip * scale;
-  std::string icon_url;
   bool has_gradient_ring = false;
-  if (base::FeatureList::IsEnabled(switches::kEnableAiSubscriptionAvatarRing) &&
-      entry->GetAiSubscriptionTier() > 0 && color_provider) {
+  if (GetAvatarAiDecorationForTier(entry->GetAiSubscriptionTier())
+          .show_decoration &&
+      color_provider) {
     // Note: For linear gradient ring to appear, the corresponding profile
     // needs to have been loaded at least once (with
     // kEnableAiSubscriptionAvatarRing), so that the corresponding profile
@@ -254,13 +253,13 @@ void OpenLearnMoreURL(bool is_profile_list_empty,
     return;
   }
 
-  browser->OpenURL(
-      content::OpenURLParams::CreateBrowserInitiated(
-          GURL(is_profile_list_empty
-                   ? chrome::kSigninOnDesktopLearnMoreURL
-                   : chrome::kAddNewProfileOnDesktopLearnMoreURL),
-          WindowOpenDisposition::NEW_FOREGROUND_TAB, ui::PAGE_TRANSITION_LINK),
-      /*navigation_handle_callback=*/{});
+  browser->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                       GURL(is_profile_list_empty
+                                ? chrome::kSigninOnDesktopLearnMoreURL
+                                : chrome::kAddNewProfileOnDesktopLearnMoreURL),
+                       ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                       ui::PAGE_TRANSITION_LINK),
+                   /*navigation_handle_callback=*/{});
 }
 
 }  // namespace
@@ -273,7 +272,7 @@ ProfilePickerHandler::~ProfilePickerHandler() {
 }
 
 void ProfilePickerHandler::EnableStartupMetrics() {
-  DCHECK(creation_time_on_startup_.is_null());
+  CHECK(creation_time_on_startup_.is_null(), base::NotFatalUntil::M162);
   content::WebContents* contents = web_ui()->GetWebContents();
   if (contents->GetVisibility() == content::Visibility::VISIBLE) {
     // Only record paint event if the window is visible.
@@ -378,6 +377,8 @@ void ProfilePickerHandler::OnJavascriptAllowed() {
 }
 void ProfilePickerHandler::OnJavascriptDisallowed() {
   profile_attributes_storage_observation_.Reset();
+  gather_profile_statistics_weak_factory_.InvalidateWeakPtrs();
+  profile_statistics_keep_alive_.reset();
   weak_factory_.InvalidateWeakPtrs();
 }
 
@@ -436,8 +437,7 @@ void ProfilePickerHandler::TryLaunchLockedProfile(
   // need to match the policy filter.
 
   // Reauth attempt.
-  if ((syncer::IsReplaceSyncPromosWithSignInPromosEnabled() &&
-       entry.GetSigninState() != SigninState::kNotSignedIn) ||
+  if (entry.GetSigninState() != SigninState::kNotSignedIn ||
       entry.CanBeManaged()) {
     // Glic version cannot run the reauth steps, show a dialog instead that
     // will redirect the user to the regular version of the picker.
@@ -488,8 +488,30 @@ void ProfilePickerHandler::TryLaunchLockedProfile(
 
 void ProfilePickerHandler::OnProfileLoadedForSwitchToReauth(Profile* profile) {
   if (!profile) {
+    OnResetPickerButtons(false);
     return;
   }
+  CHECK(signin_util::IsForceSigninEnabled());
+
+  ProfileAttributesEntry& entry =
+      CHECK_DEREF(g_browser_process->profile_manager()
+                      ->GetProfileAttributesStorage()
+                      .GetProfileAttributesWithPath(profile->GetPath()));
+  CHECK(entry.IsSigninRequired());
+
+  // Loading the profile initializes `IdentityManager`, `AccountsPolicyManager`,
+  // and `SigninProfileAttributesUpdater`, which may clear the primary account
+  // (e.g. if `RestrictSigninToPattern` or `SigninAllowed` disallows it, or if
+  // `ProfileAttributesStorage` was out of sync with the profile prefs). If the
+  // GAIA ID or email is now missing, reauth cannot proceed.
+  if (entry.GetGAIAId().empty() || entry.GetUserName().empty()) {
+    DisplaySigninErrorDialog(
+        /*profile_path=*/base::FilePath(),
+        ForceSigninUIError::ReauthNotAllowed());
+    OnResetPickerButtons(false);
+    return;
+  }
+
   ProfilePicker::SwitchToReauth(
       profile,
       base::BindOnce(&ProfilePickerHandler::OnResetPickerButtons,
@@ -717,7 +739,13 @@ void ProfilePickerHandler::HandleRemoveProfile(const base::ListValue& args) {
   }
 
   RecordProfilePickerAction(ProfilePickerAction::kDeleteProfile);
-  DCHECK(profile_statistics_keep_alive_);
+
+  // Cancel any in-flight `LoadProfileByPath()` or `GatherStatistics()`
+  // callbacks so `GatherProfileStatistics()` cannot create a new keep-alive
+  // after profile removal has started. `profile_statistics_keep_alive_` may be
+  // null if the user confirmed deletion before an unloaded profile finished
+  // loading from disk (or if loading failed).
+  gather_profile_statistics_weak_factory_.InvalidateWeakPtrs();
 
   // Deleting the profile may delete `this` (see See
   // https://crbug.com/40934491), if the profile picker was shown in a tab. Keep
@@ -730,19 +758,41 @@ void ProfilePickerHandler::HandleRemoveProfile(const base::ListValue& args) {
   // Do not use `this` after this point, it may be deleted.
 }
 
+namespace {
+
+ProfileOrderUpdateType ToProfileOrderUpdateType(
+    ProfilePickerOrderUpdateType picker_update_type) {
+  switch (picker_update_type) {
+    case ProfilePickerOrderUpdateType::kDragAndDrop:
+      return ProfileOrderUpdateType::kDragAndDrop;
+    case ProfilePickerOrderUpdateType::kContextMenuButton:
+      return ProfileOrderUpdateType::kContextMenuButton;
+  }
+}
+
+}  // namespace
+
 void ProfilePickerHandler::HandleUpdateProfileOrder(
     const base::ListValue& args) {
-  CHECK_EQ(2U, args.size());
+  CHECK_EQ(3U, args.size());
   CHECK(args[0].is_int());
   CHECK(args[1].is_int());
+  CHECK(args[2].is_int());
 
   int from_index = args[0].GetInt();
   int to_index = args[1].GetInt();
+  int update_type = args[2].GetInt();
   CHECK(from_index >= 0 && to_index >= 0);
+  CHECK_GE(update_type, 0);
+  CHECK_LE(update_type,
+           static_cast<int>(ProfilePickerOrderUpdateType::kMaxValue));
 
   g_browser_process->profile_manager()
       ->GetProfileAttributesStorage()
-      .UpdateProfilesOrderPref(from_index, to_index);
+      .UpdateProfilesOrderPref(
+          from_index, to_index,
+          ToProfileOrderUpdateType(
+              static_cast<ProfilePickerOrderUpdateType>(update_type)));
 }
 
 void ProfilePickerHandler::HandleOnLearnMoreClicked(
@@ -761,7 +811,11 @@ void ProfilePickerHandler::HandleOnLearnMoreClicked(
 void ProfilePickerHandler::HandleCloseProfileStatistics(
     const base::ListValue& args) {
   CHECK_EQ(0U, args.size());
-  DCHECK(profile_statistics_keep_alive_);
+  // Cancel any in-flight `LoadProfileByPath()` or `GatherStatistics()`
+  // callbacks so `GatherProfileStatistics()` cannot create a keep-alive after
+  // the dialog was closed. `profile_statistics_keep_alive_` may be null if the
+  // dialog was closed before an unloaded profile finished loading from disk.
+  gather_profile_statistics_weak_factory_.InvalidateWeakPtrs();
   profile_statistics_keep_alive_.reset();
 }
 
@@ -776,6 +830,9 @@ void ProfilePickerHandler::HandleGetProfileStatistics(
     return;
   }
 
+  gather_profile_statistics_weak_factory_.InvalidateWeakPtrs();
+  profile_statistics_keep_alive_.reset();
+
   Profile* profile =
       g_browser_process->profile_manager()->GetProfileByPath(*profile_path);
 
@@ -785,7 +842,7 @@ void ProfilePickerHandler::HandleGetProfileStatistics(
     g_browser_process->profile_manager()->LoadProfileByPath(
         *profile_path, false,
         base::BindOnce(&ProfilePickerHandler::GatherProfileStatistics,
-                       weak_factory_.GetWeakPtr()));
+                       gather_profile_statistics_weak_factory_.GetWeakPtr()));
   }
 }
 
@@ -799,7 +856,8 @@ void ProfilePickerHandler::GatherProfileStatistics(Profile* profile) {
 
   ProfileStatisticsFactory::GetForProfile(profile)->GatherStatistics(
       base::BindRepeating(&ProfilePickerHandler::OnProfileStatisticsReceived,
-                          weak_factory_.GetWeakPtr(), profile->GetPath()));
+                          gather_profile_statistics_weak_factory_.GetWeakPtr(),
+                          profile->GetPath()));
 }
 
 void ProfilePickerHandler::OnProfileStatisticsReceived(
@@ -848,7 +906,7 @@ void ProfilePickerHandler::OnResetPickerButtons(bool success) {
 }
 
 void ProfilePickerHandler::PushProfilesList() {
-  DCHECK(IsJavascriptAllowed());
+  CHECK(IsJavascriptAllowed(), base::NotFatalUntil::M162);
   FireWebUIListener("profiles-list-changed", GetProfilesList());
 }
 
@@ -859,6 +917,21 @@ void ProfilePickerHandler::SetProfilesOrder(
   for (const ProfileAttributesEntry* entry : entries) {
     profiles_order_[entry->GetPath()] = index++;
   }
+  CHECK(IsProfilesOrderValid());
+}
+
+bool ProfilePickerHandler::IsProfilesOrderValid() const {
+  base::flat_set<size_t> indices_set;
+  for (const auto& [path, index] : profiles_order_) {
+    if (index >= profiles_order_.size()) {
+      return false;
+    }
+    auto [_, inserted] = indices_set.insert(index);
+    if (!inserted) {
+      return false;
+    }
+  }
+  return indices_set.size() == profiles_order_.size();
 }
 
 std::vector<ProfileAttributesEntry*>
@@ -886,7 +959,7 @@ ProfilePickerHandler::GetProfilesAttributesForDisplay() {
     // Should only happen the first time the function is called.
     // Profile creation and deletion are handled at
     // 'OnProfileAdded', 'OnProfileWasRemoved'.
-    DCHECK(!profiles_order_.size());
+    CHECK(!profiles_order_.size(), base::NotFatalUntil::M162);
     SetProfilesOrder(ordered_entries);
     return ordered_entries;
   }
@@ -895,10 +968,10 @@ ProfilePickerHandler::GetProfilesAttributesForDisplay() {
   std::vector<ProfileAttributesEntry*> entries(number_of_profiles);
   for (ProfileAttributesEntry* entry : ordered_entries) {
     const auto it = profiles_order_.find(entry->GetPath());
-    DCHECK(it != profiles_order_.end());
+    CHECK(it != profiles_order_.end(), base::NotFatalUntil::M162);
     size_t index = it->second;
-    DCHECK_LT(index, number_of_profiles);
-    DCHECK(!entries[index]);
+    CHECK_LT(index, number_of_profiles, base::NotFatalUntil::M162);
+    CHECK(!entries[index], base::NotFatalUntil::M162);
     entries[index] = entry;
   }
 
@@ -930,7 +1003,8 @@ void ProfilePickerHandler::AddProfileToListAndPushUpdates(
   // We shouldn't add the same profile to the list more than once. Use
   // `insert()` to not corrput the map in case this happens.
   // https://crbug.com/40759222
-  DCHECK(it_and_whether_inserted.second);
+  CHECK(it_and_whether_inserted.second, base::NotFatalUntil::M162);
+  CHECK(IsProfilesOrderValid());
 
   MaybeUpdateGuestMode();
   PushProfilesList();
@@ -955,6 +1029,7 @@ void ProfilePickerHandler::RemoveProfileFromListAndPushUpdates(
       --it.second;
     }
   }
+  CHECK(IsProfilesOrderValid());
   MaybeUpdateGuestMode();
   FireWebUIListener("profile-removed", base::FilePathToValue(profile_path));
 }
@@ -978,7 +1053,7 @@ void ProfilePickerHandler::OnProfileAdded(const base::FilePath& profile_path) {
 void ProfilePickerHandler::OnProfileWasRemoved(
     const base::FilePath& profile_path,
     const std::u16string& profile_name) {
-  DCHECK(IsJavascriptAllowed());
+  CHECK(IsJavascriptAllowed(), base::NotFatalUntil::M162);
   RemoveProfileFromListAndPushUpdates(profile_path);
 }
 
@@ -1051,8 +1126,15 @@ void ProfilePickerHandler::OnProfileAiSubscriptionTierUpdated(
   PushProfilesList();
 }
 
+void ProfilePickerHandler::OnProfilesOrderChanged() {
+  // Reset `profiles_order_` so that `GetProfilesAttributesForDisplay()`
+  // recomputes the order from `ProfileAttributesStorage`.
+  profiles_order_.clear();
+  PushProfilesList();
+}
+
 void ProfilePickerHandler::DidFirstVisuallyNonEmptyPaint() {
-  DCHECK(!creation_time_on_startup_.is_null());
+  CHECK(!creation_time_on_startup_.is_null(), base::NotFatalUntil::M162);
   auto now = base::TimeTicks::Now();
   base::UmaHistogramTimes("ProfilePicker.StartupTime.FirstPaint",
                           now - creation_time_on_startup_);

@@ -113,7 +113,7 @@ StreamingSearchPrefetchURLLoader::ResponseReader::~ResponseReader() {
 
 void StreamingSearchPrefetchURLLoader::ResponseReader::OnStatusCodeReady(
     const network::URLLoaderCompletionStatus& status) {
-  DCHECK(!url_loader_completion_status_);
+  CHECK(!url_loader_completion_status_, base::NotFatalUntil::M163);
   url_loader_completion_status_ = status;
   if (url_loader_completion_status_->error_code != net::OK) {
     status_ = ResponseDataReaderStatus::kNetworkError;
@@ -357,8 +357,8 @@ StreamingSearchPrefetchURLLoader::GetCallbackForReadingViaResponseReader(
 SearchPrefetchURLLoader::RequestHandler
 StreamingSearchPrefetchURLLoader::GetServingResponseHandler(
     scoped_refptr<StreamingSearchPrefetchURLLoader> loader) {
-  DCHECK(!loader->streaming_prefetch_request_);
-  DCHECK(!loader->forwarding_client_);
+  CHECK(!loader->streaming_prefetch_request_, base::NotFatalUntil::M163);
+  CHECK(!loader->forwarding_client_, base::NotFatalUntil::M163);
   loader->should_be_serving_to_activation_navigation_ = true;
   loader->RecordInterceptionTime();
   return base::BindOnce(
@@ -414,8 +414,8 @@ void StreamingSearchPrefetchURLLoader::SetUpForwardingClient(
     return;
   }
 
-  // In the edge case we were between owners when a response error happened,
-  // fallback was deferred until here.
+  // In the edge case we were between owners when a response error or redirect
+  // happened, fallback was deferred until here.
   if (is_scheduled_to_fallback_) {
     Fallback();
   }
@@ -463,8 +463,8 @@ void StreamingSearchPrefetchURLLoader::OnPrerenderForwardingDisconnect(
 void StreamingSearchPrefetchURLLoader::OnReceiveEarlyHints(
     network::mojom::EarlyHintsPtr early_hints) {
   if (is_in_fallback_) {
-    DCHECK(!streaming_prefetch_request_);
-    DCHECK(forwarding_client_);
+    CHECK(!streaming_prefetch_request_, base::NotFatalUntil::M163);
+    CHECK(forwarding_client_, base::NotFatalUntil::M163);
     forwarding_client_->OnReceiveEarlyHints(std::move(early_hints));
   }
   // Do nothing.
@@ -511,8 +511,8 @@ void StreamingSearchPrefetchURLLoader::OnReceiveResponse(
 
   // Once we are using the fallback path, just forward calls.
   if (is_in_fallback_) {
-    DCHECK(!streaming_prefetch_request_);
-    DCHECK(forwarding_client_);
+    CHECK(!streaming_prefetch_request_, base::NotFatalUntil::M163);
+    CHECK(forwarding_client_, base::NotFatalUntil::M163);
     forwarding_client_->OnReceiveResponse(std::move(head), std::move(body),
                                           std::nullopt);
     return;
@@ -527,17 +527,10 @@ void StreamingSearchPrefetchURLLoader::OnReceiveResponse(
   // whether we still have a parent pointer.
   if (!can_be_served) {
     if (!streaming_prefetch_request_) {
-      // SetUpForwardingClient() needs to be called before fallback.
-      if (is_activated_) {
-        Fallback();
-      } else {
-        // Wait until SetUpForwardingClient() is called.
-        CHECK(!is_scheduled_to_fallback_);
-        is_scheduled_to_fallback_ = true;
-      }
+      StartOrScheduleFallback();
       return;
     }
-    DCHECK(streaming_prefetch_request_);
+    CHECK(streaming_prefetch_request_, base::NotFatalUntil::M163);
     streaming_prefetch_request_->ErrorEncountered();
     return;
     // Not safe to do anything after this point
@@ -583,17 +576,16 @@ void StreamingSearchPrefetchURLLoader::OnReceiveRedirect(
   TRACE_EVENT1("loading", "StreamingSearchPrefetchURLLoader::OnReceiveRedirect",
                "is_serving", is_serving);
   if (is_in_fallback_) {
-    DCHECK(forwarding_client_);
+    CHECK(forwarding_client_, base::NotFatalUntil::M163);
     forwarding_client_->OnReceiveRedirect(redirect_info, std::move(head));
     return;
   }
   if (streaming_prefetch_request_) {
     streaming_prefetch_request_->ErrorEncountered();
     // Do nothing after this point, as `this` might be deleted.
-  } else {
-    forwarding_result_ = ForwardingResult::kFailed;
-    PostTaskToReleaseOwnership();
+    return;
   }
+  StartOrScheduleFallback();
 }
 
 void StreamingSearchPrefetchURLLoader::OnUploadProgress(
@@ -609,7 +601,7 @@ void StreamingSearchPrefetchURLLoader::OnTransferSizeUpdated(
   network::RecordOnTransferSizeUpdatedUMA(
       network::OnTransferSizeUpdatedFrom::kStreamingSearchPrefetchURLLoader);
   if (forwarding_client_) {
-    DCHECK(forwarding_client_);
+    CHECK(forwarding_client_, base::NotFatalUntil::M163);
     forwarding_client_->OnTransferSizeUpdated(transfer_size_diff);
     return;
   }
@@ -648,8 +640,8 @@ void StreamingSearchPrefetchURLLoader::OnDataComplete() {
 }
 
 void StreamingSearchPrefetchURLLoader::OnStartLoadingResponseBodyFromData() {
-  DCHECK(forwarding_client_);
-  DCHECK(!streaming_prefetch_request_);
+  CHECK(forwarding_client_, base::NotFatalUntil::M163);
+  CHECK(!streaming_prefetch_request_, base::NotFatalUntil::M163);
   mojo::ScopedDataPipeConsumerHandle consumer_handle;
   MojoResult rv =
       CreateDataPipeForServingData(producer_handle_, consumer_handle);
@@ -678,7 +670,7 @@ void StreamingSearchPrefetchURLLoader::OnStartLoadingResponseBodyFromData() {
 void StreamingSearchPrefetchURLLoader::OnHandleReady(
     MojoResult result,
     const mojo::HandleSignalsState& state) {
-  DCHECK(!streaming_prefetch_request_);
+  CHECK(!streaming_prefetch_request_, base::NotFatalUntil::M163);
   // In the early shutdown pathway, |this| will be deleted soon.
   if (!forwarding_client_) {
     return;
@@ -707,8 +699,8 @@ void StreamingSearchPrefetchURLLoader::PushData() {
   // TODO(crbug.com/40250486): This method should be migrated into
   // `ResponseReader::PushData`. Now `ResponseReader` is sort of a copy of this,
   // as we are at the intermediate state during refactoring.
-  DCHECK(forwarding_client_);
-  DCHECK(!streaming_prefetch_request_);
+  CHECK(forwarding_client_, base::NotFatalUntil::M163);
+  CHECK(!streaming_prefetch_request_, base::NotFatalUntil::M163);
   TRACE_EVENT0("loading", "StreamingSearchPrefetchURLLoader::PushData");
   while (true) {
     std::string_view response_data = GetMoreDataFromCache(write_position_);
@@ -745,8 +737,8 @@ void StreamingSearchPrefetchURLLoader::PushData() {
 }
 
 void StreamingSearchPrefetchURLLoader::Finish() {
-  DCHECK(forwarding_client_);
-  DCHECK(!streaming_prefetch_request_);
+  CHECK(forwarding_client_, base::NotFatalUntil::M163);
+  CHECK(!streaming_prefetch_request_, base::NotFatalUntil::M163);
 
   serving_from_data_ = false;
   handle_watcher_.reset();
@@ -767,7 +759,7 @@ void StreamingSearchPrefetchURLLoader::OnComplete(
     response_reader_for_prerender_->OnStatusCodeReady(status);
   }
   if (forwarding_client_ && (!serving_from_data_ || is_in_fallback_)) {
-    DCHECK(!streaming_prefetch_request_);
+    CHECK(!streaming_prefetch_request_, base::NotFatalUntil::M163);
     forwarding_client_->OnComplete(status);
     forwarding_result_ = ForwardingResult::kCompleted;
     OnForwardingComplete();
@@ -775,8 +767,8 @@ void StreamingSearchPrefetchURLLoader::OnComplete(
   }
 
   if (streaming_prefetch_request_) {
-    DCHECK(!forwarding_client_);
-    DCHECK(!self_pointer_);
+    CHECK(!forwarding_client_, base::NotFatalUntil::M163);
+    CHECK(!self_pointer_, base::NotFatalUntil::M163);
     if (status.error_code == net::OK) {
       streaming_prefetch_request_->MarkPrefetchAsComplete();
     } else {
@@ -805,7 +797,7 @@ void StreamingSearchPrefetchURLLoader::FollowRedirect(
     network::HttpRequestHeadersUpdateParams headers_update_params,
     const std::optional<GURL>& new_url) {
   if (is_in_fallback_) {
-    DCHECK(network_url_loader_);
+    CHECK(network_url_loader_, base::NotFatalUntil::M163);
     network_url_loader_->FollowRedirect(std::move(headers_update_params),
                                         new_url);
     return;
@@ -834,7 +826,7 @@ void StreamingSearchPrefetchURLLoader::OnURLLoaderMojoDisconnect() {
   }
 
   if (streaming_prefetch_request_) {
-    DCHECK(!forwarding_client_);
+    CHECK(!forwarding_client_, base::NotFatalUntil::M163);
     streaming_prefetch_request_->ErrorEncountered();
   } else {
     PostTaskToReleaseOwnership();
@@ -842,8 +834,8 @@ void StreamingSearchPrefetchURLLoader::OnURLLoaderMojoDisconnect() {
 }
 
 void StreamingSearchPrefetchURLLoader::OnURLLoaderClientMojoDisconnect() {
-  DCHECK(forwarding_client_);
-  DCHECK(!streaming_prefetch_request_);
+  CHECK(forwarding_client_, base::NotFatalUntil::M163);
+  CHECK(!streaming_prefetch_request_, base::NotFatalUntil::M163);
   forwarding_client_.reset();
   receiver_.reset();
   // The forwarding logic has finished, so `this` does not need to keep the
@@ -876,6 +868,24 @@ void StreamingSearchPrefetchURLLoader::PostTaskToReleaseOwnership() {
   // To avoid UAF bugs, post a separate task to delete this object.
   base::SequencedTaskRunner::GetCurrentDefault()->ReleaseSoon(
       FROM_HERE, std::move(self_pointer_));
+}
+
+void StreamingSearchPrefetchURLLoader::StartOrScheduleFallback() {
+  CHECK(!streaming_prefetch_request_);
+
+  // SetUpForwardingClient() needs to be called before fallback.
+  if (is_activated_) {
+    Fallback();
+    return;
+  }
+
+  // Abort the prefetch loader now so no further callbacks or disconnect
+  // notifications arrive before SetUpForwardingClient() runs.
+  network_url_loader_.reset();
+  url_loader_receiver_.reset();
+  // Wait until SetUpForwardingClient() is called.
+  CHECK(!is_scheduled_to_fallback_);
+  is_scheduled_to_fallback_ = true;
 }
 
 void StreamingSearchPrefetchURLLoader::Fallback() {

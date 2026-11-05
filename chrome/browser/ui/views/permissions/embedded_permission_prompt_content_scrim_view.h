@@ -96,7 +96,7 @@ class EmbeddedPermissionPromptContentScrimView
   bool should_dismiss_on_click_;
 
   static constexpr int kOmniboxEverywherePadding = 24;
-  static constexpr float kOmniboxEverywhereCornerRadius = 28.0f;
+  static constexpr float kOmniboxEverywhereCornerRadius = 16.0f;
 
   static gfx::Rect GetScrimBounds(content::WebContents& web_contents);
   static bool IsOmniboxEverywhere(content::WebContents& web_contents);
@@ -108,6 +108,8 @@ class EmbeddedPermissionPromptContentScrimView
                            ScrimRoundedCornersNonLoomnibox);
   FRIEND_TEST_ALL_PREFIXES(EmbeddedPermissionPromptInteractiveTest,
                            ScrimBoundsNonLoomnibox);
+  FRIEND_TEST_ALL_PREFIXES(EmbeddedPermissionPromptInteractiveTest,
+                           ScrimBoundsOmniboxPopupWithWebUIShadow);
 };
 
 // The concrete implementation of `permissions::PromptContentScrim` that creates

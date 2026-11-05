@@ -13,7 +13,7 @@
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/manual_fill/public/manual_fill_constants.h"
 #import "ios/chrome/browser/autofill/manual_fill/test/manual_fill_matchers.h"
-#import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
+#import "ios/chrome/browser/autofill/test/autofill_app_interface.h"
 #import "ios/chrome/browser/device_reauth/test/reauthentication_app_interface.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/common/ui/elements/form_input_accessory_view.h"
@@ -711,8 +711,7 @@ void DismissPaymentBottomSheet() {
 
 // Tests that the credit card View Controller is dismissed when tapping the
 // keyboard.
-// TODO(crbug.com/40250530): reenable this flaky test.
-- (void)DISABLED_testTappingKeyboardDismissCreditCardControllerPopOver {
+- (void)testTappingKeyboardDismissCreditCardControllerPopOver {
   if (![ChromeEarlGrey isIPadIdiom]) {
     return;
   }
@@ -833,8 +832,7 @@ void DismissPaymentBottomSheet() {
 }
 
 // Tests that masked credit card offer CVC input.
-// TODO(crbug.com/41428751) can't test this one until https tests are possible.
-- (void)DISABLED_testCreditCardServerNumberRequiresCVC {
+- (void)testCreditCardServerNumberRequiresCVC {
   [AutofillAppInterface saveMaskedCreditCard];
 
   // Bring up the keyboard.

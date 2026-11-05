@@ -55,15 +55,14 @@ class FocusManagerTest : public ViewsTestBase, public WidgetDelegate {
   void RemoveNativeViewFocusChangeListener(NativeViewFocusChangeListener* listener);
 
   // For testing FocusManager::RotatePaneFocus().
-  void SetAccessiblePanes(
-      const std::vector<raw_ptr<View, VectorExperimental>>& panes);
+  void SetAccessiblePanes(const std::vector<raw_ptr<View>>& panes);
 
  private:
   std::unique_ptr<Widget> widget_;
   raw_ptr<View> contents_view_ = nullptr;
   raw_ptr<FocusChangeListener> focus_change_listener_ = nullptr;
   raw_ptr<NativeViewFocusChangeListener> widget_focus_change_listener_ = nullptr;
-  std::vector<raw_ptr<View, VectorExperimental>> accessible_panes_;
+  std::vector<raw_ptr<View>> accessible_panes_;
 };
 
 using ViewPair = std::pair<View*, View*>;
@@ -101,7 +100,8 @@ class TestNativeViewFocusChangeListener : public NativeViewFocusChangeListener {
 
   ~TestNativeViewFocusChangeListener() override;
 
-  const std::vector<gfx::NativeView>& focus_changes() const {
+  const std::vector<base::RawPtrIfPtrT<gfx::NativeView>>& focus_changes()
+      const {
     return focus_changes_;
   }
   void ClearFocusChanges();
@@ -112,7 +112,7 @@ class TestNativeViewFocusChangeListener : public NativeViewFocusChangeListener {
  private:
   // Parameter received via OnNativeFocusChanged in oldest-to-newest-received
   // order.
-  std::vector<gfx::NativeView> focus_changes_;
+  std::vector<base::RawPtrIfPtrT<gfx::NativeView>> focus_changes_;
 };
 
 }  // namespace views

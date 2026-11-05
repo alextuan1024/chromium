@@ -130,7 +130,7 @@ class NET_EXPORT_PRIVATE MemBackendImpl final : public Backend,
   friend class MemIterator;
 
   using EntryMap =
-      std::unordered_map<std::string, raw_ptr<MemEntryImpl, CtnExperimental>>;
+      std::unordered_map<std::string, raw_ptr<MemEntryImpl, DanglingUntriaged>>;
 
   // Performs general initialization for this current instance of the cache.
   void Init(int32_t max_bytes);
@@ -153,7 +153,7 @@ class NET_EXPORT_PRIVATE MemBackendImpl final : public Backend,
 
   // Stored in increasing order of last use time, from least recently used to
   // most recently used.
-  base::LinkedList<MemEntryImpl> lru_list_;
+  base::UnsafeLinkedList<MemEntryImpl> lru_list_;
 
   // Maximum data size for this instance, assuming no memory pressure.
   int32_t max_size_ = 0;

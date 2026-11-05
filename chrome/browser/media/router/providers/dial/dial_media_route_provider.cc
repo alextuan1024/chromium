@@ -4,6 +4,8 @@
 
 #include "chrome/browser/media/router/providers/dial/dial_media_route_provider.h"
 
+#include <optional>
+#include <string_view>
 #include <utility>
 
 #include "base/containers/flat_map.h"
@@ -16,6 +18,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/types/optional_ref.h"
 #include "chrome/browser/media/router/providers/dial/dial_media_route_provider_metrics.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/media_router/common/media_source.h"
@@ -27,7 +30,7 @@ namespace media_router {
 namespace {
 constexpr char kLoggerComponent[] = "DialMediaRouteProvider";
 
-url::Origin CreateOrigin(const std::string& url) {
+url::Origin CreateOrigin(std::string_view url) {
   return url::Origin::Create(GURL(url));
 }
 
@@ -44,7 +47,7 @@ DialMediaRouteProvider::DialMediaRouteProvider(
     : media_sink_service_(media_sink_service),
       internal_message_util_(hash_token) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
-  DCHECK(media_sink_service_);
+  CHECK(media_sink_service_, base::NotFatalUntil::M161);
 
   task_runner->PostTask(
       FROM_HERE,
@@ -72,7 +75,6 @@ void DialMediaRouteProvider::Init(
 
 DialMediaRouteProvider::~DialMediaRouteProvider() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(media_sink_queries_.empty());
   media_sink_service_->RemoveObserver(this);
 }
 
@@ -564,7 +566,11 @@ void DialMediaRouteProvider::StartObservingMediaSinks(
   // Return cached results immediately.
   if (sink_query->media_sources.insert(dial_source).second) {
     auto sinks = media_sink_service_->GetAvailableSinks(app_name);
-    NotifyOnSinksReceived(dial_source.id(), sinks, GetOrigins(app_name));
+    base::optional_ref<const std::vector<url::Origin>> origins =
+        GetOrigins(app_name);
+    NotifyOnSinksReceived(
+        dial_source.id(), sinks,
+        origins.has_value() ? *origins : std::vector<url::Origin>());
   }
 }
 
@@ -622,7 +628,7 @@ void DialMediaRouteProvider::GetState(GetStateCallback callback) {
 
 void DialMediaRouteProvider::SetActivityManagerForTest(
     std::unique_ptr<DialActivityManager> activity_manager) {
-  DCHECK(!activity_manager_);
+  CHECK(!activity_manager_, base::NotFatalUntil::M161);
   activity_manager_ = std::move(activity_manager);
 }
 
@@ -642,11 +648,14 @@ void DialMediaRouteProvider::OnAvailableSinksUpdated(
   }
 
   const auto& media_sources = sink_query_it->second->media_sources;
-  std::vector<url::Origin> origins = GetOrigins(app_name);
+  base::optional_ref<const std::vector<url::Origin>> origins =
+      GetOrigins(app_name);
 
   auto sinks = media_sink_service_->GetAvailableSinks(app_name);
   for (const auto& media_source : media_sources) {
-    NotifyOnSinksReceived(media_source.id(), sinks, origins);
+    NotifyOnSinksReceived(
+        media_source.id(), sinks,
+        origins.has_value() ? *origins : std::vector<url::Origin>());
   }
 }
 
@@ -658,10 +667,10 @@ void DialMediaRouteProvider::NotifyOnSinksReceived(
                                  sinks, origins);
 }
 
-std::vector<url::Origin> DialMediaRouteProvider::GetOrigins(
-    const std::string& app_name) {
+base::optional_ref<const std::vector<url::Origin>>
+DialMediaRouteProvider::GetOrigins(std::string_view app_name) {
   static const base::NoDestructor<
-      base::flat_map<std::string, std::vector<url::Origin>>>
+      base::flat_map<std::string_view, std::vector<url::Origin>>>
       origin_allowlist(
           {{"youtube",
             {CreateOrigin("https://music.youtube.com/"),
@@ -688,7 +697,7 @@ std::vector<url::Origin> DialMediaRouteProvider::GetOrigins(
     }
   }
 
-  return std::vector<url::Origin>();
+  return std::nullopt;
 }
 
 DialMediaRouteProvider::MediaSinkQuery::MediaSinkQuery() = default;

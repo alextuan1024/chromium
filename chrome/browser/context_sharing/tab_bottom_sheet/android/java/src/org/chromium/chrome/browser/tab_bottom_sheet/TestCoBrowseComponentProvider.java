@@ -28,7 +28,9 @@ public class TestCoBrowseComponentProvider implements CoBrowseComponentProvider 
     static boolean sUsePlaceholder;
     static @Nullable PeekViewManager sPeekViewManager;
     static @Nullable ResizingPlaceholderCoordinator sResizingPlaceholderCoordinator;
+    static @Nullable Runnable sLastLoadingCloseCallback;
 
+    @CalledByNative
     public static void setUsePlaceholderForTesting(boolean usePlaceholder) {
         ResettersForTesting.register(() -> sUsePlaceholder = false);
         sUsePlaceholder = usePlaceholder;
@@ -53,6 +55,25 @@ public class TestCoBrowseComponentProvider implements CoBrowseComponentProvider 
     @CalledByNative
     public TestCoBrowseComponentProvider() {}
 
+    /** Runs the close callback passed to the most recent loading placeholder, if any. */
+    @CalledByNative
+    public static void clickLoadingPlaceholderClose() {
+        if (sLastLoadingCloseCallback != null) {
+            sLastLoadingCloseCallback.run();
+        }
+    }
+
+    @Override
+    public @Nullable View createLoadingPlaceholderView(
+            Context context,
+            @ColorInt int backgroundColor,
+            @ColorInt int placeholderElemColor,
+            Runnable onCloseClicked) {
+        ResettersForTesting.register(() -> sLastLoadingCloseCallback = null);
+        sLastLoadingCloseCallback = onCloseClicked;
+        return new View(context);
+    }
+
     @Override
     public boolean setupPlaceholderView(TextViewWithCompoundDrawables placeholder) {
         return sUsePlaceholder;
@@ -60,7 +81,7 @@ public class TestCoBrowseComponentProvider implements CoBrowseComponentProvider 
 
     @Override
     public ResizingPlaceholderCoordinator createResizingPlaceholderCoordinator(
-            Context context, @ColorInt int backgroundColor) {
+            Context context, @ColorInt int backgroundColor, @ColorInt int placeholderElemColor) {
         return sResizingPlaceholderCoordinator != null
                 ? sResizingPlaceholderCoordinator
                 : new LegacyResizingPlaceholderCoordinator(context, backgroundColor);

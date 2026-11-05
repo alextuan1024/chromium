@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "chromeos/ash/experiences/extensions/common/api/api_features.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_browser_handlers/file_browser_handler.h"
 #include "chromeos/ash/experiences/extensions/common/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
 #include "chromeos/ash/experiences/extensions/common/api/generated_schemas.h"
 #include "chromeos/ash/experiences/extensions/common/api/manifest_features.h"
@@ -22,24 +23,25 @@ namespace ash {
 ChromeOSExtensionsAPIProvider::ChromeOSExtensionsAPIProvider() = default;
 ChromeOSExtensionsAPIProvider::~ChromeOSExtensionsAPIProvider() = default;
 
-void ChromeOSExtensionsAPIProvider::AddAPIFeatures(
-    extensions::FeatureProvider* provider) {
-  AddChromeOSAPIFeatures(provider);
+extensions::StaticFeatureTable ChromeOSExtensionsAPIProvider::GetAPIFeatures()
+    const {
+  return extensions::GetChromeOSAPIFeatures();
 }
 
-void ChromeOSExtensionsAPIProvider::AddManifestFeatures(
-    extensions::FeatureProvider* provider) {
-  AddChromeOSManifestFeatures(provider);
+extensions::StaticFeatureTable
+ChromeOSExtensionsAPIProvider::GetManifestFeatures() const {
+  return extensions::GetChromeOSManifestFeatures();
 }
 
-void ChromeOSExtensionsAPIProvider::AddPermissionFeatures(
-    extensions::FeatureProvider* provider) {
-  AddChromeOSPermissionFeatures(provider);
+extensions::StaticFeatureTable
+ChromeOSExtensionsAPIProvider::GetPermissionFeatures() const {
+  return extensions::GetChromeOSPermissionFeatures();
 }
 
-void ChromeOSExtensionsAPIProvider::AddBehaviorFeatures(
-    extensions::FeatureProvider* provider) {
+extensions::StaticFeatureTable
+ChromeOSExtensionsAPIProvider::GetBehaviorFeatures() const {
   // Note: No chromeos-specific behavior features.
+  return {};
 }
 
 void ChromeOSExtensionsAPIProvider::AddAPIJSONSources(
@@ -65,6 +67,7 @@ void ChromeOSExtensionsAPIProvider::RegisterPermissions(
 
 void ChromeOSExtensionsAPIProvider::RegisterManifestHandlers(
     extensions::ManifestHandlerRegistry* registry) {
+  registry->RegisterHandler(std::make_unique<FileBrowserHandlerParser>());
   registry->RegisterHandler(
       std::make_unique<extensions::FileSystemProviderCapabilitiesHandler>());
 }

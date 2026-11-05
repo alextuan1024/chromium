@@ -17,6 +17,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "components/autofill/core/browser/autofill_field_test_api.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/form_structure_test_api.h"
@@ -24,6 +25,7 @@
 #include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_test_util.h"
+#include "components/autofill/core/common/form_field_data.h"
 #include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
@@ -48,8 +50,10 @@ using MockExecuteModelCallback = base::OnceCallback<void(
 // because heuristic_type() returns the post-processed prediction, after
 // potentially falling back to regex.
 MATCHER(MlTypeEq, "") {
-  return std::get<0>(arg)->local_type_predictions()[static_cast<size_t>(
-             HeuristicSource::kAutofillMachineLearning)] == std::get<1>(arg);
+  return test_api(*std::get<0>(arg))
+             .local_type_predictions()[static_cast<size_t>(
+                 HeuristicSource::kAutofillMachineLearning)] ==
+         std::get<1>(arg);
 }
 
 FieldClassificationModelEncoder::ModelOutput
@@ -251,6 +255,32 @@ TEST_F(FieldClassificationModelHandlerTestWithRealModelExecution,
   ApplyModelPredictions(form_structure);
   EXPECT_THAT(form_structure->fields(),
               testing::Pointwise(MlTypeEq(), ExpectedTypesForOverfittedForm()));
+}
+
+// Tests that `kSyntheticSelectOne` fields are excluded from model inference and
+// receive no ML prediction, while surrounding fields are still classified
+// correctly without an index shift.
+TEST_F(FieldClassificationModelHandlerTestWithRealModelExecution,
+       GetModelPredictionsForForm_IgnoresSyntheticSelect) {
+  ReadModelMetadata("autofill_model_metadata.binarypb");
+  SimulateRetrieveModelFromServer("autofill_model-fold-one.tflite",
+                                  model_handler());
+  FormData form = CreateOverfittedForm()->ToFormData();
+  std::vector<FormFieldData> fields = form.ExtractFields();
+  fields.insert(
+      fields.begin(),
+      test::GetFormFieldData(
+          {.label = u"country",
+           .form_control_type = FormControlType::kSyntheticSelectOne}));
+  form.set_fields(std::move(fields));
+  auto form_structure = std::make_unique<FormStructure>(form);
+
+  ApplyModelPredictions(form_structure);
+
+  std::vector<FieldType> expected_types = ExpectedTypesForOverfittedForm();
+  expected_types.insert(expected_types.begin(), NO_SERVER_DATA);
+  EXPECT_THAT(form_structure->fields(),
+              testing::Pointwise(MlTypeEq(), expected_types));
 }
 
 // Tests that predictions with a confidence below the threshold are reported as

@@ -153,6 +153,12 @@ void GridNode::AdjustSubgriddedItemSpan(const GridItemData& subgrid_item,
   auto TranslateSpan = [&subgrid_item](GridSpan& span,
                                        GridTrackSizingDirection direction) {
     if (subgrid_item.MustConsiderGridItemsForSizing(direction)) {
+      if (subgrid_item.node.IsGridLanes() && span.IsIndefinite()) {
+        // TODO(yanlingwang): Support nested subgrids with unresolved placement
+        // inside grid-lanes subgrids before translating their descendants'
+        // spans.
+        return;
+      }
       // If a subgrid is in an opposite writing direction to the root
       // grid, we should "reverse" the subgridded item's span.
       if (subgrid_item.IsOppositeDirectionInRootGrid(direction)) {
@@ -200,7 +206,8 @@ MinMaxSizesResult GridNode::ComputeSubgridMinMaxSizes(
 
 LayoutUnit GridNode::ComputeSubgridIntrinsicBlockSize(
     const GridSizingSubtree& sizing_subtree,
-    const ConstraintSpace& space) const {
+    const ConstraintSpace& space,
+    SizingConstraint sizing_constraint) const {
   DCHECK(sizing_subtree.HasValidRootFor(*this));
   DCHECK(sizing_subtree.LayoutData().IsSubgridWithStandaloneAxis(kForRows));
 
@@ -212,7 +219,8 @@ LayoutUnit GridNode::ComputeSubgridIntrinsicBlockSize(
 
     const auto intrinsic_block_size =
         GridLayoutAlgorithm({*this, fragment_geometry, space})
-            .ComputeSubgridIntrinsicBlockSize(sizing_subtree);
+            .ComputeSubgridIntrinsicBlockSize(sizing_subtree,
+                                              sizing_constraint);
 
     // The min and max-content block size are both the box's "ideal" size after
     // layout (see https://drafts.csswg.org/css-sizing-3/#max-content).

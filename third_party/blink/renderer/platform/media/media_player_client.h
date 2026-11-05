@@ -37,6 +37,7 @@
 #include "third_party/blink/public/platform/web_common.h"
 #include "third_party/blink/public/platform/web_media_player.h"
 #include "third_party/blink/public/platform/web_media_player_client.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "ui/gfx/color_space.h"
 
@@ -56,28 +57,9 @@ namespace blink {
 class WebMediaSource;
 
 class PLATFORM_EXPORT MediaPlayerClient : public WebMediaPlayerClient,
-                                          public media::TrackManager {
+                                          public media::TrackManager,
+                                          public GarbageCollectedMixin {
  public:
-  enum VideoTrackKind {
-    kVideoTrackKindNone,
-    kVideoTrackKindAlternative,
-    kVideoTrackKindCaptions,
-    kVideoTrackKindMain,
-    kVideoTrackKindSign,
-    kVideoTrackKindSubtitles,
-    kVideoTrackKindCommentary
-  };
-
-  enum AudioTrackKind {
-    kAudioTrackKindNone,
-    kAudioTrackKindAlternative,
-    kAudioTrackKindDescriptions,
-    kAudioTrackKindMain,
-    kAudioTrackKindMainDescriptions,
-    kAudioTrackKindTranslation,
-    kAudioTrackKindCommentary
-  };
-
   static const int kMediaRemotingStopNoText = -1;
 
   virtual void NetworkStateChanged() = 0;

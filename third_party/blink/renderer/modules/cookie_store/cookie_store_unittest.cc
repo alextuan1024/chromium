@@ -18,7 +18,6 @@
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/canonical_cookie_test_helpers.h"
 #include "net/cookies/cookie_monster.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
 #include "services/network/cookie_settings.h"
 #include "services/network/restricted_cookie_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -59,7 +58,6 @@ class CookieStoreTest : public testing::Test {
 
   void TearDown() override {
     EXPECT_EQ(std::string(), bad_message_);
-    mojo::SetDefaultProcessErrorHandler(base::NullCallback());
   }
 
   CookieStore* CreateCookieStore(const V8TestingScope& scope) {
@@ -101,14 +99,8 @@ class CookieStoreTest : public testing::Test {
             /*devtools_cookies_setting_overrides=*/
             net::CookieSettingOverrides(),
             /*prefer_bound_cookie_context=*/false,
-            /*cookie_observer=*/mojo::NullRemote(),
-            network::RestrictedCookieManager::ComputeFirstPartySetMetadata(
-                origin_,
-                &cookie_monster_,
-                isolation_info_))) {
-    mojo::SetDefaultProcessErrorHandler(base::BindRepeating(
-        &CookieStoreTest::OnBadMessage, base::Unretained(this)));
-  }
+            /*is_storage_access_potentially_allowed=*/true,
+            /*cookie_observer=*/mojo::NullRemote())) {}
 
   HeapMojoRemote<network::mojom::blink::RestrictedCookieManager>
   CreateRemoteAndInstallReceiver(const V8TestingScope& scope) {
@@ -136,6 +128,9 @@ class CookieStoreTest : public testing::Test {
   network::CookieSettings cookie_settings_;
   std::unique_ptr<network::RestrictedCookieManager> backend_;
   std::string bad_message_;
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler_{
+      base::BindRepeating(&CookieStoreTest::OnBadMessage,
+                          base::Unretained(this))};
 };
 
 class CookieEventListener : public NativeEventListener {

@@ -25,10 +25,6 @@ class GoogleBottomBarLogger {
 
     // LINT.IfChange
     static final String BOTTOM_BAR_CREATED_HISTOGRAM = "CustomTabs.GoogleBottomBar.Created";
-    static final String BOTTOM_BAR_VARIANT_CREATED_HISTOGRAM =
-            "CustomTabs.GoogleBottomBar.Variant.Created";
-    static final String BUTTON_SHOWN_HISTOGRAM = "CustomTabs.GoogleBottomBar.Button.Shown";
-    static final String BUTTON_CLICKED_HISTOGRAM = "CustomTabs.GoogleBottomBar.Button.Clicked";
     static final String BUTTON_UPDATED_HISTOGRAM = "CustomTabs.GoogleBottomBar.Button.Updated";
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/custom_tabs/histograms.xml)
@@ -54,36 +50,6 @@ class GoogleBottomBarLogger {
 
         int COUNT = 2;
         // NOTE: This must be kept in sync with the definition |GoogleBottomBarCreatedEvent|
-        // in tools/metrics/histograms/metadata/custom_tabs/enums.xml.
-    }
-
-    // LINT.ThenChange(//tools/metrics/histograms/metadata/custom_tabs/enums.xml)
-
-    /**
-     * Events indicating the type of variant layout used when the Google Bottom Bar is created.
-     *
-     * <p>These values are persisted to logs. Entries should not be renumbered and numeric values
-     * should never be reused.
-     */
-    // LINT.IfChange
-    @IntDef({
-        GoogleBottomBarVariantCreatedEvent.UNKNOWN_VARIANT,
-        GoogleBottomBarVariantCreatedEvent.NO_VARIANT,
-        GoogleBottomBarVariantCreatedEvent.DOUBLE_DECKER,
-        GoogleBottomBarVariantCreatedEvent.SINGLE_DECKER,
-        GoogleBottomBarVariantCreatedEvent.SINGLE_DECKER_WITH_RIGHT_BUTTONS,
-        GoogleBottomBarVariantCreatedEvent.COUNT
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    @interface GoogleBottomBarVariantCreatedEvent {
-        int UNKNOWN_VARIANT = 0;
-        int NO_VARIANT = 1;
-        int DOUBLE_DECKER = 2;
-        int SINGLE_DECKER = 3;
-        int SINGLE_DECKER_WITH_RIGHT_BUTTONS = 4;
-
-        int COUNT = 5;
-        // NOTE: This must be kept in sync with the definition |GoogleBottomBarVariantCreatedEvent|
         // in tools/metrics/histograms/metadata/custom_tabs/enums.xml.
     }
 
@@ -154,36 +120,6 @@ class GoogleBottomBarLogger {
     }
 
     /**
-     * Logs an event indicating the type of variant layout type used for the Google Bottom Bar.
-     *
-     * @param event The variant layout type (from {@link GoogleBottomBarVariantCreatedEvent}).
-     */
-    static void logVariantCreatedEvent(@GoogleBottomBarVariantCreatedEvent int event) {
-        assert event < GoogleBottomBarVariantCreatedEvent.COUNT
-                : String.format(
-                        "Tries to log unsupported GoogleBottomBarVariantCreatedEvent %s", event);
-        RecordHistogram.recordEnumeratedHistogram(
-                BOTTOM_BAR_VARIANT_CREATED_HISTOGRAM,
-                event,
-                GoogleBottomBarVariantCreatedEvent.COUNT);
-    }
-
-    /**
-     * Logs an event indicating the type of button that is shown in the Google Bottom Bar.
-     *
-     * @param event The button type (from {@link GoogleBottomBarButtonEvent}).
-     */
-    static void logButtonShown(@GoogleBottomBarButtonEvent int event) {
-        assert event < GoogleBottomBarButtonEvent.COUNT
-                : String.format(
-                        "Tries to log button shown event with unsupported"
-                                + " GoogleBottomBarButtonEvent %s",
-                        event);
-        RecordHistogram.recordEnumeratedHistogram(
-                BUTTON_SHOWN_HISTOGRAM, event, GoogleBottomBarButtonEvent.COUNT);
-    }
-
-    /**
      * Logs an event indicating the type of button that is updated in the Google Bottom Bar.
      *
      * @param event The button type (from {@link GoogleBottomBarButtonEvent}).
@@ -196,17 +132,6 @@ class GoogleBottomBarLogger {
                         event);
         RecordHistogram.recordEnumeratedHistogram(
                 BUTTON_UPDATED_HISTOGRAM, event, GoogleBottomBarButtonEvent.COUNT);
-    }
-
-    /**
-     * Logs an event indicating the type of button that is clicked in the Google Bottom Bar.
-     *
-     * @param event The button type (from {@link GoogleBottomBarButtonEvent}).
-     */
-    static void logButtonClicked(@GoogleBottomBarButtonEvent int event) {
-        assert event < GoogleBottomBarButtonEvent.COUNT;
-        RecordHistogram.recordEnumeratedHistogram(
-                BUTTON_CLICKED_HISTOGRAM, event, GoogleBottomBarButtonEvent.COUNT);
     }
 
     /**

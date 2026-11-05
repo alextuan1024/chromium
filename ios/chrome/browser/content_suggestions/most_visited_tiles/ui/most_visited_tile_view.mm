@@ -8,7 +8,7 @@
 #import "base/check.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/favicon_base/fallback_icon_style.h"
-#import "components/ntp_tiles/features.h"
+#import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_module_content_view_delegate.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/public/most_visited_tiles_constants.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_item.h"
@@ -30,7 +30,10 @@
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
+
+// The width of a Most Visited Tile's favicon.
 constexpr CGFloat kMostVisitedFaviconWidth = 24.0;
+
 }  // namespace
 
 @interface MostVisitedTileView ()
@@ -42,6 +45,8 @@ constexpr CGFloat kMostVisitedFaviconWidth = 24.0;
 
 @implementation MostVisitedTileView {
   UIStackView* _stackView;
+  // The icon for the AIM tile.
+  UIImageView* _aimIconView;
 }
 
 @synthesize configuration = _configuration;
@@ -51,16 +56,13 @@ constexpr CGFloat kMostVisitedFaviconWidth = 24.0;
                      tileType:ContentSuggestionsTileType::kMostVisited];
   if (self) {
     self.imageContainerView.layer.cornerRadius =
-        IsNewTabPageUICleanupEnabled()
-            ? kMostVisitedTileImageContainerSquareCornerRadius
-            : MostVisitedIconContainerSize() / 2;
+        MostVisitedIconContainerCornerRadius();
     self.imageContainerView.layer.masksToBounds = NO;
     self.imageContainerView.clipsToBounds = YES;
     if (IsNewTabPageUICleanupEnabled()) {
       self.titleLabel.numberOfLines = 1;
     }
-    if (ntp_tiles::GetAimButtonRefactorArm() ==
-        ntp_tiles::AimButtonRefactorArm::kAimAsModule) {
+    if (GetAimButtonRefactorArm() == AimButtonRefactorArm::kAimAsModule) {
       self.imageContainerView.backgroundColor = UIColor.clearColor;
       self.titleLabel.numberOfLines = 1;
     }
@@ -84,9 +86,8 @@ constexpr CGFloat kMostVisitedFaviconWidth = 24.0;
     _faviconView.translatesAutoresizingMaskIntoConstraints = NO;
     [NSLayoutConstraint activateConstraints:@[
       [_faviconView.heightAnchor
-          constraintEqualToConstant:ntp_tiles::GetAimButtonRefactorArm() ==
-                                            ntp_tiles::AimButtonRefactorArm::
-                                                kAimAsModule
+          constraintEqualToConstant:GetAimButtonRefactorArm() ==
+                                            AimButtonRefactorArm::kAimAsModule
                                         ? kMostVisitedFaviconWidth
                                         : kMagicStackFaviconWidth],
       [_faviconView.widthAnchor
@@ -107,6 +108,20 @@ constexpr CGFloat kMostVisitedFaviconWidth = 24.0;
   }
   return self;
 }
+
+#pragma mark - Public
+
+- (void)configureAsAIMTileWithTitle:(NSString*)title
+                               icon:(UIImage*)icon
+                 accessibilityLabel:(NSString*)accessibilityLabel {
+  CHECK_EQ(GetAimButtonRefactorArm(), AimButtonRefactorArm::kAimAsModule);
+  _faviconView.hidden = YES;
+  [self configureAIMIconViewWithImage:icon];
+  self.titleLabel.text = title;
+  self.accessibilityLabel = accessibilityLabel;
+}
+
+#pragma mark - ContentSuggestionsTileView
 
 - (void)setTitleSpacing:(CGFloat)size {
   if (size == _stackView.spacing) {
@@ -146,13 +161,21 @@ constexpr CGFloat kMostVisitedFaviconWidth = 24.0;
                                                             fromView:self]
            : @[];
   if (item) {
-    [_faviconView configureWithAttributes:item.attributes];
+    if (item.source == ntp_tiles::TileSource::AI_MODE) {
+      [self configureAIMIconViewWithImage:item.attributes.faviconImage];
+    } else {
+      _faviconView.hidden = NO;
+      _aimIconView.hidden = YES;
+      [_faviconView configureWithAttributes:item.attributes];
+    }
     if (!hasPreviousItem) {
       [self addInteraction:[[UIContextMenuInteraction alloc]
                                initWithDelegate:self]];
     }
   } else {
     // If there is no config, then this is a placeholder tile.
+    _faviconView.hidden = NO;
+    _aimIconView.hidden = YES;
     self.titleLabel.backgroundColor = [UIColor colorNamed:kGrey100Color];
     if (hasPreviousItem) {
       for (id<UIInteraction> interaction in self.interactions) {
@@ -209,43 +232,46 @@ constexpr CGFloat kMostVisitedFaviconWidth = 24.0;
 #pragma mark - NewTabPageColorUpdating
 
 - (void)applyBackgroundColors {
-  if (ntp_tiles::GetAimButtonRefactorArm() ==
-      ntp_tiles::AimButtonRefactorArm::kAimAsModule) {
+  if (GetAimButtonRefactorArm() == AimButtonRefactorArm::kAimAsModule) {
     return;
   }
   NewTabPageColorPalette* colorPalette =
       [self.traitCollection objectForNewTabPageTrait];
   // Favicon monogram will only be applied if defaultBackgroundColor is set.
   MostVisitedItem* configuration = [self mostVisitedItem];
-  if (configuration.attributes.defaultBackgroundColor) {
-    if (colorPalette) {
-      // If a color palette is available, apply its tint and background
-      // colors to the attributes while preserving the other attributes.
-      configuration.attributes = [FaviconAttributesWithPayload
-          attributesWithMonogram:configuration.attributes.monogramString
-                       textColor:colorPalette.secondaryCellColor
-                 backgroundColor:colorPalette.monogramColor
-          defaultBackgroundColor:configuration.attributes
-                                     .defaultBackgroundColor];
-    } else {
-      // If no color palette is available, fall back to default icon style
-      // colors.
-      std::unique_ptr<favicon_base::FallbackIconStyle> default_icon_style =
-          std::make_unique<favicon_base::FallbackIconStyle>();
+  if (configuration.source == ntp_tiles::TileSource::AI_MODE) {
+    _aimIconView.tintColor = [UIColor colorNamed:kTextPrimaryColor];
+  } else {
+    if (configuration.attributes.defaultBackgroundColor) {
+      if (colorPalette) {
+        // If a color palette is available, apply its tint and background
+        // colors to the attributes while preserving the other attributes.
+        configuration.attributes = [FaviconAttributesWithPayload
+            attributesWithMonogram:configuration.attributes.monogramString
+                         textColor:colorPalette.secondaryCellColor
+                   backgroundColor:colorPalette.monogramColor
+            defaultBackgroundColor:configuration.attributes
+                                       .defaultBackgroundColor];
+      } else {
+        // If no color palette is available, fall back to default icon style
+        // colors.
+        std::unique_ptr<favicon_base::FallbackIconStyle> default_icon_style =
+            std::make_unique<favicon_base::FallbackIconStyle>();
 
-      configuration.attributes = [FaviconAttributesWithPayload
-          attributesWithMonogram:configuration.attributes.monogramString
-                       textColor:skia::UIColorFromSkColor(
-                                     default_icon_style->text_color)
-                 backgroundColor:skia::UIColorFromSkColor(
-                                     default_icon_style->background_color)
-          defaultBackgroundColor:default_icon_style->
-                                 is_default_background_color];
+        configuration.attributes = [FaviconAttributesWithPayload
+            attributesWithMonogram:configuration.attributes.monogramString
+                         textColor:skia::UIColorFromSkColor(
+                                       default_icon_style->text_color)
+                   backgroundColor:skia::UIColorFromSkColor(
+                                       default_icon_style->background_color)
+            defaultBackgroundColor:default_icon_style->
+                                   is_default_background_color];
+      }
     }
-  }
 
-  // Update the favicon view with the new attributes.
-  [self.faviconView configureWithAttributes:configuration.attributes];
+    // Update the favicon view with the new attributes.
+    [self.faviconView configureWithAttributes:configuration.attributes];
+  }
 
   if (colorPalette) {
     self.imageContainerView.backgroundColor = IsNewTabPageUICleanupEnabled()
@@ -260,6 +286,24 @@ constexpr CGFloat kMostVisitedFaviconWidth = 24.0;
 }
 
 #pragma mark - Private
+
+// Configures `_aimIconView` with `image` and hides `_faviconView`.
+- (void)configureAIMIconViewWithImage:(UIImage*)image {
+  AimButtonRefactorArm arm = GetAimButtonRefactorArm();
+  CHECK(arm == AimButtonRefactorArm::kAimAsMvt ||
+        arm == AimButtonRefactorArm::kAimAsModule);
+  if (!_aimIconView) {
+    _aimIconView = [[UIImageView alloc] init];
+    _aimIconView.translatesAutoresizingMaskIntoConstraints = NO;
+    _aimIconView.contentMode = UIViewContentModeScaleAspectFit;
+    AddSquareConstraints(_aimIconView, kMostVisitedAimIconSize);
+    [self addSubview:_aimIconView];
+    AddSameCenterConstraints(_aimIconView, self.imageContainerView);
+  }
+  _aimIconView.hidden = NO;
+  _aimIconView.image = image;
+  _aimIconView.tintColor = [UIColor colorNamed:kTextPrimaryColor];
+}
 
 // Returns the `MostVisitedItem` casted `self.configuration`.
 - (MostVisitedItem*)mostVisitedItem {

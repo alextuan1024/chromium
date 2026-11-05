@@ -7,7 +7,6 @@ import {html} from '//resources/lit/v3_0/lit.rollup.js';
 import type {ActorOverlayAppElement} from './app.js';
 
 export function getHtml(this: ActorOverlayAppElement) {
-  // clang-format off
   return html`<!--_html_template_start_-->
 <div ?hidden="${!this.borderGlowVisible_}">
   <div id="border-stroke"></div>
@@ -15,7 +14,9 @@ export function getHtml(this: ActorOverlayAppElement) {
 </div>
 <div id="magicCursor">
   <div id="cursorImage"></div>
+  ${this.cursorChipText_ ? html`
+    <div id="cursorChip">${this.cursorChipText_}</div>
+  ` : ''}
 </div>
 <!--_html_template_end_-->`;
-  // clang-format on
 }

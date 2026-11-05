@@ -33,8 +33,6 @@ extern const base::FeatureParam<bool> kShowContextMenu;
 extern const base::FeatureParam<bool> kShowContextMenuTabPreviews;
 // The maximum number of tab suggestions to show in the composebox context menu.
 extern const base::FeatureParam<int> kContextMenuMaxTabSuggestions;
-// Whether to enable multi-tab selection in the context menu.
-extern const base::FeatureParam<bool> kContextMenuEnableMultiTabSelection;
 
 // The maximum number of file attachments to upload.
 extern const base::FeatureParam<int> kMaxNumFiles;
@@ -43,8 +41,6 @@ extern const base::FeatureParam<bool> kShowContextMenuHeaders;
 
 // Whether to show the smart compose in the composebox.
 extern const base::FeatureParam<bool> kShowSmartCompose;
-// Whether to exit AI mode when the user clicks outside the composebox.
-extern const base::FeatureParam<bool> kCloseComposeboxByClickOutside;
 
 bool IsNtpComposeboxEnabled(Profile* profile);
 
@@ -98,6 +94,13 @@ extern const base::FeatureParam<bool> kMultiLineEnabled;
 
 // Whether to enable the dynamic version of the AI Mode button in the realbox.
 BASE_DECLARE_FEATURE(kNtpRealboxDynamicAiModeButton);
+
+// With kNtpRealboxDynamicAiModeButton, the button's icon forces
+// `visibility: visible`, so it paints on its own before the NTP searchbox is
+// shown, which regressed Startup.FirstWebContents.NonEmptyPaint3. When enabled,
+// the icon inherits its visibility instead. Temporary; remove once enabled by
+// default.
+BASE_DECLARE_FEATURE(kNtpRealboxDynamicAiModeButtonPreventEarlyPaint);
 
 bool IsNtpRealboxNextEnabled(Profile* profile);
 

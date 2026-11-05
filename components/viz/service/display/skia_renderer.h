@@ -15,6 +15,7 @@
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
+#include "base/trace_event/memory_dump_provider.h"
 #include "build/build_config.h"
 #include "components/viz/common/resources/transferable_resource.h"
 #include "components/viz/service/display/direct_renderer.h"
@@ -45,7 +46,9 @@ class TileDrawQuad;
 // TODO(crbug.com/40554816): SkColorSpace is only a subset comparing to
 // gfx::ColorSpace. Need to figure out support for color space that is not
 // covered by SkColorSpace.
-class VIZ_SERVICE_EXPORT SkiaRenderer : public DirectRenderer {
+class VIZ_SERVICE_EXPORT SkiaRenderer
+    : public DirectRenderer,
+      public base::trace_event::MemoryDumpProvider {
  public:
   // TODO(penghuang): Remove skia_output_surface when DDL is used everywhere.
   SkiaRenderer(const RendererSettings* settings,
@@ -59,6 +62,12 @@ class VIZ_SERVICE_EXPORT SkiaRenderer : public DirectRenderer {
   SkiaRenderer& operator=(const SkiaRenderer&) = delete;
 
   ~SkiaRenderer() override;
+
+  // base::trace_event::MemoryDumpProvider implementation. Dumps all the
+  // BufferQueues owned by this renderer, since registering each BufferQueue
+  // individually would take the MemoryDumpManager lock once per render pass.
+  bool OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
+                    base::trace_event::ProcessMemoryDump* pmd) override;
 
   void SwapBuffers(SwapFrameData swap_frame_data) override;
   void SwapBuffersSkipped() override;
@@ -113,7 +122,7 @@ class VIZ_SERVICE_EXPORT SkiaRenderer : public DirectRenderer {
   void EnsureScissorTestDisabled() override;
   void CopyDrawnRenderPass(const copy_output::RenderPassGeometry& geometry,
                            std::unique_ptr<CopyOutputRequest> request) override;
-  void DidChangeVisibility() override;
+  void DidChangeHasBackBuffers() override;
   void SetDelegatedInkPointRendererSkiaForTest(
       std::unique_ptr<DelegatedInkPointRendererSkia> renderer) override;
   bool SupportsBGRA() const override;
@@ -185,6 +194,8 @@ class VIZ_SERVICE_EXPORT SkiaRenderer : public DirectRenderer {
       const SkImage* image,
       const gfx::RectF& valid_texel_bounds,
       DrawQuadParams* params) const;
+  gfx::RectF GetRenderPassLogicalBounds(
+      AggregatedRenderPassId render_pass_id) const;
 
   bool MustFlushBatchedQuads(const DrawQuad* new_quad,
                              const DrawRPDQParams* rpdq_params,
@@ -214,11 +225,6 @@ class VIZ_SERVICE_EXPORT SkiaRenderer : public DirectRenderer {
                        const DrawRPDQParams* rpdq_params,
                        SkPaint* paint,
                        DrawQuadParams* params);
-
-  void DrawPaintOpBuffer(const cc::PaintOpBuffer* buffer,
-                         const std::optional<SkColor4f>& clear_color,
-                         const TileDrawQuad* quad,
-                         const DrawQuadParams* params);
 
   // RenderPass draw quads can only be batch when they aren't bypassed and
   // don't have any advanced effects (eg. filter).
@@ -374,6 +380,11 @@ class VIZ_SERVICE_EXPORT SkiaRenderer : public DirectRenderer {
   // |current_viewport_rect_|.
   gfx::Rect current_render_pass_update_rect_;
 
+  // When content with the sRGB transfer function must be drawn as gamma 2.2
+  // into the current render pass, sRGB primaries with the gamma 2.2 transfer
+  // function. Null otherwise, including outside of render passes.
+  sk_sp<SkColorSpace> srgb_as_gamma22_color_space_;
+
   // The scissor rect for the current draw. In the same coordinate space as and
   // contained by |current_render_pass_update_rect_|.
   std::optional<gfx::Rect> scissor_rect_;
@@ -480,9 +491,9 @@ class VIZ_SERVICE_EXPORT SkiaRenderer : public DirectRenderer {
       return resource_lock->mailbox();
     }
 
-    const gpu::SyncToken& sync_token() const {
+    std::vector<gpu::SyncToken> GetSyncTokens() const {
       DCHECK(resource_lock.has_value());
-      return resource_lock->sync_token();
+      return resource_lock->GetSyncTokens();
     }
 
     void MaybeCopyReleaseFence(const gfx::GpuFenceHandle& release_fence) {
@@ -541,8 +552,6 @@ class VIZ_SERVICE_EXPORT SkiaRenderer : public DirectRenderer {
       awaiting_release_overlay_locks_;
 #endif  // BUILDFLAG(IS_APPLE)
 
-  const bool is_using_raw_draw_;
-
   // Returns true if we need to push a color conversion layer to correctly draw
   // |render_pass|'s contents.
   bool NeedsLayerForColorConversion(const AggregatedRenderPass* render_pass);
@@ -550,6 +559,19 @@ class VIZ_SERVICE_EXPORT SkiaRenderer : public DirectRenderer {
   // Returns the color space of the current draw layer, which may differ from
   // the render pass' color space.
   gfx::ColorSpace CurrentDrawLayerColorSpace() const;
+
+  // Returns the color space as which SDR content in `color_space` must be
+  // drawn into the current render pass, or null if it can be drawn as is. When
+  // the display system decodes sRGB as gamma 2.2 (see
+  // gfx::DisplayColorSpaces::srgb_is_gamma22()), content with the sRGB
+  // transfer function is decoded with gamma 2.2 when it is converted to an HDR
+  // output color space.
+  sk_sp<SkColorSpace> GetSrgbAsGamma22ColorSpace(
+      const gfx::ColorSpace& color_space) const;
+
+  // Computes `srgb_as_gamma22_color_space_` for `render_pass`, which is about
+  // to be drawn.
+  void UpdateSrgbAsGamma22ColorSpace(const AggregatedRenderPass* render_pass);
 
   // A layer that may be pushed at the start of |BeginDrawingRenderPass| that is
   // the size of the pass' update rect. Drawing done inside this layer is in a

@@ -287,13 +287,15 @@ class PressureServiceForSharedWorkerTest
         rfh->GetStorageKey().IsFirstPartyContext()
             ? blink::mojom::SharedWorkerSameSiteCookies::kAll
             : blink::mojom::SharedWorkerSameSiteCookies::kNone,
-        /*extended_lifetime=*/false);
+        /*extended_lifetime=*/false,
+        network::PermissionsPolicyFeaturesBitset());
     worker_service_ = std::make_unique<SharedWorkerServiceImpl>(
         rfh->GetStoragePartition(), nullptr /* service_worker_context */);
     worker_host_ = std::make_unique<SharedWorkerHost>(
         worker_service_.get(), instance, rfh->GetSiteInstance(),
         std::vector<network::mojom::ContentSecurityPolicyPtr>(),
-        base::MakeRefCounted<PolicyContainerHost>());
+        base::MakeRefCounted<PolicyContainerHost>(),
+        net::StorageAccessApiStatus::kNone);
     AddClient(receiver_.InitWithNewPipeAndPassRemote(), rfh->GetGlobalId(),
               blink::MessagePortChannel(port_pair_.TakePort0()));
     mojo::Receiver<blink::mojom::BrowserInterfaceBroker>& bib =

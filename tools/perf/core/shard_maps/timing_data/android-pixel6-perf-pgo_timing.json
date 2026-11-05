@@ -1,9 +1,5 @@
 [
     {
-        "duration": "107.0",
-        "name": "jetstream2/JetStream2"
-    },
-    {
         "duration": "23.0",
         "name": "rendering.mobile/accu_weather_mobile_pinch_2018"
     },
@@ -1602,10 +1598,6 @@
     {
         "duration": "41.0",
         "name": "speedometer2/Speedometer2"
-    },
-    {
-        "duration": "42.0",
-        "name": "speedometer3/Speedometer3"
     },
     {
         "duration": "1.0",

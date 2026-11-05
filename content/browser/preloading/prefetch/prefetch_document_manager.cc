@@ -32,7 +32,6 @@
 namespace content {
 
 namespace {
-static PrefetchService* g_prefetch_service_for_testing = nullptr;
 
 // `SpeculationCandidate::tags` must never be empty: rules that specify no tags
 // carry a single null tag instead (see blink.mojom.SpeculationCandidate). Every
@@ -90,8 +89,9 @@ PrefetchDocumentManager::~PrefetchDocumentManager() = default;
 PrefetchDocumentManager* PrefetchDocumentManager::FromDocumentToken(
     int process_id,
     const blink::DocumentToken& document_token) {
-  if (auto* rfh =
-          RenderFrameHostImpl::FromDocumentToken(process_id, document_token)) {
+  // TODO(crbug.com/379869738): Remove FromUnsafeValue().
+  if (auto* rfh = RenderFrameHostImpl::FromDocumentToken(
+          ChildProcessId::FromUnsafeValue(process_id), document_token)) {
     if (auto* prefetch_document_manager = GetForCurrentDocument(rfh)) {
       // A RenderFrameHost can have multiple Documents/PrefetchDocumentManagers
       // and the Document of `document_token` might be pending deletion or
@@ -285,12 +285,6 @@ bool PrefetchDocumentManager::IsPrefetchAttemptFailedOrDiscarded(
       PrefetchKey(document_token_, url));
 }
 
-// static
-void PrefetchDocumentManager::SetPrefetchServiceForTesting(
-    PrefetchService* prefetch_service) {
-  g_prefetch_service_for_testing = prefetch_service;
-}
-
 void PrefetchDocumentManager::ResetPrefetchAheadOfPrerenderIfExist(
     PreloadingType preloading_type,
     const GURL& url) {
@@ -306,10 +300,6 @@ void PrefetchDocumentManager::ResetPrefetchAheadOfPrerenderIfExist(
 }
 
 PrefetchService* PrefetchDocumentManager::GetPrefetchService() const {
-  if (g_prefetch_service_for_testing) {
-    return g_prefetch_service_for_testing;
-  }
-
   CHECK(BrowserContextImpl::From(render_frame_host().GetBrowserContext())
             ->GetPrefetchService(),
         base::NotFatalUntil::M159);

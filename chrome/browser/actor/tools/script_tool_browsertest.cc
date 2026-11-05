@@ -2,7 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/feature_list.h"
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
@@ -11,13 +16,19 @@
 #include "base/values.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
+#include "chrome/browser/actor/actor_surface.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
+#include "chrome/browser/actor/tools/observation_delay_controller.h"
+#include "chrome/browser/actor/tools/observation_delay_test_util.h"
 #include "chrome/browser/actor/tools/script_tool_host.h"
 #include "chrome/browser/actor/tools/script_tool_request.h"
 #include "chrome/browser/actor/tools/tool_request.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/actor/tools/tools_test_util.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/actor.mojom.h"
@@ -25,6 +36,8 @@
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
+#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/navigation_controller.h"
@@ -33,8 +46,13 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_navigation_throttle.h"
 #include "content/public/test/test_navigation_throttle_inserter.h"
+#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "ui/base/page_transition_types.h"
+#include "url/url_constants.h"
+#include "url/url_util.h"
 
 using base::test::TestFuture;
 
@@ -67,10 +85,12 @@ class ActorToolsTestScriptTool : public ActorToolsTest {
 
     const auto& action_results = result.Get();
     EXPECT_EQ(action_results.size(), 1u);
-    EXPECT_TRUE(action_results.at(0).result);
-    mojom::ActionResultPtr action_result = action_results.at(0).result->Clone();
+    const auto& act_result =
+        action_results.at(0).tool_result.deprecated_action_result();
+    EXPECT_TRUE(act_result);
+    mojom::ActionResultPtr action_result = act_result->Clone();
     actor::mojom::ScriptToolResponsePtr response =
-        std::move(action_results.at(0).result->script_tool_response);
+        std::move(action_result->script_tool_response);
     EXPECT_TRUE(response);
     return {std::move(action_result), std::move(response)};
   }
@@ -102,7 +122,7 @@ class ActorToolsTestScriptTool : public ActorToolsTest {
     EXPECT_TRUE(nav_observer.last_navigation_succeeded());
 
     auto response = result.Get();
-    ExpectOkResult(*response[0].result);
+    ExpectOkResult(*response[0].tool_result.deprecated_action_result());
   }
 
   content::RenderFrameHost& NavigateSubframe(
@@ -135,37 +155,6 @@ class ActorToolsTestScriptTool : public ActorToolsTest {
   base::test::ScopedFeatureList features_;
 };
 
-class ActorToolsTestScriptToolWithStability : public ActorToolsTestScriptTool {
- public:
-  ActorToolsTestScriptToolWithStability() {
-    features_.InitAndEnableFeatureWithParameters(
-        actor::kActorScriptToolDelayObservation,
-        {{"script_tool_delay_observation_ms", "1000"}});
-  }
-
- private:
-  base::test::ScopedFeatureList features_;
-};
-
-IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolWithStability,
-                       PageStabilityDelay) {
-  const GURL url = embedded_https_test_server().GetURL(
-      "example.com", "/actor/script_tool.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-
-  const std::string input_arguments = R"JSON({"text": "test"})JSON";
-  auto action = MakeScriptToolRequest(*main_frame(), "echo", input_arguments);
-
-  base::TimeTicks start = base::TimeTicks::Now();
-  auto [action_result, response] = RunScriptTool(std::move(action));
-  base::TimeDelta duration = base::TimeTicks::Now() - start;
-
-  EXPECT_EQ(response->result, "test");
-  // The delay should be at least 1000ms.
-  EXPECT_GE(duration, base::Milliseconds(1000));
-  EXPECT_TRUE(action_result->requires_page_stabilization);
-}
-
 IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, Basic) {
   const GURL url = embedded_https_test_server().GetURL(
       "example.com", "/actor/script_tool.html");
@@ -182,12 +171,20 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, Basic) {
   EXPECT_EQ(response->tool->name, "echo");
   EXPECT_EQ(response->tool->description, "echo input");
   EXPECT_EQ(response->tool->annotations->read_only, true);
-  EXPECT_FALSE(action_result->requires_page_stabilization);
+  EXPECT_TRUE(action_result->requires_page_stabilization);
 
   const std::string expected_input_schema =
       R"JSON({"type":"object","properties":{"text":{"description":)JSON"
       R"JSON("Value to echo","type":"string"}},"required":["text"]})JSON";
   EXPECT_EQ(response->tool->input_schema, expected_input_schema);
+
+  // Navigate to a new document before invoking the tool; a request bound to
+  // the previous document's identifier must fail with kTabWentAway.
+  auto stale_action =
+      MakeScriptToolRequest(*main_frame(), "echo", input_arguments);
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  RunScriptToolExpectingError(std::move(stale_action),
+                              mojom::ActionResultCode::kTabWentAway);
 }
 
 IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, DeclarativeTool) {
@@ -301,15 +298,9 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolNoTimeout,
   actor_task().Act(ToRequestList(std::move(action)), result.GetCallback());
 
   // Wait for the task to be paused. The Act() call has not returned yet.
-  if (base::FeatureList::IsEnabled(kActorFormScriptToolInterrupt)) {
-    ASSERT_TRUE(base::test::RunUntil([&]() {
-      return actor_task().GetState() == ActorTask::State::kWaitingOnUser;
-    }));
-  } else {
-    ASSERT_TRUE(base::test::RunUntil([&]() {
-      return actor_task().GetState() == ActorTask::State::kPausedByActor;
-    }));
-  }
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return actor_task().GetState() == ActorTask::State::kWaitingOnUser;
+  }));
 
   // Wait for more than the timeout (1s).
   base::RunLoop run_loop;
@@ -318,11 +309,7 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolNoTimeout,
   run_loop.Run();
 
   // Verify that the task is still paused and has not timed out.
-  if (base::FeatureList::IsEnabled(kActorFormScriptToolInterrupt)) {
-    EXPECT_EQ(actor_task().GetState(), ActorTask::State::kWaitingOnUser);
-  } else {
-    EXPECT_EQ(actor_task().GetState(), ActorTask::State::kPausedByActor);
-  }
+  EXPECT_EQ(actor_task().GetState(), ActorTask::State::kWaitingOnUser);
 
   EXPECT_FALSE(result.IsReady());
 
@@ -336,9 +323,11 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolNoTimeout,
 
   const auto& action_results = result.Get();
   ASSERT_EQ(action_results.size(), 1u);
-  ASSERT_TRUE(action_results.at(0).result->script_tool_response);
-  base::Value actual_json = base::test::ParseJson(
-      *action_results.at(0).result->script_tool_response->result);
+  const auto& act_result =
+      action_results.at(0).tool_result.deprecated_action_result();
+  ASSERT_TRUE(act_result->script_tool_response);
+  base::Value actual_json =
+      base::test::ParseJson(*act_result->script_tool_response->result);
 
   base::Value expected_json = base::test::ParseJson(R"JSON(
   [
@@ -420,6 +409,70 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, HasTransientUserActivation) {
   EXPECT_EQ(response->result, "true");
 }
 
+// Tests the tool re-registration race for the actor: the page content (APC) is
+// observed while one tool is registered, but before the action runs, the page
+// unregisters that tool and registers a different one under the same name. The
+// action is pinned to the observed tool, so it fails rather than running the
+// replacement.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
+                       ReRegisteredToolWithSameNameIsNotExecuted) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  ASSERT_TRUE(content::ExecJs(web_contents(), R"(
+    window.controller = new AbortController();
+    window.executed = [];
+    // `ExecJs()` waits for the promise that is the script's completion value.
+    document.modelContext.registerTool({
+      execute: async () => {
+        window.executed.push('original');
+        return 'original';
+      },
+      name: 'swapped_tool',
+      description: 'the original tool',
+    }, {signal: window.controller.signal});
+  )"));
+
+  // Observe the page while the original tool is registered, as the model would
+  // before choosing an action. The action is pinned to the tool in this
+  // observation; without one, it would fall back to looking the tool up by
+  // name.
+  GetPageApc();
+  auto action = MakeScriptToolRequest(*main_frame(), "swapped_tool", "{}");
+
+  // Swap the tool out from under the pending action.
+  ASSERT_TRUE(content::ExecJs(web_contents(), R"(
+    window.controller.abort();
+    document.modelContext.registerTool({
+      execute: async () => {
+        window.executed.push('replacement');
+        return 'replacement';
+      },
+      name: 'swapped_tool',
+      description: 'a different tool that reused the name',
+    });
+  )"));
+
+  RunScriptToolExpectingError(std::move(action),
+                              mojom::ActionResultCode::kScriptToolInvalidName);
+  EXPECT_EQ(content::EvalJs(web_contents(), "window.executed.join(',')"), "");
+}
+
+// When the page has been observed, the action is pinned to the observed tool's
+// ID, and executes that tool.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, ObservedToolIsExecuted) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  GetPageApc();
+  auto action = MakeScriptToolRequest(*main_frame(), "echo",
+                                      R"JSON({"text": "test"})JSON");
+  auto [action_result, response] = RunScriptTool(std::move(action));
+  EXPECT_EQ(response->result, "test");
+}
+
 IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, WindowOpenTopLevelNavigate) {
   const GURL url = embedded_https_test_server().GetURL(
       "example.com", "/actor/script_tool.html");
@@ -451,7 +504,10 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, WindowOpenTopLevelNavigate) {
   EXPECT_TRUE(nav_observer.last_navigation_succeeded());
 
   auto results = result.Get();
-  EXPECT_EQ(results[0].result->script_tool_response->result, "opened");
+  EXPECT_EQ(results[0]
+                .tool_result.deprecated_action_result()
+                ->script_tool_response->result,
+            "opened");
 }
 
 IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, WindowOpenSucceeds) {
@@ -482,12 +538,15 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, WindowOpenSucceeds) {
   nav_observer.Wait();
 
   auto results = result.Get();
-  EXPECT_EQ(results[0].result->script_tool_response->result, "opened");
+  EXPECT_EQ(results[0]
+                .tool_result.deprecated_action_result()
+                ->script_tool_response->result,
+            "opened");
 
   // Validate the newly opened window is not included in the observation's tab
   // list, but is included in the window observations.
   base::test::TestFuture<
-      base::TimeTicks, std::vector<actor::ActionResultWithLatencyInfo>,
+      base::TimeTicks, std::vector<actor::ToolResultWithLatencyInfo>,
       actor::TaskId, bool,
       std::optional<page_content_annotations::ScreenshotOptions::
                         ScreenshotCollectionOptions>,
@@ -546,7 +605,9 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
   nav_observer.Wait();
 
   auto results = result.Get();
-  EXPECT_EQ(results[0].result->script_tool_response->result,
+  EXPECT_EQ(results[0]
+                .tool_result.deprecated_action_result()
+                ->script_tool_response->result,
             R"({"first":"opened","second":"blocked"})");
 }
 
@@ -643,7 +704,7 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
   nav_observer.Wait();
   EXPECT_TRUE(nav_observer.last_navigation_succeeded());
   auto response = result.Get();
-  ExpectOkResult(*response[0].result);
+  ExpectOkResult(*response[0].tool_result.deprecated_action_result());
 }
 
 IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
@@ -663,7 +724,7 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
   nav_observer.Wait();
   EXPECT_TRUE(nav_observer.last_navigation_succeeded());
   auto response = result.Get();
-  ExpectOkResult(*response[0].result);
+  ExpectOkResult(*response[0].tool_result.deprecated_action_result());
 }
 
 IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
@@ -807,6 +868,17 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
   auto action = MakeScriptToolRequest(subframe, "echo", input_arguments);
   auto [action_result, response] = RunScriptTool(std::move(action));
   EXPECT_EQ(response->result, "cross_origin_subframe");
+
+  // Navigating the subframe before invoking the tool invalidates the old
+  // subframe document ID (kTabWentAway).
+  auto stale_subframe_action =
+      MakeScriptToolRequest(subframe, "echo", input_arguments);
+  const GURL new_subframe_url =
+      embedded_https_test_server().GetURL("c.com", "/actor/script_tool.html");
+  ASSERT_TRUE(
+      content::NavigateIframeToURL(web_contents(), "iframe", new_subframe_url));
+  RunScriptToolExpectingError(std::move(stale_subframe_action),
+                              mojom::ActionResultCode::kTabWentAway);
 }
 
 IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, CrossOriginSubframeNavigates) {
@@ -860,8 +932,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, ToolReentrantExecution) {
 
   auto response1 = result1.Get();
   auto response2 = result2.Get();
-  EXPECT_TRUE(response1[0].result);
-  EXPECT_TRUE(response2[0].result);
+  EXPECT_TRUE(response1[0].tool_result.deprecated_action_result());
+  EXPECT_TRUE(response2[0].tool_result.deprecated_action_result());
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -880,15 +952,9 @@ IN_PROC_BROWSER_TEST_F(
                                       declarative_input);
   ActResultFuture result;
   actor_task().Act(ToRequestList(std::move(action)), result.GetCallback());
-  if (base::FeatureList::IsEnabled(kActorFormScriptToolInterrupt)) {
-    ASSERT_TRUE(base::test::RunUntil([&]() {
-      return actor_task().GetState() == ActorTask::State::kWaitingOnUser;
-    }));
-  } else {
-    ASSERT_TRUE(base::test::RunUntil([&]() {
-      return actor_task().GetState() == ActorTask::State::kPausedByActor;
-    }));
-  }
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return actor_task().GetState() == ActorTask::State::kWaitingOnUser;
+  }));
 
   content::TestNavigationObserver nav_observer(web_contents());
   web_contents()->GetController().GoBack();
@@ -910,9 +976,11 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, DefaultVoting) {
   ExpectOkResult(result);
 
   const TabObservationStrategy& strategy = result.GetStrategy();
-  EXPECT_EQ(strategy.GetScreenshotPolicy(active_tab()->GetHandle()),
+  EXPECT_EQ(strategy.GetScreenshotPolicy(
+                ActorSurfaceHandle::From(active_tab()->GetHandle())),
             ScreenshotPolicy::kRequested);
-  EXPECT_EQ(strategy.GetPageContentExtractionPolicy(active_tab()->GetHandle()),
+  EXPECT_EQ(strategy.GetPageContentExtractionPolicy(
+                ActorSurfaceHandle::From(active_tab()->GetHandle())),
             PageContentExtractionPolicy::kRequired);
 }
 
@@ -941,10 +1009,785 @@ IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolSkipVoting, SkipVoting) {
   ExpectOkResult(result);
 
   const TabObservationStrategy& strategy = result.GetStrategy();
-  EXPECT_EQ(strategy.GetScreenshotPolicy(active_tab()->GetHandle()),
+  EXPECT_EQ(strategy.GetScreenshotPolicy(
+                ActorSurfaceHandle::From(active_tab()->GetHandle())),
             ScreenshotPolicy::kSkipped);
-  EXPECT_EQ(strategy.GetPageContentExtractionPolicy(active_tab()->GetHandle()),
+  EXPECT_EQ(strategy.GetPageContentExtractionPolicy(
+                ActorSurfaceHandle::From(active_tab()->GetHandle())),
             PageContentExtractionPolicy::kSkipped);
+  EXPECT_FALSE(result.Get()
+                   .at(0)
+                   .tool_result.deprecated_action_result()
+                   ->requires_page_stabilization);
+}
+
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool, PermissionsPolicyDisabled) {
+  // Embed a cross-origin iframe without `allow="tools"`. Since the default
+  // allowlist for `Permissions-Policy: tools` is `EnableForSelf`, the
+  // cross-origin iframe has `PermissionsPolicyFeature::kTools` disabled.
+  content::RenderFrameHost& subframe =
+      NavigateSubframe(embedded_https_test_server().GetURL(
+                           "example.com", "/actor/simple_iframe.html"),
+                       embedded_https_test_server().GetURL(
+                           "sub.other.com", "/actor/script_tool.html"));
+  EXPECT_FALSE(subframe.HasTransientUserActivation());
+
+  auto action =
+      MakeScriptToolRequest(subframe, "echo", R"JSON({"text": "test"})JSON");
+  RunScriptToolExpectingError(
+      std::move(action), mojom::ActionResultCode::kScriptToolInvocationFailed);
+
+  // Ensure the browser process did not grant transient user activation to the
+  // disallowed frame.
+  EXPECT_FALSE(subframe.HasTransientUserActivation());
+}
+
+// A declarative tool whose result comes from a new, same-origin document must
+// fail if the new document has `PermissionsPolicyFeature::kTools` disabled.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
+                       PermissionsPolicyDisabledInCrossDocumentResult) {
+  // The same-origin iframe has `PermissionsPolicyFeature::kTools` enabled by
+  // default.
+  content::RenderFrameHost& subframe = NavigateSubframe(
+      embedded_https_test_server().GetURL("example.com",
+                                          "/actor/simple_iframe.html"),
+      embedded_https_test_server().GetURL(
+          "example.com", "/actor/declarative_script_tool_cross_document.html"));
+  ASSERT_TRUE(subframe.IsFeatureEnabled(
+      network::mojom::PermissionsPolicyFeature::kTools));
+
+  // Revoke `tools` from the iframe. The updated container policy only applies
+  // to the document created by the tool's form submission.
+  ASSERT_TRUE(
+      content::ExecJs(web_contents(),
+                      "document.getElementById('iframe').setAttribute('allow', "
+                      "\"tools 'none'\");"));
+
+  auto action = MakeScriptToolRequest(subframe, "declarative_tool",
+                                      R"JSON({"echo": "hello world"})JSON");
+  RunScriptToolExpectingError(
+      std::move(action), mojom::ActionResultCode::kScriptToolInvocationFailed);
+}
+
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
+                       CancelOngoingActions_ImperativeTool) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_cancel.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  // Running `hanging_tool` sends a DOM automation message once execution has
+  // started, which the test listens for to trigger cancellation mid-execution.
+  content::DOMMessageQueue message_queue(web_contents());
+  auto action = MakeScriptToolRequest(*main_frame(), "hanging_tool", "{}");
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(action)), result.GetCallback());
+
+  std::string message;
+  ASSERT_TRUE(message_queue.WaitForMessage(&message));
+  EXPECT_EQ("\"hanging_tool_started\"", message);
+
+  actor_task().CancelOngoingActions(mojom::ActionResultCode::kActionsCancelled);
+
+  ExpectErrorResult(result, mojom::ActionResultCode::kActionsCancelled);
+  EXPECT_EQ(true, content::EvalJs(web_contents(), "window.signalAborted"));
+  EXPECT_EQ(true, content::EvalJs(web_contents(), "window.toolCancelFired"));
+}
+
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
+                       CancelOngoingActions_DeclarativeTool) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/declarative_script_tool_pause.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  ASSERT_TRUE(content::ExecJs(web_contents(), R"(
+    window.toolCancelFired = false;
+    document.modelContext.addEventListener('toolcancel', e => {
+      if (e.toolName === 'declarative_tool') {
+        window.toolCancelFired = true;
+      }
+    });
+  )"));
+
+  const std::string declarative_input =
+      R"JSON({"echo":"declarative_input"})JSON";
+  auto action = MakeScriptToolRequest(*main_frame(), "declarative_tool",
+                                      declarative_input);
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(action)), result.GetCallback());
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return actor_task().GetState() == ActorTask::State::kWaitingOnUser;
+  }));
+
+  EXPECT_EQ(true,
+            content::EvalJs(
+                web_contents(),
+                "document.querySelector('form').matches(':tool-form-active')"));
+
+  actor_task().CancelOngoingActions(mojom::ActionResultCode::kActionsCancelled);
+
+  ExpectErrorResult(result, mojom::ActionResultCode::kActionsCancelled);
+  EXPECT_EQ(false,
+            content::EvalJs(
+                web_contents(),
+                "document.querySelector('form').matches(':tool-form-active')"));
+  EXPECT_EQ(
+      false,
+      content::EvalJs(
+          web_contents(),
+          "document.querySelector('button').matches(':tool-submit-active')"));
+  EXPECT_EQ(true, content::EvalJs(web_contents(), "window.toolCancelFired"));
+}
+
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
+                       CancelOngoingActions_ReentrantExecuteTool) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_cancel_reentrant.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  // Running `reentrant_outer` invokes `reentrant_inner`, which sends a DOM
+  // automation message once nested execution has started so the test can
+  // trigger cancellation mid-execution.
+  content::DOMMessageQueue message_queue(web_contents());
+  auto action = MakeScriptToolRequest(*main_frame(), "reentrant_outer", "{}");
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(action)), result.GetCallback());
+
+  std::string message;
+  ASSERT_TRUE(message_queue.WaitForMessage(&message));
+  EXPECT_EQ("\"reentrant_inner_started\"", message);
+
+  actor_task().CancelOngoingActions(mojom::ActionResultCode::kActionsCancelled);
+
+  ExpectErrorResult(result, mojom::ActionResultCode::kActionsCancelled);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(
+               web_contents(),
+               "window.outerSignalAborted && window.innerSignalAborted && "
+               "window.cancelledTools.includes('reentrant_outer') && "
+               "window.cancelledTools.includes('reentrant_inner')")
+        .ExtractBool();
+  }));
+}
+
+class ActorToolsTestScriptToolRegistration : public ActorToolsTestScriptTool {
+ public:
+  ActorToolsTestScriptToolRegistration() {
+    features_.InitAndEnableFeature(blink::features::kWebMCPWaitForToolsUntil);
+  }
+
+  // Returns the names of the script tools in an observation of the active tab,
+  // as the actor's client would take it once an action completes.
+  std::vector<std::string> GetObservedToolNames() {
+    TestFuture<ActorKeyedService::TabObservationResult> observation;
+    actor_keyed_service().RequestTabObservation(
+        *active_tab(), task_id_, /*screenshot_collection_options=*/std::nullopt,
+        observation.GetCallback());
+
+    std::vector<std::string> names;
+    const ActorKeyedService::TabObservationResult& result = observation.Get();
+    EXPECT_TRUE(result.has_value());
+    if (!result.has_value()) {
+      return names;
+    }
+    const auto& page_content = (*result)->annotated_page_content_result;
+    EXPECT_TRUE(page_content.has_value());
+    if (!page_content.has_value()) {
+      return names;
+    }
+    for (const auto& tool :
+         page_content->proto.main_frame_data().script_tools()) {
+      names.push_back(tool.name());
+    }
+    return names;
+  }
+
+ protected:
+  using State = ObservationDelayController::State;
+
+  // Registers `initial_tool` while it's parsed, says its tools aren't ready,
+  // and registers `deferred_tool` once `finishAsyncWork()` is called in it.
+  static constexpr char kDeferredRegistrationPath[] =
+      "/actor/script_tool_deferred_registration.html";
+  // Registers `trigger_tool`, whose execution says the tools aren't ready and
+  // registers `deferred_tool` once `finishAsyncWork()` is called in it.
+  static constexpr char kDeferredRegistrationOnExecutePath[] =
+      "/actor/script_tool_deferred_registration_on_execute.html";
+  // Registers `navigate_tool`, whose execution navigates to
+  // `kDeferredRegistrationResultPath`. That page provides the tool's result,
+  // says its tools aren't ready and registers `deferred_tool` once
+  // `finishAsyncWork()` is called in it.
+  static constexpr char kNavigateToDeferredRegistrationPath[] =
+      "/actor/script_tool_navigate_to_deferred_registration.html";
+  static constexpr char kDeferredRegistrationResultPath[] =
+      "/actor/script_tool_deferred_registration_result.html";
+
+ private:
+  base::test::ScopedFeatureList features_;
+};
+
+// The page registers `deferred_tool` after it has loaded. The wait for the page
+// to settle before an observation lasts until it's registered, so the
+// observation includes it.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolRegistration,
+                       ObservationWaitsForScriptToolsToBeReady) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", kDeferredRegistrationPath);
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  TestObservationDelayController controller(
+      *main_frame(), task_id_, actor_keyed_service().GetJournal(),
+      ObservationDelayController::PageStabilityConfig());
+  TestFuture<ObservationDelayController::Result> result;
+  controller.Wait(*ActorSurfaceHandle::From(active_tab()->GetHandle()).Get(),
+                  result.GetCallback());
+  ASSERT_TRUE(controller.WaitForState(State::kWaitForScriptTools));
+
+  content::ExecuteScriptAsync(web_contents(), "finishAsyncWork()");
+  ASSERT_TRUE(controller.WaitForState(State::kWaitForVisualStateUpdate));
+
+  EXPECT_EQ(result.Get(), ObservationDelayController::Result::kOk);
+  EXPECT_THAT(GetObservedToolNames(),
+              testing::UnorderedElementsAre("initial_tool", "deferred_tool"));
+}
+
+class ActorToolsTestScriptToolRegistrationTimeout
+    : public ActorToolsTestScriptToolRegistration {
+ public:
+  ActorToolsTestScriptToolRegistrationTimeout() {
+    features_.InitWithFeaturesAndParameters(
+        {{kActorObservationDelay,
+          {{kActorObservationDelayTimeout.name, "3s"}}}},
+        {});
+  }
+
+ private:
+  base::test::ScopedFeatureList features_;
+};
+
+// The page never registers `deferred_tool`. The wait for it is bounded by the
+// observation delay's timeout, after which the observation has only the tools
+// that were registered.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolRegistrationTimeout,
+                       ObservationProceedsWhenScriptToolsTimeOut) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", kDeferredRegistrationPath);
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  TestObservationDelayController controller(
+      *main_frame(), task_id_, actor_keyed_service().GetJournal(),
+      ObservationDelayController::PageStabilityConfig());
+  TestFuture<ObservationDelayController::Result> result;
+  controller.Wait(*ActorSurfaceHandle::From(active_tab()->GetHandle()).Get(),
+                  result.GetCallback());
+  ASSERT_TRUE(controller.WaitForState(State::kWaitForScriptTools));
+
+  EXPECT_EQ(result.Get(), ObservationDelayController::Result::kOk);
+  EXPECT_THAT(GetObservedToolNames(),
+              testing::UnorderedElementsAre("initial_tool"));
+}
+
+// The execution of `trigger_tool` registers `deferred_tool` after asynchronous
+// work. Because an observation is requested after the tool executes, the action
+// waits for the page's tools to be ready, so the observation that follows
+// includes `deferred_tool`.
+IN_PROC_BROWSER_TEST_F(
+    ActorToolsTestScriptToolRegistration,
+    ObservationAfterToolExecutionWaitsForScriptToolsToBeReady) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", kDeferredRegistrationOnExecutePath);
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  ActorJournalRecorder journal_recorder(actor_keyed_service().GetJournal());
+  ActResultFuture result;
+  actor_task().Act(
+      ToRequestList(MakeScriptToolRequest(*main_frame(), "trigger_tool", "{}")),
+      result.GetCallback());
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !journal_recorder.GetEntries("WaitForScriptTools").empty();
+  }));
+  EXPECT_FALSE(result.IsReady());
+  content::ExecuteScriptAsync(web_contents(), "finishAsyncWork()");
+
+  ExpectOkResult(result);
+  EXPECT_EQ(result.Get()
+                .at(0)
+                .tool_result.deprecated_action_result()
+                ->script_tool_response->result,
+            "trigger_tool result");
+  EXPECT_THAT(GetObservedToolNames(),
+              testing::UnorderedElementsAre("trigger_tool", "deferred_tool"));
+}
+
+// `navigate_tool` navigates, and its result comes from the new page, which
+// registers `deferred_tool` after asynchronous work. The wait is on the new
+// page's tools.
+IN_PROC_BROWSER_TEST_F(
+    ActorToolsTestScriptToolRegistration,
+    ObservationAfterNavigatingToolWaitsForNewPageScriptToolsToBeReady) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", kNavigateToDeferredRegistrationPath);
+  const GURL result_url = embedded_https_test_server().GetURL(
+      "example.com", kDeferredRegistrationResultPath);
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  ActorJournalRecorder journal_recorder(actor_keyed_service().GetJournal());
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(MakeScriptToolRequest(*main_frame(),
+                                                       "navigate_tool", "{}")),
+                   result.GetCallback());
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !journal_recorder.GetEntries("WaitForScriptTools").empty();
+  }));
+  ASSERT_EQ(web_contents()->GetLastCommittedURL(), result_url);
+  EXPECT_FALSE(result.IsReady());
+  content::ExecuteScriptAsync(web_contents(), "finishAsyncWork()");
+
+  ExpectOkResult(result);
+  EXPECT_EQ(
+      result.Get()
+          .at(0)
+          .tool_result.deprecated_action_result()
+          ->script_tool_response->result,
+      R"([{"@context":"https://schema.org","@type":"Message","text":"navigated"}])");
+  EXPECT_THAT(GetObservedToolNames(),
+              testing::UnorderedElementsAre("deferred_tool"));
+}
+
+// Destroying a headless page (no tab, no window) fails the tool while it waits
+// for the navigation the tool started.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
+                       HeadlessPageDestroyedWhileWaitingForNavigation) {
+  std::optional<ScopedHeadlessActorSurface> page =
+      actor_keyed_service().CreateHeadlessActorSurface();
+  const ActorSurfaceHandle handle = page->actor_surface_handle();
+  content::WebContents* contents = handle.Get()->GetWebContents();
+  ASSERT_TRUE(content::NavigateToURL(
+      contents, embedded_https_test_server().GetURL(
+                    "example.com", "/actor/script_tool_slow.html")));
+  ASSERT_TRUE(content::ExecJs(contents, R"(
+    document.modelContext.registerTool({
+      execute: async () => {
+        window.location.href = '/title1.html';
+        return new Promise(r => {});
+      },
+      name: 'navigate_and_hang',
+      description: 'test',
+      inputSchema: { type: 'object', properties: {} }
+    });
+  )"));
+
+  // Keep the task running when the page goes away, so the tool reports it.
+  TestFuture<mojom::ActionResultPtr> add_result;
+  actor_task().AddActorSurface(handle, /*stop_task_on_detach=*/false,
+                               add_result.GetCallback());
+  ExpectOkResult(*add_result.Get());
+
+  // MakeScriptToolRequest() only supports tabs.
+  std::unique_ptr<ToolRequest> action = std::make_unique<ScriptToolRequest>(
+      handle,
+      optimization_guide::DocumentIdentifierUserData::
+          GetOrCreateForCurrentDocument(contents->GetPrimaryMainFrame())
+              ->token(),
+      "navigate_and_hang", "{}");
+  content::TestNavigationManager navigation(
+      contents,
+      embedded_https_test_server().GetURL("example.com", "/title1.html"));
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(action)), result.GetCallback());
+  ASSERT_TRUE(navigation.WaitForRequestStart());
+
+  page.reset();
+
+  ExpectErrorResult(result, mojom::ActionResultCode::kTabWentAway);
+}
+
+// Moving the tab to another window doesn't fail the tool: the page is still
+// alive.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptTool,
+                       TabMovedToOtherWindowDuringInvocationContinues) {
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents(), embedded_https_test_server().GetURL(
+                          "example.com", "/actor/script_tool_cancel.html")));
+  content::WebContents* contents = web_contents();
+  // Keep a second tab so the original window stays open.
+  ASSERT_TRUE(
+      AddTabAtIndex(1, GURL(url::kAboutBlankURL), ::ui::PAGE_TRANSITION_TYPED));
+
+  content::DOMMessageQueue message_queue(contents);
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(MakeScriptToolRequest(
+                       *contents->GetPrimaryMainFrame(), "hanging_tool", "{}")),
+                   result.GetCallback());
+  std::string message;
+  ASSERT_TRUE(message_queue.WaitForMessage(&message));
+  ASSERT_EQ("\"hanging_tool_started\"", message);
+
+  chrome::MoveTabsToNewWindow(browser(), {0});
+  TinyWait();
+  EXPECT_FALSE(result.IsReady());
+
+  actor_task().CancelOngoingActions(mojom::ActionResultCode::kActionsCancelled);
+  ExpectErrorResult(result, mojom::ActionResultCode::kActionsCancelled);
+}
+
+namespace {
+
+// Inserts a throttle that cancels the navigation when it starts.
+void CancelNavigationAtStart(content::NavigationThrottleRegistry& registry) {
+  auto throttle = std::make_unique<content::TestNavigationThrottle>(registry);
+  throttle->SetResponse(content::TestNavigationThrottle::WILL_START_REQUEST,
+                        content::TestNavigationThrottle::SYNCHRONOUS,
+                        content::NavigationThrottle::CANCEL);
+  registry.AddThrottle(std::move(throttle));
+}
+
+}  // namespace
+
+class ActorToolsTestScriptToolContinuations : public ActorToolsTestScriptTool {
+ public:
+  ActorToolsTestScriptToolContinuations() {
+    // `IntermediateCrossOriginNavigation` navigates cross-origin while the tool
+    // is waiting for its continuation.
+    features_.InitWithFeatures({blink::features::kWebMCPContinuations},
+                               {kGlicCrossOriginNavigationGating});
+  }
+
+ private:
+  base::test::ScopedFeatureList features_;
+};
+
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       CrossDocumentContinuation) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  auto action = MakeScriptToolRequest(*main_frame(), "multi_step_checkout",
+                                      R"JSON({"item": "widget"})JSON");
+  auto [action_result, response] = RunScriptTool(std::move(action));
+  EXPECT_EQ(response->result, "confirmed");
+  EXPECT_THAT(web_contents()->GetLastCommittedURL().query(),
+              testing::HasSubstr("step=confirmation"));
+}
+
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       SameOriginIframeContinuation) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  auto action = MakeScriptToolRequest(*main_frame(), "iframe_handoff",
+                                      R"JSON({"item": "widget"})JSON");
+  auto [action_result, response] = RunScriptTool(std::move(action));
+  EXPECT_EQ(response->result, "confirmed");
+}
+
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       IntermediateCrossOriginNavigation) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  const GURL return_url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=confirmation");
+  const std::string query =
+      "step=bounce&return_url=" + url::EncodeUriComponent(return_url.spec());
+  const GURL bounce_url = embedded_https_test_server().GetURL(
+      "b.com", "/actor/script_tool_continuation.html?" + query);
+
+  const std::string input_arguments =
+      base::StringPrintf(R"JSON({"item": "widget", "bounce_url": "%s"})JSON",
+                         bounce_url.spec().c_str());
+  auto action = MakeScriptToolRequest(*main_frame(), "cross_origin_bounce",
+                                      input_arguments);
+  auto [action_result, response] = RunScriptTool(std::move(action));
+  EXPECT_EQ(response->result, "confirmed");
+}
+
+IN_PROC_BROWSER_TEST_F(
+    ActorToolsTestScriptToolContinuations,
+    ContinuationSucceedsWhenInitialRejectsAfterRequestToken) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  auto action =
+      MakeScriptToolRequest(*main_frame(), "reject_after_request_token", "{}");
+  auto [action_result, response] = RunScriptTool(std::move(action));
+  EXPECT_EQ(response->result, "confirmed");
+}
+
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       ResumedStepRejectionFailsTool) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  auto action = MakeScriptToolRequest(*main_frame(), "resume_and_reject", "{}");
+  RunScriptToolExpectingError(
+      std::move(action), mojom::ActionResultCode::kScriptToolInvocationFailed);
+}
+
+// Cancelling the tool while it waits for its continuation token to be redeemed
+// fails the tool, but leaves the token redeemable.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       CancelWhileWaitingForRedemption) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  content::DOMMessageQueue message_queue(web_contents());
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(MakeScriptToolRequest(
+                       *main_frame(), "request_token_and_navigate", "{}")),
+                   result.GetCallback());
+  std::string token;
+  ASSERT_TRUE(message_queue.WaitForMessage(&token));
+
+  actor_task().CancelOngoingActions(mojom::ActionResultCode::kActionsCancelled);
+  ExpectErrorResult(result, mojom::ActionResultCode::kActionsCancelled);
+  EXPECT_EQ("redeemed", content::EvalJs(web_contents(), R"(
+      document.modelContext
+          .resumeTool(window.pendingToken, async () => 'ignored')
+          .then(() => 'redeemed');
+  )"));
+}
+
+// Closing the tab while the tool waits for its continuation token to be
+// redeemed ends the task.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       TabClosedWhileWaitingForRedemption) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  content::WebContents* contents = web_contents();
+  // Keep a second tab so the window stays open.
+  ASSERT_TRUE(
+      AddTabAtIndex(1, GURL(url::kAboutBlankURL), ::ui::PAGE_TRANSITION_TYPED));
+
+  content::DOMMessageQueue message_queue(contents);
+  ActResultFuture result;
+  actor_task().Act(
+      ToRequestList(MakeScriptToolRequest(*contents->GetPrimaryMainFrame(),
+                                          "request_token_and_navigate", "{}")),
+      result.GetCallback());
+  std::string token;
+  ASSERT_TRUE(message_queue.WaitForMessage(&token));
+
+  browser()->GetTabStripModel()->CloseWebContentsAt(
+      0, TabCloseTypes::CLOSE_USER_GESTURE);
+  ExpectErrorResult(result, mojom::ActionResultCode::kTaskWentAway);
+}
+
+// A navigation that doesn't commit while the tool waits for its continuation
+// token to be redeemed doesn't fail the tool, so the document can still redeem
+// the token.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       RedeemAfterNavigationDidNotCommit) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  content::TestNavigationThrottleInserter throttle_inserter(
+      web_contents(), base::BindRepeating(&CancelNavigationAtStart));
+
+  content::TestNavigationObserver nav_observer(web_contents());
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(MakeScriptToolRequest(
+                       *main_frame(), "request_token_and_navigate",
+                       R"JSON({"url": "/title1.html"})JSON")),
+                   result.GetCallback());
+  nav_observer.Wait();
+  ASSERT_FALSE(nav_observer.last_navigation_succeeded());
+  EXPECT_FALSE(result.IsReady());
+
+  ASSERT_TRUE(content::ExecJs(web_contents(), R"(
+      document.modelContext.resumeTool(
+          window.pendingToken, async () => 'confirmed');
+  )"));
+  ExpectOkResult(result);
+  EXPECT_EQ(result.Get()
+                .at(0)
+                .tool_result.deprecated_action_result()
+                ->script_tool_response->result,
+            "confirmed");
+}
+
+// An error page that commits while the tool waits for its continuation token
+// to be redeemed doesn't fail the tool, so a later document can still redeem
+// the token.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       RedeemAfterErrorPage) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  content::DOMMessageQueue message_queue(web_contents());
+  content::TestNavigationObserver nav_observer(web_contents());
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(MakeScriptToolRequest(
+                       *main_frame(), "request_token_and_navigate",
+                       R"JSON({"url": "/non-existent"})JSON")),
+                   result.GetCallback());
+  std::string token_message;
+  ASSERT_TRUE(message_queue.WaitForMessage(&token_message));
+  nav_observer.Wait();
+  ASSERT_FALSE(nav_observer.last_navigation_succeeded());
+  EXPECT_FALSE(result.IsReady());
+
+  std::string token;
+  base::TrimString(token_message, "\"", &token);
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents(),
+      embedded_https_test_server().GetURL(
+          "example.com",
+          "/actor/script_tool_continuation.html?step=confirmation&token=" +
+              token)));
+  ExpectOkResult(result);
+  EXPECT_EQ(result.Get()
+                .at(0)
+                .tool_result.deprecated_action_result()
+                ->script_tool_response->result,
+            "confirmed");
+}
+
+// The tool can request a continuation token after it starts a navigation, while
+// its document is still active.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       RequestTokenAfterStartingNavigation) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  // Keep the navigation from committing, so the document stays active.
+  const GURL next_url =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+  content::TestNavigationManager navigation(web_contents(), next_url);
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(MakeScriptToolRequest(
+                       *main_frame(), "navigate_then_request_token",
+                       base::StringPrintf(R"JSON({"url": "%s"})JSON",
+                                          next_url.spec().c_str()))),
+                   result.GetCallback());
+  ASSERT_TRUE(navigation.WaitForRequestStart());
+
+  ExpectOkResult(result);
+  EXPECT_EQ(result.Get()
+                .at(0)
+                .tool_result.deprecated_action_result()
+                ->script_tool_response->result,
+            "confirmed");
+}
+
+// Cancelling the tool while its resumed step is running aborts the resumed
+// step's signal, and fails the tool with the cancellation code.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuations,
+                       CancelDuringResumedStep) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  content::DOMMessageQueue message_queue(web_contents());
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(MakeScriptToolRequest(*main_frame(),
+                                                       "hang_on_resume", "{}")),
+                   result.GetCallback());
+  std::string message;
+  ASSERT_TRUE(message_queue.WaitForMessage(&message));
+  ASSERT_EQ("\"resumed_step_started\"", message);
+
+  actor_task().CancelOngoingActions(mojom::ActionResultCode::kActionsCancelled);
+  ExpectErrorResult(result, mojom::ActionResultCode::kActionsCancelled);
+  ASSERT_TRUE(message_queue.WaitForMessage(&message));
+  EXPECT_EQ("\"resumed_step_aborted\"", message);
+}
+
+class ActorToolsTestScriptToolContinuationsShortExecutionTimeout
+    : public ActorToolsTestScriptToolContinuations {
+ public:
+  ActorToolsTestScriptToolContinuationsShortExecutionTimeout() {
+    timeout_features_.InitAndEnableFeatureWithParameters(
+        kGlicActorEnableScriptTools, {{"execution_timeout", "2s"}});
+  }
+
+ private:
+  base::test::ScopedFeatureList timeout_features_;
+};
+
+// The tool execution timeout bounds the whole execution, including the time
+// until the continuation token is redeemed.
+IN_PROC_BROWSER_TEST_F(
+    ActorToolsTestScriptToolContinuationsShortExecutionTimeout,
+    ExecutionTimeoutWhileWaitingForRedemption) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  auto action = MakeScriptToolRequest(*main_frame(), "redeem_after_delay",
+                                      R"JSON({"delay_ms": 3000})JSON");
+  RunScriptToolExpectingError(std::move(action),
+                              mojom::ActionResultCode::kScriptToolNoResponse);
+}
+
+class ActorToolsTestScriptToolContinuationsShortTimeout
+    : public ActorToolsTestScriptToolContinuations {
+ public:
+  ActorToolsTestScriptToolContinuationsShortTimeout() {
+    timeout_features_.InitAndEnableFeatureWithParameters(
+        blink::features::kWebMCPContinuations,
+        {{"continuation_timeout", "100ms"}});
+  }
+
+ private:
+  base::test::ScopedFeatureList timeout_features_;
+};
+
+// A continuation token that is never redeemed expires, and the tool call fails
+// instead of reporting the initial step's intermediate result.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuationsShortTimeout,
+                       ContinuationTokenExpires) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  auto action =
+      MakeScriptToolRequest(*main_frame(), "request_token_and_drop", "{}");
+  RunScriptToolExpectingError(
+      std::move(action), mojom::ActionResultCode::kScriptToolInvocationFailed);
+}
+
+// The tool fails when its continuation token expires after a navigation that
+// doesn't commit.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuationsShortTimeout,
+                       TokenExpiresAfterNavigationDidNotCommit) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  content::TestNavigationThrottleInserter throttle_inserter(
+      web_contents(), base::BindRepeating(&CancelNavigationAtStart));
+
+  auto action =
+      MakeScriptToolRequest(*main_frame(), "request_token_and_navigate",
+                            R"JSON({"url": "/title1.html"})JSON");
+  RunScriptToolExpectingError(
+      std::move(action), mojom::ActionResultCode::kScriptToolInvocationFailed);
+}
+
+// The tool fails when its continuation token expires after an error page
+// commits.
+IN_PROC_BROWSER_TEST_F(ActorToolsTestScriptToolContinuationsShortTimeout,
+                       TokenExpiresAfterErrorPage) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/script_tool_continuation.html?step=billing");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  auto action =
+      MakeScriptToolRequest(*main_frame(), "request_token_and_navigate",
+                            R"JSON({"url": "/non-existent"})JSON");
+  RunScriptToolExpectingError(
+      std::move(action), mojom::ActionResultCode::kScriptToolInvocationFailed);
 }
 
 }  // namespace actor

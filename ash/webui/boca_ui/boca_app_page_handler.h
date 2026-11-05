@@ -103,6 +103,8 @@ class BocaAppHandler : public mojom::PageHandler,
                            UpdateCaptionConfigCallback callback) override;
   void SetFloatMode(bool is_float_mode, SetFloatModeCallback callback) override;
 
+  // Submits an access code to join an active class session. Only valid for
+  // consumers.
   void SubmitAccessCode(const std::string& access_code,
                         SubmitAccessCodeCallback callback) override;
 
@@ -276,6 +278,11 @@ class BocaAppHandler : public mojom::PageHandler,
   // TODO(crbug.com/399923859): remove only the override keyword when the
   // inheritance from `mojom::Page` is removed.
   void OnPresentOwnScreenEnded() override;
+
+  void OnViewStudentScreenSubmitted(
+      const std::string& student_id,
+      ViewStudentScreenCallback callback,
+      base::expected<bool, google_apis::ApiErrorCode> result);
 
   void EndViewScreenSessionInternal(const std::string& id,
                                     EndViewScreenSessionCallback callback);

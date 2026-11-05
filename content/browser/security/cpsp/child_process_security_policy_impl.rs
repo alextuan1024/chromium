@@ -2,16 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+chromium::import! {
+    "//base:file_path";
+    "//content/browser:browser_id_types";
+    "//content/common:common_id_types";
+    "//storage/common:storage_common_rust";
+    "//url:url_rust";
+}
+
 use cxx::UniquePtr;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
-use base_file_path::ffi::FilePath;
-use content_browser_id_types::BrowsingInstanceId;
-use storage_common::FileSystemType;
+use browser_id_types::BrowsingInstanceId;
+use common_id_types::ChildProcessId;
+use file_path::ffi::FilePath;
+use storage_common_rust::FileSystemType;
 use unguessable_token::UnguessableToken;
-use url::Origin;
+use url_rust::Origin;
 
 use crate::process_state::ProcessStateMaps;
 
@@ -33,23 +42,34 @@ mod ffi {
         include!("content/browser/security/cpsp/child_process_security_policy_shim.h");
 
         #[namespace = "base"]
-        type FilePath = base_file_path::ffi::FilePath;
+        type FilePath = super::file_path::ffi::FilePath;
 
         #[namespace = "base"]
         type UnguessableToken = unguessable_token::UnguessableToken;
 
-        // Gives us access to C++ url::Origin and all methods exposed in the origin
-        // bridge file without having to redefine them here.
+        // Gives us access to C++ url::Origin and all methods exposed in the
+        // origin bridge file without having to redefine them here.
         #[namespace = "url"]
-        type Origin = url::origin::ffi::Origin;
+        type Origin = super::url_rust::origin::ffi::Origin;
         #[namespace = ""]
-        type GURL = url::gurl::ffi::GURL;
+        type GURL = super::url_rust::gurl::ffi::GURL;
+
+        #[namespace = "content"]
+        type ChildProcessSecurityPolicyImpl;
+
+        #[namespace = "content"]
+        #[Self = "ChildProcessSecurityPolicyImpl"]
+        #[cxx_name = "IsMalformedBlobUrl"]
+        fn is_malformed_blob_url(url: &GURL) -> bool;
 
         #[namespace = "content"]
         type IsolatedOriginUtil;
 
         #[namespace = "content::ChildProcessSecurityPolicy"]
         type IsolatedOriginSource = super::IsolatedOriginSource;
+
+        #[namespace = "content"]
+        type ChildProcessId = super::common_id_types::ChildProcessId;
 
         #[namespace = "content"]
         #[Self = "IsolatedOriginUtil"]
@@ -87,11 +107,25 @@ mod ffi {
         #[cxx_name = "CreateOriginWithDefaultPortIfNecessary"]
         fn create_origin_with_default_port_if_necessary(origin: &Origin) -> UniquePtr<Origin>;
 
+        #[namespace = "content::rust::child_process_security_policy"]
+        #[cxx_name = "CanCommitMaybeOpaqueNewOrigin"]
+        fn can_commit_maybe_opaque_new_origin(
+            child_id: ChildProcessId,
+            url: &GURL,
+            url_is_precursor_of_opaque_origin: bool,
+        ) -> bool;
+
+        // TODO(crbug.com/575911997): Remove this shim once Rust crash key
+        // support is available.
+        #[namespace = "content::rust::child_process_security_policy"]
+        #[cxx_name = "LogCanCommitUrlFailureReason"]
+        fn log_can_commit_url_failure_reason(failure_reason: &str);
+
         #[namespace = "storage"]
-        type FileSystemType = storage_common::FileSystemType;
+        type FileSystemType = super::storage_common_rust::FileSystemType;
 
         #[namespace = "content"]
-        type BrowsingInstanceId = content_browser_id_types::BrowsingInstanceId;
+        type BrowsingInstanceId = super::browser_id_types::BrowsingInstanceId;
     }
 
     extern "Rust" {
@@ -104,6 +138,8 @@ mod ffi {
         fn is_pseudo_scheme(scheme: &str) -> bool;
         fn clear_registered_scheme_for_testing(scheme: &str);
         fn clear_all_registered_schemes_for_testing();
+
+        fn can_commit_url(child_id: ChildProcessId, url: &GURL) -> bool;
 
         fn add_v8_optimization_disabled_state_for_origin_if_not_cached(
             browsing_instance_id: BrowsingInstanceId,
@@ -196,15 +232,15 @@ mod ffi {
     //
     // This enum combines two distinct forms of isolation:
     // 1. Logical isolation: Whether the agent cluster is origin-keyed in the
-    //    renderer process, affecting web-visible behavior (e.g. document.domain).
-    //    In the absence of an OAC header, this defaults to origin-keyed if
-    //    blink::features::kOriginAgentClusterDefaultEnabled is enabled, and
-    //    site-keyed otherwise.
-    // 2. Process isolation: Whether the origin requires an origin-keyed process in
-    //    the process model. In the absence of an OAC header, this defaults to an
-    //    origin-keyed process if features::kOriginKeyedProcessesByDefault is
-    //    enabled, and a site-keyed process otherwise. If process isolation is true,
-    //    logical isolation must also be true.
+    //    renderer process, affecting web-visible behavior (e.g.
+    //    document.domain). In the absence of an OAC header, this defaults to
+    //    origin-keyed if blink::features::kOriginAgentClusterDefaultEnabled is
+    //    enabled, and site-keyed otherwise.
+    // 2. Process isolation: Whether the origin requires an origin-keyed process
+    //    in the process model. In the absence of an OAC header, this defaults
+    //    to an origin-keyed process if features::kOriginKeyedProcessesByDefault
+    //    is enabled, and a site-keyed process otherwise. If process isolation
+    //    is true, logical isolation must also be true.
     //
     // In the C++ `content::OriginAgentClusterIsolationState` class, these two
     // forms are tracked using two separate `AgentClusterKey::OACStatus` fields.
@@ -273,7 +309,7 @@ fn is_web_safe_scheme(scheme: &str) -> bool {
 
 fn can_commit_scheme_in_any_process(scheme: &str) -> bool {
     let cpsp = ChildProcessSecurityPolicyImpl::get_locked_instance();
-    cpsp.known_schemes.get(scheme).is_some_and(|p| *p == SchemePolicy::RequestAndCommit)
+    cpsp.can_commit_scheme_in_any_process(scheme)
 }
 
 fn is_pseudo_scheme(scheme: &str) -> bool {
@@ -289,6 +325,120 @@ fn clear_registered_scheme_for_testing(scheme: &str) {
 fn clear_all_registered_schemes_for_testing() {
     let mut cpsp = ChildProcessSecurityPolicyImpl::get_locked_instance();
     cpsp.known_schemes.clear();
+}
+
+fn can_commit_url(child_id: ChildProcessId, url: &ffi::GURL) -> bool {
+    if !url.is_valid() {
+        ffi::log_can_commit_url_failure_reason("invalid_url");
+        return false; // Can't commit invalid URLs.
+    }
+
+    let scheme = url.scheme();
+
+    // Of all the pseudo schemes, only about:blank and about:srcdoc are allowed
+    // to commit.
+    if is_pseudo_scheme(scheme) {
+        if !url.is_about_blank() && !url.is_about_srcdoc() {
+            ffi::log_can_commit_url_failure_reason("pseudo_scheme_non_blank_or_srcdoc");
+            return false;
+        } else {
+            // TODO(crbug.com/324934416): Consider continuing with the checks
+            // below.
+            return true;
+        }
+    }
+
+    // Blob and filesystem URLs require special treatment; validate the inner
+    // origin they embed.
+    if url.scheme_is_blob() || url.scheme_is_filesystem() {
+        if ffi::ChildProcessSecurityPolicyImpl::is_malformed_blob_url(url) {
+            ffi::log_can_commit_url_failure_reason("malformed_blob_url");
+            return false;
+        }
+
+        let origin = url_rust::origin::ffi::create_origin_from_gurl(url);
+        if origin.opaque() {
+            // As in CanRequestURL(), allow opaque blob URLs but reject opaque
+            // filesystem URLs.
+            if url.scheme_is_blob() {
+                return true;
+            }
+            ffi::log_can_commit_url_failure_reason("opaque_filesystem_url");
+            return false;
+        }
+        // No need to log a failure reason here, because it will be logged in
+        // the sole recursive call if that call returns false.
+        let inner_origin_url = url_rust::gurl::ffi::create_gurl_from_str(&origin.serialize());
+        return can_commit_url(child_id, &inner_origin_url);
+    }
+
+    // Allow data URLs to commit in any process. Note that the precursor origin
+    // should be checked separately.
+    // TODO(crbug.com/40226863): Use Crubit to access `url::kDataScheme` instead
+    // of a string literal (as CXX does not support C++ constants).
+    if url.scheme_is("data") {
+        return true;
+    }
+
+    // With site isolation, a URL from a site may only be committed in a process
+    // dedicated to that site. This check will ensure that `url` can't commit if
+    // the process is locked to a different site.
+    //
+    // We skip this check for the error page URL, chrome-error://chromewebdata.
+    // Error pages commit with the failed URL, but the renderer uses
+    // chrome-error://chromewebdata as the document URL, which can later reach
+    // this check (e.g., if document.open() is called on an error page; see
+    // https://crbug.com/326250356). This check can fail if the error page isn't
+    // isolated (e.g., for subframes on low-memory Android), since its process
+    // won't be locked to the error page site. We still verify in the
+    // `state.can_commit_url()` call below that the process has actually been
+    // granted access to this URL, which only happens when it commits an error
+    // page (see RenderFrameHostImpl::UpdatePermissionsForNavigation()).
+    //
+    // TODO(crbug.com/40226863): Use Crubit to access `kUnreachableWebDataURL`
+    // instead of a string literal (as CXX does not support C++ constants).
+    //
+    // TODO(crbug.com/582381736, crbug.com/582409893): Remove this callback into
+    // C++ `ChildProcessSecurityPolicyImpl::CanCommitMaybeOpaqueNewOrigin()`.
+    // Calling back from Rust CPSP into C++ CPSP for a large unmigrated method
+    // introduces a circular build dependency that blocks Crubit adoption (and
+    // migrating `CanCommitMaybeOpaqueNewOrigin()` to Rust will also require
+    // resolving the re-entrant CPSP lock / deadlock issue when computing
+    // expected `ProcessLock`s). Avoid repeating this C++ CPSP callback pattern
+    // in future migration work.
+    if *url != *url_rust::gurl::ffi::create_gurl_from_str("chrome-error://chromewebdata/")
+        && !ffi::can_commit_maybe_opaque_new_origin(
+            child_id, url, /* url_is_precursor_of_opaque_origin= */ false,
+        )
+    {
+        ffi::log_can_commit_url_failure_reason("cannot_access_origin");
+        return false;
+    }
+
+    let cpsp = ChildProcessSecurityPolicyImpl::get_locked_instance();
+
+    // Most schemes can commit in any process. Note that we check
+    // can_commit_scheme_in_any_process() here, which is stricter than
+    // is_web_safe_scheme().
+    //
+    // TODO(crbug.com/40429130): The line below does not enforce that http pages
+    // cannot commit in an extension process.
+    if cpsp.can_commit_scheme_in_any_process(scheme) {
+        return true;
+    }
+
+    let Some(state) = cpsp.process_states.get_for_query(&child_id) else {
+        ffi::log_can_commit_url_failure_reason("no_security_state_found");
+        return false;
+    };
+
+    // Otherwise, we consult the child process's security state to see if it is
+    // allowed to commit the URL.
+    let can_commit = state.can_commit_url(url);
+    if !can_commit {
+        ffi::log_can_commit_url_failure_reason("cpsp_state_cannot_commit_url");
+    }
+    can_commit
 }
 
 fn add_v8_optimization_disabled_state_for_origin_if_not_cached(
@@ -307,8 +457,8 @@ fn add_v8_optimization_disabled_state_for_origin_if_not_cached(
     }
 
     let mut cpsp = ChildProcessSecurityPolicyImpl::get_locked_instance();
-    // Get the mapping between origins and whether v8 optimization is enabled (for a
-    // given browsing instance).
+    // Get the mapping between origins and whether v8 optimization is enabled
+    // (for a given browsing instance).
     let optimization_verdicts_by_origin =
         cpsp.v8_optimization_verdict_map.entry(browsing_instance_id).or_default();
     // Only store the verdict if it hasn't been cached yet.
@@ -333,8 +483,8 @@ fn lookup_are_v8_optimizations_disabled(
 ) -> bool {
     let cpsp = ChildProcessSecurityPolicyImpl::get_locked_instance();
 
-    // Get the mapping between origins and whether v8 optimization is enabled (for a
-    // given browsing instance).
+    // Get the mapping between origins and whether v8 optimization is enabled
+    // (for a given browsing instance).
     if let Some(optimization_verdicts_by_origin) = cpsp
         .v8_optimization_verdict_map
         .get(&browsing_instance_id)
@@ -433,8 +583,8 @@ fn add_origin_agent_cluster_state_for_browsing_instance(
     default_oac_state: ffi::OriginAgentClusterIsolationState,
 ) {
     // We should only be registering an isolation state if it deviates from the
-    // default isolation state (e.g., if it's explicitly requested by a header or
-    // if an ad frame's process isolation is being bypassed).
+    // default isolation state (e.g., if it's explicitly requested by a header
+    // or if an ad frame's process isolation is being bypassed).
     assert!(
         oac_state != default_oac_state,
         "Trying to add invalid OAC state: {:?} (default: {:?})",
@@ -451,8 +601,8 @@ fn add_origin_agent_cluster_state_for_browsing_instance(
     let is_valid_opt_out =
         ffi::IsolatedOriginUtil::is_valid_origin_for_origin_agent_cluster_opt_out(&origin);
 
-    // We ought to have validated the origin prior to getting here.  If the origin
-    // isn't valid at this point, something has gone wrong.
+    // We ought to have validated the origin prior to getting here.  If the
+    // origin isn't valid at this point, something has gone wrong.
     assert!(is_valid_opt_in || is_valid_opt_out, "Trying to isolate invalid origin: {:?}", *origin);
 
     assert_ne!(browsing_instance_id, BrowsingInstanceId(None));
@@ -487,11 +637,11 @@ fn record_default_origin_agent_cluster_origin_if_new(
 
     // Commits of origins that have ever sent the OriginAgentCluster header in
     // this BrowserContext are tracked in every BrowsingInstance in this
-    // BrowserContext, to avoid having to do multiple global walks. If the origin
-    // isn't in the list of such origins (i.e., the common case), return early to
-    // avoid unnecessary work, since this is called on every commit. Skip this
-    // during global walks and frame removals, since we do want to track the
-    // origin's non-isolated status in those cases.
+    // BrowserContext, to avoid having to do multiple global walks. If the
+    // origin isn't in the list of such origins (i.e., the common case),
+    // return early to avoid unnecessary work, since this is called on every
+    // commit. Skip this during global walks and frame removals, since we do
+    // want to track the origin's non-isolated status in those cases.
     if !is_global_walk_or_frame_removal {
         let browser_context_id = BrowserContextId(browser_context_token);
         let has_ever_requested_oac = cpsp
@@ -580,54 +730,49 @@ fn add_isolated_origin_internal(
     let entries = cpsp.isolated_origins.entry(site_url).or_default();
 
     // Check if the origin to be added already exists, in which case it may not
-    // need to be added again.
-    let mut should_add = true;
-    for entry in entries.iter() {
+    // need to be added again.  Note that a particular origin might have
+    // multiple entries, each one for a different profile, so all existing
+    // entries need to be checked before concluding that `origin_to_add` really
+    // needs to be added.  An origin that already exists may still be added
+    // again for a different profile (or globally for all profiles), possibly
+    // with a different BrowsingInstance ID cutoff.
+    let already_exists = entries.iter().any(|entry| {
         // TODO(crbug.com/40171707): The exact origin comparison here allows
         // redundant entries with certain uses of `isolate_all_subdomains`.
-        if *entry.origin != *origin_to_add {
-            continue;
-        }
-
-        // If the added origin already exists for the same BrowserContext and
-        // covers the same BrowsingInstances, don't re-add it.
-        if entry.browser_context_id == browser_context_id
-            && entry.matches_browsing_instance(browsing_instance_id)
+        //
+        // Only consider the origin to already exist if it was added for the
+        // same BrowserContext and covers the same BrowsingInstances.
+        if *entry.origin != *origin_to_add
+            || entry.browser_context_id != browser_context_id
+            || !entry.matches_browsing_instance(browsing_instance_id)
         {
-            if entry.applies_to_future_browsing_instances {
-                if applies_to_future_browsing_instances {
-                    // If the existing entry applies to future
-                    // BrowsingInstances, and the new isolated origin is also
-                    // requested to apply to future BrowsingInstances, the
-                    // threshold ID must necessarily be greater than the old ID,
-                    // since NextBrowsingInstanceId() returns monotonically
-                    // increasing IDs.
-                    assert!(entry.browsing_instance_id <= browsing_instance_id);
-                }
-            } else {
-                // If an origin had been added for a specific BrowsingInstance,
-                // we can't later receive a request to isolate that origin
-                // within future BrowsingInstances that start at the same (or
-                // lower) BrowsingInstance. Requests to isolate future
-                // BrowsingInstances should always reference
-                // SiteInstanceImpl::NextBrowsingInstanceId(), which always
-                // refers to an ID that's greater than any existing
-                // BrowsingInstance ID.
-                assert!(!applies_to_future_browsing_instances);
-            }
-            should_add = false;
-            break;
+            return false;
         }
 
-        // Otherwise, allow the origin to be added again for a different profile
-        // (or globally for all profiles), possibly with a different
-        // BrowsingInstance ID cutoff.  Note that a particular origin might have
-        // multiple entries, each one for a different profile, so we must loop
-        // over all such existing entries before concluding that `origin` really
-        // needs to be added.
-    }
+        if entry.applies_to_future_browsing_instances {
+            if applies_to_future_browsing_instances {
+                // If the existing entry applies to future BrowsingInstances,
+                // and the new isolated origin is also requested to apply to
+                // future BrowsingInstances, the threshold ID must necessarily
+                // be greater than the old ID, since NextBrowsingInstanceId()
+                // returns monotonically increasing IDs.
+                assert!(entry.browsing_instance_id <= browsing_instance_id);
+            }
+        } else {
+            // If an origin had been added for a specific BrowsingInstance, we
+            // can't later receive a request to isolate that origin within
+            // future BrowsingInstances that start at the same (or lower)
+            // BrowsingInstance. Requests to isolate future BrowsingInstances
+            // should always reference
+            // SiteInstanceImpl::NextBrowsingInstanceId(), which always refers
+            // to an ID that's greater than any existing BrowsingInstance ID.
+            assert!(!applies_to_future_browsing_instances);
+        }
 
-    if should_add {
+        true
+    });
+
+    if !already_exists {
         entries.push(IsolatedOriginEntry {
             origin: origin_to_add,
             applies_to_future_browsing_instances,
@@ -657,24 +802,16 @@ fn get_isolated_origins(
     let browser_context_id = BrowserContextId(browser_context_id);
     let cpsp = ChildProcessSecurityPolicyImpl::get_locked_instance();
 
-    for entries in cpsp.isolated_origins.values() {
-        for entry in entries {
-            if has_source && source != entry.source {
-                continue;
-            }
-
-            if !entry.matches_profile(&browser_context_id) {
-                continue;
-            }
-
+    let matching_entries = cpsp.isolated_origins.values().flatten().filter(|entry| {
+        (!has_source || source == entry.source)
+            && entry.matches_profile(&browser_context_id)
             // Do not include origins that only apply to specific
             // BrowsingInstances for this API.
-            if !entry.applies_to_future_browsing_instances {
-                continue;
-            }
+            && entry.applies_to_future_browsing_instances
+    });
 
-            ffi::push_origin_to_vector(&entry.origin, origins.as_mut());
-        }
+    for entry in matching_entries {
+        ffi::push_origin_to_vector(&entry.origin, origins.as_mut());
     }
 }
 
@@ -686,8 +823,6 @@ fn get_matching_process_isolated_origin_from_legacy_origin_list(
 ) -> cxx::UniquePtr<ffi::Origin> {
     let browser_context_id = BrowserContextId(browser_context_id);
     let cpsp = ChildProcessSecurityPolicyImpl::get_locked_instance();
-
-    let mut best_match: Option<&cxx::UniquePtr<ffi::Origin>> = None;
 
     let mut entries_opt = cpsp.isolated_origins.get(&site_url);
 
@@ -704,49 +839,41 @@ fn get_matching_process_isolated_origin_from_legacy_origin_list(
         }
     }
 
-    // Looks for all isolated origins that were already isolated at the time the
-    // BrowsingInstance corresponding to `browsing_instance_id` was created. If
-    // multiple isolated origins are registered with a common domain suffix,
-    // return the most specific one.  For example, if foo.isolated.com and
-    // isolated.com are both isolated origins, bar.foo.isolated.com should
-    // return foo.isolated.com.
-    if let Some(entries) = entries_opt {
-        for entry in entries {
-            // If this isolated origin applies only to a specific profile, don't
-            // use it for a different profile.
-            if !entry.matches_profile(&browser_context_id) {
-                continue;
-            }
+    // All the isolated origins that match `origin` and that were already
+    // isolated at the time the BrowsingInstance corresponding to
+    // `browsing_instance_id` was created.  Entries that apply only to a
+    // specific profile are skipped for other profiles.  The filter is lazy, so
+    // the loop below still examines each entry only once.
+    let matching_entries = entries_opt.into_iter().flatten().filter(|entry| {
+        entry.matches_profile(&browser_context_id)
+            && entry.matches_browsing_instance(browsing_instance_id)
+            && ffi::IsolatedOriginUtil::does_origin_match_isolated_origin(&origin, &entry.origin)
+    });
 
-            if entry.matches_browsing_instance(browsing_instance_id)
-                && ffi::IsolatedOriginUtil::does_origin_match_isolated_origin(
-                    &origin,
-                    &entry.origin,
-                )
-            {
-                // If a match has been found that requires all subdomains to be
-                // isolated then return immediately. `origin` is returned to
-                // ensure proper process isolation, e.g.
-                // https://a.b.c.isolated.com matches an IsolatedOriginEntry
-                // constructed from http://[*.]isolated.com, so
-                // https://a.b.c.isolated.com must be returned.
-                if entry.isolate_all_subdomains {
-                    return ffi::create_origin_with_default_port_if_necessary(&origin);
-                }
+    let mut best_match: Option<&IsolatedOriginEntry> = None;
+    for entry in matching_entries {
+        // If a match has been found that requires all subdomains to be
+        // isolated, return `origin` itself to ensure proper process isolation,
+        // e.g. https://a.b.c.isolated.com matches an IsolatedOriginEntry
+        // constructed from http://[*.]isolated.com, so
+        // https://a.b.c.isolated.com must be returned.
+        if entry.isolate_all_subdomains {
+            return ffi::create_origin_with_default_port_if_necessary(&origin);
+        }
 
-                if best_match.is_none()
-                    || best_match.as_ref().unwrap().host().len() < entry.origin.host().len()
-                {
-                    best_match = Some(&entry.origin);
-                }
-            }
+        // If multiple isolated origins are registered with a common domain
+        // suffix, return the most specific one (i.e., the one with the longest
+        // host).  For example, if foo.isolated.com and isolated.com are both
+        // isolated origins, bar.foo.isolated.com should return
+        // foo.isolated.com.
+        if best_match.is_none_or(|best| best.origin.host().len() < entry.origin.host().len()) {
+            best_match = Some(entry);
         }
     }
 
-    if let Some(best) = best_match {
-        return url::origin::ffi::clone_origin(best);
-    } else {
-        return cxx::UniquePtr::null();
+    match best_match {
+        Some(entry) => url_rust::origin::ffi::clone_origin(&entry.origin),
+        None => cxx::UniquePtr::null(),
     }
 }
 
@@ -797,15 +924,12 @@ fn is_isolated_site_from_source(
     // of origin just to call back into C++ to convert it to a site URL.
     let site_url = ffi::get_site_for_origin(&origin);
     let cpsp = ChildProcessSecurityPolicyImpl::get_locked_instance();
-    if let Some(entries) = cpsp.isolated_origins.get(&site_url) {
-        let site_origin = url::origin::ffi::create_origin_from_gurl(&site_url);
-        for entry in entries {
-            if entry.source == source && *entry.origin == *site_origin {
-                return true;
-            }
-        }
-    }
-    false
+    let Some(entries) = cpsp.isolated_origins.get(&site_url) else {
+        return false;
+    };
+
+    let site_origin = url_rust::origin::ffi::create_origin_from_gurl(&site_url);
+    entries.iter().any(|entry| entry.source == source && *entry.origin == *site_origin)
 }
 
 fn get_isolated_origin_entry_count_for_testing(origin: cxx::UniquePtr<ffi::Origin>) -> i32 {
@@ -1098,6 +1222,10 @@ impl ChildProcessSecurityPolicyImpl {
         // std::sync::nonpoison::Mutex once it is stabilized.
         Self::get_instance().lock().unwrap()
     }
+
+    fn can_commit_scheme_in_any_process(&self, scheme: &str) -> bool {
+        self.known_schemes.get(scheme).is_some_and(|p| *p == SchemePolicy::RequestAndCommit)
+    }
 }
 
 /// A unique identifier for a `BrowserContext`, wrapping C++
@@ -1123,7 +1251,9 @@ enum IsolatedOriginSource {
     WebTriggered,
     Test,
 }
-// LINT.ThenChange(//content/public/browser/child_process_security_policy.h:IsolatedOriginSource)
+// LINT.ThenChange(
+// //content/public/browser/child_process_security_policy.h:IsolatedOriginSource
+// )
 
 #[allow(unsafe_code)]
 // SAFETY: IsolatedOriginSource is a simple enum with a fixed repr(i32) that

@@ -5,6 +5,8 @@
 package org.chromium.chrome.browser.price_tracking;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -13,7 +15,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
-import android.content.res.Resources;
 import android.os.Looper;
 import android.view.View;
 
@@ -83,7 +84,7 @@ public class PriceTrackingButtonControllerUnitTest {
 
     @Before
     public void setUp() {
-        mActivity = Robolectric.setupActivity(Activity.class);
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
 
         PriceTrackingUtilsJni.setInstanceForTesting(mMockPriceTrackingUtilsJni);
@@ -93,6 +94,7 @@ public class PriceTrackingButtonControllerUnitTest {
         mTabSupplier = ObservableSuppliers.createNullable(mMockTab);
         when(mMockTab.getContext()).thenReturn(mActivity);
         when(mMockTabBookmarkerSupplier.get()).thenReturn(mMockTabBookmarker);
+        when(mMockBookmarkModel.isEditBookmarksEnabled()).thenReturn(true);
     }
 
     private PriceTrackingButtonController createButtonController() {
@@ -130,19 +132,18 @@ public class PriceTrackingButtonControllerUnitTest {
 
     @Test
     public void testPriceTrackingButtonClick() {
+        View view = new View(mActivity);
         PriceTrackingButtonController priceTrackingButtonController = createButtonController();
         ButtonData buttonData = priceTrackingButtonController.get(mMockTab);
 
-        buttonData.getButtonSpec().getOnClickListener().onClick(null);
+        buttonData.getButtonSpec().getOnClickListener().onClick(view);
 
-        verify(mMockTabBookmarker).startOrModifyPriceTracking(mMockTab);
+        verify(mMockTabBookmarker).startOrModifyPriceTracking(mMockTab, view);
     }
 
     @Test
     public void testPriceTrackingButtonClick_shouldRemoveTrackingWhenAlreadyTracking() {
-        View mockView = Mockito.mock(View.class);
-        Resources mockResources = Mockito.mock(Resources.class);
-        when(mockView.getResources()).thenReturn(mockResources);
+        View view = new View(mActivity);
 
         BookmarkId bookmarkId = new BookmarkId(1234, BookmarkType.NORMAL);
         when(mMockBookmarkModel.getUserBookmarkIdForTab(mMockTab)).thenReturn(bookmarkId);
@@ -153,21 +154,80 @@ public class PriceTrackingButtonControllerUnitTest {
         mPriceTrackingStateSupplier.set(true);
 
         ButtonData buttonData = priceTrackingButtonController.get(mMockTab);
+        Assert.assertEquals(
+                mActivity.getString(R.string.disable_price_tracking_menu_item),
+                buttonData.getButtonSpec().getContentDescription());
 
-        buttonData.getButtonSpec().getOnClickListener().onClick(mockView);
+        buttonData.getButtonSpec().getOnClickListener().onClick(view);
 
-        verify(mMockTabBookmarker, never()).startOrModifyPriceTracking(mMockTab);
+        verify(mMockTabBookmarker, never()).startOrModifyPriceTracking(any(), any());
         verify(mMockPriceTrackingUtilsJni)
                 .setPriceTrackingStateForBookmark(
                         eq(mMockProfile),
                         eq(bookmarkId.getId()),
-                        eq(false),
+                        /* enabled= */ eq(false),
                         jniCallbackArgumentCaptor.capture(),
-                        eq(false));
+                        /* bookmarkCreatedForPriceTracking= */ eq(false));
 
-        jniCallbackArgumentCaptor.getValue().onResult(true);
+        jniCallbackArgumentCaptor.getValue().onResult(/* result= */ true);
 
         verify(mMockSnackbarManager).showSnackbar(any());
+    }
+
+    @Test
+    public void testPriceTrackingButtonClick_editSpecShown_opensPopupEvenIfPopupGatingChanged() {
+        View view = new View(mActivity);
+        when(mMockTabBookmarker.shouldUseBookmarkPopup()).thenReturn(true);
+
+        PriceTrackingButtonController priceTrackingButtonController = createButtonController();
+        mPriceTrackingStateSupplier.set(true);
+        ButtonData buttonData = priceTrackingButtonController.get(mMockTab);
+        Assert.assertEquals(
+                mActivity.getString(R.string.edit_price_tracking_button_description),
+                buttonData.getButtonSpec().getContentDescription());
+
+        // The click must follow the shown "Edit" label, not re-evaluated popup gating.
+        when(mMockTabBookmarker.shouldUseBookmarkPopup()).thenReturn(false);
+        buttonData.getButtonSpec().getOnClickListener().onClick(view);
+
+        verify(mMockTabBookmarker).showPriceTrackingManagePopup(mMockTab, view);
+        verify(mMockTabBookmarker, never()).startOrModifyPriceTracking(any(), any());
+        verify(mMockPriceTrackingUtilsJni, never())
+                .setPriceTrackingStateForBookmark(
+                        /* profile= */ any(),
+                        /* bookmarkId= */ anyLong(),
+                        /* enabled= */ anyBoolean(),
+                        /* callback= */ any(),
+                        /* bookmarkCreatedForPriceTracking= */ anyBoolean());
+    }
+
+    @Test
+    public void testPriceTrackingButtonClick_desktopEditBookmarksDisabled_untracksWithoutPopup() {
+        View view = new View(mActivity);
+        BookmarkId bookmarkId = new BookmarkId(1234, BookmarkType.NORMAL);
+        when(mMockBookmarkModel.getUserBookmarkIdForTab(mMockTab)).thenReturn(bookmarkId);
+        when(mMockBookmarkModel.isEditBookmarksEnabled()).thenReturn(false);
+        when(mMockTabBookmarker.shouldUseBookmarkPopup()).thenReturn(true);
+
+        PriceTrackingButtonController priceTrackingButtonController = createButtonController();
+        mPriceTrackingStateSupplier.set(true);
+        ButtonData buttonData = priceTrackingButtonController.get(mMockTab);
+        Assert.assertEquals(
+                mActivity.getString(R.string.disable_price_tracking_menu_item),
+                buttonData.getButtonSpec().getContentDescription());
+
+        buttonData.getButtonSpec().getOnClickListener().onClick(view);
+
+        // The popup would let the user edit or remove the bookmark, which the policy forbids.
+        verify(mMockTabBookmarker, never()).showPriceTrackingManagePopup(any(), any());
+        verify(mMockTabBookmarker, never()).startOrModifyPriceTracking(any(), any());
+        verify(mMockPriceTrackingUtilsJni)
+                .setPriceTrackingStateForBookmark(
+                        eq(mMockProfile),
+                        eq(bookmarkId.getId()),
+                        /* enabled= */ eq(false),
+                        /* callback= */ any(),
+                        /* bookmarkCreatedForPriceTracking= */ eq(false));
     }
 
     @Test

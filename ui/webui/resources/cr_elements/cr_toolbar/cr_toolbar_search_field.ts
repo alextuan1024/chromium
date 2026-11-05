@@ -16,6 +16,7 @@ import {getHtml} from './cr_toolbar_search_field.html.js';
 export interface CrToolbarSearchFieldElement {
   $: {
     icon: CrIconButtonElement,
+    prompt: HTMLElement,
     searchInput: HTMLInputElement,
     searchTerm: HTMLElement,
   };
@@ -75,6 +76,8 @@ export class CrToolbarSearchFieldElement extends
       iconOverride: {type: String},
 
       inputAriaDescription: {type: String},
+
+      hideClearButton: {type: Boolean},
     };
   }
 
@@ -86,6 +89,7 @@ export class CrToolbarSearchFieldElement extends
   private accessor searchFocused_: boolean = false;
   accessor iconOverride: string|undefined;
   accessor inputAriaDescription: string = '';
+  accessor hideClearButton: boolean = false;
 
   override firstUpdated() {
     this.addEventListener('click', e => this.showSearch_(e));
@@ -129,6 +133,10 @@ export class CrToolbarSearchFieldElement extends
 
   protected shouldShowSpinner_(): boolean {
     return this.spinnerActive && this.showingSearch;
+  }
+
+  protected shouldShowClearButton_(): boolean {
+    return this.hasSearchText && !this.hideClearButton;
   }
 
   protected onSearchIconClick_() {

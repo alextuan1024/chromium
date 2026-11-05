@@ -39,8 +39,7 @@ namespace {
 
 bool IsTextSecurityNode(const Node& node) {
   return node.GetLayoutObject() &&
-         node.GetLayoutObject()->StyleRef().TextSecurity() !=
-             ETextSecurity::kNone;
+         node.GetLayoutObject()->Style().TextSecurity() != ETextSecurity::kNone;
 }
 
 }  // anonymous namespace
@@ -173,27 +172,6 @@ void TextIteratorTextState::EmitChar16BeforeChildren(
 void TextIteratorTextState::EmitChar16BeforeNode(UChar code_unit,
                                                  const Node& node) {
   ResetPositionContainerNode(PositionNodeType::kBeforeNode, node);
-  PopulateStringBufferFromChar16(code_unit);
-}
-
-void TextIteratorTextState::EmitChar16Before(UChar code_unit,
-                                             const Text& text_node,
-                                             wtf_size_t offset) {
-  // TODO(editing-dev): text-transform:uppercase can make text longer, e.g.
-  // "U+00DF" to "SS". See "fast/css/case-transform.html"
-  // DCHECK_LE(offset, text_node.length());
-  position_node_type_ = PositionNodeType::kBeforeCharacter;
-  position_container_node_ = &text_node;
-  position_node_ = &text_node;
-  position_start_offset_ = offset;
-  position_end_offset_ = offset;
-  PopulateStringBufferFromChar16(code_unit);
-}
-
-void TextIteratorTextState::EmitReplacmentCodeUnit(UChar code_unit,
-                                                   const Text& text_node,
-                                                   wtf_size_t offset) {
-  SetTextNodePosition(text_node, offset, offset + 1);
   PopulateStringBufferFromChar16(code_unit);
 }
 

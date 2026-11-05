@@ -24,7 +24,7 @@
 #include "chrome/browser/ui/ash/editor_menu/utils/utils.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/icon.h"
 #include "chromeos/ash/components/editor_menu/public/cpp/preset_text_query.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -78,11 +78,6 @@ constexpr gfx::Insets kChipsContainerInsets = gfx::Insets::TLBR(8, 16, 0, 16);
 constexpr gfx::Insets kTextfieldContainerInsets = gfx::Insets(16);
 
 constexpr gfx::Size kTabbedPaneSize = gfx::Size(180, 36);
-
-const views::FlexSpecification kTabbedPaneFlexSpecification =
-    views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
-                             views::MaximumFlexSizeRule::kPreferred)
-        .WithWeight(1);
 
 const std::u16string GetEditorMenuAccessibilityName(
     TextAndImageMode text_and_image_mode) {
@@ -259,7 +254,7 @@ void EditorMenuView::TabSelectedAt(int index) {
 
 void EditorMenuView::UpdateBounds(const gfx::Rect& anchor_view_bounds) {
   gfx::Rect editor_menu_bounds = GetEditorMenuBounds(
-      anchor_view_bounds, this, application_locale_storage_->Get());
+      anchor_view_bounds, this, application_locale_storage_->GetTag());
   GetWidget()->SetBounds(editor_menu_bounds);
   UpdateChipsContainer(/*editor_menu_width=*/editor_menu_bounds.width());
 }
@@ -322,8 +317,11 @@ void EditorMenuView::AddTitleContainer() {
     tabbed_pane_ =
         title_container_->AddChildView(std::make_unique<views::TabbedPane>());
     tabbed_pane_->SetPreferredSize(kTabbedPaneSize);
-    tabbed_pane_->SetProperty(views::kFlexBehaviorKey,
-                              kTabbedPaneFlexSpecification);
+    tabbed_pane_->SetProperty(
+        views::kFlexBehaviorKey,
+        views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
+                                 views::MaximumFlexSizeRule::kPreferred)
+            .WithWeight(1));
     tabbed_pane_->AddTab(GetEditorMenuWriteCardTitle(),
                          std::make_unique<views::View>());
     tabbed_pane_->AddTab(GetEditorMenuLobsterTitle(),

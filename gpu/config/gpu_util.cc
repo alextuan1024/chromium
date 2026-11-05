@@ -312,7 +312,8 @@ GpuFeatureStatus GetSkiaGraphiteFeatureStatus(
   if (blocklisted_features.count(GPU_FEATURE_TYPE_SKIA_GRAPHITE)) {
     return kGpuFeatureStatusBlocklisted;
   }
-  if (gpu_preferences.gr_context_type != GrContextType::kGraphiteDawn) {
+  if (gpu_preferences.gr_context_type != GrContextType::kGraphiteDawn &&
+      gpu_preferences.gr_context_type != GrContextType::kGraphiteVulkan) {
     return kGpuFeatureStatusDisabled;
   }
   const bool can_use_graphite = [command_line]() -> bool {
@@ -404,7 +405,6 @@ void SetProcessGlWorkaroundsFromGpuFeatures(
 
   gl::GlWorkarounds workarounds = {
       .disable_d3d11 = is_enabled(DISABLE_D3D11),
-      .disable_metal = is_enabled(DISABLE_METAL),
 #if BUILDFLAG(IS_WIN)
       .disable_direct_composition_video_overlays =
           is_enabled(DISABLE_DIRECT_COMPOSITION_VIDEO_OVERLAYS),
@@ -467,20 +467,6 @@ uint32_t EstimateAmountOfTotalDiskSpaceMB() {
     }
   }
   return static_cast<uint32_t>(sum.InMiB());
-}
-
-// Only record Nvidia GPUs.
-void RecordGpuHistogram(uint32_t vendor_id, uint32_t device_id) {
-  switch (vendor_id) {
-    case 0x10de:
-      base::SparseHistogram::FactoryGet(
-          "GPU.MultiGpu.Nvidia", base::HistogramBase::kUmaTargetedHistogramFlag)
-          ->Add(device_id);
-      break;
-    default:
-      // Do nothing if it's not Nvidia.
-      break;
-  }
 }
 
 // Only record Intel NPU.
@@ -628,7 +614,6 @@ GpuFeatureInfo ComputeGpuFeatureInfo(const GPUInfo& gpu_info,
 
     use_software_gl = gl::IsSoftwareGLImplementation(*requested_impl);
     if (use_software_gl) {
-      std::string use_gl = command_line->GetSwitchValueASCII(switches::kUseGL);
       std::string use_angle =
           command_line->GetSwitchValueASCII(switches::kUseANGLE);
       if (use_angle == gl::kANGLEImplementationSwiftShaderForWebGLName ||
@@ -804,7 +789,10 @@ GrContextType GpuModeToGrContextType(GpuMode mode) {
     case GpuMode::HARDWARE_VULKAN:
       return GrContextType::kVulkan;
     case GpuMode::HARDWARE_GRAPHITE:
-      return GrContextType::kGraphiteDawn;
+      return base::CommandLine::ForCurrentProcess()->HasSwitch(
+                 switches::kSkiaGraphiteVulkanBackend)
+                 ? GrContextType::kGraphiteVulkan
+                 : GrContextType::kGraphiteDawn;
     case GpuMode::UNKNOWN:
     case GpuMode::SOFTWARE_GL:
     case GpuMode::DISPLAY_COMPOSITOR:
@@ -1221,23 +1209,11 @@ void RecordDevicePerfInfoHistograms() {
   UMA_HISTOGRAM_ENUMERATION("GPU.D3D11FeatureLevel",
                             ConvertToHistogramD3D11FeatureLevel(
                                 device_perf_info->d3d11_feature_level));
-  UMA_HISTOGRAM_ENUMERATION("GPU.HasDiscreteGpu",
-                            device_perf_info->has_discrete_gpu);
 #endif  // BUILDFLAG(IS_WIN)
   UMA_HISTOGRAM_ENUMERATION("GPU.IntelGpuGeneration",
                             device_perf_info->intel_gpu_generation);
   UMA_HISTOGRAM_BOOLEAN("GPU.SoftwareRendering",
                         device_perf_info->software_rendering);
-}
-
-void RecordDiscreteGpuHistograms(const GPUInfo& gpu_info) {
-  if (gpu_info.GpuCount() < 2)
-    return;
-  // To simplify logic, if there are multiple GPUs identified on a device,
-  // assume Nvidia is the discrete GPU.
-  RecordGpuHistogram(gpu_info.gpu.vendor_id, gpu_info.gpu.device_id);
-  for (const auto& gpu : gpu_info.secondary_gpus)
-    RecordGpuHistogram(gpu.vendor_id, gpu.device_id);
 }
 
 void RecordNpuHistograms(const GPUInfo& gpu_info) {

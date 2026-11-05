@@ -62,7 +62,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/login/users/user_manager_delegate_impl.h"
@@ -192,7 +192,7 @@ class TabDesktopMediaListTest : public InProcessBrowserTest,
   void AddWebcontents(int favicon_greyscale) {
     GURL url = embedded_test_server()->GetURL("/title1.html");
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
     content::WebContents* contents =
@@ -296,8 +296,7 @@ class TabDesktopMediaListTest : public InProcessBrowserTest,
   // Must be listed before |list_|, so it's destroyed last.
   DesktopMediaListMockObserver observer_;
   std::unique_ptr<TabDesktopMediaList> list_;
-  std::vector<raw_ptr<content::WebContents, VectorExperimental>>
-      manually_added_web_contents_;
+  std::vector<raw_ptr<content::WebContents>> manually_added_web_contents_;
   std::vector<std::unique_ptr<TestAppWindow>> manually_added_app_windows_;
 
   scoped_refptr<const extensions::Extension> extension_;

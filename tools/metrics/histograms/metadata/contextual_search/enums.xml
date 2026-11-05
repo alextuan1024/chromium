@@ -80,6 +80,18 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//components/contextual_search/contextual_search_metrics_recorder.h:ContextualSearchContextState, //chrome/browser/resources/new_tab_page/ntp_searchbox.ts:ContextualSearchContextState) -->
 
+<!-- LINT.IfChange(ContextualSearchDriveConsentKitLoadResult) -->
+
+<enum name="ContextualSearchDriveConsentKitLoadResult">
+  <int value="0" label="Rendered"/>
+  <int value="1" label="Timed out before a response"/>
+  <int value="2" label="Timed out after a network error"/>
+  <int value="3" label="Timed out after an HTTP error"/>
+  <int value="4" label="Timed out after the page committed"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/ui/webui/drive_picker_host/drive_picker_host_ui.h:ConsentKitLoadResult) -->
+
 <!-- LINT.IfChange(ContextualSearchErrorPage) -->
 
 <enum name="ContextualSearchErrorPage">
@@ -128,6 +140,19 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//components/contextual_search/contextual_search_metrics_recorder.h:ContextualSearchNoAcMatchState) -->
 
+<!-- LINT.IfChange(ContextualSearchSingleTabMenuItemAction) -->
+
+<enum name="ContextualSearchSingleTabMenuItemAction">
+  <int value="0" label="Recent tab selected"/>
+  <int value="1" label="Recent tab deselected"/>
+  <int value="2" label="Recent tab submitted"/>
+  <int value="3" label="Current tab selected"/>
+  <int value="4" label="Current tab deselected"/>
+  <int value="5" label="Current tab submitted"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/omnibox/common/omnibox_metrics_utils.h:SingleTabMenuItemAction, //ui/webui/resources/cr_components/composebox/common.ts:SingleTabMenuItemAction) -->
+
 <!-- LINT.IfChange(ContextualSearchSource) -->
 
 <enum name="ContextualSearchSource">
@@ -137,9 +162,21 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="ContextualTasks"/>
   <int value="4" label="Lens"/>
   <int value="5" label="OmniboxEverywhere"/>
+  <int value="6" label="ContextualCue"/>
 </enum>
 
 <!-- LINT.ThenChange(//components/contextual_search/contextual_search_metrics_recorder.h:ContextualSearchSource) -->
+
+<!-- LINT.IfChange(RichImageSuggestBatchLoadStatus) -->
+
+<enum name="RichImageSuggestBatchLoadStatus">
+  <int value="0" label="Cached"/>
+  <int value="1" label="Loaded"/>
+  <int value="2" label="TimedOut"/>
+  <int value="3" label="Superseded"/>
+</enum>
+
+<!-- LINT.ThenChange(//ui/webui/resources/cr_components/composebox/common.ts:RichImageSuggestBatchLoadStatus) -->
 
 </enums>
 

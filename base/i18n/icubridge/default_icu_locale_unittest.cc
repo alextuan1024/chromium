@@ -5,13 +5,16 @@
 #include "base/i18n/icubridge/default_icu_locale.h"
 
 #include <utility>
+#include <vector>
 
 #include "base/barrier_closure.h"
+#include "base/callback_list.h"
 #include "base/check.h"
 #include "base/i18n/language_tag.h"
 #include "base/i18n/test/scoped_icu_locale.h"
 #include "base/run_loop.h"
 #include "base/task/thread_pool.h"
+#include "base/test/bind.h"
 #include "base/test/gtest_util.h"
 #include "base/test/task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -52,7 +55,38 @@ TEST(DefaultIcuLocaleTest, SyncsWithIcuDefaultLocale) {
   EXPECT_STREQ(icu::Locale::getDefault().getName(), "pt_BR");
 }
 
+TEST(DefaultIcuLocaleTest, OnDefaultLocaleUpdatedCallback) {
+  ScopedDefaultIcuLocale initial_en(GetKnownLanguageTag("en-US"));
+  std::vector<LanguageTag> notifications;
+
+  {
+    CallbackListSubscription subscription =
+        RegisterOnDefaultLocaleUpdatedCallback(
+            base::BindLambdaForTesting([&](const LanguageTag& locale) {
+              notifications.push_back(locale);
+            }));
+
+    {
+      ScopedDefaultIcuLocale override_ar(GetKnownLanguageTag("ar"));
+      ASSERT_EQ(notifications.size(), 1u);
+      EXPECT_EQ(notifications[0], GetKnownLanguageTag("ar"));
+    }
+
+    ASSERT_EQ(notifications.size(), 2u);
+    EXPECT_EQ(notifications[1], GetKnownLanguageTag("en-US"));
+  }
+
+  // After the subscription is destroyed, further locale updates should not
+  // invoke the callback.
+  ScopedDefaultIcuLocale override_fr(GetKnownLanguageTag("fr-FR"));
+  EXPECT_EQ(notifications.size(), 2u);
+}
+
 TEST(DefaultIcuLocaleTest, ThreadSafety) {
+  // Capture and restore the pre-test locale after `task_environment` joins all
+  // worker threads. Concurrent inner `ScopedDefaultIcuLocale` instances may
+  // destroy out of LIFO order and leave `pt-BR` or `fr-FR` installed.
+  ScopedDefaultIcuLocale restore_locale(GetKnownLanguageTag("en-US"));
   base::test::TaskEnvironment task_environment;
 
   // Run multiple reader and writer tasks concurrently on the ThreadPool.

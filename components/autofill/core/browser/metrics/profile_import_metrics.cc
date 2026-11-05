@@ -15,9 +15,12 @@
 
 #include "base/i18n/case_conversion.h"
 #include "base/i18n/char_iterator.h"
+#include "base/i18n/language_tag.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
+#include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_cleaner.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_comparator.h"
@@ -182,24 +185,24 @@ void LogAddressProfileImportUkm(
     size_t num_edited_fields,
     std::optional<AutofillProfile> import_candidate,
     const std::vector<const AutofillProfile*>& existing_profiles,
-    std::string_view app_locale) {
+    const base::i18n::LanguageTag& app_locale) {
   ukm::builders::Autofill2_AddressProfileImport builder(source_id);
   builder
       .SetAutocompleteUnrecognizedImport(
           profile_import_metadata
               .did_import_from_unrecognized_autocomplete_field)
-      .SetImportType(static_cast<int64_t>(import_type))
+      .SetImportType(std::to_underlying(import_type))
       .SetNumberOfEditedFields(num_edited_fields)
       .SetPhoneNumberStatus(
-          static_cast<int64_t>(profile_import_metadata.phone_import_status))
-      .SetUserDecision(static_cast<int64_t>(user_decision))
+          std::to_underlying(profile_import_metadata.phone_import_status))
+      .SetUserDecision(std::to_underlying(user_decision))
       .SetUserHasExistingProfile(!existing_profiles.empty());
   if (import_type == AutofillProfileImportType::kNewProfile &&
       !existing_profiles.empty() && import_candidate) {
     builder.SetDuplicationRank(GetDuplicationRank(
         AddressDataCleaner::CalculateMinimalIncompatibleProfileWithTypeSets(
             *import_candidate, existing_profiles,
-            AutofillProfileComparator(app_locale))));
+            AutofillProfileComparator(app_locale.tag_string()))));
   }
   builder.Record(ukm_recorder);
 }
@@ -214,6 +217,25 @@ void LogAddressFormImportCountrySource(
     const ProfileImportMetadata& profile_import_metadata) {
   base::UmaHistogramEnumeration("Autofill.AddressProfileImportCountrySource",
                                 profile_import_metadata.country_source);
+}
+
+void LogAddressFormImportCountryMatchesExplicitlyObserved(
+    const AddressCountryCode& explicitly_observed_country,
+    const AddressCountryCode& phone_number_country,
+    const GeoIpCountryCode& variations_service_country) {
+  if (explicitly_observed_country->empty() || phone_number_country->empty() ||
+      variations_service_country->empty()) {
+    return;
+  }
+  base::UmaHistogramBoolean(
+      "Autofill.AddressProfileImportCountryMatchesExplicitlyObserved."
+      "PhoneNumberRegionCode",
+      phone_number_country == explicitly_observed_country);
+  base::UmaHistogramBoolean(
+      "Autofill.AddressProfileImportCountryMatchesExplicitlyObserved."
+      "VariationsServiceCountry",
+      base::EqualsCaseInsensitiveASCII(variations_service_country.value(),
+                                       explicitly_observed_country.value()));
 }
 
 void LogAddressFormImportRequirementMetric(const AutofillProfile& profile) {
@@ -299,7 +321,7 @@ void LogNewProfileImportDecision(
     const ProfileImportMetadata& profile_import_metadata,
     const std::vector<const AutofillProfile*>& existing_profiles,
     const AutofillProfile& import_candidate,
-    std::string_view app_locale) {
+    const base::i18n::LanguageTag& app_locale) {
   constexpr std::string_view kNameBase =
       "Autofill.ProfileImport.NewProfileDecision2.";
   base::UmaHistogramEnumeration(base::StrCat({kNameBase, "Aggregate"}),
@@ -315,7 +337,7 @@ void LogNewProfileImportDecision(
     int duplication_rank = GetDuplicationRank(
         AddressDataCleaner::CalculateMinimalIncompatibleProfileWithTypeSets(
             import_candidate, existing_profiles,
-            AutofillProfileComparator(app_locale)));
+            AutofillProfileComparator(app_locale.tag_string())));
     if (duplication_rank == 1) {
       base::UmaHistogramEnumeration(
           base::StrCat({kNameBase, "UserHasQuasiDuplicateProfile"}), decision);
@@ -343,7 +365,7 @@ void LogProfileUpdateImportDecision(
     AutofillClient::AddressPromptUserDecision decision,
     const std::vector<const AutofillProfile*>& existing_profiles,
     const AutofillProfile& import_candidate,
-    std::string_view app_locale) {
+    const base::i18n::LanguageTag& app_locale) {
   constexpr std::string_view kNameBase =
       "Autofill.ProfileImport.UpdateProfileDecision2.";
   base::UmaHistogramEnumeration(base::StrCat({kNameBase, "Aggregate"}),
@@ -352,7 +374,7 @@ void LogProfileUpdateImportDecision(
   int duplication_rank = GetDuplicationRank(
       AddressDataCleaner::CalculateMinimalIncompatibleProfileWithTypeSets(
           import_candidate, existing_profiles,
-          AutofillProfileComparator(app_locale)));
+          AutofillProfileComparator(app_locale.tag_string())));
   if (duplication_rank == 1) {
     base::UmaHistogramEnumeration(
         base::StrCat({kNameBase, "UserHasQuasiDuplicateProfile"}), decision);

@@ -11,20 +11,28 @@ import android.util.ArrayMap;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.Callback;
 import org.chromium.base.Token;
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabRestoreEntryId;
+import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncFeatures;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
+import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
+import org.chromium.chrome.browser.tabmodel.undo.UndoClosureSnapshot;
+import org.chromium.chrome.browser.tabmodel.undo.UndoClosureSnapshotFactory;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,11 +40,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
 
-/** A tab model observer for managing bulk closures. */
+/**
+ * A {@link TabModelObserver} that saves closed tabs and tab groups to {@link HistoricalTabSaver}
+ * and, when {@link ChromeFeatureList#sUndoableTabClosureRework} is enabled, captures an {@link
+ * UndoClosureSnapshot} to notify the registered undo callback for undoable closures.
+ */
 @NullMarked
 public class HistoricalTabModelObserver implements TabModelObserver {
     private final TabModel mTabModel;
     private final HistoricalTabSaver mHistoricalTabSaver;
+    private @Nullable Callback<UndoClosureSnapshot> mUndoClosureCallback;
 
     /**
      * @param tabModel The tab model to observe tab closures in.
@@ -55,15 +68,25 @@ public class HistoricalTabModelObserver implements TabModelObserver {
 
     /** Removes observers. */
     public void destroy() {
+        mUndoClosureCallback = null;
         mTabModel.removeObserver(this);
         mHistoricalTabSaver.destroy();
+    }
+
+    /**
+     * Sets the callback invoked with an {@link UndoClosureSnapshot} when an undoable closure is
+     * saved to {@link HistoricalTabSaver}.
+     */
+    public void setUndoClosureCallback(
+            @Nullable Callback<UndoClosureSnapshot> undoClosureCallback) {
+        mUndoClosureCallback = undoClosureCallback;
     }
 
     /**
      * Adds a secondary {@link TabModel} supplier to check if a deleted tab should be added to
      * recent tabs.
      */
-    public void addSecondaryTabModelSupplier(Supplier<TabModel> tabModelSupplier) {
+    public void addSecondaryTabModelSupplier(Supplier<@Nullable TabModel> tabModelSupplier) {
         mHistoricalTabSaver.addSecondaryTabModelSupplier(tabModelSupplier);
     }
 
@@ -71,26 +94,86 @@ public class HistoricalTabModelObserver implements TabModelObserver {
      * Removes a secondary {@link TabModel} supplier to check if a deleted tab should be added to
      * recent tabs.
      */
-    public void removeSecondaryTabModelSupplier(Supplier<TabModel> tabModelSupplier) {
+    public void removeSecondaryTabModelSupplier(Supplier<@Nullable TabModel> tabModelSupplier) {
         mHistoricalTabSaver.removeSecondaryTabModelSupplier(tabModelSupplier);
     }
 
     @Override
     public void onFinishingMultipleTabClosure(List<Tab> tabs, boolean canRestore) {
+        onFinishingMultipleTabClosure(
+                tabs,
+                canRestore,
+                TabClosingSource.UNKNOWN,
+                /* undoRunnable= */ null,
+                /* isAllTabs= */ false,
+                /* isUndoable= */ false);
+    }
+
+    @Override
+    public void onFinishingMultipleTabClosure(
+            List<Tab> tabs,
+            boolean canRestore,
+            @TabClosingSource int closingSource,
+            @Nullable Runnable undoRunnable,
+            boolean isAllTabs,
+            boolean isUndoable) {
         if (tabs.isEmpty() || !canRestore) return;
 
+        @TabRestoreEntryId int entryId = saveToTabRestoreService(tabs);
+        if (!isUndoable
+                || mUndoClosureCallback == null
+                || !ChromeFeatureList.sUndoableTabClosureRework.isEnabled()
+                || mTabModel.isIncognitoBranded()) {
+            return;
+        }
+        if (entryId == HistoricalTabSaver.INVALID_TAB_RESTORE_ENTRY_ID
+                && !hasHidingTabGroup(tabs)) {
+            return;
+        }
+
+        // For closures finalized at close time (isUndoable == true),
+        // TabCollectionTabModelImpl#closeTabsInternal invokes onFinishingMultipleTabClosure
+        // before removeTabsAndSelectNext removes the closing tabs or closes detached tab groups,
+        // so the tabs, selection state, and group metadata are still live in mTabModel. Capturing
+        // savedTabGroupSyncId via TabGroupSyncService#getGroup(LocalTabGroupId) also relies on
+        // HistoricalTabModelObserver running before
+        // TabGroupSyncLocalObserver#onFinishingMultipleTabClosure() calls
+        // removeLocalTabGroupMapping() in the same observer pass.
+        Profile profile = mTabModel.getProfile();
+        assert profile != null;
+        boolean isTabGroupSyncEnabled = TabGroupSyncFeatures.isTabGroupSyncEnabled(profile);
+        @Nullable TabGroupSyncService tabGroupSyncService =
+                isTabGroupSyncEnabled ? TabGroupSyncServiceFactory.getForProfile(profile) : null;
+
+        UndoClosureSnapshot snapshot =
+                UndoClosureSnapshotFactory.captureFromTabModel(
+                        mTabModel,
+                        tabs,
+                        isAllTabs,
+                        isTabGroupSyncEnabled,
+                        tabGroupSyncService,
+                        closingSource,
+                        entryId,
+                        undoRunnable);
+        if (entryId == HistoricalTabSaver.INVALID_TAB_RESTORE_ENTRY_ID
+                && !snapshot.hasReopenableHiddenGroups()) {
+            return;
+        }
+        mUndoClosureCallback.onResult(snapshot);
+    }
+
+    private @TabRestoreEntryId int saveToTabRestoreService(List<Tab> tabs) {
         if (tabs.size() == 1) {
             Tab tab = tabs.get(0);
             if (!isTabGroupWithOneTab(tab)) {
-                mHistoricalTabSaver.createHistoricalTab(tab);
-                return;
+                return mHistoricalTabSaver.createHistoricalTab(tab);
             }
         }
 
-        buildGroupsAndCreateClosure(tabs);
+        return buildGroupsAndCreateClosure(tabs);
     }
 
-    private void buildGroupsAndCreateClosure(List<Tab> tabs) {
+    private @TabRestoreEntryId int buildGroupsAndCreateClosure(List<Tab> tabs) {
         Map<Token, HistoricalEntry> tabGroupIdToGroup = new ArrayMap<>();
         List<HistoricalEntry> entries = new ArrayList<>();
 
@@ -98,7 +181,7 @@ public class HistoricalTabModelObserver implements TabModelObserver {
         @Nullable TabGroupSyncService tabGroupSyncService =
                 TabGroupSyncServiceFactory.getForProfile(profile);
 
-        LazyOneshotSupplier<Set<Token>> tabGroupIdsInComprehensiveModel =
+        LazyOneshotSupplier<Set<TabGroupId>> tabGroupIdsInComprehensiveModel =
                 mTabModel.getLazyAllTabGroupIds(tabs, /* includePendingClosures= */ true);
         for (Tab tab : tabs) {
             @Nullable Token tabGroupId = tab.getTabGroupId();
@@ -117,9 +200,10 @@ public class HistoricalTabModelObserver implements TabModelObserver {
             // group ID. If the entry is still present in the comprehensive model, the tab group is
             // not fully closing and we can proceed with the process of saving an event to recent
             // tabs.
-            if ((mTabModel.isTabGroupHiding(tabGroupId)
+            if ((mTabModel.isTabGroupHiding(TabGroupId.fromOptionalToken(tabGroupId))
                             || isCollaborationTabGroup(tabGroupSyncService, tabGroupId))
-                    && !assumeNonNull(tabGroupIdsInComprehensiveModel.get()).contains(tabGroupId)) {
+                    && !assumeNonNull(tabGroupIdsInComprehensiveModel.get())
+                            .contains(TabGroupId.fromRawToken(tabGroupId))) {
                 continue;
             }
 
@@ -134,14 +218,16 @@ public class HistoricalTabModelObserver implements TabModelObserver {
             }
 
             // A null title (default title) is handled in HistoricalTabSaver.
-            String title = mTabModel.getTabGroupTitle(tab);
+            String title = mTabModel.getTabGroupTitle(TabGroupId.fromRawToken(tabGroupId));
             // Give a tab group the first color in the color list as a placeholder.
-            @TabGroupColorId int color = mTabModel.getTabGroupColorWithFallback(tab);
+            @TabGroupColorId
+            int color = mTabModel.getTabGroupColorWithFallback(TabGroupId.fromRawToken(tabGroupId));
 
             List<Tab> groupTabs = new ArrayList<>();
             groupTabs.add(tab);
             HistoricalEntry historicalGroup =
-                    new HistoricalEntry(tabGroupId, title, color, groupTabs);
+                    new HistoricalEntry(
+                            tabGroupId, title, color, groupTabs, /* savedTabGroupSyncId= */ null);
             entries.add(historicalGroup);
             tabGroupIdToGroup.put(tabGroupId, historicalGroup);
         }
@@ -161,16 +247,17 @@ public class HistoricalTabModelObserver implements TabModelObserver {
             }
         }
 
-        mHistoricalTabSaver.createHistoricalBulkClosure(groupAdjustedEntries);
+        return mHistoricalTabSaver.createHistoricalBulkClosure(groupAdjustedEntries);
     }
 
     private boolean shouldSaveSeparateTabs(HistoricalEntry entry) {
         @Nullable Token tabGroupId = entry.getTabGroupId();
         if (tabGroupId == null) return false;
 
-        boolean groupExists = mTabModel.tabGroupExists(tabGroupId);
+        boolean groupExists = mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(tabGroupId));
         if (groupExists) {
-            List<Tab> tabsInGroup = mTabModel.getTabsInGroup(tabGroupId);
+            List<Tab> tabsInGroup =
+                    mTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(tabGroupId));
             if (tabsInGroup.size() != entry.getTabs().size()
                     || !entry.getTabs().containsAll(tabsInGroup)) {
                 // Case: Group information not lost yet (non-undoable closure). Rely on whether all
@@ -192,10 +279,10 @@ public class HistoricalTabModelObserver implements TabModelObserver {
         @Nullable Token tabGroupId = tab.getTabGroupId();
         if (tabGroupId == null) return false;
 
-        if (mTabModel.tabGroupExists(tabGroupId)) {
+        if (mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(tabGroupId))) {
             // Case: Group information not lost yet (non-undoable closure). Rely on whether the tab
             // is the only tab in its tab group.
-            List<Tab> tabs = mTabModel.getTabsInGroup(tabGroupId);
+            List<Tab> tabs = mTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(tabGroupId));
             return tabs.size() == 1 && tabs.contains(tab);
         } else {
             // Case: Group information already lost (undoable closure). Rely on whether the tab
@@ -222,5 +309,16 @@ public class HistoricalTabModelObserver implements TabModelObserver {
         if (savedTabGroup == null) return false;
 
         return !TextUtils.isEmpty(savedTabGroup.collaborationId);
+    }
+
+    private boolean hasHidingTabGroup(List<Tab> tabs) {
+        for (Tab tab : tabs) {
+            @Nullable Token groupId = tab.getTabGroupId();
+            if (groupId != null
+                    && mTabModel.isTabGroupHiding(TabGroupId.fromOptionalToken(groupId))) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -40,7 +40,7 @@ import org.chromium.ui.base.TestActivity;
 public class SafetyHubPasswordsModuleMediatorTest {
     private static final @DrawableRes int SAFE_ICON = R.drawable.material_ic_check_24dp;
     private static final @DrawableRes int INFO_ICON = R.drawable.btn_info;
-    private static final @DrawableRes int WARNING_ICON = R.drawable.ic_error;
+    private static final @DrawableRes int WARNING_ICON = R.drawable.ic_error_24dp;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -142,6 +142,10 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertEquals(WARNING_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertEquals(expectedPrimaryButtonText, mPreference.getPrimaryButtonText());
         assertNull(mPreference.getSecondaryButtonText());
+
+        mPreference.getPrimaryButtonClickListener().onClick(null);
+        verify(mMediatorDelegateMock, times(1))
+                .startSettingsForModule(SafetyHubPasswordsFragment.class);
     }
 
     @Test
@@ -184,6 +188,10 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertEquals(WARNING_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertEquals(expectedPrimaryButtonText, mPreference.getPrimaryButtonText());
         assertEquals(expectedSecondaryButtonText, mPreference.getSecondaryButtonText());
+
+        mPreference.getSecondaryButtonClickListener().onClick(null);
+        verify(mMediatorDelegateMock, times(1))
+                .startSettingsForModule(SafetyHubPasswordsFragment.class);
     }
 
     @Test
@@ -342,6 +350,10 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertEquals(SAFE_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertNull(mPreference.getPrimaryButtonText());
         assertEquals(expectedSecondaryButtonText, mPreference.getSecondaryButtonText());
+
+        mPreference.getSecondaryButtonClickListener().onClick(null);
+        verify(mMediatorDelegateMock, times(1))
+                .startSettingsForModule(SafetyHubPasswordsFragment.class);
     }
 
     @Test
@@ -378,6 +390,10 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertEquals(INFO_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertEquals(expectedPrimaryButtonText, mPreference.getPrimaryButtonText());
         assertNull(mPreference.getSecondaryButtonText());
+
+        mPreference.getPrimaryButtonClickListener().onClick(null);
+        verify(mMediatorDelegateMock, times(1))
+                .startSettingsForModule(SafetyHubPasswordsFragment.class);
     }
 
     @Test
@@ -416,6 +432,10 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertEquals(INFO_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertEquals(expectedPrimaryButtonText, mPreference.getPrimaryButtonText());
         assertEquals(expectedSecondaryButtonText, mPreference.getSecondaryButtonText());
+
+        mPreference.getSecondaryButtonClickListener().onClick(null);
+        verify(mMediatorDelegateMock, times(1))
+                .startSettingsForModule(SafetyHubPasswordsFragment.class);
     }
 
     @Test
@@ -488,6 +508,10 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertEquals(INFO_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertEquals(expectedPrimaryButtonText, mPreference.getPrimaryButtonText());
         assertNull(mPreference.getSecondaryButtonText());
+
+        mPreference.getPrimaryButtonClickListener().onClick(null);
+        verify(mMediatorDelegateMock, times(1))
+                .startSettingsForModule(SafetyHubPasswordsFragment.class);
     }
 
     @Test
@@ -525,6 +549,10 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertEquals(INFO_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertEquals(expectedPrimaryButtonText, mPreference.getPrimaryButtonText());
         assertEquals(expectedSecondaryButtonText, mPreference.getSecondaryButtonText());
+
+        mPreference.getSecondaryButtonClickListener().onClick(null);
+        verify(mMediatorDelegateMock, times(1))
+                .startSettingsForModule(SafetyHubPasswordsFragment.class);
     }
 
     @Test
@@ -585,6 +613,10 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertEquals(INFO_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertNull(mPreference.getPrimaryButtonText());
         assertEquals(expectedSecondaryButtonText, mPreference.getSecondaryButtonText());
+
+        mPreference.getSecondaryButtonClickListener().onClick(null);
+        verify(mMediatorDelegateMock, times(1))
+                .startSettingsForModule(SafetyHubPasswordsFragment.class);
     }
 
     @Test
@@ -683,6 +715,10 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertEquals(INFO_ICON, shadowOf(mPreference.getIcon()).getCreatedFromResId());
         assertNull(mPreference.getPrimaryButtonText());
         assertEquals(expectedSecondaryButtonText, mPreference.getSecondaryButtonText());
+
+        mPreference.getSecondaryButtonClickListener().onClick(null);
+        verify(mMediatorDelegateMock, times(1))
+                .startSettingsForModule(SafetyHubPasswordsFragment.class);
     }
 
     @Test
@@ -707,5 +743,107 @@ public class SafetyHubPasswordsModuleMediatorTest {
         assertNull(mPreference.getIcon());
         assertNull(mPreference.getPrimaryButtonText());
         assertNull(mPreference.getSecondaryButtonText());
+    }
+
+    @Test
+    public void triggerNewCredentialFetch() {
+        verify(mAccountDataSource, times(0)).triggerNewCredentialFetch();
+        verify(mLocalDataSource, times(0)).triggerNewCredentialFetch();
+
+        mModuleMediator.triggerNewCredentialFetch();
+
+        verify(mAccountDataSource, times(1)).triggerNewCredentialFetch();
+        verify(mLocalDataSource, times(1)).triggerNewCredentialFetch();
+    }
+
+    @Test
+    public void triggerNewCredentialFetch_whileLoading() {
+        mockTriggerCheckup(true);
+
+        SafetyHubPasswordsModuleMediator moduleMediator =
+                new SafetyHubPasswordsModuleMediator(
+                        mPreference,
+                        mAccountDataSource,
+                        mLocalDataSource,
+                        mMediatorDelegateMock,
+                        mModuleDelegateMock);
+        moduleMediator.setUpModule();
+        verify(mAccountDataSource, times(0)).triggerNewCredentialFetch();
+        verify(mLocalDataSource, times(0)).triggerNewCredentialFetch();
+
+        moduleMediator.triggerNewCredentialFetch();
+
+        verify(mAccountDataSource, times(0)).triggerNewCredentialFetch();
+        verify(mLocalDataSource, times(0)).triggerNewCredentialFetch();
+    }
+
+    @Test
+    public void singleCompromisedAccountPassword_unavailableLocalPasswords() {
+        int compromisedAccountPasswordsCount = 1;
+        mockAccountPasswordCounts(compromisedAccountPasswordsCount, /* reused= */ 0, /* weak= */ 0);
+        mockLocalPasswordCounts(/* compromised= */ -1, /* reused= */ -1, /* weak= */ -1);
+
+        mockAccountPasswordState(
+                SafetyHubAccountPasswordsDataSource.ModuleType.HAS_COMPROMISED_PASSWORDS);
+        mockLocalPasswordState(SafetyHubLocalPasswordsDataSource.ModuleType.UNAVAILABLE_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(
+                SafetyHubAccountPasswordsDataSource.ModuleType.HAS_COMPROMISED_PASSWORDS);
+        mModuleMediator.localPasswordsStateChanged(
+                SafetyHubLocalPasswordsDataSource.ModuleType.UNAVAILABLE_PASSWORDS);
+
+        String expectedSummary =
+                mActivity
+                        .getResources()
+                        .getQuantityString(
+                                R.plurals.safety_hub_compromised_passwords_summary,
+                                compromisedAccountPasswordsCount,
+                                compromisedAccountPasswordsCount);
+        assertEquals(expectedSummary, mPreference.getSummary().toString());
+    }
+
+    @Test
+    public void reusedLocalPasswordsExist_signedOutWithInvalidAccountCounts() {
+        int reusedLocalPasswordsCount = 1;
+        mockAccountPasswordCounts(/* compromised= */ -1, /* reused= */ -1, /* weak= */ -1);
+        mockLocalPasswordCounts(/* compromised= */ 0, reusedLocalPasswordsCount, /* weak= */ 0);
+
+        mockAccountPasswordState(SafetyHubAccountPasswordsDataSource.ModuleType.SIGNED_OUT);
+        mockLocalPasswordState(SafetyHubLocalPasswordsDataSource.ModuleType.HAS_REUSED_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(
+                SafetyHubAccountPasswordsDataSource.ModuleType.SIGNED_OUT);
+        mModuleMediator.localPasswordsStateChanged(
+                SafetyHubLocalPasswordsDataSource.ModuleType.HAS_REUSED_PASSWORDS);
+
+        String expectedSummary =
+                mActivity
+                        .getResources()
+                        .getQuantityString(
+                                R.plurals.safety_hub_reused_passwords_summary,
+                                reusedLocalPasswordsCount,
+                                reusedLocalPasswordsCount);
+        assertEquals(expectedSummary, mPreference.getSummary().toString());
+    }
+
+    @Test
+    public void weakLocalPasswordsExist_signedOutWithInvalidAccountCounts() {
+        int weakLocalPasswordsCount = 1;
+        mockAccountPasswordCounts(/* compromised= */ -1, /* reused= */ -1, /* weak= */ -1);
+        mockLocalPasswordCounts(/* compromised= */ 0, /* reused= */ 0, weakLocalPasswordsCount);
+
+        mockAccountPasswordState(SafetyHubAccountPasswordsDataSource.ModuleType.SIGNED_OUT);
+        mockLocalPasswordState(SafetyHubLocalPasswordsDataSource.ModuleType.HAS_WEAK_PASSWORDS);
+        mModuleMediator.accountPasswordsStateChanged(
+                SafetyHubAccountPasswordsDataSource.ModuleType.SIGNED_OUT);
+        mModuleMediator.localPasswordsStateChanged(
+                SafetyHubLocalPasswordsDataSource.ModuleType.HAS_WEAK_PASSWORDS);
+
+        String expectedSummary =
+                mActivity
+                        .getResources()
+                        .getQuantityString(
+                                R.plurals.safety_hub_weak_passwords_summary,
+                                weakLocalPasswordsCount,
+                                weakLocalPasswordsCount);
+        assertEquals(expectedSummary, mPreference.getSummary().toString());
     }
 }

@@ -55,10 +55,28 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) ThrottlingController {
       uint32_t net_log_source_id,
       const GURL& url);
 
+  // Returns the interceptor that currently matches `url` in the specified
+  // throttling profile. This is used by transports which do not issue a
+  // URLRequest and therefore have no NetLog source to register.
+  static ThrottlingNetworkInterceptor* GetInterceptorForProfile(
+      const base::UnguessableToken& throttling_profile_id,
+      const GURL& url);
+
 #if BUILDFLAG(IS_P2P_ENABLED)
   static ThrottlingP2PNetworkInterceptor* GetP2PInterceptor(
       uint32_t net_log_source_id);
 #endif
+
+  // The controller is a process-wide singleton that binds to the first thread
+  // that uses it. Tests that run several network threads one after the other in
+  // the same process call this once a thread is done with the controller, so
+  // that the next thread can bind it. May be called on any thread.
+  static void DetachFromThreadForTesting();
+
+  // Returns true if no throttling conditions are set and no NetLog source is
+  // registered. May be called on any thread, as long as no other thread is
+  // using the controller at the same time.
+  static bool IsEmptyForTesting();
 
  private:
   friend class ScopedThrottlingToken;

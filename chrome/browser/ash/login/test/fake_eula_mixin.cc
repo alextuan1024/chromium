@@ -7,7 +7,6 @@
 #include "ash/constants/ash_switches.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_util.h"
-#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "url/gurl.h"
 
@@ -18,19 +17,11 @@ using ::net::test_server::BasicHttpResponse;
 using ::net::test_server::HttpRequest;
 using ::net::test_server::HttpResponse;
 
-constexpr char kFakeOnlineEulaPath[] = "/intl/en-US/chrome/eula_text.html";
+constexpr char kFakeOnlineEulaPath[] = "/intl/en-US/chrome/terms/";
 
 }  // namespace
 
 const char* FakeEulaMixin::kFakeOnlineEula = "No obligations at all";
-const char* FakeEulaMixin::kOfflineEULAWarning =
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-    // See IDS_TERMS_HTML for the complete text.
-    "Google Chrome and ChromeOS Additional Terms of Service";
-#else
-    // Placeholder text in terms_chromium.html.
-    "In official builds this space will show the terms of service.";
-#endif
 
 FakeEulaMixin::FakeEulaMixin(InProcessBrowserTestMixinHost* host,
                              net::EmbeddedTestServer* test_server)
@@ -55,7 +46,7 @@ std::unique_ptr<HttpResponse> FakeEulaMixin::HandleRequest(
     const HttpRequest& request) {
   GURL request_url = GURL("http://localhost").Resolve(request.relative_url);
   const std::string request_path = request_url.GetPath();
-  if (!base::EndsWith(request_path, "/eula_text.html",
+  if (!base::EndsWith(request_path, "/chrome/terms/",
                       base::CompareCase::SENSITIVE)) {
     return nullptr;
   }

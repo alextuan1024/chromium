@@ -9,6 +9,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/containers/to_vector.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -19,6 +20,7 @@
 #include "build/build_config.h"
 #include "components/viz/common/gpu/context_provider.h"
 #include "device/vr/openxr/exit_xr_present_reason.h"
+#include "device/vr/openxr/fb/openxr_frame_rate_handler_fb.h"
 #include "device/vr/openxr/openxr_api_wrapper.h"
 #include "device/vr/openxr/openxr_input_helper.h"
 #include "device/vr/openxr/openxr_util.h"
@@ -97,6 +99,7 @@ void OpenXrRenderLoop::ExitPresent(ExitXrPresentReason reason) {
   presentation_receiver_.reset();
   frame_data_receiver_.reset();
   layer_manager_receiver_.reset();
+  frame_rate_controller_receiver_.reset();
   submit_client_.reset();
 
   pending_frame_.reset();
@@ -108,7 +111,10 @@ void OpenXrRenderLoop::ExitPresent(ExitXrPresentReason reason) {
 
   // Kill outstanding overlays:
   overlay_visible_ = false;
+  has_valid_overlay_texture_ = false;
   overlay_receiver_.reset();
+  overlay_submit_callback_.Reset();
+  pending_overlay_pose_callback_.Reset();
 
   graphics_binding_->SetOverlayAndWebXrVisibility(false, false);
 
@@ -266,7 +272,7 @@ void OpenXrRenderLoop::SetStageParameters(
 #if BUILDFLAG(IS_WIN)
 void OpenXrRenderLoop::SubmitFrameWithTextureHandle(
     int16_t frame_index,
-    mojo::PlatformHandle texture_handle,
+    gpu::ExportedSharedImage exported_shared_image,
     const gpu::SyncToken& sync_token) {
   DVLOG(3) << __func__ << " frame_index=" << frame_index;
   TRACE_EVENT1("xr", "OpenXrRenderLoop::SubmitFrameWithTextureHandle",
@@ -275,8 +281,9 @@ void OpenXrRenderLoop::SubmitFrameWithTextureHandle(
     return;
   }
 
-  graphics_binding_->SetWebXrTexture(std::move(texture_handle), sync_token,
-                                     left_webxr_bounds_, right_webxr_bounds_);
+  graphics_binding_->SetWebXrTexture(
+      gpu::ClientSharedImage::ImportUnowned(std::move(exported_shared_image)),
+      sync_token, left_webxr_bounds_, right_webxr_bounds_);
 
   // Regardless of success - try to composite what we have.
   MaybeCompositeAndSubmit();
@@ -290,7 +297,10 @@ void OpenXrRenderLoop::CleanUp() {
   presentation_receiver_.reset();
   frame_data_receiver_.reset();
   layer_manager_receiver_.reset();
+  frame_rate_controller_receiver_.reset();
   overlay_receiver_.reset();
+  overlay_submit_callback_.Reset();
+  pending_overlay_pose_callback_.Reset();
   environment_receiver_.reset();
   StopRuntime();
 }
@@ -306,6 +316,9 @@ void OpenXrRenderLoop::ClearPendingFrame() {
     return;
   }
 
+  if (overlay_submit_callback_) {
+    std::move(overlay_submit_callback_).Run(false);
+  }
   pending_frame_.reset();
   // Send frame data to outstanding requests.
   if (delayed_get_frame_data_callback_ &&
@@ -336,6 +349,13 @@ bool OpenXrRenderLoop::StartPendingFrame() {
     DCHECK(pending_frame_->frame_data_);
     pending_frame_->render_info_ = GetRenderInfo(*pending_frame_->frame_data_);
   }
+
+  if (!webxr_visible_ && pending_overlay_pose_callback_ &&
+      pending_frame_->render_info_) {
+    std::move(pending_overlay_pose_callback_)
+        .Run(pending_frame_->render_info_->Clone());
+  }
+
   return true;
 }
 
@@ -404,10 +424,7 @@ void OpenXrRenderLoop::StartRuntimeFinish(
   }
   session->submit_frame_sink = std::move(submit_frame_sink);
 
-  const auto& enabled_features = openxr_->GetEnabledFeatures();
-  session->enabled_features.insert(session->enabled_features.end(),
-                                   enabled_features.begin(),
-                                   enabled_features.end());
+  session->enabled_features = base::ToVector(openxr_->GetEnabledFeatures());
 
   session->device_config = device::mojom::XRSessionDeviceConfig::New();
   session->device_config->enable_anti_aliasing =
@@ -418,8 +435,20 @@ void OpenXrRenderLoop::StartRuntimeFinish(
   if (auto* depth = openxr_->GetDepthSensor(); depth) {
     session->device_config->depth_configuration = depth->GetDepthConfig();
   }
+  if (auto* frame_rate_handler = openxr_->GetFrameRateHandler()) {
+    session->device_config->frame_rate = frame_rate_handler->frame_rate();
+    if (!frame_rate_handler->supported_frame_rates().empty()) {
+      session->device_config->supported_frame_rates =
+          frame_rate_handler->supported_frame_rates();
+      session->frame_rate_controller =
+          frame_rate_controller_receiver_.BindNewPipeAndPassRemote();
+    }
+  }
   if (graphics_binding_->SupportsLayers()) {
-    session->device_config->max_render_layers = openxr_->GetMaxRenderLayers();
+    session->device_config->max_render_layers =
+        openxr_->IsFeatureEnabled(mojom::XRSessionFeature::LAYERS)
+            ? openxr_->GetMaxRenderLayers()
+            : 1;
   }
 
   session->enviroment_blend_mode =
@@ -453,8 +482,10 @@ void OpenXrRenderLoop::MaybeCompositeAndSubmit(
   }
 
   // Check if we have obtained all layers (overlay and webxr) that we need.
+  // Note: When WebXR is visible, we do not block on the overlay, allowing
+  // WebXR to run at full frame rate while reusing the latched overlay texture.
   if (pending_frame_->waiting_for_webxr_ ||
-      pending_frame_->waiting_for_overlay_) {
+      (pending_frame_->waiting_for_overlay_ && !webxr_visible_)) {
     DVLOG(3) << __func__ << "Waiting for additional layers, waiting_for_webxr_="
              << pending_frame_->waiting_for_webxr_
              << " waiting_for_overlay=" << pending_frame_->waiting_for_overlay_;
@@ -465,10 +496,13 @@ void OpenXrRenderLoop::MaybeCompositeAndSubmit(
   // Dropping the "Maybe", because now we've passed that point.
   TRACE_EVENT_BEGIN("xr", "CompositeAndSubmit");
   bool copy_successful = false;
-  bool has_webxr_content = pending_frame_->webxr_submitted_ && webxr_visible_;
-  bool has_overlay_content =
-      pending_frame_->overlay_submitted_ && overlay_visible_;
-  bool can_submit = has_webxr_content || has_overlay_content;
+  const bool has_webxr_content =
+      pending_frame_->webxr_submitted_ && webxr_visible_;
+  const bool has_overlay_content =
+      (pending_frame_->overlay_submitted_ || has_valid_overlay_texture_) &&
+      overlay_visible_;
+  const bool can_submit =
+      has_webxr_content || (!webxr_visible_ && has_overlay_content);
 
   // Tell texture helper to composite, then grab the output texture, and submit.
   // If we submitted, set up the next frame, and send outstanding pose requests.
@@ -603,48 +637,73 @@ void OpenXrRenderLoop::UpdateLayerBounds(int16_t frame_id,
 
 void OpenXrRenderLoop::SubmitOverlayTexture(
     int16_t frame_id,
-    gfx::GpuMemoryBufferHandle texture,
+    gpu::ExportedSharedImage exported_shared_image,
     const gpu::SyncToken& sync_token,
     const gfx::RectF& left_bounds,
     const gfx::RectF& right_bounds,
     SubmitOverlayTextureCallback overlay_submit_callback) {
   TRACE_EVENT_INSTANT("xr", "OpenXrRenderLoop::SubmitOverlay");
   DCHECK(overlay_visible_);
-  overlay_submit_callback_ = std::move(overlay_submit_callback);
-  if (!pending_frame_) {
-    // We may stop presenting while there is a pending SubmitOverlayTexture
-    // outstanding.  If we get an overlay submit we weren't expecting, just
-    // ignore it.
-    DCHECK(!is_presenting_);
-    std::move(overlay_submit_callback_).Run(false);
+  if (!is_presenting_) {
+    std::move(overlay_submit_callback).Run(false);
     return;
   }
 
-  pending_frame_->waiting_for_overlay_ = false;
+  const bool success = graphics_binding_->SetOverlayTexture(
+      gpu::ClientSharedImage::ImportUnowned(std::move(exported_shared_image)),
+      sync_token, left_bounds, right_bounds);
+  has_valid_overlay_texture_ = success;
 
-  graphics_binding_->SetOverlayTexture(std::move(texture), sync_token,
-                                       left_bounds, right_bounds);
-  pending_frame_->overlay_submitted_ = true;
-
-  // Regardless of success - try to composite what we have.
-  MaybeCompositeAndSubmit();
+  if (pending_frame_) {
+    pending_frame_->waiting_for_overlay_ = false;
+    pending_frame_->overlay_submitted_ = success;
+    if (overlay_submit_callback_) {
+      std::move(overlay_submit_callback_).Run(false);
+    }
+    overlay_submit_callback_ = std::move(overlay_submit_callback);
+    // Regardless of success - try to composite what we have.
+    MaybeCompositeAndSubmit();
+  } else {
+    // WebXR already composited and cleared pending_frame_. Acknowledge the
+    // callback so the overlay loop continues, and the new texture will be
+    // composited on the next WebXR frame.
+    std::move(overlay_submit_callback).Run(success);
+  }
 }
 
 void OpenXrRenderLoop::RequestNextOverlayPose(
     RequestNextOverlayPoseCallback callback) {
   DVLOG(3) << __func__;
+  if (!is_presenting_) {
+    std::move(callback).Run(mojom::XRRenderInfo::New());
+    return;
+  }
   // We will only request poses while the overlay is visible.
   DCHECK(overlay_visible_);
   TRACE_EVENT_INSTANT("xr", "OpenXrRenderLoop::RequestOverlayPose");
 
-  // Ensure we have a pending frame; bail if the session ended while starting
-  // it. ExitPresent() has already reset the overlay receiver, so dropping this
-  // callback during teardown is safe.
-  if (!StartPendingFrame()) {
+  if (pending_overlay_pose_callback_) {
+    std::move(pending_overlay_pose_callback_).Run(mojom::XRRenderInfo::New());
+  }
+
+  if (!webxr_visible_) {
+    // When WebXR is hidden, the overlay drives the frame loop.
+    pending_overlay_pose_callback_ = std::move(callback);
+    StartPendingFrame();
     return;
   }
 
-  std::move(callback).Run(pending_frame_->render_info_->Clone());
+  // When WebXR is visible, WebXR drives the OpenXR frame loop. Do not call
+  // StartPendingFrame() here, as that would invoke xrWaitFrame() and block on
+  // hardware VSync, stealing frame pacing from WebXR. Defer until
+  // SendFrameData() has dispatched the frame to WebXR so the overlay IPC never
+  // delays WebXR frame start.
+  if (pending_frame_ && pending_frame_->render_info_ &&
+      pending_frame_->sent_to_webxr_ && pending_frame_->waiting_for_overlay_) {
+    std::move(callback).Run(pending_frame_->render_info_->Clone());
+  } else {
+    pending_overlay_pose_callback_ = std::move(callback);
+  }
 }
 
 void OpenXrRenderLoop::SetOverlayAndWebXRVisibility(bool overlay_visible,
@@ -656,6 +715,18 @@ void OpenXrRenderLoop::SetOverlayAndWebXRVisibility(bool overlay_visible,
   // Update state.
   webxr_visible_ = webxr_visible;
   overlay_visible_ = overlay_visible;
+  if (!overlay_visible_) {
+    has_valid_overlay_texture_ = false;
+    if (pending_overlay_pose_callback_) {
+      std::move(pending_overlay_pose_callback_)
+          .Run(pending_frame_ && pending_frame_->render_info_
+                   ? pending_frame_->render_info_->Clone()
+                   : mojom::XRRenderInfo::New());
+    }
+  } else if (!webxr_visible_ && is_presenting_ &&
+             pending_overlay_pose_callback_) {
+    StartPendingFrame();
+  }
   if (pending_frame_) {
     pending_frame_->waiting_for_webxr_ =
         pending_frame_->waiting_for_webxr_ && webxr_visible;
@@ -704,7 +775,23 @@ void OpenXrRenderLoop::SendFrameData(
       empty_frame_data->render_info->frame_id =
           frame_data->render_info->frame_id;
     }
+    // Blink expects the shared images with every frame it could draw into,
+    // even one it then skips because the session is hidden. They don't expose
+    // anything about the user, so pass them along.
+    empty_frame_data->buffer_shared_image =
+        std::move(frame_data->buffer_shared_image);
+    empty_frame_data->buffer_sync_token = frame_data->buffer_sync_token;
+    empty_frame_data->composition_layers_data =
+        std::move(frame_data->composition_layers_data);
     std::move(callback).Run(std::move(empty_frame_data));
+  }
+
+  if (pending_frame_) {
+    pending_frame_->sent_to_webxr_ = true;
+    if (pending_overlay_pose_callback_ && pending_frame_->render_info_) {
+      std::move(pending_overlay_pose_callback_)
+          .Run(pending_frame_->render_info_->Clone());
+    }
   }
 }
 
@@ -724,6 +811,8 @@ mojom::XRFrameDataPtr OpenXrRenderLoop::GetNextFrameData() {
   const XrTime frame_time = openxr_->GetPredictedDisplayTime();
 
   frame_data->time_delta = base::Nanoseconds(frame_time);
+  frame_data->predicted_display_time = OpenXrApiWrapper::XrTimeToTimeTicks(
+      instance_, *extension_helper_, frame_time);
   frame_data->render_info->views = openxr_->GetViews();
 
   // Unless we are fully synchronized/visible we shouldn't report input state.
@@ -732,6 +821,10 @@ mojom::XRFrameDataPtr OpenXrRenderLoop::GetNextFrameData() {
   }
 
   frame_data->render_info->mojo_from_viewer = openxr_->GetViewerPose();
+
+  if (auto* frame_rate_handler = openxr_->GetFrameRateHandler()) {
+    frame_data->frame_rate = frame_rate_handler->frame_rate();
+  }
 
   UpdateStageParameters();
 
@@ -835,6 +928,9 @@ void OpenXrRenderLoop::StartRuntime(
   VisibilityChangedCallback on_visibility_state_changed_callback =
       base::BindRepeating(&OpenXrRenderLoop::SetVisibilityState,
                           weak_ptr_factory_.GetWeakPtr());
+  openxr_->SetOnSessionResumedCallback(
+      base::BindRepeating(&OpenXrRenderLoop::OnOpenXrSessionResumed,
+                          weak_ptr_factory_.GetWeakPtr()));
   if (XR_FAILED(openxr_->InitSession(
           std::move(options), *extension_helper_,
           std::move(on_session_started_callback),
@@ -846,6 +942,24 @@ void OpenXrRenderLoop::StartRuntime(
     // StopRuntime, which should be resilient to duplicate calls.
     ExitPresent(ExitXrPresentReason::kStartRuntimeFailed);
     StopRuntime();
+  }
+}
+
+void OpenXrRenderLoop::OnOpenXrSessionResumed() {
+  // This runs while processing OpenXR events, which can happen inside
+  // GetFrameData(), so serve a deferred frame request in a new task.
+  task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&OpenXrRenderLoop::MaybeServeDelayedGetFrameData,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void OpenXrRenderLoop::MaybeServeDelayedGetFrameData() {
+  // Serve a frame request that ShouldDelayGetFrameData() deferred while the
+  // session was stopped.
+  if (delayed_get_frame_data_callback_ &&
+      (webxr_visible_ || on_webxr_submitted_)) {
+    std::move(delayed_get_frame_data_callback_).Run();
   }
 }
 
@@ -901,9 +1015,11 @@ void OpenXrRenderLoop::StopRuntime() {
     std::move(end_callback_).Run();
   }
   openxr_ = nullptr;
+  has_valid_overlay_texture_ = false;
   // Need to destroy the graphics binding after the OpenXrApiWrapper, which
   // depends on it.
   graphics_binding_.reset();
+  fence_helper_.reset();
   context_provider_.reset();
 }
 
@@ -968,8 +1084,8 @@ void OpenXrRenderLoop::SubmitFrameDrawnIntoTexture(
   // supports_gpu_fence_ was established once in OnContextProviderCreated().
   if (supports_gpu_fence_) {
     gpu::ClientSharedImage::CreateGpuFenceForSyncTokens(
-        std::move(shared_images), std::move(combined_sync_tokens), gl,
-        context_provider_->ContextSupport(),
+        std::move(shared_images), std::move(combined_sync_tokens),
+        fence_helper_.get(), context_provider_->ContextSupport(),
         base::BindOnce(&OpenXrRenderLoop::OnWebXrTokenSignaled,
                        weak_ptr_factory_.GetWeakPtr(), frame_index, layer_ids));
     return;
@@ -977,15 +1093,40 @@ void OpenXrRenderLoop::SubmitFrameDrawnIntoTexture(
 
   // No GPU fence: a CPU finish guarantees the WebGL write completed before the
   // binding reads the shared image. WaitOnFence is a no-op without a fence FD.
-  // TODO(crbug.com/506004811): use a GL-signal/Vulkan-wait fence if available.
-  for (const auto& sync_token : combined_sync_tokens) {
-    gl->WaitSyncTokenCHROMIUM(sync_token.GetConstData());
-  }
-  gl->Finish();
+#if BUILDFLAG(IS_LINUX)
+  // The finish is only needed if the flushed write left no fence to wait on.
+  gpu::ClientSharedImage::WaitSyncTokenAndSignal(
+      std::move(shared_images), std::move(combined_sync_tokens), gl,
+      context_provider_->ContextSupport(),
+      base::BindOnce(&OpenXrRenderLoop::OnWebXrWritesFlushed,
+                     weak_ptr_factory_.GetWeakPtr(), frame_index,
+                     std::move(layer_ids)));
+  TRACE_EVENT_END("xr", perfetto::Track(frame_index));
+#else
+  gpu::ClientSharedImage::WaitSyncTokenAndFinish(
+      std::move(shared_images), std::move(combined_sync_tokens), gl);
   TRACE_EVENT_END("xr", perfetto::Track(frame_index));
   MarkFrameSubmitted(frame_index);
   MaybeCompositeAndSubmit(layer_ids);
+#endif
 }
+
+#if BUILDFLAG(IS_LINUX)
+void OpenXrRenderLoop::OnWebXrWritesFlushed(
+    int16_t frame_index,
+    std::vector<LayerId> updated_layers) {
+  // As in OnWebXrTokenSignaled(), the session may have ended in the meantime.
+  if (!is_presenting_ || !openxr_ || !context_provider_) {
+    return;
+  }
+  if (!graphics_binding_->WaitOnImplicitFences(updated_layers)) {
+    context_provider_->ContextGL()->Finish();
+  }
+
+  MarkFrameSubmitted(frame_index);
+  MaybeCompositeAndSubmit(updated_layers);
+}
+#endif  // BUILDFLAG(IS_LINUX)
 
 void OpenXrRenderLoop::OnWebXrTokenSignaled(
     int16_t frame_index,
@@ -1187,6 +1328,27 @@ void OpenXrRenderLoop::SetEnabledCompositionLayers(
       context_provider_->SharedImageInterface());
 }
 
+void OpenXrRenderLoop::UpdateTargetFrameRate(
+    float rate,
+    UpdateTargetFrameRateCallback callback) {
+  // The handler is gone if the runtime has already ended the session.
+  OpenXrFrameRateHandlerFb* frame_rate_handler = openxr_->GetFrameRateHandler();
+  if (!frame_rate_handler) {
+    std::move(callback).Run();
+    return;
+  }
+  if (!std::ranges::contains(frame_rate_handler->supported_frame_rates(),
+                             rate)) {
+    frame_rate_controller_receiver_.ReportBadMessage(
+        "Frame rate is not supported.");
+    return;
+  }
+  // Don't wait for a switch, which may never come. GetNextFrameData()
+  // reports it if it does.
+  frame_rate_handler->RequestFrameRate(rate);
+  std::move(callback).Run();
+}
+
 void OpenXrRenderLoop::CreateAnchor(
     mojom::XRNativeOriginInformationPtr native_origin_information,
     const device::Pose& native_origin_from_anchor,
@@ -1262,8 +1424,9 @@ void OpenXrRenderLoop::OnContextLostCallback(
   DCHECK(task_runner()->BelongsToCurrentThread());
   DCHECK_EQ(context_provider_, nullptr);
 
-  // Context providers are required to be released on the context thread they
-  // were bound to.
+  // The textures belong to the lost context. Context providers are required to
+  // be released on the context thread they were bound to.
+  fence_helper_.reset();
   lost_context_provider.reset();
 
   if (graphics_binding_ && graphics_binding_->RequiresSharedImages()) {
@@ -1333,6 +1496,8 @@ void OpenXrRenderLoop::OnContextProviderCreated(
 
   context_provider->AddObserver(this);
   context_provider_ = std::move(context_provider);
+  fence_helper_ = std::make_unique<gpu::SharedImageFenceHelper>(
+      context_provider_->ContextGL());
 
   // GL_CHROMIUM_gpu_fence (EGL_ANDROID_native_fence_sync) is a fixed property
   // of this context, so query it once here. Requesting a fence without it
@@ -1359,6 +1524,12 @@ void OpenXrRenderLoop::OnContextProviderCreated(
 bool OpenXrRenderLoop::ShouldDelayGetFrameData() const {
   // If we've already given out a pose for the current frame, delay.
   if (webxr_has_pose_) {
+    return true;
+  }
+
+  // There are no frames to give out while the runtime has stopped the session.
+  // OnOpenXrSessionResumed() serves the request once it runs again.
+  if (!openxr_->IsSessionRunning()) {
     return true;
   }
 

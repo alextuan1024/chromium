@@ -49,6 +49,10 @@ public class InstanceSwitcherFaviconHelper {
         mIconGenerator = FaviconUtils.createRoundedRectangleIconGenerator(context);
     }
 
+    /* package */ void destroy() {
+        mLargeIconBridge.destroy();
+    }
+
     /* package */ void setFavicon(
             PropertyModel model,
             PropertyModel.WritableObjectPropertyKey<Drawable> faviconKey,
@@ -61,12 +65,23 @@ public class InstanceSwitcherFaviconHelper {
             model.set(faviconKey, mIncognitoFavicon);
         } else {
             GURL url = new GURL(item.url);
-            mLargeIconBridge.getLargeIconForUrl(
-                    url,
-                    mMinIconSizeDp,
-                    (icon, fallbackColor, isFallbackColorDefault, iconType) -> {
-                        model.set(faviconKey, createIconDrawable(item.url, icon, fallbackColor));
-                    });
+            boolean callbackWillBeInvoked =
+                    mLargeIconBridge.getLargeIconForUrl(
+                            url,
+                            mMinIconSizeDp,
+                            (icon, fallbackColor, isFallbackColorDefault, iconType) -> {
+                                model.set(
+                                        faviconKey,
+                                        createIconDrawable(item.url, icon, fallbackColor));
+                            });
+            if (!callbackWillBeInvoked) {
+                model.set(
+                        faviconKey,
+                        createIconDrawable(
+                                item.url,
+                                /* icon= */ null,
+                                LargeIconBridge.DEFAULT_ICON_FALLBACK_COLOR));
+            }
         }
     }
 

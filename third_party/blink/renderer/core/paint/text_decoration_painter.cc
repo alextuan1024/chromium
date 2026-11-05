@@ -139,8 +139,7 @@ Color TextDecorationPainter::LineColorForPhase(
     const ResolvedDecoration& decoration,
     TextShadowPaintPhase text_shadow_paint_phase) const {
   if (text_shadow_paint_phase == TextShadowPaintPhase::kShadow ||
-      (RuntimeEnabledFeatures::BackgroundClipTextDecorationEnabled() &&
-       paint_info_.phase == PaintPhase::kTextClip)) {
+      paint_info_.phase == PaintPhase::kTextClip) {
     return Color::kBlack;
   }
   return decoration_info.LineColor(decoration);
@@ -163,6 +162,16 @@ void TextDecorationPainter::PaintUnderOrOverLineDecorations(
       [&](TextShadowPaintPhase phase) {
         for (wtf_size_t i = 0; i < decoration_info.AppliedDecorationCount();
              i++) {
+          // Decorations that aren't in effect only have lines so that the ink
+          // overflow of the text includes them (see
+          // `AppliedTextDecoration::IsInEffect()`).
+          //
+          // TODO(crbug.com/571157138): Paint them with a deferred color (see
+          // `cc::DeferredValueGenerator`), so that the compositor can animate
+          // them when their element is hovered.
+          if (!decoration_info.AppliedDecoration(i).IsInEffect()) {
+            continue;
+          }
           const ResolvedDecoration decoration =
               decoration_info.ResolveDecorationAt(i);
 
@@ -233,6 +242,10 @@ void TextDecorationPainter::PaintLineThroughDecorations(
              ++applied_decoration_index) {
           const AppliedTextDecoration& decoration =
               decoration_info.AppliedDecoration(applied_decoration_index);
+          // See `PaintUnderOrOverLineDecorations()`.
+          if (!decoration.IsInEffect()) {
+            continue;
+          }
           TextDecorationLine lines = decoration.Lines();
           if (EnumHasFlags(lines, TextDecorationLine::kLineThrough)) {
             const ResolvedDecoration resolved =

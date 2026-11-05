@@ -39,7 +39,7 @@ namespace media {
 
 static const gfx::Size kInputVisibleSize(64, 48);
 
-EncoderStatus::Or<std::unique_ptr<VideoEncodeAccelerator>>
+base::expected<std::unique_ptr<VideoEncodeAccelerator>, EncoderStatus>
 CreateAndInitializeFakeVEA(
     bool will_initialization_succeed,
     const VideoEncodeAccelerator::Config& config,
@@ -50,7 +50,8 @@ CreateAndInitializeFakeVEA(
     std::unique_ptr<MediaLog> media_log,
     MojoVideoEncodeAcceleratorService::GetCommandBufferHelperCB
         get_command_buffer_helper_cb,
-    scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner) {
+    scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
+    gpu::Scheduler* gpu_scheduler) {
   // Use FakeVEA as scoped_ptr to guarantee proper destruction via Destroy().
   auto vea = std::make_unique<FakeVideoEncodeAccelerator>(
       base::SingleThreadTaskRunner::GetCurrentDefault());
@@ -61,7 +62,7 @@ CreateAndInitializeFakeVEA(
   if (result.is_ok()) {
     return base::WrapUnique<VideoEncodeAccelerator>(vea.release());
   } else {
-    return std::move(result);
+    return base::unexpected(std::move(result));
   }
 }
 

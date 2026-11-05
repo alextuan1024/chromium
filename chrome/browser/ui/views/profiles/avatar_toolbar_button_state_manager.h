@@ -43,12 +43,21 @@ enum class AvatarToolbarButtonState {
   kOnSignin,
   kShowIdentityName,
   kSigninPending,
+  // Sync error states (`kSyncPaused` through `kSyncError`, plus
+  // `kPasskeysLockedError` when `device::kPasskeyUnlockIdentityErrorUi` is
+  // enabled): `SyncService::GetUserActionableError()` returns at most one error
+  // at a time and determines relative priority among Sync errors
+  // (`GenericSyncErrorStateProvider` ignores `kPasskeysLocked`).
+  // TODO(crbug.com/470338958): Refactor Sync error state priority so
+  // `AvatarToolbarButtonState` does not appear to rank specific Sync errors
+  // (such as `kBookmarksLimitExceeded`) above `kSyncError`.
   kSyncPaused,
   kUpgradeClientError,
   kPassphraseError,
   kBookmarksLimitExceeded,
   // Catch-all for remaining errors in sync-the-feature or sync-the-transport
-  // (this includes Trusted Vault locked Sync error).
+  // (this includes Trusted Vault locked Sync error, and excludes
+  // `kPasskeysLocked`).
   kSyncError,
   kPasskeysLockedError,
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -134,11 +143,16 @@ class StateProvider {
   // Returns the accessibility label of the button.
   virtual std::optional<std::u16string> GetAccessibilityLabel() const;
 
+  // Action run when the button is pressed. The button may be hidden (e.g.,
+  // overflowed) when this runs; actions that anchor UI to the button must use
+  // `AvatarToolbarButtonInterface::RunWhenVisible()` themselves.
+  using ButtonAction =
+      base::RepeatingCallback<void(bool is_source_accelerator)>;
+
   // Returns the action to be used when the button is pressed. This is used to
   // override the default action of the button (defined by
   // `AvatarToolbarButtonDelegate`) when it is pressed.
-  virtual std::optional<base::RepeatingCallback<void(bool)>>
-  GetButtonActionOverride();
+  virtual std::optional<ButtonAction> GetButtonActionOverride();
 
   virtual void OnButtonPressed();
   virtual void OnIconUpdated();
@@ -265,15 +279,10 @@ class AvatarToolbarButtonStateManager
                               int avatar_size,
                               bool is_label_visible) const;
 
-  // Shared button press logic.
+  // Shared button press logic. Runs immediately, without waiting for the
+  // button to become visible (see `StateProvider::ButtonAction`).
   void HandleButtonPressed(bool is_source_accelerator);
 
-  // Shared IPH methods.
-  void MaybeShowProfileSwitchIPH();
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  void MaybeShowSupervisedUserSignInIPH();
-  void MaybeShowSignInBenefitsIPH();
-#endif
   void MaybeShowExplicitBrowserSigninPreferenceRememberedIPH(
       const AccountInfo& account_info);
 
@@ -285,14 +294,6 @@ class AvatarToolbarButtonStateManager
   [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
   CreateScopedInfiniteDelayOverrideForTesting(AvatarDelayType delay_type);
 
-  // static
-  [[nodiscard]] static base::AutoReset<base::TimeDelta>
-  SetScopedIPHMinDelayAfterCreationForTesting(base::TimeDelta delay);
-
-  // Do not show the IPH right when creating the window, so that the IPH has a
-  // separate animation.
-  static base::TimeDelta g_iph_min_delay_after_creation;
-
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
   CreateScopedZeroDelayOverrideSigninPendingTextForTesting();
@@ -300,10 +301,6 @@ class AvatarToolbarButtonStateManager
   // WARNING: Check `AvatarToolbarButton::ForceShowingPromoForTesting()` before
   // using.
   void ForceShowingPromoForTesting();
-
-  // Returns whether the delay timer was running or not.
-  // Stops the timer if it is running.
-  bool GetStateAndFireSignedOutTriggerDelayTimerForTesting();
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
  private:
@@ -390,9 +387,6 @@ class AvatarToolbarButtonStateManager
   // remembered following a web sign-in event but waiting for the available
   // account information to be fetched in order to show the sign in IPH.
   GaiaId gaia_id_for_signin_choice_remembered_;
-
-  // Time when this object was created.
-  const base::TimeTicks creation_time_;
 
   std::vector<raw_ref<Observer>> state_manager_observers_;
 

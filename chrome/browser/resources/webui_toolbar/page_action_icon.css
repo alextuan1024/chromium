@@ -31,6 +31,9 @@
    * the toolbar button default. */
   --toolbar-chip-height: inherit;
 
+  --toolbar-chip-ink-drop-hover-color: var(--color-omnibox-action-icon-hover);
+  --toolbar-chip-ink-drop-ripple-color: var(--color-omnibox-icon-pressed);
+
   /* Standard C++ PageActions use 20px icons natively. */
   --toolbar-chip-icon-size: var(--location-bar-trailing-icon-size);
 
@@ -42,6 +45,12 @@
        var(--toolbar-chip-icon-size)) / 2);
 
 
+  --toolbar-chip-collapsed-padding-start: calc(
+      var(--location-bar-page-action-icon-padding-start) +
+      var(--dynamic-base-padding));
+  --toolbar-chip-collapsed-padding-end: calc(
+      var(--location-bar-page-action-icon-padding-end) +
+      var(--dynamic-base-padding));
   --toolbar-chip-padding-start: calc(
       var(--location-bar-page-action-icon-padding-start) +
       var(--dynamic-base-padding));
@@ -88,6 +97,11 @@
 
   --toolbar-chip-bg-color: var(--color-omnibox-icon-background-tonal);
   --toolbar-chip-fg-color: var(--color-omnibox-icon-foreground-tonal);
+  --toolbar-chip-ink-drop-hover-color: var(--color-omnibox-icon-hover);
+}
+
+:host-context([dir=rtl]) #animatedIcon {
+  transform: scaleX(-1);
 }
 
 #text {
@@ -107,6 +121,12 @@
   text-box: trim-both cap alphabetic;
   text-overflow: clip;
   white-space: nowrap;
+}
+
+/* Grey the label while the browser window is inactive. The browser only sets
+ * controls-appear-inactive on Mac. The icon keeps its color. */
+:host-context(toolbar-app[controls-appear-inactive]) #text {
+  color: var(--color-label-foreground-disabled);
 }
 
 /* SlideAndCrossfade animation styling: used by the AI Mode page action chip
@@ -151,7 +171,7 @@
   --slide-crossfade-leading-collapsed: var(--slide-crossfade-trailing);
 }
 
-:host([slide-and-crossfade]:dir(rtl)) {
+:host-context([dir=rtl]):host([slide-and-crossfade]) {
   --slide-crossfade-direction: 1;
 }
 
@@ -221,7 +241,13 @@
 }
 
 :host([slide-and-crossfade]:not([show-trailing-icon])) #text {
-  transform: translateX(0);
+  /* The resting state must match the out-of-mode computed value ('none', the
+   * default for #text) so that turning slide-and-crossfade on is not a
+   * computed value change and does not start a spurious no-op transition.
+   * 'none' still interpolates smoothly to translateX(): per CSS Transforms
+   * (https://www.w3.org/TR/css-transforms-1/#transform-interpolation-length-fixup)
+   * 'none' is substituted with identity functions matching the other side. */
+  transform: none;
   transition: transform var(--slide-crossfade-duration-collapse)
       var(--slide-crossfade-easing);
 }

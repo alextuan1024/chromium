@@ -196,7 +196,7 @@ class PasswordFormManager : public PasswordFormManagerForUI,
   void OnGeneratedPasswordAccepted(
       autofill::FormData form_data,
       autofill::FieldRendererId generation_element_id,
-      const std::u16string& password);
+      const PasswordString& password);
 
   // Check if the field identified by |driver_id| and |field_id| is present in
   // the |observed_form()|.
@@ -234,13 +234,12 @@ class PasswordFormManager : public PasswordFormManagerForUI,
   bool IsNewLogin() const;
   FormFetcher* GetFormFetcher();
   // Writes to the password store the credential defined by
-  // |form.username_value|, |form.password_value|, |form.url| with the
-  // |generated_password| as a backup password. Uses |form_manager| for writing
-  // but doesn't change its state.
-  static void PresaveGeneratedPasswordAsBackup(
-      const PasswordFormManager& form_manager,
-      PasswordForm form,
-      const PasswordString& generated_password);
+  // `form.username_value`, `form.url`, and `primary_password`, with
+  // `backup_password` stored as a backup password. Any existing
+  // `password_value` or `new_password_value` on `form` itself is ignored.
+  void SaveWithBackupPassword(PasswordForm form,
+                              const PasswordString& primary_password,
+                              const PasswordString& backup_password);
   void PresaveGeneratedPassword(const autofill::FormData& form_data,
                                 const PasswordString& generated_password);
   void PasswordNoLongerGenerated();
@@ -433,7 +432,8 @@ class PasswordFormManager : public PasswordFormManagerForUI,
   void DelayFillForServerSidePredictions();
 
   // Sends fill data to the renderer immediately regardless of whether server
-  // predictions are available.
+  // predictions are available. Note that this method can cause `this` to be
+  // destroyed, so no logic should be executed after calling `FillNow()`.
   void FillNow();
 
   // Checks if `best_candidate` has better signal than the username
@@ -521,6 +521,10 @@ class PasswordFormManager : public PasswordFormManagerForUI,
 
   // Time when stored credentials are received from the store. Used for metrics.
   base::TimeTicks received_stored_credentials_time_;
+
+  // Ensures that TimeBetweenStoreAndServer2 is recorded at most once during the
+  // lifetime of this form manager.
+  bool has_recorded_time_between_store_and_server_uma_ = false;
 
   PasswordFormPredictionWaiter async_predictions_waiter_;
 

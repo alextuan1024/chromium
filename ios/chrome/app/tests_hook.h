@@ -11,6 +11,8 @@
 #import "base/containers/span.h"
 
 class AimEligibilityService;
+@class ChromeConnectionOptions;
+class ExtensionService;
 class PrefService;
 class ProfileIOS;
 class ProfileOAuth2TokenServiceDelegate;
@@ -20,7 +22,10 @@ class SystemIdentityManager;
 class TabGroupService;
 class TrustedVaultClientBackend;
 @class UIImage;
+@class UIViewController;
 @class UIWindow;
+@class UIWindowScene;
+@protocol ChromeLensViewFinderController;
 @protocol ReauthenticationProtocol;
 
 namespace contextual_search {
@@ -63,6 +68,10 @@ namespace password_manager {
 class BulkLeakCheckServiceInterface;
 class RecipientsFetcher;
 }  // namespace password_manager
+
+namespace signin {
+class AccountPreviewDataService;
+}  // namespace signin
 
 namespace tab_groups {
 class TabGroupSyncService;
@@ -149,6 +158,10 @@ bool ShouldLoadMinimalAppUI();
 // simple UILabel into the first UIWindow).
 void LoadMinimalAppUI(UIWindow* window);
 
+// Returns true if `scene` is displayed on the cover display of a closed iPhone
+// Duo in tests.
+bool IsWindowSceneOnDuoCoverDisplay(UIWindowScene* scene);
+
 // Returns a policy provider that should be installed as the platform policy
 // provider when testing. May return nullptr.
 policy::ConfigurationPolicyProvider* GetOverriddenPlatformPolicyProvider();
@@ -169,17 +182,21 @@ std::unique_ptr<TrustedVaultClientBackend> CreateTrustedVaultClientBackend();
 // Allows overriding the TabGroupSyncService factory. The real factory will be
 // used if this hook returns null.
 std::unique_ptr<tab_groups::TabGroupSyncService> CreateTabGroupSyncService(
-    ProfileIOS* profile);
+    ProfileIOS& profile);
 
 // Allows overriding the ShoppingService factory. The real factory will be used
 // if this hook returns null.
 std::unique_ptr<commerce::ShoppingService> CreateShoppingService(
-    ProfileIOS* profile);
+    ProfileIOS& profile);
 
 // Allows overriding the GCMProfileService factory. The real factory will be
 // used if this hook returns null.
 std::unique_ptr<gcm::GCMProfileService> CreateGCMProfileService(
-    ProfileIOS* profile);
+    ProfileIOS& profile);
+
+// Allows overriding the ExtensionService factory. The real factory will be
+// used if this hook returns null.
+std::unique_ptr<ExtensionService> CreateExtensionService(ProfileIOS& profile);
 
 // Allows additional test setup for the DataSharingService.
 void DataSharingServiceHooks(
@@ -224,6 +241,11 @@ base::TimeDelta PasswordCheckMinimumDuration();
 // instance will be used if this hook returns a nullptr.
 std::unique_ptr<drive::DriveService> GetOverriddenDriveService();
 
+// Returns an `AccountPreviewDataService` instance that should be used in EG
+// tests. The real instance will be used if this hook returns a nullptr.
+std::unique_ptr<signin::AccountPreviewDataService>
+GetOverriddenAccountPreviewDataService();
+
 // Override the Feature Engagement Tracker used in tests with a demo version.
 feature_engagement::FeatureActivation FETDemoModeOverride();
 
@@ -251,18 +273,36 @@ UIImage* GetPHPickerViewControllerImage();
 // Returns a mock AimEligibilityService for testing.
 // The real factory will be used if this hook returns null.
 std::unique_ptr<AimEligibilityService> CreateAimEligibilityService(
-    ProfileIOS* profile);
+    ProfileIOS& profile);
 
 // Returns a mock ContextualSearchService for testing.
 // The real factory will be used if this hook returns null.
 std::unique_ptr<contextual_search::ContextualSearchService>
-CreateContextualSearchService(ProfileIOS* profile);
+CreateContextualSearchService(ProfileIOS& profile);
 
 // Injects fake tabs into the given browser.
 void InjectFakeTabsInBrowser(Browser* browser);
 
 // Returns a fake reauthentication module to be used in tests.
 id<ReauthenticationProtocol> GetFakeReauthenticationModule();
+
+// Returns a fake Lens View Finder controller to be used in tests, or nil to
+// use the provider.
+UIViewController<ChromeLensViewFinderController>*
+GetOverriddenLensViewFinderController();
+
+// Returns true if application startup should pause at the background stage
+// (AppInitStage::kBrowserObjectsForBackgroundHandlers) and suppress scene
+// foregrounding to simulate a background launch.
+bool ShouldPauseStartupAtBackgroundStage();
+
+// Unpauses application startup if it was paused at the background stage.
+void UnpauseStartupAtBackgroundStage();
+
+// Allows overriding the connection options handled by
+// `-scene:willConnectToSession:options:` during cold start in tests. Returns
+// `nil` if no override is specified.
+ChromeConnectionOptions* GetOverriddenConnectionOptions();
 
 }  // namespace tests_hook
 

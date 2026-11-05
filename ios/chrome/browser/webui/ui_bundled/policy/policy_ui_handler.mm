@@ -22,6 +22,7 @@
 #import "components/enterprise/browser/identifiers/profile_id_service.h"
 #import "components/enterprise/browser/reporting/common_pref_names.h"
 #import "components/enterprise/browser/reporting/report_scheduler.h"
+#import "components/enterprise/browser/reporting/saas_usage/saas_usage_report_scheduler.h"
 #import "components/policy/core/browser/policy_conversions.h"
 #import "components/policy/core/browser/webui/json_generation.h"
 #import "components/policy/core/browser/webui/machine_level_user_cloud_policy_status_provider.h"
@@ -31,6 +32,7 @@
 #import "components/policy/core/common/cloud/cloud_policy_core.h"
 #import "components/policy/core/common/cloud/machine_level_user_cloud_policy_manager.h"
 #import "components/policy/core/common/cloud/user_cloud_policy_manager.h"
+#import "components/policy/core/common/enterprise_management_status_util.h"
 #import "components/policy/core/common/local_test_policy_provider.h"
 #import "components/policy/core/common/policy_logger.h"
 #import "components/policy/core/common/policy_map.h"
@@ -45,6 +47,8 @@
 #import "components/strings/grit/components_strings.h"
 #import "components/version_info/version_info.h"
 #import "ios/chrome/browser/enterprise/identifiers/profile_id_service_factory_ios.h"
+#import "ios/chrome/browser/policy/model/browser_management_service.h"
+#import "ios/chrome/browser/policy/model/browser_management_service_factory.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/policy/model/policy_conversions_client_ios.h"
 #import "ios/chrome/browser/policy/model/profile_policy_connector.h"
@@ -58,6 +62,7 @@
 #import "ios/chrome/common/channel_info.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "mojo/public/cpp/bindings/callback_helpers.h"
 #import "mojo/public/cpp/bindings/pending_receiver.h"
 #import "mojo/public/cpp/bindings/pending_remote.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -174,7 +179,7 @@ void PolicyUIHandler::AddCommonLocalizedStringsToSource(
 void PolicyUIHandler::RegisterMessages() {
   web_ui()->RegisterMessageCallback(
       "listenPoliciesUpdates",
-      base::BindRepeating(&PolicyUIHandler::HandleListenPoliciesUpdates,
+      base::BindRepeating(&PolicyUIHandler::SendInitialState,
                           base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       "reloadPolicies",
@@ -218,15 +223,45 @@ void PolicyUIHandler::RegisterMessages() {
 }
 
 void PolicyUIHandler::HandleUploadReport(const base::ListValue& args) {
-  upload_report_count_ += 1;
   DCHECK_EQ(1u, args.size());
-  const std::string& callback_id = args[0].GetString();
-  auto* report_scheduler = GetApplicationContext()
-                               ->GetBrowserPolicyConnector()
-                               ->chrome_browser_cloud_management_controller()
-                               ->report_scheduler();
+  UploadReportImpl(
+      base::BindOnce(&PolicyUIHandler::OnReportUploadedWebUiWrapper,
+                     weak_factory_.GetWeakPtr(), args[0].Clone()));
+}
+
+void PolicyUIHandler::UploadReport(UploadReportCallback callback) {
+  UploadReportImpl(
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback)));
+}
+
+void PolicyUIHandler::UploadReportImpl(base::OnceClosure on_report_uploaded) {
+  upload_report_count_ += 1;
+
+  auto* browser_controller = GetApplicationContext()
+                                 ->GetBrowserPolicyConnector()
+                                 ->chrome_browser_cloud_management_controller();
   auto* profile_reporting_service = enterprise_reporting::
       CloudProfileReportingServiceFactoryIOS::GetForProfile(&profile_.get());
+
+  // Upload SaaS usage reports.
+  auto* browser_saas_scheduler =
+      browser_controller ? browser_controller->saas_usage_report_scheduler()
+                         : nullptr;
+  auto* profile_saas_scheduler =
+      profile_reporting_service
+          ? profile_reporting_service->saas_usage_report_scheduler()
+          : nullptr;
+
+  if (browser_saas_scheduler) {
+    browser_saas_scheduler->TriggerReport();
+  }
+  if (profile_saas_scheduler) {
+    profile_saas_scheduler->TriggerReport();
+  }
+
+  // Upload browser and profile reports.
+  auto* report_scheduler =
+      browser_controller ? browser_controller->report_scheduler() : nullptr;
   auto* profile_report_scheduler =
       profile_reporting_service ? profile_reporting_service->report_scheduler()
                                 : nullptr;
@@ -239,21 +274,23 @@ void PolicyUIHandler::HandleUploadReport(const base::ListValue& args) {
     report_count++;
   }
 
+  base::OnceClosure on_done =
+      base::BindOnce(&PolicyUIHandler::OnReportUploaded,
+                     weak_factory_.GetWeakPtr(), std::move(on_report_uploaded));
+
   if (report_count == 0) {
     // Nothing to upload, return immediately.
-    OnReportUploaded(callback_id);
+    std::move(on_done).Run();
     return;
   }
 
   // Upload 1 or 2 reports depending on which type(s) of reporting are enabled.
-  const auto on_report_uploaded = base::BarrierClosure(
-      report_count, base::BindOnce(&PolicyUIHandler::OnReportUploaded,
-                                   weak_factory_.GetWeakPtr(), callback_id));
+  const auto barrier = base::BarrierClosure(report_count, std::move(on_done));
   if (report_scheduler) {
-    report_scheduler->UploadReport(on_report_uploaded);
+    report_scheduler->UploadReport(barrier);
   }
   if (profile_report_scheduler) {
-    profile_report_scheduler->UploadReport(on_report_uploaded);
+    profile_report_scheduler->UploadReport(barrier);
   }
 }
 
@@ -406,10 +443,14 @@ std::optional<std::string> PolicyUIHandler::GetProfileId() {
   return profile_id_service ? profile_id_service->GetProfileId() : std::nullopt;
 }
 
-void PolicyUIHandler::OnReportUploaded(const std::string& callback_id) {
-  web_ui()->ResolveJavascriptCallback(base::Value(callback_id),
-                                      /*response=*/base::Value());
+void PolicyUIHandler::OnReportUploaded(base::OnceClosure on_report_uploaded) {
+  std::move(on_report_uploaded).Run();
   SendStatus();
+}
+
+void PolicyUIHandler::OnReportUploadedWebUiWrapper(base::Value callback_id) {
+  web_ui()->ResolveJavascriptCallback(callback_id,
+                                      /*response=*/base::Value());
 }
 
 base::DictValue PolicyUIHandler::GetPolicyNames() const {
@@ -447,6 +488,30 @@ base::DictValue PolicyUIHandler::GetPolicyNames() const {
   return names;
 }
 
+base::flat_map<std::string, policy::mojom::PolicyGroupNamesPtr>
+PolicyUIHandler::GetPolicyNamesMojo() const {
+  scoped_refptr<policy::SchemaMap> schema_map =
+      profile_->GetPolicyConnector()->GetSchemaRegistry()->schema_map();
+  std::vector<std::string> chrome_policy_names;
+  const policy::Schema* chrome_schema = schema_map->GetSchema(
+      policy::PolicyNamespace(policy::POLICY_DOMAIN_CHROME, ""));
+  for (auto it = chrome_schema->GetPropertiesIterator(); !it.IsAtEnd();
+       it.Advance()) {
+    chrome_policy_names.emplace_back(it.key());
+  }
+  base::flat_map<std::string, policy::mojom::PolicyGroupNamesPtr> names;
+  names.emplace(policy::kChromePoliciesId, policy::mojom::PolicyGroupNames::New(
+                                               policy::kChromePoliciesName,
+                                               std::move(chrome_policy_names)));
+  names.emplace(
+      policy::kPrecedencePoliciesId,
+      policy::mojom::PolicyGroupNames::New(
+          policy::kPrecedencePoliciesName,
+          std::vector<std::string>(std::begin(policy::metapolicy::kPrecedence),
+                                   std::end(policy::metapolicy::kPrecedence))));
+  return names;
+}
+
 base::DictValue PolicyUIHandler::GetPolicyValues() const {
   base::ListValue policy_ids;
   policy_ids.Append(policy::kChromePoliciesId);
@@ -464,11 +529,26 @@ base::DictValue PolicyUIHandler::GetPolicyValues() const {
   return dict;
 }
 
-void PolicyUIHandler::HandleListenPoliciesUpdates(const base::ListValue& args) {
+policy::mojom::PolicyGroupsResponsePtr PolicyUIHandler::GetPolicyValuesMojo()
+    const {
+  return policy::mojom::PolicyGroupsResponse::New(
+      std::vector<std::string>{policy::kChromePoliciesId,
+                               policy::kPrecedencePoliciesId},
+      policy::PolicyConversions(
+          std::make_unique<PolicyConversionsClientIOS>(&profile_.get()))
+          .UseChromePolicyConversions()
+          .ToMojoPolicyGroups());
+}
+
+void PolicyUIHandler::SendInitialState(const base::ListValue& args) {
   OnRefreshPoliciesDone();
 }
 
 void PolicyUIHandler::HandleReloadPolicies(const base::ListValue& args) {
+  ReloadPolicies();
+}
+
+void PolicyUIHandler::ReloadPolicies() {
   reload_policies_count_ += 1;
   GetPolicyService()->RefreshPolicies(
       base::BindOnce(&PolicyUIHandler::OnRefreshPoliciesDone,
@@ -478,11 +558,12 @@ void PolicyUIHandler::HandleReloadPolicies(const base::ListValue& args) {
 
 void PolicyUIHandler::SendPolicies() {
   if (IsMojoEnabled()) {
-    return;
+    client_->PoliciesUpdated(GetPolicyNamesMojo(), GetPolicyValuesMojo());
+  } else {
+    base::DictValue names = GetPolicyNames();
+    base::DictValue values = GetPolicyValues();
+    web_ui()->FireWebUIListener("policies-updated", names, values);
   }
-  base::DictValue names = GetPolicyNames();
-  base::DictValue values = GetPolicyValues();
-  web_ui()->FireWebUIListener("policies-updated", names, values);
 }
 
 void PolicyUIHandler::SendSchema() {
@@ -547,11 +628,20 @@ void PolicyUIHandler::GetDebugString(GetDebugStringCallback callback) {
 
 std::string PolicyUIHandler::GetPoliciesJsonImpl() {
   copy_to_json_count_ += 1;
-  return policy::GenerateJson(
-      /*policy_values=*/policy::PolicyConversions(
+  base::DictValue policy_values =
+      policy::PolicyConversions(
           std::make_unique<PolicyConversionsClientIOS>(&profile_.get()))
-          .ToValueDict(),
-      GetStatusValue(),
+          .ToValueDict();
+  base::DictValue status = GetStatusValue();
+  status.Set(policy::kManagementServiceKey,
+             policy::GetManagementServiceStatus(
+                 policy::BrowserManagementServiceFactory::GetForPlatform(),
+                 policy::BrowserManagementServiceFactory::GetForProfile(
+                     &profile_.get()),
+                 GetPolicyService()));
+
+  return policy::GenerateJson(
+      std::move(policy_values), std::move(status),
       policy::JsonGenerationParams()
           .with_application_name(l10n_util::GetStringUTF8(IDS_IOS_PRODUCT_NAME))
           .with_channel_name(std::string(GetChannelString(GetChannel())))

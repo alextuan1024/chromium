@@ -14,6 +14,10 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Log;
@@ -65,8 +69,13 @@ class AudioTrackOutputStream {
     private static final String TAG = "AudioTrackOutput";
     // Must be the same as AudioBus::kChannelAlignment.
     private static final int CHANNEL_ALIGNMENT = 16;
+    // Matches the 10ms source-exhausted delay in AlsaPcmOutputStream::ScheduleNextWrite.
+    private static final long NO_DATA_SLEEP_MS = 10;
 
-    private long mNativeAudioTrackOutputStream;
+    @JniType("::media::AudioTrackOutputStream")
+    interface NativeAudioTrackOutputStream extends JniTypeToken {}
+
+    private @Nullable JniRawPtr<NativeAudioTrackOutputStream> mNativeAudioTrackOutputStream;
     private final Callback mCallback;
     private @Nullable AudioTrack mAudioTrack;
     private int mBufferSizeInBytes;
@@ -94,8 +103,6 @@ class AudioTrackOutputStream {
 
         @Override
         public void run() {
-            // This should not be a busy loop, since the thread would be blocked in either
-            // AudioSyncReader::WaitUntilDataIsReady() or AudioTrack.write().
             while (!mDone) {
                 int left = writeData();
                 // AudioTrack.write() failed, exit the run loop.
@@ -103,7 +110,20 @@ class AudioTrackOutputStream {
                 // Only partial data is written, retry again.
                 if (left > 0) continue;
 
-                readMoreData();
+                if (!readMoreData() && !mDone) {
+                    // For PCM streams, onMoreData() always returns a full buffer (zero-filled on
+                    // underflow), so AudioTrack.write(WRITE_BLOCKING) paces this loop. For
+                    // compressed bitstream streams, silence cannot be synthesized so onMoreData()
+                    // returns null when no packet is available (e.g. during renderer underflow or
+                    // while draining the AudioTrack buffer at end-of-stream). Sleep briefly
+                    // (matching AlsaPcmOutputStream::ScheduleNextWrite) to avoid busy-polling IPC;
+                    // stop() interrupts this thread to wake it immediately.
+                    try {
+                        Thread.sleep(NO_DATA_SLEEP_MS);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -154,18 +174,22 @@ class AudioTrackOutputStream {
                     public AudioBufferInfo onMoreData(ByteBuffer audioData, long delayInFrames) {
                         return AudioTrackOutputStreamJni.get()
                                 .onMoreData(
-                                        mNativeAudioTrackOutputStream, audioData, delayInFrames);
+                                        assumeNonNull(mNativeAudioTrackOutputStream),
+                                        audioData,
+                                        delayInFrames);
                     }
 
                     @Override
                     public long getAddress(ByteBuffer byteBuffer) {
                         return AudioTrackOutputStreamJni.get()
-                                .getAddress(mNativeAudioTrackOutputStream, byteBuffer);
+                                .getAddress(
+                                        assumeNonNull(mNativeAudioTrackOutputStream), byteBuffer);
                     }
 
                     @Override
                     public void onError() {
-                        AudioTrackOutputStreamJni.get().onError(mNativeAudioTrackOutputStream);
+                        AudioTrackOutputStreamJni.get()
+                                .onError(assumeNonNull(mNativeAudioTrackOutputStream));
                     }
                 };
     }
@@ -246,9 +270,12 @@ class AudioTrackOutputStream {
     }
 
     @CalledByNative
-    void start(long nativeAudioTrackOutputStream) {
+    void start(JniRawPtr<NativeAudioTrackOutputStream> nativeAudioTrackOutputStream) {
         Log.d(TAG, "AudioTrackOutputStream.start()");
-        if (mWorkerThread != null) return;
+        if (mWorkerThread != null) {
+            nativeAudioTrackOutputStream.release();
+            return;
+        }
 
         mNativeAudioTrackOutputStream = nativeAudioTrackOutputStream;
         mTotalReadFrames = 0;
@@ -281,7 +308,10 @@ class AudioTrackOutputStream {
         audioTrack.flush();
         mLastPlaybackHeadPosition = 0;
         mTotalPlayedFrames = 0;
-        mNativeAudioTrackOutputStream = 0;
+        if (mNativeAudioTrackOutputStream != null) {
+            mNativeAudioTrackOutputStream.release();
+            mNativeAudioTrackOutputStream = null;
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -307,8 +337,8 @@ class AudioTrackOutputStream {
         return new AudioBufferInfo(frames, size);
     }
 
-    private void readMoreData() {
-        assert mNativeAudioTrackOutputStream != 0;
+    private boolean readMoreData() {
+        assert mNativeAudioTrackOutputStream != null;
 
         // Although the return value of AudioTrack.getPlaybackHeadPosition() should be unsigned
         // 32-bit integer and would overflow, it is correct to calculate the difference between
@@ -323,12 +353,13 @@ class AudioTrackOutputStream {
 
         ByteBuffer readBuffer = assumeNonNull(mReadBuffer);
         AudioBufferInfo info = mCallback.onMoreData(readBuffer.duplicate(), delayInFrames);
-        if (info == null || info.getNumBytes() <= 0) return;
+        if (info == null || info.getNumBytes() <= 0) return false;
 
         mTotalReadFrames += info.getNumFrames();
 
         mWriteBuffer = readBuffer.asReadOnlyBuffer();
         mLeftSize = info.getNumBytes();
+        return true;
     }
 
     private int writeData() {
@@ -352,10 +383,12 @@ class AudioTrackOutputStream {
     @NativeMethods
     interface Natives {
         AudioBufferInfo onMoreData(
-                long nativeAudioTrackOutputStream, ByteBuffer audioData, long delayInFrames);
+                JniPtr<NativeAudioTrackOutputStream> self,
+                ByteBuffer audioData,
+                long delayInFrames);
 
-        void onError(long nativeAudioTrackOutputStream);
+        void onError(JniPtr<NativeAudioTrackOutputStream> self);
 
-        long getAddress(long nativeAudioTrackOutputStream, ByteBuffer byteBuffer);
+        long getAddress(JniPtr<NativeAudioTrackOutputStream> self, ByteBuffer byteBuffer);
     }
 }

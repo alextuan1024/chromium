@@ -4,7 +4,6 @@
 
 #include "chrome/browser/ash/file_manager/file_manager_browsertest_utils.h"
 
-#include "pdf/buildflags.h"
 
 namespace file_manager {
 namespace test {
@@ -116,18 +115,8 @@ TestCase& TestCase::EnableFilesPolicyNewUX() {
   return *this;
 }
 
-TestCase& TestCase::EnableDriveTrash() {
-  options.enable_drive_trash = true;
-  return *this;
-}
-
 TestCase& TestCase::EnableArcVm() {
   options.enable_arc_vm = true;
-  return *this;
-}
-
-TestCase& TestCase::EnableMirrorSync() {
-  options.enable_mirrorsync = true;
   return *this;
 }
 
@@ -201,13 +190,6 @@ TestCase& TestCase::EnableSkyVault() {
   return *this;
 }
 
-#if BUILDFLAG(ENABLE_PDF)
-TestCase& TestCase::SetEnableOopifPdf(bool enable) {
-  options.enable_oopif_pdf = enable;
-  return *this;
-}
-#endif  // BUILDFLAG(ENABLE_PDF)
-
 std::string TestCase::GetFullName() const {
   std::string full_name = name;
 
@@ -254,14 +236,6 @@ std::string TestCase::GetFullName() const {
     full_name += "_PhotosDocumentsProvider";
   }
 
-  if (options.enable_drive_trash) {
-    full_name += "_DriveTrash";
-  }
-
-  if (options.enable_mirrorsync) {
-    full_name += "_MirrorSync";
-  }
-
   if (options.file_transfer_connector_report_only) {
     full_name += "_ReportOnly";
   }
@@ -295,12 +269,6 @@ std::string TestCase::GetFullName() const {
   if (options.enable_cros_components) {
     full_name += "_CrosComponents";
   }
-
-#if BUILDFLAG(ENABLE_PDF)
-  if (options.enable_oopif_pdf) {
-    full_name += "_OopifPdf";
-  }
-#endif  // BUILDFLAG(ENABLE_PDF)
 
   switch (options.device_mode) {
     case kDeviceModeNotSet:

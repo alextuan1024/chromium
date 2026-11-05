@@ -124,8 +124,7 @@ enum class SuggestionType {
 
   // Promotion suggestions.
   kMerchantPromoCodeEntry = 41,
-  // TODO(crbug.com/546252995): Deprecate `kSeePromoCodeDetails`.
-  kSeePromoCodeDetails = 42,
+  // kSeePromoCodeDetails = 42, // DEPRECATED
 
   // Federated profiles suggestions.
   kIdentityCredential = 66,
@@ -184,6 +183,10 @@ enum class SuggestionType {
   // kPendingStateSignin suggestion is displayed when the user is in the pending
   // state. On click the user will be directed to sign in.
   kPendingStateSignin = 65,
+
+  // Suggestion displayed when the user is in a pending state due to a trusted
+  // vault error. On click the user will be directed to resolve the error.
+  kPendingStateTrustedVaultError = 104,
 
   // Throbber suggestion to indicate loading state.
   kLoadingThrobber = 77,
@@ -259,9 +262,12 @@ enum class SuggestionType {
   // Suggestion to manage Wallet Direct Offers.
   kManageOffers = 102,
 
-  // Next ID: 103
+  // Suggestion to display the keyboard shortcut settings promo for AtMemory.
+  kAtMemoryShortcutSettingsPromo = 103,
 
-  kMaxValue = kManageOffers
+  // Next ID: 105
+
+  kMaxValue = kPendingStateTrustedVaultError
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:SuggestionType)
 

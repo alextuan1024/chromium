@@ -23,6 +23,7 @@
 #include "components/enterprise/browser/reporting/report_util.h"
 #include "components/enterprise/browser/reporting/reporting_delegate_factory.h"
 #include "components/enterprise/device_attestation/device_attestation_service_factory.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/policy/core/common/policy_logger.h"
 
 namespace enterprise_reporting {
@@ -298,7 +299,10 @@ void ChromeProfileRequestGenerator::OnAggregatedSignalsReceived(
     }
 
     os_report->set_name(os_signals.operating_system);
-    os_report->set_os_firewall(TranslateSettingValue(os_signals.os_firewall));
+    if (os_signals.os_firewall) {
+      os_report->set_os_firewall(
+          TranslateSettingValue(os_signals.os_firewall.value()));
+    }
     os_report->set_screen_lock_secured(
         TranslateSettingValue(os_signals.screen_lock_secured));
     if (os_signals.system_dns_servers) {
@@ -385,7 +389,14 @@ void ChromeProfileRequestGenerator::OnAggregatedSignalsReceived(
     profile_signals_report->mutable_security_event_providers()->Add(
         profile_signals.security_event_providers.begin(),
         profile_signals.security_event_providers.end());
-
+    if (enterprise_isolated_mode::IsCaaEnabledInIsolatedMode()) {
+      profile_signals_report->set_is_isolated_mode(
+          profile_signals.is_isolated_mode);
+      profile_report->set_profile_type(
+          profile_signals.is_isolated_mode
+              ? em::ChromeUserProfileInfo::ISOLATED
+              : em::ChromeUserProfileInfo::REGULAR);
+    }
     profile_report->set_allocated_profile_signals_report(
         profile_signals_report.release());
 

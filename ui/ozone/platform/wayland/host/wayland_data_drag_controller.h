@@ -73,9 +73,11 @@ class WaylandSurface;
 // 2. The data is being dragged from another application. In this case, the
 // window is notified right away about the enter event and a data fetching task
 // is posted to the thread pool. Once fully fetched, the data is delivered to
-// the entered window. If the drag cursor leaves the window or the entered
-// windows gets destroyed while the data is still being fetched, the fetching
-// task is cancelled and the whole drag session is aborted.
+// the entered window. If a drop arrives while data is still being fetched, the
+// drop (and any subsequent leave event) is deferred until fetching completes.
+// If the drag cursor leaves the window without dropping, or the entered window
+// gets destroyed while the data is still being fetched, the fetching task is
+// cancelled and the session is aborted.
 class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
                                   public WaylandDataSource::Delegate,
                                   public WaylandWindowObserver,
@@ -99,10 +101,12 @@ class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
 
   // Starts a data drag and drop session for |data|. Returns true if it is
   // successfully started, false otherwise. Only one DND session can run at a
-  // given time.
+  // given time. |drag_handler_window| is the window that requested the session
+  // and runs the drag loop; it is notified when the session ends.
   bool StartSession(const ui::OSExchangeData& data,
                     int operations,
-                    mojom::DragEventSource source);
+                    mojom::DragEventSource source,
+                    WaylandWindow* drag_handler_window);
 
   // Cancels the currently running drag and drop session.
   //
@@ -116,6 +120,12 @@ class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
   // will be propagated as usual (e.g. if the user moves the mouse out of our
   // window and then back over it again).
   void CancelSession();
+
+  // If an incoming drop is waiting on async data fetching (meaning the
+  // compositor's drag grab has already ended), cancels the fetch, cleans up
+  // the deferred drop/leave state, and resets the data device delegate if
+  // needed. Returns true if a pending drop was aborted.
+  bool AbortPendingDrop();
 
   // Returns true if there is an in-progress drag session owned by the data drag
   // controller.
@@ -172,6 +182,12 @@ class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
     kCompleted,
   };
 
+  enum class PendingDropState {
+    kNone,
+    kDrop,
+    kDropAndLeave,
+  };
+
   // WaylandDataDevice::DragDelegate:
   bool IsDragSource() const override;
   void DrawIcon() override;
@@ -209,6 +225,7 @@ class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
 
   void OnDataFetchingFinished(
       base::TimeTicks start_time,
+      scoped_refptr<CancelFlag> cancel_flag,
       std::unique_ptr<ui::OSExchangeData> received_data);
 
   void StartSessionInternal(int operations,
@@ -216,14 +233,17 @@ class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
                             uint32_t serial);
 
   void OnDataFetched(base::TimeTicks start_time,
+                     scoped_refptr<CancelFlag> cancel_flag,
                      std::map<std::string, std::vector<uint8_t>> fetched_data);
 
   void OnPortalPathsExtracted(
       base::TimeTicks start_time,
+      scoped_refptr<CancelFlag> cancel_flag,
       std::map<std::string, std::vector<uint8_t>> fetched_data,
       std::vector<std::string> paths);
 
   void CancelDataFetchingIfNeeded();
+  void AbortPendingDropIfNeeded();
 
   // Resets everything to idle state. Does nothing if the current state is
   // already `kIdle`.
@@ -258,6 +278,10 @@ class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
   uint32_t DispatchEvent(const PlatformEvent& event) override;
 
   SkBitmap GetIconBitmap();
+  // Returns the drag icon surface offset, relative to the cursor, for the
+  // given drag image `offset`, ie: the cursor location within the image in UI
+  // DIP.
+  gfx::Point GetIconSurfaceOffset(const gfx::Vector2d& offset) const;
   void DrawIconInternal();
   static void OnDragSurfaceFrame(void* data,
                                  struct wl_callback* callback,
@@ -280,6 +304,11 @@ class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
   // In outgoing sessions, tracks if any drag enter has already been received.
   bool has_received_enter_ = false;
 
+  // In incoming sessions, tracks whether wl_data_device.drop (and subsequent
+  // wl_data_device.leave) arrived while async data fetching was still in
+  // progress (`state_ == State::kFetching`).
+  PendingDropState pending_drop_state_ = PendingDropState::kNone;
+
   // Data offered by us to the other side.
   std::unique_ptr<WaylandDataSource> data_source_;
 
@@ -299,6 +328,12 @@ class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
   // has been started by an external Wayland client.
   raw_ptr<WaylandWindow> origin_window_ = nullptr;
 
+  // The window that requested the outgoing drag session and runs the drag
+  // loop, which is notified when the session ends. It may differ from
+  // |origin_window_|, which is the window with pointer or touch focus, e.g.
+  // when the focus is on a bubble (a subsurface of the requesting window).
+  raw_ptr<WaylandWindow> drag_handler_window_ = nullptr;
+
   std::unique_ptr<WaylandSurface> origin_surface_;
 
   // Current window under pointer.
@@ -310,6 +345,9 @@ class WaylandDataDragController : public WaylandDataDevice::DragDelegate,
   // Drag icon related variables.
   std::unique_ptr<WaylandSurface> icon_surface_;
   float icon_surface_buffer_scale_ = 1.0f;
+  // The ui_scale of the window the drag icon is drawn for. Used to convert the
+  // drag image offset, which is in UI DIP, into surface-local coordinates.
+  float icon_surface_ui_scale_ = 1.0f;
   std::unique_ptr<WaylandShmBuffer> icon_buffer_;
   gfx::ImageSkia icon_image_;
   // pending_icon_offset_ is the offset from the image to the cursor to be

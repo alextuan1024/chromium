@@ -18,7 +18,7 @@
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/icon_button.h"
 #include "ash/style/style_util.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "ash/wallpaper/wallpaper_controller_impl.h"
 #include "base/functional/bind.h"
 #include "chromeos/ash/components/cryptohome/auth_factor.h"
@@ -38,7 +38,6 @@
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/vector_icons.h"
@@ -173,13 +172,11 @@ LocalAuthenticationRequestView::LocalAuthenticationRequestView(
       background_color_id,
       kLocalAuthenticationRequestViewRoundedCornerRadiusDp));
 
-  // Set Border and shadow.
-  SetBorder(std::make_unique<views::HighlightBorder>(
-      kLocalAuthenticationRequestViewRoundedCornerRadiusDp,
-      views::HighlightBorder::Type::kHighlightBorderOnShadow));
-  shadow_ = SystemShadow::CreateShadowOnNinePatchLayerForView(
-      this, SystemShadow::Type::kElevation12);
-  shadow_->SetRoundedCorners(gfx::RoundedCornersF(
+  // Set highlight border and shadow decoration.
+  decoration_ = SystemDecoration::CreateForView(
+      this, SystemDecoration::ShadowType::kElevation12,
+      SystemDecoration::HighlightBorderMode::kHighlightBorder);
+  decoration_->SetRoundedCorners(gfx::RoundedCornersF(
       kLocalAuthenticationRequestViewRoundedCornerRadiusDp));
 
   // Header view which contains the back button that is aligned top right and

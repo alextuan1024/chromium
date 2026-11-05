@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
@@ -15,7 +16,6 @@
 #include "chrome/browser/ash/input_method/editor_client_connector.h"
 #include "chrome/browser/ash/input_method/editor_consent_store.h"
 #include "chrome/browser/ash/input_method/editor_event_proxy.h"
-#include "chrome/browser/ash/input_method/editor_event_sink.h"
 #include "chrome/browser/ash/input_method/editor_geolocation_provider.h"
 #include "chrome/browser/ash/input_method/editor_metrics_recorder.h"
 #include "chrome/browser/ash/input_method/editor_panel_manager.h"
@@ -33,7 +33,9 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "ui/display/display_observer.h"
+#include "ui/gfx/range/range.h"
 
+class AccountId;
 class ApplicationLocaleStorage;
 
 namespace manta {
@@ -53,7 +55,6 @@ namespace input_method {
 // providing an overall unified interface for the backend of the project.
 class EditorMediator : public EditorContext::Observer,
                        public EditorContext::System,
-                       public EditorEventSink,
                        public EditorPanelManagerImpl::Delegate,
                        public EditorSwitch::Observer,
                        public EditorSystemActuator::System,
@@ -78,13 +79,6 @@ class EditorMediator : public EditorContext::Observer,
 
   // EditorContext::System
   std::optional<ukm::SourceId> GetUkmSourceId() override;
-
-  // EditorEventSink overrides
-  void OnFocus(int context_id) override;
-  void OnBlur() override;
-  void OnActivateIme(std::string_view engine_id) override;
-  void OnSurroundingTextChanged(const std::u16string& text,
-                                gfx::Range selection_range) override;
 
   // EditorPanelManager::Delegate overrides
   void OnPromoCardDeclined() override;
@@ -122,6 +116,13 @@ class EditorMediator : public EditorContext::Observer,
   // KeyedService overrides
   void Shutdown() override;
 
+  // Handles input method events.
+  void OnFocus(int context_id);
+  void OnBlur();
+  void OnActivateIme(std::string_view engine_id);
+  void OnSurroundingTextChanged(const std::u16string& text,
+                                gfx::Range selection_range);
+
   void ShowNotice(EditorNoticeTransitionAction transition_action);
 
   // Checks if the feature should be visible.
@@ -153,7 +154,7 @@ class EditorMediator : public EditorContext::Observer,
 
   class ServiceConnection {
    public:
-    ServiceConnection(Profile* profile,
+    ServiceConnection(const AccountId& account_id,
                       EditorMediator* mediator,
                       EditorMetricsRecorder* metrics_recorder,
                       EditorServiceConnector* service_connector);
@@ -186,7 +187,6 @@ class EditorMediator : public EditorContext::Observer,
   const raw_ref<manta::MantaService> manta_service_;
 
   EditorPanelManagerImpl panel_manager_;
-  std::unique_ptr<EditorGeolocationProvider> editor_geolocation_provider_;
   MakoBubbleCoordinator mako_bubble_coordinator_;
   EditorContext editor_context_;
 

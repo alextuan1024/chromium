@@ -26,12 +26,12 @@
 #include "chrome/browser/ash/arc/accessibility/arc_accessibility_util.h"
 #include "chrome/browser/ash/arc/accessibility/arc_serialization_delegate.h"
 #include "chrome/browser/ash/arc/input_method_manager/arc_input_method_manager_service.h"
-#include "chrome/common/extensions/api/accessibility_private.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/arc/message_center/arc_notification_surface.h"
 #include "chromeos/ash/experiences/arc/message_center/arc_notification_surface_manager.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/connection_observer.h"
+#include "chromeos/ash/experiences/extensions/common/api/accessibility_private.h"
 #include "components/exo/input_method_surface.h"
 #include "components/exo/shell_surface.h"
 #include "components/exo/shell_surface_util.h"
@@ -309,11 +309,12 @@ class ArcAccessibilityTreeTracker::ChildWindowsObserver
 class ArcAccessibilityTreeTracker::ArcInputMethodManagerServiceObserver
     : public ArcInputMethodManagerService::Observer {
  public:
-  ArcInputMethodManagerServiceObserver(ArcAccessibilityTreeTracker* owner,
-                                       Profile* const profile)
+  ArcInputMethodManagerServiceObserver(
+      ArcAccessibilityTreeTracker* owner,
+      content::BrowserContext* const browser_context)
       : owner_(owner) {
     auto* arc_ime_service =
-        ArcInputMethodManagerService::GetForBrowserContext(profile);
+        ArcInputMethodManagerService::GetForBrowserContext(browser_context);
     if (arc_ime_service)
       arc_imms_observation_.Observe(arc_ime_service);
   }
@@ -492,17 +493,18 @@ class ArcAccessibilityTreeTracker::UmaRecorder {
 
 ArcAccessibilityTreeTracker::ArcAccessibilityTreeTracker(
     ax::android::AXTreeSourceAndroid::Delegate* tree_source_delegate,
-    Profile* const profile,
+    content::BrowserContext* const browser_context,
     const AccessibilityHelperInstanceRemoteProxy& accessibility_helper_instance,
     ArcBridgeService* const arc_bridge_service)
-    : profile_(profile),
+    : browser_context_(browser_context),
       tree_source_delegate_(tree_source_delegate),
       accessibility_helper_instance_(accessibility_helper_instance),
       windows_observer_(std::make_unique<WindowsObserver>(this)),
       child_windows_observer_(std::make_unique<ChildWindowsObserver>(this)),
       input_manager_service_observer_(
-          std::make_unique<ArcInputMethodManagerServiceObserver>(this,
-                                                                 profile)),
+          std::make_unique<ArcInputMethodManagerServiceObserver>(
+              this,
+              browser_context)),
       connection_observer_(
           std::make_unique<MojoConnectionObserver>(this, arc_bridge_service)),
       uma_recorder_(std::make_unique<UmaRecorder>(this)) {}
@@ -963,15 +965,17 @@ void ArcAccessibilityTreeTracker::StartTrackingWindows(aura::Window* window) {
 
 void ArcAccessibilityTreeTracker::DispatchCustomSpokenFeedbackToggled(
     bool enabled) {
-  auto event_args(extensions::api::accessibility_private::
-                      OnCustomSpokenFeedbackToggled::Create(enabled));
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::accessibility_private::OnCustomSpokenFeedbackToggled::
+          Create(enabled));
   auto event = std::make_unique<extensions::Event>(
       extensions::events::
           ACCESSIBILITY_PRIVATE_ON_CUSTOM_SPOKEN_FEEDBACK_TOGGLED,
       extensions::api::accessibility_private::OnCustomSpokenFeedbackToggled::
           kEventName,
       std::move(event_args));
-  extensions::EventRouter::Get(profile_)->BroadcastEvent(std::move(event));
+  extensions::EventRouter::Get(browser_context_)
+      ->BroadcastEvent(std::move(event));
 }
 
 aura::Window* ArcAccessibilityTreeTracker::GetFocusedArcWindow() const {

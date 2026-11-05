@@ -71,7 +71,8 @@ void ReportEnterpriseUrlFilteringEvent(
   // TODO(crbug.com/558721044): Plumb tab title on iOS.
   event_router->OnUrlFilteringInterstitial(
       page_url, GetEventTypeString(event_type), rt_lookup_response,
-      /*referrer_chain=*/{}, /*tab_title=*/"");
+      /*referrer_chain=*/{}, /*tab_title=*/"",
+      /*initiator=*/std::nullopt);
 }
 
 void MaybeReportDangerousDownloadEvent(
@@ -94,9 +95,9 @@ void MaybeReportDangerousDownloadEvent(
       /*source=*/"", /*destination=*/"", path.AsUTF8Unsafe(),
       file_info.sha256_or_cb,
       /*threat_type=*/kDangerousFileTypeDownloadThreatType, file_info.mime_type,
-      kFileDownloadDataTransferEventTrigger, response.request_token(),
+      DataTransferEventTrigger::FILE_DOWNLOAD, response.request_token(),
       /*content_transfer_method=*/"", file_info.size, info.referrer_chain(),
-      info.frame_url_chain(), result);
+      info.frame_url_chain(), result, info.extension_initiator());
 }
 
 }  // namespace enterprise_connectors

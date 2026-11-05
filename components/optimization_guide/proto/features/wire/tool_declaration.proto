@@ -1,0 +1,36 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+edition = "2023";
+
+package optimization_guide.proto;
+
+
+option optimize_for = LITE_RUNTIME;
+option java_package = "org.chromium.components.optimization_guide.features.proto";
+
+// Metadata and parameter schema for a browser tool exposed to a model.
+message ToolDeclaration {
+  // Unique name identifying the tool.
+  string name = 1;
+
+  // Natural language description of the tool's purpose and functionality.
+  string description = 2;
+
+  // JSON Schema specifying the arguments accepted by the tool.
+  string parameters_json_schema = 3;
+
+  // How the server should resolve an argument before sending a tool call to
+  // the client.
+  enum ArgumentResolution {
+    ARGUMENT_RESOLUTION_UNSPECIFIED = 0;
+
+    // Converts a synthetic node ID into a {document_id, dom_node_id} object.
+    ARGUMENT_RESOLUTION_DOM_NODE = 1;
+  }
+
+  // Maps parameter names in `parameters_json_schema` to the resolution the
+  // server must perform before sending a tool call to the client.
+  map<string, ArgumentResolution> resolved_arguments = 4;
+}

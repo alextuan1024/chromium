@@ -6,10 +6,7 @@ package org.chromium.chrome.browser.keyboard_accessory;
 
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
-import static androidx.test.espresso.contrib.RecyclerViewActions.actionOnItem;
-import static androidx.test.espresso.contrib.RecyclerViewActions.scrollTo;
 import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
 import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.isCompletelyDisplayed;
@@ -21,9 +18,10 @@ import static androidx.test.espresso.matcher.ViewMatchers.withText;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertNotNull;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
+import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.scrollToAndSelectTab;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.selectTabWithDescription;
 import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.waitToBeHidden;
-import static org.chromium.chrome.browser.keyboard_accessory.ManualFillingTestHelper.whenDisplayed;
 
 import android.view.View;
 import android.view.ViewGroup;
@@ -43,7 +41,6 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
@@ -51,7 +48,6 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeWindow;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.keyboard_accessory.button_group_component.KeyboardAccessoryButtonGroupView;
 import org.chromium.chrome.browser.layouts.LayoutTestUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
@@ -68,7 +64,6 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Integration tests for keyboard accessory and accessory sheet with other Chrome components. */
 // TODO(crbug.com/447076444): Enable Keyboard Accessory revamp flag
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DisableFeatures({
     ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_KEYBOARD_ACCESSORY_REVAMP,
     ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_SUPPRESS_ACCESSORY_ON_EMPTY
@@ -113,13 +108,13 @@ public class ManualFillingIntegrationTest {
         mHelper.startAtTestPage(/* isRtl= */ false);
 
         // Focus the field to bring up the accessory.
-        onView(withId(R.id.keyboard_accessory)).check(doesNotExist());
+        waitToBeHidden(withId(R.id.keyboard_accessory));
         mHelper.focusPasswordField();
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Check that ONLY the accessory is there but the sheet is still hidden.
-        whenDisplayed(withId(R.id.keyboard_accessory));
-        onView(withChild(withId(R.id.keyboard_accessory_sheet_frame))).check(doesNotExist());
+        waitForView(withId(R.id.keyboard_accessory));
+        waitToBeHidden(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
     }
 
     @Test
@@ -131,7 +126,7 @@ public class ManualFillingIntegrationTest {
         // Focus the field to bring up the accessory.
         mHelper.focusPasswordField();
         mHelper.waitForKeyboardAccessoryToBeShown();
-        whenDisplayed(withId(R.id.keyboard_accessory));
+        waitForView(withId(R.id.keyboard_accessory));
 
         // Dismiss the keyboard to hide the accessory again.
         mHelper.clickSubmit();
@@ -150,19 +145,13 @@ public class ManualFillingIntegrationTest {
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Check that ONLY the accessory is there but the sheet is still hidden.
-        whenDisplayed(withId(R.id.keyboard_accessory));
-        onView(withChild(withId(R.id.keyboard_accessory_sheet_frame))).check(doesNotExist());
+        waitForView(withId(R.id.keyboard_accessory));
+        waitToBeHidden(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         // Trigger the sheet and wait for it to open and the keyboard to disappear.
-        whenDisplayed(withId(R.id.bar_items_view))
-                .perform(
-                        scrollTo(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)),
-                        actionOnItem(
-                                isAssignableFrom(KeyboardAccessoryButtonGroupView.class),
-                                selectTabWithDescription(
-                                        R.string.password_accessory_sheet_toggle)));
+        scrollToAndSelectTab(R.string.password_accessory_sheet_toggle);
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
     }
 
     @Test
@@ -179,7 +168,7 @@ public class ManualFillingIntegrationTest {
                                 .showAccessorySheetTab(AccessoryTabType.CREDIT_CARDS));
 
         // Verify that the accessory sheet is shown.
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
     }
 
     @Test
@@ -195,7 +184,7 @@ public class ManualFillingIntegrationTest {
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Check that ONLY the accessory is there but the sheet is still hidden.
-        whenDisplayed(withId(R.id.keyboard_accessory))
+        waitForView(withId(R.id.keyboard_accessory))
                 .check(
                         (view, e) -> {
                             accessoryMargins.set(
@@ -204,18 +193,12 @@ public class ManualFillingIntegrationTest {
                                     accessoryMargins.get().bottomMargin,
                                     is(0)); // Attached to keyboard.
                         });
-        onView(withChild(withId(R.id.keyboard_accessory_sheet_frame))).check(doesNotExist());
+        waitToBeHidden(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         // Trigger the sheet and wait for it to open and the keyboard to disappear.
-        whenDisplayed(withId(R.id.bar_items_view))
-                .perform(
-                        scrollTo(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)),
-                        actionOnItem(
-                                isAssignableFrom(KeyboardAccessoryButtonGroupView.class),
-                                selectTabWithDescription(
-                                        R.string.password_accessory_sheet_toggle)));
+        scrollToAndSelectTab(R.string.password_accessory_sheet_toggle);
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)))
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)))
                 .check((View view, NoMatchingViewException _) -> accessorySheetView.set(view));
 
         mHelper.focusPasswordField();
@@ -236,10 +219,11 @@ public class ManualFillingIntegrationTest {
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Click the tab to show the sheet and hide the keyboard.
-        whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
+        waitForView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
+                .performViewAction(
+                        selectTabWithDescription(R.string.password_accessory_sheet_toggle));
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         // Click the generation button. This should hide the accessory sheet and bar.
         onView(withText(R.string.password_generation_accessory_button)).perform(click());
@@ -258,14 +242,16 @@ public class ManualFillingIntegrationTest {
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Click the tab to show the sheet and hide the keyboard.
-        whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
+        waitForView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
+                .performViewAction(
+                        selectTabWithDescription(R.string.password_accessory_sheet_toggle));
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         // Click the tab again to hide the sheet and show the keyboard.
-        whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
-                .perform(selectTabWithDescription(R.string.password_accessory_sheet_toggle));
+        waitForView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class))
+                .performViewAction(
+                        selectTabWithDescription(R.string.password_accessory_sheet_toggle));
         mHelper.waitForKeyboardAccessoryToBeShown();
         onView(withId(R.id.keyboard_accessory)).check(matches(isDisplayed()));
         waitToBeHidden(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
@@ -280,7 +266,7 @@ public class ManualFillingIntegrationTest {
         // Focus the password field to bring up the accessory.
         mHelper.focusPasswordField();
         mHelper.waitForKeyboardAccessoryToBeShown();
-        whenDisplayed(isAssignableFrom(KeyboardAccessoryButtonGroupView.class));
+        waitForView(isAssignableFrom(KeyboardAccessoryButtonGroupView.class));
 
         // Clicking a field without completion hides the accessory again.
         mHelper.clickFieldWithoutCompletion();
@@ -299,15 +285,9 @@ public class ManualFillingIntegrationTest {
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Click the tab to show the sheet and hide the keyboard.
-        whenDisplayed(withId(R.id.bar_items_view))
-                .perform(
-                        scrollTo(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)),
-                        actionOnItem(
-                                isAssignableFrom(KeyboardAccessoryButtonGroupView.class),
-                                selectTabWithDescription(
-                                        R.string.password_accessory_sheet_toggle)));
+        scrollToAndSelectTab(R.string.password_accessory_sheet_toggle);
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         LayoutTestUtils.startShowingAndWaitForLayout(
                 mActivityTestRule.getActivity().getLayoutManager(), LayoutType.HUB, false);
@@ -331,15 +311,9 @@ public class ManualFillingIntegrationTest {
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Click the tab to show the sheet and hide the keyboard.
-        whenDisplayed(withId(R.id.bar_items_view))
-                .perform(
-                        scrollTo(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)),
-                        actionOnItem(
-                                isAssignableFrom(KeyboardAccessoryButtonGroupView.class),
-                                selectTabWithDescription(
-                                        R.string.password_accessory_sheet_toggle)));
+        scrollToAndSelectTab(R.string.password_accessory_sheet_toggle);
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         // Simulate backgrounding the main activity.
         ThreadUtils.runOnUiThreadBlocking(
@@ -359,15 +333,9 @@ public class ManualFillingIntegrationTest {
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Click the tab to show the sheet and hide the keyboard.
-        whenDisplayed(withId(R.id.bar_items_view))
-                .perform(
-                        scrollTo(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)),
-                        actionOnItem(
-                                isAssignableFrom(KeyboardAccessoryButtonGroupView.class),
-                                selectTabWithDescription(
-                                        R.string.password_accessory_sheet_toggle)));
+        scrollToAndSelectTab(R.string.password_accessory_sheet_toggle);
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
     }
 
     @Test
@@ -383,15 +351,9 @@ public class ManualFillingIntegrationTest {
         mHelper.waitForKeyboardAccessoryToBeShown();
 
         // Click the tab to show the sheet and hide the keyboard.
-        whenDisplayed(withId(R.id.bar_items_view))
-                .perform(
-                        scrollTo(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)),
-                        actionOnItem(
-                                isAssignableFrom(KeyboardAccessoryButtonGroupView.class),
-                                selectTabWithDescription(
-                                        R.string.password_accessory_sheet_toggle)));
+        scrollToAndSelectTab(R.string.password_accessory_sheet_toggle);
         mHelper.waitForKeyboardToDisappear();
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
 
         Espresso.pressBack();
 
@@ -425,18 +387,12 @@ public class ManualFillingIntegrationTest {
         // Click in a field to open keyboard and accessory -- this shouldn't hide the snackbar.
         mHelper.focusPasswordField();
         mHelper.waitForKeyboardAccessoryToBeShown();
-        whenDisplayed(withId(R.id.keyboard_accessory));
+        waitForView(withId(R.id.keyboard_accessory));
         onView(withText(kSnackbarText)).check(matches(isCompletelyDisplayed()));
 
         // Open a keyboard accessory sheet -- this also shouldn't hide the snackbar.
-        whenDisplayed(withId(R.id.bar_items_view))
-                .perform(
-                        scrollTo(isAssignableFrom(KeyboardAccessoryButtonGroupView.class)),
-                        actionOnItem(
-                                isAssignableFrom(KeyboardAccessoryButtonGroupView.class),
-                                selectTabWithDescription(
-                                        R.string.password_accessory_sheet_toggle)));
-        whenDisplayed(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
+        scrollToAndSelectTab(R.string.password_accessory_sheet_toggle);
+        waitForView(withChild(withId(R.id.keyboard_accessory_sheet_frame)));
         onView(withText(kSnackbarText)).check(matches(isCompletelyDisplayed()));
 
         // Click into a field without completion to dismiss the keyboard accessory.

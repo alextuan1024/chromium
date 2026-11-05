@@ -19,6 +19,7 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/referrer_policy.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -46,12 +47,14 @@ class ImageDataFetcher {
 
   // Fetches the raw image bytes from the given `image_url` and calls the given
   // `callback`. The callback is run even if fetching the URL fails. In case
-  // of an error an empty string is passed to the callback. May return
-  // synchronously.
+  // of an error a non-null empty buffer is passed to the callback; its metadata
+  // contains the HTTP response code or network error when available. May
+  // return synchronously. If `initiator` is provided, sets `request_initiator`
+  // and sends same-origin credentials relative to `initiator`.
   void FetchImageData(const GURL& image_url,
                       ImageDataFetcherCallback callback,
                       ImageFetcherParams params,
-                      bool send_cookies = false);
+                      std::optional<url::Origin> initiator = std::nullopt);
 
   // Like above, but lets the caller set a referrer.
   void FetchImageData(const GURL& image_url,
@@ -59,14 +62,14 @@ class ImageDataFetcher {
                       ImageFetcherParams params,
                       const std::string& referrer,
                       net::ReferrerPolicy referrer_policy,
-                      bool send_cookies = false);
+                      std::optional<url::Origin> initiator = std::nullopt);
 
   // Like above, but supports providing only a traffic annotation.
   void FetchImageData(
       const GURL& image_url,
       ImageDataFetcherCallback callback,
       const net::NetworkTrafficAnnotationTag& traffic_annotation,
-      bool send_cookies = false);
+      std::optional<url::Origin> initiator = std::nullopt);
 
   // Like above, but supports providing only a traffic annotation.
   void FetchImageData(
@@ -75,13 +78,13 @@ class ImageDataFetcher {
       const std::string& referrer,
       net::ReferrerPolicy referrer_policy,
       const net::NetworkTrafficAnnotationTag& traffic_annotation,
-      bool send_cookies = false);
+      std::optional<url::Origin> initiator = std::nullopt);
 
   // Test-only method to inject a fetch result directly, w/o regard for how the
   // underlying loading is doing. This requires there to be a single pending
   // fetch only.
   void InjectResultForTesting(const RequestMetadata& metadata,
-                              const std::string& image_data);
+                              ImageData image_data);
 
  private:
   struct ImageDataFetcherRequest;
@@ -93,7 +96,7 @@ class ImageDataFetcher {
 
   void FinishRequest(const network::SimpleURLLoader* source,
                      const RequestMetadata& metadata,
-                     const std::string& image_data);
+                     ImageData image_data);
 
   // All active image url requests.
   std::map<const network::SimpleURLLoader*,

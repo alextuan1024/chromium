@@ -9,8 +9,13 @@ import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.text.TextUtils;
 
+import androidx.annotation.ColorRes;
 import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
+
+import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
+import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
@@ -19,14 +24,17 @@ import org.chromium.base.ObserverList;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.lifetime.Destroyable;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties.StatusIconResource;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
-import org.chromium.chrome.browser.omnibox.suggestions.CachedZeroSuggestionsManager;
-import org.chromium.chrome.browser.omnibox.suggestions.CachedZeroSuggestionsManager.SearchEngineMetadata;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileKeyedMap;
 import org.chromium.chrome.browser.search_engines.SearchEngineType;
@@ -38,10 +46,12 @@ import org.chromium.components.image_fetcher.ImageFetcherConfig;
 import org.chromium.components.image_fetcher.ImageFetcherFactory;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.search_engines.AiModeButtonUiConfig;
 import org.chromium.components.search_engines.StarterPackId;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.search_engines.TemplateUrlService.TemplateUrlServiceObserver;
+import org.chromium.net.NetworkTrafficAnnotationTag;
 import org.chromium.url.GURL;
 
 import java.util.Objects;
@@ -52,6 +62,42 @@ import java.util.Objects;
  */
 @NullMarked
 public class SearchEngineService implements Destroyable, TemplateUrlServiceObserver {
+    @VisibleForTesting
+    static final NetworkTrafficAnnotationTag TRAFFIC_ANNOTATION =
+            NetworkTrafficAnnotationTag.createComplete(
+                    "omnibox_search_engine_android_icon",
+                    """
+                    semantics {
+                        sender: "Search engine button"
+                        description:
+                            "Downloads the icon for a third-party search engine's AI Mode "
+                            "button in the address bar."
+                        trigger:
+                            "An eligible search-engine button configuration is received and "
+                            "specifies an icon URL. Google uses a bundled icon instead."
+                        data:
+                            "The icon URL from the search-engine button configuration. No "
+                            "search query is sent by this image request."
+                        destination: OTHER
+                        destination_other:
+                            "The icon server specified by the search-engine button "
+                            "configuration."
+                        user_data { type: NONE }
+                        internal { contacts { owners: "chrome/browser/ui/android/omnibox/OWNERS" } }
+                        last_reviewed: "2026-11-17"
+                    }
+                    policy {
+                        cookies_allowed: NO
+                        setting:
+                            "Users can change their default search engine in Chrome settings. "
+                            "The icon is fetched only when the third-party AI Mode button is "
+                            "eligible. There is no separate setting for downloading its icon."
+                        chrome_policy { AIModeSettings { AIModeSettings: 1 } }
+                        chrome_policy { ThirdPartyAiChatSettings { ThirdPartyAiChatSettings: 1 } }
+                        chrome_policy { DefaultSearchProviderEnabled { DefaultSearchProviderEnabled: false } }
+                    }
+                    """);
+
     private static final int MAX_IMAGE_CACHE_SIZE_BYTES = 4096;
     private static final String TAG = "DSEService";
     private static final ProfileKeyedMap<SearchEngineService> sProfileMap =
@@ -71,7 +117,23 @@ public class SearchEngineService implements Destroyable, TemplateUrlServiceObser
     private final ObserverList<SearchEngineIconObserver> mSearchEngineIconObservers =
             new ObserverList<>();
 
-    private @Nullable SearchEngineMetadata mDefaultSearchEngineMetadata;
+    /**
+     * Configuration of the AI Mode entry point offered by the current default search engine. {@code
+     * null} whenever no entry point should be shown, which covers both an engine that offers none
+     * and a client that is not permitted to surface one; native deliberately does not distinguish
+     * the two, see {@link #getAiModeButtonUiConfigSupplier}.
+     */
+    private final SettableNullableObservableSupplier<AiModeButtonUiConfig>
+            mAiModeButtonUiConfigSupplier = ObservableSuppliers.createNullable();
+
+    private boolean mIsAiModeButtonUiConfigOverriddenForTesting;
+
+    private final SettableNonNullObservableSupplier<StatusIconResource> mAiModeButtonIconSupplier =
+            ObservableSuppliers.createNonNull(
+                    new StatusIconResource(R.drawable.ic_search_spark_24dp, Resources.ID_NULL));
+
+    private long mNativeSearchEngineServiceAndroid;
+
     private @Nullable Boolean mNeedToCheckForSearchEnginePromo;
     private boolean mDoesDefaultSearchEngineHaveLogo;
     private @Nullable StatusIconResource mFavicon;
@@ -97,18 +159,12 @@ public class SearchEngineService implements Destroyable, TemplateUrlServiceObser
     }
 
     @VisibleForTesting
-    SearchEngineService(Profile profile, FaviconHelper faviconHelper) {
+    SearchEngineService(Profile profile, FaviconHelper faviconHelper, ImageFetcher imageFetcher) {
         mProfile = profile;
         mIsOffTheRecord = profile.isOffTheRecord();
         mFaviconHelper = faviconHelper;
+        mImageFetcher = imageFetcher;
         mContext = ContextUtils.getApplicationContext();
-
-        mImageFetcher =
-                ImageFetcherFactory.createImageFetcher(
-                        ImageFetcherConfig.IN_MEMORY_WITH_DISK_CACHE,
-                        profile.getProfileKey(),
-                        GlobalDiscardableReferencePool.getReferencePool(),
-                        MAX_IMAGE_CACHE_SIZE_BYTES);
 
         // TODO(b/557170473): Consider supplying OmniboxResourceProvider to resolve status icon
         // size.
@@ -125,7 +181,13 @@ public class SearchEngineService implements Destroyable, TemplateUrlServiceObser
 
         mTemplateUrlService = TemplateUrlServiceFactory.getForProfile(profile);
         mTemplateUrlService.addObserver(this);
-        mDefaultSearchEngineMetadata = CachedZeroSuggestionsManager.readSearchEngineMetadata();
+
+        // Only initialize the native peer if the Profile is native-backed. In unit tests,
+        // Profile is typically a mock without a backing native pointer. Real profiles are
+        // always native-initialized at creation time.
+        if (profile.isNativeInitialized()) {
+            mNativeSearchEngineServiceAndroid = SearchEngineServiceJni.get().init(this, profile);
+        }
 
         onTemplateURLServiceChanged();
     }
@@ -140,11 +202,22 @@ public class SearchEngineService implements Destroyable, TemplateUrlServiceObser
     }
 
     private static SearchEngineService buildForProfile(Profile profile) {
-        return new SearchEngineService(profile, new FaviconHelper());
+        return new SearchEngineService(
+                profile,
+                new FaviconHelper(),
+                ImageFetcherFactory.createImageFetcher(
+                        ImageFetcherConfig.IN_MEMORY_WITH_DISK_CACHE,
+                        profile.getProfileKey(),
+                        GlobalDiscardableReferencePool.getReferencePool(),
+                        MAX_IMAGE_CACHE_SIZE_BYTES));
     }
 
     @Override
     public void destroy() {
+        if (mNativeSearchEngineServiceAndroid != 0) {
+            SearchEngineServiceJni.get().destroy(mNativeSearchEngineServiceAndroid);
+            mNativeSearchEngineServiceAndroid = 0;
+        }
         mTemplateUrlService.removeObserver(this);
         mFaviconHelper.destroy();
         mImageFetcher.destroy();
@@ -168,15 +241,76 @@ public class SearchEngineService implements Destroyable, TemplateUrlServiceObser
             setSearchEngineName(null);
         }
 
-        if (mDefaultSearchEngineMetadata == null
-                || !TextUtils.equals(
-                        mDefaultSearchEngineMetadata.keyword, templateUrl.getKeyword())) {
-            mDefaultSearchEngineMetadata = new SearchEngineMetadata(templateUrl.getKeyword());
-            CachedZeroSuggestionsManager.eraseCachedData();
-            CachedZeroSuggestionsManager.saveSearchEngineMetadata(mDefaultSearchEngineMetadata);
+        retrieveFavicon(templateUrl, this::setSearchEngineIcon);
+    }
+
+    @CalledByNative
+    void onAiModeButtonUiConfigChanged(@Nullable AiModeButtonUiConfig config) {
+        // Native pushes a config only to an eligible client, which a test device isn't. Tests fake
+        // one via #setAiModeButtonUiConfigForTesting(), so don't let native overwrite it.
+        if (mIsAiModeButtonUiConfigOverriddenForTesting) return;
+        if (Objects.equals(mAiModeButtonUiConfigSupplier.get(), config)) return;
+
+        mAiModeButtonUiConfigSupplier.set(config);
+        if (config == null) return;
+
+        if (isDefaultSearchEngineGoogle()) {
+            mAiModeButtonIconSupplier.set(
+                    new StatusIconResource(R.drawable.ic_search_spark_24dp, Resources.ID_NULL));
+            return;
         }
 
-        retrieveFavicon(templateUrl, this::setSearchEngineIcon);
+        // Third party engines show the loupe until their own icon is fetched.
+        mAiModeButtonIconSupplier.set(
+                new StatusIconResource(R.drawable.ic_search_24dp, Resources.ID_NULL));
+        if (GURL.isEmptyOrInvalid(config.faviconUrl)) return;
+
+        GURL faviconUrl = config.faviconUrl;
+        // Request the displayed size, so that the best frame of a multi-resolution favicon is
+        // decoded and a large favicon is downscaled. A non-square favicon may be center-cropped.
+        ImageFetcher.Params params =
+                ImageFetcher.Params.create(
+                        faviconUrl,
+                        ImageFetcher.OMNIBOX_UMA_CLIENT_NAME,
+                        TRAFFIC_ANNOTATION,
+                        mSearchEngineLogoTargetSizePixels,
+                        mSearchEngineLogoTargetSizePixels);
+        mImageFetcher.fetchImage(
+                params,
+                bitmap -> {
+                    if (bitmap == null
+                            || !Objects.equals(config, mAiModeButtonUiConfigSupplier.get())) {
+                        return;
+                    }
+
+                    mAiModeButtonIconSupplier.set(
+                            new StatusIconResource(
+                                    faviconUrl.getSpec(), bitmap, Resources.ID_NULL));
+                });
+    }
+
+    /**
+     * Supplies the AI Mode entry point configuration for the current default search engine, updated
+     * reactively whenever the default search engine or user eligibility changes.
+     *
+     * <p>A null value means either that the search engine offers no AI Mode entry point, or that
+     * this client is not permitted to surface one. Native does not distinguish the two: an
+     * ineligible client is never handed a configuration in the first place, so callers cannot
+     * accidentally render an entry point they are not entitled to.
+     */
+    public NullableObservableSupplier<AiModeButtonUiConfig> getAiModeButtonUiConfigSupplier() {
+        return mAiModeButtonUiConfigSupplier;
+    }
+
+    /**
+     * Supplies the icon for the AI Mode entry point button.
+     *
+     * <p>Google uses the spark icon. A third party search engine uses the loupe until its favicon
+     * is fetched, and keeps the loupe if the fetch fails. The icon isn't updated without a
+     * configuration. Placeholders are resource-based; a fetched favicon is bitmap-based.
+     */
+    public NonNullObservableSupplier<StatusIconResource> getAiModeButtonIconSupplier() {
+        return mAiModeButtonIconSupplier;
     }
 
     /** Add observer to be notified whenever the default search engine name changes. */
@@ -252,15 +386,17 @@ public class SearchEngineService implements Destroyable, TemplateUrlServiceObser
 
     private void retrieveFaviconForStarterPack(
             TemplateUrl templateUrl, Callback<@Nullable StatusIconResource> callback) {
+        @ColorRes int tint = R.color.default_icon_color_accent1_tint_list;
         @Nullable StatusIconResource icon =
                 switch (templateUrl.getStarterPackId()) {
                     case StarterPackId.BOOKMARKS ->
-                            new StatusIconResource(R.drawable.ic_star_24dp, 0);
+                            new StatusIconResource(R.drawable.ic_star_24dp, tint);
                     case StarterPackId.HISTORY ->
-                            new StatusIconResource(R.drawable.ic_history_24dp, 0);
-                    case StarterPackId.TABS -> new StatusIconResource(R.drawable.switch_to_tab, 0);
+                            new StatusIconResource(R.drawable.ic_history_24dp, tint);
+                    case StarterPackId.TABS ->
+                            new StatusIconResource(R.drawable.switch_to_tab, tint);
                     case StarterPackId.GEMINI ->
-                            new StatusIconResource(R.drawable.ic_spark_4c_16dp, 0);
+                            new StatusIconResource(R.drawable.ic_spark_24dp, tint);
                     default -> null;
                 };
         if (icon != null) {
@@ -367,21 +503,19 @@ public class SearchEngineService implements Destroyable, TemplateUrlServiceObser
     /** Returns the hint text to be used on fakebox/searchbox on the New Tab Page. */
     public String getNtpHintText(Context context) {
         if (TextUtils.isEmpty(mSearchEngineName)) {
-            return OmniboxResourceProvider.getString(context, R.string.omnibox_empty_hint);
+            return context.getString(R.string.omnibox_empty_hint);
         }
 
         @StringRes int hintId = getHintStringRes(/* isNtpSearchBox= */ true);
-        return OmniboxResourceProvider.getString(context, hintId, mSearchEngineName);
+        return OmniboxResourceProvider.expandString(context.getString(hintId), mSearchEngineName);
     }
 
-    /** Returns the hint text string to be used on the omnibox for Hint Text Updater. */
-    public String getOmniboxHintString() {
-        // Hint text updater checks for empty search engine name and returns the empty hint in that
-        // case so this should never be null.
-        assert mSearchEngineName != null;
-
-        @StringRes int hintId = getHintStringRes(/* isNtpSearchBox= */ false);
-        return OmniboxResourceProvider.getString(mContext, hintId, mSearchEngineName);
+    /**
+     * Returns the omnibox hint string resource. The string expects the search engine name as its
+     * only argument.
+     */
+    public @StringRes int getOmniboxHintStringRes() {
+        return getHintStringRes(/* isNtpSearchBox= */ false);
     }
 
     private @StringRes int getHintStringRes(boolean isNtpSearchBox) {
@@ -404,9 +538,34 @@ public class SearchEngineService implements Destroyable, TemplateUrlServiceObser
         return R.string.omnibox_empty_hint_with_dse_name;
     }
 
+    /**
+     * Fakes the AI Mode entry point configuration of the current default search engine, as native
+     * only provides one to an eligible client. Subsequent updates from native are ignored, so that
+     * an eligibility change can't clear the config mid-test.
+     *
+     * @param config The config to supply, or null to surface no AI Mode entry point.
+     */
+    public void setAiModeButtonUiConfigForTesting(@Nullable AiModeButtonUiConfig config) {
+        @Nullable AiModeButtonUiConfig oldConfig = mAiModeButtonUiConfigSupplier.get();
+        mIsAiModeButtonUiConfigOverriddenForTesting = true;
+        mAiModeButtonUiConfigSupplier.set(config);
+        ResettersForTesting.register(
+                () -> {
+                    mIsAiModeButtonUiConfigOverriddenForTesting = false;
+                    mAiModeButtonUiConfigSupplier.set(oldConfig);
+                });
+    }
+
     /** Set the instance for testing. */
     public static void setInstanceForTesting(SearchEngineService instance) {
         sInstanceForTesting = instance;
         ResettersForTesting.register(() -> sInstanceForTesting = null);
+    }
+
+    @NativeMethods
+    public interface Natives {
+        long init(SearchEngineService caller, @JniType("Profile*") Profile profile);
+
+        void destroy(long nativeSearchEngineServiceAndroid);
     }
 }

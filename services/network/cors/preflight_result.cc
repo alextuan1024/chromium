@@ -10,7 +10,6 @@
 
 #include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -159,22 +158,6 @@ std::optional<CorsErrorStatus> PreflightResult::EnsureAllowedCrossOriginMethod(
   const bool method_allowed =
       methods_.find(method) != methods_.end() || IsCorsSafelistedMethod(method);
 
-  // This should be consistent with `NetworkServiceCorsPreflightMethodAllowed`
-  // in `tools/metrics/histograms/enums.xml`.
-  enum CorsPreflightMethodAllowed : uint8_t {
-    kBothDisallowed = 0,
-    kNormalizedMethodAllowed = 1,
-    kMethodAllowed = 2,
-    kBothAllowed = 3,
-    kMaxValue = kBothAllowed
-  };
-
-  UMA_HISTOGRAM_ENUMERATION(
-      "NetworkService.CorsPreflightMethodAllowed",
-      normalized_method_allowed
-          ? (method_allowed ? kBothAllowed : kNormalizedMethodAllowed)
-          : (method_allowed ? kMethodAllowed : kBothDisallowed));
-
   const bool allowed = acam_preflight_spec_conformant
                            ? method_allowed
                            : normalized_method_allowed;
@@ -193,8 +176,8 @@ std::optional<CorsErrorStatus> PreflightResult::EnsureAllowedCrossOriginMethod(
 std::optional<CorsErrorStatus> PreflightResult::EnsureAllowedCrossOriginHeaders(
     const net::HttpRequestHeaders& headers,
     bool is_revalidating,
-    NonWildcardRequestHeadersSupport non_wildcard_request_headers_support,
-    bool is_ad_auction_trusted_signals_request) const {
+    NonWildcardRequestHeadersSupport non_wildcard_request_headers_support)
+    const {
   const bool has_wildcard = !credentials_ && headers_.contains("*");
   if (has_wildcard) {
     if (non_wildcard_request_headers_support) {
@@ -216,8 +199,7 @@ std::optional<CorsErrorStatus> PreflightResult::EnsureAllowedCrossOriginHeaders(
   // beforehand. But user-agents may add these headers internally, and it's
   // fine.
   for (const auto& name : CorsUnsafeNotForbiddenRequestHeaderNames(
-           headers.GetHeaderVector(), is_revalidating,
-           is_ad_auction_trusted_signals_request)) {
+           headers.GetHeaderVector(), is_revalidating)) {
     // Header list check is performed in case-insensitive way. Here, we have a
     // parsed header list set in lower case, and search each header in lower
     // case.
@@ -239,8 +221,7 @@ bool PreflightResult::EnsureAllowedRequest(
     const net::HttpRequestHeaders& headers,
     bool is_revalidating,
     NonWildcardRequestHeadersSupport non_wildcard_request_headers_support,
-    bool acam_preflight_spec_conformant,
-    bool is_ad_auction_trusted_signals_request) const {
+    bool acam_preflight_spec_conformant) const {
   if (!credentials_ && credentials_mode == mojom::CredentialsMode::kInclude) {
     return false;
   }
@@ -250,8 +231,7 @@ bool PreflightResult::EnsureAllowedRequest(
   }
 
   if (EnsureAllowedCrossOriginHeaders(headers, is_revalidating,
-                                      non_wildcard_request_headers_support,
-                                      is_ad_auction_trusted_signals_request)) {
+                                      non_wildcard_request_headers_support)) {
     return false;
   }
 

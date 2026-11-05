@@ -18,7 +18,6 @@
 #include "chrome/browser/ui/translate/translate_bubble_model.h"
 #include "chrome/browser/ui/translate/translate_bubble_test_utils.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
-#include "components/language/core/common/language_experiments.h"
 #include "components/translate/core/browser/translate_step.h"
 #include "components/translate/core/common/translate_errors.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -147,6 +146,8 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
                            AlwaysTranslateCheckboxAndCloseButton);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest,
                            AlwaysTranslateCheckboxAndDoneButton);
+  FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest,
+                           AlwaysTranslateControlsTrackSourceLanguage);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, SourceResetButton);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, TargetResetButton);
   FRIEND_TEST_ALL_PREFIXES(TranslateBubbleViewTest, LazyViewInitialization);
@@ -303,6 +304,7 @@ class TranslateBubbleView : public LocationBarBubbleDelegateView,
 
   raw_ptr<views::Checkbox> always_translate_checkbox_ = nullptr;
   raw_ptr<views::Checkbox> advanced_always_translate_checkbox_ = nullptr;
+  raw_ptr<views::View> choose_language_button_ = nullptr;
   raw_ptr<views::TabbedPane> tabbed_pane_ = nullptr;
 
   raw_ptr<views::LabelButton> advanced_reset_button_source_ = nullptr;

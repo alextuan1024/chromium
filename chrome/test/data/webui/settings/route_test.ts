@@ -4,7 +4,7 @@
 
 // clang-format off
 import type {SettingsRoutes} from 'chrome://settings/settings.js';
-import {resetRouterForTesting, buildRouter, loadTimeData, Route, Router, routes, resetPageVisibilityForTesting} from 'chrome://settings/settings.js';
+import {resetRouterForTesting, buildRouter, getTopLevelRoute, loadTimeData, Route, Router, routes, resetPageVisibilityForTesting} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 
@@ -25,6 +25,12 @@ suite('Basic', function() {
     causeEvent();
     return promise;
   }
+
+  setup(function() {
+    loadTimeData.overrideValues({settingsRefresh2026: ''});
+    resetPageVisibilityForTesting();
+    resetRouterForTesting();
+  });
 
   teardown(function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -87,7 +93,7 @@ suite('Basic', function() {
     assertEquals(0, ADVANCED.depth);
 
     // Test a section route.
-    const PRIVACY = ADVANCED.createSection('/privacy', 'privacy');
+    const PRIVACY = ADVANCED.createSection('/privacy', 'privacy', '', 'icon');
     assertEquals(ADVANCED, PRIVACY.parent);
     assertEquals(1, PRIVACY.depth);
     assertFalse(PRIVACY.isSubpage());
@@ -126,6 +132,44 @@ suite('Basic', function() {
       assertFalse(paths.has(route.path), route.path);
       paths.add(route.path);
     });
+  });
+
+  test('getIcon uses the closest ancestor icon', function() {
+    const root = new Route('/');
+    const section = root.createSection('/section', 'section', '', 'icon:a');
+    const child = section.createChild('/child');
+    const grandchild = child.createChild('/grandchild');
+
+    assertEquals('icon:a', section.getIcon());
+    assertEquals('icon:a', child.getIcon());
+    assertEquals('icon:a', grandchild.getIcon());
+
+    const childWithIcon = section.createChild('/childWithIcon', 'icon:b');
+    const grandchildOfIcon = childWithIcon.createChild('/grandchild');
+    assertEquals('icon:b', childWithIcon.getIcon());
+    assertEquals('icon:b', grandchildOfIcon.getIcon());
+  });
+
+  // Asserts that getIcon() finds an icon for every route, other than the root
+  // routes in `rootsWithoutIcon`, which are not under a section.
+  function assertEveryRouteHasIcon(rootsWithoutIcon: Route[]) {
+    Object.values(routes).forEach(function(route) {
+      if (!rootsWithoutIcon.includes(route)) {
+        assertTrue(!!route.getIcon(), route.path);
+      }
+    });
+  }
+
+  test('every route has an icon', function() {
+    assertEveryRouteHasIcon([routes.BASIC, routes.ADVANCED]);
+  });
+
+  test('every route has an icon with SettingsRefresh2026', function() {
+    loadTimeData.overrideValues({settingsRefresh2026: 'settings-refresh-2026'});
+    resetPageVisibilityForTesting();
+    resetRouterForTesting();
+    // BASIC hosts the Home section, so it has an icon.
+    assertEveryRouteHasIcon([routes.ADVANCED]);
   });
 
   test('navigate back to parent previous route', function() {
@@ -339,31 +383,25 @@ suite('Basic', function() {
         routes.SITE_SETTINGS_WEB_APP_INSTALLATION.getAbsolutePath());
   });
 
-  // <if expr="not is_chromeos">
   test('account route existence', function() {
-    resetPageVisibilityForTesting({people: true});
-
-    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: false});
+    resetPageVisibilityForTesting({people: false});
     resetRouterForTesting();
     assertFalse(!!routes.ACCOUNT);
 
-    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: true});
+    resetPageVisibilityForTesting({people: true});
     resetRouterForTesting();
     assertTrue(!!routes.ACCOUNT);
   });
 
   test('google services route existence', function() {
-    resetPageVisibilityForTesting({people: true});
-
-    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: false});
+    resetPageVisibilityForTesting({people: false});
     resetRouterForTesting();
     assertFalse(!!routes.GOOGLE_SERVICES);
 
-    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: true});
+    resetPageVisibilityForTesting({people: true});
     resetRouterForTesting();
     assertTrue(!!routes.GOOGLE_SERVICES);
   });
-  // </if>
 
   test('search engines route existence', function() {
     loadTimeData.overrideValues({searchSettingsUpdate: false});
@@ -375,6 +413,69 @@ suite('Basic', function() {
     loadTimeData.overrideValues({searchSettingsUpdate: true});
     resetRouterForTesting();
     assertFalse(!!routes.SEARCH_ENGINES);
+  });
+
+  test('SettingsRefresh2026 routes', function() {
+    loadTimeData.overrideValues({
+      isGuest: false,
+      settingsRefresh2026: 'settings-refresh-2026',
+    });
+    resetPageVisibilityForTesting();
+    resetRouterForTesting();
+
+    assertEquals('/', routes.BASIC.path);
+    assertEquals('home', routes.BASIC.section);
+    assertEquals(routes.BASIC, getTopLevelRoute());
+    assertEquals(routes.BASIC, Router.getInstance().getRouteForPath('/'));
+    assertFalse(!!routes.PEOPLE);
+
+    assertTrue(!!routes.GENERAL);
+    assertEquals('/general', routes.GENERAL.path);
+    assertEquals('general', routes.GENERAL.section);
+
+    assertTrue(routes.BASIC.contains(routes.BASIC));
+    assertTrue(routes.BASIC.contains(routes.SYNC));
+    assertTrue(routes.BASIC.contains(routes.SYNC_ADVANCED));
+    assertFalse(routes.BASIC.contains(routes.APPEARANCE));
+    assertFalse(routes.BASIC.contains(routes.PRIVACY));
+    assertFalse(routes.BASIC.contains(routes.GENERAL));
+
+    assertTrue(!!routes.RESET_DIALOG);
+    assertEquals('/resetProfileSettings', routes.RESET_DIALOG.path);
+    assertTrue(routes.RESET_DIALOG.isNavigableDialog);
+    assertEquals(routes.GENERAL, routes.RESET_DIALOG.parent);
+
+    assertTrue(!!routes.TRIGGERED_RESET_DIALOG);
+    assertEquals(
+        '/triggeredResetProfileSettings', routes.TRIGGERED_RESET_DIALOG.path);
+    assertTrue(routes.TRIGGERED_RESET_DIALOG.isNavigableDialog);
+    assertEquals(routes.GENERAL, routes.TRIGGERED_RESET_DIALOG.parent);
+
+    // <if expr="not is_chromeos">
+    assertFalse(!!routes.DEFAULT_BROWSER);
+    assertFalse(!!routes.SYSTEM);
+    // </if>
+    assertFalse(!!routes.ON_STARTUP);
+    assertFalse(!!routes.DOWNLOADS);
+    assertFalse(!!routes.RESET);
+  });
+
+  // Verifies that the Device tab visibility route exists only when the
+  // corresponding feature flag is enabled.
+  test('device tab visibility route existence', function() {
+    resetPageVisibilityForTesting({people: true});
+
+    loadTimeData.overrideValues({
+      enableDeviceTabVisibilitySettings: false,
+    });
+    resetRouterForTesting();
+    assertFalse(!!routes.DEVICE_TAB_VISIBILITY);
+
+    loadTimeData.overrideValues({
+      enableDeviceTabVisibilitySettings: true,
+    });
+    resetRouterForTesting();
+    assertTrue(!!routes.DEVICE_TAB_VISIBILITY);
   });
 });
 

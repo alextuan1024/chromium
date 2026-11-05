@@ -267,19 +267,6 @@
           'isolated_scripts': 'linux_chromeos_isolated_scripts',
         },
       },
-      'mac-chrome': {
-        'additional_compile_targets': [
-          'chrome',
-          'chrome/installer/mac',
-        ],
-        'mixins': [
-          'chrome-swarming-pool',
-          'mac_14_x64',
-        ],
-        'test_suites': {
-          'isolated_scripts': 'chrome_isolated_script_tests',
-        },
-      },
       'win-branded-rel': {
         'additional_compile_targets': [
           'chrome',
@@ -594,52 +581,34 @@
     'name': 'client.openscreen.chromium',
     'machines': {
       'chromium_linux_x64': {
+        'use_swarming': False,
         'additional_compile_targets': [
           'chrome/browser/media/router',
-          'chrome/browser/media/router:openscreen_unittests',
           'chrome/browser/media/router:unittests',
-          'components/media_router/common/providers/cast/channel',
-          'components/media_router/common/providers/cast/channel:unit_tests',
-          'components/media_router/common/providers/cast/certificate',
-          'components/media_router/common/providers/cast/certificate:unit_tests',
-          'components/mirroring/browser',
-          'components/mirroring/service:mirroring_service',
-          'components/mirroring:mirroring_tests',
-          'components/mirroring:mirroring_unittests',
-          'components/openscreen_platform',
         ],
+        'test_suites': {
+          'gtest_tests': 'openscreen_chromium_gtests',
+        },
       },
       'chromium_mac_arm64': {
+        'use_swarming': False,
         'additional_compile_targets': [
           'chrome/browser/media/router',
-          'chrome/browser/media/router:openscreen_unittests',
           'chrome/browser/media/router:unittests',
-          'components/media_router/common/providers/cast/channel',
-          'components/media_router/common/providers/cast/channel:unit_tests',
-          'components/media_router/common/providers/cast/certificate',
-          'components/media_router/common/providers/cast/certificate:unit_tests',
-          'components/mirroring/browser',
-          'components/mirroring/service:mirroring_service',
-          'components/mirroring:mirroring_tests',
-          'components/mirroring:mirroring_unittests',
-          'components/openscreen_platform',
         ],
+        'test_suites': {
+          'gtest_tests': 'openscreen_chromium_gtests',
+        },
       },
       'chromium_win_x64': {
+        'use_swarming': False,
         'additional_compile_targets': [
           'chrome/browser/media/router',
-          'chrome/browser/media/router:openscreen_unittests',
           'chrome/browser/media/router:unittests',
-          'components/media_router/common/providers/cast/channel',
-          'components/media_router/common/providers/cast/channel:unit_tests',
-          'components/media_router/common/providers/cast/certificate',
-          'components/media_router/common/providers/cast/certificate:unit_tests',
-          'components/mirroring/browser',
-          'components/mirroring/service:mirroring_service',
-          'components/mirroring:mirroring_tests',
-          'components/mirroring:mirroring_unittests',
-          'components/openscreen_platform',
         ],
+        'test_suites': {
+          'gtest_tests': 'openscreen_chromium_gtests',
+        },
       },
     },
   },
@@ -866,7 +835,6 @@
         'mixins': [
           'chrome-finch-swarming-pool',
           'linux-jammy',
-          '11-x86-emulator',
           'skia_gold_test',
         ],
         'test_suites': {
@@ -977,7 +945,7 @@
       'model_validation-linux': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
-          'linux-jammy',
+          'linux-ubuntu',
           'x86-64',
         ],
         'test_suites': {
@@ -1090,7 +1058,7 @@
         ],
         'mixins': [
           'chrome-intelligence-swarming-pool',
-          'linux-jammy',
+          'linux-ubuntu',
           'x86-64',
         ],
         'test_suites': {
@@ -1147,7 +1115,6 @@
         ],
         'mixins': [
           'chrome-intelligence-swarming-pool',
-          'win10',
         ],
         'test_suites': {
            'gtest_tests': 'optimization_guide_win_gtests',
@@ -1161,7 +1128,6 @@
         ],
         'mixins': [
           'chrome-intelligence-swarming-pool',
-          'win10',
         ],
         'test_suites': {
            'gtest_tests': 'optimization_guide_win_gtests',
@@ -1176,7 +1142,7 @@
         'mixins': [
           'chrome-intelligence-swarming-pool',
           'nvidia_geforce_gtx_1660',
-          'linux-jammy',
+          'linux-ubuntu',
         ],
         'test_suites': {
            'gtest_tests': 'optimization_guide_gpu_gtests',
@@ -1304,37 +1270,31 @@
       'android_chromium_compile': {
         'additional_compile_targets': [
           'blink_unittests',
-          'capture_unittests',
-          'content_browsertests',
-          'content_unittests',
         ],
       },
       'linux_chromium_compile': {
         'additional_compile_targets': [
-          'blink_unittests',
-          'browser_tests',
           'capture_unittests',
-          'content_browsertests',
+          'chrome/browser/media/webrtc',
           'content_unittests',
           'remoting_unittests',
         ],
       },
       'linux_chromium_compile_dbg': {
+        # content_unittests is omitted here to keep this bot's p50 runtime
+        # under 20m (given its higher bot_update and gn gen overhead on GCE);
+        # content_unittests remains covered on mac_chromium_compile (Release)
+        # and win_chromium_compile_dbg (Debug).
         'additional_compile_targets': [
-          'blink_unittests',
-          'browser_tests',
           'capture_unittests',
-          'content_browsertests',
-          'content_unittests',
+          'chrome/browser/media/webrtc',
           'remoting_unittests',
         ],
       },
       'mac_chromium_compile': {
         'additional_compile_targets': [
-          'blink_unittests',
-          'browser_tests',
           'capture_unittests',
-          'content_browsertests',
+          'chrome/browser/media/webrtc',
           'content_unittests',
           'remoting_unittests',
         ],
@@ -1343,34 +1303,22 @@
         'mixins': [
           'linux-jammy',
         ],
-        'additional_compile_targets': [
-          'blink_unittests',
-          'browser_tests',
-          'capture_unittests',
-          'content_browsertests',
-          'content_unittests',
-          'remoting_unittests',
-        ],
         'test_suites': {
           'isolated_scripts': 'webrtc_chromium_wpt_tests',
         },
       },
       'win_chromium_compile': {
         'additional_compile_targets': [
-          'blink_unittests',
-          'browser_tests',
           'capture_unittests',
-          'content_browsertests',
+          'chrome/browser/media/webrtc',
           'content_unittests',
           'remoting_unittests',
         ],
       },
       'win_chromium_compile_dbg': {
         'additional_compile_targets': [
-          'blink_unittests',
-          'browser_tests',
           'capture_unittests',
-          'content_browsertests',
+          'chrome/browser/media/webrtc',
           'content_unittests',
           'remoting_unittests',
         ],

@@ -14,8 +14,9 @@
 #include "base/observer_list.h"
 #include "base/scoped_observation_traits.h"
 #include "base/time/time.h"
+#include "ui/base/interaction/element_identifier.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
@@ -26,6 +27,7 @@ class CommandUpdater;
 class LocationBarModel;
 class LocationBarTesting;
 class OmniboxController;
+class PageInfoBubbleSpecification;
 class PermissionDashboardController;
 class OmniboxView;
 class OmniboxPopupPresenterDelegate;
@@ -43,7 +45,7 @@ class WebContents;
 namespace ui {
 class MouseEvent;
 class TrackedElement;
-}
+}  // namespace ui
 
 namespace views {
 class Widget;
@@ -59,7 +61,8 @@ class LocationBar {
   // Holds the details necessary to open the omnibox match via browser commands.
   struct NavigationParams {
     GURL destination_url;
-    WindowOpenDisposition disposition{WindowOpenDisposition::CURRENT_TAB};
+    ui::mojom::WindowOpenDisposition disposition{
+        ui::mojom::WindowOpenDisposition::kCurrentTab};
     ui::PageTransition transition{ui::PAGE_TRANSITION_TYPED |
                                   ui::PAGE_TRANSITION_FROM_ADDRESS_BAR};
     base::TimeTicks match_selection_timestamp;
@@ -145,6 +148,19 @@ class LocationBar {
   // Announces an alert for accessibility screen readers.
   virtual void AnnounceAlert(const std::u16string& announcement) = 0;
 
+  // Returns whether accessibility alerts sent through `AnnounceAlert()` have a
+  // live accessible surface that can deliver them. Returns false on stub or
+  // unmounted surfaces so callers do not mark one-shot announcements as sent
+  // when the alert would be dropped.
+  virtual bool CanAnnounceAlert() const;
+
+  // Returns whether screen reader announcements for permission indicators in
+  // this location bar should append the "Change this setting in the address
+  // bar." hint (`IDS_A11Y_OMNIBOX_CHIP_HINT`). Secondary surfaces such as a
+  // side panel toolbar override this to false because their settings are not in
+  // the main window's address bar.
+  virtual bool ShouldAnnounceAddressBarHint() const;
+
   // Called when anything has changed that might affect the layout or contents
   // of the views around the edit, including the text of the edit and the
   // status of any keyword- or hint-related state.
@@ -163,6 +179,22 @@ class LocationBar {
   // Warning: this may be null if the location bar is not visible.
   // Gets an anchor for the entire location bar.
   virtual ui::TrackedElement* GetAnchorOrNull() = 0;
+
+  // Returns the ElementContext used to look up tracked elements in this
+  // location bar.
+  virtual ui::ElementContext GetElementContext() const;
+
+  // Returns whether permission chips owned by this location bar may fall back
+  // to anchoring bubbles on the browser window's contents view when neither the
+  // chip nor the location bar element is tracked yet. Secondary UI surfaces
+  // (such as side panels) return false so bubbles fail closed instead of
+  // anchoring to the main browser window.
+  virtual bool ShouldFallbackToWindowContentsAnchor() const;
+
+  // Allows custom location bar surfaces to customize Page Info bubble specs
+  // (such as UMA surface attribution) opened from permission chips.
+  virtual void ConfigurePageInfoBubbleSpecification(
+      PageInfoBubbleSpecification& specification);
 
   // Returns true if the location bar is currently in the middle of a popup
   // state transition.

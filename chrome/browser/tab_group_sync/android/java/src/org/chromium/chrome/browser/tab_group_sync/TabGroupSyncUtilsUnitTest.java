@@ -37,6 +37,7 @@ import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.SavedTabGroupTab;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.url.GURL;
 
 import java.util.List;
@@ -92,8 +93,8 @@ public class TabGroupSyncUtilsUnitTest {
                 .thenReturn(new String[] {SYNC_GROUP_ID1, SYNC_GROUP_ID2});
         when(mTabGroupSyncService.getGroup(SYNC_GROUP_ID1)).thenReturn(group1);
         when(mTabGroupSyncService.getGroup(SYNC_GROUP_ID2)).thenReturn(group2);
-        when(mTabModel.tabGroupExists(TOKEN_1)).thenReturn(true);
-        when(mTabModel.tabGroupExists(TOKEN_2)).thenReturn(false);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TOKEN_1))).thenReturn(true);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(TOKEN_2))).thenReturn(false);
 
         TabGroupSyncUtils.unmapLocalIdsNotInTabModel(mTabGroupSyncService, mTabModel);
 
@@ -122,7 +123,7 @@ public class TabGroupSyncUtilsUnitTest {
         TabGroupSyncUtils.unmapLocalIdsNotInTabModel(mTabGroupSyncService, mTabModel);
 
         // Shouldn't crash and never called.
-        verify(mTabModel, never()).tabGroupExists(any());
+        verify(mTabModel, never()).containsTabGroup(any());
         verify(mTabGroupSyncService, never())
                 .removeLocalTabGroupMapping(eq(LOCAL_TAB_GROUP_ID_1), anyInt());
     }
@@ -137,6 +138,10 @@ public class TabGroupSyncUtilsUnitTest {
         expectFilteredUrlAndTitle("chrome://newtab", "New tab", "chrome://newtab", "New tab");
         expectFilteredUrlAndTitle("chrome://newtab", "New tab", "chrome://newtab/", "New tab");
         expectFilteredUrlAndTitle("chrome://newtab", "New tab", "chrome://new-tab-page", "New Tab");
+        expectFilteredUrlAndTitle(
+                "chrome://newtab", "New tab", "chrome://new-tab-page-third-party", "New Tab");
+        expectFilteredUrlAndTitle(
+                "chrome://newtab", "New tab", "chrome://new-tab-page-third-party/", "New Tab");
     }
 
     @Test
@@ -167,7 +172,8 @@ public class TabGroupSyncUtilsUnitTest {
         for (Tab tab : tabs) {
             tab.setTabGroupId(tabGroupId);
         }
-        when(mTabModel.getTabsInGroup(eq(tabGroupId))).thenReturn(tabs);
-        when(mTabModel.tabGroupExists(tabGroupId)).thenReturn(true);
+        when(mTabModel.getTabsInGroup(eq(TabGroupId.fromOptionalToken(tabGroupId))))
+                .thenReturn(tabs);
+        when(mTabModel.containsTabGroup(TabGroupId.fromOptionalToken(tabGroupId))).thenReturn(true);
     }
 }

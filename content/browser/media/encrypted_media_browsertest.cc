@@ -73,20 +73,11 @@ enum class ConfigChangeType {
   ENCRYPTED_TO_ENCRYPTED = 3,
 };
 
-// Tests encrypted media playback with a combination of parameters:
-// - char*: Key system name.
-// - SrcType: The type of video src used to load media, MSE or SRC.
-// It is okay to run this test as a non-parameterized test, in this case,
-// GetParam() should not be called.
-class EncryptedMediaTest
-    : public MediaBrowserTest,
-      public testing::WithParamInterface<std::tuple<const char*, SrcType>> {
+// Base class for parameterized encrypted media playback tests.
+class EncryptedMediaTestBase : public MediaBrowserTest {
  public:
-  // Can only be used in parameterized (*_P) tests.
-  const std::string CurrentKeySystem() { return std::get<0>(GetParam()); }
-
-  // Can only be used in parameterized (*_P) tests.
-  SrcType CurrentSourceType() { return std::get<1>(GetParam()); }
+  virtual const std::string CurrentKeySystem() = 0;
+  virtual SrcType CurrentSourceType() = 0;
 
   void TestSimplePlayback(const std::string& encrypted_media) {
     RunSimplePlaybackTest(encrypted_media, CurrentKeySystem(),
@@ -97,23 +88,6 @@ class EncryptedMediaTest
     RunTest("encrypted_frame_size_change.html",
             "frame_size_change-av_enc-v.webm", CurrentKeySystem(),
             CurrentSourceType(), media::kEndedTitle);
-  }
-
-  void TestConfigChange(ConfigChangeType config_change_type) {
-    // TODO(xhwang): Even when config change is not supported we still start
-    // content shell only to return directly here. We probably should not run
-    // these test cases at all.
-    if (CurrentSourceType() != SrcType::MSE) {
-      GTEST_SKIP() << "Config change only happens when using MSE.";
-    }
-
-    base::StringPairs query_params;
-    query_params.emplace_back("keySystem", CurrentKeySystem());
-    query_params.emplace_back(
-        "configChangeType",
-        base::NumberToString(static_cast<int>(config_change_type)));
-    RunMediaTestPage("mse_config_change.html", query_params, media::kEndedTitle,
-                     true);
   }
 
   void RunTest(const std::string& html_page,
@@ -139,31 +113,6 @@ class EncryptedMediaTest
             media::kEndedTitle);
   }
 
-  void RunMultipleFileTest(const std::string& video_file,
-                           const std::string& audio_file,
-                           const std::string& expected_title) {
-    if (CurrentSourceType() != SrcType::MSE) {
-      GTEST_SKIP() << "Can only play MP4 encrypted streams by MSE.";
-    }
-
-    base::StringPairs query_params;
-    query_params.emplace_back("keySystem", CurrentKeySystem());
-    query_params.emplace_back("runEncrypted", "1");
-    if (!video_file.empty()) {
-      query_params.emplace_back("videoFile", video_file);
-      query_params.emplace_back("videoFormat",
-                                media::GetMimeTypeForFile(video_file));
-    }
-    if (!audio_file.empty()) {
-      query_params.emplace_back("audioFile", audio_file);
-      query_params.emplace_back("audioFormat",
-                                media::GetMimeTypeForFile(audio_file));
-    }
-
-    RunMediaTestPage(kDefaultMseOnlyEmePlayer, query_params, expected_title,
-                     true);
-  }
-
  protected:
   // We want to fail quickly when a test fails because an error is encountered.
   void AddTitlesToAwait(content::TitleWatcher* title_watcher) override {
@@ -183,6 +132,65 @@ class EncryptedMediaTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
+// Tests encrypted media playback with a combination of parameters:
+// - char*: Key system name.
+// - SrcType: The type of video src used to load media, MSE or SRC.
+// It is okay to run this test as a non-parameterized test, in this case,
+// GetParam() should not be called.
+class EncryptedMediaTest
+    : public EncryptedMediaTestBase,
+      public testing::WithParamInterface<std::tuple<const char*, SrcType>> {
+ public:
+  // Can only be used in parameterized (*_P) tests.
+  const std::string CurrentKeySystem() override {
+    return std::get<0>(GetParam());
+  }
+
+  // Can only be used in parameterized (*_P) tests.
+  SrcType CurrentSourceType() override { return std::get<1>(GetParam()); }
+};
+
+// Similar to EncryptedMediaTest, but the source type is always MSE. Needed for
+// tests that require MSE (such as config changes and encrypted MP4, see
+// http://crbug.com/170793) so we don't start content_shell only to skip them.
+class MseEncryptedMediaTest : public EncryptedMediaTestBase,
+                              public testing::WithParamInterface<const char*> {
+ public:
+  const std::string CurrentKeySystem() override { return GetParam(); }
+  SrcType CurrentSourceType() override { return SrcType::MSE; }
+
+  void TestConfigChange(ConfigChangeType config_change_type) {
+    base::StringPairs query_params;
+    query_params.emplace_back("keySystem", CurrentKeySystem());
+    query_params.emplace_back(
+        "configChangeType",
+        base::NumberToString(static_cast<int>(config_change_type)));
+    RunMediaTestPage("mse_config_change.html", query_params, media::kEndedTitle,
+                     true);
+  }
+
+  void RunMultipleFileTest(const std::string& video_file,
+                           const std::string& audio_file,
+                           const std::string& expected_title) {
+    base::StringPairs query_params;
+    query_params.emplace_back("keySystem", CurrentKeySystem());
+    query_params.emplace_back("runEncrypted", "1");
+    if (!video_file.empty()) {
+      query_params.emplace_back("videoFile", video_file);
+      query_params.emplace_back("videoFormat",
+                                media::GetMimeTypeForFile(video_file));
+    }
+    if (!audio_file.empty()) {
+      query_params.emplace_back("audioFile", audio_file);
+      query_params.emplace_back("audioFormat",
+                                media::GetMimeTypeForFile(audio_file));
+    }
+
+    RunMediaTestPage(kDefaultMseOnlyEmePlayer, query_params, expected_title,
+                     true);
+  }
+};
+
 using ::testing::Combine;
 using ::testing::Values;
 
@@ -196,6 +204,10 @@ INSTANTIATE_TEST_SUITE_P(MSE_ClearKey,
                          Combine(Values(media::kClearKeyKeySystem),
                                  Values(SrcType::MSE)));
 
+INSTANTIATE_TEST_SUITE_P(MSE_ClearKey,
+                         MseEncryptedMediaTest,
+                         Values(media::kClearKeyKeySystem));
+
 #if defined(SUPPORTS_EXTERNAL_CLEAR_KEY_IN_CONTENT_SHELL)
 INSTANTIATE_TEST_SUITE_P(SRC_ExternalClearKey,
                          EncryptedMediaTest,
@@ -206,28 +218,38 @@ INSTANTIATE_TEST_SUITE_P(MSE_ExternalClearKey,
                          EncryptedMediaTest,
                          Combine(Values(media::kExternalClearKeyKeySystem),
                                  Values(SrcType::MSE)));
+
+INSTANTIATE_TEST_SUITE_P(MSE_ExternalClearKey,
+                         MseEncryptedMediaTest,
+                         Values(media::kExternalClearKeyKeySystem));
 #endif
 
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_AudioOnly_WebM) {
-  TestSimplePlayback("bear-a_enc-a.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_AudioClearVideo_WebM) {
-  TestSimplePlayback("bear-320x240-av_enc-a.webm");
-}
-
-// TODO(crbug.com/40784898): Flaky on Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_Playback_VideoAudio_WebM DISABLED_Playback_VideoAudio_WebM
-#else
-#define MAYBE_Playback_VideoAudio_WebM Playback_VideoAudio_WebM
-#endif
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, MAYBE_Playback_VideoAudio_WebM) {
-  TestSimplePlayback("bear-320x240-av_enc-av.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoOnly_WebM) {
-  TestSimplePlayback("bear-320x240-v_enc-v.webm");
+IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_WebM) {
+  static constexpr const char* kMediaFiles[] = {
+      "bear-a_enc-a.webm",
+      "bear-320x240-av_enc-a.webm",
+#if !BUILDFLAG(IS_ANDROID)
+      // TODO(crbug.com/40784898): Flaky on Android.
+      "bear-320x240-av_enc-av.webm",
+      "bear-320x240-opus-a_enc-a.webm",
+#endif  // !BUILDFLAG(IS_ANDROID)
+      "bear-320x240-v_enc-v.webm",
+      "bear-320x240-v-vp9_subsample_enc-v.webm",
+      "bear-320x240-av_enc-v.webm",
+      "bear-320x240-opus-av_enc-av.webm",
+      "bear-320x240-opus-av_enc-v.webm",
+#if BUILDFLAG(ENABLE_AV1_DECODER)
+      "bear-av1-cenc.webm",
+#if !BUILDFLAG(IS_ANDROID)
+      // TODO(crbug.com/40863206): Flaky on Android.
+      "bear-av1-320x180-10bit-cenc.webm",
+#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENABLE_AV1_DECODER)
+  };
+  for (const char* media_file : kMediaFiles) {
+    SCOPED_TRACE(media_file);
+    TestSimplePlayback(media_file);
+  }
 }
 
 // TODO(crbug.com/40116008): Flaky on multiple platforms.
@@ -236,57 +258,36 @@ IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
   TestSimplePlayback("bear-320x240-v-vp9_fullsample_enc-v.webm");
 }
 
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoOnly_WebM_Subsample) {
-  TestSimplePlayback("bear-320x240-v-vp9_subsample_enc-v.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoClearAudio_WebM) {
-  TestSimplePlayback("bear-320x240-av_enc-v.webm");
-}
-
-// TODO(crbug.com/40784898): Flaky on Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_Playback_VideoAudio_WebM_Opus \
-  DISABLED_Playback_VideoAudio_WebM_Opus
-#else
-#define MAYBE_Playback_VideoAudio_WebM_Opus Playback_AudioOnly_WebM_Opus
-#endif
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
-                       MAYBE_Playback_VideoAudio_WebM_Opus) {
-  TestSimplePlayback("bear-320x240-opus-a_enc-a.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoAudio_WebM_Opus) {
-  TestSimplePlayback("bear-320x240-opus-av_enc-av.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoClearAudio_WebM_Opus) {
-  TestSimplePlayback("bear-320x240-opus-av_enc-v.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_AudioOnly_MP4_FLAC) {
-  RunMultipleFileTest(std::string(), "bear-flac-cenc.mp4", media::kEndedTitle);
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_AudioOnly_MP4_OPUS) {
-  RunMultipleFileTest(std::string(), "bear-opus-cenc.mp4", media::kEndedTitle);
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoOnly_MP4_VP9) {
-  // MP4 without MSE is not support yet, http://crbug.com/170793.
-  if (CurrentSourceType() != SrcType::MSE) {
-    GTEST_SKIP() << "Can only play MP4 encrypted streams by MSE.";
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_MP4) {
+  static constexpr const char* kAudioOnlyMediaFiles[] = {
+      "bear-flac-cenc.mp4",
+      "bear-opus-cenc.mp4",
+  };
+  for (const char* media_file : kAudioOnlyMediaFiles) {
+    SCOPED_TRACE(media_file);
+    RunMultipleFileTest(std::string(), media_file, media::kEndedTitle);
   }
 
-  TestSimplePlayback("bear-320x240-v_frag-vp9-cenc.mp4");
+  static constexpr const char* kMediaFiles[] = {
+      "bear-320x240-v_frag-vp9-cenc.mp4",
+#if BUILDFLAG(ENABLE_AV1_DECODER)
+      "bear-av1-cenc.mp4",
+      "bear-av1-320x180-10bit-cenc.mp4",
+#endif  // BUILDFLAG(ENABLE_AV1_DECODER)
+  };
+  for (const char* media_file : kMediaFiles) {
+    SCOPED_TRACE(media_file);
+    TestSimplePlayback(media_file);
+  }
 }
 
 // TODO(crbug.com/40513452): Decide when it's supported on Android.
-#if !BUILDFLAG(IS_ANDROID)
-
-#if BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_FUCHSIA) && defined(ARCH_CPU_ARM_FAMILY))
-// TODO(crbug.com/40187305): Failing on Mac.
 // TODO(crbug.com/40208879): Failing on Fuchsia arm.
+#if !BUILDFLAG(IS_ANDROID) && \
+    !(BUILDFLAG(IS_FUCHSIA) && defined(ARCH_CPU_ARM_FAMILY))
+
+#if BUILDFLAG(IS_MAC)
+// TODO(crbug.com/40187305): Failing on Mac.
 #define MAYBE_Playback_VideoOnly_WebM_VP9Profile2 \
   DISABLED_Playback_VideoOnly_WebM_VP9Profile2
 #else
@@ -298,74 +299,24 @@ IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
   TestSimplePlayback("bear-320x240-v-vp9_profile2_subsample_cenc-v.webm");
 }
 
-#if BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_FUCHSIA) && defined(ARCH_CPU_ARM_FAMILY))
+#if BUILDFLAG(IS_MAC)
 // TODO(crbug.com/40805145): Failing on Mac.
-// TODO(crbug.com/40208879): Failing on Fuchsia arm.
 #define MAYBE_Playback_VideoOnly_MP4_VP9Profile2 \
   DISABLED_Playback_VideoOnly_MP4_VP9Profile2
 #else
 #define MAYBE_Playback_VideoOnly_MP4_VP9Profile2 \
   Playback_VideoOnly_MP4_VP9Profile2
 #endif
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
                        MAYBE_Playback_VideoOnly_MP4_VP9Profile2) {
-  // MP4 without MSE is not support yet, http://crbug.com/170793.
-  if (CurrentSourceType() != SrcType::MSE) {
-    GTEST_SKIP() << "Can only play MP4 encrypted streams by MSE.";
-  }
-
   TestSimplePlayback("bear-320x240-v-vp9_profile2_subsample_cenc-v.mp4");
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
-
-#if BUILDFLAG(ENABLE_AV1_DECODER)
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoOnly_WebM_AV1) {
-  TestSimplePlayback("bear-av1-cenc.webm");
-}
-
-// TODO(crbug.com/40863206): Flaky on Android.
-#if BUILDFLAG(IS_ANDROID)
-#define MAYBE_Playback_VideoOnly_WebM_AV1_10bit \
-  DISABLED_Playback_VideoOnly_WebM_AV1_10bit
-#else
-#define MAYBE_Playback_VideoOnly_WebM_AV1_10bit \
-  Playback_VideoOnly_WebM_AV1_10bit
-#endif
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
-                       MAYBE_Playback_VideoOnly_WebM_AV1_10bit) {
-  TestSimplePlayback("bear-av1-320x180-10bit-cenc.webm");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoOnly_MP4_AV1) {
-  // MP4 without MSE is not support yet, http://crbug.com/170793.
-  if (CurrentSourceType() != SrcType::MSE) {
-    GTEST_SKIP() << "Can only play MP4 encrypted streams by MSE.";
-  }
-
-  TestSimplePlayback("bear-av1-cenc.mp4");
-}
-
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_VideoOnly_MP4_AV1_10bit) {
-  // MP4 without MSE is not support yet, http://crbug.com/170793.
-  if (CurrentSourceType() != SrcType::MSE) {
-    GTEST_SKIP() << "Can only play MP4 encrypted streams by MSE.";
-  }
-
-  TestSimplePlayback("bear-av1-320x180-10bit-cenc.mp4");
-}
-#endif  // BUILDFLAG(ENABLE_AV1_DECODER)
+#endif  // !BUILDFLAG(IS_ANDROID) &&
+        // !(BUILDFLAG(IS_FUCHSIA) && defined(ARCH_CPU_ARM_FAMILY))
 
 // Strictly speaking this is not an "encrypted" media test. Keep it here for
 // completeness.
-// TODO(crbug.com/330190697): Flaky on Fuchsia, deflake and re-enable the test.
-#if BUILDFLAG(IS_FUCHSIA)
-#define MAYBE_ConfigChangeVideo_ClearToClear \
-  DISABLED_ConfigChangeVideo_ClearToClear
-#else
-#define MAYBE_ConfigChangeVideo_ClearToClear ConfigChangeVideo_ClearToClear
-#endif
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
-                       MAYBE_ConfigChangeVideo_ClearToClear) {
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, ConfigChangeVideo_ClearToClear) {
   TestConfigChange(ConfigChangeType::CLEAR_TO_CLEAR);
 }
 
@@ -377,16 +328,17 @@ IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
 #define MAYBE_ConfigChangeVideo_ClearToEncrypted \
   ConfigChangeVideo_ClearToEncrypted
 #endif
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
                        MAYBE_ConfigChangeVideo_ClearToEncrypted) {
   TestConfigChange(ConfigChangeType::CLEAR_TO_ENCRYPTED);
 }
 
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, ConfigChangeVideo_EncryptedToClear) {
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
+                       ConfigChangeVideo_EncryptedToClear) {
   TestConfigChange(ConfigChangeType::ENCRYPTED_TO_CLEAR);
 }
 
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
                        ConfigChangeVideo_EncryptedToEncrypted) {
   TestConfigChange(ConfigChangeType::ENCRYPTED_TO_ENCRYPTED);
 }
@@ -402,12 +354,12 @@ IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, MAYBE_FrameSizeChangeVideo) {
 }
 
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_Encryption_CENC) {
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_Encryption_CENC) {
   RunMultipleFileTest("bear-640x360-v_frag-cenc.mp4",
                       "bear-640x360-a_frag-cenc.mp4", media::kEndedTitle);
 }
 
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_Encryption_CBC1) {
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_Encryption_CBC1) {
   RunMultipleFileTest("bear-640x360-v_frag-cbc1.mp4", std::string(),
                       media::kErrorTitle);
 }
@@ -418,23 +370,23 @@ IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_Encryption_CBC1) {
 #else
 #define MAYBE_Playback_Encryption_CENS Playback_Encryption_CENS
 #endif
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, MAYBE_Playback_Encryption_CENS) {
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, MAYBE_Playback_Encryption_CENS) {
   RunMultipleFileTest("bear-640x360-v_frag-cens.mp4", std::string(),
                       media::kErrorTitle);
 }
 
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest, Playback_Encryption_CBCS) {
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest, Playback_Encryption_CBCS) {
   RunMultipleFileTest("bear-640x360-v_frag-cbcs.mp4",
                       "bear-640x360-a_frag-cbcs.mp4", media::kEndedTitle);
 }
 
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
                        Playback_Encryption_CBCS_Video_CENC_Audio) {
   RunMultipleFileTest("bear-640x360-v_frag-cbcs.mp4",
                       "bear-640x360-a_frag-cenc.mp4", media::kEndedTitle);
 }
 
-IN_PROC_BROWSER_TEST_P(EncryptedMediaTest,
+IN_PROC_BROWSER_TEST_P(MseEncryptedMediaTest,
                        Playback_Encryption_CENC_Video_CBCS_Audio) {
   RunMultipleFileTest("bear-640x360-v_frag-cenc.mp4",
                       "bear-640x360-a_frag-cbcs.mp4", media::kEndedTitle);

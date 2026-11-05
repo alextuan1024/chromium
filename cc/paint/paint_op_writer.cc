@@ -289,8 +289,16 @@ void PaintOpWriter::WriteSizeAt(base::span<uint8_t> memory, size_t size) {
       static_cast<uint32_t>(static_cast<uint64_t>(size) >> 32);
 }
 
+void PaintOpWriter::Write(uint64_t data) {
+  // uint64_t is serialized as two uint32_ts to meet the 4-byte minimum
+  // alignment requirement of PaintOpWriter (https://crbug.com/1429994 and
+  // https://crbug.com/1440013).
+  Write(static_cast<uint32_t>(data));
+  Write(static_cast<uint32_t>(data >> 32));
+}
+
 void PaintOpWriter::Write(const SkPath& path, UsePaintCache use_paint_cache) {
-  auto id = path.getGenerationID();
+  PaintCacheId id = path.getGenerationID();
   Write(id);
 
   DCHECK(use_paint_cache == UsePaintCache::kEnabled ||
@@ -338,8 +346,8 @@ void PaintOpWriter::Write(const PaintFlags& flags, const SkM44& current_ctm) {
     // Fast path for when there is nothing complicated to write.
     // NOTE: size_t is written as two 32-bit zeros (see WriteSize()).
     WriteSimpleMultiple(
-        flags.color_, flags.width_, flags.miter_limit_, flags.bitfields_uint_,
-        flags.targeted_hdr_headroom_,
+        flags.paint_color_.color, flags.width_, flags.miter_limit_,
+        flags.bitfields_uint_, flags.targeted_hdr_headroom_,
         // flags.path_effect_.
         base::checked_cast<uint8_t>(PathEffect::Type::kNull),
         // flags.color_filter_.
@@ -353,7 +361,7 @@ void PaintOpWriter::Write(const PaintFlags& flags, const SkM44& current_ctm) {
     return;
   }
 
-  WriteSimple(flags.color_);
+  WriteSimple(flags.paint_color_.color);
   Write(flags.width_);
   Write(flags.miter_limit_);
   WriteSimple(flags.bitfields_uint_);

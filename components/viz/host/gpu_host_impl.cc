@@ -39,8 +39,6 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "ui/gfx/win/rendering_window_manager.h"
-#elif BUILDFLAG(IS_MAC)
-#include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
 #endif
 
 #if BUILDFLAG(IS_OZONE)
@@ -158,12 +156,6 @@ GpuHostImpl::GpuHostImpl(Delegate* delegate,
   delegate_->BindDiscardableMemoryReceiver(
       discardable_manager_remote.InitWithNewPipeAndPassReceiver());
 
-  scoped_refptr<base::SequencedTaskRunner> task_runner = nullptr;
-#if BUILDFLAG(IS_MAC)
-  if (params_.main_thread_task_runner->BelongsToCurrentThread())
-    task_runner = ui::WindowResizeHelperMac::Get()->task_runner();
-#endif
-
 #if BUILDFLAG(IS_ANDROID)
   viz_main_->SetHostProcessId(base::GetCurrentProcId());
 #endif
@@ -191,12 +183,15 @@ GpuHostImpl::GpuHostImpl(Delegate* delegate,
   }
 #endif
 
-  viz_main_->CreateGpuService(
-      gpu_service_remote_.BindNewPipeAndPassReceiver(task_runner),
-      gpu_host_receiver_.BindNewPipeAndPassRemote(task_runner),
-      gpu_logging_receiver_.BindNewPipeAndPassRemote(task_runner),
-      std::move(discardable_manager_remote),
-      use_shader_cache_shm_count_.CloneRegion(), std::move(gpu_service_params));
+  viz_main_->CreateGpuService(gpu_service_remote_.BindNewPipeAndPassReceiver(
+                                  params_.main_thread_task_runner),
+                              gpu_host_receiver_.BindNewPipeAndPassRemote(
+                                  params_.main_thread_task_runner),
+                              gpu_logging_receiver_.BindNewPipeAndPassRemote(
+                                  params_.main_thread_task_runner),
+                              std::move(discardable_manager_remote),
+                              use_shader_cache_shm_count_.CloneRegion(),
+                              std::move(gpu_service_params));
   MaybeSendFontRenderParams();
 
   // The persistent cache is not used by the GPU process for info collection.
@@ -233,6 +228,13 @@ void GpuHostImpl::SetProcessId(base::ProcessId pid) {
   DCHECK_EQ(base::kNullProcessId, pid_);
   DCHECK_NE(base::kNullProcessId, pid);
   pid_ = pid;
+#if BUILDFLAG(IS_WIN)
+  for (const auto& [parent_window, child_window] : pending_child_windows_) {
+    gfx::RenderingWindowManager::GetInstance()->RegisterChild(
+        parent_window, child_window, /*expected_child_process_id=*/pid_);
+  }
+  pending_child_windows_.clear();
+#endif  // BUILDFLAG(IS_WIN)
 }
 
 void GpuHostImpl::OnProcessCrashed() {
@@ -292,16 +294,13 @@ void GpuHostImpl::ConnectFrameSinkManager(
 
 void GpuHostImpl::EstablishGpuChannel(int client_id,
                                       uint64_t client_tracing_id,
-                                      bool is_gpu_host,
-                                      bool enable_extra_handles_validation,
+                                      mojom::GpuClientType client_type,
                                       bool sync,
                                       mojo::ScopedMessagePipeHandle handle,
                                       EstablishChannelCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   TRACE_EVENT2("gpu", "GpuHostImpl::EstablishGpuChannel", "client_id",
-               client_id, "is_gpu_host", is_gpu_host);
-  DCHECK(!(is_gpu_host && enable_extra_handles_validation));
-
+               client_id, "client_type", client_type);
   shutdown_timeout_.Stop();
 
   if (gpu::IsReservedClientId(client_id)) {
@@ -323,22 +322,20 @@ void GpuHostImpl::EstablishGpuChannel(int client_id,
     {
       mojo::SyncCallRestrictions::ScopedAllowSyncCall scoped_allow;
       gpu_service_remote_->EstablishGpuChannel(
-          client_id, client_tracing_id, is_gpu_host,
-          enable_extra_handles_validation, std::move(handle), &success,
-          &gpu_info, &gpu_feature_info, &shared_image_capabilities);
+          client_id, client_tracing_id, client_type, std::move(handle),
+          &success, &gpu_info, &gpu_feature_info, &shared_image_capabilities);
     }
     OnChannelEstablished(client_id, /*sync=*/true, /*success=*/success,
                          gpu_info, gpu_feature_info, shared_image_capabilities);
   } else {
     gpu_service_remote_->EstablishGpuChannel(
-        client_id, client_tracing_id, is_gpu_host,
-        enable_extra_handles_validation, std::move(handle),
+        client_id, client_tracing_id, client_type, std::move(handle),
         base::BindOnce(&GpuHostImpl::OnChannelEstablished,
                        weak_ptr_factory_.GetWeakPtr(), client_id, false));
   }
 
   // The gpu host channel uses the same cache as the compositor client.
-  if (is_gpu_host &&
+  if (client_type == mojom::GpuClientType::kBrowser &&
       !base::FeatureList::IsEnabled(features::kGpuPersistentCache)) {
     SetChannelDiskCacheHandle(client_id,
                               gpu::kDisplayCompositorGpuDiskCacheHandle);
@@ -539,6 +536,11 @@ void GpuHostImpl::SetChannelPersistentCachePendingBackend(
       factory->DeletePendingBackendAsync(std::move(pending_backend));
     }
     return;
+  }
+  // Only record the size of the caches that the GPU process uses.
+  if (auto* factory = PersistentCacheSandboxedFileFactory::GetInstance()) {
+    factory->RecordDiskSizeAsync(
+        GetGpuDiskCacheSubdir(gpu::GetHandleType(handle)));
   }
   gpu_service()->SetChannelPersistentCachePendingBackend(
       client_id, handle, std::move(pending_backend));
@@ -786,10 +788,13 @@ void GpuHostImpl::DidUpdateDXGIInfo(gfx::mojom::DXGIInfoPtr dxgi_info) {
 
 void GpuHostImpl::AddChildWindow(gpu::SurfaceHandle parent_window,
                                  gpu::SurfaceHandle child_window) {
-  if (pid_ != base::kNullProcessId) {
-    gfx::RenderingWindowManager::GetInstance()->RegisterChild(
-        parent_window, child_window, /*expected_child_process_id=*/pid_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (pid_ == base::kNullProcessId) {
+    pending_child_windows_[parent_window] = child_window;
+    return;
   }
+  gfx::RenderingWindowManager::GetInstance()->RegisterChild(
+      parent_window, child_window, /*expected_child_process_id=*/pid_);
 }
 #endif  // BUILDFLAG(IS_WIN)
 

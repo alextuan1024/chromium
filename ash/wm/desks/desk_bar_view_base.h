@@ -32,6 +32,7 @@ namespace ash {
 class DeskBarHoverObserver;
 class OverviewGrid;
 class DesksWindowOcclusionCalculator;
+class SystemDecoration;
 
 // Base class for desk bar views, including desk bar view within overview and
 // desk bar view for the desk button.
@@ -94,12 +95,13 @@ class ASH_EXPORT DeskBarViewBase : public views::View,
 
   OverviewGrid* overview_grid() const { return overview_grid_.get(); }
 
-  const std::vector<raw_ptr<DeskMiniView, VectorExperimental>>& mini_views()
+  const std::vector<raw_ptr<DeskMiniView, DanglingUntriaged>>& mini_views()
       const {
     return mini_views_;
   }
 
   views::View* background_view() { return background_view_; }
+  SystemDecoration* decoration_for_testing() { return decoration_.get(); }
 
   DefaultDeskButton* default_desk_button() { return default_desk_button_; }
   const DefaultDeskButton* default_desk_button() const {
@@ -319,6 +321,8 @@ class ASH_EXPORT DeskBarViewBase : public views::View,
                       window_occlusion_calculator);
   ~DeskBarViewBase() override;
 
+  void MaybeSetupBackgroundView();
+
   // Return the X offset of the first mini_view on the left (if there's one),
   // or the X offset of this view's center point when there are no mini_views.
   // This offset is used to calculate the amount by which the mini_views should
@@ -425,12 +429,15 @@ class ASH_EXPORT DeskBarViewBase : public views::View,
   base::WeakPtr<OverviewGrid> overview_grid_;
 
   // The views representing desks mini_views. They're owned by views hierarchy.
-  std::vector<raw_ptr<DeskMiniView, VectorExperimental>> mini_views_;
+  std::vector<raw_ptr<DeskMiniView, DanglingUntriaged>> mini_views_;
 
   // The view representing the desk bar background view. It's owned by views
   // hierarchy. It exists only in the shelf desk bar as it's needed for
   // animation.
   raw_ptr<views::View> background_view_ = nullptr;
+
+  // System decoration for `background_view_` (nine-patch highlight border).
+  std::unique_ptr<SystemDecoration> decoration_;
 
   // Put the contents in a `ScrollView` to support scrollable desks. Due to
   // `ScrollView`'s added latency even when scrolling is a non-factor, this is

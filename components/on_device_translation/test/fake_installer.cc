@@ -35,13 +35,25 @@ base::FilePath FakeOnDeviceTranslationInstaller::GetLibraryPath() const {
 
 base::FilePath FakeOnDeviceTranslationInstaller::GetLanguagePackPath(
     LanguagePackKey language_pack) const {
+  auto it = language_pack_paths_.find(language_pack);
+  if (it != language_pack_paths_.end()) {
+    return it->second;
+  }
   return fake_install_dir_.AppendASCII(GetPackageInstallDirName(language_pack));
+}
+
+void FakeOnDeviceTranslationInstaller::SetLanguagePackPath(
+    LanguagePackKey language_pack,
+    base::FilePath path) {
+  language_pack_paths_[language_pack] = std::move(path);
 }
 
 void FakeOnDeviceTranslationInstaller::Init(
     base::RepeatingClosure on_ready_callback) {
   if (is_init_) {
-    on_ready_callback.Run();
+    if (on_ready_callback) {
+      on_ready_callback.Run();
+    }
     return;
   }
   // Schedule it to run on the next loop cycle
@@ -75,6 +87,24 @@ void FakeOnDeviceTranslationInstaller::InstallLanguagePackNow(
   for (Observer& observer : observers_) {
     observer.OnLanguagePackInstallationChanged(language_pack);
     observer.OnLanguagePackInstalled(language_pack);
+  }
+}
+void FakeOnDeviceTranslationInstaller::FailLibraryInstallNow(
+    InstallError error) {
+  // Cancel the `InitNow()` task that `Init()` posted, because the install
+  // failed instead.
+  weak_ptr_factory_.InvalidateWeakPtrs();
+  for (Observer& observer : observers_) {
+    observer.OnLibraryInstallFailed(error);
+  }
+}
+void FakeOnDeviceTranslationInstaller::FailLanguagePackInstallNow(
+    LanguagePackKey language_pack,
+    InstallError error) {
+  // Cancel the `InstallLanguagePackNow()` tasks that are pending.
+  weak_ptr_factory_.InvalidateWeakPtrs();
+  for (Observer& observer : observers_) {
+    observer.OnLanguagePackInstallFailed(language_pack, error);
   }
 }
 void FakeOnDeviceTranslationInstaller::UnInstallLanguagePack(

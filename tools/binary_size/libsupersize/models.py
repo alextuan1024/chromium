@@ -166,8 +166,8 @@ FLAG_COVERED = 256
 # Relevant for non-locale .pak symbols. Indicates a pak entry is stored
 # uncompressed.
 FLAG_UNCOMPRESSED = 512
-# Relevant for .data & .rodata symbols. Indicates the symbol is a Feature flag
-# placed in the .data..cr_features section.
+# Relevant for .data, .data.rel.ro & .rodata symbols. Indicates the symbol is a
+# Feature flag placed in a section with the .cr_features suffix.
 FLAG_FEATURE = 1024
 
 
@@ -265,14 +265,25 @@ class Container(BaseContainer):
     'name',
     'section_sizes',
     'metrics_by_file',
+    'relocation_addresses',
   )
 
-  def __init__(self, name, metadata, section_sizes, metrics_by_file):
+  def __init__(
+    self,
+    name,
+    metadata,
+    section_sizes,
+    metrics_by_file,
+    relocation_addresses=None,
+  ):
     super().__init__()
     self.name = name
     self.metadata = metadata or {}
     self.section_sizes = section_sizes  # E.g. {SECTION_TEXT: 0}
     self.metrics_by_file = metrics_by_file
+    self.relocation_addresses = (
+      relocation_addresses if relocation_addresses is not None else []
+    )
 
   def IsEmpty(self):
     return self.name == CONTAINER_NAME_EMPTY
@@ -466,6 +477,22 @@ class SizeInfo(BaseSizeInfo):
     logging.debug('Done expanding filtered_symbols')
     self.raw_symbols = SymbolGroup(raw_symbols)
 
+    kept_by_container = {
+      container: []
+      for container in self.containers
+      if container.relocation_addresses
+    }
+    if kept_by_container:
+      for sym, start_idx, end_idx in _IterContainerSymbolRelocations(
+        self.containers, raw_symbols, is_sparse=True
+      ):
+        if start_idx < end_idx:
+          kept_by_container[sym.container].extend(
+            sym.container.relocation_addresses[start_idx:end_idx]
+          )
+      for container, kept in kept_by_container.items():
+        container.relocation_addresses = kept
+
 
 class DeltaSizeInfo(BaseSizeInfo):
   """What you get when you Diff() two SizeInfo objects.
@@ -482,6 +509,7 @@ class DeltaSizeInfo(BaseSizeInfo):
     'after',
     'removed_sources',
     'added_sources',
+    '_sort_symbols',
   )
 
   def __init__(
@@ -492,12 +520,29 @@ class DeltaSizeInfo(BaseSizeInfo):
     raw_symbols,
     removed_sources=None,
     added_sources=None,
+    sort=False,
   ):
     super().__init__(containers, raw_symbols)
     self.before = before
     self.after = after
     self.removed_sources = removed_sources or []
     self.added_sources = added_sources or []
+    self._sort_symbols = sort
+
+  @property
+  def symbols(self):
+    if self._symbols is None:
+      syms = super().symbols
+      if self._sort_symbols:
+        logging.debug('Grouping')
+        # Group path aliases so that functions defined in headers will be sorted
+        # by their actual size rather than shown as many small symbols.
+        # Grouping these is nice since adding or remove just one path alias
+        # changes the PSS of all symbols (a lot of noise).
+        syms = syms.GroupedByAliases(same_name_only=True)
+        logging.debug('Sorting')
+        self._symbols = syms.Sorted()
+    return self._symbols
 
   @property
   def is_sparse(self):
@@ -509,6 +554,7 @@ class DeltaSizeInfo(BaseSizeInfo):
     # They could be re-computed if the need arises.
     self.removed_sources = []
     self.added_sources = []
+    self._symbols = None
 
     # Assumes BUILD_CONFIG_GIT_REVISION is always present.
     i = 1
@@ -560,6 +606,7 @@ class DeltaSizeInfo(BaseSizeInfo):
         DIFF_STATUS_UNCHANGED
       ).Inverted()
     self.raw_symbols = filtered_symbols
+    self._symbols = None
     self.before.MakeSparse(
       SymbolGroup(
         [sym.before_symbol for sym in filtered_symbols if sym.before_symbol]
@@ -758,6 +805,7 @@ class Symbol(BaseSymbol):
     'size',
     'component',
     'disassembly',
+    'relocation_count',
   )
 
   def __init__(
@@ -788,6 +836,7 @@ class Symbol(BaseSymbol):
     self.container = None
     self.component = ''
     self.disassembly = disassembly or ''
+    self.relocation_count = 0
 
   def __repr__(self):
     if self.container_name:
@@ -819,17 +868,31 @@ class Symbol(BaseSymbol):
     self.template_name = full_name if template_name is None else template_name
     self.name = full_name if name is None else name
 
+  # The pss properties are hot, so avoid calling other properties.
   @property
   def pss(self):
-    return float(self.size) / self.num_aliases
+    aliases = self.aliases
+    return self.size / len(aliases) if aliases else float(self.size)
 
   @property
   def pss_without_padding(self):
-    return float(self.size_without_padding) / self.num_aliases
+    aliases = self.aliases
+    size = self.size - self.padding
+    return size / len(aliases) if aliases else float(size)
 
   @property
   def padding_pss(self):
-    return float(self.padding) / self.num_aliases
+    aliases = self.aliases
+    return self.padding / len(aliases) if aliases else float(self.padding)
+
+  @property
+  def relocation_pss(self):
+    aliases = self.aliases
+    return (
+      self.relocation_count / len(aliases)
+      if aliases
+      else float(self.relocation_count)
+    )
 
 
 class DeltaSymbol(BaseSymbol):
@@ -840,11 +903,12 @@ class DeltaSymbol(BaseSymbol):
   to one symbol in the |before|, and then be an alias to another in |after|.
   """
 
-  __slots__ = ('before_symbol', 'after_symbol')
+  __slots__ = ('before_symbol', 'after_symbol', '_diff_status')
 
   def __init__(self, before_symbol, after_symbol):
     self.before_symbol = before_symbol
     self.after_symbol = after_symbol
+    self._diff_status = None
 
   def __repr__(self):
     before_container_name = (
@@ -882,6 +946,16 @@ class DeltaSymbol(BaseSymbol):
 
   @property
   def diff_status(self):
+    # Cached since it is queried many times per symbol (e.g. clustering,
+    # filtering, and describing), and is expensive to compute. Assumes that
+    # before_symbol and after_symbol are not modified after diffing.
+    ret = self._diff_status
+    if ret is None:
+      ret = self._ComputeDiffStatus()
+      self._diff_status = ret
+    return ret
+
+  def _ComputeDiffStatus(self):
     if self.before_symbol is None:
       return DIFF_STATUS_ADDED
     if self.after_symbol is None:
@@ -893,7 +967,18 @@ class DeltaSymbol(BaseSymbol):
     #     symbols all happen the same size (hence delta size = 0).
     # The purpose of checking PSS is to account for (2). However, this means (1)
     # would produce much more diffs than before!
-    if self.size != 0 or self.pss != 0:
+    # When neither symbol has aliases (and |before_symbol| is not
+    # padding-only), delta PSS == delta size, so skip computing PSS.
+    before = self.before_symbol
+    after = self.after_symbol
+    if (
+      self.size != 0
+      or before.relocation_count != after.relocation_count
+      or (
+        (before.aliases or after.aliases or before.size == before.padding)
+        and (self.pss != 0 or self.relocation_pss != 0)
+      )
+    ):
       return DIFF_STATUS_CHANGED
     return DIFF_STATUS_UNCHANGED
 
@@ -947,57 +1032,131 @@ class DeltaSymbol(BaseSymbol):
 
   @property
   def padding_pss(self):
-    if self.after_symbol is None:
-      return -self.before_symbol.padding_pss
-    if self.before_symbol is None:
-      return self.after_symbol.padding_pss
+    before = self.before_symbol
+    after = self.after_symbol
+    if after is None:
+      return -before.padding_pss
+    if before is None:
+      return after.padding_pss
     # Padding tracked in aggregate, except for padding-only symbols.
-    if self.before_symbol.size_without_padding == 0:
-      return self.after_symbol.padding_pss - self.before_symbol.padding_pss
+    if before.size == before.padding:
+      return after.padding_pss - before.padding_pss
     return 0
 
   @property
   def padding(self):
-    if self.after_symbol is None:
-      return -self.before_symbol.padding
-    if self.before_symbol is None:
-      return self.after_symbol.padding
+    before = self.before_symbol
+    after = self.after_symbol
+    if after is None:
+      return -before.padding
+    if before is None:
+      return after.padding
     # Padding tracked in aggregate, except for padding-only symbols.
-    if self.before_symbol.size_without_padding == 0:
-      return self.after_symbol.padding - self.before_symbol.padding
+    if before.size == before.padding:
+      return after.padding - before.padding
     return 0
 
   @property
   def pss(self):
-    if self.after_symbol is None:
-      return -self.before_symbol.pss
-    if self.before_symbol is None:
-      return self.after_symbol.pss
+    before = self.before_symbol
+    after = self.after_symbol
+    if after is None:
+      return -before.pss
+    if before is None:
+      return after.pss
     # Padding tracked in aggregate, except for padding-only symbols.
-    if self.before_symbol.size_without_padding == 0:
-      return self.after_symbol.pss - self.before_symbol.pss
-    return (
-      self.after_symbol.pss_without_padding
-      - self.before_symbol.pss_without_padding
-    )
+    if before.size == before.padding:
+      return after.pss - before.pss
+    return after.pss_without_padding - before.pss_without_padding
 
   @property
   def size(self):
-    if self.after_symbol is None:
-      return -self.before_symbol.size
-    if self.before_symbol is None:
-      return self.after_symbol.size
+    before = self.before_symbol
+    after = self.after_symbol
+    if after is None:
+      return -before.size
+    if before is None:
+      return after.size
     # Padding tracked in aggregate, except for padding-only symbols.
-    if self.before_symbol.size_without_padding == 0:
-      return self.after_symbol.padding - self.before_symbol.padding
-    return (
-      self.after_symbol.size_without_padding
-      - self.before_symbol.size_without_padding
-    )
+    if before.size == before.padding:
+      return after.padding - before.padding
+    return (after.size - after.padding) - (before.size - before.padding)
 
   @property
   def pss_without_padding(self):
     return self.pss - self.padding_pss
+
+  @property
+  def relocation_count(self):
+    before = self.before_symbol.relocation_count if self.before_symbol else 0
+    after = self.after_symbol.relocation_count if self.after_symbol else 0
+    return after - before
+
+  @property
+  def relocation_pss(self):
+    before = self.before_symbol.relocation_pss if self.before_symbol else 0.0
+    after = self.after_symbol.relocation_pss if self.after_symbol else 0.0
+    return after - before
+
+
+def _IterContainerSymbolRelocations(
+  containers, raw_symbols, *, is_sparse=False
+):
+  """Yields (sym, start_idx, end_idx) for relocation matches.
+
+  Requires symbols within each container to be sorted by ascending |address|
+  unless |is_sparse| is True.
+  """
+  state_by_container = {
+    container: [container.relocation_addresses, 0, 0]
+    for container in containers
+    if container.relocation_addresses
+  }
+  if not state_by_container:
+    return
+
+  # Only non-BSS native symbols with positive address and unpadded size can own
+  # relative relocations; for alias groups, match only the primary symbol so
+  # the shared address range is scanned once.
+  eligible_symbols = (
+    sym
+    for sym in raw_symbols
+    if sym.container in state_by_container
+    and sym.IsNative()
+    and not sym.IsBss()
+    and sym.address > 0
+    and sym.size_without_padding > 0
+    and (not sym.aliases or sym is sym.aliases[0])
+  )
+  if is_sparse:
+    # Sparse symbol lists (e.g. diffs/filtered) are not address-sorted.
+    eligible_symbols = sorted(eligible_symbols, key=lambda sym: sym.address)
+
+  for sym in eligible_symbols:
+    state = state_by_container[sym.container]
+    reloc_addrs, reloc_idx, prev_addr = state
+    start = sym.address
+    assert start >= prev_addr, 'Symbols must be sorted by address'
+    end = sym.end_address
+    num_relocs = len(reloc_addrs)
+    while reloc_idx < num_relocs and reloc_addrs[reloc_idx] < start:
+      reloc_idx += 1
+    match_start = reloc_idx
+    while reloc_idx < num_relocs and reloc_addrs[reloc_idx] < end:
+      reloc_idx += 1
+    state[1] = reloc_idx
+    state[2] = start
+    yield sym, match_start, reloc_idx
+
+
+def AttributeRelocations(containers, raw_symbols, *, is_sparse=False):
+  """Attributes relative relocation addresses to native symbols."""
+  for sym, start_idx, end_idx in _IterContainerSymbolRelocations(
+    containers, raw_symbols, is_sparse=is_sparse
+  ):
+    count = end_idx - start_idx
+    for alias in sym.aliases or (sym,):
+      alias.relocation_count = count
 
 
 class SymbolGroup(BaseSymbol):
@@ -1163,6 +1322,14 @@ class SymbolGroup(BaseSymbol):
     if self._padding is None:
       self._padding = sum(s.padding for s in self.IterUniqueSymbols())
     return self._padding
+
+  @property
+  def relocation_count(self):
+    return sum(s.relocation_count for s in self.IterUniqueSymbols())
+
+  @property
+  def relocation_pss(self):
+    return sum(s.relocation_pss for s in self)
 
   @property
   def aliases(self):

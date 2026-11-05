@@ -115,6 +115,7 @@ class CORE_EXPORT EmptyChromeClient : public ChromeClient {
   void DidChangeThemeColor(std::optional<SkColor> theme_color) override {}
   void DidChangeBackgroundColor(SkColor4f background_color,
                                 bool color_adjust) override {}
+  void UpdateEncoding(const String& encoding_name) override {}
   void FocusPage() override {}
   void DidFocusPage() override {}
   bool CanTakeFocus(mojom::blink::FocusType) override { return false; }
@@ -126,7 +127,7 @@ class CORE_EXPORT EmptyChromeClient : public ChromeClient {
   void BeginLifecycleUpdates(LocalFrame& main_frame) override {}
   void RegisterForCommitObservation(CommitObserver*) override {}
   void UnregisterFromCommitObservation(CommitObserver*) override {}
-  void WillCommitCompositorFrame() override {}
+  void WillSnapshotCommitState() override {}
   std::unique_ptr<cc::ScopedPauseRendering> PauseRendering(
       LocalFrame&) override;
   std::optional<int> GetMaxRenderBufferBounds(LocalFrame& frame) const override;
@@ -145,12 +146,6 @@ class CORE_EXPORT EmptyChromeClient : public ChromeClient {
                      const gfx::Vector2d& cursor_offset,
                      const gfx::Rect& drag_obj_rect) override {}
   bool AcceptsLoadDrops() const override { return true; }
-  bool ShouldReportDetailedMessageForSourceAndSeverity(
-      LocalFrame&,
-      mojom::blink::ConsoleMessageLevel,
-      const String&) override {
-    return false;
-  }
   void AddMessageToConsole(LocalFrame*,
                            mojom::ConsoleMessageSource,
                            mojom::ConsoleMessageLevel,
@@ -210,8 +205,8 @@ class CORE_EXPORT EmptyChromeClient : public ChromeClient {
   const display::ScreenInfos& GetScreenInfos(LocalFrame&) const override {
     return empty_screen_infos_;
   }
-  const display::ScreenInfo& GetOriginalScreenInfo(LocalFrame&) const override {
-    return empty_screen_infos_.current();
+  float GetOriginalDeviceScaleFactor(LocalFrame&) const override {
+    return empty_screen_infos_.current().device_scale_factor;
   }
   void ContentsSizeChanged(LocalFrame*, const gfx::Size&) const override {}
   void ShowMouseOverURL(const HitTestResult&) override {}
@@ -376,7 +371,7 @@ class CORE_EXPORT EmptyLocalFrameClient : public LocalFrameClient {
       bool has_rel_opener,
       mojo::PendingReceiver<
           mojom::blink::NavigationResumeDeferredCommitListener>,
-      std::optional<base::UnguessableToken> script_tool_invocation_id,
+      std::optional<ToolInvocationToken> script_tool_invocation_id,
       const String& script_injector_host) override;
 
   void DispatchWillSendSubmitEvent(HTMLFormElement*) override;
@@ -406,11 +401,6 @@ class CORE_EXPORT EmptyLocalFrameClient : public LocalFrameClient {
   void SelectorMatchChanged(const Vector<String>&,
                             const Vector<String>&) override {}
   LocalFrame* CreateFrame(const AtomicString&, HTMLFrameOwnerElement*) override;
-
-  RemoteFrame* CreateFencedFrame(
-      HTMLFencedFrameElement*,
-      mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>)
-      override;
 
   WebPluginContainerImpl* CreatePlugin(HTMLPlugInElement&,
                                        const KURL&,

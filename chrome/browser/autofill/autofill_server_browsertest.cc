@@ -37,8 +37,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/switches.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 using testing::AllOf;
 using testing::Eq;
@@ -161,7 +161,7 @@ class AutofillServerTest : public InProcessBrowserTest {
     NavigateParams params(
         browser(), embedded_https_test_server().GetURL("a.com", relative_url),
         ui::PAGE_TRANSITION_LINK);
-    params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     ui_test_utils::NavigateToURL(&params);
   }
 
@@ -263,7 +263,7 @@ IN_PROC_BROWSER_TEST_F(AutofillServerTest, AlwaysQueryForPasswordFields) {
   )");
 
   AutofillPageQueryRequest query;
-  query.set_client_version(std::string(GetProductNameAndVersionForUserAgent()));
+  query.set_client_version(GetProductNameAndVersionForUserAgent());
   auto* query_form = query.add_forms();
   query_form->set_signature(4875414400744072230U);
   query_form->set_alternative_signature(130271417830211693U);

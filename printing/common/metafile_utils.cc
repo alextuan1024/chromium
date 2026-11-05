@@ -359,13 +359,13 @@ bool RecursiveBuildStructureTree(const ui::AXNode* ax_node,
   }
 
   if (ui::IsCellOrTableHeader(ax_node->GetRole())) {
-    std::optional<int> row_span = ax_node->GetTableCellRowSpan();
+    std::optional<int> row_span = ax_node->GetTableCellDomRowSpan();
     if (row_span.has_value()) {
       tag->fAttributes.appendInt(chrome_pdf::kPDFTableAttributeOwner,
                                  chrome_pdf::kPDFTableCellRowSpanAttribute,
                                  row_span.value());
     }
-    std::optional<int> col_span = ax_node->GetTableCellColSpan();
+    std::optional<int> col_span = ax_node->GetTableCellDomColSpan();
     if (col_span.has_value()) {
       tag->fAttributes.appendInt(chrome_pdf::kPDFTableAttributeOwner,
                                  chrome_pdf::kPDFTableCellColSpanAttribute,
@@ -444,27 +444,30 @@ sk_sp<SkDocument> MakePdfDocument(
 }
 
 SkSerialReturnType SerializeOopPicture(SkPicture* pic, void* ctx) {
-  const auto* context = reinterpret_cast<const ContentToProxyTokenMap*>(ctx);
-  uint32_t pic_id = pic->uniqueID();
-  auto iter = context->find(pic_id);
+  const auto* context =
+      reinterpret_cast<const PictureSerializationContext*>(ctx);
+  auto iter = context->find(PictureUniqueId(pic->uniqueID()));
   if (iter == context->end()) {
     return nullptr;
   }
 
-  return gfx::MakeSkDataFromSpanWithCopy(base::byte_span_from_ref(pic_id));
+  const uint32_t content_id = iter->second.value();
+  return gfx::MakeSkDataFromSpanWithCopy(base::byte_span_from_ref(content_id));
 }
 
 sk_sp<SkPicture> DeserializeOopPicture(const void* data,
                                        size_t length,
                                        void* ctx) {
+  // SAFETY: Skia passes `length` as the size of `data`.
+  base::SpanReader reader(
+      UNSAFE_BUFFERS(base::span(static_cast<const uint8_t*>(data), length)));
   uint32_t pic_id;
-  if (length < sizeof(pic_id)) {
+  if (!reader.ReadU32NativeEndian(pic_id)) {
     NOTREACHED();  // Should not happen if the content is as written.
   }
-  UNSAFE_TODO(memcpy(&pic_id, data, sizeof(pic_id)));
 
   auto* context = reinterpret_cast<PictureDeserializationContext*>(ctx);
-  auto iter = context->find(pic_id);
+  auto iter = context->find(PictureContentId(pic_id));
   if (iter == context->end() || !iter->second) {
     // When we don't have the out-of-process picture available, we return
     // an empty picture. Returning a nullptr will cause the deserialization
@@ -477,7 +480,7 @@ sk_sp<SkPicture> DeserializeOopPicture(const void* data,
 SkSerialReturnType SerializeOopTypeface(SkTypeface* typeface, void* ctx) {
   auto* context = reinterpret_cast<TypefaceSerializationContext*>(ctx);
   SkTypefaceID typeface_id = typeface->uniqueID();
-  bool data_included = context->insert(typeface_id).second;
+  bool data_included = context->insert(TypefaceContentId(typeface_id)).second;
 
   // Need the typeface ID to identify the desired typeface.  Include an
   // indicator for when typeface data actually follows vs. when the typeface
@@ -512,15 +515,16 @@ sk_sp<SkTypeface> DeserializeOopTypeface(SkStream& stream, void* ctx) {
     return nullptr;
   }
 
+  TypefaceContentId typeface_id(id);
   auto* context = reinterpret_cast<TypefaceDeserializationContext*>(ctx);
-  auto iter = context->find(id);
+  auto iter = context->find(typeface_id);
   if (iter != context->end()) {
-    DCHECK(!data_included);
+    CHECK(!data_included);
     return iter->second;
   }
 
   // Typeface not encountered before, expect it to be present in the stream.
-  DCHECK(data_included);
+  CHECK(data_included);
   sk_sp<SkTypeface> typeface;
   if (base::FeatureList::IsEnabled(blink::features::kFontationsPrinting)) {
     typeface = skia::MakeTypefaceWithFontations(&stream);
@@ -528,7 +532,7 @@ sk_sp<SkTypeface> DeserializeOopTypeface(SkStream& stream, void* ctx) {
     typeface = SkTypeface::MakeDeserialize(&stream, skia::DefaultFontMgr());
   }
 
-  context->emplace(id, typeface);
+  context->emplace(typeface_id, typeface);
   return typeface;
 }
 
@@ -539,9 +543,9 @@ SkSerialReturnType SerializeRasterImage(SkImage* img, void* ctx) {
 
   auto* context = reinterpret_cast<ImageSerializationContext*>(ctx);
 
-  uint32_t img_id = img->uniqueID();
-  if (context->contains(img_id)) {
-    return SkData::MakeWithCopy(&img_id, sizeof(img_id));
+  uint64_t img_id = img->uniqueID();
+  if (context->contains(ImageContentId(img_id))) {
+    return gfx::MakeSkDataFromSpanWithCopy(base::byte_span_from_ref(img_id));
   }
 
   sk_sp<const SkData> img_data = GetImageData(img);
@@ -554,13 +558,12 @@ SkSerialReturnType SerializeRasterImage(SkImage* img, void* ctx) {
   auto data = SkData::MakeUninitialized(
       base::CheckAdd(img_data->size(), sizeof(img_id)).ValueOrDie());
 
-  // SAFETY: The span is used as a view to avoid direct pointer access.
   auto [id_span, data_span] =
       skia::as_writable_byte_span(*data).split_at<sizeof(img_id)>();
   id_span.copy_from(base::byte_span_from_ref(img_id));
   data_span.copy_from(gfx::SkDataToSpan(img_data));
 
-  context->insert(img_id);
+  context->insert(ImageContentId(img_id));
 
   return data;
 }
@@ -575,11 +578,12 @@ sk_sp<SkImage> DeserializeRasterImage(sk_sp<SkData> data,
 
   base::SpanReader reader{gfx::SkDataToSpan(data)};
 
-  uint32_t img_id;
-  if (!reader.ReadU32NativeEndian(img_id)) {
+  uint64_t img_id_val;
+  if (!reader.ReadU64NativeEndian(img_id_val)) {
     // If there is no room for id, there cannot be meaningful image data.
     return nullptr;
   }
+  ImageContentId img_id(img_id_val);
 
   auto iter = context->find(img_id);
   if (iter != context->end() && iter->second) {
@@ -591,8 +595,7 @@ sk_sp<SkImage> DeserializeRasterImage(sk_sp<SkData> data,
   }
 
   // Copy the data to avoid `bytes` being freed before the image is decoded.
-  auto data_span = reader.remaining_span();
-  auto img_data = SkData::MakeWithCopy(data_span.data(), data_span.size());
+  auto img_data = gfx::MakeSkDataFromSpanWithCopy(reader.remaining_span());
 
   // Need to explicitly decode here, as the data are prefixed with image id,
   // invalidating the built-in Skia fallback.

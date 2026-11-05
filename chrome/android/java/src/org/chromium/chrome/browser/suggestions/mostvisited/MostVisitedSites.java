@@ -43,6 +43,21 @@ public interface MostVisitedSites extends CustomLinkOperations {
          * @param siteUrl URL of site with newly-cached icon.
          */
         void onIconMadeAvailable(GURL siteUrl);
+
+        /**
+         * This is called when the AI Mode tile's title, URL, or visibility may have changed (e.g.
+         * after a default search engine switch). The site suggestions themselves are unchanged, so
+         * the observer should rebuild tiles from the last list it received.
+         */
+        default void onAiModeTileConfigChanged() {}
+
+        /**
+         * This is called when the AI Mode tile's stored index changed, including from another NTP
+         * (e.g. the other half of a split screen) removing, restoring, or moving the tile. The site
+         * suggestions themselves are unchanged, so the observer should rebuild tiles from the last
+         * list it received.
+         */
+        default void onAiModeTileIndexChanged() {}
     }
 
     /** An interface to provide {@link MostVisitedSites} with platform-specific home page data. */

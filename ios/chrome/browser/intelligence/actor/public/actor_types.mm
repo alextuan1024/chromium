@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
 
+#import <utility>
+
+#import "components/actor/public/mojom/actor_types.mojom.h"
 #import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
 
 namespace actor {
@@ -30,6 +33,12 @@ ActionResult::~ActionResult() = default;
 ActionResult::ActionResult(ActionResult&&) = default;
 ActionResult& ActionResult::operator=(ActionResult&&) = default;
 
+std::vector<ActionResult> MakeActionResults(mojom::ActionResultCode code) {
+  std::vector<ActionResult> results;
+  results.emplace_back(ToolExecutionResult(code));
+  return results;
+}
+
 // TabObservationResponse.
 TabObservationResponse::TabObservationResponse() = default;
 TabObservationResponse::TabObservationResponse(
@@ -51,5 +60,28 @@ PerformActionsResult::~PerformActionsResult() = default;
 PerformActionsResult::PerformActionsResult(PerformActionsResult&&) = default;
 PerformActionsResult& PerformActionsResult::operator=(PerformActionsResult&&) =
     default;
+
+// ConfirmationInterrupt.
+ConfirmationInterrupt::ConfirmationInterrupt() = default;
+ConfirmationInterrupt::ConfirmationInterrupt(const ConfirmationInterrupt&) =
+    default;
+ConfirmationInterrupt& ConfirmationInterrupt::operator=(
+    const ConfirmationInterrupt&) = default;
+ConfirmationInterrupt::ConfirmationInterrupt(ConfirmationInterrupt&&) noexcept =
+    default;
+ConfirmationInterrupt& ConfirmationInterrupt::operator=(
+    ConfirmationInterrupt&&) noexcept = default;
+ConfirmationInterrupt::~ConfirmationInterrupt() = default;
+
+// InterruptTaskResult.
+InterruptTaskResult::InterruptTaskResult(
+    InterruptResponse response,
+    std::unique_ptr<TabObservationResponse> observation)
+    : response(response), observation(std::move(observation)) {}
+InterruptTaskResult::~InterruptTaskResult() = default;
+InterruptTaskResult::InterruptTaskResult(InterruptTaskResult&&) noexcept =
+    default;
+InterruptTaskResult& InterruptTaskResult::operator=(
+    InterruptTaskResult&&) noexcept = default;
 
 }  // namespace actor

@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
 
+#include "base/feature_list.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/display_lock/display_lock_context.h"
@@ -18,6 +19,7 @@
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/editing/editing_boundary.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
+#include "third_party/blink/renderer/core/fragment_directive/text_fragment_anchor.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/core/html/html_details_element.h"
@@ -26,6 +28,7 @@
 #include "third_party/blink/renderer/core/layout/layout_shift_tracker.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/speculation_rules/document_speculation_rules.h"
+#include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 
@@ -669,8 +672,9 @@ bool DisplayLockUtilities::IsInLockedSubtreeCrossingFrames(
     const Node& source_node,
     IncludeSelfOrNot self) {
   if (LocalFrameView* frame_view = source_node.GetDocument().View()) {
-    if (frame_view->IsDisplayLocked())
+    if (frame_view->IsDisplayLockThrottled()) {
       return true;
+    }
   }
   const Node* node = &source_node;
 
@@ -847,8 +851,7 @@ Element* DisplayLockUtilities::LockedAncestorPreventingStyle(const Node& node) {
 
 #if DCHECK_IS_ON()
 bool DisplayLockUtilities::AssertStyleAllowed(const Node& node) {
-  if (node.GetDocument().IsFlatTreeTraversalForbidden() ||
-      node.GetDocument()
+  if (node.GetDocument()
           .GetSlotAssignmentEngine()
           .HasPendingSlotAssignmentRecalc()) {
     return true;
@@ -882,6 +885,9 @@ bool DisplayLockUtilities::IsAutoWithoutLayout(const LayoutObject& object) {
 // static
 DisplayLockUtilities::RevealResult
 DisplayLockUtilities::RevealAutoExpandableAncestors(const Node& target) {
+  DCHECK(target.GetDocument().IsSVGDocument() ||
+         !ScriptForbiddenScope::IsScriptForbidden() ||
+         !base::FeatureList::IsEnabled(kTextFragmentFallbackInFinalizeAnchor));
   // https://html.spec.whatwg.org/#ancestor-revealing-algorithm
   enum class AncestorType {
     kDetails = 0,

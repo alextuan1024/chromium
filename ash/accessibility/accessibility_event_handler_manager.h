@@ -24,10 +24,12 @@ class AccessibilityEventHandlerManager {
   enum class HandlerType {
     kMouseKeys = 0,
     kCursor,
+    kMouseShakeToLocate,
     kFullscreenMagnifier,
     kDockedMagnifier,
     kChromeVox,
     kAutoclick,
+    kHoverText,
     kSelectToSpeak,
     kMaxValue = kSelectToSpeak,
   };
@@ -49,7 +51,7 @@ class AccessibilityEventHandlerManager {
 
   // List of the current event handlers, indexed by
   // AccessibilityEventHandlerType.
-  std::vector<raw_ptr<ui::EventHandler, VectorExperimental>> event_handlers_;
+  std::vector<raw_ptr<ui::EventHandler, DanglingUntriaged>> event_handlers_;
 };
 
 }  // namespace ash

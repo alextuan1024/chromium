@@ -4,6 +4,8 @@
 
 #include "chrome/browser/background/glic/glic_launcher_configuration.h"
 
+#include <utility>
+
 #include "base/feature_list.h"
 #include "base/no_destructor.h"
 #include "base/values.h"
@@ -11,6 +13,9 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_feature.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/shell_integration.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_features.h"
@@ -61,7 +66,8 @@ GlicLauncherConfiguration::GlicLauncherConfiguration(Observer* manager)
     // TODO(b/563018760): Remove this migration logic in 6-12 months once
     // existing users have migrated.
     if (base::FeatureList::IsEnabled(features::kGlicHotkeyLocalScope) &&
-        !local_state->GetBoolean(prefs::kGlicHotkeyGlobalScopeMigratedV2)) {
+        local_state->GetInteger(prefs::kGlicDefaultHotkeyScope) ==
+            std::to_underlying(prefs::DefaultHotkeyScope::kNotMigrated)) {
       // Existing users who completed FRE default to global scope, while new
       // users default to local scope.
       // We check `prefs::kGlicLauncherEnabled` in local_state rather than the
@@ -81,13 +87,20 @@ GlicLauncherConfiguration::GlicLauncherConfiguration(Observer* manager)
         }
         const std::string hotkey_str =
             local_state->GetString(prefs::kGlicLauncherHotkey);
+        const bool is_global = !hotkey_str.empty();
         local_state->SetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled,
-                                !hotkey_str.empty());
+                                is_global);
+        local_state->SetInteger(
+            prefs::kGlicDefaultHotkeyScope,
+            std::to_underlying(is_global ? prefs::DefaultHotkeyScope::kGlobal
+                                         : prefs::DefaultHotkeyScope::kLocal));
       } else {
         // New users default to local scope.
         local_state->SetBoolean(prefs::kGlicHotkeyGlobalScopeEnabled, false);
+        local_state->SetInteger(
+            prefs::kGlicDefaultHotkeyScope,
+            std::to_underlying(prefs::DefaultHotkeyScope::kLocal));
       }
-      local_state->SetBoolean(prefs::kGlicHotkeyGlobalScopeMigratedV2, true);
     }
 
     pref_registrar_.Init(local_state);
@@ -116,7 +129,7 @@ GlicLauncherConfiguration::GlicLauncherConfiguration(Observer* manager)
 GlicLauncherConfiguration::~GlicLauncherConfiguration() = default;
 
 // static
-bool GlicLauncherConfiguration::IsEnabled(bool* is_default_value) {
+bool GlicLauncherConfiguration::IsLauncherIconEnabled(bool* is_default_value) {
   PrefService* const pref_service = g_browser_process->local_state();
   if (!pref_service) {
     if (is_default_value) {
@@ -139,8 +152,10 @@ ui::Accelerator GlicLauncherConfiguration::GetToggleHotkey() {
 }
 
 // static
-ui::Accelerator GlicLauncherConfiguration::GetSelectionHotkey() {
-  if (!base::FeatureList::IsEnabled(features::kGlicCaptureRegion)) {
+ui::Accelerator GlicLauncherConfiguration::GetSelectionHotkey(
+    Profile* profile) {
+  if (!GetGlicProviderSpec(profile).SupportsFeature(
+          GlicFeature::kCaptureRegion)) {
     return ui::Accelerator();
   }
   return GetAcceleratorFromPreference(prefs::kGlicSelectionHotkey);
@@ -169,7 +184,7 @@ void GlicLauncherConfiguration::OnCheckIsDefaultBrowserFinished(
 // static
 void GlicLauncherConfiguration::CheckDefaultBrowserToEnableLauncher() {
   bool is_enabled_default = false;
-  const bool is_launcher_enabled = IsEnabled(&is_enabled_default);
+  const bool is_launcher_enabled = IsLauncherIconEnabled(&is_enabled_default);
   if (is_enabled_default && !is_launcher_enabled) {
     auto& callback = GetCheckDefaultBrowserTestOverride();
     if (callback) {
@@ -192,7 +207,7 @@ void GlicLauncherConfiguration::
 }
 
 void GlicLauncherConfiguration::OnEnabledPrefChanged() {
-  manager_->OnEnabledChanged(IsEnabled());
+  manager_->OnEnabledChanged(IsLauncherIconEnabled());
 }
 
 void GlicLauncherConfiguration::OnGlobalHotkeyPrefChanged() {

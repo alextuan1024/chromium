@@ -4,11 +4,10 @@
 
 package org.chromium.chrome.browser.tab;
 
-import androidx.annotation.VisibleForTesting;
-
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.UnownedUserDataKey;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -21,11 +20,10 @@ import org.chromium.url.GURL;
 
 /** Provides a trusted CDN publisher URL for the current web contents in a Tab. */
 @NullMarked
-public class TrustedCdn extends TabWebContentsUserData {
-    @VisibleForTesting public static final Class<TrustedCdn> USER_DATA_KEY = TrustedCdn.class;
+public final class TrustedCdn {
+    private static @Nullable GURL sPublisherUrlForTesting;
 
-    private final Tab mTab;
-    private final long mNativeTrustedCdn;
+    private TrustedCdn() {}
 
     /**
      * UnownedUserData shared across all tabs to get the publisher url visibility. This hangs off of
@@ -74,21 +72,46 @@ public class TrustedCdn extends TabWebContentsUserData {
     }
 
     /**
-     * @return The publisher URL if the current page is hosted on a trusted CDN, or null otherwise
+     * Sets a test override for the publisher URL. Passing {@code null} clears the override rather
+     * than forcing a {@code null} publisher URL.
      */
-    public static @Nullable GURL getPublisherUrl(@Nullable Tab tab) {
-        TrustedCdn cdn = get(tab);
-        return cdn != null ? cdn.getPublisherUrl() : null;
+    public static void setPublisherUrlForTesting(@Nullable GURL publisherUrl) {
+        sPublisherUrlForTesting = publisherUrl;
+        ResettersForTesting.register(() -> sPublisherUrlForTesting = null);
     }
 
     /**
+     * @return The publisher URL if the current page is hosted on a trusted CDN, or null otherwise
+     */
+    public static @Nullable GURL getPublisherUrl(@Nullable Tab tab) {
+        if (tab == null || tab.isDestroyed()) return null;
+        if (sPublisherUrlForTesting != null) return sPublisherUrlForTesting;
+
+        WebContents webContents = tab.getWebContents();
+        if (webContents == null) return null;
+
+        WindowAndroid windowAndroid = webContents.getTopLevelNativeWindow();
+        if (windowAndroid == null) return null;
+
+        PublisherUrlVisibility publisherUrlVisibility = PublisherUrlVisibility.from(windowAndroid);
+        if (publisherUrlVisibility == null || !publisherUrlVisibility.canShowPublisherUrl(tab)) {
+            return null;
+        }
+        int level = SecurityStateModel.getSecurityLevelForWebContents(webContents);
+        if (level != ConnectionSecurityLevel.SECURE) return null;
+        GURL publisherUrl = TrustedCdnJni.get().getPublisherUrl(webContents);
+        return publisherUrl.isValid() ? publisherUrl : null;
+    }
+
+    /**
+     * Returns the name of the publisher of the content if it can be reliably extracted, or null
+     * otherwise.
+     *
      * @param tab Tab object currently being shown.
      * @return The name of the publisher of the content if it can be reliably extracted, or null
-     *         otherwise.
+     *     otherwise.
      */
-    public static @Nullable String getContentPublisher(Tab tab) {
-        if (tab == null) return null;
-
+    public static @Nullable String getContentPublisher(@Nullable Tab tab) {
         GURL publisherUrl = TrustedCdn.getPublisherUrl(tab);
         if (publisherUrl != null) {
             return UrlUtilities.extractPublisherFromPublisherUrl(publisherUrl);
@@ -97,73 +120,9 @@ public class TrustedCdn extends TabWebContentsUserData {
         return null;
     }
 
-    static TrustedCdn from(Tab tab) {
-        TrustedCdn trustedCdn = get(tab);
-        if (trustedCdn == null) {
-            trustedCdn = tab.getUserDataHost().setUserData(USER_DATA_KEY, new TrustedCdn(tab));
-        }
-        return trustedCdn;
-    }
-
-    public static void initForTesting(Tab tab) {
-        from(tab);
-    }
-
-    private static @Nullable TrustedCdn get(@Nullable Tab tab) {
-        return tab != null ? tab.getUserDataHost().getUserData(USER_DATA_KEY) : null;
-    }
-
-    private TrustedCdn(Tab tab) {
-        super(tab);
-        mTab = tab;
-        mNativeTrustedCdn = TrustedCdnJni.get().init();
-    }
-
-    @Override
-    public void initWebContents(WebContents webContents) {
-        TrustedCdnJni.get().setWebContents(mNativeTrustedCdn, webContents);
-    }
-
-    @Override
-    public void cleanupWebContents(@Nullable WebContents webContents) {
-        TrustedCdnJni.get().resetWebContents(mNativeTrustedCdn);
-    }
-
-    @Override
-    public void destroyInternal() {
-        TrustedCdnJni.get().onDestroyed(mNativeTrustedCdn);
-    }
-
-    @VisibleForTesting
-    public @Nullable GURL getPublisherUrl() {
-        WebContents webContents = mTab.getWebContents();
-        if (webContents == null) return null;
-
-        WindowAndroid windowAndroid = webContents.getTopLevelNativeWindow();
-        if (windowAndroid == null) return null;
-
-        PublisherUrlVisibility publisherUrlVisibility = PublisherUrlVisibility.from(windowAndroid);
-        if (publisherUrlVisibility == null || !publisherUrlVisibility.canShowPublisherUrl(mTab)) {
-            return null;
-        }
-        int level = SecurityStateModel.getSecurityLevelForWebContents(mTab.getWebContents());
-        if (level != ConnectionSecurityLevel.SECURE) return null;
-        GURL publisherUrl = TrustedCdnJni.get().getPublisherUrl(mNativeTrustedCdn);
-        return publisherUrl.isValid() ? publisherUrl : null;
-    }
-
     @NativeMethods
     public interface Natives {
-        long init();
-
-        void onDestroyed(long nativeTrustedCdn);
-
-        void setWebContents(
-                long nativeTrustedCdn, @JniType("content::WebContents*") WebContents webContents);
-
-        void resetWebContents(long nativeTrustedCdn);
-
         @JniType("GURL")
-        GURL getPublisherUrl(long nativeTrustedCdn);
+        GURL getPublisherUrl(@JniType("content::WebContents*") @Nullable WebContents webContents);
     }
 }

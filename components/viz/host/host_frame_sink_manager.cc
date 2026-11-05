@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/debug/crash_logging.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -111,11 +112,41 @@ bool HostFrameSinkManager::IsFrameSinkIdRegistered(
   return iter != frame_sink_data_map_.end() && iter->second.client != nullptr;
 }
 
+void HostFrameSinkManager::RequestNonEmptyFrameNotification(
+    const FrameSinkId& frame_sink_id,
+    base::OnceClosure on_non_empty_frame) {
+  DCHECK(frame_sink_id.is_valid());
+  CHECK(IsFrameSinkIdRegistered(frame_sink_id));
+  DCHECK(on_non_empty_frame);
+
+  // Any previously requested callback is simply dropped. It is never run, so
+  // there is no re-entrancy to worry about here.
+  non_empty_frame_callbacks_[frame_sink_id] = std::move(on_non_empty_frame);
+
+  if (frame_sink_manager_) {
+    frame_sink_manager_->RequestNonEmptyFrameNotification(frame_sink_id);
+  }
+}
+
+void HostFrameSinkManager::CancelNonEmptyFrameNotification(
+    const FrameSinkId& frame_sink_id) {
+  if (!non_empty_frame_callbacks_.erase(frame_sink_id)) {
+    return;
+  }
+  if (frame_sink_manager_) {
+    frame_sink_manager_->CancelNonEmptyFrameNotification(frame_sink_id);
+  }
+}
+
 void HostFrameSinkManager::InvalidateFrameSinkId(
     const FrameSinkId& frame_sink_id,
     HostFrameSinkClient* client,
     base::OnceClosure callback) {
   DCHECK(frame_sink_id.is_valid());
+
+  // Viz drops its own request as part of invalidation, so there is no need to
+  // send CancelNonEmptyFrameNotification() here.
+  non_empty_frame_callbacks_.erase(frame_sink_id);
 
   FrameSinkData& data = frame_sink_data_map_[frame_sink_id];
   CHECK(data.IsFrameSinkRegistered());
@@ -296,6 +327,14 @@ bool HostFrameSinkManager::RegisterFrameSinkHierarchy(
     return false;
   }
 
+  // Adding this edge would create a cycle if the parent is the child itself or
+  // is already reachable from the child. Viz treats cycles as a fatal error,
+  // and some callers (e.g. EmbeddedFrameSinkProviderImpl) forward FrameSinkIds
+  // chosen by an untrusted renderer, so reject the edge here instead.
+  if (IsSameOrDescendant(child_frame_sink_id, parent_frame_sink_id)) {
+    return false;
+  }
+
   FrameSinkData& parent_data = iter->second;
   CHECK(!std::ranges::contains(parent_data.children, child_frame_sink_id));
   parent_data.children.push_back(child_frame_sink_id);
@@ -305,6 +344,33 @@ bool HostFrameSinkManager::RegisterFrameSinkHierarchy(
                                                   child_frame_sink_id);
 
   return true;
+}
+
+bool HostFrameSinkManager::IsSameOrDescendant(
+    const FrameSinkId& frame_sink_id,
+    const FrameSinkId& search_frame_sink_id) const {
+  // Iterative DFS over parent -> children edges. A frame sink can have multiple
+  // parents, so track visited ids to visit each frame sink only once.
+  std::vector<FrameSinkId> to_visit = {frame_sink_id};
+  base::flat_set<FrameSinkId> visited = {frame_sink_id};
+  while (!to_visit.empty()) {
+    const FrameSinkId current = to_visit.back();
+    to_visit.pop_back();
+    if (current == search_frame_sink_id) {
+      return true;
+    }
+    // Frame sinks without an entry have no children.
+    auto iter = frame_sink_data_map_.find(current);
+    if (iter == frame_sink_data_map_.end()) {
+      continue;
+    }
+    for (const FrameSinkId& child : iter->second.children) {
+      if (visited.insert(child).second) {
+        to_visit.push_back(child);
+      }
+    }
+  }
+  return false;
 }
 
 void HostFrameSinkManager::UnregisterFrameSinkHierarchy(
@@ -500,6 +566,13 @@ void HostFrameSinkManager::RegisterAfterConnectionLoss() {
                                                       child_frame_sink_id);
     }
   }
+
+  // Re-arm pending non-empty frame notifications, since the new Viz instance
+  // has no knowledge of them. This happens before any CompositorFrameSink is
+  // recreated, so the client still cannot paint before Viz is armed.
+  for (const auto& map_entry : non_empty_frame_callbacks_) {
+    frame_sink_manager_->RequestNonEmptyFrameNotification(map_entry.first);
+  }
 }
 
 void HostFrameSinkManager::OnFirstSurfaceActivation(
@@ -515,6 +588,27 @@ void HostFrameSinkManager::OnFirstSurfaceActivation(
   if (frame_sink_data.client) {
     frame_sink_data.client->OnFirstSurfaceActivation(surface_info);
   }
+}
+
+void HostFrameSinkManager::OnFirstNonEmptyFrame(
+    const FrameSinkId& frame_sink_id) {
+  auto it = non_empty_frame_callbacks_.find(frame_sink_id);
+  if (it == non_empty_frame_callbacks_.end()) {
+    return;
+  }
+
+  // Move the callback out and erase the entry before running it, so that a
+  // callback which re-enters HostFrameSinkManager cannot invalidate `it`.
+  base::OnceClosure callback = std::move(it->second);
+  non_empty_frame_callbacks_.erase(it);
+
+  // Run synchronously. In production this is an asynchronous Mojo message in
+  // all configurations (out-of-process Viz, single process, and Android
+  // WebView), so Viz is not on the stack and a consumer that tears down the
+  // widget or the surface in response cannot re-enter surface activation. Only
+  // tests connect directly via FrameSinkManagerImpl::SetLocalClient(), where
+  // FrameSinkManagerImpl calls its client from Surface::ActivateFrame().
+  std::move(callback).Run();
 }
 
 void HostFrameSinkManager::OnAggregatedHitTestRegionListUpdated(

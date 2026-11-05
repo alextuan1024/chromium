@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "base/functional/callback.h"
@@ -16,14 +17,11 @@
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
-#include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/webui/signin/cross_device_signin_qr_bubble_ui.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/input/native_web_keyboard_event.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
 #include "content/public/browser/page.h"
@@ -37,7 +35,6 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
-#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
@@ -60,6 +57,7 @@ class CrossDeviceSigninQrWebView : public views::WebView,
             IdentityManagerFactory::GetForProfile(profile_)) {
       identity_manager_observation_.Observe(identity_manager);
     }
+    SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
   }
 
   ~CrossDeviceSigninQrWebView() override = default;
@@ -70,13 +68,6 @@ class CrossDeviceSigninQrWebView : public views::WebView,
     // Suppresses the context menu because some features, such as inspecting
     // elements, are not appropriate in a bubble.
     return true;
-  }
-
-  bool HandleKeyboardEvent(
-      content::WebContents* source,
-      const input::NativeWebKeyboardEvent& event) override {
-    return unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-        event, GetFocusManager());
   }
 
   void ResizeDueToAutoResize(content::WebContents* source,
@@ -163,14 +154,12 @@ class CrossDeviceSigninQrWebView : public views::WebView,
 
 std::unique_ptr<views::BubbleDialogDelegate> CreateCrossDeviceSigninQrBubble(
     BrowserWindowInterface* browser,
+    views::BubbleAnchor anchor,
+    base::ScopedClosureRunner keep_visible,
     GURL qr_code_url,
-    base::OnceClosure closing_callback) {
+    base::OnceClosure closing_callback,
+    CrossDeviceSigninPromoEntryPoint entry_point) {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
-
-  views::View* anchor_view = nullptr;
-  if (browser_view && browser_view->toolbar()) {
-    anchor_view = browser_view->toolbar()->avatar_toolbar_button();
-  }
 
   base::ScopedClosureRunner clear_avatar_button_effects_callback;
 
@@ -197,18 +186,21 @@ std::unique_ptr<views::BubbleDialogDelegate> CreateCrossDeviceSigninQrBubble(
 
   base::OnceClosure cleanup_closure = base::BindOnce(
       [](base::ScopedClosureRunner clear_effects,
+         base::ScopedClosureRunner keep_visible,
          base::OnceClosure closing_callback) {
         clear_effects.RunAndReset();
+        keep_visible.RunAndReset();
         if (closing_callback) {
           std::move(closing_callback).Run();
         }
       },
-      std::move(clear_avatar_button_effects_callback),
+      std::move(clear_avatar_button_effects_callback), std::move(keep_visible),
       std::move(closing_callback));
 
   auto web_view =
       std::make_unique<CrossDeviceSigninQrWebView>(browser->GetProfile());
-  web_view->LoadInitialURL(GURL(chrome::kChromeUICrossDeviceSigninQrBubbleURL));
+  web_view->LoadInitialURL(
+      CrossDeviceSigninQrBubbleUI::GetURLWithEntryPoint(entry_point));
   CrossDeviceSigninQrBubbleUI* qr_bubble_ui =
       web_view->GetWebContents()
           ->GetWebUI()
@@ -225,8 +217,9 @@ std::unique_ptr<views::BubbleDialogDelegate> CreateCrossDeviceSigninQrBubble(
 
   auto dialog_model =
       ui::DialogModel::Builder()
-          .SetTitle(l10n_util::GetStringUTF16(
-              IDS_QR_CODE_BUBBLE_SIGNIN_ON_PHONE_TITLE))
+          .SetInternalName("CrossDeviceSigninQrBubbleViews")
+          .SetTitle(
+              l10n_util::GetStringUTF16(IDS_QR_CODE_BUBBLE_SIGNIN_ON_PHONE_TITLE))
           .SetDialogDestroyingCallback(std::move(cleanup_closure))
           .OverrideShowCloseButton(true)
           .DisableCloseOnDeactivate()
@@ -238,15 +231,15 @@ std::unique_ptr<views::BubbleDialogDelegate> CreateCrossDeviceSigninQrBubble(
           .Build();
 
   auto arrow = views::BubbleBorder::TOP_RIGHT;
-  if (!anchor_view) {
+  if (anchor.IsNull()) {
     // Fallback to floating the bubble in the center of the browser window if
     // the profile menu button is unavailable.
-    anchor_view = browser_view;
+    anchor = views::BubbleAnchor(browser_view);
     arrow = views::BubbleBorder::FLOAT;
   }
 
   auto bubble = std::make_unique<views::BubbleDialogModelHost>(
-      std::move(dialog_model), anchor_view, arrow);
+      std::move(dialog_model), anchor, arrow);
   bubble->set_margins(gfx::Insets());
   bubble->set_fixed_width(kDialogWidth);
 

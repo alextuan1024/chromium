@@ -97,6 +97,7 @@ class AutocompleteProviderClientImpl : public AutocompleteProviderClient {
   bool IsIncognitoProfile() const override;
   bool IsGuestSession() const override;
   bool SearchSuggestEnabled() const override;
+  bool AllowDeletingBrowserHistory() const override;
   bool IsUrlDataCollectionActive() const override;
   bool IsPersonalizedUrlDataCollectionActive() const override;
   bool IsAuthenticated() const override;
@@ -125,7 +126,7 @@ class AutocompleteProviderClientImpl : public AutocompleteProviderClient {
       bool show,
       lens::LensOverlayInvocationSource invocation_source) override {}
   void IssueContextualSearchRequest(const GURL& destination_url,
-                                    AutocompleteMatchType::Type match_type,
+                                    omnibox::AutocompleteMatchType match_type,
                                     bool is_zero_prefix_suggestion) override {}
   base::WeakPtr<AutocompleteProviderClient> GetWeakPtr() override;
 

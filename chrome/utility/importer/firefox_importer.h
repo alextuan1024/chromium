@@ -18,13 +18,10 @@
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
 #include "chrome/utility/importer/importer.h"
-#include "components/favicon_base/favicon_usage_data.h"
 #include "components/user_data_importer/common/imported_bookmark_entry.h"
 #include "components/user_data_importer/utility/bookmark_parser.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
 namespace user_data_importer::mojom {
@@ -51,10 +48,6 @@ class FirefoxImporter : public Importer {
   void StartImport(const user_data_importer::SourceProfile& source_profile,
                    uint16_t items,
                    ImporterBridge* bridge) override;
-
-  void SetBookmarkHtmlParser(
-      mojo::PendingRemote<user_data_importer::mojom::BookmarkHtmlParser> parser)
-      override;
 
  private:
   // Location of favicons in Firefox profile. It may vary depending on Firefox
@@ -109,19 +102,19 @@ class FirefoxImporter : public Importer {
                               FaviconsLocation favicons_location,
                               bool* empty_folder);
 
-  // Loads the favicons given in the map from places.sqlite database, loads the
-  // data, and converts it into FaviconUsageData structures.
-  // This function supports older Firefox profiles (up to version 54).
+  // Loads the favicons given in the map from places.sqlite database and
+  // collects the raw image bytes for sandboxed decoding. This function supports
+  // older Firefox profiles (up to version 54).
   void LoadFavicons(sql::Database* db,
                     const FaviconMap& favicon_map,
-                    favicon_base::FaviconUsageDataList* favicons);
+                    std::vector<RawFaviconUsageData>* favicons);
 
-  // Loads the favicons for |bookmarks| from favicons.sqlite database, loads the
-  // data, and converts it into FaviconUsageData structures.
+  // Loads the favicons for |bookmarks| from favicons.sqlite database and
+  // collects the raw image bytes for sandboxed decoding.
   // This function supports newer Firefox profiles (Firefox 55 and later).
   void LoadFavicons(
       const std::vector<user_data_importer::ImportedBookmarkEntry>& bookmarks,
-      favicon_base::FaviconUsageDataList* favicons);
+      std::vector<RawFaviconUsageData>* favicons);
 
   // Copies |source_path_|/|base_file_name| to a temporary directory and returns
   // the copy's path. Using the copy is safer, ensures we don't modify Firefox's
@@ -140,11 +133,9 @@ class FirefoxImporter : public Importer {
           html_parser,
       user_data_importer::BookmarkParser::ParsedBookmarks default_bookmarks);
 
-  // Called if the bookmark HTML parser disconnects without replying, e.g.
-  // because its process terminated. Ends the favorites item and resumes the
-  // import so that the remaining items are still imported and the import
-  // terminates.
-  void OnBookmarkHtmlParserDisconnected();
+  // Ends the favorites item and resumes the import of any remaining items. Also
+  // used as the disconnect handler if `BookmarkHtmlParser` terminates early.
+  void FinishBookmarksImport();
 
   base::FilePath source_path_;
   base::FilePath app_path_;
@@ -155,11 +146,6 @@ class FirefoxImporter : public Importer {
   // Stored because we can only access it from the UI thread.
   std::string locale_;
 #endif
-
-  mojo::PendingRemote<user_data_importer::mojom::BookmarkHtmlParser>
-      html_parser_remote_;
-
-  base::WeakPtrFactory<FirefoxImporter> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_UTILITY_IMPORTER_FIREFOX_IMPORTER_H_

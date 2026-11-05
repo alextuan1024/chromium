@@ -41,12 +41,9 @@
 #include "net/cookies/cookie_util.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/cookies/test_cookie_access_delegate.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
-#include "net/first_party_sets/global_first_party_sets.h"
 #include "net/storage_access_api/status.h"
 #include "services/network/cookie_access_delegate_impl.h"
 #include "services/network/cookie_settings.h"
-#include "services/network/first_party_sets/first_party_sets_access_delegate.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/mojom/cookie_access_observer.mojom.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
@@ -290,26 +287,14 @@ class RestrictedCookieManagerTest
             /*devtools_cookies_setting_overrides=*/
             DevtoolsCookieSettingOverrides(),
             /*prefer_bound_cookie_context=*/false,
-            recording_client_.GetRemote(),
-            RestrictedCookieManager::ComputeFirstPartySetMetadata(
-                kDefaultOrigin,
-                &cookie_monster_,
-                isolation_info_))),
+            /*is_storage_access_potentially_allowed=*/true,
+            recording_client_.GetRemote())),
         receiver_(service_.get(),
                   service_remote_.BindNewPipeAndPassReceiver()) {
     sync_service_ =
         std::make_unique<RestrictedCookieManagerSync>(service_remote_.get());
   }
   ~RestrictedCookieManagerTest() override = default;
-
-  void SetUp() override {
-    mojo::SetDefaultProcessErrorHandler(base::BindRepeating(
-        &RestrictedCookieManagerTest::OnBadMessage, base::Unretained(this)));
-  }
-
-  void TearDown() override {
-    mojo::SetDefaultProcessErrorHandler(base::NullCallback());
-  }
 
   mojom::RestrictedCookieManagerRole RestrictedCookieManagerRole() const {
     return std::get<0>(GetParam());
@@ -402,19 +387,19 @@ class RestrictedCookieManagerTest
   }
 
   // Creates a service that matches `service_` except for the context it is
-  // bound to and whether that bound context wins over the per-call values.
+  // bound to, whether that bound context wins over the per-call values, and
+  // whether storage access is potentially allowed.
   std::unique_ptr<RestrictedCookieManager> CreateService(
       const net::IsolationInfo& isolation_info,
-      bool prefer_bound_cookie_context) {
+      bool prefer_bound_cookie_context,
+      bool is_storage_access_potentially_allowed = true) {
     return std::make_unique<RestrictedCookieManager>(
         RestrictedCookieManagerRole(), &cookie_monster_, cookie_settings_,
         kDefaultOrigin, isolation_info,
         /*cookies_setting_overrides=*/CookieSettingOverrides(),
         /*devtools_cookies_setting_overrides=*/
         DevtoolsCookieSettingOverrides(), prefer_bound_cookie_context,
-        recording_client_.GetRemote(),
-        RestrictedCookieManager::ComputeFirstPartySetMetadata(
-            kDefaultOrigin, &cookie_monster_, isolation_info));
+        is_storage_access_potentially_allowed, recording_client_.GetRemote());
   }
 
   void ExpectBadMessage(const std::string& reason) {
@@ -477,6 +462,9 @@ class RestrictedCookieManagerTest
   std::unique_ptr<RestrictedCookieManagerSync> sync_service_;
   std::optional<std::string> expecting_bad_message_;
   bool received_bad_message_ = false;
+  mojo::ScopedDefaultProcessErrorHandlerForTesting error_handler_{
+      base::BindRepeating(&RestrictedCookieManagerTest::OnBadMessage,
+                          base::Unretained(this))};
 };
 
 namespace {
@@ -542,7 +530,7 @@ TEST_P(RestrictedCookieManagerTest,
     options->name = "new-name";
     options->match_type = mojom::CookieMatchType::EQUALS;
     ExpectBadMessage("Incorrect url origin");
-    std::vector<net::CanonicalCookie> cookies = sync_service_->GetAllForUrl(
+    sync_service_->GetAllForUrl(
         kDefaultUrl, kDefaultSiteForCookies, kDefaultOrigin,
         net::StorageAccessApiStatus::kNone, std::move(options));
     EXPECT_TRUE(received_bad_message());
@@ -717,6 +705,288 @@ TEST_P(RestrictedCookieManagerTest, GetAllForUrlEqualsMatch_WithStorageAccess) {
           kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
           net::StorageAccessApiStatus::kAccessViaAPI, std::move(options)),
       ElementsAre(net::MatchesCookieNameValue("cookie-name", "cookie-value")));
+}
+
+TEST_P(RestrictedCookieManagerTest,
+       StorageAccessNotPotentiallyAllowed_RejectsGetAllForUrl) {
+  SetSessionCookie("cookie-name", "cookie-value", "example.com", "/");
+  cookie_settings_.set_block_third_party_cookies(true);
+  cookie_settings_.set_content_settings(
+      ContentSettingsType::STORAGE_ACCESS,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURL(kDefaultUrl),
+          ContentSettingsPattern::FromURL(kOtherUrl),
+          base::Value(ContentSetting::CONTENT_SETTING_ALLOW),
+          content_settings::ProviderType::kNone,
+          /*incognito=*/false)});
+
+  std::unique_ptr<RestrictedCookieManager> local_service = CreateService(
+      kThirdPartyIsolationInfo, /*prefer_bound_cookie_context=*/false,
+      /*is_storage_access_potentially_allowed=*/false);
+  mojo::Remote<mojom::RestrictedCookieManager> local_service_remote;
+  mojo::Receiver<mojom::RestrictedCookieManager> local_receiver(
+      local_service.get(), local_service_remote.BindNewPipeAndPassReceiver());
+  RestrictedCookieManagerSync local_sync_service(local_service_remote.get());
+
+  // kNone is allowed (returns no cookies because 3PCs are blocked).
+  EXPECT_THAT(local_sync_service.GetAllForUrl(
+                  kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+                  net::StorageAccessApiStatus::kNone, GetAllCookiesOptions()),
+              IsEmpty());
+  EXPECT_FALSE(received_bad_message());
+
+  // kAccessViaAPI is rejected with a bad message and returns no cookies.
+  ExpectBadMessage(
+      "RestrictedCookieManager: storage_access_api_status must be kNone when "
+      "storage access is not allowed");
+  EXPECT_THAT(
+      local_sync_service.GetAllForUrl(
+          kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+          net::StorageAccessApiStatus::kAccessViaAPI, GetAllCookiesOptions()),
+      IsEmpty());
+  EXPECT_TRUE(received_bad_message());
+}
+
+TEST_P(RestrictedCookieManagerTest,
+       StorageAccessNotPotentiallyAllowed_RejectsGetCookiesString) {
+  SetSessionCookie("cookie-name", "cookie-value", "example.com", "/");
+  cookie_settings_.set_block_third_party_cookies(true);
+  cookie_settings_.set_content_settings(
+      ContentSettingsType::STORAGE_ACCESS,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURL(kDefaultUrl),
+          ContentSettingsPattern::FromURL(kOtherUrl),
+          base::Value(ContentSetting::CONTENT_SETTING_ALLOW),
+          content_settings::ProviderType::kNone,
+          /*incognito=*/false)});
+
+  std::unique_ptr<RestrictedCookieManager> local_service = CreateService(
+      kThirdPartyIsolationInfo, /*prefer_bound_cookie_context=*/false,
+      /*is_storage_access_potentially_allowed=*/false);
+  mojo::Remote<mojom::RestrictedCookieManager> local_service_remote;
+  mojo::Receiver<mojom::RestrictedCookieManager> local_receiver(
+      local_service.get(), local_service_remote.BindNewPipeAndPassReceiver());
+
+  std::string cookies_out;
+  base::ReadOnlySharedMemoryRegion mapped_region;
+  uint64_t version = 0;
+  EXPECT_TRUE(local_service_remote->GetCookiesString(
+      kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+      net::StorageAccessApiStatus::kNone,
+      /*get_version_shared_memory=*/false,
+      /*is_ad_tagged=*/false, /*apply_devtools_overrides=*/false,
+      /*force_disable_third_party_cookies=*/false, &version, &mapped_region,
+      &cookies_out));
+  EXPECT_FALSE(received_bad_message());
+  EXPECT_THAT(cookies_out, IsEmpty());
+
+  ExpectBadMessage(
+      "RestrictedCookieManager: storage_access_api_status must be kNone when "
+      "storage access is not allowed");
+  EXPECT_TRUE(local_service_remote->GetCookiesString(
+      kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+      net::StorageAccessApiStatus::kAccessViaAPI,
+      /*get_version_shared_memory=*/false,
+      /*is_ad_tagged=*/false, /*apply_devtools_overrides=*/false,
+      /*force_disable_third_party_cookies=*/false, &version, &mapped_region,
+      &cookies_out));
+  EXPECT_TRUE(received_bad_message());
+  EXPECT_EQ(version, mojo::shared_memory_version::kInvalidVersion);
+  EXPECT_THAT(cookies_out, IsEmpty());
+}
+
+TEST_P(RestrictedCookieManagerTest,
+       StorageAccessNotPotentiallyAllowed_RejectsSetCanonicalCookie) {
+  cookie_settings_.set_block_third_party_cookies(true);
+  cookie_settings_.set_content_settings(
+      ContentSettingsType::STORAGE_ACCESS,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURL(kDefaultUrl),
+          ContentSettingsPattern::FromURL(kOtherUrl),
+          base::Value(ContentSetting::CONTENT_SETTING_ALLOW),
+          content_settings::ProviderType::kNone,
+          /*incognito=*/false)});
+
+  std::unique_ptr<RestrictedCookieManager> local_service = CreateService(
+      kThirdPartyIsolationInfo, /*prefer_bound_cookie_context=*/false,
+      /*is_storage_access_potentially_allowed=*/false);
+  mojo::Remote<mojom::RestrictedCookieManager> local_service_remote;
+  mojo::Receiver<mojom::RestrictedCookieManager> local_receiver(
+      local_service.get(), local_service_remote.BindNewPipeAndPassReceiver());
+  RestrictedCookieManagerSync local_sync_service(local_service_remote.get());
+
+  ExpectBadMessage(
+      "RestrictedCookieManager: storage_access_api_status must be kNone when "
+      "storage access is not allowed");
+  EXPECT_FALSE(local_sync_service.SetCanonicalCookie(
+      mojom::RestrictedCanonicalCookieParams::New(
+          "new-name", "new-value", "example.com", "/", base::Time(),
+          base::Time(), base::Time(), /*secure=*/true, /*httponly=*/false,
+          net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT,
+          mojom::RestrictedCookiePartition::UNPARTITIONED),
+      kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+      net::StorageAccessApiStatus::kAccessViaAPI));
+  EXPECT_TRUE(received_bad_message());
+  EXPECT_THAT(sync_service_->GetAllForUrl(
+                  kDefaultUrlWithPath, kDefaultSiteForCookies, kDefaultOrigin,
+                  net::StorageAccessApiStatus::kNone, GetAllCookiesOptions()),
+              IsEmpty());
+}
+
+TEST_P(RestrictedCookieManagerTest,
+       StorageAccessNotPotentiallyAllowed_RejectsSetCookieFromString) {
+  cookie_settings_.set_block_third_party_cookies(true);
+  cookie_settings_.set_content_settings(
+      ContentSettingsType::STORAGE_ACCESS,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURL(kDefaultUrl),
+          ContentSettingsPattern::FromURL(kOtherUrl),
+          base::Value(ContentSetting::CONTENT_SETTING_ALLOW),
+          content_settings::ProviderType::kNone,
+          /*incognito=*/false)});
+
+  std::unique_ptr<RestrictedCookieManager> local_service = CreateService(
+      kThirdPartyIsolationInfo, /*prefer_bound_cookie_context=*/false,
+      /*is_storage_access_potentially_allowed=*/false);
+  mojo::Remote<mojom::RestrictedCookieManager> local_service_remote;
+  mojo::Receiver<mojom::RestrictedCookieManager> local_receiver(
+      local_service.get(), local_service_remote.BindNewPipeAndPassReceiver());
+
+  ExpectBadMessage(
+      "RestrictedCookieManager: storage_access_api_status must be kNone when "
+      "storage access is not allowed");
+  local_service_remote->SetCookieFromString(
+      kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+      net::StorageAccessApiStatus::kAccessViaAPI,
+      /*is_ad_tagged=*/false, /*apply_devtools_overrides=*/false,
+      "new-name=new-value; Secure; SameSite=None; Path=/");
+  local_service_remote.FlushForTesting();
+  EXPECT_TRUE(received_bad_message());
+  EXPECT_THAT(RecordedActivity(), IsEmpty());
+  EXPECT_THAT(sync_service_->GetAllForUrl(
+                  kDefaultUrlWithPath, kDefaultSiteForCookies, kDefaultOrigin,
+                  net::StorageAccessApiStatus::kNone, GetAllCookiesOptions()),
+              IsEmpty());
+}
+
+TEST_P(RestrictedCookieManagerTest,
+       StorageAccessNotPotentiallyAllowed_RejectsAddChangeListener) {
+  cookie_settings_.set_block_third_party_cookies(true);
+  cookie_settings_.set_content_settings(
+      ContentSettingsType::STORAGE_ACCESS,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURL(kDefaultUrl),
+          ContentSettingsPattern::FromURL(kOtherUrl),
+          base::Value(ContentSetting::CONTENT_SETTING_ALLOW),
+          content_settings::ProviderType::kNone,
+          /*incognito=*/false)});
+
+  std::unique_ptr<RestrictedCookieManager> local_service = CreateService(
+      kThirdPartyIsolationInfo, /*prefer_bound_cookie_context=*/false,
+      /*is_storage_access_potentially_allowed=*/false);
+  mojo::Remote<mojom::RestrictedCookieManager> local_service_remote;
+  mojo::Receiver<mojom::RestrictedCookieManager> local_receiver(
+      local_service.get(), local_service_remote.BindNewPipeAndPassReceiver());
+  RestrictedCookieManagerSync local_sync_service(local_service_remote.get());
+
+  ExpectBadMessage(
+      "RestrictedCookieManager: storage_access_api_status must be kNone when "
+      "storage access is not allowed");
+  mojo::PendingRemote<network::mojom::CookieChangeListener> listener_remote;
+  mojo::PendingReceiver<network::mojom::CookieChangeListener>
+      listener_receiver = listener_remote.InitWithNewPipeAndPassReceiver();
+  local_sync_service.AddChangeListener(
+      kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+      net::StorageAccessApiStatus::kAccessViaAPI, std::move(listener_remote));
+  EXPECT_TRUE(received_bad_message());
+
+  TestCookieChangeListener listener(std::move(listener_receiver));
+  auto second_listener = CreateCookieChangeListener(
+      kDefaultUrlWithPath, kDefaultSiteForCookies, kDefaultOrigin,
+      net::StorageAccessApiStatus::kNone);
+  SetSessionCookie("cookie-name", "cookie-value", "example.com", "/");
+  second_listener->WaitForChange();
+  EXPECT_THAT(listener.observed_changes(), IsEmpty());
+}
+
+TEST_P(RestrictedCookieManagerTest,
+       StorageAccessNotPotentiallyAllowed_RejectsCookiesEnabledFor) {
+  cookie_settings_.set_block_third_party_cookies(true);
+  cookie_settings_.set_content_settings(
+      ContentSettingsType::STORAGE_ACCESS,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURL(kDefaultUrl),
+          ContentSettingsPattern::FromURL(kOtherUrl),
+          base::Value(ContentSetting::CONTENT_SETTING_ALLOW),
+          content_settings::ProviderType::kNone,
+          /*incognito=*/false)});
+
+  std::unique_ptr<RestrictedCookieManager> local_service = CreateService(
+      kThirdPartyIsolationInfo, /*prefer_bound_cookie_context=*/false,
+      /*is_storage_access_potentially_allowed=*/false);
+  mojo::Remote<mojom::RestrictedCookieManager> local_service_remote;
+  mojo::Receiver<mojom::RestrictedCookieManager> local_receiver(
+      local_service.get(), local_service_remote.BindNewPipeAndPassReceiver());
+
+  bool cookies_enabled = true;
+  EXPECT_TRUE(local_service_remote->CookiesEnabledFor(
+      kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+      net::StorageAccessApiStatus::kNone, /*apply_devtools_overrides=*/false,
+      &cookies_enabled));
+  EXPECT_FALSE(received_bad_message());
+  EXPECT_FALSE(cookies_enabled);
+
+  ExpectBadMessage(
+      "RestrictedCookieManager: storage_access_api_status must be kNone when "
+      "storage access is not allowed");
+  cookies_enabled = true;
+  EXPECT_TRUE(local_service_remote->CookiesEnabledFor(
+      kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+      net::StorageAccessApiStatus::kAccessViaAPI,
+      /*apply_devtools_overrides=*/false, &cookies_enabled));
+  EXPECT_TRUE(received_bad_message());
+  EXPECT_FALSE(cookies_enabled);
+}
+
+TEST_P(RestrictedCookieManagerTest,
+       StorageAccessNotPotentiallyAllowed_FeatureDisabledAllowsAccess) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kEnforceStorageAccessApiRestrictions);
+
+  SetSessionCookie("cookie-name", "cookie-value", "example.com", "/");
+  cookie_settings_.set_block_third_party_cookies(true);
+  cookie_settings_.set_content_settings(
+      ContentSettingsType::STORAGE_ACCESS,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURL(kDefaultUrl),
+          ContentSettingsPattern::FromURL(kOtherUrl),
+          base::Value(ContentSetting::CONTENT_SETTING_ALLOW),
+          content_settings::ProviderType::kNone,
+          /*incognito=*/false)});
+
+  std::unique_ptr<RestrictedCookieManager> local_service = CreateService(
+      kThirdPartyIsolationInfo, /*prefer_bound_cookie_context=*/false,
+      /*is_storage_access_potentially_allowed=*/false);
+  mojo::Remote<mojom::RestrictedCookieManager> local_service_remote;
+  mojo::Receiver<mojom::RestrictedCookieManager> local_receiver(
+      local_service.get(), local_service_remote.BindNewPipeAndPassReceiver());
+  RestrictedCookieManagerSync local_sync_service(local_service_remote.get());
+
+  EXPECT_THAT(
+      local_sync_service.GetAllForUrl(
+          kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+          net::StorageAccessApiStatus::kAccessViaAPI, GetAllCookiesOptions()),
+      ElementsAre(net::MatchesCookieNameValue("cookie-name", "cookie-value")));
+  EXPECT_FALSE(received_bad_message());
+
+  bool cookies_enabled = false;
+  EXPECT_TRUE(local_service_remote->CookiesEnabledFor(
+      kDefaultUrlWithPath, net::SiteForCookies(), kOtherOrigin,
+      net::StorageAccessApiStatus::kAccessViaAPI,
+      /*apply_devtools_overrides=*/false, &cookies_enabled));
+  EXPECT_FALSE(received_bad_message());
+  EXPECT_TRUE(cookies_enabled);
 }
 
 TEST_P(RestrictedCookieManagerTest, GetAllForUrlStartsWithMatch) {
@@ -1372,6 +1642,26 @@ TEST_P(RestrictedCookieManagerTest, SetCookieFromStringWithMismatchingDomain) {
   ASSERT_FALSE(received_bad_message());
 }
 
+TEST_P(RestrictedCookieManagerTest, SetCookieFromStringWithPublicSuffixDomain) {
+  for (const std::string& domain : {"com", ".com"}) {
+    backend()->SetCookieFromString(
+        kDefaultUrlWithPath, kDefaultSiteForCookies, kDefaultOrigin,
+        net::StorageAccessApiStatus::kNone,
+        /*is_ad_tagged=*/false, /*apply_devtools_overrides=*/false,
+        "new-name=new-value;path=/;domain=" + domain);
+    service_remote_.FlushForTesting();
+    ASSERT_FALSE(received_bad_message());
+
+    auto options = mojom::CookieManagerGetOptions::New();
+    options->name = "new-name";
+    options->match_type = mojom::CookieMatchType::EQUALS;
+    EXPECT_THAT(sync_service_->GetAllForUrl(
+                    kDefaultUrlWithPath, kDefaultSiteForCookies, kDefaultOrigin,
+                    net::StorageAccessApiStatus::kNone, std::move(options)),
+                IsEmpty());
+  }
+}
+
 TEST_P(RestrictedCookieManagerTest,
        SetCookieFromStringWithNonStandardSchemeUppercaseHost) {
   url::ScopedSchemeRegistryForTests scoped_registry;
@@ -1480,6 +1770,206 @@ TEST_P(RestrictedCookieManagerTest, SetCanonicalCookieWithMismatchingDomain) {
       kDefaultUrlWithPath, kDefaultSiteForCookies, kDefaultOrigin,
       net::StorageAccessApiStatus::kNone));
   ASSERT_TRUE(received_bad_message());
+}
+
+// Regression test for https://crbug.com/40051990: ensure a compromised renderer
+// cannot set domain cookies on public suffixes / TLDs (including multi-label
+// suffixes and private registries) even though they suffix-match the origin's
+// host.
+TEST_P(RestrictedCookieManagerTest, SetCanonicalCookieWithPublicSuffixDomain) {
+  struct TestCase {
+    const char* url;
+    const char* domain;
+  };
+  constexpr TestCase kTestCases[] = {
+      {"https://example.com/test/", "com"},
+      {"https://example.com/test/", ".com"},
+      {"https://sub.example.co.uk/test/", "co.uk"},
+      {"https://sub.example.co.uk/test/", ".co.uk"},
+      {"https://sub.example.co.uk/test/", "uk"},
+      {"https://sub.appspot.com/test/", "appspot.com"},
+      {"https://sub.appspot.com/test/", ".appspot.com"},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(testing::Message()
+                 << "url=" << test_case.url << " domain=" << test_case.domain);
+    const GURL url(test_case.url);
+    const url::Origin origin = url::Origin::Create(url);
+    const net::SiteForCookies site_for_cookies =
+        net::SiteForCookies::FromUrl(url);
+
+    service_->OverrideIsolationInfoForTesting(
+        net::IsolationInfo::CreateForInternalRequest(origin));
+    service_->OverrideOriginForTesting(origin);
+
+    received_bad_message_ = false;
+    ExpectBadMessage("Setting cookies on other domains is disallowed.");
+    EXPECT_FALSE(sync_service_->SetCanonicalCookie(
+        mojom::RestrictedCanonicalCookieParams::New(
+            "new-name", "new-value", test_case.domain, "/", base::Time(),
+            base::Time(), base::Time(), /*secure=*/true,
+            /*httponly=*/false, net::CookieSameSite::NO_RESTRICTION,
+            net::COOKIE_PRIORITY_DEFAULT,
+            mojom::RestrictedCookiePartition::UNPARTITIONED),
+        url, site_for_cookies, origin, net::StorageAccessApiStatus::kNone));
+    EXPECT_TRUE(received_bad_message());
+
+    auto options = mojom::CookieManagerGetOptions::New();
+    options->name = "new-name";
+    options->match_type = mojom::CookieMatchType::EQUALS;
+    EXPECT_THAT(sync_service_->GetAllForUrl(url, site_for_cookies, origin,
+                                            net::StorageAccessApiStatus::kNone,
+                                            std::move(options)),
+                IsEmpty());
+  }
+}
+
+TEST_P(RestrictedCookieManagerTest, SetCanonicalCookieFromPublicSuffixOrigin) {
+  const GURL suffix_url("https://co.uk/test/");
+  const url::Origin suffix_origin = url::Origin::Create(suffix_url);
+  const net::SiteForCookies suffix_site_for_cookies =
+      net::SiteForCookies::FromUrl(suffix_url);
+
+  service_->OverrideIsolationInfoForTesting(
+      net::IsolationInfo::CreateForInternalRequest(suffix_origin));
+  service_->OverrideOriginForTesting(suffix_origin);
+
+  // Attempting to set a cookie on a parent TLD must fail.
+  for (const char* domain : {"uk", ".uk"}) {
+    EXPECT_FALSE(sync_service_->SetCanonicalCookie(
+        mojom::RestrictedCanonicalCookieParams::New(
+            "new-name", "new-value", domain, "/", base::Time(), base::Time(),
+            base::Time(), /*secure=*/true,
+            /*httponly=*/false, net::CookieSameSite::NO_RESTRICTION,
+            net::COOKIE_PRIORITY_DEFAULT,
+            mojom::RestrictedCookiePartition::UNPARTITIONED),
+        suffix_url, suffix_site_for_cookies, suffix_origin,
+        net::StorageAccessApiStatus::kNone));
+  }
+
+  auto empty_options = mojom::CookieManagerGetOptions::New();
+  empty_options->name = "new-name";
+  empty_options->match_type = mojom::CookieMatchType::EQUALS;
+  EXPECT_THAT(sync_service_->GetAllForUrl(
+                  suffix_url, suffix_site_for_cookies, suffix_origin,
+                  net::StorageAccessApiStatus::kNone, std::move(empty_options)),
+              IsEmpty());
+
+  // Passing a domain attribute that matches the public suffix host itself is
+  // coerced into a host-only cookie, never a domain cookie.
+  for (const char* domain : {"co.uk", ".co.uk"}) {
+    EXPECT_TRUE(sync_service_->SetCanonicalCookie(
+        mojom::RestrictedCanonicalCookieParams::New(
+            "host-only", "value", domain, "/", base::Time(), base::Time(),
+            base::Time(), /*secure=*/true,
+            /*httponly=*/false, net::CookieSameSite::NO_RESTRICTION,
+            net::COOKIE_PRIORITY_DEFAULT,
+            mojom::RestrictedCookiePartition::UNPARTITIONED),
+        suffix_url, suffix_site_for_cookies, suffix_origin,
+        net::StorageAccessApiStatus::kNone));
+
+    auto options = mojom::CookieManagerGetOptions::New();
+    options->name = "host-only";
+    options->match_type = mojom::CookieMatchType::EQUALS;
+    std::vector<net::CanonicalCookie> cookies = sync_service_->GetAllForUrl(
+        suffix_url, suffix_site_for_cookies, suffix_origin,
+        net::StorageAccessApiStatus::kNone, std::move(options));
+    ASSERT_THAT(cookies, testing::SizeIs(1));
+    EXPECT_TRUE(cookies[0].IsHostCookie());
+    EXPECT_EQ("co.uk", cookies[0].Domain());
+  }
+}
+
+TEST_P(RestrictedCookieManagerTest, SetCanonicalCookieWithInvalidDomain) {
+  // Domains that fail validation without triggering EXCLUDE_DOMAIN_MISMATCH
+  // (e.g., subdomains of the request host or syntactically invalid domains).
+  constexpr const char* kInvalidDomains[] = {
+      "sub.example.com", ".sub.example.com",      "..example.com",
+      "%2eexample.com",  "example.com; httponly", " example.com",
+      "example.com\n",
+  };
+
+  for (const char* domain : kInvalidDomains) {
+    SCOPED_TRACE(domain);
+    EXPECT_FALSE(sync_service_->SetCanonicalCookie(
+        mojom::RestrictedCanonicalCookieParams::New(
+            "new-name", "new-value", domain, "/", base::Time(), base::Time(),
+            base::Time(), /*secure=*/true,
+            /*httponly=*/false, net::CookieSameSite::NO_RESTRICTION,
+            net::COOKIE_PRIORITY_DEFAULT,
+            mojom::RestrictedCookiePartition::UNPARTITIONED),
+        kDefaultUrlWithPath, kDefaultSiteForCookies, kDefaultOrigin,
+        net::StorageAccessApiStatus::kNone));
+    EXPECT_FALSE(received_bad_message());
+  }
+
+  auto options = mojom::CookieManagerGetOptions::New();
+  options->name = "new-name";
+  options->match_type = mojom::CookieMatchType::EQUALS;
+  EXPECT_THAT(sync_service_->GetAllForUrl(
+                  kDefaultUrlWithPath, kDefaultSiteForCookies, kDefaultOrigin,
+                  net::StorageAccessApiStatus::kNone, std::move(options)),
+              IsEmpty());
+}
+
+TEST_P(RestrictedCookieManagerTest, SetCanonicalCookieFromIpAddressOrigin) {
+  const GURL ip_url("https://127.0.0.1/test/");
+  const url::Origin ip_origin = url::Origin::Create(ip_url);
+  const net::SiteForCookies ip_site_for_cookies =
+      net::SiteForCookies::FromUrl(ip_url);
+  service_->OverrideIsolationInfoForTesting(
+      net::IsolationInfo::CreateForInternalRequest(ip_origin));
+  service_->OverrideOriginForTesting(ip_origin);
+
+  // IP address origins cannot set cookies on partial IP suffixes or other
+  // hosts.
+  for (const char* domain : {"0.0.1", ".0.0.1", "1", "192.168.0.1"}) {
+    SCOPED_TRACE(domain);
+    EXPECT_FALSE(sync_service_->SetCanonicalCookie(
+        mojom::RestrictedCanonicalCookieParams::New(
+            "new-name", "new-value", domain, "/", base::Time(), base::Time(),
+            base::Time(), /*secure=*/true,
+            /*httponly=*/false, net::CookieSameSite::NO_RESTRICTION,
+            net::COOKIE_PRIORITY_DEFAULT,
+            mojom::RestrictedCookiePartition::UNPARTITIONED),
+        ip_url, ip_site_for_cookies, ip_origin,
+        net::StorageAccessApiStatus::kNone));
+    EXPECT_FALSE(received_bad_message());
+  }
+
+  auto empty_options = mojom::CookieManagerGetOptions::New();
+  empty_options->name = "new-name";
+  empty_options->match_type = mojom::CookieMatchType::EQUALS;
+  EXPECT_THAT(sync_service_->GetAllForUrl(
+                  ip_url, ip_site_for_cookies, ip_origin,
+                  net::StorageAccessApiStatus::kNone, std::move(empty_options)),
+              IsEmpty());
+
+  // Passing a matching IP domain attribute (even with a leading dot) is coerced
+  // into a host-only cookie.
+  for (const char* domain : {"127.0.0.1", ".127.0.0.1"}) {
+    SCOPED_TRACE(domain);
+    EXPECT_TRUE(sync_service_->SetCanonicalCookie(
+        mojom::RestrictedCanonicalCookieParams::New(
+            "host-only", "value", domain, "/", base::Time(), base::Time(),
+            base::Time(), /*secure=*/true,
+            /*httponly=*/false, net::CookieSameSite::NO_RESTRICTION,
+            net::COOKIE_PRIORITY_DEFAULT,
+            mojom::RestrictedCookiePartition::UNPARTITIONED),
+        ip_url, ip_site_for_cookies, ip_origin,
+        net::StorageAccessApiStatus::kNone));
+
+    auto options = mojom::CookieManagerGetOptions::New();
+    options->name = "host-only";
+    options->match_type = mojom::CookieMatchType::EQUALS;
+    std::vector<net::CanonicalCookie> cookies = sync_service_->GetAllForUrl(
+        ip_url, ip_site_for_cookies, ip_origin,
+        net::StorageAccessApiStatus::kNone, std::move(options));
+    ASSERT_THAT(cookies, testing::SizeIs(1));
+    EXPECT_TRUE(cookies[0].IsHostCookie());
+    EXPECT_EQ("127.0.0.1", cookies[0].Domain());
+  }
 }
 
 TEST_P(RestrictedCookieManagerTest,
@@ -1594,9 +2084,8 @@ TEST_P(RestrictedCookieManagerTest,
       /*devtools_cookies_setting_overrides=*/
       DevtoolsCookieSettingOverrides(),
       /*prefer_bound_cookie_context=*/false,
-      mojo::PendingRemote<mojom::CookieAccessObserver>(),
-      RestrictedCookieManager::ComputeFirstPartySetMetadata(
-          kDefaultOrigin, &cookie_monster_, isolation_info_));
+      /*is_storage_access_potentially_allowed=*/true,
+      mojo::PendingRemote<mojom::CookieAccessObserver>());
 
   mojo::Receiver<mojom::RestrictedCookieManager> local_receiver(
       local_service.get(), local_service_remote.BindNewPipeAndPassReceiver());

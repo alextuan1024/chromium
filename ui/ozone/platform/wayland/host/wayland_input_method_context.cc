@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/command_line.h"
 #include "base/debug/dump_without_crashing.h"
@@ -20,8 +21,11 @@
 #include "base/memory/weak_ptr.h"
 #include "base/nix/xdg_util.h"
 #include "base/notimplemented.h"
+#include "base/strings/cstring_view.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_offset_string_conversions.h"
+#include "base/strings/utf_string_conversion_utils.h"
 #include "base/strings/utf_string_conversions.h"
 #include "ui/base/ime/composition_text.h"
 #include "ui/base/ime/ime_text_span.h"
@@ -34,7 +38,9 @@
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/ozone/events_ozone.h"
 #include "ui/events/types/event_type.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/range/range.h"
+#include "ui/ozone/common/features.h"
 #include "ui/ozone/platform/wayland/common/wayland_util.h"
 #include "ui/ozone/platform/wayland/host/span_style.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
@@ -43,6 +49,8 @@
 #include "ui/ozone/public/ozone_switches.h"
 
 #if BUILDFLAG(USE_XKBCOMMON)
+#include <xkbcommon/xkbcommon-keysyms.h>
+
 #include "ui/events/ozone/layout/keyboard_layout_engine_manager.h"
 #include "ui/events/ozone/layout/xkb/xkb_keyboard_layout_engine.h"
 #endif
@@ -61,8 +69,9 @@ std::optional<size_t> OffsetFromUTF8Offset(std::string_view text,
     return std::nullopt;
 
   std::u16string converted;
-  if (!base::UTF8ToUTF16(text.data(), offset, &converted))
+  if (!base::UTF8ToUTF16(text.substr(0, offset), &converted)) {
     return std::nullopt;
+  }
 
   return converted.size();
 }
@@ -70,8 +79,9 @@ std::optional<size_t> OffsetFromUTF8Offset(std::string_view text,
 bool IsImeEnabled() {
   base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
   // We do not expect both switches are set at the same time.
-  DCHECK(!cmd_line->HasSwitch(switches::kEnableWaylandIme) ||
-         !cmd_line->HasSwitch(switches::kDisableWaylandIme));
+  CHECK(!cmd_line->HasSwitch(switches::kEnableWaylandIme) ||
+            !cmd_line->HasSwitch(switches::kDisableWaylandIme),
+        base::NotFatalUntil::M163);
   // Force enable/disable wayland IMEs, when explictly specified via commandline
   // arguments.
   if (cmd_line->HasSwitch(switches::kEnableWaylandIme))
@@ -196,7 +206,7 @@ class WaylandInputMethodContextV1Client : public ZwpTextInputV1Client {
   }
 
   void OnDeleteSurroundingText(int32_t index, uint32_t length) override {
-    context_->OnDeleteSurroundingText(index, length);
+    context_->OnDeleteSurroundingTextRelativeToCursor(index, length);
   }
 
   void OnKeysym(uint32_t key,
@@ -233,8 +243,13 @@ class WaylandInputmethodContextV3Client : public ZwpTextInputV3Client {
     context_->OnCommitString(text);
   }
 
-  void OnDeleteSurroundingText(int32_t index, uint32_t length) override {
-    context_->OnDeleteSurroundingText(index, length);
+  void OnDeleteSurroundingText(uint32_t before_length,
+                               uint32_t after_length) override {
+    context_->OnDeleteSurroundingTextAroundCursor(before_length, after_length);
+  }
+
+  void OnInputEventsApplied() override {
+    context_->SendPredictedSurroundingText();
   }
 
  private:
@@ -242,6 +257,39 @@ class WaylandInputmethodContextV3Client : public ZwpTextInputV3Client {
 };
 
 }  // namespace
+
+bool ShouldComposeCedillaForDeadAcuteC(base::Environment& env) {
+  if (!base::FeatureList::IsEnabled(kWaylandCedillaCompose)) {
+    return false;
+  }
+
+  // GTK_IM_MODULE and QT_IM_MODULE may list several modules separated by
+  // colons; the first available one is used.
+  static constexpr base::cstring_view kImModuleVars[] = {"GTK_IM_MODULE",
+                                                         "QT_IM_MODULE"};
+  for (base::cstring_view var : kImModuleVars) {
+    std::string value = env.GetVar(var).value_or(std::string());
+    std::vector<std::string_view> modules = base::SplitStringPiece(
+        value, ":", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+    if (!modules.empty() && modules.front() == "cedilla") {
+      return true;
+    }
+  }
+
+  // GTK uses the pt_BR Compose table, which maps Dead<acute> + c to c with
+  // cedilla, for pt_BR locales. Use the same precedence as setlocale() for
+  // LC_CTYPE.
+  static constexpr base::cstring_view kLocaleVars[] = {"LC_ALL", "LC_CTYPE",
+                                                       "LANG"};
+  for (base::cstring_view var : kLocaleVars) {
+    std::optional<std::string> locale = env.GetVar(var);
+    if (locale && !locale->empty()) {
+      return base::StartsWith(*locale, "pt_BR",
+                              base::CompareCase::INSENSITIVE_ASCII);
+    }
+  }
+  return false;
+}
 
 WaylandInputMethodContext::WaylandInputMethodContext(
     WaylandConnection* connection,
@@ -255,8 +303,19 @@ WaylandInputMethodContext::WaylandInputMethodContext(
                   ->AsWeakPtr()),
       text_input_v1_(nullptr),
       character_composer_(kPreeditStringMode) {
+  const bool cedilla =
+      ShouldComposeCedillaForDeadAcuteC(*base::Environment::Create());
+  character_composer_.set_dead_acute_c_produces_cedilla(cedilla);
+#if BUILDFLAG(USE_XKBCOMMON)
+  xkb_composer_.set_dead_acute_c_produces_cedilla(cedilla);
+#endif
   window_->set_focus_client(this);
   Init();
+#if BUILDFLAG(USE_XKBCOMMON)
+  if (IsWaylandXkbComposeEnabled()) {
+    XkbComposer::LoadDefaultComposeTable();
+  }
+#endif
 }
 
 WaylandInputMethodContext::~WaylandInputMethodContext() {
@@ -353,14 +412,76 @@ bool WaylandInputMethodContext::DispatchKeyEvent(const KeyEvent& key_event) {
 
   // This is the fallback key event which was not consumed by IME.
   // So, process it inside Chrome.
-  if (!character_composer_.FilterKeyPress(key_event))
-    return false;
+#if BUILDFLAG(USE_XKBCOMMON)
+  // CharacterComposer keeps handling Ctrl+Shift+U hex input, sequences it
+  // already started, and keys until the XKB compose table has loaded.
+  if (IsWaylandXkbComposeEnabled() &&
+      character_composer_.preedit_string().empty() &&
+      (xkb_composer_.is_composing() ||
+       !CharacterComposer::IsHexModeStartKey(key_event)) &&
+      xkb_composer_.EnsureInitialized()) {
+    const KeyboardLayoutEngine* layout_engine =
+        KeyboardLayoutEngineManager::GetKeyboardLayoutEngine();
+    std::optional<uint32_t> keysym =
+        layout_engine
+            ? layout_engine->LookupKeysym(key_event.code(), key_event.flags())
+            : std::nullopt;
+    if (keysym.has_value() || xkb_composer_.is_composing()) {
+      const bool had_preedit = !xkb_composer_.preedit_string().empty();
+      if (!xkb_composer_.FilterKeyPress(keysym.value_or(XKB_KEY_NoSymbol),
+                                        key_event.flags())) {
+        return MaybeCommitNonBmpCharacter(key_event);
+      }
+      const std::u16string& composed = xkb_composer_.composed_character();
+      if (!composed.empty()) {
+        surrounding_text_tracker_.OnInsertText(
+            composed,
+            TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+        ime_delegate_->OnCommit(composed);
+      }
+      const std::u16string& preedit = xkb_composer_.preedit_string();
+      if (had_preedit || !preedit.empty()) {
+        UpdatePreeditText(preedit);
+      }
+      return true;
+    }
+  }
+#endif
+
+  if (!character_composer_.FilterKeyPress(key_event)) {
+    return MaybeCommitNonBmpCharacter(key_event);
+  }
 
   // CharacterComposer consumed the key event. Update the composition text.
   UpdatePreeditText(character_composer_.preedit_string());
   auto composed = character_composer_.composed_character();
   if (!composed.empty())
     ime_delegate_->OnCommit(composed);
+  return true;
+}
+
+bool WaylandInputMethodContext::MaybeCommitNonBmpCharacter(
+    const KeyEvent& key_event) {
+  // A keysym may map to a character outside the BMP (e.g. an XKB layout with
+  // U1F642). KeyEvent can only carry BMP characters, so commit such a
+  // character as text, like GtkIMContextSimple does on X11. Leave key
+  // combinations with Ctrl, Alt or Meta to accelerators.
+  if (key_event.flags() & (EF_CONTROL_DOWN | EF_ALT_DOWN | EF_COMMAND_DOWN)) {
+    return false;
+  }
+  const DomKey dom_key = key_event.GetDomKey();
+  if (!dom_key.IsCharacter()) {
+    return false;
+  }
+  const base_icu::UChar32 character = dom_key.ToCharacter();
+  if (character <= 0xFFFF || !base::IsValidCodepoint(character)) {
+    return false;
+  }
+  std::u16string text;
+  base::WriteUnicodeCharacter(character, &text);
+  surrounding_text_tracker_.OnInsertText(
+      text, TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+  ime_delegate_->OnCommit(text);
   return true;
 }
 
@@ -384,6 +505,9 @@ void WaylandInputMethodContext::UpdatePreeditText(
 
 void WaylandInputMethodContext::Reset() {
   character_composer_.Reset();
+#if BUILDFLAG(USE_XKBCOMMON)
+  xkb_composer_.Reset();
+#endif
   // TODO(b/269964109): In ChromeOS, 'reset' means to reset the composition
   // only, excluding surrounding text etc. In Wayland, text-input-v1 doesn't
   // define what state is reset in a 'reset' call. However, based on the
@@ -412,6 +536,12 @@ void WaylandInputMethodContext::UpdateFocus(
     const TextInputClientAttributes& new_client_attributes,
     TextInputClient::FocusReason reason) {
   attributes_ = new_client_attributes;
+
+  // Cached surrounding text and cursor rect belong to the previously focused
+  // text input client, so they must not be sent when re-enabling.
+  if (text_input_v3_) {
+    text_input_v3_->ClearCachedState();
+  }
 
   // This prevents unnecessarily hiding/showing the virtual keyboard.
   TextInputType new_type = new_client_attributes.input_type;
@@ -442,15 +572,27 @@ void WaylandInputMethodContext::SetCursorLocation(const gfx::Rect& rect) {
       text_input_v3_
           ? connection_->window_manager()->GetCurrentTextInputFocusedWindow()
           : connection_->window_manager()->GetCurrentKeyboardFocusedWindow();
+  if (!focused_window && text_input_v3_ && focused_ && window_) {
+    // The text input client may be focused before the compositor sends
+    // zwp_text_input_v3.enter (e.g. when the window regains focus). The cursor
+    // rect is still needed so that it can be sent along with the enable
+    // request, which resets all state on the compositor side. Compute it
+    // relative to the root window of this context, which is the surface that
+    // will receive text input focus.
+    focused_window = window_->GetRootParentWindow();
+  }
   if (!focused_window) {
     return;
   }
+  // The protocol expects surface-local coordinates, which are window-local
+  // DIP scaled by the window's ui_scale.
+  const gfx::Rect rect_in_surface = gfx::ScaleToEnclosingRectIgnoringError(
+      rect - focused_window->GetBoundsInDIP().OffsetFromOrigin(),
+      focused_window->applied_state().ui_scale);
   if (text_input_v3_) {
-    text_input_v3_->SetCursorRect(
-        rect - focused_window->GetBoundsInDIP().OffsetFromOrigin());
+    text_input_v3_->SetCursorRect(rect_in_surface);
   } else {
-    text_input_v1_->SetCursorRect(
-        rect - focused_window->GetBoundsInDIP().OffsetFromOrigin());
+    text_input_v1_->SetCursorRect(rect_in_surface);
   }
 }
 
@@ -476,14 +618,31 @@ void WaylandInputMethodContext::SetSurroundingText(
     return;
   }
 
-  size_t utf16_offset = text_range.GetMin();
-  surrounding_text_tracker_.Update(text, utf16_offset, selection_range);
+  surrounding_text_tracker_.Update(text, text_range.GetMin(), selection_range);
+  SendSurroundingText(text, text_range, composition_range, selection_range);
+}
 
+void WaylandInputMethodContext::SendPredictedSurroundingText() {
+  const auto& [surrounding_text, utf16_offset, selection, composition] =
+      surrounding_text_tracker_.predicted_state();
+  SendSurroundingText(
+      surrounding_text,
+      gfx::Range(utf16_offset, utf16_offset + surrounding_text.length()),
+      composition.is_empty() ? gfx::Range::InvalidRange() : composition,
+      selection);
+}
+
+void WaylandInputMethodContext::SendSurroundingText(
+    const std::u16string& text,
+    const gfx::Range& text_range,
+    const gfx::Range& composition_range,
+    const gfx::Range& selection_range) {
   if (!text_input_v3_ && !text_input_v1_) {
     return;
   }
 
   // Convert into UTF8 unit.
+  size_t utf16_offset = text_range.GetMin();
   std::vector<size_t> offsets_for_adjustment = {
       selection_range.start() - utf16_offset,
       selection_range.end() - utf16_offset};
@@ -729,24 +888,68 @@ void WaylandInputMethodContext::OnCursorPosition(int32_t index,
   surrounding_text_tracker_.OnSetEditableSelectionRange(new_selection_range);
 }
 
-void WaylandInputMethodContext::OnDeleteSurroundingText(int32_t index,
-                                                        uint32_t length) {
-  const auto& [surrounding_text, utf16_offset, selection, unsused_composition] =
+void WaylandInputMethodContext::OnDeleteSurroundingTextAroundCursor(
+    uint32_t before_length,
+    uint32_t after_length) {
+  const auto& [surrounding_text, utf16_offset, selection, composition] =
       surrounding_text_tracker_.predicted_state();
-  DCHECK(selection.IsValid());
+  CHECK(selection.IsValid(), base::NotFatalUntil::M163);
 
-  // TODO(crbug.com/40189286): Currently data sent from delete surrounding text
-  // from exo is broken. Currently this broken behavior is supported to prevent
-  // visible regressions, but should be fixed in the future, specifically the
-  // compatibility with non-exo wayland compositors.
-  std::vector<size_t> offsets_for_adjustment = {
-      surrounding_text_offset_ + index,
-      surrounding_text_offset_ + index + length,
-  };
+  // The preedit text is removed before the deletion, so delete around it if
+  // present. The lengths exclude the selection.
+  const gfx::Range& range = composition.is_empty() ? selection : composition;
+  std::vector<size_t> offsets = {range.GetMin() - utf16_offset,
+                                 range.GetMax() - utf16_offset};
+  const std::string text_utf8 =
+      base::UTF16ToUTF8AndAdjustOffsets(surrounding_text, &offsets);
+  if (std::ranges::contains(offsets, std::u16string::npos)) {
+    LOG(ERROR) << "The selection range for surrounding text is invalid.";
+    return;
+  }
+
+  // Clamp the deletion to the surrounding text.
+  DeleteSurroundingTextInRange(
+      offsets[0] - std::min<size_t>(before_length, offsets[0]),
+      std::min<size_t>(offsets[1] + after_length, text_utf8.size()));
+}
+
+void WaylandInputMethodContext::OnDeleteSurroundingTextRelativeToCursor(
+    int32_t index,
+    uint32_t length) {
+  const auto& [surrounding_text, utf16_offset, selection, unused_composition] =
+      surrounding_text_tracker_.predicted_state();
+  CHECK(selection.IsValid(), base::NotFatalUntil::M163);
+
+  // Convert the cursor, which is the end of the selection, to UTF-8 bytes.
+  std::vector<size_t> cursor = {selection.end() - utf16_offset};
+  const std::string text_utf8 =
+      base::UTF16ToUTF8AndAdjustOffsets(surrounding_text, &cursor);
+  if (cursor[0] == std::u16string::npos) {
+    LOG(ERROR) << "The cursor position is invalid.";
+    return;
+  }
+
+  const int64_t start = static_cast<int64_t>(cursor[0]) + index;
+  const int64_t end = start + length;
+  if (start < 0 || end > static_cast<int64_t>(text_utf8.size())) {
+    LOG(ERROR) << "The deletion range is outside of the surrounding text.";
+    return;
+  }
+  DeleteSurroundingTextInRange(static_cast<size_t>(start),
+                               static_cast<size_t>(end));
+}
+
+void WaylandInputMethodContext::DeleteSurroundingTextInRange(size_t start,
+                                                             size_t end) {
+  const auto& [surrounding_text, utf16_offset, selection, unused_composition] =
+      surrounding_text_tracker_.predicted_state();
+  CHECK(selection.IsValid(), base::NotFatalUntil::M163);
+
+  std::vector<size_t> offsets_for_adjustment = {start, end};
   base::UTF8ToUTF16AndAdjustOffsets(base::UTF16ToUTF8(surrounding_text),
                                     &offsets_for_adjustment);
   if (std::ranges::contains(offsets_for_adjustment, std::u16string::npos)) {
-    LOG(DFATAL) << "The selection range for surrounding text is invalid.";
+    LOG(ERROR) << "The selection range for surrounding text is invalid.";
     return;
   }
 
@@ -754,12 +957,10 @@ void WaylandInputMethodContext::OnDeleteSurroundingText(int32_t index,
       selection.GetMax() > offsets_for_adjustment[1] + utf16_offset) {
     // The range is started after the selection, or ended before the selection,
     // which is not supported.
-    LOG(DFATAL) << "The deletion range needs to cover whole selection range.";
+    LOG(ERROR) << "The deletion range needs to cover whole selection range.";
     return;
   }
 
-  // Move by offset calculated in SetSurroundingText to adjust to the original
-  // text place.
   size_t before = selection.GetMin() - offsets_for_adjustment[0] - utf16_offset;
   size_t after = offsets_for_adjustment[1] + utf16_offset - selection.GetMax();
 
@@ -800,8 +1001,8 @@ void WaylandInputMethodContext::OnKeysym(uint32_t keysym,
                        ? EventType::kKeyPressed
                        : EventType::kKeyReleased;
   key_delegate_->OnKeyboardKeyEvent(
-      type, dom_code, /*repeat=*/false, std::nullopt,
-      wl::EventMillisecondsToTimeTicks(time), device_id,
+      type, dom_code, /*xkb_keycode=*/std::nullopt, /*repeat=*/false,
+      std::nullopt, wl::EventMillisecondsToTimeTicks(time), device_id,
       WaylandKeyboard::KeyEventKind::kKey);
 #else
   NOTIMPLEMENTED();
@@ -823,7 +1024,6 @@ void WaylandInputMethodContext::OnModifiersMap(
 
 void WaylandInputMethodContext::OnTextInputFocusChanged(bool focused) {
   CHECK(text_input_v3_);
-  window_focused_ = focused;
   MaybeUpdateActivated(false);
 }
 
@@ -834,6 +1034,20 @@ void WaylandInputMethodContext::OnKeyboardFocusChanged(bool focused) {
   }
   window_focused_ = focused;
   MaybeUpdateActivated(false);
+}
+
+bool WaylandInputMethodContext::WindowHasTextInputFocusForTextInputV3() const {
+  if (!text_input_v3_ || !window_) {
+    return false;
+  }
+  // Bubbles are wl_subsurfaces, so zwp_text_input_v3.enter is received for the
+  // surface of their closest xdg_toplevel or xdg_popup ancestor instead.
+  WaylandWindow* target = window_->AsWaylandBubble()
+                              ? window_->GetXdgParentWindow()
+                              : window_.get();
+  auto* focused_window =
+      connection_->window_manager()->GetCurrentTextInputFocusedWindow();
+  return focused_window && focused_window == target;
 }
 
 bool WaylandInputMethodContext::WindowIsActiveForTextInputV1() const {
@@ -857,10 +1071,11 @@ void WaylandInputMethodContext::MaybeUpdateActivated(
 
   // Activate Wayland IME only if the following conditions are met:
   // 1) InputMethod has some TextInputClient connected.
-  // 2) The associated window for this context is focused, or there is an
-  //    active window for text-input-v1.
-  bool activated =
-      focused_ && (window_focused_ || WindowIsActiveForTextInputV1());
+  // 2) The associated window for this context (or, for text-input-v3 in a
+  //    bubble, its xdg parent window) is focused, or there is an active window
+  //    for text-input-v1.
+  bool activated = focused_ && (WindowHasTextInputFocusForTextInputV3() ||
+                                WindowIsActiveForTextInputV1());
   if (activated_ == activated)
     return;
 

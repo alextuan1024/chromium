@@ -124,9 +124,7 @@ class SegmentationPlatformServiceFactoryTest : public testing::Test {
          {features::kSegmentationPlatformURLVisitResumptionRanker, {}},
          {features::kSegmentationPlatformEphemeralCardRanker, {}},
          {features::kSegmentationSurveyPage, {}},
-         {features::kSegmentationPlatformFedCmUser, {}},
-         {features::kAndroidTipsNotifications, {}},
-         {features::kNewTabPageCustomizationV2, {{"show_promo", "true"}}}},
+         {features::kSegmentationPlatformFedCmUser, {}}},
         {});
 
     // Creating profile and initialising segmentation service.
@@ -640,7 +638,7 @@ TEST_F(SegmentationPlatformServiceFactoryTest, EphemeralHomeModuleBackend) {
   // Update this test when adding new cards with inputs.
   // Each card's feature flag should be enabled by test framework for this
   // integration test.
-  ASSERT_EQ(7u, registry->get_all_cards_by_priority().size());
+  ASSERT_EQ(8u, registry->get_all_cards_by_priority().size());
 
   PredictionOptions prediction_options;
   prediction_options.on_demand_execution = true;
@@ -674,6 +672,8 @@ TEST_F(SegmentationPlatformServiceFactoryTest, EphemeralHomeModuleBackend) {
   input_context->metadata_args.emplace(
       "is_eligible_to_history_opt_in",
       processing::ProcessedValue::FromFloat(0));
+  input_context->metadata_args.emplace(
+      "is_eligible_to_tips_opt_in", processing::ProcessedValue::FromFloat(0));
 
   // No cards are added, the model fetches no results and fails.
   ExpectGetAnnotatedNumericResult(

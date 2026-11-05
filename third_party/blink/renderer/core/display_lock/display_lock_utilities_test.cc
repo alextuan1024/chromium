@@ -45,7 +45,7 @@ TEST_F(DisplayLockUtilitiesTest, ShouldIgnoreHiddenUntilFoundChildren) {
     </div>
   )HTML");
 
-  Node* target = GetDocument().getElementById(AtomicString("target"));
+  Node* target = GetElementById("target");
   EXPECT_TRUE(DisplayLockUtilities::ShouldIgnoreNodeDueToDisplayLock(
       *target, DisplayLockActivationReason::kAccessibility));
 }
@@ -65,10 +65,10 @@ TEST_F(DisplayLockUtilitiesTest, DISABLED_ActivatableLockedInclusiveAncestors) {
     </div>
   )HTML");
 
-  Element& outer = *GetDocument().getElementById(AtomicString("outer"));
-  Element& inner_a = *GetDocument().getElementById(AtomicString("innerA"));
-  Element& inner_b = *GetDocument().getElementById(AtomicString("innerB"));
-  Element& innermost = *GetDocument().getElementById(AtomicString("innermost"));
+  Element& outer = *GetElementById("outer");
+  Element& inner_a = *GetElementById("innerA");
+  Element& inner_b = *GetElementById("innerB");
+  Element& innermost = *GetElementById("innermost");
   ShadowRoot& shadow_root =
       inner_b.AttachShadowRootForTesting(ShadowRootMode::kOpen);
   shadow_root.SetInnerHTMLWithoutTrustedTypes(
@@ -209,8 +209,7 @@ TEST_F(DisplayLockUtilitiesTest, LockedSubtreeCrossingFrames) {
 
   UpdateAllLifecyclePhasesForTest();
 
-  Element* grandparent =
-      GetDocument().getElementById(AtomicString("grandparent"));
+  Element* grandparent = GetElementById("grandparent");
   Element* parent = ChildDocument().getElementById(AtomicString("parent"));
   Element* child = ChildDocument().getElementById(AtomicString("child"));
 
@@ -271,7 +270,7 @@ TEST_F(DisplayLockUtilitiesTest, InteractionWithIntersectionObserver) {
     <div id="target"></target>
   )HTML");
 
-  auto* container = GetDocument().getElementById(AtomicString("container"));
+  auto* container = GetElementById("container");
   auto* target = ChildDocument().getElementById(AtomicString("target"));
 
   UpdateAllLifecyclePhasesForTest();
@@ -341,8 +340,7 @@ TEST_F(DisplayLockUtilitiesTest, ContainerQueryCrash) {
     <div id="container"><div id="child"></div></div>
   )HTML");
 
-  auto* child = DynamicTo<HTMLElement>(
-      GetDocument().getElementById(AtomicString("child")));
+  auto* child = DynamicTo<HTMLElement>(GetElementById("child"));
   ASSERT_TRUE(child);
 
   // Should not fail DCHECKs or crash.
@@ -366,11 +364,46 @@ TEST_F(DisplayLockUtilitiesTest, ScrollMarkerGroupContentVisibilityCrash) {
   )HTML");
   UpdateAllLifecyclePhasesForTest();
 
-  Element* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  Element* scroller = GetElementById("scroller");
   ASSERT_TRUE(scroller);
   scroller->setAttribute(html_names::kStyleAttr,
                          AtomicString("content-visibility: hidden"));
   UpdateAllLifecyclePhasesForTest();
+}
+
+TEST_F(DisplayLockUtilitiesTest, MoveBeforeSlotWithSlottedIframe) {
+  SetHtmlInnerHTML(R"HTML(
+    <div id="host">
+      <iframe id="frame"></iframe>
+    </div>
+  )HTML");
+  Element* host = GetElementById("host");
+  ASSERT_TRUE(host);
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <div id="locked" style="content-visibility: hidden"></div>
+    <div id="unlocked"><slot id="slot"></slot></div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* locked = shadow_root.getElementById(AtomicString("locked"));
+  Element* unlocked = shadow_root.getElementById(AtomicString("unlocked"));
+  Element* slot = shadow_root.getElementById(AtomicString("slot"));
+  ASSERT_TRUE(locked);
+  ASSERT_TRUE(unlocked);
+  ASSERT_TRUE(slot);
+
+  EXPECT_FALSE(ChildDocument().View()->IsDisplayLockThrottled());
+  EXPECT_FALSE(ChildDocument().View()->ShouldThrottleRenderingForTest());
+
+  locked->moveBefore(slot, nullptr, ASSERT_NO_EXCEPTION);
+  EXPECT_TRUE(ChildDocument().View()->IsDisplayLockThrottled());
+  EXPECT_TRUE(ChildDocument().View()->ShouldThrottleRenderingForTest());
+
+  unlocked->moveBefore(slot, nullptr, ASSERT_NO_EXCEPTION);
+  EXPECT_FALSE(ChildDocument().View()->IsDisplayLockThrottled());
+  EXPECT_FALSE(ChildDocument().View()->ShouldThrottleRenderingForTest());
 }
 
 }  // namespace blink

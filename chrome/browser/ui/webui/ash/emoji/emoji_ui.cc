@@ -11,6 +11,7 @@
 #include "ash/constants/webui_url_constants.h"
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/views/bubble/webui_bubble_dialog_view.h"
@@ -20,7 +21,6 @@
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
 #include "chrome/grit/emoji_picker_resources.h"
 #include "chrome/grit/emoji_picker_resources_map.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/emoji/grit/emoji_map.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui.h"
@@ -30,6 +30,7 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/display/screen.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/webui/webui_util.h"
 
@@ -44,7 +45,7 @@ class EmojiBubbleDialogView : public WebUIBubbleDialogView {
   explicit EmojiBubbleDialogView(
       std::unique_ptr<WebUIContentsWrapper> contents_wrapper,
       gfx::Rect caret_bounds)
-      : WebUIBubbleDialogView(nullptr,
+      : WebUIBubbleDialogView(views::BubbleAnchor(),
                               contents_wrapper->GetWeakPtr(),
                               std::nullopt,
                               views::BubbleBorder::TOP_RIGHT,
@@ -105,7 +106,8 @@ namespace ash {
 
 EmojiUIConfig::EmojiUIConfig()
     : DefaultTopChromeWebUIConfig(content::kChromeUIScheme,
-                                  ash::kChromeUIEmojiPickerHost) {}
+                                  ash::kChromeUIEmojiPickerHost,
+                                  ProcessModel::kDedicatedProcess) {}
 
 bool EmojiUIConfig::ShouldAutoResizeHost() {
   return true;

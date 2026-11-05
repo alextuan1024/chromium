@@ -11,6 +11,7 @@
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/base64.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/strings/strcat.h"
 #include "base/task/bind_post_task.h"
@@ -28,7 +29,6 @@
 #include "chrome/grit/branded_strings.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/desktop_capture.h"
-#include "media/base/media_switches.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "skia/ext/image_operations.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
@@ -39,7 +39,7 @@
 #include "ui/gfx/codec/png_codec.h"
 
 #if BUILDFLAG(IS_MAC)
-#include "base/mac/mac_util.h"
+#include "chrome/browser/media/webrtc/desktop_media_picker_utils.h"
 #endif
 
 namespace {
@@ -226,8 +226,7 @@ void ContextualSearchboxScreenshareController::StartScreenshareInternal(
   bool use_native_picker = false;
 #if BUILDFLAG(IS_MAC)
   use_native_picker =
-      base::mac::MacOSMajorVersion() >= 14 &&
-      base::FeatureList::IsEnabled(media::kUseSCContentSharingPicker) &&
+      ShouldUseSCContentSharingPicker() &&
       base::FeatureList::IsEnabled(kOmniboxEverywhereNativeScreenPicker);
 #endif
 
@@ -257,6 +256,13 @@ void ContextualSearchboxScreenshareController::StartScreenshareInternal(
       base::SplitOnceCallback(std::move(safe_callback));
   auto [picker_cancelled_callback, fallback_callback] =
       base::SplitOnceCallback(std::move(remaining_callback));
+
+  // Notify the delegate synchronously on the UI thread before posting to the
+  // IO thread so that host popup widgets (e.g. OmniboxEverywhere) are ordered
+  // out immediately before `SCContentSharingPicker` enumerates and attaches
+  // window-sharing overlays on screen.
+  is_native_picker_open_ = true;
+  NotifyScreensharePickerOpened();
 
   content::GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE,
@@ -308,6 +314,7 @@ void ContextualSearchboxScreenshareController::StartScreenshareInternal(
 void ContextualSearchboxScreenshareController::
     CaptureFullDesktopRegionScreenshot(
         CaptureRegionScreenshotCallback callback) {
+  is_native_picker_open_ = false;
   if (IsScreenshareInProgress()) {
     std::move(callback).Run(std::nullopt);
     return;
@@ -473,10 +480,16 @@ void ContextualSearchboxScreenshareController::CaptureAndUploadScreenshot(
   is_capturing_ = true;
 
 #if BUILDFLAG(IS_WIN)
+  // Delay full-screen capture after the Chrome media picker dialog closes so
+  // DWM can finish its window-close animation and unmap the dialog. Direct
+  // region capture (`region_capture_source` present on Windows) does not open
+  // the media picker dialog, and window capture targets a specific HWND.
+  const bool needs_picker_close_delay =
+      source.type != content::DesktopMediaID::TYPE_WINDOW &&
+      !region_capture_source.has_value();
   base::TimeDelta delay = screen_capture_delay_for_testing_.value_or(
-      source.type == content::DesktopMediaID::TYPE_WINDOW
-          ? base::TimeDelta()
-          : kDefaultScreenCaptureDelay);
+      needs_picker_close_delay ? kDefaultScreenCaptureDelay
+                               : base::TimeDelta());
   if (!delay.is_zero()) {
     content::GetUIThreadTaskRunner({})->PostDelayedTask(
         FROM_HERE,
@@ -617,12 +630,17 @@ void ContextualSearchboxScreenshareController::OnScreenshotProcessed(
 }
 
 void ContextualSearchboxScreenshareController::NotifyScreensharePickerOpened() {
+  if (is_picker_open_notified_) {
+    return;
+  }
+  is_picker_open_notified_ = true;
   if (delegate_) {
     delegate_->OnScreensharePickerOpened();
   }
 }
 
 void ContextualSearchboxScreenshareController::NotifyScreensharePickerClosed() {
+  is_picker_open_notified_ = false;
   if (delegate_) {
     delegate_->OnScreensharePickerClosed();
   }

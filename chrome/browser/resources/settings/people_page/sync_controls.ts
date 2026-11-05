@@ -29,7 +29,7 @@ import {RouteObserverMixinLit} from '../router.js';
 
 import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
 import {sanitizeInnerHtml} from 'chrome://resources/js/parse_html_subset.js';
-import {BatchUploadPromoProxyImpl} from 'chrome://resources/js/batch_upload_promo/batch_upload_promo_proxy.js';
+import {browserProxyFactory as batchUploadPromoProxyFactory} from 'chrome://resources/js/batch_upload_promo.mojom-webui.js';
 
 // clang-format on
 
@@ -94,12 +94,9 @@ export class SettingsSyncControlsElement extends
 
       /**
        * Returns whether this element is currently displayed on the account
-       * settings page. True when `replaceSyncPromosWithSignInPromos` is enabled
-       * and the user navigates to the account page.
+       * settings page.
        */
       isAccountSettingsPage_: {type: Boolean},
-
-      showBatchUploadPromo_: {type: Boolean},
 
       batchUploadPromoHTML_: {type: String},
     };
@@ -117,8 +114,9 @@ export class SettingsSyncControlsElement extends
   private cachedSyncPrefs_: Partial<SyncPrefs>|null = null;
   accessor showSyncDisabledInformation: boolean = false;
   protected accessor isAccountSettingsPage_: boolean = false;
-  protected accessor showBatchUploadPromo_: boolean =
-      loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos');
+  private readonly showBatchUploadPromo_: boolean =
+      !loadTimeData.valueExists('unoPhase2FollowUp') ||
+      loadTimeData.getBoolean('unoPhase2FollowUp');
   protected accessor batchUploadPromoHTML_: TrustedHTML =
       window.trustedTypes!.emptyHTML;
 
@@ -128,17 +126,13 @@ export class SettingsSyncControlsElement extends
     this.addWebUiListener(
         'sync-prefs-changed', this.handleSyncPrefsChanged_.bind(this));
 
-    if (loadTimeData.valueExists('unoPhase2FollowUp')) {
-      this.showBatchUploadPromo_ = loadTimeData.getBoolean('unoPhase2FollowUp');
-    }
-
     if (this.showBatchUploadPromo_) {
-      BatchUploadPromoProxyImpl.getInstance()
+      batchUploadPromoProxyFactory.getInstance()
           .callbackRouter.onLocalDataCountChanged.addListener(
               (localDataCount: number) => {
                 this.batchUploadPromoLocalDataCountChanged_(localDataCount);
               });
-      BatchUploadPromoProxyImpl.getInstance()
+      batchUploadPromoProxyFactory.getInstance()
           .handler.getBatchUploadPromoLocalDataCount()
           .then(({localDataCount}) => {
             this.batchUploadPromoLocalDataCountChanged_(localDataCount);
@@ -151,12 +145,6 @@ export class SettingsSyncControlsElement extends
       this.syncBrowserProxy_.didNavigateToSyncPage();
     }
     if (currentRoute === routes.ACCOUNT) {
-      // <if expr="is_chromeos">
-      if (!loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos')) {
-        return;
-      }
-      // </if>
-
       this.isAccountSettingsPage_ = true;
       this.syncBrowserProxy_.didNavigateToAccountSettingsPage();
     }
@@ -235,7 +223,7 @@ export class SettingsSyncControlsElement extends
       // Prevent navigation to href='#' and open the batch upload dialog
       // instead.
       event.preventDefault();
-      BatchUploadPromoProxyImpl.getInstance()
+      batchUploadPromoProxyFactory.getInstance()
           .handler.onBatchUploadPromoClicked();
     }
   }
@@ -262,12 +250,6 @@ export class SettingsSyncControlsElement extends
   }
 
   override currentRouteChanged(newRoute: Route, oldRoute?: Route) {
-    // <if expr="is_chromeos">
-    if (!loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos')) {
-      return;
-    }
-    // </if>
-
     this.isAccountSettingsPage_ = newRoute === routes.ACCOUNT;
 
     if (this.isAccountSettingsPage_ && oldRoute !== routes.ACCOUNT) {
@@ -409,16 +391,8 @@ export class SettingsSyncControlsElement extends
     const router = Router.getInstance();
     if (router.getCurrentRoute() === routes.SYNC_ADVANCED &&
         this.syncControlsHidden_()) {
-      // <if expr="is_chromeos">
-      if (!loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos')) {
-        router.navigateTo(routes.SYNC);
-        return;
-      }
-      // </if>
-
-      // Try to navigate the user to the account page, where they can find the
-      // toggles. If the page does not exist, they will be redirected to the
-      // people settings page from there.
+      // Navigate to the account page, where the user can find the toggles (or
+      // be redirected to the people settings page if not signed in).
       router.navigateTo(routes.ACCOUNT);
     }
   }

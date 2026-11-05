@@ -1,52 +1,37 @@
 {
     "0": {
-        "benchmarks": {
-            "speedometer3": {
-                "abridged": false
-            },
-            "jetstream2": {
-                "abridged": false
-            }
-        },
         "crossbench": {
             "speedometer3.crossbench": {
                 "crossbench_name": "speedometer_3",
                 "arguments": [
+                    "--network=live",
                     "--enable-field-trials=benchmarking"
                 ]
             },
             "browser_startup.crossbench": {
                 "crossbench_name": "browser-startup",
                 "arguments": [
-                    "--enable-features=InitialWebUI:high_stream_priority/true,WebUIReloadButton:WebUIReloadButtonDeferBrowserViewShow/true/WebUIReloadButtonKeepVisibleUntilPaint/true/WebUIReloadButtonPrewarmWebUI/true,SkipIPCChannelPausingForNonGuests,WebUIInProcessResourceLoadingV2,InitialWebUISyncNavStartToCommit,InitialWebUIWithoutExtensions,WebUIBundledCodeCache,SendGPUChannelEarly",
-                    "--enable-field-trials=benchmarking"
-                ]
-            },
-            "jetstream2.crossbench": {
-                "crossbench_name": "jetstream_2",
-                "arguments": [
-                    "--enable-field-trials=benchmarking"
-                ]
-            }
-        }
-    },
-    "1": {
-        "benchmarks": {
-            "speedometer3": {
-                "abridged": false
-            }
-        },
-        "crossbench": {
-            "speedometer3.crossbench": {
-                "crossbench_name": "speedometer_3",
-                "arguments": [
-                    "--enable-field-trials=benchmarking"
+                    "--enable-features=BypassOutdatedSurfaceActivation,DeferHistoryBackendInit,DeferLayoutDuringBrowserStartup,DeferSessionStorageScavengingOnStartup,DeferSpellcheckInitialization,GpuPersistentCacheAsyncInitialize,GtkPrefetchNavButtonIcons,InitialWebUI,InitialWebUISurfaceSync:deadline_in_frames/12000/renderer_commit_delay_ms/100000,InitialWebUIWithoutExtensions,InitialWebUIWithoutSpellCheckForNtp,InitialWebUIWithoutTranslateForNtp,LazyKeyedServiceInstantiation,OmniboxAimPopupDeferCreation,OmniboxWebUIPopupDeferCreation,OnlyUseWindowResizeHelperOnResize,OptimizeVariationsIpc,PerDependencyDeadlines,PrioritizeCompositorTaskRunnerOnStartup,PrioritizeResizeTaskRunnerOnStartup,SendGPUChannelEarly,SkipIPCChannelPausingForNonGuests,TopChromeWebUISharedRenderer,WebUIBackForwardButton,WebUIBundledCodeCache,WebUIBypassMojoConnections,WebUIHomeButton,WebUIReloadButton:WebUIReloadButtonBypassLoaderThrottles/true/WebUIReloadButtonDeferBrowserViewShow/false/WebUIReloadButtonKeepVisibleUntilPaint/true/WebUIReloadButtonPrewarmWebUI/true/WebUIReloadButtonPrewarmWebUIPreNavigate/true/WebUIReloadButtonRestartUnresponsive/true/WebUIReloadButtonRestartUnresponsiveRenderersTimeout/5s,WebUISplitTabsButton,WebUIToolbarFrameEvictionOptOut,WebiumMetricsMapping:config/CjsKOUV2ZW50TGF0ZW5jeS5HZXN0dXJlU2Nyb2xsVXBkYXRlLlRvdWNoc2NyZWVuLlRvdGFsTGF0ZW5jeQooCiZQYWdlTG9hZC5JbnRlcmFjdGl2ZVRpbWluZy5JbnB1dERlbGF5Mwo4CjZHcmFwaGljcy5TbW9vdGhuZXNzLlBlcmNlbnREcm9wcGVkRnJhbWVzMy5BbGxTZXF1ZW5jZXM=",
+                    "--enable-field-trials=benchmarking",
+                    "--repeat=10"
                 ]
             },
             "jetstream3-turbolev_future.crossbench": {
                 "crossbench_name": "jetstream_3",
                 "arguments": [
                     "--js-flags=--turbolev-future",
+                    "--enable-field-trials=benchmarking"
+                ]
+            }
+        },
+        "benchmarks": {}
+    },
+    "1": {
+        "crossbench": {
+            "speedometer3.crossbench": {
+                "crossbench_name": "speedometer_3",
+                "arguments": [
+                    "--network=live",
                     "--enable-field-trials=benchmarking"
                 ]
             },
@@ -56,18 +41,15 @@
                     "--enable-field-trials=benchmarking"
                 ]
             }
-        }
+        },
+        "benchmarks": {}
     },
     "2": {
-        "benchmarks": {
-            "speedometer3": {
-                "abridged": false
-            }
-        },
         "crossbench": {
             "speedometer3.crossbench": {
                 "crossbench_name": "speedometer_3",
                 "arguments": [
+                    "--network=live",
                     "--enable-field-trials=benchmarking"
                 ]
             },
@@ -77,13 +59,11 @@
                     "--enable-field-trials=benchmarking"
                 ]
             }
-        }
+        },
+        "benchmarks": {}
     },
     "3": {
         "benchmarks": {
-            "speedometer3": {
-                "abridged": false
-            },
             "rendering.desktop.notracing": {
                 "abridged": false
             },
@@ -95,20 +75,21 @@
             "speedometer3.crossbench": {
                 "crossbench_name": "speedometer_3",
                 "arguments": [
+                    "--network=live",
                     "--enable-field-trials=benchmarking"
                 ]
             }
         }
     },
     "extra_infos": {
-        "num_stories": 16,
-        "predicted_min_shard_time": 388.0,
-        "predicted_min_shard_index": 0,
-        "predicted_max_shard_time": 448.0,
-        "predicted_max_shard_index": 1,
-        "shard #0": 388.0,
-        "shard #1": 448.0,
-        "shard #2": 448.0,
-        "shard #3": 443.0
+        "num_stories": 10,
+        "predicted_min_shard_time": 240,
+        "predicted_min_shard_index": 1,
+        "predicted_max_shard_time": 420,
+        "predicted_max_shard_index": 2,
+        "shard #0": 300,
+        "shard #1": 240,
+        "shard #2": 420,
+        "shard #3": 415.0
     }
 }

@@ -18,6 +18,7 @@
 #include "base/uuid.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h"
 #include "components/autofill/core/browser/network/autofill_ai/mock_autofill_ai_personal_context_access_manager.h"
 #include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
@@ -117,6 +118,8 @@ class EntityDataManagerTestBase : public testing::Test {
     return histogram_tester_;
   }
 
+  base::test::TaskEnvironment& task_environment() { return task_environment_; }
+
   // Recreating the EntityDataManager in the middle of the test is discouraged
   // because this prevents any other code from keeping a pointer to the
   // EntityDataManager.
@@ -168,10 +171,10 @@ TEST_F(EntityDataManagerTest_InitiallyEmpty, AddEntityInstance) {
   EXPECT_THAT(GetEntityInstances(), UnorderedElementsAre(pp, dl, fr));
 }
 
-// Tests that AddOrUpdateEntityInstance() with a context_token asynchronously
-// adds entities.
+// Tests that AddOrUpdateEntityInstance() with a `legal_message_token`
+// asynchronously adds entities.
 TEST_F(EntityDataManagerTest_InitiallyEmpty,
-       AddEntityInstanceWithContextToken) {
+       AddEntityInstanceWithLegalMessageToken) {
   MockEntityDataManagerObserver observer;
   base::ScopedObservation<EntityDataManager, MockEntityDataManagerObserver>
       observation{&observer};
@@ -179,7 +182,8 @@ TEST_F(EntityDataManagerTest_InitiallyEmpty,
 
   EntityInstance pp = test::GetPassportEntityInstance();
   EXPECT_CALL(observer, OnEntityInstancesChanged).Times(AtLeast(1));
-  entity_data_manager().AddOrUpdateEntityInstance(pp, "test_context_token");
+  entity_data_manager().AddOrUpdateEntityInstance(pp,
+                                                  "test_legal_message_token");
   EXPECT_THAT(GetEntityInstances(), UnorderedElementsAre(pp));
 }
 
@@ -347,6 +351,27 @@ TEST_F(EntityDataManagerTest_InitiallyEmpty, ValidateEntityReauthRequirements) {
               UnorderedElementsAre(local_private_pass, public_pass));
 }
 
+// Tests that `ShouldUpdateReauthAvailability()` returns true when unset or
+// after `kReauthAvailabilityCacheDuration` has elapsed, and false within the
+// cache duration.
+TEST_F(EntityDataManagerTest_InitiallyEmpty, ShouldUpdateReauthAvailability) {
+  EXPECT_TRUE(entity_data_manager().ShouldUpdateReauthAvailability());
+
+  entity_data_manager().SetReauthAvailability(true);
+  EXPECT_FALSE(entity_data_manager().ShouldUpdateReauthAvailability());
+
+  task_environment().FastForwardBy(
+      EntityDataManager::kReauthAvailabilityCacheDuration / 2);
+  EXPECT_FALSE(entity_data_manager().ShouldUpdateReauthAvailability());
+
+  task_environment().FastForwardBy(
+      EntityDataManager::kReauthAvailabilityCacheDuration / 2);
+  EXPECT_TRUE(entity_data_manager().ShouldUpdateReauthAvailability());
+
+  entity_data_manager().SetReauthAvailability(true);
+  EXPECT_FALSE(entity_data_manager().ShouldUpdateReauthAvailability());
+}
+
 class EntityDataManagerTest_InitiallyPopulated
     : public EntityDataManagerTestBase {
  public:
@@ -423,9 +448,13 @@ TEST_F(EntityDataManagerTest_InitiallyEmpty,
           .is_null());
 
   // Opt in the user prior to enabling the Private AI feature.
-  client().SetUpPrefsAndIdentityForAutofillAi();
-  ASSERT_TRUE(GetObsoleteAutofillAiOptInStatus(client().GetPrefs(),
-                                               client().GetIdentityManager()));
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(features::kAutofillAiUsePrivateAi);
+    client().SetUpPrefsAndIdentityForAutofillAi();
+    ASSERT_TRUE(GetObsoleteAutofillAiOptInStatus(
+        client().GetPrefs(), client().GetIdentityManager()));
+  }
 
   // Enable the Private AI feature flag and simulate profile startup by
   // recreating `EntityDataManager`.
@@ -703,6 +732,115 @@ TEST_F(
   WaitUntilIdle();
 
   EXPECT_THAT(GetEntityInstances(), UnorderedElementsAre(flight_local));
+}
+
+// Tests that the record type that personal context entities are deduplicated
+// against is logged on every deduplication.
+TEST_F(EntityDataManagerTest_InitiallyEmpty,
+       DedupePersonalContextEntities_LogsAgainstRecordType) {
+  // Wait for the database to load, which also triggers a deduplication.
+  WaitUntilIdle();
+  entity_data_manager().OnPrefetchContextComplete(
+      pcontext_manager(),
+      std::vector<EntityInstance>{test::GetOrderEntityInstanceWithRandomGuid(
+          {.id = u"123",
+           .record_type = EntityInstance::RecordType::kPersonalContext})});
+  WaitUntilIdle();
+
+  entity_data_manager().AddOrUpdateEntityInstance(
+      test::GetOrderEntityInstanceWithRandomGuid(
+          {.id = u"123", .record_type = EntityInstance::RecordType::kLocal}));
+  WaitUntilIdle();
+
+  EXPECT_THAT(
+      histogram_tester().GetAllSamples(
+          "Autofill.Ai.PersonalContext.Deduplication.AgainstRecordType"),
+      BucketsAre(
+          Bucket(
+              PersonalContextDeduplicationAgainstRecordType::kNotDeduplicated,
+              1),
+          Bucket(PersonalContextDeduplicationAgainstRecordType::kLocal, 1)));
+}
+
+// Tests that a personal context entity that is a duplicate of both a local and
+// a Wallet entity is logged as a Wallet duplicate, also per entity type.
+TEST_F(EntityDataManagerTest_InitiallyEmpty,
+       DedupePersonalContextEntities_LogsWalletOverLocal) {
+  entity_data_manager().AddOrUpdateEntityInstance(
+      test::GetOrderEntityInstanceWithRandomGuid(
+          {.id = u"123", .record_type = EntityInstance::RecordType::kLocal}));
+  entity_data_manager().AddOrUpdateEntityInstance(
+      test::GetOrderEntityInstanceWithRandomGuid(
+          {.id = u"123",
+           .record_type = EntityInstance::RecordType::kServerWallet}));
+  WaitUntilIdle();
+
+  entity_data_manager().OnPrefetchContextComplete(
+      pcontext_manager(),
+      std::vector<EntityInstance>{test::GetOrderEntityInstanceWithRandomGuid(
+          {.id = u"123",
+           .record_type = EntityInstance::RecordType::kPersonalContext})});
+  WaitUntilIdle();
+
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Deduplication.AgainstRecordType",
+      PersonalContextDeduplicationAgainstRecordType::kServerWallet, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Deduplication.AgainstRecordType.Order",
+      PersonalContextDeduplicationAgainstRecordType::kServerWallet, 1);
+}
+
+// Tests that the funnel outcome of prefetched personal context entities depends
+// on whether they are duplicates of a local or Wallet entity.
+TEST_F(EntityDataManagerTest_InitiallyEmpty,
+       OnPrefetchContextComplete_LogsEntityFunnelOutcome) {
+  entity_data_manager().AddOrUpdateEntityInstance(
+      test::GetOrderEntityInstanceWithRandomGuid(
+          {.id = u"123", .record_type = EntityInstance::RecordType::kLocal}));
+  WaitUntilIdle();
+
+  entity_data_manager().OnPrefetchContextComplete(
+      pcontext_manager(),
+      std::vector<EntityInstance>{
+          test::GetOrderEntityInstanceWithRandomGuid(
+              {.id = u"123",
+               .record_type = EntityInstance::RecordType::kPersonalContext}),
+          test::GetOrderEntityInstanceWithRandomGuid(
+              {.id = u"456",
+               .record_type = EntityInstance::RecordType::kPersonalContext})});
+  WaitUntilIdle();
+
+  using enum PersonalContextPrefetchEntityFunnelOutcome;
+  EXPECT_THAT(histogram_tester().GetAllSamples(
+                  "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel"),
+              BucketsAre(Bucket(kDeduplicated, 1), Bucket(kPassed, 1)));
+  EXPECT_THAT(histogram_tester().GetAllSamples(
+                  "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel.Order"),
+              BucketsAre(Bucket(kDeduplicated, 1), Bucket(kPassed, 1)));
+}
+
+// Tests that the funnel outcome is only logged for the personal context
+// entities that were just added, not on every deduplication.
+TEST_F(EntityDataManagerTest_InitiallyEmpty,
+       DedupePersonalContextEntities_LogsFunnelOutcomeOnlyForAddedEntities) {
+  // Wait for the database to load, which also triggers a deduplication.
+  WaitUntilIdle();
+  entity_data_manager().OnPrefetchContextComplete(
+      pcontext_manager(),
+      std::vector<EntityInstance>{test::GetOrderEntityInstanceWithRandomGuid(
+          {.id = u"123",
+           .record_type = EntityInstance::RecordType::kPersonalContext})});
+  WaitUntilIdle();
+
+  // The local duplicate causes the removal of the personal context entity.
+  EntityInstance order_local = test::GetOrderEntityInstanceWithRandomGuid(
+      {.id = u"123", .record_type = EntityInstance::RecordType::kLocal});
+  entity_data_manager().AddOrUpdateEntityInstance(order_local);
+  ASSERT_THAT(GetEntityInstances(), UnorderedElementsAre(order_local));
+
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel",
+      PersonalContextPrefetchEntityFunnelOutcome::kPassed, 1);
 }
 
 }  // namespace

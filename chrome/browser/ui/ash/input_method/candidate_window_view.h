@@ -40,9 +40,6 @@ class UI_CHROMEOS_EXPORT CandidateWindowView
   ~CandidateWindowView() override;
   std::unique_ptr<views::Widget> InitWidget();
 
-  // views::BubbleDialogDelegateView:
-  void OnThemeChanged() override;
-
   // Adds the given observer. The ownership is not transferred.
   void AddObserver(Observer* observer) { observers_.AddObserver(observer); }
 
@@ -107,7 +104,7 @@ class UI_CHROMEOS_EXPORT CandidateWindowView
   raw_ptr<views::View> candidate_area_;
 
   // The candidate views are used for rendering candidates.
-  std::vector<raw_ptr<CandidateView, VectorExperimental>> candidate_views_;
+  std::vector<raw_ptr<CandidateView, DanglingUntriaged>> candidate_views_;
 
   // Current columns size in |candidate_area_|.
   gfx::Size previous_shortcut_column_size_;

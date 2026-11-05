@@ -25,7 +25,7 @@ import org.chromium.chrome.browser.hub.swipe.HubPaneSwipeCoordinator;
 /** Holds the current pane's {@link View}. */
 @NullMarked
 public class HubPaneHostView extends FrameLayout {
-    /** A provider of adjacent pane views during a swipe drag gesture. */
+    /** Provides adjacent pane views and observes pane swipe and slide transitions. */
     public interface PaneViewProvider {
         /**
          * Prepares the adjacent pane for display (warming resources) and returns its root view, or
@@ -44,6 +44,26 @@ public class HubPaneHostView extends FrameLayout {
 
         /** Notifies of the active drag displacement progress (fraction from 0.0 to 1.0). */
         default void onSwipeDragProgress(float progress, boolean isSwipeLeft) {}
+
+        /**
+         * Notifies of slide animation progress (fraction from 0.0 to 1.0) during programmatic pane
+         * switch transitions from {@code fromPaneId} to {@code toPaneId}. {@code isSwipeLeft} is
+         * true when the panes move left, i.e. the incoming pane enters from the right as it would
+         * for a left swipe.
+         */
+        default void onSlideTransitionProgress(
+                @PaneId int fromPaneId,
+                @PaneId int toPaneId,
+                float progress,
+                boolean isSwipeLeft) {}
+
+        /**
+         * Notifies that the programmatic slide transition has ended. Called exactly once per slide.
+         * A slide cut short by the next pane switch, a swipe settle or teardown first reports a
+         * final progress of 1.0. For the next pane switch, both calls arrive after the new pane is
+         * focused.
+         */
+        default void onSlideTransitionEnd() {}
     }
 
     /** A checker to see if a touch is on an interactive element. */
@@ -122,10 +142,17 @@ public class HubPaneHostView extends FrameLayout {
      * @param newRootView The new root view to display.
      * @param isSlideAnimationLeftToRight Whether the animation should slide from left-to-right
      *     (true) or right-to-left (false), only when slide animation is enabled.
+     * @param fromPaneId The pane that the slide starts from.
+     * @param toPaneId The pane that the slide ends on.
      */
-    void setRootView(@Nullable View newRootView, boolean isSlideAnimationLeftToRight) {
+    void setRootView(
+            @Nullable View newRootView,
+            boolean isSlideAnimationLeftToRight,
+            @PaneId int fromPaneId,
+            @PaneId int toPaneId) {
         assert mSwipeCoordinator != null;
-        mSwipeCoordinator.setRootView(newRootView, isSlideAnimationLeftToRight);
+        mSwipeCoordinator.setRootView(
+                newRootView, isSlideAnimationLeftToRight, fromPaneId, toPaneId);
     }
 
     void setColorMixer(HubColorMixer mixer) {

@@ -148,9 +148,6 @@ class WebPageReplayServerWrapper {
   bool Stop();
 
  private:
-  bool RunWebPageReplayCmdAndWaitForExit(
-      const std::vector<std::string>& args,
-      const base::TimeDelta& timeout = base::Seconds(5));
   bool RunWebPageReplayCmd(const std::vector<std::string>& args);
 
   std::string cmd_name() { return start_as_replay_ ? "replay" : "record"; }
@@ -319,10 +316,6 @@ class TestRecipeReplayer {
   WebPageReplayServerWrapper* web_page_replay_server_wrapper();
   content::WebContents* GetWebContents();
   void CleanupSiteData();
-  bool StartWebPageReplayServer(base::Process* web_page_replay_server,
-                                const base::FilePath& capture_file_path,
-                                const bool start_as_replay = true);
-  bool StopWebPageReplayServer(base::Process* web_page_replay_server);
   bool ReplayRecordedActions(
       const base::FilePath& recipe_file_path,
       const std::optional<base::FilePath>& command_file_path);
@@ -370,9 +363,9 @@ class TestRecipeReplayer {
       const std::string& element_xpath,
       bool expect_to_be_shown);
   // When returning true, `frame` points to the RenderFrameHost of the frame
-  // specified in `action`. This is determined dynamically because
-  // WaitForElementToBeReady may need to wait for navigations to finish and the
-  // frame to be loaded.
+  // specified in `action`, and that frame is alive. This is determined
+  // dynamically because WaitForElementToBeReady may need to wait for
+  // navigations to finish and the frame to be loaded.
   bool WaitForElementToBeReady(const std::string& xpath,
                                const int visibility_enum_val,
                                const base::DictValue& action,

@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,8 @@
 #include "base/barrier_closure.h"
 #include "base/check.h"
 #include "base/containers/fixed_flat_set.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -53,6 +56,8 @@ using IsPasswordNoteChanged =
 using PasswordNote = password_manager::PasswordNote;
 using Store = password_manager::PasswordForm::Store;
 using EditResult = password_manager::SavedPasswordsPresenter::EditResult;
+using InsecureType = password_manager::InsecureType;
+using InsecurityMetadata = password_manager::InsecurityMetadata;
 
 bool IsUsernameAlreadyUsed(
     const password_manager::SavedPasswordsPresenter::DuplicatePasswordsMap&
@@ -99,6 +104,21 @@ password_manager::StoredCredential GenerateStoredCredentialFromCredential(
 
 bool MergeDeleteAllResultsFromPasswordStores(std::vector<bool> results) {
   return std::ranges::all_of(results, [](bool result) { return result; });
+}
+
+// Changing the password invalidates all existing issues. Changing only the
+// username invalidates compromised (username, password)-pair issues while
+// keeping password-intrinsic issues (weak/reused).
+void ClearResolvedPasswordIssues(
+    base::flat_map<InsecureType, InsecurityMetadata>& issues,
+    IsPasswordChanged password_changed,
+    IsUsernameChanged username_changed) {
+  if (password_changed) {
+    issues.clear();
+  } else if (username_changed) {
+    issues.erase(InsecureType::kPhished);
+    issues.erase(InsecureType::kLeaked);
+  }
 }
 
 }  // namespace
@@ -155,10 +175,10 @@ bool SavedPasswordsPresenter::IsWaitingForPasswordStore() const {
 
 bool SavedPasswordsPresenter::RemoveCredential(
     const CredentialUIEntry& credential) {
-  if (!credential.passkey_credential_id.empty()) {
+  if (credential.IsPasskey()) {
     CHECK(passkey_store_);
-    std::string credential_id(credential.passkey_credential_id.begin(),
-                              credential.passkey_credential_id.end());
+    std::string credential_id(credential.passkey_info->credential_id.begin(),
+                              credential.passkey_info->credential_id.end());
     if (!passkey_store_->DeletePasskey(std::move(credential_id), FROM_HERE)) {
       return false;
     }
@@ -332,12 +352,10 @@ void SavedPasswordsPresenter::AddCredentials(
     return;
   }
 
-  std::vector<StoredCredential> stored_credentials;
-  std::ranges::transform(credentials, std::back_inserter(stored_credentials),
-                         [&](const CredentialUIEntry& credential) {
-                           return GenerateStoredCredentialFromCredential(
-                               credential, type);
-                         });
+  std::vector<StoredCredential> stored_credentials =
+      base::ToVector(credentials, [&](const CredentialUIEntry& credential) {
+        return GenerateStoredCredentialFromCredential(credential, type);
+      });
 
   CHECK(std::ranges::all_of(
       stored_credentials, [&](const StoredCredential& form) {
@@ -370,11 +388,10 @@ SavedPasswordsPresenter::EditResult
 SavedPasswordsPresenter::EditSavedCredentials(
     const CredentialUIEntry& original_credential,
     const CredentialUIEntry& updated_credential) {
-  if (original_credential.passkey_credential_id.empty()) {
-    return EditPassword(original_credential, updated_credential);
-  } else {
+  if (original_credential.IsPasskey()) {
     return EditPasskey(updated_credential);
   }
+  return EditPassword(original_credential, updated_credential);
 }
 
 void SavedPasswordsPresenter::MoveCredentialsToAccount(
@@ -448,8 +465,8 @@ std::vector<CredentialUIEntry> SavedPasswordsPresenter::GetSavedPasswords()
     const {
   auto credentials = GetSavedCredentials();
   std::erase_if(credentials, [](const auto& credential) {
-    return !credential.passkey_credential_id.empty() ||
-           credential.blocked_by_user || credential.federation_origin.IsValid();
+    return credential.IsPasskey() || credential.blocked_by_user ||
+           credential.federation_origin.IsValid();
   });
   return credentials;
 }
@@ -534,8 +551,8 @@ SavedPasswordsPresenter::GetActorLoginPermissions(
 }
 
 void SavedPasswordsPresenter::RevokeActorLoginPermission(
-    const std::string& signon_realm,
-    const std::string& username) {
+    std::string_view signon_realm,
+    std::u16string_view username) {
   std::vector<CredentialUIEntry> credentials;
 #if BUILDFLAG(IS_ANDROID)
   credentials = GetSavedCredentials();
@@ -546,7 +563,7 @@ void SavedPasswordsPresenter::RevokeActorLoginPermission(
     for (const StoredCredential& stored_credential :
          GetCorrespondingStoredCredentials(credential)) {
       if (stored_credential.signon_realm == signon_realm &&
-          stored_credential.username_value == base::UTF8ToUTF16(username)) {
+          stored_credential.username_value == username) {
         StoredCredential updated_credential =
             CloneStoredCredential(stored_credential);
         updated_credential.actor_login_approved = false;
@@ -772,7 +789,7 @@ void SavedPasswordsPresenter::MaybeGroupCredentials(
 
 SavedPasswordsPresenter::EditResult SavedPasswordsPresenter::EditPasskey(
     const CredentialUIEntry& updated_credential) {
-  CHECK(!updated_credential.passkey_credential_id.empty());
+  CHECK(updated_credential.IsPasskey());
   CHECK(passkey_store_);
   std::optional<PasskeyCredential> original_credential =
       passwords_grouper_->GetPasskeyFor(updated_credential);
@@ -781,7 +798,7 @@ SavedPasswordsPresenter::EditResult SavedPasswordsPresenter::EditPasskey(
   }
   std::string new_username = base::UTF16ToUTF8(updated_credential.username);
   std::string new_display_name =
-      base::UTF16ToUTF8(updated_credential.user_display_name);
+      base::UTF16ToUTF8(updated_credential.passkey_info->user_display_name);
   IsUsernameChanged username_changed(new_username !=
                                      original_credential->username());
   IsDisplayNameChanged display_name_changed(
@@ -840,10 +857,14 @@ SavedPasswordsPresenter::EditResult SavedPasswordsPresenter::EditPassword(
   base::RepeatingClosure completion_barrier_closure = base::DoNothing();
   // Only change in username or password is interesting for OnEdited listeners.
   if (username_changed || password_changed) {
+    CredentialUIEntry notified_credential = updated_credential;
+    ClearResolvedPasswordIssues(notified_credential.password_issues,
+                                password_changed, username_changed);
     completion_barrier_closure = base::BarrierClosure(
         credentials_to_change.size(),
         base::BindOnce(&SavedPasswordsPresenter::NotifyEdited,
-                       weak_ptr_factory_.GetWeakPtr(), updated_credential));
+                       weak_ptr_factory_.GetWeakPtr(),
+                       std::move(notified_credential)));
   }
 
   for (const auto& old_credential : credentials_to_change) {
@@ -854,11 +875,12 @@ SavedPasswordsPresenter::EditResult SavedPasswordsPresenter::EditPassword(
       new_credential.password_issues = updated_credential.password_issues;
     }
 
+    ClearResolvedPasswordIssues(new_credential.password_issues,
+                                password_changed, username_changed);
+
     if (password_changed) {
-      new_credential.password_value =
-          PasswordString(std::u16string(updated_credential.password));
+      new_credential.password_value = updated_credential.password;
       new_credential.date_password_modified = base::Time::Now();
-      new_credential.password_issues.clear();
     }
 
     if (note_changed) {
@@ -869,8 +891,6 @@ SavedPasswordsPresenter::EditResult SavedPasswordsPresenter::EditPassword(
     // to make sure to call the right API.
     if (username_changed) {
       new_credential.username_value = updated_credential.username;
-      new_credential.password_issues.erase(InsecureType::kPhished);
-      new_credential.password_issues.erase(InsecureType::kLeaked);
       store.UpdateLoginWithPrimaryKey(std::move(new_credential),
                                       CloneStoredCredential(old_credential),
                                       completion_barrier_closure);

@@ -157,7 +157,7 @@ class CORE_EXPORT FragmentItem final {
   bool IsBlockInInline() const;
   bool IsFloating() const;
   bool IsEmptyLineBox() const;
-  bool IsHiddenForPaint() const { return is_hidden_for_paint_; }
+  bool IsHiddenDueToLayout() const { return is_hidden_due_to_layout_; }
   bool IsListMarker() const;
 
   bool IsSvgText() const {
@@ -260,6 +260,8 @@ class CORE_EXPORT FragmentItem final {
     return rect_.offset;
   }
   const PhysicalOffset ContentOffsetInContainerFragment() const;
+  const PhysicalOffset ContentOffsetInContainerFragmentIgnoringTextBoxTrim()
+      const;
   const PhysicalSize& Size() const { return rect_.size; }
   PhysicalRect LocalRect() const { return {PhysicalOffset(), Size()}; }
   void SetOffset(const PhysicalOffset& offset) { rect_.offset = offset; }
@@ -593,13 +595,13 @@ class CORE_EXPORT FragmentItem final {
                const ShapeResultView* shape_result,
                const TextOffsetRange& text_offset,
                const PhysicalSize& size,
-               bool is_hidden_for_paint);
+               bool is_hidden_due_to_layout);
   // Create a generated text item.
   FragmentItem(const InlineItem& inline_item,
                const ShapeResultView* shape_result,
                const String& text_content,
                const PhysicalSize& size,
-               bool is_hidden_for_paint);
+               bool is_hidden_due_to_layout);
   FragmentItem(const LayoutObject& layout_object,
                TextItemType text_type,
                StyleVariant style_variant,
@@ -607,7 +609,7 @@ class CORE_EXPORT FragmentItem final {
                const ShapeResultView* shape_result,
                const String& text_content,
                const PhysicalSize& size,
-               bool is_hidden_for_paint);
+               bool is_hidden_due_to_layout);
 
   InkOverflow::Type InkOverflowType() const {
     return static_cast<InkOverflow::Type>(ink_overflow_type_);
@@ -619,7 +621,6 @@ class CORE_EXPORT FragmentItem final {
   bool HasInkOverflow() const {
     return InkOverflowType() != InkOverflow::Type::kNone;
   }
-  LayoutBox* MutableInkOverflowOwnerBox();
 
   void InvalidateInkOverflow();
 
@@ -664,21 +665,21 @@ class CORE_EXPORT FragmentItem final {
   static constexpr size_t kSubTypeBits = 3;
 
   // Note: We should not add |bidi_level_| because it is used only for layout.
-  const unsigned const_type_ : kConstTypeBits;  // ItemType
-  unsigned sub_type_ : kSubTypeBits;            // TextItemType or LineBoxType
-  unsigned style_variant_ : 2;                  // StyleVariant
-  unsigned is_hidden_for_paint_ : 1;
+  const uint32_t const_type_ : kConstTypeBits;  // ItemType
+  uint32_t sub_type_ : kSubTypeBits;            // TextItemType or LineBoxType
+  uint32_t style_variant_ : 2;                  // StyleVariant
+  uint32_t is_hidden_due_to_layout_ : 1;
   // Note: For |TextItem| and |GeneratedTextItem|, |text_direction_| equals to
   // |ShapeResult::Direction()|.
-  unsigned text_direction_ : 1;  // TextDirection.
-  unsigned has_over_annotation_ : 1 = 0;
-  unsigned has_under_annotation_ : 1 = 0;
+  uint32_t text_direction_ : 1;  // TextDirection.
+  uint32_t has_over_annotation_ : 1 = 0;
+  uint32_t has_under_annotation_ : 1 = 0;
 
-  unsigned ink_overflow_type_ : InkOverflow::kTypeBits;
+  uint32_t ink_overflow_type_ : InkOverflow::kTypeBits;
 
-  mutable unsigned is_dirty_ : 1;
+  mutable uint32_t is_dirty_ : 1;
 
-  mutable unsigned is_last_for_node_ : 1;
+  mutable uint32_t is_last_for_node_ : 1;
 };
 
 inline bool FragmentItem::CanReuse() const {

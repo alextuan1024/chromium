@@ -31,7 +31,6 @@
 #include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/web_applications/preinstalled_web_apps/calculator.h"
 #include "chrome/browser/web_applications/preinstalled_web_apps/gemini.h"
 #include "chrome/browser/web_applications/preinstalled_web_apps/google_calendar.h"
@@ -61,16 +60,6 @@ BASE_FEATURE_PARAM(bool,
                    "only_for_new_users",
                    false);
 #endif
-
-#if BUILDFLAG(IS_CHROMEOS)
-bool IsGoogleInternalAccount() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  if (!profile)
-    return false;
-  return gaia::IsGoogleInternalAccountEmail(profile->GetProfileUserName());
-}
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
 
 std::vector<ExternalInstallOptions> GetChromeBrandedApps(
     Profile& profile,
@@ -159,7 +148,7 @@ std::vector<ExternalInstallOptions> GetPreinstalledWebApps(
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #if BUILDFLAG(IS_CHROMEOS)
   // TODO(crbug.com/40854011): replace with config in admin console.
-  if (IsGoogleInternalAccount()) {
+  if (gaia::IsGoogleInternalAccountEmail(profile.GetProfileUserName())) {
     std::vector<ExternalInstallOptions> apps =
         GetChromeBrandedApps(profile, device_info);
     apps.push_back(GetConfigForMessagesDogfood());
@@ -174,12 +163,14 @@ std::vector<ExternalInstallOptions> GetPreinstalledWebApps(
 }
 
 ScopedTestingPreinstalledAppData::ScopedTestingPreinstalledAppData() {
-  DCHECK_EQ(nullptr, g_preinstalled_app_data_for_testing);
+  CHECK_EQ(nullptr, g_preinstalled_app_data_for_testing,
+           base::NotFatalUntil::M162);
   g_preinstalled_app_data_for_testing = &apps;
 }
 
 ScopedTestingPreinstalledAppData::~ScopedTestingPreinstalledAppData() {
-  DCHECK_EQ(&apps, g_preinstalled_app_data_for_testing);
+  CHECK_EQ(&apps, g_preinstalled_app_data_for_testing,
+           base::NotFatalUntil::M162);
   g_preinstalled_app_data_for_testing = nullptr;
 }
 
@@ -237,8 +228,7 @@ std::vector<PreinstalledWebAppMigration> GetPreinstalledWebAppMigrations(
       books_migration.install_url =
           GURL("https://play.google.com/books/installwebapp?usp=chromedefault");
       books_migration.expected_web_app_id = ash::kPlayBooksAppId;
-      books_migration.old_chrome_app_id =
-          extension_misc::kGooglePlayBooksExtensionId;
+      books_migration.old_chrome_app_id = extension_misc::kGooglePlayBooksAppId;
       migrations.push_back(std::move(books_migration));
 
       PreinstalledWebAppMigration maps_migration;
@@ -254,7 +244,7 @@ std::vector<PreinstalledWebAppMigration> GetPreinstalledWebAppMigrations(
           "installwebapp?usp=chrome_default");
       movies_migration.expected_web_app_id = ash::kGoogleMoviesAppId;
       movies_migration.old_chrome_app_id =
-          extension_misc::kGooglePlayMoviesExtensionId;
+          extension_misc::kGooglePlayMoviesAppId;
       migrations.push_back(std::move(movies_migration));
     }
   }

@@ -6,20 +6,32 @@
 
 #import <Foundation/Foundation.h>
 
+#import <algorithm>
+#import <map>
+#import <optional>
+#import <set>
+#import <string>
+#import <string_view>
+#import <utility>
+#import <vector>
+
 #import "base/auto_reset.h"
 #import "base/check_is_test.h"
+#import "base/containers/map_util.h"
+#import "base/feature_list.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
-#import "base/strings/sys_string_conversions.h"
+#import "base/scoped_observation.h"
+#import "base/stl_util.h"
 #import "components/policy/core/common/management/platform_management_service.h"
 #import "components/prefs/pref_service.h"
+#import "components/prefs/scoped_user_pref_update.h"
 #import "components/signin/core/browser/account_management_type_metrics_recorder.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/app/change_profile_commands.h"
-#import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
@@ -140,6 +152,184 @@ void RecordAccountProfileStartupState(bool is_primary_account,
   base::UmaHistogramEnumeration("Signin.AccountProfileStartupState2", state);
 }
 
+constexpr char kDefaultProfileName[] = "Default";
+
+// Inverts `profile_to_gaia_ids` (which is sorted in ASCII order of profile
+// names) into a map from `GaiaId` to sorted vector of profile names.
+std::map<GaiaId, std::vector<std::string>> InvertProfileToGaiaIds(
+    const ProfileNameToGaiaIds& profile_to_gaia_ids) {
+  std::map<GaiaId, std::vector<std::string>> gaia_id_to_profiles;
+  for (const auto& [profile_name, gaia_ids] : profile_to_gaia_ids) {
+    for (const GaiaId& gaia_id : gaia_ids) {
+      gaia_id_to_profiles[gaia_id].push_back(profile_name);
+    }
+  }
+  return gaia_id_to_profiles;
+}
+
+// Classifies the corruption cohort for a managed `gaia_id` attached to 2 or
+// more `profiles` (sorted in ASCII order).
+IOSAccountProfileMappingStartupState ClassifyCorruptedManagedGaia(
+    const GaiaId& gaia_id,
+    const std::vector<std::string>& profiles,
+    const std::string& personal_profile_name,
+    const ProfileAttributesStorageIOS* storage) {
+  CHECK_GE(profiles.size(), 2u);
+  if (profiles.size() >= 3) {
+    return IOSAccountProfileMappingStartupState::kThreeOrMoreProfiles;
+  }
+
+  // `profiles.size() == 2`, with `profiles[0] < profiles[1]` in ASCII order.
+  const ProfileAttributesIOS attr0 =
+      storage->GetAttributesForProfileWithName(profiles[0]);
+  const ProfileAttributesIOS attr1 =
+      storage->GetAttributesForProfileWithName(profiles[1]);
+  const bool is_personal_0 = (profiles[0] == personal_profile_name);
+  const bool is_personal_1 = (profiles[1] == personal_profile_name);
+
+  const std::optional<ProfileAttributesIOS> personal_attr =
+      (!personal_profile_name.empty() &&
+       storage->HasProfileWithName(personal_profile_name))
+          ? std::make_optional(
+                storage->GetAttributesForProfileWithName(personal_profile_name))
+          : std::nullopt;
+  const bool personal_init =
+      personal_attr.has_value() && personal_attr->IsFullyInitialized();
+  const base::Time personal_last_active =
+      personal_attr.has_value() ? personal_attr->GetLastActiveTime()
+                                : base::Time();
+
+  if (!is_personal_0 && !is_personal_1) {
+    // Attached to 2 Managed profiles (Cohorts A and B).
+    // Note: `orig_profile` was the active profile when migrated to Managed, so
+    // it is guaranteed to have Init=1. `UUID_M` starts with Init=0 and can only
+    // be initialized if it sits at `profiles[0]` (since
+    // `FindProfileNameForGaiaID` always returns `profiles[0]`). Furthermore,
+    // `"Default"` can only ever be `orig_profile` (newly created profiles
+    // always get a random UUID), so `profiles[0] == "Default"` implies Cohort B
+    // (`orig_profile < UUID_M`).
+    const bool init0 = attr0.IsFullyInitialized();
+    const bool init1 = attr1.IsFullyInitialized();
+    if (!init0 && init1) {
+      if (profiles[0] == kDefaultProfileName) {
+        return IOSAccountProfileMappingStartupState::
+            kCohortB_FirstIsDefaultUninit_SecondInit;
+      }
+      // Cohort A (`UUID_M < orig_profile`): `profiles[0]` is uninitialized
+      // `UUID_M`, `profiles[1]` is initialized `orig_profile`.
+      return personal_init
+                 ? IOSAccountProfileMappingStartupState::
+                       kCohortA2_ShadowedByUninitManaged_PersonalInit
+                 : IOSAccountProfileMappingStartupState::
+                       kCohortA1_ShadowedByUninitManaged_PersonalUninit;
+    }
+    if (init0 && init1) {
+      if (profiles[0] == kDefaultProfileName) {
+        return IOSAccountProfileMappingStartupState::
+            kCohortB_TwoInitManaged_FirstIsDefault;
+      }
+      // Cohort A3: both Managed profiles are initialized.
+      if (attr1.GetLastActiveTime() > attr0.GetLastActiveTime()) {
+        return IOSAccountProfileMappingStartupState::
+            kCohortA3c_TwoInitManaged_SecondMoreRecent;
+      }
+      if (personal_init && personal_last_active > attr0.GetLastActiveTime()) {
+        return IOSAccountProfileMappingStartupState::
+            kCohortA3b_TwoInitManaged_PersonalMoreRecent;
+      }
+      return IOSAccountProfileMappingStartupState::
+          kCohortA3a_TwoInitManaged_FirstMoreRecent;
+    }
+    if (init0 && !init1) {
+      // Cohort B (`orig_profile < UUID_M`): `profiles[0]` is initialized
+      // `orig_profile`, `profiles[1]` is uninitialized `UUID_M`.
+      return (personal_init && personal_last_active > attr0.GetLastActiveTime())
+                 ? IOSAccountProfileMappingStartupState::
+                       kCohortB2_ExtraUninitManaged_PersonalMoreRecent
+                 : IOSAccountProfileMappingStartupState::
+                       kCohortB1_ExtraUninitManaged_OrigMoreRecent;
+    }
+    return IOSAccountProfileMappingStartupState::kTwoUninitManagedProfiles;
+  }
+
+  // Attached to 1 Personal profile and 1 Managed profile (Cohort C).
+  const ProfileAttributesIOS& managed_attr = is_personal_0 ? attr1 : attr0;
+  if (!personal_init) {
+    return IOSAccountProfileMappingStartupState::
+        kCohortC1_PersonalAndManaged_PersonalUninit;
+  }
+  if (personal_attr->GetGaiaId() != gaia_id) {
+    return IOSAccountProfileMappingStartupState::
+        kCohortC2_PersonalAndManaged_NotPrimaryInPersonal;
+  }
+  if (managed_attr.GetLastActiveTime() > personal_last_active) {
+    return IOSAccountProfileMappingStartupState::
+        kCohortC3_PersonalAndManaged_PrimaryInPersonal_ManagedMoreRecent;
+  }
+  return IOSAccountProfileMappingStartupState::
+      kCohortC3_PersonalAndManaged_PrimaryInPersonal;
+}
+
+// Records the on-disk profile attachment state for managed Gaia IDs stored in
+// `storage` once at browser startup.
+void RecordAccountProfileMappingStartupState(
+    const ProfileNameToGaiaIds& profile_to_gaia_ids,
+    const ProfileAttributesStorageIOS* storage) {
+  if (!storage) {
+    CHECK_IS_TEST();
+    return;
+  }
+
+  const std::map<GaiaId, std::vector<std::string>> gaia_id_to_profiles =
+      InvertProfileToGaiaIds(profile_to_gaia_ids);
+
+  const std::string personal_profile_name = storage->GetPersonalProfileName();
+  bool has_any_managed_account = false;
+  std::vector<IOSAccountProfileMappingStartupState> corrupted_states;
+
+  for (const auto& [gaia_id, profiles] : gaia_id_to_profiles) {
+    // Skip personal accounts (attached only to `personal_profile_name`). Note
+    // that this also skips a pre-multi-profile managed primary account that has
+    // not yet been force-migrated out of the personal profile, which is fine
+    // since unmigrated accounts cannot be affected by crbug.com/577577623.
+    if (profiles.size() == 1 && profiles[0] == personal_profile_name) {
+      continue;
+    }
+    has_any_managed_account = true;
+    if (profiles.size() >= 2) {
+      corrupted_states.push_back(ClassifyCorruptedManagedGaia(
+          gaia_id, profiles, personal_profile_name, storage));
+    }
+  }
+
+  // Do not emit on devices with no managed accounts.
+  if (!has_any_managed_account) {
+    return;
+  }
+
+  const IOSAccountProfileMappingStartupState state =
+      corrupted_states.empty() ? IOSAccountProfileMappingStartupState::
+                                     kEachManagedAccountInSingleProfile
+                               : (corrupted_states.size() == 1
+                                      ? corrupted_states[0]
+                                      : IOSAccountProfileMappingStartupState::
+                                            kMultipleCorruptedManagedAccounts);
+
+  constexpr char kProfileMappingStartupStateHistogram[] =
+      "Signin.IOSAccountProfileMappingStartupState";
+  constexpr char kProfileMappingStartupStateHasDefaultHistogram[] =
+      "Signin.IOSAccountProfileMappingStartupState.HasDefaultProfile";
+  constexpr char kProfileMappingStartupStateNoDefaultHistogram[] =
+      "Signin.IOSAccountProfileMappingStartupState.NoDefaultProfile";
+
+  base::UmaHistogramEnumeration(kProfileMappingStartupStateHistogram, state);
+  base::UmaHistogramEnumeration(
+      storage->HasProfileWithName(kDefaultProfileName)
+          ? kProfileMappingStartupStateHasDefaultHistogram
+          : kProfileMappingStartupStateNoDefaultHistogram,
+      state);
+}
+
 }  // namespace
 
 // Helper class that handles assignment of accounts to profiles. Specifically,
@@ -224,6 +414,68 @@ class AccountProfileMapper::Assigner
   // must have set `is_updating_profile_attributes_storage_` to true (since
   // deleting the profile also triggers an attributes-changed notification).
   void DeleteProfileNamed(std::string_view name);
+
+  // Remaps any references to `from_profile` in `prefs::kProfileForScene` and
+  // `prefs::kLastUsedProfile` to `to_profile`.
+  // `kCleanupCorruptedAccountProfileMappings` must be enabled, and the caller
+  // must have set `is_updating_profile_attributes_storage_` to true.
+  void RemapProfileReferences(std::string_view from_profile,
+                              std::string_view to_profile);
+
+  // Abandons an initialized duplicate profile `profile_to_abandon` in favor of
+  // `replacement_profile_name`: remaps any references to `profile_to_abandon`
+  // in `prefs::kProfileForScene` and `prefs::kLastUsedProfile` to
+  // `replacement_profile_name`, and moves `profile_to_abandon`'s entry from
+  // `prefs::kProfileInfoCache` into `prefs::kAbandonedProfiles` without marking
+  // its directory for deletion on disk (`prefs::kProfilesToRemove`).
+  // `kCleanupCorruptedAccountProfileMappings` must be enabled, and the caller
+  // must have set `is_updating_profile_attributes_storage_` to true.
+  // TODO(crbug.com/581920319): Eventually purge `kAbandonedProfiles` (moving
+  // any remaining entries to `kProfilesToRemove`) once we decide whether to
+  // perform any data recovery.
+  void AbandonProfileNamed(std::string_view profile_to_abandon,
+                           std::string_view replacement_profile_name);
+
+  // Purges any entries in `prefs::kAbandonedProfiles` whose associated Gaia
+  // IDs are no longer present in `all_gaia_ids_on_device` (i.e. were removed
+  // from the device), moving their profile names to `prefs::kProfilesToRemove`
+  // so their directories on disk are deleted by
+  // `PurgeProfilesMarkedForDeletion()`. The caller must have set
+  // `is_updating_profile_attributes_storage_` to true.
+  void DeleteAbandonedProfilesForRemovedIdentities(
+      const std::set<GaiaId>& all_gaia_ids_on_device);
+
+  // Repairs corrupted 1-to-2 GaiaId-to-profile mappings on disk caused by
+  // crbug.com/577577623, recording the outcome once in
+  // `Signin.IOSAccountProfileMappingCleanupAction`. Must be called during
+  // construction after `RecordAccountProfileMappingStartupState()` and before
+  // `UpdateIdentityProfileMappings()`.
+  void MaybeCleanUpCorruptedProfileMappings();
+
+  // Performs the corrupted-mapping cleanup for a non-empty `corrupted` list
+  // (`GaiaId` -> sorted profile names with `size() >= 2`) and returns the
+  // action taken (or skipped). `kCleanupCorruptedAccountProfileMappings` must
+  // be enabled.
+  IOSAccountProfileMappingCleanupAction CleanUpCorruptedProfileMappings(
+      const std::vector<std::pair<GaiaId, std::vector<std::string>>>&
+          corrupted);
+
+  // Repairs a Cohort C collision (`gaia_id` attached to both the Personal
+  // profile and a Managed profile) by detaching `gaia_id` from the Personal
+  // profile. `kCleanupCorruptedAccountProfileMappings` must be enabled, and the
+  // caller must have set `is_updating_profile_attributes_storage_` to true.
+  IOSAccountProfileMappingCleanupAction CleanUpPersonalAndManagedCollision(
+      const GaiaId& gaia_id);
+
+  // Repairs a Cohorts A/B collision (`gaia_id` attached to two Managed profiles
+  // `profile0` < `profile1` in ASCII order) by deleting an uninitialized
+  // duplicate or abandoning the less-recently-active initialized duplicate.
+  // `kCleanupCorruptedAccountProfileMappings` must be enabled, and the caller
+  // must have set `is_updating_profile_attributes_storage_` to true.
+  IOSAccountProfileMappingCleanupAction CleanUpDuplicateManagedProfiles(
+      const GaiaId& gaia_id,
+      std::string_view profile0,
+      std::string_view profile1);
 
   // Iterates over all identities and, if necessary, assigns them to profiles.
   // Also cleans up mappings (and related profiles) if identities have been
@@ -343,6 +595,8 @@ AccountProfileMapper::Assigner::Assigner(
   ProfileAttributesStorageIOS* storage = GetProfileAttributesStorage();
   profile_to_gaia_ids_ =
       GetMappingFromProfileAttributes(system_identity_manager_, storage);
+  RecordAccountProfileMappingStartupState(profile_to_gaia_ids_, storage);
+  MaybeCleanUpCorruptedProfileMappings();
   // Ensure the mapping is populated and up-to-date.
   UpdateIdentityProfileMappings();
 
@@ -397,13 +651,14 @@ void AccountProfileMapper::Assigner::MakePersonalProfileManagedWithGaiaID(
 
     const std::string previous_personal_profile_name = GetPersonalProfileName();
 
-    const std::set<GaiaId, std::less<>> personal_gaia_ids =
+    std::set<GaiaId, std::less<>> personal_gaia_ids =
         profile_to_gaia_ids_[previous_personal_profile_name];
 
     // Detach all Gaia IDs from the old personal profile.
     for (const GaiaId& gaia_id : personal_gaia_ids) {
       DetachGaiaIdFromProfile(previous_personal_profile_name, gaia_id);
     }
+    personal_gaia_ids.erase(managed_gaia_id);
 
     ProfileAttributesStorageIOS* storage = GetProfileAttributesStorage();
     CHECK(storage);
@@ -492,10 +747,10 @@ void AccountProfileMapper::Assigner::OnIdentityListChanged() {
 }
 
 void AccountProfileMapper::Assigner::UpdateIdentityProfileMappings() {
-  std::set<GaiaId> processed_gaia_ids;
+  std::set<GaiaId> all_gaia_ids_on_device;
   system_identity_manager_->IterateOverIdentities(base::BindRepeating(
       &Assigner::ProcessIdentityForAssignmentToProfile, base::Unretained(this),
-      std::ref(processed_gaia_ids)));
+      std::ref(all_gaia_ids_on_device)));
 
   {
     base::AutoReset<bool> updating_attributes(
@@ -507,7 +762,7 @@ void AccountProfileMapper::Assigner::UpdateIdentityProfileMappings() {
     if (attributes_storage) {
       for (const auto& [profile_name, gaia_ids] : profile_to_gaia_ids_) {
         for (const GaiaId& gaia_id : gaia_ids) {
-          if (processed_gaia_ids.contains(gaia_id)) {
+          if (all_gaia_ids_on_device.contains(gaia_id)) {
             // `gaia_id` still exists, nothing to be done.
             continue;
           }
@@ -525,6 +780,13 @@ void AccountProfileMapper::Assigner::UpdateIdentityProfileMappings() {
 
           gaia_ids_failed_fetching_.erase(gaia_id);
         }
+      }
+      // Not gated on `kCleanupCorruptedAccountProfileMappings` so previously
+      // abandoned profiles are still purged on account removal if the feature
+      // flag is later disabled.
+      if (local_pref_service_ &&
+          !local_pref_service_->GetDict(prefs::kAbandonedProfiles).empty()) {
+        DeleteAbandonedProfilesForRemovedIdentities(all_gaia_ids_on_device);
       }
     }
   }
@@ -646,6 +908,323 @@ void AccountProfileMapper::Assigner::DeleteProfileNamed(std::string_view name) {
   // be no UI loaded and thus it is safe to simply mark the profile for
   // deletion directly via the ProfileManagerIOS.
   profile_manager_->MarkProfileForDeletion(name);
+}
+
+void AccountProfileMapper::Assigner::RemapProfileReferences(
+    std::string_view from_profile,
+    std::string_view to_profile) {
+  CHECK(base::FeatureList::IsEnabled(kCleanupCorruptedAccountProfileMappings));
+  CHECK(is_updating_profile_attributes_storage_);
+  CHECK(local_pref_service_);
+  CHECK(!from_profile.empty());
+  CHECK(!to_profile.empty());
+  CHECK_NE(from_profile, GetPersonalProfileName());
+  CHECK_NE(from_profile, to_profile);
+
+  // Remap any scene referencing `from_profile` to `to_profile`.
+  {
+    ScopedDictPrefUpdate update(local_pref_service_, prefs::kProfileForScene);
+    for (auto [key, value] : update.Get()) {
+      if (const std::string* profile = value.GetIfString();
+          profile && *profile == from_profile) {
+        value = base::Value(to_profile);
+      }
+    }
+  }
+
+  // If `kLastUsedProfile` pointed to `from_profile`, remap it as well.
+  if (local_pref_service_->GetString(prefs::kLastUsedProfile) == from_profile) {
+    local_pref_service_->SetString(prefs::kLastUsedProfile, to_profile);
+  }
+}
+
+void AccountProfileMapper::Assigner::AbandonProfileNamed(
+    std::string_view profile_to_abandon,
+    std::string_view replacement_profile_name) {
+  RemapProfileReferences(/*from_profile=*/profile_to_abandon,
+                         /*to_profile=*/replacement_profile_name);
+
+  // Extract the profile's attributes from `kProfileInfoCache` and archive them
+  // in `kAbandonedProfiles` (preserving `gaia_id` / `attached_gaia_ids` /
+  // `last_active_time` metadata for potential future recovery or deletion;
+  // cleared when the account is removed from the device).
+  // Privacy review: crbug.com/577577657.
+  std::optional<base::Value> abandoned_attr;
+  {
+    ScopedDictPrefUpdate update(local_pref_service_, prefs::kProfileInfoCache);
+    abandoned_attr = update->Extract(profile_to_abandon);
+  }
+  CHECK(abandoned_attr.has_value());
+  ScopedDictPrefUpdate update(local_pref_service_, prefs::kAbandonedProfiles);
+  update->Set(profile_to_abandon, std::move(*abandoned_attr));
+}
+
+void AccountProfileMapper::Assigner::
+    DeleteAbandonedProfilesForRemovedIdentities(
+        const std::set<GaiaId>& all_gaia_ids_on_device) {
+  CHECK(is_updating_profile_attributes_storage_);
+  CHECK(local_pref_service_);
+  ProfileAttributesStorageIOS* storage = GetProfileAttributesStorage();
+  CHECK(storage);
+
+  std::vector<std::string> profiles_to_remove;
+  for (const auto [profile_name, value] :
+       local_pref_service_->GetDict(prefs::kAbandonedProfiles)) {
+    const ProfileAttributesIOS attr =
+        ProfileAttributesIOS::WithAttrs(profile_name, value.GetDict());
+    ProfileAttributesIOS::GaiaIdSet gaia_ids = attr.GetAttachedGaiaIds();
+    if (const GaiaId gaia_id = attr.GetGaiaId(); !gaia_id.empty()) {
+      gaia_ids.insert(gaia_id);
+    }
+    if (base::STLSetIntersection<std::vector<GaiaId>>(gaia_ids,
+                                                      all_gaia_ids_on_device)
+            .empty()) {
+      profiles_to_remove.push_back(profile_name);
+    }
+  }
+
+  if (profiles_to_remove.empty()) {
+    return;
+  }
+
+  {
+    ScopedDictPrefUpdate abandoned_update(local_pref_service_,
+                                          prefs::kAbandonedProfiles);
+    for (const std::string& profile_name : profiles_to_remove) {
+      abandoned_update->Remove(profile_name);
+    }
+  }
+  // Append directly to `prefs::kProfilesToRemove` instead of calling
+  // `DeleteProfileNamed()` / `MarkProfileForDeletion()`, which require the
+  // profile to still exist in `prefs::kProfileInfoCache`. Because an abandoned
+  // profile was already detached from scenes and is never loaded, adding it to
+  // `prefs::kProfilesToRemove` is sufficient for
+  // `PurgeProfilesMarkedForDeletion()` to delete its directory from disk.
+  {
+    ScopedListPrefUpdate delete_update(local_pref_service_,
+                                       prefs::kProfilesToRemove);
+    for (const std::string& profile_name : profiles_to_remove) {
+      if (!storage->HasProfileWithName(profile_name) &&
+          !delete_update->contains(profile_name)) {
+        delete_update->Append(profile_name);
+      }
+    }
+  }
+}
+
+void AccountProfileMapper::Assigner::MaybeCleanUpCorruptedProfileMappings() {
+  ProfileAttributesStorageIOS* storage = GetProfileAttributesStorage();
+  if (!storage) {
+    CHECK_IS_TEST();
+    return;
+  }
+
+  // Only clean up confirmed managed accounts that are currently on the device:
+  // - Accounts removed from the device have their profiles deleted by
+  //   `UpdateIdentityProfileMappings()` anyway and should not activate the
+  //   Finch study.
+  // - Consumer accounts (`hosted_domain.length == 0`) are skipped so a consumer
+  //   account attached to both Personal and Managed is not mistakenly detached
+  //   from Personal (`UpdateIdentityProfileMappings()` will re-assign it).
+  // - Accounts whose hosted domain is not yet cached (`hosted_domain == nil`)
+  //   are deferred until a subsequent startup after `FetchHostedDomain()`
+  //   populates the persistent SSO cache.
+  std::set<GaiaId> managed_gaia_ids_on_device;
+  system_identity_manager_->IterateOverIdentities(base::BindRepeating(
+      [](SystemIdentityManager* manager, std::set<GaiaId>& managed_ids,
+         id<SystemIdentity> identity) {
+        CHECK(identity);
+        NSString* hosted_domain =
+            manager->GetCachedHostedDomainForIdentity(identity);
+        if (hosted_domain && hosted_domain.length > 0) {
+          managed_ids.insert(identity.gaiaId);
+        }
+        return SystemIdentityManager::IteratorResult::kContinueIteration;
+      },
+      system_identity_manager_, std::ref(managed_gaia_ids_on_device)));
+
+  std::vector<std::pair<GaiaId, std::vector<std::string>>> corrupted;
+  for (auto& [gaia_id, profiles] :
+       InvertProfileToGaiaIds(profile_to_gaia_ids_)) {
+    if (profiles.size() >= 2 && managed_gaia_ids_on_device.contains(gaia_id)) {
+      corrupted.emplace_back(gaia_id, std::move(profiles));
+    }
+  }
+  if (corrupted.empty()) {
+    return;
+  }
+
+  // Check the feature flag only after confirming corruption exists so that
+  // unaffected installs do not activate the Finch trial. Note: Because
+  // `corrupted` becomes empty on subsequent startups once cleaned up, the Finch
+  // study config must use `STICKY_AFTER_QUERY` activation so cleaned-up clients
+  // remain active across restarts alongside Control clients.
+  if (!base::FeatureList::IsEnabled(kCleanupCorruptedAccountProfileMappings)) {
+    return;
+  }
+
+  const IOSAccountProfileMappingCleanupAction action =
+      CleanUpCorruptedProfileMappings(corrupted);
+  base::UmaHistogramEnumeration("Signin.IOSAccountProfileMappingCleanupAction",
+                                action);
+}
+
+IOSAccountProfileMappingCleanupAction
+AccountProfileMapper::Assigner::CleanUpCorruptedProfileMappings(
+    const std::vector<std::pair<GaiaId, std::vector<std::string>>>& corrupted) {
+  CHECK(base::FeatureList::IsEnabled(kCleanupCorruptedAccountProfileMappings));
+  CHECK(!corrupted.empty());
+  ProfileAttributesStorageIOS* storage = GetProfileAttributesStorage();
+  CHECK(storage);
+
+  if (corrupted.size() >= 2) {
+    // Unexpected (`kMultipleCorruptedManagedAccounts`): `crbug.com/577577623`
+    // could only corrupt the single pre-migration primary managed account;
+    // leave multiple corrupted accounts untouched.
+    return IOSAccountProfileMappingCleanupAction::
+        kSkippedMultipleCorruptedAccounts;
+  }
+
+  const auto& [gaia_id, profiles] = corrupted[0];
+  CHECK_GE(profiles.size(), 2u);
+  if (profiles.size() >= 3) {
+    // Unexpected (`kThreeOrMoreProfiles`): attached to 3 or more profiles;
+    // leave untouched.
+    return IOSAccountProfileMappingCleanupAction::kSkippedThreeOrMoreProfiles;
+  }
+
+  IOSAccountProfileMappingCleanupAction action;
+  {
+    base::AutoReset<bool> updating_attributes(
+        &is_updating_profile_attributes_storage_, true);
+    if (std::ranges::contains(profiles, storage->GetPersonalProfileName())) {
+      // Cohort C: attached to both the Personal profile and a Managed profile.
+      action = CleanUpPersonalAndManagedCollision(gaia_id);
+    } else {
+      // Cohorts A and B: attached to two Managed profiles.
+      action =
+          CleanUpDuplicateManagedProfiles(gaia_id, profiles[0], profiles[1]);
+    }
+  }
+  profile_to_gaia_ids_ =
+      GetMappingFromProfileAttributes(system_identity_manager_, storage);
+  return action;
+}
+
+IOSAccountProfileMappingCleanupAction
+AccountProfileMapper::Assigner::CleanUpPersonalAndManagedCollision(
+    const GaiaId& gaia_id) {
+  CHECK(base::FeatureList::IsEnabled(kCleanupCorruptedAccountProfileMappings));
+  CHECK(is_updating_profile_attributes_storage_);
+  ProfileAttributesStorageIOS* storage = GetProfileAttributesStorage();
+  CHECK(storage);
+
+  const std::string personal_profile_name = storage->GetPersonalProfileName();
+  const ProfileAttributesIOS personal_attr =
+      storage->GetAttributesForProfileWithName(personal_profile_name);
+  DetachGaiaIdFromProfile(personal_profile_name, gaia_id);
+
+  if (!personal_attr.IsFullyInitialized()) {
+    // Cohort C1: Personal profile is uninitialized.
+    return IOSAccountProfileMappingCleanupAction::
+        kDetachedFromUninitPersonalProfile;
+  }
+  if (personal_attr.GetGaiaId() != gaia_id) {
+    // Cohort C2: Personal profile is initialized, and `gaia_id` is not its
+    // primary account.
+    return IOSAccountProfileMappingCleanupAction::
+        kDetachedFromInitPersonalProfileNotPrimary;
+  }
+  // Cohort C3: Personal profile is initialized with `gaia_id` as its primary
+  // account. Intentionally leave `AuthenticationInfo` intact here so it stays
+  // in sync with `IdentityManager`'s persisted primary account until
+  // `personal_profile_name` loads: `PushNotificationAccountContextManager`
+  // initializes its per-account refcount from `ProfileAttributesIOS::GetGaiaId`
+  // across all profiles, and clearing `AuthenticationInfo` eagerly would cause
+  // `PushNotificationProfileService` to unregister `gaia_id` from push
+  // notifications when `AuthenticationService::HandleForgottenIdentity()` signs
+  // it out on `personal_profile_name` load (at which point
+  // `SigninProfileInfoUpdater` clears `AuthenticationInfo` as well).
+  return IOSAccountProfileMappingCleanupAction::
+      kDetachedFromInitPersonalProfilePrimary;
+}
+
+IOSAccountProfileMappingCleanupAction
+AccountProfileMapper::Assigner::CleanUpDuplicateManagedProfiles(
+    const GaiaId& gaia_id,
+    std::string_view profile0,
+    std::string_view profile1) {
+  CHECK(base::FeatureList::IsEnabled(kCleanupCorruptedAccountProfileMappings));
+  CHECK(is_updating_profile_attributes_storage_);
+  ProfileAttributesStorageIOS* storage = GetProfileAttributesStorage();
+  CHECK(storage);
+
+  const ProfileAttributesIOS attr0 =
+      storage->GetAttributesForProfileWithName(profile0);
+  const ProfileAttributesIOS attr1 =
+      storage->GetAttributesForProfileWithName(profile1);
+  const bool init0 = attr0.IsFullyInitialized();
+  const bool init1 = attr1.IsFullyInitialized();
+
+  if (init0 && init1) {
+    // Cohort A3: both Managed profiles are initialized. Keep the more recently
+    // active profile and abandon the older one (removing it from
+    // `kProfileInfoCache` and archiving its attributes in
+    // `kAbandonedProfiles`, while keeping its directory on disk). Ties are
+    // broken in favor of `profile0` (`UUID_M`), which
+    // `FindProfileNameForGaiaID()` returned.
+    if (attr1.GetLastActiveTime() > attr0.GetLastActiveTime()) {
+      // Cohort A3c: `profile1` (`orig_profile`) is more recently active than
+      // `profile0` (`UUID_M`).
+      AbandonProfileNamed(/*profile_to_abandon=*/profile0,
+                          /*replacement_profile_name=*/profile1);
+      return IOSAccountProfileMappingCleanupAction::
+          kAbandonedFirstManagedProfileInitOlder;
+    }
+    // Cohorts A3a, A3b: `profile0` (`UUID_M`) is more recently active than (or
+    // tied with) `profile1` (`orig_profile`).
+    AbandonProfileNamed(/*profile_to_abandon=*/profile1,
+                        /*replacement_profile_name=*/profile0);
+    return IOSAccountProfileMappingCleanupAction::
+        kAbandonedSecondManagedProfileInitOlder;
+  }
+
+  // At least one of the two Managed profiles is uninitialized: delete it.
+  std::string_view profile_to_delete;
+  std::string_view profile_to_keep;
+  IOSAccountProfileMappingCleanupAction action;
+  if (!init0 && init1) {
+    // Cohorts A1, A2: `profile0` (`UUID_M`) is uninitialized, `profile1`
+    // (`orig_profile`) is initialized.
+    profile_to_delete = profile0;
+    profile_to_keep = profile1;
+    action = IOSAccountProfileMappingCleanupAction::
+        kDeletedFirstManagedProfileUninit;
+  } else if (init0 && !init1) {
+    // Cohorts B1, B2: `profile0` (`orig_profile`) is initialized, `profile1`
+    // (`UUID_M`) is uninitialized.
+    profile_to_delete = profile1;
+    profile_to_keep = profile0;
+    action = IOSAccountProfileMappingCleanupAction::
+        kDeletedSecondManagedProfileUninit;
+  } else {
+    // Unexpected (`kTwoUninitManagedProfiles`): neither profile is initialized.
+    // Keep `profile0` and delete `profile1`.
+    profile_to_delete = profile1;
+    profile_to_keep = profile0;
+    action = IOSAccountProfileMappingCleanupAction::
+        kDeletedSecondManagedProfileBothUninit;
+  }
+
+  // Remap any scene or `kLastUsedProfile` references to `profile_to_keep`
+  // across all branches (in `MainController`, scene and last-used-profile prefs
+  // are written synchronously before profile loading completes and sets
+  // `init`).
+  RemapProfileReferences(/*from_profile=*/profile_to_delete,
+                         /*to_profile=*/profile_to_keep);
+  DetachGaiaIdFromProfile(profile_to_delete, gaia_id);
+  DeleteProfileNamed(profile_to_delete);
+  return action;
 }
 
 std::string AccountProfileMapper::Assigner::GetPersonalProfileName() {
@@ -972,16 +1551,18 @@ void AccountProfileMapper::SetChangeProfileCommandsHandler(
 void AccountProfileMapper::AddObserver(AccountProfileMapper::Observer* observer,
                                        std::string_view profile_name) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  observer_lists_per_profile_name_[std::string(profile_name)].AddObserver(
-      observer);
+  base::GetOrCreate(observer_lists_per_profile_name_, profile_name)
+      .AddObserver(observer);
 }
 
 void AccountProfileMapper::RemoveObserver(
     AccountProfileMapper::Observer* observer,
     std::string_view profile_name) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  observer_lists_per_profile_name_[std::string(profile_name)].RemoveObserver(
-      observer);
+  if (auto* observers =
+          base::FindOrNull(observer_lists_per_profile_name_, profile_name)) {
+    observers->RemoveObserver(observer);
+  }
 }
 
 bool AccountProfileMapper::IsSigninSupported() {
@@ -1081,9 +1662,14 @@ AccountProfileMapper::FilterIdentitiesForProfile(
     id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (assigner_->FindProfileNameForGaiaID(identity.gaiaId) != profile_name) {
-    // The identity doesn't belong to this profile; skip over it.
-    return SystemIdentityManager::IteratorResult::kContinueIteration;
+  if (profile_manager_) {
+    ProfileAttributesIOS attr =
+        profile_manager_->GetProfileAttributesStorage()
+            ->GetAttributesForProfileWithName(profile_name);
+    if (!attr.GetAttachedGaiaIds().contains(identity.gaiaId)) {
+      // The identity doesn't belong to this profile; skip over it.
+      return SystemIdentityManager::IteratorResult::kContinueIteration;
+    }
   }
 
   switch (callback.Run(identity)) {

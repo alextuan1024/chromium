@@ -32,7 +32,6 @@
 #include "components/history_clusters/core/history_clusters_service_task_get_most_recent_clusters.h"
 #include "components/history_clusters/core/history_clusters_service_task_get_most_recent_clusters_for_ui.h"
 #include "components/history_clusters/core/history_clusters_service_task_update_cluster_triggerability.h"
-#include "components/history_clusters/core/history_clusters_service_task_update_clusters.h"
 #include "components/history_clusters/core/history_clusters_types.h"
 #include "components/history_clusters/core/history_clusters_util.h"
 #include "components/history_clusters/core/on_device_clustering_backend.h"
@@ -43,11 +42,6 @@
 namespace history_clusters {
 
 namespace {
-
-void RecordUpdateClustersLatencyHistogram(const std::string& histogram_name,
-                                          base::ElapsedTimer elapsed_timer) {
-  base::UmaHistogramMediumTimes(histogram_name, elapsed_timer.Elapsed());
-}
 
 // Serializes a KeywordMap to a base::DictValue using hardcoded keys. Recover
 // a KeywordMap serialized in this way via DictToKeywordsCache.
@@ -98,7 +92,6 @@ constexpr base::TimeDelta kAllKeywordsCacheRefreshAge = base::Hours(2);
 }  // namespace
 
 HistoryClustersService::HistoryClustersService(
-    const std::string& application_locale,
     history::HistoryService* history_service,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     site_engagement::SiteEngagementScoreProvider* engagement_score_provider,
@@ -106,17 +99,9 @@ HistoryClustersService::HistoryClustersService(
     optimization_guide::OptimizationGuideDecider* optimization_guide_decider,
     PrefService* prefs)
     : is_journeys_feature_flag_enabled_(
-          GetConfig().is_journeys_enabled_no_locale_check &&
-          IsApplicationLocaleSupportedByJourneys(application_locale)),
+          GetConfig().is_journeys_enabled_no_locale_check),
       history_service_(history_service),
       pref_service_(prefs) {
-  if (prefs && is_journeys_feature_flag_enabled_) {
-    // Log whether the user has Journeys enabled if they are eligible for it.
-    base::UmaHistogramBoolean(
-        "History.Clusters.JourneysEligibleAndEnabledAtSessionStart",
-        prefs->GetBoolean(prefs::kVisible));
-  }
-
   if (!is_journeys_feature_flag_enabled_) {
     return;
   }
@@ -246,8 +231,7 @@ HistoryClustersService::QueryClusters(
   }
 
   DCHECK(history_service_);
-  if (ShouldUseNavigationContextClustersFromPersistence() &&
-      IsUIRequestSource(clustering_request_source) && !recluster) {
+  if (IsUIRequestSource(clustering_request_source) && !recluster) {
     return std::make_unique<
         HistoryClustersServiceTaskGetMostRecentClustersForUI>(
         weak_ptr_factory_.GetWeakPtr(), backend_.get(), history_service_,
@@ -279,40 +263,16 @@ void HistoryClustersService::UpdateClusters() {
     return;
   }
 
-  // Using custom histogram as this occurs too infrequently to be captured by
-  // the built in histograms. `persist_clusters_in_history_db_period_minutes`
-  // ranges from 1 to 12 hours while the built in timing histograms go up to 1
-  // hr.
-  base::UmaHistogramCustomTimes(
-      "History.Clusters.UpdateClusters.TimeBetweenTasks",
-      update_clusters_timer_.Elapsed(), base::Minutes(60), base::Hours(48),
-      100);
-
   // Reset the timer.
   update_clusters_timer_ = {};
 
-  if (GetConfig().use_navigation_context_clusters) {
-    update_clusters_task_ =
-        std::make_unique<HistoryClustersServiceTaskUpdateClusterTriggerability>(
-            weak_ptr_factory_.GetWeakPtr(), backend_.get(), history_service_,
-            received_synced_visit_since_last_update_,
-            base::BindOnce(
-                &RecordUpdateClustersLatencyHistogram,
-                "History.Clusters.Backend.UpdateClusterTriggerability.Total",
-                base::ElapsedTimer()));
+  update_clusters_task_ =
+      std::make_unique<HistoryClustersServiceTaskUpdateClusterTriggerability>(
+          weak_ptr_factory_.GetWeakPtr(), backend_.get(), history_service_,
+          received_synced_visit_since_last_update_);
 
-    // Reset state for next iteration.
-    received_synced_visit_since_last_update_ = false;
-  } else {
-    update_clusters_task_ =
-        std::make_unique<HistoryClustersServiceTaskUpdateClusters>(
-            weak_ptr_factory_.GetWeakPtr(),
-            incomplete_visit_context_annotations_, backend_.get(),
-            history_service_,
-            base::BindOnce(&RecordUpdateClustersLatencyHistogram,
-                           "History.Clusters.Backend.UpdateClusters.Total",
-                           base::ElapsedTimer()));
-  }
+  // Reset state for next iteration.
+  received_synced_visit_since_last_update_ = false;
 }
 
 std::optional<history::ClusterKeywordData>
@@ -399,15 +359,10 @@ void HistoryClustersService::StartKeywordCacheRefresh() {
   if (cache_keyword_query_task_ && !cache_keyword_query_task_->Done())
     return;
 
+  // Overwrite this so that queries for unclustered visits are not made.
   QueryClustersContinuationParams continuation_params;
-  if (ShouldUseNavigationContextClustersFromPersistence()) {
-    // Overwrite this so that queries for unclustered visits are not made.
-    // In the old path, the `GetAnnotatedVisitsToCluster` task would set
-    // the continuation time when it exhausted all unclustered visits, so it
-    // needs to be set here.
-    continuation_params.exhausted_unclustered_visits = true;
-    continuation_params.continuation_time = base::Time::Now();
-  }
+  continuation_params.exhausted_unclustered_visits = true;
+  continuation_params.continuation_time = base::Time::Now();
 
   // 2 hour threshold chosen arbitrarily for cache refresh time.
   if ((base::Time::Now() - all_keywords_cache_timestamp_) >

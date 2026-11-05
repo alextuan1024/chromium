@@ -25,14 +25,14 @@ namespace {
 // An ordered container of pointers to DependencyNode. The order depends
 // on the operation to perform (initialisation, destruction, ...).
 using OrderedDependencyNodes =
-    std::vector<raw_ptr<DependencyNode, VectorExperimental>>;
+    std::vector<raw_ptr<DependencyNode, DanglingUntriaged>>;
 
 // Convert a vector of pointers to DependencyNode to a vector of pointers to
 // KeyedServiceBaseFactory.
-std::vector<raw_ptr<KeyedServiceBaseFactory, VectorExperimental>>
+std::vector<raw_ptr<KeyedServiceBaseFactory, DanglingUntriaged>>
 OrderedFactoriesFromOrderedDependencyNodes(
     const OrderedDependencyNodes& ordered_dependency_nodes) {
-  std::vector<raw_ptr<KeyedServiceBaseFactory, VectorExperimental>>
+  std::vector<raw_ptr<KeyedServiceBaseFactory, DanglingUntriaged>>
       ordered_factories;
   ordered_factories.reserve(ordered_dependency_nodes.size());
   for (DependencyNode* dependency_node : ordered_dependency_nodes) {
@@ -98,7 +98,7 @@ void DependencyManager::AddEdge(KeyedServiceBaseFactory* depended,
 
 void DependencyManager::RegisterPrefsForServices(
     user_prefs::PrefRegistrySyncable* pref_registry) {
-  std::vector<raw_ptr<DependencyNode, VectorExperimental>> construction_order;
+  std::vector<raw_ptr<DependencyNode, DanglingUntriaged>> construction_order;
   if (!dependency_graph_.GetConstructionOrder(&construction_order)) {
     NOTREACHED();
   }
@@ -226,6 +226,7 @@ void DependencyManager::MarkContextLive(void* context) {
 
 void DependencyManager::MarkContextDead(void* context) {
   dead_context_pointers_.insert(context);
+  contexts_with_services_disabled_by_default_.erase(context);
 
 #if DCHECK_IS_ON()
 #if BUILDFLAG(KEYED_SERVICE_HAS_TIGHT_REGISTRATION)
@@ -233,6 +234,19 @@ void DependencyManager::MarkContextDead(void* context) {
   --context_created_count_;
 #endif
 #endif
+}
+
+void DependencyManager::DisableContextServicesByDefault(void* context) {
+  AssertContextWasntDestroyed(context);
+  for (KeyedServiceBaseFactory* factory : GetConstructionOrder()) {
+    CHECK(!factory->IsServiceCreated(context));
+  }
+  contexts_with_services_disabled_by_default_.insert(context);
+}
+
+bool DependencyManager::AreContextServicesDisabledByDefault(
+    void* context) const {
+  return contexts_with_services_disabled_by_default_.contains(context);
 }
 
 DependencyGraph& DependencyManager::GetDependencyGraphForTesting() {

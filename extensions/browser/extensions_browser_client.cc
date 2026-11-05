@@ -63,6 +63,11 @@ void ExtensionsBrowserClient::AddAPIProvider(
 
 void ExtensionsBrowserClient::StartTearDown() {}
 
+bool ExtensionsBrowserClient::IsolatedModeReplacesIncognito(
+    content::BrowserContext* context) const {
+  return false;
+}
+
 scoped_refptr<update_client::UpdateClient>
 ExtensionsBrowserClient::CreateUpdateClient(
     scoped_refptr<update_client::Configurator> configurator) {
@@ -180,6 +185,10 @@ ScriptExecutor* ExtensionsBrowserClient::GetScriptExecutorForTab(
     content::WebContents& web_contents) {
   return nullptr;
 }
+
+void ExtensionsBrowserClient::OnWillExecuteScript(
+    content::WebContents* web_contents,
+    const ExtensionId& extension_id) {}
 
 bool ExtensionsBrowserClient::IsUsbDeviceAllowedByPolicy(
     content::BrowserContext* context,
@@ -417,6 +426,16 @@ gfx::NativeWindow ExtensionsBrowserClient::GetNativeWindowForFunction(
 }
 
 bool ExtensionsBrowserClient::IsLazyKeyedServiceInstantiationEnabled() const {
+  return false;
+}
+
+bool ExtensionsBrowserClient::
+    IsLazySocketAndUsbKeyedServiceInstantiationEnabled() const {
+  return false;
+}
+
+bool ExtensionsBrowserClient::
+    IsLazyChromeOSResourceKeyedServiceInstantiationEnabled() const {
   return false;
 }
 

@@ -36,8 +36,8 @@ public abstract class Struct {
     /**
      * Returns the serialization of the struct. This method can close Handles.
      *
-     * @param core the |Core| implementation used to generate handles. Only used if the data
-     *            structure being encoded contains interfaces, can be |null| otherwise.
+     * @param core the {@code Core} implementation used to generate handles. Only used if the data
+     *     structure being encoded contains interfaces, can be {@code null} otherwise.
      */
     public Message serialize(@Nullable Core core) {
         Encoder encoder = new Encoder(core, mEncodedBaseSize);
@@ -46,7 +46,7 @@ public abstract class Struct {
     }
 
     /**
-     * Similar to the method above, but returns the serialization result as |ByteBuffer|.
+     * Similar to the method above, but returns the serialization result as {@code ByteBuffer}.
      *
      * @throws UnsupportedOperationException if the struct contains interfaces or handles.
      * @throws SerializationException on serialization failure.
@@ -66,11 +66,11 @@ public abstract class Struct {
     /**
      * Returns the serialization of the struct prepended with the given header.
      *
+     * @param core the {@code Core} implementation used to generate handles. Only used if the {@code
+     *     Struct} being encoded contains interfaces, can be {@code null} otherwise.
      * @param header the header to prepend to the returned message.
-     * @param core the |Core| implementation used to generate handles. Only used if the |Struct|
-     *            being encoded contains interfaces, can be |null| otherwise.
      */
-    public ServiceMessage serializeWithHeader(Core core, MessageHeader header) {
+    public ServiceMessage serializeWithHeader(@Nullable Core core, MessageHeader header) {
         Encoder encoder = new Encoder(core, mEncodedBaseSize + header.getSize());
         header.encode(encoder);
         encode(encoder);
@@ -82,6 +82,14 @@ public abstract class Struct {
         }
     }
 
-    /** Use the given encoder to serialize this data structure. */
-    protected abstract void encode(Encoder encoder);
+    /**
+     * Use the given encoder to serialize this data structure. Structs with multiple versions
+     * override this to encode their latest version.
+     */
+    protected void encode(Encoder encoder) {
+        encodeFields(encoder.getEncoderAtDataOffset(mEncodedBaseSize, 0));
+    }
+
+    /** Use the given encoder (positioned after the struct header) to serialize the fields. */
+    protected abstract void encodeFields(Encoder encoder);
 }

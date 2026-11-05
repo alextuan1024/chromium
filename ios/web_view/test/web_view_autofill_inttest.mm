@@ -14,7 +14,7 @@
 #import "components/variations/variations_ids_provider.h"
 #import "ios/web/common/uikit_ui_util.h"
 #import "ios/web_view/public/cwv_global_state.h"
-#import "ios/web_view/public/cwv_navigation_delegate.h"
+#import "ios/web_view/test/fake_cwv_navigation_delegate.h"
 #import "ios/web_view/test/web_view_inttest_base.h"
 #import "ios/web_view/test/web_view_test_util.h"
 #import "net/base/apple/url_conversions.h"
@@ -31,27 +31,6 @@ using FieldType = autofill::FormActivityParams::FieldType;
 
 @interface CWVAutofillController (Testing)
 - (void)setForceSubmittedByUserForTesting:(BOOL)force;
-@end
-
-// A stub object that observes the |webViewDidFinishNavigation| event of
-// CWVNavigationDelegate. CWVNavigationDelegate is also used as navigation
-// policy decider, so OCMProtocolMock doesn't work here because it implements
-// all protocol methods which will return NO and block the navigation.
-@interface CWVNavigationPageLoadObserver : NSObject <CWVNavigationDelegate>
-
-// Whether |webViewDidFinishNavigation| has been called. Initiated as NO.
-@property(nonatomic, assign, readonly) BOOL pageLoaded;
-
-- (void)webViewDidFinishNavigation:(CWVWebView*)webView;
-
-@end
-
-@implementation CWVNavigationPageLoadObserver
-
-- (void)webViewDidFinishNavigation:(CWVWebView*)webView {
-  _pageLoaded = YES;
-}
-
 @end
 
 namespace ios_web_view {
@@ -180,11 +159,11 @@ class WebViewAutofillTest : public WebViewInttestBase {
   }
 
   bool WaitUntilPageLoaded() {
-    CWVNavigationPageLoadObserver* observer =
-        [[CWVNavigationPageLoadObserver alloc] init];
-    web_view_.navigationDelegate = observer;
+    FakeCWVNavigationDelegate* delegate =
+        [[FakeCWVNavigationDelegate alloc] init];
+    web_view_.navigationDelegate = delegate;
     bool result = WaitUntilConditionOrTimeout(kWaitForPageLoadTimeout, ^{
-      return observer.pageLoaded;
+      return delegate.navigationFinished;
     });
     web_view_.navigationDelegate = nil;
     return result;
@@ -266,13 +245,6 @@ TEST_F(WebViewAutofillTest, TestDelegateCallbacks) {
          autofillController:autofill_controller_
       didSubmitFormWithName:kTestFormName
                     frameID:[OCMArg any]
-             perfectFilling:[OCMArg any]];
-
-  [[[autofill_controller_delegate_ expect] ignoringNonObjectArgs]
-         autofillController:autofill_controller_
-      didSubmitFormWithName:kTestFormName
-                    frameID:[OCMArg any]
-              userInitiated:[OCMArg any]
              perfectFilling:[OCMArg any]];
   // The 'submit' event listener defined in form.js is only called during the
   // bubbling phase.
@@ -404,13 +376,6 @@ TEST_F(WebViewAutofillTest, TestChildFrameSubmission) {
          autofillController:autofill_controller_
       didSubmitFormWithName:[OCMArg any]
                     frameID:[OCMArg any]
-             perfectFilling:[OCMArg any]];  // Relax just in case.
-
-  [[autofill_controller_delegate_ expect]
-         autofillController:autofill_controller_
-      didSubmitFormWithName:[OCMArg any]
-                    frameID:[OCMArg any]
-              userInitiated:YES             // Usually YES if clicked.
              perfectFilling:[OCMArg any]];  // Relax just in case.
 
   // Wait for child frame and submit.

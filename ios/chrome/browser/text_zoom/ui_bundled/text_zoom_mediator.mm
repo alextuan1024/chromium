@@ -6,7 +6,7 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/scoped_observation.h"
-#import "components/dom_distiller/core/distilled_page_prefs.h"
+#import "components/web_distiller/core/distilled_page_prefs.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_font_size_utils.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
@@ -15,6 +15,7 @@
 #import "ios/chrome/browser/shared/public/commands/text_zoom_commands.h"
 #import "ios/chrome/browser/text_zoom/ui_bundled/text_zoom_consumer.h"
 #import "ios/chrome/browser/web/model/font_size/font_size_tab_helper.h"
+#import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_observer_bridge.h"
 
@@ -35,13 +36,13 @@
   id<TextZoomCommands> _commandHandler;
 
   // Distilled page prefs for reader mode.
-  raw_ptr<dom_distiller::DistilledPagePrefs> _distilledPagePrefs;
+  raw_ptr<web_distiller::DistilledPagePrefs> _distilledPagePrefs;
 }
 
 - (instancetype)initWithWebStateList:(WebStateList*)webStateList
                       commandHandler:(id<TextZoomCommands>)commandHandler
                   distilledPagePrefs:
-                      (dom_distiller::DistilledPagePrefs*)distilledPagePrefs {
+                      (web_distiller::DistilledPagePrefs*)distilledPagePrefs {
   DCHECK(webStateList);
   DCHECK(commandHandler);
   if (([super init])) {
@@ -191,6 +192,9 @@
 
 - (void)webState:(web::WebState*)webState
     didFinishNavigation:(web::NavigationContext*)navigation {
+  if (!navigation->HasCommitted()) {
+    return;
+  }
   [_commandHandler closeTextZoom];
 }
 

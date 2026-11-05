@@ -1,0 +1,383 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.payments.handler;
+
+import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import android.app.Activity;
+
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
+import org.robolectric.annotation.Config;
+
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
+import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.payments.handler.PaymentHandlerCoordinator.PaymentHandlerUiObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
+import org.chromium.components.payments.ui.InputProtector;
+import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.WebContentsObserver;
+import org.chromium.ui.display.DisplayAndroid;
+import org.chromium.ui.modelutil.PropertyModel;
+
+/**
+ * Unit tests for how {@link PaymentHandlerMediator} decides the height of the payment app's web
+ * view.
+ *
+ * <p>The height comes from the bottom sheet itself, and only once the sheet has settled into a
+ * state and can report its own measurements.
+ */
+@RunWith(BaseRobolectricTestRunner.class)
+public class PaymentHandlerMediatorUnitTest {
+    /** Matches R.dimen.sheet_tab_toolbar_height on the device this was measured on. */
+    private static final int TOOLBAR_HEIGHT_PX = 140;
+
+    /** The full-state sheet height a Pixel Tablet reports once the sheet has settled. */
+    private static final int MAX_OFFSET_PX = 1375;
+
+    private static final int TALL_MAX_SHEET_HEIGHT_PX = 2000;
+    private static final int SHORT_MAX_SHEET_HEIGHT_PX = 500;
+    private static final int PREFERRED_CONTENT_HEIGHT_PX = 300;
+
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    @Mock(extraInterfaces = WebContentsObserver.Observable.class)
+    private WebContents mPaymentRequestWebContents;
+
+    @Mock(extraInterfaces = WebContentsObserver.Observable.class)
+    private WebContents mPaymentHandlerWebContents;
+
+    @Mock private PaymentHandlerUiObserver mUiObserver;
+    @Mock private BottomSheetController mBottomSheetController;
+    @Mock private DisplayAndroid mDisplay;
+    @Mock private InputProtector mInputProtector;
+    @Mock private Runnable mHider;
+
+    private PropertyModel mModel;
+    private PaymentHandlerMediator mMediator;
+    private Activity mActivity;
+
+    @Before
+    public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
+        when(mDisplay.getDipScale()).thenReturn(1.0f);
+        mMediator = createMediator(/* preferredContentHeightPx= */ null);
+    }
+
+    private PaymentHandlerMediator createMediator(@Nullable Integer preferredContentHeightPx) {
+        mModel = new PropertyModel.Builder(PaymentHandlerProperties.ALL_KEYS).build();
+        return new PaymentHandlerMediator(
+                mModel,
+                mHider,
+                mPaymentRequestWebContents,
+                mPaymentHandlerWebContents,
+                mUiObserver,
+                mBottomSheetController,
+                TOOLBAR_HEIGHT_PX,
+                preferredContentHeightPx,
+                mActivity,
+                mDisplay,
+                mInputProtector);
+    }
+
+    private int contentVisibleHeight() {
+        return mModel.get(PaymentHandlerProperties.CONTENT_VISIBLE_HEIGHT_PX);
+    }
+
+    @Test
+    public void testHeightIsNotSetBeforeTheSheetSettles() {
+        // The sheet has not been laid out when the mediator is built, so anything it reports at
+        // that point is wrong.
+        assertEquals(0, contentVisibleHeight());
+    }
+
+    @Test
+    public void testHeightComesFromTheSheetWhenItReachesFull() {
+        when(mBottomSheetController.getMaxOffset()).thenReturn(MAX_OFFSET_PX);
+
+        mMediator.onSheetStateChanged(SheetState.FULL, StateChangeReason.NONE);
+
+        assertEquals(MAX_OFFSET_PX - TOOLBAR_HEIGHT_PX, contentVisibleHeight());
+    }
+
+    @Test
+    public void testHalfStateStillUsesTheFullHeight() {
+        // The sheet slides up and down rather than resizing, so the web view keeps the height it
+        // needs at full state even while only half of it is on screen.
+        when(mBottomSheetController.getMaxOffset()).thenReturn(MAX_OFFSET_PX);
+
+        mMediator.onSheetStateChanged(SheetState.HALF, StateChangeReason.NONE);
+
+        assertEquals(MAX_OFFSET_PX - TOOLBAR_HEIGHT_PX, contentVisibleHeight());
+    }
+
+    @Test
+    public void testHeightIsIgnoredWhileTheSheetStillMeasuresZero() {
+        when(mBottomSheetController.getMaxOffset()).thenReturn(0);
+
+        mMediator.onSheetStateChanged(SheetState.PEEK, StateChangeReason.NONE);
+
+        assertEquals(0, contentVisibleHeight());
+    }
+
+    @Test
+    public void testHeightIsIgnoredWhenTheSheetIsShorterThanItsToolbar() {
+        // Subtracting the toolbar would give a negative height, which would collapse the web view.
+        when(mBottomSheetController.getMaxOffset()).thenReturn(TOOLBAR_HEIGHT_PX - 1);
+
+        mMediator.onSheetStateChanged(SheetState.PEEK, StateChangeReason.NONE);
+
+        assertEquals(0, contentVisibleHeight());
+    }
+
+    @Test
+    public void testHeightIsRecomputedWhenTheSheetChangesSize() {
+        // For example when the window is resized on a desktop, or the device is rotated.
+        when(mBottomSheetController.getMaxOffset()).thenReturn(MAX_OFFSET_PX);
+        mMediator.onSheetStateChanged(SheetState.FULL, StateChangeReason.NONE);
+        assertEquals(MAX_OFFSET_PX - TOOLBAR_HEIGHT_PX, contentVisibleHeight());
+
+        when(mBottomSheetController.getMaxOffset()).thenReturn(800);
+        mMediator.onSheetStateChanged(SheetState.FULL, StateChangeReason.NONE);
+
+        assertEquals(800 - TOOLBAR_HEIGHT_PX, contentVisibleHeight());
+    }
+
+    @Test
+    public void testHiderRunsSynchronouslyOnActivityDestroyed() {
+        ApplicationStatus.onStateChangeForTesting(mActivity, ActivityState.DESTROYED);
+        verify(mHider).run();
+    }
+
+    @Test
+    public void testPreferredHeightIsSetWhenTheContentIsShown() {
+        // Available: 0.9 * 2000 - 140 (toolbar) - 10 (handlebar, 10dp at mdpi) = 1650.
+        // 300 <= 1650, so the preferred height fits as is.
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(TALL_MAX_SHEET_HEIGHT_PX);
+        mMediator = createMediator(PREFERRED_CONTENT_HEIGHT_PX);
+
+        mMediator.onSheetContentChanged(null);
+
+        assertEquals(PREFERRED_CONTENT_HEIGHT_PX, contentVisibleHeight());
+    }
+
+    @Test
+    public void testPreferredHeightIsClampedToFullHeightRatio() {
+        // Available: 0.9 * 500 - 140 (toolbar) - 10 (handlebar, 10dp at mdpi) = 300.
+        // 500 > 300, so the preferred height is clamped to 300.
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(SHORT_MAX_SHEET_HEIGHT_PX);
+        mMediator = createMediator(SHORT_MAX_SHEET_HEIGHT_PX);
+
+        mMediator.onSheetContentChanged(null);
+
+        assertEquals(300, contentVisibleHeight());
+    }
+
+    @Test
+    public void testPreferredHeightIsRaisedToMinimum() {
+        // Available: 0.9 * 2000 - 140 (toolbar) - 10 (handlebar, 10dp at mdpi) = 1650.
+        // 50 < 146 (minimum, 146dp at mdpi), so the preferred height is raised to 146.
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(TALL_MAX_SHEET_HEIGHT_PX);
+        mMediator = createMediator(/* preferredContentHeightPx= */ 50);
+
+        mMediator.onSheetContentChanged(null);
+
+        assertEquals(146, contentVisibleHeight());
+    }
+
+    @Test
+    @Config(qualifiers = "xhdpi")
+    public void testMinimumContentHeightScalesWithDisplayAndroid() {
+        // Simulates Android Automotive where Activity UI density (xhdpi = 2.0) is scaled up
+        // relative to DisplayAndroid's DIP scale (1.0).
+        when(mDisplay.getDipScale()).thenReturn(1.0f);
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(TALL_MAX_SHEET_HEIGHT_PX);
+        mMediator = createMediator(/* preferredContentHeightPx= */ 50);
+
+        mMediator.onSheetContentChanged(null);
+
+        // MIN_CONTENT_HEIGHT_DP (146) scales with DisplayAndroid (1.0 -> 146px, not 2.0 -> 292px).
+        assertEquals(146, contentVisibleHeight());
+    }
+
+    @Test
+    @Config(qualifiers = "xhdpi")
+    public void testHandlebarHeightScalesWithActivity() {
+        // Simulates Android Automotive where Activity UI density (xhdpi = 2.0) is scaled up
+        // relative to DisplayAndroid's DIP scale (1.0).
+        when(mDisplay.getDipScale()).thenReturn(1.0f);
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(SHORT_MAX_SHEET_HEIGHT_PX);
+        mMediator = createMediator(SHORT_MAX_SHEET_HEIGHT_PX);
+
+        mMediator.onSheetContentChanged(null);
+
+        // HANDLEBAR_HEIGHT_DP (10) scales with Activity (2.0 -> 20px, not 1.0 -> 10px):
+        // Available: 0.9 * 500 - 140 (toolbar) - 20 (handlebar) = 290.
+        assertEquals(290, contentVisibleHeight());
+    }
+
+    @Test
+    public void testComputeWrapContentWebViewHeightPx() {
+        // Available in all cases: 0.9 * 1000 - 100 (toolbar) - 10 (handlebar) = 790.
+
+        // Fits: 146 <= 300 <= 790.
+        assertEquals(
+                300,
+                PaymentHandlerMediator.computeWrapContentWebViewHeightPx(
+                        /* preferredContentHeightPx= */ 300,
+                        /* minContentHeightPx= */ 146,
+                        /* toolbarHeightPx= */ 100,
+                        /* handlebarHeightPx= */ 10,
+                        /* maxSheetHeightPx= */ 1000));
+        // Exactly fits: 790 == 790.
+        assertEquals(
+                790,
+                PaymentHandlerMediator.computeWrapContentWebViewHeightPx(
+                        /* preferredContentHeightPx= */ 790,
+                        /* minContentHeightPx= */ 146,
+                        /* toolbarHeightPx= */ 100,
+                        /* handlebarHeightPx= */ 10,
+                        /* maxSheetHeightPx= */ 1000));
+        // Clamped: 2000 > 790.
+        assertEquals(
+                790,
+                PaymentHandlerMediator.computeWrapContentWebViewHeightPx(
+                        /* preferredContentHeightPx= */ 2000,
+                        /* minContentHeightPx= */ 146,
+                        /* toolbarHeightPx= */ 100,
+                        /* handlebarHeightPx= */ 10,
+                        /* maxSheetHeightPx= */ 1000));
+        // Raised to the minimum: 1 < 146.
+        assertEquals(
+                146,
+                PaymentHandlerMediator.computeWrapContentWebViewHeightPx(
+                        /* preferredContentHeightPx= */ 1,
+                        /* minContentHeightPx= */ 146,
+                        /* toolbarHeightPx= */ 100,
+                        /* handlebarHeightPx= */ 10,
+                        /* maxSheetHeightPx= */ 1000));
+        // The available space wins over the minimum in a small window:
+        // 0.9 * 250 - 100 - 10 = 115 < 146.
+        assertEquals(
+                115,
+                PaymentHandlerMediator.computeWrapContentWebViewHeightPx(
+                        /* preferredContentHeightPx= */ 1,
+                        /* minContentHeightPx= */ 146,
+                        /* toolbarHeightPx= */ 100,
+                        /* handlebarHeightPx= */ 10,
+                        /* maxSheetHeightPx= */ 250));
+    }
+
+    @Test
+    public void testDynamicHeightChangesWhenOpenedWithPreferredHeight() {
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(TALL_MAX_SHEET_HEIGHT_PX);
+        when(mBottomSheetController.isSheetOpen()).thenReturn(true);
+        when(mBottomSheetController.isSheetHiding()).thenReturn(false);
+        mMediator = createMediator(PREFERRED_CONTENT_HEIGHT_PX);
+        mMediator.onSheetContentChanged(null);
+        assertEquals(PREFERRED_CONTENT_HEIGHT_PX, contentVisibleHeight());
+
+        mMediator.onDynamicHeightChanged(450);
+        assertEquals(450, contentVisibleHeight());
+
+        mMediator.onDynamicHeightChanged(200);
+        assertEquals(200, contentVisibleHeight());
+    }
+
+    @Test
+    public void testDynamicHeightIsConvertedFromCssPxToPx() {
+        // Activity stays at default mdpi (1.0), while DisplayAndroid DIP scale is 2.0 (1 CSS px =
+        // 1 dp = 2 px), verifying both dp-to-px conversion and DisplayAndroid scaling.
+        when(mDisplay.getDipScale()).thenReturn(2.0f);
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(TALL_MAX_SHEET_HEIGHT_PX);
+        when(mBottomSheetController.isSheetOpen()).thenReturn(true);
+        when(mBottomSheetController.isSheetHiding()).thenReturn(false);
+        mMediator = createMediator(PREFERRED_CONTENT_HEIGHT_PX);
+        mMediator.onSheetContentChanged(null);
+
+        mMediator.onDynamicHeightChanged(200);
+
+        assertEquals(400, contentVisibleHeight());
+    }
+
+    @Test
+    public void testDynamicHeightIsClampedToFullHeightRatio() {
+        // Available: 0.9 * 500 - 140 (toolbar) - 10 (handlebar, 10dp at mdpi) = 300.
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(SHORT_MAX_SHEET_HEIGHT_PX);
+        when(mBottomSheetController.isSheetOpen()).thenReturn(true);
+        when(mBottomSheetController.isSheetHiding()).thenReturn(false);
+        mMediator = createMediator(/* preferredContentHeightPx= */ 200);
+        mMediator.onSheetContentChanged(null);
+
+        mMediator.onDynamicHeightChanged(SHORT_MAX_SHEET_HEIGHT_PX);
+
+        assertEquals(300, contentVisibleHeight());
+    }
+
+    @Test
+    public void testDynamicHeightIsRaisedToMinimum() {
+        // 50 < 146 (minimum, 146dp at mdpi), so the resized height is raised to 146.
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(TALL_MAX_SHEET_HEIGHT_PX);
+        when(mBottomSheetController.isSheetOpen()).thenReturn(true);
+        when(mBottomSheetController.isSheetHiding()).thenReturn(false);
+        mMediator = createMediator(PREFERRED_CONTENT_HEIGHT_PX);
+        mMediator.onSheetContentChanged(null);
+
+        mMediator.onDynamicHeightChanged(50);
+
+        assertEquals(146, contentVisibleHeight());
+    }
+
+    @Test
+    public void testDynamicHeightIgnoredOnLegacyPath() {
+        // The legacy ServiceTabLauncher path has no preferred height and uses the half/full sheet.
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(TALL_MAX_SHEET_HEIGHT_PX);
+        when(mBottomSheetController.isSheetOpen()).thenReturn(true);
+        when(mBottomSheetController.isSheetHiding()).thenReturn(false);
+
+        mMediator.onDynamicHeightChanged(PREFERRED_CONTENT_HEIGHT_PX);
+
+        assertEquals(0, contentVisibleHeight());
+    }
+
+    @Test
+    public void testDynamicHeightIgnoredWhenSheetNotOpen() {
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(TALL_MAX_SHEET_HEIGHT_PX);
+        mMediator = createMediator(PREFERRED_CONTENT_HEIGHT_PX);
+        mMediator.onSheetContentChanged(null);
+        assertEquals(PREFERRED_CONTENT_HEIGHT_PX, contentVisibleHeight());
+
+        when(mBottomSheetController.isSheetOpen()).thenReturn(false);
+        mMediator.onDynamicHeightChanged(450);
+
+        assertEquals(PREFERRED_CONTENT_HEIGHT_PX, contentVisibleHeight());
+    }
+
+    @Test
+    public void testDynamicHeightIgnoredWhenSheetHiding() {
+        when(mBottomSheetController.getMaxSheetHeight()).thenReturn(TALL_MAX_SHEET_HEIGHT_PX);
+        mMediator = createMediator(PREFERRED_CONTENT_HEIGHT_PX);
+        mMediator.onSheetContentChanged(null);
+        assertEquals(PREFERRED_CONTENT_HEIGHT_PX, contentVisibleHeight());
+
+        when(mBottomSheetController.isSheetOpen()).thenReturn(true);
+        when(mBottomSheetController.isSheetHiding()).thenReturn(true);
+        mMediator.onDynamicHeightChanged(450);
+
+        assertEquals(PREFERRED_CONTENT_HEIGHT_PX, contentVisibleHeight());
+    }
+}

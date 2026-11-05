@@ -32,14 +32,17 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <utility>
 
 #include "base/auto_reset.h"
-#include "base/containers/adapters.h"
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/dcheck_is_on.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/i18n/time_formatting.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
@@ -65,7 +68,6 @@
 #include "services/network/public/mojom/trust_tokens.mojom-blink.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-blink.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/common/permissions_policy/document_policy_features.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/css/preferred_color_scheme.mojom-blink.h"
 #include "third_party/blink/public/mojom/css/preferred_contrast.mojom-blink.h"
@@ -94,7 +96,6 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_convert_coordinate_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_document_ready_state.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_element_creation_options.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_element_registration_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_focus_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_import_node_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_observable_array_css_style_sheet.h"
@@ -146,6 +147,7 @@
 #include "third_party/blink/renderer/core/dom/attr.h"
 #include "third_party/blink/renderer/core/dom/beforeunload_event_listener.h"
 #include "third_party/blink/renderer/core/dom/cdata_section.h"
+#include "third_party/blink/renderer/core/dom/child_frame_disconnector.h"
 #include "third_party/blink/renderer/core/dom/column_pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/comment.h"
 #include "third_party/blink/renderer/core/dom/document_data.h"
@@ -188,6 +190,7 @@
 #include "third_party/blink/renderer/core/dom/slot_assignment.h"
 #include "third_party/blink/renderer/core/dom/slot_assignment_engine.h"
 #include "third_party/blink/renderer/core/dom/slot_assignment_recalc_forbidden_scope.h"
+#include "third_party/blink/renderer/core/dom/slot_assignment_recalc_in_progress_scope.h"
 #include "third_party/blink/renderer/core/dom/static_node_list.h"
 #include "third_party/blink/renderer/core/dom/text_diff_range.h"
 #include "third_party/blink/renderer/core/dom/transform_source.h"
@@ -300,7 +303,6 @@
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer_controller.h"
 #include "third_party/blink/renderer/core/intersection_observer/intersection_observer_entry.h"
 #include "third_party/blink/renderer/core/layout/adjust_for_absolute_zoom.h"
-#include "third_party/blink/renderer/core/layout/hit_test_canvas_result.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_content.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
@@ -363,9 +365,11 @@
 #include "third_party/blink/renderer/core/scroll/snap_event.h"
 #include "third_party/blink/renderer/core/speculation_rules/document_speculation_rules.h"
 #include "third_party/blink/renderer/core/svg/svg_document_extensions.h"
+#include "third_party/blink/renderer/core/svg/svg_foreign_object_element.h"
 #include "third_party/blink/renderer/core/svg/svg_script_element.h"
 #include "third_party/blink/renderer/core/svg/svg_svg_element.h"
 #include "third_party/blink/renderer/core/svg/svg_title_element.h"
+#include "third_party/blink/renderer/core/svg/svg_tree_scope_resources.h"
 #include "third_party/blink/renderer/core/svg/svg_unknown_element.h"
 #include "third_party/blink/renderer/core/svg/svg_use_element.h"
 #include "third_party/blink/renderer/core/svg_element_factory.h"
@@ -421,7 +425,6 @@
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/hash_functions.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
 #include "third_party/blink/renderer/platform/wtf/text/code_point_iterator.h"
@@ -429,6 +432,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding_registry.h"
 #include "third_party/blink/renderer/platform/wtf/text/utf16.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 
 namespace blink {
@@ -448,10 +452,11 @@ class IntrinsicSizeResizeObserverDelegate : public ResizeObserver::Delegate {
 using WeakDocumentSet = blink::HeapHashSet<blink::WeakMember<blink::Document>>;
 
 WeakDocumentSet& LiveDocumentSet() {
+  DCHECK(IsMainThread());
   using WeakDocumentSetHolder = blink::DisallowNewWrapper<WeakDocumentSet>;
-  DEFINE_STATIC_LOCAL(blink::Persistent<WeakDocumentSetHolder>, holder,
-                      (blink::MakeGarbageCollected<WeakDocumentSetHolder>()));
-  return holder->Value();
+  static base::NoDestructor<Persistent<WeakDocumentSetHolder>> holder(
+      MakeGarbageCollected<WeakDocumentSetHolder>());
+  return (*holder)->Value();
 }
 #endif
 
@@ -528,13 +533,15 @@ bool HasSelectInNameAttribute(Element& element) {
 }
 
 bool IsRoleCombobox(Element& element) {
-  DEFINE_STATIC_LOCAL(const AtomicString, combobox, ("combobox"));
-  return element.getAttribute(html_names::kRoleAttr) == combobox;
+  static const base::NoDestructor<AtomicString> combobox(
+      AtomicString::FromLiteral<"combobox">());
+  return element.getAttribute(html_names::kRoleAttr) == *combobox;
 }
 
 bool IsAriaHasPopupListbox(Element& element) {
-  DEFINE_STATIC_LOCAL(const AtomicString, listbox, ("listbox"));
-  return element.getAttribute(html_names::kAriaHaspopupAttr) == listbox;
+  static const base::NoDestructor<AtomicString> listbox(
+      AtomicString::FromLiteral<"listbox">());
+  return element.getAttribute(html_names::kAriaHaspopupAttr) == *listbox;
 }
 
 // This function is a heuristic to detect synthetic selects.
@@ -1295,21 +1302,6 @@ Location* Document::location() const {
   return domWindow()->location();
 }
 
-bool Document::DocumentPolicyFeatureObserved(
-    mojom::blink::DocumentPolicyFeature feature) {
-  wtf_size_t feature_index = static_cast<wtf_size_t>(feature);
-  if (parsed_document_policies_.size() == 0) {
-    parsed_document_policies_.resize(
-        static_cast<wtf_size_t>(
-            mojom::blink::DocumentPolicyFeature::kMaxValue) +
-        1);
-  } else if (parsed_document_policies_[feature_index]) {
-    return true;
-  }
-  parsed_document_policies_[feature_index] = true;
-  return false;
-}
-
 void Document::ChildrenChanged(const ChildrenChange& change) {
   ContainerNode::ChildrenChanged(change);
   document_element_ = ElementTraversal::FirstWithin(*this);
@@ -1367,8 +1359,9 @@ AtomicString Document::ConvertLocalName(const AtomicString& name) {
 // custom element processing.
 // This is a common code for step 5.2 and 7.2 of "create an element"
 // <https://dom.spec.whatwg.org/#concept-create-element>
-// Functions other than this one should not use HTMLElementFactory and
-// SVGElementFactory because they don't support prefixes correctly.
+// Functions other than this one (and the prefix-less fast paths in
+// CreateElementForBinding / createElementNS) should not use HTMLElementFactory
+// and SVGElementFactory because they don't support prefixes correctly.
 Element* Document::CreateRawElement(const QualifiedName& qname,
                                     CreateElementFlags flags) {
   Element* element = nullptr;
@@ -1413,6 +1406,21 @@ Element* Document::CreateRawElement(const QualifiedName& qname,
 // https://dom.spec.whatwg.org/#dom-document-createelement
 Element* Document::CreateElementForBinding(const AtomicString& name,
                                            ExceptionState& exception_state) {
+  // Fast path: standard HTML tag names (e.g. "div", "span", "p", "a") are
+  // guaranteed to be valid XML 1.0 Names, lowercase ASCII, and never match
+  // autonomous custom elements (which require hyphens). Probing
+  // HTMLElementFactory::Create upfront bypasses string validation, lowercasing,
+  // and custom element checks on the hottest DOM creation paths in O(1) time
+  // without observable behavioral changes.
+  if (IsA<HTMLDocument>(this) || IsXHTMLDocument()) {
+    if (auto* element = HTMLElementFactory::Create(
+            name, *this, CreateElementFlags::ByCreateElement())) {
+      DCHECK(IsValidElementName(name));
+      DCHECK(!CustomElement::ShouldCreateCustomElement(ConvertLocalName(name)));
+      return element;
+    }
+  }
+
   if (!IsValidElementName(name)) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidCharacterError,
@@ -1562,6 +1570,32 @@ static inline QualifiedName CreateQualifiedName(
 Element* Document::createElementNS(const AtomicString& namespace_uri,
                                    const AtomicString& qualified_name,
                                    ExceptionState& exception_state) {
+  // Fast path: prefix-less standard elements in known namespaces bypass
+  // CreateQualifiedName parsing, prefix validation, and custom element checks.
+  // Any qualified name containing a prefix with a colon will miss in the
+  // factory map (which only contains prefix-less local names) and fall through
+  // to the general path.
+  Element* element = nullptr;
+  if (namespace_uri == svg_names::kNamespaceURI) {
+    element = SVGElementFactory::Create(qualified_name, *this,
+                                        CreateElementFlags::ByCreateElement());
+  } else if (namespace_uri == html_names::xhtmlNamespaceURI) {
+    element = HTMLElementFactory::Create(qualified_name, *this,
+                                         CreateElementFlags::ByCreateElement());
+  } else if (namespace_uri == mathml_names::kNamespaceURI) {
+    element = MathMLElementFactory::Create(
+        qualified_name, *this, CreateElementFlags::ByCreateElement());
+  }
+  if (element) {
+    DCHECK_EQ(CreateQualifiedName(
+                  namespace_uri, qualified_name, exception_state,
+                  Document::QualifiedNameParsingMode::kParsingElement),
+              element->TagQName());
+    DCHECK(!CustomElement::ShouldCreateCustomElement(element->TagQName()));
+    saw_elements_in_known_namespaces_ = true;
+    return element;
+  }
+
   QualifiedName q_name(
       CreateQualifiedName(namespace_uri, qualified_name, exception_state,
                           Document::QualifiedNameParsingMode::kParsingElement));
@@ -1970,6 +2004,9 @@ void Document::SetContent(const String& content,
   parser_->Append(content);
   close();
 
+  if (sanitizer) {
+    sanitizer->DidParseDocument(this);
+  }
   sanitizer_ = nullptr;
 }
 
@@ -2198,6 +2235,7 @@ void Document::DispatchDidReceiveTitle() {
   if (IsInMainFrame()) {
     String shortened_title = title_.substr(0, mojom::blink::kMaxTitleChars);
     GetFrame()->GetLocalFrameHostRemote().UpdateTitle(shortened_title);
+    GetPage()->GetChromeClient().UpdateEncoding(EncodingName());
     GetFrame()->GetPage()->GetPageScheduler()->OnTitleOrFaviconUpdated();
   }
   GetFrame()->Client()->DispatchDidReceiveTitle(title_);
@@ -2464,6 +2502,9 @@ Document::CalculateStyleAndLayoutTreeUpdateForThisDocument() const {
   if (style_engine_->NeedsStyleRecalc()) {
     return StyleAndLayoutTreeUpdate::kAnalyzed;
   }
+  if (style_engine_->HasFlatTreeMovedNodes()) {
+    return StyleAndLayoutTreeUpdate::kAnalyzed;
+  }
   if (style_engine_->NeedsStyleInvalidation()) {
     return StyleAndLayoutTreeUpdate::kAnalyzed;
   }
@@ -2594,7 +2635,7 @@ static void AssertLayoutTreeUpdated(
     if (auto* element = DynamicTo<Element>(node)) {
       if (element->ChildStyleRecalcBlockedByDisplayLock() ||
           (allow_dirty_container_subtrees && element->GetLayoutObject() &&
-           element->GetLayoutObject()->StyleRef().CanMatchSizeContainerQueries(
+           element->GetLayoutObject()->Style().CanMatchSizeContainerQueries(
                *element))) {
         node = FlatTreeTraversal::NextSkippingChildren(*node);
         continue;
@@ -2786,6 +2827,8 @@ void Document::UpdateStyleAndLayoutTreeForThisDocument() {
   UpdateUseShadowTreesIfNeeded();
 
   UpdateOverscrollCommandTargets();
+
+  style_engine.DetachDisplayLockedFlatTreeMovedNodesIfNeeded();
 
   style_engine.UpdateActiveStyle();
   style_engine.UpdateCounterStyles();
@@ -3294,6 +3337,48 @@ void Document::InvalidatePendingSVGResources() {
   DCHECK(svg_resources_needing_invalidation_.empty());
 }
 
+void Document::RegisterSVGTreeScopeResources(SVGTreeScopeResources& resources) {
+  svg_tree_scope_resources_.insert(&resources);
+}
+
+void Document::UnregisterSVGTreeScopeResources(
+    SVGTreeScopeResources& resources) {
+  svg_tree_scope_resources_.erase(&resources);
+}
+
+void Document::NotifyDisplayLockChangedForSVGResources(const Element& element) {
+  if (lifecycle_.GetState() >= DocumentLifecycle::kStopping ||
+      svg_tree_scope_resources_.empty()) {
+    return;
+  }
+  // Among SVG elements, only outermost <svg> roots can be display-locked, so
+  // `element` can only be a descendant of an SVG resource target if it has a
+  // <foreignObject> flat-tree ancestor.
+  const SVGForeignObjectElement* enclosing_foreign_object = nullptr;
+  if (element.isConnected() && !IsSlotAssignmentDirty()) {
+    if (svg_extensions_ && svg_extensions_->MayContainForeignObjects()) {
+      for (const Node& ancestor : FlatTreeTraversal::AncestorsOf(element)) {
+        if (const auto* foreign_object =
+                DynamicTo<SVGForeignObjectElement>(ancestor)) {
+          enclosing_foreign_object = foreign_object;
+          break;
+        }
+      }
+    }
+    // A childless non-SVG element outside <foreignObject> cannot be or contain
+    // an SVG resource target.
+    if (!enclosing_foreign_object && !element.IsSVGElement() &&
+        !FlatTreeTraversal::HasChildren(element)) {
+      return;
+    }
+  }
+  HeapVector<Member<SVGTreeScopeResources>, 16> scope_resources(
+      svg_tree_scope_resources_);
+  for (SVGTreeScopeResources* resources : scope_resources) {
+    resources->NotifyDisplayLockChanged(element, enclosing_foreign_object);
+  }
+}
+
 StyleResolver& Document::GetStyleResolver() const {
   return style_engine_->GetStyleResolver();
 }
@@ -3349,9 +3434,6 @@ void Document::Shutdown() {
   // Allowing script execution when the Document is shutting down can make it
   // easy to accidentally violate this condition.
 
-  if (num_canvases_ > 0)
-    UMA_HISTOGRAM_COUNTS_100("Blink.Canvas.NumCanvasesPerPage", num_canvases_);
-
   GetViewportData().Shutdown();
 
   View()->Dispose();
@@ -3398,6 +3480,7 @@ void Document::Shutdown() {
     GetPage()->GetChromeClient().AttachRootLayer(nullptr, GetFrame());
 
   MutationObserver::CleanSlotChangeList(*this);
+  MutationObserver::CleanFocusResetList(*this);
 
   hover_element_ = nullptr;
   active_element_ = nullptr;
@@ -3660,30 +3743,25 @@ DocumentParser* Document::CreateParser() {
         *html_document, parser_sync_policy_, registry, sanitizer_.Get());
   }
 
-  data_->using_rust_xml_parser_ = false;
+  data_->xml_parser_start_time_ = base::TimeTicks::Now();
 
-  // Use the Rust XML parser for situations non-XSLT situations: XMLHttpRequest,
+  // Use the Rust XML parser when XMLParsingRust is enabled, or when
+  // XMLRustForNonXslt is enabled for non-XSLT situations: XMLHttpRequest,
   // JS DOMParser API, where no dom_window_ is available, or for SVG images.
-  if (!GetFrame() || IsSVGDocument()) {
-    // Measure this for now only in non-frame = non-XSLT situations, so that
-    // when we compare the UMA metrics of Rust vs. non-Rust for
-    // XMLRustForNonXsltEnabled(), we're looking at roughly the same type and
-    // length of documents on average.
-    data_->xml_parser_start_time_ = base::TimeTicks::Now();
+  data_->using_rust_xml_parser_ =
+      RuntimeEnabledFeatures::XMLParsingRustEnabled() ||
+      (RuntimeEnabledFeatures::XMLRustForNonXsltEnabled() &&
+       (!GetFrame() || IsSVGDocument()));
 
-    if (RuntimeEnabledFeatures::XMLRustForNonXsltEnabled()) {
-      data_->using_rust_xml_parser_ = true;
-      return MakeGarbageCollected<XMLDocumentParserRs>(*this, View());
-    }
-  }
-
-  // FIXME: this should probably pass the frame instead
-  if (RuntimeEnabledFeatures::XMLParsingRustEnabled()) {
-    data_->using_rust_xml_parser_ = true;
+  if (data_->using_rust_xml_parser_) {
     return MakeGarbageCollected<XMLDocumentParserRs>(*this, View());
-  } else {
-    return MakeGarbageCollected<XMLDocumentParser>(*this, View());
   }
+
+  return MakeGarbageCollected<XMLDocumentParser>(*this, View());
+}
+
+bool Document::UsingRustXmlParserForTesting() const {
+  return data_->using_rust_xml_parser_;
 }
 
 bool Document::IsFrameSet() const {
@@ -3737,6 +3815,9 @@ bool Document::InitiateStyleOrLayoutDependentLoadForPrint() {
     GetStyleEngine().UpdateViewportSize();
     UpdateStyleAndLayout(DocumentUpdateReason::kPrinting);
 
+    if (RuntimeEnabledFeatures::HTMLPlugInDeferStyleRecalcImageLoadEnabled()) {
+      return fetcher_->BlockingRequestCount() > 0 || IsDelayingLoadEvent();
+    }
     return fetcher_->BlockingRequestCount() > 0;
   }
 
@@ -4188,8 +4269,8 @@ void Document::WillInsertBody() {
 
   // Clear the last natural size of the owner `<iframe>` if this document isn't
   // opted-in to responsive iframes.
-  if (RuntimeEnabledFeatures::ResponsiveIframesEnabled() && GetFrame() &&
-      GetFrame()->Tree().Parent() && !responsive_embedded_sizing_) {
+  if (GetFrame() && GetFrame()->Tree().Parent() &&
+      !responsive_embedded_sizing_) {
     if (FrameOwner* owner = GetFrame()->Owner()) {
       owner->ClearLastNaturalSizingInfo();
     }
@@ -4372,9 +4453,7 @@ void Document::DispatchLoadEventAndFinalize() {
   if (SvgExtensions())
     AccessSVGExtensions().StartAnimations();
 
-  if (RuntimeEnabledFeatures::ResponsiveIframesEnabled()) {
-    RequestResizeResponsiveIframe();
-  }
+  RequestResizeResponsiveIframe();
 }
 
 static bool AllDescendantsAreComplete(Document* document) {
@@ -4462,10 +4541,6 @@ bool Document::CheckCompletedInternal() {
 
   // No need to repeat if we've already notified this load as finished.
   if (!Loader()->SentDidFinishLoad()) {
-    if (GetFrame()->IsOutermostMainFrame()) {
-      GetViewportData().GetViewportDescription().ReportMobilePageStats(
-          GetFrame());
-    }
     Loader()->SetSentDidFinishLoad();
     GetFrame()->Client()->DispatchDidFinishLoad();
     // RenderFrameObservers may execute script, which could detach this frame.
@@ -4674,9 +4749,8 @@ void Document::DispatchUnloadEvents(
   if (auto* input = DynamicTo<HTMLInputElement>(current_focused_element))
     input->EndEditing();
 
-  if (!will_commit_new_document_in_this_frame && GetFrame() &&
-      !GetFrame()->IsMainFrame() &&
-      RuntimeEnabledFeatures::OmitSubframeDetachmentEventsOnRemovalEnabled()) {
+  if (!will_commit_new_document_in_this_frame &&
+      !ChildFrameDisconnector::ShouldFireUnloadEvents(*this)) {
     load_event_progress_ = kUnloadEventHandled;
     return;
   }
@@ -4919,77 +4993,27 @@ void Document::writeln(const String& text,
 }
 
 void Document::write(v8::Isolate* isolate,
-                     const Vector<String>& text,
+                     const HeapVector<Member<V8UnionStringOrTrustedHTML>>& text,
                      ExceptionState& exception_state) {
-  StringBuilder builder;
-  for (const String& string : text)
-    builder.Append(string);
-  String string =
-      TrustedTypesCheckForHTML(builder.ReleaseString(), GetExecutionContext(),
-                               trusted_types_names::kDocument,
-                               trusted_types_names::kWrite, exception_state);
-  if (exception_state.HadException())
-    return;
-
-  write(string, EnteredDOMWindow(isolate), exception_state);
-}
-
-void Document::writeln(v8::Isolate* isolate,
-                       const Vector<String>& text,
-                       ExceptionState& exception_state) {
-  StringBuilder builder;
-  for (const String& string : text)
-    builder.Append(string);
-  String string =
-      TrustedTypesCheckForHTML(builder.ReleaseString(), GetExecutionContext(),
-                               trusted_types_names::kDocument,
-                               trusted_types_names::kWriteln, exception_state);
-  if (exception_state.HadException())
-    return;
-
-  writeln(string, EnteredDOMWindow(isolate), exception_state);
-}
-
-void Document::write(v8::Isolate* isolate,
-                     TrustedHTML* text,
-                     ExceptionState& exception_state) {
-  write(text->toString(), EnteredDOMWindow(isolate), exception_state);
-}
-
-void Document::writeln(v8::Isolate* isolate,
-                       TrustedHTML* text,
-                       ExceptionState& exception_state) {
-  writeln(text->toString(), EnteredDOMWindow(isolate), exception_state);
-}
-
-void Document::write(v8::Isolate* isolate,
-                     TrustedHTML* first_text,
-                     HeapVector<Member<V8UnionStringOrTrustedHTML>> other_texts,
-                     ExceptionState& exception_state) {
-  Write(isolate, first_text, other_texts, /*line_feed*/ false, "write",
-        exception_state);
+  Write(isolate, text, /*line_feed=*/false, "write", exception_state);
 }
 
 void Document::writeln(
     v8::Isolate* isolate,
-    TrustedHTML* first_text,
-    HeapVector<Member<V8UnionStringOrTrustedHTML>> other_texts,
+    const HeapVector<Member<V8UnionStringOrTrustedHTML>>& text,
     ExceptionState& exception_state) {
-  Write(isolate, first_text, other_texts, /*line_feed*/ true, "writeln",
-        exception_state);
+  Write(isolate, text, /*line_feed=*/true, "writeln", exception_state);
 }
 
 void Document::Write(v8::Isolate* isolate,
-                     TrustedHTML* first_text,
-                     HeapVector<Member<V8UnionStringOrTrustedHTML>> other_texts,
+                     const HeapVector<Member<V8UnionStringOrTrustedHTML>>& text,
                      bool line_feed,
                      const char* sink,
                      ExceptionState& exception_state) {
   // https://html.spec.whatwg.org/#document.write(), steps 1-3:
   StringBuilder builder;
-  builder.Append(first_text->toString());
   bool is_trusted = true;
-  for (const auto& text_or_trusted : other_texts) {
+  for (const auto& text_or_trusted : text) {
     if (text_or_trusted->IsString()) {
       builder.Append(text_or_trusted->GetAsString());
       is_trusted = false;
@@ -5356,6 +5380,18 @@ CSSStyleSheet& Document::ElementSheet() {
   if (!elem_sheet_)
     elem_sheet_ = CSSStyleSheet::CreateInline(*this, base_url_);
   return *elem_sheet_;
+}
+
+void Document::ReferrerPolicyChanged() {
+  // The element sheet holds no rules; it only carries the CSSParserContext
+  // used for inline style and presentation attributes. That context
+  // snapshots the referrer policy, so drop the sheet and let ElementSheet()
+  // recreate it with the new policy.
+  if (elem_sheet_) {
+    DCHECK(!elem_sheet_->Contents()->RuleCount());
+    elem_sheet_ = nullptr;
+  }
+  GetStyleEngine().ReferrerPolicyChanged();
 }
 
 bool Document::InvalidationDisallowed() const {
@@ -5836,11 +5872,24 @@ void Document::RemoveFocusedElementOfSubtree(Node& node,
       // up with the new node's position in the DOM.
       SetShouldUpdateSelectionAfterLayout(true);
     } else {
+      // https://html.spec.whatwg.org/C/#node-remove-focus-fixup
+      // "If the has focus steps given node's node document return true, then
+      // set document's has pending focus reset to true." This has to be
+      // computed before clearing the focused element.
+      const bool set_pending_focus_reset =
+          RuntimeEnabledFeatures::FocusResetEventEnabled() && hasFocus();
       BlurEventBehavior blur_event_behavior =
           RuntimeEnabledFeatures::OmitBlurEventOnElementRemovalEnabled()
               ? BlurEventBehavior::kDropWhenRemoving
               : BlurEventBehavior::kFire;
       ClearFocusedElement(blur_event_behavior);
+      // SetFocusedElement() clears the flag, so set it afterwards. If a
+      // (legacy) blur handler moved focus elsewhere, the focused area is no
+      // longer the viewport, which is equivalent to the spec's "focus update
+      // steps" having cleared the flag.
+      if (set_pending_focus_reset && !focused_element_) {
+        SetHasPendingFocusReset();
+      }
     }
   }
 }
@@ -5853,8 +5902,7 @@ static Element* SkipDisplayNoneAncestors(Element* element) {
     // own, but it is painted as part of the <img> that uses its <map>, and hit
     // testing resolves image map hits to it, so it can be hovered/activated
     // like a rendered element.
-    if (IsA<HTMLAreaElement>(*element) &&
-        RuntimeEnabledFeatures::HTMLAreaElementDisplayNoneEnabled()) {
+    if (IsA<HTMLAreaElement>(*element)) {
       return element;
     }
   }
@@ -5930,12 +5978,24 @@ bool Document::SetFocusedElement(Element* new_focused_element,
       return true;
   }
 
+  // https://html.spec.whatwg.org/C/#focus-update-steps
+  // "For each entry of old chain and new chain, if entry is a Document object,
+  // then set entry's has pending focus reset to false." Focus is being moved
+  // explicitly, so there is no need to report an earlier focus reset.
+  ClearHasPendingFocusReset();
+
   if (focused_element_ == new_focused_element) {
     // Even though `focused_element_` hasn't changed, `focus_options_` may have,
     // so update it.
     focus_options_ = params.options;
     return true;
   }
+
+  // Focus changes run FocusedElementChangeObservers and dispatch events, so
+  // they must not happen during slot assignment recalc (rule R3 in
+  // slot_assignment.h).
+  SlotAssignmentRecalcInProgressScope::CheckNotActive(
+      SlotAssignmentInvariant::kNoFocusChange);
 
   bool focus_change_blocked = false;
   Element* old_focused_element = focused_element_;
@@ -6149,6 +6209,35 @@ void Document::ClearFocusedElement(BlurEventBehavior blur_event_behavior) {
   SetFocusedElement(nullptr, params);
 }
 
+void Document::SetHasPendingFocusReset() {
+  DCHECK(RuntimeEnabledFeatures::FocusResetEventEnabled());
+  has_pending_focus_reset_ = true;
+  // Like slotchange, focusreset is fired from the mutation observer microtask,
+  // so it's dispatched before the next rendering update and doesn't depend on
+  // the document being rendered.
+  MutationObserver::EnqueueFocusReset(*this);
+}
+
+void Document::FireFocusResetEventIfNeeded() {
+  DCHECK(RuntimeEnabledFeatures::FocusResetEventEnabled());
+  if (!std::exchange(has_pending_focus_reset_, false) || !IsActive()) {
+    return;
+  }
+  // https://github.com/whatwg/html/pull/13050
+  // Fire focusreset only if the focused area of the document is still its
+  // viewport. The focused area is the viewport if there's no focused element
+  // and focus isn't inside a nested frame (in which case the focused area
+  // would be the frame owner element).
+  if (focused_element_) {
+    return;
+  }
+  if (GetFrame() && GetPage() &&
+      GetPage()->GetFocusController().FocusedFrameOwnerElement(*GetFrame())) {
+    return;
+  }
+  DispatchEvent(*Event::Create(event_type_names::kFocusreset));
+}
+
 void Document::UpdateFocusgroupLastFocused(Element& focused_element) {
   if (!RuntimeEnabledFeatures::FocusgroupEnabled(GetExecutionContext())) {
     return;
@@ -6205,9 +6294,7 @@ void Document::SendFocusNotification(Element* new_focused_element,
   }
 
   auto dom_node_id = mojom::blink::DOMNodeId::New(kInvalidDOMNodeId);
-  if (base::FeatureList::IsEnabled(
-          features::kPopulateDOMNodeIdInFocusedNodeDetails) &&
-      new_focused_element && (is_editable || is_richly_editable)) {
+  if (new_focused_element && (is_editable || is_richly_editable)) {
     dom_node_id->value = new_focused_element->GetDomNodeId();
   }
 
@@ -6250,6 +6337,10 @@ void Document::NotifyFocusedElementChanged(Element* old_focused_element,
 
   blink::NotifyPriorityScrollAnchorStatusChanged(old_focused_element,
                                                  new_focused_element);
+}
+
+bool Document::HasSequentialFocusNavigationStartingPoint() const {
+  return sequential_focus_navigation_starting_point_;
 }
 
 void Document::SetSequentialFocusNavigationStartingPoint(Node* node) {
@@ -6613,10 +6704,6 @@ EventListener* Document::GetWindowAttributeEventListener(
   return dom_window->GetAttributeEventListener(event_type);
 }
 
-void Document::EnqueueDisplayLockActivationTask(base::OnceClosure task) {
-  scripted_animation_controller_->EnqueueTask(std::move(task));
-}
-
 void Document::EnqueueAnimationFrameTask(base::OnceClosure task) {
   scripted_animation_controller_->EnqueueTask(std::move(task));
 }
@@ -6649,6 +6736,20 @@ void Document::EnqueueScrollEndEventForNode(Node* target) {
           : Event::Create(event_type_names::kScrollend);
   scroll_end_event->SetTarget(target);
   scripted_animation_controller_->EnqueuePerFrameEvent(scroll_end_event);
+
+  if (RuntimeEnabledFeatures::AnchorPositionRelayoutOnScrollEndEnabled() &&
+      GetFrame()) {
+    const LayoutBox* box = nullptr;
+    if (const auto* element = DynamicTo<Element>(target)) {
+      box = element->GetLayoutBoxForScrolling();
+    } else if (target->IsDocumentNode()) {
+      box = GetLayoutView();
+    }
+    if (box && box->GetScrollableArea()) {
+      GetFrame()->NotifyScrollEndForAnchorPositioning(
+          box->GetScrollableArea()->GetScrollElementId());
+    }
+  }
 }
 
 void Document::EnqueueScrollSnapChangeEvent(Node* target,
@@ -6735,8 +6836,9 @@ void Document::DispatchMediaQueryListEvents() {
 }
 
 Document::EventFactorySet& Document::EventFactories() {
-  DEFINE_STATIC_LOCAL(EventFactorySet, event_factory, ());
-  return event_factory;
+  DCHECK(IsMainThread());
+  static base::NoDestructor<EventFactorySet> event_factory;
+  return *event_factory;
 }
 
 void Document::RegisterEventFactory(
@@ -6801,6 +6903,8 @@ void Document::AddListenerTypeIfNeeded(const AtomicString& event_type,
     AddListenerType(kTransitionEndListener);
   } else if (event_type == event_type_names::kScroll) {
     AddListenerType(kScrollListener);
+  } else if (event_type == event_type_names::kDOMActivate) {
+    AddListenerType(kDOMActivateListener);
   } else if (event_type == event_type_names::kLoad) {
     if (Node* node = event_target.ToNode()) {
       if (IsA<HTMLStyleElement>(*node)) {
@@ -7911,10 +8015,6 @@ SVGDocumentExtensions& Document::AccessSVGExtensions() {
   return *svg_extensions_;
 }
 
-bool Document::HasSVGRootNode() const {
-  return IsA<SVGSVGElement>(documentElement());
-}
-
 HTMLCollection* Document::images() {
   return EnsureCachedCollection<HTMLCollection>(kDocImages);
 }
@@ -7959,14 +8059,6 @@ DocumentNameCollection* Document::DocumentNamedItems(const AtomicString& name) {
 HTMLCollection* Document::DocumentAllNamedItems(const AtomicString& name) {
   return EnsureCachedCollection<DocumentAllNameCollection>(
       kDocumentAllNamedItems, name);
-}
-
-void Document::IncrementImmediateChildFrameCreationCount() {
-  data_->immediate_child_frame_creation_count_++;
-}
-
-int Document::GetImmediateChildFrameCreationCount() const {
-  return data_->immediate_child_frame_creation_count_;
 }
 
 DOMWindow* Document::defaultView() const {
@@ -8046,7 +8138,7 @@ void Document::FinishedParsing() {
   SetParsingState(kInDOMContentLoaded);
   DocumentParserTiming::From(*this).MarkParserStop();
 
-  if (RuntimeEnabledFeatures::WebMCPEnabled(GetExecutionContext())) {
+  if (ModelContext::IsDeclarativeWebMCPEnabled(GetExecutionContext())) {
     if (auto* model_context = ModelContextSupplement::GetIfExists(*this)) {
       model_context->DidFinishParsing();
     }
@@ -8142,9 +8234,7 @@ void Document::FinishedParsing() {
       }
     }
 
-    if (RuntimeEnabledFeatures::ResponsiveIframesEnabled()) {
-      RequestResizeResponsiveIframe();
-    }
+    RequestResizeResponsiveIframe();
 
     BeginLifecycleUpdatesIfRenderingReady();
 
@@ -8362,7 +8452,6 @@ void Document::ColorSchemeMetaChanged() {
 }
 
 void Document::RequestResizeResponsiveIframe(ExceptionState* exception_state) {
-  DCHECK(RuntimeEnabledFeatures::ResponsiveIframesEnabled());
   if (!IsHTMLDocument() || !responsive_embedded_sizing_) {
     if (exception_state) {
       exception_state->ThrowDOMException(
@@ -8372,8 +8461,14 @@ void Document::RequestResizeResponsiveIframe(ExceptionState* exception_state) {
     }
     return;
   }
-  if (auto* owner = GetFrame()->Owner()) {
-    LocalFrameView* view = View();
+  LocalFrame* frame = GetFrame();
+  if (FrameOwner* owner = frame ? frame->Owner() : nullptr) {
+    LocalFrameView* view = frame->View();
+    CHECK(view);
+    if (RuntimeEnabledFeatures::ResponsiveIframesAsyncResizeEnabled()) {
+      view->ScheduleResponsiveIframeResize();
+      return;
+    }
     LocalFrameView::NaturalSizeLayoutScope natural_size_scope(view);
     UpdateStyleAndLayout(DocumentUpdateReason::kUnknown);
     if (view->RecordNaturalDimensions()) {
@@ -8786,7 +8881,7 @@ std::optional<Document::TopLayerReason> Document::IsScheduledForTopLayerRemoval(
 }
 
 HTMLDialogElement* Document::ActiveModalDialog() const {
-  for (const auto& element : base::Reversed(top_layer_elements_)) {
+  for (const auto& element : std::views::reverse(top_layer_elements_)) {
     if (auto* dialog = DynamicTo<HTMLDialogElement>(*element)) {
       if (dialog->IsModal()) {
         // Modal dialogs transitioning out after being closed are not considered
@@ -8879,7 +8974,7 @@ Element* Document::PointerLockElement() const {
 }
 
 void Document::DecrementLoadEventDelayCount() {
-  DCHECK(load_event_delay_count_);
+  CHECK_GT(load_event_delay_count_, 0);
   --load_event_delay_count_;
 
   if (!load_event_delay_count_)
@@ -8887,7 +8982,7 @@ void Document::DecrementLoadEventDelayCount() {
 }
 
 void Document::DecrementLoadEventDelayCountAndCheckLoadEvent() {
-  DCHECK(load_event_delay_count_);
+  CHECK_GT(load_event_delay_count_, 0);
   --load_event_delay_count_;
 
   if (!load_event_delay_count_)
@@ -9595,7 +9690,6 @@ void Document::Trace(Visitor* visitor) const {
   visitor->Trace(popover_pointerdown_target_);
   visitor->Trace(dialog_pointerdown_target_);
   visitor->Trace(popover_picker_pointerdown_info_);
-  visitor->Trace(popovers_waiting_to_hide_);
   visitor->Trace(all_open_popovers_);
   visitor->Trace(all_open_dialogs_);
   visitor->Trace(elements_with_interest_);
@@ -9606,6 +9700,7 @@ void Document::Trace(Visitor* visitor) const {
   visitor->Trace(clear_focused_element_timer_);
   visitor->Trace(node_iterators_);
   visitor->Trace(ranges_);
+  visitor->Trace(unobserved_child_list_mutation_target_);
   visitor->Trace(document_explicit_root_intersection_observer_data_);
   visitor->Trace(style_engine_);
   visitor->Trace(form_controller_);
@@ -9623,6 +9718,7 @@ void Document::Trace(Visitor* visitor) const {
   visitor->Trace(element_data_cache_);
   visitor->Trace(use_elements_needing_update_);
   visitor->Trace(svg_resources_needing_invalidation_);
+  visitor->Trace(svg_tree_scope_resources_);
   visitor->Trace(template_document_);
   visitor->Trace(template_document_host_);
   visitor->Trace(user_action_elements_);
@@ -9735,16 +9831,6 @@ bool Document::IsFocusAllowed(FocusTrigger trigger,
     return true;
   }
 
-  // Check the focus setter's permissions policy to see if it allows focus
-  // without user activation.
-  const ExecutionContext* initiator_context = initiator_frame.DomWindow();
-  if (initiator_context && initiator_context->IsFeatureEnabled(
-                               network::mojom::PermissionsPolicyFeature::
-                                   kFocusWithoutUserActivation)) {
-    CountUse(WebFeature::kFocusWithoutUserActivationAllowedByPolicy);
-    return true;
-  }
-
   // Allow focus if the currently focused frame is an inclusive descendant of
   // the focus setter's frame. This means the setter (or one of its children)
   // already has focus, so moving focus within is not stealing it from a parent.
@@ -9760,10 +9846,16 @@ bool Document::IsFocusAllowed(FocusTrigger trigger,
     }
   }
 
-  AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
-      ConsoleMessage::Source::kOther, ConsoleMessage::Level::kWarning,
-      "Blocked focus call from a frame because its "
-      "'focus-without-user-activation' permissions policy is denied."));
+  // Check the focus setter's permissions policy to see if it allows focus
+  // without user activation.
+  const LocalDOMWindow* initiator_window = initiator_frame.DomWindow();
+  if (initiator_window &&
+      initiator_window->GetExecutionContext()->IsFeatureEnabled(
+          network::mojom::PermissionsPolicyFeature::kFocusWithoutUserActivation,
+          ReportOptions::kReportOnFailure)) {
+    CountUse(WebFeature::kFocusWithoutUserActivationAllowedByPolicy);
+    return true;
+  }
 
   CountUse(WebFeature::kFocusWithoutUserActivationBlocked);
   return false;
@@ -10287,9 +10379,6 @@ Document* Document::parseHTMLInternal(ExecutionContext* context,
   doc->setAllowDeclarativeShadowRoots(true);
   doc->SetContent(html, sanitizer);
   doc->SetMimeType(keywords::kTextHtml);
-  if (sanitizer) {
-    sanitizer->DidParseDocument(doc);
-  }
   return doc;
 }
 
@@ -10306,11 +10395,8 @@ Document* Document::parseHTMLUnsafe(ExecutionContext* context,
     return nullptr;
   }
 
-  auto* streaming_sanitizer =
-      RuntimeEnabledFeatures::StreamingSanitizerEnabled()
-          ? SanitizerAPI::CreateStreamingSanitizer(
-                Sanitizer::Mode::kUnsafe, fragment_options, exception_state)
-          : nullptr;
+  auto* streaming_sanitizer = SanitizerAPI::CreateStreamingSanitizer(
+      Sanitizer::Mode::kUnsafe, fragment_options, exception_state);
 
   if (exception_state.HadException()) {
     return nullptr;
@@ -10318,15 +10404,6 @@ Document* Document::parseHTMLUnsafe(ExecutionContext* context,
 
   Document* doc = parseHTMLInternal(context, compliant_html,
                                     streaming_sanitizer, exception_state);
-  if (exception_state.HadException()) {
-    return nullptr;
-  }
-  if (!streaming_sanitizer) {
-    SanitizerAPI::SanitizeInternal(Sanitizer::Mode::kUnsafe,
-                                   /*context_element*/ doc,
-                                   /*root_element*/ doc, fragment_options,
-                                   exception_state);
-  }
   if (exception_state.HadException()) {
     return nullptr;
   }
@@ -10348,24 +10425,14 @@ Document* Document::parseHTMLUnsafe(ExecutionContext* context,
     return nullptr;
   }
 
-  auto* streaming_sanitizer =
-      RuntimeEnabledFeatures::StreamingSanitizerEnabled()
-          ? SanitizerAPI::CreateStreamingSanitizer(
-                Sanitizer::Mode::kUnsafe, fragment_options, exception_state)
-          : nullptr;
+  auto* streaming_sanitizer = SanitizerAPI::CreateStreamingSanitizer(
+      Sanitizer::Mode::kUnsafe, fragment_options, exception_state);
 
   if (exception_state.HadException()) {
     return nullptr;
   }
   Document* doc = parseHTMLInternal(context, compliant_html,
                                     streaming_sanitizer, exception_state);
-  if (!RuntimeEnabledFeatures::StreamingSanitizerEnabled()) {
-    CHECK(!streaming_sanitizer);
-    SanitizerAPI::SanitizeInternal(Sanitizer::Mode::kUnsafe,
-                                   /*context_element*/ doc,
-                                   /*root_element*/ doc, fragment_options,
-                                   exception_state);
-  }
   if (exception_state.HadException()) {
     return nullptr;
   }
@@ -10379,20 +10446,16 @@ Document* Document::parseHTMLUnsafe(ExecutionContext* context,
                                     ExceptionState& exception_state) {
   CHECK(RuntimeEnabledFeatures::TrustedTypesCreateParserOptionsEnabled());
   UseCounter::Count(context, WebFeature::kHTMLUnsafeMethods);
-  String compliant_html = TrustedTypesCheckForHTML(
-      html, context, trusted_types_names::kDocument,
+  FragmentParserOptions fragment_options(options);
+  String compliant_html = TrustedTypesCheckForFragment(
+      html, fragment_options, context, trusted_types_names::kDocument,
       trusted_types_names::kParseHTMLUnsafe, exception_state);
   if (exception_state.HadException()) {
     return nullptr;
   }
 
-  FragmentParserOptions fragment_options(options);
-
-  auto* streaming_sanitizer =
-      RuntimeEnabledFeatures::StreamingSanitizerEnabled()
-          ? SanitizerAPI::CreateStreamingSanitizer(
-                Sanitizer::Mode::kUnsafe, fragment_options, exception_state)
-          : nullptr;
+  auto* streaming_sanitizer = SanitizerAPI::CreateStreamingSanitizer(
+      Sanitizer::Mode::kUnsafe, fragment_options, exception_state);
 
   if (exception_state.HadException()) {
     return nullptr;
@@ -10400,15 +10463,6 @@ Document* Document::parseHTMLUnsafe(ExecutionContext* context,
 
   Document* doc = parseHTMLInternal(context, compliant_html,
                                     streaming_sanitizer, exception_state);
-  if (exception_state.HadException()) {
-    return nullptr;
-  }
-  if (!streaming_sanitizer) {
-    SanitizerAPI::SanitizeInternal(Sanitizer::Mode::kUnsafe,
-                                   /*context_element*/ doc,
-                                   /*root_element*/ doc, fragment_options,
-                                   exception_state);
-  }
   if (exception_state.HadException()) {
     return nullptr;
   }
@@ -10421,20 +10475,13 @@ Document* Document::parseHTML(ExecutionContext* context,
                               SetHTMLOptions* options,
                               ExceptionState& exception_state) {
   CHECK(RuntimeEnabledFeatures::SanitizerAPIEnabled());
-  auto* streaming_sanitizer =
-      RuntimeEnabledFeatures::StreamingSanitizerEnabled()
-          ? SanitizerAPI::CreateStreamingSanitizer(
-                Sanitizer::Mode::kSafe, FragmentParserOptions(options),
-                exception_state)
-          : nullptr;
+  auto* streaming_sanitizer = SanitizerAPI::CreateStreamingSanitizer(
+      Sanitizer::Mode::kSafe, FragmentParserOptions(options), exception_state);
+  if (exception_state.HadException()) {
+    return nullptr;
+  }
   Document* doc =
       parseHTMLInternal(context, html, streaming_sanitizer, exception_state);
-  if (!streaming_sanitizer) {
-    SanitizerAPI::SanitizeInternal(
-        Sanitizer::Mode::kSafe,
-        /*context_element*/ doc, /*root_element*/ doc,
-        FragmentParserOptions(options), exception_state);
-  }
   if (exception_state.HadException()) {
     return nullptr;
   }
@@ -10503,7 +10550,8 @@ void Document::UpdateOverscrollCommandTargets() {
   HeapHashSet<Member<Element>> new_targets;
   for (Element* element : overscroll_command_invokers_) {
     if (auto* html_element = DynamicTo<HTMLElement>(element)) {
-      if (Element* target = html_element->commandForElement()) {
+      if (Element* target = html_element->commandForElement();
+          target && target->GetTreeScope() == html_element->GetTreeScope()) {
         new_targets.insert(target);
       }
     }
@@ -10544,6 +10592,30 @@ void Document::RemoveOverscrollCommandInvoker(Element& invoker) {
   if (overscroll_command_invokers_.Contains(&invoker)) {
     overscroll_command_invokers_.erase(&invoker);
     MarkOverscrollCommandTargetsDirty();
+  }
+}
+
+void Document::DidHaveFormEdit() {
+  // Value changes caused by `document.execCommand` calls should not be
+  // interpreted as a user edit. See https://crbug.com/764760.
+  if (had_form_edit_ || IsRunningExecCommand()) {
+    return;
+  }
+  had_form_edit_ = true;
+  if (GetFrame()) {
+    GetFrame()->GetLocalFrameHostRemote().DidHaveFormEdit();
+  }
+}
+
+void Document::DidHaveUserEdit() {
+  // Value changes caused by `document.execCommand` calls should not be
+  // interpreted as a user edit. See https://crbug.com/764760.
+  if (had_user_edit_ || IsRunningExecCommand()) {
+    return;
+  }
+  had_user_edit_ = true;
+  if (GetFrame()) {
+    GetFrame()->GetLocalFrameHostRemote().DidHaveUserEdit();
   }
 }
 

@@ -139,7 +139,6 @@ void MainThreadDebugger::ContextCreated(ScriptState* script_state,
   aux_data_builder.Append(",\"frameId\":\"");
   aux_data_builder.Append(IdentifiersFactory::FrameId(frame));
   aux_data_builder.Append("\"}");
-  String aux_data = aux_data_builder.ToString();
   String human_readable_name =
       !world.IsMainWorld() ? world.NonMainWorldHumanReadableName() : String();
   String origin_string = origin ? origin->ToRawString() : String();
@@ -147,7 +146,7 @@ void MainThreadDebugger::ContextCreated(ScriptState* script_state,
       script_state->GetContext(), ContextGroupId(frame),
       ToV8InspectorStringView(human_readable_name));
   context_info.origin = ToV8InspectorStringView(origin_string);
-  context_info.auxData = ToV8InspectorStringView(aux_data);
+  context_info.auxData = ToV8InspectorStringView(aux_data_builder);
   context_info.hasMemoryOnConsole = LocalDOMWindow::From(script_state);
   GetV8Inspector()->contextCreated(context_info);
 }
@@ -410,8 +409,7 @@ void MainThreadDebugger::QuerySelectorCallback(
   auto* container_node = DynamicTo<ContainerNode>(SecondArgumentAsNode(info));
   if (!container_node)
     return;
-  ScriptState* script_state =
-      ScriptState::ForRelevantRealm(info.GetIsolate(), info.This());
+  ScriptState* script_state = ScriptState::ForCurrentRealm(info);
   v8::TryCatch try_catch(info.GetIsolate());
   Element* element = container_node->QuerySelector(
       AtomicString(selector), PassThroughException(info.GetIsolate()));
@@ -440,8 +438,7 @@ void MainThreadDebugger::QuerySelectorAllCallback(
   auto* container_node = DynamicTo<ContainerNode>(SecondArgumentAsNode(info));
   if (!container_node)
     return;
-  ScriptState* script_state =
-      ScriptState::ForRelevantRealm(info.GetIsolate(), info.This());
+  ScriptState* script_state = ScriptState::ForCurrentRealm(info);
   v8::TryCatch try_catch(info.GetIsolate());
   // ToV8(elementList) doesn't work here, since we need a proper Array instance,
   // not NodeList.
@@ -484,8 +481,7 @@ void MainThreadDebugger::XpathSelectorCallback(
   if (!node || !node->IsContainerNode())
     return;
 
-  ScriptState* script_state =
-      ScriptState::ForRelevantRealm(isolate, info.This());
+  ScriptState* script_state = ScriptState::ForCurrentRealm(info);
   v8::TryCatch try_catch(isolate);
   XPathResult* result = XPathEvaluator::Create()->evaluate(
       nullptr, selector, node, nullptr, XPathResult::kAnyType, ScriptValue(),

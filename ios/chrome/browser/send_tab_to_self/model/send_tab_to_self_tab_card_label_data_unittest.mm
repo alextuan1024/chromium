@@ -8,10 +8,8 @@
 
 #import "base/functional/bind.h"
 #import "base/strings/utf_string_conversions.h"
-#import "base/test/scoped_feature_list.h"
 #import "base/time/time.h"
 #import "components/send_tab_to_self/fake_send_tab_to_self_model.h"
-#import "components/send_tab_to_self/features.h"
 #import "components/send_tab_to_self/send_tab_to_self_entry.h"
 #import "components/send_tab_to_self/stub_send_tab_to_self_sync_service.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
@@ -39,11 +37,8 @@ class SendTabToSelfTabCardLabelDataTest : public PlatformTest {
     TestProfileIOS::Builder test_profile_builder;
     test_profile_builder.AddTestingFactory(
         SendTabToSelfSyncServiceFactory::GetInstance(),
-        base::BindRepeating(
-            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
-              return std::make_unique<
-                  send_tab_to_self::StubSendTabToSelfSyncService>();
-            }));
+        base::BindOnce(
+            &std::make_unique<send_tab_to_self::StubSendTabToSelfSyncService>));
 
     profile_ = std::move(test_profile_builder).Build();
     model_ = static_cast<FakeSendTabToSelfModel*>(
@@ -55,8 +50,6 @@ class SendTabToSelfTabCardLabelDataTest : public PlatformTest {
  protected:
   web::WebTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  base::test::ScopedFeatureList scoped_feature_list_{
-      send_tab_to_self::kSendTabToSelfAutoOpen};
   std::unique_ptr<TestProfileIOS> profile_;
   raw_ptr<FakeSendTabToSelfModel> model_;
 };
@@ -246,35 +239,6 @@ TEST_F(SendTabToSelfTabCardLabelDataTest, ExpiryClearsLabel) {
   // expired and cleared.
   task_environment_.FastForwardBy(base::Days(2));
   EXPECT_EQ(nullptr, SendTabToSelfTabCardLabelData::FromWebState(&web_state));
-}
-
-// Tests that GetLabelTextForWebState returns nil when the feature flag is
-// disabled.
-TEST_F(SendTabToSelfTabCardLabelDataTest, FeatureDisabledReturnsNull) {
-  // Re-initialize the feature list to be disabled for this test.
-  base::test::ScopedFeatureList disabled_feature_list;
-  disabled_feature_list.InitAndDisableFeature(
-      send_tab_to_self::kSendTabToSelfAutoOpen);
-
-  GURL url(kExampleURL);
-  base::Time now = base::Time::Now();
-
-  // Add an unviewed matching entry.
-  const SendTabToSelfEntry* entry = model_->AddEntryRemotely(
-      url, "Title", /*target_device_cache_guid=*/kLocalDeviceCacheGuid,
-      send_tab_to_self::PageContext(), send_tab_to_self::NavigationHistory());
-  model_->MarkEntryOpened(entry->GetGUID());
-
-  web::FakeWebState web_state;
-  web_state.SetBrowserState(profile_.get());
-  web_state.SetCurrentURL(url);
-  web_state.SetLastActiveTime(now);
-
-  NSString* label_text =
-      SendTabToSelfTabCardLabelData::GetLabelTextForWebState(&web_state);
-
-  // The label should NOT be created because the feature flag is disabled.
-  EXPECT_EQ(label_text, nil);
 }
 
 // Tests that after a label is shown (dismissed), it is not recreated even if

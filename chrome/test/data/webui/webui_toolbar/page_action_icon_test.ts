@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
 
 import type {HelpBubbleOptions} from '//resources/cr_components/help_bubble/help_bubble_controller.js';
 import {hexColorToSkColor} from '//resources/js/color_utils.js';
@@ -10,11 +10,15 @@ import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, IconTable, IconType, PageActionAnimationStyle, PageActionId, PageActionTrigger, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {PageActionIconElement, PageActionState} from 'chrome://webui-toolbar.top-chrome/app.js';
+import type {PageActionIconElement} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {BrowserProxyImpl, IconTable, IconType, PageActionAnimationStyle, PageActionId, PageActionTrigger, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {PageActionState} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {TestToolbarBrowserProxy} from './test_toolbar_browser_proxy.js';
 import type {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
+
+// Computed 2D matrix for scaleX(-1).
+const FLIPPED_X_MATRIX = 'matrix(-1, 0, 0, 1, 0, 0)';
 
 interface StartTrackingCall {
   element: HTMLElement;
@@ -40,6 +44,7 @@ suite('PageActionIconTest', function() {
       shouldAnimateChipIn: false,
       shouldAnimateChipOut: false,
       backgroundColorOverride: null,
+      foregroundColorOverride: null,
       identifier: {
         nativeIdentifier: '',
         secondaryIdentifier: '',
@@ -100,6 +105,7 @@ suite('PageActionIconTest', function() {
       stopTracking: (element: HTMLElement) => {
         stopTrackingCalls.push(element);
       },
+      notifyElementActivated: () => {},
     };
     TrackedElementManager.setInstance(mockManager as TrackedElementManager);
 
@@ -111,6 +117,16 @@ suite('PageActionIconTest', function() {
     icon.state = createBaseState();
     document.body.appendChild(icon);
     await microtasksFinished();
+  });
+
+  teardown(function() {
+    document.documentElement.dir = 'ltr';
+    document.documentElement.style.removeProperty(
+        '--color-omnibox-action-icon-hover');
+    document.documentElement.style.removeProperty(
+        '--color-omnibox-icon-pressed');
+    document.documentElement.style.removeProperty(
+        '--color-omnibox-icon-hover');
   });
 
   test('Render', function() {
@@ -168,6 +184,133 @@ suite('PageActionIconTest', function() {
     await microtasksFinished();
 
     assertEquals('rgb(255, 0, 0)', style.get('background-color')?.toString());
+  });
+
+  test('Foreground color', async function() {
+    const button = icon.$.button;
+    const actualButton = button.$.button;
+    icon.style.setProperty(
+        '--color-omnibox-icon-foreground-tonal', 'rgb(255, 0, 0)');
+    icon.style.setProperty('--color-toolbar-button-icon', 'rgb(1, 2, 3)');
+
+    // Default: toolbar button icon color.
+    const style = actualButton.computedStyleMap();
+    assertEquals('rgb(1, 2, 3)', style.get('color')?.toString());
+
+    // Show a text chip, should now use --color-omnibox-icon-foreground-tonal.
+    icon.state = {
+      ...createBaseState(),
+      text: 'Inexplicably expanded bookmark chip',
+      shouldShowChip: true,
+    };
+    await microtasksFinished();
+
+    assertEquals('rgb(255, 0, 0)', style.get('color')?.toString());
+
+    // Custom color, no chip.
+    icon.state = {
+      ...createBaseState(),
+      foregroundColorOverride: hexColorToSkColor('#00ff00'),
+    };
+    await microtasksFinished();
+
+    assertEquals('rgb(0, 255, 0)', style.get('color')?.toString());
+
+    // Custom color, with chip -- still using custom color. Also verify that
+    // both overrides can be applied at the same time.
+    icon.state = {
+      ...createBaseState(),
+      text: 'Inexplicably expanded bookmark chip',
+      shouldShowChip: true,
+      backgroundColorOverride: hexColorToSkColor('#ff00ff'),
+      foregroundColorOverride: hexColorToSkColor('#0000ff'),
+    };
+    await microtasksFinished();
+
+    assertEquals('rgb(0, 0, 255)', style.get('color')?.toString());
+    assertEquals('rgb(255, 0, 255)', style.get('background-color')?.toString());
+
+    // And back to no custom color again.
+    icon.state = {
+      ...createBaseState(),
+      text: 'Inexplicably expanded bookmark chip',
+      shouldShowChip: true,
+    };
+    await microtasksFinished();
+
+    assertEquals('rgb(255, 0, 0)', style.get('color')?.toString());
+  });
+
+  test('Ink drop hover and ripple colors', async function() {
+    const kActionHoverColor = 'rgb(11, 22, 33)';
+    const kIconPressedColor = 'rgb(44, 55, 66)';
+    const kIconHoverColor = 'rgb(77, 88, 99)';
+
+    document.documentElement.style.setProperty(
+        '--color-omnibox-action-icon-hover', kActionHoverColor);
+    document.documentElement.style.setProperty(
+        '--color-omnibox-icon-pressed', kIconPressedColor);
+    document.documentElement.style.setProperty(
+        '--color-omnibox-icon-hover', kIconHoverColor);
+
+    const actualButton = icon.$.button.$.button;
+
+    // Default icon-only chip uses kColorOmniboxActionIconHover and
+    // kColorOmniboxIconPressed.
+    assertEquals(
+        kActionHoverColor,
+        window.getComputedStyle(actualButton, '::before').backgroundColor);
+    assertEquals(
+        kIconPressedColor,
+        window.getComputedStyle(actualButton, '::after').backgroundColor);
+
+    // When label is shown, hover switches to kColorOmniboxIconHover while
+    // ripple remains kColorOmniboxIconPressed.
+    icon.state = {
+      ...createBaseState(),
+      text: 'Inexplicably expanded bookmark chip',
+      shouldShowChip: true,
+    };
+    await microtasksFinished();
+
+    assertEquals(
+        kIconHoverColor,
+        window.getComputedStyle(actualButton, '::before').backgroundColor);
+    assertEquals(
+        kIconPressedColor,
+        window.getComputedStyle(actualButton, '::after').backgroundColor);
+
+    // Verify inside a page-action-icons container (capsule vs. non-capsule):
+    // native doesn't tie inkdrop colors to the capsule, so they always use
+    // omnibox colors.
+    const container = document.createElement('page-action-icons');
+    document.body.appendChild(container);
+
+    // Non-capsule
+    container.pageActionStates = [createBaseState()];
+    await microtasksFinished();
+    const nonCapsuleIcon =
+        container.shadowRoot.querySelector('page-action-icon');
+    assertTrue(!!nonCapsuleIcon);
+    const nonCapsuleButton = nonCapsuleIcon.$.button.$.button;
+    assertEquals(
+        kActionHoverColor,
+        window.getComputedStyle(nonCapsuleButton, '::before').backgroundColor);
+    assertEquals(
+        kIconPressedColor,
+        window.getComputedStyle(nonCapsuleButton, '::after').backgroundColor);
+
+    // Capsule
+    container.toggleAttribute('is-capsule', true);
+    await microtasksFinished();
+    assertEquals(
+        kActionHoverColor,
+        window.getComputedStyle(nonCapsuleButton, '::before').backgroundColor);
+    assertEquals(
+        kIconPressedColor,
+        window.getComputedStyle(nonCapsuleButton, '::after').backgroundColor);
+
+    container.remove();
   });
 
   test('Render without accessible name', async function() {
@@ -348,19 +491,6 @@ suite('PageActionIconTest', function() {
         assertFalse(icon.$.button.hasAttribute('animates-label'));
         assertFalse(icon.$.button.hasAttribute('has-label'));
       });
-
-  test('Pointer down triggers onPageActionPointerDown', async function() {
-    const button = icon.$.button;
-    button.dispatchEvent(new PointerEvent('pointerdown', {
-      bubbles: true,
-      composed: true,
-    }));
-
-    const actionId =
-        await toolbarUiHandler.whenCalled('onPageActionPointerDown');
-    assertEquals(PageActionId.kActionShowTranslate, actionId);
-  });
-
   test('Start tracking when identifier is set', async () => {
     icon.state = {
       ...icon.state,
@@ -372,7 +502,7 @@ suite('PageActionIconTest', function() {
     await microtasksFinished();
 
     assertEquals(1, startTrackingCalls.length);
-    assertEquals(icon.$.button, startTrackingCalls[0]!.element);
+    assertEquals(icon, startTrackingCalls[0]!.element);
     assertEquals('test-id', startTrackingCalls[0]!.nativeId);
     assertEquals(0, stopTrackingCalls.length);
   });
@@ -399,7 +529,7 @@ suite('PageActionIconTest', function() {
 
     assertEquals(1, startTrackingCalls.length);
     assertEquals(1, stopTrackingCalls.length);
-    assertEquals(icon.$.button, stopTrackingCalls[0]!);
+    assertEquals(icon, stopTrackingCalls[0]!);
   });
 
   test('Stop tracking and start tracking when identifier changes', async () => {
@@ -423,9 +553,9 @@ suite('PageActionIconTest', function() {
     await microtasksFinished();
 
     assertEquals(1, stopTrackingCalls.length);
-    assertEquals(icon.$.button, stopTrackingCalls[0]!);
+    assertEquals(icon, stopTrackingCalls[0]!);
     assertEquals(2, startTrackingCalls.length);
-    assertEquals(icon.$.button, startTrackingCalls[1]!.element);
+    assertEquals(icon, startTrackingCalls[1]!.element);
     assertEquals('test-id-2', startTrackingCalls[1]!.nativeId);
   });
 
@@ -442,7 +572,7 @@ suite('PageActionIconTest', function() {
 
     icon.remove();
     assertEquals(1, stopTrackingCalls.length);
-    assertEquals(icon.$.button, stopTrackingCalls[0]!);
+    assertEquals(icon, stopTrackingCalls[0]!);
   });
 
   test('Highlight changed callback updates is-menu-open', async () => {
@@ -467,6 +597,56 @@ suite('PageActionIconTest', function() {
     options.onHighlightChanged(false);
     await microtasksFinished();
     assertFalse(icon.$.button.hasAttribute('is-menu-open'));
+  });
+
+  test('Click suppression when bubble is open or recently closed', async () => {
+    icon.state = {
+      ...icon.state,
+      identifier: {
+        nativeIdentifier: 'test-id',
+        secondaryIdentifier: '',
+      },
+    };
+    await microtasksFinished();
+    assertEquals(1, startTrackingCalls.length);
+    const options = startTrackingCalls[0]!.options;
+    assertTrue(!!options?.onHighlightChanged);
+
+    const button = icon.$.button;
+    const dispatchMouseClick = () => {
+      button.dispatchEvent(new PointerEvent(
+          'pointerdown', {bubbles: true, button: 0, pointerType: 'mouse'}));
+      button.dispatchEvent(new PointerEvent(
+          'click', {bubbles: true, button: 0, pointerType: 'mouse'}));
+    };
+
+    // 1. Normal click when not highlighted triggers the action.
+    dispatchMouseClick();
+    assertEquals(1, toolbarUiHandler.getCallCount('onPageActionClick'));
+
+    // 2. Click while highlighted (bubble open) is suppressed.
+    options.onHighlightChanged(true);
+    dispatchMouseClick();
+    assertEquals(1, toolbarUiHandler.getCallCount('onPageActionClick'));
+
+    // 3. Click right after unhighlighting (< 100ms) is suppressed.
+    options.onHighlightChanged(false);
+    icon.highlightTracker.lastUnhighlightedTime = performance.now() + 10000;
+    dispatchMouseClick();
+    assertEquals(1, toolbarUiHandler.getCallCount('onPageActionClick'));
+
+    // 4. Keyboard activation (empty pointerType) is not suppressed even after
+    // a pointerdown that armed click skipping.
+    button.dispatchEvent(new PointerEvent(
+        'pointerdown', {bubbles: true, button: 0, pointerType: 'mouse'}));
+    button.dispatchEvent(
+        new PointerEvent('click', {bubbles: true, button: 0, pointerType: ''}));
+    assertEquals(2, toolbarUiHandler.getCallCount('onPageActionClick'));
+
+    // 5. Click after >= 100ms since bubble closed triggers the action.
+    icon.highlightTracker.lastUnhighlightedTime = performance.now() - 200;
+    dispatchMouseClick();
+    assertEquals(3, toolbarUiHandler.getCallCount('onPageActionClick'));
   });
 
   test('Help bubble callbacks update hasHelpBubble and tooltip', async () => {
@@ -678,6 +858,148 @@ suite('PageActionIconTest', function() {
       });
 
   test(
+      'Cancels pending glow up icon animation on tab switch before next frame',
+      async function() {
+        icon.glowUpEnabled = true;
+
+        const iconTable = IconTable.getInstance();
+        iconTable.applyUpdates([
+          {
+            handleId: 1n,
+            iconUrlOrName: 'webui-toolbar:star',
+            iconType: IconType.kIconSet,
+            color: null,
+          },
+          {
+            handleId: 2n,
+            iconUrlOrName: 'webui-toolbar:star_filled',
+            iconType: IconType.kIconSet,
+            color: null,
+          },
+        ]);
+
+        icon.state = {
+          ...createBaseState(),
+          pageActionId: PageActionId.kActionBookmarkThisTab,
+          icon: {handleId: 1n},
+          tabSwitchToken: 1,
+        };
+        await icon.updateComplete;
+
+        // Start star -> star_filled animation and await pure microtasks (not
+        // setTimeout-based microtasksFinished()) so requestAnimationFrame is
+        // queued deterministically before any vsync frame can fire.
+        icon.state = {
+          ...icon.state,
+          icon: {handleId: 2n},
+          tabSwitchToken: 1,
+        };
+        await icon.updateComplete;
+        const animatedIcon =
+            icon.shadowRoot.querySelector<CrIconElement>('#animatedIcon');
+        assertTrue(!!animatedIcon);
+        await animatedIcon.updateComplete;
+        await Promise.resolve();
+
+        // Before the animation frame fires, receive a navigation / tab switch
+        // token increment that unmounts #animatedIcon.
+        icon.state = {
+          ...icon.state,
+          tabSwitchToken: 2,
+        };
+        await icon.updateComplete;
+        assertFalse(!!icon.shadowRoot.querySelector('#animatedIcon'));
+
+        // Advancing frames must not hit assert(crIcon) in playIconAnimation.
+        await nextFrame();
+        assertTrue(!!icon.shadowRoot.querySelector('icon-from-table'));
+        assertFalse(!!icon.shadowRoot.querySelector('#animatedIcon'));
+
+        // Also verify cancellation mid-await right after icon.updateComplete
+        // (before crIcon.updateComplete / requestAnimationFrame scheduling --
+        // that is, we *don't* call `await animatedIcon.updateComplete;` or
+        // `await Promise.resolve();` this time).
+        icon.state = {
+          ...icon.state,
+          icon: {handleId: 1n},
+          tabSwitchToken: 2,
+        };
+        await icon.updateComplete;
+        assertTrue(!!icon.shadowRoot.querySelector('#animatedIcon'));
+        icon.state = {
+          ...icon.state,
+          tabSwitchToken: 3,
+        };
+        await icon.updateComplete;
+        await nextFrame();
+        assertTrue(!!icon.shadowRoot.querySelector('icon-from-table'));
+        assertFalse(!!icon.shadowRoot.querySelector('#animatedIcon'));
+      });
+
+  test(
+      'Cancels pending glow up icon animation on disconnect before next frame',
+      async function() {
+        icon.glowUpEnabled = true;
+
+        const iconTable = IconTable.getInstance();
+        iconTable.applyUpdates([
+          {
+            handleId: 1n,
+            iconUrlOrName: 'webui-toolbar:star',
+            iconType: IconType.kIconSet,
+            color: null,
+          },
+          {
+            handleId: 2n,
+            iconUrlOrName: 'webui-toolbar:star_filled',
+            iconType: IconType.kIconSet,
+            color: null,
+          },
+        ]);
+
+        icon.state = {
+          ...createBaseState(),
+          pageActionId: PageActionId.kActionBookmarkThisTab,
+          icon: {handleId: 2n},
+          tabSwitchToken: 1,
+        };
+        await icon.updateComplete;
+
+        // Start star_filled -> star animation and queue requestAnimationFrame
+        // using pure microtask awaits so zero vsync frames elapse.
+        icon.state = {
+          ...icon.state,
+          icon: {handleId: 1n},
+          tabSwitchToken: 1,
+        };
+        await icon.updateComplete;
+        const animatedIcon =
+            icon.shadowRoot.querySelector<CrIconElement>('#animatedIcon');
+        assertTrue(!!animatedIcon);
+        await animatedIcon.updateComplete;
+        await Promise.resolve();
+
+        // Disconnect the element before the animation frame runs (e.g. NTP
+        // hiding the bookmark action or omnibox suppressing page actions).
+        icon.remove();
+        await icon.updateComplete;
+
+        // Advancing frames must not throw Assertion failed on detached element.
+        await nextFrame();
+        assertFalse(!!icon.shadowRoot.querySelector('#animatedIcon'));
+
+        // Mutating state while disconnected must not start a new animation.
+        icon.state = {
+          ...icon.state,
+          icon: {handleId: 2n},
+          tabSwitchToken: 1,
+        };
+        await icon.updateComplete;
+        await nextFrame();
+        assertFalse(!!icon.shadowRoot.querySelector('#animatedIcon'));
+      });
+
+  test(
       'SlideAndCrossfade animation attributes and trailing icon',
       async function() {
         icon.state = {
@@ -817,6 +1139,131 @@ suite('PageActionIconTest', function() {
         assertEquals(PageActionId.kActionShowTranslate, actionId);
         assertFalse(isShowing);
       });
+
+  [false, true].forEach(glowUpEnabled => {
+    test(
+        `Flips icon in RTL when glowUpEnabled is ${glowUpEnabled}`,
+        async function() {
+          icon.glowUpEnabled = glowUpEnabled;
+          const iconTable = IconTable.getInstance();
+          iconTable.applyUpdates([
+            {
+              handleId: 1n,
+              iconUrlOrName: 'webui-toolbar:star',
+              iconType: IconType.kIconSet,
+              color: null,
+            },
+            {
+              handleId: 2n,
+              iconUrlOrName: 'webui-toolbar:star_filled',
+              iconType: IconType.kIconSet,
+              color: null,
+            },
+          ]);
+
+          icon.state = {
+            ...createBaseState(),
+            pageActionId: PageActionId.kActionBookmarkThisTab,
+            icon: {handleId: 1n},
+          };
+          await microtasksFinished();
+
+          const staticIcon =
+              icon.shadowRoot.querySelector<HTMLElement>('#icon');
+          assertTrue(!!staticIcon);
+          assertEquals('none', window.getComputedStyle(staticIcon).transform);
+
+          document.documentElement.dir = 'rtl';
+          assertEquals(
+              FLIPPED_X_MATRIX, window.getComputedStyle(staticIcon).transform);
+
+          // Transition to starred; with glowUpEnabled = false, #icon stays
+          // mounted and remains flipped. With glowUpEnabled = true,
+          // #animatedIcon also flips.
+          icon.state = {
+            ...icon.state,
+            icon: {handleId: 2n},
+          };
+          await icon.updateComplete;
+
+          if (!glowUpEnabled) {
+            assertEquals(null, icon.shadowRoot.querySelector('#animatedIcon'));
+            assertEquals(
+                FLIPPED_X_MATRIX,
+                window.getComputedStyle(staticIcon).transform);
+          } else {
+            const animatedIcon =
+                icon.shadowRoot.querySelector<CrIconElement>('#animatedIcon');
+            assertTrue(!!animatedIcon);
+            assertEquals(
+                FLIPPED_X_MATRIX,
+                window.getComputedStyle(animatedIcon).transform);
+
+            await animatedIcon.updateComplete;
+            await nextFrame();
+            await triggerAnimationEndAndVerify(animatedIcon);
+          }
+        });
+  });
+
+  test('Does not flip full-color favicon icon in RTL', async function() {
+    const iconTable = IconTable.getInstance();
+    iconTable.applyUpdates([
+      {
+        handleId: 10n,
+        iconUrlOrName: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+        iconType: IconType.kFullColorUrl,
+        color: null,
+      },
+    ]);
+
+    icon.state = {
+      ...createBaseState(),
+      pageActionId: PageActionId.kActionShowIntentPicker,
+      icon: {handleId: 10n},
+    };
+    await microtasksFinished();
+
+    const staticIcon = icon.shadowRoot.querySelector<HTMLElement>('#icon');
+    assertTrue(!!staticIcon);
+    assertTrue(staticIcon.hasAttribute('is-full-color'));
+    assertEquals('none', window.getComputedStyle(staticIcon).transform);
+
+    document.documentElement.dir = 'rtl';
+    assertEquals('none', window.getComputedStyle(staticIcon).transform);
+  });
+
+  test('Flips trailing icon in RTL', async function() {
+    const iconTable = IconTable.getInstance();
+    iconTable.applyUpdates([
+      {
+        handleId: 123n,
+        iconUrlOrName: 'webui-toolbar:arrow_forward',
+        iconType: IconType.kIconSet,
+        color: null,
+      },
+    ]);
+
+    icon.state = {
+      ...createBaseState(),
+      pageActionId: PageActionId.kActionAiMode,
+      text: 'AI Mode',
+      shouldShowChip: true,
+      animationStyle: PageActionAnimationStyle.kSlideAndCrossfade,
+      trailingIcon: {handleId: 123n},
+      showTrailingIcon: true,
+    };
+    await microtasksFinished();
+
+    const trailingIcon =
+        icon.shadowRoot.querySelector<HTMLElement>('#trailing-icon');
+    assertTrue(!!trailingIcon);
+    assertEquals('none', window.getComputedStyle(trailingIcon).transform);
+
+    document.documentElement.dir = 'rtl';
+    assertEquals(
+        FLIPPED_X_MATRIX, window.getComputedStyle(trailingIcon).transform);
+  });
 });
 
 suite('PageActionIconsTest', function() {
@@ -831,6 +1278,7 @@ suite('PageActionIconsTest', function() {
       shouldAnimateChipIn: false,
       shouldAnimateChipOut: false,
       backgroundColorOverride: null,
+      foregroundColorOverride: null,
       identifier: {
         nativeIdentifier: '',
         secondaryIdentifier: '',

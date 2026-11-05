@@ -4,10 +4,15 @@
 
 package org.chromium.chrome.browser.composeplate;
 
+import androidx.annotation.IntDef;
+
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.chrome.browser.util.BrowserUiUtils.ModuleTypeOnStartAndNtp;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /** The utility class for logging the composeplate's metrics. */
 @NullMarked
@@ -17,8 +22,31 @@ public class ComposeplateMetricsUtils {
             "NewTabPage.Composeplate.Impression";
     public static final String HISTOGRAM_NTP_OMNIBOX_IMPRESSION2 =
             "NewTabPage.FakeSearchBox.Impression2";
-    public static final String HISTOGRAM_NTP_OMNIBOX_COMPOSEPLATE_BUTTON_IMPRESSION2 =
-            "NewTabPage.FakeSearchBox.ComposeplateButton.Impression2";
+    public static final String HISTOGRAM_COMPOSEPLATE_BUTTONS_IMPRESSION =
+            "NewTabPage.Composeplate.Buttons.Impression";
+
+    /**
+     * The buttons on the composeplate. These values are recorded to the
+     * NewTabPage.Composeplate.Buttons.Impression histogram. Entries should not be renumbered and
+     * numeric values should never be reused.
+     */
+    // LINT.IfChange(ComposeplateViewButtonType)
+    @IntDef({
+        ComposeplateViewButtonType.AI_MODE,
+        ComposeplateViewButtonType.INCOGNITO,
+        ComposeplateViewButtonType.CREATE_IMAGE,
+        ComposeplateViewButtonType.ADD_IMAGE
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ComposeplateViewButtonType {
+        int AI_MODE = 0;
+        int INCOGNITO = 1;
+        int CREATE_IMAGE = 2;
+        int ADD_IMAGE = 3;
+        int NUM_ENTRIES = 4;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:NtpComposeplateViewButtonType)
 
     /**
      * Records a click on a section within the Composeplate row on the New Tab Page.
@@ -43,9 +71,16 @@ public class ComposeplateMetricsUtils {
         RecordHistogram.recordBooleanHistogram(HISTOGRAM_NTP_OMNIBOX_IMPRESSION2, true);
     }
 
-    /** Records an impression of composeplate button on the fake search box in the New Tab Page. */
-    public static void recordFakeSearchBoxComposeplateButtonImpression2(boolean isVisible) {
-        RecordHistogram.recordBooleanHistogram(
-                HISTOGRAM_NTP_OMNIBOX_COMPOSEPLATE_BUTTON_IMPRESSION2, isVisible);
+    /**
+     * Records an impression of a button on the composeplate in the New Tab Page.
+     *
+     * @param buttonType The {@link ComposeplateViewButtonType} of the button that was shown.
+     */
+    public static void recordComposeplateButtonImpression(
+            @ComposeplateViewButtonType int buttonType) {
+        RecordHistogram.recordEnumeratedHistogram(
+                HISTOGRAM_COMPOSEPLATE_BUTTONS_IMPRESSION,
+                buttonType,
+                ComposeplateViewButtonType.NUM_ENTRIES);
     }
 }

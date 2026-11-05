@@ -30,13 +30,26 @@ namespace features {
 
 GFX_SWITCHES_EXPORT BASE_DECLARE_FEATURE(kUseSmartRefForGPUFenceHandle);
 GFX_SWITCHES_EXPORT BASE_DECLARE_FEATURE(kUseRoundedPointConversion);
-GFX_SWITCHES_EXPORT BASE_DECLARE_FEATURE(kHdrAgtm);
 GFX_SWITCHES_EXPORT BASE_DECLARE_FEATURE(kHdrAgtmParseOldSyntax);
 
 // Workaround for an issue in Windows where icons with fully transparent
 // pixels are rendered as black squares. See https://crbug.com/441293180
 // Used as a killswitch in case an issue is discovered with the implementation.
 GFX_SWITCHES_EXPORT BASE_DECLARE_FEATURE(kTransparentIconWorkaround);
+
+// When enabled, HarfBuzz uses SkTypeface::copyTableData to load font tables.
+// On platforms that support zero-copy table access (DirectWrite on Windows,
+// CoreText on macOS), this avoids allocating a buffer and copying the table
+// data.
+GFX_SWITCHES_EXPORT BASE_DECLARE_FEATURE(kHarfBuzzZeroCopyFontTable);
+
+#if BUILDFLAG(IS_LINUX)
+// When enabled, subpixel positioning at scale factors above 1x caps hinting at
+// HINTING_SLIGHT instead of disabling it. Slight hinting only adjusts glyphs
+// vertically, so it is compatible with fractional horizontal positions. Used as
+// a killswitch.
+GFX_SWITCHES_EXPORT BASE_DECLARE_FEATURE(kSlightHintingWithSubpixelPositioning);
+#endif  // BUILDFLAG(IS_LINUX)
 
 }  // namespace features
 

@@ -39,12 +39,21 @@ use zune_core::options::DecoderOptions;
 use crate::decoder::IDCTPtr;
 use crate::idct::scalar::{idct_int, idct_int_1x1};
 
+// Match libjpeg's JDCT_ISLOW: 13-bit constants and two fractional bits
+// between passes. Round once per pass; the final bias also level-shifts by 128.
+const CONST_BITS: i32 = 13;
+const PASS1_SHIFT: i32 = CONST_BITS - 2;
+const PASS1_ROUND: i32 = 1 << (PASS1_SHIFT - 1);
+const OUTPUT_SHIFT: i32 = CONST_BITS + 2 + 3;
+const SCALE_BITS: i32 = (1 << (OUTPUT_SHIFT - 1)) + (128 << OUTPUT_SHIFT);
+
 #[cfg(feature = "x86")]
 pub mod avx2;
 #[cfg(feature = "neon")]
 pub mod neon;
 
 pub mod scalar;
+mod scaled_basis;
 
 /// Choose an appropriate IDCT function
 #[allow(unused_variables)]
@@ -98,8 +107,18 @@ pub fn choose_idct_4x4_func(_options: &DecoderOptions) -> IDCTPtr {
     scalar::idct4x4
 }
 
-pub fn choose_idct_1x1_func(_: &DecoderOptions) -> IDCTPtr {
-    // These are simple stores, no alternative implementation for now
+#[allow(unused_variables)]
+pub fn choose_idct_1x1_func(options: &DecoderOptions) -> IDCTPtr {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(feature = "x86")]
+    {
+        if options.use_avx2() {
+            return |a: &mut [i32; 64], b: &mut [i16], c: usize| {
+                // SAFETY: `options.use_avx2()` only returns true if avx2 is supported.
+                unsafe { avx2::idct_avx2_1x1(a, b, c) }
+            };
+        }
+    }
     idct_int_1x1
 }
 
@@ -107,7 +126,322 @@ pub fn choose_idct_1x1_func(_: &DecoderOptions) -> IDCTPtr {
 #[allow(unreachable_code)]
 #[allow(dead_code)]
 mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use super::*;
+
+    fn check_scaled_idct(input: [i32; 64], half: [i16; 16], quarter: [i16; 4], eighth: i16) {
+        const STRIDE: usize = 7;
+        let cases: [(usize, IDCTPtr, &[i16]); 3] = [
+            (4, scalar::idct_scaled_4x4, &half),
+            (2, scalar::idct_scaled_2x2, &quarter),
+            (1, scalar::idct_scaled_1x1, core::slice::from_ref(&eighth))
+        ];
+        for (side, transform, expected) in cases {
+            let mut coefficients = input;
+            let mut output = vec![-1; (side - 1) * STRIDE + side];
+            transform(&mut coefficients, &mut output, STRIDE);
+            assert_eq!(coefficients, input);
+            for (index, sample) in output.into_iter().enumerate() {
+                let row = index / STRIDE;
+                let column = index % STRIDE;
+                let value = if column < side { expected[row * side + column] } else { -1 };
+                assert_eq!(sample, value, "scale 1/{}, position {index}", 8 / side);
+            }
+        }
+    }
+
+    #[test]
+    fn scaled_idct_native_mixed_and_clipping() {
+        // Golden samples were produced by libjpeg-turbo's reduced IDCTs with
+        // unit quantization, not by resizing its full-size output.
+        let mut input = [0; 64];
+        for (coefficient, index) in input.iter_mut().zip(0_i32..) {
+            *coefficient = ((index * 29) % 107) - 53;
+        }
+        check_scaled_idct(
+            input,
+            [
+                122, 116, 112, 114, 115, 84, 157, 132, 115, 124, 126, 112, 122, 129, 123, 138
+            ],
+            [109, 129, 123, 125],
+            121
+        );
+        input.fill(0);
+        input[0] = 700;
+        input[1] = 700;
+        input[8] = -400;
+        input[9] = 200;
+        check_scaled_idct(
+            input,
+            [
+                255, 215, 88, 0, 255, 242, 135, 60, 255, 255, 203, 147, 255, 255, 250, 208
+            ],
+            [255, 70, 255, 202],
+            216
+        );
+    }
+
+    #[test]
+    fn scaled_idct_native_axis_and_rounding() {
+        let mut input = [0; 64];
+        input[0] = -5;
+        check_scaled_idct(input, [127; 16], [127; 4], 127);
+        input.fill(0);
+        input[1] = 47;
+        input[3] = -83;
+        input[7] = 19;
+        check_scaled_idct(
+            input,
+            [
+                130, 142, 114, 126, 130, 142, 114, 126, 130, 142, 114, 126, 130, 142, 114, 126
+            ],
+            [136, 120, 136, 120],
+            128
+        );
+        input.fill(0);
+        input[8] = -101;
+        input[24] = 35;
+        input[56] = -49;
+        check_scaled_idct(
+            input,
+            [
+                115, 115, 115, 115, 117, 117, 117, 117, 139, 139, 139, 139, 141, 141, 141, 141
+            ],
+            [116, 116, 140, 140],
+            128
+        );
+    }
+
+    #[test]
+    fn scaled_idct_discards_cancelled_frequencies() {
+        let mut input = [0; 64];
+        input[4] = 719;
+        input[32] = -299;
+        input[36] = 153;
+        check_scaled_idct(input, [128; 16], [128; 4], 128);
+    }
+
+    fn check_idct(input: [i32; 64], expected: [i16; 64], reduced: bool) {
+        const STRIDE: usize = 13;
+        let mut functions: Vec<(&str, IDCTPtr)> = vec![
+            ("scalar", idct_int),
+            ("native", choose_idct_func(&DecoderOptions::new_fast())),
+        ];
+        if reduced {
+            functions.push(("scalar 4x4", scalar::idct4x4));
+            functions.push((
+                "native 4x4",
+                choose_idct_4x4_func(&DecoderOptions::new_fast())
+            ));
+        }
+        if input[1..].iter().all(|&coefficient| coefficient == 0) {
+            functions.push(("DC only", idct_int_1x1));
+            functions.push((
+                "native DC only",
+                choose_idct_1x1_func(&DecoderOptions::new_fast())
+            ));
+        } else {
+            #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+            if DecoderOptions::new_fast().use_avx2() {
+                functions.push(("AVX2 nonzero", |a, b, c| {
+                    // SAFETY: AVX2 support was checked above.
+                    unsafe { avx2::idct_avx2_nonzero(a, b, c) }
+                }));
+            }
+        }
+        for (name, function) in functions {
+            let mut coefficients = input;
+            let mut output = [-1; 8 * STRIDE];
+            function(&mut coefficients, &mut output, STRIDE);
+            for (row, expected) in output.chunks_exact(STRIDE).zip(expected.chunks_exact(8)) {
+                assert_eq!(&row[..8], expected, "{name}");
+                assert_eq!(&row[8..], &[-1; STRIDE - 8], "{name} overwrote padding");
+            }
+            if name.ends_with("4x4") {
+                for (index, coefficient) in coefficients.iter().enumerate() {
+                    if index / 8 >= 4 || index % 8 >= 4 {
+                        assert_eq!(*coefficient, 0, "{name} violated the 4x4 contract");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn islow_rounding() {
+        // Golden samples from libjpeg's jidctint.c, with unit quantization.
+        let mut coefficients = [0; 64];
+        coefficients[9] = -255;
+        #[rustfmt::skip]
+        let expected = [
+            67, 76, 93, 116, 140, 163, 180, 189,
+            76, 84, 99, 118, 138, 157, 172, 180,
+            93, 99, 108, 121, 135, 148, 157, 163,
+            116, 118, 121, 126, 130, 135, 138, 140,
+            140, 138, 135, 130, 126, 121, 118, 116,
+            163, 157, 148, 135, 121, 108, 99, 93,
+            180, 172, 157, 138, 118, 99, 84, 76,
+            189, 180, 163, 140, 116, 93, 76, 67,
+        ];
+        check_idct(coefficients, expected, true);
+
+        coefficients[9] = 0;
+        coefficients[0] = 255;
+        coefficients[63] = -256;
+        #[rustfmt::skip]
+        let expected = [
+            157, 167, 150, 172, 148, 170, 153, 162,
+            167, 140, 189, 125, 195, 130, 180, 153,
+            149, 189, 116, 212, 108, 204, 130, 170,
+            172, 125, 212, 98, 221, 108, 195, 148,
+            148, 195, 108, 221, 98, 212, 125, 172,
+            170, 130, 204, 108, 212, 116, 189, 149,
+            153, 180, 130, 195, 125, 189, 140, 167,
+            162, 153, 170, 148, 172, 149, 167, 157,
+        ];
+        check_idct(coefficients, expected, false);
+    }
+
+    #[test]
+    fn islow_4x4_rounding() {
+        #[rustfmt::skip]
+        let coefficients = [
+            -254, -7, 0, 0, 0, 0, 0, 0,
+            7, 0, -30, 32, 0, 0, 0, 0,
+            7, 0, -30, 32, 0, 0, 0, 0,
+            7, 0, -30, 32, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        #[rustfmt::skip]
+        let expected = [
+            98, 86, 85, 106, 131, 130, 97, 64,
+            96, 92, 92, 100, 109, 109, 97, 85,
+            94, 98, 99, 93, 86, 87, 97, 107,
+            94, 99, 100, 91, 80, 82, 97, 113,
+            95, 97, 98, 94, 89, 90, 97, 104,
+            95, 95, 95, 96, 97, 97, 97, 97,
+            95, 96, 97, 95, 93, 94, 97, 101,
+            94, 98, 99, 93, 85, 86, 97, 108,
+        ];
+        check_idct(coefficients, expected, true);
+    }
+
+    #[test]
+    fn islow_final_rounding_and_clipping() {
+        // An extra first-pass rounding bias in the final pass changes 227 to 228.
+        let mut row = [0, 0, 29, 93, 163, 227, 255, 255];
+        for coefficient in [-1013, 1013] {
+            let mut coefficients = [0; 64];
+            coefficients[1] = coefficient;
+            let mut expected = [0; 64];
+            for output_row in expected.chunks_exact_mut(8) {
+                output_row.copy_from_slice(&row);
+            }
+            check_idct(coefficients, expected, true);
+            row.reverse();
+        }
+    }
+
+    #[test]
+    fn dc_rounding_and_extremes() {
+        for dc in [-2048, -1024, -1023, -4, -1, 0, 3, 4, 1015, 1016, 1023, 2047] {
+            let mut coefficients = [0; 64];
+            coefficients[0] = dc;
+            let sample = (((dc + 4) >> 3) + 128).clamp(0, 255) as i16;
+            check_idct(coefficients, [sample; 64], true);
+        }
+    }
+
+    #[test]
+    fn wide_dc_zero_ac_matches_scalar() {
+        for dc in [-76500_i32, -65536, -32769, 32768, 65535, 65536, 76500] {
+            let mut coefficients = [0; 64];
+            coefficients[0] = dc;
+            let sample = (dc.wrapping_add(1028) >> 3).clamp(0, 255) as i16;
+            check_idct(coefficients, [sample; 64], false);
+        }
+    }
+
+    #[test]
+    fn scalar_simd_consistency() {
+        let mut state = 0x12345678_u32;
+        for reduced in [false, true] {
+            for _ in 0..256 {
+                let mut coefficients = [0; 64];
+                for (index, coefficient) in coefficients.iter_mut().enumerate() {
+                    state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                    if !reduced || (index / 8 < 4 && index % 8 < 4) {
+                        *coefficient = (state >> 16) as i32 - 32768;
+                    }
+                }
+                let mut expected = [0; 64];
+                let mut reference_coefficients = coefficients;
+                idct_int(&mut reference_coefficients, &mut expected, 8);
+                check_idct(coefficients, expected, reduced);
+            }
+        }
+    }
+
+    #[test]
+    fn dequantized_i32_simd_consistency() {
+        let mut state = 0x87654321_u32;
+        for reduced in [false, true] {
+            for mask in [255, 32767, 65535, i32::MAX as u32, u32::MAX] {
+                for _ in 0..32 {
+                    let mut coefficients = [0; 64];
+                    for (index, coefficient) in coefficients.iter_mut().enumerate() {
+                        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                        if !reduced || (index / 8 < 4 && index % 8 < 4) {
+                            *coefficient = (state & mask) as i32;
+                            if state & 1 != 0 {
+                                *coefficient = coefficient.wrapping_neg();
+                            }
+                        }
+                    }
+                    let mut expected = [0; 64];
+                    let mut reference_coefficients = coefficients;
+                    idct_int(&mut reference_coefficients, &mut expected, 8);
+                    check_idct(coefficients, expected, reduced);
+                }
+            }
+        }
+    }
+
+    #[cfg(all(
+        feature = "std",
+        feature = "x86",
+        any(target_arch = "x86", target_arch = "x86_64")
+    ))]
+    #[test]
+    fn avx2_output_bounds_are_checked_before_raw_stores() {
+        if !DecoderOptions::new_fast().use_avx2() {
+            return;
+        }
+        let functions: [IDCTPtr; 4] = [
+            |a, b, c| unsafe { avx2::idct_avx2(a, b, c) },
+            |a, b, c| unsafe { avx2::idct_avx2_nonzero(a, b, c) },
+            |a, b, c| unsafe { avx2::idct_avx2_4x4(a, b, c) },
+            |a, b, c| unsafe { avx2::idct_avx2_1x1(a, b, c) }
+        ];
+        for function in functions {
+            for (length, stride) in [(63, 8), (64, 7), (64, usize::MAX / 7 + 1)] {
+                assert!(std::panic::catch_unwind(|| {
+                    function(&mut [0; 64], &mut [0; 64][..length], stride);
+                })
+                .is_err());
+            }
+            let mut output = [-1; 8 + 7 * 13];
+            function(&mut [0; 64], &mut output, 13);
+            for row in 0..8 {
+                assert_eq!(&output[row * 13..row * 13 + 8], &[128; 8]);
+            }
+        }
+    }
 
     #[test]
     fn idct_test0() {

@@ -6,8 +6,12 @@
 
 #include <optional>
 
+#include "base/files/file_path.h"
 #include "base/test/scoped_feature_list.h"
+#include "components/download/public/common/download_create_info.h"
 #include "components/download/public/common/download_features.h"
+#include "components/download/public/common/download_item_impl.h"
+#include "components/download/public/common/mock_download_item.h"
 #include "crypto/hash.h"
 #include "net/base/net_errors.h"
 #include "net/cert/cert_status_flags.h"
@@ -17,11 +21,34 @@
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
 namespace download {
 namespace {
+
+TEST(DownloadUtilsTest, AutoResumeAttemptLimit) {
+  testing::NiceMock<MockDownloadItem> item;
+  const GURL url("https://example.com/download");
+  const base::FilePath target_path(FILE_PATH_LITERAL("download"));
+  ON_CALL(item, GetState())
+      .WillByDefault(testing::Return(DownloadItem::INTERRUPTED));
+  ON_CALL(item, GetURL()).WillByDefault(testing::ReturnRef(url));
+  ON_CALL(item, GetTargetFilePath())
+      .WillByDefault(testing::ReturnRef(target_path));
+  ON_CALL(item, GetLastReason())
+      .WillByDefault(
+          testing::Return(DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT));
+
+  EXPECT_CALL(item, GetAutoResumeCount())
+      .WillOnce(testing::Return(DownloadItemImpl::kMaxAutoResumeAttempts - 1));
+  EXPECT_TRUE(IsInterruptedDownloadAutoResumable(&item, 1024));
+
+  EXPECT_CALL(item, GetAutoResumeCount())
+      .WillOnce(testing::Return(DownloadItemImpl::kMaxAutoResumeAttempts));
+  EXPECT_FALSE(IsInterruptedDownloadAutoResumable(&item, 1024));
+}
 
 TEST(DownloadUtilsTest, HandleServerResponse200) {
   scoped_refptr<net::HttpResponseHeaders> headers(
@@ -195,6 +222,43 @@ TEST(DownloadUtilsTest, AbortedServiceWorkerWithCertErrorIsCertProblem) {
                 net::CERT_STATUS_DATE_INVALID, /*is_partial_request=*/false,
                 DOWNLOAD_INTERRUPT_REASON_NONE,
                 /*is_served_from_service_worker=*/true));
+}
+
+TEST(DownloadUtilsTest, HandleResponseHeadersPopulatesSaveInfoLastModified) {
+  // Case 1: Headers have Last-Modified but no strong validators.
+  // create_info.last_modified remains empty, but save_info->last_modified is populated.
+  {
+    net::HttpResponseHeaders::Builder builder(net::HttpVersion(1, 1), "200 OK");
+    builder.AddHeader("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT");
+    scoped_refptr<net::HttpResponseHeaders> headers = builder.Build();
+    ASSERT_FALSE(headers->HasStrongValidators());
+
+    DownloadCreateInfo create_info;
+    create_info.save_info = std::make_unique<DownloadSaveInfo>();
+
+    HandleResponseHeaders(headers.get(), &create_info);
+    EXPECT_TRUE(create_info.last_modified.empty());
+    EXPECT_EQ("Wed, 21 Oct 2015 07:28:00 GMT",
+              create_info.save_info->last_modified);
+  }
+
+  // Case 2: Headers have strong validator (ETag).
+  // Both create_info.last_modified and save_info->last_modified are populated.
+  {
+    net::HttpResponseHeaders::Builder builder(net::HttpVersion(1, 1), "200 OK");
+    builder.AddHeader("ETag", "\"xyz\"");
+    builder.AddHeader("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT");
+    scoped_refptr<net::HttpResponseHeaders> headers = builder.Build();
+    ASSERT_TRUE(headers->HasStrongValidators());
+
+    DownloadCreateInfo create_info;
+    create_info.save_info = std::make_unique<DownloadSaveInfo>();
+
+    HandleResponseHeaders(headers.get(), &create_info);
+    EXPECT_EQ("Wed, 21 Oct 2015 07:28:00 GMT", create_info.last_modified);
+    EXPECT_EQ("Wed, 21 Oct 2015 07:28:00 GMT",
+              create_info.save_info->last_modified);
+  }
 }
 
 }  // namespace

@@ -12,8 +12,8 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/page_action/action_ids.h"
+#include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_properties_provider.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
@@ -32,6 +32,7 @@
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/vector_icons/vector_icons.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "ui/base/hit_test.h"
@@ -220,9 +221,6 @@ WebAppToolbarButtonContainer::WebAppToolbarButtonContainer(
       .icon_insets = PageActionIconInsetsFromSize(page_action_icon_size),
       .between_icon_spacing = page_action_between_icon_spacing,
       .icon_label_bubble_delegate = this,
-      // The toolbar button container already sets spacing between child
-      // views.
-      .should_bridge_containers = false,
       // On space constraint, the page action should get hidden.
       .hide_icon_on_space_constraint = true,
   };
@@ -321,7 +319,7 @@ void WebAppToolbarButtonContainer::UpdateStatusIconsVisibility() {
   page_actions::PageActionController* controller = nullptr;
   if (tabs::TabInterface* active_tab =
           browser_view_->browser()->GetActiveTabInterface()) {
-    controller = active_tab->GetTabFeatures()->page_action_controller();
+    controller = page_actions::PageActionController::From(active_tab);
   }
   page_action_container_->SetController(controller);
 }

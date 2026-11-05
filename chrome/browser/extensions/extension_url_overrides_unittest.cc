@@ -38,6 +38,10 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/codec/png_codec.h"
 
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"  // nogncheck
+#endif
+
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/login/users/user_manager_delegate_impl.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
@@ -399,6 +403,49 @@ TEST_F(ExtensionWebUITest, TestNumExtensionsOverridingURL) {
   EXPECT_EQ(2u, ExtensionUrlOverrides::GetNumberOfExtensionsOverridingURL(
                     ntp_url, profile_.get()));
 }
+
+// TopChromeWebUIProfile isn't available on Android.
+#if !BUILDFLAG(IS_ANDROID)
+// The overrides pref isn't read for profiles with extensions disabled (e.g.,
+// TopChromeWebUIProfile).
+TEST_F(ExtensionWebUITest, HandlersSkipPrefWhenExtensionsDisabled) {
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_top_chrome_webui_profile;
+  Profile* top_chrome_webui_profile = webui::GetTopChromeWebUIProfile();
+  ASSERT_TRUE(top_chrome_webui_profile);
+
+  const char kOverrideResource[] = "1.html";
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("ext")
+          .SetManifestKey(
+              api::chrome_url_overrides::ManifestKeys::kChromeUrlOverrides,
+              base::DictValue().Set("bookmarks", kOverrideResource))
+          .Build();
+  const GURL kBookmarksUrl(chrome::kChromeUIBookmarksURL);
+  const GURL kOverrideUrl = extension->GetResourceURL(kOverrideResource);
+
+  // The regular profile applies the override in both directions.
+  registrar()->AddExtension(extension.get());
+  GURL url = kBookmarksUrl;
+  EXPECT_TRUE(
+      ExtensionUrlOverrides::HandleChromeURLOverride(&url, profile_.get()));
+  EXPECT_EQ(kOverrideUrl, url);
+  EXPECT_TRUE(ExtensionUrlOverrides::HandleChromeURLOverrideReverse(
+      &url, profile_.get()));
+  EXPECT_EQ(kBookmarksUrl, url);
+
+  // Extensions are disabled for TopChromeWebUIProfile, and it doesn't register
+  // the overrides pref. The handlers should return false without reading the
+  // pref, since reading an unregistered pref crashes.
+  url = kBookmarksUrl;
+  EXPECT_FALSE(ExtensionUrlOverrides::HandleChromeURLOverride(
+      &url, top_chrome_webui_profile));
+  EXPECT_EQ(kBookmarksUrl, url);
+  url = kOverrideUrl;
+  EXPECT_FALSE(ExtensionUrlOverrides::HandleChromeURLOverrideReverse(
+      &url, top_chrome_webui_profile));
+  EXPECT_EQ(kOverrideUrl, url);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 class ExtensionWebUIOverrideURLTest : public ExtensionServiceTestWithInstall {
  public:

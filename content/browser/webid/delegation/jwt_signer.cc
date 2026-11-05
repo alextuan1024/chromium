@@ -6,7 +6,6 @@
 
 #include <map>
 
-#include "base/base64.h"
 #include "base/base64url.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
@@ -21,7 +20,6 @@
 #include "crypto/openssl_util.h"
 #include "crypto/random.h"
 #include "crypto/sign.h"
-#include "crypto/signature_verifier.h"
 #include "third_party/boringssl/src/include/openssl/base.h"
 #include "third_party/boringssl/src/include/openssl/bn.h"
 #include "third_party/boringssl/src/include/openssl/bytestring.h"
@@ -70,11 +68,8 @@ std::optional<std::string> BIGNUMToPadded(const BIGNUM* value,
     return std::nullopt;
   }
 
-  std::string base64;
-  base::Base64UrlEncode(base::as_byte_span(padded_bytes),
-                        base::Base64UrlEncodePolicy::OMIT_PADDING, &base64);
-
-  return base64;
+  return base::Base64UrlEncode(padded_bytes,
+                               base::Base64UrlEncodePolicy::OMIT_PADDING);
 }
 
 std::optional<std::string> BIGNUMToBase64(const BIGNUM* value) {
@@ -197,15 +192,13 @@ std::optional<Jwk> ExportPublicKeyEdDsa(
 
   jwk.kty = "OKP";
   jwk.crv = "Ed25519";
-  jwk.alg = "EdDSA";
+  // RFC 9864 deprecated the polymorphic "EdDSA" in favour of naming the curve.
+  jwk.alg = "Ed25519";
 
   std::array<uint8_t, 32> public_key_raw = private_key.ToEd25519PublicKey();
 
-  std::string x_base64;
-  base::Base64UrlEncode(public_key_raw,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING, &x_base64);
-
-  jwk.x = x_base64;
+  jwk.x = base::Base64UrlEncode(public_key_raw,
+                                base::Base64UrlEncodePolicy::OMIT_PADDING);
 
   return jwk;
 }
@@ -284,8 +277,17 @@ bool VerifyJwt(const Jwk& jwk,
     return false;
   }
 
+  // `header.alg` has to name the algorithm implied by the key's `kty`/`crv`,
+  // and is checked here rather than taken from `Jwk::alg`, which a key parsed
+  // off the network may omit or disagree with.
+  //
+  // TODO(crbug.com/561405995): drop "EdDSA" once no deployed issuer sends it.
+  // RFC 9864 deprecated it in favour of the fully-specified "Ed25519"; it is
+  // accepted here only so the browser keeps working with issuers that have not
+  // migrated yet. Nothing emits it.
   crypto::sign::SignatureKind kind;
-  if (jwk.kty == "OKP" && jwk.crv == "Ed25519" && header.alg == "EdDSA") {
+  if (jwk.kty == "OKP" && jwk.crv == "Ed25519" &&
+      (header.alg == "Ed25519" || header.alg == "EdDSA")) {
     kind = crypto::sign::SignatureKind::ED25519;
   } else if (jwk.kty == "EC" && jwk.crv == "P-256" && header.alg == "ES256") {
     kind = crypto::sign::SignatureKind::ECDSA_SHA256;

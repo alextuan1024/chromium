@@ -41,10 +41,6 @@ if os.getcwd() != self_dir:
   java_path = fix_path(java_path)
 java_cmd = [java_path]
 
-# https://github.com/iBotPeaches/Apktool/issues/3174
-# https://chromium-review.googlesource.com/c/chromium/src/+/4697557/3
-java_cmd += ['-Djdk.util.zip.disableZip64ExtraFieldValidation=true']
-
 # This is a simple argparser for jvm, jar, and classpath arguments.
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--jar-args')
@@ -53,6 +49,7 @@ parser.add_argument('--classpath')
 # Test_runner parses the classpath for sharding junit tests.
 known_args, unknown_args = parser.parse_known_args(sys.argv[1:])
 
+{extra_flags}
 if known_args.jvm_args:
   jvm_arguments = known_args.jvm_args.strip('"').split()
   java_cmd.extend(jvm_arguments)
@@ -66,7 +63,6 @@ else:
 if known_args.classpath:
   classpath += [known_args.classpath]
 
-{extra_flags}
 java_cmd += ['-classpath', ':'.join(classpath), \"{main_class}\"]
 java_cmd.extend(extra_program_args)
 java_cmd.extend(jar_arguments)

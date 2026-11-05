@@ -11,6 +11,7 @@
 #include "ash/webui/grit/ash_media_app_resources.h"
 #include "ash/webui/media_app_ui/url_constants.h"
 #include "ash/webui/web_applications/webui_test_prod_util.h"
+#include "base/check.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
@@ -18,7 +19,6 @@
 #include "base/logging.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/metrics/user_metrics.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
@@ -26,6 +26,7 @@
 #include "chromeos/ash/components/specialized_features/feature_access_checker.h"
 #include "chromeos/grit/chromeos_media_app_bundle_resources.h"
 #include "chromeos/grit/chromeos_media_app_bundle_resources_map.h"
+#include "components/variations/service/variations_service.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
@@ -46,59 +47,20 @@ constexpr char kMediaAppUntrustedScriptSrc[] =
 
 int g_media_app_window_count = 0;
 
-// Helper class to populate MediaApp metrics for UMA and for Happiness Tracking
-// surveys. Manages its own lifetime; tracking whether at least one MediaApp
-// WebUI instance is still running.
-class MediaAppMetricsHelper {
- public:
-  static MediaAppUserActions actions;
+void OnUiFirstNavigated() {
+  // Record the number of other media app windows that currently exist when a
+  // new one is created. Counts windows open with any supported file type, or
+  // in the "zero state" (with no open file). Pick 50 as a sensible maximum
+  // (additional windows will be recorded in the 51 bucket).
+  constexpr int kMaxExpectedWindowCount = 50;
+  UMA_HISTOGRAM_EXACT_LINEAR("Apps.MediaApp.Load.OtherOpenWindowCount",
+                             g_media_app_window_count, kMaxExpectedWindowCount);
+  ++g_media_app_window_count;
+}
 
-  static void OnUiFirstNavigated() {
-    // Record the number of other media app windows that currently exist when a
-    // new one is created. Counts windows open with any supported file type, or
-    // in the "zero state" (with no open file). Pick 50 as a sensible maximum
-    // (additional windows will be recorded in the 51 bucket).
-    constexpr int kMaxExpectedWindowCount = 50;
-    UMA_HISTOGRAM_EXACT_LINEAR("Apps.MediaApp.Load.OtherOpenWindowCount",
-                               g_media_app_window_count,
-                               kMaxExpectedWindowCount);
-    if (g_media_app_window_count++ == 0) {
-      DCHECK(!instance);
-      instance = new MediaAppMetricsHelper();
-    }
-  }
-
-  static void OnUiDestroyedAfterNavigation() {
-    if (--g_media_app_window_count == 0) {
-      delete instance;
-      instance = nullptr;
-    }
-  }
-
-  MediaAppMetricsHelper(const MediaAppMetricsHelper&) = delete;
-  MediaAppMetricsHelper& operator=(const MediaAppMetricsHelper&) = delete;
-
- private:
-  MediaAppMetricsHelper() { base::AddActionCallback(callback_); }
-  ~MediaAppMetricsHelper() { base::RemoveActionCallback(callback_); }
-
-  static void OnAction(const std::string& user_action,
-                       base::TimeTicks action_time) {
-    actions.clicked_edit_image_in_photos =
-        actions.clicked_edit_image_in_photos ||
-        user_action == "MediaApp.Image.Tool.EditInPhotos";
-    actions.clicked_edit_video_in_photos =
-        actions.clicked_edit_video_in_photos ||
-        user_action == "MediaApp.Video.Tool.EditInPhotos";
-  }
-
-  base::ActionCallback callback_ =
-      base::BindRepeating(&MediaAppMetricsHelper::OnAction);
-
-  static MediaAppMetricsHelper* instance;
-};
-MediaAppUserActions MediaAppMetricsHelper::actions = {false, false};
-MediaAppMetricsHelper* MediaAppMetricsHelper::instance = nullptr;
+void OnUiDestroyedAfterNavigation() {
+  --g_media_app_window_count;
+}
 
 bool IsFontRequest(const std::string& path) {
   return base::StartsWith(path, kFontRequestPrefix);
@@ -192,11 +154,15 @@ content::WebUIDataSource* CreateAndAddMediaAppUntrustedDataSource(
 }  // namespace
 
 MediaAppGuestUI::MediaAppGuestUI(
+    variations::VariationsService* variations_service,
     content::WebUI* web_ui,
     std::unique_ptr<MediaAppGuestUIDelegate> delegate)
     : UntrustedWebUIController(web_ui),
       WebContentsObserver(web_ui->GetWebContents()),
       delegate_(std::move(delegate)) {
+  CHECK(variations_service);
+  variations_service_observation_.Observe(variations_service);
+
   task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
       {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN});
@@ -218,7 +184,7 @@ MediaAppGuestUI::MediaAppGuestUI(
 
 MediaAppGuestUI::~MediaAppGuestUI() {
   if (app_navigation_committed_) {
-    MediaAppMetricsHelper::OnUiDestroyedAfterNavigation();
+    OnUiDestroyedAfterNavigation();
   }
 }
 
@@ -232,7 +198,7 @@ void MediaAppGuestUI::ReadyToCommitNavigation(
 
   if (!app_navigation_committed_) {
     app_navigation_committed_ = true;
-    MediaAppMetricsHelper::OnUiFirstNavigated();
+    OnUiFirstNavigated();
   }
 
   mojo::AssociatedRemote<blink::mojom::AutoplayConfigurationClient> client;
@@ -240,6 +206,10 @@ void MediaAppGuestUI::ReadyToCommitNavigation(
       &client);
   client->AddAutoplayFlags(url::Origin::Create(handle->GetURL()),
                            blink::mojom::kAutoplayFlagForceAllow);
+}
+
+void MediaAppGuestUI::OnVariationsServiceDestroyed() {
+  variations_service_observation_.Reset();
 }
 
 void MediaAppGuestUI::StartFontDataRequest(
@@ -309,9 +279,13 @@ void MediaAppGuestUI::OnMantisAvailableDone(IsMantisAvailableCallback callback,
 void MediaAppGuestUI::IsMantisAvailable(IsMantisAvailableCallback callback) {
   // Mantis does not live in //chrome, no need to use delegate.
   if (mantis_untrusted_service_manager_ == nullptr) {
+    variations::VariationsService* variations_service =
+        variations_service_observation_.GetSource();
+    CHECK(variations_service);
     mantis_untrusted_service_manager_ =
         std::make_unique<MantisUntrustedServiceManager>(
             delegate_->GetFeatureAccessChecker(
+                variations_service,
                 MantisUntrustedServiceManager::GetFeatureAccessConfig(),
                 web_ui()));
   }
@@ -333,10 +307,6 @@ void MediaAppGuestUI::CreateMantisUntrustedService(
   }
   mantis_untrusted_service_manager_->Create(std::move(page), dlc_uuid,
                                             std::move(callback));
-}
-
-MediaAppUserActions GetMediaAppUserActionsForHappinessTracking() {
-  return MediaAppMetricsHelper::actions;
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(MediaAppGuestUI)

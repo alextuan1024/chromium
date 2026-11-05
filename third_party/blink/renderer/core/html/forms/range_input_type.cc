@@ -148,9 +148,8 @@ bool RangeInputType::SupportsRequired() const {
 
 StepRange RangeInputType::CreateStepRange(
     AnyStepHandling any_step_handling) const {
-  DEFINE_STATIC_LOCAL(
-      const StepRange::StepDescription, step_description,
-      (kRangeDefaultStep, kRangeDefaultStepBase, kRangeStepScaleFactor));
+  static const StepRange::StepDescription step_description(
+      kRangeDefaultStep, kRangeDefaultStepBase, kRangeStepScaleFactor);
 
   const Decimal step_base = FindStepBase(kRangeDefaultStepBase);
   const Decimal minimum =
@@ -381,14 +380,10 @@ void RangeInputType::DisabledAttributeChanged(DisabledChangedReason reason) {
     return;
   }
   if (GetElement().IsDisabledFormControl()) {
-    bool avoid_dispatch =
-        RuntimeEnabledFeatures::
-            DisableFormControlChangeEventDuringMutationEnabled() &&
-        (GetElement().GetDocument().StatePreservingAtomicMoveInProgress() ||
-         reason == DisabledChangedReason::kFieldsetChildrenChanged);
     SliderThumbElement::EventDispatch dispatch =
-        avoid_dispatch ? SliderThumbElement::kEventDispatchDisallowed
-                       : SliderThumbElement::kEventDispatchAllowed;
+        ShouldSuppressChangeEventForDisabledStateChange(reason)
+            ? SliderThumbElement::kEventDispatchDisallowed
+            : SliderThumbElement::kEventDispatchAllowed;
     GetSliderThumbElement()->StopDragging(dispatch);
   }
 }

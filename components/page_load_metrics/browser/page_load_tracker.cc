@@ -804,6 +804,14 @@ void PageLoadTracker::FrameSizeChanged(
   }
 }
 
+void PageLoadTracker::OnFrameVisibilityChanged(
+    content::RenderFrameHost* render_frame_host,
+    blink::mojom::FrameVisibility visibility) {
+  for (const auto& observer : observers_) {
+    observer->OnFrameVisibilityChanged(render_frame_host, visibility);
+  }
+}
+
 void PageLoadTracker::OnCookiesRead(
     const GURL& url,
     const GURL& first_party_url,
@@ -1171,6 +1179,14 @@ void PageLoadTracker::OnMainFrameAdRectsChanged(
   }
 }
 
+void PageLoadTracker::OnSubresourceLoadMetricsObserved(
+    content::RenderFrameHost* rfh,
+    const blink::SubresourceLoadMetrics& subresource_load_metrics) {
+  for (const auto& observer : observers_) {
+    observer->OnSubresourceLoadMetricsObserved(rfh, subresource_load_metrics);
+  }
+}
+
 content::WebContents* PageLoadTracker::GetWebContents() const {
   return web_contents_;
 }
@@ -1418,18 +1434,6 @@ void PageLoadTracker::OnRestoreFromBackForwardCache(
   // no longer accurate, so reset that as well.
   page_end_reason_ = END_NONE;
   page_end_time_ = base::TimeTicks();
-}
-
-void PageLoadTracker::OnSharedStorageWorkletHostCreated() {
-  for (const auto& observer : observers_) {
-    observer->OnSharedStorageWorkletHostCreated();
-  }
-}
-
-void PageLoadTracker::OnSharedStorageSelectURLCalled() {
-  for (const auto& observer : observers_) {
-    observer->OnSharedStorageSelectURLCalled();
-  }
 }
 
 void PageLoadTracker::UpdateMetrics(

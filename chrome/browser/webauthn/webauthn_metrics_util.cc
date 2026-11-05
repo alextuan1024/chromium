@@ -4,7 +4,13 @@
 
 #include "chrome/browser/webauthn/webauthn_metrics_util.h"
 
+#include <string_view>
+
 #include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/strings/strcat.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
 
 namespace {
 
@@ -32,6 +38,20 @@ enum class CombinedSelectorAction {
   kMaxValue = kCancelButtonClicked,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/webauthn/enums.xml)
+
+webauthn::metrics::AmbientUkmDisplayOutcome ToUkmDisplayOutcome(
+    webauthn::metrics::AmbientDisplayOutcome outcome) {
+  switch (outcome) {
+    case webauthn::metrics::AmbientDisplayOutcome::kShown:
+      return webauthn::metrics::AmbientUkmDisplayOutcome::kShown;
+    case webauthn::metrics::AmbientDisplayOutcome::kNoCredentials:
+      return webauthn::metrics::AmbientUkmDisplayOutcome::kNoCredentials;
+    case webauthn::metrics::AmbientDisplayOutcome::kNotPrimaryPage:
+    case webauthn::metrics::AmbientDisplayOutcome::kNoPermissionRequestManager:
+    case webauthn::metrics::AmbientDisplayOutcome::kAnotherRequestPending:
+      return webauthn::metrics::AmbientUkmDisplayOutcome::kNotShownOther;
+  }
+}
 
 }  // namespace
 
@@ -71,6 +91,87 @@ void RecordGPMCachedOpportunisticallyRetrievedKeyEvent(
         WebAuthenticationGPMCachedOpportunisticallyRetrievedKeyEvent event) {
   base::UmaHistogramEnumeration(
       kCachedOpportunisticallyRetrievedKeyEventTypeHistogram, event);
+}
+
+void RecordAmbientDisplayOutcome(ukm::SourceId source_id,
+                                 AmbientDisplayOutcome outcome) {
+  base::UmaHistogramEnumeration("WebAuthentication.Ambient.DisplayOutcome",
+                                outcome);
+  if (source_id != ukm::kInvalidSourceId) {
+    ukm::builders::WebAuthn_AmbientSignIn(source_id)
+        .SetDisplayOutcome(static_cast<int64_t>(ToUkmDisplayOutcome(outcome)))
+        .Record(ukm::UkmRecorder::Get());
+  }
+}
+
+void RecordAmbientInitialUiMode(ukm::SourceId source_id,
+                                AmbientInitialUiMode mode) {
+  base::UmaHistogramEnumeration("WebAuthentication.Ambient.InitialUiMode",
+                                mode);
+  if (source_id != ukm::kInvalidSourceId) {
+    ukm::builders::WebAuthn_AmbientSignIn(source_id)
+        .SetInitialUiMode(static_cast<int64_t>(mode))
+        .Record(ukm::UkmRecorder::Get());
+  }
+}
+
+void RecordAmbientBubbleCredentialCount(size_t credential_count) {
+  base::UmaHistogramCounts100("WebAuthentication.Ambient.BubbleCredentialCount",
+                              base::saturated_cast<int>(credential_count));
+}
+
+void RecordAmbientBubbleResolution(bool bubble_initially_shown,
+                                   AmbientBubbleResolution resolution) {
+  base::UmaHistogramEnumeration(
+      bubble_initially_shown
+          ? "WebAuthentication.Ambient.BubbleResolution.InitiallyShown"
+          : "WebAuthentication.Ambient.BubbleResolution.OpenedFromChip",
+      resolution);
+}
+
+void RecordAmbientCredentialSelectionMethod(
+    AmbientCredentialSelectionMethod method) {
+  base::UmaHistogramEnumeration(
+      "WebAuthentication.Ambient.CredentialSelectionMethod", method);
+}
+
+void RecordAmbientChipOnlyOutcome(ukm::SourceId source_id,
+                                  AmbientChipOnlyOutcome outcome) {
+  base::UmaHistogramEnumeration("WebAuthentication.Ambient.ChipOnlyOutcome",
+                                outcome);
+  if (source_id != ukm::kInvalidSourceId) {
+    ukm::builders::WebAuthn_AmbientSignIn(source_id)
+        .SetChipOnlyOutcome(static_cast<int64_t>(outcome))
+        .Record(ukm::UkmRecorder::Get());
+  }
+}
+
+void RecordAmbientUkmBubbleOutcome(ukm::SourceId source_id,
+                                   AmbientUkmBubbleOutcome outcome) {
+  if (source_id != ukm::kInvalidSourceId) {
+    ukm::builders::WebAuthn_AmbientSignIn(source_id)
+        .SetBubbleOutcome(static_cast<int64_t>(outcome))
+        .Record(ukm::UkmRecorder::Get());
+  }
+}
+
+void RecordAmbientBubbleShownDuration(AmbientBubbleCloseReason reason,
+                                      base::TimeDelta duration) {
+  std::string_view suffix;
+  switch (reason) {
+    case AmbientBubbleCloseReason::kRequestEnded:
+      suffix = "RequestEnded";
+      break;
+    case AmbientBubbleCloseReason::kDismissed:
+      suffix = "Dismissed";
+      break;
+    case AmbientBubbleCloseReason::kCredentialSelected:
+      suffix = "CredentialSelected";
+      break;
+  }
+  base::UmaHistogramLongTimes100(
+      base::StrCat({"WebAuthentication.Ambient.BubbleShownDuration.", suffix}),
+      duration);
 }
 
 }  // namespace webauthn::metrics

@@ -1,3 +1,5 @@
 include_rules = [
-  "+ios/chrome/browser/default_browser/promo/public/features.h",
+  # keep-sorted start
+  "+ios/chrome/browser/aim/model",
+  # keep-sorted end
 ]

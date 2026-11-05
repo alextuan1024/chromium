@@ -10,6 +10,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -257,8 +258,10 @@ void SaveAndFillManagerImpl::PopulateCreditCardInfo(
     CreditCard& card,
     const UserProvidedCardSaveAndFillDetails&
         user_provided_card_save_and_fill_details) {
-  const std::string app_locale =
-      payments_autofill_client()->GetPaymentsDataManager().app_locale();
+  const std::string_view app_locale = payments_autofill_client()
+                                          ->GetPaymentsDataManager()
+                                          .app_locale()
+                                          .tag_string();
 
   card.SetInfo(CREDIT_CARD_NUMBER,
                user_provided_card_save_and_fill_details.card_number,
@@ -335,6 +338,7 @@ void SaveAndFillManagerImpl::OnDidGetDetailsForCreateCard(
 }
 
 void SaveAndFillManagerImpl::PopulateInitialUploadDetails() {
+  upload_details_ = UploadCardRequestDetails();
   // For "Save and Fill" flow, we don't know whether CVC will be provided by the
   // user so we only check the CVC storage user preference to populate the
   // signal.
@@ -348,7 +352,7 @@ void SaveAndFillManagerImpl::PopulateInitialUploadDetails() {
   upload_details_.upload_card_source = UploadCardSource::kUpstreamSaveAndFill;
   upload_details_.billing_customer_number = GetBillingCustomerId(
       payments_autofill_client()->GetPaymentsDataManager());
-  upload_details_.app_locale = autofill_client_->GetAppLocale();
+  upload_details_.app_locale = autofill_client_->GetAppLocale().tag_string();
   // For Save and Fill dialog, the account email should always be shown in the
   // legal message.
   upload_details_.client_behavior_signals.push_back(

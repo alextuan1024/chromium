@@ -17,6 +17,7 @@
 #include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_forward.h"
+#include "base/i18n/language_tag.h"
 #include "base/location.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
@@ -107,7 +108,7 @@ void AlternativeStateNameMapUpdater::PopulateAlternativeStateNameMap(
         base::UTF16ToUTF8(profile->GetRawInfo(ADDRESS_HOME_COUNTRY)));
 
     const AlternativeStateNameMap::StateName state_name(profile->GetInfo(
-        ADDRESS_HOME_STATE, address_data_manager_->app_locale()));
+        ADDRESS_HOME_STATE, address_data_manager_->app_locale().tag_string()));
     const AlternativeStateNameMap::StateName normalized_state =
         AlternativeStateNameMap::NormalizeStateName(state_name);
 
@@ -132,15 +133,13 @@ void AlternativeStateNameMapUpdater::LoadStatesData(
     base::OnceClosure done_callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  const std::vector<std::string>& country_codes =
-      CountryDataMap::GetInstance()->country_codes();
+  const CountryDataMap* country_data_map = CountryDataMap::GetInstance();
 
   // Remove all invalid country names.
   std::erase_if(country_to_state_names_map,
-                [&country_codes](
+                [country_data_map](
                     const CountryToStateNamesListMapping::value_type& entry) {
-                  return !std::ranges::contains(country_codes,
-                                                entry.first.value());
+                  return !country_data_map->HasCountryCode(entry.first.value());
                 });
 
   // If there is no valid country to be processed, return early.
@@ -157,7 +156,7 @@ void AlternativeStateNameMapUpdater::LoadStatesData(
   for (const auto& [country_code, states] : country_to_state_names_map) {
     // This is a security check to ensure that we only attempt to read files
     // that match to known countries.
-    if (!std::ranges::contains(country_codes, country_code.value())) {
+    if (!country_data_map->HasCountryCode(country_code.value())) {
       continue;
     }
 

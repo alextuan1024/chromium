@@ -7,15 +7,19 @@
 #include "chrome/browser/extensions/api/tab_capture/tab_capture_api.h"
 
 #include <algorithm>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
+#include "base/types/expected.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/api/tab_capture/tab_capture_registry.h"
+#include "chrome/browser/extensions/api/tabs/tabs_constants.h"
 #include "chrome/browser/extensions/browser_window_util.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/media/webrtc/capture_policy_utils.h"
@@ -30,6 +34,8 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/extensions_browser_client.h"
+#include "extensions/browser/screenshot_access.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/features/feature.h"
 #include "extensions/common/features/feature_provider.h"
@@ -64,6 +70,22 @@ const char kMediaStreamSource[] = "chromeMediaSource";
 const char kMediaStreamSourceId[] = "chromeMediaSourceId";
 const char kMediaStreamSourceTab[] = "tab";
 
+std::optional<std::string> GetScreenshotRestrictionError(
+    content::WebContents* target_contents) {
+  const base::expected<void, ScreenshotAccessError> access =
+      ExtensionsBrowserClient::Get()->IsScreenshotRestricted(target_contents);
+  if (access.has_value()) {
+    return std::nullopt;
+  }
+  switch (access.error()) {
+    case ScreenshotAccessError::kDisabledByPreferences:
+      return tabs_constants::kScreenshotsDisabled;
+    case ScreenshotAccessError::kDisabledByDlp:
+      return tabs_constants::kScreenshotsDisabledByDlp;
+  }
+  NOTREACHED();
+}
+
 bool OptionsSpecifyAudioOrVideo(const TabCapture::CaptureOptions& options) {
   return (options.audio && *options.audio) || (options.video && *options.video);
 }
@@ -84,8 +106,8 @@ DesktopMediaID BuildDesktopMediaID(content::WebContents* target_contents,
 void AddMediaStreamSourceConstraints(content::WebContents* target_contents,
                                      TabCapture::CaptureOptions* options,
                                      const std::string& device_id) {
-  DCHECK(options);
-  DCHECK(target_contents);
+  CHECK(options, base::NotFatalUntil::M161);
+  CHECK(target_contents, base::NotFatalUntil::M161);
 
   MediaStreamConstraint* constraints_to_modify[2] = {nullptr, nullptr};
 
@@ -189,6 +211,11 @@ ExtensionFunction::ResponseAction TabCaptureCaptureFunction::Run() {
     return RespondNow(Error(kNoAudioOrVideo));
   }
 
+  if (std::optional<std::string> screenshot_error =
+          GetScreenshotRestrictionError(target_contents)) {
+    return RespondNow(Error(std::move(*screenshot_error)));
+  }
+
   DesktopMediaID source =
       BuildDesktopMediaID(target_contents, &params->options);
   TabCaptureRegistry* registry = TabCaptureRegistry::Get(browser_context());
@@ -231,9 +258,9 @@ ExtensionFunction::ResponseAction TabCaptureGetMediaStreamIdFunction::Run() {
 
   content::WebContents* target_contents = nullptr;
   if (params->options && params->options->target_tab_id) {
-    if (!ExtensionTabUtil::GetTabById(*(params->options->target_tab_id),
-                                      browser_context(), true,
-                                      &target_contents)) {
+    if (!ExtensionTabUtil::GetTabById(
+            *(params->options->target_tab_id), browser_context(),
+            include_incognito_information(), &target_contents)) {
       return RespondNow(Error(kInvalidTabIdError));
     }
   } else {
@@ -275,9 +302,9 @@ ExtensionFunction::ResponseAction TabCaptureGetMediaStreamIdFunction::Run() {
   bool should_restrict_to_render_frame = extension()->manifest_version() < 3;
   if (params->options && params->options->consumer_tab_id) {
     content::WebContents* consumer_contents = nullptr;
-    if (!ExtensionTabUtil::GetTabById(*(params->options->consumer_tab_id),
-                                      browser_context(), true,
-                                      &consumer_contents)) {
+    if (!ExtensionTabUtil::GetTabById(
+            *(params->options->consumer_tab_id), browser_context(),
+            include_incognito_information(), &consumer_contents)) {
       return RespondNow(Error(kInvalidTabIdError));
     }
 
@@ -322,6 +349,11 @@ ExtensionFunction::ResponseAction TabCaptureGetMediaStreamIdFunction::Run() {
   CHECK_NE(-1, caller_process_id);
   CHECK(restrict_to_render_frame_id.has_value() ||
         !should_restrict_to_render_frame);
+
+  if (std::optional<std::string> screenshot_error =
+          GetScreenshotRestrictionError(target_contents)) {
+    return RespondNow(Error(std::move(*screenshot_error)));
+  }
 
   DesktopMediaID source = BuildDesktopMediaID(target_contents, nullptr);
   TabCaptureRegistry* registry = TabCaptureRegistry::Get(browser_context());

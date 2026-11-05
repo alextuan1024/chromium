@@ -32,6 +32,7 @@ import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.Observer;
 import org.chromium.chrome.browser.omnibox.LocationBar;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent.ContentPriority;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
@@ -217,12 +218,24 @@ public class MiniOriginBarController implements Observer {
                                     : MiniOriginEvent.FORM_FIELD_LOST_FOCUS);
                 };
         mKeyboardVisibilityObserver =
-                (showing) -> {
-                    if (mIsOmniboxFocusedSupplier.getAsBoolean()) return;
-                    updateMiniOriginBarState(
-                            showing
-                                    ? MiniOriginEvent.KEYBOARD_APPEARED
-                                    : MiniOriginEvent.KEYBOARD_DISAPPEARED);
+                new KeyboardVisibilityListener() {
+                    @Override
+                    public void keyboardVisibilityChanged(boolean isVisible) {
+                        onKeyboardStateChanged();
+                    }
+
+                    @Override
+                    public void keyboardObscuringChanged(boolean isObscuring) {
+                        onKeyboardStateChanged();
+                    }
+
+                    private void onKeyboardStateChanged() {
+                        if (mIsOmniboxFocusedSupplier.getAsBoolean()) return;
+                        updateMiniOriginBarState(
+                                isKeyboardShowing()
+                                        ? MiniOriginEvent.KEYBOARD_APPEARED
+                                        : MiniOriginEvent.KEYBOARD_DISAPPEARED);
+                    }
                 };
 
         mIsFormFieldFocusedSupplier
@@ -351,6 +364,7 @@ public class MiniOriginBarController implements Observer {
                 locationBarView.getPaddingTop(),
                 locationBarRightPadding,
                 locationBarView.getPaddingBottom());
+        mControlContainer.doSynchronousLayout(/* forceCaptureAfterLayout= */ false);
 
         recomputeLayouts();
     }
@@ -387,9 +401,6 @@ public class MiniOriginBarController implements Observer {
         mSuppressToolbarSceneLayerSupplier.set(false);
         mControlContainer.toggleLocationBarOnlyMode(false);
 
-        mControlContainer.mutateLayoutParams().height = LayoutParams.WRAP_CONTENT;
-        mControlContainer.doSynchronousLayout(/* forceCaptureAfterLayout= */ false);
-
         var locationBarView = mLocationBar.getContainerView();
         locationBarView.setLayoutParams(mDefaultLocationBarLayoutParams);
         locationBarView.setPadding(
@@ -397,7 +408,11 @@ public class MiniOriginBarController implements Observer {
                 locationBarView.getPaddingTop(),
                 mDefaultLocationBarRightPadding,
                 locationBarView.getPaddingBottom());
+        locationBarView.setTranslationX(0.0f);
         mLocationBar.setUrlBarUsesSmallText(false);
+
+        mControlContainer.mutateLayoutParams().height = LayoutParams.WRAP_CONTENT;
+        mControlContainer.doSynchronousLayout(/* forceCaptureAfterLayout= */ false);
     }
 
     public void destroy() {
@@ -427,13 +442,11 @@ public class MiniOriginBarController implements Observer {
 
     private boolean isCobrowseSheetOpen() {
         BottomSheetContent content = mBottomSheetController.getCurrentSheetContent();
-        if (content == null
-                || content.getPriority() != BottomSheetContent.ContentPriority.COBROWSE) {
+        if (content == null || content.getPriority() != ContentPriority.COBROWSE) {
             return false;
         }
         int state = mBottomSheetController.getSheetState();
-        return state == BottomSheetController.SheetState.HALF
-                || state == BottomSheetController.SheetState.FULL;
+        return state == SheetState.HALF || state == SheetState.FULL;
     }
 
     /**
@@ -508,10 +521,14 @@ public class MiniOriginBarController implements Observer {
             case MiniOriginState.SHOWING_WITH_ACCESSORY_SHEET -> {
                 return switch (miniOriginEvent) {
                     case MiniOriginEvent.CONTROLS_POSITION_BECAME_TOP,
-                            MiniOriginEvent.FORM_FIELD_LOST_FOCUS -> MiniOriginState.NOT_READY;
-                    case MiniOriginEvent.ACCESSORY_SHEET_DISAPPEARED -> MiniOriginState.SHOWING;
-                        // We don't animate from this state because the accessory sheet is in the
-                        // way.
+                            MiniOriginEvent.FORM_FIELD_LOST_FOCUS ->
+                            MiniOriginState.NOT_READY;
+                    case MiniOriginEvent.ACCESSORY_SHEET_DISAPPEARED ->
+                            isKeyboardShowing()
+                                    ? MiniOriginState.SHOWING
+                                    : (mIsFormFieldFocusedSupplier.get()
+                                            ? MiniOriginState.READY
+                                            : MiniOriginState.NOT_READY);
                     default -> MiniOriginState.SHOWING_WITH_ACCESSORY_SHEET;
                 };
             }
@@ -530,7 +547,9 @@ public class MiniOriginBarController implements Observer {
     }
 
     private boolean isKeyboardShowing() {
-        return mKeyboardVisibilityDelegate.isKeyboardShowing(mControlContainer.getView());
+        View view = mControlContainer.getView();
+        return mKeyboardVisibilityDelegate.isKeyboardVisible(view)
+                || mKeyboardVisibilityDelegate.isKeyboardObscuring(view);
     }
 
     private void updateAnimationProgress(float minimizationProgress) {
@@ -650,7 +669,7 @@ public class MiniOriginBarController implements Observer {
             ViewUtils.setAncestorsShouldClipChildren(mContainerView, false, View.NO_ID);
             ViewUtils.setAncestorsShouldClipToPadding(mContainerView, false, View.NO_ID);
             mFinalKeyboardHeight =
-                    mKeyboardVisibilityDelegate.isKeyboardShowing(mContainerView)
+                    mKeyboardVisibilityDelegate.isKeyboardObscuring(mContainerView)
                             ? bounds.getUpperBound().bottom
                             : 0;
         }

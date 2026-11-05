@@ -37,7 +37,38 @@
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/widget/widget.h"
 
+#if BUILDFLAG(IS_WIN)
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_shortcut_win.h"
+#include "chrome/browser/win/taskbar_manager.h"
+#endif  // BUILDFLAG(IS_WIN)
+
 namespace omnibox_everywhere {
+
+namespace {
+
+void MarkNtpPromoCompleted(Profile* profile) {
+  if (profile && profile->GetPrefs() &&
+      profile->GetPrefs()->FindPreference(prefs::kNtpPromoCompleted)) {
+    profile->GetPrefs()->SetBoolean(prefs::kNtpPromoCompleted, true);
+  }
+}
+
+#if BUILDFLAG(IS_WIN)
+void PinToTaskbarIfShortcutExists(base::OnceCallback<void(bool)> callback,
+                                  bool shortcut_exists) {
+  // The shell only allows pinning an AUMI that has a Start Menu shortcut.
+  if (!shortcut_exists) {
+    std::move(callback).Run(false);
+    return;
+  }
+  browser_util::PinAppToTaskbar(
+      GetAppUserModelId(),
+      browser_util::PinAppToTaskbarChannel::kOmniboxEverywhere,
+      std::move(callback));
+}
+#endif  // BUILDFLAG(IS_WIN)
+
+}  // namespace
 
 OmniboxEverywhereController::OmniboxEverywhereController(
     OmniboxEverywhereUIManager::ContentsWrapperFactory contents_wrapper_factory,
@@ -57,9 +88,8 @@ OmniboxEverywhereController::OmniboxEverywhereController(
   if (g_browser_process && g_browser_process->local_state()) {
     enabled_pref_member_.Init(
         prefs::kOmniboxEverywhereEnabled, g_browser_process->local_state(),
-        base::BindRepeating(
-            &OmniboxEverywhereController::UpdateHotkeyRegistration,
-            base::Unretained(this)));
+        base::BindRepeating(&OmniboxEverywhereController::OnEnabledPrefChanged,
+                            base::Unretained(this)));
     hotkey_pref_member_.Init(
         prefs::kHotkeyEnabled, g_browser_process->local_state(),
         base::BindRepeating(
@@ -70,6 +100,7 @@ OmniboxEverywhereController::OmniboxEverywhereController(
         base::BindRepeating(
             &OmniboxEverywhereController::UpdateHotkeyRegistration,
             base::Unretained(this)));
+    ClearUserDisabledBackgroundPrefsIfEnforced();
   }
   UpdateHotkeyRegistration();
 
@@ -229,6 +260,10 @@ bool OmniboxEverywhereController::InvokeForProfilePath(
 bool OmniboxEverywhereController::InvokeForStartup(InvocationSource source,
                                                    Profile* fallback_profile,
                                                    gfx::NativeWindow context) {
+  if (!IsEnabled()) {
+    return false;
+  }
+
   if (auto* target_profile = GetTargetProfile()) {
     OnInvoke(source, target_profile, context);
     return true;
@@ -281,6 +316,33 @@ bool OmniboxEverywhereController::IsEnabled() const {
   return !enabled_pref_member_.prefs() || enabled_pref_member_.GetValue();
 }
 
+void OmniboxEverywhereController::OnEnabledPrefChanged() {
+  UpdateHotkeyRegistration();
+  if (!IsEnabled()) {
+    // `Close()` cancels open dialogs and hides the widget. `Shutdown()` then
+    // destroys the widget and WebContents, so a screen picker that is still
+    // open cannot reopen the widget when it closes. The next invocation after
+    // re-enabling creates a new widget.
+    Close();
+    ui_manager_->Shutdown();
+  }
+  ClearUserDisabledBackgroundPrefsIfEnforced();
+}
+
+void OmniboxEverywhereController::ClearUserDisabledBackgroundPrefsIfEnforced() {
+  if (!enabled_pref_member_.IsManaged() || !IsEnabled()) {
+    return;
+  }
+
+  PrefService* local_state = g_browser_process->local_state();
+  for (const char* pref_name : {prefs::kOmniboxEverywhereBackgroundMode,
+                                prefs::kOmniboxEverywhereLaunchOnStartup}) {
+    if (!local_state->GetBoolean(pref_name)) {
+      local_state->ClearPref(pref_name);
+    }
+  }
+}
+
 bool OmniboxEverywhereController::IsHotkeyEnabled() const {
   return !hotkey_pref_member_.prefs() || hotkey_pref_member_.GetValue();
 }
@@ -290,9 +352,8 @@ void OmniboxEverywhereController::MaybeLoadPersistedTargetProfile() {
     return;
   }
 
-  if (!g_browser_process || !g_browser_process->local_state() ||
-      !g_browser_process->local_state()->GetBoolean(
-          prefs::kOmniboxEverywhereBackgroundMode)) {
+  if (!g_browser_process ||
+      !prefs::IsBackgroundModeEnabled(g_browser_process->local_state())) {
     return;
   }
 
@@ -398,8 +459,13 @@ void OmniboxEverywhereController::OnInvoke(InvocationSource source,
 
   SetTargetProfile(profile);
   switch (source) {
+    // Mark the NTP promo completed when the user invokes Omnibox Everywhere
+    // directly via hotkey, status tray, or command line. Invocations from
+    // `kNtpPromo` leave this unset until the user actually navigates in
+    // `OmniboxEverywhereService::NavigateInBrowserWindow()`.
     case InvocationSource::kGlobalHotkey:
     case InvocationSource::kStatusTrayIcon:
+      MarkNtpPromoCompleted(profile);
       if (ui_manager_->profile() == profile) {
         const bool should_dismiss = prefs::IsEphemeralModelEnabled()
                                         ? ui_manager_->IsVisible()
@@ -410,8 +476,11 @@ void OmniboxEverywhereController::OnInvoke(InvocationSource source,
         }
       }
       break;
-    case InvocationSource::kProfilePicker:
     case InvocationSource::kCommandLine:
+      MarkNtpPromoCompleted(profile);
+      break;
+    case InvocationSource::kProfilePicker:
+    case InvocationSource::kNtpPromo:
       break;
   }
 
@@ -516,9 +585,12 @@ void OmniboxEverywhereController::ExecuteCommand(
 
 void OmniboxEverywhereController::OfferPinToTaskbar(
     base::OnceCallback<void(bool)> callback) {
-  if (callback) {
-    std::move(callback).Run(false);
-  }
+#if BUILDFLAG(IS_WIN)
+  ui_manager_->CreateStartMenuShortcut(
+      base::BindOnce(&PinToTaskbarIfShortcutExists, std::move(callback)));
+#else
+  std::move(callback).Run(false);
+#endif
 }
 
 }  // namespace omnibox_everywhere

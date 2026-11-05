@@ -4,9 +4,10 @@
 
 #include "remoting/host/setup/daemon_controller_delegate_win.h"
 
-#include <stddef.h>
 #include <windows.h>
+
 #include <aclapi.h>
+#include <stddef.h>
 
 #include <memory>
 #include <optional>
@@ -55,6 +56,9 @@ const char kConfigDirSecurityDescriptor[] =
 
 const char kUnprivilegedConfigFileSecurityDescriptor[] =
     "O:BAG:BAD:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;AU)";
+
+// TODO(crbug.com/551615326): Migrate `IsHandleReparsePoint()`, `IsPathSafe()`,
+// and `SetDirAcl()` to the helpers in remoting/host/win/file_security_util.h.
 
 // Helper to check if a handle refers to a reparse point (junction or symlink).
 // This is used to prevent Local Privilege Escalation (LPE) via junction
@@ -121,7 +125,8 @@ bool ReadConfig(const base::FilePath& filename, base::DictValue& config_out) {
   if (!file.is_valid()) {
     DWORD error = GetLastError();
     if (error == ERROR_FILE_NOT_FOUND) {
-      LOG(INFO) << "'" << filename.value() << "' does not exist, skipping read.";
+      LOG(INFO) << "'" << filename.value()
+                << "' does not exist, skipping read.";
     } else {
       PLOG(ERROR) << "Failed to open '" << filename.value() << "'.";
     }
@@ -129,7 +134,8 @@ bool ReadConfig(const base::FilePath& filename, base::DictValue& config_out) {
   }
 
   if (IsHandleReparsePoint(file.Get())) {
-    LOG(ERROR) << "Config file '" << filename.value() << "' is a reparse point.";
+    LOG(ERROR) << "Config file '" << filename.value()
+               << "' is a reparse point.";
     return false;
   }
 
@@ -317,7 +323,8 @@ bool WriteConfigSafe(const base::FilePath& target_path,
   // file (unlike ReplaceFileW which inherits the target's ACLs).
   if (!::MoveFileExW(temp_path.value().c_str(), target_path.value().c_str(),
                      MOVEFILE_REPLACE_EXISTING)) {
-    PLOG(ERROR) << "Failed to move temp file to target: " << target_path.value();
+    PLOG(ERROR) << "Failed to move temp file to target: "
+                << target_path.value();
     base::DeleteFile(temp_path);
     return false;
   }
@@ -367,7 +374,7 @@ bool WriteConfig(const base::FilePath& config_dir,
 
   // Extract the unprivileged fields from the configuration.
   base::DictValue unprivileged_config;
-  for (const auto& key : DaemonController::GetUnprivilegedConfigKeys()) {
+  for (const auto& key : DaemonController::kUnprivilegedConfigKeys) {
     if (const base::Value* value = config.Find(key)) {
       unprivileged_config.Set(key, value->Clone());
     }
@@ -626,7 +633,8 @@ void DaemonControllerDelegateWin::SetConfigAndStart(
   }
 
   if (IsHandleReparsePoint(dir_handle.Get())) {
-    LOG(ERROR) << "Config directory is a reparse point: " << config_dir_.value();
+    LOG(ERROR) << "Config directory is a reparse point: "
+               << config_dir_.value();
     InvokeCompletionCallback(std::move(done), false);
     return;
   }

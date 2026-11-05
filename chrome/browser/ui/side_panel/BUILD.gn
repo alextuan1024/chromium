@@ -28,7 +28,8 @@ source_set("side_panel") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/tabs:tabs_public",
     "//components/tabs:public",
     "//content/public/browser",
@@ -37,22 +38,33 @@ source_set("side_panel") {
   ]
 
   deps = [
+    "//chrome/app:generated_resources",
     "//chrome/browser:primitives",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/actions:actions_headers",
+    "//chrome/common:constants",
+    "//components/contextual_tasks/public:feature_list",
     "//components/pref_registry",
     "//url",
   ]
 
+  if (enable_extensions_core) {
+    public_deps += [ "//extensions/common" ]
+  }
   if (enable_extensions) {
     deps += [ "//extensions/common:common_constants" ]
   }
 
   if (!is_android) {
-    deps += [ "//chrome/browser/ui:browser_actions" ]
+    public_deps += [ "//ui/views" ]
+    deps += [
+      "//chrome/browser/contextual_tasks",
+      "//chrome/browser/ui:browser_actions",
+    ]
   }
 
   if (is_android) {
+    public_deps += [ "//chrome/browser/ui/android/tab_model" ]
     deps += [ "//chrome/browser/ui/side_panel/android" ]
   }
 }
@@ -72,8 +84,8 @@ source_set("side_panel_views_dependent") {
     "side_panel_util.cc",
     "side_panel_util.h",
   ]
+  public_deps = [ ":side_panel" ]
   deps = [
-    ":side_panel",
     "//base",
     "//chrome/browser/tab_list",
     "//chrome/browser/ui/actions:actions_headers",
@@ -128,10 +140,16 @@ source_set("unit_tests") {
   ]
 
   if (!is_android) {
-    sources += [ "side_panel_metrics_unittest.cc" ]
+    sources += [
+      "side_panel_metrics_unittest.cc",
+      "side_panel_prefs_unittest.cc",
+    ]
     deps += [
       ":side_panel_views_dependent",
       "//base/test:test_support",
+      "//chrome/common:constants",
+      "//components/prefs",
+      "//components/sync_preferences:test_support",
     ]
   }
 }

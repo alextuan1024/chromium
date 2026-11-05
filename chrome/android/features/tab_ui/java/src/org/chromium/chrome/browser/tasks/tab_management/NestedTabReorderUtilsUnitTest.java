@@ -31,6 +31,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabUngrouper;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -51,17 +52,20 @@ public class NestedTabReorderUtilsUnitTest {
     @Mock private Tab mTab1;
     @Mock private Tab mTab2;
     @Mock private Tab mTab3;
-    @Mock private Tab mPinnedTab;
 
     private TabListModel mModelList;
 
     @Before
     public void setUp() {
         when(mTabModel.getTabUngrouper()).thenReturn(mTabUngrouper);
-        when(mTabModel.getTabsInGroup(GROUP_ID)).thenReturn(List.of(mTab1, mTab2));
+        when(mTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(GROUP_ID)))
+                .thenReturn(List.of(mTab1, mTab2));
+        when(mTabModel.getTabCountForGroup(TabGroupId.fromOptionalToken(GROUP_ID))).thenReturn(2);
         when(mTab1.getId()).thenReturn(TAB_ID_1);
         when(mTab2.getId()).thenReturn(TAB_ID_2);
         when(mTab3.getId()).thenReturn(TAB_ID_3);
+        when(mTab1.getTabGroupId()).thenReturn(GROUP_ID);
+        when(mTab2.getTabGroupId()).thenReturn(GROUP_ID);
 
         when(mTabModel.getTabById(TAB_ID_1)).thenReturn(mTab1);
         when(mTabModel.getTabById(TAB_ID_2)).thenReturn(mTab2);
@@ -94,13 +98,10 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, standaloneModel));
 
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1));
-        when(mTabModel.getRelatedTabList(TAB_ID_2)).thenReturn(List.of(mTab2));
-
         assertTrue(
                 NestedTabReorderUtils.reorderItem(
                         mTabModel, mModelList, /* fromIndex= */ 0, /* toIndex= */ 1));
-        verify(mTabModel).moveRelatedTabs(TAB_ID_1, 1);
+        verify(mTabModel).moveGroupToIndex(TabGroupId.fromRawToken(GROUP_ID), 1);
     }
 
     @Test
@@ -124,8 +125,6 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel1));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel2));
-
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1, mTab2));
 
         assertTrue(
                 NestedTabReorderUtils.reorderItem(
@@ -160,8 +159,6 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel2));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, standaloneModel));
 
-        when(mTabModel.getRelatedTabList(TAB_ID_2)).thenReturn(List.of(mTab1, mTab2));
-
         assertTrue(
                 NestedTabReorderUtils.reorderItem(
                         mTabModel, mModelList, /* fromIndex= */ 2, /* toIndex= */ 3));
@@ -189,9 +186,6 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel1));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel2));
-
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1, mTab2));
-        when(mTabModel.getRelatedTabList(TAB_ID_2)).thenReturn(List.of(mTab1, mTab2));
 
         assertTrue(
                 NestedTabReorderUtils.reorderItem(
@@ -221,6 +215,9 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB, standaloneModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel));
+
+        when(mTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(GROUP_ID)))
+                .thenReturn(List.of(mTab2));
 
         assertTrue(
                 NestedTabReorderUtils.reorderItem(
@@ -255,7 +252,8 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, standaloneModel));
 
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1));
+        when(mTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(GROUP_ID)))
+                .thenReturn(List.of(mTab1));
 
         assertTrue(
                 NestedTabReorderUtils.reorderItem(
@@ -284,7 +282,8 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB, standaloneModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
 
-        when(mTabModel.getRelatedTabList(TAB_ID_2)).thenReturn(List.of(mTab2, mTab3));
+        when(mTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(GROUP_ID)))
+                .thenReturn(List.of(mTab2, mTab3));
 
         assertTrue(
                 NestedTabReorderUtils.reorderItem(
@@ -307,8 +306,6 @@ public class NestedTabReorderUtilsUnitTest {
 
         mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, standaloneModel));
-
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1, mTab2));
 
         assertTrue(
                 NestedTabReorderUtils.reorderItem(
@@ -410,10 +407,10 @@ public class NestedTabReorderUtilsUnitTest {
     }
 
     @Test
-    public void testReorderItem_GroupHeaderWithoutTabId_ResolvesFromGroup() {
-        // Group header using ALL_KEYS_TAB_GROUP_GRID without TAB_ID
+    public void testReorderItem_GroupHeaderWithoutTabId_UngroupsChild() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
+                        .with(TabProperties.TAB_ID, Tab.INVALID_TAB_ID)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, GROUP_ID)
                         .build();
         PropertyModel childModel1 =
@@ -425,12 +422,63 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel1));
 
-        // Child 1 moving up onto the header (which lacks TAB_ID) should resolve representative tab
-        // ID and ungroup
+        // Child 1 moving up onto the header (which lacks TAB_ID) should ungroup.
         assertTrue(
                 NestedTabReorderUtils.reorderItem(
                         mTabModel, mModelList, /* fromIndex= */ 1, /* toIndex= */ 0));
         verify(mTabUngrouper).ungroupTabs(List.of(mTab1), /* trailing= */ false, false);
+    }
+
+    @Test
+    public void testReorderItem_StandaloneOntoHeaderWithInvalidTabId_MergesIntoGroup() {
+        PropertyModel headerModel =
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
+                        .with(TabProperties.TAB_ID, Tab.INVALID_TAB_ID)
+                        .with(TabProperties.TAB_GROUP_HEADER_ID, GROUP_ID)
+                        .build();
+        PropertyModel standaloneModel =
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
+                        .with(TabProperties.TAB_ID, TAB_ID_3)
+                        .build();
+
+        mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
+        mModelList.add(new ListItem(TabProperties.UiType.TAB, standaloneModel));
+
+        assertTrue(
+                NestedTabReorderUtils.reorderItem(
+                        mTabModel, mModelList, /* fromIndex= */ 1, /* toIndex= */ 0));
+        verify(mTabModel)
+                .mergeListOfTabsToGroup(
+                        List.of(mTab3),
+                        mTab1,
+                        /* indexInGroup= */ 0,
+                        TabGroupMergeNotificationType.NOTIFY_ALWAYS);
+    }
+
+    @Test
+    public void testReorderItem_GroupHeaderWithoutTabId_StaysBelowPinnedTabs() {
+        // Groups are never pinned, so a moved group stays at or after the first non-pinned index.
+        PropertyModel standaloneModel =
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
+                        .with(TabProperties.TAB_ID, TAB_ID_3)
+                        .build();
+        PropertyModel headerModel =
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
+                        .with(TabProperties.TAB_ID, Tab.INVALID_TAB_ID)
+                        .with(TabProperties.TAB_GROUP_HEADER_ID, GROUP_ID)
+                        .build();
+
+        mModelList.add(new ListItem(TabProperties.UiType.TAB, standaloneModel));
+        mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
+
+        when(mTab3.getIsPinned()).thenReturn(true);
+        when(mTabModel.indexOf(mTab3)).thenReturn(0);
+        when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(1);
+
+        assertTrue(
+                NestedTabReorderUtils.reorderItem(
+                        mTabModel, mModelList, /* fromIndex= */ 1, /* toIndex= */ 0));
+        verify(mTabModel).moveGroupToIndex(TabGroupId.fromRawToken(GROUP_ID), 1);
     }
 
     @Test
@@ -455,8 +503,6 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB, headerModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel1));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel2));
-
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1, mTab2));
 
         assertTrue(
                 NestedTabReorderUtils.reorderItemInDirection(
@@ -484,10 +530,10 @@ public class NestedTabReorderUtilsUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, solitaryChildModel));
 
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1));
-        when(mTabModel.getRelatedTabList(TAB_ID_3)).thenReturn(List.of(mTab3));
+        when(mTabModel.getTabCountForGroup(TabGroupId.fromOptionalToken(GROUP_ID))).thenReturn(1);
+        when(mTabModel.getTabsInGroup(TabGroupId.fromOptionalToken(GROUP_ID)))
+                .thenReturn(List.of(mTab1));
         when(mTabModel.indexOf(mTab1)).thenReturn(1);
-        when(mTabModel.indexOf(mTab3)).thenReturn(0);
         when(mTabModel.getTabAt(0)).thenReturn(mTab3);
 
         // Solitary child tab at pos 2 moving up should move the entire group above standalone tab
@@ -495,41 +541,7 @@ public class NestedTabReorderUtilsUnitTest {
         assertTrue(
                 NestedTabReorderUtils.reorderItemInDirection(
                         mTabModel, mModelList, /* pos= */ 2, /* toPrevious= */ true));
-        verify(mTabModel).moveRelatedTabs(TAB_ID_1, 0);
-    }
-
-    @Test
-    public void testReorderTabGroupByToken_ForwardsToReorderTabGroup() {
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1, mTab2));
-        when(mTabModel.getRelatedTabList(TAB_ID_3)).thenReturn(List.of(mTab3));
-        when(mTabModel.indexOf(mTab1)).thenReturn(0);
-        when(mTabModel.indexOf(mTab2)).thenReturn(1);
-        when(mTabModel.getTabAt(2)).thenReturn(mTab3);
-
-        assertTrue(
-                NestedTabReorderUtils.reorderTabGroup(
-                        mTabModel, GROUP_ID, /* toPrevious= */ false));
-        verify(mTabModel).moveRelatedTabs(TAB_ID_1, 2);
-
-        // Null model or unknown group returns false
-        assertFalse(NestedTabReorderUtils.reorderTabGroup(null, GROUP_ID, /* toPrevious= */ false));
-        assertFalse(
-                NestedTabReorderUtils.reorderTabGroup(
-                        mTabModel, new Token(99L, 99L), /* toPrevious= */ false));
-    }
-
-    @Test
-    public void testReorderTabGroup_PrecededByPinnedTab_ReturnsFalse() {
-        when(mPinnedTab.getId()).thenReturn(200);
-        when(mPinnedTab.getIsPinned()).thenReturn(true);
-        when(mTabModel.getTabAt(0)).thenReturn(mPinnedTab);
-        when(mTabModel.getTabAt(1)).thenReturn(mTab1);
-        when(mTabModel.indexOf(mTab1)).thenReturn(1);
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1, mTab2));
-
-        assertFalse(
-                NestedTabReorderUtils.reorderTabGroup(mTabModel, GROUP_ID, /* toPrevious= */ true));
-        verify(mTabModel, never()).moveRelatedTabs(anyInt(), anyInt());
+        verify(mTabModel).moveGroupToIndex(TabGroupId.fromRawToken(GROUP_ID), 0);
     }
 
     @Test
@@ -623,11 +635,11 @@ public class NestedTabReorderUtilsUnitTest {
                         .build();
 
         // 2 tabs in group -> not solitary
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1, mTab2));
+        when(mTabModel.getTabCountForGroup(TabGroupId.fromOptionalToken(GROUP_ID))).thenReturn(2);
         assertFalse(NestedTabReorderUtils.isSolitaryChild(mTabModel, childModel));
 
         // 1 tab in group -> solitary child
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1));
+        when(mTabModel.getTabCountForGroup(TabGroupId.fromOptionalToken(GROUP_ID))).thenReturn(1);
         assertTrue(NestedTabReorderUtils.isSolitaryChild(mTabModel, childModel));
 
         // Standalone tab (no group ID) -> not solitary child in a group

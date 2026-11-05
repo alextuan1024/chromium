@@ -10,6 +10,11 @@ import("../build_webui_tests.gni")
 out_dir = "$target_gen_dir/glic"
 
 group("generate_test_files") {
+  data = [
+    "browser_tests/",
+    "test_client/",
+    "test_data/",
+  ]
   data_deps = [
     ":build_extra_ts",
     ":move_html",
@@ -25,18 +30,24 @@ ts_library("build_extra_ts") {
     "browser_tests/browser_test_base.ts",
     "browser_tests/geic_api_browsertest.ts",
     "browser_tests/glic_api_browsertest.ts",
+    "browser_tests/glic_api_drive_picker_browsertest.ts",
     "browser_tests/glic_chrome_tools_browsertest.ts",
     "browser_tests/glic_api_skills_browsertest.ts",
     "browser_tests/glic_api_zss_browsertest.ts",
     "browser_tests/glic_permission_enforcement_browsertest.ts",
+    "browser_tests/glic_actor_conversation_anchor_browsertest.ts",
     "browser_tests/glic_actor_task_lifecycle_browsertest.ts",
     "browser_tests/glic_actor_attempt_otp_filling_browsertest.ts",
     "browser_tests/glic_cue_target_browsertest.ts",
     "browser_tests/glic_experimental_triggering_message_handler_browsertest.ts",
     "browser_tests/glic_drag_and_drop_browsertest.ts",
+    "browser_tests/glic_drag_and_drop_policy_browsertest.ts",
+    "browser_tests/glic_web_drag_and_drop_browsertest.ts",
     "browser_tests/glic_focus_browsertest.ts",
     "browser_tests/glic_android_browsertest.ts",
+    "browser_tests/glic_mic_permission_android_browsertest.ts",
     "browser_tests/glic_browser_test_android.ts",
+    "browser_tests/failing_init_client.ts",
     "browser_tests/minimal_client.ts",
     "api_boot.ts",
     "test_client/client.ts",
@@ -51,6 +62,7 @@ ts_library("build_extra_ts") {
     "test_client/sections/multi_tab.ts",
     "test_client/sections/scroll_to.ts",
     "test_client/sections/skills.ts",
+    "test_client/sections/tools.ts",
     "test_client/sections/sizing.ts",
     "test_client/sections/permissions.ts",
     "test_client/sections/file.ts",
@@ -128,12 +140,11 @@ if (!is_android) {
     cc_test_files = [ "glic_browsertest.cc" ]
 
     files = [
-      "unit_tests/glic_api_host_test.ts",
+      "unit_tests/actor_client_test.ts",
       "unit_tests/glic_api_client_test.ts",
       "unit_tests/observable_test.ts",
       "unit_tests/mojo_logging_test.ts",
       "unit_tests/overlay_test.ts",
-      "unit_tests/post_message_transport_test.ts",
       "unit_tests/test_helpers.ts",
       "unit_tests/webview_test.ts",
     ]

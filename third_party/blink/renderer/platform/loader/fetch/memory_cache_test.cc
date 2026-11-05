@@ -34,6 +34,7 @@
 #include <variant>
 
 #include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/memory_limit.h"
 #include "base/memory_coordinator/test_memory_consumer_registry.h"
 #include "base/test/scoped_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -123,20 +124,20 @@ class MemoryCacheTest : public testing::Test {
  protected:
   void SetUp() override {
     auto* properties = MakeGarbageCollected<TestResourceFetcherProperties>();
-    lifecycle_notifier_ = MakeGarbageCollected<MockContextLifecycleNotifier>();
     fetcher_ = MakeGarbageCollected<ResourceFetcher>(ResourceFetcherInit(
         properties->MakeDetachable(), MakeGarbageCollected<MockFetchContext>(),
         base::MakeRefCounted<scheduler::FakeTaskRunner>(),
         base::MakeRefCounted<scheduler::FakeTaskRunner>(),
-        MakeGarbageCollected<TestLoaderFactory>(), lifecycle_notifier_,
+        MakeGarbageCollected<TestLoaderFactory>(),
+        lifecycle_notifier_.Notifier(),
         nullptr /* back_forward_cache_loader_helper */));
   }
 
   test::TaskEnvironmentWithMainThreadScheduler task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   base::TestMemoryConsumerRegistry test_memory_consumer_registry_;
+  ScopedMockContextLifecycleNotifier lifecycle_notifier_;
   Persistent<ResourceFetcher> fetcher_;
-  Persistent<MockContextLifecycleNotifier> lifecycle_notifier_;
   ScopedTestingPlatformSupport<TestingPlatformSupport> platform_;
   ScopedMemoryCacheForTesting scoped_memory_cache_;
 
@@ -418,7 +419,7 @@ TEST_F(MemoryCacheStrongReferenceTest, ChangeMemoryCacheSizeStateful) {
   // OnUpdateMemoryLimit() clamps max_size to current size (resource->size()),
   // preventing growth without immediate eviction.
   test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-      0, task_environment_.QuitClosure());
+      base::MemoryLimit::FromPercent(0), task_environment_.QuitClosure());
   task_environment_.RunUntilQuit();
   EXPECT_EQ(MemoryCache::Get()->strong_references_max_size_, resource->size());
   EXPECT_EQ(MemoryCache::Get()->strong_references_.size(), 1u);
@@ -433,7 +434,7 @@ TEST_F(MemoryCacheStrongReferenceTest, ChangeMemoryCacheSizeStateful) {
   // Relax memory limit back to 100%. Under stateful mode, OnUpdateMemoryLimit()
   // expands max_size back to baseline.
   test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-      100, task_environment_.QuitClosure());
+      base::MemoryLimit::Default(), task_environment_.QuitClosure());
   task_environment_.RunUntilQuit();
   EXPECT_EQ(MemoryCache::Get()->strong_references_max_size_, baseline);
 }
@@ -454,7 +455,7 @@ TEST_F(MemoryCacheStrongReferenceTest, ChangeMemoryCacheSizeStateless) {
 
   // In stateless mode, OnUpdateMemoryLimit does nothing.
   test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-      0, task_environment_.QuitClosure());
+      base::MemoryLimit::FromPercent(0), task_environment_.QuitClosure());
   task_environment_.RunUntilQuit();
   EXPECT_EQ(MemoryCache::Get()->strong_references_max_size_, baseline);
   EXPECT_EQ(MemoryCache::Get()->strong_references_.size(), 1u);

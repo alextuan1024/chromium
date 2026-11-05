@@ -20,8 +20,7 @@ import org.chromium.chrome.browser.download.DownloadUtils;
 import org.chromium.chrome.browser.download.home.DownloadManagerCoordinator;
 import org.chromium.chrome.browser.download.home.DownloadManagerUiConfig;
 import org.chromium.chrome.browser.download.home.DownloadManagerUiConfigHelper;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.profiles.OtrProfileId;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.BasicNativePage;
 import org.chromium.chrome.browser.ui.native_page.NativePageHost;
@@ -43,7 +42,7 @@ public class DownloadPage extends BasicNativePage implements DownloadManagerCoor
      * @param activity The activity to get context and manage fragments.
      * @param snackbarManager The {@link SnackbarManager} to show snack bars.
      * @param modalDialogManager The {@link ModalDialogManager} associated with the activity.
-     * @param otrProfileId The {@link OtrProfileId} for the profile. Null for regular profile.
+     * @param profile The {@link Profile} associated with the downloads.
      * @param host A NativePageHost to load urls.
      * @param backPressmanager The {@link BackPressManager} for handling back press.
      */
@@ -51,7 +50,7 @@ public class DownloadPage extends BasicNativePage implements DownloadManagerCoor
             Activity activity,
             SnackbarManager snackbarManager,
             @Nullable ModalDialogManager modalDialogManager,
-            @Nullable OtrProfileId otrProfileId,
+            Profile profile,
             NativePageHost host,
             BackPressManager backPressManager) {
         super(host);
@@ -60,7 +59,7 @@ public class DownloadPage extends BasicNativePage implements DownloadManagerCoor
 
         DownloadManagerUiConfig config =
                 DownloadManagerUiConfigHelper.fromFlags(activity)
-                        .setOtrProfileId(otrProfileId)
+                        .setOtrProfileId(profile.getOtrProfileId())
                         .setIsSeparateActivity(false)
                         .setShowPaginationHeaders(DownloadUtils.shouldShowPaginationHeaders())
                         .setEdgeToEdgePadAdjusterGenerator(host::createEdgeToEdgePadAdjuster)
@@ -68,7 +67,7 @@ public class DownloadPage extends BasicNativePage implements DownloadManagerCoor
 
         mDownloadCoordinator =
                 DownloadManagerCoordinatorFactoryHelper.create(
-                        activity, config, snackbarManager, modalDialogManager);
+                        activity, profile, config, snackbarManager, modalDialogManager);
 
         mDownloadCoordinator.addObserver(this);
         mTitle = activity.getString(R.string.menu_downloads);
@@ -95,7 +94,7 @@ public class DownloadPage extends BasicNativePage implements DownloadManagerCoor
     }
 
     @Override
-    public boolean supportsEdgeToEdge() {
+    public boolean supportsEdgeToEdgeOnBottom() {
         return true;
     }
 
@@ -123,11 +122,6 @@ public class DownloadPage extends BasicNativePage implements DownloadManagerCoor
     }
 
     private void initializeBackPressHandler(BackPressManager backPressManager) {
-        if (!ChromeFeatureList.isEnabled(
-                ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES)) {
-            return;
-        }
-
         // Helper function to get an active handler.
         Supplier<@Nullable BackPressHandler> getActiveHandler =
                 () -> {

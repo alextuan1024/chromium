@@ -22,6 +22,7 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "remoting/base/auto_thread_task_runner.h"
@@ -105,6 +106,7 @@ class MockDaemonProcess : public DaemonProcess {
               (override));
 
   MOCK_METHOD(void, OnSessionCountChanged, (size_t), (override));
+  MOCK_METHOD(void, OnPeerSessionManagerBound, (), (override));
 
   using DaemonProcess::Stop;
 };
@@ -135,7 +137,10 @@ std::unique_ptr<DesktopSession> MockDaemonProcess::DoCreateDesktopSession(
 mojom::DesktopSessionOptionsPtr CreateSessionOptions() {
   auto options = mojom::DesktopSessionOptions::New();
   options->screen_resolution = ScreenResolution();
-  options->is_curtained = false;
+  options->curtain_required = false;
+#if BUILDFLAG(IS_LINUX)
+  options->terminate_local_session = false;
+#endif  // BUILDFLAG(IS_LINUX)
   return options;
 }
 
@@ -196,6 +201,7 @@ void DaemonProcessTest::SetUp() {
   EXPECT_CALL(*daemon_process_, LaunchNetworkProcess())
       .Times(AnyNumber())
       .WillRepeatedly(Invoke(this, &DaemonProcessTest::LaunchNetworkProcess));
+  EXPECT_CALL(*daemon_process_, OnPeerSessionManagerBound()).Times(AnyNumber());
 }
 
 void DaemonProcessTest::TearDown() {
@@ -498,5 +504,39 @@ TEST_F(DaemonProcessTest, DesktopSessionsPersistAcrossCrashNetworkProcess) {
   EXPECT_EQ(desktop_sessions().size(), 1u);
   EXPECT_EQ(id, desktop_sessions().begin()->second->id());
 }
+
+TEST_F(DaemonProcessTest, CallsOnPeerSessionManagerBoundWhenRequested) {
+  EXPECT_CALL(*daemon_process_, SendHostConfigToNetworkProcess(_));
+  StartDaemonProcess();
+
+  EXPECT_CALL(*daemon_process_, OnPeerSessionManagerBound()).Times(1);
+  mojo::AssociatedRemote<mojom::PeerSessionManager> peer_session_manager;
+  daemon_process_->OnAssociatedInterfaceRequest(
+      mojom::PeerSessionManager::Name_,
+      peer_session_manager.BindNewEndpointAndPassDedicatedReceiver()
+          .PassHandle());
+}
+
+#if BUILDFLAG(IS_WIN)
+TEST_F(DaemonProcessTest, MultipleCertificateBrokersCanBindConcurrently) {
+  EXPECT_CALL(*daemon_process_, SendHostConfigToNetworkProcess(_));
+  StartDaemonProcess();
+
+  mojo::AssociatedRemote<mojom::CertificateBroker> first_broker;
+  daemon_process_->OnAssociatedInterfaceRequest(
+      mojom::CertificateBroker::Name_,
+      first_broker.BindNewEndpointAndPassDedicatedReceiver().PassHandle());
+
+  mojo::AssociatedRemote<mojom::CertificateBroker> second_broker;
+  daemon_process_->OnAssociatedInterfaceRequest(
+      mojom::CertificateBroker::Name_,
+      second_broker.BindNewEndpointAndPassDedicatedReceiver().PassHandle());
+
+  first_broker.FlushForTesting();
+  second_broker.FlushForTesting();
+  EXPECT_TRUE(first_broker.is_connected());
+  EXPECT_TRUE(second_broker.is_connected());
+}
+#endif
 
 }  // namespace remoting

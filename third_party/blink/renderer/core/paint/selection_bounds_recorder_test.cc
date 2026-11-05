@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/core/editing/testing/selection_sample.h"
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/paint/paint_controller_paint_test.h"
+#include "third_party/blink/renderer/core/paint/paint_info.h"
 
 using testing::ElementsAre;
 
@@ -332,7 +333,7 @@ TEST_F(SelectionBoundsRecorderTest, BoundsHidden) {
   EXPECT_EQ(gfx::Point(80, 80), host->selection().end.edge_start);
   EXPECT_EQ(gfx::Point(80, 160), host->selection().end.edge_end);
 
-  auto* container = GetDocument().getElementById(AtomicString("container"));
+  auto* container = GetElementById("container");
   container->scrollToForTesting(0, 59);
   UpdateAllLifecyclePhasesForTest();
   EXPECT_FALSE(host->selection().start.hidden);
@@ -384,7 +385,7 @@ TEST_F(SelectionBoundsRecorderTest, BoundsVisibleWithLineHeightOverflow) {
     <input id="input" type="text" value="XXXX">
   )HTML");
 
-  auto* input = GetDocument().getElementById(AtomicString("input"));
+  auto* input = GetElementById("input");
   input->Focus();
   local_frame->Selection().SetHandleVisibleForTesting();
   local_frame->GetPage()->GetFocusController().SetFocusedFrame(local_frame);
@@ -396,6 +397,60 @@ TEST_F(SelectionBoundsRecorderTest, BoundsVisibleWithLineHeightOverflow) {
   // extends below the input's clip due to line-height > height.
   EXPECT_FALSE(host->selection().start.hidden);
   EXPECT_FALSE(host->selection().end.hidden);
+}
+
+TEST_F(SelectionBoundsRecorderTest, ReplacedElementInResourceSubtree) {
+  SetBodyInnerHTML(R"HTML(
+    <svg width="200" height="200">
+      <filter id="f"><feImage href="#g"/></filter>
+      <g id="g">
+        <foreignObject width="100" height="100">
+          <img id="target_img" width="50" height="50">
+        </foreignObject>
+      </g>
+    </svg>
+    <div style="width: 100px; height: 100px; filter: url(#f)"></div>
+  )HTML");
+
+  LocalFrame* local_frame = GetDocument().GetFrame();
+  local_frame->Selection().SetHandleVisibleForTesting();
+  local_frame->GetPage()->GetFocusController().SetFocusedFrame(local_frame);
+  local_frame->Selection().SelectAll();
+  UpdateAllLifecyclePhasesForTest();
+
+  LayoutObject* target_img = GetLayoutObjectByElementId("target_img");
+  ASSERT_TRUE(target_img);
+  EXPECT_TRUE(target_img->IsSelected());
+  EXPECT_THAT(ContentDisplayItems(),
+              testing::Contains(
+                  IsSameId(target_img->Id(), DisplayItem::kSelectionTint)));
+  auto* host = local_frame->View()->RootCcLayer()->layer_tree_host();
+  EXPECT_NE(gfx::SelectionBound::EMPTY, host->selection().start.type);
+  EXPECT_NE(gfx::SelectionBound::EMPTY, host->selection().end.type);
+
+  LayoutObject* resource_g = GetLayoutObjectByElementId("g");
+  ASSERT_TRUE(resource_g);
+
+  PaintController paint_controller;
+  {
+    GraphicsContext context(paint_controller);
+    paint_controller.UpdateCurrentPaintChunkProperties(
+        PaintChunk::Id(resource_g->Id(), DisplayItem::kDrawingFirst),
+        *resource_g, PropertyTreeState::Root());
+    PaintInfo info(
+        context, CullRect::Infinite(), PaintPhase::kForeground,
+        /*descendant_painting_blocked=*/false,
+        PaintFlag::kOmitCompositingInfo | PaintFlag::kPaintingResourceSubtree);
+    resource_g->Paint(info);
+  }
+  const PaintArtifact& artifact = paint_controller.CommitNewDisplayItems();
+  EXPECT_FALSE(artifact.GetDisplayItemList().IsEmpty());
+  EXPECT_THAT(artifact.GetDisplayItemList(),
+              testing::Not(testing::Contains(
+                  IsSameId(target_img->Id(), DisplayItem::kSelectionTint))));
+  for (const auto& chunk : artifact.GetPaintChunks()) {
+    EXPECT_FALSE(chunk.layer_selection_data);
+  }
 }
 
 }  // namespace blink

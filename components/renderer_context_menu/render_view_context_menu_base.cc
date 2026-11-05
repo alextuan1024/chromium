@@ -20,11 +20,13 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/user_browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/buildflags.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/ui_base_features.h"
 #include "url/origin.h"
 
@@ -203,7 +205,7 @@ RenderViewContextMenuBase::RenderViewContextMenuBase(
     : params_(params),
       source_web_contents_(
           WebContents::FromRenderFrameHost(&render_frame_host)),
-      browser_context_(source_web_contents_->GetBrowserContext()),
+      browser_context_(content::GetUserBrowserContext(render_frame_host)),
       menu_model_(this),
       render_frame_id_(render_frame_host.GetRoutingID()),
       render_frame_token_(render_frame_host.GetFrameToken()),
@@ -481,11 +483,12 @@ RenderFrameHost* RenderViewContextMenuBase::GetRenderFrameHost() const {
 
 // Controller functions --------------------------------------------------------
 
-void RenderViewContextMenuBase::OpenURL(const GURL& url,
-                                        const GURL& referring_url,
-                                        const url::Origin& initiator,
-                                        WindowOpenDisposition disposition,
-                                        ui::PageTransition transition) {
+void RenderViewContextMenuBase::OpenURL(
+    const GURL& url,
+    const GURL& referring_url,
+    const url::Origin& initiator,
+    ui::mojom::WindowOpenDisposition disposition,
+    ui::PageTransition transition) {
   OpenURLWithExtraHeaders(
       url, referring_url, initiator, disposition, transition,
       /*extra_headers=*/"", /*started_from_context_menu=*/true,
@@ -496,7 +499,7 @@ void RenderViewContextMenuBase::OpenURLWithExtraHeaders(
     const GURL& url,
     const GURL& referring_url,
     const url::Origin& initiator,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
     const std::string& extra_headers,
     bool started_from_context_menu,
@@ -515,14 +518,14 @@ RenderViewContextMenuBase::GetOpenURLParamsWithExtraHeaders(
     const GURL& url,
     const GURL& referring_url,
     const url::Origin& initiator,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
     const std::string& extra_headers,
     bool started_from_context_menu) {
   // Do not send the referrer url to OTR windows. We still need the
   // |referring_url| to populate the |initiator_origin| below for browser UI.
   GURL referrer_url;
-  if (disposition != WindowOpenDisposition::OFF_THE_RECORD) {
+  if (disposition != ui::mojom::WindowOpenDisposition::kOffTheRecord) {
     referrer_url = referring_url.GetAsReferrer();
   }
 
@@ -530,7 +533,7 @@ RenderViewContextMenuBase::GetOpenURLParamsWithExtraHeaders(
       url, content::Referrer(referrer_url, params_.referrer_policy));
 
   if (params_.link_url == url &&
-      disposition != WindowOpenDisposition::OFF_THE_RECORD) {
+      disposition != ui::mojom::WindowOpenDisposition::kOffTheRecord) {
     params_.link_followed = url;
   }
 

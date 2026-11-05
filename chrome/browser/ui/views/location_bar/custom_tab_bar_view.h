@@ -5,15 +5,16 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_CUSTOM_TAB_BAR_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_CUSTOM_TAB_BAR_VIEW_H_
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_view.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_menu_button.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
+#include "ui/gfx/text_constants.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/accessible_pane_view.h"
 #include "ui/views/context_menu_controller.h"
@@ -38,7 +39,6 @@ class CustomTabBarTitleOriginView;
 // outside of the app scope. For Android apps on ChromeOS, CustomTabBarView is
 // additionally used to show a three-dot menu icon.
 class CustomTabBarView : public views::AccessiblePaneView,
-                         public TabStripModelObserver,
                          public ui::SimpleMenuModel::Delegate,
                          public views::ContextMenuController,
                          public IconLabelBubbleView::Delegate,
@@ -54,6 +54,13 @@ class CustomTabBarView : public views::AccessiblePaneView,
 
   LocationIconView* location_icon_view() { return location_icon_view_; }
 
+  // Returns true if the custom tab bar's security state does not match
+  // the currently visible state.
+  bool HasSecurityStateChanged() const;
+
+  // Populates child elements with page details from the current WebContents.
+  void UpdateContents();
+
   // views::AccessiblePaneView:
   gfx::Rect GetAnchorBoundsInScreen() const override;
   void SetVisible(bool visible) override;
@@ -62,14 +69,6 @@ class CustomTabBarView : public views::AccessiblePaneView,
   void OnPaintBackground(gfx::Canvas* canvas) override;
   void ChildPreferredSizeChanged(views::View* child) override;
   void OnThemeChanged() override;
-
-  // TabstripModelObserver:
-  void OnTabChangedAt(tabs::TabInterface* tab,
-                      TabChangeType change_type) override;
-  void OnTabStripModelChanged(
-      TabStripModel* tab_strip_model,
-      const TabStripModelChange& change,
-      const TabStripSelectionChange& selection) override;
 
   // IconLabelBubbleView::Delegate:
   SkColor GetIconLabelBubbleSurroundingForegroundColor() const override;
@@ -99,8 +98,11 @@ class CustomTabBarView : public views::AccessiblePaneView,
   void GoBackToAppForTesting();
   bool IsShowingOriginForTesting() const;
   bool IsShowingCloseButtonForTesting() const;
+  gfx::ElideBehavior GetLocationElideBehaviorForTesting() const;
 
  private:
+  void OnActiveTabChanged(BrowserWindowInterface* browser_interface);
+
   // Takes the web contents for the custom tab bar back to the app scope.
   void GoBackToApp();
 
@@ -123,9 +125,6 @@ class CustomTabBarView : public views::AccessiblePaneView,
     return web_app::AppBrowserController::From(browser_);
   }
 
-  // Populates child elements with page details from the current WebContents.
-  void UpdateContents();
-
   bool GetShowTitle() const;
 
   SkColor title_bar_color_ = SK_ColorTRANSPARENT;
@@ -143,6 +142,9 @@ class CustomTabBarView : public views::AccessiblePaneView,
   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
 
   raw_ptr<views::FlexLayout> layout_manager_;
+
+  base::CallbackListSubscription active_tab_subscription_;
+  base::CallbackListSubscription tab_ui_change_subscription_;
 
   base::WeakPtrFactory<CustomTabBarView> weak_factory_{this};
 };

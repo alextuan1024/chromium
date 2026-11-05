@@ -19,8 +19,8 @@
 #include "components/autofill/core/browser/logging/log_router.h"
 #include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/personal_context/core/mock_personal_context_eligibility_service.h"
 #include "components/personal_context/core/personal_context_prefs.h"
 #include "components/personal_context/core/personal_context_types.h"
@@ -96,8 +96,7 @@ class AtMemoryEnablementUtilsTest : public testing::Test {
         features::kAutofillAtMemory, {{"at_memory_eligible_tiers", ""}});
     autofill_client().GetPrefs()->registry()->RegisterIntegerPref(
         optimization_guide::prefs::kFindAndFillWithGeminiSettings,
-        std::to_underlying(optimization_guide::model_execution::prefs::
-                               ModelExecutionEnterprisePolicyValue::kAllow));
+        std::to_underlying(optimization_guide::EnterprisePolicyValue::kAllow));
     // Enable the toggle by default in tests since it represents the default
     // active state.
     autofill_client().GetPrefs()->SetUserPref(
@@ -339,6 +338,30 @@ TEST_F(AtMemoryEnablementUtilsTest,
       autofill_client().GetLastCommittedPrimaryMainFrameURL()));
 }
 
+// Tests that `kAtMemorySkipEnablementChecks` doesn't enable AtMemory for a
+// profile whose Glic provider doesn't support Personal Context.
+TEST_F(AtMemoryEnablementUtilsTest,
+       MayPerformAtMemoryAction_SkipEnablementChecksUnsupportedGlicProvider) {
+  base::test::ScopedFeatureList debug_features(
+      features::debug::kAtMemorySkipEnablementChecks);
+
+  EXPECT_CALL(personal_context_service_, GetEligibilityState)
+      .WillRepeatedly(Return(personal_context::PersonalContextEligibilityState::
+                                 kDisabledNotEligible));
+  EXPECT_CALL(personal_context_service_, GetNonEligibilityReason)
+      .WillRepeatedly(
+          Return(personal_context::PersonalContextNonEligibilityReason::
+                     kUnsupportedGlicProvider));
+
+  std::string debug_message;
+  EXPECT_FALSE(MayPerformAtMemoryAction(
+      AtMemoryAction::kTriggerSearchUI, autofill_client(),
+      autofill_client().GetLastCommittedPrimaryMainFrameURL(),
+      /*retrieve_params=*/std::nullopt, &debug_message));
+  EXPECT_EQ(debug_message,
+            "Unsupported Glic provider doesn't support @memory.");
+}
+
 // Tests that a user is eligible for AtMemory if their subscription tier is in
 // the list of eligible tiers configured by the feature parameters.
 TEST_F(AtMemoryEnablementUtilsTest,
@@ -516,8 +539,7 @@ class AtMemoryEnablementUtilsFeatureCheckedLastTest : public testing::Test {
         true);
     registry_->RegisterIntegerPref(
         optimization_guide::prefs::kFindAndFillWithGeminiSettings,
-        std::to_underlying(optimization_guide::model_execution::prefs::
-                               ModelExecutionEnterprisePolicyValue::kAllow));
+        std::to_underlying(optimization_guide::EnterprisePolicyValue::kAllow));
     pref_service_ = std::make_unique<TestPrefService>(pref_store_, registry_);
 
     autofill_client_.set_last_committed_primary_main_frame_url(

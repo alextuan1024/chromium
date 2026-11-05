@@ -31,7 +31,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_PEER_CONNECTION_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_PEER_CONNECTION_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <utility>
@@ -273,6 +274,12 @@ class MODULES_EXPORT RTCPeerConnection final
   void NoteCreateOfferFailed();
   void NoteCreateAnswerFailed();
 
+  // Called when a chained operation (see
+  // https://w3c.github.io/webrtc-pc/#dfn-chain-an-operation) is started, and
+  // right before its promise (or callback) is settled on the main thread.
+  void NoteChainedOperationStarted();
+  void NoteChainedOperationSettled();
+
   // MediaStreamObserver
   void OnStreamAddTrack(MediaStream*,
                         MediaStreamTrack*,
@@ -370,6 +377,11 @@ class MODULES_EXPORT RTCPeerConnection final
     BoolFunction setup_function_;
   };
   void Dispose();
+
+  // Whether createOffer()/createAnswer() may report a failure detected by the
+  // native layer on the same task, i.e., whether the JS-visible operations
+  // chain is empty.
+  bool AllowSynchronousSdpCreationFailure() const;
 
   void MaybeDispatchEvent(Event*);
   // TODO(hbos): Remove any remaining uses of ScheduleDispatchEvent.
@@ -580,6 +592,10 @@ class MODULES_EXPORT RTCPeerConnection final
   String last_answer_;
   int pending_create_offer_count_ = 0;
   int pending_create_answer_count_ = 0;
+  // Number of chained operations whose promise (or callback) has not yet been
+  // settled on the main thread. The JS-visible operations chain is empty
+  // iff this is zero.
+  int unsettled_chained_operations_count_ = 0;
 
   Member<RTCSctpTransport> sctp_transport_;
 

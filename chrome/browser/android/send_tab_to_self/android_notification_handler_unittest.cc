@@ -9,6 +9,8 @@
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -28,10 +30,12 @@
 #include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
+// Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/NotificationManager_jni.h"
 
 namespace send_tab_to_self {
@@ -100,8 +104,8 @@ class AndroidNotificationHandlerTest : public ChromeRenderViewHostTestHarness {
     tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
                                                          &mock_tab_interface_);
 
-    handler_ =
-        std::make_unique<NiceMock<MockAndroidNotificationHandler>>(model());
+    handler_ = std::make_unique<NiceMock<MockAndroidNotificationHandler>>(
+        profile(), model());
     model()->SetLocalCacheGuid(kDeviceId);
   }
 
@@ -120,7 +124,6 @@ class AndroidNotificationHandlerTest : public ChromeRenderViewHostTestHarness {
   MockAndroidNotificationHandler* handler() { return handler_.get(); }
 
  protected:
-  base::test::ScopedFeatureList scoped_feature_list_{kSendTabToSelfAutoOpen};
   std::unique_ptr<TestTabModel> tab_model_;
   tabs::MockTabInterface mock_tab_interface_;
   std::unique_ptr<MockAndroidNotificationHandler> handler_;
@@ -154,10 +157,52 @@ TEST_F(AndroidNotificationHandlerTest,
   EXPECT_TRUE(model()->GetEntryByGUID(guid)->IsOpened());
 
   histogram_tester.ExpectUniqueSample(
-      "Sharing.SendTabToSelf.AutoOpenOutcome2",
+      "Sharing.SendTabToSelf.AutoOpenedImmediately", true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Sharing.SendTabToSelf.AutoOpenOutcome3",
       AutoOpenOutcome::kTabsOpenedImmediatelyInBackground, 1);
 
   // Clean up the tab model from the global list.
+  TabModelList::RemoveTabModel(tab_model_.get());
+}
+
+TEST_F(AndroidNotificationHandlerTest,
+       ShouldAutoOpenMultipleNewEntriesInBackgroundIfActive) {
+  base::HistogramTester histogram_tester;
+  // Attach the tab model to simulate an active browser window.
+  TabModelList::AddTabModel(tab_model_.get());
+
+  const SendTabToSelfEntry* entry1 =
+      model()->AddEntryRemotely({.url = GURL("https://www.google.com/"),
+                                 .title = "Google",
+                                 .target_device_cache_guid = kDeviceId});
+  const SendTabToSelfEntry* entry2 =
+      model()->AddEntryRemotely({.url = GURL("https://www.youtube.com/"),
+                                 .title = "YouTube",
+                                 .target_device_cache_guid = kDeviceId});
+  const std::string guid1 = entry1->GetGUID();
+  const std::string guid2 = entry2->GetGUID();
+
+  // Ensure no system notification is shown since Chrome is active.
+  EXPECT_CALL(*handler(), ShowNotification).Times(0);
+  // Expect the message banner to be displayed on the active WebContents.
+  EXPECT_CALL(*handler(),
+              ShowMessageBanner(kRemoteDeviceName, /*opened_tab_count=*/2,
+                                web_contents(), entry1->GetURL()));
+
+  // Trigger the addition of both entries simultaneously.
+  handler()->DisplayNewEntries({entry1, entry2});
+
+  // Verify that both entries were marked as opened.
+  EXPECT_TRUE(model()->GetEntryByGUID(guid1)->IsOpened());
+  EXPECT_TRUE(model()->GetEntryByGUID(guid2)->IsOpened());
+
+  histogram_tester.ExpectUniqueSample(
+      "Sharing.SendTabToSelf.AutoOpenedImmediately", true, 2);
+  histogram_tester.ExpectUniqueSample(
+      "Sharing.SendTabToSelf.AutoOpenOutcome3",
+      AutoOpenOutcome::kTabsOpenedImmediatelyInBackground, 2);
+
   TabModelList::RemoveTabModel(tab_model_.get());
 }
 
@@ -183,8 +228,10 @@ TEST_F(AndroidNotificationHandlerTest, ShouldNotAutoOpenNewEntriesIfNotActive) {
   // Verify that the entry is NOT marked as opened yet.
   EXPECT_FALSE(model()->GetEntryByGUID(guid)->IsOpened());
 
-  histogram_tester.ExpectUniqueSample("Sharing.SendTabToSelf.AutoOpenOutcome2",
-                                      AutoOpenOutcome::kUnopenedImmediately, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Sharing.SendTabToSelf.AutoOpenedImmediately", false, 1);
+  histogram_tester.ExpectTotalCount("Sharing.SendTabToSelf.AutoOpenOutcome3",
+                                    0);
 }
 
 TEST_F(AndroidNotificationHandlerTest,
@@ -224,7 +271,7 @@ TEST_F(AndroidNotificationHandlerTest,
   EXPECT_TRUE(model()->GetEntryByGUID(guid2)->IsOpened());
 
   histogram_tester.ExpectUniqueSample(
-      "Sharing.SendTabToSelf.AutoOpenOutcome2",
+      "Sharing.SendTabToSelf.AutoOpenOutcome3",
       AutoOpenOutcome::kTabsOpenedInBackgroundUponActivation, 2);
 
   // Clean up the tab model.
@@ -262,8 +309,10 @@ TEST_F(AndroidNotificationHandlerTest,
   // Verify that the entry is NOT marked as opened.
   EXPECT_FALSE(model()->GetEntryByGUID(guid)->IsOpened());
 
-  histogram_tester.ExpectUniqueSample("Sharing.SendTabToSelf.AutoOpenOutcome2",
-                                      AutoOpenOutcome::kUnopenedImmediately, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Sharing.SendTabToSelf.AutoOpenedImmediately", false, 1);
+  histogram_tester.ExpectTotalCount("Sharing.SendTabToSelf.AutoOpenOutcome3",
+                                    0);
 
   // Clean up the OTR tab model.
   TabModelList::RemoveTabModel(&otr_tab_model);
@@ -292,7 +341,9 @@ TEST_F(AndroidNotificationHandlerTest, ShouldEnqueueMessageBannerOnAutoOpen) {
   EXPECT_TRUE(model()->GetEntryByGUID(guid)->IsOpened());
 
   histogram_tester.ExpectUniqueSample(
-      "Sharing.SendTabToSelf.AutoOpenOutcome2",
+      "Sharing.SendTabToSelf.AutoOpenedImmediately", true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Sharing.SendTabToSelf.AutoOpenOutcome3",
       AutoOpenOutcome::kTabsOpenedImmediatelyInBackground, 1);
 
   // Clean up the tab model.
@@ -343,7 +394,7 @@ TEST_F(AndroidNotificationHandlerModelNotReadyTest,
   EXPECT_TRUE(model()->GetEntryByGUID(guid)->IsOpened());
 
   histogram_tester.ExpectUniqueSample(
-      "Sharing.SendTabToSelf.AutoOpenOutcome2",
+      "Sharing.SendTabToSelf.AutoOpenOutcome3",
       AutoOpenOutcome::kTabsOpenedInBackgroundUponActivation, 1);
 
   // Clean up the tab model from the global list.
@@ -371,7 +422,7 @@ TEST_F(AndroidNotificationHandlerTest,
 
   // Verify it didn't open.
   EXPECT_FALSE(model()->GetEntryByGUID(guid)->IsOpened());
-  histogram_tester.ExpectTotalCount("Sharing.SendTabToSelf.AutoOpenOutcome2",
+  histogram_tester.ExpectTotalCount("Sharing.SendTabToSelf.AutoOpenOutcome3",
                                     0);
 
   // Create a new WebContents to simulate tab initialization.
@@ -393,7 +444,7 @@ TEST_F(AndroidNotificationHandlerTest,
 
   EXPECT_TRUE(model()->GetEntryByGUID(guid)->IsOpened());
   histogram_tester.ExpectUniqueSample(
-      "Sharing.SendTabToSelf.AutoOpenOutcome2",
+      "Sharing.SendTabToSelf.AutoOpenOutcome3",
       AutoOpenOutcome::kTabsOpenedInBackgroundUponActivation, 1);
 }
 
@@ -562,8 +613,10 @@ TEST_F(AndroidNotificationHandlerWithoutTabGridAutoOpenSupportTest,
 
   EXPECT_FALSE(model()->GetEntryByGUID(entry->GetGUID())->IsOpened());
 
-  histogram_tester.ExpectUniqueSample("Sharing.SendTabToSelf.AutoOpenOutcome2",
-                                      AutoOpenOutcome::kUnopenedImmediately, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Sharing.SendTabToSelf.AutoOpenedImmediately", false, 1);
+  histogram_tester.ExpectTotalCount("Sharing.SendTabToSelf.AutoOpenOutcome3",
+                                    0);
 
   TabModelList::RemoveTabModel(tab_model_.get());
 }
@@ -598,27 +651,17 @@ TEST_F(AndroidNotificationHandlerWithTabGridAutoOpenSupportTest,
   EXPECT_TRUE(model()->GetEntryByGUID(guid)->IsOpened());
 
   histogram_tester.ExpectUniqueSample(
-      "Sharing.SendTabToSelf.AutoOpenOutcome2",
+      "Sharing.SendTabToSelf.AutoOpenedImmediately", true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Sharing.SendTabToSelf.AutoOpenOutcome3",
       AutoOpenOutcome::kTabsOpenedImmediatelyInBackground, 1);
 
   TabModelList::RemoveTabModel(tab_model_.get());
 }
 
-class AndroidNotificationHandlerWithFormFieldsPropagationTest
-    : public AndroidNotificationHandlerTest {
- public:
-  AndroidNotificationHandlerWithFormFieldsPropagationTest() {
-    feature_list_.InitAndEnableFeature(kSendTabToSelfPropagateFormFields);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-// Verifies that ShowNotification receives the entry containing form field data
-// when Chrome is not in the foreground.
-TEST_F(AndroidNotificationHandlerWithFormFieldsPropagationTest,
-       ShowNotificationWithPageContext) {
+// Verifies that `ShowNotification` receives the entry containing form field
+// data when Chrome is not in the foreground.
+TEST_F(AndroidNotificationHandlerTest, ShowNotificationWithPageContext) {
   PageContext page_context;
   PageContext::FormField field;
   field.name_attribute = u"username";
@@ -629,11 +672,11 @@ TEST_F(AndroidNotificationHandlerWithFormFieldsPropagationTest,
       GURL(kExampleUrl), "Title", kDeviceId, page_context, NavigationHistory());
   const std::string guid = entry->GetGUID();
 
-  EXPECT_CALL(*handler(),
-              ShowNotification(AllOf(
-                  Property(&SendTabToSelfEntry::GetGUID, Eq(guid)),
-                  Property(&SendTabToSelfEntry::GetPageContext,
-                           Eq(page_context)))));
+  EXPECT_CALL(
+      *handler(),
+      ShowNotification(AllOf(
+          Property(&SendTabToSelfEntry::GetGUID, Eq(guid)),
+          Property(&SendTabToSelfEntry::GetPageContext, Eq(page_context)))));
 
   // Chrome is in background (no tab model added), so entries are displayed as
   // notifications.
@@ -641,11 +684,10 @@ TEST_F(AndroidNotificationHandlerWithFormFieldsPropagationTest,
   EXPECT_FALSE(model()->GetEntryByGUID(guid)->IsOpened());
 }
 
-// Verifies that AndroidNotificationHandler::ShowNotification correctly
-// serializes the entry's PageContext and invokes
-// Java_NotificationManager_showNotification via JNI without errors when form
-// field propagation is enabled.
-TEST_F(AndroidNotificationHandlerWithFormFieldsPropagationTest,
+// Verifies that `AndroidNotificationHandler::ShowNotification` correctly
+// serializes the entry's `PageContext` and invokes
+// `Java_NotificationManager_showNotification` via JNI without errors.
+TEST_F(AndroidNotificationHandlerTest,
        ShowNotificationInvokesJavaNotificationManager) {
   PageContext page_context;
   PageContext::FormField field;
@@ -657,7 +699,7 @@ TEST_F(AndroidNotificationHandlerWithFormFieldsPropagationTest,
       GURL(kExampleUrl), "Title", kDeviceId, page_context, NavigationHistory());
   const std::string guid = entry->GetGUID();
 
-  AndroidNotificationHandler handler(model());
+  AndroidNotificationHandler handler(profile(), model());
   handler.DisplayNewEntries({entry});
 
   // Verifying that hideNotification returns true confirms that
@@ -666,6 +708,35 @@ TEST_F(AndroidNotificationHandlerWithFormFieldsPropagationTest,
   // notification for `guid` in Java SharedPreferences.
   JNIEnv* env = base::android::AttachCurrentThread();
   EXPECT_TRUE(Java_NotificationManager_hideNotification(env, guid));
+}
+
+TEST_F(AndroidNotificationHandlerTest, IgnoresTabModelsFromOtherProfile) {
+  TestingProfile other_profile;
+  std::unique_ptr<content::WebContents> other_web_contents =
+      content::WebContentsTester::CreateTestWebContents(&other_profile,
+                                                        nullptr);
+  other_web_contents->WasShown();
+  TestTabModel other_tab_model(&other_profile);
+  other_tab_model.SetWebContentsList({other_web_contents.get()});
+  other_tab_model.SetIsActiveModel(true);
+
+  const SendTabToSelfEntry* entry =
+      model()->AddEntryRemotely({.url = GURL(kExampleUrl),
+                                 .title = "Title",
+                                 .target_device_cache_guid = kDeviceId});
+  const std::string guid = entry->GetGUID();
+
+  TabModelList::AddTabModel(&other_tab_model);
+  base::ScopedClosureRunner remove_other_tab_model(
+      base::BindOnce(&TabModelList::RemoveTabModel, &other_tab_model));
+  EXPECT_FALSE(model()->GetEntryByGUID(guid)->IsOpened());
+
+  EXPECT_CALL(*handler(), ShowNotification).Times(1);
+  EXPECT_CALL(*handler(), ShowMessageBanner).Times(0);
+
+  handler()->DisplayNewEntries({entry});
+
+  EXPECT_FALSE(model()->GetEntryByGUID(guid)->IsOpened());
 }
 
 }  // namespace

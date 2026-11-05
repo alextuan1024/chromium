@@ -27,6 +27,7 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/download_manager_delegate.h"
 #include "content/public/browser/frame_tree_node_id.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/save_page_type.h"
 #include "content/public/common/referrer.h"
 #include "net/base/isolation_info.h"
@@ -160,6 +161,10 @@ class CONTENT_EXPORT SavePackage final
   FRIEND_TEST_ALL_PREFIXES(SavePackageBrowserTest, ExplicitCancel);
   FRIEND_TEST_ALL_PREFIXES(SavePackageBrowserTest, Reload);
   FRIEND_TEST_ALL_PREFIXES(SavePackageBrowserTest, DownloadItemDestroyed);
+  FRIEND_TEST_ALL_PREFIXES(SavePackageSitePerProcessBrowserTest,
+                           IgnoreSubresourceAfterContainerNavigation);
+  FRIEND_TEST_ALL_PREFIXES(SavePackageSitePerProcessBrowserTest,
+                           IgnoreSubframeAfterNavigation);
 
   // Map from SaveItem::id() (aka save_item_id) into a SaveItem.
   using SaveItemIdMap =
@@ -257,6 +262,7 @@ class CONTENT_EXPORT SavePackage final
 
   // Helper for finding or creating a SaveItem with the given parameters.
   SaveItem* CreatePendingSaveItem(
+      GlobalRenderFrameHostId requester_frame_host_id,
       FrameTreeNodeId container_frame_tree_node_id,
       FrameTreeNodeId save_item_frame_tree_node_id,
       const GURL& url,
@@ -266,6 +272,7 @@ class CONTENT_EXPORT SavePackage final
   // Helper for finding a SaveItem with the given url, or falling back to
   // creating a SaveItem with the given parameters.
   void CreatePendingSaveItemDeduplicatingByUrl(
+      GlobalRenderFrameHostId requester_frame_host_id,
       FrameTreeNodeId container_frame_tree_node_id,
       FrameTreeNodeId save_item_frame_tree_node_id,
       const GURL& url,
@@ -273,11 +280,13 @@ class CONTENT_EXPORT SavePackage final
       SaveFileCreateInfo::SaveFileSource save_source);
 
   // Helper to enqueue a savable resource reported by GetSavableResourceLinks.
-  void EnqueueSavableResource(FrameTreeNodeId container_frame_tree_node_id,
+  void EnqueueSavableResource(GlobalRenderFrameHostId requester_frame_host_id,
+                              FrameTreeNodeId container_frame_tree_node_id,
                               const GURL& url,
                               const Referrer& referrer);
   // Helper to enqueue a subframe reported by GetSavableResourceLinks.
-  void EnqueueFrame(FrameTreeNodeId container_frame_tree_node_id,
+  void EnqueueFrame(GlobalRenderFrameHostId requester_frame_host_id,
+                    FrameTreeNodeId container_frame_tree_node_id,
                     FrameTreeNodeId frame_tree_node_id,
                     const GURL& frame_original_url);
 
@@ -369,13 +378,13 @@ class CONTENT_EXPORT SavePackage final
   // and also to find SaveItems to associate with a containing frame.
   // Note that |url_to_save_item_| does NOT own SaveItems - they
   // remain owned by waiting_item_queue_, in_progress_items_, etc.
-  std::map<GURL, raw_ptr<SaveItem, CtnExperimental>> url_to_save_item_;
+  std::map<GURL, raw_ptr<SaveItem, DanglingUntriaged>> url_to_save_item_;
 
   // Map used to route responses from a given a subframe (i.e.
   // GetSerializedHtmlWithLocalLinksResponse) to the right SaveItem.
   // Note that |frame_tree_node_id_to_save_item_| does NOT own SaveItems - they
   // remain owned by waiting_item_queue_, in_progress_items_, etc.
-  std::unordered_map<FrameTreeNodeId, raw_ptr<SaveItem, CtnExperimental>>
+  std::unordered_map<FrameTreeNodeId, raw_ptr<SaveItem, DanglingUntriaged>>
       frame_tree_node_id_to_save_item_;
 
   // Used to limit which local paths get exposed to which frames
@@ -384,7 +393,7 @@ class CONTENT_EXPORT SavePackage final
   // SaveItems - they remain owned by waiting_item_queue_, in_progress_items_,
   // etc.
   std::unordered_map<FrameTreeNodeId,
-                     std::vector<raw_ptr<SaveItem, VectorExperimental>>>
+                     std::vector<raw_ptr<SaveItem, DanglingUntriaged>>>
       frame_tree_node_id_to_contained_save_items_;
 
   // Number of frames that we still need to get a response from.

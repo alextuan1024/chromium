@@ -95,8 +95,8 @@ class CapturedTabRegistry {
   CapturedTabRegistry& operator=(const CapturedTabRegistry&) = delete;
 
   void Register(const GlobalRenderFrameHostId& id, WebContents* web_contents) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    DCHECK(web_contents);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
+    CHECK(web_contents, base::NotFatalUntil::M163);
     // Opportunistically drop entries whose WebContents has gone away, so the
     // map stays proportional to the number of live captured tabs.
     std::erase_if(entries_, [](const auto& entry) { return !entry.second; });
@@ -104,7 +104,7 @@ class CapturedTabRegistry {
   }
 
   WebContents* Lookup(const GlobalRenderFrameHostId& id) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
     const auto it = entries_.find(id);
     if (it == entries_.end()) {
       return nullptr;
@@ -223,7 +223,8 @@ WebContentsFrameTracker::~WebContentsFrameTracker() {
 
 void WebContentsFrameTracker::WillStartCapturingWebContents(
     const gfx::Size& capture_size,
-    bool is_high_dpi_enabled) {
+    bool is_high_dpi_enabled,
+    media::ResolutionChangePolicy resolution_change_policy) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(!is_capturing_, base::NotFatalUntil::M160);
   if (!web_contents()) {
@@ -236,7 +237,17 @@ void WebContentsFrameTracker::WillStartCapturingWebContents(
     auto_scaler_ =
         std::make_unique<WebContentsAutoScaler>(*context_, capture_size);
   }
-  context_->IncrementCapturerCount(CalculatePreferredSize(capture_size));
+
+  // Only override the WebContents preferred size when the capturer requires a
+  // fixed resolution or aspect ratio. For ANY_WITHIN_LIMIT, `capture_size` is
+  // just an upper bound (e.g. maxWidth/maxHeight) and forcing its aspect ratio
+  // onto a fullscreened tab causes severe letterboxing.
+  const gfx::Size preferred_size =
+      resolution_change_policy ==
+              media::ResolutionChangePolicy::ANY_WITHIN_LIMIT
+          ? gfx::Size()
+          : CalculatePreferredSize(capture_size);
+  context_->IncrementCapturerCount(preferred_size);
   is_capturing_ = true;
 }
 

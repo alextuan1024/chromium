@@ -47,6 +47,7 @@
 #include "third_party/blink/renderer/core/resize_observer/resize_observation.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer.h"
 #include "third_party/blink/renderer/core/style/content_data.h"
+#include "third_party/blink/renderer/platform/graphics/paint/float_clip_rect.h"
 #include "third_party/blink/renderer/platform/graphics/paint/tracked_element_data.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -82,8 +83,9 @@ NodeRareData* NodeRareData::SetField(FieldId field_id,
       // reallocate.
       size_t new_size = std::max<size_t>(current_size * 2, 1);
       vec = MakeGarbageCollected<NodeRareData>(
-          AdditionalBytes(kSlotSizeBytes * new_size), PassKey(),
-          std::move(*this));
+          AdditionalBytes(
+              base::checked_cast<uint32_t>(kSlotSizeBytes * new_size)),
+          PassKey(), std::move(*this));
     }
 
     // Update the bitfield first, so that if we're tracing in parallel,
@@ -422,9 +424,11 @@ RareDataUpdate<ElementInternals> NodeRareData::EnsureElementInternals(
   return EnsureField<ElementInternals>(FieldId::kElementInternals, target);
 }
 
-RareDataUpdate<DisplayLockContext> NodeRareData::EnsureDisplayLockContext(
-    Element* element) {
-  return EnsureField<DisplayLockContext>(FieldId::kDisplayLockContext, element);
+RareDataUpdate<DisplayLockContext> NodeRareData::SetDisplayLockContext(
+    DisplayLockContext& context) {
+  CHECK(!GetDisplayLockContext());
+  return {base::PassKey<NodeRareData>(), context,
+          SetField(FieldId::kDisplayLockContext, &context)};
 }
 DisplayLockContext* NodeRareData::GetDisplayLockContext() const {
   return static_cast<DisplayLockContext*>(
@@ -811,6 +815,18 @@ void NodeRareData::ClearCanvasTransform() {
   SetFieldToNullIfExists(FieldId::kCanvasTransform);
 }
 
+const FloatClipRect* NodeRareData::GetCanvasClip() const {
+  return GetWrappedField<FloatClipRect>(FieldId::kCanvasClip);
+}
+
+RareDataUpdate<void> NodeRareData::SetCanvasClip(const FloatClipRect& clip) {
+  return SetWrappedField<FloatClipRect>(FieldId::kCanvasClip, clip);
+}
+
+void NodeRareData::ClearCanvasClip() {
+  SetFieldToNullIfExists(FieldId::kCanvasClip);
+}
+
 RareDataUpdate<void> NodeRareData::SetOverscrollContainer(Element* element) {
   return SetWrappedField<WeakMember<Element>>(FieldId::kOverscrollContainer,
                                               element);
@@ -819,6 +835,24 @@ RareDataUpdate<void> NodeRareData::SetOverscrollContainer(Element* element) {
 Element* NodeRareData::GetOverscrollContainer() const {
   if (auto* value =
           GetWrappedField<WeakMember<Element>>(FieldId::kOverscrollContainer)) {
+    return value->Get();
+  }
+  return nullptr;
+}
+
+RareDataUpdate<void> NodeRareData::SetImplicitAnchor(Element* element) {
+  if (!element) {
+    SetFieldToNullIfExists(FieldId::kImplicitAnchor);
+    return RareDataUpdate<void>(this);
+  }
+  element->SetMayBeImplicitAnchor();
+  return SetWrappedField<WeakMember<Element>>(FieldId::kImplicitAnchor,
+                                              element);
+}
+
+Element* NodeRareData::GetImplicitAnchor() const {
+  if (auto* value =
+          GetWrappedField<WeakMember<Element>>(FieldId::kImplicitAnchor)) {
     return value->Get();
   }
   return nullptr;

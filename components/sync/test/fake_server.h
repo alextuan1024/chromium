@@ -12,6 +12,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/files/file_path.h"
@@ -22,6 +23,7 @@
 #include "base/values.h"
 #include "components/sync/base/collaboration_id.h"
 #include "components/sync/base/data_type.h"
+#include "components/sync/base/progress_marker_map.h"
 #include "components/sync/engine/loopback_server/loopback_server.h"
 #include "components/sync/engine/loopback_server/loopback_server_entity.h"
 #include "components/sync/engine/loopback_server/persistent_bookmark_entity.h"
@@ -65,9 +67,13 @@ class FakeServer : public syncer::LoopbackServer::ObserverForTests {
     // corresponding OnWillCommit() call.
     virtual void OnWillCommit() {}
 
-    // Called after FakeServer has processed a successful commit. The types
-    // updated as part of the commit are passed in `committed_data_types`.
-    virtual void OnCommit(syncer::DataTypeSet committed_data_types) {}
+    // Called after FakeServer has processed a successful commit.
+    // `committer_cache_guid` is the committing client's cache GUID for client
+    // COMMIT requests, or empty for server-initiated changes (e.g.
+    // `InjectEntity()`). The types updated as part of the commit are passed in
+    // `committed_data_types`.
+    virtual void OnCommit(std::string_view committer_cache_guid,
+                          syncer::DataTypeSet committed_data_types) {}
 
     // Called whenever a get updates request is received by FakeServer.
     virtual void OnWillGetUpdates(
@@ -254,7 +260,8 @@ class FakeServer : public syncer::LoopbackServer::ObserverForTests {
   void RemoveCollaboration(const syncer::CollaborationId& collaboration_id);
 
   // Implement LoopbackServer::ObserverForTests:
-  void OnCommit(syncer::DataTypeSet committed_data_types) override;
+  void OnCommit(std::string_view committer_cache_guid,
+                syncer::DataTypeSet committed_data_types) override;
   void OnCommittedDeletionOrigin(
       syncer::DataType type,
       const sync_pb::DeletionOrigin& deletion_origin) override;
@@ -264,6 +271,12 @@ class FakeServer : public syncer::LoopbackServer::ObserverForTests {
       syncer::DataType type) const;
 
   std::string GetStoreBirthday() const;
+
+  // Returns true if `progress_markers` are non-empty and up to date with all
+  // server entities and migration versions for all non-commit-only types in
+  // `progress_markers`.
+  bool AreProgressMarkersUpToDate(
+      const syncer::ProgressMarkerMap& progress_markers) const;
 
   // Returns the current FakeServer as a WeakPtr.
   base::WeakPtr<FakeServer> AsWeakPtr();

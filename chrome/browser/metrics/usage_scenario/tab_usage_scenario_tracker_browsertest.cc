@@ -31,6 +31,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/media_player_id.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -44,8 +45,12 @@
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
+#endif
 
 namespace metrics {
 
@@ -157,6 +162,15 @@ class MediaWaiter : public content::WebContentsObserver {
   base::test::TestFuture<void> audio_stopped_playing_future_;
 };
 
+// Makes the video in /media/fullscreen.html fullscreen. Fullscreen requests
+// from unfocused views are rejected, and browser tests that run in parallel
+// can't rely on OS-level window activation, so simulate view focus first.
+[[nodiscard]] ::testing::AssertionResult MakeVideoFullscreen(
+    content::WebContents* contents) {
+  contents->GetRenderWidgetHostView()->SetHasFocusForTesting(true);
+  return content::ExecJs(contents, "makeFullscreen('small_video')");
+}
+
 }  // namespace
 
 class TabUsageScenarioTrackerBrowserTest : public InProcessBrowserTest {
@@ -205,6 +219,12 @@ class TabUsageScenarioTrackerBrowserTest : public InProcessBrowserTest {
   std::unique_ptr<TabUsageScenarioTracker> tab_usage_scenario_tracker_;
 
  private:
+#if BUILDFLAG(IS_MAC)
+  // Fake NSWindow fullscreen transitions to avoid asynchronous AppKit Space
+  // transitions that can cause spurious window occlusion updates on Mac.
+  ui::test::ScopedFakeNSWindowFullscreen fake_fullscreen_window_;
+#endif
+
   // TODO(https://crbug.com/423465927): Explore a better approach to make the
   // existing tests run with the prewarm feature enabled.
   test::ScopedPrewarmFeatureList prewarm_feature_list_{
@@ -549,8 +569,7 @@ IN_PROC_BROWSER_TEST_P(TabUsageScenarioTrackerDiscardBrowserTest,
 
   auto* fullscreen_contents = browser()->tab_strip_model()->GetWebContentsAt(1);
   FullscreenEventsWaiter fullscreen_waiter(fullscreen_contents);
-  EXPECT_TRUE(
-      content::ExecJs(fullscreen_contents, "makeFullscreen('small_video')"));
+  EXPECT_TRUE(MakeVideoFullscreen(fullscreen_contents));
   ASSERT_TRUE(fullscreen_waiter.WaitAndClear(true));
   EXPECT_TRUE(
       data_store_.TrackingPlayingFullScreenVideoSingleMonitorForTesting());
@@ -587,7 +606,7 @@ IN_PROC_BROWSER_TEST_F(TabUsageScenarioTrackerBrowserTest, FullScreenVideo) {
   FullscreenEventsWaiter waiter(contents);
   EXPECT_TRUE(content::NavigateToURL(
       contents, embedded_test_server()->GetURL("/media/fullscreen.html")));
-  EXPECT_TRUE(content::ExecJs(contents, "makeFullscreen('small_video')"));
+  EXPECT_TRUE(MakeVideoFullscreen(contents));
   ASSERT_TRUE(waiter.WaitAndClear(true));
   tick_clock_.Advance(kInterval);
   EXPECT_TRUE(content::ExecJs(contents, "exitFullscreen()"));
@@ -690,15 +709,8 @@ IN_PROC_BROWSER_TEST_F(TabUsageScenarioTrackerBrowserTest, TabAudio) {
             interval_data.source_id_for_longest_visible_origin_duration);
 }
 
-// TODO(https://crbug.com/448444906): There's a race condition in this test
-// between the two calls to ResetIntervalData() that manifests on Mac.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_FullScreenVideoClosed DISABLED_FullScreenVideoClosed
-#else
-#define MAYBE_FullScreenVideoClosed FullScreenVideoClosed
-#endif
 IN_PROC_BROWSER_TEST_F(TabUsageScenarioTrackerBrowserTest,
-                       MAYBE_FullScreenVideoClosed) {
+                       FullScreenVideoClosed) {
   // Play fullscreen video in a tab and close it while it's playing, ensure that
   // things are tracked properly.
   EXPECT_TRUE(
@@ -710,7 +722,7 @@ IN_PROC_BROWSER_TEST_F(TabUsageScenarioTrackerBrowserTest,
                     ui::PAGE_TRANSITION_LINK));
   auto* contents = browser()->tab_strip_model()->GetWebContentsAt(1);
   FullscreenEventsWaiter waiter(contents);
-  EXPECT_TRUE(content::ExecJs(contents, "makeFullscreen('small_video')"));
+  EXPECT_TRUE(MakeVideoFullscreen(contents));
   ASSERT_TRUE(waiter.WaitAndClear(true));
   tick_clock_.Advance(kInterval * 2);
   auto expected_source_id =
@@ -768,7 +780,7 @@ IN_PROC_BROWSER_TEST_F(TabUsageScenarioTrackerBrowserTest,
   EXPECT_TRUE(content::NavigateToURL(
       contents, embedded_test_server()->GetURL("/media/fullscreen.html")));
   FullscreenEventsWaiter waiter(contents);
-  EXPECT_TRUE(content::ExecJs(contents, "makeFullscreen('small_video')"));
+  EXPECT_TRUE(MakeVideoFullscreen(contents));
   ASSERT_TRUE(waiter.WaitAndClear(true));
   tick_clock_.Advance(kInterval);
   auto expected_source_id =
@@ -816,7 +828,7 @@ IN_PROC_BROWSER_TEST_F(TabUsageScenarioTrackerBrowserTest,
   ui_test_utils::BrowserCreatedObserver browser_created_observer;
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/title2.html"),
-      WindowOpenDisposition::NEW_WINDOW,
+      ui::mojom::WindowOpenDisposition::kNewWindow,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   BrowserWindowInterface* const browser2 = browser_created_observer.Wait();
 

@@ -10,7 +10,6 @@
 #include <optional>
 #include <utility>
 
-#include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
@@ -44,6 +43,7 @@
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gfx/skia_util.h"
 
 namespace paint_preview {
 
@@ -99,14 +99,7 @@ void BitmapCallbackImpl(
   EXPECT_EQ(bitmap.width(), expected_bitmap.width());
   EXPECT_EQ(bitmap.height(), expected_bitmap.height());
   EXPECT_EQ(bitmap.bytesPerPixel(), expected_bitmap.bytesPerPixel());
-  // Assert that all the bytes of the backing memory are equal. This check is
-  // only safe if all of the width, height and bytesPerPixel are equal between
-  // the two bitmaps.
-  UNSAFE_TODO(
-      EXPECT_EQ(memcmp(bitmap.getPixels(), expected_bitmap.getPixels(),
-                       expected_bitmap.bytesPerPixel() *
-                           expected_bitmap.width() * expected_bitmap.height()),
-                0));
+  EXPECT_TRUE(gfx::BitmapsAreEqual(bitmap, expected_bitmap));
 }
 
 SkRect ToSkRect(const gfx::Size& size) {
@@ -959,18 +952,5 @@ TEST_F(PaintPreviewCompositorTest,
                      bitmap));
   task_environment_.RunUntilIdle();
 }
-
-class NoOpDiscardableAllocator : public base::DiscardableMemoryAllocator {
- public:
-  NoOpDiscardableAllocator() = default;
-  ~NoOpDiscardableAllocator() override = default;
-
-  std::unique_ptr<base::DiscardableMemory> AllocateLockedDiscardableMemory(
-      size_t size) override {
-    return nullptr;
-  }
-  size_t GetBytesAllocated() const override { return 0U; }
-  void ReleaseFreeMemory() override {}
-};
 
 }  // namespace paint_preview

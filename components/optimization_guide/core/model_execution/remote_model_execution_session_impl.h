@@ -5,11 +5,14 @@
 #ifndef COMPONENTS_OPTIMIZATION_GUIDE_CORE_MODEL_EXECUTION_REMOTE_MODEL_EXECUTION_SESSION_IMPL_H_
 #define COMPONENTS_OPTIMIZATION_GUIDE_CORE_MODEL_EXECUTION_REMOTE_MODEL_EXECUTION_SESSION_IMPL_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
+#include "base/containers/circular_deque.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -17,21 +20,48 @@
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/streaming_client/streaming_websocket_client.h"
+#include "services/network/public/cpp/network_context_getter.h"
 
 class OptimizationGuideLogger;
-
-namespace network::mojom {
-class NetworkContext;
-}  // namespace network::mojom
 
 namespace signin {
 class IdentityManager;
 }  // namespace signin
 
 namespace optimization_guide {
+
+// The status of establishing a streaming WebSocket connection. Also used for
+// UMA logging. Entries should not be renumbered and numeric values should never
+// be reused.
+// LINT.IfChange(StreamingConnectionStatus)
+enum class StreamingConnectionStatusInternal {
+  kConnected = 0,
+  kAccessTokenFailure = 1,
+  kHandshakeFailed = 2,
+  kClientErrorDuringConnect = 3,
+  kMojoPipeDisconnectedDuringConnect = 4,
+  kCancelledByDestruction = 5,
+  kMaxValue = kCancelledByDestruction,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/optimization/enums.xml:OptimizationGuideStreamingConnectionStatus)
+
+// The reason an active streaming WebSocket connection disconnected. Also used
+// for UMA logging. Entries should not be renumbered and numeric values should
+// never be reused.
+// LINT.IfChange(StreamingDisconnectReason)
+enum class StreamingDisconnectReasonInternal {
+  kSessionDestroyed = 0,
+  kIdleTimeout = 1,
+  kServerDropClean = 2,
+  kServerDropUnclean = 3,
+  kClientError = 4,
+  kMojoPipeDisconnected = 5,
+  kMaxValue = kMojoPipeDisconnected,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/optimization/enums.xml:OptimizationGuideStreamingDisconnectReason)
 
 // RemoteModelExecutionSession implementation that communicates with MES
 // via WebSocket using StreamingWebSocketClient.
@@ -43,7 +73,7 @@ class RemoteModelExecutionSessionImpl
       ModelBasedCapabilityKey feature,
       const StreamingModelExecutionOptions& options,
       OptimizationGuideModelExecutionStreamingCallback callback,
-      network::mojom::NetworkContext* network_context,
+      network::NetworkContextGetter network_context_getter,
       signin::IdentityManager* identity_manager,
       OptimizationGuideLogger* logger = nullptr);
 
@@ -85,14 +115,19 @@ class RemoteModelExecutionSessionImpl
   ConnectionState connection_state() const { return connection_state_; }
 
  private:
-  void NotifyObservers();
+  uint64_t SetConnectionState(ConnectionState state);
+  void NotifyObservers(
+      uint64_t state_change_id,
+      std::optional<DisconnectReason> disconnect_reason = std::nullopt);
   void HandleDisconnection(
-      std::optional<OptimizationGuideModelExecutionError> error);
+      std::optional<OptimizationGuideModelExecutionError> error,
+      std::variant<StreamingConnectionStatusInternal,
+                   StreamingDisconnectReasonInternal> disconnect_reason);
   void ResetIdleTimer();
   void OnIdleTimeout();
   void StartConnection();
   void OnAccessTokenReceived(const std::string& access_token);
-  void SendPendingRequests();
+  void SendPendingRequests(uint64_t state_change_id);
   void DispatchResponse(OptimizationGuideModelStreamingResult result);
   void DispatchError(OptimizationGuideModelExecutionError error);
 
@@ -101,16 +136,16 @@ class RemoteModelExecutionSessionImpl
   OptimizationGuideModelExecutionStreamingCallback callback_;
   const raw_ptr<signin::IdentityManager> identity_manager_;
 
-  // TODO(crbug.com/553134125): Add debug logging with the logger.
   const raw_ptr<OptimizationGuideLogger> optimization_guide_logger_;
 
   ConnectionState connection_state_ = ConnectionState::kDisconnected;
+  uint64_t state_change_id_ = 0;
   base::ReentrantObserverList<Observer> observers_;
 
   base::RetainingOneShotTimer idle_timer_;
   std::string access_token_;
 
-  std::vector<std::vector<uint8_t>> pending_requests_;
+  base::circular_deque<std::vector<uint8_t>> pending_requests_;
 
   std::unique_ptr<streaming_client::StreamingWebSocketClient> client_;
 

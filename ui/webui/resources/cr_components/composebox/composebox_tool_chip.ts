@@ -38,7 +38,7 @@ export class ComposeboxToolChipElement extends I18nMixinLit
     };
   }
 
-  protected accessor inputState: InputState|null = null;
+  accessor inputState: InputState|null = null;
   accessor isCanvasQuerySubmitted: boolean = false;
 
 
@@ -65,6 +65,13 @@ export class ComposeboxToolChipElement extends I18nMixinLit
       default:
         return '';
     }
+  }
+
+  protected getToolChipAriaLabel_(): string {
+    const config = this.inputState?.toolConfigs?.find(
+        c => c.tool === this.inputState!.activeTool);
+    return config?.chipA11yLabel ||
+        this.i18n('removeToolChipAriaLabel', this.getToolChipLabel_());
   }
 
   protected getIcon_(): string {

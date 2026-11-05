@@ -4,6 +4,7 @@
 
 #include "components/winhttp/network_fetcher.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <limits>
@@ -33,7 +34,7 @@
 #include "components/winhttp/net_util.h"
 #include "components/winhttp/proxy_info.h"
 #include "components/winhttp/scoped_hinternet.h"
-#include "components/winhttp/scoped_winttp_proxy_info.h"
+#include "components/winhttp/scoped_winhttp_proxy_info.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "url/url_constants.h"
 
@@ -251,7 +252,7 @@ void NetworkFetcher::ContinueFetch(
       return HRESULTFromLastError();
     }
 
-    SetProxyForRequest(request_handle_.get(), std::move(winhttp_proxy_info));
+    SetProxyForRequest(request_handle_.get(), winhttp_proxy_info);
 
     const auto winhttp_callback = ::WinHttpSetStatusCallback(
         request_handle_.get(), &NetworkFetcher::WinHttpStatusCallback,

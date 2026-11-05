@@ -29,6 +29,10 @@ struct AutocompleteMatch;
 class Profile;
 class PrefService;
 
+namespace content {
+class BrowserContext;
+}  // namespace content
+
 namespace extensions {
 class Extension;
 class ExtensionPrefs;
@@ -56,11 +60,13 @@ class SafeBrowsingTokenFetcher;
 class SearchHijackingDetector;
 class ActivityLogIngester;
 
-// This class processes extension signals and reports telemetry for a given
-// profile (regular profile only). It is used exclusively on the UI thread.
+// This class processes extension signals and reports telemetry for a regular
+// profile, or, for enterprise reporting only, an Enterprise Isolated Mode
+// profile. It is used exclusively on the UI thread.
 // Lifetime:
-// The service is instantiated when the associated profile is instantiated. It
-// is destructed when the corresponding profile is destructed.
+// The service is instantiated when the associated profile is instantiated (for
+// Enterprise Isolated Mode profiles, only when ExtensionTelemetryServiceFactory
+// allows it. It is destructed when the corresponding profile is destructed.
 // Enable/Disable states:
 // The service is enabled if:
 //  - the user is opted into Enhanced Safe Browsing (ESB) OR
@@ -86,6 +92,16 @@ class ExtensionTelemetryService : public KeyedService {
  public:
   // Convenience method to get the service for a profile.
   static ExtensionTelemetryService* Get(Profile* profile);
+
+  // Returns the service that should receive a signal from an extension running
+  // in `caller` that acted on `target` (e.g. a tab or a cookie store), or
+  // nullptr if the signal should be dropped. `target` may be null if the
+  // activity didn't act on a specific context. Use this instead of `Get()` for
+  // signals that can act on another profile than the caller's, so that they
+  // are attributed to the profile where the activity happened.
+  static ExtensionTelemetryService* GetForSignal(
+      content::BrowserContext* caller,
+      content::BrowserContext* target);
 
   ExtensionTelemetryService(ExtensionTelemetryService&&) = delete;
   ExtensionTelemetryService& operator=(ExtensionTelemetryService&&) = delete;
@@ -153,9 +169,9 @@ class ExtensionTelemetryService : public KeyedService {
   using SignalProcessors =
       base::flat_map<ExtensionSignalType,
                      std::unique_ptr<ExtensionSignalProcessor>>;
-  using SignalSubscribers = base::flat_map<
-      ExtensionSignalType,
-      std::vector<raw_ptr<ExtensionSignalProcessor, VectorExperimental>>>;
+  using SignalSubscribers =
+      base::flat_map<ExtensionSignalType,
+                     std::vector<raw_ptr<ExtensionSignalProcessor>>>;
   // Maps extension id to extension data.
   using ExtensionStore = base::flat_map<
       extensions::ExtensionId,
@@ -287,7 +303,7 @@ class ExtensionTelemetryService : public KeyedService {
   // Callback invoked when file data for an extension is completed. The data is
   // saved to Prefs and the next extension file data collection is initiated.
   void OnOffstoreFileDataCollected(
-      base::flat_set<OffstoreExtensionFileDataContext>::iterator context,
+      const OffstoreExtensionFileDataContext& context,
       base::DictValue file_data);
 
   // Stops and clears any offstore file data collection objects/contexts.
@@ -437,6 +453,11 @@ class ExtensionTelemetryService : public KeyedService {
   FRIEND_TEST_ALL_PREFIXES(ExtensionTelemetryServiceTest,
                            FileData_EnforcesCollectionDurationLimit);
 
+  // Invalidated when offstore file data collection is stopped or restarted
+  // so that in-flight file processor replies are dropped without affecting
+  // other callbacks bound to `weak_factory_`.
+  base::WeakPtrFactory<ExtensionTelemetryService>
+      offstore_file_data_collection_weak_factory_{this};
   base::WeakPtrFactory<ExtensionTelemetryService> weak_factory_{this};
 };
 

@@ -2,12 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/css/cascade_layered.h"
 #include "third_party/blink/renderer/core/css/counter_style_map.h"
 #include "third_party/blink/renderer/core/css/css_default_style_sheets.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/keywords.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/wtf/leak_annotations.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/thread_specific.h"
 
 namespace blink {
 
@@ -469,8 +473,8 @@ HashMap<AtomicString, String> CollectUACounterStyleRules() {
 
 const HashMap<AtomicString, String>& GetUACounterStyleRules() {
   using RuleMap = HashMap<AtomicString, String>;
-  DEFINE_STATIC_LOCAL(RuleMap, ua_rules, (CollectUACounterStyleRules()));
-  return ua_rules;
+  static base::NoDestructor<RuleMap> ua_rules(CollectUACounterStyleRules());
+  return *ua_rules;
 }
 
 String GetUACounterStyleRuleText(const AtomicString& name) {
@@ -500,8 +504,13 @@ CounterStyleMap* CounterStyleMap::CreateUACounterStyleMap() {
 
 // static
 CounterStyleMap* CounterStyleMap::GetUACounterStyleMap() {
-  DEFINE_STATIC_LOCAL(Persistent<CounterStyleMap>, ua_counter_style_map,
-                      (CreateUACounterStyleMap()));
+  static base::NoDestructor<ThreadSpecific<Persistent<CounterStyleMap>>>
+      thread_specific_map;
+  Persistent<CounterStyleMap>& ua_counter_style_map = **thread_specific_map;
+  if (!ua_counter_style_map) [[unlikely]] {
+    ua_counter_style_map = CreateUACounterStyleMap();
+    LEAK_SANITIZER_IGNORE_OBJECT(&ua_counter_style_map);
+  }
   return ua_counter_style_map;
 }
 

@@ -23,7 +23,7 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "third_party/boringssl/src/include/openssl/rand.h"
+#include "third_party/boringssl/src/include/openssl/rand.h"  // nocheck
 
 namespace memory_simulator {
 class MemoryHolder;
@@ -36,8 +36,6 @@ class ExtremeLightweightDetectorQuarantineBranch;
 namespace base {
 
 namespace internal {
-
-void ConfigureBoringSSLBackedRandBytesFieldTrial();
 
 // Returns a random double in range [0, 1). For use in allocator shim to avoid
 // infinite recursion. Thread-safe.

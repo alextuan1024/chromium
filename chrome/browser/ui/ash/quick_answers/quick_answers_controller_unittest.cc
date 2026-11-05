@@ -22,7 +22,7 @@
 #include "chromeos/components/quick_answers/quick_answers_client.h"
 #include "chromeos/components/quick_answers/quick_answers_model.h"
 #include "chromeos/constants/chromeos_features.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -346,7 +346,7 @@ TEST_F(QuickAnswersControllerTest, ShouldNotCrashWhenContextMenuCloses) {
   ASSERT_TRUE(active_menu_controller->owner() != nullptr);
 
   // Simulate closing the context menu.
-  ChromeQuickAnswersTestBase::ResetMenuParent();
+  ASSERT_NO_FATAL_FAILURE(ChromeQuickAnswersTestBase::ResetMenuParent());
 
   // Simulate returning a quick answers request after the context menu closed.
   // This should *not* result in a crash.

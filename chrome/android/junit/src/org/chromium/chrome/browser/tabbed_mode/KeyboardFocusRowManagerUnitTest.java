@@ -10,6 +10,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.content.Context;
+import android.view.ContextThemeWrapper;
+
+import androidx.test.core.app.ApplicationProvider;
+
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -22,6 +27,7 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarCoordinator;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperManager;
@@ -42,7 +48,6 @@ public class KeyboardFocusRowManagerUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private BookmarkBarCoordinator mBookmarkBarCoordinator;
-    @Mock private CompositorViewHolder mCompositorViewHolder;
     @Mock private MessageContainerCoordinator mMessageContainerCoordinator;
     @Mock private ModalDialogManager mModalDialogManager;
     @Mock private SidePanelContainerCoordinator mSidePanelContainerCoordinator;
@@ -52,6 +57,7 @@ public class KeyboardFocusRowManagerUnitTest {
     @Mock private ToolbarManager mToolbarManager;
     @Mock private VerticalTabsSideUiCoordinator mVerticalTabsSideUiCoordinator;
 
+    private TestCompositorViewHolder mCompositorViewHolder;
     private final SettableNonNullObservableSupplier<@StripVisibilityState Integer>
             mStripVisibilityStateSupplier =
                     ObservableSuppliers.createNonNull(StripVisibilityState.OBSCURED);
@@ -59,8 +65,27 @@ public class KeyboardFocusRowManagerUnitTest {
             new OneshotSupplierImpl<>();
     private KeyboardFocusRowManager mKeyboardFocusRowManager;
 
+    /** Counts focus requests, which the real class can only serve with a current tab. */
+    private static class TestCompositorViewHolder extends CompositorViewHolder {
+        private int mFocusOnFirstContentViewItemCount;
+
+        TestCompositorViewHolder(Context context) {
+            super(context, null);
+        }
+
+        @Override
+        public void setFocusOnFirstContentViewItem() {
+            mFocusOnFirstContentViewItemCount++;
+        }
+    }
+
     @Before
     public void setUp() {
+        mCompositorViewHolder =
+                new TestCompositorViewHolder(
+                        new ContextThemeWrapper(
+                                ApplicationProvider.getApplicationContext(),
+                                R.style.Theme_BrowserUI_DayNight));
         mSideUiStateProviderSupplier.set(mSideUiStateProvider);
         when(mStripLayoutHelperManager.getStripVisibilityStateSupplier())
                 .thenReturn(mStripVisibilityStateSupplier);
@@ -100,7 +125,7 @@ public class KeyboardFocusRowManagerUnitTest {
     public void testSwitchKeyboardFocusRow_withVerticalTabs() {
         when(mSideUiStateProvider.isSideUiShowing(SideUiId.VERTICAL_TABS)).thenReturn(true);
 
-        // Initial state: NONE. Switching moves to OMNIBOX.
+        // Initial state: CONTENT_PANE. Switching moves to OMNIBOX.
         mKeyboardFocusRowManager.onKeyboardFocusRowSwitch(/* forward= */ true);
         verify(mToolbarManager).beginFuseboxInput(any());
 
@@ -116,9 +141,9 @@ public class KeyboardFocusRowManagerUnitTest {
         when(mToolbarManager.isUrlBarFocused()).thenReturn(false);
         when(mVerticalTabsSideUiCoordinator.containsKeyboardFocus()).thenReturn(true);
 
-        // Next switch moves to NONE.
+        // Next switch moves to CONTENT_PANE.
         mKeyboardFocusRowManager.onKeyboardFocusRowSwitch(/* forward= */ true);
-        verify(mCompositorViewHolder).setFocusOnFirstContentViewItem();
+        assertEquals(1, mCompositorViewHolder.mFocusOnFirstContentViewItemCount);
     }
 
     @Test
@@ -139,7 +164,7 @@ public class KeyboardFocusRowManagerUnitTest {
     public void testSwitchKeyboardFocusRowBackward_withVerticalTabs() {
         when(mSideUiStateProvider.isSideUiShowing(SideUiId.VERTICAL_TABS)).thenReturn(true);
 
-        // Initial state: NONE. Backward switch moves to the last element (VERTICAL_TABS).
+        // Initial state: CONTENT_PANE. Backward switch moves to the last element (VERTICAL_TABS).
         mKeyboardFocusRowManager.onKeyboardFocusRowSwitch(/* forward= */ false);
         verify(mVerticalTabsSideUiCoordinator).requestKeyboardFocus();
 
@@ -148,12 +173,12 @@ public class KeyboardFocusRowManagerUnitTest {
         mKeyboardFocusRowManager.onKeyboardFocusRowSwitch(/* forward= */ false);
         verify(mToolbarManager).beginFuseboxInput(any());
 
-        // Focus is on OMNIBOX. Backward switch moves to NONE.
+        // Focus is on OMNIBOX. Backward switch moves to CONTENT_PANE.
         when(mVerticalTabsSideUiCoordinator.containsKeyboardFocus()).thenReturn(false);
         when(mToolbarManager.isUrlBarFocused()).thenReturn(true);
         mKeyboardFocusRowManager.onKeyboardFocusRowSwitch(/* forward= */ false);
         verify(mToolbarManager).endFuseboxInput();
-        verify(mCompositorViewHolder).setFocusOnFirstContentViewItem();
+        assertEquals(1, mCompositorViewHolder.mFocusOnFirstContentViewItemCount);
     }
 
     @Test
@@ -167,7 +192,7 @@ public class KeyboardFocusRowManagerUnitTest {
     public void testSwitchKeyboardFocusRow_withMessage() {
         when(mMessageContainerCoordinator.isVisible()).thenReturn(true);
 
-        // Initial state: NONE. Switching moves to MESSAGE.
+        // Initial state: CONTENT_PANE. Switching moves to MESSAGE.
         mKeyboardFocusRowManager.onKeyboardFocusRowSwitch(/* forward= */ true);
         verify(mMessageContainerCoordinator).requestKeyboardFocus();
 
@@ -189,10 +214,41 @@ public class KeyboardFocusRowManagerUnitTest {
         verify(mToolbarManager).endFuseboxInput();
         verify(mMessageContainerCoordinator).requestKeyboardFocus();
 
-        // Focus is on MESSAGE. Backward switch moves to NONE.
+        // Focus is on MESSAGE. Backward switch moves to CONTENT_PANE.
         when(mToolbarManager.isUrlBarFocused()).thenReturn(false);
         when(mMessageContainerCoordinator.containsKeyboardFocus()).thenReturn(true);
         mKeyboardFocusRowManager.onKeyboardFocusRowSwitch(/* forward= */ false);
-        verify(mCompositorViewHolder).setFocusOnFirstContentViewItem();
+        assertEquals(1, mCompositorViewHolder.mFocusOnFirstContentViewItemCount);
+    }
+
+    @Test
+    public void testFocusWebContentsPane_fromOmnibox() {
+        when(mToolbarManager.isUrlBarFocused()).thenReturn(true);
+
+        mKeyboardFocusRowManager.focusWebContentsPane();
+
+        verify(mToolbarManager).endFuseboxInput();
+        assertEquals(1, mCompositorViewHolder.mFocusOnFirstContentViewItemCount);
+    }
+
+    @Test
+    public void testFocusWebContentsPane_fromAnotherRow() {
+        when(mStripLayoutHelperManager.containsKeyboardFocus()).thenReturn(true);
+
+        mKeyboardFocusRowManager.focusWebContentsPane();
+
+        verify(mToolbarManager, never()).endFuseboxInput();
+        assertEquals(1, mCompositorViewHolder.mFocusOnFirstContentViewItemCount);
+    }
+
+    @Test
+    public void testFocusWebContentsPane_noOpWhenCannotSwitch() {
+        when(mToolbarManager.isUrlBarFocused()).thenReturn(true);
+        when(mTabObscuringHandler.isToolbarObscured()).thenReturn(true);
+
+        mKeyboardFocusRowManager.focusWebContentsPane();
+
+        verify(mToolbarManager, never()).endFuseboxInput();
+        assertEquals(0, mCompositorViewHolder.mFocusOnFirstContentViewItemCount);
     }
 }

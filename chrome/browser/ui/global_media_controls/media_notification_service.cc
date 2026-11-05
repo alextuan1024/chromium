@@ -57,6 +57,9 @@
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/system/unified/unified_system_tray_bubble.h"
 #include "ash/system/unified/unified_system_tray_controller.h"
+#include "chromeos/ui/base/window_properties.h"
+#include "chromeos/ui/base/window_state_type.h"
+#include "ui/aura/window.h"
 #endif
 
 namespace mojom {
@@ -105,6 +108,42 @@ bool IsWebContentsFocused(content::WebContents* web_contents) {
   return browser->GetTabStripModel()->GetActiveWebContents() == web_contents;
 }
 
+content::MediaSession* g_media_session_for_test = nullptr;
+
+content::MediaSession* GetMediaSession(content::WebContents* web_contents) {
+  if (g_media_session_for_test) {
+    return g_media_session_for_test;
+  }
+  return content::MediaSession::Get(web_contents);
+}
+
+// Returns true if `web_contents` has a default PresentationRequest and the
+// active MediaSession's routed frame (if any) is same-origin with that
+// request's frame origin. Since only the outermost main frame can set a
+// default PresentationRequest, a MediaSession routed to a cross-origin
+// subframe should not use the main frame's default PresentationRequest.
+bool HasSameOriginDefaultPresentationRequest(
+    content::WebContents* web_contents) {
+  base::WeakPtr<media_router::WebContentsPresentationManager>
+      presentation_manager =
+          media_router::WebContentsPresentationManager::Get(web_contents);
+  if (!presentation_manager ||
+      !presentation_manager->HasDefaultPresentationRequest()) {
+    return false;
+  }
+
+  auto* media_session = GetMediaSession(web_contents);
+  if (!media_session) {
+    return true;
+  }
+  content::RenderFrameHost* routed_frame = media_session->GetRoutedFrame();
+  if (!routed_frame) {
+    return true;
+  }
+  return routed_frame->GetLastCommittedOrigin().IsSameOriginWith(
+      presentation_manager->GetDefaultPresentationRequest().frame_origin);
+}
+
 bool ShouldInitializeWithRemotePlaybackSource(
     content::WebContents* web_contents,
     media_session::mojom::RemotePlaybackMetadataPtr remote_playback_metadata) {
@@ -113,12 +152,9 @@ bool ShouldInitializeWithRemotePlaybackSource(
   }
 
   // Do not initialize MediaRouterUI with RemotePlayback media source when there
-  // exists default presentation request.
-  base::WeakPtr<media_router::WebContentsPresentationManager>
-      presentation_manager =
-          media_router::WebContentsPresentationManager::Get(web_contents);
-  if (presentation_manager &&
-      presentation_manager->HasDefaultPresentationRequest()) {
+  // exists a default presentation request from the same origin as the media
+  // session's routed frame.
+  if (HasSameOriginDefaultPresentationRequest(web_contents)) {
     return false;
   }
 
@@ -215,6 +251,17 @@ void MediaNotificationService::ShowDialogAsh(
   auto* web_contents = content::WebContents::FromRenderFrameHost(
       content::RenderFrameHost::FromID(
           context->presentation_request().render_frame_host_id));
+  // Do not open Ash tray bubbles (MediaTray or Quick Settings) from a
+  // trusted-pinned (locked fullscreen) window.
+  if (web_contents) {
+    if (aura::Window* const window = web_contents->GetTopLevelNativeWindow();
+        window && window->GetProperty(chromeos::kWindowStateTypeKey) ==
+                      chromeos::WindowStateType::kTrustedPinned) {
+      CancelRequest(std::move(context),
+                    "Presentation is not allowed in locked fullscreen.");
+      return;
+    }
+  }
   OnStartPresentationContextCreated(std::move(context));
   auto routes = media_router::WebContentsPresentationManager::Get(web_contents)
                     ->GetMediaRoutes();
@@ -635,6 +682,15 @@ MediaNotificationService::CreateCastDialogControllerForSession(
             remote_playback_metadata->audio_codec));
   }
 
+  base::WeakPtr<media_router::WebContentsPresentationManager>
+      presentation_manager =
+          media_router::WebContentsPresentationManager::Get(web_contents);
+  if (presentation_manager &&
+      presentation_manager->HasDefaultPresentationRequest() &&
+      !HasSameOriginDefaultPresentationRequest(web_contents)) {
+    return nullptr;
+  }
+
   return media_router::MediaRouterUI::CreateWithDefaultMediaSource(
       web_contents);
 }
@@ -731,6 +787,12 @@ void MediaNotificationService::set_device_provider_for_testing(
   device_provider_ = std::move(device_provider);
 }
 
+// static
+void MediaNotificationService::SetMediaSessionForTest(
+    content::MediaSession* media_session) {
+  g_media_session_for_test = media_session;
+}
+
 bool MediaNotificationService::HasCastNotificationsForWebContents(
     content::WebContents* web_contents) const {
   return !media_router::WebContentsPresentationManager::Get(web_contents)
@@ -740,11 +802,6 @@ bool MediaNotificationService::HasCastNotificationsForWebContents(
 
 bool MediaNotificationService::HasTabMirroringSessionForWebContents(
     content::WebContents* web_contents) const {
-  if (!base::FeatureList::IsEnabled(
-          media_router::kFallbackToAudioTabMirroring)) {
-    return false;
-  }
-
   // Return true if there exists a tab mirroring session associated with
   // `web_contents`.
   const int item_tab_id =

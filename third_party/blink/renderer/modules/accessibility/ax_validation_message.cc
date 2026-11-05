@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/modules/accessibility/ax_validation_message.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/html/forms/listed_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
@@ -65,15 +66,15 @@ bool AXValidationMessage::IsVisible() const {
 }
 
 const AtomicString& AXValidationMessage::LiveRegionStatus() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, live_region_status_assertive,
-                      ("assertive"));
-  return live_region_status_assertive;
+  static const base::NoDestructor<AtomicString> live_region_status_assertive(
+      AtomicString::FromLiteral<"assertive">());
+  return *live_region_status_assertive;
 }
 
 const AtomicString& AXValidationMessage::LiveRegionRelevant() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, live_region_relevant_additions,
-                      ("additions"));
-  return live_region_relevant_additions;
+  static const base::NoDestructor<AtomicString> live_region_relevant_additions(
+      AtomicString::FromLiteral<"additions">());
+  return *live_region_relevant_additions;
 }
 
 ax::mojom::blink::Role AXValidationMessage::NativeRoleIgnoringAria() const {
@@ -124,13 +125,14 @@ String AXValidationMessage::TextAlternative(
     message.Append(form_control_element->ValidationSubMessage());
   }
 
+  String message_string = message.ReleaseString();
   if (name_sources) {
     name_sources->push_back(NameSource(true));
     name_sources->back().type = ax::mojom::NameFrom::kContents;
-    name_sources->back().text = message.ToString();
+    name_sources->back().text = message_string;
   }
 
-  return message.ToString();
+  return message_string;
 }
 
 }  // namespace blink

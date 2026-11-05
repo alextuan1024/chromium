@@ -49,10 +49,6 @@ class WebLocalFrame;
 class WebView;
 }  // namespace blink
 
-namespace content {
-class AXTreeSnapshotter;
-}
-
 namespace printing {
 
 class MetafileSkia;
@@ -160,6 +156,9 @@ class PrintRenderFrameHelper
   friend class PrintRenderFrameHelperTestBase;
   FRIEND_TEST_ALL_PREFIXES(PrintRenderFrameHelperPreviewTest,
                            BlockScriptInitiatedPrinting);
+  FRIEND_TEST_ALL_PREFIXES(
+      PrintRenderFrameHelperPreviewTest,
+      PrintWithParamsBlocksConcurrentPrintPreviewAndScriptedPrint);
   FRIEND_TEST_ALL_PREFIXES(MAYBE_PrintRenderFrameHelperTest,
                            PrintRequestedPages);
   FRIEND_TEST_ALL_PREFIXES(MAYBE_PrintRenderFrameHelperTest,
@@ -421,7 +420,8 @@ class PrintRenderFrameHelper
   // `page_index` is 0-based.
   // `metafile` is the rendered page and should be valid.
   // Returns true if print preview should continue, false on failure.
-  bool PreviewPageRendered(uint32_t page_index,
+  bool PreviewPageRendered(const mojom::PrintParams& print_params,
+                           uint32_t page_index,
                            std::unique_ptr<MetafileSkia> metafile);
 
   // Called when the connection with the |preview_ui_| goes away.
@@ -570,8 +570,8 @@ class PrintRenderFrameHelper
     const std::vector<uint32_t>& pages_to_render() const;
     size_t pages_rendered_count() const;
     MetafileSkia* metafile();
-    ContentProxySet* typeface_content_info();
-    ContentProxySet* image_content_info();
+    TypefaceSerializationContext* typeface_content_info();
+    ImageSerializationContext* image_content_info();
 
    private:
     enum class State {
@@ -593,10 +593,10 @@ class PrintRenderFrameHelper
     std::unique_ptr<PrepareFrameAndViewForPrint> prep_frame_view_;
 
     // The typefaces encountered in the content during document serialization.
-    ContentProxySet typeface_content_info_;
+    TypefaceSerializationContext typeface_content_info_;
 
     // The images encountered in the content during document serialization.
-    ContentProxySet image_content_info_;
+    ImageSerializationContext image_content_info_;
 
     // A document metafile is needed when not using the print compositor.
     std::unique_ptr<MetafileSkia> metafile_;
@@ -666,13 +666,6 @@ class PrintRenderFrameHelper
   bool render_frame_gone_ = false;
   bool delete_pending_ = false;
 
-  // If tagged PDF exporting is enabled, we also need to capture an
-  // accessibility tree and store it in the metafile. AXTreeSnapshotter should
-  // stay alive through the duration of printing one document, because text
-  // drawing commands are only annotated with a DOMNodeId if accessibility
-  // is enabled.
-  std::unique_ptr<content::AXTreeSnapshotter> snapshotter_;
-
   // Used for two reasons:
   // * To give the document time to finish loading any pending resources that
   //   are desired for printing.
@@ -682,7 +675,9 @@ class PrintRenderFrameHelper
   //   parameters so that it can be invoked after DidStopLoading.
   base::OnceClosure on_stop_loading_closure_;
 
-  // This is used to report PrintWithParams() call result.
+  // This is used to report the `PrintWithParams()` call result, and also
+  // serves as a flag indicating that `PrintWithParams()` is in progress to
+  // prevent concurrent print operations.
   PrintWithParamsCallback print_with_params_callback_;
 
   // Stores the quit closures of Mojo responses.

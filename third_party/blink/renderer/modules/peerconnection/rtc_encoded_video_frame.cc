@@ -5,7 +5,6 @@
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_video_frame.h"
 
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -279,9 +278,9 @@ uint32_t RTCEncodedVideoFrame::timestamp() const {
   return delegate_->RtpTimestamp().value_or(0);
 }
 
-DOMArrayBuffer* RTCEncodedVideoFrame::data(ExecutionContext* context) const {
+DOMArrayBuffer* RTCEncodedVideoFrame::data() const {
   if (!frame_data_) {
-    frame_data_ = delegate_->CreateDataBuffer(context->GetIsolate());
+    frame_data_ = delegate_->CreateDataBuffer();
   }
   return frame_data_.Get();
 }
@@ -430,11 +429,11 @@ void RTCEncodedVideoFrame::setMetadata(ExecutionContext* context,
   }
 }
 
-void RTCEncodedVideoFrame::setData(ExecutionContext*, DOMArrayBuffer* data) {
+void RTCEncodedVideoFrame::setData(DOMArrayBuffer* data) {
   frame_data_ = data;
 }
 
-String RTCEncodedVideoFrame::toString(ExecutionContext* context) const {
+String RTCEncodedVideoFrame::toString() const {
   if (!delegate_) {
     return "empty";
   }
@@ -447,11 +446,11 @@ String RTCEncodedVideoFrame::toString(ExecutionContext* context) const {
     sb.Append(", ");
   }
   sb.Append("size: ");
-  sb.AppendNumber(data(context)->ByteLength());
+  sb.AppendNumber(data()->ByteLength());
   sb.Append(" bytes, type: ");
   sb.Append(type().AsCStr());
   sb.Append("}");
-  return sb.ToString();
+  return sb.ReleaseString();
 }
 
 void RTCEncodedVideoFrame::SyncDelegate() const {

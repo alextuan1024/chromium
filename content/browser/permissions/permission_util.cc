@@ -10,22 +10,42 @@
 #include "components/content_settings/core/common/content_settings.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "services/network/public/mojom/web_sandbox_flags.mojom-shared.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom-shared.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+#include "url/scheme_host_port.h"
 
 using blink::mojom::PermissionDescriptorPtr;
 
 namespace content {
 
-#if BUILDFLAG(IS_ANDROID)
 namespace {
+
+#if BUILDFLAG(IS_ANDROID)
 constexpr const char* kIsFileURLHistogram =
     "Permissions.GetLastCommittedOriginAsURL.IsFileURL";
-}
 #endif
+
+// Returns true if the opaque-origin document in `render_frame_host` may use the
+// permissions of its precursor origin. See https://crbug.com/576129749.
+//
+// Due to dependency issues, this function is duplicated from
+// components/permissions/permission_util.cc.
+bool ShouldUsePrecursorOrigin(RenderFrameHost* render_frame_host) {
+  const url::SchemeHostPort& precursor =
+      render_frame_host->GetLastCommittedOrigin()
+          .GetTupleOrPrecursorTupleIfOpaque();
+  return precursor.IsValid() &&
+         precursor ==
+             url::SchemeHostPort(render_frame_host->GetLastCommittedURL()) &&
+         render_frame_host->IsSandboxed(
+             network::mojom::WebSandboxFlags::kOrigin);
+}
+
+}  // namespace
 
 PermissionOption PermissionUtil::ToPermissionOption(
     blink::mojom::PermissionStatus permission_status) {
@@ -71,9 +91,9 @@ GURL PermissionUtil::GetLastCommittedOriginAsURL(
     content::RenderFrameHost* render_frame_host) {
   CHECK(render_frame_host);
 
+#if BUILDFLAG(IS_ANDROID)
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(render_frame_host);
-#if BUILDFLAG(IS_ANDROID)
   // If `allow_universal_access_from_file_urls` flag is enabled, a file:/// can
   // change its url via history.pushState/replaceState to any other url,
   // including about:blank. To avoid user confusion we should always use a
@@ -88,54 +108,17 @@ GURL PermissionUtil::GetLastCommittedOriginAsURL(
   }
 #endif
 
-  GURL origin = render_frame_host->GetLastCommittedOrigin().GetURL();
-  if (origin.is_empty() && render_frame_host->IsInPrimaryMainFrame()) {
-    if (!web_contents->GetVisibleURL().is_empty()) {
-      origin = web_contents->GetVisibleURL().DeprecatedGetOriginAsURL();
-    }
-  }
-  return origin;
-}
-
-bool PermissionUtil::IsDomainOverride(
-    const PermissionDescriptorPtr& descriptor) {
-  return descriptor->extension &&
-         descriptor->extension->is_top_level_storage_access();
-}
-
-const url::Origin& PermissionUtil::ExtractDomainOverride(
-    const PermissionDescriptorPtr& descriptor) {
-  const blink::mojom::TopLevelStorageAccessPermissionDescriptorPtr&
-      override_descriptor =
-          descriptor->extension->get_top_level_storage_access();
-  return override_descriptor->requestedOrigin;
-}
-
-bool PermissionUtil::ValidateDomainOverride(
-    const std::vector<blink::mojom::PermissionDescriptorPtr>& types,
-    RenderFrameHost* rfh,
-    const blink::mojom::PermissionDescriptorPtr& descriptor) {
-  if (types.size() > 1) {
-    // Requests with domain overrides must be requested individually.
-    return false;
-  }
-  if (!rfh || !rfh->IsInPrimaryMainFrame()) {
-    // Requests with domain overrides must be requested from a top-level
-    // browsing context.
-    return false;
+  const url::Origin& origin = render_frame_host->GetLastCommittedOrigin();
+  // An opaque origin has no permissions of its own. For historical reasons,
+  // some top-level documents with an opaque origin may use the permissions of
+  // their precursor origin instead.
+  // TODO(https://crbug.com/571135408): Revisit this logic.
+  if (origin.opaque() && render_frame_host->IsInPrimaryMainFrame() &&
+      ShouldUsePrecursorOrigin(render_frame_host)) {
+    return origin.GetTupleOrPrecursorTupleIfOpaque().GetURL();
   }
 
-  const url::Origin& overridden_origin =
-      PermissionUtil::ExtractDomainOverride(descriptor);
-
-  if (rfh->GetLastCommittedOrigin().IsSameOriginWith(overridden_origin)) {
-    // In case `overridden_origin` equals
-    // `render_frame_host->GetLastCommittedOrigin()` then you should use
-    // `GetPermissionStatusForCurrentDocument`.
-    return false;
-  }
-
-  return true;
+  return origin.GetURL();
 }
 
 bool PermissionUtil::IsDevicePermission(

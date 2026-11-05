@@ -13,8 +13,6 @@ import static org.robolectric.Shadows.shadowOf;
 
 import static org.chromium.chrome.browser.browserservices.verification.ChromeOriginVerifierUnitTestSupport.addVerification;
 
-import android.content.ComponentName;
-import android.content.Intent;
 import android.net.Uri;
 import android.os.Process;
 
@@ -23,6 +21,7 @@ import androidx.browser.customtabs.CustomTabsSessionToken;
 import androidx.browser.customtabs.PostMessageServiceConnection;
 import androidx.test.core.app.ApplicationProvider;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -36,7 +35,6 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowPackageManager;
 
 import org.chromium.base.IntentUtils;
-import org.chromium.base.SysUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.UmaRecorderHolder;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -45,7 +43,6 @@ import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
 import org.chromium.chrome.browser.browserservices.verification.ChromeOriginVerifier;
 import org.chromium.chrome.browser.browserservices.verification.ChromeOriginVerifierJni;
 import org.chromium.chrome.browser.customtabs.content.EngagementSignalsHandler;
-import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
@@ -63,7 +60,7 @@ public class ClientManagerTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private ClientManager mClientManager;
-    private final SessionHolder mSession =
+    private final SessionHolder.CustomTab mSession =
             SessionHolder.of(CustomTabsSessionToken.createMockSessionTokenForTesting());
     private final int mUid = Process.myUid();
     private final int mPid = Process.myPid();
@@ -88,10 +85,7 @@ public class ClientManagerTest {
         OriginVerifierJni.setInstanceForTesting(mMockOriginVerifierJni);
 
         ChromeOriginVerifierJni.setInstanceForTesting(mMockChromeOriginVerifierJni);
-        Mockito.doAnswer(
-                        args -> {
-                            return 100L;
-                        })
+        Mockito.doAnswer(_ -> JniUniquePtr.createForTesting(100L))
                 .when(mMockChromeOriginVerifierJni)
                 .init(Mockito.any(), Mockito.any());
 
@@ -118,10 +112,9 @@ public class ClientManagerTest {
         ChromeOriginVerifier.clearCachedVerificationsForTesting();
         UmaRecorderHolder.resetForTesting();
 
-        mPostMessageServiceConnection =
-                new PostMessageServiceConnection(mSession.getSessionAsCustomTab()) {};
+        mPostMessageServiceConnection = new PostMessageServiceConnection(mSession.getToken()) {};
         mPostMessageHandler = new PostMessageHandler(mPostMessageServiceConnection);
-        mEngagementSignalsHandler = new EngagementSignalsHandler(mSession.getSessionAsCustomTab());
+        mEngagementSignalsHandler = new EngagementSignalsHandler(mSession.getToken());
     }
 
     @Test
@@ -307,7 +300,7 @@ public class ClientManagerTest {
         // TODO(peconn): Get rid of this anonymous class once PostMessageServiceConnection is made
         // non-abstract. Same with the other occurrences below.
         PostMessageServiceConnection serviceConnection =
-                new PostMessageServiceConnection(mSession.getSessionAsCustomTab()) {};
+                new PostMessageServiceConnection(mSession.getToken()) {};
         Assert.assertTrue(
                 cm.newSession(
                         mSession,
@@ -348,7 +341,7 @@ public class ClientManagerTest {
     public void testPostMessageOriginDifferentRelations() {
         final ClientManager cm = mClientManager;
         PostMessageServiceConnection serviceConnection =
-                new PostMessageServiceConnection(mSession.getSessionAsCustomTab()) {};
+                new PostMessageServiceConnection(mSession.getToken()) {};
         Assert.assertTrue(
                 cm.newSession(
                         mSession,
@@ -494,7 +487,7 @@ public class ClientManagerTest {
         final ClientManager cm = mClientManager;
 
         PostMessageServiceConnection serviceConnection =
-                new PostMessageServiceConnection(mSession.getSessionAsCustomTab()) {};
+                new PostMessageServiceConnection(mSession.getToken()) {};
         Assert.assertTrue(
                 cm.newSession(
                         mSession,
@@ -525,279 +518,5 @@ public class ClientManagerTest {
         cm.initializeWithPostMessageOriginForSession(mSession, null, null);
         Assert.assertNull(cm.getPostMessageOriginForSessionForTesting(mSession));
         Assert.assertNull(cm.getPostMessageTargetOriginForSessionForTesting(mSession));
-    }
-
-    @Test
-    public void testLogConnectionClosedCTForeground() {
-        String histogramName = "CustomTabs.SessionDisconnectStatus";
-        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
-
-        Assert.assertTrue(
-                "A new session should have been created.",
-                mClientManager.newSession(
-                        mSession,
-                        mUid,
-                        mPid,
-                        null,
-                        mPostMessageHandler,
-                        mPostMessageServiceConnection,
-                        mEngagementSignalsHandler));
-        mClientManager.setCustomTabIsInForeground(mSession, true);
-        mClientManager.dontKeepAliveForSession(mSession);
-
-        mClientManager.cleanupSession(mSession);
-
-        Assert.assertEquals(
-                "Only one histogram value should have been logged",
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName, ClientManager.SessionDisconnectStatus.CT_FOREGROUND));
-    }
-
-    @Test
-    public void testLogConnectionClosedCTForegroundKeepAlive() {
-        String histogramName = "CustomTabs.SessionDisconnectStatus";
-        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
-        Intent intent =
-                new Intent()
-                        .setComponent(
-                                new ComponentName(
-                                        ApplicationProvider.getApplicationContext(),
-                                        ChromeLauncherActivity.class));
-
-        Assert.assertTrue(
-                "A new session should have been created.",
-                mClientManager.newSession(
-                        mSession,
-                        mUid,
-                        mPid,
-                        null,
-                        mPostMessageHandler,
-                        mPostMessageServiceConnection,
-                        mEngagementSignalsHandler));
-        mClientManager.setCustomTabIsInForeground(mSession, true);
-        mClientManager.keepAliveForSession(mSession, intent);
-
-        mClientManager.cleanupSession(mSession);
-
-        Assert.assertEquals(
-                "Only one histogram value should have been logged",
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName,
-                        ClientManager.SessionDisconnectStatus.CT_FOREGROUND_KEEP_ALIVE));
-    }
-
-    @Test
-    public void testLogConnectionClosedCTBackground() {
-        String histogramName = "CustomTabs.SessionDisconnectStatus";
-        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
-
-        Assert.assertTrue(
-                "A new session should have been created.",
-                mClientManager.newSession(
-                        mSession,
-                        mUid,
-                        mPid,
-                        null,
-                        mPostMessageHandler,
-                        mPostMessageServiceConnection,
-                        mEngagementSignalsHandler));
-        mClientManager.setCustomTabIsInForeground(mSession, false);
-        mClientManager.dontKeepAliveForSession(mSession);
-
-        mClientManager.cleanupSession(mSession);
-
-        Assert.assertEquals(
-                "Only one histogram value should have been logged",
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName, ClientManager.SessionDisconnectStatus.CT_BACKGROUND));
-    }
-
-    @Test
-    public void testLogConnectionClosedCTBackgroundKeepAlive() {
-        String histogramName = "CustomTabs.SessionDisconnectStatus";
-        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
-        Intent intent =
-                new Intent()
-                        .setComponent(
-                                new ComponentName(
-                                        ApplicationProvider.getApplicationContext(),
-                                        ChromeLauncherActivity.class));
-
-        Assert.assertTrue(
-                "A new session should have been created.",
-                mClientManager.newSession(
-                        mSession,
-                        mUid,
-                        mPid,
-                        null,
-                        mPostMessageHandler,
-                        mPostMessageServiceConnection,
-                        mEngagementSignalsHandler));
-        mClientManager.setCustomTabIsInForeground(mSession, false);
-        mClientManager.keepAliveForSession(mSession, intent);
-
-        mClientManager.cleanupSession(mSession);
-
-        Assert.assertEquals(
-                "Only one histogram value should have been logged",
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName,
-                        ClientManager.SessionDisconnectStatus.CT_BACKGROUND_KEEP_ALIVE));
-    }
-
-    @Test
-    public void testLogConnectionClosedLowMemoryCTForeground() {
-        String histogramName = "CustomTabs.SessionDisconnectStatus";
-        SysUtils.setIsCurrentlyLowMemoryForTesting(true);
-
-        Assert.assertTrue(
-                "A new session should have been created.",
-                mClientManager.newSession(
-                        mSession,
-                        mUid,
-                        mPid,
-                        null,
-                        mPostMessageHandler,
-                        mPostMessageServiceConnection,
-                        mEngagementSignalsHandler));
-        mClientManager.setCustomTabIsInForeground(mSession, true);
-        mClientManager.dontKeepAliveForSession(mSession);
-
-        mClientManager.cleanupSession(mSession);
-
-        Assert.assertEquals(
-                "Only one histogram value should have been logged",
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName,
-                        ClientManager.SessionDisconnectStatus.LOW_MEMORY_CT_FOREGROUND));
-    }
-
-    @Test
-    public void testLogConnectionClosedLowMemoryCTForegroundKeepAlive() {
-        String histogramName = "CustomTabs.SessionDisconnectStatus";
-        SysUtils.setIsCurrentlyLowMemoryForTesting(true);
-        Intent intent =
-                new Intent()
-                        .setComponent(
-                                new ComponentName(
-                                        ApplicationProvider.getApplicationContext(),
-                                        ChromeLauncherActivity.class));
-
-        Assert.assertTrue(
-                "A new session should have been created.",
-                mClientManager.newSession(
-                        mSession,
-                        mUid,
-                        mPid,
-                        null,
-                        mPostMessageHandler,
-                        mPostMessageServiceConnection,
-                        mEngagementSignalsHandler));
-        mClientManager.setCustomTabIsInForeground(mSession, true);
-        mClientManager.keepAliveForSession(mSession, intent);
-
-        mClientManager.cleanupSession(mSession);
-
-        Assert.assertEquals(
-                "Only one histogram value should have been logged",
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName,
-                        ClientManager.SessionDisconnectStatus.LOW_MEMORY_CT_FOREGROUND_KEEP_ALIVE));
-    }
-
-    @Test
-    public void testLogConnectionClosedLowMemoryCTBackground() {
-        String histogramName = "CustomTabs.SessionDisconnectStatus";
-        SysUtils.setIsCurrentlyLowMemoryForTesting(true);
-
-        Assert.assertTrue(
-                "A new session should have been created.",
-                mClientManager.newSession(
-                        mSession,
-                        mUid,
-                        mPid,
-                        null,
-                        mPostMessageHandler,
-                        mPostMessageServiceConnection,
-                        mEngagementSignalsHandler));
-        mClientManager.setCustomTabIsInForeground(mSession, false);
-        mClientManager.dontKeepAliveForSession(mSession);
-
-        mClientManager.cleanupSession(mSession);
-
-        Assert.assertEquals(
-                "Only one histogram value should have been logged",
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName,
-                        ClientManager.SessionDisconnectStatus.LOW_MEMORY_CT_BACKGROUND));
-    }
-
-    @Test
-    public void testLogConnectionClosedLowMemoryCTBackgroundKeepAlive() {
-        String histogramName = "CustomTabs.SessionDisconnectStatus";
-        SysUtils.setIsCurrentlyLowMemoryForTesting(true);
-        Intent intent =
-                new Intent()
-                        .setComponent(
-                                new ComponentName(
-                                        ApplicationProvider.getApplicationContext(),
-                                        ChromeLauncherActivity.class));
-
-        Assert.assertTrue(
-                "A new session should have been created.",
-                mClientManager.newSession(
-                        mSession,
-                        mUid,
-                        mPid,
-                        null,
-                        mPostMessageHandler,
-                        mPostMessageServiceConnection,
-                        mEngagementSignalsHandler));
-        mClientManager.setCustomTabIsInForeground(mSession, false);
-        mClientManager.keepAliveForSession(mSession, intent);
-
-        mClientManager.cleanupSession(mSession);
-
-        Assert.assertEquals(
-                "Only one histogram value should have been logged",
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName,
-                        ClientManager.SessionDisconnectStatus.LOW_MEMORY_CT_BACKGROUND_KEEP_ALIVE));
-    }
-
-    @Test
-    public void testLogConnectionClosedCleanupCalledTwiceLogsOnce() {
-        String histogramName = "CustomTabs.SessionDisconnectStatus";
-        SysUtils.setIsCurrentlyLowMemoryForTesting(false);
-
-        Assert.assertTrue(
-                "A new session should have been created.",
-                mClientManager.newSession(
-                        mSession,
-                        mUid,
-                        mPid,
-                        null,
-                        mPostMessageHandler,
-                        mPostMessageServiceConnection,
-                        mEngagementSignalsHandler));
-        mClientManager.setCustomTabIsInForeground(mSession, true);
-        mClientManager.dontKeepAliveForSession(mSession);
-
-        mClientManager.cleanupSession(mSession);
-        mClientManager.cleanupSession(mSession);
-
-        Assert.assertEquals(
-                "Only one histogram value should have been logged",
-                1,
-                RecordHistogram.getHistogramValueCountForTesting(
-                        histogramName, ClientManager.SessionDisconnectStatus.CT_FOREGROUND));
     }
 }

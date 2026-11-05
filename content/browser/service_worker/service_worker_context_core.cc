@@ -25,6 +25,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/services/storage/public/cpp/quota_client_callback_wrapper.h"
+#include "content/browser/devtools/service_worker_devtools_manager.h"
 #include "content/browser/log_console_message.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/service_worker/service_worker_client.h"
@@ -206,7 +207,7 @@ class ClearAllServiceWorkersHelper
     }
     // Make a copy of live versions map because StopWorker() removes the version
     // from it when we were starting up and don't have a process yet.
-    const std::map<int64_t, raw_ptr<ServiceWorkerVersion, CtnExperimental>>
+    const std::map<int64_t, raw_ptr<ServiceWorkerVersion, DanglingUntriaged>>
         live_versions_copy = context->GetLiveVersions();
     for (const auto& version_itr : live_versions_copy) {
       ServiceWorkerVersion* version(version_itr.second);
@@ -235,7 +236,7 @@ class ClearAllServiceWorkersHelper
 };
 
 int GetWarmedUpServiceWorkerCount(
-    const std::map<int64_t, raw_ptr<ServiceWorkerVersion, CtnExperimental>>&
+    const std::map<int64_t, raw_ptr<ServiceWorkerVersion, DanglingUntriaged>>&
         live_versions) {
   return std::ranges::count_if(live_versions, [](const auto& iter) {
     ServiceWorkerVersion& service_worker_version = *iter.second;
@@ -1004,8 +1005,9 @@ void ServiceWorkerContextCore::RemoveLiveVersion(int64_t id) {
 std::vector<ServiceWorkerRegistrationInfo>
 ServiceWorkerContextCore::GetAllLiveRegistrationInfo() {
   std::vector<ServiceWorkerRegistrationInfo> infos;
-  for (std::map<int64_t, raw_ptr<ServiceWorkerRegistration, CtnExperimental>>::
-           const_iterator iter = live_registrations_.begin();
+  for (std::map<int64_t, raw_ptr<ServiceWorkerRegistration,
+                                 DanglingUntriaged>>::const_iterator iter =
+           live_registrations_.begin();
        iter != live_registrations_.end(); ++iter) {
     infos.push_back(iter->second->GetInfo());
   }
@@ -1015,9 +1017,8 @@ ServiceWorkerContextCore::GetAllLiveRegistrationInfo() {
 std::vector<ServiceWorkerVersionInfo>
 ServiceWorkerContextCore::GetAllLiveVersionInfo() {
   std::vector<ServiceWorkerVersionInfo> infos;
-  for (std::map<int64_t,
-                raw_ptr<ServiceWorkerVersion, CtnExperimental>>::const_iterator
-           iter = live_versions_.begin();
+  for (std::map<int64_t, raw_ptr<ServiceWorkerVersion, DanglingUntriaged>>::
+           const_iterator iter = live_versions_.begin();
        iter != live_versions_.end(); ++iter) {
     infos.push_back(iter->second->GetInfo());
   }
@@ -1184,8 +1185,15 @@ void ServiceWorkerContextCore::NotifyAllRegistrationsDeletedForStorageKey(
 }
 
 void ServiceWorkerContextCore::OnStorageWiped() {
+  // Version IDs restart from 0 in the wiped storage, while `wrapper_` stays the
+  // same. Drop the DevTools agent hosts of the old versions, which are keyed by
+  // `wrapper_` and version ID, before any new version can reuse their IDs.
+  ServiceWorkerDevToolsManager::GetInstance()->StorageWiped(wrapper_);
   observer_list_->Notify(FROM_HERE,
                          &ServiceWorkerContextCoreObserver::OnStorageWiped);
+  for (auto& observer : sync_observer_list_->observers) {
+    observer.OnStorageWipedSync(wrapper_);
+  }
 }
 
 void ServiceWorkerContextCore::OnMainScriptResponseSet(
@@ -1505,7 +1513,6 @@ ScopedServiceWorkerClient::CommitResponseAndRelease(
   return std::make_tuple(std::move(container_info), std::move(controller));
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 ServiceWorkerHidDelegateObserver*
 ServiceWorkerContextCore::hid_delegate_observer() {
   if (!hid_delegate_observer_) {
@@ -1519,7 +1526,6 @@ void ServiceWorkerContextCore::SetServiceWorkerHidDelegateObserverForTesting(
     std::unique_ptr<ServiceWorkerHidDelegateObserver> hid_delegate_observer) {
   hid_delegate_observer_ = std::move(hid_delegate_observer);
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
 ServiceWorkerUsbDelegateObserver*

@@ -437,7 +437,7 @@ BocaAppHandler::~BocaAppHandler() {
   // Best effort end session. Not handling response, if update failed,
   // persistent notification will stay.
   EndSession(base::BindOnce([](std::optional<mojom::UpdateSessionError>) {}));
-  if (ash::features::IsAnnotatorModeEnabled() && is_producer_) {
+  if (is_producer_) {
     ash::boca::util::EnableOrDisableMarkerMode(/*enable=*/false);
   }
 }
@@ -710,6 +710,10 @@ void BocaAppHandler::SetFloatMode(bool is_float_mode,
 
 void BocaAppHandler::SubmitAccessCode(const std::string& access_code,
                                       SubmitAccessCodeCallback callback) {
+  if (is_producer_) {
+    receiver_.ReportBadMessage("SubmitAccessCode called by producer.");
+    return;
+  }
   if (boca_session_manager_->disabled_on_non_managed_network()) {
     std::move(callback).Run(mojom::SubmitAccessCodeError::kNetworkRestriction);
     return;
@@ -728,21 +732,8 @@ void BocaAppHandler::ViewStudentScreen(const std::string& id,
   CHECK(spotlight_service_);
   spotlight_service_->ViewScreen(
       id, base_url_,
-      base::BindOnce(
-          [](ViewStudentScreenCallback callback,
-             base::expected<bool, google_apis::ApiErrorCode> result) {
-            if (!result.has_value()) {
-              boca::RecordViewStudentScreenErrorCode(result.error());
-              LOG(WARNING) << "[Boca] Error requesting to view student screen: "
-                           << result.error();
-              std::move(callback).Run(
-                  mojom::ViewStudentScreenError::kHTTPError);
-              return;
-            } else {
-              std::move(callback).Run(std::nullopt);
-            }
-          },
-          std::move(callback)));
+      base::BindOnce(&BocaAppHandler::OnViewStudentScreenSubmitted,
+                     weak_ptr_factory_.GetWeakPtr(), id, std::move(callback)));
 }
 
 void BocaAppHandler::EndViewScreenSession(
@@ -794,8 +785,15 @@ void BocaAppHandler::SetUserPref(mojom::BocaValidPref pref,
                                  SetUserPrefCallback callback) {
   // Boca should only get but not set kDefaultMediaStreamSetting.
   if (pref == mojom::BocaValidPref::kDefaultMediaStreamSetting) {
-    mojo::ReportBadMessage(
+    receiver_.ReportBadMessage(
         "Attempted to set kDefaultMediaStreamSetting user pref.");
+    return;
+  }
+
+  const PrefService::Preference* const preference =
+      pref_service_->FindPreference(GetPrefName(pref));
+  if (!preference || preference->GetType() != value.type()) {
+    receiver_.ReportBadMessage("Using disallowed type for pref.");
     return;
   }
 
@@ -810,6 +808,14 @@ void BocaAppHandler::SetSitePermission(const std::string& url,
   if (is_producer_) {
     receiver_.ReportBadMessage("SetSitePermission called by producer.");
     std::move(callback).Run(false);
+    return;
+  }
+
+  if (!BocaAppClient::Get()->IsBocaAppWindow(
+          web_ui_->GetWebContents()->GetTopLevelNativeWindow())) {
+    std::move(callback).Run(false);
+    receiver_.ReportBadMessage(
+        "SetSitePermission called outside of Boca SWA window.");
     return;
   }
 
@@ -1529,6 +1535,22 @@ BocaSessionManager& BocaAppHandler::GetBocaSessionManager() {
 
 void BocaAppHandler::OnPresentOwnScreenEnded() {
   remote_->OnPresentOwnScreenEnded();
+}
+
+void BocaAppHandler::OnViewStudentScreenSubmitted(
+    const std::string& student_id,
+    ViewStudentScreenCallback callback,
+    base::expected<bool, google_apis::ApiErrorCode> result) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!result.has_value()) {
+    boca::RecordViewStudentScreenErrorCode(result.error());
+    LOG(WARNING) << "[Boca] Error requesting to view student screen: "
+                 << result.error();
+    std::move(callback).Run(mojom::ViewStudentScreenError::kHTTPError);
+    return;
+  }
+  boca_session_manager_->StartFastPolling(student_id);
+  std::move(callback).Run(std::nullopt);
 }
 
 void BocaAppHandler::EndViewScreenSessionInternal(

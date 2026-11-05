@@ -4,6 +4,8 @@
 
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
 
+#include <memory>
+
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
@@ -14,6 +16,12 @@
 #include "components/custom_handlers/protocol_handler_registry.h"
 #include "content/public/common/url_constants.h"
 #include "url/url_util.h"
+
+#if BUILDFLAG(IS_LINUX)
+#include "base/feature_list.h"
+#include "chrome/browser/external_protocol/features.h"
+#include "chrome/browser/external_protocol/xdg_scheme_handler_cache_linux.h"
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/web_applications/app_service/publisher_helper.h"
@@ -26,21 +34,14 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-static int64_t
+static jni_zero::JniUniquePtr<AutocompleteSchemeClassifier>
 JNI_ChromeAutocompleteSchemeClassifier_CreateAutocompleteClassifier(
     JNIEnv* env,
     Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
-  return reinterpret_cast<intptr_t>(
-      new ChromeAutocompleteSchemeClassifier(profile));
-}
-
-static void JNI_ChromeAutocompleteSchemeClassifier_DeleteAutocompleteClassifier(
-    JNIEnv* env,
-    int64_t chrome_autocomplete_scheme_classifier) {
-  delete reinterpret_cast<ChromeAutocompleteSchemeClassifier*>(
-      chrome_autocomplete_scheme_classifier);
+  return jni_zero::MakeUnique(std::unique_ptr<AutocompleteSchemeClassifier>(
+      std::make_unique<ChromeAutocompleteSchemeClassifier>(profile)));
 }
 #endif
 
@@ -57,7 +58,14 @@ bool IsCustomSchemeHandledByWebApp(Profile* profile,
 
 ChromeAutocompleteSchemeClassifier::ChromeAutocompleteSchemeClassifier(
     Profile* profile)
-    : profile_(profile) {}
+    : profile_(profile) {
+#if BUILDFLAG(IS_LINUX)
+  // Start scanning now so the result is ready by the time a scheme is typed.
+  if (base::FeatureList::IsEnabled(features::kXdgSchemeHandlerDetection)) {
+    xdg_scheme_handler_cache_ = XdgSchemeHandlerCache::GetOrCreate();
+  }
+#endif
+}
 
 ChromeAutocompleteSchemeClassifier::~ChromeAutocompleteSchemeClassifier() =
     default;
@@ -104,10 +112,14 @@ ChromeAutocompleteSchemeClassifier::GetInputTypeForScheme(
 
     case ExternalProtocolHandler::UNKNOWN: {
 #if BUILDFLAG(IS_LINUX)
-      // Linux impl of GetApplicationNameForScheme doesn't distinguish
-      // between URL schemes with handers and those without. This will
-      // make the default behaviour be search on Linux.
-      return metrics::OmniboxInputType::EMPTY;
+      // GetApplicationNameForScheme() on Linux doesn't distinguish between
+      // URL schemes with handlers and those without, and it blocks. Use the
+      // XDG scheme handler associations instead; unknown schemes default to
+      // search.
+      return xdg_scheme_handler_cache_ &&
+                     xdg_scheme_handler_cache_->HasHandler(scheme)
+                 ? metrics::OmniboxInputType::URL
+                 : metrics::OmniboxInputType::EMPTY;
 #elif BUILDFLAG(IS_CHROMEOS)
       return IsCustomSchemeHandledByWebApp(profile_, scheme)
                  ? metrics::OmniboxInputType::URL

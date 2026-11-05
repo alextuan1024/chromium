@@ -24,6 +24,7 @@
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "content/public/android/content_jni_headers/ContentUiEventHandler_jni.h"
+#include "ui/events/motionevent_jni_headers/MotionEvent_jni.h"
 
 using base::android::AttachCurrentThread;
 using base::android::JavaRef;
@@ -138,8 +139,12 @@ void ContentUiEventHandler::SendMouseWheelEvent(
       /*android_action_button=*/0,
       /*android_gesture_classification=*/0,
       /*android_button_state=*/0,
-      /*raw_offset_x_pixels=*/0,
-      /*raw_offset_y_pixels=*/0,
+      /*raw_offset_x_pixels=*/
+      JNI_MotionEvent::Java_MotionEvent_getRawX(env, motion_event) -
+          pointer.pos_x_pixels,
+      /*raw_offset_y_pixels=*/
+      JNI_MotionEvent::Java_MotionEvent_getRawY(env, motion_event) -
+          pointer.pos_y_pixels,
       /*for_touch_handle=*/false,
       /*pointer0=*/&pointer,
       /*pointer1=*/nullptr);
@@ -159,8 +164,7 @@ void ContentUiEventHandler::SendMouseEvent(
   auto source = ui::MotionEventAndroidSourceJava::Create(motion_event, false);
 
   // Construct a motion_event object minimally, only to convert the raw
-  // parameters to ui::MotionEvent values. Since we used only the cached values
-  // at index=0, it is okay to even pass a null event to the constructor.
+  // parameters to ui::MotionEvent values.
   ui::MotionEventAndroid::Pointer pointer(
       /*id=*/source->GetPointerId(0), /*pos_x_pixels=*/source->GetXPix(0),
       /*pos_y_pixels=*/source->GetYPix(0),
@@ -181,8 +185,12 @@ void ContentUiEventHandler::SendMouseEvent(
       /*action_index=*/0, android_action_button,
       /*android_gesture_classification=*/0,
       /*android_button_state=*/source->GetButtonState(),
-      /*raw_offset_x_pixels=*/0,
-      /*raw_offset_y_pixels=*/0,
+      /*raw_offset_x_pixels=*/
+      JNI_MotionEvent::Java_MotionEvent_getRawX(env, motion_event) -
+          pointer.pos_x_pixels,
+      /*raw_offset_y_pixels=*/
+      JNI_MotionEvent::Java_MotionEvent_getRawY(env, motion_event) -
+          pointer.pos_y_pixels,
       /*for_touch_handle=*/false,
       /*pointer0=*/&pointer,
       /*pointer1=*/nullptr);
@@ -227,17 +235,68 @@ void ContentUiEventHandler::CancelFling(JNIEnv* env, int64_t time_ms) {
       /*synthetic_scroll*/ false, true));
 }
 
-static int64_t JNI_ContentUiEventHandler_Init(JNIEnv* env,
-                                              WebContents* web_contents) {
+namespace {
+
+ContentUiEventHandler* FromWebContents(WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+  auto* view = static_cast<WebContentsViewAndroid*>(
+      static_cast<WebContentsImpl*>(web_contents)->GetView());
+  return view ? view->content_ui_event_handler() : nullptr;
+}
+
+}  // namespace
+
+static void JNI_ContentUiEventHandler_Init(JNIEnv* env,
+                                           WebContents* web_contents) {
   WebContentsImpl* web_contents_impl =
       static_cast<WebContentsImpl*>(web_contents);
   CHECK(web_contents_impl)
       << "A ContentUiEventHandler should be created with a valid WebContents.";
-  auto handler = std::make_unique<ContentUiEventHandler>(web_contents_impl);
-  auto* handler_ptr = handler.get();
   static_cast<WebContentsViewAndroid*>(web_contents_impl->GetView())
-      ->SetContentUiEventHandler(std::move(handler));
-  return reinterpret_cast<intptr_t>(handler_ptr);
+      ->SetContentUiEventHandler(
+          std::make_unique<ContentUiEventHandler>(web_contents_impl));
+}
+
+static void JNI_ContentUiEventHandler_SendMouseWheelEvent(
+    JNIEnv* env,
+    WebContents* web_contents,
+    const JavaRef<jobject>& event,
+    int64_t time_ns) {
+  if (auto* handler = FromWebContents(web_contents)) {
+    handler->SendMouseWheelEvent(env, event, time_ns);
+  }
+}
+
+static void JNI_ContentUiEventHandler_SendMouseEvent(
+    JNIEnv* env,
+    WebContents* web_contents,
+    const JavaRef<jobject>& event,
+    int64_t time_ns,
+    int32_t changed_button,
+    int32_t tool_type) {
+  if (auto* handler = FromWebContents(web_contents)) {
+    handler->SendMouseEvent(env, event, time_ns, changed_button, tool_type);
+  }
+}
+
+static void JNI_ContentUiEventHandler_SendScrollEvent(JNIEnv* env,
+                                                      WebContents* web_contents,
+                                                      int64_t time_ms,
+                                                      float delta_x,
+                                                      float delta_y) {
+  if (auto* handler = FromWebContents(web_contents)) {
+    handler->SendScrollEvent(env, time_ms, delta_x, delta_y);
+  }
+}
+
+static void JNI_ContentUiEventHandler_CancelFling(JNIEnv* env,
+                                                  WebContents* web_contents,
+                                                  int64_t time_ms) {
+  if (auto* handler = FromWebContents(web_contents)) {
+    handler->CancelFling(env, time_ms);
+  }
 }
 
 }  // namespace content

@@ -23,7 +23,7 @@ static String RectsAsString(const Vector<T>& rects) {
     sb.Append(")");
   }
   sb.Append("]");
-  return sb.ToString();
+  return sb.ReleaseString();
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -41,7 +41,7 @@ static String XrRegionsAsString(const Vector<CompositorElementId>& xr_regions) {
     sb.Append(")");
   }
   sb.Append("]");
-  return sb.ToString();
+  return sb.ReleaseString();
 }
 #endif
 
@@ -87,16 +87,10 @@ String HitTestData::ToString() const {
   if (scroll_translation) {
     append_field("scroll_translation: ",
                  Format("{}", scroll_translation.Get()));
-    if (!RuntimeEnabledFeatures::
-            ScrollingContentsCullRectOnScrollNodeEnabled() &&
-        scrolling_contents_cull_rect != InfiniteIntRect()) {
-      append_field("scrolling_contents_cull_rect: ",
-                   String(scrolling_contents_cull_rect.ToString()));
-    }
   }
 
   sb.Append("}");
-  return sb.ToString();
+  return sb.ReleaseString();
 }
 
 std::ostream& operator<<(std::ostream& os, const HitTestData& data) {

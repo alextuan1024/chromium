@@ -106,8 +106,6 @@ source_set("renderer") {
     "bindings/js_runner.h",
     "bindings/listener_tracker.cc",
     "bindings/listener_tracker.h",
-    "blob_native_handler.cc",
-    "blob_native_handler.h",
     "chrome_setting.cc",
     "chrome_setting.h",
     "console.cc",
@@ -140,11 +138,11 @@ source_set("renderer") {
     "extension_url_loader_throttle.h",
     "extension_web_view_helper.cc",
     "extension_web_view_helper.h",
-    "extensions_render_frame_observer.cc",
-    "extensions_render_frame_observer.h",
     "extensions_renderer_api_provider.h",
     "extensions_renderer_client.cc",
     "extensions_renderer_client.h",
+    "extensions_web_local_frame_observer.cc",
+    "extensions_web_local_frame_observer.h",
     "feature_cache.cc",
     "feature_cache.h",
     "gc_callback.cc",
@@ -248,10 +246,7 @@ source_set("renderer") {
     "worker_thread_util.h",
   ]
 
-  configs += [
-    "//build/config:precompiled_headers",
-    "//build/config/compiler:wexit_time_destructors",
-  ]
+  configs += [ "//build/config:precompiled_headers" ]
 
   deps = [
     "//build:android_buildflags",
@@ -270,14 +265,13 @@ source_set("renderer") {
     "//gin",
     "//mojo/public/js:resources",
     "//pdf:buildflags",
-    "//services/accessibility/public/mojom",
+    "//services/accessibility/public/mojom:automation",
     "//services/metrics/public/cpp:metrics_cpp",
     "//skia",
     "//storage/common",
     "//third_party/blink/public:blink",
     "//third_party/blink/public/common",
     "//third_party/cld_3/src/src:cld_3",
-    "//third_party/zlib/google:compression_utils",
     "//ui/strings:auto_image_annotation_strings_grit",
   ]
 

@@ -210,6 +210,22 @@ const KURL& WorkerClassicScriptLoader::ResponseURL() const {
   return response_url_;
 }
 
+TextEncoding WorkerClassicScriptLoader::GetScriptEncoding() const {
+  // If `decoder_` is available, return its encoding so that any BOM-detected
+  // encoding override is reflected.
+  if (decoder_) {
+    return decoder_->Encoding();
+  }
+  // Otherwise, resolve `response_encoding_` with the same fallback rules as
+  // `TextResourceDecoder::DefaultEncoding` (UTF-8 when unspecified, or Latin-1
+  // when invalid).
+  if (response_encoding_.empty()) {
+    return Utf8Encoding();
+  }
+  TextEncoding encoding(response_encoding_);
+  return encoding.IsValid() ? encoding : Latin1Encoding();
+}
+
 void WorkerClassicScriptLoader::DidReceiveResponse(
     uint64_t identifier,
     const ResourceResponse& response) {
@@ -222,7 +238,11 @@ void WorkerClassicScriptLoader::DidReceiveResponse(
           &fetch_client_settings_object_fetcher_->GetConsoleLogger(), response,
           fetch_client_settings_object_fetcher_->GetProperties()
               .GetFetchClientSettingsObject()
-              .MimeTypeCheckForClassicWorkerScript())) {
+              .MimeTypeCheckForClassicWorkerScript(),
+          is_top_level_script_
+              ? AllowedByNosniff::ClassicScriptUsage::
+                    kScriptElementOrTopLevelWorkerScript
+              : AllowedByNosniff::ClassicScriptUsage::kImportScripts)) {
     NotifyError();
     return;
   }
@@ -258,9 +278,7 @@ void WorkerClassicScriptLoader::DidReceiveData(base::span<const char> data) {
 
   if (!decoder_) {
     decoder_ = std::make_unique<TextResourceDecoder>(TextResourceDecoderOptions(
-        TextResourceDecoderOptions::kPlainTextContent,
-        response_encoding_.empty() ? Utf8Encoding()
-                                   : TextEncoding(response_encoding_)));
+        TextResourceDecoderOptions::kPlainTextContent, GetScriptEncoding()));
   }
 
   if (data.empty()) {
@@ -385,15 +403,7 @@ void WorkerClassicScriptLoader::ProcessDocumentPolicy(
   if (!response.CurrentRequestUrl().ProtocolIs("blob") &&
       !response.CurrentRequestUrl().ProtocolIs("file") &&
       !response.CurrentRequestUrl().ProtocolIs("filesystem")) {
-    PolicyParserMessageBuffer header_logger("Document-Policy HTTP header: ");
-    document_policy_ = DocumentPolicy::DocumentPolicyBundle{
-        DocumentPolicyParser::Parse(
-            response.HttpHeaderField(http_names::kDocumentPolicy),
-            header_logger)
-            .value_or(DocumentPolicy::ParsedDocumentPolicy{}),
-        std::string(
-            response.HttpHeaderField(http_names::kDocumentPolicyReportOnly)
-                .Utf8())};
+    document_policy_ = DocumentPolicyParser::ParseResponseHeaders(response);
   }
 }
 

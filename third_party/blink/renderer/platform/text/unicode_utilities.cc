@@ -27,9 +27,15 @@
 
 #include "third_party/blink/renderer/platform/text/unicode_utilities.h"
 
-#include <unicode/normalizer2.h>
+#include <unicode/uchar.h>
 #include <unicode/utf16.h>
 
+#include <string>
+
+#include "base/i18n/icubridge/icu_bridge.h"
+#include "base/i18n/icubridge/normalizer.h"
+#include "base/strings/string_view_util.h"
+#include "third_party/blink/public/platform/unicode_utilities.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 
@@ -120,7 +126,7 @@ bool IsSeparator(UChar32 character) {
 }
 
 bool ContainsOnlySeparatorsOrEmpty(const String& pattern) {
-  unsigned index = 0;
+  wtf_size_t index = 0;
   while (index < pattern.length()) {
     const UChar32 character = pattern.CodePointAt(index);
     if (!IsSeparator(character)) {
@@ -144,6 +150,8 @@ bool ContainsOnlySeparatorsOrEmpty(const String& pattern) {
 // We refer to the above technique as the "kana workaround". The next few
 // functions are helper functinos for the kana workaround.
 
+// If we switch the argument type from UChar to UChar32, we need to update
+// ContainsKanaLetters() implementation too.
 bool IsKanaLetter(UChar character) {
   // Hiragana letters.
   if (character >= 0x3041 && character <= 0x3096)
@@ -295,41 +303,34 @@ static inline bool IsCombiningVoicedSoundMark(UChar character) {
   return false;
 }
 
-bool ContainsKanaLetters(const String& pattern) {
-  const unsigned length = pattern.length();
-  for (unsigned i = 0; i < length; ++i) {
-    if (IsKanaLetter(pattern[i]))
+bool ContainsKanaLetters(const StringView& pattern) {
+  // No Kana letters in Latin-1.
+  if (pattern.Is8Bit()) {
+    return false;
+  }
+  // IsKanaLetter() doesn't support non-BMP code points.
+  for (UChar character : pattern.Span16()) {
+    if (IsKanaLetter(character)) {
       return true;
+    }
   }
   return false;
+}
+
+bool ContainsKanaLetters(std::u16string_view pattern) {
+  return ContainsKanaLetters(StringView(base::span(pattern)));
 }
 
 Vector<UChar> NormalizeCharactersIntoNfc(base::span<const UChar> characters) {
   DCHECK(characters.size());
 
-  UErrorCode status = U_ZERO_ERROR;
-  const icu::Normalizer2* normalizer = icu::Normalizer2::getNFCInstance(status);
-  DCHECK(U_SUCCESS(status));
-  int32_t input_length = static_cast<int32_t>(characters.size());
-  // copy-on-write.
-  icu::UnicodeString normalized(false, characters.data(), input_length);
-  // In the vast majority of cases, input is already NFC. Run a quick check
-  // to avoid normalizing the entire input unnecessarily.
-  int32_t normalized_prefix_length =
-      normalizer->spanQuickCheckYes(normalized, status);
-  if (normalized_prefix_length < input_length) {
-    icu::UnicodeString un_normalized(normalized, normalized_prefix_length);
-    normalized.truncate(normalized_prefix_length);
-    normalizer->normalizeSecondAndAppend(normalized, un_normalized, status);
-  }
-  int32_t buffer_size = normalized.length();
-  DCHECK(buffer_size);
+  const std::u16string normalized =
+      base::i18n::IcuBridge::GetInstance().normalizer().Normalize(
+          base::i18n::IcuBridge::Normalizer::NormalizationForm::NFC,
+          base::as_string_view(characters));
+  DCHECK(normalized.size());
 
-  Vector<UChar> buffer;
-  buffer.resize(static_cast<wtf_size_t>(buffer_size));
-  normalized.extract(buffer.data(), buffer_size, status);
-  DCHECK(U_SUCCESS(status));
-  return buffer;
+  return Vector<UChar>(base::span<const UChar>(normalized));
 }
 
 // This function returns kNotFound if |first| and |second| contain different
@@ -401,6 +402,13 @@ bool CheckOnlyKanaLettersInStrings(base::span<const UChar> first_data,
     a += offset;
     b += offset;
   }
+}
+
+bool CheckOnlyKanaLettersInStrings(std::u16string_view search_text,
+                                   std::u16string_view match) {
+  // Needs to explicitly construct spans to call the span overload.
+  return CheckOnlyKanaLettersInStrings(base::span(search_text),
+                                       base::span(match));
 }
 
 bool CheckKanaStringsEqual(base::span<const UChar> first_data,

@@ -32,7 +32,7 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/arc/arc_util.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace feedback_mojom = feedback::report_unsafe_site::mojom;
@@ -120,7 +120,7 @@ FeedbackUI::FeedbackUI(content::WebUI* web_ui) : MojoWebDialogUI(web_ui) {
 FeedbackUI::~FeedbackUI() = default;
 
 bool FeedbackUI::IsFeedbackEnabled(Profile* profile) {
-  return chrome::CanShowFeedback(profile);
+  return chrome::CanSubmitFeedback(profile);
 }
 
 void FeedbackUI::BindInterface(
@@ -157,7 +157,11 @@ void FeedbackUI::CreatePageHandler(
 
 FeedbackUIConfig::FeedbackUIConfig()
     : DefaultTopChromeWebUIConfig(content::kChromeUIScheme,
-                                  chrome::kChromeUIFeedbackHost) {}
+                                  chrome::kChromeUIFeedbackHost,
+                                  // `FeedbackUI` needs spellcheck for its text
+                                  // input, which is disabled in the shared Top
+                                  // Chrome renderer process.
+                                  ProcessModel::kDedicatedProcess) {}
 
 bool FeedbackUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {

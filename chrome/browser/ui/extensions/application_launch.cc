@@ -15,7 +15,6 @@
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
@@ -42,6 +41,7 @@
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
+#include "chrome/browser/ui/waap/window_creation.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
@@ -61,9 +61,9 @@
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "extensions/common/manifest_handlers/web_file_handlers_info.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/display/scoped_display_for_new_windows.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/gfx/geometry/rect.h"
@@ -123,7 +123,8 @@ class EnableViaDialogFlow : public ExtensionEnableFlowDelegate {
   ~EnableViaDialogFlow() override = default;
 
   void Run() {
-    DCHECK(!registrar_->IsExtensionEnabled(extension_id_));
+    CHECK(!registrar_->IsExtensionEnabled(extension_id_),
+          base::NotFatalUntil::M162);
     flow_ =
         std::make_unique<ExtensionEnableFlow>(profile_, extension_id_, this);
     flow_->Start();
@@ -187,7 +188,8 @@ GURL UrlForExtension(const extensions::Extension* extension,
 
   GURL url;
   if (!params.override_url.is_empty()) {
-    DCHECK(IsAllowedToOverrideURL(extension, params.override_url));
+    CHECK(IsAllowedToOverrideURL(extension, params.override_url),
+          base::NotFatalUntil::M162);
     url = params.override_url;
   } else {
     url = extensions::AppLaunchInfo::GetFullLaunchURL(extension);
@@ -254,7 +256,7 @@ WebContents* OpenApplicationTab(Profile* profile,
                                 const GURL& url) {
   const Extension* extension = GetExtension(profile, launch_params);
   CHECK(extension);
-  WindowOpenDisposition disposition = launch_params.disposition;
+  ui::mojom::WindowOpenDisposition disposition = launch_params.disposition;
 
   BrowserWindowInterface* browser =
       FindTabbedBrowser(profile, launch_params.display_id);
@@ -272,11 +274,13 @@ WebContents* OpenApplicationTab(Profile* profile,
 
     // TODO(erg): AppLaunchParams should pass user_gesture from the extension
     // system to here.
-    browser = CreateBrowserWindow(BrowserWindowCreateParams(
-        BrowserWindowInterface::TYPE_NORMAL, profile, true));
+    browser = waap::CreateBrowserWindowAndRecordCreationSource(
+        BrowserWindowCreateParams(BrowserWindowInterface::TYPE_NORMAL, profile,
+                                  true),
+        waap::NewWindowCreationSource::kLaunch);
     browser->GetWindow()->Show();
     // There's no current tab in this browser window, so add a new one.
-    disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   }
 
   extensions::LaunchType launch_type =
@@ -298,7 +302,7 @@ WebContents* OpenApplicationTab(Profile* profile,
         std::move(*nav_launch_params));
   }
 
-  if (disposition == WindowOpenDisposition::CURRENT_TAB) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) {
     WebContents* existing_tab =
         browser->GetTabStripModel()->GetActiveWebContents();
     TabStripModel* model = browser->GetTabStripModel();
@@ -334,7 +338,8 @@ WebContents* OpenApplicationTab(Profile* profile,
 #if BUILDFLAG(IS_CHROMEOS)
   // In ChromeOS, extensions::LaunchType::kFullscreen launches in the
   // OpenApplicationWindow function i.e. it should not reach here.
-  DCHECK(launch_type != extensions::LaunchType::kFullscreen);
+  CHECK(launch_type != extensions::LaunchType::kFullscreen,
+        base::NotFatalUntil::M162);
 #else
   // TODO(skerner):  If we are already in full screen mode, and the user set the
   // app to open as a regular or pinned tab, what should happen? Today we open
@@ -383,9 +388,6 @@ WebContents* OpenEnabledApplicationHelper(Profile* profile,
         apps::GetAppLaunchSource(params.launch_source));
     return nullptr;
   }
-
-  UMA_HISTOGRAM_ENUMERATION("Extensions.HostedAppLaunchContainer",
-                            params.container);
 
   GURL url;
   if (supports_web_file_handlers && params.intent->activity_name.has_value()) {
@@ -515,7 +517,7 @@ BrowserWindowInterface* CreateApplicationWindow(
   // TODO(erg): AppLaunchParams should pass through the user_gesture from the
   // extension system here.
   BrowserWindowCreateParams browser_params(
-      params.disposition == WindowOpenDisposition::NEW_POPUP
+      params.disposition == ui::mojom::WindowOpenDisposition::kNewPopup
           ? BrowserWindowCreateParams::CreateForAppPopup(
                 app_name,
                 /*trusted_source=*/true, initial_bounds, profile,
@@ -531,10 +533,11 @@ BrowserWindowInterface* CreateApplicationWindow(
   return CreateBrowserWindow(std::move(browser_params));
 }
 
-WebContents* NavigateApplicationWindow(BrowserWindowInterface* browser,
-                                       const apps::AppLaunchParams& params,
-                                       const GURL& url,
-                                       WindowOpenDisposition disposition) {
+WebContents* NavigateApplicationWindow(
+    BrowserWindowInterface* browser,
+    const apps::AppLaunchParams& params,
+    const GURL& url,
+    ui::mojom::WindowOpenDisposition disposition) {
   const Extension* const extension =
       GetExtension(browser->GetProfile(), params);
   ui::PageTransition transition =
@@ -576,7 +579,8 @@ WebContents* OpenApplicationWindow(Profile* profile,
   BrowserWindowInterface* browser =
       CreateApplicationWindow(profile, params, url);
   WebContents* web_contents = NavigateApplicationWindow(
-      browser, params, url, WindowOpenDisposition::NEW_FOREGROUND_TAB);
+      browser, params, url,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab);
 
   browser->GetWindow()->Show();
   return web_contents;
@@ -609,7 +613,8 @@ WebContents* OpenAppShortcutWindow(Profile* profile, const GURL& url) {
   apps::AppLaunchParams launch_params(
       std::string(),  // this is a URL app. No app id.
       apps::LaunchContainer::kLaunchContainerWindow,
-      WindowOpenDisposition::NEW_WINDOW, apps::LaunchSource::kFromCommandLine);
+      ui::mojom::WindowOpenDisposition::kNewWindow,
+      apps::LaunchSource::kFromCommandLine);
   launch_params.override_url = url;
 
   return OpenApplicationWindow(profile, launch_params, url);

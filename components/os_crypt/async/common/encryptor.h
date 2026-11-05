@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/component_export.h"
@@ -33,6 +34,7 @@ class KeyDataView;
 class EncryptorTest;
 class EncryptorParamTest;
 class OSCryptAsync;
+class TestKeyProvider;
 class TestOSCryptAsync;
 
 // This class is used for data encryption. A thread-safe instance can be
@@ -69,6 +71,7 @@ class COMPONENT_EXPORT(OS_CRYPT_ASYNC) Encryptor
     friend class Encryptor;
     // OSCryptAsync and tests need to be able to Clone() keys.
     friend class OSCryptAsync;
+    friend class TestKeyProvider;
     friend class TestOSCryptAsync;
     friend class EncryptorTest;
     friend class EncryptorParamTest;
@@ -164,6 +167,10 @@ class COMPONENT_EXPORT(OS_CRYPT_ASYNC) Encryptor
   // then there is no guarantee that arbitrary data can be decrypted, as the
   // correct key to decrypt the data might not be available.
   virtual bool IsDecryptionAvailable() const;
+
+  // Returns the tag of the key provider currently used for encryption, or
+  // std::nullopt if no encryption provider is available.
+  std::optional<std::string_view> provider_for_encryption() const;
 
  protected:
   // Create an encryptor with a set of `keys`. This is used internally by tests.

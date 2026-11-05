@@ -26,6 +26,7 @@
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "ui/gl/trace_util.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -37,7 +38,6 @@
 
 #if BUILDFLAG(IS_OZONE)
 #include "gpu/command_buffer/service/vulkan_context_provider.h"
-#include "gpu/config/gpu_finch_features.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/ozone/public/surface_factory_ozone.h"
 #endif
@@ -212,6 +212,14 @@ SharedImageManager::ProduceGLTexture(const Mailbox& mailbox,
     return nullptr;
   }
 
+  if (!backing->usage().HasAny(SHARED_IMAGE_USAGE_GLES2_READ |
+                               SHARED_IMAGE_USAGE_GLES2_WRITE)) {
+    LOG(ERROR)
+        << "SharedImageManager::ProduceGLTexture with incorrect usage, client: "
+        << backing->debug_label();
+    return nullptr;
+  }
+
   auto representation = backing->ProduceGLTexture(this, tracker);
   if (!representation) {
     LOG(ERROR) << "SharedImageManager::ProduceGLTexture: Trying to produce a "
@@ -233,6 +241,14 @@ SharedImageManager::ProduceGLTexturePassthrough(const Mailbox& mailbox,
   if (!backing) {
     LOG(ERROR) << "SharedImageManager::ProduceGLTexturePassthrough: Trying to "
                   "produce a representation from a non-existent mailbox.";
+    return nullptr;
+  }
+
+  if (!backing->usage().HasAny(SHARED_IMAGE_USAGE_GLES2_READ |
+                               SHARED_IMAGE_USAGE_GLES2_WRITE)) {
+    LOG(ERROR) << "SharedImageManager::ProduceGLTexturePassthrough with "
+                  "incorrect usage, client: "
+               << backing->debug_label();
     return nullptr;
   }
 
@@ -298,8 +314,14 @@ std::unique_ptr<DawnImageRepresentation> SharedImageManager::ProduceDawn(
     return nullptr;
   }
 
-  EnforceSharedImageUsage(backing, {SHARED_IMAGE_USAGE_WEBGPU_READ,
-                                    SHARED_IMAGE_USAGE_WEBGPU_WRITE});
+  if (!backing->usage().HasAny(gpu::SHARED_IMAGE_USAGE_WEBGPU_READ |
+                               gpu::SHARED_IMAGE_USAGE_WEBGPU_WRITE)) {
+    LOG(ERROR) << "SharedImageManager::ProduceDawn with incorrect "
+                  "usage, client: "
+               << backing->debug_label();
+    return nullptr;
+  }
+
   auto representation =
       backing->ProduceDawn(this, tracker, device, backend_type,
                            std::move(view_formats), context_state);
@@ -329,6 +351,16 @@ std::unique_ptr<DawnBufferRepresentation> SharedImageManager::ProduceDawnBuffer(
     return nullptr;
   }
 
+  if (base::FeatureList::IsEnabled(features::kEnforceProduceDawnBufferUsage) &&
+      !backing->usage().HasAll(gpu::SHARED_IMAGE_USAGE_WEBGPU_READ |
+                               gpu::SHARED_IMAGE_USAGE_WEBGPU_WRITE |
+                               gpu::SHARED_IMAGE_USAGE_WEBGPU_SHARED_BUFFER)) {
+    LOG(ERROR) << "SharedImageManager::ProduceDawnBuffer with incorrect "
+                  "usage, client: "
+               << backing->debug_label();
+    return nullptr;
+  }
+
   auto representation = backing->ProduceDawnBuffer(this, tracker, device,
                                                    backend_type, context_state);
   if (!representation) {
@@ -351,6 +383,19 @@ SharedImageManager::ProduceWebNNTensor(const Mailbox& mailbox,
   if (!backing) {
     LOG(ERROR) << "SharedImageManager::ProduceWebNNTensor: Trying to produce a "
                   "WebNN tensor representation from a non-existent mailbox.";
+    return nullptr;
+  }
+
+  // WebNN tensors are accessed across threads on the WebNN worker task runner,
+  // so the backing must have WEBNN_SHARED_TENSOR usage to ensure thread safety
+  // and prevent lazy materialization of non-thread-safe backings off-thread.
+  if (!backing->usage().HasAll(gpu::SHARED_IMAGE_USAGE_WEBNN_SHARED_TENSOR |
+                               gpu::SHARED_IMAGE_USAGE_WEBGPU_READ |
+                               gpu::SHARED_IMAGE_USAGE_WEBGPU_WRITE |
+                               gpu::SHARED_IMAGE_USAGE_WEBGPU_SHARED_BUFFER)) {
+    LOG(ERROR) << "SharedImageManager::ProduceWebNNTensor with incorrect "
+                  "usage, backing: "
+               << backing->GetName() << " client: " << backing->debug_label();
     return nullptr;
   }
 
@@ -406,27 +451,6 @@ std::unique_ptr<MemoryImageRepresentation> SharedImageManager::ProduceMemory(
   // This is expected to fail based on the SharedImageBacking type, so don't log
   // error here. Caller is expected to handle nullptr.
   return backing->ProduceMemory(this, tracker);
-}
-
-std::unique_ptr<RasterImageRepresentation> SharedImageManager::ProduceRaster(
-    const Mailbox& mailbox,
-    MemoryTypeTracker* tracker) {
-  CALLED_ON_VALID_THREAD();
-
-  AutoLock autolock(this);
-  auto* backing = GetBacking(mailbox);
-  if (!backing) {
-    LOG(ERROR) << "SharedImageManager::ProduceRaster: Trying to Produce a "
-                  "Raster representation from a non-existent mailbox.";
-    return nullptr;
-  }
-
-  // TODO(b/349290188): Add back this enforcement when we plan on shipping
-  // RawDraw.
-  // EnforceSharedImageUsage(backing, {SHARED_IMAGE_USAGE_RAW_DRAW});
-  // This is expected to fail based on the SharedImageBacking type, so don't log
-  // error here. Caller is expected to handle nullptr.
-  return backing->ProduceRaster(this, tracker);
 }
 
 std::unique_ptr<VideoImageRepresentation> SharedImageManager::ProduceVideo(

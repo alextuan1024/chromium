@@ -53,7 +53,7 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
                     XrSurfaceEntityStereoMode.TOP_BOTTOM, StereoMode.TOP_BOTTOM);
 
     private final CopyOnWriteArrayList<Callback> mCallbacks = new CopyOnWriteArrayList<>();
-    private IntSize2d mCurrentSurfaceDimensions = new IntSize2d(1, 1);
+    private @Nullable IntSize2d mCurrentSurfaceDimensions;
 
     /** Helper for managing custom meshes. */
     private @Nullable XrCustomMeshHolder<?> mCustomMeshHolder;
@@ -70,19 +70,33 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
     public void addCallback(Callback callback) {
         if (!mCallbacks.contains(callback)) {
             mCallbacks.add(callback);
+            notifyCallbackIfSurfaceReady(callback);
+        }
+    }
 
-            Surface surface = getSurface();
-            if (surface != null && surface.isValid()) {
+    private void notifyCallbackIfSurfaceReady(Callback callback) {
+        Surface surface = getSurface();
+        if (mCurrentSurfaceDimensions != null && surface != null && surface.isValid()) {
+            callback.surfaceCreated(surface);
+            callback.surfaceChanged(
+                    surface,
+                    mCurrentSurfaceDimensions.getWidth(),
+                    mCurrentSurfaceDimensions.getHeight());
+        }
+    }
+
+    private void notifySurfaceCreated() {
+        if (mCurrentSurfaceDimensions == null) return;
+        Surface surface = getSurface();
+        if (surface != null && surface.isValid()) {
+            for (Callback callback : mCallbacks) {
                 callback.surfaceCreated(surface);
-                callback.surfaceChanged(
-                        surface,
-                        mCurrentSurfaceDimensions.getWidth(),
-                        mCurrentSurfaceDimensions.getHeight());
             }
         }
     }
 
     private void notifySurfaceChanged() {
+        if (mCurrentSurfaceDimensions == null) return;
         Surface surface = getSurface();
         if (surface != null && surface.isValid()) {
             for (Callback callback : mCallbacks) {
@@ -119,10 +133,14 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
     public void setSurfacePixelDimensions(int width, int height) {
         assertDisposed();
         if (width <= 0 || height <= 0) return;
+        boolean wasInitialized = mCurrentSurfaceDimensions != null;
         mCurrentSurfaceDimensions = new IntSize2d(width, height);
         mEntity.setSurfacePixelDimensions(mCurrentSurfaceDimensions);
         if (mCustomMeshHolder != null) {
             mCustomMeshHolder.setSurfacePixelDimensions(width, height);
+        }
+        if (!wasInitialized) {
+            notifySurfaceCreated();
         }
         notifySurfaceChanged();
     }
@@ -169,22 +187,15 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
         }
     }
 
-    private void notifySurfaceCreated(Surface surface) {
-        for (Callback callback : mCallbacks) {
-            callback.surfaceCreated(surface);
-        }
-    }
-
     private void updateSurfaceCallbacks(
             @Nullable Surface oldSurface, @Nullable Surface newSurface) {
+        if (mCurrentSurfaceDimensions == null) return;
         if (oldSurface != newSurface) {
             if (oldSurface != null) {
                 notifySurfaceDestroyed();
             }
-            if (newSurface != null && newSurface.isValid()) {
-                notifySurfaceCreated(newSurface);
-                notifySurfaceChanged();
-            }
+            notifySurfaceCreated();
+            notifySurfaceChanged();
         } else {
             notifySurfaceChanged();
         }
@@ -196,6 +207,10 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
         if (getSurfaceShape() == shape) return;
         Surface oldSurface = getSurface();
         clearCustomState();
+        int surfaceWidth =
+                mCurrentSurfaceDimensions != null ? mCurrentSurfaceDimensions.getWidth() : 1;
+        int surfaceHeight =
+                mCurrentSurfaceDimensions != null ? mCurrentSurfaceDimensions.getHeight() : 1;
         switch (shape) {
             case XrSurfaceEntityShape.QUAD:
                 mEntity.setShape(new Shape.Quad(new FloatSize2d(1f, 1f)));
@@ -209,9 +224,7 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
             case XrSurfaceEntityShape.SEAMLESS_SPHERE:
                 var sphereConfig =
                         new XrCurvedMeshGenerator.Config(
-                                getSurfaceStereoMode(),
-                                mCurrentSurfaceDimensions.getWidth(),
-                                mCurrentSurfaceDimensions.getHeight());
+                                getSurfaceStereoMode(), surfaceWidth, surfaceHeight);
                 var sphereGenerator = new XrSeamlessSphereMeshGenerator(sphereConfig);
                 var sphereHolder =
                         new XrCurvedMeshHolder(
@@ -226,9 +239,7 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
             case XrSurfaceEntityShape.ROUNDED_QUAD:
                 var quadConfig =
                         new XrPlanarMeshGenerator.Config(
-                                getSurfaceStereoMode(),
-                                mCurrentSurfaceDimensions.getWidth(),
-                                mCurrentSurfaceDimensions.getHeight());
+                                getSurfaceStereoMode(), surfaceWidth, surfaceHeight);
                 var quadGenerator = new XrRoundedQuadMeshGenerator(quadConfig);
                 var quadHolder =
                         new XrPlanarMeshHolder(
@@ -271,8 +282,8 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
     @Override
     public SizeF getEntitySize() {
         assertDisposed();
-        if (mCustomMeshHolder instanceof XrPlanarMeshHolder) {
-            return ((XrPlanarMeshHolder) mCustomMeshHolder).getSize();
+        if (mCustomMeshHolder instanceof XrPlanarMeshHolder planarHolder) {
+            return planarHolder.getSize();
         }
         FloatSize3d dimensions = mEntity.getDimensions();
         return new SizeF(dimensions.getWidth(), dimensions.getHeight());
@@ -282,11 +293,11 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
     public void setEntitySize(float width, float height) {
         assertDisposed();
         if (width <= 0f || height <= 0f) return;
-        if (mEntity.getShape() instanceof Shape.Quad) {
-            float cornerRadius = ((Shape.Quad) mEntity.getShape()).getCornerRadius();
+        if (mEntity.getShape() instanceof Shape.Quad quad) {
+            float cornerRadius = quad.getCornerRadius();
             mEntity.setShape(new Shape.Quad(new FloatSize2d(width, height), cornerRadius));
-        } else if (mCustomMeshHolder instanceof XrPlanarMeshHolder) {
-            ((XrPlanarMeshHolder) mCustomMeshHolder).setDimensions(width, height);
+        } else if (mCustomMeshHolder instanceof XrPlanarMeshHolder planarHolder) {
+            planarHolder.setDimensions(width, height);
         }
         mMovableComponent.setSize(width, height, 0f);
 
@@ -310,10 +321,10 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
     @Override
     public float getCornerRadius() {
         assertDisposed();
-        if (mEntity.getShape() instanceof Shape.Quad) {
-            return ((Shape.Quad) mEntity.getShape()).getCornerRadius();
-        } else if (mCustomMeshHolder instanceof XrPlanarMeshHolder) {
-            return ((XrPlanarMeshHolder) mCustomMeshHolder).getCornerRadius();
+        if (mEntity.getShape() instanceof Shape.Quad quad) {
+            return quad.getCornerRadius();
+        } else if (mCustomMeshHolder instanceof XrPlanarMeshHolder planarHolder) {
+            return planarHolder.getCornerRadius();
         }
         return 0f;
     }
@@ -322,11 +333,11 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
     public void setCornerRadius(float radius) {
         assertDisposed();
         if (radius < 0f) return;
-        if (mEntity.getShape() instanceof Shape.Quad) {
-            FloatSize2d extents = ((Shape.Quad) mEntity.getShape()).getExtents();
+        if (mEntity.getShape() instanceof Shape.Quad quad) {
+            FloatSize2d extents = quad.getExtents();
             mEntity.setShape(new Shape.Quad(extents, radius));
-        } else if (mCustomMeshHolder instanceof XrPlanarMeshHolder) {
-            ((XrPlanarMeshHolder) mCustomMeshHolder).setCornerRadius(radius);
+        } else if (mCustomMeshHolder instanceof XrPlanarMeshHolder planarHolder) {
+            planarHolder.setCornerRadius(radius);
         }
     }
 
@@ -347,12 +358,12 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
     public float getEntityRadius() {
         assertDisposed();
         Shape shape = mEntity.getShape();
-        if (shape instanceof Shape.Sphere) {
-            return ((Shape.Sphere) shape).getRadius();
-        } else if (shape instanceof Shape.Hemisphere) {
-            return ((Shape.Hemisphere) shape).getRadius();
-        } else if (mCustomMeshHolder instanceof XrCurvedMeshHolder) {
-            return ((XrCurvedMeshHolder) mCustomMeshHolder).getRadius();
+        if (shape instanceof Shape.Sphere sphere) {
+            return sphere.getRadius();
+        } else if (shape instanceof Shape.Hemisphere hemisphere) {
+            return hemisphere.getRadius();
+        } else if (mCustomMeshHolder instanceof XrCurvedMeshHolder curvedHolder) {
+            return curvedHolder.getRadius();
         }
         return 0f;
     }
@@ -366,8 +377,8 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
             mEntity.setShape(new Shape.Sphere(radius));
         } else if (shape instanceof Shape.Hemisphere) {
             mEntity.setShape(new Shape.Hemisphere(radius));
-        } else if (mCustomMeshHolder instanceof XrCurvedMeshHolder) {
-            ((XrCurvedMeshHolder) mCustomMeshHolder).setRadius(radius);
+        } else if (mCustomMeshHolder instanceof XrCurvedMeshHolder curvedHolder) {
+            curvedHolder.setRadius(radius);
             return;
         }
     }
@@ -376,7 +387,9 @@ public class XrSurfaceEntityHolderImpl extends XrTransformableEntityHolderImpl<S
     public void dispose() {
         if (!mIsDisposed) {
             clearCustomState();
-            notifySurfaceDestroyed();
+            if (mCurrentSurfaceDimensions != null) {
+                notifySurfaceDestroyed();
+            }
             mCallbacks.clear();
             super.dispose();
         }

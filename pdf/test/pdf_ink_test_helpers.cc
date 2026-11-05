@@ -45,6 +45,8 @@ std::string GetAnnotationModeMessageString(InkAnnotationMode mode) {
       return "draw";
     case InkAnnotationMode::kText:
       return "text";
+    case InkAnnotationMode::kSignature:
+      return "signature";
   }
   NOTREACHED();
 }
@@ -102,6 +104,24 @@ base::DictValue CreateSetAnnotationUndoRedoMessageForTesting(
   NOTREACHED();
 }
 
+base::DictValue CreateDeleteTextAnnotationMessage(int frontend_id,
+                                                  int page_index) {
+  return CreateDeleteTextAnnotationMessageWithSource(frontend_id, page_index,
+                                                     "user");
+}
+
+base::DictValue CreateDeleteTextAnnotationMessageWithSource(
+    int frontend_id,
+    int page_index,
+    std::string_view source) {
+  return base::DictValue()
+      .Set("type", "deleteTextAnnotation")
+      .Set("data", base::DictValue()
+                       .Set("id", frontend_id)
+                       .Set("pageIndex", page_index)
+                       .Set("source", source));
+}
+
 base::DictValue CreateEditTextAnnotationMessage(int frontend_id) {
   return base::DictValue()
       .Set("type", "editTextAnnotation")
@@ -152,10 +172,13 @@ InkTextBoxAttributes SampleInkTextBoxAttributesWithText(std::string text) {
       .alignment = TextAlignment::kCenter,
       .orientation = 1,
       .viewport_orientation = PageOrientation::kOriginal,
-      .is_bold = false,
-      .is_italic = true,
-      .is_strikethrough = false,
-      .is_underline = false,
+      .styles =
+          {
+              .is_bold = false,
+              .is_italic = true,
+              .is_strikethrough = false,
+              .is_underline = false,
+          },
       .text = std::move(text),
   };
 }
@@ -177,10 +200,13 @@ SampleInkTextBoxAttributesMatcherWith(const std::string& text,
       .alignment = TextAlignment::kCenter,
       .orientation = 1,
       .viewport_orientation = viewport_orientation,
-      .is_bold = true,
-      .is_italic = true,
-      .is_strikethrough = true,
-      .is_underline = true,
+      .styles =
+          {
+              .is_bold = true,
+              .is_italic = true,
+              .is_strikethrough = true,
+              .is_underline = true,
+          },
       .text = text,
   });
 }
@@ -318,10 +344,11 @@ void PrintTo(const InkTextBoxAttributes& info, std::ostream* os) {
       << ",\n  typeface=" << typeface << ",\n  alignment=" << alignment
       << ",\n  orientation=" << info.orientation << ",\n  viewport_orientation="
       << static_cast<int>(info.viewport_orientation)
-      << ",\n  is_bold=" << base::ToString(info.is_bold)
-      << ",\n  is_italic=" << base::ToString(info.is_italic)
-      << ",\n  is_strikethrough=" << base::ToString(info.is_strikethrough)
-      << ",\n  is_underline=" << base::ToString(info.is_underline)
+      << ",\n  is_bold=" << base::ToString(info.styles.is_bold)
+      << ",\n  is_italic=" << base::ToString(info.styles.is_italic)
+      << ",\n  is_strikethrough="
+      << base::ToString(info.styles.is_strikethrough)
+      << ",\n  is_underline=" << base::ToString(info.styles.is_underline)
       << ",\n  text=" << info.text << "\n}";
 }
 
@@ -330,9 +357,16 @@ bool InkTextInfoEquals(const InkTextInfo& lhs, const InkTextInfo& rhs) {
       lhs.glyph_positions, rhs.glyph_positions, [](float lhs, float rhs) {
         return base::IsApproximatelyEqual(lhs, rhs, 0.01f);
       });
-  return glyph_positions_eq && lhs.font_id == rhs.font_id &&
-         lhs.glyphs == rhs.glyphs && lhs.location == rhs.location &&
-         lhs.is_horizontal == rhs.is_horizontal && lhs.text == rhs.text &&
+  const bool location_eq =
+      base::IsApproximatelyEqual(lhs.location.x(), rhs.location.x(), 0.01f) &&
+      base::IsApproximatelyEqual(lhs.location.y(), rhs.location.y(), 0.01f) &&
+      base::IsApproximatelyEqual(lhs.location.width(), rhs.location.width(),
+                                 0.01f) &&
+      base::IsApproximatelyEqual(lhs.location.height(), rhs.location.height(),
+                                 0.01f);
+  return glyph_positions_eq && location_eq && lhs.font_id == rhs.font_id &&
+         lhs.glyphs == rhs.glyphs && lhs.is_horizontal == rhs.is_horizontal &&
+         lhs.text == rhs.text &&
          lhs.join_prev_actualtext == rhs.join_prev_actualtext;
 }
 

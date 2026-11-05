@@ -16,7 +16,7 @@
 #include "base/memory/raw_ptr.h"
 #include "chromeos/ash/services/multidevice_setup/public/mojom/multidevice_setup.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "services/network/test/test_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "url/gurl.h"
 
 class PrefService;
@@ -72,8 +72,13 @@ class TestShellDelegate : public ShellDelegate {
     send_specialized_feature_feedback_callback_ = std::move(cb);
   }
 
+  using CrackFileSystemUrlCallback =
+      base::RepeatingCallback<base::FilePath(const GURL&)>;
+  void SetCrackFileSystemUrlCallback(CrackFileSystemUrlCallback cb) {
+    crack_file_system_url_callback_ = std::move(cb);
+  }
+
   // Overridden from ShellDelegate:
-  bool CanShowWindowForUser(const aura::Window* window) const override;
   std::unique_ptr<CaptureModeDelegate> CreateCaptureModeDelegate(
       PrefService* local_state) const override;
   std::unique_ptr<ClipboardHistoryControllerDelegate>
@@ -103,7 +108,7 @@ class TestShellDelegate : public ShellDelegate {
       const override;
   std::unique_ptr<ash::ScannerDelegate> CreateScannerDelegate() const override;
   scoped_refptr<network::SharedURLLoaderFactory>
-  GetBrowserProcessUrlLoaderFactory() const override;
+  GetBrowserProcessUrlLoaderFactory() override;
   bool CanGoBack(gfx::NativeWindow window) const override;
   void SetTabScrubberEnabled(bool enabled) override;
   bool ShouldWaitForTouchPressAck(gfx::NativeWindow window) override;
@@ -116,7 +121,7 @@ class TestShellDelegate : public ShellDelegate {
       const WindowState& window_state) override {}
   const GURL& GetLastCommittedURLForWindowIfAny(aura::Window* window) override;
   void ForceSkipWarningUserOnClose(
-      const std::vector<raw_ptr<aura::Window, VectorExperimental>>& windows)
+      const std::vector<raw_ptr<aura::Window, DanglingUntriaged>>& windows)
       override {}
 
   void SetCanGoBack(bool can_go_back);
@@ -124,6 +129,7 @@ class TestShellDelegate : public ShellDelegate {
   void SetSessionRestoreInProgress(bool in_progress);
   bool IsLoggingRedirectDisabled() const override;
   base::FilePath GetPrimaryUserDownloadsFolder() const override;
+  base::FilePath CrackFileSystemUrl(const GURL& file_system_url) const override;
   void OpenFeedbackDialog(FeedbackSource source,
                           const std::string& description_template,
                           const std::string& category_tag) override;
@@ -164,8 +170,9 @@ class TestShellDelegate : public ShellDelegate {
   UserEducationDelegateFactory user_education_delegate_factory_;
   SendSpecializedFeatureFeedbackCallback
       send_specialized_feature_feedback_callback_;
+  CrackFileSystemUrlCallback crack_file_system_url_callback_;
 
-  scoped_refptr<network::TestSharedURLLoaderFactory> url_loader_factory_;
+  std::unique_ptr<network::TestURLLoaderFactory> url_loader_factory_;
 
   GURL last_committed_url_;
 

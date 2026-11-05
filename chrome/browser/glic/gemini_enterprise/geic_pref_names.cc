@@ -9,11 +9,7 @@
 namespace geic::prefs {
 
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
-  // These prefs are intentionally NOT synced: they represent per-device UI
-  // state, so they must not follow the user across profiles/devices. Omitting
-  // the flags argument registers them with NO_REGISTRATION_FLAGS; do not add
-  // SYNCABLE_PREF or SYNCABLE_PRIORITY_PREF here.
-  registry->RegisterBooleanPref(kGeicPinnedToTabstrip, true);
+  registry->RegisterDictionaryPref(kGeicCompletedFre);
 }
 
 }  // namespace geic::prefs

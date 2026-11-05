@@ -6,6 +6,7 @@
 
 #import <UIKit/UIKit.h>
 
+#import "base/containers/to_vector.h"
 #import "base/memory/ref_counted_memory.h"
 #import "base/strings/sys_string_conversions.h"
 #import "ios/web/common/features.h"
@@ -49,12 +50,14 @@ scoped_refptr<base::RefCountedMemory> FakeWebClient::GetDataResourceBytes(
 
 std::vector<JavaScriptFeature*> FakeWebClient::GetJavaScriptFeatures(
     BrowserState* browser_state) const {
-  return java_script_features_;
+  return base::ToVector(java_script_features_,
+                        &raw_ptr<JavaScriptFeature, DanglingUntriaged>::get);
 }
 
 void FakeWebClient::SetJavaScriptFeatures(
     std::vector<JavaScriptFeature*> features) {
-  java_script_features_ = features;
+  java_script_features_ =
+      base::ToVector<raw_ptr<JavaScriptFeature, DanglingUntriaged>>(features);
 }
 
 void FakeWebClient::PrepareErrorPage(
@@ -88,9 +91,19 @@ bool FakeWebClient::IsSmoothScrollingSupported() const {
   return base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault);
 }
 
-bool FakeWebClient::IsUniversalOptOutEnabled(
+UniversalOptOutState FakeWebClient::GetUniversalOptOutState(
     BrowserState* browser_state) const {
-  return universal_opt_out_enabled_;
+  return universal_opt_out_state_;
+}
+
+ExtensionController* FakeWebClient::GetExtensionController(
+    BrowserState* browser_state) const {
+  return extension_controller_;
+}
+
+void FakeWebClient::SetExtensionController(
+    ExtensionController* extension_controller) {
+  extension_controller_ = extension_controller;
 }
 
 }  // namespace web

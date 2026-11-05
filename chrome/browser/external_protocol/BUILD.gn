@@ -7,9 +7,11 @@ source_set("external_protocol") {
     "constants.h",
     "external_protocol_handler.h",
     "external_protocol_observer.h",
+    "features.h",
   ]
 
   public_deps = [
+    "//base",
     "//chrome/browser:shell_integration",
     "//content/public/browser",
     "//ui/base",
@@ -19,6 +21,10 @@ source_set("external_protocol") {
     sources += [ "auto_launch_protocols_policy_handler.h" ]
     public_deps += [ "//components/policy/core/browser" ]
   }
+
+  if (is_linux) {
+    sources += [ "xdg_scheme_handler_cache_linux.h" ]
+  }
 }
 
 source_set("impl") {
@@ -26,6 +32,7 @@ source_set("impl") {
     "constants.cc",
     "external_protocol_handler.cc",
     "external_protocol_observer.cc",
+    "features.cc",
   ]
 
   public_deps = [ ":external_protocol" ]
@@ -57,12 +64,19 @@ source_set("impl") {
   if (!is_android && !is_chromeos) {
     sources += [ "auto_launch_protocols_policy_handler.cc" ]
   }
+
+  if (is_linux) {
+    sources += [ "xdg_scheme_handler_cache_linux.cc" ]
+  }
 }
 
 source_set("unit_tests") {
   testonly = true
 
   sources = [ "external_protocol_handler_unittest.cc" ]
+  if (is_linux) {
+    sources += [ "xdg_scheme_handler_cache_linux_unittest.cc" ]
+  }
 
   deps = [
     ":external_protocol",
@@ -71,6 +85,7 @@ source_set("unit_tests") {
     "//chrome/browser/prefs",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//components/prefs",
     "//components/prefs:test_support",
     "//content/public/browser",
@@ -101,12 +116,11 @@ if (!is_android && !is_chromeos) {
       ":impl",
       "//base",
       "//chrome/browser:browser_features",
+      "//chrome/browser:platform_util_internal",
       "//chrome/browser:shell_integration",
       "//chrome/browser/policy:test_support",
       "//chrome/browser/profiles:profile",
-      "//chrome/browser/ui",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//components/policy:generated",
       "//components/policy/core/browser",
       "//components/policy/core/common",

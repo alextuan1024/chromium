@@ -34,45 +34,74 @@ class UserData : public base::SupportsUserData::Data {
   UserData(const UserData&) = delete;
   UserData& operator=(const UserData&) = delete;
 
+  SmartSelectionClient* client() const { return client_.get(); }
+
  private:
   std::unique_ptr<SmartSelectionClient> client_;
 };
-}
 
-static int64_t JNI_SmartSelectionClient_Init(JNIEnv* env,
-                                             WebContents* web_contents) {
+SmartSelectionClient* FromWebContents(WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+  auto* user_data = static_cast<UserData*>(
+      web_contents->GetUserData(kSmartSelectionClientUDKey));
+  return user_data ? user_data->client() : nullptr;
+}
+}  // namespace
+
+static void JNI_SmartSelectionClient_Init(WebContents* web_contents) {
   CHECK(web_contents)
       << "A SmartSelectionClient should be created with a valid WebContents.";
 
-  if (auto* user_data = web_contents->GetUserData(kSmartSelectionClientUDKey)) {
-    return reinterpret_cast<intptr_t>(user_data);
+  if (!FromWebContents(web_contents)) {
+    new SmartSelectionClient(web_contents);
   }
+}
 
-  return reinterpret_cast<intptr_t>(new SmartSelectionClient(web_contents));
+static void JNI_SmartSelectionClient_RequestSurroundingText(
+    WebContents* web_contents,
+    int32_t num_extra_characters,
+    int32_t callback_data) {
+  if (auto* client = FromWebContents(web_contents)) {
+    client->RequestSurroundingText(num_extra_characters, callback_data);
+  }
+}
+
+static void JNI_SmartSelectionClient_CancelAllRequests(
+    WebContents* web_contents) {
+  if (auto* client = FromWebContents(web_contents)) {
+    client->CancelAllRequests();
+  }
 }
 
 SmartSelectionClient::SmartSelectionClient(WebContents* web_contents)
-    : web_contents_(web_contents) {
-  CHECK(!web_contents_->GetUserData(kSmartSelectionClientUDKey),
+    : WebContentsObserver(web_contents) {
+  CHECK(!web_contents->GetUserData(kSmartSelectionClientUDKey),
         base::NotFatalUntil::M159);
-  web_contents_->SetUserData(kSmartSelectionClientUDKey,
-                             std::make_unique<UserData>(this));
+  web_contents->SetUserData(kSmartSelectionClientUDKey,
+                            std::make_unique<UserData>(this));
 }
 
-SmartSelectionClient::~SmartSelectionClient() {
+SmartSelectionClient::~SmartSelectionClient() = default;
+
+void SmartSelectionClient::WebContentsDestroyed() {
+  // Notify Java here rather than in the destructor. This client is owned by
+  // the WebContents' user data, which is destroyed after the WebContentsAndroid
+  // has been cleared. Looking up the Java object from the destructor would
+  // re-create a WebContentsAndroid (and its Java peer) for a WebContents that
+  // is already being destroyed, and nothing would ever free it.
   JNIEnv* env = base::android::AttachCurrentThread();
   ScopedJavaLocalRef<jobject> j_obj = GetJavaObject(env);
   if (!j_obj.is_null()) {
-    Java_SmartSelectionClient_onNativeSideDestroyed(
-        env, j_obj, reinterpret_cast<intptr_t>(this));
+    Java_SmartSelectionClient_onNativeSideDestroyed(env, j_obj);
   }
 }
 
-void SmartSelectionClient::RequestSurroundingText(
-    JNIEnv* env,
-    int num_extra_characters,
-    int callback_data) {
-  RenderFrameHost* focused_frame = web_contents_->GetFocusedFrame();
+void SmartSelectionClient::RequestSurroundingText(int num_extra_characters,
+                                                  int callback_data) {
+  RenderFrameHost* focused_frame =
+      web_contents() ? web_contents()->GetFocusedFrame() : nullptr;
   if (!focused_frame) {
     OnSurroundingTextReceived(callback_data, std::u16string(), 0, 0);
     return;
@@ -84,7 +113,7 @@ void SmartSelectionClient::RequestSurroundingText(
       num_extra_characters);
 }
 
-void SmartSelectionClient::CancelAllRequests(JNIEnv* env) {
+void SmartSelectionClient::CancelAllRequests() {
   weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
@@ -103,7 +132,10 @@ void SmartSelectionClient::OnSurroundingTextReceived(int callback_data,
 
 base::android::ScopedJavaLocalRef<jobject> SmartSelectionClient::GetJavaObject(
     JNIEnv* env) {
-  return Java_SmartSelectionClient_getFromWebContents(env, web_contents_);
+  if (!web_contents()) {
+    return ScopedJavaLocalRef<jobject>();
+  }
+  return Java_SmartSelectionClient_getFromWebContents(env, web_contents());
 }
 
 }  // namespace content

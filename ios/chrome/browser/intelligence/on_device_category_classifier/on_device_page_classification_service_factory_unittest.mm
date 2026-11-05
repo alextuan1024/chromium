@@ -21,7 +21,7 @@
 namespace {
 
 std::unique_ptr<KeyedService> BuildTestInProcessClassificationService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   static base::NoDestructor<
       optimization_guide::TestOptimizationGuideModelProvider>
       test_model_provider;
@@ -35,7 +35,7 @@ class OnDevicePageClassificationServiceFactoryTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         InProcessCategoryClassificationServiceFactory::GetInstance(),
-        base::BindRepeating(&BuildTestInProcessClassificationService));
+        base::BindOnce(&BuildTestInProcessClassificationService));
     return std::move(builder).Build();
   }
 
@@ -55,8 +55,7 @@ TEST_F(OnDevicePageClassificationServiceFactoryTest, CreateServiceForProfile) {
 TEST_F(OnDevicePageClassificationServiceFactoryTest,
        DoNotCreateServiceForOffTheRecordProfile) {
   auto profile = CreateProfile();
-  ProfileIOS* otr_profile =
-      profile->CreateOffTheRecordProfileWithTestingFactories();
+  ProfileIOS* otr_profile = profile->GetOffTheRecordProfile();
   EXPECT_EQ(
       OnDevicePageClassificationServiceFactory::GetForProfile(otr_profile),
       nullptr);

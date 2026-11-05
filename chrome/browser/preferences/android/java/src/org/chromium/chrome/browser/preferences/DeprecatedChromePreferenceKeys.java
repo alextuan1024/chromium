@@ -9,7 +9,6 @@ import org.chromium.build.annotations.CheckDiscard;
 import org.chromium.build.annotations.NullMarked;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -38,6 +37,7 @@ public class DeprecatedChromePreferenceKeys {
                 "Chrome.AuxiliarySearch.IsSchemaV2Set",
                 "Chrome.AuxiliarySearchModule.Impression",
                 "Chrome.AuxiliarySearchModule.UserResponded",
+                "Chrome.BottomBar.EducationPendingTooltips",
                 "Chrome.ContinuousSearch.DismissalCount",
                 "Chrome.ContextMenu.SearchWithGoogleLensClicked",
                 "Chrome.ContextMenu.ShopImageWithGoogleLensClicked",
@@ -73,6 +73,11 @@ public class DeprecatedChromePreferenceKeys {
                 "Chrome.OfflineMeasurements.IsRoaming",
                 "Chrome.OfflineMeasurements.TimeBetweenChecksMillisList",
                 "Chrome.OfflineMeasurements.UserStateList",
+                "Chrome.Omnibox.CachedZeroSuggestGroupsInfo",
+                "Chrome.Omnibox.FuseboxPlusMenuLastOpenTime",
+                "Chrome.PageInsightsHub.NumberOfTimesPageInsightsHubOpenedByUser",
+                "Chrome.PageInsightsHub.PageInsightsHubLastOpenedTimestamp",
+                "Chrome.PageInsightsHub.PrivacyNoticeClosedByUser",
                 "Chrome.PriceTracking.PriceAlerts",
                 "Chrome.PriceTracking.PriceAlertsShowCount",
                 "Chrome.PriceTracking.PriceDropAlerts",
@@ -89,6 +94,8 @@ public class DeprecatedChromePreferenceKeys {
                 "Chrome.RequestDesktopSiteGlobalSetting.DefaultOnCohortDisplaySpec",
                 "Chrome.RequestDesktopSiteGlobalSetting.OptInMessageCohort",
                 "Chrome.RequestDesktopSiteGlobalSetting.OptInMessageShown",
+                "Chrome.SafetyCheck.RunCounter",
+                "Chrome.SearchEngine.IsEeaChoiceCountry",
                 "Chrome.SearchResumptionModule.Collapse",
                 "Chrome.Segmentation.ShowQueryTiles",
                 "Chrome.SigninPromo.NTPImpressions",
@@ -108,6 +115,7 @@ public class DeprecatedChromePreferenceKeys {
                 "Chrome.WebFeed.IntroLastShownTimeMs",
                 "Chrome.WebFeed.IntroWebFeedIdShownTimeMs.*",
                 "Chrome.WebFeed.IntroWebFeedIdShownCount.*",
+                "Chrome.Widget.NumConsecutiveCrashes",
                 "LocaleManager_USR_TYPE",
                 "PersistedNotificationId",
                 "PhysicalWeb.ActivityReferral",
@@ -194,6 +202,7 @@ public class DeprecatedChromePreferenceKeys {
                 "night_mode_default_to_light",
                 "ntp_button_enabled",
                 "ntp_button_variant",
+                "omnibox:dse:keyword",
                 "physical_web",
                 "physical_web_sharing",
                 "prefetch_bandwidth",
@@ -218,13 +227,29 @@ public class DeprecatedChromePreferenceKeys {
                 "swap_pixel_format_to_fix_convert_from_translucent",
                 "tab_group_android_enabled",
                 "tab_persistent_store_task_runner_enabled",
+                "twa_dialog_number_of_dismissals_on_clear_data",
+                "twa_dialog_number_of_dismissals_on_uninstall",
                 "user_font_scale_factor",
                 "user_set_force_enable_zoom",
                 "webapk_number_of_uninstalls",
-                "website_settings_filter");
+                "website_settings_filter",
+                "zero_suggest_list_size");
     }
 
     static List<KeyPrefix> getPrefixesForTesting() {
-        return Collections.emptyList();
+        return Arrays.asList(
+                new KeyPrefix("omnibox:cached_suggestions:*"),
+                new KeyPrefix("zero_suggest_answer_text*"),
+                new KeyPrefix("zero_suggest_description*"),
+                new KeyPrefix("zero_suggest_display_text*"),
+                new KeyPrefix("zero_suggest_group_id*"),
+                new KeyPrefix("zero_suggest_is_deletable*"),
+                new KeyPrefix("zero_suggest_is_search*"),
+                new KeyPrefix("zero_suggest_is_starred*"),
+                new KeyPrefix("zero_suggest_native_subtypes*"),
+                new KeyPrefix("zero_suggest_native_type*"),
+                new KeyPrefix("zero_suggest_post_content_data*"),
+                new KeyPrefix("zero_suggest_post_content_type*"),
+                new KeyPrefix("zero_suggest_url*"));
     }
 }

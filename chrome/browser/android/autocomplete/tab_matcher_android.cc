@@ -22,6 +22,7 @@
 #include "components/search_engines/template_url_service.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
+#include "third_party/jni_zero/default_conversions.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/browser/ui/android/omnibox/jni_headers/ChromeAutocompleteProviderClient_jni.h"
@@ -62,7 +63,7 @@ class AutocompleteClientTabAndroidUserData
 
  private:
   explicit AutocompleteClientTabAndroidUserData(TabAndroid* tab) : tab_(tab) {
-    DCHECK(tab);
+    CHECK(tab, base::NotFatalUntil::M161);
     tab->AddObserver(this);
   }
   friend class TabAndroidUserData<AutocompleteClientTabAndroidUserData>;
@@ -88,7 +89,7 @@ TabMatcherAndroid::~TabMatcherAndroid() = default;
 
 bool TabMatcherAndroid::IsTabOpenWithURL(const GURL& url,
                                          const AutocompleteInput* input) const {
-  DCHECK(input);
+  CHECK(input, base::NotFatalUntil::M161);
   const AutocompleteInput empty_input;
   if (!input)
     input = &empty_input;
@@ -107,8 +108,8 @@ bool TabMatcherAndroid::IsTabOpenWithURL(const GURL& url,
 
 void TabMatcherAndroid::FindMatchingTabs(GURLToTabInfoMap* map,
                                          const AutocompleteInput* input) const {
-  DCHECK(map);
-  DCHECK(input);
+  CHECK(map, base::NotFatalUntil::M161);
+  CHECK(input, base::NotFatalUntil::M161);
   const AutocompleteInput empty_input;
   if (!input)
     input = &empty_input;
@@ -131,8 +132,10 @@ std::vector<TabMatcher::TabWrapper> TabMatcherAndroid::GetOpenTabs(
     const AutocompleteInput* input,
     bool unused_exclude_active_tab) const {
   std::vector<TabMatcher::TabWrapper> open_tabs;
-  for (int64_t tab_ptr : GetOpenAndroidTabs(input)) {
-    TabAndroid* open_tab = reinterpret_cast<TabAndroid*>(tab_ptr);
+  for (TabAndroid* open_tab : GetOpenAndroidTabs(input)) {
+    if (!open_tab) {
+      continue;
+    }
     open_tabs.emplace_back(open_tab->GetTitle(), open_tab->GetURL(),
                            open_tab->GetLastShownTimestamp());
   }
@@ -140,7 +143,7 @@ std::vector<TabMatcher::TabWrapper> TabMatcherAndroid::GetOpenTabs(
   return open_tabs;
 }
 
-std::vector<int64_t> TabMatcherAndroid::GetOpenAndroidTabs(
+std::vector<TabAndroid*> TabMatcherAndroid::GetOpenAndroidTabs(
     const AutocompleteInput* input) const {
   using chrome::android::ActivityType;
   static const bool is_desktop = base::android::device_info::is_desktop();
@@ -149,30 +152,28 @@ std::vector<int64_t> TabMatcherAndroid::GetOpenAndroidTabs(
   // - tab models for not matching profile (eg. incognito vs non-incognito)
   // - custom and trusted tabs.
   std::vector<TabModel*> tab_models;
-  for (TabModel* model : TabModelList::models()) {
-    if (profile_ != model->GetProfile())
-      continue;
-
+  TabModelList::ForEach(profile_, [&](TabModel* model) {
     auto type = model->activity_type();
     if (type == ActivityType::kCustomTab ||
         type == ActivityType::kTrustedWebActivity) {
-      continue;
+      return true;
     }
 
     // Ignore tab models for closed/persisted windows (headless) on Desktop
     // Android.
     if (is_desktop &&
         model->GetTabModelType() == TabModel::TabModelType::kHeadless) {
-      continue;
+      return true;
     }
 
     tab_models.push_back(model);
-  }
+    return true;
+  });
 
   CHECK(input);
   if (omnibox::IsAndroidHubOrTabSearch(input->current_page_classification()) &&
       profile_->IsRegularProfile()) {
-    TabModel* archived_tab_model = TabModelList::GetArchivedTabModel();
+    TabModel* archived_tab_model = TabModelList::GetArchivedTabModel(profile_);
     if (archived_tab_model) {
       tab_models.push_back(archived_tab_model);
     }
@@ -180,7 +181,7 @@ std::vector<int64_t> TabMatcherAndroid::GetOpenAndroidTabs(
 
   // Short circuit in the event we have no tab models hosting eligible tabs.
   if (tab_models.size() == 0) {
-    return std::vector<int64_t>();
+    return std::vector<TabAndroid*>();
   }
 
   // Create and populate an array of Java TabModels.
@@ -218,14 +219,16 @@ TabMatcher::GURLToTabInfoMap TabMatcherAndroid::GetAllHiddenAndNonCCTTabInfos(
   using chrome::android::ActivityType;
   GURLToTabInfoMap tab_infos;
 
-  for (int64_t ptr : GetOpenAndroidTabs(input)) {
-    TabAndroid* tab = reinterpret_cast<TabAndroid*>(ptr);
+  for (TabAndroid* tab : GetOpenAndroidTabs(input)) {
+    if (!tab) {
+      continue;
+    }
     // Browser did not load the tab yet after Chrome started. To avoid
     // reloading WebContents, we just compare URLs.
     AutocompleteClientTabAndroidUserData::CreateForTabAndroid(tab);
     AutocompleteClientTabAndroidUserData* user_data =
         AutocompleteClientTabAndroidUserData::FromTabAndroid(tab);
-    DCHECK(user_data);
+    CHECK(user_data, base::NotFatalUntil::M161);
     if (!user_data->IsInitialized()) {
       user_data->UpdateStrippedURL(tab->GetURL(), template_url_service_,
                                    /*keep_search_intent_params=*/true);

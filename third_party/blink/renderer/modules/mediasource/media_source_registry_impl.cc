@@ -32,7 +32,10 @@
 
 #include <utility>
 
+#include "base/no_destructor.h"
+#include "third_party/blink/renderer/platform/blob/blob_url.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
@@ -40,21 +43,23 @@ namespace blink {
 // static
 void MediaSourceRegistryImpl::Init() {
   DCHECK(IsMainThread());
-  DEFINE_STATIC_LOCAL(MediaSourceRegistryImpl, instance, ());
-  DVLOG(1) << __func__ << " instance=" << &instance;
+  static base::NoDestructor<MediaSourceRegistryImpl> instance;
+  DVLOG(1) << __func__ << " instance=" << &*instance;
 }
 
-void MediaSourceRegistryImpl::RegisterUrl(
-    const KURL& url,
+KURL MediaSourceRegistryImpl::RegisterUrl(
+    const SecurityOrigin* security_origin,
     scoped_refptr<MediaSourceAttachment> attachment) {
   DCHECK(IsMainThread());
   DCHECK_EQ(&attachment->Registry(), this);
 
-  DCHECK(!url.IsEmpty());  // Caller of interface should already enforce this.
+  const KURL url = BlobURL::CreatePublicURL(security_origin);
+  DCHECK(!url.IsEmpty());
 
   DVLOG(1) << __func__ << " url=" << url << ", IsMainThread=" << IsMainThread();
 
   media_sources_.Set(url.GetString(), std::move(attachment));
+  return url;
 }
 
 void MediaSourceRegistryImpl::UnregisterUrl(const KURL& url) {

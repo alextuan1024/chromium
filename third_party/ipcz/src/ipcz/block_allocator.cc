@@ -10,11 +10,11 @@
 #include <limits>
 #include <thread>
 
+#include "base/compiler_specific.h"
+#include "base/numerics/safe_conversions.h"
 #include "ipcz/block_allocator.h"
 #include "ipcz/ipcz.h"
 #include "third_party/abseil-cpp/absl/base/macros.h"
-#include "util/safe_math.h"
-#include "util/unsafe_buffers.h"
 
 namespace ipcz {
 
@@ -67,7 +67,7 @@ BlockAllocator::BlockAllocator(absl::Span<uint8_t> region, uint32_t block_size)
   // BlockHeader uses a signed 16-bit index to reference other blocks, and block
   // 0 must be able to reference any block; so the total number of blocks must
   // not exceed the max value of an int16_t.
-  num_blocks_ = checked_cast<int16_t>(region.size() / block_size);
+  num_blocks_ = base::checked_cast<int16_t>(region.size() / block_size);
   ABSL_ASSERT(num_blocks_ > 0);
 }
 
@@ -81,8 +81,11 @@ void BlockAllocator::InitializeRegion() const {
   // By zeroing the entire region, every block effectively points to its
   // immediate successor as the next free block. See comments on the `next`
   // field if BlockHeader.
-  IPCZ_UNSAFE_TODO(memset(region_.data(), 0, region_.size()));
+  UNSAFE_TODO(memset(region_.data(), 0, region_.size()));
+  InitializePrezeroedRegion();
+}
 
+void BlockAllocator::InitializePrezeroedRegion() const {
   // Ensure that the last block points back to the unallocatable first block,
   // indicating the end of the free-list.
   free_block_at(last_block_index()).SetNextFreeBlock(kFrontBlockIndex);

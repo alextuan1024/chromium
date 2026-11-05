@@ -7,6 +7,7 @@
 #import "base/debug/dump_without_crashing.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
+#import "components/application_locale_storage/application_locale_storage.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
@@ -49,8 +50,8 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/reauthentication/local_reauthentication_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/widget_promo_instructions/widget_promo_instructions_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/public/commands/browser_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
@@ -175,25 +176,24 @@ constexpr NSInteger kLevelUpPasswordCheckupWalkthroughTotalPages = 3;
       initWithPasswordCheckManager:IOSChromePasswordCheckManagerFactory::
                                        GetForProfile(profile)
                      faviconLoader:faviconLoader
-                       syncService:SyncServiceFactory::GetForProfile(profile)];
+                       syncService:SyncServiceFactory::GetForProfile(profile)
+                       prefService:profile->GetPrefs()
+                 applicationLocale:GetApplicationContext()
+                                       ->GetApplicationLocaleStorage()
+                                       ->GetTag()
+                                       .tag_string()];
   self.mediator.tracker =
       feature_engagement::TrackerFactory::GetForProfile(profile);
 
-  signin::IdentityManager* identityManager =
-      IdentityManagerFactory::GetForProfile(profile);
-
   PasswordManagerViewController* passwordsViewController =
       [[PasswordManagerViewController alloc]
-          initWithIdentityManager:identityManager
-                      prefService:profile->GetPrefs()
-           shouldOpenInSearchMode:self.openViewControllerForPasswordSearch];
+          initWithShouldOpenInSearchMode:
+              self.openViewControllerForPasswordSearch];
   self.passwordsViewController = passwordsViewController;
 
   CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
   passwordsViewController.sceneHandler =
       HandlerForProtocol(dispatcher, SceneCommands);
-  passwordsViewController.browserHandler =
-      HandlerForProtocol(dispatcher, BrowserCommands);
   passwordsViewController.settingsHandler =
       HandlerForProtocol(dispatcher, SettingsCommands);
   passwordsViewController.snackbarHandler =
@@ -418,7 +418,7 @@ constexpr NSInteger kLevelUpPasswordCheckupWalkthroughTotalPages = 3;
 - (void)performReauthenticationForRetrievingTrustedVaultKey {
   trusted_vault::SecurityDomainId securityDomainID =
       trusted_vault::SecurityDomainId::kChromeSync;
-  trusted_vault::TrustedVaultUserActionTriggerForUMA trigger = trusted_vault ::
+  trusted_vault::TrustedVaultUserActionTriggerForUMA trigger = trusted_vault::
       TrustedVaultUserActionTriggerForUMA::kPasswordManagerSettings;
   if (_trustedVaultReauthenticationCoordinator) {
     // This method can be called while the previous trusted vault reauth is
@@ -739,7 +739,7 @@ constexpr NSInteger kLevelUpPasswordCheckupWalkthroughTotalPages = 3;
   AuthenticationService* authenticationService =
       AuthenticationServiceFactory::GetForProfile(self.profile);
   if (!authenticationService->SigninEnabled()) {
-    // TODO(crbug.com/450982128): Display some error message to the user.
+    // TODO(crbug.com/564375982): Display some error message to the user.
     self.credentialImportUUID = nil;
     return;
   }
@@ -766,10 +766,10 @@ constexpr NSInteger kLevelUpPasswordCheckupWalkthroughTotalPages = 3;
                                              DoNothingContinuationProvider()];
   __weak __typeof(self) weakSelf = self;
   _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
         [weakSelf signinForImportFinishedWithCoordinator:coordinator
-                                                identity:identity];
+                                                identity:result.value_or(nil)];
       };
   [_signinCoordinator start];
 }

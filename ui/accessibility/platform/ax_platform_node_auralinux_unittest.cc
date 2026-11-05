@@ -1145,6 +1145,49 @@ TEST_F(AXPlatformNodeAuraLinuxTest, TestAtkActionAriaAction) {
   g_object_unref(root_obj);
 }
 
+TEST_F(AXPlatformNodeAuraLinuxTest, TestAtkActionAriaActionMissingTarget) {
+  AXNodeData root;
+  root.id = 1;
+  root.role = ax::mojom::Role::kRootWebArea;
+  root.AddIntListAttribute(ax::mojom::IntListAttribute::kActionsIds, {3});
+
+  Init(root);
+
+  AtkObject* root_obj(GetRootAtkObject());
+  ASSERT_TRUE(ATK_IS_OBJECT(root_obj));
+  ASSERT_TRUE(ATK_IS_ACTION(root_obj));
+  g_object_ref(root_obj);
+
+  EXPECT_EQ(3, atk_action_get_n_actions(ATK_ACTION(root_obj)));
+  EXPECT_FALSE(atk_action_do_action(ATK_ACTION(root_obj), 2));
+  EXPECT_EQ(nullptr, atk_action_get_name(ATK_ACTION(root_obj), 2));
+  EXPECT_EQ(nullptr, atk_action_get_localized_name(ATK_ACTION(root_obj), 2));
+
+  g_object_unref(root_obj);
+}
+
+TEST_F(AXPlatformNodeAuraLinuxTest, TestAtkActionNegativeIndex) {
+  AXNodeData root;
+  root.id = 1;
+  root.role = ax::mojom::Role::kSlider;
+  root.SetDefaultActionVerb(ax::mojom::DefaultActionVerb::kClick);
+  root.AddAction(ax::mojom::Action::kDecrement);
+  root.AddAction(ax::mojom::Action::kIncrement);
+  Init(root);
+
+  AtkObject* root_obj(GetRootAtkObject());
+  ASSERT_TRUE(ATK_IS_OBJECT(root_obj));
+  ASSERT_TRUE(ATK_IS_ACTION(root_obj));
+  g_object_ref(root_obj);
+
+  EXPECT_EQ(nullptr, atk_action_get_name(ATK_ACTION(root_obj), -1));
+  EXPECT_EQ(nullptr, atk_action_get_localized_name(ATK_ACTION(root_obj), -1));
+  EXPECT_EQ(nullptr, atk_action_get_description(ATK_ACTION(root_obj), -1));
+  EXPECT_EQ(nullptr, atk_action_get_keybinding(ATK_ACTION(root_obj), -1));
+
+  g_object_unref(root_obj);
+}
+
 //
 // AtkValue tests
 //
@@ -1503,6 +1546,53 @@ TEST_F(AXPlatformNodeAuraLinuxTest,
   EXPECT_EQ(initial_call_count + 1,
             AXPlatformForTest::GetInstance()
                 .inline_text_boxes_used_in_web_content_count());
+}
+
+// Regression test for crbug.com/503354595.
+TEST_F(AXPlatformNodeAuraLinuxTest, AtkTextLastLineWithTrailingIgnoredContent) {
+  TestAXNodeWrapper::SetGlobalIsWebContent(true);
+
+  // A container has two text lines, separated by a line break and a trailing
+  // ignored line break.
+  TestAXTreeUpdateNode line_break(ax::mojom::Role::kLineBreak, {});
+  line_break.data.SetName("\n");
+  line_break.data.AddBoolAttribute(
+      ax::mojom::BoolAttribute::kIsLineBreakingObject, true);
+  TestAXTreeUpdateNode ignored_break = line_break;
+  ignored_break.data.AddState(ax::mojom::State::kIgnored);
+  TestAXTreeUpdateNode container(
+      ax::mojom::Role::kGenericContainer,
+      {TestAXTreeUpdateNode("Line one"), line_break,
+       TestAXTreeUpdateNode("Line two"), ignored_break});
+  container.data.AddBoolAttribute(
+      ax::mojom::BoolAttribute::kIsLineBreakingObject, true);
+  Init(TestAXTreeUpdate(container));
+
+  AtkObject* root_obj = GetRootAtkObject();
+  ASSERT_TRUE(ATK_IS_TEXT(root_obj));
+  AtkText* atk_text = ATK_TEXT(root_obj);
+  ASSERT_EQ(17, atk_text_get_character_count(atk_text));
+
+  // ATK line queries at offset 12 must return "Line two" with offsets 9 and 17.
+  int start_offset = -1;
+  int end_offset = -1;
+  char* content = atk_text_get_string_at_offset(
+      atk_text, 12, ATK_TEXT_GRANULARITY_LINE, &start_offset, &end_offset);
+  EXPECT_STREQ("Line two", content);
+  EXPECT_EQ(9, start_offset);
+  EXPECT_EQ(17, end_offset);
+  g_free(content);
+
+  // A LINE_END query searches backward for a line end rather than a line start
+  // and must return the same range.
+  start_offset = -1;
+  end_offset = -1;
+  content = atk_text_get_text_at_offset(
+      atk_text, 12, ATK_TEXT_BOUNDARY_LINE_END, &start_offset, &end_offset);
+  EXPECT_STREQ("Line two", content);
+  EXPECT_EQ(9, start_offset);
+  EXPECT_EQ(17, end_offset);
+  g_free(content);
 }
 
 TEST_F(AXPlatformNodeAuraLinuxTest, AtkTextGeometryRequestsInlineTextBoxes) {
@@ -3370,6 +3460,54 @@ TEST_F(AXPlatformNodeAuraLinuxTest, FindStartOfStyleWithNoStyles) {
 
   EXPECT_EQ(0, node->FindStartOfStyle(0, ax::mojom::MoveDirection::kBackward));
   EXPECT_EQ(0, node->FindStartOfStyle(4, ax::mojom::MoveDirection::kBackward));
+}
+
+TEST_F(AXPlatformNodeAuraLinuxTest, ResetComputedHypertextClearsCachedState) {
+  AXNodeData root;
+  root.id = 1;
+  root.role = ax::mojom::Role::kRootWebArea;
+  root.child_ids = {2, 3};
+
+  // Include a non-BMP character (U+1F600) so `GetHypertextAdjustments()`
+  // populates a non-empty `text_unicode_adjustments_` vector.
+  AXNodeData text;
+  text.id = 2;
+  text.role = ax::mojom::Role::kStaticText;
+  text.SetName("Hi \xF0\x9F\x98\x80");
+
+  AXNodeData link;
+  link.id = 3;
+  link.role = ax::mojom::Role::kLink;
+  link.SetName("Link");
+
+  Init(root, text, link);
+
+  AXPlatformNodeAuraLinux* node = GetRootPlatformNode();
+  ASSERT_NE(nullptr, node);
+
+  EXPECT_FALSE(node->GetHypertext().empty());
+  EXPECT_FALSE(node->GetAXHypertext().needs_update);
+  EXPECT_EQ(1u, node->GetAXHypertext().hyperlinks.size());
+  EXPECT_EQ(1u, node->GetAXHypertext().hyperlink_offset_to_index.size());
+
+  const base::OffsetAdjuster::Adjustments& adjustments =
+      node->GetHypertextAdjustments();
+  EXPECT_FALSE(adjustments.empty());
+  ASSERT_TRUE(node->text_unicode_adjustments_.has_value());
+
+  int start_offset = -1;
+  int end_offset = -1;
+  node->GetTextAttributes(0, &start_offset, &end_offset);
+  EXPECT_FALSE(node->offset_to_text_attributes_.empty());
+
+  node->ResetComputedHypertext();
+
+  EXPECT_TRUE(node->GetAXHypertext().needs_update);
+  EXPECT_TRUE(node->GetAXHypertext().hypertext.empty());
+  EXPECT_TRUE(node->GetAXHypertext().hyperlinks.empty());
+  EXPECT_TRUE(node->GetAXHypertext().hyperlink_offset_to_index.empty());
+  EXPECT_FALSE(node->text_unicode_adjustments_.has_value());
+  EXPECT_TRUE(node->offset_to_text_attributes_.empty());
 }
 
 }  // namespace ui

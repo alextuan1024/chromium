@@ -17,6 +17,7 @@
 #include "ash/style/dark_light_mode_controller_impl.h"
 #include "ash/style/typography.h"
 #include "ash/system/holding_space/holding_space_item_view.h"
+#include "base/containers/span.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
@@ -73,7 +74,7 @@ void AssertNoLayers(const views::View* view) {
 
 // Returns the holding space items associated with the specified `views`.
 std::vector<const HoldingSpaceItem*> GetHoldingSpaceItems(
-    const std::vector<const HoldingSpaceItemView*> views) {
+    base::span<const HoldingSpaceItemView* const> views) {
   std::vector<const HoldingSpaceItem*> items;
   for (const HoldingSpaceItemView* view : views)
     items.push_back(view->item());
@@ -127,12 +128,12 @@ class DragImageLayoutManager : public views::LayoutManagerBase {
     return proposed_layout;
   }
 
-  std::vector<raw_ptr<views::View, VectorExperimental>>
+  std::vector<raw_ptr<views::View, DanglingUntriaged>>
   GetChildViewsInPaintOrder(const views::View* host) const override {
     // Paint `children` in reverse order so that earlier views paint at a higher
     // z-index than later views, like a deck of cards with the first `child`
     // stacked on top.
-    std::vector<raw_ptr<views::View, VectorExperimental>> children;
+    std::vector<raw_ptr<views::View, DanglingUntriaged>> children;
     for (views::View* child : std::views::reverse(host->children())) {
       children.push_back(child);
     }
@@ -166,8 +167,9 @@ class DragImageItemView : public views::View {
   gfx::Insets GetInsets() const final {
     // Add insets to accommodate the shadow so that the view's content will be
     // laid out within the appropriate shadow margins.
-    return gfx::Insets(-gfx::ShadowValue::GetMargin(
-        ui::Shadow::MakeShadowValues(drag_drop::kDragImageElevation)));
+    return gfx::Insets(
+        -gfx::ShadowValue::GetMargin(ui::decoration::Shadow::MakeShadowValues(
+            drag_drop::kDragImageElevation)));
   }
 
   void OnPaintBackground(gfx::Canvas* canvas) override {
@@ -181,8 +183,9 @@ class DragImageItemView : public views::View {
     flags.setAntiAlias(true);
     flags.setColor(
         color_provider_->GetColor(drag_drop::kDragImageBackgroundColor));
-    flags.setLooper(gfx::CreateShadowDrawLooper(
-        ui::Shadow::MakeShadowValues(drag_drop::kDragImageElevation)));
+    flags.setLooper(
+        gfx::CreateShadowDrawLooper(ui::decoration::Shadow::MakeShadowValues(
+            drag_drop::kDragImageElevation)));
     canvas->DrawRoundRect(bounds, kDragImageItemViewCornerRadius, flags);
   }
 

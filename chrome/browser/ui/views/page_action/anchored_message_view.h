@@ -5,11 +5,14 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_PAGE_ACTION_ANCHORED_MESSAGE_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_PAGE_ACTION_ANCHORED_MESSAGE_VIEW_H_
 
+#include <memory>
 #include <optional>
 #include <string>
 
+#include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_model.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -18,6 +21,7 @@
 #include "ui/base/models/image_model.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/menu_button_controller.h"
 #include "ui/views/controls/menu/menu_runner.h"
@@ -28,11 +32,13 @@ class SimpleMenuModel;
 }
 
 namespace views {
+class AnimatingLayoutManager;
 class ImageButton;
 class ImageView;
 class Label;
 class MenuButton;
 class Widget;
+class WidgetFadeAnimator;
 }
 
 namespace page_actions {
@@ -74,6 +80,8 @@ class AnchoredMessageBubbleView : public views::BubbleDialogDelegate,
   // views::BubbleDialogDelegate:
   views::View* GetContentsView() override;
   bool CanActivate() const override;
+  gfx::Rect GetAnchorRect() const override;
+  void OnAnchorBoundsChanged() override;
 
   // views::View:
   views::Widget* GetWidget() override;
@@ -82,10 +90,24 @@ class AnchoredMessageBubbleView : public views::BubbleDialogDelegate,
 
   void UpdateContent(const PageActionModelInterface& model);
 
+  // Slides and fades the bubble into view. Reverses an in-progress
+  // AnimateOut().
+  void AnimateIn();
+
+  // Slides and fades the bubble out of view, then closes its widget.
+  void AnimateOut();
+
+  bool is_closing() const { return is_closing_; }
+
+  views::WidgetFadeAnimator* fade_animator_for_testing() {
+    return fade_animator_.get();
+  }
+
   // views::BubbleDialogDelegate:
   void OnWidgetDestroying(views::Widget* widget) override;
 
  protected:
+  void AddedToWidget() override;
   void OnThemeChanged() override;
 
  private:
@@ -93,6 +115,7 @@ class AnchoredMessageBubbleView : public views::BubbleDialogDelegate,
   void MenuButtonPressed();
   void OnMenuClosed();
   void OnExpandButtonPressed();
+  void CloseWidget();
 
   void UpdateExpandButtonIcon();
   void UpdateExpandButtonTooltip();
@@ -102,8 +125,10 @@ class AnchoredMessageBubbleView : public views::BubbleDialogDelegate,
   void UpdateActionButtons(const PageActionModelInterface& model);
   void UpdateExpandableContent(const PageActionModelInterface& model);
 
+  raw_ptr<views::AnimatingLayoutManager> animating_layout_ = nullptr;
   raw_ptr<views::View> top_row_ = nullptr;
   raw_ptr<views::View> bottom_container_ = nullptr;
+  raw_ptr<views::View> items_container_ = nullptr;
   raw_ptr<views::Label> label_ = nullptr;
   raw_ptr<MultiIconButton> expand_button_ = nullptr;
   raw_ptr<ChipContainerView> chip_container_ = nullptr;
@@ -117,8 +142,14 @@ class AnchoredMessageBubbleView : public views::BubbleDialogDelegate,
   std::unique_ptr<views::MenuRunner> menu_runner_;
   std::unique_ptr<views::MenuButtonController::PressedLock> pressed_lock_;
   bool expanded_ = false;
+  bool has_animated_in_ = false;
+  bool is_closing_ = false;
+  std::unique_ptr<views::WidgetFadeAnimator> fade_animator_;
+  base::CallbackListSubscription fade_complete_subscription_;
   std::optional<AnchoredMessageExpandableContent> expandable_content_;
   const raw_ref<Delegate> delegate_;
+
+  base::WeakPtrFactory<AnchoredMessageBubbleView> weak_factory_{this};
 };
 
 }  // namespace page_actions

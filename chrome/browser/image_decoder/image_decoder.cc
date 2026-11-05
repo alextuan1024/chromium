@@ -9,6 +9,7 @@
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/ref_counted_memory.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
@@ -43,6 +44,16 @@ void RunDecodeCallbackOnTaskRunner(
 }
 
 template <typename ImageDataType>
+base::span<const uint8_t> GetImageDataSpan(const ImageDataType& image_data) {
+  return base::as_byte_span(image_data);
+}
+
+base::span<const uint8_t> GetImageDataSpan(
+    const scoped_refptr<base::RefCountedMemory>& image_data) {
+  return base::span(*image_data);
+}
+
+template <typename ImageDataType>
 void DecodeImage(ImageDataType image_data,
                  data_decoder::mojom::ImageCodec codec,
                  bool shrink_to_fit,
@@ -50,7 +61,7 @@ void DecodeImage(ImageDataType image_data,
                  data_decoder::DecodeImageCallback callback,
                  scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
                  data_decoder::DataDecoder* data_decoder) {
-  base::span<const uint8_t> image_data_span(base::as_byte_span(image_data));
+  base::span<const uint8_t> image_data_span = GetImageDataSpan(image_data);
 
   if (data_decoder) {
     data_decoder::DecodeImage(
@@ -107,6 +118,8 @@ void ImageDecoder::Start(ImageRequest* image_request,
 
 template void ImageDecoder::Start(ImageRequest*, std::vector<uint8_t>);
 template void ImageDecoder::Start(ImageRequest*, std::string);
+template void ImageDecoder::Start(ImageRequest*,
+                                  scoped_refptr<base::RefCountedMemory>);
 
 // static
 template <typename ImageDataType>
@@ -120,6 +133,12 @@ void ImageDecoder::StartWithOptions(ImageRequest* image_request,
       desired_image_frame_size);
 }
 
+template void ImageDecoder::StartWithOptions(
+    ImageRequest*,
+    scoped_refptr<base::RefCountedMemory>,
+    ImageCodec,
+    bool,
+    const gfx::Size&);
 template void ImageDecoder::StartWithOptions(ImageRequest*,
                                              std::vector<uint8_t>,
                                              ImageCodec,
@@ -140,8 +159,8 @@ void ImageDecoder::StartWithOptionsImpl(
     ImageCodec image_codec,
     bool shrink_to_fit,
     const gfx::Size& desired_image_frame_size) {
-  DCHECK(image_request);
-  DCHECK(image_request->task_runner());
+  CHECK(image_request, base::NotFatalUntil::M161);
+  CHECK(image_request->task_runner(), base::NotFatalUntil::M161);
 
   int request_id;
   {
@@ -171,6 +190,12 @@ void ImageDecoder::StartWithOptionsImpl(
                              image_request->data_decoder());
 }
 
+template void ImageDecoder::StartWithOptionsImpl(
+    ImageRequest*,
+    scoped_refptr<base::RefCountedMemory>,
+    ImageCodec,
+    bool,
+    const gfx::Size&);
 template void ImageDecoder::StartWithOptionsImpl(ImageRequest*,
                                                  std::vector<uint8_t>,
                                                  ImageCodec,
@@ -184,7 +209,7 @@ template void ImageDecoder::StartWithOptionsImpl(ImageRequest*,
 
 // static
 void ImageDecoder::Cancel(ImageRequest* image_request) {
-  DCHECK(image_request);
+  CHECK(image_request, base::NotFatalUntil::M161);
   ImageDecoder::GetInstance()->CancelImpl(image_request);
 }
 
@@ -212,7 +237,8 @@ void ImageDecoder::OnDecodeImageSucceeded(const SkBitmap& decoded_image,
     image_request_id_map_.erase(it);
   }
 
-  DCHECK(image_request->task_runner()->RunsTasksInCurrentSequence());
+  CHECK(image_request->task_runner()->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M161);
   image_request->OnImageDecoded(decoded_image);
 }
 
@@ -227,6 +253,7 @@ void ImageDecoder::OnDecodeImageFailed(int request_id) {
     image_request_id_map_.erase(it);
   }
 
-  DCHECK(image_request->task_runner()->RunsTasksInCurrentSequence());
+  CHECK(image_request->task_runner()->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M161);
   image_request->OnDecodeImageFailed();
 }

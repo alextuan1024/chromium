@@ -6,9 +6,9 @@
 
 #include <cstdlib>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
-#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
@@ -23,7 +23,7 @@ void ShowRequestFileSystemDialog(
     const std::string& volume_label,
     bool writable,
     base::OnceCallback<void(ui::mojom::DialogButton)> callback) {
-  DCHECK(callback);
+  CHECK(callback, base::NotFatalUntil::M162);
 
   // Split the callback for the accept and cancel actions (the later been
   // further split for cancel and close actions).

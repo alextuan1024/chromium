@@ -6,6 +6,7 @@
 #define DEVICE_VR_ANDROID_ARCORE_AR_COMPOSITOR_FRAME_SINK_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/functional/callback.h"
@@ -156,8 +157,7 @@ class ArCompositorFrameSink : public viz::mojom::CompositorFrameSinkClient {
   // be two frames with outstanding resources at a time (though we also have a
   // max size to our swapchain), so we generally expect this to be ~4 items, but
   // it could be 2*Swapchain size in a worst case.
-  base::flat_map<viz::ResourceId, raw_ptr<WebXrFrame, CtnExperimental>>
-      id_to_frame_map_;
+  base::flat_map<viz::ResourceId, raw_ptr<WebXrFrame>> id_to_frame_map_;
 
   base::OnceCallback<void(bool)> on_initialized_;
   BeginFrameCallback on_begin_frame_;
@@ -172,6 +172,11 @@ class ArCompositorFrameSink : public viz::mojom::CompositorFrameSinkClient {
   viz::ResourceIdGenerator resource_id_generator_;
   uint64_t next_begin_frame_id_ = 1;
   bool should_composite_dom_overlay_ = false;
+  // The oldest DOM surface that is acceptable to draw while the latest one
+  // hasn't activated yet. The DOM SurfaceId changes often (e.g. on Android
+  // every selection or caret change allocates a new LocalSurfaceId), so we
+  // embed a range rather than just the latest id, to avoid drawing nothing.
+  std::optional<viz::SurfaceId> dom_fallback_surface_id_;
 
   // Mojom remotes and helpers
   mojo::AssociatedRemote<viz::mojom::DisplayPrivate> display_private_;

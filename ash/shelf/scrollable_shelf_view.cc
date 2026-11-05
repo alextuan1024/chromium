@@ -348,7 +348,6 @@ void ScrollableShelfView::Init() {
   // RootView which is beneath |translucent_background_| in ShelfWidget.
   // As a result, the child view will not show.
   SetPaintToLayer(ui::LAYER_NOT_DRAWN);
-  layer()->SetFillsBoundsOpaquely(false);
 
   // Initialize the shelf container view.
   // Note that |shelf_container_view_| should be under the arrow buttons. It
@@ -1142,6 +1141,12 @@ bool ScrollableShelfView::ShouldHideTooltip(const gfx::Point& cursor_location,
   gfx::Point location_in_shelf_view = cursor_location;
   views::View::ConvertPointToTarget(this, shelf_view_, &location_in_shelf_view);
   return shelf_view_->ShouldHideTooltip(location_in_shelf_view, delegate_view);
+}
+
+base::expected<aura::Window*, ScrollableShelfView::NoPreviewReason>
+ScrollableShelfView::GetPreviewWindowOrShowAppMenu(views::View* view,
+                                                   bool show_app_menu) {
+  return shelf_view_->GetPreviewWindowOrShowAppMenu(view, show_app_menu);
 }
 
 std::u16string ScrollableShelfView::GetTitleForView(

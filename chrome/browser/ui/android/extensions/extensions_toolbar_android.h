@@ -7,7 +7,9 @@
 
 #include "base/android/jni_android.h"
 #include "base/android/scoped_java_ref.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ui/android/extensions/extension_keybinding_registry_android.h"
 #include "chrome/browser/ui/extensions/extension_popup_types.h"
@@ -24,7 +26,7 @@ class ExtensionsToolbarAndroid : public ExtensionsToolbarViewModel::Delegate,
                                  public ExtensionsToolbarViewModel::Observer {
  public:
   ExtensionsToolbarAndroid(BrowserWindowInterface* browser,
-                           const base::android::JavaRef<jobject>& java_object);
+                           const jni_zero::JavaRef<jobject>& java_object);
   ExtensionsToolbarAndroid(const ExtensionsToolbarAndroid&) = delete;
   ExtensionsToolbarAndroid& operator=(const ExtensionsToolbarAndroid&) = delete;
   ~ExtensionsToolbarAndroid() override;
@@ -66,39 +68,36 @@ class ExtensionsToolbarAndroid : public ExtensionsToolbarViewModel::Delegate,
       content::WebContents* web_contents) override;
 
   // JNI implementations.
-  void Destroy(JNIEnv* env);
-  base::android::ScopedJavaLocalRef<jobject> GetRequestAccessButtonParams(
+  jni_zero::ScopedJavaLocalRef<jobject> GetRequestAccessButtonParams(
       JNIEnv* env,
       content::WebContents* web_contents);
-  base::android::ScopedJavaLocalRef<jobject> GetAction(
+  jni_zero::ScopedJavaLocalRef<jobject> GetAction(
       JNIEnv* env,
       const ToolbarActionsModel::ActionId& action_id,
       content::WebContents* web_contents);
-  base::android::ScopedJavaLocalRef<jobject> GetIcon(
-      JNIEnv* env,
-      const ToolbarActionsModel::ActionId& action_id,
-      content::WebContents* web_contents,
-      int canvas_width_dp,
-      int canvas_height_dp,
-      float scale_factor);
-  std::vector<ToolbarActionsModel::ActionId> GetAllActionIds(JNIEnv* env);
-  std::vector<ToolbarActionsModel::ActionId> GetPinnedActionIds(JNIEnv* env);
-  base::android::ScopedJavaLocalRef<jobject> GetMenuButtonState(
+  SkBitmap GetIcon(const ToolbarActionsModel::ActionId& action_id,
+                   content::WebContents* web_contents,
+                   int canvas_width_dp,
+                   int canvas_height_dp,
+                   float scale_factor);
+  base::span<const ToolbarActionsModel::ActionId> GetAllActionIds();
+  base::span<const ToolbarActionsModel::ActionId> GetPinnedActionIds();
+  jni_zero::ScopedJavaLocalRef<jobject> GetMenuButtonState(
       JNIEnv* env,
       content::WebContents* web_contents,
       int canvas_width_dp,
       int canvas_height_dp,
       float scale_factor,
       int color);
-  bool HandleKeyDownEvent(JNIEnv* env, const ui::KeyEventAndroid& key_event);
-  bool IsActionDraggable(JNIEnv* env,
-                         const ToolbarActionsModel::ActionId& action_id);
+  bool HandleKeyDownEvent(const ui::KeyEventAndroid& key_event);
+  bool IsActionDraggable(const ToolbarActionsModel::ActionId& action_id);
   void ExecuteUserAction(const ToolbarActionsModel::ActionId& action_id,
                          ToolbarActionViewModel::InvocationSource source);
-  bool OnRequestAccessButtonClicked(JNIEnv* env,
-                                    content::WebContents* web_contents);
+  bool OnRequestAccessButtonClicked(content::WebContents* web_contents);
   void MovePinnedAction(const ToolbarActionsModel::ActionId& action_id,
                         int target_index);
+  void MovePinnedActionBy(const ToolbarActionsModel::ActionId& action_id,
+                          int move_by);
 
  private:
   void RegisterIconObserverForAction(
@@ -106,6 +105,8 @@ class ExtensionsToolbarAndroid : public ExtensionsToolbarViewModel::Delegate,
 
   void OnActionIconUpdated(const ToolbarActionsModel::ActionId& action_id);
 
+  void NotifyActionRemoved(const ToolbarActionsModel::ActionId& action_id);
+  void NotifyPinnedActionsChanged();
 
   const raw_ptr<BrowserWindowInterface> browser_;
 
@@ -136,7 +137,9 @@ class ExtensionsToolbarAndroid : public ExtensionsToolbarViewModel::Delegate,
       keybinding_registry_;
 
   // Java counterpart that `this` is owned by.
-  const base::android::ScopedJavaGlobalRef<jobject> java_object_;
+  const jni_zero::ScopedJavaGlobalRef<jobject> java_object_;
+
+  base::WeakPtrFactory<ExtensionsToolbarAndroid> weak_ptr_factory_{this};
 };
 
 }  // namespace extensions

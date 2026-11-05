@@ -77,8 +77,8 @@ void WebContentsVideoCaptureDevice::OnFrameCaptured(
     mojo::PendingRemote<viz::mojom::FrameSinkVideoConsumerFrameCallbacks>
         callbacks) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (info->metadata.source_size.has_value()) {
-    const gfx::Size new_size = *info->metadata.source_size;
+  if (info->metadata.capture.source_size.has_value()) {
+    const gfx::Size new_size = *info->metadata.capture.source_size;
     // Only update the captured content size when the size changes. See also
     // the comment in WebContentsFrameTracker::SetCapturedContentSize which
     // expects that behavior.
@@ -108,7 +108,8 @@ void WebContentsVideoCaptureDevice::WillStart() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   tracker_.AsyncCall(&WebContentsFrameTracker::WillStartCapturingWebContents)
       .WithArgs(capture_params().SuggestConstraints().max_frame_size,
-                capture_params().is_high_dpi_enabled);
+                capture_params().is_high_dpi_enabled,
+                capture_params().resolution_change_policy);
 }
 
 void WebContentsVideoCaptureDevice::DidStop() {

@@ -18,7 +18,6 @@ import org.chromium.chrome.browser.app.tabmodel.ArchivedTabModelOrchestrator.Lea
 import org.chromium.chrome.browser.app.tabmodel.TabStateStore.TabStateStoreCleaner;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabArchiveSettings;
@@ -32,7 +31,6 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorBase;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
-import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStoreImpl.TabPersistentStoreImplCleaner;
 import org.chromium.chrome.browser.tabmodel.TabbedModeTabPersistencePolicy;
 import org.chromium.chrome.browser.tabwindow.TabWindowManager;
@@ -45,13 +43,32 @@ import java.util.Set;
 
 /** Cleaner that allows a window to clean up persisted state for another window. */
 @NullMarked
-public class PersistentStoreCleaner {
+public class PersistentStoreCleaner implements Destroyable {
     /** Dependencies for cleaning unused data for a specific profile. */
     private static class UnusedDataDeps implements Destroyable {
         final Set<TabContentManager> mTabContentManagers = new HashSet<>();
         @Nullable Runnable mCleanupRunnable;
         TabWindowManager.@Nullable Observer mTabWindowManagerObserver;
+        @Nullable TabModelSelector mObservedSelector;
+        @Nullable TabModelSelectorObserver mTabModelSelectorObserver;
         @Nullable Destroyable mArchivedTabsLease;
+
+        void pruneDestroyedManagers() {
+            mTabContentManagers.removeIf(TabContentManager::isDestroyed);
+        }
+
+        @Nullable TabContentManager getValidManager() {
+            pruneDestroyedManagers();
+            return mTabContentManagers.isEmpty() ? null : mTabContentManagers.iterator().next();
+        }
+
+        void clearSelectorObserver() {
+            if (mObservedSelector != null && mTabModelSelectorObserver != null) {
+                mObservedSelector.removeObserver(mTabModelSelectorObserver);
+                mObservedSelector = null;
+                mTabModelSelectorObserver = null;
+            }
+        }
 
         void maybeAcquireArchivedTabsLease(Profile profile) {
             if (mArchivedTabsLease == null
@@ -64,6 +81,7 @@ public class PersistentStoreCleaner {
 
         @Override
         public void destroy() {
+            clearSelectorObserver();
             if (mTabWindowManagerObserver != null) {
                 TabWindowManagerSingleton.getInstance().removeObserver(mTabWindowManagerObserver);
                 mTabWindowManagerObserver = null;
@@ -85,6 +103,7 @@ public class PersistentStoreCleaner {
     private final TabPersistentStoreImplCleaner mLegacyCleaner;
 
     private @Nullable UnusedDataDeps mUnusedDataDeps;
+    private boolean mIsDestroyed;
 
     /**
      * @param profile The original profile used for dependencies.
@@ -195,12 +214,13 @@ public class PersistentStoreCleaner {
      */
     public void scheduleCleanUnusedData(TabContentManager manager) {
         assertOnUiThread();
-        if (!ChromeFeatureList.sScheduleWindowCleaning.isEnabled()) return;
+        if (mIsDestroyed || !ChromeFeatureList.sScheduleWindowCleaning.isEnabled()) return;
         UnusedDataDeps unusedDataDeps = mUnusedDataDeps;
         if (unusedDataDeps == null) {
             unusedDataDeps = new UnusedDataDeps();
             mUnusedDataDeps = unusedDataDeps;
         }
+        unusedDataDeps.pruneDestroyedManagers();
         unusedDataDeps.mTabContentManagers.add(manager);
 
         TabWindowManager tabWindowManager = TabWindowManagerSingleton.getInstance();
@@ -216,6 +236,32 @@ public class PersistentStoreCleaner {
                     };
             tabWindowManager.addObserver(unusedDataDeps.mTabWindowManagerObserver);
         }
+    }
+
+    /**
+     * Removes a {@link TabContentManager} when its host activity / orchestrator is destroyed. If no
+     * active managers remain, cleans unused dependencies and unregisters observers to avoid memory
+     * leaks.
+     *
+     * @param manager The {@link TabContentManager} to remove.
+     */
+    public void removeTabContentManager(TabContentManager manager) {
+        assertOnUiThread();
+        if (mUnusedDataDeps == null) return;
+
+        mUnusedDataDeps.mTabContentManagers.remove(manager);
+        mUnusedDataDeps.pruneDestroyedManagers();
+        if (mUnusedDataDeps.mTabContentManagers.isEmpty()) {
+            cleanUnusedDeps();
+        }
+    }
+
+    @Override
+    public void destroy() {
+        assertOnUiThread();
+        mIsDestroyed = true;
+        cleanUnusedDeps();
+        mPersistencePolicy.destroy();
     }
 
     /** Schedules the cleaning of unused windows if a cleanup task is not already scheduled. */
@@ -235,13 +281,10 @@ public class PersistentStoreCleaner {
 
     private void cleanUnusedWindows(UnusedDataDeps deps) {
         assertOnUiThread();
-        TabContentManager validManager = null;
-        for (TabContentManager manager : deps.mTabContentManagers) {
-            if (!manager.isDestroyed()) {
-                validManager = manager;
-                break;
-            }
+        if (deps != mUnusedDataDeps) {
+            return;
         }
+        TabContentManager validManager = deps.getValidManager();
 
         if (validManager == null) {
             cleanUnusedDeps();
@@ -295,23 +338,28 @@ public class PersistentStoreCleaner {
                 // before initializing (e.g. window closed during startup), re-evaluate cleanup:
                 // if other selectors remain, continue waiting or proceed; if all selectors are
                 // gone, maybeCleanUnusedWindows() will safely abort.
-                TabModelSelectorObserver destructionObserver =
+                deps.clearSelectorObserver();
+                deps.mObservedSelector = selector;
+                deps.mTabModelSelectorObserver =
                         new TabModelSelectorObserver() {
                             @Override
+                            public void onTabStateInitialized() {
+                                onFinished();
+                            }
+
+                            @Override
                             public void onDestroyed() {
-                                selector.removeObserver(this);
+                                onFinished();
+                            }
+
+                            private void onFinished() {
+                                deps.clearSelectorObserver();
                                 deps.mCleanupRunnable = null;
+                                if (deps != mUnusedDataDeps) return;
                                 maybeCleanUnusedWindows();
                             }
                         };
-                selector.addObserver(destructionObserver);
-                TabModelUtils.runOnTabStateInitialized(
-                        () -> {
-                            selector.removeObserver(destructionObserver);
-                            deps.mCleanupRunnable = null;
-                            maybeCleanUnusedWindows();
-                        },
-                        selector);
+                selector.addObserver(deps.mTabModelSelectorObserver);
                 return;
             }
         }
@@ -325,16 +373,16 @@ public class PersistentStoreCleaner {
             }
         }
 
-        TabArchiveSettings archiveSettings =
-                new TabArchiveSettings(ChromeSharedPreferences.getInstance());
+        TabArchiveSettings archiveSettings = TabArchiveSettings.getInstance();
         // Check if there are any archived tabs either tracked in persistent settings or in
-        // memory. archiveSettings.getArchivedTabCount() reads the persisted count from
-        // SharedPreferences, and isInstantiatedForProfile checks memory residency.
-        // If hasArchivedTabs is true but archivedTabModelSelector is null (e.g. a brand new lease
-        // where models haven't been created yet), thumbnail pruning is safely deferred to prevent
-        // deleting thumbnails of archived tabs whose IDs are not yet loaded in memory.
+        // memory, or if the persisted archived tab count has not yet been initialized on upgrade.
+        // If hasArchivedTabs is true but archivedTabModelSelector is null (e.g. before deferred
+        // startup or on a brand new lease where models haven't been created yet), thumbnail pruning
+        // is safely deferred to prevent deleting thumbnails of archived tabs whose IDs are not yet
+        // loaded in memory.
         boolean hasArchivedTabs =
-                archiveSettings.getArchivedTabCount() > 0
+                !archiveSettings.hasArchivedTabCountBeenSet()
+                        || archiveSettings.getArchivedTabCount() > 0
                         || ArchivedTabModelOrchestrator.isInstantiatedForProfile(mProfile);
         if (!hasArchivedTabs || archivedTabModelSelector != null) {
             deleteAllTabDataExceptFor(validManager, tabIds);

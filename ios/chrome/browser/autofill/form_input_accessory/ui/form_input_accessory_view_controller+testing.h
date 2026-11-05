@@ -8,16 +8,12 @@
 #import "ios/chrome/browser/autofill/form_input_accessory/ui/form_input_accessory_view_controller.h"
 
 @class FormSuggestion;
-@class FormSuggestionView;
 
 // Exposes private methods for unit testing.
 @interface FormInputAccessoryViewController (Testing)
 
 // Exposed for unit testing.
 - (void)updateFormSuggestionView:(NSArray<FormSuggestion*>*)suggestions;
-
-// Exposed for unit testing.
-@property(nonatomic, readonly) FormSuggestionView* formSuggestionView;
 
 @end
 

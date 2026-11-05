@@ -21,7 +21,6 @@ import android.os.Build;
 import android.view.View;
 
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.core.app.ApplicationProvider;
 import androidx.test.espresso.contrib.RecyclerViewActions;
 import androidx.test.filters.MediumTest;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -51,7 +50,6 @@ import org.chromium.chrome.browser.feed.v2.FeedV2TestHelper;
 import org.chromium.chrome.browser.feed.v2.TestFeedServer;
 import org.chromium.chrome.browser.firstrun.FirstRunUtils;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.gesturenav.GestureNavigationUtils;
 import org.chromium.chrome.browser.ntp.NewTabPage;
 import org.chromium.chrome.browser.ntp.NtpSmoothTransitionDelegate;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
@@ -66,12 +64,12 @@ import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.browser.suggestions.SuggestionsDependenciesRule;
 import org.chromium.chrome.test.util.browser.suggestions.mostvisited.FakeMostVisitedSites;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.test.util.BackForwardTransitionAnimationManagerTestUtils;
 import org.chromium.content_public.browser.test.util.Coordinates;
 import org.chromium.content_public.browser.test.util.TestTouchUtils;
 import org.chromium.content_public.browser.test.util.TouchCommon;
 import org.chromium.content_public.browser.test.util.WebContentsUtils;
 import org.chromium.net.NetworkChangeNotifier;
-import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.io.IOException;
@@ -88,7 +86,6 @@ import java.util.concurrent.TimeoutException;
 // Restrict to Phones and Tablets because Desktop Android does not show feed in NTP.
 @Restriction({DeviceFormFactor.PHONE_OR_TABLET})
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     // Disable minimum show duration to allow controls to hide immediately on scroll.
     ChromeSwitches.DISABLE_MINIMUM_SHOW_DURATION,
     "disable-features=IPH_FeedHeaderMenu"
@@ -113,7 +110,6 @@ public class FeedV2NewTabPageTest {
 
     private Tab mTab;
     private NewTabPage mNtp;
-    private EmbeddedTestServer mTestServer;
     private List<SiteSuggestion> mSiteSuggestions;
     private TestFeedServer mFeedServer;
 
@@ -132,20 +128,17 @@ public class FeedV2NewTabPageTest {
                 });
 
         mFeedServer = new TestFeedServer();
-        mTestServer =
-                EmbeddedTestServer.createAndStartServer(
-                        ApplicationProvider.getApplicationContext());
 
-        mSiteSuggestions = NewTabPageTestUtils.createFakeSiteSuggestions(mTestServer);
+        mSiteSuggestions = NewTabPageTestUtils.createFakeSiteSuggestions();
         FakeMostVisitedSites mostVisitedSites = new FakeMostVisitedSites();
         mostVisitedSites.setTileSuggestions(mSiteSuggestions);
         mSuggestionsDeps.getFactory().mostVisitedSites = mostVisitedSites;
-        GestureNavigationUtils.setMinRequiredPhysicalRamMbForTesting(0);
+        BackForwardTransitionAnimationManagerTestUtils.setMinRequiredPhysicalRamMbForTesting(0);
     }
 
     @After
     public void tearDown() {
-        if (mTestServer != null) {
+        if (mFeedServer != null) {
             mFeedServer.shutdown();
         }
     }
@@ -215,7 +208,8 @@ public class FeedV2NewTabPageTest {
         onView(withId(R.id.feed_stream_recycler_view))
                 .perform(RecyclerViewActions.scrollToPosition(MIN_ITEMS_AFTER_LOAD));
 
-        mActivityTestRule.loadUrl(mTestServer.getURL("/chrome/test/data/android/blue.html"));
+        mActivityTestRule.loadUrl(
+                mActivityTestRule.getTestServer().getURL("/chrome/test/data/android/blue.html"));
 
         WebContentsUtils.waitForCopyableViewInWebContents(webContents);
 
@@ -252,23 +246,25 @@ public class FeedV2NewTabPageTest {
                         new AnimatorListenerAdapter() {
                             @Override
                             public void onAnimationEnd(Animator animation) {
-                                Assert.assertEquals(
-                                        "Feed has been scrolled to target position when NTP"
-                                                + " finished faded out",
-                                        RecyclerView.SCROLL_STATE_IDLE,
-                                        getRecyclerView().getScrollState());
-                                Assert.assertEquals(
-                                        "Feed has been scrolled to target position when NTP"
-                                                + " finished faded out",
-                                        Integer.valueOf(
-                                                FeedSurfaceProvider.RestoringState.RESTORED),
-                                        ntp.getCoordinatorForTesting()
-                                                .getRestoringStateSupplier()
-                                                .get());
                                 callbackHelper.notifyCalled();
                             }
                         });
         callbackHelper.waitForNext();
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            "Feed has been scrolled to target position when NTP finished"
+                                    + " faded out",
+                            getRecyclerView().getScrollState(),
+                            Matchers.is(RecyclerView.SCROLL_STATE_IDLE));
+                    Criteria.checkThat(
+                            "Feed has been scrolled to target position when NTP finished"
+                                    + " faded out",
+                            ntp.getCoordinatorForTesting()
+                                    .getRestoringStateSupplier()
+                                    .get(),
+                            Matchers.is(FeedSurfaceProvider.RestoringState.RESTORED));
+                });
     }
 
     @Test

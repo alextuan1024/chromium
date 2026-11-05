@@ -105,18 +105,13 @@ std::optional<PreflightRequiredReason> NeedsPreflight(
   if (!IsCorsSafelistedMethod(request.method))
     return PreflightRequiredReason::kDisallowedMethod;
 
-  bool is_ad_auction_trusted_signals_request =
-      request.trusted_params &&
-      request.trusted_params->is_ad_auction_trusted_signals_request;
-
   const bool is_revalidating_for_headers =
       base::FeatureList::IsEnabled(features::kSafeRevalidation)
           ? false
           : request.is_revalidating;
 
   if (!CorsUnsafeNotForbiddenRequestHeaderNames(
-           request.headers.GetHeaderVector(), is_revalidating_for_headers,
-           is_ad_auction_trusted_signals_request)
+           request.headers.GetHeaderVector(), is_revalidating_for_headers)
            .empty()) {
     return PreflightRequiredReason::kDisallowedHeader;
   }
@@ -432,7 +427,8 @@ CorsURLLoader::CorsURLLoader(
     NetworkContext* context,
     std::optional<base::UnguessableToken> network_restrictions_id,
     net::CookieSettingOverrides factory_cookie_setting_overrides,
-    net::CookieSettingOverrides devtools_cookie_setting_overrides)
+    net::CookieSettingOverrides devtools_cookie_setting_overrides,
+    bool factory_is_storage_access_potentially_allowed)
     : receiver_(this, std::move(loader_receiver)),
       process_id_(process_id),
       request_id_(request_id),
@@ -462,7 +458,11 @@ CorsURLLoader::CorsURLLoader(
       shared_dictionary_storage_(std::move(shared_dictionary_storage)),
       shared_dictionary_observer_(shared_dictionary_observer),
       factory_cookie_setting_overrides_(factory_cookie_setting_overrides),
-      devtools_cookie_setting_overrides_(devtools_cookie_setting_overrides) {
+      devtools_cookie_setting_overrides_(devtools_cookie_setting_overrides),
+      is_storage_access_potentially_allowed_(
+          url_loader_util::IsStorageAccessPotentiallyAllowed(
+              factory_is_storage_access_potentially_allowed,
+              request_)) {
   TRACE_EVENT("loading", "CorsURLLoader::CorsURLLoader",
               net::NetLogWithSourceToFlow(net_log_), "url", request_.url.spec(),
               "process_id", process_id_, "request_id", request_id_,
@@ -518,8 +518,10 @@ CorsURLLoader::CorsURLLoader(
 CorsURLLoader::~CorsURLLoader() {
   TRACE_EVENT("loading", "CorsURLLoader::~CorsURLLoader",
               net::NetLogWithSourceToFlow(net_log_));
-  // Reset pipes first to ignore possible subsequent callback invocations
-  // caused by `network_loader_`
+  // Must cancel an in-flight preflight before disconnecting pipes, then
+  // disconnect `network_client_receiver_` before `network_loader_` is
+  // destroyed to drop any subsequent callbacks.
+  preflight_check_handle_.reset();
   network_client_receiver_.reset();
 }
 
@@ -1145,9 +1147,9 @@ CorsURLLoader::GetStorageAccessStatus() const {
       isolation_info_.top_frame_origin(),
       url_loader_util::CalculateCookieSettingOverrides(
           factory_cookie_setting_overrides_, devtools_cookie_setting_overrides_,
-          request_,
-          /*emit_metrics=*/false),
-      /*cookie_partition_key=*/std::nullopt, request_.permissions_policy);
+          request_, is_storage_access_potentially_allowed_),
+      /*cookie_partition_key=*/std::nullopt, request_.permissions_policy,
+      is_storage_access_potentially_allowed_);
 }
 
 bool CorsURLLoader::AllowUnsafeHeaders() const {
@@ -1304,17 +1306,25 @@ bool CorsURLLoader::CheckPreflightRequired() {
 void CorsURLLoader::StartPreflightCheck() {
   mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver> remote_observer;
 
-  context_->cors_preflight_controller()->PerformPreflightCheck(
-      base::BindOnce(&CorsURLLoader::OnPreflightRequestComplete,
-                     weak_factory_.GetWeakPtr()),
-      request_id_, request_,
-      PreflightController::WithTrustedHeaderClient(
-          options_ & mojom::kURLLoadOptionUseHeaderClient),
-      context_->cors_non_wildcard_request_headers_support(), tainted_,
-      net::NetworkTrafficAnnotationTag(traffic_annotation_),
-      network_loader_factory_, isolation_info_,
-      weak_devtools_observer_factory_.GetWeakPtr(), net_log_,
-      context_->acam_preflight_spec_conformant(), std::move(remote_observer));
+  std::unique_ptr<PreflightController::PreflightCheckHandle> handle =
+      context_->cors_preflight_controller()->PerformPreflightCheck(
+          base::BindOnce(&CorsURLLoader::OnPreflightRequestComplete,
+                         weak_factory_.GetWeakPtr()),
+          request_id_, request_,
+          PreflightController::WithTrustedHeaderClient(
+              options_ & mojom::kURLLoadOptionUseHeaderClient),
+          context_->cors_non_wildcard_request_headers_support(), tainted_,
+          net::NetworkTrafficAnnotationTag(traffic_annotation_),
+          network_loader_factory_, isolation_info_,
+          weak_devtools_observer_factory_.GetWeakPtr(), net_log_,
+          context_->acam_preflight_spec_conformant(),
+          std::move(remote_observer));
+  // On a cache hit, `PerformPreflightCheck()` synchronously runs
+  // `OnPreflightRequestComplete()` (which can destroy `this`), so
+  // `preflight_check_handle_` must only be assigned when `handle` is non-null.
+  if (handle) {
+    preflight_check_handle_ = std::move(handle);
+  }
 }
 
 void CorsURLLoader::ReportCorsErrorToDevTools(const CorsErrorStatus& status,
@@ -1372,6 +1382,8 @@ void CorsURLLoader::OnPreflightRequestComplete(
     int net_error,
     std::optional<CorsErrorStatus> status,
     bool has_authorization_covered_by_wildcard) {
+  preflight_check_handle_.reset();
+
   has_authorization_covered_by_wildcard_ =
       has_authorization_covered_by_wildcard;
 

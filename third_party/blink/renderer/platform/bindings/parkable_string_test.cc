@@ -11,12 +11,12 @@
 
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_helpers.h"
 #include "base/memory_coordinator/test_memory_consumer_registry.h"
 #include "base/memory_coordinator/utils.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/rand_util.h"
 #include "base/run_loop.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -37,9 +37,9 @@
 #include "third_party/blink/renderer/platform/scheduler/public/rail_mode_observer.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 using ThreadPoolExecutionMode =
     base::test::TaskEnvironment::ThreadPoolExecutionMode;
@@ -189,9 +189,8 @@ class ParkableStringTest
   }
 
   void TriggerCriticalMemoryPressureAndWait() {
-    test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-        base::kCriticalMemoryPressureThreshold, base::DoNothing());
-    test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
+    test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
+        base::kCriticalMemoryPressureThreshold,
         task_environment_.QuitClosure());
     task_environment_.RunUntilQuit();
   }
@@ -361,7 +360,7 @@ TEST_P(ParkableStringTest, DecompressUtf16String) {
   }
 
   String large_string = String(data);
-  String copy = String(large_string.Impl()->IsolatedCopy());
+  String copy = String(data);
   ParkableString parkable(large_string.ReleaseImpl());
   large_string = String();
   EXPECT_FALSE(parkable.Is8Bit());
@@ -432,7 +431,7 @@ TEST_P(ParkableStringTest, Park) {
 
 TEST_P(ParkableStringTest, EqualityNoUnparking) {
   String large_string = MakeLargeString();
-  String copy = String(large_string.Impl()->IsolatedCopy());
+  String copy = MakeLargeString();
   EXPECT_NE(large_string.Impl(), copy.Impl());
 
   ParkableString parkable(large_string.Impl());
@@ -541,7 +540,7 @@ TEST_P(ParkableStringTest, AbortedParkingRetainsCompressedData) {
 
 TEST_P(ParkableStringTest, Unpark) {
   ParkableString parkable(MakeLargeString().Impl());
-  String unparked_copy = String(parkable.ToString().Impl()->IsolatedCopy());
+  String unparked_copy = MakeLargeString();
   EXPECT_TRUE(parkable.may_be_parked());
   EXPECT_FALSE(parkable.Impl()->is_parked());
   EXPECT_TRUE(ParkAndWait(parkable));
@@ -555,7 +554,7 @@ TEST_P(ParkableStringTest, Unpark) {
 TEST_P(ParkableStringTest, BackgroundUnparkFromMemory) {
   // Memory parked strings can be unparked on a background thread.
   ParkableString parkable(MakeLargeString().Impl());
-  String unparked_copy = String(parkable.ToString().Impl()->IsolatedCopy());
+  String unparked_copy = MakeLargeString();
   EXPECT_TRUE(ParkAndWait(parkable));
   ParkableStringImpl* impl = parkable.Impl();
   // Check that the string was added to the correct StringMap.
@@ -591,7 +590,7 @@ TEST_P(ParkableStringTest, BackgroundUnparkFromMemory) {
 TEST_P(ParkableStringTest, BackgroundUnparkFromDisk) {
   // On disk strings can be unparked on a background thread.
   ParkableString parkable(MakeLargeString().Impl());
-  String unparked_copy = String(parkable.ToString().Impl()->IsolatedCopy());
+  String unparked_copy = MakeLargeString();
   EXPECT_TRUE(ParkAndWait(parkable));
   ParkableStringImpl* impl = parkable.Impl();
 
@@ -881,8 +880,6 @@ TEST_P(ParkableStringTest, Compression) {
                                     1);
   histogram_tester.ExpectTotalCount(
       "Memory.ParkableString.Decompression.Latency", 2);
-  histogram_tester.ExpectTotalCount(
-      "Memory.ParkableString.Decompression.ThroughputMBps", 2);
 }
 
 TEST_P(ParkableStringTest, SynchronousCompression) {
@@ -1402,9 +1399,6 @@ TEST_P(ParkableStringTest, ReportTotalDiskTime) {
   histogram_tester.ExpectUniqueSample(
       "Memory.ParkableString.TotalUnparkingTime.5min",
       mock_elapsed_time_ms * kNumIterations - 1, 1);
-  histogram_tester.ExpectUniqueSample(
-      "Memory.ParkableString.TotalParkingThreadTime.5min", mock_elapsed_time_ms,
-      1);
 }
 
 TEST_P(ParkableStringTest, EncodingAndDeduplication) {
@@ -1432,6 +1426,51 @@ TEST_P(ParkableStringTest, EncodingAndDeduplication) {
   // Same content, but the hash must be different because the encoding is.
   EXPECT_EQ(large_string_16.RawByteSpan(), large_string_8.RawByteSpan());
   EXPECT_NE(*parkable_16.Impl()->digest(), *parkable_8.Impl()->digest());
+}
+
+TEST_P(ParkableStringTest, CreateNonParkableCopy) {
+  ParkableString null_copy = ParkableString().CreateNonParkableCopy();
+  EXPECT_TRUE(null_copy.IsNull());
+  EXPECT_FALSE(null_copy.may_be_parked());
+
+  ParkableString small(String("abc").ReleaseImpl());
+  ASSERT_FALSE(small.may_be_parked());
+  ParkableString small_copy = small.CreateNonParkableCopy();
+  EXPECT_FALSE(small_copy.may_be_parked());
+  EXPECT_EQ(small.Impl(), small_copy.Impl());
+
+  ParkableString parkable = CreateAndParkAll();
+  ASSERT_TRUE(parkable.Impl()->is_parked());
+
+  {
+    ParkableString non_parkable = parkable.CreateNonParkableCopy();
+    EXPECT_FALSE(non_parkable.may_be_parked());
+    EXPECT_FALSE(parkable.Impl()->is_parked());
+    EXPECT_EQ(parkable.ToString().Impl(), non_parkable.ToString().Impl());
+    EXPECT_FALSE(parkable.Impl()->Park(
+        ParkableStringImpl::ParkingMode::kSynchronousOnly));
+    EXPECT_FALSE(parkable.Impl()->is_parked());
+
+    base::WaitableEvent done;
+    LambdaThreadDelegate snapshot_delegate(base::BindLambdaForTesting([&]() {
+      ParkableString off_thread_copy = non_parkable.CreateNonParkableCopy();
+      EXPECT_FALSE(off_thread_copy.may_be_parked());
+      EXPECT_EQ(non_parkable.Impl(), off_thread_copy.Impl());
+
+      ParkableStringImpl::MemoryUsage usage =
+          off_thread_copy.Impl()->MemoryUsageForSnapshot();
+      EXPECT_EQ(usage.string_impl, off_thread_copy.ToString().Impl());
+      done.Signal();
+    }));
+    base::PlatformThreadHandle thread;
+    ASSERT_TRUE(base::PlatformThread::Create(0, &snapshot_delegate, &thread));
+    done.Wait();
+    base::PlatformThread::Join(thread);
+  }
+
+  EXPECT_TRUE(
+      parkable.Impl()->Park(ParkableStringImpl::ParkingMode::kSynchronousOnly));
+  EXPECT_TRUE(parkable.Impl()->is_parked());
 }
 
 class ParkableStringTestWithQueuedThreadPool : public ParkableStringTest {

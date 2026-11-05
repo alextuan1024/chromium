@@ -9,9 +9,8 @@
 
 #include "ash/webui/recorder_app_ui/mojom/recorder_app.mojom.h"
 #include "ash/webui/recorder_app_ui/recorder_app_ui_delegate.h"
-#include "ash/webui/recorder_app_ui/url_constants.h"
-#include "ash/webui/system_apps/public/system_web_app_ui_config.h"
 #include "base/containers/flat_set.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "chromeos/services/machine_learning/public/mojom/machine_learning_service.mojom.h"
@@ -25,21 +24,13 @@
 #include "ui/message_center/message_center_observer.h"
 #include "ui/webui/mojo_web_ui_controller.h"
 
+class PrefService;
+
+namespace media_device_salt {
+class MediaDeviceSaltService;
+}  // namespace media_device_salt
+
 namespace ash {
-
-class RecorderAppUI;
-
-// WebUIConfig for chrome://recorder-app
-class RecorderAppUIConfig : public SystemWebAppUIConfig<RecorderAppUI> {
- public:
-  explicit RecorderAppUIConfig(
-      SystemWebAppUIConfig::CreateWebUIControllerFunc create_controller_func)
-      : SystemWebAppUIConfig(kChromeUIRecorderAppHost,
-                             SystemWebAppType::RECORDER,
-                             create_controller_func) {}
-
-  bool IsWebUIEnabled(content::BrowserContext* browser_context) override;
-};
 
 // The WebUI for chrome://recorder_app
 class RecorderAppUI
@@ -53,8 +44,19 @@ class RecorderAppUI
       base::OnceCallback<void(const std::optional<std::string>&)>;
   using DeviceIdMappingCallback =
       base::RepeatingCallback<void(const std::string&, WithRealIdCallback)>;
-  explicit RecorderAppUI(content::WebUI* web_ui,
-                         std::unique_ptr<RecorderAppUIDelegate> delegate);
+
+  // `local_state` must be non-null and must outlive `this`.
+  // `media_device_salt_service` provides the persistent salts used to
+  // translate media device IDs. It is null when the browser context has no
+  // such service -- notably in a guest session, where the context is
+  // off-the-record and MediaDeviceSaltServiceFactory is kOriginalOnly -- in
+  // which case the browser context's unique ID is used as the salt instead.
+  // If non-null, it must outlive `this`.
+  RecorderAppUI(
+      PrefService* local_state,
+      content::WebUI* web_ui,
+      std::unique_ptr<RecorderAppUIDelegate> delegate,
+      media_device_salt::MediaDeviceSaltService* media_device_salt_service);
   ~RecorderAppUI() override;
 
   RecorderAppUI(const RecorderAppUI&) = delete;
@@ -202,6 +204,8 @@ class RecorderAppUI
 
   // message_center::MessageCenterObserver
   void OnQuietModeChanged(bool in_quiet_mode) override;
+
+  const raw_ref<PrefService> local_state_;
 
   mojo::Remote<MachineLearningService> ml_service_;
 

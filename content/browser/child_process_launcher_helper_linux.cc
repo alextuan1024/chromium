@@ -93,7 +93,7 @@ ChildProcessLauncherHelper::LaunchProcessOnLauncherThread(
     base::ProcessHandle handle = zygote_handle->ForkRequest(
         command_line()->argv(), files_to_register->GetMapping(),
         GetProcessType());
-    *launch_result = LAUNCH_RESULT_SUCCESS;
+    *launch_result = handle ? LAUNCH_RESULT_SUCCESS : LAUNCH_RESULT_FAILURE;
 
 #if !BUILDFLAG(IS_OPENBSD)
     if (handle) {
@@ -174,8 +174,9 @@ void ChildProcessLauncherHelper::ForceNormalProcessTerminationSync(
   }
 }
 
-void ChildProcessLauncherHelper::SetProcessPriorityOnLauncherThread(
-    base::Process process,
+// static
+void ChildProcessLauncherHelper::ApplyProcessPriorityOnLauncherThread(
+    base::Process& process,
     base::Process::Priority priority) {
   CHECK(CurrentlyOnProcessLauncherTaskRunner(), base::NotFatalUntil::M159);
   if (process.CanSetPriority()) {

@@ -49,6 +49,7 @@ IN_PROC_BROWSER_TEST_F(ChromeShellDelegateBrowserTest,
   bool callback_ran = false;
   factory->Render(
       token, "<img>test</img>", gfx::Size(100, 100),
+      /*data_src=*/std::nullopt,
       base::BindOnce([](bool* ran, ui::ImageModel model) { *ran = true; },
                      &callback_ran));
 
@@ -61,7 +62,7 @@ IN_PROC_BROWSER_TEST_F(ChromeShellDelegateBrowserTest,
   ASSERT_TRUE(window_state);
   PinWindow(window, /*trusted=*/true);
   EXPECT_TRUE(window_state->IsPinned());
-  // Transitioning to locked fullscreen triggers ToggleLockedFullscreen on the
+  // Transitioning to trusted pinned triggers ToggleTrustedPinned on the
   // WindowStateDelegate, which handles environment setup.
 
   // Pump active tasks just past the 250ms rendering debounce timer.

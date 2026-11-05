@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/check_deref.h"
+#include "base/fuzzing_buildflags.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -18,7 +19,6 @@
 #include "base/version.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
-#include "chrome/browser/first_party_sets/scoped_mock_first_party_sets_handler.h"
 #include "chrome/browser/webid/federated_identity_permission_context.h"
 #include "chrome/browser/webid/federated_identity_permission_context_factory.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
@@ -42,7 +42,6 @@
 #include "components/permissions/resolvers/content_setting_permission_resolver.h"
 #include "components/permissions/test/mock_permission_prompt_factory.h"
 #include "components/prefs/pref_service.h"
-#include "components/privacy_sandbox/privacy_sandbox_prefs.h"
 #include "content/public/browser/btm_service.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/permission_descriptor_util.h"
@@ -55,20 +54,28 @@
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "net/base/schemeful_site.h"
-#include "net/first_party_sets/first_party_set_entry.h"
-#include "net/first_party_sets/global_first_party_sets.h"
 #include "net/storage_access_api/status.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 
+#if !BUILDFLAG(USE_FUZZING_ENGINE)
+#include "chrome/browser/private_insights/private_insights_service_factory.h"
+#include "chrome/browser/storage_access_api/storage_access_metrics_unittest_psl-reversed-inc.cc"
+#include "components/prefs/testing_pref_service.h"
+#include "components/private_insights/events/storage_access_log_event.pb.h"
+#include "components/private_insights/private_insights_features.h"  // nogncheck
+#include "components/private_insights/private_insights_service.h"   // nogncheck
+#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "testing/gmock/include/gmock/gmock.h"
+#endif  // !BUILDFLAG(USE_FUZZING_ENGINE)
+
 namespace {
 
 using testing::_;
 using testing::AllOf;
-using testing::Contains;
-using testing::Each;
 using testing::ElementsAre;
 using testing::ElementsAreArray;
 using testing::Field;
@@ -78,6 +85,7 @@ using testing::Lt;
 using testing::Matcher;
 using testing::Pair;
 using testing::Pointee;
+using testing::Property;
 using testing::UnorderedElementsAre;
 using DwaEntry = metrics::dwa::mojom::DwaEntry;
 using PermissionStatus = blink::mojom::PermissionStatus;
@@ -101,20 +109,6 @@ MATCHER_P2(DwaEntryMatches, outcome, requester, "") {
                   testing::UnorderedElementsAre(testing::Pair(
                       kDwaMetricsHash, static_cast<int64_t>(outcome))))),
       arg, result_listener);
-}
-
-MATCHER_P(DecidedByRelatedWebsiteSets, inner, "") {
-  return testing::ExplainMatchResult(
-      inner, arg.metadata.decided_by_related_website_sets(), result_listener);
-}
-
-MATCHER_P(IsExpired, inner, "") {
-  return testing::ExplainMatchResult(inner, arg.IsExpired(), result_listener);
-}
-
-MATCHER_P(ExpirationIs, inner, "") {
-  return testing::ExplainMatchResult(inner, arg.metadata.expiration(),
-                                     result_listener);
 }
 
 GURL GetTopLevelURL() {
@@ -323,7 +317,6 @@ class StorageAccessGrantPermissionContextTest
       mock_permission_prompt_factory_;
   permissions::PermissionRequestID::RequestLocalId::Generator
       request_id_generator_;
-  first_party_sets::ScopedMockFirstPartySetsHandler first_party_sets_handler_;
 };
 
 TEST_F(StorageAccessGrantPermissionContextTest, InsecureOriginsDisallowed) {
@@ -351,60 +344,6 @@ TEST_F(StorageAccessGrantPermissionContextTest, OpaqueOriginDisallowed) {
   EXPECT_EQ(1, static_cast<content::MockRenderProcessHost*>(
                    web_contents()->GetPrimaryMainFrame()->GetProcess())
                    ->bad_msg_count());
-}
-
-TEST_F(StorageAccessGrantPermissionContextTest, FencedFrameDisallowed) {
-  NavigateAndCommit(GetTopLevelURL());
-
-  content::RenderFrameHost* fenced_frame_rfh =
-      content::RenderFrameHostTester::For(main_rfh())->AppendFencedFrame();
-
-  auto request_data = std::make_unique<permissions::PermissionRequestData>(
-      content::PermissionDescriptorUtil::
-          CreatePermissionDescriptorForPermissionType(
-              permissions::PermissionUtil::ContentSettingsTypeToPermissionType(
-                  ContentSettingsType::STORAGE_ACCESS)),
-      CreateFakeID(fenced_frame_rfh), /*user_gesture=*/true, GetRequesterURL(),
-      GetTopLevelURL());
-
-  content::PermissionResult result =
-      RequestPermission(std::move(request_data)).Take();
-
-  EXPECT_EQ(PermissionStatus::DENIED, result.status);
-  EXPECT_EQ(content::PermissionStatusSource::FENCED_FRAME, result.source);
-
-  EXPECT_EQ(1, static_cast<content::MockRenderProcessHost*>(
-                   fenced_frame_rfh->GetProcess())
-                   ->bad_msg_count());
-}
-
-TEST_F(StorageAccessGrantPermissionContextTest,
-       FencedFrameQueryReturnsDeniedEvenWithGrant) {
-  NavigateAndCommit(GetTopLevelURL());
-
-  // Set an explicit grant.
-  HostContentSettingsMap* settings_map =
-      HostContentSettingsMapFactory::GetForProfile(profile());
-  settings_map->SetContentSettingDefaultScope(
-      GetRequesterURL(), GetTopLevelURL(), ContentSettingsType::STORAGE_ACCESS,
-      CONTENT_SETTING_ALLOW);
-
-  content::RenderFrameHost* fenced_frame_rfh =
-      content::RenderFrameHostTester::For(main_rfh())->AppendFencedFrame();
-
-  // The permissions framework transforms all permissions statuses to `DENIED`
-  // within fenced frames.
-  EXPECT_EQ(
-      PermissionStatus::DENIED,
-      permission_context()
-          ->GetPermissionStatus(
-              content::PermissionDescriptorUtil::
-                  CreatePermissionDescriptorForPermissionType(
-                      permissions::PermissionUtil::
-                          ContentSettingsTypeToPermissionType(
-                              permission_context()->content_settings_type())),
-              fenced_frame_rfh, GetRequesterURL(), GetTopLevelURL())
-          .status);
 }
 
 TEST_F(StorageAccessGrantPermissionContextTest,
@@ -578,28 +517,6 @@ TEST_F(StorageAccessGrantPermissionContextTest, BlockReused) {
   EXPECT_THAT(page_specific_content_settings()->GetTwoSiteRequests(
                   ContentSettingsType::STORAGE_ACCESS),
               UnorderedElementsAre(Pair(GetRequesterSite(), true)));
-}
-
-TEST_F(StorageAccessGrantPermissionContextTest, FpsGrantReused) {
-  auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
-  content_settings::ContentSettingConstraints constraints;
-  constraints.set_decided_by_related_website_sets(true);
-  map->SetContentSettingDefaultScope(GetRequesterURL(), GetTopLevelURL(),
-                                     ContentSettingsType::STORAGE_ACCESS,
-                                     CONTENT_SETTING_ALLOW, constraints);
-
-  EXPECT_TRUE(
-      RequestPermission(MakePermissionRequestData(/*user_gesture=*/true))
-          .Wait());
-
-  EXPECT_THAT(metrics::dwa::DwaRecorder::Get()->GetEntriesForTesting(),
-              ElementsAre(Pointee(
-                  DwaEntryMatches(RequestOutcome::kReusedImplicitGrant,
-                                  net::SchemefulSite(GetRequesterURL())))));
-
-  EXPECT_THAT(page_specific_content_settings()->GetTwoSiteRequests(
-                  ContentSettingsType::STORAGE_ACCESS),
-              IsEmpty());
 }
 
 TEST_F(StorageAccessGrantPermissionContextTest,
@@ -942,159 +859,6 @@ TEST_F(StorageAccessGrantPermissionContextTest, ExplicitGrantAccept) {
               UnorderedElementsAre(Pair(GetRequesterSite(), true)));
 }
 
-class StorageAccessGrantPermissionContextAPIWithFirstPartySetsTest
-    : public StorageAccessGrantPermissionContextTest {
- public:
-  StorageAccessGrantPermissionContextAPIWithFirstPartySetsTest() = default;
-
-  void SetUp() override {
-    StorageAccessGrantPermissionContextTest::SetUp();
-    additional_features_.InitAndEnableFeature(
-        content_settings::features::kStorageAccessAPIRelatedWebsiteSets);
-
-    // Enable Related Website Sets (formerly First Party Sets).
-    profile()->GetPrefs()->SetBoolean(
-        prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, true);
-    // Create a FPS with https://requester.example.com as the member and
-    // https://embedder.com as the primary.
-    first_party_sets_handler_.SetGlobalSets(
-        net::GlobalFirstPartySets::CreateForTesting(
-            base::Version("1.2.3"),
-            /*entries=*/
-            {{net::SchemefulSite(GetTopLevelURL()),
-              {net::FirstPartySetEntry(net::SchemefulSite(GetTopLevelURL()),
-                                       net::SiteType::kPrimary)}},
-             {net::SchemefulSite(GetRequesterURL()),
-              {net::FirstPartySetEntry(net::SchemefulSite(GetTopLevelURL()),
-                                       net::SiteType::kAssociated)}}},
-            /*aliases=*/{}));
-  }
-
- private:
-  base::test::ScopedFeatureList additional_features_;
-  first_party_sets::ScopedMockFirstPartySetsHandler first_party_sets_handler_;
-};
-
-TEST_F(StorageAccessGrantPermissionContextAPIWithFirstPartySetsTest,
-       ImplicitGrant_AutograntedWithinFPS) {
-  HostContentSettingsMap* settings_map =
-      HostContentSettingsMapFactory::GetForProfile(profile());
-  DCHECK(settings_map);
-
-  // Overriding the clock to test expiry time.
-  base::SimpleTestClock test_clock;
-  test_clock.SetNow(base::Time::Now());
-  settings_map->SetClockForTesting(&test_clock);
-
-  // Check no `SessionModel::DURABLE` setting with
-  // `decided_by_related_website_sets` exists yet.
-  ASSERT_THAT(settings_map->GetSettingsForOneType(
-                  ContentSettingsType::STORAGE_ACCESS,
-                  content_settings::mojom::SessionModel::DURABLE),
-              Each(DecidedByRelatedWebsiteSets(false)));
-
-  EXPECT_EQ(DecidePermission(MakePermissionRequestData(/*user_gesture=*/true))
-                .Get()
-                .status,
-            PermissionStatus::GRANTED);
-
-  histogram_tester().ExpectUniqueSample(kGrantIsImplicitHistogram,
-                                        /*sample=*/true, 1);
-
-  EXPECT_THAT(metrics::dwa::DwaRecorder::Get()->GetEntriesForTesting(),
-              ElementsAre(Pointee(
-                  DwaEntryMatches(RequestOutcome::kGrantedByFirstPartySet,
-                                  net::SchemefulSite(GetRequesterURL())))));
-
-  DCHECK(settings_map);
-  // Check the `SessionModel::DURABLE` setting with
-  // `decided_by_related_website_sets` granted by FPS and its expiry.
-  EXPECT_THAT(
-      settings_map->GetSettingsForOneType(
-          ContentSettingsType::STORAGE_ACCESS,
-          content_settings::mojom::SessionModel::DURABLE),
-      Contains(AllOf(
-          DecidedByRelatedWebsiteSets(true), IsExpired(false),
-          ExpirationIs(
-              test_clock.Now() +
-              permissions::kStorageAccessAPIRelatedWebsiteSetsLifetime))));
-
-  EXPECT_THAT(page_specific_content_settings()->GetTwoSiteRequests(
-                  ContentSettingsType::STORAGE_ACCESS),
-              IsEmpty());
-}
-
-class
-    StorageAccessGrantPermissionContextAPIWithFirstPartySetsFeatureDisabledTest
-    : public StorageAccessGrantPermissionContextTest {
- public:
-  StorageAccessGrantPermissionContextAPIWithFirstPartySetsFeatureDisabledTest() =
-      default;
-
-  void SetUp() override {
-    StorageAccessGrantPermissionContextTest::SetUp();
-    StorageAccessGrantPermissionContext::SetImplicitGrantLimitForTesting(
-        kImplicitGrantLimit);
-    additional_features_.InitAndDisableFeature(
-        content_settings::features::kStorageAccessAPIRelatedWebsiteSets);
-
-    // Enable Related Website Sets (formerly First Party Sets).
-    profile()->GetPrefs()->SetBoolean(
-        prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, true);
-    // Create a FPS with https://requester.example.com as the member and
-    // https://embedder.com as the primary.
-    first_party_sets_handler_.SetGlobalSets(
-        net::GlobalFirstPartySets::CreateForTesting(
-            base::Version("1.2.3"),
-            /*entries=*/
-            {{net::SchemefulSite(GetTopLevelURL()),
-              {net::FirstPartySetEntry(net::SchemefulSite(GetTopLevelURL()),
-                                       net::SiteType::kPrimary)}},
-             {net::SchemefulSite(GetRequesterURL()),
-              {net::FirstPartySetEntry(net::SchemefulSite(GetTopLevelURL()),
-                                       net::SiteType::kAssociated)}}},
-            /*aliases=*/{}));
-  }
-
- private:
-  base::test::ScopedFeatureList additional_features_;
-  first_party_sets::ScopedMockFirstPartySetsHandler first_party_sets_handler_;
-};
-
-TEST_F(
-    StorageAccessGrantPermissionContextAPIWithFirstPartySetsFeatureDisabledTest,
-    ImplicitGrant_NotAutograntedWithinFPS) {
-  HostContentSettingsMap* settings_map =
-      HostContentSettingsMapFactory::GetForProfile(profile());
-  DCHECK(settings_map);
-
-  // Check no `SessionModel::DURABLE` setting with
-  // `decided_by_related_website_sets` exists yet.
-  ASSERT_THAT(settings_map->GetSettingsForOneType(
-                  ContentSettingsType::STORAGE_ACCESS,
-                  content_settings::mojom::SessionModel::DURABLE),
-              Each(DecidedByRelatedWebsiteSets(false)));
-
-  EXPECT_EQ(DecidePermission(MakePermissionRequestData(/*user_gesture=*/true))
-                .Get()
-                .status,
-            PermissionStatus::GRANTED);
-
-  histogram_tester().ExpectUniqueSample(kGrantIsImplicitHistogram,
-                                        /*sample=*/true, 1);
-
-  EXPECT_THAT(metrics::dwa::DwaRecorder::Get()->GetEntriesForTesting(),
-              ElementsAre(Pointee(
-                  DwaEntryMatches(RequestOutcome::kGrantedByAllowance,
-                                  net::SchemefulSite(GetRequesterURL())))));
-
-  // Check that the setting was NOT decided by RWS.
-  EXPECT_THAT(settings_map->GetSettingsForOneType(
-                  ContentSettingsType::STORAGE_ACCESS,
-                  content_settings::mojom::SessionModel::USER_SESSION),
-              Contains(DecidedByRelatedWebsiteSets(false)));
-}
-
 TEST_F(StorageAccessGrantPermissionContextTest, RepeatedDismissalsNotExposed) {
   content::RenderFrameHost* child_rfh =
       content::RenderFrameHostTester::For(main_rfh())->AppendChild("child");
@@ -1214,3 +978,108 @@ INSTANTIATE_TEST_SUITE_P(
     ,
     StorageAccessGrantPermissionContextAPIWithFedCMConnectionTest,
     testing::Bool());
+
+#if !BUILDFLAG(USE_FUZZING_ENGINE)
+namespace {
+
+using ::private_insights::events::StorageAccessLogEvent;
+
+class MockPrivateInsightsService
+    : public private_insights::PrivateInsightsService {
+ public:
+  MockPrivateInsightsService(PrefService* local_state,
+                             const base::FilePath& profile_dir)
+      : PrivateInsightsService(local_state,
+                               profile_dir,
+                               /*url_loader_factory=*/nullptr) {}
+
+  MOCK_METHOD(void,
+              LogStorageAccessEvent,
+              (StorageAccessLogEvent event),
+              (override));
+};
+
+MATCHER_P2(StorageAccessEventIs, domain, outcome, "") {
+  return testing::ExplainMatchResult(
+      AllOf(Property("domain", &StorageAccessLogEvent::domain, domain),
+            Property("outcome", &StorageAccessLogEvent::outcome, outcome)),
+      arg, result_listener);
+}
+
+}  // namespace
+
+// Checks that request outcomes reach Private Insights through the permission
+// context, not only through `RecordOutcomeToPrivateInsights()` directly.
+class StorageAccessGrantPermissionContextPrivateInsightsTest
+    : public StorageAccessGrantPermissionContextTest {
+ public:
+  void SetUp() override {
+    StorageAccessGrantPermissionContextTest::SetUp();
+    // After the base fixture's feature list, so they are destroyed in reverse
+    // order. Checked when recording, so it need not precede profile creation.
+    pi_features_.InitAndEnableFeature(
+        private_insights::kPrivateInsightsStorageAccess);
+    // Frozen Public Suffix List, so the reported domain does not depend on the
+    // real list; see storage_access_metrics_unittest_psl.gperf.
+    net::registry_controlled_domains::SetFindDomainGraphForTesting(
+        storage_access_api_test_psl::kDafsa);
+  }
+
+  void TearDown() override {
+    net::registry_controlled_domains::ResetFindDomainGraphForTesting();
+    StorageAccessGrantPermissionContextTest::TearDown();
+  }
+
+  TestingProfile::TestingFactories GetTestingFactories() const override {
+    return {TestingProfile::TestingFactory{
+        private_insights::PrivateInsightsServiceFactory::GetInstance(),
+        base::BindOnce(&StorageAccessGrantPermissionContextPrivateInsightsTest::
+                           BuildService,
+                       base::Unretained(this))}};
+  }
+
+  MockPrivateInsightsService& service() {
+    auto* service = static_cast<MockPrivateInsightsService*>(
+        private_insights::PrivateInsightsServiceFactory::GetForProfile(
+            profile()));
+    CHECK(service);
+    return *service;
+  }
+
+ private:
+  std::unique_ptr<KeyedService> BuildService(
+      content::BrowserContext* context) const {
+    return std::make_unique<testing::StrictMock<MockPrivateInsightsService>>(
+        &local_state_, context->GetPath());
+  }
+
+  base::test::ScopedFeatureList pi_features_;
+  mutable TestingPrefServiceSimple local_state_;
+};
+
+TEST_F(StorageAccessGrantPermissionContextPrivateInsightsTest,
+       ExplicitGrantIsReported) {
+  // requester.example.com is reported as its eTLD+1.
+  EXPECT_CALL(service(),
+              LogStorageAccessEvent(StorageAccessEventIs(
+                  "example.com", StorageAccessLogEvent::GRANTED_BY_USER)));
+
+  auto future =
+      DecidePermission(MakePermissionRequestData(/*user_gesture=*/true));
+  WaitUntilPrompt();
+  request_manager()->Accept(/*prompt_options=*/std::monostate());
+  EXPECT_EQ(PermissionStatus::GRANTED, future.Get().status);
+}
+
+TEST_F(StorageAccessGrantPermissionContextPrivateInsightsTest,
+       DenialWithoutPromptIsReported) {
+  EXPECT_CALL(service(), LogStorageAccessEvent(StorageAccessEventIs(
+                             "example.com",
+                             StorageAccessLogEvent::DENIED_BY_PREREQUISITES)));
+
+  EXPECT_EQ(PermissionStatus::DENIED,
+            DecidePermission(MakePermissionRequestData(/*user_gesture=*/false))
+                .Get()
+                .status);
+}
+#endif  // !BUILDFLAG(USE_FUZZING_ENGINE)

@@ -21,12 +21,15 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/touch_to_fill/password_manager/touch_to_fill_password_manager_controller.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
 #include "components/device_reauth/device_authenticator.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/origin_credential_store.h"
 #include "components/password_manager/core/browser/passkey_credential.h"
 #include "components/password_manager/core/browser/password_credential_filler.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/url_formatter/elide_url.h"
 #include "content/public/browser/web_contents.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
@@ -136,18 +139,28 @@ void TouchToFillPasswordManagerCredentialDelegate::OnCredentialSelected(
       .SetUserAction(static_cast<int64_t>(UserAction::kSelectedCredential))
       .Record(ukm::UkmRecorder::Get());
 
-  if (!password_client_->IsReauthBeforeFillingRequired(authenticator_.get())) {
-    FillCredential(credential);
+  bool should_reauth =
+      !base::FeatureList::IsEnabled(
+          password_manager::features::kDeviceReauthRefactor)
+          ? password_client_->IsReauthBeforeFillingRequiredLegacy(
+                authenticator_.get())
+          : password_client_->IsReauthBeforeFillingRequired(
+                password_client_->GetDeviceAuthAvailabilityChecker().get());
+
+  if (should_reauth) {
+    CHECK(authenticator_);
+    // `this` notifies the authenticator when it is destructed, resulting in
+    // the callback being reset by the authenticator. Therefore, it is safe
+    // to use base::Unretained.
+    authenticator_->AuthenticateWithMessage(
+        u"",
+        base::BindOnce(
+            &TouchToFillPasswordManagerCredentialDelegate::OnReauthCompleted,
+            base::Unretained(this), credential));
     return;
   }
 
-  // `this` notifies the authenticator when it is destructed, resulting in
-  // the callback being reset by the authenticator. Therefore, it is safe
-  // to use base::Unretained.
-  authenticator_->AuthenticateWithMessage(
-      u"", base::BindOnce(
-               &TouchToFillPasswordManagerCredentialDelegate::OnReauthCompleted,
-               base::Unretained(this), credential));
+  FillCredential(credential);
 }
 
 void TouchToFillPasswordManagerCredentialDelegate::OnPasskeyCredentialSelected(
@@ -311,7 +324,7 @@ void TouchToFillPasswordManagerCredentialDelegate::FillCredential(
     const UiCredential& credential) {
   filler_->UpdateTriggerSubmission(ShouldTriggerSubmission());
   filler_->FillUsernameAndPassword(
-      credential.username(), credential.password(),
+      credential.username(), credential.password().value(),
       base::BindOnce(&TouchToFillPasswordManagerCredentialDelegate::
                          OnFillingCredentialComplete,
                      base::Unretained(this), credential.username()));

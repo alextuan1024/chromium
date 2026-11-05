@@ -8,9 +8,11 @@
 
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_management_internal.h"
@@ -19,6 +21,7 @@
 #include "chrome/browser/extensions/external_policy_loader.h"
 #include "chrome/browser/extensions/low_trust_policy_install_block_manager.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/enterprise/isolated_mode/scoped_isolated_mode_override_for_testing.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/themes/pref_names.h"
@@ -30,13 +33,16 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_urls.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/strings/grit/extensions_strings.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "chrome/browser/extensions/policy_dse_ntp_override_metrics_reporter.h"
+#endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -190,13 +196,10 @@ TEST_F(StandardManagementPolicyProviderTest,
 }
 
 TEST_F(StandardManagementPolicyProviderTest, UnsupportedDeveloperExtension) {
-  base::test::ScopedFeatureList feature_list(
-      extensions_features::kExtensionDisableUnsupportedDeveloper);
   // Disable developer mode.
   util::SetDeveloperModeForProfile(&profile_, false);
   auto extension = CreateExtension(ManifestLocation::kUnpacked);
 
-  std::u16string error16;
   EXPECT_TRUE(provider_.MustRemainDisabled(extension.get(), nullptr));
 }
 
@@ -269,14 +272,14 @@ TEST_F(StandardManagementPolicyProviderTest, ThemeExtension) {
 
   // Setting policy theme prevents users from loading an extension theme.
   profile_.GetTestingPrefService()->SetManagedPref(
-      themes::prefs::kPolicyThemeColor, std::make_unique<base::Value>(100));
+      themes::kPolicyThemeColor, std::make_unique<base::Value>(100));
 
   EXPECT_FALSE(provider_.UserMayLoad(extension.get(), &error16));
   EXPECT_NE(std::u16string(), error16);
 
   // Unsetting policy theme allows users to load an extension theme.
   profile_.GetTestingPrefService()->RemoveManagedPref(
-      themes::prefs::kPolicyThemeColor);
+      themes::kPolicyThemeColor);
 
   EXPECT_TRUE(provider_.UserMayLoad(extension.get(), &error16));
 }
@@ -351,8 +354,13 @@ TEST_F(StandardManagementPolicyProviderTest, LowTrustSettingsOverrideBlock) {
         return test_future.Take();
       };
 
+  base::HistogramTester histograms;
+
   // 1. Simulate an unmanaged (low trust) environment.
   {
+    policy::ScopedManagementServiceOverrideForTesting platform_management(
+        policy::ManagementServiceFactory::GetForPlatform(),
+        policy::EnterpriseManagementAuthority::NONE);
     policy::ScopedManagementServiceOverrideForTesting profile_management(
         policy::ManagementServiceFactory::GetForProfile(&profile_),
         policy::EnterpriseManagementAuthority::NONE);
@@ -429,6 +437,10 @@ TEST_F(StandardManagementPolicyProviderTest, LowTrustSettingsOverrideBlock) {
       EXPECT_TRUE(decision.error.empty());
     }
   }
+
+  histograms.ExpectUniqueSample("Extensions.LowTrustPolicyBlock.Action",
+                                LowTrustPolicyBlockAction::kBlockedOnInstall,
+                                2);
 }
 
 // Tests that when an extension was previously blocked from policy install in
@@ -437,6 +449,9 @@ TEST_F(StandardManagementPolicyProviderTest, LowTrustManualInstallBypass) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(kBlockPolicyDseNtpOverridesInLowTrust);
 
+  policy::ScopedManagementServiceOverrideForTesting platform_management(
+      policy::ManagementServiceFactory::GetForPlatform(),
+      policy::EnterpriseManagementAuthority::NONE);
   policy::ScopedManagementServiceOverrideForTesting profile_management(
       policy::ManagementServiceFactory::GetForProfile(&profile_),
       policy::EnterpriseManagementAuthority::NONE);
@@ -518,5 +533,76 @@ TEST_F(StandardManagementPolicyProviderTest, LowTrustManualInstallBypass) {
   }
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+
+// Base struct used to initialize the Isolated Mode override before
+// `StandardManagementPolicyProviderTest` constructs `TestingProfile`.
+struct ScopedIsolatedModeInitializer {
+  enterprise_isolated_mode::ScopedIsolatedModeOverrideForTesting
+      scoped_isolated_mode;
+};
+
+class StandardManagementPolicyProviderIsolatedModeTest
+    : private ScopedIsolatedModeInitializer,
+      public StandardManagementPolicyProviderTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  StandardManagementPolicyProviderIsolatedModeTest()
+      : ScopedIsolatedModeInitializer{
+            enterprise_isolated_mode::ScopedIsolatedModeOverrideForTesting(
+                IsIsolatedMode())} {}
+
+  bool IsIsolatedMode() const { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         StandardManagementPolicyProviderIsolatedModeTest,
+                         testing::Bool());
+
+// Tests that when Enterprise Isolated Mode is enabled, only force-installed
+// extensions must remain enabled in Isolated Mode.
+TEST_P(StandardManagementPolicyProviderIsolatedModeTest,
+       MustRemainIsolatedModeEnabled) {
+  auto forced_extension =
+      ExtensionBuilder("forced")
+          .SetLocation(ManifestLocation::kExternalPolicyDownload)
+          .Build();
+  auto recommended_extension =
+      ExtensionBuilder("recommended")
+          .SetLocation(ManifestLocation::kExternalPrefDownload)
+          .Build();
+  auto internal_extension = ExtensionBuilder("internal")
+                                .SetLocation(ManifestLocation::kInternal)
+                                .Build();
+  auto not_allowed_forced_extension =
+      ExtensionBuilder("not_allowed")
+          .SetLocation(ManifestLocation::kExternalPolicyDownload)
+          .SetManifestKey("incognito", "not_allowed")
+          .Build();
+
+  {
+    ExtensionManagementPrefUpdater<sync_preferences::TestingPrefServiceSyncable>
+        pref_updater(profile_.GetTestingPrefService());
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        forced_extension->id(), extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/true);
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        recommended_extension->id(), extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/false);
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        not_allowed_forced_extension->id(),
+        extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/true);
+  }
+
+  EXPECT_EQ(
+      provider_.MustRemainIsolatedModeEnabled(forced_extension.get(), nullptr),
+      IsIsolatedMode());
+  EXPECT_FALSE(provider_.MustRemainIsolatedModeEnabled(
+      recommended_extension.get(), nullptr));
+  EXPECT_FALSE(provider_.MustRemainIsolatedModeEnabled(
+      internal_extension.get(), nullptr));
+  EXPECT_FALSE(provider_.MustRemainIsolatedModeEnabled(
+      not_allowed_forced_extension.get(), nullptr));
+}
 
 }  // namespace extensions

@@ -7,6 +7,8 @@
 #include "base/test/scoped_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_create_core_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_sampling_mode.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_thinking_effort.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
@@ -132,6 +134,43 @@ TEST_F(ResolveSamplingParamsOptionTest, InvalidTemperature) {
   auto result = ResolveSamplingParamsOption(options, GetFrame().DomWindow());
   ASSERT_FALSE(result.has_value());
   ASSERT_EQ(result.error(), SamplingParamsOptionError::kInvalidTemperature);
+}
+
+TEST_F(ResolveSamplingParamsOptionTest,
+       SamplingModeTakesPrecedenceOverLegacyParams) {
+  auto* options = MakeGarbageCollected<LanguageModelCreateCoreOptions>();
+  options->setSamplingMode(V8LanguageModelSamplingMode::Enum::kMostPredictable);
+  options->setTopK(10);
+  options->setTemperature(0.5);
+  auto result = ResolveSamplingParamsOption(options, GetFrame().DomWindow());
+  ASSERT_TRUE(result.has_value());
+  ASSERT_FALSE(result.value());
+
+  auto* options2 = MakeGarbageCollected<LanguageModelCreateCoreOptions>();
+  options2->setSamplingMode(V8LanguageModelSamplingMode::Enum::kPredictable);
+  options2->setTemperature(0.5);
+  auto result2 = ResolveSamplingParamsOption(options2, GetFrame().DomWindow());
+  ASSERT_TRUE(result2.has_value());
+  ASSERT_FALSE(result2.value());
+
+  auto* options3 = MakeGarbageCollected<LanguageModelCreateCoreOptions>();
+  options3->setSamplingMode(V8LanguageModelSamplingMode::Enum::kCreative);
+  options3->setTopK(10);
+  auto result3 = ResolveSamplingParamsOption(options3, GetFrame().DomWindow());
+  ASSERT_TRUE(result3.has_value());
+  ASSERT_FALSE(result3.value());
+}
+
+TEST(AIUtilsThinkingEffortTest, RoundTripsBetweenV8AndMojo) {
+  for (V8LanguageModelThinkingEffort::Enum effort :
+       {V8LanguageModelThinkingEffort::Enum::kNone,
+        V8LanguageModelThinkingEffort::Enum::kLow,
+        V8LanguageModelThinkingEffort::Enum::kMedium,
+        V8LanguageModelThinkingEffort::Enum::kHigh}) {
+    V8LanguageModelThinkingEffort v8_effort(effort);
+    EXPECT_EQ(ConvertThinkingEffortToV8(ConvertThinkingEffortToMojo(v8_effort)),
+              v8_effort);
+  }
 }
 
 TEST_F(AIUtilsTest,

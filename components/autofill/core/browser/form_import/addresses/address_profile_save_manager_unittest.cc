@@ -6,6 +6,7 @@
 
 #include <string_view>
 
+#include "base/i18n/language_tag.h"
 #include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -327,7 +328,8 @@ void AddressProfileSaveManagerTest::TestImportScenario(
 
   // Initiate the profile import.
   save_manager.ImportProfileFromForm(
-      test_scenario.observed_profile, "en-US", form_url(), ukm_source_id(),
+      test_scenario.observed_profile, base::i18n::GetKnownLanguageTag("en-US"),
+      form_url(), ukm_source_id(),
       /*allow_only_silent_updates=*/test_scenario.allow_only_silent_updates,
       import_metadata());
 
@@ -1535,7 +1537,7 @@ TEST_P(AddressProfileSaveManagerTest, NameEmail_Work_SaveProfile) {
       test::OnlyAddressProfile(AutofillProfile::RecordType::kAccountWork);
   const AutofillProfile observed_profile =
       test::SupersetProfileOf({account_name_email_profile, work_profile},
-                              address_data_manager().app_locale(),
+                              address_data_manager().app_locale().tag_string(),
                               AutofillProfile::RecordType::kAccount);
 
   ImportScenarioTestCase test_scenario{
@@ -1568,7 +1570,7 @@ TEST_P(AddressProfileSaveManagerTest, NameEmail_Home_SaveProfile) {
       test::OnlyAddressProfile(AutofillProfile::RecordType::kAccountHome);
   const AutofillProfile observed_profile =
       test::SupersetProfileOf({account_name_email_profile, home_profile},
-                              address_data_manager().app_locale(),
+                              address_data_manager().app_locale().tag_string(),
                               AutofillProfile::RecordType::kAccount);
 
   ImportScenarioTestCase test_scenario{
@@ -1599,7 +1601,7 @@ TEST_P(AddressProfileSaveManagerTest, NameEmail_Work_SaveProfile_Declined) {
       test::OnlyAddressProfile(AutofillProfile::RecordType::kAccountWork);
   const AutofillProfile observed_profile =
       test::SupersetProfileOf({account_name_email_profile, work_profile},
-                              address_data_manager().app_locale(),
+                              address_data_manager().app_locale().tag_string(),
                               AutofillProfile::RecordType::kAccount);
 
   ImportScenarioTestCase test_scenario{
@@ -1630,7 +1632,7 @@ TEST_P(AddressProfileSaveManagerTest, NameEmail_Home_SaveProfile_Declined) {
       test::OnlyAddressProfile(AutofillProfile::RecordType::kAccountHome);
   const AutofillProfile observed_profile =
       test::SupersetProfileOf({account_name_email_profile, home_profile},
-                              address_data_manager().app_locale(),
+                              address_data_manager().app_locale().tag_string(),
                               AutofillProfile::RecordType::kAccount);
 
   ImportScenarioTestCase test_scenario{

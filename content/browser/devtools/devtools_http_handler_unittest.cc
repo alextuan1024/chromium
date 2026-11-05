@@ -157,6 +157,9 @@ class MockDevToolsManagerDelegate : public DevToolsManagerDelegate {
     last_instance = this;
     EXPECT_CALL(*this, SetActiveWebSocketConnections(testing::_))
         .Times(testing::AtLeast(0));
+    EXPECT_CALL(*this, ClientAttached(testing::_)).Times(testing::AtLeast(0));
+    ON_CALL(*this, AllowInspectingTarget(testing::_))
+        .WillByDefault(testing::Return(true));
   }
   MOCK_METHOD(scoped_refptr<DevToolsAgentHost>,
               CreateNewTarget,
@@ -173,6 +176,14 @@ class MockDevToolsManagerDelegate : public DevToolsManagerDelegate {
   MOCK_METHOD(void,
               SetActiveWebSocketConnections,
               (size_t count),
+              (override));
+  MOCK_METHOD(bool,
+              AllowInspectingTarget,
+              (DevToolsAgentHost*),
+              (override));
+  MOCK_METHOD(void,
+              ClientAttached,
+              (DevToolsAgentHostClientChannel*),
               (override));
 };
 
@@ -770,6 +781,75 @@ TEST_F(DevToolsHttpHandlerWithApprovalTest,
       url, {{"connection", "upgrade"}, {"upgrade", "websocket"}});
 
   EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  StopServer();
+}
+
+
+TEST_F(DevToolsHttpHandlerWithServerTest, JsonActivateCloseRespectsAllowlist) {
+  scoped_refptr<DevToolsAgentHost> host = DevToolsAgentHost::CreateForDiscovery();
+  int port = StartServer();
+
+  EXPECT_CALL(*MockDevToolsManagerDelegate::last_instance, AllowInspectingTarget(testing::_))
+      .WillRepeatedly(testing::Return(false));
+
+  auto request = RunRequestUntilCompletion(
+      base::StringPrintf("http://127.0.0.1:%d/json/activate/%s", port, host->GetId().c_str()));
+  EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  request = RunRequestUntilCompletion(
+      base::StringPrintf("http://127.0.0.1:%d/json/close/%s", port, host->GetId().c_str()));
+  EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  StopServer();
+}
+
+TEST_F(DevToolsHttpHandlerWithServerTest, WebSocketRespectsAllowlist) {
+  scoped_refptr<DevToolsAgentHost> host = DevToolsAgentHost::CreateForDiscovery();
+  int port = StartServer();
+
+  EXPECT_CALL(*MockDevToolsManagerDelegate::last_instance, AllowInspectingTarget(testing::_))
+      .WillRepeatedly(testing::Return(false));
+
+  auto request = RunRequestUntilCompletion(
+      base::StringPrintf("http://127.0.0.1:%d/devtools/page/%s", port, host->GetId().c_str()),
+      {{"connection", "upgrade"}, {"upgrade", "websocket"}});
+
+  // Expect HTTP 403 Forbidden because AllowInspectingTarget returned false
+  EXPECT_EQ(403, request->response_info().headers->response_code());
+
+  StopServer();
+}
+
+TEST_F(DevToolsWebSocketHandlerTest, WebSocketClientExposesTransportMetadata) {
+  int port = StartServer();
+  std::string debugging_url = GetWebSocketDebuggingURL(port);
+
+  std::optional<net::IPEndPoint> peer_address;
+  EXPECT_CALL(*MockDevToolsManagerDelegate::last_instance,
+              ClientAttached(testing::_))
+      .WillOnce([&](DevToolsAgentHostClientChannel* channel) {
+        DevToolsAgentHostClient* client = channel->GetClient();
+        ASSERT_NE(client, nullptr);
+        EXPECT_EQ(client->GetTypeForMetrics(), "RemoteDebugger");
+        DevToolsAgentHostClient::PeerMetadata metadata =
+            client->GetPeerMetadata();
+        EXPECT_EQ(
+            metadata.transport_type,
+            DevToolsAgentHostClient::PeerMetadata::TransportType::kWebSocket);
+        peer_address = metadata.peer_address;
+        ASSERT_TRUE(peer_address.has_value());
+        EXPECT_TRUE(peer_address->address().IsLoopback());
+        EXPECT_GT(peer_address->port(), 0);
+      });
+
+  auto request =
+      RunRequestUntilCompletion(debugging_url, {
+                                                   {"connection", "upgrade"},
+                                                   {"upgrade", "websocket"},
+                                               });
+  EXPECT_EQ(request->GetResponseCode(), 500);
+  EXPECT_TRUE(peer_address.has_value());
 
   StopServer();
 }

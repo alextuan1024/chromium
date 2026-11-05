@@ -97,6 +97,10 @@ base::OnceClosure AppServer::ModeCheck() {
 
   if (active_version != base::Version("0") && this_version > active_version) {
     scoped_refptr<LocalPrefs> local_prefs = CreateLocalPrefs(updater_scope());
+    if (!local_prefs) {
+      return base::BindOnce(&AppServer::Shutdown, this,
+                            kErrorFailedToCreateLocalPrefs);
+    }
     if (!local_prefs->GetQualified()) {
       global_prefs = nullptr;
       prefs_ = local_prefs;
@@ -130,6 +134,10 @@ base::OnceClosure AppServer::ModeCheck() {
         SwapVersions(global_prefs.get(), CreateLocalPrefs(updater_scope()));
     event.SetActivated(activated).WriteAsync();
     if (!activated) {
+      // Commit while holding the global prefs lock. Releasing `global_prefs`
+      // writes pending changes asynchronously, so the write can land after the
+      // lock is released and race with the next reader.
+      PrefsCommitPendingWrites(global_prefs->GetPrefService());
       return base::BindOnce(&AppServer::Shutdown, this, kErrorFailedToSwap);
     }
   }
@@ -141,6 +149,10 @@ base::OnceClosure AppServer::ModeCheck() {
 
   if (IsInternalService()) {
     prefs_ = CreateLocalPrefs(updater_scope());
+    if (!prefs_) {
+      return base::BindOnce(&AppServer::Shutdown, this,
+                            kErrorFailedToCreateLocalPrefs);
+    }
     return base::BindOnce(&AppServer::ActiveDutyInternal, this,
                           base::MakeRefCounted<UpdateServiceInternalImpl>());
   }
@@ -271,6 +283,9 @@ void AppServer::FirstTaskRun() {
 
 bool AppServer::SwapVersions(GlobalPrefs* global_prefs,
                              scoped_refptr<LocalPrefs> local_prefs) {
+  if (!global_prefs || !local_prefs) {
+    return false;
+  }
   global_prefs->SetSwapping(true);
   PrefsCommitPendingWrites(global_prefs->GetPrefService());
   if (!global_prefs->GetMigratedLegacyUpdaters()) {

@@ -7,8 +7,6 @@ package org.chromium.chrome.browser.customtabs;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 
-import static org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule.LONG_TIMEOUT_MS;
-
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -23,7 +21,6 @@ import androidx.browser.customtabs.CustomTabsSessionToken;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.SmallTest;
 
-import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -36,6 +33,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.base.test.transit.Triggers;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
@@ -47,6 +45,7 @@ import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.page.PageTitleCondition;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContentsObserver;
@@ -115,27 +114,12 @@ public class CustomTabPostMessageTest {
 
     private void waitForTitle(String newTitle) {
         Tab currentTab = mCustomTabActivityTestRule.getActivity().getActivityTab();
-        ChromeTabUtils.waitForTitle(currentTab, newTitle);
+        Triggers.noopTo().waitFor(new PageTitleCondition(newTitle, () -> currentTab));
     }
 
     private void setCanUseHiddenTabForSession(SessionHolder sessionHolder, boolean useHiddenTab) {
         CustomTabsConnection.getInstance()
                 .setCanUseHiddenTabForSession(sessionHolder, useHiddenTab);
-    }
-
-    private static void ensureCompletedSpeculationForUrl(final String url) {
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            "Tab was not created",
-                            CustomTabsConnection.getInstance().getSpeculationParamsForTesting(),
-                            Matchers.notNullValue());
-                },
-                LONG_TIMEOUT_MS,
-                CriteriaHelper.DEFAULT_POLLING_INTERVAL);
-        ChromeTabUtils.waitForTabPageLoaded(
-                CustomTabsConnection.getInstance().getSpeculationParamsForTesting().hiddenTab.tab,
-                url);
     }
 
     /**
@@ -442,7 +426,7 @@ public class CustomTabPostMessageTest {
 
         setCanUseHiddenTabForSession(sessionHolder, true);
         session.mayLaunchUrl(Uri.parse(url), null, null);
-        ensureCompletedSpeculationForUrl(url);
+        CustomTabsTestUtils.ensureCompletedSpeculationForUrl(url);
 
         if (requestTime == BEFORE_INTENT) {
             channelRequested =

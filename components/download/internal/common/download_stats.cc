@@ -472,20 +472,6 @@ void RecordDownloadMimeType(const std::string& mime_type_string,
 #endif  // BUILDFLAG(IS_ANDROID)
 }
 
-void RecordDownloadMimeTypeForNormalProfile(const std::string& mime_type_string,
-                                            bool is_transient) {
-  DownloadContent download_content =
-      DownloadContentFromMimeType(mime_type_string, false);
-  base::UmaHistogramEnumeration("Download.Start.ContentType.NormalProfile",
-                                download_content);
-#if BUILDFLAG(IS_ANDROID)
-  base::UmaHistogramEnumeration(
-      base::StrCat({"Download.Start.ContentType.NormalProfile.",
-                    is_transient ? "Transient" : "NonTransient"}),
-      download_content);
-#endif  // BUILDFLAG(IS_ANDROID)
-}
-
 void RecordFileBandwidth(size_t length,
                          base::TimeDelta elapsed_time) {
   base::UmaHistogramCustomCounts(
@@ -556,7 +542,8 @@ DownloadConnectionSecurity CheckDownloadConnectionSecurity(
 void RecordDownloadHttpResponseCode(int response_code,
                                     bool is_background_mode) {
   int status_code = net::HttpUtil::MapStatusCodeForHistogram(response_code);
-  std::vector<int> status_codes = net::HttpUtil::GetStatusCodesForHistogram();
+  base::span<const int> status_codes =
+      net::HttpUtil::GetStatusCodesForHistogram();
   UMA_HISTOGRAM_CUSTOM_ENUMERATION("Download.HttpResponseCode", status_code,
                                    status_codes);
   if (is_background_mode) {
@@ -564,24 +551,6 @@ void RecordDownloadHttpResponseCode(int response_code,
         "Download.HttpResponseCode.BackgroundDownload", status_code,
         status_codes);
   }
-}
-
-void RecordInputStreamReadError(MojoResult mojo_result) {
-  InputStreamReadError error = InputStreamReadError::kUnknown;
-  switch (mojo_result) {
-    case MOJO_RESULT_INVALID_ARGUMENT:
-      error = InputStreamReadError::kInvalidArgument;
-      break;
-    case MOJO_RESULT_OUT_OF_RANGE:
-      error = InputStreamReadError::kOutOfRange;
-      break;
-    case MOJO_RESULT_BUSY:
-      error = InputStreamReadError::kBusy;
-      break;
-    default:
-      NOTREACHED();
-  }
-  base::UmaHistogramEnumeration("Download.InputStreamReadError", error);
 }
 
 #if BUILDFLAG(IS_ANDROID)

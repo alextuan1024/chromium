@@ -207,8 +207,8 @@ class ShellContentRendererUrlLoaderThrottleProvider
       const network::ResourceRequest& request) override {
     std::vector<std::unique_ptr<blink::URLLoaderThrottle>> throttles;
     if (local_frame_token.has_value()) {
-      auto throttle = content::MaybeCreateIdentityUrlLoaderThrottle(
-          base::BindRepeating(
+      auto throttle =
+          content::MaybeCreateIdentityUrlLoaderThrottle(base::BindRepeating(
               [](const blink::LocalFrameToken& token,
                  const scoped_refptr<base::SequencedTaskRunner>
                      main_thread_task_runner,
@@ -226,8 +226,7 @@ class ShellContentRendererUrlLoaderThrottleProvider
                                                 token, idp_origin, status));
                 }
               },
-              local_frame_token.value(), main_thread_task_runner_),
-          content::GetSetLoginHeaderInProcessParser());
+              local_frame_token.value(), main_thread_task_runner_));
       if (throttle)
         throttles.push_back(std::move(throttle));
     }
@@ -425,7 +424,7 @@ ShellContentRendererClient::GetSupportedKeySystems(
   if (base::FeatureList::IsEnabled(media::kExternalClearKeyForTesting))
     key_systems.push_back(
         std::make_unique<cdm::ExternalClearKeyKeySystemInfo>());
-  std::move(cb).Run(std::move(key_systems));
+  std::move(cb).Run(std::move(key_systems), /*pending_key_systems=*/{});
   return nullptr;
 }
 #endif

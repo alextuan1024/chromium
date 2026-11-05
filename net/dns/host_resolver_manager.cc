@@ -117,6 +117,7 @@
 #include "net/log/net_log_source_type.h"
 #include "net/log/net_log_with_source.h"
 #include "net/socket/client_socket_factory.h"
+#include "net/socket/socket_pool_additional_capacity.h"
 #include "net/url_request/url_request_context.h"
 #include "url/scheme_host_port.h"
 #include "url/url_constants.h"
@@ -127,11 +128,13 @@
 
 #if BUILDFLAG(IS_WIN)
 #include <Winsock2.h>
+
 #include "net/base/winsock_init.h"
 #endif
 
 #if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 #include <net/if.h>
+
 #include "net/base/sys_addrinfo.h"
 #if !BUILDFLAG(IS_ANDROID)
 #include <ifaddrs.h>
@@ -158,6 +161,10 @@ const int kIPv6ProbePeriodMs = 1000;
 const uint8_t kIPv6ProbeAddress[] = {0x20, 0x01, 0x48, 0x60, 0x48, 0x60,
                                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                      0x00, 0x00, 0x88, 0x88};
+
+// Port used for globally reachability checks.
+// See https://crbug.com/1403182 for details on why this port is used.
+constexpr uint16_t kGloballyReachableCheckPort = 443;
 
 // True if |hostname| ends with either ".local" or ".local.".
 bool ResemblesMulticastDNSName(std::string_view hostname) {
@@ -211,8 +218,13 @@ PrioritizedDispatcher::Limits GetDispatcherLimits(
   std::string group =
       base::FieldTrialList::FindFullName("HostResolverDispatch");
 
-  if (group.empty())
+  if (group.empty()) {
+    // Randomize the effective limit above `kDefaultMaxSystemTasks`, matching
+    // the socket pools, so that sites can't probe for a fixed global limit.
+    limits.additional_capacity =
+        SocketPoolAdditionalCapacity::Create(kDefaultMaxSystemTasks);
     return limits;
+  }
 
   // The format of the group name is a list of non-negative integers separated
   // by ':'. Each of the elements in the list corresponds to an element in
@@ -285,14 +297,6 @@ std::vector<IPEndPoint> FilterAddresses(std::vector<IPEndPoint> addresses,
   return addresses;
 }
 
-int GetPortForGloballyReachableCheck() {
-  if (!base::FeatureList::IsEnabled(
-          features::kUseAlternativePortForGloballyReachableCheck)) {
-    return 443;
-  }
-  return features::kAlternativePortForGloballyReachableCheck.Get();
-}
-
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
@@ -326,6 +330,37 @@ void RecordDnsClientCapabilityMetrics(const DnsClient* dns_client) {
   }
   base::UmaHistogramEnumeration("Net.DNS.DnsConfig.DnsClientCapability",
                                 capability);
+}
+
+// Returns true if `dns_client` can currently create DNS transactions whose
+// behavior depends on `DnsConfig`.
+bool CanUseConfigDependentDnsTransactions(const DnsClient& dns_client) {
+  if (dns_client.CanUseSecureDnsTransactions()) {
+    // DoH servers and mode are configured via `DnsConfig`.
+    return true;
+  }
+  if (!dns_client.CanUseInsecureDnsTransactions(/*ech_mode=*/std::nullopt)) {
+    return false;
+  }
+  switch (dns_client.GetInsecureDnsMode(/*ech_mode=*/std::nullopt)) {
+    case InsecureDnsMode::kEnabledBuiltIn:
+      // Built-in classic DNS reads nameservers and query options from
+      // `DnsConfig`.
+      return true;
+    case InsecureDnsMode::kEnabledPlatform:
+    case InsecureDnsMode::kEnabledPlatformNoSystem:
+      // Platform DNS delegates nameserver selection and Private DNS handling to
+      // the OS resolver rather than `DnsConfig`.
+      //
+      // Although `DnsConfig` search domains are still used, lookups that rely
+      // on them are rare, so we trade off a potential transient lookup failure
+      // for the ability to perform lookups without a `DnsConfig`. Once
+      // `DnsConfig` is updated, caches are invalidated and subsequent lookups
+      // will pick up the new search domains.
+      return false;
+    case InsecureDnsMode::kDisabled:
+      NOTREACHED();
+  }
 }
 }  // namespace
 
@@ -686,9 +721,8 @@ void HostResolverManager::SetDnsConfigOverrides(DnsConfigOverrides overrides) {
   // Not allowed to set overrides if compiled without DnsClient.
   DCHECK(dns_client_);
 
-  bool transactions_allowed_before =
-      dns_client_->CanUseSecureDnsTransactions() ||
-      dns_client_->CanUseInsecureDnsTransactions(/*ech_mode=*/std::nullopt);
+  bool pending_transactions_may_depend_on_config =
+      CanUseConfigDependentDnsTransactions(*dns_client_);
   bool changed = dns_client_->SetConfigOverrides(std::move(overrides));
 
   if (changed) {
@@ -697,9 +731,15 @@ void HostResolverManager::SetDnsConfigOverrides(DnsConfigOverrides overrides) {
     // Only invalidate cache if new overrides have resulted in a config change.
     InvalidateCaches();
 
-    // Need to update jobs iff transactions were previously allowed because
-    // in-progress jobs may be running using a now-invalid configuration.
-    if (transactions_allowed_before) {
+    // Need to update jobs iff config-dependent transactions were previously
+    // allowed because in-progress jobs may be running using a now-invalid
+    // configuration.
+    if (pending_transactions_may_depend_on_config ||
+        // This extra check is necessary to handle transitions into kSecure when
+        // pending_transactions_may_depend_on_config happened to be false (e.g.,
+        // built-in resolver disabled into DoH enabled).
+        dns_client_->GetEffectiveConfig().secure_dns_mode ==
+            SecureDnsMode::kSecure) {
       UpdateJobsForChangedConfig();
     }
   }
@@ -823,7 +863,9 @@ void HostResolverManager::InitializeJobKeyAndIPAddress(
   bool use_local_ipv6 = true;
   if (dns_client_) {
     const DnsConfig& config = dns_client_->GetEffectiveConfig();
-    if (!config.nameservers.empty() || !config.doh_config.servers().empty()) {
+    if (!config.nameservers.empty() ||
+        dns_client_->CanUseSecureDnsTransactions() ||
+        dns_client_->CanUseInsecureDnsTransactions(out_job_key.GetEchMode())) {
       use_local_ipv6 = config.use_local_ipv6;
     }
   }
@@ -1062,7 +1104,7 @@ HostCache::Entry HostResolverManager::ResolveAsIP(DnsQueryTypeSet query_types,
                             HostCache::Entry::SOURCE_UNKNOWN);
   }
 
-  std::set<std::string> aliases;
+  base::flat_set<std::string> aliases;
   if (resolve_canonname) {
     aliases = {ip_address.ToString()};
   }
@@ -1110,8 +1152,7 @@ std::optional<HostCache::Entry> HostResolverManager::MaybeServeFromCache(
         cache_usage ==
             ResolveHostParameters::CacheUsage::STALE_ALLOWED_WHILE_REFRESHING);
     cache_result = cache->Lookup(effective_key, tick_clock_->NowTicks(),
-                                 ignore_secure, record_metrics);
-    staleness = HostCache::kNotStale;
+                                 ignore_secure, record_metrics, &staleness);
   }
   if (cache_result) {
     *out_stale_info = std::move(staleness);
@@ -1656,7 +1697,7 @@ int HostResolverManager::StartGloballyReachableCheck(
       base::RefCountedData<std::unique_ptr<DatagramClientSocket>>>(
       std::move(probing_socket));
   int rv = probing_socket_ptr->ConnectAsync(
-      IPEndPoint(dest, GetPortForGloballyReachableCheck()),
+      IPEndPoint(dest, kGloballyReachableCheckPort),
       base::BindOnce(&HostResolverManager::RunFinishGloballyReachableCheck,
                      weak_ptr_factory_.GetWeakPtr(), refcounted_socket,
                      std::move(callback)));
@@ -1833,11 +1874,10 @@ void HostResolverManager::OnSystemDnsConfigChanged(const DnsConfig& config) {
   }
 
   bool changed = false;
-  bool transactions_allowed_before = false;
+  bool pending_transactions_may_depend_on_config = false;
   if (dns_client_) {
-    transactions_allowed_before =
-        dns_client_->CanUseSecureDnsTransactions() ||
-        dns_client_->CanUseInsecureDnsTransactions(/*ech_mode=*/std::nullopt);
+    pending_transactions_may_depend_on_config =
+        CanUseConfigDependentDnsTransactions(*dns_client_);
     changed = dns_client_->SetSystemConfig(config);
   }
 
@@ -1845,10 +1885,17 @@ void HostResolverManager::OnSystemDnsConfigChanged(const DnsConfig& config) {
   InvalidateCaches();
 
   if (changed) {
-    // Need to update jobs iff transactions were previously allowed because
-    // in-progress jobs may be running using a now-invalid configuration.
-    if (transactions_allowed_before)
+    // Need to update jobs iff config-dependent transactions were previously
+    // allowed because in-progress jobs may be running using a now-invalid
+    // configuration.
+    if (pending_transactions_may_depend_on_config ||
+        // This extra check is necessary to handle transitions into kSecure when
+        // pending_transactions_may_depend_on_config happened to be false (e.g.,
+        // built-in resolver disabled into DoH enabled).
+        dns_client_->GetEffectiveConfig().secure_dns_mode ==
+            SecureDnsMode::kSecure) {
       UpdateJobsForChangedConfig();
+    }
   }
 }
 

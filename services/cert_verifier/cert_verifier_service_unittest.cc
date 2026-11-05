@@ -8,11 +8,11 @@
 
 #include <iterator>
 #include <memory>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <tuple>
 
-#include "base/containers/adapters.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
@@ -170,7 +170,7 @@ class DummyCertVerifier : public net::CertVerifierWithUpdatableProc {
 
  private:
   std::map<net::CertVerifier::RequestParams,
-           raw_ptr<DummyRequest, CtnExperimental>>
+           raw_ptr<DummyRequest, DanglingUntriaged>>
       dummy_requests_;
   std::set<net::CertVerifier::RequestParams> sync_response_params_;
   std::set<net::CertVerifier::RequestParams> cancelled_requests_;
@@ -285,7 +285,7 @@ class CertVerifierServiceTest : public PlatformTest,
 
     if (!sync) {  // For fun, complete the requests in reverse order.
 
-      for (auto& info : base::Reversed(request_infos)) {
+      for (auto& info : std::views::reverse(request_infos)) {
         ASSERT_FALSE(info.dummy_cv_request->is_completed);
         dummy_cv()->RespondToRequest(info.request_params);
       }

@@ -14,16 +14,17 @@
 #include "base/check_deref.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/ash/app_mode/kiosk_controller.h"
+#include "chrome/browser/ash/app_mode/kiosk_web_app_install_util.h"
 #include "chrome/browser/ash/app_mode/load_profile.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_mixin.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_test_utils.h"
 #include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
 #include "chrome/browser/ash/ownership/fake_owner_settings_service.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_web_app_install_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
+#include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/web_applications/externally_managed_app_manager.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
@@ -34,6 +35,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/cloud/test/policy_builder.h"
+#include "components/policy/proto/cloud_policy.pb.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -194,11 +196,11 @@ IN_PROC_BROWSER_TEST_P(NewWindowsInKioskAllowedTest, AllowsNewPopupWindows) {
   ASSERT_FALSE(DidKioskCloseNewWindow());
   EXPECT_EQ(VisibleBrowserCount(), 2u);
 
-  EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(&initial_browser)
-                   ->GetExclusiveAccessContext()
+  EXPECT_FALSE(ExclusiveAccessManager::From(&initial_browser)
+                   ->context()
                    ->CanUserEnterFullscreen());
-  EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(&popup)
-                   ->GetExclusiveAccessContext()
+  EXPECT_FALSE(ExclusiveAccessManager::From(&popup)
+                   ->context()
                    ->CanUserEnterFullscreen());
   EXPECT_TRUE(
       BrowserView::GetBrowserViewForBrowser(&initial_browser)->IsFullscreen());

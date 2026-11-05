@@ -25,6 +25,7 @@ import android.view.ViewGroup.LayoutParams;
 
 import androidx.test.filters.LargeTest;
 
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -35,12 +36,10 @@ import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
@@ -54,7 +53,6 @@ import java.util.concurrent.TimeoutException;
 
 /** A RenderTest for {@link ScrollCaptureCallbackImpl}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
 @DoNotBatch(reason = "Unbatched to deflake")
 public class ScrollCaptureCallbackRenderTest {
@@ -65,8 +63,11 @@ public class ScrollCaptureCallbackRenderTest {
     @Rule
     public RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(2)
-                    .setDescription("new test html")
+                    .setRevision(3)
+                    .setDescription(
+                            "FractionalScrollOffsets enabled: scrollBy no longer truncates"
+                                    + " sub-pixel offset, so bottom-viewport captures shift"
+                                    + " by up to one physical pixel.")
                     .setBugComponent(RenderTestRule.Component.UI_BROWSER_SHARING)
                     .build();
 
@@ -87,11 +88,14 @@ public class ScrollCaptureCallbackRenderTest {
                                 .getTestServer()
                                 .getURL("/chrome/test/data/android/share/checkerboard.html"));
         mInitialPage = mActivityTestRule.startOnWebPage(url.getSpec());
-        mCallback =
-                new ScrollCaptureCallbackDelegate(
-                        new ScrollCaptureCallbackDelegate.EntryManagerWrapper());
         mTab = mInitialPage.loadedTabElement.value();
-        mCallback.setCurrentTab(mTab);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mCallback =
+                            new ScrollCaptureCallbackDelegate(
+                                    new ScrollCaptureCallbackDelegate.EntryManagerWrapper());
+                    mCallback.setCurrentTab(mTab);
+                });
         // Wait for the script to execute and for the renderer to actually paint everything.
         noopTo().waitFor(
                         uiThreadCondition(
@@ -110,6 +114,13 @@ public class ScrollCaptureCallbackRenderTest {
                                             "contentHeightPix %d",
                                             contentHeightPix);
                                 }));
+    }
+
+    @After
+    public void tearDown() {
+        if (mCallback != null) {
+            ThreadUtils.runOnUiThreadBlocking(mCallback::destroy);
+        }
     }
 
     @Test

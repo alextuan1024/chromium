@@ -18,13 +18,15 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_dom_exception.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_document_picture_in_picture_options.h"
+#include "third_party/blink/renderer/core/buildflags.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/media/html_media_test_helper.h"
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
-#include "third_party/blink/renderer/core/layout/layout_image.h"
+#include "third_party/blink/renderer/core/layout/layout_video.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
@@ -40,16 +42,11 @@
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/url_test_helpers.h"
 
-#if !BUILDFLAG(TARGET_OS_IS_ANDROID)
-#include "third_party/blink/renderer/bindings/modules/v8/v8_document_picture_in_picture_options.h"
-#endif  // !BUILDFLAG(TARGET_OS_IS_ANDROID)
-
 using ::testing::_;
 
 namespace blink {
 
 namespace {
-#if !BUILDFLAG(TARGET_OS_IS_ANDROID)
 KURL GetOpenerURL() {
   return KURL("https://example.com/");
 }
@@ -103,7 +100,6 @@ LocalDOMWindow* OpenDocumentPictureInPictureWindow(
 
   return controller.documentPictureInPictureWindow();
 }
-#endif  // !BUILDFLAG(TARGET_OS_IS_ANDROID)
 
 }  // namespace
 
@@ -602,7 +598,7 @@ TEST_F(PictureInPictureControllerTestWithWidget,
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   // Set poster image to video
-  auto* layout_image = To<LayoutImage>(Video()->GetLayoutObject());
+  auto* layout_video = To<LayoutVideo>(Video()->GetLayoutObject());
   const char kPosterUrl[] = "http://example.com/foo.jpg";
   url_test_helpers::RegisterMockedErrorURLLoad(
       url_test_helpers::ToKURL(kPosterUrl));
@@ -610,7 +606,7 @@ TEST_F(PictureInPictureControllerTestWithWidget,
   Video()->setAttribute(html_names::kStyleAttr, AtomicString("object-fit: none;"
                                                              "height: 150px;"
                                                              "width: 150px;"));
-  layout_image->ImageResource()->SetImageResource(image_content);
+  layout_video->ImageResource()->SetImageResource(image_content);
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   EXPECT_EQ(nullptr, PictureInPictureControllerImpl::From(GetDocument())
@@ -646,7 +642,6 @@ TEST_F(PictureInPictureControllerTestWithWidget, VideoIsNotAllowedIfAutoPip) {
                 .IsElementAllowed(*Video(), /*report_failure=*/false));
 }
 
-#if !BUILDFLAG(TARGET_OS_IS_ANDROID)
 TEST_F(PictureInPictureControllerTestWithWidget,
        DocumentPiPDoesNotAllowVizThrottling) {
   EXPECT_TRUE(GetWidget()->GetMayThrottleIfUndrawnFramesForTesting());
@@ -741,6 +736,7 @@ class PictureInPictureControllerChromeClient
   MOCK_METHOD(void, SetWindowRect, (const gfx::Rect&, LocalFrame&));
   MOCK_METHOD(void, MoveWindowTo, (const gfx::Point&, LocalFrame&));
   MOCK_METHOD(void, ResizeWindowTo, (const gfx::Size&, LocalFrame&));
+  MOCK_METHOD(void, FocusPage, (), (override));
 
  private:
   raw_ptr<DummyPageHolder, DanglingUntriaged> dummy_page_holder_ = nullptr;
@@ -771,6 +767,33 @@ class PictureInPictureControllerTestWithChromeClient : public RenderingTest {
   // Convenience function to set expectations on the mock.
   PictureInPictureControllerChromeClient& GetPipChromeClient() const {
     return *chrome_client_;
+  }
+
+  // Calls focus() on the opener window from `script_state`, first without and
+  // then with a user activation in `pip_window`. Expects only the second call
+  // to ask the browser to focus the opener page, and to consume the
+  // activation. Both pages share the mock client, but focus() on the opener
+  // window only asks the opener's page.
+  void ExpectPipActivationAllowsFocusingOpener(ScriptState* script_state,
+                                               LocalDOMWindow& pip_window) {
+    ScriptState::Scope entered_context_scope(script_state);
+    v8::Isolate* isolate = script_state->GetIsolate();
+    LocalDOMWindow* opener_window = GetDocument().domWindow();
+    LocalFrame* pip_frame = pip_window.GetFrame();
+
+    // Clear the activation used to open the pip window, so that only
+    // activation in the pip window can allow the focus below.
+    LocalFrame::ConsumeTransientUserActivation(&GetFrame());
+    EXPECT_CALL(GetPipChromeClient(), FocusPage()).Times(0);
+    opener_window->focus(isolate);
+    testing::Mock::VerifyAndClearExpectations(&GetPipChromeClient());
+
+    LocalFrame::NotifyUserActivation(
+        pip_frame, mojom::UserActivationNotificationType::kTest);
+    EXPECT_CALL(GetPipChromeClient(), FocusPage());
+    opener_window->focus(isolate);
+    testing::Mock::VerifyAndClearExpectations(&GetPipChromeClient());
+    EXPECT_FALSE(LocalFrame::HasTransientUserActivation(pip_frame));
   }
 
  private:
@@ -966,6 +989,147 @@ TEST_F(PictureInPictureControllerTestWithChromeClient,
   EXPECT_EQ(pictureInPictureWindow->document()->GetCompatibilityMode(),
             Document::kNoQuirksMode);
 }
-#endif  // !BUILDFLAG(TARGET_OS_IS_ANDROID)
+
+TEST_F(PictureInPictureControllerTestWithChromeClient,
+       DocumentPiPAllowedWithPictureInPictureRequestToken) {
+  V8TestingScope v8_scope;
+  ScriptState* script_state =
+      ToScriptStateForMainWorld(GetDocument().GetFrame());
+  ScriptState::Scope entered_context_scope(script_state);
+
+  PictureInPictureController& controller =
+      PictureInPictureController::From(GetDocument());
+
+  EXPECT_FALSE(LocalFrame::HasTransientUserActivation(&GetFrame()));
+  EXPECT_FALSE(controller.IsPictureInPictureRequestTokenActive());
+
+  controller.ActivatePictureInPictureRequestToken();
+  EXPECT_TRUE(controller.IsPictureInPictureRequestTokenActive());
+
+  // Opening the window should succeed and consume the token.
+  LocalDOMWindow* pip_window =
+      OpenDocumentPictureInPictureWindow(v8_scope, GetDocument());
+  EXPECT_NE(nullptr, pip_window);
+  EXPECT_FALSE(controller.IsPictureInPictureRequestTokenActive());
+  EXPECT_FALSE(LocalFrame::HasTransientUserActivation(&GetFrame()));
+}
+
+TEST_F(PictureInPictureControllerTestWithChromeClient,
+       PictureInPictureRequestTokenConsumedEvenWithUserActivation) {
+  V8TestingScope v8_scope;
+  ScriptState* script_state =
+      ToScriptStateForMainWorld(GetDocument().GetFrame());
+  ScriptState::Scope entered_context_scope(script_state);
+
+  PictureInPictureController& controller =
+      PictureInPictureController::From(GetDocument());
+
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::UserActivationNotificationType::kTest);
+  controller.ActivatePictureInPictureRequestToken();
+
+  EXPECT_TRUE(LocalFrame::HasTransientUserActivation(&GetFrame()));
+  EXPECT_TRUE(controller.IsPictureInPictureRequestTokenActive());
+
+  // Opening the window should consume the Picture-in-Picture request token
+  // even when user activation is present.
+  LocalDOMWindow* pip_window =
+      OpenDocumentPictureInPictureWindow(v8_scope, GetDocument());
+  EXPECT_NE(nullptr, pip_window);
+  EXPECT_FALSE(controller.IsPictureInPictureRequestTokenActive());
+}
+
+TEST_F(PictureInPictureControllerTestWithChromeClient,
+       PictureInPictureRequestTokenActivationAndConsumption) {
+  PictureInPictureControllerImpl::RequestToken token;
+
+  // The token is initially inactive, so `ConsumeIfActive` returns false.
+  EXPECT_FALSE(token.IsActive());
+  EXPECT_FALSE(token.ConsumeIfActive());
+
+  // Activating the token sets it to active.
+  token.Activate();
+  EXPECT_TRUE(token.IsActive());
+
+  // `ConsumeIfActive` returns true and immediately deactivates the token.
+  EXPECT_TRUE(token.ConsumeIfActive());
+  EXPECT_FALSE(token.IsActive());
+
+  // Subsequent calls to `ConsumeIfActive` return false because the token was
+  // already consumed.
+  EXPECT_FALSE(token.ConsumeIfActive());
+
+  // Calling `Deactivate` resets an active token to inactive.
+  token.Activate();
+  EXPECT_TRUE(token.IsActive());
+  token.Deactivate();
+  EXPECT_FALSE(token.IsActive());
+}
+
+TEST_F(PictureInPictureControllerTestWithChromeClient,
+       PictureInPictureWindowActivationAllowsFocusingOpener) {
+  V8TestingScope v8_scope;
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::UserActivationNotificationType::kTest);
+  LocalDOMWindow* pip_window =
+      OpenDocumentPictureInPictureWindow(v8_scope, GetDocument());
+  ASSERT_NE(nullptr, pip_window);
+  EXPECT_EQ(pip_window,
+            PictureInPictureController::GetDocumentPictureInPictureWindow(
+                GetDocument()));
+  EXPECT_EQ(GetDocument().domWindow(),
+            PictureInPictureController::GetDocumentPictureInPictureOwner(
+                *pip_window->document()));
+
+  // Script in the opener, e.g. handling a click in the pip window.
+  ExpectPipActivationAllowsFocusingOpener(
+      ToScriptStateForMainWorld(&GetFrame()), *pip_window);
+}
+
+TEST_F(PictureInPictureControllerTestWithChromeClient,
+       PictureInPictureWindowActivationAllowsFocusingOpenerFromPipScript) {
+  V8TestingScope v8_scope;
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::UserActivationNotificationType::kTest);
+  LocalDOMWindow* pip_window =
+      OpenDocumentPictureInPictureWindow(v8_scope, GetDocument());
+  ASSERT_NE(nullptr, pip_window);
+
+  // Script in the pip window calling opener.focus().
+  ScriptState* pip_script_state =
+      ToScriptStateForMainWorld(pip_window->GetFrame());
+  ASSERT_NE(nullptr, pip_script_state);
+  ExpectPipActivationAllowsFocusingOpener(pip_script_state, *pip_window);
+}
+
+#if BUILDFLAG(TARGET_OS_IS_ANDROID)
+TEST_F(PictureInPictureControllerTestWithChromeClient,
+       WindowLookupKillSwitchBlocksFocusingOpenerOnAndroid) {
+  V8TestingScope v8_scope;
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::UserActivationNotificationType::kTest);
+  LocalDOMWindow* pip_window =
+      OpenDocumentPictureInPictureWindow(v8_scope, GetDocument());
+  ASSERT_NE(nullptr, pip_window);
+
+  ScopedDocumentPictureInPictureWindowLookupAndroidForTest window_lookup(false);
+  EXPECT_EQ(nullptr,
+            PictureInPictureController::GetDocumentPictureInPictureWindow(
+                GetDocument()));
+  EXPECT_EQ(nullptr,
+            PictureInPictureController::GetDocumentPictureInPictureOwner(
+                *pip_window->document()));
+
+  // Even with activation in the pip window, focus() doesn't focus the opener.
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  ScriptState::Scope entered_context_scope(script_state);
+  LocalFrame::ConsumeTransientUserActivation(&GetFrame());
+  LocalFrame::NotifyUserActivation(
+      pip_window->GetFrame(), mojom::UserActivationNotificationType::kTest);
+  EXPECT_CALL(GetPipChromeClient(), FocusPage()).Times(0);
+  GetDocument().domWindow()->focus(script_state->GetIsolate());
+  testing::Mock::VerifyAndClearExpectations(&GetPipChromeClient());
+}
+#endif  // BUILDFLAG(TARGET_OS_IS_ANDROID)
 
 }  // namespace blink

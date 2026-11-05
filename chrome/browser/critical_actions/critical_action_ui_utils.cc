@@ -4,7 +4,12 @@
 
 #include "chrome/browser/critical_actions/critical_action_ui_utils.h"
 
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include "base/strings/strcat.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/common/webui_url_constants.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
@@ -43,10 +48,21 @@ std::string GetSiteDetailsLinkoutUrl(const GURL& page_url) {
       .spec();
 }
 
+std::string GetContactInfoLinkoutUrl() {
+#if BUILDFLAG(IS_ANDROID)
+  // Android settings (SettingsFragmentRegistry) has no /contactInfo route;
+  // /addresses opens the contact info page there.
+  constexpr std::string_view kSubPage = chrome::kAddressesSubPage;
+#else
+  constexpr std::string_view kSubPage = chrome::kContactInfoSubPage;
+#endif
+  return base::StrCat({chrome::kChromeUISettingsURL, kSubPage});
+}
+
 }  // namespace
 
-std::string GetCriticalActionLinkoutUrl(ActionType action_type,
-                                        const GURL& page_url) {
+std::optional<std::string> GetCriticalActionLinkoutUrl(ActionType action_type,
+                                                       const GURL& page_url) {
   switch (action_type) {
     case ActionType::kCredentialAccess:
     case ActionType::kGooglePasswordManager:
@@ -54,12 +70,19 @@ std::string GetCriticalActionLinkoutUrl(ActionType action_type,
     case ActionType::kCredentialsOtp:
       return GetPasswordManagerLinkoutUrl(page_url);
     case ActionType::kFormFill:
+    case ActionType::kFormFillContactInfo:
+      return GetContactInfoLinkoutUrl();
+    case ActionType::kFormFillPayments:
       return base::StrCat(
-          {chrome::kChromeUISettingsURL, chrome::kAddressesSubPage});
+          {chrome::kChromeUISettingsURL, chrome::kPaymentsSubPage});
     case ActionType::kDownload:
       return chrome::kChromeUIDownloadsURL;
     case ActionType::kSettingChange:
       return GetSiteDetailsLinkoutUrl(page_url);
+    case ActionType::kWebMcpTool:
+      // WebMCP tool calls have no management surface to link to. The visit
+      // row itself already links to the page.
+      return std::nullopt;
     case ActionType::kUnknown:
       return chrome::kChromeUISettingsURL;
   }

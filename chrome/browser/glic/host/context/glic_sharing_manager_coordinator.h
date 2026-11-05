@@ -17,7 +17,6 @@
 namespace glic {
 
 class GlicFocusedBrowserManager;
-class GlicMetrics;
 class GlicPinnedTabManager;
 
 // Coordinates the lifecycle and switching of different
@@ -25,9 +24,7 @@ class GlicPinnedTabManager;
 // (attached, detached, live mode).
 class GlicSharingManagerCoordinator {
  public:
-  GlicSharingManagerCoordinator(Profile* profile,
-                                GlicInstance* glic_instance,
-                                GlicMetrics* metrics);
+  GlicSharingManagerCoordinator(Profile* profile, GlicInstance* glic_instance);
   ~GlicSharingManagerCoordinator();
 
   GlicSharingManagerCoordinator(const GlicSharingManagerCoordinator&) = delete;
@@ -51,6 +48,17 @@ class GlicSharingManagerCoordinator {
   void OnGlicWindowActivationChanged(bool active);
 
  private:
+  GlicSharingManagerCoordinator(
+      Profile* profile,
+      GlicInstance* glic_instance,
+#if !BUILDFLAG(IS_ANDROID)
+      GlicFocusedBrowserManager* detached_mode_focused_browser_manager,
+      GlicFocusedBrowserManager* live_mode_focused_browser_manager
+#else
+      bool ignored
+#endif
+  );
+
   void UpdateSharingManagerDelegate();
 
   std::unique_ptr<GlicPinnedTabManager> pinned_tab_manager_;
@@ -70,19 +78,6 @@ class GlicSharingManagerCoordinator {
   mojom::PanelStateKind last_non_hidden_panel_state_kind_ =
       mojom::PanelStateKind::kAttached;
   mojom::WebClientMode interaction_mode_ = mojom::WebClientMode::kText;
-
- private:
-  GlicSharingManagerCoordinator(
-      Profile* profile,
-      GlicInstance* glic_instance,
-      GlicMetrics* metrics,
-#if !BUILDFLAG(IS_ANDROID)
-      GlicFocusedBrowserManager* detached_mode_focused_browser_manager,
-      GlicFocusedBrowserManager* live_mode_focused_browser_manager
-#else
-      bool ignored
-#endif
-  );
 };
 
 }  // namespace glic

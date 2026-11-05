@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/memory/weak_ptr.h"
+#include "base/uuid.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/document_service.h"
 #include "content/public/browser/render_frame_host.h"
@@ -19,17 +20,20 @@ namespace content {
 class CONTENT_EXPORT RTCLoggingDispatcherImpl
     : public DocumentService<blink::mojom::RTCLoggingDispatcher> {
  public:
-  RTCLoggingDispatcherImpl(const RTCLoggingDispatcherImpl&) = delete;
-  RTCLoggingDispatcherImpl& operator=(const RTCLoggingDispatcherImpl&) = delete;
-
-  ~RTCLoggingDispatcherImpl() override;
-
   static void Create(
       RenderFrameHost* render_frame_host,
       mojo::PendingReceiver<blink::mojom::RTCLoggingDispatcher> receiver);
 
+  RTCLoggingDispatcherImpl(
+      RenderFrameHost& render_frame_host,
+      mojo::PendingReceiver<blink::mojom::RTCLoggingDispatcher> receiver,
+      base::SelfDeletingPassKey key);
+  RTCLoggingDispatcherImpl(const RTCLoggingDispatcherImpl&) = delete;
+  RTCLoggingDispatcherImpl& operator=(const RTCLoggingDispatcherImpl&) = delete;
+
   // blink::mojom::RTCLoggingDispatcher
   void StartDiagnosticLogging(
+      const base::Uuid& session_id,
       bool upload,
       const base::flat_map<std::string, std::string>& metadata,
       StartDiagnosticLoggingCallback callback) override;
@@ -40,9 +44,7 @@ class CONTENT_EXPORT RTCLoggingDispatcherImpl
       CancelDiagnosticLoggingCallback callback) override;
 
  private:
-  RTCLoggingDispatcherImpl(
-      RenderFrameHost& render_frame_host,
-      mojo::PendingReceiver<blink::mojom::RTCLoggingDispatcher> receiver);
+  ~RTCLoggingDispatcherImpl() override;
 
   base::WeakPtrFactory<RTCLoggingDispatcherImpl> weak_ptr_factory_{this};
 };

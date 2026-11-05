@@ -31,7 +31,8 @@ inline constexpr char kWebNNTfliteDumpModel[] = "webnn-tflite-dump-model";
 // Configure the logging severity level of ONNX Runtime.
 // Usage: --webnn-ort-logging-level=VERBOSE
 // Other severity levels could be "INFO", "WARNING", "ERROR" (default), and
-// "FATAL".
+// "FATAL". "INFO" and "VERBOSE" also enable the logging of EPs that support it
+// (e.g. OpenVINO NPU).
 inline constexpr char kWebNNOrtLoggingLevel[] = "webnn-ort-logging-level";
 // Set the folder specified by --webnn-ort-dump-model for ONNX Runtime to save
 // optimized models after graph level transformations. By default, ORT saves the
@@ -46,14 +47,20 @@ inline constexpr char kWebNNOrtDumpModel[] = "webnn-ort-dump-model";
 // --allow-third-party-modules
 inline constexpr char kWebNNOrtLibraryPathForTesting[] =
     "webnn-ort-library-path-for-testing";
-// Specify the ORT EP name and library path pair via this switch for testing
-// development EP builds. Libraries of the ORT EP specified by the EP name
-// are forced to be loaded from the specified path. This switch is not to be
-// used in shipping scenarios and is ignored by default.
-// The value should be in the format <ep_name>?<ep_library_path>.
+// Specify one or more ORT EP name and library path pairs via this switch for
+// testing development EP builds. Libraries of each ORT EP specified by the EP
+// name are forced to be loaded from the specified path. This switch is not to
+// be used in shipping scenarios and is ignored by default.
+// Each pair should be in the format <ep_name>?<ep_library_path>, and multiple
+// pairs are separated by ",", e.g.
+// <ep_name1>?<ep_library_path1>,<ep_name2>?<ep_library_path2>.
+// Library paths must not contain ",". Each EP name may only appear once. Any
+// invalid pair disables the whole switch.
 // Usage:
-// --webnn-ort-ep-library-path-for-testing=OpenVINOExecutionProvider?"C:\Program
-// Files\ONNXRuntime-EP\onnxruntime_providers_openvino_plugin.dll"
+// --webnn-ort-ep-library-path-for-testing="OpenVINOExecutionProvider?C:\Program
+// Files\ONNXRuntime-EP\onnxruntime_providers_openvino_plugin.dll,
+// WebGpuExecutionProvider?C:\Program
+// Files\ONNXRuntime-EP\onnxruntime_providers_webgpu.dll"
 // --allow-third-party-modules
 inline constexpr char kWebNNOrtEpLibraryPathForTesting[] =
     "webnn-ort-ep-library-path-for-testing";
@@ -76,6 +83,18 @@ inline constexpr char kWebNNOrtEpLibraryPathForTesting[] =
 // Usage: For example, specifying an Intel GPU device using OpenVINO EP:
 // --webnn-ort-ep-device=OpenVINOExecutionProvider,0x8086,0x4680
 inline constexpr char kWebNNOrtEpDevice[] = "webnn-ort-ep-device";
+
+// Add arbitrary ONNX Runtime session configuration entries for testing.
+// The value must use the format <key>,<value>[,<key>,<value>...].
+// Like other testing switches, this is available in release builds and must
+// only be supplied through a trusted startup command line. Existing session
+// configuration entries, including dispatch security settings, cannot be
+// replaced.
+// Usage:
+// --webnn-ort-session-config-entries-for-testing=
+//   ep.qnnexecutionprovider.webnn_scenario,1,key2,value2
+inline constexpr char kWebNNOrtSessionConfigEntriesForTesting[] =
+    "webnn-ort-session-config-entries-for-testing";
 
 // Enable all execution providers, ignoring the enabled flag blocklist.
 inline constexpr char kWebNNOrtIgnoreEpBlocklist[] =

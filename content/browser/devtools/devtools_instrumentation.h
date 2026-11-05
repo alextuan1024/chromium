@@ -25,17 +25,19 @@
 #include "content/public/browser/certificate_request_result_type.h"
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/browser/global_routing_id.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/filter/source_stream_type.h"
 #include "net/http/http_request_headers.h"
 #include "services/network/public/cpp/headers_matcher.h"
+#include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/cookie_manager.mojom-forward.h"
+#include "services/network/public/mojom/fetch_api.mojom-forward.h"
 #include "services/network/public/mojom/network_context.mojom-forward.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
 #include "services/network/public/mojom/url_response_head.mojom-forward.h"
 #include "third_party/blink/public/common/page/drag_operation.h"
-#include "third_party/blink/public/mojom/devtools/console_message.mojom-forward.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-forward.h"
 #include "third_party/blink/public/mojom/drag/drag.mojom-forward.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom-forward.h"
@@ -77,7 +79,6 @@ class BackForwardCacheCanStoreTreeResult;
 class BrowserContext;
 class DedicatedWorkerHost;
 class DevToolsAgentHostImpl;
-class FencedFrame;
 class FrameTree;
 class FrameTreeNode;
 class NavigationRequest;
@@ -119,14 +120,35 @@ void ApplyAuctionNetworkRequestOverrides(FrameTreeNode* frame_tree_node,
 // this function overrides the `Accept-Language` header, it sets
 // `devtools_accept_language_overridden` to true; otherwise, false. If
 // this function overrides the `Referrer` header, it sets `referrer_override` to
-// the new Referrer header value.
+// the new Referrer header value. Network overrides are only applied by sessions
+// whose client may attach to `url`.
 void ApplyNetworkRequestOverrides(
     FrameTreeNode* frame_tree_node,
+    const GURL& url,
     blink::mojom::BeginNavigationParams* begin_params,
     bool* report_raw_headers,
     bool* devtools_user_agent_overridden,
     bool* devtools_accept_language_overridden,
     GURL* referrer_override);
+
+// Called on a navigation redirect to `redirect_url`. In `headers`, reverts the
+// extra headers set by sessions whose client may not attach to `redirect_url`
+// to the value set by a session that may, or else to `original_headers`, and
+// records the changes in `headers_update_params`. Likewise reverts emulation
+// overrides, clearing `devtools_user_agent_override` and
+// `devtools_accept_language_override` if no remaining session overrides them.
+// Sets `headers_reverted` to whether `headers` changed. Returns false if the
+// navigation must be blocked because such a session overrode the `Referer`,
+// which can't be reverted on redirect.
+bool RevertDisallowedNetworkOverridesOnRedirect(
+    FrameTreeNode* frame_tree_node,
+    const GURL& redirect_url,
+    const net::HttpRequestHeaders& original_headers,
+    net::HttpRequestHeaders* headers,
+    network::HttpRequestHeadersUpdateParams* headers_update_params,
+    bool* devtools_user_agent_override,
+    bool* devtools_accept_language_override,
+    bool* headers_reverted);
 
 // If this function overrides the `User-Agent` header, it sets the returned
 // `user_agent_overridden` to true; otherwise, false. If this function overrides
@@ -134,14 +156,17 @@ void ApplyNetworkRequestOverrides(
 // `accept_language_overridden` to true; otherwise, false.
 DevtoolsOverriddenOutputParams ApplyEmulationOverrides(
     DevToolsAgentHostImpl* agent_host,
-    net::HttpRequestHeaders* headers);
+    net::HttpRequestHeaders* headers,
+    const GURL& url);
 
 // Applies extra headers set via Network.setExtraHTTPHeaders to a WebSocket
 // handshake request. This is needed because WebSocket connections bypass the
 // normal URLLoader path where ApplyNetworkRequestOverrides is called.
+// Headers are only applied by sessions whose client may attach to `url`.
 void ApplyExtraHeadersForWebSocket(
     const GlobalRenderFrameHostId& frame_id,
     const std::optional<base::UnguessableToken>& devtools_worker_token,
+    const GURL& url,
     net::HttpRequestHeaders* headers);
 
 // Returns true if devtools want |*override_out| to be used.
@@ -150,7 +175,8 @@ void ApplyExtraHeadersForWebSocket(
 //  the behavior).
 bool ApplyUserAgentMetadataOverrides(
     FrameTreeNode* frame_tree_node,
-    std::optional<blink::UserAgentMetadata>* override_out);
+    std::optional<blink::UserAgentMetadata>* override_out,
+    const GURL& url);
 
 class WillCreateURLLoaderFactoryParams final {
   STACK_ALLOCATED();
@@ -380,6 +406,7 @@ void DidUpdatePrerenderStatus(
     FrameTreeNodeId initiator_frame_tree_node_id,
     const base::UnguessableToken& initiator_devtools_navigation_token,
     blink::mojom::SpeculationAction action,
+    std::optional<blink::mojom::SpeculationAction> effective_action,
     const GURL& prerender_url,
     bool form_submission,
     std::optional<blink::mojom::SpeculationTargetHint> target_hint,
@@ -463,10 +490,6 @@ bool HandleCertificateError(WebContents* web_contents,
                             const GURL& request_url,
                             CertErrorCallback callback);
 
-void FencedFrameCreated(
-    base::SafeRef<RenderFrameHostImpl> owner_render_frame_host,
-    FencedFrame* fenced_frame);
-
 void ReportCookieIssue(
     RenderFrameHostImpl* render_frame_host_impl,
     const network::mojom::CookieOrLineWithAccessResultPtr& excluded_cookie,
@@ -529,15 +552,6 @@ void OnWorkerMainScriptLoadingFailed(
     RenderFrameHostImpl* ancestor_rfh,
     const network::URLLoaderCompletionStatus& status);
 
-// Adds a message from a worklet to the devtools console. This is specific to
-// FLEDGE auction worklet and shared storage worklet where the message may
-// contain sensitive cross-origin information, and therefore the devtools
-// logging needs to bypass the usual path through the renderer.
-void CONTENT_EXPORT
-LogWorkletMessage(RenderFrameHostImpl& frame_host,
-                  blink::mojom::ConsoleMessageLevel log_level,
-                  const std::string& message);
-
 void ApplyNetworkContextParamsOverrides(
     BrowserContext* browser_context,
     network::mojom::NetworkContextParams* network_context_params);
@@ -562,14 +576,16 @@ void WillShowFedCmDialog(RenderFrameHost& render_frame_host, bool* intercept);
 void DidShowFedCmDialog(RenderFrameHost& render_frame_host);
 void DidCloseFedCmDialog(RenderFrameHost& render_frame_host);
 
-// Fires Network Handler to capture FedCM request and response events.
-void WillSendFedCmNetworkRequest(
+// Fires Network Handler to capture WebID (FedCM and Email Verification)
+// request and response events.
+void WillSendWebIdNetworkRequest(
     FrameTreeNodeId frame_tree_node_id,
     const network::ResourceRequest& request,
     const std::optional<std::string>& request_body = std::nullopt);
-void DidReceiveFedCmNetworkResponse(
+void DidReceiveWebIdNetworkResponse(
     FrameTreeNodeId frame_tree_node_id,
     const std::string& devtools_request_id,
+    network::mojom::RequestDestination destination,
     const GURL& url,
     const network::mojom::URLResponseHead* response_head,
     const std::string& response_body,

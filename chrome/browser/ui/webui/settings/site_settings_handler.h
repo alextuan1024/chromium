@@ -26,6 +26,7 @@
 #include "components/content_settings/core/browser/content_settings_observer.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/permissions/object_permission_context_base.h"
+#include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/prefs/pref_store.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "url/origin.h"
@@ -44,7 +45,8 @@ class SiteSettingsHandler
     : public SettingsPageUIHandler,
       public content_settings::Observer,
       public ProfileObserver,
-      public permissions::ObjectPermissionContextBase::PermissionObserver {
+      public permissions::ObjectPermissionContextBase::PermissionObserver,
+      public permissions::PermissionDecisionAutoBlocker::Observer {
  public:
   // The key used to group origins together in the UI. If two origins map to
   // the same GroupingKey, they should be displayed in the same UI group. For
@@ -52,8 +54,8 @@ class SiteSettingsHandler
   class GroupingKey {
    public:
     static GroupingKey Create(const url::Origin& origin);
-    static GroupingKey CreateFromEtldPlus1(const std::string& etld_plus1);
-    static GroupingKey Deserialize(const std::string& serialized);
+    static GroupingKey CreateFromEtldPlus1(std::string_view etld_plus1);
+    static GroupingKey Deserialize(std::string_view serialized);
 
     GroupingKey(const GroupingKey& other);
     GroupingKey& operator=(const GroupingKey& other);
@@ -123,6 +125,12 @@ class SiteSettingsHandler
       std::optional<ContentSettingsType> guard_content_settings_type,
       ContentSettingsType data_content_settings_type) override;
 
+  // permissions::PermissionDecisionAutoBlocker::Observer:
+  void OnEmbargoStarted(const GURL& origin,
+                        ContentSettingsType content_type) override;
+  void OnEmbargoRemoved(const GURL& origin,
+                        ContentSettingsType content_type) override;
+
   void OnZoomLevelChanged(const content::HostZoomMap::ZoomLevelChange& change);
 
   // SystemPermissionSettingsObserver:
@@ -134,9 +142,6 @@ class SiteSettingsHandler
   // Asynchronously fetches the usage for a given origin. Replies back with
   // OnGetUsageInfo above.
   void HandleFetchUsageTotal(const base::ListValue& args);
-
-  // Asynchronously fetches the rws membership information label.
-  void HandleGetRwsMembershipLabel(const base::ListValue& args);
 
   // Deletes the storage being used for a given host.
   void HandleClearUnpartitionedUsage(const base::ListValue& args);
@@ -334,9 +339,6 @@ class SiteSettingsHandler
   // grant objects granted via the File System Access API, per origin.
   base::ListValue PopulateFileSystemGrantData();
 
-  // Sends the list of notification permissions to review to the WebUI.
-  void SendNotificationPermissionReviewList();
-
   // Returns the list of permissions blocked at the system level.
   base::Value GetSystemDeniedPermissions();
 
@@ -361,6 +363,12 @@ class SiteSettingsHandler
       permissions::ObjectPermissionContextBase,
       permissions::ObjectPermissionContextBase::PermissionObserver>
       chooser_observations_{this};
+
+  // Change observer for permission auto-blocker.
+  base::ScopedMultiSourceObservation<
+      permissions::PermissionDecisionAutoBlocker,
+      permissions::PermissionDecisionAutoBlocker::Observer>
+      auto_blocker_observations_{this};
 
   // Change observer for prefs.
   std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;

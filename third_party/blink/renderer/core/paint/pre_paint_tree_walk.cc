@@ -6,6 +6,7 @@
 
 #include "base/debug/dump_without_crashing.h"
 #include "base/types/optional_util.h"
+#include "third_party/blink/renderer/core/animation/inherited_animations/inherited_animation_tracker.h"
 #include "third_party/blink/renderer/core/dom/document_lifecycle.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/frame/event_handler_registry.h"
@@ -364,7 +365,8 @@ void PrePaintTreeWalk::UpdateContainerTimingContext(
       case Result::kPropagateCurrentRoot:
         object.GetMutableForPainting().SetShouldInheritContainerTimingRoot(
             false);
-        context.container_timing_context_root = To<Element>(object.GetNode());
+        context.container_timing_context_root =
+            To<HTMLElement>(object.GetNode());
         break;
       case Result::kStopPropagation:
         object.GetMutableForPainting().SetShouldInheritContainerTimingRoot(
@@ -380,13 +382,12 @@ void PrePaintTreeWalk::UpdateContainerTimingContext(
     // Cached result: this node is a container root or stop node.
     // ShouldInheritContainerTimingRoot() can only be false when
     // kPropagateCurrentRoot or kStopPropagation was returned by
-    // UpdateOnPrePaint(), which only happens for elements (not anonymous
+    // UpdateOnPrePaint(), which only happens for HTML elements (not anonymous
     // boxes, which always return kPropagateAncestorRoot). So GetNode() is
-    // guaranteed non-null here.
-    CHECK(object.GetNode());
-    auto* element = DynamicTo<Element>(object.GetNode());
-    if (element &&
-        element->FastHasAttribute(html_names::kContainertimingAttr)) {
+    // guaranteed to be an HTMLElement here.
+    auto* element = To<HTMLElement>(object.GetNode());
+    CHECK(element);
+    if (element->FastHasAttribute(html_names::kContainertimingAttr)) {
       context.container_timing_context_root = element;
     } else {
       // Stop node (containertimingignore without containertiming).
@@ -642,9 +643,17 @@ void PrePaintTreeWalk::UpdateContextForOOFContainer(
   if (!object.CanContainAbsolutePositionObjects())
     return;
 
+  CHECK(context.is_hidden_due_to_layout || !fragment ||
+        !fragment->IsHiddenDueToLayout());
+
   context.absolute_positioned_container = context.current_container;
-  if (object.CanContainFixedPositionObjects())
+  context.is_abspos_container_hidden_due_to_layout =
+      context.is_hidden_due_to_layout;
+  if (object.CanContainFixedPositionObjects()) {
     context.fixed_positioned_container = context.absolute_positioned_container;
+    context.is_fixedpos_container_hidden_due_to_layout =
+        context.is_hidden_due_to_layout;
+  }
 }
 
 void PrePaintTreeWalk::WalkInternal(const LayoutObject& object,
@@ -683,11 +692,12 @@ void PrePaintTreeWalk::WalkInternal(const LayoutObject& object,
     property_tree_builder.emplace(object, pre_paint_info,
                                   *context.tree_builder_context);
     property_tree_builder->UpdateForSelf();
+    InheritedAnimationTracker::DowngradeForUnsupportedInheritance(object);
   }
-  if (object.StyleRef().IsUnboundedElementActive()) {
+  if (object.Style().IsUnboundedElementActive()) {
     DCHECK(RuntimeEnabledFeatures::UnboundedElementEnabled());
     auto* html_element = DynamicTo<HTMLElement>(object.GetNode());
-    DCHECK(!html_element || object.StyleRef().IsUnboundedElementActive() ==
+    DCHECK(!html_element || object.Style().IsUnboundedElementActive() ==
                                 html_element->IsUnboundedElementActive());
     context.inside_active_unbounded = true;
     gfx::Rect current_bounds =
@@ -763,6 +773,11 @@ void PrePaintTreeWalk::WalkInternal(const LayoutObject& object,
     property_tree_builder->IssueInvalidationsAfterUpdate();
     needs_invalidate_chrome_client_and_intersection_ |=
         property_tree_builder->PropertiesChanged();
+  }
+
+  if (object == &paint_invalidator_context.painting_layer->GetLayoutObject()) {
+    paint_invalidator_context.painting_layer->SetIsHiddenDueToLayout(
+        context.is_hidden_due_to_layout);
   }
 }
 
@@ -1121,9 +1136,6 @@ void PrePaintTreeWalk::WalkFragmentainer(
   PrePaintTreeWalkContext fragmentainer_context(
       parent_context, parent_context.NeedsTreeBuilderContext());
 
-  fragmentainer_context.is_parent_first_for_node =
-      fragmentainer.IsFirstForNode();
-
   if (!RuntimeEnabledFeatures::FragmentedOofInCbEnabled()) {
     // Always keep track of the current innermost fragmentainer we're handling,
     // as they may serve as containing blocks for OOF descendants.
@@ -1279,36 +1291,15 @@ void PrePaintTreeWalk::WalkLayoutObjectChildren(
         continue;
       }
 
-      if (layout_inline_child->FirstChild()) {
-        // We have to enter culled inlines for every block fragment where any of
-        // their children has a representation.
-        if (!parent_fragment->HasItems())
-          continue;
+      // We have to enter culled inlines for every block fragment where any of
+      // their children has a representation.
+      if (!parent_fragment->HasItems()) {
+        continue;
+      }
 
-        bool child_has_any_items;
-        if (!parent_fragment->Items()->IsContainerForCulledInline(
-                *layout_inline_child, &is_first_for_node, &is_last_for_node,
-                &child_has_any_items)) {
-          if (child_has_any_items) {
-            continue;
-          }
-          // The inline has no fragment items inside, although it does have
-          // child objects. This may happen for an AREA elements with
-          // out-of-flow positioned children.
-          //
-          // Set the first/last flags, since they may have been messed up above.
-          // This means that we're going to visit the descendants for every
-          // container fragment that has items, but this harmless, and rare.
-          is_first_for_node = true;
-          is_last_for_node = true;
-        }
-      } else {
-        // Childless and culled. This can happen for AREA elements, if nothing
-        // else. Enter them when visiting the parent for the first time.
-        if (!context.is_parent_first_for_node)
-          continue;
-        is_first_for_node = true;
-        is_last_for_node = true;
+      if (!parent_fragment->Items()->IsContainerForCulledInline(
+              *layout_inline_child, &is_first_for_node, &is_last_for_node)) {
+        continue;
       }
 
       // Inlines will pass their containing block fragment (and its incoming
@@ -1512,6 +1503,35 @@ void PrePaintTreeWalk::Walk(const LayoutObject& object,
   PrePaintTreeWalkContext context(parent_context,
                                   needs_tree_builder_context_update);
 
+  if (object.IsOutOfFlowPositioned()) {
+    context.is_hidden_due_to_layout =
+        object.IsFixedPositioned()
+            ? context.is_fixedpos_container_hidden_due_to_layout
+            : context.is_abspos_container_hidden_due_to_layout;
+  }
+
+  if (!context.is_hidden_due_to_layout) {
+    // We only need to check `LayoutBox`es for the `IsHiddenDueToLayout` flag
+    // because `LayoutInline`s can't create new formatting contexts in layout.
+    // Storing this flag in the `PrePaintTreeWalkContext` is only done to deal
+    // with cases where layout can't easily track it through nested formatting
+    // contexts; so there's no need to do this for inlines too.
+    if (auto* box = DynamicTo<LayoutBox>(&object)) {
+      if (!box->IsFragmentLessBox()) {
+        context.is_hidden_due_to_layout =
+            box->GetPhysicalFragment(0)->IsHiddenDueToLayout();
+#if DCHECK_IS_ON()
+        // Make sure that all fragments agree on whether the layout object is
+        // hidden due to layout.
+        for (wtf_size_t i = 1; i < box->PhysicalFragmentCount(); i++) {
+          DCHECK_EQ(box->GetPhysicalFragment(i)->IsHiddenDueToLayout(),
+                    context.is_hidden_due_to_layout);
+        }
+#endif
+      }
+    }
+  }
+
   WalkInternal(object, context, pre_paint_info);
 
   bool child_walk_blocked = object.ChildPrePaintBlockedByDisplayLock();
@@ -1526,12 +1546,16 @@ void PrePaintTreeWalk::Walk(const LayoutObject& object,
     // `subtree_walk_reasons` is empty.
     object.GetDisplayLockContext()->SetNeedsPrePaintSubtreeWalk(
         context.subtree_walk_reasons);
+    // Remember that we need to force subtree paint property update when we
+    // become un-display-locked.
+    if (context.tree_builder_context &&
+        context.tree_builder_context->force_subtree_update_reasons) {
+      object.GetMutableForPainting().AddSubtreePaintPropertyUpdateReason(
+          SubtreePaintPropertyUpdateReason::kPreviouslySkipped);
+    }
   }
 
   if (!child_walk_blocked) {
-    if (pre_paint_info)
-      context.is_parent_first_for_node = pre_paint_info->is_first_for_node;
-
     WalkChildren(object, physical_fragment, context, is_inside_fragment_child);
 
     if (const auto* layout_embedded_content =

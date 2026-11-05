@@ -73,6 +73,7 @@ public class InterceptNavigationDelegateClientImpl implements InterceptNavigatio
                     @Override
                     public void onDidFinishNavigationInPrimaryMainFrame(
                             Tab tab, NavigationHandle navigation) {
+                        RedirectHandlerTabHelper.maybeCreateForInitialNavigation(tab, navigation);
                         mInterceptNavigationDelegate.onNavigationFinishedInPrimaryMainFrame(
                                 navigation);
                     }
@@ -136,11 +137,10 @@ public class InterceptNavigationDelegateClientImpl implements InterceptNavigatio
             } else {
                 chromeActivity
                         .getTabModelSelector()
-                        .tryCloseTab(
+                        .closeTab(
                                 TabClosureParams.closeTab(mTab)
                                         .allowUndo(/* allowUndo= */ false)
-                                        .build(),
-                                /* allowDialog= */ false);
+                                        .build());
             }
         }
     }

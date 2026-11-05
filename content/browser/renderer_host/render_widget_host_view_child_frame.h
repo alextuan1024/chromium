@@ -20,12 +20,14 @@
 #include "cc/input/touch_action.h"
 #include "components/input/child_frame_input_helper.h"
 #include "components/input/event_with_latency_info.h"
+#include "components/input/input_router_client.h"
 #include "components/viz/common/frame_sinks/begin_frame_source.h"
 #include "components/viz/common/frame_timing_details_map.h"
 #include "components/viz/common/resources/returned_resource.h"
 #include "components/viz/common/surfaces/surface_info.h"
 #include "components/viz/host/host_frame_sink_client.h"
 #include "content/browser/compositor/image_transport_factory.h"
+#include "content/browser/renderer_host/input/mouse_wheel_phase_handler.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/touch_selection_controller_client_manager.h"
@@ -89,12 +91,6 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   void Focus() override;
   bool HasFocus() override;
   bool IsSurfaceAvailableForCopy() override;
-  void CopyFromSurface(
-      const gfx::Rect& src_rect,
-      const gfx::Size& output_size,
-      base::TimeDelta timeout,
-      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
-      override;
   void Hide() override;
   bool IsShowing() override;
   void WasOccluded() override;
@@ -110,6 +106,13 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   ui::Compositor* GetCompositor() override;
 
   // RenderWidgetHostViewBase implementation.
+  void CopyFromSurfaceImpl(
+      const gfx::Rect& src_rect,
+      const gfx::Size& output_size,
+      bool is_copy_request_secure,
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
+      override;
 #if BUILDFLAG(IS_ANDROID)
   bool IsTouchSequencePotentiallyActiveOnViz() override;
   void RequestInputBackForDragAndDrop(
@@ -124,9 +127,13 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
                              uint32_t janky_frames) override;
 #endif
   RenderWidgetHostViewBase* GetRootView() override;
+  input::RenderWidgetHostViewInput* GetPinchZoomTarget() override;
 #if BUILDFLAG(IS_WIN)
   bool ShouldInitiateStylusWriting() override;
-  void OnStartStylusWriting() override;
+  std::optional<ui::StylusHandwritingPropertiesWin>
+  TakeStylusHandwritingProperties(uint32_t touch_start_event_id) override;
+  void OnStartStylusWriting(
+      const std::optional<input::StylusWritingProperties>& properties) override;
   void OnEditElementFocusedForStylusWriting(
       blink::mojom::StylusWritingFocusResultPtr focus_result) override;
 #endif  // BUILDFLAG(IS_WIN)
@@ -158,6 +165,7 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   gfx::Rect GetBoundsInScreen() override;
   gfx::Rect GetBoundsInScreenWithoutTransform() override;
   void DidStopFlinging() override;
+  MouseWheelPhaseHandler* GetMouseWheelPhaseHandler() override;
   blink::mojom::PointerLockResult LockPointer(
       bool request_unadjusted_movement) override;
   blink::mojom::PointerLockResult ChangePointerLock(
@@ -183,6 +191,8 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
       gfx::PointF* transformed_point) override;
   void DidNavigate() override;
   gfx::PointF TransformRootPointToViewCoordSpace(
+      const gfx::PointF& point) override;
+  std::optional<gfx::PointF> TryTransformRootPointToViewCoordSpace(
       const gfx::PointF& point) override;
   TouchSelectionControllerClientManager*
   GetTouchSelectionControllerClientManager() override;
@@ -412,6 +422,8 @@ class CONTENT_EXPORT RenderWidgetHostViewChildFrame
   std::optional<DisplayFeature> display_feature_;
 
   bool disconnected_ = false;
+
+  MouseWheelPhaseHandler mouse_wheel_phase_handler_;
 
   base::WeakPtrFactory<RenderWidgetHostViewChildFrame> weak_factory_{this};
 };

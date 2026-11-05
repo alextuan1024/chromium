@@ -19,7 +19,6 @@
 
 namespace views {
 class Button;
-class BubbleDialogDelegateView;
 }  // namespace views
 
 class ColorPickerElementView;
@@ -34,9 +33,9 @@ class ColorPickerView : public views::View {
   using ColorSelectedCallback = base::RepeatingCallback<void()>;
 
   // `colors` should contain the color values and accessible names. There should
-  // not be duplicate colors.
-  explicit ColorPickerView(const views::BubbleDialogDelegateView* bubble_view,
-                           const TabGroupEditorBubbleView::Colors& colors,
+  // not be duplicate colors. The selection ring is painted in the hosting
+  // bubble's background color, resolved from the widget at paint time.
+  explicit ColorPickerView(const TabGroupEditorBubbleView::Colors& colors,
                            tab_groups::TabGroupColorId initial_color_id,
                            ColorSelectedCallback callback);
 
@@ -51,6 +50,11 @@ class ColorPickerView : public views::View {
 
   views::Button* GetElementAtIndexForTesting(int index);
 
+  // Returns the full tab group color palette, in display order, paired with
+  // each color's accessible name. This is the `colors` list the editor bubbles
+  // pass to the constructor.
+  static TabGroupEditorBubbleView::Colors GetTabGroupColors();
+
  private:
   // Handles the selection of a particular color. This is passed as a callback
   // to the views representing each color.
@@ -59,7 +63,7 @@ class ColorPickerView : public views::View {
   // Called each time the color selection changes.
   ColorSelectedCallback callback_;
 
-  std::vector<raw_ptr<ColorPickerElementView, VectorExperimental>> elements_;
+  std::vector<raw_ptr<ColorPickerElementView>> elements_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_GROUPS_COLOR_PICKER_VIEW_H_

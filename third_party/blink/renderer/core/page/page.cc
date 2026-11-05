@@ -22,8 +22,10 @@
 #include "third_party/blink/renderer/core/page/page.h"
 
 #include "base/check.h"
+#include "base/check_is_test.h"
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
+#include "base/no_destructor.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/page/color_provider_color_maps.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink-forward.h"
@@ -60,7 +62,6 @@
 #include "third_party/blink/renderer/core/frame/viewport_data.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/fullscreen/fullscreen.h"
-#include "third_party/blink/renderer/core/html/fenced_frame/document_fenced_frames.h"
 #include "third_party/blink/renderer/core/html/media/html_media_element.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/inspector/console_message_storage.h"
@@ -103,12 +104,26 @@
 #include "third_party/blink/renderer/platform/scheduler/public/agent_group_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_scheduler.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_provider.h"
 #include "ui/color/color_provider_utils.h"
 #include "ui/gfx/geometry/insets_conversions.h"
 
 namespace blink {
+
+struct Page::InitialAutoplayRestrictionState final
+    : public GarbageCollected<InitialAutoplayRestrictionState> {
+  InitialAutoplayRestrictionState(const base::UnguessableToken& id,
+                                  bool restricted)
+      : id(id), is_restricted(restricted) {}
+
+  void Trace(Visitor*) const {}
+
+  const base::UnguessableToken id;
+  bool is_restricted;
+};
 
 namespace {
 // This seems like a reasonable upper bound, and otherwise mutually
@@ -164,6 +179,14 @@ void SetSafeAreaMaxEnvVariables(
       StyleEnvironmentVariables::FormatFloatPx(safe_area_max.right()));
 }
 
+float ComputeDynamicSafeAreaInset(float max_inset,
+                                  float controls_height,
+                                  float shown_ratio) {
+  // As `shown_ratio` decreases, the safe area inset is added to the web page to
+  // keep the element out of the display cutout area.
+  return std::max(0.f, max_inset - shown_ratio * controls_height);
+}
+
 }  // namespace
 
 // Function defined in third_party/blink/public/web/blink.h.
@@ -174,17 +197,19 @@ void ResetPluginCache() {
 // Set of all live pages; includes internal Page objects that are
 // not observable from scripts.
 static Page::PageSet& AllPages() {
+  DCHECK(IsMainThread());
   using PageSetHolder = DisallowNewWrapper<Page::PageSet>;
-  DEFINE_STATIC_LOCAL(Persistent<PageSetHolder>, pages,
-                      (MakeGarbageCollected<PageSetHolder>()));
-  return pages->Value();
+  static base::NoDestructor<Persistent<PageSetHolder>> pages(
+      MakeGarbageCollected<PageSetHolder>());
+  return (*pages)->Value();
 }
 
 Page::PageSet& Page::OrdinaryPages() {
+  DCHECK(IsMainThread());
   using PageSetHolder = DisallowNewWrapper<Page::PageSet>;
-  DEFINE_STATIC_LOCAL(Persistent<PageSetHolder>, pages,
-                      (MakeGarbageCollected<PageSetHolder>()));
-  return pages->Value();
+  static base::NoDestructor<Persistent<PageSetHolder>> pages(
+      MakeGarbageCollected<PageSetHolder>());
+  return (*pages)->Value();
 }
 
 void Page::InsertOrdinaryPageForTesting(Page* page) {
@@ -505,6 +530,12 @@ void Page::TakePropertiesForLocalMainFrameSwap(Page* old_page) {
   // renderer-side opener is only set during construction and might be stale.
   // When we create the new page, we get the latest opener frame token, so the
   // new page's opener should be the most up-to-date opener.
+
+  // Transfer user agent page scale constraints (such as initial scale set by
+  // the embedder) to the new Page so that scale settings persist across main
+  // frame swaps.
+  SetUserAgentPageScaleConstraints(
+      old_page->GetPageScaleConstraintsSet().UserAgentConstraints());
 }
 
 LocalFrame* Page::DeprecatedLocalMainFrame() const {
@@ -563,17 +594,8 @@ void Page::ForcedColorsChanged() {
 }
 
 void Page::PlatformColorsChanged() {
-  for (const Page* page : AllPages()) {
-    for (Frame* frame = page->MainFrame(); frame;
-         frame = frame->Tree().TraverseNext()) {
-      if (auto* local_frame = DynamicTo<LocalFrame>(frame)) {
-        if (Document* document = local_frame->GetDocument()) {
-          document->PlatformColorsChanged();
-        }
-        if (LayoutView* view = local_frame->ContentLayoutObject())
-          view->InvalidatePaintForViewAndDescendants();
-      }
-    }
+  for (Page* page : AllPages()) {
+    page->InvalidatePlatformColors();
   }
 }
 
@@ -825,8 +847,12 @@ void Page::SetVisibilityState(
   if (is_initial_state)
     return;
 
-  for (auto& observer : page_visibility_observer_set_) {
-    observer->PageVisibilityChanged();
+  HeapVector<Member<PageVisibilityObserver>> observers(
+      page_visibility_observer_set_);
+  for (auto& observer : observers) {
+    if (page_visibility_observer_set_.Contains(observer)) {
+      observer->PageVisibilityChanged();
+    }
   }
 
   if (main_frame_) {
@@ -917,16 +943,6 @@ void CheckFrameCountConsistency(int expected_frame_count, Frame* frame) {
   for (; frame; frame = frame->Tree().TraverseNext()) {
     ++actual_frame_count;
 
-    // Check the ``DocumentFencedFrames`` on every local frame beneath
-    // the ``frame`` to get an accurate count (i.e. if an iframe embeds
-    // a fenced frame and creates a new ``DocumentFencedFrames`` object).
-    if (auto* local_frame = DynamicTo<LocalFrame>(frame)) {
-      if (auto* fenced_frames =
-              DocumentFencedFrames::Get(*local_frame->GetDocument())) {
-        actual_frame_count +=
-            static_cast<int>(fenced_frames->GetFencedFrames().size());
-      }
-    }
   }
 
   DCHECK_EQ(expected_frame_count, actual_frame_count);
@@ -957,19 +973,18 @@ void Page::UpdateSafeAreaInsetWithBrowserControls(
   gfx::InsetsF new_scaled_safe_area(scaled_max_safe_area_insets_);
 
   // The calculation is done in the unit of physical pixel.
+  // Adjusting left / right is not needed, since they are set when display
+  // insets were received at `SetSafeArea()`.
+  if (scaled_max_safe_area_insets_.top() > 0) {
+    new_scaled_safe_area.set_top(ComputeDynamicSafeAreaInset(
+        scaled_max_safe_area_insets_.top(), browser_controls.TopHeight(),
+        browser_controls.TopShownRatio()));
+  }
+
   if (scaled_max_safe_area_insets_.bottom() > 0) {
-    // Adjust the top / left / right is not needed, since they are set when
-    // display insets was received at |SetSafeArea()|.
-    float inset_bottom = scaled_max_safe_area_insets_.bottom();
-    int bottom_controls_full_height = browser_controls.BottomHeight();
-    float control_ratio = browser_controls.BottomShownRatio();
-
-    // As control_ratio decrease, safe_area_inset_bottom will be added to the
-    // web page to keep the bottom element out from the display cutout area.
-    float safe_area_inset_bottom = std::max(
-        0.f, inset_bottom - control_ratio * bottom_controls_full_height);
-
-    new_scaled_safe_area.set_bottom(safe_area_inset_bottom);
+    new_scaled_safe_area.set_bottom(ComputeDynamicSafeAreaInset(
+        scaled_max_safe_area_insets_.bottom(), browser_controls.BottomHeight(),
+        browser_controls.BottomShownRatio()));
   }
 
   if (new_scaled_safe_area != applied_safe_area_insets_ || force_update) {
@@ -1207,7 +1222,8 @@ void Page::SettingsChanged(ChangeType change_type) {
       break;
     }
     case ChangeType::kForcedColors: {
-      ForcedColorsChanged();
+      InvalidatePlatformColors();
+      InvalidateColorScheme();
       break;
     }
     case ChangeType::kAcceptLanguages:
@@ -1229,6 +1245,20 @@ void Page::InvalidateColorScheme() {
         auto* navigator = local_frame->DomWindow()->navigator();
         if (auto* preferences = NavigatorPreferences::preferences(*navigator)) {
           preferences->PreferenceMaybeChanged();
+        }
+      }
+    }
+  }
+}
+
+void Page::InvalidatePlatformColors() {
+  for (Frame* frame = MainFrame(); frame;
+       frame = frame->Tree().TraverseNext()) {
+    if (auto* local_frame = DynamicTo<LocalFrame>(frame)) {
+      local_frame->GetDocument()->PlatformColorsChanged();
+      if (!::features::IsThemeChangeOptimizationV2Enabled()) {
+        if (LayoutView* view = local_frame->ContentLayoutObject()) {
+          view->InvalidatePaintForViewAndDescendants();
         }
       }
     }
@@ -1316,6 +1346,7 @@ void Page::AcceptLanguagesChanged() {
 }
 
 void Page::Trace(Visitor* visitor) const {
+  visitor->Trace(initial_autoplay_restriction_);
   visitor->Trace(animator_);
   visitor->Trace(autoscroll_controller_);
   visitor->Trace(chrome_client_);
@@ -1446,12 +1477,54 @@ int32_t Page::AutoplayFlags() const {
   return autoplay_flags_;
 }
 
-void Page::SetIsMainFrameFencedFrameRoot() {
-  is_fenced_frame_tree_ = true;
+bool Page::HasInitialAutoplayRestriction() const {
+  return initial_autoplay_restriction_ &&
+         initial_autoplay_restriction_->is_restricted;
 }
 
+void Page::SetInitialAutoplayRestriction(const base::UnguessableToken& id,
+                                         bool restricted) {
+  CHECK(!id.is_empty());
+  if (!initial_autoplay_restriction_ ||
+      initial_autoplay_restriction_->id != id) {
+    initial_autoplay_restriction_ = nullptr;
+    // Replacement, cached, and prerendered Pages of the same tab share state.
+    // After the last live Page is gone, creation uses the browser's current
+    // value. Closed Pages are removed from OrdinaryPages() before garbage
+    // collection.
+    for (Page* page : OrdinaryPages()) {
+      if (page->initial_autoplay_restriction_ &&
+          page->initial_autoplay_restriction_->id == id) {
+        initial_autoplay_restriction_ = page->initial_autoplay_restriction_;
+        break;
+      }
+    }
+    if (!initial_autoplay_restriction_) {
+      initial_autoplay_restriction_ =
+          MakeGarbageCollected<InitialAutoplayRestrictionState>(id, restricted);
+    }
+  }
+  initial_autoplay_restriction_->is_restricted =
+      initial_autoplay_restriction_->is_restricted && restricted;
+}
+
+void Page::ReleaseInitialAutoplayRestriction() {
+  // Honor synthetic gestures on inactive Pages, as normal autoplay does.
+  // Playback still obeys lifecycle restrictions.
+  if (initial_autoplay_restriction_) {
+    initial_autoplay_restriction_->is_restricted = false;
+  }
+}
+
+void Page::SetInitialAutoplayRestrictionForTesting(bool restricted) {
+  CHECK_IS_TEST();
+  SetInitialAutoplayRestriction(base::UnguessableToken::Create(), restricted);
+}
+
+void Page::SetIsMainFrameFencedFrameRoot() {}
+
 bool Page::IsMainFrameFencedFrameRoot() const {
-  return is_fenced_frame_tree_;
+  return false;
 }
 
 void Page::SetMediaFeatureOverride(const AtomicString& media_feature,

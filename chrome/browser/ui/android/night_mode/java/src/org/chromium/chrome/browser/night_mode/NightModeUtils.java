@@ -13,19 +13,21 @@ import android.view.ContextThemeWrapper;
 
 import androidx.annotation.StyleRes;
 
+import org.jni_zero.CalledByNative;
+import org.jni_zero.JNINamespace;
+
 import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 
 /** Helper methods for supporting night mode. */
+@JNINamespace("night_mode")
 @NullMarked
 public class NightModeUtils {
     private static @Nullable Boolean sNightModeSupportedForTest;
 
-    /**
-     * @return Whether night mode is supported.
-     */
+    /** Returns whether night mode is supported. */
     public static boolean isNightModeSupported() {
         if (sNightModeSupportedForTest != null) return sNightModeSupportedForTest;
         return true;
@@ -56,11 +58,13 @@ public class NightModeUtils {
     }
 
     /**
+     * Overrides UI night mode on the provided {@code config} if the {@code provider} requires it.
+     *
      * @param provider The {@link NightModeStateProvider} that provides the night mode state.
      * @param config The {@link Configuration} on which UI night mode should be overridden if
-     *               necessary.
+     *     necessary.
      * @return True if UI night mode is overridden on the provided {@code config}, and false
-     *         otherwise.
+     *     otherwise.
      */
     public static boolean applyOverridesForNightMode(
             NightModeStateProvider provider, Configuration config) {
@@ -80,6 +84,7 @@ public class NightModeUtils {
     /**
      * Wraps a {@link Context} into one having a resource configuration with the given night mode
      * setting.
+     *
      * @param context {@link Context} to wrap.
      * @param themeResId Theme resource to use with {@link ContextThemeWrapper}.
      * @param nightMode Whether to apply night mode.
@@ -100,10 +105,10 @@ public class NightModeUtils {
     }
 
     /**
-     * The current theme setting, reflecting either the user setting or the default if the user has
-     * not explicitly set a preference.
-     * @return The current theme setting. See {@link ThemeType}.
+     * Returns the current theme setting, reflecting either the user setting or the default if the
+     * user has not explicitly set a preference. See {@link ThemeType}.
      */
+    @CalledByNative
     public static @ThemeType int getThemeSetting() {
         int userSetting = ChromeSharedPreferences.getInstance().readInt(UI_THEME_SETTING, -1);
         if (userSetting == -1) {
@@ -111,6 +116,17 @@ public class NightModeUtils {
         } else {
             return userSetting;
         }
+    }
+
+    /**
+     * Sets the theme setting. This may trigger activity recreation if the effective night mode
+     * changes.
+     *
+     * @param theme The new theme setting. See {@link ThemeType}.
+     */
+    @CalledByNative
+    public static void setThemeSetting(@ThemeType int theme) {
+        ChromeSharedPreferences.getInstance().writeInt(UI_THEME_SETTING, theme);
     }
 
     /**
@@ -133,7 +149,8 @@ public class NightModeUtils {
     }
 
     public static void setNightModeSupportedForTesting(@Nullable Boolean nightModeSupported) {
+        Boolean oldValue = sNightModeSupportedForTest;
         sNightModeSupportedForTest = nightModeSupported;
-        ResettersForTesting.register(() -> sNightModeSupportedForTest = null);
+        ResettersForTesting.register(() -> sNightModeSupportedForTest = oldValue);
     }
 }

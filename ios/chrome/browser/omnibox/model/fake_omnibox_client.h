@@ -14,6 +14,7 @@
 #import "components/sessions/core/session_id.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_scheme_classifier_impl.h"
 #import "ios/chrome/browser/omnibox/model/omnibox_client_ios.h"
+#import "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #import "ui/gfx/image/image.h"
 #import "ui/gfx/vector_icon_types.h"
 
@@ -64,10 +65,11 @@ class FakeOmniboxClient : public OmniboxClientIOS {
   const gfx::VectorIcon& GetVectorIcon() const override;
   std::optional<lens::proto::LensOverlaySuggestInputs>
   GetLensOverlaySuggestInputs() const override;
-  void ProcessExtensionMatch(const std::u16string& text,
-                             const TemplateURL* template_url,
-                             const AutocompleteMatch& match,
-                             WindowOpenDisposition disposition) override;
+  void ProcessExtensionMatch(
+      const std::u16string& text,
+      const TemplateURL* template_url,
+      const AutocompleteMatch& match,
+      ui::mojom::WindowOpenDisposition disposition) override;
   void OnInputStateChanged() override;
   void OnFocusChanged(OmniboxFocusState state,
                       OmniboxFocusChangeReason reason) override;
@@ -99,9 +101,9 @@ class FakeOmniboxClient : public OmniboxClientIOS {
   void OnAutocompleteAccept(
       const GURL& destination_url,
       TemplateURLRef::PostContent* post_content,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       ui::PageTransition transition,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       base::TimeTicks match_selection_timestamp,
       bool destination_url_entered_without_scheme,
       bool destination_url_entered_with_http_scheme,
@@ -113,7 +115,6 @@ class FakeOmniboxClient : public OmniboxClientIOS {
   void OnPopupVisibilityChanged(bool popup_is_open) override;
   void OnThumbnailRemoved() override;
   void OpenIphLink(GURL gurl) override;
-  bool IsHistoryEmbeddingsEnabled() const override;
   base::WeakPtr<OmniboxClientIOS> AsWeakPtr() override;
 
   // Setters for return values (for those not retrieved from ProfileIOS)
@@ -168,12 +169,9 @@ class FakeOmniboxClient : public OmniboxClientIOS {
   GURL get_on_autocomplete_accept_destination_url() {
     return on_autocomplete_accept_destination_url_;
   }
-  void set_is_history_embeddings_enabled(bool enabled) {
-    is_history_embeddings_enabled_ = enabled;
-  }
 
  private:
-  raw_ptr<ProfileIOS, DanglingUntriaged> profile_;
+  raw_ptr<ProfileIOS> profile_;
   AutocompleteSchemeClassifierImpl scheme_classifier_;
 
   // For overriding return values
@@ -186,11 +184,10 @@ class FakeOmniboxClient : public OmniboxClientIOS {
   bool is_paste_and_go_enabled_ = false;
   bool is_default_search_provider_enabled_ = true;
   SessionID session_id_ = SessionID::InvalidValue();
-  raw_ptr<PrefService, DanglingUntriaged> prefs_ = nullptr;
-  raw_ptr<AutocompleteControllerEmitter, DanglingUntriaged>
-      autocomplete_controller_emitter_ = nullptr;
-  raw_ptr<AutocompleteClassifier, DanglingUntriaged> autocomplete_classifier_ =
+  raw_ptr<PrefService> prefs_ = nullptr;
+  raw_ptr<AutocompleteControllerEmitter> autocomplete_controller_emitter_ =
       nullptr;
+  raw_ptr<AutocompleteClassifier> autocomplete_classifier_ = nullptr;
   bool should_default_typed_navigations_to_https_ = false;
   std::u16string formatted_full_url_ = u"";
   std::u16string url_for_display_ = u"";
@@ -203,7 +200,6 @@ class FakeOmniboxClient : public OmniboxClientIOS {
   std::optional<lens::proto::LensOverlaySuggestInputs>
       lens_overlay_suggest_inputs_ = std::nullopt;
   GURL on_autocomplete_accept_destination_url_ = GURL();
-  bool is_history_embeddings_enabled_ = false;
 
   base::WeakPtrFactory<FakeOmniboxClient> weak_factory_{this};
 };

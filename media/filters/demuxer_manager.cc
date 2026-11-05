@@ -18,6 +18,9 @@
 #include "media/base/media_switches.h"
 #include "media/filters/chunk_demuxer.h"
 #include "media/filters/ffmpeg_demuxer.h"
+#if BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
+#include "media/filters/symphonia_demuxer.h"
+#endif  // BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
 #include "net/storage_access_api/status.h"
 #include "url/gurl.h"
 
@@ -93,18 +96,37 @@ DemuxerManager::~DemuxerManager() {
   if (GetDemuxerType() == DemuxerType::kManifestDemuxer ||
       GetDemuxerType() == DemuxerType::kFrameInjectingDemuxer ||
       GetDemuxerType() == DemuxerType::kStreamProviderDemuxer) {
+    // For HLS, `data_source_info_` points into the demuxer, which the media
+    // thread may delete before this object is gone.
+    data_source_info_ = nullptr;
     media_task_runner_->DeleteSoon(FROM_HERE, std::move(demuxer_));
   }
 }
 
-void DemuxerManager::RestartClientForHLS() {
+void DemuxerManager::RestartForDemuxerChange(bool is_hls) {
   if (client_ && fallback_allowed_) {
-    client_->RestartForHls();
+    client_->RestartForDemuxerChange(is_hls);
   }
 }
 
 void DemuxerManager::OnPipelineError(PipelineStatus error) {
   DCHECK(client_);
+
+#if BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
+  if (error == DEMUXER_ERROR_SYMPHONIA_UNSUPPORTED) {
+#if BUILDFLAG(ENABLE_FFMPEG)
+    if (fallback_allowed_) {
+      return FallBackFromSymphoniaDemuxer(std::move(error));
+    }
+#endif  // BUILDFLAG(ENABLE_FFMPEG)
+    // SymphoniaDemuxer released the data source without stopping it, so stop
+    // it here since nothing will take it over.
+    if (data_source_) {
+      data_source_->Stop();
+    }
+    return client_->OnError(std::move(error));
+  }
+#endif  // BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
 
   if (!fallback_allowed_) {
     return client_->OnError(std::move(error));
@@ -128,8 +150,10 @@ void DemuxerManager::OnPipelineError(PipelineStatus error) {
     // old demuxer and data source can be freed.
     client_->StopForDemuxerReset();
     data_source_->Stop();
-    FreeResourcesAfterMediaThreadWait(base::BindOnce(
-        &DemuxerManager::RestartClientForHLS, weak_factory_.GetWeakPtr()));
+    FreeResourcesAfterMediaThreadWait(
+        /*free_data_source=*/true,
+        base::BindOnce(&DemuxerManager::RestartForDemuxerChange,
+                       weak_factory_.GetWeakPtr(), /*is_hls=*/true));
 
     return;
   }
@@ -138,11 +162,17 @@ void DemuxerManager::OnPipelineError(PipelineStatus error) {
   client_->OnError(std::move(error));
 }
 
-void DemuxerManager::FreeResourcesAfterMediaThreadWait(base::OnceClosure cb) {
+void DemuxerManager::FreeResourcesAfterMediaThreadWait(bool free_data_source,
+                                                       base::OnceClosure cb) {
   // The demuxer and data source must be freed on the main thread, but we have
-  // to make sure nothing is using them on the media thread first. So we have
-  // to post to the media thread and back.
-  data_source_info_ = nullptr;
+  // to make sure nothing is using them on the media thread first. So we post a
+  // task to the media thread that only bounces back to the main thread, where
+  // they are freed.
+  std::unique_ptr<DataSource> data_source;
+  if (free_data_source) {
+    data_source_info_ = nullptr;
+    data_source = std::move(data_source_);
+  }
   media_task_runner_->PostTask(
       FROM_HERE,
       base::BindPostTaskToCurrentDefault(base::BindOnce(
@@ -153,8 +183,27 @@ void DemuxerManager::FreeResourcesAfterMediaThreadWait(base::OnceClosure cb) {
             data_source.reset();
             std::move(done_cb).Run();
           },
-          std::move(demuxer_), std::move(data_source_), std::move(cb))));
+          std::move(demuxer_), std::move(data_source), std::move(cb))));
 }
+
+#if BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER) && BUILDFLAG(ENABLE_FFMPEG)
+void DemuxerManager::FallBackFromSymphoniaDemuxer(PipelineStatus error) {
+  CHECK(GetDemuxerType() == DemuxerType::kSymphoniaDemuxer);
+  CHECK(data_source_);
+  symphonia_fallback_ = true;
+  MEDIA_LOG(INFO, media_log_.get())
+      << "Falling back to FFmpegDemuxer: " << error.message();
+
+  // Stopping the client stops the pipeline and the demuxer. SymphoniaDemuxer
+  // released the data source without stopping it before reporting `error`,
+  // so only the demuxer is freed and FFmpegDemuxer reads the same data source.
+  client_->StopForDemuxerReset();
+  FreeResourcesAfterMediaThreadWait(
+      /*free_data_source=*/false,
+      base::BindOnce(&DemuxerManager::RestartForDemuxerChange,
+                     weak_factory_.GetWeakPtr(), /*is_hls=*/false));
+}
+#endif  // BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER) && BUILDFLAG(ENABLE_FFMPEG)
 
 void DemuxerManager::DisallowFallback() {
   fallback_allowed_ = false;
@@ -268,11 +317,21 @@ PipelineStatus DemuxerManager::CreateDemuxer(
     // run in the demuxer override case?
     SetDemuxer(std::move(demuxer_override_));
   } else if (!load_media_source) {
+#if BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
+    // If SymphoniaDemuxer reports `DEMUXER_ERROR_SYMPHONIA_UNSUPPORTED`,
+    // `OnPipelineError()` restarts with FFmpegDemuxer.
+    if (!symphonia_fallback_ &&
+        base::FeatureList::IsEnabled(kSymphoniaDemuxing)) {
+      SetDemuxer(CreateSymphoniaDemuxer());
+    }
+#endif  // BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
+    if (!demuxer_) {
 #if BUILDFLAG(ENABLE_FFMPEG)
-    SetDemuxer(CreateFFmpegDemuxer());
+      SetDemuxer(CreateFFmpegDemuxer());
 #else
-    return DEMUXER_ERROR_PROGRESSIVE_DISABLED;
+      return DEMUXER_ERROR_PROGRESSIVE_DISABLED;
 #endif
+    }
   } else {
     DCHECK(!HasDataSource());
     SetDemuxer(CreateChunkDemuxer());
@@ -405,7 +464,6 @@ std::unique_ptr<Demuxer> DemuxerManager::CreateChunkDemuxer() {
 }
 
 #if BUILDFLAG(ENABLE_FFMPEG)
-
 std::unique_ptr<Demuxer> DemuxerManager::CreateFFmpegDemuxer() {
   DCHECK(data_source_);
   return std::make_unique<FFmpegDemuxer>(
@@ -413,14 +471,30 @@ std::unique_ptr<Demuxer> DemuxerManager::CreateFFmpegDemuxer() {
       base::BindPostTaskToCurrentDefault(
           base::BindRepeating(&DemuxerManager::OnEncryptedMediaInitData,
                               weak_factory_.GetWeakPtr())),
-      base::BindPostTaskToCurrentDefault(
-          base::BindRepeating(&DemuxerManager::OnFFmpegMediaTracksUpdated,
-                              weak_factory_.GetWeakPtr())),
+      base::BindPostTaskToCurrentDefault(base::BindRepeating(
+          &DemuxerManager::OnMediaTracksUpdated, weak_factory_.GetWeakPtr())),
       media_log_.get(), IsLocalFile(loaded_url_));
 }
+#endif  // BUILDFLAG(ENABLE_FFMPEG)
 
-void DemuxerManager::OnFFmpegMediaTracksUpdated(
-    std::unique_ptr<MediaTracks> tracks) {
+#if BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
+std::unique_ptr<Demuxer> DemuxerManager::CreateSymphoniaDemuxer() {
+  CHECK(data_source_);
+  return std::make_unique<SymphoniaDemuxer>(
+      media_task_runner_, data_source_.get(),
+      base::BindPostTaskToCurrentDefault(
+          base::BindRepeating(&DemuxerManager::OnEncryptedMediaInitData,
+                              weak_factory_.GetWeakPtr())),
+      base::BindPostTaskToCurrentDefault(base::BindRepeating(
+          &DemuxerManager::OnMediaTracksUpdated, weak_factory_.GetWeakPtr())),
+      media_log_->Clone(),
+      // Without FFmpegDemuxer there is nothing to fall back to.
+      /*allow_fallback=*/BUILDFLAG(ENABLE_FFMPEG));
+}
+#endif  // BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
+
+#if BUILDFLAG(ENABLE_FFMPEG) || BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
+void DemuxerManager::OnMediaTracksUpdated(std::unique_ptr<MediaTracks> tracks) {
   DCHECK(demuxer_);
 
   // For MSE/chunk_demuxer case the media track updates are handled by
@@ -444,8 +518,7 @@ void DemuxerManager::OnFFmpegMediaTracksUpdated(
     }
   }
 }
-
-#endif  // BUILDFLAG(ENABLE_FFMPEG)
+#endif  // BUILDFLAG(ENABLE_FFMPEG) || BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
 
 #if BUILDFLAG(ENABLE_HLS_DEMUXER)
 std::tuple<raw_ptr<DataSourceInfo>, std::unique_ptr<Demuxer>>

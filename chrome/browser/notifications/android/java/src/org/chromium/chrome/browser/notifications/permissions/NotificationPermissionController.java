@@ -16,12 +16,18 @@ import org.chromium.base.TimeUtils;
 import org.chromium.base.UnownedUserDataKey;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker.NotificationPermissionState;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.browser_ui.notifications.NotificationProxyUtils;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
+import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.feature_engagement.UiFormat;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.permissions.AndroidPermissionDelegate;
 import org.chromium.ui.permissions.PermissionPrefs;
@@ -111,6 +117,7 @@ public class NotificationPermissionController {
 
     private final AndroidPermissionDelegate mAndroidPermissionDelegate;
     private final Supplier<RationaleDelegate> mRationaleDelegateSupplier;
+    private final @Nullable Profile mProfile;
 
     /**
      * Constructor. Should only be called by {@link ChromeTabbedActivity}. Features looking to
@@ -123,8 +130,25 @@ public class NotificationPermissionController {
     public NotificationPermissionController(
             AndroidPermissionDelegate androidPermissionDelegate,
             Supplier<RationaleDelegate> rationaleDelegateSupplier) {
+        this(androidPermissionDelegate, rationaleDelegateSupplier, /* profile= */ null);
+    }
+
+    /**
+     * Constructor. Should only be called by {@link ChromeTabbedActivity}. Features looking to
+     * request this permission in context should instead use {@link
+     * ContextualNotificationPermissionRequester}.
+     *
+     * @param androidPermissionDelegate The delegate to request Android permissions.
+     * @param rationaleDelegateSupplier The delegate to show the rationale UI.
+     * @param profile The current {@link Profile}, or null if unavailable.
+     */
+    public NotificationPermissionController(
+            AndroidPermissionDelegate androidPermissionDelegate,
+            Supplier<RationaleDelegate> rationaleDelegateSupplier,
+            @Nullable Profile profile) {
         mAndroidPermissionDelegate = androidPermissionDelegate;
         mRationaleDelegateSupplier = rationaleDelegateSupplier;
+        mProfile = profile;
     }
 
     /**
@@ -179,12 +203,33 @@ public class NotificationPermissionController {
             return false;
         }
 
-        // Record the state of the notification permission before trying to ask but after verifying
-        // we are running on Android T.
-        recordCurrentNotificationPermissionStatus();
+        if (mAndroidPermissionDelegate.hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
+            NotificationUmaTracker.getInstance()
+                    .recordNotificationPermissionState(NotificationPermissionState.ALLOWED);
+            return false;
+        }
 
-        @PermissionRequestMode int requestMode = shouldRequestPermission();
+        boolean canRequest =
+                mAndroidPermissionDelegate.canRequestPermission(
+                        Manifest.permission.POST_NOTIFICATIONS);
+
+        recordDeniedNotificationPermissionStatus(canRequest);
+
+        if (!canRequest) {
+            return false;
+        }
+
+        @PermissionRequestMode int requestMode = getPermissionRequestMode();
         if (requestMode == PermissionRequestMode.DO_NOT_REQUEST) return false;
+
+        if (mProfile != null && TrackerFactory.isInterruptiveCooldownGroupEnabled()) {
+            Tracker tracker = TrackerFactory.getTrackerForProfile(mProfile);
+            FeatureProperties featureProperties = new FeatureProperties(UiFormat.ALERTS);
+            if (!tracker.shouldTriggerHelpUi(
+                    FeatureConstants.NOTIFICATION_PERMISSION_PROMO_FEATURE, featureProperties)) {
+                return false;
+            }
+        }
 
         if (requestMode == PermissionRequestMode.REQUEST_ANDROID_PERMISSION) {
             requestAndroidPermission();
@@ -199,10 +244,50 @@ public class NotificationPermissionController {
                                 }
                                 if (rationaleResult == RationaleUiResult.ACCEPTED) {
                                     requestAndroidPermission();
+                                } else {
+                                    notifyTrackerDismissed();
                                 }
                             });
         }
         return true;
+    }
+
+    private void notifyTrackerDismissed() {
+        if (mProfile != null && TrackerFactory.isInterruptiveCooldownGroupEnabled()) {
+            TrackerFactory.getTrackerForProfile(mProfile)
+                    .dismissed(FeatureConstants.NOTIFICATION_PERMISSION_PROMO_FEATURE);
+        }
+    }
+
+    private void recordDeniedNotificationPermissionStatus(boolean canRequest) {
+        if (!canRequest
+                && mAndroidPermissionDelegate.isPermissionRevokedByPolicy(
+                        Manifest.permission.POST_NOTIFICATIONS)) {
+            NotificationUmaTracker.getInstance()
+                    .recordNotificationPermissionState(
+                            NotificationPermissionState.DENIED_BY_DEVICE_POLICY);
+            return;
+        }
+
+        int promptCount =
+                ChromeSharedPreferences.getInstance()
+                        .readInt(ChromePreferenceKeys.NOTIFICATION_PERMISSION_REQUEST_COUNT, 0);
+        @NotificationPermissionState int state;
+        switch (promptCount) {
+            case 0:
+                state = NotificationPermissionState.DENIED_NEVER_ASKED;
+                break;
+            case 1:
+                state = NotificationPermissionState.DENIED_ASKED_ONCE;
+                break;
+            case 2:
+                state = NotificationPermissionState.DENIED_ASKED_TWICE;
+                break;
+            default:
+                state = NotificationPermissionState.DENIED_ASKED_MORE_THAN_TWICE;
+                break;
+        }
+        NotificationUmaTracker.getInstance().recordNotificationPermissionState(state);
     }
 
     private void recordOsPromptShown() {
@@ -232,11 +317,16 @@ public class NotificationPermissionController {
         if (mAndroidPermissionDelegate.hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
             return PermissionRequestMode.DO_NOT_REQUEST;
         }
+
         if (!mAndroidPermissionDelegate.canRequestPermission(
                 Manifest.permission.POST_NOTIFICATIONS)) {
             return PermissionRequestMode.DO_NOT_REQUEST;
         }
 
+        return getPermissionRequestMode();
+    }
+
+    private @PermissionRequestMode int getPermissionRequestMode() {
         // Check if it is too soon to request permission again.
         if (wasPermissionRequestShown()) {
             if (!hasEnoughTimeExpiredForRetriggerSinceLastDenial()) {
@@ -261,10 +351,10 @@ public class NotificationPermissionController {
         }
 
         // Decide whether to show the rationale or just the system prompt.
-        boolean meetsAndroidRationaleAPI =
-                mAndroidPermissionDelegate.shouldShowRequestPermissionRationale(
-                        Manifest.permission.POST_NOTIFICATIONS);
-        boolean shouldShowRationale = shouldAlwaysShowRationaleFirst() || meetsAndroidRationaleAPI;
+        boolean shouldShowRationale =
+                shouldAlwaysShowRationaleFirst()
+                        || mAndroidPermissionDelegate.shouldShowRequestPermissionRationale(
+                                Manifest.permission.POST_NOTIFICATIONS);
         return shouldShowRationale
                 ? PermissionRequestMode.REQUEST_PERMISSION_WITH_RATIONALE
                 : PermissionRequestMode.REQUEST_ANDROID_PERMISSION;
@@ -299,55 +389,6 @@ public class NotificationPermissionController {
         return allowRequestingPermissionsForSiteNotifications && canRequestPermission;
     }
 
-    /**
-     * Records the current status of the notification permission (Allowed/Denied) and if denied we
-     * include how many times we've asked or if the permission is denied by policy.
-     */
-    private void recordCurrentNotificationPermissionStatus() {
-        if (mAndroidPermissionDelegate.hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
-            NotificationUmaTracker.getInstance()
-                    .recordNotificationPermissionState(NotificationPermissionState.ALLOWED);
-            return;
-        }
-
-        if (mAndroidPermissionDelegate.isPermissionRevokedByPolicy(
-                Manifest.permission.POST_NOTIFICATIONS)) {
-            NotificationUmaTracker.getInstance()
-                    .recordNotificationPermissionState(
-                            NotificationPermissionState.DENIED_BY_DEVICE_POLICY);
-            return;
-        }
-
-        // Get number of times we've requested for notification permission at startup.
-        // This count is updated on NotificationUmaTracker.onNotificationPermissionRequested.
-        int promptCount =
-                ChromeSharedPreferences.getInstance()
-                        .readInt(ChromePreferenceKeys.NOTIFICATION_PERMISSION_REQUEST_COUNT, 0);
-
-        switch (promptCount) {
-            case 0:
-                NotificationUmaTracker.getInstance()
-                        .recordNotificationPermissionState(
-                                NotificationPermissionState.DENIED_NEVER_ASKED);
-                break;
-            case 1:
-                NotificationUmaTracker.getInstance()
-                        .recordNotificationPermissionState(
-                                NotificationPermissionState.DENIED_ASKED_ONCE);
-                break;
-            case 2:
-                NotificationUmaTracker.getInstance()
-                        .recordNotificationPermissionState(
-                                NotificationPermissionState.DENIED_ASKED_TWICE);
-                break;
-            default:
-                NotificationUmaTracker.getInstance()
-                        .recordNotificationPermissionState(
-                                NotificationPermissionState.DENIED_ASKED_MORE_THAN_TWICE);
-                break;
-        }
-    }
-
     private void requestAndroidPermission() {
         String[] permissionsToRequest = {Manifest.permission.POST_NOTIFICATIONS};
         mAndroidPermissionDelegate.requestPermissions(
@@ -357,6 +398,7 @@ public class NotificationPermissionController {
     }
 
     private void onNotificationPermissionRequestResult(String[] permissions, int[] grantResults) {
+        notifyTrackerDismissed();
         if (permissions == null
                 || grantResults == null
                 || permissions.length != 1

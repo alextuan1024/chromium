@@ -35,10 +35,8 @@ extern const char kComposeFirstRunSessionCloseReason[];
 extern const char kComposeFirstRunSessionDialogShownCount[];
 extern const char kComposeMSBBSessionCloseReason[];
 extern const char kComposeMSBBSessionDialogShownCount[];
-extern const char kInnerTextNodeOffsetFound[];
 extern const char kComposeContextMenuCtr[];
 extern const char kComposeProactiveNudgeCtr[];
-extern const char kComposeSelectionNudgeCtr[];
 extern const char kComposeProactiveNudgeShowStatus[];
 extern const char kOpenComposeDialogResult[];
 extern const char kComposeStartSessionEntryPoint[];
@@ -58,10 +56,8 @@ enum class ComposeContextMenuCtrEvent {
 // Keep in sync with ComposeRequestReason in
 // src/tools/metrics/histograms/metadata/compose/enums.xml.
 enum class ComposeRequestReason {
-  // When the ComposeUpfrontInputModes featuer is enabled, the "first request"
-  // is split between one of three input modes.
-  // TODO(b/371054228): Deprecate the kFirstRequest bucket when upfront inputs
-  // launches.
+  // The "first request" is split between one of three upfront input modes,
+  // except when no input mode is set (e.g. auto-submit).
   kFirstRequest = 0,
   kRetryRequest = 1,
   kUpdateRequest = 2,
@@ -157,7 +153,8 @@ enum class ComposeShowStatus {
   kNotComposeEligible = 9,
   kIncorrectScheme = 10,
   kFormFieldNestedInFencedFrame = 11,
-  kComposeFeatureFlagDisabled = 12,
+  // DEPRECATED: Compose feature flag was removed.
+  // kComposeFeatureFlagDisabled = 12,
   kDisabledOnChromeOS = 13,
   kAutocompleteOff = 14,
   kWritingSuggestionsFalse = 15,
@@ -193,7 +190,8 @@ enum class ComposeNudgeCtrEvent {
 enum class ComposeEntryPoint {
   kContextMenu = 0,
   kProactiveNudge = 1,
-  kSelectionNudge = 2,
+  // DEPRECATED: Selection nudge was removed.
+  // kSelectionNudge = 2,
   kSavedStateNudge = 3,
   kSavedStateNotification = 4,
   kMaxValue = kSavedStateNotification,
@@ -351,24 +349,6 @@ enum class OpenComposeDialogResult {
   kMaxValue = kAutofillFormDataNotFoundAfterSelectAll
 };
 
-// Enum to log if the inner text successfuly found an offset
-// Keep in sync with ComposeInnerTextNodeOffset in
-// src/tools/metrics/histograms/metadata/compose/enums.xml.
-enum class ComposeInnerTextNodeOffset {
-  kNoOffsetFound = 0,
-  kOffsetFound = 1,
-  kMaxValue = kOffsetFound
-};
-
-// Enum to log if all text was selected on behalf of the user.
-// Keep in sync with ComposeSelectAllStatus in
-// src/tools/metrics/histograms/metadata/compose/enums.xml.
-enum class ComposeSelectAllStatus {
-  kNoSelectAll = 0,
-  kSelectedAll = 1,
-  kMaxValue = kSelectedAll
-};
-
 // Class that automatically reports any UKM metrics for the page-level Compose
 // UKM as defined in go/ukm-collection-chrome-compose.
 class PageUkmTracker {
@@ -434,8 +414,6 @@ void LogComposeContextMenuShowStatus(ComposeShowStatus status);
 
 void LogComposeProactiveNudgeCtr(ComposeNudgeCtrEvent event);
 
-void LogComposeSelectionNudgeCtr(ComposeNudgeCtrEvent event);
-
 void LogComposeProactiveNudgeShowStatus(ComposeShowStatus status);
 
 void LogOpenComposeDialogResult(OpenComposeDialogResult result);
@@ -447,10 +425,8 @@ void LogComposeRequestReason(ComposeRequestReason reason);
 void LogComposeRequestReason(EvalLocation eval_location,
                              ComposeRequestReason reason);
 
-void LogComposeRequestStatus(bool page_language_supported,
-                             compose::mojom::ComposeStatus status);
+void LogComposeRequestStatus(compose::mojom::ComposeStatus status);
 void LogComposeRequestStatus(EvalLocation eval_location,
-                             bool page_language_supported,
                              compose::mojom::ComposeStatus status);
 
 // Log the duration of a compose request. |is_ok| indicates the status of
@@ -501,9 +477,6 @@ void LogComposeDialogInnerTextShortenedBy(int shortened_by);
 // dialog is opened.
 void LogComposeDialogInnerTextSize(int size);
 
-// Log if the inner text node offset was found successfully.
-void LogComposeDialogInnerTextOffsetFound(bool inner_offset_found);
-
 // Log the time taken for the dialog to be fully shown and interactable.
 void LogComposeDialogOpenLatency(base::TimeDelta duration);
 
@@ -518,8 +491,6 @@ void LogComposeSessionDuration(
 
 void LogComposeRequestFeedback(EvalLocation eval_location,
                                ComposeRequestFeedback feedback);
-
-void LogComposeSelectAllStatus(ComposeSelectAllStatus select_all_status);
 
 // Emit an enum for for each event present in `session_events`.
 // Split the event counts histogram on `eval_location` if provided.

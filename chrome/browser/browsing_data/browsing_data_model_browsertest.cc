@@ -24,7 +24,6 @@
 #include "base/threading/platform_thread.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_model_delegate.h"
 #include "chrome/browser/media/clear_key_cdm_test_helper.h"
-#include "chrome/browser/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations_mixin.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_settings_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -36,11 +35,12 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/chrome_test_utils.h"
-#include "chrome/test/base/mixin_based_in_process_browser_test.h"
+#include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/browsing_data/content/browsing_data_model_test_util.h"
 #include "components/browsing_data/content/browsing_data_test_util.h"
 #include "components/browsing_data/content/shared_worker_info.h"
+#include "components/browsing_data/core/features.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/performance_manager/public/features.h"
@@ -48,7 +48,6 @@
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
-#include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations.h"
 #include "components/privacy_sandbox/privacy_sandbox_settings.h"
 #include "components/services/storage/public/mojom/local_storage_control.mojom.h"
 #include "components/services/storage/public/mojom/storage_usage_info.mojom.h"
@@ -378,7 +377,7 @@ using browsing_data_test_util::HasDataForType;
 using browsing_data_test_util::SetDataForType;
 
 class BrowsingDataModelBrowserTest
-    : public MixinBasedInProcessBrowserTest,
+    : public InProcessBrowserTest,
       public ::testing::WithParamInterface<bool> {
  public:
   BrowsingDataModelBrowserTest() {
@@ -427,14 +426,10 @@ class BrowsingDataModelBrowserTest
         /*is_initialization_complete_return=*/true,
         /*is_first_policy_load_complete_return=*/true);
     policy::BrowserPolicyConnector::SetPolicyProviderForTesting(&provider_);
-    MixinBasedInProcessBrowserTest::SetUpInProcessBrowserTestFixture();
+    InProcessBrowserTest::SetUpInProcessBrowserTestFixture();
   }
 
   void SetUpOnMainThread() override {
-    // Mark all Privacy Sandbox APIs as attested since the test cases are
-    // testing behaviors not related to attestations.
-    privacy_sandbox::PrivacySandboxAttestations::GetInstance()
-        ->SetAllPrivacySandboxAttestedForTesting(true);
     host_resolver()->AddRule("*", "127.0.0.1");
     https_server_ = std::make_unique<net::EmbeddedTestServer>(
         net::test_server::EmbeddedTestServer::TYPE_HTTPS);
@@ -516,8 +511,6 @@ class BrowsingDataModelBrowserTest
 
  protected:
   std::unique_ptr<net::EmbeddedTestServer> https_server_;
-  privacy_sandbox::PrivacySandboxAttestationsMixin
-      privacy_sandbox_attestations_mixin_{&mixin_host_};
 
   web_app::OsIntegrationTestOverrideBlockingRegistration faked_os_integration_;
   base::test::ScopedFeatureList feature_list_;
@@ -865,7 +858,25 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataModelBrowserTest,
   }
 }
 
-IN_PROC_BROWSER_TEST_F(BrowsingDataModelBrowserTest,
+class BrowsingDataModelSharedWorkerBrowserTest
+    : public BrowsingDataModelBrowserTest {
+ public:
+  BrowsingDataModelSharedWorkerBrowserTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        browsing_data::features::kBrowsingDataModelSharedWorkerKeyWithoutURL,
+        GetParam());
+  }
+  ~BrowsingDataModelSharedWorkerBrowserTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         BrowsingDataModelSharedWorkerBrowserTest,
+                         ::testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(BrowsingDataModelSharedWorkerBrowserTest,
                        SharedWorkerAccessReportedCorrectly) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
@@ -883,29 +894,96 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataModelBrowserTest,
 
   SetDataForType("SharedWorker", web_contents());
   WaitForModelUpdate(allowed_browsing_data_model, /*expected_size=*/1);
+  ASSERT_TRUE(HasDataForType("SharedWorker", web_contents()));
 
-  // Validate Shared Worker is reported.
+  // Validate Shared Worker is reported with the appropriate DataKey.
   url::Origin testOrigin = https_test_server()->GetOrigin(kTestHost);
-  GURL::Replacements replacements;
-  replacements.SetPathStr("browsing_data/shared_worker.js");
-  GURL worker = testOrigin.GetURL().ReplaceComponents(replacements);
-  browsing_data::SharedWorkerInfo data_key(
-      worker, /*name=*/"", blink::StorageKey::CreateFirstParty(testOrigin),
-      blink::mojom::SharedWorkerSameSiteCookies::kAll);
-  ValidateBrowsingDataEntries(
-      allowed_browsing_data_model,
-      {{kTestHost,
-        data_key,
-        {{BrowsingDataModel::StorageType::kSharedWorker},
-         /*storage_size=*/0,
-         /*cookie_count=*/0}}});
+  auto storage_key = blink::StorageKey::CreateFirstParty(testOrigin);
+  if (GetParam()) {
+    ValidateBrowsingDataEntries(
+        allowed_browsing_data_model,
+        {{kTestHost,
+          storage_key,
+          {{BrowsingDataModel::StorageType::kSharedWorker},
+           /*storage_size=*/0,
+           /*cookie_count=*/0}}});
+  } else {
+    GURL::Replacements replacements;
+    replacements.SetPathStr("browsing_data/shared_worker.js");
+    GURL worker = testOrigin.GetURL().ReplaceComponents(replacements);
+    browsing_data::SharedWorkerInfo data_key(
+        worker, /*name=*/"", storage_key,
+        blink::mojom::SharedWorkerSameSiteCookies::kAll);
+    ValidateBrowsingDataEntries(
+        allowed_browsing_data_model,
+        {{kTestHost,
+          data_key,
+          {{BrowsingDataModel::StorageType::kSharedWorker},
+           /*storage_size=*/0,
+           /*cookie_count=*/0}}});
+  }
   ASSERT_EQ(allowed_browsing_data_model->size(), 1u);
 
-  // Delete Shared Worker
+  // Delete Shared Worker and verify that the running worker was terminated.
   RemoveBrowsingDataForDataOwner(allowed_browsing_data_model, kTestHost);
-  // Validate that the allowed browsing data model is empty.
   ValidateBrowsingDataEntries(allowed_browsing_data_model, {});
   ASSERT_EQ(allowed_browsing_data_model->size(), 0u);
+  ASSERT_FALSE(HasDataForType("SharedWorker", web_contents()));
+}
+
+IN_PROC_BROWSER_TEST_P(BrowsingDataModelSharedWorkerBrowserTest,
+                       SharedWorkerMultipleInstancesDeduplicated) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      https_test_server()->GetURL(kTestHost, "/browsing_data/site_data.html")));
+
+  auto* content_settings =
+      content_settings::PageSpecificContentSettings::GetForFrame(
+          web_contents()->GetPrimaryMainFrame());
+  auto* allowed_browsing_data_model =
+      content_settings->allowed_browsing_data_model();
+
+  // Start the primary test shared worker and two additional shared workers
+  // with distinct URLs and names under the same origin.
+  SetDataForType("SharedWorker", web_contents());
+  ASSERT_TRUE(content::ExecJs(web_contents(), R"(
+    Promise.all([
+      new Promise((resolve, reject) => {
+        window.sw1 = new SharedWorker('shared_worker.js?1', 'worker1');
+        window.sw1.onerror = reject;
+        window.sw1.port.onmessage = resolve;
+      }),
+      new Promise((resolve, reject) => {
+        window.sw2 = new SharedWorker('shared_worker.js?2', 'worker2');
+        window.sw2.onerror = reject;
+        window.sw2.port.onmessage = resolve;
+      }),
+    ])
+  )"));
+
+  if (GetParam()) {
+    // When keyed by StorageKey, all shared workers for the origin deduplicate
+    // into a single model entry.
+    WaitForModelUpdate(allowed_browsing_data_model, /*expected_size=*/1);
+    EXPECT_EQ(std::distance(allowed_browsing_data_model->begin(),
+                            allowed_browsing_data_model->end()),
+              1);
+  } else {
+    // When keyed by SharedWorkerInfo, each distinct URL/name creates a new map
+    // entry in the model.
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return std::distance(allowed_browsing_data_model->begin(),
+                           allowed_browsing_data_model->end()) == 3;
+    }));
+  }
+
+  ASSERT_TRUE(HasDataForType("SharedWorker", web_contents()));
+
+  // Deleting browsing data for the host should terminate all running shared
+  // workers belonging to that StorageKey.
+  RemoveBrowsingDataForDataOwner(allowed_browsing_data_model, kTestHost);
+  ValidateBrowsingDataEntries(allowed_browsing_data_model, {});
+  ASSERT_FALSE(HasDataForType("SharedWorker", web_contents()));
 }
 
 IN_PROC_BROWSER_TEST_F(BrowsingDataModelBrowserTest,

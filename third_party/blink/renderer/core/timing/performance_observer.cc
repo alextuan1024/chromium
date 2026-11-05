@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_performance_observer_init.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/performance_entry_names.h"
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
@@ -28,6 +29,7 @@
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/timer.h"
+#include "third_party/blink/renderer/platform/widget/frame_widget.h"
 
 namespace blink {
 
@@ -233,6 +235,11 @@ void PerformanceObserver::observe(ScriptState* script_state,
         }
       } else {
         entry_types |= entry_type;
+        if (const auto* counters =
+                PerformanceEntry::GetUseCountersForType(entry_type)) {
+          UseCounter::Count(GetExecutionContext(),
+                            counters->explicitly_requested);
+        }
       }
     }
     if (entry_types == PerformanceEntry::kInvalid) {
@@ -251,6 +258,9 @@ void PerformanceObserver::observe(ScriptState* script_state,
                 mojom::ConsoleMessageSource::kJavaScript,
                 mojom::ConsoleMessageLevel::kWarning, message));
       }
+    }
+    if ((entry_types | filter_options_) & PerformanceEntry::kScroll) {
+      ImportScrollTimingRecords();
     }
     filter_options_ = entry_types;
   } else {
@@ -271,7 +281,7 @@ void PerformanceObserver::observe(ScriptState* script_state,
     }
     type_ = PerformanceObserverType::kTypeObserver;
     AtomicString entry_type_atomic_string(observer_init->type());
-    PerformanceEntryType entry_type =
+    PerformanceEntry::EntryType entry_type =
         PerformanceEntry::ToEntryTypeEnum(entry_type_atomic_string);
     if (!(supported_types & entry_type)) {
       String message = StrCat({"The entry type '", observer_init->type(),
@@ -284,67 +294,43 @@ void PerformanceObserver::observe(ScriptState* script_state,
       }
       return;
     }
+    const auto* counters = PerformanceEntry::GetUseCountersForType(entry_type);
+    if (counters) {
+      UseCounter::Count(GetExecutionContext(), counters->explicitly_requested);
+    }
+    if (entry_type == PerformanceEntry::kScroll) {
+      ImportScrollTimingRecords();
+    }
     if (observer_init->buffered()) {
       // Append all entries of this type to the current performance_entries_
       // to be returned on the next callback.
-      performance_entries_.append_range(performance_->getBufferedEntriesByType(
-          AtomicString(observer_init->type())));
-      std::sort(performance_entries_.begin(), performance_entries_.end(),
-                PerformanceEntry::StartTimeCompareLessThan);
+      PerformanceEntryVector buffered_entries =
+          performance_->getBufferedEntriesByType(
+              AtomicString(observer_init->type()));
+      if (!buffered_entries.empty()) {
+        if (counters) {
+          UseCounter::Count(GetExecutionContext(), counters->observed);
+        }
+        performance_entries_.append_range(buffered_entries);
+        std::sort(performance_entries_.begin(), performance_entries_.end(),
+                  PerformanceEntry::StartTimeCompareLessThan);
+      }
       is_buffered = true;
     }
     if (entry_type == PerformanceEntry::kEvent &&
         observer_init->hasDurationThreshold()) {
-      // TODO(npm): should we do basic validation (like negative values etc?).
+      // TODO: should we do basic validation (like negative values etc?).
       duration_threshold_ = std::max(16.0, observer_init->durationThreshold());
     }
     filter_options_ |= entry_type;
   }
-  if (filter_options_ & PerformanceEntry::kLayoutShift) {
-    UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kLayoutShiftExplicitlyRequested);
-  }
-  if (filter_options_ & PerformanceEntry::kElement) {
-    UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kElementTimingExplicitlyRequested);
-  }
-  if (filter_options_ & PerformanceEntry::kLargestContentfulPaint) {
-    UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kLargestContentfulPaintExplicitlyRequested);
-  }
-  if (filter_options_ & PerformanceEntry::kResource) {
-    UseCounter::Count(GetExecutionContext(), WebFeature::kResourceTiming);
-  }
-  if (filter_options_ & PerformanceEntry::kLongTask) {
-    UseCounter::Count(GetExecutionContext(), WebFeature::kLongTaskObserver);
-  }
-  if (filter_options_ & PerformanceEntry::kVisibilityState) {
-    UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kVisibilityStateObserver);
-  }
-  if (filter_options_ & PerformanceEntry::kLongAnimationFrame) {
-    UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kLongAnimationFrameObserver);
-  }
-  if (filter_options_ & PerformanceEntry::kContainer) {
-    UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kContainerTimingExplicitlyRequested);
-  }
-  if (filter_options_ & PerformanceEntry::kSoftNavigation) {
-    UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kSoftNavigationExplicitlyRequested);
-  }
-  if (filter_options_ & PerformanceEntry::kInteractionContentfulPaint) {
-    UseCounter::Count(
-        GetExecutionContext(),
-        WebFeature::kInteractionContentfulPaintExplicitlyRequested);
-  }
 
   requires_dropped_entries_ = true;
-  if (is_registered_)
+  if (is_registered_) {
     performance_->UpdatePerformanceObserverFilterOptions();
-  else
+  } else {
     performance_->RegisterPerformanceObserver(*this);
+  }
   is_registered_ = true;
   if (is_buffered) {
     UseCounter::Count(GetExecutionContext(),
@@ -355,8 +341,9 @@ void PerformanceObserver::observe(ScriptState* script_state,
 
 void PerformanceObserver::disconnect() {
   performance_entries_.clear();
-  if (performance_)
+  if (performance_) {
     performance_->UnregisterPerformanceObserver(*this);
+  }
   is_registered_ = false;
   filter_options_ = PerformanceEntry::kInvalid;
 }
@@ -369,13 +356,19 @@ PerformanceEntryVector PerformanceObserver::takeRecords() {
 
 void PerformanceObserver::EnqueuePerformanceEntry(PerformanceEntry& entry) {
   performance_entries_.push_back(&entry);
-  if (performance_)
+  if (const auto* counters = PerformanceEntry::GetUseCountersForType(
+          static_cast<PerformanceEntry::EntryType>(entry.EntryTypeEnum()))) {
+    UseCounter::Count(GetExecutionContext(), counters->observed);
+  }
+  if (performance_) {
     performance_->ActivateObserver(*this);
+  }
 }
 
 bool PerformanceObserver::CanObserve(const PerformanceEntry& entry) const {
-  if (entry.EntryTypeEnum() != PerformanceEntry::kEvent)
+  if (entry.EntryTypeEnum() != PerformanceEntry::kEvent) {
     return true;
+  }
   return entry.duration() >= duration_threshold_;
 }
 
@@ -383,13 +376,28 @@ bool PerformanceObserver::HasPendingActivity() const {
   return is_registered_;
 }
 
-void PerformanceObserver::Deliver(std::optional<int> dropped_entries_count) {
-  if (!GetExecutionContext())
+void PerformanceObserver::ImportScrollTimingRecords() {
+  // TODO(crbug.com/504094429): Support child-frame timelines before letting
+  // child observers read the widget's shared buffer.
+  auto* window = DynamicTo<LocalDOMWindow>(GetExecutionContext());
+  LocalFrame* frame = window ? window->GetFrame() : nullptr;
+  if (!frame || !frame->IsLocalRoot()) {
     return;
+  }
+  if (FrameWidget* widget = frame->GetWidgetForLocalRoot()) {
+    widget->ImportScrollTimingRecords();
+  }
+}
+
+void PerformanceObserver::Deliver(std::optional<int> dropped_entries_count) {
+  if (!GetExecutionContext()) {
+    return;
+  }
   DCHECK(!GetExecutionContext()->IsContextPaused());
 
-  if (performance_entries_.empty())
+  if (performance_entries_.empty()) {
     return;
+  }
 
   PerformanceEntryVector performance_entries;
   performance_entries.swap(performance_entries_);
@@ -405,10 +413,11 @@ void PerformanceObserver::Deliver(std::optional<int> dropped_entries_count) {
 
 void PerformanceObserver::ContextLifecycleStateChanged(
     mojom::FrameLifecycleState state) {
-  if (state == mojom::FrameLifecycleState::kRunning)
+  if (state == mojom::FrameLifecycleState::kRunning) {
     performance_->ActivateObserver(*this);
-  else
+  } else {
     performance_->SuspendObserver(*this);
+  }
 }
 
 void PerformanceObserver::Trace(Visitor* visitor) const {

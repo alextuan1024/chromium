@@ -46,10 +46,12 @@
 #include "third_party/blink/renderer/core/inspector/dom_editor.h"
 #include "third_party/blink/renderer/core/inspector/inspector_history.h"
 #include "third_party/blink/renderer/core/xml/parser/xml_document_parser.h"
+#include "third_party/blink/renderer/core/xml/parser/xml_document_parser_rs.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/crypto.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_deque.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
@@ -76,15 +78,22 @@ void DOMPatchSupport::PatchDocument(const String& markup) {
 
   DCHECK(new_document);
   if (!IsA<HTMLDocument>(GetDocument())) {
-    DocumentParser* parser =
-        MakeGarbageCollected<XMLDocumentParser>(*new_document, nullptr);
+    ScriptableDocumentParser* parser;
+    if (RuntimeEnabledFeatures::XMLParsingRustEnabled() ||
+        RuntimeEnabledFeatures::XMLRustForNonXsltEnabled()) {
+      parser =
+          MakeGarbageCollected<XMLDocumentParserRs>(*new_document, nullptr);
+    } else {
+      parser = MakeGarbageCollected<XMLDocumentParser>(*new_document, nullptr);
+    }
     parser->Append(markup);
     parser->Finish();
     parser->Detach();
 
     // Avoid breakage on non-well-formed documents.
-    if (!static_cast<XMLDocumentParser*>(parser)->WellFormed())
+    if (!parser->WellFormed()) {
       return;
+    }
   }
   new_document->SetContent(markup);
   Digest* old_info = CreateDigest(GetDocument().documentElement(), nullptr);
@@ -130,6 +139,9 @@ Node* DOMPatchSupport::PatchNode(Node* node,
 
   // Compose the old list.
   ContainerNode* parent_node = node->parentNode();
+  if (!parent_node) {
+    return nullptr;
+  }
   HeapVector<Member<Digest>> old_list;
   for (Node* child = parent_node->firstChild(); child;
        child = child->nextSibling())
@@ -207,7 +219,14 @@ bool DOMPatchSupport::InnerPatchNode(Digest* old_digest,
 
     // FIXME: Create a function in Element for copying properties.
     // cloneDataFromElement() is close but not enough for this case.
-    for (auto& attribute : new_element->AttributesWithoutUpdate()) {
+    //
+    // SetAttribute() may run script (e.g. custom element reactions), which
+    // could mutate the attribute storage of |new_element| and invalidate an
+    // AttributeCollection (a non-owning span) iterating over it. Take an
+    // owning copy of the attributes first.
+    const AttributeVector new_attributes(
+        new_element->AttributesWithoutUpdate());
+    for (const Attribute& attribute : new_attributes) {
       if (!dom_editor_->SetAttribute(old_element,
                                      attribute.GetName().ToString(),
                                      attribute.Value(), exception_state))
@@ -435,7 +454,7 @@ DOMPatchSupport::Digest* DOMPatchSupport::CreateDigest(
     Node* node,
     UnusedNodesMap* unused_nodes_map) {
   Digest* digest = MakeGarbageCollected<Digest>(node);
-  Digestor digestor(kHashAlgorithmSha256);
+  Digestor digestor(HashAlgorithm::kSha256);
   DigestValue digest_result;
 
   Node::NodeType node_type = node->getNodeType();
@@ -454,7 +473,7 @@ DOMPatchSupport::Digest* DOMPatchSupport::CreateDigest(
 
     AttributeCollection attributes = element->AttributesWithoutUpdate();
     if (!attributes.IsEmpty()) {
-      Digestor attrs_digestor(kHashAlgorithmSha256);
+      Digestor attrs_digestor(HashAlgorithm::kSha256);
       for (auto& attribute : attributes) {
         attrs_digestor.UpdateUtf8(attribute.GetName().ToString());
         attrs_digestor.UpdateUtf8(attribute.Value().GetString());

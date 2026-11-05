@@ -1,0 +1,19 @@
+load("//crowbar", "crowbar_workflow")
+
+crowbar_workflow(
+    origin_files = glob([
+        "README.md",
+        "fftpack.c",
+        "fftpack.h",
+        "pffft.c",
+        "pffft.h",
+        "test_pffft.c",
+    ]),
+    transformations = [
+        patch.apply(patches = [
+            "patches/01-rmv_printf.diff",
+            "patches/02-decl_validate_simd.diff",
+            "patches/03-malloca.diff",
+        ]),
+    ],
+)

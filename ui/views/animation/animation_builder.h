@@ -12,8 +12,9 @@
 
 #include "base/functional/callback.h"
 #include "base/location.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/types/pass_key.h"
 #include "ui/compositor/layer_animation_observer.h"
@@ -52,7 +53,7 @@ class VIEWS_EXPORT AnimationBuilder {
  public:
   class Observer : public ui::LayerAnimationObserver {
     // TODO(crbug.com/428196026): Remove this macro once it gets fixed.
-    ADVANCED_MEMORY_SAFETY_CHECKS();
+    SANITIZED_OBJECT();
 
    public:
     Observer();
@@ -108,6 +109,10 @@ class VIEWS_EXPORT AnimationBuilder {
     // can return true before a sequence is started if the duration is zero.
     int sequences_to_run_ = 0;
     raw_ptr<AnimationAbortHandle, DanglingUntriaged> abort_handle_ = nullptr;
+
+    // Used to detect that a callback has deleted this observer by destroying
+    // the last sequence it was attached to.
+    base::WeakPtrFactory<Observer> weak_factory_{this};
   };
 
   AnimationBuilder();

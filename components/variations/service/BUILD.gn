@@ -52,7 +52,11 @@ static_library("service") {
     "variations_service_utils.h",
   ]
 
-  public_deps = [ "//base" ]
+  public_deps = [
+    "//base",
+    "//components/metrics",
+    "//components/variations",
+  ]
   deps = [
     ":buildflags",
     "//base:build_time",
@@ -63,13 +67,11 @@ static_library("service") {
     "//components/enterprise/browser/groups:prefs",
     "//components/keyed_service/core",
     "//components/language/core/browser",
-    "//components/metrics",
     "//components/network_time",
     "//components/network_time/time_tracker",
     "//components/pref_registry",
     "//components/prefs",
     "//components/sync/service",
-    "//components/variations",
     "//components/variations/field_trial_config",
     "//components/variations/proto",
     "//components/version_info",

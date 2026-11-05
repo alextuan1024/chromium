@@ -37,19 +37,13 @@ class GCM_EXPORT ConnectionFactory {
   using BuildLoginRequestCallback =
       base::RepeatingCallback<void(mcs_proto::LoginRequest* login_request)>;
 
-  // Reasons for triggering a connection reset. Note that these enums are
-  // consumed by a histogram, so ordering should not be modified.
+  // Reasons for triggering a connection reset.
   enum ConnectionResetReason {
-    LOGIN_FAILURE,           // Login response included an error.
-    CLOSE_COMMAND,           // Received a close command.
-    HEARTBEAT_FAILURE,       // Heartbeat was not acknowledged in time.
-    SOCKET_FAILURE,          // net::Socket error.
-    NETWORK_CHANGE,          // NetworkChangeNotifier notified of a network
-                             // change.
-    NEW_HEARTBEAT_INTERVAL,  // New heartbeat interval was set.
-    // Count of total number of connection reset reasons. All new reset reasons
-    // should be added above this line.
-    CONNECTION_RESET_COUNT,
+    LOGIN_FAILURE,      // Login response included an error.
+    CLOSE_COMMAND,      // Received a close command.
+    HEARTBEAT_FAILURE,  // Heartbeat was not acknowledged in time.
+    SOCKET_FAILURE,     // net::Socket error.
+    NETWORK_CHANGE,     // NetworkChangeNotifier notified of a network change.
   };
 
   // Listener interface to be notified of endpoint connection events.
@@ -100,11 +94,6 @@ class GCM_EXPORT ConnectionFactory {
 
   // Returns a debug string describing the connection state.
   virtual std::string GetConnectionStateString() const = 0;
-
-  // If in backoff, the time at which the next retry will be made. Otherwise,
-  // a null time, indicating either no attempt to connect has been made or no
-  // backoff is in progress.
-  virtual base::TimeTicks NextRetryAttempt() const = 0;
 
   // Manually reset the connection. This can occur if an application specific
   // event forced a reset (e.g. server sends a close connection response).

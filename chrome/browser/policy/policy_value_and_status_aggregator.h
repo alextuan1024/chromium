@@ -58,16 +58,23 @@ class PolicyValueAndStatusAggregator : public PolicyValueProvider::Observer,
   // Returns the dictionary containing the policy metadata available for the
   // platform.
   base::DictValue GetAggregatedPolicyStatus();
-  // TODO: crbug.com/40897784 - replace non-mojo version once all status
-  // providers implement the mojo version of `GetStatus`.
+  // TODO(crbug.com/40897784): Remove the non-mojo version once the migration is
+  // complete.
   base::flat_map<std::string, policy::mojom::StatusPtr>
   GetAggregatedPolicyStatusMojo();
 
   // Returns the dictionary containing policy names.
   base::DictValue GetAggregatedPolicyNames();
+  // TODO(crbug.com/40897784): Remove the non-mojo version once the migration is
+  // complete.
+  base::flat_map<std::string, policy::mojom::PolicyGroupNamesPtr>
+  GetAggregatedPolicyNamesMojo();
 
   // Returns the available policy values.
   base::DictValue GetAggregatedPolicyValues();
+  // TODO(crbug.com/40897784): Remove the non-mojo version once the migration is
+  // complete.
+  policy::mojom::PolicyGroupsResponsePtr GetAggregatedPolicyValuesMojo();
 
   // Refreshes the policy values by calling Refresh() on all
   // PolicyValueProviders and notifies the observers about policy value and
@@ -120,8 +127,7 @@ class PolicyValueAndStatusAggregator : public PolicyValueProvider::Observer,
   // Contains the pointers to PolicyValueProvider which also implement
   // PolicyStatusProvider. The ownership of the instances will be in
   // `status_providers_`.
-  std::vector<raw_ptr<PolicyValueProvider, VectorExperimental>>
-      value_providers_unowned_;
+  std::vector<raw_ptr<PolicyValueProvider>> value_providers_unowned_;
   base::ObserverList<Observer> observers_;
   base::ScopedMultiSourceObservation<PolicyValueProvider,
                                      PolicyValueProvider::Observer>
@@ -130,6 +136,7 @@ class PolicyValueAndStatusAggregator : public PolicyValueProvider::Observer,
                                      PolicyStatusProvider::Observer>
       policy_status_provider_observations_{this};
   base::ScopedObservation<Profile, ProfileObserver> profile_observation_{this};
+  raw_ptr<Profile> profile_;
 };
 }  // namespace policy
 

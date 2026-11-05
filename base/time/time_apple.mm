@@ -17,10 +17,12 @@
 #include "base/apple/mach_logging.h"
 #include "base/apple/scoped_cftyperef.h"
 #include "base/apple/scoped_mach_port.h"
+#include "base/check_op.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time_override.h"
 #include "build/build_config.h"
+#include "third_party/abseil-cpp/absl/numeric/int128.h"
 
 namespace {
 
@@ -78,6 +80,29 @@ int64_t MachTimeToMicroseconds(uint64_t mach_time) {
   return base::checked_cast<int64_t>(microseconds);
 }
 
+uint64_t MicrosecondsToMachTime(int64_t microseconds) {
+  CHECK_GE(microseconds, 0);
+  const uint64_t us = static_cast<uint64_t>(microseconds);
+  mach_timebase_info_data_t* timebase_info = MachTimebaseInfo();
+
+  if (timebase_info->numer == timebase_info->denom) {
+    uint64_t mach_time = 0;
+    CHECK(!__builtin_umulll_overflow(us, base::Time::kNanosecondsPerMicrosecond,
+                                     &mach_time));
+    return mach_time;
+  }
+
+  // Multiply in 128-bit arithmetic to avoid intermediate overflow or precision
+  // loss: us < 2^63, kNanosecondsPerMicrosecond = 1000, and denom < 2^32, so
+  // their product is always < 2^105.
+  const absl::uint128 mach_time =
+      (absl::uint128(us) * base::Time::kNanosecondsPerMicrosecond *
+       timebase_info->denom) /
+      timebase_info->numer;
+  CHECK_EQ(absl::Uint128High64(mach_time), 0u);
+  return absl::Uint128Low64(mach_time);
+}
+
 // Returns monotonically growing number of ticks in microseconds since some
 // unspecified starting point.
 int64_t ComputeCurrentTicks() {
@@ -85,6 +110,18 @@ int64_t ComputeCurrentTicks() {
   // with less precision (such as TickCount) just call through to
   // mach_absolute_time.
   return MachTimeToMicroseconds(mach_absolute_time());
+}
+
+int64_t ComputeCurrentRealTicks() {
+  // `mach_continuous_time()` is guaranteed to advance in lockstep with
+  // `mach_absolute_time()` (the backing source for `TimeTicks` and `LiveTicks`)
+  // while the system is awake. Both calls query the same underlying hardware
+  // counter using the same `mach_timebase_info`, with `mach_continuous_time()`
+  // adding a sleep offset that is updated only upon system sleep/wake
+  // transitions. See:
+  // https://developer.apple.com/documentation/kernel/1646199-mach_continuous_time
+  // https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/clock.c
+  return MachTimeToMicroseconds(mach_continuous_time());
 }
 
 int64_t ComputeThreadTicks() {
@@ -160,6 +197,11 @@ TimeDelta TimeDelta::FromMachTime(uint64_t mach_time) {
   return Microseconds(MachTimeToMicroseconds(mach_time));
 }
 
+uint64_t TimeDelta::ToMachTime() const {
+  CHECK(!is_inf());
+  return MicrosecondsToMachTime(InMicroseconds());
+}
+
 // TimeTicks ------------------------------------------------------------------
 
 namespace subtle {
@@ -170,6 +212,10 @@ TimeTicks TimeTicksNowIgnoringOverride() {
 TimeTicks TimeTicksLowResolutionNowIgnoringOverride() {
   return TimeTicks() + Microseconds(MachTimeToMicroseconds(
                            clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW_APPROX)));
+}
+
+time_internal::RealTicks RealTicksNowIgnoringOverride() {
+  return time_internal::RealTicks() + Microseconds(ComputeCurrentRealTicks());
 }
 }  // namespace subtle
 
@@ -186,6 +232,11 @@ bool TimeTicks::IsConsistentAcrossProcesses() {
 // static
 TimeTicks TimeTicks::FromMachAbsoluteTime(uint64_t mach_absolute_time) {
   return TimeTicks(MachTimeToMicroseconds(mach_absolute_time));
+}
+
+uint64_t TimeTicks::ToMachAbsoluteTime() const {
+  CHECK(!is_inf());
+  return MicrosecondsToMachTime(us_);
 }
 
 // static

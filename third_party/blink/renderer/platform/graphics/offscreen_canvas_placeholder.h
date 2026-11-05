@@ -18,13 +18,10 @@
 
 namespace gfx {
 class RectF;
-class Transform;
 }
 
 namespace blink {
 
-class Element;
-class ElementImage;
 class ExportedCanvasResource;
 
 class PLATFORM_EXPORT OffscreenCanvasPlaceholder {
@@ -62,8 +59,7 @@ class PLATFORM_EXPORT OffscreenCanvasPlaceholder {
 
    protected:
     // virtual and protected for testing
-    virtual void PostImageToPlaceholder(
-        scoped_refptr<ExportedCanvasResource>&&);
+    virtual void PostImageToPlaceholder(scoped_refptr<ExportedCanvasResource>);
     // virtual for mocking
     virtual void OnMainThreadReceivedImage();
 
@@ -84,7 +80,7 @@ class PLATFORM_EXPORT OffscreenCanvasPlaceholder {
         base::WeakPtr<Client> client,
         scoped_refptr<base::SingleThreadTaskRunner> task_runner,
         DOMNodeId placeholder_canvas_id,
-        scoped_refptr<blink::ExportedCanvasResource>&& canvas_resource);
+        scoped_refptr<blink::ExportedCanvasResource> canvas_resource);
 
     base::RepeatingClosure animation_state_callback_;
 
@@ -110,7 +106,7 @@ class PLATFORM_EXPORT OffscreenCanvasPlaceholder {
   ~OffscreenCanvasPlaceholder();
 
   virtual void SetOffscreenCanvasResource(
-      scoped_refptr<ExportedCanvasResource>&&);
+      scoped_refptr<ExportedCanvasResource>);
   void SetClient(base::WeakPtr<Client>,
                  scoped_refptr<base::SingleThreadTaskRunner>);
 
@@ -137,14 +133,6 @@ class PLATFORM_EXPORT OffscreenCanvasPlaceholder {
                                   float font_height) {}
   virtual void ClearRenderedText(const gfx::RectF& rect) {}
   virtual void ClearRenderedText() {}
-  virtual void UpdateDrawnElementGeometry(Element&,
-                                          const gfx::Transform*,
-                                          bool update_hit_test_order) {}
-  virtual void UpdateDrawnElementGeometry(ElementImage&,
-                                          const gfx::Transform*,
-                                          bool update_hit_test_order) {}
-  virtual void ClearDrawnElementGeometry(Element&) {}
-  virtual void ClearDrawnElementGeometry(ElementImage&) {}
 
   AnimationState GetAnimationStateForTesting() const {
     return current_animation_state_;

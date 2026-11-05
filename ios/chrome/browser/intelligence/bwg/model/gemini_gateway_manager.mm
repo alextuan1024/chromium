@@ -13,6 +13,7 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_actuation_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_camera_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_consent_provider_handler.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_custom_ui_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_page_state_change_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_session_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_suggestion_handler.h"
@@ -75,6 +76,9 @@
       initWithPrefService:profile->GetPrefs()];
   _gateway.consentProviderHandler = _consentProviderHandler;
 
+  _customUIHandler = [[GeminiCustomUIHandler alloc] init];
+  _gateway.customUIHandler = _customUIHandler;
+
   if (gemini::IsFeatureAvailable(gemini::Feature::kImageRemix, profile)) {
     _cameraHandler =
         [[GeminiCameraHandler alloc] initWithPrefService:profile->GetPrefs()];
@@ -100,6 +104,7 @@
                                  ? actor_browser_agent->browser_id()
                                  : SessionID::InvalidValue()];
     _gateway.actuationHandler = _actuationHandler;
+    _sessionHandler.chatMessageHandler = _actuationHandler;
   }
 }
 
@@ -109,10 +114,12 @@
   _sessionHandler = nil;
   _pageStateChangeHandler = nil;
   _cameraHandler = nil;
+  _tabPickerHandler.sharedTabsManager = nullptr;
   _tabPickerHandler = nil;
   [_actuationHandler disconnect];
   _actuationHandler = nil;
   _suggestionHandler = nil;
+  _customUIHandler = nil;
   _gateway = nil;
 }
 

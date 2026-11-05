@@ -38,9 +38,7 @@ import org.chromium.content_public.browser.selection.SelectionActionMenuDelegate
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Utility class around menu items for the text selection action menu. This was created (as opposed
@@ -50,20 +48,6 @@ import java.util.Locale;
 @NullMarked
 public class SelectActionMenuHelper {
     private static final String TAG = "SelectActionMenu"; // 20 char limit.
-
-    /**
-     * Spacing between consecutive default selection menu items within the {@link
-     * SelectionMenuItem.ItemGroupOffset#DEFAULT_ITEMS} category. Default items are assigned orders
-     * {@code 0, DEFAULT_ITEM_ORDER_SPACING, 2 * DEFAULT_ITEM_ORDER_SPACING, ...} based on their
-     * position in the (possibly delegate-customized) order array, rather than consecutive integers.
-     * This leaves {@code DEFAULT_ITEM_ORDER_SPACING - 1} free order slots in the gap between any
-     * two consecutive default items so that embedders can interpose their own items at stable
-     * positions without having to reorder the default items. See {@link
-     * SelectionMenuItem.ItemOrder} for the interposition constants embedders use (e.g. {@link
-     * SelectionMenuItem.ItemOrder#COPY_LINK_TO_HIGHLIGHT}, which lands in a gap between two default
-     * items).
-     */
-    @VisibleForTesting static final int DEFAULT_ITEM_ORDER_SPACING = 10;
 
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({
@@ -94,6 +78,34 @@ public class SelectActionMenuHelper {
         boolean canWebSearch(@MenuType int menuType);
 
         boolean canPasteAsPlainText();
+    }
+
+    /** Ephemeral class used to customize menu items as they're built and added to the menu. */
+    @VisibleForTesting
+    /* package */ static class ItemBuilder {
+        private final @Nullable SelectionActionMenuDelegate mDelegate;
+        private final @MenuType int mMenuType;
+        private final boolean mIsSelectionReadOnly;
+        private final String mSelectedText;
+
+        /* package */ ItemBuilder(
+                @Nullable SelectionActionMenuDelegate delegate,
+                @MenuType int menuType,
+                boolean isSelectionReadOnly,
+                String selectedText) {
+            mDelegate = delegate;
+            mMenuType = menuType;
+            mIsSelectionReadOnly = isSelectionReadOnly;
+            mSelectedText = selectedText;
+        }
+
+        private @Nullable SelectionMenuItem buildItem(SelectionMenuItem.Builder pendingItem) {
+            if (mDelegate != null) {
+                return mDelegate.buildItem(
+                        mMenuType, mIsSelectionReadOnly, mSelectedText, pendingItem);
+            }
+            return pendingItem.build();
+        }
     }
 
     // Do not instantiate.
@@ -140,34 +152,21 @@ public class SelectActionMenuHelper {
         SelectionMenuItem primaryAssistItem =
                 getPrimaryAssistItem(context, selectedText, classificationResult);
         if (primaryAssistItem != null) menu.addMenuItem(primaryAssistItem);
-
-        menu.addAll(
-                getDefaultItems(
-                        context,
-                        delegate,
-                        menuType,
-                        isSelectionReadOnly,
-                        selectedText,
-                        selectionActionMenuDelegate));
-
-        // TODO(crbug.com/452918681): Instead of creating extra lists. We should pass the
-        //  PendingSelectionMenu into these helper methods. This would require refactoring tests.
-        List<SelectionMenuItem> secondaryAssistItems =
-                getSecondaryAssistItems(classificationResult);
-        if (secondaryAssistItems != null) menu.addAll(secondaryAssistItems);
-
-        List<SelectionMenuItem> textProcessingAssistItems =
-                getTextProcessingItems(
-                        context,
-                        menuType,
-                        isSelectionPassword,
-                        isSelectionReadOnly,
-                        selectedText,
-                        isTextProcessingAllowed,
-                        selectionActionMenuDelegate);
-        if (textProcessingAssistItems != null) {
-            menu.addAll(textProcessingAssistItems);
-        }
+        ItemBuilder builder =
+                new ItemBuilder(
+                        selectionActionMenuDelegate, menuType, isSelectionReadOnly, selectedText);
+        addDefaultItems(menu, context, delegate, menuType, builder, selectionActionMenuDelegate);
+        addSecondaryAssistItems(menu, classificationResult);
+        addTextProcessingItems(
+                menu,
+                context,
+                menuType,
+                isSelectionPassword,
+                isSelectionReadOnly,
+                selectedText,
+                isTextProcessingAllowed,
+                builder,
+                selectionActionMenuDelegate);
         if (selectionActionMenuDelegate != null) {
             menu.addAll(
                     selectionActionMenuDelegate.getAdditionalMenuItems(
@@ -198,14 +197,13 @@ public class SelectActionMenuHelper {
     }
 
     @VisibleForTesting
-    static List<SelectionMenuItem> getDefaultItems(
+    static void addDefaultItems(
+            PendingSelectionMenu menu,
             @Nullable Context context,
             TextSelectionCapabilitiesDelegate delegate,
             @MenuType int menuType,
-            boolean isSelectionReadOnly,
-            String selectedText,
+            ItemBuilder builder,
             @Nullable SelectionActionMenuDelegate selectionActionMenuDelegate) {
-        List<SelectionMenuItem> menuItems = new ArrayList<>();
         // If the delegate is null, use the static default implementation. Otherwise call the method
         // on the delegate.
         @DefaultItem
@@ -215,68 +213,41 @@ public class SelectActionMenuHelper {
                         : selectionActionMenuDelegate.getDefaultMenuItemOrder(menuType);
         for (int pos = 0; pos < itemOrder.length; pos++) {
             @DefaultItem int item = itemOrder[pos];
-            // Space default items out (see DEFAULT_ITEM_ORDER_SPACING) so embedders can interpose
-            // their own items in the gaps between two default items at stable positions.
-            int order = pos * DEFAULT_ITEM_ORDER_SPACING;
-            if (item == DefaultItem.CUT) {
-                if (menuType == MenuType.DROPDOWN ? !isSelectionReadOnly : delegate.canCut()) {
-                    menuItems.add(cut(order, delegate.canCut()));
-                }
-            } else if (item == DefaultItem.COPY) {
-                if (menuType == MenuType.DROPDOWN || delegate.canCopy()) {
-                    menuItems.add(copy(order, delegate.canCopy()));
-                }
-            } else if (item == DefaultItem.PASTE) {
-                if (menuType == MenuType.DROPDOWN ? !isSelectionReadOnly : delegate.canPaste()) {
-                    menuItems.add(paste(order, delegate.canPaste()));
-                }
-            } else if (item == DefaultItem.PASTE_AS_PLAIN_TEXT) {
-                if (menuType == MenuType.DROPDOWN
-                        ? !isSelectionReadOnly
-                        : delegate.canPasteAsPlainText()) {
-                    menuItems.add(pasteAsPlainText(context, order, delegate.canPasteAsPlainText()));
-                }
-            } else if (item == DefaultItem.SHARE) {
-                if (menuType == MenuType.DROPDOWN || delegate.canShare(menuType)) {
-                    menuItems.add(
-                            share(
-                                    context,
-                                    order,
-                                    menuType,
-                                    isSelectionReadOnly,
-                                    delegate.canShare(menuType)));
-                }
-            } else if (item == DefaultItem.SELECT_ALL) {
-                if (menuType == MenuType.DROPDOWN
-                        ? !isSelectionReadOnly
-                        : delegate.canSelectAll(menuType)) {
-                    menuItems.add(selectAll(order, delegate.canSelectAll(menuType)));
-                }
-            } else if (item == DefaultItem.WEB_SEARCH) {
-                if (menuType == MenuType.DROPDOWN || delegate.canWebSearch(menuType)) {
-                    menuItems.add(
-                            webSearch(
-                                    context,
-                                    order,
-                                    selectedText,
-                                    menuType,
-                                    isSelectionReadOnly,
-                                    selectionActionMenuDelegate,
-                                    delegate.canWebSearch(menuType)));
-                }
+            switch (item) {
+                case DefaultItem.CUT ->
+                        menu.maybeAddMenuItem(builder.buildItem(cut(pos, delegate.canCut())));
+                case DefaultItem.COPY ->
+                        menu.maybeAddMenuItem(builder.buildItem(copy(pos, delegate.canCopy())));
+                case DefaultItem.PASTE ->
+                        menu.maybeAddMenuItem(builder.buildItem(paste(pos, delegate.canPaste())));
+                case DefaultItem.PASTE_AS_PLAIN_TEXT ->
+                        menu.maybeAddMenuItem(
+                                builder.buildItem(
+                                        pasteAsPlainText(
+                                                context, pos, delegate.canPasteAsPlainText())));
+                case DefaultItem.SHARE ->
+                        menu.maybeAddMenuItem(
+                                builder.buildItem(
+                                        share(context, pos, delegate.canShare(menuType))));
+                case DefaultItem.SELECT_ALL ->
+                        menu.maybeAddMenuItem(
+                                builder.buildItem(selectAll(pos, delegate.canSelectAll(menuType))));
+                case DefaultItem.WEB_SEARCH ->
+                        menu.maybeAddMenuItem(
+                                builder.buildItem(webSearch(pos, delegate.canWebSearch(menuType))));
+                default -> {}
             }
         }
-        return menuItems;
     }
 
-    private static @Nullable List<SelectionMenuItem> getSecondaryAssistItems(
-            @Nullable Result classificationResult) {
+    private static void addSecondaryAssistItems(
+            PendingSelectionMenu menu, @Nullable Result classificationResult) {
         // We have to use android.R.id.textAssist as group id to make framework show icons for
         // menu items if there is selected text.
         @IdRes int groupId = android.R.id.textAssist;
 
         if (classificationResult == null || classificationResult.textClassification == null) {
-            return null;
+            return;
         }
         TextClassification classification = classificationResult.textClassification;
         List<RemoteAction> actions = classification.getActions();
@@ -284,13 +255,12 @@ public class SelectActionMenuHelper {
         if (count < 2) {
             // More than one item is needed as the first item is reserved for the
             // primary assist item.
-            return null;
+            return;
         }
         List<Drawable> icons = classificationResult.additionalIcons;
         assert icons == null || icons.size() == count
                 : "icons list should be either null or have the same length with actions.";
 
-        List<SelectionMenuItem> secondaryAssistItems = new ArrayList<>();
         // First action is reserved for primary action so start at index 1.
         final int startIndex = 1;
         for (int i = startIndex; i < count; i++) {
@@ -300,7 +270,7 @@ public class SelectActionMenuHelper {
                 continue;
             }
 
-            SelectionMenuItem item =
+            menu.addMenuItem(
                     new SelectionMenuItem.Builder(action.getTitle())
                             .setId(Menu.NONE)
                             .setGroupId(groupId)
@@ -309,25 +279,24 @@ public class SelectActionMenuHelper {
                                     i - startIndex, ItemGroupOffset.SECONDARY_ASSIST_ITEMS)
                             .setContentDescription(action.getContentDescription())
                             .setShowAsActionFlags(MenuItem.SHOW_AS_ACTION_IF_ROOM)
-                            .build();
-            secondaryAssistItems.add(item);
+                            .build());
         }
-        return secondaryAssistItems;
     }
 
     @VisibleForTesting
-    /* package */ static @Nullable List<SelectionMenuItem> getTextProcessingItems(
+    /* package */ static void addTextProcessingItems(
+            PendingSelectionMenu menu,
             Context context,
             @MenuType int menuType,
             boolean isSelectionPassword,
             boolean isSelectionReadOnly,
             String selectedText,
             boolean isTextProcessingAllowed,
+            ItemBuilder builder,
             @Nullable SelectionActionMenuDelegate selectionActionMenuDelegate) {
-        if (selectedText.isEmpty()) return null;
-        List<SelectionMenuItem> textProcessingItems = new ArrayList<>();
+        if (selectedText.isEmpty()) return;
         if (isSelectionPassword || !isTextProcessingAllowed) {
-            return textProcessingItems;
+            return;
         }
         List<ResolveInfo> supportedActivities =
                 PackageManagerUtils.queryIntentActivities(createProcessTextIntent(), 0);
@@ -337,7 +306,7 @@ public class SelectActionMenuHelper {
                             menuType, supportedActivities);
         }
         if (supportedActivities.isEmpty()) {
-            return textProcessingItems;
+            return;
         }
         final PackageManager packageManager = context.getPackageManager();
         for (int i = 0; i < supportedActivities.size(); i++) {
@@ -352,38 +321,16 @@ public class SelectActionMenuHelper {
                 icon = resolveInfo.loadIcon(packageManager);
             }
             Intent intent = createProcessTextIntentForResolveInfo(resolveInfo, isSelectionReadOnly);
-            if (isReadAloud(title)) {
-                if (isSelectionReadOnly || menuType != MenuType.DROPDOWN) {
-                    category = ItemGroupOffset.DEFAULT_ITEMS;
-                    order = SelectionMenuItem.ItemOrder.READ_ALOUD_READ_ONLY;
-                } else {
-                    category = ItemGroupOffset.SECONDARY_ASSIST_ITEMS;
-                    order = SelectionMenuItem.ItemOrder.READ_ALOUD_EDITABLE;
-                }
-            }
-            textProcessingItems.add(
-                    new SelectionMenuItem.Builder(title)
-                            .setId(Menu.NONE)
-                            .setGroupId(R.id.select_action_menu_text_processing_items)
-                            .setIcon(icon)
-                            .setOrderAndCategory(order, category)
-                            .setShowAsActionFlags(MenuItem.SHOW_AS_ACTION_IF_ROOM)
-                            .setIntent(intent)
-                            .build());
+            menu.maybeAddMenuItem(
+                    builder.buildItem(
+                            new SelectionMenuItem.Builder(title)
+                                    .setId(Menu.NONE)
+                                    .setGroupId(R.id.select_action_menu_text_processing_items)
+                                    .setIcon(icon)
+                                    .setOrderAndCategory(order, category)
+                                    .setShowAsActionFlags(MenuItem.SHOW_AS_ACTION_IF_ROOM)
+                                    .setIntent(intent)));
         }
-        return textProcessingItems;
-    }
-
-    private static boolean isReadAloud(@Nullable CharSequence title) {
-        if (title != null) {
-            String lowerTitle = title.toString().toLowerCase(Locale.US);
-            if (lowerTitle.contains("read aloud")
-                    || lowerTitle.contains("listen")
-                    || lowerTitle.contains("reading mode")) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static Intent createProcessTextIntentForResolveInfo(
@@ -417,7 +364,7 @@ public class SelectActionMenuHelper {
         return icon;
     }
 
-    private static SelectionMenuItem cut(int order, boolean isEnabled) {
+    private static SelectionMenuItem.Builder cut(int order, boolean isEnabled) {
         return new SelectionMenuItem.Builder(android.R.string.cut)
                 .setId(R.id.select_action_menu_cut)
                 .setGroupId(R.id.select_action_menu_default_items)
@@ -427,11 +374,10 @@ public class SelectActionMenuHelper {
                 .setShowAsActionFlags(
                         MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
                 .setIsEnabled(isEnabled)
-                .setIsIconTintable(true)
-                .build();
+                .setIsIconTintable(true);
     }
 
-    private static SelectionMenuItem copy(int order, boolean isEnabled) {
+    private static SelectionMenuItem.Builder copy(int order, boolean isEnabled) {
         return new SelectionMenuItem.Builder(android.R.string.copy)
                 .setId(R.id.select_action_menu_copy)
                 .setGroupId(R.id.select_action_menu_default_items)
@@ -441,11 +387,10 @@ public class SelectActionMenuHelper {
                 .setShowAsActionFlags(
                         MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
                 .setIsEnabled(isEnabled)
-                .setIsIconTintable(true)
-                .build();
+                .setIsIconTintable(true);
     }
 
-    private static SelectionMenuItem paste(int order, boolean isEnabled) {
+    private static SelectionMenuItem.Builder paste(int order, boolean isEnabled) {
         return new SelectionMenuItem.Builder(android.R.string.paste)
                 .setId(android.R.id.paste)
                 .setGroupId(R.id.select_action_menu_default_items)
@@ -455,37 +400,26 @@ public class SelectActionMenuHelper {
                 .setShowAsActionFlags(
                         MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
                 .setIsEnabled(isEnabled)
-                .setIsIconTintable(true)
-                .build();
+                .setIsIconTintable(true);
     }
 
-    private static SelectionMenuItem share(
-            @Nullable Context context,
-            int order,
-            @MenuType int menuType,
-            boolean isSelectionReadOnly,
-            boolean isEnabled) {
+    private static SelectionMenuItem.Builder share(
+            @Nullable Context context, int order, boolean isEnabled) {
         if (context == null) {
             context = ContextUtils.getApplicationContext();
-        }
-        @ItemGroupOffset int category = ItemGroupOffset.DEFAULT_ITEMS;
-        if (!isSelectionReadOnly && menuType == MenuType.DROPDOWN) {
-            category = ItemGroupOffset.SECONDARY_ASSIST_ITEMS;
-            order = SelectionMenuItem.ItemOrder.SHARE_EDITABLE;
         }
         return new SelectionMenuItem.Builder(context.getString(R.string.actionbar_share))
                 .setId(R.id.select_action_menu_share)
                 .setGroupId(R.id.select_action_menu_default_items)
                 .setIconAttr(android.R.attr.actionModeShareDrawable)
-                .setOrderAndCategory(order, category)
+                .setOrderAndCategory(order, ItemGroupOffset.DEFAULT_ITEMS)
                 .setShowAsActionFlags(
                         MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
                 .setIsEnabled(isEnabled)
-                .setIsIconTintable(true)
-                .build();
+                .setIsIconTintable(true);
     }
 
-    private static SelectionMenuItem selectAll(int order, boolean isEnabled) {
+    private static SelectionMenuItem.Builder selectAll(int order, boolean isEnabled) {
         return new SelectionMenuItem.Builder(android.R.string.selectAll)
                 .setId(R.id.select_action_menu_select_all)
                 .setGroupId(R.id.select_action_menu_default_items)
@@ -495,11 +429,10 @@ public class SelectActionMenuHelper {
                 .setShowAsActionFlags(
                         MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
                 .setIsEnabled(isEnabled)
-                .setIsIconTintable(true)
-                .build();
+                .setIsIconTintable(true);
     }
 
-    private static SelectionMenuItem pasteAsPlainText(
+    private static SelectionMenuItem.Builder pasteAsPlainText(
             @Nullable Context context, int order, boolean isEnabled) {
         SelectionMenuItem.Builder builder =
                 new SelectionMenuItem.Builder(android.R.string.paste_as_plain_text)
@@ -514,45 +447,18 @@ public class SelectActionMenuHelper {
             builder.setIcon(ContextCompat.getDrawable(context, R.drawable.ic_paste_as_plain_text))
                     .setIsIconTintable(true);
         }
-        return builder.build();
+        return builder;
     }
 
-    private static SelectionMenuItem webSearch(
-            @Nullable Context context,
-            int order,
-            String selectedText,
-            @MenuType int menuType,
-            boolean isSelectionReadOnly,
-            @Nullable SelectionActionMenuDelegate selectionActionMenuDelegate,
-            boolean isEnabled) {
-        if (context == null) {
-            context = ContextUtils.getApplicationContext();
-        }
-        // Limited the title, "Search <default search engine> for <selected text>", to context menu
-        // triggered by cursor right click (or touchpad double tap) only. Otherwise using default
-        // title "Web Search".
-        String title = context.getString(R.string.actionbar_web_search);
-        if (menuType == MenuType.DROPDOWN && selectionActionMenuDelegate != null) {
-            String customTitle =
-                    selectionActionMenuDelegate.getWebSearchMenuItemTitle(context, selectedText);
-            if (customTitle != null) {
-                title = customTitle;
-            }
-        }
-        @ItemGroupOffset int category = ItemGroupOffset.DEFAULT_ITEMS;
-        if (!isSelectionReadOnly && menuType == MenuType.DROPDOWN) {
-            category = ItemGroupOffset.SECONDARY_ASSIST_ITEMS;
-            order = SelectionMenuItem.ItemOrder.WEB_SEARCH_EDITABLE;
-        }
-        return new SelectionMenuItem.Builder(title)
+    private static SelectionMenuItem.Builder webSearch(int order, boolean isEnabled) {
+        return new SelectionMenuItem.Builder(R.string.actionbar_web_search)
                 .setId(R.id.select_action_menu_web_search)
                 .setGroupId(R.id.select_action_menu_default_items)
                 .setIconAttr(android.R.attr.actionModeWebSearchDrawable)
-                .setOrderAndCategory(order, category)
+                .setOrderAndCategory(order, ItemGroupOffset.DEFAULT_ITEMS)
                 .setShowAsActionFlags(
                         MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT)
                 .setIsEnabled(isEnabled)
-                .setIsIconTintable(true)
-                .build();
+                .setIsIconTintable(true);
     }
 }

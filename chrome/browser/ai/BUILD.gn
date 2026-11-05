@@ -5,9 +5,20 @@
 import("//chrome/common/features.gni")
 import("//components/optimization_guide/features.gni")
 import("//pdf/features.gni")
+import("//services/on_device_model/on_device_model.gni")
 
 assert(build_with_model_execution)
 assert(is_win || is_mac || is_linux || is_chromeos || is_android)
+
+source_set("features") {
+  sources = [
+    "features.cc",
+    "features.h",
+  ]
+
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
+  public_deps = [ "//base" ]
+}
 
 source_set("ai") {
   sources = [
@@ -25,15 +36,20 @@ source_set("ai") {
     "ai_summarizer.h",
     "ai_utils.h",
     "ai_writer.h",
-    "features.cc",
-    "features.h",
+    "semantic_embedder_spaces.h",
   ]
+  if (!is_android) {
+    sources += [
+      "ai_embedding_gemma_v1_decision_model.h",
+      "ai_language_model_decision_model.h",
+      "decision_model_prompt_builder.h",
+      "decision_model_schema_compiler.h",
+    ]
+  }
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
   public_deps = [
+    ":features",
     "//base",
     "//chrome/browser/actor",
     "//chrome/browser/glic",
@@ -46,6 +62,13 @@ source_set("ai") {
     "//content/public/browser",
     "//services/passage_embeddings/public/mojom",
   ]
+  if (is_chrome_branded && use_on_device_model_service) {
+    sources += [ "ai_page_action_controller.h" ]
+    public_deps += [
+      "//ui/base/interaction",
+      "//ui/base/unowned_user_data",
+    ]
+  }
 }
 
 source_set("impl") {
@@ -64,35 +87,37 @@ source_set("impl") {
     "ai_summarizer.cc",
     "ai_utils.cc",
     "ai_writer.cc",
+    "semantic_embedder_spaces.cc",
   ]
+  if (!is_android) {
+    sources += [
+      "ai_embedding_gemma_v1_decision_model.cc",
+      "ai_language_model_decision_model.cc",
+      "decision_model_prompt_builder.cc",
+      "decision_model_schema_compiler.cc",
+    ]
+  }
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
-  public_deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//components/content_extraction/content/browser",
-  ]
+  public_deps = [ "//components/content_extraction/content/browser" ]
   deps = [
     ":ai",
     "//base:i18n",
+    "//build:branding_buildflags",
     "//chrome/browser:browser_process",
     "//chrome/browser/component_updater",
-    "//chrome/browser/history_embeddings",
     "//chrome/browser/passage_embeddings",
     "//chrome/browser/ui/tabs:tabs_public",
     "//components/autofill/content/browser",
     "//components/autofill/core/browser",
-    "//components/history_embeddings/content",
-    "//components/history_embeddings/core",
     "//components/language/core/common",
     "//components/optimization_guide/content/browser",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/passage_embeddings/core",
     "//components/site_engagement/content",
     "//pdf:buildflags",
+    "//services/on_device_model/public/cpp:buildflags",
     "//skia",
     "//third_party/protobuf:protobuf_lite",
   ]
@@ -101,6 +126,30 @@ source_set("impl") {
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/tabs:tab_group",
       "//chrome/browser/ui/tabs:tab_strip",
+    ]
+  }
+  if (is_chrome_branded && use_on_device_model_service) {
+    sources += [ "ai_page_action_controller.cc" ]
+    deps += [
+      "//chrome/app:branded_strings",
+      "//chrome/app:generated_resources",
+      "//chrome/browser:global_features",
+      "//chrome/browser/optimization_guide",
+      "//chrome/browser/ui:browser_element_identifiers",
+      "//chrome/browser/ui:chrome_pages",
+      "//chrome/browser/ui/actions:actions_headers",
+      "//chrome/browser/ui/dialogs:browser_dialogs",
+      "//chrome/browser/ui/interaction",
+      "//chrome/browser/ui/page_action",
+      "//chrome/browser/ui/webui/settings",
+      "//chrome/common",
+      "//components/prefs",
+      "//components/tabs:public",
+      "//components/vector_icons",
+      "//ui/actions",
+      "//ui/base",
+      "//ui/color:color_headers",
+      "//ui/views",
     ]
   }
   if (enable_pdf) {
@@ -121,12 +170,16 @@ source_set("test_support") {
     "//chrome/browser/optimization_guide",
     "//chrome/browser/optimization_guide:test_support",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/optimization_guide/core:manifest_broker_test_support",
     "//components/optimization_guide/core:test_support",
     "//testing/gmock",
     "//testing/gtest",
   ]
-  deps = [ ":ai" ]
+  deps = [
+    ":ai",
+    "//components/component_updater:component_updater_paths",
+  ]
 }
 
 source_set("unit_tests") {
@@ -135,14 +188,20 @@ source_set("unit_tests") {
     "ai_manager_unittest.cc",
     "ai_summarizer_unittest.cc",
     "ai_utils_unittest.cc",
+    "semantic_embedder_spaces_unittest.cc",
   ]
   if (!is_android) {
     sources += [
+      "ai_embedding_gemma_v1_decision_model_unittest.cc",
+      "ai_language_model_decision_model_unittest.cc",
       "ai_language_model_unittest.cc",
       "ai_proofreader_unittest.cc",
       "ai_rewriter_unittest.cc",
       "ai_semantic_embedder_service_launcher_unittest.cc",
+      "ai_semantic_embedder_unittest.cc",
       "ai_writer_unittest.cc",
+      "decision_model_prompt_builder_unittest.cc",
+      "decision_model_schema_compiler_unittest.cc",
     ]
   }
   deps = [
@@ -150,10 +209,12 @@ source_set("unit_tests") {
     ":test_support",
     "//chrome/browser/component_updater",
     "//chrome/browser/optimization_guide:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//components/component_updater:test_support",
     "//components/on_device_ai",
     "//components/optimization_guide/core:manifest_broker_test_support",
     "//components/optimization_guide/core:test_support",
+    "//components/optimization_guide/core/model_execution/configs:summarize_config",
     "//components/passage_embeddings/core:test_support",
   ]
 }
@@ -173,14 +234,34 @@ if (!is_android) {
       ":test_support",
       "//base",
       "//chrome/browser/actor:test_support",
+      "//chrome/browser/ui:browser_tabstrip",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//components/passage_embeddings/core:test_support",
       "//content/test:test_support",
       "//testing/gmock",
     ]
+
+    if (is_chrome_branded && use_on_device_model_service) {
+      sources += [ "ai_page_action_controller_browsertest.cc" ]
+      deps += [
+        "//chrome/app:branded_strings",
+        "//chrome/browser:browser_process",
+        "//chrome/browser/ui/actions:actions_headers",
+        "//chrome/browser/ui/page_action",
+        "//chrome/browser/ui/tabs:tab_strip",
+        "//chrome/browser/ui/views/interaction",
+        "//chrome/browser/ui/views/page_action:test_support",
+        "//chrome/browser/ui/views/toolbar:test_support",
+        "//chrome/browser/ui/webui/settings",
+        "//ui/base",
+        "//ui/base/interaction",
+        "//ui/views",
+        "//ui/views:test_support",
+        "//url",
+      ]
+    }
   }
 }
 
@@ -197,7 +278,6 @@ if (!is_android && !is_chromeos_device) {
       "//base",
       "//chrome/browser/ui/browser_window",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//components/embedder_support",
       "//content/test:test_support",
       "//testing/gmock",

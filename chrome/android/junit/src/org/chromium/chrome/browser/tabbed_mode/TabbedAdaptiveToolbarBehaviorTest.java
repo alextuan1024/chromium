@@ -26,6 +26,7 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -42,11 +43,11 @@ import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.glic.GlicButtonDelegate;
 import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.glic.GlicEnablingJni;
 import org.chromium.chrome.browser.glic.GlicKeyedService;
 import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonDelegate;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab_group_suggestion.toolbar.GroupSuggestionsButtonController;
@@ -55,6 +56,7 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonController;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
+import org.chromium.chrome.browser.ttc.TtcEntryPoint;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
 
 import java.util.List;
@@ -69,6 +71,7 @@ public class TabbedAdaptiveToolbarBehaviorTest {
     @Mock private Profile mProfile;
     @Mock private ActorKeyedService mActorKeyedService;
     @Mock private ActorTask mActorTask;
+    @Mock private TtcEntryPoint mTtcEntryPoint;
     @Mock private GlicEnabling.Natives mGlicEnablingJniMock;
     @Mock private GlicKeyedService mGlicKeyedService;
     @Mock private AdaptiveToolbarButtonController mAdaptiveToolbarButtonController;
@@ -98,7 +101,7 @@ public class TabbedAdaptiveToolbarBehaviorTest {
         GlicEnablingJni.setInstanceForTesting(mGlicEnablingJniMock);
         GlicKeyedServiceFactory.setForTesting(mGlicKeyedService);
         when(mGlicEnablingJniMock.isEnabledForProfile(any())).thenReturn(false);
-        Activity activity = Robolectric.setupActivity(Activity.class);
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
 
         when(mTabModelSelector.getCurrentModel()).thenReturn(mTabModel);
         when(mTabModel.getProfile()).thenReturn(mProfile);
@@ -120,7 +123,8 @@ public class TabbedAdaptiveToolbarBehaviorTest {
                         () -> mChromeAndroidTask,
                         mBrowserControlsVisibilityManager,
                         mIsVerticalTabsActiveSupplier,
-                        mIsGlicPinnedSupplier);
+                        mIsGlicPinnedSupplier,
+                        mTtcEntryPoint);
     }
 
     @Test
@@ -313,6 +317,43 @@ public class TabbedAdaptiveToolbarBehaviorTest {
                 .addButtonVariant(eq(AdaptiveToolbarButtonVariant.GLIC), any());
         verify(mAdaptiveToolbarButtonController)
                 .addButtonVariant(eq(AdaptiveToolbarButtonVariant.ADD_TO_BOOKMARKS), any());
+    }
+
+    @Test
+    @Config(qualifiers = "w600dp-h820dp")
+    @EnableFeatures({
+        ChromeFeatureList.CONTEXTUAL_TASKS_ENTRY_POINTS + ":force_toolbar_button/true",
+        ChromeFeatureList.CONTEXTUAL_TASKS_SIDE_PANEL
+    })
+    public void testResultFilterWithAskGoogleForced() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        mBehavior.registerPerSurfaceButtons(
+                mAdaptiveToolbarButtonController, SupplierUtils.ofNull());
+        verify(mAdaptiveToolbarButtonController)
+                .addButtonVariant(eq(AdaptiveToolbarButtonVariant.ASK_GOOGLE), any());
+        assertTopResult(
+                /* segmentationResults= */ List.of(AdaptiveToolbarButtonVariant.SHARE),
+                /* expectedTopResult= */ AdaptiveToolbarButtonVariant.ASK_GOOGLE);
+    }
+
+    @Test
+    @Config(qualifiers = "w600dp-h820dp")
+    @EnableFeatures({
+        ChromeFeatureList.CONTEXTUAL_TASKS_ENTRY_POINTS,
+        ChromeFeatureList.CONTEXTUAL_TASKS_SIDE_PANEL
+    })
+    public void testResultFilterWithAskGooglePinned() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        mBehavior.registerPerSurfaceButtons(
+                mAdaptiveToolbarButtonController, SupplierUtils.ofNull());
+        verify(mAdaptiveToolbarButtonController)
+                .addButtonVariant(eq(AdaptiveToolbarButtonVariant.ASK_GOOGLE), any());
+        assertTopResult(
+                /* segmentationResults= */ List.of(AdaptiveToolbarButtonVariant.ASK_GOOGLE),
+                /* expectedTopResult= */ AdaptiveToolbarButtonVariant.ASK_GOOGLE);
+        assertTopResult(
+                /* segmentationResults= */ List.of(AdaptiveToolbarButtonVariant.SHARE),
+                /* expectedTopResult= */ AdaptiveToolbarButtonVariant.SHARE);
     }
 
     private void assertTopResult(

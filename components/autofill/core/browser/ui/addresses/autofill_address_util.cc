@@ -10,10 +10,12 @@
 #include <array>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/check.h"
 #include "base/containers/to_vector.h"
+#include "base/i18n/language_tag.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -118,7 +120,7 @@ void ExtendAddressComponents(
 
 void GetAddressComponents(
     const std::string& country_code,
-    const std::string& ui_language_code,
+    const base::i18n::LanguageTag& ui_language_code,
     bool include_literals,
     std::vector<std::vector<AutofillAddressUIComponent>>* address_components,
     std::string* components_language_code) {
@@ -162,7 +164,7 @@ void GetAddressComponents(
 
 std::vector<AutofillAddressUIComponent> GetAddressComponents(
     const std::string& country_code,
-    const std::string& ui_language_code,
+    const base::i18n::LanguageTag& ui_language_code,
     bool enable_field_labels_localization,
     bool include_literals,
     std::string& components_language_code) {
@@ -172,18 +174,19 @@ std::vector<AutofillAddressUIComponent> GetAddressComponents(
     localization.SetGetter(l10n_util::GetStringUTF8);
   }
   AutofillCountry country(country_code);
+  const std::string ui_language_string(ui_language_code.tag_string());
 
   std::vector<AutofillAddressUIComponent> components;
   if (include_literals) {
     components = ConvertAddressUiComponents(
         ::i18n::addressinput::BuildComponentsWithLiterals(
-            country_code, localization, ui_language_code,
+            country_code, localization, ui_language_string,
             &components_language_code),
         country);
   } else {
     components = ConvertAddressUiComponents(
         ::i18n::addressinput::BuildComponents(country_code, localization,
-                                              ui_language_code,
+                                              ui_language_string,
                                               &components_language_code),
         country);
   }
@@ -202,10 +205,11 @@ std::vector<AutofillAddressUIComponent> GetAddressComponents(
   NOTREACHED();
 }
 
-std::u16string GetEnvelopeStyleAddress(const AutofillProfile& profile,
-                                       const std::string& ui_language_code,
-                                       bool include_recipient,
-                                       bool include_country) {
+std::u16string GetEnvelopeStyleAddress(
+    const AutofillProfile& profile,
+    const base::i18n::LanguageTag& ui_language_code,
+    bool include_recipient,
+    bool include_country) {
   const std::u16string country_code = profile.GetRawInfo(ADDRESS_HOME_COUNTRY);
 
   std::string not_used;
@@ -224,7 +228,8 @@ std::u16string GetEnvelopeStyleAddress(const AutofillProfile& profile,
                                component.field == ALTERNATIVE_FULL_NAME)) {
       return true;
     }
-    return profile.GetInfo(component.field, ui_language_code).empty();
+    return profile.GetInfo(component.field, ui_language_code.tag_string())
+        .empty();
   });
 
   // Remove delimiters from the beginning and the end.
@@ -247,14 +252,16 @@ std::u16string GetEnvelopeStyleAddress(const AutofillProfile& profile,
       }
       continue;
     }
-    std::u16string info = profile.GetInfo(component.field, ui_language_code);
+    std::u16string info =
+        profile.GetInfo(component.field, ui_language_code.tag_string());
     pieces.push_back(info);
     last_field_was_non_empty = true;
   }
 
   if (include_country) {
     pieces.push_back(u"\n");
-    pieces.push_back(profile.GetInfo(ADDRESS_HOME_COUNTRY, ui_language_code));
+    pieces.push_back(
+        profile.GetInfo(ADDRESS_HOME_COUNTRY, ui_language_code.tag_string()));
   }
 
   std::string address_utf8 = base::UTF16ToUTF8(base::StrCat(pieces));
@@ -272,9 +279,10 @@ std::u16string GetEnvelopeStyleAddress(const AutofillProfile& profile,
   return base::UTF8ToUTF16(address_utf8);
 }
 
-std::u16string GetProfileDescription(const AutofillProfile& profile,
-                                     const std::string& ui_language_code,
-                                     bool include_address_and_contacts) {
+std::u16string GetProfileDescription(
+    const AutofillProfile& profile,
+    const base::i18n::LanguageTag& ui_language_code,
+    bool include_address_and_contacts) {
   // All user-visible fields.
   static constexpr FieldType kDetailsFields[] = {
       NAME_FULL,
@@ -290,17 +298,18 @@ std::u16string GetProfileDescription(const AutofillProfile& profile,
       ADDRESS_HOME_COUNTRY};
 
   if (!include_address_and_contacts) {
-    return profile.GetInfo(NAME_FULL, ui_language_code);
+    return profile.GetInfo(NAME_FULL, ui_language_code.tag_string());
   }
 
-  return profile.ConstructInferredLabel(
-      kDetailsFields, /*num_fields_to_include=*/2, ui_language_code);
+  return profile.ConstructInferredLabel(kDetailsFields,
+                                        /*num_fields_to_include=*/2,
+                                        ui_language_code.tag_string());
 }
 
 std::vector<ProfileValueDifference> GetProfileDifferenceForUi(
     const AutofillProfile& first_profile,
     const AutofillProfile& second_profile,
-    const std::string& app_locale) {
+    const base::i18n::LanguageTag& app_locale) {
   std::vector<ProfileValueDifference> differences_for_ui =
       AutofillProfileComparator::GetProfileDifference(
           first_profile, second_profile,
@@ -343,14 +352,14 @@ std::vector<ProfileValueDifference> GetProfileDifferenceForUi(
 
 std::u16string GetProfileSummaryForMigrationPrompt(
     const AutofillProfile& profile,
-    const std::string& app_locale) {
+    const base::i18n::LanguageTag& app_locale) {
   std::vector<FieldType> fields = {
       FieldType::NAME_FULL, FieldType::ADDRESS_HOME_LINE1,
       FieldType::EMAIL_ADDRESS, FieldType::PHONE_HOME_WHOLE_NUMBER};
   std::vector<std::u16string> values;
   values.reserve(fields.size());
   for (FieldType field : fields) {
-    std::u16string value = profile.GetInfo(field, app_locale);
+    std::u16string value = profile.GetInfo(field, app_locale.tag_string());
     if (!value.empty()) {
       values.push_back(value);
     }

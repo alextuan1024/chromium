@@ -39,10 +39,8 @@ import type {ChromeSigninUserChoiceInfo, SyncBrowserProxy, SyncStatus} from '/sh
 import {ChromeSigninUserChoice, SignedInState, StatusAction, SyncBrowserProxyImpl} from '/shared/settings/people_page/sync_browser_proxy.js';
 import {PrefService} from '/shared/settings/prefs2/pref_service.js';
 import {PrefServiceObserverMixinLit} from '/shared/settings/prefs2/pref_service_observer_mixin_lit.js';
-import type {MetricsReporting, PrivacyPageBrowserProxy} from '/shared/settings/privacy_page/privacy_page_browser_proxy.js';
-import {PrivacyPageBrowserProxyImpl} from '/shared/settings/privacy_page/privacy_page_browser_proxy.js';
 import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
-// <if expr="is_chromeos">
+// <if expr="_google_chrome and is_chromeos">
 import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
 
 // </if>
@@ -56,6 +54,8 @@ import {RelaunchMixinLit, RestartType} from '../relaunch_mixin_lit.js';
 
 import {getCss} from './personalization_options.css.js';
 import {getHtml} from './personalization_options.html.js';
+import type {MetricsReporting, PrivacyPageBrowserProxy} from './privacy_page_browser_proxy.js';
+import {PrivacyPageBrowserProxyImpl} from './privacy_page_browser_proxy.js';
 
 export interface SettingsPersonalizationOptionsElement {
   $: {
@@ -76,9 +76,6 @@ const SettingsPersonalizationOptionsElementBase =
 // browser_element_identifiers constants
 const ANONYMIZED_URL_COLLECTION_ID =
     'kAnonymizedUrlCollectionPersonalizationSettingId';
-
-export type PersonalizationOptionsElement =
-    SettingsPersonalizationOptionsElement;
 
 export class SettingsPersonalizationOptionsElement extends
     SettingsPersonalizationOptionsElementBase {
@@ -106,15 +103,15 @@ export class SettingsPersonalizationOptionsElement extends
 
       showSearchAggregatorSuggest_: {type: Boolean},
 
-      searchAggregatorSuggestFakePref_: {type: Object},
-
       showSignoutDialog_: {type: Boolean},
 
+      // <if expr="_google_chrome">
       shouldUseMetricsConsentRestructure_: {type: Boolean},
-
-      syncFirstSetupInProgress_: {type: Boolean},
+      // </if>
 
       // <if expr="not is_chromeos">
+      syncFirstSetupInProgress_: {type: Boolean},
+
       signinAvailable_: {type: Boolean},
 
       chromeSigninUserChoiceInfo_: {type: Object},
@@ -133,21 +130,16 @@ export class SettingsPersonalizationOptionsElement extends
 
   protected accessor showSearchAggregatorSuggest_: boolean =
       loadTimeData.getBoolean('showSearchAggregatorSuggest');
-  protected accessor searchAggregatorSuggestFakePref_:
-      chrome.settingsPrivate.PrefObject<boolean> = {
-    key: 'enterprise_search_aggregator_settings.fake_pref',
-    type: chrome.settingsPrivate.PrefType.BOOLEAN,
-    value: true,
-    enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
-    controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
-  };
 
   protected accessor showSignoutDialog_: boolean = false;
-  protected accessor syncFirstSetupInProgress_: boolean = false;
+  // <if expr="_google_chrome">
   protected accessor shouldUseMetricsConsentRestructure_: boolean =
       loadTimeData.getBoolean('shouldUseMetricsConsentRestructure');
+  // </if>
 
   // <if expr="not is_chromeos">
+  protected accessor syncFirstSetupInProgress_: boolean = false;
+
   protected accessor signinAvailable_: boolean =
       loadTimeData.getBoolean('signinAvailable');
 
@@ -155,7 +147,7 @@ export class SettingsPersonalizationOptionsElement extends
       undefined;
   // </if>
 
-  protected accessor spellCheckDictionariesPref_:
+  private accessor spellCheckDictionariesPref_:
       chrome.settingsPrivate.PrefObject<string[]>|undefined;
 
   private browserProxy_: PrivacyPageBrowserProxy =
@@ -170,6 +162,7 @@ export class SettingsPersonalizationOptionsElement extends
     this.mirrorPref('spellcheck.dictionaries', 'spellCheckDictionariesPref_');
   }
 
+  // <if expr="not is_chromeos">
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
 
@@ -177,6 +170,7 @@ export class SettingsPersonalizationOptionsElement extends
       this.syncFirstSetupInProgress_ = this.computeSyncFirstSetupInProgress_();
     }
   }
+  // </if>
 
   override firstUpdated(changedProperties: PropertyValues<this>) {
     super.firstUpdated(changedProperties);
@@ -201,44 +195,25 @@ export class SettingsPersonalizationOptionsElement extends
         this.$.urlCollectionToggle.getBubbleAnchor(), {paddingTop: 10});
   }
 
+  // <if expr="not is_chromeos">
   private computeSyncFirstSetupInProgress_(): boolean {
     return !!this.syncStatus.firstSetupInProgress;
   }
+  // </if>
 
   protected showPriceEmailNotificationsToggle_(): boolean {
     if (!loadTimeData.getBoolean('changePriceEmailNotificationsEnabled')) {
       return false;
     }
     // Only show the toggle when the user signed in.
-    if (loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos') &&
-        this.syncStatus.signedInState === SignedInState.SIGNED_IN) {
-      return true;
-    }
-    return this.syncStatus.signedInState === SignedInState.SYNCING;
+    return this.syncStatus.signedInState === SignedInState.SIGNED_IN ||
+        this.syncStatus.signedInState === SignedInState.SYNCING;
   }
 
   protected getPriceEmailNotificationsPrefDesc_(): string {
     const username = this.syncStatus.signedInUsername || '';
     return loadTimeData.getStringF('priceEmailNotificationsPrefDesc', username);
   }
-
-  // <if expr="is_chromeos">
-  /**
-   * @return the autocomplete search suggestions CrToggleElement.
-   */
-  getSearchSuggestToggle(): SettingsToggleButtonElement|null {
-    return this.shadowRoot.querySelector<SettingsToggleButtonElement>(
-        '#searchSuggestToggle');
-  }
-
-  /**
-   * @return the anonymized URL collection CrToggleElement.
-   */
-  getUrlCollectionToggle(): SettingsToggleButtonElement|null {
-    return this.shadowRoot.querySelector<SettingsToggleButtonElement>(
-        '#urlCollectionToggle');
-  }
-  // </if>
 
   // <if expr="_google_chrome and not is_chromeos">
   protected onMetricsReportingChange_(e: Event) {
@@ -269,15 +244,8 @@ export class SettingsPersonalizationOptionsElement extends
     return (pageVisibility.privacy as PrivacyPageVisibility).searchPrediction;
   }
 
-  // <if expr="is_chromeos">
-  protected onMetricsReportingLinkClick_() {
-    // TODO(wesokuhara) Deep link directly to metrics toggle via settingId.
-    OpenWindowProxyImpl.getInstance().openUrl(
-        loadTimeData.getString('osSettingsPrivacyHubSubpageUrl'));
-  }
-  // </if>
-
   // <if expr="_google_chrome">
+  // <if expr="not is_chromeos">
   protected onUseSpellingServiceSettingsBooleanControlChange_(event: Event) {
     // If turning on using the spelling service, automatically turn on
     // spellcheck so that the spelling service can run.
@@ -287,7 +255,6 @@ export class SettingsPersonalizationOptionsElement extends
     }
   }
 
-  // <if expr="not is_chromeos">
   protected showSpellCheckControlToggle_(): boolean {
     return !!this.spellCheckDictionariesPref_ &&
         this.spellCheckDictionariesPref_.value.length > 0;
@@ -295,6 +262,12 @@ export class SettingsPersonalizationOptionsElement extends
   // </if><!-- not chromeos -->
 
   // <if expr="is_chromeos">
+  protected onMetricsReportingLinkClick_() {
+    // TODO(wesokuhara) Deep link directly to metrics toggle via settingId.
+    OpenWindowProxyImpl.getInstance().openUrl(
+        loadTimeData.getString('osSettingsPrivacyHubSubpageUrl'));
+  }
+
   protected showSpellCheckControlLink_(): boolean {
     return !!this.spellCheckDictionariesPref_ &&
         this.spellCheckDictionariesPref_.value.length > 0;

@@ -16,6 +16,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/types/expected.h"
 #include "build/build_config.h"
 #include "cc/trees/render_frame_metadata.h"
 #include "content/browser/back_forward_cache/back_forward_cache_impl.h"
@@ -25,6 +26,7 @@
 #include "content/browser/devtools/protocol/page.h"
 #include "content/browser/preloading/prerender/prerender_final_status.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
+#include "content/public/browser/devtools_manager_delegate.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/javascript_dialog_manager.h"
 #include "content/public/browser/render_widget_host.h"
@@ -134,6 +136,7 @@ class PageHandler : public DevToolsDomainHandler,
   void Reload(std::optional<bool> bypassCache,
               std::optional<std::string> script_to_evaluate_on_load,
               std::optional<std::string> loader_id,
+              std::optional<bool> check_for_repost,
               std::unique_ptr<ReloadCallback> callback) override;
   void Navigate(const std::string& url,
                 std::optional<std::string> referrer,
@@ -168,11 +171,13 @@ class PageHandler : public DevToolsDomainHandler,
                            std::optional<int> every_nth_frame,
                            std::optional<int> max_frames_in_flight,
                            std::optional<bool> send_last_frame) override;
-  Response StartScreenRecording(std::optional<bool> audio,
-                                std::optional<int> max_width,
-                                std::optional<int> max_height,
-                                std::optional<int> frame_rate,
-                                std::string* out_stream) override;
+  void StartScreenRecording(
+      std::optional<bool> audio,
+      std::optional<int> max_width,
+      std::optional<int> max_height,
+      std::optional<int> frame_rate,
+      std::optional<std::string> capture_area,
+      std::unique_ptr<StartScreenRecordingCallback> callback) override;
   void StopScreenRecording(
       std::unique_ptr<StopScreenRecordingCallback> callback) override;
   void OnMediaRecorderFlushed();
@@ -210,9 +215,6 @@ class PageHandler : public DevToolsDomainHandler,
                                const Binary& data) override;
 
   Response SetPrerenderingAllowed(bool is_allowed) override;
-  void GetAnnotatedPageContent(
-      std::optional<bool> include_actionable_information,
-      std::unique_ptr<GetAnnotatedPageContentCallback> callback) override;
 
   Response AddScriptToEvaluateOnNewDocument(
       const std::string& source,
@@ -229,6 +231,28 @@ class PageHandler : public DevToolsDomainHandler,
   Response AssureTopLevelActiveFrame();
 
  private:
+  // Asks the embedder for the capture device of the browser window that shows
+  // the target, and starts `media_recorder_` with it.
+  void StartBrowserWindowRecording(
+      bool audio,
+      int max_width,
+      int max_height,
+      int frame_rate,
+      std::unique_ptr<StartScreenRecordingCallback> callback);
+  void OnBrowserWindowCaptureDevice(
+      base::WeakPtr<MediaRecorder> recorder,
+      bool audio,
+      int max_width,
+      int max_height,
+      int frame_rate,
+      std::unique_ptr<StartScreenRecordingCallback> callback,
+      base::expected<DevToolsManagerDelegate::BrowserWindowCaptureDevice,
+                     std::string> device);
+  void OnBrowserWindowRecordingStarted(
+      base::WeakPtr<MediaRecorder> recorder,
+      std::unique_ptr<StartScreenRecordingCallback> callback,
+      Response response);
+
   struct PendingScreenshotRequest;
 
   using BitmapEncoder =
@@ -268,6 +292,21 @@ class PageHandler : public DevToolsDomainHandler,
   // returns Response with an error.
   using ResponseOrWebContents = std::variant<Response, WebContentsImpl*>;
   ResponseOrWebContents GetWebContentsForTopLevelActiveFrame();
+
+  // Returns an error response if the client's trust level or local file access
+  // permission does not allow it to navigate the page to `url`. `host_` must
+  // not be null.
+  Response CheckNavigationAllowed(const GURL& url);
+
+  // Runs when the form repost check of Reload() is complete. If `proceed` is
+  // true, prepares the reload of `outermost_main_frame`. If `proceed` is
+  // false, the user cancelled the form repost dialog or the reload was
+  // discarded.
+  void OnReloadRepostCheckDone(
+      base::WeakPtr<RenderFrameHostImpl> outermost_main_frame,
+      std::string script_to_evaluate_on_load,
+      std::unique_ptr<ReloadCallback> callback,
+      bool proceed);
 
   const bool allow_unsafe_operations_;
   const bool is_trusted_;
@@ -318,6 +357,10 @@ class PageHandler : public DevToolsDomainHandler,
   bool is_prerendering_allowed_ = true;
   base::RepeatingCallback<void(std::string)> prepare_for_reload_callback_;
   bool have_pending_reload_ = false;
+  // True while Reload() calls into the navigation controller.
+  bool is_starting_reload_ = false;
+  // The callback of a reload that started synchronously in Reload().
+  std::unique_ptr<ReloadCallback> reload_success_callback_;
   std::string pending_script_to_evaluate_on_load_;
   url::Origin initiating_origin_;
 

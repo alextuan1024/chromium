@@ -20,7 +20,6 @@ import org.chromium.components.signin.AccountUtils;
 import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
-import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -38,7 +37,6 @@ class AccountPickerMediator implements ProfileDataCache.Observer {
     private final MVCListAdapter.ModelList mListModel;
     private final AccountPickerCoordinator.Listener mAccountPickerListener;
     private final ProfileDataCache mProfileDataCache;
-    private final IdentityManager mIdentityManager;
 
     @MainThread
     AccountPickerMediator(
@@ -48,9 +46,7 @@ class AccountPickerMediator implements ProfileDataCache.Observer {
             IdentityManager identityManager) {
         mListModel = listModel;
         mAccountPickerListener = listener;
-        mIdentityManager = identityManager;
-        mProfileDataCache =
-                ProfileDataCache.createWithDefaultImageSizeAndNoBadge(context, identityManager);
+        mProfileDataCache = ProfileDataCache.createWithDefaultImageSize(context, identityManager);
         mProfileDataCache.addObserver(this);
         updateAccounts(getAccounts());
     }
@@ -88,7 +84,7 @@ class AccountPickerMediator implements ProfileDataCache.Observer {
 
     private List<AccountInfo> getAccounts() {
         if (SigninFeatureMap.isEnabled(SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS)) {
-            return mIdentityManager.getExtendedAccountInfoForAccountsWithRefreshToken();
+            return mProfileDataCache.getFilteredAccountInfoIfFulfilledOrEmpty();
         }
         return AccountUtils.getAccountsIfFulfilledOrEmpty(
                 AccountManagerFacadeProvider.getInstance().getAccounts());
@@ -98,7 +94,7 @@ class AccountPickerMediator implements ProfileDataCache.Observer {
         mListModel.clear();
 
         // Add an "existing account" row for each account
-        for (CoreAccountInfo account : accounts) {
+        for (AccountInfo account : accounts) {
             PropertyModel model =
                     ExistingAccountRowProperties.createModel(
                             mProfileDataCache.getById(account.getId()),

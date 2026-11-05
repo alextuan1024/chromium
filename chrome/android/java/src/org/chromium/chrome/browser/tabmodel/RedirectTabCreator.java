@@ -17,6 +17,7 @@ import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.WindowAndroid;
@@ -35,7 +36,7 @@ public class RedirectTabCreator extends ChromeTabCreator {
             OneshotSupplier<ProfileProvider> profileProviderSupplier,
             boolean incognito,
             AsyncTabParamsManager asyncTabParamsManager,
-            Supplier<TabModelSelector> tabModelSelectorSupplier,
+            Supplier<@Nullable TabModelSelector> tabModelSelectorSupplier,
             Supplier<@Nullable CompositorViewHolder> compositorViewHolderSupplier) {
         super(
                 activity,
@@ -76,8 +77,16 @@ public class RedirectTabCreator extends ChromeTabCreator {
             @Nullable Tab parent,
             boolean openInTabGroup,
             @Nullable Intent intent) {
-        // Clean up AsyncTabParams with the tab to reparent if any.
-        mAsyncTabParamsManager.remove(IntentHandler.getTabId(intent));
+        // Clean up AsyncTabParams with the tab to reparent if any, while preserving the
+        // LoadUrlParams when params shares the instance being forwarded.
+        AsyncTabParams params = mAsyncTabParamsManager.remove(IntentHandler.getTabId(intent));
+        if (params != null) {
+            if (params.getLoadUrlParams() == loadUrlParams) {
+                params.destroyPreservingLoadUrlParams();
+            } else {
+                params.destroy();
+            }
+        }
 
         // Sanitize the url.
         GURL url = UrlFormatter.fixupUrl(loadUrlParams.getUrl());
@@ -94,6 +103,16 @@ public class RedirectTabCreator extends ChromeTabCreator {
                         /* preferNew= */ false,
                         mIncognito,
                         openInTabGroup);
+        return null;
+    }
+
+    @Override
+    public @Nullable Tab createFrozenTab(
+            TabState state, int id, int index, @TabLaunchType int type) {
+        AsyncTabParams params = mAsyncTabParamsManager.remove(id);
+        if (params != null) {
+            params.destroy();
+        }
         return null;
     }
 }

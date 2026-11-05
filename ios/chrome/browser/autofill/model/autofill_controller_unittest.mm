@@ -277,9 +277,8 @@ class AutofillControllerTest : public PlatformTest {
 
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindOnce(
-            &password_manager::BuildPasswordStoreInterface<
-                ProfileIOS, password_manager::MockPasswordStoreInterface>));
+        base::BindOnce(&password_manager::BuildPasswordStoreInterface<
+                       password_manager::MockPasswordStoreInterface>));
     // Profile import requires a PersonalDataManager which itself needs the
     // WebDataService; this is not initialized on a TestProfileIOS by
     // default.
@@ -388,7 +387,7 @@ class AutofillControllerTest : public PlatformTest {
 
   AutofillAgent* autofill_agent_;
 
-  std::unique_ptr<TestAutofillManagerInjector<TestAutofillManager>>
+  std::unique_ptr<TestAutofillManagerInjectorIOS<TestAutofillManager>>
       autofill_manager_injector_;
 
   // Retrieves suggestions according to form events.
@@ -423,7 +422,7 @@ void AutofillControllerTest::SetUp() {
           profile_.get(), web_state(), infobar_manager, autofill_agent_);
 
   autofill_manager_injector_ =
-      std::make_unique<TestAutofillManagerInjector<TestAutofillManager>>(
+      std::make_unique<TestAutofillManagerInjectorIOS<TestAutofillManager>>(
           web_state());
 
   accessory_mediator_ =

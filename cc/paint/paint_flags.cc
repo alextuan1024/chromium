@@ -49,8 +49,7 @@ CorePaintFlags::CorePaintFlags() {
 }
 
 bool CorePaintFlags::operator==(const CorePaintFlags& other) const {
-  return color_ == other.color_ && width_ == other.width_ &&
-         miter_limit_ == other.miter_limit_ &&
+  return paint_color_ == other.paint_color_ && width_ == other.width_ &&
          bitfields_uint_ == other.bitfields_uint_;
 }
 
@@ -70,12 +69,13 @@ PaintFlags::~PaintFlags() = default;
 
 bool PaintFlags::CanConvertToCorePaintFlags() const {
   return IsValid() && !path_effect_ && !shader_ && !color_filter_ &&
-         !draw_looper_ && !image_filter_;
+         !draw_looper_ && !image_filter_ &&
+         !getPaintColor().has_deferred_color();
 }
 
-CorePaintFlags PaintFlags::ToCorePaintFlags() const {
+const CorePaintFlags& PaintFlags::ToCorePaintFlags() const {
   DCHECK(CanConvertToCorePaintFlags());
-  return CorePaintFlags(*this);
+  return *this;
 }
 
 void PaintFlags::setImageFilter(sk_sp<PaintFilter> filter) {
@@ -138,6 +138,9 @@ bool PaintFlags::SupportsFoldingAlpha() const {
     return false;
   }
   if (getLooper()) {
+    return false;
+  }
+  if (getPaintColor().has_deferred_color()) {
     return false;
   }
   return true;
@@ -214,7 +217,7 @@ bool PaintFlags::EqualsForTesting(const PaintFlags& other) const {
   // Can't just ToSkPaint and operator== here as SkPaint does pointer
   // comparisons on all the ref'd skia objects on the SkPaint, which
   // is not true after serialization.
-  return getColor() == other.getColor() &&
+  return getPaintColor() == other.getPaintColor() &&
          getStrokeWidth() == other.getStrokeWidth() &&
          getStrokeMiter() == other.getStrokeMiter() &&
          getBlendMode() == other.getBlendMode() &&
@@ -235,20 +238,24 @@ bool PaintFlags::EqualsForTesting(const PaintFlags& other) const {
          AreValuesEqualForTesting(shader_, other.shader_);  // IN-TEST
 }
 
-bool PaintFlags::HasDiscardableImages(
-    gfx::ContentColorUsage* content_color_usage) const {
-  bool has_discardable_images = false;
+bool PaintFlags::HasDiscardableImages() const {
+  return (shader_ && shader_->HasDiscardableImages()) ||
+         (image_filter_ && image_filter_->has_discardable_images());
+}
+
+bool PaintFlags::HasReadBackDisallowedContent() const {
+  return (shader_ && shader_->HasReadBackDisallowedContent()) ||
+         (image_filter_ && image_filter_->has_read_back_disallowed_content());
+}
+
+void PaintFlags::UnionColorVolumeInto(
+    gfx::ContentColorVolume& color_volume) const {
   if (shader_) {
-    has_discardable_images = shader_->HasDiscardableImages(content_color_usage);
+    shader_->UnionColorVolumeInto(color_volume);
   }
-  if (image_filter_ && image_filter_->has_discardable_images()) {
-    if (content_color_usage) {
-      *content_color_usage =
-          std::max(*content_color_usage, image_filter_->GetContentColorUsage());
-    }
-    has_discardable_images = true;
+  if (image_filter_) {
+    image_filter_->UnionColorVolumeInto(color_volume);
   }
-  return has_discardable_images;
 }
 
 float PaintFlags::DynamicRangeLimitMixture::ComputeEffectiveHdrHeadroom(

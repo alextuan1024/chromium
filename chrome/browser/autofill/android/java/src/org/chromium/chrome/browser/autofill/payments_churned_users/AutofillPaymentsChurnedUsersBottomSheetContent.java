@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.autofill.payments_churned_users;
 
+import android.content.res.Resources;
 import android.view.View;
 
 import androidx.annotation.StringRes;
@@ -12,10 +13,13 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.autofill.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 
 /** BottomSheetContent implementation for the Payments Churned Users bottom sheet. */
 @NullMarked
 /*package*/ class AutofillPaymentsChurnedUsersBottomSheetContent implements BottomSheetContent {
+    private static final BottomSheetType SHEET_TYPE = new BottomSheetType.Builder().build();
+
     private final View mContentView;
 
     AutofillPaymentsChurnedUsersBottomSheetContent(View contentView) {
@@ -42,8 +46,12 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 
     @Override
     public boolean hasCustomLifecycle() {
-        // Keeps the bottom sheet open during checkout page navigation.
-        return true;
+        return false;
+    }
+
+    @Override
+    public BottomSheetType getSheetType() {
+        return SHEET_TYPE;
     }
 
     @Override
@@ -69,18 +77,16 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
     @Override
     public @StringRes int getSheetHalfHeightAccessibilityStringId() {
         assert false : "This method will not be called.";
-        return R.string.ok;
+        return Resources.ID_NULL;
     }
 
     @Override
     public @StringRes int getSheetFullHeightAccessibilityStringId() {
-        // TODO(crbug.com/558880203): Add dedicated churned users accessibility strings.
-        return R.string.ok;
+        return R.string.autofill_churned_users_bottom_sheet_full_height;
     }
 
     @Override
     public @StringRes int getSheetClosedAccessibilityStringId() {
-        // TODO(crbug.com/558880203): Add dedicated churned users accessibility strings.
-        return R.string.ok;
+        return R.string.autofill_churned_users_bottom_sheet_closed;
     }
 }

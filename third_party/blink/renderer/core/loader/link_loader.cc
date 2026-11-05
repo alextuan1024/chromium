@@ -127,8 +127,13 @@ bool LinkLoader::LoadLink(const LinkLoadParameters& params,
   PreloadHelper::DnsPrefetchIfNeeded(params, &document, document.GetFrame(),
                                      PreloadHelper::kLinkCalledFromMarkup);
 
-  PreloadHelper::PreconnectIfNeeded(params, &document, document.GetFrame(),
-                                    PreloadHelper::kLinkCalledFromMarkup);
+  // The preconnect is triggered by the world that's inserting or modifying the
+  // <link> element, e.g. an extension content script's isolated world.
+  ExecutionContext* context = document.GetExecutionContext();
+  PreloadHelper::PreconnectIfNeeded(
+      params, &document, document.GetFrame(),
+      PreloadHelper::kLinkCalledFromMarkup,
+      /*initiator_world=*/context ? context->GetCurrentWorld() : nullptr);
 
   PreloadHelper::PreloadIfNeeded(
       params, document, NullUrl(), PreloadHelper::kLinkCalledFromMarkup,
@@ -190,11 +195,10 @@ void LinkLoader::LoadStylesheet(
   String integrity_attr = params.integrity;
   if (!integrity_attr.empty()) {
     IntegrityMetadataSet metadata_set;
-    SubresourceIntegrity::ParseIntegrityAttribute(integrity_attr, metadata_set,
-                                                  context);
+    SubresourceIntegrity::ParseIntegrityAttribute(integrity_attr, metadata_set);
     link_fetch_params.SetIntegrityMetadata(metadata_set);
-    link_fetch_params.MutableResourceRequest().SetFetchIntegrity(integrity_attr,
-                                                                 context);
+    link_fetch_params.MutableResourceRequest().SetFetchIntegrity(
+        integrity_attr);
   }
 
   CSSStyleSheetResource::Fetch(link_fetch_params, context->Fetcher(),

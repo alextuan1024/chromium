@@ -348,7 +348,7 @@ void PDFiumFormFiller::Form_DoURIAction(FPDF_FORMFILLINFO* param,
   }
 
   engine->client_->NavigateTo(std::string(uri),
-                              WindowOpenDisposition::CURRENT_TAB);
+                              WindowOpenDisposition::kCurrentTab);
 }
 
 // static
@@ -526,9 +526,6 @@ int PDFiumFormFiller::Form_GetPlatform(FPDF_FORMFILLINFO* param,
 #else
   platform_flag = 2;
 #endif
-
-  std::string javascript =
-      "alert(\"Platform:" + base::NumberToString(platform_flag) + "\")";
 
   return platform_flag;
 }

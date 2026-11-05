@@ -31,4 +31,20 @@ Tests errors when finding DOM nodes by accessible name.
     id : <number>
     sessionId : <string>
 }
+{
+    error : {
+        code : -32000
+        message : Document is not active.
+    }
+    id : <number>
+    sessionId : <string>
+}
+{
+    error : {
+        code : -32000
+        message : No node found for given backend id
+    }
+    id : <number>
+    sessionId : <string>
+}
 

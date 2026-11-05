@@ -624,6 +624,7 @@ public class Fido2ApiTestHelper {
     /**
      * Verifies that the returned userVerificationMethod matches expected values.
      *
+     * @param echoUserVerificationMethods Whether the methods were echoed and should be checked.
      * @param userVerificationMethods The userVerificationMethods from the Fido2 API.
      */
     public static void validateUserVerificationMethods(
@@ -713,6 +714,7 @@ public class Fido2ApiTestHelper {
      * Constructs an intent that returns an error response from the Fido2 API.
      *
      * @param errorCode Numeric values corresponding to a Fido2 error.
+     * @param errorMsg Optional error message to include in the response. May be null.
      * @return an Intent containing the error response.
      */
     public static Intent createErrorIntent(int errorCode, @Nullable String errorMsg) {
@@ -721,6 +723,48 @@ public class Fido2ApiTestHelper {
 
         Intent intent = new Intent();
         intent.putExtra(Fido2Api.CREDENTIAL_EXTRA, parcel.marshall());
+        return intent;
+    }
+
+    /**
+     * Builds a successful makeCredential response intent at runtime. Unlike the serialized
+     * responses above, Robolectric's Parcel can parse it. Also mocks the attestation object
+     * parsing, which needs native code.
+     */
+    public static Intent createRuntimeMakeCredentialIntent() {
+        Fido2ApiJni.setInstanceForTesting(
+                (attestationObject, result) -> {
+                    result.authenticatorData = TEST_AUTHENTICATOR_DATA;
+                    result.attestationObject = attestationObject;
+                    return true;
+                });
+        return createRuntimeSuccessIntent(/* responseTag= */ 4, /* lastFieldTag= */ 4);
+    }
+
+    /** Like {@link #createRuntimeMakeCredentialIntent()}, but for getAssertion. */
+    public static Intent createRuntimeGetAssertionIntent() {
+        return createRuntimeSuccessIntent(/* responseTag= */ 5, /* lastFieldTag= */ 5);
+    }
+
+    private static Intent createRuntimeSuccessIntent(int responseTag, int lastFieldTag) {
+        Parcel parcel = Parcel.obtain();
+        final int a = writeHeader(OBJECT_MAGIC, parcel);
+        final int b = writeHeader(responseTag, parcel);
+        final int c = writeHeader(OBJECT_MAGIC, parcel);
+        // Byte array fields: key handle, clientDataJSON, then either the attestation object or the
+        // authenticator data and signature.
+        for (int tag = 2; tag <= lastFieldTag; tag++) {
+            int z = writeHeader(tag, parcel);
+            parcel.writeByteArray(new byte[] {(byte) tag});
+            writeLength(z, parcel);
+        }
+        writeLength(c, parcel);
+        writeLength(b, parcel);
+        writeLength(a, parcel);
+
+        Intent intent = new Intent();
+        intent.putExtra(Fido2Api.CREDENTIAL_EXTRA, parcel.marshall());
+        parcel.recycle();
         return intent;
     }
 
@@ -748,6 +792,22 @@ public class Fido2ApiTestHelper {
      * @param mockResult The mock value for {@link ClientDataJson#buildClientDataJson} to return.
      */
     public static void mockClientDataJson(String mockResult) {
+        mockClientDataJsonWithCallback(
+                (clientDataRequestType,
+                        callerOrigin,
+                        challenge,
+                        isCrossOrigin,
+                        optionsByteBuffer,
+                        relyingPartyId,
+                        topOrigin) -> mockResult);
+    }
+
+    /**
+     * Installs a mock callback for ClientDataJson.
+     *
+     * <p>This keeps callers from depending on ClientDataJsonImpl's JNI interface.
+     */
+    public static void mockClientDataJsonWithCallback(ClientDataJsonMock mock) {
         ClientDataJsonImpl.Natives clientDataJsonJni =
                 new ClientDataJsonImpl.Natives() {
                     @Override
@@ -756,13 +816,33 @@ public class Fido2ApiTestHelper {
                             String callerOrigin,
                             byte[] challenge,
                             boolean isCrossOrigin,
-                            ByteBuffer optionsByteBuffer,
-                            String relyingPartyId,
-                            org.chromium.url.Origin topOrigin) {
-                        return mockResult;
+                            @Nullable ByteBuffer optionsByteBuffer,
+                            @Nullable String relyingPartyId,
+                            @Nullable org.chromium.url.Origin topOrigin) {
+                        return mock.buildClientDataJson(
+                                clientDataRequestType,
+                                callerOrigin,
+                                challenge,
+                                isCrossOrigin,
+                                optionsByteBuffer,
+                                relyingPartyId,
+                                topOrigin);
                     }
                 };
         ClientDataJsonImplJni.setInstanceForTesting(clientDataJsonJni);
+    }
+
+    /** A mockable callback for ClientDataJson requests. */
+    @FunctionalInterface
+    public interface ClientDataJsonMock {
+        String buildClientDataJson(
+                int clientDataRequestType,
+                String callerOrigin,
+                byte[] challenge,
+                boolean isCrossOrigin,
+                @Nullable ByteBuffer optionsByteBuffer,
+                @Nullable String relyingPartyId,
+                @Nullable org.chromium.url.Origin topOrigin);
     }
 
     /** Mocks ClientDataJson with the default test value. */

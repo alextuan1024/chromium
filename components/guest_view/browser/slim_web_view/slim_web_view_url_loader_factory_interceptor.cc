@@ -136,7 +136,7 @@ class URLLoaderFactoryProxy
     bool should_add_headers = false;
     if (guest_) {
       const auto& params = guest_->before_send_headers_params();
-      if (params.has_value() && params->resource_types.contains(type) &&
+      if (params.has_value() && params->resource_types.Has(type) &&
           (params->include_sub_frame_requests || !is_subframe_request_)) {
         should_add_headers = true;
       }
@@ -195,6 +195,15 @@ class URLLoaderFactoryProxy
       mojo::MakeSelfOwnedReceiver(std::make_unique<SlimWebViewHeaderClient>(
                                       nullptr, std::move(target_header_client)),
                                   std::move(receiver));
+    }
+  }
+
+  void OnLoaderFailedWithRemoteEndpoint(
+      int32_t request_id,
+      const net::IPEndPoint& remote_endpoint) override {
+    if (target_url_loader_header_client_) {
+      target_url_loader_header_client_->OnLoaderFailedWithRemoteEndpoint(
+          request_id, remote_endpoint);
     }
   }
 

@@ -10,7 +10,10 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.url.GURL;
+
+import java.util.Objects;
 
 /**
  * Immutable description of the AI Mode entry point offered by a single search engine.
@@ -52,10 +55,6 @@ public final class AiModeButtonUiConfig {
     /**
      * Omnibox hint text shown while the AI Mode entry point is engaged. {@code
      * IDS_AI_MODE_OMNIBOX_PLACEHOLDER}, e.g. "Press tab then enter to ask AI Mode".
-     *
-     * <p>Note this is the desktop variant. Android clients likely want {@code
-     * IDS_AI_MODE_OMNIBOX_PLACEHOLDER_ANDROID}, which prefixes a {@code <tab_key>} placeholder for
-     * the rendered key glyph; see crbug.com/561690870.
      */
     public final String placeholderText;
 
@@ -91,5 +90,43 @@ public final class AiModeButtonUiConfig {
         this.faviconUrl = faviconUrl;
         this.navigationUrl = navigationUrl;
         this.navigationUrlEmpty = navigationUrlEmpty;
+    }
+
+    @Override
+    public boolean equals(@Nullable Object obj) {
+        if (this == obj) return true;
+        if (!(obj instanceof AiModeButtonUiConfig that)) return false;
+        return Objects.equals(text, that.text)
+                && Objects.equals(tooltip, that.tooltip)
+                && Objects.equals(a11yLabel, that.a11yLabel)
+                && Objects.equals(contextMenuLabel, that.contextMenuLabel)
+                && Objects.equals(placeholderText, that.placeholderText)
+                && Objects.equals(faviconUrl, that.faviconUrl)
+                && Objects.equals(navigationUrl, that.navigationUrl)
+                && Objects.equals(navigationUrlEmpty, that.navigationUrlEmpty);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(
+                text,
+                tooltip,
+                a11yLabel,
+                contextMenuLabel,
+                placeholderText,
+                faviconUrl,
+                navigationUrl,
+                navigationUrlEmpty);
+    }
+
+    @Override
+    public String toString() {
+        return "AiModeButtonUiConfig{text='"
+                + text
+                + "', tooltip='"
+                + tooltip
+                + "', navUrl='"
+                + navigationUrl
+                + "'}";
     }
 }

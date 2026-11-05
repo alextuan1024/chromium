@@ -8,6 +8,7 @@
 #include <gbm.h>
 #include <xf86drmMode.h>
 
+#include <algorithm>
 #include <memory>
 
 #include "base/containers/flat_set.h"
@@ -15,6 +16,7 @@
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/posix/eintr_wrapper.h"
+#include "base/synchronization/lock.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/gfx/buffer_usage_util.h"
 #include "ui/gfx/geometry/size_conversions.h"
@@ -45,9 +47,10 @@ bool GbmPixmapWayland::InitializeBuffer(
     viz::SharedImageFormat format,
     NativePixmapUsageSet usage,
     std::optional<gfx::Size> visible_area_size) {
-  DCHECK(!visible_area_size ||
-         ((visible_area_size.value().width() <= size.width()) &&
-          (visible_area_size.value().height() <= size.height())));
+  CHECK(!visible_area_size ||
+            ((visible_area_size.value().width() <= size.width()) &&
+             (visible_area_size.value().height() <= size.height())),
+        base::NotFatalUntil::M163);
   TRACE_EVENT0("wayland", "GbmPixmapWayland::InitializeBuffer");
 
   widget_ = widget;
@@ -88,18 +91,34 @@ bool GbmPixmapWayland::InitializeBuffer(
     // creation without modifiers, and leave the choices to driver.
     if (!gbm_bo_ && buffer_manager_->AllowsImplicitModifierForFormat(format)) {
       gbm_bo_ = gbm_device->CreateBuffer(fourcc_format, size, gbm_flags);
+      // The driver may report a modifier for the implicitly allocated buffer
+      // (e.g. `DRM_FORMAT_MOD_LINEAR`) that the compositor did not advertise.
+      // Such a buffer must be submitted with `DRM_FORMAT_MOD_INVALID`, which
+      // the compositor advertised, or it may reject the buffer.
+      if (gbm_bo_ &&
+          !std::ranges::contains(buffer_manager_->GetModifiersForFormat(format),
+                                 gbm_bo_->GetFormatModifier())) {
+        use_implicit_modifier_for_wl_buffer_ = true;
+      }
     }
   }
 
   if (!gbm_bo_) {
-    // Only log an error for a failing format once to avoid console spam.
+    // Only log an error for a failing format once to avoid console spam. This
+    // may run concurrently on the GPU main and IO threads, so access to the set
+    // of failed formats must be synchronized.
+    static base::NoDestructor<base::Lock> failed_formats_lock;
     static base::NoDestructor<base::flat_set<viz::SharedImageFormat>>
         failed_formats;
 
-    if (failed_formats->contains(format)) {
+    bool inserted;
+    {
+      base::AutoLock lock(*failed_formats_lock);
+      inserted = failed_formats->insert(format).second;
+    }
+    if (!inserted) {
       return false;
     }
-    failed_formats->insert(format);
 
     LOG(ERROR) << "Cannot create bo with format=" << format.ToString()
                << " and usage=" << ui::NativePixmapUsageToString(usage);
@@ -188,9 +207,8 @@ uint32_t GbmPixmapWayland::GetUniqueId() const {
 bool GbmPixmapWayland::ScheduleOverlayPlane(
     gfx::AcceleratedWidget widget,
     const gfx::OverlayPlaneData& overlay_plane_data,
-    std::vector<gfx::GpuFence> acquire_fences,
-    std::vector<gfx::GpuFence> release_fences) {
-  DCHECK_NE(widget, gfx::kNullAcceleratedWidget);
+    gfx::GpuFenceHandle acquire_fence) {
+  CHECK_NE(widget, gfx::kNullAcceleratedWidget, base::NotFatalUntil::M163);
 
   if (!created_wl_buffer_) {
     CreateDmabufBasedWlBuffer(overlay_plane_data);
@@ -200,18 +218,14 @@ bool GbmPixmapWayland::ScheduleOverlayPlane(
 
   auto* surface = buffer_manager_->GetSurface(widget);
   // This must never be hit.
-  DCHECK(surface);
+  CHECK(surface, base::NotFatalUntil::M163);
   GbmSurfacelessWayland* surfaceless =
       static_cast<GbmSurfacelessWayland*>(surface);
-  DCHECK(surfaceless);
+  CHECK(surfaceless, base::NotFatalUntil::M163);
 
-  DCHECK(acquire_fences.empty() || acquire_fences.size() == 1u);
-  surfaceless->QueueWaylandOverlayConfig(
-      {overlay_plane_data,
-       acquire_fences.empty()
-           ? nullptr
-           : std::make_unique<gfx::GpuFence>(std::move(acquire_fences[0])),
-       buffer_id_, surfaceless->surface_scale_factor()});
+  surfaceless->QueueWaylandOverlayConfig({overlay_plane_data,
+                                          std::move(acquire_fence), buffer_id_,
+                                          surfaceless->surface_scale_factor()});
   return true;
 }
 
@@ -239,30 +253,37 @@ gfx::NativePixmapHandle GbmPixmapWayland::ExportHandle() const {
 
 void GbmPixmapWayland::CreateDmabufBasedWlBuffer(
     const gfx::OverlayPlaneData& overlay_plane_data) {
-  uint64_t modifier = gbm_bo_->GetFormatModifier();
+  const uint64_t modifier = use_implicit_modifier_for_wl_buffer_
+                                ? DRM_FORMAT_MOD_INVALID
+                                : gbm_bo_->GetFormatModifier();
 
   std::vector<uint32_t> strides;
   std::vector<uint32_t> offsets;
   std::vector<uint64_t> modifiers;
+
+  // Each plane may be backed by a separate dmabuf object (e.g. buffers
+  // allocated with disjoint planes), so pass the fd of every plane.
+  std::vector<base::ScopedFD> fds;
 
   size_t plane_count = gbm_bo_->GetNumPlanes();
   for (size_t i = 0; i < plane_count; ++i) {
     strides.push_back(GetDmaBufPitch(i));
     offsets.push_back(GetDmaBufOffset(i));
     modifiers.push_back(modifier);
-  }
 
-  base::ScopedFD fd(HANDLE_EINTR(dup(GetDmaBufFd(0))));
-  if (!fd.is_valid()) {
-    PLOG(FATAL) << "dup";
+    base::ScopedFD fd(HANDLE_EINTR(dup(GetDmaBufFd(i))));
+    if (!fd.is_valid()) {
+      PLOG(FATAL) << "dup";
+    }
+    fds.push_back(std::move(fd));
   }
 
   // The wl_buffer must be destroyed once this pixmap is destroyed.
   created_wl_buffer_ = true;
 
-  // Asks Wayland to create a wl_buffer based on the |file| fd.
+  // Asks Wayland to create a wl_buffer based on the per-plane |fds|.
   buffer_manager_->CreateDmabufBasedBuffer(
-      std::move(fd), visible_area_size_, strides, offsets, modifiers,
+      std::move(fds), visible_area_size_, strides, offsets, modifiers,
       gbm_bo_->GetFormat(), plane_count, overlay_plane_data.color_space,
       overlay_plane_data.hdr_metadata, buffer_id_);
 }

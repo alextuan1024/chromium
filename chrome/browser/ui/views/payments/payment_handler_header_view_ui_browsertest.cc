@@ -2,13 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <string>
+
 #include "base/strings/string_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/views/location_bar/location_icon_view.h"
 #include "chrome/browser/ui/views/payments/payment_handler_web_flow_view_controller.h"
 #include "chrome/browser/ui/views/payments/payment_request_browsertest_base.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view_ids.h"
 #include "chrome/browser/ui/views/payments/payment_request_dialog_view_test_api.h"
+#include "chrome/browser/ui/views/payments/payment_request_views_util.h"
 #include "chrome/test/payments/payment_app_install_util.h"
 #include "components/omnibox/browser/buildflags.h"
 #include "components/payments/content/icon/icon_size.h"
@@ -16,8 +23,22 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/theme_change_waiter.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "ui/color/color_provider.h"
+#include "ui/compositor/layer.h"
+#include "ui/compositor/layer_type.h"
+#include "ui/gfx/color_utils.h"
+#include "ui/views/animation/ink_drop.h"
+#include "ui/views/animation/ink_drop_highlight.h"
+#include "ui/views/animation/ink_drop_host.h"
+#include "ui/views/background.h"
 #include "ui/views/controls/image_view.h"
+#include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/test/views_test_utils.h"
+#include "ui/views/view_utils.h"
 
 namespace payments {
 namespace {
@@ -26,21 +47,16 @@ using IconInstall = test::PaymentAppInstallUtil::IconInstall;
 
 class PaymentHandlerHeaderViewUITest : public PaymentRequestBrowserTestBase {
  public:
-  PaymentHandlerHeaderViewUITest() {
-    feature_list_.InitWithFeatures(
-        {features::kPaymentRequestMandatoryPaymentAppUi,
-         features::kPaymentHandlerHtmlHeadThemeColor},
-        {});
-  }
-  ~PaymentHandlerHeaderViewUITest() override = default;
-
   void SetUpOnMainThread() override {
     PaymentRequestBrowserTestBase::SetUpOnMainThread();
     NavigateTo("/payment_handler.html");
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
+  base::test::ScopedFeatureList feature_list_{
+      {features::kPaymentRequestMandatoryPaymentAppUi,
+       features::kPaymentHandlerHtmlHeadThemeColor,
+       features::kPaymentHandlerCameraAccessUx}};
 };
 
 IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest,
@@ -72,8 +88,18 @@ IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest,
   EXPECT_TRUE(IsViewVisible(DialogViewID::CANCEL_BUTTON, view_stack->top()));
   EXPECT_FALSE(IsViewVisible(DialogViewID::BACK_BUTTON, view_stack->top()));
   EXPECT_TRUE(IsViewVisible(DialogViewID::SHEET_TITLE, view_stack->top()));
-  EXPECT_TRUE(
+
+  // With kPaymentHandlerCameraAccessUx enabled the payment app icon is replaced
+  // by the PageInfo LocationIconView (`kAppIconElementId`), so
+  // PAYMENT_APP_HEADER_ICON is not shown.
+  EXPECT_NE(
+      nullptr,
+      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+          PaymentHandlerWebFlowViewController::kAppIconElementId,
+          views::ElementTrackerViews::GetContextForView(view_stack->top())));
+  EXPECT_FALSE(
       IsViewVisible(DialogViewID::PAYMENT_APP_HEADER_ICON, view_stack->top()));
+
   EXPECT_TRUE(IsViewVisible(DialogViewID::PAYMENT_APP_OPENED_WINDOW_SHEET,
                             view_stack->top()));
 
@@ -118,7 +144,15 @@ IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest, HeaderWithoutIcon) {
                                DialogEvent::PAYMENT_HANDLER_TITLE_SET});
   ClickOnDialogViewAndWait(DialogViewID::PAY_BUTTON);
 
-  // The payment app has no icon, so it should not be displayed on the header.
+  // The payment app has no icon, so PAYMENT_APP_HEADER_ICON should not be
+  // displayed on the header, while the PageInfo LocationIconView is still
+  // displayed.
+  ViewStack* view_stack = test_api(dialog_view()).view_stack();
+  EXPECT_NE(
+      nullptr,
+      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+          PaymentHandlerWebFlowViewController::kAppIconElementId,
+          views::ElementTrackerViews::GetContextForView(view_stack->top())));
   EXPECT_FALSE(IsViewVisible(DialogViewID::PAYMENT_APP_HEADER_ICON));
 }
 
@@ -229,7 +263,122 @@ IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest,
   ClickOnCancel();
 }
 
-IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest, LargeIcon) {
+IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest, HtmlHeadThemeColor) {
+  ThemeServiceFactory::GetForProfile(browser()->GetProfile())
+      ->SetBrowserColorScheme(ThemeService::BrowserColorScheme::kDark);
+  std::string method_name;
+  // Use 127.0.0.1 because the test server's certificate is not valid for
+  // a.com. With --ignore-certificate-errors a.com still loads, but the Page
+  // Info icon shows "Not secure". Real payment apps never show that, because
+  // the dialog closes on pages that are not secure.
+  InstallPaymentApp("127.0.0.1", "/payment_handler_sw.js", &method_name);
+
+  // Trigger PaymentRequest, and wait until the PaymentHandler has loaded a
+  // web-contents that has set a title.
+  ResetEventWaiterForSequence({DialogEvent::PROCESSING_SPINNER_SHOWN,
+                               DialogEvent::PROCESSING_SPINNER_HIDDEN,
+                               DialogEvent::DIALOG_OPENED,
+                               DialogEvent::LOADING_VIEW_SHOWN,
+                               DialogEvent::PAYMENT_HANDLER_WINDOW_OPENED,
+                               DialogEvent::LOADING_VIEW_HIDDEN,
+                               DialogEvent::PAYMENT_HANDLER_TITLE_SET});
+  ASSERT_EQ(
+      "success",
+      content::EvalJs(
+          GetActiveWebContents(),
+          content::JsReplace("launchWithoutWaitForResponse($1)", method_name)));
+  ASSERT_TRUE(WaitForObservedEvent());
+
+  ViewStack* view_stack = test_api(dialog_view()).view_stack();
+  views::View* header_view = view_stack->top()->GetViewByID(
+      static_cast<int>(DialogViewID::PAYMENT_APP_HEADER));
+  ASSERT_TRUE(header_view);
+
+  auto* controller_map = test_api(dialog_view()).controller_map();
+  auto it = controller_map->find(view_stack->top());
+  ASSERT_NE(it, controller_map->end());
+  auto* controller =
+      static_cast<PaymentHandlerWebFlowViewController*>(it->second.get());
+  content::WebContents* payment_handler_web_contents =
+      controller->web_contents();
+  ASSERT_NE(nullptr, payment_handler_web_contents);
+
+  auto* location_icon =
+      views::AsViewClass<LocationIconView>(controller->GetPageInfoIconView());
+  ASSERT_NE(nullptr, location_icon);
+  EXPECT_NE(nullptr, location_icon->background());
+  EXPECT_FALSE(color_utils::IsDark(location_icon->GetForegroundColor()));
+  EXPECT_NE(SK_ColorWHITE, header_view->background()->color().ResolveToSkColor(
+                               header_view->GetColorProvider()));
+
+  // A white HTML theme in Dark Mode hides the dark Omnibox pill and makes the
+  // Page Info icon dark.
+  ResetEventWaiter(DialogEvent::PAYMENT_HANDLER_THEME_COLOR_SET);
+  ASSERT_TRUE(content::ExecJs(
+      payment_handler_web_contents,
+      "const meta = document.createElement('meta'); meta.name = 'theme-color';"
+      "meta.content = '#FFFFFF'; document.head.appendChild(meta);"));
+  ASSERT_TRUE(WaitForObservedEvent());
+
+  EXPECT_EQ(SK_ColorWHITE, header_view->background()->color().ResolveToSkColor(
+                               header_view->GetColorProvider()));
+  EXPECT_EQ(nullptr, location_icon->background());
+  EXPECT_TRUE(color_utils::IsDark(location_icon->GetForegroundColor()));
+  // The hover highlight follows the icon color. The Omnibox one, which would
+  // be invisible here, is a solid color layer.
+  EXPECT_EQ(ui::LAYER_TEXTURED, views::InkDrop::Get(location_icon)
+                                    ->CreateInkDropHighlight()
+                                    ->layer()
+                                    ->type());
+
+  // Navigating to a page without a theme color restores the Omnibox pill.
+  content::ThemeChangeWaiter waiter(payment_handler_web_contents);
+  ASSERT_TRUE(content::NavigateToURL(
+      payment_handler_web_contents,
+      https_server()->GetURL("127.0.0.1", "/payment_handler.html")));
+  waiter.Wait();
+  EXPECT_NE(nullptr, location_icon->background());
+  EXPECT_FALSE(color_utils::IsDark(location_icon->GetForegroundColor()));
+}
+
+IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest, HeaderHeight) {
+  std::string method_name;
+  InstallPaymentApp("a.com", "/payment_handler_sw.js", &method_name);
+
+  // Trigger PaymentRequest, and wait until the PaymentHandler has loaded a
+  // web-contents that has set a title.
+  ResetEventWaiterForSequence({DialogEvent::PROCESSING_SPINNER_SHOWN,
+                               DialogEvent::PROCESSING_SPINNER_HIDDEN,
+                               DialogEvent::DIALOG_OPENED,
+                               DialogEvent::LOADING_VIEW_SHOWN,
+                               DialogEvent::PAYMENT_HANDLER_WINDOW_OPENED,
+                               DialogEvent::LOADING_VIEW_HIDDEN,
+                               DialogEvent::PAYMENT_HANDLER_TITLE_SET});
+  ASSERT_EQ(
+      "success",
+      content::EvalJs(
+          GetActiveWebContents(),
+          content::JsReplace("launchWithoutWaitForResponse($1)", method_name)));
+  ASSERT_TRUE(WaitForObservedEvent());
+
+  ViewStack* view_stack = test_api(dialog_view()).view_stack();
+  views::View* top_view = view_stack->top();
+  views::test::RunScheduledLayout(top_view);
+  EXPECT_EQ(
+      kPaymentHandlerHeaderHeight,
+      top_view->GetViewByID(static_cast<int>(DialogViewID::PAYMENT_APP_HEADER))
+          ->height());
+}
+
+class PaymentHandlerHeaderViewAppIconUITest
+    : public PaymentHandlerHeaderViewUITest {
+ private:
+  base::test::ScopedFeatureList app_icon_feature_list_{
+      {},
+      {features::kPaymentHandlerCameraAccessUx}};
+};
+
+IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewAppIconUITest, LargeIcon) {
   // Install a payment app with a large icon that will be sized down at render.
   std::string method_name = test::PaymentAppInstallUtil::InstallPaymentApp(
       *GetActiveWebContents()->GetPrimaryMainFrame(), *https_server(), "a.com",
@@ -268,12 +417,21 @@ IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest, LargeIcon) {
           .size());
 }
 
-IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest, HtmlHeadThemeColor) {
-  std::string method_name;
-  InstallPaymentApp("a.com", "/payment_handler_sw.js", &method_name);
+class PaymentHandlerHeaderViewPageInfoThemeColorDisabledUITest
+    : public PaymentHandlerHeaderViewUITest {
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      {},
+      {features::kPaymentHandlerPageInfoThemeColor}};
+};
 
-  // Trigger PaymentRequest, and wait until the PaymentHandler has loaded a
-  // web-contents that has set a title.
+IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewPageInfoThemeColorDisabledUITest,
+                       HtmlHeadThemeColor) {
+  ThemeServiceFactory::GetForProfile(browser()->GetProfile())
+      ->SetBrowserColorScheme(ThemeService::BrowserColorScheme::kDark);
+  std::string method_name;
+  InstallPaymentApp("127.0.0.1", "/payment_handler_sw.js", &method_name);
+
   ResetEventWaiterForSequence({DialogEvent::PROCESSING_SPINNER_SHOWN,
                                DialogEvent::PROCESSING_SPINNER_HIDDEN,
                                DialogEvent::DIALOG_OPENED,
@@ -298,25 +456,24 @@ IN_PROC_BROWSER_TEST_F(PaymentHandlerHeaderViewUITest, HtmlHeadThemeColor) {
   ASSERT_NE(it, controller_map->end());
   auto* controller =
       static_cast<PaymentHandlerWebFlowViewController*>(it->second.get());
-  content::WebContents* payment_handler_web_contents =
-      controller->web_contents();
-  ASSERT_NE(nullptr, payment_handler_web_contents);
+  ASSERT_NE(nullptr, controller->web_contents());
+  auto* location_icon =
+      views::AsViewClass<LocationIconView>(controller->GetPageInfoIconView());
+  ASSERT_NE(nullptr, location_icon);
 
-  // Verify red color is not set yet.
-  EXPECT_NE(SK_ColorRED, header_view->background()->color().ResolveToSkColor(
-                             header_view->GetColorProvider()));
-
-  // Inject meta theme-color tag via JavaScript and verify event, header
-  // background color (#FF0000 -> SK_ColorRED)
   ResetEventWaiter(DialogEvent::PAYMENT_HANDLER_THEME_COLOR_SET);
   ASSERT_TRUE(content::ExecJs(
-      payment_handler_web_contents,
+      controller->web_contents(),
       "const meta = document.createElement('meta'); meta.name = 'theme-color';"
-      "meta.content = '#FF0000'; document.head.appendChild(meta);"));
+      "meta.content = '#FFFFFF'; document.head.appendChild(meta);"));
   ASSERT_TRUE(WaitForObservedEvent());
 
-  EXPECT_EQ(SK_ColorRED, header_view->background()->color().ResolveToSkColor(
-                             header_view->GetColorProvider()));
+  // The header follows the theme color but the Page Info icon keeps the
+  // Omnibox pill and color.
+  EXPECT_EQ(SK_ColorWHITE, header_view->background()->color().ResolveToSkColor(
+                               header_view->GetColorProvider()));
+  EXPECT_NE(nullptr, location_icon->background());
+  EXPECT_FALSE(color_utils::IsDark(location_icon->GetForegroundColor()));
 }
 
 }  // namespace

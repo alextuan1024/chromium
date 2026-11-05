@@ -192,8 +192,16 @@ void CheckIfSolidShape(const SkCanvas& canvas,
   if (flags.nothingToDraw())
     return;
 
-  bool does_cover_canvas = IsFullQuad(canvas, shape);
   SkBlendMode blendmode = flags.getBlendMode();
+  // Unless clearing, a deferred color's value isn't known until raster.
+  if (flags.getPaintColor().has_deferred_color() &&
+      blendmode != SkBlendMode::kClear) {
+    *is_transparent = false;
+    *is_solid_color = false;
+    return;
+  }
+
+  bool does_cover_canvas = IsFullQuad(canvas, shape);
   if (does_cover_canvas && ActsLikeClear(blendmode, flags.getColor4f().fA)) {
     *is_transparent = true;
   } else if (!flags.isFullyTransparent() || blendmode != SkBlendMode::kSrc) {
@@ -315,6 +323,12 @@ std::optional<SkColor4f> SolidColorAnalyzer::DetermineIfSolidColor(
         return std::nullopt;
       case PaintOpType::kClipRRect: {
         const auto& rrect_op = static_cast<const ClipRRectOp&>(op);
+        // The covers-canvas shortcut below only holds for kIntersect. An RRect
+        // that covers the canvas makes a kDifference clip empty rather than a
+        // no-op, so bail out as kClipRect does.
+        if (rrect_op.op == SkClipOp::kDifference) {
+          return std::nullopt;
+        }
         bool does_cover_canvas =
             CheckIfRRectClipCoversCanvas(canvas, rrect_op.rrect);
         // If the clip covers the full canvas, we can treat it as if there's no

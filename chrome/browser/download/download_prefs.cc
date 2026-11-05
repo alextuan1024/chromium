@@ -27,7 +27,6 @@
 #include "chrome/browser/download/download_core_service_impl.h"
 #include "chrome/browser/download/download_dir_util.h"
 #include "chrome/browser/download/download_prompt_status.h"
-#include "chrome/browser/download/download_stats.h"
 #include "chrome/browser/download/download_target_determiner.h"
 #include "chrome/browser/download/trusted_sources_manager.h"
 #include "chrome/browser/profiles/profile.h"
@@ -56,15 +55,17 @@
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #endif
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #endif
 
 using content::BrowserContext;
@@ -137,6 +138,25 @@ DefaultDownloadDirectory& GetDefaultDownloadDirectorySingleton() {
   static base::NoDestructor<DefaultDownloadDirectory> instance;
   return *instance;
 }
+
+#if BUILDFLAG(IS_CHROMEOS)
+// Returns the default download directory for `profile`, which is an Ash
+// internal Profile, such as the sign-in Profile.
+// Ash internal Profiles are not associated with any user, so they don't have
+// the folders of the user, such as MyFiles. However, DownloadPrefs is created
+// for them, too, e.g. when a download is attempted in the GAIA webview on the
+// login screen, even if the download is denied later.
+// This returns the path that had been used for them, as
+// file_manager::util::GetDownloadsFolderForProfile() returned it for Profiles
+// without users. It is kept only for backward compatibility.
+// TODO(crbug.com/579585875): Revisit the download directory for Ash internal
+// Profiles.
+base::FilePath GetLegacyDefaultDownloadDirectoryForAshInternalProfile(
+    Profile* profile) {
+  CHECK(!ash::IsUserBrowserContext(profile));
+  return profile->GetPath().AppendASCII("MyFiles").AppendASCII("Downloads");
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace
 
@@ -216,6 +236,11 @@ DownloadPrefs::DownloadPrefs(Profile* profile) : profile_(profile) {
     // Update the download directory if the pref is from user pref store or
     // default pref.
     if (pref->IsUserControlled()) {
+      // The migration is only for the folders of the user, which Ash internal
+      // Profiles don't have.
+      if (!ash::IsUserBrowserContext(profile_)) {
+        continue;
+      }
       const base::FilePath current = prefs->GetFilePath(path_pref);
       base::FilePath migrated;
       if (!current.empty() &&
@@ -279,8 +304,6 @@ DownloadPrefs::DownloadPrefs(Profile* profile) : profile_(profile) {
   prompt_for_download_.Init(prefs::kPromptForDownload, prefs);
 #if BUILDFLAG(IS_ANDROID)
   prompt_for_download_android_.Init(prefs::kPromptForDownloadAndroid, prefs);
-  RecordDownloadPromptStatus(
-      static_cast<DownloadPromptStatus>(*prompt_for_download_android_));
   auto_open_pdf_enabled_.Init(prefs::kAutoOpenPdfEnabled, prefs);
 #endif
   download_path_.Init(prefs::kDownloadDefaultDirectory, prefs);
@@ -398,6 +421,9 @@ void DownloadPrefs::RegisterProfilePrefs(
 
 base::FilePath DownloadPrefs::GetDefaultDownloadDirectoryForProfile() const {
 #if BUILDFLAG(IS_CHROMEOS)
+  if (!ash::IsUserBrowserContext(profile_)) {
+    return GetLegacyDefaultDownloadDirectoryForAshInternalProfile(profile_);
+  }
   return file_manager::util::GetDownloadsFolderForProfile(profile_);
 #else
   return GetDefaultDownloadDirectory();
@@ -417,14 +443,14 @@ std::string DownloadPrefs::GetDefaultDownloadName() {
 // static
 DownloadPrefs* DownloadPrefs::FromDownloadManager(
     DownloadManager* download_manager) {
-  DCHECK(download_manager->GetBrowserContext());
+  CHECK(download_manager->GetBrowserContext(), base::NotFatalUntil::M161);
   DownloadCoreService* service =
       DownloadCoreServiceFactory::GetForBrowserContext(
           download_manager->GetBrowserContext());
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M161);
   ChromeDownloadManagerDelegate* delegate =
       service->GetDownloadManagerDelegate();
-  DCHECK(delegate);
+  CHECK(delegate, base::NotFatalUntil::M161);
   return delegate->download_prefs();
 }
 
@@ -464,16 +490,23 @@ void DownloadPrefs::SetSaveFileType(int type) {
 bool DownloadPrefs::PromptForDownload() const {
   // If the DownloadDirectory policy is set, then |prompt_for_download_| should
   // always be false.
-  DCHECK(!download_path_.IsManaged() || !prompt_for_download_.GetValue());
+  CHECK(!download_path_.IsManaged() || !prompt_for_download_.GetValue(),
+        base::NotFatalUntil::M161);
 
-// Return the Android prompt for download only.
 #if BUILDFLAG(IS_ANDROID)
+  if (base::android::device_info::is_desktop() &&
+      base::FeatureList::IsEnabled(
+          download::features::kEnableDownloadSaveAsSystemFileDialog)) {
+    return *prompt_for_download_;
+  }
+
   // Use |prompt_for_download_| preference for enterprise policy.
   if (prompt_for_download_.IsManaged())
     return prompt_for_download_.GetValue();
 
-  // As long as they haven't indicated in preferences they do not want the
-  // dialog shown, show the dialog.
+  // Return the Android prompt for download status when not using the OS file
+  // picker. As long as they haven't indicated in preferences they do not want
+  // the dialog shown, show the dialog.
   return *prompt_for_download_android_ !=
          static_cast<int>(DownloadPromptStatus::DONT_SHOW);
 #else
@@ -494,7 +527,8 @@ bool DownloadPrefs::IsAutoOpenEnabled(const GURL& url,
   base::FilePath::StringType extension = path.Extension();
   if (extension.empty())
     return false;
-  DCHECK(extension[0] == base::FilePath::kExtensionSeparator);
+  CHECK(extension[0] == base::FilePath::kExtensionSeparator,
+        base::NotFatalUntil::M161);
   extension.erase(0, 1);
   if (base::FilePath::CompareEqualIgnoreCase(extension,
                                              FILE_PATH_LITERAL("pdf")) &&
@@ -510,7 +544,8 @@ bool DownloadPrefs::IsAutoOpenByPolicy(const GURL& url,
   base::FilePath::StringType extension = path.Extension();
   if (extension.empty())
     return false;
-  DCHECK(extension[0] == base::FilePath::kExtensionSeparator);
+  CHECK(extension[0] == base::FilePath::kExtensionSeparator,
+        base::NotFatalUntil::M161);
   extension.erase(0, 1);
 
   // if |url| is a blob scheme, use the originating URL for policy evaluation.
@@ -530,7 +565,8 @@ bool DownloadPrefs::EnableAutoOpenByUserBasedOnExtension(
     return false;
   }
 
-  DCHECK(extension[0] == base::FilePath::kExtensionSeparator);
+  CHECK(extension[0] == base::FilePath::kExtensionSeparator,
+        base::NotFatalUntil::M161);
 #else
   if (extension[0] != base::FilePath::kExtensionSeparator) {
     return false;
@@ -548,7 +584,8 @@ void DownloadPrefs::DisableAutoOpenByUserBasedOnExtension(
   base::FilePath::StringType extension = file_name.Extension();
   if (extension.empty())
     return;
-  DCHECK(extension[0] == base::FilePath::kExtensionSeparator);
+  CHECK(extension[0] == base::FilePath::kExtensionSeparator,
+        base::NotFatalUntil::M161);
   extension.erase(0, 1);
   auto_open_by_user_.erase(extension);
   SaveAutoOpenState();
@@ -631,6 +668,14 @@ base::FilePath DownloadPrefs::SanitizeDownloadTargetPath(
     return path;
 
 #if BUILDFLAG(IS_CHROMEOS)
+  if (!ash::IsUserBrowserContext(profile_)) {
+    // Ash internal Profiles don't have the folders of the user, and their
+    // download directories are not configurable, as it requires a file picker,
+    // which is not available outside of user sessions. Always use the default
+    // download directory.
+    return GetDefaultDownloadDirectoryForProfile();
+  }
+
   base::FilePath migrated_drive_path;
   // Managed prefs may force a legacy Drive path as the download path. Ensure
   // the path is valid when DriveFS is enabled.

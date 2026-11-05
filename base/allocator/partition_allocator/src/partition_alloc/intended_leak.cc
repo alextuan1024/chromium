@@ -14,6 +14,7 @@
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/in_slot_metadata.h"
 #include "partition_alloc/internal_allocator.h"
+#include "partition_alloc/partition_alloc_base/containers/span.h"
 #include "partition_alloc/partition_lock.h"
 
 namespace partition_alloc {
@@ -42,20 +43,23 @@ InternalUnorderedMap<uint32_t, size_t>& GetLeakSizePerTypeIdMap() {
 void PartitionRoot::Zap(SlotStart slot_start,
                         SlotSpanMetadata* slot_span,
                         uint32_t type_id) {
-  void* object = reinterpret_cast<void*>(slot_start.value());
+  uint8_t* object = slot_start.ToObject<uint8_t>();
 
   uint64_t zap_value = internal::kIntendedLeakQuarantineMarker |
                        (static_cast<uint64_t>(type_id) << 8);
 
   size_t slot_size = slot_span->GetUtilizedSlotSize();
   size_t count = slot_size / sizeof(uint64_t);
-  std::fill_n(static_cast<uint64_t*>(object), count, zap_value);
-
-  size_t remainder_offset = sizeof(uint64_t) * count;
-  size_t remainder_size = slot_size - remainder_offset;
-
-  std::fill_n(PA_UNSAFE_TODO(static_cast<uint8_t*>(object) + remainder_offset),
-              remainder_size, internal::kIntendedLeakQuarantineRemainder);
+  size_t remainder_offset = count * sizeof(uint64_t);
+  // Note that if slot_size is cleanly divisible by sizeof(uint64_t), then
+  // remainder_span will be empty.
+  auto [object_span, remainder_span] =
+      PA_UNSAFE_TODO(internal::base::span(object, slot_size))
+          .split_at(remainder_offset);
+  std::ranges::fill(
+      internal::base::subtle::reinterpret_span<uint64_t>(object_span),
+      zap_value);
+  std::ranges::fill(remainder_span, internal::kIntendedLeakQuarantineRemainder);
 }
 
 // static

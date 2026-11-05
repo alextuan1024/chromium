@@ -29,8 +29,6 @@
 #include "components/autofill/core/browser/ui/payments/card_name_fix_flow_controller_impl.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
-class GURL;
-
 namespace webauthn {
 class InternalAuthenticator;
 }
@@ -61,6 +59,7 @@ class CreditCardRiskBasedAuthenticator;
 struct FilledCardInformationBubbleOptions;
 class IbanAccessManager;
 class MerchantPromoCodeManager;
+class OfferNotificationHandler;
 struct OfferNotificationOptions;
 class OtpUnmaskDelegate;
 enum class OtpUnmaskResult;
@@ -83,16 +82,21 @@ class PaymentsChurnedUsersManager;
 class PaymentsChurnedUsersUiDelegate;
 class PaymentsWindowManager;
 class WalletReminderNoticeManager;
-class WalletReminderNoticeUiDelegate;
 
-// Chrome implementation of PaymentsAutofillClient. Used for Chrome Desktop
-// and Clank. Owned by the ChromeAutofillClient. Created lazily in the
-// ChromeAutofillClient when it is needed, and it observes the same
+// Chrome implementation of PaymentsAutofillClient. Base class shared by
+// ChromePaymentsAutofillClientDesktop and ChromePaymentsAutofillClientAndroid.
+// Owned by ChromeAutofillClient via `Create()`, and it observes the same
 // WebContents as its owning ChromeAutofillClient.
 class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
                                      public content::WebContentsObserver {
  public:
-  explicit ChromePaymentsAutofillClient(ContentAutofillClient* client);
+  // Creates a platform-specific ChromePaymentsAutofillClient instance for
+  // `client`. Defined in the respective Desktop and Android implementations
+  // (`chrome_payments_autofill_client_desktop.cc` and
+  // `chrome_payments_autofill_client_android.cc`).
+  static std::unique_ptr<ChromePaymentsAutofillClient> Create(
+      ContentAutofillClient* client);
+
   ChromePaymentsAutofillClient(const ChromePaymentsAutofillClient&) = delete;
   ChromePaymentsAutofillClient& operator=(const ChromePaymentsAutofillClient&) =
       delete;
@@ -200,7 +204,6 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
   IbanManager* GetIbanManager() override;
   IbanAccessManager* GetIbanAccessManager() override;
   MerchantPromoCodeManager* GetMerchantPromoCodeManager() override;
-  void OpenPromoCodeOfferDetailsURL(const GURL& url) override;
   AutofillOfferManager* GetAutofillOfferManager() override;
   void UpdateOfferNotification(
       const AutofillOfferData& offer,
@@ -254,7 +257,6 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
   bool IsTabModalPopup() const override;
   BnplStrategy* GetBnplStrategy() override;
   BnplUiDelegate* GetBnplUiDelegate() override;
-  WalletReminderNoticeUiDelegate* GetWalletReminderNoticeUiDelegate() override;
   WalletReminderNoticeManager* GetWalletReminderNoticeManager() override;
   PaymentsChurnedUsersUiDelegate* GetPaymentsChurnedUsersUiDelegate() override;
 #if !BUILDFLAG(IS_ANDROID)
@@ -310,6 +312,11 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
       std::unique_ptr<TouchToFillPaymentMethodController>
           touch_to_fill_payment_method_controller);
 #endif
+
+ protected:
+  explicit ChromePaymentsAutofillClient(ContentAutofillClient* client);
+
+  ContentAutofillClient* client() const { return &client_.get(); }
 
  private:
   std::u16string GetAccountHolderName() const;
@@ -405,12 +412,6 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
   // Lazily initialized: access only through `GetBnplUiDelegate()`.
   std::unique_ptr<BnplUiDelegate> bnpl_ui_delegate_;
 
-  // The WalletReminderNoticeUiDelegate used to handle the UI in the Wallet
-  // Reminder Notice flow. Lazily initialized: access only through
-  // `GetWalletReminderNoticeUiDelegate()`.
-  std::unique_ptr<WalletReminderNoticeUiDelegate>
-      wallet_reminder_notice_ui_delegate_;
-
   // The WalletReminderNoticeManager used to orchestrate the Wallet Reminder
   // Notice flow. Lazily initialized: access only through
   // `GetWalletReminderNoticeManager()`.
@@ -421,6 +422,10 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
   // interactions when the user triggers Autofill from the Omnibox.
   std::unique_ptr<OmniboxAutofillDelegate> omnibox_autofill_delegate_;
 #endif
+
+  // Updates the offer notification on this tab. Nullptr if there is no
+  // `AutofillOfferManager`, e.g. in off-the-record profiles.
+  std::unique_ptr<OfferNotificationHandler> offer_notification_handler_;
 
   // Whether autofill payment methods are supported for this client. Is true by
   // default, and is flipped manually when `DisablePaymentsAutofill` is called.

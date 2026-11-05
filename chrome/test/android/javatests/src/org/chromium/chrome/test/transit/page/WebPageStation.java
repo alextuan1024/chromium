@@ -15,6 +15,7 @@ import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider
 import org.chromium.chrome.browser.omnibox.UrlBar;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.content_public.browser.test.transit.WebContentsElementProvider;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.content_public.browser.test.util.TouchCommon;
 
@@ -23,7 +24,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 
 /** The screen that shows a loaded webpage with the omnibox and the toolbar. */
-public class WebPageStation extends CtaPageStation {
+public class WebPageStation extends CtaPageStation implements WebContentsElementProvider {
     public Element<WebContents> webContentsElement;
     public ViewElement<UrlBar> urlBarElement;
 
@@ -44,12 +45,27 @@ public class WebPageStation extends CtaPageStation {
     }
 
     @Override
+    public Element<WebContents> getWebContentsElement() {
+        return webContentsElement;
+    }
+
+    @Override
     protected TripBuilder clickUrlBarOrSearchBarTo() {
         return urlBarElement.clickTo();
     }
 
     public static Builder<WebPageStation> newBuilder() {
         return new Builder<>(WebPageStation::new);
+    }
+
+    /** {@link #waitForPage(Tab, String, Builder)} for a web page. */
+    public static WebPageStation waitForWebPage(Tab tab, String url) {
+        return waitForPage(tab, url, newBuilder());
+    }
+
+    /** {@link #waitForPageLoad(TripBuilder, Tab, String, Builder)} for a web page. */
+    public static WebPageStation waitForWebPageLoad(TripBuilder trip, Tab tab, String url) {
+        return waitForPageLoad(trip, tab, url, newBuilder());
     }
 
     /** Condition to check the page url does not match any of the prohibited urls. */
@@ -87,13 +103,17 @@ public class WebPageStation extends CtaPageStation {
     /** Opens the web page app menu by pressing the toolbar "..." button */
     public RegularWebPageAppMenuFacility openRegularTabAppMenu() {
         assert !mIsIncognito;
-        return menuButtonElement.clickTo().enterFacility(new RegularWebPageAppMenuFacility());
+        return toolbar.menuButtonElement
+                .clickTo()
+                .enterFacility(new RegularWebPageAppMenuFacility());
     }
 
     /** Opens the web page app menu by pressing the toolbar "..." button */
     public IncognitoWebPageAppMenuFacility openIncognitoTabAppMenu() {
         assert mIsIncognito;
-        return menuButtonElement.clickTo().enterFacility(new IncognitoWebPageAppMenuFacility());
+        return toolbar.menuButtonElement
+                .clickTo()
+                .enterFacility(new IncognitoWebPageAppMenuFacility());
     }
 
     /** Scrolls down the page using a drag gesture to dismiss browser controls. */

@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.tab_ui;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import static java.util.Comparator.comparingInt;
 
 import androidx.annotation.IntDef;
@@ -169,11 +171,6 @@ public class TabSwitcherGroupSuggestionService {
                 }
 
                 @Override
-                public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                    clearSuggestions();
-                }
-
-                @Override
                 public void willCloseTabs(
                         List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                     clearSuggestions();
@@ -194,32 +191,28 @@ public class TabSwitcherGroupSuggestionService {
     private final TabGroupObserver mTabGroupObserver =
             new TabGroupObserver() {
                 @Override
-                public void willMergeTabToGroup(
-                        Tab movedTab, int newRootId, @Nullable Token tabGroupId) {
+                public void didMergeTabToGroup(Tab movedTab, boolean isDestinationTab) {
                     clearSuggestions();
                 }
 
                 @Override
-                public void willMoveTabGroup(Token tabGroupId, int currentIndex) {
+                public void willMoveTabGroup(Token tabGroupId) {
                     clearSuggestions();
                 }
 
                 @Override
-                public void willMoveTabOutOfGroup(
-                        Tab movedTab, @Nullable Token destinationTabGroupId) {
+                public void willMoveTabOutOfGroup(Tab movedTab) {
                     clearSuggestions();
                 }
 
                 @Override
-                public void didCreateNewGroup(Tab destinationTab, TabModel tabModel) {
+                public void onTabGroupCreated(Token tabGroupId) {
                     clearSuggestions();
                 }
 
                 @Override
                 public void didRemoveTabGroup(
-                        int oldRootId,
-                        @Nullable Token oldTabGroupId,
-                        @DidRemoveTabGroupReason int removalReason) {
+                        Token oldTabGroupId, @DidRemoveTabGroupReason int removalReason) {
                     clearSuggestions();
                 }
 
@@ -257,6 +250,11 @@ public class TabSwitcherGroupSuggestionService {
 
     public void destroy() {
         mCurrentTabModelSupplier.removeObserver(mOnTabModelChanged);
+        TabModel tabModel = mCurrentTabModelSupplier.get();
+        if (tabModel != null) {
+            tabModel.removeObserver(mTabModelObserver);
+            tabModel.removeTabGroupObserver(mTabGroupObserver);
+        }
         mSuggestionLifecycleObserverHandler.onSuggestionIgnored();
     }
 
@@ -358,7 +356,7 @@ public class TabSwitcherGroupSuggestionService {
             return null;
         }
 
-        tabs.sort(comparingInt(tab -> tabIdsToIndices.get(tab.getId())));
+        tabs.sort(comparingInt(tab -> assumeNonNull(tabIdsToIndices.get(tab.getId()))));
         return tabs;
     }
 

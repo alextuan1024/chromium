@@ -34,11 +34,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Queue;
-import java.util.Set;
 
 /**
  * Utility class that asynchronously fetches any Websites and the permissions that the user has set
@@ -220,26 +217,14 @@ public class WebsitePermissionsFetcher {
     }
 
     /**
-     * Fetches all preferences within a specific category and populates them with First Party Sets
-     * info.
-     *
-     * @param category A category to fetch.
-     * @param callback The callback to run when the fetch is complete.
-     */
-    public void fetchPreferencesForCategoryAndPopulateRwsInfo(
-            SiteSettingsCategory category, WebsitePermissionsCallback callback) {
-        var fetcherInternal = new WebsitePermissionFetcherInternal();
-        fetcherInternal.fetchPreferencesForCategoryAndPopulateRwsInfo(category, callback);
-    }
-
-    /**
      * Internal class that actually performs the fetches, asynchronously fetching any Websites and
      * the permissions that the user has set for them.
      */
     private class WebsitePermissionFetcherInternal {
         // This map looks up Websites by their origin and embedder and content setting (e.g. allow,
         // block).
-        private final Map<Pair<OriginAndEmbedder, Integer>, Website> mSites = new HashMap<>();
+        private final Map<Pair<OriginAndEmbedder, @Nullable Integer>, Website> mSites =
+                new HashMap<>();
 
         /**
          * Fetches preferences for all sites that have them. TODO(mvanouwerkerk): Add an argument
@@ -301,22 +286,6 @@ public class WebsitePermissionsFetcher {
                         queue, mSiteSettingsCategory.getContentSettingsType());
             }
             return queue;
-        }
-
-        /**
-         * Fetches all preferences within a specific category and populates them with First Party
-         * Sets info.
-         *
-         * @param category A category to fetch.
-         * @param callback The callback to run when the fetch is complete.
-         */
-        public void fetchPreferencesForCategoryAndPopulateRwsInfo(
-                SiteSettingsCategory category, WebsitePermissionsCallback callback) {
-            TaskQueue queue = createFetchersForCategory(category);
-            queue.add(new RelatedWebsiteSetsInfoFetcher());
-
-            queue.add(new PermissionsAvailableCallbackRunner(callback));
-            queue.next();
         }
 
         private void addFetcherForStorage(TaskQueue queue) {
@@ -420,7 +389,7 @@ public class WebsitePermissionsFetcher {
             WebsiteAddress permissionOrigin = assumeNonNull(WebsiteAddress.create(origin));
             WebsiteAddress permissionEmbedder = WebsiteAddress.create(embedder);
 
-            Pair<OriginAndEmbedder, Integer> key =
+            Pair<OriginAndEmbedder, @Nullable Integer> key =
                     new Pair<>(
                             OriginAndEmbedder.create(permissionOrigin, permissionEmbedder),
                             contentSetting);
@@ -706,62 +675,6 @@ public class WebsitePermissionsFetcher {
             }
         }
 
-        private class RelatedWebsiteSetsInfoFetcher extends Task {
-            private boolean canDealWithRelatedWebsiteSetsInfo() {
-                return mSiteSettingsDelegate != null
-                        && mSiteSettingsDelegate.isRelatedWebsiteSetsDataAccessEnabled();
-            }
-
-            @Override
-            public void run() {
-                if (canDealWithRelatedWebsiteSetsInfo()) {
-                    Map<String, List<Website>> rwsOwnerToMembers =
-                            buildOwnerToMembersMapFromFetchedSites();
-
-                    // For each {@link Website} sets its RelatedWebsiteSet info: the RWS Owner and
-                    // the number of members of that RWS.
-                    for (Website site : mSites.values()) {
-                        String rwsOwnerHostname =
-                                mSiteSettingsDelegate.getRelatedWebsiteSetOwner(
-                                        site.getAddress().getOrigin());
-                        if (rwsOwnerHostname == null
-                                || rwsOwnerToMembers.get(rwsOwnerHostname) == null) continue;
-                        site.setRwsCookieInfo(
-                                new RwsCookieInfo(
-                                        rwsOwnerHostname, rwsOwnerToMembers.get(rwsOwnerHostname)));
-                    }
-                }
-            }
-
-            /**
-             * Builds a {@link Map<String, List <Website>>} of RWS Owner - Set of RWS Members from
-             * the fetched websites.
-             */
-            private Map<String, List<Website>> buildOwnerToMembersMapFromFetchedSites() {
-                // set to avoid equals implementation for Website object
-                Set<String> originToWebsite = new HashSet<>();
-                Map<String, List<Website>> rwsOwnerToMember = new HashMap<>();
-                for (Website site : mSites.values()) {
-                    String rwsMemberHostname = site.getAddress().getDomainAndRegistry();
-                    String rwsOwnerHostname =
-                            mSiteSettingsDelegate.getRelatedWebsiteSetOwner(
-                                    site.getAddress().getOrigin());
-                    if (rwsOwnerHostname == null) continue;
-                    List<Website> members = rwsOwnerToMember.get(rwsOwnerHostname);
-                    if (!originToWebsite.contains(rwsMemberHostname)) {
-                        if (members == null) {
-                            members = new ArrayList<>();
-                        }
-                        members.add(site);
-                        originToWebsite.add(rwsMemberHostname);
-                        rwsOwnerToMember.put(rwsOwnerHostname, members);
-                    }
-                }
-
-                return rwsOwnerToMember;
-            }
-        }
-
         private class BrowsingDataModelFetcher extends Task {
             @Override
             public void runAsync(final TaskQueue queue) {
@@ -785,6 +698,7 @@ public class WebsitePermissionsFetcher {
                                 website.setDomainImportant(info.isDomainImportant());
                             }
                             queue.next();
+                            model.releaseModel();
                         });
             }
         }

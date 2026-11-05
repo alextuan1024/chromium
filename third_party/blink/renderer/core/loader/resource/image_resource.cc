@@ -34,6 +34,7 @@
 #include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/public/common/features.h"
@@ -59,12 +60,10 @@
 #include "third_party/blink/renderer/platform/loader/fetch/unique_identifier.h"
 #include "third_party/blink/renderer/platform/network/http_parsers.h"
 #include "third_party/blink/renderer/platform/network/network_utils.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/reporting_disposition.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 #include "v8/include/v8.h"
@@ -80,30 +79,34 @@ constexpr auto kFlushDelay = base::Seconds(1);
 
 wtf_size_t FindTransparentPlaceholderIndex(const KURL& image_url) {
   CHECK(IsMainThread());
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      Vector<String>, known_transparent_urls,
-      ({"data:image/gif;base64,R0lGODlhAQABAIAAAP///////"
-        "yH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==",
-        "data:image/gif;base64,R0lGODlhAQABAID/"
-        "AMDAwAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="}));
-  return known_transparent_urls.Find(image_url);
+  static const base::NoDestructor<Vector<String>> known_transparent_urls({
+      String::FromLiteral<"data:image/gif;base64,R0lGODlhAQABAIAAAP///////"
+                          "yH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==">(),
+      String::FromLiteral<"data:image/gif;base64,R0lGODlhAQABAID/"
+                          "AMDAwAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==">(),
+  });
+  return known_transparent_urls->Find(image_url);
 }
 
 scoped_refptr<SharedBuffer> GetDataForTransparentPlaceholderImageIndex(
     wtf_size_t index) {
   CHECK(index >= 0 && index < 2);
   CHECK(IsMainThread());
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      Vector<scoped_refptr<SharedBuffer>>, known_transparent_encoded_gifs,
-      ({SharedBuffer::Create(base::span_from_cstring(
-            "\x47\x49\x46\x38\x39\x61\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff"
-            "\xff\xff\xff\x21\xf9\x04\x01\x0a\x00\x01\x00\x2c\x00\x00\x00\x00"
-            "\x01\x00\x01\x00\x00\x02\x02\x4c\x01\x00\x3b")),
-        SharedBuffer::Create(base::span_from_cstring(
-            "\x47\x49\x46\x38\x39\x61\x01\x00\x01\x00\x80\xff\x00\xc0\xc0\xc0"
-            "\x00\x00\x00\x21\xf9\x04\x01\x00\x00\x00\x00\x2c\x00\x00\x00\x00"
-            "\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b"))}));
-  return known_transparent_encoded_gifs[index];
+  static base::NoDestructor<Vector<scoped_refptr<SharedBuffer>>>
+      known_transparent_encoded_gifs(
+          {SharedBuffer::Create(base::span_from_cstring(
+               "\x47\x49\x46\x38\x39\x61\x01\x00\x01\x00\x80\x00\x00\xff\xff"
+               "\xff"
+               "\xff\xff\xff\x21\xf9\x04\x01\x0a\x00\x01\x00\x2c\x00\x00\x00"
+               "\x00"
+               "\x01\x00\x01\x00\x00\x02\x02\x4c\x01\x00\x3b")),
+           SharedBuffer::Create(base::span_from_cstring(
+               "\x47\x49\x46\x38\x39\x61\x01\x00\x01\x00\x80\xff\x00\xc0\xc0"
+               "\xc0"
+               "\x00\x00\x00\x21\xf9\x04\x01\x00\x00\x00\x00\x2c\x00\x00\x00"
+               "\x00"
+               "\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b"))});
+  return (*known_transparent_encoded_gifs)[index];
 }
 
 void MarkKnownTransparentPlaceholderResourceRequestIfNeeded(
@@ -127,7 +130,9 @@ ImageResource* CreateResourceForTransparentPlaceholderImage(
       GetDataForTransparentPlaceholderImageIndex(index);
   CHECK(data->size());
 
-  scoped_refptr<Image> image = BitmapImage::Create();
+  scoped_refptr<Image> image =
+      BitmapImage::Create(/*observer=*/nullptr, /*is_multipart=*/false,
+                          /*is_cors_same_origin=*/true);
   image->SetData(data, true);
   auto* image_content = ImageResourceContent::CreateLoaded(image);
   auto* resource =
@@ -378,8 +383,9 @@ void ImageResource::OnMemoryDump(WebMemoryDumpLevelOfDetail level_of_detail,
   Resource::OnMemoryDump(level_of_detail, memory_dump);
   const String name = StrCat({GetMemoryDumpName(), "/image_content"});
   auto* dump = memory_dump->CreateMemoryAllocatorDump(name);
-  if (content_->HasImage() && content_->GetImage()->HasData())
-    dump->AddScalar("size", "bytes", content_->GetImage()->DataSize());
+  if (std::optional<size_t> data_size = content_->ImageDataSize()) {
+    dump->AddScalar("size", "bytes", *data_size);
+  }
 }
 
 void ImageResource::Trace(Visitor* visitor) const {
@@ -437,12 +443,22 @@ scoped_refptr<const SharedBuffer> ImageResource::ResourceBuffer() const {
   return GetContent()->ResourceBuffer();
 }
 
+bool ImageResource::HasResourceBuffer() const {
+  // Avoids ResourceBuffer(), which can unpark and copy the encoded image.
+  return Data() ||
+         (GetContent()->HasImage() && GetContent()->GetImage()->HasData());
+}
+
 void ImageResource::AppendData(
     std::variant<SegmentedBuffer, base::span<const char>> data) {
   // We don't have a BackgroundResponseProcessor for ImageResources. So this
   // method must be called with a `span<const char>` data.
   CHECK(std::holds_alternative<base::span<const char>>(data));
   base::span<const char> span = std::get<base::span<const char>>(data);
+  // For multipart content, this counts framing bytes as well. When the
+  // multipart parser feed us data blocks via MultipartDataReceived(), the
+  // accounted amount remain the same. The accounted amount is then updated by
+  // UpdateMultipartImage() when a full part has been received.
   external_memory_accounter_.Increase(v8::Isolate::GetCurrent(), span.size());
   if (multipart_parser_) {
     multipart_parser_->AppendData(span);
@@ -543,9 +559,23 @@ void ImageResource::IntegrityFailure() {
   DCHECK_EQ(result, ImageResourceContent::UpdateImageResult::kNoDecodeError);
 }
 
-void ImageResource::UpdateImageAndClearBuffer() {
+void ImageResource::UpdateMultipartImage() {
   UpdateImage(Data(), ImageResourceContent::kClearAndUpdateImage, true);
   ClearData();
+
+  // If decoding encountered an error, the Image and data buffer will have been
+  // dropped and the memory accounter has been cleared.
+  if (ErrorOccurred()) {
+    return;
+  }
+
+  // We've transferred ownership of the data buffer from ourselves to the
+  // Image. Let the accounted memory size match that of the Image's data buffer
+  // plus any buffered bytes from the multipart parser.
+  const size_t image_buffer_size = GetContent()->ImageDataSize().value_or(0);
+  external_memory_accounter_.Set(
+      v8::Isolate::GetCurrent(),
+      image_buffer_size + multipart_parser_->BufferedBytes());
 }
 
 void ImageResource::NotifyStartLoad() {
@@ -556,26 +586,21 @@ void ImageResource::NotifyStartLoad() {
 
 void ImageResource::Finish(base::TimeTicks load_finish_time,
                            base::SingleThreadTaskRunner* task_runner) {
-  const bool enforce_integrity =
-      RuntimeEnabledFeatures::CSSResourceIntegrityEnforcementEnabled();
-
   if (multipart_parser_ && !ErrorOccurred()) {
     multipart_parser_->Finish();
   }
 
-  if (enforce_integrity) {
-    // Resource::Finish() runs CheckResourceIntegrity() before notifying
-    // observers, so we can act on the result afterwards.
-    Resource::Finish(load_finish_time, task_runner);
-  }
+  // Resource::Finish() runs CheckResourceIntegrity() before notifying
+  // observers, so we can act on the result afterwards.
+  Resource::Finish(load_finish_time, task_runner);
 
-  if (enforce_integrity && !PassedIntegrityChecks()) {
+  if (!PassedIntegrityChecks()) {
     // TODO(crbug.com/435625756): Surface the integrity failure to the
     // devtools console.
     IntegrityFailure();
   } else if (multipart_parser_) {
     if (Data())
-      UpdateImageAndClearBuffer();
+      UpdateMultipartImage();
   } else {
     UpdateImage(Data(), ImageResourceContent::kUpdateImage, true);
     // As encoded image data can be obtained from Image::Data() via `content_`
@@ -584,10 +609,6 @@ void ImageResource::Finish(base::TimeTicks load_finish_time,
     // document:
     // https://docs.google.com/document/d/1v0yTAZ6wkqX2U_M6BNIGUJpM1s0TIw1VsqpxoL7aciY/edit?usp=sharing
     ClearData();
-  }
-
-  if (!enforce_integrity) {
-    Resource::Finish(load_finish_time, task_runner);
   }
 }
 
@@ -630,8 +651,7 @@ void ImageResource::UpdateResourceInfoFromObservers() {
   GetContent()->UpdateResourceInfoFromObservers();
 }
 
-std::pair<std::optional<ResourcePriority>, std::optional<ResourcePriority>>
-ImageResource::PriorityFromObservers() const {
+std::optional<ResourcePriority> ImageResource::PriorityFromObservers() const {
   return GetContent()->PriorityFromObservers();
 }
 
@@ -665,7 +685,7 @@ void ImageResource::OnePartInMultipartReceived(
     multipart_parsing_state_ = MultipartParsingState::kParsingFirstPart;
     return;
   }
-  UpdateImageAndClearBuffer();
+  UpdateMultipartImage();
 
   if (multipart_parsing_state_ == MultipartParsingState::kParsingFirstPart) {
     multipart_parsing_state_ = MultipartParsingState::kFinishedParsingFirstPart;

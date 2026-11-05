@@ -18,6 +18,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.TextView;
 
+import androidx.annotation.ChecksSdkIntAtLeast;
 import androidx.appcompat.widget.Toolbar.OnMenuItemClickListener;
 import androidx.recyclerview.widget.LinearLayoutManager;
 
@@ -32,7 +33,7 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.history.HistoryManagerToolbar.InfoHeaderPref;
+import org.chromium.chrome.browser.history.FilterSheetCoordinator.FilterItem;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -109,6 +110,7 @@ public class HistoryManager
 
     private boolean mIsSearching;
 
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public static boolean isAppSpecificHistoryEnabled() {
         return ChromeFeatureList.sAppSpecificHistory.isEnabled()
                 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE;
@@ -234,8 +236,8 @@ public class HistoryManager
                         showAppFilter,
                         shouldClusterByDomain,
                         openHistoryItemCallback,
-                        new ChromeAsyncTabLauncher(/* incognito= */ false),
-                        new ChromeAsyncTabLauncher(/* incognito= */ true));
+                        new ChromeAsyncTabLauncher(/* incognito= */ false, mActivity),
+                        new ChromeAsyncTabLauncher(/* incognito= */ true, mActivity));
         mSelectableListLayout.initializeRecyclerView(
                 mContentManager.getAdapter(),
                 mContentManager.getRecyclerView(),
@@ -252,11 +254,8 @@ public class HistoryManager
         }
 
         mIsLargeFormFactorDevice = DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity);
-        if (mContentManager.showAppFilter() || mIsLargeFormFactorDevice) {
-            // Now the search mode can have a header. Let the layout ignore it to
-            // return the right item count.
-            mSelectableListLayout.ignoreItemTypeForEmptyState(ItemViewType.STANDARD_HEADER);
-        }
+        // Search mode can have a header. Let the layout ignore it to return the right item count.
+        mSelectableListLayout.ignoreItemTypeForEmptyState(ItemViewType.STANDARD_HEADER);
 
         mShouldShowPrivacyDisclaimerSupplier.set(
                 shouldShowInfoHeader && mContentManager.isInfoHeaderAvailable());
@@ -332,6 +331,8 @@ public class HistoryManager
 
         onBackPressStateChanged(); // Initialize back press State.
         mContentManager.maybeQueryApps();
+        mContentManager.maybeQueryClients();
+        mContentManager.maybeQueryTimePeriodOptions();
 
         mContentManager.getAdapter().setIsLargeFormFactorDevice(mIsLargeFormFactorDevice);
     }
@@ -350,10 +351,11 @@ public class HistoryManager
         if (mLaunchedForApp) {
             assert mAppId != null;
             assumeNonNull(mContentManager);
+            FilterItem<String> appInfo = mContentManager.getAppInfoCache().get(mAppId);
             descText =
                     res.getString(
                             R.string.history_manager_app_specific_empty_state_description,
-                            mContentManager.getAppInfoCache().get(mAppId).label);
+                            appInfo != null ? appInfo.label : "");
         } else {
             descText =
                     res.getString(R.string.history_manager_empty_state_view_or_clear_page_visited);
@@ -428,7 +430,6 @@ public class HistoryManager
         assumeNonNull(mToolbar);
         assumeNonNull(mSelectableListLayout);
 
-        mContentManager.maybeResetAppFilterChip();
         mContentManager.getAdapter().onSearchStart();
         mToolbar.showSearchView(showKeyboard);
         String searchEmptyString = getSearchEmptyString();

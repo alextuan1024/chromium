@@ -4,26 +4,108 @@
 
 #include "chrome/browser/ui/webui/settings/on_device_ai_settings_handler.h"
 
-#include "base/run_loop.h"
+#include <utility>
+#include <vector>
+
+#include "base/byte_size.h"
+#include "base/memory/raw_ptr.h"
+#include "base/strings/strcat.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_browser_process.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/optimization_guide/core/model_execution/on_device_capability.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_web_ui.h"
+#include "media/base/media_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/text/bytes_formatting.h"
 
 namespace {
+using optimization_guide::OnDeviceBaseModel;
+using optimization_guide::OnDeviceModelCategory;
+using optimization_guide::OnDeviceModelControl;
 using optimization_guide::model_execution::prefs::localstate::
     kOnDeviceAiUserSettingsEnabled;
+
+class FakeOnDeviceModelControl : public OnDeviceModelControl {
+ public:
+  FakeOnDeviceModelControl() = default;
+  ~FakeOnDeviceModelControl() override = default;
+
+  void SetModels(std::vector<ModelInfo> models) { models_ = std::move(models); }
+
+  const std::vector<OnDeviceBaseModel>& uninstalled_models() const {
+    return uninstalled_models_;
+  }
+
+  // OnDeviceModelControl:
+  void UninstallModels() override { models_.clear(); }
+
+  void InstallCapability(OnDeviceBaseModel base_model) override {}
+
+  void UninstallCapability(OnDeviceBaseModel base_model) override {
+    uninstalled_models_.push_back(base_model);
+    for (auto& model : models_) {
+      if (model.base_model == base_model) {
+        model.status = ModelStatus::kDownloadable;
+        model.size_bytes = 0;
+      }
+    }
+  }
+
+  void GetModels(ModelsCallback callback) override {
+    std::move(callback).Run(models_);
+  }
+
+  ModelInstallState GetModelInstallState(
+      OnDeviceBaseModel base_model) const override {
+    for (const auto& model : models_) {
+      if (model.base_model == base_model &&
+          model.status == ModelStatus::kReady) {
+        return ModelInstallState::kInstalled;
+      }
+    }
+    for (OnDeviceBaseModel uninstalled : uninstalled_models_) {
+      if (uninstalled == base_model) {
+        return ModelInstallState::kUninstalled;
+      }
+    }
+    return ModelInstallState::kNeverInstalled;
+  }
+
+  void AddObserver(Observer* observer) override {}
+  void RemoveObserver(Observer* observer) override {}
+
+ private:
+  std::vector<ModelInfo> models_;
+  std::vector<OnDeviceBaseModel> uninstalled_models_;
+};
 
 class TestingOnDeviceAiSettingsHandler
     : public settings::OnDeviceAiSettingsHandler {
  public:
+  using OnDeviceAiSettingsHandler::HandleDeleteOnDeviceAiCapability;
+  using OnDeviceAiSettingsHandler::HandleGetOnDeviceAiCapabilities;
   using OnDeviceAiSettingsHandler::HandleGetOnDeviceAiEnabled;
   using OnDeviceAiSettingsHandler::HandleSetOnDeviceAiEnabled;
   using OnDeviceAiSettingsHandler::set_web_ui;
+
+  void set_model_control(OnDeviceModelControl* model_control) {
+    model_control_ = model_control;
+  }
+
+ protected:
+  OnDeviceModelControl* GetModelControl() override { return model_control_; }
+
+ private:
+  raw_ptr<OnDeviceModelControl> model_control_ = nullptr;
 };
 }  // namespace
 
@@ -96,7 +178,6 @@ TEST_F(OnDeviceAiSettingsHandlerTest,
   EXPECT_FALSE(local_state()->GetBoolean(kOnDeviceAiUserSettingsEnabled));
 }
 
-
 TEST_F(OnDeviceAiSettingsHandlerTest,
        HandleGetOnDeviceAiEnabled_PolicyDisabled) {
   using optimization_guide::model_execution::prefs::
@@ -161,6 +242,254 @@ TEST_F(OnDeviceAiSettingsHandlerTest, PrefChangesNotifyPage_PolicyDisabled) {
       *test_web_ui()->call_data()[0];
   EXPECT_EQ("on-device-ai-enabled-changed", call_data.arg1()->GetString());
   EXPECT_FALSE(call_data.arg2()->GetDict().FindBool("allowedByPolicy").value());
+}
+
+TEST_F(OnDeviceAiSettingsHandlerTest, GetCapabilities_NoModelControl) {
+  handler()->set_model_control(nullptr);
+
+  base::ListValue args;
+  args.Append("callback_id");
+  handler()->HandleGetOnDeviceAiCapabilities(args);
+
+  ASSERT_EQ(1u, test_web_ui()->call_data().size());
+  const content::TestWebUI::CallData& call_data =
+      *test_web_ui()->call_data()[0];
+  EXPECT_EQ("cr.webUIResponse", call_data.function_name());
+  EXPECT_EQ("callback_id", call_data.arg1()->GetString());
+  EXPECT_TRUE(call_data.arg2()->GetBool());
+  EXPECT_TRUE(call_data.arg3()->GetList().empty());
+}
+
+TEST_F(OnDeviceAiSettingsHandlerTest,
+       HandleGetOnDeviceAiCapabilities_FiltersHiddensAndSortsBySize) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitFromCommandLine(
+      base::StrCat({"AIApiFoundationalModel:model_version/v4,",
+                    media::kOnDeviceWebSpeechSmallExpertModel.name}),
+      "");
+
+  FakeOnDeviceModelControl fake_control;
+  handler()->set_model_control(&fake_control);
+
+  const base::ByteSize kAsrSize = base::GiB(3);
+  const base::ByteSize kNanoSize = base::GiB(1);
+  const base::ByteSize kGemmaSize = base::GiB(2);
+
+  fake_control.SetModels({
+      OnDeviceModelControl::ModelInfo(
+          OnDeviceBaseModel::kSpeechRecognitionSmallExpert,
+          OnDeviceModelControl::ModelStatus::kReady, kAsrSize.InBytes()),
+      // Unmapped models are excluded by GetOnDeviceModelUiMetadata().
+      OnDeviceModelControl::ModelInfo(OnDeviceBaseModel::kClassifier,
+                                      OnDeviceModelControl::ModelStatus::kReady,
+                                      base::MiB(200).InBytes()),
+      OnDeviceModelControl::ModelInfo(
+          OnDeviceBaseModel::kProofreaderSmallExpert,
+          OnDeviceModelControl::ModelStatus::kReady, base::MiB(300).InBytes()),
+      OnDeviceModelControl::ModelInfo(OnDeviceBaseModel::kV3NanoGpu,
+                                      OnDeviceModelControl::ModelStatus::kReady,
+                                      kNanoSize.InBytes()),
+      OnDeviceModelControl::ModelInfo(OnDeviceBaseModel::kGemma4,
+                                      OnDeviceModelControl::ModelStatus::kReady,
+                                      kGemmaSize.InBytes()),
+  });
+
+  base::ListValue args;
+  args.Append("callback_id");
+  handler()->HandleGetOnDeviceAiCapabilities(args);
+
+  ASSERT_EQ(1u, test_web_ui()->call_data().size());
+  const content::TestWebUI::CallData& call_data =
+      *test_web_ui()->call_data()[0];
+  EXPECT_EQ("cr.webUIResponse", call_data.function_name());
+  EXPECT_EQ("callback_id", call_data.arg1()->GetString());
+  EXPECT_TRUE(call_data.arg2()->GetBool());
+
+  const base::ListValue& capabilities = call_data.arg3()->GetList();
+  ASSERT_EQ(3u, capabilities.size());
+
+  // Sorted by category first (GeneralPurpose before LiveTranscription), then
+  // by size descending within each category: Gemma4 (2 GiB), V3NanoGpu (1 GiB),
+  // ASR (3 GiB).
+  const base::DictValue& row0 = capabilities[0].GetDict();
+  EXPECT_EQ(static_cast<int>(OnDeviceBaseModel::kGemma4), row0.FindInt("id"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelControl::ModelStatus::kReady),
+            row0.FindInt("status"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelCategory::kGeneralPurpose),
+            row0.FindInt("category"));
+  EXPECT_EQ(l10n_util::GetStringUTF8(
+                IDS_ON_DEVICE_MODEL_CATEGORY_GENERAL_PURPOSE_TITLE),
+            *row0.FindString("categoryTitle"));
+  EXPECT_EQ(l10n_util::GetStringUTF8(
+                IDS_ON_DEVICE_MODEL_CATEGORY_GENERAL_PURPOSE_DESCRIPTION),
+            *row0.FindString("description"));
+  EXPECT_EQ("Gemma 4", *row0.FindString("modelName"));
+  EXPECT_EQ(base::UTF16ToUTF8(ui::FormatBytes(kGemmaSize)),
+            *row0.FindString("size"));
+  const base::ListValue* row0_details = row0.FindList("details");
+  ASSERT_NE(nullptr, row0_details);
+  ASSERT_EQ(2u, row0_details->size());
+  EXPECT_EQ(l10n_util::GetStringUTF8(
+                IDS_ON_DEVICE_MODEL_CATEGORY_GENERAL_PURPOSE_DETAIL_1),
+            (*row0_details)[0].GetString());
+  EXPECT_EQ(l10n_util::GetStringUTF8(
+                IDS_ON_DEVICE_MODEL_CATEGORY_GENERAL_PURPOSE_DETAIL_2),
+            (*row0_details)[1].GetString());
+
+  const base::DictValue& row1 = capabilities[1].GetDict();
+  EXPECT_EQ(static_cast<int>(OnDeviceBaseModel::kV3NanoGpu),
+            row1.FindInt("id"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelControl::ModelStatus::kReady),
+            row1.FindInt("status"));
+  EXPECT_EQ("Gemini Nano", *row1.FindString("modelName"));
+  EXPECT_EQ(base::UTF16ToUTF8(ui::FormatBytes(kNanoSize)),
+            *row1.FindString("size"));
+
+  const base::DictValue& row2 = capabilities[2].GetDict();
+  EXPECT_EQ(static_cast<int>(OnDeviceBaseModel::kSpeechRecognitionSmallExpert),
+            row2.FindInt("id"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelControl::ModelStatus::kReady),
+            row2.FindInt("status"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelCategory::kLiveTranscription),
+            row2.FindInt("category"));
+  EXPECT_EQ(l10n_util::GetStringUTF8(
+                IDS_ON_DEVICE_MODEL_CATEGORY_LIVE_TRANSCRIPTION_TITLE),
+            *row2.FindString("categoryTitle"));
+  EXPECT_EQ(l10n_util::GetStringUTF8(
+                IDS_ON_DEVICE_MODEL_CATEGORY_LIVE_TRANSCRIPTION_DESCRIPTION),
+            *row2.FindString("description"));
+  EXPECT_EQ("Gemma 500M", *row2.FindString("modelName"));
+  EXPECT_EQ(base::UTF16ToUTF8(ui::FormatBytes(kAsrSize)),
+            *row2.FindString("size"));
+}
+
+TEST_F(OnDeviceAiSettingsHandlerTest,
+       HandleGetOnDeviceAiCapabilities_DownloadingAndUpdatingModels) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitFromCommandLine(
+      base::StrCat({"AIApiFoundationalModel:model_version/v4,",
+                    media::kOnDeviceWebSpeechSmallExpertModel.name}),
+      "");
+
+  FakeOnDeviceModelControl fake_control;
+  handler()->set_model_control(&fake_control);
+
+  const base::ByteSize kNanoSize = base::GiB(1);
+
+  fake_control.SetModels({
+      OnDeviceModelControl::ModelInfo(
+          OnDeviceBaseModel::kGemma4,
+          OnDeviceModelControl::ModelStatus::kDownloading,
+          /*size_bytes=*/0),
+      OnDeviceModelControl::ModelInfo(OnDeviceBaseModel::kV3NanoGpu,
+                                      OnDeviceModelControl::ModelStatus::kReady,
+                                      kNanoSize.InBytes()),
+      OnDeviceModelControl::ModelInfo(
+          OnDeviceBaseModel::kSpeechRecognitionSmallExpert,
+          OnDeviceModelControl::ModelStatus::kUpdating,
+          /*size_bytes=*/0),
+  });
+
+  base::ListValue args;
+  args.Append("callback_id");
+  handler()->HandleGetOnDeviceAiCapabilities(args);
+
+  ASSERT_EQ(1u, test_web_ui()->call_data().size());
+  const content::TestWebUI::CallData& call_data =
+      *test_web_ui()->call_data()[0];
+  EXPECT_EQ("cr.webUIResponse", call_data.function_name());
+  EXPECT_EQ("callback_id", call_data.arg1()->GetString());
+  EXPECT_TRUE(call_data.arg2()->GetBool());
+
+  const base::ListValue& capabilities = call_data.arg3()->GetList();
+  ASSERT_EQ(3u, capabilities.size());
+
+  // Within GeneralPurpose, V3NanoGpu (kReady, 1 GiB) sorts before Gemma4
+  // (kDownloading, 0 B).
+  const base::DictValue& row0 = capabilities[0].GetDict();
+  EXPECT_EQ(static_cast<int>(OnDeviceBaseModel::kV3NanoGpu),
+            row0.FindInt("id"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelControl::ModelStatus::kReady),
+            row0.FindInt("status"));
+  EXPECT_EQ(base::UTF16ToUTF8(ui::FormatBytes(kNanoSize)),
+            *row0.FindString("size"));
+
+  const base::DictValue& row1 = capabilities[1].GetDict();
+  EXPECT_EQ(static_cast<int>(OnDeviceBaseModel::kGemma4), row1.FindInt("id"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelControl::ModelStatus::kDownloading),
+            row1.FindInt("status"));
+  EXPECT_EQ(base::UTF16ToUTF8(ui::FormatBytes(base::ByteSize(0))),
+            *row1.FindString("size"));
+
+  const base::DictValue& row2 = capabilities[2].GetDict();
+  EXPECT_EQ(static_cast<int>(OnDeviceBaseModel::kSpeechRecognitionSmallExpert),
+            row2.FindInt("id"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelControl::ModelStatus::kUpdating),
+            row2.FindInt("status"));
+  EXPECT_EQ(base::UTF16ToUTF8(ui::FormatBytes(base::ByteSize(0))),
+            *row2.FindString("size"));
+}
+
+TEST_F(OnDeviceAiSettingsHandlerTest, HandleDeleteOnDeviceAiCapability) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitFromCommandLine("AIApiFoundationalModel:model_version/v4",
+                                   "");
+
+  FakeOnDeviceModelControl fake_control;
+  handler()->set_model_control(&fake_control);
+
+  const base::ByteSize kNanoSize = base::GiB(1);
+  const base::ByteSize kGemmaSize = base::GiB(2);
+
+  fake_control.SetModels({
+      OnDeviceModelControl::ModelInfo(OnDeviceBaseModel::kV3NanoGpu,
+                                      OnDeviceModelControl::ModelStatus::kReady,
+                                      kNanoSize.InBytes()),
+      OnDeviceModelControl::ModelInfo(OnDeviceBaseModel::kGemma4,
+                                      OnDeviceModelControl::ModelStatus::kReady,
+                                      kGemmaSize.InBytes()),
+  });
+
+  // Hidden/unmapped models (e.g. kClassifier) and flag-disabled models (e.g.
+  // kProofreaderSmallExpert) should not be uninstallable.
+  for (OnDeviceBaseModel disallowed_model :
+       {OnDeviceBaseModel::kClassifier,
+        OnDeviceBaseModel::kProofreaderSmallExpert}) {
+    base::ListValue invalid_args;
+    invalid_args.Append("ignored_callback_id");
+    invalid_args.Append(static_cast<int>(disallowed_model));
+    handler()->HandleDeleteOnDeviceAiCapability(invalid_args);
+    EXPECT_TRUE(fake_control.uninstalled_models().empty());
+    test_web_ui()->ClearTrackedCalls();
+  }
+
+  base::ListValue args;
+  args.Append("delete_callback_id");
+  args.Append(static_cast<int>(OnDeviceBaseModel::kGemma4));
+  handler()->HandleDeleteOnDeviceAiCapability(args);
+
+  ASSERT_EQ(1u, fake_control.uninstalled_models().size());
+  EXPECT_EQ(OnDeviceBaseModel::kGemma4, fake_control.uninstalled_models()[0]);
+
+  ASSERT_EQ(1u, test_web_ui()->call_data().size());
+  const content::TestWebUI::CallData& call_data =
+      *test_web_ui()->call_data()[0];
+  EXPECT_EQ("cr.webUIResponse", call_data.function_name());
+  EXPECT_EQ("delete_callback_id", call_data.arg1()->GetString());
+  EXPECT_TRUE(call_data.arg2()->GetBool());
+
+  const base::ListValue& capabilities = call_data.arg3()->GetList();
+  ASSERT_EQ(2u, capabilities.size());
+  EXPECT_EQ(static_cast<int>(OnDeviceBaseModel::kV3NanoGpu),
+            capabilities[0].GetDict().FindInt("id"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelControl::ModelStatus::kReady),
+            capabilities[0].GetDict().FindInt("status"));
+  EXPECT_EQ(static_cast<int>(OnDeviceBaseModel::kGemma4),
+            capabilities[1].GetDict().FindInt("id"));
+  EXPECT_EQ(static_cast<int>(OnDeviceModelControl::ModelStatus::kDownloadable),
+            capabilities[1].GetDict().FindInt("status"));
+  EXPECT_EQ(base::UTF16ToUTF8(ui::FormatBytes(base::ByteSize(0))),
+            *capabilities[1].GetDict().FindString("size"));
 }
 
 }  // namespace settings

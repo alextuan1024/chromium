@@ -13,6 +13,7 @@
 #import "ios/chrome/browser/settings/clear_browsing_data/public/quick_delete_constants.h"
 #import "ios/chrome/browser/settings/clear_browsing_data/quick_delete_browsing_data/ui/quick_delete_browsing_data_view_controller_delegate.h"
 #import "ios/chrome/browser/settings/clear_browsing_data/ui/quick_delete_mutator.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_model.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_icon_item.h"
@@ -34,6 +35,9 @@ const CGFloat kDefaultSymbolSize = 24;
 // TableView's footer section height.
 constexpr CGFloat kSectionFooterHeight = 0;
 
+// Content view alpha for disabled browsing data cells.
+constexpr CGFloat kDisabledCellAlpha = 0.5;
+
 // The URL for signing out of Chrome from Delete Browsing Data (DBD).
 const char kDBDSignOutOfChromeURL[] = "settings://DBDSignOutOfChrome";
 
@@ -51,6 +55,7 @@ typedef NS_ENUM(NSInteger, ItemIdentifier) {
   ItemIdentifierSiteData,
   ItemIdentifierCache,
   ItemIdentifierAutofill,
+  ItemIdentifierSiteSettings,
   ItemIdentifierManageOtherData,
 };
 
@@ -62,6 +67,9 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
   [items addObject:@(ItemIdentifierSiteData)];
   [items addObject:@(ItemIdentifierCache)];
   [items addObject:@(ItemIdentifierAutofill)];
+  if (IsDomainLevelSitePermissionsEnabled()) {
+    [items addObject:@(ItemIdentifierSiteSettings)];
+  }
   return items;
 }
 
@@ -79,11 +87,14 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
   NSString* _tabsSummary;
   NSString* _cacheSummary;
   NSString* _autofillSummary;
+  NSString* _siteSettingsSummary;
   BOOL _historySelected;
+  BOOL _historyDeletionEnabled;
   BOOL _tabsSelected;
   BOOL _siteDataSelected;
   BOOL _cacheSelected;
   BOOL _autofillSelected;
+  BOOL _siteSettingsSelected;
   BOOL _shouldShowFooter;
 }
 @end
@@ -94,7 +105,11 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
 
 - (instancetype)init {
   UITableViewStyle style = ChromeTableViewStyle();
-  return [super initWithStyle:style];
+  self = [super initWithStyle:style];
+  if (self) {
+    _historyDeletionEnabled = YES;
+  }
+  return self;
 }
 
 #pragma mark - UIViewController
@@ -161,6 +176,7 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
     case ItemIdentifierSiteData:
     case ItemIdentifierCache:
     case ItemIdentifierAutofill:
+    case ItemIdentifierSiteSettings:
       // Update selection value for the corresponding cell with
       // `itemIdentifier`.
       [self toggleSelectionForItemIdentifier:itemIdentifier];
@@ -279,9 +295,26 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
   [self updateSnapshotForItemIdentifier:ItemIdentifierAutofill];
 }
 
+- (void)setSiteSettingsSummary:(NSString*)siteSettingsSummary {
+  _siteSettingsSummary = siteSettingsSummary;
+  [self updateSnapshotForItemIdentifier:ItemIdentifierSiteSettings];
+}
+
 - (void)setHistorySelection:(BOOL)selected {
-  _historySelected = selected;
+  _historySelected = selected && _historyDeletionEnabled;
   [self updateSnapshotForItemIdentifier:ItemIdentifierHistory];
+}
+
+- (void)setHistoryDeletionEnabled:(BOOL)enabled {
+  if (_historyDeletionEnabled == enabled) {
+    return;
+  }
+  _historyDeletionEnabled = enabled;
+  if (!_historyDeletionEnabled) {
+    _historySelected = NO;
+  }
+  [self updateSnapshotForItemIdentifier:ItemIdentifierHistory];
+  [self updateDoneButtonEnabledStatus];
 }
 
 - (void)setTabsSelection:(BOOL)selected {
@@ -304,6 +337,11 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
   [self updateSnapshotForItemIdentifier:ItemIdentifierAutofill];
 }
 
+- (void)setSiteSettingsSelection:(BOOL)selected {
+  _siteSettingsSelected = selected;
+  [self updateSnapshotForItemIdentifier:ItemIdentifierSiteSettings];
+}
+
 - (void)deletionInProgress {
   NOTREACHED();
 }
@@ -319,7 +357,7 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
 - (void)updateDoneButtonEnabledStatus {
   self.navigationItem.rightBarButtonItem.enabled =
       _historySelected || _tabsSelected || _siteDataSelected ||
-      _cacheSelected || _autofillSelected;
+      _cacheSelected || _autofillSelected || _siteSettingsSelected;
 }
 
 // Returns the cancel button on the navigation bar.
@@ -361,6 +399,9 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
   [_mutator updateSiteDataSelection:_siteDataSelected];
   [_mutator updateCacheSelection:_cacheSelected];
   [_mutator updateAutofillSelection:_autofillSelected];
+  if (IsDomainLevelSitePermissionsEnabled()) {
+    [_mutator updateSiteSettingsSelection:_siteSettingsSelected];
+  }
   [_delegate dismissBrowsingDataPage];
 }
 
@@ -369,6 +410,7 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
                                 summary:(NSString*)summary
                                    icon:(UIImage*)icon
                                selected:(BOOL)selected
+                                enabled:(BOOL)enabled
                 accessibilityIdentifier:(NSString*)accessibilityIdentifier {
   TableViewCellContentConfiguration* configuration =
       [[TableViewCellContentConfiguration alloc] init];
@@ -387,10 +429,17 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
 
   cell.contentConfiguration = configuration;
   cell.accessibilityIdentifier = accessibilityIdentifier;
+  cell.userInteractionEnabled = enabled;
+  cell.contentView.alpha = enabled ? 1.0 : kDisabledCellAlpha;
 
   UIAccessibilityTraits traits = cell.accessibilityTraits;
   traits |= UIAccessibilityTraitButton;
-  if (selected) {
+  if (enabled) {
+    traits &= ~UIAccessibilityTraitNotEnabled;
+  } else {
+    traits |= UIAccessibilityTraitNotEnabled;
+  }
+  if (selected && enabled) {
     cell.accessoryType = UITableViewCellAccessoryCheckmark;
     traits |= UIAccessibilityTraitSelected;
   } else {
@@ -415,9 +464,14 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
 
   cell.contentConfiguration = configuration;
   cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  cell.userInteractionEnabled = YES;
+  cell.contentView.alpha = 1.0;
 
   cell.accessibilityIdentifier = kQuickDeleteManageOtherDataCellIdentifier;
-  cell.accessibilityTraits |= UIAccessibilityTraitButton;
+  UIAccessibilityTraits traits = cell.accessibilityTraits;
+  traits |= UIAccessibilityTraitButton;
+  traits &= ~(UIAccessibilityTraitNotEnabled | UIAccessibilityTraitSelected);
+  cell.accessibilityTraits = traits;
 
   return cell;
 }
@@ -434,6 +488,7 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
                           summary:_historySummary
                              icon:[self iconForItemIdentifier:itemIdentifier]
                          selected:_historySelected
+                          enabled:_historyDeletionEnabled
           accessibilityIdentifier:kQuickDeleteBrowsingDataHistoryIdentifier];
     }
     case ItemIdentifierTabs: {
@@ -442,6 +497,7 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
                           summary:_tabsSummary
                              icon:[self iconForItemIdentifier:itemIdentifier]
                          selected:_tabsSelected
+                          enabled:YES
           accessibilityIdentifier:kQuickDeleteBrowsingDataTabsIdentifier];
     }
     case ItemIdentifierSiteData: {
@@ -453,6 +509,7 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
                                       IDS_DEL_COOKIES_COUNTER)
                              icon:[self iconForItemIdentifier:itemIdentifier]
                          selected:_siteDataSelected
+                          enabled:YES
           accessibilityIdentifier:kQuickDeleteBrowsingDataSiteDataIdentifier];
     }
     case ItemIdentifierCache: {
@@ -461,6 +518,7 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
                           summary:_cacheSummary
                              icon:[self iconForItemIdentifier:itemIdentifier]
                          selected:_cacheSelected
+                          enabled:YES
           accessibilityIdentifier:kQuickDeleteBrowsingDataCacheIdentifier];
     }
     case ItemIdentifierAutofill: {
@@ -469,7 +527,19 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
                           summary:_autofillSummary
                              icon:[self iconForItemIdentifier:itemIdentifier]
                          selected:_autofillSelected
+                          enabled:YES
           accessibilityIdentifier:kQuickDeleteBrowsingDataAutofillIdentifier];
+    }
+    case ItemIdentifierSiteSettings: {
+      return [self
+              createCellWithTitle:l10n_util::GetNSString(
+                                      IDS_IOS_SITE_SETTINGS_TITLE)
+                          summary:_siteSettingsSummary
+                             icon:[self iconForItemIdentifier:itemIdentifier]
+                         selected:_siteSettingsSelected
+                          enabled:YES
+          accessibilityIdentifier:
+              kQuickDeleteBrowsingDataSiteSettingsIdentifier];
     }
     case ItemIdentifierManageOtherData: {
       return [self createManageOtherDataCell];
@@ -481,6 +551,11 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
 - (void)updateSnapshotForItemIdentifier:(ItemIdentifier)itemIdentifier {
   NSDiffableDataSourceSnapshot<NSNumber*, NSNumber*>* snapshot =
       [_dataSource snapshot];
+  // Some items (e.g. site settings) are only added to the snapshot when their
+  // feature is enabled, and reloading a missing item raises an exception.
+  if ([snapshot indexOfItemIdentifier:@(itemIdentifier)] == NSNotFound) {
+    return;
+  }
   [snapshot reloadItemsWithIdentifiers:@[ @(itemIdentifier) ]];
   [_dataSource applySnapshot:snapshot animatingDifferences:YES];
 
@@ -490,6 +565,7 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
     case ItemIdentifierSiteData:
     case ItemIdentifierCache:
     case ItemIdentifierAutofill:
+    case ItemIdentifierSiteSettings:
       [self updateDoneButtonEnabledStatus];
       break;
     case ItemIdentifierManageOtherData:
@@ -504,6 +580,9 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
 - (void)toggleSelectionForItemIdentifier:(ItemIdentifier)itemIdentifier {
   switch (itemIdentifier) {
     case ItemIdentifierHistory: {
+      if (!_historyDeletionEnabled) {
+        return;
+      }
       _historySelected = !_historySelected;
       break;
     }
@@ -521,6 +600,10 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
     }
     case ItemIdentifierAutofill: {
       _autofillSelected = !_autofillSelected;
+      break;
+    }
+    case ItemIdentifierSiteSettings: {
+      _siteSettingsSelected = !_siteSettingsSelected;
       break;
     }
     case ItemIdentifierManageOtherData: {
@@ -548,6 +631,10 @@ NSArray<NSNumber*>* BrowsingDataItemIdentifiers() {
     }
     case ItemIdentifierAutofill: {
       return SymbolTemplateWithPointSize(SymbolAutofillData,
+                                         kDefaultSymbolSize);
+    }
+    case ItemIdentifierSiteSettings: {
+      return SymbolTemplateWithPointSize(SymbolSliderHorizontal,
                                          kDefaultSymbolSize);
     }
     case ItemIdentifierManageOtherData: {

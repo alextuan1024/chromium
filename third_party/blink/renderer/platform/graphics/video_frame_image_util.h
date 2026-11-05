@@ -7,8 +7,14 @@
 
 #include <memory>
 
+#include "base/functional/function_ref.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
+#include "cc/paint/paint_image.h"
+#include "components/viz/common/gpu/context_lost_observer.h"
+#include "components/viz/common/gpu/raster_context_provider.h"
 #include "components/viz/common/resources/shared_image_format.h"
+#include "gpu/command_buffer/client/shared_image_pool.h"
 #include "media/base/video_transformation.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_snapshot_info.h"
 #include "third_party/blink/renderer/platform/graphics/image_orientation.h"
@@ -25,18 +31,75 @@ class PaintCanvasVideoRenderer;
 class VideoFrame;
 }  // namespace media
 
-namespace viz {
-class RasterContextProvider;
-}
-
 namespace cc {
 class PaintCanvas;
 class PaintFlags;
 }  // namespace cc
 
 namespace blink {
-class CanvasNon2DResourceProvider;
 class StaticBitmapImage;
+class WebGraphicsContext3DProviderWrapper;
+
+// Pool of accelerated SharedImages used to produce AcceleratedStaticBitmapImage
+// snapshots from media::VideoFrames.
+class PLATFORM_EXPORT VideoFrameAcceleratedSnapshotPool
+    : public viz::ContextLostObserver {
+ public:
+  static std::unique_ptr<VideoFrameAcceleratedSnapshotPool> Create(
+      const CanvasSnapshotInfo& info);
+
+  VideoFrameAcceleratedSnapshotPool(const VideoFrameAcceleratedSnapshotPool&) =
+      delete;
+  VideoFrameAcceleratedSnapshotPool& operator=(
+      const VideoFrameAcceleratedSnapshotPool&) = delete;
+  ~VideoFrameAcceleratedSnapshotPool() override;
+
+  bool IsValid() const;
+  gfx::Size Size() const { return info_.size; }
+  CanvasSnapshotInfo GetInfo() const { return info_; }
+
+  scoped_refptr<StaticBitmapImage> CreateSnapshot(
+      base::FunctionRef<void(cc::PaintCanvas&)> draw_callback);
+
+ private:
+  static constexpr int kMaxRecycledImages = 3;
+
+  VideoFrameAcceleratedSnapshotPool(
+      const CanvasSnapshotInfo& info,
+      base::WeakPtr<WebGraphicsContext3DProviderWrapper>
+          context_provider_wrapper);
+
+  static void OnImageReleased(
+      base::WeakPtr<VideoFrameAcceleratedSnapshotPool> pool,
+      scoped_refptr<gpu::ClientImage> image,
+      const gpu::SyncToken& sync_token,
+      bool is_lost);
+
+  // viz::ContextLostObserver:
+  void OnContextLost() override;
+
+  void EnsureImageReadyForDraw();
+  gpu::raster::RasterInterface* RasterInterface() const;
+
+  const CanvasSnapshotInfo info_;
+  base::WeakPtr<WebGraphicsContext3DProviderWrapper> context_provider_wrapper_;
+  scoped_refptr<viz::RasterContextProvider> raster_context_provider_;
+  std::unique_ptr<gpu::SharedImagePool<gpu::ClientImage>> image_pool_;
+  // Holds the most recently drawn image so that if its snapshot is released
+  // before the next draw (`current_image_->HasOneRef()`), it is reused in place
+  // without round-tripping through `image_pool_` or re-clearing (`is_cleared_`
+  // stays true). If `current_image_` still has an external reader on the next
+  // draw, `EnsureImageReadyForDraw()` replaces `current_image_` from
+  // `image_pool_` and the old image is returned to `image_pool_` by
+  // `OnImageReleased()` once its last reader drops its ref.
+  scoped_refptr<gpu::ClientImage> current_image_;
+  cc::PaintImage::ContentId cached_content_id_ =
+      cc::PaintImage::kInvalidContentId;
+  bool is_cleared_ = false;
+
+  base::WeakPtrFactory<VideoFrameAcceleratedSnapshotPool> weak_ptr_factory_{
+      this};
+};
 
 // Converts a media orientation into a blink one or vice versa.
 PLATFORM_EXPORT ImageOrientationEnum
@@ -57,13 +120,12 @@ enum class VideoColorSpaceInterpretation {
   kReinterpretAsSRGB,
 };
 
-// Returns true if CreateImageFromVideoFrame() expects to create an
-// AcceleratedStaticBitmapImage. Note: This may be overridden if a software
-// `snapshot_provider` is given to CreateImageFromVideoFrame().
+// Returns true if CreateAcceleratedImageFromVideoFrame() can be used to create
+// an AcceleratedStaticBitmapImage from a VideoFrame.
 PLATFORM_EXPORT bool WillCreateAcceleratedImagesFromVideoFrame();
 
 // Returns an accelerated StaticBitmapImage for the given frame.
-// `snapshot_provider` should have a size equal to frame->natural_size() and
+// `snapshot_pool` should have a size equal to frame->natural_size() and
 // color space equal to frame->CompatRGBColorSpace().
 //
 // `video_renderer` may optionally be provided in cases where the same frame may
@@ -80,7 +142,7 @@ PLATFORM_EXPORT bool WillCreateAcceleratedImagesFromVideoFrame();
 PLATFORM_EXPORT scoped_refptr<StaticBitmapImage>
 CreateAcceleratedImageFromVideoFrame(
     scoped_refptr<media::VideoFrame> frame,
-    CanvasNon2DResourceProvider* snapshot_provider,
+    VideoFrameAcceleratedSnapshotPool* snapshot_pool,
     media::PaintCanvasVideoRenderer* video_renderer = nullptr,
     VideoOrientationBehavior orientation_behavior =
         VideoOrientationBehavior::kTagOrientation,
@@ -129,7 +191,7 @@ PLATFORM_EXPORT scoped_refptr<StaticBitmapImage> DrawAndSnapshotToImage(
 PLATFORM_EXPORT scoped_refptr<viz::RasterContextProvider>
 GetRasterContextProvider();
 
-// Helper function for creating a CanvasSnapshotProvider from a VideoFrame. The
+// Helper function for creating a CanvasSnapshotInfo from a VideoFrame. The
 // returned info structure will be filled as follows:
 //   alpha_type: kOpaque_SkAlphaType for opaque frames, kPremul_SkAlphaType
 //   otherwise.

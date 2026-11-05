@@ -7,8 +7,10 @@
 
 #include <optional>
 
+#include "base/auto_reset.h"
 #include "base/callback_list.h"
 #include "base/containers/flat_map.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/devtools/protocol/browser.h"
 
@@ -44,6 +46,13 @@ class BrowserHandlerAndroid : public protocol::Browser::Backend {
   // if no registered AndroidBrowserWindow owns that session id.
   static ui::BaseWindow* FindBrowserWindowById(int window_id);
 
+  // Replaces the registered-window lookup used by FindBrowserWindowById() for
+  // the lifetime of the returned AutoReset. Lets tests provide fake live
+  // windows without a Java-backed BrowserWindowInterface.
+  using BrowserWindowLookup = base::RepeatingCallback<ui::BaseWindow*(int)>;
+  [[nodiscard]] static base::AutoReset<BrowserWindowLookup>
+  SetBrowserWindowLookupForTesting(BrowserWindowLookup lookup);
+
   // Builds a Browser::Bounds payload from the given window.
   static std::unique_ptr<protocol::Browser::Bounds> BuildBrowserWindowBounds(
       ui::BaseWindow* window);
@@ -73,8 +82,6 @@ class BrowserHandlerAndroid : public protocol::Browser::Backend {
       std::optional<protocol::Binary> image) override;
   protocol::Response ExecuteBrowserCommand(
       const protocol::Browser::BrowserCommandId& command_id) override;
-  protocol::Response AddPrivacySandboxEnrollmentOverride(
-      const std::string& in_url) override;
 
  private:
   struct WindowLookupResult {

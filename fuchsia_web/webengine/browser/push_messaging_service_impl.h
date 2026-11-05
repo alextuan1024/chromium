@@ -77,7 +77,6 @@ class PushMessagingServiceImpl final : public content::PushMessagingService,
   void Unsubscribe(blink::mojom::PushUnregistrationReason reason,
                    const GURL& origin,
                    int64_t service_worker_registration_id,
-                   const std::string& sender_id,
                    UnregisterCallback callback) override;
   bool SupportNonVisibleMessages() override;
   void DidDeleteServiceWorkerRegistration(
@@ -94,8 +93,6 @@ class PushMessagingServiceImpl final : public content::PushMessagingService,
   void OnSendError(
       const std::string& app_id,
       const gcm::GCMClient::SendErrorDetails& send_error_details) override;
-  void OnSendAcknowledged(const std::string& app_id,
-                          const std::string& message_id) override;
   bool CanHandle(const std::string& app_id) const override;
 
  private:

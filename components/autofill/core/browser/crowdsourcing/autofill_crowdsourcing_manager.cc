@@ -23,6 +23,8 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/containers/flat_set.h"
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -236,6 +238,7 @@ net::NetworkTrafficAnnotationTag GetNetworkTrafficAnnotation(
             "Hashed descriptions of the form and its fields. User data is not "
             "sent."
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "autofill.googleapis.com"
           internal {
             contacts {
               owners: "//components/autofill/OWNERS"
@@ -289,6 +292,7 @@ net::NetworkTrafficAnnotationTag GetNetworkTrafficAnnotation(
           "data given to each field, if recognized from the user's "
           "profile(s). User data is not sent."
         destination: GOOGLE_OWNED_SERVICE
+        api_service_name: "autofill.googleapis.com"
         internal {
           contacts {
             owners: "//components/autofill/OWNERS"
@@ -344,8 +348,11 @@ LogBuffer& operator<<(LogBuffer& out, const AutofillPageQueryRequest& query) {
   out << Tr{} << "client_version:" << query.client_version();
   for (const auto& form : query.forms()) {
     LogBuffer form_buffer(LogBuffer::IsActive(true));
+    bool is_first = true;
     for (const auto& field : form.fields()) {
-      form_buffer << "Signature: " << field.signature();
+      form_buffer << (is_first ? "" : ", ")
+                  << "Signature: " << field.signature();
+      is_first = false;
     }
     out << Tr{} << ("Form " + base::NumberToString(form.signature()))
         << std::move(form_buffer);
@@ -374,6 +381,9 @@ LogBuffer& operator<<(LogBuffer& out, const AutofillUploadContents& upload) {
     out << Tr{} << "passwords_revealed:" << upload.passwords_revealed();
   if (upload.has_has_form_tag())
     out << Tr{} << "has_form_tag:" << upload.has_form_tag();
+  if (upload.has_is_subform()) {
+    out << Tr{} << "is_subform:" << upload.is_subform();
+  }
 
   out << Tr{} << "form_signature:" << upload.form_signature();
   if (upload.has_second_last_address_form_submitted()) {
@@ -400,12 +410,8 @@ LogBuffer& operator<<(LogBuffer& out, const AutofillUploadContents& upload) {
     out << Tr{} << Attrib{"style", "font-weight: bold"}
         << "field_signature:" << field.signature();
 
-    std::vector<std::string> types_as_strings;
-    types_as_strings.reserve(field.autofill_type_size());
-    for (uint32_t type : field.autofill_type()) {
-      types_as_strings.emplace_back(FieldTypeToString(type));
-    }
-    out << Tr{} << "autofill_type:" << types_as_strings;
+    out << Tr{} << "autofill_type:"
+        << base::ToVector(field.autofill_type(), &FieldTypeToString);
 
     if (field.generation_type()) {
       out << Tr{}
@@ -568,10 +574,8 @@ std::optional<std::string> GetAPIQueryPayload(
   if (!query.SerializeToString(&serialized_query))
     return std::nullopt;
 
-  std::string payload;
-  base::Base64UrlEncode(serialized_query,
-                        base::Base64UrlEncodePolicy::INCLUDE_PADDING, &payload);
-  return std::move(payload);
+  return base::Base64UrlEncode(serialized_query,
+                               base::Base64UrlEncodePolicy::INCLUDE_PADDING);
 }
 
 std::string GetAPIKeyForUrl(version_info::Channel channel) {
@@ -606,10 +610,9 @@ void InitActiveExperiments() {
           {variations::GOOGLE_WEB_PROPERTIES_TRIGGER_ANY_CONTEXT,
            variations::GOOGLE_WEB_PROPERTIES_TRIGGER_FIRST_PARTY});
   std::erase_if(active_experiments, std::not_fn(&IsAutofillExperimentId));
-  std::sort(active_experiments.begin(), active_experiments.end());
-  active_experiments.erase(
-      std::unique(active_experiments.begin(), active_experiments.end()),
-      active_experiments.end());
+  std::ranges::sort(active_experiments);
+  auto duplicates = std::ranges::unique(active_experiments);
+  active_experiments.erase(duplicates.begin(), duplicates.end());
 
   if (features::debug::kAutofillServerCommunicationExperimentId.Get()) {
     active_experiments.push_back(
@@ -617,6 +620,27 @@ void InitActiveExperiments() {
   }
 
   GetActiveExperiments() = std::move(active_experiments);
+}
+
+// Returns the counts of unique form and structural signatures in `query`.
+std::pair<size_t, size_t> ComputeQuerySignatureCounts(
+    const AutofillPageQueryRequest& query) {
+  std::vector<uint64_t> form_signatures;
+  form_signatures.reserve(query.forms_size());
+  std::vector<uint64_t> structural_signatures;
+  structural_signatures.reserve(query.forms_size());
+  for (const AutofillPageQueryRequest::Form& form : query.forms()) {
+    if (form.has_signature()) {
+      form_signatures.push_back(form.signature());
+    }
+    if (form.has_structural_signature()) {
+      structural_signatures.push_back(form.structural_signature());
+    }
+  }
+  return {
+      base::flat_set<uint64_t>(std::move(form_signatures)).size(),
+      base::flat_set<uint64_t>(std::move(structural_signatures)).size(),
+  };
 }
 
 }  // namespace
@@ -676,6 +700,8 @@ struct AutofillCrowdsourcingManager::FormRequestData {
   std::optional<net::IsolationInfo> isolation_info;
   std::string payload;
   int num_attempts = 0;
+  size_t unique_form_signatures_count = 0;
+  size_t unique_structural_signatures_count = 0;
 };
 
 ScopedActiveAutofillExperiments::ScopedActiveAutofillExperiments() {
@@ -764,19 +790,23 @@ bool AutofillCrowdsourcingManager::StartQueryRequest(
     return false;
   }
 
-  std::string query_data;
-  if (CheckCacheForQueryRequest(queried_form_signatures, &query_data)) {
+  if (std::optional<std::string> query_data =
+          CheckCacheForQueryRequest(*payload)) {
     LOG_AF(client_->GetCurrentLogManager())
         << LoggingScope::kAutofillServer << LogMessage::kCachedAutofillQuery
         << Br{} << query;
     if (scoped_callback_runner) {
       std::move(scoped_callback_runner)
           .Release()
-          .Run(QueryResponse(std::move(query_data),
+          .Run(QueryResponse(std::move(*query_data),
                              std::move(queried_form_signatures)));
     }
     return true;
   }
+
+  const auto [unique_form_signatures_count,
+              unique_structural_signatures_count] =
+      ComputeQuerySignatureCounts(query);
 
   LOG_AF(client_->GetCurrentLogManager())
       << LoggingScope::kAutofillServer << LogMessage::kSendAutofillQuery << Br{}
@@ -787,6 +817,8 @@ bool AutofillCrowdsourcingManager::StartQueryRequest(
       .request_type = CrowdsourcingRequestType::kRequestQuery,
       .isolation_info = std::move(isolation_info),
       .payload = std::move(payload).value(),
+      .unique_form_signatures_count = unique_form_signatures_count,
+      .unique_structural_signatures_count = unique_structural_signatures_count,
   });
 }
 
@@ -895,6 +927,8 @@ bool AutofillCrowdsourcingManager::StartUploadRequest(
 void AutofillCrowdsourcingManager::ClearUploadHistory(PrefService* pref_service) {
   if (pref_service) {
     pref_service->ClearPref(prefs::kAutofillVoteUploadEvents);
+    pref_service->ClearPref(
+        prefs::kAutofillVoteSecondaryFormSignatureUploadEvents);
     pref_service->ClearPref(prefs::kAutofillMetadataUploadEvents);
     pref_service->SetTime(prefs::kAutofillUploadEventsLastResetTimestamp,
                           AutofillClock::Now());
@@ -1025,33 +1059,31 @@ bool AutofillCrowdsourcingManager::StartRequest(FormRequestData request_data) {
 }
 
 void AutofillCrowdsourcingManager::CacheQueryRequest(
-    const std::vector<FormSignature>& forms_in_query,
-    const std::string& query_data) {
+    std::string payload,
+    std::string_view query_data) {
   for (auto it = cached_forms_.begin(); it != cached_forms_.end(); ++it) {
-    if (it->first == forms_in_query) {
+    if (it->payload == payload) {
       // We hit the cache, move to the first position and return.
-      auto data = *it;
-      cached_forms_.erase(it);
-      cached_forms_.push_front(data);
+      cached_forms_.splice(cached_forms_.begin(), cached_forms_, it);
       return;
     }
   }
-  cached_forms_.emplace_front(forms_in_query, query_data);
+  cached_forms_.push_front(
+      CachedQuery{.payload = std::move(payload),
+                  .response = std::string(query_data)});
   while (cached_forms_.size() > max_form_cache_size_)
     cached_forms_.pop_back();
 }
 
-bool AutofillCrowdsourcingManager::CheckCacheForQueryRequest(
-    const std::vector<FormSignature>& forms_in_query,
-    std::string* query_data) const {
-  for (const auto& [signatures, cached_data] : cached_forms_) {
-    if (signatures == forms_in_query) {
-      // We hit the cache, fill the data and return.
-      *query_data = cached_data;
-      return true;
+std::optional<std::string>
+AutofillCrowdsourcingManager::CheckCacheForQueryRequest(
+    std::string_view payload) const {
+  for (const CachedQuery& entry : cached_forms_) {
+    if (entry.payload == payload) {
+      return entry.response;
     }
   }
-  return false;
+  return std::nullopt;
 }
 
 // static
@@ -1100,6 +1132,13 @@ void AutofillCrowdsourcingManager::OnSimpleLoaderComplete(
   if (!simple_loader->LoadedFromCache()) {
     AutofillCrowdsourcingManager::RecordRequestsInLastMinute(
         request_data.request_type);
+    if (request_data.request_type == CrowdsourcingRequestType::kRequestQuery) {
+      base::UmaHistogramCounts100(kUmaUniqueFormSignaturesCount,
+                                  request_data.unique_form_signatures_count);
+      base::UmaHistogramCounts100(
+          kUmaUniqueStructuralSignaturesCount,
+          request_data.unique_structural_signatures_count);
+    }
   }
 
   if (!success) {
@@ -1150,7 +1189,7 @@ void AutofillCrowdsourcingManager::OnSimpleLoaderComplete(
     return;
   }
 
-  CacheQueryRequest(request_data.form_signatures, *response_body);
+  CacheQueryRequest(std::move(request_data.payload), *response_body);
   base::UmaHistogramBoolean(kUmaWasInCache, simple_loader->LoadedFromCache());
   if (request_data.callback) {
     std::move(request_data.callback)

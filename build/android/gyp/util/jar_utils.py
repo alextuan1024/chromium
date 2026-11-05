@@ -10,8 +10,7 @@ import tempfile
 import zipfile
 from typing import List, Optional, Union
 
-_SRC_PATH = pathlib.Path(__file__).resolve().parents[4]
-_JDEPS_PATH = _SRC_PATH / 'third_party/jdk/current/bin/jdeps'
+from util import build_utils
 
 _IGNORED_JAR_PATHS = [
     # This matches org_ow2_asm_asm_commons and org_ow2_asm_asm_analysis, both of
@@ -40,7 +39,7 @@ def _create_filtered_jar_tempfile(jar_path: pathlib):
 def run_jdeps(
     filepath: pathlib.Path,
     *,
-    jdeps_path: pathlib.Path = _JDEPS_PATH,
+    jdeps_path: Optional[pathlib.Path] = None,
     verbose: bool = False,
 ) -> Optional[str]:
     """Runs jdeps on the given filepath and returns the output."""
@@ -49,8 +48,12 @@ def run_jdeps(
         # does not affect correctness.
         return None
 
-    cmd = [
-        str(jdeps_path),
+    jdeps_cmd = (
+        [str(jdeps_path)]
+        if jdeps_path is not None
+        else build_utils.JdkToolCmd('jdeps')
+    )
+    cmd = jdeps_cmd + [
         '-verbose:class',
         '-filter:none',  # Necessary to include intra-package deps.
         '--multi-release',  # Some jars support multiple JDK releases.
@@ -66,17 +69,17 @@ def run_jdeps(
         # E.g.: Error: Module net.bytebuddy not found, required by org.mockito
         # See: https://stackoverflow.com/questions/64066952/jdeps-module-not-found-exception-when-listing-dependancies
         with _create_filtered_jar_tempfile(filepath) as f:
-            new_cmd = cmd[:-1] + [f.name]
+            cmd = cmd[:-1] + [f.name]
             result = subprocess.run(
-                new_cmd, text=True, check=False, capture_output=True
+                cmd, text=True, check=False, capture_output=True
             )
-            if result.returncode:
-                # Pack all the information into the error message since that is the last
-                # thing visible in the output.
-                raise RuntimeError(
-                    f'\nFilepath:\n{filepath}\ncmd:\n{" ".join(cmd)}\n'
-                    f'stdout:\n{result.stdout}\nstderr:{result.stderr}\n'
-                )
+    if result.returncode:
+        # Pack all the information into the error message since that is the last
+        # thing visible in the output.
+        raise RuntimeError(
+            f'\nFilepath:\n{filepath}\ncmd:\n{" ".join(cmd)}\n'
+            f'stdout:\n{result.stdout}\nstderr:{result.stderr}\n'
+        )
     if verbose:
         logging.debug('Finished %s', filepath)
     return result.stdout

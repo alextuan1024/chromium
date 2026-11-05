@@ -23,9 +23,15 @@ dictionary StreamInfo {
 };
 
 // Persisted options for a MIME handler registered for one MIME type.
-dictionary MimeHandlerOptions {
-  // Whether this handler is active for the given MIME type.
-  required boolean enabled;
+[preserveNull] dictionary MimeHandlerOptions {
+  // Whether this handler is enabled. Defaults to the manifest entry's
+  // `enabled` value.
+  boolean enabled;
+
+  // Whether this handler may be used for embedded loads (iframe, embed,
+  // object). Defaults to the manifest entry's `can_embed` value. Has no
+  // effect while `enabled` is false.
+  boolean canEmbed;
 };
 
 // Use the <code>chrome.mimeHandler</code> API to handle MIME type streams
@@ -41,18 +47,27 @@ interface MimeHandler {
   // will be torn down; callers should not expect further execution.
   static Promise<undefined> abortAndFallbackToNativeHandler();
 
-  // Sets the configuration options for a specified MIME type.
-  // |mimeType|: The MIME type to configure.
-  // |options|: The new options to use.
+  // Sets the configuration options for a specified MIME type. If the extension
+  // runs in split incognito mode, options set from incognito apply only to
+  // incognito and last until the incognito session ends. Options not set from
+  // incognito follow the values set outside incognito.
+  // |mimeType|: The MIME type to configure. It must be a MIME type the
+  // extension handles through mime_types_handler.
+  // |options|: The options to change. A member set to null forgets the value
+  // the extension set, so the manifest entry's value applies again. In split
+  // incognito mode, it forgets only the value of the profile the call is made
+  // from. After such a call from incognito, incognito follows the value set
+  // outside incognito again.
   // |Returns|: Promise resolved when the configuration has been set.
   static Promise<undefined> setMimeHandlerOptions(DOMString mimeType,
                                                   MimeHandlerOptions options);
 
-  // Reads the persisted options for a MIME type. Returns defaults
-  // (enabled=true) if none have been stored.
-  // |mimeType|: The MIME type whose options to read.
+  // Reads the options for a MIME type. Each member is the value the extension
+  // set, or the manifest entry's value if the extension has not set it.
+  // |mimeType|: The MIME type whose options to read. It must be a MIME type
+  // the extension handles through mime_types_handler.
   // |PromiseValue|: options
-  // |Returns|: Promise resolved with the persisted options for the MIME type.
+  // |Returns|: Promise resolved with the options for the MIME type.
   static Promise<MimeHandlerOptions> getMimeHandlerOptions(DOMString mimeType);
 };
 

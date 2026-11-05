@@ -183,7 +183,6 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
   }
   virtual bool SnapContainerDataNeedsUpdate() const { return false; }
   virtual void SetSnapContainerDataNeedsUpdate(bool) {}
-  void SnapAfterScrollbarScrolling(ScrollbarOrientation, cc::ScrollSourceType);
   virtual void UpdateFocusDataForSnapAreas() {}
 
   // SnapAtCurrentPosition(), SnapForEndPosition(), SnapForDirection(), and
@@ -200,25 +199,27 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
                           bool scrolled_x,
                           bool scrolled_y,
                           cc::ScrollSourceType source_type);
-  bool SnapForDirection(ScrollDirectionPhysical direction);
-  bool SnapForPageScroll(ScrollDirectionPhysical direction);
-  bool SnapForDocumentScroll(ScrollDirectionPhysical direction);
+  bool SnapForDirection(mojom::blink::ScrollDirectionPhysical direction);
+  bool SnapForPageScroll(mojom::blink::ScrollDirectionPhysical direction);
+  bool SnapForDocumentScroll(mojom::blink::ScrollDirectionPhysical direction);
   std::unique_ptr<cc::SnapSelectionStrategy> PageScrollSnapStrategy(
-      ScrollDirectionPhysical direction) const;
+      mojom::blink::ScrollDirectionPhysical direction) const;
   void SnapAfterLayout();
 
-  // Tries to find a target snap position. If found, returns the target
-  // position. This *does not* update the target snap area element id and should
-  // only be used when querying what the snap position would be. When scrolling
-  // to the snap position GetSnapPositionAndSetTarget should be used instead.
-  virtual std::optional<cc::SnapPositionData> GetSnapPosition(
+  // Tries to find a target snap position without updating the target snap
+  // area element IDs. Returns nullopt if snap data is missing or empty.
+  // Otherwise returns selection data, which may have type kNone.
+  // When scrolling, use GetSnapPositionAndSetTarget() or apply the returned
+  // IDs.
+  [[nodiscard]] virtual std::optional<cc::SnapPositionData> GetSnapPosition(
       const cc::SnapSelectionStrategy& strategy) const {
     return std::nullopt;
   }
 
   // Tries to find a target snap position. If found, returns the target position
   // and updates the last target snap area element id for the snap container's
-  // data. If not found, then clears the last target snap area element id.
+  // data. If snap data is missing or empty, leaves target IDs unchanged.
+  // Otherwise applies the returned IDs even when no snap position is found.
   //
   // NOTE: If a target position is found, then it is expected that this position
   // will be scrolled to.
@@ -558,8 +559,6 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
   void OnScrollFinished(bool enqueue_scrollend);
 
   float ScrollStep(ui::ScrollGranularity, ScrollbarOrientation) const;
-  std::unique_ptr<cc::SnapSelectionStrategy> PageSnap(
-      ScrollbarOrientation) const;
 
   // Injects a gesture scroll event based on the given parameters for mouse
   // events on a scrollbar of this scrollable area.
@@ -654,9 +653,6 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
   explicit ScrollableArea(
       scoped_refptr<base::SingleThreadTaskRunner> compositor_task_runner);
 
-  ScrollbarOrientation ScrollbarOrientationFromDirection(
-      ScrollDirectionPhysical) const;
-
   // Needed to let the animators call scrollOffsetChanged.
   friend class ScrollAnimatorCompositorCoordinator;
   void ScrollOffsetChanged(const ScrollOffset&,
@@ -680,6 +676,7 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
   bool HasBeenDisposed() const { return has_been_disposed_; }
 
   virtual const Document* GetDocument() const;
+  bool IsLatchedForGestureScroll() const;
 
   // Resolves into un-zoomed physical pixels a scroll |delta| based on its
   // ScrollGranularity units.

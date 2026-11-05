@@ -5,10 +5,12 @@
 #include "third_party/blink/renderer/core/inspector/devtools_session.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/fixed_flat_set.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
@@ -29,7 +31,6 @@
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "third_party/inspector_protocol/crdtp/cbor.h"
@@ -43,10 +44,32 @@ namespace {
 const char kV8StateKey[] = "v8";
 const char kSessionId[] = "sessionId";
 
-bool ShouldInterruptForMethod(const String& method) {
-  return method != "Debugger.evaluateOnCallFrame" &&
-         method != "Runtime.evaluate" && method != "Runtime.callFunctionOn" &&
-         method != "Runtime.getProperties" && method != "Runtime.runScript";
+// Allow-list of Chrome DevTools Protocol methods that are safe to dispatch by
+// interrupting V8 execution on the target thread.
+//
+// SECURITY NOTE: V8 interrupt callbacks run at stack check points (such as
+// optimized loop back-edges) that JIT compilers model as having no JS heap
+// writes. Only methods proven not to execute arbitrary page JavaScript (no
+// getters, Proxy traps, Error.prepareStackTrace, toString/valueOf, or
+// microtasks) may be listed here.
+bool ShouldInterruptForMethod(std::string_view method) {
+  static constexpr auto kInterruptMethods =
+      base::MakeFixedFlatSet<std::string_view>({
+          "Debugger.getPossibleBreakpoints",
+          "Debugger.getScriptSource",
+          "Debugger.getStackTrace",
+          "Debugger.pause",
+          "Debugger.removeBreakpoint",
+          "Debugger.resume",
+          "Debugger.setBreakpoint",
+          "Debugger.setBreakpointByUrl",
+          "Debugger.setBreakpointsActive",
+          "Emulation.setScriptExecutionDisabled",
+          "Page.crash",
+          "Performance.getMetrics",
+          "Runtime.terminateExecution",
+      });
+  return kInterruptMethods.contains(method);
 }
 
 std::vector<uint8_t> Get8BitStringFrom(v8_inspector::StringBuffer* msg) {
@@ -148,7 +171,7 @@ class DevToolsSession::IOSession : public mojom::blink::DevToolsSession {
     // and be run immediately. Only methods that do not run JS code are safe.
     Vector<uint8_t> message_copy;
     message_copy.append_range(message);
-    if (ShouldInterruptForMethod(method)) {
+    if (ShouldInterruptForMethod(StringUtf8Adaptor(method).AsStringView())) {
       inspector_task_runner_->AppendTask(CrossThreadBindOnce(
           &::blink::DevToolsSession::DispatchProtocolCommandImpl,
           MakeUnwrappingCrossThreadWeakHandle(session_), call_id, method,
@@ -166,8 +189,6 @@ class DevToolsSession::IOSession : public mojom::blink::DevToolsSession {
         CrossThreadBindOnce(&::blink::DevToolsSession::UnpauseAndTerminate,
                             MakeUnwrappingCrossThreadWeakHandle(session_)));
   }
-
-
 
  private:
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
@@ -266,7 +287,8 @@ bool DevToolsSession::IsDetached() {
 void DevToolsSession::Append(InspectorAgent* agent) {
   agents_.push_back(agent);
   agent->Init(agent_->probe_sink_.Get(), inspector_backend_dispatcher_.get(),
-              &session_state_, v8_session_);
+              &session_state_, v8_session_,
+              ClientIsTrusted(client_is_trusted_));
 }
 
 void DevToolsSession::Detach() {
@@ -357,7 +379,7 @@ void DevToolsSession::DidStartProvisionalLoad(LocalFrame* frame) {
 
 void DevToolsSession::DidFailProvisionalLoad(LocalFrame* frame) {
   if (v8_session_ && agent_->inspected_frames_->Root() == frame) {
-    v8_session_->setSkipAllPauses(false);
+    v8_session_->setSkipAllPausesForInternalUse(false);
   }
 }
 
@@ -366,13 +388,13 @@ void DevToolsSession::DidCommitLoad(LocalFrame* frame, DocumentLoader*) {
     agents_[i]->DidCommitLoadForLocalFrame(frame);
   }
   if (v8_session_ && agent_->inspected_frames_->Root() == frame) {
-    v8_session_->setSkipAllPauses(false);
+    v8_session_->setSkipAllPausesForInternalUse(false);
   }
 }
 
 void DevToolsSession::PaintTiming(Document* document,
                                   const char* name,
-                                  double timestamp) {
+                                  base::TimeTicks) {
   if (v8_session_ &&
       agent_->inspected_frames_->Root()->GetDocument() == document) {
     v8_session_->triggerPreciseCoverageDeltaUpdate(
@@ -453,6 +475,14 @@ void DevToolsSession::FlushProtocolNotifications() {
   if (IsDetached()) {
     return;
   }
+  // Only a handful of commands can be interrupting, and these generally
+  // do not generate protocol notifications. However, flushing notifications
+  // while interrupting may cause some undesired consequences, in particular
+  // in case of CSS agent that performs non-trivial work upon flushing, so
+  // defer it until handling a top-level command.
+  if (agent_->IsInterruptingExecution()) {
+    return;
+  }
   for (wtf_size_t i = 0; i < agents_.size(); i++) {
     agents_[i]->FlushPendingProtocolNotifications();
   }
@@ -515,10 +545,8 @@ void DevToolsSession::UnpauseAndTerminate() {
   if (!v8_session_) {
     return;
   }
-  v8_session_->setSkipAllPauses(true);
+  v8_session_->setSkipAllPausesForInternalUse(true);
   v8_session_->resume(true /* terminate on resume */);
 }
-
-
 
 }  // namespace blink

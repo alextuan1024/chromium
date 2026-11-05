@@ -91,52 +91,6 @@ def get_parts(config):
             entitlements='helper-gpu-entitlements.plist',
             verify_options=verify_options,
         ),
-        'helper-aperitif-app': CodeSignedProduct(
-            '{0.framework_dir}/Helpers/{0.product} Helper (Aperitif).app'.format(
-                config
-            ),
-            '{}.helper'.format(uncustomized_bundle_id),
-            options=CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS,
-            verify_options=verify_options,
-        ),
-        'helper-aperitif-renderer-app': CodeSignedProduct(
-            '{0.framework_dir}/Helpers/{0.product} Helper (Aperitif Renderer).app'.format(
-                config
-            ),
-            '{}.helper.renderer'.format(uncustomized_bundle_id),
-            # Do not use |CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS|
-            # because library validation is incompatible with the JIT
-            # entitlement.
-            options=CodeSignOptions.RESTRICT
-            | CodeSignOptions.KILL
-            | CodeSignOptions.HARDENED_RUNTIME,
-            entitlements='helper-renderer-entitlements.plist',
-            verify_options=verify_options,
-        ),
-        'helper-aperitif-gpu-app': CodeSignedProduct(
-            '{0.framework_dir}/Helpers/{0.product} Helper (Aperitif GPU).app'.format(
-                config
-            ),
-            '{}.helper'.format(uncustomized_bundle_id),
-            # Do not use |CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS|
-            # because library validation is incompatible with more
-            # permissive code signing entitlements.
-            options=CodeSignOptions.RESTRICT
-            | CodeSignOptions.KILL
-            | CodeSignOptions.HARDENED_RUNTIME,
-            entitlements='helper-gpu-entitlements.plist',
-            verify_options=verify_options,
-        ),
-        'helper-aperitif-alerts': CodeSignedProduct(
-            '{0.framework_dir}/Helpers/{0.product} Helper (Aperitif Alerts).app'.format(
-                config
-            ),
-            '{}.framework.AlertNotificationService'.format(
-                config.base_bundle_id
-            ),
-            options=CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS,
-            verify_options=verify_options,
-        ),
         'helper-alerts': CodeSignedProduct(
             '{0.framework_dir}/Helpers/{0.product} Helper (Alerts).app'.format(
                 config
@@ -319,7 +273,7 @@ def _sanity_check_version_keys(paths, parts):
         commands.PlistContext(app_plist_path) as app_plist,
         commands.PlistContext(framework_plist_path) as framework_plist,
     ):
-        if not 'KSVersion' in app_plist:
+        if 'KSVersion' not in app_plist:
             assert 'com.google.Chrome' not in app_plist['CFBundleIdentifier']
             return
         ks_version = app_plist['KSVersion']

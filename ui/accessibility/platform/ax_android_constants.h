@@ -32,6 +32,7 @@ COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXMenuItemClassname[];
 COMPONENT_EXPORT(AX_PLATFORM)
 extern const char kAXMultiAutoCompleteTextViewClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXNavigationViewClassname[];
+COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXNoteClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXPagerClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXProgressBarClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXRadioButtonClassname[];
@@ -42,6 +43,7 @@ COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXSeekBarClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXSwitchClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXSpinnerClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXTabWidgetClassname[];
+COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXTermClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXTextViewClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXTimePickerClassname[];
 COMPONENT_EXPORT(AX_PLATFORM) extern const char kAXToggleButtonClassname[];

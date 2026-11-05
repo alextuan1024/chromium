@@ -151,15 +151,14 @@ class TranslateBubbleViewBrowserTest_SearchUIEnabled
 
 IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest,
                        CloseBrowserWithoutTranslating) {
-  EXPECT_FALSE(
-      TranslateBubbleController::From(browser())->GetTranslateBubble());
+  EXPECT_FALSE(TranslateController::From(browser())->GetTranslateBubble());
 
   // Show a French page and wait until the bubble is shown.
   GURL french_url = GURL(embedded_test_server()->GetURL("/french_page.html"));
   NavigateAndWaitForLanguageDetection(french_url, "fr");
 
   TranslateBubbleView* bubble =
-      TranslateBubbleController::From(browser())->GetTranslateBubble();
+      TranslateController::From(browser())->GetTranslateBubble();
   EXPECT_TRUE(bubble);
   views::ViewTracker bubble_tracker(bubble);
   EXPECT_EQ(bubble, bubble_tracker.view());
@@ -175,15 +174,14 @@ IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest,
                        CloseLastTabWithoutTranslating) {
-  EXPECT_FALSE(
-      TranslateBubbleController::From(browser())->GetTranslateBubble());
+  EXPECT_FALSE(TranslateController::From(browser())->GetTranslateBubble());
 
   // Show a French page and wait until the bubble is shown.
   GURL french_url = GURL(embedded_test_server()->GetURL("/french_page.html"));
   NavigateAndWaitForLanguageDetection(french_url, "fr");
 
   TranslateBubbleView* bubble =
-      TranslateBubbleController::From(browser())->GetTranslateBubble();
+      TranslateController::From(browser())->GetTranslateBubble();
   EXPECT_TRUE(bubble);
   views::ViewTracker bubble_tracker(bubble);
   EXPECT_EQ(bubble, bubble_tracker.view());
@@ -201,8 +199,7 @@ IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest,
                        CloseAnotherTabWithoutTranslating) {
-  EXPECT_FALSE(
-      TranslateBubbleController::From(browser())->GetTranslateBubble());
+  EXPECT_FALSE(TranslateController::From(browser())->GetTranslateBubble());
 
   int active_index = browser()->GetTabStripModel()->active_index();
 
@@ -217,15 +214,13 @@ IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest,
       browser()->GetTabStripModel()->GetWebContentsAt(french_index);
 
   // The bubble is not shown because the tab is not activated.
-  EXPECT_FALSE(
-      TranslateBubbleController::From(browser())->GetTranslateBubble());
+  EXPECT_FALSE(TranslateController::From(browser())->GetTranslateBubble());
 
   // Close the French page tab immediately.
   chrome::CloseWebContents(browser(), web_contents, false);
   EXPECT_EQ(active_index, browser()->GetTabStripModel()->active_index());
   EXPECT_EQ(1, browser()->GetTabStripModel()->count());
-  EXPECT_FALSE(
-      TranslateBubbleController::From(browser())->GetTranslateBubble());
+  EXPECT_FALSE(TranslateController::From(browser())->GetTranslateBubble());
 
   // Close the last tab.
   chrome::CloseWebContents(
@@ -257,7 +252,8 @@ class TranslateBubbleViewPdfBrowserTest : public TranslateBubbleViewBrowserTest 
   base::test::ScopedFeatureList feature_list_;
 };
 
-// Test that TriggerPdfTranslation displays the Reading Mode side panel for PDF pages.
+// Test that OnPdfTranslationRequested displays the Reading Mode side panel for
+// PDF pages.
 IN_PROC_BROWSER_TEST_F(TranslateBubbleViewPdfBrowserTest,
                        PdfTranslateBubbleDisplay) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -268,7 +264,7 @@ IN_PROC_BROWSER_TEST_F(TranslateBubbleViewPdfBrowserTest,
           browser()->tab_strip_model()->GetActiveWebContents());
   ASSERT_TRUE(client);
 
-  client->TriggerPdfTranslation();
+  client->OnPdfTranslationRequested();
 
   SidePanelUI* side_panel_ui = SidePanelUI::From(browser());
   ASSERT_TRUE(side_panel_ui);
@@ -291,7 +287,7 @@ class TranslateBubbleVisualTest
   TranslateBubbleVisualTest() = default;
 
   TranslateBubbleView* GetCurrentTranslateBubble() {
-    return TranslateBubbleController::From(browser())->GetTranslateBubble();
+    return TranslateController::From(browser())->GetTranslateBubble();
   }
 
   // TestBrowserDialog:
@@ -328,14 +324,14 @@ IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest,
   GURL french_url = GURL(embedded_test_server()->GetURL("/french_page.html"));
   NavigateAndWaitForLanguageDetection(french_url, "fr");
   TranslateBubbleView* bubble =
-      TranslateBubbleController::From(browser())->GetTranslateBubble();
+      TranslateController::From(browser())->GetTranslateBubble();
   EXPECT_TRUE(bubble);
 
   views::test::WidgetDestroyedWaiter waiter(bubble->GetWidget());
   chrome::Find(browser());
   waiter.Wait();
 
-  bubble = TranslateBubbleController::From(browser())->GetTranslateBubble();
+  bubble = TranslateController::From(browser())->GetTranslateBubble();
   EXPECT_FALSE(bubble);
 }
 
@@ -345,7 +341,7 @@ IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest_SearchUIDisabled,
   NavigateAndWaitForLanguageDetection(french_url, "fr");
 
   TranslateBubbleView* bubble =
-      TranslateBubbleController::From(browser())->GetTranslateBubble();
+      TranslateController::From(browser())->GetTranslateBubble();
   ASSERT_TRUE(bubble);
 
   // Switch to advanced target view
@@ -367,7 +363,7 @@ IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest_SearchUIEnabled,
   NavigateAndWaitForLanguageDetection(french_url, "fr");
 
   TranslateBubbleView* bubble =
-      TranslateBubbleController::From(browser())->GetTranslateBubble();
+      TranslateController::From(browser())->GetTranslateBubble();
   ASSERT_TRUE(bubble);
 
   // Switch to advanced target view
@@ -389,7 +385,7 @@ IN_PROC_BROWSER_TEST_F(TranslateBubbleViewBrowserTest_SearchUIEnabled,
   NavigateAndWaitForLanguageDetection(french_url, "fr");
 
   TranslateBubbleView* bubble =
-      TranslateBubbleController::From(browser())->GetTranslateBubble();
+      TranslateController::From(browser())->GetTranslateBubble();
   ASSERT_TRUE(bubble);
 
   // Switch to advanced target view (the search view)

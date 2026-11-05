@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/types/pass_key.h"
 #include "components/autofill/core/browser/autofill_field.h"
@@ -46,6 +48,16 @@ bool ShouldRecordFillingHistory(FillingProduct filling_product) {
 }
 
 FormAutofillHistory::FieldFillingEntry::FieldFillingEntry(
+    const AutofillField& field)
+    : FieldFillingEntry(field.value(),
+                        field.is_autofilled_according_to_renderer(),
+                        field.field_modifiers(/*pass_key=*/{}),
+                        field.autofill_source_profile_guid(),
+                        field.autofilled_type(),
+                        field.filling_product(),
+                        /*ignore_is_autofilled=*/false) {}
+
+FormAutofillHistory::FieldFillingEntry::FieldFillingEntry(
     std::u16string field_value,
     bool field_is_autofilled_according_to_renderer,
     std::vector<FieldModifier> field_modifiers,
@@ -53,7 +65,7 @@ FormAutofillHistory::FieldFillingEntry::FieldFillingEntry(
     std::optional<FieldType> field_autofilled_type,
     FillingProduct field_filling_product,
     bool ignore_is_autofilled)
-    : value(field_value),
+    : value(std::move(field_value)),
       is_autofilled_according_to_renderer(
           field_is_autofilled_according_to_renderer),
       field_modifiers(std::move(field_modifiers)),
@@ -76,7 +88,8 @@ FormAutofillHistory::FormAutofillHistory() = default;
 FormAutofillHistory::~FormAutofillHistory() = default;
 
 void FormAutofillHistory::AddFormFillingEntry(
-    base::span<const AutofillField* const> filled_fields,
+    PreFillFieldStates filled_fields,
+    const base::flat_set<FieldGlobalId>& emptied_field_ids,
     FillingProduct filling_product,
     bool is_refill) {
   // Intuitively, `if (!is_refill) history_.emplace_front()` suffices, but it
@@ -88,30 +101,21 @@ void FormAutofillHistory::AddFormFillingEntry(
     history_.emplace_front();
   }
 
-  for (const AutofillField* field : filled_fields) {
+  for (auto& [field_id, pre_fill_state] : filled_fields) {
     // During refills, a field that was previously filled in the original
     // fill operation, with initial value `A` and filled value `B`, might be
     // refilled with a newer value `C`. We do not store this so that upon
     // undoing Autofill, the field's value reverts from `C` to `A` directly as
-    // this is what happened from a user's perspective.
-    size_ +=
-        history_.front()
-            .emplace(
-                field->global_id(),
-                FieldFillingEntry(
-                    field->value(),
-                    field->is_autofilled_according_to_renderer(),
-                    field->field_modifiers(/*pass_key=*/{}),
-                    field->autofill_source_profile_guid(),
-                    field->autofilled_type(), field->filling_product(),
-                    // `FormAutofillHistory::AddFormFillingEntry` only gets
-                    // fields that were autofilled. In case a field has an
-                    // empty value, this means Autofill intentionally
-                    // filled an empty string into it, and therefore when
-                    // undoing changes to this field we should not look at
-                    // `FormFieldData::is_autofilled_according_to_renderer`.
-                    /*ignore_is_autofilled=*/field->value().empty()))
-            .second;
+    // this is what happened from a user's perspective. However, update
+    // `ignore_is_autofilled` to reflect whether the latest fill/refill left
+    // a previously non-empty field intentionally empty.
+    auto [it, inserted] =
+        history_.front().emplace(field_id, std::move(pre_fill_state));
+    if (inserted) {
+      ++size_;
+    }
+    it->second.ignore_is_autofilled =
+        !it->second.value.empty() && emptied_field_ids.contains(field_id);
   }
   // Drop the last history entry while the history size exceeds the limit.
   while (size_ > kMaxStorableFieldFillHistory) {

@@ -36,6 +36,12 @@ const CGFloat kTableViewTopSpace = 8;
 UIColor* BackgroundColor() {
   return [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
 }
+
+// Returns true if `first` and `second` are both nil or contain equal elements.
+bool AreCredentialArraysEqual(NSArray<id<Credential>>* first,
+                              NSArray<id<Credential>>* second) {
+  return first == second || [first isEqualToArray:second];
+}
 }  // namespace
 
 // This cell just adds a simple hover pointer interaction to the TableViewCell.
@@ -75,7 +81,10 @@ UIColor* BackgroundColor() {
 
 @end
 
-@implementation CredentialListViewController
+@implementation CredentialListViewController {
+  // Whether credentials have been presented at least once.
+  BOOL _hasPresentedCredentials;
+}
 
 @synthesize delegate;
 
@@ -135,11 +144,24 @@ UIColor* BackgroundColor() {
                      allCredentials:(NSArray<id<Credential>>*)all
                       showSearchBar:(BOOL)showSearchBar
               showNewPasswordOption:(BOOL)showNewPasswordOption {
-  self.suggestedCredentials = suggested;
-  self.allCredentials = all;
-  self.showNewPasswordOption = showNewPasswordOption;
-  [self.tableView reloadData];
-  [self.tableView layoutIfNeeded];
+  // Skip reloading when only `showSearchBar` changes or filtering leaves the
+  // displayed credentials identical. This stays fast because `isEqualToArray:`
+  // short-circuits on count/pointer equality when callers reuse existing
+  // credential instances.
+  BOOL dataChanged =
+      !_hasPresentedCredentials ||
+      !AreCredentialArraysEqual(self.suggestedCredentials, suggested) ||
+      !AreCredentialArraysEqual(self.allCredentials, all) ||
+      self.showNewPasswordOption != showNewPasswordOption;
+
+  if (dataChanged) {
+    _hasPresentedCredentials = YES;
+    self.suggestedCredentials = suggested;
+    self.allCredentials = all;
+    self.showNewPasswordOption = showNewPasswordOption;
+    [self.tableView reloadData];
+    [self.tableView layoutIfNeeded];
+  }
 
   // Remove or add the search controller depending on whether there are
   // passwords to search.
@@ -211,7 +233,7 @@ UIColor* BackgroundColor() {
   credentialCell.accessibilityTraits |= UIAccessibilityTraitButton;
 
   // Load favicon.
-  if (credential.favicon) {
+  if (credential.favicon.length) {
     // Load the favicon from disk.
     [self loadFaviconAtIndexPath:indexPath forCell:cell];
   }
@@ -229,8 +251,9 @@ UIColor* BackgroundColor() {
   return credentialCell;
 }
 
-// Asynchronously loads favicon for given index path. The loads are cancelled
-// upon cell reuse automatically.
+// Asynchronously loads favicon for given index path. Loads are not cancelled
+// when the cell is reused; instead, the result is dropped if the cell no longer
+// shows the same credential by the time it arrives.
 - (void)loadFaviconAtIndexPath:(NSIndexPath*)indexPath
                        forCell:(UITableViewCell*)cell {
   id<Credential> credential = [self credentialForIndexPath:indexPath];
@@ -241,15 +264,17 @@ UIColor* BackgroundColor() {
   NSString* serviceIdentifier = credential.serviceIdentifier;
 
   FetchFaviconAsync(credential.favicon, ^(FaviconAttributes* attributes) {
-    // Only set favicon if the cell hasn't been reused.
-    if ([credentialCell.uniqueIdentifier isEqualToString:serviceIdentifier]) {
-      // Update the UI on the main thread.
-      dispatch_async(dispatch_get_main_queue(), ^{
-        if (attributes) {
-          [credentialCell.faviconView configureWithAttributes:attributes];
-        }
-      });
+    if (!attributes) {
+      return;
     }
+    // The cell must only be accessed on the main thread. Checking for reuse
+    // there also guarantees the cell can't be reused between the check and
+    // the update.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if ([credentialCell.uniqueIdentifier isEqualToString:serviceIdentifier]) {
+        [credentialCell.faviconView configureWithAttributes:attributes];
+      }
+    });
   });
 }
 

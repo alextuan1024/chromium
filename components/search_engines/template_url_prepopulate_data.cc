@@ -11,9 +11,9 @@
 #include <vector>
 
 #include "base/check_is_test.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
-#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/not_fatal_until.h"
@@ -24,8 +24,8 @@
 #include "components/prefs/pref_service.h"
 #include "components/regional_capabilities/program_settings.h"
 #include "components/regional_capabilities/regional_capabilities_utils.h"
+#include "components/search_engines/search_engine_type.h"
 #include "components/search_engines/search_engines_pref_names.h"
-#include "components/search_engines/search_engines_switches.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_data_util.h"
 #include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
@@ -38,11 +38,31 @@ namespace {
 
 inline std::unique_ptr<TemplateURLData> PrepopulatedEngineToTemplateURLData(
     const PrepopulatedEngine* engine) {
-  return TemplateURLDataFromPrepopulatedEngine(*engine);
+  return engine ? TemplateURLDataFromPrepopulatedEngine(*engine) : nullptr;
+}
+
+std::vector<std::unique_ptr<TemplateURLData>>
+GetOverriddenTemplateURLDataNoMetrics(const PrefService& prefs) {
+  std::vector<std::unique_ptr<TemplateURLData>> t_urls;
+
+  const base::ListValue& list = prefs.GetList(prefs::kSearchProviderOverrides);
+
+  for (const base::Value& engine : list) {
+    if (engine.is_dict()) {
+      auto t_url = TemplateURLDataFromOverrideDictionary(engine.GetDict());
+      if (t_url) {
+        t_urls.push_back(std::move(t_url));
+      }
+    }
+  }
+
+  return t_urls;
 }
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+//
+// LINT.IfChange(SearchProviderOverrideStatus)
 enum class SearchProviderOverrideStatus {
   // No preferences are available for `prefs::kSearchProviderOverrides`.
   kNoPref = 0,
@@ -55,68 +75,32 @@ enum class SearchProviderOverrideStatus {
   // template URL(s).
   kPrefHasValidUrls = 2,
 
-  // The feature `kIgnoreSearchProviderOverrides` is enabled and the pref
-  // `kSearchProviderOverrides` is present.
-  kIgnoredPref = 3,
+  // Deprecated: used when `kIgnoreSearchProviderOverrides` was enabled and the
+  // pref `kSearchProviderOverrides` was present.
+  kDeprecatedIgnoredPref = 3,
 
-  kMaxValue = kIgnoredPref
+  kMaxValue = kDeprecatedIgnoredPref,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/search/enums.xml:SearchProviderOverrideStatus)
 
-std::vector<std::unique_ptr<TemplateURLData>> GetOverriddenTemplateURLData(
-    PrefService& prefs) {
-  std::vector<std::unique_ptr<TemplateURLData>> t_urls;
-
-  const bool ignore_overrides =
-      base::FeatureList::IsEnabled(switches::kIgnoreSearchProviderOverrides);
-  if (!ignore_overrides) {
-    const base::ListValue& list =
-        prefs.GetList(prefs::kSearchProviderOverrides);
-
-    for (const base::Value& engine : list) {
-      if (engine.is_dict()) {
-        auto t_url = TemplateURLDataFromOverrideDictionary(engine.GetDict());
-        if (t_url) {
-          t_urls.push_back(std::move(t_url));
-        }
-      }
-    }
-  }
-
-  const bool has_pref = prefs.HasPrefPath(prefs::kSearchProviderOverrides);
-
-  SearchProviderOverrideStatus status = SearchProviderOverrideStatus::kNoPref;
-  if (ignore_overrides && has_pref) {
-    status = SearchProviderOverrideStatus::kIgnoredPref;
-  } else if (!t_urls.empty()) {
-    status = SearchProviderOverrideStatus::kPrefHasValidUrls;
-  } else if (has_pref) {
-    status = SearchProviderOverrideStatus::kEmptyPref;
-  }
-
-  base::UmaHistogramEnumeration("Search.SearchProviderOverrideStatus", status);
-
-  return t_urls;
-}
-
-std::unique_ptr<TemplateURLData> FindPrepopulatedEngineInternal(
-    PrefService& prefs,
+const PrepopulatedEngine* FindPrepopulatedEngineInternal(
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
         regional_prepopulated_engines,
     int prepopulated_id,
     bool use_first_as_fallback) {
-  // This could be more efficient. We load all URLs but keep only one.
-  std::vector<std::unique_ptr<TemplateURLData>> prepopulated_engines =
-      GetPrepopulatedEngines(prefs, regional_prepopulated_engines);
-  CHECK(!prepopulated_engines.empty());
+  // The regional list should never be empty because we always fall back to a
+  // default non-empty regional list, even when `use_first_as_fallback` is
+  // false.
+  CHECK(!regional_prepopulated_engines.empty());
 
-  for (auto& engine : prepopulated_engines) {
-    if (engine->prepopulate_id == prepopulated_id) {
-      return std::move(engine);
+  for (const PrepopulatedEngine* engine : regional_prepopulated_engines) {
+    if (engine->id == prepopulated_id) {
+      return engine;
     }
   }
 
   if (use_first_as_fallback) {
-    return std::move(prepopulated_engines[0]);
+    return regional_prepopulated_engines[0];
   }
 
   return nullptr;
@@ -171,12 +155,17 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterIntegerPref(prefs::kSearchProviderOverridesVersion, -1);
 }
 
-int GetDataVersion(PrefService* prefs) {
-  if (!base::FeatureList::IsEnabled(switches::kIgnoreSearchProviderOverrides) &&
-      prefs && prefs->HasPrefPath(prefs::kSearchProviderOverridesVersion)) {
-    return prefs->GetInteger(prefs::kSearchProviderOverridesVersion);
+void RecordSearchProviderOverrideStatus(const PrefService& prefs) {
+  SearchProviderOverrideStatus status = SearchProviderOverrideStatus::kNoPref;
+  if (prefs.HasPrefPath(prefs::kSearchProviderOverrides)) {
+    status = GetOverriddenTemplateURLDataNoMetrics(prefs).empty()
+                 ? SearchProviderOverrideStatus::kEmptyPref
+                 : SearchProviderOverrideStatus::kPrefHasValidUrls;
   }
+  base::UmaHistogramEnumeration("Search.SearchProviderOverrideStatus2", status);
+}
 
+int GetDataVersion(PrefService* prefs) {
   return kCurrentDataVersion;
 }
 
@@ -184,14 +173,6 @@ std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedEngines(
     PrefService& prefs,
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
         regional_prepopulated_engines) {
-  // If there is a set of search engines in the preferences file, it overrides
-  // the built-in set.
-  std::vector<std::unique_ptr<TemplateURLData>> t_urls =
-      GetOverriddenTemplateURLData(prefs);
-  if (!t_urls.empty()) {
-    return t_urls;
-  }
-
   return base::ToVector(regional_prepopulated_engines,
                         &PrepopulatedEngineToTemplateURLData);
 }
@@ -201,9 +182,9 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngine(
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
         regional_prepopulated_engines,
     int prepopulated_id) {
-  return FindPrepopulatedEngineInternal(prefs, regional_prepopulated_engines,
-                                        prepopulated_id,
-                                        /*use_first_as_fallback=*/false);
+  return PrepopulatedEngineToTemplateURLData(FindPrepopulatedEngineInternal(
+      regional_prepopulated_engines, prepopulated_id,
+      /*use_first_as_fallback=*/false));
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -249,32 +230,29 @@ const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
       regional_prepopulated_engines, regional_variants);
 }
 
+const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
+    SearchEngineType engine_type,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants) {
+  return GetPrepopulatedEngineFromBuiltInDataImpl(
+      [engine_type](const PrepopulatedEngine* engine) {
+        return engine->type == engine_type;
+      },
+      regional_prepopulated_engines, regional_variants);
+}
+
 std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
     PrefService& prefs,
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
         regional_prepopulated_engines,
     const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants,
     int prepopulated_id) {
-  // TODO(crbug.com/530597465): Refactor to better share code with
-  // `GetPrepopulatedEngine()` once the SearchProvidersOverride logic is
-  // removed.
-
-  // If there is a set of search engines in the preferences file, we look for
-  // the ID there first.
-  for (std::unique_ptr<TemplateURLData>& data :
-       GetOverriddenTemplateURLData(prefs)) {
-    if (data->prepopulate_id == prepopulated_id) {
-      return std::move(data);
-    }
-  }
-
-  if (auto* matched_engine = GetPrepopulatedEngineFromBuiltInData(
-          prepopulated_id, regional_prepopulated_engines, regional_variants);
-      matched_engine) {
-    return PrepopulatedEngineToTemplateURLData(matched_engine);
-  }
-
-  return {};
+  // TODO(crbug.com/531675190): Refactor to better share code with
+  // `GetPrepopulatedEngine()`.
+  return PrepopulatedEngineToTemplateURLData(
+      GetPrepopulatedEngineFromBuiltInData(
+          prepopulated_id, regional_prepopulated_engines, regional_variants));
 }
 
 std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
@@ -283,43 +261,50 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
         regional_prepopulated_engines,
     const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants,
     std::u16string_view keyword) {
-  // TODO(crbug.com/530597465): Refactor to better share code with
-  // `GetPrepopulatedEngine()` once the SearchProvidersOverride logic is
-  // removed.
+  // TODO(crbug.com/531675190): Refactor to better share code with
+  // `GetPrepopulatedEngine()`.
+  return PrepopulatedEngineToTemplateURLData(
+      GetPrepopulatedEngineFromBuiltInData(
+          keyword, regional_prepopulated_engines, regional_variants));
+}
 
-  // If there is a set of search engines in the preferences file, we look for
-  // the keyword there first.
-  for (std::unique_ptr<TemplateURLData>& data :
-       GetOverriddenTemplateURLData(prefs)) {
-    if (data->keyword() == keyword) {
-      return std::move(data);
+std::vector<raw_ptr<const PrepopulatedEngine>> GetAllPrepopulatedEngines(
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines) {
+  std::vector<raw_ptr<const PrepopulatedEngine>> engines;
+  base::flat_set<int> seen_ids;
+
+  for (const PrepopulatedEngine* engine : regional_prepopulated_engines) {
+    if (seen_ids.insert(engine->id).second) {
+      engines.push_back(engine);
     }
   }
 
-  if (auto* matched_engine = GetPrepopulatedEngineFromBuiltInData(
-          keyword, regional_prepopulated_engines, regional_variants);
-      matched_engine) {
-    return PrepopulatedEngineToTemplateURLData(matched_engine);
+  // Engines that no regional list references are not offered.
+  // TODO(crbug.com/446637115): With migration enabled, migration targets are
+  // not listed outside regions whose list includes them, and a pre-migration ID
+  // falls back to its first definition referenced by a regional list.
+  // TODO(crbug.com/446637115): `GetPrepopulatedEngineFromFullList()` also
+  // consults regional variants, and this function does not. With shadow
+  // variants enabled, an engine could be listed with one definition and added
+  // with another. Resolve this as part of that feature.
+  for (const PrepopulatedEngine* engine :
+       regional_capabilities::GetPrepopulatedEnginesInRegionalLists()) {
+    if (seen_ids.insert(engine->id).second) {
+      engines.push_back(engine);
+    }
   }
 
-  return {};
-}
-
-void ClearPrepopulatedEnginesInPrefs(PrefService* prefs) {
-  if (!prefs)
-    return;
-
-  prefs->ClearPref(prefs::kSearchProviderOverrides);
-  prefs->ClearPref(prefs::kSearchProviderOverridesVersion);
+  return engines;
 }
 
 std::unique_ptr<TemplateURLData> GetPrepopulatedFallbackSearch(
     PrefService& prefs,
     const std::vector<raw_ptr<const PrepopulatedEngine>>&
         regional_prepopulated_engines) {
-  return FindPrepopulatedEngineInternal(prefs, regional_prepopulated_engines,
-                                        google.id,
-                                        /*use_first_as_fallback=*/true);
+  return PrepopulatedEngineToTemplateURLData(
+      FindPrepopulatedEngineInternal(regional_prepopulated_engines, google.id,
+                                     /*use_first_as_fallback=*/true));
 }
 
 }  // namespace TemplateURLPrepopulateData

@@ -9,8 +9,6 @@
 #import "base/test/task_environment.h"
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/test/mock_tracker.h"
-#import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
-#import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/authentication/signin/non_modal_promo/coordinator/non_modal_signin_promo_types.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -29,7 +27,6 @@
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
-#import "third_party/ocmock/gtest_support.h"
 
 // Fake implementation of NonModalSignInPromoCommands for testing
 @interface FakeNonModalSignInPromoHandler
@@ -93,13 +90,6 @@
 
 @end
 
-namespace {
-std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
-    ProfileIOS* profile) {
-  return std::make_unique<feature_engagement::test::MockTracker>();
-}
-}  // namespace
-
 class NonModalSignInPromoMediatorTest : public PlatformTest {
  protected:
   void SetUp() override {
@@ -118,11 +108,12 @@ class NonModalSignInPromoMediatorTest : public PlatformTest {
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
 
     builder.AddTestingFactory(
         feature_engagement::TrackerFactory::GetInstance(),
-        base::BindRepeating(&BuildFeatureEngagementMockTracker));
+        base::BindOnce(
+            &std::make_unique<feature_engagement::test::MockTracker>));
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
     authentication_service_ =
         AuthenticationServiceFactory::GetForProfile(profile_);

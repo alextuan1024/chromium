@@ -175,7 +175,7 @@ chromium-metrics-reviews@google.com.
 <!-- LINT.ThenChange(//tools/metrics/histograms/metadata/ash/histograms.xml:AshDisplayModes) -->
 
 <histogram name="AppManagement.AppDetailViews{AppType}"
-    enum="AppManagementUserAction" expires_after="2026-06-28">
+    enum="AppManagementUserAction" expires_after="2027-10-02">
   <owner>sharminzaman@google.com</owner>
   <owner>ovn@google.com</owner>
   <owner>lt-web-apps-team@google.com</owner>
@@ -184,7 +184,8 @@ chromium-metrics-reviews@google.com.
     The actions taken by the user when they are viewing the app details of an
     app in App Management (chrome://os-settings/app-management). On
     Windows/Linux/MacOS AppManagement.AppDetailViews.WebApp is the view on
-    chrome://app-settings page. {AppType}
+    chrome://app-settings page. Warning: this histogram was expired from
+    2026-06-28 to 2026-10-02; data may be missing. {AppType}
   </summary>
   <token key="AppType">
     <variant name=""/>
@@ -221,7 +222,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="AppPreloadService.ServerResponseCodes"
-    enum="CombinedHttpResponseAndNetErrorCode" expires_after="2026-11-29">
+    enum="CombinedHttpResponseAndNetErrorCode" expires_after="2027-11-29">
   <owner>ovn@google.com</owner>
   <owner>lt-web-apps-team@google.com</owner>
   <summary>
@@ -333,7 +334,7 @@ chromium-metrics-reviews@google.com.
   <token key="AppInstallSurface" variants="AppInstallSurface"/>
 </histogram>
 
-<histogram name="Apps.AppLaunch" enum="AppLaunch" expires_after="2027-02-07">
+<histogram name="Apps.AppLaunch" enum="AppLaunch" expires_after="2027-04-11">
   <owner>tapted@chromium.org</owner>
   <owner>benwells@chromium.org</owner>
   <summary>
@@ -343,7 +344,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.AppLaunch.ChromeAppsDeprecationCheck"
-    enum="ChromeAppDeprecationLaunchOutcome" expires_after="2027-01-17">
+    enum="ChromeAppDeprecationLaunchOutcome" expires_after="2027-03-21">
   <owner>giovax@google.com</owner>
   <owner>src/apps/DEPRECATION_OWNERS</owner>
   <summary>
@@ -1360,18 +1361,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="Apps.AppList.SuggestedContent.Enabled" enum="BooleanEnabled"
-    expires_after="2027-03-01">
-  <owner>chenjih@google.com</owner>
-  <owner>chromeos-launcher-search@google.com</owner>
-  <summary>
-    Whether or not the user has enabled Suggested Content in the launcher. This
-    is logged once per UMA upload, and only for any user that has the Suggested
-    Content toggle feature flag enabled. Warning: this histogram was expired
-    from 2023-06-04 to 2023-08-18; data may be missing.
-  </summary>
-</histogram>
-
 <histogram
     name="Apps.AppList.SystemInfoProvider.CrosHealthdProbeError.{ProbeErrorSourceStruct}"
     enum="CrosDiagnosticsCrosHealthdProbeError" expires_after="2027-03-01">
@@ -1875,7 +1864,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.AppsCount.{AppType}" units="Apps"
-    expires_after="2026-11-29">
+    expires_after="2027-11-29">
   <owner>ovn@google.com</owner>
   <owner>lt-web-apps-team@google.com</owner>
   <component>1389907</component>
@@ -1904,8 +1893,17 @@ chromium-metrics-reviews@google.com.
   <token key="InstallReason" variants="InstallReason"/>
 </histogram>
 
+<histogram name="Apps.AppShim.Launched" enum="Boolean"
+    expires_after="2027-03-01">
+  <owner>mek@chromium.org</owner>
+  <owner>src/chrome/browser/web_applications/OWNERS</owner>
+  <summary>
+    Records true when an app shim child process launches on macOS.
+  </summary>
+</histogram>
+
 <histogram name="Apps.AppShim.LaunchResult.{LaunchMode}"
-    enum="AppShimLaunchResult" expires_after="2027-03-01">
+    enum="AppShimLaunchResult" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
@@ -1913,6 +1911,25 @@ chromium-metrics-reviews@google.com.
     launch process completes (either successfully connecting, or giving up). If
     the first launch attempt fails, Chrome may attempt to recreate the shim and
     retry. Success after recreation is recorded as a separate bucket.
+  </summary>
+  <token key="LaunchMode">
+    <variant name="Background"
+        summary="Background launch (e.g. notifications)"/>
+    <variant name="Normal" summary="Normal foreground launch"/>
+  </token>
+</histogram>
+
+<histogram name="Apps.AppShim.Lifecycle.{LaunchMode}"
+    enum="AppShimLifecycleState" expires_after="2027-05-02">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    Records the lifecycle progression of an App Shim launch initiated by Chrome.
+    Recorded when the launch starts, gets a PID, connects, disconnects before
+    handshake, terminates after connecting, or fails to launch entirely. If the
+    first launch attempt fails, Chrome recreates the shim and retries; each
+    attempt records its own pre-connect lifecycle states (up to twice per
+    LaunchShim call).
   </summary>
   <token key="LaunchMode">
     <variant name="Background"
@@ -1932,14 +1949,71 @@ chromium-metrics-reviews@google.com.
   </summary>
   <token key="Operation">
     <variant name="SecCodeCheckValidityAdHoc"/>
-    <variant name="SecCodeCheckValidityLegacy"/>
     <variant name="SecCodeCopyGuestWithAttributes"/>
     <variant name="SecCodeCopySigningInformation"/>
   </token>
 </histogram>
 
+<histogram name="Apps.AppShim.NotificationProvider.Outcome"
+    enum="AppShimNotificationProviderOutcome" expires_after="2027-03-01">
+  <owner>mek@chromium.org</owner>
+  <owner>src/chrome/browser/web_applications/OWNERS</owner>
+  <summary>
+    Records the outcome of AppShimManager::LaunchNotificationProvider on macOS
+    when connecting a MacNotificationProvider to an app shim (binding to an
+    already-running host, launching a new shim in background mode, or falling
+    back to a dummy provider when no profile is available or Chrome is shutting
+    down).
+  </summary>
+</histogram>
+
+<histogram name="Apps.AppShim.TimeToConnect.{LaunchMode}" units="ms"
+    expires_after="2027-05-02">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    Records the time from when Chrome initiates an App Shim launch attempt until
+    the App Shim successfully connects via mojo (kBootstrapConnected). If the
+    first launch attempt fails and Chrome recreates the shim and retries, this
+    records the duration of the successful attempt only. This does not include
+    time taken to process the launch request if the shim was already running.
+  </summary>
+  <token key="LaunchMode">
+    <variant name="Background"
+        summary="Background launch (e.g. notifications)"/>
+    <variant name="Normal" summary="Normal foreground launch"/>
+  </token>
+</histogram>
+
+<histogram name="Apps.AppShim.TimeToFailure.{LaunchMode}" units="ms"
+    expires_after="2027-05-02">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    Records the time from when Chrome initiates an App Shim launch attempt until
+    the App Shim fails to connect (either kDisconnectedBeforeHandshake or
+    kLaunchFailed). If the first launch attempt fails and Chrome recreates the
+    shim and retries, this is recorded for each failed attempt (up to twice per
+    LaunchShim call).
+  </summary>
+  <token key="LaunchMode">
+    <variant name="Background"
+        summary="Background launch (e.g. notifications)"/>
+    <variant name="Normal" summary="Normal foreground launch"/>
+  </token>
+</histogram>
+
+<histogram name="Apps.AppShim.WillTerminate" enum="Boolean"
+    expires_after="2027-03-01">
+  <owner>mek@chromium.org</owner>
+  <owner>src/chrome/browser/web_applications/OWNERS</owner>
+  <summary>
+    Records true when an app shim child process is about to terminate on macOS.
+  </summary>
+</histogram>
+
 <histogram name="Apps.AppShimRegistry.HmacKeyStore.LoadResult"
-    enum="AppShimRegistryGetHmacKeyResult" expires_after="2027-02-28">
+    enum="AppShimRegistryGetHmacKeyResult" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>src/chrome/browser/web_applications/OWNERS</owner>
   <summary>
@@ -1950,7 +2024,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.AppShimRegistry.HmacKeyStore.SaveResult"
-    enum="AppShimRegistrySaveHmacKeyResult" expires_after="2027-02-28">
+    enum="AppShimRegistrySaveHmacKeyResult" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>src/chrome/browser/web_applications/OWNERS</owner>
   <summary>
@@ -1960,7 +2034,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.AppShimRegistry.VerifyCdHashResult"
-    enum="AppShimRegistryVerifyCdHashResult" expires_after="2027-01-24">
+    enum="AppShimRegistryVerifyCdHashResult" expires_after="2027-03-28">
   <owner>dmurph@google.com</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
@@ -1971,7 +2045,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.AppShimSignatureValidationResult"
-    enum="WebAppShimSignatureValidationResult" expires_after="2027-02-07">
+    enum="WebAppShimSignatureValidationResult" expires_after="2027-04-11">
   <owner>markrowe@chromium.org</owner>
   <owner>chrome-platform-security-core@google.com</owner>
   <owner>dmurph@google.com</owner>
@@ -2068,7 +2142,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.CreateShortcutIcon.Linux.Result"
-    enum="WebAppCreateShortcutIconLinuxResult" expires_after="2026-11-01">
+    enum="WebAppCreateShortcutIconLinuxResult" expires_after="2027-09-30">
   <owner>estade@chromium.org</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
@@ -2079,7 +2153,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.CreateShortcuts.Linux.Result"
-    enum="WebAppCreateShortcutLinuxResult" expires_after="2026-11-15">
+    enum="WebAppCreateShortcutLinuxResult" expires_after="2027-11-15">
   <owner>phillis@chromium.org</owner>
   <owner>cmumford@chromium.org</owner>
   <summary>
@@ -2102,7 +2176,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.CreateShortcuts.Mac.Result2"
-    enum="WebAppCreateShortcutMacResult" expires_after="2027-01-31">
+    enum="WebAppCreateShortcutMacResult" expires_after="2027-04-04">
   <owner>mek@chromium.org</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
@@ -2111,7 +2185,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.CreateShortcuts.Mac.UpdateSignatureResult"
-    enum="UpdateSignatureResult" expires_after="2027-01-17">
+    enum="UpdateSignatureResult" expires_after="2027-03-21">
   <owner>mek@chromium.org</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
@@ -2121,7 +2195,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.DefaultAppLaunch{DefaultAppLaunchSource}"
-    enum="DefaultAppName" expires_after="2027-02-07">
+    enum="DefaultAppName" expires_after="2027-04-11">
   <owner>ovn@google.com</owner>
   <owner>lt-web-apps-team@google.com</owner>
   <owner>cros-device-enablement@google.com</owner>
@@ -2223,7 +2297,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.FullRestoreWindowCount2" units="count"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>dandersson@chromium.org</owner>
   <owner>fanafan@chromium.org</owner>
   <owner>chromeos-wm-corexp@google.com</owner>
@@ -2326,7 +2400,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.MediaApp.Load.OtherOpenWindowCount" units="windows"
-    expires_after="2027-02-14">
+    expires_after="2027-04-18">
   <owner>tapted@chromium.org</owner>
   <owner>patricialor@chromium.org</owner>
   <summary>
@@ -2382,7 +2456,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.OobeAppRecommendationsService.ServerResponseCodes"
-    enum="CombinedHttpResponseAndNetErrorCode" expires_after="2027-01-17">
+    enum="CombinedHttpResponseAndNetErrorCode" expires_after="2027-03-21">
   <owner>bohdanty@google.com</owner>
   <owner>cros-oobe@google.com</owner>
   <summary>
@@ -2528,7 +2602,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.RestoredAppLaunch" enum="AppType"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>dandersson@chromium.org</owner>
   <owner>fanafan@chromium.org</owner>
   <owner>chromeos-wm-corexp@google.com</owner>
@@ -2539,7 +2613,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.RestoreInitSetting" enum="RestoreSetting"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>dandersson@chromium.org</owner>
   <owner>fanafan@chromium.org</owner>
   <owner>chromeos-wm-corexp@google.com</owner>
@@ -2642,7 +2716,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.SessionRestoreExitResult" enum="SessionRestoreExitResult"
-    expires_after="2027-02-28">
+    expires_after="2027-05-02">
   <owner>dandersson@chromium.org</owner>
   <owner>fanafan@chromium.org</owner>
   <owner>chromeos-wm-corexp@google.com</owner>
@@ -2653,7 +2727,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.SessionRestoreWindowCount"
-    enum="SessionRestoreWindowCount" expires_after="2027-02-07">
+    enum="SessionRestoreWindowCount" expires_after="2027-04-11">
   <owner>dandersson@chromium.org</owner>
   <owner>fanafan@chromium.org</owner>
   <owner>chromeos-wm-corexp@google.com</owner>
@@ -2732,7 +2806,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.UsageTime.{AppType}" units="ms"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>ovn@google.com</owner>
   <owner>lt-web-apps-team@google.com</owner>
   <component>1389907</component>
@@ -2744,7 +2818,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Apps.UsageTimeV2.{AppTypeV2}" units="ms"
-    expires_after="2026-11-29">
+    expires_after="2027-11-29">
   <owner>ovn@google.com</owner>
   <owner>lt-web-apps-team@google.com</owner>
   <component>1389907</component>

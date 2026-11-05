@@ -6,29 +6,28 @@
 
 #include "base/byte_size.h"
 #include "base/containers/span.h"
-#include "base/feature_list.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/system/sys_info.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/common/loader/lcp_critical_path_predictor_util.h"
 #include "third_party/blink/public/mojom/loader/code_cache.mojom-blink.h"
 #include "third_party/blink/public/mojom/script/script_type.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/referrer_script_info.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_streamer.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_code_cache.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_compile_hints_common.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/scriptable_document_parser.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
-#include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/frame/frame.h"
 #include "third_party/blink/renderer/core/html/html_document.h"
 #include "third_party/blink/renderer/core/inspector/inspector_trace_events.h"
-#include "third_party/blink/renderer/core/lcp_critical_path_predictor/lcp_critical_path_predictor.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/loader/resource/script_resource.h"
-#include "third_party/blink/renderer/core/loader/url_matcher.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/script/cache_hint_attribute_value.h"
 #include "third_party/blink/renderer/core/script/document_write_intervention.h"
@@ -53,6 +52,18 @@
 
 namespace blink {
 namespace {
+
+#if !BUILDFLAG(IS_CHROMEOS)
+constexpr base::ByteSize kLowPriorityAsyncScriptMinMemory = base::GiB(3);
+constexpr base::TimeDelta kLowPriorityAsyncScriptMaxDocumentAge =
+    base::Seconds(3);
+
+bool IsDeviceEligibleForLowPriorityAsyncScriptExecution() {
+  return !base::SysInfo::IsLowEndDevice() &&
+         base::SysInfo::AmountOfTotalPhysicalMemory() >=
+             kLowPriorityAsyncScriptMinMemory;
+}
+#endif
 
 InlineScriptStreamer* GetInlineScriptStreamer(const String& source,
                                               Document& document) {
@@ -102,7 +113,7 @@ ClassicPendingScript* ClassicPendingScript::Fetch(
   ExecutionContext* context = element_document.GetExecutionContext();
   FetchParameters params(options.CreateFetchParameters(
       url, context->GetSecurityOrigin(), context->GetCurrentWorld(),
-      cross_origin, encoding, defer, context));
+      cross_origin, encoding, defer));
 
   ClassicPendingScript* pending_script =
       MakeGarbageCollected<ClassicPendingScript>(
@@ -283,14 +294,14 @@ bool ClassicPendingScript::IsEligibleForLowPriorityAsyncScriptExecution()
     const {
   DCHECK_EQ(GetSchedulingType(), ScriptSchedulingType::kAsync);
 
-  static const bool feature_enabled =
-      base::FeatureList::IsEnabled(
-          features::kLowPriorityAsyncScriptExecution) &&
-      !base::SysInfo::IsLowEndDevice() &&
-      (base::SysInfo::AmountOfTotalPhysicalMemory().InGiBF() >=
-       features::kMinimumPhysicalMemoryForLowPriorityAsyncScriptExecution
-           .Get());
-  if (!feature_enabled) {
+  // Disabled on ChromeOS due to a power consumption regression (see
+  // crbug.com/429069717).
+#if BUILDFLAG(IS_CHROMEOS)
+  return false;
+#else
+  static const bool enabled =
+      IsDeviceEligibleForLowPriorityAsyncScriptExecution();
+  if (!enabled) {
     return false;
   }
 
@@ -302,20 +313,16 @@ bool ClassicPendingScript::IsEligibleForLowPriorityAsyncScriptExecution()
 
   // Most LCP elements are provided by the main frame, and delaying subframe's
   // resources seems not to improve LCP.
-  const bool main_frame_only =
-      features::kLowPriorityAsyncScriptExecutionMainFrameOnlyParam.Get();
-  if (main_frame_only && !element_document->IsInOutermostMainFrame()) {
+  if (!element_document->IsInOutermostMainFrame()) {
     return false;
   }
 
-  const base::TimeDelta feature_limit =
-      features::kLowPriorityAsyncScriptExecutionFeatureLimitParam.Get();
-  if (!feature_limit.is_zero() &&
-      element_document->GetStartTime().Elapsed() > feature_limit) {
+  if (element_document->GetStartTime().Elapsed() >
+      kLowPriorityAsyncScriptMaxDocumentAge) {
     return false;
   }
 
-  // Do not enable kLowPriorityAsyncScriptExecution on reload.
+  // Do not enable low-priority async script execution on reload.
   // No specific reason to use element document here instead of context
   // document though.
   Document& top_document = element_document->TopDocument();
@@ -324,31 +331,7 @@ bool ClassicPendingScript::IsEligibleForLowPriorityAsyncScriptExecution()
     return false;
   }
 
-  // Check if LCP influencing scripts are to be excluded.
-  const bool exclude_lcp_influencers =
-      features::kLowPriorityAsyncScriptExecutionExcludeLcpInfluencersParam
-          .Get();
-  if (exclude_lcp_influencers && LcppScriptObserverEnabled()) {
-    if (LCPCriticalPathPredictor* lcpp = top_document.GetFrame()->GetLCPP()) {
-      if (lcpp->IsLcpInfluencerScript(GetResource()->Url())) {
-        return false;
-      }
-    }
-  }
-
-  const bool disable_when_lcp_not_in_html =
-      features::kLowPriorityAsyncScriptExecutionDisableWhenLcpNotInHtmlParam
-          .Get();
-  if (disable_when_lcp_not_in_html && !top_document.IsLcpElementFoundInHtml()) {
-    // If LCP element isn't found in main document HTML during preload scanning,
-    // disable delaying.
-    return false;
-  }
-
-  const bool cross_site_only =
-      features::kLowPriorityAsyncScriptExecutionCrossSiteOnlyParam.Get();
-  if (cross_site_only && GetResource() &&
-      element_document->GetExecutionContext()) {
+  if (GetResource() && element_document->GetExecutionContext()) {
     scoped_refptr<const SecurityOrigin> url_origin =
         SecurityOrigin::Create(GetResource()->Url());
     if (url_origin->IsSameSiteWith(
@@ -369,68 +352,31 @@ bool ClassicPendingScript::IsEligibleForLowPriorityAsyncScriptExecution()
     return false;
   }
 
-  bool is_ad_resource =
-      GetResource() && GetResource()->GetResourceRequest().IsAdResource();
-  switch (features::kLowPriorityAsyncScriptExecutionTargetParam.Get()) {
-    case features::AsyncScriptExperimentalSchedulingTarget::kAds:
-      if (!is_ad_resource) {
-        return false;
-      }
-      break;
-    case features::AsyncScriptExperimentalSchedulingTarget::kNonAds:
-      if (is_ad_resource) {
-        return false;
-      }
-      break;
-    case features::AsyncScriptExperimentalSchedulingTarget::kBoth:
-      break;
-  }
-
-  const bool exclude_non_parser_inserted =
-      features::kLowPriorityAsyncScriptExecutionExcludeNonParserInsertedParam
-          .Get();
-  if (exclude_non_parser_inserted && !parser_inserted()) {
+  if (GetResource() && GetResource()->GetResourceRequest().IsAdResource()) {
     return false;
   }
 
-  const bool exclude_scripts_via_document_write =
-      features::kLowPriorityAsyncScriptExecutionExcludeDocumentWriteParam.Get();
-  if (exclude_scripts_via_document_write && is_in_document_write()) {
+  if (is_in_document_write()) {
     return false;
   }
 
-  const bool opt_out_low =
-      features::kLowPriorityAsyncScriptExecutionOptOutLowFetchPriorityHintParam
-          .Get();
-  const bool opt_out_auto =
-      features::kLowPriorityAsyncScriptExecutionOptOutAutoFetchPriorityHintParam
-          .Get();
-  const bool opt_out_high =
-      features::kLowPriorityAsyncScriptExecutionOptOutHighFetchPriorityHintParam
-          .Get();
-
-  if (GetResource()) {
-    switch (GetResource()->GetResourceRequest().GetFetchPriorityHint()) {
-      case mojom::blink::FetchPriorityHint::kLow:
-        if (opt_out_low) {
-          return false;
-        }
-        break;
-      case mojom::blink::FetchPriorityHint::kAuto:
-        if (opt_out_auto) {
-          return false;
-        }
-        break;
-      case mojom::blink::FetchPriorityHint::kHigh:
-        if (opt_out_high) {
-          return false;
-        }
-        break;
-    }
+  if (GetResource() &&
+      GetResource()->GetResourceRequest().GetFetchPriorityHint() ==
+          mojom::blink::FetchPriorityHint::kHigh) {
+    return false;
   }
 
   return true;
+#endif
 }
+
+#if !BUILDFLAG(IS_CHROMEOS)
+// static
+bool ClassicPendingScript::
+    IsDeviceEligibleForLowPriorityAsyncScriptExecutionForTesting() {
+  return IsDeviceEligibleForLowPriorityAsyncScriptExecution();
+}
+#endif
 
 void ClassicPendingScript::NotifyFinished(Resource* resource) {
   // The following SRI checks need to be here because, unfortunately, fetches
@@ -496,7 +442,9 @@ void ClassicPendingScript::NotifyFinished(Resource* resource) {
   auto* fetcher = execution_context->Fetcher();
   const bool mime_type_failure = !AllowedByNosniff::MimeTypeAsScript(
       fetcher->GetUseCounter(), &fetcher->GetConsoleLogger(),
-      resource->GetResponse(), AllowedByNosniff::MimeTypeCheck::kLaxForElement);
+      resource->GetResponse(), AllowedByNosniff::MimeTypeCheck::kLaxForElement,
+      AllowedByNosniff::ClassicScriptUsage::
+          kScriptElementOrTopLevelWorkerScript);
 
   TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("v8.compile"),
               "ClassicPendingScript::NotifyFinished",
@@ -520,13 +468,25 @@ void ClassicPendingScript::NotifyFinished(Resource* resource) {
   classic_script_ =
       ClassicScript::CreateFromResource(To<ScriptResource>(resource), options_);
 
+  if (CachedMetadataHandler* cache_handler = classic_script_->CacheHandler()) {
+    cache_handler->Check(
+        ExecutionContext::GetCodeCacheHostFromContext(execution_context),
+        classic_script_->SourceText());
+  }
+
   // We'll still wait for ScriptCacheConsumer before marking this PendingScript
-  // ready.
-  if (classic_script_->CacheConsumer()) {
+  // ready, provided the code cache passed validation.
+  if (classic_script_->CacheConsumer() &&
+      V8CodeCache::HasCodeCache(classic_script_->CacheHandler(),
+                                CachedMetadataHandler::kCrashIfUnchecked)) {
     AdvanceReadyState(kWaitingForCacheConsumer);
     // TODO(leszeks): Decide whether kNetworking is the right task type here.
+    v8::Isolate* isolate = execution_context->GetIsolate();
+    v8::HandleScope handle_scope(isolate);
     classic_script_->CacheConsumer()->NotifyClientWaiting(
-        this, classic_script_,
+        this, classic_script_->CacheHandler(),
+        V8String(isolate, classic_script_->SourceText()),
+        classic_script_->CreateScriptOrigin(isolate),
         execution_context->GetTaskRunner(TaskType::kNetworking));
   } else {
     // Either there was never a cache consume, or it was dropped. Either way, we

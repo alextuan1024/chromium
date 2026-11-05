@@ -17,8 +17,6 @@
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
-#include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations.h"
-#include "components/privacy_sandbox/privacy_sandbox_attestations/scoped_privacy_sandbox_attestations.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "components/privacy_sandbox/privacy_sandbox_settings.h"
 #include "content/public/browser/navigation_details.h"
@@ -27,13 +25,12 @@
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/network/public/cpp/features.h"
 #include "third_party/blink/public/common/features.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 using content::WebContents;
 
@@ -85,7 +82,7 @@ IN_PROC_BROWSER_TEST_F(InspectUITest, SharedWorker) {
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(chrome::kChromeUIInspectURL),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   ASSERT_TRUE(RunTestCase("SharedWorker"));
@@ -151,52 +148,6 @@ IN_PROC_BROWSER_TEST_F(InspectUITest, MAYBE_LaunchUIDevtools) {
   // Ensure that "Inspect Native UI" button is enabled.
   ASSERT_TRUE(ExecJs(inspect_ui_contents->GetPrimaryMainFrame(),
                      "assertNativeUIButtonDisabled(false);"));
-}
-
-class InspectUIFencedFrameTest : public InspectUITest {
- public:
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- protected:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-// TODO(crbug.com/40227465): Re-enable this test
-IN_PROC_BROWSER_TEST_F(InspectUIFencedFrameTest,
-                       DISABLED_FencedFrameInFrontEnd) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-  TabStripModel* tab_strip_model = browser()->tab_strip_model();
-
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
-                                           GURL(chrome::kChromeUIInspectURL)));
-
-  const int inspect_ui_tab_idx = tab_strip_model->active_index();
-  content::WebContents* inspect_ui_contents =
-      tab_strip_model->GetActiveWebContents();
-
-  content::WebContents* front_end_tab =
-      LaunchUIDevtools(tab_strip_model->GetActiveWebContents()->GetWebUI());
-
-  tab_strip_model->ActivateTabAt(inspect_ui_tab_idx);
-
-  // Run an empty test, to load the mocha test file on the page.
-  ASSERT_TRUE(RunTestCase("Empty"));
-  // Ensure that "Inspect Native UI" button is disabled.
-  ASSERT_TRUE(ExecJs(inspect_ui_contents->GetPrimaryMainFrame(),
-                     "assertNativeUIButtonDisabled(true);"));
-
-  // Create a fenced frame into the front-end page.
-  const GURL fenced_frame_url =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
-  ASSERT_TRUE(fenced_frame_test_helper().CreateFencedFrame(
-      front_end_tab->GetPrimaryMainFrame(), fenced_frame_url));
-
-  // Ensure that the fenced frame doesn't affect to the the front-end observer.
-  // "Inspect Native UI" button is still disabled.
-  ASSERT_TRUE(ExecJs(inspect_ui_contents->GetPrimaryMainFrame(),
-                     "assertNativeUIButtonDisabled(true);"));
 }
 
 class InspectUIRemoteDebuggingTest : public InspectUITest {

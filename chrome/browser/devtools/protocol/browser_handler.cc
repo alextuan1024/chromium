@@ -19,8 +19,8 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
+#include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -35,12 +35,12 @@ using protocol::Response;
 
 namespace {
 
-BrowserWindow* GetBrowserWindow(int window_id) {
-  BrowserWindow* result = nullptr;
+BrowserWindowInterface* GetBrowserWindowInterface(int window_id) {
+  BrowserWindowInterface* result = nullptr;
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [window_id, &result](BrowserWindowInterface* browser_window_interface) {
         if (browser_window_interface->GetSessionID().id() == window_id) {
-          result = BrowserWindow::FromBrowser(browser_window_interface);
+          result = browser_window_interface;
           return false;
         }
         return true;
@@ -129,7 +129,8 @@ Response BrowserHandler::GetWindowForTarget(
 Response BrowserHandler::GetWindowBounds(
     int window_id,
     std::unique_ptr<protocol::Browser::Bounds>* out_bounds) {
-  BrowserWindow* window = GetBrowserWindow(window_id);
+  BrowserWindowInterface* browser = GetBrowserWindowInterface(window_id);
+  BrowserWindow* window = BrowserWindow::FromBrowser(browser);
   if (!window) {
     return Response::ServerError("Browser window not found");
   }
@@ -146,7 +147,8 @@ Response BrowserHandler::Close() {
 Response BrowserHandler::SetWindowBounds(
     int window_id,
     std::unique_ptr<protocol::Browser::Bounds> window_bounds) {
-  BrowserWindow* window = GetBrowserWindow(window_id);
+  BrowserWindowInterface* browser = GetBrowserWindowInterface(window_id);
+  BrowserWindow* window = BrowserWindow::FromBrowser(browser);
   if (!window) {
     return Response::ServerError("Browser window not found");
   }
@@ -174,7 +176,7 @@ Response BrowserHandler::SetWindowBounds(
           "To make minimized window fullscreen, "
           "restore it to normal state first.");
     }
-    window->GetExclusiveAccessContext()->EnterFullscreen(
+    ExclusiveAccessManager::From(browser)->context()->EnterFullscreen(
         url::Origin(), EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE,
         FullscreenTabParams());
   } else if (window_state == "maximized") {
@@ -193,7 +195,7 @@ Response BrowserHandler::SetWindowBounds(
     window->Minimize();
   } else if (window_state == "normal") {
     if (window->IsFullscreen()) {
-      window->GetExclusiveAccessContext()->ExitFullscreen();
+      ExclusiveAccessManager::From(browser)->context()->ExitFullscreen();
     } else if (window->IsMinimized() || window->IsMaximized()) {
       window->Restore();
     } else if (set_bounds) {
@@ -209,7 +211,8 @@ Response BrowserHandler::SetWindowBounds(
 protocol::Response BrowserHandler::SetContentsSize(int window_id,
                                                    std::optional<int> width,
                                                    std::optional<int> height) {
-  BrowserWindow* window = GetBrowserWindow(window_id);
+  BrowserWindowInterface* browser = GetBrowserWindowInterface(window_id);
+  BrowserWindow* window = BrowserWindow::FromBrowser(browser);
   if (!window) {
     return Response::ServerError("Browser window not found");
   }
@@ -285,23 +288,5 @@ protocol::Response BrowserHandler::ExecuteBrowserCommand(
     return Response::InvalidRequest(
         "Browser command not supported. BrowserCommandId: " + command_id);
   }
-  return Response::Success();
-}
-
-protocol::Response BrowserHandler::AddPrivacySandboxEnrollmentOverride(
-    const std::string& in_url) {
-  auto host = content::DevToolsAgentHost::GetForId(target_id_);
-  if (!host) {
-    return Response::ServerError("No host found");
-  }
-
-  GURL url_to_add = GURL(in_url);
-
-  if (!url_to_add.is_valid()) {
-    return Response::InvalidParams("Invalid URL");
-  }
-
-  privacy_sandbox::PrivacySandboxAttestations::GetInstance()->AddOverride(
-      net::SchemefulSite(url_to_add));
   return Response::Success();
 }

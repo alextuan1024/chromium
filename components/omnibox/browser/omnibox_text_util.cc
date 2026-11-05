@@ -4,19 +4,22 @@
 
 #include "components/omnibox/browser/omnibox_text_util.h"
 
+#include "base/i18n/rtl.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "components/contextual_tasks/public/features.h"
-#include "components/dom_distiller/core/url_constants.h"
-#include "components/dom_distiller/core/url_utils.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/location_bar_model_util.h"
 #include "components/omnibox/browser/omnibox_client.h"
+#include "components/strings/grit/components_strings.h"
+#include "components/web_distiller/core/url_constants.h"
+#include "components/web_distiller/core/url_utils.h"
 #include "content/public/common/url_constants.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -135,6 +138,35 @@ std::u16string SanitizeTextForPaste(const std::u16string& text) {
 }
 // LINT.ThenChange(//ui/webui/resources/cr_components/searchbox/utils.ts:SanitizeTextForPaste)
 
+std::u16string FormatAdditionalText(std::u16string_view text) {
+  if (text.empty()) {
+    return std::u16string();
+  }
+  std::u16string adjusted_text(text);
+  base::i18n::AdjustStringForLocaleDirection(&adjusted_text);
+  return l10n_util::GetStringFUTF16(IDS_OMNIBOX_ADDITIONAL_TEXT_DASH_TEMPLATE,
+                                    std::u16string(), adjusted_text);
+}
+
+GURL GetUrlForCopyOfUnmodifiedText(
+    const GURL& navigation_entry_url,
+    const GURL& contextual_tasks_inner_frame_url) {
+  GURL url = navigation_entry_url;
+
+  // Don't let users copy Reader Mode page URLs.
+  // We display the original article's URL in the omnibox, so users will
+  // expect that to be what is copied to the clipboard.
+  if (web_distiller::url_utils::IsDistilledPage(url)) {
+    url = web_distiller::url_utils::GetOriginalUrlFromDistillerUrl(url);
+  }
+  // Don't let users copy Contextual Task URLs. We should let them copy the
+  // inner frame URL instead.
+  if (!contextual_tasks_inner_frame_url.is_empty()) {
+    url = contextual_tasks_inner_frame_url;
+  }
+  return url;
+}
+
 void AdjustTextForCopy(
     int sel_min,
     std::u16string* text,
@@ -163,22 +195,9 @@ void AdjustTextForCopy(
   // text (whether it's in the elided or unelided form), copy the omnibox
   // contents as a hyperlink to the current page.
   if (!has_user_modified_text) {
-    *url_from_text = navigation_entry_url;
+    *url_from_text = GetUrlForCopyOfUnmodifiedText(
+        navigation_entry_url, contextual_tasks_inner_frame_url);
     *write_url = true;
-
-    // Don't let users copy Reader Mode page URLs.
-    // We display the original article's URL in the omnibox, so users will
-    // expect that to be what is copied to the clipboard.
-    if (dom_distiller::url_utils::IsDistilledPage(*url_from_text)) {
-      *url_from_text = dom_distiller::url_utils::GetOriginalUrlFromDistillerUrl(
-          *url_from_text);
-    }
-    // Don't let users copy Contextual Task URLs. We should let them copy the
-    // inner frame URL instead.
-    if (!contextual_tasks_inner_frame_url.is_empty()) {
-      *url_from_text = contextual_tasks_inner_frame_url;
-    }
-
     *text = base::UTF8ToUTF16(url_from_text->spec());
     return;
   }

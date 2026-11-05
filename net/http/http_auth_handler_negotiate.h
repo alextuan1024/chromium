@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
@@ -54,9 +55,10 @@ class NET_EXPORT_PRIVATE HttpAuthHandlerNegotiate : public HttpAuthHandler {
     ~Factory() override;
 
 #if !BUILDFLAG(IS_ANDROID)
-    // Sets the system library to use, thereby assuming ownership of
-    // |auth_library|.
-    void set_library(std::unique_ptr<AuthLibrary> auth_provider) {
+    // Sets the system library to use. Ownership is shared: on Windows the
+    // SSPI calls run on a separate sequence and an in-flight call keeps
+    // |auth_library| alive even if this Factory is destroyed.
+    void set_library(scoped_refptr<AuthLibrary> auth_provider) {
       auth_library_ = std::move(auth_provider);
     }
 
@@ -82,7 +84,7 @@ class NET_EXPORT_PRIVATE HttpAuthHandlerNegotiate : public HttpAuthHandler {
     HttpAuthMechanismFactory negotiate_auth_system_factory_;
     bool is_unsupported_ = false;
 #if !BUILDFLAG(IS_ANDROID)
-    std::unique_ptr<AuthLibrary> auth_library_;
+    scoped_refptr<AuthLibrary> auth_library_;
 #endif  // !BUILDFLAG(IS_ANDROID)
   };
 
@@ -97,7 +99,52 @@ class NET_EXPORT_PRIVATE HttpAuthHandlerNegotiate : public HttpAuthHandler {
   bool AllowsDefaultCredentials() override;
   bool AllowsExplicitCredentials() override;
 
+  // Result of validating a Negotiate target host (such as the target service
+  // principal host reported by GSSAPI) against the challenged origin and
+  // `HttpAuthPreferences`.
+  //
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(NegotiateTargetHostValidationResult)
+  enum class TargetHostValidationResult {
+    kSameHost = 0,
+    kAllowedDifferentHost = 1,
+    // See `HttpAuthMechanism::TargetPrincipalError` for the next three values.
+    kPrincipalQueryFailed = 2,
+    kNonHttpServicePrincipal = 3,
+    kUnparsableHost = 4,
+    kMissingPreferences = 5,
+    kDisallowedByServerAllowlist = 6,
+    kDisallowedByDelegateAllowlist = 7,
+    // Only delegation was disallowed for the target host on the first token,
+    // so it is regenerated with the delegation allowed for that host.
+    kAllowedWithClampedDelegation = 8,
+    kMaxValue = kAllowedWithClampedDelegation,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:NegotiateTargetHostValidationResult)
+
+  // Result of validating a DNS CNAME canonical host against the challenged
+  // origin and `HttpAuthPreferences`.
+  //
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(NegotiateCnameValidationResult)
+  enum class CnameValidationResult {
+    kSameHost = 0,
+    kAllowedDifferentHost = 1,
+    kAllowedWithClampedDelegation = 2,
+    kAllowedWindowsDotlessIntranet = 3,
+    kInvalidCanonicalHost = 4,
+    kMissingPreferences = 5,
+    kDisallowedByServerAllowlist = 6,
+    kMaxValue = kDisallowedByServerAllowlist,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:NegotiateCnameValidationResult)
+
   const std::string& spn_for_testing() const { return spn_; }
+  HttpAuth::DelegationType delegation_type_for_testing() const {
+    return delegation_type_;
+  }
 
  protected:
   // HttpAuthHandler
@@ -120,6 +167,8 @@ class NET_EXPORT_PRIVATE HttpAuthHandlerNegotiate : public HttpAuthHandler {
     STATE_NONE,
   };
 
+  struct TargetHostValidation;
+
   std::string CreateSPN(const std::string& server,
                         const url::SchemeHostPort& scheme_host_port);
 
@@ -129,9 +178,30 @@ class NET_EXPORT_PRIVATE HttpAuthHandlerNegotiate : public HttpAuthHandler {
 
   int DoResolveCanonicalName();
   int DoResolveCanonicalNameComplete(int rv);
+  // Validates a DNS CNAME `canonical_host` of a server when
+  // `kValidateNegotiateCnameAllowlist` is enabled, recording the result to UMA
+  // and NetLog and clamping delegation to what `canonical_host` allows when it
+  // passes validation, or to `kNone` when it is rejected. Returns whether to
+  // use `canonical_host` for the SPN instead of the requested host.
+  bool ShouldUseCanonicalNameForSpn(const std::string& canonical_host);
   int DoGenerateAuthToken();
   int DoGenerateAuthTokenComplete(int rv);
   HttpAuth::DelegationType GetDelegationType() const;
+
+  // Validates a candidate target host (a DNS CNAME canonical host or the
+  // service principal host from `HttpAuthMechanism::GetTargetPrincipalHost()`)
+  // against `scheme_host_port_` and `http_auth_preferences_`. When
+  // `allow_delegation_clamping` is true and the target host only permits a
+  // lower delegation level than `delegation_type_`, returns
+  // `kAllowedDifferentHost` with `allowed_delegation` set to the lower level;
+  // otherwise returns `kDisallowedByDelegateAllowlist`. When
+  // `allow_bracketed_ipv6` is false (for DNS CNAMEs passed directly to
+  // `CreateSPN()`), bracketed IPv6 literals are rejected; when true (for
+  // already-canonicalized target principal hosts and `scheme_host_port_`),
+  // bracketed IPv6 literals are accepted.
+  TargetHostValidation ValidateTargetHost(std::string_view target_host,
+                                          bool allow_delegation_clamping,
+                                          bool allow_bracketed_ipv6) const;
 
   std::unique_ptr<HttpAuthMechanism> auth_system_;
   const raw_ptr<HostResolver> resolver_;
@@ -154,6 +224,12 @@ class NET_EXPORT_PRIVATE HttpAuthHandlerNegotiate : public HttpAuthHandler {
   handles::NetworkHandle target_network_ = handles::kInvalidNetworkHandle;
 
   State next_state_ = STATE_NONE;
+
+  // Whether a token has been returned to the caller, after which target
+  // validation failures can no longer be handled by regenerating the token.
+  bool auth_token_generated_ = false;
+
+  HttpAuth::DelegationType delegation_type_ = HttpAuth::DelegationType::kNone;
 
   raw_ptr<const HttpAuthPreferences> http_auth_preferences_;
 };

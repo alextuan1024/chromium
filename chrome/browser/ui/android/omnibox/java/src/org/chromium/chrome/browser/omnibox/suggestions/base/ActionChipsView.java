@@ -7,12 +7,14 @@ package org.chromium.chrome.browser.omnibox.suggestions.base;
 import android.content.Context;
 import android.view.KeyEvent;
 
+import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.build.annotations.CheckDiscard;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.suggestions.RecyclerViewSelectionController;
 import org.chromium.chrome.browser.omnibox.suggestions.SelectionController.TraversalMode;
@@ -22,10 +24,13 @@ import org.chromium.ui.base.KeyNavigationUtil;
 /**
  * Container view for the {@link ChipView}. Chips should be initially horizontally aligned with the
  * Content view and stretch to the end of the encompassing BaseSuggestionView.
+ *
+ * <p>This view holds no model state; see {@link BaseSuggestionViewBinder} for how chips are bound.
  */
 @NullMarked
 public class ActionChipsView extends RecyclerView {
     private RecyclerViewSelectionController mSelectionController;
+    private @Nullable SpacingRecyclerViewItemDecoration mItemDecoration;
 
     /**
      * Constructs a new pedal view.
@@ -34,7 +39,6 @@ public class ActionChipsView extends RecyclerView {
      */
     public ActionChipsView(Context context) {
         super(context);
-
         setItemAnimator(null);
         setId(R.id.omnibox_actions_carousel);
         var layoutManager = new LinearLayoutManager(context, LinearLayoutManager.HORIZONTAL, false);
@@ -86,16 +90,17 @@ public class ActionChipsView extends RecyclerView {
         mSelectionController.reset();
     }
 
-    public void setLeadInSpacing(int spacing) {
-        if (getItemDecorationCount() > 0) {
-            assert getItemDecorationCount() == 1 : "Expected at most 1 decoration";
-            removeItemDecorationAt(0);
+    public void setLeadInSpacing(@Px int spacing) {
+        if (mItemDecoration != null) {
+            if (mItemDecoration.getLeadInSpace() == spacing) return;
+            removeItemDecoration(mItemDecoration);
         }
 
-        addItemDecoration(
+        mItemDecoration =
                 new SpacingRecyclerViewItemDecoration(
                         spacing,
-                        getResources().getDimensionPixelSize(R.dimen.omnibox_action_chip_spacing)));
+                        getResources().getDimensionPixelSize(R.dimen.omnibox_action_chip_spacing));
+        addItemDecoration(mItemDecoration);
     }
 
     void setSelectionControllerForTesting(RecyclerViewSelectionController controller) {

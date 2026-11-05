@@ -5,7 +5,6 @@
 #include "chrome/browser/sync/test/integration/sync_integration_test_util.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/browser/sync/test/integration/themes_helper.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "content/public/test/browser_test.h"
 
 namespace {
@@ -22,18 +21,7 @@ class TwoClientThemesSyncTest
     : public SyncTest,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  TwoClientThemesSyncTest() : SyncTest(TWO_CLIENT) {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitWithFeatures(
-          /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos,
-                                syncer::kSeparateLocalAndAccountThemes,
-                                // `kEnablePreferencesAccountStorage` is used to
-                                // enable themes in transport
-                                // mode alongside some other data types.
-                                switches::kEnablePreferencesAccountStorage},
-          /*disabled_features=*/{});
-    }
-  }
+  TwoClientThemesSyncTest() : SyncTest(TWO_CLIENT) {}
 
   TwoClientThemesSyncTest(const TwoClientThemesSyncTest&) = delete;
   TwoClientThemesSyncTest& operator=(const TwoClientThemesSyncTest&) = delete;
@@ -43,9 +31,6 @@ class TwoClientThemesSyncTest
   SyncTest::SetupSyncMode GetSetupSyncMode() const override {
     return GetParam();
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(,

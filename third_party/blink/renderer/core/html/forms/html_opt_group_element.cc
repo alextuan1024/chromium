@@ -38,7 +38,6 @@
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 
 namespace blink {
@@ -74,6 +73,12 @@ void HTMLOptGroupElement::ParseAttribute(
   if (params.name == html_names::kDisabledAttr) {
     PseudoStateChanged(CSSSelector::kPseudoDisabled);
     PseudoStateChanged(CSSSelector::kPseudoEnabled);
+    if (RuntimeEnabledFeatures::SelectedcontentSpec2Enabled() &&
+        params.old_value.IsNull() != params.new_value.IsNull()) {
+      if (HTMLSelectElement* select = OwnerSelectElement()) {
+        select->ResetSelectedness();
+      }
+    }
   } else if (params.name == html_names::kLabelAttr) {
     UpdateGroupLabel();
   }
@@ -144,17 +149,15 @@ Node::InsertionNotificationRequest HTMLOptGroupElement::InsertedInto(
     ContainerNode& insertion_point) {
   HTMLElement::InsertedInto(insertion_point);
 
-  owner_select_ = HTMLSelectElement::WalkAncestorsForRelatedParts(*this).select;
-  if (owner_select_) {
+  HTMLSelectElement* new_ancestor_select =
+      HTMLSelectElement::WalkAncestorsForRelatedParts(*this).select;
+  if (owner_select_ != new_ancestor_select) {
+    // When inserting, we can only gain an associated <select>
+    CHECK(!owner_select_);
+    owner_select_ = new_ancestor_select;
     owner_select_->OptGroupInsertedOrRemoved(*this);
   }
   UpdateGroupLabel();
-
-  if (HTMLSelectElement* select = OwnerSelectElement()) {
-    if (&insertion_point == select) {
-      select->OptGroupInsertedOrRemoved(*this);
-    }
-  }
   return kInsertionDone;
 }
 
@@ -235,7 +238,7 @@ void HTMLOptGroupElement::ManuallyAssignSlots() {
       continue;
     opt_group_nodes.push_back(child);
   }
-  opt_group_slot_->Assign(opt_group_nodes);
+  opt_group_slot_->SetManuallyAssignedNodesForRecalc(opt_group_nodes);
 }
 
 void HTMLOptGroupElement::UpdateGroupLabel() {

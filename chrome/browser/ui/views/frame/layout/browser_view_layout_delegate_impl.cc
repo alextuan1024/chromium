@@ -10,6 +10,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/animation/browser_animation_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/exclusive_access/browser_view_exclusive_access_context.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
 #include "chrome/browser/ui/tabs/features.h"
@@ -22,6 +23,7 @@
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/glass_frame_service.h"
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
+#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_host.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_view.h"
 #include "chrome/common/buildflags.h"
@@ -208,7 +210,18 @@ BrowserViewLayoutDelegateImpl::GetAnimationController() const {
 
 ExclusiveAccessBubbleViews*
 BrowserViewLayoutDelegateImpl::GetExclusiveAccessBubble() const {
-  return browser_view_->GetExclusiveAccessBubble();
+  // Layout may run before InitPostWindowConstruction() creates the context.
+  auto* context =
+      BrowserViewExclusiveAccessContext::From(browser_view_->browser());
+  if (!context) {
+    return nullptr;
+  }
+  return context->exclusive_access_bubble();
+}
+
+OrganizerPanelLocation
+BrowserViewLayoutDelegateImpl::GetOrganizerPanelLocation() const {
+  return OrganizerPanelHost::GetPreferredLocation(*browser_view_->browser());
 }
 
 bool BrowserViewLayoutDelegateImpl::IsTopControlsSlideBehaviorEnabled() const {
@@ -225,12 +238,12 @@ gfx::NativeView BrowserViewLayoutDelegateImpl::GetHostViewForAnchoring() const {
 }
 
 bool BrowserViewLayoutDelegateImpl::HasFindBarController() const {
-  return browser_view_->browser()->GetFeatures().HasFindBarController();
+  auto* const controller = FindBarController::From(browser_view_->browser());
+  return controller && controller->HasFindBar();
 }
 
 void BrowserViewLayoutDelegateImpl::MoveWindowForFindBarIfNecessary() const {
-  auto* const controller =
-      browser_view_->browser()->GetFeatures().GetFindBarController();
+  auto* const controller = FindBarController::From(browser_view_->browser());
   return controller->find_bar()->MoveWindowIfNecessary();
 }
 
@@ -308,4 +321,8 @@ BrowserViewLayoutDelegateImpl::AddOnGlassModeChangedCallback(
     *current_state_out = false;
   }
   return base::CallbackListSubscription();
+}
+
+int BrowserViewLayoutDelegateImpl::GetRestoredWindowCornerRadius() const {
+  return browser_view_->GetFrameView()->GetRestoredWindowCornerRadius();
 }

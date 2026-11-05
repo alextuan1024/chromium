@@ -29,6 +29,7 @@
 
 #include "third_party/blink/renderer/core/editing/commands/editing_commands_utilities.h"
 
+#include "base/no_destructor.h"
 #include "third_party/blink/public/web/web_local_frame_client.h"
 #include "third_party/blink/renderer/core/clipboard/data_transfer.h"
 #include "third_party/blink/renderer/core/dom/text.h"
@@ -105,7 +106,7 @@ bool IsNodeRendered(const Node& node) {
   if (!layout_object)
     return false;
 
-  return layout_object->StyleRef().Visibility() == EVisibility::kVisible;
+  return layout_object->Style().Visibility() == EVisibility::kVisible;
 }
 
 bool IsInlineElement(const Node* node) {
@@ -185,7 +186,7 @@ static bool IsSpecialHTMLElement(const Node& n) {
   if (!layout_object)
     return false;
 
-  if (layout_object->StyleRef().IsDisplayTable()) {
+  if (layout_object->Style().IsDisplayTable()) {
     return true;
   }
 
@@ -294,7 +295,7 @@ bool LineBreakExistsAtPosition(const Position& position) {
 
   const auto* text_node = DynamicTo<Text>(position.AnchorNode());
   if (!text_node ||
-      text_node->GetLayoutObject()->StyleRef().ShouldCollapseBreaks()) {
+      text_node->GetLayoutObject()->Style().ShouldCollapseBreaks()) {
     return false;
   }
 
@@ -363,7 +364,7 @@ Position LeadingCollapsibleWhitespacePosition(const Position& position,
     return Position();
   if (option == kNotConsiderNonCollapsibleWhitespace &&
       anchor_node->GetLayoutObject() &&
-      anchor_node->GetLayoutObject()->StyleRef().ShouldPreserveWhiteSpaces()) {
+      anchor_node->GetLayoutObject()->Style().ShouldPreserveWhiteSpaces()) {
     return Position();
   }
   const String& string = anchor_text_node->data();
@@ -649,9 +650,9 @@ SelectionInDomTree SelectionForParagraphIteration(
 }
 
 const String& NonBreakingSpaceString() {
-  DEFINE_STATIC_LOCAL(String, non_breaking_space_string,
-                      (base::span_from_ref(uchar::kNoBreakSpace)));
-  return non_breaking_space_string;
+  static base::NoDestructor<String> non_breaking_space_string{
+      base::span_from_ref(uchar::kNoBreakSpace)};
+  return *non_breaking_space_string;
 }
 
 // TODO(tkent): This is a workaround of some crash bugs in the editing code,

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -32,8 +33,7 @@
 #include "components/actor/core/aggregated_journal.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/autofill/core/browser/integrators/actor/actor_form_filling_types.h"
-#include "components/origin_gating/core/checker_id.h"
-#include "components/origin_gating/core/origin_gating_cache.h"
+#include "components/origin_gating/core/client_tool.h"
 #include "components/origin_gating/core/origin_gating_checker.h"
 #include "components/origin_gating/core/origin_gating_registration.h"
 #include "components/origin_gating/core/origin_gating_service.h"
@@ -45,6 +45,7 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#include "url/gurl.h"
 
 class Profile;
 
@@ -62,7 +63,9 @@ class ScopedUmaHistogramTimer;
 
 namespace content {
 class NavigationHandle;
-}
+class RenderFrameHost;
+class WebContents;
+}  // namespace content
 
 namespace origin_gating {
 class OriginGatingService;
@@ -74,10 +77,13 @@ class Origin;
 
 namespace actor {
 
-struct ActionResultWithLatencyInfo;
+class ActorSurface;
 class ActorTask;
 class AutofillSelectionDialogEventHandler;
+struct InterceptedJavaScriptDialog;
 class ToolRequest;
+class ToolResult;
+struct ToolResultWithLatencyInfo;
 namespace ui {
 class UiEventDispatcher;
 }
@@ -178,12 +184,24 @@ class ExecutionEngine : public ToolDelegate,
       base::RepeatingCallback<std::unique_ptr<ExecutionEngine>(ActorTask&)>;
   static FactoryFunction& GetFactoryFunctionForTesting();
 
-  static std::unique_ptr<ExecutionEngine> Create(ActorTask& owner_task);
+  // Defines the allowed navigation schemes / origin gating policy.
+  enum class AllowedSchemes {
+    kRequireHttpsOrHttp,
+    kRequireHttpsOrHttpOrNtp,
+  };
+
+  static std::unique_ptr<ExecutionEngine> Create(
+      ActorTask& owner_task,
+      AllowedSchemes allowed_schemes = AllowedSchemes::kRequireHttpsOrHttp);
 
   // Constructor public for std::make_unique but only usable via static Create
   // method.
-  explicit ExecutionEngine(base::PassKey<ExecutionEngine>,
-                           ActorTask& owner_task);
+  explicit ExecutionEngine(
+      base::PassKey<ExecutionEngine>,
+      ActorTask& owner_task,
+      AllowedSchemes allowed_schemes = AllowedSchemes::kRequireHttpsOrHttp);
+
+  AllowedSchemes allowed_schemes() const { return allowed_schemes_; }
 
   ExecutionEngine(const ExecutionEngine&) = delete;
   ExecutionEngine& operator=(const ExecutionEngine&) = delete;
@@ -200,10 +218,15 @@ class ExecutionEngine : public ToolDelegate,
   void FailCurrentTool(mojom::ActionResultCode reason) override;
 
   // Performs the given tool actions and invokes the callback when completed.
+  // `on_actions_accepted`, which may be null, runs once `actions` are accepted,
+  // right before the first of them starts. It doesn't run if `actions` are
+  // rejected because an action sequence is already in progress. If it stops or
+  // pauses the task, or destroys this engine, `actions` don't start.
   using ActCallback =
-      base::OnceCallback<void(std::vector<ActionResultWithLatencyInfo>,
+      base::OnceCallback<void(std::vector<ToolResultWithLatencyInfo>,
                               TabObservationStrategy)>;
   void Act(std::vector<std::unique_ptr<ToolRequest>>&& actions,
+           base::OnceClosure on_actions_accepted,
            ActCallback callback);
 
   // Invalidated anytime `action_sequence_` is reset.
@@ -245,14 +268,16 @@ class ExecutionEngine : public ToolDelegate,
   void InterruptFromTool(bool retain_user_control) override;
   void UninterruptFromTool() override;
   void EnqueueFollowupAction(std::unique_ptr<ToolRequest> action) override;
-  void AddTab(
-      tabs::TabHandle tab_handle,
+  void AddActorSurface(
+      ActorSurfaceHandle actor_surface_handle,
       bool stop_task_on_detach,
       base::OnceCallback<void(mojom::ActionResultPtr)> callback) override;
-  bool HasTab(tabs::TabHandle tab_handle) override;
-  void RemoveTab(tabs::TabHandle tab_handle) override;
+  bool HasActorSurface(ActorSurfaceHandle actor_surface_handle) override;
+  void RemoveActorSurface(ActorSurfaceHandle actor_surface_handle) override;
   base::WeakPtr<actor_login::ActionSequenceDelegate> GetActionSequenceDelegate()
       override;
+  void OnActionTargetFrameResolved(
+      content::RenderFrameHost& target_frame) override;
 
   // actor_login::ActionSequenceDelegate:
   base::CallbackListSubscription RegisterActionSequenceEnded(
@@ -308,19 +333,16 @@ class ExecutionEngine : public ToolDelegate,
 
   void DidUninterruptTask();
 
+  void set_tool_invoke_callback_for_testing(base::OnceClosure callback) {
+    tool_invoke_callback_for_testing_ = std::move(callback);
+  }
+
   void set_tool_invoke_complete_callback_for_testing(
       base::OnceClosure callback) {
     tool_invoke_complete_callback_for_testing_ = std::move(callback);
   }
 
   State state() const { return state_; }
-
-  origin_gating::CheckerId checker_id() const {
-    return origin_gating_registration_ ? origin_gating_registration_->id()
-                                       : origin_gating::CheckerId();
-  }
-
-  const origin_gating::OriginGatingCache& GetOriginGatingCache() const;
 
   const origin_gating::OriginGatingChecker& GetOriginGatingChecker() const;
   origin_gating::OriginGatingChecker& GetOriginGatingChecker();
@@ -333,17 +355,13 @@ class ExecutionEngine : public ToolDelegate,
   // origin_gating::OriginGatingChecker::Delegate
   void DoesOriginRequireUserConfirmation(
       origin_gating::GatingDecisionContext* context,
-      origin_gating::GateableEvent event,
-      const GURL& source,
-      const GURL& destination,
+      const origin_gating::GateableEvent& event,
       DoesOriginRequireUserConfirmationCallback callback) const override;
   void EvaluateEnterprisePolicy(
       const GURL& destination,
       EvaluateEnterprisePolicyCallback callback) const override;
   void OnNoVerdict(origin_gating::GatingDecisionContext* context,
-                   origin_gating::GateableEvent event,
-                   const GURL& source,
-                   const GURL& destination,
+                   const origin_gating::GateableEvent& event,
                    bool requires_user_confirmation,
                    base::OnceCallback<void(NoVerdictResult)> callback) override;
 
@@ -352,7 +370,9 @@ class ExecutionEngine : public ToolDelegate,
 
  protected:
   // Allow derived classes to use the natural constructors.
-  explicit ExecutionEngine(ActorTask& owner_task);
+  explicit ExecutionEngine(
+      ActorTask& owner_task,
+      AllowedSchemes allowed_schemes = AllowedSchemes::kRequireHttpsOrHttp);
 
  private:
   class NewTabWebContentsObserver;
@@ -371,13 +391,8 @@ class ExecutionEngine : public ToolDelegate,
 
   // Performs synchronous safety checks for the next action. If everything
   // passes calls tool_controller_.Invoke().
-  void DidFinishAsyncSafetyChecks(const url::Origin& evaluated_origin,
+  void DidFinishAsyncSafetyChecks(const url::Origin& committed_origin,
                                   mojom::ActionResultCode result_code);
-
-  // If a failure occurs before the next action starts, we associate the tab
-  // that the action would have acted on with the task, so that we can provide
-  // tab observations back to the client.
-  void FailedOnTabBeforeToolCreation();
 
   // Synchronously executes the next action. There are several types of actions,
   // including renderer-scoped actions, tab-scoped actions, and global actions.
@@ -386,11 +401,18 @@ class ExecutionEngine : public ToolDelegate,
   // Called each time an action finishes.
   void PostToolCreate(mojom::ActionResultPtr result);
   void FinishedUiPreInvoke(mojom::ActionResultPtr result);
-  void FinishedToolInvoke(mojom::ActionResultPtr result);
+  void FinishedToolInvoke(ToolResult tool_result);
+  void FinishToolInvokeWithDialogs(
+      ToolResult tool_result,
+      std::vector<InterceptedJavaScriptDialog> javascript_dialogs);
   void FinishedUiPostInvoke(mojom::ActionResultPtr result);
 
   void CompleteActions(mojom::ActionResultPtr result,
                        std::optional<size_t> action_index);
+  void CompleteActions(
+      ToolResult tool_result,
+      std::optional<size_t> action_index,
+      std::vector<InterceptedJavaScriptDialog> javascript_dialogs);
 
   // Returns the next action that will be started when ExecuteNextAction is
   // reached.
@@ -412,6 +434,30 @@ class ExecutionEngine : public ToolDelegate,
   size_t InProgressActionIndex() const;
   const ToolRequest& GetInProgressAction() const;
 
+  // Returns the surface `request` validates against, looked up in this task's
+  // profile. Returns null if the surface is gone or belongs to another profile.
+  // `ActorSurfaceHandle::Get()` is profile-agnostic, so it must not be used to
+  // resolve a handle from the client before the target has been validated.
+  ActorSurface* GetSurfaceForValidation(const ToolRequest& request);
+
+  // Returns the WebContents whose JavaScriptDialogInterceptor corresponds to
+  // `action` (its explicit validation surface, or the task's most recently
+  // actuated surface when `action` has no target surface).
+  content::WebContents* GetWebContentsForDialogAttachment(
+      const ToolRequest& action);
+
+  // Drains and returns any JavaScript dialogs intercepted on `action`'s
+  // WebContents during this action.
+  std::vector<InterceptedJavaScriptDialog> TakeInterceptedJavaScriptDialogs(
+      const ToolRequest& action);
+
+  // Returns the shared PageStabilityConfig to defer observation for the
+  // currently executing action when `kActorStabilizeOncePerBundle` is enabled
+  // and the next queued action can reuse the same observation delayer; returns
+  // `std::nullopt` if the current action must wait immediately.
+  std::optional<ObservationDelayController::PageStabilityConfig>
+  GetDeferredObservationConfig() const;
+
   void LogNavigationGating(const url::Origin& source,
                            base::optional_ref<const url::Origin> initiator,
                            const url::Origin& destination,
@@ -424,9 +470,17 @@ class ExecutionEngine : public ToolDelegate,
       const url::Origin& destination_origin,
       State initial_state,
       std::optional<url::Origin> initiator,
-      origin_gating::GateableEvent event,
+      origin_gating::GateableEvent::Type event_type,
       std::unique_ptr<origin_gating::GatingDecisionContext> context,
       origin_gating::GatingDecision decision);
+
+  // Evaluates page-action gating on each of `origins` (the distinct origins of
+  // a page action's ancestor frames that differ from the main frame's) as a dry
+  // run, without blocking the action or prompting the user, and records the
+  // outcome to UMA. `tool` is the tool performing the page action.
+  void RunSubframeGatingDryRun(base::WeakPtr<content::WebContents> web_contents,
+                               origin_gating::ClientTool tool,
+                               std::set<url::Origin> origins);
 
   // Called when the browser detects the actor needs to confirm a
   // client-side-initiated navigation to a novel origin.
@@ -473,6 +527,9 @@ class ExecutionEngine : public ToolDelegate,
   // Owns `this`.
   const base::raw_ref<ActorTask> task_;
 
+  // Allowed navigation schemes / origin gating policy.
+  const AllowedSchemes allowed_schemes_ = AllowedSchemes::kRequireHttpsOrHttp;
+
   base::SafeRef<AggregatedJournal> journal_;
 
   // Created when task_ is set. Handles execution details for an individual tool
@@ -501,18 +558,19 @@ class ExecutionEngine : public ToolDelegate,
   // completes.
   std::optional<mojom::ActionResultCode> external_tool_failure_reason_;
 
+  // True while `CompleteActions()` is draining a pending deferred observation.
+  // Prevents `TabsCanOpenNewWebContents()` and `FailCurrentTool()` from
+  // treating a tool as still in progress.
+  bool is_settling_pending_observation_ = false;
+
   // The results for actions so far.
-  std::vector<ActionResultWithLatencyInfo> action_results_;
+  std::vector<ToolResultWithLatencyInfo> action_results_;
 
   // Manages the registration lifetime of this engine's OriginGatingChecker with
   // the OriginGatingService. Automatically unregisters the checker upon
   // destruction.
   std::unique_ptr<origin_gating::OriginGatingRegistration>
       origin_gating_registration_;
-
-  // This will allow us to store already-recorded origins to avoid duplication
-  // of dark launch metrics.
-  origin_gating::OriginGatingCache dark_launch_origin_gating_cache_;
 
   TabObservationStrategy observation_strategy_;
 
@@ -533,6 +591,9 @@ class ExecutionEngine : public ToolDelegate,
   // If a tool finishes while the task is in a waiting state, the finish
   // callback and processing is deferred until the task is resumed.
   base::OnceClosure deferred_finish_tool_invoke_;
+
+  // Run right after the current tool is invoked.
+  base::OnceClosure tool_invoke_callback_for_testing_;
 
   base::OnceClosure tool_invoke_complete_callback_for_testing_;
 

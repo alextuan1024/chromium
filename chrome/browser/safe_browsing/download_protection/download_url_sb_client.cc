@@ -9,9 +9,9 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
-#include "components/safe_browsing/content/browser/client_report_util.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
-#include "components/safe_browsing/content/browser/ui_manager.h"
+#include "components/safe_browsing/content/browser/interstitials/ui_manager.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer_manager.h"
+#include "components/safe_browsing/content/browser/threat_details/client_report_util.h"
 #include "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #include "components/safe_browsing/core/browser/referrer_chain_provider.h"
 #include "components/safe_browsing/core/common/features.h"
@@ -41,22 +41,23 @@ DownloadUrlSBClient::DownloadUrlSBClient(
       start_time_(base::TimeTicks::Now()),
       database_manager_(database_manager),
       v5_get_hash_protocol_manager_(v5_get_hash_protocol_manager) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(item_);
-  DCHECK(service_);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(item_, base::NotFatalUntil::M162);
+  CHECK(service_, base::NotFatalUntil::M162);
   download_item_observation_.Observe(item_.get());
 }
 
 // Implements DownloadItem::Observer.
 void DownloadUrlSBClient::OnDownloadDestroyed(
     download::DownloadItem* download) {
-  DCHECK(download_item_observation_.IsObservingSource(item_.get()));
+  CHECK(download_item_observation_.IsObservingSource(item_.get()),
+        base::NotFatalUntil::M162);
   download_item_observation_.Reset();
   item_ = nullptr;
 }
 
 void DownloadUrlSBClient::StartCheck() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!database_manager_.get() ||
       database_manager_->CheckDownloadUrl(url_chain_, this)) {
     CheckDone(SBThreatType::SB_THREAT_TYPE_SAFE);
@@ -87,7 +88,7 @@ DownloadUrlSBClient::GetV5GetHashProtocolManager() {
 }
 
 DownloadUrlSBClient::~DownloadUrlSBClient() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 }
 
 void DownloadUrlSBClient::CheckDone(SBThreatType threat_type) {
@@ -126,7 +127,7 @@ void DownloadUrlSBClient::ReportMalware() {
 }
 
 void DownloadUrlSBClient::IdentifyReferrerChain() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!item_)
     return;
 

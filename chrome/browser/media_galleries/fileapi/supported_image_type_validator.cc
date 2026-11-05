@@ -97,8 +97,8 @@ bool SupportedImageTypeValidator::SupportsFileType(const base::FilePath& path) {
 
 void SupportedImageTypeValidator::StartPreWriteValidation(
     ResultCallback result_callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(callback_.is_null());
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M161);
+  CHECK(callback_.is_null(), base::NotFatalUntil::M161);
   callback_ = std::move(result_callback);
 
   base::ThreadPool::PostTaskAndReplyWithResult(
@@ -108,23 +108,13 @@ void SupportedImageTypeValidator::StartPreWriteValidation(
                      weak_factory_.GetWeakPtr()));
 }
 
-void SupportedImageTypeValidator::StartPostWriteValidation(
-    const base::FilePath& dest_platform_path,
-    ResultCallback result_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-
-  // StartPostWriteValidation() implementation is required. So effectively do
-  // nothing here.
-  std::move(result_callback).Run(base::File::FILE_OK);
-}
-
 SupportedImageTypeValidator::SupportedImageTypeValidator(
     const base::FilePath& path)
     : path_(path) {}
 
 void SupportedImageTypeValidator::OnFileOpen(
     std::unique_ptr<std::string> data) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M161);
   if (!data.get()) {
     std::move(callback_).Run(base::File::FILE_ERROR_SECURITY);
     return;

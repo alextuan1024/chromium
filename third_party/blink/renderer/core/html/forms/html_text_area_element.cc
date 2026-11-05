@@ -28,8 +28,7 @@
 
 #include <utility>
 
-#include "base/feature_list.h"
-#include "third_party/blink/public/common/features.h"
+#include "base/no_destructor.h"
 #include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_focus_options.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
@@ -45,7 +44,6 @@
 #include "third_party/blink/renderer/core/event_interface_names.h"
 #include "third_party/blink/renderer/core/events/before_text_inserted_event.h"
 #include "third_party/blink/renderer/core/events/drag_event.h"
-#include "third_party/blink/renderer/core/events/keyboard_event.h"
 #include "third_party/blink/renderer/core/events/mouse_event.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -77,7 +75,6 @@
 #include "third_party/blink/renderer/platform/json/json_values.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
 #include "third_party/blink/renderer/platform/wtf/text/line_ending.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -155,8 +152,9 @@ HTMLTextAreaElement::HTMLTextAreaElement(Document& document)
       // Prewarm 'monospace', the default font family for `<textarea>`. The
       // default language should be fine for this purpose because most users set
       // the same family for all languages.
-      FontCache::PrewarmFamily(settings->GetGenericFontFamilySettings().Fixed(
-          LayoutLocale::GetDefault().GetScript()));
+      FontCache::PrewarmFamily(settings->GetGenericFontFamilySettings().Get(
+          GenericFontFamily::kFixed,
+          LayoutLocale::GetDefault().GetScriptForFont()));
       g_is_default_font_prewarmed = true;
     }
   }
@@ -177,8 +175,9 @@ FormControlType HTMLTextAreaElement::FormControlType() const {
 }
 
 const AtomicString& HTMLTextAreaElement::FormControlTypeAsString() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, textarea, ("textarea"));
-  return textarea;
+  static const base::NoDestructor<AtomicString> textarea(
+      AtomicString::FromLiteral<"textarea">());
+  return *textarea;
 }
 
 FormControlState HTMLTextAreaElement::SaveFormControlState() const {
@@ -204,8 +203,7 @@ int HTMLTextAreaElement::scrollWidth() {
     return TextControlElement::scrollWidth();
   const LayoutUnit width = editor_box->PhysicalPaddingBoxRect().Width() +
                            box->PaddingOutsets().HorizontalSum();
-  return AdjustForAbsoluteZoom::AdjustLayoutUnit(width, box->StyleRef())
-      .Round();
+  return AdjustForAbsoluteZoom::AdjustLayoutUnit(width, box->Style()).Round();
 }
 
 int HTMLTextAreaElement::scrollHeight() {
@@ -222,8 +220,7 @@ int HTMLTextAreaElement::scrollHeight() {
     return TextControlElement::scrollHeight();
   const LayoutUnit height = editor_box->PhysicalPaddingBoxRect().Height() +
                             box->PaddingOutsets().VerticalSum();
-  return AdjustForAbsoluteZoom::AdjustLayoutUnit(height, box->StyleRef())
-      .Round();
+  return AdjustForAbsoluteZoom::AdjustLayoutUnit(height, box->Style()).Round();
 }
 
 double HTMLTextAreaElement::scrollLeft() {
@@ -417,19 +414,6 @@ void HTMLTextAreaElement::UpdateSelectionOnFocus(
 }
 
 void HTMLTextAreaElement::DefaultEventHandler(Event& event) {
-  if (auto* keyboard_event = DynamicTo<KeyboardEvent>(event);
-      base::FeatureList::IsEnabled(
-          blink::features::kAutofillKeydownEditableElement) &&
-      keyboard_event && event.type() == event_type_names::kKeydown &&
-      IsFocused() && !IsDisabledOrReadOnly() && GetDocument().GetPage() &&
-      GetDocument()
-          .GetPage()
-          ->GetChromeClient()
-          .HandleKeyboardEventOnEditableElement(*this, *keyboard_event)) {
-    event.SetDefaultHandled();
-    return;
-  }
-
   if (GetLayoutObject() &&
       (IsA<MouseEvent>(event) || IsA<DragEvent>(event) ||
        event.HasInterface(event_interface_names::kWheelEvent) ||
@@ -463,6 +447,7 @@ void HTMLTextAreaElement::SubtreeHasChanged() {
 #endif
   SetValueBeforeFirstUserEditIfNotSet();
   UpdateValue();
+  UpdatePlaceholderBreakAriaHidden(value_);
   CheckIfValueWasReverted(Value());
   SetNeedsValidityCheck();
   SetAutofillState(WebAutofillState::kNotFilled);
@@ -486,6 +471,7 @@ void HTMLTextAreaElement::SubtreeHasChanged() {
     GetDocument().GetPage()->GetChromeClient().DidClearValueInTextField(*this);
   }
   GetDocument().GetPage()->GetChromeClient().DidChangeValueInTextField(*this);
+  GetDocument().DidHaveFormEdit();
 }
 
 void HTMLTextAreaElement::HandleBeforeTextInsertedEvent(
@@ -627,6 +613,7 @@ void HTMLTextAreaElement::SetValueCommon(const String& new_value,
 
   // Clear the suggested value. Use the base class version to not trigger a view
   // update.
+  SetAutofillState(autofill_state);
   TextControlElement::SetSuggestedValue(String());
 
   // Return early because we don't want to trigger other side effects when the
@@ -685,7 +672,6 @@ void HTMLTextAreaElement::SetValueCommon(const String& new_value,
                       std::min(end_of_string, selection_end));
   }
 
-  SetAutofillState(autofill_state);
   NotifyFormStateChanged();
   switch (event_behavior) {
     case TextFieldEventBehavior::kDispatchChangeEvent:
@@ -736,16 +722,17 @@ void HTMLTextAreaElement::SetSuggestedValue(const String& value) {
     // information to javascript.
     sanitized_value = String();
   }
+  TextControlElement::SetSuggestedValue(sanitized_value);
   SetAutofillState(!sanitized_value.empty() ? WebAutofillState::kPreviewed
                                             : WebAutofillState::kNotFilled);
-  TextControlElement::SetSuggestedValue(sanitized_value);
   SetNeedsStyleRecalc(
       kSubtreeStyleChange,
       StyleChangeReasonForTracing::Create(style_change_reason::kControlValue));
 }
 
-void HTMLTextAreaElement::DidChangeIsInCanvasSubtree() {
-  TextControlElement::DidChangeIsInCanvasSubtree();
+void HTMLTextAreaElement::DidChangeIsInCanvasSubtree(
+    CanvasSubtreePropagation propagation_behavior) {
+  TextControlElement::DidChangeIsInCanvasSubtree(propagation_behavior);
   if (IsInCanvasSubtree()) {
     // Hide suggested values when under canvas, to prevent leaking this
     // information to javascript.
@@ -886,8 +873,7 @@ HTMLElement* HTMLTextAreaElement::UpdatePlaceholderText() {
   if (!placeholder) {
     auto* new_element = MakeGarbageCollected<HTMLDivElement>(GetDocument());
     placeholder = new_element;
-    placeholder->SetShadowPseudoId(
-        shadow_element_names::kPseudoInputPlaceholder);
+    UpdatePlaceholderShadowPseudoId(*placeholder);
     placeholder->setAttribute(html_names::kIdAttr,
                               shadow_element_names::kIdPlaceholder);
     placeholder->SetInlineStyleProperty(
@@ -967,9 +953,9 @@ WebFormControlElement::TextInfo HTMLTextAreaElement::GetTextInfo() const {
   }
 
   WebFormControlElement::TextInfo results;
-  results.effective_zoom = inner_layout->StyleRef().EffectiveZoom();
+  results.effective_zoom = inner_layout->Style().EffectiveZoom();
   results.primary_ascent =
-      inner_layout->StyleRef().GetFontHeight().ascent.ToFloat();
+      inner_layout->Style().GetFontHeight().ascent.ToFloat();
   for (LayoutObject* child = inner_layout->FirstChild(); child;
        child = child->NextSibling()) {
     const auto* paragraph_block = DynamicTo<LayoutBlockFlow>(child);

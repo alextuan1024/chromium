@@ -21,6 +21,7 @@
 #include "build/build_config.h"
 #include "mojo/core/embedder/scoped_ipc_support.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
+#include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/scoped_interface_endpoint_handle.h"
@@ -57,9 +58,10 @@ class DesktopSession;
 class PeerConnectionProcessHandler;
 class HostEventLogger;
 
-// This class implements core of the daemon process. It manages the networking
-// process running at lower privileges and maintains the list of desktop
-// sessions.
+// This class implements core of the daemon process. It manages the trusted
+// control-plane network process (running under an unprivileged service
+// account), spawns sandboxed per-session peer connection processes, and
+// maintains the list of desktop sessions.
 class DaemonProcess : public ConfigWatcher::Delegate,
                       public WorkerProcessIpcDelegate,
                       public HostStatusObserver,
@@ -76,7 +78,7 @@ class DaemonProcess : public ConfigWatcher::Delegate,
 
   using StoppedCallback = base::OnceCallback<void(int /*exit_code*/)>;
   using DesktopSessionMap =
-      std::map<int, raw_ptr<DesktopSession, CtnExperimental>>;
+      std::map<int, raw_ptr<DesktopSession, DanglingUntriaged>>;
 
   DaemonProcess(const DaemonProcess&) = delete;
   DaemonProcess& operator=(const DaemonProcess&) = delete;
@@ -189,7 +191,10 @@ class DaemonProcess : public ConfigWatcher::Delegate,
   void OnHostShutdown() override;
 
   // Creates a platform-specific desktop session and assigns a unique ID to it.
-  // An implementation should validate |params| as they are received via IPC.
+  // `options` (`client_id`, `required_username`, etc.) is populated by the
+  // trusted network process after client authentication; implementations must
+  // still enforce OS session/account eligibility invariants (such as rejecting
+  // root/system UIDs and validating session routing).
   virtual std::unique_ptr<DesktopSession> DoCreateDesktopSession(
       int terminal_id,
       const mojom::DesktopSessionOptions& options) = 0;
@@ -220,6 +225,10 @@ class DaemonProcess : public ConfigWatcher::Delegate,
 
   // Called when the count of active desktop sessions changes.
   virtual void OnSessionCountChanged(size_t session_count);
+
+  // Called when the network process binds `mojom::PeerSessionManager` at
+  // startup on hosts where the PeerConnection process is enabled.
+  virtual void OnPeerSessionManagerBound();
 
   scoped_refptr<AutoThreadTaskRunner> caller_task_runner() {
     return caller_task_runner_;
@@ -252,6 +261,9 @@ class DaemonProcess : public ConfigWatcher::Delegate,
     return remoting_host_control_.get();
   }
 
+  // Deletes all desktop sessions.
+  void DeleteAllDesktopSessions();
+
  private:
   // Launches a peer connection process and establishes an IPC channel with it.
   // Returns a pointer to the created handler, or nullptr if creation failed.
@@ -268,9 +280,6 @@ class DaemonProcess : public ConfigWatcher::Delegate,
 
   // Binds associated interfaces to the network process launcher.
   void BindAssociatedInterfaces();
-
-  // Deletes all desktop sessions.
-  void DeleteAllDesktopSessions();
 
   // Task runner on which public methods of this class must be called.
   scoped_refptr<AutoThreadTaskRunner> caller_task_runner_;
@@ -313,8 +322,7 @@ class DaemonProcess : public ConfigWatcher::Delegate,
 
 #if BUILDFLAG(IS_WIN)
   std::unique_ptr<CertificateBrokerImpl> certificate_broker_impl_;
-  std::unique_ptr<mojo::AssociatedReceiver<mojom::CertificateBroker>>
-      certificate_broker_;
+  mojo::AssociatedReceiverSet<mojom::CertificateBroker> certificate_brokers_;
 #endif
 
   scoped_refptr<HostStatusMonitor> status_monitor_;

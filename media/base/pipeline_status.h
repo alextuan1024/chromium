@@ -24,6 +24,7 @@ namespace media {
 // Status states for pipeline.  All codes except PIPELINE_OK indicate errors.
 // Logged to UMA, so never reuse a value, always add new/greater ones!
 // When adding a new one, also update enums.xml.
+// LINT.IfChange(PipelineStatusCodes)
 enum PipelineStatusCodes : StatusCodeType {
   PIPELINE_OK = 0,
   // Deprecated: PIPELINE_ERROR_URL_NOT_FOUND = 1,
@@ -79,12 +80,15 @@ enum PipelineStatusCodes : StatusCodeType {
   // rather than it being unsupported.
   DEMUXER_ERROR_PROGRESSIVE_DISABLED = 27,
 
-  // Must be equal to the largest value ever logged.
-  PIPELINE_STATUS_MAX = DEMUXER_ERROR_PROGRESSIVE_DISABLED,
-};
+  // Used as a signal to fall back to FFmpegDemuxer when SymphoniaDemuxer does
+  // not recognize the container, is not enabled for it, or cannot play all of
+  // its tracks.
+  DEMUXER_ERROR_SYMPHONIA_UNSUPPORTED = 28,
 
-MEDIA_EXPORT std::string_view PipelineStatusCodeToString(
-    PipelineStatusCodes code);
+  // Must be equal to the largest value ever logged.
+  PIPELINE_STATUS_MAX = DEMUXER_ERROR_SYMPHONIA_UNSUPPORTED,
+};
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml:PipelineStatus)
 
 struct PipelineStatusTraits {
   using Codes = PipelineStatusCodes;
@@ -115,6 +119,7 @@ struct PipelineStatusTraits {
       STRINGIFY_STATUS_CASE(DEMUXER_ERROR_NO_SUPPORTED_STREAMS);
       STRINGIFY_STATUS_CASE(DEMUXER_ERROR_DETECTED_HLS);
       STRINGIFY_STATUS_CASE(DEMUXER_ERROR_PROGRESSIVE_DISABLED);
+      STRINGIFY_STATUS_CASE(DEMUXER_ERROR_SYMPHONIA_UNSUPPORTED);
       STRINGIFY_STATUS_CASE(DECODER_ERROR_NOT_SUPPORTED);
       STRINGIFY_STATUS_CASE(DEMUXER_ERROR_BITSTREAM_CONVERSION_FAILED);
       STRINGIFY_STATUS_CASE(CHUNK_DEMUXER_ERROR_APPEND_FAILED);

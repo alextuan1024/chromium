@@ -244,9 +244,10 @@ ValidationResult ValidateMetadataAndFeatures(
       if (feature_result != ValidationResult::kValidationSuccess)
         return feature_result;
     } else if (feature.has_sql_feature()) {
-      // TODO(haileywang): Fix sql validation with other requirements.
-      if (feature.sql_feature().sql().empty())
-        return ValidationResult::kFeatureListInvalid;
+      auto feature_result = ValidateMetadataSqlFeature(feature.sql_feature());
+      if (feature_result != ValidationResult::kValidationSuccess) {
+        return feature_result;
+      }
     } else {
       return ValidationResult::kFeatureListInvalid;
     }
@@ -527,7 +528,6 @@ using VisitUmaFeature =
 void VisitAllUmaFeatures(const proto::SegmentationModelMetadata& model_metadata,
                          bool include_outputs,
                          VisitUmaFeature visit) {
-  std::vector<proto::UMAFeature> features;
   for (int i = 0; i < model_metadata.features_size(); ++i) {
     visit.Run(model_metadata.features(i));
   }

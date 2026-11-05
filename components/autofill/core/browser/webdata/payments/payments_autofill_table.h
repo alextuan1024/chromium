@@ -214,9 +214,9 @@ class VirtualCardUsageData;
 //
 //   offer_id           The unique server ID for this offer data.
 //   offer_reward_amount
-//                      The string including the reward details of the offer.
-//                      Could be either percentage cashback (XXX%) or fixed
-//                      amount cashback (XXX$).
+//                      TODO(crbug.com/546252995): Rename `offer_reward_amount`
+//                      to `offer_short_title`.
+//                      The short title of the offer.
 //   expiry             The timestamp when the offer will go expired. Expired
 //                      offers will not be shown in the frontend.
 //   offer_details_url  The link leading to the offer terms and conditions page.
@@ -228,18 +228,8 @@ class VirtualCardUsageData;
 //   usage_instructions_text
 //                      Server-driven UI string to instruct the user on how they
 //                      can redeem the offer.
-// -----------------------------------------------------------------------------
-// offer_eligible_instrument
-//                      Contains the mapping of credit cards and card linked
-//                      offers. Neither written nor read anymore, since
-//                      card-linked offers are no longer synced.
-//                      TODO(crbug.com/546252995): Drop this table once
-//                      `OfferType` is deprecated.
-//
-//   offer_id           Int 64 to identify the relevant offer. Matches the
-//                      `offer_id` in the `offer_data` table.
-//   instrument_id      The new form of instrument id of the card. Will not be
-//                      used for now.
+//   issue_time         The timestamp when the offer was issued.
+//   issuer_name        The name of the merchant that issued the offer.
 // -----------------------------------------------------------------------------
 // offer_merchant_domain
 //                      Contains the mapping of merchant domains and card linked
@@ -515,15 +505,18 @@ class PaymentsAutofillTable : public WebDatabaseTable {
   // will be completely overwritten.
   void SetAutofillOffers(
       const std::vector<AutofillOfferData>& autofill_offer_data);
+  // Returns the offers with the most recently issued ones first, followed by
+  // offers with an unknown (null) issue time. Ties are broken by offer id, so
+  // that the order is deterministic.
   bool GetAutofillOffers(
       std::vector<std::unique_ptr<AutofillOfferData>>* autofill_offer_data);
 
   // Inserts `autofill_offer_data`, replacing any offer with the same offer id.
   bool AddOrUpdateAutofillOffer(const AutofillOfferData& autofill_offer_data);
   // Removes the offer with `offer_id`. Succeeds if no such offer exists.
-  bool RemoveAutofillOffer(int64_t offer_id);
+  bool RemoveAutofillOffer(std::string_view offer_id);
   // Returns whether an offer with `offer_id` is stored.
-  bool AutofillOfferExists(int64_t offer_id);
+  bool AutofillOfferExists(std::string_view offer_id);
 
   // CRUD operations for VirtualCardUsageData in the virtual_card_usage_data
   // table
@@ -613,6 +606,9 @@ class PaymentsAutofillTable : public WebDatabaseTable {
   bool MigrateToVersion144AddCardCreationSourceColumn();
   bool MigrateToVersion153ReplaceOriginWithIsUserConfirmed();
   bool MigrateToVersion156ClearLegacyOffers();
+  bool MigrateToVersion158OfferIdAsString();
+  bool MigrateToVersion160AddOfferIssueTime();
+  bool MigrateToVersion162AddOfferIssuerName();
 
  private:
   // Adds to `masked_credit_cards` and updates `server_card_metadata`.
@@ -637,7 +633,6 @@ class PaymentsAutofillTable : public WebDatabaseTable {
   bool InitServerCreditCardCloudTokenDataTable();
   bool InitStoredCvcTable();
   bool InitOfferDataTable();
-  bool InitOfferEligibleInstrumentTable();
   bool InitOfferMerchantDomainTable();
   bool InitVirtualCardUsageDataTable();
   bool InitMaskedBankAccountsTable();

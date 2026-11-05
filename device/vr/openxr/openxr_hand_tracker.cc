@@ -18,6 +18,7 @@
 #include "device/vr/openxr/openxr_interaction_profiles.h"
 #include "device/vr/openxr/openxr_util.h"
 #include "device/vr/public/cpp/switches.h"
+#include "device/vr/public/cpp/xr_session_feature_set.h"
 #include "device/vr/public/mojom/xr_hand_tracking_data.mojom.h"
 #include "device/vr/public/mojom/xr_session.mojom-shared.h"
 #include "third_party/openxr/src/include/openxr/openxr.h"
@@ -68,19 +69,6 @@ OpenXrHandTracker::OpenXrHandTracker(
       anonymization_strategy_(GetAnonymizationStrategy()) {
   locations_.jointCount = joint_locations_buffer_.size();
   locations_.jointLocations = joint_locations_buffer_.data();
-
-  XrNextChainBuilder next_chain(&locations_);
-  if (mesh_scale_enabled_ && UseRuntimeAnonymization()) {
-    // Setting `overrideHandScale` to true and `overrideValueInput` to 1 will
-    // scale the hands to the size of the "standard" hand mesh per:
-    // https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html#XrHandTrackingScaleFB
-    mesh_scale_.overrideHandScale = true;
-    mesh_scale_.overrideValueInput = 1.0f;
-
-    next_chain.Add(&mesh_scale_);
-  }
-
-  ExtendLocationsNextChain(next_chain);
 }
 
 OpenXrHandTracker::~OpenXrHandTracker() {
@@ -189,8 +177,23 @@ XrResult OpenXrHandTracker::InitializeHandTracking() {
   create_info.hand = type_ == OpenXrHandednessType::kRight ? XR_HAND_RIGHT_EXT
                                                            : XR_HAND_LEFT_EXT;
   create_info.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
-  return extension_helper_->ExtensionMethods().xrCreateHandTrackerEXT(
-      session_, &create_info, &hand_tracker_);
+  RETURN_IF_XR_FAILED(
+      extension_helper_->ExtensionMethods().xrCreateHandTrackerEXT(
+          session_, &create_info, &hand_tracker_));
+
+  XrNextChainBuilder next_chain(&locations_);
+  if (mesh_scale_enabled_ && UseRuntimeAnonymization()) {
+    // Setting `overrideHandScale` to true and `overrideValueInput` to 1 will
+    // scale the hands to the size of the "standard" hand mesh per:
+    // https://registry.khronos.org/OpenXR/specs/1.1/html/xrspec.html#XrHandTrackingScaleFB
+    mesh_scale_.overrideHandScale = true;
+    mesh_scale_.overrideValueInput = 1.0f;
+
+    next_chain.Add(&mesh_scale_);
+  }
+
+  ExtendLocationsNextChain(next_chain);
+  return XR_SUCCESS;
 }
 
 bool OpenXrHandTracker::IsDataValid() const {
@@ -220,8 +223,7 @@ OpenXrHandTrackerFactory::GetRequestedExtensions() const {
   return *kExtensions;
 }
 
-std::set<device::mojom::XRSessionFeature>
-OpenXrHandTrackerFactory::GetSupportedFeatures() const {
+XRSessionFeatureSet OpenXrHandTrackerFactory::GetSupportedFeatures() const {
   if (!IsEnabled()) {
     return {};
   }

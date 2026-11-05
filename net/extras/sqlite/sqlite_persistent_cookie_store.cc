@@ -8,8 +8,10 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <set>
+#include <string>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -183,7 +185,9 @@ namespace {
 // Version 24 - 2024/08/15 - https://crrev.com/c/5792044
 // Version 23 - 2024/04/10 - https://crrev.com/c/5169630
 //
-// Versions older than two years should be removed and marked as unsupported.
+// There should be at minimum two supported versions to ensure we retain
+// functional migration code, but additional versions more than two years old
+// should be removed and marked as unsupported.
 // This was last done in March 2026. https://crrev.com/c/7620217
 // Be sure to update SQLitePersistentCookieStoreTest.TestInvalidVersionRecovery
 // to test the latest unsupported version number.
@@ -406,8 +410,10 @@ class SQLitePersistentCookieStore::Backend
 
   size_t GetQueueLengthForTesting();
 
-  // Post background delete of all cookies that match |cookies|.
-  void DeleteAllInList(const std::list<CookieOrigin>& cookies);
+  // Post background delete of all cookies that match |cookies| or whose
+  // top_frame_site_key is in |top_frame_site_keys|.
+  void DeleteAllInList(const std::list<CookieOrigin>& cookies,
+                       const std::list<std::string>& top_frame_site_keys);
 
  private:
   // You should call Close() before destructing this object.
@@ -473,7 +479,7 @@ class SQLitePersistentCookieStore::Backend
 
   // Load all cookies for a set of domains/hosts. The error recovery code
   // assumes |key| includes all related domains within an eTLD + 1.
-  bool LoadCookiesForDomains(const std::set<std::string>& key);
+  bool LoadCookiesForDomains(const std::vector<std::string>& key);
 
   void DeleteTopFrameSiteKeys(
       const absl::flat_hash_set<std::string>& top_frame_site_keys);
@@ -489,7 +495,9 @@ class SQLitePersistentCookieStore::Backend
 
   void DeleteSessionCookiesOnStartup();
 
-  void BackgroundDeleteAllInList(const std::list<CookieOrigin>& cookies);
+  void BackgroundDeleteAllInList(
+      const std::list<CookieOrigin>& cookies,
+      const std::list<std::string>& top_frame_site_keys);
 
   // Shared code between the different load strategies to be used after all
   // cookies have been loaded.
@@ -517,7 +525,7 @@ class SQLitePersistentCookieStore::Backend
   std::vector<std::unique_ptr<CanonicalCookie>> cookies_ GUARDED_BY(lock_);
 
   // Map of domain keys(eTLD+1) to domains/hosts that are to be loaded from DB.
-  std::map<std::string, std::set<std::string>> keys_to_load_;
+  std::map<std::string, std::vector<std::string>> keys_to_load_;
 
   // If false, we should filter out session cookies when reading the DB.
   bool restore_old_session_cookies_;
@@ -842,14 +850,11 @@ bool SQLitePersistentCookieStore::Backend::DoInitializeDatabase() {
     return false;
   }
 
-  std::vector<std::string> host_keys;
-  while (smt.Step())
-    host_keys.push_back(smt.ColumnString(0));
-
   // Build a map of domain keys (always eTLD+1) to domains.
-  for (const auto& domain : host_keys) {
+  while (smt.Step()) {
+    std::string domain = smt.ColumnString(0);
     std::string key = CookieMonster::GetKey(domain);
-    keys_to_load_[key].insert(domain);
+    keys_to_load_[std::move(key)].push_back(std::move(domain));
   }
 
   if (!restore_old_session_cookies_)
@@ -891,7 +896,7 @@ void SQLitePersistentCookieStore::Backend::ChainLoadCookies(
 }
 
 bool SQLitePersistentCookieStore::Backend::LoadCookiesForDomains(
-    const std::set<std::string>& domains) {
+    const std::vector<std::string>& domains) {
   DCHECK(background_task_runner()->RunsTasksInCurrentSequence());
 
   sql::Statement smt, delete_statement;
@@ -1460,17 +1465,19 @@ size_t SQLitePersistentCookieStore::Backend::GetQueueLengthForTesting() {
 }
 
 void SQLitePersistentCookieStore::Backend::DeleteAllInList(
-    const std::list<CookieOrigin>& cookies) {
-  if (cookies.empty())
+    const std::list<CookieOrigin>& cookies,
+    const std::list<std::string>& top_frame_site_keys) {
+  if (cookies.empty() && top_frame_site_keys.empty()) {
     return;
+  }
 
   if (background_task_runner()->RunsTasksInCurrentSequence()) {
-    BackgroundDeleteAllInList(cookies);
+    BackgroundDeleteAllInList(cookies, top_frame_site_keys);
   } else {
     // Perform deletion on background task runner.
-    PostBackgroundTask(
-        FROM_HERE,
-        base::BindOnce(&Backend::BackgroundDeleteAllInList, this, cookies));
+    PostBackgroundTask(FROM_HERE,
+                       base::BindOnce(&Backend::BackgroundDeleteAllInList, this,
+                                      cookies, top_frame_site_keys));
   }
 }
 
@@ -1480,10 +1487,9 @@ void SQLitePersistentCookieStore::Backend::DeleteSessionCookiesOnStartup() {
     LOG(WARNING) << "Unable to delete session cookies.";
 }
 
-// TODO(crbug.com/40188414) Investigate including top_frame_site_key in the
-// WHERE clause.
 void SQLitePersistentCookieStore::Backend::BackgroundDeleteAllInList(
-    const std::list<CookieOrigin>& cookies) {
+    const std::list<CookieOrigin>& cookies,
+    const std::list<std::string>& top_frame_site_keys) {
   DCHECK(background_task_runner()->RunsTasksInCurrentSequence());
 
   if (!db())
@@ -1497,6 +1503,13 @@ void SQLitePersistentCookieStore::Backend::BackgroundDeleteAllInList(
   sql::Statement delete_statement(db()->GetCachedStatement(
       SQL_FROM_HERE, "DELETE FROM cookies WHERE host_key=? AND is_secure=?"));
   if (!delete_statement.is_valid()) {
+    LOG(WARNING) << "Unable to delete cookies on shutdown.";
+    return;
+  }
+
+  sql::Statement delete_partition_statement(db()->GetCachedStatement(
+      SQL_FROM_HERE, "DELETE FROM cookies WHERE top_frame_site_key=?"));
+  if (!delete_partition_statement.is_valid()) {
     LOG(WARNING) << "Unable to delete cookies on shutdown.";
     return;
   }
@@ -1520,6 +1533,20 @@ void SQLitePersistentCookieStore::Backend::BackgroundDeleteAllInList(
     }
   }
 
+  for (const std::string& top_frame_site_key : top_frame_site_keys) {
+    // Unpartitioned cookies are stored with an empty top_frame_site_key, so an
+    // empty key must never be used here.
+    if (top_frame_site_key.empty()) {
+      continue;
+    }
+
+    delete_partition_statement.Reset(true);
+    delete_partition_statement.BindString(0, top_frame_site_key);
+    if (!delete_partition_statement.Run()) {
+      LOG(WARNING) << "Could not delete partitioned cookies from the DB.";
+    }
+  }
+
   if (!transaction.Commit())
     LOG(WARNING) << "Unable to delete cookies on shutdown.";
 }
@@ -1530,6 +1557,12 @@ void SQLitePersistentCookieStore::Backend::FinishedLoadingCookies(
   TRACE_EVENT("loading",
               "SQLitePersistentCookieStore::Backend::FinishedLoadingCookies",
               perfetto::Flow::FromPointer(this));
+  DCHECK(background_task_runner()->RunsTasksInCurrentSequence());
+  // Only clear on failure; `FinishedLoadingCookies` is also called after
+  // single-key loads when other keys remain in `keys_to_load_`.
+  if (!success) {
+    keys_to_load_.clear();
+  }
   PostClientTask(FROM_HERE,
                  base::BindOnce(&Backend::NotifyLoadCompleteInForeground, this,
                                 std::move(loaded_callback), success));
@@ -1559,8 +1592,9 @@ SQLitePersistentCookieStore::SQLitePersistentCookieStore(
 }
 
 void SQLitePersistentCookieStore::DeleteAllInList(
-    const std::list<CookieOrigin>& cookies) {
-  backend_->DeleteAllInList(cookies);
+    const std::list<CookieOrigin>& cookies,
+    const std::list<std::string>& top_frame_site_keys) {
+  backend_->DeleteAllInList(cookies, top_frame_site_keys);
 }
 
 void SQLitePersistentCookieStore::Load(LoadedCallback loaded_callback,

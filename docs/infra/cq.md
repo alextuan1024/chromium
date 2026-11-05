@@ -23,11 +23,12 @@ described below.
 
 ### Dry-Run
 
-This runs all the normal set of tests for a CL. When the dry-run has complete,
+This runs all the normal set of tests for a CL. When the dry-run has completed,
 it will simply report the results of the CQ attempt as a Gerrit comment on the
-CL and take no further action. This mode is intended to be used frequently as a
-CL is developed. Can be triggered via either the `CQ Dry Run` button in Gerrit
-or by applying the `Commit-Queue +1` label vote. See
+CL and take no further action. This mode is intended to be used as a CL is
+developed. Can be triggered via either the `CQ Dry Run` button in Gerrit or by
+applying the `Commit-Queue +1` label vote. Passing tryjob builds from a dry-run
+can be reused at submit time (see [Build Reuse](#build-reuse)). See
 [below](#what-exactly-does-the-cq-run) for the anatomy of a build on the CQ.
 
 ### Full-Run
@@ -65,6 +66,26 @@ a passing run much more unlikely than a normal CQ run. Consequently, when
 running the Mega CQ, you'll likely want to spot-check the failures listed on
 Gerrit for anything that looks particularly relevant to your CL. Then you can use
 the normal `SUBMIT TO CQ` button to land once all failures look unrelated.
+
+## Build Reuse
+
+When you trigger a CQ run (`CQ+1` dry-run or `CQ+2` full-run), the CQ checks
+whether passing builds from an earlier run on the same patchset (or an
+equivalent patchset across trivial rebases or commit message edits) are still
+fresh enough to reuse instead of rebuilding from scratch.
+
+Whether a passing build can be reused depends on the target branch and builder:
+
+- **Commit-distance reuse window (`main`)**: Reusable CQ builders targeting
+  `main` use a **1300-commit** reuse window rather than wall-clock time. A
+  passing build remains reusable as long as `main` has not advanced by more than
+  1300 commits since the build ran, even if more than 24 hours have elapsed
+  (such as over a quiet weekend or holiday). Conversely, during high-volume
+  weekday commit surges, builds expire once `main` advances past 1300 commits.
+- **Time-based reuse window (24-hour fallback)**: Milestone release branches,
+  builders explicitly opted out of commit-distance reuse, and builders that do
+  not emit gitiles commit metadata reuse passing builds for up to **24 hours**
+  from when they were created.
 
 ## Options
 
@@ -199,6 +220,17 @@ The Chromium CQ supports a variety of options that can change what it checks.
 
   Specifies the number of compilation failures each trybot should collect before
   terminating the build (0 means infinity).
+
+* `Missing-Deps: <mode>`
+
+  Configures how Siso handles missing dependencies (passing
+  `-missing_deps=<mode>` to Siso). `<mode>` must be one of:
+  * `ignore`: Skip missing dependency checks.
+  * `warn`: Print warnings on missing dependencies without failing the build.
+  * `error`: Print errors on missing dependencies and continue running remaining
+    steps, then fail the build at completion.
+  * `fatal`: Fail the build step immediately upon detecting missing
+    dependencies.
 
 ## Google-internal CQ Builders
 

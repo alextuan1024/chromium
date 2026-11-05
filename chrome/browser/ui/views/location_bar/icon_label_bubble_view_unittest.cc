@@ -17,6 +17,9 @@
 #include "components/strings/grit/components_strings.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/pointer/touch_ui_controller.h"
+#include "ui/color/color_id.h"
+#include "ui/color/color_provider.h"
+#include "ui/color/color_variant.h"
 #include "ui/compositor/layer_textured.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/test/event_generator.h"
@@ -25,6 +28,8 @@
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/text_constants.h"
+#include "ui/native_theme/mock_os_settings_provider.h"
+#include "ui/native_theme/native_theme.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/animation/test/ink_drop_host_test_api.h"
 #include "ui/views/animation/test/test_ink_drop.h"
@@ -63,6 +68,7 @@ class TestIconLabelBubbleView : public IconLabelBubbleView {
   using IconLabelBubbleView::SetUpForInOutAnimation;
   using IconLabelBubbleView::UpdateAnimationProgress;
   using IconLabelBubbleView::UpdateBackground;
+  using IconLabelBubbleView::UpdateLabelColors;
 
   enum State {
     GROWING,
@@ -123,6 +129,10 @@ class TestIconLabelBubbleView : public IconLabelBubbleView {
     animation_step_closure_ = std::move(cb);
   }
 
+  void set_disabled_foreground_color(std::optional<ui::ColorVariant> color) {
+    disabled_foreground_color_ = std::move(color);
+  }
+
   void AnimationEnded(const gfx::Animation* animation) override {
     IconLabelBubbleView::AnimationEnded(animation);
     if (animation_ended_closure_) {
@@ -145,11 +155,16 @@ class TestIconLabelBubbleView : public IconLabelBubbleView {
     return true;
   }
 
+  std::optional<ui::ColorVariant> GetDisabledForegroundColor() const override {
+    return disabled_foreground_color_;
+  }
+
  private:
   std::unique_ptr<gfx::ScopedAnimationDurationScaleMode> zero_duration_mode_ =
       std::make_unique<gfx::ScopedAnimationDurationScaleMode>(
           gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
   bool is_bubble_showing_ = false;
+  std::optional<ui::ColorVariant> disabled_foreground_color_;
   base::RepeatingClosure animation_ended_closure_;
   base::RepeatingClosure animation_step_closure_;
 };
@@ -648,6 +663,19 @@ TEST_F(IconLabelBubbleViewTest, LabelPaintsBackgroundAlways) {
   EXPECT_EQ(nullptr, view()->GetBackground());
 }
 
+TEST_F(IconLabelBubbleViewTest, DisabledTextColorResetsToDefault) {
+  view()->set_disabled_foreground_color(SK_ColorRED);
+  view()->UpdateLabelColors();
+  view()->SetEnabled(false);
+  EXPECT_EQ(view()->GetCurrentTextColor(), SK_ColorRED);
+
+  view()->set_disabled_foreground_color(std::nullopt);
+  view()->UpdateLabelColors();
+  EXPECT_EQ(
+      view()->GetCurrentTextColor(),
+      view()->GetColorProvider()->GetColor(ui::kColorLabelForegroundDisabled));
+}
+
 TEST_F(IconLabelBubbleViewTest, CollapsedSizing) {
   view()->ResetSlideAnimation(true);
   view()->SizeToPreferredSize();
@@ -946,6 +974,7 @@ TEST_F(IconLabelBubbleViewTest, SlideAndCrossfadeAnimationConfiguredAndDriven) {
   views::ImageView* trailing_image = view()->GetCrossfadeImageView();
   ASSERT_NE(trailing_image, nullptr);
   EXPECT_TRUE(trailing_image->GetVisible());
+  EXPECT_TRUE(trailing_image->GetFlipCanvasOnPaintForRTLUI());
   ASSERT_NE(trailing_image->layer(), nullptr);
 
   // Leading icon container layer is created.
@@ -1127,4 +1156,60 @@ TEST_F(IconLabelBubbleViewTest, InOutAnimationShrinkingThreshold) {
   EXPECT_DOUBLE_EQ(view()->slide_animation_for_testing().GetCurrentValue(),
                    0.9);
   EXPECT_TRUE(view()->IsShrinking());
+}
+
+namespace {
+
+class HighlightableTestInkDrop : public TestInkDrop {
+ public:
+  void SetHighlighted(bool highlighted) { highlighted_ = highlighted; }
+  bool IsHighlightFadingInOrVisible() const override { return highlighted_; }
+
+ private:
+  bool highlighted_ = false;
+};
+
+}  // namespace
+
+TEST_F(IconLabelBubbleViewTest, HighContrastInkDropLabelLayerAndColor) {
+  ui::MockOsSettingsProvider os_settings_provider;
+
+  // In normal mode, the label does not paint to a layer and subpixel rendering
+  // is enabled.
+  EXPECT_FALSE(view()->GetLabel()->layer());
+  EXPECT_TRUE(view()->GetLabel()->GetSubpixelRenderingEnabled());
+
+  // Enable forced colors and high contrast.
+  os_settings_provider.SetForcedColorsActive(true);
+  os_settings_provider.SetPreferredContrast(
+      ui::NativeTheme::PreferredContrast::kMore);
+
+  ASSERT_TRUE(view()->GetLabel()->layer());
+  EXPECT_FALSE(view()->GetLabel()->layer()->fills_bounds_opaquely());
+  EXPECT_FALSE(view()->GetLabel()->GetSubpixelRenderingEnabled());
+
+  auto test_ink_drop = std::make_unique<HighlightableTestInkDrop>();
+  auto* test_ink_drop_ptr = test_ink_drop.get();
+  InkDropHostTestApi(views::InkDrop::Get(view()))
+      .SetInkDrop(std::move(test_ink_drop));
+
+  const SkColor normal_color = view()->GetLabel()->GetEnabledColor();
+  const SkColor hover_color =
+      view()->GetColorProvider()->GetColor(ui::kColorIconHovered);
+
+  // Highlighting the ink drop updates the label color to kColorIconHovered.
+  test_ink_drop_ptr->SetHighlighted(true);
+  views::InkDrop::Get(view())->OnInkDropHighlightedChanged();
+  EXPECT_EQ(view()->GetLabel()->GetEnabledColor(), hover_color);
+
+  // Clearing the ink drop highlight restores the normal foreground color.
+  test_ink_drop_ptr->SetHighlighted(false);
+  views::InkDrop::Get(view())->OnInkDropHighlightedChanged();
+  EXPECT_EQ(view()->GetLabel()->GetEnabledColor(), normal_color);
+
+  // Disabling forced colors destroys the label layer and re-enables subpixel
+  // rendering.
+  os_settings_provider.SetForcedColorsActive(false);
+  EXPECT_FALSE(view()->GetLabel()->layer());
+  EXPECT_TRUE(view()->GetLabel()->GetSubpixelRenderingEnabled());
 }

@@ -5,11 +5,17 @@
 #ifndef IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_TOOLS_MODEL_ACTOR_TOOL_REQUEST_H_
 #define IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_TOOLS_MODEL_ACTOR_TOOL_REQUEST_H_
 
+#import <optional>
+
+#import "base/types/pass_key.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
 #import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
 #import "ios/web/public/web_state_id.h"
+#import "url/origin.h"
 
 namespace actor {
+
+class ActorEngine;
 
 // Represents a request to create and execute an `ActorTool`.
 //
@@ -42,9 +48,26 @@ class ActorToolRequest {
   // Note that this does not validate that the ID points to an active WebState.
   web::WebStateID GetTargetWebStateId() const;
 
+  // Returns true if the current tab's URL should be checked against origin
+  // gating before executing this tool.
+  bool RequiresUrlCheckInCurrentTab() const;
+
+  // Returns the origin to pre-approve in `OriginGatingCache` before executing
+  // this tool, or `std::nullopt` if the tool does not grant a navigation
+  // origin.
+  std::optional<url::Origin> AssociatedOriginGrant() const;
+
+  // Returns true if this action was enqueued as a follow-up to an in-progress
+  // action rather than provided in the initial `Act()` sequence.
+  bool IsFollowup() const { return is_followup_; }
+  void SetAsFollowup(base::PassKey<ActorEngine>) { is_followup_ = true; }
+
  private:
   // An owned copy of the action proto.
   optimization_guide::proto::Action action_;
+
+  // Whether this request was dynamically enqueued by an in-progress action.
+  bool is_followup_ = false;
 };
 
 }  // namespace actor

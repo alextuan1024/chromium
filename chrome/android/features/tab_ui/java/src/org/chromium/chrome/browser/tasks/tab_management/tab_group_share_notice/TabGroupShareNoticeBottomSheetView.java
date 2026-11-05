@@ -14,8 +14,9 @@ import androidx.annotation.StringRes;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.R;
+import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 import org.chromium.ui.widget.ButtonCompat;
 
 /**
@@ -24,6 +25,8 @@ import org.chromium.ui.widget.ButtonCompat;
  */
 @NullMarked
 public class TabGroupShareNoticeBottomSheetView extends LinearLayout implements BottomSheetContent {
+    private static final BottomSheetType SHEET_TYPE = new BottomSheetType.Builder().build();
+
     private final ViewGroup mContentView;
     private final ButtonCompat mConfirmButton;
     private @Nullable Runnable mCompletionHandler;
@@ -73,6 +76,11 @@ public class TabGroupShareNoticeBottomSheetView extends LinearLayout implements 
     @Override
     public boolean swipeToDismissEnabled() {
         return true;
+    }
+
+    @Override
+    public BottomSheetType getSheetType() {
+        return SHEET_TYPE;
     }
 
     @Override

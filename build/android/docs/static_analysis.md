@@ -4,21 +4,13 @@ We use several tools for static analysis in chromium.
 
 [TOC]
 
-## Autoninja Integration
+## GN Arg: `android_static_analysis`
 
-You can set `android_static_analysis = "build_server"` in your gn args to run
-static analysis tasks in the background. This will change the build as follows:
-* `autoninja` will not wait for static analysis jobs to complete.
-  * This means the build will succeed but static analysis might fail later.
-  * If there are background tasks still running, autoninja will say so at the end of the build.
-  * Leads to [30-50% improvement in build times][cbuild- speed improvement] when building debug.
-* If a background static analysis task fails, the failure output is printed onto the terminal that ran `autoninja`.
-  * The output is preceded by an emoji like ⏩.
-  * If the output gets mixed in with what you are doing so it is no longer clear, you can check the task output in the logfile.
-    * E.g.: `out/Default/buildserver.log.0`.
-* Changes the terminal title to keep live track of remaining analysis tasks.
-
-[cbuild- speed improvement]: https://dashboards.corp.google.com/clank_build_speed?f=commit:bt:1411615,1422246&f=benchmark:in:base_sig_compile,chrome_nosig_compile&f=server:in:true,false&f=emulator:in:None,api31
+* `"no-lint"` (default for non-official builds): runs Error Prone and
+  other static analysis as normal build steps, but disables Android Lint.
+  * `"build_server"` is a deprecated alias for `"no-lint"`.
+* `"on"`: runs all static analysis, Android Lint included, as build steps.
+* `"off"`: disables static analysis.
 
 ## [Android Lint](lint.md)
 * Runs as part of normal compilation.
@@ -43,18 +35,22 @@ static analysis tasks in the background. This will change the build as follows:
   * Checking correctness of [nullable annotations] (via NullAway plugin).
   * Enforcement of `@GuardedBy`, `@CheckReturnValue`, and `@DoNotMock`.
   * Enforcement of `/* paramName= */` comments.
-* A list of enabled / disabled checks is found [within `compile_java.py`]
+* A list of enabled / disabled checks is found [within `errorprone.py`]
   * Many checks are currently disabled because there is work involved in fixing
     violations they introduce. Please help!
 * Chrome has [a few custom checks].
+  * On linux-x64, Error Prone runs as a GraalVM native-image that has these
+    checks compiled in, so local changes to them are not used until the
+    `error_prone` CIPD package is rebuilt and rolled. To test local changes, set
+    the `DISABLE_NATIVE_IMAGE=1` environment variable.
 * Checks run on the entire codebase, not only on changed lines.
 * Does not run when `chromium_code = false` (e.g. for `//third_party`).
 
 [ErrorProne]: https://errorprone.info/
 [Useful checks include]: https://errorprone.info/bugpatterns
 [nullable annotations]: /styleguide/java/nullaway.md
-[within `compile_java.py`]: https://source.chromium.org/chromium/chromium/src/+/main:build/android/gyp/compile_java.py;l=46;drc=5dc479e73c3c9c03b59f324b2e349b8bd008401f
 [a few custom checks]: /tools/android/errorprone_plugin/src/org/chromium/tools/errorprone/plugin/
+[within `errorprone.py`]: /build/android/gyp/errorprone.py
 
 ## [Checkstyle](https://checkstyle.sourceforge.io/)
 * Mainly used for checking Java formatting & style.

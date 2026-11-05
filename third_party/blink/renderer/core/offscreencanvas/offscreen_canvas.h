@@ -19,6 +19,7 @@
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource_dispatcher.h"
 #include "third_party/blink/renderer/platform/graphics/dom_node_id.h"
+#include "third_party/blink/renderer/platform/graphics/paint/float_clip_rect.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
 #include "third_party/blink/renderer/platform/text/layout_locale.h"
@@ -30,7 +31,7 @@
 namespace blink {
 
 class CanvasContextCreationAttributesCore;
-class DOMMatrix;
+class ElementImageDefaultSize;
 class UpdateElementGeometryOptions;
 class ImageBitmap;
 class ImageEncodeOptions;
@@ -83,16 +84,16 @@ class CORE_EXPORT OffscreenCanvas final
                                     const ImageEncodeOptions* options,
                                     ExceptionState& exception_state);
 
-  DOMMatrix* getElementTransform(const V8UnionElementOrElementImage* element,
-                                 DOMMatrix* draw_transform,
-                                 ExceptionState&);
+  ElementImageDefaultSize* getElementImageDefaultSize(
+      const V8UnionElementOrElementImage* element,
+      ExceptionState&) const;
   void updateElementGeometry(const V8UnionElementOrElementImage*,
                              const UpdateElementGeometryOptions*,
                              ExceptionState&);
-  void clearElementGeometry(const V8UnionElementOrElementImage*);
+  void clearElementGeometry(const V8UnionElementOrElementImage*,
+                            ExceptionState&);
 
   void SetSize(gfx::Size);
-  void RecordTransfer();
 
   static OffscreenCanvas* FromPlaceholderId(ExecutionContext* context,
                                             DOMNodeId canvas_id);
@@ -148,11 +149,16 @@ class CORE_EXPORT OffscreenCanvas final
                           float font_height) override;
   void ClearRenderedText(const gfx::RectF& rect) override;
   void ClearRenderedText() override;
+  bool ShouldCaptureRenderedText() override {
+    return should_capture_rendered_text_ && HasPlaceholderCanvas();
+  }
   void UpdateDrawnElementGeometry(Element&,
                                   const gfx::Transform*,
+                                  const FloatClipRect*,
                                   bool update_hit_test_order) override;
   void UpdateDrawnElementGeometry(ElementImage&,
                                   const gfx::Transform*,
+                                  const FloatClipRect*,
                                   bool update_hit_test_order) override;
   void ClearDrawnElementGeometry(Element&) override;
   void ClearDrawnElementGeometry(ElementImage&) override;
@@ -164,6 +170,7 @@ class CORE_EXPORT OffscreenCanvas final
 
     // Fields populated by updateElementGeometry.
     std::optional<gfx::Transform> transform;
+    std::optional<FloatClipRect> clip;
     bool update_hit_test_order = false;
 
     // Set to `true` by clearElementGeometry.
@@ -171,7 +178,7 @@ class CORE_EXPORT OffscreenCanvas final
   };
 
   bool PushFrameIfNeeded();
-  bool PushFrame(scoped_refptr<CanvasResource>&& frame);
+  bool PushFrame(scoped_refptr<ExportedCanvasResource> frame);
   void DidDraw(const gfx::Rect&) override;
   using CanvasRenderingContextHost::DidDraw;
   bool ShouldAccelerate2dContext() const override;
@@ -184,8 +191,6 @@ class CORE_EXPORT OffscreenCanvas final
   bool IsWebGL1Enabled() const override { return true; }
   bool IsWebGL2Enabled() const override { return true; }
   bool IsWebGLBlocked() const override { return false; }
-
-  // CanvasResourceProviderDelegate implementation
   void NotifyGpuContextLost() override;
   void SetNeedsCompositingUpdate() override {}
 
@@ -292,6 +297,7 @@ class CORE_EXPORT OffscreenCanvas final
   void QueueUpdate(ElementGeometryUpdate update);
   void QueueElementGeometryUpdate(DOMNodeId element_id,
                                   const gfx::Transform* transform,
+                                  const FloatClipRect* clip,
                                   bool update_hit_test_order);
   void QueueClearElementGeometry(DOMNodeId element_id);
   void ProcessPendingElementGeometryUpdates();
@@ -334,6 +340,8 @@ class CORE_EXPORT OffscreenCanvas final
   // then the following members would remain as initialized zero values.
   uint32_t client_id_ = 0;
   uint32_t sink_id_ = 0;
+
+  bool should_capture_rendered_text_ = false;
 
   Vector<ElementGeometryUpdate> pending_element_geometry_updates_;
 };

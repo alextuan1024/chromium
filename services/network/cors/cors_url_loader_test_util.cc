@@ -4,6 +4,7 @@
 
 #include "services/network/cors/cors_url_loader_test_util.h"
 
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/ref_counted.h"
 #include "base/notreached.h"
@@ -43,7 +44,10 @@ namespace network::cors {
 
 TestURLLoaderFactory::TestURLLoaderImpl::TestURLLoaderImpl(
     mojo::PendingReceiver<mojom::URLLoader> receiver)
-    : receiver_(this, std::move(receiver)) {}
+    : receiver_(this, std::move(receiver)) {
+  receiver_.set_disconnect_handler(base::BindOnce(
+      [](bool* disconnected) { *disconnected = true; }, &is_disconnected_));
+}
 
 TestURLLoaderFactory::TestURLLoaderImpl::~TestURLLoaderImpl() = default;
 
@@ -192,6 +196,8 @@ CorsURLLoaderTestBase::ResetFactoryParams::ResetFactoryParams() {
   ignore_isolated_world_origin = params.ignore_isolated_world_origin;
   isolated_world_origin_lock = params.isolated_world_origin_lock;
   client_security_state = std::move(params.client_security_state);
+  is_storage_access_potentially_allowed =
+      params.is_storage_access_potentially_allowed;
 
   mojom::URLLoaderFactoryOverride factory_override;
   skip_cors_enabled_scheme_check =
@@ -356,6 +362,8 @@ void CorsURLLoaderTestBase::ResetFactory(std::optional<url::Origin> initiator,
       params.skip_cors_enabled_scheme_check;
   factory_params->client_security_state = params.client_security_state.Clone();
   factory_params->isolation_info = params.isolation_info;
+  factory_params->is_storage_access_potentially_allowed =
+      params.is_storage_access_potentially_allowed;
   factory_params->url_loader_network_observer = std::move(
       const_cast<mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>&>(
           params.url_loader_network_observer));

@@ -27,6 +27,7 @@
 #include "services/network/shared_dictionary/shared_dictionary_cache.h"
 #include "services/network/shared_dictionary/shared_dictionary_storage_on_disk.h"
 #include "services/network/shared_dictionary/shared_dictionary_storage_result.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace network {
 namespace {
@@ -40,10 +41,9 @@ std::optional<base::UnguessableToken> DeserializeToUnguessableToken(
   return base::UnguessableToken::Deserialize(token->high(), token->low());
 }
 
-std::string ToCommaSeparatedString(
-    const std::set<mojom::RequestDestination>& match_dest) {
+std::string ToCommaSeparatedString(RequestDestinationSet match_dest) {
   std::vector<std::string_view> destinations;
-  for (auto dest : match_dest) {
+  for (mojom::RequestDestination dest : match_dest) {
     std::string_view result = RequestDestinationToString(
         dest, EmptyRequestDestinationOption::kUseFiveCharEmptyString);
     destinations.push_back(result);
@@ -53,7 +53,7 @@ std::string ToCommaSeparatedString(
 
 constexpr base::MemoryConsumerTraits kOnDiskTraits(
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     base::MemoryConsumerTraits::ExecutionType::kAsynchronous,
     base::MemoryConsumerTraits::IsStateful::kYes);
@@ -326,8 +326,8 @@ class SharedDictionaryManagerOnDisk::MismatchingEntryDeletionTask
 
   raw_ptr<SharedDictionaryManagerOnDisk> manager_;
   base::OnceCallback<void(int)> callback_;
-  std::set<base::UnguessableToken> disk_cache_key_tokens_;
-  std::set<base::UnguessableToken> writing_disk_cache_key_tokens_;
+  absl::flat_hash_set<base::UnguessableToken> disk_cache_key_tokens_;
+  absl::flat_hash_set<base::UnguessableToken> writing_disk_cache_key_tokens_;
   std::unique_ptr<disk_cache::Backend::Iterator> disk_cache_iterator_;
   uint32_t invalid_disk_cache_entry_count_ = 0;
   uint32_t metadata_missing_dictionary_count_ = 0;
@@ -639,7 +639,7 @@ SharedDictionaryManagerOnDisk::CreateWriter(
     base::Time response_time,
     base::TimeDelta expiration,
     const std::string& match,
-    const std::set<mojom::RequestDestination>& match_dest,
+    RequestDestinationSet match_dest,
     const std::string& id,
     base::OnceCallback<void(net::SharedDictionaryInfo)> callback) {
   const base::UnguessableToken disk_cache_key_token =
@@ -664,7 +664,7 @@ void SharedDictionaryManagerOnDisk::OnDictionaryWrittenInDiskCache(
     base::Time response_time,
     base::TimeDelta expiration,
     const std::string& match,
-    const std::set<mojom::RequestDestination>& match_dest,
+    RequestDestinationSet match_dest,
     const std::string& id,
     const base::UnguessableToken& disk_cache_key_token,
     base::OnceCallback<void(net::SharedDictionaryInfo)> callback,
@@ -823,7 +823,7 @@ void SharedDictionaryManagerOnDisk::MaybeStartSerializedTask() {
 }
 
 void SharedDictionaryManagerOnDisk::OnDictionaryDeleted(
-    const std::set<base::UnguessableToken>& disk_cache_key_tokens,
+    const absl::flat_hash_set<base::UnguessableToken>& disk_cache_key_tokens,
     bool need_to_doom_disk_cache_entries) {
   if (disk_cache_key_tokens.empty()) {
     return;

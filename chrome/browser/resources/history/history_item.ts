@@ -78,7 +78,15 @@ export class HistoryItemElement extends HistoryItemElementBase {
         reflect: true,
       },
 
-      selectionNotAllowed_: {type: Boolean},
+      isCardCollapsed: {
+        type: Boolean,
+        reflect: true,
+      },
+
+      isCollapsibleDayCardsEnabled_: {
+        type: Boolean,
+        reflect: true,
+      },
 
       hasTimeGap: {type: Boolean},
 
@@ -102,8 +110,9 @@ export class HistoryItemElement extends HistoryItemElementBase {
   }
 
   private isShiftKeyDown_: boolean = false;
-  protected accessor selectionNotAllowed_: boolean =
-      !loadTimeData.getBoolean('allowDeletingHistory');
+  protected accessor isCollapsibleDayCardsEnabled_: boolean =
+      loadTimeData.valueExists('isBrowsingHistoryCollapsibleDayCardsEnabled') &&
+      loadTimeData.getBoolean('isBrowsingHistoryCollapsibleDayCardsEnabled');
   protected accessor isCriticalActionsEnabled_: boolean =
       loadTimeData.getBoolean('isCriticalActionsEnabled');
   private eventTracker_: EventTracker = new EventTracker();
@@ -113,9 +122,13 @@ export class HistoryItemElement extends HistoryItemElementBase {
   accessor searchTerm: string = '';
   accessor isCardStart: boolean = false;
   accessor isCardEnd: boolean = false;
+  accessor isCardCollapsed: boolean = false;
   accessor numberOfItems: number = 0;
   accessor selected: boolean = false;
   accessor isExpanded_: boolean = false;
+
+  protected readonly selectionNotAllowed_: boolean =
+      !loadTimeData.getBoolean('allowDeletingHistory');
 
   override connectedCallback() {
     super.connectedCallback();
@@ -269,8 +282,29 @@ export class HistoryItemElement extends HistoryItemElementBase {
     return !!this.item?.isActorVisit;
   }
 
+  protected onCardHeadingClick_(e: Event) {
+    if (!this.isCollapsibleDayCardsEnabled_) {
+      return;
+    }
+    e.stopPropagation();
+    this.fire('toggle-card-collapse', {
+      index: this.index,
+    });
+  }
+
+  protected getCardCollapseIcon_(): string {
+    return this.isCardCollapsed ? 'cr:keyboard-arrow-down' :
+                                  'cr:keyboard-arrow-up';
+  }
+
+  protected getCardCollapseTitle_(): string {
+    return loadTimeData.getString(
+        this.isCardCollapsed ? 'expandSessionButton' :
+                               'collapseSessionButton');
+  }
+
   protected isExpandable_(): boolean {
-    return this.isCriticalActionsEnabled_ && !!this.item?.isActorVisit &&
+    return this.isCriticalActionsEnabled_ &&
         (this.item?.criticalActions?.length ?? 0) > 0;
   }
 
@@ -289,6 +323,10 @@ export class HistoryItemElement extends HistoryItemElementBase {
 
   protected getCriticalActions_(): CriticalAction[] {
     return this.item?.criticalActions || [];
+  }
+
+  protected hasLinkout_(action: CriticalAction): boolean {
+    return !!action.linkoutUrl;
   }
 
   protected getCriticalActionAriaLabel_(action: CriticalAction): string {
@@ -424,7 +462,7 @@ export class HistoryItemElement extends HistoryItemElementBase {
 
   protected actorIconClass_(): string {
     // <if expr="_google_chrome">
-    return 'history-internal:arrow-selector-spark';
+    return 'history-internal:arrow-selector-spark-new';
     // </if>
     // <if expr="not _google_chrome">
     return loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?

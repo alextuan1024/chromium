@@ -11,7 +11,6 @@
 #include "chrome/browser/ui/global_media_controls/media_item_ui_metrics.h"
 #include "chrome/browser/ui/views/global_media_controls/cast_device_footer_view.h"
 #include "chrome/browser/ui/views/global_media_controls/cast_device_selector_view.h"
-#include "chrome/browser/ui/views/global_media_controls/media_dialog_view.h"
 #include "chrome/browser/ui/views/global_media_controls/media_item_ui_device_selector_view.h"
 #include "components/global_media_controls/public/constants.h"
 #include "components/global_media_controls/public/media_session_notification_item.h"
@@ -21,13 +20,11 @@
 #include "components/media_router/browser/media_router_factory.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/media_session.h"
-#include "media/base/media_switches.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ui/views/global_media_controls/media_item_ui_cast_footer_view.h"
-#include "chrome/browser/ui/views/global_media_controls/media_item_ui_legacy_cast_footer_view.h"
 #endif
 
 namespace {
@@ -121,7 +118,7 @@ base::RepeatingClosure GetStopCastingCallback(
   }
 
   const auto& route_id = route->media_route_id();
-  auto cast_mode = HasRemotePlaybackRoute(item)
+  auto cast_mode = route->media_source().IsRemotePlaybackSource()
                        ? media_router::MediaCastMode::REMOTE_PLAYBACK
                        : media_router::MediaCastMode::TAB_MIRROR;
 
@@ -130,30 +127,11 @@ base::RepeatingClosure GetStopCastingCallback(
          media_router::MediaCastMode cast_mode) {
         router->TerminateRoute(route_id);
         MediaItemUIMetrics::RecordStopCastingMetrics(cast_mode);
-        if (cast_mode == media_router::MediaCastMode::TAB_MIRROR) {
-          MediaDialogView::HideDialog();
-        }
       },
       route_id,
       media_router::MediaRouterFactory::GetApiForBrowserContext(profile),
       cast_mode);
   return stop_casting_callback;
-}
-
-bool HasRemotePlaybackRoute(
-    base::WeakPtr<media_message_center::MediaNotificationItem> item) {
-  if (base::FeatureList::IsEnabled(media::kMediaRemotingWithoutFullscreen) &&
-      item &&
-      item->GetSourceType() ==
-          media_message_center::SourceType::kLocalMediaSession) {
-    const auto* media_session_item =
-        static_cast<global_media_controls::MediaSessionNotificationItem*>(
-            item.get());
-    return media_session_item->GetRemotePlaybackMetadata() &&
-           media_session_item->GetRemotePlaybackMetadata()
-               ->remote_playback_started;
-  }
-  return false;
 }
 
 std::optional<media_router::MediaRoute> GetSessionRoute(
@@ -170,20 +148,14 @@ std::optional<media_router::MediaRoute> GetSessionRoute(
     return std::nullopt;
   }
 
-  // Return std::nullopt if fallback to tab mirroring is disabled, and
-  // media session doesn't have an associated Remote Playback route.
-  if (!base::FeatureList::IsEnabled(
-          media_router::kFallbackToAudioTabMirroring) &&
-      !HasRemotePlaybackRoute(item)) {
-    return std::nullopt;
-  }
-
   auto* web_contents =
       content::MediaSession::GetWebContentsFromRequestId(item_id);
   if (!web_contents) {
     return std::nullopt;
   }
 
+  // Associate Remote Playback and Tab Mirroring routes with the media session
+  // of the tab that started them, regardless of feature state.
   const int item_tab_id =
       sessions::SessionTabHelper::IdForTab(web_contents).id();
   for (const auto& route :
@@ -244,40 +216,37 @@ std::unique_ptr<global_media_controls::MediaItemUIFooter> BuildFooter(
     base::WeakPtr<media_message_center::MediaNotificationItem> item,
     Profile* profile,
     media_message_center::MediaColorTheme media_color_theme) {
-  // Show a footer view for a Cast item.
+  if (!item) {
+    return nullptr;
+  }
+
+  base::RepeatingClosure stop_casting_cb;
+  std::optional<std::string> device_name;
   if (item->GetSourceType() == media_message_center::SourceType::kCast) {
     auto media_cast_item =
         static_cast<CastMediaNotificationItem*>(item.get())->GetWeakPtr();
-#if BUILDFLAG(IS_CHROMEOS)
-    return std::make_unique<MediaItemUICastFooterView>(
-        base::BindRepeating(&CastMediaNotificationItem::StopCasting,
-                            media_cast_item),
-        media_color_theme);
-#else
-    return std::make_unique<CastDeviceFooterView>(
-        media_cast_item->device_name(),
-        base::BindRepeating(&CastMediaNotificationItem::StopCasting,
-                            media_cast_item),
-        media_color_theme);
-#endif
+    stop_casting_cb = base::BindRepeating(
+        &CastMediaNotificationItem::StopCasting, media_cast_item);
+    device_name = media_cast_item->device_name();
+  } else if (item->GetSourceType() ==
+             media_message_center::SourceType::kLocalMediaSession) {
+    stop_casting_cb = GetStopCastingCallback(profile, id, item);
+    auto* media_session_item =
+        static_cast<global_media_controls::MediaSessionNotificationItem*>(
+            item.get());
+    device_name = media_session_item->device_name();
   }
 
-  base::RepeatingClosure stop_casting_cb =
-      GetStopCastingCallback(profile, id, item);
   if (stop_casting_cb.is_null()) {
     return nullptr;
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
-  return std::make_unique<MediaItemUILegacyCastFooterView>(
-      std::move(stop_casting_cb));
+  return std::make_unique<MediaItemUICastFooterView>(std::move(stop_casting_cb),
+                                                     media_color_theme);
 #else
-  auto* media_session_item =
-      static_cast<global_media_controls::MediaSessionNotificationItem*>(
-          item.get());
   return std::make_unique<CastDeviceFooterView>(
-      media_session_item->device_name(), std::move(stop_casting_cb),
-      media_color_theme);
+      device_name, std::move(stop_casting_cb), media_color_theme);
 #endif
 }
 

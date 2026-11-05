@@ -8,6 +8,7 @@
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/glic/public/widget/glic_side_panel_coordinator_android.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
+#include "chrome/browser/glic/test_support/glic_histogram_tester.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "content/public/test/browser_test.h"
 
@@ -80,21 +81,28 @@ IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
       "with a peek side panel."));
 }
 
-// TODO(b/508340459): Fix flakiness on x64.
 IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
-                       DISABLED_NotShowingOnTabSwitchIfPreviouslyClosed) {
+                       NotShowingOnTabSwitchIfPreviouslyClosed) {
   ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
 
   tabs::TabInterface* tab1 = GetTabListInterface()->GetActiveTab();
+  ASSERT_OK(
+      WaitForSidePanelState(tab1, GlicSidePanelCoordinator::State::kShown));
 
-  PreventDeletionOnClose();
-  instance->CloseAllEmbedders();
+  ASSERT_OK(CloseAllEmbeddersAndWait(instance));
   ASSERT_OK(
       WaitForSidePanelState(tab1, GlicSidePanelCoordinator::State::kClosed));
 
   CreateAndActivateTab(GetSimpleTestUrl());
 
+  base::test::TestFuture<tabs::TabInterface*> focused_tab_future;
+  base::CallbackListSubscription subscription =
+      instance->GetSharingManagerInternal().AddFocusedTabChangedCallback(
+          base::BindLambdaForTesting([&](const FocusedTabData& data) {
+            focused_tab_future.SetValue(data.focus());
+          }));
   GetTabListInterface()->ActivateTab(tab1->GetHandle());
+  ASSERT_EQ(focused_tab_future.Get(), tab1);
 
   ASSERT_OK(
       WaitForSidePanelState(tab1, GlicSidePanelCoordinator::State::kClosed));
@@ -134,11 +142,12 @@ IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
       WaitForSidePanelState(new_tab, GlicSidePanelCoordinator::State::kPeek));
 }
 
-// TODO(crbug.com/533364604): Fix flakiness.
 IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
-                       DISABLED_ShowDoesNotDeactivateActiveEmbedder) {
+                       ShowDoesNotDeactivateActiveEmbedder) {
   ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
   tabs::TabInterface* tab = GetTabListInterface()->GetActiveTab();
+  ASSERT_OK(
+      WaitForSidePanelState(tab, GlicSidePanelCoordinator::State::kShown));
 
   EXPECT_TRUE(instance->IsShowing());
   EXPECT_EQ(instance->GetActiveEmbedderTabForTesting(), tab);
@@ -188,6 +197,47 @@ IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
   coordinator_android->SuppressBottomSheetForTesting(false);
 }
 
+// Serves a page that never bootstraps a web client so invocations stay in their
+// loading (`!client_ready`) state. `SetGlicPagePath()` must be called before
+// `SetUpCommandLine()` initializes the test servers.
+class GlicAndroidPeekNeverReadyClientBrowserTest
+    : public GlicAndroidPeekBrowserTest {
+ public:
+  GlicAndroidPeekNeverReadyClientBrowserTest() {
+    SetGlicPagePath("/title1.html");
+  }
+};
+
+// Regression test for crbug.com/575088540: when `Show()` synchronously fails
+// and transitions from `kPeek` to `kClosed` while the client is still loading,
+// `DidCloseFor(kExplicitlyClosed)` synchronously cancels and destroys the
+// running show-only `GlicInvokeHandler` (and `ShowInstanceTask`).
+IN_PROC_BROWSER_TEST_F(GlicAndroidPeekNeverReadyClientBrowserTest,
+                       ShowFailsWhenSuppressedWhileLoadingCancelsInvoke) {
+  tabs::TabInterface* tab = GetTabListInterface()->GetActiveTab();
+  auto* coordinator_android = GetSidePanelCoordinatorAndroid(tab);
+
+  // Set the C++ coordinator to `State::kPeek` while the Java bottom sheet is
+  // still in `SheetState.NONE` so that when `Show()` is suppressed below,
+  // `SetState(State::kClosed)` transitions from `kPeek` to `kClosed` and fires
+  // state callbacks synchronously.
+  coordinator_android->OnOpened(false);
+
+  // Suppress the bottom sheet so that the next Show() fails synchronously and
+  // transitions from kPeek to kClosed inside ShowInstanceTask::Start().
+  coordinator_android->SuppressBottomSheetForTesting(true);
+
+  base::test::TestFuture<GlicInvokeError> error_future;
+  GlicInvokeOptions options(glic::Target(*tab),
+                            mojom::InvocationSource::kTopChromeButton);
+  options.focus_on_show = true;
+  options.on_error = error_future.GetCallback();
+  coordinator().Invoke(std::move(options));
+
+  EXPECT_EQ(error_future.Get(), GlicInvokeError::kPanelClosed);
+  coordinator_android->SuppressBottomSheetForTesting(false);
+}
+
 IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
                        TransitionToPeekOnActiveEmbedderSwapAcrossWindows) {
   // Setup the first window and show Glic in expanded state on its active
@@ -226,6 +276,7 @@ IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
                        CloseFromPeekStateNotifiesVisibility) {
+  GlicHistogramTester histogram_tester;
   ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
   tabs::TabInterface* active_tab = GetTabListInterface()->GetActiveTab();
   auto* coordinator_android = GetSidePanelCoordinatorAndroid(active_tab);
@@ -236,6 +287,7 @@ IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
             GlicSidePanelCoordinator::State::kPeek);
   EXPECT_TRUE(instance->IsShowing());
   EXPECT_NE(instance->GetEmbedderForTab(active_tab), nullptr);
+  histogram_tester.ExpectTotalCount("Glic.PanelWebUiState.FinishState3", 0);
 
   int visibility_change_count = 0;
   auto subscription =
@@ -249,8 +301,9 @@ IN_PROC_BROWSER_TEST_F(GlicAndroidPeekBrowserTest,
   EXPECT_FALSE(instance->IsShowing());
 
   // Verify that closing from peek mode notified global visibility observers
-  // (such as Java's GlicButtonStateController).
+  // (such as Java's GlicButtonStateController) and recorded FinishState3.
   EXPECT_GT(visibility_change_count, 0);
+  histogram_tester.ExpectTotalCount("Glic.PanelWebUiState.FinishState3", 1);
 }
 
 }  // namespace glic

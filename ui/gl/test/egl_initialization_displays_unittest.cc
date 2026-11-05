@@ -5,8 +5,11 @@
 #include <algorithm>
 
 #include "base/command_line.h"
+#include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gl/gl_display.h"
+#include "ui/gl/gl_features.h"
 #include "ui/gl/gl_switches.h"
 #include "ui/gl/gl_utils.h"
 #include "ui/gl/init/gl_display_initializer.h"
@@ -21,6 +24,7 @@ TEST(EGLInitializationDisplaysTest, DisableD3D11) {
 
   // using disable-d3d11 workaround with the default --use-angle should never
   // return D3D11.
+  gl::GlWorkarounds old_workarounds = gl::GetGlWorkarounds();
   gl::GlWorkarounds workarounds = {
       .disable_d3d11 = true,
   };
@@ -45,6 +49,8 @@ TEST(EGLInitializationDisplaysTest, DisableD3D11) {
   gl::init::GetEGLInitDisplaysForTesting(false, true, true, true, true, true,
                                          true, command_line.get(), &displays);
   EXPECT_FALSE(std::ranges::contains(displays, gl::ANGLE_D3D11));
+
+  gl::SetGlWorkarounds(old_workarounds);
 }
 
 TEST(EGLInitializationDisplaysTest, DefaultRenderers) {
@@ -162,5 +168,35 @@ TEST(EGLInitializationDisplaysTest, NoExtensions) {
   EXPECT_TRUE(std::ranges::contains(displays, gl::DEFAULT));
   EXPECT_EQ(displays.size(), 1u);
 }
+
+#if BUILDFLAG(IS_APPLE)
+TEST(EGLInitializationDisplaysTest, ANGLEPurgeableBufferPoolFeature) {
+  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+
+  {
+    // By default, the feature is disabled and should not be added to
+    // enabled_features.
+    std::vector<std::string> enabled_features;
+    std::vector<std::string> disabled_features;
+    features::GetANGLEFeaturesFromCommandLineAndFinch(
+        &command_line, enabled_features, disabled_features);
+    EXPECT_FALSE(
+        std::ranges::contains(enabled_features, "purgeableBufferPool"));
+  }
+
+  {
+    // When kANGLEPurgeableBufferPool is enabled, "purgeableBufferPool" should
+    // be added to enabled_features.
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(features::kANGLEPurgeableBufferPool);
+
+    std::vector<std::string> enabled_features;
+    std::vector<std::string> disabled_features;
+    features::GetANGLEFeaturesFromCommandLineAndFinch(
+        &command_line, enabled_features, disabled_features);
+    EXPECT_TRUE(std::ranges::contains(enabled_features, "purgeableBufferPool"));
+  }
+}
+#endif  // BUILDFLAG(IS_APPLE)
 
 }  // namespace

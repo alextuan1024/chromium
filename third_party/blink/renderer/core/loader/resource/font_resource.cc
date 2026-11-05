@@ -28,9 +28,11 @@
 
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
@@ -44,6 +46,7 @@
 #include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom-blink.h"
 #include "third_party/blink/renderer/platform/fonts/font_custom_platform_data.h"
 #include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
+#include "third_party/blink/renderer/platform/fonts/ift/ift_patcher.h"
 #include "third_party/blink/renderer/platform/fonts/web_font_decoder.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
@@ -52,9 +55,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/resource_loader.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
@@ -63,7 +63,6 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "third_party/blink/renderer/platform/scheduler/public/non_main_thread.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #endif  // IS_WIN
 
 
@@ -96,11 +95,10 @@ scoped_refptr<base::SequencedTaskRunner> GetFontDecodingTaskRunner() {
   // On Windows, the font decoding relies on FontManager, which requires
   // creating garbage collected objects. This means the thread the decoding
   // runs on must be GC enabled.
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(
-      std::unique_ptr<NonMainThread>, font_decoding_thread,
-      (NonMainThread::CreateThread(
-          ThreadCreationParams(ThreadType::kFontThread).SetSupportsGC(true))));
-  return font_decoding_thread->GetTaskRunner();
+  static base::NoDestructor<std::unique_ptr<NonMainThread>>
+      font_decoding_thread(NonMainThread::CreateThread(
+          ThreadCreationParams(ThreadType::kFontThread).SetSupportsGC(true)));
+  return (*font_decoding_thread)->GetTaskRunner();
 #else
   return worker_pool::CreateSequencedTaskRunner(
       {base::TaskPriority::USER_BLOCKING});
@@ -315,13 +313,22 @@ const FontCustomPlatformData* FontResource::GetCustomFontData() {
         font_data_ = FontCustomPlatformData::Create(
             std::move(background_decode_result_->sk_typeface),
             background_decode_result_->decoded_size);
+        ift_patcher_ = std::move(background_decode_result_->ift_patcher);
       } else {
         auto decode_start_time = base::TimeTicks::Now();
-        font_data_ =
-            FontCustomPlatformData::Create(Data(), ots_parsing_message_);
+        base::expected<DecodedWebFont, String> decode_result =
+            DecodeWebFont(Data());
         base::UmaHistogramMicrosecondsTimes(
             "Blink.Fonts.DecodeTime",
             base::TimeTicks::Now() - decode_start_time);
+        if (decode_result.has_value()) {
+          font_data_ = FontCustomPlatformData::Create(
+              std::move(decode_result->sk_typeface),
+              decode_result->decoded_size);
+          ift_patcher_ = std::move(decode_result->ift_patcher);
+        } else {
+          ots_parsing_message_ = std::move(decode_result).error();
+        }
       }
     } else {
       ots_parsing_message_ = background_decode_result_.error();
@@ -330,6 +337,7 @@ const FontCustomPlatformData* FontResource::GetCustomFontData() {
 
   if (!font_data_) {
     SetStatus(ResourceStatus::kDecodeError);
+    ift_patcher_.reset();
   } else {
     // Call observers once and remove them.
     HeapHashSet<WeakMember<FontResourceClearDataObserver>> observers;
@@ -338,8 +346,16 @@ const FontCustomPlatformData* FontResource::GetCustomFontData() {
       observer->FontResourceDataWillBeCleared();
     }
     ClearData();
+    if (base::FeatureList::IsEnabled(
+            features::kFontResourceDecodedMemoryAccounting)) {
+      SetDecodedSize(font_data_->DataSize());
+    }
   }
   return font_data_;
+}
+
+std::unique_ptr<IftPatcher> FontResource::CloneIftPatcher() const {
+  return ift_patcher_ ? ift_patcher_->Clone() : nullptr;
 }
 
 void FontResource::WillReloadAfterDiskCacheMiss() {

@@ -10,6 +10,7 @@ Please report all Chromium security bugs in the tracker using
 
 Please check here for any news and updates about the Chrome VRP.
 
+* October 2026: Updates for external fuzzer contribution.
 * April 2026 : Updates for new reward structure.
 * March 2026 : Updated formatting criteria & added self-service hotlists.
 
@@ -51,6 +52,7 @@ reports:
     queue immediately.
 * Include the version number and OS used to reproduce the bug and please
   consider including a bisection.
+* The bug must also reproduce on HEAD.
 
 ### Proof of Concept (PoC)
 
@@ -140,6 +142,7 @@ reports:
   * For a full reward,  please consider performing a full bisection, detailing
     the commit that introduced the issue and / or all the active release
     channels impacted by the bug.
+* Bugs must also reproduce on HEAD.
 * Focus your report: the robots which perform our initial triage work best when
   provided with a concise report that clearly describes a security bug.
 * Empty initial comments will lead to your report being closed and may lead to
@@ -217,6 +220,20 @@ hardware that you've used to demonstrate the full-chain exploit. Finally, add
 the
 [Security-Request-Exploit-Assessment](https://issues.chromium.org/hotlists/8186895)
 hotlist to the issue (you can do this after it has been filed).
+
+### Contributing Fuzzers
+
+We welcome contributions of blackbox fuzzers with a proven track record, and
+will run them on our clusterfuzz infrastructure so that reports are created
+automatically. To submit a fuzzer please first submit three valid security
+vulnerabilities found with the fuzzer using our normal processes. Once three
+vulnerabilities have been confirmed, and did not dupe against our internal
+fuzzers or AI tools, you are welcome to submit your fuzzer. Reach out to
+fuzzing@chromium.org with details of your fuzzer and links to the previously
+submitted vulnerabilities.
+
+All issues reported by hosted fuzzers are eligible for baseline rewards
+and a fuzzer bonus, as outlined in our [VRP Rules page](https://bughunters.google.com/about/rules/chrome-friends/chrome-vulnerability-reward-program-rules#fuzzer-bonus).
 
 ## Frequently Asked Questions (FAQ)
 
@@ -356,8 +373,7 @@ security problem, and adding necessary pocs and traces as attachments.
 * The exploit must work against a released Chrome build on the latest operating
   system versions and architectures, and prove code execution by executing a
   command shell with the credentials of the user running Chrome.
-* r/w and arbitrary read must work using Chrome in a special mode - details will
-  be released here soon.
+* r/w and arbitrary read must work using Chrome using `--vrp-flags` (see above).
 * If you have a proof to add to a bug after it has been rewarded, add the hotlist
   [Security-Request-Exploit-Assessment](https://issues.chromium.org/hotlists/8186895)
   (hotlist id:8186895) along with a poc and comment that demonstrates the proof.

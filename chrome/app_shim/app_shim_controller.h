@@ -5,9 +5,11 @@
 #ifndef CHROME_APP_SHIM_APP_SHIM_CONTROLLER_H_
 #define CHROME_APP_SHIM_APP_SHIM_CONTROLLER_H_
 
-#include <vector>
-
 #import <AppKit/AppKit.h>
+#include <sys/types.h>
+
+#include <optional>
+#include <vector>
 
 #include "base/files/file_path.h"
 #include "chrome/common/mac/app_shim.mojom.h"
@@ -48,6 +50,8 @@ class AppShimController
    public:
     virtual ~TestDelegate() = default;
     virtual void PopulateChromeCommandLine(base::CommandLine& command_line) = 0;
+    // Called when PollForChromeReady() is about to schedule a retry.
+    virtual void OnPollForChromeReady() {}
   };
 
   static void SetDelegateForTesting(TestDelegate* delegate);
@@ -68,6 +72,19 @@ class AppShimController
     // when swapping out FeatureList instances in FinalizeFeatureState();
     scoped_refptr<base::SequencedTaskRunner> io_thread_runner;
   };
+
+  // This enum is persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(MacAppShimBadgeOSStatus)
+  enum class BadgeUpdateOSStatus {
+    kNotDetermined = 1,
+    kPromptPending = 2,
+    kDenied = 3,
+    kGranted = 4,
+    kGrantedBadgeDisabled = 5,
+    kMaxValue = kGrantedBadgeDisabled,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/notifications/enums.xml:MacAppShimBadgeOSStatus)
 
   explicit AppShimController(const Params& params);
 
@@ -181,7 +198,8 @@ class AppShimController
       mojo::PendingAssociatedReceiver<remote_cocoa::mojom::Application>
           receiver) override;
   void CreateCommandDispatcherForWidget(uint64_t widget_id) override;
-  void SetBadgeLabel(const std::string& badge_label) override;
+  void SetBadgeLabel(const std::string& badge_label,
+                     SetBadgeLabelCallback callback) override;
   void SetUserAttention(
       chrome::mojom::AppShimAttentionType attention_type) override;
   void UpdateProfileMenu(std::vector<chrome::mojom::ProfileMenuItemPtr>
@@ -194,6 +212,7 @@ class AppShimController
           provider) override;
   void RequestNotificationPermission(
       RequestNotificationPermissionCallback callback) override;
+  void SynchronizeNotificationPermissionStatus() override;
   void BindChildHistogramFetcherFactory(
       mojo::PendingReceiver<metrics::mojom::ChildHistogramFetcherFactory>
           receiver) override;
@@ -253,6 +272,10 @@ class AppShimController
   // - The pid specified to the app's command line (if it exists).
   // - The pid specified in the chrome::kSingletonLockFilename file.
   NSRunningApplication* __strong chrome_to_connect_to_;
+
+  // The validated PID from `app_mode::kLaunchedByChromeProcessId`, if this shim
+  // was launched by Chrome.
+  std::optional<pid_t> launched_by_chrome_pid_;
 
   // The Chrome process that was launched by this app in FindOrLaunchChrome.
   // Note that the app is not compelled to connect to this process (consider the

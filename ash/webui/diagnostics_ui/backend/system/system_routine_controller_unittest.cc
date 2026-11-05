@@ -8,7 +8,6 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/system/diagnostics/diagnostics_log_controller.h"
-#include "ash/system/diagnostics/fake_diagnostics_browser_delegate.h"
 #include "ash/system/diagnostics/routine_log.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/webui/diagnostics_ui/backend/system/fake_system_routine_controller_delegate.h"
@@ -25,15 +24,13 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "chromeos/ash/components/mojo_service_manager/fake_mojo_service_manager.h"
-#include "chromeos/ash/components/test/ash_test_suite.h"
 #include "chromeos/ash/services/cros_healthd/public/cpp/fake_cros_healthd.h"
 #include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd.mojom.h"
 #include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_diagnostics.mojom.h"
 #include "content/public/test/browser_task_environment.h"
-#include "mojo/public/cpp/system/platform_handle.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 #include "services/device/public/cpp/test/test_wake_lock_provider.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/resource/resource_bundle.h"
 
 namespace ash::diagnostics {
 
@@ -66,7 +63,7 @@ void SetCrosHealthdRoutineUpdateResponse(healthd::RoutineUpdatePtr response) {
 void SetNonInteractiveRoutineUpdateResponse(
     uint32_t percent_complete,
     healthd::DiagnosticRoutineStatusEnum status,
-    mojo::ScopedHandle output_handle) {
+    mojo::PlatformHandle output_handle) {
   DCHECK_GE(percent_complete, 0u);
   DCHECK_LE(percent_complete, 100u);
 
@@ -228,16 +225,13 @@ class SystemRoutineControllerTest : public AshTestBase {
   ~SystemRoutineControllerTest() override = default;
 
   void SetUp() override {
-    ui::ResourceBundle::CleanupSharedInstance();
-    AshTestSuite::LoadTestResources();
     AshTestBase::SetUp();
     cros_healthd::FakeCrosHealthd::Initialize();
     auto delegate = std::make_unique<FakeSystemRoutineControllerDelegate>();
     fake_delegate_ = delegate.get();
     system_routine_controller_ =
         std::make_unique<SystemRoutineController>(std::move(delegate));
-    DiagnosticsLogController::Initialize(
-        std::make_unique<FakeDiagnosticsBrowserDelegate>());
+    DiagnosticsLogController::Initialize();
 
     wake_lock_provider_ = std::make_unique<device::TestWakeLockProvider>();
 
@@ -259,8 +253,8 @@ class SystemRoutineControllerTest : public AshTestBase {
   }
 
  protected:
-  mojo::ScopedHandle CreateMojoHandleForPowerRoutine(double charge_percent,
-                                                     bool charge) {
+  mojo::PlatformHandle CreateMojoHandleForPowerRoutine(double charge_percent,
+                                                       bool charge) {
     return CreateMojoHandle(
         ConstructPowerRoutineResultJson(charge_percent, charge));
   }
@@ -306,7 +300,7 @@ class SystemRoutineControllerTest : public AshTestBase {
   std::unique_ptr<SystemRoutineController> system_routine_controller_;
 
  private:
-  mojo::ScopedHandle CreateMojoHandle(const std::string& contents) {
+  mojo::PlatformHandle CreateMojoHandle(const std::string& contents) {
     const bool temp_success = temp_dir_.CreateUniqueTempDir();
     DCHECK(temp_success);
 
@@ -316,7 +310,7 @@ class SystemRoutineControllerTest : public AshTestBase {
     DCHECK(fd.is_valid());
     const bool write_success = base::WriteFileDescriptor(fd.get(), contents);
     DCHECK(write_success);
-    return mojo::WrapPlatformFile(std::move(fd));
+    return mojo::PlatformHandle(std::move(fd));
   }
 
   base::ScopedTempDir temp_dir_;
@@ -380,7 +374,7 @@ TEST_F(SystemRoutineControllerTest, CpuStressSuccess) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Before the update interval, the routine status is not processed.
   task_environment()->FastForwardBy(base::Seconds(59));
@@ -409,7 +403,7 @@ TEST_F(SystemRoutineControllerTest, CpuStressFailure) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kFailed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Before the update interval, the routine status is not processed.
   task_environment()->FastForwardBy(base::Seconds(59));
@@ -438,7 +432,7 @@ TEST_F(SystemRoutineControllerTest, CpuStressStillRunning) {
   // Update the status on cros_healthd to signify the routine is still running.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kRunning,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Before the update interval, the routine status is not processed.
   task_environment()->FastForwardBy(base::Seconds(59));
@@ -452,7 +446,7 @@ TEST_F(SystemRoutineControllerTest, CpuStressStillRunning) {
   // Update the status on cros_healthd to signify the routine is completed
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Fast forward by the refresh interval.
   task_environment()->FastForwardBy(base::Seconds(1));
@@ -477,7 +471,7 @@ TEST_F(SystemRoutineControllerTest, CpuStressStillRunningMultipleIntervals) {
   // Update the status on cros_healthd to signify the routine is still running.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kRunning,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Before the update interval, the routine status is not processed.
   task_environment()->FastForwardBy(base::Seconds(59));
@@ -490,7 +484,7 @@ TEST_F(SystemRoutineControllerTest, CpuStressStillRunningMultipleIntervals) {
 
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kRunning,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // After another refresh interval, the routine is still running.
   task_environment()->FastForwardBy(base::Seconds(1));
@@ -499,7 +493,7 @@ TEST_F(SystemRoutineControllerTest, CpuStressStillRunningMultipleIntervals) {
   // Update the status on cros_healthd to signify the routine is completed
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // After a second refresh interval, the routine is completed.
   task_environment()->FastForwardBy(base::Seconds(1));
@@ -524,7 +518,7 @@ TEST_F(SystemRoutineControllerTest, TwoConsecutiveRoutines) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
   task_environment()->FastForwardBy(base::Seconds(60));
   EXPECT_FALSE(routine_runner_1.result.is_null());
   VerifyRoutineResult(*routine_runner_1.result, mojom::RoutineType::kCpuStress,
@@ -546,7 +540,7 @@ TEST_F(SystemRoutineControllerTest, TwoConsecutiveRoutines) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kFailed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
   task_environment()->FastForwardBy(base::Seconds(60));
   EXPECT_FALSE(routine_runner_2.result.is_null());
   VerifyRoutineResult(*routine_runner_2.result, mojom::RoutineType::kCpuStress,
@@ -558,7 +552,7 @@ TEST_F(SystemRoutineControllerTest, PowerRoutineSuccess) {
                         healthd::DiagnosticRoutineStatusEnum::kWaiting);
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/10, healthd::DiagnosticRoutineStatusEnum::kRunning,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   FakeRoutineRunner routine_runner;
   system_routine_controller_->RunRoutine(
@@ -591,7 +585,7 @@ TEST_F(SystemRoutineControllerTest, DischargeRoutineSuccess) {
                         healthd::DiagnosticRoutineStatusEnum::kWaiting);
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/10, healthd::DiagnosticRoutineStatusEnum::kRunning,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   FakeRoutineRunner routine_runner;
   system_routine_controller_->RunRoutine(
@@ -758,7 +752,7 @@ TEST_F(SystemRoutineControllerTest, CancelRoutine) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/0, healthd::DiagnosticRoutineStatusEnum::kCancelled,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Close the routine_runner
   routine_runner.reset();
@@ -793,7 +787,7 @@ TEST_F(SystemRoutineControllerTest, CancelRoutineDtor) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/0, healthd::DiagnosticRoutineStatusEnum::kCancelled,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Destroy the SystemRoutineController.
   // Clear raw_ptr before destroying controller to avoid dangling detection.
@@ -868,7 +862,7 @@ TEST_F(SystemRoutineControllerTest, RunRoutineCount1) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Before the update interval, the routine status is not processed.
   task_environment()->FastForwardBy(base::Seconds(59));
@@ -926,7 +920,7 @@ TEST_F(SystemRoutineControllerTest, RoutineLog) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // After the update interval, the update is fetched and processed.
   task_environment()->FastForwardBy(base::Seconds(60));
@@ -955,7 +949,7 @@ TEST_F(SystemRoutineControllerTest, RoutineLog) {
 
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/0, healthd::DiagnosticRoutineStatusEnum::kCancelled,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Close the routine_runner
   routine_runner_2.reset();
@@ -990,7 +984,7 @@ TEST_F(SystemRoutineControllerTest, RoutineResultEmitted) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // After the update interval, the update is fetched and processed.
   task_environment()->FastForwardBy(base::Seconds(60));
@@ -1043,7 +1037,7 @@ TEST_F(SystemRoutineControllerTest, MemoryRuntimeEmitted) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // After the update interval, the update is fetched and processed.
   task_environment()->FastForwardBy(base::Seconds(1000));
@@ -1073,7 +1067,7 @@ TEST_F(SystemRoutineControllerTest, CancelThenStartRoutine) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/0, healthd::DiagnosticRoutineStatusEnum::kCancelled,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Close the routine_runner
   routine_runner.reset();
@@ -1094,7 +1088,7 @@ TEST_F(SystemRoutineControllerTest, CancelThenStartRoutine) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // After the update interval, the update is fetched and processed.
   task_environment()->FastForwardBy(base::Seconds(60));
@@ -1122,7 +1116,7 @@ TEST_F(SystemRoutineControllerTest, MemoryAcquiresWakeLock) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/100, healthd::DiagnosticRoutineStatusEnum::kPassed,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // After the update interval, the update is fetched and processed.
   task_environment()->FastForwardBy(base::Seconds(1000));
@@ -1153,7 +1147,7 @@ TEST_F(SystemRoutineControllerTest, CancelMemoryReleasesWakeLock) {
   // Update the status on cros_healthd.
   SetNonInteractiveRoutineUpdateResponse(
       /*percent_complete=*/0, healthd::DiagnosticRoutineStatusEnum::kCancelled,
-      mojo::ScopedHandle());
+      mojo::PlatformHandle());
 
   // Close the routine_runner
   routine_runner.reset();

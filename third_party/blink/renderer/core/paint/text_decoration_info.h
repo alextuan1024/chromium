@@ -59,6 +59,14 @@ struct TextDecorationFragmentContext {
 CORE_EXPORT TextDecorationFragmentContext
 ComputeTextDecorationFragmentContext(const InlineCursor& cursor);
 
+// Returns the bounds of the underlines and overlines of text with `style` that
+// is `inline_size` long, ignoring the decorations that aren't in effect (see
+// `AppliedTextDecoration::IsInEffect()`).
+CORE_EXPORT std::optional<gfx::RectF> ComputeUnderOverDecorationBounds(
+    const ComputedStyle& style,
+    const UsedFont& font,
+    LayoutUnit inline_size);
+
 // Holds the resolved metrics and styling for a single AppliedTextDecoration.
 // This immutable structure decouples index-specific properties from the overall
 // TextDecorationInfo context.
@@ -76,6 +84,10 @@ struct ResolvedDecoration {
   // This field is available only if a decorating box is applied and `lines`
   // has underline.
   LayoutUnit offset_from_decorating_box;
+  // Inline offset of the target from the start of its decorating box, used
+  // to keep the wavy pattern phase continuous across the fragments the box
+  // decorates. Available only if a decorating box is applied.
+  LayoutUnit inline_offset_from_decorating_box;
   ResolvedUnderlinePosition underline_position =
       ResolvedUnderlinePosition::kNearAlphabeticBaselineAuto;
   bool has_underline = false;
@@ -180,6 +192,8 @@ class CORE_EXPORT TextDecorationInfo {
 
  private:
   LayoutUnit OffsetFromDecoratingBox(const DecoratingBox& decorating_box) const;
+  LayoutUnit InlineOffsetFromDecoratingBox(
+      const DecoratingBox& decorating_box) const;
   float ComputeThickness(const ResolvedDecoration& decoration) const;
 
   LayoutUnit Width() const { return width_; }

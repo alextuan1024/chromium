@@ -44,10 +44,12 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.TestFileUtil;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.blink_public.common.BlinkFeatures;
@@ -64,9 +66,17 @@ import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.display.DisplayUtil;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -802,12 +812,12 @@ public class AwSettingsTest {
 
         @Override
         protected Boolean getAlteredValue() {
-            return DISABLED;
+            return ENABLED;
         }
 
         @Override
         protected Boolean getInitialValue() {
-            return ENABLED;
+            return DISABLED;
         }
 
         @Override
@@ -859,12 +869,12 @@ public class AwSettingsTest {
 
         @Override
         protected Boolean getAlteredValue() {
-            return DISABLED;
+            return ENABLED;
         }
 
         @Override
         protected Boolean getInitialValue() {
-            return ENABLED;
+            return DISABLED;
         }
 
         @Override
@@ -2707,6 +2717,144 @@ public class AwSettingsTest {
         }
     }
 
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testBlockNetworkLoadsWithWebSocket() throws Throwable {
+        doTestBlockNetworkLoadsWithWebSocket(/* fromDedicatedWorker= */ false);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testBlockNetworkLoadsWithWebSocketFromDedicatedWorker() throws Throwable {
+        doTestBlockNetworkLoadsWithWebSocket(/* fromDedicatedWorker= */ true);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    @DisableFeatures(AwFeatures.WEBVIEW_BLOCK_NETWORK_LOADS_FOR_WEB_SOCKETS)
+    public void testBlockNetworkLoadsWithWebSocketKillSwitch() throws Throwable {
+        final TestAwContentsClient contentClient = new TestAwContentsClient();
+        final AwTestContainerView testContainer =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        final AwContents awContents = testContainer.getAwContents();
+        final AwSettings awSettings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
+        awSettings.setJavaScriptEnabled(true);
+        awSettings.setBlockNetworkLoads(true);
+
+        try (ServerSocket serverSocket =
+                new ServerSocket(0, 10, InetAddress.getByAddress(new byte[] {127, 0, 0, 1}))) {
+            loadWebSocketPage(awContents, contentClient, serverSocket, false);
+            // With the kill switch off, the old behavior is kept and the handshake is sent.
+            assertWebSocketHandshakeReceived(serverSocket);
+        }
+    }
+
+    private void loadWebSocketPage(
+            AwContents awContents,
+            TestAwContentsClient contentClient,
+            ServerSocket serverSocket,
+            boolean fromDedicatedWorker)
+            throws Throwable {
+        String socketScript =
+                String.format(
+                        Locale.ROOT,
+                        """
+                        var ws = new WebSocket('ws://127.0.0.1:%d/');
+                        ws.onerror = () => report('ws_error');
+                        ws.onopen = () => report('ws_open');
+                        """,
+                        serverSocket.getLocalPort());
+        String pageHtml;
+        if (fromDedicatedWorker) {
+            pageHtml =
+                    String.format(
+                            Locale.ROOT,
+                            """
+                            <html><body>
+                            <script id="worker" type="text/js-worker">
+                            function report(r) { postMessage(r); }
+                            %s
+                            </script>
+                            <script>
+                            const src = document.getElementById('worker').textContent;
+                            const worker = new Worker(URL.createObjectURL(new Blob([src])));
+                            worker.onmessage = e => { document.title = e.data; };
+                            </script>
+                            </body></html>
+                            """,
+                            socketScript);
+        } else {
+            pageHtml =
+                    String.format(
+                            Locale.ROOT,
+                            """
+                            <html><body><script>
+                            function report(r) { document.title = r; }
+                            %s
+                            </script></body></html>
+                            """,
+                            socketScript);
+        }
+        mActivityTestRule.loadDataWithBaseUrlSync(
+                awContents,
+                contentClient.getOnPageFinishedHelper(),
+                pageHtml,
+                "text/html",
+                false,
+                "http://example.test/",
+                null);
+    }
+
+    private static void assertWebSocketHandshakeReceived(ServerSocket serverSocket)
+            throws Exception {
+        serverSocket.setSoTimeout((int) WAIT_TIMEOUT_MS);
+        try (Socket socket = serverSocket.accept()) {
+            BufferedReader reader =
+                    new BufferedReader(
+                            new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            boolean sawUpgrade = false;
+            String line;
+            while ((line = reader.readLine()) != null && !line.isEmpty()) {
+                if (line.toLowerCase(Locale.US).startsWith("upgrade: websocket")) {
+                    sawUpgrade = true;
+                }
+            }
+            Assert.assertTrue("Expected a WebSocket handshake request", sawUpgrade);
+        }
+    }
+
+    private void doTestBlockNetworkLoadsWithWebSocket(boolean fromDedicatedWorker)
+            throws Throwable {
+        final TestAwContentsClient contentClient = new TestAwContentsClient();
+        final AwTestContainerView testContainer =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        final AwContents awContents = testContainer.getAwContents();
+        final AwSettings awSettings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
+        awSettings.setJavaScriptEnabled(true);
+
+        try (ServerSocket serverSocket =
+                new ServerSocket(0, 10, InetAddress.getByAddress(new byte[] {127, 0, 0, 1}))) {
+            // Blocked: the WebSocket fails and no connection reaches the server.
+            awSettings.setBlockNetworkLoads(true);
+            loadWebSocketPage(awContents, contentClient, serverSocket, fromDedicatedWorker);
+            AwActivityTestRule.pollInstrumentationThread(
+                    () -> "ws_error".equals(mActivityTestRule.getTitleOnUiThread(awContents)));
+            serverSocket.setSoTimeout(500);
+            Assert.assertThrows(
+                    "WebSocket connected while network loads are blocked",
+                    SocketTimeoutException.class,
+                    () -> serverSocket.accept().close());
+
+            // Unblocked: the WebSocket handshake reaches the server.
+            awSettings.setBlockNetworkLoads(false);
+            loadWebSocketPage(awContents, contentClient, serverSocket, fromDedicatedWorker);
+            assertWebSocketHandshakeReceived(serverSocket);
+        }
+    }
+
     // Test an Android asset URL (file:///android_asset/)
     @Test
     @SmallTest
@@ -3322,6 +3470,7 @@ public class AwSettingsTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView", "Preferences"})
+    @DisableFeatures(AwFeatures.WEBVIEW_IGNORE_DEFAULT_VIDEO_POSTER)
     public void testDefaultVideoPosterUrl() throws Throwable {
         final CallbackHelper videoPosterAccessedCallbackHelper = new CallbackHelper();
         final String defaultVideoPosterUrl = "http://default_video_poster/";
@@ -4131,5 +4280,345 @@ public class AwSettingsTest {
                 "Even without LAYOUT_ALGORITHM_TEXT_AUTOSIZING set, text-size-adjust is obeyed.",
                 "\"20px\"",
                 fontSizeStr);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testSetAllowFileAccessHistogram() throws Throwable {
+        TestAwContentsClient contentClient = new TestAwContentsClient();
+        AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        AwContents awContents = testContainerView.getAwContents();
+        AwSettings settings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
+
+        var watcherTrue =
+                HistogramWatcher.newSingleRecordWatcher("Android.WebView.SetAllowFileAccess", true);
+        settings.setAllowFileAccess(true);
+        watcherTrue.assertExpected();
+
+        var watcherFalse =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.SetAllowFileAccess", false);
+        settings.setAllowFileAccess(false);
+        watcherFalse.assertExpected();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testSetAllowContentAccessHistogram() throws Throwable {
+        TestAwContentsClient contentClient = new TestAwContentsClient();
+        AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        AwContents awContents = testContainerView.getAwContents();
+        AwSettings settings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
+
+        var watcherTrue =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.SetAllowContentAccess", true);
+        settings.setAllowContentAccess(true);
+        watcherTrue.assertExpected();
+
+        var watcherFalse =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.SetAllowContentAccess", false);
+        settings.setAllowContentAccess(false);
+        watcherFalse.assertExpected();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testSetAllowFileAccessFromFileURLsHistogram() throws Throwable {
+        TestAwContentsClient contentClient = new TestAwContentsClient();
+        AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        AwContents awContents = testContainerView.getAwContents();
+        AwSettings settings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
+
+        var watcherTrue =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.SetAllowFileAccessFromFileURLs", true);
+        settings.setAllowFileAccessFromFileUrls(true);
+        watcherTrue.assertExpected();
+
+        var watcherFalse =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.SetAllowFileAccessFromFileURLs", false);
+        settings.setAllowFileAccessFromFileUrls(false);
+        watcherFalse.assertExpected();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testSetAllowUniversalAccessFromFileURLsHistogram() throws Throwable {
+        TestAwContentsClient contentClient = new TestAwContentsClient();
+        AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        AwContents awContents = testContainerView.getAwContents();
+        AwSettings settings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
+
+        var watcherTrue =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.SetAllowUniversalAccessFromFileURLs", true);
+        settings.setAllowUniversalAccessFromFileUrls(true);
+        watcherTrue.assertExpected();
+
+        var watcherFalse =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.WebView.SetAllowUniversalAccessFromFileURLs", false);
+        settings.setAllowUniversalAccessFromFileUrls(false);
+        watcherFalse.assertExpected();
+    }
+
+    class AwSettingsWebGraphicsEnabledTestHelper extends AwSettingsTestHelper<Boolean> {
+        private static final String WEBGL_ENABLED_STRING = "WebGL Enabled";
+        private static final String WEBGL_DISABLED_STRING = "WebGL Disabled";
+        private static final String WEBGPU_UNAVAILABLE_STRING = "WebGPU: unavailable";
+        private static final String WEBGPU_NULL_ADAPTER_STRING = "WebGPU: null adapter";
+        private static final String WEBGPU_ADAPTER_STRING = "WebGPU: adapter";
+        private static final String JS_OBJECT_NAME = "resultListener";
+
+        private final TestWebMessageListener mWebMessageListener;
+        private final boolean mTestWebGPU;
+
+        AwSettingsWebGraphicsEnabledTestHelper(
+                AwTestContainerView containerView,
+                TestAwContentsClient contentViewClient,
+                boolean testWebGPU)
+                throws Throwable {
+            super(containerView, contentViewClient, true);
+            mTestWebGPU = testWebGPU;
+            mWebMessageListener = new TestWebMessageListener();
+            TestWebMessageListener.addWebMessageListenerOnUiThread(
+                    mAwContents, JS_OBJECT_NAME, new String[] {"*"}, mWebMessageListener);
+        }
+
+        @Override
+        protected Boolean getAlteredValue() {
+            return DISABLED;
+        }
+
+        @Override
+        protected Boolean getInitialValue() {
+            return ENABLED;
+        }
+
+        @Override
+        protected Boolean getCurrentValue() {
+            return mAwSettings.getWebGraphicsEnabled();
+        }
+
+        @Override
+        protected void setCurrentValue(Boolean value) {
+            mAwSettings.setWebGraphicsEnabled(value);
+        }
+
+        @Override
+        protected void doEnsureSettingHasValue(Boolean value) throws Throwable {
+            if (mTestWebGPU) {
+                ensureWebGPUHasValue(value);
+            } else {
+                ensureWebGLHasValue(value);
+            }
+        }
+
+        private void ensureWebGLHasValue(Boolean value) throws Throwable {
+            loadDataSync(getWebGLData());
+            Assert.assertEquals(
+                    value == ENABLED ? WEBGL_ENABLED_STRING : WEBGL_DISABLED_STRING,
+                    mWebMessageListener.waitForOnPostMessage().getAsString());
+        }
+
+        private void ensureWebGPUHasValue(Boolean value) throws Throwable {
+            // WebGPU is only exposed in secure contexts, so load with an https base URL.
+            mActivityTestRule.loadDataWithBaseUrlSync(
+                    mAwContents,
+                    mContentViewClient.getOnPageFinishedHelper(),
+                    getWebGPUData(),
+                    "text/html",
+                    false,
+                    "https://example.com/",
+                    null);
+            String result = mWebMessageListener.waitForOnPostMessage().getAsString();
+            if (result.equals(WEBGPU_UNAVAILABLE_STRING)) {
+                // navigator.gpu is not exposed in this configuration; nothing to verify.
+                return;
+            }
+            Assert.assertEquals(
+                    value == ENABLED ? WEBGPU_ADAPTER_STRING : WEBGPU_NULL_ADAPTER_STRING, result);
+        }
+
+        private String getWebGPUData() {
+            return "<html><head><script>"
+                    + "function checkWebGPU() {"
+                    + "  if (!navigator.gpu) {"
+                    + "    "
+                    + JS_OBJECT_NAME
+                    + ".postMessage('"
+                    + WEBGPU_UNAVAILABLE_STRING
+                    + "');"
+                    + "    return;"
+                    + "  }"
+                    + "  navigator.gpu.requestAdapter().then(function(adapter) {"
+                    + "    "
+                    + JS_OBJECT_NAME
+                    + ".postMessage(adapter === null ? '"
+                    + WEBGPU_NULL_ADAPTER_STRING
+                    + "' : '"
+                    + WEBGPU_ADAPTER_STRING
+                    + "');"
+                    + "  });"
+                    + "}"
+                    + "</script></head><body onload=\"checkWebGPU();\"></body></html>";
+        }
+
+        private String getWebGLData() {
+            return "<html><head><script>"
+                    + "function checkWebGL() {"
+                    + "  var c1 = document.createElement('canvas');"
+                    + "  var gl1 = c1.getContext('webgl') || c1.getContext('experimental-webgl');"
+                    + "  var c2 = document.createElement('canvas');"
+                    + "  var gl2 = c2.getContext('webgl2');"
+                    + "  if (gl1 !== null && gl2 !== null) {"
+                    + "    "
+                    + JS_OBJECT_NAME
+                    + ".postMessage('"
+                    + WEBGL_ENABLED_STRING
+                    + "');"
+                    + "  } else if (gl1 === null && gl2 === null) {"
+                    + "    "
+                    + JS_OBJECT_NAME
+                    + ".postMessage('"
+                    + WEBGL_DISABLED_STRING
+                    + "');"
+                    + "  } else {"
+                    + "    "
+                    + JS_OBJECT_NAME
+                    + ".postMessage('Partial: webgl=' + (gl1 !== null)"
+                    + "        + ', webgl2=' + (gl2 !== null));"
+                    + "  }"
+                    + "}"
+                    + "</script></head><body onload=\"checkWebGL();\"></body></html>";
+        }
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(AwFeatures.WEBVIEW_WEB_GRAPHICS_SWITCH_ENABLED)
+    @CommandLineFlags.Add({"ignore-gpu-blocklist"})
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testWebGraphicsEnabledWithTwoViews() throws Throwable {
+        ViewPair views = createViews();
+        runPerViewSettingsTest(
+                new AwSettingsWebGraphicsEnabledTestHelper(
+                        views.getContainer0(), views.getClient0(), /* testWebGPU= */ false),
+                new AwSettingsWebGraphicsEnabledTestHelper(
+                        views.getContainer1(), views.getClient1(), /* testWebGPU= */ false));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(AwFeatures.WEBVIEW_WEB_GRAPHICS_SWITCH_ENABLED)
+    @CommandLineFlags.Add({"ignore-gpu-blocklist", "enable-unsafe-webgpu"})
+    @DisableIf.Build(
+            supported_abis_includes = "x86",
+            message = "Dawn (use_dawn) is not built on Android x86/x64")
+    @DisableIf.Build(
+            supported_abis_includes = "x86_64",
+            message = "Dawn (use_dawn) is not built on Android x86/x64")
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testWebGraphicsEnabledWebGPUWithTwoViews() throws Throwable {
+        ViewPair views = createViews();
+        runPerViewSettingsTest(
+                new AwSettingsWebGraphicsEnabledTestHelper(
+                        views.getContainer0(), views.getClient0(), /* testWebGPU= */ true),
+                new AwSettingsWebGraphicsEnabledTestHelper(
+                        views.getContainer1(), views.getClient1(), /* testWebGPU= */ true));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(AwFeatures.WEBVIEW_WEB_GRAPHICS_SWITCH_ENABLED)
+    @CommandLineFlags.Add({"ignore-gpu-blocklist"})
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testWebGraphicsEnabledDynamicToggleOnSameView() throws Throwable {
+        doTestWebGraphicsEnabledDynamicToggleOnSameView(/* testWebGPU= */ false);
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(AwFeatures.WEBVIEW_WEB_GRAPHICS_SWITCH_ENABLED)
+    @CommandLineFlags.Add({"ignore-gpu-blocklist", "enable-unsafe-webgpu"})
+    @DisableIf.Build(
+            supported_abis_includes = "x86",
+            message = "Dawn (use_dawn) is not built on Android x86/x64")
+    @DisableIf.Build(
+            supported_abis_includes = "x86_64",
+            message = "Dawn (use_dawn) is not built on Android x86/x64")
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testWebGraphicsEnabledWebGPUDynamicToggleOnSameView() throws Throwable {
+        doTestWebGraphicsEnabledDynamicToggleOnSameView(/* testWebGPU= */ true);
+    }
+
+    private void doTestWebGraphicsEnabledDynamicToggleOnSameView(boolean testWebGPU)
+            throws Throwable {
+        final TestAwContentsClient contentClient = new TestAwContentsClient();
+        final AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        AwSettingsWebGraphicsEnabledTestHelper helper =
+                new AwSettingsWebGraphicsEnabledTestHelper(
+                        testContainerView, contentClient, testWebGPU);
+
+        // Default is enabled (WebGL 1 / WebGL 2 contexts and WebGPU adapter succeed).
+        helper.ensureSettingHasInitialValue();
+
+        // Disable web graphics and verify WebGL 1 / WebGL 2 contexts and WebGPU adapters are null.
+        helper.setAlteredSettingValue();
+        helper.ensureSettingHasAlteredValue();
+
+        // Re-enable web graphics and verify everything is available again.
+        helper.setInitialSettingValue();
+        helper.ensureSettingHasInitialValue();
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(AwFeatures.WEBVIEW_WEB_GRAPHICS_SWITCH_ENABLED)
+    @CommandLineFlags.Add({"ignore-gpu-blocklist"})
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testWebGraphicsEnabledFeatureFlagDisabled() throws Throwable {
+        doTestWebGraphicsEnabledFeatureFlagDisabled(/* testWebGPU= */ false);
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(AwFeatures.WEBVIEW_WEB_GRAPHICS_SWITCH_ENABLED)
+    @CommandLineFlags.Add({"ignore-gpu-blocklist", "enable-unsafe-webgpu"})
+    @DisableIf.Build(
+            supported_abis_includes = "x86",
+            message = "Dawn (use_dawn) is not built on Android x86/x64")
+    @DisableIf.Build(
+            supported_abis_includes = "x86_64",
+            message = "Dawn (use_dawn) is not built on Android x86/x64")
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testWebGraphicsEnabledWebGPUFeatureFlagDisabled() throws Throwable {
+        doTestWebGraphicsEnabledFeatureFlagDisabled(/* testWebGPU= */ true);
+    }
+
+    private void doTestWebGraphicsEnabledFeatureFlagDisabled(boolean testWebGPU) throws Throwable {
+        final TestAwContentsClient contentClient = new TestAwContentsClient();
+        final AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        AwSettingsWebGraphicsEnabledTestHelper helper =
+                new AwSettingsWebGraphicsEnabledTestHelper(
+                        testContainerView, contentClient, testWebGPU);
+        helper.ensureSettingHasInitialValue();
+        helper.setAlteredSettingValue();
+        // When the feature flag is disabled, setWebGraphicsEnabled(false) is a no-op and WebGL /
+        // WebGPU stay enabled.
+        helper.ensureSettingHasInitialValue();
     }
 }

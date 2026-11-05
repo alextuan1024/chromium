@@ -4,16 +4,16 @@
 
 #include "third_party/blink/renderer/core/timing/soft_navigation_heuristics.h"
 
-#include <cstdint>
+#include <algorithm>
 #include <iterator>
 #include <utility>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/containers/adapters.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/not_fatal_until.h"
 #include "base/numerics/safe_conversions.h"
-#include "build/build_config.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_type.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -73,7 +73,7 @@ const char
 // values should never be reused. Please keep in sync with
 // "SoftNavigationOutcome" in tools/metrics/histograms/enums.xml. Note also that
 // these form a bitmask; future conditions should continue this pattern.
-// LINT.IfChange
+// LINT.IfChange(SoftNavigationOutcome)
 enum SoftNavigationOutcome {
   kSoftNavigationDetected = 0,
 
@@ -88,9 +88,13 @@ enum SoftNavigationOutcome {
   // such that you could have paints without a dom mod.
   kNoPaintOrDomModification = kInsufficientPaints | kNoDomModification,
 
-  kMaxValue = kNoSoftNavContextDuringUrlChangeButMergingIntoPreviousContext,
+  // All soft-navigation criteria were met, but TimeOrigin() <=
+  // ReferenceMonotonicTime(), so reporting to page_load_metrics was skipped.
+  kInvalidTimeOrigin = 1 << 4,
+
+  kMaxValue = kInvalidTimeOrigin,
 };
-// LINT.ThenChange(/tools/metrics/histograms/enums.xml:SoftNavigationOutcome)
+// LINT.ThenChange(//tools/metrics/histograms/enums.xml:SoftNavigationOutcome)
 
 void OnSoftNavigationContextWasExhausted(const SoftNavigationContext& context,
                                          uint64_t viewport_area,
@@ -183,6 +187,16 @@ void GroupLcpCandidatesByContext(const HeapVector<Member<T>>& records,
     candidates->MaybeUpdateCandidate(record);
   }
 }
+
+struct ContextRecords : public GarbageCollected<ContextRecords> {
+  void Trace(Visitor* visitor) const {
+    visitor->Trace(image_records);
+    visitor->Trace(text_records);
+  }
+
+  HeapVector<Member<ImageRecord>> image_records;
+  HeapVector<Member<TextRecord>> text_records;
+};
 
 }  // namespace
 
@@ -466,42 +480,50 @@ void SoftNavigationHeuristics::EmitSoftNavigation(
   UpdateSoftLcpMetricsForContext(context);
 }
 
-void SoftNavigationHeuristics::OnElementLastContentfulPaint(
-    ImageRecord* record) {
-  OnContentfulPaintImpl(record);
+PaintTimingClient::Type SoftNavigationHeuristics::GetType() const {
+  return Type::kSoftNavigationHeuristics;
 }
 
-void SoftNavigationHeuristics::OnElementLastContentfulPaint(
-    TextRecord* record,
-    bool was_previously_reported) {
-  OnContentfulPaintImpl(record);
-}
-
-template <IsDerivedFromPaintTimingRecord T>
-void SoftNavigationHeuristics::OnContentfulPaintImpl(T* record) const {
-  Node* node = record->GetNode();
-  // TODO(crbug.com/441914208, crbug.com/557111456): `node` can be null here,
-  // which is unexpected. Change this back to a CHECK when the root cause is
-  // understood and fixed.
-  if (!node) {
-    return;
+OptionalPaintTimingCallback SoftNavigationHeuristics::OnPaintFinished(
+    const HeapVector<Member<ImageRecord>>& image_records,
+    const HeapVector<Member<TextRecord>>& text_records) {
+  if (interaction_id_to_context_.empty() ||
+      (image_records.empty() && text_records.empty())) {
+    return std::nullopt;
   }
 
-  SoftNavigationContext* context =
-      paint_attribution_tracker_->GetSoftNavigationContextForNode(node);
-  if (!context || !context->ShouldTrackForPaintTiming(*record)) {
-    return;
-  }
-  record->SetSoftNavigationContext(context);
-  context->AddPaintedArea(record);
-}
+  HeapHashMap<Member<SoftNavigationContext>, Member<ContextRecords>>
+      records_per_context;
+  auto get_records_for_record =
+      [&](const PaintTimingRecord& record) -> ContextRecords* {
+    SoftNavigationContext* context =
+        paint_attribution_tracker_->GetSoftNavigationContextForNode(
+            record.GetNode());
+    if (!context || !context->IsRecordingLargestContentfulPaint()) {
+      return nullptr;
+    }
+    auto add_result = records_per_context.insert(context, nullptr);
+    if (add_result.is_new_entry) {
+      add_result.stored_value->value = MakeGarbageCollected<ContextRecords>();
+    }
+    return add_result.stored_value->value.Get();
+  };
 
-void SoftNavigationHeuristics::OnPaintFinished() {
-  for (const auto& context : interaction_id_to_context_.Values()) {
-    if (context->OnPaintFinished()) {
-      MaybeCommitNavigationOrEmitSoftNavigation(context);
+  for (const auto& record : image_records) {
+    if (ContextRecords* records = get_records_for_record(*record)) {
+      records->image_records.push_back(record);
     }
   }
+  for (const auto& record : text_records) {
+    if (ContextRecords* records = get_records_for_record(*record)) {
+      records->text_records.push_back(record);
+    }
+  }
+
+  for (auto& [context, records] : records_per_context) {
+    context->OnPaintFinished(records->image_records, records->text_records);
+  }
+  return std::nullopt;
 }
 
 void SoftNavigationHeuristics::OnInputOrScroll() {
@@ -516,8 +538,9 @@ void SoftNavigationHeuristics::OnInputOrScroll() {
 void SoftNavigationHeuristics::OnFramePresented(
     const HeapVector<Member<ImageRecord>>& image_records,
     const HeapVector<Member<TextRecord>>& text_records,
-    const HeapVector<Member<ElementTimingInfo>>&,
-    const DOMPaintTimingInfo&) {
+    const base::TimeTicks& presentation_timestamp,
+    const DOMPaintTimingInfo& paint_timing_info,
+    uint64_t navigation_id) {
   // First, group the records by context, ignoring records that aren't needed.
   ContextToCandidatesMap candidates_per_context;
   GroupLcpCandidatesByContext(image_records, candidates_per_context);
@@ -527,7 +550,9 @@ void SoftNavigationHeuristics::OnFramePresented(
   // context, if any. We do this before unblocking entries waiting for FCP
   // below, since that also emits and updates metrics.
   for (const auto& context_and_records : candidates_per_context) {
-    context_and_records.key->OnFramePresented(context_and_records.value);
+    context_and_records.key->OnFramePresented(context_and_records.value,
+                                              presentation_timestamp,
+                                              paint_timing_info, navigation_id);
   }
 
   // If we're waiting on FCP presentation feedback to emit entries, check if we
@@ -586,33 +611,18 @@ void SoftNavigationHeuristics::ReportSoftNavigationToMetrics(
 
   CHECK_EQ(context->GetSoftNavigationHeuristics(), this);
 
-  if (LocalFrameClient* frame_client = frame->Client()) {
-#if BUILDFLAG(IS_FUCHSIA)
-    if (context->TimeOrigin() <= loader->GetTiming().ReferenceMonotonicTime()) {
-      LOG(ERROR) << "SoftNavigationHeuristics: TimeOrigin ("
-                 << context->TimeOrigin().since_origin().InMicroseconds()
-                 << " us) is less than or equal to ReferenceMonotonicTime ("
-                 << loader->GetTiming()
-                        .ReferenceMonotonicTime()
-                        .since_origin()
-                        .InMicroseconds()
-                 << " us). Early returning to avoid crash.";
-      return;
-    }
-#else
-    // If this CHECK_GT fails in a test, it's likely because the test simulates
-    // events with an impossibly small start_time, which is less than the
-    // initial reference time, which makes the duration appear negative.  In
-    // case you're using ui::test::EventGenerator directly, you may want to use
-    // the Kombucha API's SendKeyPress facility instead; if you must use the
-    // EventGeneratorDirectly, you may need to manually advance its internal
-    // clock to the real time (ui::Test::EventGenerator::AdvanceClock) before
-    // dispatching the event. See also crbug.com/490814752 and
-    // chrome/test/interaction/README.md for the Kombucha API.
-    CHECK_GT(context->TimeOrigin(),
-             loader->GetTiming().ReferenceMonotonicTime());
-#endif
+  if (context->TimeOrigin() <= loader->GetTiming().ReferenceMonotonicTime()) {
+    // OS or synthetic event timestamps can occasionally precede or equal
+    // navigation start across platforms (see crbug.com/585428860,
+    // crbug.com/534229754, crbug.com/490814752). Return early rather than
+    // clamping start_time to 0 (which would distort Soft FCP/LCP and foreground
+    // attribution downstream).
+    base::UmaHistogramEnumeration(kPageLoadInternalSoftNavigationOutcome,
+                                  SoftNavigationOutcome::kInvalidTimeOrigin);
+    return;
+  }
 
+  if (LocalFrameClient* frame_client = frame->Client()) {
     blink::SoftNavigationMetricsForReporting metrics = {
         .performance_timeline_navigation_id =
             context->NavigationId().non_web_exposed_id,
@@ -792,6 +802,11 @@ void SoftNavigationHeuristics::OnVideoSrcChanged(HTMLVideoElement* element) {
       PaintTimingDetector::NotifyInteractionTriggeredVideoSrcChange(*object);
     }
   }
+}
+
+void SoftNavigationHeuristics::SetContextForTest(SoftNavigationContext* context,
+                                                 Node* node) {
+  paint_attribution_tracker_->SetContextForTest(context, node);
 }
 
 }  // namespace blink

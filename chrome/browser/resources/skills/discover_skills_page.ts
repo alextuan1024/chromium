@@ -22,17 +22,11 @@ import {getHtml} from './discover_skills_page.html.js';
 import type {Skill, TopicInfo} from './skill.mojom-webui.js';
 import {SkillsDialogType, SkillSource} from './skill.mojom-webui.js';
 import {SkillsManagementAction, SkillsManagementPage} from './skill_metrics.mojom-webui.js';
-import type {BrowseSkillsInitialState} from './skills.mojom-webui.js';
-import {SkillsPageBrowserProxy} from './skills_page_browser_proxy.js';
+import {browserProxyFactory} from './skills.mojom-webui.js';
+import type {BrowserProxy, BrowseSkillsInitialState} from './skills.mojom-webui.js';
 
 // The default category name for all skills.
 const kAllCategoriesString: string = loadTimeData.getString('all');
-
-export interface DiscoverSkillsPageElement {
-  $: {
-    invalidSkillToast: CrToastElement,
-  };
-}
 
 export class DiscoverSkillsPageElement extends CrLitElement {
   static get is() {
@@ -58,27 +52,27 @@ export class DiscoverSkillsPageElement extends CrLitElement {
   }
 
   /* key: category, value: skill */
-  protected accessor skills_: Map<string, Skill[]> = new Map();
+  private accessor skills_: Map<string, Skill[]> = new Map();
   // Subheader categories.
   protected accessor topicHeaders_: Set<TopicInfo> = new Set();
   // Skills that are pending removal and can't be saved.
-  protected skillsPendingRemoval_: Set<string> = new Set();
-  protected accessor selectedCategory_: string = '';
+  private skillsPendingRemoval_: Set<string> = new Set();
+  private accessor selectedCategory_: string = '';
   // Determines if a 1P skill is in the process of being saved.
-  protected accessor is1PSkillSaving_: boolean = false;
-  protected accessor searchTerm_: string = '';
+  private accessor is1PSkillSaving_: boolean = false;
+  private accessor searchTerm_: string = '';
   private listenerIds_: number[] = [];
-  private proxy_: SkillsPageBrowserProxy = SkillsPageBrowserProxy.getInstance();
+  private proxy_: BrowserProxy = browserProxyFactory.getInstance();
   private eventTracker_: EventTracker = new EventTracker();
 
   override connectedCallback() {
     super.connectedCallback();
     this.proxy_.handler.getInitial1PSkills().then(({initialState}) => {
-      this.update1PSkills_(initialState);
+      this.update1pSkills_(initialState);
     });
     this.listenerIds_ = [
       this.proxy_.callbackRouter.update1PSkills.addListener(
-          this.update1PSkills_.bind(this)),
+          this.update1pSkills_.bind(this)),
     ];
     // Listen for save button clicks.
     this.eventTracker_.add(
@@ -95,7 +89,7 @@ export class DiscoverSkillsPageElement extends CrLitElement {
     this.is1PSkillSaving_ = false;
   }
 
-  protected onSkillSave_(savedSkill: Skill) {
+  private onSkillSave_(savedSkill: Skill) {
     this.proxy_.handler.recordSkillsManagementAction(
         SkillsManagementPage.kBrowseSkills,
         SkillsManagementAction.kClickedAddSkill);
@@ -113,7 +107,8 @@ export class DiscoverSkillsPageElement extends CrLitElement {
       if (success) {
         this.proxy_.handler.openSkillsDialog(SkillsDialogType.kAdd, savedSkill);
       } else {
-        this.$.invalidSkillToast.show();
+        this.shadowRoot.querySelector<CrToastElement>(
+                           '#invalidSkillToast')!.show();
         this.skillsPendingRemoval_ =
             new Set([...this.skillsPendingRemoval_, savedSkill.id]);
       }
@@ -125,7 +120,7 @@ export class DiscoverSkillsPageElement extends CrLitElement {
     return this.is1PSkillSaving_ || this.skillsPendingRemoval_.has(skill.id);
   }
 
-  protected update1PSkills_(state: BrowseSkillsInitialState) {
+  private update1pSkills_(state: BrowseSkillsInitialState) {
     // Getting a new set of 1p skills, so we can remove any prior skills that
     // were pending removal.
     this.skillsPendingRemoval_ = new Set();
@@ -193,7 +188,7 @@ export class DiscoverSkillsPageElement extends CrLitElement {
     }
   }
 
-  protected filter_(skills: Skill[]) {
+  private filter_(skills: Skill[]) {
     const term = this.searchTerm_.toLowerCase();
 
     if (!term) {
@@ -226,7 +221,7 @@ export class DiscoverSkillsPageElement extends CrLitElement {
   }
 
   // Gets all skills.
-  protected getAllSkills_(): Skill[] {
+  private getAllSkills_(): Skill[] {
     const allSkills = Array.from(this.skills_.values()).flat();
     return this.filter_(allSkills);
   }

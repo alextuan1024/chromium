@@ -15,6 +15,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "chromeos/components/sensors/ash/sensor_hal_dispatcher.h"
 #include "chromeos/components/sensors/fake_sensor_device.h"
@@ -61,9 +62,7 @@ class FakeObserver : public AccelerometerReader::Observer {
 class AccelerometerProviderMojoTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    ash::AshTestHelper::InitParams init_params;
-    init_params.start_session = false;
-    ash_test_helper_.SetUp(std::move(init_params));
+    ash_test_helper_.SetUp(ash::AshTestHelper::InitParams());
 
     sensor_hal_server_ =
         std::make_unique<chromeos::sensors::FakeSensorHalServer>();
@@ -141,7 +140,7 @@ class AccelerometerProviderMojoTest : public ::testing::Test {
   FakeObserver observer_;
   std::unique_ptr<chromeos::sensors::FakeSensorHalServer> sensor_hal_server_;
   std::map<int32_t,
-           raw_ptr<chromeos::sensors::FakeSensorDevice, CtnExperimental>>
+           raw_ptr<chromeos::sensors::FakeSensorDevice, DanglingUntriaged>>
       sensor_devices_;
 
   scoped_refptr<AccelerometerProviderMojo> provider_;
@@ -160,8 +159,10 @@ TEST_F(AccelerometerProviderMojoTest, CheckNoScale) {
   chromeos::sensors::SensorHalDispatcher::GetInstance()->RegisterServer(
       sensor_hal_server_->PassRemote());
 
-  // Wait until all tasks done and no samples updated.
-  base::RunLoop().RunUntilIdle();
+  // Wait until the lid-accelerometer is initialized.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return provider_->GetInitializationStateForTesting() == MojoState::LID;
+  }));
 
   // Simulate timeout to check |ec_lid_angle_driver_status_|.
   TriggerNewDevicesTimeout();
@@ -180,8 +181,10 @@ TEST_F(AccelerometerProviderMojoTest, CheckNoLocation) {
   chromeos::sensors::SensorHalDispatcher::GetInstance()->RegisterServer(
       sensor_hal_server_->PassRemote());
 
-  // Wait until all tasks done and no samples updated.
-  base::RunLoop().RunUntilIdle();
+  // Wait until the lid-accelerometer is initialized.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return provider_->GetInitializationStateForTesting() == MojoState::LID;
+  }));
 
   // Simulate timeout to check |ec_lid_angle_driver_status_|.
   TriggerNewDevicesTimeout();
@@ -196,8 +199,10 @@ TEST_F(AccelerometerProviderMojoTest, GetSamplesOfOneAccel) {
   chromeos::sensors::SensorHalDispatcher::GetInstance()->RegisterServer(
       sensor_hal_server_->PassRemote());
 
-  // Wait until a sample is received.
-  base::RunLoop().RunUntilIdle();
+  // Wait until the lid-accelerometer is initialized.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return provider_->GetInitializationStateForTesting() == MojoState::LID;
+  }));
 
   // Simulate timeout to check |ec_lid_angle_driver_status_|.
   TriggerNewDevicesTimeout();
@@ -220,8 +225,10 @@ TEST_F(AccelerometerProviderMojoTest, GetSamplesWithNoLidAngle) {
   chromeos::sensors::SensorHalDispatcher::GetInstance()->RegisterServer(
       sensor_hal_server_->PassRemote());
 
-  // Wait until samples are received.
-  base::RunLoop().RunUntilIdle();
+  // Wait until both accelerometers are initialized.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return provider_->GetInitializationStateForTesting() == MojoState::LID_BASE;
+  }));
 
   // Simulate timeout to check |ec_lid_angle_driver_status_|.
   TriggerNewDevicesTimeout();
@@ -239,10 +246,9 @@ TEST_F(AccelerometerProviderMojoTest, GetSamplesWithNoLidAngle) {
   // Service.
   sensor_devices_[kFakeLidAccelerometerId]->ClearReceivers();
 
-  // Wait until the disconnection is done.
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_FALSE(sensor_hal_server_->GetSensorService()->HasReceivers());
+  // Wait until the provider resets its SensorService remote.
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !sensor_hal_server_->GetSensorService()->HasReceivers(); }));
 }
 
 TEST_F(AccelerometerProviderMojoTest, GetSamplesWithLidAngle) {
@@ -257,12 +263,13 @@ TEST_F(AccelerometerProviderMojoTest, GetSamplesWithLidAngle) {
   chromeos::sensors::SensorHalDispatcher::GetInstance()->RegisterServer(
       sensor_hal_server_->PassRemote());
 
-  // Wait until all setups are finished and no samples updated.
-  base::RunLoop().RunUntilIdle();
+  // Wait until the lid-angle driver and the lid-accelerometer are initialized.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return provider_->GetInitializationStateForTesting() == MojoState::ANGL_LID;
+  }));
 
   EXPECT_TRUE(observer_.is_supported_.has_value());
   EXPECT_TRUE(observer_.is_supported_.value());
-  EXPECT_EQ(provider_->GetInitializationStateForTesting(), MojoState::ANGL_LID);
   EXPECT_FALSE(observer_.update_.has(ACCELEROMETER_SOURCE_SCREEN));
   EXPECT_FALSE(observer_.update_.has(ACCELEROMETER_SOURCE_ATTACHED_KEYBOARD));
 
@@ -270,10 +277,9 @@ TEST_F(AccelerometerProviderMojoTest, GetSamplesWithLidAngle) {
 
   provider_->TriggerRead();
 
-  // Wait until samples are received.
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_TRUE(observer_.update_.has(ACCELEROMETER_SOURCE_SCREEN));
+  // Wait until a sample is received.
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return observer_.update_.has(ACCELEROMETER_SOURCE_SCREEN); }));
   EXPECT_FALSE(observer_.update_.has(ACCELEROMETER_SOURCE_ATTACHED_KEYBOARD));
 
   observer_.update_.Reset();
@@ -288,10 +294,9 @@ TEST_F(AccelerometerProviderMojoTest, GetSamplesWithLidAngle) {
   chromeos::sensors::SensorHalDispatcher::GetInstance()->RegisterServer(
       sensor_hal_server_->PassRemote());
 
-  // Wait until samples are received.
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_TRUE(observer_.update_.has(ACCELEROMETER_SOURCE_SCREEN));
+  // Wait until a sample is received.
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return observer_.update_.has(ACCELEROMETER_SOURCE_SCREEN); }));
   EXPECT_FALSE(observer_.update_.has(ACCELEROMETER_SOURCE_ATTACHED_KEYBOARD));
 }
 

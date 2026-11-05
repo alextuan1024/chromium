@@ -24,7 +24,7 @@ static_library("skyvault") {
   ]
 
   public_deps = [
-    "//chrome/browser:browser_public_dependencies",
+    "//ash/constants",
     "//chrome/browser/ui/webui/ash/system_web_dialog",
   ]
 
@@ -35,8 +35,7 @@ static_library("skyvault") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/chromeos/skyvault:resources",
     "//chrome/browser/ui/webui:theme_source",
-    "//chrome/common",
-    "//chrome/common:chrome_features",
+    "//components/strings:components_strings",
     "//content/public/browser",
     "//ui/base:types",
     "//ui/gfx",
@@ -59,11 +58,12 @@ source_set("browser_tests") {
     ":skyvault",
     "//base/test:test_support",
     "//chrome/browser/ash/policy/skyvault",
-    "//chrome/browser/ui",
     "//chrome/browser/ui:browser_window_header",
+    "//chrome/browser/ui/browser_window",
     "//chrome/common",
     "//chrome/common:chrome_features",
-    "//chrome/test:test_support_ui",
+    "//chrome/test/base:in_process_browser_test",
+    "//chrome/test/base:ui_test_utils",
     "//content/test:test_support",
     "//testing/gtest",
     "//ui/gfx",

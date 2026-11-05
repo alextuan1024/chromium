@@ -6,6 +6,7 @@
 #import "base/strings/string_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
+#import "base/time/time.h"
 #import "components/autofill/core/common/autofill_prefs.h"
 #import "components/enterprise/browser/enterprise_switches.h"
 #import "components/enterprise/connectors/core/features.h"
@@ -14,7 +15,6 @@
 #import "components/password_manager/core/common/password_manager_pref_names.h"
 #import "components/policy/core/common/cloud/cloud_policy_constants.h"
 #import "components/policy/core/common/policy_loader_ios_constants.h"
-#import "components/policy/core/common/policy_switches.h"
 #import "components/policy/policy_constants.h"
 #import "components/policy/test_support/embedded_policy_test_server.h"
 #import "components/policy/test_support/signature_provider.h"
@@ -24,16 +24,18 @@
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
 #import "ios/chrome/browser/device_reauth/test/reauthentication_app_interface.h"
+#import "ios/chrome/browser/enterprise/data_protection/test/data_protection_app_interface.h"
+#import "ios/chrome/browser/history/ui_bundled/history_ui_constants.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_constants.h"
 #import "ios/chrome/browser/policy/model/cloud/user_policy_constants.h"
 #import "ios/chrome/browser/policy/model/policy_app_interface.h"
 #import "ios/chrome/browser/policy/model/policy_earl_grey_utils.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
+#import "ios/chrome/browser/settings/password/public/passwords_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_settings_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/elements/elements_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/language/language_settings_ui_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/password_settings/password_settings_constants.h"
-#import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_root_table_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
@@ -57,10 +59,93 @@
 #import "ios/web/public/test/element_selector.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "ui/base/l10n/l10n_util.h"
+#import "url/gurl.h"
 
+using base::test::ios::kWaitForClearBrowsingDataTimeout;
 using policy_test_utils::SetPolicy;
 
 namespace {
+
+// Opens the History UI, verifies whether `kHistoryToolbarEditButtonIdentifier`
+// is enabled or disabled, and closes the History UI.
+void VerifyHistoryUIForAllowDeletingBrowserHistory(bool expected_enabled) {
+  [ChromeEarlGreyUI openToolsMenu];
+  [ChromeEarlGreyUI
+      tapToolsMenuButton:chrome_test_util::HistoryDestinationButton()];
+
+  id<GREYMatcher> edit_button_state_matcher =
+      expected_enabled
+          ? grey_allOf(grey_enabled(), grey_sufficientlyVisible(), nil)
+          : grey_allOf(grey_not(grey_enabled()), grey_sufficientlyVisible(),
+                       nil);
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kHistoryToolbarEditButtonIdentifier)]
+      assertWithMatcher:edit_button_state_matcher];
+
+  [[EarlGrey selectElementWithMatcher:
+                 grey_accessibilityID(
+                     kHistoryNavigationControllerDoneButtonIdentifier)]
+      performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:grey_accessibilityID(
+                                                 kHistoryTableViewIdentifier)];
+}
+
+// Opens Quick Delete (Clear Browsing Data), navigates to the Browsing Data
+// selection page, verifies whether the Browsing History row is enabled and
+// selected or disabled and unselected, and dismisses Quick Delete without
+// deleting the seeded history entries.
+void VerifyQuickDeleteForAllowDeletingBrowserHistory(bool expected_enabled) {
+  [ChromeEarlGreyUI openToolsMenu];
+  [ChromeEarlGreyUI
+      tapToolsMenuAction:chrome_test_util::ButtonWithAccessibilityLabel(
+                             l10n_util::GetNSString(
+                                 IDS_IOS_TOOLS_MENU_CLEAR_BROWSING_DATA))];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      chrome_test_util::ClearBrowsingDataView()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_text(l10n_util::GetNSString(IDS_CLEAR_BROWSING_DATA_CALCULATING))
+                                     timeout:kWaitForClearBrowsingDataTimeout];
+
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::BrowsingDataButtonMatcher()]
+      performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          chrome_test_util::NavigationBarTitleWithAccessibilityLabelId(
+              IDS_IOS_DELETE_BROWSING_DATA_TITLE)];
+
+  NSString* expected_counter_subtitle = l10n_util::GetNSStringF(
+      IDS_DEL_BROWSING_HISTORY_COUNTER_SINGLE_DOMAIN_TEXT, u"example.com");
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          grey_allOf(
+              grey_ancestor(chrome_test_util::ClearBrowsingHistoryButton()),
+              chrome_test_util::ContainsPartialText(expected_counter_subtitle),
+              nil)];
+  id<GREYMatcher> history_row_state_matcher =
+      expected_enabled
+          ? grey_allOf(grey_enabled(),
+                       grey_accessibilityTrait(UIAccessibilityTraitSelected),
+                       grey_sufficientlyVisible(), nil)
+          : grey_allOf(
+                grey_accessibilityTrait(UIAccessibilityTraitNotEnabled),
+                grey_not(grey_accessibilityTrait(UIAccessibilityTraitSelected)),
+                grey_sufficientlyVisible(), nil);
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::ClearBrowsingHistoryButton()]
+      assertWithMatcher:history_row_state_matcher];
+
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::NavigationBarCancelButton()]
+      performAction:grey_tap()];
+  [ChromeEarlGreyUI tapClearBrowsingDataMenuButton:
+                        chrome_test_util::ButtonWithAccessibilityLabelId(
+                            IDS_IOS_DELETE_BROWSING_DATA_CANCEL)];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                      chrome_test_util::ClearBrowsingDataView()];
+}
 
 // Verifies that a bool type policy sets the pref properly.
 void VerifyBoolPolicy(const std::string& policy_key,
@@ -150,6 +235,10 @@ const char kTestPagePath[] = "/pony.html";
 // The text on the pony page.
 const char kTestPageText[] = "pony";
 
+// Timeout for the initial page load away from the native New Tab Page, allowing
+// WebKit helper processes to launch when exceeding `kWaitForUIElementTimeout`.
+constexpr base::TimeDelta kInitialPageLoadTimeout = base::Seconds(20);
+
 }  // namespace
 
 // Test case to verify that enterprise policies are set and respected.
@@ -177,11 +266,9 @@ const char kTestPageText[] = "pony";
 
 - (void)openAutofillSettingsPage {
   [self openSettingsMenu];
-  if ([ChromeEarlGrey isYourSavedInfoSettingsPageIosEnabled]) {
-    [ChromeEarlGreyUI
-        tapSettingsMenuButton:grey_accessibilityID(
-                                  kSettingsAutofillAndPasswordsCellId)];
-  }
+  [ChromeEarlGreyUI
+      tapSettingsMenuButton:grey_accessibilityID(
+                                kSettingsAutofillAndPasswordsCellId)];
 }
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
@@ -189,6 +276,8 @@ const char kTestPageText[] = "pony";
   // app, this policy data will appear under the
   // "com.apple.configuration.managed" key.
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  config.additional_args.push_back(
+      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
   config.relaunch_policy = NoForceRelaunchAndResetState;
   return config;
 }
@@ -358,6 +447,103 @@ const char kTestPageText[] = "pony";
                   @"History had an unexpected entry count");
 }
 
+// Tests for the AllowDeletingBrowserHistory policy across unset, false, and
+// true states on History UI (including dynamically exiting active Edit mode)
+// and Quick Delete (Clear Browsing Data).
+- (void)testAllowDeletingBrowserHistory {
+  GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
+
+  // Set history to a clean state and verify it is clean.
+  if (![ChromeTestCase forceRestartAndWipe]) {
+    [ChromeEarlGrey clearBrowsingHistory];
+  }
+
+  [ChromeEarlGrey resetBrowsingDataPrefs];
+  GREYAssertEqual([ChromeEarlGrey browsingHistoryEntryCount], 0,
+                  @"History was unexpectedly non-empty");
+
+  // Perform a navigation and seed a domain visit so History UI and Quick Delete
+  // (`HistoryCounter` unique domains) both display non-empty browsing history.
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kTestPagePath)];
+  [ChromeEarlGrey waitForWebStateContainingText:kTestPageText];
+  [ChromeEarlGrey addHistoryServiceTypedURL:GURL("https://example.com/")];
+  GREYAssertEqual([ChromeEarlGrey browsingHistoryEntryCount], 2,
+                  @"History had an unexpected entry count");
+
+  // Unset state (default allows deleting browser history).
+  [PolicyAppInterface clearPolicies];
+  GREYAssertTrue(base::test::ios::WaitUntilConditionOrTimeout(
+                     base::test::ios::kWaitForUIElementTimeout,
+                     ^{
+                       return [ChromeEarlGrey
+                           userBooleanPref:prefs::kAllowDeletingBrowserHistory];
+                     }),
+                 @"Unexpected default value for AllowDeletingBrowserHistory");
+  VerifyQuickDeleteForAllowDeletingBrowserHistory(/*expected_enabled=*/true);
+
+  // Verify History UI in unset state, enter active Edit mode, then dynamically
+  // set AllowDeletingBrowserHistory to false and verify History UI exits active
+  // Edit mode and disables the Edit button.
+  [ChromeEarlGreyUI openToolsMenu];
+  [ChromeEarlGreyUI
+      tapToolsMenuButton:chrome_test_util::HistoryDestinationButton()];
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kHistoryToolbarEditButtonIdentifier)]
+      assertWithMatcher:grey_allOf(grey_enabled(), grey_sufficientlyVisible(),
+                                   nil)];
+
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kHistoryToolbarEditButtonIdentifier)]
+      performAction:grey_tap()];
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kHistoryToolbarDeleteButtonIdentifier)]
+      assertWithMatcher:grey_sufficientlyVisible()];
+
+  SetPolicy(false, policy::key::kAllowDeletingBrowserHistory);
+  GREYAssertTrue(
+      base::test::ios::WaitUntilConditionOrTimeout(
+          base::test::ios::kWaitForUIElementTimeout,
+          ^{
+            return ![ChromeEarlGrey
+                userBooleanPref:prefs::kAllowDeletingBrowserHistory];
+          }),
+      @"AllowDeletingBrowserHistory preference was unexpectedly true");
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kHistoryToolbarDeleteButtonIdentifier)]
+      assertWithMatcher:grey_nil()];
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kHistoryToolbarEditButtonIdentifier)]
+      assertWithMatcher:grey_allOf(grey_not(grey_enabled()),
+                                   grey_sufficientlyVisible(), nil)];
+
+  [[EarlGrey selectElementWithMatcher:
+                 grey_accessibilityID(
+                     kHistoryNavigationControllerDoneButtonIdentifier)]
+      performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:grey_accessibilityID(
+                                                 kHistoryTableViewIdentifier)];
+
+  // False (disabled) state across History UI and Quick Delete.
+  VerifyHistoryUIForAllowDeletingBrowserHistory(/*expected_enabled=*/false);
+  VerifyQuickDeleteForAllowDeletingBrowserHistory(/*expected_enabled=*/false);
+
+  // True (enabled) state across History UI and Quick Delete.
+  SetPolicy(true, policy::key::kAllowDeletingBrowserHistory);
+  GREYAssertTrue(
+      base::test::ios::WaitUntilConditionOrTimeout(
+          base::test::ios::kWaitForUIElementTimeout,
+          ^{
+            return [ChromeEarlGrey
+                userBooleanPref:prefs::kAllowDeletingBrowserHistory];
+          }),
+      @"AllowDeletingBrowserHistory preference was unexpectedly false");
+  VerifyHistoryUIForAllowDeletingBrowserHistory(/*expected_enabled=*/true);
+  VerifyQuickDeleteForAllowDeletingBrowserHistory(/*expected_enabled=*/true);
+}
+
 // Tests for the SearchSuggestEnabled policy.
 - (void)testSearchSuggestEnabled {
   VerifyBoolPolicy(policy::key::kSearchSuggestEnabled,
@@ -463,8 +649,7 @@ const char kTestPageText[] = "pony";
 
 // Tests whether the managed item will be shown if UserPolicy is enabled and
 // the browser is signed in with a managed account.
-// TODO(crbug.com/435333773): Reenable this test.
-- (void)FLAKY_testPopupMenuItemWithUserPolicy {
+- (void)testPopupMenuItemWithUserPolicy {
   // Sign in with a managed account.
   NSString* managedAccountEmail = base::SysUTF8ToNSString(
       base::StrCat({"enterprise@", policy::SignatureProvider::kTestDomain1}));
@@ -480,13 +665,12 @@ const char kTestPageText[] = "pony";
       performAction:grey_scrollToContentEdge(kGREYContentEdgeBottom)];
   [ChromeEarlGreyUI
       tapToolsMenuAction:grey_accessibilityID(kTextMenuEnterpriseInfo)];
+
+  // Check the navigation before waiting for the page content.
+  [ChromeEarlGrey waitForWebStateVisibleURL:GURL(kChromeUIManagementURL)];
   [ChromeEarlGrey
       waitForWebStateContainingText:l10n_util::GetStringUTF8(
                                         IDS_IOS_MANAGEMENT_UI_DESC)];
-
-  // Check the navigation without assert the content (which is done in another
-  // test case).
-  [ChromeEarlGrey waitForWebStateVisibleURL:GURL(kChromeUIManagementURL)];
 }
 
 // Tests the chrome://management page when no machine level policy is set.
@@ -519,20 +703,11 @@ const char kTestPageText[] = "pony";
   _server = std::make_unique<policy::EmbeddedPolicyTestServer>();
   _server->Start();
 
-  // Enable machine level (browser) cloud policies.
+  // Enable machine level (browser) cloud policies. Use an enrollment token that
+  // will start chrome browser cloud management without making network calls.
   AppLaunchConfiguration config;
-  config.additional_args.push_back(
-      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
-  config.additional_args.push_back("-com.apple.configuration.managed");
-  // Use an enrollment token that will start chrome browser cloud management
-  // without making network calls.
-  config.additional_args.push_back(
-      base::StrCat({"<dict><key>CloudManagementEnrollmentToken</key><string>",
-                    policy::kInvalidEnrollmentToken, "</string></dict>"}));
-  // Use the embedded test server as the policy server.
-  config.additional_args.push_back(
-      base::StrCat({"--", policy::switches::kDeviceManagementUrl, "=",
-                    _server->GetServiceURL().spec()}));
+  policy_test_utils::AddCBCMEnrollmentArguments(
+      config, policy::kInvalidEnrollmentToken, _server->GetServiceURL());
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   [PolicyAppInterface setBrowserCloudPolicyDataWithDomain:kDomain1];
@@ -626,20 +801,11 @@ const char kTestPageText[] = "pony";
   _server = std::make_unique<policy::EmbeddedPolicyTestServer>();
   _server->Start();
 
-  // Enable browser cloud policies.
+  // Enable browser cloud policies. Use a CBCM enrollment token that will start
+  // chrome browser cloud management without making network calls.
   AppLaunchConfiguration config;
-  config.additional_args.push_back(
-      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
-  config.additional_args.push_back("-com.apple.configuration.managed");
-  // Use a CBCM enrollment token that will start chrome browser cloud management
-  // without making network calls.
-  config.additional_args.push_back(
-      base::StrCat({"<dict><key>CloudManagementEnrollmentToken</key><string>",
-                    policy::kInvalidEnrollmentToken, "</string></dict>"}));
-  // Use the embedded test server as the policy server.
-  config.additional_args.push_back(
-      base::StrCat({"--", policy::switches::kDeviceManagementUrl, "=",
-                    _server->GetServiceURL().spec()}));
+  policy_test_utils::AddCBCMEnrollmentArguments(
+      config, policy::kInvalidEnrollmentToken, _server->GetServiceURL());
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   // Set CBCM policies.
@@ -669,20 +835,11 @@ const char kTestPageText[] = "pony";
   _server = std::make_unique<policy::EmbeddedPolicyTestServer>();
   _server->Start();
 
-  // Enable browser cloud policies.
+  // Enable browser cloud policies. Use a CBCM enrollment token that will start
+  // chrome browser cloud management without making network calls.
   AppLaunchConfiguration config;
-  config.additional_args.push_back(
-      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
-  config.additional_args.push_back("-com.apple.configuration.managed");
-  // Use a CBCM enrollment token that will start chrome browser cloud management
-  // without making network calls.
-  config.additional_args.push_back(
-      base::StrCat({"<dict><key>CloudManagementEnrollmentToken</key><string>",
-                    policy::kInvalidEnrollmentToken, "</string></dict>"}));
-  // Use the embedded test server as the policy server.
-  config.additional_args.push_back(
-      base::StrCat({"--", policy::switches::kDeviceManagementUrl, "=",
-                    _server->GetServiceURL().spec()}));
+  policy_test_utils::AddCBCMEnrollmentArguments(
+      config, policy::kInvalidEnrollmentToken, _server->GetServiceURL());
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   // Set CBCM policies.
@@ -714,17 +871,8 @@ const char kTestPageText[] = "pony";
   CHECK(_server->Start());
 
   AppLaunchConfiguration config;
-
-  config.additional_args.push_back(
-      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
-  config.additional_args.push_back(base::StrCat(
-      {"-", base::SysNSStringToUTF8(kPolicyLoaderIOSConfigurationKey)}));
-  config.additional_args.push_back(
-      base::StrCat({"<dict><key>", policy::key::kCloudManagementEnrollmentToken,
-                    "</key><string>", kEnrollmentToken, "</string></dict>"}));
-  config.additional_args.push_back(
-      base::StrCat({"--", policy::switches::kDeviceManagementUrl, "=",
-                    _server->GetServiceURL().spec()}));
+  policy_test_utils::AddCBCMEnrollmentArguments(config, kEnrollmentToken,
+                                                _server->GetServiceURL());
 
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
@@ -735,6 +883,12 @@ const char kTestPageText[] = "pony";
       waitForWebStateContainingText:
           l10n_util::GetStringFUTF8(
               IDS_MANAGEMENT_THREAT_PROTECTION_DESCRIPTION_BY, u"example.com")];
+
+  // Tap the button to show more info.
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:VisibleElementSelector(
+                                           @"threat-protection-more")];
+  [ChromeEarlGrey tapWebStateElementWithID:@"threat-protection-more"];
 
   // Validate that the Connectors section is visible.
   GREYAssertTrue(
@@ -798,6 +952,32 @@ const char kTestPageText[] = "pony";
 - (void)testBrowserSignInDisabledWhileAppVisible {
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
   [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+
+  // Force sign out.
+  SetPolicy(0, policy::key::kBrowserSignin);
+
+  // Check that the sign out pop up is presented.
+  ConditionBlock condition = ^{
+    NSError* error = nil;
+    [[EarlGrey
+        selectElementWithMatcher:grey_accessibilityLabel(l10n_util::GetNSString(
+                                     IDS_IOS_ENTERPRISE_SIGNED_OUT))]
+        assertWithMatcher:grey_sufficientlyVisible()
+                    error:&error];
+    return error == nil;
+  };
+  bool promptPresented = base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, condition);
+  GREYAssertTrue(promptPresented, @"'Signed Out' prompt not shown");
+}
+
+// Tests that the UI notifying the user of their sign out is displayed when the
+// policy changes while the app is launched.
+- (void)testBrowserSignInDisabledWhileAppVisibleFromManagedAccount {
+  FakeSystemIdentity* fakeManagedIdentity =
+      [FakeSystemIdentity fakeManagedIdentity];
+  [SigninEarlGrey
+      signinWithFakeManagedIdentityInPersonalProfile:fakeManagedIdentity];
 
   // Force sign out.
   SetPolicy(0, policy::key::kBrowserSignin);
@@ -956,6 +1136,61 @@ const char kTestPageText[] = "pony";
   print = [[app staticTexts] matchingIdentifier:@"Print"];
   GREYAssertTrue(print.count == 0,
                  @"'Print' option should not have been on the share menu");
+}
+
+// Tests that Full Page screenshot PDF generation is allowed when the
+// `DisableScreenshots` enterprise policy is unset.
+- (void)testDisableScreenshotsUnset {
+  GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
+
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kTestPagePath)
+              withTimeout:kInitialPageLoadTimeout];
+  [ChromeEarlGrey waitForWebStateContainingText:kTestPageText];
+  GREYAssertTrue(
+      [DataProtectionAppInterface canGenerateFullPageScreenshotPDF],
+      @"Full Page screenshot PDF should be generated when policy is unset.");
+}
+
+// Tests that Full Page screenshot PDF generation is blocked in both regular and
+// Incognito tabs when the `DisableScreenshots` enterprise policy is set to
+// `true`.
+- (void)testDisableScreenshotsEnabled {
+  GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
+
+  SetPolicy(true, policy::key::kDisableScreenshots);
+
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kTestPagePath)
+              withTimeout:kInitialPageLoadTimeout];
+  [ChromeEarlGrey waitForWebStateContainingText:kTestPageText];
+  GREYAssertFalse(
+      [DataProtectionAppInterface canGenerateFullPageScreenshotPDF],
+      @"Full Page screenshot PDF should be blocked when DisableScreenshots is "
+      @"true.");
+
+  [ChromeEarlGrey openNewIncognitoTab];
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kTestPagePath)
+              withTimeout:kInitialPageLoadTimeout];
+  [ChromeEarlGrey waitForWebStateContainingText:kTestPageText];
+  GREYAssertFalse(
+      [DataProtectionAppInterface canGenerateFullPageScreenshotPDF],
+      @"Full Page screenshot PDF should be blocked in Incognito when "
+      @"DisableScreenshots is true.");
+}
+
+// Tests that Full Page screenshot PDF generation is allowed when the
+// `DisableScreenshots` enterprise policy is set to `false`.
+- (void)testDisableScreenshotsDisabled {
+  GREYAssertTrue(self.testServer->Start(), @"Test server failed to start.");
+
+  SetPolicy(false, policy::key::kDisableScreenshots);
+
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kTestPagePath)
+              withTimeout:kInitialPageLoadTimeout];
+  [ChromeEarlGrey waitForWebStateContainingText:kTestPageText];
+  GREYAssertTrue(
+      [DataProtectionAppInterface canGenerateFullPageScreenshotPDF],
+      @"Full Page screenshot PDF should be generated when DisableScreenshots "
+      @"is false.");
 }
 
 @end

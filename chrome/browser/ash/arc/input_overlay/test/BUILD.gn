@@ -8,8 +8,6 @@ static_library("test_support") {
   testonly = true
 
   sources = [
-    "arc_test_window.cc",
-    "arc_test_window.h",
     "event_capturer.cc",
     "event_capturer.h",
     "game_controls_test_base.cc",
@@ -36,11 +34,9 @@ static_library("test_support") {
     "//chrome/test:test_support",
     "//chromeos/ash/experiences/arc",
     "//chromeos/ash/experiences/arc:arc_test_support",
-    "//chromeos/strings:strings_grit",
-    "//components/exo:test_support",
+    "//chromeos/resources:strings",
     "//content/test:test_support",
     "//ui/aura",
-    "//ui/display",
     "//ui/lottie",
   ]
 }

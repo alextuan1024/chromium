@@ -4,19 +4,24 @@
 
 #include "net/http/http_auth_gssapi_posix.h"
 
+#include <iterator>
 #include <memory>
+#include <string>
 #include <string_view>
 
 #include "base/base_paths.h"
 #include "base/check.h"
-#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/native_library.h"
 #include "base/path_service.h"
+#include "base/types/expected.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_auth_challenge_tokenizer.h"
+#include "net/http/http_auth_mechanism.h"
 #include "net/http/mock_gssapi_library_posix.h"
+#include "net/log/net_log_source_type.h"
 #include "net/log/net_log_with_source.h"
 #include "net/log/test_net_log.h"
 #include "net/log/test_net_log_util.h"
@@ -26,37 +31,6 @@
 namespace net {
 
 namespace {
-
-// gss_buffer_t helpers.
-void ClearBuffer(gss_buffer_t dest) {
-  if (!dest)
-    return;
-  dest->length = 0;
-  delete [] reinterpret_cast<char*>(dest->value);
-  dest->value = nullptr;
-}
-
-void SetBuffer(gss_buffer_t dest, const void* src, size_t length) {
-  if (!dest)
-    return;
-  ClearBuffer(dest);
-  if (!src)
-    return;
-  dest->length = length;
-  if (length) {
-    dest->value = new char[length];
-    UNSAFE_TODO(memcpy(dest->value, src, length));
-  }
-}
-
-void CopyBuffer(gss_buffer_t dest, const gss_buffer_t src) {
-  if (!dest)
-    return;
-  ClearBuffer(dest);
-  if (!src)
-    return;
-  SetBuffer(dest, src->value, src->length);
-}
 
 const char kInitialAuthResponse[] = "Mary had a little lamb";
 
@@ -94,7 +68,7 @@ TEST(HttpAuthGSSAPIPOSIXTest, GSSAPIStartup) {
   // TODO(ahendrickson): Manipulate the libraries and paths to test each of the
   // libraries we expect, and also whether or not they have the interface
   // functions we want.
-  auto gssapi = std::make_unique<GSSAPISharedLibrary>(std::string());
+  auto gssapi = base::MakeRefCounted<GSSAPISharedLibrary>(std::string());
   DCHECK(gssapi.get());
   EXPECT_TRUE(
       gssapi.get()->Init(NetLogWithSource::Make(NetLogSourceType::NONE)));
@@ -120,7 +94,7 @@ TEST(HttpAuthGSSAPIPOSIXTest, CustomLibraryMissing) {
   RecordingNetLogObserver net_log_observer;
 
   auto gssapi =
-      std::make_unique<GSSAPISharedLibrary>("/this/library/does/not/exist");
+      base::MakeRefCounted<GSSAPISharedLibrary>("/this/library/does/not/exist");
   EXPECT_FALSE(
       gssapi.get()->Init(NetLogWithSource::Make(NetLogSourceType::NONE)));
 
@@ -139,7 +113,7 @@ TEST(HttpAuthGSSAPIPOSIXTest, CustomLibraryExists) {
   ASSERT_TRUE(base::PathService::Get(base::DIR_MODULE, &module));
   auto basename = base::GetNativeLibraryName("test_gssapi");
   module = module.AppendASCII(basename);
-  auto gssapi = std::make_unique<GSSAPISharedLibrary>(module.value());
+  auto gssapi = base::MakeRefCounted<GSSAPISharedLibrary>(module.value());
   EXPECT_TRUE(
       gssapi.get()->Init(NetLogWithSource::Make(NetLogSourceType::NONE)));
 
@@ -160,7 +134,7 @@ TEST(HttpAuthGSSAPIPOSIXTest, CustomLibraryMethodsMissing) {
   ASSERT_TRUE(base::PathService::Get(base::DIR_MODULE, &module));
   auto basename = base::GetNativeLibraryName("test_badgssapi");
   module = module.AppendASCII(basename);
-  auto gssapi = std::make_unique<GSSAPISharedLibrary>(module.value());
+  auto gssapi = base::MakeRefCounted<GSSAPISharedLibrary>(module.value());
 
   // Are you here because this test mysteriously passed even though the library
   // doesn't actually have all the methods we need? This could be because the
@@ -184,7 +158,7 @@ TEST(HttpAuthGSSAPIPOSIXTest, CustomLibraryMethodsMissing) {
 }
 
 TEST(HttpAuthGSSAPIPOSIXTest, GSSAPICycle) {
-  auto mock_library = std::make_unique<test::MockGSSAPILibrary>();
+  auto mock_library = base::MakeRefCounted<test::MockGSSAPILibrary>();
   DCHECK(mock_library.get());
   mock_library->Init(NetLogWithSource());
   const char kAuthResponse[] = "Mary had a little lamb";
@@ -256,10 +230,10 @@ TEST(HttpAuthGSSAPIPOSIXTest, GSSAPICycle) {
                                                   &ret_flags,
                                                   &time_rec);
     EXPECT_EQ(query.response_code, major_status);
-    CopyBuffer(&input_token, &output_token);
-    ClearBuffer(&output_token);
+    test::CopyGssBuffer(&output_token, &input_token);
+    test::ClearGssBuffer(&output_token);
   }
-  ClearBuffer(&input_token);
+  test::ClearGssBuffer(&input_token);
   major_status = mock_library->delete_sec_context(&minor_status,
                                                   &context_handle,
                                                   GSS_C_NO_BUFFER);
@@ -268,8 +242,8 @@ TEST(HttpAuthGSSAPIPOSIXTest, GSSAPICycle) {
 
 TEST(HttpAuthGSSAPITest, ParseChallenge_FirstRound) {
   // The first round should just consist of an unadorned "Negotiate" header.
-  test::MockGSSAPILibrary mock_library;
-  HttpAuthGSSAPI auth_gssapi(&mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
+  auto mock_library = base::MakeRefCounted<test::MockGSSAPILibrary>();
+  HttpAuthGSSAPI auth_gssapi(mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
   HttpAuthChallengeTokenizer challenge("Negotiate");
   EXPECT_EQ(HttpAuth::AUTHORIZATION_RESULT_ACCEPT,
             auth_gssapi.ParseChallenge(&challenge));
@@ -279,14 +253,14 @@ TEST(HttpAuthGSSAPITest, ParseChallenge_TwoRounds) {
   RecordingNetLogObserver net_log_observer;
   // The first round should just have "Negotiate", and the second round should
   // have a valid base64 token associated with it.
-  test::MockGSSAPILibrary mock_library;
-  HttpAuthGSSAPI auth_gssapi(&mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
+  auto mock_library = base::MakeRefCounted<test::MockGSSAPILibrary>();
+  HttpAuthGSSAPI auth_gssapi(mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
   HttpAuthChallengeTokenizer first_challenge("Negotiate");
   EXPECT_EQ(HttpAuth::AUTHORIZATION_RESULT_ACCEPT,
             auth_gssapi.ParseChallenge(&first_challenge));
 
   // Generate an auth token and create another thing.
-  EstablishInitialContext(&mock_library);
+  EstablishInitialContext(mock_library.get());
   std::string auth_token;
   EXPECT_EQ(OK, auth_gssapi.GenerateAuthToken(
                     nullptr, "HTTP/intranet.google.com", std::string(),
@@ -315,8 +289,8 @@ TEST(HttpAuthGSSAPITest, ParseChallenge_TwoRounds) {
 TEST(HttpAuthGSSAPITest, ParseChallenge_UnexpectedTokenFirstRound) {
   // If the first round challenge has an additional authentication token, it
   // should be treated as an invalid challenge from the server.
-  test::MockGSSAPILibrary mock_library;
-  HttpAuthGSSAPI auth_gssapi(&mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
+  auto mock_library = base::MakeRefCounted<test::MockGSSAPILibrary>();
+  HttpAuthGSSAPI auth_gssapi(mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
   HttpAuthChallengeTokenizer challenge("Negotiate Zm9vYmFy");
   EXPECT_EQ(HttpAuth::AUTHORIZATION_RESULT_INVALID,
             auth_gssapi.ParseChallenge(&challenge));
@@ -325,13 +299,13 @@ TEST(HttpAuthGSSAPITest, ParseChallenge_UnexpectedTokenFirstRound) {
 TEST(HttpAuthGSSAPITest, ParseChallenge_MissingTokenSecondRound) {
   // If a later-round challenge is simply "Negotiate", it should be treated as
   // an authentication challenge rejection from the server or proxy.
-  test::MockGSSAPILibrary mock_library;
-  HttpAuthGSSAPI auth_gssapi(&mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
+  auto mock_library = base::MakeRefCounted<test::MockGSSAPILibrary>();
+  HttpAuthGSSAPI auth_gssapi(mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
   HttpAuthChallengeTokenizer first_challenge("Negotiate");
   EXPECT_EQ(HttpAuth::AUTHORIZATION_RESULT_ACCEPT,
             auth_gssapi.ParseChallenge(&first_challenge));
 
-  EstablishInitialContext(&mock_library);
+  EstablishInitialContext(mock_library.get());
   std::string auth_token;
   EXPECT_EQ(OK,
             auth_gssapi.GenerateAuthToken(
@@ -345,13 +319,13 @@ TEST(HttpAuthGSSAPITest, ParseChallenge_MissingTokenSecondRound) {
 TEST(HttpAuthGSSAPITest, ParseChallenge_NonBase64EncodedToken) {
   // If a later-round challenge has an invalid base64 encoded token, it should
   // be treated as an invalid challenge.
-  test::MockGSSAPILibrary mock_library;
-  HttpAuthGSSAPI auth_gssapi(&mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
+  auto mock_library = base::MakeRefCounted<test::MockGSSAPILibrary>();
+  HttpAuthGSSAPI auth_gssapi(mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
   HttpAuthChallengeTokenizer first_challenge("Negotiate");
   EXPECT_EQ(HttpAuth::AUTHORIZATION_RESULT_ACCEPT,
             auth_gssapi.ParseChallenge(&first_challenge));
 
-  EstablishInitialContext(&mock_library);
+  EstablishInitialContext(mock_library.get());
   std::string auth_token;
   EXPECT_EQ(OK,
             auth_gssapi.GenerateAuthToken(
@@ -419,8 +393,9 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_NoLibrary) {
 }
 
 TEST(HttpAuthGSSAPITest, GetGssStatusValue_WithLibrary) {
-  test::MockGSSAPILibrary library;
-  auto actual = GetGssStatusValue(&library, "my_method", GSS_S_BAD_NAME, 1);
+  auto library = base::MakeRefCounted<test::MockGSSAPILibrary>();
+  auto actual =
+      GetGssStatusValue(library.get(), "my_method", GSS_S_BAD_NAME, 1);
   auto expected = base::JSONReader::Read(R"(
       {
         "function": "my_method",
@@ -440,9 +415,9 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_WithLibrary) {
 }
 
 TEST(HttpAuthGSSAPITest, GetGssStatusValue_Multiline) {
-  test::MockGSSAPILibrary library;
+  auto library = base::MakeRefCounted<test::MockGSSAPILibrary>();
   auto actual = GetGssStatusValue(
-      &library, "my_method",
+      library.get(), "my_method",
       static_cast<OM_uint32>(
           test::MockGSSAPILibrary::DisplayStatusSpecials::MultiLine),
       0);
@@ -470,9 +445,9 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_Multiline) {
 }
 
 TEST(HttpAuthGSSAPITest, GetGssStatusValue_InfiniteLines) {
-  test::MockGSSAPILibrary library;
+  auto library = base::MakeRefCounted<test::MockGSSAPILibrary>();
   auto actual = GetGssStatusValue(
-      &library, "my_method",
+      library.get(), "my_method",
       static_cast<OM_uint32>(
           test::MockGSSAPILibrary::DisplayStatusSpecials::InfiniteLines),
       0);
@@ -503,9 +478,9 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_InfiniteLines) {
 }
 
 TEST(HttpAuthGSSAPITest, GetGssStatusValue_Failure) {
-  test::MockGSSAPILibrary library;
+  auto library = base::MakeRefCounted<test::MockGSSAPILibrary>();
   auto actual = GetGssStatusValue(
-      &library, "my_method",
+      library.get(), "my_method",
       static_cast<OM_uint32>(
           test::MockGSSAPILibrary::DisplayStatusSpecials::Fail),
       0);
@@ -526,9 +501,9 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_Failure) {
 }
 
 TEST(HttpAuthGSSAPITest, GetGssStatusValue_EmptyMessage) {
-  test::MockGSSAPILibrary library;
+  auto library = base::MakeRefCounted<test::MockGSSAPILibrary>();
   auto actual = GetGssStatusValue(
-      &library, "my_method",
+      library.get(), "my_method",
       static_cast<OM_uint32>(
           test::MockGSSAPILibrary::DisplayStatusSpecials::EmptyMessage),
       0);
@@ -549,9 +524,9 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_EmptyMessage) {
 }
 
 TEST(HttpAuthGSSAPITest, GetGssStatusValue_Misbehave) {
-  test::MockGSSAPILibrary library;
+  auto library = base::MakeRefCounted<test::MockGSSAPILibrary>();
   auto actual = GetGssStatusValue(
-      &library, "my_method",
+      library.get(), "my_method",
       static_cast<OM_uint32>(
           test::MockGSSAPILibrary::DisplayStatusSpecials::UninitalizedBuffer),
       0);
@@ -572,9 +547,9 @@ TEST(HttpAuthGSSAPITest, GetGssStatusValue_Misbehave) {
 }
 
 TEST(HttpAuthGSSAPITest, GetGssStatusValue_NotUtf8) {
-  test::MockGSSAPILibrary library;
+  auto library = base::MakeRefCounted<test::MockGSSAPILibrary>();
   auto actual = GetGssStatusValue(
-      &library, "my_method",
+      library.get(), "my_method",
       static_cast<OM_uint32>(
           test::MockGSSAPILibrary::DisplayStatusSpecials::InvalidUtf8),
       0);
@@ -602,9 +577,9 @@ TEST(HttpAuthGSSAPITest, GetContextStateAsValue_ValidContext) {
                                    /* ctx_flags= */ 0,
                                    /* locally_initiated= */ 1,
                                    /* open= */ 0};
-  test::MockGSSAPILibrary library;
+  auto library = base::MakeRefCounted<test::MockGSSAPILibrary>();
   auto actual = GetContextStateAsValue(
-      &library, reinterpret_cast<const gss_ctx_id_t>(&context));
+      library.get(), reinterpret_cast<const gss_ctx_id_t>(&context));
   auto expected = base::JSONReader::Read(R"(
       {
         "source": {
@@ -621,7 +596,8 @@ TEST(HttpAuthGSSAPITest, GetContextStateAsValue_ValidContext) {
         },
         "lifetime": "100",
         "mechanism": {
-          "oid": "<Empty OID>"
+          "length": 6,
+          "bytes": "KwYBBQUC"
         },
         "flags": {
           "value": "0x00000000",
@@ -637,8 +613,8 @@ TEST(HttpAuthGSSAPITest, GetContextStateAsValue_ValidContext) {
 }
 
 TEST(HttpAuthGSSAPITest, GetContextStateAsValue_NoContext) {
-  test::MockGSSAPILibrary library;
-  auto actual = GetContextStateAsValue(&library, GSS_C_NO_CONTEXT);
+  auto library = base::MakeRefCounted<test::MockGSSAPILibrary>();
+  auto actual = GetContextStateAsValue(library.get(), GSS_C_NO_CONTEXT);
   auto expected = base::JSONReader::Read(R"(
       {
          "error": {
@@ -655,6 +631,266 @@ TEST(HttpAuthGSSAPITest, GetContextStateAsValue_NoContext) {
                                          base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected.has_value());
   EXPECT_EQ(actual, expected);
+}
+
+TEST(HttpAuthGSSAPIPOSIXTest, GetTargetPrincipalHost) {
+  using Error = HttpAuthMechanism::TargetPrincipalError;
+  using Result = base::expected<std::string, Error>;
+  const Result kNotReported = base::unexpected(Error::kNotReported);
+  const Result kQueryFailed = base::unexpected(Error::kQueryFailed);
+  const Result kNonHttpServicePrincipal =
+      base::unexpected(Error::kNonHttpServicePrincipal);
+  const Result kUnparsableHost = base::unexpected(Error::kUnparsableHost);
+
+  auto mock_library = base::MakeRefCounted<test::MockGSSAPILibrary>();
+  HttpAuthGSSAPI auth_gssapi(mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
+
+  // Before establishing a context, no principal is reported.
+  EXPECT_EQ(auth_gssapi.GetTargetPrincipalHost(), kNotReported);
+
+  gss_OID_desc hostbased_service_oid = {
+      10, const_cast<char*>("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x04")};
+  gss_OID_desc hostbased_service_x_oid = {
+      6, const_cast<char*>("\x2b\x06\x01\x05\x06\x02")};
+  gss_OID_desc user_name_oid = {
+      10, const_cast<char*>("\x2a\x86\x48\x86\xf7\x12\x01\x02\x01\x01")};
+  gss_OID_desc krb5_principal_oid = {
+      10, const_cast<char*>("\x2a\x86\x48\x86\xf7\x12\x01\x02\x02\x01")};
+  gss_OID_desc unknown_name_oid = {
+      6, const_cast<char*>("\x2b\x06\x01\x05\x06\x05")};
+  gss_OID_desc krb5_mech_oid = {
+      9, const_cast<char*>("\x2a\x86\x48\x86\xf7\x12\x01\x02\x02")};
+  gss_OID_desc ntlmssp_mech_oid = {
+      10, const_cast<char*>("\x2b\x06\x01\x04\x01\x82\x37\x02\x02\x0a")};
+  gss_OID_desc empty_oid = {0, nullptr};
+
+  auto test_context = [&](test::GssContextMockImpl context_info,
+                          const Result& expected) {
+    mock_library = base::MakeRefCounted<test::MockGSSAPILibrary>();
+    mock_library->Init(NetLogWithSource());
+    HttpAuthGSSAPI auth_sys(mock_library, CHROME_GSS_SPNEGO_MECH_OID_DESC);
+
+    gss_buffer_desc in_buffer = {0, nullptr};
+    char out_buf[] = "Mary had a little lamb";
+    gss_buffer_desc out_buffer = {std::size(out_buf), out_buf};
+    mock_library->ExpectSecurityContext("Negotiate", GSS_S_CONTINUE_NEEDED, 0,
+                                        context_info, in_buffer, out_buffer);
+
+    std::string auth_token;
+    EXPECT_EQ(
+        OK, auth_sys.GenerateAuthToken(
+                nullptr, "HTTP@requested.host.com", std::string(), &auth_token,
+                NetLogWithSource::Make(NetLogSourceType::NONE),
+                base::BindOnce(&UnexpectedCallback)));
+
+    EXPECT_EQ(auth_sys.GetTargetPrincipalHost(), expected);
+  };
+
+  // `mech_type` defaults to SPNEGO with `open == 0`, which is what MIT krb5
+  // reports until SPNEGO negotiation completes.
+  auto test_target = [&](std::string_view mock_spn, const Result& expected,
+                         const gss_OID_desc& name_type = {0, nullptr},
+                         const gss_OID_desc& mech_type =
+                             *CHROME_GSS_SPNEGO_MECH_OID_DESC,
+                         int open = 0) {
+    SCOPED_TRACE(mock_spn);
+    test::GssContextMockImpl context_info(
+        "localhost",  // Source name
+        "",           // Target name (assigned below to preserve embedded NULs)
+        23,           // Lifetime
+        mech_type,    // Mechanism
+        0,            // Context flags
+        1,            // Locally initiated
+        open);        // Open
+    context_info.targ_name.assign(mock_spn.data(), mock_spn.size());
+    context_info.targ_name_type = name_type;
+    test_context(context_info, expected);
+  };
+
+  // Incomplete round-1 SPNEGO or Heimdal NTLM context with `GSS_C_NO_NAME`.
+  {
+    test::GssContextMockImpl no_name_context(
+        "localhost", "", 23, *CHROME_GSS_SPNEGO_MECH_OID_DESC, 0, 1, 0);
+    no_name_context.has_targ_name = false;
+    test_context(no_name_context, kNotReported);
+  }
+
+  // NTLMSSP fallback under SPNEGO (`1.3.6.1.4.1.311.2.2.10`) skips Kerberos
+  // principal validation whatever name `display_name()` reports.
+  test_target("HTTP/canonical.example.com", kNotReported, hostbased_service_oid,
+              ntlmssp_mech_oid);
+  test_target("HTTP@canonical.example.com", kNotReported, user_name_oid,
+              ntlmssp_mech_oid);
+  test_target("HTTP@canonical.example.com", kNotReported, empty_oid,
+              ntlmssp_mech_oid);
+
+  // `inquire_context()`, `display_name()`, or empty-buffer failures on an
+  // established non-NTLM context.
+  {
+    test::GssContextMockImpl inquire_fail_context(
+        "localhost", "HTTP/canonical.example.com@REALM", 23,
+        *CHROME_GSS_SPNEGO_MECH_OID_DESC, 0, 1, 0);
+    inquire_fail_context.inquire_context_status = GSS_S_FAILURE;
+    test_context(inquire_fail_context, kQueryFailed);
+  }
+  // Heimdal SPNEGO returns `GSS_S_NO_CONTEXT` for an incomplete round-1 context
+  // that only proposed a mechanism list (no optimistic mechanism token).
+  {
+    test::GssContextMockImpl mech_list_only_context(
+        "localhost", "HTTP/canonical.example.com@REALM", 23,
+        *CHROME_GSS_SPNEGO_MECH_OID_DESC, 0, 1, /*open=*/0);
+    mech_list_only_context.inquire_context_status = GSS_S_NO_CONTEXT;
+    test_context(mech_list_only_context, kNotReported);
+  }
+  // `GSS_S_NO_CONTEXT` on an established context still fails closed.
+  {
+    test::GssContextMockImpl open_no_context(
+        "localhost", "HTTP/canonical.example.com@REALM", 23,
+        *CHROME_GSS_SPNEGO_MECH_OID_DESC, 0, 1, /*open=*/1);
+    open_no_context.inquire_context_status = GSS_S_NO_CONTEXT;
+    test_context(open_no_context, kQueryFailed);
+  }
+  {
+    test::GssContextMockImpl display_fail_context(
+        "localhost", "HTTP/canonical.example.com@REALM", 23,
+        *CHROME_GSS_SPNEGO_MECH_OID_DESC, 0, 1, 0);
+    display_fail_context.display_targ_name_status = GSS_S_BAD_NAME;
+    test_context(display_fail_context, kQueryFailed);
+  }
+  test_target("", kQueryFailed);
+  test_target(std::string_view("\0", 1), kQueryFailed);
+
+  // Standard `HTTP/<host>[:<port>][@<REALM>]` and KDC-aliased `host/<host>`
+  // service principals, including trailing dots and trailing NUL terminators.
+  test_target("HTTP/canonical.example.com@REALM", "canonical.example.com");
+  test_target("http/canonical.EXAMPLE.COM@REALM", "canonical.example.com");
+  test_target("HTTP/canonical.example.com", "canonical.example.com");
+  test_target("HTTP/canonical.example.com:8443@REALM", "canonical.example.com");
+  test_target("host/canonical.example.com@REALM", "canonical.example.com");
+  test_target("HOST/canonical.EXAMPLE.COM:8443@REALM", "canonical.example.com");
+  test_target("HTTP/canonical.example.com.@REALM", "canonical.example.com");
+  test_target(std::string_view("HTTP/canonical.example.com@REALM\0", 33),
+              "canonical.example.com");
+  test_target("HTTP/canonical.example.com@REALM", "canonical.example.com",
+              empty_oid, krb5_mech_oid);
+
+  // `GSS_C_NT_HOSTBASED_SERVICE` (`HTTP@<host>` and `host@<host>`) names.
+  test_target("HTTP@canonical.EXAMPLE.COM", "canonical.example.com",
+              hostbased_service_oid);
+  test_target("http@canonical.example.com:8080", "canonical.example.com",
+              hostbased_service_x_oid);
+  test_target("host@canonical.EXAMPLE.COM", "canonical.example.com",
+              hostbased_service_oid);
+  test_target("HOST@canonical.example.com.", "canonical.example.com",
+              hostbased_service_x_oid);
+  test_target("HTTP@canonical.example.com", "canonical.example.com",
+              hostbased_service_oid, *CHROME_GSS_SPNEGO_MECH_OID_DESC,
+              /*open=*/1);
+  // While SPNEGO hasn't completed (`!open` and `mech_type` is SPNEGO),
+  // `gss-ntlmssp` displays `HTTP/<host>` (with a trailing NUL) under
+  // `GSS_C_NT_HOSTBASED_SERVICE`, and `HTTP@<host>` under an empty or
+  // unrecognized name type is also returned for validation.
+  test_target(std::string_view("HTTP/canonical.example.com\0", 27),
+              "canonical.example.com", hostbased_service_oid);
+  test_target("HTTP@canonical.example.com", "canonical.example.com", empty_oid);
+  test_target("host@canonical.example.com", "canonical.example.com", empty_oid);
+  test_target("HTTP@canonical.example.com", "canonical.example.com",
+              unknown_name_oid);
+  test_target("host@canonical.example.com", "canonical.example.com",
+              unknown_name_oid);
+  // Once the context is open, or under `GSS_C_NT_USER_NAME` /
+  // `GSS_KRB5_NT_PRINCIPAL_NAME` (even on SPNEGO Round 1), or under a
+  // non-SPNEGO mechanism without a hostbased OID, `HTTP@REALM` and `host@REALM`
+  // are rejected as `kNonHttpServicePrincipal`.
+  test_target("HTTP@canonical.example.com", kNonHttpServicePrincipal, empty_oid,
+              *CHROME_GSS_SPNEGO_MECH_OID_DESC, /*open=*/1);
+  test_target("host@canonical.example.com", kNonHttpServicePrincipal, empty_oid,
+              *CHROME_GSS_SPNEGO_MECH_OID_DESC, /*open=*/1);
+  test_target("HTTP@canonical.example.com", kNonHttpServicePrincipal,
+              user_name_oid);
+  test_target("host@canonical.example.com", kNonHttpServicePrincipal,
+              user_name_oid);
+  test_target("HTTP@canonical.example.com", kNonHttpServicePrincipal,
+              krb5_principal_oid);
+  test_target("host@canonical.example.com", kNonHttpServicePrincipal,
+              krb5_principal_oid);
+  test_target("HTTP@canonical.example.com", kNonHttpServicePrincipal, empty_oid,
+              krb5_mech_oid);
+  test_target("HTTP@canonical.example.com", kNonHttpServicePrincipal,
+              user_name_oid, krb5_mech_oid);
+  test_target("HTTP@canonical.example.com", kNonHttpServicePrincipal,
+              krb5_principal_oid, krb5_mech_oid);
+  test_target("host@canonical.example.com", kNonHttpServicePrincipal, empty_oid,
+              krb5_mech_oid);
+  test_target("host@canonical.example.com", kNonHttpServicePrincipal,
+              user_name_oid, krb5_mech_oid);
+  test_target("host@canonical.example.com", kNonHttpServicePrincipal,
+              krb5_principal_oid, krb5_mech_oid);
+
+  // Canonical IPv4, IPv6 (bracketed, bare, or differing only in ASCII case),
+  // and punycode hosts.
+  test_target("HTTP/10.0.0.2@REALM", "10.0.0.2");
+  test_target("HTTP/[2001:db8::1]:80@REALM", "[2001:db8::1]");
+  test_target("HTTP/2001:db8::1@REALM", "[2001:db8::1]");
+  test_target("HTTP/2001:DB8::1@REALM", "[2001:db8::1]");
+  test_target("HTTP@2001:db8::1", "[2001:db8::1]", hostbased_service_oid);
+  test_target("HTTP/xn--bcher-kva.example.com@REALM",
+              "xn--bcher-kva.example.com");
+
+  // Hosts that only compare equal to another host after canonicalization:
+  // IPv4 shorthand, non-RFC-5952 IPv6, percent-encoding, and UTS-46 mapping of
+  // IDN U-labels, fullwidth letters, and ignored code points (U+00AD).
+  test_target("HTTP/0x0a.0.0.2@REALM", kUnparsableHost);
+  test_target("HTTP/167772162@REALM", kUnparsableHost);
+  test_target("HTTP/010.0.0.2@REALM", kUnparsableHost);
+  test_target("HTTP/10.2@REALM", kUnparsableHost);
+  test_target("HTTP/[2001:0DB8:0000:0000:0000:0000:0000:0001]:80@REALM",
+              kUnparsableHost);
+  test_target("HTTP/2001:0DB8:0:0:0:0:0:1@REALM", kUnparsableHost);
+  test_target("HTTP/app%2edev.example.com@REALM", kUnparsableHost);
+  test_target("HTTP@app%2edev.example.com", kUnparsableHost,
+              hostbased_service_oid);
+  test_target(
+      "HTTP/b\xc3\xbc"
+      "cher.example.com@REALM",
+      kUnparsableHost);
+  test_target(
+      "HTTP@b\xc3\xbc"
+      "cher.example.com",
+      kUnparsableHost, hostbased_service_oid);
+  test_target(
+      "HTTP/\xef\xbd\x83"
+      "anonical.example.com@REALM",
+      kUnparsableHost);
+  test_target(
+      "HTTP/canon\xc2\xad"
+      "ical.example.com@REALM",
+      kUnparsableHost);
+
+  // Non-HTTP services and UPNs.
+  test_target("ldap/canonical.example.com@REALM", kNonHttpServicePrincipal);
+  test_target("ldap@canonical.example.com", kNonHttpServicePrincipal,
+              hostbased_service_oid);
+  test_target("user@REALM", kNonHttpServicePrincipal);
+  test_target("canonical.example.com", kNonHttpServicePrincipal);
+
+  // Escaped delimiters, NULs, extra components, and malformed hosts/ports.
+  test_target(R"(HTTP/foo\/bar@REALM)", kUnparsableHost);
+  test_target(R"(user\/HTTP/canonical.example.com@REALM)", kUnparsableHost);
+  test_target(R"(HTTP/canonical.example.com\@evil.com@REALM)", kUnparsableHost);
+  test_target("HTTP/canonical.example.com/instance@REALM", kUnparsableHost);
+  test_target("HTTP/canonical.example.com@REALM@OTHER", kUnparsableHost);
+  test_target(std::string_view("HTTP/canonical.example.com\0@REALM", 33),
+              kUnparsableHost);
+  test_target(std::string_view("HTTP/canonical.example.com@REALM\0\0", 34),
+              kUnparsableHost);
+  test_target("HTTP/.@REALM", kUnparsableHost);
+  test_target("HTTP/canonical.example.com..@REALM", kUnparsableHost);
+  test_target("HTTP/@REALM", kUnparsableHost);
+  test_target("HTTP@", kUnparsableHost, hostbased_service_oid);
+  test_target("HTTP/canonical.example.com:99999@REALM", kUnparsableHost);
+  test_target("HTTP/[not-ipv6]@REALM", kUnparsableHost);
+  test_target("HTTP/not:an:ipv6@REALM", kUnparsableHost);
 }
 
 }  // namespace net

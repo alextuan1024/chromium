@@ -26,13 +26,14 @@
 #include "third_party/blink/renderer/core/html/html_element.h"
 
 #include <iterator>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "base/containers/enum_set.h"
-#include "base/feature_list.h"
+#include "base/memory/raw_ptr_exclusion.h"
+#include "base/no_destructor.h"
 #include "base/system/sys_info.h"
 #include "build/build_config.h"
-#include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/mojom/forms/form_control_type.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/unbounded_element/unbounded_element.mojom-blink.h"
@@ -41,6 +42,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_attach_internals_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_show_popover_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_show_unbounded_element_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_toggle_popover_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_boolean_togglepopoveroptions.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_stringlegacynulltoemptystring_trustedscript.h"
@@ -69,6 +71,7 @@
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
 #include "third_party/blink/renderer/core/dom/focus_params.h"
 #include "third_party/blink/renderer/core/dom/id_target_observer.h"
+#include "third_party/blink/renderer/core/dom/interest_invoker_target_data.h"
 #include "third_party/blink/renderer/core/dom/invoker_data.h"
 #include "third_party/blink/renderer/core/dom/node-inl.h"
 #include "third_party/blink/renderer/core/dom/node_lists_node_data.h"
@@ -89,6 +92,7 @@
 #include "third_party/blink/renderer/core/events/keyboard_event.h"
 #include "third_party/blink/renderer/core/events/pointer_event.h"
 #include "third_party/blink/renderer/core/events/toggle_event.h"
+#include "third_party/blink/renderer/core/events/ui_event.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -135,11 +139,10 @@
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_box_model_object.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/mathml/mathml_element.h"
 #include "third_party/blink/renderer/core/mathml_names.h"
 #include "third_party/blink/renderer/core/overscroll/overscroll_area_tracker.h"
-#include "third_party/blink/renderer/core/page/chrome_client.h"
-#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/spatial_navigation.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/paint/timing/container_timing.h"
@@ -158,7 +161,6 @@
 #include "third_party/blink/renderer/platform/text/bidi_paragraph.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/widget/frame_widget.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -172,9 +174,11 @@ using AttributeChangedFunction =
 using mojom::blink::FormControlType;
 
 struct AttributeTriggers {
-  const QualifiedName& attribute;
+  // RAW_PTR_EXCLUSION: #global-scope
+  RAW_PTR_EXCLUSION const QualifiedName& attribute;
   WebFeature web_feature;
-  const AtomicString& event;
+  // RAW_PTR_EXCLUSION: #global-scope
+  RAW_PTR_EXCLUSION const AtomicString& event;
   AttributeChangedFunction function;
 };
 
@@ -482,10 +486,6 @@ const AttributeTriggers* HTMLElement::TriggersForAttributeName(
       {html_names::kContainertimingAttr, kNoWebFeature, kNoEvent,
        &HTMLElement::OnContainerTimingAttrChanged},
       {html_names::kContainertimingignoreAttr, kNoWebFeature, kNoEvent,
-       &HTMLElement::OnContainerTimingIgnoreAttrChanged},
-      // Deprecated dashed spelling: still functional, but warns. Remove once
-      // the origin trial ends.
-      {html_names::kContainertimingIgnoreAttr, kNoWebFeature, kNoEvent,
        &HTMLElement::OnContainerTimingIgnoreAttrChanged},
 
       {html_names::kOnabortAttr, kNoWebFeature, event_type_names::kAbort,
@@ -938,7 +938,8 @@ void HTMLElement::AttributeChanged(const AttributeModificationParams& params) {
              RuntimeEnabledFeatures::UnboundedElementEnabled()) {
     if (params.new_value.IsNull() &&
         HasElementFlag(ElementFlags::kIsUnboundedElementActive)) {
-      SetUnboundedElementActive(false, UnboundedEvents::kFireNonCancelable);
+      SetUnboundedElementActive(false, UnboundedEvents::kFireNonCancelable,
+                                /*source=*/nullptr);
     }
   }
 }
@@ -1396,7 +1397,7 @@ void AddBeforetoggleConsoleWarning(Document& document) {
 }  // namespace
 
 // https://html.spec.whatwg.org/multipage/popover.html#showing-popover
-class ScopedPopoverShowing {
+class [[nodiscard]] ScopedPopoverShowing {
   STACK_ALLOCATED();
 
  public:
@@ -1440,7 +1441,7 @@ class ScopedPopoverShowing {
 
 // https://html.spec.whatwg.org/multipage/popover.html#hiding-popover-nesting-count
 // https://html.spec.whatwg.org/multipage/popover.html#popover-hiding
-class ScopedPopoverHiding {
+class [[nodiscard]] ScopedPopoverHiding {
   STACK_ALLOCATED();
 
  public:
@@ -1497,6 +1498,22 @@ bool HTMLElement::IsPopoverReady(PopoverTriggerAction action,
                           "Not supported on elements that are not popovers.");
     return false;
   }
+  if (action == PopoverTriggerAction::kHide) {
+    if (GetPopoverData()->visibilityState() !=
+        PopoverVisibilityState::kShowing) {
+      // Important to check that visibility is not kShowing (rather than
+      // popoverOpen()), because a hide transition might have been started on
+      // this popover already, and we don't want to allow a double-hide.
+      return false;
+    }
+    if (expected_document && &GetDocument() != expected_document) {
+      maybe_throw_exception(DOMExceptionCode::kInvalidStateError,
+                            "Invalid when the document changes while showing "
+                            "or hiding a popover element.");
+      return false;
+    }
+    return true;
+  }
   if (!GetDocument().IsActive()) {
     maybe_throw_exception(
         DOMExceptionCode::kInvalidStateError,
@@ -1505,13 +1522,6 @@ bool HTMLElement::IsPopoverReady(PopoverTriggerAction action,
   }
   if (action == PopoverTriggerAction::kShow &&
       GetPopoverData()->visibilityState() != PopoverVisibilityState::kHidden) {
-    return false;
-  }
-  if (action == PopoverTriggerAction::kHide &&
-      GetPopoverData()->visibilityState() != PopoverVisibilityState::kShowing) {
-    // Important to check that visibility is not kShowing (rather than
-    // popoverOpen()), because a hide transition might have been started on this
-    // popover already, and we don't want to allow a double-hide.
     return false;
   }
   if (!isConnected()) {
@@ -1569,8 +1579,15 @@ bool HTMLElement::IsPopoverReady(PopoverTriggerAction action,
 }
 
 namespace {
-// We have to mark *all* invokers for the given popover dirty in the
-// ax tree, since they all should now have an updated expanded state.
+// Marks all invokers for `popover` dirty in the AX tree when `popover` opens,
+// closes, or is removed from the DOM, since the invokers' expanded/collapsed
+// state (`AXNodeObject::IsExpanded`) and details relation
+// (`AXObject::GetPopoverTargetForInvoker` /
+// `GetCommandForElementForDetailsRelation`) depend on whether `popover` is a
+// connected popover and whether it is open.
+// Note: When a target element is inserted into the DOM, or has its `popover`
+// or `id` attribute modified, `AXObjectCacheImpl` marks any referencing
+// invokers dirty via `AXRelationCache`.
 void MarkPopoverInvokersDirty(const HTMLElement& popover) {
   CHECK(popover.IsPopover());
   auto& document = popover.GetDocument();
@@ -1603,11 +1620,20 @@ void MarkPopoverInvokersDirty(const HTMLElement& popover) {
 }  // namespace
 
 ScriptPromise<IDLUndefined> HTMLElement::showUnboundedElement(
-    ScriptState* script_state) {
+    ScriptState* script_state,
+    ShowUnboundedElementOptions* options) {
   DCHECK(RuntimeEnabledFeatures::UnboundedElementEnabled());
   auto* resolver =
       MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
   auto promise = resolver->Promise();
+
+  if (IsUnboundedElementActive() ||
+      (GetUnboundedEventData() && GetUnboundedEventData()->isTransitioning())) {
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kInvalidStateError,
+        "The element is already an active unbounded element."));
+    return promise;
+  }
 
   if (!FastHasAttribute(html_names::kUnboundedAttr)) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
@@ -1638,6 +1664,8 @@ ScriptPromise<IDLUndefined> HTMLElement::showUnboundedElement(
 
   if (auth !=
           ContextFeatureSettings::UnboundedElementAuth::kAllowedPrivileged &&
+      auth != ContextFeatureSettings::UnboundedElementAuth::
+                  kAllowedByPrivilegedMainFrame &&
       !LocalFrame::HasTransientUserActivation(frame)) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kNotAllowedError,
@@ -1649,28 +1677,12 @@ ScriptPromise<IDLUndefined> HTMLElement::showUnboundedElement(
   WebFrameWidgetImpl* widget =
       web_frame ? web_frame->FrameWidgetImpl() : nullptr;
   auto* view = GetDocument().View();
-  if (!widget || !view ||
-      !view->UpdateAllLifecyclePhasesExceptPaint(
-          DocumentUpdateReason::kJavaScript)) {
+  if (!widget || !view || !GetDocument().IsActive()) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError,
         "The element is not in an active document."));
     return promise;
   }
-  gfx::Rect bounds;
-  if (auto* layout_object = GetLayoutObject()) {
-    bounds = layout_object->AbsoluteBoundingBoxRectForUnboundedElement();
-    bounds = view->FrameToViewport(bounds);
-    if (auto* local_root_widget = frame->GetWidgetForLocalRoot()) {
-      bounds = gfx::ToRoundedRect(
-          local_root_widget->BlinkSpaceToDIPs(gfx::RectF(bounds)));
-    }
-  }
-  // Unbounded elements must have a minimum size of 1x1 to prevent empty-bounds
-  // compositor and platform window issues.
-  bounds.set_width(std::max(1, bounds.width()));
-  bounds.set_height(std::max(1, bounds.height()));
-  SetLastSentUnboundedBounds(bounds);
 
 #if BUILDFLAG(IS_ANDROID)
   // Unbounded elements rely on
@@ -1690,7 +1702,76 @@ ScriptPromise<IDLUndefined> HTMLElement::showUnboundedElement(
   }
 #endif
 
-  SetUnboundedElementActive(true, UnboundedEvents::kFireNonCancelable);
+  // Dismiss any currently active unbounded element on the widget before
+  // activating this element, so that multiple elements are never active at
+  // once and any third elements opened inside closing beforetoggle listeners
+  // are cleanly dismissed.
+  while (HTMLElement* active = widget->GetActiveUnboundedElement()) {
+    if (active == this) {
+      break;
+    }
+    widget->DismissUnboundedSurfaceState(
+        WebFrameWidgetImpl::UnboundedDismissReason::kProgrammatic);
+  }
+
+  if (!FastHasAttribute(html_names::kUnboundedAttr) || !isConnected() ||
+      GetDocument().GetFrame() != frame || !GetDocument().IsActive()) {
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kInvalidStateError,
+        "The element is no longer eligible to be shown as unbounded."));
+    return promise;
+  }
+
+  Element* source =
+      options && options->hasSource() ? options->source() : nullptr;
+  SetUnboundedElementActive(true, UnboundedEvents::kFireNonCancelable, source);
+  if (!IsUnboundedElementActive() || !isConnected() ||
+      GetDocument().GetFrame() != frame) {
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kInvalidStateError,
+        "The element was deactivated or detached during beforetoggle."));
+    return promise;
+  }
+
+  // Run style and layout now to recalculate CSS anchor positioning against the
+  // monitor DIPs-to-CSS-px bounds (`UnboundedAnchorConstrainingBounds`) before
+  // reading the final element bounds below.
+  view = GetDocument().View();
+  if (!view || !view->UpdateAllLifecyclePhasesExceptPaint(
+                   DocumentUpdateReason::kJavaScript)) {
+    // Layout update only fails if the document became inactive after the
+    // opening `beforetoggle`; silently reset the active flag without firing a
+    // closing `beforetoggle` on an inactive document.
+    SetUnboundedElementActive(false, UnboundedEvents::kSuppress,
+                              /*source=*/nullptr);
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kInvalidStateError,
+        "The element is not in an active document."));
+    return promise;
+  }
+  if (!IsUnboundedElementActive() || !isConnected() ||
+      GetDocument().GetFrame() != frame) {
+    SetUnboundedElementActive(false, UnboundedEvents::kSuppress,
+                              /*source=*/nullptr);
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kInvalidStateError,
+        "The element was deactivated or detached during layout."));
+    return promise;
+  }
+  gfx::Rect bounds;
+  if (auto* layout_object = GetLayoutObject()) {
+    bounds = layout_object->AbsoluteBoundingBoxRectForUnboundedElement();
+    bounds = view->FrameToViewport(bounds);
+    if (auto* local_root_widget = frame->GetWidgetForLocalRoot()) {
+      bounds = gfx::ToRoundedRect(
+          local_root_widget->BlinkSpaceToDIPs(gfx::RectF(bounds)));
+    }
+  }
+  // Unbounded elements must have a minimum size of 1x1 to prevent empty-bounds
+  // compositor and platform window issues.
+  bounds.set_width(std::max(1, bounds.width()));
+  bounds.set_height(std::max(1, bounds.height()));
+  SetLastSentUnboundedBounds(bounds);
 
   mojo::PendingAssociatedRemote<mojom::blink::UnboundedSurfaceHost> host_remote;
   auto host_receiver = host_remote.InitWithNewEndpointAndPassReceiver();
@@ -1713,7 +1794,8 @@ ScriptPromise<IDLUndefined> HTMLElement::hideUnboundedElement(
       MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
   auto promise = resolver->Promise();
 
-  if (!IsUnboundedElementActive()) {
+  if (!IsUnboundedElementActive() ||
+      (GetUnboundedEventData() && GetUnboundedEventData()->isTransitioning())) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError,
         "The element is not an active unbounded element."));
@@ -1742,7 +1824,8 @@ bool HTMLElement::IsUnboundedElementActive() const {
   return HasElementFlag(ElementFlags::kIsUnboundedElementActive);
 }
 bool HTMLElement::SetUnboundedElementActive(bool active,
-                                            UnboundedEvents fire_events) {
+                                            UnboundedEvents fire_events,
+                                            Element* source) {
   DCHECK(RuntimeEnabledFeatures::UnboundedElementEnabled());
   DCHECK(!active || FastHasAttribute(html_names::kUnboundedAttr));
   if (HasElementFlag(ElementFlags::kIsUnboundedElementActive) == active) {
@@ -1750,7 +1833,36 @@ bool HTMLElement::SetUnboundedElementActive(bool active,
     return true;
   }
 
+  // Unlike Popover, no HTML invoker button closes an unbounded element, so
+  // `source` is always null on close.
+  Element* event_source = active ? source : nullptr;
   if (fire_events != UnboundedEvents::kSuppress) {
+    class [[nodiscard]] ScopedTransitioning {
+      STACK_ALLOCATED();
+
+     public:
+      explicit ScopedTransitioning(UnboundedEventData& data)
+          : data_(data), was_transitioning_(data.isTransitioning()) {
+        data_.setIsTransitioning(true);
+      }
+      ~ScopedTransitioning() {
+        if (!was_transitioning_) {
+          DCHECK(data_.isTransitioning());
+          data_.setIsTransitioning(false);
+        }
+      }
+
+      bool WasTransitioning() const { return was_transitioning_; }
+
+     private:
+      UnboundedEventData& data_;
+      bool was_transitioning_;
+    };
+    ScopedTransitioning scoped_transitioning(EnsureUnboundedEventData());
+    if (scoped_transitioning.WasTransitioning()) {
+      return true;
+    }
+
     String old_state = active ? keywords::kClosed : keywords::kOpen;
     String new_state = active ? keywords::kOpen : keywords::kClosed;
     Event::Cancelable cancelable =
@@ -1759,7 +1871,7 @@ bool HTMLElement::SetUnboundedElementActive(bool active,
             : Event::Cancelable::kNo;
     ToggleEvent* before_event =
         ToggleEvent::Create(event_type_names::kBeforetoggle, cancelable,
-                            old_state, new_state, nullptr);
+                            old_state, new_state, event_source);
     if (DispatchEvent(*before_event) != DispatchEventResult::kNotCanceled) {
       return false;
     }
@@ -1767,8 +1879,18 @@ bool HTMLElement::SetUnboundedElementActive(bool active,
       // The event handler changed the state.
       return true;
     }
+    if (active && (!FastHasAttribute(html_names::kUnboundedAttr) ||
+                   !isConnected() || !GetDocument().IsActive())) {
+      return false;
+    }
   }
   SetElementFlag(ElementFlags::kIsUnboundedElementActive, active);
+  SetImplicitAnchor(active ? source : nullptr);
+  if (active) {
+    EnsureUnboundedEventData().EnsureConstrainingBoundsSnapshot(*this);
+  } else if (UnboundedEventData* event_data = GetUnboundedEventData()) {
+    event_data->ClearConstrainingBoundsSnapshot();
+  }
   WebFrameWidgetImpl* widget = nullptr;
   if (auto* frame = GetDocument().GetFrame()) {
     if (auto* web_frame =
@@ -1798,6 +1920,8 @@ bool HTMLElement::SetUnboundedElementActive(bool active,
         kLocalStyleChange,
         StyleChangeReasonForTracing::Create(style_change_reason::kPseudoClass));
     if (auto* layout_object = GetLayoutObject()) {
+      layout_object->SetNeedsLayoutAndFullPaintInvalidation(
+          layout_invalidation_reason::kAnchorPositioning);
       layout_object->AddSubtreePaintPropertyUpdateReason(
           SubtreePaintPropertyUpdateReason::kContainerChainMayChange);
     }
@@ -1814,7 +1938,7 @@ bool HTMLElement::SetUnboundedElementActive(bool active,
     }
     ToggleEvent* event = ToggleEvent::Create(
         event_type_names::kToggle, Event::Cancelable::kNo, old_state,
-        active ? keywords::kOpen : keywords::kClosed, nullptr);
+        active ? keywords::kOpen : keywords::kClosed, event_source);
     event->SetTarget(this);
 
     event_data.setPendingEventTask(PostCancellableTask(
@@ -1851,6 +1975,52 @@ void HTMLElement::AttachLayoutTree(AttachContext& context) {
       }
     }
   }
+}
+
+UnboundedConstrainingBoundsSnapshot::UnboundedConstrainingBoundsSnapshot(
+    HTMLElement& element)
+    : PostLayoutSnapshotClient(element.GetDocument().GetFrame()),
+      element_(&element) {}
+
+bool UnboundedConstrainingBoundsSnapshot::IsActive() const {
+  return active_ && element_->IsUnboundedElementActive();
+}
+
+std::optional<gfx::Rect>
+UnboundedConstrainingBoundsSnapshot::ComputeConstrainingBounds() const {
+  const LayoutObject* layout_object = element_->GetLayoutObject();
+  if (!layout_object ||
+      layout_object->Style().GetPosition() != EPosition::kFixed) {
+    return std::nullopt;
+  }
+  return layout_object->UnboundedAnchorConstrainingBounds();
+}
+
+bool UnboundedConstrainingBoundsSnapshot::UpdateSnapshot() {
+  if (!IsActive()) {
+    return false;
+  }
+  std::optional<gfx::Rect> new_bounds = ComputeConstrainingBounds();
+  if (constraining_bounds_ == new_bounds) {
+    return false;
+  }
+  constraining_bounds_ = new_bounds;
+  if (LayoutObject* layout_object = element_->GetLayoutObject()) {
+    layout_object->SetNeedsLayoutAndFullPaintInvalidation(
+        layout_invalidation_reason::kAnchorPositioning);
+    layout_object->SetNeedsPaintPropertyUpdate();
+    return true;
+  }
+  return false;
+}
+
+bool UnboundedConstrainingBoundsSnapshot::ShouldScheduleNextService() {
+  return IsActive() && constraining_bounds_ != ComputeConstrainingBounds();
+}
+
+void UnboundedConstrainingBoundsSnapshot::Trace(Visitor* visitor) const {
+  visitor->Trace(element_);
+  PostLayoutSnapshotClient::Trace(visitor);
 }
 
 UnboundedEventData* HTMLElement::GetUnboundedEventData() const {
@@ -2051,7 +2221,7 @@ void HTMLElement::ShowPopoverInternal(Element* invoker,
                   mojom::blink::ConsoleMessageSource::kOther,
                   mojom::blink::ConsoleMessageLevel::kError,
                   "Cannot open an auto popover nested inside a hint popover.");
-              Vector<DOMNodeId> nodes;
+              Vector<DOMNodeIdType> nodes;
               nodes.push_back(GetDomNodeId());
               message->SetNodes(original_document.GetFrame(), nodes);
               original_document.AddConsoleMessage(message);
@@ -2118,8 +2288,11 @@ void HTMLElement::ShowPopoverInternal(Element* invoker,
     }
 
     // We only restore focus for popover=auto/hint, and only for the first
-    // popover in the stack. If there's nothing showing, restore focus.
-    should_restore_focus = !original_document.TopmostPopoverOrHint();
+    // popover in the stack (so we restore focus if there's no popover showing
+    // now), except for <menulist> elements which restore focus for each
+    // submenu level.
+    should_restore_focus = !original_document.TopmostPopoverOrHint() ||
+                           IsA<HTMLMenuListElement>(this);
 
     // Add this popover to the appropriate popover stack.
     CHECK(!append_to_stack->Contains(this));
@@ -2285,7 +2458,7 @@ PopoverHideResult HTMLElement::CloseEntirePopoverStack(
     // order.
     CHECK(probe::ToCoreProbeSink(popover_stack_for_inspector.back())
               ->HasDevToolsSessions());
-    stack.append_range(base::Reversed(popover_stack_for_inspector));
+    stack.append_range(std::views::reverse(popover_stack_for_inspector));
     return PopoverHideResult::kForcedOpenByInspector;
   }
   return PopoverHideResult::kHidden;
@@ -2381,7 +2554,8 @@ PopoverHideResult HTMLElement::HideAllPopoversUntil(
         // stack.
         return PopoverHideResult::kHidden;
       }
-      while (last_to_hide && last_to_hide->popoverOpen()) {
+      while (last_to_hide && last_to_hide->popoverOpen() &&
+             stack.Contains(last_to_hide)) {
         CHECK(!stack.empty());
         auto stack_top = stack.back();
         if (stack_top->HidePopoverInternal(
@@ -2422,7 +2596,7 @@ PopoverHideResult HTMLElement::HideAllPopoversUntil(
       }
 
       if (!popover_stack_for_inspector->empty()) {
-        stack.append_range(base::Reversed(*popover_stack_for_inspector));
+        stack.append_range(std::views::reverse(*popover_stack_for_inspector));
         result = PopoverHideResult::kForcedOpenByInspector;
       }
     } while (repeating_hide);
@@ -2595,9 +2769,10 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
   if (transition_behavior ==
       HidePopoverTransitionBehavior::kFireEventsAndWaitForTransitions) {
     // Fire the "closing" beforetoggle event.
-    auto* event = ToggleEvent::Create(
-        event_type_names::kBeforetoggle, Event::Cancelable::kNo,
-        /*old_state*/ keywords::kOpen, /*new_state*/ keywords::kClosed, invoker);
+    auto* event = ToggleEvent::Create(event_type_names::kBeforetoggle,
+                                      Event::Cancelable::kNo,
+                                      /*old_state*/ keywords::kOpen,
+                                      /*new_state*/ keywords::kClosed, invoker);
     if (invoker && RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
                        invoker->GetExecutionContext())) {
       event->SetComposed(true);
@@ -2608,12 +2783,10 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
     CHECK_EQ(event->newState(), keywords::kClosed);
     event->SetTarget(this);
     auto result = DispatchEvent(*event);
-    if (result != DispatchEventResult::kNotCanceled) {
-      // The event can be cancelled before dispatch, if the target or execution
-      // context no longer exists, etc. See crbug.com/1445329.
-      CHECK_EQ(result, DispatchEventResult::kCanceledBeforeDispatch);
-      return PopoverHideResult::kHidden;
-    }
+    // The event can be cancelled before dispatch, if the target or execution
+    // context no longer exists, etc. See crbug.com/40268117.
+    CHECK(result == DispatchEventResult::kNotCanceled ||
+          result == DispatchEventResult::kCanceledBeforeDispatch);
 
     // The 'beforetoggle' event handler could have changed this popover, e.g. by
     // changing its type, removing it from the document, or calling
@@ -2652,8 +2825,12 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
       DCHECK_NE(upstream_invoker->GetInvokerData()->GetInterestState(),
                 InterestState::kNoInterest);
       // We're already closing this popover, so don't try to close it again.
+      // Hiding a popover can't be canceled, so neither can the resulting
+      // 'loseinterest' event.
       upstream_invoker->LoseInterestNow(
-          InterestLostCancelable::kCancelable,
+          RuntimeEnabledFeatures::InterestForSpecAlignmentEnabled()
+              ? InterestLostCancelable::kNotCancelable
+              : InterestLostCancelable::kCancelable,
           InterestLostPopoverBehavior::kDontClosePopovers);
     }
 
@@ -2719,6 +2896,23 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
     document.RemoveFromTopLayerImmediately(this);
   }
 
+  // If this popover is the target of an active interest invoker, and the
+  // 'loseinterest' event was not fired above (either because events are not
+  // being fired, or because the invoker's `interestfor` relationship no longer
+  // resolves), move the invoker to the no-interest state without firing
+  // events.
+  if (InterestInvokerTargetData* target_data = GetInterestInvokerTargetData()) {
+    if (Element* interest_invoker = target_data->interestInvoker();
+        interest_invoker &&
+        interest_invoker->GetInterestState() != InterestState::kNoInterest &&
+        interest_invoker->GetInvokerData()->ActiveInterestTarget() == this &&
+        (transition_behavior ==
+             HidePopoverTransitionBehavior::kNoEventsNoWaiting ||
+         !SourceInterestInvoker())) {
+      interest_invoker->ChangeInterestState(this, InterestState::kNoInterest);
+    }
+  }
+
   // Remove this popover from the stack.
   if (PopoverType() != PopoverValueType::kManual) {
     if (hint_stack.Contains(this)) {
@@ -2747,6 +2941,7 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
 
   // Re-apply display:none, and stop matching `:popover-open`.
   GetPopoverData()->setVisibilityState(PopoverVisibilityState::kHidden);
+  GetPopoverData()->setHidingThisPopover(false);
 
   PseudoStateChanged(CSSSelector::kPseudoPopoverOpen);
   if (HTMLSelectElement::IsPopoverPickerElement(this)) {
@@ -2790,6 +2985,14 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
       previously_focused_element->Focus(FocusParams(
           SelectionBehaviorOnFocus::kRestore, mojom::blink::FocusType::kScript,
           /*capabilities=*/nullptr, focus_options));
+      if (RuntimeEnabledFeatures::InterestForSpecAlignmentEnabled()) {
+        // If focus didn't actually move to the previously focused element
+        // (e.g. because it is hidden or inert), the suppression flag might not
+        // have been consumed. Reset it, so it doesn't suppress a later focus.
+        if (InvokerData* data = previously_focused_element->GetInvokerData()) {
+          data->SetSuppressNextFocusInterest(false);
+        }
+      }
     }
   }
 
@@ -3205,15 +3408,21 @@ void HTMLElement::InvokePopover(Element& invoker,
 }
 
 void HTMLElement::SetImplicitAnchor(Element* element) {
-  CHECK(IsPopover());
-  GetPopoverData()->setImplicitAnchor(element);
-  if (element) {
-    element->SetMayBeImplicitAnchor();
+  CHECK(IsPopover() || RuntimeEnabledFeatures::UnboundedElementEnabled());
+  if (!element) {
+    if (NodeRareData* data = RareData()) {
+      data->SetImplicitAnchor(nullptr).RefreshNode(*this);
+    }
+    return;
   }
+  EnsureRareData().SetImplicitAnchor(element).RefreshNode(*this);
 }
 
 Element* HTMLElement::implicitAnchor() const {
-  return GetPopoverData() ? GetPopoverData()->implicitAnchor() : nullptr;
+  if (const NodeRareData* data = RareData()) {
+    return data->GetImplicitAnchor();
+  }
+  return nullptr;
 }
 
 bool HTMLElement::DispatchFocusEvent(
@@ -3247,23 +3456,26 @@ bool HTMLElement::IsValidBuiltinCommand(HTMLElement& invoker,
     return true;
   }
   if (Element::IsOverscrollCommand(command)) {
-    CHECK(RuntimeEnabledFeatures::OverscrollGesturesEnabled());
-    return true;
+    CHECK(
+        RuntimeEnabledFeatures::OverscrollAreasEnabled(GetExecutionContext()));
+    return GetTreeScope() == invoker.GetTreeScope();
   }
   return false;
 }
 
 bool HTMLElement::HandleCommandInternal(HTMLElement& invoker,
-                                        CommandEventType command) {
+                                        CommandEventType command,
+                                        UIEvent* activate_event) {
   if (!IsValidBuiltinCommand(invoker, command)) {
     return false;
   }
-  if (Element::HandleCommandInternal(invoker, command)) {
+  if (Element::HandleCommandInternal(invoker, command, activate_event)) {
     return true;
   }
 
   if (command == CommandEventType::kToggleOverscroll) {
-    CHECK(RuntimeEnabledFeatures::OverscrollGesturesEnabled());
+    CHECK(
+        RuntimeEnabledFeatures::OverscrollAreasEnabled(GetExecutionContext()));
     if (Element* container = GetOverscrollContainer()) {
       if (auto* tracker = container->GetOverscrollAreaTracker()) {
         tracker->ToggleArea(this);
@@ -3273,7 +3485,8 @@ bool HTMLElement::HandleCommandInternal(HTMLElement& invoker,
   }
 
   if (command == CommandEventType::kShowOverscroll) {
-    CHECK(RuntimeEnabledFeatures::OverscrollGesturesEnabled());
+    CHECK(
+        RuntimeEnabledFeatures::OverscrollAreasEnabled(GetExecutionContext()));
     if (Element* container = GetOverscrollContainer()) {
       if (auto* tracker = container->GetOverscrollAreaTracker()) {
         tracker->OpenArea(this);
@@ -3283,7 +3496,8 @@ bool HTMLElement::HandleCommandInternal(HTMLElement& invoker,
   }
 
   if (command == CommandEventType::kHideOverscroll) {
-    CHECK(RuntimeEnabledFeatures::OverscrollGesturesEnabled());
+    CHECK(
+        RuntimeEnabledFeatures::OverscrollAreasEnabled(GetExecutionContext()));
     if (Element* container = GetOverscrollContainer()) {
       if (auto* tracker = container->GetOverscrollAreaTracker()) {
         tracker->CloseArea(this);
@@ -3389,7 +3603,7 @@ bool HTMLElement::CanBeCommandInvoker() const {
   return false;
 }
 
-bool HTMLElement::HandleCommandForActivation() {
+bool HTMLElement::HandleCommandForActivation(UIEvent* activate_event) {
   if (!CanBeCommandInvoker()) {
     return false;
   }
@@ -3399,12 +3613,6 @@ bool HTMLElement::HandleCommandForActivation() {
   Element* command_target = commandForElement();
   if (!command_target) {
     return false;
-  }
-  // commandfor & popovertarget shouldn't be combined, so warn.
-  if (FastHasAttribute(html_names::kPopovertargetAttr)) {
-    AddConsoleMessage(mojom::blink::ConsoleMessageSource::kOther,
-                      mojom::blink::ConsoleMessageLevel::kWarning,
-                      "popovertarget is ignored on elements with commandfor.");
   }
   const AtomicString& action = command();
   if (action.empty()) {
@@ -3420,6 +3628,14 @@ bool HTMLElement::HandleCommandForActivation() {
   if (!is_valid_builtin && command_event_type != CommandEventType::kCustom) {
     return false;
   }
+  // commandfor & popovertarget shouldn't be combined, so warn. This comes
+  // after the early returns above, which are the cases where no command runs
+  // and popovertarget is therefore honored, not ignored.
+  if (FastHasAttribute(html_names::kPopovertargetAttr)) {
+    AddConsoleMessage(mojom::blink::ConsoleMessageSource::kOther,
+                      mojom::blink::ConsoleMessageLevel::kWarning,
+                      "popovertarget is ignored on elements with commandfor.");
+  }
   Event* command_event =
       CommandEvent::Create(event_type_names::kCommand, action, this);
   if (RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
@@ -3429,7 +3645,8 @@ bool HTMLElement::HandleCommandForActivation() {
   command_target->DispatchEvent(*command_event);
   if (!command_event->defaultPrevented() &&
       command_event_type != CommandEventType::kCustom) {
-    command_target->HandleCommandInternal(*this, command_event_type);
+    command_target->HandleCommandInternal(*this, command_event_type,
+                                          activate_event);
   }
   return true;
 }
@@ -3504,7 +3721,7 @@ CommandEventType HTMLElement::GetCommandEventType(
   }
 
   // Overscroll gestures.
-  if (RuntimeEnabledFeatures::OverscrollGesturesEnabled()) {
+  if (RuntimeEnabledFeatures::OverscrollAreasEnabled(execution_context)) {
     if (EqualIgnoringAsciiCase(action, keywords::kToggleOverscroll)) {
       return CommandEventType::kToggleOverscroll;
     }
@@ -3601,9 +3818,12 @@ CommandEventType HTMLElement::GetCommandEventType(
 }
 
 const AtomicString& HTMLElement::autocapitalize() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, kCharacters, ("characters"));
-  DEFINE_STATIC_LOCAL(const AtomicString, kWords, ("words"));
-  DEFINE_STATIC_LOCAL(const AtomicString, kSentences, ("sentences"));
+  static const base::NoDestructor<AtomicString> kCharacters(
+      AtomicString::FromLiteral<"characters">());
+  static const base::NoDestructor<AtomicString> kWords(
+      AtomicString::FromLiteral<"words">());
+  static const base::NoDestructor<AtomicString> kSentences(
+      AtomicString::FromLiteral<"sentences">());
 
   const AtomicString& value = FastGetAttribute(html_names::kAutocapitalizeAttr);
   if (value.empty())
@@ -3613,14 +3833,14 @@ const AtomicString& HTMLElement::autocapitalize() const {
       EqualIgnoringAsciiCase(value, keywords::kOff)) {
     return keywords::kNone;
   }
-  if (EqualIgnoringAsciiCase(value, kCharacters)) {
-    return kCharacters;
+  if (EqualIgnoringAsciiCase(value, *kCharacters)) {
+    return *kCharacters;
   }
-  if (EqualIgnoringAsciiCase(value, kWords)) {
-    return kWords;
+  if (EqualIgnoringAsciiCase(value, *kWords)) {
+    return *kWords;
   }
   // "sentences", "on", or an invalid value
-  return kSentences;
+  return *kSentences;
 }
 
 void HTMLElement::setAutocapitalize(const AtomicString& value) {
@@ -3799,14 +4019,16 @@ void HTMLElement::setTranslate(bool enable) {
 // default).
 // http://www.whatwg.org/specs/web-apps/current-work/multipage/common-dom-interfaces.html#limited-to-only-known-values
 static inline const AtomicString& ToValidDirValue(const AtomicString& value) {
-  DEFINE_STATIC_LOCAL(const AtomicString, ltr_value, ("ltr"));
-  DEFINE_STATIC_LOCAL(const AtomicString, rtl_value, ("rtl"));
+  static const base::NoDestructor<AtomicString> ltr_value(
+      AtomicString::FromLiteral<"ltr">());
+  static const base::NoDestructor<AtomicString> rtl_value(
+      AtomicString::FromLiteral<"rtl">());
 
-  if (EqualIgnoringAsciiCase(value, ltr_value)) {
-    return ltr_value;
+  if (EqualIgnoringAsciiCase(value, *ltr_value)) {
+    return *ltr_value;
   }
-  if (EqualIgnoringAsciiCase(value, rtl_value)) {
-    return rtl_value;
+  if (EqualIgnoringAsciiCase(value, *rtl_value)) {
+    return *rtl_value;
   }
   if (EqualIgnoringAsciiCase(value, keywords::kAuto)) {
     return keywords::kAuto;
@@ -3931,7 +4153,7 @@ const AtomicString& HTMLElement::GetDirectionalAttribute(
     if (const LayoutObject* layout_object = GetLayoutObject()) {
       // Note that this isn't part of the HTML spec's concept, but we've
       // always honored CSS directionality for the title attribute.
-      direction = layout_object->StyleRef().Direction();
+      direction = layout_object->Style().Direction();
     }
     if (HasDirectionAuto()) {
       if (const std::optional<TextDirection> string_direction =
@@ -3970,6 +4192,9 @@ void HTMLElement::RemovedFrom(ContainerNode& insertion_point) {
     // If a popover is removed from the document, make sure it gets
     // removed from the popover element stack and the top layer.
     if (was_in_document) {
+      if (!popoverOpen()) {
+        MarkPopoverInvokersDirty(*this);
+      }
       // We can't run focus event handlers while removing elements.
       HidePopoverInternal(
           /*invoker=*/nullptr, HidePopoverFocusBehavior::kNone,
@@ -3981,7 +4206,17 @@ void HTMLElement::RemovedFrom(ContainerNode& insertion_point) {
   if (RuntimeEnabledFeatures::UnboundedElementEnabled() &&
       IsUnboundedElementActive() &&
       !GetDocument().StatePreservingAtomicMoveInProgress()) {
-    SetUnboundedElementActive(false, UnboundedEvents::kSuppress);
+    SetUnboundedElementActive(false, UnboundedEvents::kSuppress,
+                              /*source=*/nullptr);
+  }
+
+  // Drop the container timing record when a container root is disconnected,
+  // including during atomic moves (moveBefore()).
+  if (was_in_document && FastHasAttribute(html_names::kContainertimingAttr) &&
+      RuntimeEnabledFeatures::ContainerTimingEnabled(GetExecutionContext())) {
+    if (auto* window = GetDocument().domWindow()) {
+      ContainerTiming::From(*window).OnContainerRootDisconnected(this);
+    }
   }
 
   Element::RemovedFrom(insertion_point);
@@ -4196,17 +4431,47 @@ FocusgroupFlags HTMLElement::NativeArrowKeyAxes() const {
   return Element::NativeArrowKeyAxes();
 }
 
-void HTMLElement::DefaultEventHandler(Event& event) {
-  auto* submit_behavior = SubmitBehavior();
+bool HTMLElement::HasActivationBehavior() const {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    return false;
+  }
+  return SubmitBehavior();
+}
 
-  if (event.type() == event_type_names::kDOMActivate) {
-    // Delegate to `HTMLSubmitButtonBehavior` if present.
-    if (submit_behavior && submit_behavior->HandleActivation(event)) {
+void HTMLElement::RunActivationBehavior(
+    Event& event,
+    EventDispatchHandlingState* handling_state) {
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    if (event.defaultPrevented() || event.DefaultHandled()) {
       return;
     }
 
-    if (HandleCommandForActivation()) {
+    if (auto* submit_behavior = SubmitBehavior()) {
+      if (submit_behavior->HandleActivation(event)) {
+        return;
+      }
+    }
+
+    if (HandleCommandForActivation(DynamicTo<UIEvent>(&event))) {
       return;
+    }
+  }
+  Element::RunActivationBehavior(event, handling_state);
+}
+
+void HTMLElement::DefaultEventHandler(Event& event) {
+  auto* submit_behavior = SubmitBehavior();
+
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    if (event.type() == event_type_names::kDOMActivate) {
+      // Delegate to `HTMLSubmitButtonBehavior` if present.
+      if (submit_behavior && submit_behavior->HandleActivation(event)) {
+        return;
+      }
+
+      if (HandleCommandForActivation(To<UIEvent>(&event))) {
+        return;
+      }
     }
   }
 
@@ -4216,19 +4481,11 @@ void HTMLElement::DefaultEventHandler(Event& event) {
     return;
   }
 
-  if (auto* keyboard_event = DynamicTo<KeyboardEvent>(event)) {
-    if (base::FeatureList::IsEnabled(
-            blink::features::kAutofillKeydownEditableElement) &&
-        event.type() == event_type_names::kKeydown) {
-      HandleKeydownEvent(*keyboard_event);
-      if (event.DefaultHandled()) {
-        return;
-      }
-    } else if (event.type() == event_type_names::kKeypress) {
-      HandleKeypressEvent(*keyboard_event);
-      if (event.DefaultHandled()) {
-        return;
-      }
+  if (auto* keyboard_event = DynamicTo<KeyboardEvent>(event);
+      keyboard_event && event.type() == event_type_names::kKeypress) {
+    HandleKeypressEvent(*keyboard_event);
+    if (event.DefaultHandled()) {
+      return;
     }
   }
 
@@ -4236,6 +4493,13 @@ void HTMLElement::DefaultEventHandler(Event& event) {
 }
 
 bool HTMLElement::HandleKeyboardActivation(Event& event) {
+  // If the focus is on a descendant (such as a text field),
+  // skip handling keyboard activation.
+  if (RuntimeEnabledFeatures::KeyboardActivationFocusCheckEnabled()) {
+    if (GetDocument().FocusedElement() != this) {
+      return false;
+    }
+  }
   auto* keyboard_event = DynamicTo<KeyboardEvent>(event);
   if (keyboard_event) {
     if (event.type() == event_type_names::kKeydown &&
@@ -4278,28 +4542,6 @@ bool HTMLElement::MatchesReadWritePseudoClass() const {
   return IsEditableOrEditingHost(*this);
 }
 
-void HTMLElement::HandleKeydownEvent(KeyboardEvent& event) {
-  const bool is_focused_contenteditable = [this]() {
-    if (!IsFocusedElementInDocument()) {
-      return false;
-    }
-    // blink::IsEditable() may depend on the computed style, so we may need to
-    // update the style.
-    GetDocument().UpdateStyleAndLayoutTree();
-    return blink::IsEditable(*this);
-  }();
-
-  if (is_focused_contenteditable) {
-    // Handles only contenteditables. TextFieldInputType and HTMLTextAreaElement
-    // analogously handle the event for <input> and <textarea>.
-    if (Page* page = GetDocument().GetPage();
-        page && page->GetChromeClient().HandleKeyboardEventOnEditableElement(
-                    *this, event)) {
-      event.SetDefaultHandled();
-    }
-  }
-}
-
 void HTMLElement::HandleKeypressEvent(KeyboardEvent& event) {
   if (!IsSpatialNavigationEnabled(GetDocument().GetFrame()) ||
       SupportsFocus(UpdateBehavior::kStyleAndLayout) ==
@@ -4326,8 +4568,7 @@ void HTMLElement::HandleKeypressEvent(KeyboardEvent& event) {
 int HTMLElement::AdjustedOffsetForZoom(LayoutUnit offset) {
   const auto* layout_object = GetLayoutObject();
   DCHECK(layout_object);
-  return AdjustForAbsoluteZoom::AdjustLayoutUnit(offset,
-                                                 layout_object->StyleRef())
+  return AdjustForAbsoluteZoom::AdjustLayoutUnit(offset, layout_object->Style())
       .Round();
 }
 
@@ -4532,31 +4773,16 @@ void HTMLElement::OnContainerTimingAttrChanged(
 
 void HTMLElement::OnContainerTimingIgnoreAttrChanged(
     const AttributeModificationParams& params) {
-  // Both spellings are handled here and share the same use counter. The dashed
-  // `containertiming-ignore` one is deprecated in favor of
-  // `containertimingignore`: it stays functional for the remainder of the
-  // origin trial, but warns. The warning fires on every occurrence on purpose:
-  // measured usage is negligible and the spelling goes away when the trial
-  // ends, so it is not worth tracking per-page state to suppress repeats.
+  // Count attribute adoption, but ignore attributes in user agent shadow DOM
+  // (consistent with the generic attribute use-counting in ParseAttribute).
   if (!params.new_value.IsNull() && !IsInUserAgentShadowRoot()) {
     UseCounter::Count(GetDocument(),
                       WebFeature::kContainerTimingIgnoreAttribute);
-    if (params.name == html_names::kContainertimingIgnoreAttr) {
-      AddConsoleMessage(
-          mojom::blink::ConsoleMessageSource::kDeprecation,
-          mojom::blink::ConsoleMessageLevel::kWarning,
-          "The 'containertiming-ignore' attribute is deprecated and will be "
-          "removed. Use 'containertimingignore' instead.");
-    }
   }
 
   if (!RuntimeEnabledFeatures::ContainerTimingEnabled(GetExecutionContext())) {
     return;
   }
-  // Only this spelling's presence is tracked here. That is still correct when
-  // the element carries both spellings: all this does is mark the subtree for
-  // re-attribution, and the pre-paint walk resolves the effective ignore state
-  // through HasContainerTimingIgnoreAttribute(), which sees both spellings.
   bool had_container_timing_ignore = !params.old_value.IsNull();
   bool has_container_timing_ignore = !params.new_value.IsNull();
   if (had_container_timing_ignore == has_container_timing_ignore) {

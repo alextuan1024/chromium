@@ -23,9 +23,11 @@
 #include "chrome/browser/ash/printing/cups_print_job_manager_factory.h"
 #include "chrome/browser/ash/printing/local_printer.h"
 #include "chrome/browser/extensions/api/printing/print_job_submitter.h"
-#include "chrome/common/extensions/api/printing.h"
+#include "chromeos/ash/experiences/extensions/common/api/printing.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/event_router_factory.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom-forward.h"
 #include "ui/gfx/native_ui_types.h"
 
 class PrefRegistrySimple;
@@ -117,6 +119,7 @@ class PrintingAPIHandler : public BrowserContextKeyedAPI,
   void SubmitJob(gfx::NativeWindow native_window,
                  scoped_refptr<const extensions::Extension> extension,
                  std::optional<api::printing::SubmitJob::Params> params,
+                 mojo::PendingRemote<blink::mojom::Blob> document,
                  SubmitJobCallback callback);
 
   // Returns an error message if an error occurred.

@@ -1,0 +1,108 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.chrome.browser.tab;
+
+import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
+import org.robolectric.shadows.ShadowLooper;
+
+import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.content_public.browser.WebContents;
+import org.chromium.url.GURL;
+
+import java.util.List;
+
+/** Unit tests for {@link TabWebContentsDelegateAndroidImpl}. */
+@RunWith(BaseRobolectricTestRunner.class)
+public class TabWebContentsDelegateAndroidImplUnitTest {
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    @Mock private TabImpl mTab;
+    @Mock private TabWebContentsDelegateAndroid mWrappedDelegate;
+    @Mock private TabObserver mObserver1;
+    @Mock private TabObserver mObserver2;
+    @Mock private WebContents mWebContents;
+
+    private TabWebContentsDelegateAndroidImpl mDelegate;
+
+    @Before
+    public void setUp() {
+        when(mTab.getTabObservers()).thenReturn(List.of(mObserver1, mObserver2));
+        mDelegate = new TabWebContentsDelegateAndroidImpl(mTab, mWrappedDelegate);
+    }
+
+    @Test
+    public void testOnBeforeUnloadFired_Proceed() {
+        mDelegate.onBeforeUnloadFired(/* proceed= */ true);
+
+        verify(mObserver1).onBeforeUnloadFired(mTab, true);
+        verify(mObserver2).onBeforeUnloadFired(mTab, true);
+    }
+
+    @Test
+    public void testOnBeforeUnloadFired_Cancel() {
+        mDelegate.onBeforeUnloadFired(/* proceed= */ false);
+
+        verify(mObserver1).onBeforeUnloadFired(mTab, false);
+        verify(mObserver2).onBeforeUnloadFired(mTab, false);
+    }
+
+    @Test
+    public void testCloseContents_Detached() {
+        when(mTab.isDetachedFromActivity()).thenReturn(true);
+
+        mDelegate.closeContents();
+        ShadowLooper.runUiThreadTasks();
+
+        verify(mTab).setDidCloseWhileDetached();
+        verify(mObserver1).onCloseContents(mTab);
+        verify(mObserver2).onCloseContents(mTab);
+        verify(mWrappedDelegate).closeContents();
+    }
+
+    @Test
+    public void testGetUrlForDeviceNotifications_usesCommittedUrlOverVisibleUrl() {
+        GURL committedUrl = new GURL("https://committed.example/");
+        GURL pendingUrl = new GURL("https://pending.example/");
+        when(mTab.getWebContents()).thenReturn(mWebContents);
+        when(mWebContents.getLastCommittedUrl()).thenReturn(committedUrl);
+        when(mTab.getUrl()).thenReturn(pendingUrl);
+
+        assertEquals(
+                committedUrl, TabWebContentsDelegateAndroidImpl.getUrlForDeviceNotifications(mTab));
+    }
+
+    @Test
+    public void testGetUrlForDeviceNotifications_fallsBackToTabUrlWithoutWebContents() {
+        GURL tabUrl = new GURL("https://tab.example/");
+        when(mTab.getWebContents()).thenReturn(null);
+        when(mTab.getUrl()).thenReturn(tabUrl);
+
+        assertEquals(tabUrl, TabWebContentsDelegateAndroidImpl.getUrlForDeviceNotifications(mTab));
+    }
+
+    @Test
+    public void testCloseContents_Attached() {
+        when(mTab.isDetachedFromActivity()).thenReturn(false);
+
+        mDelegate.closeContents();
+        ShadowLooper.runUiThreadTasks();
+
+        verify(mTab, never()).setDidCloseWhileDetached();
+        verify(mObserver1).onCloseContents(mTab);
+        verify(mObserver2).onCloseContents(mTab);
+        verify(mWrappedDelegate).closeContents();
+    }
+}

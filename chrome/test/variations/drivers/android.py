@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import enum
 import os
 import logging
 import posixpath
@@ -13,6 +14,7 @@ from typing import List, Optional
 import attr
 
 from chrome.test.variations.drivers import DriverFactory
+
 # This import also adds `devil` and `build/android` to `sys.path`.
 from chrome.test.variations.test_utils import android
 from selenium import webdriver
@@ -25,30 +27,53 @@ from devil.android.sdk import intent
 # taking a screenshot.
 SCREENSHOT_WAIT_TIME_SECONDS = 5
 
+
+class FormFactor(enum.Enum):
+  """The kind of Android device the emulator runs."""
+
+  PHONE = enum.auto()
+  DESKTOP = enum.auto()
+
+
 @attr.attrs()
 class AndroidDriverFactory(DriverFactory):
   channel: str = attr.attrib()
   avd_config: Optional[str] = attr.attrib()
   enabled_emulator_window: bool = attr.attrib()
   ports: List[int] = attr.attrib()
+  form_factor: FormFactor = attr.attrib(
+    validator=attr.validators.instance_of(FormFactor)
+  )
 
-  #override
+  # override
   def __attrs_post_init__(self):
     super().__attrs_post_init__()
     self._instance = android.launch_emulator(
       avd_config=self.avd_config,
       emulator_window=self.enabled_emulator_window,
-      ports=self.ports)
+      ports=self.ports,
+      # Android desktop runs a headless system user; Chrome only gets a
+      # visible window (and renders frames for screenshots) for the main user.
+      ensure_main_user=self.form_factor == FormFactor.DESKTOP,
+    )
     self._device_temp_dir = device_temp_file.NamedDeviceTemporaryDirectory(
-      self.device.adb)
+      self.device.adb
+    )
     self._install_package()
 
   def _install_package(self):
-    self._package_name = android.install_chrome(self.channel, self.device)
+    # Request the desktop APK explicitly on desktop. Otherwise the installer
+    # may install the phone APK, which also runs on the desktop emulator.
+    installer_package = (
+      'ChromeDesktop' if self.form_factor == FormFactor.DESKTOP else 'Chrome'
+    )
+    self._package_name = android.install_chrome(
+      self.channel, self.device, package=installer_package
+    )
     self.device.ClearApplicationState(self.package_name)
-    logging.info('Installed Chrome (%s)', self.package_name)
+    logging.info('Installed %s (%s)', installer_package, self.package_name)
 
-  #override
+  # override
   @property
   def supports_startup_timeout(self) -> bool:
     # Android doesn't support browser startup timeout.
@@ -72,29 +97,35 @@ class AndroidDriverFactory(DriverFactory):
 
   def _push_seed(self, seed_file: str):
     local_seed_file = posixpath.join(
-      self.device_temp_dir.name, os.path.basename(seed_file))
+      self.device_temp_dir.name, os.path.basename(seed_file)
+    )
     self.device.adb.Push(seed_file, local_seed_file)
 
+    # GetUidForPackage returns the uid for device.target_user, which
+    # EnsureMainUser sets to the main user on Android desktop.
     uid = self.device.GetUidForPackage(self.package_name)
-    self.device.RunShellCommand(
-      ['chown', uid, local_seed_file], as_root=True)
+    if not uid:
+      raise RuntimeError(f'{self.package_name} is not installed.')
+    logging.info('Using uid %s for %s', uid, self.package_name)
+    self.device.RunShellCommand(['chown', uid, local_seed_file], as_root=True)
     return local_seed_file
 
-  #override
+  # override
   def wait_for_screenshot(self):
     time.sleep(SCREENSHOT_WAIT_TIME_SECONDS)
 
-  #override
+  # override
   @contextmanager
   def create_driver(
     self,
     seed_file: Optional[str] = None,
-    options: Optional[webdriver.ChromeOptions] = None
-    ) -> webdriver.Remote:
+    options: Optional[webdriver.ChromeOptions] = None,
+  ) -> webdriver.Remote:
     options = options or self.default_options
     options.enable_mobile(
       android_package=self.package_name,
       android_activity=self.activity_name,
+      device_serial=self.device.serial,
     )
     # We clean up the application dir and place several files there, so
     # we need to keep the data when running webdriver.
@@ -103,8 +134,7 @@ class AndroidDriverFactory(DriverFactory):
     if seed_file:
       installed_seed_path = self._push_seed(seed_file)
       logging.info('Installed seed at (%s)', installed_seed_path)
-      options.add_argument(
-        f'variations-test-seed-path={installed_seed_path}')
+      options.add_argument(f'variations-test-seed-path={installed_seed_path}')
       options.add_argument(f'--fake-variations-channel={self.channel}')
     driver = None
     try:
@@ -113,25 +143,24 @@ class AndroidDriverFactory(DriverFactory):
       if driver:
         driver.quit()
 
-  #override
+  # override
   def close(self):
     self._instance.Stop()
 
 
 @attr.attrs()
 class WebviewDriverFactory(AndroidDriverFactory):
-
-  #override
+  # override
   @property
   def package_name(self):
     return 'org.chromium.webview_shell'
 
-  #override
+  # override
   @property
   def activity_name(self):
     return '.WebViewBrowserActivity'
 
-  #override
+  # override
   def _install_package(self):
     # Clear the system webview shell.
     self.device.ClearApplicationState(self.package_name)
@@ -141,14 +170,16 @@ class WebviewDriverFactory(AndroidDriverFactory):
 
     # Launch shell once to create local state files.
     self.device.StartActivity(
-        intent.Intent(
-            action='android.intent.action.MAIN',
-            package=self.package_name,
-            activity='.WebViewBrowserActivity'),
-        blocking=True)
+      intent.Intent(
+        action='android.intent.action.MAIN',
+        package=self.package_name,
+        activity='.WebViewBrowserActivity',
+      ),
+      blocking=True,
+    )
     self.device.ForceStop(self.package_name)
 
-  #override
+  # override
   def _push_seed(self, seed_file: str):
     # Variation seeds for webview are always being loaded from app_webview.
     package_dir = self.device.GetApplicationDataDirectory(self.package_name)
@@ -158,7 +189,9 @@ class WebviewDriverFactory(AndroidDriverFactory):
     seed_path = posixpath.join(app_data_dir, 'variations_seed')
     seed_new_path = posixpath.join(app_data_dir, 'variations_seed_new')
     self.device.RunShellCommand(
-      ['cp', local_seed_file, seed_path], check_return=True, as_root=True)
+      ['cp', local_seed_file, seed_path], check_return=True, as_root=True
+    )
     self.device.RunShellCommand(
-      ['cp', local_seed_file, seed_new_path], check_return=True, as_root=True)
+      ['cp', local_seed_file, seed_new_path], check_return=True, as_root=True
+    )
     return local_seed_file

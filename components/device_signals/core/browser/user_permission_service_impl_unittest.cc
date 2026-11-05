@@ -4,24 +4,36 @@
 
 #include "components/device_signals/core/browser/user_permission_service_impl.h"
 
+#include <array>
+#include <memory>
 #include <optional>
+#include <set>
+#include <utility>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/task_environment.h"
+#include "build/build_config.h"
 #include "components/device_signals/core/browser/mock_user_delegate.h"
 #include "components/device_signals/core/browser/pref_names.h"
-#include "components/device_signals/core/browser/user_context.h"
-#include "components/device_signals/core/browser/user_delegate.h"
+#include "components/device_signals/core/browser/user_permission_service.h"
 #include "components/device_signals/core/common/signals_features.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
-#include "components/prefs/pref_registry.h"
-#include "components/prefs/pref_service.h"
+#include "components/policy/core/common/policy_types.h"
 #include "components/prefs/testing_pref_service.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "components/device_signals/core/browser/user_context.h"
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
+#if BUILDFLAG(IS_ANDROID)
+#include "components/signin/public/base/signin_prefs.h"
+#include "google_apis/gaia/gaia_id_literal.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 using policy::EnterpriseManagementAuthority;
 using policy::ScopedManagementServiceOverrideForTesting;
@@ -47,6 +59,11 @@ class TestManagementService : public policy::ManagementService {
   }
 };
 
+#if BUILDFLAG(IS_ANDROID)
+constexpr GaiaIdLiteral kPrimaryGaiaId("primary-gaia-id");
+constexpr GaiaIdLiteral kOtherGaiaId("other-gaia-id");
+#endif  // BUILDFLAG(IS_ANDROID)
+
 }  // namespace
 
 class UserPermissionServiceImplTest : public testing::Test,
@@ -54,6 +71,9 @@ class UserPermissionServiceImplTest : public testing::Test,
  protected:
   UserPermissionServiceImplTest() {
     RegisterProfilePrefs(test_prefs_.registry());
+#if BUILDFLAG(IS_ANDROID)
+    SigninPrefs::RegisterProfilePrefs(test_prefs_.registry());
+#endif  // BUILDFLAG(IS_ANDROID)
     scoped_feature_list_.InitWithFeatureState(
         enterprise_signals::features::kNewEvSignalsUnaffiliatedEnabled,
         is_new_ev_signals_unaffiliated_enabled());
@@ -61,6 +81,20 @@ class UserPermissionServiceImplTest : public testing::Test,
     auto mock_user_delegate =
         std::make_unique<testing::StrictMock<MockUserDelegate>>();
     mock_user_delegate_ = mock_user_delegate.get();
+
+    // By default, consent is required so that the regular consent rules apply.
+    // Tests exercising implicit consent override this expectation.
+    EXPECT_CALL(*mock_user_delegate_, IsCollectSignalsConsentRequired())
+        .Times(AnyNumber())
+        .WillRepeatedly(Return(true));
+
+#if BUILDFLAG(IS_ANDROID)
+    // By default, a primary account is signed in. Tests exercising the
+    // signed-out state override this expectation.
+    EXPECT_CALL(*mock_user_delegate_, GetPrimaryAccountGaiaId())
+        .Times(AnyNumber())
+        .WillRepeatedly(Return(GaiaId(kPrimaryGaiaId)));
+#endif  // BUILDFLAG(IS_ANDROID)
 
     permission_service_ = std::make_unique<UserPermissionServiceImpl>(
         &management_service_, std::move(mock_user_delegate), &test_prefs_);
@@ -79,13 +113,30 @@ class UserPermissionServiceImplTest : public testing::Test,
 
   void SetUserConsentGiven() {
     // Fake as if user has given consent.
+#if BUILDFLAG(IS_ANDROID)
+    // On Android, consent is only stored per account.
+    SetAccountConsentGiven(kPrimaryGaiaId);
+#else
     test_prefs_.SetBoolean(prefs::kDeviceSignalsConsentReceived, true);
+#endif  // BUILDFLAG(IS_ANDROID)
   }
 
   void SetPermanentUserConsentGiven() {
     // Fake as if user has given permanent consent.
+#if BUILDFLAG(IS_ANDROID)
+    // On Android, consent is only stored per account.
+    SetAccountConsentGiven(kPrimaryGaiaId);
+#else
     test_prefs_.SetBoolean(prefs::kDeviceSignalsPermanentConsentReceived, true);
+#endif  // BUILDFLAG(IS_ANDROID)
   }
+
+#if BUILDFLAG(IS_ANDROID)
+  void SetAccountConsentGiven(const GaiaId& gaia_id) {
+    SigninPrefs(test_prefs_)
+        .SetDeviceSignalsPermanentConsentReceived(gaia_id, true);
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
 
   void SetPolicyScopesNeedingSignals(bool machine_scope, bool user_scope) {
     std::set<policy::PolicyScope> scopes;
@@ -108,9 +159,8 @@ class UserPermissionServiceImplTest : public testing::Test,
 
   bool is_new_ev_signals_unaffiliated_enabled() { return GetParam(); }
 
-  base::test::TaskEnvironment task_environment_;
-
   base::test::ScopedFeatureList scoped_feature_list_;
+
   TestManagementService management_service_;
   std::optional<ScopedManagementServiceOverrideForTesting> scoped_override_;
   raw_ptr<testing::StrictMock<MockUserDelegate>> mock_user_delegate_;
@@ -409,14 +459,10 @@ TEST_P(UserPermissionServiceImplTest,
 TEST_P(UserPermissionServiceImplTest, CanCollectSignals_AlreadyConsented) {
   SetUserConsentGiven();
   EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
-  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
-            UserPermission::kMissingConsent);
 }
 TEST_P(UserPermissionServiceImplTest, CanCollectSignals_PermanentConsent) {
   SetPermanentUserConsentGiven();
   EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
-  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
-            UserPermission::kMissingConsent);
 }
 
 // Tests that consent is required before allowing to collect signals from an
@@ -424,8 +470,6 @@ TEST_P(UserPermissionServiceImplTest, CanCollectSignals_PermanentConsent) {
 TEST_P(UserPermissionServiceImplTest, CanCollectSignals_BrowserNotManaged) {
   SetUserAsCloudManaged();
   EXPECT_EQ(permission_service_->CanCollectSignals(),
-            UserPermission::kMissingConsent);
-  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
             UserPermission::kMissingConsent);
 }
 
@@ -435,13 +479,9 @@ TEST_P(UserPermissionServiceImplTest,
        CanCollectSignals_BrowserManaged_UnmanagedUser) {
   SetDeviceAsCloudManaged();
 
-  EXPECT_CALL(*mock_user_delegate_, IsManagedUser())
-      .Times(2)
-      .WillRepeatedly(Return(false));
+  EXPECT_CALL(*mock_user_delegate_, IsManagedUser()).WillOnce(Return(false));
 
   EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
-  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
-            UserPermission::kMissingConsent);
 }
 
 // Tests that signals can be collected when on a managed browser in an
@@ -450,16 +490,10 @@ TEST_P(UserPermissionServiceImplTest,
        CanCollectSignals_BrowserManaged_AffiliatedUser) {
   SetDeviceAsCloudManaged();
 
-  EXPECT_CALL(*mock_user_delegate_, IsManagedUser())
-      .Times(2)
-      .WillRepeatedly(Return(true));
-  EXPECT_CALL(*mock_user_delegate_, IsAffiliated())
-      .Times(2)
-      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*mock_user_delegate_, IsManagedUser()).WillOnce(Return(true));
+  EXPECT_CALL(*mock_user_delegate_, IsAffiliated()).WillOnce(Return(true));
 
   EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
-  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
-            UserPermission::kGranted);
 }
 
 struct UnaffiliatedUserTestCase {
@@ -486,12 +520,8 @@ TEST_P(UserPermissionServiceImplTest,
   };
 
   for (const auto& test_case : test_cases) {
-    EXPECT_CALL(*mock_user_delegate_, IsManagedUser())
-        .Times(2)
-        .WillRepeatedly(Return(true));
-    EXPECT_CALL(*mock_user_delegate_, IsAffiliated())
-        .Times(2)
-        .WillRepeatedly(Return(false));
+    EXPECT_CALL(*mock_user_delegate_, IsManagedUser()).WillOnce(Return(true));
+    EXPECT_CALL(*mock_user_delegate_, IsAffiliated()).WillOnce(Return(false));
 
     SetPolicyScopesNeedingSignals(test_case.machine_scope,
                                   test_case.user_scope);
@@ -499,10 +529,147 @@ TEST_P(UserPermissionServiceImplTest,
     EXPECT_EQ(permission_service_->CanCollectSignals(),
               test_case.can_collect ? UserPermission::kGranted
                                     : UserPermission::kMissingConsent);
-    EXPECT_EQ(permission_service_->CanCollectReportSignals(),
-              UserPermission::kMissingConsent);
   }
 }
+
+// Tests that signals can be collected without explicit consent on an unmanaged
+// device when the delegate reports that consent is not required.
+TEST_P(UserPermissionServiceImplTest,
+       CanCollectSignals_ConsentNotRequired_BrowserNotManaged) {
+  SetUserAsCloudManaged();
+
+  EXPECT_CALL(*mock_user_delegate_, IsCollectSignalsConsentRequired())
+      .WillOnce(Return(false));
+
+  EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
+}
+
+// Tests that signals can be collected without explicit consent for an
+// unaffiliated user whose user-level policy needs signals, when the delegate
+// reports that consent is not required.
+TEST_P(UserPermissionServiceImplTest,
+       CanCollectSignals_ConsentNotRequired_UnaffiliatedUser) {
+  SetDeviceAsCloudManaged();
+
+  EXPECT_CALL(*mock_user_delegate_, IsCollectSignalsConsentRequired())
+      .WillOnce(Return(false));
+
+  EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
+}
+
+// Tests that consent is required before allowing to collect reporting signals
+// from an unmanaged browser.
+TEST_P(UserPermissionServiceImplTest,
+       CanCollectReportSignals_BrowserNotManaged) {
+  SetUserAsCloudManaged();
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kMissingConsent);
+}
+
+// Tests that reporting signals cannot be collected when on a managed browser in
+// an unmanaged profile.
+TEST_P(UserPermissionServiceImplTest,
+       CanCollectReportSignals_BrowserManaged_UnmanagedUser) {
+  SetDeviceAsCloudManaged();
+  EXPECT_CALL(*mock_user_delegate_, IsManagedUser()).WillOnce(Return(false));
+
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kMissingConsent);
+}
+
+// Tests that reporting signals can be collected when on a managed browser in an
+// affiliated profile.
+TEST_P(UserPermissionServiceImplTest,
+       CanCollectReportSignals_BrowserManaged_AffiliatedUser) {
+  SetDeviceAsCloudManaged();
+  EXPECT_CALL(*mock_user_delegate_, IsManagedUser()).WillOnce(Return(true));
+  EXPECT_CALL(*mock_user_delegate_, IsAffiliated()).WillOnce(Return(true));
+
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kGranted);
+}
+
+// Tests that reporting signals cannot be collected without consent when on a
+// managed browser in an unaffiliated profile.
+TEST_P(UserPermissionServiceImplTest,
+       CanCollectReportSignals_BrowserManaged_UnaffiliatedUser) {
+  SetDeviceAsCloudManaged();
+  EXPECT_CALL(*mock_user_delegate_, IsManagedUser()).WillOnce(Return(true));
+  EXPECT_CALL(*mock_user_delegate_, IsAffiliated()).WillOnce(Return(false));
+
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kMissingConsent);
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+// Tests that user consent does not grant access to reporting signals on
+// non-Android platforms.
+TEST_P(UserPermissionServiceImplTest,
+       CanCollectReportSignals_AlreadyConsented) {
+  SetUserConsentGiven();
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kMissingConsent);
+}
+
+TEST_P(UserPermissionServiceImplTest,
+       CanCollectReportSignals_PermanentConsent) {
+  SetPermanentUserConsentGiven();
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kMissingConsent);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_ANDROID)
+// Tests that, on Android, only the consent given by the primary account is
+// taken into account, and that it grants access to both signals and reporting
+// signals.
+TEST_P(UserPermissionServiceImplTest, Android_PrimaryAccountConsent) {
+  SetUserAsCloudManaged();
+
+  SetAccountConsentGiven(kOtherGaiaId);
+  EXPECT_FALSE(permission_service_->HasUserConsented());
+  EXPECT_EQ(permission_service_->CanCollectSignals(),
+            UserPermission::kMissingConsent);
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kMissingConsent);
+
+  SetAccountConsentGiven(kPrimaryGaiaId);
+  EXPECT_TRUE(permission_service_->HasUserConsented());
+  EXPECT_FALSE(permission_service_->ShouldCollectConsent());
+  EXPECT_EQ(permission_service_->CanCollectSignals(), UserPermission::kGranted);
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kGranted);
+}
+
+// Tests that, on Android, consent is considered missing when there is no
+// primary account, even if a previous primary account had given consent.
+TEST_P(UserPermissionServiceImplTest, Android_NoPrimaryAccount) {
+  SetUserAsCloudManaged();
+  SetAccountConsentGiven(kPrimaryGaiaId);
+  EXPECT_CALL(*mock_user_delegate_, GetPrimaryAccountGaiaId())
+      .WillRepeatedly(Return(GaiaId()));
+
+  EXPECT_FALSE(permission_service_->HasUserConsented());
+  EXPECT_EQ(permission_service_->CanCollectSignals(),
+            UserPermission::kMissingConsent);
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kMissingConsent);
+}
+
+// Tests that, on Android, primary account consent grants access to reporting
+// signals on a cloud-managed device where the user is unaffiliated.
+TEST_P(UserPermissionServiceImplTest,
+       CanCollectReportSignals_Android_ManagedDeviceUnaffiliated) {
+  SetDeviceAsCloudManaged();
+  SetAccountConsentGiven(kPrimaryGaiaId);
+
+  EXPECT_CALL(*mock_user_delegate_, IsManagedUser()).WillOnce(Return(true));
+  EXPECT_CALL(*mock_user_delegate_, IsAffiliated()).WillOnce(Return(false));
+
+  EXPECT_EQ(permission_service_->CanCollectReportSignals(),
+            UserPermission::kGranted);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 INSTANTIATE_TEST_SUITE_P(, UserPermissionServiceImplTest, testing::Bool());
 

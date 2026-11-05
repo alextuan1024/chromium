@@ -8,21 +8,28 @@
 #include <string>
 #include <utility>
 
+#include "base/check.h"
+#include "base/check_op.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "remoting/codec/utils.h"
 #include "remoting/protocol/client_video_stats_dispatcher.h"
 #include "remoting/protocol/frame_consumer.h"
 #include "remoting/protocol/frame_stats.h"
 #include "remoting/protocol/video_renderer.h"
 #include "remoting/protocol/webrtc_transport.h"
-#include "third_party/libyuv/include/libyuv/convert.h"
-#include "third_party/libyuv/include/libyuv/convert_from.h"
 #include "third_party/webrtc/api/scoped_refptr.h"
+#include "third_party/webrtc/api/video/video_common.h"
+#include "third_party/webrtc/api/video/video_frame_buffer.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_frame.h"
 #include "third_party/webrtc/rtc_base/time_utils.h"
 
@@ -33,6 +40,22 @@ namespace {
 // Maximum number of ClientFrameStats instances to keep.
 const int kMaxQueuedStats = 200;
 
+base::span<const uint8_t> GetYuvPlaneSpan(const uint8_t* data,
+                                          int stride,
+                                          int width,
+                                          int rows) {
+  CHECK(data);
+  CHECK_GT(width, 0);
+  CHECK_GT(rows, 0);
+  CHECK_GE(stride, width);
+  // SAFETY: `CHECK`s above ensure `data` is non-null, `rows >= 1`, `width >=
+  // 1`, and `stride >= width`, and `webrtc::PlanarYuv8Buffer` guarantees at
+  // least `rows` rows of `width` bytes spaced `stride` bytes apart.
+  return UNSAFE_BUFFERS(base::span(
+      data,
+      static_cast<size_t>(stride) * (rows - 1) + static_cast<size_t>(width)));
+}
+
 std::unique_ptr<webrtc::DesktopFrame> ConvertYuvToRgb(
     scoped_refptr<webrtc::VideoFrameBuffer> yuv_frame,
     std::unique_ptr<webrtc::DesktopFrame> rgb_frame,
@@ -40,16 +63,44 @@ std::unique_ptr<webrtc::DesktopFrame> ConvertYuvToRgb(
   DCHECK(rgb_frame->size().equals(
       webrtc::DesktopSize(yuv_frame->width(), yuv_frame->height())));
   CHECK_EQ(rgb_frame->pixel_format(), webrtc::FOURCC_ARGB);
-  auto yuv_to_rgb_function = (pixel_format == FrameConsumer::FORMAT_BGRA)
-                                 ? &libyuv::I420ToARGB
-                                 : &libyuv::I420ToABGR;
-  webrtc::scoped_refptr<const webrtc::I420BufferInterface> i420_frame =
-      yuv_frame->ToI420();
-  yuv_to_rgb_function(i420_frame->DataY(), i420_frame->StrideY(),
-                      i420_frame->DataU(), i420_frame->StrideU(),
-                      i420_frame->DataV(), i420_frame->StrideV(),
-                      rgb_frame->data(), rgb_frame->stride(),
-                      i420_frame->width(), i420_frame->height());
+  if (rgb_frame->size().is_empty()) {
+    return rgb_frame;
+  }
+
+  webrtc::scoped_refptr<const webrtc::I420BufferInterface> owned_i420;
+  const webrtc::PlanarYuv8Buffer* planar_yuv = nullptr;
+  bool is_i444 = false;
+  if (yuv_frame->type() == webrtc::VideoFrameBuffer::Type::kI444) {
+    planar_yuv = yuv_frame->GetI444();
+    is_i444 = true;
+  } else {
+    owned_i420 = yuv_frame->ToI420();
+    planar_yuv = owned_i420.get();
+  }
+  if (!planar_yuv) {
+    LOG(ERROR) << "Failed to obtain planar YUV buffer for video frame.";
+    return nullptr;
+  }
+  CHECK_EQ(planar_yuv->width(), rgb_frame->size().width());
+  CHECK_EQ(planar_yuv->height(), rgb_frame->size().height());
+
+  const int width = planar_yuv->width();
+  const int height = planar_yuv->height();
+  const int uv_width = planar_yuv->ChromaWidth();
+  const int uv_height = planar_yuv->ChromaHeight();
+  const base::span<const uint8_t> y_span = GetYuvPlaneSpan(
+      planar_yuv->DataY(), planar_yuv->StrideY(), width, height);
+  const base::span<const uint8_t> u_span = GetYuvPlaneSpan(
+      planar_yuv->DataU(), planar_yuv->StrideU(), uv_width, uv_height);
+  const base::span<const uint8_t> v_span = GetYuvPlaneSpan(
+      planar_yuv->DataV(), planar_yuv->StrideV(), uv_width, uv_height);
+
+  const webrtc::FourCC output_fourcc =
+      (pixel_format == FrameConsumer::FORMAT_BGRA) ? webrtc::FOURCC_ARGB
+                                                   : webrtc::FOURCC_ABGR;
+  ConvertYuvToDesktopFrame(y_span, planar_yuv->StrideY(), u_span,
+                           planar_yuv->StrideU(), v_span, planar_yuv->StrideV(),
+                           is_i444, output_fourcc, *rgb_frame);
 
   rgb_frame->mutable_updated_region()->AddRect(
       webrtc::DesktopRect::MakeSize(rgb_frame->size()));
@@ -63,7 +114,9 @@ WebrtcVideoRendererAdapter::WebrtcVideoRendererAdapter(
     VideoRenderer* video_renderer)
     : label_(label),
       video_renderer_(video_renderer),
-      task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()) {}
+      task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
+      convert_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
+          {base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN})) {}
 
 WebrtcVideoRendererAdapter::~WebrtcVideoRendererAdapter() {
   DCHECK(task_runner_->BelongsToCurrentThread());
@@ -186,8 +239,8 @@ void WebrtcVideoRendererAdapter::HandleFrameOnMainThread(
       video_renderer_->GetFrameConsumer()->AllocateFrame(
           webrtc::DesktopSize(frame->width(), frame->height()));
 
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+  convert_task_runner_->PostTaskAndReplyWithResult(
+      FROM_HERE,
       base::BindOnce(&ConvertYuvToRgb, std::move(frame), std::move(rgb_frame),
                      video_renderer_->GetFrameConsumer()->GetPixelFormat()),
       base::BindOnce(&WebrtcVideoRendererAdapter::DrawFrame,
@@ -200,6 +253,9 @@ void WebrtcVideoRendererAdapter::DrawFrame(
     std::unique_ptr<ClientFrameStats> stats,
     std::unique_ptr<webrtc::DesktopFrame> frame) {
   DCHECK(task_runner_->BelongsToCurrentThread());
+  if (!frame) {
+    return;
+  }
   stats->time_decoded = base::TimeTicks::Now();
   video_renderer_->GetFrameConsumer()->DrawFrame(
       std::move(frame),

@@ -11,9 +11,9 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/dom_distiller/core/url_constants.h"
 #include "components/profile_metrics/browser_profile_type.h"
 #include "components/url_formatter/url_formatter.h"
+#include "components/web_distiller/core/url_constants.h"
 #include "net/base/url_util.h"
 #include "url/gurl.h"
 #include "url/url_canon.h"
@@ -27,7 +27,6 @@ const char kMainFrameSchemeDifferentPage[] =
 // non-unique (e.g. http://site.test):
 const char kMainFrameSchemeDifferentPageNonUniqueHostname[] =
     "Navigation.MainFrameSchemeDifferentPage2NonUniqueHostname";
-const char kMainFrameSchemeOTR[] = "Navigation.MainFrameSchemeOTR2";
 const char kMainFrameSchemeDifferentPageOTR[] =
     "Navigation.MainFrameSchemeDifferentPageOTR2";
 const char kMainFrameHasRTLDomain[] = "Navigation.MainFrameHasRTLDomain2";
@@ -53,7 +52,7 @@ constexpr auto kSchemeNames = std::to_array<const char*>({
     url::kFileSystemScheme,
     "chrome-native",
     "chrome-search",
-    dom_distiller::kDomDistillerScheme,
+    web_distiller::kWebDistillerScheme,
     "devtools",
     "chrome-extension",
     "view-source",
@@ -100,7 +99,6 @@ void RecordPrimaryMainFrameNavigation(
                             url_formatter::IDNToUnicode(url.GetHost())));
 
   if (is_off_the_record) {
-    UMA_HISTOGRAM_ENUMERATION(kMainFrameSchemeOTR, scheme, Scheme::COUNT);
     if (!is_same_document) {
       UMA_HISTOGRAM_ENUMERATION(kMainFrameSchemeDifferentPageOTR, scheme,
                                 Scheme::COUNT);

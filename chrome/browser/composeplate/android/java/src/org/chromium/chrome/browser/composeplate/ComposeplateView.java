@@ -12,18 +12,32 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import androidx.annotation.DrawableRes;
 import androidx.annotation.StyleRes;
-
-import org.jni_zero.internal.Nullable;
+import androidx.core.view.ViewCompat;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.components.search_engines.AiModeButtonUiConfig;
 
 @NullMarked
 /** View for the composeplate layout which is shown below the fake search box on NTP. */
 public class ComposeplateView extends LinearLayout {
 
     private @Nullable View mComposeplateButton;
-    private @Nullable View mIncognitoButton;
+    private @Nullable View mOptionalButton;
+    private @Nullable View mTrailingButton;
+    private @Nullable ImageView mComposeplateButtonIcon;
+    private @Nullable ImageView mOptionalButtonIcon;
+    private @Nullable ImageView mTrailingButtonIcon;
+    private @Nullable TextView mOptionalButtonText;
+    private @Nullable TextView mTrailingButtonText;
+
+    /** The tint of the icons, initially the one declared in the layout. */
+    private @Nullable ColorStateList mIconTint;
+
+    /** Whether the AI Mode button icon should be tinted, see {@link #setAiModeButtonIcon}. */
+    private boolean mShouldTintAiModeButtonIcon = true;
 
     public ComposeplateView(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -34,7 +48,16 @@ public class ComposeplateView extends LinearLayout {
         super.onFinishInflate();
 
         mComposeplateButton = findViewById(R.id.composeplate_button);
-        mIncognitoButton = findViewById(R.id.incognito_button);
+        mOptionalButton = findViewById(R.id.optional_button);
+        mTrailingButton = findViewById(R.id.trailing_button);
+        mComposeplateButtonIcon = findViewById(R.id.composeplate_button_icon);
+        mOptionalButtonIcon = findViewById(R.id.optional_button_icon);
+        mTrailingButtonIcon = findViewById(R.id.trailing_button_icon);
+        mOptionalButtonText = findViewById(R.id.optional_button_text);
+        mTrailingButtonText = findViewById(R.id.trailing_button_text);
+        if (mComposeplateButtonIcon != null) {
+            mIconTint = mComposeplateButtonIcon.getImageTintList();
+        }
     }
 
     /**
@@ -48,8 +71,12 @@ public class ComposeplateView extends LinearLayout {
             ComposeplateUtils.applyComposeplateBackground(context, mComposeplateButton, apply);
         }
 
-        if (mIncognitoButton != null) {
-            ComposeplateUtils.applyComposeplateBackground(context, mIncognitoButton, apply);
+        if (mOptionalButton != null) {
+            ComposeplateUtils.applyComposeplateBackground(context, mOptionalButton, apply);
+        }
+
+        if (mTrailingButton != null) {
+            ComposeplateUtils.applyComposeplateBackground(context, mTrailingButton, apply);
         }
     }
 
@@ -57,16 +84,14 @@ public class ComposeplateView extends LinearLayout {
     void setColorStateList(@Nullable ColorStateList colorStateList) {
         if (colorStateList == null) return;
 
-        if (mComposeplateButton != null) {
-            setColorStateList(
-                    mComposeplateButton.findViewById(R.id.composeplate_button_icon),
-                    colorStateList);
+        mIconTint = colorStateList;
+        // A full color AI Mode button icon keeps its own colors.
+        if (mShouldTintAiModeButtonIcon) {
+            setColorStateList(mComposeplateButtonIcon, colorStateList);
         }
 
-        if (mIncognitoButton != null) {
-            setColorStateList(
-                    mIncognitoButton.findViewById(R.id.incognito_button_icon), colorStateList);
-        }
+        setColorStateList(mOptionalButtonIcon, colorStateList);
+        setColorStateList(mTrailingButtonIcon, colorStateList);
     }
 
     /**
@@ -81,9 +106,255 @@ public class ComposeplateView extends LinearLayout {
                     textStyleResId);
         }
 
-        if (mIncognitoButton != null) {
-            setTextStyle(mIncognitoButton.findViewById(R.id.incognito_button_text), textStyleResId);
+        setTextStyle(mTrailingButtonText, textStyleResId);
+        setTextStyle(mOptionalButtonText, textStyleResId);
+    }
+
+    /**
+     * Updates the AI Mode button with the strings provided by the default search engine.
+     *
+     * @param aiModeButtonUiConfig The {@link AiModeButtonUiConfig} of the default search engine.
+     */
+    void setAiModeButtonUiConfig(AiModeButtonUiConfig aiModeButtonUiConfig) {
+        if (mComposeplateButton == null) return;
+
+        TextView textView = mComposeplateButton.findViewById(R.id.composeplate_button_text);
+        if (textView != null) {
+            textView.setText(aiModeButtonUiConfig.text);
         }
+
+        ViewCompat.setTooltipText(mComposeplateButton, aiModeButtonUiConfig.tooltip);
+        mComposeplateButton.setContentDescription(aiModeButtonUiConfig.a11yLabel);
+    }
+
+    /**
+     * Updates the icon of the AI Mode button.
+     *
+     * @param aiModeButtonIcon The icon to show on the AI Mode button, and whether to tint it.
+     */
+    void setAiModeButtonIcon(ComposeplateProperties.AiModeButtonIcon aiModeButtonIcon) {
+        if (mComposeplateButtonIcon == null) return;
+
+        mShouldTintAiModeButtonIcon = aiModeButtonIcon.shouldTint;
+        mComposeplateButtonIcon.setImageDrawable(aiModeButtonIcon.drawable);
+        mComposeplateButtonIcon.setImageTintList(mShouldTintAiModeButtonIcon ? mIconTint : null);
+    }
+
+    /**
+     * Updates the icon of the optional button.
+     *
+     * @param iconResId The resource id of the icon drawable to show on the optional button.
+     */
+    void setOptionalButtonIcon(@DrawableRes int iconResId) {
+        if (mOptionalButtonIcon == null) return;
+
+        mOptionalButtonIcon.setImageResource(iconResId);
+    }
+
+    /**
+     * Sets the click listener of the optional button.
+     *
+     * @param listener The click listener to set on the optional button.
+     */
+    void setOptionalButtonClickListener(@Nullable OnClickListener listener) {
+        if (mOptionalButton == null) return;
+
+        mOptionalButton.setOnClickListener(listener);
+    }
+
+    /**
+     * Updates the text of the optional button. The text is only shown with the large form factor
+     * layout; see {@link #setOptionalButtonContentDescription(String)} for the accessible name.
+     *
+     * @param text The text of the optional button.
+     */
+    void setOptionalButtonText(@Nullable String text) {
+        if (mOptionalButtonText == null) return;
+
+        mOptionalButtonText.setText(text);
+    }
+
+    /**
+     * Updates the content description of the optional button. It is also used as the tooltip of the
+     * button.
+     *
+     * @param contentDescription The content description of the optional button.
+     */
+    void setOptionalButtonContentDescription(@Nullable String contentDescription) {
+        if (mOptionalButton == null) return;
+
+        mOptionalButton.setContentDescription(contentDescription);
+        mOptionalButton.setTooltipText(contentDescription);
+    }
+
+    /**
+     * Updates the icon of the trailing button.
+     *
+     * @param iconResId The resource id of the icon drawable to show on the trailing button.
+     */
+    void setTrailingButtonIcon(@DrawableRes int iconResId) {
+        if (mTrailingButtonIcon == null) return;
+
+        mTrailingButtonIcon.setImageResource(iconResId);
+    }
+
+    /**
+     * Sets the click listener of the trailing button.
+     *
+     * @param listener The click listener to set on the trailing button.
+     */
+    void setTrailingButtonClickListener(@Nullable OnClickListener listener) {
+        if (mTrailingButton == null) return;
+
+        mTrailingButton.setOnClickListener(listener);
+    }
+
+    /**
+     * Updates the text of the trailing button.
+     *
+     * @param text The text of the trailing button.
+     */
+    void setTrailingButtonText(@Nullable String text) {
+        if (mTrailingButtonText == null) return;
+
+        mTrailingButtonText.setText(text);
+    }
+
+    /**
+     * Updates the content description of the trailing button. It is also used as the tooltip of the
+     * button.
+     *
+     * @param contentDescription The content description of the trailing button.
+     */
+    void setTrailingButtonContentDescription(@Nullable String contentDescription) {
+        if (mTrailingButton == null) return;
+
+        mTrailingButton.setContentDescription(contentDescription);
+        mTrailingButton.setTooltipText(contentDescription);
+    }
+
+    /**
+     * Updates the visibility of the optional button.
+     *
+     * @param visible Whether the optional button is visible.
+     */
+    void setOptionalButtonVisibility(boolean visible) {
+        if (mOptionalButton == null) return;
+
+        mOptionalButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    /**
+     * Updates the visibility of the optional button's text.
+     *
+     * @param visible Whether the optional button's text is visible.
+     */
+    void setOptionalButtonTextVisibility(boolean visible) {
+        if (mOptionalButtonText == null) return;
+
+        mOptionalButtonText.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    /**
+     * Sets whether the optional button wraps its content instead of sharing the width equally with
+     * the other weighted buttons.
+     *
+     * @param wrapContent Whether the optional button wraps its content.
+     */
+    void setOptionalButtonWrapContent(boolean wrapContent) {
+        updateButtonLayoutParams(mOptionalButton, getWidth(wrapContent), getWeight(wrapContent));
+    }
+
+    /**
+     * Sets whether the trailing button wraps its content instead of sharing the width equally with
+     * the other weighted buttons.
+     *
+     * @param wrapContent Whether the trailing button wraps its content.
+     */
+    void setTrailingButtonWrapContent(boolean wrapContent) {
+        updateButtonLayoutParams(mTrailingButton, getWidth(wrapContent), getWeight(wrapContent));
+    }
+
+    /**
+     * Returns the layout width of a button.
+     *
+     * @param wrapContent Whether the button wraps its content instead of sharing the remaining
+     *     width by weight.
+     * @return {@link LayoutParams#WRAP_CONTENT} if wrapping content, otherwise 0 so the width is
+     *     determined by the weight.
+     */
+    private int getWidth(boolean wrapContent) {
+        return wrapContent ? LayoutParams.WRAP_CONTENT : 0;
+    }
+
+    /**
+     * Returns the layout weight of a button.
+     *
+     * @param wrapContent Whether the button wraps its content instead of sharing the remaining
+     *     width by weight.
+     * @return 0 if wrapping content, otherwise 1 so the button shares the remaining width equally
+     *     with the other weighted buttons.
+     */
+    private float getWeight(boolean wrapContent) {
+        return wrapContent ? 0f : 1f;
+    }
+
+    /**
+     * Updates the visibility of the trailing button's text.
+     *
+     * @param visible Whether the trailing button's text is visible.
+     */
+    void setTrailingButtonTextVisibility(boolean visible) {
+        if (mTrailingButtonText == null) return;
+
+        mTrailingButtonText.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    /**
+     * Sets the lateral (start and end) padding of the optional and trailing buttons.
+     *
+     * @param padding The padding in pixels.
+     */
+    void setButtonLateralPadding(int padding) {
+        updateButtonHorizontalPadding(mOptionalButton, padding);
+        updateButtonHorizontalPadding(mTrailingButton, padding);
+    }
+
+    /**
+     * Sets the end margin of the composeplate and optional buttons.
+     *
+     * @param marginEnd The end margin in pixels.
+     */
+    void setButtonMarginEnd(int marginEnd) {
+        updateButtonMarginEnd(mComposeplateButton, marginEnd);
+        updateButtonMarginEnd(mOptionalButton, marginEnd);
+    }
+
+    private void updateButtonLayoutParams(@Nullable View button, int width, float weight) {
+        if (button == null) return;
+
+        LayoutParams layoutParams = (LayoutParams) button.getLayoutParams();
+        layoutParams.width = width;
+        layoutParams.weight = weight;
+        button.setLayoutParams(layoutParams);
+    }
+
+    private void updateButtonMarginEnd(@Nullable View button, int marginEnd) {
+        if (button == null) return;
+
+        LayoutParams layoutParams = (LayoutParams) button.getLayoutParams();
+        layoutParams.setMarginEnd(marginEnd);
+        button.setLayoutParams(layoutParams);
+    }
+
+    private void updateButtonHorizontalPadding(@Nullable View button, int horizontalPadding) {
+        if (button == null) return;
+
+        button.setPaddingRelative(
+                horizontalPadding,
+                button.getPaddingTop(),
+                horizontalPadding,
+                button.getPaddingBottom());
     }
 
     private void setColorStateList(@Nullable ImageView view, ColorStateList colorStateList) {

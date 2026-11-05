@@ -348,6 +348,10 @@ class MODULES_EXPORT AudioParamHandler final
                            TimelinePruningOnDisconnectedNode);
   FRIEND_TEST_ALL_PREFIXES(AudioParamHandlerTest,
                            SetValueCurveWithPastStartTime);
+  FRIEND_TEST_ALL_PREFIXES(AudioParamHandlerTest,
+                           SetTargetFollowedByRampAfterEventAtSameTime);
+  FRIEND_TEST_ALL_PREFIXES(AudioParamHandlerTest,
+                           SetTargetFollowedByRampAtSameTime);
 
   AudioParamHandler(BaseAudioContext&,
                     AudioParamType,
@@ -391,13 +395,13 @@ class MODULES_EXPORT AudioParamHandler final
   // the event was not inserted.
   bool InsertEvent(std::unique_ptr<ParamEvent>, ExceptionState&)
       EXCLUSIVE_LOCKS_REQUIRED(events_lock_);
-  float ValuesForFrameRangeImpl(const size_t start_frame,
-                                const size_t end_frame,
-                                float default_value,
-                                base::span<float> values,
-                                const double sample_rate,
-                                const double control_rate,
-                                unsigned render_quantum_frames)
+  void ValuesForFrameRangeImpl(const size_t start_frame,
+                               const size_t end_frame,
+                               float default_value,
+                               base::span<float> values,
+                               const double sample_rate,
+                               const double control_rate,
+                               unsigned render_quantum_frames)
       EXCLUSIVE_LOCKS_REQUIRED(events_lock_);
 
   // Produce a nice string describing the event in human-readable form.
@@ -453,10 +457,10 @@ class MODULES_EXPORT AudioParamHandler final
   // LinearRampToValue or ExponentialRampToValue event.  This requires
   // special handling because the ramp should start at whatever value
   // the SetTarget event has reached at this time, instead of using
-  // the value of the SetTarget event.
+  // the value of the SetTarget event.  `next_event` may be null.
   void ProcessSetTargetFollowedByRamp(wtf_size_t event_index,
                                       ParamEvent*& current_event,
-                                      ParamEvent::Type next_event_type,
+                                      const ParamEvent* next_event,
                                       size_t current_frame,
                                       double sample_rate,
                                       double control_rate,

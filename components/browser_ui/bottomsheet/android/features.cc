@@ -8,6 +8,16 @@
 
 namespace browser_ui {
 
-BASE_FEATURE(kBottomSheetTypes, base::FEATURE_DISABLED_BY_DEFAULT);
+// Kill switch for the fixes to how the bottom sheet hides one content and shows
+// the next queued content.
+BASE_FEATURE(kBottomSheetDeferContentSwapOnHidden,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for translating the bottom sheet container to match keyboard IME
+// animations.
+BASE_FEATURE(kBottomSheetSmoothKeyboardTransition,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kBottomSheetTypes, base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace browser_ui

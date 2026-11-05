@@ -66,10 +66,9 @@ class VIZ_SERVICE_EXPORT SkiaOutputDevice {
     SkCanvas* GetCanvas();
 
     // Ganesh
-    GrSemaphoresSubmitted Flush(
-        gpu::VulkanContextProvider* vulkan_context_provider,
-        std::vector<GrBackendSemaphore> end_semaphores,
-        base::OnceClosure on_finished);
+    bool Flush(gpu::VulkanContextProvider* vulkan_context_provider,
+               std::vector<GrBackendSemaphore> end_semaphores,
+               base::OnceClosure on_finished);
     bool Wait(int num_semaphores,
               const GrBackendSemaphore wait_semaphores[],
               bool delete_semaphores_after_wait);
@@ -125,7 +124,6 @@ class VIZ_SERVICE_EXPORT SkiaOutputDevice {
     SkImageInfo image_info;
     // This is redundant with `image_info.colorSpace()`.
     gfx::ColorSpace color_space;
-    int sample_count = 1;
     float device_scale_factor = 1.f;
     gfx::OverlayTransform transform = gfx::OVERLAY_TRANSFORM_NONE;
 
@@ -220,11 +218,10 @@ class VIZ_SERVICE_EXPORT SkiaOutputDevice {
 
   // Overridden by SkiaOutputDeviceVulkanSecondaryCB.
   virtual SkCanvas* GetCanvas(SkSurface* sk_surface);
-  virtual GrSemaphoresSubmitted Flush(
-      SkSurface* sk_surface,
-      gpu::VulkanContextProvider* vulkan_context_provider,
-      std::vector<GrBackendSemaphore> end_semaphores,
-      base::OnceClosure on_finished);
+  virtual bool Flush(SkSurface* sk_surface,
+                     gpu::VulkanContextProvider* vulkan_context_provider,
+                     std::vector<GrBackendSemaphore> end_semaphores,
+                     base::OnceClosure on_finished);
   virtual bool Wait(SkSurface* sk_surface,
                     int num_semaphores,
                     const GrBackendSemaphore wait_semaphores[],

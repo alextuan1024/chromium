@@ -74,8 +74,8 @@ bool IsExtractedAmountSupportedByAnyBnplIssuer(
   if (!extracted_amount_in_micros) {
     return false;
   }
-  return std::any_of(
-      bnpl_issuers.begin(), bnpl_issuers.end(),
+  return std::ranges::any_of(
+      bnpl_issuers,
       [extracted_amount_in_micros](const BnplIssuer& bnpl_issuer) {
         // For MVP, BNPL will only target US users and support
         // USD.
@@ -166,7 +166,7 @@ void BnplManager::OnUserDecisionToUseBnpl(
   ongoing_flow_state_ = std::make_unique<OngoingFlowState>();
   ongoing_flow_state_->final_checkout_amount = std::move(final_checkout_amount);
   ongoing_flow_state_->app_locale =
-      browser_autofill_manager_->client().GetAppLocale();
+      browser_autofill_manager_->client().GetAppLocale().tag_string();
   ongoing_flow_state_->billing_customer_number =
       GetBillingCustomerId(payments_autofill_client().GetPaymentsDataManager());
   ongoing_flow_state_->on_bnpl_vcn_fetched_callback =
@@ -708,7 +708,8 @@ std::vector<Suggestion> BnplManager::GetBnplSuggestions(
                                      /*checkout_amount=*/std::nullopt,
                                      /*amount_extraction_error=*/std::nullopt,
                                      std::move(enforced_order)),
-          browser_autofill_manager_->client().GetAppLocale(),
+          std::string(
+              browser_autofill_manager_->client().GetAppLocale().tag_string()),
           is_card_number_field_empty));
     }
   }
@@ -1286,17 +1287,16 @@ void BnplManager::ReplaceLoadingThrobberWithIssuerSuggestions(
 
   // If there is no loading suggestion, then no need to update the current
   // suggestion list.
-  auto throbber_it =
-      std::find_if(new_suggestions.begin(), new_suggestions.end(),
-                   [](const Suggestion& suggestion) {
-                     return suggestion.type == SuggestionType::kLoadingThrobber;
-                   });
+  auto throbber_it = std::ranges::find(
+      new_suggestions, SuggestionType::kLoadingThrobber, &Suggestion::type);
   if (throbber_it == new_suggestions.end()) {
     return;
   }
 
   std::vector<Suggestion> bnpl_suggestions = GetSuggestionsForBnpl(
-      issuer_contexts, browser_autofill_manager_->client().GetAppLocale(),
+      issuer_contexts,
+      std::string(
+          browser_autofill_manager_->client().GetAppLocale().tag_string()),
       /*is_card_number_field_empty=*/true);
 
   // Replace the loading throbber suggestion with the BNPL suggestions. This
@@ -1323,26 +1323,23 @@ void BnplManager::ReplaceIssuerSuggestionsWithLoadingThrobber() {
   };
 
   // Find the start position of BNPL suggestions.
-  auto bnpl_suggestions_start =
-      std::find_if(cached_suggestions_.begin(), cached_suggestions_.end(),
-                   type_is_bnpl_entry);
+  auto bnpl_suggestions_start = std::ranges::find(
+      cached_suggestions_, SuggestionType::kBnplEntry, &Suggestion::type);
 
   // If there is no BNPL suggestions in the suggestion list, there has to be a
   // loading throbber suggestion. Therefore, no need to update the suggestion
   // list.
   if (bnpl_suggestions_start == cached_suggestions_.end()) {
-    CHECK(std::find_if(cached_suggestions_.begin(), cached_suggestions_.end(),
-                       [](const Suggestion& suggestion) {
-                         return suggestion.type ==
-                                SuggestionType::kLoadingThrobber;
-                       }) != cached_suggestions_.end());
+    CHECK(std::ranges::contains(cached_suggestions_,
+                                SuggestionType::kLoadingThrobber,
+                                &Suggestion::type));
     return;
   }
 
   // Find the end position of BNPL suggestions.
   auto bnpl_suggestions_end =
-      std::find_if(bnpl_suggestions_start, cached_suggestions_.end(),
-                   type_is_not_bnpl_entry);
+      std::ranges::find_if(bnpl_suggestions_start, cached_suggestions_.end(),
+                           type_is_not_bnpl_entry);
 
   // When there are pay later BNPL suggestions, there must be footer
   // suggestions with different suggestion type after the BNPL entries.

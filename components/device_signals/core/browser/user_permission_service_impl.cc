@@ -9,6 +9,7 @@
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "build/build_config.h"
 #include "components/device_signals/core/browser/pref_names.h"
 #include "components/device_signals/core/browser/user_context.h"
 #include "components/device_signals/core/browser/user_delegate.h"
@@ -16,6 +17,11 @@
 #include "components/policy/core/common/management/management_service.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/prefs/pref_service.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "components/signin/public/base/signin_prefs.h"
+#include "google_apis/gaia/gaia_id.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace device_signals {
 
@@ -49,8 +55,18 @@ UserPermissionServiceImpl::GetWeakPtr() {
 }
 
 bool UserPermissionServiceImpl::HasUserConsented() const {
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, consent is given via the enterprise signals disclaimer and is
+  // stored per account in `SigninPrefs`, keyed by the Gaia ID of the account
+  // that gave it.
+  const GaiaId gaia_id = user_delegate_->GetPrimaryAccountGaiaId();
+  return !gaia_id.empty() &&
+         SigninPrefs(*user_prefs_)
+             .GetDeviceSignalsPermanentConsentReceived(gaia_id);
+#else
   return user_prefs_->GetBoolean(prefs::kDeviceSignalsConsentReceived) ||
          user_prefs_->GetBoolean(prefs::kDeviceSignalsPermanentConsentReceived);
+#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 bool UserPermissionServiceImpl::ShouldCollectConsent() const {
@@ -120,6 +136,10 @@ UserPermission UserPermissionServiceImpl::CanUserCollectSignals(
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX
 
 UserPermission UserPermissionServiceImpl::CanCollectSignals() const {
+  if (!user_delegate_->IsCollectSignalsConsentRequired()) {
+    return UserPermission::kGranted;
+  }
+
   if (HasUserConsented()) {
     return UserPermission::kGranted;
   }
@@ -152,6 +172,15 @@ UserPermission UserPermissionServiceImpl::CanCollectReportSignals() const {
       user_delegate_->IsAffiliated()) {
     return UserPermission::kGranted;
   }
+
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, users can consent to sharing device signals with their
+  // organization via the enterprise signals disclaimer, which also covers PII
+  // signals in reports.
+  if (HasUserConsented()) {
+    return UserPermission::kGranted;
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
 
   return UserPermission::kMissingConsent;
 }

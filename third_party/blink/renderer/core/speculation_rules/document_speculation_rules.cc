@@ -7,11 +7,12 @@
 #include <algorithm>
 
 #include "base/containers/to_vector.h"
-#include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/state_transitions.h"
 #include "net/http/http_no_vary_search_data.h"
 #include "services/network/public/mojom/no_vary_search.mojom-blink.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
@@ -23,6 +24,7 @@
 #include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/event_handler_registry.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/html/anchor_element_utils.h"
 #include "third_party/blink/renderer/core/html/html_anchor_element.h"
@@ -40,7 +42,6 @@
 #include "third_party/blink/renderer/platform/weborigin/referrer.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "url/gurl.h"
@@ -165,7 +166,7 @@ std::optional<Referrer> GetReferrer(const SpeculationRule* rule,
         mojom::blink::ConsoleMessageSource::kOther,
         mojom::blink::ConsoleMessageLevel::kWarning,
         MakeReferrerWarning(action, url, referrer, link));
-    Vector<DOMNodeId> nodes;
+    Vector<DOMNodeIdType> nodes;
     if (rule_set.source()->GetNodeId()) {
       nodes.push_back(*rule_set.source()->GetNodeId());
     }
@@ -181,19 +182,6 @@ std::optional<Referrer> GetReferrer(const SpeculationRule* rule,
 
   return referrer;
 }
-
-// The reason for calling |UpdateSpeculationCandidates| for metrics.
-// Currently, this is designed to measure the impact of the project of
-// retriggering preloading on BFCache restoration (crbug.com/1449163), so
-// other update reasons (such as ruleset insertion/removal etc...) will be
-// tentatively classified as |kOther|.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class UpdateSpeculationCandidatesReason {
-  kOther = 0,
-  kRestoredFromBFCache = 1,
-  kMaxValue = kRestoredFromBFCache,
-};
 
 // Converts a blink-variant No-Vary-Search hint into net's matcher type. This
 // mirrors content's no_vary_search::ParseHttpNoVarySearchDataFromMojom for the
@@ -640,7 +628,6 @@ void DocumentSpeculationRules::DisplayLockedElementDisconnected(Element* root) {
 }
 
 void DocumentSpeculationRules::DocumentRestoredFromBFCache() {
-  first_update_after_restored_from_bfcache_ = true;
   QueueUpdateSpeculationCandidates();
 }
 
@@ -988,14 +975,6 @@ void DocumentSpeculationRules::UpdateSpeculationCandidates() {
     UseCounter::Count(document,
                       WebFeature::kSpeculationRulesEagernessImmediate);
   }
-
-  base::UmaHistogramEnumeration(
-      "Preloading.Experimental.UpdateSpeculationCandidatesReason",
-      first_update_after_restored_from_bfcache_
-          ? UpdateSpeculationCandidatesReason::kRestoredFromBFCache
-          : UpdateSpeculationCandidatesReason::kOther);
-
-  first_update_after_restored_from_bfcache_ = false;
 }
 
 void DocumentSpeculationRules::AddLinkBasedSpeculationCandidates(
@@ -1015,7 +994,9 @@ void DocumentSpeculationRules::AddLinkBasedSpeculationCandidates(
             mojom::blink::SpeculationAction action,
             SpeculationRuleSet* rule_set,
             const HeapVector<Member<SpeculationRule>>& speculation_rules) {
-          if (!link->HrefURL().ProtocolIsInHttpFamily()) {
+          const KURL href_url = link->HrefURL();
+          if (!href_url.ProtocolIsInHttpFamily() ||
+              href_url.PotentiallyDanglingMarkup()) {
             return;
           }
 
@@ -1030,8 +1011,7 @@ void DocumentSpeculationRules::AddLinkBasedSpeculationCandidates(
           // A default-styled <area> has no box of its own. Judge it by the
           // <img> that uses its <map> instead.
           if (const auto* area = DynamicTo<HTMLAreaElement>(link);
-              area && !area->GetLayoutObject() &&
-              RuntimeEnabledFeatures::HTMLAreaElementDisplayNoneEnabled()) {
+              area && !area->GetLayoutObject()) {
             const HTMLImageElement* image = area->ImageElement();
             if (!image ||
                 ComputedStyle::IsNullOrEnsured(image->GetComputedStyle())) {
@@ -1094,7 +1074,7 @@ void DocumentSpeculationRules::AddLinkBasedSpeculationCandidates(
 
             SpeculationCandidate* candidate =
                 MakeGarbageCollected<SpeculationCandidate>(
-                    link->HrefURL(), action, referrer.value(),
+                    href_url, action, referrer.value(),
                     rule->requires_anonymous_client_ip_when_cross_origin(),
                     target_hint, rule->eagerness(),
                     rule->no_vary_search_hint().Clone(), rule->injection_type(),
@@ -1244,9 +1224,8 @@ void DocumentSpeculationRules::SetPendingUpdateState(
 #if DCHECK_IS_ON()
   // TODO(jbroman): This could use "using enum" once that's allowed.
   using S = PendingUpdateState;
-  DEFINE_STATIC_LOCAL(
-      base::StateTransitions<S>, transitions,
-      ({
+  static base::NoDestructor<base::StateTransitions<S>> transitions(
+      base::StateTransitions<S>({
           // When there is no update, we can only queue an update.
           {S::kNoUpdate,
            {S::kMicrotaskQueued, S::kMicrotaskQueuedWithForcedStyleUpdate}},
@@ -1265,7 +1244,8 @@ void DocumentSpeculationRules::SetPendingUpdateState(
           {S::kMicrotaskQueuedWithForcedStyleUpdate, {S::kNoUpdate}},
       }));
   if (pending_update_state_ != new_state) {
-    DCHECK_STATE_TRANSITION(&transitions, pending_update_state_, new_state);
+    DCHECK_STATE_TRANSITION(transitions.get(), pending_update_state_,
+                            new_state);
   }
 #endif
   pending_update_state_ = new_state;

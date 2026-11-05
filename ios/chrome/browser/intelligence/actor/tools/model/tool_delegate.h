@@ -5,25 +5,31 @@
 #ifndef IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_TOOLS_MODEL_TOOL_DELEGATE_H_
 #define IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_TOOLS_MODEL_TOOL_DELEGATE_H_
 
+#import <memory>
+
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
+#import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
 #import "ios/web/public/navigation/navigation_manager.h"
+
+class GURL;
 
 namespace web {
 class WebState;
 }  // namespace web
 
-namespace origin_gating {
-class OriginGatingChecker;
-}  // namespace origin_gating
-
 namespace actor {
-class ActorToolFactory;
 class ActorTaskFormFillingHandler;
+class ActorToolFactory;
+class ActorToolRequest;
 class AggregatedJournal;
 
 // Provides the tools layer with access to objects owned by the orchestration
 // layer. The lifetime of this is tied to the ActorTask, which outlives any
 // tools that use it.
+//
+// Methods that change the task's `ActorTaskState` are posted so that a tool
+// never re-enters the task on its own stack. Queries and registration (e.g.
+// `InsertWebState()`) stay synchronous as they must return a result.
 //
 // This is based on chrome/browser/actor/tools/tool_delegate.h.
 class ToolDelegate {
@@ -43,12 +49,16 @@ class ToolDelegate {
   virtual ActorTaskFormFillingHandler* GetActorTaskFormFillingHandler() = 0;
 
   // Temporarily interrupts the task's execution flow because the tool is
-  // waiting for user interaction (e.g. device re-authentication). This pauses
-  // the task and transitions it to the `ActorTaskState::kWaitingOnUser` state.
+  // waiting for user interaction (e.g. device re-authentication). Ignored
+  // unless the tool is executing. Posts a call that moves the task to
+  // `ActorTaskState::kWaitingOnUser`, dropped if the tool completes, fails or
+  // is cancelled first.
   virtual void InterruptFromTool() = 0;
 
   // Resumes the task's execution flow once the user interaction is completed.
-  // This restores the task to `ActorTaskState::kActing`.
+  // Ignored unless the tool is executing. Posts a call that restores the task
+  // to `ActorTaskState::kActing`, dropped if the tool completes, fails or is
+  // cancelled first.
   virtual void UninterruptFromTool() = 0;
 
   // Returns whether the window identified by `window_id` exists.
@@ -62,10 +72,15 @@ class ToolDelegate {
       const web::NavigationManager::WebLoadParams& load_params,
       bool in_background) = 0;
 
-  // Returns the origin gating checker used for evaluating navigation and
-  // actuation policies, or nullptr if unavailable.
-  virtual origin_gating::OriginGatingChecker* GetOriginGatingChecker()
-      const = 0;
+  // Invokes `callback` with `ToolExecutionResult::Ok()` if the tool may
+  // navigate to `url`, or an error result otherwise.
+  virtual void IsAcceptableNavigationDestination(
+      const GURL& url,
+      ToolExecutionCallback callback) = 0;
+
+  // Enqueues an action to be performed as a follow-up to the current action.
+  virtual void EnqueueFollowupAction(
+      std::unique_ptr<ActorToolRequest> action) = 0;
 };
 
 }  // namespace actor

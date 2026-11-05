@@ -9,7 +9,7 @@
 #import "base/functional/bind.h"
 #import "base/memory/raw_ptr.h"
 #import "base/test/mock_callback.h"
-#import "components/optimization_guide/core/model_execution/feature_keys.h"
+#import "components/optimization_guide/core/feature_registry/feature_keys.h"
 #import "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #import "components/optimization_guide/proto/features/enhanced_calendar.pb.h"
 #import "components/signin/public/base/consent_level.h"
@@ -57,12 +57,12 @@ class FakeOptimizationGuideService : public ::FakeOptimizationGuideService {
 
 // Helper function to create a FakeOptimizationGuideService.
 std::unique_ptr<KeyedService> CreateFakeOptimizationGuideService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   return std::make_unique<FakeOptimizationGuideService>(
-      profile->GetProtoDatabaseProvider(), profile->GetStatePath(),
-      profile->IsOffTheRecord(), "en",
+      profile.GetProtoDatabaseProvider(), profile.GetStatePath(),
+      profile.IsOffTheRecord(), "en",
       base::WeakPtr<optimization_guide::OptimizationGuideStore>(),
-      profile->GetPrefs(), nullptr, nullptr,
+      profile.GetPrefs(), nullptr, nullptr,
       IdentityManagerFactory::GetForProfile(profile));
 }
 
@@ -76,11 +76,11 @@ class EnhancedCalendarServiceImplTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         OptimizationGuideServiceFactory::GetInstance(),
-        base::BindRepeating(&CreateFakeOptimizationGuideService));
+        base::BindOnce(&CreateFakeOptimizationGuideService));
     builder.AddTestingFactory(
         IdentityManagerFactory::GetInstance(),
-        base::BindRepeating(&IdentityTestEnvironmentBrowserStateAdaptor::
-                                BuildIdentityManagerForTests));
+        base::BindOnce(&IdentityTestEnvironmentBrowserStateAdaptor::
+                           BuildIdentityManagerForTests));
     profile_ = std::move(builder).Build();
 
     fake_optimization_guide_service_ =

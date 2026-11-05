@@ -26,6 +26,10 @@ class IdentityManager;
 bool IsUsernameAllowedByPattern(std::string_view username,
                                 std::string_view pattern);
 
+// Returns true if `pattern` is empty or is a valid regular expression that can
+// match standard `user@domain.tld` email addresses.
+bool IsUsernamePatternValid(std::string_view pattern);
+
 // Returns true if the username is allowed based on a pattern registered
 // |prefs::kGoogleServicesUsernamePattern| with the preferences service
 // referenced by |prefs|.
@@ -33,11 +37,16 @@ bool IsUsernameAllowedByPatternFromPrefs(const PrefService* prefs,
                                          std::string_view username);
 
 // Returns all accounts for which Chrome should keep account-keyed preferences.
-// These are the accounts in the cookie (signed in or signed out) plus the
-// primary account.
+// These are the accounts in the cookie (signed in or signed out), the primary
+// account and the accounts with refresh tokens.
 // In particular, when the cookies are cleared while signed in, they may be
 // rebuilt immediately, and in that case it is very important to not clear the
 // preferences.
+// Accounts with refresh tokens are kept even if they are not in the cookie nor
+// the primary account (e.g. on Android, the accounts on the device after
+// sign-out). Callers should make sure that refresh tokens are loaded
+// (`IdentityManager::AreRefreshTokensLoaded()`) before relying on the result
+// to remove preferences.
 // `identity_manager` may be nullptr.
 // `accounts_in_cookie_jar_info.AreAccountsFresh()` must be true.
 base::flat_set<GaiaId> GetAllGaiaIdsForKeyedPreferences(

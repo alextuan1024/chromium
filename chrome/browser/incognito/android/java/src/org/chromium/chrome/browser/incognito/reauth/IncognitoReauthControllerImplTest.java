@@ -10,6 +10,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -36,6 +38,9 @@ import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabHidingType;
+import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_ui.TabSwitcherCustomViewManager;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -55,6 +60,7 @@ public class IncognitoReauthControllerImplTest {
     @Mock private LayoutStateProvider mLayoutStateProviderMock;
     @Mock private TabModelSelector mTabModelSelectorMock;
     @Mock private TabModel mIncognitoTabModelMock;
+    @Mock private Tab mCurrentTabMock;
     @Mock private Profile mProfileMock;
     @Mock private IncognitoReauthCoordinatorFactory mIncognitoReauthCoordinatorFactoryMock;
     @Mock private IncognitoReauthCoordinator mIncognitoReauthCoordinatorMock;
@@ -76,6 +82,7 @@ public class IncognitoReauthControllerImplTest {
     private SettableMonotonicObservableSupplier<Profile> mProfileObservableSupplier;
 
     private boolean mIsIncognitoReauthPendingOnRestore;
+    private boolean mIsActivityRecreating;
 
     private void switchToIncognitoTabModel() {
         doReturn(true).when(mTabModelSelectorMock).isIncognitoBrandedModelSelected();
@@ -141,6 +148,7 @@ public class IncognitoReauthControllerImplTest {
                         mProfileObservableSupplier,
                         mIncognitoReauthCoordinatorFactoryMock,
                         () -> mIsIncognitoReauthPendingOnRestore,
+                        () -> mIsActivityRecreating,
                         TASK_ID);
         mProfileObservableSupplier.set(mProfileMock);
         RobolectricUtil.runAllBackgroundAndUi();
@@ -199,6 +207,42 @@ public class IncognitoReauthControllerImplTest {
                         + " exists already after coming to foreground.",
                 mIncognitoReauthController.isReauthPageShowing());
         verify(mIncognitoReauthCoordinatorMock).show();
+    }
+
+    /** The task is also reported as not visible while the Activity is recreated in foreground. */
+    @Test
+    public void testTaskNotVisible_WhileActivityRecreating_DoesNotMakeReauthPending() {
+        doReturn(1).when(mIncognitoTabModelMock).getCount();
+        switchToIncognitoTabModel();
+
+        mIsActivityRecreating = true;
+        mIncognitoReauthController.onTaskVisibilityChanged(TASK_ID, false);
+
+        assertFalse(
+                "Re-auth should not be pending when the Activity is only recreated.",
+                mIncognitoReauthController.isIncognitoReauthPending());
+        mIncognitoReauthController.onStartWithNative();
+        assertFalse(
+                "IncognitoReauthCoordinator should not be created when the Activity is only"
+                        + " recreated.",
+                mIncognitoReauthController.isReauthPageShowing());
+    }
+
+    @Test
+    public void testTaskNotVisible_WhileActivityRecreating_KeepsReauthPending() {
+        doReturn(1).when(mIncognitoTabModelMock).getCount();
+        switchToIncognitoTabModel();
+        mIncognitoReauthController.onTaskVisibilityChanged(TASK_ID, false);
+        assertTrue(
+                "Re-auth should be pending after the task went to background.",
+                mIncognitoReauthController.isIncognitoReauthPending());
+
+        mIsActivityRecreating = true;
+        mIncognitoReauthController.onTaskVisibilityChanged(TASK_ID, false);
+
+        assertTrue(
+                "A recreation should not clear a pending re-auth.",
+                mIncognitoReauthController.isIncognitoReauthPending());
     }
 
     @Test
@@ -398,5 +442,93 @@ public class IncognitoReauthControllerImplTest {
         assertTrue(
                 "Re-auth screen should be shown if we are about to show a tab.",
                 mIncognitoReauthController.isReauthPageShowing());
+    }
+
+    @Test
+    public void testShowsFullScreenReauth_HidesCurrentTabAndShowsOnSuccess() {
+        doReturn(1).when(mIncognitoTabModelMock).getCount();
+        doReturn(mCurrentTabMock).when(mTabModelSelectorMock).getCurrentTab();
+        doReturn(false).when(mCurrentTabMock).isHidden();
+        switchToIncognitoTabModel();
+
+        mIncognitoReauthController.onTaskVisibilityChanged(TASK_ID, false);
+        mIncognitoReauthController.onStartWithNative();
+
+        assertTrue(mIncognitoReauthController.isReauthPageShowing());
+        verify(mCurrentTabMock).hide(TabHidingType.ACTIVITY_HIDDEN);
+
+        doReturn(true).when(mCurrentTabMock).isHidden();
+        mIncognitoReauthController
+                .getIncognitoReauthCallbackForTesting()
+                .onIncognitoReauthSuccess();
+
+        assertFalse(mIncognitoReauthController.isReauthPageShowing());
+        assertFalse(mIncognitoReauthController.isIncognitoReauthPending());
+        verify(mCurrentTabMock).show(TabSelectionType.FROM_USER);
+    }
+
+    @Test
+    public void testOnIncognitoReauthNotPossible_ShowsCurrentTab() {
+        doReturn(1).when(mIncognitoTabModelMock).getCount();
+        doReturn(mCurrentTabMock).when(mTabModelSelectorMock).getCurrentTab();
+        doReturn(true).when(mCurrentTabMock).isHidden();
+        switchToIncognitoTabModel();
+
+        mIncognitoReauthController.onTaskVisibilityChanged(TASK_ID, false);
+        mIncognitoReauthController.onStartWithNative();
+        assertTrue(mIncognitoReauthController.isReauthPageShowing());
+
+        mIncognitoReauthController
+                .getIncognitoReauthCallbackForTesting()
+                .onIncognitoReauthNotPossible();
+
+        assertFalse(mIncognitoReauthController.isReauthPageShowing());
+        assertFalse(mIncognitoReauthController.isIncognitoReauthPending());
+        verify(mCurrentTabMock).show(TabSelectionType.FROM_USER);
+    }
+
+    @Test
+    public void testSwitchToRegularTabModel_DoesNotShowIncognitoTab() {
+        doReturn(1).when(mIncognitoTabModelMock).getCount();
+        doReturn(mCurrentTabMock).when(mTabModelSelectorMock).getCurrentTab();
+        doReturn(true).when(mCurrentTabMock).isHidden();
+        switchToIncognitoTabModel();
+
+        mIncognitoReauthController.onTaskVisibilityChanged(TASK_ID, false);
+        mIncognitoReauthController.onStartWithNative();
+        assertTrue(mIncognitoReauthController.isReauthPageShowing());
+
+        switchToRegularTabModel();
+
+        assertFalse(mIncognitoReauthController.isReauthPageShowing());
+        assertTrue(mIncognitoReauthController.isIncognitoReauthPending());
+        verify(mCurrentTabMock, never()).show(TabSelectionType.FROM_USER);
+    }
+
+    @Test
+    public void testShowsFullScreenReauth_CurrentTabChangesBeforeSuccess_ShowsNewTab() {
+        doReturn(1).when(mIncognitoTabModelMock).getCount();
+        doReturn(mCurrentTabMock).when(mTabModelSelectorMock).getCurrentTab();
+        doReturn(false).when(mCurrentTabMock).isHidden();
+        switchToIncognitoTabModel();
+
+        mIncognitoReauthController.onTaskVisibilityChanged(TASK_ID, false);
+        mIncognitoReauthController.onStartWithNative();
+
+        assertTrue(mIncognitoReauthController.isReauthPageShowing());
+        verify(mCurrentTabMock).hide(TabHidingType.ACTIVITY_HIDDEN);
+
+        Tab newTabMock = mock(Tab.class);
+        doReturn(true).when(newTabMock).isHidden();
+        doReturn(newTabMock).when(mTabModelSelectorMock).getCurrentTab();
+
+        mIncognitoReauthController
+                .getIncognitoReauthCallbackForTesting()
+                .onIncognitoReauthSuccess();
+
+        assertFalse(mIncognitoReauthController.isReauthPageShowing());
+        assertFalse(mIncognitoReauthController.isIncognitoReauthPending());
+        verify(newTabMock).show(TabSelectionType.FROM_USER);
+        verify(mCurrentTabMock, never()).show(TabSelectionType.FROM_USER);
     }
 }

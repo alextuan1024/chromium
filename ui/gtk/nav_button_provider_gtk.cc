@@ -4,13 +4,31 @@
 
 #include "ui/gtk/nav_button_provider_gtk.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string_view>
+#include <utility>
+#include <vector>
 
+#include "base/containers/flat_map.h"
+#include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkBlendMode.h"
+#include "third_party/skia/include/core/SkCanvas.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkImageInfo.h"
 #include "third_party/skia/include/core/SkSamplingOptions.h"
 #include "ui/base/glib/glib_cast.h"
 #include "ui/base/glib/scoped_gobject.h"
+#include "ui/base/glib/scoped_gsignal.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_rep.h"
 #include "ui/gfx/image/image_skia_source.h"
@@ -20,6 +38,9 @@
 #include "ui/views/widget/widget.h"
 
 namespace gtk {
+
+BASE_FEATURE(kGtkPrefetchNavButtonIcons, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGtkCacheNavButtonIcons, base::FEATURE_DISABLED_BY_DEFAULT);
 
 namespace {
 
@@ -36,6 +57,99 @@ const int kNavButtonIconSize = 16;
 
 // Specified in GtkHeaderBar spec.
 const int kHeaderSpacing = 6;
+
+GtkStyleContext* GetSymbolicMaskContext() {
+  static base::NoDestructor<GtkCssContext> context([] {
+    auto ctx = GetStyleContextFromCss("image");
+    ApplyCssToContext(ctx, "* { color: #ffffff; }");
+    return ctx;
+  }());
+  return *context;
+}
+
+ScopedGObject<GdkPixbuf> TintSymbolicPixbuf(
+    const ScopedGObject<GdkPixbuf>& mask,
+    SkColor fg) {
+  // `kRGBA_8888_SkColorType` requires 8-bit RGBA. Return opaque RGB icons
+  // untinted rather than overwriting them.
+  if (!gdk_pixbuf_get_has_alpha(mask) ||
+      gdk_pixbuf_get_bits_per_sample(mask) != 8) {
+    return mask;
+  }
+  int width = gdk_pixbuf_get_width(mask);
+  int height = gdk_pixbuf_get_height(mask);
+  auto info = SkImageInfo::Make(width, height, kRGBA_8888_SkColorType,
+                                kUnpremul_SkAlphaType);
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(width, height);
+  SkCanvas canvas(bitmap);
+  if (!canvas.writePixels(info, gdk_pixbuf_get_pixels(mask),
+                          gdk_pixbuf_get_rowstride(mask), 0, 0)) {
+    return mask;
+  }
+  canvas.drawColor(fg, SkBlendMode::kSrcIn);
+  auto out =
+      TakeGObject(gdk_pixbuf_new(GDK_COLORSPACE_RGB, true, 8, width, height));
+  if (!out || !bitmap.readPixels(info, gdk_pixbuf_get_pixels(out),
+                                 gdk_pixbuf_get_rowstride(out), 0, 0)) {
+    return mask;
+  }
+  return out;
+}
+
+// Caches decoded GTK3 caption-button icons across `NavButtonProviderGtk`
+// instances and button states (`:backdrop`, `:hover`, `:active`). Symbolic SVGs
+// are decoded once into a white mask and tinted in memory per state.
+struct NavButtonCache {
+  struct Icon {
+    ScopedGObject<GdkPixbuf> pixbuf;
+    bool was_symbolic = false;
+
+    gfx::Size Resolve(GtkStyleContext* context, NavButtonIcon* icon) const {
+      if (icon) {
+        icon->pixbuf =
+            was_symbolic
+                ? TintSymbolicPixbuf(pixbuf, GtkStyleContextGetColor(context))
+                : pixbuf;
+      }
+      return {gdk_pixbuf_get_width(pixbuf), gdk_pixbuf_get_height(pixbuf)};
+    }
+  };
+
+  static NavButtonCache& Get() {
+    static base::NoDestructor<NavButtonCache> cache;
+    return *cache;
+  }
+
+  NavButtonCache() {
+    if (GtkCheckVersion(4)) {
+      return;
+    }
+    GtkSettings* settings = gtk_settings_get_default();
+    auto on_settings = base::BindRepeating(
+        [](GtkSettings*, GParamSpec*) { NavButtonCache::Get().Clear(); });
+    // Connect without `G_CONNECT_AFTER` so the cache is cleared before
+    // `GtkUi::OnThemeChanged` notifies `NativeTheme` observers to redraw.
+    theme_name_signal =
+        ScopedGSignal(settings, "notify::gtk-theme-name", on_settings);
+    icon_theme_name_signal =
+        ScopedGSignal(settings, "notify::gtk-icon-theme-name", on_settings);
+  }
+
+  void Clear() {
+    icons.clear();
+    prefetched = false;
+    ++generation;
+  }
+
+  base::flat_map<std::pair<ui::NavButtonProvider::FrameButtonDisplayType, int>,
+                 Icon>
+      icons;
+  bool prefetched = false;
+  uint64_t generation = 0;
+  ScopedGSignal theme_name_signal;
+  ScopedGSignal icon_theme_name_signal;
+};
 
 const char* ButtonStyleClassFromButtonType(
     ui::NavButtonProvider::FrameButtonDisplayType type) {
@@ -91,10 +205,49 @@ gfx::Size LoadNavButtonIcon(ui::NavButtonProvider::FrameButtonDisplayType type,
                             NavButtonIcon* icon = nullptr) {
   const char* icon_name = IconNameFromButtonType(type);
   if (!GtkCheckVersion(4)) {
+    const bool use_cache =
+        base::FeatureList::IsEnabled(kGtkCacheNavButtonIcons);
+    if (use_cache) {
+      auto& icons = NavButtonCache::Get().icons;
+      if (auto it = icons.find({type, scale}); it != icons.end()) {
+        return it->second.Resolve(button_context, icon);
+      }
+    }
     auto icon_info = TakeGObject(gtk_icon_theme_lookup_icon_for_scale(
         GetDefaultIconTheme(), icon_name, kNavButtonIconSize, scale,
         static_cast<GtkIconLookupFlags>(GTK_ICON_LOOKUP_USE_BUILTIN |
                                         GTK_ICON_LOOKUP_GENERIC_FALLBACK)));
+    if (!icon && icon_info && scale == 1 &&
+        base::FeatureList::IsEnabled(kGtkPrefetchNavButtonIcons)) {
+      // At scale 1, a square SVG icon whose directory `Size` and `Scale` match
+      // the lookup request is rasterized at `kNavButtonIconSize` (whether
+      // `Type` is `Scalable`, `Fixed`, or `Threshold`), so its size is known
+      // without decoding it (non-square `window-*-symbolic.svg` icons are not
+      // expected in practice). Decoding can be slow: gdk-pixbuf >= 2.43 decodes
+      // through glycin, which uses a sandboxed loader process.
+      const char* filename = gtk_icon_info_get_filename(icon_info);
+      if (filename && std::string_view(filename).ends_with("-symbolic.svg") &&
+          gtk_icon_info_get_base_size(icon_info) == kNavButtonIconSize &&
+          gtk_icon_info_get_base_scale(icon_info) == 1) {
+        return {kNavButtonIconSize, kNavButtonIconSize};
+      }
+    }
+    if (use_cache) {
+      if (!icon_info) {
+        return {};
+      }
+      gboolean was_symbolic = FALSE;
+      auto icon_pixbuf = TakeGObject(gtk_icon_info_load_symbolic_for_context(
+          icon_info, GetSymbolicMaskContext(), &was_symbolic, nullptr));
+      if (!icon_pixbuf) {
+        return {};
+      }
+      auto [it, _] = NavButtonCache::Get().icons.emplace(
+          std::pair(type, scale),
+          NavButtonCache::Icon{std::move(icon_pixbuf),
+                               static_cast<bool>(was_symbolic)});
+      return it->second.Resolve(button_context, icon);
+    }
     auto icon_pixbuf = TakeGObject(gtk_icon_info_load_symbolic_for_context(
         icon_info, button_context, nullptr, nullptr));
     gfx::Size size{gdk_pixbuf_get_width(icon_pixbuf),
@@ -198,6 +351,27 @@ void CalculateUnscaledButtonSize(
   *button_margin = GtkStyleContextGetMargin(button_context);
 }
 
+GtkCssContext CreateButtonContext(
+    ui::FrameType frame_type,
+    ui::NavButtonProvider::FrameButtonDisplayType type,
+    ui::NavButtonProvider::ButtonState state,
+    bool maximized,
+    bool active,
+    int pixbuf_scale) {
+  auto button_context = AppendCssNodeToStyleContext(
+      CreateWindowControlsContext(frame_type, maximized), "button.titlebutton");
+  gtk_style_context_set_scale(button_context, pixbuf_scale);
+  gtk_style_context_add_class(button_context,
+                              ButtonStyleClassFromButtonType(type));
+  GtkStateFlags button_state = GtkStateFlagsFromButtonState(state);
+  if (!active) {
+    button_state =
+        static_cast<GtkStateFlags>(button_state | GTK_STATE_FLAG_BACKDROP);
+  }
+  gtk_style_context_set_state(button_context, button_state);
+  return button_context;
+}
+
 class NavButtonImageSource : public gfx::ImageSkiaSource {
  public:
   NavButtonImageSource(ui::FrameType frame_type,
@@ -229,18 +403,8 @@ class NavButtonImageSource : public gfx::ImageSkiaSource {
     // with a high-quality filter.
     const int pixbuf_scale = std::ceil(scale);
 
-    auto button_context = AppendCssNodeToStyleContext(
-        CreateWindowControlsContext(frame_type_, maximized_),
-        "button.titlebutton");
-    gtk_style_context_set_scale(button_context, pixbuf_scale);
-    gtk_style_context_add_class(button_context,
-                                ButtonStyleClassFromButtonType(type_));
-    GtkStateFlags button_state = GtkStateFlagsFromButtonState(state_);
-    if (!active_) {
-      button_state =
-          static_cast<GtkStateFlags>(button_state | GTK_STATE_FLAG_BACKDROP);
-    }
-    gtk_style_context_set_state(button_context, button_state);
+    auto button_context = CreateButtonContext(
+        frame_type_, type_, state_, maximized_, active_, pixbuf_scale);
 
     // Gtk header bars usually have the same height in both maximized and
     // restored windows.  But chrome's tabstrip background has a smaller height
@@ -256,38 +420,7 @@ class NavButtonImageSource : public gfx::ImageSkiaSource {
     // be downsized when it would have clipped.  In GTK, the image is always
     // scaled to fit the drawing region (preserving aspect ratio).  Only add
     // "contain" if clipping would occur.
-    int bg_width = 0;
-    int bg_height = 0;
-    if (GtkCheckVersion(4)) {
-      auto* snapshot = gtk_snapshot_new();
-      gtk_snapshot_render_background(snapshot, button_context, 0, 0,
-                                     button_size_.width(),
-                                     button_size_.height());
-      if (auto* node = gtk_snapshot_free_to_node(snapshot)) {
-        if (GdkTexture* texture = GetTextureFromRenderNode(node)) {
-          bg_width = gdk_texture_get_width(texture);
-          bg_height = gdk_texture_get_height(texture);
-        }
-        gsk_render_node_unref(node);
-      }
-    } else {
-      cairo_pattern_t* cr_pattern = nullptr;
-      cairo_surface_t* cr_surface = nullptr;
-      GtkStyleContextGet(
-          button_context,
-          "background-image" /* GTK_STYLE_PROPERTY_BACKGROUND_IMAGE */,
-          &cr_pattern, nullptr);
-      if (cr_pattern) {
-        cairo_pattern_get_surface(cr_pattern, &cr_surface);
-        if (cr_surface &&
-            cairo_surface_get_type(cr_surface) == CAIRO_SURFACE_TYPE_IMAGE) {
-          bg_width = cairo_image_surface_get_width(cr_surface);
-          bg_height = cairo_image_surface_get_height(cr_surface);
-        }
-        cairo_pattern_destroy(cr_pattern);
-      }
-    }
-    if (bg_width > button_size_.width() || bg_height > button_size_.height()) {
+    if (BackgroundImageFillsButton(pixbuf_scale)) {
       ApplyCssToContext(button_context,
                         ".titlebutton { background-size: contain; }");
     }
@@ -357,6 +490,39 @@ class NavButtonImageSource : public gfx::ImageSkiaSource {
   bool HasRepresentationAtAllScales() const override { return true; }
 
  private:
+  // Returns whether the button's background image, drawn in an area of
+  // `button_size_`, reaches the edges of the area (so it is clipped or exactly
+  // fits).  This uses the size the image is drawn at, which respects
+  // `background-size` (e.g. Breeze draws its 36px SVG assets at 18px).
+  bool BackgroundImageFillsButton(int pixbuf_scale) const {
+    // Use a separate context: the CSS below must not affect the context used
+    // for rendering.  Measure only the background image, drawn once.
+    auto context = CreateButtonContext(frame_type_, type_, state_, maximized_,
+                                       active_, pixbuf_scale);
+    ApplyCssToContext(context,
+                      ".titlebutton {"
+                      "  background-color: transparent;"
+                      "  background-position: center;"
+                      "  background-repeat: no-repeat;"
+                      "  border: none;"
+                      "  box-shadow: none;"
+                      "  padding: 0;"
+                      "}");
+    cairo_surface_t* surface =
+        cairo_recording_surface_create(CAIRO_CONTENT_COLOR_ALPHA, nullptr);
+    cairo_t* cr = cairo_create(surface);
+    gtk_render_background(context, cr, 0, 0, button_size_.width(),
+                          button_size_.height());
+    cairo_destroy(cr);
+    double x = 0;
+    double y = 0;
+    double width = 0;
+    double height = 0;
+    cairo_recording_surface_ink_extents(surface, &x, &y, &width, &height);
+    cairo_surface_destroy(surface);
+    return width >= button_size_.width() || height >= button_size_.height();
+  }
+
   ui::FrameType frame_type_;
   ui::NavButtonProvider::FrameButtonDisplayType type_;
   ui::NavButtonProvider::ButtonState state_;
@@ -364,6 +530,100 @@ class NavButtonImageSource : public gfx::ImageSkiaSource {
   bool active_;
   gfx::Size button_size_;
 };
+
+int g_pending_prefetches = 0;
+
+struct PrefetchRequest {
+  ui::NavButtonProvider::FrameButtonDisplayType type;
+  uint64_t generation;
+};
+
+void OnNavButtonIconPrefetched(GObject* source,
+                               GAsyncResult* result,
+                               gpointer user_data) {
+  std::unique_ptr<PrefetchRequest> request(
+      static_cast<PrefetchRequest*>(user_data));
+  // When `kGtkCacheNavButtonIcons` is disabled, finishing the load stores the
+  // pixbuf in the symbolic icon cache of the `GtkIconInfo`, which the
+  // synchronous load at paint time then hits.
+  gboolean was_symbolic = FALSE;
+  auto pixbuf = TakeGObject(gtk_icon_info_load_symbolic_for_context_finish(
+      reinterpret_cast<GtkIconInfo*>(source), result, &was_symbolic, nullptr));
+  --g_pending_prefetches;
+  if (request) {
+    auto& cache = NavButtonCache::Get();
+    if (pixbuf && request->generation == cache.generation) {
+      cache.icons.try_emplace(
+          std::pair(request->type, 1),
+          NavButtonCache::Icon{std::move(pixbuf),
+                               static_cast<bool>(was_symbolic)});
+    }
+  }
+}
+
+// GTK3 only. Starts asynchronous loads of the icons that the first browser
+// window paints (normal state, active, restored, 1x), so that painting does not
+// decode them on the UI thread. Paints with other parameters fall back to a
+// synchronous load unless `kGtkCacheNavButtonIcons` is enabled. This cannot use
+// the parameters of the first `RedrawImages()` call because `Widget::Init()`
+// runs initial layout before the window is shown, activated, or maximized, so
+// `maximized` and `active` are both false there.
+void PrefetchNavButtonIcons() {
+  const bool use_cache = base::FeatureList::IsEnabled(kGtkCacheNavButtonIcons);
+  if (use_cache) {
+    if (NavButtonCache::Get().prefetched) {
+      return;
+    }
+    NavButtonCache::Get().prefetched = true;
+  } else {
+    static bool prefetched = false;
+    if (prefetched) {
+      return;
+    }
+    prefetched = true;
+  }
+
+  // The icon theme returns the same cached `GtkIconInfo`, and with it the
+  // symbolic icon cache, only while the info is alive, so keep them alive.
+  static base::NoDestructor<std::vector<ScopedGObject<GtkIconInfo>>> infos;
+  for (auto type : {ui::NavButtonProvider::FrameButtonDisplayType::kMinimize,
+                    ui::NavButtonProvider::FrameButtonDisplayType::kMaximize,
+                    ui::NavButtonProvider::FrameButtonDisplayType::kClose}) {
+    if (use_cache && NavButtonCache::Get().icons.contains({type, 1})) {
+      continue;
+    }
+    auto icon_info = TakeGObject(gtk_icon_theme_lookup_icon_for_scale(
+        GetDefaultIconTheme(), IconNameFromButtonType(type), kNavButtonIconSize,
+        /*scale=*/1,
+        static_cast<GtkIconLookupFlags>(GTK_ICON_LOOKUP_USE_BUILTIN |
+                                        GTK_ICON_LOOKUP_GENERIC_FALLBACK)));
+    if (!icon_info) {
+      continue;
+    }
+    if (use_cache) {
+      auto request = std::make_unique<PrefetchRequest>(
+          PrefetchRequest{type, NavButtonCache::Get().generation});
+      ++g_pending_prefetches;
+      gtk_icon_info_load_symbolic_for_context_async(
+          icon_info, GetSymbolicMaskContext(), nullptr,
+          &OnNavButtonIconPrefetched, request.release());
+      continue;
+    }
+    // Must match the context that `NavButtonImageSource` loads the icon with,
+    // since the symbolic icon cache is keyed on its colors.
+    auto image_context = AppendCssNodeToStyleContext(
+        CreateButtonContext(ui::FrameType::kBrowser, type,
+                            ui::NavButtonProvider::ButtonState::kNormal,
+                            /*maximized=*/false, /*active=*/true,
+                            /*pixbuf_scale=*/1),
+        "image");
+    gtk_style_context_set_scale(image_context, 1);
+    ++g_pending_prefetches;
+    gtk_icon_info_load_symbolic_for_context_async(
+        icon_info, image_context, nullptr, &OnNavButtonIconPrefetched, nullptr);
+    infos->push_back(std::move(icon_info));
+  }
+}
 
 }  // namespace
 
@@ -377,9 +637,28 @@ NavButtonProviderGtk::NavButtonProviderGtk(ui::FrameType frame_type)
   prefer_dark_signal_ =
       ScopedGSignal(settings, "notify::gtk-application-prefer-dark-theme",
                     callback, G_CONNECT_AFTER);
+
+  // This provider is only created for windows that use the native GTK frame,
+  // so users of other themes don't pay for the prefetch.
+  if (frame_type == ui::FrameType::kBrowser && !GtkCheckVersion(4) &&
+      base::FeatureList::IsEnabled(kGtkPrefetchNavButtonIcons)) {
+    PrefetchNavButtonIcons();
+  }
 }
 
 NavButtonProviderGtk::~NavButtonProviderGtk() = default;
+
+// static
+void NavButtonProviderGtk::ClearIconCacheForTesting() {
+  NavButtonCache::Get().Clear();
+}
+
+// static
+void NavButtonProviderGtk::WaitForPrefetchForTesting() {
+  while (g_pending_prefetches > 0) {
+    g_main_context_iteration(nullptr, /*may_block=*/true);
+  }
+}
 
 void NavButtonProviderGtk::RedrawImages(int top_area_height,
                                         bool maximized,
@@ -401,16 +680,19 @@ void NavButtonProviderGtk::RedrawImages(int top_area_height,
   for (auto type : display_types) {
     CalculateUnscaledButtonSize(frame_type_, type, maximized,
                                 &button_sizes[type], &button_margins[type]);
-    int button_unconstrained_height = button_sizes[type].height() +
-                                      button_margins[type].top() +
-                                      button_margins[type].bottom();
+    // Negative CSS margins must not reduce the vertical space required to fit
+    // the rendered button within `[0, top_area_height]`.
+    int effective_top =
+        std::max(0, header_padding.top() + button_margins[type].top());
+    int effective_bottom =
+        std::max(0, header_padding.bottom() + button_margins[type].bottom());
+    int needed_height =
+        effective_top + button_sizes[type].height() + effective_bottom;
 
-    int needed_height = header_padding.top() + button_unconstrained_height +
-                        header_padding.bottom();
-
-    if (needed_height > top_area_height) {
+    if (needed_height > top_area_height && needed_height > 0) {
       scale =
-          std::min(scale, static_cast<double>(top_area_height) / needed_height);
+          std::min(scale, static_cast<double>(std::max(0, top_area_height)) /
+                              needed_height);
     }
   }
 
@@ -422,24 +704,30 @@ void NavButtonProviderGtk::RedrawImages(int top_area_height,
 
   inter_button_spacing_ = std::round(scale * kHeaderSpacing);
 
+  const int clamped_top_area_height = std::max(0, top_area_height);
   for (auto type : display_types) {
-    double button_height =
-        scale * (button_sizes[type].height() + button_margins[type].top() +
-                 button_margins[type].bottom());
-    double available_height =
-        top_area_height -
-        scale * (header_padding.top() + header_padding.bottom());
-    double scaled_button_offset = (available_height - button_height) / 2;
+    int effective_top =
+        std::max(0, header_padding.top() + button_margins[type].top());
+    int effective_bottom =
+        std::max(0, header_padding.bottom() + button_margins[type].bottom());
+    double button_occupied_height =
+        scale *
+        (effective_top + button_sizes[type].height() + effective_bottom);
+    double scaled_button_offset =
+        (clamped_top_area_height - button_occupied_height) / 2.0;
 
     gfx::Size size = button_sizes[type];
-    size = gfx::Size(std::round(scale * size.width()),
-                     std::round(scale * size.height()));
+    size = gfx::Size(
+        std::max(0, static_cast<int>(std::round(scale * size.width()))),
+        std::clamp(static_cast<int>(std::round(scale * size.height())), 0,
+                   clamped_top_area_height));
     gfx::Insets margin = button_margins[type];
-    margin = gfx::Insets::TLBR(
-        std::round(scale * (header_padding.top() + margin.top()) +
-                   scaled_button_offset),
-        std::round(scale * margin.left()), 0,
-        std::round(scale * margin.right()));
+    int top_margin =
+        std::clamp(static_cast<int>(std::round(scale * effective_top +
+                                               scaled_button_offset)),
+                   0, clamped_top_area_height - size.height());
+    margin = gfx::Insets::TLBR(top_margin, std::round(scale * margin.left()), 0,
+                               std::round(scale * margin.right()));
 
     button_margins_[type] = margin;
 

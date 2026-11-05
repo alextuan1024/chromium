@@ -7,11 +7,15 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <map>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/linear_find.h"
+#include "base/containers/to_vector.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
@@ -22,6 +26,8 @@
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -32,6 +38,10 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "components/viz/common/quads/compositor_frame.h"
+#include "components/viz/test/compositor_frame_helpers.h"
+#include "components/viz/test/fake_compositor_frame_sink_client.h"
+#include "content/browser/browser_url_handler_impl.h"
 #include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/frame_navigation_entry.h"
 #include "content/browser/renderer_host/frame_tree.h"
@@ -39,6 +49,7 @@
 #include "content/browser/renderer_host/navigation_entry_restore_context_impl.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/navigation_type.h"
+#include "content/browser/renderer_host/policy_container_host.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/renderer_host/renderer_cancellation_throttle.h"
@@ -54,6 +65,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/invalidate_type.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/render_frame_host.h"
@@ -94,6 +106,7 @@
 #include "net/test/embedded_test_server/expectation_handler.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/url_request/url_request_failed_job.h"
+#include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/loader/referrer_utils.h"
 #include "third_party/blink/public/common/page_state/page_state_serialization.h"
@@ -144,6 +157,102 @@ class DataURLOriginToCommitObserver : public WebContentsObserver {
   }
 
   std::optional<url::Origin> origin_to_commit_;
+};
+
+// Removes the first and last lines, and the common indentation, of a raw string
+// literal. This lets the expected text be indented with the code:
+//
+//   EXPECT_EQ(Dedent(R"(
+//       line 1
+//         line 2
+//   )"), "line 1\n  line 2\n");
+std::string Dedent(std::string_view text) {
+  std::vector<std::string_view> lines = base::SplitStringPiece(
+      text, "\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  CHECK_GE(lines.size(), 2u);
+  CHECK(base::TrimWhitespaceASCII(lines.front(), base::TRIM_ALL).empty());
+  CHECK(base::TrimWhitespaceASCII(lines.back(), base::TRIM_ALL).empty());
+  lines = std::vector(lines.begin() + 1, lines.end() - 1);
+  size_t indent = std::string_view::npos;
+  for (std::string_view line : lines) {
+    indent = std::min(indent, line.find_first_not_of(' '));
+  }
+  std::string result;
+  for (std::string_view line : lines) {
+    result += line.substr(std::min(indent, line.size()));
+    result += "\n";
+  }
+  return result;
+}
+
+// Depicts the session history and the frames as ASCII art, using names given
+// to FrameNavigationEntries (FNE). Only follows the first child at each level,
+// along root -- child -- grandchild. For example:
+//
+//   [0]  a1 -- b
+//   [1]* a1 -- c -- d
+//   frames: a1 -- e (c pending) -- f1
+//
+// `*` marks the last committed entry. The "frames:" line shows the last
+// committed FNE of each frame, and the FNE its pending history navigation is
+// going to, if any. FNEs without a name are shown as "?".
+class SessionHistoryDepicter {
+ public:
+  explicit SessionHistoryDepicter(NavigationControllerImpl& controller)
+      : controller_(controller) {}
+
+  // Names `fne`, after checking its URL.
+  void Name(FrameNavigationEntry* fne, std::string name, const GURL& url) {
+    EXPECT_EQ(url, fne->url()) << name;
+    names_.emplace(fne, std::move(name));
+  }
+
+  // The FNEs of the entry at `index`, along root -- child -- grandchild.
+  std::vector<FrameNavigationEntry*> EntryFnes(int index) {
+    std::vector<FrameNavigationEntry*> fnes;
+    for (auto* node = controller_->GetEntryAtIndex(index)->root_node(); node;
+         node = node->children.empty() ? nullptr : node->children[0].get()) {
+      fnes.push_back(node->frame_entry.get());
+    }
+    return fnes;
+  }
+
+  std::string Depict() {
+    std::string result;
+    for (int i = 0; i < controller_->GetEntryCount(); ++i) {
+      std::vector<std::string> names = base::ToVector(
+          EntryFnes(i), [&](FrameNavigationEntry* fne) { return NameOf(fne); });
+      bool current = i == controller_->GetLastCommittedEntryIndex();
+      result += base::StringPrintf("[%d]%s %s\n", i, current ? "*" : " ",
+                                   base::JoinString(names, " -- ").c_str());
+    }
+    std::vector<std::string> frames;
+    for (FrameTreeNode* node = controller_->frame_tree().root(); node;
+         node = node->child_count() ? node->child_at(0) : nullptr) {
+      frames.push_back(
+          NameOf(node->current_frame_host()->last_committed_frame_entry()));
+      if (NavigationRequest* request = node->navigation_request()) {
+        NavigationEntryImpl* entry =
+            controller_->GetEntryWithUniqueID(request->nav_entry_id());
+        frames.back() += " (" +
+                         NameOf(entry ? entry->GetFrameEntry(node) : nullptr) +
+                         " pending)";
+      }
+    }
+    return result + "frames: " + base::JoinString(frames, " -- ") + "\n";
+  }
+
+ private:
+  std::string NameOf(FrameNavigationEntry* fne) const {
+    auto it = names_.find(fne);
+    return it == names_.end() ? "?" : it->second;
+  }
+
+  const raw_ref<NavigationControllerImpl> controller_;
+  // Keys hold a reference, so the address of a named FNE can't be reused by a
+  // new FNE.
+  std::map<scoped_refptr<FrameNavigationEntry>, std::string, std::less<>>
+      names_;
 };
 
 }  // namespace
@@ -218,16 +327,26 @@ class NavigationControllerBrowserTest
   }
 
  protected:
-  // TODO(bokan): There's one test whose result depends on whether the
-  // FractionalScrollOffsets feature is enabled in Blink's
-  // RuntimeEnabledFeatures. Since there's just one, we can determine the
-  // status of the feature using script, rather than plumbing this state across
-  // the browser/renderer boundary. This can be removed once the feature is
-  // shipped to stable and the flag removed. https://crbug.com/414283.
-  bool IsFractionalScrollOffsetsEnabled() {
-    std::string script =
-        "internals.runtimeFlags.fractionalScrollOffsetsEnabled";
-    return EvalJs(shell(), script).ExtractBool();
+  // Verifies that `actual_offset` is the result of scrolling to `css_offset`,
+  // which may land between physical pixels, and returns the offset that
+  // subsequent scrolls to the same position must report. With
+  // FractionalScrollOffsets Blink keeps a fractional offset, which the page
+  // scale factor may still quantize; without it the offset is truncated to a
+  // physical pixel. https://crbug.com/414283.
+  double VerifyScrollOffset(double css_offset, double actual_offset) {
+    if (EvalJs(shell(), "internals.runtimeFlags.fractionalScrollOffsetsEnabled")
+            .ExtractBool()) {
+      EXPECT_NEAR(css_offset, actual_offset, 1);
+      return actual_offset;
+    }
+    float device_scale_factor = shell()
+                                    ->web_contents()
+                                    ->GetRenderWidgetHostView()
+                                    ->GetDeviceScaleFactor();
+    double expected_offset =
+        round(device_scale_factor * css_offset) / device_scale_factor;
+    EXPECT_FLOAT_EQ(expected_offset, actual_offset);
+    return expected_offset;
   }
 
   // Creates a form and submits it to |form_submit_url|. Returns the POST ID of
@@ -4091,27 +4210,8 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerBrowserTest, ReloadWithUrlAnchor) {
 
   double window_scroll_y = EvalJs(shell(), "window.scrollY").ExtractDouble();
 
-  // TODO(bokan): The round hack below can go
-  // away once FractionalScrolLOffsets ships. The reason it's required is that,
-  // at certain device scale factors, the given CSS pixel scroll value may land
-  // between physical pixels. Without the feature Blink will truncate to the
-  // nearest physical pixel so the expectation must account for that. When the
-  // feature is enabled, Blink stores the fractional offset so the truncation
-  // is unnecessary. https://crbug.com/414283.
-  bool fractional_scroll_offsets_enabled = IsFractionalScrollOffsetsEnabled();
-
   // The 'center-element' y-position is 2000px. 2000px is an arbitrary value.
-  double expected_window_scroll_y = 2000;
-  if (!fractional_scroll_offsets_enabled) {
-    float device_scale_factor = shell()
-                                    ->web_contents()
-                                    ->GetRenderWidgetHostView()
-                                    ->GetDeviceScaleFactor();
-    expected_window_scroll_y =
-        round(device_scale_factor * expected_window_scroll_y) /
-        device_scale_factor;
-  }
-  EXPECT_FLOAT_EQ(expected_window_scroll_y, window_scroll_y);
+  double expected_window_scroll_y = VerifyScrollOffset(2000, window_scroll_y);
 
   // Reload.
   ReloadBlockUntilNavigationsComplete(shell(), 1);
@@ -4135,26 +4235,7 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerBrowserTest,
 
   double window_scroll_y = EvalJs(shell(), "window.scrollY").ExtractDouble();
 
-  // TODO(bokan): The round hack below can go
-  // away once FractionalScrolLOffsets ships. The reason it's required is that,
-  // at certain device scale factors, the given CSS pixel scroll value may land
-  // between physical pixels. Without the feature Blink will truncate to the
-  // nearest physical pixel so the expectation must account for that. When the
-  // feature is enabled, Blink stores the fractional offset so the truncation
-  // is unnecessary. https://crbug.com/414283.
-  bool fractional_scroll_offsets_enabled = IsFractionalScrollOffsetsEnabled();
-
-  double expected_window_scroll_y = 2100;
-  if (!fractional_scroll_offsets_enabled) {
-    float device_scale_factor = shell()
-                                    ->web_contents()
-                                    ->GetRenderWidgetHostView()
-                                    ->GetDeviceScaleFactor();
-    expected_window_scroll_y =
-        round(device_scale_factor * expected_window_scroll_y) /
-        device_scale_factor;
-  }
-  EXPECT_FLOAT_EQ(expected_window_scroll_y, window_scroll_y);
+  double expected_window_scroll_y = VerifyScrollOffset(2100, window_scroll_y);
 
   // Reload.
   ReloadBlockUntilNavigationsComplete(shell(), 1);
@@ -4182,26 +4263,8 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerBrowserTest,
 
   double window_scroll_y = EvalJs(shell(), "window.scrollY").ExtractDouble();
 
-  // TODO(bokan): The round hack below can go
-  // away once FractionalScrolLOffsets ships. The reason it's required is that,
-  // at certain device scale factors, the given CSS pixel scroll value may land
-  // between physical pixels. Without the feature Blink will truncate to the
-  // nearest physical pixel so the expectation must account for that. When the
-  // feature is enabled, Blink stores the fractional offset so the truncation
-  // is unnecessary. https://crbug.com/414283.
-  bool fractional_scroll_offsets_enabled = IsFractionalScrollOffsetsEnabled();
-
-  double window_scroll_y_with_user_scroll = 2100;
-  if (!fractional_scroll_offsets_enabled) {
-    float device_scale_factor = shell()
-                                    ->web_contents()
-                                    ->GetRenderWidgetHostView()
-                                    ->GetDeviceScaleFactor();
-    window_scroll_y_with_user_scroll =
-        round(device_scale_factor * window_scroll_y_with_user_scroll) /
-        device_scale_factor;
-  }
-  EXPECT_FLOAT_EQ(window_scroll_y_with_user_scroll, window_scroll_y);
+  double window_scroll_y_with_user_scroll =
+      VerifyScrollOffset(2100, window_scroll_y);
 
   // Navigate to the same url and user scroll should be dropped.
   EXPECT_TRUE(NavigateToURL(shell(), url));
@@ -4247,26 +4310,8 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerBrowserTest,
 
   double window_scroll_y = EvalJs(shell(), "window.scrollY").ExtractDouble();
 
-  // TODO(bokan): The round hack below can go
-  // away once FractionalScrolLOffsets ships. The reason it's required is that,
-  // at certain device scale factors, the given CSS pixel scroll value may land
-  // between physical pixels. Without the feature Blink will truncate to the
-  // nearest physical pixel so the expectation must account for that. When the
-  // feature is enabled, Blink stores the fractional offset so the truncation
-  // is unnecessary. https://crbug.com/414283.
-  bool fractional_scroll_offsets_enabled = IsFractionalScrollOffsetsEnabled();
-
-  double window_scroll_y_with_user_scroll = 2100;
-  if (!fractional_scroll_offsets_enabled) {
-    float device_scale_factor = shell()
-                                    ->web_contents()
-                                    ->GetRenderWidgetHostView()
-                                    ->GetDeviceScaleFactor();
-    window_scroll_y_with_user_scroll =
-        round(device_scale_factor * window_scroll_y_with_user_scroll) /
-        device_scale_factor;
-  }
-  EXPECT_FLOAT_EQ(window_scroll_y_with_user_scroll, window_scroll_y);
+  double window_scroll_y_with_user_scroll =
+      VerifyScrollOffset(2100, window_scroll_y);
 
   // Navigate to the same url and user scroll should be dropped.
   EXPECT_TRUE(NavigateToURL(shell(), url));
@@ -6734,6 +6779,209 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerBrowserTest,
   EXPECT_EQ(
       root->current_frame_host()->GetSiteInstance(),
       root->child_at(0)->child_at(0)->current_frame_host()->GetSiteInstance());
+}
+
+// A frame can navigate same-document while a cross-document history navigation
+// in its parent is still pending. The new NavigationEntry must use the
+// FrameNavigationEntries of the documents still displayed, not the ones from
+// the history entry being navigated to. That history entry must be left
+// untouched, so the pending navigation still loads the right subframes. See
+// https://crbug.com/560754831.
+IN_PROC_BROWSER_TEST_P(
+    NavigationControllerBrowserTest,
+    FrameNavigationEntry_SameDocumentDuringPendingHistoryNavigation) {
+  if (!base::FeatureList::IsEnabled(
+          features::kSessionHistoryUseFrameCommittedEntry)) {
+    GTEST_SKIP() << "Test requires kSessionHistoryUseFrameCommittedEntry";
+  }
+  WebContentsImpl* web_contents =
+      static_cast<WebContentsImpl*>(shell()->web_contents());
+  NavigationControllerImpl& controller = web_contents->GetController();
+  FrameTreeNode* root = web_contents->GetPrimaryFrameTree().root();
+  SessionHistoryDepicter history(controller);
+
+  GURL main_url(
+      embedded_test_server()->GetURL("/frame_tree/page_with_one_frame.html"));
+  GURL child_url_0(embedded_test_server()->GetURL(
+      "/navigation_controller/page_with_iframe_simple.html?0"));
+  GURL child_url_1(embedded_test_server()->GetURL(
+      "/navigation_controller/page_with_iframe_simple.html?1"));
+  GURL csp_url(embedded_test_server()->GetURL(
+      "/set-header?Content-Security-Policy: img-src 'none'"));
+
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+  FrameTreeNode* child = root->child_at(0);
+
+  // 1. Navigate the child to a page with a grandchild.
+  EXPECT_TRUE(NavigateToURLFromRenderer(child, child_url_0));
+  EXPECT_TRUE(WaitForLoadStop(web_contents));
+
+  // 2. Navigate the child to another document, and give the grandchild a CSP.
+  EXPECT_TRUE(NavigateToURLFromRenderer(child, child_url_1));
+  EXPECT_TRUE(WaitForLoadStop(web_contents));
+  FrameTreeNode* grandchild = child->child_at(0);
+  {
+    FrameNavigateParamsCapturer capturer(grandchild);
+    EXPECT_TRUE(
+        ExecJs(child, JsReplace("frames[0].location.replace($1)", csp_url)));
+    capturer.Wait();
+  }
+
+  // 3. Same-document navigation in the main frame.
+  {
+    FrameNavigateParamsCapturer capturer(root);
+    EXPECT_TRUE(ExecJs(root, "history.pushState({}, '', '#3')"));
+    capturer.Wait();
+  }
+
+  // FrameNavigationEntries (FNE):
+  //   a1: main_url     b: baz.com         d: simple_page_1   f1: csp_url
+  //   a2: main_url#3   c: child_url_0     e: child_url_1     f2: csp_url#foo
+  //
+  // Session history, as root -- child -- grandchild.
+  // (* is last committed)
+  // ---------------------------------------------------------------------------
+  ASSERT_EQ(4, controller.GetEntryCount());
+  history.Name(history.EntryFnes(0)[0], "a1", main_url);
+  history.Name(history.EntryFnes(3)[0], "a2", GURL(main_url.spec() + "#3"));
+  history.Name(history.EntryFnes(0)[1], "b",
+               embedded_test_server()->GetURL("baz.com", "/title1.html"));
+  history.Name(history.EntryFnes(1)[1], "c", child_url_0);
+  history.Name(history.EntryFnes(1)[2], "d",
+               embedded_test_server()->GetURL(
+                   "/navigation_controller/simple_page_1.html"));
+  history.Name(history.EntryFnes(2)[1], "e", child_url_1);
+  history.Name(history.EntryFnes(2)[2], "f1", csp_url);
+  EXPECT_EQ(Dedent(R"(
+      [0]  a1 -- b
+      [1]  a1 -- c -- d
+      [2]  a1 -- e -- f1
+      [3]* a2 -- e -- f1
+      frames: a2 -- e -- f1
+  )"),
+            history.Depict());
+
+  // 4. Go back to after step 1. The main frame commits its same-document
+  // navigation right away, while the child's cross-document navigation is
+  // held, keeping the grandchild frame in place as well. Entry 1 says the
+  // child is on `c`, but it is still on `e`.
+  TestNavigationManager child_navigation(web_contents, child_url_0);
+  {
+    FrameNavigateParamsCapturer capturer(root);
+    capturer.set_wait_for_load(false);
+    controller.GoToOffset(-2);
+    capturer.Wait();
+  }
+  ASSERT_TRUE(child_navigation.WaitForRequestStart());
+  EXPECT_EQ(Dedent(R"(
+      [0]  a1 -- b
+      [1]* a1 -- c -- d
+      [2]  a1 -- e -- f1
+      [3]  a2 -- e -- f1
+      frames: a1 -- e (c pending) -- f1
+  )"),
+            history.Depict());
+
+  // 5. Same-document navigation in the grandchild. Entry 1 is cloned into a
+  // new entry 2, pruning the forward entries. `d` is replaced by the new `f2`,
+  // and `c` by `e`, the child's own FNE. Entry 1 is left untouched.
+  {
+    FrameNavigateParamsCapturer capturer(grandchild);
+    capturer.set_wait_for_load(false);
+    EXPECT_TRUE(ExecJs(grandchild, "location.hash = 'foo'"));
+    capturer.Wait();
+    EXPECT_EQ(NAVIGATION_TYPE_NEW_SUBFRAME, capturer.navigation_type());
+  }
+  FrameNavigationEntry* f2 =
+      grandchild->current_frame_host()->last_committed_frame_entry();
+  history.Name(f2, "f2", GURL(csp_url.spec() + "#foo"));
+  EXPECT_EQ(Dedent(R"(
+      [0]  a1 -- b
+      [1]  a1 -- c -- d
+      [2]* a1 -- e -- f2
+      frames: a1 -- e (c pending) -- f2
+  )"),
+            history.Depict());
+  // `f2` keeps the grandchild's CSP.
+  ASSERT_TRUE(f2->policy_container_policies());
+  EXPECT_EQ(1u,
+            f2->policy_container_policies()->content_security_policies.size());
+
+  // 6. Let the child's history navigation finish. The child goes back to
+  // entry 1, and its new grandchild loads `d`, not `f2`.
+  ASSERT_TRUE(child_navigation.WaitForNavigationFinished());
+  EXPECT_TRUE(child_navigation.was_committed());
+  EXPECT_TRUE(WaitForLoadStop(web_contents));
+  EXPECT_EQ(Dedent(R"(
+      [0]  a1 -- b
+      [1]* a1 -- c -- d
+      [2]  a1 -- e -- f2
+      frames: a1 -- c -- d
+  )"),
+            history.Depict());
+  // `d` is loaded without the CSP of `f2`.
+  EXPECT_TRUE(child->child_at(0)
+                  ->current_frame_host()
+                  ->policy_container_host()
+                  ->policies()
+                  .content_security_policies.empty());
+}
+
+// A subframe recreated by a reload has no committed FrameNavigationEntry until
+// its own navigation commits. If another frame adds a NavigationEntry in the
+// meantime, the new entry keeps the FrameNavigationEntry the subframe had in
+// the previous one.
+IN_PROC_BROWSER_TEST_P(
+    NavigationControllerBrowserTest,
+    FrameNavigationEntry_SameDocumentBeforeRecreatedSubframeCommits) {
+  WebContentsImpl* web_contents =
+      static_cast<WebContentsImpl*>(shell()->web_contents());
+  NavigationControllerImpl& controller = web_contents->GetController();
+  FrameTreeNode* root = web_contents->GetPrimaryFrameTree().root();
+
+  GURL main_url(embedded_test_server()->GetURL(
+      "/navigation_controller/page_with_iframe_simple.html"));
+  GURL child_url(embedded_test_server()->GetURL(
+      "/navigation_controller/simple_page_1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+  scoped_refptr<FrameNavigationEntry> child_entry =
+      controller.GetLastCommittedEntry()->GetFrameEntry(root->child_at(0));
+  ASSERT_TRUE(child_entry);
+  EXPECT_EQ(child_url, child_entry->url());
+
+  // 1. Reload, and hold the navigation of the recreated child.
+  TestNavigationManager child_navigation(web_contents, child_url);
+  {
+    FrameNavigateParamsCapturer capturer(root);
+    capturer.set_wait_for_load(false);
+    controller.Reload(ReloadType::NORMAL, false);
+    capturer.Wait();
+  }
+  ASSERT_TRUE(child_navigation.WaitForRequestStart());
+  FrameTreeNode* child = root->child_at(0);
+  EXPECT_FALSE(child->current_frame_host()->last_committed_frame_entry());
+
+  // 2. Same-document navigation in the main frame. The new entry shares the
+  // child's FrameNavigationEntry with the previous one.
+  {
+    FrameNavigateParamsCapturer capturer(root);
+    capturer.set_wait_for_load(false);
+    EXPECT_TRUE(ExecJs(root, "history.pushState({}, '', '#foo')"));
+    capturer.Wait();
+  }
+  ASSERT_EQ(2, controller.GetEntryCount());
+  EXPECT_EQ(1, controller.GetLastCommittedEntryIndex());
+  EXPECT_EQ(child_entry.get(),
+            controller.GetEntryAtIndex(0)->GetFrameEntry(child));
+  EXPECT_EQ(child_entry.get(),
+            controller.GetEntryAtIndex(1)->GetFrameEntry(child));
+
+  // 3. Let the child commit. It ends up on that FrameNavigationEntry.
+  ASSERT_TRUE(child_navigation.WaitForNavigationFinished());
+  EXPECT_TRUE(child_navigation.was_committed());
+  EXPECT_EQ(child_entry.get(),
+            child->current_frame_host()->last_committed_frame_entry());
+  EXPECT_EQ(child_url, child_entry->url());
 }
 
 // Verify the tree of FrameNavigationEntries when a nested iframe commits after
@@ -15556,12 +15804,8 @@ class RequestMonitoringNavigationBrowserTest
       const GURL& url_to_find) {
     DCHECK(url_to_find.SchemeIsHTTPOrHTTPS());
 
-    auto it = std::ranges::find(accumulated_requests_, url_to_find,
-                                &net::test_server::HttpRequest::GetURL);
-    if (it == accumulated_requests_.end()) {
-      return nullptr;
-    }
-    return &*it;
+    return base::LinearFind(accumulated_requests_, url_to_find,
+                            &net::test_server::HttpRequest::GetURL);
   }
 
  protected:
@@ -17437,8 +17681,9 @@ class CountRepostFormWarningWebContentsDelegate : public WebContentsDelegate {
 
   int repost_form_warning_count() { return repost_form_warning_count_; }
 
-  void ShowRepostFormWarningDialog(WebContents* source) override {
+  bool ShowRepostFormWarningDialog(WebContents* source) override {
     repost_form_warning_count_++;
+    return true;
   }
 
  private:
@@ -19026,7 +19271,6 @@ IN_PROC_BROWSER_TEST_P(SandboxedNavigationControllerBrowserTest,
                             .root();
 
   std::string back_script = "history.back();";
-  std::string forward_script = "history.forward();";
 
   NavigationControllerImpl& controller = static_cast<NavigationControllerImpl&>(
       shell()->web_contents()->GetController());
@@ -21160,16 +21404,25 @@ IN_PROC_BROWSER_TEST_P(NavigationControllerBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_P(NavigationControllerBrowserTest,
-                       URLLoadReturnsNavigationHandle) {
+                       LoadURLWithParamsForResultReturnsNavigationHandle) {
   GURL url(embedded_test_server()->GetURL("/title1.html"));
 
   TestNavigationManager navigation_manager(shell()->web_contents(), url);
-  base::WeakPtr<NavigationHandle> navigation =
-      shell()->web_contents()->GetController().LoadURLWithParams(
-          NavigationController::LoadURLParams(url));
+  NavigationController::LoadURLParams params(url);
+  base::expected<base::WeakPtr<NavigationHandle>, NavigationNotStartedReason>
+      result =
+          shell()->web_contents()->GetController().LoadURLWithParamsForResult(
+              params);
 
   // The returned NavigationHandle should be valid.
-  EXPECT_TRUE(navigation);
+  ASSERT_TRUE(result.has_value());
+  base::WeakPtr<NavigationHandle> navigation = result.value();
+  ASSERT_TRUE(navigation);
+
+  // The navigation is already owned by the FrameTreeNode when the handle is
+  // returned, i.e. the handle refers to a navigation that is really in flight.
+  EXPECT_EQ(navigation.get(),
+            contents()->GetPrimaryFrameTree().root()->navigation_request());
 
   // Start the navigation and ensure that the NavigationHandle we saw matches
   // the one TestNavigationManager saw.
@@ -25371,5 +25624,349 @@ IN_PROC_BROWSER_TEST_P(
   RunReloadReplacesInitialEntryAfterCanceledNavigationTest(
       shell(), embedded_test_server(), ReloadType::BYPASSING_CACHE);
 }
+
+namespace {
+
+// Builds a CompositorFrame that CompositorFrame::HasVisuallyNonEmptyContent()
+// reports as non-empty (two SolidColorDrawQuads, rather than the single
+// background quad a blank document submits).
+viz::CompositorFrame MakeVisuallyNonEmptyCompositorFrame() {
+  constexpr gfx::Rect kOutputRect(0, 0, 100, 100);
+  return viz::CompositorFrameBuilder()
+      .AddRenderPass(
+          viz::RenderPassBuilder(kOutputRect)
+              .AddSolidColorQuad(kOutputRect, SkColors::kWhite)
+              .AddSolidColorQuad(gfx::Rect(0, 0, 10, 10), SkColors::kRed))
+      .Build();
+}
+
+// Leaves `contents` on an unmodified blank tab with a renderer-initiated
+// pending URL visible in place of about:blank.
+void StartPendingRendererInitiatedNavigationInNewTab(WebContentsImpl* contents,
+                                                     const GURL& url) {
+  NavigationController::LoadURLParams params(url);
+  params.is_renderer_initiated = true;
+  params.initiator_origin = url::Origin::Create(url);
+  params.transition_type = ui::PAGE_TRANSITION_LINK;
+  TestNavigationManager nav_manager(contents, url);
+  contents->GetController().LoadURLWithParams(params);
+  ASSERT_TRUE(nav_manager.WaitForRequestStart());
+
+  NavigationControllerImpl& controller = contents->GetController();
+  ASSERT_TRUE(controller.IsUnmodifiedBlankTab());
+  ASSERT_TRUE(controller.GetPendingEntry());
+  ASSERT_TRUE(controller.GetPendingEntry()->is_renderer_initiated());
+  ASSERT_EQ(controller.GetPendingEntry(), controller.GetVisibleEntry());
+  ASSERT_EQ(url, controller.GetVisibleEntry()->GetURL());
+}
+
+}  // namespace
+
+// The tests below submit CompositorFrames directly, which keeps them focused on
+// the browser and Viz plumbing and lets them cover frame sink lifetimes that a
+// non-compromised renderer cannot produce on demand. The attack itself is
+// covered end to end by the
+// NonEmptyCompositorFrameInInitialEmptyDocumentClearsPendingURL test in
+// SecurityExploitBrowserTest.
+
+// Verifies that a renderer cannot disarm the detection by asking for a new
+// CompositorFrameSink before drawing, which destroys the old
+// CompositorFrameSinkSupport in Viz. See https://crbug.com/40055319.
+IN_PROC_BROWSER_TEST_P(
+    NavigationControllerBrowserTest,
+    VisuallyNonEmptyCompositorFrameAfterRecreatingFrameSinkRevertsPendingURL) {
+  Shell* new_shell =
+      Shell::CreateNewWindow(shell()->web_contents()->GetBrowserContext(),
+                             GURL(), nullptr, gfx::Size(100, 100));
+  WebContentsImpl* new_contents =
+      static_cast<WebContentsImpl*>(new_shell->web_contents());
+  NavigationControllerImpl& controller = new_contents->GetController();
+
+  ASSERT_NO_FATAL_FAILURE(StartPendingRendererInitiatedNavigationInNewTab(
+      new_contents, embedded_test_server()->GetURL("/title1.html")));
+
+  // Recreate the CompositorFrameSink, as a renderer recovering from context
+  // loss would.
+  RenderWidgetHostImpl* rwh =
+      new_contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  viz::FakeCompositorFrameSinkClient sink_client;
+  mojo::Remote<viz::mojom::CompositorFrameSink> compositor_frame_sink;
+  mojo::PendingRemote<blink::mojom::RenderInputRouterClient> rir_client;
+  std::ignore = rir_client.InitWithNewPipeAndPassReceiver();
+  rwh->CreateFrameSink(compositor_frame_sink.BindNewPipeAndPassReceiver(),
+                       sink_client.BindInterfaceRemote(),
+                       std::move(rir_client));
+  EXPECT_TRUE(controller.IsUnmodifiedBlankTab());
+
+  viz::LocalSurfaceId local_surface_id =
+      rwh->GetView()->GetLocalSurfaceId().is_valid()
+          ? rwh->GetView()->GetLocalSurfaceId()
+          : viz::LocalSurfaceId(1, 1, base::UnguessableToken::Create());
+  compositor_frame_sink->SubmitCompositorFrame(
+      local_surface_id, MakeVisuallyNonEmptyCompositorFrame(), std::nullopt, 0);
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return new_contents->HasAccessedInitialDocument(); }));
+  EXPECT_TRUE(controller.GetVisibleEntry()->IsInitialEntry());
+  EXPECT_EQ(GURL::EmptyGURL(), controller.GetVisibleEntry()->GetURL());
+}
+
+// Verifies that a renderer cannot suppress the notification by closing its
+// CompositorFrameSink pipe immediately after submitting a spoofed frame. The
+// surface has already activated and is still drawn, so the browser must still
+// be told. This test prevents a bypass found in an earlier
+// CompositorFrameSinkSupport-based approach. See https://crbug.com/40055319.
+IN_PROC_BROWSER_TEST_P(
+    NavigationControllerBrowserTest,
+    VisuallyNonEmptyCompositorFrameThenClosedSinkRevertsPendingURL) {
+  Shell* new_shell =
+      Shell::CreateNewWindow(shell()->web_contents()->GetBrowserContext(),
+                             GURL(), nullptr, gfx::Size(100, 100));
+  WebContentsImpl* new_contents =
+      static_cast<WebContentsImpl*>(new_shell->web_contents());
+  NavigationControllerImpl& controller = new_contents->GetController();
+
+  ASSERT_NO_FATAL_FAILURE(StartPendingRendererInitiatedNavigationInNewTab(
+      new_contents, embedded_test_server()->GetURL("/title1.html")));
+
+  RenderWidgetHostImpl* rwh =
+      new_contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  // Held in an optional so the test can close the client pipe along with the
+  // sink, as a renderer tearing down its CompositorFrameSink would.
+  std::optional<viz::FakeCompositorFrameSinkClient> sink_client;
+  sink_client.emplace();
+  mojo::Remote<viz::mojom::CompositorFrameSink> compositor_frame_sink;
+  mojo::PendingRemote<blink::mojom::RenderInputRouterClient> rir_client;
+  std::ignore = rir_client.InitWithNewPipeAndPassReceiver();
+  rwh->CreateFrameSink(compositor_frame_sink.BindNewPipeAndPassReceiver(),
+                       sink_client->BindInterfaceRemote(),
+                       std::move(rir_client));
+
+  viz::LocalSurfaceId local_surface_id =
+      rwh->GetView()->GetLocalSurfaceId().is_valid()
+          ? rwh->GetView()->GetLocalSurfaceId()
+          : viz::LocalSurfaceId(1, 1, base::UnguessableToken::Create());
+  compositor_frame_sink->SubmitCompositorFrame(
+      local_surface_id, MakeVisuallyNonEmptyCompositorFrame(), std::nullopt, 0);
+
+  // Tear down the sink right after submitting, without ever drawing again.
+  compositor_frame_sink.reset();
+  sink_client.reset();
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return new_contents->HasAccessedInitialDocument(); }));
+  EXPECT_TRUE(controller.GetVisibleEntry()->IsInitialEntry());
+  EXPECT_EQ(GURL::EmptyGURL(), controller.GetVisibleEntry()->GetURL());
+}
+
+namespace {
+
+// Records the union of the InvalidateTypes passed to NavigationStateChanged().
+class RecordNavigationStateChangedDelegate : public WebContentsDelegate {
+ public:
+  RecordNavigationStateChangedDelegate() = default;
+  RecordNavigationStateChangedDelegate(
+      const RecordNavigationStateChangedDelegate&) = delete;
+  RecordNavigationStateChangedDelegate& operator=(
+      const RecordNavigationStateChangedDelegate&) = delete;
+  ~RecordNavigationStateChangedDelegate() override = default;
+
+  void NavigationStateChanged(WebContents* source,
+                              InvalidateTypes changed_flags) override {
+    ++call_count_;
+    changed_flags_ |= changed_flags;
+  }
+
+  int call_count() const { return call_count_; }
+  bool url_invalidated() const { return changed_flags_ & INVALIDATE_TYPE_URL; }
+
+  void Reset() {
+    call_count_ = 0;
+    changed_flags_ = 0;
+  }
+
+ private:
+  int call_count_ = 0;
+  int changed_flags_ = 0;
+};
+
+}  // namespace
+
+class NavigationControllerSkipUrlInvalidationBrowserTest
+    : public NavigationControllerBrowserTestBase,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  NavigationControllerSkipUrlInvalidationBrowserTest() {
+    feature_list_.InitWithFeatureState(
+        features::kSkipUrlInvalidationForUnchangedSameDocumentReplacement,
+        IsFeatureEnabled());
+  }
+
+  bool IsFeatureEnabled() const { return GetParam(); }
+
+ protected:
+  // Runs `script` in the main frame, waits for the resulting same-document
+  // navigation to commit, and returns whether it invalidated the URL.
+  bool RunSameDocumentNavigationAndCheckUrlInvalidated(
+      RecordNavigationStateChangedDelegate& delegate,
+      const std::string& script) {
+    delegate.Reset();
+    FrameNavigateParamsCapturer capturer(
+        contents()->GetPrimaryFrameTree().root());
+    capturer.set_wait_for_load(false);
+    EXPECT_TRUE(ExecJs(shell(), script));
+    capturer.Wait();
+    EXPECT_TRUE(capturer.is_same_document());
+    EXPECT_GT(delegate.call_count(), 0);
+    return delegate.url_invalidated();
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Checks that a main frame same-document navigation that replaces the current
+// entry without changing its URL only invalidates the URL when the feature is
+// disabled, and that other same-document navigations always invalidate it.
+IN_PROC_BROWSER_TEST_P(NavigationControllerSkipUrlInvalidationBrowserTest,
+                       SameDocumentNavigations) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  RecordNavigationStateChangedDelegate delegate;
+  contents()->SetDelegate(&delegate);
+
+  // history.replaceState() with the current URL.
+  EXPECT_EQ(!IsFeatureEnabled(),
+            RunSameDocumentNavigationAndCheckUrlInvalidated(
+                delegate, "history.replaceState({}, '', location.href)"));
+  EXPECT_EQ(url, contents()->GetLastCommittedURL());
+
+  // history.replaceState() with a different URL.
+  GURL replaced_url(embedded_test_server()->GetURL("/replaced"));
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "history.replaceState({}, '', '/replaced')"));
+  EXPECT_EQ(replaced_url, contents()->GetLastCommittedURL());
+
+  // history.pushState() with the current URL creates a new entry.
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "history.pushState({}, '', location.href)"));
+  EXPECT_EQ(replaced_url, contents()->GetLastCommittedURL());
+
+  // location.replace() to a new fragment changes the URL, whereas repeating it
+  // with the same fragment replaces the current entry without changing the URL.
+  GURL fragment_url(embedded_test_server()->GetURL("/replaced#foo"));
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "location.replace('#foo')"));
+  EXPECT_EQ(fragment_url, contents()->GetLastCommittedURL());
+  EXPECT_EQ(!IsFeatureEnabled(),
+            RunSameDocumentNavigationAndCheckUrlInvalidated(
+                delegate, "location.replace('#foo')"));
+  EXPECT_EQ(fragment_url, contents()->GetLastCommittedURL());
+
+  // If the current entry's virtual URL changes during a same-document
+  // replacement (even when the real URL stays the same), the URL must still be
+  // invalidated.
+  NavigationEntryImpl* entry =
+      contents()->GetController().GetLastCommittedEntry();
+  const GURL virtual_url("http://virtual.example.com/");
+  BrowserURLHandlerImpl::URLHandler null_handler = nullptr;
+  BrowserURLHandlerImpl::URLHandler reset_to_real_url =
+      [](GURL* url, BrowserContext* browser_context) { return true; };
+  BrowserURLHandlerImpl::GetInstance()->AddHandlerPair(null_handler,
+                                                       reset_to_real_url);
+  entry->SetVirtualURL(virtual_url);
+  entry->set_update_virtual_url_with_url(true);
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "history.replaceState({}, '', location.href)"));
+  EXPECT_EQ(fragment_url, entry->GetVirtualURL());
+  BrowserURLHandlerImpl::GetInstance()->RemoveHandlerForTesting(null_handler);
+
+  contents()->SetDelegate(shell());
+}
+
+// Verifies that when a browser-initiated navigation is pending, a same-document
+// history.replaceState() preserves the pending entry
+// (https://crbug.com/900036), skips INVALIDATE_TYPE_URL when the committed URL
+// is unchanged, and still invalidates the URL when the committed URL changes or
+// when the pending browser-initiated navigation later finishes or is canceled.
+IN_PROC_BROWSER_TEST_P(NavigationControllerSkipUrlInvalidationBrowserTest,
+                       SameDocumentReplaceStateWithPendingBrowserNavigation) {
+  GURL initial_url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), initial_url));
+
+  RecordNavigationStateChangedDelegate delegate;
+  contents()->SetDelegate(&delegate);
+  NavigationControllerImpl& controller = contents()->GetController();
+
+  // 1. Start a browser-initiated navigation and pause it before it commits, so
+  // that `pending_entry_` is active and visible.
+  GURL pending_url(embedded_test_server()->GetURL("/title2.html"));
+  TestNavigationManager stalled_navigation(contents(), pending_url);
+  controller.LoadURL(pending_url, Referrer(), ui::PAGE_TRANSITION_TYPED,
+                     std::string());
+  ASSERT_TRUE(stalled_navigation.WaitForRequestStart());
+  ASSERT_NE(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(pending_url, controller.GetPendingEntry()->GetURL());
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+
+  // 2. While the browser-initiated navigation is pending, an unchanged-URL
+  // history.replaceState() keeps the pending entry and only invalidates the URL
+  // when the feature is disabled.
+  EXPECT_EQ(
+      !IsFeatureEnabled(),
+      RunSameDocumentNavigationAndCheckUrlInvalidated(
+          delegate, "history.replaceState({step: 1}, '', location.href)"));
+  ASSERT_NE(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+  EXPECT_EQ(initial_url, contents()->GetLastCommittedURL());
+
+  // 3. A history.replaceState() that changes the committed entry's URL while
+  // the browser-initiated navigation is pending still invalidates the URL and
+  // preserves the pending entry.
+  GURL replaced_url(embedded_test_server()->GetURL("/replaced"));
+  EXPECT_TRUE(RunSameDocumentNavigationAndCheckUrlInvalidated(
+      delegate, "history.replaceState({step: 2}, '', '/replaced')"));
+  ASSERT_NE(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+  EXPECT_EQ(replaced_url, contents()->GetLastCommittedURL());
+
+  // 4. Canceling the pending browser-initiated navigation discards the pending
+  // entry, invalidates the URL, and reverts the visible URL to the replaced
+  // committed entry.
+  delegate.Reset();
+  contents()->Stop();
+  EXPECT_TRUE(delegate.url_invalidated());
+  EXPECT_EQ(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(replaced_url, contents()->GetVisibleURL());
+
+  // 5. Start another browser-initiated navigation, commit an unchanged-URL
+  // replaceState() while it is pending, and then let the browser-initiated
+  // navigation commit; the cross-document commit must invalidate the URL and
+  // update the visible URL.
+  TestNavigationManager committing_navigation(contents(), pending_url);
+  controller.LoadURL(pending_url, Referrer(), ui::PAGE_TRANSITION_TYPED,
+                     std::string());
+  ASSERT_TRUE(committing_navigation.WaitForRequestStart());
+  EXPECT_EQ(
+      !IsFeatureEnabled(),
+      RunSameDocumentNavigationAndCheckUrlInvalidated(
+          delegate, "history.replaceState({step: 3}, '', location.href)"));
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+
+  delegate.Reset();
+  ASSERT_TRUE(committing_navigation.WaitForNavigationFinished());
+  EXPECT_TRUE(committing_navigation.was_successful());
+  EXPECT_TRUE(delegate.url_invalidated());
+  EXPECT_EQ(nullptr, controller.GetPendingEntry());
+  EXPECT_EQ(pending_url, contents()->GetLastCommittedURL());
+  EXPECT_EQ(pending_url, contents()->GetVisibleURL());
+
+  contents()->SetDelegate(shell());
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         NavigationControllerSkipUrlInvalidationBrowserTest,
+                         ::testing::Bool());
 
 }  // namespace content

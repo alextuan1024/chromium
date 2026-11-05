@@ -3,11 +3,14 @@
 // found in the LICENSE file.
 
 #include "base/test/test_future.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_test_util.h"
-#include "chrome/browser/actor/tools/attempt_otp_filling_tool_request.h"
+#include "chrome/browser/actor/tools/one_time_token/attempt_otp_filling_tool_request.h"
 #include "chrome/browser/affiliations/affiliation_service_factory.h"
-#include "chrome/browser/autofill/one_time_token_service_factory.h"
+#include "chrome/browser/autofill/gmail_otp_backend_factory.h"
 #include "chrome/browser/glic/actor/new_glic_actor_functional_browsertest.h"
+#include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
@@ -18,10 +21,9 @@
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
-#include "components/one_time_tokens/core/browser/mock_one_time_token_service.h"
+#include "components/one_time_tokens/core/browser/fake_gmail_otp_backend.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
 #include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
-#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/page_content_annotations/content/page_context_fetcher.h"
 #include "components/performance_manager/public/features.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -83,6 +85,7 @@ namespace glic::actor {
 namespace {
 
 using ::actor::ActorTask;
+using ::actor::GetDomNodeOnPage;
 using ::actor::TaskId;
 using ::base::test::TestFuture;
 using optimization_guide::proto::Actions;
@@ -212,19 +215,6 @@ class TestJournalObserver : public ::actor::AggregatedJournal::Observer {
   std::vector<std::string> entries_;
 };
 
-std::optional<::actor::DomNode> GetDomNodeOnPage(
-    content::RenderFrameHost& rfh,
-    std::string_view query_selector) {
-  ASSIGN_OR_RETURN(int node_id, content::GetDOMNodeId(rfh, query_selector));
-  ASSIGN_OR_RETURN(
-      std::string document_identifier,
-      optimization_guide::DocumentIdentifierUserData::GetDocumentIdentifier(
-          rfh.GetGlobalFrameToken()));
-  return ::actor::DomNode{
-      .node_id = node_id,
-      .document_identifier = std::move(document_identifier)};
-}
-
 class GlicActorTaskLifecycleFunctionalBrowserTest
     : public GlicActorFunctionalBrowserTestBase {
  public:
@@ -275,12 +265,11 @@ class GlicActorTaskLifecycleGmailOtpEnabledBrowserTest
                                          -> std::unique_ptr<KeyedService> {
           return std::make_unique<affiliations::FakeAffiliationService>();
         }));
-    autofill::OneTimeTokenServiceFactory::GetInstance()
-        ->SetTestingSubclassFactoryAndUse<
-            one_time_tokens::MockOneTimeTokenService>(
-            context,
-            base::BindOnce(&GlicActorTaskLifecycleGmailOtpEnabledBrowserTest::
-                               CreateMockOtpService));
+    GmailOtpBackendFactory::GetInstance()->SetTestingFactory(
+        context, base::BindRepeating([](content::BrowserContext* context)
+                                         -> std::unique_ptr<KeyedService> {
+          return std::make_unique<one_time_tokens::FakeGmailOtpBackend>();
+        }));
   }
 
   void SetUpOnMainThread() override {
@@ -290,30 +279,10 @@ class GlicActorTaskLifecycleGmailOtpEnabledBrowserTest
                                                        true);
     SeedTestServerAffiliation("example.com");
 
-    EXPECT_CALL(GetMockOtpService(),
-                Subscribe(testing::_, testing::_, testing::_, testing::_))
-        .WillRepeatedly(
-            [](one_time_tokens::OneTimeTokenSource source,
-               base::Time expiration,
-               one_time_tokens::OneTimeTokenService::Callback callback,
-               base::OnceClosure expiration_callback) {
-              return one_time_tokens::ExpiringSubscription();
-            });
-    EXPECT_CALL(GetMockOtpService(), GetRecentOneTimeTokens(testing::_))
-        .WillRepeatedly(
-            [](one_time_tokens::OneTimeTokenService::Callback callback) {});
-    EXPECT_CALL(GetMockOtpService(), GetCachedOneTimeTokens())
-        .WillRepeatedly(
-            []() { return std::vector<one_time_tokens::OneTimeToken>(); });
-    EXPECT_CALL(GetMockOtpService(), FetchUserDataProcessingConsent(testing::_))
-        .WillRepeatedly(
-            [](one_time_tokens::OneTimeTokenService::
-                   FetchUserDataProcessingConsentCallback callback) {
-              std::move(callback).Run(
-                  one_time_tokens::UserDataProcessingConsentStates{
-                      .comms_apps = one_time_tokens::ConsentState::kEnabled,
-                      .google_apps = one_time_tokens::ConsentState::kEnabled});
-            });
+    GetFakeGmailOtpBackend().SetUserDataProcessingConsent(
+        one_time_tokens::UserDataProcessingConsentStates{
+            .comms_apps = one_time_tokens::ConsentState::kEnabled,
+            .google_apps = one_time_tokens::ConsentState::kEnabled});
   }
 
   affiliations::FakeAffiliationService* fake_affiliation_service() {
@@ -333,37 +302,18 @@ class GlicActorTaskLifecycleGmailOtpEnabledBrowserTest
     });
   }
 
-  static std::unique_ptr<one_time_tokens::MockOneTimeTokenService>
-  CreateMockOtpService(content::BrowserContext* context) {
-    return std::make_unique<
-        testing::NiceMock<one_time_tokens::MockOneTimeTokenService>>();
-  }
-
-  one_time_tokens::MockOneTimeTokenService& GetMockOtpService() {
-    auto* mock_otp_service =
-        static_cast<one_time_tokens::MockOneTimeTokenService*>(
-            autofill::OneTimeTokenServiceFactory::GetForProfile(GetProfile()));
-    CHECK(mock_otp_service);
-    return *mock_otp_service;
+  one_time_tokens::FakeGmailOtpBackend& GetFakeGmailOtpBackend() {
+    auto* fake_backend = static_cast<one_time_tokens::FakeGmailOtpBackend*>(
+        GmailOtpBackendFactory::GetForProfile(GetProfile()));
+    CHECK(fake_backend);
+    return *fake_backend;
   }
 
   void SetMockOtpResponse(const std::string& otp) {
-    EXPECT_CALL(GetMockOtpService(),
-                Subscribe(one_time_tokens::OneTimeTokenSource::kGmail,
-                          testing::_, testing::_, testing::_))
-        .WillOnce([otp](one_time_tokens::OneTimeTokenSource source,
-                        base::Time expiration,
-                        one_time_tokens::OneTimeTokenService::Callback callback,
-                        base::OnceClosure expiration_callback) {
-          callback.Run(
-              one_time_tokens::OneTimeTokenSource::kGmail,
-              base::expected<one_time_tokens::OneTimeToken,
-                             one_time_tokens::OneTimeTokenRetrievalError>(
-                  one_time_tokens::OneTimeToken(
-                      one_time_tokens::OneTimeTokenType::kGmail, otp,
-                      base::TimeTicks::Now(), "sender@example.com")));
-          return one_time_tokens::ExpiringSubscription();
-        });
+    GetFakeGmailOtpBackend().ClearCache();
+    GetFakeGmailOtpBackend().ProcessCallbacks(one_time_tokens::OneTimeToken(
+        one_time_tokens::OneTimeTokenType::kGmail, otp, base::TimeTicks::Now(),
+        "sender@example.com"));
   }
 
   void SetGmailOtpConfirmationResponseMode(std::string_view mode) {
@@ -394,6 +344,22 @@ class GlicActorTaskLifecycleGmailOtpEnabledBrowserTest
         << "Waiting for tab observation failed: " << *error_message;
     ASSERT_TRUE(result.value());
   }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Explicitly disables Gmail OTP so the tests below don't depend on the
+// feature's default state (e.g. it may be enabled by the field trial testing
+// config).
+class GlicActorTaskLifecycleGmailOtpDisabledBrowserTest
+    : public GlicActorTaskLifecycleFunctionalBrowserTest {
+ public:
+  GlicActorTaskLifecycleGmailOtpDisabledBrowserTest() {
+    scoped_feature_list_.InitAndDisableFeature(
+        features::kGlicActorAutofillOneTimePassword);
+  }
+  ~GlicActorTaskLifecycleGmailOtpDisabledBrowserTest() override = default;
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -768,7 +734,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpEnabledBrowserTest,
       task_id.value(), glic::mojom::ActorTaskStopReason::kTaskComplete);
 }
 
-IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleFunctionalBrowserTest,
+IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpDisabledBrowserTest,
                        testGmailOtpOptInDialogFeatureDisabled) {
   GlicInstanceImpl* instance = GetInstanceImpl();
   ASSERT_TRUE(instance);
@@ -885,7 +851,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpEnabledBrowserTest,
       task_id.value(), glic::mojom::ActorTaskStopReason::kTaskComplete);
 }
 
-IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleFunctionalBrowserTest,
+IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpDisabledBrowserTest,
                        testGmailOtpConfirmationDialogFeatureDisabled) {
   GlicInstanceImpl* instance = GetInstanceImpl();
   ASSERT_TRUE(instance);
@@ -956,7 +922,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpEnabledBrowserTest,
 
   std::unique_ptr<::actor::ToolRequest> request =
       std::make_unique<::actor::AttemptOtpFillingToolRequest>(
-          active_tab()->GetHandle(),
+          ::actor::ActorSurfaceHandle::From(active_tab()->GetHandle()),
           std::vector<::actor::PageTarget>{otp_field},
           /*for_signin=*/false);
 
@@ -1018,7 +984,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpEnabledBrowserTest,
 
   std::unique_ptr<::actor::ToolRequest> request =
       std::make_unique<::actor::AttemptOtpFillingToolRequest>(
-          active_tab()->GetHandle(),
+          ::actor::ActorSurfaceHandle::From(active_tab()->GetHandle()),
           std::vector<::actor::PageTarget>{otp_field},
           /*for_signin=*/false);
 
@@ -1027,7 +993,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpEnabledBrowserTest,
 
   ::actor::ExpectErrorResult(
       result,
-      ::actor::mojom::ActionResultCode::kOtpUserDeclinedOptingIntoFilling);
+      ::actor::mojom::ActionResultCode::kOtpUserDeclinedFillingConfirmation);
 
   EXPECT_EQ(
       content::EvalJs(web_contents(), "document.querySelector('#otp').value"),
@@ -1078,7 +1044,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpEnabledBrowserTest,
 
   std::unique_ptr<::actor::ToolRequest> request =
       std::make_unique<::actor::AttemptOtpFillingToolRequest>(
-          active_tab()->GetHandle(),
+          ::actor::ActorSurfaceHandle::From(active_tab()->GetHandle()),
           std::vector<::actor::PageTarget>{otp_field},
           /*for_signin=*/false);
 
@@ -1194,7 +1160,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpEnabledBrowserTest,
 
     std::unique_ptr<::actor::ToolRequest> request =
         std::make_unique<::actor::AttemptOtpFillingToolRequest>(
-            active_tab()->GetHandle(),
+            ::actor::ActorSurfaceHandle::From(active_tab()->GetHandle()),
             std::vector<::actor::PageTarget>{otp_field},
             /*for_signin=*/false);
 
@@ -1204,9 +1170,9 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleGmailOtpEnabledBrowserTest,
     if (tc.response_mode == "accept") {
       ::actor::ExpectOkResult(result);
     } else {
-      ::actor::ExpectErrorResult(
-          result,
-          ::actor::mojom::ActionResultCode::kOtpUserDeclinedOptingIntoFilling);
+      ::actor::ExpectErrorResult(result,
+                                 ::actor::mojom::ActionResultCode::
+                                     kOtpUserDeclinedFillingConfirmation);
     }
 
     EXPECT_EQ(
@@ -1245,7 +1211,30 @@ bool IsProtectRecentlyVisibleTabEnabled() {
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleFunctionalBrowserTest,
+class GlicActorTaskLifecyclePriorityBrowserTest
+    : public GlicActorTaskLifecycleFunctionalBrowserTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  GlicActorTaskLifecyclePriorityBrowserTest() {
+    if (IsNoWebview()) {
+      scoped_feature_list_.InitWithFeatures(
+          /*enabled_features=*/{features::kGlicNoWebview},
+          /*disabled_features=*/{});
+    } else {
+      scoped_feature_list_.InitWithFeatures(
+          /*enabled_features=*/{},
+          /*disabled_features=*/{features::kGlicNoWebview});
+    }
+  }
+  ~GlicActorTaskLifecyclePriorityBrowserTest() override = default;
+
+  bool IsNoWebview() const { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(GlicActorTaskLifecyclePriorityBrowserTest,
                        testActuatingPriorityChange) {
   GlicInstanceImpl* instance = GetInstanceImpl();
   ASSERT_TRUE(instance);
@@ -1254,12 +1243,16 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleFunctionalBrowserTest,
       GlicSidePanelCoordinator::GetForTab(active_tab());
   bool supports_peek = coordinator && coordinator->SupportsPeek();
 
-  content::WebContents* webui_contents = instance->host().webui_contents();
-  ASSERT_TRUE(webui_contents);
-  content::RenderProcessHost* webui_rph =
-      webui_contents->GetPrimaryMainFrame()->GetProcess();
+  const bool is_no_webview = IsNoWebviewEnabled();
+  content::WebContents* webui_contents = nullptr;
+  content::RenderProcessHost* webui_rph = nullptr;
+  if (!is_no_webview) {
+    webui_contents = instance->host().webui_contents();
+    ASSERT_TRUE(webui_contents);
+    webui_rph = webui_contents->GetPrimaryMainFrame()->GetProcess();
+  }
   content::WebContents* guest_contents = instance->host().web_client_contents();
-  EXPECT_TRUE(guest_contents);
+  ASSERT_TRUE(guest_contents);
   content::RenderProcessHost* guest_rph =
       guest_contents->GetPrimaryMainFrame()->GetProcess();
 
@@ -1272,8 +1265,10 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleFunctionalBrowserTest,
   EXPECT_EQ(guest_contents->GetVisibility(), content::Visibility::HIDDEN);
 
 #if !BUILDFLAG(IS_ANDROID)
-  EXPECT_OK(
-      RunUntilPriorityIs(webui_rph, base::Process::Priority::kBestEffort));
+  if (!is_no_webview) {
+    EXPECT_OK(
+        RunUntilPriorityIs(webui_rph, base::Process::Priority::kBestEffort));
+  }
   EXPECT_OK(
       RunUntilPriorityIs(guest_rph, base::Process::Priority::kBestEffort));
 #else
@@ -1284,10 +1279,14 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleFunctionalBrowserTest,
           ? content::ChildProcessImportance::NOT_PERCEPTIBLE
           : content::ChildProcessImportance::NORMAL;
 
-  EXPECT_OK(RunUntilImportanceIs(webui_rph, expected_importance_when_hidden));
-  // TODO(crbug.com/525435394): Ensure the guest process is not protected.
-  EXPECT_OK(RunUntilImportanceIs(
-      guest_rph, content::ChildProcessImportance::NOT_PERCEPTIBLE));
+  if (!is_no_webview) {
+    EXPECT_OK(RunUntilImportanceIs(webui_rph, expected_importance_when_hidden));
+    // TODO(crbug.com/525435394): Ensure the guest process is not protected.
+    EXPECT_OK(RunUntilImportanceIs(
+        guest_rph, content::ChildProcessImportance::NOT_PERCEPTIBLE));
+  } else {
+    EXPECT_OK(RunUntilImportanceIs(guest_rph, expected_importance_when_hidden));
+  }
 #endif
   ExecuteJsTest();
 
@@ -1304,18 +1303,24 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleFunctionalBrowserTest,
         WaitForWebUiContentsVisibility(instance, content::Visibility::HIDDEN));
     EXPECT_EQ(guest_contents->GetVisibility(), content::Visibility::HIDDEN);
   } else {
-    EXPECT_EQ(webui_contents->GetVisibility(), content::Visibility::HIDDEN);
+    if (!is_no_webview) {
+      EXPECT_EQ(webui_contents->GetVisibility(), content::Visibility::HIDDEN);
+    }
     EXPECT_EQ(guest_contents->GetVisibility(), content::Visibility::HIDDEN);
   }
 
 #if !BUILDFLAG(IS_ANDROID)
-  EXPECT_OK(
-      RunUntilPriorityIs(webui_rph, base::Process::Priority::kUserBlocking));
+  if (!is_no_webview) {
+    EXPECT_OK(
+        RunUntilPriorityIs(webui_rph, base::Process::Priority::kUserBlocking));
+  }
   EXPECT_OK(
       RunUntilPriorityIs(guest_rph, base::Process::Priority::kUserBlocking));
 #else
-  EXPECT_OK(RunUntilImportanceIs(webui_rph,
-                                 content::ChildProcessImportance::IMPORTANT));
+  if (!is_no_webview) {
+    EXPECT_OK(RunUntilImportanceIs(webui_rph,
+                                   content::ChildProcessImportance::IMPORTANT));
+  }
   EXPECT_OK(RunUntilImportanceIs(guest_rph,
                                  content::ChildProcessImportance::IMPORTANT));
 #endif
@@ -1329,13 +1334,17 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleFunctionalBrowserTest,
   EXPECT_EQ(active_tab(), second_tab);
 
 #if !BUILDFLAG(IS_ANDROID)
-  EXPECT_OK(
-      RunUntilPriorityIs(webui_rph, base::Process::Priority::kUserVisible));
+  if (!is_no_webview) {
+    EXPECT_OK(
+        RunUntilPriorityIs(webui_rph, base::Process::Priority::kUserVisible));
+  }
   EXPECT_OK(
       RunUntilPriorityIs(guest_rph, base::Process::Priority::kUserVisible));
 #else
-  EXPECT_OK(RunUntilImportanceIs(webui_rph,
-                                 content::ChildProcessImportance::MODERATE));
+  if (!is_no_webview) {
+    EXPECT_OK(RunUntilImportanceIs(webui_rph,
+                                   content::ChildProcessImportance::MODERATE));
+  }
   EXPECT_OK(RunUntilImportanceIs(guest_rph,
                                  content::ChildProcessImportance::MODERATE));
 #endif
@@ -1346,17 +1355,31 @@ IN_PROC_BROWSER_TEST_F(GlicActorTaskLifecycleFunctionalBrowserTest,
 
   // Now Glic is not actuating, so the priority should drop.
 #if !BUILDFLAG(IS_ANDROID)
-  EXPECT_OK(
-      RunUntilPriorityIs(webui_rph, base::Process::Priority::kBestEffort));
+  if (!is_no_webview) {
+    EXPECT_OK(
+        RunUntilPriorityIs(webui_rph, base::Process::Priority::kBestEffort));
+  }
   EXPECT_OK(
       RunUntilPriorityIs(guest_rph, base::Process::Priority::kBestEffort));
 #else
-  EXPECT_OK(RunUntilImportanceIs(webui_rph, expected_importance_when_hidden));
-  // TODO(crbug.com/525435394): Ensure the guest process is not protected.
-  EXPECT_OK(RunUntilImportanceIs(
-      guest_rph, content::ChildProcessImportance::NOT_PERCEPTIBLE));
+  if (!is_no_webview) {
+    EXPECT_OK(RunUntilImportanceIs(webui_rph, expected_importance_when_hidden));
+    // TODO(crbug.com/525435394): Ensure the guest process is not protected.
+    EXPECT_OK(RunUntilImportanceIs(
+        guest_rph, content::ChildProcessImportance::NOT_PERCEPTIBLE));
+  } else {
+    EXPECT_OK(RunUntilImportanceIs(guest_rph, expected_importance_when_hidden));
+  }
 #endif
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    GlicActorTaskLifecyclePriorityBrowserTest,
+    ::testing::Bool(),
+    [](const testing::TestParamInfo<bool>& info) {
+      return info.param ? "NoWebview" : "Webview";
+    });
 
 }  // namespace
 }  // namespace glic::actor

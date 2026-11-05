@@ -9,15 +9,18 @@
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/location.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "build/branding_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/after_startup_task_utils.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/status_icons/status_icon_menu_model.h"
 #include "chrome/browser/status_icons/status_tray.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -25,12 +28,15 @@
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_icon.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_prefs.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/keep_alive_registry/keep_alive_registry.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/prefs/pref_service.h"
+#include "components/search_engines/template_url_service.h"
+#include "content/public/browser/browser_thread.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -56,6 +62,14 @@ OmniboxEverywhereBackgroundModeManager::OmniboxEverywhereBackgroundModeManager(
       base::BindRepeating(
           &OmniboxEverywhereBackgroundModeManager::OnPrefChanged,
           base::Unretained(this)));
+  if (g_browser_process->local_state()->FindPreference(
+          ::prefs::kBackgroundModeEnabled)) {
+    background_mode_policy_pref_member_.Init(
+        ::prefs::kBackgroundModeEnabled, g_browser_process->local_state(),
+        base::BindRepeating(
+            &OmniboxEverywhereBackgroundModeManager::OnPrefChanged,
+            base::Unretained(this)));
+  }
 #if BUILDFLAG(IS_WIN)
   launch_on_startup_pref_member_.Init(
       prefs::kOmniboxEverywhereLaunchOnStartup,
@@ -63,6 +77,14 @@ OmniboxEverywhereBackgroundModeManager::OmniboxEverywhereBackgroundModeManager(
       base::BindRepeating(
           &OmniboxEverywhereBackgroundModeManager::OnPrefChanged,
           base::Unretained(this)));
+  if (g_browser_process->local_state()->FindPreference(
+          ::prefs::kForegroundLaunchOnLogin)) {
+    launch_on_startup_policy_pref_member_.Init(
+        ::prefs::kForegroundLaunchOnLogin, g_browser_process->local_state(),
+        base::BindRepeating(
+            &OmniboxEverywhereBackgroundModeManager::OnPrefChanged,
+            base::Unretained(this)));
+  }
 #endif  // BUILDFLAG(IS_WIN)
   hotkey_string_pref_member_.Init(
       prefs::kOmniboxEverywhereHotkey, g_browser_process->local_state(),
@@ -87,10 +109,19 @@ void OmniboxEverywhereBackgroundModeManager::SetProfile(Profile* profile) {
     return;
   }
   profile_ = profile;
+  template_url_service_observation_.Reset();
+  if (profile_) {
+    if (TemplateURLService* template_url_service =
+            TemplateURLServiceFactory::GetForProfile(profile_)) {
+      template_url_service_observation_.Observe(template_url_service);
+    }
+    OnTemplateURLServiceChanged();
+  }
   OnPrefChanged();
 }
 
 void OmniboxEverywhereBackgroundModeManager::Reset() {
+  deferred_status_icon_weak_factory_.InvalidateWeakPtrs();
   profile_keep_alive_.reset();
   keep_alive_.reset();
   HideStatusIcon();
@@ -109,11 +140,12 @@ void OmniboxEverywhereBackgroundModeManager::OnPrefChanged() {
     return;
   }
 
-  const bool background_mode_enabled = background_mode_pref_member_.GetValue();
+  const bool background_mode_enabled =
+      prefs::IsBackgroundModeEnabled(g_browser_process->local_state());
 
 #if BUILDFLAG(IS_WIN)
   const bool launch_on_startup_enabled =
-      launch_on_startup_pref_member_.GetValue();
+      prefs::IsLaunchOnStartupEnabled(g_browser_process->local_state());
   const bool should_launch_on_startup =
       background_mode_enabled && launch_on_startup_enabled;
   // TODO(crbug.com/532190282): Load the persisted target profile on OS startup
@@ -127,7 +159,19 @@ void OmniboxEverywhereBackgroundModeManager::OnPrefChanged() {
   }
 
   if (!status_icon_) {
-    ShowStatusIcon();
+    if (base::FeatureList::IsEnabled(
+            omnibox::kOmniboxEverywhereDeferStatusIcon) &&
+        !AfterStartupTaskUtils::IsBrowserStartupComplete()) {
+      if (!deferred_status_icon_weak_factory_.HasWeakPtrs()) {
+        AfterStartupTaskUtils::PostTask(
+            FROM_HERE, content::GetUIThreadTaskRunner({}),
+            base::BindOnce(
+                &OmniboxEverywhereBackgroundModeManager::ShowStatusIcon,
+                deferred_status_icon_weak_factory_.GetWeakPtr()));
+      }
+    } else {
+      ShowStatusIcon();
+    }
   }
 
   if (background_mode_enabled) {
@@ -150,8 +194,8 @@ void OmniboxEverywhereBackgroundModeManager::OnPrefChanged() {
 
 void OmniboxEverywhereBackgroundModeManager::UpdateProfileKeepAlive() {
   if (enabled_pref_member_.GetValue() &&
-      background_mode_pref_member_.GetValue() && profile_ &&
-      !profile_->IsOffTheRecord()) {
+      prefs::IsBackgroundModeEnabled(g_browser_process->local_state()) &&
+      profile_ && !profile_->IsOffTheRecord()) {
     if (!profile_keep_alive_ || profile_keep_alive_->profile() != profile_) {
       profile_keep_alive_ = ScopedProfileKeepAlive::TryAcquire(
           profile_, ProfileKeepAliveOrigin::kOmniboxEverywhere);
@@ -162,22 +206,25 @@ void OmniboxEverywhereBackgroundModeManager::UpdateProfileKeepAlive() {
 }
 
 void OmniboxEverywhereBackgroundModeManager::ShowStatusIcon() {
+  deferred_status_icon_weak_factory_.InvalidateWeakPtrs();
+  if (status_icon_) {
+    return;
+  }
   StatusTray* status_tray =
       g_browser_process ? g_browser_process->status_tray() : nullptr;
   if (!status_tray) {
     return;
   }
 
-  gfx::ImageSkia icon_image = GetOmniboxEverywhereIcon();
-
   std::u16string tooltip =
       l10n_util::GetStringUTF16(IDS_OMNIBOX_EVERYWHERE_STATUS_ICON_TOOLTIP);
   status_icon_ = status_tray->CreateStatusIcon(
-      StatusTray::OMNIBOX_EVERYWHERE_ICON, icon_image, tooltip);
+      StatusTray::OMNIBOX_EVERYWHERE_ICON, GetStatusIconImage(), tooltip);
   if (status_icon_) {
     status_icon_->AddObserver(this);
 #if BUILDFLAG(IS_MAC)
     status_icon_->SetOpenMenuWithSecondaryClick(true);
+    UpdateStatusIconImageTemplate();
 #endif
     UpdateStatusIconContextMenu();
   }
@@ -248,6 +295,46 @@ void OmniboxEverywhereBackgroundModeManager::OnBrowserCreated(
 void OmniboxEverywhereBackgroundModeManager::OnBrowserClosed(
     BrowserWindowInterface* browser) {
   UpdateVisibilityOfExitInContextMenu();
+}
+
+gfx::ImageSkia OmniboxEverywhereBackgroundModeManager::GetStatusIconImage()
+    const {
+  bool for_dark_background = false;
+#if BUILDFLAG(IS_WIN)
+  for_dark_background = taskbar_theme_watcher_.in_dark_mode();
+#endif
+  return GetOmniboxEverywhereIcon(template_url_service_observation_.GetSource(),
+                                  for_dark_background);
+}
+
+void OmniboxEverywhereBackgroundModeManager::UpdateStatusIconImage() {
+  if (!status_icon_) {
+    return;
+  }
+  status_icon_->SetImage(GetStatusIconImage());
+#if BUILDFLAG(IS_MAC)
+  // The template property belongs to the image, so set it again after every
+  // `SetImage()`.
+  UpdateStatusIconImageTemplate();
+#endif
+}
+
+#if BUILDFLAG(IS_MAC)
+void OmniboxEverywhereBackgroundModeManager::UpdateStatusIconImageTemplate() {
+  // Let macOS draw the monochrome loupe in the menu bar's color, e.g. white on
+  // a dark menu bar.
+  status_icon_->SetImageTemplate(IsOmniboxEverywhereIconMonochrome(
+      template_url_service_observation_.GetSource()));
+}
+#endif
+
+void OmniboxEverywhereBackgroundModeManager::OnTemplateURLServiceChanged() {
+  UpdateStatusIconImage();
+}
+
+void OmniboxEverywhereBackgroundModeManager::
+    OnTemplateURLServiceShuttingDown() {
+  template_url_service_observation_.Reset();
 }
 
 void OmniboxEverywhereBackgroundModeManager::

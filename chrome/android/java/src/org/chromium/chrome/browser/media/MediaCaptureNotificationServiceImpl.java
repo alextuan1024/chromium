@@ -29,6 +29,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
 import org.chromium.chrome.browser.notifications.NotificationWrapperBuilderFactory;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
@@ -53,9 +54,12 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -78,6 +82,7 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
     private BaseNotificationManagerProxy mNotificationManager;
     private SharedPreferencesManager mSharedPreferences;
     private final TreeMap<Integer, Set<@MediaType Integer>> mNotificationsType = new TreeMap<>();
+    private final Map<Integer, @Nullable String> mNotificationsUrl = new HashMap<>();
     private final List<Pair<Integer, NotificationWrapper>> mNotifications = new ArrayList<>();
 
     private boolean mStartedForegroundService;
@@ -94,12 +99,14 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
     /**
      * @param notificationId Unique id of the notification.
      * @param mediaTypes Media types of the notification.
-     * @return Whether the notification has already been created for provided notification id and
-     *     mediaTypes.
+     * @param url URL the notification attributes the media usage to.
+     * @return Whether the existing notification for {@code notificationId} differs from the given
+     *     media types or URL and therefore has to be rebuilt.
      */
     private boolean doesNotificationNeedUpdate(
-            int notificationId, Set<@MediaType Integer> mediaTypes) {
-        return !mediaTypes.equals(mNotificationsType.get(notificationId));
+            int notificationId, Set<@MediaType Integer> mediaTypes, @Nullable String url) {
+        return !mediaTypes.equals(mNotificationsType.get(notificationId))
+                || !Objects.equals(url, mNotificationsUrl.get(notificationId));
     }
 
     /**
@@ -194,18 +201,52 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
             @Nullable String url,
             boolean isIncognito,
             int startId) {
+        Set<@MediaType Integer> liveMediaTypes = refreshMediaTypes(notificationId, mediaTypes);
         if (doesNotificationExist(notificationId)
-                && !doesNotificationNeedUpdate(notificationId, mediaTypes)) {
+                && !doesNotificationNeedUpdate(notificationId, liveMediaTypes, url)) {
             return;
         }
-        boolean hasNewMediaTypesToUpdate = !mediaTypes.isEmpty();
-        destroyNotification(notificationId, hasNewMediaTypesToUpdate);
-        if (hasNewMediaTypesToUpdate) {
-            createNotification(notificationId, mediaTypes, url, isIncognito);
+        boolean hasActiveMediaTypes = !liveMediaTypes.isEmpty();
+        destroyNotification(notificationId, hasActiveMediaTypes);
+        if (hasActiveMediaTypes) {
+            createNotification(notificationId, liveMediaTypes, url, isIncognito);
         }
         if (mNotificationsType.isEmpty()) {
             getService().stopSelf(startId);
         }
+    }
+
+    /**
+     * Replaces the {@code mediaTypes} snapshot from an incoming {@link
+     * #ACTION_MEDIA_CAPTURE_UPDATE} intent with the live capture state of the tab's {@link
+     * WebContents}.
+     *
+     * <p>{@link #updateMediaNotificationForTab} dispatches {@code startService(intent)}
+     * asynchronously with a point-in-time snapshot of {@code mediaTypes}. When multiple streams
+     * tear down at the end of a call or switch capture targets, an earlier update intent can arrive
+     * on the UI thread after the stream state or {@link WebContents} lifecycle has already changed.
+     * Replacing the snapshot with the live {@link WebContents} state can also add types that were
+     * not in {@code mediaTypes}.
+     *
+     * <p>An empty {@code mediaTypes} input is trusted and passed through. If the tab is missing or
+     * its {@link WebContents} is destroyed, returns an empty set (caveat: a tab in the undo-close
+     * window is not found by {@code getTabById()} while it may still be capturing). This keeps the
+     * path JNI-free when a redelivered intent arrives before native is loaded. Guarded by {@link
+     * ChromeFeatureList#MEDIA_CAPTURE_NOTIFICATION_REFRESH_MEDIA_TYPES} as a kill switch.
+     */
+    private static Set<@MediaType Integer> refreshMediaTypes(
+            int notificationId, Set<@MediaType Integer> mediaTypes) {
+        if (mediaTypes.isEmpty()
+                || !ChromeFeatureList.sMediaCaptureNotificationRefreshMediaTypes.isEnabled()) {
+            return mediaTypes;
+        }
+        final int tabId = getTabIdFromNotificationId(notificationId);
+        final Tab tab = TabWindowManagerSingleton.getInstance().getTabById(tabId);
+        WebContents webContents = tab != null ? tab.getWebContents() : null;
+        if (webContents == null || webContents.isDestroyed()) {
+            return new HashSet<>();
+        }
+        return getMediaTypes(webContents);
     }
 
     private static boolean hasCapturingMediaType(@Nullable Set<@MediaType Integer> mediaTypes) {
@@ -249,8 +290,10 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
      * Destroys the notification for the id notificationId.
      *
      * @param notificationId Unique id of the notification.
+     * @param hasActiveMediaTypes Whether the tab still has active media types and will immediately
+     *     recreate the notification.
      */
-    private void destroyNotification(int notificationId, boolean hasNewMediaTypesToUpdate) {
+    private void destroyNotification(int notificationId, boolean hasActiveMediaTypes) {
         if (doesNotificationExist(notificationId)) {
             final var oldMediaTypes = mNotificationsType.get(notificationId);
             if (hasCapturingMediaType(oldMediaTypes)) {
@@ -258,13 +301,14 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
                 tryStopMediaCapture(tabId);
             }
             mNotificationsType.remove(notificationId);
+            mNotificationsUrl.remove(notificationId);
             if (isBackgroundMediaCapturingEnabled()) {
                 int lastIndex = mNotifications.size() - 1;
                 boolean isRemovingLatestNotification =
                         lastIndex >= 0 && mNotifications.get(lastIndex).first == notificationId;
                 mNotifications.removeIf(
                         notificationEntry -> notificationEntry.first == notificationId);
-                if (!hasNewMediaTypesToUpdate) {
+                if (!hasActiveMediaTypes) {
                     if (mNotifications.isEmpty()) {
                         if (!TabSharingUiManager.getInstance().isSharing()) {
                             stopForegroundService();
@@ -360,6 +404,7 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
                         contentIntent,
                         stopIntent);
         mNotificationsType.put(notificationId, mediaTypes);
+        mNotificationsUrl.put(notificationId, url);
         if (isBackgroundMediaCapturingEnabled()) {
             // For large screen device, we use the latest notification to start or update
             // the foreground service.
@@ -419,18 +464,47 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
 
     private void startOrUpdateForegroundService(
             int notificationId, NotificationWrapper notification) {
-        mForgroundServiceType = getRequiredForegroundServiceType();
+        int foregroundServiceType = getRequiredForegroundServiceType();
+
+        // The MediaProjection token can be revoked by MediaProjection.stop(), System UI stop,
+        // screen lock, or another projection starting, whereas MediaStreamCaptureIndicator only
+        // updates after DesktopCapturerAndroid's next CaptureFrame() reports a permanent error, so
+        // isCapturingScreen() can lag. If starting with FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        // throws SecurityException, retry without that type; after a fallback, mNotificationsType
+        // still holds the projection types until native teardown sends the next update.
+        if ((foregroundServiceType & ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION) != 0) {
+            try {
+                startForegroundInternal(notificationId, notification, foregroundServiceType);
+                ScreenCapture.onForegroundServiceRunning(true);
+                return;
+            } catch (SecurityException e) {
+                Log.w(
+                        TAG,
+                        "Unable to start foreground service with type 0x%x",
+                        foregroundServiceType,
+                        e);
+                foregroundServiceType &= ~ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+            }
+        }
+
+        if (foregroundServiceType == 0) {
+            stopForegroundService();
+        } else {
+            startForegroundInternal(notificationId, notification, foregroundServiceType);
+            ScreenCapture.onForegroundServiceRunning(false);
+        }
+    }
+
+    private void startForegroundInternal(
+            int notificationId, NotificationWrapper notification, int foregroundServiceType) {
         ForegroundServiceUtils.getInstance()
                 .startForeground(
                         getService(),
                         notificationId,
                         notification.getNotification(),
-                        mForgroundServiceType);
-
+                        foregroundServiceType);
+        mForgroundServiceType = foregroundServiceType;
         mStartedForegroundService = true;
-        boolean isRunningMediaProjection =
-                (mForgroundServiceType & ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION) != 0;
-        ScreenCapture.onForegroundServiceRunning(isRunningMediaProjection);
     }
 
     private void stopForegroundService() {
@@ -565,7 +639,7 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
         try {
             context.startService(intent);
         } catch (IllegalStateException e) {
-            Log.e(TAG, "Unable to start service for update: " + e);
+            Log.e(TAG, "Unable to start service for update", e);
         }
     }
 
@@ -581,7 +655,7 @@ public class MediaCaptureNotificationServiceImpl extends SplitCompatService.Impl
         try {
             context.startService(new Intent(context, MediaCaptureNotificationService.class));
         } catch (IllegalStateException e) {
-            Log.e(TAG, "Unable to start service for clear: " + e);
+            Log.e(TAG, "Unable to start service for clear", e);
         }
     }
 

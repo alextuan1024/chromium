@@ -12,9 +12,11 @@
 #include "base/time/time.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/javascript_dialogs/tab_modal_dialog_manager.h"
+#include "components/tabs/public/async_web_contents_destroyer_data.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace tabs {
 
@@ -46,7 +48,13 @@ TabWebContentsDestroyer::TabWebContentsDestroyer(
       profile_observation_.Observe(profile);
     }
   }
+  AsyncWebContentsDestroyerData::CreateForWebContents(web_contents_.get());
   web_contents_->SetDelegate(this);
+  // The tab is closed: stop delivering input to it, and cancel any in-flight
+  // touch sequence now, while all of its views are still alive and attached,
+  // instead of leaving it to be flushed during final teardown.
+  ignore_input_events_.emplace(
+      web_contents_->IgnoreInputEvents(/*audit_callback=*/std::nullopt));
   // Cancel any pre-existing in-flight navigations before ClosePage() cancels
   // NavigationRequests.
   web_contents_->Stop();
@@ -70,6 +78,9 @@ TabWebContentsDestroyer::~TabWebContentsDestroyer() {
                                     /*reset_state=*/true);
     }
     web_contents_->SetDelegate(nullptr);
+    // Release input suppression while `web_contents_` is still alive, so its
+    // release-time gesture reset runs against live views.
+    ignore_input_events_.reset();
     web_contents_.reset();
   }
 }
@@ -125,7 +136,7 @@ content::WebContents* TabWebContentsDestroyer::CreateCustomWebContents(
     const GURL& opener_url,
     const std::string& frame_name,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     const content::StoragePartitionConfig& partition_config,
     content::SessionStorageNamespaceHandle* session_storage_namespace) {

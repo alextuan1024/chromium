@@ -58,13 +58,14 @@ void LayoutManager::ViewVisibilitySet(View* host,
 }
 
 void LayoutManager::SetViewVisibility(View* view, bool visible) {
-  DCHECK(!view->parent() || view->parent()->GetLayoutManager() == this ||
-         view->parent()->GetLayoutManager() == nullptr);
+  CHECK(!view->parent() || view->parent()->GetLayoutManager() == this ||
+            view->parent()->GetLayoutManager() == nullptr,
+        base::NotFatalUntil::M163);
   base::AutoReset<raw_ptr<View>> setter(&view_setting_visibility_on_, view);
   view->SetVisible(visible);
 }
 
-std::vector<raw_ptr<View, VectorExperimental>>
+std::vector<raw_ptr<View, DanglingUntriaged>>
 LayoutManager::GetChildViewsInPaintOrder(const View* host) const {
   return host->children();
 }

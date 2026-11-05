@@ -10,6 +10,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "build/build_config.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_environment.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_footer_panel.h"
@@ -30,7 +31,6 @@
 #include "chrome/browser/ash/app_list/arc/arc_app_test.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/shelf_controller_helper.h"
@@ -38,9 +38,22 @@
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
+#include "components/account_id/account_id.h"
+#include "components/account_id/account_id_literal.h"  // nogncheck
 #include "components/user_manager/user_manager.h"
+#include "google_apis/gaia/gaia_id.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace {
+
+const char kTestExtensionId[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const char kTestOtherExtensionId[] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+#if BUILDFLAG(IS_CHROMEOS)
+constexpr char kOtherProfileEmail[] = "other_profile@gmail.com";
+constexpr AccountId::Literal kOtherAccountId =
+    AccountId::Literal::FromUserEmailGaiaId(kOtherProfileEmail,
+                                            GaiaId::Literal("2345678901"));
 
 std::vector<arc::mojom::AppInfoPtr> GetArcSettingsAppInfo() {
   std::vector<arc::mojom::AppInfoPtr> apps;
@@ -52,14 +65,7 @@ std::vector<arc::mojom::AppInfoPtr> GetArcSettingsAppInfo() {
   apps.push_back(std::move(app));
   return apps;
 }
-
-}  // namespace
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-namespace {
-
-const char kTestExtensionId[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const char kTestOtherExtensionId[] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+#endif
 
 }  // namespace
 
@@ -75,6 +81,8 @@ class AppInfoDialogViewsTest : public ChromeViewsTestBase,
 #if BUILDFLAG(IS_CHROMEOS)
     arc_app_test_ =
         std::make_unique<ArcAppTest>(ArcAppTest::UserManagerMode::kCreate);
+    // Users need to be registered before logging in.
+    arc_app_test_->AddAdditionalUser(kOtherAccountId);
     arc_app_test_->PreProfileSetUp();
 #endif
 
@@ -185,7 +193,13 @@ class AppInfoDialogViewsTest : public ChromeViewsTestBase,
 };
 
 // Tests that the dialog closes when the current app is uninstalled.
-TEST_F(AppInfoDialogViewsTest, UninstallingAppClosesDialog) {
+// TODO(crbug.com/573033441): Flaky on ChromeOS ASan/LSan.
+#if BUILDFLAG(IS_CHROMEOS) && defined(ADDRESS_SANITIZER)
+#define MAYBE_UninstallingAppClosesDialog DISABLED_UninstallingAppClosesDialog
+#else
+#define MAYBE_UninstallingAppClosesDialog UninstallingAppClosesDialog
+#endif
+TEST_F(AppInfoDialogViewsTest, MAYBE_UninstallingAppClosesDialog) {
   ShowAppInfo(kTestExtensionId);
   ASSERT_TRUE(widget_);
   EXPECT_FALSE(widget_->IsClosed());
@@ -263,18 +277,14 @@ TEST_F(AppInfoDialogViewsTest, ArcAppInfoLinks) {
 
   // Re-show App Info but for non-primary profile.
   CloseAppInfo();
-  const AccountId other_account_id =
-      AccountId::FromUserEmail("other_profile@gmail.com");
-  auto* fake_user_manager = static_cast<ash::FakeChromeUserManager*>(
-      user_manager::UserManager::Get());
-  fake_user_manager->AddUser(other_account_id);
+  ASSERT_TRUE(user_manager::UserManager::Get()->FindUser(kOtherAccountId));
 
   TestingProfileManager profile_manager(TestingBrowserProcess::GetGlobal());
   ASSERT_TRUE(profile_manager.SetUp());
   ash::ScopedAccountIdAnnotator annotator(profile_manager.profile_manager(),
-                                          other_account_id);
+                                          kOtherAccountId);
   TestingProfile* other_profile =
-      profile_manager.CreateTestingProfile("other_profile@gmail.com");
+      profile_manager.CreateTestingProfile(kOtherProfileEmail);
 
   extension_environment_.CreateExtensionServiceForProfile(other_profile);
   // We're adding the extension to the second profile, so don't install it

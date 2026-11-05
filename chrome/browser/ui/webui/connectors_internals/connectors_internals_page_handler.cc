@@ -13,11 +13,14 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/enterprise/client_certificates/certificate_provisioning_service_factory.h"
+#include "chrome/browser/enterprise/connectors/device_trust/device_trust_connector_service_factory.h"
+#include "chrome/browser/enterprise/connectors/device_trust/device_trust_service_factory.h"
 #include "chrome/browser/enterprise/reporting/cloud_profile_reporting_service.h"
 #include "chrome/browser/enterprise/reporting/cloud_profile_reporting_service_factory.h"
 #include "chrome/browser/enterprise/signals/signals_aggregator_factory.h"
 #include "chrome/browser/enterprise/signals/user_permission_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/webui/connectors_internals/device_trust_utils.h"
 #include "components/device_signals/core/browser/signals_aggregator.h"
 #include "components/device_signals/core/browser/user_permission_service.h"
 #include "components/enterprise/browser/reporting/chrome_profile_request_generator.h"
@@ -27,26 +30,25 @@
 #include "components/enterprise/client_certificates/core/certificate_provisioning_service.h"
 #include "components/enterprise/connectors/connectors_internals.mojom.h"
 #include "components/enterprise/connectors/core/connectors_internals_utils.h"
+#include "components/enterprise/device_trust/core/device_trust_connector_service.h"
+#include "components/enterprise/device_trust/core/device_trust_service.h"
 #include "components/prefs/pref_service.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "net/cert/x509_certificate.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/enterprise/connectors/device_trust/device_trust_features.h"
 #include "chrome/browser/enterprise/reporting/reporting_delegate_factory_android.h"
 #else
-#include "chrome/browser/enterprise/connectors/device_trust/device_trust_connector_service_factory.h"
-#include "chrome/browser/enterprise/connectors/device_trust/device_trust_service_factory.h"
 #include "chrome/browser/enterprise/reporting/reporting_delegate_factory_desktop.h"
-#include "chrome/browser/ui/webui/connectors_internals/device_trust_utils.h"
-#include "components/enterprise/device_trust/core/device_trust_service.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/mac/secure_enclave_client.h"
 #endif  // BUILDFLAG(IS_MAC)
 
-#if BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
+#if !BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "components/enterprise/browser/controller/chrome_browser_cloud_management_controller.h"
@@ -63,7 +65,7 @@ ConnectorsInternalsPageHandler::ConnectorsInternalsPageHandler(
     mojo::PendingReceiver<connectors_internals::mojom::PageHandler> receiver,
     Profile* profile)
     : receiver_(this, std::move(receiver)), profile_(profile) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M162);
 }
 
 ConnectorsInternalsPageHandler::~ConnectorsInternalsPageHandler() = default;
@@ -71,8 +73,12 @@ ConnectorsInternalsPageHandler::~ConnectorsInternalsPageHandler() = default;
 void ConnectorsInternalsPageHandler::GetDeviceTrustState(
     GetDeviceTrustStateCallback callback) {
 #if BUILDFLAG(IS_ANDROID)
-  NOTIMPLEMENTED();
-#else
+  if (!IsDeviceTrustConnectorAndroidEnabled()) {
+    std::move(callback).Run(utils::CreateUnsupportedDeviceTrustState());
+    return;
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
   auto* device_trust_service =
       DeviceTrustServiceFactory::GetForProfile(profile_);
 
@@ -89,7 +95,6 @@ void ConnectorsInternalsPageHandler::GetDeviceTrustState(
       base::BindOnce(&ConnectorsInternalsPageHandler::OnSignalsCollected,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback),
                      device_trust_service->IsEnabled()));
-#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 void ConnectorsInternalsPageHandler::DeleteDeviceTrustKey(
@@ -108,7 +113,6 @@ void ConnectorsInternalsPageHandler::DeleteDeviceTrustKey(
 
 void ConnectorsInternalsPageHandler::GetClientCertificateState(
     GetClientCertificateStateCallback callback) {
-#if BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
   auto* profile_certificate_provisioning_service =
       client_certificates::CertificateProvisioningServiceFactory::GetForProfile(
           profile_);
@@ -125,12 +129,6 @@ void ConnectorsInternalsPageHandler::GetClientCertificateState(
   std::move(callback).Run(utils::CreateClientCertificateState(
       browser_certificate_provisioning_service,
       profile_certificate_provisioning_service));
-
-#else
-  std::move(callback).Run(
-      connectors_internals::mojom::ClientCertificateState::New(
-          std::vector<std::string>(), nullptr, nullptr));
-#endif
 }
 
 void ConnectorsInternalsPageHandler::GetSignalsReportingState(
@@ -170,10 +168,23 @@ void ConnectorsInternalsPageHandler::GetSignalsReportingState(
   auto state = utils::CreateSignalsReportingState(
       profile_->GetPrefs(), profile_report_scheduler, can_collect_all_signals);
 
+  if (!state->signals_report_enabled) {
+    std::move(callback).Run(std::move(state));
+    return;
+  }
+
+  // Show the signals that were actually uploaded when available. Signals are
+  // only collected on demand as a fallback, as they can't include signals that
+  // require a challenge from the server (e.g. client certificates).
+  if (state->signals) {
+    std::move(callback).Run(std::move(state));
+    return;
+  }
+
   auto* signals_aggregator =
       enterprise_signals::SignalsAggregatorFactory::GetForProfile(profile_);
 
-  if (!state->signals_report_enabled || !signals_aggregator) {
+  if (!signals_aggregator) {
     std::move(callback).Run(std::move(state));
     return;
   }
@@ -225,7 +236,6 @@ void ConnectorsInternalsPageHandler::RefreshProvisioningDomainConfigs(
 #endif  // BUILDFLAG(ENTERPRISE_PROXY)
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 void ConnectorsInternalsPageHandler::OnSignalsCollected(
     GetDeviceTrustStateCallback callback,
     bool is_device_trust_enabled,
@@ -255,17 +265,20 @@ void ConnectorsInternalsPageHandler::OnSignalsCollected(
       std::move(consent_metadata));
   std::move(callback).Run(std::move(state));
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 void ConnectorsInternalsPageHandler::OnReportGenerated(
     GetSignalsReportingStateCallback callback,
     connectors_internals::mojom::SignalsReportingStatePtr state,
     base::expected<enterprise_reporting::ReportRequestQueue,
                    enterprise_reporting::ReportGenerationError> result) {
-  auto [error_info, signals_json] =
+  auto [error_info, signals] =
       utils::ProcessReportGenerationResult(std::move(result));
   state->error_info = std::move(error_info);
-  state->signals_json = std::move(signals_json);
+  if (signals) {
+    state->signals = connectors_internals::mojom::Signals::New(
+        std::move(*signals),
+        connectors_internals::mojom::SignalsSource::kCollectedOnDemand);
+  }
   std::move(callback).Run(std::move(state));
   request_generator_.reset();
 }

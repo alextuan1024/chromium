@@ -4,23 +4,28 @@
 
 package org.chromium.chrome.browser.customtabs;
 
+import static androidx.browser.customtabs.CustomTabsIntent.COLOR_SCHEME_DARK;
 import static androidx.browser.customtabs.CustomTabsIntent.COLOR_SCHEME_LIGHT;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import static org.chromium.chrome.browser.customtabs.CustomTabsFeatureUsage.CUSTOM_TABS_FEATURE_USAGE_HISTOGRAM;
 
 import android.app.Activity;
+import android.app.PendingIntent;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.drawable.BitmapDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Parcel;
 
+import androidx.browser.auth.AuthTabColorSchemeParams;
 import androidx.browser.auth.AuthTabIntent;
 import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
@@ -29,13 +34,17 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.robolectric.annotation.GraphicsMode;
 
+import org.chromium.base.IntentUtils;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.TitleVisibility;
+import org.chromium.chrome.browser.browserservices.intents.CustomTabIntentDataHolder;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.CustomTabProfileType;
 import org.chromium.ui.base.TestActivity;
@@ -173,6 +182,8 @@ public class AuthTabIntentDataProviderUnitTest {
     }
 
     @Test
+    // Required for WebP images.
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     public void testIntentData_closeButtonIcon() {
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
@@ -212,5 +223,197 @@ public class AuthTabIntentDataProviderUnitTest {
         assertFalse(
                 "Ephemeral AuthTab should not support optional button",
                 mIntentDataProvider.isOptionalButtonSupported());
+    }
+
+    @Test
+    public void testReconstructFromSavedDataHolder() {
+        mIntent.putExtra(AuthTabIntent.EXTRA_REDIRECT_SCHEME, SCHEME);
+        mIntent.putExtra(AuthTabIntent.EXTRA_HTTPS_REDIRECT_HOST, HOST);
+        mIntent.putExtra(AuthTabIntent.EXTRA_HTTPS_REDIRECT_PATH, PATH);
+        mIntent.putExtra(CustomTabsIntent.EXTRA_ENABLE_EPHEMERAL_BROWSING, true);
+        AuthTabIntentDataProvider originalProvider =
+                new AuthTabIntentDataProvider(mIntent, mActivity, COLOR_SCHEME_LIGHT);
+        CustomTabIntentDataHolder holder = originalProvider.getCustomTabIntentDataHolder();
+        assertNotNull(holder);
+
+        Parcel parcel = Parcel.obtain();
+        CustomTabIntentDataHolder restoredHolder;
+        try {
+            holder.writeToParcel(parcel, 0);
+            parcel.setDataPosition(0);
+            restoredHolder = CustomTabIntentDataHolder.CREATOR.createFromParcel(parcel);
+        } finally {
+            parcel.recycle();
+        }
+
+        AuthTabIntentDataProvider restoredProvider =
+                new AuthTabIntentDataProvider(
+                        new Intent(), mActivity, COLOR_SCHEME_LIGHT, restoredHolder);
+        assertEquals(
+                originalProvider.getClientPackageName(), restoredProvider.getClientPackageName());
+        assertEquals(
+                originalProvider.getAuthRedirectScheme(), restoredProvider.getAuthRedirectScheme());
+        assertEquals(
+                originalProvider.getAuthRedirectHost(), restoredProvider.getAuthRedirectHost());
+        assertEquals(
+                originalProvider.getAuthRedirectPath(), restoredProvider.getAuthRedirectPath());
+        assertEquals(originalProvider.getCustomTabMode(), restoredProvider.getCustomTabMode());
+        assertEquals(originalProvider.getActivityType(), restoredProvider.getActivityType());
+        assertEquals(
+                originalProvider.getColorProvider().getToolbarColor(),
+                restoredProvider.getColorProvider().getToolbarColor());
+        assertEquals(originalProvider.getUrlToLoad(), restoredProvider.getUrlToLoad());
+    }
+
+    @Test
+    public void testReconstructFromSavedDataHolder_colorSchemeParams() {
+        AuthTabColorSchemeParams lightParams =
+                new AuthTabColorSchemeParams.Builder()
+                        .setToolbarColor(0xFF112233)
+                        .setNavigationBarColor(0xFF445566)
+                        .setNavigationBarDividerColor(0xFF778899)
+                        .build();
+        AuthTabColorSchemeParams darkParams =
+                new AuthTabColorSchemeParams.Builder()
+                        .setToolbarColor(0xFF000001)
+                        .setNavigationBarColor(0xFF000002)
+                        .build();
+        Intent colorIntent =
+                new AuthTabIntent.Builder()
+                        .setColorSchemeParams(COLOR_SCHEME_LIGHT, lightParams)
+                        .setColorSchemeParams(COLOR_SCHEME_DARK, darkParams)
+                        .build()
+                        .intent;
+        mIntent.putExtras(colorIntent.getExtras());
+
+        AuthTabIntentDataProvider originalProvider =
+                new AuthTabIntentDataProvider(mIntent, mActivity, COLOR_SCHEME_LIGHT);
+        CustomTabIntentDataHolder holder = originalProvider.getCustomTabIntentDataHolder();
+        assertNotNull(holder);
+
+        Parcel parcel = Parcel.obtain();
+        CustomTabIntentDataHolder restoredHolder;
+        try {
+            holder.writeToParcel(parcel, 0);
+            parcel.setDataPosition(0);
+            restoredHolder = CustomTabIntentDataHolder.CREATOR.createFromParcel(parcel);
+        } finally {
+            parcel.recycle();
+        }
+
+        AuthTabIntentDataProvider restoredLight =
+                new AuthTabIntentDataProvider(
+                        new Intent(), mActivity, COLOR_SCHEME_LIGHT, restoredHolder);
+        AuthTabIntentDataProvider restoredDark =
+                new AuthTabIntentDataProvider(
+                        new Intent(), mActivity, COLOR_SCHEME_DARK, restoredHolder);
+
+        assertEquals(0xFF112233, restoredLight.getColorProvider().getToolbarColor());
+        assertEquals(
+                Integer.valueOf(0xFF445566),
+                restoredLight.getColorProvider().getNavigationBarColor());
+        assertEquals(
+                Integer.valueOf(0xFF778899),
+                restoredLight.getColorProvider().getNavigationBarDividerColor());
+        assertTrue(restoredLight.getColorProvider().hasCustomToolbarColor());
+
+        assertEquals(0xFF000001, restoredDark.getColorProvider().getToolbarColor());
+        assertEquals(
+                Integer.valueOf(0xFF000002),
+                restoredDark.getColorProvider().getNavigationBarColor());
+        assertNull(restoredDark.getColorProvider().getNavigationBarDividerColor());
+
+        assertEquals(
+                originalProvider.getColorProvider().getToolbarColor(),
+                restoredLight.getColorProvider().getToolbarColor());
+    }
+
+    @Test
+    public void testReconstructFromSavedDataHolder_timeoutColorSchemeAndUmaGating() {
+        PendingIntent timeoutPi =
+                PendingIntent.getBroadcast(
+                        mActivity,
+                        13,
+                        new Intent("auth_tab_timeout"),
+                        IntentUtils.getPendingIntentMutabilityFlag(true));
+        mIntent.putExtra(CustomTabsIntent.EXTRA_COLOR_SCHEME, COLOR_SCHEME_DARK);
+        mIntent.putExtra(CustomTabActivityTimeoutHandler.EXTRA_TIMEOUT_MINUTES, 20);
+        mIntent.putExtra(CustomTabActivityTimeoutHandler.EXTRA_TIMEOUT_PENDING_INTENT, timeoutPi);
+
+        int countBeforeLaunch =
+                RecordHistogram.getHistogramTotalCountForTesting(
+                        CUSTOM_TABS_FEATURE_USAGE_HISTOGRAM);
+        AuthTabIntentDataProvider originalProvider =
+                new AuthTabIntentDataProvider(mIntent, mActivity, COLOR_SCHEME_DARK);
+        int countAfterLaunch =
+                RecordHistogram.getHistogramTotalCountForTesting(
+                        CUSTOM_TABS_FEATURE_USAGE_HISTOGRAM);
+        assertTrue(
+                "Expected CustomTabs.FeatureUsage samples on initial AuthTab launch",
+                countAfterLaunch > countBeforeLaunch);
+
+        CustomTabIntentDataHolder holder = originalProvider.getCustomTabIntentDataHolder();
+        assertNotNull(holder);
+        assertEquals(COLOR_SCHEME_DARK, holder.mColorScheme);
+        assertEquals(Integer.valueOf(20), originalProvider.getTimeoutMinutes());
+        assertEquals(timeoutPi, originalProvider.getTimeoutPendingIntent());
+        assertNull(originalProvider.getEmbedderTabId());
+        assertFalse(originalProvider.isRestoreTabRequested());
+
+        Parcel parcel = Parcel.obtain();
+        CustomTabIntentDataHolder restoredHolder;
+        try {
+            holder.writeToParcel(parcel, 0);
+            parcel.setDataPosition(0);
+            restoredHolder = CustomTabIntentDataHolder.CREATOR.createFromParcel(parcel);
+        } finally {
+            parcel.recycle();
+        }
+
+        HistogramWatcher noUmaOnRestore =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords(CUSTOM_TABS_FEATURE_USAGE_HISTOGRAM)
+                        .build();
+        AuthTabIntentDataProvider restoredProvider =
+                new AuthTabIntentDataProvider(
+                        new Intent(), mActivity, COLOR_SCHEME_DARK, restoredHolder);
+        noUmaOnRestore.assertExpected();
+
+        assertEquals(
+                COLOR_SCHEME_DARK, restoredProvider.getCustomTabIntentDataHolder().mColorScheme);
+        assertEquals(Integer.valueOf(20), restoredProvider.getTimeoutMinutes());
+        assertEquals(timeoutPi, restoredProvider.getTimeoutPendingIntent());
+        assertNull(restoredProvider.getEmbedderTabId());
+        assertFalse(restoredProvider.isRestoreTabRequested());
+    }
+
+    @Test
+    public void testReconstructFromSavedDataHolder_defaultColorSchemeAndNullTimeout() {
+        AuthTabIntentDataProvider originalProvider =
+                new AuthTabIntentDataProvider(mIntent, mActivity, COLOR_SCHEME_LIGHT);
+        CustomTabIntentDataHolder holder = originalProvider.getCustomTabIntentDataHolder();
+        assertNotNull(holder);
+        assertEquals(CustomTabsIntent.COLOR_SCHEME_SYSTEM, holder.mColorScheme);
+        assertNull(originalProvider.getTimeoutMinutes());
+        assertNull(originalProvider.getTimeoutPendingIntent());
+
+        Parcel parcel = Parcel.obtain();
+        CustomTabIntentDataHolder restoredHolder;
+        try {
+            holder.writeToParcel(parcel, 0);
+            parcel.setDataPosition(0);
+            restoredHolder = CustomTabIntentDataHolder.CREATOR.createFromParcel(parcel);
+        } finally {
+            parcel.recycle();
+        }
+
+        AuthTabIntentDataProvider restoredProvider =
+                new AuthTabIntentDataProvider(
+                        new Intent(), mActivity, COLOR_SCHEME_LIGHT, restoredHolder);
+        assertEquals(
+                CustomTabsIntent.COLOR_SCHEME_SYSTEM,
+                restoredProvider.getCustomTabIntentDataHolder().mColorScheme);
+        assertNull(restoredProvider.getTimeoutMinutes());
+        assertNull(restoredProvider.getTimeoutPendingIntent());
     }
 }

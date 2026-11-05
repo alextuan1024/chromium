@@ -35,6 +35,7 @@
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
+#import "ios/chrome/browser/shared/ui/util/vertical_bar_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
@@ -228,10 +229,21 @@ inline LayoutStateScenePassKey PassKey() {
   [self updateAssistantTopConstraints:self.layoutState.containedLayoutActive];
 }
 
+#if defined(__IPHONE_27_1) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_27_1
+// As the window root, owns the vertical bar decision for the whole scene.
+- (UIVerticalBarBehavior)preferredVerticalBarBehavior {
+  return PreferredVerticalBarBehavior(self.traitCollection);
+}
+#endif
+
 #pragma mark - UIResponder
 
 - (BOOL)canBecomeFirstResponder {
-  return YES;
+  // Only claim first responder when Tab Grid or App Bar has key commands to
+  // handle. When browser layout is active, child view controllers (e.g. BVC)
+  // handle keyboard input.
+  return _tabGridViewController.keyCommands.count > 0 ||
+         _appBar.keyCommands.count > 0;
 }
 
 - (NSArray<UIKeyCommand*>*)keyCommands {
@@ -514,6 +526,7 @@ inline LayoutStateScenePassKey PassKey() {
                           passKey:PassKey()];
   [self.layoutState setWindowedMode:IsWindowedMode(self.view.window)
                             passKey:PassKey()];
+  UpdateVerticalBarConfiguration(self);
 }
 
 // Helper to update app content constraints for panel layout.
@@ -824,6 +837,15 @@ inline LayoutStateScenePassKey PassKey() {
   ];
 
   _assistantSheetConstraints = sheetConstraints;
+  // With fullscreen refactoring, the app content container is only positioned
+  // by constraints. The default constraints are deactivated while the
+  // Assistant is presented, and without Chrome Next IA no fill constraints
+  // replace them, so the app content must be kept filling the view here.
+  if (IsFullscreenRefactoringEnabled() && !IsChromeNextIaEnabled()) {
+    [self setupDefaultConstraints];
+    _assistantSheetConstraints = [sheetConstraints
+        arrayByAddingObjectsFromArray:_baseAssistantConstraints];
+  }
 }
 
 // Dismissal callback method for the first IA promo IPH.

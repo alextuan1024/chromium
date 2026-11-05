@@ -160,7 +160,8 @@ const PrintableSubEntry kU002C[] = {
     {DomCode::US_W, false, false, kAny, kAny, VKEY_OEM_COMMA},
     {DomCode::US_V, false, false, kAny, kAny, VKEY_OEM_COMMA},
     {DomCode::US_M, false, false, kAny, kAny, VKEY_OEM_COMMA},
-    {DomCode::COMMA, false, false, kAny, kAny, VKEY_OEM_COMMA}};
+    {DomCode::COMMA, false, false, kAny, kAny, VKEY_OEM_COMMA},
+    {DomCode::BACKSLASH, false, false, kAny, kAny, VKEY_OEM_COMMA}};
 
 // U+002D hyphen-minus
 const PrintableSubEntry kU002D[] = {
@@ -184,6 +185,7 @@ const PrintableSubEntry kU002E[] = {
     {DomCode::US_O, false, false, kAny, kAny, VKEY_OEM_PERIOD},
     {DomCode::QUOTE, false, false, kAny, kAny, VKEY_OEM_7},
     {DomCode::PERIOD, false, false, kAny, kAny, VKEY_OEM_PERIOD},
+    {DomCode::SLASH, true, false, 0x003A, kAny, VKEY_OEM_PERIOD},  // colon
     {DomCode::SLASH, false, false, kAny, kAny, VKEY_OEM_2}};
 
 // U+002F /
@@ -193,7 +195,9 @@ const PrintableSubEntry kU002F[] = {
     {DomCode::BACKQUOTE, false, false, kAny, kAny, VKEY_OEM_7},
     {DomCode::BACKSLASH, false, false, kAny, kAny, VKEY_OEM_5},
     {DomCode::SLASH, false, false, kAny, kAny, VKEY_OEM_2},
-    {DomCode::CONTROL_RIGHT, false, false, kAny, kAny, VKEY_RCONTROL},
+    // Brazilian ABNT2 (IntlRo) and ThinkPad (ControlRight) layouts.
+    {DomCode::INTL_RO, false, false, kAny, kAny, VKEY_OEM_2},
+    {DomCode::CONTROL_RIGHT, false, false, kAny, kAny, VKEY_OEM_2},
     {DomCode::DIGIT3, true, false, 0x0033, kAny, VKEY_3},       // 3
     {DomCode::DIGIT3, true, false, 0x003F, kAny, VKEY_OEM_2},   // ?
     {DomCode::DIGIT0, true, false, 0x0030, kAny, VKEY_0},       // 0
@@ -335,6 +339,8 @@ const PrintableSubEntry kU00E7[] = {
     {DomCode::QUOTE, false, false, kAny, kAny, VKEY_OEM_7},
     {DomCode::BACKSLASH, false, false, kAny, kAny, VKEY_OEM_2},
     {DomCode::COMMA, false, false, kAny, kAny, VKEY_OEM_COMMA},
+    {DomCode::PERIOD, false, true, kAny, 0x002E, VKEY_OEM_PERIOD},  // full stop
+    {DomCode::PERIOD, false, false, kAny, kAny, VKEY_OEM_5},
     {DomCode::SEMICOLON, true, true, 0x00C7, 0x00DE,
      VKEY_OEM_3},  // C ced., Thorn
     {DomCode::SEMICOLON, true, false, 0x00C7, kAny,
@@ -380,6 +386,7 @@ const PrintableSubEntry kU00F6[] = {
     {DomCode::DIGIT0, false, false, kAny, kAny, VKEY_OEM_3},
     {DomCode::MINUS, false, false, kAny, kAny, VKEY_OEM_PLUS},
     {DomCode::BRACKET_LEFT, false, false, kAny, kAny, VKEY_OEM_4},
+    {DomCode::COMMA, false, false, kAny, kAny, VKEY_OEM_2},
     {DomCode::SEMICOLON, true, false, 0x00E9, kAny, VKEY_OEM_7},  // e acute
     {DomCode::SEMICOLON, true, true, 0x00D6, 0x0162,
      VKEY_OEM_3},  // O dia., T ced.
@@ -666,6 +673,39 @@ bool IsControlCharacter(uint32_t character) {
   return (character < 0x20) || (character > 0x7E && character < 0xA0);
 }
 
+KeyboardCode FallbackKeyboardCode(DomCode dom_code, DomKey dom_key) {
+  if (dom_code == DomCode::NONE) {
+    dom_code = UsLayoutDomKeyToDomCode(dom_key);
+  }
+  return DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
+}
+
+// Returns true for modifier, lock and group-switching keysyms (the same ranges
+// as IsModifierKey() in keyboard_code_conversion_x.cc). Their function is
+// defined by the layout rather than by the physical key, so the US layout VKEY
+// of the physical key (e.g. VKEY_MENU for AltRight) must not be used for them.
+bool IsModifierKeysym(xkb_keysym_t keysym) {
+  return (keysym >= XKB_KEY_Shift_L && keysym <= XKB_KEY_Hyper_R) ||
+         (keysym >= XKB_KEY_ISO_Lock && keysym <= XKB_KEY_ISO_Level5_Lock) ||
+         keysym == XKB_KEY_Mode_switch || keysym == XKB_KEY_Num_Lock;
+}
+
+// Returns the VKEY for a non-printable keysym with DOM key |dom_key|, falling
+// back to the US layout VKEY for non-modifier keysyms.
+KeyboardCode NonPrintableKeyboardCode(DomCode dom_code,
+                                      DomKey dom_key,
+                                      xkb_keysym_t keysym) {
+  // Match X11, which maps ISO_Level5_Shift to VKEY_OEM_8.
+  if (keysym == XKB_KEY_ISO_Level5_Shift) {
+    return VKEY_OEM_8;
+  }
+  KeyboardCode key_code = NonPrintableDomKeyToKeyboardCode(dom_key);
+  if (key_code == VKEY_UNKNOWN && !IsModifierKeysym(keysym)) {
+    key_code = FallbackKeyboardCode(dom_code, dom_key);
+  }
+  return key_code;
+}
+
 }  // anonymous namespace
 
 XkbKeyCodeConverter::XkbKeyCodeConverter() {
@@ -779,11 +819,7 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
                << KeycodeConverter::DomCodeToCodeString(dom_code) << "'";
     return false;
   }
-  xkb_mod_mask_t xkb_flags = EventFlagsToXkbFlags(flags);
-  // Obtain keysym and character.
-  xkb_keysym_t xkb_keysym;
-  uint32_t character = 0;
-  if (!XkbLookup(xkb_keycode, xkb_flags, &xkb_keysym, &character)) {
+  if (!LookupXkbKeycode(dom_code, xkb_keycode, flags, dom_key, key_code)) {
     // If we do not have matching legacy Xkb keycode for the Dom code,
     // we could be dealing with a newer application launcher or similar
     // key. Let's see if we have a basic mapping for it.
@@ -793,7 +829,30 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
       *dom_key = DomKey::UNIDENTIFIED;
       *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
     }
-    return true;
+  }
+  return true;
+}
+
+bool XkbKeyboardLayoutEngine::LookupNativeKeycode(
+    uint32_t native_keycode,
+    int flags,
+    DomKey* dom_key,
+    KeyboardCode* key_code) const {
+  return LookupXkbKeycode(KeycodeConverter::XkbKeycodeToDomCode(native_keycode),
+                          native_keycode, flags, dom_key, key_code);
+}
+
+bool XkbKeyboardLayoutEngine::LookupXkbKeycode(DomCode dom_code,
+                                               xkb_keycode_t xkb_keycode,
+                                               int flags,
+                                               DomKey* dom_key,
+                                               KeyboardCode* key_code) const {
+  xkb_mod_mask_t xkb_flags = EventFlagsToXkbFlags(flags);
+  // Obtain keysym and character.
+  xkb_keysym_t xkb_keysym;
+  uint32_t character = 0;
+  if (!XkbLookup(xkb_keycode, xkb_flags, &xkb_keysym, &character)) {
+    return false;
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -823,20 +882,29 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+  const int kNonShiftlikeModifiers =
+      EF_CONTROL_DOWN | EF_ALT_DOWN | EF_COMMAND_DOWN;
+
   // Classify the keysym and convert to DOM and VKEY representations.
+  bool control_transformed_to_nul = false;
   if (dom_code != DomCode::DIGIT2 || (flags & EF_CONTROL_DOWN) == 0) {
     // Non-character key. (We only support NUL as ^@ and ^2.)
     *dom_key = NonPrintableXKeySymToDomKey(xkb_keysym);
     if (*dom_key != DomKey::NONE) {
-      *key_code = NonPrintableDomKeyToKeyboardCode(*dom_key);
-      if (*key_code == VKEY_UNKNOWN)
-        *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
+      *key_code = NonPrintableKeyboardCode(dom_code, *dom_key, xkb_keysym);
       return true;
     }
     if (character == 0) {
-      *dom_key = DomKey::UNIDENTIFIED;
-      *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
-      return true;
+      if ((flags & kNonShiftlikeModifiers) == 0) {
+        *dom_key = DomKey::UNIDENTIFIED;
+        *key_code = NonPrintableKeyboardCode(dom_code, DomKey::UNIDENTIFIED,
+                                             xkb_keysym);
+        return true;
+      }
+      // XKB's Control transformation maps some printable keys to NUL (e.g.
+      // Ctrl+Space and Ctrl+`). Let the fallback below find the character
+      // without the modifier.
+      control_transformed_to_nul = true;
     }
   }
 
@@ -844,8 +912,6 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
   // non-printable and a non-shiftlike modifier is down, we preferentially
   // return a printable key as if the modifier were not down.
   // https://w3c.github.io/uievents/#keys-guidelines
-  const int kNonShiftlikeModifiers =
-      EF_CONTROL_DOWN | EF_ALT_DOWN | EF_COMMAND_DOWN;
   if ((flags & kNonShiftlikeModifiers) && IsControlCharacter(character)) {
     int normal_ui_flags = flags & ~kNonShiftlikeModifiers;
     xkb_mod_mask_t normal_xkb_flags = EventFlagsToXkbFlags(normal_ui_flags);
@@ -861,15 +927,44 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
     }
   }
 
+  if (control_transformed_to_nul && character == 0) {
+    *dom_key = DomKey::UNIDENTIFIED;
+    *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
+    return true;
+  }
+
   *dom_key = DomKey::FromCharacter(character);
   *key_code = AlphanumericKeyboardCode(xkb_keysym, character);
   if (*key_code == VKEY_UNKNOWN) {
     *key_code = DifficultKeyboardCode(dom_code, flags, xkb_keycode, xkb_flags,
                                       xkb_keysym, character);
-    if (*key_code == VKEY_UNKNOWN)
-      *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
+    if (*key_code == VKEY_UNKNOWN) {
+      *key_code = FallbackKeyboardCode(dom_code, *dom_key);
+    }
   }
   return true;
+}
+
+std::optional<uint32_t> XkbKeyboardLayoutEngine::LookupKeysym(DomCode dom_code,
+                                                              int flags) const {
+  if (!xkb_state_ || dom_code == DomCode::NONE) {
+    return std::nullopt;
+  }
+  xkb_keycode_t xkb_keycode =
+      key_code_converter_->DomCodeToXkbKeyCode(dom_code);
+  if (xkb_keycode == key_code_converter_->InvalidXkbKeyCode()) {
+    return std::nullopt;
+  }
+  xkb_keysym_t xkb_keysym = XKB_KEY_NoSymbol;
+  uint32_t character = 0;
+  std::ignore = XkbLookup(xkb_keycode, EventFlagsToXkbFlags(flags), &xkb_keysym,
+                          &character);
+#if BUILDFLAG(IS_CHROMEOS)
+  if (dom_code == DomCode::PRINT_SCREEN && xkb_keysym == XKB_KEY_Print) {
+    xkb_keysym = XKB_KEY_3270_PrintScreen;
+  }
+#endif
+  return xkb_keysym;
 }
 
 void XkbKeyboardLayoutEngine::SetInitCallbackForTest(
@@ -883,11 +978,10 @@ void XkbKeyboardLayoutEngine::SetInitCallbackForTest(
 }
 
 bool XkbKeyboardLayoutEngine::SetCurrentLayoutFromBuffer(
-    const char* keymap_string,
-    size_t size) {
+    std::string_view keymap_string) {
   xkb_keymap* keymap = xkb_keymap_new_from_buffer(
-      xkb_context_.get(), keymap_string, size, XKB_KEYMAP_FORMAT_TEXT_V1,
-      XKB_KEYMAP_COMPILE_NO_FLAGS);
+      xkb_context_.get(), keymap_string.data(), keymap_string.size(),
+      XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
   if (!keymap)
     return false;
 
@@ -966,6 +1060,14 @@ int XkbKeyboardLayoutEngine::UpdateModifiers(uint32_t depressed,
                                              uint32_t latched,
                                              uint32_t locked,
                                              uint32_t group) {
+  if (!xkb_state_) {
+    // The first XKB keymap may arrive after GTK IM events that depend on
+    // modifier state (e.g. fcitx5 firing on first input activation).
+    // Guard like XkbLookup does to avoid xkb_state_update_mask(NULL).
+    LOG(ERROR) << "No current XKB state";
+    return 0;
+  }
+
   auto* state = xkb_state_.get();
   xkb_state_update_mask(state, depressed, latched, locked, 0, 0, group);
   auto component = static_cast<xkb_state_component>(XKB_STATE_MODS_DEPRESSED |
@@ -982,9 +1084,26 @@ int XkbKeyboardLayoutEngine::UpdateModifiers(uint32_t depressed,
   return xkb_modifier_converter_.UiFlagsFromMask(mask);
 }
 
+bool XkbKeyboardLayoutEngine::HasKeymap() const {
+  return xkb_state_ != nullptr;
+}
+
+bool XkbKeyboardLayoutEngine::KeyRepeats(xkb_keycode_t xkb_keycode) const {
+  if (!xkb_state_) {
+    return false;
+  }
+  return xkb_keymap_key_repeats(xkb_state_get_keymap(xkb_state_.get()),
+                                xkb_keycode) != 0;
+}
+
 DomCode XkbKeyboardLayoutEngine::GetDomCodeByKeysym(
     uint32_t keysym,
     const std::optional<std::vector<std::string_view>>& modifiers) const {
+  if (!xkb_state_) {
+    LOG(ERROR) << "No current XKB state";
+    return DomCode::NONE;
+  }
+
   // Look up all candidates.
   auto range = std::equal_range(
       xkb_keysym_map_.begin(), xkb_keysym_map_.end(), XkbKeysymMapEntry{keysym},
@@ -1059,8 +1178,8 @@ KeyboardCode XkbKeyboardLayoutEngine::DifficultKeyboardCode(
   // active, because it changes the function of the keypad keys (e.g. from
   // navigation keys to numeric/decimal keys) rather than being a shortcut
   // modifier.
-  xkb_mod_mask_t num_lock_flags = xkb_modifier_converter_.MaskFromUiFlags(
-      ui_flags & ui::EF_NUM_LOCK_ON);
+  xkb_mod_mask_t num_lock_flags =
+      xkb_flags & xkb_modifier_converter_.MaskFromUiFlags(ui::EF_NUM_LOCK_ON);
   xkb_keysym_t plain_keysym;
   uint32_t plain_character;
   if (!XkbLookup(xkb_keycode, num_lock_flags, &plain_keysym, &plain_character))
@@ -1124,6 +1243,14 @@ KeyboardCode XkbKeyboardLayoutEngine::DifficultKeyboardCode(
   if ((simple != std::end(kSimpleMap)) &&
       (simple->plain_character == plain_character)) {
     return simple->key_code;
+  }
+
+  if (dom_code == DomCode::NONE) {
+    // Without a DomCode, kMultiMap cannot match and characters like space are
+    // not in kSimpleMap either. Fall back to the US layout DomCode for the
+    // unmodified character.
+    return DomCodeToUsLayoutNonLocatedKeyboardCode(
+        UsLayoutDomKeyToDomCode(DomKey::FromCharacter(plain_character)));
   }
 
   return VKEY_UNKNOWN;

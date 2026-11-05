@@ -5,6 +5,7 @@
 #ifndef SERVICES_NETWORK_CORS_CORS_URL_LOADER_H_
 #define SERVICES_NETWORK_CORS_CORS_URL_LOADER_H_
 
+#include <memory>
 #include <optional>
 
 #include "base/memory/raw_ptr.h"
@@ -97,7 +98,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
       NetworkContext* context,
       std::optional<base::UnguessableToken> network_restrictions_id,
       net::CookieSettingOverrides factory_cookie_setting_overrides,
-      net::CookieSettingOverrides devtools_cookie_setting_overrides);
+      net::CookieSettingOverrides devtools_cookie_setting_overrides,
+      bool factory_is_storage_access_potentially_allowed);
 
   CorsURLLoader(const CorsURLLoader&) = delete;
   CorsURLLoader& operator=(const CorsURLLoader&) = delete;
@@ -372,6 +374,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   std::optional<URLLoaderCompletionStatus> deferred_completion_status_;
   const net::CookieSettingOverrides factory_cookie_setting_overrides_;
   const net::CookieSettingOverrides devtools_cookie_setting_overrides_;
+  // Whether the factory params and ResourceRequest potentially allow storage
+  // access via the Storage Access API (or Storage Access Headers).
+  const bool is_storage_access_potentially_allowed_;
+
+  // Handle for an in-flight CORS preflight check. Must be declared after
+  // `weak_devtools_observer_factory_` so that DevTools observer weak pointers
+  // remain valid during preflight cancellation on destruction.
+  std::unique_ptr<PreflightController::PreflightCheckHandle>
+      preflight_check_handle_;
 
   // Used to provide weak pointers of this class for synchronously calling
   // URLLoaderClient methods. This should be reset any time

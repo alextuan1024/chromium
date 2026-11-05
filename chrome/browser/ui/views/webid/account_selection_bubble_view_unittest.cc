@@ -16,6 +16,7 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/browser/ui/views/webid/account_selection_view_base.h"
 #include "chrome/browser/ui/views/webid/account_selection_view_test_base.h"
@@ -41,6 +42,7 @@
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event.h"
 #include "ui/gfx/image/image_unittest_util.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/button/md_text_button.h"
@@ -310,7 +312,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
     EXPECT_EQ(box_layout_manager->GetOrientation(),
               views::BoxLayout::Orientation::kVertical);
 
-    std::vector<raw_ptr<views::View, VectorExperimental>> children =
+    std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
         container->children();
     ASSERT_EQ(children.size(), 2u);
 
@@ -352,7 +354,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
       bool expected_icon_visibility,
       bool has_display_identifier,
       const std::u16string& expected_subtitle = u"") {
-    std::vector<raw_ptr<views::View, VectorExperimental>> children =
+    std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
         dialog()->children();
     ASSERT_EQ(children.size(), 3u);
     PerformHeaderChecks(children[0], expected_title, expected_icon_visibility,
@@ -378,7 +380,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
                         /*expect_privacy_policy=*/true);
   }
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> GetContents(
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> GetContents(
       views::View* container) {
     return static_cast<views::ScrollView*>(container->children()[1])
         ->contents()
@@ -403,7 +405,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
     const std::vector<std::string> kAccountSuffixes = {"0", "1", "2"};
     CreateAndShowMultiAccountPicker(kAccountSuffixes);
 
-    std::vector<raw_ptr<views::View, VectorExperimental>> children =
+    std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
         dialog()->children();
     // The separator is in the multiple accounts container.
     ASSERT_EQ(children.size(), 2u);
@@ -412,7 +414,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
     PerformMultiAccountChecks(children[1], /*expected_account_rows=*/3,
                               /*expected_login_rows=*/0);
 
-    std::vector<raw_ptr<views::View, VectorExperimental>> contents =
+    std::vector<raw_ptr<views::View, DanglingUntriaged>> contents =
         GetContents(children[1]);
     size_t accounts_index = 0;
 
@@ -426,7 +428,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
     CreateAccountSelectionBubble();
     dialog_->ShowFailureDialog(kIdpETLDPlusOne, idp_data_->idp_metadata);
 
-    const std::vector<raw_ptr<views::View, VectorExperimental>> children =
+    const std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
         dialog()->children();
     ASSERT_EQ(children.size(), 3u);
 
@@ -434,7 +436,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
     EXPECT_TRUE(IsViewClass<views::Separator>(children[1]));
 
     const views::View* failure_dialog = children[2];
-    const std::vector<raw_ptr<views::View, VectorExperimental>>
+    const std::vector<raw_ptr<views::View, DanglingUntriaged>>
         failure_dialog_children = failure_dialog->children();
     ASSERT_EQ(failure_dialog_children.size(), 2u);
 
@@ -451,6 +453,10 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
     ASSERT_TRUE(button);
     EXPECT_EQ(button->GetText(),
               l10n_util::GetStringUTF16(IDS_SIGNIN_CONTINUE));
+    EXPECT_EQ(
+        button->GetViewAccessibility().GetCachedName(),
+        l10n_util::GetStringUTF16(IDS_SIGNIN_CONTINUE) + u", " +
+            l10n_util::GetStringUTF16(IDS_ACCOUNT_SELECTION_OPENS_IN_NEW_TAB));
   }
 
   void TestErrorDialog(const std::u16string expected_title,
@@ -464,7 +470,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
         kIdpETLDPlusOne, idp_data_->idp_metadata,
         content::IdentityCredentialTokenError(error_code, error_url));
 
-    const std::vector<raw_ptr<views::View, VectorExperimental>> children =
+    const std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
         dialog()->children();
     ASSERT_EQ(children.size(), 4u);
 
@@ -472,7 +478,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
     EXPECT_TRUE(IsViewClass<views::Separator>(children[1]));
 
     const views::View* error_dialog = children[2];
-    const std::vector<raw_ptr<views::View, VectorExperimental>>
+    const std::vector<raw_ptr<views::View, DanglingUntriaged>>
         error_dialog_children = error_dialog->children();
     ASSERT_EQ(error_dialog_children.size(), 2u);
 
@@ -489,7 +495,7 @@ class AccountSelectionBubbleViewTest : public ChromeViewsTestBase,
     EXPECT_EQ(description->GetText(), expected_description);
 
     // Check the buttons shown.
-    const std::vector<raw_ptr<views::View, VectorExperimental>> button_row =
+    const std::vector<raw_ptr<views::View, DanglingUntriaged>> button_row =
         children[3]->children();
 
     if (error_url.is_empty()) {
@@ -610,11 +616,30 @@ TEST_F(AccountSelectionBubbleViewTest, SingleAccount) {
                     /*has_display_identifier=*/true);
 }
 
+// Tests that with `kFedCmIdpLinks`, the single account bubble for a new account
+// doesn't show disclosure text, since permission is requested through the modal
+// dialog instead.
+TEST_F(AccountSelectionBubbleViewTest, SingleAccountSignUpWithIdpLinks) {
+  base::test::ScopedFeatureList feature_list(features::kFedCmIdpLinks);
+  CreateAndShowSingleAccountPicker(/*has_display_identifier=*/true,
+                                   LoginState::kSignUp);
+
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
+      dialog()->children();
+  ASSERT_EQ(children.size(), 3u);
+  views::View* single_account_chooser = children[2];
+  // Order: Account row, "Continue as" button.
+  ASSERT_EQ(single_account_chooser->children().size(), 2u);
+  views::View* account_row = single_account_chooser->children()[0];
+  CheckNonHoverableAccountRow(account_row, kAccountSuffix,
+                              /*has_display_identifier=*/true);
+}
+
 TEST_F(AccountSelectionBubbleViewTest, SingleAccountNoTermsOfService) {
   idp_data_->client_metadata.terms_of_service_url = GURL("");
   CreateAndShowSingleAccountPicker(true);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 3u);
   PerformHeaderChecks(children[0], kTitleSignIn,
@@ -644,7 +669,7 @@ TEST_F(AccountSelectionBubbleViewTest, SingleAccountOnlyTwoDisclosureFields) {
   idp_data_->client_metadata.terms_of_service_url = GURL();
   CreateAndShowSingleAccountPicker(true);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 3u);
   PerformHeaderChecks(children[0], kTitleSignIn,
@@ -681,7 +706,7 @@ TEST_F(AccountSelectionBubbleViewTest, UseDifferentAccountNotSupported) {
   const std::vector<std::string> kAccountSuffixes = {"0", "1"};
   CreateAndShowMultiAccountPicker(kAccountSuffixes, true);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 2u);
   PerformHeaderChecks(children[0], kTitleSignIn,
@@ -694,7 +719,7 @@ TEST_F(AccountSelectionBubbleViewTest, UseDifferentAccountNotSupported) {
 TEST_F(AccountSelectionBubbleViewTest, ReturningAccount) {
   CreateAndShowSingleAccountPicker(true, LoginState::kSignIn);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 3u);
   PerformHeaderChecks(children[0], kTitleSignIn,
@@ -702,7 +727,7 @@ TEST_F(AccountSelectionBubbleViewTest, ReturningAccount) {
   EXPECT_TRUE(IsViewClass<views::Separator>(children[1]));
 
   views::View* single_account_chooser = children[2];
-  std::vector<raw_ptr<views::View, VectorExperimental>> chooser_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> chooser_children =
       single_account_chooser->children();
   ASSERT_EQ(chooser_children.size(), 2u);
   views::View* single_account_row = chooser_children[0];
@@ -722,7 +747,7 @@ TEST_F(AccountSelectionBubbleViewTest, NewAccountWithoutRequestPermission) {
   idp_data_->disclosure_fields = {};
   CreateAndShowSingleAccountPicker(true);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 3u);
   PerformHeaderChecks(children[0], kTitleSignIn,
@@ -730,7 +755,7 @@ TEST_F(AccountSelectionBubbleViewTest, NewAccountWithoutRequestPermission) {
   EXPECT_TRUE(IsViewClass<views::Separator>(children[1]));
 
   views::View* single_account_chooser = children[2];
-  std::vector<raw_ptr<views::View, VectorExperimental>> chooser_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> chooser_children =
       single_account_chooser->children();
   ASSERT_EQ(chooser_children.size(), 2u);
   views::View* single_account_row = chooser_children[0];
@@ -764,19 +789,19 @@ TEST_F(AccountSelectionBubbleViewTest,
   dialog()->ShowSingleAccountConfirmDialog(account,
                                            /*show_back_button=*/false);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 3u);
 
   views::View* single_account_chooser = children[2];
-  std::vector<raw_ptr<views::View, VectorExperimental>> chooser_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> chooser_children =
       single_account_chooser->children();
   ASSERT_EQ(chooser_children.size(), 2u);
 
   views::MdTextButton* button =
       static_cast<views::MdTextButton*>(chooser_children[1]);
   ASSERT_TRUE(button);
-  EXPECT_EQ(*(button->GetBgColorOverrideDeprecated()), bg_color);
+  EXPECT_EQ(button->GetBgColorOverride(), bg_color);
 }
 
 TEST_F(AccountSelectionBubbleViewTest,
@@ -800,12 +825,12 @@ TEST_F(AccountSelectionBubbleViewTest,
   dialog()->ShowSingleAccountConfirmDialog(account,
                                            /*show_back_button=*/false);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 3u);
 
   views::View* single_account_chooser = children[2];
-  std::vector<raw_ptr<views::View, VectorExperimental>> chooser_children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> chooser_children =
       single_account_chooser->children();
   ASSERT_EQ(chooser_children.size(), 2u);
 
@@ -813,7 +838,7 @@ TEST_F(AccountSelectionBubbleViewTest,
       static_cast<views::MdTextButton*>(chooser_children[1]);
   ASSERT_TRUE(button);
   // The button color is not customized by the IDP.
-  EXPECT_FALSE(button->GetBgColorOverrideDeprecated());
+  EXPECT_FALSE(button->GetBgColorOverride());
 }
 
 TEST_F(AccountSelectionBubbleViewTest, Verifying) {
@@ -824,7 +849,7 @@ TEST_F(AccountSelectionBubbleViewTest, Verifying) {
   dialog_->ShowVerifyingSheet(
       account, l10n_util::GetStringUTF16(IDS_VERIFY_SHEET_TITLE));
 
-  const std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  const std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 3u);
   PerformHeaderChecks(children[0], kTitleSigningIn,
@@ -845,7 +870,7 @@ TEST_F(AccountSelectionBubbleViewTest, VerifyingForAutoReauthn) {
       l10n_util::GetStringUTF16(IDS_VERIFY_SHEET_TITLE_AUTO_REAUTHN);
   dialog_->ShowVerifyingSheet(account, title);
 
-  const std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  const std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 3u);
   PerformHeaderChecks(children[0], kTitleSigningInWithAutoReauthn,
@@ -887,7 +912,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultipleAccountsMultipleIdps) {
       CreateTestIdentityRequestAccount(kAccountSuffixes2[1], idp_list[1])};
   CreateAndShowMultiIdpAccountPicker(account_list, idp_list);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 2u);
   PerformHeaderChecks(children[0], kTitleSignInWithoutIdp,
@@ -897,7 +922,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultipleAccountsMultipleIdps) {
   PerformMultiAccountChecks(accounts_container, /*expected_account_rows=*/4,
                             /*expected_login_rows=*/0);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> accounts =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> accounts =
       GetContents(accounts_container);
 
   // Check the first IDP.
@@ -929,7 +954,7 @@ TEST_F(AccountSelectionBubbleViewTest, OneIdpWithMismatch) {
       CreateTestIdentityRequestAccounts(kAccountSuffixes1, idp_list[0]);
   CreateAndShowMultiIdpAccountPicker(accounts_list, idp_list);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 2u);
   PerformHeaderChecks(children[0], kTitleSignInWithoutIdp,
@@ -938,7 +963,7 @@ TEST_F(AccountSelectionBubbleViewTest, OneIdpWithMismatch) {
   PerformMultiAccountChecks(children[1], /*expected_account_rows=*/2,
                             /*expected_login_rows=*/1);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> contents =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> contents =
       GetContents(children[1]);
 
   size_t index = 0;
@@ -978,7 +1003,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultiIdpUseOtherAccountNotSupported) {
       CreateTestIdentityRequestAccount(kAccountSuffixes2[0], idp_list[1])};
   CreateAndShowMultiIdpAccountPicker(accounts_list, idp_list);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 2u);
   PerformHeaderChecks(children[0], kTitleSignInWithoutIdp,
@@ -987,7 +1012,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultiIdpUseOtherAccountNotSupported) {
   PerformMultiAccountChecks(children[1], /*expected_account_rows=*/3,
                             /*expected_login_rows=*/0);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> contents =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> contents =
       GetContents(children[1]);
 
   // Check the first IDP.
@@ -1035,7 +1060,7 @@ TEST_F(AccountSelectionBubbleViewTest, ShowSingleReturningAccount) {
 
   CreateAccountSelectionBubble();
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 2u);
   PerformHeaderChecks(children[0], kTitleSignInWithoutIdp,
@@ -1049,7 +1074,7 @@ TEST_F(AccountSelectionBubbleViewTest, ShowSingleReturningAccount) {
   EXPECT_EQ(layout_manager->GetOrientation(),
             views::BoxLayout::Orientation::kVertical);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> contents =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> contents =
       GetContents(children[1]);
   ASSERT_EQ(6u, contents.size());
 
@@ -1080,7 +1105,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultiIdpWithAllIdpsMismatch) {
   CreateAndShowMultiIdpAccountPicker(std::vector<IdentityRequestAccountPtr>(),
                                      idp_list);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 2u);
   PerformHeaderChecks(children[0], kTitleSignInWithoutIdp,
@@ -1089,7 +1114,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultiIdpWithAllIdpsMismatch) {
   PerformMultiAccountChecks(children[1], /*expected_account_rows=*/0,
                             /*expected_login_rows=*/2);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> contents =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> contents =
       GetContents(children[1]);
 
   ASSERT_GE(contents.size(), 2u);
@@ -1126,7 +1151,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultipleReturningAccounts) {
 
   CreateAndShowMultiIdpAccountPicker(accounts_list, idp_list);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 2u);
   PerformHeaderChecks(children[0], kTitleSignInWithoutIdp,
@@ -1135,7 +1160,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultipleReturningAccounts) {
   PerformMultiAccountChecks(children[1], /*expected_account_rows=*/4,
                             /*expected_login_rows=*/0);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> accounts =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> accounts =
       GetContents(children[1]);
 
   // Returning accounts are shown first.
@@ -1148,10 +1173,6 @@ TEST_F(AccountSelectionBubbleViewTest, MultipleReturningAccounts) {
 
 TEST_F(AccountSelectionBubbleViewTest,
        MultipleReturningAccountsWithTimestamps) {
-  const std::vector<std::string> kAccountSuffixes1 = {"new1", "returning1",
-                                                      "returning2"};
-  const std::vector<std::string> kAccountSuffixes2 = {"new2", "returning3",
-                                                      "returning4"};
   std::vector<IdentityProviderDataPtr> idp_list = {
       base::MakeRefCounted<content::IdentityProviderData>(
           kIdpForDisplay, content::IdentityProviderMetadata(),
@@ -1184,7 +1205,7 @@ TEST_F(AccountSelectionBubbleViewTest,
 
   CreateAndShowMultiIdpAccountPicker(accounts_list, idp_list);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   ASSERT_EQ(children.size(), 2u);
   // The multiple account chooser container includes the separator.
@@ -1194,7 +1215,7 @@ TEST_F(AccountSelectionBubbleViewTest,
   PerformMultiAccountChecks(children[1], /*expected_account_rows=*/6,
                             /*expected_login_rows=*/0);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> accounts =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> accounts =
       GetContents(children[1]);
 
   const std::vector<std::string> expected_account_order = {
@@ -1348,7 +1369,7 @@ TEST_F(AccountSelectionBubbleViewTest, OneDisabledAccount) {
                                   /*rp_icon=*/gfx::Image(),
                                   /*show_back_button=*/false);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   // The separator is in the multiple accounts container.
   ASSERT_EQ(children.size(), 2u);
@@ -1358,7 +1379,7 @@ TEST_F(AccountSelectionBubbleViewTest, OneDisabledAccount) {
   PerformMultiAccountChecks(children[1], /*expected_account_rows=*/1,
                             /*expected_login_rows=*/1);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> accounts =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> accounts =
       GetContents(children[1]);
 
   // Check the filtered account and use a different account button.
@@ -1384,7 +1405,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultipleDisabledAccounts) {
                                   /*rp_icon=*/gfx::Image(),
                                   /*show_back_button=*/false);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   // The separator is in the multiple accounts container.
   ASSERT_EQ(children.size(), 2u);
@@ -1394,7 +1415,7 @@ TEST_F(AccountSelectionBubbleViewTest, MultipleDisabledAccounts) {
   PerformMultiAccountChecks(children[1], /*expected_account_rows=*/3,
                             /*expected_login_rows=*/1);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> contents =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> contents =
       GetContents(children[1]);
 
   // Check the text shown.
@@ -1425,7 +1446,7 @@ TEST_F(AccountSelectionBubbleViewTest, OneDisabledAccountAndOneEnabledAccount) {
                                   /*rp_icon=*/gfx::Image(),
                                   /*show_back_button=*/false);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   // The separator is in the multiple accounts container.
   ASSERT_EQ(children.size(), 2u);
@@ -1435,7 +1456,7 @@ TEST_F(AccountSelectionBubbleViewTest, OneDisabledAccountAndOneEnabledAccount) {
   PerformMultiAccountChecks(children[1], /*expected_account_rows=*/2,
                             /*expected_login_rows=*/1);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> contents =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> contents =
       GetContents(children[1]);
   CheckHoverableAccountRow(contents[0], kAccountSuffixes[0],
                            /*has_display_identifier=*/true,
@@ -1467,7 +1488,7 @@ TEST_F(AccountSelectionBubbleViewTest, SingleIdentifierAccounts) {
                                   /*rp_icon=*/gfx::Image(),
                                   /*show_back_button=*/false);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> children =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
       dialog()->children();
   // The separator is in the multiple accounts container.
   ASSERT_EQ(children.size(), 2u);
@@ -1477,7 +1498,7 @@ TEST_F(AccountSelectionBubbleViewTest, SingleIdentifierAccounts) {
   PerformMultiAccountChecks(children[1], /*expected_account_rows=*/2,
                             /*expected_login_rows=*/1);
 
-  std::vector<raw_ptr<views::View, VectorExperimental>> contents =
+  std::vector<raw_ptr<views::View, DanglingUntriaged>> contents =
       GetContents(children[1]);
   CheckHoverableAccountRow(contents[0], kAccountSuffixes[0],
                            /*has_display_identifier=*/false,
@@ -1537,11 +1558,11 @@ TEST_F(AccountSelectionBubbleViewTest,
 class AccountSelectionInteractionTest : public AccountSelectionBubbleViewTest {
  public:
   views::View* GetFirstAccountHoverButton() {
-    std::vector<raw_ptr<views::View, VectorExperimental>> children =
+    std::vector<raw_ptr<views::View, DanglingUntriaged>> children =
         dialog_->children();
 
     views::View* container = children[1];
-    std::vector<raw_ptr<views::View, VectorExperimental>> children2 =
+    std::vector<raw_ptr<views::View, DanglingUntriaged>> children2 =
         static_cast<views::ScrollView*>(container->children()[1])
             ->contents()
             ->children();

@@ -12,15 +12,12 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
-#include "base/task/single_thread_task_runner.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
-#include "base/test/test_mock_time_task_runner.h"
 #include "build/buildflag.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/signin/internal/identity_manager/account_tracker_service.h"
@@ -41,6 +38,7 @@
 #include "net/cookies/cookie_access_result.h"
 #include "net/cookies/cookie_change_dispatcher.h"
 #include "net/cookies/cookie_options.h"
+#include "net/cookies/cookie_partition_key_collection.h"
 #include "services/network/test/test_cookie_manager.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -118,6 +116,32 @@ class InstrumentedGaiaCookieManagerService : public GaiaCookieManagerService {
   MOCK_METHOD0(StartSetAccounts, void());
 };
 
+// Reports a Gaia cookie unless `set_has_gaia_cookies(false)` is called.
+class TestGaiaCookieManager : public network::TestCookieManager {
+ public:
+  void GetCookieList(
+      const GURL& url,
+      const net::CookieOptions& cookie_options,
+      const net::CookiePartitionKeyCollection& cookie_partition_key_collection,
+      GetCookieListCallback callback) override {
+    net::CookieAccessResultList cookies;
+    if (has_gaia_cookies_) {
+      cookies.emplace_back(
+          *net::CanonicalCookie::CreateForTesting(
+              url, "A=B", base::Time::Now(), net::CookieSourceType::kOther),
+          net::CookieAccessResult());
+    }
+    std::move(callback).Run(cookies, net::CookieAccessResultList());
+  }
+
+  void set_has_gaia_cookies(bool has_gaia_cookies) {
+    has_gaia_cookies_ = has_gaia_cookies;
+  }
+
+ private:
+  bool has_gaia_cookies_ = true;
+};
+
 class CustomTestSigninClient : public TestSigninClient {
  public:
   using TestSigninClient::TestSigninClient;
@@ -150,6 +174,8 @@ class GaiaCookieManagerServiceTest : public testing::Test {
     AccountTrackerService::RegisterPrefs(pref_service_.registry());
     GaiaCookieManagerService::RegisterPrefs(pref_service_.registry());
     signin_client_ = std::make_unique<CustomTestSigninClient>(&pref_service_);
+    signin_client_->set_cookie_manager(
+        std::make_unique<TestGaiaCookieManager>());
 
 #if BUILDFLAG(IS_ANDROID)
     signin::SetUpFakeAccountManagerFacade();
@@ -166,6 +192,11 @@ class GaiaCookieManagerServiceTest : public testing::Test {
   }
   ProfileOAuth2TokenService* token_service() { return token_service_.get(); }
   CustomTestSigninClient* signin_client() { return signin_client_.get(); }
+
+  void SetHasGaiaCookies(bool has_gaia_cookies) {
+    static_cast<TestGaiaCookieManager*>(signin_client_->GetCookieManager())
+        ->set_has_gaia_cookies(has_gaia_cookies);
+  }
 
   void SimulateAccessTokenFailure(OAuth2AccessTokenManager::Consumer* consumer,
                                   OAuth2AccessTokenManager::Request* request,
@@ -220,12 +251,6 @@ class GaiaCookieManagerServiceTest : public testing::Test {
     base::RunLoop().RunUntilIdle();
   }
 
-  void Advance(scoped_refptr<base::TestMockTimeTaskRunner> test_task_runner,
-               base::TimeDelta advance_by) {
-    test_task_runner->FastForwardBy(advance_by + base::Milliseconds(1));
-    test_task_runner->RunUntilIdle();
-  }
-
   bool IsLoadPending(const std::string& url) {
     return signin_client_->GetTestURLLoaderFactory()->IsPending(
         GURL(url).spec());
@@ -263,8 +288,10 @@ class GaiaCookieManagerServiceTest : public testing::Test {
   const CoreAccountId account_id3_;
   const CoreAccountId account_id4_;
 
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+
  private:
-  base::test::TaskEnvironment task_environment_;
   GoogleServiceAuthError no_error_;
   GoogleServiceAuthError error_;
   GoogleServiceAuthError canceled_;
@@ -347,10 +374,6 @@ TEST_F(GaiaCookieManagerServiceTest, LogoutRetried) {
                                               token_service(), signin_client());
   MockObserver observer(&helper);
 
-  auto test_task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-  base::SingleThreadTaskRunner::CurrentHandleOverrideForTesting
-      sttrcdh_override(test_task_runner);
-
   EXPECT_CALL(helper, StartGaiaLogOut()).Times(2);
 
   MockLogOutFromCookieCompletedCallback log_out_from_cookie_completed;
@@ -360,22 +383,17 @@ TEST_F(GaiaCookieManagerServiceTest, LogoutRetried) {
                            log_out_from_cookie_completed.Get());
 
   SimulateLogOutFailure(&helper, canceled());
-  DCHECK(helper.is_running());
-  Advance(test_task_runner, helper.GetBackoffEntry()->GetTimeUntilRelease());
+  EXPECT_TRUE(helper.is_running());
+  task_environment_.FastForwardBy(
+      helper.GetBackoffEntry()->GetTimeUntilRelease());
   SimulateLogOutSuccess(&helper);
-  DCHECK(!helper.is_running());
+  EXPECT_FALSE(helper.is_running());
 }
 
 TEST_F(GaiaCookieManagerServiceTest, LogoutRetriedTwice) {
   InstrumentedGaiaCookieManagerService helper(account_tracker_service(),
                                               token_service(), signin_client());
   MockObserver observer(&helper);
-  base::HistogramTester histograms;
-
-  auto test_task_runner = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
-
-  base::SingleThreadTaskRunner::CurrentHandleOverrideForTesting
-      sttrcdh_override(test_task_runner);
 
   EXPECT_CALL(helper, StartGaiaLogOut()).Times(3);
 
@@ -386,13 +404,15 @@ TEST_F(GaiaCookieManagerServiceTest, LogoutRetriedTwice) {
                            log_out_from_cookie_completed.Get());
   // Logout requests are retried even if the error is persistent.
   SimulateLogOutFailure(&helper, error());
-  DCHECK(helper.is_running());
-  Advance(test_task_runner, helper.GetBackoffEntry()->GetTimeUntilRelease());
+  EXPECT_TRUE(helper.is_running());
+  task_environment_.FastForwardBy(
+      helper.GetBackoffEntry()->GetTimeUntilRelease());
   SimulateLogOutFailure(&helper, canceled());
-  DCHECK(helper.is_running());
-  Advance(test_task_runner, helper.GetBackoffEntry()->GetTimeUntilRelease());
+  EXPECT_TRUE(helper.is_running());
+  task_environment_.FastForwardBy(
+      helper.GetBackoffEntry()->GetTimeUntilRelease());
   SimulateLogOutSuccess(&helper);
-  DCHECK(!helper.is_running());
+  EXPECT_FALSE(helper.is_running());
 }
 
 TEST_F(GaiaCookieManagerServiceTest, ContinueAfterSuccess) {
@@ -919,6 +939,105 @@ TEST_F(GaiaCookieManagerServiceTest, MultipleTriggerListAccounts) {
   SimulateListAccountsSuccess(&helper, data);
 }
 
+class GaiaCookieManagerServiceSkipListAccountsTest
+    : public GaiaCookieManagerServiceTest {
+ public:
+  GaiaCookieManagerServiceSkipListAccountsTest() { SetHasGaiaCookies(false); }
+
+ private:
+  base::test::ScopedFeatureList feature_list_{
+      switches::kSkipListAccountsWithoutGaiaCookies};
+};
+
+TEST_F(GaiaCookieManagerServiceSkipListAccountsTest,
+       ListAccountsSkippedWithoutGaiaCookies) {
+  gaia::ListedAccount account;
+  account.gaia_id = GaiaId("8");
+  account.id = CoreAccountId::FromGaiaId(account.gaia_id);
+  account.email = "a@b.com";
+  account.raw_email = "a@b.com";
+  signin_client()->GetPrefs()->SetString(
+      prefs::kGaiaCookieLastListAccountsBinaryData,
+      CreateListAccountsResponse(
+          signin::AccountsInCookieJarInfo(true, {account})));
+
+  InstrumentedGaiaCookieManagerService helper(account_tracker_service(),
+                                              token_service(), signin_client());
+  MockObserver observer(&helper);
+
+  EXPECT_CALL(helper, StartFetchingListAccounts()).Times(0);
+  EXPECT_CALL(observer,
+              OnGaiaAccountsInCookieUpdated(kCookiesEmptyFresh, no_error()));
+  helper.ListAccounts();
+
+  EXPECT_EQ(helper.ListAccounts(), kCookiesEmptyFresh);
+  EXPECT_TRUE(signin_client()
+                  ->GetPrefs()
+                  ->GetString(prefs::kGaiaCookieLastListAccountsBinaryData)
+                  .empty());
+  EXPECT_FALSE(helper.is_running());
+}
+
+TEST_F(GaiaCookieManagerServiceTest,
+       ListAccountsNotSkippedWhenFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      switches::kSkipListAccountsWithoutGaiaCookies);
+  SetHasGaiaCookies(false);
+  InstrumentedGaiaCookieManagerService helper(account_tracker_service(),
+                                              token_service(), signin_client());
+
+  EXPECT_CALL(helper, StartFetchingListAccounts());
+  EXPECT_EQ(helper.ListAccounts(), kCookiesEmptyStale);
+}
+
+TEST_F(GaiaCookieManagerServiceSkipListAccountsTest,
+       ListAccountsSentAfterGaiaCookieAdded) {
+  InstrumentedGaiaCookieManagerService helper(account_tracker_service(),
+                                              token_service(), signin_client());
+
+  EXPECT_CALL(helper, StartFetchingListAccounts()).Times(0);
+  helper.ListAccounts();
+  EXPECT_EQ(helper.ListAccounts(), kCookiesEmptyFresh);
+  testing::Mock::VerifyAndClearExpectations(&helper);
+
+  SetHasGaiaCookies(true);
+  EXPECT_CALL(helper, StartFetchingListAccounts());
+  helper.ForceOnCookieChangeProcessing();
+}
+
+TEST_F(GaiaCookieManagerServiceSkipListAccountsTest,
+       SkippedListAccountsStartsNextRequest) {
+  InstrumentedGaiaCookieManagerService helper(account_tracker_service(),
+                                              token_service(), signin_client());
+
+  signin_client()->SetNetworkCallsDelayed(true);
+  helper.TriggerListAccounts();
+  helper.SetAccountsInCookie(
+      gaia::MultiloginMode::MULTILOGIN_UPDATE_COOKIE_ACCOUNTS_ORDER,
+      {{account_id1_, kAccountId1}}, gaia::GaiaSource::kChrome,
+      base::DoNothing());
+
+  EXPECT_CALL(helper, StartFetchingListAccounts()).Times(0);
+  EXPECT_CALL(helper, StartSetAccounts());
+  signin_client()->SetNetworkCallsDelayed(false);
+}
+
+TEST_F(GaiaCookieManagerServiceSkipListAccountsTest,
+       IgnoreMissingGaiaCookiesDiscardsSkippedResult) {
+  InstrumentedGaiaCookieManagerService helper(account_tracker_service(),
+                                              token_service(), signin_client());
+
+  EXPECT_CALL(helper, StartFetchingListAccounts()).Times(0);
+  helper.ListAccounts();
+  EXPECT_EQ(helper.ListAccounts(), kCookiesEmptyFresh);
+  testing::Mock::VerifyAndClearExpectations(&helper);
+
+  helper.set_ignore_missing_gaia_cookies_for_testing(true);
+  EXPECT_CALL(helper, StartFetchingListAccounts());
+  EXPECT_EQ(helper.ListAccounts(), kCookiesEmptyStale);
+}
+
 TEST_F(GaiaCookieManagerServiceTest, GaiaCookieLastListAccountsDataSaved) {
   gaia::ListedAccount signed_in_account;
   signed_in_account.gaia_id = GaiaId("8");
@@ -940,14 +1059,14 @@ TEST_F(GaiaCookieManagerServiceTest, GaiaCookieLastListAccountsDataSaved) {
     MockObserver observer(&helper);
 
     EXPECT_CALL(helper, StartFetchingListAccounts());
-    // |kGaiaCookieLastListAccountsBinaryData| is empty.
+    // `kGaiaCookieLastListAccountsBinaryData` is empty.
     ASSERT_EQ(helper.ListAccounts(), kCookiesEmptyStale);
 
     EXPECT_CALL(observer, OnGaiaAccountsInCookieUpdated(cookies_expected_fresh,
                                                         no_error()));
 
     SimulateListAccountsSuccess(&helper, data);
-    // |kGaiaCookieLastListAccountsBinaryData| is set.
+    // `kGaiaCookieLastListAccountsBinaryData` is set.
     ASSERT_EQ(signin_client()->GetPrefs()->GetString(
                   prefs::kGaiaCookieLastListAccountsBinaryData),
               data);
@@ -962,48 +1081,55 @@ TEST_F(GaiaCookieManagerServiceTest, GaiaCookieLastListAccountsDataSaved) {
     InstrumentedGaiaCookieManagerService helper(
         account_tracker_service(), token_service(), signin_client());
     MockObserver observer(&helper);
-    auto test_task_runner =
-        base::MakeRefCounted<base::TestMockTimeTaskRunner>();
 
-    base::SingleThreadTaskRunner::CurrentHandleOverrideForTesting
-        sttrcdh_override(test_task_runner);
-
-    EXPECT_CALL(helper, StartFetchingListAccounts()).Times(3);
-
-    // Though |SimulateListAccountsSuccess| is not yet called, we are able to
-    // retrieve last |list_accounts| and  |expected_accounts| from the pref,
-    // but mark them as stale. A |StartFetchingListAccounts| is triggered.
+    // Though `SimulateListAccountsSuccess()` is not yet called, we are able to
+    // retrieve last `list_accounts` and `expected_accounts` from the pref,
+    // but mark them as stale. A `StartFetchingListAccounts()` is triggered.
+    EXPECT_CALL(helper, StartFetchingListAccounts());
     signin::AccountsInCookieJarInfo cookies_expected_stale(
         false, {signed_in_account, signed_out_account});
     EXPECT_EQ(helper.ListAccounts(), cookies_expected_stale);
+    testing::Mock::VerifyAndClearExpectations(&helper);
 
-    // |SimulateListAccountsSuccess| and assert list accounts is not stale
+    // `SimulateListAccountsSuccess()` and assert list accounts is not stale
     // anymore.
     EXPECT_CALL(observer, OnGaiaAccountsInCookieUpdated(cookies_expected_fresh,
                                                         no_error()));
     SimulateListAccountsSuccess(&helper, data);
     ASSERT_EQ(helper.ListAccounts(), cookies_expected_fresh);
+    testing::Mock::VerifyAndClearExpectations(&observer);
 
     // Change list account state to be stale, which will trigger list accounts
     // request.
+    EXPECT_CALL(helper, StartFetchingListAccounts());
     helper.ForceOnCookieChangeProcessing();
+    testing::Mock::VerifyAndClearExpectations(&helper);
 
     // Receive an unexpected response from the server. Listed accounts as well
-    // as the pref should be cleared.
+    // as the pref should be cleared, and a retry should be scheduled with
+    // backoff without notifying the observer yet.
+    EXPECT_CALL(observer, OnGaiaAccountsInCookieUpdated(_, _)).Times(0);
+    EXPECT_CALL(helper, StartFetchingListAccounts()).Times(0);
+    SimulateListAccountsSuccess(&helper, "[]");
+    EXPECT_EQ(helper.ListAccounts(), kCookiesEmptyStale);
+    testing::Mock::VerifyAndClearExpectations(&observer);
+    testing::Mock::VerifyAndClearExpectations(&helper);
+
+    // List accounts retries once on `UNEXPECTED_SERVICE_RESPONSE` errors with
+    // backoff protection.
+    EXPECT_CALL(helper, StartFetchingListAccounts());
+    task_environment_.FastForwardBy(
+        helper.GetBackoffEntry()->GetTimeUntilRelease());
+    testing::Mock::VerifyAndClearExpectations(&helper);
+
     GoogleServiceAuthError error =
         GoogleServiceAuthError::FromUnexpectedServiceResponse(
             "Error parsing ListAccounts response");
     EXPECT_CALL(observer,
                 OnGaiaAccountsInCookieUpdated(kCookiesEmptyStale, error));
     SimulateListAccountsSuccess(&helper, "[]");
-    EXPECT_EQ(helper.ListAccounts(), kCookiesEmptyStale);
 
-    // List accounts retries once on |UNEXPECTED_SERVICE_RESPONSE| errors with
-    // backoff protection.
-    Advance(test_task_runner, helper.GetBackoffEntry()->GetTimeUntilRelease());
-    SimulateListAccountsSuccess(&helper, "[]");
-
-    // |kGaiaCookieLastListAccountsBinaryData| is cleared.
+    // `kGaiaCookieLastListAccountsBinaryData` is cleared.
     EXPECT_TRUE(signin_client()
                     ->GetPrefs()
                     ->GetString(prefs::kGaiaCookieLastListAccountsBinaryData)
@@ -1011,7 +1137,7 @@ TEST_F(GaiaCookieManagerServiceTest, GaiaCookieLastListAccountsDataSaved) {
   }
 
   {
-    // On next startup, |kGaiaCookieLastListAccountsBinaryData| contains last
+    // On next startup, `kGaiaCookieLastListAccountsBinaryData` contains last
     // list accounts data.
     EXPECT_TRUE(signin_client()
                     ->GetPrefs()
@@ -1327,13 +1453,8 @@ class GaiaCookieManagerServiceCookieTest
 
 TEST_P(GaiaCookieManagerServiceCookieTest, CookieChange) {
   GURL kGoogleUrl = GaiaUrls::GetInstance()->secure_google_url();
-  network::TestCookieManager* test_cookie_manager = nullptr;
-  {
-    auto cookie_manager = std::make_unique<network::TestCookieManager>();
-    test_cookie_manager = cookie_manager.get();
-    signin_client()->set_cookie_manager(std::move(cookie_manager));
-  }
-  ASSERT_EQ(test_cookie_manager, signin_client()->GetCookieManager());
+  auto* test_cookie_manager =
+      static_cast<TestGaiaCookieManager*>(signin_client()->GetCookieManager());
   base::MockCallback<
       GaiaCookieManagerService::GaiaCookieDeletedByUserActionCallback>
       cookie_deleted_callback;

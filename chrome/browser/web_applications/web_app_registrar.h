@@ -27,7 +27,6 @@
 #include "base/types/pass_key.h"
 #include "base/types/strong_alias.h"
 #include "base/values.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/proto/web_app_os_integration_state.pb.h"
 #include "chrome/browser/web_applications/scope_extension_info.h"
@@ -51,10 +50,6 @@ struct ShareTarget;
 }  // namespace proto
 }  // namespace apps
 
-namespace content {
-class StoragePartitionConfig;
-}  // namespace content
-
 namespace webapps {
 enum class WebappInstallSource;
 }  // namespace webapps
@@ -64,7 +59,6 @@ namespace proto {
 enum InstallState : int;
 }
 
-class IsolatedWebAppUrlInfo;
 class WebApp;
 class WebAppCommandScheduler;
 class WebAppProvider;
@@ -95,10 +89,6 @@ using AppsHavingTrustedIconsCount =
     base::StrongAlias<class AppsHavingTrustedIconsCountTag, int>;
 
 struct FindBestAppInScopeOptions {
-  // Sets the `filter` applied to the best match only.
-  explicit FindBestAppInScopeOptions(WebAppFilter filter);
-  ~FindBestAppInScopeOptions();
-
   // Only apps that pass this filter are considered when ranking apps for scope
   // control over a URL.
   WebAppFilter eligibility_filter = WebAppFilter::InstalledInChrome();
@@ -107,11 +97,12 @@ struct FindBestAppInScopeOptions {
   // app.
   WebAppScopeScoreOptions scope_score_options = {};
 
-  // After determining the best app to control a given url, this filter is
-  // checked with the final app. If it does not pass, then std::nullopt is
-  // returned. This is a nice shortcut as most callers also have a specific set
-  // of constraints the app needs to satisfy, like having OS integration, etc.
-  WebAppFilter filter;
+  // By default, scope extensions of Isolated Web Apps (and their sub apps) are
+  // ignored (with `only_consider_scope_extensions`, IWAs are skipped): an https
+  // URL in an IWA's `scope_extensions` never loads inside the IWA, so it must
+  // not be attributed to it. Set to true only when asking which app claims the
+  // URL, e.g. for navigation capturing.
+  bool include_isolated_web_app_scope_extensions = false;
 };
 
 // Enabling this will force all apps that are exclusively preinstalled and open
@@ -164,8 +155,6 @@ class WebAppRegistrar {
   std::vector<webapps::AppId> GetAppsFromSyncAndPendingInstallation() const;
   std::vector<webapps::AppId> GetAppsPendingUninstall() const;
 
-  bool AppsExistWithExternalConfigData() const;
-
   void SetProvider(base::PassKey<WebAppProvider>, WebAppProvider& provider);
   void Start();
 
@@ -205,8 +194,11 @@ class WebAppRegistrar {
 
   // Returns the AppId of an app that best matches the specified filter.
   // 'Best' is determined by the longest scope that is a prefix of `url`.
-  // Note that this method doesn't consider suggested apps (from migration or
-  // from another device).
+  // The `filter` is checked only against the final best app: if it does not
+  // pass, std::nullopt is returned. See `FindBestAppInScopeOptions` for which
+  // apps are ranked and how. Note that by default this method doesn't consider
+  // suggested apps (from migration or from another device), nor the scope
+  // extensions of Isolated Web Apps.
   //
   // Example usage:
   //    std::optional<webapps::AppId> app_ip = FindBestAppWithUrlInScope(
@@ -214,13 +206,7 @@ class WebAppRegistrar {
   std::optional<webapps::AppId> FindBestAppWithUrlInScope(
       const GURL& url,
       const WebAppFilter& filter,
-      WebAppScopeScoreOptions scope_score_options = {}) const;
-
-  // A more granular overload of the function above: allows the caller to
-  // include suggested apps, for instance.
-  std::optional<webapps::AppId> FindBestAppWithUrlInScope(
-      const GURL& url,
-      const FindBestAppInScopeOptions& options) const;
+      const FindBestAppInScopeOptions& options = {}) const;
 
   // Finds all apps that have scopes that are nested within the given
   // `outer_scope`, and match the specified filter.
@@ -510,22 +496,6 @@ class WebAppRegistrar {
   std::optional<proto::os_state::WebAppOsIntegration>
   GetAppCurrentOsIntegrationState(const webapps::AppId& app_id) const;
 
-  // Returns the StoragePartitionConfig of all StoragePartitions used by
-  // `app_id` if `app_id` is an Isolated Web App; both the primary and any
-  // <controlledframe> StoragePartitions will be returned. Returns an empty
-  // vector if the app is not an Isolated Web App.
-  std::vector<content::StoragePartitionConfig>
-  GetIsolatedWebAppStoragePartitionConfigs(const webapps::AppId& app_id) const;
-
-  // Saves a record of the |partition_name| in
-  // |isolated_web_app_in_memory_controlled_frame_partitions_|.
-  // Then returns the StoragePartitionConfig of the in-memory
-  // Controlled Frame partition.
-  std::optional<content::StoragePartitionConfig>
-  SaveAndGetInMemoryControlledFramePartitionConfig(
-      const IsolatedWebAppUrlInfo& url_info,
-      const std::string& partition_name);
-
   // Returns if the given app_id would ever be eligible to capture links in
   // its scope. This returns false for apps that aren't installed.
   bool CanCaptureLinksInScope(const webapps::AppId& app_id) const;
@@ -776,12 +746,6 @@ class WebAppRegistrar {
 #if DCHECK_IS_ON()
   int mutations_count_ = 0;
 #endif
-
-  // Keeps a record of in-memory (non-persistent) Storage Partitions created by
-  // Isolated Web Apps' Controlled Frames. This table will expire on browser
-  // shutdown same as in-memory Storage Partitions.
-  base::flat_map<webapps::AppId, base::flat_set<std::string>>
-      isolated_web_app_in_memory_controlled_frame_partitions_;
 
   base::WeakPtrFactory<WebAppRegistrar> weak_factory_{this};
 };

@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -107,6 +108,7 @@ class MockResourceRequestSender : public ResourceRequestSender {
       std::unique_ptr<ResourceLoadInfoNotifierWrapper>
           resource_load_info_notifier_wrapper,
       CodeCacheHost* code_cache_host,
+      bool should_fetch_code_cache,
       base::OnceCallback<void(mojom::blink::RendererEvictionReason)>
           evict_from_bfcache_callback,
       base::RepeatingCallback<void(size_t)>
@@ -116,6 +118,7 @@ class MockResourceRequestSender : public ResourceRequestSender {
       EXPECT_TRUE(loader_options & network::mojom::kURLLoadOptionSynchronous);
     }
     resource_request_client_ = std::move(resource_request_client);
+    saw_should_fetch_code_cache_ = should_fetch_code_cache;
     return 1;
   }
 
@@ -132,6 +135,10 @@ class MockResourceRequestSender : public ResourceRequestSender {
 
   bool canceled() { return canceled_; }
 
+  bool saw_should_fetch_code_cache() const {
+    return saw_should_fetch_code_cache_.value();
+  }
+
   void Freeze(LoaderFreezeMode mode) override { freeze_mode_ = mode; }
   LoaderFreezeMode freeze_mode() const { return freeze_mode_; }
 
@@ -142,6 +149,7 @@ class MockResourceRequestSender : public ResourceRequestSender {
  private:
   scoped_refptr<ResourceRequestClient> resource_request_client_;
   bool canceled_ = false;
+  std::optional<bool> saw_should_fetch_code_cache_;
   LoaderFreezeMode freeze_mode_ = LoaderFreezeMode::kNone;
   SyncLoadResponse sync_load_response_;
 };
@@ -231,7 +239,8 @@ class TestURLLoaderClient : public URLLoaderClient {
     return true;
   }
 
-  void DidSendData(uint64_t bytesSent, uint64_t totalBytesToBeSent) override {
+  void DidSendData(uint64_t bytes_sent,
+                   uint64_t total_bytes_to_be_sent) override {
     EXPECT_TRUE(loader_);
   }
 
@@ -258,10 +267,10 @@ class TestURLLoaderClient : public URLLoaderClient {
     }
   }
 
-  void DidFinishLoading(base::TimeTicks finishTime,
-                        int64_t totalEncodedDataLength,
-                        uint64_t totalEncodedBodyLength,
-                        int64_t totalDecodedBodyLength) override {
+  void DidFinishLoading(base::TimeTicks finish_time,
+                        int64_t total_encoded_data_length,
+                        uint64_t total_encoded_body_length,
+                        int64_t total_decoded_body_length) override {
     EXPECT_TRUE(loader_);
     EXPECT_TRUE(did_receive_response_);
     EXPECT_FALSE(did_finish_);
@@ -273,10 +282,10 @@ class TestURLLoaderClient : public URLLoaderClient {
   }
 
   void DidFail(const WebURLError& error,
-               base::TimeTicks finishTime,
-               int64_t totalEncodedDataLength,
-               uint64_t totalEncodedBodyLength,
-               int64_t totalDecodedBodyLength) override {
+               base::TimeTicks finish_time,
+               int64_t total_encoded_data_length,
+               uint64_t total_encoded_body_length,
+               int64_t total_decoded_body_length) override {
     EXPECT_TRUE(loader_);
     EXPECT_FALSE(did_finish_);
     error_ = error;
@@ -330,7 +339,7 @@ class URLLoaderTest : public testing::Test {
 
   ~URLLoaderTest() override = default;
 
-  void DoStartAsyncRequest() {
+  void DoStartAsyncRequest(bool should_fetch_code_cache = true) {
     auto request = std::make_unique<network::ResourceRequest>();
     request->url = GURL(kTestURL);
     request->destination = network::mojom::RequestDestination::kEmpty;
@@ -340,7 +349,7 @@ class URLLoaderTest : public testing::Test {
         /*no_mime_sniffing=*/false,
         std::make_unique<ResourceLoadInfoNotifierWrapper>(
             /*resource_load_info_notifier=*/nullptr),
-        /*code_cache_host=*/nullptr, client());
+        /*code_cache_host=*/nullptr, should_fetch_code_cache, client());
     ASSERT_TRUE(resource_request_client());
   }
 
@@ -352,7 +361,6 @@ class URLLoaderTest : public testing::Test {
     redirect_info.new_url = GURL(kTestURL);
     redirect_info.new_site_for_cookies =
         net::SiteForCookies::FromUrl(GURL(kTestURL));
-    std::vector<std::string> removed_headers;
     bool callback_called = false;
     resource_request_client()->OnReceivedRedirect(
         redirect_info, network::mojom::URLResponseHead::New(),
@@ -425,6 +433,16 @@ class URLLoaderTest : public testing::Test {
 
 TEST_F(URLLoaderTest, Success) {
   DoStartAsyncRequest();
+  EXPECT_TRUE(sender()->saw_should_fetch_code_cache());
+  DoReceiveResponse();
+  DoCompleteRequest();
+  EXPECT_FALSE(sender()->canceled());
+  EXPECT_TRUE(client()->did_receive_response_body());
+}
+
+TEST_F(URLLoaderTest, ShouldFetchCodeCacheFalseForwardedToSender) {
+  DoStartAsyncRequest(/*should_fetch_code_cache=*/false);
+  EXPECT_FALSE(sender()->saw_should_fetch_code_cache());
   DoReceiveResponse();
   DoCompleteRequest();
   EXPECT_FALSE(sender()->canceled());

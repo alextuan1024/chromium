@@ -4,14 +4,22 @@
 
 #include "third_party/blink/renderer/core/fetch/fetch_response_data.h"
 
+#include <optional>
+
 #include "base/test/scoped_feature_list.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/cpp/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_response.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/fetch/fetch_header_list.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/blob/blob_data.h"
+#include "third_party/blink/renderer/platform/network/http_names.h"
+#include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
@@ -35,6 +43,9 @@ class FetchResponseDataTest : public testing::Test {
     EXPECT_EQ("bar", response.headers.at("bar"));
     EXPECT_EQ("no-cache", response.headers.at("cache-control"));
   }
+
+ protected:
+  test::TaskEnvironment task_environment_;
 };
 
 TEST_F(FetchResponseDataTest, HeaderList) {
@@ -286,6 +297,49 @@ TEST_F(FetchResponseDataTest, ContentSecurityPolicy) {
             network::mojom::ContentSecurityPolicyType::kReport);
 }
 
+TEST_F(FetchResponseDataTest, ContentSecurityPolicyCorsFiltered) {
+  FetchResponseData* internal_response = CreateInternalResponse();
+  internal_response->HeaderList()->Append("content-security-policy",
+                                          "frame-ancestors 'none'");
+  internal_response->HeaderList()->Append("content-security-policy-report-only",
+                                          "img-src 'none'");
+
+  // Unexposed CSP headers should not be included in parsed_headers for a
+  // CORS-filtered response, while internal headers remain populated.
+  FetchResponseData* unexposed_cors_response =
+      internal_response->CreateCorsFilteredResponse(HTTPHeaderSet());
+  mojom::blink::FetchAPIResponsePtr unexposed_api_response =
+      unexposed_cors_response->PopulateFetchAPIResponse(
+          KURL("https://www.example.org"));
+  CheckHeaders(*unexposed_api_response);
+  EXPECT_EQ("frame-ancestors 'none'",
+            unexposed_api_response->headers.at("content-security-policy"));
+  EXPECT_EQ("img-src 'none'", unexposed_api_response->headers.at(
+                                  "content-security-policy-report-only"));
+  ASSERT_TRUE(unexposed_api_response->parsed_headers);
+  EXPECT_TRUE(
+      unexposed_api_response->parsed_headers->content_security_policy.empty());
+
+  // Explicitly CORS-exposed CSP headers should be included in parsed_headers.
+  FetchResponseData* exposed_cors_response =
+      internal_response->CreateCorsFilteredResponse(
+          {"content-security-policy", "content-security-policy-report-only"});
+  mojom::blink::FetchAPIResponsePtr exposed_api_response =
+      exposed_cors_response->PopulateFetchAPIResponse(
+          KURL("https://www.example.org"));
+  CheckHeaders(*exposed_api_response);
+  ASSERT_TRUE(exposed_api_response->parsed_headers);
+  const auto& exposed_csp =
+      exposed_api_response->parsed_headers->content_security_policy;
+  ASSERT_EQ(exposed_csp.size(), 2U);
+  EXPECT_EQ(exposed_csp[0]->header->type,
+            network::mojom::ContentSecurityPolicyType::kEnforce);
+  EXPECT_EQ(exposed_csp[0]->header->header_value, "frame-ancestors 'none'");
+  EXPECT_EQ(exposed_csp[1]->header->type,
+            network::mojom::ContentSecurityPolicyType::kReport);
+  EXPECT_EQ(exposed_csp[1]->header->header_value, "img-src 'none'");
+}
+
 TEST_F(FetchResponseDataTest, AuthChallengeInfo) {
   FetchResponseData* internal_response = CreateInternalResponse();
   net::AuthChallengeInfo auth_challenge_info;
@@ -330,6 +384,140 @@ TEST_F(FetchResponseDataTest, TimingAllowPassed) {
   fetch_api_response =
       cloned_response_data->PopulateFetchAPIResponse(KURL());
   EXPECT_FALSE(fetch_api_response->timing_allow_passed);
+}
+
+namespace {
+
+class TestCacheStorageSideDataWriter
+    : public network::mojom::blink::CacheStorageSideDataWriter {
+ public:
+  mojo::PendingRemote<network::mojom::blink::CacheStorageSideDataWriter>
+  BindNewPipeAndPassRemote() {
+    return receiver_.BindNewPipeAndPassRemote();
+  }
+
+  void FlushForTesting() { receiver_.FlushForTesting(); }
+  size_t write_count() const { return write_count_; }
+
+  // network::mojom::blink::CacheStorageSideDataWriter:
+  void WriteSideData(mojo_base::BigBuffer data) override { ++write_count_; }
+
+ private:
+  size_t write_count_ = 0;
+  mojo::Receiver<network::mojom::blink::CacheStorageSideDataWriter> receiver_{
+      this};
+};
+
+}  // namespace
+
+TEST_F(FetchResponseDataTest, CacheStorageSideDataWriterPreservedOnClone) {
+  TestCacheStorageSideDataWriter test_writer;
+  FetchResponseData* internal_response = CreateInternalResponse();
+  internal_response->SetResponseSource(
+      network::mojom::FetchResponseSource::kCacheStorage);
+  internal_response->SetCacheStorageSideDataWriter(
+      test_writer.BindNewPipeAndPassRemote());
+  FetchResponseData* basic_response_data =
+      internal_response->CreateBasicFilteredResponse();
+
+  DummyExceptionStateForTesting exception_state;
+  FetchResponseData* cloned_response_data =
+      basic_response_data->Clone(nullptr, exception_state);
+  ASSERT_FALSE(exception_state.HadException());
+
+  // PopulateFetchAPIResponse should not consume or populate the writer.
+  mojom::blink::FetchAPIResponsePtr populated_original =
+      basic_response_data->PopulateFetchAPIResponse(KURL());
+  mojom::blink::FetchAPIResponsePtr populated_clone =
+      cloned_response_data->PopulateFetchAPIResponse(KURL());
+  EXPECT_FALSE(populated_original->cache_storage_side_data_writer.is_valid());
+  EXPECT_FALSE(populated_clone->cache_storage_side_data_writer.is_valid());
+
+  // Both the original and cloned response share the ref-counted PendingRemote
+  // holder, and TakeCacheStorageSideDataWriter() moves the underlying
+  // PendingRemote out of the shared holder. Once taken from the clone, neither
+  // the clone nor the original response has a valid PendingRemote anymore.
+  mojo::PendingRemote<network::mojom::blink::CacheStorageSideDataWriter>
+      clone_writer = cloned_response_data->TakeCacheStorageSideDataWriter();
+  ASSERT_TRUE(clone_writer.is_valid());
+  EXPECT_FALSE(
+      cloned_response_data->TakeCacheStorageSideDataWriter().is_valid());
+  EXPECT_FALSE(
+      basic_response_data->TakeCacheStorageSideDataWriter().is_valid());
+
+  mojo::Remote<network::mojom::blink::CacheStorageSideDataWriter> remote(
+      std::move(clone_writer));
+
+  constexpr uint8_t kData[] = {1, 2, 3};
+  remote->WriteSideData(mojo_base::BigBuffer(kData));
+  remote.FlushForTesting();
+  test_writer.FlushForTesting();
+  EXPECT_EQ(1u, test_writer.write_count());
+}
+
+TEST_F(FetchResponseDataTest, InitFromResourceResponsePadding) {
+  V8TestingScope scope(KURL("https://example.org/page.html"));
+  constexpr base::Time kResponseTime =
+      base::Time::FromSecondsSinceUnixEpoch(1700000000);
+
+  auto create_cached_response =
+      [&](const Vector<KURL>& url_list,
+          network::mojom::FetchResponseType response_type =
+              network::mojom::FetchResponseType::kOpaque,
+          std::optional<base::Time> response_time = std::nullopt) {
+        ResourceResponse resource_response(url_list.back());
+        resource_response.SetHttpStatusCode(200);
+        resource_response.SetWasCached(true);
+        resource_response.SetResponseTime(
+            response_time.value_or(kResponseTime));
+
+        FetchResponseData* response_data = FetchResponseData::Create();
+        response_data->InitFromResourceResponse(
+            scope.GetExecutionContext(), response_type, url_list,
+            http_names::kGET, network::mojom::CredentialsMode::kOmit,
+            resource_response);
+        return response_data;
+      };
+
+  FetchResponseData* base_response =
+      create_cached_response({KURL("https://example.com/script.js")});
+  FetchResponseData* empty_ref_response =
+      create_cached_response({KURL("https://example.com/script.js#")});
+  FetchResponseData* ref_a_response =
+      create_cached_response({KURL("https://example.com/script.js#a")});
+  FetchResponseData* ref_b_response =
+      create_cached_response({KURL("https://example.com/script.js#b")});
+  FetchResponseData* redirected_response =
+      create_cached_response({KURL("https://example.com/start"),
+                              KURL("https://example.com/script.js#c")});
+
+  EXPECT_GE(base_response->GetPadding(), 0);
+  EXPECT_EQ(base_response->GetPadding(), empty_ref_response->GetPadding());
+  EXPECT_EQ(base_response->GetPadding(), ref_a_response->GetPadding());
+  EXPECT_EQ(base_response->GetPadding(), ref_b_response->GetPadding());
+  EXPECT_EQ(base_response->GetPadding(), redirected_response->GetPadding());
+
+  // FetchResponseData::UrlList() continues to preserve the full URL per spec.
+  ASSERT_EQ(1u, ref_a_response->UrlList().size());
+  EXPECT_EQ(KURL("https://example.com/script.js#a"),
+            ref_a_response->UrlList()[0]);
+
+  FetchResponseData* redirect_base = create_cached_response(
+      {KURL("https://example.com/redirect")},
+      network::mojom::FetchResponseType::kOpaqueRedirect);
+  FetchResponseData* redirect_with_ref = create_cached_response(
+      {KURL("https://example.com/redirect#a")},
+      network::mojom::FetchResponseType::kOpaqueRedirect);
+  EXPECT_EQ(redirect_base->GetPadding(), redirect_with_ref->GetPadding());
+
+  FetchResponseData* query_response =
+      create_cached_response({KURL("https://example.com/script.js?v=1")});
+  FetchResponseData* different_time_response =
+      create_cached_response({KURL("https://example.com/script.js")},
+                             network::mojom::FetchResponseType::kOpaque,
+                             kResponseTime + base::Seconds(1));
+  EXPECT_NE(base_response->GetPadding(), query_response->GetPadding());
+  EXPECT_NE(base_response->GetPadding(), different_time_response->GetPadding());
 }
 
 }  // namespace blink

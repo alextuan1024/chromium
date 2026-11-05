@@ -182,6 +182,7 @@ public class AuxiliarySearchDonor {
     /**
      * Sets the document schema for the current session.
      *
+     * @param success Whether the consumer schema was found, i.e., the device supports Tab donation.
      * @return false if the schema has been set before.
      */
     @SuppressWarnings("CheckResult")
@@ -242,7 +243,7 @@ public class AuxiliarySearchDonor {
                 session -> {
                     SetSchemaRequest setSchemaRequest = buildSetSchemaRequest();
                     if (setSchemaRequest == null) {
-                        return null;
+                        return Futures.immediateCancelledFuture();
                     }
 
                     ListenableFuture<SetSchemaResponse> responseFutureCallback =
@@ -322,6 +323,8 @@ public class AuxiliarySearchDonor {
      *
      * @param entries The list of objects to donate.
      * @param entryToFaviconMap The map of <Entry, favicon>.
+     * @param callback The callback to be called with whether all documents were donated
+     *     successfully.
      */
     @VisibleForTesting
     public <T> void donateFavicons(
@@ -358,6 +361,8 @@ public class AuxiliarySearchDonor {
      * Donates tabs with favicons.
      *
      * @param entryToFaviconMap The map of tab with favicons.
+     * @param callback The callback to be called with whether all documents were donated
+     *     successfully.
      */
     @VisibleForTesting
     public <T> void donateEntries(Map<T, Bitmap> entryToFaviconMap, Callback<Boolean> callback) {
@@ -419,7 +424,7 @@ public class AuxiliarySearchDonor {
 
         AuxiliarySearchDataEntry dataEntry = (AuxiliarySearchDataEntry) entry;
         boolean isTab = dataEntry.type == AuxiliarySearchEntryType.TAB;
-        int entryId = isTab ? dataEntry.tabId : dataEntry.visitId;
+        long entryId = isTab ? dataEntry.tabId : dataEntry.visitId;
         String documentId = getDocumentId(dataEntry.type, entryId);
         if (counts != null) {
             counts[dataEntry.type] += 1;
@@ -631,7 +636,7 @@ public class AuxiliarySearchDonor {
     }
 
     @VisibleForTesting
-    public static String getDocumentId(int type, int id) {
+    public static String getDocumentId(int type, long id) {
         switch (type) {
             case AuxiliarySearchEntryType.TAB:
                 return TAB_PREFIX + id;

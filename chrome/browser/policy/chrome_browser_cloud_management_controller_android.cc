@@ -6,12 +6,15 @@
 
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/client_certificates/browser_context_delegate.h"
 #include "chrome/browser/enterprise/client_certificates/cert_utils.h"
+#include "chrome/browser/enterprise/connectors/device_trust/attestation/android/android_attestation_token_client.h"
+#include "chrome/browser/enterprise/connectors/device_trust/key_management/android/device_trust_key_manager_android.h"
 #include "chrome/browser/enterprise/reporting/reporting_delegate_factory_android.h"
 #include "chrome/browser/enterprise/reporting/saas_usage/saas_usage_reporting_delegate_factory_impl.h"
 #include "chrome/browser/net/system_network_context_manager.h"
@@ -19,6 +22,7 @@
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/policy/client_data_delegate_android.h"
 #include "chrome/common/chrome_paths.h"
+#include "components/enterprise/browser/controller/browser_dm_token_storage.h"
 #include "components/enterprise/client_certificates/core/browser_cloud_management_delegate.h"
 #include "components/enterprise/client_certificates/core/certificate_provisioning_service.h"
 #include "components/enterprise/client_certificates/core/dm_server_client.h"
@@ -26,6 +30,7 @@
 #include "components/enterprise/client_certificates/core/key_upload_client.h"
 #include "components/policy/core/common/cloud/machine_level_user_cloud_policy_manager.h"
 #include "components/policy/core/common/configuration_policy_provider.h"
+#include "components/policy/core/common/features.h"
 #include "components/policy/core/common/policy_namespace.h"
 #include "components/policy/core/common/policy_service.h"
 #include "components/policy/policy_constants.h"
@@ -90,13 +95,24 @@ void DeferredInitializationRunner::OnProviderUpdatePropagated(
   }
 
   policy_service->RemoveProviderUpdateObserver(this);
+
+  // `BrowserDMTokenStorage` cached the enrollment token, at the latest when
+  // `ReadyToInit()` checked for a DM token, before the platform policies
+  // carrying it reached the `PolicyService`. Have it read the token again so
+  // that the deferred initialization doesn't use the stale value.
+  if (base::FeatureList::IsEnabled(
+          features::kCbcmRefreshEnrollmentTokenBeforeDeferredInit)) {
+    BrowserDMTokenStorage::Get()->RefreshEnrollmentToken();
+  }
   std::move(callback_).Run();
 }
 
 bool CloudManagementEnrollmentTokenPolicyAvailable() {
-  DCHECK(g_browser_process);
-  DCHECK(g_browser_process->browser_policy_connector());
-  DCHECK(g_browser_process->browser_policy_connector()->GetPolicyService());
+  CHECK(g_browser_process, base::NotFatalUntil::M162);
+  CHECK(g_browser_process->browser_policy_connector(),
+        base::NotFatalUntil::M162);
+  CHECK(g_browser_process->browser_policy_connector()->GetPolicyService(),
+        base::NotFatalUntil::M162);
 
   return g_browser_process->browser_policy_connector()
       ->GetPolicyService()
@@ -190,7 +206,7 @@ scoped_refptr<base::SingleThreadTaskRunner>
 ChromeBrowserCloudManagementControllerAndroid::GetBestEffortTaskRunner() {
   // ChromeBrowserCloudManagementControllerAndroid is bound to BrowserThread::UI
   // and so must its best-effort task runner.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   return content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT});
 }
 
@@ -257,9 +273,10 @@ bool ChromeBrowserCloudManagementControllerAndroid::
 
 void ChromeBrowserCloudManagementControllerAndroid::DeferInitialization(
     base::OnceClosure callback) {
-  DCHECK(callback);
-  DCHECK(g_browser_process);
-  DCHECK(g_browser_process->browser_policy_connector());
+  CHECK(callback, base::NotFatalUntil::M162);
+  CHECK(g_browser_process, base::NotFatalUntil::M162);
+  CHECK(g_browser_process->browser_policy_connector(),
+        base::NotFatalUntil::M162);
 
   provider_update_observer_ =
       std::make_unique<DeferredInitializationRunner>(std::move(callback));
@@ -278,6 +295,13 @@ ChromeBrowserCloudManagementControllerAndroid::
   return client_certificates::CreateBrowserCertificateProvisioningService(
       g_browser_process->local_state(), certificate_store_.get(),
       GetDeviceManagementService(), GetSharedURLLoaderFactory());
+}
+
+std::unique_ptr<enterprise_connectors::DeviceTrustKeyManager>
+ChromeBrowserCloudManagementControllerAndroid::CreateDeviceTrustKeyManager() {
+  return std::make_unique<enterprise_connectors::DeviceTrustKeyManagerAndroid>(
+      std::make_unique<enterprise_connectors::AndroidAttestationTokenClient>(),
+      g_browser_process->local_state());
 }
 
 }  // namespace policy

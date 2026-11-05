@@ -13,11 +13,14 @@
 #include "ash/constants/chrome_webui_url_constants.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/constants/webui_url_constants.h"
+#include "ash/multi_user/multi_user_window_manager.h"
 #include "ash/public/cpp/app_list/internal_app_id_constants.h"
 #include "ash/public/cpp/shelf_model.h"
 #include "ash/public/cpp/shelf_types.h"
 #include "ash/public/cpp/window_properties.h"
+#include "ash/shell.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
+#include "base/check.h"
 #include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -32,18 +35,14 @@
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/file_manager/url_util.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/system_web_apps/apps/calculator_app/calculator_app_utils.h"
 #include "chrome/browser/ash/system_web_apps/apps/camera_app/chrome_camera_app_ui_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/chromeos/arc/arc_web_contents_data.h"
-#include "chrome/browser/chromeos/network/network_portal_signin_window.h"
-#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
-#include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/sessions/tab_restore_service_factory.h"
-#include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/ash/network/network_portal_signin_window.h"
 #include "chrome/browser/ui/ash/shelf/app_service/app_service_app_window_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/app_window_base.h"
 #include "chrome/browser/ui/ash/shelf/app_window_shelf_item_controller.h"
@@ -55,55 +54,41 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/webui/chrome_web_contents_handler.h"
-#include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
 #include "chromeos/ash/experiences/arc/intent_helper/arc_intent_helper_bridge.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
+#include "components/account_id/account_id.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
+#include "components/services/app_service/public/cpp/app_service.h"
+#include "components/services/app_service/public/cpp/app_service_registry.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "components/services/app_service/public/cpp/types_util.h"
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
-#include "components/sessions/core/tab_restore_service.h"
-#include "components/sessions/core/tab_restore_service_observer.h"
 #include "components/url_formatter/url_fixer.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/webapps/common/web_app_id.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
-#include "third_party/blink/public/mojom/navigation/was_activated_option.mojom.h"
 #include "ui/aura/window.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/url_constants.h"
 
 namespace {
-
-void RestoreTabUsingProfile(Profile* profile) {
-  sessions::TabRestoreService* service =
-      TabRestoreServiceFactory::GetForProfile(profile);
-  service->RestoreMostRecentEntry(nullptr);
-}
-
-bool IsIncognitoAllowed() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  return profile && IncognitoModePrefs::IsIncognitoAllowed(profile);
-}
 
 // Returns URL path and query without the "/" prefix. For example, for the URL
 // "chrome://settings/networks/?type=WiFi" returns "networks/?type=WiFi".
@@ -173,50 +158,6 @@ bool OpenFilesSwa(Profile* const profile,
 
 }  // namespace
 
-// TabRestoreHelper is used to restore a tab. In particular when the user
-// attempts to a restore a tab if the TabRestoreService hasn't finished loading
-// this waits for it. Once the TabRestoreService finishes loading the tab is
-// restored.
-class ChromeNewWindowClient::TabRestoreHelper
-    : public sessions::TabRestoreServiceObserver {
- public:
-  TabRestoreHelper(ChromeNewWindowClient* delegate,
-                   Profile* profile,
-                   sessions::TabRestoreService* service)
-      : delegate_(delegate), profile_(profile), tab_restore_service_(service) {
-    tab_restore_service_->AddObserver(this);
-  }
-
-  TabRestoreHelper(const TabRestoreHelper&) = delete;
-  TabRestoreHelper& operator=(const TabRestoreHelper&) = delete;
-
-  ~TabRestoreHelper() override { tab_restore_service_->RemoveObserver(this); }
-
-  sessions::TabRestoreService* tab_restore_service() {
-    return tab_restore_service_;
-  }
-
-  void TabRestoreServiceChanged(sessions::TabRestoreService* service) override {
-  }
-
-  void TabRestoreServiceDestroyed(
-      sessions::TabRestoreService* service) override {
-    // This destroys us.
-    delegate_->tab_restore_helper_.reset();
-  }
-
-  void TabRestoreServiceLoaded(sessions::TabRestoreService* service) override {
-    RestoreTabUsingProfile(profile_);
-    // This destroys us.
-    delegate_->tab_restore_helper_.reset();
-  }
-
- private:
-  raw_ptr<ChromeNewWindowClient> delegate_;
-  raw_ptr<Profile> profile_;
-  raw_ptr<sessions::TabRestoreService> tab_restore_service_;
-};
-
 ChromeNewWindowClient::ChromeNewWindowClient() {
   arc::ArcIntentHelperBridge::SetControlCameraAppDelegate(this);
 }
@@ -242,7 +183,15 @@ void ChromeNewWindowClient::NewTab() {
 
   // Display a browser, setting the focus to the location bar after it is shown.
   {
-    Profile* profile = ProfileManager::GetActiveUserProfile();
+    // TODO(crbug.com/278643115): Take `account_id` from the callers.
+    const session_manager::Session* session =
+        session_manager::SessionManager::Get()->GetActiveSession();
+    CHECK(session);
+    content::BrowserContext* browser_context =
+        ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+            session->account_id());
+    CHECK(browser_context);
+    Profile* profile = Profile::FromBrowserContext(browser_context);
     bool is_otr_forced =
         IncognitoModePrefs::ShouldOpenSubsequentBrowsersInIncognito(
             *base::CommandLine::ForCurrentProcess(), profile);
@@ -260,15 +209,27 @@ void ChromeNewWindowClient::NewTab() {
 
 void ChromeNewWindowClient::NewWindow(bool is_incognito,
                                       bool should_trigger_session_restore) {
-  if (is_incognito && !IsIncognitoAllowed()) {
+  BrowserWindowInterface* browser =
+      GlobalBrowserCollection::GetInstance()->GetActiveBrowser();
+  Profile* profile = nullptr;
+  if (browser && browser->GetProfile()) {
+    profile = browser->GetProfile()->GetOriginalProfile();
+  } else {
+    // TODO(crbug.com/278643115): Take `account_id` from the callers.
+    const session_manager::Session* session =
+        session_manager::SessionManager::Get()->GetActiveSession();
+    CHECK(session);
+    content::BrowserContext* browser_context =
+        ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+            session->account_id());
+    CHECK(browser_context);
+    profile =
+        Profile::FromBrowserContext(browser_context)->GetOriginalProfile();
+  }
+  if (is_incognito && !IncognitoModePrefs::IsIncognitoAllowed(profile)) {
     return;
   }
 
-  BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->GetActiveBrowser();
-  Profile* profile = (browser && browser->GetProfile())
-                         ? browser->GetProfile()->GetOriginalProfile()
-                         : ProfileManager::GetActiveUserProfile();
   chrome::NewEmptyWindow(
       is_incognito ? profile->GetPrimaryOTRProfile(/*create_if_needed=*/true)
                    : profile,
@@ -283,17 +244,17 @@ void ChromeNewWindowClient::NewWindowForDetachingTab(
 }
 
 namespace {
-WindowOpenDisposition ToWindowOpenDisposition(
+ui::mojom::WindowOpenDisposition ToWindowOpenDisposition(
     ash::NewWindowDelegate::Disposition disposition) {
   switch (disposition) {
     case ash::NewWindowDelegate::Disposition::kNewForegroundTab:
-      return WindowOpenDisposition::NEW_FOREGROUND_TAB;
+      return ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     case ash::NewWindowDelegate::Disposition::kNewWindow:
-      return WindowOpenDisposition::NEW_WINDOW;
+      return ui::mojom::WindowOpenDisposition::kNewWindow;
     case ash::NewWindowDelegate::Disposition::kOffTheRecord:
-      return WindowOpenDisposition::OFF_THE_RECORD;
+      return ui::mojom::WindowOpenDisposition::kOffTheRecord;
     case ash::NewWindowDelegate::Disposition::kSwitchToTab:
-      return WindowOpenDisposition::SWITCH_TO_TAB;
+      return ui::mojom::WindowOpenDisposition::kSwitchToTab;
   }
 }
 }  // namespace
@@ -301,58 +262,57 @@ WindowOpenDisposition ToWindowOpenDisposition(
 void ChromeNewWindowClient::OpenUrl(const GURL& url,
                                     OpenUrlFrom from,
                                     Disposition disposition) {
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+
   // Opens a URL in a new tab. If the URL is for a chrome://settings page,
   // opens settings in a new window.
-  Profile* profile = ProfileManager::GetActiveUserProfile();
   if ((url.SchemeIs(url::kAboutScheme) ||
        url.SchemeIs(content::kChromeUIScheme))) {
     // Show browser settings (e.g. chrome://settings). This may open in a window
     // or a tab depending on feature SplitSettings.
     if (url.GetHost() == ash::chrome_urls::kChromeUISettingsHost) {
+      content::BrowserContext* browser_context =
+          ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+              session->account_id());
+      CHECK(browser_context);
       std::string sub_page = GetPathAndQuery(url);
-      chrome::ShowSettingsSubPageForProfile(profile, sub_page);
+      chrome::ShowSettingsSubPageForProfile(
+          Profile::FromBrowserContext(browser_context), sub_page);
       return;
     }
     // OS settings are shown in a window.
     if (url.GetHost() == ash::kChromeUIOSSettingsHost) {
-      auto* session =
-          session_manager::SessionManager::Get()->GetActiveSession();
-      if (session) {
-        // TODO(crbug.com/447287122): Revisit here to see if there always is an
-        // active user session.
-        ash::SettingsAppManager::Get()->Open(
-            CHECK_DEREF(user_manager::UserManager::Get()->FindUser(
-                session->account_id())),
-            {.sub_page = GetPathAndQuery(url)});
-      }
+      ash::SettingsAppManager::Get()->Open(
+          CHECK_DEREF(user_manager::UserManager::Get()->FindUser(
+              session->account_id())),
+          {.sub_page = GetPathAndQuery(url)});
       return;
     }
   }
 
-  NavigateParams navigate_params(
-      profile, url,
-      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_LINK |
-                                ui::PAGE_TRANSITION_FROM_API));
-  navigate_params.disposition = ToWindowOpenDisposition(disposition);
-
   // If the |from| is kUserInteraction, then the page will load with a user
   // activation. This means it will be able to autoplay media without
   // restriction.
-  if (from == OpenUrlFrom::kUserInteraction) {
-    navigate_params.was_activated = blink::mojom::WasActivatedOption::kYes;
+  content::WebContents* tab = ash::BrowserController::GetInstance()->OpenUrl(
+      session->account_id(), url,
+      {.disposition = ToWindowOpenDisposition(disposition),
+       .transition = ui::PageTransitionFromInt(ui::PAGE_TRANSITION_LINK |
+                                               ui::PAGE_TRANSITION_FROM_API),
+       .user_activation = from == OpenUrlFrom::kUserInteraction});
+  if (!tab) {
+    return;
   }
 
-  Navigate(&navigate_params);
+  // The browser window might be on another user's desktop, and hence not
+  // visible. Ensure the browser becomes visible on this user's desktop.
+  ash::Shell::Get()->multi_user_window_manager()->ShowWindowForCurrentUser(
+      CHECK_DEREF(ash::BrowserController::GetInstance()->GetBrowserForTab(tab))
+          .GetNativeWindow());
 
-  if (navigate_params.browser) {
-    // The browser window might be on another user's desktop, and hence not
-    // visible. Ensure the browser becomes visible on this user's desktop.
-    multi_user_util::MoveWindowToCurrentDesktop(
-        navigate_params.browser->GetWindow()->GetNativeWindow());
-  }
-
-  auto* tab = navigate_params.navigated_or_inserted_contents.get();
-  if (from == OpenUrlFrom::kArc && tab) {
+  if (from == OpenUrlFrom::kArc) {
     // Add a flag to remember this tab originated in the ARC context.
     tab->SetUserData(&arc::ArcWebContentsData::kArcTransitionFlag,
                      std::make_unique<arc::ArcWebContentsData>(tab));
@@ -360,23 +320,36 @@ void ChromeNewWindowClient::OpenUrl(const GURL& url,
 }
 
 void ChromeNewWindowClient::OpenCalculator() {
-  Profile* const profile = ProfileManager::GetActiveUserProfile();
-  apps::AppServiceProxy* proxy =
-      apps::AppServiceProxyFactory::GetForProfile(profile);
-  DCHECK(proxy);
-  proxy->Launch(ash::calculator_app::GetInstalledCalculatorAppId(profile),
-                ui::EF_NONE, apps::LaunchSource::kFromKeyboard);
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id());
+  CHECK(browser_context);
+  CHECK_DEREF(apps::AppServiceRegistry::Get()->Find(session->account_id()))
+      .Launch(ash::calculator_app::GetInstalledCalculatorAppId(browser_context),
+              ui::EF_NONE, apps::LaunchSource::kFromKeyboard);
 }
 
 void ChromeNewWindowClient::OpenFileManager() {
-  Profile* const profile = ProfileManager::GetActiveUserProfile();
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id());
+  CHECK(browser_context);
+  Profile* const profile = Profile::FromBrowserContext(browser_context);
   if (OpenFilesSwa(profile)) {
     return;
   }
 
   apps::AppServiceProxy* proxy =
       apps::AppServiceProxyFactory::GetForProfile(profile);
-  DCHECK(proxy);
+  CHECK(proxy, base::NotFatalUntil::M162);
 
   auto launch_files_app = [proxy](const apps::AppUpdate& update) {
     if (update.Readiness() != apps::Readiness::kReady) {
@@ -386,33 +359,36 @@ void ChromeNewWindowClient::OpenFileManager() {
       return;
     }
 
-    proxy->Launch(update.AppId(),
-                  apps::GetEventFlags(WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                      /*prefer_container=*/true),
-                  apps::LaunchSource::kFromKeyboard);
+    proxy->Launch(
+        update.AppId(),
+        apps::GetEventFlags(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                            /*prefer_container=*/true),
+        apps::LaunchSource::kFromKeyboard);
   };
 
   bool result = proxy->AppRegistryCache().ForOneApp(
       file_manager::kFileManagerAppId, std::move(launch_files_app));
-  DCHECK(result);
+  CHECK(result, base::NotFatalUntil::M162);
 }
 
-void ChromeNewWindowClient::OpenDownloadsFolder() {
-  Profile* const profile = ProfileManager::GetActiveUserProfile();
-  base::FilePath target_directory =
-      file_manager::util::GetDownloadsFolderForProfile(profile);
+void ChromeNewWindowClient::OpenDownloadsFolder(const AccountId& account_id) {
+  const user_manager::User& user =
+      CHECK_DEREF(user_manager::UserManager::Get()->FindUser(account_id));
+  const base::FilePath target_directory =
+      file_manager::util::GetDownloadsFolder(user);
+
+  Profile* const profile = Profile::FromBrowserContext(
+      ash::BrowserContextHelper::Get()->GetBrowserContextByUser(&user));
   if (OpenFilesSwa(profile, target_directory)) {
     return;
   }
 
   apps::AppServiceProxy* proxy =
       apps::AppServiceProxyFactory::GetForProfile(profile);
-  auto downloads_path =
-      file_manager::util::GetDownloadsFolderForProfile(profile);
-  DCHECK(proxy);
+  CHECK(proxy, base::NotFatalUntil::M162);
 
   auto launch_files_app = [proxy,
-                           downloads_path](const apps::AppUpdate& update) {
+                           target_directory](const apps::AppUpdate& update) {
     if (update.Readiness() != apps::Readiness::kReady) {
       LOG(WARNING)
           << "Couldn't launch Files app because it isn't ready, readiness: "
@@ -421,61 +397,69 @@ void ChromeNewWindowClient::OpenDownloadsFolder() {
     }
 
     std::vector<base::FilePath> launch_files;
-    launch_files.push_back(downloads_path);
+    launch_files.push_back(target_directory);
     proxy->LaunchAppWithFiles(
         update.AppId(),
-        apps::GetEventFlags(WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        apps::GetEventFlags(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                             /*prefer_container=*/true),
         apps::LaunchSource::kFromKeyboard, std::move(launch_files));
   };
 
   bool result = proxy->AppRegistryCache().ForOneApp(
       file_manager::kFileManagerAppId, launch_files_app);
-  DCHECK(result);
+  CHECK(result, base::NotFatalUntil::M162);
 }
 
 void ChromeNewWindowClient::OpenCrosh() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  ash::LaunchSystemWebAppAsync(profile, ash::SystemWebAppType::CROSH);
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id());
+  CHECK(browser_context);
+  ash::LaunchSystemWebAppAsync(Profile::FromBrowserContext(browser_context),
+                               ash::SystemWebAppType::CROSH);
 }
 
 void ChromeNewWindowClient::OpenGetHelp() {
-  Profile* const profile = ProfileManager::GetActiveUserProfile();
-  chrome::ShowHelpForProfile(profile, chrome::HelpSource::kKeyboard);
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id());
+  CHECK(browser_context);
+  chrome::ShowHelpForProfile(Profile::FromBrowserContext(browser_context),
+                             chrome::HelpSource::kKeyboard);
 }
 
-void ChromeNewWindowClient::RestoreTab() {
-  if (tab_restore_helper_.get()) {
-    DCHECK(!tab_restore_helper_->tab_restore_service()->IsLoaded());
-    return;
-  }
-
+void ChromeNewWindowClient::RestoreTab(const AccountId& account_id) {
+  // Historically reopening a closed tab is a no-op while an incognito window is
+  // active; preserved here.
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->GetActiveBrowser();
-  Profile* profile = browser ? browser->GetProfile() : nullptr;
-  if (!profile) {
-    profile = ProfileManager::GetActiveUserProfile();
-  }
-  if (profile->IsOffTheRecord()) {
+  if (browser && browser->GetProfile()->IsOffTheRecord()) {
     return;
   }
-  sessions::TabRestoreService* service =
-      TabRestoreServiceFactory::GetForProfile(profile);
-  if (!service) {
-    return;
-  }
-
-  if (service->IsLoaded()) {
-    RestoreTabUsingProfile(profile);
-  } else {
-    tab_restore_helper_ =
-        std::make_unique<TabRestoreHelper>(this, profile, service);
-    service->LoadTabsFromLastSession();
-  }
+  // Forwards to //chrome; //ash can't depend on BrowserController (it pulls in
+  // //content).
+  ash::BrowserController::GetInstance()->RestoreTab(account_id);
 }
 
 void ChromeNewWindowClient::ShowShortcutCustomizationApp() {
-  ash::ShowShortcutCustomizationApp(ProfileManager::GetActiveUserProfile());
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id());
+  CHECK(browser_context);
+  ash::ShowShortcutCustomizationApp(
+      Profile::FromBrowserContext(browser_context));
 }
 
 void ChromeNewWindowClient::ShowTaskManager(bool from_context_menu) {
@@ -486,7 +470,15 @@ void ChromeNewWindowClient::ShowTaskManager(bool from_context_menu) {
 }
 
 void ChromeNewWindowClient::OpenDiagnostics() {
-  ash::ShowDiagnosticsApp(ProfileManager::GetActiveUserProfile());
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id());
+  CHECK(browser_context);
+  ash::ShowDiagnosticsApp(Profile::FromBrowserContext(browser_context));
 }
 
 void ChromeNewWindowClient::OpenFeedbackPage(
@@ -498,33 +490,50 @@ void ChromeNewWindowClient::OpenFeedbackPage(
 }
 
 void ChromeNewWindowClient::OpenPersonalizationHub() {
-  Profile* const profile = ProfileManager::GetActiveUserProfile();
-  ash::LaunchSystemWebAppAsync(profile, ash::SystemWebAppType::PERSONALIZATION);
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id());
+  CHECK(browser_context);
+  ash::LaunchSystemWebAppAsync(Profile::FromBrowserContext(browser_context),
+                               ash::SystemWebAppType::PERSONALIZATION);
 }
 
 void ChromeNewWindowClient::OpenCaptivePortalSignin(const GURL& url) {
-  chromeos::NetworkPortalSigninWindow::Get()->Show(url);
+  ash::NetworkPortalSigninWindow::Get()->Show(url);
 }
 
 void ChromeNewWindowClient::OpenFile(const base::FilePath& file_path) {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  platform_util::OpenItem(profile, file_path,
-                          platform_util::OpenItemType::OPEN_FILE,
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id());
+  CHECK(browser_context);
+  platform_util::OpenItem(Profile::FromBrowserContext(browser_context),
+                          file_path, platform_util::OpenItemType::OPEN_FILE,
                           platform_util::OpenOperationCallback());
 }
 
 void ChromeNewWindowClient::ToggleGeminiApp() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  const AccountId& account_id = ash::BrowserContextHelper::Get()
-                                    ->GetUserByBrowserContext(profile)
-                                    ->GetAccountId();
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  const AccountId& account_id = session->account_id();
 
   ash::BrowserDelegate* app_window =
       ash::BrowserController::GetInstance()->FindWebApp(
           account_id, ash::kGeminiAppId, ash::BrowserType::kApp);
   if (!app_window) {
-    apps::AppServiceProxyFactory::GetForProfile(profile)->Launch(
-        ash::kGeminiAppId, ui::EF_NONE, apps::LaunchSource::kFromKeyboard);
+    CHECK_DEREF(apps::AppServiceRegistry::Get()->Find(account_id))
+        .Launch(ash::kGeminiAppId, ui::EF_NONE,
+                apps::LaunchSource::kFromKeyboard);
     return;
   }
 
@@ -538,7 +547,7 @@ void ChromeNewWindowClient::ToggleGeminiApp() {
 void ChromeNewWindowClient::LaunchCameraApp(const std::string& queries,
                                             bool launch_in_dialog,
                                             int32_t task_id) {
-  DCHECK(IsCameraAppEnabled());
+  CHECK(IsCameraAppEnabled(), base::NotFatalUntil::M162);
   ChromeCameraAppUIDelegate::CameraAppDialog::ShowIntent(
       queries, launch_in_dialog, arc::GetArcWindow(task_id));
   apps::RecordAppLaunch(ash::kCameraAppId, apps::LaunchSource::kFromArc);
@@ -554,15 +563,23 @@ void ChromeNewWindowClient::CloseCameraApp() {
     return;
   }
 
-  DCHECK_LE(app_controller->window_count(), 1lu);
+  CHECK_LE(app_controller->window_count(), 1lu, base::NotFatalUntil::M162);
   if (app_controller->window_count() > 0) {
     app_controller->windows().front()->Close();
   }
 }
 
 bool ChromeNewWindowClient::IsCameraAppEnabled() {
-  Profile* const profile = ProfileManager::GetActiveUserProfile();
-  auto* swa_manager = ash::SystemWebAppManager::Get(profile);
+  // TODO(crbug.com/278643115): Take `account_id` from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id());
+  CHECK(browser_context);
+  auto* swa_manager = ash::SystemWebAppManager::Get(
+      Profile::FromBrowserContext(browser_context));
   return swa_manager &&
          swa_manager->IsAppEnabled(ash::SystemWebAppType::CAMERA);
 }

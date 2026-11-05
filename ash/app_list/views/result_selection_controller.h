@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ash/app_list/views/search_result_base_view.h"
@@ -22,7 +23,7 @@ class SearchResultContainerView;
 // This alias is intended to clarify the intended use of this class within the
 // context of this controller.
 using ResultSelectionModel =
-    std::vector<raw_ptr<SearchResultContainerView, VectorExperimental>>;
+    std::vector<raw_ptr<SearchResultContainerView, DanglingUntriaged>>;
 
 // Stores and organizes the details for the 'coordinates' of the selected
 // result. This includes all information to determine exactly where a result is,
@@ -156,8 +157,7 @@ class ASH_EXPORT ResultSelectionController {
 
   // Returns the location of a result with the provided ID.
   // Returns nullptr if the result cannot be found.
-  std::unique_ptr<ResultLocationDetails> FindResultWithId(
-      const std::string& id);
+  std::unique_ptr<ResultLocationDetails> FindResultWithId(std::string_view id);
 
   // Updates a |ResultLocationDetails| to a new container, updating most
   // attributes based on |result_selection_model_|.

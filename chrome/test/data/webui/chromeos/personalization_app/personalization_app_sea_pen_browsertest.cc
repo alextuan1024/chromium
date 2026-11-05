@@ -7,13 +7,13 @@
 #include "ash/wallpaper/sea_pen_wallpaper_manager.h"
 #include "ash/wallpaper/wallpaper_utils/sea_pen_metadata_utils.h"
 #include "ash/webui/common/mojom/sea_pen.mojom.h"
-#include "ash/webui/personalization_app/test/personalization_app_mojom_banned_mocha_test_base.h"
 #include "base/containers/span.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/string_view_util.h"
 #include "base/test/gtest_tags.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_mocha_test_base.h"
+#include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_mojom_banned_mocha_test_base.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/webui/feedback/feedback_dialog.h"
@@ -109,7 +109,14 @@ class PersonalizationAppSeaPenBrowserTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(PersonalizationAppSeaPenBrowserTest, SeaPen) {
+// TODO(crbug.com/566263805, crbug.com/566387414): Flaky and times out on debug
+// builds.
+#if !defined(NDEBUG)
+#define MAYBE_SeaPen DISABLED_SeaPen
+#else
+#define MAYBE_SeaPen SeaPen
+#endif
+IN_PROC_BROWSER_TEST_F(PersonalizationAppSeaPenBrowserTest, MAYBE_SeaPen) {
   RunTestWithoutTestLoader(
       "chromeos/personalization_app/personalization_app_test.js",
       "runMochaSuite('sea pen')");

@@ -6,6 +6,8 @@
 
 #import <StoreKit/StoreKit.h>
 
+#import <utility>
+
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "components/signin/public/identity_manager/account_info.h"
@@ -460,9 +462,9 @@ void ConfirmChangeProfileWithCompletion(SaveToPhotosCoordinator* coordinator,
                                              // Handle profile switching.
                                              DoNothingContinuationProvider()];
   _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
-        [weakSelf handleSigninResult:result identity:identity];
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
+        [weakSelf handleSigninResult:std::move(result)];
       };
   [_signinCoordinator start];
 }
@@ -509,15 +511,14 @@ void ConfirmChangeProfileWithCompletion(SaveToPhotosCoordinator* coordinator,
   _alertController = nil;
 }
 
-- (void)handleSigninResult:(SigninCoordinatorResult)result
-                  identity:(id<SystemIdentity>)identity {
+- (void)handleSigninResult:(SigninCoordinatorResultOrIdentity)result {
   [_signinCoordinator stop];
   _signinCoordinator = nil;
-  if (result == SigninCoordinatorResultSuccess) {
-    [_mediator userSignedInToSaveImageWithIdentity:identity];
+  if (result.has_value()) {
+    [_mediator userSignedInToSaveImageWithIdentity:result.value()];
     base::UmaHistogramEnumeration(kSaveToPhotosSignInResultHistogram,
                                   SaveToPhotosSignInResult::kSignInSuccess);
-  } else if (result == SigninCoordinatorResultCanceledByUser) {
+  } else if (result.error() == SigninCoordinatorResultCanceledByUser) {
     base::UmaHistogramEnumeration(kSaveToPhotosSignInResultHistogram,
                                   SaveToPhotosSignInResult::kSignInCanceled);
   } else {

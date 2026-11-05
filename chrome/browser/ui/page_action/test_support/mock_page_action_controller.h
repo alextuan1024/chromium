@@ -20,6 +20,10 @@ class MockPageActionController : public PageActionController {
   ~MockPageActionController() override;
 
   MOCK_METHOD(void, Show, (actions::ActionId), (override));
+  void Show(actions::ActionId action_id,
+            const PageActionVisibilityConfig& config) override {
+    Show(action_id);
+  }
   MOCK_METHOD(void, Hide, (actions::ActionId), (override));
   void ShowSuggestionChip(actions::ActionId action_id) override {
     ShowSuggestionChip(action_id, SuggestionChipConfig());
@@ -89,6 +93,11 @@ class MockPageActionController : public PageActionController {
               OverrideBackgroundColor,
               (actions::ActionId,
                std::optional<ui::ColorId> override_background_color_id),
+              (override));
+  MOCK_METHOD(void,
+              OverrideForegroundColor,
+              (actions::ActionId,
+               std::optional<ui::ColorId> override_foreground_color_id),
               (override));
   MOCK_METHOD(void,
               SetAnchoredMessageText,

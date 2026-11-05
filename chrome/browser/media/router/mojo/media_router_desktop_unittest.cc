@@ -37,6 +37,8 @@
 #include "components/media_router/common/media_route.h"
 #include "components/media_router/common/media_source.h"
 #include "components/media_router/common/test/test_helper.h"
+#include "content/public/test/test_renderer_host.h"
+#include "content/public/test/web_contents_tester.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -49,7 +51,6 @@ using media_router::mojom::RouteMessagePtr;
 using testing::_;
 using testing::Eq;
 using testing::Invoke;
-using testing::InvokeWithoutArgs;
 using testing::IsEmpty;
 using testing::Mock;
 using testing::NiceMock;
@@ -253,6 +254,71 @@ TEST_F(MediaRouterDesktopTest, CreateRoute) {
                               1);
 }
 
+TEST_F(MediaRouterDesktopTest, CreateRouteWithRemotePlaybackSource) {
+  const char kRemotePlaybackSource[] =
+      "remote-playback:media-session?&video_codec=vp8&audio_codec=aac";
+  ProvideTestSink(mojom::MediaRouteProviderId::CAST, kSinkId);
+  content::RenderViewHostTestEnabler rvh_test_enabler;
+  std::unique_ptr<content::WebContents> web_contents(
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
+
+  MediaRoute route(kRouteId, MediaSource(kRemotePlaybackSource), kSinkId,
+                   kDescription, true);
+  EXPECT_CALL(mock_cast_provider_,
+              CreateRouteInternal(kRemotePlaybackSource, kSinkId, _,
+                                  url::Origin::Create(GURL(kOrigin)), _, _, _))
+      .WillOnce(WithArg<6>(
+          [&route](mojom::MediaRouteProvider::CreateRouteCallback& cb) {
+            std::move(cb).Run(route, nullptr, std::nullopt,
+                              mojom::RouteRequestResultCode::OK);
+          }));
+
+  RouteResponseCallbackHandler handler;
+  base::RunLoop run_loop;
+  EXPECT_CALL(handler, DoInvoke(testing::Pointee(route), Not(""), "",
+                                mojom::RouteRequestResultCode::OK, _))
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
+  static_cast<MediaRouter*>(router())->CreateRoute(
+      kRemotePlaybackSource, kSinkId, url::Origin::Create(GURL(kOrigin)),
+      web_contents.get(),
+      base::BindOnce(&RouteResponseCallbackHandler::Invoke,
+                     base::Unretained(&handler)),
+      base::Milliseconds(kTimeoutMillis));
+  run_loop.Run();
+}
+
+TEST_F(MediaRouterDesktopTest,
+       CreateRouteWithRemotePlaybackSourceFailsAndResetsPermission) {
+  const char kRemotePlaybackSource[] =
+      "remote-playback:media-session?&video_codec=vp8&audio_codec=aac";
+  ProvideTestSink(mojom::MediaRouteProviderId::CAST, kSinkId);
+  content::RenderViewHostTestEnabler rvh_test_enabler;
+  std::unique_ptr<content::WebContents> web_contents(
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
+
+  EXPECT_CALL(mock_cast_provider_,
+              CreateRouteInternal(kRemotePlaybackSource, kSinkId, _,
+                                  url::Origin::Create(GURL(kOrigin)), _, _, _))
+      .WillOnce(
+          WithArg<6>([](mojom::MediaRouteProvider::CreateRouteCallback& cb) {
+            std::move(cb).Run(std::nullopt, nullptr, "Route creation failed",
+                              mojom::RouteRequestResultCode::TIMED_OUT);
+          }));
+
+  RouteResponseCallbackHandler handler;
+  base::RunLoop run_loop;
+  EXPECT_CALL(handler, DoInvoke(nullptr, "", "Route creation failed",
+                                mojom::RouteRequestResultCode::TIMED_OUT, _))
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
+  static_cast<MediaRouter*>(router())->CreateRoute(
+      kRemotePlaybackSource, kSinkId, url::Origin::Create(GURL(kOrigin)),
+      web_contents.get(),
+      base::BindOnce(&RouteResponseCallbackHandler::Invoke,
+                     base::Unretained(&handler)),
+      base::Milliseconds(kTimeoutMillis));
+  run_loop.Run();
+}
+
 // Tests that MediaRouter is aware when a route is created, even if
 // MediaRouteProvider doesn't call OnRoutesUpdated().
 TEST_F(MediaRouterDesktopTest, RouteRecognizedAfterCreation) {
@@ -283,7 +349,7 @@ TEST_F(MediaRouterDesktopTest, CreateRouteFails) {
   base::RunLoop run_loop;
   EXPECT_CALL(handler, DoInvoke(nullptr, "", kError,
                                 mojom::RouteRequestResultCode::TIMED_OUT, _))
-      .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
   router()->CreateRoute(kSource, kSinkId, url::Origin::Create(GURL(kOrigin)),
                         nullptr,
                         base::BindOnce(&RouteResponseCallbackHandler::Invoke,
@@ -306,7 +372,7 @@ TEST_F(MediaRouterDesktopTest, JoinRouteNotFoundFails) {
   EXPECT_CALL(handler,
               DoInvoke(nullptr, "", "Route not found",
                        mojom::RouteRequestResultCode::ROUTE_NOT_FOUND, _))
-      .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
   JoinRoute(kSource, kPresentationId, url::Origin::Create(GURL(kOrigin)),
             nullptr,
             base::BindOnce(&RouteResponseCallbackHandler::Invoke,
@@ -337,7 +403,7 @@ TEST_F(MediaRouterDesktopTest, JoinRouteTimedOutFails) {
   base::RunLoop run_loop;
   EXPECT_CALL(handler, DoInvoke(nullptr, "", kError,
                                 mojom::RouteRequestResultCode::TIMED_OUT, _))
-      .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
   JoinRoute(kSource, kPresentationId, url::Origin::Create(GURL(kOrigin)),
             nullptr,
             base::BindOnce(&RouteResponseCallbackHandler::Invoke,
@@ -366,7 +432,7 @@ TEST_F(MediaRouterDesktopTest, JoinRoute_EscalationFromTabToDesktopFails) {
               DoInvoke(nullptr, "",
                        "Cannot switch to desktop capture without user consent",
                        mojom::RouteRequestResultCode::USER_NOT_ALLOWED, _))
-      .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
 
   JoinRoute(desktop_source, kPresentationId, url::Origin::Create(GURL(kOrigin)),
             nullptr,
@@ -394,7 +460,7 @@ TEST_F(MediaRouterDesktopTest, JoinRoute_AutoJoinEscalationFails) {
               DoInvoke(nullptr, "",
                        "Cannot switch to desktop capture without user consent",
                        mojom::RouteRequestResultCode::USER_NOT_ALLOWED, _))
-      .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
 
   JoinRoute(desktop_source, kAutoJoinPresentationId,
             url::Origin::Create(GURL(kOrigin)), nullptr,
@@ -784,7 +850,7 @@ TEST_F(MediaRouterDesktopTest, PresentationConnectionStateChangedCallback) {
     closed_info.message = "Foo";
 
     EXPECT_CALL(callback, Run(StateChangeInfoEquals(closed_info)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     router()->OnPresentationConnectionClosed(
         route_id, PresentationConnectionCloseReason::WENT_AWAY, "Foo");
     run_loop.Run();
@@ -796,7 +862,7 @@ TEST_F(MediaRouterDesktopTest, PresentationConnectionStateChangedCallback) {
   {
     base::RunLoop run_loop;
     EXPECT_CALL(callback, Run(StateChangeInfoEquals(terminated_info)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     router()->OnPresentationConnectionStateChanged(
         route_id, PresentationConnectionState::TERMINATED);
     run_loop.Run();

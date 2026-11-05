@@ -23,16 +23,22 @@
 #include "net/cert/nss_cert_database.h"
 #include "net/cert/scoped_nss_types.h"
 
+class NssService;
+
 namespace arc {
 
 // This service makes corporate usage keys available to ARC apps.
 class CertStoreService : public KeyedService,
                          public net::CertDatabase::Observer {
  public:
-  explicit CertStoreService(content::BrowserContext* context);
+  // `nss_service` is the one belonging to `context`, and must be non-null
+  // whenever `context` is. Both are null only when a unit test constructs this
+  // directly, which leaves the service inert.
+  CertStoreService(content::BrowserContext* context, NssService* nss_service);
 
   // This constructor is public only for testing.
   CertStoreService(content::BrowserContext* context,
+                   NssService* nss_service,
                    std::unique_ptr<ArcCertInstaller> installer);
 
   ~CertStoreService() override;
@@ -143,16 +149,11 @@ class CertStoreService : public KeyedService,
   void ListCertsInUserSlot(
       std::vector<CertDescription> cert_descriptions) const;
 
-  // Processes metadata from |allowed_certs| stored in the given |slot| and
-  // appends them to |certificates|.
-  void OnFilteredAllowedCertificates(
-      keymanagement::mojom::ChapsSlot slot,
-      std::vector<CertDescription> certificates,
-      net::ScopedCERTCertificateList allowed_certs);
   void OnUpdatedKeys(std::vector<CertDescription> certificates, bool success);
   void OnArcCertsInstalled(bool need_policy_update, bool success);
 
   const raw_ptr<content::BrowserContext> context_;
+  const raw_ptr<NssService> nss_service_;
 
   std::unique_ptr<ArcCertInstaller> installer_;
   CertificateCache certificate_cache_;

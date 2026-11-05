@@ -17,15 +17,17 @@
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/compressed_pointer.h"
+#include "partition_alloc/debug_data_on_stack.h"
 #include "partition_alloc/internal/page_allocator_internal.h"
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/partition_alloc_base/bits.h"
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
+#include "partition_alloc/partition_alloc_base/cxx_wrapper/algorithm.h"
 #include "partition_alloc/partition_alloc_base/debug/alias.h"
 #include "partition_alloc/partition_alloc_base/files/platform_file.h"
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/partition_alloc_config.h"
-#include "partition_alloc/partition_alloc_constants.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/thread_isolation/thread_isolation.h"
 
 #if PA_BUILDFLAG(IS_IOS)
@@ -256,18 +258,24 @@ void PartitionAddressSpace::InitZeroSegment() {
       static_cast<size_t>(PA_CONFIG(USER_SPACE_ZERO_SEGMENT_SIZE_MB)) * 1024 *
       1024;
 
-  const WellKnownReadOnlyRegions well_known = GetWellKnownReadOnlyRegions();
+  const WellKnownReadOnlyRegions well_known =
+      GetWellKnownReadOnlyRegions(min_zero_segment_size);
   PA_CHECK(well_known.count <= WellKnownReadOnlyRegions::kMaxRegions);
+  // `well_known` covers 0-XGB as well if supported.
+  if (well_known.count == 0 || well_known.regions[0].address != 0) {
+    return;
+  }
 
   // Reserves a region given by `address` and `size`. Returns false in case of
   // failure. Previously reserved regions are intentionally leaked allowing for
   // partial user space segment.
   const auto reserve_region = [](uintptr_t address, size_t size) -> bool {
+    PA_DCHECK(address != 0);
     const uintptr_t allocated_base =
-        AllocPages(address, size, PageAllocationGranularity(),
-                   PageAccessibilityConfiguration(
-                       PageAccessibilityConfiguration::kInaccessible),
-                   PageTag::kPartitionAlloc);
+        SystemAllocPages(address, size,
+                         PageAccessibilityConfiguration(
+                             PageAccessibilityConfiguration::kInaccessible),
+                         PageTag::kPartitionAlloc);
     if (allocated_base == address) {
       return true;
     }
@@ -278,51 +286,48 @@ void PartitionAddressSpace::InitZeroSegment() {
   };
 
   uintptr_t current_addr = 0;
+
+  // Attempts to fill any gap in `[current_addr, target_addr)`. Returns true if
+  // the entire gap was filled (or no gap existed), or false if reservation
+  // failed (in which case `zero_segment_size_` is set to the contiguous prefix
+  // acquired so far).
+  const auto fill_gap_up_to = [&](uintptr_t target_addr) -> bool {
+    if (target_addr <= current_addr) {
+      return true;
+    }
+    const size_t granularity = PageAllocationGranularity();
+    PA_DCHECK(current_addr % granularity == 0);
+    PA_DCHECK(target_addr % granularity == 0);
+    if (current_addr % granularity != 0 || target_addr % granularity != 0 ||
+        !reserve_region(current_addr, target_addr - current_addr)) {
+      zero_segment_size_ = current_addr;
+      return false;
+    }
+    return true;
+  };
+
   for (size_t i = 0; i < well_known.count; ++i) {
     const auto& region = well_known.regions[i];
     if (region.address >= min_zero_segment_size) {
       break;
     }
-    if (region.address > current_addr) {
-      const uintptr_t gap_start =
-          base::bits::AlignUp(current_addr, PageAllocationGranularity());
-      const uintptr_t gap_end =
-          base::bits::AlignDown(region.address, PageAllocationGranularity());
-      if (gap_end > gap_start) {
-        const size_t gap_size = gap_end - gap_start;
-        if (!reserve_region(gap_start, gap_size)) {
-          zero_segment_size_ =
-              current_addr;  // Keep the contiguous region we have so far.
-          return;
-        }
-      }
+    if (!fill_gap_up_to(region.address)) {
+      return;
     }
-
     current_addr = region.address + region.size;
   }
 
   // Reserve the trailing gap if applicable.
-  if (min_zero_segment_size > current_addr) {
-    const uintptr_t gap_start =
-        base::bits::AlignUp(current_addr, PageAllocationGranularity());
-    const uintptr_t gap_end = base::bits::AlignDown(
-        min_zero_segment_size, PageAllocationGranularity());
-    if (gap_end > gap_start) {
-      const size_t gap_size = gap_end - gap_start;
-      if (!reserve_region(gap_start, gap_size)) {
-        zero_segment_size_ =
-            current_addr;  // Keep the contiguous region we have so far.
-        return;
-      }
-    }
+  if (!fill_gap_up_to(min_zero_segment_size)) {
+    return;
   }
 
-  zero_segment_size_ = min_zero_segment_size;
+  zero_segment_size_ = std::max(current_addr, min_zero_segment_size);
 }
 #endif  // PA_CONFIG(ENABLE_USER_SPACE_ZERO_SEGMENT)
 
-void PartitionAddressSpace::InitConfigurablePool(uintptr_t pool_base,
-                                                 size_t size) {
+void PartitionAddressSpace::InitConfigurablePool(
+    const ConfigurablePoolConfig& config) {
   // The ConfigurablePool must only be initialized once.
   PA_CHECK(!IsConfigurablePoolInitialized());
 
@@ -335,17 +340,24 @@ void PartitionAddressSpace::InitConfigurablePool(uintptr_t pool_base,
   }
 #endif
 
-  PA_CHECK(pool_base);
-  PA_CHECK(size <= kConfigurablePoolMaxSize);
-  PA_CHECK(size >= kConfigurablePoolMinSize);
-  PA_CHECK(std::has_single_bit(size));
-  PA_CHECK(pool_base % size == 0);
+  PA_CHECK(config.pool_base);
+  PA_CHECK(config.size <= kConfigurablePoolMaxSize);
+  PA_CHECK(config.size >= kConfigurablePoolMinSize);
+  PA_CHECK(std::has_single_bit(config.size));
+  PA_CHECK(config.pool_base % config.size == 0);
+#if PA_BUILDFLAG(IS_FUCHSIA)
+  PA_CHECK(config.vmar->is_valid());
+#endif
 
-  setup_.configurable_pool_base_address_ = pool_base;
-  setup_.configurable_pool_base_mask_ = ~(size - 1);
+  setup_.configurable_pool_base_address_ = config.pool_base;
+  setup_.configurable_pool_base_mask_ = ~(config.size - 1);
+#if PA_BUILDFLAG(IS_FUCHSIA)
+  setup_.configurable_pool_vmar_ = config.vmar->get();
+#endif
 
-  AddressPoolManager::GetInstance().Add(
-      kConfigurablePoolHandle, setup_.configurable_pool_base_address_, size);
+  AddressPoolManager::GetInstance().Add(kConfigurablePoolHandle,
+                                        setup_.configurable_pool_base_address_,
+                                        config.size, config.pkey);
 
 #if PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)
   // Initialize metadata for configurable pool without PartitionAlloc enabled.
@@ -430,6 +442,9 @@ void PartitionAddressSpace::UninitForTesting() {
   setup_.brp_pool_base_address_ = kUninitializedPoolBaseAddress;
   setup_.configurable_pool_base_address_ = kUninitializedPoolBaseAddress;
   setup_.configurable_pool_base_mask_ = 0;
+#if PA_BUILDFLAG(IS_FUCHSIA)
+  setup_.configurable_pool_vmar_ = ZX_HANDLE_INVALID;
+#endif  // PA_BUILDFLAG(IS_FUCHSIA)
   AddressPoolManager::GetInstance().ResetForTesting();
 #if PA_BUILDFLAG(ENABLE_POINTER_COMPRESSION)
   CompressedPointerBaseGlobal::ResetBaseForTesting();
@@ -460,6 +475,9 @@ void PartitionAddressSpace::UninitConfigurablePoolForTesting() {
   AddressPoolManager::GetInstance().Remove(kConfigurablePoolHandle);
   setup_.configurable_pool_base_address_ = kUninitializedPoolBaseAddress;
   setup_.configurable_pool_base_mask_ = 0;
+#if PA_BUILDFLAG(IS_FUCHSIA)
+  setup_.configurable_pool_vmar_ = ZX_HANDLE_INVALID;
+#endif  // PA_BUILDFLAG(IS_FUCHSIA)
 #if PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)
   setup_.offsets_to_metadata_[kConfigurablePoolHandle] = SystemPageSize();
 #endif  // PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)

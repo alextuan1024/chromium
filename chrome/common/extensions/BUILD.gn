@@ -26,6 +26,7 @@ source_set("extensions") {
     "permissions/chrome_permission_message_provider.h",
     "permissions/chrome_permission_message_rules.h",
     "sync_helper.h",
+    "webui_origin_access.h",
   ]
 
   # Files that can only be included from here.
@@ -51,6 +52,7 @@ source_set("extensions") {
     "permissions/chrome_permission_message_provider.cc",
     "permissions/chrome_permission_message_rules.cc",
     "sync_helper.cc",
+    "webui_origin_access.cc",
   ]
 
   public_deps = [
@@ -91,15 +93,6 @@ source_set("extensions") {
     "//url",
   ]
 
-  # TODO(https://crbug.com/356905053): These sources do not currently build
-  # cleanly on the experimental desktop-android configuration. Gradually include
-  # more of them, or omit them behind more targeted GN flags.
-  if (enable_extensions) {
-    public += [ "api/file_browser_handlers/file_browser_handler.h" ]
-
-    sources += [ "api/file_browser_handlers/file_browser_handler.cc" ]
-  }
-
   if (enable_platform_apps) {
     public += [ "api/url_handlers/url_handlers_parser.h" ]
     sources += [ "api/url_handlers/url_handlers_parser.cc" ]
@@ -108,6 +101,7 @@ source_set("extensions") {
   if (is_chromeos) {
     deps += [
       "//ash/constants",
+      "//ash/webui/os_feedback_ui:url_constants",
       "//chromeos/ash/experiences/extensions/common",
     ]
   }
@@ -181,6 +175,7 @@ source_set("unit_tests") {
     "permissions/permissions_data_unittest.cc",
     "permissions/settings_override_permission_unittest.cc",
     "sync_type_unittest.cc",
+    "webui_origin_access_unittest.cc",
   ]
 
   if (!is_android) {
@@ -188,10 +183,7 @@ source_set("unit_tests") {
   }
 
   if (is_chromeos) {
-    sources += [
-      "api/file_browser_handlers/file_browser_handler_manifest_unittest.cc",
-      "manifest_tests/extension_manifests_webview_accessible_resources_unittest.cc",
-    ]
+    sources += [ "manifest_tests/extension_manifests_webview_accessible_resources_unittest.cc" ]
   }
 
   if (enable_platform_apps) {
@@ -207,18 +199,30 @@ source_set("unit_tests") {
     ":test_support",
     "//base",
     "//base/i18n:test_support",
-    "//chrome/test:test_support",
+    "//base/test:test_support",
+    "//chrome/app:generated_resources",
+    "//chrome/common:chrome_features",
+    "//chrome/common:constants",
+    "//chrome/common:non_code_constants",
+    "//chrome/common:test_support",
+    "//chrome/common:url_constants",
+    "//components/version_info",
+    "//content/test:test_support",
     "//extensions:test_support",
     "//extensions/common",
     "//extensions/common:common_constants",
+    "//extensions/common:test_support",
+    "//extensions/common/api",
     "//extensions/strings",
+    "//net:test_support",
+    "//testing/gmock",
     "//testing/gtest",
   ]
 }
 
 json_features("extension_features_unittest") {
   feature_type = "APIFeature"
-  method_name = "AddUnittestAPIFeatures"
+  method_name = "GetUnittestAPIFeatures"
   sources = [
     "//chrome/test/data/extensions/extension_api_unittest/api_features.json",
   ]

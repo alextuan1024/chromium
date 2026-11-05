@@ -32,11 +32,11 @@ class ASH_PUBLIC_EXPORT TestNewWindowDelegate : public NewWindowDelegate {
                Disposition disposition) override;
   void OpenCalculator() override;
   void OpenFileManager() override;
-  void OpenDownloadsFolder() override;
+  void OpenDownloadsFolder(const AccountId& account_id) override;
   void OpenCrosh() override;
   void OpenDiagnostics() override;
   void OpenGetHelp() override;
-  void RestoreTab() override;
+  void RestoreTab(const AccountId& account_id) override;
   void ShowShortcutCustomizationApp() override;
   void ShowTaskManager(bool from_context_menu) override;
   void OpenFeedbackPage(FeedbackSource source,

@@ -19,6 +19,8 @@ import org.chromium.base.test.transit.TrafficControl;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.test.ChromeActivityTestRule;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 
 /**
@@ -28,7 +30,7 @@ import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
  */
 @NullMarked
 public class ReusedCtaTransitTestRule<HostStationT extends Station<? extends ChromeTabbedActivity>>
-        extends BaseCtaTransitTestRule implements TestRule {
+        implements TestRule {
     @SuppressLint("StaticFieldLeak")
     private static @Nullable ChromeTabbedActivity sActivity;
 
@@ -36,6 +38,7 @@ public class ReusedCtaTransitTestRule<HostStationT extends Station<? extends Chr
         TrafficControl.addHopOffListener(ReusedCtaTransitTestRule::clearActivity);
     }
 
+    private final ChromeTabbedActivityTestRule mActivityTestRule;
     private final Function<ChromeTabbedActivityTestRule, HostStationT> mEntryPointFunction;
     private final BatchedPublicTransitRule<HostStationT> mBatchedRule;
     private final RuleChain mChain;
@@ -43,7 +46,7 @@ public class ReusedCtaTransitTestRule<HostStationT extends Station<? extends Chr
     ReusedCtaTransitTestRule(
             Class<HostStationT> homeStationType,
             Function<ChromeTabbedActivityTestRule, HostStationT> entryPointFunction) {
-        super();
+        mActivityTestRule = new ChromeTabbedActivityTestRule();
         mEntryPointFunction = entryPointFunction;
         mBatchedRule = new BatchedPublicTransitRule<>(homeStationType, true);
         mActivityTestRule.setFinishActivity(false);
@@ -68,8 +71,21 @@ public class ReusedCtaTransitTestRule<HostStationT extends Station<? extends Chr
             sActivity = mActivityTestRule.getActivity();
         } else {
             mActivityTestRule.setActivity(sActivity);
+            ChromeActivityTestRule.ensureActivityFocused(sActivity);
         }
         return station;
+    }
+
+    public ChromeTabbedActivityTestRule getActivityTestRule() {
+        return mActivityTestRule;
+    }
+
+    public ChromeTabbedActivity getActivity() {
+        return mActivityTestRule.getActivity();
+    }
+
+    public Profile getProfile(boolean incognito) {
+        return mActivityTestRule.getProfile(incognito);
     }
 
     static void clearActivity() {

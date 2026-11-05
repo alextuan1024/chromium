@@ -32,7 +32,8 @@ WebNNTensorImpl::WebNNTensorImpl(
           context.owning_task_runner()),
       context_(context),
       descriptor_(std::move(tensor_info->descriptor)),
-      usage_(std::move(tensor_info->usage)) {}
+      usage_(std::move(tensor_info->usage)),
+      is_in_renderer_(context.IsContextProviderInRenderer()) {}
 
 WebNNTensorImpl::WebNNTensorImpl(
     mojo::PendingAssociatedReceiver<mojom::WebNNTensor> receiver,
@@ -48,7 +49,8 @@ WebNNTensorImpl::WebNNTensorImpl(
       context_(context),
       representation_(std::move(representation)),
       descriptor_(std::move(tensor_info->descriptor)),
-      usage_(std::move(tensor_info->usage)) {}
+      usage_(std::move(tensor_info->usage)),
+      is_in_renderer_(context.IsContextProviderInRenderer()) {}
 
 WebNNTensorImpl::~WebNNTensorImpl() = default;
 
@@ -129,7 +131,7 @@ void WebNNTensorImpl::WriteTensor(mojo_base::BigBuffer src_buffer) {
 }
 
 void WebNNTensorImpl::ImportTensor(uint64_t flow_id,
-                                   const gpu::SyncToken& fence) {
+                                   const std::vector<gpu::SyncToken>& fences) {
   ScopedTrace scoped_trace("WebNNTensorImpl::ImportTensor");
 
   if (!usage().Has(MLTensorUsageFlags::kWebGpuInterop)) {
@@ -142,7 +144,7 @@ void WebNNTensorImpl::ImportTensor(uint64_t flow_id,
     return;
   }
 
-  // Defer the next task until the fence is released, after prior scheduled
+  // Defer the next task until the fences are released, after prior scheduled
   // tasks run.
   context_->RunOrScheduleTask(
       base::BindOnce(
@@ -168,7 +170,7 @@ void WebNNTensorImpl::ImportTensor(uint64_t flow_id,
           },
           base::RetainedRef(this), std::move(scoped_trace), flow_id,
           GetBadMessageCallbackOnMojoSequence()),
-      {fence});
+      fences);
 }
 
 void WebNNTensorImpl::ExportTensor(uint64_t flow_id, uint64_t release_count) {
@@ -268,6 +270,14 @@ void WebNNTensorImpl::ExportTensorSync(uint64_t flow_id,
 
 void WebNNTensorImpl::OnDisconnect() {
   ResetMojoReceiver();
+  if (is_in_renderer_) {
+    // Defer destruction until pending fast-path tasks on this runner finish.
+    context_->owning_task_runner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&WebNNContextImpl::DestroyTensorFromInRenderer,
+                       context_->AsWeakPtr(), handle()));
+    return;
+  }
   context_->RemoveWebNNTensorImpl(handle());
 }
 

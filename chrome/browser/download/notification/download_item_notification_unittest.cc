@@ -11,6 +11,7 @@
 #include <string>
 #include <utility>
 
+#include "ash/strings/grit/ash_strings.h"
 #include "base/files/file_path.h"
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
@@ -41,6 +42,7 @@
 #include "content/public/test/mock_download_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/l10n/l10n_util.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
@@ -411,6 +413,19 @@ TEST_F(DownloadItemNotificationTest, DeepScanning) {
   download_item_notification_->Click(std::nullopt, std::nullopt);
 }
 
+TEST_F(DownloadItemNotificationTest, DeepScannedOpenedDangerous) {
+  EXPECT_CALL(*download_item_, GetDangerType())
+      .WillRepeatedly(
+          Return(download::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_OPENED_DANGEROUS));
+  EXPECT_CALL(*download_item_, IsDangerous()).WillRepeatedly(Return(true));
+
+  CreateDownloadItemNotification();
+  EXPECT_EQ(1u, NotificationCount());
+  EXPECT_EQ(l10n_util::GetStringUTF16(
+                IDS_PROMPT_DOWNLOAD_DEEP_SCANNED_OPENED_DANGEROUS),
+            LookUpNotification()->message());
+}
+
 // Test that EDIT_WITH_MEDIA_APP is added for pdf file on CHROMEOS.
 // It should not be added for other build configs.
 TEST_F(DownloadItemNotificationTest, NotificationActionsForPdf) {
@@ -452,6 +467,18 @@ TEST_F(DownloadItemNotificationTest, NotificationActionsForAudio) {
   EXPECT_FALSE(
       std::ranges::contains(*actions, DownloadCommands::OPEN_WITH_MEDIA_APP));
 #endif
+}
+
+TEST_F(DownloadItemNotificationTest, SensitiveContentWarningPriority) {
+  EXPECT_CALL(*download_item_, GetDangerType())
+      .WillRepeatedly(
+          Return(download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_WARNING));
+  EXPECT_CALL(*download_item_, IsDangerous()).WillRepeatedly(Return(true));
+
+  CreateDownloadItemNotification();
+  EXPECT_TRUE(download_item_notification_->GetDownload()->MightBeMalicious());
+  ASSERT_TRUE(LookUpNotification());
+  EXPECT_EQ(message_center::HIGH_PRIORITY, LookUpNotification()->priority());
 }
 
 }  // namespace test

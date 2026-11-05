@@ -165,6 +165,7 @@ class CORE_EXPORT Page final : public GarbageCollected<Page>,
   // Should be called when |GetScrollbarTheme().UsesOverlayScrollbars()|
   // changes.
   static void UsesOverlayScrollbarsChanged();
+  // TODO(crbug.com/40280130): Remove once kThemeChangeOptimizationV2 launches.
   static void ForcedColorsChanged();
   static void PlatformColorsChanged();
   static void ColorSchemeChanged();
@@ -173,6 +174,8 @@ class CORE_EXPORT Page final : public GarbageCollected<Page>,
   void DisableEmulatedForcedColors();
   bool UpdateColorProviders(
       const ColorProviderColorMaps& color_provider_colors);
+  void InvalidateColorScheme();
+  void InvalidatePlatformColors();
   void UpdateColorProvidersForTest();
   const ui::ColorProvider* GetColorProviderForPainting(
       mojom::blink::ColorScheme color_scheme,
@@ -269,14 +272,15 @@ class CORE_EXPORT Page final : public GarbageCollected<Page>,
 
   void SetWindowFeatures(const WebWindowFeatures& features) {
     window_features_ = features;
-    always_on_top_ = features.always_on_top;
   }
   const WebWindowFeatures& GetWindowFeatures() const {
     return window_features_;
   }
 
-  void SetAlwaysOnTop(bool always_on_top) { always_on_top_ = always_on_top; }
-  bool AlwaysOnTop() const { return always_on_top_; }
+  void SetAlwaysOnTopPopup(bool always_on_top_popup) {
+    always_on_top_popup_ = always_on_top_popup;
+  }
+  bool AlwaysOnTopPopup() const { return always_on_top_popup_; }
 
   PageScaleConstraintsSet& GetPageScaleConstraintsSet();
   const PageScaleConstraintsSet& GetPageScaleConstraintsSet() const;
@@ -408,6 +412,12 @@ class CORE_EXPORT Page final : public GarbageCollected<Page>,
   void ClearAutoplayFlags();
 
   int32_t AutoplayFlags() const;
+
+  bool HasInitialAutoplayRestriction() const;
+  void SetInitialAutoplayRestriction(const base::UnguessableToken& id,
+                                     bool restricted);
+  void ReleaseInitialAutoplayRestriction();
+  void SetInitialAutoplayRestrictionForTesting(bool restricted);
 
   void SetIsPrerendering(bool is_prerendering) {
     is_prerendering_ = is_prerendering;
@@ -553,13 +563,12 @@ class CORE_EXPORT Page final : public GarbageCollected<Page>,
   friend class TextFragmentGenerationNavigationTest;
   friend class ScopedPagePauser;
   class CloseTaskHandler;
+  struct InitialAutoplayRestrictionState;
 
   // SettingsDelegate overrides.
   void SettingsChanged(SettingsDelegate::ChangeType) override;
 
   void AcceptLanguagesChanged();
-
-  void InvalidateColorScheme();
 
   // Connect the Page to the `opener_`'s related pages, if those exist.
   void LinkRelatedPagesIfNeeded();
@@ -624,7 +633,7 @@ class CORE_EXPORT Page final : public GarbageCollected<Page>,
 
   Deprecation deprecation_;
   WebWindowFeatures window_features_;
-  bool always_on_top_ = false;
+  bool always_on_top_popup_ = false;
 
   bool opened_by_dom_;
   // Set to true when window.close() has been called and the Page will be
@@ -711,6 +720,8 @@ class CORE_EXPORT Page final : public GarbageCollected<Page>,
   VisionDeficiency vision_deficiency_ = VisionDeficiency::kNoVisionDeficiency;
 
   int32_t autoplay_flags_;
+  // Shared with other Pages for the same WebContents; traced by each Page.
+  Member<InitialAutoplayRestrictionState> initial_autoplay_restriction_;
 
   // Whether the page is being prerendered by the Prerender2
   // feature. See content/browser/preloading/prerender/README.md.
@@ -729,11 +740,6 @@ class CORE_EXPORT Page final : public GarbageCollected<Page>,
   bool should_prepare_paint_tree_on_prerender_ = false;
   // If true, pauses JavaScript execution until the page is activated.
   bool should_pause_javascript_execution_on_prerender_ = false;
-
-  // Whether the the Page's main document is a Fenced Frame document. This is
-  // only set for the MPArch implementation and is true when the corresponding
-  // browser side FrameTree has the FrameTree::Type of kFencedFrame.
-  bool is_fenced_frame_tree_ = false;
 
   // This tracks the mode that the fenced frame is set to.
   blink::FencedFrame::DeprecatedFencedFrameMode fenced_frame_mode_ =

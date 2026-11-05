@@ -68,6 +68,10 @@ inline constexpr char kGroupParamsError[] =
     "Cannot specify 'createProperties' along with a 'groupId'.";
 inline constexpr char kNotAllowedForDevToolsError[] =
     "Operation not allowed for DevTools windows";
+inline constexpr char kNotAllowedForPictureInPictureError[] =
+    "Operation not allowed for picture-in-picture windows";
+inline constexpr char kCannotUnhighlightPictureInPictureTabError[] =
+    "Cannot unhighlight the tab in a picture-in-picture window";
 inline constexpr char kSplitWithTabAlreadyInSplitViewError[] =
     "Tab ID * is already in a split view.";
 inline constexpr char kSplitWithTabIndexNotAdjacentError[] =

@@ -13,7 +13,6 @@ import org.chromium.base.Callback;
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab_group_suggestion.SuggestionMetricsService;
@@ -22,11 +21,13 @@ import org.chromium.chrome.browser.tab_ui.TabSwitcherGroupSuggestionService.Sugg
 import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.tabwindow.WindowId;
 import org.chromium.chrome.browser.tasks.tab_management.MessageCardView.ActionProvider;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
 import org.chromium.chrome.tab_ui.R;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -109,6 +110,7 @@ public class TabGroupSuggestionMessageService
 
     private final Callback<@TabId Integer> mAddOnMessageAfterTabCallback;
     private final StartMergeAnimation mStartMergeAnimation;
+    private final TabWindowManager mTabWindowManager;
     private boolean mMessageCurrentlyShown;
 
     /**
@@ -116,12 +118,14 @@ public class TabGroupSuggestionMessageService
      * @param currentTabModelSupplier The supplier for the current {@link TabModel}.
      * @param onMessageAfterTabCallback A callback to be called to add a message after a tab.
      * @param startMergeAnimation A callback used to start the merge animation.
+     * @param tabWindowManager The {@link TabWindowManager}.
      */
     public TabGroupSuggestionMessageService(
             Context context,
             NullableObservableSupplier<TabModel> currentTabModelSupplier,
             Callback<@TabId Integer> onMessageAfterTabCallback,
-            StartMergeAnimation startMergeAnimation) {
+            StartMergeAnimation startMergeAnimation,
+            TabWindowManager tabWindowManager) {
         super(
                 MessageType.TAB_GROUP_SUGGESTION_MESSAGE,
                 UiType.TAB_GROUP_SUGGESTION_MESSAGE,
@@ -131,6 +135,7 @@ public class TabGroupSuggestionMessageService
         mCurrentTabModelSupplier = currentTabModelSupplier;
         mAddOnMessageAfterTabCallback = onMessageAfterTabCallback;
         mStartMergeAnimation = startMergeAnimation;
+        mTabWindowManager = tabWindowManager;
     }
 
     /**
@@ -204,11 +209,9 @@ public class TabGroupSuggestionMessageService
             assert tab.getTabGroupId() != null;
             assert metricsService != null;
 
-            @WindowId
-            int windowId =
-                    TabWindowManagerSingleton.getInstance()
-                            .findWindowIdForTabGroup(tab.getTabGroupId());
-            metricsService.onSuggestionAccepted(windowId, GTS_SUGGESTION, tab.getTabGroupId());
+            @WindowId int windowId = mTabWindowManager.findWindowIdForTabGroup(tab.getTabGroupId());
+            metricsService.onSuggestionAccepted(
+                    windowId, GTS_SUGGESTION, TabGroupId.fromRawToken(tab.getTabGroupId()));
         }
 
         dismissMessage(CallbackUtils.emptyRunnable());

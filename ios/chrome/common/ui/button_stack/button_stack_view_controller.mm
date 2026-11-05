@@ -140,7 +140,7 @@ typedef NS_ENUM(NSInteger, ButtonStackButtonPosition) {
 
 - (void)viewDidDisappear:(BOOL)animated {
   [super viewDidDisappear:animated];
-  if (self.isBeingDismissed) {
+  if ([self isBeingRemovedFromHierarchy]) {
     [self.actionDelegate didDismissButtonStackViewController];
   }
 }
@@ -300,6 +300,25 @@ typedef NS_ENUM(NSInteger, ButtonStackButtonPosition) {
 
 #pragma mark - Private
 
+// Returns whether `self` is being popped, or whether `self` or one of its
+// ancestors is being dismissed. When embedded in a presented container, only
+// the container reports `isBeingDismissed`, so the parent chain needs to be
+// inspected. `isMovingFromParentViewController` is only checked on `self` as
+// UIKit only reports it from the removed view controller's own appearance
+// callbacks, never from its children's.
+- (BOOL)isBeingRemovedFromHierarchy {
+  if (self.isMovingFromParentViewController) {
+    return YES;
+  }
+  for (UIViewController* viewController = self; viewController;
+       viewController = viewController.parentViewController) {
+    if (viewController.isBeingDismissed) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
 // Returns the height of the button stack view.
 - (CGFloat)buttonStackHeight {
   // Calculate the size the stack view needs without forcing a full layout pass.
@@ -340,6 +359,8 @@ typedef NS_ENUM(NSInteger, ButtonStackButtonPosition) {
   scrollView.delegate = self;
   scrollView.contentInset =
       UIEdgeInsetsMake(0, 0, [self contentViewBottomInset], 0);
+  scrollView.accessibilityIdentifier =
+      kButtonStackScrollViewAccessibilityIdentifier;
   return scrollView;
 }
 

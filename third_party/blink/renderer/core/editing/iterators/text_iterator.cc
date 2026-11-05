@@ -258,8 +258,6 @@ TextIteratorAlgorithm<Strategy>::~TextIteratorAlgorithm() {
   const Document& document = OwnerDocument();
   if (behavior_.ForSelectionToString())
     document.CountUse(WebFeature::kSelectionToStringWithShadowTree);
-  if (behavior_.ForWindowFind())
-    document.CountUse(WebFeature::kWindowFindWithShadowTree);
 }
 
 template <typename Strategy>
@@ -535,13 +533,8 @@ template <typename Strategy>
 void TextIteratorAlgorithm<Strategy>::HandleTextNode() {
   if (ExcludesAutofilledValue()) {
     HTMLFormControlElement* control = nullptr;
-    if (RuntimeEnabledFeatures::
-            TextIteratorExcludeAutofilledSelectFixEnabled()) {
-      if (node_->IsInUserAgentShadowRoot()) {
-        control = DynamicTo<HTMLFormControlElement>(node_->OwnerShadowHost());
-      }
-    } else {
-      control = EnclosingTextControl(node_);
+    if (node_->IsInUserAgentShadowRoot()) {
+      control = DynamicTo<HTMLFormControlElement>(node_->OwnerShadowHost());
     }
     // For security reason, we don't expose suggested value if it is
     // auto-filled.
@@ -598,7 +591,7 @@ void TextIteratorAlgorithm<Strategy>::HandleReplacedElement() {
     return;
 
   LayoutObject* layout_object = node_->GetLayoutObject();
-  if (layout_object->StyleRef().Visibility() != EVisibility::kVisible &&
+  if (layout_object->Style().Visibility() != EVisibility::kVisible &&
       !IgnoresStyleVisibility()) {
     return;
   }
@@ -796,8 +789,7 @@ bool TextIteratorAlgorithm<Strategy>::ShouldRepresentNodeOffsetZero() {
   // unrendered content, we would create VisiblePositions on every call to this
   // function without this check.
   if (!node_->GetLayoutObject() ||
-      node_->GetLayoutObject()->StyleRef().Visibility() !=
-          EVisibility::kVisible ||
+      node_->GetLayoutObject()->Style().Visibility() != EVisibility::kVisible ||
       (node_->GetLayoutObject()->IsLayoutBlockFlow() &&
        !To<LayoutBlock>(node_->GetLayoutObject())->StitchedSize().height &&
        !IsA<HTMLBodyElement>(*node_))) {
@@ -971,6 +963,16 @@ template <typename Strategy>
 const Node& TextIteratorAlgorithm<Strategy>::CurrentContainer() const {
   if (!text_state_.PositionNode())
     return *end_container_;
+  if (!text_state_.PositionContainerNode() &&
+      RuntimeEnabledFeatures::FastCommonGraphemeClusterPrefixLengthEnabled()) {
+    // Return the parent of the position node, which is the container that
+    // EnsurePositionContainer() sets, without computing the offsets in it.
+    // They're the position node's index, which takes time linear in the index
+    // to find. ComputeCommonGraphemeClusterPrefixLength() relies on this to
+    // check the container of every run before the selection quickly.
+    const ContainerNode* parent = Strategy::Parent(*text_state_.PositionNode());
+    return *parent;
+  }
   EnsurePositionContainer();
   return *text_state_.PositionContainerNode();
 }

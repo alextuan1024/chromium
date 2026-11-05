@@ -15,6 +15,7 @@ import("//build/config/win/console_app.gni")
 import("//build/config/win/manifest.gni")
 import("//build/private_code_test/private_code_test.gni")
 import("//build/toolchain/toolchain.gni")
+import("//build/util/compatible_versions.gni")
 import("//chrome/browser/buildflags.gni")
 import("//chrome/chrome_paks.gni")
 import("//chrome/common/features.gni")
@@ -132,7 +133,12 @@ group("assert_no_deps") {
 
 if (!is_android && !is_mac) {
   group("chrome") {
-    public_deps = [ ":chrome_initial" ]
+    public_deps = [
+      ":chrome_initial",
+
+      # These files are used by the installer so we need a public dep.
+      ":packed_resources",
+    ]
     data_deps = [ ":chrome_initial" ]
 
     # Do not add any more deps or data_deps to group("chrome").
@@ -214,6 +220,7 @@ if (!is_android && !is_mac) {
         "//chrome/browser/win:chrome_process_finder",
         "//chrome/chrome_elf",
         "//chrome/common:constants",
+        "//chrome/common/child_module",
         "//chrome/common/win:delay_load_failure_support",
         "//chrome/install_static:install_static_util",
         "//chrome/install_static:secondary_module",
@@ -222,6 +229,7 @@ if (!is_android && !is_mac) {
         "//components/activity_reporter:buildflags",
         "//components/crash/core/app",
         "//components/crash/core/app:run_as_crashpad_handler",
+        "//components/startup_metric_utils/common:constants",
         "//components/version_info:channel",
         "//content:sandbox_helper_win",
         "//content/public/common:static_switches",
@@ -230,6 +238,10 @@ if (!is_android && !is_mac) {
         "//sandbox/policy/mojom",
         "//third_party/crashpad/crashpad/util",
       ]
+
+      if (has_compatible_versions) {
+        deps += [ ":copy_compatible_versions" ]
+      }
 
       data_deps += [
         "//chrome/app/version_assembly:version_assembly_manifest",
@@ -324,6 +336,12 @@ if (!is_android && !is_mac) {
 
       data_deps += [ "//components/crash/core/app:chrome_crashpad_handler" ]
 
+      if (is_chrome_branded) {
+        data_deps += [
+          "//chrome/common/request_header_integrity/internal:chromecompaneros",
+        ]
+      }
+
       ldflags = []
 
       # On Chrome OS builds put priority to the library in the installed
@@ -368,10 +386,10 @@ if (!is_android && !is_mac) {
       }
     }
 
-    # These files are used by the installer so we need a public dep.
-    public_deps += [ ":packed_resources" ]
-
-    # The step's output are needed at runtime, so we also need a data_dep.
+    # The step's output are needed at runtime, so we need a data_dep.
+    # Note: Do not add ":packed_resources" to deps/public_deps here, as that
+    # forces all C++ compilations in chrome_initial to wait for resources.pak.
+    # Instead, group("chrome") exposes it via public_deps for installers.
     data_deps += [ ":packed_resources" ]
 
     # ChromeOS by design is safe to have rpath=$ORIGIN. This simplifies shared
@@ -383,7 +401,6 @@ if (!is_android && !is_mac) {
     data_deps += [
       "//chrome/browser/resources/media/mei_preload:component",
       "//chrome/browser/web_applications/isolated_web_apps/key_distribution/preload:component",
-      "//components/privacy_sandbox/privacy_sandbox_attestations/preload:component",
       "//third_party/widevine/cdm",
     ]
 
@@ -415,7 +432,6 @@ if (!is_android && !is_mac) {
 
 if (is_win) {
   shared_library("chrome_dll") {
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
     configs -= [ "//build/config/compiler:thinlto_optimize_default" ]
     configs += [ "//build/config/compiler:thinlto_optimize_max" ]
 
@@ -479,6 +495,13 @@ if (is_win) {
     sources = [ "app/FirstRun" ]
     outputs = [ "$root_out_dir/First Run" ]
   }
+
+  if (has_compatible_versions) {
+    copy("copy_compatible_versions") {
+      sources = [ compatible_versions_file ]
+      outputs = [ "$root_out_dir/COMPATIBLE_VERSIONS" ]
+    }
+  }
 } else if (is_mac) {
   chrome_helper_name = chrome_product_full_name + " Helper"
   chrome_framework_name = chrome_product_full_name + " Framework"
@@ -540,45 +563,54 @@ if (is_win) {
       "CHROMIUM_CREATOR=$chrome_mac_creator_code",
     ]
 
-    sources = [
-      "app/chrome_exe_main_mac.cc",
-      "app/llvm_profile_util.cc",
-      "app/llvm_profile_util.h",
-    ]
+    sources = [ "app/chrome_exe_main_mac.c" ]
 
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
+    configs -= [ "//build/config/sanitizers:alloc_token" ]
 
     deps = [
-      ":chrome_app_strings_bundle_data",
-      ":chrome_resources",
-      ":chrome_versioned_bundle_data",
       "//base:compiler_specific",
-      "//base/allocator:early_zone_registration_apple",
       "//build:branding_buildflags",
       "//build/config/compiler:compiler_buildflags",
       "//chrome/common:buildflags",
-      "//chrome/common:version_header",
+      "//content/public/app:aperitif",
+    ]
+
+    # Links the framework's shared library directly, after libaperitif, so
+    # that the framework's load command follows libaperitif's. `+link` can't
+    # be used: it adds the framework as `-framework`, which the Apple link
+    # rule places before all shared libraries. The framework itself is copied
+    # into the bundle by `:chrome_versioned_bundle_data` in `bundle_deps`.
+    deps += [ ":chrome_framework+link_nested" ]
+
+    bundle_deps = [
+      ":chrome_app_strings_bundle_data",
+      ":chrome_resources",
+      ":chrome_versioned_bundle_data",
     ]
 
     if (enable_updater) {
-      deps += [ ":chromium_updater_privileged_helper" ]
+      bundle_deps += [ ":chromium_updater_privileged_helper" ]
     }
+
+    ldflags = []
 
     if (enable_stripping) {
       # At link time, preserve the global symbols specified in the .exports
       # file. All other global symbols will be marked as private. The default
       # //build/config/apple:strip_all config will then remove the remaining
       # local and debug symbols.
-      ldflags = [ "-Wl,-exported_symbols_list," +
-                  rebase_path("app/app.exports", root_build_dir) ]
+      ldflags += [ "-Wl,-exported_symbols_list," +
+                   rebase_path("app/app.exports", root_build_dir) ]
     }
 
     if (is_component_build) {
-      # In a component build, the framework is directly linked to the
-      # executable because dlopen() and loading all the dependent dylibs
-      # is time-consuming, see https://crbug.com/40176946.
-      deps += [ ":chrome_framework+link" ]
-      ldflags = [ "-Wl,-rpath,@executable_path/../Frameworks" ]
+      ldflags += [
+        "-Wl,-rpath,@executable_path/../Frameworks",
+
+        # Add an rpath to the Libraries directory in the versioned framework
+        # so that @rpath/libaperitif.dylib resolves.
+        "-Wl,-rpath,@executable_path/../Frameworks/$chrome_framework_name.framework/Versions/$chrome_framework_version/Libraries",
+      ]
 
       # The Framework is packaged inside the .app bundle. But when using the
       # component build, all the dependent shared libraries of :chrome_dll are
@@ -602,6 +634,16 @@ if (is_win) {
         objdump_path,
         "--image",
         rebase_path(inputs[0], root_out_dir),
+        "--exact-match",
+
+        # Do not --allow more libraries here without consulting with the
+        # security team (security-dev@chromium.org).
+        "--allow",
+        "@executable_path/../Frameworks/$chrome_framework_name.framework/Versions/$chrome_framework_version/Libraries/libaperitif.dylib",
+        "--allow",
+        "@executable_path/../Frameworks/$chrome_framework_name.framework/Versions/$chrome_framework_version/$chrome_framework_name",
+        "--allow",
+        "/usr/lib/libc++abi.dylib",
         "--allow",
         "/usr/lib/libSystem.B.dylib",
       ]
@@ -784,21 +826,7 @@ if (is_win) {
         "CHROMIUM_HELPER_BUNDLE_ID_SUFFIX=${invoker.helper_bundle_id_suffix}",
       ]
 
-      _is_aperitif_helper =
-          defined(invoker.is_aperitif_helper) && invoker.is_aperitif_helper
-
-      sources = []
-      if (_is_aperitif_helper) {
-        sources += [ "app/chrome_exe_main_mac.c" ]
-      } else {
-        sources += [
-          "app/chrome_exe_main_mac.cc",
-          "app/llvm_profile_util.cc",
-          "app/llvm_profile_util.h",
-        ]
-      }
-
-      configs += [ "//build/config/compiler:wexit_time_destructors" ]
+      sources = [ "app/chrome_exe_main_mac.c" ]
 
       defines = [ "HELPER_EXECUTABLE" ]
       if (defined(invoker.defines)) {
@@ -807,16 +835,16 @@ if (is_win) {
 
       deps = [
         "//base:compiler_specific",
-        "//base/allocator:early_zone_registration_apple",
         "//build:branding_buildflags",
         "//build/config/compiler:compiler_buildflags",
-        "//chrome/common:version_header",
-        "//sandbox/mac:seatbelt",
+        "//content/public/app:aperitif",
       ]
 
-      if (_is_aperitif_helper) {
-        deps += [ "//content/public/app:aperitif" ]
-      }
+      # Links the framework's shared library directly, after libaperitif, so
+      # that the framework's load command follows libaperitif's. `+link` can't
+      # be used: it adds the framework as `-framework`, which the Apple link
+      # rule places before all shared libraries.
+      deps += [ ":chrome_framework+link_nested" ]
 
       if (defined(invoker.deps)) {
         deps += invoker.deps
@@ -828,10 +856,6 @@ if (is_win) {
 
       ldflags = []
 
-      if (_is_aperitif_helper || is_component_build) {
-        deps += [ ":chrome_framework+link_nested" ]
-      }
-
       if (is_component_build) {
         ldflags += [
           # The helper is in Chromium.app/Contents/Frameworks/Chromium
@@ -839,9 +863,7 @@ if (is_win) {
           # Helper.app/Contents/MacOS
 
           # Set up an rpath to the Contents/Frameworks directory so that
-          # Chromium.framework will be found there. This matches the path that
-          # chrome_exe_main_mac.cc uses with `dlopen` and avoids loading the
-          # framework into memory twice.
+          # Chromium.framework will be found there.
           "-Wl,-rpath,@executable_path/../../../../../../..",
 
           # Add an rpath to the Libraries directory in the versioned framework
@@ -851,7 +873,7 @@ if (is_win) {
           # Add an rpath up to the base for all other libraries.
           "-Wl,-rpath,@loader_path/../../../../../../../../../..",
         ]
-      } else if (_is_aperitif_helper) {
+      } else {
         ldflags += [ "-Wcrl,installnametool,-change,@executable_path/../Frameworks/$chrome_framework_name.framework/Versions/$chrome_version_full/Libraries/libaperitif.dylib,@executable_path/../../../../Libraries/libaperitif.dylib,-change,@executable_path/../Frameworks/$chrome_framework_name.framework/Versions/$chrome_version_full/$chrome_framework_name,@executable_path/../../../../$chrome_framework_name" ]
       }
 
@@ -887,28 +909,19 @@ if (is_win) {
     ".alerts",
     " (Alerts)",
   ]
-  aperitif_alert_helper_params = [
-    "aperitif_alerts",
-    ".alerts",
-    " (Aperitif Alerts)",
-  ]
 
   # Merge all helper apps needed by //content and //chrome.
-  chrome_mac_helpers = content_mac_helpers + content_mac_aperitif_helpers + [
-                         alert_helper_params,
-                         aperitif_alert_helper_params,
-                       ]
+  chrome_mac_helpers = content_mac_helpers + [ alert_helper_params ]
 
   # Create all helper apps required by //content.
   foreach(helper_params, content_mac_helpers) {
     chrome_helper_app("chrome_helper_app_${helper_params[0]}") {
       helper_name_suffix = helper_params[2]
       helper_bundle_id_suffix = helper_params[1]
-      is_aperitif_helper = false
       if (enable_separate_renderer_binary && helper_params[0] == "renderer") {
         # TODO(crbug.com/534570563): Accommodate Apéritif when
         # enable_separate_renderer_binary is true by updating
-        # chrome_exe_main_mac.cc to link librenderer.dylib directly.
+        # chrome_exe_main_mac.c to link librenderer.dylib directly.
         defines = [ "RENDERER_HELPER_EXECUTABLE" ]
         data_deps = [ ":chrome_renderer" ]
       }
@@ -938,31 +951,10 @@ if (is_win) {
     public_deps = [ ":chrome_helper_app_alerts_plist_strings" ]
   }
 
-  # Create all aperitif helper apps.
-  foreach(helper_params, content_mac_aperitif_helpers) {
-    chrome_helper_app("chrome_helper_app_${helper_params[0]}") {
-      helper_name_suffix = helper_params[2]
-      helper_bundle_id_suffix = helper_params[1]
-      is_aperitif_helper = true
-    }
-  }
-
   chrome_helper_app("chrome_helper_app_${alert_helper_params[0]}") {
     helper_name_suffix = alert_helper_params[2]
     helper_bundle_id_suffix = alert_helper_params[1]
     info_plist_target = ":chrome_helper_app_alerts_plist"
-    deps = [
-      ":chrome_app_icon",
-      ":chrome_asset_catalog",
-      ":chrome_helper_app_alerts_resources",
-    ]
-  }
-
-  chrome_helper_app("chrome_helper_app_${aperitif_alert_helper_params[0]}") {
-    helper_name_suffix = aperitif_alert_helper_params[2]
-    helper_bundle_id_suffix = aperitif_alert_helper_params[1]
-    info_plist_target = ":chrome_helper_app_alerts_plist"
-    is_aperitif_helper = true
     deps = [
       ":chrome_app_icon",
       ":chrome_asset_catalog",
@@ -975,14 +967,6 @@ if (is_win) {
       _helper_target = helper_params[0]
       _helper_bundle_id = helper_params[1]
       _helper_suffix = helper_params[2]
-
-      _is_aperitif_helper = false
-      foreach(aperitif_params,
-              content_mac_aperitif_helpers + [ aperitif_alert_helper_params ]) {
-        if (helper_params[0] == aperitif_params[0]) {
-          _is_aperitif_helper = true
-        }
-      }
 
       action("verify_libraries_chrome_helper_app_${_helper_target}") {
         script = "//chrome/tools/build/mac/verify_dynamic_libraries.py"
@@ -1001,27 +985,13 @@ if (is_win) {
 
         # Do not --allow more libraries here without consulting with the
         # security team (security-dev@chromium.org).
-        if (_is_aperitif_helper) {
-          if (is_component_build) {
-            args += [
-              "--allow",
-              "@rpath/libaperitif.dylib",
-              "--allow",
-              "@rpath/$chrome_framework_name.framework/$chrome_framework_name",
-            ]
-          } else {
-            args += [
-              "--allow",
-              "@executable_path/../../../../Libraries/libaperitif.dylib",
-              "--allow",
-              "@executable_path/../../../../$chrome_framework_name",
-            ]
-          }
-        }
-
         args += [
           "--allow",
-          "/usr/lib/libsandbox.1.dylib",
+          "@executable_path/../../../../Libraries/libaperitif.dylib",
+          "--allow",
+          "@executable_path/../../../../$chrome_framework_name",
+          "--allow",
+          "/usr/lib/libc++abi.dylib",
           "--allow",
           "/usr/lib/libSystem.B.dylib",
         ]
@@ -1106,6 +1076,7 @@ if (is_win) {
       }
       if (!use_v8_context_snapshot || include_both_v8_snapshots) {
         sources += [ "$root_out_dir/snapshot_blob.bin" ]
+        public_deps += [ "//v8:run_mksnapshot_default" ]
       }
     }
   }
@@ -1138,6 +1109,8 @@ if (is_win) {
 
         # Do not --allow more libraries here without consulting with the
         # security team (security-dev@chromium.org).
+        "--allow",
+        "/usr/lib/libc++abi.dylib",
         "--allow",
         "/usr/lib/libsandbox.1.dylib",
         "--allow",
@@ -1316,6 +1289,7 @@ if (is_win) {
     deps = [
       ":dependencies",
       "//build:chromeos_buildflags",
+      "//chrome/app:chrome_crash_user_streams",
       "//chrome/app:command_ids",
       "//chrome/browser:chrome_browser_application_mac",
       "//chrome/browser:chrome_content_browser_client",
@@ -1349,10 +1323,7 @@ if (is_win) {
 
     ldflags = [ "-ObjC" ]
 
-    configs += [
-      ":chrome_dll_symbol_order",
-      "//build/config/compiler:wexit_time_destructors",
-    ]
+    configs += [ ":chrome_dll_symbol_order" ]
     if (!is_component_build && !using_sanitizer) {
       configs += [ ":chrome_dll_symbol_exports" ]
     }
@@ -1368,7 +1339,6 @@ if (is_win) {
       "Resources",
     ]
 
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
     configs -= [ "//build/config/compiler:thinlto_optimize_default" ]
     configs += [ "//build/config/compiler:thinlto_optimize_max" ]
 
@@ -1389,7 +1359,6 @@ if (is_win) {
       ":widevine_cdm_library",
       "//chrome/browser/resources/media/mei_preload:component_bundle",
       "//chrome/browser/web_applications/isolated_web_apps/key_distribution/preload:component_bundle",
-      "//components/privacy_sandbox/privacy_sandbox_attestations/preload:component_bundle",
     ]
 
     if (is_chrome_branded) {
@@ -1812,7 +1781,6 @@ if (is_android) {
       "//chrome/browser/flags:flags_android",
       "//chrome/browser/lifetime",
       "//chrome/browser/payments:impl",
-      "//chrome/browser/ui",
       "//chrome/child",
       "//chrome/common",
       "//chrome/common:version_header",
@@ -1867,6 +1835,9 @@ if (is_linux || is_chromeos) {
       }
       if (!is_chromeos && angle_shared_libvulkan) {
         deps += [ ":angle_libvulkan_symbols" ]
+      }
+      if (is_chrome_branded) {
+        deps += [ ":chromecompaneros_symbols" ]
       }
       if (build_with_internal_optimization_guide) {
         deps += [ ":optimization_guide_symbols" ]
@@ -2000,6 +1971,21 @@ if (is_linux || is_chromeos) {
         }
       }
     }
+    if (is_chrome_branded) {
+      extract_symbols("chromecompaneros_symbols") {
+        binary = "$root_out_dir/libchromecompaneros.so"
+        if (current_cpu == "x86") {
+          # GYP used "ia32" so keep that naming for back-compat.
+          symbol_file = "$root_out_dir/chromecompaneros.breakpad.ia32"
+        } else {
+          symbol_file = "$root_out_dir/chromecompaneros.breakpad.$current_cpu"
+        }
+
+        deps = [
+          "//chrome/common/request_header_integrity/internal:chromecompaneros",
+        ]
+      }
+    }
     if (build_with_internal_shape_detection) {
       extract_symbols("shape_detection_symbols") {
         binary = "$root_out_dir/libshape_detection_internal.so"
@@ -2077,6 +2063,15 @@ if (enable_separate_renderer_binary) {
   if (is_win) {
     process_version_rc_template("chrome_renderer_dll_version") {
       sources = [ "app/chrome_renderer_dll.ver" ]
+      if (has_compatible_versions) {
+        sources += [ compatible_versions_file ]
+      } else {
+        extra_args = [
+          "-e",
+          "COMPATIBLE_VERSIONS=\"\"",
+        ]
+      }
+      template_file = "app/chrome_renderer_dll_version.rc.version"
       output = "$target_gen_dir/chrome_renderer_dll_version.rc"
     }
   }
@@ -2095,7 +2090,6 @@ if (enable_separate_renderer_binary) {
       if (is_win) {
         # On Windows, chrome_renderer is built as a shared library DLL, so match
         # the compiler and linker configs from :chrome_dll.
-        configs += [ "//build/config/compiler:wexit_time_destructors" ]
         configs -= [ "//build/config/compiler:thinlto_optimize_default" ]
         configs += [ "//build/config/compiler:thinlto_optimize_max" ]
         configs += [ "//build/config/win:delayloads" ]
@@ -2114,6 +2108,9 @@ if (enable_separate_renderer_binary) {
 
       defines = [ "BUILDING_CHROME_RENDERER" ]
       deps = _chrome_renderer_deps + [ "//chrome/child" ]
+      if (is_mac) {
+        deps += [ "//chrome/app:chrome_crash_user_streams" ]
+      }
       if (is_win) {
         deps += [
           ":chrome_renderer_dll_version",
@@ -2136,6 +2133,7 @@ if (enable_separate_renderer_binary) {
                 ]
       defines = [ "BUILDING_CHROME_RENDERER" ]
       deps = _chrome_renderer_deps + [
+               "//chrome/app:chrome_crash_user_streams",
                "//chrome/child",
                "//sandbox/linux:sandbox_services",
              ]

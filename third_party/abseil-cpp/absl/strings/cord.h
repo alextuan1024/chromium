@@ -192,10 +192,10 @@ class ABSL_ATTRIBUTE_TRIVIAL_ABI Cord {
   // movable. The moved-from state is valid but unspecified.
   // Moves need to be declared since they are otherwise inhibited via the
   // declaration of the destructor.
-  Cord(const Cord&) = default;
+  Cord(const Cord&);
   Cord(Cord&&) = default;
-  Cord& operator=(const Cord&) = default;
-  Cord& operator=(Cord&&) = default;
+  Cord& operator=(const Cord&);
+  Cord& operator=(Cord&&);
 
   // Creates a Cord from a `src` string. This constructor is marked explicit to
   // prevent implicit Cord constructions from arguments convertible to an
@@ -1120,7 +1120,8 @@ class ABSL_ATTRIBUTE_TRIVIAL_ABI Cord {
   void SetCrcCordState(crc_internal::CrcCordState state);
   const crc_internal::CrcCordState* absl_nullable MaybeGetCrcCordState() const;
 
-  CharIterator FindImpl(CharIterator it, absl::string_view needle) const;
+  template <typename T>
+  CharIterator FindImpl(CharIterator it, const T& needle) const;
 
   void CopyToArrayImpl(char* absl_nonnull dst) const;
 };

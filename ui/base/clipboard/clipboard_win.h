@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/clipboard_change_notifier.h"
 #include "ui/base/clipboard/clipboard_format_type.h"
@@ -95,6 +96,8 @@ class ClipboardWin : public Clipboard, public ClipboardChangeNotifier {
                ReadPngCallback callback) const override;
   void ReadURL(const std::optional<DataTransferEndpoint>& data_dst,
                ReadUrlCallback callback) const override;
+  void ReadURLs(const std::optional<DataTransferEndpoint>& data_dst,
+                ReadUrlsCallback callback) const override;
   void WritePortableAndPlatformRepresentations(
       ClipboardBuffer buffer,
       const ObjectMap& objects,
@@ -108,7 +111,7 @@ class ClipboardWin : public Clipboard, public ClipboardChangeNotifier {
   void WriteSvg(std::string_view markup) override;
   void WriteRTF(std::string_view rtf) override;
   void WriteFilenames(std::vector<ui::FileInfo> filenames) override;
-  void WriteURL(const ClipboardUrlInfo& url_info) override;
+  void WriteURLs(base::span<const ClipboardUrlInfo> url_infos) override;
   void WriteWebSmartPaste() override;
   void WriteBitmap(const SkBitmap& bitmap) override;
   void WriteData(const ClipboardFormatType& format,

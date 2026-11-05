@@ -4,14 +4,24 @@
 
 #include "content/browser/file_system_access/file_system_access_file_modification_host_impl.h"
 
+#include <limits>
+#include <vector>
+
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/functional/bind.h"
+#include "base/functional/concurrent_callbacks.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/test/bind.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/types/pass_key.h"
+#include "components/services/storage/public/cpp/buckets/bucket_info.h"
+#include "components/services/storage/public/cpp/buckets/bucket_init_params.h"
+#include "components/services/storage/public/cpp/buckets/bucket_locator.h"
+#include "components/services/storage/public/cpp/quota_error_or.h"
 #include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/file_system_access/mock_file_system_access_permission_context.h"
 #include "content/public/test/browser_task_environment.h"
@@ -41,6 +51,59 @@ int64_t RequestCapacityChangeSync(
   return granted_capacity;
 }
 
+// MockQuotaManagerProxy that can defer delivery of GetBucketSpaceRemaining()
+// results. The space remaining is computed when the request is made, but the
+// callback is only run once RunDeferredCallbacks() is called. This simulates
+// multiple capacity requests racing against stale quota usage information.
+class DeferringQuotaManagerProxy : public storage::MockQuotaManagerProxy {
+ public:
+  using storage::MockQuotaManagerProxy::MockQuotaManagerProxy;
+
+  void GetBucketSpaceRemaining(
+      const storage::BucketLocator& bucket,
+      base::OnceCallback<void(storage::QuotaErrorOr<int64_t>)> callback)
+      override {
+    if (!defer_callbacks_) {
+      storage::MockQuotaManagerProxy::GetBucketSpaceRemaining(
+          bucket, std::move(callback));
+      return;
+    }
+    storage::MockQuotaManagerProxy::GetBucketSpaceRemaining(
+        bucket, base::BindOnce(
+                    [](base::OnceCallback<void(storage::QuotaErrorOr<int64_t>)>
+                           callback,
+                       base::OnceCallback<void(base::OnceClosure)> defer,
+                       storage::QuotaErrorOr<int64_t> space_remaining) {
+                      std::move(defer).Run(base::BindOnce(
+                          std::move(callback), std::move(space_remaining)));
+                    },
+                    std::move(callback), deferred_callbacks_.CreateCallback()));
+  }
+
+  void set_defer_callbacks(bool defer) { defer_callbacks_ = defer; }
+
+  // Waits for all deferred lookups to complete, then runs their callbacks in
+  // the order the lookups were made.
+  void RunDeferredCallbacks() {
+    base::RunLoop run_loop;
+    std::move(deferred_callbacks_)
+        .Done(base::BindOnce([](std::vector<base::OnceClosure> callbacks) {
+                for (auto& callback : callbacks) {
+                  std::move(callback).Run();
+                }
+              }).Then(run_loop.QuitClosure()));
+    run_loop.Run();
+    deferred_callbacks_ = base::ConcurrentCallbacks<base::OnceClosure>();
+  }
+
+ protected:
+  ~DeferringQuotaManagerProxy() override = default;
+
+ private:
+  bool defer_callbacks_ = false;
+  base::ConcurrentCallbacks<base::OnceClosure> deferred_callbacks_;
+};
+
 }  // namespace
 
 class FileSystemAccessFileModificationHostImplTest : public testing::Test {
@@ -57,7 +120,7 @@ class FileSystemAccessFileModificationHostImplTest : public testing::Test {
         /*is_incognito=*/false, data_dir_.GetPath(),
         base::SingleThreadTaskRunner::GetCurrentDefault(),
         special_storage_policy_);
-    quota_manager_proxy_ = base::MakeRefCounted<storage::MockQuotaManagerProxy>(
+    quota_manager_proxy_ = base::MakeRefCounted<DeferringQuotaManagerProxy>(
         quota_manager(), base::SingleThreadTaskRunner::GetCurrentDefault());
     file_system_context_ = storage::CreateFileSystemContextForTesting(
         quota_manager_proxy(), data_dir_.GetPath());
@@ -70,18 +133,12 @@ class FileSystemAccessFileModificationHostImplTest : public testing::Test {
         file_system_context_, chrome_blob_context_, &permission_context_,
         /*off_the_record=*/false);
 
-    auto test_file_url = file_system_context_->CreateCrackedFileSystemURL(
+    test_file_url_ = file_system_context_->CreateCrackedFileSystemURL(
         kTestStorageKey, storage::kFileSystemTypeTemporary,
         base::FilePath::FromUTF8Unsafe("test"));
-    test_file_url.SetBucket(
+    test_file_url_.SetBucket(
         storage::BucketLocator::ForDefaultBucket(kTestStorageKey));
-    mojo::Remote<blink::mojom::FileSystemAccessFileModificationHost>
-        allocation_host_remote;
-    allocation_host_ =
-        std::make_unique<FileSystemAccessFileModificationHostImpl>(
-            manager_.get(), test_file_url,
-            base::PassKey<FileSystemAccessFileModificationHostImplTest>(),
-            allocation_host_remote.BindNewPipeAndPassReceiver(), 0);
+    allocation_host_ = CreateHost(/*file_size=*/0);
   }
 
   void TearDown() override {
@@ -90,13 +147,21 @@ class FileSystemAccessFileModificationHostImplTest : public testing::Test {
   }
 
  protected:
+  std::unique_ptr<FileSystemAccessFileModificationHostImpl> CreateHost(
+      int64_t file_size) {
+    mojo::Remote<blink::mojom::FileSystemAccessFileModificationHost> remote;
+    return std::make_unique<FileSystemAccessFileModificationHostImpl>(
+        manager_.get(), test_file_url_,
+        base::PassKey<FileSystemAccessFileModificationHostImplTest>(),
+        remote.BindNewPipeAndPassReceiver(), file_size);
+  }
+
   storage::MockQuotaManager* quota_manager() {
     return static_cast<storage::MockQuotaManager*>(quota_manager_.get());
   }
 
-  storage::MockQuotaManagerProxy* quota_manager_proxy() {
-    return static_cast<storage::MockQuotaManagerProxy*>(
-        quota_manager_proxy_.get());
+  DeferringQuotaManagerProxy* quota_manager_proxy() {
+    return static_cast<DeferringQuotaManagerProxy*>(quota_manager_proxy_.get());
   }
   const blink::StorageKey kTestStorageKey =
       blink::StorageKey::CreateFromStringForTesting("https://example.com/test");
@@ -111,6 +176,7 @@ class FileSystemAccessFileModificationHostImplTest : public testing::Test {
   scoped_refptr<storage::FileSystemContext> file_system_context_;
   scoped_refptr<ChromeBlobStorageContext> chrome_blob_context_;
   scoped_refptr<FileSystemAccessManagerImpl> manager_;
+  storage::FileSystemURL test_file_url_;
 
   std::unique_ptr<FileSystemAccessFileModificationHostImpl> allocation_host_;
   scoped_refptr<storage::MockQuotaManager> quota_manager_;
@@ -125,6 +191,21 @@ TEST_F(FileSystemAccessFileModificationHostImplTest,
   EXPECT_EQ(granted_capacity, requested_capacity);
   EXPECT_EQ(*quota_manager_proxy_->last_notified_bucket_delta(),
             requested_capacity);
+}
+
+TEST_F(FileSystemAccessFileModificationHostImplTest,
+       RequestCapacityChange_ZeroCapacity) {
+  // A zero delta needs neither a quota lookup nor a usage update, so the
+  // request completes even though quota lookups are deferred.
+  quota_manager_proxy()->set_defer_callbacks(true);
+
+  base::test::TestFuture<int64_t> future;
+  allocation_host_->RequestCapacityChange(0, future.GetCallback());
+
+  ASSERT_TRUE(future.IsReady());
+  EXPECT_EQ(future.Get(), 0);
+  EXPECT_EQ(allocation_host_->granted_capacity(), 0);
+  EXPECT_EQ(quota_manager_proxy_->notify_bucket_modified_count(), 0);
 }
 
 TEST_F(FileSystemAccessFileModificationHostImplTest,
@@ -159,4 +240,99 @@ TEST_F(FileSystemAccessFileModificationHostImplTest,
   EXPECT_EQ("A file's size cannot be negative or out of bounds",
             bad_message_observer.WaitForBadMessage());
 }
+
+TEST_F(FileSystemAccessFileModificationHostImplTest,
+       RequestCapacityChange_IllegalPositiveCapacityOverflow) {
+  const int64_t initial_capacity = std::numeric_limits<int64_t>::max() - 10;
+  auto host = CreateHost(initial_capacity);
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  int64_t granted_capacity = RequestCapacityChangeSync(host.get(), 20);
+  EXPECT_EQ(granted_capacity, 0);
+  EXPECT_EQ(host->granted_capacity(), initial_capacity);
+  EXPECT_EQ(quota_manager_proxy_->notify_bucket_modified_count(), 0);
+  EXPECT_EQ("A file's size cannot be negative or out of bounds",
+            bad_message_observer.WaitForBadMessage());
+}
+
+TEST_F(FileSystemAccessFileModificationHostImplTest,
+       RequestCapacityChange_ConcurrentPositiveCapacityOverflow) {
+  // Both requests pass the initial bounds check and observe the same (stale)
+  // usage, but granting both would overflow `granted_capacity_`.
+  const int64_t large_delta = std::numeric_limits<int64_t>::max() / 2 + 10;
+  quota_manager_proxy()->set_defer_callbacks(true);
+
+  base::test::TestFuture<int64_t> future1;
+  base::test::TestFuture<int64_t> future2;
+  allocation_host_->RequestCapacityChange(large_delta, future1.GetCallback());
+  allocation_host_->RequestCapacityChange(large_delta, future2.GetCallback());
+  quota_manager_proxy()->RunDeferredCallbacks();
+
+  EXPECT_EQ(future1.Get(), large_delta);
+  EXPECT_EQ(future2.Get(), 0);
+  EXPECT_EQ(allocation_host_->granted_capacity(), large_delta);
+  EXPECT_EQ(quota_manager_proxy_->notify_bucket_modified_count(), 1);
+}
+
+TEST_F(FileSystemAccessFileModificationHostImplTest,
+       RequestCapacityChange_ConcurrentNegativeCapacityBelowZero) {
+  // Each release is valid on its own, but releasing both would make
+  // `granted_capacity_` negative. Releases are applied without waiting for a
+  // quota lookup, so the second one is checked against the updated capacity
+  // and rejected as a bad message.
+  auto host = CreateHost(/*file_size=*/50);
+  quota_manager_proxy()->set_defer_callbacks(true);
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  base::test::TestFuture<int64_t> future1;
+  base::test::TestFuture<int64_t> future2;
+  host->RequestCapacityChange(-40, future1.GetCallback());
+  host->RequestCapacityChange(-40, future2.GetCallback());
+
+  EXPECT_EQ(future1.Get(), -40);
+  EXPECT_EQ(future2.Get(), 0);
+  EXPECT_EQ(host->granted_capacity(), 10);
+  EXPECT_EQ(quota_manager_proxy_->notify_bucket_modified_count(), 1);
+  EXPECT_EQ("A file's size cannot be negative or out of bounds",
+            bad_message_observer.WaitForBadMessage());
+}
+
+TEST_F(FileSystemAccessFileModificationHostImplTest,
+       RequestCapacityChange_BucketQuotaExceeded) {
+  // The StorageKey has plenty of quota left, but the file's bucket does not.
+  quota_manager()->SetQuota(kTestStorageKey, 1024 * 1024);
+  storage::BucketInitParams params(kTestStorageKey, "test_bucket");
+  params.quota = 100;
+  ASSERT_OK_AND_ASSIGN(storage::BucketInfo bucket,
+                       quota_manager()->GetOrCreateBucketSync(params));
+  test_file_url_.SetBucket(bucket.ToBucketLocator());
+  auto host = CreateHost(/*file_size=*/0);
+
+  EXPECT_EQ(RequestCapacityChangeSync(host.get(), 101), 0);
+  EXPECT_EQ(host->granted_capacity(), 0);
+  EXPECT_EQ(quota_manager_proxy_->notify_bucket_modified_count(), 0);
+
+  EXPECT_EQ(RequestCapacityChangeSync(host.get(), 100), 100);
+  EXPECT_EQ(host->granted_capacity(), 100);
+  EXPECT_EQ(*quota_manager_proxy_->last_notified_bucket_delta(), 100);
+
+  // The granted capacity counts against the bucket's quota.
+  EXPECT_EQ(RequestCapacityChangeSync(host.get(), 1), 0);
+  EXPECT_EQ(host->granted_capacity(), 100);
+}
+
+TEST_F(FileSystemAccessFileModificationHostImplTest,
+       RequestCapacityChange_StorageKeyQuotaExceeded) {
+  quota_manager()->SetQuota(kTestStorageKey, 100);
+
+  EXPECT_EQ(RequestCapacityChangeSync(allocation_host_.get(), 101), 0);
+  EXPECT_EQ(allocation_host_->granted_capacity(), 0);
+  EXPECT_EQ(quota_manager_proxy_->notify_bucket_modified_count(), 0);
+
+  EXPECT_EQ(RequestCapacityChangeSync(allocation_host_.get(), 100), 100);
+  EXPECT_EQ(allocation_host_->granted_capacity(), 100);
+}
+
 }  // namespace content

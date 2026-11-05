@@ -1,8 +1,15 @@
 adithyas@chromium.org
 bokan@chromium.org
+danielmendz@google.com
 gklassen@chromium.org
 mcnee@chromium.org
 migueloruiz@google.com
 vollick@chromium.org
 
+jamescook@chromium.org #{LAST_RESORT_SUGGESTION}
+mwoj@google.com #{LAST_RESORT_SUGGESTION}
+vincentchiang@chromium.org #{LAST_RESORT_SUGGESTION}
+
 file://chrome/browser/ai/OWNERS
+
+per-file android/...=haileywang@google.com

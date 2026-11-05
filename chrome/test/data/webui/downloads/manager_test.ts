@@ -177,7 +177,7 @@ suite('manager tests', function() {
   test('toast is not hidden when itself is clicked', () => {
     toastManager.show('');
     assertTrue(toastManager.isToastOpen);
-    toastManager.shadowRoot.querySelector<HTMLElement>('#toast')!.click();
+    toastManager.$.toast.click();
     assertTrue(toastManager.isToastOpen);
   });
 
@@ -233,11 +233,7 @@ suite('manager tests', function() {
         await microtasksFinished();
         const item = manager.shadowRoot.querySelector('downloads-item');
         assertTrue(!!item);
-        item.dispatchEvent(new CustomEvent('save-dangerous-click', {
-          bubbles: true,
-          composed: true,
-          detail: {id: item.data?.id || ''},
-        }));
+        item.fire('save-dangerous-click', {id: item.data?.id || ''});
         await callbackRouterRemote.$.flushForTesting();
         const recordOpenId =
             await handler.whenCalled('recordOpenBypassWarningDialog');
@@ -270,11 +266,7 @@ suite('manager tests', function() {
     await microtasksFinished();
     const item = manager.shadowRoot.querySelector('downloads-item');
     assertTrue(!!item);
-    item.dispatchEvent(new CustomEvent('save-dangerous-click', {
-      bubbles: true,
-      composed: true,
-      detail: {id: item.data?.id || ''},
-    }));
+    item.fire('save-dangerous-click', {id: item.data?.id || ''});
     await callbackRouterRemote.$.flushForTesting();
     const recordOpenId =
         await handler.whenCalled('recordOpenBypassWarningDialog');
@@ -308,11 +300,7 @@ suite('manager tests', function() {
         await microtasksFinished();
         const item = manager.shadowRoot.querySelector('downloads-item');
         assertTrue(!!item);
-        item.dispatchEvent(new CustomEvent('save-dangerous-click', {
-          bubbles: true,
-          composed: true,
-          detail: {id: item.data?.id || ''},
-        }));
+        item.fire('save-dangerous-click', {id: item.data?.id || ''});
         await microtasksFinished();
 
         const dialog = manager.shadowRoot.querySelector(
@@ -329,7 +317,7 @@ suite('manager tests', function() {
   test(
       'shouldShowEsbPromotion returns true on first dangerous download',
       async () => {
-        document.body.removeChild(manager);
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
         loadTimeData.overrideValues({esbDownloadRowPromo: true});
         handler.setEligbleForEsbPromo(true);
         manager = document.createElement('downloads-manager');
@@ -350,7 +338,7 @@ suite('manager tests', function() {
   test(
       'shouldShowEsbPromotion returns true on most recent dangerous download',
       async () => {
-        document.body.removeChild(manager);
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
         loadTimeData.overrideValues({esbDownloadRowPromo: true});
         handler.setEligbleForEsbPromo(true);
         manager = document.createElement('downloads-manager');
@@ -380,7 +368,7 @@ suite('manager tests', function() {
   test(
       'calls logsEsbPromotionRowViewed when promo row is in first 5 downloads',
       async () => {
-        document.body.removeChild(manager);
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
         loadTimeData.overrideValues({esbDownloadRowPromo: true});
         handler.setEligbleForEsbPromo(true);
         manager = document.createElement('downloads-manager');

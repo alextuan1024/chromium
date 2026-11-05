@@ -91,7 +91,8 @@ public class AppMenuItemUtils {
                         theme.shouldShowBadgeOnMenuItemIcon(id))
                 .with(AppMenuItemProperties.MENU_ICON_AT_START, isMenuIconAtStart)
                 .with(AppMenuItemProperties.TITLE_CONDENSED, theme.getContentDescription(id))
-                .with(AppMenuItemProperties.MANAGED, theme.isMenuItemManaged(id));
+                .with(AppMenuItemProperties.MANAGED, theme.isMenuItemManaged(id))
+                .with(AppMenuItemProperties.SHORTCUT_TEXT, theme.getShortcutText(id));
     }
 
     /**
@@ -112,9 +113,31 @@ public class AppMenuItemUtils {
             @StringRes int titleId,
             @DrawableRes int iconResId,
             boolean isMenuIconAtStart) {
+        return buildModelForStandardMenuItem(
+                context, theme, id, context.getString(titleId), iconResId, isMenuIconAtStart);
+    }
+
+    /**
+     * Build a property model for a standard text menu item.
+     *
+     * @param context The Context used to resolve resources.
+     * @param theme The AppMenuItemTheme handling theming aspects.
+     * @param id The id of the menu item.
+     * @param title The title to be displayed.
+     * @param iconResId The resource id of the icon to be displayed (or 0 for no icon).
+     * @param isMenuIconAtStart Whether the menu icon should be placed at the start.
+     * @return The property model for this item.
+     */
+    public static PropertyModel buildModelForStandardMenuItem(
+            Context context,
+            AppMenuItemTheme theme,
+            @IdRes int id,
+            String title,
+            @DrawableRes int iconResId,
+            boolean isMenuIconAtStart) {
         PropertyModel model =
                 buildBaseModelForTextItem(theme, id, isMenuIconAtStart)
-                        .with(AppMenuItemProperties.TITLE, context.getString(titleId))
+                        .with(AppMenuItemProperties.TITLE, title)
                         .build();
         if (iconResId != 0) {
             model.set(
@@ -380,6 +403,22 @@ public class AppMenuItemUtils {
                 showIcon
                         ? AppMenuHandler.AppMenuItemType.STANDARD
                         : AppMenuHandler.AppMenuItemType.STANDARD_NO_ICON,
+                model);
+    }
+
+    /**
+     * Build a list item for a tab group menu item.
+     *
+     * @param model The property model for this item.
+     * @param showIcon Whether the icon should be displayed.
+     * @return The list item for this menu item.
+     */
+    public static MVCListAdapter.ListItem createTabGroupListItem(
+            PropertyModel model, boolean showIcon) {
+        return new MVCListAdapter.ListItem(
+                showIcon
+                        ? AppMenuHandler.AppMenuItemType.TAB_GROUP
+                        : AppMenuHandler.AppMenuItemType.TAB_GROUP_NO_ICON,
                 model);
     }
 

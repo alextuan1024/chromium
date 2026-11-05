@@ -10,19 +10,16 @@ static_library("kcer") {
     "kcer_factory_ash.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash",
     "//ash/constants",
     "//ash/public/cpp",
     "//base",
-    "//chrome/browser/ash/kcer/nssdb_migration",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/net",
     "//chrome/browser/profiles:profile",
-    "//chrome/common",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/dbus/userdataauth:userdataauth_proto",
     "//chromeos/ash/components/kcer",
     "//chromeos/ash/components/network",
     "//chromeos/ash/components/tpm",
@@ -33,8 +30,6 @@ static_library("kcer") {
     "//content/public/browser",
     "//crypto",
   ]
-
-  allow_circular_includes_from = [ "//chrome/browser/ash/kcer/nssdb_migration" ]
 }
 
 source_set("browser_tests") {

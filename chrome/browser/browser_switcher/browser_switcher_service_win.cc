@@ -48,8 +48,8 @@ const int kCurrentFileVersion = 1;
 // policies). This stores the rules as raw-pointers rather than unique-pointers,
 // to avoid copying/moving them from their original source.
 struct MergedRuleSet {
-  std::vector<raw_ptr<Rule, VectorExperimental>> sitelist;
-  std::vector<raw_ptr<Rule, VectorExperimental>> greylist;
+  std::vector<raw_ptr<Rule>> sitelist;
+  std::vector<raw_ptr<Rule>> greylist;
 };
 
 // Creates a RuleSet that is the concatenation of all 3 sources.
@@ -151,7 +151,7 @@ std::optional<std::string>* IeemSitelistUrlForTesting() {
 
 bool IsLBSExtensionEnabled(Profile* profile) {
   auto* reg = extensions::ExtensionRegistry::Get(profile);
-  DCHECK(reg);
+  CHECK(reg, base::NotFatalUntil::M161);
   return reg->enabled_extensions().Contains(kLBSExtensionId);
 }
 
@@ -276,13 +276,13 @@ void BrowserSwitcherServiceWin::SitelistCacheFileUpdated() {
 
 void BrowserSwitcherServiceWin::OnCacheFileUpdatedForTesting(
     base::OnceClosure cb) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   cache_file_updated_callback_for_testing_ = std::move(cb);
 }
 
 void BrowserSwitcherServiceWin::OnSitelistCacheFileUpdatedForTesting(
     base::OnceClosure cb) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   sitelist_cache_file_updated_callback_for_testing_ = std::move(cb);
 }
 
@@ -300,7 +300,7 @@ void BrowserSwitcherServiceWin::DeletePrefsFile() {
 }
 
 void BrowserSwitcherServiceWin::SavePrefsToFile() {
-  DCHECK(prefs().IsEnabled());
+  CHECK(prefs().IsEnabled(), base::NotFatalUntil::M161);
   base::FilePath path = GetCacheDir();
   if (path.empty())
     return;

@@ -23,7 +23,6 @@
 #import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
-#import "ios/chrome/browser/shared/public/commands/browser_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
@@ -36,6 +35,7 @@
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
 
@@ -90,8 +90,6 @@ using signin_metrics::PromoAction;
 
   CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
   viewController.sceneHandler = HandlerForProtocol(dispatcher, SceneCommands);
-  viewController.browserHandler =
-      HandlerForProtocol(dispatcher, BrowserCommands);
   viewController.settingsHandler =
       HandlerForProtocol(dispatcher, SettingsCommands);
   viewController.snackbarHandler =
@@ -161,11 +159,8 @@ using signin_metrics::PromoAction;
   // `message` in the UIAlertController, the attributed message below
   // specifically denotes the font style to apply.
   if (warning) {
-    // Signing out may also cause tabs to be closed, see
-    // `MainControllerAuthenticationServiceDelegate::
-    //    ClearBrowsingDataForSignedinPeriod`.
     NSString* clearDataMessage = l10n_util::GetNSString(
-        IDS_IOS_SIGNOUT_AND_DISALLOW_SIGNIN_CLOSES_TABS_AND_CLEARS_DATA_MESSAGE_WITH_MANAGED_ACCOUNT);
+        IDS_IOS_SIGNOUT_DIALOG_MESSAGE_WITH_NOT_SAVED_DATA);
     self.signOutCoordinator.attributedMessage = [[NSAttributedString alloc]
         initWithString:clearDataMessage
             attributes:@{
@@ -200,13 +195,9 @@ using signin_metrics::PromoAction;
                             completion:(signin_ui::SignoutCompletionCallback)
                                            completion {
   DCHECK(completion);
-  BOOL shouldClearDataOnSignOut =
-      self.authService->ShouldClearDataForSignedInPeriodOnSignOut();
-  if (shouldClearDataOnSignOut ||
-      signin::DifferentUserIsSignedInInAnotherScene(self.sceneState)) {
-    // Either `shouldClearDataOnSignOut` holds, or another scene is signed-in
-    // with another account. In both case, we must ask the user to confirm and
-    // warn them there is a possibility of loss of unsynced data.
+  if (signin::DifferentUserIsSignedInInAnotherScene(self.sceneState)) {
+    // Another scene is signed-in with another account. We must ask the user to
+    // confirm and warn them there is a possibility of loss of unsynced data.
     [self showSignOutFromTargetRect:targetRect
                             warning:YES
                          completion:completion];
@@ -232,7 +223,6 @@ using signin_metrics::PromoAction;
                                                         std::move(callback));
 }
 
-// Signs the user out of Chrome, only clears data for managed accounts.
 - (void)signOutWithCompletion:(signin_ui::SignoutCompletionCallback)completion {
   DCHECK(completion);
   [self.googleServicesSettingsViewController preventUserInteraction];

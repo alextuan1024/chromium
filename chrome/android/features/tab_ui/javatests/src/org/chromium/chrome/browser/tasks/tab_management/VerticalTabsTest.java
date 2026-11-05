@@ -29,7 +29,6 @@ import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.espresso.UiController;
 import androidx.test.espresso.ViewAction;
 import androidx.test.filters.MediumTest;
-import androidx.test.runner.lifecycle.Stage;
 
 import org.hamcrest.Matcher;
 import org.junit.After;
@@ -40,19 +39,16 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
-import org.chromium.chrome.browser.searchwidget.SearchActivity;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
@@ -64,8 +60,10 @@ import org.chromium.chrome.tab_ui.R;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.Journeys;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.components.tab_groups.TabGroupId;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -81,10 +79,10 @@ import java.util.List;
  * titles/colors, tab reordering, undo closure, and multi-tab selection workflows.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
 @EnableFeatures({ChromeFeatureList.ANDROID_VERTICAL_TABS + ":enable_by_default/true"})
 @Batch(Batch.PER_CLASS)
+@DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/563034033
 public class VerticalTabsTest {
     private static final String TEST_GROUP_TITLE = "Vertical Tabs Project";
     private static final int TEST_TABS_TO_MAKE = 5;
@@ -93,12 +91,14 @@ public class VerticalTabsTest {
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
+    private WebPageStation mPage;
+
     @Before
     public void setUp() {
         ChromeSharedPreferences.getInstance()
                 .writeBoolean(ChromePreferenceKeys.VERTICAL_TABS_ENABLED, true);
-        WebPageStation page = mActivityTestRule.startOnBlankPage();
-        ChromeTabbedActivity cta = page.getActivity();
+        mPage = mActivityTestRule.startOnBlankPage();
+        ChromeTabbedActivity cta = mPage.getActivity();
         CriteriaHelper.pollUiThread(cta.getTabModelSelectorSupplier().get()::isTabStateInitialized);
     }
 
@@ -154,7 +154,19 @@ public class VerticalTabsTest {
 
     @Test
     @MediumTest
-    public void testToolbarButtonsVisibility() {
+    @DisableFeatures(ChromeFeatureList.TAB_SEARCH_FOR_DESKTOP)
+    public void testToolbarButtonsVisibility_TabSearchDisabled() {
+        onView(withId(R.id.collapse_button)).check(matches(isDisplayed()));
+        // The grid tab switcher is available on tablets, so the search button falls back to Hub
+        // search and remains visible.
+        onView(withId(R.id.tab_search_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.new_tab_button)).check(matches(isDisplayed()));
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.TAB_SEARCH_FOR_DESKTOP)
+    public void testToolbarButtonsVisibility_TabSearchEnabled() {
         onView(withId(R.id.collapse_button)).check(matches(isDisplayed()));
         onView(withId(R.id.tab_search_button)).check(matches(isDisplayed()));
         onView(withId(R.id.new_tab_button)).check(matches(isDisplayed()));
@@ -313,8 +325,7 @@ public class VerticalTabsTest {
         assertNotNull("Tab 1 should exist.", tab1);
         assertNotNull("Tab 2 should exist.", tab2);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab1, tab2);
 
         assertTabInGroup(selector, tab1, "Tab 1 should be part of a tab group.");
         assertTabInGroup(selector, tab2, "Tab 2 should be part of a tab group.");
@@ -329,10 +340,7 @@ public class VerticalTabsTest {
         Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
-
-        assertTabInGroup(selector, tab1, "Tab 1 should be part of a group.");
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab1, tab2);
 
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
@@ -360,17 +368,21 @@ public class VerticalTabsTest {
         Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab1, tab2);
 
         String testTitle = TEST_GROUP_TITLE;
         ThreadUtils.runOnUiThreadBlocking(
-                () -> selector.getCurrentModel().setTabGroupTitle(tab1.getTabGroupId(), testTitle));
+                () ->
+                        selector.getCurrentModel()
+                                .setTabGroupTitle(
+                                        TabGroupId.fromRawToken(tab1.getTabGroupId()), testTitle));
 
         CriteriaHelper.pollUiThread(
                 () ->
                         testTitle.equals(
-                                selector.getCurrentModel().getTabGroupTitle(tab1.getTabGroupId())),
+                                selector.getCurrentModel()
+                                        .getTabGroupTitle(
+                                                TabGroupId.fromRawToken(tab1.getTabGroupId()))),
                 "Tab group title should match the stored custom title.");
     }
 
@@ -383,20 +395,22 @@ public class VerticalTabsTest {
         Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab1, tab2);
 
         @TabGroupColorId int targetColorId = TabGroupColorId.CYAN;
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
                         selector.getCurrentModel()
-                                .setTabGroupColor(tab1.getTabGroupId(), targetColorId));
+                                .setTabGroupColor(
+                                        TabGroupId.fromRawToken(tab1.getTabGroupId()),
+                                        targetColorId));
 
         CriteriaHelper.pollUiThread(
                 () ->
                         targetColorId
                                 == selector.getCurrentModel()
-                                        .getTabGroupColor(tab1.getTabGroupId()),
+                                        .getTabGroupColor(
+                                                TabGroupId.fromRawToken(tab1.getTabGroupId())),
                 "Tab group color ID should match the stored color ID.");
     }
 
@@ -409,21 +423,24 @@ public class VerticalTabsTest {
         Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
-
-        assertTabInGroup(selector, tab1, "Tab 1 should be in a group.");
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab1, tab2);
 
         clickTabItemAtPosition(0);
 
         CriteriaHelper.pollUiThread(
-                () -> selector.getCurrentModel().getTabGroupCollapsed(tab1.getTabGroupId()),
+                () ->
+                        selector.getCurrentModel()
+                                .getTabGroupCollapsed(
+                                        TabGroupId.fromRawToken(tab1.getTabGroupId())),
                 "Tab group should be collapsed after clicking its header in Left Rail.");
 
         clickTabItemAtPosition(0);
 
         CriteriaHelper.pollUiThread(
-                () -> !selector.getCurrentModel().getTabGroupCollapsed(tab1.getTabGroupId()),
+                () ->
+                        !selector.getCurrentModel()
+                                .getTabGroupCollapsed(
+                                        TabGroupId.fromRawToken(tab1.getTabGroupId())),
                 "Tab group should be expanded after clicking its header in Left Rail again.");
     }
 
@@ -627,33 +644,6 @@ public class VerticalTabsTest {
     }
 
     // =========================================================================================
-    // Left Rail Toolbar Buttons
-    // =========================================================================================
-    @Test
-    @MediumTest
-    public void testClickSearchButton_OpensSearch() {
-        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
-        assertFalse(
-                "Hub layout should not be visible initially.",
-                cta.getLayoutManager().isLayoutVisible(LayoutType.HUB));
-
-        SearchActivity searchActivity =
-                ApplicationTestUtils.waitForActivityWithClass(
-                        SearchActivity.class,
-                        Stage.RESUMED,
-                        /* uiThreadTrigger= */ null,
-                        /* backgroundThreadTrigger= */ () ->
-                                onView(withId(R.id.tab_search_button)).perform(click()));
-        assertNotNull("SearchActivity should be opened.", searchActivity);
-
-        assertFalse(
-                "Hub layout should not open when tab search is triggered.",
-                cta.getLayoutManager().isLayoutVisible(LayoutType.HUB));
-
-        ApplicationTestUtils.finishActivity(searchActivity);
-    }
-
-    // =========================================================================================
     // Desktop Windowing Mode & App Header Spacer
     // =========================================================================================
 
@@ -676,7 +666,7 @@ public class VerticalTabsTest {
                 () -> {
                     VerticalTabRailLayout railLayout =
                             cta.findViewById(R.id.vertical_tab_rail_container);
-                    railLayout.setDesktopWindowSpacerVisible(/* visible= */ true);
+                    railLayout.setDesktopWindowSpacerVisibleForTesting(/* visible= */ true);
                 });
 
         // 3. Verify the spacer transitions to VISIBLE.
@@ -687,7 +677,7 @@ public class VerticalTabsTest {
                 () -> {
                     VerticalTabRailLayout railLayout =
                             cta.findViewById(R.id.vertical_tab_rail_container);
-                    railLayout.setDesktopWindowSpacerVisible(/* visible= */ false);
+                    railLayout.setDesktopWindowSpacerVisibleForTesting(/* visible= */ false);
                 });
 
         onView(withId(R.id.desktop_window_spacer)).check(matches(withEffectiveVisibility(GONE)));
@@ -697,7 +687,7 @@ public class VerticalTabsTest {
                 () -> {
                     VerticalTabRailLayout railLayout =
                             cta.findViewById(R.id.vertical_tab_rail_container);
-                    railLayout.setDesktopWindowSpacerVisible(initialSpacerVisible);
+                    railLayout.setDesktopWindowSpacerVisibleForTesting(initialSpacerVisible);
                 });
     }
 
@@ -775,21 +765,13 @@ public class VerticalTabsTest {
     @MediumTest
     public void testMoveTabIntoGroup() {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
-        TabModelSelector selector = cta.getTabModelSelectorSupplier().get();
 
         Tab tab1 = createTabOnUiThread(cta, /* incognito= */ false);
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
         Tab tab3 = createTabOnUiThread(cta, /* incognito= */ false);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId()));
-
-        assertTabInGroup(selector, tab1, "Tab 1 should be in a group.");
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> selector.getCurrentModel().mergeTabsToGroup(tab3.getId(), tab1.getId()));
-
-        assertTabInGroup(selector, tab3, "Tab 3 should be merged into Tab 1's group.");
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab1, tab2);
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab3, tab1);
     }
 
     @Test
@@ -802,15 +784,8 @@ public class VerticalTabsTest {
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
         Tab tab3 = createTabOnUiThread(cta, /* incognito= */ false);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId());
-                    selector.getCurrentModel().mergeTabsToGroup(tab3.getId(), tab1.getId());
-                });
-
-        CriteriaHelper.pollUiThread(
-                () -> selector.getCurrentModel().isTabInTabGroup(tab3),
-                "All 3 tabs should be in a group.");
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab1, tab2);
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab3, tab1);
 
         // 1. Move child Tab 3 UP within the group to index 0.
         ThreadUtils.runOnUiThreadBlocking(
@@ -843,10 +818,7 @@ public class VerticalTabsTest {
         Tab tabB = createTabOnUiThread(cta, /* incognito= */ false);
         Tab tabC = createTabOnUiThread(cta, /* incognito= */ false);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> selector.getCurrentModel().mergeTabsToGroup(tabA.getId(), tabB.getId()));
-
-        assertTabInGroup(selector, tabA, "Tab A and B should be in a group.");
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tabA, tabB);
 
         // 1. Move Tab C UP above the Tab Group to index 0.
         ThreadUtils.runOnUiThreadBlocking(
@@ -880,13 +852,8 @@ public class VerticalTabsTest {
         Tab tab2 = createTabOnUiThread(cta, /* incognito= */ false);
         Tab tab3 = createTabOnUiThread(cta, /* incognito= */ false);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    selector.getCurrentModel().mergeTabsToGroup(tab1.getId(), tab2.getId());
-                    selector.getCurrentModel().mergeTabsToGroup(tab3.getId(), tab1.getId());
-                });
-
-        assertTabInGroup(selector, tab3, "All 3 tabs should be in a group initially.");
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab1, tab2);
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab3, tab1);
 
         // 1. Simulate dragging Tab 1 UPWARDS out of the group (trailing = false).
         ThreadUtils.runOnUiThreadBlocking(
@@ -1138,14 +1105,14 @@ public class VerticalTabsTest {
         TabModel model = selector.getCurrentModel();
         // Model order from top to bottom: tab4 (index 0), tab3 (index 1), tab2 (index 2), tab1
         // (index 3).
+        Journeys.mergeTabsToGroupProgrammatically(mPage, tab2, tab3);
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    model.mergeTabsToGroup(tab2.getId(), tab3.getId());
-                    model.setTabGroupCollapsed(tab2.getTabGroupId(), true);
-                });
+                () ->
+                        model.setTabGroupCollapsed(
+                                TabGroupId.fromRawToken(tab2.getTabGroupId()), true));
 
         CriteriaHelper.pollUiThread(
-                () -> model.getTabGroupCollapsed(tab2.getTabGroupId()),
+                () -> model.getTabGroupCollapsed(TabGroupId.fromRawToken(tab2.getTabGroupId())),
                 "Tab group should be collapsed initially.");
 
         // In the Flat RV, position 0 is tab4, position 1 is group header for tab3/tab2, position 2
@@ -1160,7 +1127,7 @@ public class VerticalTabsTest {
         // 3. Verify the tab group is automatically expanded and all 4 tabs are multi-selected.
         CriteriaHelper.pollUiThread(
                 () ->
-                        !model.getTabGroupCollapsed(tab2.getTabGroupId())
+                        !model.getTabGroupCollapsed(TabGroupId.fromRawToken(tab2.getTabGroupId()))
                                 && model.getMultiSelectedTabsCount() == 4
                                 && model.isTabMultiSelected(tab4.getId())
                                 && model.isTabMultiSelected(tab3.getId())

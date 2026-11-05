@@ -8,26 +8,32 @@
 #include "base/run_loop.h"
 #include "base/test/gtest_util.h"
 #include "base/time/time_override.h"
+#include "base/unguessable_token.h"
 #include "media/base/media_content_type.h"
 #include "media/base/media_switches.h"
 #include "media/base/media_track.h"
 #include "media/mojo/mojom/media_player.mojom-blink.h"
+#include "partition_alloc/partition_alloc.h"
 #include "services/media_session/public/mojom/media_session.mojom-blink.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/autoplay/autoplay.mojom-blink.h"
+#include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
+#include "third_party/blink/public/platform/web_audio_source_provider_impl.h"
 #include "third_party/blink/public/platform/web_media_player.h"
 #include "third_party/blink/public/platform/web_media_player_source.h"
 #include "third_party/blink/renderer/core/css/css_default_style_sheets.h"
 #include "third_party/blink/renderer/core/dom/dom_implementation.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
+#include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/fullscreen/fullscreen.h"
 #include "third_party/blink/renderer/core/html/html_document.h"
 #include "third_party/blink/renderer/core/html/html_head_element.h"
+#include "third_party/blink/renderer/core/html/html_source_element.h"
 #include "third_party/blink/renderer/core/html/media/html_audio_element.h"
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
 #include "third_party/blink/renderer/core/html/media/media_error.h"
@@ -38,17 +44,25 @@
 #include "third_party/blink/renderer/core/html/track/text_track.h"
 #include "third_party/blink/renderer/core/html/track/text_track_list.h"
 #include "third_party/blink/renderer/core/html/track/video_track_list.h"
+#include "third_party/blink/renderer/core/intersection_observer/intersection_observer_entry.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
+#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
+#include "third_party/blink/renderer/platform/audio/audio_bus.h"
+#include "third_party/blink/renderer/platform/audio/audio_source_provider_client.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/thread_state_scopes.h"
+#include "third_party/blink/renderer/platform/mediastream/media_stream_descriptor.h"
 #include "third_party/blink/renderer/platform/network/network_state_notifier.h"
+#include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/testing/empty_web_media_player.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -70,6 +84,24 @@ void SimulateRequestPlay(HTMLMediaElement* element, bool triggered_by_user) {
 void SimulateRequestPause(HTMLMediaElement* element, bool triggered_by_user) {
   static_cast<media::mojom::blink::MediaPlayer*>(element)->RequestPause(
       triggered_by_user);
+}
+
+void SimulateRequestSeekForward(HTMLMediaElement* element,
+                                base::TimeDelta seek_time) {
+  static_cast<media::mojom::blink::MediaPlayer*>(element)->RequestSeekForward(
+      seek_time);
+}
+
+void SimulateRequestSeekBackward(HTMLMediaElement* element,
+                                 base::TimeDelta seek_time) {
+  static_cast<media::mojom::blink::MediaPlayer*>(element)->RequestSeekBackward(
+      seek_time);
+}
+
+void SimulateRequestSeekTo(HTMLMediaElement* element,
+                           base::TimeDelta seek_time) {
+  static_cast<media::mojom::blink::MediaPlayer*>(element)->RequestSeekTo(
+      seek_time);
 }
 
 enum class TestURLScheme {
@@ -131,6 +163,7 @@ class MockWebMediaPlayer : public EmptyWebMediaPlayer {
   MOCK_METHOD0(Play, void());
   MOCK_METHOD0(UnlockBackgroundPlayback, void());
   MOCK_METHOD1(Pause, void(PauseReason));
+  MOCK_METHOD1(Seek, void(double));
   MOCK_METHOD0(OnTimeUpdate, void());
   MOCK_CONST_METHOD0(Paused, bool());
   MOCK_CONST_METHOD0(Seekable, WebTimeRanges());
@@ -396,8 +429,10 @@ enum class MediaTestParam { kAudio, kVideo };
 
 }  // namespace
 
-class HTMLMediaElementTest : public testing::TestWithParam<MediaTestParam> {
+class HTMLMediaElementTestBase : public testing::Test {
  protected:
+  virtual MediaTestParam GetMediaTestParam() const = 0;
+
   void SetUp() override {
     // Sniff the media player pointer to facilitate mocking.
     auto mock_media_player =
@@ -429,7 +464,7 @@ class HTMLMediaElementTest : public testing::TestWithParam<MediaTestParam> {
         MakeGarbageCollected<WebMediaStubLocalFrameClient>(
             std::move(mock_media_player)));
 
-    if (GetParam() == MediaTestParam::kAudio) {
+    if (GetMediaTestParam() == MediaTestParam::kAudio) {
       media_ = MakeGarbageCollected<HTMLAudioElement>(
           dummy_page_holder_->GetDocument());
     } else {
@@ -464,11 +499,52 @@ class HTMLMediaElementTest : public testing::TestWithParam<MediaTestParam> {
 
   bool WasAutoplayInitiated() { return Media()->WasAutoplayInitiated(); }
 
+  bool HasAutoplayIntersectionObserver() const {
+    return !!Media()->autoplay_policy_->autoplay_intersection_observer_;
+  }
+
+  void UpdateAutoplayVisibility(bool visible) {
+    Media()->autoplay_policy_->UpdateAutoplayMutedWhenVisible(visible);
+  }
+
+  void QueueInvisibleAutoplayIntersection() {
+    std::optional<IntersectionGeometry::RootGeometry> root_geometry;
+    IntersectionGeometry geometry(nullptr, *Media(), {}, {0}, {}, {}, {},
+                                  root_geometry);
+    auto* entry =
+        MakeGarbageCollected<IntersectionObserverEntry>(geometry, 0, Media());
+    ASSERT_EQ(0, entry->intersectionRatio());
+    Media()->autoplay_policy_->OnIntersectionChangedForAutoplay({entry});
+  }
+
+  void PrepareMutedAttributeAutoplay(AutoplayPolicy::Type policy) {
+    Media()->GetDocument().GetSettings()->SetAutoplayPolicy(policy);
+    Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+        true);
+    Media()->setMuted(true);
+    Media()->SetBooleanAttribute(html_names::kPlaysinlineAttr, true);
+    Media()->SetBooleanAttribute(html_names::kAutoplayAttr, true);
+    Media()->SetSrc(SrcSchemeToURL(TestURLScheme::kHttp));
+    test::RunPendingTasks();
+    SetReadyState(HTMLMediaElement::kHaveEnoughData);
+    test::RunPendingTasks();
+    ASSERT_TRUE(HasAutoplayIntersectionObserver());
+    ASSERT_TRUE(Media()->paused());
+  }
+
   bool CouldPlayIfEnoughData() { return Media()->CouldPlayIfEnoughData(); }
 
   bool PotentiallyPlaying() { return Media()->PotentiallyPlaying(); }
 
   bool ShouldDelayLoadEvent() { return Media()->should_delay_load_event_; }
+
+  void PerformMicrotaskCheckpoint() {
+    Media()
+        ->GetDocument()
+        .GetAgent()
+        .event_loop()
+        ->PerformMicrotaskCheckpoint();
+  }
 
   void SetNetworkState(WebMediaPlayer::NetworkState state) {
     Media()->SetNetworkState(state);
@@ -592,7 +668,17 @@ class HTMLMediaElementTest : public testing::TestWithParam<MediaTestParam> {
     Media()->media_source_attachment_ = std::move(attachment);
   }
 
+  void WrapAudioSourceProviderForTesting(
+      scoped_refptr<WebAudioSourceProviderImpl> provider) {
+    Media()->audio_source_provider_.Wrap(std::move(provider));
+  }
+
  protected:
+  KURL SelectNextSourceChild(String* content_type,
+                             HTMLMediaElement::InvalidURLAction action) {
+    return Media()->SelectNextSourceChild(content_type, action);
+  }
+
   // Helpers to call MediaPlayerObserver mojo methods and check their results.
   void NotifyMediaPlaying() {
     media_->DidPlayerStartPlaying();
@@ -851,6 +937,20 @@ class HTMLMediaElementTest : public testing::TestWithParam<MediaTestParam> {
   TestMediaPlayerHost media_player_host_;
   mojo::AssociatedReceiver<media::mojom::blink::MediaPlayerHost>
       media_player_host_receiver_{&media_player_host_};
+};
+
+class HTMLMediaElementTest
+    : public HTMLMediaElementTestBase,
+      public testing::WithParamInterface<MediaTestParam> {
+ protected:
+  MediaTestParam GetMediaTestParam() const override { return GetParam(); }
+};
+
+class HTMLVideoElementAutoplayTest : public HTMLMediaElementTestBase {
+ protected:
+  MediaTestParam GetMediaTestParam() const override {
+    return MediaTestParam::kVideo;
+  }
 };
 
 INSTANTIATE_TEST_SUITE_P(Audio,
@@ -1115,6 +1215,234 @@ TEST_P(HTMLMediaElementTest,
   Media()->Play();
 
   EXPECT_TRUE(WasAutoplayInitiated());
+}
+
+TEST_P(HTMLMediaElementTest,
+       InitialAutoplayRestrictionChangesAffectExistingElement) {
+  Media()->GetDocument().GetSettings()->SetAutoplayPolicy(
+      AutoplayPolicy::Type::kNoUserGestureRequired);
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      true);
+
+  EXPECT_EQ(DOMExceptionCode::kNotAllowedError, Media()->Play());
+
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      false);
+  EXPECT_EQ(std::nullopt, Media()->Play());
+
+  Media()->pause();
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      true);
+  EXPECT_EQ(DOMExceptionCode::kNotAllowedError, Media()->Play());
+}
+
+TEST_P(HTMLMediaElementTest,
+       ActivatedPlaybackReleasesRestrictionAndGestureLock) {
+  Document& document = Media()->GetDocument();
+  document.GetSettings()->SetAutoplayPolicy(
+      AutoplayPolicy::Type::kUserGestureRequired);
+  HTMLMediaElement* media;
+  if (GetParam() == MediaTestParam::kAudio) {
+    media = MakeGarbageCollected<HTMLAudioElement>(document);
+  } else {
+    media = MakeGarbageCollected<HTMLVideoElement>(document);
+  }
+  EXPECT_EQ(DOMExceptionCode::kNotAllowedError, media->Play());
+  document.GetPage()->SetInitialAutoplayRestrictionForTesting(true);
+  LocalFrame::NotifyUserActivation(
+      document.GetFrame(), mojom::UserActivationNotificationType::kTest);
+
+  EXPECT_EQ(std::nullopt, media->Play());
+  EXPECT_FALSE(document.GetPage()->HasInitialAutoplayRestriction());
+  media->pause();
+  EXPECT_TRUE(LocalFrame::ConsumeTransientUserActivation(document.GetFrame()));
+  ASSERT_FALSE(LocalFrame::HasTransientUserActivation(document.GetFrame()));
+  EXPECT_EQ(std::nullopt, media->Play());
+}
+
+TEST_P(HTMLMediaElementTest,
+       InitialAutoplayRestrictionReleaseIgnoresStaleSnapshot) {
+  Document& document = Media()->GetDocument();
+  const auto id = base::UnguessableToken::Create();
+  document.GetSettings()->SetAutoplayPolicy(
+      AutoplayPolicy::Type::kNoUserGestureRequired);
+  document.GetPage()->SetInitialAutoplayRestriction(id, true);
+  EXPECT_EQ(DOMExceptionCode::kNotAllowedError, Media()->Play());
+
+  LocalFrame::NotifyUserActivation(
+      document.GetFrame(), mojom::UserActivationNotificationType::kTest);
+  ASSERT_FALSE(document.GetPage()->HasInitialAutoplayRestriction());
+  ASSERT_TRUE(LocalFrame::ConsumeTransientUserActivation(document.GetFrame()));
+  ASSERT_FALSE(LocalFrame::HasTransientUserActivation(document.GetFrame()));
+
+  document.GetPage()->SetInitialAutoplayRestriction(id, true);
+  EXPECT_FALSE(document.GetPage()->HasInitialAutoplayRestriction());
+  EXPECT_EQ(std::nullopt, Media()->Play());
+}
+
+TEST_F(HTMLVideoElementAutoplayTest,
+       InitialAutoplayRestrictionReleaseCancelsQueuedVisibilityPause) {
+  PrepareMutedAttributeAutoplay(AutoplayPolicy::Type::kNoUserGestureRequired);
+  UpdateAutoplayVisibility(true);
+  ASSERT_FALSE(Media()->paused());
+
+  QueueInvisibleAutoplayIntersection();
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      false);
+  test::RunPendingTasks();
+  EXPECT_FALSE(HasAutoplayIntersectionObserver());
+  EXPECT_FALSE(Media()->paused());
+}
+
+TEST_F(HTMLVideoElementAutoplayTest,
+       InitialAutoplayRestrictionReleaseStopsVisibilityObservation) {
+  PrepareMutedAttributeAutoplay(AutoplayPolicy::Type::kNoUserGestureRequired);
+  UpdateAutoplayVisibility(true);
+  ASSERT_FALSE(Media()->paused());
+
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      false);
+  QueueInvisibleAutoplayIntersection();
+  test::RunPendingTasks();
+  EXPECT_FALSE(HasAutoplayIntersectionObserver());
+  EXPECT_FALSE(Media()->paused());
+}
+
+TEST_F(HTMLVideoElementAutoplayTest,
+       InitialAutoplayRestrictionReleaseAllowsHiddenMutedAttributeAutoplay) {
+  PrepareMutedAttributeAutoplay(AutoplayPolicy::Type::kNoUserGestureRequired);
+  QueueInvisibleAutoplayIntersection();
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      false);
+  test::RunPendingTasks();
+  EXPECT_FALSE(HasAutoplayIntersectionObserver());
+  EXPECT_FALSE(Media()->paused());
+}
+
+TEST_F(HTMLVideoElementAutoplayTest,
+       InitialAutoplayRestrictionReleasePreservesMutedVisibilityPolicy) {
+  PrepareMutedAttributeAutoplay(
+      AutoplayPolicy::Type::kDocumentUserActivationRequired);
+  UpdateAutoplayVisibility(true);
+  ASSERT_FALSE(Media()->paused());
+
+  QueueInvisibleAutoplayIntersection();
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      false);
+  test::RunPendingTasks();
+  EXPECT_TRUE(HasAutoplayIntersectionObserver());
+  EXPECT_TRUE(Media()->paused());
+  UpdateAutoplayVisibility(true);
+  EXPECT_FALSE(Media()->paused());
+
+  Media()->GetDocument().GetSettings()->SetAutoplayPolicy(
+      AutoplayPolicy::Type::kUserGestureRequired);
+  QueueInvisibleAutoplayIntersection();
+  test::RunPendingTasks();
+  EXPECT_TRUE(HasAutoplayIntersectionObserver());
+  EXPECT_TRUE(Media()->paused());
+  UpdateAutoplayVisibility(true);
+  EXPECT_FALSE(Media()->paused());
+}
+
+TEST_P(HTMLMediaElementTest,
+       InitialAutoplayRestrictionReleaseDoesNotStartAttributeAutoplay) {
+  Media()->GetDocument().GetSettings()->SetAutoplayPolicy(
+      AutoplayPolicy::Type::kNoUserGestureRequired);
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      true);
+  Media()->SetSrc(SrcSchemeToURL(TestURLScheme::kHttp));
+  Media()->SetBooleanAttribute(html_names::kAutoplayAttr, true);
+  test::RunPendingTasks();
+
+  SetReadyState(HTMLMediaElement::kHaveEnoughData);
+  test::RunPendingTasks();
+
+  EXPECT_TRUE(Media()->paused());
+  EXPECT_FALSE(WasAutoplayInitiated());
+
+  LocalFrame::NotifyUserActivation(
+      Media()->GetDocument().GetFrame(),
+      mojom::UserActivationNotificationType::kTest);
+  EXPECT_FALSE(
+      Media()->GetDocument().GetPage()->HasInitialAutoplayRestriction());
+  EXPECT_TRUE(LocalFrame::ConsumeTransientUserActivation(
+      Media()->GetDocument().GetFrame()));
+  test::RunPendingTasks();
+  EXPECT_TRUE(Media()->paused());
+  EXPECT_EQ(std::nullopt, Media()->Play());
+}
+
+TEST_P(HTMLMediaElementTest,
+       InitialAutoplayRestrictionReleasePreservesDocumentPolicy) {
+  Media()->GetDocument().GetSettings()->SetAutoplayPolicy(
+      AutoplayPolicy::Type::kDocumentUserActivationRequired);
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      true);
+  EXPECT_EQ(DOMExceptionCode::kNotAllowedError, Media()->Play());
+
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      false);
+  EXPECT_EQ(DOMExceptionCode::kNotAllowedError, Media()->Play());
+
+  LocalFrame::NotifyUserActivation(
+      Media()->GetDocument().GetFrame(),
+      mojom::UserActivationNotificationType::kTest);
+  EXPECT_EQ(std::nullopt, Media()->Play());
+}
+
+TEST_F(HTMLVideoElementAutoplayTest,
+       InitialAutoplayRestrictionAllowsMutedVideoButNotUnmuting) {
+  Media()->GetDocument().GetSettings()->SetAutoplayPolicy(
+      AutoplayPolicy::Type::kNoUserGestureRequired);
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      true);
+  EXPECT_EQ(DOMExceptionCode::kNotAllowedError, Media()->Play());
+  Media()->setMuted(true);
+  EXPECT_EQ(std::nullopt, Media()->Play());
+  ASSERT_FALSE(Media()->paused());
+  Media()->setMuted(false);
+  EXPECT_TRUE(Media()->paused());
+}
+
+TEST_F(HTMLVideoElementAutoplayTest,
+       InitialAutoplayRestrictionReleaseAllowsUnmuting) {
+  Media()->GetDocument().GetSettings()->SetAutoplayPolicy(
+      AutoplayPolicy::Type::kNoUserGestureRequired);
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      true);
+  Media()->setMuted(true);
+  EXPECT_EQ(std::nullopt, Media()->Play());
+  ASSERT_FALSE(Media()->paused());
+
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      false);
+  test::RunPendingTasks();
+  ASSERT_FALSE(Media()->paused());
+  EXPECT_FALSE(LocalFrame::HasTransientUserActivation(
+      Media()->GetDocument().GetFrame()));
+  Media()->setMuted(false);
+  EXPECT_FALSE(Media()->paused());
+}
+
+TEST_F(HTMLVideoElementAutoplayTest,
+       InitialAutoplayRestrictionReleasePreservesUnmutePolicy) {
+  Media()->GetDocument().GetSettings()->SetAutoplayPolicy(
+      AutoplayPolicy::Type::kDocumentUserActivationRequired);
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      true);
+  Media()->setMuted(true);
+  EXPECT_EQ(std::nullopt, Media()->Play());
+  ASSERT_FALSE(Media()->paused());
+
+  Media()->GetDocument().GetPage()->SetInitialAutoplayRestrictionForTesting(
+      false);
+  test::RunPendingTasks();
+  ASSERT_FALSE(Media()->paused());
+  EXPECT_FALSE(LocalFrame::HasTransientUserActivation(
+      Media()->GetDocument().GetFrame()));
+  Media()->setMuted(false);
+  EXPECT_TRUE(Media()->paused());
 }
 
 TEST_P(HTMLMediaElementTest, AutoplayInitiated_GestureRequired_Gesture) {
@@ -1494,6 +1822,54 @@ TEST_P(HTMLMediaElementTest, ClearMediaPlayerResetsLazyMediaLoadState) {
   ClearMediaPlayer();
 
   EXPECT_TRUE(IsLazyMediaLoadStateNoneForTesting());
+}
+
+// The loading attribute's missing value default is the Eager state, so
+// removing it from a deferred element must resume loading.
+// https://html.spec.whatwg.org/#attr-media-loading
+TEST_P(HTMLMediaElementTest, RemovingLoadingAttributeResumesDeferredMedia) {
+  ScopedLazyLoadVideoAndAudioForTest scoped_feature(true);
+
+  Media()->setAttribute(html_names::kLoadingAttr, AtomicString("lazy"));
+  SetLazyMediaLoadStateToDeferredForTesting();
+
+  Media()->removeAttribute(html_names::kLoadingAttr);
+
+  EXPECT_TRUE(Media()->IsLazyLoadResumed());
+}
+
+// The loading attribute's invalid value default is also the Eager state.
+TEST_P(HTMLMediaElementTest, InvalidLoadingAttributeResumesDeferredMedia) {
+  ScopedLazyLoadVideoAndAudioForTest scoped_feature(true);
+
+  Media()->setAttribute(html_names::kLoadingAttr, AtomicString("lazy"));
+  SetLazyMediaLoadStateToDeferredForTesting();
+
+  Media()->setAttribute(html_names::kLoadingAttr, AtomicString("foo"));
+
+  EXPECT_TRUE(Media()->IsLazyLoadResumed());
+}
+
+TEST_P(HTMLMediaElementTest, EagerLoadingAttributeResumesDeferredMedia) {
+  ScopedLazyLoadVideoAndAudioForTest scoped_feature(true);
+
+  Media()->setAttribute(html_names::kLoadingAttr, AtomicString("lazy"));
+  SetLazyMediaLoadStateToDeferredForTesting();
+
+  Media()->setAttribute(html_names::kLoadingAttr, AtomicString("eager"));
+
+  EXPECT_TRUE(Media()->IsLazyLoadResumed());
+}
+
+TEST_P(HTMLMediaElementTest, LazyLoadingAttributeKeepsMediaDeferred) {
+  ScopedLazyLoadVideoAndAudioForTest scoped_feature(true);
+
+  Media()->setAttribute(html_names::kLoadingAttr, AtomicString("lazy"));
+  SetLazyMediaLoadStateToDeferredForTesting();
+
+  Media()->setAttribute(html_names::kLoadingAttr, AtomicString("LAZY"));
+
+  EXPECT_TRUE(Media()->IsLazyLoadDeferred());
 }
 
 TEST_P(HTMLMediaElementTest, DomInteractive) {
@@ -2337,6 +2713,112 @@ TEST_P(HTMLMediaElementTest, RequestPause_SystemTriggered) {
   // The frame should NOT be granted transient user activation.
   EXPECT_FALSE(LocalFrame::HasTransientUserActivation(
       Media()->GetDocument().GetFrame()));
+}
+
+TEST_P(HTMLMediaElementTest, RequestSeek_Seekable) {
+  EXPECT_CALL(*MockMediaPlayer(), Duration()).WillRepeatedly(Return(30.0));
+  EXPECT_CALL(*MockMediaPlayer(), CurrentTime()).WillRepeatedly(Return(15.0));
+  WebTimeRanges seekable(0.0, 30.0);
+  EXPECT_CALL(*MockMediaPlayer(), Seekable()).WillRepeatedly(Return(seekable));
+
+  Media()->SetSrc(SrcSchemeToURL(TestURLScheme::kHttp));
+  test::RunPendingTasks();
+  SetReadyState(HTMLMediaElement::kHaveEnoughData);
+  test::RunPendingTasks();
+  ASSERT_EQ(15.0, Media()->currentTime());
+
+  EXPECT_CALL(*MockMediaPlayer(), Seek(20.0));
+  SimulateRequestSeekTo(Media(), base::Seconds(20));
+  EXPECT_EQ(20.0, Media()->currentTime());
+  testing::Mock::VerifyAndClearExpectations(MockMediaPlayer());
+  EXPECT_CALL(*MockMediaPlayer(), Duration()).WillRepeatedly(Return(30.0));
+  EXPECT_CALL(*MockMediaPlayer(), Seekable()).WillRepeatedly(Return(seekable));
+
+  EXPECT_CALL(*MockMediaPlayer(), Seek(25.0));
+  SimulateRequestSeekForward(Media(), base::Seconds(5));
+  EXPECT_EQ(25.0, Media()->currentTime());
+  testing::Mock::VerifyAndClearExpectations(MockMediaPlayer());
+  EXPECT_CALL(*MockMediaPlayer(), Duration()).WillRepeatedly(Return(30.0));
+  EXPECT_CALL(*MockMediaPlayer(), Seekable()).WillRepeatedly(Return(seekable));
+
+  // Seeking forward past duration clamps to duration.
+  EXPECT_CALL(*MockMediaPlayer(), Seek(30.0));
+  SimulateRequestSeekForward(Media(), base::Seconds(10));
+  EXPECT_EQ(30.0, Media()->currentTime());
+  testing::Mock::VerifyAndClearExpectations(MockMediaPlayer());
+  EXPECT_CALL(*MockMediaPlayer(), Duration()).WillRepeatedly(Return(30.0));
+  EXPECT_CALL(*MockMediaPlayer(), Seekable()).WillRepeatedly(Return(seekable));
+
+  EXPECT_CALL(*MockMediaPlayer(), Seek(10.0));
+  SimulateRequestSeekBackward(Media(), base::Seconds(20));
+  EXPECT_EQ(10.0, Media()->currentTime());
+  testing::Mock::VerifyAndClearExpectations(MockMediaPlayer());
+  EXPECT_CALL(*MockMediaPlayer(), Duration()).WillRepeatedly(Return(30.0));
+  EXPECT_CALL(*MockMediaPlayer(), Seekable()).WillRepeatedly(Return(seekable));
+
+  // Seeking backward past 0 clamps to 0.
+  EXPECT_CALL(*MockMediaPlayer(), Seek(0.0));
+  SimulateRequestSeekBackward(Media(), base::Seconds(15));
+  EXPECT_EQ(0.0, Media()->currentTime());
+  testing::Mock::VerifyAndClearExpectations(MockMediaPlayer());
+
+  // Seeking to a TimeDelta that rounds slightly above duration() (e.g. from
+  // ChunkDemuxer::SetDuration rounding to nearest microsecond) clamps to
+  // duration().
+  const double unaligned_duration = 20.0 / 3.0;
+  const base::TimeDelta rounded_up_duration = base::Microseconds(6666667);
+  ASSERT_GT(rounded_up_duration.InSecondsF(), unaligned_duration);
+  WebTimeRanges unaligned_seekable(0.0, unaligned_duration);
+  EXPECT_CALL(*MockMediaPlayer(), Duration())
+      .WillRepeatedly(Return(unaligned_duration));
+  EXPECT_CALL(*MockMediaPlayer(), Seekable())
+      .WillRepeatedly(Return(unaligned_seekable));
+  Media()->DurationChanged(unaligned_duration, /*request_seek=*/false);
+  EXPECT_CALL(*MockMediaPlayer(), Seek(unaligned_duration));
+  SimulateRequestSeekTo(Media(), rounded_up_duration);
+  EXPECT_EQ(unaligned_duration, Media()->currentTime());
+}
+
+TEST_P(HTMLMediaElementTest, RequestSeek_EmptySeekableRanges) {
+  EXPECT_CALL(*MockMediaPlayer(), Duration()).WillRepeatedly(Return(30.0));
+  EXPECT_CALL(*MockMediaPlayer(), CurrentTime()).WillRepeatedly(Return(15.0));
+  EXPECT_CALL(*MockMediaPlayer(), Seekable())
+      .WillRepeatedly(Return(WebTimeRanges()));
+
+  Media()->SetSrc(SrcSchemeToURL(TestURLScheme::kHttp));
+  test::RunPendingTasks();
+  SetReadyState(HTMLMediaElement::kHaveEnoughData);
+  test::RunPendingTasks();
+  ASSERT_EQ(15.0, Media()->currentTime());
+
+  EXPECT_CALL(*MockMediaPlayer(), Seek(_)).Times(0);
+  SimulateRequestSeekTo(Media(), base::Seconds(20));
+  SimulateRequestSeekTo(Media(), base::Seconds(0));
+  SimulateRequestSeekForward(Media(), base::Seconds(5));
+  SimulateRequestSeekBackward(Media(), base::Seconds(5));
+  EXPECT_EQ(15.0, Media()->currentTime());
+}
+
+TEST_P(HTMLMediaElementTest, RequestSeek_FiniteStreamingZeroRange) {
+  EXPECT_CALL(*MockMediaPlayer(), Duration()).WillRepeatedly(Return(30.0));
+  EXPECT_CALL(*MockMediaPlayer(), CurrentTime()).WillRepeatedly(Return(15.0));
+  // Non-seekable finite streaming media returns a single [0.0, 0.0] range.
+  EXPECT_CALL(*MockMediaPlayer(), Seekable())
+      .WillRepeatedly(Return(WebTimeRanges(0.0, 0.0)));
+
+  Media()->SetSrc(SrcSchemeToURL(TestURLScheme::kHttp));
+  test::RunPendingTasks();
+  SetReadyState(HTMLMediaElement::kHaveEnoughData);
+  test::RunPendingTasks();
+  ASSERT_EQ(15.0, Media()->currentTime());
+
+  EXPECT_CALL(*MockMediaPlayer(), Seek(_)).Times(0);
+  SimulateRequestSeekTo(Media(), base::Seconds(20));
+  SimulateRequestSeekTo(Media(), base::Seconds(0));
+  SimulateRequestSeekForward(Media(), base::Seconds(5));
+  SimulateRequestSeekBackward(Media(), base::Seconds(5));
+  SimulateRequestSeekBackward(Media(), base::Seconds(20));
+  EXPECT_EQ(15.0, Media()->currentTime());
 }
 
 TEST_P(HTMLMediaElementTest, PlayedWithUserActivation) {
@@ -3472,6 +3954,156 @@ TEST_P(HTMLMediaElementTest, MediaShouldBeOpaque_NetworkState) {
   // opaque.
   SetNetworkState(WebMediaPlayer::kNetworkStateIdle);
   EXPECT_TRUE(MediaShouldBeOpaque());
+}
+
+TEST_P(HTMLMediaElementTest, SelectNextSourceChildMediaQueryMatching) {
+  auto* source1 =
+      Media()->GetDocument().CreateRawElement(html_names::kSourceTag);
+  source1->setAttribute(html_names::kSrcAttr,
+                        AtomicString("http://example.com/not_matched.mp4"));
+  source1->setAttribute(html_names::kMediaAttr, AtomicString("not all"));
+  // Fill up inline attribute vector capacity to verify attribute stability.
+  for (int i = 0; i < 6; ++i) {
+    source1->setAttribute(AtomicString(Format("data-attr{}", i)),
+                          AtomicString("val"));
+  }
+  Media()->AppendChild(source1);
+
+  auto* source2 =
+      Media()->GetDocument().CreateRawElement(html_names::kSourceTag);
+  source2->setAttribute(html_names::kSrcAttr,
+                        AtomicString("http://example.com/matched.mp4"));
+  source2->setAttribute(html_names::kMediaAttr, AtomicString("all"));
+  Media()->AppendChild(source2);
+
+  String content_type;
+  KURL url = SelectNextSourceChild(&content_type, HTMLMediaElement::kDoNothing);
+  EXPECT_EQ(url.GetString(), "http://example.com/matched.mp4");
+}
+
+TEST_P(HTMLMediaElementTest, SourceWasAddedIgnoredWithSrcObject) {
+  MediaStreamComponentVector audio_components;
+  MediaStreamComponentVector video_components;
+  auto* descriptor = MakeGarbageCollected<MediaStreamDescriptor>(
+      audio_components, video_components);
+  Media()->SetSrcObjectVariant(descriptor);
+  EXPECT_TRUE(Media()->HasSrcObject());
+
+  // With srcObject set, appending a <source> child element must be ignored.
+  auto* source =
+      Media()->GetDocument().CreateRawElement(html_names::kSourceTag);
+  source->setAttribute(html_names::kSrcAttr,
+                       AtomicString("http://example.com/test.mp4"));
+  Media()->appendChild(source);
+
+  test::RunPendingTasks();
+
+  EXPECT_TRUE(Media()->HasSrcObject());
+}
+
+TEST_P(HTMLMediaElementTest, SourceWasAddedIgnoredWhenNetworkStateNotNoSource) {
+  Media()->SetSrc(SrcSchemeToURL(TestURLScheme::kHttp));
+  test::RunPendingTasks();
+  ASSERT_TRUE(Media()->GetWebMediaPlayer());
+
+  SetReadyState(HTMLMediaElement::kHaveMetadata);
+  SetNetworkState(WebMediaPlayer::kNetworkStateDecodeError);
+  EXPECT_EQ(Media()->getNetworkState(), HTMLMediaElement::kNetworkIdle);
+
+  auto* source =
+      Media()->GetDocument().CreateRawElement(html_names::kSourceTag);
+  source->setAttribute(html_names::kSrcAttr,
+                       AtomicString("http://example.com/test.mp4"));
+  Media()->appendChild(source);
+
+  test::RunPendingTasks();
+
+  EXPECT_EQ(Media()->getNetworkState(), HTMLMediaElement::kNetworkIdle);
+}
+
+class MockAudioSourceProviderClient final
+    : public GarbageCollected<MockAudioSourceProviderClient>,
+      public AudioSourceProviderClient {
+ public:
+  void SetFormat(uint32_t number_of_channels, float sample_rate) override {}
+  void lock() override {}
+  void unlock() override {}
+  void OnCurrentSrcChanged(const KURL& current_src) override {}
+  void Trace(Visitor* visitor) const override {
+    AudioSourceProviderClient::Trace(visitor);
+  }
+};
+
+TEST_P(HTMLMediaElementTest,
+       AudioSourceProviderProvideInputAvoidsDynamicAllocation) {
+  constexpr int kFrames = 128;
+  auto provider =
+      base::MakeRefCounted<WebAudioSourceProviderImpl>(nullptr, nullptr);
+  WrapAudioSourceProviderForTesting(provider);
+  auto* client = MakeGarbageCollected<MockAudioSourceProviderClient>();
+  Media()->GetAudioSourceProvider().SetClient(client);
+
+  scoped_refptr<AudioBus> bus = AudioBus::Create(2, kFrames);
+  // Warm up `WebAudioSourceProviderImpl::bus_wrapper_` on the first call.
+  Media()->GetAudioSourceProvider().ProvideInput(bus.get(), kFrames);
+
+  for (unsigned ch = 0; ch < bus->NumberOfChannels(); ++ch) {
+    std::ranges::fill(bus->Channel(ch)->MutableSpan(), 1.0f);
+  }
+  EXPECT_FALSE(bus->IsSilent());
+  EXPECT_EQ(bus->MaxAbsValue(), 1.0f);
+
+  auto* buffer_partition = Partitions::BufferPartition();
+  buffer_partition->ResetBookkeepingForTesting();
+  const size_t baseline_allocated_bytes =
+      buffer_partition->total_size_of_allocated_bytes_.load(
+          std::memory_order_relaxed);
+
+  Media()->GetAudioSourceProvider().ProvideInput(bus.get(), kFrames);
+
+  EXPECT_EQ(buffer_partition->max_size_of_allocated_bytes_.load(
+                std::memory_order_relaxed),
+            baseline_allocated_bytes);
+  // `ProvideInput()` mutable-spans each channel (keeping `AudioChannel`'s
+  // silent flag cleared, unlike the early `bus->Zero()` return) and delegates
+  // to `WebAudioSourceProviderImpl::ProvideInput()` to zero the sample data.
+  EXPECT_FALSE(bus->IsSilent());
+  EXPECT_EQ(bus->MaxAbsValue(), 0.0f);
+
+  Media()->GetAudioSourceProvider().SetClient(nullptr);
+  WrapAudioSourceProviderForTesting(nullptr);
+}
+
+TEST_P(HTMLMediaElementTest, MutedAttributeWouldMute) {
+  ScopedMediaElementMutedDefaultStateForTest scoped_feature(false);
+  Document& document = Media()->GetDocument();
+
+  Media()->SetBooleanAttribute(html_names::kMutedAttr, true);
+  EXPECT_FALSE(Media()->muted());
+  EXPECT_FALSE(document.IsUseCounted(
+      WebFeature::kHTMLMediaElementMutedAttributeWouldMute));
+  PerformMicrotaskCheckpoint();
+  EXPECT_TRUE(document.IsUseCounted(
+      WebFeature::kHTMLMediaElementMutedAttributeWouldMute));
+}
+
+TEST_P(HTMLMediaElementTest, MutedAttributeWouldMuteNotCounted) {
+  ScopedMediaElementMutedDefaultStateForTest scoped_feature(false);
+  Document& document = Media()->GetDocument();
+
+  // Not counted when set by the parser.
+  document.body()->SetInnerHTMLWithoutTrustedTypes(
+      "<audio muted></audio><video muted></video>");
+  PerformMicrotaskCheckpoint();
+  EXPECT_FALSE(document.IsUseCounted(
+      WebFeature::kHTMLMediaElementMutedAttributeWouldMute));
+
+  // Not counted when muted right after setting the attribute.
+  Media()->SetBooleanAttribute(html_names::kMutedAttr, true);
+  Media()->setMuted(true);
+  PerformMicrotaskCheckpoint();
+  EXPECT_FALSE(document.IsUseCounted(
+      WebFeature::kHTMLMediaElementMutedAttributeWouldMute));
 }
 
 }  // namespace blink

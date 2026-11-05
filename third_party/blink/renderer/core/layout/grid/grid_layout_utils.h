@@ -21,6 +21,7 @@ namespace blink {
 
 class BlockNode;
 class BoxFragmentBuilder;
+class ComputedStyle;
 class ConstraintSpace;
 class GapGeometry;
 class GridLayoutData;
@@ -362,9 +363,31 @@ void InitializeTrackCollection(const SubgriddedItemData& opt_subgrid_data,
 // sizing.
 bool HasBlockSizeDependentGridItem(const GridItems& grid_items);
 
+LayoutUnit ComputeBlockSizeForSubgrid(const GridSizingSubtree& sizing_subtree,
+                                      const GridItemData& subgrid_data,
+                                      const ConstraintSpace& space,
+                                      SizingConstraint sizing_constraint);
+
+MinMaxSizesResult ComputeMinMaxSizesForSubgrid(
+    const BlockNode& node,
+    const GridSizingSubtree& sizing_subtree,
+    const ConstraintSpace& space);
+
+// Computes a virtual item's contribution for the requested track-sizing step
+// using its group's cached measurements and the tracks it spans.
+// `track_baseline` is the shared baseline for the track that `virtual_item`
+// participates in, or `LayoutUnit::Min()` if the item is not baseline-aligned.
+LayoutUnit ContributionSizeForVirtualItem(
+    const GridLayoutTrackCollection& track_collection,
+    LayoutUnit track_baseline,
+    GridItemContributionType contribution_type,
+    GridItemData* virtual_item);
+
 // Appends items from any subgridded children to `grid_items`.
-template <typename NodeType>
-void AppendSubgriddedItems(const NodeType& node, GridItems* grid_items) {
+template <typename NodeType, typename CallbackFunc>
+void AppendSubgriddedItems(const NodeType& node,
+                           GridItems* grid_items,
+                           const CallbackFunc& callback_func) {
   DCHECK(grid_items);
 
   const auto& root_grid_style = node.Style();
@@ -414,6 +437,7 @@ void AppendSubgriddedItems(const NodeType& node, GridItems* grid_items) {
 
       node.AdjustSubgriddedItemSpan(current_item, subgridded_item);
     }
+    callback_func(current_item, subgridded_items);
     grid_items->Append(subgridded_items);
   }
 }
@@ -523,6 +547,26 @@ LayoutUnit LargestAutoPlacedSubgridContribution(LayoutUnit start_extra_margin,
 void AccommodateSubgridExtraMargins(const GridSizingSubtree& sizing_subtree,
                                     GridSizingTrackCollection& track_collection,
                                     GridTrackSizingDirection track_direction);
+
+// Calculates an eligible item's contribution to row growth. All offsets are
+// relative to the current fragment. Callers determine eligibility and whether
+// the item continues into the next fragmentainer.
+LayoutUnit CalculateRowExpansionForFragmentation(
+    LayoutUnit fragmentainer_space,
+    LayoutUnit grid_area_block_end,
+    LayoutUnit item_block_end,
+    bool needs_growth_past_fragmentainer);
+
+// Determines whether an item *may* grow to encompass content pushed down by
+// fragmentation (lines pushed down by a fragmentation line, etc).
+// `opt_row_track_collection` should be nullptr if there is no row track
+// collection available in the given layout algorithm (for example, grid lanes
+// column containers).
+bool MinBlockSizeShouldEncompassIntrinsicSize(
+    const GridItemData& grid_item,
+    const ComputedStyle& container_style,
+    bool has_descendant_that_depends_on_percentage_block_size,
+    const GridLayoutTrackCollection* opt_row_track_collection);
 
 }  // namespace blink
 

@@ -14,8 +14,6 @@ source_set("enterprise_platform_keys") {
     "enterprise_platform_keys_api.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     "//build:chromeos_buildflags",
     "//extensions/browser",
@@ -23,8 +21,8 @@ source_set("enterprise_platform_keys") {
 
   deps = [
     "//base",
+    "//chrome/browser/ash/platform_keys",
     "//chrome/browser/ash/platform_keys:keystore_service",
-    "//chrome/browser/chromeos/platform_keys",
     "//chrome/browser/extensions",
     "//chrome/browser/profiles:profile",
     "//chrome/common/extensions/api",

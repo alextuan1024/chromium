@@ -155,6 +155,11 @@ targets.compile_target(
 )
 
 targets.compile_target(
+    name = "chrome/browser/media/webrtc",
+    label = "//chrome/browser/media/webrtc:webrtc",
+)
+
+targets.compile_target(
     name = "chrome/installer/linux",
     label = "//chrome/installer/linux:linux",
 )
@@ -162,6 +167,8 @@ targets.compile_target(
 targets.compile_target(
     name = "chrome/installer/mac",
     label = "//chrome/installer/mac:mac",
+    # All references have been moved to starlark
+    skip_usage_check = True,
 )
 
 targets.compile_target(

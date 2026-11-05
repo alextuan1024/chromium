@@ -6,11 +6,22 @@
 
 #include <string.h>
 
-#include "base/compiler_specific.h"
-#include "base/logging.h"
-#include "base/strings/string_number_conversions.h"
+#include <memory>
+#include <utility>
+
+#include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/location.h"
+#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_util_win.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/threading/scoped_blocking_call.h"
+#include "base/win/scoped_gdi_object.h"
 #include "chrome/browser/ui/views/status_icons/status_tray_win.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
@@ -21,35 +32,60 @@
 #include "ui/message_center/public/cpp/notifier_id.h"
 #include "ui/views/controls/menu/menu_runner.h"
 
+namespace {
+
+using RefCountedIcon = base::RefCountedData<base::win::ScopedGDIObject<HICON>>;
+
+StatusIconWin::ShellNotifyIconCallback& GetShellNotifyIconCallback() {
+  static base::NoDestructor<StatusIconWin::ShellNotifyIconCallback> callback;
+  return *callback;
+}
+
+// Only the owned request and its resources are accessed on the worker.
+// In particular, this must not depend on UI objects or shutdown-time globals:
+// Shell_NotifyIcon can outlive ThreadPool shutdown if Explorer is unresponsive.
+void NotifyIconOnBackgroundThread(
+    scoped_refptr<StatusTrayWin::Window> window,
+    StatusIconWin::ShellNotifyIconCallback callback,
+    DWORD message,
+    std::unique_ptr<NOTIFYICONDATA> data,
+    scoped_refptr<RefCountedIcon> icon,
+    scoped_refptr<RefCountedIcon> balloon_icon) {
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+  if (callback) {
+    callback.Run(message, *data);
+  } else {
+    Shell_NotifyIcon(message, data.get());
+  }
+}
+
+}  // namespace
+
 ////////////////////////////////////////////////////////////////////////////////
 // StatusIconWin, public:
 
-StatusIconWin::StatusIconWin(StatusTrayWin* tray,
+StatusIconWin::StatusIconWin(base::WeakPtr<StatusTrayWin> tray,
                              UINT id,
-                             HWND window,
+                             scoped_refptr<StatusTrayWin::Window> window,
                              UINT message)
-    : tray_(tray), icon_id_(id), window_(window), message_id_(message) {
-  NOTIFYICONDATA icon_data = InitIconData();
-  icon_data.uFlags = NIF_MESSAGE;
-  icon_data.uCallbackMessage = message_id_;
-  BOOL result = Shell_NotifyIcon(NIM_ADD, &icon_data);
-  // This can happen if the explorer process isn't running when we try to
-  // create the icon for some reason (for example, at startup).
-  if (!result) {
-    LOG(WARNING) << "Unable to create status tray icon.";
-  }
+    : tray_(std::move(tray)),
+      icon_id_(id),
+      window_(std::move(window)),
+      message_id_(message) {
+  AddIcon();
 }
 
 StatusIconWin::~StatusIconWin() {
   // Remove our icon.
-  NOTIFYICONDATA icon_data = InitIconData();
-  Shell_NotifyIcon(NIM_DELETE, &icon_data);
+  NotifyIcon(NIM_DELETE, InitIconData());
 }
 
-void StatusIconWin::HandleClickEvent(const gfx::Point& cursor_pos,
-                                     bool left_mouse_click) {
+void StatusIconWin::HandleActivation(const gfx::Point& cursor_pos,
+                                     bool is_primary_activation,
+                                     ui::mojom::MenuSourceType source_type) {
   // Pass to the observer if appropriate.
-  if (left_mouse_click && HasObservers()) {
+  if (is_primary_activation && HasObservers()) {
     DispatchClickEvent();
     return;
   }
@@ -58,17 +94,21 @@ void StatusIconWin::HandleClickEvent(const gfx::Point& cursor_pos,
     return;
   }
 
+  if (menu_runner_callback_) {
+    menu_runner_callback_.Run(cursor_pos, source_type);
+    return;
+  }
+
   // Set our window as the foreground window, so the context menu closes when
   // we click away from it.
-  if (!SetForegroundWindow(window_)) {
+  if (!SetForegroundWindow(window())) {
     return;
   }
 
   menu_runner_ = std::make_unique<views::MenuRunner>(
       menu_model_, views::MenuRunner::HAS_MNEMONICS);
   menu_runner_->RunMenuAt(nullptr, nullptr, gfx::Rect(cursor_pos, gfx::Size()),
-                          views::MenuAnchorPosition::kTopLeft,
-                          ui::mojom::MenuSourceType::kMouse);
+                          views::MenuAnchorPosition::kTopLeft, source_type);
 }
 
 void StatusIconWin::HandleBalloonClickEvent() {
@@ -79,46 +119,26 @@ void StatusIconWin::HandleBalloonClickEvent() {
 
 void StatusIconWin::ResetIcon() {
   // Delete any previously existing icon.
-  NOTIFYICONDATA icon_data_1 = InitIconData();
-  Shell_NotifyIcon(NIM_DELETE, &icon_data_1);
-
-  NOTIFYICONDATA icon_data_2 = InitIconData();
-  icon_data_2.uFlags = NIF_MESSAGE;
-  icon_data_2.uCallbackMessage = message_id_;
-  icon_data_2.hIcon = icon_.get();
-  // If we have an image, then set the NIF_ICON flag, which tells
-  // Shell_NotifyIcon() to set the image for the status icon it creates.
-  if (icon_data_2.hIcon) {
-    icon_data_2.uFlags |= NIF_ICON;
-  }
-  // Re-add our icon.
-  BOOL result = Shell_NotifyIcon(NIM_ADD, &icon_data_2);
-  if (!result) {
-    LOG(WARNING) << "Unable to re-create status tray icon.";
-  }
+  NotifyIcon(NIM_DELETE, InitIconData());
+  AddIcon();
 }
 
 void StatusIconWin::SetImage(const gfx::ImageSkia& image) {
   // Create the icon.
-  NOTIFYICONDATA icon_data = InitIconData();
-  icon_data.uFlags = NIF_ICON;
-  icon_ = IconUtil::CreateHICONFromSkBitmap(*image.bitmap());
-  icon_data.hIcon = icon_.get();
-  BOOL result = Shell_NotifyIcon(NIM_MODIFY, &icon_data);
-  if (!result) {
-    LOG(WARNING) << "Error setting status tray icon image";
-  }
+  auto icon_data = InitIconData();
+  icon_data->uFlags = NIF_ICON | NIF_SHOWTIP;
+  icon_ = base::MakeRefCounted<Icon>(
+      IconUtil::CreateHICONFromSkBitmap(*image.bitmap()));
+  icon_data->hIcon = icon_->data.get();
+  NotifyIcon(NIM_MODIFY, std::move(icon_data));
 }
 
 void StatusIconWin::SetToolTip(const std::u16string& tool_tip) {
-  // Create the icon.
-  NOTIFYICONDATA icon_data = InitIconData();
-  icon_data.uFlags = NIF_TIP;
-  base::wcslcpy(icon_data.szTip, base::as_wcstr(tool_tip));
-  BOOL result = Shell_NotifyIcon(NIM_MODIFY, &icon_data);
-  if (!result) {
-    LOG(WARNING) << "Unable to set tooltip for status tray icon";
-  }
+  tooltip_ = tool_tip;
+  auto icon_data = InitIconData();
+  icon_data->uFlags = NIF_TIP | NIF_SHOWTIP;
+  base::wcslcpy(icon_data->szTip, base::as_wcstr(tooltip_));
+  NotifyIcon(NIM_MODIFY, std::move(icon_data));
 }
 
 void StatusIconWin::DisplayBalloon(
@@ -126,27 +146,36 @@ void StatusIconWin::DisplayBalloon(
     const std::u16string& title,
     const std::u16string& contents,
     const message_center::NotifierId& notifier_id) {
-  NOTIFYICONDATA icon_data = InitIconData();
-  icon_data.uFlags = NIF_INFO;
-  icon_data.dwInfoFlags = NIIF_INFO;
-  base::wcslcpy(icon_data.szInfoTitle, base::as_wcstr(title));
-  base::wcslcpy(icon_data.szInfo, base::as_wcstr(contents));
-  icon_data.uTimeout = 0;
+  auto icon_data = InitIconData();
+  icon_data->uFlags = NIF_INFO | NIF_SHOWTIP;
+  icon_data->dwInfoFlags = NIIF_INFO;
+  base::wcslcpy(icon_data->szInfoTitle, base::as_wcstr(title));
+  base::wcslcpy(icon_data->szInfo, base::as_wcstr(contents));
+  icon_data->uTimeout = 0;
 
   if (!icon.isNull()) {
-    balloon_icon_ = IconUtil::CreateHICONFromSkBitmap(*icon.bitmap());
-    icon_data.hBalloonIcon = balloon_icon_.get();
-    icon_data.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;
+    balloon_icon_ = base::MakeRefCounted<Icon>(
+        IconUtil::CreateHICONFromSkBitmap(*icon.bitmap()));
+    icon_data->hBalloonIcon = balloon_icon_->data.get();
+    icon_data->dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;
   }
 
-  BOOL result = Shell_NotifyIcon(NIM_MODIFY, &icon_data);
-  if (!result) {
-    LOG(WARNING) << "Unable to create status tray balloon.";
-  }
+  NotifyIcon(NIM_MODIFY, std::move(icon_data));
 }
 
 void StatusIconWin::ForceVisible() {
-  tray_->UpdateIconVisibilityInBackground(this);
+  // Registration is asynchronous. Do not start the COM visibility request
+  // until preceding Shell requests have completed.
+  window_->task_runner()->PostTaskAndReply(
+      FROM_HERE, base::DoNothing(),
+      base::BindOnce(&StatusIconWin::UpdateIconVisibility,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void StatusIconWin::UpdateIconVisibility() {
+  if (tray_) {
+    tray_->UpdateIconVisibilityInBackground(this);
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -156,14 +185,60 @@ void StatusIconWin::UpdatePlatformContextMenu(StatusIconMenuModel* menu) {
   // |menu_model_| is about to be destroyed. Destroy the menu (which closes it)
   // so that it doesn't attempt to continue using |menu_model_|.
   menu_runner_.reset();
-  DCHECK(menu);
+  CHECK(menu, base::NotFatalUntil::M162);
   menu_model_ = menu;
 }
 
-NOTIFYICONDATA StatusIconWin::InitIconData() const {
-  return {
-      .cbSize = sizeof(NOTIFYICONDATA),
-      .hWnd = window_,
-      .uID = icon_id_,
-  };  // Other fields are zero-initialized.
+void StatusIconWin::AddIcon() {
+  // Include NIF_SHOWTIP so Windows keeps rendering standard OS szTip hover
+  // tooltips after opting into NOTIFYICON_VERSION_4.
+  auto icon_data = InitIconData();
+  icon_data->uFlags = NIF_MESSAGE | NIF_SHOWTIP;
+  icon_data->uCallbackMessage = message_id_;
+  icon_data->hIcon = icon_ ? icon_->data.get() : nullptr;
+  if (icon_data->hIcon) {
+    icon_data->uFlags |= NIF_ICON;
+  }
+  if (!tooltip_.empty()) {
+    icon_data->uFlags |= NIF_TIP;
+    base::wcslcpy(icon_data->szTip, base::as_wcstr(tooltip_));
+  }
+  NotifyIcon(NIM_ADD, std::move(icon_data));
+
+  auto version_data = InitIconData();
+  version_data->uVersion = NOTIFYICON_VERSION_4;
+  NotifyIcon(NIM_SETVERSION, std::move(version_data));
+}
+
+std::unique_ptr<NOTIFYICONDATA> StatusIconWin::InitIconData() const {
+  auto data = std::make_unique<NOTIFYICONDATA>();
+  data->cbSize = sizeof(NOTIFYICONDATA);
+  data->hWnd = window();
+  data->uID = icon_id_;
+  return data;
+}
+
+// static
+void StatusIconWin::SetShellNotifyIconForTesting(
+    ShellNotifyIconCallback callback) {
+  GetShellNotifyIconCallback() = std::move(callback);
+}
+
+void StatusIconWin::SetMenuRunnerCallbackForTesting(
+    MenuRunnerCallback callback) {
+  menu_runner_callback_ = std::move(callback);
+}
+
+void StatusIconWin::NotifyIcon(DWORD message,
+                               std::unique_ptr<NOTIFYICONDATA> data) {
+  // Owning NOTIFYICONDATA alone does not retain either icon handle. Share
+  // ownership of the matching image resources with the request instead of
+  // borrowing handles that SetImage/DisplayBalloon or destruction can release.
+  auto icon = data->hIcon ? icon_ : nullptr;
+  auto balloon_icon = data->hBalloonIcon ? balloon_icon_ : nullptr;
+  window_->task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&NotifyIconOnBackgroundThread, window_,
+                     GetShellNotifyIconCallback(), message, std::move(data),
+                     std::move(icon), std::move(balloon_icon)));
 }

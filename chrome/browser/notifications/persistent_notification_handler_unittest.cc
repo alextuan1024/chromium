@@ -33,7 +33,7 @@
 #include "components/optimization_guide/core/model_quality/test_model_quality_logs_uploader_service.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/content/browser/notification_content_detection/notification_content_detection_constants.h"
-#include "components/safe_browsing/core/browser/safe_browsing_metrics_collector.h"
+#include "components/safe_browsing/core/browser/metrics_collector/safe_browsing_metrics_collector.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/ukm/test_ukm_recorder.h"
@@ -229,6 +229,45 @@ TEST_F(PersistentNotificationHandlerTest, OnClose_Programmatically) {
 
   handler->OnClose(profile_.get(), origin_, kExampleNotificationId,
                    /* by_user= */ false, base::DoNothing());
+}
+
+TEST_F(PersistentNotificationHandlerTest, EmptyNotificationId) {
+  std::unique_ptr<NotificationHandler> handler =
+      std::make_unique<PersistentNotificationHandler>();
+
+  base::test::TestFuture<void> close_completed;
+  handler->OnClose(profile_.get(), origin_, /*notification_id=*/"",
+                   /*by_user=*/true, close_completed.GetCallback());
+  EXPECT_TRUE(close_completed.Wait());
+
+  base::test::TestFuture<void> click_completed;
+  handler->OnClick(profile_.get(), origin_, /*notification_id=*/"",
+                   /*action_index=*/std::nullopt, /*reply=*/std::nullopt,
+                   click_completed.GetCallback());
+  EXPECT_TRUE(click_completed.Wait());
+}
+
+TEST_F(PersistentNotificationHandlerTest, InvalidOrigin) {
+  base::HistogramTester histogram_tester;
+  std::unique_ptr<NotificationHandler> handler =
+      std::make_unique<PersistentNotificationHandler>();
+
+  base::test::TestFuture<void> close_completed;
+  handler->OnClose(profile_.get(), GURL(), kExampleNotificationId,
+                   /*by_user=*/true, close_completed.GetCallback());
+  EXPECT_TRUE(close_completed.Wait());
+  histogram_tester.ExpectUniqueSample(
+      "Notifications.PersistentWebNotificationCloseResult",
+      content::PersistentNotificationStatus::kDatabaseError, 1);
+
+  base::test::TestFuture<void> click_completed;
+  handler->OnClick(profile_.get(), GURL(), kExampleNotificationId,
+                   /*action_index=*/std::nullopt, /*reply=*/std::nullopt,
+                   click_completed.GetCallback());
+  EXPECT_TRUE(click_completed.Wait());
+  histogram_tester.ExpectUniqueSample(
+      "Notifications.PersistentWebNotificationClickResult",
+      content::PersistentNotificationStatus::kDatabaseError, 1);
 }
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(SAFE_BROWSING_AVAILABLE)

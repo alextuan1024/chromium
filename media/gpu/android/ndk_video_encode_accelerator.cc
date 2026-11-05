@@ -13,7 +13,6 @@
 #include <optional>
 
 #include "base/android/android_info.h"
-#include "base/android/jni_android.h"
 #include "base/bits.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
@@ -24,17 +23,18 @@
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
+#include "gpu/command_buffer/common/scheduling_priority.h"
+#include "gpu/command_buffer/service/scheduler.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
 #include "media/base/android/media_codec_util.h"
-#include "media/base/android/media_jni_headers/VideoAcceleratorUtil_jni.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/encoder_status.h"
 #include "media/base/media_serializers_base.h"
@@ -86,11 +86,8 @@ constexpr const char* kMediaFormatKeyVideoBitrateLayering =
     "video-bitrate-layering";
 
 bool IsTemporalLayerEncodingEnabled() {
-  static bool enabled = []() {
-    JNIEnv* env = base::android::AttachCurrentThread();
-    return Java_VideoAcceleratorUtil_isTemporalLayerEncodingEnabled(env);
-  }();
-  return enabled;
+  return base::android::android_info::sdk_int() >=
+         base::android::android_info::SDK_VERSION_CINNAMON_BUN;
 }
 
 bool IsNdkSvcApiSupported() {
@@ -648,13 +645,6 @@ bool ProfileNeedsConfigDataInBitstream(VideoCodecProfile profile) {
   }
 }
 
-void WaitForSyncTokenOnGpuThread(
-    scoped_refptr<CommandBufferHelper> command_buffer_helper,
-    gpu::SyncToken sync_token,
-    base::OnceClosure done_cb) {
-  command_buffer_helper->WaitForSyncToken(sync_token, std::move(done_cb));
-}
-
 constexpr std::string_view kEncoderStatusHistogramPrefix =
     "Media.VideoEncoder.NDKVEA.EncodeStatus.";
 
@@ -735,17 +725,20 @@ NdkVideoEncodeAccelerator::PendingEncode::operator=(PendingEncode&&) = default;
 
 NdkVideoEncodeAccelerator::NdkVideoEncodeAccelerator(
     scoped_refptr<base::SequencedTaskRunner> runner,
-    const gpu::GpuDriverBugWorkarounds& gpu_workarounds)
+    const gpu::GpuDriverBugWorkarounds& gpu_workarounds,
+    gpu::Scheduler* gpu_scheduler)
     : task_runner_(std::move(runner)),
       // We just need an arbitrary non-zero value for the first timestamp
       // due to issues with EGL surface path.
       next_timestamp_(base::TimeTicks::Now().since_origin()),
+      gpu_scheduler_(gpu_scheduler),
       gpu_workarounds_(gpu_workarounds) {}
 
 NdkVideoEncodeAccelerator::~NdkVideoEncodeAccelerator() {
   // It's supposed to be cleared by Destroy(), it basically checks
   // that we destroy `this` correctly.
   DCHECK(!media_codec_);
+  DCHECK(wait_sequence_id_.is_null());
 
   if (!error_occurred_ && have_encoded_frames_) {
     base::UmaHistogramEnumeration(
@@ -982,6 +975,10 @@ void NdkVideoEncodeAccelerator::Destroy() {
     // functions will use it via saved `userdata` pointers.
     media_codec_.reset();
   }
+  if (!wait_sequence_id_.is_null()) {
+    gpu_scheduler_->DestroySequence(wait_sequence_id_);
+    wait_sequence_id_ = gpu::SequenceId();
+  }
   metrics_helper_.reset();
   delete this;
 }
@@ -1041,8 +1038,10 @@ bool NdkVideoEncodeAccelerator::SetInputBufferLayout(
   // unfortunately, see https://crbug.com/1084702 for details. It seems they
   // only work when stride/y_plane_height information is provided.
   const auto aligned_size = gfx::Size(
-      base::bits::AlignDownDeprecatedDoNotUse(configured_size.width(), 16),
-      base::bits::AlignDownDeprecatedDoNotUse(configured_size.height(), 16));
+      base::bits::AlignDown(
+          base::checked_cast<uint32_t>(configured_size.width()), 16u),
+      base::bits::AlignDown(
+          base::checked_cast<uint32_t>(configured_size.height()), 16u));
 
   bool require_aligned_resolution = false;
   if (!AMediaFormat_getInt32(input_format.get(), AMEDIAFORMAT_KEY_STRIDE,
@@ -1145,15 +1144,20 @@ void NdkVideoEncodeAccelerator::FeedInput() {
         // We don't have CommandBufferHelper yet, let's wait till it's set.
         return;
       }
+      CHECK(gpu_scheduler_);
+      if (wait_sequence_id_.is_null()) {
+        wait_sequence_id_ = gpu_scheduler_->CreateSequence(
+            gpu::SchedulingPriority::kNormal,
+            base::SingleThreadTaskRunner::GetCurrentDefault());
+      }
       next_encode.sync_state = SyncState::kSyncInProgress;
-      auto sync_done_callback = base::BindPostTaskToCurrentDefault(
+      auto sync_done_callback =
           base::BindOnce(&NdkVideoEncodeAccelerator::OnSyncDone,
-                         weak_ptr_factory_.GetWeakPtr(), frame->unique_id()));
-      gpu_task_runner_->PostTask(
-          FROM_HERE,
-          base::BindOnce(&WaitForSyncTokenOnGpuThread, command_buffer_helper_,
-                         frame->acquire_sync_token(),
-                         std::move(sync_done_callback)));
+                         weak_ptr_factory_.GetWeakPtr(), frame->unique_id());
+      gpu_scheduler_->ScheduleTask(gpu::Scheduler::Task(
+          wait_sequence_id_, std::move(sync_done_callback),
+          frame->shared_image()->GetSyncTokensForVideoFrame(
+              frame->acquire_sync_token())));
       return;
     }
     case SyncState::kSyncInProgress:
@@ -1653,10 +1657,8 @@ void NdkVideoEncodeAccelerator::DrainOutput() {
   if (!timestamp_info.has_value()) {
     MEDIA_LOG(ERROR, log_) << "Failed to find timestamp for encoded frame. ts:"
                            << mc_buffer_info.presentationTimeUs;
-    NOTREACHED(base::NotFatalUntil::M150)
-        << "Failed to find timestamp for encoded frame. ts:"
-        << mc_buffer_info.presentationTimeUs;
-    timestamp_info = FrameTimestampInfo();
+    NOTREACHED() << "Failed to find timestamp for encoded frame. ts:"
+                 << mc_buffer_info.presentationTimeUs;
   }
   auto metadata = BitstreamBufferMetadata(
       mc_buffer_size + config_size, key_frame, timestamp_info->real_timestamp);

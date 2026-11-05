@@ -40,6 +40,12 @@ std::string ActionTypeToString(ActionType type) {
       return "FederatedLogin";
     case ActionType::kCredentialsOtp:
       return "CredentialsOtp";
+    case ActionType::kWebMcpTool:
+      return "WebMcpTool";
+    case ActionType::kFormFillContactInfo:
+      return "FormFillContactInfo";
+    case ActionType::kFormFillPayments:
+      return "FormFillPayments";
     case ActionType::kUnknown:
       return "Unknown";
   }

@@ -137,8 +137,8 @@ OrderSummaryViewController::OrderSummaryViewController(
     base::WeakPtr<PaymentRequestState> state,
     base::WeakPtr<PaymentRequestDialogView> dialog)
     : PaymentRequestSheetController(spec, state, dialog) {
-  DCHECK(spec);
-  DCHECK(state);
+  CHECK(spec, base::NotFatalUntil::M162);
+  CHECK(state, base::NotFatalUntil::M162);
   spec->AddObserver(this);
   state->AddObserver(this);
 }
@@ -203,13 +203,6 @@ void OrderSummaryViewController::FillContentView(views::View* content_view) {
             false, DialogViewID::VIEW_ID_NONE, view_id)
             .release());
   }
-
-  std::u16string total_label_value = l10n_util::GetStringFUTF16(
-      IDS_PAYMENT_REQUEST_ORDER_SUMMARY_SHEET_TOTAL_FORMAT,
-      base::UTF8ToUTF16(
-          spec()->GetTotal(state()->selected_app())->amount->currency),
-      spec()->GetFormattedCurrencyAmount(
-          spec()->GetTotal(state()->selected_app())->amount));
 
   content_view->AddChildViewRaw(
       CreateLineItemView(

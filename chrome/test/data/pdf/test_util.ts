@@ -399,14 +399,6 @@ export function setupMockMetricsPrivate(): MockMetricsPrivate {
  */
 export function checkPdfTitleIsExpectedTitle(expectedTitle: string): boolean {
   const viewer = document.body.querySelector<PdfViewerElement>('#viewer')!;
-  // Tab title is updated only when document.title is called in a top-level
-  // document (`main_frame` of `WebContents`). For OOPIF PDF viewer, the current
-  // document is the child of a top-level document, hence document.title is not
-  // set and therefore validation is unnecessary.
-  if (!viewer.isPdfOopifEnabled && expectedTitle !== document.title) {
-    return false;
-  }
-
   return expectedTitle === viewer.pdfTitle;
 }
 
@@ -432,7 +424,6 @@ export function getZoomableViewport(
 
   const dummyPlugin = document.createElement('embed');
   dummyPlugin.id = 'plugin';
-  dummyPlugin.src = 'data:text/plain,plugin-content';
   viewport.setContent(dummyPlugin);
   return viewport;
 }
@@ -629,7 +620,6 @@ export function setUpInkTestContext(scrollbarWidth: number = 5): {
   const mockPlugin = createMockPdfPluginForTest();
   mockPlugin.viewport = viewport;
   mockPlugin.id = 'plugin';
-  mockPlugin.src = 'data:text/plain,plugin-content';
   mockPlugin.setMessageReply('getAnnotationBrush', {
     data: {
       type: AnnotationBrushType.PEN,

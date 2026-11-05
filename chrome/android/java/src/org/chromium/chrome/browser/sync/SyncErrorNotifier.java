@@ -24,14 +24,15 @@ import org.chromium.chrome.browser.notifications.NotificationWrapperBuilderFacto
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileKeyedMap;
+import org.chromium.chrome.browser.profiles.ProfileTokenUtils;
 import org.chromium.chrome.browser.sync.ui.PassphraseActivity;
-import org.chromium.chrome.browser.sync.ui.SyncTrustedVaultProxyActivity;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxy;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.NotificationMetadata;
 import org.chromium.components.browser_ui.notifications.NotificationWrapper;
 import org.chromium.components.browser_ui.notifications.PendingIntentProvider;
 import org.chromium.components.sync.SyncService;
+import org.chromium.components.trusted_vault.SecurityDomainId;
 import org.chromium.components.trusted_vault.TrustedVaultClient;
 import org.chromium.components.trusted_vault.TrustedVaultUserActionTriggerForUMA;
 
@@ -66,6 +67,10 @@ public class SyncErrorNotifier implements SyncService.SyncStateChangedListener {
     private final BaseNotificationManagerProxy mNotificationManager;
     private final SyncService mSyncService;
     private final TrustedVaultClient mTrustedVaultClient;
+    private final Profile mProfile;
+    // Tag of this Profile's notification. Each Profile gets its own notification, and its own
+    // PendingIntents, so that one Profile's notification never replaces or clears another's.
+    private final String mNotificationTag;
 
     // What notification is being shown, if any. In truth, for REQUIRE_TRUSTED_VAULT_* states this
     // is set slightly earlier, when the class calls createTrustedVaultKeyRetrievalIntent().
@@ -88,17 +93,22 @@ public class SyncErrorNotifier implements SyncService.SyncStateChangedListener {
         return new SyncErrorNotifier(
                 BaseNotificationManagerProxyFactory.create(),
                 syncService,
-                TrustedVaultClient.get());
+                TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC),
+                profile);
     }
 
     @VisibleForTesting
     public SyncErrorNotifier(
             BaseNotificationManagerProxy notificationManager,
             SyncService syncService,
-            TrustedVaultClient trustedVaultClient) {
+            TrustedVaultClient trustedVaultClient,
+            Profile profile) {
         mNotificationManager = notificationManager;
         mSyncService = syncService;
         mTrustedVaultClient = trustedVaultClient;
+        mProfile = profile;
+        mNotificationTag = ProfileTokenUtils.getNotificationTag(TAG, profile);
+        cancelLegacyNotification();
         mSyncService.addSyncStateChangedListener(this);
     }
 
@@ -125,7 +135,8 @@ public class SyncErrorNotifier implements SyncService.SyncStateChangedListener {
         switch (goalState) {
             case NotificationState.HIDDEN:
                 {
-                    mNotificationManager.cancel(NotificationConstants.NOTIFICATION_ID_SYNC);
+                    mNotificationManager.cancel(
+                            mNotificationTag, NotificationConstants.NOTIFICATION_ID_SYNC);
                     break;
                 }
             case NotificationState.REQUIRE_PASSPHRASE:
@@ -194,7 +205,10 @@ public class SyncErrorNotifier implements SyncService.SyncStateChangedListener {
     private void showNotification(Intent intentTriggeredOnClick) {
         // Converting |intentTriggeredOnClick| into a PendingIntent is needed because it will be
         // handed over to the Android notification manager, a foreign application.
-        // FLAG_UPDATE_CURRENT ensures any cached intent extras are updated.
+        // FLAG_UPDATE_CURRENT ensures any cached intent extras are updated. Adding the Profile also
+        // sets a Profile-scoped identity so Profiles do not share or overwrite each other's
+        // PendingIntent.
+        ProfileTokenUtils.addProfileToIntent(mProfile, intentTriggeredOnClick);
         PendingIntentProvider pendingIntent =
                 PendingIntentProvider.getActivity(
                         ContextUtils.getApplicationContext(),
@@ -204,16 +218,14 @@ public class SyncErrorNotifier implements SyncService.SyncStateChangedListener {
 
         @StringRes int title = getNotificationTitle();
         @StringRes int textBody = getNotificationText();
-        // There is no need to provide a group summary notification because NOTIFICATION_ID_SYNC
-        // ensures there's only one sync notification at a time.
+        // There is no need to provide a group summary notification because the tag and
+        // NOTIFICATION_ID_SYNC ensure there's only one sync notification per Profile at a time.
         NotificationWrapper notification =
                 NotificationWrapperBuilderFactory.createNotificationWrapperBuilder(
                                 ChromeChannelDefinitions.ChannelId.BROWSER,
                                 new NotificationMetadata(
                                         NotificationUmaTracker.SystemNotificationType.SYNC,
-                                        // TODO(crbug.com/41489615): Investigate why passing null
-                                        // leads to no notifications.
-                                        TAG,
+                                        mNotificationTag,
                                         NotificationConstants.NOTIFICATION_ID_SYNC))
                         .setAutoCancel(true)
                         .setContentIntent(pendingIntent)
@@ -229,6 +241,15 @@ public class SyncErrorNotifier implements SyncService.SyncStateChangedListener {
                 .onNotificationShown(
                         NotificationUmaTracker.SystemNotificationType.SYNC,
                         notification.getNotification());
+    }
+
+    /**
+     * Cancels a notification posted before notifications were per-Profile, which used the plain
+     * {@link #TAG} and was never cleared when the error was resolved.
+     */
+    // TODO(crbug.com/585922618): Remove in M163 once such notifications are gone.
+    private void cancelLegacyNotification() {
+        mNotificationManager.cancel(TAG, NotificationConstants.NOTIFICATION_ID_SYNC);
     }
 
     /**
@@ -255,9 +276,13 @@ public class SyncErrorNotifier implements SyncService.SyncStateChangedListener {
                 .then(
                         realIntent ->
                                 promise.fulfill(
-                                        SyncTrustedVaultProxyActivity.createKeyRetrievalProxyIntent(
-                                                realIntent,
-                                                TrustedVaultUserActionTriggerForUMA.NOTIFICATION)),
+                                        mTrustedVaultClient
+                                                .getProxyIntentFactory()
+                                                .createKeyRetrievalProxyIntent(
+                                                        realIntent,
+                                                        TrustedVaultUserActionTriggerForUMA
+                                                                .NOTIFICATION,
+                                                        SecurityDomainId.CHROME_SYNC)),
                         exception -> promise.reject(exception));
         return promise;
     }

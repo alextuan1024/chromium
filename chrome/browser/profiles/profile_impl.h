@@ -98,8 +98,6 @@ class ProfileImpl : public Profile {
       override;
   content::BackgroundFetchDelegate* GetBackgroundFetchDelegate() override;
   content::BackgroundSyncController* GetBackgroundSyncController() override;
-  content::ReduceAcceptLanguageControllerDelegate*
-  GetReduceAcceptLanguageControllerDelegate() override;
   std::unique_ptr<download::InProgressDownloadManager>
   RetrieveInProgressDownloadManager() override;
   content::FileSystemAccessPermissionContext*
@@ -304,6 +302,15 @@ class ProfileImpl : public Profile {
   // The key to index KeyedService instances created by
   // SimpleKeyedServiceFactory.
   std::unique_ptr<ProfileKey> key_;
+
+#if BUILDFLAG(IS_ANDROID)
+  // The proto database provider of a profile that did not take over
+  // StartupData, created early so that `key_` has one during service creation.
+  // Moved to the default StoragePartition in
+  // TakeDefaultProtoDatabaseProvider().
+  std::unique_ptr<leveldb_proto::ProtoDatabaseProvider>
+      default_proto_db_provider_;
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<ash::Preferences> chromeos_preferences_;

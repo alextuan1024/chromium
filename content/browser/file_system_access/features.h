@@ -16,6 +16,8 @@ namespace content::features {
 // be documented alongside the definition of their values in the .cc file.
 
 // Alphabetical:
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kFileSystemAccessAsBlobBlocklistCheck);
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kFileSystemAccessDeserializeBlocklistCheck);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(
     kFileSystemAccessDirectoryIterationBlocklistCheck);
 CONTENT_EXPORT BASE_DECLARE_FEATURE(kFileSystemAccessObserverQuotaLimit);
@@ -37,6 +39,7 @@ CONTENT_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t,
 CONTENT_EXPORT BASE_DECLARE_FEATURE(
     kFileSystemAccessRenameRequiresParentWritePermission);
 CONTENT_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kOnlyInHomedir);
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kFileSystemAccessWriteBlocklistCheck);
 }  // namespace content::features
 
 #endif  // CONTENT_BROWSER_FILE_SYSTEM_ACCESS_FEATURES_H_

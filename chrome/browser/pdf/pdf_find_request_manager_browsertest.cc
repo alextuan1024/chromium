@@ -23,6 +23,7 @@
 #include "content/public/browser/browser_plugin_guest_manager.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/content_paths.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
@@ -47,12 +48,14 @@ class PdfFindRequestManagerTest : public InProcessBrowserTest {
     // Swap the WebContents's delegate for our test delegate.
     normal_delegate_ = contents()->GetDelegate();
     contents()->SetDelegate(&test_delegate_);
+    test_delegate_.Observe(contents());
   }
 
   void TearDownOnMainThread() override {
     // Swap the WebContents's delegate back to its usual delegate.
     contents()->SetDelegate(normal_delegate_);
     normal_delegate_ = nullptr;
+    test_delegate_.Observe(nullptr);
   }
 
  protected:
@@ -66,9 +69,11 @@ class PdfFindRequestManagerTest : public InProcessBrowserTest {
 
   void Find(const std::string& search_text,
             blink::mojom::FindOptionsPtr options) {
-    delegate()->UpdateLastRequest(++last_request_id_);
-    contents()->Find(last_request_id_, base::UTF8ToUTF16(search_text),
-                     std::move(options), /*skip_delay=*/false);
+    contents()->Find(base::UTF8ToUTF16(search_text), std::move(options),
+                     /*skip_delay=*/false, [this](int request_id) {
+                       last_request_id_ = request_id;
+                       delegate()->UpdateLastRequest(request_id);
+                     });
   }
 
   WebContents* contents() const {
@@ -93,10 +98,13 @@ class PdfFindRequestManagerTestWithPdfPartialLoading
     : public PdfFindRequestManagerTest {
  public:
   PdfFindRequestManagerTestWithPdfPartialLoading() {
+    // TODO(crbug.com/40123601): Partial loading doesn't work with
+    // `features::kPdfOpaqueOrigin` yet, so disable it here to keep testing
+    // partial loading. See PDFExtensionTestWithPartialLoading for details.
     feature_list_.InitWithFeatures(
         {chrome_pdf::features::kPdfIncrementalLoading,
          chrome_pdf::features::kPdfPartialLoading},
-        {});
+        {::features::kPdfOpaqueOrigin});
   }
 
  private:

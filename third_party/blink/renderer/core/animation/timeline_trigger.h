@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_TIMELINE_TRIGGER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_ANIMATION_TIMELINE_TRIGGER_H_
 
+#include "cc/animation/animation_events.h"
 #include "cc/animation/timeline_trigger.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_timeline_trigger_options.h"
 #include "third_party/blink/renderer/core/animation/animation_trigger.h"
@@ -28,6 +29,7 @@ class CORE_EXPORT TimelineTrigger : public AnimationTrigger {
   using RangeBoundary = TimelineTriggerRange::Boundary;
   using TriggerBoundaries = TimelineTriggerRange::TriggerBoundaries;
   using CcBoundaries = cc::TimelineTrigger::Boundaries;
+  using AnimationTriggerEvent = cc::AnimationTriggerEvent;
 
   explicit TimelineTrigger(TimelineTriggerRangeList* ranges);
   static TimelineTrigger* Create(
@@ -90,6 +92,8 @@ class CORE_EXPORT TimelineTrigger : public AnimationTrigger {
   State GetState() { return state_; }
   bool Update();
 
+  void ExecutePendingCompositorNotifications() override;
+
   void Trace(Visitor* visitor) const override;
 
   void CreateCompositorTrigger() override;
@@ -117,8 +121,11 @@ class CORE_EXPORT TimelineTrigger : public AnimationTrigger {
 
   // These functions are called when the cc::AnimationTrigger associated with
   // this trigger observes the related conditions on the compositor thread.
+  // ExecutePendingCompositorNotifications() syncs them later.
   void NotifyActivated(base::TimeTicks activate_time) override;
   void NotifyDeactivated(base::TimeTicks deactivate_time) override;
+
+  void ExecuteCompositorNotification(const AnimationTriggerEvent& event);
 
   void HandlePostTripAdd(Animation* animation,
                          Behavior activate_behavior,
@@ -134,6 +141,10 @@ class CORE_EXPORT TimelineTrigger : public AnimationTrigger {
   Member<TimelineTriggerRangeList> ranges_;
 
   State state_;
+
+  // Activations and deactivations observed on the impl thread that haven't
+  // been synced yet, see ExecutePendingCompositorNotifications().
+  Vector<AnimationTriggerEvent> pending_compositor_notifications_;
 };
 
 template <>

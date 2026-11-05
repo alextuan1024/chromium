@@ -155,8 +155,8 @@ void NavigationApi::InitializeForNewWindow(
     WebFrameLoadType load_type,
     CommitReason commit_reason,
     NavigationApi* previous,
-    const std::vector<WebHistoryItem>& back_entries,
-    const std::vector<WebHistoryItem>& forward_entries,
+    const HeapVector<Member<HistoryItem>>& back_entries,
+    const HeapVector<Member<HistoryItem>>& forward_entries,
     HistoryItem* previous_entry) {
   CHECK(entries_.empty());
 
@@ -192,12 +192,11 @@ void NavigationApi::InitializeForNewWindow(
 
   // Construct |entries_|. Any back entries are inserted, then the current
   // entry, then any forward entries.
-  entries_.reserve(base::checked_cast<wtf_size_t>(back_entries.size() +
-                                                  forward_entries.size() + 1));
+  entries_.reserve(back_entries.size() + forward_entries.size() + 1);
   for (const auto& entry : back_entries)
     entries_.emplace_back(MakeEntryFromItem(*entry));
 
-  current_entry_index_ = base::checked_cast<wtf_size_t>(back_entries.size());
+  current_entry_index_ = back_entries.size();
   entries_.emplace_back(MakeEntryFromItem(current));
 
   for (const auto& entry : forward_entries)
@@ -345,8 +344,17 @@ void NavigationApi::SetEntriesForRestore(
   // Avoid a dangling navigate event when restoring.
   // This prevents the successful cross-document navigation that exited this
   // page from remaining as an ongoing event that would be "aborted".
-  ongoing_navigate_event_ = nullptr;
-  ongoing_api_method_tracker_ = nullptr;
+  // An ongoing event that was intercepted or has already reacted (e.g. an
+  // intercepted same-document navigation that was in flight when a prerendered
+  // page got activated) is not dangling: it will finish via
+  // NavigateEvent::ReactDone(), which expects it to still be ongoing, so it
+  // must be preserved along with its API method tracker.
+  if (!ongoing_navigate_event_ ||
+      (!ongoing_navigate_event_->HasNavigationActions() &&
+       !ongoing_navigate_event_->HasReacted())) {
+    ongoing_navigate_event_ = nullptr;
+    ongoing_api_method_tracker_ = nullptr;
+  }
 
   HeapVector<Member<NavigationHistoryEntry>> new_entries;
   new_entries.reserve(

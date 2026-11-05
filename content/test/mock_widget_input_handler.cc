@@ -69,8 +69,9 @@ void MockWidgetInputHandler::ImeSetComposition(
   dispatched_messages_.emplace_back(std::make_unique<DispatchedIMEMessage>(
       "SetComposition", text, ime_text_spans, range, start, end, ime_state,
       target_dom_node_id));
-  if (callback)
-    std::move(callback).Run();
+  if (callback) {
+    std::move(callback).Run(gfx::Range::InvalidRange());
+  }
 }
 
 void MockWidgetInputHandler::ImeCommitText(
@@ -160,6 +161,9 @@ void MockWidgetInputHandler::UpdateBrowserControlsState(
     bool animate,
     const std::optional<cc::BrowserControlsOffsetTagModifications>&
         offset_tag_modifications) {}
+
+void MockWidgetInputHandler::StartBrowserControlsAnimation(
+    const cc::BrowserControlsAnimationParams& params) {}
 
 void MockWidgetInputHandler::FlushReceiverForTesting() {
   DCHECK(receiver_.is_bound());

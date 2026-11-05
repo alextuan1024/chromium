@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/core/animation/property_handle.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/css_value.h"
+#include "third_party/blink/renderer/core/css/css_variable_data.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/link_parameter_list.h"
 #include "third_party/blink/renderer/core/style/shadow_list.h"
@@ -234,6 +235,13 @@ bool CSSPropertyEquality::PropertiesEqual(const PropertyHandle& property,
                                           const ComputedStyle& b) {
   if (property.IsCSSCustomProperty()) {
     const AtomicString& name = property.CustomPropertyName();
+    const CSSVariableData* a_data = a.GetVariableData(name);
+    const CSSVariableData* b_data = b.GetVariableData(name);
+    const bool a_tainted = a_data && a_data->IsAttrTainted();
+    const bool b_tainted = b_data && b_data->IsAttrTainted();
+    if (a_tainted != b_tainted) {
+      return false;
+    }
     return base::ValuesEquivalent(a.GetVariableValue(name),
                                   b.GetVariableValue(name));
   }
@@ -570,8 +578,8 @@ bool CSSPropertyEquality::PropertiesEqual(const PropertyHandle& property,
       return ValueEquals(a.ForcedColorAdjust(), b.ForcedColorAdjust());
     case CSSPropertyID::kFieldSizing:
       return ValueEquals(a.FieldSizing(), b.FieldSizing());
-    case CSSPropertyID::kFlowTolerance:
-      return ValueEquals(a.GetFlowTolerance(), b.GetFlowTolerance());
+    case CSSPropertyID::kFitTolerance:
+      return ValueEquals(a.GetFitTolerance(), b.GetFitTolerance());
     case CSSPropertyID::kFrameSizing:
       return ValueEquals(a.FrameSizing(), b.FrameSizing());
     case CSSPropertyID::kGridAutoColumns:
@@ -1430,7 +1438,6 @@ bool CSSPropertyEquality::PropertiesEqual(const PropertyHandle& property,
     case CSSPropertyID::kInternalForcedOutlineColor:
     case CSSPropertyID::kInternalForcedVisitedColor:
     case CSSPropertyID::kInternalOverscrollContainer:
-    case CSSPropertyID::kInternalOverscrollPosition:
     case CSSPropertyID::kInternalUnbounded:
     case CSSPropertyID::kInternalVisitedBackgroundColor:
     case CSSPropertyID::kInternalVisitedBorderBlockEndColor:
@@ -1460,15 +1467,23 @@ bool CSSPropertyEquality::PropertiesEqual(const PropertyHandle& property,
     case CSSPropertyID::kBackground:
     case CSSPropertyID::kBackgroundPosition:
     case CSSPropertyID::kBorder:
+    case CSSPropertyID::kBorderBlockEndRadius:
+    case CSSPropertyID::kBorderBlockStartRadius:
     case CSSPropertyID::kBorderBottom:
+    case CSSPropertyID::kBorderBottomRadius:
     case CSSPropertyID::kBorderColor:
     case CSSPropertyID::kBorderImage:
+    case CSSPropertyID::kBorderInlineEndRadius:
+    case CSSPropertyID::kBorderInlineStartRadius:
     case CSSPropertyID::kBorderLeft:
+    case CSSPropertyID::kBorderLeftRadius:
     case CSSPropertyID::kBorderRadius:
     case CSSPropertyID::kBorderRight:
+    case CSSPropertyID::kBorderRightRadius:
     case CSSPropertyID::kBorderSpacing:
     case CSSPropertyID::kBorderStyle:
     case CSSPropertyID::kBorderTop:
+    case CSSPropertyID::kBorderTopRadius:
     case CSSPropertyID::kBorderWidth:
     case CSSPropertyID::kColumnRule:
     case CSSPropertyID::kColumnRuleInset:
@@ -1585,6 +1600,7 @@ bool CSSPropertyEquality::PropertiesEqual(const PropertyHandle& property,
     case CSSPropertyID::kAnimationFillMode:
     case CSSPropertyID::kAnimationIterationCount:
     case CSSPropertyID::kAnimationName:
+    case CSSPropertyID::kAnimationNavigationBehavior:
     case CSSPropertyID::kAnimationPlayState:
     case CSSPropertyID::kAnimationRange:
     case CSSPropertyID::kAnimationRangeEnd:

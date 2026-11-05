@@ -93,7 +93,7 @@ RendererTask::RendererTask(const std::u16string& title,
       render_process_host_(render_process_host),
       renderer_resources_sampler_(
           CreateRendererResourcesSampler(render_process_host_)),
-      render_process_id_(render_process_host_->GetDeprecatedID()),
+      render_process_id_(render_process_host_->GetID()),
       profile_name_(GetRendererProfileName(render_process_host_)) {
   OnNetworkBytesRead(base::ByteSize(0));
 
@@ -164,14 +164,14 @@ Task::Type RendererTask::GetType() const {
   return Task::RENDERER;
 }
 
-int RendererTask::GetChildProcessUniqueID() const {
+content::ChildProcessId RendererTask::GetChildProcessUniqueID() const {
   return render_process_id_;
 }
 
 void RendererTask::GetTerminationStatus(base::TerminationStatus* out_status,
                                         int* out_error_code) const {
-  DCHECK(out_status);
-  DCHECK(out_error_code);
+  CHECK(out_status, base::NotFatalUntil::M162);
+  CHECK(out_error_code, base::NotFatalUntil::M162);
 
   *out_status = termination_status_;
   *out_error_code = termination_error_code_;
@@ -237,7 +237,7 @@ base::WeakPtr<RendererTask> RendererTask::AsWeakPtr() {
 // static
 std::u16string RendererTask::GetTitleFromWebContents(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   std::u16string title = web_contents->GetTitle();
   if (title.empty()) {
     GURL url = web_contents->GetLastCommittedURL();
@@ -262,7 +262,7 @@ std::u16string RendererTask::GetTitleFromWebContents(
 // static
 std::unique_ptr<gfx::ImageSkia> RendererTask::GetFaviconFromWebContents(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
 #if BUILDFLAG(IS_ANDROID)
   TabAndroid* tab_android = TabAndroid::FromWebContents(web_contents);

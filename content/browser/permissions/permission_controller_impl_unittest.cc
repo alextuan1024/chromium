@@ -10,12 +10,14 @@
 
 #include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
+#include "base/test/bind.h"
 #include "base/test/mock_callback.h"
 #include "base/test/test_future.h"
 #include "base/test/with_feature_override.h"
 #include "base/types/optional_ref.h"
 #include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/content_settings/core/common/features.h"
+#include "content/browser/permissions/permission_subscription_impl.h"
 #include "content/public/browser/permission_controller.h"
 #include "content/public/browser/permission_controller_delegate.h"
 #include "content/public/browser/permission_descriptor_util.h"
@@ -163,6 +165,13 @@ class PermissionControllerImplTest : public ::testing::Test {
   MockManagerWithRequests* mock_manager() {
     return static_cast<MockManagerWithRequests*>(
         browser_context_.GetPermissionControllerDelegate());
+  }
+
+  // Exposes `PermissionControllerImpl::subscriptions_`, which is only
+  // accessible to this fixture (friendship is not inherited by the TEST_F
+  // subclasses).
+  const PermissionController::SubscriptionsMap& subscriptions() {
+    return permission_controller_->subscriptions_;
   }
 
   OverrideStatus SetPermissionOverrideAndWait(
@@ -353,7 +362,7 @@ TEST_P(PermissionControllerImplTestWithApproxLocation,
                         content::PermissionDescriptorUtil::
                             CreatePermissionDescriptorForPermissionTypes(
                                 test_case.delegated_permissions),
-                        /*user_gesture*/ true, GURL(kTestUrl)),
+                        /*user_gesture*/ true),
                     testing::_))
             .WillByDefault(forward_callbacks);
       } else {
@@ -364,7 +373,7 @@ TEST_P(PermissionControllerImplTestWithApproxLocation,
                             content::PermissionDescriptorUtil::
                                 CreatePermissionDescriptorForPermissionTypes(
                                     test_case.delegated_permissions),
-                            /*user_gesture*/ true, GURL(kTestUrl)),
+                            /*user_gesture*/ true),
                         testing::_))
             .WillOnce(forward_callbacks);
       }
@@ -418,18 +427,24 @@ TEST_P(PermissionControllerImplTestWithApproxLocation,
                                PermissionStatus::DENIED);
 
   base::MockCallback<PermissionResultCallback> geo_callback;
-  permission_controller()->SubscribeToPermissionResultChange(
-      PermissionDescriptorUtil::CreatePermissionDescriptorForPermissionType(
-          PermissionType::GEOLOCATION),
-      nullptr, nullptr, kUrl,
-      /*should_include_device_status=*/false, geo_callback.Get());
+  std::unique_ptr<PermissionController::PermissionSubscription>
+      geo_subscription =
+          permission_controller()->SubscribeToPermissionResultChange(
+              PermissionDescriptorUtil::
+                  CreatePermissionDescriptorForPermissionType(
+                      PermissionType::GEOLOCATION),
+              nullptr, nullptr, kUrl,
+              /*should_include_device_status=*/false, geo_callback.Get());
 
   base::MockCallback<PermissionResultCallback> sync_callback;
-  permission_controller()->SubscribeToPermissionResultChange(
-      PermissionDescriptorUtil::CreatePermissionDescriptorForPermissionType(
-          PermissionType::BACKGROUND_SYNC),
-      nullptr, nullptr, kUrl,
-      /*should_include_device_status=*/false, sync_callback.Get());
+  std::unique_ptr<PermissionController::PermissionSubscription>
+      sync_subscription =
+          permission_controller()->SubscribeToPermissionResultChange(
+              PermissionDescriptorUtil::
+                  CreatePermissionDescriptorForPermissionType(
+                      PermissionType::BACKGROUND_SYNC),
+              nullptr, nullptr, kUrl,
+              /*should_include_device_status=*/false, sync_callback.Get());
 
   // Geolocation should change status, so subscriber is updated.
   EXPECT_CALL(
@@ -452,6 +467,101 @@ TEST_P(PermissionControllerImplTestWithApproxLocation,
   SetPermissionOverrideAndWait(kTestOrigin, kTestOrigin,
                                PermissionType::GEOLOCATION,
                                PermissionStatus::ASK);
+}
+
+// A callback may unsubscribe another subscription that is part of the same
+// notification batch. The removed subscription must not be notified.
+TEST_F(PermissionControllerImplTest,
+       NotifyChangedSubscriptionsSkipsSubscriptionsRemovedWhileNotifying) {
+  GURL kUrl = GURL(kTestUrl);
+  url::Origin kTestOrigin = url::Origin::Create(kUrl);
+
+  SetPermissionOverrideAndWait(kTestOrigin, kTestOrigin,
+                               PermissionType::BACKGROUND_SYNC,
+                               PermissionStatus::DENIED);
+
+  std::unique_ptr<PermissionController::PermissionSubscription>
+      first_subscription;
+  std::unique_ptr<PermissionController::PermissionSubscription>
+      second_subscription;
+  int callback_count = 0;
+
+  // Each callback unsubscribes the other one, so exactly one of them runs no
+  // matter which order they are dispatched in.
+  auto subscribe = [&](std::unique_ptr<
+                       PermissionController::PermissionSubscription>*
+                           peer_subscription) {
+    return permission_controller()->SubscribeToPermissionResultChange(
+        PermissionDescriptorUtil::CreatePermissionDescriptorForPermissionType(
+            PermissionType::BACKGROUND_SYNC),
+        nullptr, nullptr, kUrl,
+        /*should_include_device_status=*/false,
+        base::BindLambdaForTesting([&, peer_subscription](PermissionResult) {
+          ++callback_count;
+          peer_subscription->reset();
+        }));
+  };
+  first_subscription = subscribe(&second_subscription);
+  second_subscription = subscribe(&first_subscription);
+
+  SetPermissionOverrideAndWait(kTestOrigin, kTestOrigin,
+                               PermissionType::BACKGROUND_SYNC,
+                               PermissionStatus::GRANTED);
+
+  EXPECT_EQ(callback_count, 1);
+}
+
+// The delegate is always destroyed before the PermissionController, so
+// Shutdown() is the last point at which subscriptions can be torn down.
+TEST_F(PermissionControllerImplTest, ShutdownUnsubscribes) {
+  base::MockCallback<base::RepeatingCallback<void(PermissionResult)>> callback;
+  std::unique_ptr<PermissionController::PermissionSubscription> subscription =
+      permission_controller()->SubscribeToPermissionResultChange(
+          PermissionDescriptorUtil::CreatePermissionDescriptorForPermissionType(
+              PermissionType::GEOLOCATION),
+          /*render_process_host=*/nullptr, /*render_frame_host=*/nullptr,
+          GURL(kTestUrl),
+          /*should_include_device_status=*/false, callback.Get());
+  PermissionController::SubscriptionId id =
+      static_cast<PermissionSubscriptionImpl*>(subscription.get())->id();
+
+  ASSERT_FALSE(subscriptions().IsEmpty());
+  ASSERT_EQ(mock_manager()->subscriptions(), &subscriptions());
+
+  // The delegate must still be able to observe the unsubscription, and must no
+  // longer hold a pointer into the controller afterwards.
+  EXPECT_CALL(*mock_manager(), UnsubscribeFromPermissionResultChange(id));
+  permission_controller()->Shutdown();
+
+  EXPECT_TRUE(subscriptions().IsEmpty());
+  EXPECT_EQ(mock_manager()->subscriptions(), nullptr);
+}
+
+// Verifies that content actually drives Shutdown() from the BrowserContext's
+// pre-destruction phase. See BrowserContextImpl::NotifyWillBeDestroyed().
+TEST_F(PermissionControllerImplTest, BrowserContextShutdownUnsubscribes) {
+  TestBrowserContext browser_context;
+  auto owned_delegate =
+      std::make_unique<::testing::NiceMock<MockPermissionManager>>();
+  MockPermissionManager* delegate = owned_delegate.get();
+  browser_context.SetPermissionControllerDelegate(std::move(owned_delegate));
+
+  base::MockCallback<base::RepeatingCallback<void(PermissionResult)>> callback;
+  std::unique_ptr<PermissionController::PermissionSubscription> subscription =
+      PermissionControllerImpl::FromBrowserContext(&browser_context)
+          ->SubscribeToPermissionResultChange(
+              PermissionDescriptorUtil::
+                  CreatePermissionDescriptorForPermissionType(
+                      PermissionType::GEOLOCATION),
+              /*render_process_host=*/nullptr, /*render_frame_host=*/nullptr,
+              GURL(kTestUrl),
+              /*should_include_device_status=*/false, callback.Get());
+  PermissionController::SubscriptionId id =
+      static_cast<PermissionSubscriptionImpl*>(subscription.get())->id();
+
+  EXPECT_CALL(*delegate, UnsubscribeFromPermissionResultChange(id));
+  browser_context.NotifyWillBeDestroyed();
+  EXPECT_EQ(delegate->subscriptions(), nullptr);
 }
 
 TEST_F(PermissionControllerImplTest,
@@ -758,6 +868,71 @@ TEST_F(PermissionControllerImplWithDelegateTest, PermissionPolicyTest) {
   EXPECT_EQ(PermissionStatus::DENIED,
             permission_controller->GetPermissionStatusForCurrentDocument(
                 geolocation_permission_descriptor, child_without_policy));
+}
+
+TEST_F(PermissionControllerImplWithDelegateTest,
+       CameraPanTiltZoomPermissionPolicyTest) {
+  const char* kOrigin1 = "https://example.com";
+  const char* kOrigin2 = "https://example-child.com";
+
+  NavigateAndCommit(GURL(kOrigin1));
+  PermissionController* permission_controller =
+      GetBrowserContext()->GetPermissionController();
+  RenderFrameHost* parent = main_rfh();
+  ASSERT_TRUE(parent);
+
+  const auto ptz_descriptor = content::PermissionDescriptorUtil::
+      CreatePermissionDescriptorForPermissionType(
+          PermissionType::CAMERA_PAN_TILT_ZOOM);
+
+  // Top level frame initially has permission in ASK state.
+  EXPECT_EQ(PermissionStatus::ASK,
+            permission_controller->GetPermissionStatusForCurrentDocument(
+                ptz_descriptor, parent));
+
+  // Cross-origin iframe without 'camera' policy must be DENIED.
+  content::RenderFrameHost* child_without_policy =
+      AddChildRFH(parent, GURL(kOrigin2));
+  ASSERT_TRUE(child_without_policy);
+  EXPECT_EQ(PermissionStatus::DENIED,
+            permission_controller->GetPermissionStatusForCurrentDocument(
+                ptz_descriptor, child_without_policy));
+
+  // Requesting permission from child frame without policy must be rejected
+  // immediately with FEATURE_POLICY source without prompting.
+  base::test::TestFuture<const std::vector<content::PermissionResult>&> future;
+  content::PermissionRequestDescription request_description(
+      content::PermissionDescriptorUtil::
+          CreatePermissionDescriptorForPermissionType(
+              PermissionType::CAMERA_PAN_TILT_ZOOM),
+      /*user_gesture=*/true);
+  permission_controller->RequestPermissionsFromCurrentDocument(
+      child_without_policy, request_description, future.GetCallback());
+  const std::vector<content::PermissionResult>& results = future.Get();
+  ASSERT_EQ(1u, results.size());
+  EXPECT_EQ(PermissionStatus::DENIED, results[0].status);
+  EXPECT_EQ(content::PermissionStatusSource::FEATURE_POLICY, results[0].source);
+
+  // Cross-origin iframe with 'camera' policy must follow top-level state.
+  content::RenderFrameHost* child_with_policy =
+      AddChildRFH(parent, GURL(kOrigin2),
+                  network::mojom::PermissionsPolicyFeature::kCamera);
+  ASSERT_TRUE(child_with_policy);
+  EXPECT_EQ(PermissionStatus::ASK,
+            permission_controller->GetPermissionStatusForCurrentDocument(
+                ptz_descriptor, child_with_policy));
+
+  permission_manager()->SetPermissionStatus(GURL(kOrigin1),
+                                            PermissionStatus::GRANTED);
+  EXPECT_EQ(PermissionStatus::GRANTED,
+            permission_controller->GetPermissionStatusForCurrentDocument(
+                ptz_descriptor, parent));
+  EXPECT_EQ(PermissionStatus::GRANTED,
+            permission_controller->GetPermissionStatusForCurrentDocument(
+                ptz_descriptor, child_with_policy));
+  EXPECT_EQ(PermissionStatus::DENIED,
+            permission_controller->GetPermissionStatusForCurrentDocument(
+                ptz_descriptor, child_without_policy));
 }
 #endif
 

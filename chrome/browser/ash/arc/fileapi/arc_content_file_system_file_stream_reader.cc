@@ -19,7 +19,6 @@
 #include "chrome/browser/ash/arc/fileapi/arc_content_file_system_size_util.h"
 #include "content/public/browser/browser_thread.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
-#include "mojo/public/cpp/system/platform_handle.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 
@@ -65,20 +64,19 @@ ArcContentFileSystemFileStreamReader::~ArcContentFileSystemFileStreamReader() {
 }
 
 int ArcContentFileSystemFileStreamReader::Read(
-    net::IOBuffer* buffer,
+    scoped_refptr<net::IOBuffer> buffer,
     int buffer_length,
     net::CompletionOnceCallback callback) {
   CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   if (file_) {
-    ReadInternal(buffer, buffer_length, std::move(callback));
+    ReadInternal(std::move(buffer), buffer_length, std::move(callback));
     return net::ERR_IO_PENDING;
   }
   file_system_operation_runner_util::OpenFileSessionToReadOnIOThread(
       arc_url_,
       base::BindOnce(&ArcContentFileSystemFileStreamReader::OnOpenFileSession,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     base::WrapRefCounted(buffer), buffer_length,
-                     std::move(callback)));
+                     weak_ptr_factory_.GetWeakPtr(), std::move(buffer),
+                     buffer_length, std::move(callback)));
   return net::ERR_IO_PENDING;
 }
 
@@ -103,7 +101,7 @@ void ArcContentFileSystemFileStreamReader::CloseInternal(
 }
 
 void ArcContentFileSystemFileStreamReader::ReadInternal(
-    net::IOBuffer* buffer,
+    scoped_refptr<net::IOBuffer> buffer,
     int buffer_length,
     net::CompletionOnceCallback callback) {
   CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
@@ -114,8 +112,7 @@ void ArcContentFileSystemFileStreamReader::ReadInternal(
   // |task_runner_| along with |file_| and ReadFile() won't be called.
   task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE,
-      base::BindOnce(&ReadFile, file_.get(), base::WrapRefCounted(buffer),
-                     buffer_length),
+      base::BindOnce(&ReadFile, file_.get(), std::move(buffer), buffer_length),
       base::BindOnce(&ArcContentFileSystemFileStreamReader::OnRead,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
 }
@@ -161,15 +158,14 @@ void ArcContentFileSystemFileStreamReader::OnOpenFileSession(
 
   session_id_ = std::move(file_handle->url_id);
   CHECK(session_id_.length() > 0, base::NotFatalUntil::M160);
-  mojo::PlatformHandle platform_handle =
-      mojo::UnwrapPlatformHandle(std::move(file_handle->fd));
+  mojo::PlatformHandle platform_handle = std::move(file_handle->fd);
   if (!platform_handle.is_valid()) {
-    LOG(ERROR) << "PassWrappedInternalPlatformHandle failed";
+    LOG(ERROR) << "Invalid platform handle";
     CloseInternal(CloseStatus::kStatusError);
     std::move(callback).Run(net::ERR_INVALID_HANDLE);
     return;
   }
-  file_ = std::make_unique<base::File>(platform_handle.ReleaseFD());
+  file_ = std::make_unique<base::File>(platform_handle.TakeFD());
   if (!file_->IsValid()) {
     LOG(ERROR) << "Invalid file.";
     CloseInternal(CloseStatus::kStatusError);
@@ -196,7 +192,7 @@ void ArcContentFileSystemFileStreamReader::OnSeekFile(
   switch (seek_result) {
     case 0:
       // File stream is ready. Resume Read().
-      ReadInternal(buf.get(), buffer_length, std::move(callback));
+      ReadInternal(std::move(buf), buffer_length, std::move(callback));
       break;
     case ESPIPE: {
       // Pipe is not seekable. Just consume the contents.
@@ -226,7 +222,7 @@ void ArcContentFileSystemFileStreamReader::ConsumeFileContents(
   CHECK(file_->IsValid(), base::NotFatalUntil::M160);
   if (num_bytes_to_consume == 0) {
     // File stream is ready. Resume Read().
-    ReadInternal(buf.get(), buffer_length, std::move(callback));
+    ReadInternal(std::move(buf), buffer_length, std::move(callback));
     return;
   }
   auto num_bytes_to_read = std::min(

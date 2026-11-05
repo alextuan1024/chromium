@@ -13,6 +13,7 @@ if (is_android) {
       "android/feed_surface_renderer_bridge.h",
       "android/jni_translation.h",
       "android/refresh_task_scheduler_impl.h",
+      "articles_list_visible_sync_service_factory.h",
       "feed_service_factory.h",
     ]
 
@@ -41,13 +42,11 @@ if (is_android) {
       "android/jni_translation.cc",
       "android/navigation_recorder.cc",
       "android/refresh_task_scheduler_impl.cc",
+      "articles_list_visible_sync_service_factory.cc",
       "feed_service_factory.cc",
     ]
 
-    public_deps = [
-      ":feed",
-      "//chrome/browser:browser_public_dependencies",
-    ]
+    public_deps = [ ":feed" ]
 
     deps = [
       "//chrome/android:chrome_jni_headers",
@@ -57,11 +56,10 @@ if (is_android) {
       "//chrome/browser/flags:flags_android",
       "//chrome/browser/history",
       "//chrome/browser/metrics",
-      "//chrome/browser/regional_capabilities",
+      "//chrome/browser/prefs:util",
       "//chrome/browser/search_engines",
       "//chrome/browser/signin",
       "//chrome/common:channel_info",
-      "//chrome/common:version_header",
       "//components/country_codes",
       "//components/feed:feature_list",
       "//components/feed/core/proto:proto_v2",
@@ -70,8 +68,8 @@ if (is_android) {
       "//components/keyed_service/core",
       "//components/metrics",
       "//components/offline_pages/core",
+      "//components/offline_pages/core:switches",
       "//components/prefs",
-      "//components/regional_capabilities",
       "//components/search_engines",
       "//components/variations",
       "//components/variations/service",
@@ -79,6 +77,7 @@ if (is_android) {
       "//google_apis",
       "//net",
       "//services/service_manager/public/cpp",
+      "//ui/base",
     ]
   }
 }

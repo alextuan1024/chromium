@@ -73,7 +73,8 @@ class CORE_EXPORT IntersectionGeometry {
     kScrollAndVisibilityOnly,
     // This flag is to expose extra information of occluded state.
     kShouldExposeOccluderNodeId,
-    kConstructorFlagLast = kShouldExposeOccluderNodeId,
+    kStaleGeometry,
+    kConstructorFlagLast = kStaleGeometry,
 
     // These flags will be computed
     kShouldUseCachedRects,
@@ -188,8 +189,8 @@ class CORE_EXPORT IntersectionGeometry {
                   const Element& target_element,
                   bool has_target_margin,
                   bool has_scroll_margin);
-    const LayoutObject* target;
-    const LayoutObject* root;
+    const LayoutObject* target = nullptr;
+    const LayoutObject* root = nullptr;
     enum Relationship {
       kInvalid,
       // The target is in a sub-frame of the implicit root.

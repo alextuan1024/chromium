@@ -43,6 +43,8 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
     private @Nullable RadioButtonWithDescription mAddToBookmarksButton;
     private @Nullable RadioButtonWithDescription mReadAloudButton;
     private @Nullable RadioButtonWithDescription mGlicButton;
+    private @Nullable RadioButtonWithDescription mTtcButton;
+    private @Nullable RadioButtonWithDescription mAskGoogleButton;
     private @AdaptiveToolbarButtonVariant int mSelected;
     private @AdaptiveToolbarButtonVariant int mAutoButtonCaption;
     private @Nullable AdaptiveToolbarStatePredictor mStatePredictor;
@@ -51,6 +53,8 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
     private boolean mCanUseReadAloud;
     private boolean mCanUseTranslate = true;
     private boolean mCanUseGlic;
+    private boolean mCanUseTtc;
+    private boolean mCanUseAskGoogle;
     private @Nullable Runnable mOnComponentUpdated;
     private Runnable mInitRadioButtonRunnable = this::initializeRadioButtonSelection;
     private boolean mIsBound;
@@ -92,6 +96,9 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
         mReadAloudButton =
                 (RadioButtonWithDescription) holder.findViewById(R.id.adaptive_option_read_aloud);
         mGlicButton = (RadioButtonWithDescription) holder.findViewById(R.id.adaptive_option_glic);
+        mTtcButton = (RadioButtonWithDescription) holder.findViewById(R.id.adaptive_option_ttc);
+        mAskGoogleButton =
+                (RadioButtonWithDescription) holder.findViewById(R.id.adaptive_option_ask_google);
 
         mIsBound = true;
 
@@ -109,7 +116,9 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
         "mAddToBookmarksButton",
         "mReadAloudButton",
         "mPageSummaryButton",
-        "mGlicButton"
+        "mGlicButton",
+        "mTtcButton",
+        "mAskGoogleButton"
     })
     @SuppressWarnings("NullAway")
     private boolean isBound() {
@@ -182,6 +191,8 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
         updateReadAloudButtonVisibility();
         updateTranslateButtonVisibility();
         updateGlicButtonVisibility();
+        updateTtcButtonVisibility();
+        updateAskGoogleButtonVisibility();
 
         if (mOnComponentUpdated != null) mOnComponentUpdated.run();
     }
@@ -207,6 +218,10 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
             mSelected = AdaptiveToolbarButtonVariant.READ_ALOUD;
         } else if (mGlicButton.isChecked()) {
             mSelected = AdaptiveToolbarButtonVariant.GLIC;
+        } else if (mTtcButton.isChecked()) {
+            mSelected = AdaptiveToolbarButtonVariant.TTC;
+        } else if (mAskGoogleButton.isChecked()) {
+            mSelected = AdaptiveToolbarButtonVariant.ASK_GOOGLE;
         } else {
             assert false : "No matching setting found.";
         }
@@ -246,6 +261,10 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
                 return mReadAloudButton;
             case AdaptiveToolbarButtonVariant.GLIC:
                 return mGlicButton;
+            case AdaptiveToolbarButtonVariant.TTC:
+                return mTtcButton;
+            case AdaptiveToolbarButtonVariant.ASK_GOOGLE:
+                return mAskGoogleButton;
         }
         return null;
     }
@@ -273,6 +292,12 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
                 break;
             case AdaptiveToolbarButtonVariant.GLIC:
                 stringRes = R.string.glic_button_entrypoint_ask_gemini_label;
+                break;
+            case AdaptiveToolbarButtonVariant.TTC:
+                stringRes = R.string.ttc_entrypoint_label;
+                break;
+            case AdaptiveToolbarButtonVariant.ASK_GOOGLE:
+                stringRes = R.string.contextual_search_open_lens_action_label;
                 break;
             case AdaptiveToolbarButtonVariant.OPEN_IN_BROWSER:
                 stringRes = R.string.menu_open_in_product_default;
@@ -308,6 +333,16 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
         updateGlicButtonVisibility();
     }
 
+    void setCanUseTtc(boolean canUseTtc) {
+        mCanUseTtc = canUseTtc;
+        updateTtcButtonVisibility();
+    }
+
+    void setCanUseAskGoogle(boolean canUseAskGoogle) {
+        mCanUseAskGoogle = canUseAskGoogle;
+        updateAskGoogleButtonVisibility();
+    }
+
     private void updateNewTabButtonVisibility() {
         updateButtonVisibility(mNewTabButton, mCanUseNewTab);
     }
@@ -326,6 +361,14 @@ public class RadioButtonGroupAdaptiveToolbarPreference extends ContainedRadioBut
 
     private void updateGlicButtonVisibility() {
         updateButtonVisibility(mGlicButton, mCanUseGlic);
+    }
+
+    private void updateTtcButtonVisibility() {
+        updateButtonVisibility(mTtcButton, mCanUseTtc);
+    }
+
+    private void updateAskGoogleButtonVisibility() {
+        updateButtonVisibility(mAskGoogleButton, mCanUseAskGoogle);
     }
 
     /**

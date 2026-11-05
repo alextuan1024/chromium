@@ -4,15 +4,23 @@
 
 #include "extensions/browser/process_manager.h"
 
+#include <memory>
+
+#include "base/auto_reset.h"
+#include "base/process/kill.h"
 #include "build/android_buildflags.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/common/content_client.h"
+#include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/test_browser_context.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extensions_test.h"
 #include "extensions/browser/process_manager_delegate.h"
+#include "extensions/browser/service_worker/worker_id.h"
+#include "extensions/browser/service_worker/worker_id_set.h"
 #include "extensions/browser/test_extensions_browser_client.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 
 using content::BrowserContext;
 using content::SiteInstance;
@@ -140,6 +148,104 @@ TEST_F(ProcessManagerTest, IsBackgroundHostAllowed) {
   extension_system()->SetReady();
   base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(manager.startup_background_hosts_created_for_test());
+}
+
+// Test that destroying a RenderProcessHost without a subsequent
+// RenderProcessExited notification (for example, when a worker registration
+// arrived after RenderProcessHostImpl::FastShutdown() marked the host dead)
+// still removes the host observation and tracked worker before ~ProcessManager.
+TEST_F(ProcessManagerTest,
+       CleansUpTrackedWorkerWhenRenderProcessHostDestroyed) {
+  ProcessManager manager(original_context(), extension_registry());
+  auto render_process_host =
+      std::make_unique<content::MockRenderProcessHost>(original_context());
+  render_process_host->Init();
+  render_process_host->SimulateRenderProcessExit(
+      base::TERMINATION_STATUS_NORMAL_TERMINATION, /*exit_code=*/0);
+  ASSERT_FALSE(render_process_host->IsInitializedAndNotDead());
+
+  const WorkerId worker_id{/*extension_id=*/"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                           render_process_host->GetID(),
+                           /*version_id=*/1,
+                           /*thread_id=*/1, blink::ServiceWorkerToken()};
+  manager.StartTrackingServiceWorkerRunningInstance(worker_id);
+  EXPECT_TRUE(manager.HasServiceWorker(worker_id));
+
+  // Destroying a dead RenderProcessHost fires RenderProcessHostDestroyed()
+  // without firing RenderProcessExited() again.
+  render_process_host.reset();
+  EXPECT_FALSE(manager.HasServiceWorker(worker_id));
+}
+
+TEST_F(ProcessManagerTest, ServiceWorkerTrackingLookupAndTokenStop) {
+  constexpr char kExtensionIdA[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  constexpr char kExtensionIdB[] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  constexpr char kExtensionIdMissing[] = "cccccccccccccccccccccccccccccccc";
+
+  ProcessManager manager(original_context(), extension_registry());
+  content::MockRenderProcessHost render_process_host(original_context());
+  render_process_host.Init();
+
+  const blink::ServiceWorkerToken token_a1;
+  const blink::ServiceWorkerToken token_a2;
+  const blink::ServiceWorkerToken token_b1;
+  const blink::ServiceWorkerToken token_missing;
+
+  const WorkerId worker_a1(kExtensionIdA, render_process_host.GetID(),
+                           /*version_id=*/10, /*thread_id=*/1, token_a1);
+  const WorkerId worker_a2(kExtensionIdA, render_process_host.GetID(),
+                           /*version_id=*/11, /*thread_id=*/2, token_a2);
+  const WorkerId worker_b1(kExtensionIdB, render_process_host.GetID(),
+                           /*version_id=*/10, /*thread_id=*/1, token_b1);
+
+  EXPECT_FALSE(manager.HasServiceWorkerForExtension(kExtensionIdA));
+  EXPECT_FALSE(manager.HasServiceWorkerForExtension(kExtensionIdA, 10, 1));
+
+  base::AutoReset<bool> allow_multiple_workers =
+      WorkerIdSet::AllowMultipleWorkersPerExtensionForTesting();
+  manager.StartTrackingServiceWorkerRunningInstance(worker_a1);
+  manager.StartTrackingServiceWorkerRunningInstance(worker_a2);
+  manager.StartTrackingServiceWorkerRunningInstance(worker_b1);
+
+  EXPECT_TRUE(manager.HasServiceWorkerForExtension(kExtensionIdA));
+  EXPECT_TRUE(manager.HasServiceWorkerForExtension(kExtensionIdB));
+  EXPECT_FALSE(manager.HasServiceWorkerForExtension(kExtensionIdMissing));
+
+  // Verify exact `(version_id, thread_id)` matching and mismatches.
+  EXPECT_TRUE(manager.HasServiceWorkerForExtension(kExtensionIdA, 10, 1));
+  EXPECT_TRUE(manager.HasServiceWorkerForExtension(kExtensionIdA, 11, 2));
+  EXPECT_TRUE(manager.HasServiceWorkerForExtension(kExtensionIdB, 10, 1));
+  EXPECT_FALSE(manager.HasServiceWorkerForExtension(kExtensionIdA, 10, 2));
+  EXPECT_FALSE(manager.HasServiceWorkerForExtension(kExtensionIdA, 11, 1));
+  EXPECT_FALSE(manager.HasServiceWorkerForExtension(kExtensionIdA, 99, 1));
+  EXPECT_FALSE(
+      manager.HasServiceWorkerForExtension(kExtensionIdMissing, 10, 1));
+
+  // Mismatching version_id, token, or extension_id must not stop tracking.
+  manager.StopTrackingServiceWorkerRunningInstance(kExtensionIdA, 99, token_a1);
+  manager.StopTrackingServiceWorkerRunningInstance(kExtensionIdA, 10,
+                                                   token_missing);
+  manager.StopTrackingServiceWorkerRunningInstance(kExtensionIdA, 11, token_a1);
+  manager.StopTrackingServiceWorkerRunningInstance(kExtensionIdMissing, 10,
+                                                   token_a1);
+  EXPECT_TRUE(manager.HasServiceWorker(worker_a1));
+  EXPECT_TRUE(manager.HasServiceWorker(worker_a2));
+  EXPECT_TRUE(manager.HasServiceWorker(worker_b1));
+
+  // Matching `(extension_id, version_id, token)` stops only that instance.
+  manager.StopTrackingServiceWorkerRunningInstance(kExtensionIdA, 10, token_a1);
+  EXPECT_FALSE(manager.HasServiceWorker(worker_a1));
+  EXPECT_FALSE(manager.HasServiceWorkerForExtension(kExtensionIdA, 10, 1));
+  EXPECT_TRUE(manager.HasServiceWorkerForExtension(kExtensionIdA));
+  EXPECT_TRUE(manager.HasServiceWorkerForExtension(kExtensionIdA, 11, 2));
+  EXPECT_TRUE(manager.HasServiceWorker(worker_b1));
+
+  manager.StopTrackingServiceWorkerRunningInstance(kExtensionIdA, 11, token_a2);
+  EXPECT_FALSE(manager.HasServiceWorkerForExtension(kExtensionIdA));
+  EXPECT_TRUE(manager.HasServiceWorkerForExtension(kExtensionIdB));
+
+  manager.StopTrackingServiceWorkerRunningInstance(kExtensionIdB, 10, token_b1);
+  EXPECT_FALSE(manager.HasServiceWorkerForExtension(kExtensionIdB));
 }
 
 }  // namespace extensions

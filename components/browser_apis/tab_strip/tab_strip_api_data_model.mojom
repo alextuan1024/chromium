@@ -7,6 +7,7 @@ module tabs_api.mojom;
 import "components/browser_apis/tab_strip/tab_strip_api_types.mojom";
 import "components/tab_groups/public/mojom/tab_group_types.mojom";
 import "components/tabs/public/mojom/tabs.mojom";
+import "mojo/public/mojom/base/time.mojom";
 import "url/mojom/url.mojom";
 
 // Holds a data URL representation of an image, ie: favicon.
@@ -30,6 +31,9 @@ struct Tab {
   bool is_selected;
   // The current tab is blocked (by a modal).
   bool is_blocked;
+
+  // Timestamp of the last activation or user interaction with the tab.
+  mojo_base.mojom.TimeTicks last_active;
 };
 
 // Window represents a browser window.
@@ -60,6 +64,9 @@ struct UnpinnedTabs {
 struct TabGroup {
   NodeId id;
   TabGroupVisualData data;
+  // Whether the tab group is ephemeral (created when focusing ungrouped tabs
+  // and ungrouped when unfocused).
+  bool is_ephemeral;
 };
 
 // TODO(crbug.com/425652802): This should be merged with struct

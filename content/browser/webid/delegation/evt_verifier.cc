@@ -30,7 +30,12 @@ base::expected<void, Result> VerifyEVT(const sdjwt::SdJwt& sd_jwt,
     return base::unexpected(Result::kSdJwtInvalidTyp);
   }
 
-  if (header.alg != "EdDSA" && header.alg != "RS256" && header.alg != "ES256") {
+  // TODO(crbug.com/561405995): drop "EdDSA" once no deployed issuer sends it.
+  // RFC 9864 deprecated it in favour of the fully-specified "Ed25519", which
+  // the Email Verification Protocol requires; it is accepted here only so the
+  // browser keeps working with issuers that have not migrated yet.
+  if (header.alg != "Ed25519" && header.alg != "EdDSA" &&
+      header.alg != "RS256" && header.alg != "ES256") {
     return base::unexpected(Result::kSdJwtUnsupportedHeaderAlg);
   }
 
@@ -153,10 +158,8 @@ base::expected<void, Result> VerifyKB(const sdjwt::Jwt& kb_jwt,
 
   // - Compute the SHA-256 hash of the EVT and verify it matches sd_hash
   std::string computed_hash = crypto::SHA256HashString(evt_string);
-  std::string computed_hash_b64;
-  base::Base64UrlEncode(computed_hash,
-                        base::Base64UrlEncodePolicy::OMIT_PADDING,
-                        &computed_hash_b64);
+  std::string computed_hash_b64 = base::Base64UrlEncode(
+      computed_hash, base::Base64UrlEncodePolicy::OMIT_PADDING);
 
   if (kb_payload.sd_hash.value() != computed_hash_b64) {
     return base::unexpected(Result::kKbInvalidSdHash);

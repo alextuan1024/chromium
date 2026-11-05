@@ -50,7 +50,9 @@ std::unique_ptr<TemplateURLData> TemplateURLDataFromDictionary(
 
   const std::string* id = dict.FindString(DefaultSearchManager::kID);
   if (id) {
-    base::StringToInt64(*id, &result->id);
+    int64_t value = 0;
+    base::StringToInt64(*id, &value);
+    result->id = TemplateURLID(value);
   }
 
   const std::string* string_value = nullptr;
@@ -204,7 +206,6 @@ std::unique_ptr<TemplateURLData> TemplateURLDataFromDictionary(
       dict.FindList(DefaultSearchManager::kInputEncodings);
   if (encodings) {
     for (const auto& it : *encodings) {
-      std::string encoding;
       if (it.is_string()) {
         result->input_encodings.push_back(it.GetString());
       }
@@ -242,7 +243,8 @@ std::unique_ptr<TemplateURLData> TemplateURLDataFromDictionary(
 
 base::DictValue TemplateURLDataToDictionary(const TemplateURLData& data) {
   base::DictValue url_dict;
-  url_dict.Set(DefaultSearchManager::kID, base::NumberToString(data.id));
+  url_dict.Set(DefaultSearchManager::kID,
+               base::NumberToString(data.id.value()));
   url_dict.Set(DefaultSearchManager::kShortName, data.short_name());
   url_dict.Set(DefaultSearchManager::kKeyword, data.keyword());
   url_dict.Set(DefaultSearchManager::kPrepopulateID, data.prepopulate_id);

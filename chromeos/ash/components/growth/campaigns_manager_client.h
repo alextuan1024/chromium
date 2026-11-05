@@ -15,9 +15,15 @@
 #include "chromeos/ash/components/growth/action_performer.h"
 #include "chromeos/ash/components/growth/campaigns_constants.h"
 
+class AccountId;
+
 namespace base {
 class Version;
 }  // namespace base
+
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
 
 namespace growth {
 
@@ -44,11 +50,13 @@ class CampaignsManagerClient {
   virtual void AddOnTrackerInitializedCallback(
       OnTrackerInitializedCallback callback) = 0;
 
+  // Sets the account of the active user so the client can resolve per-user
+  // services (e.g. the feature engagement tracker). Empty when there is no
+  // active user.
+  virtual void SetActiveAccountId(const AccountId& account_id) = 0;
+
   // True if the device is in demo mode.
   virtual bool IsDeviceInDemoMode() const = 0;
-
-  // True if the device is cloud gaming device.
-  virtual bool IsCloudGamingDevice() const = 0;
 
   // True if the device is feature aware device.
   virtual bool IsFeatureAwareDevice() const = 0;
@@ -57,7 +65,7 @@ class CampaignsManagerClient {
   virtual bool IsAppIconOnShelf(const std::string& app_id) const = 0;
 
   // Returns application locale.
-  virtual const std::string& GetApplicationLocale() const = 0;
+  virtual const base::i18n::LanguageTag& GetApplicationLocale() const = 0;
 
   // Returns user selected locale.
   virtual const std::string& GetUserLocale() const = 0;

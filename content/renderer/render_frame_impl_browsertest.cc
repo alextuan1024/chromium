@@ -42,16 +42,20 @@
 #include "content/renderer/navigation_state.h"
 #include "content/test/frame_host_test_interface.mojom.h"
 #include "content/test/test_render_frame.h"
+#include "media/media_buildflags.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/navigation/navigation_params.h"
 #include "third_party/blink/public/common/navigation/navigation_params_mojom_traits.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/blink/public/mojom/autoplay/autoplay.mojom.h"
 #include "third_party/blink/public/mojom/browser_interface_broker.mojom-forward.h"
 #include "third_party/blink/public/mojom/frame/frame_owner_properties.mojom.h"
 #include "third_party/blink/public/mojom/frame/frame_replication_state.mojom.h"
@@ -67,12 +71,21 @@
 #include "third_party/blink/public/web/web_frame_widget.h"
 #include "third_party/blink/public/web/web_history_item.h"
 #include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_local_frame_observer.h"
 #include "third_party/blink/public/web/web_v8_features.h"
 #include "third_party/blink/public/web/web_view.h"
 #include "ui/display/screen_info.h"
 #include "ui/display/screen_infos.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/native_theme/native_theme.h"
+
+#if BUILDFLAG(ENABLE_LIBRARY_CDMS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
+#include "base/test/test_future.h"
+#include "content/public/renderer/key_system_support.h"
+#include "media/base/cdm_capability.h"
+#include "media/base/key_system_capability.h"
+#include "media/mojo/mojom/key_system_support.mojom.h"
+#endif
 
 using blink::WebURLRequest;
 
@@ -228,23 +241,33 @@ class RenderFrameImplTest : public RenderViewTest {
     return frame.GetWebView()->AutoplayFlagsForTest();
   }
 
+  static mojo::AssociatedRemote<blink::mojom::AutoplayConfigurationClient>
+  GetAutoplayConfigurationClient(TestRenderFrame* frame) {
+    mojo::AssociatedRemote<blink::mojom::AutoplayConfigurationClient> client;
+    mojo::ScopedInterfaceEndpointHandle handle =
+        client.BindNewEndpointAndPassDedicatedReceiver().PassHandle();
+    EXPECT_TRUE(frame->GetAssociatedInterfaceRegistry()->TryBindInterface(
+        blink::mojom::AutoplayConfigurationClient::Name_, &handle));
+    return client;
+  }
+
  private:
   mojo::AssociatedRemote<blink::mojom::Widget> widget_remote_;
   blink::LocalFrameToken child_frame_token_;
 };
 
-class RenderFrameTestObserver : public RenderFrameObserver {
+class RenderFrameTestObserver : public RenderFrameObserver,
+                                public blink::WebLocalFrameObserver {
  public:
   explicit RenderFrameTestObserver(RenderFrame* render_frame)
       : RenderFrameObserver(render_frame),
+        blink::WebLocalFrameObserver(render_frame->GetWebFrame()),
         visible_(false),
         last_main_frame_rect_(-1, -1, -1, -1) {}
 
   ~RenderFrameTestObserver() override {}
 
   // RenderFrameObserver implementation.
-  void WasShown() override { visible_ = true; }
-  void WasHidden() override { visible_ = false; }
   void OnDestruct() override { delete this; }
   void OnMainFrameRectangleChanged(const gfx::Rect& main_frame_rect) override {
     last_main_frame_rect_ = main_frame_rect;
@@ -253,6 +276,11 @@ class RenderFrameTestObserver : public RenderFrameObserver {
       const gfx::Rect& main_frame_viewport_rect) override {
     last_main_frame_viewport_rect_ = main_frame_viewport_rect;
   }
+
+  // blink::WebLocalFrameObserver implementation.
+  void OnFrameDetached() override {}
+  void WasShown() override { visible_ = true; }
+  void WasHidden() override { visible_ = false; }
 
   bool visible() const { return visible_; }
   gfx::Rect last_main_frame_rect() const { return last_main_frame_rect_; }
@@ -439,9 +467,10 @@ TEST_F(RenderFrameImplTest, NoCrashOnReceiveTitleWhenNavigatingToJavascript) {
 
 TEST_F(RenderFrameImplTest, AutoplayFlags) {
   // Add autoplay flags to the page.
-  GetMainRenderFrame()->AddAutoplayFlags(
-      url::Origin::Create(GURL(kAutoplayTestOrigin)),
-      blink::mojom::kAutoplayFlagHighMediaEngagement);
+  auto client = GetAutoplayConfigurationClient(GetMainRenderFrame());
+  client->AddAutoplayFlags(url::Origin::Create(GURL(kAutoplayTestOrigin)),
+                           blink::mojom::kAutoplayFlagHighMediaEngagement);
+  client.FlushForTesting();
 
   // Navigate the top frame.
   LoadHTMLWithUrlOverride(kParentFrameHTML, kAutoplayTestOrigin);
@@ -459,6 +488,21 @@ TEST_F(RenderFrameImplTest, AutoplayFlags) {
   EXPECT_EQ(blink::mojom::kAutoplayFlagHighMediaEngagement,
             AutoplayFlagsForFrame(child_frame()));
 
+  // Re-bind the interface and add another flag for the same origin across two
+  // separate bindings, verifying both re-binding reset and flag merging.
+  auto client2 = GetAutoplayConfigurationClient(GetMainRenderFrame());
+  client2->AddAutoplayFlags(url::Origin::Create(GURL(kAutoplayTestOrigin)),
+                            blink::mojom::kAutoplayFlagUserException);
+  client2.FlushForTesting();
+  auto client3 = GetAutoplayConfigurationClient(GetMainRenderFrame());
+  client3->AddAutoplayFlags(url::Origin::Create(GURL(kAutoplayTestOrigin)),
+                            blink::mojom::kAutoplayFlagForceAllow);
+  client3.FlushForTesting();
+  LoadHTMLWithUrlOverride(kParentFrameHTML, kAutoplayTestOrigin);
+  EXPECT_EQ(blink::mojom::kAutoplayFlagUserException |
+                blink::mojom::kAutoplayFlagForceAllow,
+            AutoplayFlagsForFrame(*GetMainRenderFrame()));
+
   // Navigate the top frame.
   LoadHTMLWithUrlOverride(kParentFrameHTML, "https://www.example.com");
   LoadChildFrame();
@@ -472,8 +516,10 @@ TEST_F(RenderFrameImplTest, AutoplayFlags) {
 
 TEST_F(RenderFrameImplTest, AutoplayFlags_WrongOrigin) {
   // Add autoplay flags to the page.
-  GetMainRenderFrame()->AddAutoplayFlags(
-      url::Origin(), blink::mojom::kAutoplayFlagHighMediaEngagement);
+  auto client = GetAutoplayConfigurationClient(GetMainRenderFrame());
+  client->AddAutoplayFlags(url::Origin(),
+                           blink::mojom::kAutoplayFlagHighMediaEngagement);
+  client.FlushForTesting();
 
   // Navigate the top frame.
   LoadHTMLWithUrlOverride(kParentFrameHTML, kAutoplayTestOrigin);
@@ -861,7 +907,6 @@ void ExpectPendingInterfaceReceiversFromSources(
     mojo::PendingReceiver<blink::mojom::BrowserInterfaceBroker>
         browser_interface_broker_receiver,
     std::vector<SourceAnnotation> expected_sources) {
-  std::vector<SourceAnnotation> sources;
   ASSERT_TRUE(browser_interface_broker_receiver.is_valid());
 
   std::vector<SourceAnnotation> browser_interface_broker_sources;
@@ -1395,6 +1440,75 @@ TEST_F(RenderFrameImplTest, SubframeMojoJSEnabled) {
       blink::WebV8Features::IsMojoJSEnabledForTesting(child_context));
 }
 
+#if BUILDFLAG(ENABLE_LIBRARY_CDMS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
+namespace {
+
+// Sends `capabilities` when the observer is set, as the browser does.
+class FakeKeySystemSupport : public media::mojom::KeySystemSupport {
+ public:
+  explicit FakeKeySystemSupport(KeySystemCapabilities capabilities)
+      : capabilities_(std::move(capabilities)) {}
+
+  void Bind(mojo::ScopedMessagePipeHandle handle) {
+    receiver_.Bind(mojo::PendingReceiver<media::mojom::KeySystemSupport>(
+        std::move(handle)));
+  }
+
+  // Closes both connections, as the browser does when the document changes.
+  void Disconnect() {
+    receiver_.reset();
+    observer_.reset();
+  }
+
+  // media::mojom::KeySystemSupport
+  void SetObserver(mojo::PendingRemote<media::mojom::KeySystemSupportObserver>
+                       observer) override {
+    observer_.Bind(std::move(observer));
+    observer_->OnKeySystemSupportUpdated(capabilities_);
+  }
+
+ private:
+  const KeySystemCapabilities capabilities_;
+  mojo::Receiver<media::mojom::KeySystemSupport> receiver_{this};
+  mojo::Remote<media::mojom::KeySystemSupportObserver> observer_;
+};
+
+}  // namespace
+
+// Pending capabilities are reported as unsupported once the connection to the
+// browser closes, so that queries waiting for them don't hang.
+TEST_F(RenderFrameImplTest, KeySystemSupportDisconnectResolvesPending) {
+  constexpr char kKeySystem[] = "com.example.foo";
+  KeySystemCapabilities capabilities;
+  capabilities.emplace(
+      kKeySystem,
+      media::KeySystemCapability(
+          media::CdmCapability(),
+          base::unexpected(media::CdmCapabilityQueryStatus::kPending)));
+  FakeKeySystemSupport key_system_support(std::move(capabilities));
+  GetMainRenderFrame()->GetBrowserInterfaceBroker().SetBinderForTesting(
+      media::mojom::KeySystemSupport::Name_,
+      base::BindRepeating(&FakeKeySystemSupport::Bind,
+                          base::Unretained(&key_system_support)));
+
+  base::test::TestFuture<KeySystemCapabilities> update;
+  std::unique_ptr<media::KeySystemSupportRegistration> registration =
+      ObserveKeySystemSupportUpdate(GetMainRenderFrame(),
+                                    update.GetRepeatingCallback());
+  EXPECT_TRUE(update.Take().at(kKeySystem).IsPending());
+
+  key_system_support.Disconnect();
+  const media::KeySystemCapability capability = update.Take().at(kKeySystem);
+  EXPECT_TRUE(capability.sw_cdm_capability_or_status.has_value());
+  ASSERT_FALSE(capability.hw_cdm_capability_or_status.has_value());
+  EXPECT_EQ(capability.hw_cdm_capability_or_status.error(),
+            media::CdmCapabilityQueryStatus::kDisconnectionError);
+
+  GetMainRenderFrame()->GetBrowserInterfaceBroker().SetBinderForTesting(
+      media::mojom::KeySystemSupport::Name_, {});
+}
+#endif  // BUILDFLAG(ENABLE_LIBRARY_CDMS) || BUILDFLAG(IS_WIN) ||
+        // BUILDFLAG(IS_ANDROID)
 
 class RenderFrameImplMojoJsTest : public RenderViewTest {
  public:

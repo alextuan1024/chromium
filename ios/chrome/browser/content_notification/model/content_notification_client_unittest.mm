@@ -22,7 +22,6 @@
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
@@ -62,11 +61,6 @@ class FakeContentNotificationService : public ContentNotificationService {
       ContentNotificationNAUConfiguration* configuration) override {}
 };
 
-std::unique_ptr<KeyedService> CreateFakeContentNotificationService(
-    ProfileIOS* profile) {
-  return std::make_unique<FakeContentNotificationService>();
-}
-
 }  // namespace
 
 class ContentNotificationClientTest : public PlatformTest {
@@ -75,7 +69,7 @@ class ContentNotificationClientTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         ContentNotificationServiceFactory::GetInstance(),
-        base::BindRepeating(&CreateFakeContentNotificationService));
+        base::BindOnce(&std::make_unique<FakeContentNotificationService>));
     ProfileIOS* profile =
         profile_manager_.AddProfileWithBuilder(std::move(builder));
     BrowserList* list = BrowserListFactory::GetForProfile(profile);
@@ -83,9 +77,7 @@ class ContentNotificationClientTest : public PlatformTest {
     scene_state_.activationLevel = SceneActivationLevelForegroundActive;
     browser_ = std::make_unique<TestBrowser>(profile, scene_state_);
     list->AddBrowser(browser_.get());
-    client_ = IsMultiProfilePushNotificationHandlingEnabled()
-                  ? std::make_unique<ContentNotificationClient>(profile)
-                  : std::make_unique<ContentNotificationClient>();
+    client_ = std::make_unique<ContentNotificationClient>(profile);
     ScopedDictPrefUpdate update(GetApplicationContext()->GetLocalState(),
                                 prefs::kAppLevelPushNotificationPermissions);
     update->Set(kContentNotificationKey, true);

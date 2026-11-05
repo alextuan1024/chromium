@@ -4,6 +4,7 @@
 
 import("//build/config/c++/c++.gni")
 import("//build/config/chrome_build.gni")
+import("//build/config/gclient_args.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build/config/sysroot.gni")
 import("//build/linux/strip_binary.gni")
@@ -30,6 +31,13 @@ declare_args() {
 
   # Enables building Flatpak package bundles (.flatpak).
   enable_flatpak = false
+
+  # Enable building snap packages. Defaults to true when the snap runtime
+  # libraries are checked out ("checkout_snap_runtime" in .gclient
+  # custom_vars), which are available for x64 and arm64. arm64 also needs
+  # "arm64" in the target_cpu list of .gclient.
+  enable_snap_package =
+      checkout_snap_runtime && (target_cpu == "x64" || target_cpu == "arm64")
 }
 
 assert(is_linux)
@@ -97,6 +105,10 @@ if (enable_swiftshader) {
   packaging_files_shlibs += [ "$root_out_dir/libvk_swiftshader.so" ]
 }
 
+if (is_chrome_branded) {
+  packaging_files_shlibs += [ "$root_out_dir/libchromecompaneros.so" ]
+}
+
 if (build_with_internal_optimization_guide) {
   packaging_files_shlibs +=
       [ "$root_out_dir/liboptimization_guide_internal.so" ]
@@ -114,8 +126,6 @@ packaging_files = packaging_files_binaries + [
                     "$root_out_dir/locales/en-US.pak",
                     "$root_out_dir/MEIPreload/manifest.json",
                     "$root_out_dir/MEIPreload/preloaded_data.pb",
-                    "$root_out_dir/PrivacySandboxAttestationsPreloaded/manifest.json",
-                    "$root_out_dir/PrivacySandboxAttestationsPreloaded/privacy-sandbox-attestations.dat",
                   ]
 if (enable_swiftshader) {
   packaging_files += [ "$root_out_dir/vk_swiftshader_icd.json" ]
@@ -262,6 +272,14 @@ strip_binary("strip_libvk_swiftshader.shlib") {
   deps = [ "//third_party/swiftshader/src/Vulkan:swiftshader_libvulkan" ]
 }
 
+if (is_chrome_branded) {
+  strip_binary("strip_chromecompaneros") {
+    binary_input = "$root_out_dir/libchromecompaneros.so"
+    deps =
+        [ "//chrome/common/request_header_integrity/internal:chromecompaneros" ]
+  }
+}
+
 if (build_with_internal_optimization_guide) {
   strip_binary("strip_optimization_guide") {
     binary_input = "$root_out_dir/liboptimization_guide_internal.so"
@@ -356,12 +374,12 @@ copy("common_packaging_files") {
   sources = [
     "//chrome/app/resources/manpage.1.in",
     "common/apparmor.template",
-    "common/appdata.xml.template",
     "common/apt.include",
     "common/default-app-block.template",
     "common/default-app.template",
     "common/desktop.template",
     "common/key.include",
+    "common/metainfo.xml.template",
     "common/postinst.include",
     "common/prerm.include",
     "common/repo.cron",
@@ -491,7 +509,6 @@ group("installer_deps") {
     "//chrome/browser/enterprise/connectors/device_trust/key_management/installer/management_service:chrome_management_service",
     "//chrome/browser/resources/media/mei_preload:component",
     "//components/crash/core/app:chrome_crashpad_handler",
-    "//components/privacy_sandbox/privacy_sandbox_attestations/preload:component",
     "//sandbox/linux:chrome_sandbox",
   ]
   if (bundle_widevine_cdm) {
@@ -530,6 +547,12 @@ group("installer_deps") {
     if (enable_flatpak) {
       public_deps += [ ":flatpak_packaging_files" ]
     }
+  }
+  if (is_chrome_branded) {
+    public_deps += [
+      ":strip_chromecompaneros",
+      "//chrome/common/request_header_integrity/internal:chromecompaneros",
+    ]
   }
   if (build_with_internal_optimization_guide) {
     public_deps += [
@@ -673,6 +696,66 @@ template("linux_package") {
         deps = [ ":installer_deps" ]
       }
     }
+
+    if (enable_snap_package) {
+      snap_target_name = "${target_name}_snap"
+
+      action(snap_target_name) {
+        visibility = [ ":*" ]
+        script = "snap/build.py"
+
+        if (!is_chrome_branded) {
+          package = "chromium"
+        }
+        if (current_cpu == "x64") {
+          snap_arch = "amd64"
+        } else if (current_cpu == "arm") {
+          snap_arch = "armhf"
+        } else if (current_cpu == "arm64") {
+          snap_arch = "arm64"
+        } else if (current_cpu == "riscv64") {
+          snap_arch = "riscv64"
+        } else {
+          assert(false, "Snap package not configured for this architecture.")
+        }
+
+        snap_runtime_dir = "snap/runtime/linux-${snap_arch}"
+        assert(path_exists("$snap_runtime_dir/manifest.json"),
+               "Missing snap runtime ($snap_runtime_dir). Set " +
+                   "\"checkout_snap_runtime\": True in .gclient custom_vars " +
+                   "and re-run \"gclient sync\".")
+
+        inputs = packaging_files + [
+                   "$snap_runtime_dir/manifest.json",
+                   "snap/build.py",
+                   "snap/chrome.launcher.in",
+                   "snap/snap.yaml.in",
+                 ]
+        outputs = [ "$root_out_dir/${package}-${channel}_${chrome_version_full}_${snap_arch}.snap" ]
+
+        args = [
+          "-a",
+          snap_arch,
+          "-b",
+          build_timestamp,
+          "-c",
+          invoker.channel,
+          "-d",
+          branding_path_component,
+          "-o",
+          rebase_path(root_out_dir, root_build_dir),
+          "-t",
+          target_os,
+          "--runtime-dir",
+          rebase_path(snap_runtime_dir, root_build_dir),
+          "--use-static-angle=$use_static_angle",
+        ]
+        if (is_official_build) {
+          args += [ "-f" ]
+        }
+        deps = [ ":installer_deps" ]
+      }
+    }
   }
 
   group(target_name) {
@@ -681,6 +764,9 @@ template("linux_package") {
       deps += [ ":$rpm_target_name" ]
       if (enable_flatpak) {
         deps += [ ":$flatpak_target_name" ]
+      }
+      if (enable_snap_package) {
+        deps += [ ":$snap_target_name" ]
       }
     }
   }
@@ -718,6 +804,11 @@ if (!is_chromeos) {
   if (enable_flatpak) {
     group("dev_flatpak") {
       deps = [ ":unstable_flatpak" ]
+    }
+  }
+  if (enable_snap_package) {
+    group("dev_snap") {
+      deps = [ ":unstable_snap" ]
     }
   }
 }

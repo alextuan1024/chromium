@@ -20,13 +20,13 @@ if (!is_android) {
       "web_app_internals_handler.h",
       "web_app_internals_ui.h",
     ]
-    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
     deps = [
       ":mojo_bindings",
       "//base",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/resources/web_app_internals:resources",
       "//chrome/browser/web_applications",
+      "//chrome/browser/web_applications/isolated_web_apps",
       "//chrome/common",
       "//components/prefs",
       "//components/webapps/browser",

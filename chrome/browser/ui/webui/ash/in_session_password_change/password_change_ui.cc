@@ -26,7 +26,7 @@
 #include "chrome/grit/password_change_resources.h"
 #include "chrome/grit/password_change_resources_map.h"
 #include "chromeos/ash/components/login/auth/public/saml_password_attributes.h"
-#include "chromeos/strings/grit/chromeos_strings.h"
+#include "chromeos/resources/grit/chromeos_strings.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/browser_thread.h"
@@ -67,7 +67,7 @@ std::string GetPasswordChangeUrl(Profile* profile) {
 std::u16string GetHostedHeaderText(const std::string& password_change_url) {
   std::u16string host =
       base::UTF8ToUTF16(net::GetHostAndOptionalPort(GURL(password_change_url)));
-  DCHECK(!host.empty());
+  CHECK(!host.empty(), base::NotFatalUntil::M162);
   return l10n_util::GetStringFUTF16(IDS_LOGIN_SAML_PASSWORD_CHANGE_NOTICE,
                                     host);
 }

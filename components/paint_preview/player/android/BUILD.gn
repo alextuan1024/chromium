@@ -94,6 +94,7 @@ android_library("java") {
 
   deps = [
     "//base:base_java",
+    "//base:memory_coordinator_java",
     "//build/android:build_java",
     "//components/browser_ui/styles/android:java",
     "//components/browser_ui/widget/android:java",
@@ -143,6 +144,7 @@ android_library("javatests") {
     ":player_java_test_support",
     "//base:base_java",
     "//base:base_java_test_support",
+    "//base/test:public_transit_java",
     "//components/paint_preview/browser/android:java",
     "//components/signin/public/android:java",
     "//components/signin/public/android:signin_java_test_support",

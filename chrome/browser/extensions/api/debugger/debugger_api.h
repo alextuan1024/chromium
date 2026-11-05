@@ -10,6 +10,7 @@
 
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -31,6 +32,13 @@ struct MessageSubstitution;
 
 namespace extensions {
 class ExtensionDevToolsClientHost;
+
+// Returns `extension_name` prepared for the warning shown while the extension
+// is debugging the browser: truncated to a maximum length, with any directional
+// formatting left open by the truncation terminated so that the name can't
+// visually reorder the rest of the warning. See https://crbug.com/514078071.
+std::u16string GetExtensionNameForDevToolsWarning(
+    std::u16string_view extension_name);
 
 // Android uses messages instead of desktop infobars, so the desktop infobar
 // controller is skipped on Android.
@@ -58,7 +66,8 @@ class ExtensionDevToolsInfoBarController {
 
   void OnInfoBarActionInternal();
 
-  std::set<raw_ptr<ExtensionDevToolsClientHost, SetExperimental>> active_hosts_;
+  std::set<raw_ptr<ExtensionDevToolsClientHost, DanglingUntriaged>>
+      active_hosts_;
   std::u16string last_extension_name_;
   base::OneShotTimer autoclose_timer_;
 };

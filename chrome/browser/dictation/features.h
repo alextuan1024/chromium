@@ -39,18 +39,36 @@ extern const base::FeatureParam<bool> kShowPartials;
 // If true, uses the Web Speech API backend instead of the cloud backend.
 extern const base::FeatureParam<bool> kWebSpeechApiBackend;
 
-// If true, the session will end when a dictation stream ends, rather than
-// allowing multiple streams in a single session.
-extern const base::FeatureParam<bool> kSessionEndsOnStreamEnd;
+// If non-empty, instructs the component extension to route the transcription
+// request to the given experimental config.
+extern const base::FeatureParam<std::string> kSecondaryRoutingKey;
 
-// The delay before ending a session after a stream ends when
-// `kSessionEndsOnStreamEnd` is enabled.
+// The delay before ending a session after a stream ends.
 extern const base::FeatureParam<base::TimeDelta> kAutoSessionEndDelay;
 
 // Omaha release cohort tag for the connector component extension (e.g.,
 // "canary"). If non-empty, this tag is passed to the component updater
 // so Omaha can serve pre-release or canary extension cohorts.
 extern const base::FeatureParam<std::string> kDictationConnectorTag;
+
+// Comma-separated list of hosts (a host also matches its subdomains) whose
+// editors are asked to populate their EditContext when dictation starts, by
+// sending them one-time IME input. See DictationAgent.PopulateEditContext.
+extern const base::FeatureParam<std::string> kPopulateEditContextHosts;
+
+// Enables press-and-hold (push-to-talk) hotkey support for Dictation.
+BASE_DECLARE_FEATURE(kDictationPressAndHold);
+
+// Minimum hold duration before a dedicated press-and-hold hotkey press
+// transitions to press-and-hold (push-to-talk) mode.
+extern const base::FeatureParam<base::TimeDelta>
+    kDictationPressAndHoldThreshold;
+
+// Minimum hold duration before a shared hotkey (when toggle and press-and-hold
+// are configured to the same shortcut) transitions from tap-to-toggle mode to
+// press-and-hold (push-to-talk) mode.
+extern const base::FeatureParam<base::TimeDelta>
+    kDictationSharedHotkeyPressAndHoldThreshold;
 
 }  // namespace dictation
 

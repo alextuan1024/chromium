@@ -5,23 +5,30 @@
 #include "services/network/cors/cors_url_loader_factory.h"
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
 
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/system/data_pipe_utils.h"
 #include "mojo/public/cpp/test_support/fake_message_dispatch_context.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/base/features.h"
 #include "net/base/load_flags.h"
-#include "net/base/mock_network_change_notifier.h"
 #include "net/disk_cache/buildflags.h"
 #include "net/disk_cache/disk_cache.h"
 #include "net/http/http_cache.h"
+#include "net/http/http_request_headers.h"
 #include "net/proxy_resolution/configured_proxy_resolution_service.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
@@ -32,6 +39,7 @@
 #include "net/url_request/url_request_context_builder.h"
 #include "services/network/cors/cors_url_loader_test_util.h"
 #include "services/network/is_browser_initiated.h"
+#include "services/network/keepalive_statistics_recorder.h"
 #include "services/network/network_context.h"
 #include "services/network/network_service.h"
 #include "services/network/prefetch_matching_url_loader_factory.h"
@@ -142,7 +150,12 @@ class CorsURLLoaderFactoryTest : public testing::Test,
         traffic_annotation);
   }
 
-  bool CreateLoaderAndStartAndReturnIsOutermostMainFrame(
+  // Like CreateLoaderAndStart(), but returns the request after the factory's
+  // validation, which may mutate it (e.g. truncate over-long values). The
+  // factory moves the request into the loader unless web security is disabled,
+  // so with web security enabled only fields that a move leaves intact, such
+  // as bools, are reliable.
+  ResourceRequest CreateLoaderAndStartAndReturnRequest(
       const ResourceRequest& request) {
     url_loaders_.emplace_back();
     test_cors_loader_clients_.emplace_back(
@@ -153,7 +166,28 @@ class CorsURLLoaderFactoryTest : public testing::Test,
         mojom::kURLLoadOptionNone, request_copy,
         test_cors_loader_clients_.back()->CreateRemote(),
         net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
-    return request_copy.is_outermost_main_frame;
+    return request_copy;
+  }
+
+  bool CreateLoaderAndStartAndReturnIsOutermostMainFrame(
+      const ResourceRequest& request) {
+    return CreateLoaderAndStartAndReturnRequest(request)
+        .is_outermost_main_frame;
+  }
+
+  // Returns a same-origin no-cors GET request to `path` with
+  // `content_user_agent` set.
+  ResourceRequest CreateContentUserAgentRequest(
+      std::optional<std::string> content_user_agent,
+      std::string_view path = "/echoall") {
+    ResourceRequest request;
+    request.mode = mojom::RequestMode::kNoCors;
+    request.credentials_mode = mojom::CredentialsMode::kOmit;
+    request.method = net::HttpRequestHeaders::kGetMethod;
+    request.url = test_server()->GetURL(path);
+    request.request_initiator = url::Origin::Create(request.url);
+    request.content_user_agent = std::move(content_user_agent);
+    return request;
   }
 
   void ResetFactory() {
@@ -161,20 +195,14 @@ class CorsURLLoaderFactoryTest : public testing::Test,
     factory_owner_.reset();
   }
 
-  const CorsURLLoaderFactory* GetCorsURLLoaderFactory() const {
-    return factory_owner_->GetCorsURLLoaderFactoryForTesting();
-  }
-
   net::test_server::EmbeddedTestServer* test_server() { return &test_server_; }
 
   NetworkContext* network_context() { return network_context_.get(); }
 
+  NetworkService* network_service() { return network_service_.get(); }
+
   std::vector<mojo::Remote<mojom::URLLoader>>& url_loaders() {
     return url_loaders_;
-  }
-
-  net::test::MockNetworkChangeNotifier* mock_network_change_notifier() {
-    return scoped_mock_network_change_notifier_->mock_network_change_notifier();
   }
 
   std::vector<std::unique_ptr<TestURLLoaderClient>>&
@@ -194,12 +222,6 @@ class CorsURLLoaderFactoryTest : public testing::Test,
 
  private:
   mojo::FakeMessageDispatchContext mojo_context_;
-  // This is required by NetworkBoundCorsURLLoaderFactoryTest but has to live
-  // here to destruct things in the right order (it must outlive
-  // url_request_context_).
-  std::unique_ptr<net::test::ScopedMockNetworkChangeNotifier>
-      scoped_mock_network_change_notifier_ =
-          std::make_unique<net::test::ScopedMockNetworkChangeNotifier>();
   std::unique_ptr<net::URLRequestContext> url_request_context_;
   ResourceScheduler resource_scheduler_;
   std::unique_ptr<NetworkService> network_service_;
@@ -294,6 +316,170 @@ TEST_F(CorsURLLoaderFactoryTest, DisallowedLoadFlagToUntrustedLoader) {
   CreateLoaderAndStart(request);
   EXPECT_EQ("CorsURLLoaderFactory: Untrusted caller using restricted load flag",
             bad_message_observer.WaitForBadMessage());
+}
+
+class UserAgentFromScriptDisabledCorsURLLoaderFactoryTest
+    : public CorsURLLoaderFactoryTest {
+ public:
+  UserAgentFromScriptDisabledCorsURLLoaderFactoryTest() {
+    AddScopedFeatureList().InitAndDisableFeature(
+        net::features::kAllowUserAgentHeaderFromScript);
+  }
+};
+
+TEST_F(UserAgentFromScriptDisabledCorsURLLoaderFactoryTest,
+       ContentUserAgentRejectedWhenFeatureDisabled) {
+  base::HistogramTester histogram_tester;
+
+  ResourceRequest request = CreateContentUserAgentRequest("MyAgent/1.0");
+  mojo::test::BadMessageObserver bad_message_observer;
+  CreateLoaderAndStart(request);
+  EXPECT_EQ("CorsURLLoaderFactory: content_user_agent is set unexpectedly.",
+            bad_message_observer.WaitForBadMessage());
+  histogram_tester.ExpectTotalCount("NetworkService.ContentUserAgentSize", 0);
+}
+
+// A present but empty value is still rejected.
+TEST_F(UserAgentFromScriptDisabledCorsURLLoaderFactoryTest,
+       EmptyContentUserAgentRejectedWhenFeatureDisabled) {
+  ResourceRequest request = CreateContentUserAgentRequest("");
+  mojo::test::BadMessageObserver bad_message_observer;
+  CreateLoaderAndStart(request);
+  EXPECT_EQ("CorsURLLoaderFactory: content_user_agent is set unexpectedly.",
+            bad_message_observer.WaitForBadMessage());
+}
+
+class UserAgentFromScriptEnabledCorsURLLoaderFactoryTest
+    : public CorsURLLoaderFactoryTest {
+ public:
+  UserAgentFromScriptEnabledCorsURLLoaderFactoryTest() {
+    AddScopedFeatureList().InitAndEnableFeature(
+        net::features::kAllowUserAgentHeaderFromScript);
+  }
+};
+
+// The default (web security enabled) path accepts `content_user_agent` and
+// sends it as the User-Agent.
+TEST_F(UserAgentFromScriptEnabledCorsURLLoaderFactoryTest,
+       ContentUserAgentSentWhenFeatureEnabled) {
+  ResourceRequest request =
+      CreateContentUserAgentRequest("MyAgent/1.0", "/echoheader?User-Agent");
+  mojo::test::BadMessageObserver bad_message_observer;
+  CreateLoaderAndStart(request);
+
+  TestURLLoaderClient* client = test_cors_loader_clients().back().get();
+  client->RunUntilComplete();
+  EXPECT_EQ(net::OK, client->completion_status().error_code);
+  std::string body;
+  ASSERT_TRUE(
+      mojo::BlockingCopyToString(client->response_body_release(), &body));
+  EXPECT_EQ("MyAgent/1.0", body);
+  EXPECT_FALSE(bad_message_observer.got_bad_message());
+}
+
+// With web security disabled the factory hands the validated request straight
+// to the network loader factory by reference, which lets the tests observe
+// the request as forwarded.
+class UserAgentFromScriptEnabledWebSecurityDisabledCorsURLLoaderFactoryTest
+    : public UserAgentFromScriptEnabledCorsURLLoaderFactoryTest {
+ private:
+  void SetUp() override {
+    auto factory_params = network::mojom::URLLoaderFactoryParams::New();
+    factory_params->disable_web_security = true;
+    BaseSetup(std::move(factory_params), mojom::NetworkContextParams::New());
+  }
+};
+
+TEST_F(UserAgentFromScriptEnabledWebSecurityDisabledCorsURLLoaderFactoryTest,
+       ContentUserAgentAcceptedWhenFeatureEnabled) {
+  base::HistogramTester histogram_tester;
+
+  ResourceRequest request = CreateContentUserAgentRequest("MyAgent/1.0");
+  ResourceRequest forwarded = CreateLoaderAndStartAndReturnRequest(request);
+  EXPECT_EQ("MyAgent/1.0", forwarded.content_user_agent);
+  histogram_tester.ExpectUniqueSample("NetworkService.ContentUserAgentSize", 11,
+                                      1);
+}
+
+TEST_F(UserAgentFromScriptEnabledWebSecurityDisabledCorsURLLoaderFactoryTest,
+       NoContentUserAgentRecordsNoSample) {
+  base::HistogramTester histogram_tester;
+
+  ResourceRequest request = CreateContentUserAgentRequest(std::nullopt);
+  ResourceRequest forwarded = CreateLoaderAndStartAndReturnRequest(request);
+  EXPECT_EQ(std::nullopt, forwarded.content_user_agent);
+  histogram_tester.ExpectTotalCount("NetworkService.ContentUserAgentSize", 0);
+}
+
+// Covers the boundaries of the 512-byte cap. The value is opaque bytes, so the
+// cut is at byte 512 even inside a multi-byte character. The histogram records
+// the size before truncation.
+TEST_F(UserAgentFromScriptEnabledWebSecurityDisabledCorsURLLoaderFactoryTest,
+       ContentUserAgentTruncationBoundaries) {
+  const struct {
+    const char* name;
+    std::string input;
+    std::string expected;
+  } kCases[] = {
+      {"Empty", "", ""},
+      {"OneBelowLimit", std::string(511, 'a'), std::string(511, 'a')},
+      {"AtLimit", std::string(512, 'a'), std::string(512, 'a')},
+      {"OneAboveLimit", std::string(513, 'a'), std::string(512, 'a')},
+      {"MultiByteCharEndingAtLimit", std::string(510, 'a') + "\u00E9",
+       std::string(510, 'a') + "\u00E9"},
+      {"MultiByteCharStraddlingLimit", std::string(510, 'a') + "\u20AC",
+       (std::string(510, 'a') + "\u20AC").substr(0, 512)},
+      {"NotUtf8",
+       std::string(500, 'a') + std::string(13, static_cast<char>(0xFF)),
+       std::string(500, 'a') + std::string(12, static_cast<char>(0xFF))},
+      {"TrailingSpaceAfterCut", std::string(511, 'a') + " b",
+       std::string(511, 'a')},
+  };
+  for (const auto& test_case : kCases) {
+    SCOPED_TRACE(test_case.name);
+    base::HistogramTester histogram_tester;
+
+    ResourceRequest request = CreateContentUserAgentRequest(test_case.input);
+    ResourceRequest forwarded = CreateLoaderAndStartAndReturnRequest(request);
+    EXPECT_EQ(test_case.expected, forwarded.content_user_agent);
+    histogram_tester.ExpectUniqueSample("NetworkService.ContentUserAgentSize",
+                                        test_case.input.size(), 1);
+  }
+}
+
+class UserAgentFromScriptEnabledKeepaliveCorsURLLoaderFactoryTest
+    : public UserAgentFromScriptEnabledCorsURLLoaderFactoryTest {
+ protected:
+  const base::UnguessableToken top_frame_id_ = base::UnguessableToken::Create();
+
+ private:
+  void SetUp() override {
+    auto factory_params = network::mojom::URLLoaderFactoryParams::New();
+    factory_params->top_frame_id = top_frame_id_;
+    BaseSetup(std::move(factory_params), mojom::NetworkContextParams::New());
+  }
+};
+
+// The keepalive request size limit counts `content_user_agent`, which is sent
+// as the User-Agent header.
+TEST_F(UserAgentFromScriptEnabledKeepaliveCorsURLLoaderFactoryTest,
+       KeepaliveRequestSizeIncludesContentUserAgent) {
+  ResourceRequest request =
+      CreateContentUserAgentRequest("MyAgent/1.0", "/hung");
+  request.keepalive = true;
+  CreateLoaderAndStart(request);
+
+  KeepaliveStatisticsRecorder* recorder =
+      network_service()->keepalive_statistics_recorder();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return recorder->GetTotalRequestSizePerTopLevelFrame(top_frame_id_) > 0;
+  })) << "The keepalive request size was never recorded";
+  const size_t expected_size =
+      request.url.spec().size() +
+      std::string_view(net::HttpRequestHeaders::kUserAgent).size() +
+      std::string_view("MyAgent/1.0").size();
+  EXPECT_EQ(static_cast<int>(expected_size),
+            recorder->GetTotalRequestSizePerTopLevelFrame(top_frame_id_));
 }
 
 TEST_F(CorsURLLoaderFactoryTest, DocumentDestinationRequiresNavigateMode) {
@@ -526,8 +712,39 @@ TEST_F(RequireCrossSiteRequestForCookiesCorsURLLoaderFactoryTest,
   EXPECT_EQ(net::OK, client->completion_status().error_code);
 }
 
+class SharedWorkerSameSiteCookiesNoneCorsURLLoaderFactoryTest
+    : public CorsURLLoaderFactoryTest {
+  void SetUp() override {
+    auto factory_params = network::mojom::URLLoaderFactoryParams::New();
+    const url::Origin kOrigin =
+        url::Origin::Create(GURL("https://example.test"));
+    factory_params->isolation_info = net::IsolationInfo::Create(
+        net::IsolationInfo::RequestType::kOther, kOrigin, kOrigin,
+        net::SiteForCookies(), /*nonce=*/std::nullopt,
+        net::NetworkIsolationPartition::kSharedWorkerSameSiteCookiesNone);
+    auto context_params = mojom::NetworkContextParams::New();
+    BaseSetup(std::move(factory_params), std::move(context_params));
+  }
+};
+
+TEST_F(SharedWorkerSameSiteCookiesNoneCorsURLLoaderFactoryTest,
+       NonNullSiteForCookiesRejected) {
+  ResourceRequest request;
+  GURL url = test_server()->GetURL("/echoall");
+  request.mode = mojom::RequestMode::kCors;
+  request.credentials_mode = mojom::CredentialsMode::kInclude;
+  request.method = net::HttpRequestHeaders::kGetMethod;
+  request.url = url;
+  request.request_initiator = url::Origin::Create(url);
+  request.site_for_cookies = net::SiteForCookies::FromUrl(url);
+  mojo::test::BadMessageObserver bad_message_observer;
+  CreateLoaderAndStart(request);
+  EXPECT_EQ(
+      "CorsURLLoaderFactory: all requests in this context must be cross-site",
+      bad_message_observer.WaitForBadMessage());
+}
+
 TEST_F(CorsURLLoaderFactoryTest, UntrustedCorsPreflightRequestAreFailed) {
-  EXPECT_FALSE(GetCorsURLLoaderFactory()->IsCorsPreflighLoadOptionAllowed());
   ResourceRequest request;
   GURL url = test_server()->GetURL("/echoall");
   request.mode = mojom::RequestMode::kNavigate;
@@ -543,29 +760,22 @@ TEST_F(CorsURLLoaderFactoryTest, UntrustedCorsPreflightRequestAreFailed) {
             bad_message_observer.WaitForBadMessage());
 }
 
-class NetworkBoundCorsURLLoaderFactoryTest : public CorsURLLoaderFactoryTest {
-  void SetUp() override {
-    // Setting URLLoaderFactoryParams::bound_network requires
-    // net::base::NetworkChangeNotifier::AreNetworkHandlesSupported() == true.
-    // To make that the case, force its support.
-    mock_network_change_notifier()->ForceNetworkHandlesSupported();
-    auto factory_params = network::mojom::URLLoaderFactoryParams::New();
-    factory_params->disable_web_security = true;
-    auto context_params = mojom::NetworkContextParams::New();
-    context_params->bound_network = 1234;
-    BaseSetup(std::move(factory_params), std::move(context_params));
-  }
-};
-
-// Regression test for crbug.com/366242716.
-TEST_F(NetworkBoundCorsURLLoaderFactoryTest, CorsPreflightRequestAreAllowed) {
-  if constexpr (BUILDFLAG(IS_ANDROID)) {
-    EXPECT_TRUE(GetCorsURLLoaderFactory()->IsCorsPreflighLoadOptionAllowed());
-  } else {
-    GTEST_SKIP() << "Network bound NetworkContext/URLRequestContext is "
-                    "supported only on "
-                    "Android, see URLRequestContextBuilder::BindToNetwork";
-  }
+TEST_F(CorsURLLoaderFactoryTest,
+       ReadAndDiscardBodyAndSniffMimeTypeOptionsAreBadMessage) {
+  ResourceRequest request;
+  const GURL url = test_server()->GetURL("/echoall");
+  request.mode = mojom::RequestMode::kNoCors;
+  request.credentials_mode = mojom::CredentialsMode::kOmit;
+  request.method = net::HttpRequestHeaders::kGetMethod;
+  request.url = url;
+  request.request_initiator = url::Origin::Create(url);
+  mojo::test::BadMessageObserver bad_message_observer;
+  CreateLoaderAndStart(request, mojom::kURLLoadOptionReadAndDiscardBody |
+                                    mojom::kURLLoadOptionSniffMimeType);
+  EXPECT_EQ(
+      "CorsURLLoaderFactory: kURLLoadOptionReadAndDiscardBody and "
+      "kURLLoadOptionSniffMimeType cannot be used together",
+      bad_message_observer.WaitForBadMessage());
 }
 
 TEST_F(CorsURLLoaderFactoryTest, ForbiddenSecHeader) {
@@ -677,6 +887,101 @@ TEST_F(BrowserProcessCorsURLLoaderFactoryTest, OutermostMainFrameNotClamped) {
   EXPECT_FALSE(bad_message_observer.got_bad_message());
   histogram_tester.ExpectTotalCount(
       "NetworkService.CorsURLLoaderFactory.IsOutermostMainFrameClamped", 0);
+}
+
+class StorageAccessRestrictedCorsURLLoaderFactoryTest
+    : public CorsURLLoaderFactoryTest {
+ protected:
+  void SetUp() override {
+    auto factory_params = network::mojom::URLLoaderFactoryParams::New();
+    factory_params->is_storage_access_potentially_allowed = false;
+    auto context_params = mojom::NetworkContextParams::New();
+    BaseSetup(std::move(factory_params), std::move(context_params));
+  }
+};
+
+TEST_F(StorageAccessRestrictedCorsURLLoaderFactoryTest,
+       StorageAccessApiStatusRejected) {
+  ResourceRequest request;
+  request.mode = mojom::RequestMode::kCors;
+  request.credentials_mode = mojom::CredentialsMode::kInclude;
+  request.method = net::HttpRequestHeaders::kGetMethod;
+  request.url = test_server()->GetURL("/echoall");
+  request.request_initiator = url::Origin::Create(request.url);
+  request.storage_access_api_status =
+      net::StorageAccessApiStatus::kAccessViaAPI;
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  CreateLoaderAndStart(request);
+  EXPECT_EQ(
+      "CorsURLLoaderFactory: storage_access_api_status must be kNone when "
+      "storage access is not allowed",
+      bad_message_observer.WaitForBadMessage());
+}
+
+TEST_F(StorageAccessRestrictedCorsURLLoaderFactoryTest,
+       StorageAccessApiStatusNoneAllowed) {
+  ResourceRequest request;
+  request.mode = mojom::RequestMode::kCors;
+  request.credentials_mode = mojom::CredentialsMode::kInclude;
+  request.method = net::HttpRequestHeaders::kGetMethod;
+  request.url = test_server()->GetURL("/echoall");
+  request.request_initiator = url::Origin::Create(request.url);
+  request.storage_access_api_status = net::StorageAccessApiStatus::kNone;
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  CreateLoaderAndStart(request);
+  test_cors_loader_clients().back()->RunUntilComplete();
+  EXPECT_EQ(net::OK,
+            test_cors_loader_clients().back()->completion_status().error_code);
+  EXPECT_FALSE(bad_message_observer.got_bad_message());
+}
+
+class StorageAccessRestrictedFeatureDisabledCorsURLLoaderFactoryTest
+    : public StorageAccessRestrictedCorsURLLoaderFactoryTest {
+ public:
+  StorageAccessRestrictedFeatureDisabledCorsURLLoaderFactoryTest() {
+    AddScopedFeatureList().InitAndDisableFeature(
+        features::kEnforceStorageAccessApiRestrictions);
+  }
+};
+
+TEST_F(StorageAccessRestrictedFeatureDisabledCorsURLLoaderFactoryTest,
+       FeatureDisabledBypassesBadMessage) {
+  ResourceRequest request;
+  request.mode = mojom::RequestMode::kCors;
+  request.credentials_mode = mojom::CredentialsMode::kInclude;
+  request.method = net::HttpRequestHeaders::kGetMethod;
+  request.url = test_server()->GetURL("/echoall");
+  request.request_initiator = url::Origin::Create(request.url);
+  request.storage_access_api_status =
+      net::StorageAccessApiStatus::kAccessViaAPI;
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  CreateLoaderAndStart(request);
+  test_cors_loader_clients().back()->RunUntilComplete();
+  EXPECT_EQ(net::OK,
+            test_cors_loader_clients().back()->completion_status().error_code);
+  EXPECT_FALSE(bad_message_observer.got_bad_message());
+}
+
+TEST_F(CorsURLLoaderFactoryTest,
+       StorageAccessApiStatusAllowedWhenNotRestricted) {
+  ResourceRequest request;
+  request.mode = mojom::RequestMode::kCors;
+  request.credentials_mode = mojom::CredentialsMode::kInclude;
+  request.method = net::HttpRequestHeaders::kGetMethod;
+  request.url = test_server()->GetURL("/echoall");
+  request.request_initiator = url::Origin::Create(request.url);
+  request.storage_access_api_status =
+      net::StorageAccessApiStatus::kAccessViaAPI;
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  CreateLoaderAndStart(request);
+  test_cors_loader_clients().back()->RunUntilComplete();
+  EXPECT_EQ(net::OK,
+            test_cors_loader_clients().back()->completion_status().error_code);
+  EXPECT_FALSE(bad_message_observer.got_bad_message());
 }
 
 #if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)

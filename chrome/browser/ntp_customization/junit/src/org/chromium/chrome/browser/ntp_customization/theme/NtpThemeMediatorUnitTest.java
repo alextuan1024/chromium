@@ -78,7 +78,6 @@ public class NtpThemeMediatorUnitTest {
     @Mock private Profile mProfile;
     @Mock private NtpCustomizationUtils.OnImageLoadedCallback mOnImageSelectedCallback;
     @Mock private BottomSheetDelegate mBottomSheetDelegate;
-    @Mock private View mView;
     @Mock private NtpCustomizationConfigManager mNtpCustomizationConfigManager;
     @Mock private Uri mUri;
     @Mock private NtpThemeDelegate mNtpThemeDelegate;
@@ -89,6 +88,7 @@ public class NtpThemeMediatorUnitTest {
     private PropertyModel mThemePropertyModel;
     private NtpThemeMediator mMediator;
     private Context mContext;
+    private View mView;
 
     @Before
     public void setUp() {
@@ -96,7 +96,7 @@ public class NtpThemeMediatorUnitTest {
                 new ContextThemeWrapper(
                         ApplicationProvider.getApplicationContext(),
                         R.style.Theme_BrowserUI_DayNight);
-        when(mView.getContext()).thenReturn(mContext);
+        mView = new View(mContext);
         NtpCustomizationUtils.setImageFetcherForTesting(mImageFetcher);
 
         mBottomSheetPropertyModel =
@@ -305,7 +305,7 @@ public class NtpThemeMediatorUnitTest {
         createMediator(true);
         reset(mThemePropertyModel);
 
-        mMediator.onChromeColorSelected(2);
+        mMediator.onChromeColorSelected();
 
         verify(mThemePropertyModel)
                 .set(eq(IS_SECTION_SELECTED), eq(new Pair<>(CHROME_COLOR, true)));

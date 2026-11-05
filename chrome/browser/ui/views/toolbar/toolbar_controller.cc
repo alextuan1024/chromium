@@ -4,15 +4,20 @@
 
 #include "chrome/browser/ui/views/toolbar/toolbar_controller.h"
 
+#include <algorithm>
+#include <array>
 #include <optional>
 #include <ranges>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
+#include "base/containers/fixed_flat_map.h"
+#include "base/containers/flat_map.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -50,6 +55,7 @@
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/widget/widget.h"
 
 namespace {
 
@@ -142,37 +148,37 @@ ToolbarController::ToolbarController(
                 return;
               }
 
-              views::FlexSpecification* original_spec =
-                  toolbar_element->GetProperty(views::kFlexBehaviorKey);
-              views::FlexSpecification flex_spec;
-              if (!original_spec) {
-                flex_spec = views::FlexSpecification(
-                    views::LayoutOrientation::kHorizontal,
-                    views::MinimumFlexSizeRule::kPreferredSnapToZero,
-                    views::MaximumFlexSizeRule::kPreferred);
-                toolbar_element->SetProperty(views::kFlexBehaviorKey,
-                                             flex_spec);
+              // Copy any existing spec by value before calling `SetProperty()`,
+              // which mutates an existing `FlexSpecification` allocation in
+              // place.
+              std::optional<views::FlexSpecification> original_spec;
+              if (const views::FlexSpecification* existing_spec =
+                      toolbar_element->GetProperty(views::kFlexBehaviorKey)) {
+                original_spec = *existing_spec;
               }
-              flex_spec =
-                  toolbar_element->GetProperty(views::kFlexBehaviorKey)
-                      ->WithOrder(id_to_order_map.at(id.overflow_identifier));
+              views::FlexSpecification flex_spec =
+                  original_spec.value_or(views::FlexSpecification(
+                      views::LayoutOrientation::kHorizontal,
+                      views::MinimumFlexSizeRule::kPreferredSnapToZero,
+                      views::MaximumFlexSizeRule::kPreferred));
+              flex_spec = flex_spec.WithOrder(
+                  id_to_order_map.at(id.overflow_identifier));
               toolbar_element->SetProperty(views::kFlexBehaviorKey, flex_spec);
 
-              // Create pop out state and pop out handlers to support pop out.
+              // Create pop out state for every responsive element, and attach a
+              // PopOutHandler when an observed element identifier is
+              // configured.
+              auto state = std::make_unique<PopOutState>();
+              state->original_spec = std::move(original_spec);
+              state->responsive_spec = flex_spec;
               if (id.observed_identifier.has_value()) {
-                auto state = std::make_unique<PopOutState>();
-                if (original_spec) {
-                  state->original_spec =
-                      std::optional<views::FlexSpecification>(*original_spec);
-                }
-                state->responsive_spec = flex_spec;
                 state->handler = std::make_unique<PopOutHandler>(
                     this,
                     views::ElementTrackerViews::GetContextForView(
                         toolbar_container_view),
                     id.overflow_identifier, id.observed_identifier.value());
-                pop_out_state_[id.overflow_identifier] = std::move(state);
               }
+              pop_out_state_[id.overflow_identifier] = std::move(state);
             }},
         overflow_id);
   }
@@ -208,71 +214,91 @@ ToolbarController::GetDefaultOverflowOrder() {
 }
 
 // Every activate identifier should have an action name in order to emit
-// metrics. Please update action names in actions.xml to match this map.
+// metrics. Please update action names in actions.xml to match these tables.
 std::string ToolbarController::GetActionNameFromElementIdentifier(
     std::variant<ui::ElementIdentifier, actions::ActionId> identifier) {
-  static const base::NoDestructor<base::flat_map<
-      std::variant<ui::ElementIdentifier, actions::ActionId>, std::string_view>>
-      identifier_to_action_name_map(
-          {{kToolbarAvatarButtonElementId, "AvatarButton"},
-           {kToolbarBatterySaverButtonElementId, "BatterySaverButton"},
-           {kExtensionsMenuButtonElementId, "ExtensionsMenuButton"},
-           {kToolbarForwardButtonElementId, "ForwardButton"},
-           {kActionForward, "ForwardButton"},
-           {kToolbarHomeButtonElementId, "HomeButton"},
-           {kActionHome, "HomeButton"},
-           {kToolbarMediaButtonElementId, "MediaButton"},
-           {kToolbarSidePanelButtonElementId, "SidePanelButton"},
-           {kToolbarSplitTabsToolbarButtonElementId, "SplitTabs"},
-           {kPinnedToolbarActionShowSidePanelContextualTasksElementId,
-            "PinnedContextualTasksSidePanelButton"},
-           {kActionSidePanelShowContextualTasks,
-            "PinnedContextualTasksSidePanelButton"},
-           {kActionClearBrowsingData, "PinnedClearBrowsingDataButton"},
-           {kActionCopyUrl, "PinnedCopyLinkButton"},
-           {kActionDevTools, "PinnedDeveloperToolsButton"},
-           {kActionNewIncognitoWindow, "PinnedNewIncognitoWindowButton"},
-           {kActionNewIsolatedWindow, "PinnedNewIsolatedWindowButton"},
-           {kActionPrint, "PinnedPrintButton"},
-           {kActionQrCodeGenerator, "PinnedQrCodeGeneratorButton"},
-           {kActionRouteMedia, "PinnedCastButton"},
-           {kActionSendTabToSelf, "PinnedSendTabToSelfButton"},
-           {kActionShowAddressesBubbleOrPage,
-            "PinnedShowAddressesBubbleOrPageButton"},
-           {kActionShowChromeLabs, "PinnedShowChromeLabsButton"},
-           {kActionShowDownloads, "PinnedShowDownloadsButton"},
-           {kActionShowPasswordManager,
-            "PinnedShowPasswordsBubbleOrPageButton"},
-           {kActionShowPasswordsBubbleOrPage,
-            "PinnedShowPasswordsBubbleOrPageButton"},
-           {kActionShowPaymentMethods, "PinnedShowPaymentsBubbleOrPageButton"},
-           {kActionShowPaymentsBubbleOrPage,
-            "PinnedShowPaymentsBubbleOrPageButton"},
-           {kActionShowTranslate, "PinnedShowTranslateButton"},
-           {kActionSidePanelShowBookmarks, "PinnedShowBookmarkSidePanelButton"},
-           {kActionSidePanelShowReadAnything,
-            "PinnedShowReadAnythingSidePanelButton"},
-           {kActionSidePanelShowHistoryCluster,
-            "PinnedShowHistorySidePanelButton"},
-           {kActionSidePanelShowReadingList,
-            "PinnedShowReadingListSidePanelButton"},
-           {kActionSidePanelShowSearchCompanion,
-            "PinnedShowSearchCompanionSidePanelButton"},
-           {kActionTaskManager, "PinnedTaskManagerButton"},
-           {kActionSidePanelShowLensOverlayResults,
-            "PinnedShowLensOverlayResultsSidePanelButton"},
-           {kActionSendSharedTabGroupFeedback, "SharedTabGroupFeedbackButton"},
-           {kActionTabSearch, "PinnedTabSearchButton"},
-           {kActionSidePanelShowGlic, "PinnedGlicButton"},
-           {kActionSidePanelShowTabsFromOtherDevices,
-            "PinnedTabsFromOtherDevicesButton"},
-           {kGlicButtonElementId, "GlicButtonElementId"}});
+  static constexpr auto kElementIdToActionName =
+      std::to_array<std::pair<ui::ElementIdentifier, std::string_view>>({
+          {kToolbarAvatarButtonElementId, "AvatarButton"},
+          {kToolbarBatterySaverButtonElementId, "BatterySaverButton"},
+          {kExtensionsMenuButtonElementId, "ExtensionsMenuButton"},
+          {kToolbarForwardButtonElementId, "ForwardButton"},
+          {kToolbarHomeButtonElementId, "HomeButton"},
+          {kToolbarMediaButtonElementId, "MediaButton"},
+          {kToolbarSidePanelButtonElementId, "SidePanelButton"},
+          {kToolbarSplitTabsToolbarButtonElementId, "SplitTabs"},
+          {kPinnedToolbarActionShowSidePanelContextualTasksElementId,
+           "PinnedContextualTasksSidePanelButton"},
+          {kGlicButtonElementId, "GlicButtonElementId"},
+      });
 
-  const auto it = identifier_to_action_name_map->find(identifier);
-  return it == identifier_to_action_name_map->end()
+  static constexpr auto kActionIdToActionNameMap =
+      base::MakeFixedFlatMap<actions::ActionId, std::string_view>({
+          {kActionForward, "ForwardButton"},
+          {kActionHome, "HomeButton"},
+          {kActionSidePanelShowContextualTasks,
+           "PinnedContextualTasksSidePanelButton"},
+          {kActionClearBrowsingData, "PinnedClearBrowsingDataButton"},
+          {kActionCopyUrl, "PinnedCopyLinkButton"},
+          {kActionDevTools, "PinnedDeveloperToolsButton"},
+          {kActionNewIncognitoWindow, "PinnedNewIncognitoWindowButton"},
+          {kActionNewIsolatedWindow, "PinnedNewIsolatedWindowButton"},
+          {kActionPrint, "PinnedPrintButton"},
+          {kActionQrCodeGenerator, "PinnedQrCodeGeneratorButton"},
+          {kActionRouteMedia, "PinnedCastButton"},
+          {kActionSendTabToSelf, "PinnedSendTabToSelfButton"},
+          {kActionShowAddressesBubbleOrPage,
+           "PinnedShowAddressesBubbleOrPageButton"},
+          {kActionShowChromeLabs, "PinnedShowChromeLabsButton"},
+          {kActionShowDownloads, "PinnedShowDownloadsButton"},
+          {kActionShowPasswordManager, "PinnedShowPasswordsBubbleOrPageButton"},
+          {kActionShowPasswordsBubbleOrPage,
+           "PinnedShowPasswordsBubbleOrPageButton"},
+          {kActionShowPaymentMethods, "PinnedShowPaymentsBubbleOrPageButton"},
+          {kActionShowPaymentsBubbleOrPage,
+           "PinnedShowPaymentsBubbleOrPageButton"},
+          {kActionShowTranslate, "PinnedShowTranslateButton"},
+          {kActionSidePanelShowBookmarks, "PinnedShowBookmarkSidePanelButton"},
+          {kActionSidePanelShowReadAnything,
+           "PinnedShowReadAnythingSidePanelButton"},
+          {kActionSidePanelShowHistoryCluster,
+           "PinnedShowHistorySidePanelButton"},
+          {kActionSidePanelShowReadingList,
+           "PinnedShowReadingListSidePanelButton"},
+          {kActionSidePanelShowSearchCompanion,
+           "PinnedShowSearchCompanionSidePanelButton"},
+          {kActionTaskManager, "PinnedTaskManagerButton"},
+          {kActionTtcToolbar, "PinnedTtcButton"},
+          {kActionGlicSmartSelectionToolbar, "PinnedGlicSmartSelectionButton"},
+          {kActionSidePanelShowLensOverlayResults,
+           "PinnedShowLensOverlayResultsSidePanelButton"},
+          {kActionSendSharedTabGroupFeedback, "SharedTabGroupFeedbackButton"},
+          {kActionTabSearch, "PinnedTabSearchButton"},
+          {kActionSidePanelShowGlic, "PinnedGlicButton"},
+          {kActionSidePanelShowTabsFromOtherDevices,
+           "PinnedTabsFromOtherDevicesButton"},
+      });
+
+  const std::string_view suffix = std::visit(
+      absl::Overload{
+          [](ui::ElementIdentifier id) -> std::string_view {
+            const auto it = std::ranges::find(
+                kElementIdToActionName, id,
+                &std::pair<ui::ElementIdentifier, std::string_view>::first);
+            return it == kElementIdToActionName.end() ? std::string_view()
+                                                      : it->second;
+          },
+          [](actions::ActionId id) -> std::string_view {
+            const auto it = kActionIdToActionNameMap.find(id);
+            return it == kActionIdToActionNameMap.end() ? std::string_view()
+                                                        : it->second;
+          }},
+      identifier);
+
+  return suffix.empty()
              ? std::string()
-             : base::StrCat({"ResponsiveToolbar.OverflowMenuItemActivated.",
-                             it->second});
+             : base::StrCat(
+                   {"ResponsiveToolbar.OverflowMenuItemActivated.", suffix});
 }
 
 bool ToolbarController::PopOut(ui::ElementIdentifier identifier,
@@ -293,31 +319,12 @@ bool ToolbarController::PopOut(ui::ElementIdentifier identifier,
     return false;
   }
 
+  const bool was_popped_out = it->second->scoped_pop_out_count > 0;
   it->second->is_popped_out = true;
 
-  auto& original = it->second->original_spec;
-
-  if (original.has_value()) {
-    if (base::FeatureList::IsEnabled(features::kToolbarProfileChipResizing)) {
-      // Some elements (e.g. profile chip) use flex rules that allow
-      // snapping/scaling to zero. When popping out, elements should never be
-      // below the mininmum size.
-      element->SetProperty(
-          views::kFlexBehaviorKey,
-          views::FlexSpecification(views::LayoutOrientation::kHorizontal,
-                                   views::MinimumFlexSizeRule::kScaleToMinimum,
-                                   views::MaximumFlexSizeRule::kPreferred)
-              .WithOrder((*original).order())
-              .WithWeight((*original).weight())
-              .WithAlignment((*original).alignment()));
-    } else {
-      element->SetProperty(views::kFlexBehaviorKey, original.value());
-    }
-  } else {
-    element->ClearProperty(views::kFlexBehaviorKey);
+  if (!was_popped_out) {
+    ApplyPopOutSpec(element, *it->second);
   }
-
-  element->parent()->InvalidateLayout();
   if (show_synchronously) {
     toolbar_container_view_->DeprecatedLayoutImmediately();
   }
@@ -342,10 +349,85 @@ bool ToolbarController::EndPopOut(ui::ElementIdentifier identifier) {
   }
 
   it->second->is_popped_out = false;
-
-  element->SetProperty(views::kFlexBehaviorKey, it->second->responsive_spec);
-  element->parent()->InvalidateLayout();
+  MaybeRestoreResponsiveSpec(element, *it->second);
   return true;
+}
+
+base::ScopedClosureRunner ToolbarController::CreateScopedPopOut(
+    ui::ElementIdentifier identifier) {
+  if (ToolbarControllerUtil::PreventOverflow()) {
+    return base::ScopedClosureRunner();
+  }
+  views::View* const element =
+      FindToolbarElementWithId(toolbar_container_view_, identifier);
+  if (!element) {
+    return base::ScopedClosureRunner();
+  }
+  const auto it = pop_out_state_.find(identifier);
+  if (it == pop_out_state_.end()) {
+    return base::ScopedClosureRunner();
+  }
+
+  const bool was_popped_out = it->second->IsPoppedOut();
+  ++it->second->scoped_pop_out_count;
+  if (!was_popped_out) {
+    ApplyPopOutSpec(element, *it->second);
+  }
+  if (views::Widget* widget = toolbar_container_view_->GetWidget()) {
+    widget->LayoutRootViewIfNecessary();
+  }
+
+  return base::ScopedClosureRunner(
+      base::BindOnce(&ToolbarController::ReleaseScopedPopOut,
+                     weak_ptr_factory_.GetWeakPtr(), identifier));
+}
+
+void ToolbarController::ApplyPopOutSpec(views::View* element,
+                                        const PopOutState& state) {
+  if (state.original_spec.has_value()) {
+    if (base::FeatureList::IsEnabled(features::kToolbarProfileChipResizing)) {
+      // Some elements (e.g. profile chip) use flex rules that allow
+      // snapping/scaling to zero. When popping out, elements should never be
+      // below the minimum size.
+      element->SetProperty(
+          views::kFlexBehaviorKey,
+          views::FlexSpecification(views::LayoutOrientation::kHorizontal,
+                                   views::MinimumFlexSizeRule::kScaleToMinimum,
+                                   views::MaximumFlexSizeRule::kPreferred)
+              .WithOrder(state.original_spec->order())
+              .WithWeight(state.original_spec->weight())
+              .WithAlignment(state.original_spec->alignment()));
+    } else {
+      element->SetProperty(views::kFlexBehaviorKey, *state.original_spec);
+    }
+  } else {
+    element->ClearProperty(views::kFlexBehaviorKey);
+  }
+
+  element->parent()->InvalidateLayout();
+}
+
+void ToolbarController::MaybeRestoreResponsiveSpec(views::View* element,
+                                                   const PopOutState& state) {
+  if (state.IsPoppedOut()) {
+    return;
+  }
+  element->SetProperty(views::kFlexBehaviorKey, state.responsive_spec);
+  element->parent()->InvalidateLayout();
+}
+
+void ToolbarController::ReleaseScopedPopOut(ui::ElementIdentifier identifier) {
+  const auto it = pop_out_state_.find(identifier);
+  CHECK(it != pop_out_state_.end());
+  CHECK_GT(it->second->scoped_pop_out_count, 0);
+  --it->second->scoped_pop_out_count;
+
+  // `toolbar_container_view_` may have removed the child view before the scoped
+  // token is released (e.g. unpinning a responsive button).
+  if (views::View* const element =
+          FindToolbarElementWithId(toolbar_container_view_, identifier)) {
+    MaybeRestoreResponsiveSpec(element, *it->second);
+  }
 }
 
 bool ToolbarController::ShouldShowOverflowButton(gfx::Size available_size) {

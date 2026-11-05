@@ -14,11 +14,13 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "ui/webui/mojo_web_ui_controller.h"
 
+class Profile;
+
 namespace glic {
 
 // WebUI controller for the Glic overlay surface (`chrome://glic/overlay`).
 //
-// In NoWebview mode (`features::IsGlicNoWebviewEnabled()`), Glic loads this
+// In NoWebview mode (`GlicKeyedService::IsNoWebviewEnabled()`), Glic loads this
 // lightweight WebUI overlay instead of embedding a webview in `GlicUI`. It is
 // responsible for displaying loading skeletons and local error/offline panels
 // while the guest page (`gemini.google.com/glic`) runs in a separate
@@ -26,6 +28,8 @@ namespace glic {
 class GlicOverlayUI : public ui::MojoWebUIController,
                       public mojom::GlicOverlayPageHandlerFactory {
  public:
+  static bool IsShowErrorAllowed(Profile* profile);
+
   explicit GlicOverlayUI(content::WebUI* web_ui);
   GlicOverlayUI(const GlicOverlayUI&) = delete;
   GlicOverlayUI& operator=(const GlicOverlayUI&) = delete;

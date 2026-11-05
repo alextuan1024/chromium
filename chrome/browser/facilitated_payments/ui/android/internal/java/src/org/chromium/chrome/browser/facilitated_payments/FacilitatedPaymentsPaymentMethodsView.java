@@ -4,14 +4,11 @@
 
 package org.chromium.chrome.browser.facilitated_payments;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.content.Context;
 import android.content.res.Resources;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.FrameLayout;
-import android.widget.LinearLayout;
 
 import androidx.annotation.StringRes;
 
@@ -39,10 +36,8 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
                     .setUserCritical(UserCriticalFeature.FACILITATED_PAYMENTS_PAYMENT_METHODS)
                     .build();
 
-    // Contains everything to be shown in the bottom sheet. Includes the drag handler.
-    private final LinearLayout mView;
     // Holds the screens to be displayed in the bottom sheet. To show different screens, simply swap
-    // the view contained. Does not include the drag handler.
+    // the view contained.
     private final FrameLayout mScreenHolder;
     private final BottomSheetController mBottomSheetController;
     // The screen currently being shown.
@@ -56,6 +51,10 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
             new BottomSheetObserver() {
                 @Override
                 public void onSheetClosed(@StateChangeReason int reason) {
+                    if (mBottomSheetController.getCurrentSheetContent()
+                            != FacilitatedPaymentsPaymentMethodsView.this) {
+                        return;
+                    }
                     assert mUiEventListener != null;
                     switch (reason) {
                         case StateChangeReason.BACK_PRESS: // Intentional fallthrough.
@@ -73,6 +72,7 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
                             mUiEventListener.onResult(UiEvent.SCREEN_CLOSED_NOT_BY_USER);
                             break;
                     }
+                    mCurrentScreen = null;
                     mBottomSheetController.removeObserver(mBottomSheetObserver);
                 }
             };
@@ -87,18 +87,17 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
     FacilitatedPaymentsPaymentMethodsView(
             Context context, BottomSheetController bottomSheetController) {
         mBottomSheetController = bottomSheetController;
-        mView =
-                (LinearLayout)
+        mScreenHolder =
+                (FrameLayout)
                         LayoutInflater.from(context)
                                 .inflate(R.layout.facilitated_payments_sequence_view, null);
-        mScreenHolder = (FrameLayout) mView.findViewById(R.id.screen_holder);
 
         // Apply RTL layout changes.
         int layoutDirection =
                 LocalizationUtils.isLayoutRtl()
                         ? View.LAYOUT_DIRECTION_RTL
                         : View.LAYOUT_DIRECTION_LTR;
-        mView.setLayoutDirection(layoutDirection);
+        mScreenHolder.setLayoutDirection(layoutDirection);
     }
 
     /**
@@ -109,19 +108,27 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
     void setVisible(boolean isVisible) {
         if (isVisible) {
             assert mUiEventListener != null && mNextScreen != null;
-            // If the bottom sheet is already showing a screen, replace it with {@link
-            // #mNextScreen}. Else, open the bottom sheet and show the {@link mNextScreen}.
-            if (mBottomSheetController.isSheetOpen()) {
-                assert mCurrentScreen != null;
+            // Fail fast if this view's sheet is in the middle of animating closed.
+            if (mBottomSheetController.getCurrentSheetContent() == this
+                    && mBottomSheetController.isSheetHiding()) {
+                mUiEventListener.onResult(UiEvent.SCREEN_COULD_NOT_BE_SHOWN);
+                mCurrentScreen = null;
+                mNextScreen = null;
+                return;
+            } else if (mCurrentScreen != null) {
+                // If this view is already showing a screen, swap it with {@link #mNextScreen}.
                 mScreenHolder.addView(mNextScreen.getView());
                 mScreenHolder.removeView(mCurrentScreen.getView());
             } else {
+                // Open the bottom sheet and show {@link #mNextScreen}.
                 assert mCurrentScreen == null;
+                mScreenHolder.removeAllViews();
                 mBottomSheetController.addObserver(mBottomSheetObserver);
                 mScreenHolder.addView(mNextScreen.getView());
                 if (!mBottomSheetController.requestShowContent(this, /* animate= */ true)) {
                     mUiEventListener.onResult(UiEvent.SCREEN_COULD_NOT_BE_SHOWN);
                     mBottomSheetController.removeObserver(mBottomSheetObserver);
+                    mBottomSheetController.hideContent(this, /* animate= */ false);
                     mNextScreen = null;
                     return;
                 }
@@ -133,6 +140,10 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
         } else {
             mBottomSheetController.hideContent(this, true);
             mCurrentScreen = null;
+            if (mBottomSheetController.getCurrentSheetContent() != this) {
+                mNextScreen = null;
+                mBottomSheetController.removeObserver(mBottomSheetObserver);
+            }
         }
     }
 
@@ -173,7 +184,7 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
 
     @Override
     public View getContentView() {
-        return mView;
+        return mScreenHolder;
     }
 
     @Override
@@ -197,6 +208,11 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
     }
 
     @Override
+    public boolean showHandlebar() {
+        return true;
+    }
+
+    @Override
     public boolean hasCustomLifecycle() {
         return mHasCustomLifecycle;
     }
@@ -216,13 +232,9 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
 
     @Override
     public int getVerticalScrollOffset() {
-        return assumeNonNull(mCurrentScreen).getVerticalScrollOffset();
-    }
-
-    @Override
-    public String getSheetContentDescription(Context context) {
-        return context.getString(
-                R.string.facilitated_payments_payment_methods_bottom_sheet_content_description);
+        // The bottom sheet can query the scroll offset while it is animating closed, after
+        // {@link #setVisible(boolean)} has already cleared {@link #mCurrentScreen}.
+        return mCurrentScreen == null ? 0 : mCurrentScreen.getVerticalScrollOffset();
     }
 
     @Override

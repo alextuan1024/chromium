@@ -68,7 +68,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/shell_dialogs/fake_select_file_dialog.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -261,7 +261,7 @@ class DownloadItemCreatedObserver : public DownloadManager::Observer {
   // being destroyed between creation and return of WaitForNewDownloadItem();
   // the caller must guarantee that in some other fashion.
   void WaitForDownloadItem(
-      std::vector<raw_ptr<DownloadItem, VectorExperimental>>* items_seen) {
+      std::vector<raw_ptr<DownloadItem, DanglingUntriaged>>* items_seen) {
     if (!manager_) {
       // The manager went away before we were asked to wait; return
       // what we have, even if it's null.
@@ -299,7 +299,7 @@ class DownloadItemCreatedObserver : public DownloadManager::Observer {
 
   base::OnceClosure quit_waiting_callback_;
   raw_ptr<DownloadManager> manager_;
-  std::vector<raw_ptr<DownloadItem, VectorExperimental>> items_seen_;
+  std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> items_seen_;
 };
 
 class SavePageBrowserTest : public InProcessBrowserTest {
@@ -351,7 +351,7 @@ class SavePageBrowserTest : public InProcessBrowserTest {
     // Generally, there should only be one download item created
     // in all of these tests.  If it's already here, grab it; if not,
     // wait for it to show up.
-    std::vector<raw_ptr<DownloadItem, VectorExperimental>> items;
+    std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> items;
     DownloadManager* manager = browser->GetProfile()->GetDownloadManager();
     manager->GetAllDownloads(&items);
     if (items.empty())
@@ -485,7 +485,7 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest,
 IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, MAYBE_SaveHTMLOnlyCancel) {
   GURL url = NavigateToMockURL("a");
   DownloadManager* manager = GetDownloadManager();
-  std::vector<raw_ptr<DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> downloads;
   manager->GetAllDownloads(&downloads);
   ASSERT_EQ(0u, downloads.size());
 
@@ -502,7 +502,7 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, MAYBE_SaveHTMLOnlyCancel) {
 
   ASSERT_TRUE(GetCurrentTab(browser())->SavePage(full_file_name, dir,
                                         content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
-  std::vector<raw_ptr<DownloadItem, VectorExperimental>> items;
+  std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> items;
   creation_observer.WaitForDownloadItem(&items);
   ASSERT_EQ(1UL, items.size());
   ASSERT_EQ(url.spec(), items[0]->GetOriginalUrl().spec());
@@ -572,7 +572,7 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, DISABLED_SaveHTMLOnlyTabDestroy) {
   DownloadCoreServiceFactory::GetForBrowserContext(browser()->GetProfile())
       ->SetDownloadManagerDelegateForTesting(std::move(delaying_delegate));
   DownloadManager* manager = GetDownloadManager();
-  std::vector<raw_ptr<DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> downloads;
   manager->GetAllDownloads(&downloads);
   ASSERT_EQ(0u, downloads.size());
 
@@ -581,7 +581,7 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, DISABLED_SaveHTMLOnlyTabDestroy) {
   DownloadItemCreatedObserver creation_observer(manager);
   ASSERT_TRUE(GetCurrentTab(browser())->SavePage(full_file_name, dir,
                                         content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
-  std::vector<raw_ptr<DownloadItem, VectorExperimental>> items;
+  std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> items;
   creation_observer.WaitForDownloadItem(&items);
   ASSERT_EQ(1u, items.size());
 
@@ -652,9 +652,9 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest,
 
   // Navigate, unblocking with new tab.
   GURL url = embedded_test_server()->GetURL("/save_page/b.htm");
-  NavigateToURLWithDisposition(incognito, url,
-                               WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                               ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
+  NavigateToURLWithDisposition(
+      incognito, url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
   // Save the page before completion.
   base::FilePath full_file_name, dir;
@@ -726,7 +726,7 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, RemoveFromList) {
   ASSERT_FALSE(HasFailure());
 
   DownloadManager* manager = GetDownloadManager();
-  std::vector<raw_ptr<DownloadItem, VectorExperimental>> downloads;
+  std::vector<raw_ptr<DownloadItem, DanglingUntriaged>> downloads;
   manager->GetAllDownloads(&downloads);
   ASSERT_EQ(1UL, downloads.size());
 
@@ -944,7 +944,7 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveDownloadableIFrame) {
 
     ASSERT_TRUE(VerifySavePackageExpectations(browser(), download_url));
     persisted.WaitForPersisted();
-    std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
+    std::vector<raw_ptr<download::DownloadItem, DanglingUntriaged>> downloads;
     GetDownloadManager()->GetAllDownloads(&downloads);
     for (download::DownloadItem* download : downloads) {
       download->Remove();
@@ -1337,7 +1337,7 @@ class SavePageOriginalVsSavedComparisonTest
     // See https://crbug.com/41450468.
     ASSERT_TRUE(
         ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,foo")));
-    chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     EXPECT_TRUE(content::WaitForLoadStop(GetCurrentTab(browser())));
     DLOG(INFO) << "Verifying test expectations after history navigation...";
     AssertExpectationsAboutCurrentTab(expected_number_of_frames_in_saved_page,
@@ -1857,5 +1857,35 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveMHTMLWithDlp) {
 }
 
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+IN_PROC_BROWSER_TEST_F(SavePageBrowserTest,
+                       SavePageAsBlocksConcurrentFullscreen) {
+  NavigateToMockURL("a");
+  WebContents* web_contents = GetCurrentTab(browser());
+  auto request_fullscreen = [&]() {
+    return content::EvalJs(web_contents,
+                           "document.documentElement.requestFullscreen()"
+                           ".then(() => 'entered', () => 'rejected')");
+  };
+
+  SavePackageFilePicker::SetShouldPromptUser(true);
+  FakeSelectFileDialog::Factory* dialog_factory =
+      FakeSelectFileDialog::RegisterFactory();
+  base::ScopedClosureRunner reset_factory(
+      base::BindOnce([]() { ui::SelectFileDialog::SetFactory(nullptr); }));
+
+  base::RunLoop run_loop;
+  dialog_factory->SetOpenCallback(run_loop.QuitClosure());
+  chrome::SavePage(browser());
+  run_loop.Run();
+
+  EXPECT_EQ("rejected", request_fullscreen());
+  EXPECT_FALSE(web_contents->IsFullscreen());
+
+  ASSERT_NE(nullptr, dialog_factory->GetLastDialog());
+  dialog_factory->GetLastDialog()->CallFileSelectionCanceled();
+
+  EXPECT_EQ("entered", request_fullscreen());
+}
 
 }  // namespace

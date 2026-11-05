@@ -7,6 +7,7 @@
 
 #include "base/memory/raw_ref.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/signin/signin_promo.h"
 #include "components/signin/public/base/signin_buildflags.h"
@@ -93,7 +94,7 @@ struct ProfileMenuAvatarButtonPromoInfo {
     kBatchUploadPromo = 1,
     kBatchUploadBookmarksPromo = 2,
     kBatchUploadWindows10DepreciationPromo = 3,
-    kSyncPromo = 4,
+    // kSyncPromo = 4,  // Deprecated, not used anymore.
     kSigninPromo = 5,
 
     kMaxValue = kSigninPromo,
@@ -107,11 +108,6 @@ struct ProfileMenuAvatarButtonPromoInfo {
                          const ProfileMenuAvatarButtonPromoInfo& info2) =
       default;
 };
-
-// Returns true if the sign-in promo for `promo_type` should use the legacy
-// global Autofill sign-in promo limits. This is true when the limits
-// experiment is disabled and the promo type is not Search AI Mode.
-bool ShouldUseAutofillSignInPromoLimits(signin::SignInPromoType promo_type);
 
 // Records the show count at which the AvatarButton was showing `promo_type`
 // for `gaia_id` that lead to the promo being accepted. `gaia_id` may be empty
@@ -150,6 +146,9 @@ void ComputeProfileMenuAvatarButtonPromoInfo(
 // via `ComputeProfileMenuAvatarButtonPromoInfo()`.
 class AvatarButtonPromoManager : public signin::IdentityManager::Observer {
  public:
+  static constexpr base::TimeDelta kSigninPromoMinimumDelayForNextPromoAllowed =
+      base::Days(7);
+
   AvatarButtonPromoManager(
       signin::IdentityManager* identity_manager,
       signin::AccountPreviewDataService* account_preview_data_service,

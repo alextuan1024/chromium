@@ -2,29 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <algorithm>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/stl_util.h"
-#include "base/strings/stringprintf.h"
-#include "base/test/mock_callback.h"
-#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/new_tab_page/prefs/ntp_pref_names.h"
+#include "build/build_config.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_tabstrip.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/tab_list/constants.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/ui_test_utils.h"
-#include "components/ntp_tiles/features.h"
-#include "components/ntp_tiles/tile_type.h"
-#include "components/prefs/pref_service.h"
-#include "components/search/ntp_features.h"
+#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/platform_browser_test.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/spare_render_process_host_manager.h"
@@ -33,9 +25,29 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
+#include "testing/gmock/include/gmock/gmock.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "content/public/common/content_features.h"
+#else
+#include "base/functional/callback_helpers.h"
+#include "base/memory_coordinator/memory_limit.h"
+#include "base/test/mock_callback.h"
+#include "base/test/run_until.h"
+#include "chrome/browser/new_tab_page/prefs/ntp_pref_names.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "components/prefs/pref_service.h"
+#include "components/search/ntp_features.h"
+#include "content/public/test/memory_coordinator_browsertest_util.h"
+#include "content/public/test/no_renderer_crashes_assertion.h"
+#include "content/public/test/test_utils.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace {
 
+#if !BUILDFLAG(IS_ANDROID)
 // Observes TabStripModelChange::kRemoved notifications and records the
 // WebContents remove reason and the TabModel detach reason.
 class WebContentsRemovedObserver : public TabStripModelObserver {
@@ -70,6 +82,7 @@ class WebContentsRemovedObserver : public TabStripModelObserver {
   std::optional<TabRemovedReason> remove_reason_;
   std::optional<tabs::TabInterface::DetachReason> tab_detach_reason_;
 };
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 void ExpectIsWebUiNtp(content::WebContents* tab) {
   EXPECT_EQ(chrome::ChromeUINewTabPageURLAsGURL().spec(),
@@ -88,9 +101,19 @@ std::set<content::ChildProcessId> LiveRenderProcessHostIds() {
 
 }  // namespace
 
-class WebUiNtpBrowserTest : public InProcessBrowserTest {
+class WebUiNtpBrowserTest : public PlatformBrowserTest {
  public:
-  WebUiNtpBrowserTest() = default;
+  WebUiNtpBrowserTest() {
+#if BUILDFLAG(IS_ANDROID)
+    // When `AndroidWarmUpSpareRendererWithTimeout` is enabled with
+    // `only_for_navigation=true` (e.g. via the fieldtrial testing config),
+    // root frame initialization (`kRFHInitRoot`) during new-tab creation
+    // cannot consume a spare renderer. Disable it so `SpareRenderer` behaves
+    // the same regardless of the field trial configuration.
+    feature_list_.InitAndDisableFeature(
+        features::kAndroidWarmUpSpareRendererWithTimeout);
+#endif
+  }
 
   ~WebUiNtpBrowserTest() override = default;
 
@@ -104,21 +127,37 @@ class WebUiNtpBrowserTest : public InProcessBrowserTest {
     embedded_test_server()->StartAcceptingConnections();
   }
 
+ protected:
+  // Opens the NTP in a new foreground tab, waits for it to finish loading and
+  // returns its WebContents.
+  content::WebContents* OpenNewTabPage() {
+    tabs::TabInterface* tab = GetTabListInterface()->OpenTab(
+        chrome::ChromeUINewTabURLAsGURL(), tab_list::kNoTabIndex);
+    if (!tab) {
+      ADD_FAILURE() << "Failed to open a new tab.";
+      return nullptr;
+    }
+    content::WebContents* web_contents = tab->GetContents();
+    EXPECT_TRUE(content::WaitForLoadStop(web_contents));
+    return web_contents;
+  }
+
  private:
   // TODO(https://crbug.com/423465927): Explore a better approach to make the
   // existing tests run with the prewarm feature enabled.
   test::ScopedPrewarmFeatureList scoped_prewarm_feature_list_{
       test::ScopedPrewarmFeatureList::PrewarmState::kDisabled};
+#if BUILDFLAG(IS_ANDROID)
   base::test::ScopedFeatureList feature_list_;
+#endif
 };
 
 // Verify that the WebUI NTP commits in a SiteInstance with the WebUI URL.
 IN_PROC_BROWSER_TEST_F(WebUiNtpBrowserTest, VerifySiteInstance) {
   const GURL& ntp_url = chrome::ChromeUINewTabURLAsGURL();
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), ntp_url));
-
   content::WebContents* web_contents =
-      browser()->GetTabStripModel()->GetActiveWebContents();
+      chrome_test_utils::GetActiveWebContents(this);
+  ASSERT_TRUE(content::NavigateToURL(web_contents, ntp_url));
   ASSERT_EQ(ntp_url, web_contents->GetLastCommittedURL());
 
   const GURL& webui_ntp_url = chrome::ChromeUINewTabPageURLAsGURL();
@@ -134,12 +173,8 @@ IN_PROC_BROWSER_TEST_F(WebUiNtpBrowserTest, ProcessPerSite) {
 
   // Open a few NTPs.
   for (size_t i = 0; i < 3; i++) {
-    content::WebContentsAddedObserver tab_observer;
-    chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
-
-    // Wait for the new tab.
-    auto* tab = tab_observer.GetWebContents();
-    ASSERT_TRUE(WaitForLoadStop(tab));
+    content::WebContents* tab = OpenNewTabPage();
+    ASSERT_TRUE(tab);
 
     // Sanity check: the NTP should be a WebUI NTP (and not chrome://newtab/ or
     // some other NTP).
@@ -150,14 +185,19 @@ IN_PROC_BROWSER_TEST_F(WebUiNtpBrowserTest, ProcessPerSite) {
 
   // Verify that all NTPs share a process.
   for (size_t i = 1; i < tabs.size(); i++) {
-    EXPECT_EQ(tabs[0]->GetPrimaryMainFrame()->GetProcess(),
-              tabs[i]->GetPrimaryMainFrame()->GetProcess());
+    EXPECT_EQ(tabs[0]->GetPrimaryMainFrame()->GetProcess()->GetID(),
+              tabs[i]->GetPrimaryMainFrame()->GetProcess()->GetID());
   }
 }
 
 // Verify that the WebUI NTP uses an available spare process and does not
 // discard it as in https://crbug.com/40699271.
 IN_PROC_BROWSER_TEST_F(WebUiNtpBrowserTest, SpareRenderer) {
+#if BUILDFLAG(IS_ANDROID)
+  // Android does not keep a spare renderer around by default, so create one.
+  content::SpareRenderProcessHostManager::Get().WarmupSpare(GetProfile());
+#endif
+
   // Capture current spare renderer.
   std::vector<content::ChildProcessId> spare_ids_before_navigation =
       content::SpareRenderProcessHostManager::Get().GetSpareIds();
@@ -169,24 +209,26 @@ IN_PROC_BROWSER_TEST_F(WebUiNtpBrowserTest, SpareRenderer) {
       LiveRenderProcessHostIds();
 
   // Open an NTP.
-  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
-  auto* ntp = browser()->GetTabStripModel()->GetActiveWebContents();
-  ASSERT_TRUE(WaitForLoadStop(ntp));
+  content::WebContents* ntp = OpenNewTabPage();
+  ASSERT_TRUE(ntp);
   ExpectIsWebUiNtp(ntp);
 
   // Check spare was taken.
-  EXPECT_TRUE(
-      std::ranges::contains(spare_ids_before_navigation,
-                            ntp->GetPrimaryMainFrame()->GetProcess()->GetID()));
+  EXPECT_THAT(
+      spare_ids_before_navigation,
+      testing::Contains(ntp->GetPrimaryMainFrame()->GetProcess()->GetID()));
 
   // No processes should be unnecessarily terminated.
   const std::set<content::ChildProcessId> ending_rph_ids =
       LiveRenderProcessHostIds();
-  const std::set<content::ChildProcessId> terminated_rph_ids =
-      base::STLSetDifference<std::set<content::ChildProcessId>>(
-          starting_rph_ids, ending_rph_ids);
-  EXPECT_TRUE(terminated_rph_ids.empty());
+  EXPECT_THAT(base::STLSetDifference<std::set<content::ChildProcessId>>(
+                  starting_rph_ids, ending_rph_ids),
+              testing::IsEmpty());
 }
+
+// The tests below exercise the desktop TabStripModel, which is not available
+// on Android.
+#if !BUILDFLAG(IS_ANDROID)
 
 // Currently it is possible to load the NTP absent a TabModel in an app window
 // context. Assert the NTP loads without a TabModel successfully.
@@ -257,7 +299,11 @@ IN_PROC_BROWSER_TEST_F(WebUiNtpBrowserTest, HandlesTabModelChanges) {
   // Re-insert the tab into the tab strip, creating a new TabModel.
   tab_strip_model->AppendWebContents(std::move(extracted_contents), true);
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
+// TODO(b:514161985): Enable on Android once enterprise shortcuts are
+// implemented there.
+#if !BUILDFLAG(IS_ANDROID)
 class WebUiNtpEnterpriseShortcutsBrowserTest : public WebUiNtpBrowserTest {
  public:
   WebUiNtpEnterpriseShortcutsBrowserTest() = default;
@@ -267,16 +313,16 @@ class WebUiNtpEnterpriseShortcutsBrowserTest : public WebUiNtpBrowserTest {
 IN_PROC_BROWSER_TEST_F(WebUiNtpEnterpriseShortcutsBrowserTest,
                        DISABLED_EnterpriseShortcuts) {
   // 1. Set the user preference to use enterprise shortcuts.
-  browser()->GetProfile()->GetPrefs()->SetBoolean(
-      ntp_prefs::kNtpCustomLinksVisible, false);
-  browser()->GetProfile()->GetPrefs()->SetBoolean(
+  GetProfile()->GetPrefs()->SetBoolean(ntp_prefs::kNtpCustomLinksVisible,
+                                       false);
+  GetProfile()->GetPrefs()->SetBoolean(
       ntp_prefs::kNtpEnterpriseShortcutsVisible, true);
 
   // 2. Navigate to the New Tab Page.
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(
-      browser(), chrome::ChromeUINewTabPageURLAsGURL()));
   content::WebContents* web_contents =
-      browser()->GetTabStripModel()->GetActiveWebContents();
+      chrome_test_utils::GetActiveWebContents(this);
+  ASSERT_TRUE(content::NavigateToURL(web_contents,
+                                     chrome::ChromeUINewTabPageURLAsGURL()));
 
   // 3. Verify through JavaScript that the page is configured correctly.
   // - Enterprise shortcuts are displayed.
@@ -297,3 +343,186 @@ IN_PROC_BROWSER_TEST_F(WebUiNtpEnterpriseShortcutsBrowserTest,
   ASSERT_TRUE(base::test::RunUntil(
       [&] { return content::EvalJs(web_contents, js_check).ExtractBool(); }));
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if !BUILDFLAG(IS_ANDROID)
+class WebUiNtpKeepAliveBrowserTest : public WebUiNtpBrowserTest {
+ public:
+  explicit WebUiNtpKeepAliveBrowserTest(bool enable = true) {
+    keep_alive_feature_list_.InitWithFeatureState(
+        ntp_features::kKeepNtpRendererAlive, enable);
+  }
+
+ private:
+  base::test::ScopedFeatureList keep_alive_feature_list_;
+};
+
+class WebUiNtpKeepAliveDisabledBrowserTest
+    : public WebUiNtpKeepAliveBrowserTest {
+ public:
+  WebUiNtpKeepAliveDisabledBrowserTest()
+      : WebUiNtpKeepAliveBrowserTest(/*enable=*/false) {}
+};
+
+IN_PROC_BROWSER_TEST_F(WebUiNtpKeepAliveDisabledBrowserTest,
+                       DoesNotKeepAliveWhenDisabled) {
+  content::WebContents* tab = chrome_test_utils::GetActiveWebContents(this);
+  ASSERT_TRUE(content::NavigateToURL(tab, chrome::ChromeUINewTabURLAsGURL()));
+  content::RenderProcessHost* ntp_rph =
+      tab->GetPrimaryMainFrame()->GetProcess();
+  EXPECT_EQ(ntp_rph->GetPendingReuseRefCountForTesting(), 0);
+
+  content::RenderProcessHostWatcher exit_watcher(
+      ntp_rph, content::RenderProcessHostWatcher::WATCH_FOR_HOST_DESTRUCTION);
+  ASSERT_TRUE(content::NavigateToURL(
+      tab, embedded_test_server()->GetURL("a.com", "/title1.html")));
+  exit_watcher.Wait();
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiNtpKeepAliveBrowserTest,
+                       ReuseWarmProcessAcrossTabsAndWindows) {
+  content::WebContents* tab = chrome_test_utils::GetActiveWebContents(this);
+  ASSERT_TRUE(content::NavigateToURL(tab, chrome::ChromeUINewTabURLAsGURL()));
+  ExpectIsWebUiNtp(tab);
+  content::RenderProcessHost* ntp_rph =
+      tab->GetPrimaryMainFrame()->GetProcess();
+  const content::ChildProcessId ntp_id = ntp_rph->GetID();
+  EXPECT_EQ(ntp_rph->GetPendingReuseRefCountForTesting(), 1);
+
+  // Navigating away keeps the NTP renderer alive with zero frames and does not
+  // pin the destination site's renderer.
+  content::RenderFrameDeletedObserver ntp_rfh_deleted(
+      tab->GetPrimaryMainFrame());
+  ASSERT_TRUE(content::NavigateToURL(
+      tab, embedded_test_server()->GetURL("a.com", "/title1.html")));
+  ntp_rfh_deleted.WaitUntilDeleted();
+  content::RenderProcessHost* host = content::RenderProcessHost::FromID(ntp_id);
+  ASSERT_NE(host, nullptr);
+  EXPECT_TRUE(host->IsInitializedAndNotDead());
+  EXPECT_EQ(host->GetRenderFrameHostCount(), 0);
+  EXPECT_EQ(host->GetPendingReuseRefCountForTesting(), 1);
+  EXPECT_EQ(tab->GetPrimaryMainFrame()
+                ->GetProcess()
+                ->GetPendingReuseRefCountForTesting(),
+            0);
+
+  // Opening a new NTP tab reuses the warm process without consuming the spare.
+  content::SpareRenderProcessHostManager::Get().WarmupSpare(GetProfile());
+  const std::vector<content::ChildProcessId> spare_ids =
+      content::SpareRenderProcessHostManager::Get().GetSpareIds();
+  ASSERT_FALSE(spare_ids.empty());
+  content::WebContents* ntp2 = OpenNewTabPage();
+  ASSERT_TRUE(ntp2);
+  ExpectIsWebUiNtp(ntp2);
+  EXPECT_EQ(ntp2->GetPrimaryMainFrame()->GetProcess()->GetID(), ntp_id);
+  EXPECT_EQ(host->GetPendingReuseRefCountForTesting(), 1);
+  EXPECT_EQ(content::SpareRenderProcessHostManager::Get().GetSpareIds(),
+            spare_ids);
+
+  // Closing the NTP tab leaves the process warm with zero frames, and opening
+  // an NTP in a new browser window reuses it.
+  content::RenderFrameDeletedObserver ntp2_rfh_deleted(
+      ntp2->GetPrimaryMainFrame());
+  browser()->GetTabStripModel()->CloseWebContentsAt(
+      browser()->GetTabStripModel()->GetIndexOfWebContents(ntp2),
+      TabCloseTypes::CLOSE_NONE);
+  ntp2_rfh_deleted.WaitUntilDeleted();
+  EXPECT_EQ(host->GetRenderFrameHostCount(), 0);
+  EXPECT_EQ(host->GetPendingReuseRefCountForTesting(), 1);
+
+  BrowserWindowInterface* window2 = CreateBrowser(GetProfile());
+  content::WebContents* window2_tab =
+      TabListInterface::From(window2)->GetActiveTab()->GetContents();
+  ASSERT_TRUE(
+      content::NavigateToURL(window2_tab, chrome::ChromeUINewTabURLAsGURL()));
+  ExpectIsWebUiNtp(window2_tab);
+  EXPECT_EQ(window2_tab->GetPrimaryMainFrame()->GetProcess()->GetID(), ntp_id);
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiNtpKeepAliveBrowserTest,
+                       ReleaseIdleProcessOnMemoryPressureAndRepinFreshHost) {
+  content::WebContents* tab = chrome_test_utils::GetActiveWebContents(this);
+  ASSERT_TRUE(content::NavigateToURL(tab, chrome::ChromeUINewTabURLAsGURL()));
+  content::RenderProcessHost* initial_rph =
+      tab->GetPrimaryMainFrame()->GetProcess();
+  const content::ChildProcessId initial_id = initial_rph->GetID();
+  ASSERT_EQ(initial_rph->GetPendingReuseRefCountForTesting(), 1);
+
+  // Navigate away so the pinned NTP process is idle with zero frames.
+  content::RenderFrameDeletedObserver initial_rfh_deleted(
+      tab->GetPrimaryMainFrame());
+  ASSERT_TRUE(content::NavigateToURL(
+      tab, embedded_test_server()->GetURL("a.com", "/title1.html")));
+  initial_rfh_deleted.WaitUntilDeleted();
+  ASSERT_EQ(initial_rph->GetRenderFrameHostCount(), 0);
+
+  // Moderate pressure releases the pin and destroys the idle NTP process.
+  content::RenderProcessHostWatcher destroy_watcher(
+      initial_rph,
+      content::RenderProcessHostWatcher::WATCH_FOR_HOST_DESTRUCTION);
+  content::test::ScopedMemoryLimitOverride memory_limit("NtpRendererKeepAlive");
+  memory_limit.SetLimit(base::MemoryLimit::ModeratePressureThreshold());
+  memory_limit.NotifyReleaseMemory();
+  destroy_watcher.Wait();
+  EXPECT_EQ(content::RenderProcessHost::FromID(initial_id), nullptr);
+
+  // Loading an NTP while still under pressure does not pin the new host.
+  ASSERT_TRUE(content::NavigateToURL(tab, chrome::ChromeUINewTabURLAsGURL()));
+  EXPECT_EQ(tab->GetPrimaryMainFrame()
+                ->GetProcess()
+                ->GetPendingReuseRefCountForTesting(),
+            0);
+
+  // Clearing pressure allows the next NTP load to lazily pin the fresh host.
+  memory_limit.ClearLimit();
+  ASSERT_TRUE(content::NavigateToURL(tab, chrome::ChromeUINewTabURLAsGURL()));
+  content::RenderProcessHost* repinned_rph =
+      tab->GetPrimaryMainFrame()->GetProcess();
+  EXPECT_NE(repinned_rph->GetID(), initial_id);
+  EXPECT_EQ(repinned_rph->GetPendingReuseRefCountForTesting(), 1);
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiNtpKeepAliveBrowserTest,
+                       ReleaseOnCrashAndReacquireOnReload) {
+  content::WebContents* tab = chrome_test_utils::GetActiveWebContents(this);
+  ASSERT_TRUE(content::NavigateToURL(tab, chrome::ChromeUINewTabURLAsGURL()));
+  content::RenderProcessHost* ntp_rph =
+      tab->GetPrimaryMainFrame()->GetProcess();
+  ASSERT_EQ(ntp_rph->GetPendingReuseRefCountForTesting(), 1);
+
+  {
+    content::ScopedAllowRendererCrashes allow_crashes(ntp_rph);
+    content::CrashTab(tab);
+  }
+  EXPECT_EQ(ntp_rph->GetPendingReuseRefCountForTesting(), 0);
+
+  ASSERT_TRUE(content::NavigateToURL(tab, chrome::ChromeUINewTabURLAsGURL()));
+  EXPECT_EQ(tab->GetPrimaryMainFrame()
+                ->GetProcess()
+                ->GetPendingReuseRefCountForTesting(),
+            1);
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiNtpKeepAliveBrowserTest,
+                       UnpinsWhenProcessLimitReached) {
+  base::ScopedClosureRunner reset_limit(base::BindOnce(
+      &content::RenderProcessHost::SetMaxRendererProcessCount, 0u));
+
+  content::WebContents* tab = chrome_test_utils::GetActiveWebContents(this);
+  ASSERT_TRUE(content::NavigateToURL(tab, chrome::ChromeUINewTabURLAsGURL()));
+  content::RenderProcessHost* ntp_rph =
+      tab->GetPrimaryMainFrame()->GetProcess();
+  ASSERT_EQ(ntp_rph->GetPendingReuseRefCountForTesting(), 1);
+
+  // Lowering the max renderer count to 1 puts the browser at the process limit,
+  // so the next NTP commit releases the keep-alive rather than retaining an
+  // idle slot at the limit.
+  content::RenderProcessHost::SetMaxRendererProcessCount(1);
+  ASSERT_TRUE(content::RenderProcessHost::IsProcessLimitReached());
+  ASSERT_TRUE(content::NavigateToURL(tab, chrome::ChromeUINewTabURLAsGURL()));
+  EXPECT_EQ(tab->GetPrimaryMainFrame()
+                ->GetProcess()
+                ->GetPendingReuseRefCountForTesting(),
+            0);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)

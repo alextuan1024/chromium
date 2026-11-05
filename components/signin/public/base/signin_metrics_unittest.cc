@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "components/metrics/profile_metrics_service.h"
@@ -24,7 +25,6 @@ const AccessPoint kAccessPointsThatSupportUserAction[] = {
     AccessPoint::kExtensions,
     AccessPoint::kBookmarkBubble,
     AccessPoint::kBookmarkManager,
-    AccessPoint::kAvatarBubbleSignIn,
     AccessPoint::kUserManager,
     AccessPoint::kFullscreenSigninPromo,
     AccessPoint::kRecentTabs,
@@ -41,10 +41,11 @@ const AccessPoint kAccessPointsThatSupportUserAction[] = {
     AccessPoint::kSetUpList,
     AccessPoint::kChromeSigninInterceptBubble,
     AccessPoint::kNotificationsOptInScreenContentToggle,
-    AccessPoint::kAvatarBubbleSignInWithSyncPromo,
+    AccessPoint::kProfileMenuPrimaryButton,
     AccessPoint::kProductSpecifications,
     AccessPoint::kAddressBubble,
     AccessPoint::kGlicLaunchButton,
+    AccessPoint::kHistoryPage,
     AccessPoint::kNonModalSigninPasswordPromo,
     AccessPoint::kNonModalSigninBookmarkPromo,
     AccessPoint::kUserManagerWithPrefilledEmail,
@@ -55,6 +56,10 @@ const AccessPoint kAccessPointsThatSupportUserAction[] = {
     AccessPoint::kSettingsAutofillAndPasswords,
     AccessPoint::kIndigo,
     AccessPoint::kSkills,
+    AccessPoint::kPasswordManagerCard,
+    AccessPoint::kOtherDeviceTabsMenu,
+    AccessPoint::kAccountSwitchingPromo,
+    AccessPoint::kProfileMenuSwitchAccount,
 };
 
 const AccessPoint kAccessPointsThatSupportImpression[] = {
@@ -65,7 +70,6 @@ const AccessPoint kAccessPointsThatSupportImpression[] = {
     AccessPoint::kExtensionInstallBubble,
     AccessPoint::kBookmarkBubble,
     AccessPoint::kBookmarkManager,
-    AccessPoint::kAvatarBubbleSignIn,
     AccessPoint::kFullscreenSigninPromo,
     AccessPoint::kRecentTabs,
     AccessPoint::kPasswordBubble,
@@ -85,6 +89,7 @@ const AccessPoint kAccessPointsThatSupportImpression[] = {
     AccessPoint::kCredentialExchangeImport,
     AccessPoint::kIosGeminiButtonToolbar,
     AccessPoint::kSettingsAutofillAndPasswords,
+    AccessPoint::kPasswordManagerCard,
 };
 
 class SigninMetricsTest : public ::testing::Test {
@@ -107,8 +112,6 @@ class SigninMetricsTest : public ::testing::Test {
         return "BookmarkBubble";
       case AccessPoint::kBookmarkManager:
         return "BookmarkManager";
-      case AccessPoint::kAvatarBubbleSignIn:
-        return "AvatarBubbleSignin";
       case AccessPoint::kUserManager:
         return "UserManager";
       case AccessPoint::kFullscreenSigninPromo:
@@ -183,8 +186,8 @@ class SigninMetricsTest : public ::testing::Test {
         return "OidcRedirectionInterception";
       case AccessPoint::kWebauthnModalDialog:
         return "WebAuthnModalDialog";
-      case AccessPoint::kAvatarBubbleSignInWithSyncPromo:
-        return "AvatarBubbleSigninWithSyncPromo";
+      case AccessPoint::kProfileMenuPrimaryButton:
+        return "ProfileMenuPrimaryButton";
       case AccessPoint::kAccountMenuSwitchAccount:
         return "AccountMenu";
       case AccessPoint::kAccountMenuSwitchAccountFailed:
@@ -271,6 +274,20 @@ class SigninMetricsTest : public ::testing::Test {
         return "Skills";
       case AccessPoint::kAccountMenuSignedOutState:
         return "AccountMenuSignedOutState";
+      case AccessPoint::kAppSwitcherAISummarization:
+        return "AppSwitcherAISummarization";
+      case AccessPoint::kGeminiExternalAppStoreEvent:
+        return "GeminiExternalAppStoreEvent";
+      case AccessPoint::kPasswordManagerCard:
+        return "PasswordManagerCard";
+      case AccessPoint::kEnterpriseProxy:
+        return "EnterpriseProxy";
+      case AccessPoint::kOtherDeviceTabsMenu:
+        return "OtherDeviceTabsMenu";
+      case AccessPoint::kAccountSwitchingPromo:
+        return "AccountSwitchingPromo";
+      case AccessPoint::kProfileMenuSwitchAccount:
+        return "ProfileMenuSwitchAccount";
     }
   }
 };
@@ -358,6 +375,57 @@ TEST(LogSignInStarted, RecordWithProfileContext) {
     EXPECT_EQ(4,
               histogram_tester.GetTotalCountForPrefix("Signin.SignIn.Started"));
   }
+}
+
+TEST(LogSigninFunnelEventTest, RecordsHistogramForSupportedAccessPoint) {
+  base::HistogramTester histogram_tester;
+
+  LogSigninFunnelEvent(AccessPoint::kStartPage,
+                       SigninFunnelEvent::kPromoShownWithAccount);
+  LogSigninFunnelEvent(AccessPoint::kFullscreenSigninPromo,
+                       SigninFunnelEvent::kPromoShownNoAccount);
+  LogSigninFunnelEvent(AccessPoint::kBookmarkManager,
+                       SigninFunnelEvent::kSigninButtonClicked);
+  LogSigninFunnelEvent(AccessPoint::kNtpFeedTopPromo,
+                       SigninFunnelEvent::kChooseOtherAccountClicked);
+  LogSigninFunnelEvent(AccessPoint::kRecentTabs,
+                       SigninFunnelEvent::kSigninDeclinedButtonClicked);
+  LogSigninFunnelEvent(AccessPoint::kSettingsAutofillAndPasswords,
+                       SigninFunnelEvent::kPromoShownWithAccount);
+  LogSigninFunnelEvent(AccessPoint::kWebSignin,
+                       SigninFunnelEvent::kPromoShownNoAccount);
+
+  histogram_tester.ExpectUniqueSample("Signin.SigninFunnel.StartPage",
+                                      SigninFunnelEvent::kPromoShownWithAccount,
+                                      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(
+      "Signin.SigninFunnel.FullscreenSigninPromo",
+      SigninFunnelEvent::kPromoShownNoAccount,
+      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample("Signin.SigninFunnel.BookmarkManager",
+                                      SigninFunnelEvent::kSigninButtonClicked,
+                                      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(
+      "Signin.SigninFunnel.NtpFeedTopPromo",
+      SigninFunnelEvent::kChooseOtherAccountClicked,
+      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(
+      "Signin.SigninFunnel.RecentTabs",
+      SigninFunnelEvent::kSigninDeclinedButtonClicked,
+      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(
+      "Signin.SigninFunnel.SettingsAutofillAndPasswords",
+      SigninFunnelEvent::kPromoShownWithAccount,
+      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample("Signin.SigninFunnel.WebSignin",
+                                      SigninFunnelEvent::kPromoShownNoAccount,
+                                      /*expected_bucket_count=*/1);
+  EXPECT_EQ(7, histogram_tester.GetTotalCountForPrefix("Signin.SigninFunnel."));
+}
+
+TEST(LogSigninFunnelEventTest, ChecksForUnsupportedAccessPoint) {
+  EXPECT_CHECK_DEATH(LogSigninFunnelEvent(
+      AccessPoint::kPasswordBubble, SigninFunnelEvent::kPromoShownWithAccount));
 }
 
 }  // namespace

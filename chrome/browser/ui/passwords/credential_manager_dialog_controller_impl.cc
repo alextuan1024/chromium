@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/passwords/credential_manager_dialog_controller_impl.h"
 
+#include <optional>
+
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/profiles/profile.h"
@@ -22,6 +24,7 @@
 #include "components/password_manager/core/browser/password_sync_util.h"
 #include "components/password_manager/core/browser/password_ui_utils.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
+#include "components/password_manager/core/common/remote_actor/remote_actor_credential_sharing_policy.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/service/sync_service.h"
@@ -29,6 +32,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "url/gurl.h"
 #include "url/origin.h"
 
 namespace {
@@ -79,9 +83,9 @@ CredentialManagerDialogControllerImpl::
 void CredentialManagerDialogControllerImpl::ShowAccountChooser(
     std::unique_ptr<AccountChooserPrompt> dialog,
     std::vector<std::unique_ptr<password_manager::PasswordForm>> locals) {
-  DCHECK(!account_chooser_dialog_);
-  DCHECK(!autosignin_dialog_);
-  DCHECK(dialog);
+  CHECK(!account_chooser_dialog_, base::NotFatalUntil::M162);
+  CHECK(!autosignin_dialog_, base::NotFatalUntil::M162);
+  CHECK(dialog, base::NotFatalUntil::M162);
   local_credentials_ = std::move(locals);
   if (base::FeatureList::IsEnabled(
           password_manager::features::kCredentialManagementUnifiedUi)) {
@@ -95,9 +99,9 @@ void CredentialManagerDialogControllerImpl::ShowAccountChooser(
 
 void CredentialManagerDialogControllerImpl::ShowAutosigninPrompt(
     std::unique_ptr<AutoSigninFirstRunPrompt> dialog) {
-  DCHECK(!account_chooser_dialog_);
-  DCHECK(!autosignin_dialog_);
-  DCHECK(dialog);
+  CHECK(!account_chooser_dialog_, base::NotFatalUntil::M162);
+  CHECK(!autosignin_dialog_, base::NotFatalUntil::M162);
+  CHECK(dialog, base::NotFatalUntil::M162);
   autosignin_dialog_ = std::move(dialog);
   autosignin_dialog_->ShowAutoSigninPrompt();
 }
@@ -191,14 +195,7 @@ void CredentialManagerDialogControllerImpl::OnAutoSigninOK() {
       profile_->GetPrefs());
   password_manager::metrics_util::LogAutoSigninPromoUserAction(
       password_manager::metrics_util::AUTO_SIGNIN_OK_GOT_IT);
-  if (autosignin_dialog_) {
-    autosignin_dialog_->ControllerGone();
-    // Delete the dialog asynchronously because we are currently in a views
-    // callback. Synchronous destruction would cause a use-after-free crash
-    // when the call stack unwinds back to the views framework.
-    base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
-        FROM_HERE, std::move(autosignin_dialog_));
-  }
+  ResetDialog();
   delegate_->OnDialogHidden();
 }
 
@@ -209,14 +206,7 @@ void CredentialManagerDialogControllerImpl::OnAutoSigninTurnOff() {
       profile_->GetPrefs());
   password_manager::metrics_util::LogAutoSigninPromoUserAction(
       password_manager::metrics_util::AUTO_SIGNIN_TURN_OFF);
-  if (autosignin_dialog_) {
-    autosignin_dialog_->ControllerGone();
-    // Delete the dialog asynchronously because we are currently in a views
-    // callback. Synchronous destruction would cause a use-after-free crash
-    // when the call stack unwinds back to the views framework.
-    base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
-        FROM_HERE, std::move(autosignin_dialog_));
-  }
+  ResetDialog();
   delegate_->OnDialogHidden();
 }
 
@@ -239,13 +229,18 @@ void CredentialManagerDialogControllerImpl::OnCloseDialog() {
 }
 
 void CredentialManagerDialogControllerImpl::ResetDialog() {
+  // Delete the dialogs asynchronously to prevent synchronous destruction of the
+  // underlying views::Widget, which would unblock and focus the WebContents,
+  // potentially causing re-entrancy and synchronous WebContents destruction.
   if (account_chooser_dialog_) {
     account_chooser_dialog_->ControllerGone();
-    account_chooser_dialog_.reset();
+    base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
+        FROM_HERE, std::move(account_chooser_dialog_));
   }
   if (autosignin_dialog_) {
     autosignin_dialog_->ControllerGone();
-    autosignin_dialog_.reset();
+    base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
+        FROM_HERE, std::move(autosignin_dialog_));
   }
 }
 
@@ -267,6 +262,15 @@ CredentialManagerDialogControllerImpl::GetDisplayType() const {
 
 bool CredentialManagerDialogControllerImpl::ShouldShowTopIllustration() const {
   return false;
+}
+
+std::optional<password_manager::RemoteActorType>
+CredentialManagerDialogControllerImpl::GetActorType() const {
+  return std::nullopt;
+}
+
+GURL CredentialManagerDialogControllerImpl::GetActorIconUrl() const {
+  return GURL();
 }
 
 std::u16string CredentialManagerDialogControllerImpl::GetTitle() const {

@@ -4,6 +4,9 @@
 
 package org.chromium.chrome.browser.ui.android.webid;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
@@ -32,6 +35,8 @@ import com.google.android.material.color.MaterialColors;
 import org.chromium.base.Callback;
 import org.chromium.blink.mojom.RpContext;
 import org.chromium.blink.mojom.RpMode;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.AccountProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ButtonData;
@@ -39,6 +44,7 @@ import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.C
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.DataSharingConsentProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ErrorProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties;
+import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.IdpProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.IdpSignInProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ItemProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.LoginButtonProperties;
@@ -49,6 +55,7 @@ import org.chromium.components.browser_ui.util.AvatarGenerator;
 import org.chromium.components.browser_ui.widget.RoundedIconGenerator;
 import org.chromium.components.browser_ui.widget.TintedDrawable;
 import org.chromium.content.webid.IdentityRequestDialogDisclosureField;
+import org.chromium.ui.UiUtils;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
@@ -62,12 +69,14 @@ import org.chromium.url.GURL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
  * Provides functions that map {@link AccountSelectionProperties} changes in a {@link PropertyModel}
  * to the suitable method in {@link AccountSelectionView}.
  */
+@NullMarked
 class AccountSelectionViewBinder {
     private static final String TAG = "AccountSelectionView";
 
@@ -126,6 +135,17 @@ class AccountSelectionViewBinder {
                 new Rect(0, 0, outBitmapSize, outBitmapSize),
                 paint);
         return new BitmapDrawable(resources, output);
+    }
+
+    // Returns whether bitmap is a valid brand icon: non-null, square, and at least
+    // getBrandIconMinimumSize(rpMode) when circle-cropped.
+    static boolean isValidBrandIcon(
+            @Nullable Bitmap bitmap, @RpMode.EnumType int rpMode, boolean shouldCircleCrop) {
+        return bitmap != null
+                && bitmap.getWidth() == bitmap.getHeight()
+                && (!shouldCircleCrop
+                        || bitmap.getWidth()
+                                >= AccountSelectionBridge.getBrandIconMinimumSize(rpMode));
     }
 
     static void updateAccountViewAvatar(PropertyModel model, View view) {
@@ -279,7 +299,7 @@ class AccountSelectionViewBinder {
                 Bitmap brandIcon = idpMetadata.getBrandIconBitmap();
                 ImageView endIconView = view.findViewById(R.id.end_icon);
                 if (!showIdp || brandIcon == null) {
-                    setDefaultLoginImage(context, properties, startIconView);
+                    setDefaultLoginImage(context, properties.mRpMode, startIconView);
                     if (endIconView != null) {
                         endIconView.setVisibility(View.GONE);
                     }
@@ -293,7 +313,7 @@ class AccountSelectionViewBinder {
                     startIconView.setImageDrawable(croppedBrandIcon);
 
                     if (endIconView != null) {
-                        setDefaultLoginImage(context, properties, endIconView);
+                        setDefaultLoginImage(context, properties.mRpMode, endIconView);
                         endIconView.setVisibility(View.VISIBLE);
                     }
                 }
@@ -343,21 +363,67 @@ class AccountSelectionViewBinder {
         }
     }
 
+    /**
+     * Called whenever an identity provider row is bound to the active-mode IDP picker view.
+     *
+     * @param model The model containing the data for the view.
+     * @param view The view to be bound.
+     * @param key The key of the property to be bound.
+     */
+    static void bindIdpView(PropertyModel model, View view, PropertyKey key) {
+        if (key != IdpProperties.PROPERTIES) {
+            assert false : "Unhandled update to property:" + key;
+            return;
+        }
+        IdpProperties.Properties properties = model.get(IdpProperties.PROPERTIES);
+        Context context = view.getContext();
+        IdentityProviderData identityProvider = properties.mIdentityProvider;
+        IdentityProviderMetadata idpMetadata = identityProvider.getIdpMetadata();
+        ImageView startIconView = view.findViewById(R.id.start_icon);
+        Bitmap brandIcon = idpMetadata.getBrandIconBitmap();
+        if (isValidBrandIcon(brandIcon, RpMode.ACTIVE, /* shouldCircleCrop= */ true)) {
+            Resources resources = view.getResources();
+            int iconSize =
+                    resources.getDimensionPixelSize(
+                            R.dimen.account_selection_active_mode_sheet_icon_size);
+            startIconView.setImageDrawable(
+                    createBitmapWithMaskableIconSafeZone(
+                            resources, assumeNonNull(brandIcon), iconSize));
+        } else {
+            startIconView.setImageDrawable(
+                    UiUtils.getTintedDrawable(
+                            context,
+                            R.drawable.ic_globe_24dp,
+                            R.color.default_icon_color_tint_list));
+        }
+
+        TextView subject = view.findViewById(R.id.title);
+        String idpForDisplay = identityProvider.getIdpForDisplay();
+        subject.setText(idpForDisplay);
+        subject.setContentDescription(
+                context.getString(
+                        R.string.account_selection_add_account_opens_in_new_tab, idpForDisplay));
+
+        view.setOnClickListener(
+                clickedView -> {
+                    properties.mOnClickListener.onResult(
+                            new ButtonData(/* account= */ null, idpMetadata));
+                });
+    }
+
     static void setDefaultLoginImage(
-            Context context, LoginButtonProperties.Properties properties, ImageView iconView) {
+            Context context, @RpMode.EnumType int rpMode, ImageView iconView) {
         TintedDrawable plusIcon =
                 TintedDrawable.constructTintedDrawable(
                         context,
-                        properties.mRpMode == RpMode.ACTIVE
-                                ? R.drawable.plus
-                                : R.drawable.open_in_new_tab,
-                        properties.mRpMode == RpMode.ACTIVE
+                        rpMode == RpMode.ACTIVE ? R.drawable.plus : R.drawable.open_in_new_tab,
+                        rpMode == RpMode.ACTIVE
                                 ? R.color.default_icon_color_accent1_tint_list
                                 : R.color.default_icon_color_tint_list);
         iconView.setImageDrawable(plusIcon);
     }
 
-    static SpanApplier.SpanInfo createLink(
+    static SpanApplier.@Nullable SpanInfo createLink(
             Context context, String tag, GURL url, Consumer<Context> clickCallback) {
         if (GURL.isEmptyOrInvalid(url)) return null;
 
@@ -369,6 +435,102 @@ class AccountSelectionViewBinder {
                 };
         return new SpanApplier.SpanInfo(
                 startTag, endTag, new ChromeClickableSpan(context, onClickCallback));
+    }
+
+    /**
+     * Shows the identity provider's links in a row below the data sharing consent text, or hides
+     * the row if it has none. Only the active mode container layout has this row.
+     */
+    private static void bindIdpLinks(
+            View view, DataSharingConsentProperties.Properties properties) {
+        View idpLinksRow = view.findViewById(R.id.idp_links_row);
+        if (idpLinksRow == null) return;
+
+        SpannableString idpLinksText = getIdpLinksText(view.getContext(), properties);
+        idpLinksRow.setVisibility(idpLinksText != null ? View.VISIBLE : View.GONE);
+        // With the links row below it, only the top corners of the consent text's row are rounded.
+        view.findViewById(R.id.user_data_sharing_consent_row)
+                .setBackgroundResource(
+                        idpLinksText != null
+                                ? R.drawable
+                                        .account_selection_active_mode_consent_container_top_background
+                                : R.drawable
+                                        .account_selection_active_mode_consent_container_background);
+        if (idpLinksText == null) return;
+
+        TextView idpLinks = idpLinksRow.findViewById(R.id.idp_links);
+        idpLinks.setText(idpLinksText);
+        idpLinks.setMovementMethod(LinkMovementMethod.getInstance());
+    }
+
+    /**
+     * Returns the text with links to whichever of the identity provider's account management page,
+     * privacy policy and terms of service it has, or null if it has none.
+     */
+    private static @Nullable SpannableString getIdpLinksText(
+            Context context, DataSharingConsentProperties.Properties properties) {
+        SpanApplier.SpanInfo accountManagementSpan =
+                createIdpLink(
+                        context,
+                        "link_idp_account",
+                        properties.mIdpAccountManagementUrl,
+                        properties.mIdpLinkClickCallback);
+        SpanApplier.SpanInfo privacyPolicySpan =
+                createIdpLink(
+                        context,
+                        "link_idp_privacy_policy",
+                        properties.mIdpPrivacyPolicyUrl,
+                        properties.mIdpLinkClickCallback);
+        SpanApplier.SpanInfo termsOfServiceSpan =
+                createIdpLink(
+                        context,
+                        "link_idp_terms_of_service",
+                        properties.mIdpTermsOfServiceUrl,
+                        properties.mIdpLinkClickCallback);
+
+        @StringRes int textId;
+        if (accountManagementSpan != null) {
+            if (privacyPolicySpan != null && termsOfServiceSpan != null) {
+                textId = R.string.account_selection_idp_links;
+            } else if (privacyPolicySpan != null) {
+                textId = R.string.account_selection_idp_links_no_tos;
+            } else if (termsOfServiceSpan != null) {
+                textId = R.string.account_selection_idp_links_no_pp;
+            } else {
+                textId = R.string.account_selection_idp_links_no_pp_or_tos;
+            }
+        } else if (privacyPolicySpan != null && termsOfServiceSpan != null) {
+            textId = R.string.account_selection_idp_links_no_account_management;
+        } else if (privacyPolicySpan != null) {
+            textId = R.string.account_selection_idp_links_no_account_management_or_tos;
+        } else if (termsOfServiceSpan != null) {
+            textId = R.string.account_selection_idp_links_no_account_management_or_pp;
+        } else {
+            return null;
+        }
+
+        List<SpanApplier.SpanInfo> spans = new ArrayList<>();
+        for (SpanApplier.SpanInfo span :
+                new SpanApplier.SpanInfo[] {
+                    accountManagementSpan, privacyPolicySpan, termsOfServiceSpan
+                }) {
+            if (span != null) {
+                spans.add(span);
+            }
+        }
+        return SpanApplier.applySpans(
+                context.getString(textId, properties.mIdpForDisplay),
+                spans.toArray(new SpanApplier.SpanInfo[0]));
+    }
+
+    /** Returns a link for `url` that calls `clickCallback` with it, or null if `url` is empty. */
+    private static SpanApplier.@Nullable SpanInfo createIdpLink(
+            Context context, String tag, GURL url, BiConsumer<Context, GURL> clickCallback) {
+        return createLink(
+                context,
+                tag,
+                url,
+                (Context clickContext) -> clickCallback.accept(clickContext, url));
     }
 
     /**
@@ -452,6 +614,7 @@ class AccountSelectionViewBinder {
             TextView textView = view.findViewById(R.id.user_data_sharing_consent);
             textView.setText(span);
             textView.setMovementMethod(LinkMovementMethod.getInstance());
+            bindIdpLinks(view, properties);
             if (properties.mSetFocusViewCallback != null) {
                 properties.mSetFocusViewCallback.onResult(textView);
             }
@@ -563,7 +726,10 @@ class AccountSelectionViewBinder {
             description +=
                     context.getString(R.string.signin_generic_error_dialog_more_details_prompt);
             return new ErrorText(
-                    summary, description, context, properties.mMoreDetailsClickRunnable);
+                    summary,
+                    description,
+                    context,
+                    assertNonNull(properties.mMoreDetailsClickRunnable));
         }
 
         if (url.isEmpty()) {
@@ -592,7 +758,10 @@ class AccountSelectionViewBinder {
 
         if (clickableText) {
             return new ErrorText(
-                    summary, description, context, properties.mMoreDetailsClickRunnable);
+                    summary,
+                    description,
+                    context,
+                    assertNonNull(properties.mMoreDetailsClickRunnable));
         }
         return new ErrorText(summary, description);
     }
@@ -668,7 +837,7 @@ class AccountSelectionViewBinder {
                     });
 
             String btnText;
-            HeaderProperties.HeaderType headerType = properties.mHeaderType;
+            @HeaderProperties.HeaderType int headerType = properties.mHeaderType;
             if (headerType == HeaderProperties.HeaderType.SIGN_IN_TO_IDP_STATIC) {
                 btnText = context.getString(R.string.signin_continue);
                 button.setContentDescription(
@@ -677,6 +846,7 @@ class AccountSelectionViewBinder {
             } else if (headerType == HeaderProperties.HeaderType.SIGN_IN_ERROR) {
                 btnText = context.getString(R.string.signin_error_dialog_got_it_button);
             } else {
+                assumeNonNull(account);
                 String givenName = account.getGivenName();
                 if (givenName.isEmpty()) {
                     btnText = context.getString(R.string.signin_continue);
@@ -723,7 +893,8 @@ class AccountSelectionViewBinder {
                     model.get(ItemProperties.DRAGBAR_HANDLE_VISIBLE) ? View.VISIBLE : View.GONE);
             return;
         }
-        PropertyModel itemModel = model.get((WritableObjectPropertyKey<PropertyModel>) key);
+        PropertyModel itemModel =
+                model.get((WritableObjectPropertyKey<@Nullable PropertyModel>) key);
         ViewBinder<PropertyModel, View, PropertyKey> itemBinder = null;
         if (key == ItemProperties.HEADER) {
             itemView = view.findViewById(R.id.header_view_item);
@@ -732,7 +903,12 @@ class AccountSelectionViewBinder {
             itemView = view.findViewById(R.id.account_selection_continue_btn);
             itemBinder = AccountSelectionViewBinder::bindContinueButtonView;
         } else if (key == ItemProperties.DATA_SHARING_CONSENT) {
-            itemView = view.findViewById(R.id.user_data_sharing_consent);
+            // The active mode sheet may wrap the consent text in a container; see
+            // `AccountSelectionCoordinator#setupContentView()`.
+            itemView = view.findViewById(R.id.user_data_sharing_consent_container);
+            if (itemView == null) {
+                itemView = view.findViewById(R.id.user_data_sharing_consent);
+            }
             itemBinder = AccountSelectionViewBinder::bindDataSharingConsentView;
         } else if (key == ItemProperties.IDP_SIGNIN) {
             itemView = view.findViewById(R.id.idp_signin);
@@ -776,6 +952,7 @@ class AccountSelectionViewBinder {
     static void bindHeaderView(PropertyModel model, View view, PropertyKey key) {
         Resources resources = view.getResources();
         View headerView = view.findViewById(R.id.header);
+        Callback<View> setFocusViewCallback = model.get(HeaderProperties.SET_FOCUS_VIEW_CALLBACK);
 
         // Reuse the same header from previous dialog if active mode verify sheet.
         if (model.get(HeaderProperties.RP_MODE) == RpMode.ACTIVE
@@ -783,8 +960,8 @@ class AccountSelectionViewBinder {
                         || model.get(HeaderProperties.TYPE)
                                 == HeaderProperties.HeaderType.VERIFY_AUTO_REAUTHN)) {
             headerView.setContentDescription(resources.getString(R.string.verify_sheet_title));
-            if (model.get(HeaderProperties.SET_FOCUS_VIEW_CALLBACK) != null) {
-                model.get(HeaderProperties.SET_FOCUS_VIEW_CALLBACK).onResult(headerView);
+            if (setFocusViewCallback != null) {
+                setFocusViewCallback.onResult(headerView);
             }
             return;
         }
@@ -797,10 +974,10 @@ class AccountSelectionViewBinder {
                 || key == HeaderProperties.RP_MODE
                 || key == HeaderProperties.IS_MULTIPLE_ACCOUNT_CHOOSER
                 || key == HeaderProperties.SET_FOCUS_VIEW_CALLBACK
-                || key == HeaderProperties.IS_MULTIPLE_IDPS) {
+                || key == HeaderProperties.IS_SHOWING_MULTIPLE_IDPS) {
             TextView headerTitleText = view.findViewById(R.id.header_title);
             TextView headerSubtitleText = view.findViewById(R.id.header_subtitle);
-            HeaderProperties.HeaderType headerType = model.get(HeaderProperties.TYPE);
+            @HeaderProperties.HeaderType int headerType = model.get(HeaderProperties.TYPE);
 
             String subtitle =
                     computeHeaderSubtitle(
@@ -810,13 +987,12 @@ class AccountSelectionViewBinder {
                             model.get(HeaderProperties.IFRAME_FOR_DISPLAY),
                             model.get(HeaderProperties.RP_MODE),
                             model.get(HeaderProperties.IS_MULTIPLE_ACCOUNT_CHOOSER),
-                            model.get(HeaderProperties.IS_MULTIPLE_IDPS));
+                            model.get(HeaderProperties.IS_SHOWING_MULTIPLE_IDPS));
             if (!subtitle.isEmpty()) {
                 headerTitleText.setPadding(
                         /* left= */ 0, /* top= */ 12, /* right= */ 0, /* bottom= */ 0);
-                if (headerSubtitleText.getText() != subtitle
-                        && model.get(HeaderProperties.SET_FOCUS_VIEW_CALLBACK) != null) {
-                    model.get(HeaderProperties.SET_FOCUS_VIEW_CALLBACK).onResult(headerView);
+                if (headerSubtitleText.getText() != subtitle && setFocusViewCallback != null) {
+                    setFocusViewCallback.onResult(headerView);
                 }
                 headerSubtitleText.setText(subtitle);
                 headerSubtitleText.setMovementMethod(LinkMovementMethod.getInstance());
@@ -834,10 +1010,9 @@ class AccountSelectionViewBinder {
                             model.get(HeaderProperties.IDP_FOR_DISPLAY),
                             model.get(HeaderProperties.RP_CONTEXT),
                             model.get(HeaderProperties.RP_MODE),
-                            model.get(HeaderProperties.IS_MULTIPLE_IDPS));
-            if (headerTitleText.getText() != title
-                    && model.get(HeaderProperties.SET_FOCUS_VIEW_CALLBACK) != null) {
-                model.get(HeaderProperties.SET_FOCUS_VIEW_CALLBACK).onResult(headerView);
+                            model.get(HeaderProperties.IS_SHOWING_MULTIPLE_IDPS));
+            if (headerTitleText.getText() != title && setFocusViewCallback != null) {
+                setFocusViewCallback.onResult(headerView);
             }
             headerTitleText.setText(title);
             headerTitleText.setMovementMethod(LinkMovementMethod.getInstance());
@@ -878,8 +1053,31 @@ class AccountSelectionViewBinder {
             Bitmap brandIcon = model.get(HeaderProperties.HEADER_ICON);
             // Do not crop the header icon when it is the RP icon, e.g. when there are multiple IDPs
             // in the current dialog.
-            boolean shouldCircleCrop = !model.get(HeaderProperties.IS_MULTIPLE_IDPS);
+            boolean shouldCircleCrop = !model.get(HeaderProperties.IS_SHOWING_MULTIPLE_IDPS);
+            ImageView headerIconView = view.findViewById(R.id.header_icon);
             if (brandIcon == null) {
+                if (model.get(HeaderProperties.RP_MODE) == RpMode.ACTIVE
+                        && model.get(HeaderProperties.IS_MULTI_IDP_REQUEST)) {
+                    // TODO(crbug.com/575550088): Show the RP icon instead of the fallback icon in
+                    // active mode with multiple IDPs.
+                    @HeaderProperties.HeaderType int headerType = model.get(HeaderProperties.TYPE);
+                    boolean showFallbackIcon =
+                            model.get(HeaderProperties.IS_SHOWING_MULTIPLE_IDPS)
+                                    && (headerType == HeaderProperties.HeaderType.SIGN_IN
+                                            || headerType
+                                                    == HeaderProperties.HeaderType.IDP_PICKER);
+                    if (showFallbackIcon) {
+                        headerIconView.setImageDrawable(
+                                UiUtils.getTintedDrawable(
+                                        view.getContext(),
+                                        R.drawable.ic_globe_24dp,
+                                        R.color.default_icon_color_tint_list));
+                        headerIconView.setVisibility(View.VISIBLE);
+                    } else {
+                        // Hide the fallback icon in case the account chooser showed it.
+                        headerIconView.setVisibility(View.GONE);
+                    }
+                }
                 return;
             }
             int iconSize =
@@ -887,7 +1085,6 @@ class AccountSelectionViewBinder {
                             model.get(HeaderProperties.RP_MODE) == RpMode.ACTIVE
                                     ? R.dimen.account_selection_active_mode_sheet_icon_size
                                     : R.dimen.account_selection_sheet_icon_size);
-            ImageView headerIconView = view.findViewById(R.id.header_icon);
             if (shouldCircleCrop) {
                 Drawable croppedBrandIcon =
                         createBitmapWithMaskableIconSafeZone(resources, brandIcon, iconSize);
@@ -901,6 +1098,8 @@ class AccountSelectionViewBinder {
                 headerIconView.setImageDrawable(new BitmapDrawable(resources, output));
             }
             headerIconView.setVisibility(View.VISIBLE);
+        } else if (key == HeaderProperties.IS_MULTI_IDP_REQUEST) {
+            // Read when HEADER_ICON is bound.
         } else if (key == HeaderProperties.RP_BRAND_ICON) {
             // RP icon is not shown in passive mode.
             if (model.get(HeaderProperties.RP_MODE) == RpMode.PASSIVE) return;
@@ -959,21 +1158,27 @@ class AccountSelectionViewBinder {
 
     private static String computeHeaderTitle(
             Resources resources,
-            HeaderProperties.HeaderType type,
+            @HeaderProperties.HeaderType int type,
             String topLevelUrl,
             String iframeUrl,
-            String idpUrl,
+            @Nullable String idpUrl,
             @RpContext.EnumType int rpContext,
             @RpMode.EnumType int rpMode,
-            Boolean isMultipleIdps) {
+            Boolean isShowingMultipleIdps) {
         if (topLevelUrl.isEmpty()) {
             return "";
         }
         @StringRes int titleStringId;
-        // In single IDP active mode, show the title with RP and IDP.
+        String rpUrl = iframeUrl.isEmpty() ? topLevelUrl : iframeUrl;
         if (rpMode == RpMode.ACTIVE) {
-            // We do not currently support multiple IDPs in active mode.
-            assert !isMultipleIdps;
+            // If there are multiple IDPs, show the title with just the RP.
+            if (isShowingMultipleIdps) {
+                return String.format(
+                        resources.getString(
+                                R.string.account_selection_multi_idp_sheet_title_explicit_signin),
+                        rpUrl);
+            }
+            // In single IDP active mode, show the title with RP and IDP.
             // If the iframe is not present, use only the IDP string in the title.
             if (iframeUrl.isEmpty()) {
                 switch (rpContext) {
@@ -1021,10 +1226,8 @@ class AccountSelectionViewBinder {
             return resources.getString(getVerifyHeaderAutoReauthnStringId());
         }
 
-        String rpUrl = iframeUrl.isEmpty() ? topLevelUrl : iframeUrl;
-
         // If there are multiple IDPs, show the title with just the RP.
-        if (isMultipleIdps) {
+        if (isShowingMultipleIdps) {
             // The title does not change depending on RP context in a dialog involving multiple
             // IDPs. Note that context is indeed shown when the dialog is transitioned to single
             // IDP, e.g. once the user selects an account.
@@ -1052,12 +1255,12 @@ class AccountSelectionViewBinder {
 
     private static String computeHeaderSubtitle(
             Resources resources,
-            HeaderProperties.HeaderType type,
+            @HeaderProperties.HeaderType int type,
             String rpUrl,
             String iframeUrl,
             @RpMode.EnumType int rpMode,
             Boolean isMultipleAccountChooser,
-            Boolean isMultipleIdps) {
+            Boolean isShowingMultipleIdps) {
         if (type == HeaderProperties.HeaderType.VERIFY
                 || type == HeaderProperties.HeaderType.VERIFY_AUTO_REAUTHN) {
             return "";
@@ -1071,7 +1274,15 @@ class AccountSelectionViewBinder {
                     rpUrl,
                     iframeUrl);
         }
-        if (rpMode == RpMode.PASSIVE || isMultipleIdps) return "";
+        if (rpMode == RpMode.PASSIVE) return "";
+        if (isShowingMultipleIdps) {
+            if (type == HeaderProperties.HeaderType.LOADING) return "";
+            if (type == HeaderProperties.HeaderType.IDP_PICKER) {
+                return resources.getString(R.string.account_selection_idp_picker_subtitle);
+            }
+            assert type == HeaderProperties.HeaderType.SIGN_IN;
+            return resources.getString(R.string.account_selection_multi_idp_sheet_subtitle);
+        }
 
         if (isMultipleAccountChooser) {
             return String.format(

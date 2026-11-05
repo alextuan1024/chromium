@@ -133,19 +133,32 @@ class PermissionRequest {
 
   // Returns prompt icon appropriate for displaying on the chip button in the
   // location bar.
-  IconId GetIconForChip();
+  virtual IconId GetIconForChip() const;
 
   // Returns prompt icon appropriate for displaying on the quiet chip button in
   // the location bar.
-  IconId GetBlockedIconForChip();
+  virtual IconId GetBlockedIconForChip() const;
+
+  // Returns whether the request stays pending, with its chip still in the
+  // location bar, when the user closes the prompt bubble without deciding. The
+  // user can then reopen the bubble from the chip until the chip expires.
+  // Otherwise, closing the bubble dismisses the request.
+  virtual bool ShouldKeepChipOnBubbleClose() const;
 
   // Returns prompt text appropriate for displaying on the chip button in the
   // location bar.
-  std::optional<std::u16string> GetRequestChipText(ChipTextType type) const;
+  virtual std::optional<std::u16string> GetRequestChipText(
+      ChipTextType type) const;
 
   // Returns prompt text appropriate for displaying under the dialog title
   // "[domain] wants to:".
   virtual std::u16string GetMessageTextFragment() const;
+
+  // Returns whether the prompt bubble opens automatically when the request is
+  // shown with a chip in the location bar. Otherwise, only the chip is shown,
+  // and the user can click it to open the bubble. Quiet chips never open their
+  // bubble automatically.
+  virtual bool ShouldBubbleStartOpen() const;
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
   // Returns the text to be used in the "allow always" button of the
@@ -198,6 +211,16 @@ class PermissionRequest {
   // corresponds to a denial, but is segregated in case the context needs to
   // be able to distinguish between an active refusal or an implicit refusal.
   void Cancelled(bool is_final_decision = true);
+
+  // Returns true if `PermissionGranted()` has already been called on this
+  // request.
+  bool IsPermissionGranted() const;
+
+  // Returns true if a final decision (`PermissionGranted()`,
+  // `PermissionDenied()`, or `Cancelled(/*is_final_decision=*/true)`) has
+  // already been made on this request, consuming
+  // `permission_decided_callback_`.
+  bool IsDecisionFinalized() const;
 
   // Used to record UMA for whether requests are associated with a user gesture.
   // To keep things simple this metric is only recorded for the most popular
@@ -255,6 +278,10 @@ class PermissionRequest {
 
   // Called once a decision is made about the permission.
   PermissionDecidedCallback permission_decided_callback_;
+
+  // Set once a final decision (`PermissionGranted()`, `PermissionDenied()`, or
+  // `Cancelled(/*is_final_decision=*/true)`) is made.
+  std::optional<PermissionDecision> final_decision_;
 
   // Called when the request is finished to perform bookkeeping tasks.
   base::OnceClosure request_finished_callback_;

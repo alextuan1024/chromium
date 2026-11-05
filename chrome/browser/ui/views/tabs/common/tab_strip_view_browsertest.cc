@@ -5,27 +5,45 @@
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 
 #include "base/auto_reset.h"
+#include "base/check_deref.h"
+#include "base/i18n/test/scoped_rtl_for_testing.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
+#include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
+#include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
+#include "chrome/browser/ui/views/tabs/tab/glow_hover_controller.h"
+#include "chrome/browser/ui/views/tabs/tab/tab_close_button.h"
+#include "chrome/browser/ui/views/tabs/tab_style_views.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_browser_test_mixin.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/test/browser_test.h"
+#include "ui/compositor/layer.h"
+#include "ui/compositor/layer_test_api.h"
+#include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/gfx/geometry/point_f.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/layout/normalized_geometry.h"
 #include "ui/views/view_utils.h"
 
-class TabStripViewBrowserTest
-    : public VerticalTabsBrowserTestMixin<InProcessBrowserTest>,
-      public testing::WithParamInterface<TabStripOrientation> {
+class TabStripViewBrowserTestBase
+    : public VerticalTabsBrowserTestMixin<InProcessBrowserTest> {
  public:
-  TabStripViewBrowserTest() = default;
-  ~TabStripViewBrowserTest() override = default;
+  TabStripViewBrowserTestBase() = default;
+  ~TabStripViewBrowserTestBase() override = default;
 
-  TabStripOrientation orientation() const { return GetParam(); }
+  virtual TabStripOrientation orientation() const = 0;
 
   bool is_horizontal() const {
     return orientation() == TabStripOrientation::kHorizontal;
@@ -68,10 +86,23 @@ class TabStripViewBrowserTest
     return views::GetMainAxis(layout_orientation(), view->size());
   }
 
+  void EnableRichAnimations() {
+    animation_mode_reset_.reset();
+    animation_mode_reset_ = gfx::AnimationTestApi::SetRichAnimationRenderMode(
+        gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED);
+  }
+
  private:
   std::unique_ptr<base::AutoReset<gfx::Animation::RichAnimationRenderMode>>
       animation_mode_reset_ = gfx::AnimationTestApi::SetRichAnimationRenderMode(
           gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
+};
+
+class TabStripViewBrowserTest
+    : public TabStripViewBrowserTestBase,
+      public testing::WithParamInterface<TabStripOrientation> {
+ public:
+  TabStripOrientation orientation() const override { return GetParam(); }
 };
 
 IN_PROC_BROWSER_TEST_P(TabStripViewBrowserTest,
@@ -124,6 +155,154 @@ IN_PROC_BROWSER_TEST_P(TabStripViewBrowserTest,
             GetMainAxisSize(tab_strip_view()) / 2);
 }
 
+IN_PROC_BROWSER_TEST_P(
+    TabStripViewBrowserTest,
+    SwitchingOrientationWithHoveredAndFocusedTabDoesNotCrash) {
+  AppendPinnedTab();
+  RunScheduledLayouts();
+
+  ASSERT_NE(unpinned_collection_node(), nullptr);
+  ASSERT_FALSE(unpinned_collection_node()->children().empty());
+  views::View* tab_view = unpinned_collection_node()->children()[0]->view();
+  ASSERT_NE(tab_view, nullptr);
+
+  // Hover and focus the tab before switching orientation.
+  ui::MouseEvent hover_event(ui::EventType::kMouseEntered, gfx::Point(),
+                             gfx::Point(), ui::EventTimeForNow(), 0, 0);
+  tab_view->OnMouseEntered(hover_event);
+  tab_view->RequestFocus();
+
+  if (is_horizontal()) {
+    EnterVerticalTabsMode();
+  } else {
+    ExitVerticalTabsMode();
+  }
+
+  EXPECT_NE(tab_strip_view(), nullptr);
+}
+
+IN_PROC_BROWSER_TEST_P(TabStripViewBrowserTest,
+                       RecordsVerticalTimeToSwitchOnlyInVerticalMode) {
+  AppendTab();
+  RunScheduledLayouts();
+
+  ASSERT_NE(tab_strip_view(), nullptr);
+  ASSERT_NE(unpinned_collection_node(), nullptr);
+  ASSERT_GE(unpinned_collection_node()->children().size(), 2u);
+  views::View* tab_view = unpinned_collection_node()->children()[0]->view();
+  ASSERT_NE(tab_view, nullptr);
+
+  base::HistogramTester histogram_tester;
+
+  ui::MouseEvent enter_event(ui::EventType::kMouseEntered, gfx::Point(),
+                             gfx::Point(), ui::EventTimeForNow(), 0, 0);
+  tab_strip_view()->OnMouseEntered(enter_event);
+
+  ui::MouseEvent press_event(ui::EventType::kMousePressed, gfx::Point(5, 5),
+                             gfx::Point(5, 5), ui::EventTimeForNow(),
+                             ui::EF_LEFT_MOUSE_BUTTON,
+                             ui::EF_LEFT_MOUSE_BUTTON);
+  tab_view->OnMousePressed(press_event);
+  ui::MouseEvent release_event(ui::EventType::kMouseReleased, gfx::Point(5, 5),
+                               gfx::Point(5, 5), ui::EventTimeForNow(),
+                               ui::EF_LEFT_MOUSE_BUTTON,
+                               ui::EF_LEFT_MOUSE_BUTTON);
+  tab_view->OnMouseReleased(release_event);
+
+  histogram_tester.ExpectTotalCount("TabStrip.Vertical.TimeToSwitch",
+                                    is_horizontal() ? 0 : 1);
+  histogram_tester.ExpectTotalCount("TabStrip.TimeToSwitch",
+                                    is_horizontal() ? 1 : 0);
+}
+
+IN_PROC_BROWSER_TEST_P(TabStripViewBrowserTest,
+                       ClosingLastPinnedTabAnimatesOut) {
+  AppendPinnedTab();
+  RunScheduledLayouts();
+
+  EnableRichAnimations();
+
+  ASSERT_NE(tab_strip_view(), nullptr);
+  ASSERT_NE(pinned_tabs_scroll_view(), nullptr);
+  PinnedTabContainerView* const pinned_container =
+      tab_strip_view()->GetPinnedTabsContainer();
+  ASSERT_NE(pinned_container, nullptr);
+  ASSERT_EQ(pinned_container->children().size(), 1u);
+
+  const int initial_pinned_size = GetMainAxisSize(pinned_tabs_scroll_view());
+  EXPECT_GT(initial_pinned_size, 0);
+
+  // Close the last (and only) pinned tab.
+  tab_strip_model()->CloseWebContentsAt(0, TabCloseTypes::CLOSE_USER_GESTURE);
+  RunScheduledLayouts();
+
+  // The pinned container should animate out the closing tab rather than
+  // snapping to 0 immediately and clipping or destroying the tab view.
+  EXPECT_TRUE(
+      TabCollectionAnimatingLayoutManager::IsViewAnimating(pinned_container));
+  EXPECT_EQ(pinned_container->children().size(), 1u);
+  EXPECT_EQ(GetMainAxisSize(pinned_tabs_scroll_view()), initial_pinned_size);
+
+  // Once the animation completes, the pending-delete tab view should be removed
+  // and the pinned scroll view should collapse to 0 along the main axis.
+  vertical_tab_strip_controller()
+      ->animation_coordinator()
+      .StopAllAnimationsForTesting();
+  RunScheduledLayouts();
+
+  EXPECT_FALSE(
+      TabCollectionAnimatingLayoutManager::IsViewAnimating(pinned_container));
+  EXPECT_TRUE(pinned_container->children().empty());
+  EXPECT_EQ(GetMainAxisSize(pinned_tabs_scroll_view()), 0);
+}
+
+IN_PROC_BROWSER_TEST_P(TabStripViewBrowserTest,
+                       ClosingLastPinnedSplitTabAnimatesOut) {
+  AppendPinnedTab();
+  AppendPinnedTab();
+  tab_strip_model()->ActivateTabAt(
+      0, TabStripUserGestureDetails(
+             TabStripUserGestureDetails::GestureType::kOther));
+  tab_strip_model()->AddToNewSplit(
+      {1}, {}, split_tabs::SplitTabCreatedSource::kTabContextMenu);
+  RunScheduledLayouts();
+
+  EnableRichAnimations();
+
+  ASSERT_NE(tab_strip_view(), nullptr);
+  ASSERT_NE(pinned_tabs_scroll_view(), nullptr);
+  PinnedTabContainerView* const pinned_container =
+      tab_strip_view()->GetPinnedTabsContainer();
+  ASSERT_NE(pinned_container, nullptr);
+  ASSERT_EQ(pinned_container->children().size(), 1u);
+
+  const int initial_pinned_size = GetMainAxisSize(pinned_tabs_scroll_view());
+  EXPECT_GT(initial_pinned_size, 0);
+
+  // Close both tabs in the pinned split view together.
+  tab_strip_model()->CloseSelectedTabs();
+  RunScheduledLayouts();
+
+  // The pinned container should animate out the closing split view rather than
+  // snapping to 0 immediately.
+  EXPECT_TRUE(
+      TabCollectionAnimatingLayoutManager::IsViewAnimating(pinned_container));
+  EXPECT_FALSE(pinned_container->children().empty());
+  EXPECT_EQ(GetMainAxisSize(pinned_tabs_scroll_view()), initial_pinned_size);
+
+  // Once the animation completes, the pending-delete views should be removed
+  // and the pinned scroll view should collapse to 0 along the main axis.
+  vertical_tab_strip_controller()
+      ->animation_coordinator()
+      .StopAllAnimationsForTesting();
+  RunScheduledLayouts();
+
+  EXPECT_FALSE(
+      TabCollectionAnimatingLayoutManager::IsViewAnimating(pinned_container));
+  EXPECT_TRUE(pinned_container->children().empty());
+  EXPECT_EQ(GetMainAxisSize(pinned_tabs_scroll_view()), 0);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     All,
     TabStripViewBrowserTest,
@@ -137,3 +316,146 @@ INSTANTIATE_TEST_SUITE_P(
           return "Horizontal";
       }
     });
+
+class HorizontalTabStripViewPinnedSeamBrowserTest
+    : public TabStripViewBrowserTestBase {
+ public:
+  HorizontalTabStripViewPinnedSeamBrowserTest() { EnableRichAnimations(); }
+  TabStripOrientation orientation() const override {
+    return TabStripOrientation::kHorizontal;
+  }
+  const std::vector<base::test::FeatureRef> GetDisabledFeatures() override {
+    auto disabled = TabStripViewBrowserTestBase::GetDisabledFeatures();
+    disabled.push_back(tabs::kNewHorizontalPinnedTabStyling);
+    return disabled;
+  }
+  TabView* GetTabView(int i) {
+    auto handle = tab_strip_model()->GetTabAtIndex(i)->GetHandle();
+    return views::AsViewClass<TabView>(
+        root_node()->GetNodeForHandle(handle)->view());
+  }
+  static TabStyle::SeparatorOpacities SeparatorOpacities(const TabView* tab) {
+    return tab->tab_styling()->GetSeparatorOpacitiesForTesting();
+  }
+  ui::LayerTestApi PinnedLayerTestApi() {
+    return ui::LayerTestApi(pinned_collection_node()->view()->layer());
+  }
+  void ResetTabHoverStates() {
+    for (int i = 0; i < tab_strip_model()->count(); ++i) {
+      TabView& tab = CHECK_DEREF(GetTabView(i));
+      tab.UpdateHovered(false);
+      CHECK_DEREF(tab.GetHoverControllerForTesting())
+          .Hide(TabStyle::HideHoverStyle::kImmediate);
+    }
+  }
+  void SettleLayout() {
+    ResetTabHoverStates();
+    pinned_collection_node()->view()->InvalidateLayout();
+    unpinned_collection_node()->view()->InvalidateLayout();
+    vertical_tab_strip_controller()
+        ->animation_coordinator()
+        .StopAllAnimationsForTesting();
+    RunScheduledLayouts();
+    pinned_collection_node()->view()->layer()->SendDamagedRects();
+  }
+  bool TakePinnedSeamDamaged(TabView* tab) {
+    views::View* root = tab->layer() ? tab : pinned_collection_node()->view();
+    const int w = TabStyle::Get()->GetTabOverlap();
+    const gfx::Rect seam(tab->width() - w, 0, w, tab->height());
+    const bool hit = ui::LayerTestApi(root->layer())
+                         .damaged_region()
+                         .Contains(views::View::ConvertRectToTarget(
+                             tab, root, tab->GetMirroredRect(seam)));
+    root->layer()->SendDamagedRects();
+    return hit;
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(HorizontalTabStripViewPinnedSeamBrowserTest,
+                       SeamSeparatorRepaintsPinnedTabOnUnpinnedChanges) {
+  AppendPinnedTab();
+  AppendPinnedTab();
+  AppendTab();
+  SettleLayout();
+  TabView* pinned0 = GetTabView(0);
+  TabView* pinned1 = GetTabView(1);
+  TabView* unpinned0 = GetTabView(2);
+  ASSERT_TRUE(pinned0 && pinned1 && unpinned0 && GetTabView(3));
+
+  unpinned0->UpdateHovered(true);
+  EXPECT_EQ(SeparatorOpacities(pinned1).right, 0.0f);
+  EXPECT_FALSE(
+      PinnedLayerTestApi().damaged_region().Contains(pinned0->bounds()));
+  EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+  ResetTabHoverStates();
+  EXPECT_EQ(SeparatorOpacities(pinned1).right, 1.0f);
+  EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+
+  unpinned0->close_button_for_testing()->SchedulePaint();
+  GetTabView(3)->SchedulePaint();
+  EXPECT_TRUE(PinnedLayerTestApi().damaged_region().IsEmpty());
+
+  tab_strip_model()->SelectTabAt(2);
+  EXPECT_EQ(SeparatorOpacities(pinned1).right, 0.0f);
+  EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+  tab_strip_model()->DeselectTabAt(2);
+  EXPECT_EQ(SeparatorOpacities(pinned1).right, 1.0f);
+  EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+
+  {
+    base::i18n::ScopedRTLForTesting scoped_rtl(true);
+    SettleLayout();
+    unpinned0->UpdateHovered(true);
+    EXPECT_EQ(SeparatorOpacities(pinned1).left, 0.0f);
+    EXPECT_FALSE(PinnedLayerTestApi().damaged_region().Contains(
+        pinned0->GetMirroredBounds()));
+    EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+  }
+
+  tab_strip_model()->ActivateTabAt(2);
+  SettleLayout();
+  tab_strip_model()->AddToNewGroup({2});
+  EXPECT_EQ(SeparatorOpacities(pinned1).right, 1.0f);
+  EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+
+  tab_strip_model()->ActivateTabAt(3);
+  unpinned0->UpdateHovered(true);
+  ASSERT_TRUE(unpinned0->GetHoverControllerForTesting());
+  unpinned0->GetHoverControllerForTesting()->animation_for_testing()->End();
+  EXPECT_EQ(SeparatorOpacities(pinned1).right, 1.0f);
+
+  unpinned0->UpdateHovered(false);
+  AppendTab();
+  SettleLayout();
+  tab_strip_model()->SelectTabAt(2);
+  tab_strip_model()->RemoveFromGroup({2});
+  RunScheduledLayouts();
+  EXPECT_EQ(SeparatorOpacities(pinned1).right, 0.0f);
+  EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+  tab_strip_model()->CloseWebContentsAt(2, TabCloseTypes::CLOSE_NONE);
+  RunScheduledLayouts();
+  EXPECT_EQ(SeparatorOpacities(pinned1).right, 1.0f);
+  EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+
+  const auto kSource = split_tabs::SplitTabCreatedSource::kTabContextMenu;
+  tab_strip_model()->ActivateTabAt(0);
+  tab_strip_model()->AddToNewSplit({1}, {}, kSource);
+  tab_strip_model()->ActivateTabAt(3);
+  tab_strip_model()->AddToNewSplit({2}, {}, kSource);
+  AppendTab();
+  SettleLayout();
+  auto* split = views::AsViewClass<SplitTabView>(
+      unpinned_collection_node()->children().front()->view());
+  ASSERT_TRUE(split);
+  split->OnMouseEntered({ui::EventType::kMouseEntered, gfx::PointF(),
+                         gfx::PointF(), ui::EventTimeForNow(), 0, 0});
+  EXPECT_LT(SeparatorOpacities(pinned1).right, 1.0f);
+  EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+
+  pinned1->SetPaintToLayer();
+  pinned1->layer()->SendDamagedRects();
+  split->OnMouseExited({ui::EventType::kMouseExited, gfx::PointF(),
+                        gfx::PointF(), ui::EventTimeForNow(), 0, 0});
+  EXPECT_TRUE(TakePinnedSeamDamaged(pinned1));
+  pinned1->DestroyLayer();
+}

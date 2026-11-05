@@ -104,7 +104,7 @@ std::unique_ptr<ConsentRequester> ConsentRequester::CreateConsentRequester(
 // static
 void ConsentRequester::SetConsentRequesterForTest(
     std::unique_ptr<ConsentRequester> consent_requester) {
-  DCHECK(consent_requester);
+  CHECK(consent_requester, base::NotFatalUntil::M162);
   *GetTestInstanceStorage() = std::move(consent_requester);
 }
 
@@ -167,11 +167,11 @@ void ConsentDialogCoordinator::OnConsentDialogAccept() {
 
 void ConsentDialogCoordinator::OnConsentDialogCancel() {
   base::RecordAction(base::UserMetricsAction("DeviceSignalsConsent_Cancelled"));
-  profiles::CloseProfileWindows(profile_);
 #if !BUILDFLAG(IS_CHROMEOS)
   ProfilePicker::Show(ProfilePicker::Params::FromEntryPoint(
       ProfilePicker::EntryPoint::kProfileLocked));
 #endif  // !BUILDFLAG(IS_CHROMEOS)
+  profiles::CloseProfileWindows(profile_);
 }
 
 void ConsentDialogCoordinator::OnConsentDialogClose() {

@@ -7,12 +7,15 @@
 #include "base/one_shot_event.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/values_test_util.h"
 #include "base/values.h"
+#include "chrome/browser/devtools/features.h"
 #include "chrome/browser/devtools/protocol/devtools_protocol_test_support.h"
 #include "chrome/browser/extensions/browser_window_util.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/scoped_test_mv2_enabler.h"
+#include "chrome/browser/policy/developer_tools_policy_handler.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -24,15 +27,19 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/common/chrome_paths.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url_starter_pack_data.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/install_verifier.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/extension_features.h"
@@ -68,8 +75,14 @@ class DevToolsExtensionsProtocolTest : public DevToolsProtocolTestBase {
   }
 
   scoped_refptr<const extensions::Extension> InstallExtensionFromPath(
-      const std::string& path) {
+      const std::string& path,
+      std::optional<extensions::mojom::ManifestLocation> location =
+          std::nullopt) {
     extensions::ChromeTestExtensionLoader loader(browser()->GetProfile());
+    if (location.has_value()) {
+      loader.set_location(*location);
+      loader.set_pack_extension(true);
+    }
 
     base::FilePath extension_path =
         base::PathService::CheckedGet(chrome::DIR_TEST_DATA)
@@ -426,6 +439,125 @@ IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest,
 }
 
 IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest,
+                       CannotAccessStorageValuesPolicyInstalledContentScript) {
+  extensions::ScopedInstallVerifierBypassForTest install_verifier_bypass;
+  scoped_refptr<const extensions::Extension> policy_extension =
+      InstallExtensionFromPath(
+          "simple_content_script",
+          extensions::mojom::ManifestLocation::kExternalPolicyDownload);
+  ASSERT_TRUE(policy_extension);
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL url =
+      embedded_test_server()->GetURL("/devtools/page_with_content_script.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  DetachProtocolClient();
+  agent_host_ = FindPageHost("/devtools/page_with_content_script.html");
+  ASSERT_TRUE(agent_host_);
+  agent_host_->AttachClient(this);
+
+  // Under the default DeveloperToolsAvailability policy
+  // (kDisallowedForForceInstalledExtensions), storage access for a
+  // policy-installed extension must fail with "Extension not found.".
+  EXPECT_FALSE(SendStorageCommand("Extensions.getStorageItems",
+                                  policy_extension.get(), base::DictValue()));
+  ASSERT_EQ(*error()->FindString("message"), "Extension not found.");
+
+  EXPECT_FALSE(SendStorageCommand(
+      "Extensions.setStorageItems", policy_extension.get(),
+      base::DictValue().Set("values", base::DictValue().Set("foo", "bar"))));
+  ASSERT_EQ(*error()->FindString("message"), "Extension not found.");
+
+  EXPECT_FALSE(SendStorageCommand(
+      "Extensions.removeStorageItems", policy_extension.get(),
+      base::DictValue().Set("keys", base::ListValue().Append("foo"))));
+  ASSERT_EQ(*error()->FindString("message"), "Extension not found.");
+
+  EXPECT_FALSE(SendStorageCommand("Extensions.clearStorageItems",
+                                  policy_extension.get(), base::DictValue()));
+  ASSERT_EQ(*error()->FindString("message"), "Extension not found.");
+}
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsExtensionsProtocolTest,
+    CanAccessStorageValuesPolicyInstalledContentScriptWhenAllowedByPolicy) {
+  extensions::ScopedInstallVerifierBypassForTest install_verifier_bypass;
+  scoped_refptr<const extensions::Extension> policy_extension =
+      InstallExtensionFromPath(
+          "simple_content_script",
+          extensions::mojom::ManifestLocation::kExternalPolicyDownload);
+  ASSERT_TRUE(policy_extension);
+
+  browser()->GetProfile()->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kAllowed));
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL url =
+      embedded_test_server()->GetURL("/devtools/page_with_content_script.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  DetachProtocolClient();
+  agent_host_ = FindPageHost("/devtools/page_with_content_script.html");
+  ASSERT_TRUE(agent_host_);
+  agent_host_->AttachClient(this);
+
+  ASSERT_TRUE(SendStorageCommand(
+      "Extensions.setStorageItems", policy_extension.get(),
+      base::DictValue().Set("values", base::DictValue().Set("foo", "bar"))));
+
+  const base::DictValue* get_result = SendStorageCommand(
+      "Extensions.getStorageItems", policy_extension.get(),
+      base::DictValue().Set("keys", base::ListValue().Append("foo")));
+  ASSERT_TRUE(get_result);
+  ASSERT_EQ(*get_result->FindDict("data")->FindString("foo"), "bar");
+}
+
+class DevToolsExtensionsProtocolInspectionCheckDisabledTest
+    : public DevToolsExtensionsProtocolTest {
+ public:
+  DevToolsExtensionsProtocolInspectionCheckDisabledTest() {
+    scoped_feature_list_.InitAndDisableFeature(
+        features::kDevToolsExtensionStorageInspectionCheck);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    DevToolsExtensionsProtocolInspectionCheckDisabledTest,
+    CanAccessStorageValuesPolicyInstalledContentScriptWhenKillSwitchDisabled) {
+  extensions::ScopedInstallVerifierBypassForTest install_verifier_bypass;
+  scoped_refptr<const extensions::Extension> policy_extension =
+      InstallExtensionFromPath(
+          "simple_content_script",
+          extensions::mojom::ManifestLocation::kExternalPolicyDownload);
+  ASSERT_TRUE(policy_extension);
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL url =
+      embedded_test_server()->GetURL("/devtools/page_with_content_script.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  DetachProtocolClient();
+  agent_host_ = FindPageHost("/devtools/page_with_content_script.html");
+  ASSERT_TRUE(agent_host_);
+  agent_host_->AttachClient(this);
+
+  ASSERT_TRUE(SendStorageCommand(
+      "Extensions.setStorageItems", policy_extension.get(),
+      base::DictValue().Set("values", base::DictValue().Set("foo", "bar"))));
+
+  const base::DictValue* get_result = SendStorageCommand(
+      "Extensions.getStorageItems", policy_extension.get(),
+      base::DictValue().Set("keys", base::ListValue().Append("foo")));
+  ASSERT_TRUE(get_result);
+  ASSERT_EQ(*get_result->FindDict("data")->FindString("foo"), "bar");
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest,
                        CannotGetStorageValuesWithoutContentScript) {
   // Load an extension with no associated content scripts.
   const base::DictValue* load_result =
@@ -513,6 +645,7 @@ IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest, CanGetExtensions) {
   ASSERT_FALSE(id.empty());
 
   // Load packed extension
+  extensions::ScopedInstallVerifierBypassForTest install_verifier_bypass;
   extensions::ChromeTestExtensionLoader loader(browser()->GetProfile());
   loader.set_location(extensions::mojom::ManifestLocation::kInternal);
   loader.set_pack_extension(true);
@@ -627,5 +760,48 @@ IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest,
 
   EXPECT_FALSE(trigger_result->FindDict("error"));
   EXPECT_TRUE(result_catcher.GetNextResult()) << result_catcher.message();
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest,
+                       TriggerActionFailsForUnknownExtension) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
+
+  scoped_refptr<content::DevToolsAgentHost> page_host =
+      content::DevToolsAgentHost::GetOrCreateForTab(
+          browser()->tab_strip_model()->GetActiveWebContents());
+  base::DictValue trigger_extension_params;
+  trigger_extension_params.Set("id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  trigger_extension_params.Set("targetId", page_host->GetId());
+  const base::DictValue* trigger_result = SendCommandSync(
+      "Extensions.triggerAction", std::move(trigger_extension_params));
+
+  EXPECT_FALSE(trigger_result);
+  ASSERT_TRUE(error());
+  EXPECT_EQ(*error()->FindString("message"),
+            "No action found for the provided extension id.");
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest,
+                       TriggerActionFailsForTabWithoutBrowser) {
+  scoped_refptr<const extensions::Extension> extension =
+      InstallExtensionFromPath("popup_action");
+  ASSERT_TRUE(extension);
+
+  // A WebContents that is not in any tab strip has no browser window.
+  std::unique_ptr<content::WebContents> web_contents =
+      content::WebContents::Create(
+          content::WebContents::CreateParams(browser()->GetProfile()));
+  scoped_refptr<content::DevToolsAgentHost> page_host =
+      content::DevToolsAgentHost::GetOrCreateForTab(web_contents.get());
+  base::DictValue trigger_extension_params;
+  trigger_extension_params.Set("id", extension->id());
+  trigger_extension_params.Set("targetId", page_host->GetId());
+  const base::DictValue* trigger_result = SendCommandSync(
+      "Extensions.triggerAction", std::move(trigger_extension_params));
+
+  EXPECT_FALSE(trigger_result);
+  ASSERT_TRUE(error());
+  EXPECT_EQ(*error()->FindString("message"),
+            "Tab target is not attached to a browser window.");
 }
 }  // namespace

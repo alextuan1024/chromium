@@ -6,10 +6,10 @@ package org.chromium.chrome.browser.tabmodel;
 
 import com.google.errorprone.annotations.DoNotMock;
 
-import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.components.tab_groups.TabGroupId;
 
 import java.util.Collections;
 import java.util.List;
@@ -38,8 +38,7 @@ public class TabClosureParams {
      * @param tabGroupId The ID of the tab group.
      * @return A builder for the tab group or null if the group is not found.
      */
-    public static @Nullable Builder forCloseTabGroup(
-            TabModel tabModel, @Nullable Token tabGroupId) {
+    public static @Nullable Builder forCloseTabGroup(TabModel tabModel, TabGroupId tabGroupId) {
         List<Tab> relatedTabs = tabModel.getTabsInGroup(tabGroupId);
         if (relatedTabs.isEmpty()) return null;
 
@@ -73,6 +72,7 @@ public class TabClosureParams {
         private @TabClosingSource int mTabClosingSource = TabClosingSource.UNKNOWN;
         private @Nullable Runnable mUndoRunnable;
         private boolean mIsTabGroup;
+        private boolean mAllowUnloadHandlers = true;
 
         private Builder(
                 @TabCloseType int tabCloseType, boolean isAllTabs, @Nullable List<Tab> tabs) {
@@ -175,6 +175,23 @@ public class TabClosureParams {
         }
 
         /**
+         * Sets whether the tabs being closed may run their {@code beforeunload} and {@code unload}
+         * handlers before they are destroyed. Default is true.
+         *
+         * <p>True does not mean a handler will run: the closure still has to reach a call site
+         * that consults this, the capability has to be enabled for this build and form factor,
+         * the page has to have registered a handler, and on {@code beforeunload} the user still
+         * has to confirm. False means the tabs are destroyed without the handlers being given a
+         * chance, and a registered {@code beforeunload} handler cannot cancel the closure.
+         *
+         * @see TabClosureParamsUtils#areBeforeUnloadHandlersEnabled()
+         */
+        public Builder allowUnloadHandlers(boolean allowUnloadHandlers) {
+            mAllowUnloadHandlers = allowUnloadHandlers;
+            return this;
+        }
+
+        /**
          * Sets whether the closure is for a tab group and came from {@link forCloseTabGroup}. This
          * is used to identify if the tab closure is for an entire tab group. It is currently used
          * by {@link TabRemover} to decide which type of dialog to show. It may have other uses in
@@ -227,6 +244,7 @@ public class TabClosureParams {
             tabClosingSource(params.tabClosingSource);
             withUndoRunnable(params.undoRunnable);
             if (canSetIsTabGroup(params.isTabGroup)) isTabGroup(params.isTabGroup);
+            allowUnloadHandlers(params.allowUnloadHandlers);
             return this;
         }
 
@@ -243,7 +261,8 @@ public class TabClosureParams {
                     mTabClosingSource,
                     mTabCloseType,
                     mUndoRunnable,
-                    mIsTabGroup);
+                    mIsTabGroup,
+                    mAllowUnloadHandlers);
         }
     }
 
@@ -265,6 +284,12 @@ public class TabClosureParams {
     public final @Nullable Runnable undoRunnable;
     public final boolean isTabGroup;
 
+    /**
+     * Whether the tabs being closed may run their {@code beforeunload} and {@code unload} handlers
+     * before they are destroyed. See {@link Builder#allowUnloadHandlers}.
+     */
+    public final boolean allowUnloadHandlers;
+
     private TabClosureParams(
             @Nullable List<Tab> tabs,
             boolean isAllTabs,
@@ -276,7 +301,8 @@ public class TabClosureParams {
             @TabClosingSource int tabClosingSource,
             @TabCloseType int tabCloseType,
             @Nullable Runnable undoRunnable,
-            boolean isTabGroup) {
+            boolean isTabGroup,
+            boolean allowUnloadHandlers) {
         this.tabs = tabs;
         this.isAllTabs = isAllTabs;
         this.recommendedNextTab = recommendedNextTab;
@@ -288,6 +314,7 @@ public class TabClosureParams {
         this.tabCloseType = tabCloseType;
         this.undoRunnable = undoRunnable;
         this.isTabGroup = isTabGroup;
+        this.allowUnloadHandlers = allowUnloadHandlers;
     }
 
     /**
@@ -354,7 +381,8 @@ public class TabClosureParams {
                     && this.tabClosingSource == otherParams.tabClosingSource
                     && this.tabCloseType == otherParams.tabCloseType
                     && Objects.equals(this.undoRunnable, otherParams.undoRunnable)
-                    && this.isTabGroup == otherParams.isTabGroup;
+                    && this.isTabGroup == otherParams.isTabGroup
+                    && this.allowUnloadHandlers == otherParams.allowUnloadHandlers;
         }
         return false;
     }
@@ -372,7 +400,8 @@ public class TabClosureParams {
                 this.tabClosingSource,
                 this.tabCloseType,
                 this.undoRunnable,
-                this.isTabGroup);
+                this.isTabGroup,
+                this.allowUnloadHandlers);
     }
 
     @Override
@@ -398,6 +427,8 @@ public class TabClosureParams {
                 + "\nundoRunnable "
                 + this.undoRunnable
                 + "\nisTabGroup "
-                + this.isTabGroup;
+                + this.isTabGroup
+                + "\nallowUnloadHandlers "
+                + this.allowUnloadHandlers;
     }
 }

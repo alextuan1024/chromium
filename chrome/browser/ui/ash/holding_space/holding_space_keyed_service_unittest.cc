@@ -59,12 +59,11 @@
 #include "chrome/browser/ui/ash/holding_space/holding_space_test_util.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_util.h"
 #include "chrome/browser/ui/ash/holding_space/scoped_test_mount_point.h"
-#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/print_preview/pdf_printer_handler.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/disks/disk_mount_manager.h"
 #include "chromeos/ash/components/disks/fake_disk_mount_manager.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
@@ -72,6 +71,7 @@
 #include "components/account_id/account_id.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/testing_pref_store.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/sync_preferences/pref_service_mock_factory.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "components/user_manager/test_helper.h"
@@ -608,7 +608,11 @@ class HoldingSpaceKeyedServiceTest : public BrowserWithTestWindowTest {
 
   TestingProfile* CreateSecondaryProfile(
       std::unique_ptr<sync_preferences::PrefServiceSyncable> prefs = nullptr) {
-    constexpr char kSecondaryProfileName[] = "secondary_profile";
+    // "@test" matters: GetProfilePath() appends it to any name lacking "@",
+    // so without it here the profile's hashed path and the user's login
+    // hash would never match, and GetUserByBrowserContext() couldn't
+    // resolve a user for this profile.
+    constexpr char kSecondaryProfileName[] = "secondary_profile@test";
     const GaiaId kFakeGaia2("fakegaia2");
     LogIn(kSecondaryProfileName, kFakeGaia2);
     return profile_manager()->CreateTestingProfile(
@@ -635,7 +639,7 @@ class HoldingSpaceKeyedServiceTest : public BrowserWithTestWindowTest {
   }
 
   void ActivateSecondaryProfile() {
-    const std::string kSecondaryProfileName = "secondary_profile";
+    const std::string kSecondaryProfileName = "secondary_profile@test";
     const AccountId account_id(AccountId::FromUserEmail(kSecondaryProfileName));
     ash::Shell::Get()->session_controller()->SwitchActiveUser(account_id);
   }
@@ -723,7 +727,7 @@ class HoldingSpaceKeyedServiceTest : public BrowserWithTestWindowTest {
 
  private:
   std::map<Profile*,
-           raw_ptr<testing::NiceMock<MockDownloadManager>, CtnExperimental>>
+           raw_ptr<testing::NiceMock<MockDownloadManager>, DanglingUntriaged>>
       download_managers_;
   arc::ArcServiceManager arc_service_manager_;
   base::ScopedTempDir temp_dir_;
@@ -755,9 +759,11 @@ class HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest
   void LogIn(std::string_view email, const GaiaId& gaia_id) override {
     CHECK_EQ(email, user_manager::kGuestUserName);
     auto* user = user_manager()->AddGuestUser();
-    user_manager()->UserLoggedIn(
-        user->GetAccountId(),
-        user_manager::TestHelper::GetFakeUsernameHash(user->GetAccountId()));
+    const AccountId& account_id = user->GetAccountId();
+    session_manager::SessionManager::Get()->CreateSession(
+        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id),
+        /*new_user=*/false,
+        /*has_active_session=*/false);
   }
 
   TestingProfile* CreateProfile(const std::string& profile_name) override {
@@ -777,21 +783,14 @@ class HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest
              base::BindRepeating(&BuildVolumeManager)}});
     profile_ =
         profile_manager()->CreateGuestProfile(std::move(guest_profile_builder));
+
+    // The guest profile is already annotated with its AccountId, but
+    // BrowserContextHelper::GetUserByBrowserContext() still defaults to a
+    // username-hash match against the profile's directory -- which isn't
+    // derived from any user's hash for guest profiles. Force the
+    // annotated-AccountId lookup instead.
+    ash::BrowserContextHelper::Get()->SetUseAnnotatedAccountIdForTesting();
     return profile_;
-  }
-
-  std::unique_ptr<BrowserWindow> CreateBrowserWindow() override {
-    // Do not create browser window.
-    return nullptr;
-  }
-
-  std::unique_ptr<BrowserWindowInterface> CreateBrowser(
-      Profile* profile,
-      BrowserWindowInterface::Type browser_type,
-      bool hosted_app,
-      BrowserWindow* browser_window) override {
-    // Do not create browser.
-    return nullptr;
   }
 
  private:
@@ -2855,7 +2854,7 @@ TEST_P(HoldingSpaceKeyedServiceAddAndRemoveItemTest, AddAndRemoveItem) {
   }
 
   // Attempt to add a holding space item of the same type and `file_path`.
-  const std::string& id2 = AddItem(profile, GetType(), file_path);
+  const std::string id2 = AddItem(profile, GetType(), file_path);
 
   ASSERT_EQ(model->items().size(), 1u);
 
@@ -3167,33 +3166,19 @@ class HoldingSpaceKeyedServicePrintToPdfIntegrationTest
     HoldingSpaceKeyedServiceTest::SetUp();
 
     // Create the PDF printer handler.
-    BrowserWindowInterface* browser = GetBrowserForPdfPrinterHandler();
     pdf_printer_handler_ = std::make_unique<::printing::PdfPrinterHandler>(
-        browser->GetProfile(),
-        browser->GetTabStripModel()->GetActiveWebContents(),
+        GetProfileForPdfPrinterHandler(),
+        /*preview_web_contents=*/nullptr,
         /*sticky_settings=*/nullptr);
   }
 
-  void TearDown() override {
-    incognito_browser_.reset();
-    HoldingSpaceKeyedServiceTest::TearDown();
-  }
-
-  BrowserWindowInterface* GetBrowserForPdfPrinterHandler() {
-    if (!UseIncognitoBrowser()) {
-      return browser();
-    }
-    if (!incognito_browser_) {
-      incognito_browser_ =
-          CreateBrowserWithTestWindowForParams(BrowserWindowCreateParams(
-              profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
-              /*user_gesture=*/true));
-    }
-    return incognito_browser_.get();
+  Profile* GetProfileForPdfPrinterHandler() {
+    return UseIncognitoBrowser()
+               ? profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true)
+               : profile();
   }
 
   std::unique_ptr<::printing::PdfPrinterHandler> pdf_printer_handler_;
-  std::unique_ptr<BrowserWindowInterface> incognito_browser_;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,

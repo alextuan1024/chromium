@@ -8,16 +8,15 @@
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator.h"
 #import "ios/chrome/browser/shared/public/commands/tab_picker_commands.h"
 #import "ios/chrome/browser/tab_picker/public/tab_picker_logger.h"
+#import "third_party/omnibox_proto/tool_mode.pb.h"
 
 @protocol ComposeboxDebuggerLogger;
 @class ComposeboxInputPlateViewController;
 @class ComposeboxFocusParams;
 enum class ComposeboxEntrypoint;
-@class ComposeboxModeHolder;
 @class ComposeboxTheme;
 @protocol ComposeboxURLLoader;
 class Browser;
-class GURL;
 @protocol OmniboxPopupPresenterDelegate;
 
 // The coordinator for the compose box input plate.
@@ -42,7 +41,6 @@ class GURL;
                                focusParams:(ComposeboxFocusParams*)focusParams
                                  URLLoader:(id<ComposeboxURLLoader>)URLLoader
                                      theme:(ComposeboxTheme*)theme
-                                modeHolder:(ComposeboxModeHolder*)modeHolder
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
@@ -60,13 +58,11 @@ class GURL;
 // Focuses the Composebox;
 - (void)focusComposebox;
 
-/// Processes a webpage context from a context library signal. Called on the
-/// cobrowse context only.
-- (void)processContextLibraryWebpageSignalWithURL:(const GURL&)url
-                                            title:(NSString*)title;
-
 // Updates the theme of the input plate.
 - (void)updateTheme:(ComposeboxTheme*)theme;
+
+// Updates the active tool mode of the composebox.
+- (void)setToolMode:(omnibox::ToolMode)toolMode;
 
 @end
 

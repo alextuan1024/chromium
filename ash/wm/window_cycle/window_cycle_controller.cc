@@ -32,8 +32,10 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/string_util.h"
+#include "base/task/sequenced_task_runner.h"
 #include "components/prefs/pref_service.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/views/widget/widget.h"
 
 namespace ash {
 
@@ -48,10 +50,6 @@ constexpr char kAltTabSwitchModeHistogramName[] =
     "Ash.WindowCycleController.SwitchMode";
 constexpr char kAltTabModeSwitchSourceHistogramName[] =
     "Ash.WindowCycleController.ModeSwitchSource";
-constexpr char kSameAppWindowCycleIsSameAppHistogramName[] =
-    "Ash.WindowCycleController.SameApp.IsSameApp";
-constexpr char kSameAppWindowCycleDeskModeHistogramName[] =
-    "Ash.WindowCycleController.SameApp.DeskMode";
 
 // Enumeration of the alt-tab modes to record initial mode and mode switch.
 // Note that these values are persisted to histograms so existing values should
@@ -109,6 +107,8 @@ WindowCycleController::WindowCycleController() {
 }
 
 WindowCycleController::~WindowCycleController() {
+  // `~Shell` cancels cycling first, so the list never outlives the controller.
+  CHECK(!window_cycle_list_);
   Shell::Get()->session_controller()->RemoveObserver(this);
 }
 
@@ -126,14 +126,14 @@ void WindowCycleController::RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterBooleanPref(prefs::kAltTabPerDesk, DesksMruType::kAllDesks);
 }
 
-void WindowCycleController::HandleCycleWindow(WindowCyclingDirection direction,
-                                              bool same_app_only) {
+void WindowCycleController::HandleCycleWindow(
+    WindowCyclingDirection direction) {
   if (!CanCycle())
     return;
 
   const bool should_start_alt_tab = !IsCycling();
   if (should_start_alt_tab)
-    StartCycling(same_app_only);
+    StartCycling();
 
   Step(direction, /*starting_alt_tab_or_switching_mode=*/should_start_alt_tab);
 }
@@ -208,7 +208,7 @@ void WindowCycleController::StartFling(float velocity_x) {
   window_cycle_list_->StartFling(velocity_x);
 }
 
-void WindowCycleController::StartCycling(bool same_app_only) {
+void WindowCycleController::StartCycling() {
   Shell* shell = Shell::Get();
 
   // Close the wallpaper preview if it is open to prevent visual glitches where
@@ -229,22 +229,17 @@ void WindowCycleController::StartCycling(bool same_app_only) {
 
   WindowCycleController::WindowList window_list = CreateWindowList();
   SaveCurrentActiveDeskAndWindow(window_list);
-  window_cycle_list_ =
-      std::make_unique<WindowCycleList>(window_list, same_app_only);
+  window_cycle_list_ = std::make_unique<WindowCycleList>(window_list);
   event_filter_ = std::make_unique<WindowCycleEventFilter>();
-  base::UmaHistogramBoolean(kSameAppWindowCycleIsSameAppHistogramName,
-                            same_app_only);
-  if (!same_app_only) {
-    base::RecordAction(base::UserMetricsAction("WindowCycleController_Cycle"));
-    base::UmaHistogramCounts100(kAltTabItemsHistogramName, window_list.size());
-    if (IsInteractiveAltTabModeAllowed()) {
-      // When alt-tab interactive mode is available, report the initial alt-tab
-      // mode which indicates the user's preferred mode.
-      base::UmaHistogramEnumeration(kAltTabInitialModeHistogramName,
-                                    IsAltTabPerActiveDesk()
-                                        ? AltTabMode::kCurrentDesk
-                                        : AltTabMode::kAllDesks);
-    }
+  base::RecordAction(base::UserMetricsAction("WindowCycleController_Cycle"));
+  base::UmaHistogramCounts100(kAltTabItemsHistogramName, window_list.size());
+  if (IsInteractiveAltTabModeAllowed()) {
+    // When alt-tab interactive mode is available, report the initial alt-tab
+    // mode which indicates the user's preferred mode.
+    base::UmaHistogramEnumeration(kAltTabInitialModeHistogramName,
+                                  IsAltTabPerActiveDesk()
+                                      ? AltTabMode::kCurrentDesk
+                                      : AltTabMode::kAllDesks);
   }
 
   desks_observation_.Observe(DesksController::Get());
@@ -257,7 +252,9 @@ void WindowCycleController::CompleteCycling() {
 }
 
 void WindowCycleController::CancelCycling() {
-  StopCycling();
+  if (IsCycling()) {
+    StopCycling();
+  }
 }
 
 void WindowCycleController::MaybeResetCycleList() {
@@ -333,12 +330,10 @@ void WindowCycleController::OnModeChanged(bool per_desk,
   prefs->SetBoolean(prefs::kAltTabPerDesk, per_desk);
 
   // Report the alt-tab mode the user switches to and the source of switch.
-  if (!window_cycle_list_->same_app_only()) {
-    base::UmaHistogramEnumeration(
-        kAltTabSwitchModeHistogramName,
-        per_desk ? AltTabMode::kCurrentDesk : AltTabMode::kAllDesks);
-    base::UmaHistogramEnumeration(kAltTabModeSwitchSourceHistogramName, source);
-  }
+  base::UmaHistogramEnumeration(
+      kAltTabSwitchModeHistogramName,
+      per_desk ? AltTabMode::kCurrentDesk : AltTabMode::kAllDesks);
+  base::UmaHistogramEnumeration(kAltTabModeSwitchSourceHistogramName, source);
 
   // Announce the new mode and the updated window selection via ChromeVox.
   aura::Window* target_window = window_cycle_list_->GetTargetWindow();
@@ -471,7 +466,6 @@ void WindowCycleController::StopCycling() {
   event_filter_.reset();
 
   desks_observation_.Reset();
-  const bool was_same_app_only = window_cycle_list_->same_app_only();
   window_cycle_list_.reset();
 
   // We can't use the MRU window list here to get the active window, since
@@ -481,14 +475,8 @@ void WindowCycleController::StopCycling() {
   aura::Window* active_window_after_window_cycle =
       window_util::GetActiveWindow();
 
-  if (was_same_app_only) {
-    base::UmaHistogramEnumeration(kSameAppWindowCycleDeskModeHistogramName,
-                                  IsAltTabPerActiveDesk()
-                                      ? AltTabMode::kCurrentDesk
-                                      : AltTabMode::kAllDesks);
-  } else if (active_window_after_window_cycle != nullptr &&
-             active_window_before_window_cycle_ !=
-                 active_window_after_window_cycle) {
+  if (active_window_after_window_cycle != nullptr &&
+      active_window_before_window_cycle_ != active_window_after_window_cycle) {
     Shell::Get()->metrics()->task_switch_metrics_recorder().OnTaskSwitch(
         TaskSwitchSource::WINDOW_CYCLE_CONTROLLER);
 
@@ -498,6 +486,19 @@ void WindowCycleController::StopCycling() {
   active_window_before_window_cycle_ = nullptr;
   active_desk_container_id_before_cycle_ = kShellWindowId_Invalid;
   Shell::Get()->event_rewriter_controller()->SetAltDownRemappingEnabled(true);
+}
+
+void WindowCycleController::TakeClosedCycleUiWidget(
+    std::unique_ptr<views::Widget> widget) {
+  closed_cycle_ui_widget_ = std::move(widget);
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&WindowCycleController::DeleteClosedCycleUiWidget,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void WindowCycleController::DeleteClosedCycleUiWidget() {
+  closed_cycle_ui_widget_.reset();
 }
 
 void WindowCycleController::InitFromUserPrefs() {

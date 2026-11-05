@@ -14,6 +14,7 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
+#include "base/task/sequenced_task_runner.h"
 #include "components/payments/content/content_payment_request_delegate.h"
 #include "components/payments/content/has_enrolled_instrument_query_factory.h"
 #include "components/payments/content/payment_app.h"
@@ -136,8 +137,11 @@ constexpr char kTimeToCheckoutShowToCompleteSuccessfullyHistogramName[] =
 
 PaymentRequest::PaymentRequest(
     std::unique_ptr<ContentPaymentRequestDelegate> delegate,
-    mojo::PendingReceiver<mojom::PaymentRequest> receiver)
-    : DocumentService(*delegate->GetRenderFrameHost(), std::move(receiver)),
+    mojo::PendingReceiver<mojom::PaymentRequest> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(*delegate->GetRenderFrameHost(),
+                      std::move(receiver),
+                      key),
       WebContentsObserver(content::WebContents::FromRenderFrameHost(
           delegate->GetRenderFrameHost())),
       log_(web_contents()),
@@ -356,7 +360,8 @@ void PaymentRequest::Init(
   if (std::ranges::any_of(
           spec_->url_payment_method_identifiers(), [&](const GURL& url) {
             return url != google_pay_url && url != android_pay_url &&
-                   url != google_play_billing_url;
+                   url != google_play_billing_url &&
+                   url != google_pay_authentication_url;
           })) {
     method_categories.push_back(JourneyLogger::PaymentMethodCategory::kOther);
   }
@@ -563,6 +568,13 @@ void PaymentRequest::UpdateWith(mojom::PaymentDetailsPtr details) {
     return;
   }
 
+  bool is_resolving_promise_passed_into_show_method = !spec_->IsInitialized();
+  if (is_resolving_promise_passed_into_show_method && !details->error.empty()) {
+    log_.Error(errors::kInvalidState);
+    ResetAndDeleteThis();
+    return;
+  }
+
   if (state()->selected_app() && state()->IsPaymentAppInvoked() &&
       state()->selected_app()->IsWaitingForPaymentDetailsUpdate()) {
     state()->selected_app()->UpdateWith(
@@ -571,8 +583,6 @@ void PaymentRequest::UpdateWith(mojom::PaymentDetailsPtr details) {
             base::BindRepeating(&PaymentApp::IsValidForPaymentMethodIdentifier,
                                 state()->selected_app()->AsWeakPtr())));
   }
-
-  bool is_resolving_promise_passed_into_show_method = !spec_->IsInitialized();
 
   // spec_->UpdateWith() can synchronously trigger observers that destroy the
   // payment window's WebContents and delete `this`.
@@ -1004,21 +1014,13 @@ void PaymentRequest::OnPayerInfoSelected(mojom::PayerDetailPtr payer_info) {
 }
 
 void PaymentRequest::OnInternalError(const std::string& error_message) {
-  // If |client_| is not bound, then the object is already being destroyed as
-  // a result of a renderer event.
-  if (!client_.is_bound()) {
-    return;
-  }
-
-  RecordFirstAbortReason(JourneyLogger::ABORT_REASON_INTERNAL_ERROR);
-
-  client_->OnError(mojom::PaymentErrorReason::NOT_SUPPORTED, error_message);
-
-  if (observer_for_testing_) {
-    observer_for_testing_->OnInternalError();
-  }
-
-  ResetAndDeleteThis();
+  // To avoid tearing down the PaymentRequest class while it or its delegate
+  // may still be on the call stack (e.g., during ShowDialog() or if showing
+  // the dialog triggers a synchronous browser window resize), post the error
+  // handling and self-deletion asynchronously.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&PaymentRequest::OnInternalErrorImpl,
+                                weak_ptr_factory_.GetWeakPtr(), error_message));
 }
 
 void PaymentRequest::SetWindowSizeCheckRejectionReason(
@@ -1279,6 +1281,24 @@ void PaymentRequest::OnAbortResult(bool aborted) {
     RecordFirstAbortReason(JourneyLogger::ABORT_REASON_ABORTED_BY_MERCHANT);
     state_->OnAbort();
   }
+}
+
+void PaymentRequest::OnInternalErrorImpl(const std::string& error_message) {
+  // If |client_| is not bound, then the object is already being destroyed as
+  // a result of a renderer event.
+  if (!client_.is_bound()) {
+    return;
+  }
+
+  RecordFirstAbortReason(JourneyLogger::ABORT_REASON_INTERNAL_ERROR);
+
+  client_->OnError(mojom::PaymentErrorReason::NOT_SUPPORTED, error_message);
+
+  if (observer_for_testing_) {
+    observer_for_testing_->OnInternalError();
+  }
+
+  ResetAndDeleteThis();
 }
 
 void PaymentRequest::ShowErrorMessageAndAbortPayment() {

@@ -5,12 +5,12 @@
 import 'chrome://history/history.js';
 
 import type {HistoryAppElement, HistorySideBarElement} from 'chrome://history/history.js';
-import {BrowserProxyImpl, CrRouter, historyClustersBrowserProxyFactory, historyEmbeddingsBrowserProxyFactory, HistoryEmbeddingsPageHandlerRemote, MetricsProxyImpl, PageHandlerRemote as HistoryClustersPageHandlerRemote} from 'chrome://history/history.js';
+import {BrowserProxyImpl, CrRouter, historyClustersBrowserProxyFactory, MetricsProxyImpl, PageHandlerRemote as HistoryClustersPageHandlerRemote} from 'chrome://history/history.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {keyDownOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
-import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
+import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestMetricsProxy} from './history_clusters/utils.js';
 import {TestHistoryBrowserProxy} from './test_browser_proxy.js';
@@ -30,9 +30,6 @@ import {navigateTo} from './test_util.js';
         enableHistoryClusters: 'Enable',
         isHistoryClustersEnabled,
         isHistoryClustersVisible: true,
-        /* For this test suite we want to keep testing the old cr-tabs which
-           is the default Stable configuration. */
-        enableHistoryEmbeddings: false,
       });
     });
 
@@ -75,9 +72,7 @@ import {navigateTo} from './test_util.js';
 
     test('routing to /grouped may change active view', async () => {
       assertEquals('history', app.$.content.selected);
-      assertEquals(
-          app.shadowRoot.querySelector('#history'),
-          app.$.tabsContent.selectedItem);
+      assertEquals(app.$.history, app.$.tabsContent.selectedItem);
 
       navigateTo('/grouped', app);
       await microtasksFinished();
@@ -91,7 +86,7 @@ import {navigateTo} from './test_util.js';
       assertEquals(
           isHistoryClustersEnabled ?
               app.shadowRoot.querySelector('#history-clusters') :
-              app.shadowRoot.querySelector('#history'),
+              app.$.history,
           app.$.tabsContent.selectedItem);
     });
 
@@ -128,12 +123,13 @@ import {navigateTo} from './test_util.js';
       assertEquals('history', sidebar.$.menu.selected);
       assertEquals('chrome://history/', window.location.href);
 
-      const historyTabs = app.shadowRoot.querySelector('cr-tabs');
-      assertEquals(!!historyTabs, isHistoryClustersEnabled);
+      const groupViewButton =
+          app.shadowRoot.querySelector<HTMLElement>('#groupViewButton');
+      assertEquals(!!groupViewButton, isHistoryClustersEnabled);
 
       if (isHistoryClustersEnabled) {
-        assertTrue(!!historyTabs);
-        historyTabs.selected = 1;
+        assertTrue(!!groupViewButton);
+        groupViewButton.click();
         await microtasksFinished();
         assertEquals('grouped', sidebar.$.menu.selected);
         assertEquals('chrome://history/grouped', window.location.href);
@@ -151,7 +147,7 @@ import {navigateTo} from './test_util.js';
         assertEquals('grouped', sidebar.$.menu.selected);
         assertEquals('chrome://history/grouped', window.location.href);
 
-        historyTabs.selected = 0;
+        groupViewButton.click();
         await microtasksFinished();
         assertEquals('history', sidebar.$.menu.selected);
         assertEquals('chrome://history/', window.location.href);
@@ -170,9 +166,7 @@ import {navigateTo} from './test_util.js';
     test('route updates from search', async function() {
       const searchTerm = 'McCree';
       assertEquals('history', app.$.content.selected);
-      app.dispatchEvent(new CustomEvent(
-          'change-query',
-          {bubbles: true, composed: true, detail: {search: searchTerm}}));
+      app.fire('change-query', {search: searchTerm});
       await microtasksFinished();
       assertEquals('chrome://history/?q=' + searchTerm, window.location.href);
     });
@@ -202,9 +196,10 @@ import {navigateTo} from './test_util.js';
               'chrome://history/?q=' + searchTerm, window.location.href);
 
           if (isHistoryClustersEnabled) {
-            const tabs = app.shadowRoot.querySelector('cr-tabs');
-            assertTrue(!!tabs);
-            tabs.selected = 1;
+            const groupViewButton =
+                app.shadowRoot.querySelector<HTMLElement>('#groupViewButton');
+            assertTrue(!!groupViewButton);
+            groupViewButton.click();
             await microtasksFinished();
             assertEquals('grouped', sidebar.$.menu.selected);
             assertEquals(searchTerm, app.$.toolbar.searchTerm);
@@ -218,19 +213,13 @@ import {navigateTo} from './test_util.js';
         'routing to chrome://history/syncedTabs works correctly',
         async function() {
           navigateTo('/syncedTabs', app);
-          if (isHistoryClustersEnabled) {
-            // cr-tabs can change their selected value, but these should be
-            // ignored since /syncedTabs is not a tabbed page.
-            const historyTabs = app.shadowRoot.querySelector('cr-tabs')!;
-            historyTabs.selected = -1;
-            await microtasksFinished();
-          }
-          assertEquals(`chrome://history/syncedTabs`, window.location.href);
+          await microtasksFinished();
+          assertEquals('chrome://history/syncedTabs', window.location.href);
         });
   });
 });
 
-suite(`routing-test-with-history-clusters-pref-set`, () => {
+suite('routing-test-with-history-clusters-pref-set', () => {
   let app: HistoryAppElement;
   let testProxy: TestHistoryBrowserProxy;
   let testMetricsProxy: TestMetricsProxy;
@@ -261,149 +250,32 @@ suite(`routing-test-with-history-clusters-pref-set`, () => {
   }
 
   test(
-      `route to non default last selected tab when no url params set `,
+      'route to non default last selected tab when no url params set ',
       async () => {
         initialize();
         await microtasksFinished();
-        assertEquals(`chrome://history/grouped`, window.location.href);
+        assertEquals('chrome://history/grouped', window.location.href);
       });
 
-  test(`route to grouped url when last tab is grouped`, async () => {
+  test('route to grouped url when last tab is grouped', async () => {
     loadTimeData.overrideValues({lastSelectedTab: 0});
     initialize();
     await microtasksFinished();
-    assertEquals(`chrome://history/`, window.location.href);
+    assertEquals('chrome://history/', window.location.href);
     testProxy.handler.reset();
 
     navigateTo('/grouped', app);
     await microtasksFinished();
-    assertEquals(`chrome://history/grouped`, window.location.href);
+    assertEquals('chrome://history/grouped', window.location.href);
     const lastSelectedTab =
         await testProxy.handler.whenCalled('setLastSelectedTab');
     assertEquals(lastSelectedTab, 1);
   });
 
-  test(`route to list url when last tab is list`, async () => {
+  test('route to list url when last tab is list', async () => {
     loadTimeData.overrideValues({lastSelectedTab: 0});
     initialize();
     await microtasksFinished();
-    assertEquals(`chrome://history/`, window.location.href);
-  });
-});
-
-suite(`routing-test-with-history-embeddings-enabled`, () => {
-  let app: HistoryAppElement;
-
-  suiteSetup(() => {
-    loadTimeData.overrideValues({
-      enableHistoryEmbeddings: true,
-      isHistoryClustersEnabled: true,
-      isHistoryClustersVisible: true,
-      historyEmbeddingsSuggestion1: 'suggestion 1',
-      historyEmbeddingsSuggestion2: 'suggestion 2',
-      historyEmbeddingsSuggestion3: 'suggestion 3',
-    });
-  });
-
-  setup(() => {
-    window.history.replaceState({}, '', '/');
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    CrRouter.resetForTesting();
-
-    // Some extra setup of mocking proxies to get the history-app to work.
-    const clustersHandler =
-        TestMock.fromClass(HistoryClustersPageHandlerRemote);
-    const {instance: clustersProxy} =
-        historyClustersBrowserProxyFactory.createForTest(clustersHandler);
-    historyClustersBrowserProxyFactory.setInstance(clustersProxy);
-    BrowserProxyImpl.setInstance(new TestHistoryBrowserProxy());
-    MetricsProxyImpl.setInstance(new TestMetricsProxy());
-    const handler = TestMock.fromClass(HistoryEmbeddingsPageHandlerRemote);
-    handler.setResultFor('search', new Promise(() => {}));
-    const {instance: embeddingsProxy} =
-        historyEmbeddingsBrowserProxyFactory.createForTest(handler);
-    historyEmbeddingsBrowserProxyFactory.setInstance(embeddingsProxy);
-
-    app = document.createElement('history-app');
-    document.body.appendChild(app);
-    return microtasksFinished();
-  });
-
-  test('route updates from group filter chip', async () => {
-    // Tabs should be hidden.
-    assertEquals(null, app.shadowRoot.querySelector('cr-tabs'));
-
-    const filterChips =
-        app.shadowRoot.querySelector('cr-history-embeddings-filter-chips');
-    assertTrue(!!filterChips);
-    assertTrue(isVisible(filterChips));
-
-    // Changing the "By group" chip to should change the URL.
-    filterChips.dispatchEvent(new CustomEvent(
-        'show-results-by-group-changed', {detail: {value: true}}));
-    await microtasksFinished();
-    assertEquals('chrome://history/grouped', window.location.href);
-
-    filterChips.dispatchEvent(new CustomEvent(
-        'show-results-by-group-changed', {detail: {value: false}}));
-    await microtasksFinished();
     assertEquals('chrome://history/', window.location.href);
-  });
-
-  test('route updates from date filter chip', async () => {
-    navigateTo('/?q=test', app);
-    await microtasksFinished();
-
-    const filterChips =
-        app.shadowRoot.querySelector('cr-history-embeddings-filter-chips');
-    assertTrue(!!filterChips);
-
-    // Changing the "By group" chip to should change the URL.
-    filterChips.dispatchEvent(new CustomEvent('selected-suggestion-changed', {
-      detail: {
-        value: {
-          timeRangeStart: new Date('2011-01-01T00:00:00'),
-        },
-      },
-      composed: true,
-      bubbles: true,
-    }));
-    await microtasksFinished();
-
-    assertEquals(
-        'chrome://history/?q=test&after=2011-01-01', window.location.href);
-  });
-
-  test('route clears date if invalid', async () => {
-    navigateTo('/?q=test&after=2022-invalid-date', app);
-    await microtasksFinished();
-    assertEquals('chrome://history/?q=test', window.location.href);
-  });
-
-  test('route sets correct date', async () => {
-    navigateTo('/?q=test&after=2022-12-04', app);
-    await microtasksFinished();
-
-    function stringAsDateObject(dateString: string) {
-      const dateObject = new Date(dateString + 'T00:00:00');
-      return dateObject;
-    }
-
-    const filterChips =
-        app.shadowRoot.querySelector('cr-history-embeddings-filter-chips');
-    assertTrue(!!filterChips);
-    assertEquals(
-        stringAsDateObject('2022-12-04').getTime(),
-        filterChips.timeRangeStart?.getTime());
-
-    navigateTo('/?q=test&after=1999-01-30', app);
-    await microtasksFinished();
-    assertEquals(
-        stringAsDateObject('1999-01-30').getTime(),
-        filterChips.timeRangeStart?.getTime());
-
-    navigateTo('/?q=test', app);
-    await microtasksFinished();
-    assertEquals(undefined, filterChips.timeRangeStart);
   });
 });

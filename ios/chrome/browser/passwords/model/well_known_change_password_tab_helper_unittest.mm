@@ -5,8 +5,11 @@
 
 #import <Foundation/Foundation.h>
 
+#import <optional>
+
 #import "base/memory/raw_ptr.h"
 #import "base/test/bind.h"
+#import "base/test/gmock_callback_support.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/affiliations/core/browser/mock_affiliation_service.h"
 #import "components/password_manager/core/browser/well_known_change_password/well_known_change_password_util.h"
@@ -67,8 +70,12 @@ void LoadUrlWithTransition(web::WebState* web_state,
   navigation_manager->LoadURLWithParams(params);
 }
 
-std::unique_ptr<KeyedService> MakeMockAffiliationService(ProfileIOS* profile) {
-  return std::make_unique<NiceMock<affiliations::MockAffiliationService>>();
+std::unique_ptr<KeyedService> MakeMockAffiliationService(ProfileIOS& profile) {
+  auto mock_service =
+      std::make_unique<NiceMock<affiliations::MockAffiliationService>>();
+  ON_CALL(*mock_service, FetchChangePasswordURL)
+      .WillByDefault(base::test::RunOnceCallback<1>(std::nullopt));
+  return mock_service;
 }
 
 }  // namespace
@@ -87,7 +94,9 @@ class WellKnownChangePasswordTabHelperTest : public PlatformTest {
 
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(IOSChromeAffiliationServiceFactory::GetInstance(),
-                              base::BindRepeating(&MakeMockAffiliationService));
+                              base::BindOnce(&MakeMockAffiliationService));
+    builder.SetSharedURLLoaderFactory(
+        test_url_loader_factory_.GetSafeWeakWrapper());
     profile_ = std::move(builder).Build();
 
     web::WebState::CreateParams params(profile_.get());
@@ -106,9 +115,6 @@ class WellKnownChangePasswordTabHelperTest : public PlatformTest {
 
     web_state()->SetDelegate(&delegate_);
     WellKnownChangePasswordTabHelper::CreateForWebState(web_state());
-    profile_->SetSharedURLLoaderFactory(
-        base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
-            &test_url_loader_factory_));
     test_recorder_ = std::make_unique<ukm::TestAutoSetUkmRecorder>();
   }
 
@@ -134,8 +140,10 @@ class WellKnownChangePasswordTabHelperTest : public PlatformTest {
   // Sets if change passwords URL can be obtained.
   void SetChangePasswordURLForAffiliationService(
       const GURL& change_password_url) {
-    EXPECT_CALL(*affiliation_service_, GetChangePasswordURL)
-        .WillRepeatedly(testing::Return(change_password_url));
+    EXPECT_CALL(*affiliation_service_, FetchChangePasswordURL)
+        .WillOnce(base::test::RunOnceCallback<1>(
+            affiliations::AffiliationService::ChangePasswordUrlMatch(
+                change_password_url)));
   }
 
   // Maps a path to a ServerResponse config object.

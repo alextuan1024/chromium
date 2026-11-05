@@ -218,7 +218,7 @@ export class LensSearchboxElement extends LensSearchboxElementBase implements
         /*isOnFocus=*/ !input);
   }
 
-  override handleKeyNavigation(e: KeyboardEvent) {
+  override async handleKeyNavigation(e: KeyboardEvent) {
     if (this.showThumbnail) {
       const thumbnail =
           this.shadowRoot.querySelector<HTMLElement>('cr-searchbox-thumbnail');
@@ -261,7 +261,7 @@ export class LensSearchboxElement extends LensSearchboxElementBase implements
         e.preventDefault();
       }
     }
-    super.handleKeyNavigation(e);
+    await super.handleKeyNavigation(e);
   }
 
   queryInputAutocomplete() {
@@ -269,15 +269,6 @@ export class LensSearchboxElement extends LensSearchboxElementBase implements
     this.queryAutocomplete(
         input, /*preventInlineAutocomplete=*/ false,
         /*isOnFocus=*/ !input);
-  }
-
-  isInputEmpty(): boolean {
-    // If this is called before first render, the input element will not exist.
-    if (!this.shadowRoot?.querySelector('#input') || !this.$.input ||
-        !this.$.input.lastInput()) {
-      return true;
-    }
-    return !this.$.input.lastInput()!.text.trim();
   }
 
   private computeSelectedMatch_(): AutocompleteMatch|null {

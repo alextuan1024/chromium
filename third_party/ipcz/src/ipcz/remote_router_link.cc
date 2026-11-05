@@ -7,6 +7,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "ipcz/application_object.h"
 #include "ipcz/box.h"
 #include "ipcz/node_link.h"
@@ -15,9 +18,6 @@
 #include "ipcz/parcel.h"
 #include "ipcz/remote_router_link.h"
 #include "ipcz/router.h"
-#include "util/log.h"
-#include "util/safe_math.h"
-#include "util/unsafe_buffers.h"
 
 namespace ipcz {
 
@@ -205,7 +205,7 @@ void RemoteRouterLink::AcceptParcel(std::unique_ptr<Parcel> parcel) {
   uint32_t num_subparcels;
   if (parcel->subparcel_index() == 0) {
     // The total subparcel count includes this (the main) parcel.
-    num_subparcels = checked_cast<uint32_t>(subparcels.size()) + 1;
+    num_subparcels = base::checked_cast<uint32_t>(subparcels.size()) + 1;
 
     // Send the other subparcels separately before sending this main one. All
     // will be collected on the receiving end and reconstituted into a single
@@ -283,8 +283,8 @@ void RemoteRouterLink::AcceptParcel(std::unique_ptr<Parcel> parcel) {
   // within and we'll be copying the full contents into message data below.
   // SAFETY: `descriptors` is an InlinedVector allocated with `num_portals`
   // elements.
-  IPCZ_UNSAFE_BUFFERS(memset(descriptors.data(), 0,
-                             descriptors.size() * sizeof(descriptors[0])));
+  UNSAFE_BUFFERS(memset(descriptors.data(), 0,
+                        descriptors.size() * sizeof(descriptors[0])));
 
   size_t portal_index = 0;
   for (size_t i = 0; i < objects.size(); ++i) {
@@ -334,8 +334,8 @@ void RemoteRouterLink::AcceptParcel(std::unique_ptr<Parcel> parcel) {
   if (!descriptors.empty()) {
     // SAFETY: `new_routers` was allocated with `num_portals` elements, matching
     // `descriptors.size()`.
-    IPCZ_UNSAFE_BUFFERS(memcpy(new_routers.data(), descriptors.data(),
-                               descriptors.size() * sizeof(descriptors[0])));
+    UNSAFE_BUFFERS(memcpy(new_routers.data(), descriptors.data(),
+                          descriptors.size() * sizeof(descriptors[0])));
   }
 
   if (must_split_parcel) {

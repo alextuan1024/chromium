@@ -15,13 +15,17 @@
 class ContextualSearchFulfillmentAction : public OmniboxAction {
  public:
   ContextualSearchFulfillmentAction(const GURL& url,
-                                    AutocompleteMatchType::Type match_type,
+                                    omnibox::AutocompleteMatchType match_type,
                                     bool is_zero_prefix_suggestion);
 
   // OmniboxAction:
   OmniboxActionId ActionId() const override;
   void RecordActionShown(size_t position, bool executed) const override;
   void Execute(ExecutionContext& context) const override;
+#if BUILDFLAG(IS_ANDROID)
+  base::android::ScopedJavaLocalRef<jobject> GetOrCreateJavaObject(
+      JNIEnv* env) const override;
+#endif
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
   const gfx::VectorIcon& GetVectorIcon() const override;
 #endif
@@ -35,7 +39,7 @@ class ContextualSearchFulfillmentAction : public OmniboxAction {
  protected:
   ~ContextualSearchFulfillmentAction() override;
 
-  AutocompleteMatchType::Type match_type_;
+  omnibox::AutocompleteMatchType match_type_;
   bool is_zero_prefix_suggestion_;
   // This URL includes all of the search_terms_args that its match had
   // associated with it.

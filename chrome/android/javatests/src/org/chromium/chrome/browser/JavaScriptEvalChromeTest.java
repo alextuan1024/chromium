@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser;
 
 import androidx.test.filters.LargeTest;
-import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -15,22 +14,19 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.UrlUtils;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 
 import java.util.concurrent.TimeoutException;
 
 /** Tests for evaluation of JavaScript. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class JavaScriptEvalChromeTest {
     @Rule
@@ -46,9 +42,11 @@ public class JavaScriptEvalChromeTest {
                             + "</script></head>"
                             + "<body><button id=\"test\">Test button</button></body></html>");
 
+    private WebPageStation mPage;
+
     @Before
     public void setUp() {
-        mActivityTestRule.startOnWebPage(JSTEST_URL);
+        mPage = mActivityTestRule.startOnWebPage(JSTEST_URL);
     }
 
     /**
@@ -59,12 +57,10 @@ public class JavaScriptEvalChromeTest {
     @LargeTest
     @Feature({"Browser"})
     public void testJavaScriptEvalIsCorrectlyOrderedWithinOneTab() throws TimeoutException {
-        Tab tab1 = mActivityTestRule.getActivityTab();
-        ChromeTabUtils.newTabFromMenu(
-                InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
-        Tab tab2 = mActivityTestRule.getActivityTab();
-        mActivityTestRule.getActivityTestRule().loadUrl(JSTEST_URL);
-        ChromeTabUtils.switchTabInCurrentTabModel(mActivityTestRule.getActivity(), tab1.getId());
+        Tab tab1 = mPage.getTab();
+        mPage = mPage.openWebPageInNewTab(JSTEST_URL);
+        Tab tab2 = mPage.getTab();
+        mPage = mPage.selectTabFast(tab1, WebPageStation::newBuilder);
 
         Assert.assertFalse("Tab didn't open", tab1 == tab2);
 
